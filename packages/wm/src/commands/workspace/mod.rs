@@ -1,4 +1,5 @@
 mod activate_workspace;
+mod animate_workspace_switch;
 mod deactivate_workspace;
 mod focus_workspace;
 mod move_workspace_in_direction;

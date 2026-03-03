@@ -39,6 +39,12 @@ general:
   # - 'false': Only show windows from the currently shown workspaces.
   show_all_in_taskbar: false
 
+  # Fade animation when switching workspaces.
+  workspace_switch_animation:
+    enabled: true
+    duration_ms: 180  # 0 = off; ~100–300 ms recommended
+    easing: 'ease_out_quad'  # linear | ease_out_quad | ease_out_cubic | ease_in_out
+
 gaps:
   # Whether to scale the gaps with the DPI of the monitor.
   scale_with_dpi: true

@@ -1,7 +1,12 @@
 use anyhow::Context;
 use tracing::info;
 
-use super::activate_workspace;
+use super::{
+  activate_workspace,
+  animate_workspace_switch::{
+    collect_fade_in_windows, fade_out_workspace, schedule_fade_in,
+  },
+};
 use crate::{
   commands::{
     container::set_focused_descendant, workspace::deactivate_workspace,
@@ -55,6 +60,27 @@ pub fn focus_workspace(
       .and_then(|monitor| monitor.displayed_workspace())
       .context("No workspace is currently displayed.")?;
 
+    let is_different_workspace =
+      target_workspace.id() != displayed_workspace.id();
+
+    let anim = &config.value.general.workspace_switch_animation;
+    let animation_enabled =
+      anim.enabled && anim.duration_ms > 0 && is_different_workspace;
+
+    if animation_enabled {
+      fade_out_workspace(
+        &displayed_workspace,
+        anim.duration_ms,
+        &anim.easing,
+      );
+    }
+
+    let fade_in_windows = if is_different_workspace {
+      collect_fade_in_windows(&target_workspace)
+    } else {
+      vec![]
+    };
+
     // Set focus to whichever window last had focus in workspace. If the
     // workspace has no windows, then set focus to the workspace itself.
     let container_to_focus = target_workspace
@@ -87,6 +113,13 @@ pub fn focus_workspace(
     // Save the currently focused workspace as recent.
     state.recent_workspace_name = Some(focused_workspace.config().name);
     state.pending_sync.queue_cursor_jump();
+
+    let (fade_duration, fade_easing) = if animation_enabled {
+      (anim.duration_ms, anim.easing.clone())
+    } else {
+      (0, anim.easing.clone())
+    };
+    schedule_fade_in(fade_in_windows, fade_duration, fade_easing);
   }
 
   Ok(())

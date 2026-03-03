@@ -93,6 +93,9 @@ pub struct GeneralConfig {
 
   /// Affects which windows get shown in the native Windows taskbar.
   pub show_all_in_taskbar: bool,
+
+  /// Fade animation played when switching between workspaces.
+  pub workspace_switch_animation: WorkspaceSwitchAnimationConfig,
 }
 
 impl Default for GeneralConfig {
@@ -106,8 +109,64 @@ impl Default for GeneralConfig {
       config_reload_commands: vec![],
       hide_method: HideMethod::Cloak,
       show_all_in_taskbar: false,
+      workspace_switch_animation: WorkspaceSwitchAnimationConfig::default(),
     }
   }
+}
+
+/// Configuration for the fade animation played on workspace switch.
+///
+/// YAML example:
+/// ```yaml
+/// general:
+///   workspace_switch_animation:
+///     enabled: true
+///     duration_ms: 180
+///     easing: ease_out_quad
+/// ```
+///
+/// Set `enabled: false` **or** `duration_ms: 0` to disable the animation
+/// entirely and get an instant switch.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(default, rename_all(serialize = "camelCase"))]
+pub struct WorkspaceSwitchAnimationConfig {
+  /// Whether the fade animation is active.
+  pub enabled: bool,
+
+  /// Total duration of each fade direction (fade-out and fade-in) in
+  /// milliseconds.  Values below `1` disable the animation.
+  pub duration_ms: u64,
+
+  /// Easing function applied to the opacity curve.
+  pub easing: AnimationEasing,
+}
+
+impl Default for WorkspaceSwitchAnimationConfig {
+  fn default() -> Self {
+    WorkspaceSwitchAnimationConfig {
+      enabled: true,
+      duration_ms: 180,
+      easing: AnimationEasing::default(),
+    }
+  }
+}
+
+/// Easing function used for the workspace switch fade animation.
+///
+/// | Value            | Feel                                         |
+/// |------------------|----------------------------------------------|
+/// | `linear`         | Constant speed throughout                    |
+/// | `ease_out_quad`  | Fast start, gentle deceleration (default)    |
+/// | `ease_out_cubic` | Fast start, stronger deceleration at the end |
+/// | `ease_in_out`    | Slow start and end, fast in the middle       |
+#[derive(Clone, Debug, Default, Deserialize, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AnimationEasing {
+  Linear,
+  #[default]
+  EaseOutQuad,
+  EaseOutCubic,
+  EaseInOut,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
