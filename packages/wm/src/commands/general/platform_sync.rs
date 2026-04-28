@@ -444,9 +444,22 @@ fn redraw_containers(
     // Capture display state before transition to detect opening windows
     let previous_display_state = window.display_state();
 
+    // Inactive stack children are always hidden; the active child (first in
+    // child_focus_order) is the only visible window in the stack.
+    let is_inactive_stack_child = window
+      .parent()
+      .and_then(|p| p.as_stack().cloned())
+      .map(|stack| {
+        stack.borrow_child_focus_order().front().copied()
+          != Some(window.id())
+      })
+      .unwrap_or(false);
+
     // Transition display state depending on whether window will be
     // shown or hidden.
-    let new_display_state =
+    let new_display_state = if is_inactive_stack_child {
+      DisplayState::Hidden
+    } else {
       match (previous_display_state.clone(), workspace.is_displayed()) {
         (DisplayState::Hidden | DisplayState::Hiding, true) => {
           DisplayState::Showing
@@ -455,7 +468,8 @@ fn redraw_containers(
           DisplayState::Hiding
         }
         _ => previous_display_state.clone(),
-      };
+      }
+    };
     window.set_display_state(new_display_state);
 
     let target_rect = window

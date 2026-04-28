@@ -27,9 +27,10 @@ use crate::{
       },
     monitor::focus_monitor,
     window::{
-      ignore_window, move_window_in_direction, move_window_to_workspace,
-      resize_window, set_window_position, set_window_size,
-      update_window_state, WindowPositionTarget,
+      cycle_stack_focus, ignore_window, move_window_in_direction,
+      move_window_to_workspace, resize_window, set_window_position,
+      set_window_size, toggle_stack, update_window_state,
+      WindowPositionTarget,
     },
     workspace::{
       focus_workspace, move_workspace_in_direction,
@@ -775,6 +776,18 @@ impl WindowManager {
           }
           _ => Ok(()),
         }
+      }
+      InvokeCommand::ToggleStack => {
+        if let Some(window) = subject_container.as_tiling_window() {
+          toggle_stack(&window, state, config)?;
+          state.pending_sync.queue_focus_change();
+        }
+        Ok(())
+      }
+      InvokeCommand::CycleStackFocus { prev } => {
+        cycle_stack_focus(&subject_container, *prev, state)?;
+        state.pending_sync.queue_focus_change();
+        Ok(())
       }
       InvokeCommand::ToggleTilingDirection => {
         toggle_tiling_direction(subject_container, state, config)

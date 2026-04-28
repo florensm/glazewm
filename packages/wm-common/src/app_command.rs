@@ -231,6 +231,13 @@ pub enum InvokeCommand {
   },
   ToggleMinimized,
   ToggleTiling,
+  /// Toggle the focused tiling window into or out of a stack container.
+  ToggleStack,
+  /// Cycle focus to the next or previous window within the parent stack.
+  CycleStackFocus {
+    #[clap(long, default_value_t = false)]
+    prev: bool,
+  },
   ToggleTilingDirection,
   SetTilingDirection {
     #[clap(required = true)]
