@@ -237,6 +237,12 @@ pub enum InvokeCommand {
     #[clap(long, default_value_t = false)]
     prev: bool,
   },
+  /// Absorb the adjacent tiling neighbor in the given direction into a
+  /// stack with the focused window.
+  StackAbsorbNeighbor {
+    #[clap(required = true)]
+    direction: Direction,
+  },
   ToggleTilingDirection,
   SetTilingDirection {
     #[clap(required = true)]
