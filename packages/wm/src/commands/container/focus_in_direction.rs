@@ -118,6 +118,10 @@ fn tiling_focus_target(
           TilingContainer::Split(split) => split
             .descendant_in_direction(&direction.inverse())
             .map(Into::into),
+          TilingContainer::Stack(stack) => stack
+            .child_focus_order()
+            .find_map(|c| c.into_tiling_window().ok())
+            .map(Into::into),
         });
       }
       None => origin_or_ancestor = parent.into(),

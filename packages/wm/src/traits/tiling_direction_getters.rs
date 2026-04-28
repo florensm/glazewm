@@ -22,11 +22,15 @@ pub trait TilingDirectionGetters: CommonGetters {
   ) -> Option<TilingWindow> {
     let child = self.child_in_direction(direction)?;
 
-    // Traverse further down if the child is a split container.
+    // Traverse further down if the child is a split container. A stack
+    // exposes its focused tiling child as the target.
     match child {
       TilingContainer::Split(split_child) => {
         split_child.descendant_in_direction(direction)
       }
+      TilingContainer::Stack(stack_child) => stack_child
+        .child_focus_order()
+        .find_map(|c| c.into_tiling_window().ok()),
       TilingContainer::TilingWindow(window) => Some(window),
     }
   }

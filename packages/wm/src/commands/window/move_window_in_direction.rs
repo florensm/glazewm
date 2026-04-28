@@ -165,6 +165,26 @@ fn move_to_sibling_container(
         .queue_container_to_redraw(sibling_window)
         .queue_container_to_redraw(window_to_move);
     }
+    TilingContainer::Stack(sibling_stack) => {
+      // Move the window into the stack, targeting its focused child's slot.
+      let target_index = sibling_stack
+        .child_focus_order()
+        .find_map(|c| c.into_tiling_window().ok())
+        .map(|w| w.index())
+        .unwrap_or(0);
+
+      move_container_within_tree(
+        &window_to_move.into(),
+        &sibling_stack.clone().into(),
+        target_index,
+        state,
+      )?;
+
+      state
+        .pending_sync
+        .queue_container_to_redraw(sibling_stack)
+        .queue_containers_to_redraw(parent.tiling_children());
+    }
     TilingContainer::Split(sibling_split) => {
       let sibling_descendant =
         sibling_split.descendant_in_direction(&direction.inverse());
