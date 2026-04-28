@@ -1,3 +1,4 @@
+mod cycle_stack_focus;
 mod ignore_window;
 mod manage_window;
 mod move_window_in_direction;
@@ -6,9 +7,11 @@ mod resize_window;
 mod run_window_rules;
 mod set_window_position;
 mod set_window_size;
+mod toggle_stack;
 mod unmanage_window;
 mod update_window_state;
 
+pub use cycle_stack_focus::*;
 pub use ignore_window::*;
 pub use manage_window::*;
 pub use move_window_in_direction::*;
@@ -17,5 +20,6 @@ pub use resize_window::*;
 pub use run_window_rules::*;
 pub use set_window_position::*;
 pub use set_window_size::*;
+pub use toggle_stack::*;
 pub use unmanage_window::*;
 pub use update_window_state::*;
