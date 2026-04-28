@@ -224,6 +224,30 @@ window_rules:
       - window_process: { equals: "CleanShot X" }
 
 binding_modes:
+  # When enabled, the focused window can be stacked with its neighbors.
+  - name: "stack"
+    keybindings:
+      # Absorb the neighbor in a given direction into the stack.
+      - commands: ["stack-absorb-neighbor --direction left"]
+        bindings: ["h", "left"]
+      - commands: ["stack-absorb-neighbor --direction right"]
+        bindings: ["l", "right"]
+      - commands: ["stack-absorb-neighbor --direction up"]
+        bindings: ["k", "up"]
+      - commands: ["stack-absorb-neighbor --direction down"]
+        bindings: ["j", "down"]
+      # Cycle focus to the next/previous window within the stack.
+      - commands: ["cycle-stack-focus"]
+        bindings: ["n"]
+      - commands: ["cycle-stack-focus --prev"]
+        bindings: ["p"]
+      # Toggle the focused window out of the stack.
+      - commands: ["toggle-stack"]
+        bindings: ["g"]
+      # Press enter/escape to return to default keybindings.
+      - commands: ["wm-disable-binding-mode --name stack"]
+        bindings: ["escape", "enter"]
+
   # When enabled, the focused window can be resized via arrow keys or HJKL.
   - name: "resize"
     keybindings:
@@ -285,6 +309,14 @@ keybindings:
   # be inserted.
   - commands: ["toggle-tiling-direction"]
     bindings: ["alt+v"]
+
+  # Toggle the focused window into/out of a stack container.
+  - commands: ["toggle-stack"]
+    bindings: ["alt+g"]
+
+  # Enter stack mode to absorb neighbors or cycle focus within the stack.
+  - commands: ["wm-enable-binding-mode --name stack"]
+    bindings: ["alt+shift+g"]
 
   # Change focus from tiling windows -> floating -> fullscreen.
   - commands: ["wm-cycle-focus"]
