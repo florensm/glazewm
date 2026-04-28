@@ -29,7 +29,8 @@ use crate::{
     window::{
       cycle_stack_focus, ignore_window, move_window_in_direction,
       move_window_to_workspace, resize_window, set_window_position,
-      set_window_size, toggle_stack, update_window_state,
+      set_window_size, stack_absorb_neighbor, toggle_stack,
+      update_window_state,
       WindowPositionTarget,
     },
     workspace::{
@@ -787,6 +788,13 @@ impl WindowManager {
       InvokeCommand::CycleStackFocus { prev } => {
         cycle_stack_focus(&subject_container, *prev, state)?;
         state.pending_sync.queue_focus_change();
+        Ok(())
+      }
+      InvokeCommand::StackAbsorbNeighbor { direction } => {
+        if let Some(window) = subject_container.as_tiling_window() {
+          stack_absorb_neighbor(&window, direction, state)?;
+          state.pending_sync.queue_focus_change();
+        }
         Ok(())
       }
       InvokeCommand::ToggleTilingDirection => {
