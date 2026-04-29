@@ -216,14 +216,27 @@ fn redraw_containers(
       .descendant_focus_order()
       .collect::<Vec<_>>();
 
-    // Sort the windows to update by their focus order. The most recently
-    // focused window will be updated first.
-    // TODO: To reduce flicker, redraw windows that will be shown first,
-    // then redraw the ones to be hidden last.
+    // Sort so that windows to be shown are processed before windows to be
+    // hidden (prevents a blank-frame flash when uncloaking replaces
+    // cloaking, e.g. during stack-focus cycling). Within each group,
+    // least-recently-focused is processed first (after the rev() below).
     windows.sort_by_key(|window| {
-      descendant_focus_order
+      let is_inactive_stack_child = window
+        .parent()
+        .and_then(|p| p.as_stack().cloned())
+        .map(|s| {
+          s.borrow_child_focus_order().front().copied()
+            != Some(window.id())
+        })
+        .unwrap_or(false);
+      let ws_displayed =
+        window.workspace().is_some_and(|w| w.is_displayed());
+      let will_show = !is_inactive_stack_child && ws_displayed;
+      let focus_pos = descendant_focus_order
         .iter()
-        .position(|order| order.id() == window.id())
+        .position(|order| order.id() == window.id());
+      // Windows to show sort higher → after rev() they are processed first.
+      (will_show, focus_pos)
     });
 
     windows

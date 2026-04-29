@@ -318,6 +318,12 @@ keybindings:
   - commands: ["wm-enable-binding-mode --name stack"]
     bindings: ["alt+shift+g"]
 
+  # Cycle focus to the next/previous window within the focused stack.
+  - commands: ["cycle-stack-focus"]
+    bindings: ["alt+oem_period"]
+  - commands: ["cycle-stack-focus --prev"]
+    bindings: ["alt+oem_comma"]
+
   # Change focus from tiling windows -> floating -> fullscreen.
   - commands: ["wm-cycle-focus"]
     bindings: ["alt+space"]

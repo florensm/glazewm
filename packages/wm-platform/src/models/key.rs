@@ -410,9 +410,9 @@ impl_key_parsing! {
   Oem8 => ["oem_8"],
   Oem102 => ["oem_102"],
   OemPlus => ["oem_plus"],
-  OemComma => ["oem_comma"],
+  OemComma => ["oem_comma", "comma"],
   OemMinus => ["oem_minus"],
-  OemPeriod => ["oem_period"],
+  OemPeriod => ["oem_period", "period"],
 
   // Language-specific keys
   Muhenkan => ["muhenkan"],
