@@ -361,10 +361,17 @@ fn insertion_target(
     };
 
     if let Some(sibling) = sibling {
-      return Ok((
-        sibling.parent().context("No parent.")?,
-        sibling.index() + 1,
-      ));
+      let parent = sibling.parent().context("No parent.")?;
+
+      // When the focused window lives inside a stack, insert the new window
+      // as a sibling of the stack rather than into it.
+      if parent.as_stack().is_some() {
+        let stack_parent =
+          parent.parent().context("Stack has no parent.")?;
+        return Ok((stack_parent, parent.index() + 1));
+      }
+
+      return Ok((parent, sibling.index() + 1));
     }
   }
 

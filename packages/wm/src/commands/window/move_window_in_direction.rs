@@ -181,29 +181,14 @@ fn move_to_sibling_container(
         .queue_container_to_redraw(container_to_move);
     }
     TilingContainer::Stack(sibling_stack) => {
-      // When moving an individual window into an adjacent stack, insert it
-      // at the focused child's slot. When moving a whole stack, swap instead.
-      if matches!(&container_to_move, TilingContainer::TilingWindow(_)) {
-        let target_index = sibling_stack
-          .child_focus_order()
-          .find_map(|c| c.into_tiling_window().ok())
-          .map(|w| w.index())
-          .unwrap_or(0);
-
-        move_container_within_tree(
-          &container_to_move.clone().into(),
-          &sibling_stack.clone().into(),
-          target_index,
-          state,
-        )?;
-      } else {
-        move_container_within_tree(
-          &container_to_move.clone().into(),
-          &parent,
-          sibling_stack.index(),
-          state,
-        )?;
-      }
+      // Swap with the stack as an opaque unit. Absorbing into a stack is
+      // done explicitly via `stack-absorb-neighbor`.
+      move_container_within_tree(
+        &container_to_move.clone().into(),
+        &parent,
+        sibling_stack.index(),
+        state,
+      )?;
 
       state
         .pending_sync

@@ -14,10 +14,44 @@ pub struct ParsedConfig {
   pub gaps: GapsConfig,
   pub general: GeneralConfig,
   pub keybindings: Vec<KeybindingConfig>,
+  pub stack: StackConfig,
   pub window_behavior: WindowBehaviorConfig,
   pub window_effects: WindowEffectsConfig,
   pub window_rules: Vec<WindowRuleConfig>,
   pub workspaces: Vec<WorkspaceConfig>,
+}
+
+/// Configuration for the stack tab bar.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(default, rename_all(serialize = "camelCase"))]
+pub struct StackConfig {
+  /// Height of the tab bar in pixels (0 = disabled).
+  pub tab_bar_height: LengthValue,
+
+  /// Background color of the tab bar.
+  pub tab_bar_background: Color,
+
+  /// Background color of the active (focused) tab.
+  pub tab_active_background: Color,
+
+  /// Background color of inactive tabs.
+  pub tab_inactive_background: Color,
+
+  /// Foreground (text) color of tab labels.
+  pub tab_text_color: Color,
+}
+
+impl Default for StackConfig {
+  fn default() -> Self {
+    use std::str::FromStr;
+    Self {
+      tab_bar_height: LengthValue::from_px(0),
+      tab_bar_background: Color::from_str("#2d2d2d").unwrap(),
+      tab_active_background: Color::from_str("#4a4a6a").unwrap(),
+      tab_inactive_background: Color::from_str("#1e1e2e").unwrap(),
+      tab_text_color: Color::from_str("#cdd6f4").unwrap(),
+    }
+  }
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
