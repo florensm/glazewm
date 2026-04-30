@@ -18,7 +18,7 @@ use windows::{
       PostMessageW, RegisterClassW, SetWindowLongPtrW,
       SetWindowPos, ShowWindow, CREATESTRUCTW, DI_NORMAL, GCLP_HICONSM,
       GWLP_USERDATA, HICON, IDC_ARROW, SM_CXSMICON, SW_HIDE, SWP_NOACTIVATE,
-      SWP_SHOWWINDOW,
+      SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, SWP_SHOWWINDOW,
       WM_APP, WM_CLOSE, WM_CREATE, WM_DESTROY, WM_ERASEBKGND,
       WM_LBUTTONDOWN, WM_PAINT, WNDCLASSW, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW,
       WS_POPUP, WS_VISIBLE,
@@ -74,9 +74,9 @@ struct TabBarState {
 ///
 /// The window is a `WS_POPUP | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE` overlay
 /// created on the event-loop thread. Tab state is updated from the tokio
-/// thread via `SendMessageW(WM_UPDATE_TABS)` (synchronous). Click events are
-/// routed back through the `on_click` closure, which is expected to send a
-/// message on a tokio channel.
+/// thread via `PostMessageW(WM_UPDATE_TABS)`. Click events are routed back
+/// through the `on_click` closure, which is expected to send a message on a
+/// tokio channel.
 ///
 /// # Platform-specific
 ///
@@ -186,6 +186,22 @@ impl NativeStackTabBar {
     }
   }
 
+  /// Brings the tab bar window to the top of the z-order and ensures it is
+  /// visible.
+  pub fn bring_to_front(&self) {
+    // SAFETY: `self.hwnd` is a valid window handle.
+    unsafe {
+      let _ = SetWindowPos(
+        HWND(self.hwnd),
+        HWND(0isize),
+        0,
+        0,
+        0,
+        0,
+        SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW,
+      );
+    }
+  }
 
   /// Hides the tab bar window without destroying it.
   ///
@@ -455,4 +471,3 @@ unsafe extern "system" fn tab_bar_wnd_proc(
     _ => DefWindowProcW(hwnd, msg, wparam, lparam),
   }
 }
-
