@@ -21,12 +21,24 @@ pub struct ParsedConfig {
   pub workspaces: Vec<WorkspaceConfig>,
 }
 
+/// Position of the stack tab bar relative to the stack content.
+#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum TabBarPosition {
+  #[default]
+  Top,
+  Bottom,
+}
+
 /// Configuration for the stack tab bar.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(default, rename_all(serialize = "camelCase"))]
 pub struct StackConfig {
   /// Height of the tab bar in pixels (0 = disabled).
   pub tab_bar_height: LengthValue,
+
+  /// Whether the tab bar appears above or below the stack content.
+  pub tab_bar_position: TabBarPosition,
 
   /// Background color of the tab bar.
   pub tab_bar_background: Color,
@@ -46,6 +58,7 @@ impl Default for StackConfig {
     use std::str::FromStr;
     Self {
       tab_bar_height: LengthValue::from_px(0),
+      tab_bar_position: TabBarPosition::Top,
       tab_bar_background: Color::from_str("#2d2d2d").unwrap(),
       tab_active_background: Color::from_str("#4a4a6a").unwrap(),
       tab_inactive_background: Color::from_str("#1e1e2e").unwrap(),

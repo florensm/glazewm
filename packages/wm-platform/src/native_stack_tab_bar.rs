@@ -17,10 +17,10 @@ use windows::{
       GetClassLongPtrW, GetWindowLongPtrW, PostMessageW, RegisterClassW,
       SendMessageW, SetWindowLongPtrW, SetWindowPos, ShowWindow, CREATESTRUCTW,
       DI_NORMAL, GCLP_HICONSM, GWLP_USERDATA, HICON, SW_HIDE, SWP_NOACTIVATE,
-      SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, SWP_SHOWWINDOW, WM_APP, WM_CLOSE,
-      WM_CREATE, WM_DESTROY, WM_ERASEBKGND, WM_GETICON, WM_LBUTTONDOWN,
-      WM_PAINT, WNDCLASSW, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_POPUP,
-      WS_VISIBLE,
+      SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, SWP_SHOWWINDOW,
+      WM_APP, WM_CLOSE, WM_CREATE, WM_DESTROY, WM_ERASEBKGND, WM_GETICON,
+      WM_LBUTTONDOWN, WM_PAINT, WNDCLASSW, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW,
+      WS_POPUP, WS_VISIBLE,
     },
   },
 };
@@ -73,9 +73,9 @@ struct TabBarState {
 ///
 /// The window is a `WS_POPUP | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE` overlay
 /// created on the event-loop thread. Tab state is updated from the tokio
-/// thread via `PostMessageW(WM_UPDATE_TABS)`. Click events are routed back
-/// through the `on_click` closure, which is expected to send a message on a
-/// tokio channel.
+/// thread via `SendMessageW(WM_UPDATE_TABS)` (synchronous). Click events are
+/// routed back through the `on_click` closure, which is expected to send a
+/// message on a tokio channel.
 ///
 /// # Platform-specific
 ///
@@ -156,11 +156,11 @@ impl NativeStackTabBar {
     Ok(Self { hwnd })
   }
 
-  /// Repositions the tab bar and updates its tab state.
+  /// Repositions the tab bar and updates its tab state synchronously.
   ///
-  /// The update is posted asynchronously to the event-loop thread via
-  /// `PostMessageW`. The previous state remains visible until the next
-  /// paint triggered by `InvalidateRect`.
+  /// Uses `SendMessageW` so the window is repositioned and its state
+  /// is fully updated before this call returns. This ensures callers
+  /// (e.g. `bring_to_front`) always see the bar at its correct rect.
   pub fn update(&self, rect: &Rect, tabs: Vec<TabInfo>, active_index: usize) {
     let update = Box::new(TabUpdate {
       tabs,
@@ -170,10 +170,13 @@ impl NativeStackTabBar {
 
     let ptr = Box::into_raw(update) as usize;
 
-    // SAFETY: `self.hwnd` is a valid window handle. The pointer is an
-    // owned heap allocation recovered in the WNDPROC.
+    // SAFETY: `self.hwnd` is a valid window handle on the event-loop
+    // thread. `SendMessageW` blocks until the WNDPROC processes
+    // `WM_UPDATE_TABS`, at which point the `Box<TabUpdate>` is
+    // recovered and freed. The calling (tokio) thread holds no other
+    // references into the `TabBarState`, so there is no aliasing.
     unsafe {
-      let _ = PostMessageW(
+      SendMessageW(
         HWND(self.hwnd),
         WM_UPDATE_TABS,
         WPARAM(ptr),

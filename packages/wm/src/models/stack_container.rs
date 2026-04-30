@@ -6,7 +6,9 @@ use std::{
 
 use anyhow::Context;
 use uuid::Uuid;
-use wm_common::{ContainerDto, GapsConfig, StackContainerDto, TilingDirection};
+use wm_common::{
+  ContainerDto, GapsConfig, StackContainerDto, TabBarPosition, TilingDirection,
+};
 use wm_platform::{LengthValue, Rect};
 
 use crate::{
@@ -29,13 +31,18 @@ struct StackContainerInner {
   tiling_size: f32,
   gaps_config: GapsConfig,
   tab_bar_height: LengthValue,
+  tab_bar_position: TabBarPosition,
   /// Optional user-assigned name for targeting via `move-to-stack --name`.
   name: Option<String>,
 }
 
 impl StackContainer {
   /// Creates a new `StackContainer` with default sizing and no children.
-  pub fn new(gaps_config: GapsConfig, tab_bar_height: LengthValue) -> Self {
+  pub fn new(
+    gaps_config: GapsConfig,
+    tab_bar_height: LengthValue,
+    tab_bar_position: TabBarPosition,
+  ) -> Self {
     let stack = StackContainerInner {
       id: Uuid::new_v4(),
       parent: None,
@@ -44,10 +51,16 @@ impl StackContainer {
       tiling_size: 1.0,
       gaps_config,
       tab_bar_height,
+      tab_bar_position,
       name: None,
     };
 
     Self(Rc::new(RefCell::new(stack)))
+  }
+
+  /// Returns the tab bar position (top or bottom).
+  pub fn tab_bar_position(&self) -> TabBarPosition {
+    self.0.borrow().tab_bar_position.clone()
   }
 
   /// Returns the user-assigned name of this stack, if any.

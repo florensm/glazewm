@@ -46,6 +46,7 @@ pub fn stack_insert(
       let new_stack = StackContainer::new(
         target.gaps_config().clone(),
         config.value.stack.tab_bar_height.clone(),
+        config.value.stack.tab_bar_position.clone(),
       );
       wrap_in_stack_container(
         &new_stack,

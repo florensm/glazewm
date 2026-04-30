@@ -56,6 +56,7 @@ pub fn move_to_stack(
     let stack = StackContainer::new(
       window.gaps_config().clone(),
       config.value.stack.tab_bar_height.clone(),
+      config.value.stack.tab_bar_position.clone(),
     );
     stack.set_name(name.to_string());
 
