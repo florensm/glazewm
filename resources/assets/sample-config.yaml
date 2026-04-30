@@ -120,9 +120,13 @@ gaps:
     left: "20px"
 
 stack:
-  # Height of the tab bar shown above stacked windows (0px = disabled).
+  # Height of the tab bar shown for stacked windows (0px = disabled).
   # ** Only rendered on Windows.
   tab_bar_height: "30px"
+
+  # Whether the tab bar appears above or below the stacked windows.
+  # Possible values: "top" | "bottom"
+  tab_bar_position: "top"
 
   # Tab bar colors.
   tab_bar_background: "#2d2d2d"

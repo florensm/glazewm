@@ -11,6 +11,8 @@ use wm_common::{
 #[cfg(target_os = "windows")]
 use wm_platform::NativeWindowWindowsExt;
 #[cfg(target_os = "windows")]
+use wm_common::TabBarPosition;
+#[cfg(target_os = "windows")]
 use wm_platform::{
   CornerStyle, NativeStackTabBar, OpacityValue, TabBarColors, TabInfo,
   WorkspaceSurrogate,
@@ -1145,12 +1147,20 @@ fn sync_tab_bars(state: &mut WmState, config: &UserConfig) {
     .filter_map(|s| {
       let stack_rect = s.to_rect().ok()?;
       let tab_h = s.tab_bar_height_px();
-      let tab_bar_rect = Rect::from_ltrb(
-        stack_rect.left,
-        stack_rect.top,
-        stack_rect.right,
-        stack_rect.top + tab_h,
-      );
+      let tab_bar_rect = match s.tab_bar_position() {
+        TabBarPosition::Top => Rect::from_ltrb(
+          stack_rect.left,
+          stack_rect.top,
+          stack_rect.right,
+          stack_rect.top + tab_h,
+        ),
+        TabBarPosition::Bottom => Rect::from_ltrb(
+          stack_rect.left,
+          stack_rect.bottom - tab_h,
+          stack_rect.right,
+          stack_rect.bottom,
+        ),
+      };
 
       let focus_order = s.borrow_child_focus_order();
       let active_id = focus_order.front().copied();
@@ -1201,8 +1211,10 @@ fn sync_tab_bars(state: &mut WmState, config: &UserConfig) {
 
   for info in stacks_info {
     if let Some(bar) = state.tab_bars.get(&info.id) {
-      bar.bring_to_front();
+      // Update state synchronously first so the bar is at the correct
+      // rect and tab content before being made visible.
       bar.update(&info.tab_bar_rect, info.tabs, info.active_index);
+      bar.bring_to_front();
     } else {
       let tx = tab_click_tx.clone();
       let stack_id = info.id;

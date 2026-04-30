@@ -96,7 +96,8 @@ pub fn toggle_stack(
     // Window is not in a stack — wrap it in a new one.
     let gaps_config = window.gaps_config().clone();
     let tab_bar_height = config.value.stack.tab_bar_height.clone();
-    let stack = StackContainer::new(gaps_config, tab_bar_height);
+    let tab_bar_position = config.value.stack.tab_bar_position.clone();
+    let stack = StackContainer::new(gaps_config, tab_bar_height, tab_bar_position);
     let tiling_window: TilingContainer = window.clone().into();
 
     wrap_in_stack_container(&stack, &parent, &[tiling_window])?;
