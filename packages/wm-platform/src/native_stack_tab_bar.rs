@@ -74,9 +74,9 @@ struct TabBarState {
 ///
 /// The window is a `WS_POPUP | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE` overlay
 /// created on the event-loop thread. Tab state is updated from the tokio
-/// thread via `PostMessageW(WM_UPDATE_TABS)`. Click events are routed back
-/// through the `on_click` closure, which is expected to send a message on a
-/// tokio channel.
+/// thread via `SendMessageW(WM_UPDATE_TABS)` (synchronous). Click events are
+/// routed back through the `on_click` closure, which is expected to send a
+/// message on a tokio channel.
 ///
 /// # Platform-specific
 ///
