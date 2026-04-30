@@ -1,5 +1,7 @@
 use anyhow::Context;
 #[cfg(target_os = "windows")]
+use std::collections::HashSet;
+#[cfg(target_os = "windows")]
 use wm_common::WindowEffectConfig;
 use tracing::{debug, warn};
 use wm_common::{
@@ -9,7 +11,10 @@ use wm_common::{
 #[cfg(target_os = "windows")]
 use wm_platform::NativeWindowWindowsExt;
 #[cfg(target_os = "windows")]
-use wm_platform::{CornerStyle, OpacityValue, WorkspaceSurrogate};
+use wm_platform::{
+  CornerStyle, NativeStackTabBar, OpacityValue, TabBarColors, TabInfo,
+  WorkspaceSurrogate,
+};
 use wm_platform::{Rect, WindowZOrder};
 
 use crate::{
@@ -805,6 +810,9 @@ fn redraw_containers(
   #[cfg(target_os = "windows")]
   state.animation_manager.apply_outgoing_surrogate_opacities();
 
+  #[cfg(target_os = "windows")]
+  sync_tab_bars(state, config);
+
   Ok(())
 }
 
@@ -1098,4 +1106,125 @@ fn apply_transparency_effect(
   };
 
   _ = window.native().set_transparency(transparency);
+}
+
+/// Creates, updates, or destroys tab bar overlay windows for all
+/// `StackContainer`s that have a non-zero `tab_bar_height`.
+///
+/// Stale entries (stacks that have been removed) are dropped from
+/// `state.tab_bars`. New entries are created via
+/// `NativeStackTabBar::create`. Existing entries are repositioned and
+/// repainted via `NativeStackTabBar::update`.
+#[cfg(target_os = "windows")]
+fn sync_tab_bars(state: &mut WmState, config: &UserConfig) {
+  use uuid::Uuid;
+
+  // During workspace-switch animations the surrogates slide while real windows
+  // stay cloaked. Hide all tab bars so they do not float over the surrogates.
+  // The next `sync_tab_bars` call after the animation ends will re-show them.
+  if state.animation_manager.is_workspace_switch_active() {
+    for bar in state.tab_bars.values() {
+      bar.hide();
+    }
+    return;
+  }
+
+  struct StackTabInfo {
+    id: Uuid,
+    tab_bar_rect: Rect,
+    tabs: Vec<TabInfo>,
+    active_index: usize,
+  }
+
+  // Collect stacks that need a visible tab bar.
+  let stacks_info: Vec<StackTabInfo> = state
+    .root_container
+    .descendants()
+    .filter_map(|c| c.as_stack().cloned())
+    .filter(|s| s.tab_bar_height_px() > 0)
+    .filter_map(|s| {
+      let stack_rect = s.to_rect().ok()?;
+      let tab_h = s.tab_bar_height_px();
+      let tab_bar_rect = Rect::from_ltrb(
+        stack_rect.left,
+        stack_rect.top,
+        stack_rect.right,
+        stack_rect.top + tab_h,
+      );
+
+      let focus_order = s.borrow_child_focus_order();
+      let active_id = focus_order.front().copied();
+      drop(focus_order);
+
+      let children = s.children();
+      let active_index = active_id
+        .and_then(|id| children.iter().position(|c| c.id() == id))
+        .unwrap_or(0);
+
+      let tabs: Vec<TabInfo> = children
+        .iter()
+        .filter_map(|c| c.as_tiling_window())
+        .map(|w| TabInfo {
+          title: w.native_properties().title,
+          hwnd: w.native().id().0,
+        })
+        .collect();
+
+      if tabs.is_empty() {
+        return None;
+      }
+
+      Some(StackTabInfo {
+        id: s.id(),
+        tab_bar_rect,
+        tabs,
+        active_index,
+      })
+    })
+    .collect();
+
+  // Remove tab bars for stacks that no longer exist or have no tabs.
+  let current_ids: HashSet<Uuid> =
+    stacks_info.iter().map(|s| s.id).collect();
+  state.tab_bars.retain(|id, _| current_ids.contains(id));
+
+  // Build colors from config (same for all tab bars in this sync).
+  let colors = TabBarColors {
+    background: config.value.stack.tab_bar_background.clone(),
+    active: config.value.stack.tab_active_background.clone(),
+    inactive: config.value.stack.tab_inactive_background.clone(),
+    text: config.value.stack.tab_text_color.clone(),
+  };
+
+  let tab_click_tx = state.tab_click_tx.clone();
+  let dispatcher = state.dispatcher.clone();
+
+  for info in stacks_info {
+    if let Some(bar) = state.tab_bars.get(&info.id) {
+      bar.bring_to_front();
+      bar.update(&info.tab_bar_rect, info.tabs, info.active_index);
+    } else {
+      let tx = tab_click_tx.clone();
+      let stack_id = info.id;
+      let on_click = Box::new(move |idx: usize| {
+        let _ = tx.send((stack_id, idx));
+      });
+
+      match NativeStackTabBar::create(
+        &dispatcher,
+        &info.tab_bar_rect,
+        info.tabs,
+        info.active_index,
+        colors.clone(),
+        on_click,
+      ) {
+        Ok(bar) => {
+          state.tab_bars.insert(info.id, bar);
+        }
+        Err(err) => {
+          tracing::warn!("Failed to create tab bar: {err}");
+        }
+      }
+    }
+  }
 }

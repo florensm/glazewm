@@ -41,6 +41,10 @@ pub use resize_session::ResizeSession;
 mod workspace_surrogate;
 #[cfg(target_os = "windows")]
 pub use workspace_surrogate::WorkspaceSurrogate;
+#[cfg(target_os = "windows")]
+mod native_stack_tab_bar;
+#[cfg(target_os = "windows")]
+pub use native_stack_tab_bar::{NativeStackTabBar, TabBarColors, TabInfo};
 
 
 pub use platform_event::*;

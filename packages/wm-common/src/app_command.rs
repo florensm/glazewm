@@ -238,11 +238,26 @@ pub enum InvokeCommand {
     #[clap(long, default_value_t = false)]
     prev: bool,
   },
+  /// Focus the stack child at a specific zero-based index.
+  FocusStackIndex {
+    #[clap(long)]
+    index: usize,
+  },
   /// Absorb the adjacent tiling neighbor in the given direction into a
   /// stack with the focused window.
   StackAbsorbNeighbor {
     #[clap(long)]
     direction: Direction,
+  },
+  /// Move the focused window into a stack with the most-recently-focused
+  /// other tiling window on the workspace. If no stack exists at the
+  /// target, a new one is created.
+  StackInsert,
+  /// Move the focused tiling window into the named stack on the current
+  /// workspace. Creates a new named stack if none exists yet.
+  MoveToStack {
+    #[clap(long)]
+    name: String,
   },
   ToggleTilingDirection,
   SetTilingDirection {

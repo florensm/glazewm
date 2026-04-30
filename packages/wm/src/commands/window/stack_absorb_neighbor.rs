@@ -7,6 +7,7 @@ use crate::{
   },
   models::{StackContainer, TilingContainer, TilingWindow},
   traits::{CommonGetters, TilingSizeGetters},
+  user_config::UserConfig,
   wm_state::WmState,
 };
 
@@ -21,6 +22,7 @@ pub fn stack_absorb_neighbor(
   window: &TilingWindow,
   direction: &Direction,
   state: &mut WmState,
+  config: &UserConfig,
 ) -> anyhow::Result<()> {
   let parent = window.parent().context("Window has no parent.")?;
 
@@ -52,7 +54,10 @@ pub fn stack_absorb_neighbor(
     s
   } else {
     let pivot_parent = pivot.parent().context("No parent.")?;
-    let new_stack = StackContainer::new(window.gaps_config().clone());
+    let new_stack = StackContainer::new(
+      window.gaps_config().clone(),
+      config.value.stack.tab_bar_height.clone(),
+    );
     wrap_in_stack_container(
       &new_stack,
       &pivot_parent,

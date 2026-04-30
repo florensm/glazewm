@@ -1,5 +1,8 @@
 mod cycle_stack_focus;
+mod focus_stack_index;
+mod move_to_stack;
 mod stack_absorb_neighbor;
+mod stack_insert;
 mod ignore_window;
 mod manage_window;
 mod move_window_in_direction;
@@ -13,7 +16,10 @@ mod unmanage_window;
 mod update_window_state;
 
 pub use cycle_stack_focus::*;
+pub use focus_stack_index::*;
+pub use move_to_stack::*;
 pub use stack_absorb_neighbor::*;
+pub use stack_insert::*;
 pub use ignore_window::*;
 pub use manage_window::*;
 pub use move_window_in_direction::*;

@@ -86,6 +86,18 @@ pub fn handle_window_focused(
     // Update the WM's focus state.
     set_focused_descendant(&window.clone().into(), None);
 
+    // If the focused window is inside a stack, queue all children for
+    // redraw so the newly-active child is uncloaked and siblings are
+    // cloaked. This handles OS-driven focus (e.g. taskbar click on a
+    // cloaked stack window after a lock/unlock cycle).
+    if let Some(parent) = window.parent() {
+      if let Some(stack) = parent.as_stack() {
+        for child in stack.tiling_children() {
+          state.pending_sync.queue_container_to_redraw(child);
+        }
+      }
+    }
+
     // Run window rules for focus events.
     run_window_rules(
       window.clone(),

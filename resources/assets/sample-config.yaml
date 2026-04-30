@@ -119,6 +119,17 @@ gaps:
     bottom: "20px"
     left: "20px"
 
+stack:
+  # Height of the tab bar shown above stacked windows (0px = disabled).
+  # ** Only rendered on Windows.
+  tab_bar_height: "30px"
+
+  # Tab bar colors.
+  tab_bar_background: "#2d2d2d"
+  tab_active_background: "#4a4a6a"
+  tab_inactive_background: "#1e1e2e"
+  tab_text_color: "#cdd6f4"
+
 window_effects:
   # Visual effects to apply to the focused window.
   focused_window:
@@ -223,6 +234,14 @@ window_rules:
         window_class: { not_regex: "PPTFrameClass" }
       - window_process: { equals: "CleanShot X" }
 
+  # Example: auto-stack browser windows into a named stack on open.
+  # Requires `stack.tab_bar_height` to be non-zero for the tab bar to show.
+  # - commands: ["move-to-stack --name browsers"]
+  #   match:
+  #     - window_process: { equals: "firefox" }
+  #     - window_process: { equals: "chrome" }
+  #     - window_process: { equals: "msedge" }
+
 binding_modes:
   # When enabled, the focused window can be stacked with its neighbors.
   - name: "stack"
@@ -313,6 +332,10 @@ keybindings:
   # Toggle the focused window into/out of a stack container.
   - commands: ["toggle-stack"]
     bindings: ["alt+g"]
+
+  # Stack the focused window with the most-recently-focused other window.
+  - commands: ["stack-insert"]
+    bindings: ["alt+shift+s"]
 
   # Enter stack mode to absorb neighbors or cycle focus within the stack.
   - commands: ["wm-enable-binding-mode --name stack"]

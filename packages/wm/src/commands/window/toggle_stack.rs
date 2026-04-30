@@ -19,7 +19,7 @@ use crate::{
 pub fn toggle_stack(
   window: &TilingWindow,
   state: &mut WmState,
-  _config: &UserConfig,
+  config: &UserConfig,
 ) -> anyhow::Result<()> {
   let parent = window.parent().context("Window has no parent.")?;
 
@@ -95,7 +95,8 @@ pub fn toggle_stack(
   } else {
     // Window is not in a stack — wrap it in a new one.
     let gaps_config = window.gaps_config().clone();
-    let stack = StackContainer::new(gaps_config);
+    let tab_bar_height = config.value.stack.tab_bar_height.clone();
+    let stack = StackContainer::new(gaps_config, tab_bar_height);
     let tiling_window: TilingContainer = window.clone().into();
 
     wrap_in_stack_container(&stack, &parent, &[tiling_window])?;

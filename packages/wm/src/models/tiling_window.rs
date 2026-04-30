@@ -143,9 +143,19 @@ impl PositionGetters for TilingWindow {
   fn to_rect(&self) -> anyhow::Result<Rect> {
     let parent = self.parent().context("No parent container.")?;
 
-    // All children of a stack share the full stack rect.
+    // All children of a stack share the stack rect offset below the tab bar.
     if let Some(stack) = parent.as_stack() {
-      return stack.to_rect();
+      let stack_rect = stack.to_rect()?;
+      let tab_h = stack.tab_bar_height_px();
+      if tab_h > 0 {
+        return Ok(Rect::from_ltrb(
+          stack_rect.left,
+          stack_rect.top + tab_h,
+          stack_rect.right,
+          stack_rect.bottom,
+        ));
+      }
+      return Ok(stack_rect);
     }
 
     // Otherwise, use the normal tiling position calculation (same as

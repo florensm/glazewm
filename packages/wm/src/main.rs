@@ -248,6 +248,14 @@ async fn start_wm(
 
         Ok(())
       },
+      Some((stack_id, tab_index)) = wm.tab_click_rx.recv() => {
+        // Synthesize a `FocusStackIndex` command targeted at the stack.
+        wm.process_commands(
+          &vec![wm_common::InvokeCommand::FocusStackIndex { index: tab_index }],
+          Some(stack_id),
+          &mut config,
+        ).map(|_| ())
+      },
       Some(wm_event) = wm.event_rx.recv() => {
         tracing::debug!("Received WM event: {:?}", wm_event);
 
