@@ -1213,7 +1213,6 @@ fn sync_tab_bars(state: &mut WmState, config: &UserConfig) {
     if let Some(bar) = state.tab_bars.get(&info.id) {
       if info.visible {
         bar.update(&info.tab_bar_rect, info.tabs, info.active_index);
-        bar.show_at(&info.tab_bar_rect);
       } else {
         bar.hide();
       }

@@ -14,9 +14,10 @@ use windows::{
     System::LibraryLoader::GetModuleHandleW,
     UI::WindowsAndMessaging::{
       CreateWindowExW, DefWindowProcW, DestroyWindow, DrawIconEx,
-      GetClassLongPtrW, GetWindowLongPtrW, PostMessageW, RegisterClassW,
-      SendMessageW, SetWindowLongPtrW, SetWindowPos, ShowWindow, CREATESTRUCTW,
-      DI_NORMAL, GCLP_HICONSM, GWLP_USERDATA, HICON, SW_HIDE, SWP_NOACTIVATE,
+      GetClassLongPtrW, GetSystemMetrics, GetWindowLongPtrW, LoadCursorW,
+      PostMessageW, RegisterClassW, SendMessageW, SetWindowLongPtrW,
+      SetWindowPos, ShowWindow, CREATESTRUCTW, DI_NORMAL, GCLP_HICONSM,
+      GWLP_USERDATA, HICON, IDC_ARROW, SM_CXSMICON, SW_HIDE, SWP_NOACTIVATE,
       SWP_SHOWWINDOW,
       WM_APP, WM_CLOSE, WM_CREATE, WM_DESTROY, WM_ERASEBKGND, WM_GETICON,
       WM_LBUTTONDOWN, WM_PAINT, WNDCLASSW, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW,
@@ -185,24 +186,6 @@ impl NativeStackTabBar {
     }
   }
 
-  /// Repositions, resizes, and shows the tab bar at the given rect.
-  ///
-  /// Passes the explicit position so the bar is always at the correct
-  /// location regardless of any previously cached state.
-  pub fn show_at(&self, rect: &Rect) {
-    // SAFETY: `self.hwnd` is a valid window handle.
-    unsafe {
-      let _ = SetWindowPos(
-        HWND(self.hwnd),
-        HWND(0isize),
-        rect.left,
-        rect.top,
-        rect.width(),
-        rect.height(),
-        SWP_NOACTIVATE | SWP_SHOWWINDOW,
-      );
-    }
-  }
 
   /// Hides the tab bar window without destroying it.
   ///
@@ -234,6 +217,10 @@ fn ensure_class_registered() {
       // No background brush: WM_ERASEBKGND returns 1 to suppress erase,
       // and WM_PAINT draws the entire client area.
       hbrBackground: HBRUSH::default(),
+      // SAFETY: IDC_ARROW is a valid system cursor resource.
+      hCursor: unsafe {
+        LoadCursorW(None, IDC_ARROW).unwrap_or_default()
+      },
       ..Default::default()
     };
 
@@ -323,7 +310,9 @@ unsafe fn paint_tab_bar(hwnd: HWND, state: &TabBarState) {
 
     // Attempt to load the window's small icon.
     let icon_hwnd = HWND(tab.hwnd);
-    let icon_size = (height - 6).max(8);
+    // Use the system's small icon size (SM_CXSMICON, typically 16px) so
+    // the icon is never upscaled from a smaller source bitmap.
+    let icon_size = GetSystemMetrics(SM_CXSMICON).max(8);
     // 2 = ICON_SMALL2 — small icon used for the window title bar.
     let icon_lresult =
       SendMessageW(icon_hwnd, WM_GETICON, WPARAM(2), LPARAM(0));
@@ -430,6 +419,18 @@ unsafe extern "system" fn tab_bar_wnd_proc(
         state.tabs = update.tabs;
         state.active_index = update.active_index;
         state.rect = update.rect;
+
+        // Reposition and show in one call so the bar is never visible with
+        // stale content at a new position (eliminates flicker on tab switch).
+        let _ = SetWindowPos(
+          hwnd,
+          HWND(0),
+          state.rect.left,
+          state.rect.top,
+          state.rect.width(),
+          state.rect.height(),
+          SWP_NOACTIVATE | SWP_SHOWWINDOW,
+        );
 
         // SAFETY: `hwnd` is valid and `None` means the full client area.
         let _ = InvalidateRect(hwnd, None, false);
