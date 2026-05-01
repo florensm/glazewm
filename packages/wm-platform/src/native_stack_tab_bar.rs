@@ -186,19 +186,21 @@ impl NativeStackTabBar {
     }
   }
 
-  /// Brings the tab bar window to the top of the z-order and ensures it is
-  /// visible.
-  pub fn bring_to_front(&self) {
+  /// Repositions, resizes, and shows the tab bar at the given rect.
+  ///
+  /// Passes the explicit position so the bar is always at the correct
+  /// location regardless of any previously cached state.
+  pub fn show_at(&self, rect: &Rect) {
     // SAFETY: `self.hwnd` is a valid window handle.
     unsafe {
       let _ = SetWindowPos(
         HWND(self.hwnd),
         HWND(0isize),
-        0,
-        0,
-        0,
-        0,
-        SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW,
+        rect.left,
+        rect.top,
+        rect.width(),
+        rect.height(),
+        SWP_NOACTIVATE | SWP_SHOWWINDOW,
       );
     }
   }
@@ -433,18 +435,6 @@ unsafe extern "system" fn tab_bar_wnd_proc(
         state.tabs = update.tabs;
         state.active_index = update.active_index;
         state.rect = update.rect;
-
-        // Reposition and show in one call so the bar is never visible with
-        // stale content at a new position (eliminates flicker on tab switch).
-        let _ = SetWindowPos(
-          hwnd,
-          HWND(0),
-          state.rect.left,
-          state.rect.top,
-          state.rect.width(),
-          state.rect.height(),
-          SWP_NOACTIVATE | SWP_SHOWWINDOW,
-        );
 
         // SAFETY: `hwnd` is valid and `None` means the full client area.
         let _ = InvalidateRect(hwnd, None, false);
