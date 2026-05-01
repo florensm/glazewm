@@ -17,7 +17,7 @@ use windows::{
       GetClassLongPtrW, GetWindowLongPtrW, PostMessageW, RegisterClassW,
       SendMessageW, SetWindowLongPtrW, SetWindowPos, ShowWindow, CREATESTRUCTW,
       DI_NORMAL, GCLP_HICONSM, GWLP_USERDATA, HICON, SW_HIDE, SWP_NOACTIVATE,
-      SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, SWP_SHOWWINDOW,
+      SWP_SHOWWINDOW,
       WM_APP, WM_CLOSE, WM_CREATE, WM_DESTROY, WM_ERASEBKGND, WM_GETICON,
       WM_LBUTTONDOWN, WM_PAINT, WNDCLASSW, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW,
       WS_POPUP, WS_VISIBLE,
@@ -156,11 +156,11 @@ impl NativeStackTabBar {
     Ok(Self { hwnd })
   }
 
-  /// Repositions the tab bar and updates its tab state synchronously.
+  /// Posts a tab-state update to the tab bar window.
   ///
-  /// Uses `SendMessageW` so the window is repositioned and its state
-  /// is fully updated before this call returns. This ensures callers
-  /// (e.g. `bring_to_front`) always see the bar at its correct rect.
+  /// Uses `PostMessageW` (fire-and-forget) to avoid blocking the tokio
+  /// thread, which could deadlock if the Win32 event-loop thread is itself
+  /// waiting on a `SetWindowPos` for a managed application window.
   pub fn update(&self, rect: &Rect, tabs: Vec<TabInfo>, active_index: usize) {
     let update = Box::new(TabUpdate {
       tabs,
@@ -170,13 +170,13 @@ impl NativeStackTabBar {
 
     let ptr = Box::into_raw(update) as usize;
 
-    // SAFETY: `self.hwnd` is a valid window handle on the event-loop
-    // thread. `SendMessageW` blocks until the WNDPROC processes
-    // `WM_UPDATE_TABS`, at which point the `Box<TabUpdate>` is
-    // recovered and freed. The calling (tokio) thread holds no other
-    // references into the `TabBarState`, so there is no aliasing.
+    // SAFETY: `self.hwnd` is a valid window handle. `PostMessageW` queues
+    // the message without blocking; ownership of the `Box<TabUpdate>`
+    // transfers to the WNDPROC, which recovers and frees it in
+    // `WM_UPDATE_TABS`. If the post fails the pointer is leaked (window
+    // is gone), which is acceptable as the app is shutting down anyway.
     unsafe {
-      SendMessageW(
+      let _ = PostMessageW(
         HWND(self.hwnd),
         WM_UPDATE_TABS,
         WPARAM(ptr),
@@ -185,19 +185,21 @@ impl NativeStackTabBar {
     }
   }
 
-  /// Brings the tab bar window to the top of the z-order and ensures it is
-  /// visible.
-  pub fn bring_to_front(&self) {
+  /// Repositions, resizes, and shows the tab bar at the given rect.
+  ///
+  /// Passes the explicit position so the bar is always at the correct
+  /// location regardless of any previously cached state.
+  pub fn show_at(&self, rect: &Rect) {
     // SAFETY: `self.hwnd` is a valid window handle.
     unsafe {
       let _ = SetWindowPos(
         HWND(self.hwnd),
         HWND(0isize),
-        0,
-        0,
-        0,
-        0,
-        SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW,
+        rect.left,
+        rect.top,
+        rect.width(),
+        rect.height(),
+        SWP_NOACTIVATE | SWP_SHOWWINDOW,
       );
     }
   }
@@ -427,18 +429,7 @@ unsafe extern "system" fn tab_bar_wnd_proc(
         let state = &mut *state_ptr;
         state.tabs = update.tabs;
         state.active_index = update.active_index;
-        state.rect = update.rect.clone();
-
-        // Reposition and resize the window to match the new rect.
-        let _ = SetWindowPos(
-          hwnd,
-          HWND(0),
-          update.rect.left,
-          update.rect.top,
-          update.rect.width(),
-          update.rect.height(),
-          SWP_NOZORDER | SWP_NOACTIVATE,
-        );
+        state.rect = update.rect;
 
         // SAFETY: `hwnd` is valid and `None` means the full client area.
         let _ = InvalidateRect(hwnd, None, false);
