@@ -1121,24 +1121,20 @@ fn apply_transparency_effect(
 fn sync_tab_bars(state: &mut WmState, config: &UserConfig) {
   use uuid::Uuid;
 
-  // During workspace-switch animations the surrogates slide while real windows
-  // stay cloaked. Hide all tab bars so they do not float over the surrogates.
-  // The next `sync_tab_bars` call after the animation ends will re-show them.
-  if state.animation_manager.is_workspace_switch_active() {
-    for bar in state.tab_bars.values() {
-      bar.hide();
-    }
-    return;
-  }
+  let ws_switch_active =
+    state.animation_manager.is_workspace_switch_active();
 
   struct StackTabInfo {
     id: Uuid,
     tab_bar_rect: Rect,
     tabs: Vec<TabInfo>,
     active_index: usize,
+    /// Whether the stack's workspace is currently displayed.
+    visible: bool,
   }
 
-  // Collect stacks that need a visible tab bar.
+  // Collect ALL stacks with a configured tab bar (across all workspaces).
+  // The `visible` flag drives whether the bar is shown or hidden.
   let stacks_info: Vec<StackTabInfo> = state
     .root_container
     .descendants()
@@ -1184,21 +1180,25 @@ fn sync_tab_bars(state: &mut WmState, config: &UserConfig) {
         return None;
       }
 
+      let visible = !ws_switch_active
+        && s.workspace().map_or(false, |ws| ws.is_displayed());
+
       Some(StackTabInfo {
         id: s.id(),
         tab_bar_rect,
         tabs,
         active_index,
+        visible,
       })
     })
     .collect();
 
-  // Remove tab bars for stacks that no longer exist or have no tabs.
+  // Retain bars for all existing stacks (avoids destroy/recreate on
+  // workspace switch). Bars for stacks that have been removed are dropped.
   let current_ids: HashSet<Uuid> =
     stacks_info.iter().map(|s| s.id).collect();
   state.tab_bars.retain(|id, _| current_ids.contains(id));
 
-  // Build colors from config (same for all tab bars in this sync).
   let colors = TabBarColors {
     background: config.value.stack.tab_bar_background.clone(),
     active: config.value.stack.tab_active_background.clone(),
@@ -1211,11 +1211,13 @@ fn sync_tab_bars(state: &mut WmState, config: &UserConfig) {
 
   for info in stacks_info {
     if let Some(bar) = state.tab_bars.get(&info.id) {
-      // Update state synchronously first so the bar is at the correct
-      // rect and tab content before being made visible.
-      bar.update(&info.tab_bar_rect, info.tabs, info.active_index);
-      bar.bring_to_front();
-    } else {
+      if info.visible {
+        bar.update(&info.tab_bar_rect, info.tabs, info.active_index);
+        bar.show_at(&info.tab_bar_rect);
+      } else {
+        bar.hide();
+      }
+    } else if info.visible {
       let tx = tab_click_tx.clone();
       let stack_id = info.id;
       let on_click = Box::new(move |idx: usize| {
