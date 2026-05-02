@@ -15,11 +15,11 @@ use windows::{
     UI::WindowsAndMessaging::{
       CreateWindowExW, DefWindowProcW, DestroyWindow, DrawIconEx,
       GetClassLongPtrW, GetSystemMetrics, GetWindowLongPtrW, LoadCursorW,
-      PostMessageW, RegisterClassW, SendMessageW, SetWindowLongPtrW,
+      PostMessageW, RegisterClassW, SetWindowLongPtrW,
       SetWindowPos, ShowWindow, CREATESTRUCTW, DI_NORMAL, GCLP_HICONSM,
       GWLP_USERDATA, HICON, IDC_ARROW, SM_CXSMICON, SW_HIDE, SWP_NOACTIVATE,
       SWP_SHOWWINDOW,
-      WM_APP, WM_CLOSE, WM_CREATE, WM_DESTROY, WM_ERASEBKGND, WM_GETICON,
+      WM_APP, WM_CLOSE, WM_CREATE, WM_DESTROY, WM_ERASEBKGND,
       WM_LBUTTONDOWN, WM_PAINT, WNDCLASSW, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW,
       WS_POPUP, WS_VISIBLE,
     },
@@ -313,14 +313,12 @@ unsafe fn paint_tab_bar(hwnd: HWND, state: &TabBarState) {
     // Use the system's small icon size (SM_CXSMICON, typically 16px) so
     // the icon is never upscaled from a smaller source bitmap.
     let icon_size = GetSystemMetrics(SM_CXSMICON).max(8);
-    // 2 = ICON_SMALL2 — small icon used for the window title bar.
-    let icon_lresult =
-      SendMessageW(icon_hwnd, WM_GETICON, WPARAM(2), LPARAM(0));
-    let hicon = if icon_lresult.0 != 0 {
-      HICON(icon_lresult.0)
-    } else {
-      HICON(GetClassLongPtrW(icon_hwnd, GCLP_HICONSM) as isize)
-    };
+    // `GetClassLongPtrW` reads directly from kernel-mode data — no
+    // cross-process message required. `SendMessageW(WM_GETICON)` would
+    // block the Win32 event loop while the target app processes the
+    // message, freezing all window management until it responds.
+    let hicon =
+      HICON(GetClassLongPtrW(icon_hwnd, GCLP_HICONSM) as isize);
 
     let text_x = if hicon.0 != 0 {
       let icon_y = (height - icon_size) / 2;
