@@ -612,6 +612,13 @@ fn redraw_containers(
         || has_slide_in);
 
     // Determine the rect to use for this frame.
+    //
+    // On Windows, `start_animation_if_needed` takes `&NativeWindow`, so a
+    // `Ref<NativeWindow>` is obtained via `window.native()` and kept alive
+    // only for the duration of that call. It must NOT outlive this block:
+    // `reposition_window` (called below) may invoke
+    // `set_has_pending_dpi_adjustment`, which calls `borrow_mut` on the same
+    // `RefCell` — holding the `Ref` across that call would panic.
     let (position_result, _) = if should_use_animations {
       // Incoming workspace-switch windows: the surrogate handles all visuals
       // for the full animation duration — freeze the real window.
