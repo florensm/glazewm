@@ -108,6 +108,23 @@ async fn start_wm(
 ) -> anyhow::Result<()> {
   setup_logging(&verbosity)?;
 
+  // Capture panics into the error log so silent crashes are diagnosable.
+  std::panic::set_hook(Box::new(|info| {
+    let location = info
+      .location()
+      .map(|l| format!("{}:{}", l.file(), l.line()))
+      .unwrap_or_else(|| "unknown location".to_string());
+    let message = info
+      .payload()
+      .downcast_ref::<&str>()
+      .copied()
+      .or_else(|| {
+        info.payload().downcast_ref::<String>().map(String::as_str)
+      })
+      .unwrap_or("unknown panic");
+    tracing::error!("PANIC at {}: {}", location, message);
+  }));
+
   // Ensure that only one instance of the WM is running.
   let _single_instance = SingleInstance::new()?;
 
@@ -177,7 +194,6 @@ async fn start_wm(
     &mut config,
   ) {
     tracing::error!("{:?}", err);
-    dispatcher.show_error_dialog("Non-fatal error", &err.to_string());
   }
 
   // Create an interval for periodically cleaning up invalid windows.
@@ -304,7 +320,6 @@ async fn start_wm(
 
     if let Err(err) = res {
       tracing::error!("{:?}", err);
-      dispatcher.show_error_dialog("Non-fatal error", &err.to_string());
     }
   }
 
