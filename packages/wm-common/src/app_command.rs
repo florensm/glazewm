@@ -159,6 +159,7 @@ pub enum InvokeCommand {
   Close,
   Focus(InvokeFocusCommand),
   Ignore,
+  MoveCursor(InvokeMoveCursorCommand),
   Move(InvokeMoveCommand),
   MoveWorkspace {
     #[clap(long)]
@@ -374,6 +375,14 @@ pub struct InvokeFocusCommand {
   pub recent_workspace: bool,
 }
 
+
+#[derive(Args, Clone, Debug, PartialEq, Serialize)]
+#[group(required = true, multiple = false)]
+pub struct InvokeMoveCursorCommand {
+  /// Move the cursor to the center of the currently focused window.
+  #[clap(long)]
+  pub direction: Option<Direction>,
+}
 
 #[derive(Args, Clone, Debug, PartialEq, Serialize)]
 #[group(required = true, multiple = false)]
