@@ -74,15 +74,30 @@ struct TabBarState {
 ///
 /// The window is a `WS_POPUP | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE` overlay
 /// created on the event-loop thread. Tab state is updated from the tokio
-/// thread via `SendMessageW(WM_UPDATE_TABS)` (synchronous). Click events are
-/// routed back through the `on_click` closure, which is expected to send a
-/// message on a tokio channel.
+/// thread via `PostMessageW(WM_UPDATE_TABS)` (fire-and-forget). Click events
+/// are routed back through the `on_click` closure, which is expected to send
+/// a message on a tokio channel.
+///
+/// `update` deduplicates posts by caching the last-applied rect, active
+/// index, and tab keys. During animations `platform_sync` runs every frame,
+/// but the tab bar content does not change, so redundant GDI repaints are
+/// skipped until something actually differs.
 ///
 /// # Platform-specific
 ///
 /// Only available on Windows.
 pub struct NativeStackTabBar {
   hwnd: isize,
+  /// Rect from the last posted `WM_UPDATE_TABS`, or `None` after `hide()`.
+  ///
+  /// Reset to `None` by `hide()` so the next `update()` always re-posts even
+  /// when rect and tab state are unchanged (needed to re-show the window after
+  /// a workspace-switch hide).
+  last_rect: Option<Rect>,
+  /// Active-tab index from the last post.
+  last_active_index: usize,
+  /// Per-tab keys from the last post: `(hwnd, title)`.
+  last_tab_keys: Vec<(isize, String)>,
 }
 
 // SAFETY: `hwnd` is a valid Win32 window handle that can be passed between
@@ -104,6 +119,12 @@ impl NativeStackTabBar {
     colors: TabBarColors,
     on_click: Box<dyn Fn(usize) + Send + 'static>,
   ) -> crate::Result<Self> {
+    // Snapshot the creation state for the dedup cache so the first `update`
+    // call with identical content does not post a redundant `WM_UPDATE_TABS`.
+    let initial_rect = rect.clone();
+    let initial_tab_keys: Vec<(isize, String)> =
+      tabs.iter().map(|t| (t.hwnd, t.title.clone())).collect();
+
     let state = Box::new(TabBarState {
       tabs,
       active_index,
@@ -154,7 +175,12 @@ impl NativeStackTabBar {
       Ok(handle.0)
     })??;
 
-    Ok(Self { hwnd })
+    Ok(Self {
+      hwnd,
+      last_rect: Some(initial_rect),
+      last_active_index: active_index,
+      last_tab_keys: initial_tab_keys,
+    })
   }
 
   /// Posts a tab-state update to the tab bar window.
@@ -162,7 +188,31 @@ impl NativeStackTabBar {
   /// Uses `PostMessageW` (fire-and-forget) to avoid blocking the tokio
   /// thread, which could deadlock if the Win32 event-loop thread is itself
   /// waiting on a `SetWindowPos` for a managed application window.
-  pub fn update(&self, rect: &Rect, tabs: Vec<TabInfo>, active_index: usize) {
+  ///
+  /// No-op when `rect`, `active_index`, and the `(hwnd, title)` pairs of
+  /// `tabs` are all identical to the last post. This prevents redundant GDI
+  /// repaints during animation ticks where `platform_sync` runs every frame
+  /// but the tab bar content has not changed.
+  pub fn update(
+    &mut self,
+    rect: &Rect,
+    tabs: Vec<TabInfo>,
+    active_index: usize,
+  ) {
+    let new_tab_keys: Vec<(isize, String)> =
+      tabs.iter().map(|t| (t.hwnd, t.title.clone())).collect();
+
+    if self.last_rect.as_ref() == Some(rect)
+      && self.last_active_index == active_index
+      && self.last_tab_keys == new_tab_keys
+    {
+      return;
+    }
+
+    self.last_rect = Some(rect.clone());
+    self.last_active_index = active_index;
+    self.last_tab_keys = new_tab_keys;
+
     let update = Box::new(TabUpdate {
       tabs,
       active_index,
@@ -186,12 +236,13 @@ impl NativeStackTabBar {
     }
   }
 
-
   /// Hides the tab bar window without destroying it.
   ///
-  /// Used to suppress the overlay during workspace-switch animations so the
-  /// bar does not float over the workspace-surrogate slides.
-  pub fn hide(&self) {
+  /// Clears the cached rect so the next `update()` call always re-posts,
+  /// causing `WM_UPDATE_TABS` to reposition and re-show the window even when
+  /// the tab content has not changed since the hide.
+  pub fn hide(&mut self) {
+    self.last_rect = None;
     // SAFETY: `self.hwnd` is a valid window handle.
     unsafe {
       let _ = ShowWindow(HWND(self.hwnd), SW_HIDE);

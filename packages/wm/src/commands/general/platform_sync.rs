@@ -1234,7 +1234,7 @@ fn sync_tab_bars(state: &mut WmState, config: &UserConfig) {
   let dispatcher = state.dispatcher.clone();
 
   for info in stacks_info {
-    if let Some(bar) = state.tab_bars.get(&info.id) {
+    if let Some(bar) = state.tab_bars.get_mut(&info.id) {
       if info.visible {
         bar.update(&info.tab_bar_rect, info.tabs, info.active_index);
       } else {
