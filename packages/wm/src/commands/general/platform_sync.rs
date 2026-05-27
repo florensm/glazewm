@@ -1,7 +1,9 @@
+use std::collections::HashSet;
+
 use anyhow::Context;
-#[cfg(target_os = "windows")]
-use wm_common::{WindowEffectConfig, WorkspaceSwitchStyle};
 use tracing::{debug, warn};
+#[cfg(target_os = "windows")]
+use wm_common::{TabBarPosition, WindowEffectConfig, WorkspaceSwitchStyle};
 use wm_common::{
   CursorJumpTrigger, DisplayState, HideCorner, HideMethod, UniqueExt,
   WindowState, WmEvent,
@@ -9,7 +11,10 @@ use wm_common::{
 #[cfg(target_os = "windows")]
 use wm_platform::NativeWindowWindowsExt;
 #[cfg(target_os = "windows")]
-use wm_platform::{CornerStyle, OpacityValue, WorkspaceSurrogate};
+use wm_platform::{
+  CornerStyle, NativeStackTabBar, OpacityValue, TabBarColors, TabInfo,
+  WorkspaceSurrogate,
+};
 use wm_platform::{Rect, WindowZOrder};
 
 use crate::{
@@ -229,14 +234,27 @@ fn redraw_containers(
       .descendant_focus_order()
       .collect::<Vec<_>>();
 
-    // Sort the windows to update by their focus order. The most recently
-    // focused window will be updated first.
-    // TODO: To reduce flicker, redraw windows that will be shown first,
-    // then redraw the ones to be hidden last.
+    // Sort so that windows to be shown are processed before windows to be
+    // hidden (prevents a blank-frame flash when uncloaking replaces
+    // cloaking, e.g. during stack-focus cycling). Within each group,
+    // least-recently-focused is processed first (after the rev() below).
     windows.sort_by_key(|window| {
-      descendant_focus_order
+      let is_inactive_stack_child = window
+        .parent()
+        .and_then(|p| p.as_stack().cloned())
+        .map(|s| {
+          s.borrow_child_focus_order().front().copied()
+            != Some(window.id())
+        })
+        .unwrap_or(false);
+      let ws_displayed =
+        window.workspace().is_some_and(|w| w.is_displayed());
+      let will_show = !is_inactive_stack_child && ws_displayed;
+      let focus_pos = descendant_focus_order
         .iter()
-        .position(|order| order.id() == window.id())
+        .position(|order| order.id() == window.id());
+      // Windows to show sort higher → after rev() they are processed first.
+      (will_show, focus_pos)
     });
 
     windows
@@ -464,12 +482,25 @@ fn redraw_containers(
       continue;
     }
 
-    // Capture display state before transition to detect opening windows
+    // Inactive stack children are always hidden; the active child (first in
+    // child_focus_order) is the only visible window in the stack.
+    let is_inactive_stack_child = window
+      .parent()
+      .and_then(|p| p.as_stack().cloned())
+      .map(|stack| {
+        stack.borrow_child_focus_order().front().copied()
+          != Some(window.id())
+      })
+      .unwrap_or(false);
+
+    // Capture display state before transition to detect opening windows.
     let previous_display_state = window.display_state();
 
     // Transition display state depending on whether window will be
     // shown or hidden.
-    let new_display_state =
+    window.set_display_state(if is_inactive_stack_child {
+      DisplayState::Hidden
+    } else {
       match (previous_display_state.clone(), workspace.is_displayed()) {
         (DisplayState::Hidden | DisplayState::Hiding, true) => {
           DisplayState::Showing
@@ -478,12 +509,13 @@ fn redraw_containers(
           DisplayState::Hiding
         }
         _ => previous_display_state.clone(),
-      };
-    window.set_display_state(new_display_state);
+      }
+    });
 
     let target_rect = window
       .to_rect()?
       .apply_delta(&window.total_border_delta()?, None);
+
 
 
     let is_visible = matches!(
@@ -851,6 +883,9 @@ fn redraw_containers(
   #[cfg(target_os = "windows")]
   state.animation_manager.apply_outgoing_surrogate_opacities();
 
+  #[cfg(target_os = "windows")]
+  sync_tab_bars(state, config);
+
   Ok(())
 }
 
@@ -1144,4 +1179,137 @@ fn apply_transparency_effect(
   };
 
   _ = window.native().set_transparency(transparency);
+}
+
+/// Creates, updates, or destroys tab bar overlay windows for all
+/// `StackContainer`s that have a non-zero `tab_bar_height`.
+///
+/// Stale entries (stacks that have been removed) are dropped from
+/// `state.tab_bars`. New entries are created via
+/// `NativeStackTabBar::create`. Existing entries are repositioned and
+/// repainted via `NativeStackTabBar::update`.
+#[cfg(target_os = "windows")]
+fn sync_tab_bars(state: &mut WmState, config: &UserConfig) {
+  use uuid::Uuid;
+
+  // No workspace-switch animation on this branch; tab bars always visible
+  // when their workspace is displayed.
+  let ws_switch_active = false;
+
+  struct StackTabInfo {
+    id: Uuid,
+    tab_bar_rect: Rect,
+    tabs: Vec<TabInfo>,
+    active_index: usize,
+    /// Whether the stack's workspace is currently displayed.
+    visible: bool,
+  }
+
+  // Collect ALL stacks with a configured tab bar (across all workspaces).
+  // The `visible` flag drives whether the bar is shown or hidden.
+  let stacks_info: Vec<StackTabInfo> = state
+    .root_container
+    .descendants()
+    .filter_map(|c| c.as_stack().cloned())
+    .filter(|s| s.tab_bar_height_px() > 0)
+    .filter_map(|s| {
+      let stack_rect = s.to_rect().ok()?;
+      let tab_h = s.tab_bar_height_px();
+      let tab_bar_rect = match s.tab_bar_position() {
+        TabBarPosition::Top => Rect::from_ltrb(
+          stack_rect.left,
+          stack_rect.top,
+          stack_rect.right,
+          stack_rect.top + tab_h,
+        ),
+        TabBarPosition::Bottom => Rect::from_ltrb(
+          stack_rect.left,
+          stack_rect.bottom - tab_h,
+          stack_rect.right,
+          stack_rect.bottom,
+        ),
+      };
+
+      let focus_order = s.borrow_child_focus_order();
+      let active_id = focus_order.front().copied();
+      drop(focus_order);
+
+      let children = s.children();
+      let active_index = active_id
+        .and_then(|id| children.iter().position(|c| c.id() == id))
+        .unwrap_or(0);
+
+      let tabs: Vec<TabInfo> = children
+        .iter()
+        .filter_map(|c| c.as_tiling_window())
+        .map(|w| TabInfo {
+          title: w.native_properties().title,
+          hwnd: w.native().id().0,
+        })
+        .collect();
+
+      if tabs.is_empty() {
+        return None;
+      }
+
+      let visible = !ws_switch_active
+        && s.workspace().map_or(false, |ws| ws.is_displayed());
+
+      Some(StackTabInfo {
+        id: s.id(),
+        tab_bar_rect,
+        tabs,
+        active_index,
+        visible,
+      })
+    })
+    .collect();
+
+  // Retain bars for all existing stacks (avoids destroy/recreate on
+  // workspace switch). Bars for stacks that have been removed are dropped.
+  let current_ids: HashSet<Uuid> =
+    stacks_info.iter().map(|s| s.id).collect();
+  state.tab_bars.retain(|id, _| current_ids.contains(id));
+
+  let colors = TabBarColors {
+    background: config.value.stack.tab_bar_background.clone(),
+    active: config.value.stack.tab_active_background.clone(),
+    inactive: config.value.stack.tab_inactive_background.clone(),
+    text: config.value.stack.tab_text_color.clone(),
+  };
+
+  let tab_click_tx = state.tab_click_tx.clone();
+  let dispatcher = state.dispatcher.clone();
+
+  for info in stacks_info {
+    if let Some(bar) = state.tab_bars.get_mut(&info.id) {
+      if info.visible {
+        bar.update(&info.tab_bar_rect, info.tabs, info.active_index);
+      } else {
+        bar.hide();
+      }
+    } else if info.visible {
+      let tx = tab_click_tx.clone();
+      let stack_id = info.id;
+      let on_click = Box::new(move |idx: usize| {
+        let _ = tx.send((stack_id, idx));
+      });
+
+      match NativeStackTabBar::create(
+        &dispatcher,
+        &info.tab_bar_rect,
+        info.tabs,
+        info.active_index,
+        colors.clone(),
+        on_click,
+      ) {
+        Ok(bar) => {
+          state.tab_bars.insert(info.id, bar);
+        }
+        Err(err) => {
+          tracing::warn!("Failed to create tab bar: {err}");
+        }
+      }
+    }
+  }
 }

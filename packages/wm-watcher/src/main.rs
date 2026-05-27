@@ -41,6 +41,12 @@ async fn main() -> anyhow::Result<()> {
         managed_handles.into_iter().map(NativeWindow::from_handle);
 
       for window in managed_windows {
+        // Remove DWM cloak first so the window becomes compositable before
+        // `ShowWindow` makes it visible. Without this, windows cloaked
+        // during a workspace-switch animation remain invisible ("ghosted")
+        // even after the watcher restores their other attributes.
+        let _ = window.set_cloaked(false);
+
         if let Err(err) = window.show() {
           tracing::warn!("Failed to show window: {:?}", err);
         }
