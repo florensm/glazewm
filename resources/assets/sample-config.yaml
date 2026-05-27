@@ -54,6 +54,21 @@ gaps:
     bottom: '20px'
     left: '20px'
 
+stack:
+  # Height of the tab bar shown for stacked windows (0px = disabled).
+  # ** Only rendered on Windows.
+  tab_bar_height: "30px"
+
+  # Whether the tab bar appears above or below the stacked windows.
+  # Possible values: "top" | "bottom"
+  tab_bar_position: "top"
+
+  # Tab bar colors.
+  tab_bar_background: "#2d2d2d"
+  tab_active_background: "#4a4a6a"
+  tab_inactive_background: "#1e1e2e"
+  tab_text_color: "#cdd6f4"
+
 window_effects:
   # Visual effects to apply to the focused window.
   focused_window:
@@ -158,7 +173,38 @@ window_rules:
         window_class: { not_regex: 'PPTFrameClass' }
       - window_process: { equals: 'CleanShot X' }
 
+  # Example: auto-stack browser windows into a named stack on open.
+  # Requires `stack.tab_bar_height` to be non-zero for the tab bar to show.
+  # - commands: ["move-to-stack --name browsers"]
+  #   match:
+  #     - window_process: { equals: "firefox" }
+  #     - window_process: { equals: "chrome" }
+  #     - window_process: { equals: "msedge" }
+
 binding_modes:
+  # When enabled, the focused window can be stacked with its neighbors.
+  - name: "stack"
+    keybindings:
+      # Absorb the neighbor in a given direction into the stack.
+      - commands: ["stack-absorb-neighbor --direction left"]
+        bindings: ["h", "left"]
+      - commands: ["stack-absorb-neighbor --direction right"]
+        bindings: ["l", "right"]
+      - commands: ["stack-absorb-neighbor --direction up"]
+        bindings: ["k", "up"]
+      - commands: ["stack-absorb-neighbor --direction down"]
+        bindings: ["j", "down"]
+      # Cycle focus to the next/previous window within the stack.
+      - commands: ["cycle-stack-focus"]
+        bindings: ["n"]
+      - commands: ["cycle-stack-focus --prev"]
+        bindings: ["p"]
+      # Toggle the focused window out of the stack.
+      - commands: ["toggle-stack"]
+        bindings: ["g"]
+      # Press enter/escape to return to default keybindings.
+      - commands: ["wm-disable-binding-mode --name stack"]
+        bindings: ["escape", "enter"]
   # When enabled, the focused window can be resized via arrow keys or HJKL.
   - name: 'resize'
     keybindings:
@@ -220,6 +266,24 @@ keybindings:
   # be inserted.
   - commands: ['toggle-tiling-direction']
     bindings: ['alt+v']
+
+  # Toggle the focused window into/out of a stack container.
+  - commands: ["toggle-stack"]
+    bindings: ["alt+g"]
+
+  # Stack the focused window with the most-recently-focused other window.
+  - commands: ["stack-insert"]
+    bindings: ["alt+shift+s"]
+
+  # Enter stack mode to absorb neighbors or cycle focus within the stack.
+  - commands: ["wm-enable-binding-mode --name stack"]
+    bindings: ["alt+shift+g"]
+
+  # Cycle focus to the next/previous window within the focused stack.
+  - commands: ["cycle-stack-focus"]
+    bindings: ["alt+oem_period"]
+  - commands: ["cycle-stack-focus --prev"]
+    bindings: ["alt+oem_comma"]
 
   # Change focus from tiling windows -> floating -> fullscreen.
   - commands: ['wm-cycle-focus']

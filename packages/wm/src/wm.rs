@@ -27,9 +27,11 @@ use crate::{
     },
     monitor::focus_monitor,
     window::{
-      ignore_window, move_window_in_direction, move_window_to_workspace,
+      cycle_stack_focus, focus_stack_index, ignore_window,
+      move_to_stack, move_window_in_direction, move_window_to_workspace,
       resize_window, set_window_position, set_window_size,
-      update_window_state, WindowPositionTarget,
+      stack_absorb_neighbor, stack_insert, toggle_stack, update_window_state,
+      WindowPositionTarget,
     },
     workspace::{
       focus_workspace, move_workspace_in_direction,
@@ -54,6 +56,12 @@ pub struct WindowManager {
   pub event_rx: mpsc::UnboundedReceiver<WmEvent>,
   pub exit_rx: mpsc::UnboundedReceiver<()>,
   pub state: WmState,
+  /// Receiver for tab click events routed from the event-loop thread.
+  ///
+  /// Always present (not cfg-gated) so that the `tokio::select!` arm in
+  /// `main.rs` compiles on all platforms. On non-Windows the sender is
+  /// never used, so this receiver never yields an item.
+  pub tab_click_rx: mpsc::UnboundedReceiver<(uuid::Uuid, usize)>,
 }
 
 impl WindowManager {
@@ -63,14 +71,17 @@ impl WindowManager {
   ) -> anyhow::Result<Self> {
     let (event_tx, event_rx) = mpsc::unbounded_channel();
     let (exit_tx, exit_rx) = mpsc::unbounded_channel();
+    let (tab_click_tx, tab_click_rx) = mpsc::unbounded_channel();
 
-    let mut state = WmState::new(dispatcher, event_tx, exit_tx);
+    let mut state =
+      WmState::new(dispatcher, event_tx, exit_tx, tab_click_tx);
     state.populate(config)?;
 
     Ok(Self {
       event_rx,
       exit_rx,
       state,
+      tab_click_rx,
     })
   }
 
@@ -738,6 +749,44 @@ impl WindowManager {
           }
           _ => Ok(()),
         }
+      }
+      InvokeCommand::ToggleStack => {
+        if let Some(window) = subject_container.as_tiling_window() {
+          toggle_stack(&window, state, config)?;
+          state.pending_sync.queue_focus_change();
+        }
+        Ok(())
+      }
+      InvokeCommand::CycleStackFocus { prev } => {
+        cycle_stack_focus(&subject_container, *prev, state)?;
+        state.pending_sync.queue_focus_change();
+        Ok(())
+      }
+      InvokeCommand::FocusStackIndex { index } => {
+        focus_stack_index(&subject_container, *index, state)?;
+        state.pending_sync.queue_focus_change();
+        Ok(())
+      }
+      InvokeCommand::StackAbsorbNeighbor { direction } => {
+        if let Some(window) = subject_container.as_tiling_window() {
+          stack_absorb_neighbor(&window, direction, state, config)?;
+          state.pending_sync.queue_focus_change();
+        }
+        Ok(())
+      }
+      InvokeCommand::StackInsert => {
+        if let Some(window) = subject_container.as_tiling_window() {
+          stack_insert(&window, state, config)?;
+          state.pending_sync.queue_focus_change();
+        }
+        Ok(())
+      }
+      InvokeCommand::MoveToStack { name } => {
+        if let Some(window) = subject_container.as_tiling_window() {
+          move_to_stack(&window, name, state, config)?;
+          state.pending_sync.queue_focus_change();
+        }
+        Ok(())
       }
       InvokeCommand::ToggleTilingDirection => {
         toggle_tiling_direction(subject_container, state, config)

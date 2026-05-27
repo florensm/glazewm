@@ -340,10 +340,8 @@ fn insertion_target(
     };
 
     if let Some(sibling) = sibling {
-      return Ok((
-        sibling.parent().context("No parent.")?,
-        sibling.index() + 1,
-      ));
+      let parent = sibling.parent().context("No parent.")?;
+      return Ok((parent, sibling.index() + 1));
     }
   }
 

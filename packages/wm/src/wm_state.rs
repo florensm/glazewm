@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::time::Instant;
 
 use anyhow::Context;
@@ -9,7 +10,7 @@ use wm_platform::{
   Direction, Dispatcher, Display, NativeWindow, Point, Rect,
 };
 #[cfg(target_os = "windows")]
-use wm_platform::{NativeWindowWindowsExt, OpacityValue};
+use wm_platform::{NativeStackTabBar, NativeWindowWindowsExt, OpacityValue};
 
 use crate::{
   commands::{
@@ -75,6 +76,17 @@ pub struct WmState {
 
   /// Sender for gracefully shutting down the WM.
   exit_tx: mpsc::UnboundedSender<()>,
+
+  /// Sender half of the tab-click channel.
+  ///
+  /// Always present so that the channel stays open (preventing
+  /// `tab_click_rx.recv()` from immediately returning `None`). Only
+  /// actually used to send events on Windows when a tab is clicked.
+  pub tab_click_tx: mpsc::UnboundedSender<(Uuid, usize)>,
+
+  /// Live tab bar windows keyed by their `StackContainer` ID.
+  #[cfg(target_os = "windows")]
+  pub tab_bars: HashMap<Uuid, NativeStackTabBar>,
 }
 
 impl WmState {
@@ -82,6 +94,7 @@ impl WmState {
     dispatcher: Dispatcher,
     event_tx: mpsc::UnboundedSender<WmEvent>,
     exit_tx: mpsc::UnboundedSender<()>,
+    tab_click_tx: mpsc::UnboundedSender<(Uuid, usize)>,
   ) -> Self {
     Self {
       root_container: RootContainer::new(),
@@ -97,6 +110,9 @@ impl WmState {
       has_initialized: false,
       event_tx,
       exit_tx,
+      tab_click_tx,
+      #[cfg(target_os = "windows")]
+      tab_bars: HashMap::new(),
     }
   }
 
