@@ -1,6 +1,6 @@
 use anyhow::Context;
 #[cfg(target_os = "windows")]
-use wm_common::WindowEffectConfig;
+use wm_common::{WindowEffectConfig, WorkspaceSwitchStyle};
 use tracing::{debug, warn};
 use wm_common::{
   CursorJumpTrigger, DisplayState, HideCorner, HideMethod, UniqueExt,
@@ -265,9 +265,7 @@ fn redraw_containers(
       });
 
       if has_ws_windows {
-        let incoming_fades = ws_config.style.incoming_fades();
-        let outgoing_fades = ws_config.style.outgoing_fades();
-        let is_fade_only = ws_config.style.is_fade_only();
+        let is_no_slide = ws_config.style.is_no_slide();
         let mut ws_windows: Vec<(uuid::Uuid, Option<WorkspaceSurrogate>, bool)> =
           Vec::new();
         let mut monitor_x = 0i32;
@@ -323,7 +321,7 @@ fn redraw_containers(
               .and_then(|rect| {
                 let viewport =
                   Rect::from_xy(monitor_x, monitor_y, monitor_width, monitor_height);
-                WorkspaceSurrogate::new(hwnd, &rect, &viewport, opacity, incoming_fades)
+                WorkspaceSurrogate::new(hwnd, &rect, &viewport, opacity, ws_config.opacity_incoming)
                   .map_err(|e| {
                     tracing::warn!(
                       "Failed to create incoming surrogate: {e}."
@@ -347,7 +345,7 @@ fn redraw_containers(
             let viewport =
               Rect::from_xy(monitor_x, monitor_y, monitor_width, monitor_height);
             let surrogate =
-              WorkspaceSurrogate::new(hwnd, &current, &viewport, opacity, outgoing_fades)
+              WorkspaceSurrogate::new(hwnd, &current, &viewport, opacity, ws_config.opacity_outgoing)
                 .map_err(|e| {
                   tracing::warn!("Failed to create outgoing surrogate: {e}.");
                   e
@@ -364,19 +362,19 @@ fn redraw_containers(
 
         // For slide styles, skip when direction == 0: workspace names were not
         // found in the config so the slide offset would be 0, placing
-        // surrogates at their target and causing an instant flash. Fade-only
-        // has no slide offset so direction == 0 is fine.
-        if (has_outgoing || has_incoming) && (direction != 0 || is_fade_only) {
+        // surrogates at their target and causing an instant flash. Non-slide
+        // styles (fade/zoom) have no slide offset so direction == 0 is fine.
+        if (has_outgoing || has_incoming) && (direction != 0 || is_no_slide) {
           // Show outgoing surrogates before flushing: real windows are still
           // active so their DWM thumbnails are immediately warm.
-          // For fade-only, also show incoming surrogates at zero opacity so
-          // DWM warms their thumbnails before the animation loop begins.
+          // For stationary (non-slide) styles, also show incoming surrogates at
+          // their start opacity so DWM warms their thumbnails before the loop.
           for (_, ref mut surrogate, is_incoming) in &mut ws_windows {
             if let Some(s) = surrogate {
               if !*is_incoming {
                 s.show_initial();
-              } else if is_fade_only {
-                s.show_fade_incoming();
+              } else if ws_config.style != WorkspaceSwitchStyle::Slide {
+                s.show_incoming();
               }
             }
           }
@@ -390,7 +388,7 @@ fn redraw_containers(
 
           state.animation_manager.start_workspace_switch(
             ws_windows,
-            direction,
+            direction, // order_direction: +1/-1
             monitor_x,
             monitor_width,
             monitor_y,

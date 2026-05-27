@@ -52,19 +52,21 @@ animations:
     duration_ms: 300
     # See 'window_move.easing' for available options.
     easing: "ease_out_cubic"
-    # Transition style. Options:
-    #   'slide_horizontal' (default)   - slide left/right, full opacity
-    #   'slide_vertical'               - slide up/down, full opacity
-    #   'slide_crossfade_horizontal'   - horizontal slide, both sides fade
-    #   'slide_crossfade_vertical'     - vertical slide, both sides fade
-    #   'slide_fade_out_horizontal'    - horizontal slide, outgoing fades out
-    #   'slide_fade_out_vertical'      - vertical slide, outgoing fades out
-    #   'slide_fade_in_horizontal'     - horizontal slide, incoming fades in
-    #   'slide_fade_in_vertical'       - vertical slide, incoming fades in
-    #   'fade'                         - pure crossfade, no slide
-    #   'zoom'                         - outgoing shrinks to center, incoming expands
-    style: "slide_horizontal"
-    # Amount of workspace-level zoom applied during slide transitions. The
+    # Motion style. Options:
+    #   'slide' (default) - workspaces slide along the 'direction' axis
+    #   'fade'            - pure crossfade; both workspaces stay in place
+    #   'zoom'            - outgoing shrinks to monitor center, incoming expands
+    style: "slide"
+    # Slide axis when style is 'slide'. Options: 'horizontal' (default), 'vertical'.
+    direction: "horizontal"
+    # Opacity at the end of the outgoing workspace's exit (0.0–1.0).
+    # 1.0 = stays fully opaque (default); 0.0 = fades out to transparent.
+    # Combine with opacity_incoming: 0.0 for a crossfade on any style.
+    opacity_outgoing: 1.0
+    # Opacity at the start of the incoming workspace's entrance (0.0–1.0).
+    # 1.0 = starts fully opaque (default); 0.0 = fades in from transparent.
+    opacity_incoming: 1.0
+    # Amount of workspace-level zoom applied during 'slide' transitions. The
     # outgoing workspace shrinks from 1.0 to (1 - zoom_factor) as it exits;
     # the incoming grows from (1 - zoom_factor) to 1.0. Scaling is from the
     # monitor center so all windows move inward together. Range: 0.0 (no zoom)
@@ -78,14 +80,15 @@ animations:
     # See 'window_move.easing' for available options.
     easing: "ease_in_cubic"
     # Transition style. Options:
-    #   'fade' (default)         - fade out only
-    #   'zoom'                   - zoom out from window center while fading
-    #   'slide_right'            - slide off the right edge while fading
-    #   'slide_left'             - slide off the left edge while fading
-    #   'slide_top'              - slide off the top edge while fading
-    #   'slide_bottom'           - slide off the bottom edge while fading
-    style: "fade"
-    # Final opacity (0.0–1.0). At 0.0 the window fades to fully transparent.
+    #   'none' (default)  - no positional movement; combine with opacity_to for a fade
+    #   'zoom'            - zoom out from window center
+    #   'slide_right'     - slide off the right edge
+    #   'slide_left'      - slide off the left edge
+    #   'slide_top'       - slide off the top edge
+    #   'slide_bottom'    - slide off the bottom edge
+    style: "none"
+    # Final opacity (0.0–1.0). At 0.0 the window fades to fully transparent;
+    # at 1.0 no fade is applied.
     opacity_to: 0.0
 
   # Animation settings for when the focused window changes (Windows only).
@@ -98,6 +101,10 @@ animations:
     #   'opacity' (default) - window briefly dims then restores opacity
     #   'scale'             - window briefly pops in from a slightly smaller size
     style: "opacity"
+    # For 'opacity' style: dim level at the start of the animation, relative to
+    # the effect opacity. E.g. 0.5 = dims to 50% of effect opacity then
+    # restores. Range: 0.0–1.0. Default: 0.5.
+    opacity_from: 0.5
     # For 'scale' style: ratio of the initial shrunken size relative to the
     # window's actual size. E.g. 0.98 = window starts at 98% and grows to 100%.
     # Range: 0.5–1.0.

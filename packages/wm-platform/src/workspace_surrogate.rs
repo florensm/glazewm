@@ -24,9 +24,15 @@ pub struct WorkspaceSurrogate {
   viewport: Rect,
   /// DWM thumbnail opacity (0–255) derived from the window-effects config.
   opacity: u8,
-  /// When `true`, the surrogate's opacity is lerped each frame: outgoing
-  /// fades out (opacity → 0) and incoming fades in (0 → opacity).
-  fade: bool,
+  /// The non-full-opacity end of the opacity animation, as a fraction of
+  /// `opacity` (0.0–1.0).
+  ///
+  /// For outgoing windows this is the final opacity fraction (start = 1.0,
+  /// end = `opacity_endpoint`). For incoming windows it is the initial opacity
+  /// fraction (start = `opacity_endpoint`, end = 1.0). At `1.0` (default) the
+  /// opacity is constant throughout the animation; at `0.0` the window fully
+  /// fades out or in.
+  opacity_endpoint: f32,
 }
 
 impl WorkspaceSurrogate {
@@ -37,25 +43,24 @@ impl WorkspaceSurrogate {
   /// the thumbnail registration dimensions and the reference for per-frame
   /// coordinate math.
   ///
+  /// `opacity_endpoint` controls how far the opacity animates away from the
+  /// effect opacity. For outgoing windows pass `config.opacity_outgoing`; for
+  /// incoming windows pass `config.opacity_incoming`. At `1.0` the opacity is
+  /// held constant; at `0.0` the window fully fades.
+  ///
   /// The surrogate is created hidden. For outgoing windows, call
   /// [`show_initial`] before cloaking the real window to avoid a blank frame.
-  /// For incoming windows, [`slide_axis`] reveals the surrogate as soon as the
-  /// window's visible area becomes non-empty.
-  ///
-  /// When `fade` is `true`, [`slide_axis`] lerps the surrogate opacity each
-  /// frame: outgoing fades from `opacity` → 0; incoming fades from 0 →
-  /// `opacity`. [`apply_effect_opacity`] must still be called after cloaking
-  /// the outgoing real window to set the animation-start opacity correctly.
+  /// For incoming windows in stationary styles (fade/zoom), call
+  /// [`show_incoming`] before the animation loop to pre-warm the DWM thumbnail.
   ///
   /// [`show_initial`]: WorkspaceSurrogate::show_initial
-  /// [`slide_axis`]: WorkspaceSurrogate::slide_axis
-  /// [`apply_effect_opacity`]: WorkspaceSurrogate::apply_effect_opacity
+  /// [`show_incoming`]: WorkspaceSurrogate::show_incoming
   pub fn new(
     hwnd: HWND,
     rect: &Rect,
     viewport: &Rect,
     opacity: u8,
-    fade: bool,
+    opacity_endpoint: f32,
   ) -> crate::Result<Self> {
     let inner = NativeSurrogate::create(
       hwnd,
@@ -71,7 +76,7 @@ impl WorkspaceSurrogate {
       rect: rect.clone(),
       viewport: viewport.clone(),
       opacity,
-      fade,
+      opacity_endpoint: opacity_endpoint.clamp(0.0, 1.0),
     })
   }
 
@@ -119,15 +124,20 @@ impl WorkspaceSurrogate {
     self.inner.set_window_opacity(self.opacity);
   }
 
-  /// Shows the surrogate at zero opacity with the thumbnail pre-positioned at
-  /// the window's location within the monitor viewport.
+  /// Shows the surrogate at the incoming animation start opacity, with the
+  /// thumbnail pre-positioned at the window's location within the monitor
+  /// viewport.
   ///
-  /// Use for incoming windows in fade-only transitions so DWM warms the
-  /// thumbnail before the animation begins without showing it. [`update_fade`]
-  /// then lerps opacity from 0 to the configured effect opacity.
+  /// Use for incoming windows in stationary transitions (fade, zoom) so DWM
+  /// warms the thumbnail before the animation begins. The start opacity is
+  /// derived from `opacity_endpoint`: `opacity_endpoint * effect_opacity`. At
+  /// `opacity_endpoint = 0.0` the surrogate is invisible but the thumbnail is
+  /// registered; at `1.0` it starts fully opaque. [`update_fade`] or
+  /// [`update_zoom`] then drives the per-frame opacity from this initial state.
   ///
   /// [`update_fade`]: WorkspaceSurrogate::update_fade
-  pub fn show_fade_incoming(&mut self) {
+  /// [`update_zoom`]: WorkspaceSurrogate::update_zoom
+  pub fn show_incoming(&mut self) {
     let rc_src =
       RECT { left: 0, top: 0, right: self.rect.width(), bottom: self.rect.height() };
     let rc_dst = RECT {
@@ -137,21 +147,16 @@ impl WorkspaceSurrogate {
       bottom: self.rect.bottom - self.viewport.top,
     };
     self.inner.set_thumbnail_rects(rc_src, rc_dst);
-    self.inner.set_window_opacity(0);
+    self.inner.set_window_opacity(self.lerp_opacity(0.0, true));
     self.inner.set_visible(true);
   }
 
   /// Advances the surrogate opacity for a fade-only transition.
   ///
-  /// The surrogate stays at its target rect; only the window opacity is
-  /// lerped each frame to produce a crossfade without positional movement.
+  /// The surrogate stays at its target rect; only the window opacity is lerped
+  /// each frame to produce a crossfade without positional movement.
   pub fn update_fade(&mut self, eased_progress: f32, is_incoming: bool) {
-    let fade_alpha = if is_incoming {
-      (self.opacity as f32 * eased_progress).round() as u8
-    } else {
-      (self.opacity as f32 * (1.0 - eased_progress)).round() as u8
-    };
-    self.inner.set_window_opacity(fade_alpha);
+    self.inner.set_window_opacity(self.lerp_opacity(eased_progress, is_incoming));
   }
 
   /// Advances the surrogate along the horizontal axis to `eased_progress`
@@ -282,7 +287,7 @@ impl WorkspaceSurrogate {
   /// Each surrogate independently zooms in (incoming) or out (outgoing) from
   /// its own center. `rcDestination` grows from a zero-size rect at the
   /// surrogate center to the full surrogate rect, scaling the source content
-  /// via DWM.
+  /// via DWM. Opacity is lerped according to `opacity_endpoint`.
   pub fn update_zoom(&mut self, eased_progress: f32, is_incoming: bool) {
     let t = if is_incoming {
       eased_progress
@@ -317,7 +322,25 @@ impl WorkspaceSurrogate {
     };
 
     self.inner.set_thumbnail_rects(rc_src, rc_dst);
+    self.inner.set_window_opacity(self.lerp_opacity(eased_progress, is_incoming));
     self.inner.set_visible(true);
+  }
+
+  /// Computes the per-frame window opacity for a surrogate at `progress`
+  /// (0.0 → 1.0).
+  ///
+  /// Outgoing: lerps from `opacity` → `opacity_endpoint * opacity`.
+  /// Incoming: lerps from `opacity_endpoint * opacity` → `opacity`.
+  /// When `opacity_endpoint` is `1.0` (default), the result is constant
+  /// `opacity` — no fade.
+  fn lerp_opacity(&self, progress: f32, is_incoming: bool) -> u8 {
+    let (start_frac, end_frac): (f32, f32) = if is_incoming {
+      (self.opacity_endpoint, 1.0)
+    } else {
+      (1.0, self.opacity_endpoint)
+    };
+    let frac = start_frac + (end_frac - start_frac) * progress;
+    (self.opacity as f32 * frac.clamp(0.0, 1.0)).round() as u8
   }
 
   /// Shared implementation for [`update_slide_zoom_horizontal`] and
@@ -432,16 +455,7 @@ impl WorkspaceSurrogate {
       bottom: vis_bottom - self.viewport.top,
     };
     self.inner.set_thumbnail_rects(rc_src, rc_dst);
-
-    if self.fade {
-      let fade_alpha = if is_incoming {
-        (self.opacity as f32 * eased_progress).round() as u8
-      } else {
-        (self.opacity as f32 * (1.0 - eased_progress)).round() as u8
-      };
-      self.inner.set_window_opacity(fade_alpha);
-    }
-
+    self.inner.set_window_opacity(self.lerp_opacity(eased_progress, is_incoming));
     self.inner.set_visible(true);
   }
 
@@ -531,16 +545,7 @@ impl WorkspaceSurrogate {
       )
     };
     self.inner.set_thumbnail_rects(rc_src, rc_dst);
-
-    if self.fade {
-      let fade_alpha = if is_incoming {
-        (self.opacity as f32 * eased_progress).round() as u8
-      } else {
-        (self.opacity as f32 * (1.0 - eased_progress)).round() as u8
-      };
-      self.inner.set_window_opacity(fade_alpha);
-    }
-
+    self.inner.set_window_opacity(self.lerp_opacity(eased_progress, is_incoming));
     self.inner.set_visible(true);
   }
 }

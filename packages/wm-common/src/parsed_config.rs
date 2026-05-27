@@ -433,7 +433,7 @@ impl Default for AnimationsConfig {
 
 /// Spatial style for window open/close transitions.
 ///
-/// Used by both `WindowOpenConfig.direction` and `WindowCloseConfig.style` so
+/// Used by both `WindowOpenConfig.style` and `WindowCloseConfig.style` so
 /// the same values apply symmetrically: a window that opens with `slide_right`
 /// (entering from the right) closes with `slide_right` (exiting to the right).
 #[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
@@ -452,12 +452,12 @@ pub enum WindowTransitionStyle {
   /// Slide in/out from/to the bottom edge.
   #[serde(alias = "bottom")]
   SlideBottom,
-  /// Fade only — no positional slide. Combined with `opacity_from`/`opacity_to`
-  /// for a pure crossfade.
-  #[serde(alias = "none")]
-  Fade,
-  /// Zoom in/out from the window center. Automatically fades when
-  /// `opacity_from`/`opacity_to` are set; otherwise pure scale.
+  /// No positional movement. Combine with `opacity_from`/`opacity_to` for a
+  /// pure fade. Accepts `"fade"` as a legacy alias.
+  #[serde(alias = "fade")]
+  None,
+  /// Zoom in/out from the window center. Combine with `opacity_from`/`opacity_to`
+  /// to also fade while zooming.
   Zoom,
 }
 
@@ -467,7 +467,7 @@ impl WindowTransitionStyle {
   /// Stationary styles keep the surrogate at the window's final position for
   /// the full animation; the surrogate window itself never moves.
   pub fn is_stationary(&self) -> bool {
-    matches!(self, Self::Fade | Self::Zoom)
+    matches!(self, Self::None | Self::Zoom)
   }
 }
 
@@ -514,6 +514,11 @@ pub struct FocusChangeConfig {
   /// `scale` (window briefly pops from a slightly smaller size to its actual
   /// size).
   pub style: FocusAnimationStyle,
+  /// For `opacity` style: the dim level at the start of the animation
+  /// (0.0–1.0), relative to the configured effect opacity. E.g. `0.5` dims
+  /// the window to 50% of its effect opacity before restoring it. Range:
+  /// 0.0–1.0. Default: `0.5`.
+  pub opacity_from: f32,
   /// For `scale` style: ratio by which the window starts undersized at the
   /// beginning of the animation. E.g. `0.98` = window begins at 98% of its
   /// actual size and grows to 100%. Range: 0.5–1.0.
@@ -529,6 +534,7 @@ impl Default for FocusChangeConfig {
       duration_ms: 150,
       easing: EasingFunction::CubicBezier(0.16, 1.0, 0.3, 1.0),
       style: FocusAnimationStyle::Opacity,
+      opacity_from: 0.5,
       scale_factor: 0.98,
       trigger: FocusTrigger::All,
     }
@@ -546,12 +552,13 @@ pub struct WindowOpenConfig {
   ///
   /// - `slide_right` (default): slides in from the right.
   /// - `slide_left` / `slide_top` / `slide_bottom`: slide from that edge.
-  /// - `fade`: no slide; combine with `opacity_from` for a pure fade-in.
-  /// - `zoom`: zoom in from the window center; fades automatically.
+  /// - `none` / `fade`: no slide; combine with `opacity_from` for a pure
+  ///   fade-in.
+  /// - `zoom`: zoom in from the window center.
   #[serde(alias = "direction")]
   pub style: WindowTransitionStyle,
-  /// Starting opacity (0.0–1.0). At `1.0` no fade is applied; at `0.0`
-  /// the window fades in from fully transparent.
+  /// Starting opacity (0.0–1.0). At `1.0` no fade is applied; at `0.0` the
+  /// window fades in from fully transparent. Can be combined with any style.
   pub opacity_from: f32,
 }
 
@@ -580,12 +587,14 @@ pub struct WindowCloseConfig {
   pub easing: EasingFunction,
   /// Transition style for the close animation.
   ///
-  /// - `fade` (default): fade out only; set `opacity_to` for target opacity.
+  /// - `none` (default): no positional movement; combine with `opacity_to` for
+  ///   a pure fade-out.
+  /// - `zoom`: zoom out from the window center.
   /// - `slide_right` / `slide_left` / `slide_top` / `slide_bottom`: slide off
-  ///   that edge while fading.
-  /// - `zoom`: zoom out from the window center while fading.
+  ///   that edge.
   pub style: WindowTransitionStyle,
-  /// Final opacity (0.0–1.0). At `0.0` the window fades to fully transparent.
+  /// Final opacity (0.0–1.0). At `0.0` the window fades to fully transparent;
+  /// at `1.0` no fade is applied.
   pub opacity_to: f32,
 }
 
@@ -595,95 +604,73 @@ impl Default for WindowCloseConfig {
       enabled: false,
       duration_ms: 150,
       easing: EasingFunction::CubicBezier(0.32, 0.0, 0.67, 0.0),
-      style: WindowTransitionStyle::Fade,
+      style: WindowTransitionStyle::None,
       opacity_to: 0.0,
     }
   }
 }
 
-/// Visual style of the workspace-switch transition.
+/// Motion style of the workspace-switch transition.
 #[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum WorkspaceSwitchStyle {
-  /// Workspaces slide left/right (default).
+  /// Workspaces slide along the axis set by `direction` (default).
   #[default]
-  SlideHorizontal,
-  /// Workspaces slide up/down.
-  SlideVertical,
-  /// Horizontal slide; both workspaces crossfade simultaneously.
-  SlideCrossfadeHorizontal,
-  /// Vertical slide; both workspaces crossfade simultaneously.
-  SlideCrossfadeVertical,
-  /// Horizontal slide; outgoing fades out, incoming slides in at full opacity.
-  SlideFadeOutHorizontal,
-  /// Vertical slide; outgoing fades out, incoming slides in at full opacity.
-  SlideFadeOutVertical,
-  /// Horizontal slide; incoming fades in, outgoing slides out at full opacity.
-  SlideFadeInHorizontal,
-  /// Vertical slide; incoming fades in, outgoing slides out at full opacity.
-  SlideFadeInVertical,
-  /// Pure crossfade; no positional slide.
+  Slide,
+  /// Pure crossfade; no positional slide. Both surrogates stay in place and
+  /// their opacities are driven by `opacity_outgoing` / `opacity_incoming`.
   Fade,
-  /// Outgoing workspace shrinks to the monitor center; incoming expands from it.
+  /// Outgoing workspace shrinks to the monitor center; incoming expands from
+  /// it. Opacities are also animated via `opacity_outgoing` / `opacity_incoming`.
   Zoom,
 }
 
 impl WorkspaceSwitchStyle {
-  /// Returns whether the outgoing workspace surrogate should fade.
-  pub fn outgoing_fades(&self) -> bool {
-    matches!(
-      self,
-      Self::SlideCrossfadeHorizontal
-        | Self::SlideCrossfadeVertical
-        | Self::SlideFadeOutHorizontal
-        | Self::SlideFadeOutVertical
-        | Self::Fade
-    )
-  }
-
-  /// Returns whether the incoming workspace surrogate should fade.
-  pub fn incoming_fades(&self) -> bool {
-    matches!(
-      self,
-      Self::SlideCrossfadeHorizontal
-        | Self::SlideCrossfadeVertical
-        | Self::SlideFadeInHorizontal
-        | Self::SlideFadeInVertical
-        | Self::Fade
-    )
-  }
-
   /// Returns `true` when the transition has no positional slide component.
-  pub fn is_fade_only(&self) -> bool {
+  pub fn is_no_slide(&self) -> bool {
     matches!(self, Self::Fade | Self::Zoom)
   }
 }
 
+/// Slide axis for the `slide` workspace-switch style.
+#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum WorkspaceSwitchDirection {
+  /// Slide left/right (default).
+  #[default]
+  Horizontal,
+  /// Slide up/down.
+  Vertical,
+}
+
 /// Animation config for workspace-switch transitions.
 ///
-/// Outgoing workspaces translate off-screen (for slide styles) or fade out
-/// (for crossfade styles) while the incoming workspace slides or fades in,
-/// all constrained to the monitor on which the switch occurs.
+/// Outgoing workspaces translate off-screen (for the `slide` style) or stay in
+/// place (for `fade`/`zoom`) while the incoming workspace slides or crossfades
+/// in, all constrained to the monitor on which the switch occurs.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(default, rename_all(serialize = "camelCase"))]
 pub struct WorkspaceSwitchAnimationConfig {
   pub enabled: bool,
   pub duration_ms: u32,
   pub easing: EasingFunction,
-  /// Transition style.
-  ///
-  /// - `slide_horizontal` (default): slide left/right, full opacity.
-  /// - `slide_vertical`: slide up/down, full opacity.
-  /// - `slide_crossfade_horizontal`: horizontal slide; both sides fade.
-  /// - `slide_crossfade_vertical`: vertical slide; both sides fade.
-  /// - `slide_fade_out_horizontal`: horizontal slide; outgoing fades out.
-  /// - `slide_fade_out_vertical`: vertical slide; outgoing fades out.
-  /// - `slide_fade_in_horizontal`: horizontal slide; incoming fades in.
-  /// - `slide_fade_in_vertical`: vertical slide; incoming fades in.
-  /// - `fade`: pure crossfade, no positional slide.
-  /// - `zoom`: outgoing shrinks to center, incoming expands from center.
+  /// Motion style: `slide` (default), `fade`, or `zoom`.
   pub style: WorkspaceSwitchStyle,
-  /// Amount of workspace-level scale applied during slide transitions.
+  /// Slide axis when `style` is `slide`: `horizontal` (default) or `vertical`.
+  pub direction: WorkspaceSwitchDirection,
+  /// Opacity at the end of the outgoing workspace's animation (0.0–1.0).
+  ///
+  /// At `1.0` (default) the outgoing workspace stays fully opaque. At `0.0` it
+  /// fades out to transparent. Any value in between produces a partial fade.
+  /// Applies to all `style` values.
+  pub opacity_outgoing: f32,
+  /// Opacity at the start of the incoming workspace's animation (0.0–1.0).
+  ///
+  /// At `1.0` (default) the incoming workspace starts fully opaque. At `0.0`
+  /// it fades in from transparent. Any value in between produces a partial
+  /// fade. Applies to all `style` values.
+  pub opacity_incoming: f32,
+  /// Amount of workspace-level scale applied during `slide` transitions.
   ///
   /// The outgoing workspace shrinks from `1.0` to `1.0 - zoom_factor` as it
   /// exits; the incoming grows from `1.0 - zoom_factor` to `1.0` as it enters.
@@ -701,6 +688,9 @@ impl Default for WorkspaceSwitchAnimationConfig {
       duration_ms: 300,
       easing: EasingFunction::CubicBezier(0.33, 1.0, 0.68, 1.0),
       style: WorkspaceSwitchStyle::default(),
+      direction: WorkspaceSwitchDirection::default(),
+      opacity_outgoing: 1.0,
+      opacity_incoming: 1.0,
       zoom_factor: 0.1,
     }
   }

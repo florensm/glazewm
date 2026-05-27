@@ -21,7 +21,10 @@ const VSYNC_PIPELINE_OFFSET_US: u64 = 1_500;
 
 use tokio::sync::mpsc;
 use uuid::Uuid;
-use wm_common::{EasingFunction, FocusAnimationStyle, WindowTransitionStyle, WorkspaceSwitchStyle};
+use wm_common::{
+  EasingFunction, FocusAnimationStyle, WindowTransitionStyle,
+  WorkspaceSwitchDirection, WorkspaceSwitchStyle,
+};
 use wm_platform::{NativeWindow, OpacityValue, Rect};
 #[cfg(target_os = "windows")]
 use wm_platform::{
@@ -66,11 +69,13 @@ struct WorkspaceSwitchState {
   duration: Duration,
   /// Easing function applied to raw elapsed-time progress.
   easing: EasingFunction,
-  /// Transition style (slide horizontal/vertical or fade).
+  /// Motion style (slide, fade, or zoom).
   style: WorkspaceSwitchStyle,
-  /// Slide direction: `+1` = target workspace is higher-index (incoming from
-  /// the far edge, outgoing to the near edge). `-1` = opposite.
-  direction: i32,
+  /// Slide axis (horizontal or vertical). Only used when `style` is `Slide`.
+  slide_direction: WorkspaceSwitchDirection,
+  /// Workspace ordering direction: `+1` = target workspace is higher-index
+  /// (incoming from the far edge, outgoing to the near edge). `-1` = opposite.
+  order_direction: i32,
   /// Left x-coordinate of the animation monitor in screen pixels.
   monitor_x: i32,
   /// Width of the animation monitor in screen pixels.
@@ -609,58 +614,56 @@ impl AnimationManager {
               continue;
             }
             match ws.style {
-              WorkspaceSwitchStyle::SlideHorizontal
-              | WorkspaceSwitchStyle::SlideCrossfadeHorizontal
-              | WorkspaceSwitchStyle::SlideFadeOutHorizontal
-              | WorkspaceSwitchStyle::SlideFadeInHorizontal => {
-                if ws.zoom_factor > 0.0 {
-                  s.update_slide_zoom_horizontal(
-                    eased_final,
-                    entry.is_incoming,
-                    ws.direction,
-                    ws.monitor_x,
-                    ws.monitor_width,
-                    ws.monitor_y,
-                    ws.monitor_height,
-                    ws.slide_distance_h,
-                    ws.zoom_factor,
-                  );
-                } else {
-                  s.update_slide_horizontal(
-                    eased_final,
-                    entry.is_incoming,
-                    ws.direction,
-                    ws.monitor_x,
-                    ws.monitor_width,
-                    ws.slide_distance_h,
-                  );
-                }
-              }
-              WorkspaceSwitchStyle::SlideVertical
-              | WorkspaceSwitchStyle::SlideCrossfadeVertical
-              | WorkspaceSwitchStyle::SlideFadeOutVertical
-              | WorkspaceSwitchStyle::SlideFadeInVertical => {
-                if ws.zoom_factor > 0.0 {
-                  s.update_slide_zoom_vertical(
-                    eased_final,
-                    entry.is_incoming,
-                    ws.direction,
-                    ws.monitor_x,
-                    ws.monitor_width,
-                    ws.monitor_y,
-                    ws.monitor_height,
-                    ws.slide_distance_v,
-                    ws.zoom_factor,
-                  );
-                } else {
-                  s.update_slide_vertical(
-                    eased_final,
-                    entry.is_incoming,
-                    ws.direction,
-                    ws.monitor_y,
-                    ws.monitor_height,
-                    ws.slide_distance_v,
-                  );
+              WorkspaceSwitchStyle::Slide => {
+                match ws.slide_direction {
+                  WorkspaceSwitchDirection::Horizontal => {
+                    if ws.zoom_factor > 0.0 {
+                      s.update_slide_zoom_horizontal(
+                        eased_final,
+                        entry.is_incoming,
+                        ws.order_direction,
+                        ws.monitor_x,
+                        ws.monitor_width,
+                        ws.monitor_y,
+                        ws.monitor_height,
+                        ws.slide_distance_h,
+                        ws.zoom_factor,
+                      );
+                    } else {
+                      s.update_slide_horizontal(
+                        eased_final,
+                        entry.is_incoming,
+                        ws.order_direction,
+                        ws.monitor_x,
+                        ws.monitor_width,
+                        ws.slide_distance_h,
+                      );
+                    }
+                  }
+                  WorkspaceSwitchDirection::Vertical => {
+                    if ws.zoom_factor > 0.0 {
+                      s.update_slide_zoom_vertical(
+                        eased_final,
+                        entry.is_incoming,
+                        ws.order_direction,
+                        ws.monitor_x,
+                        ws.monitor_width,
+                        ws.monitor_y,
+                        ws.monitor_height,
+                        ws.slide_distance_v,
+                        ws.zoom_factor,
+                      );
+                    } else {
+                      s.update_slide_vertical(
+                        eased_final,
+                        entry.is_incoming,
+                        ws.order_direction,
+                        ws.monitor_y,
+                        ws.monitor_height,
+                        ws.slide_distance_v,
+                      );
+                    }
+                  }
                 }
               }
               WorkspaceSwitchStyle::Fade => {
@@ -1026,7 +1029,7 @@ impl AnimationManager {
   pub fn start_workspace_switch(
     &mut self,
     windows: Vec<(Uuid, Option<WorkspaceSurrogate>, bool)>,
-    direction: i32,
+    order_direction: i32,
     monitor_x: i32,
     monitor_width: i32,
     monitor_y: i32,
@@ -1050,7 +1053,7 @@ impl AnimationManager {
     let v_monitor_bottom = monitor_y + monitor_height;
 
     let slide_distance_h = {
-      let (trailing, leading) = if direction >= 0 {
+      let (trailing, leading) = if order_direction >= 0 {
         // Outgoing moves left; trailing edge = right side of outgoing content.
         // Incoming from right; leading edge = left side of incoming content.
         let max_out_right = windows
@@ -1097,7 +1100,7 @@ impl AnimationManager {
     };
 
     let slide_distance_v = {
-      let (trailing, leading) = if direction >= 0 {
+      let (trailing, leading) = if order_direction >= 0 {
         // Outgoing moves up; trailing edge = bottom side of outgoing content.
         // Incoming from below; leading edge = top side of incoming content.
         let max_out_bottom = windows
@@ -1152,12 +1155,13 @@ impl AnimationManager {
 
     if !ws_windows.is_empty() {
       tracing::info!(
-        "Starting workspace-switch animation: style={:?}, direction={}, \
-         monitor=({monitor_x},{monitor_y},{monitor_width}x{monitor_height}), \
+        "Starting workspace-switch animation: style={:?}, direction={:?}, \
+         order={}, monitor=({monitor_x},{monitor_y},{monitor_width}x{monitor_height}), \
          slide_distance=({slide_distance_h}x{slide_distance_v}), \
          windows={}",
         ws_config.style,
-        direction,
+        ws_config.direction,
+        order_direction,
         ws_windows.len(),
       );
       // Install the per-monitor DXGI vsync waiter so the timer thread wakes
@@ -1171,7 +1175,8 @@ impl AnimationManager {
         duration: Duration::from_millis(u64::from(duration_ms)),
         easing: ws_config.easing.clone(),
         style: ws_config.style.clone(),
-        direction,
+        slide_direction: ws_config.direction.clone(),
+        order_direction,
         monitor_x,
         monitor_width,
         monitor_y,
@@ -1208,7 +1213,8 @@ impl AnimationManager {
     let is_zoom = anim_config.style == WindowTransitionStyle::Zoom;
     let is_stationary = anim_config.style.is_stationary();
 
-    // Skip when there is nothing to animate.
+    // Skip `None` style (no slide, no zoom) with no opacity change — nothing
+    // would visually change for the duration.
     if is_stationary && !is_zoom && anim_config.opacity_from >= 1.0 {
       return;
     }
@@ -1328,10 +1334,12 @@ impl AnimationManager {
       anim_config.easing.clone(),
     );
 
-    let effect_frac = effect_opacity as f32 / 255.0;
-    let target_frac = anim_config.opacity_to.clamp(0.0, 1.0) * effect_frac;
-    anim.start_opacity = Some(OpacityValue(effect_frac));
-    anim.target_opacity = Some(OpacityValue(target_frac));
+    if anim_config.opacity_to < 1.0 {
+      let effect_frac = effect_opacity as f32 / 255.0;
+      let target_frac = anim_config.opacity_to.clamp(0.0, 1.0) * effect_frac;
+      anim.start_opacity = Some(OpacityValue(effect_frac));
+      anim.target_opacity = Some(OpacityValue(target_frac));
+    }
 
     match ResizeSession::begin(
       native_window.hwnd(),
@@ -1463,7 +1471,7 @@ impl AnimationManager {
 
     match fc.style {
       FocusAnimationStyle::Opacity => {
-        let dim_frac = effect_frac * 0.5;
+        let dim_frac = effect_frac * fc.opacity_from.clamp(0.0, 1.0);
         let mut anim = WindowAnimationState::new_movement(
           current_rect.clone(),
           current_rect,
