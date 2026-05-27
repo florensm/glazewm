@@ -9,6 +9,7 @@ use crate::app_command::InvokeCommand;
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 #[serde(default, rename_all(serialize = "camelCase"))]
 pub struct ParsedConfig {
+  pub animations: AnimationsConfig,
   pub binding_modes: Vec<BindingModeConfig>,
   pub gaps: GapsConfig,
   pub general: GeneralConfig,
@@ -385,6 +386,503 @@ pub struct WorkspaceConfig {
 
   #[serde(default = "default_bool::<false>")]
   pub keep_alive: bool,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(default, rename_all(serialize = "camelCase"))]
+pub struct AnimationsConfig {
+  /// Animation settings for pure window translations (position changes
+  /// only).
+  pub window_move: AnimationTypeConfig,
+  /// Animation settings for operations that change window size.
+  pub window_resize: WindowResizeConfig,
+  /// Animation settings for when a new window appears.
+  ///
+  /// # Platform-specific
+  ///
+  /// Only has an effect on Windows.
+  pub window_open: WindowOpenConfig,
+  /// Animation settings for workspace-switch slide transitions.
+  pub workspace_switch: WorkspaceSwitchAnimationConfig,
+  /// Animation settings for when a window is closed.
+  ///
+  /// # Platform-specific
+  ///
+  /// Only has an effect on Windows.
+  pub window_close: WindowCloseConfig,
+  /// Animation settings for when the focused window changes.
+  ///
+  /// # Platform-specific
+  ///
+  /// Only has an effect on Windows.
+  pub focus_change: FocusChangeConfig,
+}
+
+impl Default for AnimationsConfig {
+  fn default() -> Self {
+    AnimationsConfig {
+      window_move: AnimationTypeConfig::default(),
+      window_resize: WindowResizeConfig::default(),
+      window_open: WindowOpenConfig::default(),
+      workspace_switch: WorkspaceSwitchAnimationConfig::default(),
+      window_close: WindowCloseConfig::default(),
+      focus_change: FocusChangeConfig::default(),
+    }
+  }
+}
+
+/// Spatial style for window open/close transitions.
+///
+/// Used by both `WindowOpenConfig.style` and `WindowCloseConfig.style` so
+/// the same values apply symmetrically: a window that opens with `slide_right`
+/// (entering from the right) closes with `slide_right` (exiting to the right).
+#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum WindowTransitionStyle {
+  /// Slide in/out from/to the right edge (default).
+  #[default]
+  #[serde(alias = "right")]
+  SlideRight,
+  /// Slide in/out from/to the left edge.
+  #[serde(alias = "left")]
+  SlideLeft,
+  /// Slide in/out from/to the top edge.
+  #[serde(alias = "top")]
+  SlideTop,
+  /// Slide in/out from/to the bottom edge.
+  #[serde(alias = "bottom")]
+  SlideBottom,
+  /// No positional movement. Combine with `opacity_from`/`opacity_to` for a
+  /// pure fade. Accepts `"fade"` as a legacy alias.
+  #[serde(alias = "fade")]
+  None,
+  /// Zoom in/out from the window center. Combine with `opacity_from`/`opacity_to`
+  /// to also fade while zooming.
+  Zoom,
+}
+
+impl WindowTransitionStyle {
+  /// Returns `true` when the style has no positional slide component.
+  ///
+  /// Stationary styles keep the surrogate at the window's final position for
+  /// the full animation; the surrogate window itself never moves.
+  pub fn is_stationary(&self) -> bool {
+    matches!(self, Self::None | Self::Zoom)
+  }
+}
+
+/// Animation style for the focus-change effect.
+#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum FocusAnimationStyle {
+  /// Briefly dim the window then restore its opacity (default).
+  #[default]
+  Opacity,
+  /// Briefly expand the window then snap back to its actual size.
+  Scale,
+}
+
+/// Determines which focus changes trigger the focus animation.
+#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum FocusTrigger {
+  /// Animate on all focus changes — keyboard, WM commands, and mouse clicks
+  /// (default).
+  #[default]
+  All,
+  /// Only animate when focus changes via a WM command or keyboard shortcut.
+  /// Skips click-to-focus events, where the click already provides visual
+  /// feedback.
+  KeyboardOnly,
+}
+
+/// Animation settings for when the focused window changes.
+///
+/// # Platform-specific
+///
+/// Only has an effect on Windows.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(default, rename_all(serialize = "camelCase"))]
+pub struct FocusChangeConfig {
+  /// Whether the focus-change animation is enabled.
+  pub enabled: bool,
+  /// Duration of the animation in milliseconds.
+  pub duration_ms: u32,
+  /// See `window_move.easing` for available options.
+  pub easing: EasingFunction,
+  /// Animation style: `opacity` (window briefly dims then restores) or
+  /// `scale` (window briefly pops from a slightly smaller size to its actual
+  /// size).
+  pub style: FocusAnimationStyle,
+  /// For `opacity` style: the dim level at the start of the animation
+  /// (0.0–1.0), relative to the configured effect opacity. E.g. `0.5` dims
+  /// the window to 50% of its effect opacity before restoring it. Range:
+  /// 0.0–1.0. Default: `0.5`.
+  pub opacity_from: f32,
+  /// For `scale` style: initial size ratio relative to the window's actual
+  /// size. Values < 1.0 start smaller and grow to actual size; values > 1.0
+  /// start larger and shrink to actual size. With a spring easing, values
+  /// slightly below 1.0 (e.g. `0.90`) produce a natural overshoot — the
+  /// window briefly exceeds its actual size before settling. Range: 0.01+.
+  pub scale_factor: f32,
+  /// Which focus events trigger the animation.
+  pub trigger: FocusTrigger,
+}
+
+impl Default for FocusChangeConfig {
+  fn default() -> Self {
+    FocusChangeConfig {
+      enabled: false,
+      duration_ms: 200,
+      easing: EasingFunction::EaseOutSpring,
+      style: FocusAnimationStyle::Scale,
+      opacity_from: 0.5,
+      scale_factor: 0.90,
+      trigger: FocusTrigger::All,
+    }
+  }
+}
+
+/// Animation settings for when a new window appears (Windows only).
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(default, rename_all(serialize = "camelCase"))]
+pub struct WindowOpenConfig {
+  pub enabled: bool,
+  pub duration_ms: u32,
+  pub easing: EasingFunction,
+  /// Transition style for the open animation.
+  ///
+  /// - `slide_right` (default): slides in from the right.
+  /// - `slide_left` / `slide_top` / `slide_bottom`: slide from that edge.
+  /// - `none` / `fade`: no slide; combine with `opacity_from` for a pure
+  ///   fade-in.
+  /// - `zoom`: zoom in from the window center.
+  #[serde(alias = "direction")]
+  pub style: WindowTransitionStyle,
+  /// Starting opacity (0.0–1.0). At `1.0` no fade is applied; at `0.0` the
+  /// window fades in from fully transparent. Can be combined with any style.
+  pub opacity_from: f32,
+}
+
+impl Default for WindowOpenConfig {
+  fn default() -> Self {
+    WindowOpenConfig {
+      enabled: true,
+      duration_ms: 150,
+      easing: EasingFunction::CubicBezier(0.16, 1.0, 0.3, 1.0),
+      style: WindowTransitionStyle::SlideRight,
+      opacity_from: 1.0,
+    }
+  }
+}
+
+/// Animation settings for when a window is closed.
+///
+/// # Platform-specific
+///
+/// Only has an effect on Windows.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(default, rename_all(serialize = "camelCase"))]
+pub struct WindowCloseConfig {
+  pub enabled: bool,
+  pub duration_ms: u32,
+  pub easing: EasingFunction,
+  /// Transition style for the close animation.
+  ///
+  /// - `none` (default): no positional movement; combine with `opacity_to` for
+  ///   a pure fade-out.
+  /// - `zoom`: zoom out from the window center.
+  /// - `slide_right` / `slide_left` / `slide_top` / `slide_bottom`: slide off
+  ///   that edge.
+  pub style: WindowTransitionStyle,
+  /// Final opacity (0.0–1.0). At `0.0` the window fades to fully transparent;
+  /// at `1.0` no fade is applied.
+  pub opacity_to: f32,
+}
+
+impl Default for WindowCloseConfig {
+  fn default() -> Self {
+    WindowCloseConfig {
+      enabled: false,
+      duration_ms: 150,
+      easing: EasingFunction::CubicBezier(0.32, 0.0, 0.67, 0.0),
+      style: WindowTransitionStyle::None,
+      opacity_to: 0.0,
+    }
+  }
+}
+
+/// Motion style of the workspace-switch transition.
+#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum WorkspaceSwitchStyle {
+  /// Workspaces slide along the axis set by `direction` (default).
+  #[default]
+  Slide,
+  /// Pure crossfade; no positional slide. Both surrogates stay in place and
+  /// their opacities are driven by `opacity_outgoing` / `opacity_incoming`.
+  Fade,
+  /// Outgoing workspace shrinks to the monitor center; incoming expands from
+  /// it. Opacities are also animated via `opacity_outgoing` / `opacity_incoming`.
+  Zoom,
+}
+
+impl WorkspaceSwitchStyle {
+  /// Returns `true` when the transition has no positional slide component.
+  pub fn is_no_slide(&self) -> bool {
+    matches!(self, Self::Fade | Self::Zoom)
+  }
+}
+
+/// Slide axis for the `slide` workspace-switch style.
+#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum WorkspaceSwitchDirection {
+  /// Slide left/right (default).
+  #[default]
+  Horizontal,
+  /// Slide up/down.
+  Vertical,
+}
+
+/// Animation config for workspace-switch transitions.
+///
+/// Outgoing workspaces translate off-screen (for the `slide` style) or stay in
+/// place (for `fade`/`zoom`) while the incoming workspace slides or crossfades
+/// in, all constrained to the monitor on which the switch occurs.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(default, rename_all(serialize = "camelCase"))]
+pub struct WorkspaceSwitchAnimationConfig {
+  pub enabled: bool,
+  pub duration_ms: u32,
+  pub easing: EasingFunction,
+  /// Motion style: `slide` (default), `fade`, or `zoom`.
+  pub style: WorkspaceSwitchStyle,
+  /// Slide axis when `style` is `slide`: `horizontal` (default) or `vertical`.
+  pub direction: WorkspaceSwitchDirection,
+  /// Opacity at the end of the outgoing workspace's animation (0.0–1.0).
+  ///
+  /// At `1.0` (default) the outgoing workspace stays fully opaque. At `0.0` it
+  /// fades out to transparent. Any value in between produces a partial fade.
+  /// Applies to all `style` values.
+  pub opacity_outgoing: f32,
+  /// Opacity at the start of the incoming workspace's animation (0.0–1.0).
+  ///
+  /// At `1.0` (default) the incoming workspace starts fully opaque. At `0.0`
+  /// it fades in from transparent. Any value in between produces a partial
+  /// fade. Applies to all `style` values.
+  pub opacity_incoming: f32,
+  /// Amount of workspace-level scale applied during `slide` transitions.
+  ///
+  /// The outgoing workspace shrinks from `1.0` to `1.0 - zoom_factor` as it
+  /// exits; the incoming grows from `1.0 - zoom_factor` to `1.0` as it enters.
+  /// Scaling is from the monitor center so all windows move inward together,
+  /// preserving the workspace-as-a-panel illusion. Has no effect on `fade` or
+  /// `zoom` styles. Valid range: `0.0` (no zoom) to `1.0` (collapses to a
+  /// point). Recommended range: `0.05`–`0.15` for a subtle depth effect.
+  pub zoom_factor: f32,
+}
+
+impl Default for WorkspaceSwitchAnimationConfig {
+  fn default() -> Self {
+    WorkspaceSwitchAnimationConfig {
+      enabled: true,
+      duration_ms: 300,
+      easing: EasingFunction::CubicBezier(0.33, 1.0, 0.68, 1.0),
+      style: WorkspaceSwitchStyle::default(),
+      direction: WorkspaceSwitchDirection::default(),
+      opacity_outgoing: 1.0,
+      opacity_incoming: 1.0,
+      zoom_factor: 0.1,
+    }
+  }
+}
+
+/// Animation settings for window move operations.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(default, rename_all(serialize = "camelCase"))]
+pub struct AnimationTypeConfig {
+  pub enabled: bool,
+  pub duration_ms: u32,
+  pub easing: EasingFunction,
+  /// Minimum pixel distance required to trigger movement animations.
+  /// Helps prevent animations from starting on very small position
+  /// changes. Increase this value on high-DPI displays to reduce
+  /// sensitivity.
+  pub threshold_px: u32,
+}
+
+impl Default for AnimationTypeConfig {
+  fn default() -> Self {
+    AnimationTypeConfig {
+      enabled: true,
+      duration_ms: 150,
+      easing: EasingFunction::CubicBezier(0.42, 0.0, 0.58, 1.0),
+      threshold_px: 10,
+    }
+  }
+}
+
+/// Animation settings for window resize operations.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(default, rename_all(serialize = "camelCase"))]
+pub struct WindowResizeConfig {
+  pub enabled: bool,
+  pub duration_ms: u32,
+  pub easing: EasingFunction,
+  /// Minimum pixel distance required to trigger resize animations.
+  /// Increase this value on high-DPI displays to reduce sensitivity.
+  pub threshold_px: u32,
+  /// Optional solid-color backdrop for the surrogate overlay window.
+  ///
+  /// Accepts an HTML hex color string with optional alpha component (e.g.
+  /// `"#1a1a1a"` or `"#1a1a1aCC"`). When unset (default), the surrogate
+  /// backdrop is fully transparent.
+  ///
+  /// # Platform-specific
+  ///
+  /// Only has an effect on Windows; ignored on macOS.
+  pub surrogate_color: Option<Color>,
+}
+
+impl Default for WindowResizeConfig {
+  fn default() -> Self {
+    WindowResizeConfig {
+      enabled: true,
+      duration_ms: 150,
+      easing: EasingFunction::CubicBezier(0.42, 0.0, 0.58, 1.0),
+      threshold_px: 10,
+      surrogate_color: None,
+    }
+  }
+}
+
+/// Easing function for animations.
+///
+/// Named aliases map to their CSS cubic-bezier equivalents and can be used
+/// interchangeably with `cubic_bezier(x1, y1, x2, y2)` notation:
+/// `linear`, `ease_in`, `ease_out`, `ease_in_out`,
+/// `ease_in_cubic`, `ease_out_cubic`, `ease_in_out_cubic`, `ease_out_spring`.
+#[derive(Clone, Debug, PartialEq)]
+pub enum EasingFunction {
+  /// CSS cubic bezier curve: `cubic_bezier(x1, y1, x2, y2)`.
+  ///
+  /// Control points `(x1, y1)` and `(x2, y2)` define the shape between the
+  /// implicit anchors `(0, 0)` and `(1, 1)`. `x1` and `x2` must be in
+  /// `[0, 1]`; `y1` and `y2` may exceed that range to produce overshoot.
+  CubicBezier(f32, f32, f32, f32),
+  /// Exponentially-decaying spring. Overshoots past 1.0 and oscillates before
+  /// settling. Runs to full wall-clock duration to preserve the bounce.
+  EaseOutSpring,
+}
+
+impl Default for EasingFunction {
+  fn default() -> Self {
+    EasingFunction::CubicBezier(0.42, 0.0, 0.58, 1.0) // ease_in_out
+  }
+}
+
+impl Eq for EasingFunction {}
+
+impl EasingFunction {
+  /// Returns `true` when this function can produce values outside `[0, 1]`.
+  ///
+  /// Non-overshooting functions are cut off at 99% eased progress to avoid
+  /// the "stuck at destination" look. Overshooting ones run to full wall-clock
+  /// duration to preserve their bounce.
+  pub fn can_overshoot(&self) -> bool {
+    match self {
+      EasingFunction::EaseOutSpring => true,
+      EasingFunction::CubicBezier(_, y1, _, y2) => {
+        *y1 < 0.0 || *y1 > 1.0 || *y2 < 0.0 || *y2 > 1.0
+      }
+    }
+  }
+}
+
+impl<'de> Deserialize<'de> for EasingFunction {
+  fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+    let s = String::deserialize(d)?;
+    // Named aliases expand to their CSS cubic-bezier control points.
+    match s.as_str() {
+      "linear" => Ok(EasingFunction::CubicBezier(0.0, 0.0, 1.0, 1.0)),
+      "ease_in_out" => Ok(EasingFunction::CubicBezier(0.42, 0.0, 0.58, 1.0)),
+      "ease_in" => Ok(EasingFunction::CubicBezier(0.42, 0.0, 1.0, 1.0)),
+      "ease_out" => Ok(EasingFunction::CubicBezier(0.0, 0.0, 0.58, 1.0)),
+      "ease_in_out_cubic" => Ok(EasingFunction::CubicBezier(0.65, 0.0, 0.35, 1.0)),
+      "ease_in_cubic" => Ok(EasingFunction::CubicBezier(0.32, 0.0, 0.67, 0.0)),
+      "ease_out_cubic" => Ok(EasingFunction::CubicBezier(0.33, 1.0, 0.68, 1.0)),
+      "ease_out_spring" => Ok(EasingFunction::EaseOutSpring),
+      s => {
+        if let Some(inner) = s
+          .strip_prefix("cubic_bezier(")
+          .and_then(|s| s.strip_suffix(')'))
+        {
+          let parts: Vec<&str> = inner.split(',').collect();
+          if parts.len() != 4 {
+            return Err(serde::de::Error::custom(
+              "cubic_bezier requires exactly 4 arguments: \
+               cubic_bezier(x1, y1, x2, y2)",
+            ));
+          }
+          let mut floats = [0f32; 4];
+          for (i, part) in parts.iter().enumerate() {
+            floats[i] = part.trim().parse::<f32>().map_err(|_| {
+              serde::de::Error::custom(format!(
+                "cubic_bezier argument {} is not a valid number: {}",
+                i + 1,
+                part.trim()
+              ))
+            })?;
+          }
+          let [x1, y1, x2, y2] = floats;
+          if !(0.0..=1.0).contains(&x1) || !(0.0..=1.0).contains(&x2) {
+            return Err(serde::de::Error::custom(
+              "cubic_bezier x1 and x2 must be in [0, 1]",
+            ));
+          }
+          Ok(EasingFunction::CubicBezier(x1, y1, x2, y2))
+        } else {
+          Err(serde::de::Error::custom(format!(
+            "unknown easing function '{s}'; valid values: linear, \
+             ease_in, ease_out, ease_in_out, ease_in_cubic, \
+             ease_out_cubic, ease_in_out_cubic, ease_out_spring, \
+             cubic_bezier(x1, y1, x2, y2)"
+          )))
+        }
+      }
+    }
+  }
+}
+
+impl Serialize for EasingFunction {
+  fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+    match self {
+      EasingFunction::EaseOutSpring => s.serialize_str("ease_out_spring"),
+      EasingFunction::CubicBezier(x1, y1, x2, y2) => {
+        // Serialize back to a named alias when the control points match exactly,
+        // so round-tripped configs stay human-readable.
+        let repr = if *x1 == 0.0 && *y1 == 0.0 && *x2 == 1.0 && *y2 == 1.0 {
+          "linear".to_string()
+        } else if *x1 == 0.42 && *y1 == 0.0 && *x2 == 0.58 && *y2 == 1.0 {
+          "ease_in_out".to_string()
+        } else if *x1 == 0.42 && *y1 == 0.0 && *x2 == 1.0 && *y2 == 1.0 {
+          "ease_in".to_string()
+        } else if *x1 == 0.0 && *y1 == 0.0 && *x2 == 0.58 && *y2 == 1.0 {
+          "ease_out".to_string()
+        } else if *x1 == 0.65 && *y1 == 0.0 && *x2 == 0.35 && *y2 == 1.0 {
+          "ease_in_out_cubic".to_string()
+        } else if *x1 == 0.32 && *y1 == 0.0 && *x2 == 0.67 && *y2 == 0.0 {
+          "ease_in_cubic".to_string()
+        } else if *x1 == 0.33 && *y1 == 1.0 && *x2 == 0.68 && *y2 == 1.0 {
+          "ease_out_cubic".to_string()
+        } else {
+          format!("cubic_bezier({x1}, {y1}, {x2}, {y2})")
+        };
+        s.serialize_str(&repr)
+      }
+    }
+  }
 }
 
 /// Helper function for setting a default value for a boolean field.
