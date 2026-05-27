@@ -493,6 +493,16 @@ fn redraw_containers(
       })
       .unwrap_or(false);
 
+    // A scratchpad overlay (window with `scratchpad_origin` on a regular
+    // workspace) is treated as always-displayed so that workspace switches
+    // don't cloak it. Windows stashed in `__scratchpad__` still cloak
+    // normally because `workspace.is_displayed()` is false for that
+    // workspace and `is_scratchpad_overlay` is false for the stashed case.
+    let is_scratchpad_overlay = window
+      .as_non_tiling_window()
+      .is_some_and(|nw| nw.scratchpad_origin().is_some())
+      && workspace.config().name != "__scratchpad__";
+
     // Capture display state before transition to detect opening windows.
     let previous_display_state = window.display_state();
 
@@ -501,7 +511,7 @@ fn redraw_containers(
     window.set_display_state(if is_inactive_stack_child {
       DisplayState::Hidden
     } else {
-      match (previous_display_state.clone(), workspace.is_displayed()) {
+      match (previous_display_state.clone(), workspace.is_displayed() || is_scratchpad_overlay) {
         (DisplayState::Hidden | DisplayState::Hiding, true) => {
           DisplayState::Showing
         }

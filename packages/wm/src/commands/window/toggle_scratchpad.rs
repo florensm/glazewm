@@ -108,11 +108,16 @@ fn hide_scratchpad_windows(
 ) -> anyhow::Result<()> {
   info!("Hiding {} scratchpad window(s).", windows.len());
 
-  // Determine focus target before detaching any window so the workspace
-  // focus order is still intact.
-  let focus_target = windows
-    .first()
-    .and_then(|w| state.focus_target_after_removal(w));
+  // Only reassign focus if the currently focused container is one of the
+  // scratchpad windows being hidden. If the user is already focused on a
+  // different workspace, we must not steal focus from it.
+  let focused = state.focused_container();
+  let is_scratchpad_focused = focused
+    .as_ref()
+    .is_some_and(|f| windows.iter().any(|w| w.id() == f.id()));
+  let focus_target = is_scratchpad_focused
+    .then(|| windows.first().and_then(|w| state.focus_target_after_removal(w)))
+    .flatten();
 
   let scratchpad_ws = state.scratchpad_workspace.clone().into();
   let mut window_dtos = Vec::new();

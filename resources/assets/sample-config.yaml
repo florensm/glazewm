@@ -445,12 +445,14 @@ keybindings:
   # Send the focused window to the scratchpad (or restore it if it's already
   # there). The scratchpad is a hidden pool of windows that can be toggled
   # into view as always-on-top floating overlays.
+  # NOTE: Choose a binding that doesn't conflict with your other keybindings.
   - commands: ['send-to-scratchpad']
-    bindings: ['alt+shift+s']
+    bindings: ['alt+shift+y']
 
-  # Show or hide all scratchpad windows on the focused monitor.
+  # Show or hide all scratchpad windows as always-on-top overlays.
+  # NOTE: Choose a binding that doesn't conflict with your other keybindings.
   - commands: ['toggle-scratchpad']
-    bindings: ['alt+s']
+    bindings: ['alt+y']
 
   # Close focused window.
   - commands: ["close"]
