@@ -1484,19 +1484,19 @@ impl AnimationManager {
         self.ensure_timer_running();
       }
       FocusAnimationStyle::Scale => {
-        let sf = fc.scale_factor.clamp(0.1, 1.0_f32);
+        let sf = fc.scale_factor.max(0.01);
         let w = current_rect.width();
         let h = current_rect.height();
         let sw = ((w as f32 * sf).round() as i32).max(1);
         let sh = ((h as f32 * sf).round() as i32).max(1);
-        let shrunken = Rect::from_xy(
+        let initial_rect = Rect::from_xy(
           current_rect.x() + (w - sw) / 2,
           current_rect.y() + (h - sh) / 2,
           sw,
           sh,
         );
         let anim = WindowAnimationState::new_movement(
-          shrunken.clone(),
+          initial_rect.clone(),
           current_rect.clone(),
           fc.duration_ms,
           fc.easing.clone(),
@@ -1504,7 +1504,7 @@ impl AnimationManager {
         let _ = native_window.set_cloaked(true);
         match ResizeSession::begin(
           native_window.hwnd(),
-          &shrunken,
+          &initial_rect,
           &current_rect,
           None,
           effect_opacity,

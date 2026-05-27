@@ -519,9 +519,11 @@ pub struct FocusChangeConfig {
   /// the window to 50% of its effect opacity before restoring it. Range:
   /// 0.0–1.0. Default: `0.5`.
   pub opacity_from: f32,
-  /// For `scale` style: ratio by which the window starts undersized at the
-  /// beginning of the animation. E.g. `0.98` = window begins at 98% of its
-  /// actual size and grows to 100%. Range: 0.5–1.0.
+  /// For `scale` style: initial size ratio relative to the window's actual
+  /// size. Values < 1.0 start smaller and grow to actual size; values > 1.0
+  /// start larger and shrink to actual size. With a spring easing, values
+  /// slightly below 1.0 (e.g. `0.90`) produce a natural overshoot — the
+  /// window briefly exceeds its actual size before settling. Range: 0.01+.
   pub scale_factor: f32,
   /// Which focus events trigger the animation.
   pub trigger: FocusTrigger,
@@ -531,11 +533,11 @@ impl Default for FocusChangeConfig {
   fn default() -> Self {
     FocusChangeConfig {
       enabled: false,
-      duration_ms: 150,
-      easing: EasingFunction::CubicBezier(0.16, 1.0, 0.3, 1.0),
-      style: FocusAnimationStyle::Opacity,
+      duration_ms: 200,
+      easing: EasingFunction::EaseOutSpring,
+      style: FocusAnimationStyle::Scale,
       opacity_from: 0.5,
-      scale_factor: 0.98,
+      scale_factor: 0.90,
       trigger: FocusTrigger::All,
     }
   }

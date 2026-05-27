@@ -94,21 +94,24 @@ animations:
   # Animation settings for when the focused window changes (Windows only).
   focus_change:
     enabled: false
-    duration_ms: 150
+    duration_ms: 200
     # See 'window_move.easing' for available options.
-    easing: "cubic_bezier(0.16, 1.0, 0.3, 1.0)"
+    # 'ease_out_spring' (default) - natural spring that briefly overshoots.
+    easing: "ease_out_spring"
     # Animation style. Options:
-    #   'opacity' (default) - window briefly dims then restores opacity
-    #   'scale'             - window briefly pops in from a slightly smaller size
-    style: "opacity"
+    #   'scale'   (default) - window pops from an initial size to its actual size
+    #   'opacity'           - window briefly dims then restores opacity
+    style: "scale"
     # For 'opacity' style: dim level at the start of the animation, relative to
     # the effect opacity. E.g. 0.5 = dims to 50% of effect opacity then
     # restores. Range: 0.0–1.0. Default: 0.5.
     opacity_from: 0.5
-    # For 'scale' style: ratio of the initial shrunken size relative to the
-    # window's actual size. E.g. 0.98 = window starts at 98% and grows to 100%.
-    # Range: 0.5–1.0.
-    scale_factor: 0.98
+    # For 'scale' style: initial size ratio relative to the window's actual size.
+    # Values < 1.0 start smaller and grow; values > 1.0 start larger and shrink.
+    # With 'ease_out_spring', values slightly below 1.0 (e.g. 0.90) produce a
+    # natural overshoot — the window briefly exceeds its actual size before
+    # settling. Default: 0.90.
+    scale_factor: 0.90
     # Which focus changes trigger the animation. Options:
     #   'all'            - animate on all focus changes (keyboard and mouse)
     #   'keyboard_only'  - animate only on keyboard/WM-command focus changes
