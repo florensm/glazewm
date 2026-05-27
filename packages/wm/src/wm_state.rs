@@ -12,7 +12,7 @@ use wm_platform::{
   Direction, Dispatcher, Display, NativeWindow, Point, Rect,
 };
 #[cfg(target_os = "windows")]
-use wm_platform::{NativeStackTabBar, NativeWindowWindowsExt, OpacityValue};
+use wm_platform::{NativeScratchpadOverlay, NativeStackTabBar, NativeWindowWindowsExt, OpacityValue};
 
 use crate::{
   animation::AnimationManager,
@@ -80,6 +80,13 @@ pub struct WmState {
   /// Whether the initial state has been populated.
   has_initialized: bool,
 
+  /// Active dim overlay shown behind scratchpad windows (Windows only).
+  ///
+  /// `Some` while the scratchpad is visible; dropped (destroying the window)
+  /// when the scratchpad is hidden.
+  #[cfg(target_os = "windows")]
+  pub scratchpad_overlay: Option<NativeScratchpadOverlay>,
+
   /// Detached workspace used to store hidden scratchpad windows.
   ///
   /// This workspace is never attached to any monitor, so
@@ -138,6 +145,8 @@ impl WmState {
         GapsConfig::default(),
         TilingDirection::Horizontal,
       ),
+      #[cfg(target_os = "windows")]
+      scratchpad_overlay: None,
       event_tx,
       exit_tx,
       tab_click_tx,

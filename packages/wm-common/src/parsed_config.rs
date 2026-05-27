@@ -994,11 +994,24 @@ where
 }
 
 /// Top-level scratchpad configuration.
-#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(default, rename_all(serialize = "camelCase"))]
 pub struct ScratchpadConfig {
   /// Animation settings for toggling scratchpad windows.
   pub toggle: ScratchpadToggleConfig,
+  /// Opacity of the dim overlay drawn behind scratchpad windows (0.0–1.0).
+  ///
+  /// `0.0` disables the overlay entirely; `0.5` is a 50% black tint.
+  pub overlay_opacity: f32,
+}
+
+impl Default for ScratchpadConfig {
+  fn default() -> Self {
+    Self {
+      toggle: ScratchpadToggleConfig::default(),
+      overlay_opacity: 0.5,
+    }
+  }
 }
 
 /// Transition style for scratchpad toggle animations.

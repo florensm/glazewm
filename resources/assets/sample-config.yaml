@@ -271,6 +271,9 @@ scratchpad:
     style: 'slide_top'
     # Starting opacity when showing (0.0 = fade in from transparent).
     opacity_from: 0.0
+  # Opacity of the semi-transparent black overlay drawn behind scratchpad
+  # windows (0.0 = no overlay, 1.0 = fully opaque black). Default: 0.5.
+  overlay_opacity: 0.5
 
 workspaces:
   - name: "1"

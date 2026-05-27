@@ -1,7 +1,11 @@
 use anyhow::Context;
 use tracing::info;
+#[cfg(target_os = "windows")]
+use tracing::warn;
 use wm_common::WmEvent;
 use wm_platform::Rect;
+#[cfg(target_os = "windows")]
+use wm_platform::NativeScratchpadOverlay;
 
 use crate::{
   commands::container::{attach_container, detach_container, set_focused_descendant},
@@ -21,7 +25,6 @@ use crate::{
 /// unclocks them.
 pub fn toggle_scratchpad(
   state: &mut WmState,
-  #[allow(unused_variables)]
   config: &UserConfig,
 ) -> anyhow::Result<()> {
   let shown = state.scratchpad_shown_windows();
@@ -33,7 +36,7 @@ pub fn toggle_scratchpad(
     if stashed.is_empty() {
       return Ok(());
     }
-    show_scratchpad_windows(stashed, state)
+    show_scratchpad_windows(stashed, state, config)
   }
 }
 
@@ -41,6 +44,7 @@ pub fn toggle_scratchpad(
 fn show_scratchpad_windows(
   windows: Vec<WindowContainer>,
   state: &mut WmState,
+  config: &UserConfig,
 ) -> anyhow::Result<()> {
   let focused_workspace = state
     .focused_container()
@@ -51,6 +55,20 @@ fn show_scratchpad_windows(
     .monitor()
     .context("No monitor for focused workspace.")?
     .to_rect()?;
+
+  // Create the dim overlay behind scratchpad windows (Windows only).
+  // The overlay is placed at HWND_TOP (non-topmost), so scratchpad windows
+  // with `shown_on_top` (TOPMOST) always render above it.
+  #[cfg(target_os = "windows")]
+  {
+    let opacity = config.value.scratchpad.overlay_opacity;
+    if opacity > 0.0 {
+      match NativeScratchpadOverlay::new(&monitor_rect, opacity) {
+        Ok(overlay) => state.scratchpad_overlay = Some(overlay),
+        Err(err) => warn!("Failed to create scratchpad overlay: {err}"),
+      }
+    }
+  }
 
   info!("Showing {} scratchpad window(s).", windows.len());
 
@@ -106,6 +124,13 @@ fn hide_scratchpad_windows(
   windows: Vec<WindowContainer>,
   state: &mut WmState,
 ) -> anyhow::Result<()> {
+  // Destroy the dim overlay (Windows only). Dropping `Some` calls
+  // `DestroyWindow` via the `Drop` impl on `NativeScratchpadOverlay`.
+  #[cfg(target_os = "windows")]
+  {
+    state.scratchpad_overlay = None;
+  }
+
   info!("Hiding {} scratchpad window(s).", windows.len());
 
   // Only reassign focus if the currently focused container is one of the
