@@ -10,6 +10,16 @@ use wm_common::{
   ActiveDrag, ContainerDto, DisplayState, GapsConfig, WindowDto,
   WindowRuleConfig, WindowState,
 };
+
+/// Records the origin of a scratchpad window so it can be restored.
+#[derive(Clone, Debug)]
+pub struct ScratchpadOrigin {
+  /// Name of the workspace the window was on before entering the scratchpad.
+  pub workspace_name: String,
+  /// Window state before entering the scratchpad (e.g. `Tiling` or
+  /// `Floating`). Used to restore the window to its original state.
+  pub prev_state: WindowState,
+}
 use wm_platform::{NativeWindow, Rect, RectDelta};
 
 use crate::{
@@ -42,6 +52,8 @@ struct NonTilingWindowInner {
   has_custom_floating_placement: bool,
   done_window_rules: Vec<WindowRuleConfig>,
   active_drag: Option<ActiveDrag>,
+  /// Scratchpad origin info, present only while the window is stashed.
+  scratchpad_origin: Option<ScratchpadOrigin>,
 }
 
 impl NonTilingWindow {
@@ -76,6 +88,7 @@ impl NonTilingWindow {
       has_custom_floating_placement,
       done_window_rules,
       active_drag,
+      scratchpad_origin: None,
     };
 
     Self(Rc::new(RefCell::new(window)))
@@ -90,6 +103,16 @@ impl NonTilingWindow {
     insertion_target: Option<InsertionTarget>,
   ) {
     self.0.borrow_mut().insertion_target = insertion_target;
+  }
+
+  /// Returns the scratchpad origin info if this window is in the scratchpad.
+  pub fn scratchpad_origin(&self) -> Option<ScratchpadOrigin> {
+    self.0.borrow().scratchpad_origin.clone()
+  }
+
+  /// Sets or clears the scratchpad origin info.
+  pub fn set_scratchpad_origin(&self, origin: Option<ScratchpadOrigin>) {
+    self.0.borrow_mut().scratchpad_origin = origin;
   }
 
   pub fn to_tiling(&self, gaps_config: GapsConfig) -> TilingWindow {

@@ -4,7 +4,10 @@ use anyhow::Context;
 use tokio::sync::mpsc::{self};
 use tracing::warn;
 use uuid::Uuid;
-use wm_common::{BindingModeConfig, HideCorner, WindowState, WmEvent};
+use wm_common::{
+  BindingModeConfig, GapsConfig, HideCorner, TilingDirection, WindowState,
+  WmEvent, WorkspaceConfig,
+};
 use wm_platform::{
   Direction, Dispatcher, Display, NativeWindow, Point, Rect,
 };
@@ -77,6 +80,14 @@ pub struct WmState {
   /// Whether the initial state has been populated.
   has_initialized: bool,
 
+  /// Detached workspace used to store hidden scratchpad windows.
+  ///
+  /// This workspace is never attached to any monitor, so
+  /// `workspace.is_displayed()` always returns `false` for it. This ensures
+  /// that `platform_sync` always cloaks scratchpad windows whenever they are
+  /// queued for redraw.
+  pub scratchpad_workspace: Workspace,
+
   /// Sender for emitting WM-related events.
   event_tx: mpsc::UnboundedSender<WmEvent>,
 
@@ -117,6 +128,16 @@ impl WmState {
       is_paused: false,
       is_focus_synced: false,
       has_initialized: false,
+      scratchpad_workspace: Workspace::new(
+        WorkspaceConfig {
+          name: "__scratchpad__".to_string(),
+          display_name: None,
+          bind_to_monitor: None,
+          keep_alive: false,
+        },
+        GapsConfig::default(),
+        TilingDirection::Horizontal,
+      ),
       event_tx,
       exit_tx,
       tab_click_tx,
@@ -208,6 +229,30 @@ impl WmState {
     let mut workspaces = self.workspaces();
     config.sort_workspaces(&mut workspaces);
     workspaces
+  }
+
+  /// Returns all windows currently stashed in the scratchpad (hidden).
+  pub fn scratchpad_windows(&self) -> Vec<WindowContainer> {
+    self
+      .scratchpad_workspace
+      .descendants()
+      .filter_map(|c| c.as_window_container().ok())
+      .collect()
+  }
+
+  /// Returns all scratchpad windows that are currently shown as overlays.
+  ///
+  /// These are windows with a `scratchpad_origin` that have been moved out
+  /// of the scratchpad workspace and onto a regular workspace.
+  pub fn scratchpad_shown_windows(&self) -> Vec<WindowContainer> {
+    self
+      .windows()
+      .into_iter()
+      .filter(|w| {
+        w.as_non_tiling_window()
+          .is_some_and(|nw| nw.scratchpad_origin().is_some())
+      })
+      .collect()
   }
 
   pub fn windows(&self) -> Vec<WindowContainer> {

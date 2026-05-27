@@ -63,4 +63,10 @@ pub enum WmEvent {
   PauseChanged {
     is_paused: bool,
   },
+  ScratchpadToggled {
+    /// Whether scratchpad windows are now shown (`true`) or hidden (`false`).
+    shown: bool,
+    /// The windows that were toggled.
+    windows: Vec<ContainerDto>,
+  },
 }

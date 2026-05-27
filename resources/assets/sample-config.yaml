@@ -254,6 +254,24 @@ window_behavior:
       # Whether to show fullscreen windows as always on top.
       shown_on_top: false
 
+scratchpad:
+  # Animation settings for toggling the scratchpad. Currently defined but
+  # rendered only when `feat/animations-pr` is also active; the effect is
+  # an instant show/hide otherwise.
+  toggle:
+    enabled: false
+    duration_ms: 200
+    # Easing function name. Accepts the same values as the animations block.
+    easing: 'ease_out_cubic'
+    # Motion style:
+    # - 'slide_top' (default): slides in from the top edge.
+    # - 'slide_bottom' / 'slide_left' / 'slide_right': slide from that edge.
+    # - 'zoom': zoom in/out from the window center.
+    # - 'fade' / 'none': no positional movement.
+    style: 'slide_top'
+    # Starting opacity when showing (0.0 = fade in from transparent).
+    opacity_from: 0.0
+
 workspaces:
   - name: "1"
   - name: "2"
@@ -423,6 +441,16 @@ keybindings:
   # Minimize focused window.
   - commands: ["toggle-minimized"]
     bindings: ["alt+m"]
+
+  # Send the focused window to the scratchpad (or restore it if it's already
+  # there). The scratchpad is a hidden pool of windows that can be toggled
+  # into view as always-on-top floating overlays.
+  - commands: ['send-to-scratchpad']
+    bindings: ['alt+shift+s']
+
+  # Show or hide all scratchpad windows on the focused monitor.
+  - commands: ['toggle-scratchpad']
+    bindings: ['alt+s']
 
   # Close focused window.
   - commands: ["close"]

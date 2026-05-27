@@ -151,6 +151,7 @@ pub enum SubscribableEvent {
   WorkspaceDeactivated,
   WorkspaceUpdated,
   PauseChanged,
+  ScratchpadToggled,
 }
 
 #[derive(Clone, Debug, Parser, PartialEq, Serialize)]
@@ -231,6 +232,18 @@ pub enum InvokeCommand {
   },
   ToggleMinimized,
   ToggleTiling,
+
+  /// Send the focused window to the scratchpad, or restore it if already
+  /// there.
+  ///
+  /// If the window is currently visible as a scratchpad overlay, it is
+  /// restored to its origin workspace and state.
+  SendToScratchpad,
+
+  /// Show all scratchpad windows as always-on-top floating overlays on the
+  /// focused monitor, or hide them all if any are currently shown.
+  ToggleScratchpad,
+
   /// Toggle the focused tiling window into or out of a stack container.
   ToggleStack,
   /// Cycle focus to the next or previous window within the parent stack.
@@ -259,6 +272,7 @@ pub enum InvokeCommand {
     #[clap(long)]
     name: String,
   },
+
   ToggleTilingDirection,
   SetTilingDirection {
     #[clap(required = true)]

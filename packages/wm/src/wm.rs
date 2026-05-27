@@ -31,8 +31,9 @@ use crate::{
     window::{
       cycle_stack_focus, focus_stack_index, ignore_window,
       move_to_stack, move_window_in_direction, move_window_to_workspace,
-      resize_window, set_window_position, set_window_size,
-      stack_absorb_neighbor, stack_insert, toggle_stack, update_window_state,
+      resize_window, send_to_scratchpad, set_window_position,
+      set_window_size, stack_absorb_neighbor, stack_insert,
+      toggle_scratchpad, toggle_stack, update_window_state,
       WindowPositionTarget,
     },
     workspace::{
@@ -834,6 +835,15 @@ impl WindowManager {
           }
           _ => Ok(()),
         }
+      }
+      InvokeCommand::SendToScratchpad => {
+        match subject_container.as_window_container() {
+          Ok(window) => send_to_scratchpad(window, state, config),
+          _ => Ok(()),
+        }
+      }
+      InvokeCommand::ToggleScratchpad => {
+        toggle_scratchpad(state, config)
       }
       InvokeCommand::ToggleStack => {
         if let Some(window) = subject_container.as_tiling_window() {
