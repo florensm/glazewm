@@ -430,13 +430,6 @@ fn redraw_containers(
     let workspace =
       window.workspace().context("Window has no workspace.")?;
 
-    let monitor = window.monitor().context("No monitor.")?;
-    let hide_corner = monitors_by_hide_corner
-      .iter()
-      .find(|(m, _)| m.id() == monitor.id())
-      .map(|(_, hide_corner)| hide_corner)
-      .context("Monitor not found in hide corner map.")?;
-
     // Whether the window should be shown above all other windows.
     let z_order = match window.state() {
       WindowState::Floating(config) if config.shown_on_top => {
@@ -481,6 +474,25 @@ fn redraw_containers(
     if !windows_to_redraw.contains(window) {
       continue;
     }
+
+    // Windows with no monitor (e.g. those in the `__scratchpad__` workspace)
+    // cannot be positioned or animated — just cloak/hide them and move on.
+    let Some(monitor) = window.monitor() else {
+      window.set_display_state(DisplayState::Hidden);
+      #[cfg(target_os = "windows")]
+      if config.value.general.hide_method == HideMethod::Cloak {
+        let _ = window.native().set_cloaked(true);
+      } else {
+        let _ = window.native().hide();
+      }
+      continue;
+    };
+
+    let hide_corner = monitors_by_hide_corner
+      .iter()
+      .find(|(m, _)| m.id() == monitor.id())
+      .map(|(_, hide_corner)| hide_corner)
+      .context("Monitor not found in hide corner map.")?;
 
     // Inactive stack children are always hidden; the active child (first in
     // child_focus_order) is the only visible window in the stack.
