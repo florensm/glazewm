@@ -78,6 +78,12 @@ pub fn send_to_scratchpad(
   detach_container(non_tiling.clone().into())?;
   attach_container(&non_tiling.clone().into(), &scratchpad_ws, None)?;
 
+  // Cancel any in-flight animation (e.g. from the tiling→floating
+  // conversion). The scratchpad workspace has no monitor, so every
+  // animation tick would error with "No monitor." until the animation
+  // completed.
+  state.animation_manager.remove_animation(&non_tiling.id());
+
   // Queue for redraw: `platform_sync` will cloak the window because
   // `__scratchpad__` is never displayed.
   state
