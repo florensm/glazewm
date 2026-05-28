@@ -124,6 +124,14 @@ fn restore_from_scratchpad(
 
   info!("Restoring window from scratchpad.");
 
+  // If the overlay is still shown (window was visible as an overlay when
+  // `send-to-scratchpad` was pressed), destroy it now. Without this the dim
+  // overlay would persist on screen with no scratchpad window behind it.
+  #[cfg(target_os = "windows")]
+  {
+    state.scratchpad_overlay = None;
+  }
+
   // Clear the scratchpad marker so `platform_sync` treats it as a normal
   // window from this point on.
   non_tiling.set_scratchpad_origin(None);

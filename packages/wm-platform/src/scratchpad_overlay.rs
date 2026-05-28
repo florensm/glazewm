@@ -4,6 +4,7 @@ use windows::{
   core::w,
   Win32::{
     Foundation::{COLORREF, HWND, LPARAM, LRESULT, WPARAM},
+    Graphics::Gdi::{GetStockObject, HBRUSH, BLACK_BRUSH},
     UI::WindowsAndMessaging::{
       CreateWindowExW, DefWindowProcW, DestroyWindow, RegisterClassW,
       SetLayeredWindowAttributes, SetWindowPos, HWND_TOP, LWA_ALPHA,
@@ -35,10 +36,14 @@ unsafe extern "system" fn default_wnd_proc(
 /// Registers the `GlazeWM_ScratchpadOverlay` window class.
 fn ensure_class_registered() {
   OVERLAY_CLASS_REGISTERED.get_or_init(|| {
+    // SAFETY: `BLACK_BRUSH` is a valid stock object that lives for the
+    // duration of the process.
+    let hbr_black = unsafe { HBRUSH(GetStockObject(BLACK_BRUSH).0) };
+
     let wnd_class = WNDCLASSW {
       lpszClassName: w!("GlazeWM_ScratchpadOverlay"),
       lpfnWndProc: Some(default_wnd_proc),
-      // Null background brush: WS_EX_LAYERED handles all painting.
+      hbrBackground: hbr_black,
       ..Default::default()
     };
 

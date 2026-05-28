@@ -140,9 +140,18 @@ fn hide_scratchpad_windows(
   let is_scratchpad_focused = focused
     .as_ref()
     .is_some_and(|f| windows.iter().any(|w| w.id() == f.id()));
-  let focus_target = is_scratchpad_focused
-    .then(|| windows.first().and_then(|w| state.focus_target_after_removal(w)))
-    .flatten();
+
+  // `focus_target_after_removal` only returns `Some` when the passed window
+  // IS the currently focused container, so we must pass the actual focused
+  // window — not `windows.first()`, which may differ.
+  let focus_target = if is_scratchpad_focused {
+    focused
+      .as_ref()
+      .and_then(|f| f.as_window_container().ok())
+      .and_then(|w| state.focus_target_after_removal(&w))
+  } else {
+    None
+  };
 
   let scratchpad_ws = state.scratchpad_workspace.clone().into();
   let mut window_dtos = Vec::new();
