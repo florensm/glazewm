@@ -13,6 +13,8 @@ mod mouse_listener;
 mod native_window;
 mod platform_event;
 mod platform_impl;
+#[cfg(target_os = "windows")]
+mod scratchpad_overlay;
 mod single_instance;
 mod thread_bound;
 mod window_listener;
@@ -46,6 +48,8 @@ mod native_stack_tab_bar;
 #[cfg(target_os = "windows")]
 pub use native_stack_tab_bar::{NativeStackTabBar, TabBarColors, TabInfo};
 pub use platform_event::*;
+#[cfg(target_os = "windows")]
+pub use scratchpad_overlay::*;
 pub use single_instance::*;
 pub use thread_bound::*;
 pub use window_listener::*;

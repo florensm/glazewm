@@ -387,6 +387,9 @@ impl IpcServer {
         SubscribableEvent::WorkspaceUpdated
       }
       WmEvent::PauseChanged { .. } => SubscribableEvent::PauseChanged,
+      WmEvent::ScratchpadToggled { .. } => {
+        SubscribableEvent::ScratchpadToggled
+      }
     };
 
     self

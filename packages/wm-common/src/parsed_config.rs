@@ -14,6 +14,7 @@ pub struct ParsedConfig {
   pub gaps: GapsConfig,
   pub general: GeneralConfig,
   pub keybindings: Vec<KeybindingConfig>,
+  pub scratchpad: ScratchpadConfig,
   pub stack: StackConfig,
   pub window_behavior: WindowBehaviorConfig,
   pub window_effects: WindowEffectsConfig,
@@ -990,6 +991,90 @@ where
       Keybinding::new(keys).map_err(serde::de::Error::custom)
     })
     .collect()
+}
+
+/// Top-level scratchpad configuration.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(default, rename_all(serialize = "camelCase"))]
+pub struct ScratchpadConfig {
+  /// Animation settings for toggling scratchpad windows.
+  pub toggle: ScratchpadToggleConfig,
+  /// Opacity of the dim overlay drawn behind scratchpad windows (0.0–1.0).
+  ///
+  /// `0.0` disables the overlay entirely; `0.5` is a 50% black tint.
+  pub overlay_opacity: f32,
+}
+
+impl Default for ScratchpadConfig {
+  fn default() -> Self {
+    Self {
+      toggle: ScratchpadToggleConfig::default(),
+      overlay_opacity: 0.5,
+    }
+  }
+}
+
+/// Transition style for scratchpad toggle animations.
+///
+/// Applies symmetrically: showing uses the entry direction and hiding
+/// reverses it.
+#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ScratchpadToggleStyle {
+  /// Slide in from the top edge (default — drop-down terminal style).
+  #[default]
+  SlideTop,
+  /// Slide in from the bottom edge.
+  SlideBottom,
+  /// Slide in from the left edge.
+  SlideLeft,
+  /// Slide in from the right edge.
+  SlideRight,
+  /// Zoom in/out from the window center.
+  Zoom,
+  /// Pure crossfade; no positional movement.
+  Fade,
+  /// No animation.
+  None,
+}
+
+/// Animation settings for when scratchpad windows are toggled.
+///
+/// Animations are rendered by `feat/animations-pr` when merged; on this
+/// branch the config is parsed and stored but the effect is instant
+/// show/hide.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(default, rename_all(serialize = "camelCase"))]
+pub struct ScratchpadToggleConfig {
+  /// Whether the animation is enabled.
+  pub enabled: bool,
+  /// Duration of the animation in milliseconds.
+  pub duration_ms: u32,
+  /// Easing function name (e.g. `"ease_out_cubic"`, `"ease_out_spring"`).
+  ///
+  /// Accepts the same named values as `feat/animations-pr`. Stored as a
+  /// string to avoid a direct dependency on that branch's `EasingFunction`
+  /// type; updated to the shared type after the merge.
+  pub easing: String,
+  /// Motion style for the transition.
+  pub style: ScratchpadToggleStyle,
+  /// Starting opacity when showing (0.0–1.0).
+  ///
+  /// At `1.0` no fade is applied; at `0.0` the window fades in from fully
+  /// transparent.
+  pub opacity_from: f32,
+}
+
+impl Default for ScratchpadToggleConfig {
+  fn default() -> Self {
+    ScratchpadToggleConfig {
+      enabled: false,
+      duration_ms: 200,
+      easing: "ease_out_cubic".to_string(),
+      style: ScratchpadToggleStyle::SlideTop,
+      opacity_from: 0.0,
+    }
+  }
 }
 
 /// Helper function for deserializing [`HideMethod`].
