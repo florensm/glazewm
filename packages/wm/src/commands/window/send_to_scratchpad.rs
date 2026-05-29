@@ -235,3 +235,51 @@ fn restore_from_scratchpad(
 
   Ok(())
 }
+
+/// Updates `scratchpad_origin.prev_state` for a shown scratchpad overlay
+/// instead of changing the window's actual state.
+///
+/// Called by toggle-tiling / toggle-floating so users can decide what state
+/// the window will be restored to without pulling it out of the scratchpad.
+/// Returns `true` if the window was a shown overlay and the call was handled;
+/// the caller should skip its normal `update_window_state` path.
+///
+/// The toggle follows `prev_state`, not the window's current `shown_on_top`
+/// floating state:
+/// - If `prev_state` already matches the toggle target → toggle it the other
+///   way (Tiling → default Floating, Floating → Tiling).
+/// - Otherwise → set `prev_state` to the toggle target.
+pub fn update_scratchpad_prev_state(
+  window: &WindowContainer,
+  toggle_target: &WindowState,
+  config: &UserConfig,
+) -> bool {
+  let nw = match window.as_non_tiling_window() {
+    Some(nw) => nw,
+    None => return false,
+  };
+
+  let origin = match nw.scratchpad_origin() {
+    Some(origin) => origin,
+    None => return false,
+  };
+
+  let new_prev = if origin.prev_state.is_same_state(toggle_target) {
+    // Already in that state — flip the other way.
+    match toggle_target {
+      WindowState::Tiling => WindowState::Floating(
+        config.value.window_behavior.state_defaults.floating.clone(),
+      ),
+      _ => WindowState::Tiling,
+    }
+  } else {
+    toggle_target.clone()
+  };
+
+  nw.set_scratchpad_origin(Some(ScratchpadOrigin {
+    prev_state: new_prev,
+    workspace_name: origin.workspace_name,
+  }));
+
+  true
+}

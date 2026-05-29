@@ -32,6 +32,7 @@ use crate::{
       cycle_stack_focus, focus_stack_index, ignore_window,
       move_to_stack, move_window_in_direction, move_window_to_workspace,
       resize_window, send_to_scratchpad, set_window_position,
+      update_scratchpad_prev_state,
       set_window_size, stack_absorb_neighbor, stack_insert,
       toggle_scratchpad, toggle_stack, update_window_state,
       WindowPositionTarget,
@@ -760,6 +761,12 @@ impl WindowManager {
               .unwrap_or(floating_defaults.shown_on_top),
           });
 
+          // For shown scratchpad overlays, update prev_state instead of
+          // pulling the window out of the scratchpad.
+          if update_scratchpad_prev_state(&window, &target_state, config) {
+            return Ok(());
+          }
+
           let window = update_window_state(
             window.clone(),
             window.toggled_state(target_state, config),
@@ -824,6 +831,16 @@ impl WindowManager {
       InvokeCommand::ToggleTiling => {
         match subject_container.as_window_container() {
           Ok(window) => {
+            // For shown scratchpad overlays, update prev_state instead of
+            // pulling the window out of the scratchpad.
+            if update_scratchpad_prev_state(
+              &window,
+              &WindowState::Tiling,
+              config,
+            ) {
+              return Ok(());
+            }
+
             update_window_state(
               window.clone(),
               window.toggled_state(WindowState::Tiling, config),
