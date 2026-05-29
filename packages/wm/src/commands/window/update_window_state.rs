@@ -29,6 +29,14 @@ pub fn update_window_state(
     return Ok(window);
   }
 
+  // Strip scratchpad membership when a state change is applied to a shown
+  // overlay. This ensures the window cleanly exits the scratchpad pool
+  // rather than leaving an orphaned `scratchpad_origin` behind. Use
+  // `send-to-scratchpad` to restore to the origin workspace instead.
+  if let WindowContainer::NonTilingWindow(ref nw) = window {
+    nw.set_scratchpad_origin(None);
+  }
+
   // Mark for state-change animation so `platform_sync` allows a `window_move`
   // animation across the tiling/floating boundary for this window.
   state.pending_sync.mark_window_state_change(window.id());
