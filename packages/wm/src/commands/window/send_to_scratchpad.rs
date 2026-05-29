@@ -8,46 +8,50 @@ use crate::{
     window::update_window_state,
     workspace::activate_workspace,
   },
-  models::{NonTilingWindow, ScratchpadOrigin, WindowContainer},
-  traits::{CommonGetters, WindowGetters},
+  models::{ScratchpadOrigin, WindowContainer},
+  traits::{CommonGetters, PositionGetters, WindowGetters},
   user_config::UserConfig,
   wm_state::WmState,
 };
 
-/// Sends the focused window to the scratchpad, or restores it if it is
-/// already there.
+/// Sends the focused window to the scratchpad, or restores it if already shown.
 ///
 /// **Send flow:** converts the window to a floating `shown_on_top` overlay,
 /// records its origin workspace and previous state, then moves it to the
 /// detached scratchpad workspace so `platform_sync` cloaks it automatically.
 ///
-/// **Restore flow:** if the window is a visible scratchpad overlay (i.e. it
-/// has a `scratchpad_origin`), it is moved back to its origin workspace and
-/// its previous state (`Tiling` or `Floating`) is restored.
+/// **Restore flow:** if the window is a visible scratchpad overlay (has a
+/// `scratchpad_origin` and lives on a regular workspace), it is moved back to
+/// its origin workspace and its previous state (`Tiling` or `Floating`) is
+/// restored.
+///
+/// No-ops if the window is already hidden inside the scratchpad workspace.
 pub fn send_to_scratchpad(
   window: WindowContainer,
   state: &mut WmState,
   config: &UserConfig,
 ) -> anyhow::Result<()> {
-  // If the window is currently shown as a scratchpad overlay, restore it.
-  if let Some(non_tiling) = window.as_non_tiling_window() {
-    if non_tiling.scratchpad_origin().is_some() {
-      return restore_from_scratchpad(non_tiling.clone(), state, config);
-    }
+  // If the window is currently shown as a scratchpad overlay, restore it
+  // rather than sending it to the scratchpad again.
+  let is_shown_overlay = window
+    .as_non_tiling_window()
+    .is_some_and(|nw| nw.scratchpad_origin().is_some())
+    && !state
+      .scratchpad_workspace
+      .descendants()
+      .any(|c| c.id() == window.id());
+
+  if is_shown_overlay {
+    return restore_from_scratchpad(window, state, config);
   }
 
-  // Also check the scratchpad workspace (hidden stash).
-  let is_stashed = state
+  // No-op if the window is already hidden inside the scratchpad workspace.
+  if state
     .scratchpad_workspace
     .descendants()
-    .any(|c| c.id() == window.id());
-
-  if is_stashed {
-    if let Some(non_tiling) = window.as_non_tiling_window() {
-      if non_tiling.scratchpad_origin().is_some() {
-        return restore_from_scratchpad(non_tiling.clone(), state, config);
-      }
-    }
+    .any(|c| c.id() == window.id())
+  {
+    return Ok(());
   }
 
   info!("Sending window to scratchpad: {window}.");
@@ -59,14 +63,12 @@ pub fn send_to_scratchpad(
   // Convert to floating with always-on-top so it behaves as an overlay
   // when shown. The original state is preserved in `ScratchpadOrigin` for
   // accurate restoration.
-  let floating_config = FloatingStateConfig {
-    centered: false,
-    shown_on_top: true,
-  };
-
   let window = update_window_state(
     window,
-    WindowState::Floating(floating_config),
+    WindowState::Floating(FloatingStateConfig {
+      centered: false,
+      shown_on_top: true,
+    }),
     state,
     config,
   )?;
@@ -92,6 +94,12 @@ pub fn send_to_scratchpad(
   detach_container(non_tiling.clone().into())?;
   attach_container(&non_tiling.clone().into(), &scratchpad_ws, None)?;
 
+  // Cancel any in-flight animation (e.g. from the tiling→floating
+  // conversion). The scratchpad workspace has no monitor, so every
+  // animation tick would error with "No monitor." until the animation
+  // completed.
+  state.animation_manager.remove_animation(&non_tiling.id());
+
   // Queue for redraw: `platform_sync` will cloak the window because the
   // scratchpad workspace's `is_displayed()` is always false.
   state
@@ -112,65 +120,118 @@ pub fn send_to_scratchpad(
   Ok(())
 }
 
-/// Restores a scratchpad window back to its origin workspace and state.
+/// Restores a shown scratchpad overlay to its origin workspace.
+///
+/// Clears the window's `scratchpad_origin`, destroys the dim overlay if no
+/// other scratchpad windows remain visible, then moves the window to its
+/// origin workspace and restores its previous state.
 fn restore_from_scratchpad(
-  non_tiling: NonTilingWindow,
+  window: WindowContainer,
   state: &mut WmState,
   config: &UserConfig,
 ) -> anyhow::Result<()> {
+  let non_tiling = window
+    .as_non_tiling_window()
+    .context("Shown scratchpad window is not non-tiling.")?
+    .clone();
+
   let origin = non_tiling
     .scratchpad_origin()
-    .context("Window is not a scratchpad window.")?;
+    .context("Window has no scratchpad origin.")?;
 
-  info!("Restoring window from scratchpad.");
+  info!("Restoring window from scratchpad: {window}.");
 
-  // If the overlay is still shown (window was visible as an overlay when
-  // `send-to-scratchpad` was pressed), destroy it now. Without this the dim
-  // overlay would persist on screen with no scratchpad window behind it.
+  let current_workspace =
+    window.workspace().context("Window has no workspace.")?;
+
+  // Compute focus fallback before detaching.
+  let focus_target = state.focus_target_after_removal(&window);
+
+  // Clear the scratchpad marker before checking shown windows so the count
+  // reflects the post-restore state.
+  non_tiling.set_scratchpad_origin(None);
+
+  // Destroy the dim overlay if this was the last shown scratchpad window.
   #[cfg(target_os = "windows")]
-  {
+  if state.scratchpad_shown_windows().is_empty() {
     state.scratchpad_overlay = None;
   }
 
-  // Clear the scratchpad marker so `platform_sync` treats it as a normal
-  // window from this point on.
-  non_tiling.set_scratchpad_origin(None);
+  // Find or activate the origin workspace.
+  let origin_workspace = match state.workspace_by_name(&origin.workspace_name) {
+    Some(ws) => ws,
+    None => {
+      activate_workspace(
+        Some(&origin.workspace_name),
+        None,
+        state,
+        config,
+      )?;
+      state
+        .workspace_by_name(&origin.workspace_name)
+        .context("Failed to activate origin workspace.")?
+    }
+  };
 
-  // Activate the origin workspace if it has been deactivated.
-  if state.workspace_by_name(&origin.workspace_name).is_none() {
-    activate_workspace(Some(&origin.workspace_name), None, state, config)?;
+  let current_monitor =
+    current_workspace.monitor().context("No monitor.")?;
+  let origin_monitor =
+    origin_workspace.monitor().context("No monitor.")?;
+
+  // Adjust floating placement and DPI when crossing monitors.
+  if origin_monitor.id() != current_monitor.id() {
+    if current_monitor
+      .has_dpi_difference(&origin_monitor.clone().into())?
+    {
+      non_tiling.set_has_pending_dpi_adjustment(true);
+    }
+
+    non_tiling.set_floating_placement(
+      non_tiling
+        .floating_placement()
+        .translate_to_center(&origin_workspace.to_rect()?),
+    );
   }
 
-  let target_workspace = state
-    .workspace_by_name(&origin.workspace_name)
-    .context("Origin workspace not found and could not be activated.")?;
+  // Capture the DTO before moving so `parent_id` still reflects the current
+  // workspace.
+  let window_dto = non_tiling.to_dto()?;
 
-  // Move from wherever the window currently lives (scratchpad workspace or
-  // a regular workspace if shown as an overlay) to the origin workspace.
+  // Move to the origin workspace (still floating).
   detach_container(non_tiling.clone().into())?;
   attach_container(
     &non_tiling.clone().into(),
-    &target_workspace.clone().into(),
-    Some(target_workspace.child_count()),
+    &origin_workspace.clone().into(),
+    Some(origin_workspace.child_count()),
   )?;
 
-  // Restore the original window state (`Tiling` or `Floating`).
+  // Cancel any in-flight animation before restoring state.
+  state.animation_manager.remove_animation(&non_tiling.id());
+
+  // Restore the window's previous state (e.g. tiling in origin workspace).
   // For `Tiling`, `update_window_state` uses the stored `insertion_target`
   // to place the window back in its original tiling position.
-  let updated = update_window_state(
+  update_window_state(
     non_tiling.clone().into(),
     origin.prev_state,
     state,
     config,
   )?;
 
-  // Focus the restored window.
-  set_focused_descendant(&updated.clone().into(), None);
-  state.pending_sync.queue_focus_change();
+  // The window was removed from the current workspace; reorder it.
+  state
+    .pending_sync
+    .queue_workspace_to_reorder(current_workspace);
+
+  // Restore focus to whatever was behind the overlay.
+  if let Some(target) = focus_target {
+    set_focused_descendant(&target, None);
+    state.pending_sync.queue_focus_change();
+  }
 
   state.emit_event(WmEvent::ScratchpadToggled {
     shown: false,
-    windows: vec![updated.to_dto()?],
+    windows: vec![window_dto],
   });
 
   Ok(())
