@@ -19,6 +19,20 @@ pub fn move_window_to_workspace(
   state: &mut WmState,
   config: &UserConfig,
 ) -> anyhow::Result<()> {
+  // If the window is a shown scratchpad overlay, strip its scratchpad status
+  // before moving. The window genuinely leaves the scratchpad pool.
+  if let WindowContainer::NonTilingWindow(ref nw) = window {
+    if nw.scratchpad_origin().is_some() {
+      nw.set_scratchpad_origin(None);
+
+      // Destroy the dim overlay if no other scratchpad windows remain shown.
+      #[cfg(target_os = "windows")]
+      if state.scratchpad_shown_windows().is_empty() {
+        state.scratchpad_overlay = None;
+      }
+    }
+  }
+
   let current_workspace = window.workspace().context("No workspace.")?;
   let current_monitor =
     current_workspace.monitor().context("No monitor.")?;
