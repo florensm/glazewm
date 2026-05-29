@@ -7,7 +7,7 @@ use windows::{
     Graphics::Gdi::{GetStockObject, HBRUSH, BLACK_BRUSH},
     UI::WindowsAndMessaging::{
       CreateWindowExW, DefWindowProcW, DestroyWindow, RegisterClassW,
-      SetLayeredWindowAttributes, SetWindowPos, HWND_TOP, LWA_ALPHA,
+      SetLayeredWindowAttributes, SetWindowPos, HWND_TOPMOST, LWA_ALPHA,
       SWP_NOACTIVATE, SWP_NOCOPYBITS, SWP_NOSENDCHANGING, SWP_SHOWWINDOW,
       WNDCLASSW, WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW,
       WS_EX_TRANSPARENT, WS_POPUP,
@@ -70,9 +70,10 @@ impl NativeScratchpadOverlay {
   /// Creates and shows a full-monitor dim overlay.
   ///
   /// `opacity` is clamped to `0.0–1.0` and mapped to a Win32 alpha value.
-  /// The overlay is placed at `HWND_TOP` so it sits above all non-topmost
-  /// windows but below the scratchpad windows, which are shown with
-  /// `shown_on_top` (TOPMOST).
+  /// The overlay is placed at `HWND_TOPMOST` so it covers all regular
+  /// (non-topmost) windows. Scratchpad windows also use `HWND_TOPMOST` and
+  /// are repositioned by `platform_sync` after the overlay is created, so
+  /// they always appear above it.
   pub fn new(monitor_rect: &Rect, opacity: f32) -> crate::Result<Self> {
     ensure_class_registered();
 
@@ -111,12 +112,14 @@ impl NativeScratchpadOverlay {
       SetLayeredWindowAttributes(hwnd, COLORREF(0), alpha, LWA_ALPHA)?;
     }
 
-    // Show above non-topmost windows without stealing activation.
-    // SAFETY: `hwnd` and `HWND_TOP` are valid.
+    // Show above all windows without stealing activation. Scratchpad windows
+    // are placed at `HWND_TOPMOST` by `platform_sync` after this call, so
+    // they appear above the overlay.
+    // SAFETY: `hwnd` and `HWND_TOPMOST` are valid.
     unsafe {
       SetWindowPos(
         hwnd,
-        HWND_TOP,
+        HWND_TOPMOST,
         monitor_rect.x(),
         monitor_rect.y(),
         monitor_rect.width(),

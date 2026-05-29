@@ -25,8 +25,22 @@ pub fn handle_window_destroyed(
   if let Some(window) = found_window {
     let workspace = window.workspace().context("No workspace.")?;
 
+    // Check before unmanaging so the flag is still readable on the Rc.
+    #[cfg(target_os = "windows")]
+    let was_shown_scratchpad = window
+      .as_non_tiling_window()
+      .is_some_and(|nw| nw.scratchpad_origin().is_some());
+
     info!("Window closed: {window}");
     unmanage_window(window, state)?;
+
+    // Destroy the dim overlay if the closed window was the last shown
+    // scratchpad overlay (scratchpad_shown_windows no longer includes it
+    // because it is now detached from the tree).
+    #[cfg(target_os = "windows")]
+    if was_shown_scratchpad && state.scratchpad_shown_windows().is_empty() {
+      state.scratchpad_overlay = None;
+    }
 
     // Destroy parent workspace if window was killed while its workspace
     // was not displayed (e.g. via task manager).
