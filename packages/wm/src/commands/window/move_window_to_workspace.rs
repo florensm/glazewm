@@ -5,6 +5,7 @@ use wm_common::WindowState;
 use crate::{
   commands::{
     container::{move_container_within_tree, set_focused_descendant},
+    window::update_window_state,
     workspace::activate_workspace,
   },
   models::{WindowContainer, WorkspaceTarget},
@@ -20,18 +21,25 @@ pub fn move_window_to_workspace(
   config: &UserConfig,
 ) -> anyhow::Result<()> {
   // If the window is a shown scratchpad overlay, strip its scratchpad status
-  // before moving. The window genuinely leaves the scratchpad pool.
-  if let WindowContainer::NonTilingWindow(ref nw) = window {
-    if nw.scratchpad_origin().is_some() {
-      nw.set_scratchpad_origin(None);
+  // and capture prev_state so we can restore it after the move.
+  let scratchpad_prev_state =
+    if let WindowContainer::NonTilingWindow(ref nw) = window {
+      if let Some(origin) = nw.scratchpad_origin() {
+        nw.set_scratchpad_origin(None);
 
-      // Destroy the dim overlay if no other scratchpad windows remain shown.
-      #[cfg(target_os = "windows")]
-      if state.scratchpad_shown_windows().is_empty() {
-        state.scratchpad_overlay = None;
+        // Destroy the dim overlay if no other scratchpad windows remain shown.
+        #[cfg(target_os = "windows")]
+        if state.scratchpad_shown_windows().is_empty() {
+          state.scratchpad_overlay = None;
+        }
+
+        Some(origin.prev_state)
+      } else {
+        None
       }
-    }
-  }
+    } else {
+      None
+    };
 
   let current_workspace = window.workspace().context("No workspace.")?;
   let current_monitor =
@@ -139,6 +147,19 @@ pub fn move_window_to_workspace(
     if let Some(focus_target) = focus_target {
       set_focused_descendant(&focus_target, None);
       state.pending_sync.queue_focus_change();
+    }
+
+    // If this was a shown scratchpad overlay, restore its previous state
+    // (tiling or floating without shown_on_top) now that the window lives
+    // in the target workspace. `insertion_target` was cleared above so
+    // tiling falls back to beside the last focused tiling window in the
+    // target workspace, which is appropriate for an explicit workspace move.
+    if let Some(prev_state) = scratchpad_prev_state {
+      update_window_state(window, prev_state, state, config)?;
+      state
+        .pending_sync
+        .queue_workspace_to_reorder(target_workspace);
+      return Ok(());
     }
 
     match window {

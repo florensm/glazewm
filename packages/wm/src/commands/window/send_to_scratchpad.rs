@@ -211,20 +211,26 @@ fn restore_from_scratchpad(
   // Restore the window's previous state (e.g. tiling in origin workspace).
   // For `Tiling`, `update_window_state` uses the stored `insertion_target`
   // to place the window back in its original tiling position.
-  update_window_state(
+  let restored = update_window_state(
     non_tiling.clone().into(),
     origin.prev_state,
     state,
     config,
   )?;
 
-  // The window was removed from the current workspace; reorder it.
+  // The window was removed from the shown workspace; reorder it.
+  let is_same_workspace = origin_workspace.id() == current_workspace.id();
   state
     .pending_sync
     .queue_workspace_to_reorder(current_workspace);
 
-  // Restore focus to whatever was behind the overlay.
-  if let Some(target) = focus_target {
+  // If restoring to the same workspace the overlay was shown on, focus the
+  // restored window. Otherwise restore focus to whatever was behind the
+  // overlay (the user stays on the current workspace).
+  if is_same_workspace {
+    set_focused_descendant(&restored.clone().into(), None);
+    state.pending_sync.queue_focus_change();
+  } else if let Some(target) = focus_target {
     set_focused_descendant(&target, None);
     state.pending_sync.queue_focus_change();
   }
