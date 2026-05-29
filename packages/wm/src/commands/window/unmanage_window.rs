@@ -27,12 +27,22 @@ pub fn detach_window_for_close(
   let ancestors = window.ancestors().take(3).collect::<Vec<_>>();
   let focus_target = state.focus_target_after_removal(&window.clone());
 
+  // Check before detaching so the flag is still readable on the Rc.
+  let was_shown_scratchpad = window
+    .as_non_tiling_window()
+    .is_some_and(|nw| nw.scratchpad_origin().is_some());
+
   detach_container(window.clone().into())?;
 
   state.window_target_positions.remove(&window.id());
   // NOTE: `state.animation_manager.remove_animation` is intentionally
   // skipped — the close surrogate must keep running until
   // `AnimationManager::update_internal` sends `WM_CLOSE` on completion.
+
+  // Destroy the dim overlay if this was the last shown scratchpad window.
+  if was_shown_scratchpad && state.scratchpad_shown_windows().is_empty() {
+    state.scratchpad_overlay = None;
+  }
 
   for ancestor in ancestors.iter().rev() {
     flatten_child_split_containers(ancestor)?;

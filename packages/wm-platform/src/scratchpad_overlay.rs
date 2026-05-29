@@ -7,10 +7,10 @@ use windows::{
     Graphics::Gdi::{GetStockObject, HBRUSH, BLACK_BRUSH},
     UI::WindowsAndMessaging::{
       CreateWindowExW, DefWindowProcW, DestroyWindow, RegisterClassW,
-      SetLayeredWindowAttributes, SetWindowPos, HWND_TOP, HTTRANSPARENT,
-      LWA_ALPHA, SWP_NOACTIVATE, SWP_NOCOPYBITS, SWP_NOSENDCHANGING,
-      SWP_SHOWWINDOW, WM_NCHITTEST, WNDCLASSW, WS_EX_LAYERED,
-      WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_POPUP,
+      SetLayeredWindowAttributes, SetWindowPos, HWND_TOPMOST, LWA_ALPHA,
+      SWP_NOACTIVATE, SWP_NOCOPYBITS, SWP_NOSENDCHANGING, SWP_SHOWWINDOW,
+      WNDCLASSW, WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW,
+      WS_EX_TRANSPARENT, WS_POPUP,
     },
   },
 };
@@ -20,23 +20,15 @@ use crate::Rect;
 /// Ensures the overlay window class is registered exactly once per process.
 static OVERLAY_CLASS_REGISTERED: OnceLock<()> = OnceLock::new();
 
-/// Window procedure for the overlay.
+/// Default window procedure for the overlay window.
 ///
-/// Returns `HTTRANSPARENT` for `WM_NCHITTEST` so that mouse events fall
-/// through to the windows beneath the overlay, while the overlay itself
-/// remains visually rendered. All other messages are forwarded to
-/// `DefWindowProcW`.
-///
-/// SAFETY: All parameters are forwarded unchanged to Win32 APIs.
-unsafe extern "system" fn overlay_wnd_proc(
+/// SAFETY: All parameters are passed through unchanged to `DefWindowProcW`.
+unsafe extern "system" fn default_wnd_proc(
   hwnd: HWND,
   msg: u32,
   wparam: WPARAM,
   lparam: LPARAM,
 ) -> LRESULT {
-  if msg == WM_NCHITTEST {
-    return LRESULT(HTTRANSPARENT as isize);
-  }
   // SAFETY: All parameters are valid and passed through unchanged.
   unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) }
 }
@@ -50,7 +42,7 @@ fn ensure_class_registered() {
 
     let wnd_class = WNDCLASSW {
       lpszClassName: w!("GlazeWM_ScratchpadOverlay"),
-      lpfnWndProc: Some(overlay_wnd_proc),
+      lpfnWndProc: Some(default_wnd_proc),
       hbrBackground: hbr_black,
       ..Default::default()
     };
@@ -64,11 +56,11 @@ fn ensure_class_registered() {
 /// Semi-transparent black overlay drawn over the full monitor when the
 /// scratchpad is shown.
 ///
-/// `WM_NCHITTEST` returns `HTTRANSPARENT` so clicks fall through to the
-/// scratchpad windows (TOPMOST) or the desktop beneath. The window is
-/// excluded from GlazeWM management because `WS_EX_NOACTIVATE` and
-/// `WS_EX_TOOLWINDOW` cause the `check_is_manageable` guard to reject it.
-/// Dropped when the scratchpad is hidden.
+/// The window uses `WS_EX_TRANSPARENT` so mouse clicks fall through to
+/// the scratchpad windows (TOPMOST) or the desktop beneath it. It is
+/// excluded from GlazeWM management because it carries both
+/// `WS_EX_NOACTIVATE` and `WS_EX_TOOLWINDOW`, which the `check_is_manageable`
+/// guard rejects. Dropped when the scratchpad is hidden.
 pub struct NativeScratchpadOverlay {
   /// Raw `HWND` value of the overlay window.
   hwnd: isize,
@@ -78,9 +70,10 @@ impl NativeScratchpadOverlay {
   /// Creates and shows a full-monitor dim overlay.
   ///
   /// `opacity` is clamped to `0.0–1.0` and mapped to a Win32 alpha value.
-  /// The overlay is placed at `HWND_TOP` so it sits above all non-topmost
-  /// windows but below the scratchpad windows, which use `shown_on_top`
-  /// (TOPMOST).
+  /// The overlay is placed at `HWND_TOPMOST` so it covers all regular
+  /// (non-topmost) windows. Scratchpad windows also use `HWND_TOPMOST` and
+  /// are repositioned by `platform_sync` after the overlay is created, so
+  /// they always appear above it.
   pub fn new(monitor_rect: &Rect, opacity: f32) -> crate::Result<Self> {
     ensure_class_registered();
 
@@ -88,7 +81,10 @@ impl NativeScratchpadOverlay {
     // or menu handles are needed for a borderless overlay.
     let hwnd = unsafe {
       CreateWindowExW(
-        WS_EX_LAYERED | WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW,
+        WS_EX_LAYERED
+          | WS_EX_NOACTIVATE
+          | WS_EX_TOOLWINDOW
+          | WS_EX_TRANSPARENT,
         w!("GlazeWM_ScratchpadOverlay"),
         w!(""),
         WS_POPUP,
@@ -116,12 +112,14 @@ impl NativeScratchpadOverlay {
       SetLayeredWindowAttributes(hwnd, COLORREF(0), alpha, LWA_ALPHA)?;
     }
 
-    // Show above non-topmost windows without stealing activation.
-    // SAFETY: `hwnd` and `HWND_TOP` are valid.
+    // Show above all windows without stealing activation. Scratchpad windows
+    // are placed at `HWND_TOPMOST` by `platform_sync` after this call, so
+    // they appear above the overlay.
+    // SAFETY: `hwnd` and `HWND_TOPMOST` are valid.
     unsafe {
       SetWindowPos(
         hwnd,
-        HWND_TOP,
+        HWND_TOPMOST,
         monitor_rect.x(),
         monitor_rect.y(),
         monitor_rect.width(),
