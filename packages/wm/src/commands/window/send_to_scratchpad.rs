@@ -151,12 +151,6 @@ fn restore_from_scratchpad(
   // reflects the post-restore state.
   non_tiling.set_scratchpad_origin(None);
 
-  // Destroy the dim overlay if this was the last shown scratchpad window.
-  #[cfg(target_os = "windows")]
-  if state.scratchpad_shown_windows().is_empty() {
-    state.scratchpad_overlay = None;
-  }
-
   // Find or activate the origin workspace.
   let origin_workspace = match state.workspace_by_name(&origin.workspace_name) {
     Some(ws) => ws,

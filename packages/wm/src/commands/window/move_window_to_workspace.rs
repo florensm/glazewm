@@ -24,19 +24,10 @@ pub fn move_window_to_workspace(
   // and capture prev_state so we can restore it after the move.
   let scratchpad_prev_state =
     if let WindowContainer::NonTilingWindow(ref nw) = window {
-      if let Some(origin) = nw.scratchpad_origin() {
+      nw.scratchpad_origin().map(|origin| {
         nw.set_scratchpad_origin(None);
-
-        // Destroy the dim overlay if no other scratchpad windows remain shown.
-        #[cfg(target_os = "windows")]
-        if state.scratchpad_shown_windows().is_empty() {
-          state.scratchpad_overlay = None;
-        }
-
-        Some(origin.prev_state)
-      } else {
-        None
-      }
+        origin.prev_state
+      })
     } else {
       None
     };
