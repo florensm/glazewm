@@ -7,7 +7,7 @@ use std::{
 use anyhow::Context;
 use uuid::Uuid;
 use wm_common::{
-  ContainerDto, GapsConfig, StackContainerDto, TabBarPosition, TilingDirection,
+  ContainerDto, GapsConfig, StackContainerDto, TabBarPosition,
 };
 use wm_platform::{LengthValue, Rect};
 

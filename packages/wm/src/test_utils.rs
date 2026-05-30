@@ -5,8 +5,8 @@
 
 use bon::bon;
 use wm_common::{
-  FloatingStateConfig, GapsConfig, TilingDirection, WindowState,
-  WorkspaceConfig,
+  FloatingStateConfig, GapsConfig, WindowState, WorkspaceConfig,
+  WorkspaceLayout,
 };
 use wm_platform::{Display, NativeWindow, Rect, RectDelta};
 
@@ -174,12 +174,12 @@ impl SplitContainer {
   #[builder]
   #[allow(clippy::cast_precision_loss)]
   pub fn mock(
-    #[builder(default = TilingDirection::Horizontal)]
-    tiling_direction: TilingDirection,
+    #[builder(default = WorkspaceLayout::SplitHorizontal)]
+    layout: WorkspaceLayout,
     #[builder(default = GapsConfig::default())] gaps_config: GapsConfig,
     #[builder(default = vec![])] tiling_containers: Vec<TilingContainer>,
   ) -> Self {
-    let split = Self::new(tiling_direction, gaps_config);
+    let split = Self::new(layout, gaps_config);
 
     for child in tiling_containers {
       attach_container(&child.into(), &split.clone().into(), None)
@@ -232,8 +232,8 @@ impl Workspace {
   pub fn mock(
     #[builder(default = "1".to_string())] name: String,
     display_name: Option<String>,
-    #[builder(default = TilingDirection::Horizontal)]
-    tiling_direction: TilingDirection,
+    #[builder(default = WorkspaceLayout::SplitHorizontal)]
+    layout: WorkspaceLayout,
     #[builder(default = GapsConfig::default())] gaps_config: GapsConfig,
     #[builder(default = vec![])] tiling_containers: Vec<TilingContainer>,
     #[builder(default = vec![])] non_tiling_windows: Vec<NonTilingWindow>,
@@ -245,7 +245,7 @@ impl Workspace {
       keep_alive: false,
     };
 
-    let workspace = Self::new(config, gaps_config, tiling_direction);
+    let workspace = Self::new(config, gaps_config, layout);
 
     for child in tiling_containers {
       attach_container(&child.into(), &workspace.clone().into(), None)

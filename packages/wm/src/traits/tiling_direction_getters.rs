@@ -7,9 +7,32 @@ use crate::models::{TilingContainer, TilingWindow};
 
 #[delegatable_trait]
 pub trait TilingDirectionGetters: CommonGetters {
-  fn tiling_direction(&self) -> TilingDirection;
+  /// Returns the active layout for this direction container.
+  fn layout(&self) -> wm_common::WorkspaceLayout;
 
-  fn set_tiling_direction(&self, tiling_direction: TilingDirection);
+  /// Sets the active layout for this direction container.
+  fn set_layout(&self, layout: wm_common::WorkspaceLayout);
+
+  /// Returns the primary tiling direction derived from the active layout.
+  ///
+  /// Used for directional focus/move navigation and compatibility with
+  /// logic that only cares about the primary axis.
+  fn tiling_direction(&self) -> TilingDirection {
+    self.layout().primary_direction()
+  }
+
+  /// Replaces the layout with a `Split` variant using the given direction.
+  fn set_tiling_direction(&self, direction: TilingDirection) {
+    let new_layout = match direction {
+      TilingDirection::Horizontal => {
+        wm_common::WorkspaceLayout::SplitHorizontal
+      }
+      TilingDirection::Vertical => {
+        wm_common::WorkspaceLayout::SplitVertical
+      }
+    };
+    self.set_layout(new_layout);
+  }
 
   /// Traverses down a container in search of a descendant in the given
   /// direction. For example, for `Direction::Right`, get the right-most
@@ -59,17 +82,17 @@ pub trait TilingDirectionGetters: CommonGetters {
 /// Implements the `TilingDirectionGetters` trait for a given struct.
 ///
 /// Expects that the struct has a wrapping `RefCell` containing a struct
-/// with a `tiling_direction` field.
+/// with a `layout` field of type `WorkspaceLayout`.
 #[macro_export]
 macro_rules! impl_tiling_direction_getters {
   ($struct_name:ident) => {
     impl TilingDirectionGetters for $struct_name {
-      fn tiling_direction(&self) -> TilingDirection {
-        self.0.borrow().tiling_direction.clone()
+      fn layout(&self) -> wm_common::WorkspaceLayout {
+        self.0.borrow().layout.clone()
       }
 
-      fn set_tiling_direction(&self, tiling_direction: TilingDirection) {
-        self.0.borrow_mut().tiling_direction = tiling_direction;
+      fn set_layout(&self, layout: wm_common::WorkspaceLayout) {
+        self.0.borrow_mut().layout = layout;
       }
     }
   };

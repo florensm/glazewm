@@ -1,5 +1,5 @@
 use anyhow::Context;
-use wm_common::{TilingDirection, WmEvent};
+use wm_common::{TilingDirection, WmEvent, WorkspaceLayout};
 
 use super::{flatten_split_container, wrap_in_split_container};
 use crate::{
@@ -19,18 +19,16 @@ pub fn toggle_tiling_direction(
       toggle_window_direction(tiling_window, config)
     }
     Container::Workspace(workspace) => {
-      workspace
-        .set_tiling_direction(workspace.tiling_direction().inverse());
-
+      workspace.set_layout(workspace.layout().inverse());
       Ok(workspace.into())
     }
     // Can only toggle tiling direction from a tiling window or workspace.
     _ => return Ok(()),
   }?;
 
-  state.emit_event(WmEvent::TilingDirectionChanged {
+  state.emit_event(WmEvent::LayoutChanged {
     direction_container: direction_container.to_dto()?,
-    new_tiling_direction: direction_container.tiling_direction(),
+    new_layout: direction_container.layout(),
   });
 
   Ok(())
@@ -44,15 +42,12 @@ fn toggle_window_direction(
     .direction_container()
     .context("No direction container.")?;
 
-  // If the window is an only child, then either change the tiling
-  // direction of its parent workspace or flatten its parent split
-  // container.
+  // If the window is an only child, then either change the layout of its
+  // parent workspace or flatten its parent split container.
   if tiling_window.tiling_siblings().count() == 0 {
     return match parent {
       DirectionContainer::Workspace(workspace) => {
-        workspace
-          .set_tiling_direction(workspace.tiling_direction().inverse());
-
+        workspace.set_layout(workspace.layout().inverse());
         Ok(workspace.into())
       }
       DirectionContainer::Split(split_container) => {
@@ -65,11 +60,15 @@ fn toggle_window_direction(
     };
   }
 
-  // Create a new split container to wrap the window.
-  let split_container = SplitContainer::new(
-    parent.tiling_direction().inverse(),
-    config.value.gaps.clone(),
-  );
+  // Create a new split container to wrap the window, using the inverse of
+  // the current split direction. For non-split layouts, default to vertical.
+  let new_split_layout = match parent.layout() {
+    WorkspaceLayout::SplitHorizontal => WorkspaceLayout::SplitVertical,
+    _ => WorkspaceLayout::SplitVertical,
+  };
+
+  let split_container =
+    SplitContainer::new(new_split_layout, config.value.gaps.clone());
 
   wrap_in_split_container(
     &split_container,

@@ -7,7 +7,8 @@ use std::{
 use anyhow::Context;
 use uuid::Uuid;
 use wm_common::{
-  ContainerDto, GapsConfig, TilingDirection, WorkspaceConfig, WorkspaceDto,
+  ContainerDto, GapsConfig, WorkspaceConfig, WorkspaceDto,
+  WorkspaceLayout,
 };
 use wm_platform::{Rect, RectDelta};
 
@@ -31,14 +32,14 @@ struct WorkspaceInner {
   child_focus_order: VecDeque<Uuid>,
   config: WorkspaceConfig,
   gaps_config: GapsConfig,
-  tiling_direction: TilingDirection,
+  layout: WorkspaceLayout,
 }
 
 impl Workspace {
   pub fn new(
     config: WorkspaceConfig,
     gaps_config: GapsConfig,
-    tiling_direction: TilingDirection,
+    layout: WorkspaceLayout,
   ) -> Self {
     let workspace = WorkspaceInner {
       id: Uuid::new_v4(),
@@ -47,7 +48,7 @@ impl Workspace {
       child_focus_order: VecDeque::new(),
       config,
       gaps_config,
-      tiling_direction,
+      layout,
     };
 
     Self(Rc::new(RefCell::new(workspace)))
@@ -172,7 +173,7 @@ impl Workspace {
       height: rect.height(),
       x: rect.x(),
       y: rect.y(),
-      tiling_direction: self.tiling_direction(),
+      layout: self.layout(),
     }))
   }
 }
@@ -191,9 +192,9 @@ impl std::fmt::Display for Workspace {
   fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
     write!(
       f,
-      "Workspace(name={}, tiling_direction={:?})",
+      "Workspace(name={}, layout={:?})",
       self.config().name,
-      self.tiling_direction(),
+      self.layout(),
     )
   }
 }

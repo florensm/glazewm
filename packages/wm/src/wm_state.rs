@@ -5,7 +5,7 @@ use tokio::sync::mpsc::{self};
 use tracing::warn;
 use uuid::Uuid;
 use wm_common::{
-  BindingModeConfig, GapsConfig, HideCorner, TilingDirection, WindowState,
+  BindingModeConfig, GapsConfig, HideCorner, WindowState, WorkspaceLayout,
   WmEvent, WorkspaceConfig,
 };
 use wm_platform::{
@@ -136,7 +136,7 @@ impl WmState {
           keep_alive: false,
         },
         GapsConfig::default(),
-        TilingDirection::Horizontal,
+        WorkspaceLayout::SplitHorizontal,
       ),
       event_tx,
       exit_tx,

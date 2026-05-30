@@ -1,6 +1,6 @@
 use anyhow::Context;
 use tracing::info;
-use wm_common::{TilingDirection, WmEvent, WorkspaceConfig};
+use wm_common::{WmEvent, WorkspaceConfig, WorkspaceLayout};
 
 use super::sort_workspaces;
 use crate::{
@@ -51,16 +51,16 @@ pub fn activate_workspace(
 
   let monitor_rect = target_monitor.to_rect()?;
 
-  let tiling_direction = if monitor_rect.height() > monitor_rect.width() {
-    TilingDirection::Vertical
+  let layout = if monitor_rect.height() > monitor_rect.width() {
+    WorkspaceLayout::SplitVertical
   } else {
-    TilingDirection::Horizontal
+    WorkspaceLayout::SplitHorizontal
   };
 
   let workspace = Workspace::new(
     workspace_config.clone(),
     config.value.gaps.clone(),
-    tiling_direction,
+    layout,
   );
 
   // Attach the created workspace to the specified monitor.

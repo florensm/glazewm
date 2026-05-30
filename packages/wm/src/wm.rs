@@ -38,7 +38,7 @@ use crate::{
     },
     workspace::{
       focus_workspace, move_workspace_in_direction,
-      update_workspace_config,
+      set_workspace_layout, update_workspace_config,
     },
   },
   events::{
@@ -893,6 +893,9 @@ impl WindowManager {
           config,
           tiling_direction,
         )
+      }
+      InvokeCommand::SetWorkspaceLayout { layout } => {
+        set_workspace_layout(subject_container, layout.clone(), state)
       }
       InvokeCommand::WmCycleFocus {
         omit_floating,

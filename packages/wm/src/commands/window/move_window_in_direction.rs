@@ -325,10 +325,8 @@ fn invert_workspace_tiling_direction(
   // container around 1 and 2. This results in H[H[1 V[2 3]]], and
   // V[H[1 V[2]] 3] after the tiling direction change.
   if workspace_children.len() > 1 {
-    let split_container = SplitContainer::new(
-      workspace.tiling_direction(),
-      config.value.gaps.clone(),
-    );
+    let split_container =
+      SplitContainer::new(workspace.layout(), config.value.gaps.clone());
 
     wrap_in_split_container(
       &split_container,

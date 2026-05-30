@@ -1,6 +1,7 @@
 use anyhow::Context;
 use wm_common::{
   try_warn, FullscreenStateConfig, TilingDirection, WindowState,
+  WorkspaceLayout,
 };
 use wm_platform::{LengthValue, Point, Rect};
 
@@ -243,10 +244,13 @@ fn drop_as_tiling_window(
     };
 
   if should_split {
-    let split_container = SplitContainer::new(
-      tiling_direction.inverse(),
-      config.value.gaps.clone(),
-    );
+    // Create a split perpendicular to the parent's tiling direction.
+    let split_layout = match tiling_direction {
+      TilingDirection::Horizontal => WorkspaceLayout::SplitVertical,
+      TilingDirection::Vertical => WorkspaceLayout::SplitHorizontal,
+    };
+    let split_container =
+      SplitContainer::new(split_layout, config.value.gaps.clone());
 
     wrap_in_split_container(
       &split_container,
