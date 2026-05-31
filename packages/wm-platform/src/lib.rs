@@ -41,6 +41,12 @@ pub use resize_session::ResizeSession;
 mod workspace_surrogate;
 #[cfg(target_os = "windows")]
 pub use workspace_surrogate::WorkspaceSurrogate;
+#[cfg(target_os = "windows")]
+mod native_dcomp_surrogate;
+#[cfg(target_os = "windows")]
+pub use native_dcomp_surrogate::{
+  DcompContext, NativeDcompSurrogate, IDENTITY_TRANSFORM,
+};
 
 pub use platform_event::*;
 pub use single_instance::*;
