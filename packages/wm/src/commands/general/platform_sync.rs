@@ -301,6 +301,10 @@ fn redraw_containers(
           req.monitor_width,
           req.monitor_height,
         );
+        // Drop any in-flight overlay first so the new snapshot captures the
+        // real current workspace, not the previous overlay mid-wipe. This makes
+        // rapid switches play as clean successive wipes rather than nested ones.
+        state.animation_manager.clear_iris_switch();
         match NativeIrisOverlay::create(&monitor) {
           Ok(overlay) => {
             state.animation_manager.start_iris_switch(
@@ -312,6 +316,11 @@ fn redraw_containers(
               ws_config.duration_ms,
               ws_config.easing.clone(),
             );
+            // Composite the overlay (covering the outgoing workspace) before the
+            // redraw loop below switches the real windows underneath, so the
+            // switch never shows through for a frame. Without this the cover and
+            // the switch race within one frame, causing an occasional flicker.
+            wm_platform::dwm_flush();
           }
           Err(err) => {
             tracing::warn!(
