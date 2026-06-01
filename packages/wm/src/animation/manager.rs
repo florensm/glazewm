@@ -28,7 +28,9 @@ use wm_common::{
 use wm_platform::{NativeWindow, OpacityValue, Rect};
 #[cfg(target_os = "windows")]
 use wm_platform::{
-  DxgiVsyncWaiter, NativeWindowWindowsExt, ResizeSession, WorkspaceSurrogate,
+  DcompContext, DcompSession, DcompTransitionKind, DxgiVsyncWaiter,
+  NativeWindowWindowsExt, ResizeSession, WindowZOrder, WorkspaceSurrogate,
+  SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOSENDCHANGING, SWP_NOZORDER,
 };
 
 use crate::{
@@ -171,6 +173,23 @@ pub struct AnimationManager {
   /// sent after the fade finishes without borrowing the window container.
   #[cfg(target_os = "windows")]
   pending_close_windows: HashMap<Uuid, isize>,
+  /// Shared DirectComposition device backing all 3D transitions (flip/tilt).
+  ///
+  /// Created lazily the first time a 3D style runs and reused thereafter, so
+  /// configurations that never use a 3D style pay no Direct3D/DComp cost.
+  #[cfg(target_os = "windows")]
+  dcomp_context: Option<DcompContext>,
+  /// Active DirectComposition 3D transitions, keyed by window ID.
+  ///
+  /// Driven directly in `update_internal` (not through `platform_sync`); each
+  /// settles to an identity transform at completion for a seamless hand-off to
+  /// the real window.
+  #[cfg(target_os = "windows")]
+  dcomp_sessions: HashMap<Uuid, DcompSession>,
+  /// Completed open/focus 3D surrogates kept alive until the final
+  /// `platform_sync` repositions and uncloaks the real window, then dropped.
+  #[cfg(target_os = "windows")]
+  pending_dcomp_cleanup: Vec<DcompSession>,
 }
 
 impl AnimationManager {
@@ -196,6 +215,12 @@ impl AnimationManager {
       pending_ws_cleanup: None,
       #[cfg(target_os = "windows")]
       pending_close_windows: HashMap::new(),
+      #[cfg(target_os = "windows")]
+      dcomp_context: None,
+      #[cfg(target_os = "windows")]
+      dcomp_sessions: HashMap::new(),
+      #[cfg(target_os = "windows")]
+      pending_dcomp_cleanup: Vec::new(),
     }
   }
 
@@ -231,6 +256,8 @@ impl AnimationManager {
     self.slide_in_monitor_rects.remove(window_id);
     #[cfg(target_os = "windows")]
     self.pending_close_windows.remove(window_id);
+    #[cfg(target_os = "windows")]
+    self.dcomp_sessions.remove(window_id);
   }
 
   /// Removes all completed animations and returns their window IDs.
@@ -271,6 +298,10 @@ impl AnimationManager {
     if self.workspace_switch.is_some() {
       return true;
     }
+    #[cfg(target_os = "windows")]
+    if !self.dcomp_sessions.is_empty() {
+      return true;
+    }
     false
   }
 
@@ -297,6 +328,12 @@ impl AnimationManager {
     // On WM shutdown close-animation windows are left open — only clear
     // the tracking state without sending WM_CLOSE.
     self.pending_close_windows.clear();
+    // Drop all 3D transition surrogates. The managed-window cleanup loop in
+    // `WmState::Drop` uncloaks the underlying real windows, so they reappear at
+    // their target positions.
+    self.dcomp_sessions.clear();
+    self.pending_dcomp_cleanup.clear();
+    self.dcomp_context = None;
     sessions
   }
 
@@ -422,6 +459,90 @@ impl AnimationManager {
       if let Some(container) = state.container_by_id(*window_id) {
         if let Ok(window) = container.as_window_container() {
           state.pending_sync.queue_container_to_redraw(window);
+        }
+      }
+    }
+
+    // Drive DirectComposition 3D transitions (flip/tilt). These surrogates are
+    // updated directly here rather than through `platform_sync`, and settle to
+    // an identity transform at completion so the hand-off to the real window is
+    // seamless.
+    //
+    // The shared context is temporarily taken out so the sessions map can be
+    // borrowed mutably alongside it, then restored before the block ends. The
+    // context always exists when a session does (both are set together in
+    // `start_dcomp_transition`).
+    #[cfg(target_os = "windows")]
+    if !state.animation_manager.dcomp_sessions.is_empty() {
+      if let Some(ctx) = state.animation_manager.dcomp_context.take() {
+        let dcomp_ids: Vec<Uuid> = state
+          .animation_manager
+          .dcomp_sessions
+          .keys()
+          .copied()
+          .collect();
+
+        let mut completed: Vec<(Uuid, DcompTransitionKind)> = Vec::new();
+        for id in &dcomp_ids {
+          let eased = state
+            .animation_manager
+            .animations
+            .get(id)
+            .map_or(1.0, WindowAnimationState::eased_progress);
+
+          if let Some(session) =
+            state.animation_manager.dcomp_sessions.get_mut(id)
+          {
+            if let Err(err) = session.apply_frame(&ctx, eased) {
+              tracing::warn!(
+                "DComp transition frame failed for {id}: {err}."
+              );
+            }
+            if eased >= 1.0 {
+              completed.push((*id, session.kind()));
+            }
+          }
+        }
+
+        // Publish all visual updates for this frame in a single commit.
+        if let Err(err) = ctx.commit() {
+          tracing::warn!("DComp commit failed: {err}.");
+        }
+        state.animation_manager.dcomp_context = Some(ctx);
+
+        for (id, kind) in completed {
+          match kind {
+            DcompTransitionKind::CloseFlip => {
+              // The card has flipped fully edge-on (invisible) and the real
+              // window is already cloaked — drop the surrogate and close it.
+              let session =
+                state.animation_manager.dcomp_sessions.remove(&id);
+              state.animation_manager.animations.remove(&id);
+              // Clear the tracking entry so the DWM close-finalize block
+              // below does not also close this already-handled window.
+              state.animation_manager.pending_close_windows.remove(&id);
+              if let Some(session) = session {
+                let native =
+                  NativeWindow::from_handle(session.source_hwnd());
+                if let Err(err) = native.close() {
+                  tracing::warn!(
+                    "Failed to send WM_CLOSE for window {id}: {err}."
+                  );
+                }
+              }
+            }
+            DcompTransitionKind::OpenFlip | DcompTransitionKind::FocusTilt => {
+              // Keep the surrogate (now at identity) covering the window
+              // until the final `platform_sync` repositions and uncloaks the
+              // real window. `remove_completed_animations` removes the
+              // animation and queues that redraw.
+              if let Some(session) =
+                state.animation_manager.dcomp_sessions.remove(&id)
+              {
+                state.animation_manager.pending_dcomp_cleanup.push(session);
+              }
+            }
+          }
         }
       }
     }
@@ -719,6 +840,16 @@ impl AnimationManager {
     #[cfg(target_os = "windows")]
     {
       state.animation_manager.pending_session_cleanup.clear();
+      // Drop completed 3D-transition surrogates now that `platform_sync` has
+      // repositioned and uncloaked their real windows (which sit at the
+      // identical position the surrogate settled to). A DComp commit publishes
+      // the surrogate teardown so it disappears in the same composition frame.
+      if !state.animation_manager.pending_dcomp_cleanup.is_empty() {
+        state.animation_manager.pending_dcomp_cleanup.clear();
+        if let Some(ctx) = state.animation_manager.dcomp_context.as_ref() {
+          let _ = ctx.commit();
+        }
+      }
       // Flush before dropping workspace-switch surrogates. DWM thumbnails do
       // not capture the window's compositor shadow, so shadows are absent
       // while windows are cloaked and appear suddenly on uncloak. One flush
@@ -828,6 +959,16 @@ impl AnimationManager {
     effect_opacity: u8,
     config: &UserConfig,
   ) -> (AnimationPositionResult, Option<OpacityValue>) {
+    // A DirectComposition 3D transition (flip/tilt) owns this window's visuals
+    // entirely and is driven directly in `update_internal`. Keep the real
+    // window frozen (cloaked, not repositioned) for the whole transition; the
+    // session is moved out of `dcomp_sessions` at completion, after which this
+    // guard no longer fires and the window is repositioned and uncloaked.
+    #[cfg(target_os = "windows")]
+    if self.dcomp_sessions.contains_key(&window_id) {
+      return (AnimationPositionResult::Frozen, None);
+    }
+
     let existing_animation = self.get_animation(&window_id).cloned();
 
     let should_start = self.should_start_new_animation(
@@ -1190,6 +1331,63 @@ impl AnimationManager {
     }
   }
 
+  /// Starts a DirectComposition 3D transition (flip/tilt) for a window.
+  ///
+  /// Lazily creates the shared [`DcompContext`], creates a [`DcompSession`]
+  /// covering `window_rect`, and registers a stationary [`WindowAnimationState`]
+  /// (`window_rect` → `window_rect`) so the existing progress/vsync machinery
+  /// drives the eased transform. The caller is responsible for cloaking the real
+  /// window first.
+  ///
+  /// Returns `false` when DirectComposition is unavailable or the window cannot
+  /// be captured, so callers can fall back to a DWM-thumbnail style.
+  #[cfg(target_os = "windows")]
+  fn start_dcomp_transition(
+    &mut self,
+    window_id: Uuid,
+    source_hwnd: isize,
+    window_rect: &Rect,
+    kind: DcompTransitionKind,
+    duration_ms: u32,
+    easing: EasingFunction,
+  ) -> bool {
+    if self.dcomp_context.is_none() {
+      match DcompContext::new() {
+        Ok(ctx) => self.dcomp_context = Some(ctx),
+        Err(err) => {
+          tracing::warn!(
+            "DirectComposition unavailable; falling back from 3D style: {err}."
+          );
+          return false;
+        }
+      }
+    }
+
+    let ctx = self
+      .dcomp_context
+      .as_ref()
+      .expect("DComp context was just ensured.");
+    let session =
+      match DcompSession::create(ctx, source_hwnd, window_rect, kind) {
+        Ok(session) => session,
+        Err(err) => {
+          tracing::warn!("Failed to create DComp 3D transition: {err}.");
+          return false;
+        }
+      };
+
+    let anim = WindowAnimationState::new_movement(
+      window_rect.clone(),
+      window_rect.clone(),
+      duration_ms,
+      easing,
+    );
+    self.animations.insert(window_id, anim);
+    self.dcomp_sessions.insert(window_id, session);
+    self.ensure_timer_running();
+    true
+  }
+
   /// Starts an open animation for a newly appearing window.
   ///
   /// The surrogate animates from a computed start state (determined by
@@ -1199,6 +1397,9 @@ impl AnimationManager {
   ///
   /// No-ops when `direction` is `Fade` and `opacity_from` is `1.0` (nothing
   /// would visually change for the duration).
+  ///
+  /// The `Flip` style instead uses a DirectComposition 3D card flip, falling
+  /// back to `Zoom` when the window cannot be captured.
   #[cfg(target_os = "windows")]
   pub fn start_open_animation(
     &mut self,
@@ -1210,7 +1411,37 @@ impl AnimationManager {
     native_window: &NativeWindow,
   ) {
     let anim_config = &config.value.animations.window_open;
-    let is_zoom = anim_config.style == WindowTransitionStyle::Zoom;
+
+    // DirectComposition card flip (opt-in). Cloak and pre-position the real
+    // window at its target so it is revealed there when the surrogate is torn
+    // down, then run the 3D flip. On any failure fall through to a zoom open.
+    if anim_config.style.is_flip() {
+      let _ = native_window.set_cloaked(true);
+      let _ = native_window.set_window_pos(
+        &WindowZOrder::Normal,
+        &target_rect,
+        SWP_NOZORDER
+          | SWP_FRAMECHANGED
+          | SWP_NOACTIVATE
+          | SWP_NOSENDCHANGING,
+      );
+      if self.start_dcomp_transition(
+        window_id,
+        native_window.hwnd().0,
+        &target_rect,
+        DcompTransitionKind::OpenFlip,
+        anim_config.duration_ms,
+        anim_config.easing.clone(),
+      ) {
+        return;
+      }
+      // Fallback path: undo the cloak so the zoom session below cloaks fresh.
+      let _ = native_window.set_cloaked(false);
+    }
+
+    // `Flip` falls back to `Zoom` when the surrogate could not be created.
+    let is_zoom = anim_config.style == WindowTransitionStyle::Zoom
+      || anim_config.style.is_flip();
     let is_stationary = anim_config.style.is_stationary();
 
     // Skip `None` style (no slide, no zoom) with no opacity change — nothing
@@ -1316,7 +1547,29 @@ impl AnimationManager {
     }
 
     let anim_config = &config.value.animations.window_close;
-    let is_zoom = anim_config.style == WindowTransitionStyle::Zoom;
+
+    // DirectComposition card flip (opt-in). The caller already cloaked the real
+    // window, so the overlay covers it at `current_rect`. On any failure this
+    // falls through to a zoom close as a graceful fallback.
+    if anim_config.style.is_flip()
+      && self.start_dcomp_transition(
+        window_id,
+        native_window.hwnd().0,
+        &current_rect,
+        DcompTransitionKind::CloseFlip,
+        anim_config.duration_ms,
+        anim_config.easing.clone(),
+      )
+    {
+      self
+        .pending_close_windows
+        .insert(window_id, native_window.hwnd().0);
+      return;
+    }
+
+    // `Flip` falls back to `Zoom` when the surrogate could not be created.
+    let is_zoom = anim_config.style == WindowTransitionStyle::Zoom
+      || anim_config.style.is_flip();
     let is_stationary = anim_config.style.is_stationary();
 
     // For slide-out, the surrogate travels from current_rect to an off-screen
@@ -1484,44 +1737,96 @@ impl AnimationManager {
         self.ensure_timer_running();
       }
       FocusAnimationStyle::Scale => {
-        let sf = fc.scale_factor.max(0.01);
-        let w = current_rect.width();
-        let h = current_rect.height();
-        let sw = ((w as f32 * sf).round() as i32).max(1);
-        let sh = ((h as f32 * sf).round() as i32).max(1);
-        let initial_rect = Rect::from_xy(
-          current_rect.x() + (w - sw) / 2,
-          current_rect.y() + (h - sh) / 2,
-          sw,
-          sh,
-        );
-        let anim = WindowAnimationState::new_movement(
-          initial_rect.clone(),
-          current_rect.clone(),
+        self.start_focus_scale(
+          window_id,
+          current_rect,
+          effect_opacity,
+          fc.scale_factor,
           fc.duration_ms,
           fc.easing.clone(),
+          native_window,
         );
+      }
+      FocusAnimationStyle::Tilt => {
+        // DirectComposition 3D tilt/pop (opt-in). Cloak the real window, run
+        // the tilt, and fall back to the scale style if capture is unavailable.
         let _ = native_window.set_cloaked(true);
-        match ResizeSession::begin(
-          native_window.hwnd(),
-          &initial_rect,
+        if !self.start_dcomp_transition(
+          window_id,
+          native_window.hwnd().0,
           &current_rect,
-          None,
-          effect_opacity,
-          true,
+          DcompTransitionKind::FocusTilt,
+          fc.duration_ms,
+          fc.easing.clone(),
         ) {
-          Ok(session) => {
-            self.animations.insert(window_id, anim);
-            self.resize_sessions.insert(window_id, session);
-            self.ensure_timer_running();
-          }
-          Err(err) => {
-            let _ = native_window.set_cloaked(false);
-            tracing::warn!(
-              "Failed to begin focus scale animation for {window_id}: {err}."
-            );
-          }
+          let _ = native_window.set_cloaked(false);
+          self.start_focus_scale(
+            window_id,
+            current_rect,
+            effect_opacity,
+            fc.scale_factor,
+            fc.duration_ms,
+            fc.easing.clone(),
+            native_window,
+          );
         }
+      }
+    }
+  }
+
+  /// Starts a `Scale`-style focus animation: a growing `ResizeSession` from a
+  /// centred, `scale_factor`-shrunken rect to `current_rect`.
+  ///
+  /// The real window is cloaked and the surrogate reveals the content as it
+  /// grows. Also used as the fallback for the `Tilt` style when a window cannot
+  /// be captured for a DirectComposition surrogate.
+  #[cfg(target_os = "windows")]
+  fn start_focus_scale(
+    &mut self,
+    window_id: Uuid,
+    current_rect: Rect,
+    effect_opacity: u8,
+    scale_factor: f32,
+    duration_ms: u32,
+    easing: EasingFunction,
+    native_window: &NativeWindow,
+  ) {
+    let sf = scale_factor.max(0.01);
+    let w = current_rect.width();
+    let h = current_rect.height();
+    let sw = ((w as f32 * sf).round() as i32).max(1);
+    let sh = ((h as f32 * sf).round() as i32).max(1);
+    let initial_rect = Rect::from_xy(
+      current_rect.x() + (w - sw) / 2,
+      current_rect.y() + (h - sh) / 2,
+      sw,
+      sh,
+    );
+    let anim = WindowAnimationState::new_movement(
+      initial_rect.clone(),
+      current_rect.clone(),
+      duration_ms,
+      easing,
+    );
+    let _ = native_window.set_cloaked(true);
+    match ResizeSession::begin(
+      native_window.hwnd(),
+      &initial_rect,
+      &current_rect,
+      None,
+      effect_opacity,
+      true,
+    ) {
+      Ok(session) => {
+        self.animations.insert(window_id, anim);
+        self.resize_sessions.insert(window_id, session);
+        self.ensure_timer_running();
+      }
+      Err(err) => {
+        let _ = native_window.set_cloaked(false);
+        tracing::warn!(
+          "Failed to begin focus scale animation for {window_id}: {err}."
+        );
       }
     }
   }

@@ -41,6 +41,7 @@ animations:
     #   'slide_bottom'           - slides in from the bottom
     #   'fade'                   - no slide; combine with opacity_from for pure fade
     #   'zoom'                   - zoom in from window center
+    #   'flip'                   - 3D card flip in (Windows 11; falls back to zoom)
     style: "slide_right"
     # Starting opacity (0.0–1.0). At 1.0 no fade is applied; at 0.0 the
     # window fades in from fully transparent. Can be combined with any style.
@@ -86,6 +87,7 @@ animations:
     #   'slide_left'      - slide off the left edge
     #   'slide_top'       - slide off the top edge
     #   'slide_bottom'    - slide off the bottom edge
+    #   'flip'            - 3D card flip out (Windows 11; falls back to zoom)
     style: "none"
     # Final opacity (0.0–1.0). At 0.0 the window fades to fully transparent;
     # at 1.0 no fade is applied.
@@ -101,6 +103,7 @@ animations:
     # Animation style. Options:
     #   'scale'   (default) - window pops from an initial size to its actual size
     #   'opacity'           - window briefly dims then restores opacity
+    #   'tilt'              - 3D tilt/pop (Windows 11; falls back to scale)
     style: "scale"
     # For 'opacity' style: dim level at the start of the animation, relative to
     # the effect opacity. E.g. 0.5 = dims to 50% of effect opacity then

@@ -459,6 +459,10 @@ pub enum WindowTransitionStyle {
   /// Zoom in/out from the window center. Combine with `opacity_from`/`opacity_to`
   /// to also fade while zooming.
   Zoom,
+  /// Flip in/out around the window's vertical axis with perspective, like
+  /// turning a card. Requires DirectComposition (Windows 11); falls back to the
+  /// `zoom` behaviour when the window cannot be captured.
+  Flip,
 }
 
 impl WindowTransitionStyle {
@@ -467,7 +471,12 @@ impl WindowTransitionStyle {
   /// Stationary styles keep the surrogate at the window's final position for
   /// the full animation; the surrogate window itself never moves.
   pub fn is_stationary(&self) -> bool {
-    matches!(self, Self::None | Self::Zoom)
+    matches!(self, Self::None | Self::Zoom | Self::Flip)
+  }
+
+  /// Returns `true` for the DirectComposition-backed 3D flip style.
+  pub fn is_flip(&self) -> bool {
+    matches!(self, Self::Flip)
   }
 }
 
@@ -480,6 +489,10 @@ pub enum FocusAnimationStyle {
   Opacity,
   /// Briefly expand the window then snap back to its actual size.
   Scale,
+  /// Briefly tilt the window in 3D with perspective, settling to flat.
+  /// Requires DirectComposition (Windows 11); falls back to `scale` when the
+  /// window cannot be captured.
+  Tilt,
 }
 
 /// Determines which focus changes trigger the focus animation.

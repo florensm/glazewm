@@ -562,3 +562,242 @@ impl Drop for NativeDcompSurrogate {
     }
   }
 }
+
+// ---------------------------------------------------------------------------
+// 3D transition sessions
+//
+// A [`DcompSession`] wraps a [`NativeDcompSurrogate`] with the per-frame 4x4
+// transform for one of the supported cinematic styles. The animation system in
+// the `wm` crate owns these sessions but never touches Windows APIs directly:
+// it calls [`DcompSession::apply_frame`] with the eased animation progress and
+// batches a single [`DcompContext::commit`] per tick.
+// ---------------------------------------------------------------------------
+
+/// Maximum flip angle for the card-flip open/close style, in degrees.
+///
+/// A full quarter turn: the card is edge-on (invisible) at the extreme and
+/// face-on (flat) when settled, giving the signature "card turning" look.
+const FLIP_MAX_DEG: f32 = 90.0;
+
+/// Perspective depth for the flip, as a multiple of the content width. Smaller
+/// values foreshorten more strongly. Tuned for a bold, cinematic turn.
+const FLIP_DEPTH_FACTOR: f32 = 1.15;
+
+/// Maximum lean angle for the focus tilt style, in degrees.
+const TILT_MAX_DEG: f32 = 13.0;
+
+/// Perspective depth for the tilt, as a multiple of the content height.
+const TILT_DEPTH_FACTOR: f32 = 1.0;
+
+/// Extra uniform scale applied at the start of the focus tilt ("pop"), as a
+/// fraction above 1.0. Settles to 1.0 (no scale) when the animation completes.
+const TILT_POP: f32 = 0.05;
+
+/// Multiplies two row-major 4x4 matrices in the row-vector convention.
+///
+/// `mat_mul(a, b)` produces the matrix that applies `a` first, then `b`
+/// (`point * a * b`).
+fn mat_mul(a: &[[f32; 4]; 4], b: &[[f32; 4]; 4]) -> [[f32; 4]; 4] {
+  let mut out = [[0.0_f32; 4]; 4];
+  for (i, row) in out.iter_mut().enumerate() {
+    for (j, cell) in row.iter_mut().enumerate() {
+      *cell = (0..4).map(|k| a[i][k] * b[k][j]).sum();
+    }
+  }
+  out
+}
+
+/// Builds a translation matrix in the row-vector convention.
+fn mat_translate(tx: f32, ty: f32, tz: f32) -> [[f32; 4]; 4] {
+  [
+    [1.0, 0.0, 0.0, 0.0],
+    [0.0, 1.0, 0.0, 0.0],
+    [0.0, 0.0, 1.0, 0.0],
+    [tx, ty, tz, 1.0],
+  ]
+}
+
+/// Builds a uniform scale matrix.
+fn mat_scale(s: f32) -> [[f32; 4]; 4] {
+  [
+    [s, 0.0, 0.0, 0.0],
+    [0.0, s, 0.0, 0.0],
+    [0.0, 0.0, s, 0.0],
+    [0.0, 0.0, 0.0, 1.0],
+  ]
+}
+
+/// Builds a rotation about the X axis (lean), in the row-vector convention.
+fn mat_rotate_x(rad: f32) -> [[f32; 4]; 4] {
+  let (s, c) = rad.sin_cos();
+  [
+    [1.0, 0.0, 0.0, 0.0],
+    [0.0, c, s, 0.0],
+    [0.0, -s, c, 0.0],
+    [0.0, 0.0, 0.0, 1.0],
+  ]
+}
+
+/// Builds a rotation about the Y axis (flip), in the row-vector convention.
+fn mat_rotate_y(rad: f32) -> [[f32; 4]; 4] {
+  let (s, c) = rad.sin_cos();
+  [
+    [c, 0.0, s, 0.0],
+    [0.0, 1.0, 0.0, 0.0],
+    [-s, 0.0, c, 0.0],
+    [0.0, 0.0, 0.0, 1.0],
+  ]
+}
+
+/// Builds a perspective matrix that divides x/y by `1 - z / depth`, so content
+/// rotated toward the viewer is magnified and content rotated away foreshortens.
+fn mat_perspective(depth: f32) -> [[f32; 4]; 4] {
+  [
+    [1.0, 0.0, 0.0, 0.0],
+    [0.0, 1.0, 0.0, 0.0],
+    [0.0, 0.0, 1.0, -1.0 / depth],
+    [0.0, 0.0, 0.0, 1.0],
+  ]
+}
+
+/// The cinematic 3D style applied by a [`DcompSession`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DcompTransitionKind {
+  /// Window-open card flip: starts edge-on (90°) and settles face-on (0°).
+  OpenFlip,
+  /// Window-close card flip: starts face-on (0°) and turns edge-on (90°).
+  CloseFlip,
+  /// Focus tilt/pop: starts leaned back and slightly enlarged, settles flat.
+  FocusTilt,
+}
+
+impl DcompTransitionKind {
+  /// Computes the content transform for this style at `eased` progress.
+  ///
+  /// `cw`/`ch` are the captured content size in pixels; `margin` is the
+  /// transparent padding (in pixels) between the content and each overlay edge.
+  /// All styles resolve to the identity placement (`translate(margin, margin)`)
+  /// at `eased == 1.0`, so the surrogate aligns exactly with the real window for
+  /// a seamless hand-off.
+  fn transform(self, eased: f32, cw: f32, ch: f32, margin: f32) -> [[f32; 4]; 4] {
+    let to_origin = mat_translate(-cw / 2.0, -ch / 2.0, 0.0);
+    let to_center = mat_translate(cw / 2.0 + margin, ch / 2.0 + margin, 0.0);
+
+    let core = match self {
+      Self::OpenFlip | Self::CloseFlip => {
+        // Open settles to flat (1 - eased); close turns away (eased).
+        let t = if matches!(self, Self::OpenFlip) {
+          1.0 - eased
+        } else {
+          eased
+        };
+        let angle = t * FLIP_MAX_DEG.to_radians();
+        mat_mul(&mat_rotate_y(angle), &mat_perspective(cw * FLIP_DEPTH_FACTOR))
+      }
+      Self::FocusTilt => {
+        let t = 1.0 - eased;
+        let angle = t * TILT_MAX_DEG.to_radians();
+        let scale = mat_scale(1.0 + t * TILT_POP);
+        let rot = mat_rotate_x(angle);
+        mat_mul(
+          &mat_mul(&scale, &rot),
+          &mat_perspective(ch * TILT_DEPTH_FACTOR),
+        )
+      }
+    };
+
+    mat_mul(&mat_mul(&to_origin, &core), &to_center)
+  }
+}
+
+/// A live 3D transition for a single window, backed by a [`NativeDcompSurrogate`].
+///
+/// The overlay is created larger than the window (by [`margin`](Self::margin))
+/// so rotated/scaled content never clips at the window edges. Each frame the
+/// owner calls [`apply_frame`](Self::apply_frame) with the eased progress; the
+/// transform settles to an exact 1:1 placement over the real window at progress
+/// `1.0`.
+///
+/// # Platform-specific
+///
+/// Windows only. Borderless capture requires Windows 11.
+pub struct DcompSession {
+  /// The transformable surrogate overlay.
+  surrogate: NativeDcompSurrogate,
+  /// The cinematic style driving the per-frame transform.
+  kind: DcompTransitionKind,
+  /// Handle of the captured source window, used to send `WM_CLOSE` on a
+  /// completed close transition.
+  source_hwnd: isize,
+  /// Transparent padding (pixels) between content and each overlay edge.
+  margin: f32,
+}
+
+impl DcompSession {
+  /// Creates a transition for `source_hwnd` covering `window_rect`.
+  ///
+  /// The overlay is inset-padded around `window_rect` so 3D content has room to
+  /// extend. The surrogate is created hidden, given its starting transform, then
+  /// shown and committed so the first visible frame is already correct.
+  ///
+  /// Returns an error if the window cannot be captured; callers fall back to a
+  /// DWM-thumbnail style.
+  pub fn create(
+    ctx: &DcompContext,
+    source_hwnd: isize,
+    window_rect: &Rect,
+    kind: DcompTransitionKind,
+  ) -> crate::Result<Self> {
+    let w = window_rect.width() as f32;
+    let h = window_rect.height() as f32;
+    // Generous, content-relative padding so the near edge of a rotated card or
+    // a scaled "pop" never clips. The overlay is transparent, so over-sizing it
+    // is visually free.
+    let margin = (0.45 * w.max(h)).clamp(80.0, 700.0);
+    let mi = margin as i32;
+    let overlay = Rect::from_xy(
+      window_rect.x() - mi,
+      window_rect.y() - mi,
+      window_rect.width() + 2 * mi,
+      window_rect.height() + 2 * mi,
+    );
+
+    let surrogate =
+      NativeDcompSurrogate::create(ctx, HWND(source_hwnd), &overlay, false)?;
+    let mut session = Self {
+      surrogate,
+      kind,
+      source_hwnd,
+      margin,
+    };
+    session.apply_frame(ctx, 0.0)?;
+    session.surrogate.set_visible(true);
+    ctx.commit()?;
+    Ok(session)
+  }
+
+  /// Pulls the latest captured frame and applies this style's transform for the
+  /// given eased progress. Does not commit; the owner batches one
+  /// [`DcompContext::commit`] per tick.
+  pub fn apply_frame(
+    &mut self,
+    ctx: &DcompContext,
+    eased: f32,
+  ) -> crate::Result<()> {
+    let (cw, ch) = self.surrogate.update_capture(ctx)?;
+    let matrix =
+      self.kind.transform(eased, cw as f32, ch as f32, self.margin);
+    self.surrogate.set_transform(&matrix)?;
+    Ok(())
+  }
+
+  /// Returns this session's transition style.
+  pub fn kind(&self) -> DcompTransitionKind {
+    self.kind
+  }
+
+  /// Returns the handle of the captured source window.
+  pub fn source_hwnd(&self) -> isize {
+    self.source_hwnd
+  }
+}
