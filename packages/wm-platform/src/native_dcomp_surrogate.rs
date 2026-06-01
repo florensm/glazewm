@@ -603,6 +603,22 @@ const FLIP_MAX_DEG: f32 = 90.0;
 /// values foreshorten more strongly. Tuned for a bold, cinematic turn.
 const FLIP_DEPTH_FACTOR: f32 = 1.15;
 
+/// Maximum swing angle for the hinge (door) open/close style, in degrees.
+///
+/// The content pivots about its left edge and swings *away* from the viewer, so
+/// large angles foreshorten (never magnify) and stay within the overlay.
+const HINGE_MAX_DEG: f32 = 78.0;
+
+/// Perspective depth for the hinge, as a multiple of the content width.
+const HINGE_DEPTH_FACTOR: f32 = 1.3;
+
+/// Maximum in-plane (Z) rotation for the spin open/close style, in degrees.
+const SPIN_MAX_DEG: f32 = 16.0;
+
+/// How far the spin style shrinks at its extreme, as a fraction below 1.0
+/// (e.g. 0.18 = scales up from 0.82). Staying below 1.0 avoids edge clipping.
+const SPIN_SHRINK: f32 = 0.18;
+
 /// Maximum lean angle for the focus tilt style, in degrees.
 const TILT_MAX_DEG: f32 = 13.0;
 
@@ -669,6 +685,17 @@ fn mat_rotate_y(rad: f32) -> [[f32; 4]; 4] {
   ]
 }
 
+/// Builds an in-plane rotation about the Z axis, in the row-vector convention.
+fn mat_rotate_z(rad: f32) -> [[f32; 4]; 4] {
+  let (s, c) = rad.sin_cos();
+  [
+    [c, s, 0.0, 0.0],
+    [-s, c, 0.0, 0.0],
+    [0.0, 0.0, 1.0, 0.0],
+    [0.0, 0.0, 0.0, 1.0],
+  ]
+}
+
 /// Builds a perspective matrix that divides x/y by `1 - z / depth`, so content
 /// rotated toward the viewer is magnified and content rotated away foreshortens.
 fn mat_perspective(depth: f32) -> [[f32; 4]; 4] {
@@ -680,53 +707,131 @@ fn mat_perspective(depth: f32) -> [[f32; 4]; 4] {
   ]
 }
 
-/// The cinematic 3D style applied by a [`DcompSession`].
+/// Shape of an open/close 3D transition.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DcompShape {
+  /// Card flip about the vertical center axis (edge-on ↔ flat).
+  Flip,
+  /// Door swing about the left edge (away from the viewer ↔ flat).
+  Hinge,
+  /// In-plane spin with a scale "pop" (rotated + small ↔ flat).
+  Spin,
+}
+
+/// Shape of a focus 3D transition.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DcompFocus {
+  /// Lean back with a slight scale pop, settling flat.
+  Tilt,
+}
+
+/// A 3D transition applied by a [`DcompSession`], parameterized by phase
+/// (open / close / focus) and shape.
+///
+/// Every transition resolves to the identity placement at `eased == 1.0`, so
+/// the surrogate aligns exactly with the real window for a seamless hand-off.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DcompTransitionKind {
-  /// Window-open card flip: starts edge-on (90°) and settles face-on (0°).
-  OpenFlip,
-  /// Window-close card flip: starts face-on (0°) and turns edge-on (90°).
-  CloseFlip,
-  /// Focus tilt/pop: starts leaned back and slightly enlarged, settles flat.
-  FocusTilt,
+  /// Window-open transition: animates from the shape's extreme pose to flat.
+  Open(DcompShape),
+  /// Window-close transition: animates from flat to the shape's extreme pose.
+  Close(DcompShape),
+  /// Focus transition: animates from the shape's extreme pose to flat.
+  Focus(DcompFocus),
 }
 
 impl DcompTransitionKind {
-  /// Computes the content transform for this style at `eased` progress.
+  /// Whether this is a close transition (drives a `WM_CLOSE` on completion).
+  pub fn is_close(self) -> bool {
+    matches!(self, Self::Close(_))
+  }
+
+  /// Whether this is a focus transition.
+  pub fn is_focus(self) -> bool {
+    matches!(self, Self::Focus(_))
+  }
+
+  /// Computes the content transform for this transition at `eased` progress.
   ///
   /// `cw`/`ch` are the captured content size in pixels; `margin` is the
   /// transparent padding (in pixels) between the content and each overlay edge.
-  /// All styles resolve to the identity placement (`translate(margin, margin)`)
-  /// at `eased == 1.0`, so the surrogate aligns exactly with the real window for
-  /// a seamless hand-off.
   fn transform(self, eased: f32, cw: f32, ch: f32, margin: f32) -> [[f32; 4]; 4] {
-    let to_origin = mat_translate(-cw / 2.0, -ch / 2.0, 0.0);
-    let to_center = mat_translate(cw / 2.0 + margin, ch / 2.0 + margin, 0.0);
+    // `extreme` is 0.0 at the flat/settled pose and 1.0 at the shape's most
+    // extreme pose. Open and focus animate extreme→0; close animates 0→extreme.
+    match self {
+      Self::Open(shape) => shape_matrix(shape, 1.0 - eased, cw, ch, margin),
+      Self::Close(shape) => shape_matrix(shape, eased, cw, ch, margin),
+      Self::Focus(focus) => focus_matrix(focus, 1.0 - eased, cw, ch, margin),
+    }
+  }
+}
 
-    let core = match self {
-      Self::OpenFlip | Self::CloseFlip => {
-        // Open settles to flat (1 - eased); close turns away (eased).
-        let t = if matches!(self, Self::OpenFlip) {
-          1.0 - eased
-        } else {
-          eased
-        };
-        let angle = t * FLIP_MAX_DEG.to_radians();
-        mat_mul(&mat_rotate_y(angle), &mat_perspective(cw * FLIP_DEPTH_FACTOR))
-      }
-      Self::FocusTilt => {
-        let t = 1.0 - eased;
-        let angle = t * TILT_MAX_DEG.to_radians();
-        let scale = mat_scale(1.0 + t * TILT_POP);
-        let rot = mat_rotate_x(angle);
-        mat_mul(
-          &mat_mul(&scale, &rot),
-          &mat_perspective(ch * TILT_DEPTH_FACTOR),
-        )
-      }
-    };
+/// Builds the open/close transform for `shape` at `extreme` ∈ [0, 1].
+///
+/// `extreme == 0.0` is the flat identity placement; `extreme == 1.0` is the
+/// shape's most extreme pose.
+fn shape_matrix(
+  shape: DcompShape,
+  extreme: f32,
+  cw: f32,
+  ch: f32,
+  margin: f32,
+) -> [[f32; 4]; 4] {
+  match shape {
+    DcompShape::Flip => {
+      let to_origin = mat_translate(-cw / 2.0, -ch / 2.0, 0.0);
+      let to_center = mat_translate(cw / 2.0 + margin, ch / 2.0 + margin, 0.0);
+      let core = mat_mul(
+        &mat_rotate_y(extreme * FLIP_MAX_DEG.to_radians()),
+        &mat_perspective(cw * FLIP_DEPTH_FACTOR),
+      );
+      mat_mul(&mat_mul(&to_origin, &core), &to_center)
+    }
+    DcompShape::Hinge => {
+      // Pivot about the left edge (x = 0), vertically centered; swing away
+      // from the viewer (negative angle) so content foreshortens, never
+      // magnifies, regardless of angle.
+      let to_origin = mat_translate(0.0, -ch / 2.0, 0.0);
+      let to_anchor = mat_translate(margin, ch / 2.0 + margin, 0.0);
+      let core = mat_mul(
+        &mat_rotate_y(-extreme * HINGE_MAX_DEG.to_radians()),
+        &mat_perspective(cw * HINGE_DEPTH_FACTOR),
+      );
+      mat_mul(&mat_mul(&to_origin, &core), &to_anchor)
+    }
+    DcompShape::Spin => {
+      // Pure in-plane rotation + scale (no perspective). Scale stays below 1.0
+      // so corners never clip the overlay.
+      let to_origin = mat_translate(-cw / 2.0, -ch / 2.0, 0.0);
+      let to_center = mat_translate(cw / 2.0 + margin, ch / 2.0 + margin, 0.0);
+      let scale = mat_scale(1.0 - extreme * SPIN_SHRINK);
+      let rot = mat_rotate_z(-extreme * SPIN_MAX_DEG.to_radians());
+      mat_mul(&mat_mul(&mat_mul(&to_origin, &scale), &rot), &to_center)
+    }
+  }
+}
 
-    mat_mul(&mat_mul(&to_origin, &core), &to_center)
+/// Builds the focus transform for `focus` at `extreme` ∈ [0, 1].
+///
+/// `extreme == 0.0` is the flat identity placement; `extreme == 1.0` is the
+/// shape's most extreme pose.
+fn focus_matrix(
+  focus: DcompFocus,
+  extreme: f32,
+  cw: f32,
+  ch: f32,
+  margin: f32,
+) -> [[f32; 4]; 4] {
+  match focus {
+    DcompFocus::Tilt => {
+      let to_origin = mat_translate(-cw / 2.0, -ch / 2.0, 0.0);
+      let to_center = mat_translate(cw / 2.0 + margin, ch / 2.0 + margin, 0.0);
+      let scale = mat_scale(1.0 + extreme * TILT_POP);
+      let rot = mat_rotate_x(extreme * TILT_MAX_DEG.to_radians());
+      let core =
+        mat_mul(&mat_mul(&scale, &rot), &mat_perspective(ch * TILT_DEPTH_FACTOR));
+      mat_mul(&mat_mul(&to_origin, &core), &to_center)
+    }
   }
 }
 

@@ -463,6 +463,12 @@ pub enum WindowTransitionStyle {
   /// turning a card. Requires DirectComposition (Windows 11); falls back to the
   /// `zoom` behaviour when the window cannot be captured.
   Flip,
+  /// Swing in/out about the window's left edge like a door, with perspective.
+  /// Requires DirectComposition (Windows 11); falls back to `zoom`.
+  Hinge,
+  /// Spin in/out with a small in-plane rotation and scale "pop". Requires
+  /// DirectComposition (Windows 11); falls back to `zoom`.
+  Spin,
 }
 
 impl WindowTransitionStyle {
@@ -471,12 +477,14 @@ impl WindowTransitionStyle {
   /// Stationary styles keep the surrogate at the window's final position for
   /// the full animation; the surrogate window itself never moves.
   pub fn is_stationary(&self) -> bool {
-    matches!(self, Self::None | Self::Zoom | Self::Flip)
+    matches!(self, Self::None | Self::Zoom | Self::Flip | Self::Hinge | Self::Spin)
   }
 
-  /// Returns `true` for the DirectComposition-backed 3D flip style.
-  pub fn is_flip(&self) -> bool {
-    matches!(self, Self::Flip)
+  /// Returns `true` for the DirectComposition-backed 3D styles (flip, hinge,
+  /// spin), which require live capture and fall back to `zoom` when a window
+  /// cannot be captured.
+  pub fn is_dcomp(&self) -> bool {
+    matches!(self, Self::Flip | Self::Hinge | Self::Spin)
   }
 }
 

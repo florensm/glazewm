@@ -42,6 +42,8 @@ animations:
     #   'fade'                   - no slide; combine with opacity_from for pure fade
     #   'zoom'                   - zoom in from window center
     #   'flip'                   - 3D card flip in (Windows 11; falls back to zoom)
+    #   'hinge'                  - 3D door swing in from the left edge (Windows 11; falls back to zoom)
+    #   'spin'                   - in-plane spin with a scale "pop" (Windows 11; falls back to zoom)
     style: "slide_right"
     # Starting opacity (0.0–1.0). At 1.0 no fade is applied; at 0.0 the
     # window fades in from fully transparent. Can be combined with any style.
@@ -88,6 +90,8 @@ animations:
     #   'slide_top'       - slide off the top edge
     #   'slide_bottom'    - slide off the bottom edge
     #   'flip'            - 3D card flip out (Windows 11; falls back to zoom)
+    #   'hinge'           - 3D door swing out to the left edge (Windows 11; falls back to zoom)
+    #   'spin'            - in-plane spin with a scale "pop" (Windows 11; falls back to zoom)
     style: "none"
     # Final opacity (0.0–1.0). At 0.0 the window fades to fully transparent;
     # at 1.0 no fade is applied.
