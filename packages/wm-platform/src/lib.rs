@@ -48,6 +48,10 @@ pub use native_dcomp_surrogate::{
   DcompContext, DcompFocus, DcompSession, DcompShape, DcompTransitionKind,
   NativeDcompSurrogate, IDENTITY_TRANSFORM,
 };
+#[cfg(target_os = "windows")]
+mod native_iris_overlay;
+#[cfg(target_os = "windows")]
+pub use native_iris_overlay::NativeIrisOverlay;
 
 pub use platform_event::*;
 pub use single_instance::*;
@@ -64,6 +68,30 @@ pub fn dwm_flush() {
     // SAFETY: No preconditions; `DwmFlush` is safe to call from any thread
     // and blocks until the next DWM composition frame is ready.
     let _ = windows::Win32::Graphics::Dwm::DwmFlush();
+  }
+}
+
+/// Returns the current cursor position in virtual-screen pixels.
+///
+/// Returns `None` if the position cannot be queried. On non-Windows platforms
+/// this always returns `None`.
+pub fn cursor_position() -> Option<(i32, i32)> {
+  #[cfg(target_os = "windows")]
+  {
+    use windows::Win32::{
+      Foundation::POINT, UI::WindowsAndMessaging::GetCursorPos,
+    };
+    let mut point = POINT { x: 0, y: 0 };
+    // SAFETY: `point` is a valid stack out-parameter.
+    if unsafe { GetCursorPos(&raw mut point) }.is_ok() {
+      Some((point.x, point.y))
+    } else {
+      None
+    }
+  }
+  #[cfg(not(target_os = "windows"))]
+  {
+    None
   }
 }
 

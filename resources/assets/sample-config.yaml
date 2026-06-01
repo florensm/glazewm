@@ -59,9 +59,17 @@ animations:
     #   'slide' (default) - workspaces slide along the 'direction' axis
     #   'fade'            - pure crossfade; both workspaces stay in place
     #   'zoom'            - outgoing shrinks to monitor center, incoming expands
+    #   'iris'            - a frozen snapshot of the old workspace stays on top
+    #                       while a circular hole grows from 'iris_origin',
+    #                       revealing the new workspace beneath (Windows only)
     style: "slide"
     # Slide axis when style is 'slide'. Options: 'horizontal' (default), 'vertical'.
     direction: "horizontal"
+    # Origin of the circle when style is 'iris'. Options:
+    #   'center' (default) - grow from the monitor center
+    #   'cursor'           - grow from the current mouse-cursor position
+    #   'focused_window'   - grow from the center of the newly focused window
+    iris_origin: "center"
     # Opacity at the end of the outgoing workspace's exit (0.0–1.0).
     # 1.0 = stays fully opaque (default); 0.0 = fades out to transparent.
     # Combine with opacity_incoming: 0.0 for a crossfade on any style.

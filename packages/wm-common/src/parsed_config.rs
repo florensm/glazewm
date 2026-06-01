@@ -685,6 +685,11 @@ pub enum WorkspaceSwitchStyle {
   /// Outgoing workspace shrinks to the monitor center; incoming expands from
   /// it. Opacities are also animated via `opacity_outgoing` / `opacity_incoming`.
   Zoom,
+  /// Iris wipe: a frozen snapshot of the outgoing workspace stays on top while
+  /// a circular hole grows from `iris_origin`, revealing the live incoming
+  /// workspace beneath. Requires Windows; falls back to an instant switch when
+  /// the monitor cannot be captured.
+  Iris,
 }
 
 impl WorkspaceSwitchStyle {
@@ -692,6 +697,27 @@ impl WorkspaceSwitchStyle {
   pub fn is_no_slide(&self) -> bool {
     matches!(self, Self::Fade | Self::Zoom)
   }
+
+  /// Returns `true` for the iris-wipe style, which is driven by a single
+  /// snapshot overlay rather than per-window surrogates.
+  pub fn is_iris(&self) -> bool {
+    matches!(self, Self::Iris)
+  }
+}
+
+/// Origin point from which the iris-wipe circle grows.
+#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum WorkspaceSwitchIrisOrigin {
+  /// Grow from the center of the monitor (default).
+  #[default]
+  Center,
+  /// Grow from the current mouse-cursor position.
+  Cursor,
+  /// Grow from the center of the newly focused window on the incoming
+  /// workspace. Falls back to the monitor center when the incoming workspace
+  /// has no focusable window.
+  FocusedWindow,
 }
 
 /// Slide axis for the `slide` workspace-switch style.
@@ -720,6 +746,9 @@ pub struct WorkspaceSwitchAnimationConfig {
   pub style: WorkspaceSwitchStyle,
   /// Slide axis when `style` is `slide`: `horizontal` (default) or `vertical`.
   pub direction: WorkspaceSwitchDirection,
+  /// Origin of the iris circle when `style` is `iris`: `center` (default),
+  /// `cursor`, or `focused_window`. Ignored by other styles.
+  pub iris_origin: WorkspaceSwitchIrisOrigin,
   /// Opacity at the end of the outgoing workspace's animation (0.0–1.0).
   ///
   /// At `1.0` (default) the outgoing workspace stays fully opaque. At `0.0` it
@@ -751,6 +780,7 @@ impl Default for WorkspaceSwitchAnimationConfig {
       easing: EasingFunction::CubicBezier(0.33, 1.0, 0.68, 1.0),
       style: WorkspaceSwitchStyle::default(),
       direction: WorkspaceSwitchDirection::default(),
+      iris_origin: WorkspaceSwitchIrisOrigin::default(),
       opacity_outgoing: 1.0,
       opacity_incoming: 1.0,
       zoom_factor: 0.1,

@@ -7,6 +7,23 @@ use crate::{
   traits::CommonGetters,
 };
 
+/// A pending iris-wipe workspace switch requested by `focus_workspace`.
+///
+/// Carries the monitor geometry and the circle origin (all in screen pixels)
+/// so `platform_sync` can snapshot the monitor and start the overlay before the
+/// real windows are switched underneath. Stored as primitives to avoid coupling
+/// `PendingSync` to platform types.
+#[derive(Debug, Clone, Copy)]
+pub struct IrisSwitchRequest {
+  pub monitor_x: i32,
+  pub monitor_y: i32,
+  pub monitor_width: i32,
+  pub monitor_height: i32,
+  pub monitor_handle: isize,
+  pub origin_x: i32,
+  pub origin_y: i32,
+}
+
 #[derive(Debug, Default)]
 #[allow(clippy::struct_excessive_bools)]
 pub struct PendingSync {
@@ -55,6 +72,10 @@ pub struct PendingSync {
   /// and the `focus_change` animation is enabled. Consumed by `platform_sync`
   /// when it processes that window's frame so `effect_opacity` is available.
   focus_animation_window: Option<Uuid>,
+
+  /// Pending iris-wipe workspace switch, consumed by `platform_sync` to create
+  /// the snapshot overlay before the real windows are switched.
+  iris_switch: Option<IrisSwitchRequest>,
 }
 
 impl PendingSync {
@@ -65,6 +86,7 @@ impl PendingSync {
       || self.needs_focused_effect_update
       || self.needs_all_effects_update
       || self.needs_cursor_jump
+      || self.iris_switch.is_some()
   }
 
   pub fn clear(&mut self) -> &mut Self {
@@ -79,6 +101,7 @@ impl PendingSync {
     self.workspace_switch_direction = 0;
     self.window_state_changes.clear();
     self.focus_animation_window = None;
+    self.iris_switch = None;
     self
   }
 
@@ -232,5 +255,19 @@ impl PendingSync {
   /// Returns the slide direction for the current workspace switch.
   pub fn workspace_switch_direction(&self) -> i32 {
     self.workspace_switch_direction
+  }
+
+  /// Requests an iris-wipe workspace switch for this sync cycle.
+  pub fn request_iris_switch(
+    &mut self,
+    request: IrisSwitchRequest,
+  ) -> &mut Self {
+    self.iris_switch = Some(request);
+    self
+  }
+
+  /// Consumes and returns the pending iris-wipe request, if any.
+  pub fn take_iris_switch(&mut self) -> Option<IrisSwitchRequest> {
+    self.iris_switch.take()
   }
 }

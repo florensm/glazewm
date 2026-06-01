@@ -9,9 +9,13 @@ use wm_common::{
 #[cfg(target_os = "windows")]
 use wm_platform::NativeWindowWindowsExt;
 #[cfg(target_os = "windows")]
-use wm_platform::{CornerStyle, OpacityValue, WorkspaceSurrogate};
+use wm_platform::{
+  CornerStyle, NativeIrisOverlay, OpacityValue, WorkspaceSurrogate,
+};
 use wm_platform::{Rect, WindowZOrder};
 
+#[cfg(target_os = "windows")]
+use crate::pending_sync::IrisSwitchRequest;
 use crate::{
   animation::AnimationPositionResult,
   models::{Container, WindowContainer},
@@ -19,6 +23,30 @@ use crate::{
   user_config::UserConfig,
   wm_state::WmState,
 };
+
+/// Returns the smallest iris radius that fully covers the monitor from the
+/// origin — the distance to the farthest monitor corner.
+#[cfg(target_os = "windows")]
+fn iris_max_radius(req: &IrisSwitchRequest) -> i32 {
+  let corners = [
+    (req.monitor_x, req.monitor_y),
+    (req.monitor_x + req.monitor_width, req.monitor_y),
+    (req.monitor_x, req.monitor_y + req.monitor_height),
+    (
+      req.monitor_x + req.monitor_width,
+      req.monitor_y + req.monitor_height,
+    ),
+  ];
+  corners
+    .iter()
+    .map(|&(x, y)| {
+      let dx = f64::from(x - req.origin_x);
+      let dy = f64::from(y - req.origin_y);
+      dx.hypot(dy)
+    })
+    .fold(0.0_f64, f64::max)
+    .ceil() as i32
+}
 
 pub fn platform_sync(
   state: &mut WmState,
@@ -263,6 +291,36 @@ fn redraw_containers(
   {
     let ws_config = &config.value.animations.workspace_switch;
     if ws_config.enabled {
+      // Iris-wipe pre-pass: snapshot the monitor (still showing the outgoing
+      // workspace) and show the overlay before the real windows are switched in
+      // the redraw loop below. The hole is then driven by the animation manager.
+      if let Some(req) = state.pending_sync.take_iris_switch() {
+        let monitor = Rect::from_xy(
+          req.monitor_x,
+          req.monitor_y,
+          req.monitor_width,
+          req.monitor_height,
+        );
+        match NativeIrisOverlay::create(&monitor) {
+          Ok(overlay) => {
+            state.animation_manager.start_iris_switch(
+              overlay,
+              req.origin_x,
+              req.origin_y,
+              iris_max_radius(&req),
+              req.monitor_handle,
+              ws_config.duration_ms,
+              ws_config.easing.clone(),
+            );
+          }
+          Err(err) => {
+            tracing::warn!(
+              "Iris overlay failed; instant workspace switch: {err}."
+            );
+          }
+        }
+      }
+
       let direction = state.pending_sync.workspace_switch_direction();
       // Only start a new workspace-switch animation when there are actually
       // incoming/outgoing windows in this sync (i.e., this is the initial
