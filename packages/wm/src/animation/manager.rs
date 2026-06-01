@@ -509,6 +509,15 @@ impl AnimationManager {
                 "DComp transition frame failed for {id}: {err}."
               );
             }
+            // Reveal once the live capture has a real frame, so the overlay is
+            // never shown blank. The overlay is topmost: show it first (it now
+            // covers the real window with identical content), then cloak the
+            // real window — no blank gap and no double image.
+            if !session.is_revealed() && session.has_content() {
+              session.reveal();
+              let _ = NativeWindow::from_handle(session.source_hwnd())
+                .set_cloaked(true);
+            }
             if eased >= 1.0 {
               completed.push((*id, session.kind()));
             }
@@ -975,13 +984,25 @@ impl AnimationManager {
     config: &UserConfig,
   ) -> (AnimationPositionResult, Option<OpacityValue>) {
     // A DirectComposition 3D transition (flip/tilt) owns this window's visuals
-    // entirely and is driven directly in `update_internal`. Keep the real
-    // window frozen (cloaked, not repositioned) for the whole transition; the
-    // session is moved out of `dcomp_sessions` at completion, after which this
-    // guard no longer fires and the window is repositioned and uncloaked.
+    // and is driven directly in `update_internal`. Once the overlay is revealed
+    // (covering the window), keep the real window frozen — cloaked and not
+    // repositioned — for the rest of the transition. The session is moved out
+    // of `dcomp_sessions` at completion, after which this guard no longer fires
+    // and the window is repositioned and uncloaked normally.
+    //
+    // Before reveal (waiting for the first captured frame), a focus tilt keeps
+    // the real window in the normal visible path so there is no blank gap —
+    // `update_internal` cloaks it at the moment of reveal. An open flip stays
+    // frozen during this window so its real window never flashes at full size
+    // while appearing.
     #[cfg(target_os = "windows")]
-    if self.dcomp_sessions.contains_key(&window_id) {
-      return (AnimationPositionResult::Frozen, None);
+    if let Some(session) = self.dcomp_sessions.get(&window_id) {
+      if session.is_revealed()
+        || !matches!(session.kind(), DcompTransitionKind::FocusTilt)
+      {
+        return (AnimationPositionResult::Frozen, None);
+      }
+      return (AnimationPositionResult::Apply(target_rect), None);
     }
 
     let existing_animation = self.get_animation(&window_id).cloned();
@@ -1763,9 +1784,11 @@ impl AnimationManager {
         );
       }
       FocusAnimationStyle::Tilt => {
-        // DirectComposition 3D tilt/pop (opt-in). Cloak the real window, run
-        // the tilt, and fall back to the scale style if capture is unavailable.
-        let _ = native_window.set_cloaked(true);
+        // DirectComposition 3D tilt/pop (opt-in). The real window stays visible
+        // until the surrogate has its first captured frame — `update_internal`
+        // reveals the overlay and cloaks the real window together — so there is
+        // no blank gap. Falls back to the scale style (which cloaks itself)
+        // when the window cannot be captured.
         if !self.start_dcomp_transition(
           window_id,
           native_window.hwnd().0,
@@ -1774,7 +1797,6 @@ impl AnimationManager {
           fc.duration_ms,
           fc.easing.clone(),
         ) {
-          let _ = native_window.set_cloaked(false);
           self.start_focus_scale(
             window_id,
             current_rect,

@@ -219,6 +219,12 @@ struct Capture {
   _session: GraphicsCaptureSession,
   /// Current frame-pool size in pixels (tracks the source window's size).
   size: SizeInt32,
+  /// Whether at least one real frame has been copied into the surface.
+  ///
+  /// `Windows.Graphics.Capture` delivers its first frame a few composition
+  /// cycles after `StartCapture`. Callers gate revealing the surrogate on this
+  /// so the overlay is never shown blank.
+  has_content: bool,
 }
 
 impl Capture {
@@ -256,6 +262,7 @@ impl Capture {
       frame_pool,
       _session: session,
       size,
+      has_content: false,
     })
   }
 
@@ -326,6 +333,7 @@ impl Capture {
       );
       surface.EndDraw()?;
     }
+    self.has_content = true;
     Ok(self.current_size())
   }
 
@@ -557,6 +565,11 @@ impl NativeDcompSurrogate {
   pub fn hwnd(&self) -> HWND {
     HWND(self.hwnd)
   }
+
+  /// Whether at least one real captured frame has been drawn into the surface.
+  pub fn has_content(&self) -> bool {
+    self.capture.has_content
+  }
 }
 
 impl Drop for NativeDcompSurrogate {
@@ -738,14 +751,21 @@ pub struct DcompSession {
   source_hwnd: isize,
   /// Transparent padding (pixels) between content and each overlay edge.
   margin: f32,
+  /// Whether the overlay has been revealed (shown) yet.
+  ///
+  /// Stays hidden until the live capture delivers its first real frame, so the
+  /// overlay is never shown blank — the caller keeps the real window visible
+  /// until then and cloaks it at reveal for a seamless hand-off.
+  revealed: bool,
 }
 
 impl DcompSession {
   /// Creates a transition for `source_hwnd` covering `window_rect`.
   ///
   /// The overlay is inset-padded around `window_rect` so 3D content has room to
-  /// extend. The surrogate is created hidden, given its starting transform, then
-  /// shown and committed so the first visible frame is already correct.
+  /// extend. It is created hidden with its starting transform; the owner drives
+  /// [`apply_frame`](Self::apply_frame) and calls [`reveal`](Self::reveal) once
+  /// [`has_content`](Self::has_content) reports the first captured frame.
   ///
   /// Returns an error if the window cannot be captured; callers fall back to a
   /// DWM-thumbnail style.
@@ -776,11 +796,31 @@ impl DcompSession {
       kind,
       source_hwnd,
       margin,
+      revealed: false,
     };
+    // Apply the starting transform and publish it while still hidden.
     session.apply_frame(ctx, 0.0)?;
-    session.surrogate.set_visible(true);
     ctx.commit()?;
     Ok(session)
+  }
+
+  /// Whether the overlay has captured at least one real frame and is ready to
+  /// be revealed without showing blank.
+  pub fn has_content(&self) -> bool {
+    self.surrogate.has_content()
+  }
+
+  /// Whether the overlay has already been revealed.
+  pub fn is_revealed(&self) -> bool {
+    self.revealed
+  }
+
+  /// Shows the overlay. Call once [`has_content`](Self::has_content) is `true`;
+  /// the overlay is topmost, so showing it before cloaking the real window
+  /// hands off without a blank frame.
+  pub fn reveal(&mut self) {
+    self.surrogate.set_visible(true);
+    self.revealed = true;
   }
 
   /// Pulls the latest captured frame and applies this style's transform for the
