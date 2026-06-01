@@ -61,9 +61,10 @@ use windows::{
     },
     UI::WindowsAndMessaging::{
       CreateWindowExW, DefWindowProcW, DestroyWindow, RegisterClassW,
-      SetWindowPos, ShowWindow, SWP_NOACTIVATE, SWP_NOCOPYBITS, SWP_NOMOVE,
-      SWP_NOSIZE, SWP_NOZORDER, SWP_SHOWWINDOW, SW_HIDE, SW_SHOWNOACTIVATE,
-      WNDCLASSW, WS_EX_NOACTIVATE, WS_EX_NOREDIRECTIONBITMAP, WS_EX_TOOLWINDOW,
+      SetWindowPos, ShowWindow, HWND_TOPMOST, SWP_NOACTIVATE, SWP_NOCOPYBITS,
+      SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, SWP_SHOWWINDOW, SW_HIDE,
+      SW_SHOWNOACTIVATE, WNDCLASSW, WS_EX_NOACTIVATE,
+      WS_EX_NOREDIRECTIONBITMAP, WS_EX_TOOLWINDOW, WS_EX_TOPMOST,
       WS_EX_TRANSPARENT, WS_POPUP,
     },
   },
@@ -415,12 +416,16 @@ impl NativeDcompSurrogate {
     // Transparent, non-interactive overlay. `WS_EX_NOREDIRECTIONBITMAP` gives
     // the window no redirection surface so DirectComposition composes it with
     // per-pixel alpha — pixels the visual does not cover are see-through.
+    // `WS_EX_TOPMOST` keeps the transition above reflowing sibling windows
+    // (close) and above the real window if the OS briefly uncloaks it while
+    // it holds focus (focus tilt).
     // SAFETY: Class name is the static literal registered above.
     let hwnd = unsafe {
       CreateWindowExW(
         WS_EX_NOREDIRECTIONBITMAP
           | WS_EX_NOACTIVATE
           | WS_EX_TOOLWINDOW
+          | WS_EX_TOPMOST
           | WS_EX_TRANSPARENT,
         w!("GlazeWM_DcompSurrogate"),
         w!(""),
@@ -464,11 +469,13 @@ impl NativeDcompSurrogate {
     } else {
       windows::Win32::UI::WindowsAndMessaging::SET_WINDOW_POS_FLAGS::default()
     };
+    // Place the overlay in the topmost band so reflowing siblings and a
+    // briefly-uncloaked source window cannot draw over the transition.
     // SAFETY: `hwnd` is valid; position is unchanged (set at creation).
     unsafe {
       SetWindowPos(
         hwnd,
-        source_hwnd,
+        HWND_TOPMOST,
         0,
         0,
         0,

@@ -247,6 +247,17 @@ impl AnimationManager {
     self.pending_close_windows.contains_key(window_id)
   }
 
+  /// Returns `true` while a DirectComposition 3D transition (flip/tilt) is
+  /// driving the given window.
+  ///
+  /// Used by `sync_focus` to defer `SetForegroundWindow`: making the window
+  /// foreground prompts the OS to uncloak it, which would flash the real
+  /// window (and its shadow) through the transparent surrogate overlay.
+  #[cfg(target_os = "windows")]
+  pub fn has_dcomp_session(&self, window_id: &Uuid) -> bool {
+    self.dcomp_sessions.contains_key(window_id)
+  }
+
   /// Removes a window's animation and any associated resize session.
   pub fn remove_animation(&mut self, window_id: &Uuid) {
     self.animations.remove(window_id);
@@ -541,6 +552,10 @@ impl AnimationManager {
               {
                 state.animation_manager.pending_dcomp_cleanup.push(session);
               }
+              // `sync_focus` deferred `SetForegroundWindow` during the
+              // transition; re-queue it now that the window is being uncloaked
+              // so OS focus transfers to it in this same tick.
+              state.pending_sync.queue_focus_change();
             }
           }
         }

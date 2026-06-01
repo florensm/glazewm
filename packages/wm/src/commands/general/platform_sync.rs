@@ -120,6 +120,15 @@ fn sync_focus(
     {
       return Ok(());
     }
+
+    // Defer `SetForegroundWindow` while a DirectComposition 3D transition
+    // (open flip / focus tilt) owns the focused window. Making it foreground
+    // prompts the OS to uncloak it, flashing the real window through the
+    // transparent surrogate. `AnimationManager::update_internal` re-queues the
+    // focus change once the transition completes and the window is uncloaked.
+    if state.animation_manager.has_dcomp_session(&window.id()) {
+      return Ok(());
+    }
   }
 
   // Sets focus to the appropriate target:
