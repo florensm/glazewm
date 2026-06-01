@@ -1382,6 +1382,7 @@ impl AnimationManager {
     source_hwnd: isize,
     window_rect: &Rect,
     kind: DcompTransitionKind,
+    intensity: f32,
     duration_ms: u32,
     easing: EasingFunction,
   ) -> bool {
@@ -1401,14 +1402,19 @@ impl AnimationManager {
       .dcomp_context
       .as_ref()
       .expect("DComp context was just ensured.");
-    let session =
-      match DcompSession::create(ctx, source_hwnd, window_rect, kind) {
-        Ok(session) => session,
-        Err(err) => {
-          tracing::warn!("Failed to create DComp 3D transition: {err}.");
-          return false;
-        }
-      };
+    let session = match DcompSession::create(
+      ctx,
+      source_hwnd,
+      window_rect,
+      kind,
+      intensity,
+    ) {
+      Ok(session) => session,
+      Err(err) => {
+        tracing::warn!("Failed to create DComp 3D transition: {err}.");
+        return false;
+      }
+    };
 
     let anim = WindowAnimationState::new_movement(
       window_rect.clone(),
@@ -1479,6 +1485,7 @@ impl AnimationManager {
         native_window.hwnd().0,
         &target_rect,
         DcompTransitionKind::Open(shape),
+        config.value.animations.transitions_3d.intensity,
         anim_config.duration_ms,
         anim_config.easing.clone(),
       ) {
@@ -1606,6 +1613,7 @@ impl AnimationManager {
         native_window.hwnd().0,
         &current_rect,
         DcompTransitionKind::Close(shape),
+        config.value.animations.transitions_3d.intensity,
         anim_config.duration_ms,
         anim_config.easing.clone(),
       ) {
@@ -1796,17 +1804,22 @@ impl AnimationManager {
           native_window,
         );
       }
-      FocusAnimationStyle::Tilt => {
-        // DirectComposition 3D tilt/pop (opt-in). The real window stays visible
-        // until the surrogate has its first captured frame — `update_internal`
-        // reveals the overlay and cloaks the real window together — so there is
-        // no blank gap. Falls back to the scale style (which cloaks itself)
-        // when the window cannot be captured.
+      FocusAnimationStyle::Tilt | FocusAnimationStyle::Spin => {
+        // DirectComposition 3D focus blink (opt-in). The real window stays
+        // visible until the surrogate has its first captured frame —
+        // `update_internal` reveals the overlay and cloaks the real window
+        // together — so there is no blank gap. Falls back to the scale style
+        // (which cloaks itself) when the window cannot be captured.
+        let focus = match fc.style {
+          FocusAnimationStyle::Spin => DcompFocus::Spin,
+          _ => DcompFocus::Tilt,
+        };
         if !self.start_dcomp_transition(
           window_id,
           native_window.hwnd().0,
           &current_rect,
-          DcompTransitionKind::Focus(DcompFocus::Tilt),
+          DcompTransitionKind::Focus(focus),
+          config.value.animations.transitions_3d.intensity,
           fc.duration_ms,
           fc.easing.clone(),
         ) {

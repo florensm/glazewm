@@ -108,6 +108,7 @@ animations:
     #   'scale'   (default) - window pops from an initial size to its actual size
     #   'opacity'           - window briefly dims then restores opacity
     #   'tilt'              - 3D tilt/pop (Windows 11; falls back to scale)
+    #   'spin'              - 3D in-plane spin/pop (Windows 11; falls back to scale)
     style: "scale"
     # For 'opacity' style: dim level at the start of the animation, relative to
     # the effect opacity. E.g. 0.5 = dims to 50% of effect opacity then
@@ -123,6 +124,16 @@ animations:
     #   'all'            - animate on all focus changes (keyboard and mouse)
     #   'keyboard_only'  - animate only on keyboard/WM-command focus changes
     trigger: "all"
+
+  # General tuning shared by every 3D (DirectComposition) transition style —
+  # the 'flip'/'hinge'/'spin' open/close styles and the 'tilt'/'spin' focus
+  # styles. One setting adjusts them all, on top of each animation's own
+  # duration/easing (Windows 11 only).
+  transitions_3d:
+    # How pronounced the 3D effect is, from 0.0 (flat — no visible rotation or
+    # scale) to 1.0 (the full designed pose). Lower values are subtler.
+    # Default: 1.0.
+    intensity: 1.0
 
 general:
   # Commands to run when the WM has started. This is useful for running a

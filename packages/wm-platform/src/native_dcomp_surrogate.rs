@@ -629,6 +629,14 @@ const TILT_DEPTH_FACTOR: f32 = 1.0;
 /// fraction above 1.0. Settles to 1.0 (no scale) when the animation completes.
 const TILT_POP: f32 = 0.05;
 
+/// Maximum in-plane (Z) rotation for the focus spin style, in degrees. Smaller
+/// than the open/close spin so a focus blink reads as a quick twist, not a turn.
+const SPIN_FOCUS_MAX_DEG: f32 = 9.0;
+
+/// Extra uniform scale applied at the start of the focus spin ("pop"), as a
+/// fraction above 1.0. Settles to 1.0 (no scale) when the animation completes.
+const SPIN_FOCUS_POP: f32 = 0.04;
+
 /// Multiplies two row-major 4x4 matrices in the row-vector convention.
 ///
 /// `mat_mul(a, b)` produces the matrix that applies `a` first, then `b`
@@ -723,6 +731,8 @@ pub enum DcompShape {
 pub enum DcompFocus {
   /// Lean back with a slight scale pop, settling flat.
   Tilt,
+  /// Spin in-plane with a slight scale pop, settling flat.
+  Spin,
 }
 
 /// A 3D transition applied by a [`DcompSession`], parameterized by phase
@@ -755,13 +765,29 @@ impl DcompTransitionKind {
   ///
   /// `cw`/`ch` are the captured content size in pixels; `margin` is the
   /// transparent padding (in pixels) between the content and each overlay edge.
-  fn transform(self, eased: f32, cw: f32, ch: f32, margin: f32) -> [[f32; 4]; 4] {
+  /// `intensity` (0.0–1.0) scales how pronounced the extreme pose is; at `0.0`
+  /// the transform is the flat identity placement throughout.
+  fn transform(
+    self,
+    eased: f32,
+    cw: f32,
+    ch: f32,
+    margin: f32,
+    intensity: f32,
+  ) -> [[f32; 4]; 4] {
     // `extreme` is 0.0 at the flat/settled pose and 1.0 at the shape's most
     // extreme pose. Open and focus animate extreme→0; close animates 0→extreme.
+    // `intensity` dials the magnitude of the extreme pose down toward flat.
     match self {
-      Self::Open(shape) => shape_matrix(shape, 1.0 - eased, cw, ch, margin),
-      Self::Close(shape) => shape_matrix(shape, eased, cw, ch, margin),
-      Self::Focus(focus) => focus_matrix(focus, 1.0 - eased, cw, ch, margin),
+      Self::Open(shape) => {
+        shape_matrix(shape, (1.0 - eased) * intensity, cw, ch, margin)
+      }
+      Self::Close(shape) => {
+        shape_matrix(shape, eased * intensity, cw, ch, margin)
+      }
+      Self::Focus(focus) => {
+        focus_matrix(focus, (1.0 - eased) * intensity, cw, ch, margin)
+      }
     }
   }
 }
@@ -832,6 +858,15 @@ fn focus_matrix(
         mat_mul(&mat_mul(&scale, &rot), &mat_perspective(ch * TILT_DEPTH_FACTOR));
       mat_mul(&mat_mul(&to_origin, &core), &to_center)
     }
+    DcompFocus::Spin => {
+      // In-plane spin about the center with a slight scale pop, settling flat.
+      // No perspective; the overlay margin absorbs the rotation/pop overhang.
+      let to_origin = mat_translate(-cw / 2.0, -ch / 2.0, 0.0);
+      let to_center = mat_translate(cw / 2.0 + margin, ch / 2.0 + margin, 0.0);
+      let scale = mat_scale(1.0 + extreme * SPIN_FOCUS_POP);
+      let rot = mat_rotate_z(extreme * SPIN_FOCUS_MAX_DEG.to_radians());
+      mat_mul(&mat_mul(&to_origin, &mat_mul(&scale, &rot)), &to_center)
+    }
   }
 }
 
@@ -856,6 +891,8 @@ pub struct DcompSession {
   source_hwnd: isize,
   /// Transparent padding (pixels) between content and each overlay edge.
   margin: f32,
+  /// Scales how pronounced the 3D pose is (0.0 = flat, 1.0 = full).
+  intensity: f32,
   /// Whether the overlay has been revealed (shown) yet.
   ///
   /// Stays hidden until the live capture delivers its first real frame, so the
@@ -872,6 +909,9 @@ impl DcompSession {
   /// [`apply_frame`](Self::apply_frame) and calls [`reveal`](Self::reveal) once
   /// [`has_content`](Self::has_content) reports the first captured frame.
   ///
+  /// `intensity` (0.0–1.0) scales how pronounced the 3D pose is; `1.0` is the
+  /// full designed look and `0.0` keeps the overlay flat throughout.
+  ///
   /// Returns an error if the window cannot be captured; callers fall back to a
   /// DWM-thumbnail style.
   pub fn create(
@@ -879,6 +919,7 @@ impl DcompSession {
     source_hwnd: isize,
     window_rect: &Rect,
     kind: DcompTransitionKind,
+    intensity: f32,
   ) -> crate::Result<Self> {
     let w = window_rect.width() as f32;
     let h = window_rect.height() as f32;
@@ -901,6 +942,7 @@ impl DcompSession {
       kind,
       source_hwnd,
       margin,
+      intensity: intensity.clamp(0.0, 1.0),
       revealed: false,
     };
     // Apply the starting transform and publish it while still hidden.
@@ -937,8 +979,13 @@ impl DcompSession {
     eased: f32,
   ) -> crate::Result<()> {
     let (cw, ch) = self.surrogate.update_capture(ctx)?;
-    let matrix =
-      self.kind.transform(eased, cw as f32, ch as f32, self.margin);
+    let matrix = self.kind.transform(
+      eased,
+      cw as f32,
+      ch as f32,
+      self.margin,
+      self.intensity,
+    );
     self.surrogate.set_transform(&matrix)?;
     Ok(())
   }

@@ -416,6 +416,14 @@ pub struct AnimationsConfig {
   ///
   /// Only has an effect on Windows.
   pub focus_change: FocusChangeConfig,
+  /// General tuning shared by all DirectComposition 3D transition styles
+  /// (`flip`, `hinge`, `spin`, `tilt`), independent of which animation uses
+  /// them.
+  ///
+  /// # Platform-specific
+  ///
+  /// Only has an effect on Windows.
+  pub transitions_3d: Transitions3dConfig,
 }
 
 impl Default for AnimationsConfig {
@@ -427,7 +435,34 @@ impl Default for AnimationsConfig {
       workspace_switch: WorkspaceSwitchAnimationConfig::default(),
       window_close: WindowCloseConfig::default(),
       focus_change: FocusChangeConfig::default(),
+      transitions_3d: Transitions3dConfig::default(),
     }
+  }
+}
+
+/// General tuning shared by every DirectComposition 3D transition style
+/// (`flip`, `hinge`, `spin`, `tilt`).
+///
+/// These settings apply on top of each animation's own `duration_ms`/`easing`,
+/// so a single value adjusts all 3D styles at once rather than duplicating
+/// per-style fields.
+///
+/// # Platform-specific
+///
+/// Only has an effect on Windows.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(default, rename_all(serialize = "camelCase"))]
+pub struct Transitions3dConfig {
+  /// How pronounced the 3D effect is, from `0.0` (flat — no visible rotation
+  /// or scale) to `1.0` (the full designed pose). Scales the rotation and
+  /// scale of every 3D style uniformly; `duration_ms`/`easing` are unaffected.
+  /// Range: 0.0–1.0. Default: `1.0`.
+  pub intensity: f32,
+}
+
+impl Default for Transitions3dConfig {
+  fn default() -> Self {
+    Transitions3dConfig { intensity: 1.0 }
   }
 }
 
@@ -501,6 +536,10 @@ pub enum FocusAnimationStyle {
   /// Requires DirectComposition (Windows 11); falls back to `scale` when the
   /// window cannot be captured.
   Tilt,
+  /// Briefly spin the window in-plane with a small scale "pop", settling to
+  /// flat. Requires DirectComposition (Windows 11); falls back to `scale` when
+  /// the window cannot be captured.
+  Spin,
 }
 
 /// Determines which focus changes trigger the focus animation.
