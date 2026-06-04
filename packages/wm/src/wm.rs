@@ -48,7 +48,7 @@ use crate::{
     handle_window_title_changed,
   },
   ipc_server::IpcServer,
-  models::{Container, WorkspaceTarget},
+  models::{Container, WindowContainer, WorkspaceTarget},
   traits::{CommonGetters, PositionGetters, WindowGetters},
   user_config::UserConfig,
   wm_state::WmState,
@@ -836,8 +836,30 @@ impl WindowManager {
         }
       }
       InvokeCommand::ToggleStack => {
-        if let Some(window) = subject_container.as_tiling_window() {
-          toggle_stack(&window, state, config)?;
+        if let Ok(window) = subject_container.as_window_container() {
+          let tiling = match window {
+            WindowContainer::TilingWindow(ref w) => w.clone(),
+            WindowContainer::NonTilingWindow(_) => {
+              // Convert floating → tiling. If the window's saved
+              // insertion target puts it back into an existing stack,
+              // it is already in a good state — don't toggle it back out.
+              let converted = update_window_state(
+                window,
+                WindowState::Tiling,
+                state,
+                config,
+              )?;
+              let WindowContainer::TilingWindow(w) = converted else {
+                return Ok(());
+              };
+              if w.parent().is_some_and(|p| p.as_stack().is_some()) {
+                state.pending_sync.queue_focus_change();
+                return Ok(());
+              }
+              w
+            }
+          };
+          toggle_stack(&tiling, state, config)?;
           state.pending_sync.queue_focus_change();
         }
         Ok(())
@@ -860,15 +882,17 @@ impl WindowManager {
         Ok(())
       }
       InvokeCommand::StackInsert => {
-        if let Some(window) = subject_container.as_tiling_window() {
-          stack_insert(&window, state, config)?;
+        if let Ok(window) = subject_container.as_window_container() {
+          let tiling = ensure_tiling(window, state, config)?;
+          stack_insert(&tiling, state, config)?;
           state.pending_sync.queue_focus_change();
         }
         Ok(())
       }
       InvokeCommand::MoveToStack { name } => {
-        if let Some(window) = subject_container.as_tiling_window() {
-          move_to_stack(&window, name, state, config)?;
+        if let Ok(window) = subject_container.as_window_container() {
+          let tiling = ensure_tiling(window, state, config)?;
+          move_to_stack(&tiling, name, state, config)?;
           state.pending_sync.queue_focus_change();
         }
         Ok(())
@@ -950,6 +974,26 @@ impl WindowManager {
 
       if let Err(err) = ipc_server.process_event(wm_event) {
         tracing::warn!("{:?}", err);
+      }
+    }
+  }
+}
+
+/// Ensures `window` is a `TilingWindow`, converting it from any non-tiling
+/// state (floating, fullscreen, minimized) if needed.
+fn ensure_tiling(
+  window: WindowContainer,
+  state: &mut WmState,
+  config: &UserConfig,
+) -> anyhow::Result<crate::models::TilingWindow> {
+  match window {
+    WindowContainer::TilingWindow(w) => Ok(w),
+    WindowContainer::NonTilingWindow(_) => {
+      let converted =
+        update_window_state(window, WindowState::Tiling, state, config)?;
+      match converted {
+        WindowContainer::TilingWindow(w) => Ok(w),
+        _ => anyhow::bail!("Window could not be converted to tiling."),
       }
     }
   }
