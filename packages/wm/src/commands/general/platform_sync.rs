@@ -465,7 +465,7 @@ fn redraw_containers(
       continue;
     }
 
-    // Capture display state before transition to detect opening windows
+    // Capture display state before transition to detect opening windows.
     let previous_display_state = window.display_state();
 
     // Inactive stack children are always hidden; the active child (first in
