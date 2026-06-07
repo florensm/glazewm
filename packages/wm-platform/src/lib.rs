@@ -45,6 +45,10 @@ pub use workspace_surrogate::WorkspaceSurrogate;
 mod native_iris_overlay;
 #[cfg(target_os = "windows")]
 pub use native_iris_overlay::NativeIrisOverlay;
+#[cfg(target_os = "windows")]
+mod native_stack_tab_bar;
+#[cfg(target_os = "windows")]
+pub use native_stack_tab_bar::{NativeStackTabBar, TabBarColors, TabInfo};
 
 pub use platform_event::*;
 pub use single_instance::*;

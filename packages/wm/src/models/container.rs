@@ -16,7 +16,7 @@ use wm_platform::{Direction, NativeWindow, Rect, RectDelta};
 use crate::{
   models::{
     Monitor, NativeWindowProperties, NonTilingWindow, RootContainer,
-    SplitContainer, TilingWindow, Workspace,
+    SplitContainer, StackContainer, TilingWindow, Workspace,
   },
   traits::*,
   user_config::UserConfig,
@@ -102,6 +102,8 @@ pub enum Container {
   Workspace(Workspace),
   #[subenum(TilingContainer, DirectionContainer)]
   Split(SplitContainer),
+  #[subenum(TilingContainer)]
+  Stack(StackContainer),
   #[subenum(TilingContainer, WindowContainer)]
   TilingWindow(TilingWindow),
   #[subenum(WindowContainer)]
