@@ -751,6 +751,22 @@ impl Default for AnimationTypeConfig {
   }
 }
 
+/// How the window's content is rendered inside the animated rect during a
+/// resize animation.
+#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ResizeContentMode {
+  /// Content keeps its natural size; the animated rect reveals or clips it
+  /// at the edges (default). Mixed grow/shrink resizes expose the
+  /// `surrogate_color` backdrop in the area the content cannot cover.
+  #[default]
+  Reveal,
+  /// Content is scaled to always fill the animated rect. No backdrop is
+  /// ever exposed, at the cost of the content appearing slightly stretched
+  /// mid-animation.
+  Stretch,
+}
+
 /// Animation settings for window resize operations.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(default, rename_all(serialize = "camelCase"))]
@@ -765,12 +781,21 @@ pub struct WindowResizeConfig {
   ///
   /// Accepts an HTML hex color string with optional alpha component (e.g.
   /// `"#1a1a1a"` or `"#1a1a1aCC"`). When unset (default), the surrogate
-  /// backdrop is fully transparent.
+  /// backdrop is fully transparent. Only relevant for the `reveal` content
+  /// mode; `stretch` never exposes the backdrop.
   ///
   /// # Platform-specific
   ///
   /// Only has an effect on Windows; ignored on macOS.
   pub surrogate_color: Option<Color>,
+  /// How window content is rendered during the resize: `reveal` (default)
+  /// keeps content at its natural size and clips/reveals it at the edges;
+  /// `stretch` scales the content to always fill the animated rect.
+  ///
+  /// # Platform-specific
+  ///
+  /// Only has an effect on Windows; ignored on macOS.
+  pub content_mode: ResizeContentMode,
 }
 
 impl Default for WindowResizeConfig {
@@ -781,6 +806,7 @@ impl Default for WindowResizeConfig {
       easing: EasingFunction::CubicBezier(0.42, 0.0, 0.58, 1.0),
       threshold_px: 10,
       surrogate_color: None,
+      content_mode: ResizeContentMode::default(),
     }
   }
 }

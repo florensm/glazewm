@@ -10,7 +10,8 @@ use wm_common::{
 use wm_platform::NativeWindowWindowsExt;
 #[cfg(target_os = "windows")]
 use wm_platform::{
-  CornerStyle, NativeIrisOverlay, OpacityValue, WorkspaceSurrogate,
+  CornerStyle, NativeIrisOverlay, OpacityValue, ResizeSession,
+  WorkspaceSurrogate,
 };
 use wm_platform::{Rect, WindowZOrder};
 
@@ -473,6 +474,26 @@ fn redraw_containers(
   // Get monitors by their optimal hide corner.
   let monitors_by_hide_corner = state.monitors_by_hide_corner();
 
+  // Whether any window in this redraw cycle changes size. Pure translations
+  // in the same cycle then share the `window_resize` timing so all edges
+  // stay in lock-step during the relayout (see
+  // `AnimationManager::start_animation_if_needed`).
+  let cycle_has_resize = windows_to_update.iter().any(|window| {
+    let target_rect = window.to_rect().and_then(|rect| {
+      window
+        .total_border_delta()
+        .map(|delta| rect.apply_delta(&delta, None))
+    });
+
+    match (target_rect, state.window_target_positions.get(&window.id())) {
+      (Ok(target_rect), Some(prev)) => {
+        prev.width() != target_rect.width()
+          || prev.height() != target_rect.height()
+      }
+      _ => false,
+    }
+  });
+
   for window in windows_to_update.iter().rev() {
     let should_bring_to_front = windows_to_bring_to_front.contains(window);
 
@@ -705,6 +726,7 @@ fn redraw_containers(
         state.animation_manager.start_animation_if_needed(
           window.id(),
           is_resize,
+          cycle_has_resize,
           target_rect.clone(),
           previous_target,
           &*native_ref,
@@ -716,6 +738,7 @@ fn redraw_containers(
       state.animation_manager.start_animation_if_needed(
         window.id(),
         is_resize,
+        cycle_has_resize,
         target_rect.clone(),
         previous_target,
         u8::MAX,
@@ -777,14 +800,16 @@ fn redraw_containers(
             // cloaked window at target asynchronously so DWM captures the
             // correctly-sized content during the curtain-reveal. Mixed and
             // shrinking sessions use the clip/wipe approach (thumbnail at
-            // source) and leave the window at source until `pre_commit`.
-            let is_growing = state
+            // source), and stretch sessions sample source-sized content for
+            // the whole animation — both leave the window at source until
+            // `pre_commit`.
+            let needs_preposition = state
               .animation_manager
               .resize_sessions
               .get(&window.id())
-              .map_or(false, |s| s.is_growing());
+              .map_or(false, ResizeSession::needs_preposition);
 
-            if is_growing {
+            if needs_preposition {
               // Post asynchronously: the curtain-reveal surrogate starts at
               // source size and only exposes "new" area (beyond source
               // dimensions) after tens of frames (~40–60 ms into the
@@ -911,6 +936,12 @@ fn redraw_containers(
       }
     }
   }
+
+  // Commit all surrogate repositions queued during this pass in a single
+  // `DeferWindowPos` transaction so adjacent windows' edges land in the
+  // same DWM composition frame.
+  #[cfg(target_os = "windows")]
+  state.animation_manager.flush_surrogate_updates();
 
   // Apply effect opacity to outgoing surrogates now that the real windows
   // have been cloaked. This removes the double-blend that would occur if

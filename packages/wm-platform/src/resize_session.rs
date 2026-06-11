@@ -7,7 +7,10 @@ use windows::Win32::{
   },
 };
 
-use crate::{native_surrogate::to_logical, Color, NativeSurrogate, Rect};
+use crate::{
+  native_surrogate::to_logical, Color, NativeSurrogate, Rect,
+  SurrogateBatch,
+};
 
 /// Tracks a single window's resize/move animation and manages its surrogate
 /// overlay.
@@ -54,6 +57,15 @@ pub struct ResizeSession {
   /// toward/away from the surrogate center instead of repositioning the
   /// surrogate window. Used for zoom-in (open) and zoom-out (close) effects.
   pub zoom: bool,
+  /// When `true`, the DWM thumbnail is scaled each frame to fill the whole
+  /// animated rect (`ResizeContentMode::Stretch`). The thumbnail stays
+  /// registered at source dimensions for the session's lifetime — no
+  /// re-registration on redirects, no backdrop exposure, and no
+  /// pre-positioning of the real window before `pre_commit`.
+  stretch: bool,
+  /// Logical (visible-content) dimensions of the source window at session
+  /// start. Used as the thumbnail `rcSource` size in stretch mode.
+  source_size: (i32, i32),
 }
 
 impl ResizeSession {
@@ -82,6 +94,11 @@ impl ResizeSession {
   /// area uncovered by the thumbnail shows the configured color rather than
   /// exposing the desktop.
   ///
+  /// When `stretch` is `true` (`ResizeContentMode::Stretch`), the thumbnail
+  /// is always registered at source dimensions and scaled each frame to fill
+  /// the animated rect — no backdrop is ever exposed and the real window is
+  /// never repositioned before [`pre_commit`].
+  ///
   /// When surrogate creation fails the session is returned without one — the
   /// animation falls back to direct window repositioning every frame.
   ///
@@ -93,6 +110,7 @@ impl ResizeSession {
     surrogate_color: Option<&Color>,
     effect_opacity: u8,
     initially_visible: bool,
+    stretch: bool,
   ) -> crate::Result<Self> {
     let border_inset = compute_border_inset(hwnd);
 
@@ -102,14 +120,25 @@ impl ResizeSession {
 
     // Growing: thumbnail at target dimensions for curtain-reveal.
     // Shrinking/mixed: thumbnail at source dimensions for clip/wipe.
-    let thumbnail_rect = if is_growing { target_rect } else { source_rect };
+    // Stretch: always at source dimensions; scaled to fit each frame.
+    let thumbnail_rect = if is_growing && !stretch {
+      target_rect
+    } else {
+      source_rect
+    };
 
     // Mixed: one axis grows, one shrinks. Apply the backdrop color so the area
-    // the thumbnail cannot cover shows the configured color instead of the desktop.
+    // the thumbnail cannot cover shows the configured color instead of the
+    // desktop. Stretch mode always covers the full rect, so no backdrop is
+    // needed.
     let is_mixed = !is_growing
       && (target_rect.width() > source_rect.width()
         || target_rect.height() > source_rect.height());
-    let backdrop_color = if is_mixed { surrogate_color } else { None };
+    let backdrop_color = if is_mixed && !stretch {
+      surrogate_color
+    } else {
+      None
+    };
 
     let surrogate = match NativeSurrogate::create(
       hwnd,
@@ -130,6 +159,8 @@ impl ResizeSession {
       }
     };
 
+    let logical_src = to_logical(source_rect, &border_inset);
+
     Ok(Self {
       hwnd: hwnd.0,
       target_rect: target_rect.clone(),
@@ -138,15 +169,21 @@ impl ResizeSession {
       effect_opacity,
       is_growing,
       zoom: false,
+      stretch,
+      source_size: (logical_src.width(), logical_src.height()),
     })
   }
 
-  /// Returns `true` when no dimension shrinks (curtain-reveal mode).
+  /// Returns `true` when the cloaked real window should be asynchronously
+  /// pre-positioned at the target rect immediately after cloaking.
   ///
-  /// Used by `platform_sync` to decide whether to asynchronously pre-position
-  /// the cloaked real window at the target rect immediately after cloaking.
-  pub fn is_growing(&self) -> bool {
-    self.is_growing
+  /// This is required for growing curtain-reveal sessions so DWM captures
+  /// correctly-sized content. Stretch sessions never pre-position: the
+  /// thumbnail is sampled at source dimensions for the whole animation, so
+  /// resizing the real window mid-animation would corrupt the sampled
+  /// content.
+  pub fn needs_preposition(&self) -> bool {
+    self.is_growing && !self.stretch
   }
 
   /// Whether a surrogate overlay with a valid DWM thumbnail is active.
@@ -202,6 +239,27 @@ impl ResizeSession {
     surrogate.set_window_opacity(opacity);
   }
 
+  /// Computes the DWM thumbnail `rcSource`/`rcDestination` pair that scales
+  /// the full source content to a `dst_width` × `dst_height` destination
+  /// (stretch mode).
+  fn stretch_rects(&self, dst_width: i32, dst_height: i32) -> (RECT, RECT) {
+    let (src_w, src_h) = self.source_size;
+    (
+      RECT {
+        left: self.border_inset.left,
+        top: self.border_inset.top,
+        right: self.border_inset.left + src_w,
+        bottom: self.border_inset.top + src_h,
+      },
+      RECT {
+        left: 0,
+        top: 0,
+        right: dst_width,
+        bottom: dst_height,
+      },
+    )
+  }
+
   /// Updates the surrogate to the current animation frame position and opacity.
   ///
   /// `current_rect` is the physical animated rect; it is converted to the
@@ -210,11 +268,47 @@ impl ResizeSession {
   /// `opacity` maps to the DWM thumbnail opacity (0 = transparent, 255 =
   /// opaque). Pass `255` for resize animations where no fade is needed.
   pub fn update(&mut self, current_rect: &Rect, opacity: u8) {
+    let logical = to_logical(current_rect, &self.border_inset);
+    let stretch_rects = self
+      .stretch
+      .then(|| self.stretch_rects(logical.width(), logical.height()));
+
     if let Some(surrogate) = &mut self.surrogate {
-      let logical = to_logical(current_rect, &self.border_inset);
+      if let Some((rc_src, rc_dst)) = stretch_rects {
+        surrogate.set_thumbnail_rects(rc_src, rc_dst);
+      }
       if let Err(err) = surrogate.update(&logical, opacity) {
         tracing::warn!("Surrogate update failed: {err}.");
       }
+    }
+  }
+
+  /// Like [`update`], but queues the surrogate reposition into `batch` so
+  /// all surrogates in the same animation tick move atomically in one
+  /// `DeferWindowPos` transaction.
+  ///
+  /// Thumbnail and opacity updates are applied immediately — they are DWM
+  /// state changes that cannot be deferred, and only become visible at the
+  /// next composition alongside the batched repositions.
+  ///
+  /// [`update`]: ResizeSession::update
+  pub fn defer_update(
+    &mut self,
+    batch: &mut SurrogateBatch,
+    current_rect: &Rect,
+    opacity: u8,
+  ) {
+    let logical = to_logical(current_rect, &self.border_inset);
+    let stretch_rects = self
+      .stretch
+      .then(|| self.stretch_rects(logical.width(), logical.height()));
+
+    if let Some(surrogate) = &mut self.surrogate {
+      if let Some((rc_src, rc_dst)) = stretch_rects {
+        surrogate.set_thumbnail_rects(rc_src, rc_dst);
+      }
+      surrogate.defer_reposition(batch, &logical);
+      surrogate.set_window_opacity(opacity);
     }
   }
 
@@ -292,7 +386,10 @@ impl ResizeSession {
     self.is_growing = new_is_growing;
     self.target_rect = new_target.clone();
 
-    if self.hwnd == 0 {
+    // Stretch mode samples the source content at its original dimensions for
+    // the whole session — no thumbnail re-registration and no real-window
+    // pre-positioning are needed on a redirect.
+    if self.hwnd == 0 || self.stretch {
       return;
     }
 
@@ -378,8 +475,15 @@ impl ResizeSession {
       );
     }
 
+    let logical = to_logical(&self.target_rect, &self.border_inset);
+    let stretch_rects = self
+      .stretch
+      .then(|| self.stretch_rects(logical.width(), logical.height()));
+
     if let Some(surrogate) = &mut self.surrogate {
-      let logical = to_logical(&self.target_rect, &self.border_inset);
+      if let Some((rc_src, rc_dst)) = stretch_rects {
+        surrogate.set_thumbnail_rects(rc_src, rc_dst);
+      }
       if let Err(err) = surrogate.update(&logical, self.effect_opacity) {
         tracing::warn!("Surrogate pre-commit update failed: {err}.");
       }

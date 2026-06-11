@@ -12,7 +12,8 @@ use windows::{
     },
     System::LibraryLoader::{GetModuleHandleW, GetProcAddress},
     UI::WindowsAndMessaging::{
-      CreateWindowExW, DefWindowProcW, DestroyWindow, RegisterClassW,
+      BeginDeferWindowPos, CreateWindowExW, DefWindowProcW, DeferWindowPos,
+      DestroyWindow, EndDeferWindowPos, RegisterClassW,
       SetLayeredWindowAttributes, SetWindowPos, SET_WINDOW_POS_FLAGS,
       LWA_ALPHA, SWP_NOACTIVATE, SWP_NOCOPYBITS, SWP_NOMOVE,
       SWP_NOSENDCHANGING, SWP_NOSIZE, SWP_NOZORDER, SWP_SHOWWINDOW, WNDCLASSW,
@@ -234,6 +235,122 @@ fn register_thumbnail(
   }
 
   Some(thumbnail)
+}
+
+/// Collects surrogate repositions for one animation frame and applies them
+/// atomically in a single `DeferWindowPos` transaction.
+///
+/// Sequential per-surrogate `SetWindowPos` calls can straddle a DWM
+/// composition boundary, letting adjacent windows' edges desync for one
+/// frame during a multi-window relayout. Batching all repositions into one
+/// transaction guarantees every surrogate lands in the same composition
+/// frame.
+///
+/// When the transaction cannot be created or fails mid-way, [`commit`] falls
+/// back to individual `SetWindowPos` calls so no reposition is lost.
+///
+/// [`commit`]: SurrogateBatch::commit
+///
+/// # Platform-specific
+///
+/// Only available on Windows.
+#[derive(Default)]
+pub struct SurrogateBatch {
+  /// Queued repositions as `(surrogate hwnd, logical target rect)` pairs.
+  entries: Vec<(isize, Rect)>,
+}
+
+impl SurrogateBatch {
+  /// Creates an empty batch.
+  #[must_use]
+  pub fn new() -> Self {
+    Self::default()
+  }
+
+  /// Whether any repositions have been queued.
+  #[must_use]
+  pub fn is_empty(&self) -> bool {
+    self.entries.is_empty()
+  }
+
+  /// Queues a reposition; applied on [`commit`].
+  ///
+  /// [`commit`]: SurrogateBatch::commit
+  fn push(&mut self, hwnd: isize, rect: Rect) {
+    self.entries.push((hwnd, rect));
+  }
+
+  /// Applies all queued repositions in one `DeferWindowPos` transaction.
+  ///
+  /// Falls back to individual `SetWindowPos` calls when the transaction
+  /// fails (e.g. a surrogate window was destroyed mid-frame).
+  pub fn commit(self) {
+    if self.entries.is_empty() {
+      return;
+    }
+
+    let flags = SWP_NOACTIVATE
+      | SWP_NOCOPYBITS
+      | SWP_NOSENDCHANGING
+      | SWP_NOZORDER;
+
+    // SAFETY: All handles refer to surrogate windows owned by this process;
+    // a stale handle only causes the transaction to fail, which is handled
+    // by the fallback below.
+    #[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
+    let deferred = unsafe {
+      let Ok(mut hdwp) = BeginDeferWindowPos(self.entries.len() as i32)
+      else {
+        return Self::commit_individually(&self.entries, flags);
+      };
+
+      for (hwnd, rect) in &self.entries {
+        match DeferWindowPos(
+          hdwp,
+          HWND(*hwnd),
+          HWND(0),
+          rect.x(),
+          rect.y(),
+          rect.width(),
+          rect.height(),
+          flags,
+        ) {
+          Ok(next) => hdwp = next,
+          // The transaction (including prior entries) is invalidated on
+          // failure; redo everything individually.
+          Err(_) => return Self::commit_individually(&self.entries, flags),
+        }
+      }
+
+      EndDeferWindowPos(hdwp).is_ok()
+    };
+
+    if !deferred {
+      Self::commit_individually(&self.entries, flags);
+    }
+  }
+
+  /// Fallback: applies each queued reposition with its own `SetWindowPos`
+  /// call.
+  fn commit_individually(
+    entries: &[(isize, Rect)],
+    flags: SET_WINDOW_POS_FLAGS,
+  ) {
+    for (hwnd, rect) in entries {
+      // SAFETY: See `commit` — failures for stale handles are ignored.
+      unsafe {
+        let _ = SetWindowPos(
+          HWND(*hwnd),
+          HWND(0),
+          rect.x(),
+          rect.y(),
+          rect.width(),
+          rect.height(),
+          flags,
+        );
+      }
+    }
+  }
 }
 
 /// Converts a physical `Rect` to logical by subtracting the invisible border
@@ -612,6 +729,24 @@ impl NativeSurrogate {
     Ok(())
   }
 
+  /// Queues a reposition to `rect` into `batch` instead of issuing an
+  /// immediate `SetWindowPos`.
+  ///
+  /// All surrogates queued into the same [`SurrogateBatch`] are repositioned
+  /// atomically when the batch is committed, so adjacent windows' edges move
+  /// in the same DWM composition frame. No-op when `rect` matches the last
+  /// applied position.
+  pub fn defer_reposition(
+    &mut self,
+    batch: &mut SurrogateBatch,
+    rect: &Rect,
+  ) {
+    if self.last_rect.as_ref() == Some(rect) {
+      return;
+    }
+    batch.push(self.hwnd, rect.clone());
+    self.last_rect = Some(rect.clone());
+  }
 }
 
 impl Drop for NativeSurrogate {

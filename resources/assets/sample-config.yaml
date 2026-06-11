@@ -18,6 +18,8 @@ animations:
     threshold_px: 10
 
   # Animation settings for window resize operations.
+  # When a single layout change both moves and resizes windows, the moved
+  # windows share this resize timing so all edges stay in lock-step.
   window_resize:
     enabled: true
     duration_ms: 150
@@ -26,6 +28,17 @@ animations:
     # Minimum pixel distance required to trigger resize animations.
     # Default: 10
     threshold_px: 10
+    # How window content is rendered during the resize. Options:
+    #   'reveal' (default) - content keeps its natural size; the animated
+    #                        rect reveals or clips it at the edges. Mixed
+    #                        grow/shrink resizes expose the surrogate_color
+    #                        backdrop where the content cannot cover.
+    #   'stretch'          - content is scaled to always fill the animated
+    #                        rect; no backdrop is ever exposed, at the cost
+    #                        of slight stretching mid-animation.
+    content_mode: "reveal"
+    # Solid backdrop color behind the animated window content ('reveal'
+    # mode only).
     # surrogate_color: "#1a1a1a"
 
   # Animation settings for when a new window appears. Windows only.

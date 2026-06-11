@@ -72,6 +72,8 @@ const OPEN_PAINT_GRACE: Duration = Duration::from_millis(30);
 
 use tokio::sync::mpsc;
 use uuid::Uuid;
+#[cfg(target_os = "windows")]
+use wm_common::ResizeContentMode;
 use wm_common::{
   EasingFunction, FocusAnimationStyle, WindowTransitionStyle,
   WorkspaceSwitchDirection, WorkspaceSwitchStyle,
@@ -80,7 +82,7 @@ use wm_platform::{NativeWindow, OpacityValue, Rect};
 #[cfg(target_os = "windows")]
 use wm_platform::{
   DxgiVsyncWaiter, NativeIrisOverlay, NativeWindowWindowsExt, ResizeSession,
-  WorkspaceSurrogate,
+  SurrogateBatch, WorkspaceSurrogate,
 };
 
 use crate::{
@@ -252,6 +254,17 @@ pub struct AnimationManager {
   /// and the real window has been moved to its final position.
   #[cfg(target_os = "windows")]
   pub(crate) resize_sessions: HashMap<Uuid, ResizeSession>,
+  /// Surrogate updates queued during the current redraw pass, as
+  /// `(window ID, animated rect, opacity)` tuples.
+  ///
+  /// Filled by the surrogate drive path in [`start_animation_if_needed`] and
+  /// applied atomically by [`flush_surrogate_updates`] at the end of each
+  /// redraw pass, so all surrogates land in the same DWM composition frame.
+  ///
+  /// [`start_animation_if_needed`]: AnimationManager::start_animation_if_needed
+  /// [`flush_surrogate_updates`]: AnimationManager::flush_surrogate_updates
+  #[cfg(target_os = "windows")]
+  pending_surrogate_updates: Vec<(Uuid, Rect, u8)>,
   /// Sessions that have been removed from `resize_sessions` after their
   /// animation completed but must outlive the final `platform_sync` call
   /// that repositions the real window.
@@ -326,6 +339,8 @@ impl AnimationManager {
       animation_vsync_time: Arc::new(Mutex::new(None)),
       #[cfg(target_os = "windows")]
       resize_sessions: HashMap::new(),
+      #[cfg(target_os = "windows")]
+      pending_surrogate_updates: Vec::new(),
       #[cfg(target_os = "windows")]
       pending_session_cleanup: Vec::new(),
       #[cfg(target_os = "windows")]
@@ -438,6 +453,7 @@ impl AnimationManager {
     let mut sessions: Vec<ResizeSession> =
       self.resize_sessions.drain().map(|(_, s)| s).collect();
     sessions.extend(self.pending_session_cleanup.drain(..));
+    self.pending_surrogate_updates.clear();
     self.workspace_switch = None;
     self.pending_ws_cleanup = None;
     *self.animation_timer_vsync.lock().expect("animation mutex poisoned") = None;
@@ -1156,6 +1172,13 @@ impl AnimationManager {
   /// Starts a new animation when movement or resize crosses the configured
   /// threshold.
   ///
+  /// `cycle_has_resize` is `true` when any window in the same redraw cycle
+  /// changes size. Pure translations then adopt the `window_resize` timing
+  /// and easing so adjacent edges stay in lock-step throughout the relayout —
+  /// with differing `window_move`/`window_resize` durations, a moved window
+  /// would otherwise arrive early and detach from its still-resizing
+  /// neighbors.
+  ///
   /// Returns [`AnimationPositionResult::Frozen`] while a surrogate overlay
   /// is active so the caller does not reposition the real window on
   /// intermediate frames.
@@ -1163,6 +1186,7 @@ impl AnimationManager {
     &mut self,
     window_id: Uuid,
     is_resize: bool,
+    cycle_has_resize: bool,
     target_rect: Rect,
     previous_target: Option<Rect>,
     // Only used on Windows to capture the window for the surrogate.
@@ -1193,7 +1217,13 @@ impl AnimationManager {
           .map(|a| a.current_rect())
           .unwrap_or_else(|| prev_target.clone());
 
-        let (duration_ms, easing) = if is_resize {
+        // Share the resize timing across the whole cycle when any window in
+        // it resizes, keeping all edges in lock-step (see doc comment).
+        let use_resize_timing = is_resize
+          || (cycle_has_resize
+            && config.value.animations.window_resize.enabled);
+
+        let (duration_ms, easing) = if use_resize_timing {
           let c = &config.value.animations.window_resize;
           (c.duration_ms, c.easing.clone())
         } else {
@@ -1224,6 +1254,11 @@ impl AnimationManager {
           } else {
             None
           };
+          // Stretch content mode only affects sessions that change size; a
+          // pure translation always fills its rect exactly.
+          let stretch = is_resize
+            && config.value.animations.window_resize.content_mode
+              == ResizeContentMode::Stretch;
           match ResizeSession::begin(
             native_window.hwnd(),
             &start_rect,
@@ -1231,6 +1266,7 @@ impl AnimationManager {
             surrogate_color,
             effect_opacity,
             true,
+            stretch,
           ) {
             Ok(session) => {
               self.resize_sessions.insert(window_id, session);
@@ -1326,7 +1362,13 @@ impl AnimationManager {
           } else if let Some(monitor_rect) = monitor_rect {
             session.update_clipped(&current_rect, &monitor_rect, opacity_u8);
           } else {
-            session.update(&current_rect, opacity_u8);
+            // Queue instead of applying immediately: all surrogate
+            // repositions in this redraw pass are committed atomically by
+            // `flush_surrogate_updates` so adjacent windows' edges land in
+            // the same DWM composition frame.
+            self
+              .pending_surrogate_updates
+              .push((window_id, current_rect, opacity_u8));
           }
           return (AnimationPositionResult::Frozen, None);
         }
@@ -1346,6 +1388,31 @@ impl AnimationManager {
       // disabled. Apply the final target rect directly.
       (AnimationPositionResult::Apply(target_rect), None)
     }
+  }
+
+  /// Applies all surrogate updates queued during the current redraw pass in
+  /// a single `DeferWindowPos` transaction.
+  ///
+  /// Called at the end of each redraw pass. Committing all repositions
+  /// atomically guarantees that adjacent windows' surrogates move in the
+  /// same DWM composition frame during multi-window relayouts; sequential
+  /// per-surrogate `SetWindowPos` calls can straddle a composition boundary
+  /// and let edges visibly desync for a frame.
+  #[cfg(target_os = "windows")]
+  pub fn flush_surrogate_updates(&mut self) {
+    if self.pending_surrogate_updates.is_empty() {
+      return;
+    }
+
+    let mut batch = SurrogateBatch::new();
+    for (window_id, rect, opacity) in
+      std::mem::take(&mut self.pending_surrogate_updates)
+    {
+      if let Some(session) = self.resize_sessions.get_mut(&window_id) {
+        session.defer_update(&mut batch, &rect, opacity);
+      }
+    }
+    batch.commit();
   }
 
   /// Returns `true` while a workspace-switch slide animation is in progress
@@ -1603,6 +1670,7 @@ impl AnimationManager {
       None,
       effect_opacity,
       false,
+      false,
     ) {
       Ok(mut session) => {
         session.zoom = is_zoom;
@@ -1691,6 +1759,7 @@ impl AnimationManager {
       &target_rect,
       None,
       effect_opacity,
+      false,
       false,
     ) {
       Ok(mut session) => {
@@ -1846,7 +1915,10 @@ impl AnimationManager {
           fc.duration_ms,
           fc.easing.clone(),
         );
-        let _ = native_window.set_cloaked(true);
+        // Create the (immediately visible) surrogate before cloaking the
+        // real window. Cloaking first would expose the desktop for the
+        // frame(s) it takes to create the surrogate and register its
+        // thumbnail — a visible flash on every focus change.
         match ResizeSession::begin(
           native_window.hwnd(),
           &shrunken,
@@ -1854,14 +1926,15 @@ impl AnimationManager {
           None,
           effect_opacity,
           true,
+          false,
         ) {
           Ok(session) => {
+            let _ = native_window.set_cloaked(true);
             self.animations.insert(window_id, anim);
             self.resize_sessions.insert(window_id, session);
             self.ensure_timer_running();
           }
           Err(err) => {
-            let _ = native_window.set_cloaked(false);
             tracing::warn!(
               "Failed to begin focus scale animation for {window_id}: {err}."
             );
