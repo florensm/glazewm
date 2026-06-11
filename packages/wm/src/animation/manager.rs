@@ -70,6 +70,17 @@ const WS_COMPLETE_THRESHOLD_PX: f32 = 1.5;
 #[cfg(target_os = "windows")]
 const OPEN_PAINT_GRACE: Duration = Duration::from_millis(30);
 
+/// Remaining animation time at which the real (cloaked) window is handed off
+/// to its final rect mid-animation via [`ResizeSession::maybe_handoff`].
+///
+/// A 100 ms lead gives the app 2–3 repaint frames at any common refresh rate
+/// to settle at the new size while still hidden behind the surrogate. The
+/// `pre_commit` synchronous `SetWindowPos` at completion is the correctness
+/// guarantee; this handoff is purely an early-repaint optimisation to
+/// eliminate the classic Windows end-of-resize flash.
+#[cfg(target_os = "windows")]
+const HANDOFF_LEAD: Duration = Duration::from_millis(100);
+
 use tokio::sync::mpsc;
 use uuid::Uuid;
 #[cfg(target_os = "windows")]
@@ -255,7 +266,12 @@ pub struct AnimationManager {
   #[cfg(target_os = "windows")]
   pub(crate) resize_sessions: HashMap<Uuid, ResizeSession>,
   /// Surrogate updates queued during the current redraw pass, as
-  /// `(window ID, animated rect, opacity)` tuples.
+  /// `(window ID, animated rect, opacity, handoff)` tuples.
+  ///
+  /// `handoff` is `true` when the remaining animation time has fallen below
+  /// [`HANDOFF_LEAD`]; [`flush_surrogate_updates`] calls
+  /// [`ResizeSession::maybe_handoff`] for those entries so the real window is
+  /// repositioned at its final rect while still cloaked.
   ///
   /// Filled by the surrogate drive path in [`start_animation_if_needed`] and
   /// applied atomically by [`flush_surrogate_updates`] at the end of each
@@ -264,7 +280,7 @@ pub struct AnimationManager {
   /// [`start_animation_if_needed`]: AnimationManager::start_animation_if_needed
   /// [`flush_surrogate_updates`]: AnimationManager::flush_surrogate_updates
   #[cfg(target_os = "windows")]
-  pending_surrogate_updates: Vec<(Uuid, Rect, u8)>,
+  pending_surrogate_updates: Vec<(Uuid, Rect, u8, bool)>,
   /// Sessions that have been removed from `resize_sessions` after their
   /// animation completed but must outlive the final `platform_sync` call
   /// that repositions the real window. Keyed by window ID so the final
@@ -1372,9 +1388,13 @@ impl AnimationManager {
             // repositions in this redraw pass are committed atomically by
             // `flush_surrogate_updates` so adjacent windows' edges land in
             // the same DWM composition frame.
+            let handoff = self
+              .animations
+              .get(&window_id)
+              .is_some_and(|a| a.remaining_at(now) <= HANDOFF_LEAD);
             self
               .pending_surrogate_updates
-              .push((window_id, current_rect, opacity_u8));
+              .push((window_id, current_rect, opacity_u8, handoff));
           }
           return (AnimationPositionResult::Frozen, None);
         }
@@ -1430,10 +1450,13 @@ impl AnimationManager {
     }
 
     let mut batch = SurrogateBatch::new();
-    for (window_id, rect, opacity) in
+    for (window_id, rect, opacity, handoff) in
       std::mem::take(&mut self.pending_surrogate_updates)
     {
       if let Some(session) = self.resize_sessions.get_mut(&window_id) {
+        if handoff {
+          session.maybe_handoff();
+        }
         session.defer_update(&mut batch, &rect, opacity);
       }
     }

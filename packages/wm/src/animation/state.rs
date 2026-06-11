@@ -135,6 +135,20 @@ impl WindowAnimationState {
     self.eased_progress_at(Instant::now())
   }
 
+  /// Remaining wall-clock time until the animation's duration window
+  /// elapses at `now`.
+  ///
+  /// Returns the full `start_delay + duration` when the animation has not
+  /// rendered its first frame yet (`start_time` unset). Used to schedule the
+  /// mid-animation handoff of the real window to its final rect.
+  pub fn remaining_at(&self, now: Instant) -> Duration {
+    match self.start_time.get() {
+      Some(start) => (start + self.start_delay + self.duration)
+        .saturating_duration_since(now),
+      None => self.start_delay + self.duration,
+    }
+  }
+
   /// Largest per-axis rect travel distance, in pixels, between the start and
   /// target rects.
   ///
