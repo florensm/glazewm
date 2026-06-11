@@ -267,9 +267,10 @@ pub struct AnimationManager {
   pending_surrogate_updates: Vec<(Uuid, Rect, u8)>,
   /// Sessions that have been removed from `resize_sessions` after their
   /// animation completed but must outlive the final `platform_sync` call
-  /// that repositions the real window.
+  /// that repositions the real window. Keyed by window ID so the final
+  /// redraw can detect that `pre_commit` already positioned the window.
   #[cfg(target_os = "windows")]
-  pub(crate) pending_session_cleanup: Vec<ResizeSession>,
+  pub(crate) pending_session_cleanup: Vec<(Uuid, ResizeSession)>,
   /// Monitor rects for active slide-in (window-open) animations, keyed by
   /// window ID. Used to hide the surrogate while it is fully off the monitor.
   #[cfg(target_os = "windows")]
@@ -412,7 +413,7 @@ impl AnimationManager {
       #[cfg(target_os = "windows")]
       if let Some(mut session) = self.resize_sessions.remove(id) {
         session.pre_commit();
-        self.pending_session_cleanup.push(session);
+        self.pending_session_cleanup.push((*id, session));
       }
       #[cfg(target_os = "windows")]
       self.slide_in_monitor_rects.remove(id);
@@ -452,7 +453,8 @@ impl AnimationManager {
   pub fn drain_all_sessions(&mut self) -> Vec<ResizeSession> {
     let mut sessions: Vec<ResizeSession> =
       self.resize_sessions.drain().map(|(_, s)| s).collect();
-    sessions.extend(self.pending_session_cleanup.drain(..));
+    sessions
+      .extend(self.pending_session_cleanup.drain(..).map(|(_, s)| s));
     self.pending_surrogate_updates.clear();
     self.workspace_switch = None;
     self.pending_ws_cleanup = None;
@@ -1034,18 +1036,22 @@ impl AnimationManager {
     // surrogate overlay.
     #[cfg(target_os = "windows")]
     {
-      state.animation_manager.pending_session_cleanup.clear();
-      // Flush before dropping workspace-switch surrogates. DWM thumbnails do
-      // not capture the window's compositor shadow, so shadows are absent
-      // while windows are cloaked and appear suddenly on uncloak. One flush
-      // after `platform_sync` (which uncloaks real windows) lets DWM render
-      // one frame with the real windows — including their shadows — while the
-      // surrogates are still live. Per-window thumbnail hides were already
-      // issued inside `platform_sync` immediately after each `set_cloaked(false)`
-      // call, so this flush shows only real windows without double-blend.
-      if state.animation_manager.pending_ws_cleanup.is_some() {
+      // Flush before dropping any completed surrogates (move/resize sessions
+      // and workspace-switch alike). The uncloak issued inside
+      // `platform_sync` is a DWM attribute change that only takes effect at
+      // the next composition — destroying the surrogate without waiting for
+      // that frame can produce one composition where the surrogate is gone
+      // but the real window is still cloaked: a visible blank flash at the
+      // end of the animation. The flush guarantees DWM renders one frame
+      // with the real window visible (including its compositor shadow,
+      // which thumbnails do not capture) while the surrogate still covers
+      // it, making the teardown seamless.
+      if !state.animation_manager.pending_session_cleanup.is_empty()
+        || state.animation_manager.pending_ws_cleanup.is_some()
+      {
         wm_platform::dwm_flush();
       }
+      state.animation_manager.pending_session_cleanup.clear();
       state.animation_manager.pending_ws_cleanup = None;
       // Reset to 0 so the timer thread reverts to `DwmFlush` for any
       // subsequent window move/resize animations.
@@ -1388,6 +1394,25 @@ impl AnimationManager {
       // disabled. Apply the final target rect directly.
       (AnimationPositionResult::Apply(target_rect), None)
     }
+  }
+
+  /// Returns `true` when `window_id`'s animation just completed and
+  /// `pre_commit` synchronously positioned the real window at `rect`.
+  ///
+  /// Used by `platform_sync` on the completion redraw to skip the redundant
+  /// `SetWindowPos` — its `SWP_FRAMECHANGED` would force a full frame
+  /// recalculation and repaint of the window right as it is uncloaked,
+  /// producing a visible flash at the end of move/resize animations.
+  #[cfg(target_os = "windows")]
+  pub fn was_pre_committed_at(
+    &self,
+    window_id: &Uuid,
+    rect: &Rect,
+  ) -> bool {
+    self
+      .pending_session_cleanup
+      .iter()
+      .any(|(id, session)| id == window_id && session.target_rect() == rect)
   }
 
   /// Applies all surrogate updates queued during the current redraw pass in

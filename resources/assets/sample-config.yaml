@@ -47,14 +47,14 @@ animations:
     duration_ms: 150
     # See 'window_move.easing' for available options.
     easing: "cubic_bezier(0.16, 1.0, 0.3, 1.0)"
-    # Transition style. Options:
+    # Transition type ('style' also accepted). Options:
     #   'slide_right' (default)  - slides in from the right
     #   'slide_left'             - slides in from the left
     #   'slide_top'              - slides in from the top
     #   'slide_bottom'           - slides in from the bottom
     #   'fade'                   - no slide; combine with opacity_from for pure fade
     #   'zoom'                   - zoom in from window center
-    style: "slide_right"
+    type: "slide_right"
     # Starting opacity (0.0–1.0). At 1.0 no fade is applied; at 0.0 the
     # window fades in from fully transparent. Can be combined with any style.
     opacity_from: 1.0
@@ -65,17 +65,17 @@ animations:
     duration_ms: 250
     # See 'window_move.easing' for available options.
     easing: "ease_out_cubic"
-    # Motion style. Options:
+    # Motion type ('style' also accepted). Options:
     #   'slide' (default) - workspaces slide along the 'direction' axis
     #   'fade'            - pure crossfade; both workspaces stay in place
     #   'zoom'            - outgoing shrinks to monitor center, incoming expands
     #   'iris'            - a frozen snapshot of the old workspace stays on top
     #                       while a circular hole grows from 'iris_origin',
     #                       revealing the new workspace beneath (Windows only)
-    style: "slide"
-    # Slide axis when style is 'slide'. Options: 'horizontal' (default), 'vertical'.
+    type: "slide"
+    # Slide axis when type is 'slide'. Options: 'horizontal' (default), 'vertical'.
     direction: "horizontal"
-    # Origin of the circle when style is 'iris'. Options:
+    # Origin of the circle when type is 'iris'. Options:
     #   'center' (default) - grow from the monitor center
     #   'cursor'           - grow from the current mouse-cursor position
     #   'focused_window'   - grow from the center of the newly focused window
@@ -100,14 +100,14 @@ animations:
     duration_ms: 150
     # See 'window_move.easing' for available options.
     easing: "ease_in_cubic"
-    # Transition style. Options:
+    # Transition type ('style' also accepted). Options:
     #   'none' (default)  - no positional movement; combine with opacity_to for a fade
     #   'zoom'            - zoom out from window center
     #   'slide_right'     - slide off the right edge
     #   'slide_left'      - slide off the left edge
     #   'slide_top'       - slide off the top edge
     #   'slide_bottom'    - slide off the bottom edge
-    style: "none"
+    type: "none"
     # Final opacity (0.0–1.0). At 0.0 the window fades to fully transparent;
     # at 1.0 no fade is applied.
     opacity_to: 0.0
@@ -118,15 +118,15 @@ animations:
     duration_ms: 150
     # See 'window_move.easing' for available options.
     easing: "cubic_bezier(0.16, 1.0, 0.3, 1.0)"
-    # Animation style. Options:
+    # Animation type ('style' also accepted). Options:
     #   'opacity' (default) - window briefly dims then restores opacity
     #   'scale'             - window briefly pops in from a slightly smaller size
-    style: "opacity"
-    # For 'opacity' style: dim level at the start of the animation, relative to
+    type: "opacity"
+    # For 'opacity' type: dim level at the start of the animation, relative to
     # the effect opacity. E.g. 0.5 = dims to 50% of effect opacity then
     # restores. Range: 0.0–1.0. Default: 0.5.
     opacity_from: 0.5
-    # For 'scale' style: ratio of the initial shrunken size relative to the
+    # For 'scale' type: ratio of the initial shrunken size relative to the
     # window's actual size. E.g. 0.98 = window starts at 98% and grows to 100%.
     # Range: 0.5–1.0.
     scale_factor: 0.98
