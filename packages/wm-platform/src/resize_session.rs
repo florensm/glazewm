@@ -2,8 +2,8 @@ use windows::Win32::{
   Foundation::{HWND, RECT},
   Graphics::Dwm::{DwmGetWindowAttribute, DWMWA_EXTENDED_FRAME_BOUNDS},
   UI::WindowsAndMessaging::{
-    GetWindowRect, IsWindow, SetWindowPos, SWP_NOACTIVATE, SWP_NOSENDCHANGING,
-    SWP_NOZORDER,
+    GetWindowRect, IsWindow, SetWindowPos, SWP_ASYNCWINDOWPOS,
+    SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOSENDCHANGING, SWP_NOZORDER,
   },
 };
 
@@ -61,11 +61,27 @@ pub struct ResizeSession {
   /// animated rect (`ResizeContentMode::Stretch`). The thumbnail stays
   /// registered at source dimensions for the session's lifetime — no
   /// re-registration on redirects, no backdrop exposure, and no
-  /// pre-positioning of the real window before `pre_commit`.
+  /// pre-positioning of the real window before the mid-animation handoff.
   stretch: bool,
-  /// Logical (visible-content) dimensions of the source window at session
-  /// start. Used as the thumbnail `rcSource` size in stretch mode.
-  source_size: (i32, i32),
+  /// `true` once a shrinking/mixed reveal session has handed the real
+  /// window off to its target rect mid-animation (see [`maybe_handoff`]).
+  /// The remaining frames scale the thumbnail like stretch mode, since the
+  /// target-sized content can no longer fill the (still larger) animated
+  /// rect at its natural size.
+  ///
+  /// [`maybe_handoff`]: ResizeSession::maybe_handoff
+  tail_stretch: bool,
+  /// `true` once the real window has been repositioned at the current
+  /// `target_rect` (at session start for growing curtain-reveals, or
+  /// mid-animation via [`maybe_handoff`]). Reset whenever a redirect changes
+  /// the target.
+  ///
+  /// [`maybe_handoff`]: ResizeSession::maybe_handoff
+  handoff_done: bool,
+  /// Logical (visible-content) dimensions of the content the thumbnail
+  /// currently samples. Matches the thumbnail registration size; updated
+  /// when the real window is repositioned mid-session.
+  content_size: (i32, i32),
 }
 
 impl ResizeSession {
@@ -159,7 +175,9 @@ impl ResizeSession {
       }
     };
 
-    let logical_src = to_logical(source_rect, &border_inset);
+    // The thumbnail samples content at its registration size: target dims
+    // for growing curtain-reveals, source dims otherwise.
+    let logical_content = to_logical(thumbnail_rect, &border_inset);
 
     Ok(Self {
       hwnd: hwnd.0,
@@ -170,7 +188,12 @@ impl ResizeSession {
       is_growing,
       zoom: false,
       stretch,
-      source_size: (logical_src.width(), logical_src.height()),
+      tail_stretch: false,
+      // Growing curtain-reveals are pre-positioned at animation start by
+      // `platform_sync` (see `needs_preposition`); all other sessions hand
+      // off mid-animation via `maybe_handoff`.
+      handoff_done: is_growing && !stretch,
+      content_size: (logical_content.width(), logical_content.height()),
     })
   }
 
@@ -246,11 +269,16 @@ impl ResizeSession {
     surrogate.set_window_opacity(opacity);
   }
 
+  /// Whether per-frame thumbnail scaling is active (configured stretch mode
+  /// or the post-handoff tail of a reveal session).
+  fn scales_content(&self) -> bool {
+    self.stretch || self.tail_stretch
+  }
+
   /// Computes the DWM thumbnail `rcSource`/`rcDestination` pair that scales
-  /// the full source content to a `dst_width` × `dst_height` destination
-  /// (stretch mode).
+  /// the full sampled content to a `dst_width` × `dst_height` destination.
   fn stretch_rects(&self, dst_width: i32, dst_height: i32) -> (RECT, RECT) {
-    let (src_w, src_h) = self.source_size;
+    let (src_w, src_h) = self.content_size;
     (
       RECT {
         left: self.border_inset.left,
@@ -267,6 +295,56 @@ impl ResizeSession {
     )
   }
 
+  /// Hands the real (cloaked) window off to its final target rect
+  /// mid-animation.
+  ///
+  /// The classic end-of-resize flash comes from resizing the real window at
+  /// the very end of the animation: the app's first repaint at its new size
+  /// (often a white/background-colored frame) lands right as the window is
+  /// uncloaked. Calling this while a comfortable slice of the animation
+  /// remains lets the app repaint at its final size while still hidden
+  /// behind the surrogate, so the uncloak reveals settled content.
+  ///
+  /// The reposition is posted asynchronously; `pre_commit` issues a final
+  /// synchronous move at completion as the correctness guarantee. After the
+  /// handoff the thumbnail samples target-sized content, which can no
+  /// longer fill a still-larger animated rect at natural size — reveal
+  /// sessions therefore switch to scaled rendering (`tail_stretch`) for the
+  /// remaining frames.
+  ///
+  /// No-op for zoom sessions (close animations must never move the real
+  /// window — their target rect is off-screen) and when the current target
+  /// has already been handed off.
+  pub fn maybe_handoff(&mut self) {
+    if self.handoff_done || self.zoom || self.hwnd == 0 {
+      return;
+    }
+    self.handoff_done = true;
+
+    // SAFETY: The window is cloaked while a surrogate session is active, so
+    // this reposition is invisible. `SWP_NOZORDER` makes `hWndInsertAfter`
+    // irrelevant.
+    unsafe {
+      let _ = SetWindowPos(
+        HWND(self.hwnd),
+        HWND(0),
+        self.target_rect.x(),
+        self.target_rect.y(),
+        self.target_rect.width(),
+        self.target_rect.height(),
+        SWP_NOACTIVATE | SWP_NOSENDCHANGING | SWP_NOZORDER
+          | SWP_ASYNCWINDOWPOS | SWP_FRAMECHANGED,
+      );
+    }
+
+    let logical_target = to_logical(&self.target_rect, &self.border_inset);
+    self.content_size =
+      (logical_target.width(), logical_target.height());
+    if !self.stretch {
+      self.tail_stretch = true;
+    }
+  }
+
   /// Updates the surrogate to the current animation frame position and opacity.
   ///
   /// `current_rect` is the physical animated rect; it is converted to the
@@ -277,7 +355,7 @@ impl ResizeSession {
   pub fn update(&mut self, current_rect: &Rect, opacity: u8) {
     let logical = to_logical(current_rect, &self.border_inset);
     let stretch_rects = self
-      .stretch
+      .scales_content()
       .then(|| self.stretch_rects(logical.width(), logical.height()));
 
     if let Some(surrogate) = &mut self.surrogate {
@@ -307,7 +385,7 @@ impl ResizeSession {
   ) {
     let logical = to_logical(current_rect, &self.border_inset);
     let stretch_rects = self
-      .stretch
+      .scales_content()
       .then(|| self.stretch_rects(logical.width(), logical.height()));
 
     if let Some(surrogate) = &mut self.surrogate {
@@ -393,10 +471,11 @@ impl ResizeSession {
     self.is_growing = new_is_growing;
     self.target_rect = new_target.clone();
 
-    // Stretch mode samples the source content at its original dimensions for
-    // the whole session — no thumbnail re-registration and no real-window
-    // pre-positioning are needed on a redirect.
+    // Stretch mode never re-registers the thumbnail on a redirect; only the
+    // handoff scheduling resets so the window is repositioned at the new
+    // target near the end of the redirected animation.
     if self.hwnd == 0 || self.stretch {
+      self.handoff_done = false;
       return;
     }
 
@@ -420,8 +499,8 @@ impl ResizeSession {
           SWP_NOACTIVATE | SWP_NOSENDCHANGING | SWP_NOZORDER,
         );
       }
+      let logical = to_logical(new_target, &self.border_inset);
       if let Some(surrogate) = &mut self.surrogate {
-        let logical = to_logical(new_target, &self.border_inset);
         surrogate.reregister_thumbnail(
           HWND(self.hwnd),
           logical.width(),
@@ -429,12 +508,18 @@ impl ResizeSession {
           self.border_inset,
         );
       }
+      // The real window is pre-positioned at the new target and the thumbnail
+      // is registered at target dims — curtain-reveal handoff complete. Revert
+      // to non-scaled rendering (tail_stretch off) to match the new registration.
+      self.content_size = (logical.width(), logical.height());
+      self.handoff_done = true;
+      self.tail_stretch = false;
     } else if direction_changed {
-      // Was growing, now shrinking: re-register thumbnail at current
-      // dimensions so the clip/wipe starts from the correct boundary rather
-      // than the stale (larger) growing target.
+      // Was growing, now shrinking: re-register thumbnail at current dimensions
+      // so the clip/wipe starts from the correct boundary rather than the stale
+      // (larger) growing target.
+      let logical = to_logical(current_rect, &self.border_inset);
       if let Some(surrogate) = &mut self.surrogate {
-        let logical = to_logical(current_rect, &self.border_inset);
         surrogate.reregister_thumbnail(
           HWND(self.hwnd),
           logical.width(),
@@ -442,6 +527,18 @@ impl ResizeSession {
           self.border_inset,
         );
       }
+      // Now shrinking from the current position: reset content sampling and
+      // schedule a fresh mid-animation handoff toward the new target.
+      self.content_size = (logical.width(), logical.height());
+      self.handoff_done = false;
+      self.tail_stretch = false;
+    } else {
+      // Still shrinking to a new target: reset the handoff flag so the real
+      // window is repositioned near the end of the redirected animation.
+      // `tail_stretch` is preserved — if the previous handoff already switched
+      // to scaled rendering, that rendering mode remains correct until the next
+      // `maybe_handoff` call updates `content_size` to the new target.
+      self.handoff_done = false;
     }
   }
 
@@ -484,7 +581,7 @@ impl ResizeSession {
 
     let logical = to_logical(&self.target_rect, &self.border_inset);
     let stretch_rects = self
-      .stretch
+      .scales_content()
       .then(|| self.stretch_rects(logical.width(), logical.height()));
 
     if let Some(surrogate) = &mut self.surrogate {
