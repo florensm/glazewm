@@ -32,7 +32,7 @@ pub use native_window::*;
 #[cfg(target_os = "windows")]
 mod native_surrogate;
 #[cfg(target_os = "windows")]
-pub use native_surrogate::NativeSurrogate;
+pub use native_surrogate::{NativeSurrogate, SurrogateBatch};
 #[cfg(target_os = "windows")]
 mod resize_session;
 #[cfg(target_os = "windows")]
