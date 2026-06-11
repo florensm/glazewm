@@ -174,6 +174,13 @@ impl ResizeSession {
     })
   }
 
+  /// Returns the final target rect for the real window (physical, including
+  /// invisible border).
+  #[must_use]
+  pub fn target_rect(&self) -> &Rect {
+    &self.target_rect
+  }
+
   /// Returns `true` when the cloaked real window should be asynchronously
   /// pre-positioned at the target rect immediately after cloaking.
   ///

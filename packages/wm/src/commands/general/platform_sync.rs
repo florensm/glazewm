@@ -856,16 +856,32 @@ fn redraw_containers(
         #[cfg(not(target_os = "windows"))]
         let has_surrogate = false;
 
-        if let Err(err) = reposition_window(
-          window,
-          apply_rect,
-          *hide_corner,
-          &z_order,
-          is_visible,
-          has_surrogate,
-          config,
-        ) {
-          tracing::warn!("Failed to set window position: {}", err);
+        // Skip the `SetWindowPos` on the animation-completion redraw when
+        // `pre_commit` already positioned the window at exactly this rect.
+        // Repositioning again is not just redundant — `SWP_FRAMECHANGED`
+        // forces a frame recalculation and full repaint that lands right as
+        // the window is uncloaked below, flashing at the end of every
+        // move/resize animation. The uncloak and effects below still run.
+        #[cfg(target_os = "windows")]
+        let already_positioned = is_visible
+          && state
+            .animation_manager
+            .was_pre_committed_at(&window.id(), apply_rect);
+        #[cfg(not(target_os = "windows"))]
+        let already_positioned = false;
+
+        if !already_positioned {
+          if let Err(err) = reposition_window(
+            window,
+            apply_rect,
+            *hide_corner,
+            &z_order,
+            is_visible,
+            has_surrogate,
+            config,
+          ) {
+            tracing::warn!("Failed to set window position: {}", err);
+          }
         }
 
         // Uncloak after repositioning so the window is revealed at the correct

@@ -510,9 +510,10 @@ pub struct FocusChangeConfig {
   pub duration_ms: u32,
   /// See `window_move.easing` for available options.
   pub easing: EasingFunction,
-  /// Animation style: `opacity` (window briefly dims then restores) or
+  /// Animation type: `opacity` (window briefly dims then restores) or
   /// `scale` (window briefly pops from a slightly smaller size to its actual
-  /// size).
+  /// size). The config key is `type`; `style` is accepted as a legacy alias.
+  #[serde(rename = "type", alias = "style")]
   pub style: FocusAnimationStyle,
   /// For `opacity` style: the dim level at the start of the animation
   /// (0.0–1.0), relative to the configured effect opacity. E.g. `0.5` dims
@@ -548,14 +549,17 @@ pub struct WindowOpenConfig {
   pub enabled: bool,
   pub duration_ms: u32,
   pub easing: EasingFunction,
-  /// Transition style for the open animation.
+  /// Transition type for the open animation.
   ///
   /// - `slide_right` (default): slides in from the right.
   /// - `slide_left` / `slide_top` / `slide_bottom`: slide from that edge.
   /// - `none` / `fade`: no slide; combine with `opacity_from` for a pure
   ///   fade-in.
   /// - `zoom`: zoom in from the window center.
-  #[serde(alias = "direction")]
+  ///
+  /// The config key is `type`; `style` and `direction` are accepted as
+  /// legacy aliases.
+  #[serde(rename = "type", alias = "style", alias = "direction")]
   pub style: WindowTransitionStyle,
   /// Starting opacity (0.0–1.0). At `1.0` no fade is applied; at `0.0` the
   /// window fades in from fully transparent. Can be combined with any style.
@@ -585,13 +589,16 @@ pub struct WindowCloseConfig {
   pub enabled: bool,
   pub duration_ms: u32,
   pub easing: EasingFunction,
-  /// Transition style for the close animation.
+  /// Transition type for the close animation.
   ///
   /// - `none` (default): no positional movement; combine with `opacity_to` for
   ///   a pure fade-out.
   /// - `zoom`: zoom out from the window center.
   /// - `slide_right` / `slide_left` / `slide_top` / `slide_bottom`: slide off
   ///   that edge.
+  ///
+  /// The config key is `type`; `style` is accepted as a legacy alias.
+  #[serde(rename = "type", alias = "style")]
   pub style: WindowTransitionStyle,
   /// Final opacity (0.0–1.0). At `0.0` the window fades to fully transparent;
   /// at `1.0` no fade is applied.
@@ -680,7 +687,10 @@ pub struct WorkspaceSwitchAnimationConfig {
   pub enabled: bool,
   pub duration_ms: u32,
   pub easing: EasingFunction,
-  /// Motion style: `slide` (default), `fade`, or `zoom`.
+  /// Motion type: `slide` (default), `fade`, `zoom`, or `iris`.
+  ///
+  /// The config key is `type`; `style` is accepted as a legacy alias.
+  #[serde(rename = "type", alias = "style")]
   pub style: WorkspaceSwitchStyle,
   /// Slide axis when `style` is `slide`: `horizontal` (default) or `vertical`.
   pub direction: WorkspaceSwitchDirection,
