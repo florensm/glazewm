@@ -53,15 +53,6 @@ const EDGE_SAMPLE_PX: i32 = 1;
 /// instead of the app's background.
 const EDGE_SAMPLE_INSET_PX: i32 = 4;
 
-/// Pixels cropped from each side of the main thumbnail's source rect.
-///
-/// Hides the DWM accent border (`DWMWA_BORDER_COLOR`) drawn on the outermost
-/// frame pixels. During a mixed resize the content boundary sits inside the
-/// larger animated rect, so an uncropped border ring would float
-/// mid-surface. The crop is compensated by a sub-percent scale-up to the
-/// destination; the real border reappears when the window is uncloaked.
-const ACCENT_BORDER_CROP_PX: i32 = 2;
-
 /// Accent state value for a solid-color fill.
 const ACCENT_ENABLE_GRADIENT: u32 = 1;
 
@@ -218,22 +209,13 @@ fn register_thumbnail(
     unsafe { DwmRegisterThumbnail(dest_hwnd, source_hwnd).ok()? };
 
   // `rcSource` starts at the border inset so invisible-border pixels are
-  // excluded; those pixels render as black in DWM thumbnails. An additional
-  // crop strips the DWM accent border ring (skipped for tiny windows where
-  // the resulting scale-up would be noticeable). `rcDestination` fills the
-  // whole (logical-sized) surrogate from (0, 0).
-  let crop = if logical_width > 8 * ACCENT_BORDER_CROP_PX
-    && logical_height > 8 * ACCENT_BORDER_CROP_PX
-  {
-    ACCENT_BORDER_CROP_PX
-  } else {
-    0
-  };
+  // excluded; those pixels render as black in DWM thumbnails. `rcDestination`
+  // fills the whole (logical-sized) surrogate from (0, 0).
   let src_rect = RECT {
-    left: border_inset.left + crop,
-    top: border_inset.top + crop,
-    right: border_inset.left + logical_width - crop,
-    bottom: border_inset.top + logical_height - crop,
+    left: border_inset.left,
+    top: border_inset.top,
+    right: border_inset.left + logical_width,
+    bottom: border_inset.top + logical_height,
   };
   let dst_rect = RECT {
     left: 0,
@@ -729,21 +711,18 @@ impl NativeSurrogate {
     let sample_x = EDGE_SAMPLE_INSET_PX.min(content_w - strip).max(0);
     let sample_y = EDGE_SAMPLE_INSET_PX.min(content_h - strip).max(0);
 
-    // Crop the strip span ends so the accent-border pixels there don't
-    // extend border lines into the gap (mirrors the main thumbnail's crop).
-    let crop_x = ACCENT_BORDER_CROP_PX.min((content_w - strip) / 2).max(0);
-    let crop_y = ACCENT_BORDER_CROP_PX.min((content_h - strip) / 2).max(0);
-
     // `(rcSource, rcDestination, visible)` for the right, bottom, and corner
     // extensions. Source rects are in the source window's coordinate space
-    // (offset by the border inset, matching the main thumbnail).
+    // (offset by the border inset, matching the main thumbnail). Strip spans
+    // run edge-to-edge so the accent-border lines at their ends extend
+    // coherently into the gap.
     let edges = [
       (
         RECT {
           left: right_edge - sample_x - strip,
-          top: inset.top + crop_y,
+          top: inset.top,
           right: right_edge - sample_x,
-          bottom: bottom_edge - crop_y,
+          bottom: bottom_edge,
         },
         RECT {
           left: content_w,
@@ -755,9 +734,9 @@ impl NativeSurrogate {
       ),
       (
         RECT {
-          left: inset.left + crop_x,
+          left: inset.left,
           top: bottom_edge - sample_y - strip,
-          right: right_edge - crop_x,
+          right: right_edge,
           bottom: bottom_edge - sample_y,
         },
         RECT {
