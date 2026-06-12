@@ -15,10 +15,9 @@ use std::{
 /// that period makes the computed position align with where it will be when
 /// DWM actually presents it, rather than systematically lagging behind.
 ///
-/// Expressed as a fraction of the per-monitor frame period (see
-/// [`WorkspaceSwitchState::vblank_period_us`]) rather than a fixed
-/// microsecond value, so the compensation scales correctly across monitors
-/// with different refresh rates (e.g. a 60 Hz + 175 Hz multi-monitor setup).
+/// Expressed as a fraction of the per-monitor frame period read live from
+/// the installed `DxgiVsyncWaiter`, so the compensation scales correctly
+/// across monitors with different refresh rates (e.g. 60 Hz + 175 Hz).
 /// `0.5` leads by half a frame: a balance between under-compensating (motion
 /// trails the cursor) and over-compensating (motion arrives early). Tune
 /// here if the slide feels laggy (increase toward `1.0`) or rushed (decrease
@@ -177,14 +176,6 @@ struct WorkspaceSwitchState {
   ///
   /// Mirrors `slide_distance_h` on the y-axis.
   slide_distance_v: i32,
-  /// Refresh period of the animation monitor in microseconds (one vblank
-  /// interval).
-  ///
-  /// Captured from the per-monitor `DxgiVsyncWaiter` when the switch starts.
-  /// Used with [`VSYNC_LEAD_FRACTION`] to lead the animation clock by a
-  /// fraction of a frame so the computed position aligns with the next DWM
-  /// composition. Defaults to the 60 Hz period when vsync is unavailable.
-  vblank_period_us: u64,
   /// Whether `start_time` has been re-anchored to a vsync timestamp.
   ///
   /// The clock is provisionally anchored on the wall-clock cold-start tick,
@@ -315,19 +306,6 @@ pub struct AnimationManager {
   /// Active iris-wipe workspace transition, or `None` when idle.
   #[cfg(target_os = "windows")]
   iris_switch: Option<IrisSwitchState>,
-  /// Vblank period (µs) of the monitor currently pacing move/resize surrogate
-  /// animations.
-  ///
-  /// Set when the per-monitor `DxgiVsyncWaiter` is installed for a move/resize
-  /// `ResizeSession` (see [`start_animation_if_needed`]). Used by
-  /// [`predictive_now`] to lead the animation clock by [`VSYNC_LEAD_FRACTION`]
-  /// of a frame so the computed surrogate position aligns with the next DWM
-  /// composition. `0` when no waiter is installed (DwmFlush fallback).
-  ///
-  /// [`start_animation_if_needed`]: AnimationManager::start_animation_if_needed
-  /// [`predictive_now`]: AnimationManager::predictive_now
-  #[cfg(target_os = "windows")]
-  resize_vblank_period_us: u64,
 }
 
 impl Drop for AnimationManager {
@@ -378,8 +356,6 @@ impl AnimationManager {
       pending_close_windows: HashMap::new(),
       #[cfg(target_os = "windows")]
       iris_switch: None,
-      #[cfg(target_os = "windows")]
-      resize_vblank_period_us: 0,
     }
   }
 
@@ -484,7 +460,6 @@ impl AnimationManager {
     self.pending_ws_cleanup = None;
     *self.animation_timer_vsync.lock().expect("animation mutex poisoned") = None;
     *self.animation_vsync_time.lock().expect("animation mutex poisoned") = None;
-    self.resize_vblank_period_us = 0;
     // On WM shutdown close-animation windows are left open — only clear
     // the tracking state without sending WM_CLOSE.
     self.pending_close_windows.clear();
@@ -505,12 +480,11 @@ impl AnimationManager {
   ///
   /// The thread uses a two-tier vsync strategy on Windows:
   ///
-  /// 1. **`IDXGIOutput::WaitForVBlank`** — during workspace-switch, waits for
-  ///    the animation monitor's specific vblank signal. Per-monitor and
-  ///    reliable at any Hz. Wakes right after vsync, leaving a full frame
-  ///    period for surrogate updates before the next composition.
-  /// 2. **`DwmFlush`** — baseline for window move/resize animations, aligning
-  ///    to the primary monitor's composition cycle.
+  /// 1. **`IDXGIOutput::WaitForVBlank`** — when a `DxgiVsyncWaiter` is
+  ///    installed, waits for the animation monitor's specific vblank signal.
+  ///    Per-monitor and reliable at any Hz.
+  /// 2. **`DwmFlush`** — fallback when no waiter is installed, aligning to
+  ///    the primary monitor's composition cycle.
   ///
   /// On non-Windows, `DwmFlush` is a no-op so a fixed 60 fps sleep is used.
   pub fn ensure_timer_running(&self) {
@@ -814,39 +788,17 @@ impl AnimationManager {
         animation_progress_at, apply_easing,
       };
 
-      if let Some(ws) = &mut state.animation_manager.workspace_switch {
-        // Lead the vsync clock by a fraction of the monitor's vblank period
-        // so the computed position aligns with the next DWM composition
-        // rather than the moment this code runs (see `VSYNC_LEAD_FRACTION`).
-        #[allow(
-          clippy::cast_precision_loss,
-          clippy::cast_possible_truncation,
-          clippy::cast_sign_loss
-        )]
-        let lead_us =
-          (ws.vblank_period_us as f32 * VSYNC_LEAD_FRACTION) as u64;
-        let vsync_now = state
-          .animation_manager
-          .animation_vsync_time
-          .lock()
-          .expect("animation mutex poisoned")
-          .map(|t| t + std::time::Duration::from_micros(lead_us));
+      // Compute the predictive vsync timestamp before taking a mutable borrow
+      // on `workspace_switch`. `predictive_vsync_now` reads from the installed
+      // waiter, so the period is always current — no stale cached field.
+      let ws_vsync_now =
+        state.animation_manager.predictive_vsync_now();
 
+      if let Some(ws) = &mut state.animation_manager.workspace_switch {
         // Anchor the animation clock to the first vsync-aligned tick so every
-        // inter-frame step is measured on the same clock. Anchoring to a
-        // non-vsync wall-clock instant would make the first inter-frame step
-        // irregular — a visible hitch at the start, worst on a mixed-refresh-
-        // rate setup where the pre-switch `DwmFlush` (primary monitor) and the
-        // per-monitor vblank are out of phase.
-        //
-        // When a vsync timestamp is available, re-anchor `start_time` to the
-        // first one so all vsync-driven frames share a single clock origin.
-        // The cold-start tick (and any tick where the DXGI waiter is missing
-        // or `WaitForVBlank` failed) has no vsync timestamp; fall back to the
-        // wall clock so progress always advances. Without this fallback the
-        // animation would stall at progress 0.0 forever if a vblank signal
-        // never arrives, leaving the real windows cloaked.
-        let now = match vsync_now {
+        // inter-frame step is measured on the same clock. Falls back to the
+        // wall clock so progress always advances if no vblank signal arrives.
+        let now = match ws_vsync_now {
           Some(vsync) => {
             if !ws.vsync_anchored {
               ws.start_time = Some(vsync);
@@ -1077,12 +1029,6 @@ impl AnimationManager {
       }
       state.animation_manager.pending_session_cleanup.clear();
       state.animation_manager.pending_ws_cleanup = None;
-      // Reset to 0 so the timer thread reverts to `DwmFlush` for any
-      // subsequent window move/resize animations.
-      // Clear the DXGI waiter and vsync timestamp so the timer thread reverts
-      // to DwmFlush for subsequent window move/resize animations.
-      *state.animation_manager.animation_timer_vsync.lock().expect("animation mutex poisoned") = None;
-      *state.animation_manager.animation_vsync_time.lock().expect("animation mutex poisoned") = None;
     }
 
     // Keep the timer running while animations are active; stop it otherwise
@@ -1112,37 +1058,90 @@ impl AnimationManager {
           .animation_vsync_time
           .lock()
           .expect("animation mutex poisoned") = None;
-        state.animation_manager.resize_vblank_period_us = 0;
       }
     }
 
     Ok(())
   }
 
-  /// Returns the predictive timestamp for driving move/resize surrogates.
+  /// Returns the predicted vsync instant: last wake + frame period ×
+  /// (1 - `VSYNC_LEAD_FRACTION`).
   ///
-  /// When a per-monitor `DxgiVsyncWaiter` is installed, returns the most
-  /// recent vsync wake-up time led forward by [`VSYNC_LEAD_FRACTION`] of the
-  /// monitor's vblank period, so the computed surrogate position aligns with
-  /// the next DWM composition rather than the moment this code runs (matching
-  /// the workspace-switch slide driver). Falls back to `Instant::now()` when
-  /// no vsync timestamp is available yet (the cold-start tick, or DwmFlush
-  /// pacing when no waiter is installed).
+  /// Reads the period live from the installed waiter instead of a stale
+  /// cached field. Returns `None` when no waiter is installed or no wake has
+  /// been recorded yet.
   #[cfg(target_os = "windows")]
-  fn predictive_now(&self) -> Instant {
+  fn predictive_vsync_now(&self) -> Option<Instant> {
+    let guard = self.animation_timer_vsync.lock().ok()?;
+    let waiter = guard.as_ref()?;
+    let period_us = waiter.frame_period_us();
+    let last_wake = waiter.last_wake.lock().ok()?.as_ref().copied()?;
     #[allow(
       clippy::cast_precision_loss,
       clippy::cast_possible_truncation,
       clippy::cast_sign_loss
     )]
-    let lead_us =
-      (self.resize_vblank_period_us as f32 * VSYNC_LEAD_FRACTION) as u64;
-    self
-      .animation_vsync_time
-      .lock()
-      .expect("animation mutex poisoned")
-      .map(|t| t + Duration::from_micros(lead_us))
-      .unwrap_or_else(Instant::now)
+    let lead = Duration::from_micros(
+      (period_us as f64 * f64::from(1.0_f32 - VSYNC_LEAD_FRACTION)) as u64,
+    );
+    Some(last_wake + lead)
+  }
+
+  /// Returns the predictive vsync instant if available, else wall-clock now.
+  #[cfg(target_os = "windows")]
+  fn predictive_now(&self) -> Instant {
+    self.predictive_vsync_now().unwrap_or_else(Instant::now)
+  }
+
+  /// Installs or upgrades the vsync waiter to the monitor with handle
+  /// `monitor_handle`.
+  ///
+  /// No-op during workspace or iris switch (they own the waiter). Skips DXGI
+  /// enumeration when the window is already on the installed monitor.
+  #[cfg(target_os = "windows")]
+  fn ensure_waiter_for(&self, monitor_handle: isize) {
+    // Don't touch the waiter during switch phases — they manage it.
+    if self.workspace_switch.is_some() || self.iris_switch.is_some() {
+      return;
+    }
+
+    // Fast path: already pacing from this monitor.
+    {
+      let guard = self
+        .animation_timer_vsync
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+      if guard
+        .as_ref()
+        .is_some_and(|w| w.monitor_handle() == monitor_handle)
+      {
+        return;
+      }
+    }
+
+    // Upgrade only — never downgrade to a slower refresh rate.
+    match DxgiVsyncWaiter::for_monitor(monitor_handle) {
+      Ok(new_waiter) => {
+        let mut guard = self
+          .animation_timer_vsync
+          .lock()
+          .unwrap_or_else(|e| e.into_inner());
+        let should_replace = guard
+          .as_ref()
+          .map_or(true, |w| new_waiter.frame_period_us() < w.frame_period_us());
+        if should_replace {
+          tracing::debug!(
+            monitor = monitor_handle,
+            period_us = new_waiter.frame_period_us(),
+            "vsync waiter upgraded"
+          );
+          *guard = Some(new_waiter);
+        }
+      }
+      Err(err) => {
+        tracing::warn!(?err, "failed to create vsync waiter for monitor");
+      }
+    }
   }
 
   /// Determines whether a new animation should be started for a window.
@@ -1303,27 +1302,6 @@ impl AnimationManager {
           ) {
             Ok(session) => {
               self.resize_sessions.insert(window_id, session);
-
-              // Pace the surrogate by this window's monitor vblank via a
-              // per-monitor `DxgiVsyncWaiter` (reliable at any refresh rate)
-              // instead of `DwmFlush`, which is locked to the primary monitor
-              // and judders on secondary/high-Hz monitors. Only install when
-              // none is set: a workspace-switch waiter takes precedence, and
-              // concurrent move/resize sessions share the first window's
-              // monitor clock (the common case is single-monitor). Cleared
-              // once all animations finish (see `update_internal`).
-              let mut guard = self
-                .animation_timer_vsync
-                .lock()
-                .expect("animation mutex poisoned");
-              if guard.is_none() {
-                if let Some(waiter) =
-                  DxgiVsyncWaiter::for_window(native_window.hwnd())
-                {
-                  self.resize_vblank_period_us = waiter.frame_period_us();
-                  *guard = Some(waiter);
-                }
-              }
             }
             Err(err) => {
               tracing::warn!(
@@ -1333,6 +1311,12 @@ impl AnimationManager {
             }
           }
         }
+        // Install or upgrade the vsync waiter to the highest-Hz monitor
+        // among active sessions after both the new-session and redirect paths.
+        #[cfg(target_os = "windows")]
+        self.ensure_waiter_for(DxgiVsyncWaiter::window_monitor(
+          native_window.hwnd(),
+        ));
       }
     }
 
@@ -1586,13 +1570,20 @@ impl AnimationManager {
       // Install the per-monitor DXGI vsync waiter so the timer thread wakes
       // up right after each vblank, giving a full frame period for surrogate
       // updates before the next DWM composition.
-      let waiter = DxgiVsyncWaiter::for_monitor(monitor_handle);
-      // Capture the monitor's vblank period for frame-relative clock leading;
-      // fall back to the 60 Hz period when vsync is unavailable.
-      let vblank_period_us =
-        waiter.as_ref().map_or(16_667, DxgiVsyncWaiter::frame_period_us);
-      *self.animation_timer_vsync.lock().expect("animation mutex poisoned") =
-        waiter;
+      match DxgiVsyncWaiter::for_monitor(monitor_handle) {
+        Ok(waiter) => {
+          *self
+            .animation_timer_vsync
+            .lock()
+            .expect("animation mutex poisoned") = Some(waiter);
+        }
+        Err(err) => {
+          tracing::warn!(
+            ?err,
+            "failed to create vsync waiter for workspace switch"
+          );
+        }
+      }
       self.workspace_switch = Some(WorkspaceSwitchState {
         windows: ws_windows,
         start_time: None,
@@ -1608,7 +1599,6 @@ impl AnimationManager {
         slide_distance_h,
         slide_distance_v,
         zoom_factor: ws_config.zoom_factor.clamp(0.0, 1.0),
-        vblank_period_us,
         vsync_anchored: false,
       });
     } else {
@@ -1639,8 +1629,17 @@ impl AnimationManager {
       "Starting iris-wipe workspace switch: origin=({origin_x},{origin_y}), \
        max_radius={max_radius}, duration_ms={duration_ms}."
     );
-    *self.animation_timer_vsync.lock().expect("animation mutex poisoned") =
-      DxgiVsyncWaiter::for_monitor(monitor_handle);
+    match DxgiVsyncWaiter::for_monitor(monitor_handle) {
+      Ok(waiter) => {
+        *self
+          .animation_timer_vsync
+          .lock()
+          .expect("animation mutex poisoned") = Some(waiter);
+      }
+      Err(err) => {
+        tracing::warn!(?err, "failed to create vsync waiter for iris switch");
+      }
+    }
     self.iris_switch = Some(IrisSwitchState {
       overlay,
       origin_x,
@@ -1692,6 +1691,11 @@ impl AnimationManager {
     if is_stationary && !is_zoom && anim_config.opacity_from >= 1.0 {
       return;
     }
+
+    // Pace the open animation on the window's own monitor.
+    self.ensure_waiter_for(DxgiVsyncWaiter::window_monitor(
+      native_window.hwnd(),
+    ));
 
     // Stationary styles keep the surrogate at target position; slide styles
     // offset the start one full window dimension off-screen.
@@ -1800,6 +1804,11 @@ impl AnimationManager {
     if self.pending_close_windows.contains_key(&window_id) {
       return;
     }
+
+    // Pace the close animation on the window's own monitor.
+    self.ensure_waiter_for(DxgiVsyncWaiter::window_monitor(
+      native_window.hwnd(),
+    ));
 
     let anim_config = &config.value.animations.window_close;
     let is_zoom = anim_config.style == WindowTransitionStyle::Zoom;
@@ -1956,6 +1965,11 @@ impl AnimationManager {
     {
       return;
     }
+
+    // Pace the focus animation on the window's own monitor.
+    self.ensure_waiter_for(DxgiVsyncWaiter::window_monitor(
+      native_window.hwnd(),
+    ));
 
     let fc = &config.value.animations.focus_change;
     let effect_frac = effect_opacity as f32 / 255.0;

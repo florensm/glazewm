@@ -159,6 +159,7 @@ pub enum InvokeCommand {
   Close,
   Focus(InvokeFocusCommand),
   Ignore,
+  MoveCursor(InvokeMoveCursorCommand),
   Move(InvokeMoveCommand),
   MoveWorkspace {
     #[clap(long)]
@@ -230,6 +231,34 @@ pub enum InvokeCommand {
   },
   ToggleMinimized,
   ToggleTiling,
+  /// Toggle the focused tiling window into or out of a stack container.
+  ToggleStack,
+  /// Cycle focus to the next or previous window within the parent stack.
+  CycleStackFocus {
+    #[clap(long, default_value_t = false)]
+    prev: bool,
+  },
+  /// Focus the stack child at a specific zero-based index.
+  FocusStackIndex {
+    #[clap(long)]
+    index: usize,
+  },
+  /// Absorb the adjacent tiling neighbor in the given direction into a
+  /// stack with the focused window.
+  StackAbsorbNeighbor {
+    #[clap(long)]
+    direction: Direction,
+  },
+  /// Move the focused window into a stack with the most-recently-focused
+  /// other tiling window on the workspace. If no stack exists at the
+  /// target, a new one is created.
+  StackInsert,
+  /// Move the focused tiling window into the named stack on the current
+  /// workspace. Creates a new named stack if none exists yet.
+  MoveToStack {
+    #[clap(long)]
+    name: String,
+  },
   ToggleTilingDirection,
   SetTilingDirection {
     #[clap(required = true)]
@@ -346,6 +375,14 @@ pub struct InvokeFocusCommand {
   pub recent_workspace: bool,
 }
 
+
+#[derive(Args, Clone, Debug, PartialEq, Serialize)]
+#[group(required = true, multiple = false)]
+pub struct InvokeMoveCursorCommand {
+  /// Move the cursor to the center of the currently focused window.
+  #[clap(long)]
+  pub direction: Option<Direction>,
+}
 
 #[derive(Args, Clone, Debug, PartialEq, Serialize)]
 #[group(required = true, multiple = false)]

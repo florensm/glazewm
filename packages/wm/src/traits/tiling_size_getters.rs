@@ -42,11 +42,24 @@ pub trait TilingSizeGetters: CommonGetters {
   }
 
   /// Gets the container to resize when resizing a tiling window.
+  ///
+  /// Returns a `StackContainer` when the window is a direct child of one,
+  /// since all stack members share the same rect and resizing the inner
+  /// window has no visual effect.
   fn container_to_resize(
     &self,
     is_width_resize: bool,
   ) -> anyhow::Result<Option<TilingContainer>> {
-    let parent = self.direction_container().context("No parent.")?;
+    // When inside a stack, the logical unit to resize is the stack itself.
+    let effective_self: TilingContainer =
+      match self.parent().and_then(|p| p.as_stack().cloned()) {
+        Some(stack) => TilingContainer::Stack(stack),
+        None => self.as_tiling_container()?,
+      };
+
+    let parent = effective_self
+      .direction_container()
+      .context("No parent.")?;
 
     let tiling_direction = parent.tiling_direction();
 
@@ -65,9 +78,9 @@ pub trait TilingSizeGetters: CommonGetters {
     } else {
       let grandparent = parent.parent().context("No grandparent.")?;
 
-      if self.tiling_siblings().count() > 0 {
-        // Window can only be resized if it has siblings.
-        Some(self.as_tiling_container()?)
+      if effective_self.tiling_siblings().count() > 0 {
+        // Container can only be resized if it has siblings.
+        Some(effective_self)
       } else {
         // Resize grandparent in layouts like H[1 V[2 H[3]]], where
         // container 3 is resized horizontally.

@@ -1,6 +1,6 @@
 use anyhow::Context;
 
-use super::flatten_split_container;
+use super::{flatten_split_container, flatten_stack_container};
 use crate::{
   models::Container,
   traits::{CommonGetters, TilingSizeGetters, MIN_TILING_SIZE},
@@ -20,6 +20,17 @@ pub fn detach_container(child_to_remove: Container) -> anyhow::Result<()> {
   {
     if split_parent.child_count() == 1 {
       flatten_split_container(split_parent)?;
+    }
+  }
+
+  // Flatten the parent stack container if it would have one or fewer
+  // children after removing the child (a single-child stack is redundant).
+  if let Some(stack_parent) = child_to_remove
+    .parent()
+    .and_then(|parent| parent.as_stack().cloned())
+  {
+    if stack_parent.child_count() <= 2 {
+      flatten_stack_container(stack_parent)?;
     }
   }
 
