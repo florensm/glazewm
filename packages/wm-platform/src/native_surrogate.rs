@@ -40,10 +40,18 @@ type SetWindowCompositionAttributeFn =
 /// Thickness, in logical pixels, of the content strip sampled by the
 /// edge-extension thumbnails.
 ///
-/// A 1 px strip replicates the outermost edge pixels across the exposed gap,
-/// visually extending the window's own background/border colors with no
-/// pattern distortion.
+/// A 1 px strip replicates a single pixel row/column across the exposed gap,
+/// visually extending the window's own background with no pattern distortion.
 const EDGE_SAMPLE_PX: i32 = 1;
+
+/// Distance, in logical pixels, the sampled strip is inset from the content
+/// edge.
+///
+/// The outermost frame pixels carry the DWM accent border (the focused/
+/// unfocused border color set via `DWMWA_BORDER_COLOR`) and rounded-corner
+/// antialiasing; sampling there would smear the border color across the gap
+/// instead of the app's background.
+const EDGE_SAMPLE_INSET_PX: i32 = 4;
 
 /// Accent state value for a solid-color fill.
 const ACCENT_ENABLE_GRADIENT: u32 = 1;
@@ -692,15 +700,20 @@ impl NativeSurrogate {
     let right_edge = inset.left + content_w;
     let bottom_edge = inset.top + content_h;
 
+    // Inset the sampled strip from the edge so it reads the app background
+    // rather than the DWM accent border, clamped for tiny windows.
+    let sample_x = EDGE_SAMPLE_INSET_PX.min(content_w - strip).max(0);
+    let sample_y = EDGE_SAMPLE_INSET_PX.min(content_h - strip).max(0);
+
     // `(rcSource, rcDestination, visible)` for the right, bottom, and corner
     // extensions. Source rects are in the source window's coordinate space
     // (offset by the border inset, matching the main thumbnail).
     let edges = [
       (
         RECT {
-          left: right_edge - strip,
+          left: right_edge - sample_x - strip,
           top: inset.top,
-          right: right_edge,
+          right: right_edge - sample_x,
           bottom: bottom_edge,
         },
         RECT {
@@ -714,9 +727,9 @@ impl NativeSurrogate {
       (
         RECT {
           left: inset.left,
-          top: bottom_edge - strip,
+          top: bottom_edge - sample_y - strip,
           right: right_edge,
-          bottom: bottom_edge,
+          bottom: bottom_edge - sample_y,
         },
         RECT {
           left: 0,
@@ -728,10 +741,10 @@ impl NativeSurrogate {
       ),
       (
         RECT {
-          left: right_edge - strip,
-          top: bottom_edge - strip,
-          right: right_edge,
-          bottom: bottom_edge,
+          left: right_edge - sample_x - strip,
+          top: bottom_edge - sample_y - strip,
+          right: right_edge - sample_x,
+          bottom: bottom_edge - sample_y,
         },
         RECT {
           left: content_w,
