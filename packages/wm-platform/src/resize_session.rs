@@ -160,6 +160,16 @@ impl ResizeSession {
     }
   }
 
+  /// Sets the surrogate overlay's whole-window opacity.
+  ///
+  /// Used to fade the surrogate out over the uncloaked real window at
+  /// animation completion, softening the teardown swap.
+  pub fn fade_overlay(&mut self, opacity: u8) {
+    if let Some(ref mut surrogate) = self.surrogate {
+      surrogate.set_window_opacity(opacity);
+    }
+  }
+
   /// Animates the DWM thumbnail `rcDestination` toward/away from center.
   ///
   /// `progress` is the eased animation progress (0.0 = zero-size, 1.0 = full

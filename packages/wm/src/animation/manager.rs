@@ -69,6 +69,15 @@ const WS_COMPLETE_THRESHOLD_PX: f32 = 1.5;
 #[cfg(target_os = "windows")]
 const OPEN_PAINT_GRACE: Duration = Duration::from_millis(30);
 
+/// Duration of the surrogate fade-out at animation completion.
+///
+/// After the real window is uncloaked beneath the (pixel-aligned, live)
+/// surrogate, the surrogate's opacity ramps to zero over this period so
+/// shadow, border, and late-repaint differences blend in rather than
+/// switching in a single composition.
+#[cfg(target_os = "windows")]
+const SESSION_FADE_OUT: Duration = Duration::from_millis(100);
+
 /// Maximum mid-animation handoff lead in milliseconds.
 ///
 /// The actual lead is `duration_ms * 0.35`, clamped to
@@ -273,8 +282,13 @@ pub struct AnimationManager {
   /// animation completed but must outlive the final `platform_sync` call
   /// that repositions the real window. Keyed by window ID so the final
   /// redraw can detect that `pre_commit` already positioned the window.
+  ///
+  /// The `Option<Instant>` is the fade-out start time: `None` until the
+  /// real window has been uncloaked beneath the surrogate, then set on the
+  /// first cleanup tick. Entries are dropped once the fade completes.
   #[cfg(target_os = "windows")]
-  pub(crate) pending_session_cleanup: Vec<(Uuid, ResizeSession)>,
+  pub(crate) pending_session_cleanup:
+    Vec<(Uuid, Option<Instant>, ResizeSession)>,
   /// Monitor rects for active slide-in (window-open) animations, keyed by
   /// window ID. Used to hide the surrogate while it is fully off the monitor.
   #[cfg(target_os = "windows")]
@@ -402,7 +416,7 @@ impl AnimationManager {
       #[cfg(target_os = "windows")]
       if let Some(mut session) = self.resize_sessions.remove(id) {
         session.pre_commit();
-        self.pending_session_cleanup.push((*id, session));
+        self.pending_session_cleanup.push((*id, None, session));
       }
       #[cfg(target_os = "windows")]
       self.slide_in_monitor_rects.remove(id);
@@ -424,6 +438,11 @@ impl AnimationManager {
     if self.iris_switch.is_some() {
       return true;
     }
+    // Completed sessions fading out still need ticks to advance the fade.
+    #[cfg(target_os = "windows")]
+    if !self.pending_session_cleanup.is_empty() {
+      return true;
+    }
     false
   }
 
@@ -443,7 +462,7 @@ impl AnimationManager {
     let mut sessions: Vec<ResizeSession> =
       self.resize_sessions.drain().map(|(_, s)| s).collect();
     sessions
-      .extend(self.pending_session_cleanup.drain(..).map(|(_, s)| s));
+      .extend(self.pending_session_cleanup.drain(..).map(|(_, _, s)| s));
     self.pending_surrogate_updates.clear();
     self.workspace_switch = None;
     self.pending_ws_cleanup = None;
@@ -996,27 +1015,52 @@ impl AnimationManager {
       platform_sync(state, config)?;
     }
 
-    // Clear pending sessions now that `platform_sync` has moved the real
-    // windows to their final positions. Dropping each session destroys its
-    // surrogate overlay.
+    // Fade out pending sessions now that `platform_sync` has moved the real
+    // windows to their final positions, then drop them. Dropping a session
+    // destroys its surrogate overlay.
     #[cfg(target_os = "windows")]
     {
-      // Flush before dropping any completed surrogates (move/resize sessions
-      // and workspace-switch alike). The uncloak issued inside
-      // `platform_sync` is a DWM attribute change that only takes effect at
-      // the next composition — destroying the surrogate without waiting for
-      // that frame can produce one composition where the surrogate is gone
-      // but the real window is still cloaked: a visible blank flash at the
-      // end of the animation. The flush guarantees DWM renders one frame
-      // with the real window visible (including its compositor shadow,
-      // which thumbnails do not capture) while the surrogate still covers
-      // it, making the teardown seamless.
-      if !state.animation_manager.pending_session_cleanup.is_empty()
+      // Flush before fading new surrogates or dropping workspace-switch
+      // cleanup. The uncloak issued inside `platform_sync` is a DWM
+      // attribute change that only takes effect at the next composition —
+      // fading or destroying the surrogate without waiting for that frame
+      // can produce one composition where the surrogate is dimmed/gone but
+      // the real window is still cloaked: a visible blank flash at the end
+      // of the animation. The flush guarantees DWM renders one frame with
+      // the real window visible (including its compositor shadow, which
+      // thumbnails do not capture) while the surrogate still fully covers
+      // it.
+      let has_new_session_cleanup = state
+        .animation_manager
+        .pending_session_cleanup
+        .iter()
+        .any(|(_, fade_start, _)| fade_start.is_none());
+      if has_new_session_cleanup
         || state.animation_manager.pending_ws_cleanup.is_some()
       {
         wm_platform::dwm_flush();
       }
-      state.animation_manager.pending_session_cleanup.clear();
+
+      // After `pre_commit` the surrogate is a pixel-aligned live mirror of
+      // the uncloaked window beneath it, so ramping its opacity to zero
+      // blends shadow/border/late-repaint differences instead of swapping
+      // them in a single composition. Entries are dropped once fully faded.
+      let fade_now = Instant::now();
+      state.animation_manager.pending_session_cleanup.retain_mut(
+        |(_, fade_start, session)| {
+          let start = *fade_start.get_or_insert(fade_now);
+          let progress = fade_now.saturating_duration_since(start).as_secs_f32()
+            / SESSION_FADE_OUT.as_secs_f32();
+          if progress >= 1.0 {
+            return false;
+          }
+          #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+          let opacity =
+            (f32::from(session.effect_opacity) * (1.0 - progress)) as u8;
+          session.fade_overlay(opacity);
+          true
+        },
+      );
       state.animation_manager.pending_ws_cleanup = None;
     }
 
@@ -1267,6 +1311,11 @@ impl AnimationManager {
         if let Some(session) = self.resize_sessions.get_mut(&window_id) {
           session.update_target(&start_rect, &target_rect);
         } else {
+          // Drop any still-fading surrogate from a just-completed animation
+          // of this window so two overlays don't stack.
+          self
+            .pending_session_cleanup
+            .retain(|(id, _, _)| id != &window_id);
           match ResizeSession::begin(
             native_window.hwnd(),
             &start_rect,
@@ -1417,7 +1466,9 @@ impl AnimationManager {
     self
       .pending_session_cleanup
       .iter()
-      .any(|(id, session)| id == window_id && session.target_rect() == rect)
+      .any(|(id, _, session)| {
+        id == window_id && session.target_rect() == rect
+      })
   }
 
   /// Applies all surrogate updates queued during the current redraw pass in
