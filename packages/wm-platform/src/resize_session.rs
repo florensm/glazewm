@@ -374,6 +374,20 @@ impl ResizeSession {
 
     let logical = to_logical(&self.target_rect, &self.border_inset);
     if let Some(surrogate) = &mut self.surrogate {
+      // The real window was just resized to the target above, but the live
+      // DWM thumbnail still maps the old content dimensions — for the 1–2
+      // frames until teardown it would sample a window that no longer
+      // matches its registration, producing a visible scale glitch.
+      // Re-register at target dims so the surrogate becomes a pixel-aligned
+      // 1:1 mirror of the resized window and the teardown swap is seamless.
+      if surrogate.content_size() != (logical.width(), logical.height()) {
+        surrogate.reregister_thumbnail(
+          HWND(self.hwnd),
+          logical.width(),
+          logical.height(),
+          self.border_inset,
+        );
+      }
       if let Err(err) = surrogate.update(&logical, self.effect_opacity) {
         tracing::warn!("Surrogate pre-commit update failed: {err}.");
       }

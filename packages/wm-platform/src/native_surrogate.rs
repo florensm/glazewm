@@ -633,6 +633,12 @@ impl NativeSurrogate {
     self.thumbnail != 0
   }
 
+  /// Returns the logical dimensions the main thumbnail currently samples.
+  #[must_use]
+  pub fn content_size(&self) -> (i32, i32) {
+    self.content_size
+  }
+
   /// Shows or hides the surrogate overlay window without activating it.
   ///
   /// No-op when the window is already in the requested state.
@@ -931,6 +937,9 @@ impl NativeSurrogate {
         .unwrap_or(0);
     self.content_size = (logical_width, logical_height);
     self.border_inset = border_inset;
+    // Edge-extension rects were computed against the old content dims; hide
+    // them until the next `update_edges` recomputes gaps for the new dims.
+    self.set_edges_visible(false);
   }
 
   /// Moves and resizes the surrogate overlay to `rect` and sets the whole-window
