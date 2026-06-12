@@ -69,24 +69,8 @@ const WS_COMPLETE_THRESHOLD_PX: f32 = 1.5;
 #[cfg(target_os = "windows")]
 const OPEN_PAINT_GRACE: Duration = Duration::from_millis(30);
 
-/// Maximum `HANDOFF_LEAD` cap in milliseconds.
-///
-/// The actual lead is `duration_ms * 0.35`, clamped to `[50, HANDOFF_LEAD_MAX]`.
-/// Scaling by duration keeps the tail-stretch phase a small fraction of the
-/// visual travel distance regardless of easing speed; the cap ensures apps
-/// always get ≥50 ms to repaint at the new size before uncloaking.
-#[cfg(target_os = "windows")]
-const HANDOFF_LEAD_MAX_MS: u64 = 100;
-
-/// Grace period for growing sessions to paint at the new size before the
-/// curtain-reveal switches from old scaled content to freshly painted content.
-#[cfg(target_os = "windows")]
-const GROW_REVEAL_GRACE: Duration = Duration::from_millis(60);
-
 use tokio::sync::mpsc;
 use uuid::Uuid;
-#[cfg(target_os = "windows")]
-use wm_common::ResizeContentMode;
 use wm_common::{
   EasingFunction, FocusAnimationStyle, WindowTransitionStyle,
   WorkspaceSwitchDirection, WorkspaceSwitchStyle,
@@ -112,10 +96,6 @@ struct PendingSurrogateUpdate {
   window_id: Uuid,
   rect: Rect,
   opacity: u8,
-  /// `true` when `remaining_at` ≤ proportional handoff lead.
-  handoff: bool,
-  /// `true` when `elapsed_at` ≥ `GROW_REVEAL_GRACE`.
-  reveal: bool,
 }
 
 /// Tracks a single window's participation in the current workspace-switch
@@ -1276,26 +1256,13 @@ impl AnimationManager {
         if let Some(session) = self.resize_sessions.get_mut(&window_id) {
           session.update_target(&start_rect, &target_rect);
         } else {
-          let surrogate_color = if is_resize {
-            config.value.animations.window_resize.surrogate_color.as_ref()
-          } else {
-            None
-          };
-          // Stretch content mode only affects sessions that change size; a
-          // pure translation always fills its rect exactly.
-          let stretch = is_resize
-            && config.value.animations.window_resize.content_mode
-              == ResizeContentMode::Stretch;
           match ResizeSession::begin(
             native_window.hwnd(),
             &start_rect,
             &target_rect,
             SessionOptions {
-              surrogate_color,
               effect_opacity,
               initially_visible: true,
-              stretch,
-              paint_grace: true,
             },
           ) {
             Ok(session) => {
@@ -1381,32 +1348,10 @@ impl AnimationManager {
             // repositions in this redraw pass are committed atomically by
             // `flush_surrogate_updates` so adjacent windows' edges land in
             // the same DWM composition frame.
-            let (handoff, reveal) = self
-              .animations
-              .get(&window_id)
-              .map_or((false, false), |a| {
-                // Scale the lead with the animation duration so tail-stretch
-                // covers a small fraction of visual travel regardless of
-                // easing speed. For expo-out at 150 ms this fires at ~96%
-                // visual progress (scale jump ≈1.04x, imperceptible).
-                #[allow(
-                  clippy::cast_possible_truncation,
-                  clippy::cast_sign_loss
-                )]
-                let lead_ms = (a.duration.as_millis() as f32 * 0.35)
-                  .clamp(50.0, HANDOFF_LEAD_MAX_MS as f32)
-                  as u64;
-                (
-                  a.remaining_at(now) <= Duration::from_millis(lead_ms),
-                  a.elapsed_at(now) >= GROW_REVEAL_GRACE,
-                )
-              });
             self.pending_surrogate_updates.push(PendingSurrogateUpdate {
               window_id,
               rect: current_rect,
               opacity: opacity_u8,
-              handoff,
-              reveal,
             });
           }
           return (AnimationPositionResult::Frozen, None);
@@ -1467,12 +1412,6 @@ impl AnimationManager {
       if let Some(session) =
         self.resize_sessions.get_mut(&update.window_id)
       {
-        if update.reveal {
-          session.begin_reveal();
-        }
-        if update.handoff {
-          session.maybe_handoff();
-        }
         session.defer_update(&mut batch, &update.rect, update.opacity);
       }
     }
@@ -1752,11 +1691,8 @@ impl AnimationManager {
       &start_rect,
       &target_rect,
       SessionOptions {
-        surrogate_color: None,
         effect_opacity,
         initially_visible: false,
-        stretch: false,
-        paint_grace: false,
       },
     ) {
       Ok(mut session) => {
@@ -1850,11 +1786,8 @@ impl AnimationManager {
       &current_rect,
       &target_rect,
       SessionOptions {
-        surrogate_color: None,
         effect_opacity,
         initially_visible: false,
-        stretch: false,
-        paint_grace: false,
       },
     ) {
       Ok(mut session) => {
@@ -2024,11 +1957,8 @@ impl AnimationManager {
           &shrunken,
           &current_rect,
           SessionOptions {
-            surrogate_color: None,
             effect_opacity,
             initially_visible: true,
-            stretch: false,
-            paint_grace: false,
           },
         ) {
           Ok(session) => {

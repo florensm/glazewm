@@ -28,18 +28,6 @@ animations:
     # Minimum pixel distance required to trigger resize animations.
     # Default: 10
     threshold_px: 10
-    # How window content is rendered during the resize. Options:
-    #   'reveal' (default) - content keeps its natural size; the animated
-    #                        rect reveals or clips it at the edges. Mixed
-    #                        grow/shrink resizes expose the surrogate_color
-    #                        backdrop where the content cannot cover.
-    #   'stretch'          - content is scaled to always fill the animated
-    #                        rect; no backdrop is ever exposed, at the cost
-    #                        of slight stretching mid-animation.
-    content_mode: "reveal"
-    # Solid backdrop color behind the animated window content ('reveal'
-    # mode only).
-    # surrogate_color: "#1a1a1a"
 
   # Animation settings for when a new window appears. Windows only.
   window_open:
@@ -47,14 +35,14 @@ animations:
     duration_ms: 150
     # See 'window_move.easing' for available options.
     easing: "cubic_bezier(0.16, 1.0, 0.3, 1.0)"
-    # Transition type ('style' also accepted). Options:
+    # Transition style. Options:
     #   'slide_right' (default)  - slides in from the right
     #   'slide_left'             - slides in from the left
     #   'slide_top'              - slides in from the top
     #   'slide_bottom'           - slides in from the bottom
     #   'fade'                   - no slide; combine with opacity_from for pure fade
     #   'zoom'                   - zoom in from window center
-    type: "slide_right"
+    style: "slide_right"
     # Starting opacity (0.0–1.0). At 1.0 no fade is applied; at 0.0 the
     # window fades in from fully transparent. Can be combined with any style.
     opacity_from: 1.0
@@ -65,14 +53,14 @@ animations:
     duration_ms: 250
     # See 'window_move.easing' for available options.
     easing: "ease_out_cubic"
-    # Motion type ('style' also accepted). Options:
+    # Motion style. Options:
     #   'slide' (default) - workspaces slide along the 'direction' axis
     #   'fade'            - pure crossfade; both workspaces stay in place
     #   'zoom'            - outgoing shrinks to monitor center, incoming expands
     #   'iris'            - a frozen snapshot of the old workspace stays on top
     #                       while a circular hole grows from 'iris_origin',
     #                       revealing the new workspace beneath (Windows only)
-    type: "slide"
+    style: "slide"
     # Slide axis when type is 'slide'. Options: 'horizontal' (default), 'vertical'.
     direction: "horizontal"
     # Origin of the circle when type is 'iris'. Options:
@@ -100,14 +88,14 @@ animations:
     duration_ms: 150
     # See 'window_move.easing' for available options.
     easing: "ease_in_cubic"
-    # Transition type ('style' also accepted). Options:
+    # Transition style. Options:
     #   'none' (default)  - no positional movement; combine with opacity_to for a fade
     #   'zoom'            - zoom out from window center
     #   'slide_right'     - slide off the right edge
     #   'slide_left'      - slide off the left edge
     #   'slide_top'       - slide off the top edge
     #   'slide_bottom'    - slide off the bottom edge
-    type: "none"
+    style: "none"
     # Final opacity (0.0–1.0). At 0.0 the window fades to fully transparent;
     # at 1.0 no fade is applied.
     opacity_to: 0.0
@@ -118,10 +106,10 @@ animations:
     duration_ms: 150
     # See 'window_move.easing' for available options.
     easing: "cubic_bezier(0.16, 1.0, 0.3, 1.0)"
-    # Animation type ('style' also accepted). Options:
+    # Animation style. Options:
     #   'opacity' (default) - window briefly dims then restores opacity
     #   'scale'             - window briefly pops in from a slightly smaller size
-    type: "opacity"
+    style: "opacity"
     # For 'opacity' type: dim level at the start of the animation, relative to
     # the effect opacity. E.g. 0.5 = dims to 50% of effect opacity then
     # restores. Range: 0.0–1.0. Default: 0.5.

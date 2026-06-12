@@ -559,8 +559,7 @@ pub struct FocusChangeConfig {
   pub easing: EasingFunction,
   /// Animation type: `opacity` (window briefly dims then restores) or
   /// `scale` (window briefly pops from a slightly smaller size to its actual
-  /// size). The config key is `type`; `style` is accepted as a legacy alias.
-  #[serde(rename = "type", alias = "style")]
+  /// size).
   pub style: FocusAnimationStyle,
   /// For `opacity` style: the dim level at the start of the animation
   /// (0.0–1.0), relative to the configured effect opacity. E.g. `0.5` dims
@@ -603,10 +602,6 @@ pub struct WindowOpenConfig {
   /// - `none` / `fade`: no slide; combine with `opacity_from` for a pure
   ///   fade-in.
   /// - `zoom`: zoom in from the window center.
-  ///
-  /// The config key is `type`; `style` and `direction` are accepted as
-  /// legacy aliases.
-  #[serde(rename = "type", alias = "style", alias = "direction")]
   pub style: WindowTransitionStyle,
   /// Starting opacity (0.0–1.0). At `1.0` no fade is applied; at `0.0` the
   /// window fades in from fully transparent. Can be combined with any style.
@@ -643,9 +638,6 @@ pub struct WindowCloseConfig {
   /// - `zoom`: zoom out from the window center.
   /// - `slide_right` / `slide_left` / `slide_top` / `slide_bottom`: slide off
   ///   that edge.
-  ///
-  /// The config key is `type`; `style` is accepted as a legacy alias.
-  #[serde(rename = "type", alias = "style")]
   pub style: WindowTransitionStyle,
   /// Final opacity (0.0–1.0). At `0.0` the window fades to fully transparent;
   /// at `1.0` no fade is applied.
@@ -735,9 +727,6 @@ pub struct WorkspaceSwitchAnimationConfig {
   pub duration_ms: u32,
   pub easing: EasingFunction,
   /// Motion type: `slide` (default), `fade`, `zoom`, or `iris`.
-  ///
-  /// The config key is `type`; `style` is accepted as a legacy alias.
-  #[serde(rename = "type", alias = "style")]
   pub style: WorkspaceSwitchStyle,
   /// Slide axis when `style` is `slide`: `horizontal` (default) or `vertical`.
   pub direction: WorkspaceSwitchDirection,
@@ -808,22 +797,6 @@ impl Default for AnimationTypeConfig {
   }
 }
 
-/// How the window's content is rendered inside the animated rect during a
-/// resize animation.
-#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum ResizeContentMode {
-  /// Content keeps its natural size; the animated rect reveals or clips it
-  /// at the edges (default). Mixed grow/shrink resizes expose the
-  /// `surrogate_color` backdrop in the area the content cannot cover.
-  #[default]
-  Reveal,
-  /// Content is scaled to always fill the animated rect. No backdrop is
-  /// ever exposed, at the cost of the content appearing slightly stretched
-  /// mid-animation.
-  Stretch,
-}
-
 /// Animation settings for window resize operations.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(default, rename_all(serialize = "camelCase"))]
@@ -834,25 +807,6 @@ pub struct WindowResizeConfig {
   /// Minimum pixel distance required to trigger resize animations.
   /// Increase this value on high-DPI displays to reduce sensitivity.
   pub threshold_px: u32,
-  /// Optional solid-color backdrop for the surrogate overlay window.
-  ///
-  /// Accepts an HTML hex color string with optional alpha component (e.g.
-  /// `"#1a1a1a"` or `"#1a1a1aCC"`). When unset (default), the surrogate
-  /// backdrop is fully transparent. Only relevant for the `reveal` content
-  /// mode; `stretch` never exposes the backdrop.
-  ///
-  /// # Platform-specific
-  ///
-  /// Only has an effect on Windows; ignored on macOS.
-  pub surrogate_color: Option<Color>,
-  /// How window content is rendered during the resize: `reveal` (default)
-  /// keeps content at its natural size and clips/reveals it at the edges;
-  /// `stretch` scales the content to always fill the animated rect.
-  ///
-  /// # Platform-specific
-  ///
-  /// Only has an effect on Windows; ignored on macOS.
-  pub content_mode: ResizeContentMode,
 }
 
 impl Default for WindowResizeConfig {
@@ -862,8 +816,6 @@ impl Default for WindowResizeConfig {
       duration_ms: 150,
       easing: EasingFunction::CubicBezier(0.42, 0.0, 0.58, 1.0),
       threshold_px: 10,
-      surrogate_color: None,
-      content_mode: ResizeContentMode::default(),
     }
   }
 }
