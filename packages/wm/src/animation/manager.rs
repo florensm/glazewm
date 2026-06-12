@@ -81,6 +81,11 @@ const OPEN_PAINT_GRACE: Duration = Duration::from_millis(30);
 #[cfg(target_os = "windows")]
 const HANDOFF_LEAD: Duration = Duration::from_millis(100);
 
+/// Grace period for growing sessions to paint at the new size before the
+/// curtain-reveal switches from old scaled content to freshly painted content.
+#[cfg(target_os = "windows")]
+const GROW_REVEAL_GRACE: Duration = Duration::from_millis(60);
+
 use tokio::sync::mpsc;
 use uuid::Uuid;
 #[cfg(target_os = "windows")]
@@ -93,7 +98,7 @@ use wm_platform::{NativeWindow, OpacityValue, Rect};
 #[cfg(target_os = "windows")]
 use wm_platform::{
   DxgiVsyncWaiter, NativeIrisOverlay, NativeWindowWindowsExt, ResizeSession,
-  SurrogateBatch, WorkspaceSurrogate,
+  SessionOptions, SurrogateBatch, WorkspaceSurrogate,
 };
 
 use crate::{
@@ -103,6 +108,18 @@ use crate::{
   user_config::UserConfig,
   wm_state::WmState,
 };
+
+/// A single entry in the surrogate update queue built each redraw pass.
+#[cfg(target_os = "windows")]
+struct PendingSurrogateUpdate {
+  window_id: Uuid,
+  rect: Rect,
+  opacity: u8,
+  /// `true` when `remaining_at` ≤ `HANDOFF_LEAD`.
+  handoff: bool,
+  /// `true` when `elapsed_at` ≥ `GROW_REVEAL_GRACE`.
+  reveal: bool,
+}
 
 /// Tracks a single window's participation in the current workspace-switch
 /// slide animation.
@@ -265,22 +282,13 @@ pub struct AnimationManager {
   /// and the real window has been moved to its final position.
   #[cfg(target_os = "windows")]
   pub(crate) resize_sessions: HashMap<Uuid, ResizeSession>,
-  /// Surrogate updates queued during the current redraw pass, as
-  /// `(window ID, animated rect, opacity, handoff)` tuples.
+  /// Surrogate updates queued during this redraw pass; committed atomically by
+  /// [`flush_surrogate_updates`] so adjacent surrogates land in the same DWM
+  /// composition frame.
   ///
-  /// `handoff` is `true` when the remaining animation time has fallen below
-  /// [`HANDOFF_LEAD`]; [`flush_surrogate_updates`] calls
-  /// [`ResizeSession::maybe_handoff`] for those entries so the real window is
-  /// repositioned at its final rect while still cloaked.
-  ///
-  /// Filled by the surrogate drive path in [`start_animation_if_needed`] and
-  /// applied atomically by [`flush_surrogate_updates`] at the end of each
-  /// redraw pass, so all surrogates land in the same DWM composition frame.
-  ///
-  /// [`start_animation_if_needed`]: AnimationManager::start_animation_if_needed
   /// [`flush_surrogate_updates`]: AnimationManager::flush_surrogate_updates
   #[cfg(target_os = "windows")]
-  pending_surrogate_updates: Vec<(Uuid, Rect, u8, bool)>,
+  pending_surrogate_updates: Vec<PendingSurrogateUpdate>,
   /// Sessions that have been removed from `resize_sessions` after their
   /// animation completed but must outlive the final `platform_sync` call
   /// that repositions the real window. Keyed by window ID so the final
@@ -1285,10 +1293,13 @@ impl AnimationManager {
             native_window.hwnd(),
             &start_rect,
             &target_rect,
-            surrogate_color,
-            effect_opacity,
-            true,
-            stretch,
+            SessionOptions {
+              surrogate_color,
+              effect_opacity,
+              initially_visible: true,
+              stretch,
+              paint_grace: true,
+            },
           ) {
             Ok(session) => {
               self.resize_sessions.insert(window_id, session);
@@ -1388,13 +1399,22 @@ impl AnimationManager {
             // repositions in this redraw pass are committed atomically by
             // `flush_surrogate_updates` so adjacent windows' edges land in
             // the same DWM composition frame.
-            let handoff = self
+            let (handoff, reveal) = self
               .animations
               .get(&window_id)
-              .is_some_and(|a| a.remaining_at(now) <= HANDOFF_LEAD);
-            self
-              .pending_surrogate_updates
-              .push((window_id, current_rect, opacity_u8, handoff));
+              .map_or((false, false), |a| {
+                (
+                  a.remaining_at(now) <= HANDOFF_LEAD,
+                  a.elapsed_at(now) >= GROW_REVEAL_GRACE,
+                )
+              });
+            self.pending_surrogate_updates.push(PendingSurrogateUpdate {
+              window_id,
+              rect: current_rect,
+              opacity: opacity_u8,
+              handoff,
+              reveal,
+            });
           }
           return (AnimationPositionResult::Frozen, None);
         }
@@ -1450,14 +1470,17 @@ impl AnimationManager {
     }
 
     let mut batch = SurrogateBatch::new();
-    for (window_id, rect, opacity, handoff) in
-      std::mem::take(&mut self.pending_surrogate_updates)
-    {
-      if let Some(session) = self.resize_sessions.get_mut(&window_id) {
-        if handoff {
+    for update in std::mem::take(&mut self.pending_surrogate_updates) {
+      if let Some(session) =
+        self.resize_sessions.get_mut(&update.window_id)
+      {
+        if update.reveal {
+          session.begin_reveal();
+        }
+        if update.handoff {
           session.maybe_handoff();
         }
-        session.defer_update(&mut batch, &rect, opacity);
+        session.defer_update(&mut batch, &update.rect, update.opacity);
       }
     }
     batch.commit();
@@ -1715,10 +1738,13 @@ impl AnimationManager {
       native_window.hwnd(),
       &start_rect,
       &target_rect,
-      None,
-      effect_opacity,
-      false,
-      false,
+      SessionOptions {
+        surrogate_color: None,
+        effect_opacity,
+        initially_visible: false,
+        stretch: false,
+        paint_grace: false,
+      },
     ) {
       Ok(mut session) => {
         session.zoom = is_zoom;
@@ -1805,10 +1831,13 @@ impl AnimationManager {
       native_window.hwnd(),
       &current_rect,
       &target_rect,
-      None,
-      effect_opacity,
-      false,
-      false,
+      SessionOptions {
+        surrogate_color: None,
+        effect_opacity,
+        initially_visible: false,
+        stretch: false,
+        paint_grace: false,
+      },
     ) {
       Ok(mut session) => {
         // Show the surrogate immediately so it covers the window before the
@@ -1971,10 +2000,13 @@ impl AnimationManager {
           native_window.hwnd(),
           &shrunken,
           &current_rect,
-          None,
-          effect_opacity,
-          true,
-          false,
+          SessionOptions {
+            surrogate_color: None,
+            effect_opacity,
+            initially_visible: true,
+            stretch: false,
+            paint_grace: false,
+          },
         ) {
           Ok(session) => {
             let _ = native_window.set_cloaked(true);

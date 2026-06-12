@@ -135,6 +135,19 @@ impl WindowAnimationState {
     self.eased_progress_at(Instant::now())
   }
 
+  /// Wall-clock time elapsed past `start_delay` at `now`.
+  ///
+  /// Returns `Duration::ZERO` before the first rendered frame or while still
+  /// within the delay window. Used to schedule the paint-grace reveal.
+  pub fn elapsed_at(&self, now: Instant) -> Duration {
+    match self.start_time.get() {
+      None => Duration::ZERO,
+      Some(start) => now
+        .saturating_duration_since(start)
+        .saturating_sub(self.start_delay),
+    }
+  }
+
   /// Remaining wall-clock time until the animation's duration window
   /// elapses at `now`.
   ///
@@ -279,6 +292,30 @@ mod tests {
 
     let after = anim.eased_progress_at(t0 + Duration::from_millis(99));
     assert_eq!(after, 1.0);
+  }
+
+  /// `elapsed_at` is zero before the first frame and during the delay window,
+  /// then grows normally past it.
+  #[test]
+  fn elapsed_at_zero_before_delay() {
+    let anim = WindowAnimationState::new_movement(
+      Rect::from_xy(0, 0, 100, 100),
+      Rect::from_xy(1_000, 0, 100, 100),
+      100,
+      linear(),
+    )
+    .with_delay(Duration::from_millis(30));
+
+    let t0 = Instant::now();
+    assert_eq!(anim.eased_progress_at(t0), 0.0); // anchors start_time
+    assert_eq!(anim.elapsed_at(t0 + Duration::from_millis(20)), Duration::ZERO);
+
+    let elapsed = anim.elapsed_at(t0 + Duration::from_millis(80));
+    // 80ms total − 30ms delay = 50ms elapsed past delay.
+    assert!(
+      (elapsed.as_millis() as i64 - 50).abs() <= 2,
+      "got {elapsed:?}"
+    );
   }
 
   /// `start_delay` holds the animation at progress 0.0 until the delay elapses

@@ -12,13 +12,26 @@ use crate::{
   SurrogateBatch,
 };
 
+/// Options for [`ResizeSession::begin`].
+pub struct SessionOptions<'a> {
+  /// Backdrop color for mixed (one axis grows, one shrinks) animations.
+  pub surrogate_color: Option<&'a Color>,
+  /// DWM thumbnail opacity (0–255) from the window-effects config.
+  pub effect_opacity: u8,
+  /// Whether the surrogate is visible immediately after creation.
+  pub initially_visible: bool,
+  /// When `true`, the thumbnail is scaled to fill the animated rect each frame.
+  pub stretch: bool,
+  /// When `true`, growing sessions sample old (source-sized) content for
+  /// `GROW_REVEAL_GRACE` while the app repaints at the new size.
+  pub paint_grace: bool,
+}
+
 /// Tracks a single window's resize/move animation and manages its surrogate
 /// overlay.
 ///
-/// `ResizeSession` ensures the surrogate always outlives the final
-/// `SetWindowPos` sent to the real window. On `WmState` drop, [`commit`] is
-/// called on all active sessions so no window is left at an intermediate
-/// position after a crash or forced exit.
+/// On `WmState` drop, [`commit`] is called on all active sessions so no window
+/// is left at an intermediate position after a crash or forced exit.
 ///
 /// [`commit`]: ResizeSession::commit
 ///
@@ -82,76 +95,54 @@ pub struct ResizeSession {
   /// currently samples. Matches the thumbnail registration size; updated
   /// when the real window is repositioned mid-session.
   content_size: (i32, i32),
+  /// `true` while the thumbnail is registered at source dims during the paint
+  /// grace period. Cleared by [`begin_reveal`] once the app has painted.
+  ///
+  /// [`begin_reveal`]: ResizeSession::begin_reveal
+  reveal_pending: bool,
 }
 
 impl ResizeSession {
   /// Creates a resize session with a DWM surrogate overlay.
   ///
-  /// The surrogate is positioned at the **logical** rect (physical minus
-  /// invisible border) so it does not overlap the configured window gap.
-  ///
-  /// For **shrinking** animations (`target` narrower/shorter than `source`):
-  /// the thumbnail is registered at `source_rect` dimensions, filling the
-  /// whole surrogate initially. As the surrogate shrinks the thumbnail edge is
-  /// clipped — a wipe effect with no content distortion and no timing
-  /// dependency on the real window re-rendering. The real window stays at
-  /// `source_rect` until [`pre_commit`] moves it synchronously at animation
-  /// end.
-  ///
-  /// For **growing** animations (no dimension shrinks — target >= source in
-  /// both axes): the thumbnail is registered at `target_rect` dimensions. The
-  /// caller (platform_sync's Frozen branch) asynchronously pre-positions the
-  /// cloaked real window at the target rect immediately after cloaking so DWM
-  /// can capture the correctly-sized content during the curtain-reveal.
-  ///
-  /// For **mixed** animations (one axis grows, one shrinks — e.g. side-by-side
-  /// to top-bottom layout): the thumbnail is registered at `source_rect`
-  /// dimensions (clip/wipe). `surrogate_color` is applied as a backdrop so the
-  /// area uncovered by the thumbnail shows the configured color rather than
-  /// exposing the desktop.
-  ///
-  /// When `stretch` is `true` (`ResizeContentMode::Stretch`), the thumbnail
-  /// is always registered at source dimensions and scaled each frame to fill
-  /// the animated rect — no backdrop is ever exposed and the real window is
-  /// never repositioned before [`pre_commit`].
-  ///
-  /// When surrogate creation fails the session is returned without one — the
-  /// animation falls back to direct window repositioning every frame.
+  /// Growing sessions (no dimension shrinks) use curtain-reveal: thumbnail at
+  /// target dims, cloaked window pre-positioned so DWM captures new content.
+  /// Shrinking/mixed sessions use clip/wipe: thumbnail at source dims. Stretch
+  /// mode scales the thumbnail to fit every frame. When surrogate creation
+  /// fails the animation falls back to direct window repositioning.
   ///
   /// [`pre_commit`]: ResizeSession::pre_commit
   pub fn begin(
     hwnd: HWND,
     source_rect: &Rect,
     target_rect: &Rect,
-    surrogate_color: Option<&Color>,
-    effect_opacity: u8,
-    initially_visible: bool,
-    stretch: bool,
+    options: SessionOptions<'_>,
   ) -> crate::Result<Self> {
     let border_inset = compute_border_inset(hwnd);
 
-    // Curtain-reveal when no dimension shrinks (target >= source in both axes).
     let is_growing = target_rect.width() >= source_rect.width()
       && target_rect.height() >= source_rect.height();
 
-    // Growing: thumbnail at target dimensions for curtain-reveal.
-    // Shrinking/mixed: thumbnail at source dimensions for clip/wipe.
-    // Stretch: always at source dimensions; scaled to fit each frame.
-    let thumbnail_rect = if is_growing && !stretch {
-      target_rect
-    } else {
-      source_rect
-    };
+    // Paint-grace: register at source dims while the app repaints at new size.
+    let reveal_pending =
+      is_growing && !options.stretch && options.paint_grace;
 
-    // Mixed: one axis grows, one shrinks. Apply the backdrop color so the area
-    // the thumbnail cannot cover shows the configured color instead of the
-    // desktop. Stretch mode always covers the full rect, so no backdrop is
-    // needed.
+    // Growing non-grace: thumbnail at target dims (curtain-reveal).
+    // Shrinking/mixed, stretch, or paint-grace: thumbnail at source dims.
+    let thumbnail_rect =
+      if is_growing && !options.stretch && !reveal_pending {
+        target_rect
+      } else {
+        source_rect
+      };
+
+    // Mixed (one axis grows, one shrinks): backdrop prevents desktop bleed-
+    // through. Not needed for stretch (full coverage) or growing (no gap).
     let is_mixed = !is_growing
       && (target_rect.width() > source_rect.width()
         || target_rect.height() > source_rect.height());
-    let backdrop_color = if is_mixed && !stretch {
-      surrogate_color
+    let backdrop_color = if is_mixed && !options.stretch {
+      options.surrogate_color
     } else {
       None
     };
@@ -161,8 +152,8 @@ impl ResizeSession {
       source_rect,
       thumbnail_rect,
       backdrop_color,
-      effect_opacity,
-      initially_visible,
+      options.effect_opacity,
+      options.initially_visible,
       border_inset,
     ) {
       Ok(s) => Some(s),
@@ -175,8 +166,6 @@ impl ResizeSession {
       }
     };
 
-    // The thumbnail samples content at its registration size: target dims
-    // for growing curtain-reveals, source dims otherwise.
     let logical_content = to_logical(thumbnail_rect, &border_inset);
 
     Ok(Self {
@@ -184,16 +173,14 @@ impl ResizeSession {
       target_rect: target_rect.clone(),
       surrogate,
       border_inset,
-      effect_opacity,
+      effect_opacity: options.effect_opacity,
       is_growing,
       zoom: false,
-      stretch,
+      stretch: options.stretch,
       tail_stretch: false,
-      // Growing curtain-reveals are pre-positioned at animation start by
-      // `platform_sync` (see `needs_preposition`); all other sessions hand
-      // off mid-animation via `maybe_handoff`.
-      handoff_done: is_growing && !stretch,
+      handoff_done: is_growing && !options.stretch,
       content_size: (logical_content.width(), logical_content.height()),
+      reveal_pending,
     })
   }
 
@@ -269,10 +256,33 @@ impl ResizeSession {
     surrogate.set_window_opacity(opacity);
   }
 
-  /// Whether per-frame thumbnail scaling is active (configured stretch mode
-  /// or the post-handoff tail of a reveal session).
+  /// Whether per-frame thumbnail scaling is active.
+  ///
+  /// True during stretch mode, the post-handoff tail, or the paint-grace
+  /// period when the thumbnail is still registered at source dims.
   fn scales_content(&self) -> bool {
-    self.stretch || self.tail_stretch
+    self.stretch || self.tail_stretch || self.reveal_pending
+  }
+
+  /// Switches the thumbnail from source dims to target dims after the paint
+  /// grace period, triggering the curtain-reveal of freshly painted content.
+  ///
+  /// No-op when not in a pending-reveal state or the window has been destroyed.
+  pub fn begin_reveal(&mut self) {
+    if !self.reveal_pending || self.hwnd == 0 {
+      return;
+    }
+    let logical = to_logical(&self.target_rect, &self.border_inset);
+    if let Some(surrogate) = &mut self.surrogate {
+      surrogate.reregister_thumbnail(
+        HWND(self.hwnd),
+        logical.width(),
+        logical.height(),
+        self.border_inset,
+      );
+    }
+    self.content_size = (logical.width(), logical.height());
+    self.reveal_pending = false;
   }
 
   /// Computes the DWM thumbnail `rcSource`/`rcDestination` pair that scales
@@ -480,14 +490,10 @@ impl ResizeSession {
     }
 
     if new_is_growing {
-      // Growing: pre-position the cloaked real window and register the
-      // thumbnail at target dimensions for curtain-reveal. Required on every
-      // growing redirect (not just direction changes) so the curtain-reveal
-      // covers the newly expanded area.
+      // Pre-position the cloaked real window at the new target so DWM captures
+      // correctly-sized content.
       //
-      // SAFETY: Window is cloaked when `update_target` is called (invoked from
-      // `start_animation_if_needed` during an active Frozen animation), so this
-      // `SetWindowPos` is invisible to the user.
+      // SAFETY: Window is cloaked during an active Frozen animation.
       unsafe {
         let _ = SetWindowPos(
           HWND(self.hwnd),
@@ -499,25 +505,14 @@ impl ResizeSession {
           SWP_NOACTIVATE | SWP_NOSENDCHANGING | SWP_NOZORDER,
         );
       }
-      let logical = to_logical(new_target, &self.border_inset);
-      if let Some(surrogate) = &mut self.surrogate {
-        surrogate.reregister_thumbnail(
-          HWND(self.hwnd),
-          logical.width(),
-          logical.height(),
-          self.border_inset,
-        );
-      }
-      // The real window is pre-positioned at the new target and the thumbnail
-      // is registered at target dims — curtain-reveal handoff complete. Revert
-      // to non-scaled rendering (tail_stretch off) to match the new registration.
-      self.content_size = (logical.width(), logical.height());
+      // Defer thumbnail re-registration to `begin_reveal` so the curtain-reveal
+      // shows freshly painted content rather than blank target-sized frames.
+      self.reveal_pending = true;
       self.handoff_done = true;
       self.tail_stretch = false;
     } else if direction_changed {
-      // Was growing, now shrinking: re-register thumbnail at current dimensions
-      // so the clip/wipe starts from the correct boundary rather than the stale
-      // (larger) growing target.
+      // Was growing, now shrinking: register thumbnail at current dims so the
+      // clip/wipe starts from the correct boundary.
       let logical = to_logical(current_rect, &self.border_inset);
       if let Some(surrogate) = &mut self.surrogate {
         surrogate.reregister_thumbnail(
@@ -527,17 +522,14 @@ impl ResizeSession {
           self.border_inset,
         );
       }
-      // Now shrinking from the current position: reset content sampling and
-      // schedule a fresh mid-animation handoff toward the new target.
       self.content_size = (logical.width(), logical.height());
+      self.reveal_pending = false;
       self.handoff_done = false;
       self.tail_stretch = false;
     } else {
-      // Still shrinking to a new target: reset the handoff flag so the real
-      // window is repositioned near the end of the redirected animation.
-      // `tail_stretch` is preserved — if the previous handoff already switched
-      // to scaled rendering, that rendering mode remains correct until the next
-      // `maybe_handoff` call updates `content_size` to the new target.
+      // Still shrinking: reset handoff so the window is repositioned near the
+      // end of the redirected animation. `tail_stretch` is preserved — scaled
+      // rendering stays correct until `maybe_handoff` updates `content_size`.
       self.handoff_done = false;
     }
   }
