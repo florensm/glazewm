@@ -202,15 +202,20 @@ impl ResizeSession {
   /// that reflow into the motion, where it is far less noticeable, and gives
   /// the app time to repaint before the uncloak.
   ///
-  /// The thumbnail is re-registered at target dims so the surrogate shows
-  /// the new content at natural size; edge-extension thumbnails cover the
-  /// remainder of the still-larger animated rect. The reposition is posted
-  /// asynchronously; `pre_commit` issues a final synchronous move at
+  /// The thumbnail registration is downsized to the per-axis minimum of its
+  /// current dims and the target dims — never larger than the window before
+  /// or after the (asynchronous) resize, so DWM always has real content to
+  /// sample and no transparent hole exposes the desktop. Edge-extension
+  /// thumbnails cover the remainder of the animated rect. Once the window's
+  /// actual geometry reaches the target, [`sync_registration`] re-registers
+  /// at exact target dims. `pre_commit` issues a final synchronous move at
   /// completion as the correctness guarantee.
   ///
   /// No-op for zoom sessions (close animations must never move the real
   /// window — their target rect may be off-screen) and when the current
   /// target has already been handed off.
+  ///
+  /// [`sync_registration`]: ResizeSession::sync_registration
   pub fn maybe_handoff(&mut self) {
     if self.handoff_done || self.zoom || self.hwnd == 0 {
       return;
@@ -235,14 +240,65 @@ impl ResizeSession {
 
     let logical = to_logical(&self.target_rect, &self.border_inset);
     if let Some(surrogate) = &mut self.surrogate {
-      if surrogate.content_size() != (logical.width(), logical.height()) {
+      let (cur_w, cur_h) = surrogate.content_size();
+      let safe_w = cur_w.min(logical.width());
+      let safe_h = cur_h.min(logical.height());
+      if (cur_w, cur_h) != (safe_w, safe_h) && safe_w > 0 && safe_h > 0 {
         surrogate.reregister_thumbnail(
           HWND(self.hwnd),
-          logical.width(),
-          logical.height(),
+          safe_w,
+          safe_h,
           self.border_inset,
         );
       }
+    }
+  }
+
+  /// Converges the thumbnail registration toward the target dims as the
+  /// window's actual geometry catches up with the handoff reposition.
+  ///
+  /// After [`maybe_handoff`] the registration is capped at the per-axis
+  /// minimum of old and target dims, leaving the grown axis of a mixed
+  /// resize edge-extended. Once `GetWindowRect` confirms the window has
+  /// reached the target size, re-registering at exact target dims is safe
+  /// and reveals the full new content. Cheap no-op outside the handoff tail.
+  ///
+  /// [`maybe_handoff`]: ResizeSession::maybe_handoff
+  fn sync_registration(&mut self) {
+    if !self.handoff_done || self.hwnd == 0 {
+      return;
+    }
+    let target_logical = to_logical(&self.target_rect, &self.border_inset);
+    let target_dims = (target_logical.width(), target_logical.height());
+    let Some(surrogate) = &mut self.surrogate else {
+      return;
+    };
+    if surrogate.content_size() == target_dims {
+      return;
+    }
+
+    let mut window = RECT::default();
+    // SAFETY: `HWND(self.hwnd)` was verified live at session start; a stale
+    // handle only fails the call.
+    if unsafe {
+      GetWindowRect(HWND(self.hwnd), std::ptr::from_mut(&mut window).cast())
+    }
+    .is_err()
+    {
+      return;
+    }
+
+    let actual = to_logical(
+      &Rect::from_ltrb(window.left, window.top, window.right, window.bottom),
+      &self.border_inset,
+    );
+    if (actual.width(), actual.height()) == target_dims {
+      surrogate.reregister_thumbnail(
+        HWND(self.hwnd),
+        target_dims.0,
+        target_dims.1,
+        self.border_inset,
+      );
     }
   }
 
@@ -254,6 +310,7 @@ impl ResizeSession {
   /// `opacity` maps to the DWM thumbnail opacity (0 = transparent, 255 =
   /// opaque). Pass `255` for resize animations where no fade is needed.
   pub fn update(&mut self, current_rect: &Rect, opacity: u8) {
+    self.sync_registration();
     let logical = to_logical(current_rect, &self.border_inset);
     if let Some(surrogate) = &mut self.surrogate {
       if let Err(err) = surrogate.update(&logical, opacity) {
@@ -277,6 +334,7 @@ impl ResizeSession {
     current_rect: &Rect,
     opacity: u8,
   ) {
+    self.sync_registration();
     let logical = to_logical(current_rect, &self.border_inset);
     if let Some(surrogate) = &mut self.surrogate {
       surrogate.defer_reposition(batch, &logical);

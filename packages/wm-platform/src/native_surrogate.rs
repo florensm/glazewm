@@ -940,6 +940,9 @@ impl NativeSurrogate {
     // Edge-extension rects were computed against the old content dims; hide
     // them until the next `update_edges` recomputes gaps for the new dims.
     self.set_edges_visible(false);
+    // Force the next reposition through (even at an unchanged rect) so
+    // `update_edges` re-shows the extensions for the new content dims.
+    self.last_rect = None;
   }
 
   /// Moves and resizes the surrogate overlay to `rect` and sets the whole-window
