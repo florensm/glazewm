@@ -258,10 +258,13 @@ impl ResizeSession {
 
   /// Whether per-frame thumbnail scaling is active.
   ///
-  /// True during stretch mode, the post-handoff tail, or the paint-grace
-  /// period when the thumbnail is still registered at source dims.
+  /// True during stretch mode or the post-handoff tail phase. `reveal_pending`
+  /// is intentionally excluded: during grow paint-grace the thumbnail's
+  /// `rcDestination` stays fixed at source dims, so the surrogate window
+  /// clips at the source boundary as it expands rather than stretching old
+  /// content to fill the growing rect.
   fn scales_content(&self) -> bool {
-    self.stretch || self.tail_stretch || self.reveal_pending
+    self.stretch || self.tail_stretch
   }
 
   /// Switches the thumbnail from source dims to target dims after the paint
@@ -347,10 +350,15 @@ impl ResizeSession {
       );
     }
 
-    let logical_target = to_logical(&self.target_rect, &self.border_inset);
-    self.content_size =
-      (logical_target.width(), logical_target.height());
+    // Stretch mode defers the content_size update to `pre_commit` (where the
+    // surrogate is already snapped to the target rect), so the scale is
+    // naturally 1:1 on that final frame with no visible jump. For reveal mode,
+    // switch to tail_stretch now so target content fills the still-larger
+    // animated rect without exposing the backdrop.
     if !self.stretch {
+      let logical_target = to_logical(&self.target_rect, &self.border_inset);
+      self.content_size =
+        (logical_target.width(), logical_target.height());
       self.tail_stretch = true;
     }
   }
@@ -572,6 +580,14 @@ impl ResizeSession {
     }
 
     let logical = to_logical(&self.target_rect, &self.border_inset);
+
+    // Snap content_size to target for stretch sessions: `maybe_handoff`
+    // deferred this update so the scale stays smooth during the animation.
+    // With the surrogate now exactly at target size the scale becomes 1:1.
+    if self.stretch {
+      self.content_size = (logical.width(), logical.height());
+    }
+
     let stretch_rects = self
       .scales_content()
       .then(|| self.stretch_rects(logical.width(), logical.height()));

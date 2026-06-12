@@ -69,16 +69,14 @@ const WS_COMPLETE_THRESHOLD_PX: f32 = 1.5;
 #[cfg(target_os = "windows")]
 const OPEN_PAINT_GRACE: Duration = Duration::from_millis(30);
 
-/// Remaining animation time at which the real (cloaked) window is handed off
-/// to its final rect mid-animation via [`ResizeSession::maybe_handoff`].
+/// Maximum `HANDOFF_LEAD` cap in milliseconds.
 ///
-/// A 100 ms lead gives the app 2–3 repaint frames at any common refresh rate
-/// to settle at the new size while still hidden behind the surrogate. The
-/// `pre_commit` synchronous `SetWindowPos` at completion is the correctness
-/// guarantee; this handoff is purely an early-repaint optimisation to
-/// eliminate the classic Windows end-of-resize flash.
+/// The actual lead is `duration_ms * 0.35`, clamped to `[50, HANDOFF_LEAD_MAX]`.
+/// Scaling by duration keeps the tail-stretch phase a small fraction of the
+/// visual travel distance regardless of easing speed; the cap ensures apps
+/// always get ≥50 ms to repaint at the new size before uncloaking.
 #[cfg(target_os = "windows")]
-const HANDOFF_LEAD: Duration = Duration::from_millis(100);
+const HANDOFF_LEAD_MAX_MS: u64 = 100;
 
 /// Grace period for growing sessions to paint at the new size before the
 /// curtain-reveal switches from old scaled content to freshly painted content.
@@ -114,7 +112,7 @@ struct PendingSurrogateUpdate {
   window_id: Uuid,
   rect: Rect,
   opacity: u8,
-  /// `true` when `remaining_at` ≤ `HANDOFF_LEAD`.
+  /// `true` when `remaining_at` ≤ proportional handoff lead.
   handoff: bool,
   /// `true` when `elapsed_at` ≥ `GROW_REVEAL_GRACE`.
   reveal: bool,
@@ -1387,8 +1385,19 @@ impl AnimationManager {
               .animations
               .get(&window_id)
               .map_or((false, false), |a| {
+                // Scale the lead with the animation duration so tail-stretch
+                // covers a small fraction of visual travel regardless of
+                // easing speed. For expo-out at 150 ms this fires at ~96%
+                // visual progress (scale jump ≈1.04x, imperceptible).
+                #[allow(
+                  clippy::cast_possible_truncation,
+                  clippy::cast_sign_loss
+                )]
+                let lead_ms = (a.duration.as_millis() as f32 * 0.35)
+                  .clamp(50.0, HANDOFF_LEAD_MAX_MS as f32)
+                  as u64;
                 (
-                  a.remaining_at(now) <= HANDOFF_LEAD,
+                  a.remaining_at(now) <= Duration::from_millis(lead_ms),
                   a.elapsed_at(now) >= GROW_REVEAL_GRACE,
                 )
               });
