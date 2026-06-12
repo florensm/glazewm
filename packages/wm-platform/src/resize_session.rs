@@ -2,8 +2,8 @@ use windows::Win32::{
   Foundation::{HWND, RECT},
   Graphics::Dwm::{DwmGetWindowAttribute, DWMWA_EXTENDED_FRAME_BOUNDS},
   UI::WindowsAndMessaging::{
-    GetWindowRect, IsWindow, SetWindowPos, SWP_NOACTIVATE, SWP_NOSENDCHANGING,
-    SWP_NOZORDER,
+    GetWindowRect, IsWindow, SetWindowPos, SWP_ASYNCWINDOWPOS,
+    SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOSENDCHANGING, SWP_NOZORDER,
   },
 };
 
@@ -62,6 +62,13 @@ pub struct ResizeSession {
   /// toward/away from the surrogate center instead of repositioning the
   /// surrogate window. Used for zoom-in (open) and zoom-out (close) effects.
   pub zoom: bool,
+  /// `true` once the real window has been repositioned at the current
+  /// `target_rect` (at session start for growing curtain-reveals, or
+  /// mid-animation via [`maybe_handoff`]). Reset whenever a redirect changes
+  /// the target.
+  ///
+  /// [`maybe_handoff`]: ResizeSession::maybe_handoff
+  handoff_done: bool,
 }
 
 impl ResizeSession {
@@ -113,6 +120,7 @@ impl ResizeSession {
       effect_opacity: options.effect_opacity,
       is_growing,
       zoom: false,
+      handoff_done: is_growing,
     })
   }
 
@@ -183,6 +191,59 @@ impl ResizeSession {
       surrogate.set_visible(true);
     }
     surrogate.set_window_opacity(opacity);
+  }
+
+  /// Hands the real (cloaked) window off to its final target rect
+  /// mid-animation.
+  ///
+  /// Resizing the real window at the very end of the animation makes the
+  /// app's content reflow in a single frame while everything is at rest — a
+  /// visible jump. Calling this while a slice of the animation remains moves
+  /// that reflow into the motion, where it is far less noticeable, and gives
+  /// the app time to repaint before the uncloak.
+  ///
+  /// The thumbnail is re-registered at target dims so the surrogate shows
+  /// the new content at natural size; edge-extension thumbnails cover the
+  /// remainder of the still-larger animated rect. The reposition is posted
+  /// asynchronously; `pre_commit` issues a final synchronous move at
+  /// completion as the correctness guarantee.
+  ///
+  /// No-op for zoom sessions (close animations must never move the real
+  /// window — their target rect may be off-screen) and when the current
+  /// target has already been handed off.
+  pub fn maybe_handoff(&mut self) {
+    if self.handoff_done || self.zoom || self.hwnd == 0 {
+      return;
+    }
+    self.handoff_done = true;
+
+    // SAFETY: The window is cloaked while a surrogate session is active, so
+    // this reposition is invisible. `SWP_NOZORDER` makes `hWndInsertAfter`
+    // irrelevant.
+    unsafe {
+      let _ = SetWindowPos(
+        HWND(self.hwnd),
+        HWND(0),
+        self.target_rect.x(),
+        self.target_rect.y(),
+        self.target_rect.width(),
+        self.target_rect.height(),
+        SWP_NOACTIVATE | SWP_NOSENDCHANGING | SWP_NOZORDER
+          | SWP_ASYNCWINDOWPOS | SWP_FRAMECHANGED,
+      );
+    }
+
+    let logical = to_logical(&self.target_rect, &self.border_inset);
+    if let Some(surrogate) = &mut self.surrogate {
+      if surrogate.content_size() != (logical.width(), logical.height()) {
+        surrogate.reregister_thumbnail(
+          HWND(self.hwnd),
+          logical.width(),
+          logical.height(),
+          self.border_inset,
+        );
+      }
+    }
   }
 
   /// Updates the surrogate to the current animation frame position and opacity.
@@ -303,7 +364,8 @@ impl ResizeSession {
 
     if new_is_growing {
       // Pre-position the cloaked real window at the new target so DWM captures
-      // correctly-sized content for the curtain-reveal.
+      // correctly-sized content for the curtain-reveal. This doubles as the
+      // handoff for the redirected target.
       //
       // SAFETY: Window is cloaked during an active animation.
       unsafe {
@@ -326,6 +388,7 @@ impl ResizeSession {
           self.border_inset,
         );
       }
+      self.handoff_done = true;
     } else if direction_changed {
       // Was growing, now shrinking: register thumbnail at current dims so
       // the clip/wipe starts from the correct boundary.
@@ -338,8 +401,13 @@ impl ResizeSession {
           self.border_inset,
         );
       }
+      self.handoff_done = false;
+    } else {
+      // Still shrinking: just store the new target; the thumbnail keeps its
+      // current registration. Reset the handoff so the window is repositioned
+      // near the end of the redirected animation.
+      self.handoff_done = false;
     }
-    // Still shrinking: just store new target; thumbnail stays at source dims.
   }
 
   /// Snaps the surrogate to the final target rect and synchronously

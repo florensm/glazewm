@@ -69,6 +69,15 @@ const WS_COMPLETE_THRESHOLD_PX: f32 = 1.5;
 #[cfg(target_os = "windows")]
 const OPEN_PAINT_GRACE: Duration = Duration::from_millis(30);
 
+/// Maximum mid-animation handoff lead in milliseconds.
+///
+/// The actual lead is `duration_ms * 0.35`, clamped to
+/// `[50, HANDOFF_LEAD_MAX_MS]`. Scaling by duration keeps the handoff near
+/// the end of the visual travel regardless of easing speed; the cap ensures
+/// apps always get ≥50 ms to repaint at the new size before uncloaking.
+#[cfg(target_os = "windows")]
+const HANDOFF_LEAD_MAX_MS: u64 = 100;
+
 use tokio::sync::mpsc;
 use uuid::Uuid;
 use wm_common::{
@@ -96,6 +105,8 @@ struct PendingSurrogateUpdate {
   window_id: Uuid,
   rect: Rect,
   opacity: u8,
+  /// `true` when `remaining_at` ≤ the proportional handoff lead.
+  handoff: bool,
 }
 
 /// Tracks a single window's participation in the current workspace-switch
@@ -1348,10 +1359,26 @@ impl AnimationManager {
             // repositions in this redraw pass are committed atomically by
             // `flush_surrogate_updates` so adjacent windows' edges land in
             // the same DWM composition frame.
+            let handoff =
+              self.animations.get(&window_id).map_or(false, |a| {
+                // Scale the lead with the animation duration so the handoff
+                // stays near the end of the visual travel regardless of
+                // easing speed. For expo-out at 150 ms this fires at ~96%
+                // visual progress.
+                #[allow(
+                  clippy::cast_possible_truncation,
+                  clippy::cast_sign_loss
+                )]
+                let lead_ms = (a.duration.as_millis() as f32 * 0.35)
+                  .clamp(50.0, HANDOFF_LEAD_MAX_MS as f32)
+                  as u64;
+                a.remaining_at(now) <= Duration::from_millis(lead_ms)
+              });
             self.pending_surrogate_updates.push(PendingSurrogateUpdate {
               window_id,
               rect: current_rect,
               opacity: opacity_u8,
+              handoff,
             });
           }
           return (AnimationPositionResult::Frozen, None);
@@ -1412,6 +1439,9 @@ impl AnimationManager {
       if let Some(session) =
         self.resize_sessions.get_mut(&update.window_id)
       {
+        if update.handoff {
+          session.maybe_handoff();
+        }
         session.defer_update(&mut batch, &update.rect, update.opacity);
       }
     }
