@@ -37,6 +37,14 @@ static SET_WCA: OnceLock<Option<SetWindowCompositionAttributeFn>> =
 type SetWindowCompositionAttributeFn =
   unsafe extern "system" fn(HWND, *mut WindowCompositionAttribData) -> i32;
 
+/// Thickness, in logical pixels, of the content strip sampled by the
+/// edge-extension thumbnails.
+///
+/// A 1 px strip replicates the outermost edge pixels across the exposed gap,
+/// visually extending the window's own background/border colors with no
+/// pattern distortion.
+const EDGE_SAMPLE_PX: i32 = 1;
+
 /// Accent state value for a solid-color fill.
 const ACCENT_ENABLE_GRADIENT: u32 = 1;
 
@@ -375,6 +383,12 @@ pub(crate) fn to_logical(rect: &Rect, inset: &RECT) -> Rect {
 /// surrogate expands it progressively reveals the real window's content —
 /// a curtain-reveal effect.
 ///
+/// For mixed resizes (one axis grows while the other shrinks) the animated
+/// rect can extend past the registered content on an axis. The exposed gap is
+/// covered by edge-extension thumbnails: thin strips of the content's
+/// trailing edge stretched across the gap, so the rect reads as one
+/// continuous surface instead of exposing the desktop behind it.
+///
 /// GlazeWM cloaks the real window while the overlay is active.
 ///
 /// Per-frame cost is one [`SetWindowPos`] call (plus one
@@ -395,6 +409,21 @@ pub struct NativeSurrogate {
   hwnd: isize,
   /// DWM thumbnail handle, or `0` if registration failed.
   thumbnail: isize,
+  /// Raw handle to the thumbnail source window; used to lazily register
+  /// edge-extension thumbnails.
+  source_hwnd: isize,
+  /// Logical (visible-content) dimensions the main thumbnail samples.
+  /// Updated by [`reregister_thumbnail`] when the registration size changes.
+  ///
+  /// [`reregister_thumbnail`]: NativeSurrogate::reregister_thumbnail
+  content_size: (i32, i32),
+  /// Invisible border insets of the source window, in physical pixels.
+  border_inset: RECT,
+  /// Edge-extension thumbnails covering the right, bottom, and corner gaps
+  /// of mixed resizes; `0` = not (yet) registered.
+  edge_thumbnails: [isize; 3],
+  /// Whether any edge-extension thumbnail is currently shown.
+  edges_visible: bool,
   /// Cached visibility state; guards against redundant `ShowWindow` calls.
   is_visible: bool,
   /// Last opacity passed to `SetLayeredWindowAttributes`; used to skip
@@ -553,6 +582,11 @@ impl NativeSurrogate {
     Ok(Self {
       hwnd: hwnd.0,
       thumbnail,
+      source_hwnd: source_hwnd.0,
+      content_size: (logical_thumb.width(), logical_thumb.height()),
+      border_inset,
+      edge_thumbnails: [0; 3],
+      edges_visible: false,
       is_visible: initially_visible,
       last_opacity: opacity,
       last_rect: None,
@@ -617,7 +651,147 @@ impl NativeSurrogate {
       )
     }?;
     self.last_rect = Some(rect.clone());
+    self.update_edges(rect.width(), rect.height());
     Ok(())
+  }
+
+  /// Updates the edge-extension thumbnails for the current window size.
+  ///
+  /// When the surrogate extends past the registered content on an axis (mixed
+  /// grow/shrink resizes), the exposed gap is covered by stretching a thin
+  /// strip of the content's trailing edge across it. Hides the extensions
+  /// when no gap exists. Thumbnails are registered lazily on the first frame
+  /// a gap appears; a registered thumbnail stays invisible until its
+  /// properties are set, so this causes no flash.
+  fn update_edges(&mut self, window_w: i32, window_h: i32) {
+    let (content_w, content_h) = self.content_size;
+    let gap_w = window_w - content_w;
+    let gap_h = window_h - content_h;
+
+    if (gap_w <= 0 && gap_h <= 0) || content_w <= 0 || content_h <= 0 {
+      self.set_edges_visible(false);
+      return;
+    }
+
+    if self.thumbnail == 0 {
+      return;
+    }
+
+    if self.edge_thumbnails == [0; 3] {
+      for slot in &mut self.edge_thumbnails {
+        // SAFETY: Both handles are valid; failure leaves the slot at `0`.
+        *slot = unsafe {
+          DwmRegisterThumbnail(HWND(self.hwnd), HWND(self.source_hwnd))
+        }
+        .unwrap_or(0);
+      }
+    }
+
+    let strip = EDGE_SAMPLE_PX.min(content_w).min(content_h).max(1);
+    let inset = self.border_inset;
+    let right_edge = inset.left + content_w;
+    let bottom_edge = inset.top + content_h;
+
+    // `(rcSource, rcDestination, visible)` for the right, bottom, and corner
+    // extensions. Source rects are in the source window's coordinate space
+    // (offset by the border inset, matching the main thumbnail).
+    let edges = [
+      (
+        RECT {
+          left: right_edge - strip,
+          top: inset.top,
+          right: right_edge,
+          bottom: bottom_edge,
+        },
+        RECT {
+          left: content_w,
+          top: 0,
+          right: window_w,
+          bottom: content_h.min(window_h),
+        },
+        gap_w > 0,
+      ),
+      (
+        RECT {
+          left: inset.left,
+          top: bottom_edge - strip,
+          right: right_edge,
+          bottom: bottom_edge,
+        },
+        RECT {
+          left: 0,
+          top: content_h,
+          right: content_w.min(window_w),
+          bottom: window_h,
+        },
+        gap_h > 0,
+      ),
+      (
+        RECT {
+          left: right_edge - strip,
+          top: bottom_edge - strip,
+          right: right_edge,
+          bottom: bottom_edge,
+        },
+        RECT {
+          left: content_w,
+          top: content_h,
+          right: window_w,
+          bottom: window_h,
+        },
+        gap_w > 0 && gap_h > 0,
+      ),
+    ];
+
+    for (thumbnail, (rc_src, rc_dst, visible)) in
+      self.edge_thumbnails.iter().zip(edges)
+    {
+      if *thumbnail == 0 {
+        continue;
+      }
+      let props = DWM_THUMBNAIL_PROPERTIES {
+        dwFlags: DWM_TNP_RECTSOURCE
+          | DWM_TNP_RECTDESTINATION
+          | DWM_TNP_OPACITY
+          | DWM_TNP_VISIBLE
+          | DWM_TNP_SOURCECLIENTAREAONLY,
+        rcSource: rc_src,
+        rcDestination: rc_dst,
+        opacity: u8::MAX,
+        fVisible: visible.into(),
+        fSourceClientAreaOnly: false.into(),
+        ..Default::default()
+      };
+      // SAFETY: `thumbnail` is a valid handle. `props` is stack-allocated.
+      unsafe {
+        let _ = DwmUpdateThumbnailProperties(*thumbnail, &raw const props);
+      }
+    }
+    self.edges_visible = true;
+  }
+
+  /// Shows or hides all registered edge-extension thumbnails.
+  ///
+  /// No-op when already in the requested state or none are registered.
+  fn set_edges_visible(&mut self, visible: bool) {
+    if self.edges_visible == visible {
+      return;
+    }
+    self.edges_visible = visible;
+    for thumbnail in self.edge_thumbnails {
+      if thumbnail == 0 {
+        continue;
+      }
+      let props = DWM_THUMBNAIL_PROPERTIES {
+        dwFlags: DWM_TNP_VISIBLE,
+        fVisible: visible.into(),
+        ..Default::default()
+      };
+      // SAFETY: `thumbnail` is a valid handle. `props` is stack-allocated.
+      unsafe {
+        let _ = DwmUpdateThumbnailProperties(thumbnail, &raw const props);
+      }
+    }
   }
 
   /// Sets the DWM thumbnail visibility flag without changing any other
@@ -719,6 +893,8 @@ impl NativeSurrogate {
     self.thumbnail =
       register_thumbnail(HWND(self.hwnd), source_hwnd, logical_width, logical_height, border_inset)
         .unwrap_or(0);
+    self.content_size = (logical_width, logical_height);
+    self.border_inset = border_inset;
   }
 
   /// Moves and resizes the surrogate overlay to `rect` and sets the whole-window
@@ -746,17 +922,26 @@ impl NativeSurrogate {
     }
     batch.push(self.hwnd, rect.clone());
     self.last_rect = Some(rect.clone());
+    // Edge-extension updates are DWM state changes that cannot be deferred;
+    // they only become visible at the next composition alongside the batched
+    // reposition.
+    self.update_edges(rect.width(), rect.height());
   }
 }
 
 impl Drop for NativeSurrogate {
   fn drop(&mut self) {
-    // SAFETY: `self.thumbnail` and `self.hwnd` are valid handles created
-    // in `create`. Thumbnail must be unregistered before the
+    // SAFETY: All thumbnail handles and `self.hwnd` are valid handles
+    // created by this type. Thumbnails must be unregistered before the
     // destination window is destroyed.
     unsafe {
       if self.thumbnail != 0 {
         let _ = DwmUnregisterThumbnail(self.thumbnail);
+      }
+      for thumbnail in self.edge_thumbnails {
+        if thumbnail != 0 {
+          let _ = DwmUnregisterThumbnail(thumbnail);
+        }
       }
       let _ = DestroyWindow(HWND(self.hwnd));
     }
