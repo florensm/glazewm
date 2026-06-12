@@ -1,4 +1,4 @@
-#![warn(clippy::all, clippy::pedantic)]
+﻿#![warn(clippy::all, clippy::pedantic)]
 #![allow(clippy::missing_errors_doc)]
 #![feature(iterator_try_collect)]
 
@@ -96,30 +96,57 @@ pub fn cursor_position() -> Option<(i32, i32)> {
 ///
 /// Unlike `DwmFlush`, which aligns to the primary monitor's global
 /// composition cycle, this waits for the vertical-blank signal of a
-/// specific monitor. This gives the animation tick thread a full frame
-/// period to update surrogates before the next DWM composition, regardless
-/// of which monitor is the Windows primary and regardless of whether
-/// multiple monitors with different refresh rates are connected.
+/// specific monitor. Clones share the same atomics so all copies observe
+/// period refinements and wake timestamps written by the timer thread.
 #[cfg(target_os = "windows")]
 #[derive(Clone)]
 pub struct DxgiVsyncWaiter {
   output: windows::Win32::Graphics::Dxgi::IDXGIOutput,
-  /// Monitor refresh period in microseconds (one vblank interval).
+  /// `HMONITOR` handle of the monitor this waiter was created for.
+  monitor_handle: isize,
+  /// Monitor refresh period in microseconds, shared across clones.
   ///
-  /// Captured once at construction from the output's current display mode.
-  /// Used by callers to lead the animation clock by a fraction of a frame so
-  /// the computed position aligns with the next DWM composition. Defaults to
-  /// the 60 Hz period (`16_667`) when the refresh rate cannot be queried.
-  frame_period_us: u64,
+  /// Initialized from `query_frame_period_us`; refined downward in `wait` if
+  /// the measured vblank delta is smaller (truer). Defaults to `16_667` (60 Hz).
+  period_us: std::sync::Arc<std::sync::atomic::AtomicU64>,
+  /// Timestamp of the most recent successful `WaitForVBlank` wake-up.
+  ///
+  /// Written by the timer thread immediately after vsync fires. Read by
+  /// `predictive_vsync_now` to lead the animation clock by a fraction of a
+  /// frame so the computed position aligns with the next DWM composition.
+  pub last_wake: std::sync::Arc<std::sync::Mutex<Option<std::time::Instant>>>,
 }
 
 #[cfg(target_os = "windows")]
 impl DxgiVsyncWaiter {
+  /// Returns the `HMONITOR` handle this waiter was created for.
+  #[must_use]
+  pub fn monitor_handle(&self) -> isize {
+    self.monitor_handle
+  }
+
+  /// Returns the current frame period estimate in microseconds.
+  #[must_use]
+  pub fn frame_period_us(&self) -> u64 {
+    self.period_us.load(std::sync::atomic::Ordering::Relaxed)
+  }
+
+  /// Returns the `HMONITOR` handle of the monitor nearest to `hwnd`.
+  #[must_use]
+  pub fn window_monitor(hwnd: windows::Win32::Foundation::HWND) -> isize {
+    use windows::Win32::Graphics::Gdi::{
+      MonitorFromWindow, MONITOR_DEFAULTTONEAREST,
+    };
+    // SAFETY: `MonitorFromWindow` accepts any `HWND`; invalid handles yield
+    // a null `HMONITOR`.
+    unsafe { MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST) }.0
+  }
+
   /// Locates the `IDXGIOutput` whose `HMONITOR` matches `monitor_handle`.
   ///
-  /// Enumerates all DXGI adapters and their outputs. Returns `None` when
+  /// Enumerates all DXGI adapters and their outputs. Returns `Err` when
   /// DXGI is unavailable or no output matches the given handle.
-  pub fn for_monitor(monitor_handle: isize) -> Option<Self> {
+  pub fn for_monitor(monitor_handle: isize) -> crate::Result<Self> {
     use windows::Win32::{
       Graphics::{
         Dxgi::{CreateDXGIFactory, IDXGIFactory, DXGI_OUTPUT_DESC},
@@ -128,12 +155,12 @@ impl DxgiVsyncWaiter {
     };
 
     // SAFETY: No preconditions for `CreateDXGIFactory`.
-    let factory: IDXGIFactory = unsafe { CreateDXGIFactory().ok()? };
+    let factory: IDXGIFactory = unsafe { CreateDXGIFactory()? };
 
     let mut ai = 0u32;
     loop {
       let Ok(adapter) = (unsafe { factory.EnumAdapters(ai) }) else {
-        break; // DXGI_ERROR_NOT_FOUND — no more adapters.
+        break; // DXGI_ERROR_NOT_FOUND â€” no more adapters.
       };
       let mut oi = 0u32;
       loop {
@@ -146,33 +173,34 @@ impl DxgiVsyncWaiter {
         if unsafe { output.GetDesc(&mut desc) }.is_ok()
           && desc.Monitor == HMONITOR(monitor_handle)
         {
-          let frame_period_us = Self::query_frame_period_us(&desc.DeviceName);
-          return Some(Self { output, frame_period_us });
+          let period_us = Self::query_frame_period_us(&desc.DeviceName);
+          return Ok(Self {
+            output,
+            monitor_handle,
+            period_us: std::sync::Arc::new(
+              std::sync::atomic::AtomicU64::new(period_us),
+            ),
+            last_wake: std::sync::Arc::new(std::sync::Mutex::new(None)),
+          });
         }
         oi += 1;
       }
       ai += 1;
     }
-    None
+    Err(crate::Error::DisplayNotFound)
   }
 
   /// Locates the `IDXGIOutput` for the monitor that `hwnd` currently occupies.
   ///
-  /// Resolves the window's nearest monitor via `MonitorFromWindow`, then
-  /// delegates to [`for_monitor`]. Returns `None` when DXGI is unavailable or
-  /// no output matches the window's monitor.
+  /// Delegates to [`window_monitor`] then [`for_monitor`]. Returns `Err`
+  /// when DXGI is unavailable or no output matches the window's monitor.
   ///
+  /// [`window_monitor`]: DxgiVsyncWaiter::window_monitor
   /// [`for_monitor`]: DxgiVsyncWaiter::for_monitor
-  pub fn for_window(hwnd: windows::Win32::Foundation::HWND) -> Option<Self> {
-    use windows::Win32::Graphics::Gdi::{
-      MonitorFromWindow, MONITOR_DEFAULTTONEAREST,
-    };
-
-    // SAFETY: `MonitorFromWindow` accepts any `HWND`; an invalid handle yields
-    // a null `HMONITOR`, which `for_monitor` then fails to match (returning
-    // `None`).
-    let monitor = unsafe { MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST) };
-    Self::for_monitor(monitor.0)
+  pub fn for_window(
+    hwnd: windows::Win32::Foundation::HWND,
+  ) -> crate::Result<Self> {
+    Self::for_monitor(Self::window_monitor(hwnd))
   }
 
   /// Queries the current refresh period (microseconds per vblank) for the GDI
@@ -215,19 +243,36 @@ impl DxgiVsyncWaiter {
     1_000_000 / u64::from(devmode.dmDisplayFrequency)
   }
 
-  /// Monitor refresh period in microseconds (one vblank interval).
-  pub fn frame_period_us(&self) -> u64 {
-    self.frame_period_us
-  }
-
   /// Blocks until the next vertical-blank signal from this output.
   ///
-  /// Returns `true` on success, `false` on error (caller should fall back
-  /// to an alternative wait strategy).
+  /// On success, records the wake timestamp in `last_wake` and ratchets
+  /// `period_us` downward if the measured delta is plausible (25-370 Hz).
+  /// Returns `true` on success, `false` on error.
   pub fn wait(&self) -> bool {
     // SAFETY: `self.output` is a valid `IDXGIOutput` kept alive by the
     // `Clone`-counted reference.
-    unsafe { self.output.WaitForVBlank().is_ok() }
+    if unsafe { self.output.WaitForVBlank() }.is_err() {
+      return false;
+    }
+    let now = std::time::Instant::now();
+    if let Ok(mut guard) = self.last_wake.lock() {
+      if let Some(prev) = *guard {
+        let delta_us = u64::try_from(now.duration_since(prev).as_micros())
+          .unwrap_or(u64::MAX);
+        // Plausible vblank window: 25-370 Hz -> 2_700-40_000 us.
+        if (2_700..=40_000).contains(&delta_us) {
+          let current =
+            self.period_us.load(std::sync::atomic::Ordering::Relaxed);
+          if delta_us < current {
+            self
+              .period_us
+              .store(delta_us, std::sync::atomic::Ordering::Relaxed);
+          }
+        }
+      }
+      *guard = Some(now);
+    }
+    true
   }
 }
 

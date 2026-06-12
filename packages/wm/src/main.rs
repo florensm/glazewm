@@ -220,6 +220,9 @@ async fn start_wm(
         break;
       },
       Some(()) = wm.animation_tick_rx.recv() => {
+        // Drain any stale ticks that piled up while the previous frame was
+        // processing, so each update_animations call covers the freshest state.
+        while wm.animation_tick_rx.try_recv().is_ok() {}
         wm.update_animations(&config)
       },
       Some(event) = mouse_listener.next_event() => {
