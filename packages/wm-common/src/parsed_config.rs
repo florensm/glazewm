@@ -759,8 +759,11 @@ pub struct WorkspaceSwitchAnimationConfig {
   ///
   /// `1.0` (default) slides the full monitor width/height so both workspaces
   /// travel completely off/on screen. Smaller values produce a shorter, lighter
-  /// motion similar to Hyprland's `slidefade N%`; combine with
-  /// `opacity_outgoing: 0.0` and `opacity_incoming: 0.0` for that effect.
+  /// motion similar to Hyprland's `slidefade N%`. **Requires
+  /// `opacity_outgoing: 0.0`** — at any fraction below `1.0` both workspaces
+  /// are on screen simultaneously, so a non-zero outgoing opacity causes
+  /// visible overlap. GlazeWM automatically clamps `opacity_outgoing` to `0.0`
+  /// and logs a warning if this constraint is violated.
   /// Valid range: `0.0` (no movement) to `1.0` (full monitor). Has no effect
   /// on `fade`, `zoom`, or `iris` styles.
   pub slide_distance_fraction: f32,
