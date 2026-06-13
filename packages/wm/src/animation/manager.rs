@@ -1575,13 +1575,14 @@ impl AnimationManager {
 
     let duration_ms = ws_config.duration_ms;
 
-    // Slide each workspace the full monitor dimension. The outgoing workspace
-    // exits the screen completely (no residual sliver at the trailing edge),
-    // and the incoming workspace starts one full monitor away. The two
-    // workspaces keep their normal outer-gap spacing during the slide rather
-    // than being pulled together by a seam-gap reduction.
-    let slide_distance_h = monitor_width.max(1);
-    let slide_distance_v = monitor_height.max(1);
+    // Scale the slide travel distance by the configured fraction. At 1.0
+    // (default) each workspace traverses the full monitor dimension; smaller
+    // values produce a shorter, lighter motion (à la Hyprland `slidefade N%`).
+    let fraction = ws_config.slide_distance_fraction.clamp(0.0, 1.0);
+    let slide_distance_h =
+      ((monitor_width as f32 * fraction).round() as i32).max(1);
+    let slide_distance_v =
+      ((monitor_height as f32 * fraction).round() as i32).max(1);
 
     let ws_windows: HashMap<Uuid, WorkspaceSwitchEntry> = windows
       .into_iter()
