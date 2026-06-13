@@ -5,10 +5,12 @@ use windows::{
   Win32::{
     Foundation::{COLORREF, HWND, LPARAM, LRESULT, RECT, WPARAM},
     Graphics::Dwm::{
-      DwmExtendFrameIntoClientArea, DwmRegisterThumbnail,
+      DwmExtendFrameIntoClientArea, DwmRegisterThumbnail, DwmSetWindowAttribute,
       DwmUnregisterThumbnail, DwmUpdateThumbnailProperties,
-      DWM_THUMBNAIL_PROPERTIES, DWM_TNP_OPACITY, DWM_TNP_RECTDESTINATION,
-      DWM_TNP_RECTSOURCE, DWM_TNP_SOURCECLIENTAREAONLY, DWM_TNP_VISIBLE,
+      DWMWA_WINDOW_CORNER_PREFERENCE, DWMWCP_DONOTROUND, DWMWCP_ROUND,
+      DWMWCP_ROUNDSMALL, DWM_THUMBNAIL_PROPERTIES, DWM_TNP_OPACITY,
+      DWM_TNP_RECTDESTINATION, DWM_TNP_RECTSOURCE, DWM_TNP_SOURCECLIENTAREAONLY,
+      DWM_TNP_VISIBLE,
     },
     System::LibraryLoader::{GetModuleHandleW, GetProcAddress},
     UI::WindowsAndMessaging::{
@@ -23,7 +25,7 @@ use windows::{
   },
 };
 
-use crate::{Color, Rect};
+use crate::{Color, CornerStyle, Rect};
 
 /// Ensures the surrogate window class is registered exactly once per
 /// process.
@@ -118,6 +120,36 @@ fn get_set_wca() -> Option<SetWindowCompositionAttributeFn> {
       >(proc)
     })
   })
+}
+
+/// Applies the DWM corner preference matching `corner_style` to `hwnd`.
+///
+/// `WS_POPUP | WS_EX_TOOLWINDOW` windows are not rounded by DWM by default —
+/// unlike normal app windows, which are rounded on Windows 11. Explicitly
+/// setting the corner preference on the surrogate keeps it visually consistent
+/// with the real managed window it overlays.
+///
+/// `CornerStyle::Default` maps to `DWMWCP_ROUND` rather than `DWMWCP_DEFAULT`
+/// because DWM's heuristic default for popup/tool windows is no rounding,
+/// while GlazeWM-managed app windows default to rounded on Windows 11.
+///
+/// This is a no-op on Windows 10, where `DwmSetWindowAttribute` silently
+/// returns an error for unknown attributes.
+fn apply_corner_preference(hwnd: HWND, corner_style: &CornerStyle) {
+  let pref = match corner_style {
+    CornerStyle::Default | CornerStyle::Rounded => DWMWCP_ROUND,
+    CornerStyle::Square => DWMWCP_DONOTROUND,
+    CornerStyle::SmallRounded => DWMWCP_ROUNDSMALL,
+  };
+  // SAFETY: `hwnd` is a valid window handle. `pref` is a stack-allocated i32.
+  unsafe {
+    let _ = DwmSetWindowAttribute(
+      hwnd,
+      DWMWA_WINDOW_CORNER_PREFERENCE,
+      std::ptr::from_ref(&pref.0).cast(),
+      std::mem::size_of::<i32>() as u32,
+    );
+  }
 }
 
 /// Applies a solid-color backdrop to `hwnd` via the undocumented
@@ -449,6 +481,12 @@ impl NativeSurrogate {
   /// the configured window gap. Pass `RECT::default()` to keep the full
   /// physical size (workspace-switch surrogates).
   ///
+  /// `corner_style` controls the DWM corner-rounding applied to the surrogate.
+  /// Because `WS_POPUP | WS_EX_TOOLWINDOW` windows are not rounded by DWM by
+  /// default, pass the real window's configured style so the surrogate matches
+  /// visually. `CornerStyle::Default` maps to rounded (the Windows 11 app-window
+  /// default).
+  ///
   /// Returns an error if window creation fails.
   ///
   /// [`set_visible`]: NativeSurrogate::set_visible
@@ -460,6 +498,7 @@ impl NativeSurrogate {
     opacity: u8,
     initially_visible: bool,
     border_inset: RECT,
+    corner_style: &CornerStyle,
   ) -> crate::Result<Self> {
     ensure_class_registered();
 
@@ -514,6 +553,7 @@ impl NativeSurrogate {
     }
 
     apply_backdrop(hwnd, surrogate_color);
+    apply_corner_preference(hwnd, corner_style);
 
     // Set the initial whole-window opacity. `LWA_ALPHA` makes `crKey`
     // irrelevant; COLORREF(0) is a placeholder.

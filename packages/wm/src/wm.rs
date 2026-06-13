@@ -317,6 +317,11 @@ impl WindowManager {
               } else {
                 u8::MAX
               };
+              let corner_style = if effect_cfg.corner_style.enabled {
+                effect_cfg.corner_style.style.clone()
+              } else {
+                wm_platform::CornerStyle::Default
+              };
 
               if let Ok(rect) = window.to_rect().and_then(|r| {
                 window.total_border_delta().map(|d| r.apply_delta(&d, None))
@@ -332,6 +337,7 @@ impl WindowManager {
                     window_id,
                     rect,
                     effect_opacity,
+                    corner_style,
                     config,
                     &*native_ref,
                   );

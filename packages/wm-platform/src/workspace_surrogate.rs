@@ -1,6 +1,6 @@
 use windows::Win32::Foundation::{HWND, RECT};
 
-use crate::{NativeSurrogate, Rect};
+use crate::{CornerStyle, NativeSurrogate, Rect};
 
 /// Surrogate overlay for a single window participating in a workspace-switch
 /// animation.
@@ -70,6 +70,8 @@ impl WorkspaceSurrogate {
       opacity,
       false,
       RECT::default(),
+      // Workspace surrogates span the full viewport and must not be rounded.
+      &CornerStyle::Square,
     )?;
     Ok(Self {
       inner,

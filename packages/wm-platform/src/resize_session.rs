@@ -24,7 +24,8 @@ use windows::Win32::{
 const EDGE_SAMPLE_INSET: i32 = 4;
 
 use crate::{
-  native_surrogate::to_logical, NativeSurrogate, Rect, SurrogateBatch,
+  native_surrogate::to_logical, CornerStyle, NativeSurrogate, Rect,
+  SurrogateBatch,
 };
 
 /// Options for [`ResizeSession::begin`].
@@ -33,6 +34,10 @@ pub struct SessionOptions {
   pub effect_opacity: u8,
   /// Whether the surrogate is visible immediately after creation.
   pub initially_visible: bool,
+  /// Corner style to apply to the surrogate, matching the real window's
+  /// configured style so the surrogate is visually consistent during the
+  /// animation.
+  pub corner_style: CornerStyle,
 }
 
 /// Tracks a single window's resize/move animation and manages its surrogate
@@ -130,6 +135,7 @@ impl ResizeSession {
       options.effect_opacity,
       options.initially_visible,
       border_inset,
+      &options.corner_style,
     ) {
       Ok(s) => Some(s),
       Err(err) => {

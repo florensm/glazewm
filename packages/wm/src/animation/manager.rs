@@ -96,8 +96,8 @@ use wm_common::{
 use wm_platform::{NativeWindow, OpacityValue, Rect};
 #[cfg(target_os = "windows")]
 use wm_platform::{
-  DxgiVsyncWaiter, NativeIrisOverlay, NativeWindowWindowsExt, ResizeSession,
-  SessionOptions, SurrogateBatch, WorkspaceSurrogate,
+  CornerStyle, DxgiVsyncWaiter, NativeIrisOverlay, NativeWindowWindowsExt,
+  ResizeSession, SessionOptions, SurrogateBatch, WorkspaceSurrogate,
 };
 
 use crate::{
@@ -1258,6 +1258,10 @@ impl AnimationManager {
     // animation has no per-frame fade component.
     #[cfg_attr(not(target_os = "windows"), allow(unused_variables))]
     effect_opacity: u8,
+    // Corner style from window-effects config; applied to the surrogate so it
+    // matches the real window's rounded corners during the animation.
+    #[cfg(target_os = "windows")]
+    corner_style: CornerStyle,
     config: &UserConfig,
   ) -> (AnimationPositionResult, Option<OpacityValue>) {
     let existing_animation = self.get_animation(&window_id).cloned();
@@ -1323,6 +1327,7 @@ impl AnimationManager {
             SessionOptions {
               effect_opacity,
               initially_visible: true,
+              corner_style: corner_style.clone(),
             },
           ) {
             Ok(session) => {
@@ -1708,6 +1713,7 @@ impl AnimationManager {
     target_rect: Rect,
     monitor_rect: Rect,
     effect_opacity: u8,
+    corner_style: CornerStyle,
     config: &UserConfig,
     native_window: &NativeWindow,
   ) {
@@ -1774,6 +1780,7 @@ impl AnimationManager {
       SessionOptions {
         effect_opacity,
         initially_visible: false,
+        corner_style: corner_style.clone(),
       },
     ) {
       Ok(mut session) => {
@@ -1824,6 +1831,7 @@ impl AnimationManager {
     window_id: Uuid,
     current_rect: Rect,
     effect_opacity: u8,
+    corner_style: CornerStyle,
     config: &UserConfig,
     native_window: &NativeWindow,
   ) {
@@ -1869,6 +1877,7 @@ impl AnimationManager {
       SessionOptions {
         effect_opacity,
         initially_visible: false,
+        corner_style: corner_style.clone(),
       },
     ) {
       Ok(mut session) => {
@@ -1979,6 +1988,7 @@ impl AnimationManager {
     window_id: Uuid,
     current_rect: Rect,
     effect_opacity: u8,
+    corner_style: CornerStyle,
     config: &UserConfig,
     native_window: &NativeWindow,
   ) {
@@ -2040,6 +2050,7 @@ impl AnimationManager {
           SessionOptions {
             effect_opacity,
             initially_visible: true,
+            corner_style,
           },
         ) {
           Ok(session) => {
