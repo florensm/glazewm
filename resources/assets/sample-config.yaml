@@ -81,12 +81,6 @@ animations:
     # monitor center so all windows move inward together. Range: 0.0 (no zoom)
     # to 1.0 (collapses to a point). Has no effect on 'fade' or 'zoom' styles.
     zoom_factor: 0.1
-    # Fraction of the monitor dimension each workspace travels during a 'slide'
-    # transition. 1.0 (default) = full monitor width/height. Smaller values
-    # give a lighter feel similar to Hyprland's 'slidefade N%'; combine with
-    # opacity_outgoing: 0.0 and opacity_incoming: 0.0 for that effect.
-    # Range: 0.0 (no movement) to 1.0. Has no effect on 'fade', 'zoom', or 'iris'.
-    slide_distance_fraction: 1.0
 
   # Animation settings for when a window is closed (Windows only).
   window_close:

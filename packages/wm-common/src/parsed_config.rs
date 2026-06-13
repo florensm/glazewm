@@ -754,19 +754,6 @@ pub struct WorkspaceSwitchAnimationConfig {
   /// `zoom` styles. Valid range: `0.0` (no zoom) to `1.0` (collapses to a
   /// point). Recommended range: `0.05`–`0.15` for a subtle depth effect.
   pub zoom_factor: f32,
-  /// Fraction of the monitor dimension that each workspace travels during a
-  /// `slide` transition.
-  ///
-  /// `1.0` (default) slides the full monitor width/height so both workspaces
-  /// travel completely off/on screen. Smaller values produce a shorter, lighter
-  /// motion similar to Hyprland's `slidefade N%`. **Requires
-  /// `opacity_outgoing: 0.0`** — at any fraction below `1.0` both workspaces
-  /// are on screen simultaneously, so a non-zero outgoing opacity causes
-  /// visible overlap. GlazeWM automatically clamps `opacity_outgoing` to `0.0`
-  /// and logs a warning if this constraint is violated.
-  /// Valid range: `0.0` (no movement) to `1.0` (full monitor). Has no effect
-  /// on `fade`, `zoom`, or `iris` styles.
-  pub slide_distance_fraction: f32,
 }
 
 impl Default for WorkspaceSwitchAnimationConfig {
@@ -781,7 +768,6 @@ impl Default for WorkspaceSwitchAnimationConfig {
       opacity_outgoing: 1.0,
       opacity_incoming: 1.0,
       zoom_factor: 0.1,
-      slide_distance_fraction: 1.0,
     }
   }
 }

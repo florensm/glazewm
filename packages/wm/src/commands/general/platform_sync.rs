@@ -351,29 +351,6 @@ fn redraw_containers(
 
       if has_ws_windows {
         let is_no_slide = ws_config.style.is_no_slide();
-
-        // When slide_distance_fraction < 1.0, both workspaces are on screen
-        // simultaneously during the transition. A non-zero opacity_outgoing
-        // makes them visibly overlap, which looks broken. Clamp to 0.0 and
-        // warn so users don't hit a confusing visual artifact.
-        let effective_opacity_outgoing = if ws_config.style
-          == WorkspaceSwitchStyle::Slide
-          && ws_config.slide_distance_fraction < 1.0
-          && ws_config.opacity_outgoing > 0.0
-        {
-          tracing::warn!(
-            "workspace_switch: opacity_outgoing ({}) > 0 with \
-             slide_distance_fraction ({}) < 1.0 causes both workspaces to \
-             overlap; clamping opacity_outgoing to 0.0. Set opacity_outgoing: \
-             0.0 in your config to suppress this warning.",
-            ws_config.opacity_outgoing,
-            ws_config.slide_distance_fraction,
-          );
-          0.0f32
-        } else {
-          ws_config.opacity_outgoing
-        };
-
         let mut ws_windows: Vec<(uuid::Uuid, Option<WorkspaceSurrogate>, bool)> =
           Vec::new();
         let mut monitor_x = 0i32;
@@ -453,7 +430,7 @@ fn redraw_containers(
             let viewport =
               Rect::from_xy(monitor_x, monitor_y, monitor_width, monitor_height);
             let surrogate =
-              WorkspaceSurrogate::new(hwnd, &current, &viewport, opacity, effective_opacity_outgoing)
+              WorkspaceSurrogate::new(hwnd, &current, &viewport, opacity, ws_config.opacity_outgoing)
                 .map_err(|e| {
                   tracing::warn!("Failed to create outgoing surrogate: {e}.");
                   e
