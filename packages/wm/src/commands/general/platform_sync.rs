@@ -696,7 +696,7 @@ fn redraw_containers(
         target_rect.clone(),
         monitor_rect,
         effect_opacity,
-        corner_style.clone(),
+        corner_style,
         config,
         &*native_ref,
       );
@@ -712,7 +712,7 @@ fn redraw_containers(
         window.id(),
         target_rect.clone(),
         effect_opacity,
-        corner_style.clone(),
+        corner_style,
         config,
         &*native_ref,
       );
@@ -777,7 +777,7 @@ fn redraw_containers(
           previous_target,
           &*native_ref,
           effect_opacity,
-          corner_style.clone(),
+          corner_style,
           config,
         )
       }

@@ -1327,7 +1327,7 @@ impl AnimationManager {
             SessionOptions {
               effect_opacity,
               initially_visible: true,
-              corner_style: corner_style.clone(),
+              corner_style,
             },
           ) {
             Ok(session) => {
@@ -1780,7 +1780,7 @@ impl AnimationManager {
       SessionOptions {
         effect_opacity,
         initially_visible: false,
-        corner_style: corner_style.clone(),
+        corner_style,
       },
     ) {
       Ok(mut session) => {
@@ -1877,7 +1877,7 @@ impl AnimationManager {
       SessionOptions {
         effect_opacity,
         initially_visible: false,
-        corner_style: corner_style.clone(),
+        corner_style,
       },
     ) {
       Ok(mut session) => {
