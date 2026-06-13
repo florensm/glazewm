@@ -440,6 +440,12 @@ pub struct NativeSurrogate {
   /// Last rect passed to `SetWindowPos` via `reposition`; used to skip
   /// redundant calls when the position and size have not changed.
   last_rect: Option<Rect>,
+  /// `true` when a solid-color backdrop was applied via `apply_backdrop`.
+  ///
+  /// When set, the backdrop already fills any gap between the thumbnail and
+  /// the surrogate's animated rect, so edge-extension thumbnails are not
+  /// registered or shown.
+  has_backdrop: bool,
 }
 
 impl NativeSurrogate {
@@ -598,6 +604,7 @@ impl NativeSurrogate {
       is_visible: initially_visible,
       last_opacity: opacity,
       last_rect: None,
+      has_backdrop: surrogate_color.is_some(),
     })
   }
 
@@ -678,6 +685,12 @@ impl NativeSurrogate {
   /// a gap appears; a registered thumbnail stays invisible until its
   /// properties are set, so this causes no flash.
   fn update_edges(&mut self, window_w: i32, window_h: i32) {
+    // A solid backdrop already fills any gap between the thumbnail and the
+    // surrogate rect; edge-extension thumbnails would only conflict with it.
+    if self.has_backdrop {
+      return;
+    }
+
     let (content_w, content_h) = self.content_size;
     let gap_w = window_w - content_w;
     let gap_h = window_h - content_h;

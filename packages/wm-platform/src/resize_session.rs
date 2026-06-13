@@ -1,11 +1,27 @@
+use std::collections::HashMap;
+
 use windows::Win32::{
   Foundation::{HWND, RECT},
-  Graphics::Dwm::{DwmGetWindowAttribute, DWMWA_EXTENDED_FRAME_BOUNDS},
-  UI::WindowsAndMessaging::{
-    GetWindowRect, IsWindow, SetWindowPos, SWP_ASYNCWINDOWPOS,
-    SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOSENDCHANGING, SWP_NOZORDER,
+  Graphics::{
+    Dwm::{DwmGetWindowAttribute, DWMWA_EXTENDED_FRAME_BOUNDS},
+    Gdi::{
+      CreateCompatibleBitmap, CreateCompatibleDC, DeleteDC, DeleteObject,
+      GetDC, GetPixel, ReleaseDC, SelectObject, HGDIOBJ,
+    },
   },
+  UI::WindowsAndMessaging::{
+    GetWindowRect, IsWindow, SetWindowPos, SWP_ASYNCWINDOWPOS, SWP_FRAMECHANGED,
+    SWP_NOACTIVATE, SWP_NOSENDCHANGING, SWP_NOZORDER,
+  },
+  Storage::Xps::{PrintWindow, PRINT_WINDOW_FLAGS},
 };
+
+/// Pixels inset from the content edge when sampling the backdrop color.
+///
+/// Matches `EDGE_SAMPLE_INSET_PX` in `native_surrogate.rs` so both the
+/// sampled backdrop and the (fallback) edge-extension thumbnails read from
+/// the same source strip.
+const EDGE_SAMPLE_INSET: i32 = 4;
 
 use crate::{
   native_surrogate::to_logical, NativeSurrogate, Rect, SurrogateBatch,
@@ -93,11 +109,24 @@ impl ResizeSession {
     // Shrinking/mixed: thumbnail at source dims (clip/wipe).
     let thumbnail_rect = if is_growing { target_rect } else { source_rect };
 
+    // Sample the dominant background color near the trailing content edge
+    // to use as the surrogate's solid backdrop. The backdrop fills any gap
+    // between the animated rect and the registered thumbnail area (mixed
+    // resizes) with a uniform color that blends into the app's own background.
+    // Falls back to transparent (no backdrop) when PrintWindow fails.
+    let logical_src = to_logical(source_rect, &border_inset);
+    let edge_color = sample_edge_color(
+      hwnd,
+      logical_src.width(),
+      logical_src.height(),
+      border_inset,
+    );
+
     let surrogate = match NativeSurrogate::create(
       hwnd,
       source_rect,
       thumbnail_rect,
-      None,
+      edge_color.as_ref(),
       options.effect_opacity,
       options.initially_visible,
       border_inset,
@@ -573,6 +602,124 @@ impl ResizeSession {
 
     Ok(())
   }
+}
+
+/// Captures the window's content once via `PrintWindow` and returns the
+/// dominant background color near the trailing edge.
+///
+/// Samples 32 evenly-spaced pixels along the right-edge column and 32 along
+/// the bottom-edge row, both at `EDGE_SAMPLE_INSET` px inward from the
+/// content boundary (matching the edge-extension thumbnail source). Returns
+/// `None` when capture fails — elevated windows, UWP, or first-frame blank.
+fn sample_edge_color(
+  hwnd: HWND,
+  content_w: i32,
+  content_h: i32,
+  border_inset: RECT,
+) -> Option<crate::Color> {
+  if content_w <= EDGE_SAMPLE_INSET + 1 || content_h <= EDGE_SAMPLE_INSET + 1 {
+    return None;
+  }
+
+  let full_w = content_w + border_inset.left + border_inset.right;
+  let full_h = content_h + border_inset.top + border_inset.bottom;
+
+  // SAFETY: A null HWND argument to GetDC returns the screen DC, which
+  // provides the color-depth information required by CreateCompatibleBitmap.
+  let hdc_screen = unsafe { GetDC(HWND(0)) };
+  if hdc_screen.is_invalid() {
+    return None;
+  }
+
+  // SAFETY: hdc_screen is a valid DC.
+  let hdc_mem = unsafe { CreateCompatibleDC(hdc_screen) };
+  // SAFETY: hdc_screen has color format; dimensions are positive.
+  let hbm = unsafe { CreateCompatibleBitmap(hdc_screen, full_w, full_h) };
+
+  // SAFETY: The screen DC can be released immediately; hdc_mem and hbm are
+  // independent allocations that outlive this scope.
+  unsafe { ReleaseDC(HWND(0), hdc_screen) };
+
+  if hdc_mem.is_invalid() || hbm.is_invalid() {
+    if !hdc_mem.is_invalid() {
+      // SAFETY: hdc_mem was just created and holds no selected objects yet.
+      unsafe { DeleteDC(hdc_mem) };
+    }
+    if !hbm.is_invalid() {
+      // SAFETY: hbm was just created and is not selected into any DC.
+      unsafe { let _ = DeleteObject(HGDIOBJ(hbm.0)); }
+    }
+    return None;
+  }
+
+  // SAFETY: Both handles are valid; SelectObject returns the previously
+  // selected HGDIOBJ, which must be restored before deleting hdc_mem.
+  let old_obj = unsafe { SelectObject(hdc_mem, HGDIOBJ(hbm.0)) };
+
+  // Render the full physical window into hdc_mem. Flag 0x2
+  // (PW_RENDERFULLCONTENT) forces DWM to flush GPU-composited surfaces (D3D,
+  // DirectComposition, WebGL) so hardware-accelerated apps are captured
+  // correctly and not seen as black.
+  // SAFETY: hwnd and hdc_mem are valid.
+  let captured =
+    unsafe { PrintWindow(hwnd, hdc_mem, PRINT_WINDOW_FLAGS(0x2)) };
+
+  let result = if captured.as_bool() {
+    // Sampling coordinates in full-window bitmap space: the visible content
+    // frame starts at (border_inset.left, border_inset.top).
+    let x = border_inset.left + content_w - EDGE_SAMPLE_INSET - 1;
+    let y = border_inset.top + content_h - EDGE_SAMPLE_INSET - 1;
+
+    // Read from the middle half of each edge to avoid corners (which can have
+    // rounded-corner antialiasing) and the title-bar region.
+    let y0 = border_inset.top + content_h / 4;
+    let y1 = border_inset.top + (3 * content_h) / 4;
+    let x0 = border_inset.left + content_w / 4;
+    let x1 = border_inset.left + (3 * content_w) / 4;
+
+    const N: i32 = 32;
+    let mut counts: HashMap<u32, u32> = HashMap::with_capacity(64);
+
+    for i in 0..N {
+      let sy = y0 + (y1 - y0) * i / (N - 1);
+      // SAFETY: hdc_mem is a valid DC with hbm selected.
+      let c = unsafe { GetPixel(hdc_mem, x, sy) };
+      if c.0 != 0xFFFF_FFFF {
+        *counts.entry(c.0 & 0x00FF_FFFF).or_insert(0) += 1;
+      }
+    }
+    for i in 0..N {
+      let sx = x0 + (x1 - x0) * i / (N - 1);
+      // SAFETY: hdc_mem is a valid DC with hbm selected.
+      let c = unsafe { GetPixel(hdc_mem, sx, y) };
+      if c.0 != 0xFFFF_FFFF {
+        *counts.entry(c.0 & 0x00FF_FFFF).or_insert(0) += 1;
+      }
+    }
+
+    // COLORREF is 0x00BBGGRR.
+    counts
+      .into_iter()
+      .max_by_key(|(_, n)| *n)
+      .map(|(colorref, _)| crate::Color {
+        r: (colorref & 0xFF) as u8,
+        g: ((colorref >> 8) & 0xFF) as u8,
+        b: ((colorref >> 16) & 0xFF) as u8,
+        a: 255,
+      })
+  } else {
+    None
+  };
+
+  // SAFETY: Restore original selection before freeing so GDI does not hold
+  // references to a deleted object.
+  unsafe {
+    SelectObject(hdc_mem, old_obj);
+    DeleteDC(hdc_mem);
+    let _ = DeleteObject(HGDIOBJ(hbm.0));
+  }
+
+  result
 }
 
 /// Computes the invisible border insets of `hwnd` in physical pixels.
