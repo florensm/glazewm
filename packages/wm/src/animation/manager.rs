@@ -97,7 +97,7 @@ use wm_platform::{NativeWindow, OpacityValue, Rect};
 #[cfg(target_os = "windows")]
 use wm_platform::{
   CornerStyle, DxgiVsyncWaiter, NativeIrisOverlay, NativeWindowWindowsExt,
-  ResizeSession, SessionOptions, SurrogateBatch, WorkspaceSurrogate,
+  ResizeSession, SessionOptions, SlideAxis, SurrogateBatch, WorkspaceSurrogate,
 };
 
 use crate::{
@@ -873,55 +873,43 @@ impl AnimationManager {
             }
             match ws.style {
               WorkspaceSwitchStyle::Slide => {
-                match ws.slide_direction {
-                  WorkspaceSwitchDirection::Horizontal => {
-                    if ws.zoom_factor > 0.0 {
-                      s.update_slide_zoom_horizontal(
-                        eased_final,
-                        entry.is_incoming,
-                        ws.order_direction,
-                        ws.monitor_x,
-                        ws.monitor_width,
-                        ws.monitor_y,
-                        ws.monitor_height,
-                        ws.slide_distance_h,
-                        ws.zoom_factor,
-                      );
-                    } else {
-                      s.update_slide_horizontal(
-                        eased_final,
-                        entry.is_incoming,
-                        ws.order_direction,
-                        ws.monitor_x,
-                        ws.monitor_width,
-                        ws.slide_distance_h,
-                      );
-                    }
-                  }
-                  WorkspaceSwitchDirection::Vertical => {
-                    if ws.zoom_factor > 0.0 {
-                      s.update_slide_zoom_vertical(
-                        eased_final,
-                        entry.is_incoming,
-                        ws.order_direction,
-                        ws.monitor_x,
-                        ws.monitor_width,
-                        ws.monitor_y,
-                        ws.monitor_height,
-                        ws.slide_distance_v,
-                        ws.zoom_factor,
-                      );
-                    } else {
-                      s.update_slide_vertical(
-                        eased_final,
-                        entry.is_incoming,
-                        ws.order_direction,
-                        ws.monitor_y,
-                        ws.monitor_height,
-                        ws.slide_distance_v,
-                      );
-                    }
-                  }
+                let (axis, origin, size, dist) = match ws.slide_direction {
+                  WorkspaceSwitchDirection::Horizontal => (
+                    SlideAxis::Horizontal,
+                    ws.monitor_x,
+                    ws.monitor_width,
+                    ws.slide_distance_h,
+                  ),
+                  WorkspaceSwitchDirection::Vertical => (
+                    SlideAxis::Vertical,
+                    ws.monitor_y,
+                    ws.monitor_height,
+                    ws.slide_distance_v,
+                  ),
+                };
+                if ws.zoom_factor > 0.0 {
+                  s.update_slide_zoom(
+                    axis,
+                    eased_final,
+                    entry.is_incoming,
+                    ws.order_direction,
+                    ws.monitor_x,
+                    ws.monitor_width,
+                    ws.monitor_y,
+                    ws.monitor_height,
+                    dist,
+                    ws.zoom_factor,
+                  );
+                } else {
+                  s.update_slide(
+                    axis,
+                    eased_final,
+                    entry.is_incoming,
+                    ws.order_direction,
+                    origin,
+                    size,
+                    dist,
+                  );
                 }
               }
               WorkspaceSwitchStyle::Fade => {

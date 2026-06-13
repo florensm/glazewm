@@ -40,7 +40,7 @@ pub use resize_session::{ResizeSession, SessionOptions};
 #[cfg(target_os = "windows")]
 mod workspace_surrogate;
 #[cfg(target_os = "windows")]
-pub use workspace_surrogate::WorkspaceSurrogate;
+pub use workspace_surrogate::{SlideAxis, WorkspaceSurrogate};
 #[cfg(target_os = "windows")]
 mod native_iris_overlay;
 #[cfg(target_os = "windows")]

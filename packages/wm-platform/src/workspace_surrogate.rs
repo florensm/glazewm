@@ -2,6 +2,13 @@ use windows::Win32::Foundation::{HWND, RECT};
 
 use crate::{CornerStyle, NativeSurrogate, Rect};
 
+/// Axis along which a workspace-switch slide travels.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SlideAxis {
+  Horizontal,
+  Vertical,
+}
+
 /// Surrogate overlay for a single window participating in a workspace-switch
 /// animation.
 ///
@@ -161,73 +168,46 @@ impl WorkspaceSurrogate {
     self.inner.set_window_opacity(self.lerp_opacity(eased_progress, is_incoming));
   }
 
-  /// Advances the surrogate along the horizontal axis to `eased_progress`
-  /// (0.0 → 1.0).
+  /// Advances the surrogate along `axis` to `eased_progress` (0.0 → 1.0).
   ///
-  /// The visible strip is clipped to `[monitor_x, monitor_x + monitor_width]`
-  /// via `rcSource`/`rcDestination`; the surrogate window itself does not move.
-  /// `slide_distance` is the effective travel distance (may be less than
-  /// `monitor_width` to close the seam gap between the two workspace panels).
-  pub fn update_slide_horizontal(
+  /// `monitor_origin` and `monitor_size` are the axis-relevant monitor
+  /// coordinates: `monitor_x`/`monitor_width` for `Horizontal`,
+  /// `monitor_y`/`monitor_height` for `Vertical`. The visible strip is clipped
+  /// to `[monitor_origin, monitor_origin + monitor_size]` via
+  /// `rcSource`/`rcDestination`; the surrogate window itself does not move.
+  pub fn update_slide(
     &mut self,
+    axis: SlideAxis,
     eased_progress: f32,
     is_incoming: bool,
     direction: i32,
-    monitor_x: i32,
-    monitor_width: i32,
+    monitor_origin: i32,
+    monitor_size: i32,
     slide_distance: i32,
   ) {
     self.slide_axis(
       eased_progress,
       is_incoming,
       direction,
-      monitor_x,
-      monitor_width,
+      monitor_origin,
+      monitor_size,
       slide_distance,
-      false,
+      axis == SlideAxis::Vertical,
     );
   }
 
-  /// Advances the surrogate along the vertical axis to `eased_progress`
-  /// (0.0 → 1.0).
-  ///
-  /// Behaviour mirrors [`update_slide_horizontal`] but on the y-axis:
-  /// `direction = +1` means the incoming workspace slides up from below.
-  ///
-  /// [`update_slide_horizontal`]: WorkspaceSurrogate::update_slide_horizontal
-  pub fn update_slide_vertical(
-    &mut self,
-    eased_progress: f32,
-    is_incoming: bool,
-    direction: i32,
-    monitor_y: i32,
-    monitor_height: i32,
-    slide_distance: i32,
-  ) {
-    self.slide_axis(
-      eased_progress,
-      is_incoming,
-      direction,
-      monitor_y,
-      monitor_height,
-      slide_distance,
-      true,
-    );
-  }
-
-  /// Advances the surrogate along the horizontal axis with a simultaneous
-  /// whole-workspace scale to `eased_progress` (0.0 → 1.0).
+  /// Advances the surrogate along `axis` with a simultaneous whole-workspace
+  /// scale to `eased_progress` (0.0 → 1.0).
   ///
   /// Each surrogate is positioned at the scaled screen coordinates of its
   /// window (scaling from the monitor center), so the entire workspace
   /// shrinks/grows as one unit. The outgoing workspace scales from `1.0` to
   /// `1.0 - zoom_factor`; the incoming scales from `1.0 - zoom_factor` to
-  /// `1.0`. `slide_distance` controls horizontal travel (see
-  /// [`update_slide_horizontal`]).
-  ///
-  /// [`update_slide_horizontal`]: WorkspaceSurrogate::update_slide_horizontal
-  pub fn update_slide_zoom_horizontal(
+  /// `1.0`. `slide_distance` controls travel along `axis`.
+  #[allow(clippy::too_many_arguments)]
+  pub fn update_slide_zoom(
     &mut self,
+    axis: SlideAxis,
     eased_progress: f32,
     is_incoming: bool,
     direction: i32,
@@ -248,39 +228,7 @@ impl WorkspaceSurrogate {
       monitor_height,
       slide_distance,
       zoom_factor,
-      false,
-    );
-  }
-
-  /// Advances the surrogate along the vertical axis with a simultaneous
-  /// whole-workspace scale to `eased_progress` (0.0 → 1.0).
-  ///
-  /// Mirrors [`update_slide_zoom_horizontal`] on the y-axis.
-  ///
-  /// [`update_slide_zoom_horizontal`]: WorkspaceSurrogate::update_slide_zoom_horizontal
-  pub fn update_slide_zoom_vertical(
-    &mut self,
-    eased_progress: f32,
-    is_incoming: bool,
-    direction: i32,
-    monitor_x: i32,
-    monitor_width: i32,
-    monitor_y: i32,
-    monitor_height: i32,
-    slide_distance: i32,
-    zoom_factor: f32,
-  ) {
-    self.slide_zoom_axis(
-      eased_progress,
-      is_incoming,
-      direction,
-      monitor_x,
-      monitor_width,
-      monitor_y,
-      monitor_height,
-      slide_distance,
-      zoom_factor,
-      true,
+      axis == SlideAxis::Vertical,
     );
   }
 
