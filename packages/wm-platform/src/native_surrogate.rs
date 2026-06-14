@@ -487,6 +487,12 @@ impl NativeSurrogate {
   /// visually. `CornerStyle::Default` maps to rounded (the Windows 11 app-window
   /// default).
   ///
+  /// `insert_after` is the `hWndInsertAfter` argument for the initial
+  /// `SetWindowPos` Z-order placement. Pass `HWND(0)` (`HWND_TOP`) to place
+  /// the surrogate at the top of the non-topmost Z-order so it appears above
+  /// any simultaneously active surrogates (e.g. close overlays). Pass
+  /// `source_hwnd` to place immediately below the source window.
+  ///
   /// Returns an error if window creation fails.
   ///
   /// [`set_visible`]: NativeSurrogate::set_visible
@@ -499,6 +505,7 @@ impl NativeSurrogate {
     initially_visible: bool,
     border_inset: RECT,
     corner_style: &CornerStyle,
+    insert_after: HWND,
   ) -> crate::Result<Self> {
     ensure_class_registered();
 
@@ -580,10 +587,10 @@ impl NativeSurrogate {
     )
     .unwrap_or(0);
 
-    // Place the surrogate immediately above `source_hwnd` in the Z-order.
-    // Visibility is controlled by `initially_visible`: workspace-switch
-    // surrogates start hidden to avoid a one-frame flash; resize-session
-    // surrogates start visible so they cover the real window immediately.
+    // Set the initial Z-order position and optionally show the surrogate.
+    // `insert_after` is caller-controlled: resize/open surrogates pass
+    // `HWND(0)` (HWND_TOP) so they appear above any co-active close surrogate;
+    // close and workspace surrogates pass `source_hwnd` to sit just below it.
     //
     // SAFETY: Both handles are valid.
     let show_flag = if initially_visible {
@@ -594,7 +601,7 @@ impl NativeSurrogate {
     unsafe {
       SetWindowPos(
         hwnd,
-        source_hwnd,
+        insert_after,
         0,
         0,
         0,

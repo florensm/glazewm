@@ -79,6 +79,10 @@ impl WorkspaceSurrogate {
       RECT::default(),
       // Workspace surrogates span the full viewport and must not be rounded.
       &CornerStyle::Square,
+      // Workspace surrogates should sit just below the source window; they
+      // don't compete with resize surrogates since workspace-switch and
+      // resize animations are mutually exclusive.
+      hwnd,
     )?;
     Ok(Self {
       inner,

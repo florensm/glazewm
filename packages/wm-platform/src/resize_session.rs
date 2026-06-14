@@ -38,6 +38,11 @@ pub struct SessionOptions {
   /// configured style so the surrogate is visually consistent during the
   /// animation.
   pub corner_style: CornerStyle,
+  /// When `true`, the surrogate is placed at the top of the non-topmost
+  /// Z-order (`HWND_TOP`) so it appears above any co-active close surrogates.
+  /// Pass `false` for close surrogates, which should remain below resize and
+  /// open surrogates that fill the vacated space.
+  pub place_at_top: bool,
 }
 
 /// Tracks a single window's resize/move animation and manages its surrogate
@@ -127,6 +132,7 @@ impl ResizeSession {
       border_inset,
     );
 
+    let insert_after = if options.place_at_top { HWND(0) } else { hwnd };
     let surrogate = match NativeSurrogate::create(
       hwnd,
       source_rect,
@@ -136,6 +142,7 @@ impl ResizeSession {
       options.initially_visible,
       border_inset,
       &options.corner_style,
+      insert_after,
     ) {
       Ok(s) => Some(s),
       Err(err) => {
