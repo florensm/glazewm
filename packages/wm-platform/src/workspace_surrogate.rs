@@ -110,17 +110,7 @@ impl WorkspaceSurrogate {
   ///
   /// [`apply_effect_opacity`]: WorkspaceSurrogate::apply_effect_opacity
   pub fn show_initial(&mut self) {
-    let rc_src =
-      RECT { left: 0, top: 0, right: self.rect.width(), bottom: self.rect.height() };
-    let rc_dst = RECT {
-      left: self.rect.left - self.viewport.left,
-      top: self.rect.top - self.viewport.top,
-      right: self.rect.right - self.viewport.left,
-      bottom: self.rect.bottom - self.viewport.top,
-    };
-    self.inner.set_thumbnail_rects(rc_src, rc_dst);
-    self.inner.set_window_opacity(u8::MAX);
-    self.inner.set_visible(true);
+    self.show_at_natural_position(u8::MAX);
   }
 
   /// Updates the DWM thumbnail opacity to the configured `opacity` without
@@ -147,6 +137,18 @@ impl WorkspaceSurrogate {
   /// [`update_fade`]: WorkspaceSurrogate::update_fade
   /// [`update_zoom`]: WorkspaceSurrogate::update_zoom
   pub fn show_incoming(&mut self) {
+    self.show_at_natural_position(self.lerp_opacity(0.0, true));
+  }
+
+  /// Positions the thumbnail at the window's natural (unscaled) location
+  /// within the monitor viewport and makes the surrogate visible at `opacity`.
+  ///
+  /// Shared by [`show_initial`] and [`show_incoming`], which differ only in
+  /// the opacity passed.
+  ///
+  /// [`show_initial`]: WorkspaceSurrogate::show_initial
+  /// [`show_incoming`]: WorkspaceSurrogate::show_incoming
+  fn show_at_natural_position(&mut self, opacity: u8) {
     let rc_src =
       RECT { left: 0, top: 0, right: self.rect.width(), bottom: self.rect.height() };
     let rc_dst = RECT {
@@ -156,7 +158,7 @@ impl WorkspaceSurrogate {
       bottom: self.rect.bottom - self.viewport.top,
     };
     self.inner.set_thumbnail_rects(rc_src, rc_dst);
-    self.inner.set_window_opacity(self.lerp_opacity(0.0, true));
+    self.inner.set_window_opacity(opacity);
     self.inner.set_visible(true);
   }
 
