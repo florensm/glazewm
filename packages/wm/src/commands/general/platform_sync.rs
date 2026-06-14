@@ -138,19 +138,24 @@ fn sync_focus(
 ) -> anyhow::Result<()> {
   let native_window = focused_container.as_window_container().ok();
 
-  // Defer `SetForegroundWindow` while the focused window is an incoming
-  // participant in a workspace-switch slide. The OS may asynchronously
+  // Defer `SetForegroundWindow` while the focused window is covered by an
+  // active surrogate (workspace-switch or resize). The OS may asynchronously
   // remove the DWM cloak when a window becomes the foreground window,
-  // causing it to appear at its final position before the surrogate
-  // finishes. `AnimationManager::update_internal` re-queues the focus
-  // change once the animation completes and the windows are uncloaked.
+  // causing the slow `IApplicationView::SetCloak` path to fire on the next
+  // animation tick and blocking the frame loop. `AnimationManager::update_internal`
+  // re-queues the focus change once the animation completes and the window is
+  // uncloaked.
   #[cfg(target_os = "windows")]
   if let Some(window) = &native_window {
-    if state.animation_manager.is_workspace_switch_active()
+    let is_ws_incoming = state.animation_manager.is_workspace_switch_active()
       && state
         .animation_manager
-        .is_workspace_switch_incoming(&window.id())
-    {
+        .is_workspace_switch_incoming(&window.id());
+    let has_resize_session = state
+      .animation_manager
+      .resize_sessions
+      .contains_key(&window.id());
+    if is_ws_incoming || has_resize_session {
       return Ok(());
     }
   }

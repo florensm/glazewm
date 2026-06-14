@@ -774,13 +774,24 @@ impl AnimationManager {
       state.animation_manager.remove_completed_animations();
 
     // Queue completed animations for a final redraw so `platform_sync` moves
-    // the real window to its target position.
+    // the real window to its target position and uncloak it.
     for window_id in &completed_ids {
       if let Some(container) = state.container_by_id(*window_id) {
         if let Ok(window) = container.as_window_container() {
           state.pending_sync.queue_container_to_redraw(window);
         }
       }
+    }
+
+    // Re-apply any focus change that was deferred while the now-completed
+    // resize surrogates were active. `sync_focus` skips `SetForegroundWindow`
+    // while a resize session is live to prevent the OS from asynchronously
+    // removing the DWM cloak and triggering a costly re-cloak on the next tick.
+    // Queuing here ensures the focus transfer happens in the same `platform_sync`
+    // that uncloak the windows.
+    #[cfg(target_os = "windows")]
+    if !completed_ids.is_empty() {
+      state.pending_sync.queue_focus_change();
     }
 
     // Drive workspace-switch slide surrogates. All windows share a single
