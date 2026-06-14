@@ -36,12 +36,12 @@ animations:
     # See 'window_move.easing' for available options.
     easing: "cubic_bezier(0.16, 1.0, 0.3, 1.0)"
     # Transition style. Options:
-    #   'slide_right' (default)  - slides in from the right
-    #   'slide_left'             - slides in from the left
-    #   'slide_top'              - slides in from the top
-    #   'slide_bottom'           - slides in from the bottom
-    #   'fade'                   - no slide; combine with opacity_from for pure fade
-    #   'zoom'                   - zoom in from window center
+    #   'slide_right' (default) - slides in from the right
+    #   'slide_left'            - slides in from the left
+    #   'slide_top'             - slides in from the top
+    #   'slide_bottom'          - slides in from the bottom
+    #   'none' / 'fade'         - no slide; combine with opacity_from for pure fade
+    #   'zoom'                  - zoom in from window center
     style: "slide_right"
     # Starting opacity (0.0–1.0). At 1.0 no fade is applied; at 0.0 the
     # window fades in from fully transparent. Can be combined with any style.
@@ -89,12 +89,12 @@ animations:
     # See 'window_move.easing' for available options.
     easing: "ease_in_cubic"
     # Transition style. Options:
-    #   'none' (default)  - no positional movement; combine with opacity_to for a fade
-    #   'zoom'            - zoom out from window center
-    #   'slide_right'     - slide off the right edge
-    #   'slide_left'      - slide off the left edge
-    #   'slide_top'       - slide off the top edge
-    #   'slide_bottom'    - slide off the bottom edge
+    #   'none' / 'fade' (default) - no positional movement; combine with opacity_to for a fade
+    #   'zoom'                    - zoom out from window center
+    #   'slide_right'             - slide off the right edge
+    #   'slide_left'              - slide off the left edge
+    #   'slide_top'               - slide off the top edge
+    #   'slide_bottom'            - slide off the bottom edge
     style: "none"
     # Final opacity (0.0–1.0). At 0.0 the window fades to fully transparent;
     # at 1.0 no fade is applied.

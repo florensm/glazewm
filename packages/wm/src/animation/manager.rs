@@ -1689,7 +1689,7 @@ impl AnimationManager {
   /// `ResizeSession` handles all visuals; the real window remains cloaked
   /// until the animation completes.
   ///
-  /// No-ops when `direction` is `Fade` and `opacity_from` is `1.0` (nothing
+  /// No-ops when `style` is `None` and `opacity_from` is `1.0` (nothing
   /// would visually change for the duration).
   #[cfg(target_os = "windows")]
   pub fn start_open_animation(
@@ -1732,10 +1732,18 @@ impl AnimationManager {
       anim_config.easing.clone(),
     );
 
-    // Hold at progress 0.0 briefly so the new window can paint before the
-    // surrogate reveals it, avoiding a blank/black first frame (see
-    // `OPEN_PAINT_GRACE`).
-    anim.start_delay = OPEN_PAINT_GRACE;
+    // For `None`/fade style only: hold at progress 0.0 so the app can paint
+    // before the surrogate reveals it. At progress 0.0 the surrogate sits at
+    // the window's target rect with `start_opacity`, so showing it too early
+    // would flash a black (unpainted) rectangle at the window's position.
+    //
+    // Slide and zoom surrogates are invisible at progress 0.0 (off-screen and
+    // zero-size respectively), so the grace period only adds a blank gap for
+    // those styles — omit it so the animation starts immediately and the blank
+    // between cloak and first visible surrogate pixel is minimised.
+    if is_stationary && !is_zoom {
+      anim.start_delay = OPEN_PAINT_GRACE;
+    }
 
     // Zoom open does NOT auto-fade — the surrogate is fully opaque so the
     // small thumbnail is immediately visible as it grows. Fade-in while zooming
@@ -1804,7 +1812,7 @@ impl AnimationManager {
   /// only after this returns, so the surrogate is already covering it and no
   /// gap exposes the desktop. The surrogate style is determined by
   /// `window_close.style`:
-  /// - `Fade`/`Zoom`: surrogate stays at `current_rect`, fades/zooms out.
+  /// - `None`/`Zoom`: surrogate stays at `current_rect`, fades/zooms out.
   /// - Slide styles: surrogate slides off the corresponding screen edge while
   ///   fading. The real window is never repositioned during a close animation.
   ///
@@ -1824,14 +1832,20 @@ impl AnimationManager {
       return;
     }
 
+    let anim_config = &config.value.animations.window_close;
+    let is_zoom = anim_config.style == WindowTransitionStyle::Zoom;
+    let is_stationary = anim_config.style.is_stationary();
+
+    // Skip stationary style (no slide, no zoom) with no opacity change —
+    // nothing would visually change for the duration.
+    if is_stationary && !is_zoom && anim_config.opacity_to >= 1.0 {
+      return;
+    }
+
     // Pace the close animation on the window's own monitor.
     self.ensure_waiter_for(DxgiVsyncWaiter::window_monitor(
       native_window.hwnd(),
     ));
-
-    let anim_config = &config.value.animations.window_close;
-    let is_zoom = anim_config.style == WindowTransitionStyle::Zoom;
-    let is_stationary = anim_config.style.is_stationary();
 
     // For slide-out, the surrogate travels from current_rect to an off-screen
     // target. The real window stays at current_rect throughout.

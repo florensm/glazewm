@@ -633,8 +633,8 @@ pub struct WindowCloseConfig {
   pub easing: EasingFunction,
   /// Transition type for the close animation.
   ///
-  /// - `none` (default): no positional movement; combine with `opacity_to` for
-  ///   a pure fade-out.
+  /// - `none` / `fade` (default): no positional movement; combine with
+  ///   `opacity_to` for a pure fade-out.
   /// - `zoom`: zoom out from the window center.
   /// - `slide_right` / `slide_left` / `slide_top` / `slide_bottom`: slide off
   ///   that edge.
