@@ -5,15 +5,15 @@ use windows::Win32::{
   Graphics::{
     Dwm::{DwmGetWindowAttribute, DWMWA_EXTENDED_FRAME_BOUNDS},
     Gdi::{
-      CreateCompatibleBitmap, CreateCompatibleDC, DeleteDC, DeleteObject,
-      GetDC, GetPixel, ReleaseDC, SelectObject, HGDIOBJ,
+      BitBlt, CreateCompatibleBitmap, CreateCompatibleDC, DeleteDC,
+      DeleteObject, GetDC, GetPixel, ReleaseDC, SelectObject, HGDIOBJ,
+      SRCCOPY,
     },
   },
   UI::WindowsAndMessaging::{
     GetWindowRect, IsWindow, SetWindowPos, SWP_ASYNCWINDOWPOS, SWP_FRAMECHANGED,
     SWP_NOACTIVATE, SWP_NOSENDCHANGING, SWP_NOZORDER,
   },
-  Storage::Xps::{PrintWindow, PRINT_WINDOW_FLAGS},
 };
 
 /// Pixels inset from the content edge when sampling the backdrop color.
@@ -123,13 +123,13 @@ impl ResizeSession {
     // to use as the surrogate's solid backdrop. The backdrop fills any gap
     // between the animated rect and the registered thumbnail area (mixed
     // resizes) with a uniform color that blends into the app's own background.
-    // Falls back to transparent (no backdrop) when PrintWindow fails.
+    // Falls back to transparent (no backdrop) when sampling fails.
     let logical_src = to_logical(source_rect, &border_inset);
     let edge_color = sample_edge_color(
-      hwnd,
+      logical_src.x(),
+      logical_src.y(),
       logical_src.width(),
       logical_src.height(),
-      border_inset,
     );
 
     let insert_after = if options.place_at_top { HWND(0) } else { hwnd };
@@ -475,7 +475,13 @@ impl ResizeSession {
     if new_is_growing {
       // Pre-position the cloaked real window at the new target so DWM captures
       // correctly-sized content for the curtain-reveal. This doubles as the
-      // handoff for the redirected target.
+      // handoff for the redirected target. Posted asynchronously — the
+      // curtain-reveal only exposes content beyond the current animated
+      // position after many frames, well within any app's message-queue
+      // processing time. `SWP_FRAMECHANGED` triggers `WM_NCCALCSIZE` so the
+      // client area reflects the new size. `SWP_ASYNCWINDOWPOS` avoids
+      // blocking the animation loop on the target process's message pump
+      // (blocking is the remaining input-to-frame latency on large displays).
       //
       // SAFETY: Window is cloaked during an active animation.
       unsafe {
@@ -486,7 +492,11 @@ impl ResizeSession {
           new_target.y(),
           new_target.width(),
           new_target.height(),
-          SWP_NOACTIVATE | SWP_NOSENDCHANGING | SWP_NOZORDER,
+          SWP_NOACTIVATE
+            | SWP_NOSENDCHANGING
+            | SWP_NOZORDER
+            | SWP_ASYNCWINDOWPOS
+            | SWP_FRAMECHANGED,
         );
       }
       if let Some(surrogate) = &mut self.surrogate {
@@ -520,9 +530,9 @@ impl ResizeSession {
     }
   }
 
-  /// Snaps the surrogate to the final target rect and synchronously
-  /// pre-positions the real window, in preparation for `platform_sync` to
-  /// uncloak it.
+  /// Snaps the surrogate to the final target rect and ensures the real window
+  /// is at its target position, in preparation for `platform_sync` to uncloak
+  /// it.
   ///
   /// Checks `IsWindow` and nullifies the stored handle if the window has been
   /// destroyed mid-animation, so that [`commit`] skips the `SetWindowPos`
@@ -536,18 +546,44 @@ impl ResizeSession {
       return;
     }
 
-    // SAFETY: `HWND(self.hwnd)` is valid (verified above). `SWP_NOZORDER`
-    // makes `hWndInsertAfter` irrelevant.
-    unsafe {
-      let _ = SetWindowPos(
+    // Skip the synchronous move when the window is already at target.
+    // `maybe_handoff` (shrinking sessions) and the initial async preposition
+    // (growing sessions) have normally moved the window to `target_rect` well
+    // before the animation completes, so this is a no-op in the common case.
+    // Avoiding a redundant synchronous `SetWindowPos` eliminates the
+    // occasional cross-process stall at animation end for apps with slow
+    // message queues. The call is kept as a correctness fallback for the rare
+    // case where neither earlier move was processed in time.
+    //
+    // SAFETY: `HWND(self.hwnd)` is valid (verified above).
+    let mut current = RECT::default();
+    let already_at_target = unsafe {
+      GetWindowRect(
         HWND(self.hwnd),
-        HWND(0),
-        self.target_rect.x(),
-        self.target_rect.y(),
-        self.target_rect.width(),
-        self.target_rect.height(),
-        SWP_NOACTIVATE | SWP_NOSENDCHANGING | SWP_NOZORDER,
-      );
+        std::ptr::from_mut(&mut current).cast(),
+      )
+      .is_ok()
+    } && Rect::from_ltrb(
+      current.left,
+      current.top,
+      current.right,
+      current.bottom,
+    ) == self.target_rect;
+
+    if !already_at_target {
+      // SAFETY: `HWND(self.hwnd)` is valid (verified above). `SWP_NOZORDER`
+      // makes `hWndInsertAfter` irrelevant.
+      unsafe {
+        let _ = SetWindowPos(
+          HWND(self.hwnd),
+          HWND(0),
+          self.target_rect.x(),
+          self.target_rect.y(),
+          self.target_rect.width(),
+          self.target_rect.height(),
+          SWP_NOACTIVATE | SWP_NOSENDCHANGING | SWP_NOZORDER,
+        );
+      }
     }
 
     let logical = to_logical(&self.target_rect, &self.border_inset);
@@ -617,122 +653,146 @@ impl ResizeSession {
   }
 }
 
-/// Captures the window's content once via `PrintWindow` and returns the
-/// dominant background color near the trailing edge.
+/// Samples the dominant background color near the trailing content edge by
+/// `BitBlt`-ing two narrow strips from the already-composited screen.
 ///
 /// Samples 32 evenly-spaced pixels along the right-edge column and 32 along
 /// the bottom-edge row, both at `EDGE_SAMPLE_INSET` px inward from the
 /// content boundary (matching the edge-extension thumbnail source). Returns
-/// `None` when capture fails — elevated windows, UWP, or first-frame blank.
+/// `None` when GDI handle creation fails.
+///
+/// `content_screen_left` and `content_screen_top` are the screen coordinates
+/// of the content area's top-left corner (physical rect left/top plus the
+/// invisible border insets). Reading from the DWM-composited screen rather
+/// than via `PrintWindow` avoids allocating a full-resolution bitmap and
+/// forcing a GPU→CPU flush, which is proportional to window area and becomes
+/// expensive on large displays.
 fn sample_edge_color(
-  hwnd: HWND,
+  content_screen_left: i32,
+  content_screen_top: i32,
   content_w: i32,
   content_h: i32,
-  border_inset: RECT,
 ) -> Option<crate::Color> {
   if content_w <= EDGE_SAMPLE_INSET + 1 || content_h <= EDGE_SAMPLE_INSET + 1 {
     return None;
   }
 
-  let full_w = content_w + border_inset.left + border_inset.right;
-  let full_h = content_h + border_inset.top + border_inset.bottom;
+  // Screen coordinates of the right-edge column and bottom-edge row.
+  let screen_x = content_screen_left + content_w - EDGE_SAMPLE_INSET - 1;
+  let screen_y = content_screen_top + content_h - EDGE_SAMPLE_INSET - 1;
 
-  // SAFETY: A null HWND argument to GetDC returns the screen DC, which
-  // provides the color-depth information required by CreateCompatibleBitmap.
+  // Sample the middle half of each edge to avoid corners (rounded-corner
+  // antialiasing) and the title-bar region.
+  let y0 = content_screen_top + content_h / 4;
+  let y1 = content_screen_top + (3 * content_h) / 4;
+  let x0 = content_screen_left + content_w / 4;
+  let x1 = content_screen_left + (3 * content_w) / 4;
+
+  let strip_h = y1 - y0;
+  let strip_w = x1 - x0;
+  if strip_h <= 0 || strip_w <= 0 {
+    return None;
+  }
+
+  // SAFETY: A null HWND argument to GetDC returns the screen DC.
   let hdc_screen = unsafe { GetDC(HWND(0)) };
   if hdc_screen.is_invalid() {
     return None;
   }
 
-  // SAFETY: hdc_screen is a valid DC.
-  let hdc_mem = unsafe { CreateCompatibleDC(hdc_screen) };
-  // SAFETY: hdc_screen has color format; dimensions are positive.
-  let hbm = unsafe { CreateCompatibleBitmap(hdc_screen, full_w, full_h) };
+  // Right-edge strip: 1 px wide × strip_h px tall.
+  // SAFETY: hdc_screen is a valid DC; dimensions are positive.
+  let hdc_right = unsafe { CreateCompatibleDC(hdc_screen) };
+  let hbm_right = unsafe { CreateCompatibleBitmap(hdc_screen, 1, strip_h) };
 
-  // SAFETY: The screen DC can be released immediately; hdc_mem and hbm are
-  // independent allocations that outlive this scope.
-  unsafe { ReleaseDC(HWND(0), hdc_screen) };
-
-  if hdc_mem.is_invalid() || hbm.is_invalid() {
-    if !hdc_mem.is_invalid() {
-      // SAFETY: hdc_mem was just created and holds no selected objects yet.
-      unsafe { DeleteDC(hdc_mem) };
-    }
-    if !hbm.is_invalid() {
-      // SAFETY: hbm was just created and is not selected into any DC.
-      unsafe { let _ = DeleteObject(HGDIOBJ(hbm.0)); }
+  if hdc_right.is_invalid() || hbm_right.is_invalid() {
+    unsafe {
+      if !hdc_right.is_invalid() {
+        DeleteDC(hdc_right);
+      }
+      if !hbm_right.is_invalid() {
+        let _ = DeleteObject(HGDIOBJ(hbm_right.0));
+      }
+      ReleaseDC(HWND(0), hdc_screen);
     }
     return None;
   }
 
-  // SAFETY: Both handles are valid; SelectObject returns the previously
-  // selected HGDIOBJ, which must be restored before deleting hdc_mem.
-  let old_obj = unsafe { SelectObject(hdc_mem, HGDIOBJ(hbm.0)) };
+  // SAFETY: Both handles are valid.
+  let old_right = unsafe { SelectObject(hdc_right, HGDIOBJ(hbm_right.0)) };
+  // SAFETY: All DCs and dimensions are valid; coordinates are in screen space.
+  unsafe { let _ = BitBlt(hdc_right, 0, 0, 1, strip_h, hdc_screen, screen_x, y0, SRCCOPY); }
 
-  // Render the full physical window into hdc_mem. Flag 0x2
-  // (PW_RENDERFULLCONTENT) forces DWM to flush GPU-composited surfaces (D3D,
-  // DirectComposition, WebGL) so hardware-accelerated apps are captured
-  // correctly and not seen as black.
-  // SAFETY: hwnd and hdc_mem are valid.
-  let captured =
-    unsafe { PrintWindow(hwnd, hdc_mem, PRINT_WINDOW_FLAGS(0x2)) };
+  // Bottom-edge strip: strip_w px wide × 1 px tall.
+  // SAFETY: hdc_screen is a valid DC; dimensions are positive.
+  let hdc_bottom = unsafe { CreateCompatibleDC(hdc_screen) };
+  let hbm_bottom = unsafe { CreateCompatibleBitmap(hdc_screen, strip_w, 1) };
 
-  let result = if captured.as_bool() {
-    // Sampling coordinates in full-window bitmap space: the visible content
-    // frame starts at (border_inset.left, border_inset.top).
-    let x = border_inset.left + content_w - EDGE_SAMPLE_INSET - 1;
-    let y = border_inset.top + content_h - EDGE_SAMPLE_INSET - 1;
-
-    // Read from the middle half of each edge to avoid corners (which can have
-    // rounded-corner antialiasing) and the title-bar region.
-    let y0 = border_inset.top + content_h / 4;
-    let y1 = border_inset.top + (3 * content_h) / 4;
-    let x0 = border_inset.left + content_w / 4;
-    let x1 = border_inset.left + (3 * content_w) / 4;
-
-    const N: i32 = 32;
-    let mut counts: HashMap<u32, u32> = HashMap::with_capacity(64);
-
-    for i in 0..N {
-      let sy = y0 + (y1 - y0) * i / (N - 1);
-      // SAFETY: hdc_mem is a valid DC with hbm selected.
-      let c = unsafe { GetPixel(hdc_mem, x, sy) };
-      if c.0 != 0xFFFF_FFFF {
-        *counts.entry(c.0 & 0x00FF_FFFF).or_insert(0) += 1;
+  if hdc_bottom.is_invalid() || hbm_bottom.is_invalid() {
+    unsafe {
+      SelectObject(hdc_right, old_right);
+      DeleteDC(hdc_right);
+      let _ = DeleteObject(HGDIOBJ(hbm_right.0));
+      if !hdc_bottom.is_invalid() {
+        DeleteDC(hdc_bottom);
       }
-    }
-    for i in 0..N {
-      let sx = x0 + (x1 - x0) * i / (N - 1);
-      // SAFETY: hdc_mem is a valid DC with hbm selected.
-      let c = unsafe { GetPixel(hdc_mem, sx, y) };
-      if c.0 != 0xFFFF_FFFF {
-        *counts.entry(c.0 & 0x00FF_FFFF).or_insert(0) += 1;
+      if !hbm_bottom.is_invalid() {
+        let _ = DeleteObject(HGDIOBJ(hbm_bottom.0));
       }
+      ReleaseDC(HWND(0), hdc_screen);
     }
-
-    // COLORREF is 0x00BBGGRR.
-    counts
-      .into_iter()
-      .max_by_key(|(_, n)| *n)
-      .map(|(colorref, _)| crate::Color {
-        r: (colorref & 0xFF) as u8,
-        g: ((colorref >> 8) & 0xFF) as u8,
-        b: ((colorref >> 16) & 0xFF) as u8,
-        a: 255,
-      })
-  } else {
-    None
-  };
-
-  // SAFETY: Restore original selection before freeing so GDI does not hold
-  // references to a deleted object.
-  unsafe {
-    SelectObject(hdc_mem, old_obj);
-    DeleteDC(hdc_mem);
-    let _ = DeleteObject(HGDIOBJ(hbm.0));
+    return None;
   }
 
-  result
+  let old_bottom = unsafe { SelectObject(hdc_bottom, HGDIOBJ(hbm_bottom.0)) };
+  // SAFETY: All DCs and dimensions are valid; coordinates are in screen space.
+  unsafe { let _ = BitBlt(hdc_bottom, 0, 0, strip_w, 1, hdc_screen, x0, screen_y, SRCCOPY); }
+
+  // SAFETY: The screen DC is no longer needed; hdc_right and hdc_bottom are
+  // independent allocations that outlive this scope.
+  unsafe { ReleaseDC(HWND(0), hdc_screen) };
+
+  const N: i32 = 32;
+  let mut counts: HashMap<u32, u32> = HashMap::with_capacity(64);
+
+  for i in 0..N {
+    let sy = (strip_h - 1) * i / (N - 1);
+    // SAFETY: hdc_right is a valid DC with hbm_right selected.
+    let c = unsafe { GetPixel(hdc_right, 0, sy) };
+    if c.0 != 0xFFFF_FFFF {
+      *counts.entry(c.0 & 0x00FF_FFFF).or_insert(0) += 1;
+    }
+  }
+  for i in 0..N {
+    let sx = (strip_w - 1) * i / (N - 1);
+    // SAFETY: hdc_bottom is a valid DC with hbm_bottom selected.
+    let c = unsafe { GetPixel(hdc_bottom, sx, 0) };
+    if c.0 != 0xFFFF_FFFF {
+      *counts.entry(c.0 & 0x00FF_FFFF).or_insert(0) += 1;
+    }
+  }
+
+  // SAFETY: Restore selections before freeing so GDI holds no references to
+  // deleted objects.
+  unsafe {
+    SelectObject(hdc_right, old_right);
+    DeleteDC(hdc_right);
+    let _ = DeleteObject(HGDIOBJ(hbm_right.0));
+    SelectObject(hdc_bottom, old_bottom);
+    DeleteDC(hdc_bottom);
+    let _ = DeleteObject(HGDIOBJ(hbm_bottom.0));
+  }
+
+  // COLORREF is 0x00BBGGRR.
+  counts
+    .into_iter()
+    .max_by_key(|(_, n)| *n)
+    .map(|(colorref, _)| crate::Color {
+      r: (colorref & 0xFF) as u8,
+      g: ((colorref >> 8) & 0xFF) as u8,
+      b: ((colorref >> 16) & 0xFF) as u8,
+      a: 255,
+    })
 }
 
 /// Computes the invisible border insets of `hwnd` in physical pixels.
