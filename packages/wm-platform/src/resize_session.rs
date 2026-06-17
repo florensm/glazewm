@@ -510,36 +510,18 @@ impl ResizeSession {
       let dims_changed = self.surrogate.as_ref()
         .map_or(true, |s| s.content_size() != new_dims);
 
+      // All per-keypress `SetWindowPos` calls to the real window are
+      // eliminated: the initial async pre-position (Frozen branch, first
+      // frame) covers DWM content capture for the initial target, and
+      // `pre_commit` issues a synchronous move just before uncloak (hidden
+      // by the surrogate fade-out). This removes cross-process IPC on every
+      // keypress, which is expensive for heavy source windows.
+      //
+      // `update_thumbnail_dims` is kept when dims change so that
+      // `sync_registration` can short-circuit on every tick — without it,
+      // `content_size` would lag behind `target_rect` and `GetWindowRect`
+      // would be called at 175 Hz looking for a window that never moved.
       if dims_changed {
-        // Pre-position the cloaked real window at the new target so DWM
-        // captures correctly-sized content for the curtain-reveal.
-        // `SWP_FRAMECHANGED` triggers `WM_NCCALCSIZE` to recalculate the
-        // client area for the new size.
-        //
-        // For pure-move redirects (dims unchanged) both the `SetWindowPos`
-        // and the thumbnail update are skipped entirely: the window's content
-        // doesn't change, and `pre_commit` issues a synchronous move to the
-        // final position just before uncloak. Skipping N_neighbors ×
-        // 11-keypresses/sec of async cross-process IPC posts is meaningful for
-        // heavy source windows (e.g. browsers with video) and reduces
-        // contention on the target process's message queue.
-        //
-        // SAFETY: Window is cloaked during an active animation.
-        unsafe {
-          let _ = SetWindowPos(
-            HWND(self.hwnd),
-            HWND(0),
-            new_target.x(),
-            new_target.y(),
-            new_target.width(),
-            new_target.height(),
-            SWP_NOACTIVATE
-              | SWP_NOSENDCHANGING
-              | SWP_NOZORDER
-              | SWP_ASYNCWINDOWPOS
-              | SWP_FRAMECHANGED,
-          );
-        }
         if let Some(surrogate) = &mut self.surrogate {
           surrogate.update_thumbnail_dims(
             HWND(self.hwnd),
@@ -612,8 +594,23 @@ impl ResizeSession {
     ) == self.target_rect;
 
     if !already_at_target {
+      // Include `SWP_FRAMECHANGED` when the window size changes so that
+      // `WM_NCCALCSIZE` fires and the client area reflects the new
+      // dimensions. Previously this arrived via the per-keypress async
+      // `SetWindowPos` in `update_target`; now that all mid-animation
+      // repositions are deferred here, `SWP_FRAMECHANGED` must be added
+      // at pre-commit time. This single synchronous call fires once per
+      // animation and is covered by the surrogate fade-out, so it produces
+      // no visible flash.
+      //
       // SAFETY: `HWND(self.hwnd)` is valid (verified above). `SWP_NOZORDER`
       // makes `hWndInsertAfter` irrelevant.
+      let dims_changed = current.right - current.left != self.target_rect.width()
+        || current.bottom - current.top != self.target_rect.height();
+      let mut swp_flags = SWP_NOACTIVATE | SWP_NOSENDCHANGING | SWP_NOZORDER;
+      if dims_changed {
+        swp_flags |= SWP_FRAMECHANGED;
+      }
       unsafe {
         let _ = SetWindowPos(
           HWND(self.hwnd),
@@ -622,7 +619,7 @@ impl ResizeSession {
           self.target_rect.y(),
           self.target_rect.width(),
           self.target_rect.height(),
-          SWP_NOACTIVATE | SWP_NOSENDCHANGING | SWP_NOZORDER,
+          swp_flags,
         );
       }
     }
