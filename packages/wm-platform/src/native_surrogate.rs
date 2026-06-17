@@ -763,6 +763,68 @@ impl NativeSurrogate {
     }
   }
 
+  /// Updates the DWM thumbnail source and destination dimensions in a single
+  /// `DwmUpdateThumbnailProperties` call.
+  ///
+  /// Cheaper than [`reregister_thumbnail`] for cases where the sampled area
+  /// changes but the source window is unchanged. Avoids the three-call
+  /// un-register / re-register / update-properties round-trip, which is paid
+  /// on every keypress during a key-held resize.
+  ///
+  /// Falls back to a full [`reregister_thumbnail`] if the update fails (e.g.
+  /// the thumbnail handle has become stale). No-op when no thumbnail was
+  /// registered.
+  ///
+  /// [`reregister_thumbnail`]: NativeSurrogate::reregister_thumbnail
+  pub fn update_thumbnail_dims(
+    &mut self,
+    source_hwnd: HWND,
+    logical_width: i32,
+    logical_height: i32,
+    border_inset: RECT,
+  ) {
+    if self.thumbnail == 0 {
+      return;
+    }
+    let src_rect = RECT {
+      left: border_inset.left,
+      top: border_inset.top,
+      right: border_inset.left + logical_width,
+      bottom: border_inset.top + logical_height,
+    };
+    let dst_rect = RECT {
+      left: 0,
+      top: 0,
+      right: logical_width,
+      bottom: logical_height,
+    };
+    let props = DWM_THUMBNAIL_PROPERTIES {
+      dwFlags: DWM_TNP_RECTDESTINATION
+        | DWM_TNP_RECTSOURCE
+        | DWM_TNP_SOURCECLIENTAREAONLY,
+      rcDestination: dst_rect,
+      rcSource: src_rect,
+      fSourceClientAreaOnly: false.into(),
+      ..Default::default()
+    };
+    // SAFETY: `self.thumbnail` is a valid handle. `props` is stack-allocated.
+    if unsafe { DwmUpdateThumbnailProperties(self.thumbnail, &raw const props) }
+      .is_err()
+    {
+      // Stale handle — fall back to a full re-registration.
+      self.reregister_thumbnail(
+        source_hwnd,
+        logical_width,
+        logical_height,
+        border_inset,
+      );
+      return;
+    }
+    self.content_size = (logical_width, logical_height);
+    self.border_inset = border_inset;
+    self.last_rect = None;
+  }
+
   /// Unregisters the current DWM thumbnail and registers a new one at
   /// `logical_width` × `logical_height`.
   ///

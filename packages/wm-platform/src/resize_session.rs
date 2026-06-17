@@ -501,12 +501,22 @@ impl ResizeSession {
       }
       if let Some(surrogate) = &mut self.surrogate {
         let logical = to_logical(new_target, &self.border_inset);
-        surrogate.reregister_thumbnail(
-          HWND(self.hwnd),
-          logical.width(),
-          logical.height(),
-          self.border_inset,
-        );
+        let new_dims = (logical.width(), logical.height());
+        // DWM thumbnails follow source_hwnd by handle — a position-only
+        // change never needs a new registration. Only update rcSource /
+        // rcDestination when the curtain-reveal area grows so DWM samples
+        // the correct larger content. Skip entirely on pure-move redirects
+        // (dims equal) to eliminate unnecessary cross-process DWM calls on
+        // every keypress, which block the animation tick loop long enough
+        // to drop frames on high-refresh displays.
+        if surrogate.content_size() != new_dims {
+          surrogate.update_thumbnail_dims(
+            HWND(self.hwnd),
+            new_dims.0,
+            new_dims.1,
+            self.border_inset,
+          );
+        }
       }
       self.handoff_done = true;
     } else if direction_changed {
