@@ -510,37 +510,36 @@ impl ResizeSession {
       let dims_changed = self.surrogate.as_ref()
         .map_or(true, |s| s.content_size() != new_dims);
 
-      // Pre-position the cloaked real window at the new target so DWM captures
-      // correctly-sized content for the curtain-reveal. Posted asynchronously
-      // to avoid blocking the animation loop on the target process's message
-      // pump. `SWP_FRAMECHANGED` (WM_NCCALCSIZE) is only included when the
-      // window size actually changes; pure-move redirects skip it.
-      //
-      // SAFETY: Window is cloaked during an active animation.
-      let mut swp_flags =
-        SWP_NOACTIVATE | SWP_NOSENDCHANGING | SWP_NOZORDER | SWP_ASYNCWINDOWPOS;
       if dims_changed {
-        swp_flags |= SWP_FRAMECHANGED;
-      }
-      unsafe {
-        let _ = SetWindowPos(
-          HWND(self.hwnd),
-          HWND(0),
-          new_target.x(),
-          new_target.y(),
-          new_target.width(),
-          new_target.height(),
-          swp_flags,
-        );
-      }
-      // DWM thumbnails follow source_hwnd by handle — a position-only
-      // change never needs a new registration. Only update rcSource /
-      // rcDestination when the curtain-reveal area grows so DWM samples
-      // the correct larger content. Skip entirely on pure-move redirects
-      // (dims equal) to eliminate unnecessary cross-process DWM calls on
-      // every keypress, which block the animation tick loop long enough
-      // to drop frames on high-refresh displays.
-      if dims_changed {
+        // Pre-position the cloaked real window at the new target so DWM
+        // captures correctly-sized content for the curtain-reveal.
+        // `SWP_FRAMECHANGED` triggers `WM_NCCALCSIZE` to recalculate the
+        // client area for the new size.
+        //
+        // For pure-move redirects (dims unchanged) both the `SetWindowPos`
+        // and the thumbnail update are skipped entirely: the window's content
+        // doesn't change, and `pre_commit` issues a synchronous move to the
+        // final position just before uncloak. Skipping N_neighbors ×
+        // 11-keypresses/sec of async cross-process IPC posts is meaningful for
+        // heavy source windows (e.g. browsers with video) and reduces
+        // contention on the target process's message queue.
+        //
+        // SAFETY: Window is cloaked during an active animation.
+        unsafe {
+          let _ = SetWindowPos(
+            HWND(self.hwnd),
+            HWND(0),
+            new_target.x(),
+            new_target.y(),
+            new_target.width(),
+            new_target.height(),
+            SWP_NOACTIVATE
+              | SWP_NOSENDCHANGING
+              | SWP_NOZORDER
+              | SWP_ASYNCWINDOWPOS
+              | SWP_FRAMECHANGED,
+          );
+        }
         if let Some(surrogate) = &mut self.surrogate {
           surrogate.update_thumbnail_dims(
             HWND(self.hwnd),
