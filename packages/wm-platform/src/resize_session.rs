@@ -95,6 +95,13 @@ pub struct ResizeSession {
   ///
   /// [`maybe_handoff`]: ResizeSession::maybe_handoff
   handoff_done: bool,
+  /// `true` once the session has successfully cloaked its source window.
+  ///
+  /// Used by `platform_sync` to skip the per-tick `DwmGetWindowAttribute`
+  /// round-trip on steady-state animation frames — the query only needs to
+  /// fire on the first `Frozen` frame (where the cloak state is unknown)
+  /// and after the session is torn down.
+  session_cloaked: bool,
 }
 
 impl ResizeSession {
@@ -163,6 +170,7 @@ impl ResizeSession {
       is_growing,
       zoom: false,
       handoff_done: is_growing,
+      session_cloaked: false,
     })
   }
 
@@ -180,6 +188,22 @@ impl ResizeSession {
   /// correctly-sized content before the surrogate begins expanding.
   pub fn needs_preposition(&self) -> bool {
     self.is_growing
+  }
+
+  /// Returns `true` when this session has already cloaked the source window.
+  ///
+  /// Used by `platform_sync` to skip the per-tick `DwmGetWindowAttribute`
+  /// query on steady-state `Frozen` frames where the cloak state is known.
+  pub fn is_session_cloaked(&self) -> bool {
+    self.session_cloaked
+  }
+
+  /// Marks the session's source window as cloaked.
+  ///
+  /// Called by `platform_sync` after `set_cloaked(true)` succeeds so that
+  /// subsequent `Frozen` ticks skip the `DwmGetWindowAttribute` round-trip.
+  pub fn mark_session_cloaked(&mut self) {
+    self.session_cloaked = true;
   }
 
   /// Whether a surrogate overlay with a valid DWM thumbnail is active.
@@ -345,7 +369,11 @@ impl ResizeSession {
       &self.border_inset,
     );
     if (actual.width(), actual.height()) == target_dims {
-      surrogate.reregister_thumbnail(
+      // Use the fast single-call path: the thumbnail handle is still valid
+      // so there is no need to unregister and re-register — only rcSource
+      // and rcDestination need updating. Falls back to reregister internally
+      // if the handle has gone stale.
+      surrogate.update_thumbnail_dims(
         HWND(self.hwnd),
         target_dims.0,
         target_dims.1,
@@ -473,17 +501,27 @@ impl ResizeSession {
     }
 
     if new_is_growing {
+      // Compute logical dims upfront to gate both the SWP_FRAMECHANGED flag
+      // and the thumbnail update — pure-move redirects (dims unchanged) need
+      // neither, saving an unnecessary WM_NCCALCSIZE in the target app and
+      // an extra DWM cross-process call per keypress.
+      let logical = to_logical(new_target, &self.border_inset);
+      let new_dims = (logical.width(), logical.height());
+      let dims_changed = self.surrogate.as_ref()
+        .map_or(true, |s| s.content_size() != new_dims);
+
       // Pre-position the cloaked real window at the new target so DWM captures
-      // correctly-sized content for the curtain-reveal. This doubles as the
-      // handoff for the redirected target. Posted asynchronously — the
-      // curtain-reveal only exposes content beyond the current animated
-      // position after many frames, well within any app's message-queue
-      // processing time. `SWP_FRAMECHANGED` triggers `WM_NCCALCSIZE` so the
-      // client area reflects the new size. `SWP_ASYNCWINDOWPOS` avoids
-      // blocking the animation loop on the target process's message pump
-      // (blocking is the remaining input-to-frame latency on large displays).
+      // correctly-sized content for the curtain-reveal. Posted asynchronously
+      // to avoid blocking the animation loop on the target process's message
+      // pump. `SWP_FRAMECHANGED` (WM_NCCALCSIZE) is only included when the
+      // window size actually changes; pure-move redirects skip it.
       //
       // SAFETY: Window is cloaked during an active animation.
+      let mut swp_flags =
+        SWP_NOACTIVATE | SWP_NOSENDCHANGING | SWP_NOZORDER | SWP_ASYNCWINDOWPOS;
+      if dims_changed {
+        swp_flags |= SWP_FRAMECHANGED;
+      }
       unsafe {
         let _ = SetWindowPos(
           HWND(self.hwnd),
@@ -492,24 +530,18 @@ impl ResizeSession {
           new_target.y(),
           new_target.width(),
           new_target.height(),
-          SWP_NOACTIVATE
-            | SWP_NOSENDCHANGING
-            | SWP_NOZORDER
-            | SWP_ASYNCWINDOWPOS
-            | SWP_FRAMECHANGED,
+          swp_flags,
         );
       }
-      if let Some(surrogate) = &mut self.surrogate {
-        let logical = to_logical(new_target, &self.border_inset);
-        let new_dims = (logical.width(), logical.height());
-        // DWM thumbnails follow source_hwnd by handle — a position-only
-        // change never needs a new registration. Only update rcSource /
-        // rcDestination when the curtain-reveal area grows so DWM samples
-        // the correct larger content. Skip entirely on pure-move redirects
-        // (dims equal) to eliminate unnecessary cross-process DWM calls on
-        // every keypress, which block the animation tick loop long enough
-        // to drop frames on high-refresh displays.
-        if surrogate.content_size() != new_dims {
+      // DWM thumbnails follow source_hwnd by handle — a position-only
+      // change never needs a new registration. Only update rcSource /
+      // rcDestination when the curtain-reveal area grows so DWM samples
+      // the correct larger content. Skip entirely on pure-move redirects
+      // (dims equal) to eliminate unnecessary cross-process DWM calls on
+      // every keypress, which block the animation tick loop long enough
+      // to drop frames on high-refresh displays.
+      if dims_changed {
+        if let Some(surrogate) = &mut self.surrogate {
           surrogate.update_thumbnail_dims(
             HWND(self.hwnd),
             new_dims.0,

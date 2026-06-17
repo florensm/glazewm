@@ -821,8 +821,21 @@ fn redraw_containers(
         // For `ResizeSession`-backed animations, `pre_commit` also calls
         // `SetWindowPos` synchronously just before the surrogate drops,
         // guaranteeing the window is at `target_rect` when uncloaked.
+        // Skip the per-tick `DwmGetWindowAttribute(DWMWA_CLOAKED)` round-trip
+        // for resize-session windows whose cloak state is already known — the
+        // check only fires on the first `Frozen` frame and after session
+        // teardown. Workspace-switch frozen windows (no resize session) retain
+        // the full per-tick guard as a safety net.
         #[cfg(target_os = "windows")]
-        if !window.native().is_cloaked().unwrap_or(false) {
+        let already_cloaked_by_session = state
+          .animation_manager
+          .resize_sessions
+          .get(&window.id())
+          .map_or(false, |s| s.is_session_cloaked());
+        #[cfg(target_os = "windows")]
+        if !already_cloaked_by_session
+          && !window.native().is_cloaked().unwrap_or(false)
+        {
           let _ = window.native().set_cloaked(true);
 
           // Pre-position the cloaked window at its target rect so it
@@ -883,6 +896,16 @@ fn redraw_containers(
                   | SWP_ASYNCWINDOWPOS,
               );
             }
+          }
+
+          // Mark the session cloaked so subsequent Frozen ticks skip the
+          // per-tick `DwmGetWindowAttribute` query.
+          if let Some(session) = state
+            .animation_manager
+            .resize_sessions
+            .get_mut(&window.id())
+          {
+            session.mark_session_cloaked();
           }
         }
       }
