@@ -102,6 +102,15 @@ pub struct ResizeSession {
   /// fire on the first `Frozen` frame (where the cloak state is unknown)
   /// and after the session is torn down.
   session_cloaked: bool,
+  /// Thumbnail content dims that need to be applied on the next animation
+  /// tick via `DwmUpdateThumbnailProperties`.
+  ///
+  /// Set by `update_target` instead of calling `update_thumbnail_dims`
+  /// immediately, so the DWM cross-process call is deferred from keypress
+  /// time (latency-sensitive) to vsync tick time (where there is budget).
+  /// Consumed by `defer_update` before `sync_registration` so the short-
+  /// circuit check still works on the same tick.
+  pending_thumbnail_dims: Option<(i32, i32)>,
 }
 
 impl ResizeSession {
@@ -171,6 +180,7 @@ impl ResizeSession {
       zoom: false,
       handoff_done: is_growing,
       session_cloaked: false,
+      pending_thumbnail_dims: None,
     })
   }
 
@@ -414,6 +424,14 @@ impl ResizeSession {
     current_rect: &Rect,
     opacity: u8,
   ) {
+    // Apply deferred thumbnail dims before `sync_registration` so the
+    // short-circuit check (`content_size == target_dims`) succeeds on this
+    // tick rather than falling back to `GetWindowRect`.
+    if let Some((w, h)) = self.pending_thumbnail_dims.take() {
+      if let Some(surrogate) = &mut self.surrogate {
+        surrogate.update_thumbnail_dims(HWND(self.hwnd), w, h, self.border_inset);
+      }
+    }
     self.sync_registration();
     let logical = to_logical(current_rect, &self.border_inset);
     if let Some(surrogate) = &mut self.surrogate {
@@ -540,14 +558,11 @@ impl ResizeSession {
               | SWP_FRAMECHANGED,
           );
         }
-        if let Some(surrogate) = &mut self.surrogate {
-          surrogate.update_thumbnail_dims(
-            HWND(self.hwnd),
-            new_dims.0,
-            new_dims.1,
-            self.border_inset,
-          );
-        }
+        // Defer the DWM cross-process call to the next animation tick so it
+        // fires at vsync time (where there is budget) rather than on every
+        // keypress. `defer_update` consumes this before `sync_registration`
+        // so the short-circuit check still works on the same tick.
+        self.pending_thumbnail_dims = Some(new_dims);
       }
       self.handoff_done = true;
     } else if direction_changed {
@@ -627,6 +642,15 @@ impl ResizeSession {
       }
     }
 
+    // Flush any pending thumbnail dims so the `content_size` check below
+    // uses the current target (avoids the 3-call `reregister_thumbnail`
+    // fallback for a dims mismatch that was already queued but not yet
+    // consumed by `defer_update`).
+    if let Some((w, h)) = self.pending_thumbnail_dims.take() {
+      if let Some(surrogate) = &mut self.surrogate {
+        surrogate.update_thumbnail_dims(HWND(self.hwnd), w, h, self.border_inset);
+      }
+    }
     let logical = to_logical(&self.target_rect, &self.border_inset);
     if let Some(surrogate) = &mut self.surrogate {
       // The real window was just resized to the target above, but the live
