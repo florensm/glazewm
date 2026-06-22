@@ -10,8 +10,8 @@ use wm_common::{
 use wm_platform::NativeWindowWindowsExt;
 #[cfg(target_os = "windows")]
 use wm_platform::{
-  CornerStyle, NativeIrisOverlay, OpacityValue,
-  WorkspaceSurrogate,
+  BlurBehindStyle, CornerStyle, NativeBlurOverlay, NativeIrisOverlay,
+  OpacityValue, WorkspaceSurrogate,
 };
 use wm_platform::{Rect, WindowZOrder};
 
@@ -122,6 +122,11 @@ pub fn platform_sync(
       }
     }
   }
+
+  // Sync acrylic blur overlays every tick so they track window
+  // positions through moves, resizes, and animation handoffs.
+  #[cfg(target_os = "windows")]
+  sync_blur_overlays(state, config, &focused_container);
 
   state.pending_sync.clear();
 
@@ -788,6 +793,12 @@ fn redraw_containers(
         if !already_cloaked_by_session
           && !window.native().is_cloaked().unwrap_or(false)
         {
+          // Flush before cloaking so DWM renders one frame with the
+          // surrogate's thumbnail populated and the real window still
+          // visible. Without this, the thumbnail content may not be ready
+          // for the first composition after the cloak, producing a blank
+          // frame at animation start.
+          wm_platform::dwm_flush();
           let _ = window.native().set_cloaked(true);
 
           // Pre-position the cloaked window at its target rect so it
@@ -1204,6 +1215,8 @@ fn apply_window_effects(
   #[cfg(target_os = "windows")]
   if window_effects.focused_window.border.enabled
     || window_effects.other_windows.border.enabled
+    || window_effects.focused_window.blur_behind.enabled
+    || window_effects.other_windows.blur_behind.enabled
   {
     apply_border_effect(window, effect_config);
   }
@@ -1228,6 +1241,13 @@ fn apply_window_effects(
   {
     apply_transparency_effect(window, effect_config);
   }
+
+  #[cfg(target_os = "windows")]
+  if window_effects.focused_window.blur_behind.enabled
+    || window_effects.other_windows.blur_behind.enabled
+  {
+    apply_blur_behind_effect(window, effect_config);
+  }
 }
 
 #[cfg(target_os = "windows")]
@@ -1235,11 +1255,14 @@ fn apply_border_effect(
   window: &WindowContainer,
   effect_config: &WindowEffectConfig,
 ) {
-  let border_color = if effect_config.border.enabled {
-    Some(&effect_config.border.color)
-  } else {
-    None
-  };
+  // Suppress the border when a blur-behind material is active so the
+  // colored frame doesn't clash with the acrylic/mica backdrop.
+  let border_color =
+    if effect_config.border.enabled && !effect_config.blur_behind.enabled {
+      Some(&effect_config.border.color)
+    } else {
+      None
+    };
 
   _ = window.native().set_border_color(border_color);
 
@@ -1291,4 +1314,177 @@ fn apply_transparency_effect(
   };
 
   _ = window.native().set_transparency(transparency);
+}
+
+#[cfg(target_os = "windows")]
+fn apply_blur_behind_effect(
+  window: &WindowContainer,
+  effect_config: &WindowEffectConfig,
+) {
+  // Acrylic is handled exclusively via the persistent blur overlay (see
+  // `sync_blur_overlays`); SWCA is never applied to the managed window
+  // itself to avoid the WS_EX_LAYERED/SWCA conflict.
+  // Mica and MicaAlt use `DWMWA_SYSTEMBACKDROP_TYPE` on the managed window
+  // (title-bar area only; requires Windows 11 22H2+).
+  let style = match (
+    effect_config.blur_behind.enabled,
+    &effect_config.blur_behind.style,
+  ) {
+    (true, BlurBehindStyle::Mica | BlurBehindStyle::MicaAlt) => {
+      Some(&effect_config.blur_behind.style)
+    }
+    _ => None,
+  };
+
+  if let Err(e) = window.native().set_blur_behind(style) {
+    warn!("Failed to set blur-behind on window: {e}.");
+  }
+}
+
+/// Creates, repositions, and removes acrylic blur overlay windows so that
+/// every managed window with `blur_behind: acrylic` has a matching overlay
+/// directly behind it in z-order.
+///
+/// Called on every `platform_sync` tick so overlays track position through
+/// moves, resizes, and workspace changes.
+#[cfg(target_os = "windows")]
+fn sync_blur_overlays(
+  state: &mut WmState,
+  config: &UserConfig,
+  focused_container: &Container,
+) {
+  let all_windows = state.windows();
+  let mut wanted_ids = std::collections::HashSet::new();
+
+  for window in &all_windows {
+    let is_focused = window.id() == focused_container.id();
+    let effect_cfg = if is_focused {
+      &config.value.window_effects.focused_window
+    } else {
+      &config.value.window_effects.other_windows
+    };
+
+    let wants_overlay = effect_cfg.blur_behind.enabled
+      && matches!(effect_cfg.blur_behind.style, BlurBehindStyle::Acrylic);
+
+    if !wants_overlay {
+      continue;
+    }
+
+    // Inactive-workspace windows (not in a workspace-switch animation): hide
+    // the overlay and keep the entry alive so it can be re-shown instantly
+    // when the workspace returns.
+    let workspace_displayed =
+      window.workspace().is_some_and(|ws| ws.is_displayed());
+
+    let in_ws_switch = state
+      .animation_manager
+      .is_workspace_switch_participant(&window.id());
+
+    if !workspace_displayed && !in_ws_switch {
+      if let Some(overlay) = state.blur_overlays.get(&window.id()) {
+        overlay.hide();
+      }
+      wanted_ids.insert(window.id());
+      continue;
+    }
+
+    // Determine the overlay rect for this frame.
+    //
+    // During workspace-switch the overlay tracks the surrogate's sliding rect
+    // so the acrylic effect moves with the window. For slide styles the rect
+    // is offset by the same amount as the surrogate; for fade the window
+    // stays at its target rect. Zoom/iris return None → hide the overlay.
+    //
+    // During move/resize the overlay tracks the surrogate's animated rect.
+    // Apply the same `border_inset` the surrogate uses so the overlay stays
+    // flush with the visible edge throughout — without this, the overlay is
+    // 8px larger than the surrogate on L/R/B and the sudden size change at
+    // animation start/end causes a visible flash.
+    //
+    // When a resize animation just completed (session in cleanup): use the
+    // session's logical target rect directly so we don't rely on a
+    // potentially-stale DwmGetWindowAttribute(EXTENDED_FRAME_BOUNDS).
+    //
+    // At rest, use DWMWA_EXTENDED_FRAME_BOUNDS to clip the invisible resize
+    // borders so the overlay sits flush with the window's visible edge.
+    let overlay_rect = if in_ws_switch {
+      // Use frame() as the base rect for both incoming and outgoing windows.
+      // Outgoing: starts at frame() (visible position), slides off-screen.
+      // Incoming: frame() is valid even for cloaked windows since GlazeWM
+      // positions them to their layout rect before the switch. At progress=0
+      // the overlay is fully off-screen (± full slide_distance) so any minor
+      // DWM latency in updating frame() is invisible. At progress=1 and in
+      // pending_ws_cleanup, base=frame() means the overlay is already at its
+      // rest position — no snap when cleanup clears.
+      let base = window.native().frame().ok();
+      state
+        .animation_manager
+        .ws_switch_window_screen_rect(&window.id(), base.as_ref())
+    } else if let Some(a) = state
+      .animation_manager
+      .get_animation(&window.id())
+      .filter(|a| !a.is_complete())
+    {
+      let raw = a.current_state().0;
+      let logical = state
+        .animation_manager
+        .resize_sessions
+        .get(&window.id())
+        .map(|s| s.apply_border_inset(&raw))
+        .unwrap_or(raw);
+      Some(logical)
+    } else if let Some((_, _, session)) = state
+      .animation_manager
+      .pending_session_cleanup
+      .iter()
+      .find(|(id, _, _)| *id == window.id())
+    {
+      Some(session.apply_border_inset(session.target_rect()))
+    } else {
+      window.native().frame().ok()
+    };
+
+    let Some(overlay_rect) = overlay_rect else {
+      if let Some(overlay) = state.blur_overlays.get(&window.id()) {
+        overlay.hide();
+      }
+      wanted_ids.insert(window.id());
+      continue;
+    };
+
+    // Convert the config tint (RGBA) to the ABGR u32 that SWCA expects.
+    // The default near-transparent black avoids a solid-fill bug on some
+    // Windows 10 builds where alpha=0 renders opaque.
+    let tint = effect_cfg.blur_behind.tint.as_ref().map_or(
+      0x0100_0000_u32,
+      |c| {
+        (u32::from(c.a) << 24)
+          | (u32::from(c.b) << 16)
+          | (u32::from(c.g) << 8)
+          | u32::from(c.r)
+      },
+    );
+
+    wanted_ids.insert(window.id());
+
+    match state.blur_overlays.entry(window.id()) {
+      std::collections::hash_map::Entry::Occupied(e) => {
+        let overlay = e.into_mut();
+        overlay.set_tint(tint);
+        overlay.set_rect(&overlay_rect);
+      }
+      std::collections::hash_map::Entry::Vacant(e) => {
+        if let Ok(overlay) = NativeBlurOverlay::create(&overlay_rect, tint) {
+          e.insert(overlay);
+        }
+      }
+    }
+  }
+
+  // Destroy overlays for windows that no longer need them (unmanaged,
+  // blur_behind disabled, style changed to Mica, etc.).
+  state
+    .blur_overlays
+    .retain(|id, _| wanted_ids.contains(id));
 }

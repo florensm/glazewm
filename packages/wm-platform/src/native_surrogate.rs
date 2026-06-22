@@ -1,7 +1,7 @@
-use std::{ffi::c_void, sync::OnceLock};
+use std::sync::OnceLock;
 
 use windows::{
-  core::{s, w},
+  core::w,
   Win32::{
     Foundation::{COLORREF, HWND, LPARAM, LRESULT, RECT, WPARAM},
     Graphics::Dwm::{
@@ -12,7 +12,6 @@ use windows::{
       DWM_TNP_RECTDESTINATION, DWM_TNP_RECTSOURCE, DWM_TNP_SOURCECLIENTAREAONLY,
       DWM_TNP_VISIBLE,
     },
-    System::LibraryLoader::{GetModuleHandleW, GetProcAddress},
     UI::WindowsAndMessaging::{
       BeginDeferWindowPos, CreateWindowExW, DefWindowProcW, DeferWindowPos,
       DestroyWindow, EndDeferWindowPos, RegisterClassW,
@@ -26,43 +25,13 @@ use windows::{
 };
 
 use crate::{Color, CornerStyle, Rect};
+use crate::platform_impl::swca::{
+  ACCENT_ENABLE_GRADIENT, apply_swca_accent,
+};
 
 /// Ensures the surrogate window class is registered exactly once per
 /// process.
 static SURROGATE_CLASS_REGISTERED: OnceLock<()> = OnceLock::new();
-
-/// Cached pointer to the undocumented `SetWindowCompositionAttribute`
-/// export.
-static SET_WCA: OnceLock<Option<SetWindowCompositionAttributeFn>> =
-  OnceLock::new();
-
-type SetWindowCompositionAttributeFn =
-  unsafe extern "system" fn(HWND, *mut WindowCompositionAttribData) -> i32;
-
-/// Accent state value for a solid-color fill.
-const ACCENT_ENABLE_GRADIENT: u32 = 1;
-
-/// `WCA_ACCENT_POLICY` attribute index for
-/// `SetWindowCompositionAttribute`.
-const WCA_ACCENT_POLICY: u32 = 19;
-
-/// Undocumented accent policy passed to `SetWindowCompositionAttribute`.
-#[repr(C)]
-struct AccentPolicy {
-  accent_state: u32,
-  accent_flags: u32,
-  /// ARGB tint applied over the blurred backdrop.
-  gradient_color: u32,
-  animation_id: u32,
-}
-
-/// Descriptor for `SetWindowCompositionAttribute`.
-#[repr(C)]
-struct WindowCompositionAttribData {
-  attrib: u32,
-  pv_data: *mut c_void,
-  cb_data: usize,
-}
 
 /// Default window procedure wrapper with the required `extern "system"`
 /// ABI.
@@ -93,33 +62,6 @@ fn ensure_class_registered() {
     // static class name and a valid window procedure.
     unsafe { RegisterClassW(&raw const wnd_class) };
   });
-}
-
-/// Retrieves the `SetWindowCompositionAttribute` function pointer from
-/// user32.dll, caching it in [`SET_WCA`] for subsequent calls.
-///
-/// Returns `None` when the export is unavailable (pre-Windows 10 1607).
-fn get_set_wca() -> Option<SetWindowCompositionAttributeFn> {
-  *SET_WCA.get_or_init(|| {
-    // SAFETY: user32.dll is always loaded in every Win32 process.
-    // `GetModuleHandleW` does not increment the reference count.
-    let module = unsafe { GetModuleHandleW(w!("user32.dll")).ok()? };
-
-    // SAFETY: `module` is a valid handle. The ASCII string is
-    // null-terminated via the `s!` macro.
-    let proc = unsafe {
-      GetProcAddress(module, s!("SetWindowCompositionAttribute"))
-    }?;
-
-    // SAFETY: `proc` is a valid export with the expected calling
-    // convention and parameter layout.
-    Some(unsafe {
-      std::mem::transmute::<
-        unsafe extern "system" fn() -> isize,
-        SetWindowCompositionAttributeFn,
-      >(proc)
-    })
-  })
 }
 
 /// Applies the DWM corner preference matching `corner_style` to `hwnd`.
@@ -172,30 +114,7 @@ fn apply_backdrop(hwnd: HWND, color: Option<&Color>) {
     | (u32::from(c.g) << 8)
     | u32::from(c.r);
 
-  let (accent_state, gradient_color) = (ACCENT_ENABLE_GRADIENT, abgr);
-
-  let Some(set_wca) = get_set_wca() else {
-    return;
-  };
-
-  let mut policy = AccentPolicy {
-    accent_state,
-    accent_flags: 0,
-    gradient_color,
-    animation_id: 0,
-  };
-
-  let mut data = WindowCompositionAttribData {
-    attrib: WCA_ACCENT_POLICY,
-    pv_data: std::ptr::addr_of_mut!(policy) as *mut c_void,
-    cb_data: std::mem::size_of::<AccentPolicy>(),
-  };
-
-  // SAFETY: `hwnd` is a valid window handle. `data` and `policy` are
-  // stack-allocated and remain live for the duration of this call. The
-  // struct layout matches the undocumented Win32 ABI for
-  // `WCA_ACCENT_POLICY`.
-  unsafe { set_wca(hwnd, std::ptr::addr_of_mut!(data)) };
+  apply_swca_accent(hwnd, ACCENT_ENABLE_GRADIENT, abgr);
 }
 
 /// Registers a DWM thumbnail of `source_hwnd` onto `dest_hwnd`.

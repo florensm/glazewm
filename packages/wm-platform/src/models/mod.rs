@@ -1,3 +1,4 @@
+mod blur_behind_style;
 mod color;
 mod corner_style;
 mod delta;
@@ -10,6 +11,7 @@ mod point;
 mod rect;
 mod rect_delta;
 
+pub use blur_behind_style::*;
 pub use color::*;
 pub use corner_style::*;
 pub use delta::*;

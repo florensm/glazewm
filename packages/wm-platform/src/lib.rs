@@ -30,6 +30,10 @@ pub use models::*;
 pub use mouse_listener::*;
 pub use native_window::*;
 #[cfg(target_os = "windows")]
+mod native_blur_overlay;
+#[cfg(target_os = "windows")]
+pub use native_blur_overlay::NativeBlurOverlay;
+#[cfg(target_os = "windows")]
 mod native_surrogate;
 #[cfg(target_os = "windows")]
 pub use native_surrogate::{NativeSurrogate, SurrogateBatch};

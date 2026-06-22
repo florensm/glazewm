@@ -1065,6 +1065,21 @@ impl AnimationManager {
       // the real window visible (including its compositor shadow, which
       // thumbnails do not capture) while the surrogate still fully covers
       // it.
+      //
+      // For transparent windows (`effect_opacity < 255`), the surrogate
+      // opacity and the real window's `LWA_ALPHA` compose multiplicatively:
+      // a surrogate at 80 % over a real window at 80 % would appear ~96 %
+      // opaque in the flushed frame instead of the intended 80 %. Zero out
+      // those surrogates before the flush so the rendered frame already
+      // shows the correct real-window + blur-overlay composite.
+      for (_, fade_start, session) in
+        &mut state.animation_manager.pending_session_cleanup
+      {
+        if fade_start.is_none() && session.effect_opacity < u8::MAX {
+          session.fade_overlay(0);
+        }
+      }
+
       let has_new_session_cleanup = state
         .animation_manager
         .pending_session_cleanup
@@ -1083,6 +1098,12 @@ impl AnimationManager {
       let fade_now = Instant::now();
       state.animation_manager.pending_session_cleanup.retain_mut(
         |(_, fade_start, session)| {
+          // Transparent windows were zeroed before the flush above; the
+          // flushed frame already shows the correct final composite. Drop now.
+          if session.effect_opacity < u8::MAX {
+            return false;
+          }
+
           let start = *fade_start.get_or_insert(fade_now);
           let progress = fade_now.saturating_duration_since(start).as_secs_f32()
             / SESSION_FADE_OUT.as_secs_f32();
@@ -1618,6 +1639,105 @@ impl AnimationManager {
       .and_then(|ws| ws.windows.get(window_id))
       .map(|e| e.is_incoming)
       .unwrap_or(false)
+  }
+
+  /// Returns `true` if `window_id` is participating in an active
+  /// workspace-switch animation or its post-animation cleanup.
+  #[cfg(target_os = "windows")]
+  pub fn is_workspace_switch_participant(&self, window_id: &Uuid) -> bool {
+    self
+      .workspace_switch
+      .as_ref()
+      .map(|ws| ws.windows.contains_key(window_id))
+      .unwrap_or(false)
+      || self
+        .pending_ws_cleanup
+        .as_ref()
+        .map(|ws| ws.windows.contains_key(window_id))
+        .unwrap_or(false)
+  }
+
+  /// Returns the current on-screen rect of a window participating in a
+  /// workspace-switch animation.
+  ///
+  /// For slide styles the rect is `base` shifted by the current slide offset.
+  /// For fade `base` is returned unchanged. Returns `None` for zoom and iris
+  /// styles (content scales non-planarly; the blur overlay cannot track it)
+  /// and when no surrogate exists.
+  ///
+  /// `base` is the frame-clipped rect to use as the positional origin.
+  /// Pass `surrogate.rect` (via `None` → auto-resolved internally) for
+  /// incoming windows whose `frame()` is stale (cloaked on a different
+  /// workspace). Pass the window's current `frame()` for outgoing windows so
+  /// the overlay starts flush with its pre-switch position, avoiding the ~8px
+  /// jump that occurs when `window_target_positions` (which includes the
+  /// invisible resize border) is used as the origin instead.
+  #[cfg(target_os = "windows")]
+  pub fn ws_switch_window_screen_rect(
+    &self,
+    window_id: &Uuid,
+    base: Option<&Rect>,
+  ) -> Option<Rect> {
+    use crate::animation::engine::{animation_progress_at, apply_easing};
+
+    let (ws, progress) = if let Some(ws) = &self.workspace_switch {
+      let now = std::time::Instant::now();
+      let start = ws.start_time.unwrap_or(now);
+      let raw = animation_progress_at(start, ws.duration, now);
+      let eased = apply_easing(raw, &ws.easing).clamp(0.0, 1.0_f32);
+      (ws, eased)
+    } else if let Some(ws) = &self.pending_ws_cleanup {
+      // Animation complete; windows are at their final positions.
+      (ws, 1.0_f32)
+    } else {
+      return None;
+    };
+
+    let entry = ws.windows.get(window_id)?;
+    let surrogate = entry.surrogate.as_ref()?;
+    let base = base.unwrap_or(&surrogate.rect);
+
+    match ws.style {
+      WorkspaceSwitchStyle::Fade => Some(base.clone()),
+      WorkspaceSwitchStyle::Slide => {
+        let (offset_h, offset_v) = match ws.slide_direction {
+          WorkspaceSwitchDirection::Horizontal => {
+            #[allow(clippy::cast_possible_truncation)]
+            let offset = if entry.is_incoming {
+              (ws.order_direction as f32
+                * ws.slide_distance_h as f32
+                * (1.0 - progress)) as i32
+            } else {
+              (-ws.order_direction as f32
+                * ws.slide_distance_h as f32
+                * progress) as i32
+            };
+            (offset, 0)
+          }
+          WorkspaceSwitchDirection::Vertical => {
+            #[allow(clippy::cast_possible_truncation)]
+            let offset = if entry.is_incoming {
+              (ws.order_direction as f32
+                * ws.slide_distance_v as f32
+                * (1.0 - progress)) as i32
+            } else {
+              (-ws.order_direction as f32
+                * ws.slide_distance_v as f32
+                * progress) as i32
+            };
+            (0, offset)
+          }
+        };
+        Some(Rect::from_ltrb(
+          base.left + offset_h,
+          base.top + offset_v,
+          base.right + offset_h,
+          base.bottom + offset_v,
+        ))
+      }
+      // Zoom/Iris: content scales non-planarly; hide the overlay.
+      WorkspaceSwitchStyle::Zoom | WorkspaceSwitchStyle::Iris => None,
+    }
   }
 
   /// Installs a workspace-switch animation for the provided windows.

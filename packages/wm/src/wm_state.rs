@@ -9,7 +9,7 @@ use wm_platform::{
   Direction, Dispatcher, Display, NativeWindow, Point, Rect,
 };
 #[cfg(target_os = "windows")]
-use wm_platform::{NativeWindowWindowsExt, OpacityValue};
+use wm_platform::{NativeBlurOverlay, NativeWindowWindowsExt, OpacityValue};
 
 use crate::{
   animation::AnimationManager,
@@ -74,6 +74,15 @@ pub struct WmState {
   /// Whether the OS focused window is the same as the WM focused window.
   pub is_focus_synced: bool,
 
+  /// Persistent acrylic blur-overlay windows keyed by managed-window UUID.
+  ///
+  /// Each overlay is a bare popup window with `ACCENT_ENABLE_ACRYLICBLURBEHIND`
+  /// positioned at `HWND_BOTTOM` directly behind its paired managed window.
+  /// Entries are created/removed by `apply_blur_behind_effect` in
+  /// `platform_sync`.
+  #[cfg(target_os = "windows")]
+  pub blur_overlays: HashMap<Uuid, NativeBlurOverlay>,
+
   /// Whether the initial state has been populated.
   has_initialized: bool,
 
@@ -97,6 +106,8 @@ impl WmState {
       pending_sync: PendingSync::default(),
       animation_manager: AnimationManager::new(animation_tick_tx),
       window_target_positions: HashMap::new(),
+      #[cfg(target_os = "windows")]
+      blur_overlays: HashMap::new(),
       prev_effects_window: None,
       recent_workspace_name: None,
       unmanaged_or_minimized_timestamp: None,

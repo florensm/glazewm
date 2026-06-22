@@ -9,8 +9,9 @@ use windows::{
     Graphics::Dwm::{
       DwmGetWindowAttribute, DwmSetWindowAttribute, DWMWA_BORDER_COLOR,
       DWMWA_CLOAKED, DWMWA_COLOR_NONE, DWMWA_EXTENDED_FRAME_BOUNDS,
-      DWMWA_WINDOW_CORNER_PREFERENCE, DWMWCP_DEFAULT, DWMWCP_DONOTROUND,
-      DWMWCP_ROUND, DWMWCP_ROUNDSMALL,
+      DWMWA_SYSTEMBACKDROP_TYPE, DWMWA_WINDOW_CORNER_PREFERENCE, DWMWCP_DEFAULT,
+      DWMWCP_DONOTROUND, DWMWCP_ROUND, DWMWCP_ROUNDSMALL, DWMSBT_AUTO,
+      DWMSBT_MAINWINDOW, DWMSBT_TABBEDWINDOW,
     },
     System::Threading::{
       OpenProcess, QueryFullProcessImageNameW, PROCESS_NAME_WIN32,
@@ -43,10 +44,13 @@ use windows::{
   },
 };
 
-use super::com::{IApplicationView, COM_INIT};
+use super::{
+  com::{IApplicationView, COM_INIT},
+  swca::{apply_swca_accent, ACCENT_DISABLED, ACCENT_ENABLE_BLURBEHIND},
+};
 use crate::{
-  Color, CornerStyle, Delta, Dispatcher, LengthValue, OpacityValue, Point,
-  Rect, RectDelta, WindowId, WindowZOrder,
+  BlurBehindStyle, Color, CornerStyle, Delta, Dispatcher, LengthValue,
+  OpacityValue, Point, Rect, RectDelta, WindowId, WindowZOrder,
 };
 
 /// Magic number used to identify programmatic mouse inputs from our own
@@ -752,6 +756,54 @@ impl NativeWindow {
     };
 
     self.set_transparency(&OpacityValue::from_alpha(target_alpha))
+  }
+
+  /// Implements [`NativeWindowWindowsExt::set_blur_behind`].
+  pub(crate) fn set_blur_behind(
+    &self,
+    style: Option<&BlurBehindStyle>,
+  ) -> crate::Result<()> {
+    // `Acrylic` is handled via a persistent `NativeBlurOverlay` placed
+    // behind the managed window — SWCA is never applied to the managed
+    // window itself to avoid the `WS_EX_LAYERED`/SWCA compositing conflict.
+    //
+    // `Mica`/`MicaAlt` use `DWMWA_SYSTEMBACKDROP_TYPE` (Win11 22H2+). On
+    // older Windows, the DWM call fails and a plain blur-behind via SWCA is
+    // applied as a best-effort fallback.
+    let backdrop_type = match style {
+      None => DWMSBT_AUTO,
+      Some(BlurBehindStyle::Acrylic) => return Ok(()),
+      Some(BlurBehindStyle::Mica) => DWMSBT_MAINWINDOW,
+      Some(BlurBehindStyle::MicaAlt) => DWMSBT_TABBEDWINDOW,
+    };
+
+    let dwm_result = unsafe {
+      #[allow(clippy::cast_possible_truncation)]
+      DwmSetWindowAttribute(
+        self.hwnd(),
+        DWMWA_SYSTEMBACKDROP_TYPE,
+        std::ptr::from_ref(&backdrop_type.0).cast(),
+        std::mem::size_of::<i32>() as u32,
+      )
+    };
+
+    if let Err(e) = dwm_result {
+      match style {
+        None => {
+          // Clear any SWCA fallback previously set on this window.
+          apply_swca_accent(self.hwnd(), ACCENT_DISABLED, 0);
+        }
+        Some(_) => {
+          warn!(
+            "DWMWA_SYSTEMBACKDROP_TYPE failed ({e}); \
+             falling back to SWCA blur-behind (Windows 10 only)."
+          );
+          apply_swca_accent(self.hwnd(), ACCENT_ENABLE_BLURBEHIND, 0);
+        }
+      }
+    }
+
+    Ok(())
   }
 
   /// Whether the window is cloaked. For some UWP apps, `WS_VISIBLE` will

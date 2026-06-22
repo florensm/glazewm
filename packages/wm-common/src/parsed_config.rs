@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use wm_platform::{
-  Color, CornerStyle, Key, Keybinding, LengthValue, OpacityValue,
-  RectDelta,
+  BlurBehindStyle, Color, CornerStyle, Key, Keybinding, LengthValue,
+  OpacityValue, RectDelta,
 };
 
 use crate::app_command::InvokeCommand;
@@ -253,6 +253,26 @@ pub struct WindowEffectConfig {
 
   /// Config for optionally applying transparency.
   pub transparency: TransparencyEffectConfig,
+
+  /// Config for optionally applying a DWM blur-behind material.
+  pub blur_behind: BlurBehindEffectConfig,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[serde(default, rename_all(serialize = "camelCase"))]
+pub struct BlurBehindEffectConfig {
+  /// Whether to enable the effect.
+  pub enabled: bool,
+
+  /// Backdrop material to apply.
+  pub style: BlurBehindStyle,
+
+  /// RGBA tint blended over the blurred backdrop.
+  ///
+  /// Accepts `#RRGGBB` (fully opaque) or `#RRGGBBAA`. When `None`, a
+  /// near-transparent black (`alpha = 1`) is used to avoid the solid-fill
+  /// rendering bug present on some Windows 10 builds.
+  pub tint: Option<Color>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]

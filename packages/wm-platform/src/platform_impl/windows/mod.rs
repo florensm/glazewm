@@ -1,5 +1,6 @@
 pub(crate) mod com;
 mod display;
+pub(crate) mod swca;
 mod display_listener;
 mod event_loop;
 mod keyboard_hook;
