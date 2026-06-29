@@ -1,6 +1,7 @@
 use std::{collections::HashMap, env, fs, path::PathBuf};
 
 use anyhow::{Context, Result};
+use regex::Regex;
 use wm_common::{
   InvokeCommand, KeybindingConfig, MatchType, ParsedConfig,
   WindowMatchConfig, WindowRuleConfig, WindowRuleEvent, WorkspaceConfig,
@@ -29,6 +30,11 @@ pub struct UserConfig {
   /// Hashmap of window rule event types (e.g. `WindowRuleEvent::Manage`)
   /// and the corresponding window rules of that type.
   window_rules_by_event: HashMap<WindowRuleEvent, Vec<WindowRuleConfig>>,
+
+  /// Pre-compiled regexes from `stack.tab_title_overrides`, paired with
+  /// their replacement strings. Built once on load and on config reload so
+  /// `sync_tab_bars` does not recompile on every platform-sync tick.
+  pub compiled_tab_title_overrides: Vec<(Regex, String)>,
 }
 
 impl UserConfig {
@@ -48,12 +54,15 @@ impl UserConfig {
     let (config_value, config_str) = Self::read(&config_path)?;
 
     let window_rules_by_event = Self::window_rules_by_event(&config_value);
+    let compiled_tab_title_overrides =
+      Self::compile_tab_title_overrides(&config_value);
 
     Ok(Self {
       path: config_path,
       value: config_value,
       value_str: config_str,
       window_rules_by_event,
+      compiled_tab_title_overrides,
     })
   }
 
@@ -98,6 +107,8 @@ impl UserConfig {
 
     self.window_rules_by_event =
       Self::window_rules_by_event(&config_value);
+    self.compiled_tab_title_overrides =
+      Self::compile_tab_title_overrides(&config_value);
     self.value = config_value;
     self.value_str = config_str;
 
@@ -191,6 +202,33 @@ impl UserConfig {
     });
 
     window_rules
+  }
+
+  /// Compiles `stack.tab_title_overrides` regexes once so `sync_tab_bars`
+  /// can apply them without recompiling on every platform-sync tick.
+  ///
+  /// Invalid regex patterns are logged and skipped rather than propagated
+  /// as errors, so a single bad pattern does not break the entire tab bar.
+  fn compile_tab_title_overrides(
+    config_value: &ParsedConfig,
+  ) -> Vec<(Regex, String)> {
+    config_value
+      .stack
+      .tab_title_overrides
+      .iter()
+      .filter_map(|o| {
+        match Regex::new(&o.regex) {
+          Ok(re) => Some((re, o.replace.clone())),
+          Err(err) => {
+            tracing::warn!(
+              "Invalid tab_title_overrides regex {:?}: {err}",
+              o.regex
+            );
+            None
+          }
+        }
+      })
+      .collect()
   }
 
   fn window_rules_by_event(

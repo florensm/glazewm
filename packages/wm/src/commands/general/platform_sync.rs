@@ -1398,9 +1398,15 @@ fn sync_tab_bars(state: &mut WmState, config: &UserConfig) {
       let tabs: Vec<TabInfo> = children
         .iter()
         .filter_map(|c| c.as_tiling_window())
-        .map(|w| TabInfo {
-          title: w.native_properties().title,
-          hwnd: w.native().id().0,
+        .map(|w| {
+          let raw_title = w.native_properties().title;
+          let title = config
+            .compiled_tab_title_overrides
+            .iter()
+            .fold(raw_title, |t, (re, rep)| {
+              re.replace_all(&t, rep.as_str()).into_owned()
+            });
+          TabInfo { title, hwnd: w.native().id().0 }
         })
         .collect();
 

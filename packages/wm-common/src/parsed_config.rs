@@ -66,6 +66,23 @@ pub struct StackConfig {
 
   /// Color of separator lines between tabs.
   pub tab_separator_color: Color,
+
+  /// Ordered list of regex substitutions applied to window titles in the
+  /// tab bar. Rules are applied in sequence; each rule operates on the
+  /// output of the previous one.
+  pub tab_title_overrides: Vec<TabTitleOverride>,
+}
+
+/// A single regex substitution applied to a tab title before display.
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[serde(default, rename_all(serialize = "camelCase"))]
+pub struct TabTitleOverride {
+  /// Regular expression to match against the title.
+  pub regex: String,
+
+  /// Replacement string. Supports `$1`, `$2`, … capture-group references.
+  /// Defaults to an empty string (strip the matched portion).
+  pub replace: String,
 }
 
 impl Default for StackConfig {
@@ -83,6 +100,7 @@ impl Default for StackConfig {
       tab_border_radius: LengthValue::from_px(4),
       tab_separator_width: LengthValue::from_px(1),
       tab_separator_color: Color::from_str("#3d3d3d").unwrap(),
+      tab_title_overrides: vec![],
     }
   }
 }

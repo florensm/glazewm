@@ -20,6 +20,7 @@ tauri-winres = { workspace = true }
 [dependencies]
 anyhow = { workspace = true }
 auto-launch = "0.5"
+regex = { workspace = true }
 ambassador = "0.4"
 clap = { workspace = true }
 enum-as-inner = "0.6"
