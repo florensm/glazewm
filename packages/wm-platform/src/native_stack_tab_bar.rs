@@ -401,17 +401,29 @@ unsafe fn paint_tab_bar(hwnd: HWND, state: &TabBarState) {
   let sep_w = state.colors.separator_width;
   let ind_h = state.colors.indicator_height;
 
+  // Horizontal inset applied on each side of a tab's background so that
+  // rounded corners are visible between adjacent tabs. When border_radius
+  // is 0 (flat tabs) the inset collapses to 0 and separator lines are
+  // used for visual separation instead.
+  let h_inset = if border_radius > 0 { 3 } else { 0 };
+
   // Pre-fetch a null pen so `RoundRect` has no visible outline.
   // SAFETY: NULL_PEN is a valid stock GDI object identifier.
   let null_pen = GetStockObject(NULL_PEN);
 
   for (i, tab) in state.tabs.iter().enumerate() {
-    let x = i as i32 * tab_width;
-    let actual_tab_width = if i == n_tabs - 1 {
-      width - x
+    // `slot_x`/`slot_w` = the full allocated width for this tab (used for
+    // click detection and indicator positioning).
+    let slot_x = i as i32 * tab_width;
+    let slot_w = if i == n_tabs - 1 {
+      width - slot_x
     } else {
       tab_width
     };
+
+    // `bg_x`/`bg_w` = the visible background rect after horizontal inset.
+    let bg_x = slot_x + h_inset;
+    let bg_w = (slot_w - h_inset * 2).max(0);
 
     // Draw per-tab background, either rounded or flat.
     let tab_color = if i == state.active_index {
@@ -420,43 +432,46 @@ unsafe fn paint_tab_bar(hwnd: HWND, state: &TabBarState) {
       state.colors.inactive.to_bgr()
     };
 
-    let tab_brush = CreateSolidBrush(COLORREF(tab_color));
+    if bg_w > 0 {
+      let tab_brush = CreateSolidBrush(COLORREF(tab_color));
 
-    if border_radius > 0 {
-      let old_pen = SelectObject(hdc, null_pen);
-      let old_brush = SelectObject(hdc, tab_brush);
-      // `RoundRect` corner ellipse diameter = radius * 2.
-      let _ = RoundRect(
-        hdc,
-        x,
-        0,
-        x + actual_tab_width,
-        height,
-        border_radius * 2,
-        border_radius * 2,
-      );
-      SelectObject(hdc, old_pen);
-      SelectObject(hdc, old_brush);
-      DeleteObject(tab_brush);
-    } else {
-      let tab_rect = RECT {
-        left: x,
-        top: 0,
-        right: x + actual_tab_width,
-        bottom: height,
-      };
-      FillRect(hdc, &tab_rect, tab_brush);
+      if border_radius > 0 {
+        let old_pen = SelectObject(hdc, null_pen);
+        let old_brush = SelectObject(hdc, tab_brush);
+        // `RoundRect` corner ellipse diameter = radius * 2.
+        let _ = RoundRect(
+          hdc,
+          bg_x,
+          0,
+          bg_x + bg_w,
+          height,
+          border_radius * 2,
+          border_radius * 2,
+        );
+        SelectObject(hdc, old_pen);
+        SelectObject(hdc, old_brush);
+      } else {
+        let tab_rect = RECT {
+          left: bg_x,
+          top: 0,
+          right: bg_x + bg_w,
+          bottom: height,
+        };
+        FillRect(hdc, &tab_rect, tab_brush);
+      }
+
       DeleteObject(tab_brush);
     }
 
-    // Draw separator line on the right edge of each tab except the last.
-    if sep_w > 0 && i < n_tabs - 1 {
+    // Draw separator on the right edge only for flat tabs (rounded tabs
+    // use the inset gap for visual separation instead).
+    if sep_w > 0 && border_radius == 0 && i < n_tabs - 1 {
       let sep_brush =
         CreateSolidBrush(COLORREF(state.colors.separator.to_bgr()));
       let sep_rect = RECT {
-        left: x + actual_tab_width - sep_w,
+        left: slot_x + slot_w - sep_w,
         top: 0,
-        right: x + actual_tab_width,
+        right: slot_x + slot_w,
         bottom: height,
       };
       FillRect(hdc, &sep_rect, sep_brush);
@@ -479,7 +494,7 @@ unsafe fn paint_tab_bar(hwnd: HWND, state: &TabBarState) {
       let icon_y = (height - icon_size) / 2;
       let _ = DrawIconEx(
         hdc,
-        x + 4,
+        bg_x + 4,
         icon_y,
         hicon,
         icon_size,
@@ -488,17 +503,17 @@ unsafe fn paint_tab_bar(hwnd: HWND, state: &TabBarState) {
         None,
         DI_NORMAL,
       );
-      x + 4 + icon_size + 4
+      bg_x + 4 + icon_size + 4
     } else {
-      x + 6
+      bg_x + 6
     };
 
-    // Draw tab title text.
+    // Draw tab title text within the inset background bounds.
     let mut title_wide: Vec<u16> = tab.title.encode_utf16().collect();
     let mut text_rect = RECT {
       left: text_x,
       top: 0,
-      right: x + actual_tab_width - 4,
+      right: bg_x + bg_w - 4,
       bottom: height,
     };
     DrawTextW(
@@ -509,10 +524,10 @@ unsafe fn paint_tab_bar(hwnd: HWND, state: &TabBarState) {
     );
   }
 
-  // Draw the sliding active-indicator bar at the current animated position.
+  // Draw the sliding active-indicator bar across the full slot width so
+  // it is visible regardless of the tab background inset.
   if ind_h > 0 {
     let ind_x = state.indicator_cur_x as i32;
-    // Clamp indicator width to remaining bar width so it never overflows.
     let ind_w = tab_width.min(width - ind_x);
     if ind_w > 0 {
       let ind_brush =
