@@ -23,13 +23,14 @@ pub fn detach_container(child_to_remove: Container) -> anyhow::Result<()> {
     }
   }
 
-  // Flatten the parent stack container if it would have one or fewer
-  // children after removing the child (a single-child stack is redundant).
+  // Flatten the parent stack container only when it will be completely
+  // empty after removal. A single-child stack is kept so the user's named
+  // stack persists and new windows can be moved into it later.
   if let Some(stack_parent) = child_to_remove
     .parent()
     .and_then(|parent| parent.as_stack().cloned())
   {
-    if stack_parent.child_count() <= 2 {
+    if stack_parent.child_count() <= 1 {
       flatten_stack_container(stack_parent)?;
     }
   }
