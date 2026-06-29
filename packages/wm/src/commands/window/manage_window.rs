@@ -362,6 +362,14 @@ fn insertion_target(
 
     if let Some(sibling) = sibling {
       let parent = sibling.parent().context("No parent.")?;
+
+      // If the sibling lives inside a stack, insert after the stack itself
+      // rather than into it — automatic stacking is always explicit.
+      if parent.as_stack().is_some() {
+        let stack_parent = parent.parent().context("No stack parent.")?;
+        return Ok((stack_parent, parent.index() + 1));
+      }
+
       return Ok((parent, sibling.index() + 1));
     }
   }
