@@ -51,6 +51,21 @@ pub struct StackConfig {
 
   /// Foreground (text) color of tab labels.
   pub tab_text_color: Color,
+
+  /// Color of the active-tab slide indicator bar.
+  pub tab_active_indicator_color: Color,
+
+  /// Height of the active-tab indicator bar (0 = disabled).
+  pub tab_active_indicator_height: LengthValue,
+
+  /// Corner radius of individual tab backgrounds (0 = square).
+  pub tab_border_radius: LengthValue,
+
+  /// Width of separator lines drawn between adjacent tabs (0 = disabled).
+  pub tab_separator_width: LengthValue,
+
+  /// Color of separator lines between tabs.
+  pub tab_separator_color: Color,
 }
 
 impl Default for StackConfig {
@@ -63,6 +78,11 @@ impl Default for StackConfig {
       tab_active_background: Color::from_str("#4a4a6a").unwrap(),
       tab_inactive_background: Color::from_str("#1e1e2e").unwrap(),
       tab_text_color: Color::from_str("#cdd6f4").unwrap(),
+      tab_active_indicator_color: Color::from_str("#89b4fa").unwrap(),
+      tab_active_indicator_height: LengthValue::from_px(2),
+      tab_border_radius: LengthValue::from_px(4),
+      tab_separator_width: LengthValue::from_px(1),
+      tab_separator_color: Color::from_str("#3d3d3d").unwrap(),
     }
   }
 }

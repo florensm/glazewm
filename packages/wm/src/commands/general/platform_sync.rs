@@ -1427,11 +1427,19 @@ fn sync_tab_bars(state: &mut WmState, config: &UserConfig) {
     stacks_info.iter().map(|s| s.id).collect();
   state.tab_bars.retain(|id, _| current_ids.contains(id));
 
+  let stack_cfg = &config.value.stack;
   let colors = TabBarColors {
-    background: config.value.stack.tab_bar_background.clone(),
-    active: config.value.stack.tab_active_background.clone(),
-    inactive: config.value.stack.tab_inactive_background.clone(),
-    text: config.value.stack.tab_text_color.clone(),
+    background: stack_cfg.tab_bar_background.clone(),
+    active: stack_cfg.tab_active_background.clone(),
+    inactive: stack_cfg.tab_inactive_background.clone(),
+    text: stack_cfg.tab_text_color.clone(),
+    indicator: stack_cfg.tab_active_indicator_color.clone(),
+    indicator_height: stack_cfg
+      .tab_active_indicator_height
+      .to_px(0, None),
+    border_radius: stack_cfg.tab_border_radius.to_px(0, None),
+    separator_width: stack_cfg.tab_separator_width.to_px(0, None),
+    separator: stack_cfg.tab_separator_color.clone(),
   };
 
   let tab_click_tx = state.tab_click_tx.clone();
@@ -1440,7 +1448,12 @@ fn sync_tab_bars(state: &mut WmState, config: &UserConfig) {
   for info in stacks_info {
     if let Some(bar) = state.tab_bars.get_mut(&info.id) {
       if info.visible {
-        bar.update(&info.tab_bar_rect, info.tabs, info.active_index);
+        bar.update(
+          &info.tab_bar_rect,
+          info.tabs,
+          info.active_index,
+          colors.clone(),
+        );
       } else {
         bar.hide();
       }
