@@ -3,7 +3,7 @@ use std::sync::OnceLock;
 use windows::{
   core::w,
   Win32::{
-    Foundation::{COLORREF, HWND, LPARAM, LRESULT, RECT, WPARAM},
+    Foundation::{HWND, LPARAM, LRESULT, RECT, WPARAM},
     Graphics::Dwm::{
       DwmExtendFrameIntoClientArea, DwmRegisterThumbnail, DwmSetWindowAttribute,
       DwmUnregisterThumbnail, DwmUpdateThumbnailProperties,
@@ -14,19 +14,17 @@ use windows::{
     },
     UI::WindowsAndMessaging::{
       BeginDeferWindowPos, CreateWindowExW, DefWindowProcW, DeferWindowPos,
-      DestroyWindow, EndDeferWindowPos, RegisterClassW,
-      SetLayeredWindowAttributes, SetWindowPos, SET_WINDOW_POS_FLAGS,
-      LWA_ALPHA, SWP_NOACTIVATE, SWP_NOCOPYBITS, SWP_NOMOVE,
+      DestroyWindow, EndDeferWindowPos, RegisterClassW, SetWindowPos,
+      SET_WINDOW_POS_FLAGS, SWP_NOACTIVATE, SWP_NOCOPYBITS, SWP_NOMOVE,
       SWP_NOSENDCHANGING, SWP_NOSIZE, SWP_NOZORDER, SWP_SHOWWINDOW, WNDCLASSW,
-      WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TRANSPARENT,
-      WS_POPUP,
+      WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TRANSPARENT, WS_POPUP,
     },
   },
 };
 
 use crate::{Color, CornerStyle, Rect};
 use crate::platform_impl::swca::{
-  ACCENT_ENABLE_GRADIENT, apply_swca_accent,
+  ACCENT_ENABLE_ACRYLICBLURBEHIND, ACCENT_ENABLE_GRADIENT, apply_swca_accent,
 };
 
 /// Ensures the surrogate window class is registered exactly once per
@@ -138,6 +136,7 @@ fn register_thumbnail(
   logical_width: i32,
   logical_height: i32,
   border_inset: RECT,
+  initial_opacity: u8,
 ) -> Option<isize> {
   // SAFETY: Both handles are valid top-level windows.
   let thumbnail =
@@ -167,7 +166,7 @@ fn register_thumbnail(
       | DWM_TNP_SOURCECLIENTAREAONLY,
     rcDestination: dst_rect,
     rcSource: src_rect,
-    opacity: 255,
+    opacity: initial_opacity,
     fVisible: true.into(),
     fSourceClientAreaOnly: false.into(),
     ..Default::default()
@@ -364,8 +363,8 @@ pub struct NativeSurrogate {
   border_inset: RECT,
   /// Cached visibility state; guards against redundant `ShowWindow` calls.
   is_visible: bool,
-  /// Last opacity passed to `SetLayeredWindowAttributes`; used to skip
-  /// redundant calls when opacity has not changed between frames.
+  /// Last opacity applied to the DWM thumbnail via `DWM_TNP_OPACITY`; used to
+  /// skip redundant calls when opacity has not changed between frames.
   last_opacity: u8,
   /// Last rect passed to `SetWindowPos` via `reposition`; used to skip
   /// redundant calls when the position and size have not changed.
@@ -438,7 +437,7 @@ impl NativeSurrogate {
     // SAFETY: Class name is the static literal registered above.
     let hwnd = unsafe {
       CreateWindowExW(
-        WS_EX_LAYERED | WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW | WS_EX_TRANSPARENT,
+        WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW | WS_EX_TRANSPARENT,
         w!("GlazeWM_Surrogate"),
         w!(""),
         WS_POPUP,
@@ -482,19 +481,15 @@ impl NativeSurrogate {
     apply_backdrop(hwnd, surrogate_color);
     apply_corner_preference(hwnd, corner_style);
 
-    // Set the initial whole-window opacity. `LWA_ALPHA` makes `crKey`
-    // irrelevant; COLORREF(0) is a placeholder.
-    //
-    // SAFETY: `hwnd` is a valid window handle created above.
-    unsafe {
-      let _ = SetLayeredWindowAttributes(hwnd, COLORREF(0), opacity, LWA_ALPHA);
-    }
-
     // Register the DWM thumbnail at `thumbnail_rect` dimensions. For shrinking
     // animations this equals `source_rect` so the thumbnail fills the whole
     // surrogate at start (wipe/clip effect). For growing animations this equals
     // the target rect so the surrogate progressively reveals the real window's
     // final content as it expands (curtain-reveal).
+    //
+    // `opacity` is baked into the initial registration so the first rendered
+    // frame shows the correct transparency without a separate
+    // `DwmUpdateThumbnailProperties` call.
     //
     // Failure is non-fatal: the surrogate still shows its backdrop color if
     // configured.
@@ -504,6 +499,7 @@ impl NativeSurrogate {
       logical_thumb.width(),
       logical_thumb.height(),
       border_inset,
+      opacity,
     )
     .unwrap_or(0);
 
@@ -627,37 +623,38 @@ impl NativeSurrogate {
     }
   }
 
-  /// Sets the whole-window opacity via `SetLayeredWindowAttributes`.
+  /// Sets the DWM thumbnail opacity via `DWM_TNP_OPACITY`.
   ///
-  /// `opacity` ranges from 0 (fully transparent) to 255 (fully opaque).
-  /// Composited by DWM at the window level so both the backdrop and the DWM
-  /// thumbnail fade together uniformly. No-op when `opacity` matches the last
-  /// applied value, avoiding redundant DWM surface-dirty calls on high-refresh
-  /// displays where constant-opacity animations tick at the monitor's frame rate.
+  /// `opacity` ranges from 0 (fully transparent) to 255 (fully opaque). The
+  /// SWCA acrylic backdrop is unaffected — only the thumbnail content fades.
+  /// No-op when `opacity` matches the last applied value or when no thumbnail
+  /// is registered.
   pub fn set_window_opacity(&mut self, opacity: u8) {
     if opacity == self.last_opacity {
       return;
     }
     self.last_opacity = opacity;
-    // SAFETY: `HWND(self.hwnd)` is valid until `drop`. `LWA_ALPHA` makes
-    // `crKey` irrelevant.
+    if self.thumbnail == 0 {
+      return;
+    }
+    let props = DWM_THUMBNAIL_PROPERTIES {
+      dwFlags: DWM_TNP_OPACITY,
+      opacity,
+      ..Default::default()
+    };
+    // SAFETY: `self.thumbnail` is a valid handle. `props` is stack-allocated.
     unsafe {
-      let _ = SetLayeredWindowAttributes(
-        HWND(self.hwnd),
-        COLORREF(0),
-        opacity,
-        LWA_ALPHA,
-      );
+      let _ = DwmUpdateThumbnailProperties(self.thumbnail, &raw const props);
     }
   }
 
   /// Updates the DWM thumbnail source and destination rects in a single call.
   ///
   /// `rc_src` is the source-window-local rect to sample from; `rc_dst` is the
-  /// surrogate-local rect to render into. Always forces `fVisible = true`,
-  /// `opacity = 255`, and `fSourceClientAreaOnly = false`. Overall opacity is
-  /// controlled at the window level via [`set_window_opacity`]. No-op when no
-  /// thumbnail was registered.
+  /// surrogate-local rect to render into. Always forces `fVisible = true` and
+  /// `fSourceClientAreaOnly = false`. Opacity is not set here; callers must
+  /// follow with [`set_window_opacity`] each frame. No-op when no thumbnail was
+  /// registered.
   ///
   /// [`set_window_opacity`]: NativeSurrogate::set_window_opacity
   pub fn set_thumbnail_rects(&self, rc_src: RECT, rc_dst: RECT) {
@@ -667,12 +664,10 @@ impl NativeSurrogate {
     let props = DWM_THUMBNAIL_PROPERTIES {
       dwFlags: DWM_TNP_RECTSOURCE
         | DWM_TNP_RECTDESTINATION
-        | DWM_TNP_OPACITY
         | DWM_TNP_VISIBLE
         | DWM_TNP_SOURCECLIENTAREAONLY,
       rcSource: rc_src,
       rcDestination: rc_dst,
-      opacity: u8::MAX,
       fVisible: true.into(),
       fSourceClientAreaOnly: false.into(),
       ..Default::default()
@@ -769,9 +764,15 @@ impl NativeSurrogate {
       }
       self.thumbnail = 0;
     }
-    self.thumbnail =
-      register_thumbnail(HWND(self.hwnd), source_hwnd, logical_width, logical_height, border_inset)
-        .unwrap_or(0);
+    self.thumbnail = register_thumbnail(
+      HWND(self.hwnd),
+      source_hwnd,
+      logical_width,
+      logical_height,
+      border_inset,
+      self.last_opacity,
+    )
+    .unwrap_or(0);
     self.content_size = (logical_width, logical_height);
     self.border_inset = border_inset;
     // Force the next reposition call through even if the rect is unchanged,
@@ -804,6 +805,18 @@ impl NativeSurrogate {
     }
     batch.push(self.hwnd, rect.clone());
     self.last_rect = Some(rect.clone());
+  }
+
+  /// Applies SWCA acrylic blur-behind directly to this surrogate window.
+  ///
+  /// Replaces the DWM glass backdrop (extended via `DwmExtendFrameIntoClientArea`)
+  /// with an acrylic blur layer. The DWM thumbnail is composited on top at the
+  /// current opacity. Call once after creation; the effect persists for the
+  /// lifetime of the surrogate.
+  ///
+  /// This is a no-op when SWCA is unavailable (pre-Windows 10 1607).
+  pub fn apply_swca(&self, tint: u32) {
+    apply_swca_accent(HWND(self.hwnd), ACCENT_ENABLE_ACRYLICBLURBEHIND, tint);
   }
 }
 

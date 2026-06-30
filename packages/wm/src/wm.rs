@@ -9,7 +9,7 @@ use wm_common::{
   WmEvent,
 };
 #[cfg(target_os = "windows")]
-use wm_platform::NativeWindowWindowsExt;
+use wm_platform::{BlurBehindStyle, NativeWindowWindowsExt};
 #[cfg(target_os = "windows")]
 use crate::commands::window::detach_window_for_close;
 use wm_platform::{
@@ -310,6 +310,23 @@ impl WindowManager {
               } else {
                 wm_platform::CornerStyle::Default
               };
+              let acrylic_tint = if effect_cfg.blur_behind.enabled
+                && matches!(
+                  effect_cfg.blur_behind.style,
+                  BlurBehindStyle::Acrylic
+                ) {
+                Some(effect_cfg.blur_behind.tint.as_ref().map_or(
+                  0x0100_0000_u32,
+                  |c| {
+                    (u32::from(c.a) << 24)
+                      | (u32::from(c.b) << 16)
+                      | (u32::from(c.g) << 8)
+                      | u32::from(c.r)
+                  },
+                ))
+              } else {
+                None
+              };
 
               if let Ok(rect) = window.to_rect().and_then(|r| {
                 window.total_border_delta().map(|d| r.apply_delta(&d, None))
@@ -326,6 +343,7 @@ impl WindowManager {
                     rect,
                     effect_opacity,
                     corner_style,
+                    acrylic_tint,
                     config,
                     &*native_ref,
                   );

@@ -465,6 +465,15 @@ impl WorkspaceSurrogate {
     self.inner.set_visible(true);
   }
 
+  /// Applies SWCA acrylic blur-behind to the surrogate window.
+  ///
+  /// Call once after creation. The DWM glass backdrop is replaced by an acrylic
+  /// blur layer; the DWM thumbnail renders on top at the configured opacity so
+  /// window content appears with a frosted-glass effect during the animation.
+  pub fn apply_swca(&mut self, tint: u32) {
+    self.inner.apply_swca(tint);
+  }
+
   /// Shared implementation for [`update_slide_horizontal`] and
   /// [`update_slide_vertical`].
   ///

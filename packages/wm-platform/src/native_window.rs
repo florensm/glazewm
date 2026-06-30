@@ -337,16 +337,14 @@ pub trait NativeWindowWindowsExt {
 
   /// Applies a DWM blur-behind material to the window.
   ///
-  /// When `style` is `None`, any previously applied blur-behind effect is
-  /// cleared. Uses `DWMWA_SYSTEMBACKDROP_TYPE` on Windows 11 22H2+ with an
-  /// automatic fallback to `ACCENT_ENABLE_ACRYLICBLURBEHIND` via
-  /// `SetWindowCompositionAttribute` for the `Acrylic` style on Windows 10
-  /// 1803+. `Mica` and `MicaAlt` have no Windows 10 fallback and are
-  /// silently skipped on unsupported builds.
+  /// Applies or clears a blur-behind effect on the window.
   ///
-  /// Both code paths operate at DWM composition time, so the effect is
-  /// captured by `DwmRegisterThumbnail` and persists across cloak/uncloak
-  /// cycles without flickering.
+  /// `Acrylic` uses `SetWindowCompositionAttribute` with
+  /// `ACCENT_ENABLE_ACRYLICBLURBEHIND` (Windows 10 1803+). `tint` is an
+  /// ABGR-packed `u32` blended over the acrylic backdrop; ignored for other
+  /// styles. `Mica` and `MicaAlt` use `DWMWA_SYSTEMBACKDROP_TYPE` (Windows
+  /// 11 22H2+) and silently do nothing on unsupported builds. `None` clears
+  /// any previously applied effect via both code paths.
   ///
   /// # Platform-specific
   ///
@@ -354,6 +352,7 @@ pub trait NativeWindowWindowsExt {
   fn set_blur_behind(
     &self,
     style: Option<&BlurBehindStyle>,
+    tint: u32,
   ) -> crate::Result<()>;
 }
 
@@ -468,8 +467,9 @@ impl NativeWindowWindowsExt for NativeWindow {
   fn set_blur_behind(
     &self,
     style: Option<&BlurBehindStyle>,
+    tint: u32,
   ) -> crate::Result<()> {
-    self.inner.set_blur_behind(style)
+    self.inner.set_blur_behind(style, tint)
   }
 }
 

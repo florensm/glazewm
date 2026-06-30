@@ -51,6 +51,11 @@ pub struct SessionOptions {
   /// Pass `false` for close surrogates, which should remain below resize and
   /// open surrogates that fill the vacated space.
   pub place_at_top: bool,
+  /// ABGR tint for SWCA acrylic applied to the surrogate, or `None` when
+  /// blur-behind is not configured. When `Some`, `ACCENT_ENABLE_ACRYLICBLURBEHIND`
+  /// is applied once after surrogate creation so blur is visible throughout the
+  /// animation without a separate overlay window.
+  pub acrylic_tint: Option<u32>,
 }
 
 /// Tracks a single window's resize/move animation and manages its surrogate
@@ -186,7 +191,7 @@ impl ResizeSession {
     // Thumbnail registered at source dims for all directions (see doc
     // comment): the window is only source-sized at this point, and
     // registering larger would oversample.
-    let surrogate = match NativeSurrogate::create(
+    let mut surrogate = match NativeSurrogate::create(
       hwnd,
       source_rect,
       source_rect,
@@ -206,6 +211,10 @@ impl ResizeSession {
         None
       }
     };
+
+    if let (Some(s), Some(tint)) = (&mut surrogate, options.acrylic_tint) {
+      s.apply_swca(tint);
+    }
 
     Ok(Self {
       hwnd: hwnd.0,

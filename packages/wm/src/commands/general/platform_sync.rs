@@ -123,8 +123,8 @@ pub fn platform_sync(
     }
   }
 
-  // Sync acrylic blur overlays every tick so they track window
-  // positions through moves, resizes, and animation handoffs.
+  // Sync acrylic blur overlays every tick so they track window position
+  // through moves, resizes, and workspace changes.
   #[cfg(target_os = "windows")]
   sync_blur_overlays(state, config, &focused_container);
 
@@ -389,7 +389,6 @@ fn redraw_containers(
           } else {
             u8::MAX
           };
-
           if is_incoming {
             let surrogate = window
               .to_rect()
@@ -646,7 +645,7 @@ fn redraw_containers(
     // Compute effect opacity and corner style unconditionally — needed for
     // both the movement surrogate path and the fade-in path.
     #[cfg(target_os = "windows")]
-    let (effect_opacity, corner_style) = {
+    let (effect_opacity, corner_style, acrylic_tint) = {
       let effect_cfg = if window.id() == focused_container.id() {
         &config.value.window_effects.focused_window
       } else {
@@ -662,7 +661,22 @@ fn redraw_containers(
       } else {
         CornerStyle::Default
       };
-      (opacity, style)
+      let tint = if effect_cfg.blur_behind.enabled
+        && matches!(effect_cfg.blur_behind.style, BlurBehindStyle::Acrylic)
+      {
+        Some(effect_cfg.blur_behind.tint.as_ref().map_or(
+          0x0100_0000_u32,
+          |c| {
+            (u32::from(c.a) << 24)
+              | (u32::from(c.b) << 16)
+              | (u32::from(c.g) << 8)
+              | u32::from(c.r)
+          },
+        ))
+      } else {
+        None
+      };
+      (opacity, style, tint)
     };
 
     // Start a slide-in animation for newly appearing tiling windows.
@@ -686,6 +700,7 @@ fn redraw_containers(
         monitor_rect,
         effect_opacity,
         corner_style,
+        acrylic_tint,
         config,
         &*native_ref,
       );
@@ -740,6 +755,7 @@ fn redraw_containers(
           &*native_ref,
           effect_opacity,
           corner_style,
+          acrylic_tint,
           config,
         )
       }
@@ -1321,11 +1337,11 @@ fn apply_blur_behind_effect(
   window: &WindowContainer,
   effect_config: &WindowEffectConfig,
 ) {
-  // Acrylic is handled exclusively via the persistent blur overlay (see
-  // `sync_blur_overlays`); SWCA is never applied to the managed window
-  // itself to avoid the WS_EX_LAYERED/SWCA conflict.
-  // Mica and MicaAlt use `DWMWA_SYSTEMBACKDROP_TYPE` on the managed window
-  // (title-bar area only; requires Windows 11 22H2+).
+  // `Acrylic` is handled via a persistent `NativeBlurOverlay` placed at
+  // `HWND_BOTTOM` behind the managed window — SWCA is not applied to the
+  // managed window itself to avoid the `WS_EX_LAYERED`/SWCA compositing
+  // conflict. `Mica`/`MicaAlt` use `DWMWA_SYSTEMBACKDROP_TYPE` directly
+  // on the managed window (Win11 22H2+).
   let style = match (
     effect_config.blur_behind.enabled,
     &effect_config.blur_behind.style,
@@ -1336,17 +1352,23 @@ fn apply_blur_behind_effect(
     _ => None,
   };
 
-  if let Err(e) = window.native().set_blur_behind(style) {
+  if let Err(e) = window.native().set_blur_behind(style, 0) {
     warn!("Failed to set blur-behind on window: {e}.");
   }
 }
 
 /// Creates, repositions, and removes acrylic blur overlay windows so that
 /// every managed window with `blur_behind: acrylic` has a matching overlay
-/// directly behind it in z-order.
+/// positioned at `HWND_BOTTOM` flush with the window's DWM frame rect.
 ///
-/// Called on every `platform_sync` tick so overlays track position through
-/// moves, resizes, and workspace changes.
+/// Called on every `platform_sync` tick so overlays track window position
+/// through moves, resizes, and focus changes. The overlay is hidden (but
+/// kept alive) for windows on inactive workspaces so it can be re-shown
+/// instantly when the workspace becomes active again.
+///
+/// During animations, surrogates carry the acrylic effect directly via SWCA
+/// so blur is visible throughout the animation. The static overlay is hidden
+/// while a surrogate is active and restored once the animation completes.
 #[cfg(target_os = "windows")]
 fn sync_blur_overlays(
   state: &mut WmState,
@@ -1364,92 +1386,37 @@ fn sync_blur_overlays(
       &config.value.window_effects.other_windows
     };
 
-    let wants_overlay = effect_cfg.blur_behind.enabled
-      && matches!(effect_cfg.blur_behind.style, BlurBehindStyle::Acrylic);
-
-    if !wants_overlay {
+    if !effect_cfg.blur_behind.enabled
+      || !matches!(effect_cfg.blur_behind.style, BlurBehindStyle::Acrylic)
+    {
       continue;
     }
 
-    // Inactive-workspace windows (not in a workspace-switch animation): hide
-    // the overlay and keep the entry alive so it can be re-shown instantly
-    // when the workspace returns.
-    let workspace_displayed =
-      window.workspace().is_some_and(|ws| ws.is_displayed());
+    wanted_ids.insert(window.id());
 
-    let in_ws_switch = state
-      .animation_manager
-      .is_workspace_switch_participant(&window.id());
+    // Hide the static overlay while a surrogate is active for this window.
+    // When the surrogate is running, the real window is cloaked at its target
+    // rect; reading frame() would return the target position while the
+    // surrogate is still mid-animation, causing the overlay to jump ahead.
+    // The surrogate has SWCA acrylic applied directly, so blur is visible
+    // throughout the animation without the static overlay.
+    //
+    // Also hide for windows on inactive workspaces; keep the entry alive
+    // so it can be re-shown immediately when the workspace returns.
+    let should_hide =
+      state.animation_manager.has_active_surrogate(&window.id())
+        || !window.workspace().is_some_and(|ws| ws.is_displayed());
 
-    if !workspace_displayed && !in_ws_switch {
+    if should_hide {
       if let Some(overlay) = state.blur_overlays.get(&window.id()) {
         overlay.hide();
       }
-      wanted_ids.insert(window.id());
       continue;
     }
 
-    // Determine the overlay rect for this frame.
-    //
-    // During workspace-switch the overlay tracks the surrogate's sliding rect
-    // so the acrylic effect moves with the window. For slide styles the rect
-    // is offset by the same amount as the surrogate; for fade the window
-    // stays at its target rect. Zoom/iris return None → hide the overlay.
-    //
-    // During move/resize the overlay tracks the surrogate's animated rect.
-    // Apply the same `border_inset` the surrogate uses so the overlay stays
-    // flush with the visible edge throughout — without this, the overlay is
-    // 8px larger than the surrogate on L/R/B and the sudden size change at
-    // animation start/end causes a visible flash.
-    //
-    // When a resize animation just completed (session in cleanup): use the
-    // session's logical target rect directly so we don't rely on a
-    // potentially-stale DwmGetWindowAttribute(EXTENDED_FRAME_BOUNDS).
-    //
-    // At rest, use DWMWA_EXTENDED_FRAME_BOUNDS to clip the invisible resize
-    // borders so the overlay sits flush with the window's visible edge.
-    let overlay_rect = if in_ws_switch {
-      // Use frame() as the base rect for both incoming and outgoing windows.
-      // Outgoing: starts at frame() (visible position), slides off-screen.
-      // Incoming: frame() is valid even for cloaked windows since GlazeWM
-      // positions them to their layout rect before the switch. At progress=0
-      // the overlay is fully off-screen (± full slide_distance) so any minor
-      // DWM latency in updating frame() is invisible. At progress=1 and in
-      // pending_ws_cleanup, base=frame() means the overlay is already at its
-      // rest position — no snap when cleanup clears.
-      let base = window.native().frame().ok();
-      state
-        .animation_manager
-        .ws_switch_window_screen_rect(&window.id(), base.as_ref())
-    } else if let Some(a) = state
-      .animation_manager
-      .get_animation(&window.id())
-      .filter(|a| !a.is_complete())
-    {
-      let raw = a.current_state().0;
-      let logical = state
-        .animation_manager
-        .resize_sessions
-        .get(&window.id())
-        .map(|s| s.apply_border_inset(&raw))
-        .unwrap_or(raw);
-      Some(logical)
-    } else if let Some((_, _, session)) = state
-      .animation_manager
-      .pending_session_cleanup
-      .iter()
-      .find(|(id, _, _)| *id == window.id())
-    {
-      Some(session.apply_border_inset(session.target_rect()))
-    } else {
-      window.native().frame().ok()
-    };
-
-    let Some(overlay_rect) = overlay_rect else {
-      if let Some(overlay) = state.blur_overlays.get(&window.id()) {
-        overlay.hide();
-      }
-      wanted_ids.insert(window.id());
+    // Use the DWM extended frame bounds so the overlay sits flush with the
+    // window's visible edge, clipping the invisible resize border.
+    let Ok(rect) = window.native().frame() else {
       continue;
     };
 
@@ -1466,25 +1433,20 @@ fn sync_blur_overlays(
       },
     );
 
-    wanted_ids.insert(window.id());
-
     match state.blur_overlays.entry(window.id()) {
       std::collections::hash_map::Entry::Occupied(e) => {
         let overlay = e.into_mut();
         overlay.set_tint(tint);
-        overlay.set_rect(&overlay_rect);
+        overlay.set_rect(&rect);
       }
       std::collections::hash_map::Entry::Vacant(e) => {
-        if let Ok(overlay) = NativeBlurOverlay::create(&overlay_rect, tint) {
+        if let Ok(overlay) = NativeBlurOverlay::create(&rect, tint) {
           e.insert(overlay);
         }
       }
     }
   }
 
-  // Destroy overlays for windows that no longer need them (unmanaged,
-  // blur_behind disabled, style changed to Mica, etc.).
-  state
-    .blur_overlays
-    .retain(|id, _| wanted_ids.contains(id));
+  // Destroy overlays for windows that no longer need them.
+  state.blur_overlays.retain(|id, _| wanted_ids.contains(id));
 }

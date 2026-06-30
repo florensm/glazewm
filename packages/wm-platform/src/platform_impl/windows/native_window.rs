@@ -46,7 +46,9 @@ use windows::{
 
 use super::{
   com::{IApplicationView, COM_INIT},
-  swca::{apply_swca_accent, ACCENT_DISABLED, ACCENT_ENABLE_BLURBEHIND},
+  swca::{
+    apply_swca_accent, ACCENT_DISABLED, ACCENT_ENABLE_ACRYLICBLURBEHIND,
+  },
 };
 use crate::{
   BlurBehindStyle, Color, CornerStyle, Delta, Dispatcher, LengthValue,
@@ -762,43 +764,38 @@ impl NativeWindow {
   pub(crate) fn set_blur_behind(
     &self,
     style: Option<&BlurBehindStyle>,
+    tint: u32,
   ) -> crate::Result<()> {
-    // `Acrylic` is handled via a persistent `NativeBlurOverlay` placed
-    // behind the managed window — SWCA is never applied to the managed
-    // window itself to avoid the `WS_EX_LAYERED`/SWCA compositing conflict.
-    //
-    // `Mica`/`MicaAlt` use `DWMWA_SYSTEMBACKDROP_TYPE` (Win11 22H2+). On
-    // older Windows, the DWM call fails and a plain blur-behind via SWCA is
-    // applied as a best-effort fallback.
-    let backdrop_type = match style {
-      None => DWMSBT_AUTO,
-      Some(BlurBehindStyle::Acrylic) => return Ok(()),
-      Some(BlurBehindStyle::Mica) => DWMSBT_MAINWINDOW,
-      Some(BlurBehindStyle::MicaAlt) => DWMSBT_TABBEDWINDOW,
-    };
+    match style {
+      Some(BlurBehindStyle::Acrylic) => {
+        apply_swca_accent(self.hwnd(), ACCENT_ENABLE_ACRYLICBLURBEHIND, tint);
+      }
+      _ => {
+        // Clear any SWCA acrylic applied by this function.
+        apply_swca_accent(self.hwnd(), ACCENT_DISABLED, 0);
 
-    let dwm_result = unsafe {
-      #[allow(clippy::cast_possible_truncation)]
-      DwmSetWindowAttribute(
-        self.hwnd(),
-        DWMWA_SYSTEMBACKDROP_TYPE,
-        std::ptr::from_ref(&backdrop_type.0).cast(),
-        std::mem::size_of::<i32>() as u32,
-      )
-    };
+        let backdrop_type = match style {
+          None => DWMSBT_AUTO,
+          Some(BlurBehindStyle::Mica) => DWMSBT_MAINWINDOW,
+          Some(BlurBehindStyle::MicaAlt) => DWMSBT_TABBEDWINDOW,
+          Some(BlurBehindStyle::Acrylic) => unreachable!(),
+        };
 
-    if let Err(e) = dwm_result {
-      match style {
-        None => {
-          // Clear any SWCA fallback previously set on this window.
-          apply_swca_accent(self.hwnd(), ACCENT_DISABLED, 0);
-        }
-        Some(_) => {
-          warn!(
-            "DWMWA_SYSTEMBACKDROP_TYPE failed ({e}); \
-             falling back to SWCA blur-behind (Windows 10 only)."
-          );
-          apply_swca_accent(self.hwnd(), ACCENT_ENABLE_BLURBEHIND, 0);
+        if let Err(e) = unsafe {
+          #[allow(clippy::cast_possible_truncation)]
+          DwmSetWindowAttribute(
+            self.hwnd(),
+            DWMWA_SYSTEMBACKDROP_TYPE,
+            std::ptr::from_ref(&backdrop_type.0).cast(),
+            std::mem::size_of::<i32>() as u32,
+          )
+        } {
+          if style.is_some() {
+            warn!(
+              "DWMWA_SYSTEMBACKDROP_TYPE failed ({e}); \
+               Mica/MicaAlt requires Windows 11 22H2+."
+            );
+          }
         }
       }
     }

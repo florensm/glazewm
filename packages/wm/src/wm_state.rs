@@ -74,12 +74,13 @@ pub struct WmState {
   /// Whether the OS focused window is the same as the WM focused window.
   pub is_focus_synced: bool,
 
-  /// Persistent acrylic blur-overlay windows keyed by managed-window UUID.
+  /// Acrylic blur overlay windows keyed by managed-window UUID.
   ///
-  /// Each overlay is a bare popup window with `ACCENT_ENABLE_ACRYLICBLURBEHIND`
-  /// positioned at `HWND_BOTTOM` directly behind its paired managed window.
-  /// Entries are created/removed by `apply_blur_behind_effect` in
-  /// `platform_sync`.
+  /// Each overlay is a `WS_POPUP` window with `ACCENT_ENABLE_ACRYLICBLURBEHIND`
+  /// applied via `SetWindowCompositionAttribute`, positioned at `HWND_BOTTOM`
+  /// flush with the managed window's DWM frame rect. When the managed window
+  /// is semi-transparent (`transparency` effect), the overlay's blurred-desktop
+  /// content shows through, producing a frosted-glass look.
   #[cfg(target_os = "windows")]
   pub blur_overlays: HashMap<Uuid, NativeBlurOverlay>,
 

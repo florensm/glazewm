@@ -38,37 +38,36 @@ fn ensure_class_registered() {
     let wnd_class = WNDCLASSW {
       lpszClassName: w!("GlazeWM_BlurOverlay"),
       lpfnWndProc: Some(default_wnd_proc),
-      // Null background brush: SWCA composites the acrylic layer; GDI never
-      // paints the client area.
+      // Null background brush: SWCA composites the acrylic layer; GDI
+      // never paints the client area.
       ..Default::default()
     };
 
-    // SAFETY: `wnd_class` is a properly initialized `WNDCLASSW` with a
-    // static class name and a valid window procedure.
+    // SAFETY: `wnd_class` is properly initialized with a static class name
+    // and a valid window procedure.
     unsafe { RegisterClassW(&raw const wnd_class) };
   });
 }
 
-/// A persistent, invisible backdrop window that provides an acrylic
-/// blur-behind effect for a paired managed window.
+/// A persistent backdrop window that provides an acrylic blur-behind effect
+/// for a paired managed window.
 ///
 /// Positioned at `HWND_BOTTOM` (behind all normal windows) and kept
-/// pixel-aligned with the managed window. When the managed window is
-/// semi-transparent (via the `transparency` window effect), the blurred
-/// desktop visible through the overlay shows through the window, producing
-/// a Hyprland-style frosted-glass look.
+/// pixel-aligned with the managed window's DWM frame rect. When the managed
+/// window is semi-transparent (via the `transparency` window effect), the
+/// blurred desktop visible through the overlay shows through the window,
+/// producing a frosted-glass look.
 ///
 /// The overlay uses `SetWindowCompositionAttribute` with
-/// `ACCENT_ENABLE_ACRYLICBLURBEHIND` on its own `HWND`. This avoids the
-/// well-known conflict between `WS_EX_LAYERED` (used for the managed
-/// window's transparency) and SWCA (which does not compose correctly on
-/// layered windows).
+/// `ACCENT_ENABLE_ACRYLICBLURBEHIND` on its own `HWND`. This sidesteps the
+/// `WS_EX_LAYERED`/SWCA compositing conflict that prevents applying SWCA
+/// directly to layered managed windows.
 ///
 /// # Platform-specific
 ///
 /// Only available on Windows. The acrylic effect requires Windows 10 1803+;
-/// on older versions the backdrop degrades gracefully (opaque overlay tinted
-/// by `tint`).
+/// on older versions the backdrop degrades gracefully to an opaque overlay
+/// tinted by `tint`.
 pub struct NativeBlurOverlay {
   /// Raw window handle stored as `isize` so that `NativeBlurOverlay` is
   /// `Send` even though `HWND` is not.
@@ -82,7 +81,7 @@ impl NativeBlurOverlay {
   /// Creates a new blur overlay sized and positioned to `rect` with the
   /// given ABGR `tint`.
   ///
-  /// The window is shown immediately at `HWND_BOTTOM`.
+  /// The overlay is shown immediately at `HWND_BOTTOM`.
   pub fn create(rect: &Rect, tint: u32) -> crate::Result<Self> {
     ensure_class_registered();
 

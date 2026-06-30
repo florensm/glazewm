@@ -14,9 +14,6 @@ pub(crate) const ACCENT_DISABLED: u32 = 0;
 /// Accent state: solid-color fill, used for surrogate backdrops.
 pub(crate) const ACCENT_ENABLE_GRADIENT: u32 = 1;
 
-/// Accent state: DWM blur-behind (no acrylic), available on Windows 10 1703+.
-pub(crate) const ACCENT_ENABLE_BLURBEHIND: u32 = 3;
-
 /// Accent state: acrylic blur-behind, the Win10 frosted-glass equivalent.
 pub(crate) const ACCENT_ENABLE_ACRYLICBLURBEHIND: u32 = 4;
 
