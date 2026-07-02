@@ -76,6 +76,16 @@ pub struct PendingSync {
   /// Pending iris-wipe workspace switch, consumed by `platform_sync` to create
   /// the snapshot overlay before the real windows are switched.
   iris_switch: Option<IrisSwitchRequest>,
+
+  /// Whether animations should be skipped for this sync cycle.
+  ///
+  /// Set on display setting changes: animating a relayout caused by a
+  /// resolution or working-area change is visually meaningless, and the
+  /// cloak/surrogate mechanism would kick exclusive-fullscreen games out of
+  /// fullscreen (reverting the resolution and re-triggering the event in a
+  /// loop). In-flight animations of redrawn windows are cancelled and their
+  /// windows snap to their target rect.
+  animations_suppressed: bool,
 }
 
 impl PendingSync {
@@ -102,6 +112,7 @@ impl PendingSync {
     self.window_state_changes.clear();
     self.focus_animation_window = None;
     self.iris_switch = None;
+    self.animations_suppressed = false;
     self
   }
 
@@ -269,5 +280,17 @@ impl PendingSync {
   /// Consumes and returns the pending iris-wipe request, if any.
   pub fn take_iris_switch(&mut self) -> Option<IrisSwitchRequest> {
     self.iris_switch.take()
+  }
+
+  /// Suppresses animations for this sync cycle (see `animations_suppressed`
+  /// field docs).
+  pub fn suppress_animations(&mut self) -> &mut Self {
+    self.animations_suppressed = true;
+    self
+  }
+
+  /// Returns `true` if animations should be skipped for this sync cycle.
+  pub fn animations_suppressed(&self) -> bool {
+    self.animations_suppressed
   }
 }

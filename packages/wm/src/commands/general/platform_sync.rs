@@ -293,6 +293,11 @@ fn redraw_containers(
     windows
   };
 
+  // Whether animations are skipped for this sync cycle (e.g. display
+  // setting changes). In-flight animations of redrawn windows are cancelled
+  // below so their windows snap to their target rect.
+  let suppress_animations = state.pending_sync.animations_suppressed();
+
   // Consume the pending focus animation window ID for this sync cycle.
   #[cfg(target_os = "windows")]
   let focus_anim_id = state.pending_sync.take_focus_animation();
@@ -304,7 +309,7 @@ fn redraw_containers(
   #[cfg(target_os = "windows")]
   {
     let ws_config = &config.value.animations.workspace_switch;
-    if ws_config.enabled {
+    if ws_config.enabled && !suppress_animations {
       // Iris-wipe pre-pass: snapshot the monitor (still showing the outgoing
       // workspace) and show the overlay before the real windows are switched in
       // the redraw loop below. The hole is then driven by the animation manager.
@@ -628,6 +633,13 @@ fn redraw_containers(
     // `window_move` animation when the window just crossed the tiling/floating
     // boundary so the transition is smooth rather than a teleport.
     let is_floating = matches!(window.state(), WindowState::Floating(_));
+
+    // Fullscreen windows are never animated: cloaking the real window (or
+    // covering it with a surrogate) kicks exclusive-fullscreen games out of
+    // fullscreen, reverting their resolution mode-set and re-triggering a
+    // display-settings-changed relayout in a loop.
+    let is_fullscreen =
+      matches!(window.state(), WindowState::Fullscreen(_));
     let is_state_change =
       state.pending_sync.is_window_state_change(&window.id());
 
@@ -690,8 +702,10 @@ fn redraw_containers(
     if previous_target.is_none()
       && is_visible
       && !is_floating
+      && !is_fullscreen
       && !is_outgoing_switch
       && !is_frozen_by_ws_animation
+      && !suppress_animations
       && config.value.animations.window_open.enabled
     {
       let monitor_rect = monitor.to_rect()?;
@@ -710,6 +724,8 @@ fn redraw_containers(
     // Start a focus-change animation for the newly focused window, if queued.
     #[cfg(target_os = "windows")]
     if focus_anim_id == Some(window.id())
+      && !is_fullscreen
+      && !suppress_animations
       && config.value.animations.focus_change.enabled
     {
       let native_ref = window.native();
@@ -749,12 +765,20 @@ fn redraw_containers(
     #[cfg(not(target_os = "windows"))]
     let has_focus_anim = false;
 
+    // Windows frozen by an in-flight workspace-switch animation stay on the
+    // animation path regardless of suppression — the switch's surrogate
+    // teardown uncloaks them, so dropping them here would break its
+    // invariants. Fullscreen windows and suppressed cycles otherwise always
+    // take the non-animated path, which also cancels any in-flight
+    // animation (and its surrogate) via `remove_animation` below.
     let should_use_animations = !is_outgoing_switch
-      && ((!is_floating && anim_enabled)
-        || (is_state_change && anim_enabled)
-        || is_frozen_by_ws_animation
-        || has_slide_in
-        || has_focus_anim);
+      && (is_frozen_by_ws_animation
+        || (!is_fullscreen
+          && !suppress_animations
+          && ((!is_floating && anim_enabled)
+            || (is_state_change && anim_enabled)
+            || has_slide_in
+            || has_focus_anim)));
 
     // Determine the rect to use for this frame.
     //
