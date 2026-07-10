@@ -306,6 +306,18 @@ window_rules:
   #     - window_process: { equals: "chrome" }
   #     - window_process: { equals: "msedge" }
 
+  # Forcibly manage windows that would otherwise be skipped by the
+  # built-in manageability checks (e.g. tool windows that aren't shown
+  # in the alt+tab menu). Combine with other commands to control how
+  # the window is placed once managed. Run GlazeWM with debug logging
+  # to find the process/class/title of a skipped window.
+  - commands: ['force-manage']
+    match:
+      # Flow Launcher's window has a tool window style and wouldn't be
+      # managed otherwise.
+      - window_process: { equals: 'Flow.Launcher' }
+        window_title: { equals: 'Flow.Launcher' }
+
 binding_modes:
   # When enabled, the focused window can be stacked with its neighbors.
   - name: "stack"
