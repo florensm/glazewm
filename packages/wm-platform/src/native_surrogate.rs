@@ -399,19 +399,22 @@ pub(crate) fn to_logical(rect: &Rect, inset: &RECT) -> Rect {
 /// Lightweight overlay window used during move/resize animations.
 ///
 /// At animation start the overlay is placed over the real app window at the
-/// source rect. A DWM thumbnail of the real window is rendered on top. For
-/// shrinking animations the thumbnail is registered at the source dimensions
-/// so it fills the surrogate initially; as the surrogate shrinks the
-/// thumbnail edge is clipped — a wipe effect with no distortion. For growing
-/// animations the thumbnail is registered at the target dimensions; as the
-/// surrogate expands it progressively reveals the real window's content —
-/// a curtain-reveal effect.
+/// source rect. A DWM thumbnail of the real window is rendered on top,
+/// registered at the source dimensions — never larger than the window's
+/// current content, since an oversampled `rcSource` renders as a transparent
+/// hole. For shrinking animations the surrogate clips the thumbnail edge as
+/// it shrinks — a wipe effect with no distortion. For growing animations the
+/// registration is upgraded to the target dimensions (via
+/// [`update_thumbnail_dims`]) once the real window has actually resized,
+/// progressively revealing the new content — a curtain-reveal effect.
 ///
-/// For mixed resizes (one axis grows while the other shrinks) the animated
-/// rect can extend past the registered content on an axis. The exposed gap is
-/// filled by a solid-color backdrop (sampled from the window's trailing edge
-/// via `PrintWindow` at animation start) so the rect reads as one continuous
-/// surface instead of exposing the desktop behind it.
+/// Wherever the animated rect extends past the registered content (growing
+/// sessions before the real window's resize lands, or the grown axis of a
+/// mixed resize), the exposed area is filled by a solid-color backdrop
+/// (sampled from the window's trailing edge at animation start) so the rect
+/// reads as one continuous surface instead of exposing the desktop behind it.
+///
+/// [`update_thumbnail_dims`]: NativeSurrogate::update_thumbnail_dims
 ///
 /// GlazeWM cloaks the real window while the overlay is active.
 ///
@@ -459,16 +462,13 @@ impl NativeSurrogate {
   /// solid-color fill; when `None`, the backdrop is fully transparent so only
   /// the DWM thumbnail is visible.
   ///
-  /// `thumbnail_rect` controls the DWM thumbnail registration size:
-  /// - Pass `source_rect` for shrinking animations — the thumbnail fills the
-  ///   whole surrogate at start and the surrogate clips the edge as it shrinks
-  ///   (wipe effect, no timing dependency on the real window re-rendering).
-  /// - Pass the target rect for growing animations — the thumbnail is
-  ///   registered at the final dimensions so the surrogate progressively
-  ///   reveals the real window's content as it expands (curtain-reveal).
-  ///   The caller must synchronously pre-position the cloaked real window at
-  ///   the target rect before animation begins so DWM captures the correctly-
-  ///   sized content.
+  /// `thumbnail_rect` controls the DWM thumbnail registration size. It must
+  /// not exceed the source window's actual dimensions — an oversampled
+  /// `rcSource` renders as a transparent hole that exposes whatever is
+  /// behind the surrogate. Resize sessions pass `source_rect` and upgrade
+  /// the registration later via [`update_thumbnail_dims`] as the real window
+  /// resizes; workspace surrogates pass the window's screen rect (the
+  /// surrogate itself spans the whole viewport).
   ///
   /// When `initially_visible` is `false`, the surrogate window is created
   /// hidden; the caller must call [`set_visible`] to reveal it. Pass
@@ -496,6 +496,7 @@ impl NativeSurrogate {
   /// Returns an error if window creation fails.
   ///
   /// [`set_visible`]: NativeSurrogate::set_visible
+  /// [`update_thumbnail_dims`]: NativeSurrogate::update_thumbnail_dims
   pub fn create(
     source_hwnd: HWND,
     source_rect: &Rect,
@@ -828,9 +829,12 @@ impl NativeSurrogate {
   /// Unregisters the current DWM thumbnail and registers a new one at
   /// `logical_width` × `logical_height`.
   ///
-  /// Called when a growing animation is redirected to a larger target via
-  /// `update_target` so the curtain-reveal correctly covers the newly expanded
-  /// area. No-op when no thumbnail was registered.
+  /// Prefer [`update_thumbnail_dims`] where possible — the unregister →
+  /// register window here can straddle a DWM composition, blanking the
+  /// surrogate to backdrop-only for a frame. This full re-registration is
+  /// the fallback for stale thumbnail handles.
+  ///
+  /// [`update_thumbnail_dims`]: NativeSurrogate::update_thumbnail_dims
   pub fn reregister_thumbnail(
     &mut self,
     source_hwnd: HWND,
