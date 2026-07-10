@@ -158,6 +158,13 @@ pub enum InvokeCommand {
   AdjustBorders(InvokeAdjustBordersCommand),
   Close,
   Focus(InvokeFocusCommand),
+  /// Marker command for window rules that forces matching windows to be
+  /// managed, bypassing the built-in manageability checks (e.g. the
+  /// `WS_EX_TOOLWINDOW` style check on Windows).
+  ///
+  /// Evaluated *before* a window is managed; running it against an
+  /// already-managed window is a no-op.
+  ForceManage,
   Ignore,
   MoveCursor(InvokeMoveCursorCommand),
   Move(InvokeMoveCommand),
