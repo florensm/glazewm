@@ -192,24 +192,6 @@ impl UserConfig {
       run_once: true,
     });
 
-    // Default force-manage rules. Flow Launcher's window has the
-    // `WS_EX_TOOLWINDOW` style and would otherwise be filtered out by the
-    // built-in manageability checks.
-    window_rules.push(WindowRuleConfig {
-      commands: vec![InvokeCommand::ForceManage],
-      match_window: vec![WindowMatchConfig {
-        window_process: Some(MatchType::Equals {
-          equals: "Flow.Launcher".to_string(),
-        }),
-        window_title: Some(MatchType::Equals {
-          equals: "Flow.Launcher".to_string(),
-        }),
-        ..WindowMatchConfig::default()
-      }],
-      on: vec![WindowRuleEvent::Manage],
-      run_once: true,
-    });
-
     window_rules
   }
 
@@ -516,12 +498,19 @@ mod tests {
   }
 
   #[test]
-  fn flow_launcher_is_force_managed_by_default() {
+  fn no_windows_are_force_managed_by_default() {
     let config = test_config(Vec::new());
 
-    assert!(config.is_force_managed(&test_properties(
+    assert!(!config.is_force_managed(&test_properties(
       "Flow.Launcher",
       "Flow.Launcher"
     )));
+  }
+
+  #[test]
+  fn sample_config_parses() {
+    let result = serde_yaml::from_str::<ParsedConfig>(SAMPLE_CONFIG);
+
+    assert!(result.is_ok(), "{:?}", result.err());
   }
 }
