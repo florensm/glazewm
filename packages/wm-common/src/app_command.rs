@@ -448,3 +448,16 @@ pub struct InvokeUpdateWorkspaceConfig {
   #[clap(long)]
   pub keep_alive: Option<bool>,
 }
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+
+  #[test]
+  fn parses_force_manage_command() {
+    let command = InvokeCommand::try_parse_from(["", "force-manage"])
+      .expect("Failed to parse `force-manage` command.");
+
+    assert_eq!(command, InvokeCommand::ForceManage);
+  }
+}
