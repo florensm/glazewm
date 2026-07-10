@@ -79,10 +79,12 @@ pub struct ResizeSession {
   /// `true` when no dimension shrinks (target >= source in both width and
   /// height). Curtain-reveal mode.
   ///
-  /// Growing sessions use a curtain-reveal: thumbnail registered at target
-  /// dimensions; cloaked window pre-positioned so DWM captures correctly-sized
-  /// content. Mixed/shrinking sessions use clip/wipe: thumbnail at source
-  /// dimensions, real window stays at source until `pre_commit`.
+  /// Growing sessions use a curtain-reveal: the cloaked window is
+  /// pre-positioned at the target so DWM captures correctly-sized content,
+  /// and `sync_registration` upgrades the thumbnail to target dims once the
+  /// window's actual geometry catches up. Mixed/shrinking sessions use
+  /// clip/wipe: thumbnail at source dimensions, real window stays at source
+  /// until `maybe_handoff`/`pre_commit`.
   is_growing: bool,
   /// When `true`, each frame animates the DWM thumbnail `rcDestination`
   /// toward/away from the surrogate center instead of repositioning the
@@ -116,10 +118,15 @@ pub struct ResizeSession {
 impl ResizeSession {
   /// Creates a resize session with a DWM surrogate overlay.
   ///
-  /// Growing sessions (no dimension shrinks) use curtain-reveal: thumbnail at
-  /// target dims, cloaked window pre-positioned so DWM captures new content.
-  /// Shrinking/mixed sessions use clip/wipe: thumbnail at source dims. When
-  /// surrogate creation fails the animation falls back to direct repositioning.
+  /// The thumbnail is always registered at source dims — never larger than
+  /// the real window's current content, since an oversampled `rcSource`
+  /// renders as a transparent hole that bleeds the desktop through the
+  /// surrogate. Growing sessions pre-position the cloaked window at the
+  /// target (curtain-reveal); `sync_registration` upgrades the registration
+  /// to target dims once the window's actual geometry catches up, and the
+  /// animated area beyond the source content shows the sampled backdrop
+  /// color until then. When surrogate creation fails the animation falls
+  /// back to direct repositioning.
   pub fn begin(
     hwnd: HWND,
     source_rect: &Rect,
@@ -130,10 +137,6 @@ impl ResizeSession {
 
     let is_growing = target_rect.width() >= source_rect.width()
       && target_rect.height() >= source_rect.height();
-
-    // Growing: thumbnail at target dims (curtain-reveal).
-    // Shrinking/mixed: thumbnail at source dims (clip/wipe).
-    let thumbnail_rect = if is_growing { target_rect } else { source_rect };
 
     // Sample the dominant background color near the trailing content edge
     // to use as the surrogate's solid backdrop. The backdrop fills any gap
@@ -149,10 +152,13 @@ impl ResizeSession {
     );
 
     let insert_after = if options.place_at_top { HWND(0) } else { hwnd };
+    // Thumbnail registered at source dims for all directions (see doc
+    // comment): the window is only source-sized at this point, and
+    // registering larger would oversample.
     let surrogate = match NativeSurrogate::create(
       hwnd,
       source_rect,
-      thumbnail_rect,
+      source_rect,
       edge_color.as_ref(),
       options.effect_opacity,
       options.initially_visible,
@@ -330,7 +336,11 @@ impl ResizeSession {
       let safe_w = cur_w.min(logical.width());
       let safe_h = cur_h.min(logical.height());
       if (cur_w, cur_h) != (safe_w, safe_h) && safe_w > 0 && safe_h > 0 {
-        surrogate.reregister_thumbnail(
+        // Single-call dims update rather than a full re-registration: the
+        // unregister → register window of `reregister_thumbnail` can straddle
+        // a DWM composition, blanking the surrogate to backdrop-only for a
+        // frame.
+        surrogate.update_thumbnail_dims(
           HWND(self.hwnd),
           safe_w,
           safe_h,
@@ -497,19 +507,28 @@ impl ResizeSession {
   /// direction changes, the DWM thumbnail is re-registered at the appropriate
   /// dimensions so the curtain-reveal or clip/wipe renders correctly:
   ///
-  /// - Shrinking → growing: registers thumbnail at `new_target` dimensions and
-  ///   sends a synchronous `SetWindowPos` to pre-position the cloaked real
-  ///   window at the new target so DWM captures the correctly-sized content.
-  /// - Growing → shrinking: registers thumbnail at `current_rect` dimensions
-  ///   so the clip/wipe effect starts from the correct boundary.
-  /// - Same direction: growing updates position and thumbnail; shrinking only
-  ///   stores the new target.
+  /// - Shrinking → growing: sends an asynchronous `SetWindowPos` to
+  ///   pre-position the cloaked real window at the new target so DWM captures
+  ///   the correctly-sized content; `sync_registration` upgrades the
+  ///   thumbnail once the resize lands.
+  /// - Growing → shrinking: updates the thumbnail to `current_rect`
+  ///   dimensions (capped at the window's actual dims) so the clip/wipe
+  ///   effect starts from the correct boundary.
+  /// - Same direction: growing updates position; shrinking only stores the
+  ///   new target.
+  ///
+  /// The thumbnail registration is never enlarged here — an oversampled
+  /// `rcSource` renders as a transparent hole while the asynchronous resize
+  /// is still in the target app's message queue, bleeding the desktop
+  /// through the surrogate on every key-repeat.
   ///
   /// [`pre_commit`]: ResizeSession::pre_commit
   pub fn update_target(&mut self, current_rect: &Rect, new_target: &Rect) {
     let new_is_growing = new_target.width() >= current_rect.width()
       && new_target.height() >= current_rect.height();
     let direction_changed = new_is_growing != self.is_growing;
+    let prev_target = to_logical(&self.target_rect, &self.border_inset);
+    let prev_target_dims = (prev_target.width(), prev_target.height());
 
     self.is_growing = new_is_growing;
     self.target_rect = new_target.clone();
@@ -519,14 +538,12 @@ impl ResizeSession {
     }
 
     if new_is_growing {
-      // Compute logical dims upfront to gate both the SWP_FRAMECHANGED flag
-      // and the thumbnail update — pure-move redirects (dims unchanged) need
-      // neither, saving an unnecessary WM_NCCALCSIZE in the target app and
-      // an extra DWM cross-process call per keypress.
+      // Gate on the target dims actually changing — pure-move redirects need
+      // neither the reposition nor a thumbnail update, saving an unnecessary
+      // WM_NCCALCSIZE in the target app per keypress.
       let logical = to_logical(new_target, &self.border_inset);
       let new_dims = (logical.width(), logical.height());
-      let dims_changed = self.surrogate.as_ref()
-        .map_or(true, |s| s.content_size() != new_dims);
+      let dims_changed = new_dims != prev_target_dims;
 
       if dims_changed {
         // Pre-position the cloaked real window at the new target so DWM
@@ -558,24 +575,59 @@ impl ResizeSession {
               | SWP_FRAMECHANGED,
           );
         }
-        // Defer the DWM cross-process call to the next animation tick so it
-        // fires at vsync time (where there is budget) rather than on every
-        // keypress. `defer_update` consumes this before `sync_registration`
-        // so the short-circuit check still works on the same tick.
-        self.pending_thumbnail_dims = Some(new_dims);
+        // Cap the registration at the per-axis minimum of its current dims
+        // and the new target — the reposition above is asynchronous, so the
+        // window cannot supply more content than it already has. A redirect
+        // below the current registration is downsized on the next animation
+        // tick (deferred so the DWM cross-process call fires at vsync time,
+        // where there is budget, rather than on every keypress);
+        // `sync_registration` upgrades to exact target dims once the resize
+        // lands. `defer_update` consumes the pending dims before
+        // `sync_registration` so the short-circuit check still works on the
+        // same tick.
+        if let Some(surrogate) = &self.surrogate {
+          let (reg_w, reg_h) = surrogate.content_size();
+          let capped = (reg_w.min(new_dims.0), reg_h.min(new_dims.1));
+          self.pending_thumbnail_dims =
+            if capped == (reg_w, reg_h) { None } else { Some(capped) };
+        }
       }
       self.handoff_done = true;
     } else if direction_changed {
-      // Was growing, now shrinking: register thumbnail at current dims so
-      // the clip/wipe starts from the correct boundary.
+      // Was growing, now shrinking: update the thumbnail to the current
+      // animated dims so the clip/wipe starts from the correct boundary,
+      // capped at the window's actual dims — the earlier asynchronous grow
+      // may not have been processed yet. Drop any dims still queued from the
+      // grow phase so they don't overwrite this update on the next tick.
+      self.pending_thumbnail_dims = None;
       if let Some(surrogate) = &mut self.surrogate {
         let logical = to_logical(current_rect, &self.border_inset);
-        surrogate.reregister_thumbnail(
-          HWND(self.hwnd),
-          logical.width(),
-          logical.height(),
-          self.border_inset,
-        );
+
+        let mut window = RECT::default();
+        // SAFETY: A stale handle only fails the call.
+        let actual = if unsafe {
+          GetWindowRect(HWND(self.hwnd), std::ptr::from_mut(&mut window).cast())
+        }
+        .is_ok()
+        {
+          to_logical(
+            &Rect::from_ltrb(window.left, window.top, window.right, window.bottom),
+            &self.border_inset,
+          )
+        } else {
+          logical.clone()
+        };
+
+        let safe_w = logical.width().min(actual.width());
+        let safe_h = logical.height().min(actual.height());
+        if safe_w > 0 && safe_h > 0 {
+          surrogate.update_thumbnail_dims(
+            HWND(self.hwnd),
+            safe_w,
+            safe_h,
+            self.border_inset,
+          );
+        }
       }
       self.handoff_done = false;
     } else {
@@ -643,9 +695,9 @@ impl ResizeSession {
     }
 
     // Flush any pending thumbnail dims so the `content_size` check below
-    // uses the current target (avoids the 3-call `reregister_thumbnail`
-    // fallback for a dims mismatch that was already queued but not yet
-    // consumed by `defer_update`).
+    // uses the current target (avoids a redundant dims update for a
+    // mismatch that was already queued but not yet consumed by
+    // `defer_update`).
     if let Some((w, h)) = self.pending_thumbnail_dims.take() {
       if let Some(surrogate) = &mut self.surrogate {
         surrogate.update_thumbnail_dims(HWND(self.hwnd), w, h, self.border_inset);
@@ -656,11 +708,13 @@ impl ResizeSession {
       // The real window was just resized to the target above, but the live
       // DWM thumbnail still maps the old content dimensions — for the 1–2
       // frames until teardown it would sample a window that no longer
-      // matches its registration, producing a visible scale glitch.
-      // Re-register at target dims so the surrogate becomes a pixel-aligned
-      // 1:1 mirror of the resized window and the teardown swap is seamless.
+      // matches its registration, producing a visible scale glitch. Update
+      // to target dims so the surrogate becomes a pixel-aligned 1:1 mirror
+      // of the resized window and the teardown swap is seamless. Single-call
+      // update rather than a full re-registration, which can blank the
+      // surrogate for a composition frame.
       if surrogate.content_size() != (logical.width(), logical.height()) {
-        surrogate.reregister_thumbnail(
+        surrogate.update_thumbnail_dims(
           HWND(self.hwnd),
           logical.width(),
           logical.height(),
