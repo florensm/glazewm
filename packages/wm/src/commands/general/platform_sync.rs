@@ -10,7 +10,7 @@ use wm_common::{
 use wm_platform::NativeWindowWindowsExt;
 #[cfg(target_os = "windows")]
 use wm_platform::{
-  CornerStyle, NativeIrisOverlay, OpacityValue, ResizeSession,
+  CornerStyle, NativeIrisOverlay, OpacityValue,
   WorkspaceSurrogate,
 };
 use wm_platform::{Rect, WindowZOrder};
@@ -854,13 +854,13 @@ fn redraw_containers(
             // source), and stretch sessions sample source-sized content for
             // the whole animation — both leave the window at source until
             // `pre_commit`.
-            let needs_preposition = state
+            let session_flags = state
               .animation_manager
               .resize_sessions
               .get(&window.id())
-              .map_or(false, ResizeSession::needs_preposition);
+              .map(|s| (s.needs_preposition(), s.is_move_only()));
 
-            if needs_preposition {
+            if let Some((true, is_move_only)) = session_flags {
               // Post asynchronously: the thumbnail stays registered at
               // source dims until `sync_registration` confirms the resize
               // landed, so a slow-to-respond app costs at most a few frames
@@ -871,14 +871,21 @@ fn redraw_containers(
                 SWP_ASYNCWINDOWPOS, SWP_FRAMECHANGED, SWP_NOACTIVATE,
                 SWP_NOSENDCHANGING, SWP_NOZORDER,
               };
+              let mut swp_flags = SWP_NOZORDER
+                | SWP_NOACTIVATE
+                | SWP_NOSENDCHANGING
+                | SWP_ASYNCWINDOWPOS;
+              // `SWP_FRAMECHANGED` forces `WM_NCCALCSIZE` plus a full
+              // repaint in the target app; a pure move needs neither, so
+              // multi-window relayouts skip that per-window repaint burst
+              // for windows that only change position.
+              if !is_move_only {
+                swp_flags |= SWP_FRAMECHANGED;
+              }
               let _ = window.native().set_window_pos(
                 &z_order,
                 &target_rect,
-                SWP_NOZORDER
-                  | SWP_FRAMECHANGED
-                  | SWP_NOACTIVATE
-                  | SWP_NOSENDCHANGING
-                  | SWP_ASYNCWINDOWPOS,
+                swp_flags,
               );
             }
           }
