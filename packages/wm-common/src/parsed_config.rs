@@ -275,6 +275,28 @@ pub struct BlurBehindEffectConfig {
   pub tint: Option<Color>,
 }
 
+impl BlurBehindEffectConfig {
+  /// Returns the ABGR-packed SWCA tint for the acrylic style.
+  ///
+  /// Returns `None` when the effect is disabled or a non-acrylic style is
+  /// configured. When no tint is set, falls back to near-transparent black
+  /// (`alpha = 1`) to avoid the solid-fill rendering bug present on some
+  /// Windows 10 builds.
+  #[must_use]
+  pub fn acrylic_tint(&self) -> Option<u32> {
+    if !self.enabled || self.style != BlurBehindStyle::Acrylic {
+      return None;
+    }
+
+    Some(self.tint.as_ref().map_or(0x0100_0000, |c| {
+      (u32::from(c.a) << 24)
+        | (u32::from(c.b) << 16)
+        | (u32::from(c.g) << 8)
+        | u32::from(c.r)
+    }))
+  }
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(default, rename_all(serialize = "camelCase"))]
 pub struct BorderEffectConfig {

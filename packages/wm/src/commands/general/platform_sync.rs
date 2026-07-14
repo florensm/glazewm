@@ -389,8 +389,13 @@ fn redraw_containers(
           } else {
             u8::MAX
           };
+          // Carry the acrylic blur onto the surrogate so the frosted-glass
+          // effect stays visible while the workspace slides. The static
+          // blur overlay is hidden for the duration of the animation.
+          let acrylic_tint = effect_cfg.blur_behind.acrylic_tint();
+
           if is_incoming {
-            let surrogate = window
+            let mut surrogate = window
               .to_rect()
               .and_then(|r| {
                 window.total_border_delta().map(|d| r.apply_delta(&d, None))
@@ -408,6 +413,9 @@ fn redraw_containers(
                   })
                   .ok()
               });
+            if let (Some(s), Some(tint)) = (&mut surrogate, acrylic_tint) {
+              s.apply_swca(tint);
+            }
             // Always register incoming windows even without a surrogate so
             // `is_frozen_by_ws_animation` is true for all of them — this
             // prevents the real window from being uncloaked before the
@@ -422,13 +430,16 @@ fn redraw_containers(
               .unwrap_or_else(|| Rect::from_xy(0, 0, 0, 0));
             let viewport =
               Rect::from_xy(monitor_x, monitor_y, monitor_width, monitor_height);
-            let surrogate =
+            let mut surrogate =
               WorkspaceSurrogate::new(hwnd, &current, &viewport, opacity, ws_config.opacity_outgoing)
                 .map_err(|e| {
                   tracing::warn!("Failed to create outgoing surrogate: {e}.");
                   e
                 })
                 .ok();
+            if let (Some(s), Some(tint)) = (&mut surrogate, acrylic_tint) {
+              s.apply_swca(tint);
+            }
             ws_windows.push((id, surrogate, false));
           }
         }
@@ -661,22 +672,7 @@ fn redraw_containers(
       } else {
         CornerStyle::Default
       };
-      let tint = if effect_cfg.blur_behind.enabled
-        && matches!(effect_cfg.blur_behind.style, BlurBehindStyle::Acrylic)
-      {
-        Some(effect_cfg.blur_behind.tint.as_ref().map_or(
-          0x0100_0000_u32,
-          |c| {
-            (u32::from(c.a) << 24)
-              | (u32::from(c.b) << 16)
-              | (u32::from(c.g) << 8)
-              | u32::from(c.r)
-          },
-        ))
-      } else {
-        None
-      };
-      (opacity, style, tint)
+      (opacity, style, effect_cfg.blur_behind.acrylic_tint())
     };
 
     // Start a slide-in animation for newly appearing tiling windows.
@@ -1386,11 +1382,9 @@ fn sync_blur_overlays(
       &config.value.window_effects.other_windows
     };
 
-    if !effect_cfg.blur_behind.enabled
-      || !matches!(effect_cfg.blur_behind.style, BlurBehindStyle::Acrylic)
-    {
+    let Some(tint) = effect_cfg.blur_behind.acrylic_tint() else {
       continue;
-    }
+    };
 
     wanted_ids.insert(window.id());
 
@@ -1419,19 +1413,6 @@ fn sync_blur_overlays(
     let Ok(rect) = window.native().frame() else {
       continue;
     };
-
-    // Convert the config tint (RGBA) to the ABGR u32 that SWCA expects.
-    // The default near-transparent black avoids a solid-fill bug on some
-    // Windows 10 builds where alpha=0 renders opaque.
-    let tint = effect_cfg.blur_behind.tint.as_ref().map_or(
-      0x0100_0000_u32,
-      |c| {
-        (u32::from(c.a) << 24)
-          | (u32::from(c.b) << 16)
-          | (u32::from(c.g) << 8)
-          | u32::from(c.r)
-      },
-    );
 
     match state.blur_overlays.entry(window.id()) {
       std::collections::hash_map::Entry::Occupied(e) => {

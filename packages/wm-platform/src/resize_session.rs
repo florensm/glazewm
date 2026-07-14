@@ -715,16 +715,6 @@ impl ResizeSession {
   /// call.
   ///
   /// [`commit`]: ResizeSession::commit
-  /// Applies the per-window border inset to `rect`, producing the
-  /// frame-clipped equivalent (invisible resize-border pixels excluded).
-  ///
-  /// Use this to position the blur overlay so it stays flush with the
-  /// surrogate's visible edge throughout the animation, matching the
-  /// `to_logical` clipping the surrogate itself applies.
-  pub fn apply_border_inset(&self, rect: &Rect) -> Rect {
-    to_logical(rect, &self.border_inset)
-  }
-
   pub fn pre_commit(&mut self) {
     // SAFETY: `IsWindow` is safe to call with any `HWND` value.
     if !unsafe { IsWindow(HWND(self.hwnd)).as_bool() } {
