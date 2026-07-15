@@ -87,36 +87,6 @@ const SESSION_FADE_OUT: Duration = Duration::from_millis(100);
 #[cfg(target_os = "windows")]
 const HANDOFF_LEAD_MAX_MS: u64 = 100;
 
-/// Maximum resize-session handoffs dispatched per animation tick.
-///
-/// Handing off every window in the same tick sends simultaneous
-/// `SWP_FRAMECHANGED` repositions, forcing all target apps to relayout and
-/// repaint at once — a burst that can drop frames near the animation end.
-/// The real windows are cloaked behind surrogates, so staggering is
-/// invisible.
-#[cfg(target_os = "windows")]
-const MAX_HANDOFFS_PER_TICK: usize = 2;
-
-/// Extra handoff lead added per staggered batch, in milliseconds.
-///
-/// Upper bound on the tick spacing (one 60 Hz frame period), so later
-/// batches keep their full repaint runway regardless of refresh rate.
-#[cfg(target_os = "windows")]
-const HANDOFF_STAGGER_STEP_MS: u64 = 17;
-
-/// How long a sampled surrogate backdrop color stays valid per window.
-///
-/// Sampling costs two GPU→CPU `BitBlt` readbacks on the WM thread; caching
-/// removes them from the keypress path during bursts of relayouts. App
-/// background colors change rarely (theme switches), so a stale hit is a
-/// cosmetic-only risk bounded by this TTL.
-#[cfg(target_os = "windows")]
-const EDGE_COLOR_CACHE_TTL: Duration = Duration::from_secs(30);
-
-/// Cache-size threshold above which stale edge-color entries are pruned.
-#[cfg(target_os = "windows")]
-const EDGE_COLOR_CACHE_PRUNE_LEN: usize = 128;
-
 use tokio::sync::mpsc;
 use uuid::Uuid;
 use wm_common::{
@@ -126,7 +96,7 @@ use wm_common::{
 use wm_platform::{NativeWindow, OpacityValue, Rect};
 #[cfg(target_os = "windows")]
 use wm_platform::{
-  Color, CornerStyle, DxgiVsyncWaiter, NativeIrisOverlay,
+  CornerStyle, DxgiVsyncWaiter, NativeIrisOverlay,
   NativeWindowWindowsExt, ResizeSession, SessionOptions, SlideAxis,
   SurrogateBatch, WorkspaceSurrogate,
 };
@@ -302,14 +272,6 @@ pub struct AnimationManager {
   /// and the real window has been moved to its final position.
   #[cfg(target_os = "windows")]
   pub(crate) resize_sessions: HashMap<Uuid, ResizeSession>,
-  /// Recently sampled surrogate backdrop colors keyed by window handle.
-  ///
-  /// Lets `ResizeSession::begin` skip its two-`BitBlt` screen sample for
-  /// windows resized again within [`EDGE_COLOR_CACHE_TTL`], removing the
-  /// GPU→CPU readback burst when a relayout begins many sessions in the
-  /// same keypress.
-  #[cfg(target_os = "windows")]
-  edge_color_cache: HashMap<isize, (Color, Instant)>,
   /// Surrogate updates queued during this redraw pass; committed atomically by
   /// [`flush_surrogate_updates`] so adjacent surrogates land in the same DWM
   /// composition frame.
@@ -384,8 +346,6 @@ impl AnimationManager {
       animation_vsync_time: Arc::new(Mutex::new(None)),
       #[cfg(target_os = "windows")]
       resize_sessions: HashMap::new(),
-      #[cfg(target_os = "windows")]
-      edge_color_cache: HashMap::new(),
       #[cfg(target_os = "windows")]
       pending_surrogate_updates: Vec::new(),
       #[cfg(target_os = "windows")]
@@ -1360,11 +1320,8 @@ impl AnimationManager {
           self
             .pending_session_cleanup
             .retain(|(id, _, _)| id != &window_id);
-          let hwnd = native_window.hwnd();
-          let cached_edge_color = self.cached_edge_color(hwnd.0);
-          let had_cached_color = cached_edge_color.is_some();
           match ResizeSession::begin(
-            hwnd,
+            native_window.hwnd(),
             &start_rect,
             &target_rect,
             SessionOptions {
@@ -1372,17 +1329,9 @@ impl AnimationManager {
               initially_visible: true,
               corner_style,
               place_at_top: true,
-              edge_color: cached_edge_color,
             },
           ) {
             Ok(session) => {
-              // Only cache on a miss so staleness stays bounded by the TTL
-              // rather than sliding forward on every reuse.
-              if !had_cached_color {
-                if let Some(color) = session.edge_color() {
-                  self.remember_edge_color(hwnd.0, color.clone());
-                }
-              }
               self.resize_sessions.insert(window_id, session);
             }
             Err(err) => {
@@ -1473,28 +1422,11 @@ impl AnimationManager {
                 // visual progress.
                 #[allow(
                   clippy::cast_possible_truncation,
-                  clippy::cast_sign_loss,
-                  clippy::cast_precision_loss
+                  clippy::cast_sign_loss
                 )]
-                let (duration_ms, base_lead_ms) = (
-                  a.duration.as_millis() as u64,
-                  (a.duration.as_millis() as f32 * 0.35)
-                    .clamp(50.0, HANDOFF_LEAD_MAX_MS as f32)
-                    as u64,
-                );
-                // Widen the lead when handoffs will be staggered across
-                // ticks (see `flush_surrogate_updates`): later batches need
-                // proportionally more runway to keep their repaint time
-                // before uncloak. Capped at 60% of the duration so short
-                // animations still spend most of their travel pre-handoff.
-                let stagger_batches = self
-                  .resize_sessions
-                  .len()
-                  .div_ceil(MAX_HANDOFFS_PER_TICK)
-                  .saturating_sub(1) as u64;
-                let lead_ms = (base_lead_ms
-                  + stagger_batches * HANDOFF_STAGGER_STEP_MS)
-                  .min(duration_ms * 3 / 5);
+                let lead_ms = (a.duration.as_millis() as f32 * 0.35)
+                  .clamp(50.0, HANDOFF_LEAD_MAX_MS as f32)
+                  as u64;
                 a.remaining_at(now) <= Duration::from_millis(lead_ms)
               });
             self.pending_surrogate_updates.push(PendingSurrogateUpdate {
@@ -1545,32 +1477,6 @@ impl AnimationManager {
       })
   }
 
-  /// Returns the cached surrogate backdrop color for `hwnd` when still
-  /// within [`EDGE_COLOR_CACHE_TTL`].
-  #[cfg(target_os = "windows")]
-  fn cached_edge_color(&self, hwnd: isize) -> Option<Color> {
-    self
-      .edge_color_cache
-      .get(&hwnd)
-      .filter(|(_, sampled_at)| sampled_at.elapsed() < EDGE_COLOR_CACHE_TTL)
-      .map(|(color, _)| color.clone())
-  }
-
-  /// Caches `color` as `hwnd`'s surrogate backdrop color.
-  ///
-  /// Prunes stale entries once the cache exceeds
-  /// [`EDGE_COLOR_CACHE_PRUNE_LEN`] so closed windows don't accumulate
-  /// indefinitely.
-  #[cfg(target_os = "windows")]
-  fn remember_edge_color(&mut self, hwnd: isize, color: Color) {
-    if self.edge_color_cache.len() >= EDGE_COLOR_CACHE_PRUNE_LEN {
-      self
-        .edge_color_cache
-        .retain(|_, (_, sampled_at)| sampled_at.elapsed() < EDGE_COLOR_CACHE_TTL);
-    }
-    self.edge_color_cache.insert(hwnd, (color, Instant::now()));
-  }
-
   /// Applies all surrogate updates queued during the current redraw pass in
   /// a single `DeferWindowPos` transaction.
   ///
@@ -1585,39 +1491,12 @@ impl AnimationManager {
       return;
     }
 
-    let updates = std::mem::take(&mut self.pending_surrogate_updates);
-
-    // Stagger handoffs: dispatch at most [`MAX_HANDOFFS_PER_TICK`] this
-    // tick, largest size change first — bigger resizes trigger more
-    // relayout/repaint work in the target app, so they get the most repaint
-    // runway before uncloak. Windows not dispatched stay handoff-flagged on
-    // subsequent ticks (the widened lead in `evaluate_position` budgets for
-    // this), and `pre_commit` remains the correctness fallback.
-    let mut candidates: Vec<(usize, i32)> = updates
-      .iter()
-      .enumerate()
-      .filter(|(_, update)| update.handoff)
-      .filter_map(|(index, update)| {
-        self
-          .resize_sessions
-          .get(&update.window_id)
-          .filter(|session| session.handoff_pending())
-          .map(|session| (index, session.handoff_size_delta()))
-      })
-      .collect();
-    candidates.sort_by_key(|&(_, size_delta)| std::cmp::Reverse(size_delta));
-    let dispatch: Vec<usize> = candidates
-      .iter()
-      .take(MAX_HANDOFFS_PER_TICK)
-      .map(|&(index, _)| index)
-      .collect();
-
     let mut batch = SurrogateBatch::new();
-    for (index, update) in updates.into_iter().enumerate() {
+    for update in std::mem::take(&mut self.pending_surrogate_updates) {
       if let Some(session) =
         self.resize_sessions.get_mut(&update.window_id)
       {
-        if dispatch.contains(&index) {
+        if update.handoff {
           session.maybe_handoff();
         }
         session.defer_update(&mut batch, &update.rect, update.opacity);
@@ -1909,9 +1788,6 @@ impl AnimationManager {
         initially_visible: false,
         corner_style,
         place_at_top: true,
-        // No cache for open animations: the window is new, so no prior
-        // sample exists.
-        edge_color: None,
       },
     ) {
       Ok(mut session) => {
@@ -2016,9 +1892,6 @@ impl AnimationManager {
         initially_visible: false,
         corner_style,
         place_at_top: false,
-        // Reuse a cached color when the closing window was recently
-        // animated; otherwise sample — the window is still on screen.
-        edge_color: self.cached_edge_color(native_window.hwnd().0),
       },
     ) {
       Ok(mut session) => {
@@ -2184,11 +2057,8 @@ impl AnimationManager {
         // real window. Cloaking first would expose the desktop for the
         // frame(s) it takes to create the surrogate and register its
         // thumbnail — a visible flash on every focus change.
-        let hwnd = native_window.hwnd();
-        let cached_edge_color = self.cached_edge_color(hwnd.0);
-        let had_cached_color = cached_edge_color.is_some();
         match ResizeSession::begin(
-          hwnd,
+          native_window.hwnd(),
           &shrunken,
           &current_rect,
           SessionOptions {
@@ -2196,16 +2066,9 @@ impl AnimationManager {
             initially_visible: true,
             corner_style,
             place_at_top: true,
-            edge_color: cached_edge_color,
           },
         ) {
           Ok(session) => {
-            // Only cache on a miss so staleness stays bounded by the TTL.
-            if !had_cached_color {
-              if let Some(color) = session.edge_color() {
-                self.remember_edge_color(hwnd.0, color.clone());
-              }
-            }
             let _ = native_window.set_cloaked(true);
             self.animations.insert(window_id, anim);
             self.resize_sessions.insert(window_id, session);

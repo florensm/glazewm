@@ -24,7 +24,7 @@ use windows::Win32::{
 const EDGE_SAMPLE_INSET: i32 = 4;
 
 use crate::{
-  native_surrogate::to_logical, Color, CornerStyle, NativeSurrogate, Rect,
+  native_surrogate::to_logical, CornerStyle, NativeSurrogate, Rect,
   SurrogateBatch,
 };
 
@@ -32,14 +32,6 @@ use crate::{
 pub struct SessionOptions {
   /// DWM thumbnail opacity (0–255) from the window-effects config.
   pub effect_opacity: u8,
-  /// Precomputed backdrop color for the surrogate, bypassing the on-screen
-  /// edge sample.
-  ///
-  /// Sampling performs two GPU→CPU `BitBlt` readbacks per session, which
-  /// multiplies into a visible hitch when a relayout begins sessions for
-  /// many windows at once. Callers that cache the color per window (see
-  /// `AnimationManager`) pass it here; `None` samples fresh.
-  pub edge_color: Option<Color>,
   /// Whether the surrogate is visible immediately after creation.
   pub initially_visible: bool,
   /// Corner style to apply to the surrogate, matching the real window's
@@ -84,22 +76,6 @@ pub struct ResizeSession {
   /// component, so the thumbnail matches the real window's `SetLayeredWindowAttributes`
   /// opacity throughout the move/resize.
   pub effect_opacity: u8,
-  /// Backdrop color applied to the surrogate, either passed in via
-  /// [`SessionOptions`] or freshly sampled at session start.
-  ///
-  /// Exposed via [`edge_color`] so callers can cache it per window and skip
-  /// the two-`BitBlt` screen sample on subsequent sessions.
-  ///
-  /// [`edge_color`]: ResizeSession::edge_color
-  edge_color: Option<Color>,
-  /// `true` while every target this session has been given matches the
-  /// source dimensions — the session only moves the real window, never
-  /// resizes it.
-  ///
-  /// A pure move needs no `WM_NCCALCSIZE`/full repaint, so repositions may
-  /// omit `SWP_FRAMECHANGED`. Cleared permanently by the first redirect
-  /// that changes the target dimensions.
-  is_move_only: bool,
   /// `true` when no dimension shrinks (target >= source in both width and
   /// height). Curtain-reveal mode.
   ///
@@ -161,26 +137,19 @@ impl ResizeSession {
 
     let is_growing = target_rect.width() >= source_rect.width()
       && target_rect.height() >= source_rect.height();
-    let is_move_only = target_rect.width() == source_rect.width()
-      && target_rect.height() == source_rect.height();
 
     // Sample the dominant background color near the trailing content edge
     // to use as the surrogate's solid backdrop. The backdrop fills any gap
     // between the animated rect and the registered thumbnail area (mixed
     // resizes) with a uniform color that blends into the app's own background.
-    // Skipped when the caller supplies a cached color — the sample costs two
-    // GPU→CPU `BitBlt` readbacks, which stack up when a relayout begins many
-    // sessions in the same keypress. Falls back to transparent (no backdrop)
-    // when sampling fails.
-    let edge_color = options.edge_color.or_else(|| {
-      let logical_src = to_logical(source_rect, &border_inset);
-      sample_edge_color(
-        logical_src.x(),
-        logical_src.y(),
-        logical_src.width(),
-        logical_src.height(),
-      )
-    });
+    // Falls back to transparent (no backdrop) when sampling fails.
+    let logical_src = to_logical(source_rect, &border_inset);
+    let edge_color = sample_edge_color(
+      logical_src.x(),
+      logical_src.y(),
+      logical_src.width(),
+      logical_src.height(),
+    );
 
     let insert_after = if options.place_at_top { HWND(0) } else { hwnd };
     // Thumbnail registered at source dims for all directions (see doc
@@ -213,8 +182,6 @@ impl ResizeSession {
       surrogate,
       border_inset,
       effect_opacity: options.effect_opacity,
-      edge_color,
-      is_move_only,
       is_growing,
       zoom: false,
       handoff_done: is_growing,
@@ -237,51 +204,6 @@ impl ResizeSession {
   /// correctly-sized content before the surrogate begins expanding.
   pub fn needs_preposition(&self) -> bool {
     self.is_growing
-  }
-
-  /// Returns `true` while the session has never been asked to change the
-  /// real window's dimensions — every target so far matched the source size.
-  ///
-  /// Pure moves need no `WM_NCCALCSIZE`/full repaint, so callers may omit
-  /// `SWP_FRAMECHANGED` when repositioning the window.
-  #[must_use]
-  pub fn is_move_only(&self) -> bool {
-    self.is_move_only
-  }
-
-  /// Returns the backdrop color in use by this session's surrogate, if any.
-  ///
-  /// Callers cache this per window so subsequent sessions can skip the
-  /// two-`BitBlt` screen sample via [`SessionOptions::edge_color`].
-  #[must_use]
-  pub fn edge_color(&self) -> Option<&Color> {
-    self.edge_color.as_ref()
-  }
-
-  /// Returns `true` when the session still needs its mid-animation handoff
-  /// (the real window has not yet been repositioned at the current target).
-  ///
-  /// Used to select handoff candidates when staggering handoffs across
-  /// animation ticks.
-  #[must_use]
-  pub fn handoff_pending(&self) -> bool {
-    !self.handoff_done && !self.zoom && self.hwnd != 0
-  }
-
-  /// Relative cost estimate for this session's handoff: the total dimension
-  /// change (in logical pixels) between the thumbnail's registered content
-  /// size and the target.
-  ///
-  /// Larger changes trigger more relayout/repaint work in the target app, so
-  /// staggered handoffs dispatch them first to give the app the most repaint
-  /// runway before uncloak. Returns `0` when no surrogate is active.
-  #[must_use]
-  pub fn handoff_size_delta(&self) -> i32 {
-    let target = to_logical(&self.target_rect, &self.border_inset);
-    self.surrogate.as_ref().map_or(0, |s| {
-      let (w, h) = s.content_size();
-      (target.width() - w).abs() + (target.height() - h).abs()
-    })
   }
 
   /// Returns `true` when this session has already cloaked the source window.
@@ -607,13 +529,6 @@ impl ResizeSession {
     let direction_changed = new_is_growing != self.is_growing;
     let prev_target = to_logical(&self.target_rect, &self.border_inset);
     let prev_target_dims = (prev_target.width(), prev_target.height());
-
-    // A redirect that changes the target dims means the window will be
-    // resized at least once — the session permanently stops qualifying for
-    // the `SWP_FRAMECHANGED`-free pure-move path.
-    self.is_move_only = self.is_move_only
-      && new_target.width() == self.target_rect.width()
-      && new_target.height() == self.target_rect.height();
 
     self.is_growing = new_is_growing;
     self.target_rect = new_target.clone();
