@@ -87,6 +87,19 @@ const SESSION_FADE_OUT: Duration = Duration::from_millis(100);
 #[cfg(target_os = "windows")]
 const HANDOFF_LEAD_MAX_MS: u64 = 100;
 
+/// How long a sampled surrogate backdrop color stays valid per window.
+///
+/// Sampling costs two GPU→CPU `BitBlt` readbacks on the WM thread; caching
+/// removes them from the keypress path during bursts of relayouts. App
+/// background colors change rarely (theme switches), so a stale hit is a
+/// cosmetic-only risk bounded by this TTL.
+#[cfg(target_os = "windows")]
+const EDGE_COLOR_CACHE_TTL: Duration = Duration::from_secs(30);
+
+/// Cache-size threshold above which stale edge-color entries are pruned.
+#[cfg(target_os = "windows")]
+const EDGE_COLOR_CACHE_PRUNE_LEN: usize = 128;
+
 use tokio::sync::mpsc;
 use uuid::Uuid;
 use wm_common::{
@@ -96,7 +109,7 @@ use wm_common::{
 use wm_platform::{NativeWindow, OpacityValue, Rect};
 #[cfg(target_os = "windows")]
 use wm_platform::{
-  CornerStyle, DxgiVsyncWaiter, NativeIrisOverlay,
+  Color, CornerStyle, DxgiVsyncWaiter, NativeIrisOverlay,
   NativeWindowWindowsExt, ResizeSession, SessionOptions, SlideAxis,
   SurrogateBatch, WorkspaceSurrogate,
 };
@@ -272,6 +285,14 @@ pub struct AnimationManager {
   /// and the real window has been moved to its final position.
   #[cfg(target_os = "windows")]
   pub(crate) resize_sessions: HashMap<Uuid, ResizeSession>,
+  /// Recently sampled surrogate backdrop colors keyed by window handle.
+  ///
+  /// Lets `ResizeSession::begin` skip its two-`BitBlt` screen sample for
+  /// windows resized again within [`EDGE_COLOR_CACHE_TTL`], removing the
+  /// GPU→CPU readback burst when a relayout begins many sessions in the
+  /// same keypress.
+  #[cfg(target_os = "windows")]
+  edge_color_cache: HashMap<isize, (Color, Instant)>,
   /// Surrogate updates queued during this redraw pass; committed atomically by
   /// [`flush_surrogate_updates`] so adjacent surrogates land in the same DWM
   /// composition frame.
@@ -346,6 +367,8 @@ impl AnimationManager {
       animation_vsync_time: Arc::new(Mutex::new(None)),
       #[cfg(target_os = "windows")]
       resize_sessions: HashMap::new(),
+      #[cfg(target_os = "windows")]
+      edge_color_cache: HashMap::new(),
       #[cfg(target_os = "windows")]
       pending_surrogate_updates: Vec::new(),
       #[cfg(target_os = "windows")]
@@ -1320,8 +1343,11 @@ impl AnimationManager {
           self
             .pending_session_cleanup
             .retain(|(id, _, _)| id != &window_id);
+          let hwnd = native_window.hwnd();
+          let cached_edge_color = self.cached_edge_color(hwnd.0);
+          let had_cached_color = cached_edge_color.is_some();
           match ResizeSession::begin(
-            native_window.hwnd(),
+            hwnd,
             &start_rect,
             &target_rect,
             SessionOptions {
@@ -1329,9 +1355,17 @@ impl AnimationManager {
               initially_visible: true,
               corner_style,
               place_at_top: true,
+              edge_color: cached_edge_color,
             },
           ) {
             Ok(session) => {
+              // Only cache on a miss so staleness stays bounded by the TTL
+              // rather than sliding forward on every reuse.
+              if !had_cached_color {
+                if let Some(color) = session.edge_color() {
+                  self.remember_edge_color(hwnd.0, color.clone());
+                }
+              }
               self.resize_sessions.insert(window_id, session);
             }
             Err(err) => {
@@ -1475,6 +1509,32 @@ impl AnimationManager {
       .any(|(id, _, session)| {
         id == window_id && session.target_rect() == rect
       })
+  }
+
+  /// Returns the cached surrogate backdrop color for `hwnd` when still
+  /// within [`EDGE_COLOR_CACHE_TTL`].
+  #[cfg(target_os = "windows")]
+  fn cached_edge_color(&self, hwnd: isize) -> Option<Color> {
+    self
+      .edge_color_cache
+      .get(&hwnd)
+      .filter(|(_, sampled_at)| sampled_at.elapsed() < EDGE_COLOR_CACHE_TTL)
+      .map(|(color, _)| color.clone())
+  }
+
+  /// Caches `color` as `hwnd`'s surrogate backdrop color.
+  ///
+  /// Prunes stale entries once the cache exceeds
+  /// [`EDGE_COLOR_CACHE_PRUNE_LEN`] so closed windows don't accumulate
+  /// indefinitely.
+  #[cfg(target_os = "windows")]
+  fn remember_edge_color(&mut self, hwnd: isize, color: Color) {
+    if self.edge_color_cache.len() >= EDGE_COLOR_CACHE_PRUNE_LEN {
+      self
+        .edge_color_cache
+        .retain(|_, (_, sampled_at)| sampled_at.elapsed() < EDGE_COLOR_CACHE_TTL);
+    }
+    self.edge_color_cache.insert(hwnd, (color, Instant::now()));
   }
 
   /// Applies all surrogate updates queued during the current redraw pass in
@@ -1788,6 +1848,9 @@ impl AnimationManager {
         initially_visible: false,
         corner_style,
         place_at_top: true,
+        // No cache for open animations: the window is new, so no prior
+        // sample exists.
+        edge_color: None,
       },
     ) {
       Ok(mut session) => {
@@ -1892,6 +1955,9 @@ impl AnimationManager {
         initially_visible: false,
         corner_style,
         place_at_top: false,
+        // Reuse a cached color when the closing window was recently
+        // animated; otherwise sample — the window is still on screen.
+        edge_color: self.cached_edge_color(native_window.hwnd().0),
       },
     ) {
       Ok(mut session) => {
