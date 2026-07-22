@@ -90,7 +90,7 @@ const HANDOFF_LEAD_MAX_MS: u64 = 100;
 use tokio::sync::mpsc;
 use uuid::Uuid;
 use wm_common::{
-  EasingFunction, FocusAnimationStyle, WindowTransitionStyle,
+  EasingFunction, WindowTransitionStyle,
   WorkspaceSwitchDirection, WorkspaceSwitchStyle,
 };
 use wm_platform::{NativeWindow, OpacityValue, Rect};
@@ -1979,106 +1979,6 @@ impl AnimationManager {
       if !entry.is_incoming {
         if let Some(ref mut s) = entry.surrogate {
           s.apply_effect_opacity();
-        }
-      }
-    }
-  }
-
-  /// Starts a focus-change animation for the given window.
-  ///
-  /// Skipped when the window already has an active animation or surrogate
-  /// (e.g. a move/resize animation takes priority), or when a workspace-switch
-  /// is animating the window.
-  ///
-  /// - `Opacity` style: inserts an animation that briefly dims `window_id` from
-  ///   50% of `effect_opacity` back to `effect_opacity`. No surrogate is used;
-  ///   the real window is updated each frame via `SetLayeredWindowAttributes`.
-  /// - `Scale` style: creates a growing `ResizeSession` from a centred,
-  ///   `scale_factor`-shrunken rect to `current_rect`. The real window is
-  ///   cloaked and the surrogate reveals the content as it grows.
-  #[cfg(target_os = "windows")]
-  pub fn start_focus_animation(
-    &mut self,
-    window_id: Uuid,
-    current_rect: Rect,
-    effect_opacity: u8,
-    corner_style: CornerStyle,
-    config: &UserConfig,
-    native_window: &NativeWindow,
-  ) {
-    if self.animations.contains_key(&window_id)
-      || self.resize_sessions.contains_key(&window_id)
-      || self.is_workspace_switch_incoming(&window_id)
-    {
-      return;
-    }
-
-    // Pace the focus animation on the window's own monitor.
-    self.ensure_waiter_for(DxgiVsyncWaiter::window_monitor(
-      native_window.hwnd(),
-    ));
-
-    let fc = &config.value.animations.focus_change;
-    let effect_frac = effect_opacity as f32 / 255.0;
-
-    match fc.style {
-      FocusAnimationStyle::Opacity => {
-        let dim_frac = effect_frac * fc.opacity_from.clamp(0.0, 1.0);
-        let mut anim = WindowAnimationState::new_movement(
-          current_rect.clone(),
-          current_rect,
-          fc.duration_ms,
-          fc.easing.clone(),
-        );
-        anim.start_opacity = Some(OpacityValue(dim_frac));
-        anim.target_opacity = Some(OpacityValue(effect_frac));
-        self.animations.insert(window_id, anim);
-        self.ensure_timer_running();
-      }
-      FocusAnimationStyle::Scale => {
-        let sf = fc.scale_factor.clamp(0.1, 1.0_f32);
-        let w = current_rect.width();
-        let h = current_rect.height();
-        let sw = ((w as f32 * sf).round() as i32).max(1);
-        let sh = ((h as f32 * sf).round() as i32).max(1);
-        let shrunken = Rect::from_xy(
-          current_rect.x() + (w - sw) / 2,
-          current_rect.y() + (h - sh) / 2,
-          sw,
-          sh,
-        );
-        let anim = WindowAnimationState::new_movement(
-          shrunken.clone(),
-          current_rect.clone(),
-          fc.duration_ms,
-          fc.easing.clone(),
-        );
-        // Create the (immediately visible) surrogate before cloaking the
-        // real window. Cloaking first would expose the desktop for the
-        // frame(s) it takes to create the surrogate and register its
-        // thumbnail — a visible flash on every focus change.
-        match ResizeSession::begin(
-          native_window.hwnd(),
-          &shrunken,
-          &current_rect,
-          SessionOptions {
-            effect_opacity,
-            initially_visible: true,
-            corner_style,
-            place_at_top: true,
-          },
-        ) {
-          Ok(session) => {
-            let _ = native_window.set_cloaked(true);
-            self.animations.insert(window_id, anim);
-            self.resize_sessions.insert(window_id, session);
-            self.ensure_timer_running();
-          }
-          Err(err) => {
-            tracing::warn!(
-              "Failed to begin focus scale animation for {window_id}: {err}."
-            );
-          }
         }
       }
     }

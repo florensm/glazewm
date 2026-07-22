@@ -100,29 +100,6 @@ animations:
     # at 1.0 no fade is applied.
     opacity_to: 0.0
 
-  # Animation settings for when the focused window changes (Windows only).
-  focus_change:
-    enabled: false
-    duration_ms: 150
-    # See 'window_move.easing' for available options.
-    easing: "cubic_bezier(0.16, 1.0, 0.3, 1.0)"
-    # Animation style. Options:
-    #   'opacity' (default) - window briefly dims then restores opacity
-    #   'scale'             - window briefly pops in from a slightly smaller size
-    style: "opacity"
-    # For 'opacity' type: dim level at the start of the animation, relative to
-    # the effect opacity. E.g. 0.5 = dims to 50% of effect opacity then
-    # restores. Range: 0.0–1.0. Default: 0.5.
-    opacity_from: 0.5
-    # For 'scale' type: ratio of the initial shrunken size relative to the
-    # window's actual size. E.g. 0.98 = window starts at 98% and grows to 100%.
-    # Range: 0.5–1.0.
-    scale_factor: 0.98
-    # Which focus changes trigger the animation. Options:
-    #   'all'            - animate on all focus changes (keyboard and mouse)
-    #   'keyboard_only'  - animate only on keyboard/WM-command focus changes
-    trigger: "all"
-
 general:
   # Commands to run when the WM has started. This is useful for running a
   # script or launching another application.
