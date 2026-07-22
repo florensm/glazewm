@@ -281,10 +281,6 @@ fn redraw_containers(
   // below so their windows snap to their target rect.
   let suppress_animations = state.pending_sync.animations_suppressed();
 
-  // Consume the pending focus animation window ID for this sync cycle.
-  #[cfg(target_os = "windows")]
-  let focus_anim_id = state.pending_sync.take_focus_animation();
-
   // Workspace-switch pre-pass: create slide surrogates for all
   // incoming/outgoing windows before any real window is repositioned.
   // Outgoing surrogates are shown immediately (before the real window is
@@ -690,27 +686,9 @@ fn redraw_containers(
       );
     }
 
-    // Start a focus-change animation for the newly focused window, if queued.
-    #[cfg(target_os = "windows")]
-    if focus_anim_id == Some(window.id())
-      && !is_fullscreen
-      && !suppress_animations
-      && config.value.animations.focus_change.enabled
-    {
-      let native_ref = window.native();
-      state.animation_manager.start_focus_animation(
-        window.id(),
-        target_rect.clone(),
-        effect_opacity,
-        corner_style,
-        config,
-        &*native_ref,
-      );
-    }
-
-    // A slide-in or focus animation creates a `ResizeSession` or animation
-    // entry, making the window eligible for the `Frozen`/`Apply` animation
-    // paths even when `window_move` animations are disabled.
+    // A slide-in animation creates a `ResizeSession` and animation entry,
+    // making the window eligible for the `Frozen`/`Apply` animation paths
+    // even when `window_move` animations are disabled.
     #[cfg(target_os = "windows")]
     let has_slide_in = state
       .animation_manager
@@ -722,17 +700,6 @@ fn redraw_containers(
         .map_or(false, |a| !a.is_complete());
     #[cfg(not(target_os = "windows"))]
     let has_slide_in = false;
-
-    // Active focus animation (opacity style) has no surrogate but still
-    // needs `start_animation_if_needed` to return the animated opacity.
-    #[cfg(target_os = "windows")]
-    let has_focus_anim = !has_slide_in
-      && state
-        .animation_manager
-        .get_animation(&window.id())
-        .map_or(false, |a| !a.is_complete());
-    #[cfg(not(target_os = "windows"))]
-    let has_focus_anim = false;
 
     // Windows frozen by an in-flight workspace-switch animation stay on the
     // animation path regardless of suppression — the switch's surrogate
@@ -746,8 +713,7 @@ fn redraw_containers(
           && !suppress_animations
           && ((!is_floating && anim_enabled)
             || (is_state_change && anim_enabled)
-            || has_slide_in
-            || has_focus_anim)));
+            || has_slide_in)));
 
     // Determine the rect to use for this frame.
     #[cfg_attr(not(target_os = "windows"), allow(unused_variables))]

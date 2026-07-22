@@ -381,10 +381,7 @@ impl UserConfig {
 
 #[cfg(test)]
 mod tests {
-  use wm_common::{
-    FocusAnimationStyle, ParsedConfig, WindowTransitionStyle,
-    WorkspaceSwitchStyle,
-  };
+  use wm_common::{ParsedConfig, WindowTransitionStyle, WorkspaceSwitchStyle};
 
   use super::SAMPLE_CONFIG;
 
@@ -418,8 +415,6 @@ animations:
     style: 'slide_left'
   workspace_switch:
     style: 'fade'
-  focus_change:
-    style: 'scale'
 ";
     let config: ParsedConfig =
       serde_yaml::from_str(yaml).expect("legacy config should parse");
@@ -435,10 +430,6 @@ animations:
     assert_eq!(
       config.animations.workspace_switch.style,
       WorkspaceSwitchStyle::Fade
-    );
-    assert_eq!(
-      config.animations.focus_change.style,
-      FocusAnimationStyle::Scale
     );
 
     let yaml_direction = r"

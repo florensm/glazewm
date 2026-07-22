@@ -410,12 +410,6 @@ pub struct AnimationsConfig {
   ///
   /// Only has an effect on Windows.
   pub window_close: WindowCloseConfig,
-  /// Animation settings for when the focused window changes.
-  ///
-  /// # Platform-specific
-  ///
-  /// Only has an effect on Windows.
-  pub focus_change: FocusChangeConfig,
 }
 
 impl Default for AnimationsConfig {
@@ -426,7 +420,6 @@ impl Default for AnimationsConfig {
       window_open: WindowOpenConfig::default(),
       workspace_switch: WorkspaceSwitchAnimationConfig::default(),
       window_close: WindowCloseConfig::default(),
-      focus_change: FocusChangeConfig::default(),
     }
   }
 }
@@ -468,76 +461,6 @@ impl WindowTransitionStyle {
   /// the full animation; the surrogate window itself never moves.
   pub fn is_stationary(&self) -> bool {
     matches!(self, Self::None | Self::Zoom)
-  }
-}
-
-/// Animation style for the focus-change effect.
-#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum FocusAnimationStyle {
-  /// Briefly dim the window then restore its opacity (default).
-  #[default]
-  Opacity,
-  /// Briefly expand the window then snap back to its actual size.
-  Scale,
-}
-
-/// Determines which focus changes trigger the focus animation.
-#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum FocusTrigger {
-  /// Animate on all focus changes — keyboard, WM commands, and mouse clicks
-  /// (default).
-  #[default]
-  All,
-  /// Only animate when focus changes via a WM command or keyboard shortcut.
-  /// Skips click-to-focus events, where the click already provides visual
-  /// feedback.
-  KeyboardOnly,
-}
-
-/// Animation settings for when the focused window changes.
-///
-/// # Platform-specific
-///
-/// Only has an effect on Windows.
-#[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(default, rename_all(serialize = "camelCase"))]
-pub struct FocusChangeConfig {
-  /// Whether the focus-change animation is enabled.
-  pub enabled: bool,
-  /// Duration of the animation in milliseconds.
-  pub duration_ms: u32,
-  /// See `window_move.easing` for available options.
-  pub easing: EasingFunction,
-  /// Animation type: `opacity` (window briefly dims then restores) or
-  /// `scale` (window briefly pops from a slightly smaller size to its actual
-  /// size).
-  pub style: FocusAnimationStyle,
-  /// For `opacity` style: the dim level at the start of the animation
-  /// (0.0–1.0), relative to the configured effect opacity. E.g. `0.5` dims
-  /// the window to 50% of its effect opacity before restoring it. Range:
-  /// 0.0–1.0. Default: `0.5`.
-  pub opacity_from: f32,
-  /// For `scale` style: ratio by which the window starts undersized at the
-  /// beginning of the animation. E.g. `0.98` = window begins at 98% of its
-  /// actual size and grows to 100%. Range: 0.5–1.0.
-  pub scale_factor: f32,
-  /// Which focus events trigger the animation.
-  pub trigger: FocusTrigger,
-}
-
-impl Default for FocusChangeConfig {
-  fn default() -> Self {
-    FocusChangeConfig {
-      enabled: false,
-      duration_ms: 150,
-      easing: EasingFunction::CubicBezier(0.16, 1.0, 0.3, 1.0),
-      style: FocusAnimationStyle::Opacity,
-      opacity_from: 0.5,
-      scale_factor: 0.98,
-      trigger: FocusTrigger::All,
-    }
   }
 }
 
