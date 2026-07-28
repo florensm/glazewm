@@ -49,6 +49,10 @@ pub use native_iris_overlay::NativeIrisOverlay;
 mod native_stack_tab_bar;
 #[cfg(target_os = "windows")]
 pub use native_stack_tab_bar::{NativeStackTabBar, TabBarColors, TabInfo};
+#[cfg(target_os = "windows")]
+mod native_pip_tile;
+#[cfg(target_os = "windows")]
+pub use native_pip_tile::NativePipTile;
 
 pub use platform_event::*;
 pub use single_instance::*;

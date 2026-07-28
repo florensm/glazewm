@@ -24,6 +24,7 @@ use crate::{
     WindowContainer, Workspace, WorkspaceTarget,
   },
   pending_sync::PendingSync,
+  pip_state::PipState,
   traits::{CommonGetters, PositionGetters, WindowGetters},
   user_config::UserConfig,
 };
@@ -93,6 +94,17 @@ pub struct WmState {
   /// Live tab bar windows keyed by their `StackContainer` ID.
   #[cfg(target_os = "windows")]
   pub tab_bars: HashMap<Uuid, NativeStackTabBar>,
+
+  /// Sender half of the PIP-tile-click channel.
+  ///
+  /// Always present so that the channel stays open (preventing
+  /// `pip_click_rx.recv()` from immediately returning `None`). Only
+  /// actually used to send events on Windows when a PIP tile is clicked.
+  pub pip_click_tx: mpsc::UnboundedSender<Uuid>,
+
+  /// The active picture-in-picture group, if any.
+  #[cfg(target_os = "windows")]
+  pub pip: Option<PipState>,
 }
 
 impl WmState {
@@ -102,6 +114,7 @@ impl WmState {
     exit_tx: mpsc::UnboundedSender<()>,
     animation_tick_tx: mpsc::UnboundedSender<()>,
     tab_click_tx: mpsc::UnboundedSender<(Uuid, usize)>,
+    pip_click_tx: mpsc::UnboundedSender<Uuid>,
   ) -> Self {
     Self {
       root_container: RootContainer::new(),
@@ -122,6 +135,9 @@ impl WmState {
       tab_click_tx,
       #[cfg(target_os = "windows")]
       tab_bars: HashMap::new(),
+      pip_click_tx,
+      #[cfg(target_os = "windows")]
+      pip: None,
     }
   }
 

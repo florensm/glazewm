@@ -156,6 +156,20 @@ gaps:
     bottom: "20px"
     left: "20px"
 
+pip:
+  # Size of a single picture-in-picture dock tile. Triggered via the
+  # `toggle_pip` command.
+  # ** Only available on Windows.
+  width: "320px"
+  height: "180px"
+
+  # Gap between the dock tile(s) and the monitor's working area edges.
+  gap: "16px"
+
+  # Monitor corner the dock tile(s) are anchored to.
+  # Possible values: "top_left" | "top_right" | "bottom_left" | "bottom_right"
+  corner: "bottom_right"
+
 stack:
   # Height of the tab bar shown for stacked windows (0px = disabled).
   # ** Only rendered on Windows.

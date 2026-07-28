@@ -4,7 +4,7 @@ use wm_platform::{
   RectDelta,
 };
 
-use crate::app_command::InvokeCommand;
+use crate::{app_command::InvokeCommand, PipCorner};
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 #[serde(default, rename_all(serialize = "camelCase"))]
@@ -14,6 +14,7 @@ pub struct ParsedConfig {
   pub gaps: GapsConfig,
   pub general: GeneralConfig,
   pub keybindings: Vec<KeybindingConfig>,
+  pub pip: PipConfig,
   pub stack: StackConfig,
   pub window_behavior: WindowBehaviorConfig,
   pub window_effects: WindowEffectsConfig,
@@ -28,6 +29,34 @@ pub enum TabBarPosition {
   #[default]
   Top,
   Bottom,
+}
+
+/// Configuration for the picture-in-picture (`toggle_pip`) dock tile.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(default, rename_all(serialize = "camelCase"))]
+pub struct PipConfig {
+  /// Width of a single PIP tile.
+  pub width: LengthValue,
+
+  /// Height of a single PIP tile.
+  pub height: LengthValue,
+
+  /// Gap between the dock rect and the monitor's working area edges.
+  pub gap: LengthValue,
+
+  /// Monitor corner the dock rect is anchored to.
+  pub corner: PipCorner,
+}
+
+impl Default for PipConfig {
+  fn default() -> Self {
+    Self {
+      width: LengthValue::from_px(320),
+      height: LengthValue::from_px(180),
+      gap: LengthValue::from_px(16),
+      corner: PipCorner::BottomRight,
+    }
+  }
 }
 
 /// Configuration for the stack tab bar.
@@ -992,5 +1021,19 @@ where
   #[cfg(not(target_os = "macos"))]
   {
     Ok(method)
+  }
+}
+
+#[cfg(test)]
+mod pip_config_tests {
+  use super::*;
+
+  #[test]
+  fn has_sensible_defaults() {
+    let config = PipConfig::default();
+    assert_eq!(config.width, LengthValue::from_px(320));
+    assert_eq!(config.height, LengthValue::from_px(180));
+    assert_eq!(config.gap, LengthValue::from_px(16));
+    assert_eq!(config.corner, PipCorner::BottomRight);
   }
 }

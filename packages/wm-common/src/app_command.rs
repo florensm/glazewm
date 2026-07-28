@@ -6,7 +6,7 @@ use tracing::Level;
 use uuid::Uuid;
 use wm_platform::{Delta, Direction, LengthValue, OpacityValue};
 
-use crate::TilingDirection;
+use crate::{PipTarget, TilingDirection};
 
 const VERSION: &str = env!("VERSION_NUMBER");
 
@@ -237,6 +237,13 @@ pub enum InvokeCommand {
     maximized: Option<bool>,
   },
   ToggleMinimized,
+  /// Minimizes the subject window (or every window in its workspace) into
+  /// a live, clickable thumbnail docked in a monitor corner. Running it
+  /// again for the same subject restores the original window(s).
+  TogglePip {
+    #[clap(long)]
+    target: Option<PipTarget>,
+  },
   ToggleTiling,
   /// Toggle the focused tiling window into or out of a stack container.
   ToggleStack,
@@ -488,5 +495,27 @@ mod tests {
       .expect("Failed to parse `force-manage` command.");
 
     assert_eq!(command, InvokeCommand::ForceManage);
+  }
+
+  #[test]
+  fn parses_toggle_pip_command_with_target() {
+    let command =
+      InvokeCommand::try_parse_from(["", "toggle-pip", "--target=workspace"])
+        .expect("Failed to parse `toggle-pip --target=workspace` command.");
+
+    assert_eq!(
+      command,
+      InvokeCommand::TogglePip {
+        target: Some(PipTarget::Workspace)
+      }
+    );
+  }
+
+  #[test]
+  fn parses_toggle_pip_command_without_target() {
+    let command = InvokeCommand::try_parse_from(["", "toggle-pip"])
+      .expect("Failed to parse `toggle-pip` command.");
+
+    assert_eq!(command, InvokeCommand::TogglePip { target: None });
   }
 }

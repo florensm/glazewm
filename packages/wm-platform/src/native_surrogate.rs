@@ -135,7 +135,7 @@ fn get_set_wca() -> Option<SetWindowCompositionAttributeFn> {
 ///
 /// This is a no-op on Windows 10, where `DwmSetWindowAttribute` silently
 /// returns an error for unknown attributes.
-fn apply_corner_preference(hwnd: HWND, corner_style: &CornerStyle) {
+pub(crate) fn apply_corner_preference(hwnd: HWND, corner_style: &CornerStyle) {
   let pref = match corner_style {
     CornerStyle::Default | CornerStyle::Rounded => DWMWCP_ROUND,
     CornerStyle::Square => DWMWCP_DONOTROUND,
@@ -213,7 +213,7 @@ fn apply_backdrop(hwnd: HWND, color: Option<&Color>) {
 /// Returns the opaque thumbnail handle, or `None` if registration fails
 /// (e.g. same-window, invalid handle). The caller is responsible for
 /// calling [`DwmUnregisterThumbnail`] when done.
-fn register_thumbnail(
+pub(crate) fn register_thumbnail(
   dest_hwnd: HWND,
   source_hwnd: HWND,
   logical_width: i32,

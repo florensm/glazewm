@@ -11,11 +11,11 @@ use wm_common::{
 #[cfg(target_os = "windows")]
 use wm_platform::NativeWindowWindowsExt;
 #[cfg(target_os = "windows")]
-use wm_common::TabBarPosition;
+use wm_common::{PipConfig, PipCorner, TabBarPosition};
 #[cfg(target_os = "windows")]
 use wm_platform::{
-  CornerStyle, NativeIrisOverlay, NativeStackTabBar, OpacityValue,
-  TabBarColors, TabInfo, WorkspaceSurrogate,
+  CornerStyle, NativeIrisOverlay, NativePipTile, NativeStackTabBar,
+  OpacityValue, TabBarColors, TabInfo, WorkspaceSurrogate,
 };
 use wm_platform::{Rect, WindowZOrder};
 
@@ -1039,6 +1039,9 @@ fn redraw_containers(
   #[cfg(target_os = "windows")]
   sync_tab_bars(state, config);
 
+  #[cfg(target_os = "windows")]
+  sync_pip_tile(state, config);
+
   Ok(())
 }
 
@@ -1483,4 +1486,116 @@ fn sync_tab_bars(state: &mut WmState, config: &UserConfig) {
       }
     }
   }
+}
+
+/// Creates, updates, or destroys the PIP dock tile(s) for the active
+/// `state.pip` group.
+///
+/// Each member window gets its own [`NativePipTile`] once its OS minimize
+/// has actually completed (`WindowState::Minimized`) — minimize is async,
+/// so a freshly-started member has no tile for one or more sync passes.
+/// A member that had a tile and is no longer minimized has been restored
+/// (via `toggle_pip`/`restore_pip_group`, or externally) and is dropped
+/// from the group. Once every member has been dropped, `state.pip` itself
+/// is cleared.
+#[cfg(target_os = "windows")]
+fn sync_pip_tile(state: &mut WmState, config: &UserConfig) {
+  let Some(mut pip) = state.pip.take() else {
+    return;
+  };
+  let target = pip.target;
+
+  let dispatcher = state.dispatcher.clone();
+  let pip_click_tx = state.pip_click_tx.clone();
+  let pip_cfg = &config.value.pip;
+
+  // Only counts members that currently have a dock slot (i.e. are actually
+  // minimized), so pending members don't leave a gap in the layout.
+  let mut slot_index = 0usize;
+
+  pip.members.retain_mut(|member| {
+    let had_tile = member.tile.is_some();
+
+    let Some(window) = state
+      .container_by_id(member.window_id)
+      .and_then(|container| container.as_window_container().ok())
+    else {
+      return false;
+    };
+
+    if window.state() != WindowState::Minimized {
+      // A member that never got a tile is still waiting for its initial
+      // minimize to land; keep it. A member that had one has been
+      // restored — drop it from the group.
+      return !had_tile;
+    }
+
+    if member.tile.is_none() {
+      if let Some(monitor) = window.monitor() {
+        let working_area = monitor.native_properties().working_area;
+        let rect = pip_cell_rect(&working_area, pip_cfg, slot_index);
+
+        let window_id = member.window_id;
+        let tx = pip_click_tx.clone();
+        let on_click = Box::new(move || {
+          let _ = tx.send(window_id);
+        });
+
+        match NativePipTile::create(
+          &dispatcher,
+          window.native().hwnd(),
+          &rect,
+          &CornerStyle::Default,
+          on_click,
+        ) {
+          Ok(tile) => member.tile = Some(tile),
+          Err(err) => {
+            tracing::warn!("Failed to create {target:?} PIP tile: {err}");
+          }
+        }
+      }
+    }
+
+    slot_index += 1;
+    true
+  });
+
+  state.pip = if pip.members.is_empty() { None } else { Some(pip) };
+}
+
+/// Computes the screen rect for the tile at `slot_index`, anchored at
+/// `cfg.corner` and growing away from that corner as `slot_index`
+/// increases (each tile keeps the full configured size regardless of how
+/// many are docked).
+#[cfg(target_os = "windows")]
+fn pip_cell_rect(
+  working_area: &Rect,
+  cfg: &PipConfig,
+  slot_index: usize,
+) -> Rect {
+  let width = cfg.width.to_px(0, None);
+  let height = cfg.height.to_px(0, None);
+  let gap = cfg.gap.to_px(0, None);
+  #[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
+  let offset = slot_index as i32 * (width + gap);
+
+  let (left, top) = match cfg.corner {
+    PipCorner::BottomRight => (
+      working_area.right - gap - width - offset,
+      working_area.bottom - gap - height,
+    ),
+    PipCorner::BottomLeft => (
+      working_area.left + gap + offset,
+      working_area.bottom - gap - height,
+    ),
+    PipCorner::TopRight => (
+      working_area.right - gap - width - offset,
+      working_area.top + gap,
+    ),
+    PipCorner::TopLeft => {
+      (working_area.left + gap + offset, working_area.top + gap)
+    }
+  };
+
+  Rect::from_xy(left, top, width, height)
 }

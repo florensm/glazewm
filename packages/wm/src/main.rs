@@ -40,6 +40,7 @@ mod events;
 mod ipc_server;
 mod models;
 mod pending_sync;
+mod pip_state;
 mod sys_tray;
 mod traits;
 mod user_config;
@@ -274,6 +275,9 @@ async fn start_wm(
           Some(stack_id),
           &mut config,
         ).map(|_| ())
+      },
+      Some(window_id) = wm.pip_click_rx.recv() => {
+        wm.handle_pip_click(window_id, &mut config)
       },
       Some(wm_event) = wm.event_rx.recv() => {
         tracing::debug!("Received WM event: {:?}", wm_event);

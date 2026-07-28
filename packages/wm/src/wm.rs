@@ -11,7 +11,10 @@ use wm_common::{
 #[cfg(target_os = "windows")]
 use wm_platform::NativeWindowWindowsExt;
 #[cfg(target_os = "windows")]
-use crate::commands::window::detach_window_for_close;
+use crate::commands::{
+  general::{restore_pip_group, toggle_pip},
+  window::detach_window_for_close,
+};
 use wm_platform::{
   Dispatcher, LengthValue, PlatformEvent, RectDelta, WindowEvent,
 };
@@ -65,6 +68,10 @@ pub struct WindowManager {
   /// `main.rs` compiles on all platforms. On non-Windows the sender is
   /// never used, so this receiver never yields an item.
   pub tab_click_rx: mpsc::UnboundedReceiver<(uuid::Uuid, usize)>,
+  /// Receiver for PIP tile click events routed from the event-loop thread.
+  ///
+  /// Same always-present rationale as `tab_click_rx`.
+  pub pip_click_rx: mpsc::UnboundedReceiver<uuid::Uuid>,
 }
 
 impl WindowManager {
@@ -76,6 +83,7 @@ impl WindowManager {
     let (exit_tx, exit_rx) = mpsc::unbounded_channel();
     let (animation_tick_tx, animation_tick_rx) = mpsc::unbounded_channel();
     let (tab_click_tx, tab_click_rx) = mpsc::unbounded_channel();
+    let (pip_click_tx, pip_click_rx) = mpsc::unbounded_channel();
 
     let mut state = WmState::new(
       dispatcher,
@@ -83,6 +91,7 @@ impl WindowManager {
       exit_tx,
       animation_tick_tx,
       tab_click_tx,
+      pip_click_tx,
     );
     state.populate(config)?;
 
@@ -97,6 +106,7 @@ impl WindowManager {
       animation_tick_rx,
       state,
       tab_click_rx,
+      pip_click_rx,
     })
   }
 
@@ -225,6 +235,31 @@ impl WindowManager {
     self.state.animation_manager.ensure_timer_running();
 
     Ok(new_subject_container_id)
+  }
+
+  /// Restores the PIP group containing `window_id` (its tile was clicked).
+  ///
+  /// No-op on non-Windows platforms — PIP is Windows-only for now, and
+  /// `pip_click_rx` never yields there.
+  pub fn handle_pip_click(
+    &mut self,
+    #[cfg_attr(not(target_os = "windows"), allow(unused_variables))]
+    window_id: Uuid,
+    config: &mut UserConfig,
+  ) -> anyhow::Result<()> {
+    #[cfg(target_os = "windows")]
+    {
+      restore_pip_group(window_id, &mut self.state)?;
+
+      if self.state.pending_sync.has_changes() {
+        platform_sync(&mut self.state, config)?;
+      }
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    let _ = config;
+
+    Ok(())
   }
 
   pub fn run_commands(
@@ -836,6 +871,21 @@ impl WindowManager {
             Ok(())
           }
           _ => Ok(()),
+        }
+      }
+      InvokeCommand::TogglePip { target } => {
+        #[cfg(target_os = "windows")]
+        {
+          toggle_pip(
+            target.unwrap_or(wm_common::PipTarget::Window),
+            &subject_container,
+            state,
+          )
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+          let _ = target;
+          Ok(())
         }
       }
       InvokeCommand::ToggleTiling => {
