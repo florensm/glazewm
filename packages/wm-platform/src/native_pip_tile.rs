@@ -5,8 +5,9 @@ use windows::{
   Win32::{
     Foundation::{HWND, LPARAM, LRESULT, RECT, WPARAM},
     Graphics::Dwm::{
-      DwmUnregisterThumbnail, DwmUpdateThumbnailProperties,
-      DWM_THUMBNAIL_PROPERTIES, DWM_TNP_RECTDESTINATION, DWM_TNP_RECTSOURCE,
+      DwmExtendFrameIntoClientArea, DwmUnregisterThumbnail,
+      DwmUpdateThumbnailProperties, DWM_THUMBNAIL_PROPERTIES,
+      DWM_TNP_RECTDESTINATION, DWM_TNP_RECTSOURCE,
       DWM_TNP_SOURCECLIENTAREAONLY,
     },
     System::LibraryLoader::GetModuleHandleW,
@@ -116,6 +117,27 @@ impl NativePipTile {
         return Err(crate::Error::Platform(
           "Failed to create PIP tile window.".to_string(),
         ));
+      }
+
+      // Extend the DWM glass sheet over the entire client area so the
+      // window is composited (transparent) instead of showing undefined
+      // GDI content — same reasoning as `NativeSurrogate::create`. Without
+      // this, a thumbnail-registration hiccup leaves garbage pixels
+      // instead of a clean, empty tile.
+      {
+        use windows::Win32::UI::Controls::MARGINS;
+        let margins = MARGINS {
+          cxLeftWidth: -1,
+          cxRightWidth: -1,
+          cyTopHeight: -1,
+          cyBottomHeight: -1,
+        };
+        // SAFETY: `handle` is a valid window handle created above.
+        // `margins` is stack-allocated and live for the duration of this
+        // call.
+        unsafe {
+          let _ = DwmExtendFrameIntoClientArea(handle, &raw const margins);
+        }
       }
 
       apply_corner_preference(handle, &corner_style);
