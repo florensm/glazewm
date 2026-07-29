@@ -335,25 +335,22 @@ pub trait NativeWindowWindowsExt {
     opacity_delta: &Delta<OpacityValue>,
   ) -> crate::Result<()>;
 
-  /// Applies a DWM blur-behind material to the window.
+  /// Applies a DWM system-backdrop material to the window.
   ///
-  /// Applies or clears a blur-behind effect on the window.
+  /// `Mica` and `MicaAlt` use `DWMWA_SYSTEMBACKDROP_TYPE` (Windows 11 22H2+)
+  /// and silently do nothing on unsupported builds. `None` clears any
+  /// previously applied effect.
   ///
-  /// `Acrylic` uses `SetWindowCompositionAttribute` with
-  /// `ACCENT_ENABLE_ACRYLICBLURBEHIND` (Windows 10 1803+). `tint` is an
-  /// ABGR-packed `u32` blended over the acrylic backdrop; ignored for other
-  /// styles. `Mica` and `MicaAlt` use `DWMWA_SYSTEMBACKDROP_TYPE` (Windows
-  /// 11 22H2+) and silently do nothing on unsupported builds. `None` clears
-  /// any previously applied effect via both code paths.
+  /// `Acrylic` is handled separately via a persistent `NativeBlurOverlay`
+  /// placed behind the window (see `sync_blur_overlays`) — applying SWCA
+  /// directly to the managed window itself would conflict with the
+  /// `WS_EX_LAYERED` style used by the `transparency` effect, so this method
+  /// is never called with `Acrylic`.
   ///
   /// # Platform-specific
   ///
   /// This method is only available on Windows.
-  fn set_blur_behind(
-    &self,
-    style: Option<&BlurBehindStyle>,
-    tint: u32,
-  ) -> crate::Result<()>;
+  fn set_blur_behind(&self, style: Option<&BlurBehindStyle>) -> crate::Result<()>;
 }
 
 #[cfg(target_os = "windows")]
@@ -464,12 +461,8 @@ impl NativeWindowWindowsExt for NativeWindow {
     self.inner.adjust_transparency(opacity_delta)
   }
 
-  fn set_blur_behind(
-    &self,
-    style: Option<&BlurBehindStyle>,
-    tint: u32,
-  ) -> crate::Result<()> {
-    self.inner.set_blur_behind(style, tint)
+  fn set_blur_behind(&self, style: Option<&BlurBehindStyle>) -> crate::Result<()> {
+    self.inner.set_blur_behind(style)
   }
 }
 

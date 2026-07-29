@@ -44,12 +44,7 @@ use windows::{
   },
 };
 
-use super::{
-  com::{IApplicationView, COM_INIT},
-  swca::{
-    apply_swca_accent, ACCENT_DISABLED, ACCENT_ENABLE_ACRYLICBLURBEHIND,
-  },
-};
+use super::com::{IApplicationView, COM_INIT};
 use crate::{
   BlurBehindStyle, Color, CornerStyle, Delta, Dispatcher, LengthValue,
   OpacityValue, Point, Rect, RectDelta, WindowId, WindowZOrder,
@@ -764,39 +759,30 @@ impl NativeWindow {
   pub(crate) fn set_blur_behind(
     &self,
     style: Option<&BlurBehindStyle>,
-    tint: u32,
   ) -> crate::Result<()> {
-    match style {
+    let backdrop_type = match style {
+      None => DWMSBT_AUTO,
+      Some(BlurBehindStyle::Mica) => DWMSBT_MAINWINDOW,
+      Some(BlurBehindStyle::MicaAlt) => DWMSBT_TABBEDWINDOW,
       Some(BlurBehindStyle::Acrylic) => {
-        apply_swca_accent(self.hwnd(), ACCENT_ENABLE_ACRYLICBLURBEHIND, tint);
+        unreachable!("Acrylic is applied via a NativeBlurOverlay, never here")
       }
-      _ => {
-        // Clear any SWCA acrylic applied by this function.
-        apply_swca_accent(self.hwnd(), ACCENT_DISABLED, 0);
+    };
 
-        let backdrop_type = match style {
-          None => DWMSBT_AUTO,
-          Some(BlurBehindStyle::Mica) => DWMSBT_MAINWINDOW,
-          Some(BlurBehindStyle::MicaAlt) => DWMSBT_TABBEDWINDOW,
-          Some(BlurBehindStyle::Acrylic) => unreachable!(),
-        };
-
-        if let Err(e) = unsafe {
-          #[allow(clippy::cast_possible_truncation)]
-          DwmSetWindowAttribute(
-            self.hwnd(),
-            DWMWA_SYSTEMBACKDROP_TYPE,
-            std::ptr::from_ref(&backdrop_type.0).cast(),
-            std::mem::size_of::<i32>() as u32,
-          )
-        } {
-          if style.is_some() {
-            warn!(
-              "DWMWA_SYSTEMBACKDROP_TYPE failed ({e}); \
-               Mica/MicaAlt requires Windows 11 22H2+."
-            );
-          }
-        }
+    if let Err(e) = unsafe {
+      #[allow(clippy::cast_possible_truncation)]
+      DwmSetWindowAttribute(
+        self.hwnd(),
+        DWMWA_SYSTEMBACKDROP_TYPE,
+        std::ptr::from_ref(&backdrop_type.0).cast(),
+        std::mem::size_of::<i32>() as u32,
+      )
+    } {
+      if style.is_some() {
+        warn!(
+          "DWMWA_SYSTEMBACKDROP_TYPE failed ({e}); \
+           Mica/MicaAlt requires Windows 11 22H2+."
+        );
       }
     }
 

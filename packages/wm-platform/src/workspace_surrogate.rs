@@ -1,28 +1,63 @@
 use windows::Win32::Foundation::{HWND, RECT};
 
-use crate::{CornerStyle, NativeSurrogate, Rect};
+use crate::{
+  backdrop_detect::{LIVE_BLUR_DEFAULT_TINT, LIVE_BLUR_THUMBNAIL_OPACITY},
+  has_live_backdrop, CornerStyle, NativeSurrogate, Rect, SurrogateBatch,
+};
+
+/// Positioning strategy for a [`WorkspaceSurrogate`].
+enum SurrogateMode {
+  /// The surrogate spans the whole monitor viewport, created once and never
+  /// repositioned; all motion is expressed via `rcSource`/`rcDestination`
+  /// clipping, avoiding any per-frame `SetWindowPos` call. Used for windows
+  /// with no live acrylic backdrop (the common case).
+  PinnedViewport,
+  /// The surrogate is sized to the window's own (clipped-to-monitor) visible
+  /// rect and genuinely moved/resized every frame via a batched
+  /// `SetWindowPos`. Used when the surrogate carries a live SWCA acrylic
+  /// backdrop (GlazeWM's own `blur_behind` config, or a detected external
+  /// backdrop from native Mica/Acrylic or a mod such as Windhawk's
+  /// `translucent-windows`) — pinning it to the full viewport would blur the
+  /// entire monitor instead of just the window's current footprint.
+  Live,
+}
 
 /// Surrogate overlay for a single window participating in a workspace-switch
 /// animation.
 ///
 /// Both outgoing and incoming windows move together so the whole workspace
-/// slides as a single panel. The surrogate is created at the full monitor rect
-/// (`viewport`) and never repositioned; all per-frame animation is expressed
-/// via `rcSource`/`rcDestination` in `DwmUpdateThumbnailProperties`, avoiding
-/// any per-frame `SetWindowPos` calls. The surrogate is hidden (via `SW_HIDE`)
-/// when the visible area is empty.
+/// slides as a single panel. For windows with no live backdrop
+/// ([`SurrogateMode::PinnedViewport`]), the surrogate is created at the full
+/// monitor rect (`viewport`) and never repositioned; all per-frame animation
+/// is expressed via `rcSource`/`rcDestination` in
+/// `DwmUpdateThumbnailProperties`, avoiding any per-frame `SetWindowPos`
+/// calls. Windows with a live backdrop ([`SurrogateMode::Live`]) are instead
+/// moved/resized every frame to their current visible rect, batched via
+/// [`SurrogateBatch`]. The surrogate is hidden (via `SW_HIDE`) when the
+/// visible area is empty.
 pub struct WorkspaceSurrogate {
   inner: NativeSurrogate,
   /// Final screen rect of the window (target position for incoming, current
   /// screen rect for outgoing).
   pub rect: Rect,
-  /// Monitor rect used as the surrogate window's fixed position and size.
+  /// Monitor rect used as the surrogate window's fixed position and size in
+  /// [`SurrogateMode::PinnedViewport`] mode.
   ///
-  /// The surrogate is created at `viewport` and stays there for the entire
-  /// animation. `rcDestination` coordinates are expressed relative to
-  /// `viewport`'s top-left corner in every per-frame thumbnail update.
+  /// In that mode the surrogate is created at `viewport` and stays there for
+  /// the entire animation; `rcDestination` coordinates are expressed relative
+  /// to `viewport`'s top-left corner in every per-frame thumbnail update. In
+  /// [`SurrogateMode::Live`] mode this is unused for positioning — the
+  /// surrogate is moved/resized directly to its absolute screen rect — but
+  /// per-frame visible-strip clipping still uses the monitor bounds passed to
+  /// each `update_*` call, so a sliding window never spills onto an adjacent
+  /// monitor.
   viewport: Rect,
-  /// DWM thumbnail opacity (0–255) derived from the window-effects config.
+  /// DWM thumbnail opacity (0–255) derived from the window-effects config,
+  /// capped at [`LIVE_BLUR_THUMBNAIL_OPACITY`] when [`mode`] is
+  /// [`SurrogateMode::Live`] via a probe-detected (not config-driven)
+  /// backdrop, so the live blur bleeds through.
+  ///
+  /// [`mode`]: WorkspaceSurrogate::mode
   opacity: u8,
   /// The non-full-opacity end of the opacity animation, as a fraction of
   /// `opacity` (0.0–1.0).
@@ -33,20 +68,41 @@ pub struct WorkspaceSurrogate {
   /// opacity is constant throughout the animation; at `0.0` the window fully
   /// fades out or in.
   opacity_endpoint: f32,
+  /// Positioning strategy, chosen once at creation based on whether the
+  /// surrogate carries a live acrylic backdrop.
+  mode: SurrogateMode,
 }
 
 impl WorkspaceSurrogate {
   /// Creates a hidden surrogate for a workspace-switch animation.
   ///
-  /// `viewport` is the monitor rect; the surrogate window is fixed there for
-  /// the entire animation. `rect` is the source window's screen rect, used as
-  /// the thumbnail registration dimensions and the reference for per-frame
-  /// coordinate math.
+  /// `viewport` is the monitor rect; `rect` is the source window's screen
+  /// rect, used as the thumbnail registration dimensions and the reference
+  /// for per-frame coordinate math.
   ///
   /// `opacity_endpoint` controls how far the opacity animates away from the
   /// effect opacity. For outgoing windows pass `config.opacity_outgoing`; for
   /// incoming windows pass `config.opacity_incoming`. At `1.0` the opacity is
   /// held constant; at `0.0` the window fully fades.
+  ///
+  /// `corner_style` controls the DWM corner-rounding applied to the surrogate
+  /// when it carries a live backdrop ([`SurrogateMode::Live`]), matching the
+  /// real window's configured style. Ignored in
+  /// [`SurrogateMode::PinnedViewport`] mode, where the surrogate spans the
+  /// whole monitor and must not be rounded.
+  ///
+  /// `acrylic_tint` is GlazeWM's own configured tint
+  /// (`BlurBehindEffectConfig::acrylic_tint`), or `None` when `blur_behind`
+  /// isn't configured for this window. When `None`, this additionally probes
+  /// whether the source window already has a live DWM backdrop translucency
+  /// from elsewhere (native Mica/Acrylic, or a third-party mod such as
+  /// Windhawk's `translucent-windows`) via [`has_live_backdrop`] — skipped
+  /// entirely when a config tint is set, since the two triggers are mutually
+  /// exclusive per window. Either way, a resolved tint switches the surrogate
+  /// to [`SurrogateMode::Live`] and applies SWCA acrylic directly to it, so
+  /// the frosted-glass effect (GlazeWM's own, or a preserved external one)
+  /// stays visible throughout the slide instead of being flattened to opaque
+  /// by the DWM thumbnail.
   ///
   /// The surrogate is created hidden. For outgoing windows, call
   /// [`show_initial`] before cloaking the real window to avoid a blank frame.
@@ -61,28 +117,69 @@ impl WorkspaceSurrogate {
     viewport: &Rect,
     opacity: u8,
     opacity_endpoint: f32,
+    corner_style: &CornerStyle,
+    acrylic_tint: Option<u32>,
   ) -> crate::Result<Self> {
+    // See `ResizeSession::begin` for the identical config-vs-probe
+    // resolution and thumbnail-opacity bleed-through rationale.
+    let (tint, is_probed_backdrop) = match acrylic_tint {
+      Some(t) => (Some(t), false),
+      None if has_live_backdrop(hwnd) => (Some(LIVE_BLUR_DEFAULT_TINT), true),
+      None => (None, false),
+    };
+    let carries_live_backdrop = tint.is_some();
+    let opacity = if is_probed_backdrop {
+      opacity.min(LIVE_BLUR_THUMBNAIL_OPACITY)
+    } else {
+      opacity
+    };
+
+    let mode = if carries_live_backdrop {
+      SurrogateMode::Live
+    } else {
+      SurrogateMode::PinnedViewport
+    };
+
+    // Live mode: surrogate is sized to the window's own rect and moved/resized
+    // every frame to track it, so it should match the real window's rounding.
+    // PinnedViewport mode: surrogate spans the full viewport and must not be
+    // rounded.
+    let (source_rect, thumbnail_rect, effective_corner_style): (
+      &Rect,
+      &Rect,
+      &CornerStyle,
+    ) = if carries_live_backdrop {
+      (rect, rect, corner_style)
+    } else {
+      (viewport, rect, &CornerStyle::Square)
+    };
+
     let inner = NativeSurrogate::create(
       hwnd,
-      viewport,
-      rect,
+      source_rect,
+      thumbnail_rect,
       None,
       opacity,
       false,
       RECT::default(),
-      // Workspace surrogates span the full viewport and must not be rounded.
-      &CornerStyle::Square,
+      effective_corner_style,
       // Workspace surrogates should sit just below the source window; they
       // don't compete with resize surrogates since workspace-switch and
       // resize animations are mutually exclusive.
       hwnd,
     )?;
+
+    if let Some(t) = tint {
+      inner.apply_swca(t);
+    }
+
     Ok(Self {
       inner,
       rect: rect.clone(),
       viewport: viewport.clone(),
       opacity,
       opacity_endpoint: opacity_endpoint.clamp(0.0, 1.0),
+      mode,
     })
   }
 
@@ -107,17 +204,21 @@ impl WorkspaceSurrogate {
   ///
   /// [`apply_effect_opacity`]: WorkspaceSurrogate::apply_effect_opacity
   pub fn show_initial(&mut self) {
-    let rc_src =
-      RECT { left: 0, top: 0, right: self.rect.width(), bottom: self.rect.height() };
-    let rc_dst = RECT {
-      left: self.rect.left - self.viewport.left,
-      top: self.rect.top - self.viewport.top,
-      right: self.rect.right - self.viewport.left,
-      bottom: self.rect.bottom - self.viewport.top,
+    let rc_src = RECT {
+      left: 0,
+      top: 0,
+      right: self.rect.width(),
+      bottom: self.rect.height(),
     };
-    self.inner.set_thumbnail_rects(rc_src, rc_dst);
+    self.apply_visible_rect(
+      None,
+      rc_src,
+      self.rect.left,
+      self.rect.top,
+      self.rect.right,
+      self.rect.bottom,
+    );
     self.inner.set_window_opacity(u8::MAX);
-    self.inner.set_visible(true);
   }
 
   /// Updates the DWM thumbnail opacity to the configured `opacity` without
@@ -144,23 +245,32 @@ impl WorkspaceSurrogate {
   /// [`update_fade`]: WorkspaceSurrogate::update_fade
   /// [`update_zoom`]: WorkspaceSurrogate::update_zoom
   pub fn show_incoming(&mut self) {
-    let rc_src =
-      RECT { left: 0, top: 0, right: self.rect.width(), bottom: self.rect.height() };
-    let rc_dst = RECT {
-      left: self.rect.left - self.viewport.left,
-      top: self.rect.top - self.viewport.top,
-      right: self.rect.right - self.viewport.left,
-      bottom: self.rect.bottom - self.viewport.top,
+    let rc_src = RECT {
+      left: 0,
+      top: 0,
+      right: self.rect.width(),
+      bottom: self.rect.height(),
     };
-    self.inner.set_thumbnail_rects(rc_src, rc_dst);
+    self.apply_visible_rect(
+      None,
+      rc_src,
+      self.rect.left,
+      self.rect.top,
+      self.rect.right,
+      self.rect.bottom,
+    );
     self.inner.set_window_opacity(self.lerp_opacity(0.0, true));
-    self.inner.set_visible(true);
   }
 
   /// Advances the surrogate opacity for a fade-only transition.
   ///
   /// The surrogate stays at its target rect; only the window opacity is lerped
-  /// each frame to produce a crossfade without positional movement.
+  /// each frame to produce a crossfade without positional movement. No
+  /// repositioning is needed regardless of [`SurrogateMode`] — [`show_initial`]
+  /// / [`show_incoming`] already placed the surrogate at its natural rect.
+  ///
+  /// [`show_initial`]: WorkspaceSurrogate::show_initial
+  /// [`show_incoming`]: WorkspaceSurrogate::show_incoming
   pub fn update_fade(&mut self, eased_progress: f32, is_incoming: bool) {
     self.inner.set_window_opacity(self.lerp_opacity(eased_progress, is_incoming));
   }
@@ -168,12 +278,17 @@ impl WorkspaceSurrogate {
   /// Advances the surrogate along the horizontal axis to `eased_progress`
   /// (0.0 → 1.0).
   ///
-  /// The visible strip is clipped to `[monitor_x, monitor_x + monitor_width]`
-  /// via `rcSource`/`rcDestination`; the surrogate window itself does not move.
-  /// `slide_distance` is the effective travel distance (may be less than
-  /// `monitor_width` to close the seam gap between the two workspace panels).
+  /// The visible strip is clipped to `[monitor_x, monitor_x + monitor_width]`.
+  /// In [`SurrogateMode::PinnedViewport`] mode this is done via
+  /// `rcSource`/`rcDestination` and the surrogate window itself does not
+  /// move; in [`SurrogateMode::Live`] mode the surrogate is moved/resized to
+  /// the clipped visible rect, batched via `batch`. `slide_distance` is the
+  /// effective travel distance (may be less than `monitor_width` to close the
+  /// seam gap between the two workspace panels).
+  #[allow(clippy::too_many_arguments)]
   pub fn update_slide_horizontal(
     &mut self,
+    batch: &mut SurrogateBatch,
     eased_progress: f32,
     is_incoming: bool,
     direction: i32,
@@ -182,6 +297,7 @@ impl WorkspaceSurrogate {
     slide_distance: i32,
   ) {
     self.slide_axis(
+      batch,
       eased_progress,
       is_incoming,
       direction,
@@ -199,8 +315,10 @@ impl WorkspaceSurrogate {
   /// `direction = +1` means the incoming workspace slides up from below.
   ///
   /// [`update_slide_horizontal`]: WorkspaceSurrogate::update_slide_horizontal
+  #[allow(clippy::too_many_arguments)]
   pub fn update_slide_vertical(
     &mut self,
+    batch: &mut SurrogateBatch,
     eased_progress: f32,
     is_incoming: bool,
     direction: i32,
@@ -209,6 +327,7 @@ impl WorkspaceSurrogate {
     slide_distance: i32,
   ) {
     self.slide_axis(
+      batch,
       eased_progress,
       is_incoming,
       direction,
@@ -230,8 +349,10 @@ impl WorkspaceSurrogate {
   /// [`update_slide_horizontal`]).
   ///
   /// [`update_slide_horizontal`]: WorkspaceSurrogate::update_slide_horizontal
+  #[allow(clippy::too_many_arguments)]
   pub fn update_slide_zoom_horizontal(
     &mut self,
+    batch: &mut SurrogateBatch,
     eased_progress: f32,
     is_incoming: bool,
     direction: i32,
@@ -243,6 +364,7 @@ impl WorkspaceSurrogate {
     zoom_factor: f32,
   ) {
     self.slide_zoom_axis(
+      batch,
       eased_progress,
       is_incoming,
       direction,
@@ -262,8 +384,10 @@ impl WorkspaceSurrogate {
   /// Mirrors [`update_slide_zoom_horizontal`] on the y-axis.
   ///
   /// [`update_slide_zoom_horizontal`]: WorkspaceSurrogate::update_slide_zoom_horizontal
+  #[allow(clippy::too_many_arguments)]
   pub fn update_slide_zoom_vertical(
     &mut self,
+    batch: &mut SurrogateBatch,
     eased_progress: f32,
     is_incoming: bool,
     direction: i32,
@@ -275,6 +399,7 @@ impl WorkspaceSurrogate {
     zoom_factor: f32,
   ) {
     self.slide_zoom_axis(
+      batch,
       eased_progress,
       is_incoming,
       direction,
@@ -291,10 +416,17 @@ impl WorkspaceSurrogate {
   /// Animates a zoom-from-center transition to `eased_progress` (0.0 → 1.0).
   ///
   /// Each surrogate independently zooms in (incoming) or out (outgoing) from
-  /// its own center. `rcDestination` grows from a zero-size rect at the
-  /// surrogate center to the full surrogate rect, scaling the source content
-  /// via DWM. Opacity is lerped according to `opacity_endpoint`.
-  pub fn update_zoom(&mut self, eased_progress: f32, is_incoming: bool) {
+  /// its own screen-space center. In [`SurrogateMode::PinnedViewport`] mode
+  /// the destination rect grows/shrinks via `rcDestination`; in
+  /// [`SurrogateMode::Live`] mode the surrogate window itself is moved/resized
+  /// to the scaled rect, batched via `batch`. Opacity is lerped according to
+  /// `opacity_endpoint`.
+  pub fn update_zoom(
+    &mut self,
+    batch: &mut SurrogateBatch,
+    eased_progress: f32,
+    is_incoming: bool,
+  ) {
     let t = if is_incoming {
       eased_progress
     } else {
@@ -311,25 +443,23 @@ impl WorkspaceSurrogate {
       return;
     }
 
-    let cx = w / 2;
-    let cy = h / 2;
+    // Anchor at the window's own screen-space center — not the surrogate's
+    // local origin — so the zoom converges on the window's actual tile
+    // rather than the monitor's top-left corner.
+    let cx = self.rect.left + w / 2;
+    let cy = self.rect.top + h / 2;
 
-    let rc_src = windows::Win32::Foundation::RECT {
-      left: 0,
-      top: 0,
-      right: w,
-      bottom: h,
-    };
-    let rc_dst = windows::Win32::Foundation::RECT {
-      left: cx - half_w,
-      top: cy - half_h,
-      right: cx + half_w,
-      bottom: cy + half_h,
-    };
+    let rc_src = RECT { left: 0, top: 0, right: w, bottom: h };
 
-    self.inner.set_thumbnail_rects(rc_src, rc_dst);
+    self.apply_visible_rect(
+      Some(batch),
+      rc_src,
+      cx - half_w,
+      cy - half_h,
+      cx + half_w,
+      cy + half_h,
+    );
     self.inner.set_window_opacity(self.lerp_opacity(eased_progress, is_incoming));
-    self.inner.set_visible(true);
   }
 
   /// Computes the per-frame window opacity for a surrogate at `progress`
@@ -349,20 +479,71 @@ impl WorkspaceSurrogate {
     (self.opacity as f32 * frac.clamp(0.0, 1.0)).round() as u8
   }
 
+  /// Applies a visible-rect update for one animation frame, dispatching on
+  /// [`SurrogateMode`].
+  ///
+  /// `rc_src` is the source-window-local rect to sample from. `vis_left`,
+  /// `vis_top`, `vis_right`, `vis_bottom` are the visible destination rect in
+  /// absolute screen coordinates.
+  ///
+  /// In [`SurrogateMode::PinnedViewport`] mode this only updates the DWM
+  /// thumbnail's `rcDestination` (expressed relative to `self.viewport`); the
+  /// surrogate window itself never moves. In [`SurrogateMode::Live`] mode the
+  /// thumbnail fills the surrogate's entire (resized) client area, and the
+  /// surrogate window is moved/resized to `[vis_left, vis_top, vis_right,
+  /// vis_bottom]` — immediately via `reposition` when `batch` is `None`
+  /// (initial placement, before the animation loop starts), or queued into
+  /// `batch` for an atomic multi-surrogate commit otherwise.
+  fn apply_visible_rect(
+    &mut self,
+    batch: Option<&mut SurrogateBatch>,
+    rc_src: RECT,
+    vis_left: i32,
+    vis_top: i32,
+    vis_right: i32,
+    vis_bottom: i32,
+  ) {
+    match self.mode {
+      SurrogateMode::PinnedViewport => {
+        let rc_dst = RECT {
+          left: vis_left - self.viewport.left,
+          top: vis_top - self.viewport.top,
+          right: vis_right - self.viewport.left,
+          bottom: vis_bottom - self.viewport.top,
+        };
+        self.inner.set_thumbnail_rects(rc_src, rc_dst);
+      }
+      SurrogateMode::Live => {
+        let w = vis_right - vis_left;
+        let h = vis_bottom - vis_top;
+        let rc_dst = RECT { left: 0, top: 0, right: w, bottom: h };
+        self.inner.set_thumbnail_rects(rc_src, rc_dst);
+
+        let target = Rect::from_ltrb(vis_left, vis_top, vis_right, vis_bottom);
+        match batch {
+          Some(b) => self.inner.defer_reposition(b, &target),
+          None => {
+            let _ = self.inner.reposition(&target);
+          }
+        }
+      }
+    }
+    self.inner.set_visible(true);
+  }
+
   /// Shared implementation for [`update_slide_zoom_horizontal`] and
   /// [`update_slide_zoom_vertical`].
   ///
   /// Computes a per-frame scale from the monitor center (both axes) combined
-  /// with a slide offset on the primary axis (`is_vertical` selects which).
-  /// The surrogate is pinned at `self.viewport` (the monitor rect) for the
-  /// entire animation; zoom and slide are expressed entirely via
-  /// `rcSource`/`rcDestination` in `DwmUpdateThumbnailProperties`.
+  /// with a slide offset on the primary axis (`is_vertical` selects which),
+  /// then routes the resulting visible rect through [`apply_visible_rect`].
   ///
   /// [`update_slide_zoom_horizontal`]: WorkspaceSurrogate::update_slide_zoom_horizontal
   /// [`update_slide_zoom_vertical`]: WorkspaceSurrogate::update_slide_zoom_vertical
   #[allow(clippy::too_many_arguments)]
   fn slide_zoom_axis(
     &mut self,
+    batch: &mut SurrogateBatch,
     eased_progress: f32,
     is_incoming: bool,
     direction: i32,
@@ -452,40 +633,30 @@ impl WorkspaceSurrogate {
 
     let rc_src =
       RECT { left: src_left, top: src_top, right: src_right, bottom: src_bottom };
-    // `rcDestination` is relative to the surrogate's top-left, which is
-    // pinned at `self.viewport` (monitor top-left) for the entire animation.
-    let rc_dst = RECT {
-      left: vis_left - self.viewport.left,
-      top: vis_top - self.viewport.top,
-      right: vis_right - self.viewport.left,
-      bottom: vis_bottom - self.viewport.top,
-    };
-    self.inner.set_thumbnail_rects(rc_src, rc_dst);
+    self.apply_visible_rect(
+      Some(batch),
+      rc_src,
+      vis_left,
+      vis_top,
+      vis_right,
+      vis_bottom,
+    );
     self.inner.set_window_opacity(self.lerp_opacity(eased_progress, is_incoming));
-    self.inner.set_visible(true);
-  }
-
-  /// Applies SWCA acrylic blur-behind to the surrogate window.
-  ///
-  /// Call once after creation. The DWM glass backdrop is replaced by an acrylic
-  /// blur layer; the DWM thumbnail renders on top at the configured opacity so
-  /// window content appears with a frosted-glass effect during the animation.
-  pub fn apply_swca(&mut self, tint: u32) {
-    self.inner.apply_swca(tint);
   }
 
   /// Shared implementation for [`update_slide_horizontal`] and
   /// [`update_slide_vertical`].
   ///
-  /// The surrogate is pinned at `self.viewport` (the monitor rect) for the
-  /// entire animation. The visible strip of source content is mapped to the
-  /// corresponding screen area via `rcSource`/`rcDestination`, with no
-  /// `SetWindowPos` calls per frame.
+  /// The visible strip of source content, clipped to
+  /// `[monitor_origin, monitor_origin + monitor_size]`, is routed through
+  /// [`apply_visible_rect`].
   ///
   /// [`update_slide_horizontal`]: WorkspaceSurrogate::update_slide_horizontal
   /// [`update_slide_vertical`]: WorkspaceSurrogate::update_slide_vertical
+  #[allow(clippy::too_many_arguments)]
   fn slide_axis(
     &mut self,
+    batch: &mut SurrogateBatch,
     eased_progress: f32,
     is_incoming: bool,
     direction: i32,
@@ -525,10 +696,10 @@ impl WorkspaceSurrogate {
     let src_start = vis_start - current;
     let constrained = vis_end - vis_start;
 
-    // `rcSource` is the visible slice of the source window.
-    // `rcDestination` places that slice in screen space relative to the
-    // surrogate's top-left (which equals `self.viewport`, the monitor rect).
-    let (rc_src, rc_dst) = if is_vertical {
+    // `rcSource` is the visible slice of the source window. The visible
+    // destination rect is expressed in absolute screen coordinates and
+    // routed through `apply_visible_rect`.
+    let (rc_src, vis_left, vis_top, vis_right, vis_bottom) = if is_vertical {
       (
         RECT {
           left: 0,
@@ -536,12 +707,10 @@ impl WorkspaceSurrogate {
           right: perp_size,
           bottom: src_start + constrained,
         },
-        RECT {
-          left: perp_pos - self.viewport.left,
-          top: vis_start - self.viewport.top,
-          right: perp_pos + perp_size - self.viewport.left,
-          bottom: vis_end - self.viewport.top,
-        },
+        perp_pos,
+        vis_start,
+        perp_pos + perp_size,
+        vis_end,
       )
     } else {
       (
@@ -551,16 +720,20 @@ impl WorkspaceSurrogate {
           right: src_start + constrained,
           bottom: perp_size,
         },
-        RECT {
-          left: vis_start - self.viewport.left,
-          top: perp_pos - self.viewport.top,
-          right: vis_end - self.viewport.left,
-          bottom: perp_pos + perp_size - self.viewport.top,
-        },
+        vis_start,
+        perp_pos,
+        vis_end,
+        perp_pos + perp_size,
       )
     };
-    self.inner.set_thumbnail_rects(rc_src, rc_dst);
+    self.apply_visible_rect(
+      Some(batch),
+      rc_src,
+      vis_left,
+      vis_top,
+      vis_right,
+      vis_bottom,
+    );
     self.inner.set_window_opacity(self.lerp_opacity(eased_progress, is_incoming));
-    self.inner.set_visible(true);
   }
 }

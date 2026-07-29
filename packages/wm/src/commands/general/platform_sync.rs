@@ -389,13 +389,20 @@ fn redraw_containers(
           } else {
             u8::MAX
           };
-          // Carry the acrylic blur onto the surrogate so the frosted-glass
-          // effect stays visible while the workspace slides. The static
-          // blur overlay is hidden for the duration of the animation.
+          // Carry the acrylic blur onto the surrogate (or a probe-detected
+          // external backdrop, e.g. Windhawk's `translucent-windows`) so the
+          // frosted-glass effect stays visible while the workspace slides.
+          // The static blur overlay is hidden for the duration of the
+          // animation.
           let acrylic_tint = effect_cfg.blur_behind.acrylic_tint();
+          let corner_style = if effect_cfg.corner_style.enabled {
+            effect_cfg.corner_style.style.clone()
+          } else {
+            CornerStyle::Default
+          };
 
           if is_incoming {
-            let mut surrogate = window
+            let surrogate = window
               .to_rect()
               .and_then(|r| {
                 window.total_border_delta().map(|d| r.apply_delta(&d, None))
@@ -404,18 +411,23 @@ fn redraw_containers(
               .and_then(|rect| {
                 let viewport =
                   Rect::from_xy(monitor_x, monitor_y, monitor_width, monitor_height);
-                WorkspaceSurrogate::new(hwnd, &rect, &viewport, opacity, ws_config.opacity_incoming)
-                  .map_err(|e| {
-                    tracing::warn!(
-                      "Failed to create incoming surrogate: {e}."
-                    );
-                    e
-                  })
-                  .ok()
+                WorkspaceSurrogate::new(
+                  hwnd,
+                  &rect,
+                  &viewport,
+                  opacity,
+                  ws_config.opacity_incoming,
+                  &corner_style,
+                  acrylic_tint,
+                )
+                .map_err(|e| {
+                  tracing::warn!(
+                    "Failed to create incoming surrogate: {e}."
+                  );
+                  e
+                })
+                .ok()
               });
-            if let (Some(s), Some(tint)) = (&mut surrogate, acrylic_tint) {
-              s.apply_swca(tint);
-            }
             // Always register incoming windows even without a surrogate so
             // `is_frozen_by_ws_animation` is true for all of them — this
             // prevents the real window from being uncloaked before the
@@ -430,16 +442,20 @@ fn redraw_containers(
               .unwrap_or_else(|| Rect::from_xy(0, 0, 0, 0));
             let viewport =
               Rect::from_xy(monitor_x, monitor_y, monitor_width, monitor_height);
-            let mut surrogate =
-              WorkspaceSurrogate::new(hwnd, &current, &viewport, opacity, ws_config.opacity_outgoing)
-                .map_err(|e| {
-                  tracing::warn!("Failed to create outgoing surrogate: {e}.");
-                  e
-                })
-                .ok();
-            if let (Some(s), Some(tint)) = (&mut surrogate, acrylic_tint) {
-              s.apply_swca(tint);
-            }
+            let surrogate = WorkspaceSurrogate::new(
+              hwnd,
+              &current,
+              &viewport,
+              opacity,
+              ws_config.opacity_outgoing,
+              &corner_style,
+              acrylic_tint,
+            )
+            .map_err(|e| {
+              tracing::warn!("Failed to create outgoing surrogate: {e}.");
+              e
+            })
+            .ok();
             ws_windows.push((id, surrogate, false));
           }
         }
@@ -1348,7 +1364,7 @@ fn apply_blur_behind_effect(
     _ => None,
   };
 
-  if let Err(e) = window.native().set_blur_behind(style, 0) {
+  if let Err(e) = window.native().set_blur_behind(style) {
     warn!("Failed to set blur-behind on window: {e}.");
   }
 }

@@ -30,6 +30,10 @@ pub use models::*;
 pub use mouse_listener::*;
 pub use native_window::*;
 #[cfg(target_os = "windows")]
+mod backdrop_detect;
+#[cfg(target_os = "windows")]
+pub use backdrop_detect::has_live_backdrop;
+#[cfg(target_os = "windows")]
 mod native_blur_overlay;
 #[cfg(target_os = "windows")]
 pub use native_blur_overlay::NativeBlurOverlay;

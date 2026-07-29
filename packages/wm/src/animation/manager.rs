@@ -918,6 +918,15 @@ impl AnimationManager {
         // exposes the desktop for one frame.
         let eased_final = if ws_done { 1.0 } else { eased };
 
+        // Batches every workspace-switch surrogate's `SetWindowPos` (only
+        // issued by surrogates carrying a live acrylic backdrop, tracking
+        // their own footprint instead of staying pinned to the viewport)
+        // into one `DeferWindowPos` transaction per tick — mirrors the
+        // `SurrogateBatch` already used for move/resize relayouts. Surrogates
+        // with no live backdrop never push into this batch, so it stays
+        // empty (a no-op commit) for the common case.
+        let mut ws_batch = SurrogateBatch::new();
+
         for entry in ws.windows.values_mut() {
           if let Some(ref mut s) = entry.surrogate {
             // At completion, hide outgoing surrogates immediately. They have
@@ -934,6 +943,7 @@ impl AnimationManager {
                   WorkspaceSwitchDirection::Horizontal => {
                     if ws.zoom_factor > 0.0 {
                       s.update_slide_zoom_horizontal(
+                        &mut ws_batch,
                         eased_final,
                         entry.is_incoming,
                         ws.order_direction,
@@ -946,6 +956,7 @@ impl AnimationManager {
                       );
                     } else {
                       s.update_slide_horizontal(
+                        &mut ws_batch,
                         eased_final,
                         entry.is_incoming,
                         ws.order_direction,
@@ -958,6 +969,7 @@ impl AnimationManager {
                   WorkspaceSwitchDirection::Vertical => {
                     if ws.zoom_factor > 0.0 {
                       s.update_slide_zoom_vertical(
+                        &mut ws_batch,
                         eased_final,
                         entry.is_incoming,
                         ws.order_direction,
@@ -970,6 +982,7 @@ impl AnimationManager {
                       );
                     } else {
                       s.update_slide_vertical(
+                        &mut ws_batch,
                         eased_final,
                         entry.is_incoming,
                         ws.order_direction,
@@ -985,7 +998,7 @@ impl AnimationManager {
                 s.update_fade(eased_final, entry.is_incoming);
               }
               WorkspaceSwitchStyle::Zoom => {
-                s.update_zoom(eased_final, entry.is_incoming);
+                s.update_zoom(&mut ws_batch, eased_final, entry.is_incoming);
               }
               // Iris is driven by a separate snapshot overlay (see
               // `iris_switch`), never by per-window surrogates, so it never
@@ -994,6 +1007,7 @@ impl AnimationManager {
             }
           }
         }
+        ws_batch.commit();
 
         if ws_done {
           Some(ws.windows.keys().copied().collect())

@@ -24,8 +24,9 @@ use windows::Win32::{
 const EDGE_SAMPLE_INSET: i32 = 4;
 
 use crate::{
-  native_surrogate::to_logical, Color, CornerStyle, NativeSurrogate, Rect,
-  SurrogateBatch,
+  backdrop_detect::{LIVE_BLUR_DEFAULT_TINT, LIVE_BLUR_THUMBNAIL_OPACITY},
+  has_live_backdrop, native_surrogate::to_logical, Color, CornerStyle,
+  NativeSurrogate, Rect, SurrogateBatch,
 };
 
 /// Options for [`ResizeSession::begin`].
@@ -187,6 +188,31 @@ impl ResizeSession {
       )
     });
 
+    // When no GlazeWM-configured acrylic tint applies, detect whether the
+    // source window already has its own live DWM backdrop translucency
+    // (native Mica/Acrylic, or a third-party mod such as Windhawk's
+    // `translucent-windows`) — `DwmRegisterThumbnail` flattens that to
+    // opaque, so the surrogate carries a matching live acrylic backdrop
+    // instead when this fires. The two triggers are mutually exclusive per
+    // window: config-driven acrylic always wins, and the probe is skipped
+    // entirely when it does (avoiding the extra syscalls).
+    let (acrylic_tint, is_probed_backdrop) = match options.acrylic_tint {
+      Some(tint) => (Some(tint), false),
+      None if has_live_backdrop(hwnd) => (Some(LIVE_BLUR_DEFAULT_TINT), true),
+      None => (None, false),
+    };
+
+    // The probe has no way to know the source window's real opacity — unlike
+    // GlazeWM's own `blur_behind` effect (only visible in combination with a
+    // configured `transparency` effect), the whole point here is to not
+    // regress a translucency GlazeWM doesn't own. Cap the thumbnail opacity
+    // unconditionally so the live blur underneath bleeds through.
+    let effect_opacity = if is_probed_backdrop {
+      options.effect_opacity.min(LIVE_BLUR_THUMBNAIL_OPACITY)
+    } else {
+      options.effect_opacity
+    };
+
     let insert_after = if options.place_at_top { HWND(0) } else { hwnd };
     // Thumbnail registered at source dims for all directions (see doc
     // comment): the window is only source-sized at this point, and
@@ -196,7 +222,7 @@ impl ResizeSession {
       source_rect,
       source_rect,
       edge_color.as_ref(),
-      options.effect_opacity,
+      effect_opacity,
       options.initially_visible,
       border_inset,
       &options.corner_style,
@@ -212,7 +238,7 @@ impl ResizeSession {
       }
     };
 
-    if let (Some(s), Some(tint)) = (&mut surrogate, options.acrylic_tint) {
+    if let (Some(s), Some(tint)) = (&mut surrogate, acrylic_tint) {
       s.apply_swca(tint);
     }
 
@@ -221,7 +247,7 @@ impl ResizeSession {
       target_rect: target_rect.clone(),
       surrogate,
       border_inset,
-      effect_opacity: options.effect_opacity,
+      effect_opacity,
       edge_color,
       is_move_only,
       is_growing,
