@@ -1,4 +1,5 @@
 pub(crate) mod com;
+pub(crate) mod composition;
 mod display;
 pub(crate) mod swca;
 mod display_listener;

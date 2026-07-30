@@ -1213,14 +1213,26 @@ impl AnimationManager {
           continue;
         };
 
+        let blur_amount = effect_cfg.blur_behind.blur_amount;
+        let corner_radius = effect_cfg
+          .blur_behind
+          .corner_radius
+          .to_px(rect.width().min(rect.height()), None);
+        #[allow(clippy::cast_precision_loss)]
+        let corner_radius = corner_radius as f32;
+
         match state.blur_overlays.entry(*id) {
           std::collections::hash_map::Entry::Occupied(e) => {
             let overlay = e.into_mut();
             overlay.set_tint(tint);
+            overlay.set_blur_amount(blur_amount);
+            overlay.set_corner_radius(corner_radius);
             overlay.set_rect(rect);
           }
           std::collections::hash_map::Entry::Vacant(e) => {
-            if let Ok(overlay) = NativeBlurOverlay::create(rect, tint) {
+            if let Ok(overlay) =
+              NativeBlurOverlay::create(rect, tint, blur_amount, corner_radius)
+            {
               e.insert(overlay);
             }
           }

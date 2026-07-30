@@ -258,7 +258,7 @@ pub struct WindowEffectConfig {
   pub blur_behind: BlurBehindEffectConfig,
 }
 
-#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(default, rename_all(serialize = "camelCase"))]
 pub struct BlurBehindEffectConfig {
   /// Whether to enable the effect.
@@ -273,6 +273,34 @@ pub struct BlurBehindEffectConfig {
   /// near-transparent black (`alpha = 1`) is used to avoid the solid-fill
   /// rendering bug present on some Windows 10 builds.
   pub tint: Option<Color>,
+
+  /// Blur radius/intensity of the acrylic overlay's live blur.
+  ///
+  /// Ignored for `mica`/`mica_alt` -- the OS gives no blur-radius knob for
+  /// those, and there's no overlay window to attach a custom blur effect
+  /// to for that path. Silently has no effect if the
+  /// `Windows.UI.Composition` rendering pipeline is unavailable on this
+  /// system (falls back to the OS's fixed-intensity acrylic blur).
+  pub blur_amount: f32,
+
+  /// Continuous corner radius of the acrylic overlay itself -- not the
+  /// managed window's own corners, see `corner_style` for that.
+  ///
+  /// Ignored for `mica`/`mica_alt`, and silently has no effect without the
+  /// `Windows.UI.Composition` pipeline, same as `blur_amount`.
+  pub corner_radius: LengthValue,
+}
+
+impl Default for BlurBehindEffectConfig {
+  fn default() -> Self {
+    Self {
+      enabled: false,
+      style: BlurBehindStyle::default(),
+      tint: None,
+      blur_amount: 30.0,
+      corner_radius: LengthValue::from_px(0),
+    }
+  }
 }
 
 impl BlurBehindEffectConfig {

@@ -1465,6 +1465,20 @@ fn sync_blur_overlays(
       continue;
     };
 
+    // Resolved against GlazeWM's own (cheap, in-process) tiling rect rather
+    // than a `native().frame()` query, so corner-radius percentages can be
+    // re-resolved every tick without reintroducing the cross-process DWM
+    // round-trip the redraw-scoping below exists to avoid.
+    let blur_amount = effect_cfg.blur_behind.blur_amount;
+    let corner_radius = window.to_rect().map_or(0, |rect| {
+      effect_cfg
+        .blur_behind
+        .corner_radius
+        .to_px(rect.width().min(rect.height()), None)
+    });
+    #[allow(clippy::cast_precision_loss)]
+    let corner_radius = corner_radius as f32;
+
     wanted_ids.insert(window.id());
 
     // Hide the static overlay while a surrogate is active for this window.
@@ -1493,6 +1507,8 @@ fn sync_blur_overlays(
       std::collections::hash_map::Entry::Occupied(e) => {
         let overlay = e.into_mut();
         overlay.set_tint(tint);
+        overlay.set_blur_amount(blur_amount);
+        overlay.set_corner_radius(corner_radius);
 
         // Always re-query and re-show when the overlay isn't currently
         // visible, even if this window isn't part of this tick's redraw --
@@ -1520,7 +1536,8 @@ fn sync_blur_overlays(
           continue;
         };
 
-        match NativeBlurOverlay::create(&rect, tint) {
+        match NativeBlurOverlay::create(&rect, tint, blur_amount, corner_radius)
+        {
           Ok(overlay) => {
             debug!("Blur overlay created for {}.", window.id());
             e.insert(overlay);

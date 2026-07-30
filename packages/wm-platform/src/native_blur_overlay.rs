@@ -4,17 +4,25 @@ use windows::{
   core::w,
   Win32::{
     Foundation::{HWND, LPARAM, LRESULT, WPARAM},
+    Graphics::Dwm::{DwmSetWindowAttribute, DWMWA_USE_HOSTBACKDROPBRUSH},
     UI::WindowsAndMessaging::{
       CreateWindowExW, DefWindowProcW, DestroyWindow, RegisterClassW,
       SetWindowPos, ShowWindow, HWND_BOTTOM, SWP_NOACTIVATE,
       SWP_NOSENDCHANGING, SWP_SHOWWINDOW, SW_HIDE, WNDCLASSW,
-      WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_POPUP,
+      WS_EX_NOACTIVATE, WS_EX_NOREDIRECTIONBITMAP, WS_EX_TOOLWINDOW,
+      WS_POPUP,
     },
   },
 };
 
 use crate::{
-  platform_impl::swca::{apply_swca_accent, ACCENT_ENABLE_ACRYLICBLURBEHIND},
+  platform_impl::{
+    composition::BlurVisual,
+    swca::{
+      apply_swca_accent, ACCENT_ENABLE_ACRYLICBLURBEHIND,
+      ACCENT_ENABLE_HOSTBACKDROP,
+    },
+  },
   Rect,
 };
 
@@ -38,8 +46,8 @@ fn ensure_class_registered() {
     let wnd_class = WNDCLASSW {
       lpszClassName: w!("GlazeWM_BlurOverlay"),
       lpfnWndProc: Some(default_wnd_proc),
-      // Null background brush: SWCA composites the acrylic layer; GDI
-      // never paints the client area.
+      // Null background brush: SWCA/Composition composite the acrylic
+      // layer; GDI never paints the client area.
       ..Default::default()
     };
 
@@ -47,6 +55,111 @@ fn ensure_class_registered() {
     // and a valid window procedure.
     unsafe { RegisterClassW(&raw const wnd_class) };
   });
+}
+
+/// Creates the overlay's backdrop window.
+///
+/// `composition` selects `WS_EX_NOREDIRECTIONBITMAP`, which skips the GDI
+/// redirection surface DWM would otherwise allocate -- correct for the
+/// `Windows.UI.Composition` path, whose visual tree replaces that surface
+/// entirely, but incompatible with SWCA, which composites into it. Callers
+/// falling back from a failed Composition attempt must create a *new*
+/// window with `composition: false` rather than reusing one created with
+/// the flag set.
+fn create_window(rect: &Rect, composition: bool) -> crate::Result<HWND> {
+  ensure_class_registered();
+
+  let ex_style = if composition {
+    WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW | WS_EX_NOREDIRECTIONBITMAP
+  } else {
+    WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW
+  };
+
+  // SAFETY: All parameters are valid. The class is guaranteed registered
+  // by `ensure_class_registered`. No parent HWND is needed.
+  let hwnd = unsafe {
+    CreateWindowExW(
+      ex_style,
+      w!("GlazeWM_BlurOverlay"),
+      w!(""),
+      WS_POPUP,
+      rect.x(),
+      rect.y(),
+      rect.width(),
+      rect.height(),
+      None,
+      None,
+      None,
+      None,
+    )
+  };
+
+  if hwnd.0 == 0 {
+    return Err(crate::Error::Platform(
+      "Failed to create blur overlay window.".to_string(),
+    ));
+  }
+
+  Ok(hwnd)
+}
+
+/// Applies `ACCENT_ENABLE_HOSTBACKDROP` (+ its Win11 documented equivalent,
+/// `DWMWA_USE_HOSTBACKDROPBRUSH`) to `hwnd`, required for a
+/// `CompositionBackdropBrush` to sample live desktop content instead of
+/// rendering black/opaque.
+fn apply_hostbackdrop(hwnd: HWND) {
+  apply_swca_accent(hwnd, ACCENT_ENABLE_HOSTBACKDROP, 0);
+
+  let value: windows::Win32::Foundation::BOOL = true.into();
+  // `BOOL` is a 4-byte struct; the cast is always exact.
+  #[allow(clippy::cast_possible_truncation)]
+  let size = std::mem::size_of::<windows::Win32::Foundation::BOOL>() as u32;
+  // SAFETY: `hwnd` is valid; `value` is a 4-byte BOOL matching `size`.
+  unsafe {
+    let _ = DwmSetWindowAttribute(
+      hwnd,
+      DWMWA_USE_HOSTBACKDROPBRUSH,
+      std::ptr::addr_of!(value).cast(),
+      size,
+    );
+  }
+}
+
+/// Attempts to build the `Windows.UI.Composition` pipeline for a freshly
+/// created overlay window. On any failure, destroys `hwnd` (since it was
+/// created with `WS_EX_NOREDIRECTIONBITMAP`, unusable for the SWCA
+/// fallback) so the caller can create a fresh window for that path.
+fn try_create_composition(
+  rect: &Rect,
+  tint: u32,
+  blur_amount: f32,
+  corner_radius: f32,
+) -> Option<(HWND, BlurVisual)> {
+  let hwnd = match create_window(rect, true) {
+    Ok(hwnd) => hwnd,
+    Err(err) => {
+      tracing::warn!("Blur overlay composition window creation failed: {err}.");
+      return None;
+    }
+  };
+
+  apply_hostbackdrop(hwnd);
+
+  match BlurVisual::create(hwnd, rect, tint, blur_amount, corner_radius) {
+    Ok(visual) => Some((hwnd, visual)),
+    Err(err) => {
+      tracing::warn!(
+        "Composition blur pipeline unavailable, falling back to SWCA \
+         acrylic: {err}."
+      );
+      // SAFETY: `hwnd` was just created above and not yet handed to a
+      // caller; safe to destroy immediately on this failure path.
+      unsafe {
+        let _ = DestroyWindow(hwnd);
+      }
+      None
+    }
+  }
 }
 
 /// A persistent backdrop window that provides an acrylic blur-behind effect
@@ -58,23 +171,32 @@ fn ensure_class_registered() {
 /// blurred desktop visible through the overlay shows through the window,
 /// producing a frosted-glass look.
 ///
-/// The overlay uses `SetWindowCompositionAttribute` with
-/// `ACCENT_ENABLE_ACRYLICBLURBEHIND` on its own `HWND`. This sidesteps the
-/// `WS_EX_LAYERED`/SWCA compositing conflict that prevents applying SWCA
-/// directly to layered managed windows.
+/// Renders via a `Windows.UI.Composition` pipeline (live host-backdrop
+/// brush, a continuously adjustable Gaussian-blur effect graph, and a
+/// continuous corner-radius clip) when available, falling back to
+/// `SetWindowCompositionAttribute` with `ACCENT_ENABLE_ACRYLICBLURBEHIND`
+/// otherwise -- e.g. pre-Windows 10 1803, or if any step of the Composition
+/// setup fails. In the fallback, `blur_amount`/`corner_radius` become
+/// no-ops (the OS gives no such knobs for SWCA acrylic) but `tint` keeps
+/// working the same as before.
 ///
 /// # Platform-specific
 ///
-/// Only available on Windows. The acrylic effect requires Windows 10 1803+;
-/// on older versions the backdrop degrades gracefully to an opaque overlay
-/// tinted by `tint`.
+/// Only available on Windows.
 pub struct NativeBlurOverlay {
   /// Raw window handle stored as `isize` so that `NativeBlurOverlay` is
   /// `Send` even though `HWND` is not.
   hwnd: isize,
 
-  /// Current ABGR tint applied to the overlay via SWCA.
+  /// Current ABGR tint. Applied via SWCA in the fallback path, or as the
+  /// Composition pipeline's tint layer color otherwise.
   tint: u32,
+
+  /// Current blur radius/intensity. No-op in the SWCA fallback.
+  blur_amount: f32,
+
+  /// Current corner radius, in pixels. No-op in the SWCA fallback.
+  corner_radius: f32,
 
   /// Last rect applied via `set_rect`, used to skip redundant
   /// `SetWindowPos` calls when the overlay hasn't actually moved.
@@ -91,42 +213,33 @@ pub struct NativeBlurOverlay {
   /// [`hide`]: NativeBlurOverlay::hide
   /// [`set_rect`]: NativeBlurOverlay::set_rect
   is_visible: bool,
+
+  /// `Some` when the Composition pipeline is active for this overlay;
+  /// `None` when running the SWCA fallback.
+  composition: Option<BlurVisual>,
 }
 
 impl NativeBlurOverlay {
-  /// Creates a new blur overlay sized and positioned to `rect` with the
-  /// given ABGR `tint`.
+  /// Creates a new blur overlay sized and positioned to `rect`, with the
+  /// given ABGR `tint`, blur amount, and corner radius (the latter two are
+  /// only honored when the Composition pipeline is available).
   ///
   /// The overlay is shown immediately at `HWND_BOTTOM`.
-  pub fn create(rect: &Rect, tint: u32) -> crate::Result<Self> {
-    ensure_class_registered();
-
-    // SAFETY: All parameters are valid. The class is guaranteed registered
-    // by `ensure_class_registered`. No parent HWND is needed.
-    let hwnd = unsafe {
-      CreateWindowExW(
-        WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW,
-        w!("GlazeWM_BlurOverlay"),
-        w!(""),
-        WS_POPUP,
-        rect.x(),
-        rect.y(),
-        rect.width(),
-        rect.height(),
-        None,
-        None,
-        None,
-        None,
-      )
+  pub fn create(
+    rect: &Rect,
+    tint: u32,
+    blur_amount: f32,
+    corner_radius: f32,
+  ) -> crate::Result<Self> {
+    let (hwnd, composition) = if let Some((hwnd, visual)) =
+      try_create_composition(rect, tint, blur_amount, corner_radius)
+    {
+      (hwnd, Some(visual))
+    } else {
+      let hwnd = create_window(rect, false)?;
+      apply_swca_accent(hwnd, ACCENT_ENABLE_ACRYLICBLURBEHIND, tint);
+      (hwnd, None)
     };
-
-    if hwnd.0 == 0 {
-      return Err(crate::Error::Platform(
-        "Failed to create blur overlay window.".to_string(),
-      ));
-    }
-
-    apply_swca_accent(hwnd, ACCENT_ENABLE_ACRYLICBLURBEHIND, tint);
 
     // SAFETY: `hwnd` is a valid window just created above.
     if let Err(e) = unsafe {
@@ -146,8 +259,11 @@ impl NativeBlurOverlay {
     Ok(Self {
       hwnd: hwnd.0,
       tint,
+      blur_amount,
+      corner_radius,
       rect: rect.clone(),
       is_visible: true,
+      composition,
     })
   }
 
@@ -195,15 +311,72 @@ impl NativeBlurOverlay {
       return;
     }
 
+    if let Some(composition) = &self.composition {
+      if let Err(e) = composition.set_rect(rect) {
+        tracing::warn!("Blur overlay composition resize failed: {e}.");
+      }
+    }
+
     self.rect = rect.clone();
     self.is_visible = true;
   }
 
-  /// Updates the ABGR tint; re-applies SWCA only when the value changes.
+  /// Updates the ABGR tint; re-applies only when the value changes.
   pub fn set_tint(&mut self, tint: u32) {
-    if self.tint != tint {
-      self.tint = tint;
-      apply_swca_accent(self.hwnd(), ACCENT_ENABLE_ACRYLICBLURBEHIND, tint);
+    if self.tint == tint {
+      return;
+    }
+    self.tint = tint;
+
+    match &self.composition {
+      Some(composition) => {
+        if let Err(e) = composition.set_tint(tint) {
+          tracing::warn!("Blur overlay composition tint update failed: {e}.");
+        }
+      }
+      None => {
+        apply_swca_accent(self.hwnd(), ACCENT_ENABLE_ACRYLICBLURBEHIND, tint);
+      }
+    }
+  }
+
+  /// Updates the blur radius/intensity; re-applies only when the value
+  /// changes. No-op when running the SWCA fallback (no such knob exists).
+  ///
+  /// Compares the raw `f32` for exact equality, same as `set_tint`'s ABGR
+  /// comparison -- the value only ever changes when a caller passes a
+  /// genuinely different, config-resolved number, not through any
+  /// arithmetic that could introduce drift.
+  #[allow(clippy::float_cmp)]
+  pub fn set_blur_amount(&mut self, blur_amount: f32) {
+    if self.blur_amount == blur_amount {
+      return;
+    }
+    self.blur_amount = blur_amount;
+
+    if let Some(composition) = &mut self.composition {
+      if let Err(e) = composition.set_blur_amount(blur_amount) {
+        tracing::warn!("Blur overlay blur-amount update failed: {e}.");
+      }
+    }
+  }
+
+  /// Updates the corner radius, in pixels; re-applies only when the value
+  /// changes. No-op when running the SWCA fallback (no such knob exists).
+  ///
+  /// See `set_blur_amount` for why exact `f32` equality is intentional
+  /// here.
+  #[allow(clippy::float_cmp)]
+  pub fn set_corner_radius(&mut self, corner_radius: f32) {
+    if self.corner_radius == corner_radius {
+      return;
+    }
+    self.corner_radius = corner_radius;
+
+    if let Some(composition) = &self.composition {
+      if let Err(e) = composition.set_corner_radius(corner_radius) {
+        tracing::warn!("Blur overlay corner-radius update failed: {e}.");
+      }
     }
   }
 
@@ -219,6 +392,10 @@ impl NativeBlurOverlay {
 
 impl Drop for NativeBlurOverlay {
   fn drop(&mut self) {
+    // Drop the Composition visual tree (if any) before destroying the
+    // window it's rooted to.
+    self.composition.take();
+
     // SAFETY: `self.hwnd()` is a valid window handle and `Drop` is called
     // at most once.
     unsafe {

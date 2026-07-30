@@ -14,6 +14,12 @@ pub(crate) const ACCENT_ENABLE_GRADIENT: u32 = 1;
 /// Accent state: acrylic blur-behind, the Win10 frosted-glass equivalent.
 pub(crate) const ACCENT_ENABLE_ACRYLICBLURBEHIND: u32 = 4;
 
+/// Accent state: host backdrop -- samples live desktop content from behind
+/// the window for a `Windows.UI.Composition` host-backdrop brush to pick
+/// up, rather than blurring a solid color like `ACCENT_ENABLE_ACRYLICBLURBEHIND`.
+/// The `gradient_color` field is unused for this accent state.
+pub(crate) const ACCENT_ENABLE_HOSTBACKDROP: u32 = 5;
+
 /// `WCA_ACCENT_POLICY` attribute index for
 /// `SetWindowCompositionAttribute`.
 const WCA_ACCENT_POLICY: u32 = 19;
