@@ -75,6 +75,22 @@ pub struct NativeBlurOverlay {
 
   /// Current ABGR tint applied to the overlay via SWCA.
   tint: u32,
+
+  /// Last rect applied via `set_rect`, used to skip redundant
+  /// `SetWindowPos` calls when the overlay hasn't actually moved.
+  rect: Rect,
+
+  /// Whether the overlay window is currently shown.
+  ///
+  /// Tracked explicitly (rather than inferred from a change in `rect`) so
+  /// that a caller re-showing the overlay after [`hide`] with an unchanged
+  /// rect still issues the `SetWindowPos` needed to reapply
+  /// `SWP_SHOWWINDOW` -- the rect-unchanged fast path in [`set_rect`] would
+  /// otherwise skip that call entirely, leaving the overlay hidden.
+  ///
+  /// [`hide`]: NativeBlurOverlay::hide
+  /// [`set_rect`]: NativeBlurOverlay::set_rect
+  is_visible: bool,
 }
 
 impl NativeBlurOverlay {
@@ -127,7 +143,12 @@ impl NativeBlurOverlay {
       tracing::warn!("Blur overlay SetWindowPos failed on create: {e}.");
     }
 
-    Ok(Self { hwnd: hwnd.0, tint })
+    Ok(Self {
+      hwnd: hwnd.0,
+      tint,
+      rect: rect.clone(),
+      is_visible: true,
+    })
   }
 
   /// Returns the `HWND` for this overlay.
@@ -135,9 +156,28 @@ impl NativeBlurOverlay {
     HWND(self.hwnd)
   }
 
+  /// Returns whether the overlay window is currently shown.
+  #[must_use]
+  pub fn is_visible(&self) -> bool {
+    self.is_visible
+  }
+
   /// Repositions and resizes the overlay to match `rect`, keeping it at
-  /// `HWND_BOTTOM`.
-  pub fn set_rect(&self, rect: &Rect) {
+  /// `HWND_BOTTOM`, and ensures it's shown.
+  ///
+  /// No-op if `rect` matches the last-applied rect and the overlay is
+  /// already visible, to avoid redundant `SetWindowPos` calls (and the DWM
+  /// recomposite they trigger) on every sync tick for overlays that haven't
+  /// actually moved. Always issues the call when re-showing after [`hide`],
+  /// even at an unchanged rect, since that's what reapplies
+  /// `SWP_SHOWWINDOW`.
+  ///
+  /// [`hide`]: NativeBlurOverlay::hide
+  pub fn set_rect(&mut self, rect: &Rect) {
+    if self.is_visible && &self.rect == rect {
+      return;
+    }
+
     // SAFETY: `self.hwnd()` is a valid window handle for the lifetime of
     // this struct.
     if let Err(e) = unsafe {
@@ -152,7 +192,11 @@ impl NativeBlurOverlay {
       )
     } {
       tracing::warn!("Blur overlay SetWindowPos failed: {e}.");
+      return;
     }
+
+    self.rect = rect.clone();
+    self.is_visible = true;
   }
 
   /// Updates the ABGR tint; re-applies SWCA only when the value changes.
@@ -164,7 +208,8 @@ impl NativeBlurOverlay {
   }
 
   /// Hides the overlay without destroying it.
-  pub fn hide(&self) {
+  pub fn hide(&mut self) {
+    self.is_visible = false;
     // SAFETY: `self.hwnd()` is a valid window handle.
     unsafe {
       let _ = ShowWindow(self.hwnd(), SW_HIDE);

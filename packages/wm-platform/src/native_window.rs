@@ -335,6 +335,23 @@ pub trait NativeWindowWindowsExt {
     opacity_delta: &Delta<OpacityValue>,
   ) -> crate::Result<()>;
 
+  /// Re-applies the window's current layered-window alpha, if any, without
+  /// changing its value.
+  ///
+  /// `SWP_FRAMECHANGED` (issued whenever a window is resized) forces a
+  /// non-client-area recalculation that can make DWM briefly composite the
+  /// window at full opacity before the existing `LWA_ALPHA` value is
+  /// reasserted — a one-frame flash to solid on every resize/move/workspace-
+  /// switch landing for any window using the `transparency` effect. Calling
+  /// this immediately after such a `SetWindowPos` forces DWM to recomposite
+  /// with the correct alpha right away, closing that gap. No-op if the
+  /// window isn't currently layered.
+  ///
+  /// # Platform-specific
+  ///
+  /// This method is only available on Windows.
+  fn reassert_transparency(&self) -> crate::Result<()>;
+
   /// Applies a DWM system-backdrop material to the window.
   ///
   /// `Mica` and `MicaAlt` use `DWMWA_SYSTEMBACKDROP_TYPE` (Windows 11 22H2+)
@@ -459,6 +476,10 @@ impl NativeWindowWindowsExt for NativeWindow {
     opacity_delta: &Delta<OpacityValue>,
   ) -> crate::Result<()> {
     self.inner.adjust_transparency(opacity_delta)
+  }
+
+  fn reassert_transparency(&self) -> crate::Result<()> {
+    self.inner.reassert_transparency()
   }
 
   fn set_blur_behind(&self, style: Option<&BlurBehindStyle>) -> crate::Result<()> {

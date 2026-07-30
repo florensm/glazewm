@@ -109,7 +109,7 @@ use wm_common::{
 use wm_platform::{NativeWindow, OpacityValue, Rect};
 #[cfg(target_os = "windows")]
 use wm_platform::{
-  Color, CornerStyle, DxgiVsyncWaiter, NativeIrisOverlay,
+  Color, CornerStyle, DxgiVsyncWaiter, NativeBlurOverlay, NativeIrisOverlay,
   NativeWindowWindowsExt, ResizeSession, SessionOptions, SurrogateBatch,
   WorkspaceSurrogate,
 };
@@ -429,6 +429,16 @@ impl AnimationManager {
         .map(|ws| ws.windows.contains_key(window_id))
         .unwrap_or(false)
       || self.pending_close_windows.contains_key(window_id)
+      // A completed resize session's surrogate is moved here to fade out
+      // over the uncloaked real window (see `remove_completed_animations`)
+      // rather than being dropped immediately -- it's still alive and
+      // carrying its own live acrylic blur, so the static overlay must stay
+      // hidden until the fade finishes, not just until `resize_sessions` no
+      // longer holds the entry.
+      || self
+        .pending_session_cleanup
+        .iter()
+        .any(|(id, _, _)| id == window_id)
   }
 
   /// Removes a window's animation and any associated resize session.
@@ -1132,11 +1142,17 @@ impl AnimationManager {
       // blends shadow/border/late-repaint differences instead of swapping
       // them in a single composition. Entries are dropped once fully faded.
       let fade_now = Instant::now();
+      // Windows whose fading resize-session surrogate is dropped this tick --
+      // `has_active_surrogate` now covers `pending_session_cleanup`, so once
+      // dropped here the static overlay needs a follow-up sync to reappear
+      // (see the same reasoning below for workspace-switch cleanup).
+      let mut dropped_session_ids: Vec<Uuid> = Vec::new();
       state.animation_manager.pending_session_cleanup.retain_mut(
-        |(_, fade_start, session)| {
+        |(id, fade_start, session)| {
           // Transparent windows were zeroed before the flush above; the
           // flushed frame already shows the correct final composite. Drop now.
           if session.effect_opacity < u8::MAX {
+            dropped_session_ids.push(*id);
             return false;
           }
 
@@ -1144,6 +1160,7 @@ impl AnimationManager {
           let progress = fade_now.saturating_duration_since(start).as_secs_f32()
             / SESSION_FADE_OUT.as_secs_f32();
           if progress >= 1.0 {
+            dropped_session_ids.push(*id);
             return false;
           }
           #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
@@ -1153,7 +1170,100 @@ impl AnimationManager {
           true
         },
       );
+
+      // `sync_blur_overlays` (called from `platform_sync` above) hides each
+      // window's static acrylic overlay while its workspace-switch surrogate
+      // is alive, including this `pending_ws_cleanup` grace period. The
+      // surrogate itself carries a live SWCA acrylic blur throughout, so
+      // that's fine while it's alive -- but dropping `pending_ws_cleanup`
+      // below destroys the surrogate outright, and nothing shows the static
+      // overlay again until a later `platform_sync` call runs. Between those
+      // two moments DWM can composite a frame with *no* blur behind the
+      // (semi-transparent) real window at all -- a one-frame flicker at the
+      // end of every switch. Pre-show the static overlay at its final rect
+      // (known from the surrogate, which is already positioned there) while
+      // the surrogate is still alive, so the two overlap for a flushed frame
+      // instead of leaving a gap.
+      let incoming_acrylic_windows: Vec<(Uuid, Rect)> = state
+        .animation_manager
+        .pending_ws_cleanup
+        .as_ref()
+        .map(|ws| {
+          ws.windows
+            .iter()
+            .filter(|(_, entry)| entry.is_incoming)
+            .filter_map(|(id, entry)| {
+              Some((*id, entry.surrogate.as_ref()?.rect.clone()))
+            })
+            .collect()
+        })
+        .unwrap_or_default();
+
+      let focused_id = state.focused_container().map(|c| c.id());
+      let mut pre_shown = false;
+
+      for (id, rect) in &incoming_acrylic_windows {
+        let effect_cfg = if Some(*id) == focused_id {
+          &config.value.window_effects.focused_window
+        } else {
+          &config.value.window_effects.other_windows
+        };
+
+        let Some(tint) = effect_cfg.blur_behind.acrylic_tint() else {
+          continue;
+        };
+
+        match state.blur_overlays.entry(*id) {
+          std::collections::hash_map::Entry::Occupied(e) => {
+            let overlay = e.into_mut();
+            overlay.set_tint(tint);
+            overlay.set_rect(rect);
+          }
+          std::collections::hash_map::Entry::Vacant(e) => {
+            if let Ok(overlay) = NativeBlurOverlay::create(rect, tint) {
+              e.insert(overlay);
+            }
+          }
+        }
+        pre_shown = true;
+      }
+
+      if pre_shown {
+        wm_platform::dwm_flush();
+      }
+
+      // Capture the participating window IDs before dropping the cleanup
+      // state (which destroys the surrogates) so a follow-up `platform_sync`
+      // call can settle their overlays' tint/rect through the normal path.
+      // Without this second sync, an overlay would stay however it was left
+      // above until some unrelated redraw happens to fire -- the animation
+      // timer stops right after this block when no other animation is
+      // active, so there may be no later tick. Combined with
+      // `dropped_session_ids` (resize-session surrogates dropped above,
+      // subject to the exact same hazard).
+      let mut cleanup_window_ids = dropped_session_ids;
+      if let Some(ws) = &state.animation_manager.pending_ws_cleanup {
+        cleanup_window_ids.extend(ws.windows.keys().copied());
+      }
+
       state.animation_manager.pending_ws_cleanup = None;
+
+      if !cleanup_window_ids.is_empty() {
+        let mut queued = 0;
+        for id in cleanup_window_ids {
+          if let Some(container) = state.container_by_id(id) {
+            if let Ok(window) = container.as_window_container() {
+              state.pending_sync.queue_container_to_redraw(window);
+              queued += 1;
+            }
+          }
+        }
+        tracing::debug!(
+          "Post-cleanup overlay re-sync: queued {queued} window(s) for \
+           redraw, running follow-up platform_sync."
+        );
+        platform_sync(state, config)?;
+      }
     }
 
     // Keep the timer running while animations are active; stop it otherwise

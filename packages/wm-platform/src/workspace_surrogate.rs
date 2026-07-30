@@ -1,8 +1,8 @@
 use windows::Win32::Foundation::{HWND, RECT};
 
 use crate::{
-  backdrop_detect::{LIVE_BLUR_DEFAULT_TINT, LIVE_BLUR_THUMBNAIL_OPACITY},
-  has_live_backdrop, CornerStyle, NativeSurrogate, Rect, SurrogateBatch,
+  native_surrogate::to_logical, resize_session::compute_border_inset,
+  CornerStyle, NativeSurrogate, Rect, SurrogateBatch,
 };
 
 /// Positioning strategy for a [`WorkspaceSurrogate`].
@@ -15,10 +15,9 @@ enum SurrogateMode {
   /// The surrogate is sized to the window's own (clipped-to-monitor) visible
   /// rect and genuinely moved/resized every frame via a batched
   /// `SetWindowPos`. Used when the surrogate carries a live SWCA acrylic
-  /// backdrop (GlazeWM's own `blur_behind` config, or a detected external
-  /// backdrop from native Mica/Acrylic or a mod such as Windhawk's
-  /// `translucent-windows`) — pinning it to the full viewport would blur the
-  /// entire monitor instead of just the window's current footprint.
+  /// backdrop from GlazeWM's own `blur_behind` config — pinning it to the
+  /// full viewport would blur the entire monitor instead of just the
+  /// window's current footprint.
   Live,
 }
 
@@ -52,12 +51,7 @@ pub struct WorkspaceSurrogate {
   /// each `update_*` call, so a sliding window never spills onto an adjacent
   /// monitor.
   viewport: Rect,
-  /// DWM thumbnail opacity (0–255) derived from the window-effects config,
-  /// capped at [`LIVE_BLUR_THUMBNAIL_OPACITY`] when [`mode`] is
-  /// [`SurrogateMode::Live`] via a probe-detected (not config-driven)
-  /// backdrop, so the live blur bleeds through.
-  ///
-  /// [`mode`]: WorkspaceSurrogate::mode
+  /// DWM thumbnail opacity (0–255) derived from the window-effects config.
   opacity: u8,
   /// The non-full-opacity end of the opacity animation, as a fraction of
   /// `opacity` (0.0–1.0).
@@ -71,6 +65,11 @@ pub struct WorkspaceSurrogate {
   /// Positioning strategy, chosen once at creation based on whether the
   /// surrogate carries a live acrylic backdrop.
   mode: SurrogateMode,
+  /// Invisible border insets of the source window, in physical pixels.
+  /// Zero in [`SurrogateMode::PinnedViewport`] mode. Used to offset every
+  /// per-frame `rcSource` sample past the invisible border, matching the
+  /// deflation already baked into `rect` and the surrogate's created size.
+  border_inset: RECT,
 }
 
 impl WorkspaceSurrogate {
@@ -93,16 +92,10 @@ impl WorkspaceSurrogate {
   ///
   /// `acrylic_tint` is GlazeWM's own configured tint
   /// (`BlurBehindEffectConfig::acrylic_tint`), or `None` when `blur_behind`
-  /// isn't configured for this window. When `None`, this additionally probes
-  /// whether the source window already has a live DWM backdrop translucency
-  /// from elsewhere (native Mica/Acrylic, or a third-party mod such as
-  /// Windhawk's `translucent-windows`) via [`has_live_backdrop`] — skipped
-  /// entirely when a config tint is set, since the two triggers are mutually
-  /// exclusive per window. Either way, a resolved tint switches the surrogate
-  /// to [`SurrogateMode::Live`] and applies SWCA acrylic directly to it, so
-  /// the frosted-glass effect (GlazeWM's own, or a preserved external one)
-  /// stays visible throughout the slide instead of being flattened to opaque
-  /// by the DWM thumbnail.
+  /// isn't configured for this window. When `Some`, this switches the
+  /// surrogate to [`SurrogateMode::Live`] and applies SWCA acrylic directly
+  /// to it, so the frosted-glass effect stays visible throughout the slide
+  /// instead of being flattened to opaque by the DWM thumbnail.
   ///
   /// The surrogate is created hidden. For outgoing windows, call
   /// [`show_initial`] before cloaking the real window to avoid a blank frame.
@@ -120,19 +113,7 @@ impl WorkspaceSurrogate {
     corner_style: &CornerStyle,
     acrylic_tint: Option<u32>,
   ) -> crate::Result<Self> {
-    // See `ResizeSession::begin` for the identical config-vs-probe
-    // resolution and thumbnail-opacity bleed-through rationale.
-    let (tint, is_probed_backdrop) = match acrylic_tint {
-      Some(t) => (Some(t), false),
-      None if has_live_backdrop(hwnd) => (Some(LIVE_BLUR_DEFAULT_TINT), true),
-      None => (None, false),
-    };
-    let carries_live_backdrop = tint.is_some();
-    let opacity = if is_probed_backdrop {
-      opacity.min(LIVE_BLUR_THUMBNAIL_OPACITY)
-    } else {
-      opacity
-    };
+    let carries_live_backdrop = acrylic_tint.is_some();
 
     let mode = if carries_live_backdrop {
       SurrogateMode::Live
@@ -154,6 +135,18 @@ impl WorkspaceSurrogate {
       (viewport, rect, &CornerStyle::Square)
     };
 
+    // Live mode moves/resizes the surrogate to the window's own logical rect
+    // every frame, so — like resize sessions — it must be deflated by the
+    // window's invisible resize border to avoid overshooting into the
+    // configured gap. PinnedViewport mode sizes `source_rect` to the full
+    // monitor viewport, which has no invisible border of its own; deflating
+    // it here would incorrectly shrink the pinned surrogate.
+    let border_inset = if carries_live_backdrop {
+      compute_border_inset(hwnd)
+    } else {
+      RECT::default()
+    };
+
     let inner = NativeSurrogate::create(
       hwnd,
       source_rect,
@@ -161,7 +154,7 @@ impl WorkspaceSurrogate {
       None,
       opacity,
       false,
-      RECT::default(),
+      border_inset,
       effective_corner_style,
       // Workspace surrogates should sit just below the source window; they
       // don't compete with resize surrogates since workspace-switch and
@@ -169,17 +162,24 @@ impl WorkspaceSurrogate {
       hwnd,
     )?;
 
-    if let Some(t) = tint {
+    if let Some(t) = acrylic_tint {
       inner.apply_swca(t);
     }
 
+    // Store the deflated (logical) rect so all per-frame positioning math
+    // below operates in the same coordinate space the surrogate window was
+    // actually created/sized in. A no-op when `border_inset` is zero
+    // (`PinnedViewport` mode).
+    let stored_rect = to_logical(rect, &border_inset);
+
     Ok(Self {
       inner,
-      rect: rect.clone(),
+      rect: stored_rect,
       viewport: viewport.clone(),
       opacity,
       opacity_endpoint: opacity_endpoint.clamp(0.0, 1.0),
       mode,
+      border_inset,
     })
   }
 
@@ -205,10 +205,10 @@ impl WorkspaceSurrogate {
   /// [`apply_effect_opacity`]: WorkspaceSurrogate::apply_effect_opacity
   pub fn show_initial(&mut self) {
     let rc_src = RECT {
-      left: 0,
-      top: 0,
-      right: self.rect.width(),
-      bottom: self.rect.height(),
+      left: self.border_inset.left,
+      top: self.border_inset.top,
+      right: self.border_inset.left + self.rect.width(),
+      bottom: self.border_inset.top + self.rect.height(),
     };
     self.apply_visible_rect(
       None,
@@ -246,10 +246,10 @@ impl WorkspaceSurrogate {
   /// [`update_zoom`]: WorkspaceSurrogate::update_zoom
   pub fn show_incoming(&mut self) {
     let rc_src = RECT {
-      left: 0,
-      top: 0,
-      right: self.rect.width(),
-      bottom: self.rect.height(),
+      left: self.border_inset.left,
+      top: self.border_inset.top,
+      right: self.border_inset.left + self.rect.width(),
+      bottom: self.border_inset.top + self.rect.height(),
     };
     self.apply_visible_rect(
       None,
@@ -449,7 +449,12 @@ impl WorkspaceSurrogate {
     let cx = self.rect.left + w / 2;
     let cy = self.rect.top + h / 2;
 
-    let rc_src = RECT { left: 0, top: 0, right: w, bottom: h };
+    let rc_src = RECT {
+      left: self.border_inset.left,
+      top: self.border_inset.top,
+      right: self.border_inset.left + w,
+      bottom: self.border_inset.top + h,
+    };
 
     self.apply_visible_rect(
       Some(batch),
@@ -631,8 +636,12 @@ impl WorkspaceSurrogate {
     let src_bottom =
       (((vis_bottom - final_top) as f32 / scale).round() as i32).clamp(0, wh);
 
-    let rc_src =
-      RECT { left: src_left, top: src_top, right: src_right, bottom: src_bottom };
+    let rc_src = RECT {
+      left: self.border_inset.left + src_left,
+      top: self.border_inset.top + src_top,
+      right: self.border_inset.left + src_right,
+      bottom: self.border_inset.top + src_bottom,
+    };
     self.apply_visible_rect(
       Some(batch),
       rc_src,
@@ -699,7 +708,7 @@ impl WorkspaceSurrogate {
     // `rcSource` is the visible slice of the source window. The visible
     // destination rect is expressed in absolute screen coordinates and
     // routed through `apply_visible_rect`.
-    let (rc_src, vis_left, vis_top, vis_right, vis_bottom) = if is_vertical {
+    let (mut rc_src, vis_left, vis_top, vis_right, vis_bottom) = if is_vertical {
       (
         RECT {
           left: 0,
@@ -726,6 +735,14 @@ impl WorkspaceSurrogate {
         perp_pos + perp_size,
       )
     };
+    // `rc_src` above is 0-based in the source window's logical content space;
+    // offset past the invisible border to land in the window's true physical
+    // pixel space (matches the offset baked into the initial registration in
+    // `NativeSurrogate::create`).
+    rc_src.left += self.border_inset.left;
+    rc_src.right += self.border_inset.left;
+    rc_src.top += self.border_inset.top;
+    rc_src.bottom += self.border_inset.top;
     self.apply_visible_rect(
       Some(batch),
       rc_src,

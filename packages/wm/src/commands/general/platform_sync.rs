@@ -117,6 +117,12 @@ pub fn platform_sync(
     if let Ok(window) = focused_container.as_window_container() {
       if let Some(anim) = state.animation_manager.get_animation(&window.id()) {
         if let (_, Some(opacity)) = anim.current_state() {
+          debug!(
+            "Overriding transparency for {} with in-progress animation \
+             opacity: alpha={}.",
+            window.id(),
+            opacity.to_alpha()
+          );
           let _ = window.native().set_transparency(&opacity);
         }
       }
@@ -389,11 +395,9 @@ fn redraw_containers(
           } else {
             u8::MAX
           };
-          // Carry the acrylic blur onto the surrogate (or a probe-detected
-          // external backdrop, e.g. Windhawk's `translucent-windows`) so the
-          // frosted-glass effect stays visible while the workspace slides.
-          // The static blur overlay is hidden for the duration of the
-          // animation.
+          // Carry the acrylic blur onto the surrogate so the frosted-glass
+          // effect stays visible while the workspace slides. The static
+          // blur overlay is hidden for the duration of the animation.
           let acrylic_tint = effect_cfg.blur_behind.acrylic_tint();
           let corner_style = if effect_cfg.corner_style.enabled {
             effect_cfg.corner_style.style.clone()
@@ -515,6 +519,17 @@ fn redraw_containers(
   // in the same cycle then share the `window_resize` timing so all edges
   // stay in lock-step during the relayout (see
   // `AnimationManager::start_animation_if_needed`).
+  // Set when any window's animation-completion redraw actually issues a
+  // `SWP_FRAMECHANGED` reposition on a visible window this pass (see the
+  // `already_positioned` check below) -- `reassert_transparency` inside
+  // `reposition_window` is only a best-effort fix-up for that flash (it
+  // races DWM's own compositor thread), so a single flush after the whole
+  // loop deterministically forces one composited frame with the corrected
+  // alpha, closing the race for every such window in one blocking call
+  // instead of leaving it to chance (or serializing a flush per window).
+  #[cfg(target_os = "windows")]
+  let mut needs_transparency_flush = false;
+
   let cycle_has_resize = windows_to_update.iter().any(|window| {
     let target_rect = window.to_rect().and_then(|rect| {
       window
@@ -954,6 +969,11 @@ fn redraw_containers(
           ) {
             tracing::warn!("Failed to set window position: {}", err);
           }
+
+          #[cfg(target_os = "windows")]
+          if is_visible {
+            needs_transparency_flush = true;
+          }
         }
 
         // Uncloak after repositioning so the window is revealed at the correct
@@ -1036,6 +1056,16 @@ fn redraw_containers(
   // the surrogate's configured opacity were set before cloaking.
   #[cfg(target_os = "windows")]
   state.animation_manager.apply_outgoing_surrogate_opacities();
+
+  // Force one composited frame reflecting every `reassert_transparency` call
+  // made above, deterministically closing the race against DWM's own
+  // compositor thread instead of leaving it to scheduling luck. One flush
+  // covers every window that completed an animation this pass, rather than
+  // blocking once per window.
+  #[cfg(target_os = "windows")]
+  if needs_transparency_flush {
+    wm_platform::dwm_flush();
+  }
 
   Ok(())
 }
@@ -1158,6 +1188,14 @@ fn reposition_window(
 
           window.native().set_window_pos(z_order, rect, swp_flags)?;
 
+          // `SWP_FRAMECHANGED` forces a non-client-area recalculation that
+          // can make DWM briefly composite the window at full opacity
+          // before its existing `LWA_ALPHA` is reasserted -- a one-frame
+          // flash to solid on every resize/move landing for windows using
+          // the `transparency` effect. Reassert it immediately so DWM
+          // recomposites with the correct alpha right away.
+          _ = window.native().reassert_transparency();
+
           // When there's a mismatch between the DPI of the monitor and the
           // window, the window might be sized incorrectly after the first
           // move. Setting the position twice resolves inconsistencies from
@@ -1166,6 +1204,7 @@ fn reposition_window(
           // frame.
           if window.has_pending_dpi_adjustment() {
             window.native().set_window_pos(z_order, rect, swp_flags)?;
+            _ = window.native().reassert_transparency();
             window.set_has_pending_dpi_adjustment(false);
           }
         }
@@ -1341,6 +1380,12 @@ fn apply_transparency_effect(
     &OpacityValue::from_alpha(u8::MAX)
   };
 
+  debug!(
+    "Applying transparency to {}: alpha={}.",
+    window.id(),
+    transparency.to_alpha()
+  );
+
   _ = window.native().set_transparency(transparency);
 }
 
@@ -1381,6 +1426,17 @@ fn apply_blur_behind_effect(
 /// During animations, surrogates carry the acrylic effect directly via SWCA
 /// so blur is visible throughout the animation. The static overlay is hidden
 /// while a surrogate is active and restored once the animation completes.
+///
+/// The tint is re-evaluated for every window on every tick (cheap: it
+/// no-ops internally unless the resolved value changed, e.g. on focus
+/// change). The window's on-screen rect, however, is only re-queried via
+/// `frame()` -- a cross-process `DwmGetWindowAttribute` call -- for windows
+/// actually queued for redraw this tick (or on first creation). GlazeWM owns
+/// all positioning of managed windows through that same redraw queue, so a
+/// window that isn't in it this tick cannot have moved; skipping the query
+/// avoids a `DwmGetWindowAttribute` round-trip per acrylic window per tick
+/// for windows unrelated to whatever triggered this sync (e.g. other
+/// monitors/workspaces during a workspace-switch animation elsewhere).
 #[cfg(target_os = "windows")]
 fn sync_blur_overlays(
   state: &mut WmState,
@@ -1389,6 +1445,13 @@ fn sync_blur_overlays(
 ) {
   let all_windows = state.windows();
   let mut wanted_ids = std::collections::HashSet::new();
+
+  // `containers_to_redraw()` may hold an ancestor (e.g. a whole workspace on
+  // a workspace switch) rather than each window individually -- mirror the
+  // same descendant expansion `redraw_containers` uses via `windows_to_redraw`
+  // so a window whose ancestor was queued still counts as redrawing.
+  let redrawing_ids: std::collections::HashSet<_> =
+    state.windows_to_redraw().iter().map(CommonGetters::id).collect();
 
   for window in &all_windows {
     let is_focused = window.id() == focused_container.id();
@@ -1413,32 +1476,58 @@ fn sync_blur_overlays(
     //
     // Also hide for windows on inactive workspaces; keep the entry alive
     // so it can be re-shown immediately when the workspace returns.
-    let should_hide =
-      state.animation_manager.has_active_surrogate(&window.id())
-        || !window.workspace().is_some_and(|ws| ws.is_displayed());
+    let should_hide = state.animation_manager.has_active_surrogate(&window.id())
+      || !window.workspace().is_some_and(|ws| ws.is_displayed());
 
     if should_hide {
-      if let Some(overlay) = state.blur_overlays.get(&window.id()) {
+      if let Some(overlay) = state.blur_overlays.get_mut(&window.id()) {
         overlay.hide();
       }
       continue;
     }
 
-    // Use the DWM extended frame bounds so the overlay sits flush with the
-    // window's visible edge, clipping the invisible resize border.
-    let Ok(rect) = window.native().frame() else {
-      continue;
-    };
+    let is_redrawing = redrawing_ids.contains(&window.id());
+    let had_overlay = state.blur_overlays.contains_key(&window.id());
 
     match state.blur_overlays.entry(window.id()) {
       std::collections::hash_map::Entry::Occupied(e) => {
         let overlay = e.into_mut();
         overlay.set_tint(tint);
-        overlay.set_rect(&rect);
+
+        // Always re-query and re-show when the overlay isn't currently
+        // visible, even if this window isn't part of this tick's redraw --
+        // otherwise an overlay hidden on some earlier tick (e.g. while a
+        // surrogate was active) stays hidden indefinitely once `should_hide`
+        // clears, unless this exact window happens to be redrawn again for
+        // an unrelated reason (see `is_visible` doc comment).
+        if is_redrawing || !overlay.is_visible() {
+          // Use the DWM extended frame bounds so the overlay sits flush
+          // with the window's visible edge, clipping the invisible resize
+          // border.
+          match window.native().frame() {
+            Ok(rect) => overlay.set_rect(&rect),
+            Err(err) => debug!(
+              "Blur overlay frame() query failed for {}: {err}.",
+              window.id()
+            ),
+          }
+        }
       }
       std::collections::hash_map::Entry::Vacant(e) => {
-        if let Ok(overlay) = NativeBlurOverlay::create(&rect, tint) {
-          e.insert(overlay);
+        debug_assert!(!had_overlay);
+
+        let Ok(rect) = window.native().frame() else {
+          continue;
+        };
+
+        match NativeBlurOverlay::create(&rect, tint) {
+          Ok(overlay) => {
+            debug!("Blur overlay created for {}.", window.id());
+            e.insert(overlay);
+          }
+          Err(err) => {
+            debug!("Blur overlay creation failed for {}: {err}.", window.id());
+          }
         }
       }
     }
