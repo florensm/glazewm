@@ -283,12 +283,10 @@ pub struct BlurBehindEffectConfig {
   /// system (falls back to the OS's fixed-intensity acrylic blur).
   pub blur_amount: f32,
 
-  /// Continuous corner radius of the acrylic overlay itself -- not the
-  /// managed window's own corners, see `corner_style` for that.
-  ///
-  /// Ignored for `mica`/`mica_alt`, and silently has no effect without the
-  /// `Windows.UI.Composition` pipeline, same as `blur_amount`.
-  pub corner_radius: LengthValue,
+  // The acrylic overlay's own corner radius isn't independently
+  // configurable -- it's derived from `corner_style` (see
+  // `CornerStyle::approx_radius_px`) so it always matches the real managed
+  // window's own rendered corners instead of risking a visual mismatch.
 }
 
 impl Default for BlurBehindEffectConfig {
@@ -298,7 +296,6 @@ impl Default for BlurBehindEffectConfig {
       style: BlurBehindStyle::default(),
       tint: None,
       blur_amount: 30.0,
-      corner_radius: LengthValue::from_px(0),
     }
   }
 }

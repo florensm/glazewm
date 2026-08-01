@@ -687,7 +687,13 @@ fn redraw_containers(
     // Compute effect opacity and corner style unconditionally — needed for
     // both the movement surrogate path and the fade-in path.
     #[cfg(target_os = "windows")]
-    let (effect_opacity, corner_style, acrylic_tint) = {
+    let (
+      effect_opacity,
+      corner_style,
+      acrylic_tint,
+      surrogate_blur_amount,
+      surrogate_corner_radius,
+    ) = {
       let effect_cfg = if window.id() == focused_container.id() {
         &config.value.window_effects.focused_window
       } else {
@@ -703,7 +709,23 @@ fn redraw_containers(
       } else {
         CornerStyle::Default
       };
-      (opacity, style, effect_cfg.blur_behind.acrylic_tint())
+      // Snapshotted onto the `ResizeSession` (rather than re-read live from
+      // config at tracking time) since the close animation's direct-drive
+      // loop runs after the window is detached from the container tree,
+      // where `effect_cfg` can no longer be recomputed.
+      let blur_amount = effect_cfg.blur_behind.blur_amount;
+      let corner_radius = if effect_cfg.corner_style.enabled {
+        effect_cfg.corner_style.style.approx_radius_px()
+      } else {
+        CornerStyle::Default.approx_radius_px()
+      };
+      (
+        opacity,
+        style,
+        effect_cfg.blur_behind.acrylic_tint(),
+        blur_amount,
+        corner_radius,
+      )
     };
 
     // Start a slide-in animation for newly appearing tiling windows.
@@ -728,6 +750,8 @@ fn redraw_containers(
         effect_opacity,
         corner_style,
         acrylic_tint,
+        surrogate_blur_amount,
+        surrogate_corner_radius,
         config,
         &*native_ref,
       );
@@ -783,6 +807,8 @@ fn redraw_containers(
           effect_opacity,
           corner_style,
           acrylic_tint,
+          surrogate_blur_amount,
+          surrogate_corner_radius,
           config,
         )
       }
@@ -1050,6 +1076,38 @@ fn redraw_containers(
   // same DWM composition frame.
   #[cfg(target_os = "windows")]
   state.animation_manager.flush_surrogate_updates();
+
+  // Keep the acrylic blur overlay tracking each move/resize/open session's
+  // surrogate at its just-flushed live rect, instead of leaving it hidden
+  // for the whole animation. Close sessions are tracked separately, inside
+  // `AnimationManager::update_internal`'s direct-drive loop -- that path
+  // never reaches `platform_sync` (closing windows are detached from the
+  // layout tree), so skip them here to avoid a duplicate upsert this tick.
+  #[cfg(target_os = "windows")]
+  for (id, session) in &state.animation_manager.resize_sessions {
+    if state.animation_manager.has_close_animation(id) {
+      continue;
+    }
+    let Some((tint, blur_amount, corner_radius)) = session.blur_overlay_params()
+    else {
+      continue;
+    };
+    match session.current_rect() {
+      Some(rect) => upsert_blur_overlay(
+        &mut state.blur_overlays,
+        *id,
+        tint,
+        blur_amount,
+        corner_radius,
+        &rect,
+      ),
+      None => {
+        if let Some(overlay) = state.blur_overlays.get_mut(id) {
+          overlay.hide();
+        }
+      }
+    }
+  }
 
   // Apply effect opacity to outgoing surrogates now that the real windows
   // have been cloaked. This removes the double-blend that would occur if
@@ -1437,6 +1495,52 @@ fn apply_blur_behind_effect(
 /// avoids a `DwmGetWindowAttribute` round-trip per acrylic window per tick
 /// for windows unrelated to whatever triggered this sync (e.g. other
 /// monitors/workspaces during a workspace-switch animation elsewhere).
+/// Creates or updates a tracked acrylic blur overlay for `window_id`,
+/// applying `tint`/`blur_amount`/`corner_radius` and moving it to `rect`.
+///
+/// Used by the workspace-switch live-tracking driver in
+/// `AnimationManager::update_internal`, which always has a definite
+/// up-to-date rect from the surrogate it's following each tick and so needs
+/// no conditional re-query -- unlike `sync_blur_overlays` below, which only
+/// re-queries `frame()` (a cross-process call) when the window is actually
+/// being redrawn this tick.
+///
+/// Takes the overlay map directly (rather than `&mut WmState`) so callers
+/// already holding an unrelated borrow into other `WmState` fields -- e.g.
+/// the workspace-switch driver, which calls this while still borrowing
+/// `state.animation_manager.workspace_switch` for `rect` itself -- can pass
+/// `&mut state.blur_overlays` without a borrow-checker conflict.
+#[cfg(target_os = "windows")]
+pub(crate) fn upsert_blur_overlay(
+  overlays: &mut std::collections::HashMap<uuid::Uuid, NativeBlurOverlay>,
+  window_id: uuid::Uuid,
+  tint: u32,
+  blur_amount: f32,
+  corner_radius: f32,
+  rect: &Rect,
+) {
+  match overlays.entry(window_id) {
+    std::collections::hash_map::Entry::Occupied(e) => {
+      let overlay = e.into_mut();
+      overlay.set_tint(tint);
+      overlay.set_blur_amount(blur_amount);
+      overlay.set_corner_radius(corner_radius);
+      overlay.set_rect(rect);
+    }
+    std::collections::hash_map::Entry::Vacant(e) => {
+      match NativeBlurOverlay::create(rect, tint, blur_amount, corner_radius) {
+        Ok(overlay) => {
+          debug!("Blur overlay created for {window_id}.");
+          e.insert(overlay);
+        }
+        Err(err) => {
+          debug!("Blur overlay creation failed for {window_id}: {err}.");
+        }
+      }
+    }
+  }
+}
+
 #[cfg(target_os = "windows")]
 fn sync_blur_overlays(
   state: &mut WmState,
@@ -1465,28 +1569,49 @@ fn sync_blur_overlays(
       continue;
     };
 
-    // Resolved against GlazeWM's own (cheap, in-process) tiling rect rather
-    // than a `native().frame()` query, so corner-radius percentages can be
-    // re-resolved every tick without reintroducing the cross-process DWM
-    // round-trip the redraw-scoping below exists to avoid.
     let blur_amount = effect_cfg.blur_behind.blur_amount;
-    let corner_radius = window.to_rect().map_or(0, |rect| {
-      effect_cfg
-        .blur_behind
-        .corner_radius
-        .to_px(rect.width().min(rect.height()), None)
-    });
-    #[allow(clippy::cast_precision_loss)]
-    let corner_radius = corner_radius as f32;
+
+    // Mirrors `corner_style` (falling back to `CornerStyle::Default` when
+    // disabled, same as `apply_corner_effect`) so the overlay's rounded
+    // clip lines up with the real managed window's own DWM-rendered
+    // corners sitting on top of it, rather than being an independently
+    // configured radius that can mismatch what's actually on screen.
+    let corner_radius = if effect_cfg.corner_style.enabled {
+      effect_cfg.corner_style.style.approx_radius_px()
+    } else {
+      CornerStyle::Default.approx_radius_px()
+    };
 
     wanted_ids.insert(window.id());
 
-    // Hide the static overlay while a surrogate is active for this window.
-    // When the surrogate is running, the real window is cloaked at its target
-    // rect; reading frame() would return the target position while the
-    // surrogate is still mid-animation, causing the overlay to jump ahead.
-    // The surrogate has SWCA acrylic applied directly, so blur is visible
-    // throughout the animation without the static overlay.
+    // Windows with a `Live`-mode (acrylic-tinted) workspace-switch surrogate
+    // are owned entirely by the per-tick tracker in
+    // `AnimationManager::update_internal` for the whole slide plus the
+    // `pending_ws_cleanup` grace tick -- it updates tint/blur_amount/
+    // corner_radius/rect every tick using the surrogate's own live position,
+    // which this function cannot do since it isn't invoked on most mid-slide
+    // ticks (only when `platform_sync` itself runs). Leave these overlays
+    // untouched here entirely: falling through to the hide logic below would
+    // hide them out from under the tracker, since the outgoing workspace's
+    // `!is_displayed()` flips true the instant the switch command runs, well
+    // before the animation completes.
+    // Windows with an active or fading `ResizeSession` (move/resize/open/
+    // close) are likewise owned entirely by the trackers in `platform_sync`'s
+    // post-flush loop, `AnimationManager::update_internal`'s close direct-
+    // drive loop, and its `pending_session_cleanup` fade-tail loop -- same
+    // reasoning as the workspace-switch case above.
+    if state.animation_manager.has_live_ws_surrogate(&window.id())
+      || state.animation_manager.has_live_resize_tracker(&window.id())
+    {
+      continue;
+    }
+
+    // Hide the static overlay while some other kind of surrogate/session is
+    // active for this window without a live blur tracker of its own (e.g.
+    // blur-behind not configured for it). When such a surrogate is running,
+    // the real window is cloaked at its target rect; reading frame() would
+    // return the target position while the surrogate is still mid-animation,
+    // causing the overlay to jump ahead.
     //
     // Also hide for windows on inactive workspaces; keep the entry alive
     // so it can be re-shown immediately when the workspace returns.

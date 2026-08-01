@@ -200,12 +200,9 @@ window_effects:
       # that's unavailable and the OS's fixed-intensity acrylic blur is
       # used instead.
       blur_amount: 30.0
-      # Continuous corner radius of the blur overlay itself (acrylic only)
-      # -- not the managed window's own corners, see corner_style for that.
-      # Can be a fixed size like '8px', or a percentage of the overlay's
-      # shorter side, e.g. '50%' for a fully rounded/pill shape. Same
-      # Windows.UI.Composition requirement as blur_amount.
-      corner_radius: "0px"
+      # The overlay's own corner radius isn't separately configurable --
+      # it always follows corner_style so it matches the real window's
+      # rendered corners on top of it.
 
   # Visual effects to apply to non-focused windows.
   other_windows:
@@ -224,7 +221,6 @@ window_effects:
       enabled: false
       style: "acrylic"
       blur_amount: 30.0
-      corner_radius: "0px"
 
 window_behavior:
   # New windows are created in this state whenever possible.

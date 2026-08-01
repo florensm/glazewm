@@ -70,6 +70,14 @@ pub struct WorkspaceSurrogate {
   /// per-frame `rcSource` sample past the invisible border, matching the
   /// deflation already baked into `rect` and the surrogate's created size.
   border_inset: RECT,
+  /// Live on-screen rect for the current animation frame, in
+  /// [`SurrogateMode::Live`] mode only -- lets a caller (the acrylic blur
+  /// overlay tracker in `AnimationManager::update_internal`) follow the
+  /// surrogate's actual footprint instead of only its final `rect`. `None`
+  /// in [`SurrogateMode::PinnedViewport`] mode (no single "screen rect"
+  /// applies there), and `None` whenever the visible strip is currently
+  /// empty (fully off-screen, or zoomed to nothing).
+  current_rect: Option<Rect>,
 }
 
 impl WorkspaceSurrogate {
@@ -93,9 +101,18 @@ impl WorkspaceSurrogate {
   /// `acrylic_tint` is GlazeWM's own configured tint
   /// (`BlurBehindEffectConfig::acrylic_tint`), or `None` when `blur_behind`
   /// isn't configured for this window. When `Some`, this switches the
-  /// surrogate to [`SurrogateMode::Live`] and applies SWCA acrylic directly
-  /// to it, so the frosted-glass effect stays visible throughout the slide
-  /// instead of being flattened to opaque by the DWM thumbnail.
+  /// surrogate to [`SurrogateMode::Live`] -- sized/moved to its own footprint
+  /// rather than pinned to the viewport -- so a live-tracking acrylic blur
+  /// overlay (see [`current_rect`], driven from `AnimationManager`) has a
+  /// meaningful per-frame rect to follow. This no longer applies SWCA to the
+  /// surrogate itself: SWCA has no adjustable blur radius, so the actual
+  /// frosted-glass backdrop instead comes from the same
+  /// `Windows.UI.Composition`-based overlay used in steady state, kept alive
+  /// and repositioned to this surrogate's footprint for the whole slide
+  /// instead of being hidden -- avoiding both the fixed-intensity mismatch
+  /// and the handoff flash a separate SWCA application would cause.
+  ///
+  /// [`current_rect`]: WorkspaceSurrogate::current_rect
   ///
   /// The surrogate is created hidden. For outgoing windows, call
   /// [`show_initial`] before cloaking the real window to avoid a blank frame.
@@ -162,10 +179,6 @@ impl WorkspaceSurrogate {
       hwnd,
     )?;
 
-    if let Some(t) = acrylic_tint {
-      inner.apply_swca(t);
-    }
-
     // Store the deflated (logical) rect so all per-frame positioning math
     // below operates in the same coordinate space the surrogate window was
     // actually created/sized in. A no-op when `border_inset` is zero
@@ -180,7 +193,22 @@ impl WorkspaceSurrogate {
       opacity_endpoint: opacity_endpoint.clamp(0.0, 1.0),
       mode,
       border_inset,
+      current_rect: None,
     })
+  }
+
+  /// Live on-screen rect for the current animation frame, when in
+  /// [`SurrogateMode::Live`] mode and currently visible.
+  #[must_use]
+  pub fn current_rect(&self) -> Option<&Rect> {
+    self.current_rect.as_ref()
+  }
+
+  /// Whether this surrogate carries a live acrylic backdrop
+  /// ([`SurrogateMode::Live`]), as opposed to [`SurrogateMode::PinnedViewport`].
+  #[must_use]
+  pub fn is_live(&self) -> bool {
+    matches!(self.mode, SurrogateMode::Live)
   }
 
   /// Hides the DWM thumbnail without destroying it or hiding the surrogate window.
@@ -440,6 +468,7 @@ impl WorkspaceSurrogate {
 
     if half_w <= 0 || half_h <= 0 {
       self.inner.set_visible(false);
+      self.current_rect = None;
       return;
     }
 
@@ -531,6 +560,7 @@ impl WorkspaceSurrogate {
             let _ = self.inner.reposition(&target);
           }
         }
+        self.current_rect = Some(target);
       }
     }
     self.inner.set_visible(true);
@@ -571,6 +601,7 @@ impl WorkspaceSurrogate {
 
     if scale <= 0.0 {
       self.inner.set_visible(false);
+      self.current_rect = None;
       return;
     }
 
@@ -620,6 +651,7 @@ impl WorkspaceSurrogate {
 
     if vis_left >= vis_right || vis_top >= vis_bottom {
       self.inner.set_visible(false);
+      self.current_rect = None;
       return;
     }
 
@@ -698,6 +730,7 @@ impl WorkspaceSurrogate {
 
     if vis_start >= vis_end {
       self.inner.set_visible(false);
+      self.current_rect = None;
       return;
     }
 

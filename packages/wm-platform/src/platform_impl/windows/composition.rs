@@ -48,7 +48,7 @@ use windows::{
     Composition::{
       CompositionBackdropBrush, CompositionColorBrush, CompositionEffectBrush,
       CompositionEffectSourceParameter, CompositionRoundedRectangleGeometry,
-      Compositor, Desktop::DesktopWindowTarget, SpriteVisual,
+      Compositor, ContainerVisual, Desktop::DesktopWindowTarget, SpriteVisual,
     },
   },
   Win32::{
@@ -301,7 +301,9 @@ pub(crate) struct BlurVisual {
   compositor: Compositor,
   queue: DispatcherQueue,
   host_backdrop: CompositionBackdropBrush,
+  root: ContainerVisual,
   blur_sprite: SpriteVisual,
+  tint_sprite: SpriteVisual,
 
   effect_brush: CompositionEffectBrush,
   tint_brush: CompositionColorBrush,
@@ -348,11 +350,21 @@ impl BlurVisual {
   /// Resizes the visual tree's clip and both child visuals to match `rect`.
   /// Does not reposition the `HWND` itself -- callers still issue their own
   /// `SetWindowPos`, exactly as with the SWCA path.
+  ///
+  /// Must resize `root`/`blur_sprite`/`tint_sprite` in addition to the clip
+  /// geometry -- they're independently-sized visuals set once in
+  /// `build_visual_tree` and never otherwise touched, so leaving them out
+  /// here left them pinned at their creation-time size while only the clip
+  /// grew, showing blur/tint over just the original area and nothing over
+  /// the rest whenever the overlay's `HWND` was resized after creation.
   pub(crate) fn set_rect(&self, rect: &Rect) -> crate::Result<()> {
     let size = Vector2 {
       X: pixels_to_dips(rect.width()),
       Y: pixels_to_dips(rect.height()),
     };
+    self.root.SetSize(size)?;
+    self.blur_sprite.SetSize(size)?;
+    self.tint_sprite.SetSize(size)?;
     self.rounded_geometry.SetSize(size)?;
     Ok(())
   }
@@ -489,7 +501,9 @@ fn build_visual_tree(
     compositor: compositor.clone(),
     queue: queue.clone(),
     host_backdrop,
+    root,
     blur_sprite,
+    tint_sprite,
     effect_brush,
     tint_brush,
     rounded_geometry,

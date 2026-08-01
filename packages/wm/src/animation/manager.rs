@@ -121,6 +121,8 @@ use crate::{
   user_config::UserConfig,
   wm_state::WmState,
 };
+#[cfg(target_os = "windows")]
+use crate::commands::general::upsert_blur_overlay;
 
 /// A single entry in the surrogate update queue built each redraw pass.
 #[cfg(target_os = "windows")]
@@ -439,6 +441,39 @@ impl AnimationManager {
         .pending_session_cleanup
         .iter()
         .any(|(id, _, _)| id == window_id)
+  }
+
+  /// Returns `true` if `window_id` has a `Live`-mode (acrylic-tinted)
+  /// workspace-switch surrogate actively tracked this tick, or in its
+  /// `pending_ws_cleanup` grace tail.
+  ///
+  /// That tracked blur overlay is owned entirely by the per-tick driver in
+  /// `update_internal` for as long as this returns `true` -- `sync_blur_overlays`
+  /// must leave these windows alone rather than hiding/repositioning them.
+  #[cfg(target_os = "windows")]
+  pub fn has_live_ws_surrogate(&self, window_id: &Uuid) -> bool {
+    let is_live = |ws: &WorkspaceSwitchState| {
+      ws.windows
+        .get(window_id)
+        .is_some_and(|e| e.surrogate.as_ref().is_some_and(WorkspaceSurrogate::is_live))
+    };
+    self.workspace_switch.as_ref().is_some_and(is_live)
+      || self.pending_ws_cleanup.as_ref().is_some_and(is_live)
+  }
+
+  /// Returns `true` if `window_id`'s active or fading-out `ResizeSession`
+  /// carries a live acrylic-blur tracker (i.e. `blur_behind` was configured
+  /// when the session began). Mirrors `has_live_ws_surrogate`.
+  #[cfg(target_os = "windows")]
+  pub fn has_live_resize_tracker(&self, window_id: &Uuid) -> bool {
+    self
+      .resize_sessions
+      .get(window_id)
+      .is_some_and(|s| s.blur_overlay_params().is_some())
+      || self
+        .pending_session_cleanup
+        .iter()
+        .any(|(id, _, s)| id == window_id && s.blur_overlay_params().is_some())
   }
 
   /// Removes a window's animation and any associated resize session.
@@ -768,6 +803,33 @@ impl AnimationManager {
         {
           session.update(&current_rect, opacity_u8);
         }
+
+        // Close animations are detached from the layout tree, so they never
+        // reach `platform_sync`'s per-window loop -- track the acrylic blur
+        // overlay directly here instead, mirroring `sync_blur_overlays`'
+        // steady-state behavior but following the surrogate's live rect.
+        if let Some(session) = state.animation_manager.resize_sessions.get(id)
+        {
+          if let Some((tint, blur_amount, corner_radius)) =
+            session.blur_overlay_params()
+          {
+            match session.current_rect() {
+              Some(rect) => upsert_blur_overlay(
+                &mut state.blur_overlays,
+                *id,
+                tint,
+                blur_amount,
+                corner_radius,
+                &rect,
+              ),
+              None => {
+                if let Some(overlay) = state.blur_overlays.get_mut(id) {
+                  overlay.hide();
+                }
+              }
+            }
+          }
+        }
       }
     }
 
@@ -869,6 +931,11 @@ impl AnimationManager {
       let ws_vsync_now =
         state.animation_manager.predictive_vsync_now();
 
+      // Likewise precomputed before the mutable borrow below -- needed by the
+      // live blur-overlay tracker to pick `focused_window` vs `other_windows`
+      // config per surrogate.
+      let focused_id_for_overlay = state.focused_container().map(|c| c.id());
+
       if let Some(ws) = &mut state.animation_manager.workspace_switch {
         // Anchor the animation clock to the first vsync-aligned tick so every
         // inter-frame step is measured on the same clock. Falls back to the
@@ -937,7 +1004,7 @@ impl AnimationManager {
         // empty (a no-op commit) for the common case.
         let mut ws_batch = SurrogateBatch::new();
 
-        for entry in ws.windows.values_mut() {
+        for (&window_id, entry) in ws.windows.iter_mut() {
           if let Some(ref mut s) = entry.surrogate {
             // At completion, hide outgoing surrogates immediately. They have
             // already slid fully off-screen, but hiding the thumbnail outright
@@ -1014,6 +1081,49 @@ impl AnimationManager {
               // `iris_switch`), never by per-window surrogates, so it never
               // reaches this driver.
               WorkspaceSwitchStyle::Iris => {}
+            }
+
+            // `Live`-mode surrogates carry no blur of their own (see
+            // `WorkspaceSurrogate::new`'s doc comment) -- instead, the same
+            // acrylic blur overlay used in steady state is kept alive and
+            // repositioned to follow the surrogate's own live footprint every
+            // tick, computed by the `update_*` call just above. This is what
+            // keeps `blur_amount`/tint/corner_radius correct and continuous
+            // through the whole slide instead of a fixed-intensity look that
+            // jumps to the tuned value only once the animation ends.
+            if s.is_live() {
+              match s.current_rect() {
+                Some(rect) => {
+                  let effect_cfg = if Some(window_id) == focused_id_for_overlay
+                  {
+                    &config.value.window_effects.focused_window
+                  } else {
+                    &config.value.window_effects.other_windows
+                  };
+                  if let Some(tint) = effect_cfg.blur_behind.acrylic_tint() {
+                    let blur_amount = effect_cfg.blur_behind.blur_amount;
+                    let corner_radius = if effect_cfg.corner_style.enabled {
+                      effect_cfg.corner_style.style.approx_radius_px()
+                    } else {
+                      CornerStyle::Default.approx_radius_px()
+                    };
+                    upsert_blur_overlay(
+                      &mut state.blur_overlays,
+                      window_id,
+                      tint,
+                      blur_amount,
+                      corner_radius,
+                      rect,
+                    );
+                  }
+                }
+                None => {
+                  if let Some(overlay) = state.blur_overlays.get_mut(&window_id)
+                  {
+                    overlay.hide();
+                  }
+                }
+              }
             }
           }
         }
@@ -1126,6 +1236,34 @@ impl AnimationManager {
         }
       }
 
+      // Keep the acrylic blur overlay tracking each fading session's own
+      // surrogate through the whole `pending_session_cleanup` tail, exactly
+      // as it did through the active animation -- since the overlay is never
+      // hidden to begin with, there's no `pending_ws_cleanup`-style
+      // pre-show/flush gap to plug here.
+      for (id, _, session) in &state.animation_manager.pending_session_cleanup
+      {
+        if let Some((tint, blur_amount, corner_radius)) =
+          session.blur_overlay_params()
+        {
+          match session.current_rect() {
+            Some(rect) => upsert_blur_overlay(
+              &mut state.blur_overlays,
+              *id,
+              tint,
+              blur_amount,
+              corner_radius,
+              &rect,
+            ),
+            None => {
+              if let Some(overlay) = state.blur_overlays.get_mut(id) {
+                overlay.hide();
+              }
+            }
+          }
+        }
+      }
+
       let has_new_session_cleanup = state
         .animation_manager
         .pending_session_cleanup
@@ -1214,12 +1352,11 @@ impl AnimationManager {
         };
 
         let blur_amount = effect_cfg.blur_behind.blur_amount;
-        let corner_radius = effect_cfg
-          .blur_behind
-          .corner_radius
-          .to_px(rect.width().min(rect.height()), None);
-        #[allow(clippy::cast_precision_loss)]
-        let corner_radius = corner_radius as f32;
+        let corner_radius = if effect_cfg.corner_style.enabled {
+          effect_cfg.corner_style.style.approx_radius_px()
+        } else {
+          CornerStyle::Default.approx_radius_px()
+        };
 
         match state.blur_overlays.entry(*id) {
           std::collections::hash_map::Entry::Occupied(e) => {
@@ -1476,10 +1613,16 @@ impl AnimationManager {
     // matches the real window's rounded corners during the animation.
     #[cfg(target_os = "windows")]
     corner_style: CornerStyle,
-    // ABGR tint for SWCA acrylic on the surrogate, or `None` when blur-behind
-    // is not configured.
+    // ABGR tint for the acrylic blur-overlay tracker, or `None` when
+    // blur-behind is not configured.
     #[cfg(target_os = "windows")]
     acrylic_tint: Option<u32>,
+    // Blur radius/corner radius for the tracker; ignored when `acrylic_tint`
+    // is `None`.
+    #[cfg(target_os = "windows")]
+    blur_amount: f32,
+    #[cfg(target_os = "windows")]
+    corner_radius: f32,
     config: &UserConfig,
   ) -> (AnimationPositionResult, Option<OpacityValue>) {
     let existing_animation = self.get_animation(&window_id).cloned();
@@ -1552,6 +1695,8 @@ impl AnimationManager {
               place_at_top: true,
               edge_color: cached_edge_color,
               acrylic_tint,
+              blur_amount,
+              corner_radius,
             },
           ) {
             Ok(session) => {
@@ -1972,6 +2117,8 @@ impl AnimationManager {
     effect_opacity: u8,
     corner_style: CornerStyle,
     acrylic_tint: Option<u32>,
+    blur_amount: f32,
+    corner_radius: f32,
     config: &UserConfig,
     native_window: &NativeWindow,
   ) {
@@ -2052,6 +2199,8 @@ impl AnimationManager {
         // sample exists.
         edge_color: None,
         acrylic_tint,
+        blur_amount,
+        corner_radius,
       },
     ) {
       Ok(mut session) => {
@@ -2104,6 +2253,8 @@ impl AnimationManager {
     effect_opacity: u8,
     corner_style: CornerStyle,
     acrylic_tint: Option<u32>,
+    blur_amount: f32,
+    corner_radius: f32,
     config: &UserConfig,
     native_window: &NativeWindow,
   ) {
@@ -2161,6 +2312,8 @@ impl AnimationManager {
         // animated; otherwise sample — the window is still on screen.
         edge_color: self.cached_edge_color(native_window.hwnd().0),
         acrylic_tint,
+        blur_amount,
+        corner_radius,
       },
     ) {
       Ok(mut session) => {

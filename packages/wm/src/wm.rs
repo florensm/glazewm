@@ -311,6 +311,17 @@ impl WindowManager {
                 wm_platform::CornerStyle::Default
               };
               let acrylic_tint = effect_cfg.blur_behind.acrylic_tint();
+              // Snapshotted onto the `ResizeSession` (rather than re-read
+              // live from config later) since the close animation's
+              // direct-drive loop runs after the window is detached from
+              // the container tree, where `effect_cfg` can no longer be
+              // recomputed.
+              let blur_amount = effect_cfg.blur_behind.blur_amount;
+              let corner_radius = if effect_cfg.corner_style.enabled {
+                effect_cfg.corner_style.style.approx_radius_px()
+              } else {
+                wm_platform::CornerStyle::Default.approx_radius_px()
+              };
 
               if let Ok(rect) = window.to_rect().and_then(|r| {
                 window.total_border_delta().map(|d| r.apply_delta(&d, None))
@@ -328,6 +339,8 @@ impl WindowManager {
                     effect_opacity,
                     corner_style,
                     acrylic_tint,
+                    blur_amount,
+                    corner_radius,
                     config,
                     &*native_ref,
                   );

@@ -51,11 +51,19 @@ pub struct SessionOptions {
   /// Pass `false` for close surrogates, which should remain below resize and
   /// open surrogates that fill the vacated space.
   pub place_at_top: bool,
-  /// ABGR tint for SWCA acrylic applied to the surrogate, or `None` when
-  /// blur-behind is not configured. When `Some`, `ACCENT_ENABLE_ACRYLICBLURBEHIND`
-  /// is applied once after surrogate creation so blur is visible throughout the
-  /// animation without a separate overlay window.
+  /// ABGR tint for the acrylic blur overlay tracking this session, or `None`
+  /// when blur-behind isn't configured. Snapshotted (with `blur_amount`/
+  /// `corner_radius` below) rather than applied directly to the surrogate --
+  /// the actual blur comes from the external `NativeBlurOverlay` tracker in
+  /// `AnimationManager`/`platform_sync`, which needs these values even after
+  /// the window is detached from the layout tree (close animations).
   pub acrylic_tint: Option<u32>,
+  /// Blur radius/intensity for the tracking overlay. Ignored when
+  /// `acrylic_tint` is `None`.
+  pub blur_amount: f32,
+  /// Corner radius for the tracking overlay. Ignored when `acrylic_tint` is
+  /// `None`.
+  pub corner_radius: f32,
 }
 
 /// Tracks a single window's resize/move animation and manages its surrogate
@@ -142,6 +150,22 @@ pub struct ResizeSession {
   /// Consumed by `defer_update` before `sync_registration` so the short-
   /// circuit check still works on the same tick.
   pending_thumbnail_dims: Option<(i32, i32)>,
+  /// ABGR tint for the acrylic blur overlay tracking this session, snapshotted
+  /// from `SessionOptions::acrylic_tint`. See [`blur_overlay_params`].
+  ///
+  /// [`blur_overlay_params`]: ResizeSession::blur_overlay_params
+  acrylic_tint: Option<u32>,
+  /// Blur radius for the tracking overlay, snapshotted from `SessionOptions`.
+  blur_amount: f32,
+  /// Corner radius for the tracking overlay, snapshotted from `SessionOptions`.
+  corner_radius: f32,
+  /// Live logical (border-deflated) on-screen rect for the current frame,
+  /// mirroring `WorkspaceSurrogate::current_rect`. `None` while there's
+  /// nothing to show (no surrogate, or fully clipped off-screen). Ignored
+  /// for zoom sessions -- see [`current_rect`].
+  ///
+  /// [`current_rect`]: ResizeSession::current_rect
+  current_rect: Option<Rect>,
 }
 
 impl ResizeSession {
@@ -193,7 +217,7 @@ impl ResizeSession {
     // Thumbnail registered at source dims for all directions (see doc
     // comment): the window is only source-sized at this point, and
     // registering larger would oversample.
-    let mut surrogate = match NativeSurrogate::create(
+    let surrogate = match NativeSurrogate::create(
       hwnd,
       source_rect,
       source_rect,
@@ -214,10 +238,6 @@ impl ResizeSession {
       }
     };
 
-    if let (Some(s), Some(tint)) = (&mut surrogate, options.acrylic_tint) {
-      s.apply_swca(tint);
-    }
-
     Ok(Self {
       hwnd: hwnd.0,
       target_rect: target_rect.clone(),
@@ -231,7 +251,40 @@ impl ResizeSession {
       handoff_done: is_growing,
       session_cloaked: false,
       pending_thumbnail_dims: None,
+      acrylic_tint: options.acrylic_tint,
+      blur_amount: options.blur_amount,
+      corner_radius: options.corner_radius,
+      current_rect: None,
     })
+  }
+
+  /// Returns the tint/blur-amount/corner-radius for the acrylic blur-overlay
+  /// tracker in `AnimationManager`, or `None` when blur-behind isn't
+  /// configured for this window.
+  #[must_use]
+  pub fn blur_overlay_params(&self) -> Option<(u32, f32, f32)> {
+    self
+      .acrylic_tint
+      .map(|tint| (tint, self.blur_amount, self.corner_radius))
+  }
+
+  /// Live on-screen rect (logical, border-deflated) for the acrylic-overlay
+  /// tracker to follow this tick, or `None` when there's nothing to show.
+  ///
+  /// Zoom sessions never move their surrogate window -- only the DWM
+  /// thumbnail's `rcDestination` animates within a surrogate fixed at
+  /// `target_rect` for the whole animation (see [`update_zoom_fade`]) -- so
+  /// this always reports the fixed target rect for them; no per-frame
+  /// storage is needed.
+  ///
+  /// [`update_zoom_fade`]: ResizeSession::update_zoom_fade
+  #[must_use]
+  pub fn current_rect(&self) -> Option<Rect> {
+    if self.zoom {
+      Some(to_logical(&self.target_rect, &self.border_inset))
+    } else {
+      self.current_rect.clone()
+    }
   }
 
   /// Returns the final target rect for the real window (physical, including
@@ -475,6 +528,7 @@ impl ResizeSession {
   pub fn update(&mut self, current_rect: &Rect, opacity: u8) {
     self.sync_registration();
     let logical = to_logical(current_rect, &self.border_inset);
+    self.current_rect = Some(logical.clone());
     if let Some(surrogate) = &mut self.surrogate {
       if let Err(err) = surrogate.update(&logical, opacity) {
         tracing::warn!("Surrogate update failed: {err}.");
@@ -507,6 +561,7 @@ impl ResizeSession {
     }
     self.sync_registration();
     let logical = to_logical(current_rect, &self.border_inset);
+    self.current_rect = Some(logical.clone());
     if let Some(surrogate) = &mut self.surrogate {
       surrogate.defer_reposition(batch, &logical);
       surrogate.set_window_opacity(opacity);
@@ -527,6 +582,7 @@ impl ResizeSession {
     opacity: u8,
   ) {
     let Some(surrogate) = &mut self.surrogate else {
+      self.current_rect = None;
       return;
     };
 
@@ -541,6 +597,7 @@ impl ResizeSession {
 
     if vis_left >= vis_right || vis_top >= vis_bottom {
       surrogate.set_visible(false);
+      self.current_rect = None;
       return;
     }
 
@@ -560,6 +617,7 @@ impl ResizeSession {
     }
     surrogate.set_window_opacity(opacity);
     surrogate.set_visible(true);
+    self.current_rect = Some(constrained);
   }
 
   /// Redirects the session to a new target rect while the surrogate is still
@@ -774,6 +832,7 @@ impl ResizeSession {
       }
     }
     let logical = to_logical(&self.target_rect, &self.border_inset);
+    self.current_rect = Some(logical.clone());
     if let Some(surrogate) = &mut self.surrogate {
       // The real window was just resized to the target above, but the live
       // DWM thumbnail still maps the old content dimensions — for the 1–2
