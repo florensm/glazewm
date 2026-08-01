@@ -23,7 +23,7 @@ use crate::{
       ACCENT_ENABLE_HOSTBACKDROP,
     },
   },
-  Rect,
+  BlurOverlayParams, Rect,
 };
 
 /// Ensures the blur-overlay window class is registered exactly once per
@@ -131,21 +131,21 @@ fn apply_hostbackdrop(hwnd: HWND) {
 /// fallback) so the caller can create a fresh window for that path.
 fn try_create_composition(
   rect: &Rect,
-  tint: u32,
-  blur_amount: f32,
-  corner_radius: f32,
+  params: BlurOverlayParams,
 ) -> Option<(HWND, BlurVisual)> {
   let hwnd = match create_window(rect, true) {
     Ok(hwnd) => hwnd,
     Err(err) => {
-      tracing::warn!("Blur overlay composition window creation failed: {err}.");
+      tracing::warn!(
+        "Blur overlay composition window creation failed: {err}."
+      );
       return None;
     }
   };
 
   apply_hostbackdrop(hwnd);
 
-  match BlurVisual::create(hwnd, rect, tint, blur_amount, corner_radius) {
+  match BlurVisual::create(hwnd, rect, params) {
     Ok(visual) => Some((hwnd, visual)),
     Err(err) => {
       tracing::warn!(
@@ -176,9 +176,9 @@ fn try_create_composition(
 /// continuous corner-radius clip) when available, falling back to
 /// `SetWindowCompositionAttribute` with `ACCENT_ENABLE_ACRYLICBLURBEHIND`
 /// otherwise -- e.g. pre-Windows 10 1803, or if any step of the Composition
-/// setup fails. In the fallback, `blur_amount`/`corner_radius` become
-/// no-ops (the OS gives no such knobs for SWCA acrylic) but `tint` keeps
-/// working the same as before.
+/// setup fails. In the fallback, `blur_amount`/`corner_radius`/`opacity`/
+/// `saturation` become no-ops (the OS gives no such knobs for SWCA
+/// acrylic) but `tint` keeps working the same as before.
 ///
 /// # Platform-specific
 ///
@@ -188,15 +188,10 @@ pub struct NativeBlurOverlay {
   /// `Send` even though `HWND` is not.
   hwnd: isize,
 
-  /// Current ABGR tint. Applied via SWCA in the fallback path, or as the
-  /// Composition pipeline's tint layer color otherwise.
-  tint: u32,
-
-  /// Current blur radius/intensity. No-op in the SWCA fallback.
-  blur_amount: f32,
-
-  /// Current corner radius, in pixels. No-op in the SWCA fallback.
-  corner_radius: f32,
+  /// Current tint/blur-amount/corner-radius/opacity/saturation. Applied
+  /// via SWCA in the fallback path (tint only), or as the Composition
+  /// pipeline's live properties otherwise.
+  params: BlurOverlayParams,
 
   /// Last rect applied via `set_rect`, used to skip redundant
   /// `SetWindowPos` calls when the overlay hasn't actually moved.
@@ -221,25 +216,19 @@ pub struct NativeBlurOverlay {
 
 impl NativeBlurOverlay {
   /// Creates a new blur overlay sized and positioned to `rect`, with the
-  /// given ABGR `tint`, blur amount, and corner radius (the latter two are
-  /// only honored when the Composition pipeline is available).
+  /// given `params` (blur amount, corner radius, opacity, and saturation
+  /// are only honored when the Composition pipeline is available).
   ///
   /// The overlay is shown immediately at `HWND_BOTTOM`.
-  pub fn create(
-    rect: &Rect,
-    tint: u32,
-    blur_amount: f32,
-    corner_radius: f32,
-  ) -> crate::Result<Self> {
-    let (hwnd, composition) = if let Some((hwnd, visual)) =
-      try_create_composition(rect, tint, blur_amount, corner_radius)
-    {
-      (hwnd, Some(visual))
-    } else {
-      let hwnd = create_window(rect, false)?;
-      apply_swca_accent(hwnd, ACCENT_ENABLE_ACRYLICBLURBEHIND, tint);
-      (hwnd, None)
-    };
+  pub fn create(rect: &Rect, params: BlurOverlayParams) -> crate::Result<Self> {
+    let (hwnd, composition) =
+      if let Some((hwnd, visual)) = try_create_composition(rect, params) {
+        (hwnd, Some(visual))
+      } else {
+        let hwnd = create_window(rect, false)?;
+        apply_swca_accent(hwnd, ACCENT_ENABLE_ACRYLICBLURBEHIND, params.tint);
+        (hwnd, None)
+      };
 
     // SAFETY: `hwnd` is a valid window just created above.
     if let Err(e) = unsafe {
@@ -258,9 +247,7 @@ impl NativeBlurOverlay {
 
     Ok(Self {
       hwnd: hwnd.0,
-      tint,
-      blur_amount,
-      corner_radius,
+      params,
       rect: rect.clone(),
       is_visible: true,
       composition,
@@ -323,10 +310,10 @@ impl NativeBlurOverlay {
 
   /// Updates the ABGR tint; re-applies only when the value changes.
   pub fn set_tint(&mut self, tint: u32) {
-    if self.tint == tint {
+    if self.params.tint == tint {
       return;
     }
-    self.tint = tint;
+    self.params.tint = tint;
 
     match &self.composition {
       Some(composition) => {
@@ -349,10 +336,10 @@ impl NativeBlurOverlay {
   /// arithmetic that could introduce drift.
   #[allow(clippy::float_cmp)]
   pub fn set_blur_amount(&mut self, blur_amount: f32) {
-    if self.blur_amount == blur_amount {
+    if self.params.blur_amount == blur_amount {
       return;
     }
-    self.blur_amount = blur_amount;
+    self.params.blur_amount = blur_amount;
 
     if let Some(composition) = &mut self.composition {
       if let Err(e) = composition.set_blur_amount(blur_amount) {
@@ -368,16 +355,68 @@ impl NativeBlurOverlay {
   /// here.
   #[allow(clippy::float_cmp)]
   pub fn set_corner_radius(&mut self, corner_radius: f32) {
-    if self.corner_radius == corner_radius {
+    if self.params.corner_radius == corner_radius {
       return;
     }
-    self.corner_radius = corner_radius;
+    self.params.corner_radius = corner_radius;
 
     if let Some(composition) = &self.composition {
       if let Err(e) = composition.set_corner_radius(corner_radius) {
         tracing::warn!("Blur overlay corner-radius update failed: {e}.");
       }
     }
+  }
+
+  /// Updates the overlay's own opacity (blur + tint together, as one
+  /// unit); re-applies only when the value changes. No-op when running
+  /// the SWCA fallback (no such knob exists).
+  ///
+  /// See `set_blur_amount` for why exact `f32` equality is intentional
+  /// here.
+  #[allow(clippy::float_cmp)]
+  pub fn set_opacity(&mut self, opacity: f32) {
+    if self.params.opacity == opacity {
+      return;
+    }
+    self.params.opacity = opacity;
+
+    if let Some(composition) = &self.composition {
+      if let Err(e) = composition.set_opacity(opacity) {
+        tracing::warn!("Blur overlay opacity update failed: {e}.");
+      }
+    }
+  }
+
+  /// Updates the saturation of the blurred backdrop; re-applies only when
+  /// the value changes. No-op when running the SWCA fallback (no such
+  /// knob exists).
+  ///
+  /// See `set_blur_amount` for why exact `f32` equality is intentional
+  /// here.
+  #[allow(clippy::float_cmp)]
+  pub fn set_saturation(&mut self, saturation: f32) {
+    if self.params.saturation == saturation {
+      return;
+    }
+    self.params.saturation = saturation;
+
+    if let Some(composition) = &mut self.composition {
+      if let Err(e) = composition.set_saturation(saturation) {
+        tracing::warn!("Blur overlay saturation update failed: {e}.");
+      }
+    }
+  }
+
+  /// Applies `params`, re-applying only whichever fields actually changed
+  /// (each setter no-ops internally on an unchanged value). Convenience
+  /// for the call sites that already have a full `BlurOverlayParams`
+  /// rather than one field at a time.
+  pub fn apply(&mut self, params: BlurOverlayParams) {
+    self.set_tint(params.tint);
+    self.set_blur_amount(params.blur_amount);
+    self.set_corner_radius(params.corner_radius);
+    self.set_opacity(params.opacity);
+    self.set_saturation(params.saturation);
   }
 
   /// Hides the overlay without destroying it.

@@ -14,7 +14,7 @@ use crate::{platform_impl, Rect};
 #[cfg(target_os = "macos")]
 use crate::{platform_impl::AXUIElementExt, ThreadBound};
 #[cfg(target_os = "windows")]
-use crate::{BlurBehindStyle, Color, CornerStyle, Delta, OpacityValue, RectDelta};
+use crate::{BackdropStyle, Color, CornerStyle, Delta, OpacityValue, RectDelta};
 
 /// Unique identifier of a window.
 ///
@@ -367,7 +367,7 @@ pub trait NativeWindowWindowsExt {
   /// # Platform-specific
   ///
   /// This method is only available on Windows.
-  fn set_blur_behind(&self, style: Option<&BlurBehindStyle>) -> crate::Result<()>;
+  fn set_blur_behind(&self, style: Option<&BackdropStyle>) -> crate::Result<()>;
 }
 
 #[cfg(target_os = "windows")]
@@ -482,7 +482,7 @@ impl NativeWindowWindowsExt for NativeWindow {
     self.inner.reassert_transparency()
   }
 
-  fn set_blur_behind(&self, style: Option<&BlurBehindStyle>) -> crate::Result<()> {
+  fn set_blur_behind(&self, style: Option<&BackdropStyle>) -> crate::Result<()> {
     self.inner.set_blur_behind(style)
   }
 }

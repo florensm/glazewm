@@ -10,8 +10,8 @@ use wm_common::{
 use wm_platform::NativeWindowWindowsExt;
 #[cfg(target_os = "windows")]
 use wm_platform::{
-  BlurBehindStyle, CornerStyle, NativeBlurOverlay, NativeIrisOverlay,
-  OpacityValue, WorkspaceSurrogate,
+  BackdropStyle, BlurOverlayParams, CornerStyle, NativeBlurOverlay,
+  NativeIrisOverlay, OpacityValue, WorkspaceSurrogate,
 };
 use wm_platform::{Rect, WindowZOrder};
 
@@ -398,7 +398,7 @@ fn redraw_containers(
           // Carry the acrylic blur onto the surrogate so the frosted-glass
           // effect stays visible while the workspace slides. The static
           // blur overlay is hidden for the duration of the animation.
-          let acrylic_tint = effect_cfg.blur_behind.acrylic_tint();
+          let acrylic_tint = effect_cfg.backdrop.acrylic_tint();
           let corner_style = if effect_cfg.corner_style.enabled {
             effect_cfg.corner_style.style.clone()
           } else {
@@ -687,13 +687,7 @@ fn redraw_containers(
     // Compute effect opacity and corner style unconditionally — needed for
     // both the movement surrogate path and the fade-in path.
     #[cfg(target_os = "windows")]
-    let (
-      effect_opacity,
-      corner_style,
-      acrylic_tint,
-      surrogate_blur_amount,
-      surrogate_corner_radius,
-    ) = {
+    let (effect_opacity, corner_style, blur_overlay) = {
       let effect_cfg = if window.id() == focused_container.id() {
         &config.value.window_effects.focused_window
       } else {
@@ -713,19 +707,21 @@ fn redraw_containers(
       // config at tracking time) since the close animation's direct-drive
       // loop runs after the window is detached from the container tree,
       // where `effect_cfg` can no longer be recomputed.
-      let blur_amount = effect_cfg.blur_behind.blur_amount;
+      let blur_amount = effect_cfg.backdrop.blur_amount;
       let corner_radius = if effect_cfg.corner_style.enabled {
         effect_cfg.corner_style.style.approx_radius_px()
       } else {
         CornerStyle::Default.approx_radius_px()
       };
-      (
-        opacity,
-        style,
-        effect_cfg.blur_behind.acrylic_tint(),
-        blur_amount,
-        corner_radius,
-      )
+      let blur_overlay =
+        effect_cfg.backdrop.acrylic_tint().map(|tint| BlurOverlayParams {
+          tint,
+          blur_amount,
+          corner_radius,
+          opacity: effect_cfg.backdrop.opacity,
+          saturation: effect_cfg.backdrop.saturation,
+        });
+      (opacity, style, blur_overlay)
     };
 
     // Start a slide-in animation for newly appearing tiling windows.
@@ -749,9 +745,7 @@ fn redraw_containers(
         monitor_rect,
         effect_opacity,
         corner_style,
-        acrylic_tint,
-        surrogate_blur_amount,
-        surrogate_corner_radius,
+        blur_overlay,
         config,
         &*native_ref,
       );
@@ -806,9 +800,7 @@ fn redraw_containers(
           &*native_ref,
           effect_opacity,
           corner_style,
-          acrylic_tint,
-          surrogate_blur_amount,
-          surrogate_corner_radius,
+          blur_overlay,
           config,
         )
       }
@@ -1088,19 +1080,11 @@ fn redraw_containers(
     if state.animation_manager.has_close_animation(id) {
       continue;
     }
-    let Some((tint, blur_amount, corner_radius)) = session.blur_overlay_params()
-    else {
+    let Some(params) = session.blur_overlay_params() else {
       continue;
     };
     match session.current_rect() {
-      Some(rect) => upsert_blur_overlay(
-        &mut state.blur_overlays,
-        *id,
-        tint,
-        blur_amount,
-        corner_radius,
-        &rect,
-      ),
+      Some(rect) => upsert_blur_overlay(&mut state.blur_overlays, *id, params, &rect),
       None => {
         if let Some(overlay) = state.blur_overlays.get_mut(id) {
           overlay.hide();
@@ -1340,8 +1324,8 @@ fn apply_window_effects(
   #[cfg(target_os = "windows")]
   if window_effects.focused_window.border.enabled
     || window_effects.other_windows.border.enabled
-    || window_effects.focused_window.blur_behind.enabled
-    || window_effects.other_windows.blur_behind.enabled
+    || window_effects.focused_window.backdrop.enabled
+    || window_effects.other_windows.backdrop.enabled
   {
     apply_border_effect(window, effect_config);
   }
@@ -1368,10 +1352,10 @@ fn apply_window_effects(
   }
 
   #[cfg(target_os = "windows")]
-  if window_effects.focused_window.blur_behind.enabled
-    || window_effects.other_windows.blur_behind.enabled
+  if window_effects.focused_window.backdrop.enabled
+    || window_effects.other_windows.backdrop.enabled
   {
-    apply_blur_behind_effect(window, effect_config);
+    apply_backdrop_effect(window, effect_config);
   }
 }
 
@@ -1383,7 +1367,7 @@ fn apply_border_effect(
   // Suppress the border when a blur-behind material is active so the
   // colored frame doesn't clash with the acrylic/mica backdrop.
   let border_color =
-    if effect_config.border.enabled && !effect_config.blur_behind.enabled {
+    if effect_config.border.enabled && !effect_config.backdrop.enabled {
       Some(&effect_config.border.color)
     } else {
       None
@@ -1448,7 +1432,7 @@ fn apply_transparency_effect(
 }
 
 #[cfg(target_os = "windows")]
-fn apply_blur_behind_effect(
+fn apply_backdrop_effect(
   window: &WindowContainer,
   effect_config: &WindowEffectConfig,
 ) {
@@ -1458,11 +1442,11 @@ fn apply_blur_behind_effect(
   // conflict. `Mica`/`MicaAlt` use `DWMWA_SYSTEMBACKDROP_TYPE` directly
   // on the managed window (Win11 22H2+).
   let style = match (
-    effect_config.blur_behind.enabled,
-    &effect_config.blur_behind.style,
+    effect_config.backdrop.enabled,
+    &effect_config.backdrop.style,
   ) {
-    (true, BlurBehindStyle::Mica | BlurBehindStyle::MicaAlt) => {
-      Some(&effect_config.blur_behind.style)
+    (true, BackdropStyle::Mica | BackdropStyle::MicaAlt) => {
+      Some(&effect_config.backdrop.style)
     }
     _ => None,
   };
@@ -1473,7 +1457,7 @@ fn apply_blur_behind_effect(
 }
 
 /// Creates, repositions, and removes acrylic blur overlay windows so that
-/// every managed window with `blur_behind: acrylic` has a matching overlay
+/// every managed window with `backdrop: acrylic` has a matching overlay
 /// positioned at `HWND_BOTTOM` flush with the window's DWM frame rect.
 ///
 /// Called on every `platform_sync` tick so overlays track window position
@@ -1514,21 +1498,17 @@ fn apply_blur_behind_effect(
 pub(crate) fn upsert_blur_overlay(
   overlays: &mut std::collections::HashMap<uuid::Uuid, NativeBlurOverlay>,
   window_id: uuid::Uuid,
-  tint: u32,
-  blur_amount: f32,
-  corner_radius: f32,
+  params: BlurOverlayParams,
   rect: &Rect,
 ) {
   match overlays.entry(window_id) {
     std::collections::hash_map::Entry::Occupied(e) => {
       let overlay = e.into_mut();
-      overlay.set_tint(tint);
-      overlay.set_blur_amount(blur_amount);
-      overlay.set_corner_radius(corner_radius);
+      overlay.apply(params);
       overlay.set_rect(rect);
     }
     std::collections::hash_map::Entry::Vacant(e) => {
-      match NativeBlurOverlay::create(rect, tint, blur_amount, corner_radius) {
+      match NativeBlurOverlay::create(rect, params) {
         Ok(overlay) => {
           debug!("Blur overlay created for {window_id}.");
           e.insert(overlay);
@@ -1565,11 +1545,11 @@ fn sync_blur_overlays(
       &config.value.window_effects.other_windows
     };
 
-    let Some(tint) = effect_cfg.blur_behind.acrylic_tint() else {
+    let Some(tint) = effect_cfg.backdrop.acrylic_tint() else {
       continue;
     };
 
-    let blur_amount = effect_cfg.blur_behind.blur_amount;
+    let blur_amount = effect_cfg.backdrop.blur_amount;
 
     // Mirrors `corner_style` (falling back to `CornerStyle::Default` when
     // disabled, same as `apply_corner_effect`) so the overlay's rounded
@@ -1580,6 +1560,14 @@ fn sync_blur_overlays(
       effect_cfg.corner_style.style.approx_radius_px()
     } else {
       CornerStyle::Default.approx_radius_px()
+    };
+
+    let params = BlurOverlayParams {
+      tint,
+      blur_amount,
+      corner_radius,
+      opacity: effect_cfg.backdrop.opacity,
+      saturation: effect_cfg.backdrop.saturation,
     };
 
     wanted_ids.insert(window.id());
@@ -1631,9 +1619,7 @@ fn sync_blur_overlays(
     match state.blur_overlays.entry(window.id()) {
       std::collections::hash_map::Entry::Occupied(e) => {
         let overlay = e.into_mut();
-        overlay.set_tint(tint);
-        overlay.set_blur_amount(blur_amount);
-        overlay.set_corner_radius(corner_radius);
+        overlay.apply(params);
 
         // Always re-query and re-show when the overlay isn't currently
         // visible, even if this window isn't part of this tick's redraw --
@@ -1661,8 +1647,7 @@ fn sync_blur_overlays(
           continue;
         };
 
-        match NativeBlurOverlay::create(&rect, tint, blur_amount, corner_radius)
-        {
+        match NativeBlurOverlay::create(&rect, params) {
           Ok(overlay) => {
             debug!("Blur overlay created for {}.", window.id());
             e.insert(overlay);

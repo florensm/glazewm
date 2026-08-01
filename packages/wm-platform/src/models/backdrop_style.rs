@@ -19,7 +19,7 @@ use serde::{Deserialize, Serialize};
 /// skipped.
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
-pub enum BlurBehindStyle {
+pub enum BackdropStyle {
   /// Frosted-glass acrylic that blurs content behind the window.
   #[default]
   Acrylic,

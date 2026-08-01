@@ -46,7 +46,7 @@ use windows::{
 
 use super::com::{IApplicationView, COM_INIT};
 use crate::{
-  BlurBehindStyle, Color, CornerStyle, Delta, Dispatcher, LengthValue,
+  BackdropStyle, Color, CornerStyle, Delta, Dispatcher, LengthValue,
   OpacityValue, Point, Rect, RectDelta, WindowId, WindowZOrder,
 };
 
@@ -790,13 +790,13 @@ impl NativeWindow {
   /// Implements [`NativeWindowWindowsExt::set_blur_behind`].
   pub(crate) fn set_blur_behind(
     &self,
-    style: Option<&BlurBehindStyle>,
+    style: Option<&BackdropStyle>,
   ) -> crate::Result<()> {
     let backdrop_type = match style {
       None => DWMSBT_AUTO,
-      Some(BlurBehindStyle::Mica) => DWMSBT_MAINWINDOW,
-      Some(BlurBehindStyle::MicaAlt) => DWMSBT_TABBEDWINDOW,
-      Some(BlurBehindStyle::Acrylic) => {
+      Some(BackdropStyle::Mica) => DWMSBT_MAINWINDOW,
+      Some(BackdropStyle::MicaAlt) => DWMSBT_TABBEDWINDOW,
+      Some(BackdropStyle::Acrylic) => {
         unreachable!("Acrylic is applied via a NativeBlurOverlay, never here")
       }
     };

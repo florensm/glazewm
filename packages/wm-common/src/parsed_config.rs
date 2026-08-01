@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 use wm_platform::{
-  BlurBehindStyle, Color, CornerStyle, Key, Keybinding, LengthValue,
+  BackdropStyle, Color, CornerStyle, Key, Keybinding, LengthValue,
   OpacityValue, RectDelta,
 };
 
@@ -254,18 +254,19 @@ pub struct WindowEffectConfig {
   /// Config for optionally applying transparency.
   pub transparency: TransparencyEffectConfig,
 
-  /// Config for optionally applying a DWM blur-behind material.
-  pub blur_behind: BlurBehindEffectConfig,
+  /// Config for optionally applying a DWM backdrop material.
+  #[serde(alias = "blur_behind")]
+  pub backdrop: BackdropEffectConfig,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(default, rename_all(serialize = "camelCase"))]
-pub struct BlurBehindEffectConfig {
+pub struct BackdropEffectConfig {
   /// Whether to enable the effect.
   pub enabled: bool,
 
   /// Backdrop material to apply.
-  pub style: BlurBehindStyle,
+  pub style: BackdropStyle,
 
   /// RGBA tint blended over the blurred backdrop.
   ///
@@ -283,24 +284,49 @@ pub struct BlurBehindEffectConfig {
   /// system (falls back to the OS's fixed-intensity acrylic blur).
   pub blur_amount: f32,
 
+  /// Opacity of the acrylic overlay's own composited visual (blur and
+  /// tint together, as one unit), from `0.0` to `1.0`.
+  ///
+  /// Distinct from `tint`'s own alpha channel: `tint`'s alpha only blends
+  /// the flat tint layer over the blur layer beneath it, while this
+  /// scales the *entire* overlay -- unrelated to the real managed
+  /// window's own `transparency` effect, which fades the window itself
+  /// via `SetLayeredWindowAttributes`, not the overlay. Ignored for
+  /// `mica`/`mica_alt` and silently has no effect if the
+  /// `Windows.UI.Composition` rendering pipeline is unavailable, same as
+  /// `blur_amount`.
+  pub opacity: f32,
+
+  /// Saturation of the blurred backdrop, from `0.0` (grayscale) to `2.0`
+  /// (oversaturated); `1.0` leaves it unchanged. Values outside that
+  /// range aren't clamped -- D2D1's `Saturation` effect accepts them but
+  /// the result is undefined/implementation-specific.
+  ///
+  /// Ignored for `mica`/`mica_alt` and silently has no effect if the
+  /// `Windows.UI.Composition` rendering pipeline is unavailable, same as
+  /// `blur_amount`.
+  pub saturation: f32,
+
   // The acrylic overlay's own corner radius isn't independently
   // configurable -- it's derived from `corner_style` (see
   // `CornerStyle::approx_radius_px`) so it always matches the real managed
   // window's own rendered corners instead of risking a visual mismatch.
 }
 
-impl Default for BlurBehindEffectConfig {
+impl Default for BackdropEffectConfig {
   fn default() -> Self {
     Self {
       enabled: false,
-      style: BlurBehindStyle::default(),
+      style: BackdropStyle::default(),
       tint: None,
       blur_amount: 30.0,
+      opacity: 1.0,
+      saturation: 1.0,
     }
   }
 }
 
-impl BlurBehindEffectConfig {
+impl BackdropEffectConfig {
   /// Returns the ABGR-packed SWCA tint for the acrylic style.
   ///
   /// Returns `None` when the effect is disabled or a non-acrylic style is
@@ -309,7 +335,7 @@ impl BlurBehindEffectConfig {
   /// Windows 10 builds.
   #[must_use]
   pub fn acrylic_tint(&self) -> Option<u32> {
-    if !self.enabled || self.style != BlurBehindStyle::Acrylic {
+    if !self.enabled || self.style != BackdropStyle::Acrylic {
       return None;
     }
 
