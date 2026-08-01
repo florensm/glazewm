@@ -462,7 +462,7 @@ impl AnimationManager {
   }
 
   /// Returns `true` if `window_id`'s active or fading-out `ResizeSession`
-  /// carries a live acrylic-blur tracker (i.e. `blur_behind` was configured
+  /// carries a live acrylic-blur tracker (i.e. `backdrop` was configured
   /// when the session began). Mirrors `has_live_ws_surrogate`.
   #[cfg(target_os = "windows")]
   pub fn has_live_resize_tracker(&self, window_id: &Uuid) -> bool {
@@ -1096,8 +1096,8 @@ impl AnimationManager {
                   } else {
                     &config.value.window_effects.other_windows
                   };
-                  if let Some(tint) = effect_cfg.blur_behind.acrylic_tint() {
-                    let blur_amount = effect_cfg.blur_behind.blur_amount;
+                  if let Some(tint) = effect_cfg.backdrop.acrylic_tint() {
+                    let blur_amount = effect_cfg.backdrop.blur_amount;
                     let corner_radius = if effect_cfg.corner_style.enabled {
                       effect_cfg.corner_style.style.approx_radius_px()
                     } else {
@@ -1107,8 +1107,8 @@ impl AnimationManager {
                       tint,
                       blur_amount,
                       corner_radius,
-                      opacity: effect_cfg.blur_behind.opacity,
-                      saturation: effect_cfg.blur_behind.saturation,
+                      opacity: effect_cfg.backdrop.opacity,
+                      saturation: effect_cfg.backdrop.saturation,
                     };
                     upsert_blur_overlay(
                       &mut state.blur_overlays,
@@ -1344,11 +1344,11 @@ impl AnimationManager {
           &config.value.window_effects.other_windows
         };
 
-        let Some(tint) = effect_cfg.blur_behind.acrylic_tint() else {
+        let Some(tint) = effect_cfg.backdrop.acrylic_tint() else {
           continue;
         };
 
-        let blur_amount = effect_cfg.blur_behind.blur_amount;
+        let blur_amount = effect_cfg.backdrop.blur_amount;
         let corner_radius = if effect_cfg.corner_style.enabled {
           effect_cfg.corner_style.style.approx_radius_px()
         } else {
@@ -1358,8 +1358,8 @@ impl AnimationManager {
           tint,
           blur_amount,
           corner_radius,
-          opacity: effect_cfg.blur_behind.opacity,
-          saturation: effect_cfg.blur_behind.saturation,
+          opacity: effect_cfg.backdrop.opacity,
+          saturation: effect_cfg.backdrop.saturation,
         };
 
         match state.blur_overlays.entry(*id) {

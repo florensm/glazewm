@@ -388,7 +388,7 @@ where
   Ok(result?)
 }
 
-/// Unpacks an ABGR-packed tint (see `BlurBehindEffectConfig::acrylic_tint`)
+/// Unpacks an ABGR-packed tint (see `BackdropEffectConfig::acrylic_tint`)
 /// into a `windows::UI::Color`.
 #[allow(clippy::cast_possible_truncation)]
 fn unpack_abgr_tint(tint: u32) -> Color {

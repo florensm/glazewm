@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 use wm_platform::{
-  BlurBehindStyle, Color, CornerStyle, Key, Keybinding, LengthValue,
+  BackdropStyle, Color, CornerStyle, Key, Keybinding, LengthValue,
   OpacityValue, RectDelta,
 };
 
@@ -254,18 +254,19 @@ pub struct WindowEffectConfig {
   /// Config for optionally applying transparency.
   pub transparency: TransparencyEffectConfig,
 
-  /// Config for optionally applying a DWM blur-behind material.
-  pub blur_behind: BlurBehindEffectConfig,
+  /// Config for optionally applying a DWM backdrop material.
+  #[serde(alias = "blur_behind")]
+  pub backdrop: BackdropEffectConfig,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(default, rename_all(serialize = "camelCase"))]
-pub struct BlurBehindEffectConfig {
+pub struct BackdropEffectConfig {
   /// Whether to enable the effect.
   pub enabled: bool,
 
   /// Backdrop material to apply.
-  pub style: BlurBehindStyle,
+  pub style: BackdropStyle,
 
   /// RGBA tint blended over the blurred backdrop.
   ///
@@ -312,11 +313,11 @@ pub struct BlurBehindEffectConfig {
   // window's own rendered corners instead of risking a visual mismatch.
 }
 
-impl Default for BlurBehindEffectConfig {
+impl Default for BackdropEffectConfig {
   fn default() -> Self {
     Self {
       enabled: false,
-      style: BlurBehindStyle::default(),
+      style: BackdropStyle::default(),
       tint: None,
       blur_amount: 30.0,
       opacity: 1.0,
@@ -325,7 +326,7 @@ impl Default for BlurBehindEffectConfig {
   }
 }
 
-impl BlurBehindEffectConfig {
+impl BackdropEffectConfig {
   /// Returns the ABGR-packed SWCA tint for the acrylic style.
   ///
   /// Returns `None` when the effect is disabled or a non-acrylic style is
@@ -334,7 +335,7 @@ impl BlurBehindEffectConfig {
   /// Windows 10 builds.
   #[must_use]
   pub fn acrylic_tint(&self) -> Option<u32> {
-    if !self.enabled || self.style != BlurBehindStyle::Acrylic {
+    if !self.enabled || self.style != BackdropStyle::Acrylic {
       return None;
     }
 

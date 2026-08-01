@@ -184,13 +184,13 @@ window_effects:
       # '0' or '0%' is fully transparent (and, by consequence, unfocusable).
       opacity: "95%"
 
-    # Apply a DWM blur-behind material to the window.
+    # Apply a backdrop material to the window (blur/tint/mica).
     # Uses DWMWA_SYSTEMBACKDROP_TYPE on Windows 11 22H2+ and falls back to
     # SetWindowCompositionAttribute on Windows 10 1803+ (acrylic only).
     # Both paths are DWM compositor-level, so the effect is captured by DWM
     # thumbnails and persists across the cloak/uncloak cycle.
     # ** Exclusive to Windows 10 1803+ (acrylic) / Windows 11 22H2+ (all styles).
-    blur_behind:
+    backdrop:
       enabled: false
       # Allowed values: 'acrylic', 'mica', 'mica_alt'.
       style: "acrylic"
@@ -226,7 +226,7 @@ window_effects:
     transparency:
       enabled: false
       opacity: "0%"
-    blur_behind:
+    backdrop:
       enabled: false
       style: "acrylic"
       blur_amount: 30.0

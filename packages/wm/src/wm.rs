@@ -315,19 +315,19 @@ impl WindowManager {
               // direct-drive loop runs after the window is detached from
               // the container tree, where `effect_cfg` can no longer be
               // recomputed.
-              let blur_amount = effect_cfg.blur_behind.blur_amount;
+              let blur_amount = effect_cfg.backdrop.blur_amount;
               let corner_radius = if effect_cfg.corner_style.enabled {
                 effect_cfg.corner_style.style.approx_radius_px()
               } else {
                 wm_platform::CornerStyle::Default.approx_radius_px()
               };
-              let blur_overlay = effect_cfg.blur_behind.acrylic_tint().map(
+              let blur_overlay = effect_cfg.backdrop.acrylic_tint().map(
                 |tint| wm_platform::BlurOverlayParams {
                   tint,
                   blur_amount,
                   corner_radius,
-                  opacity: effect_cfg.blur_behind.opacity,
-                  saturation: effect_cfg.blur_behind.saturation,
+                  opacity: effect_cfg.backdrop.opacity,
+                  saturation: effect_cfg.backdrop.saturation,
                 },
               );
 

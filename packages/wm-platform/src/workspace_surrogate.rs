@@ -15,7 +15,7 @@ enum SurrogateMode {
   /// The surrogate is sized to the window's own (clipped-to-monitor) visible
   /// rect and genuinely moved/resized every frame via a batched
   /// `SetWindowPos`. Used when the surrogate carries a live SWCA acrylic
-  /// backdrop from GlazeWM's own `blur_behind` config — pinning it to the
+  /// backdrop from GlazeWM's own `backdrop` config — pinning it to the
   /// full viewport would blur the entire monitor instead of just the
   /// window's current footprint.
   Live,
@@ -99,7 +99,7 @@ impl WorkspaceSurrogate {
   /// whole monitor and must not be rounded.
   ///
   /// `acrylic_tint` is GlazeWM's own configured tint
-  /// (`BlurBehindEffectConfig::acrylic_tint`), or `None` when `blur_behind`
+  /// (`BackdropEffectConfig::acrylic_tint`), or `None` when `backdrop`
   /// isn't configured for this window. When `Some`, this switches the
   /// surrogate to [`SurrogateMode::Live`] -- sized/moved to its own footprint
   /// rather than pinned to the viewport -- so a live-tracking acrylic blur

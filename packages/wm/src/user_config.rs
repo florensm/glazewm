@@ -382,6 +382,7 @@ impl UserConfig {
 #[cfg(test)]
 mod tests {
   use wm_common::{ParsedConfig, WindowTransitionStyle, WorkspaceSwitchStyle};
+  use wm_platform::BackdropStyle;
 
   use super::SAMPLE_CONFIG;
 
@@ -442,6 +443,28 @@ animations:
     assert_eq!(
       config.animations.window_open.style,
       WindowTransitionStyle::SlideTop
+    );
+  }
+
+  /// Configs written before the `blur_behind` -> `backdrop` key rename must
+  /// keep parsing via the `#[serde(alias = "blur_behind")]` on
+  /// `WindowEffectConfig::backdrop`.
+  #[test]
+  fn backdrop_key_alias_parses() {
+    let yaml = r"
+window_effects:
+  focused_window:
+    blur_behind:
+      enabled: true
+      style: 'mica'
+";
+    let config: ParsedConfig =
+      serde_yaml::from_str(yaml).expect("legacy config should parse");
+
+    assert!(config.window_effects.focused_window.backdrop.enabled);
+    assert_eq!(
+      config.window_effects.focused_window.backdrop.style,
+      BackdropStyle::Mica
     );
   }
 }
