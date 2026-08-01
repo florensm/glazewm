@@ -1,4 +1,5 @@
 mod blur_behind_style;
+mod blur_overlay_params;
 mod color;
 mod corner_style;
 mod delta;
@@ -12,6 +13,7 @@ mod rect;
 mod rect_delta;
 
 pub use blur_behind_style::*;
+pub use blur_overlay_params::*;
 pub use color::*;
 pub use corner_style::*;
 pub use delta::*;

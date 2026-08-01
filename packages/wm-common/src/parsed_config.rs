@@ -283,6 +283,29 @@ pub struct BlurBehindEffectConfig {
   /// system (falls back to the OS's fixed-intensity acrylic blur).
   pub blur_amount: f32,
 
+  /// Opacity of the acrylic overlay's own composited visual (blur and
+  /// tint together, as one unit), from `0.0` to `1.0`.
+  ///
+  /// Distinct from `tint`'s own alpha channel: `tint`'s alpha only blends
+  /// the flat tint layer over the blur layer beneath it, while this
+  /// scales the *entire* overlay -- unrelated to the real managed
+  /// window's own `transparency` effect, which fades the window itself
+  /// via `SetLayeredWindowAttributes`, not the overlay. Ignored for
+  /// `mica`/`mica_alt` and silently has no effect if the
+  /// `Windows.UI.Composition` rendering pipeline is unavailable, same as
+  /// `blur_amount`.
+  pub opacity: f32,
+
+  /// Saturation of the blurred backdrop, from `0.0` (grayscale) to `2.0`
+  /// (oversaturated); `1.0` leaves it unchanged. Values outside that
+  /// range aren't clamped -- D2D1's `Saturation` effect accepts them but
+  /// the result is undefined/implementation-specific.
+  ///
+  /// Ignored for `mica`/`mica_alt` and silently has no effect if the
+  /// `Windows.UI.Composition` rendering pipeline is unavailable, same as
+  /// `blur_amount`.
+  pub saturation: f32,
+
   // The acrylic overlay's own corner radius isn't independently
   // configurable -- it's derived from `corner_style` (see
   // `CornerStyle::approx_radius_px`) so it always matches the real managed
@@ -296,6 +319,8 @@ impl Default for BlurBehindEffectConfig {
       style: BlurBehindStyle::default(),
       tint: None,
       blur_amount: 30.0,
+      opacity: 1.0,
+      saturation: 1.0,
     }
   }
 }

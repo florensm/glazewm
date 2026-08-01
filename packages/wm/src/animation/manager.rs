@@ -109,9 +109,9 @@ use wm_common::{
 use wm_platform::{NativeWindow, OpacityValue, Rect};
 #[cfg(target_os = "windows")]
 use wm_platform::{
-  Color, CornerStyle, DxgiVsyncWaiter, NativeBlurOverlay, NativeIrisOverlay,
-  NativeWindowWindowsExt, ResizeSession, SessionOptions, SurrogateBatch,
-  WorkspaceSurrogate,
+  BlurOverlayParams, Color, CornerStyle, DxgiVsyncWaiter, NativeBlurOverlay,
+  NativeIrisOverlay, NativeWindowWindowsExt, ResizeSession, SessionOptions,
+  SurrogateBatch, WorkspaceSurrogate,
 };
 
 use crate::{
@@ -810,16 +810,12 @@ impl AnimationManager {
         // steady-state behavior but following the surrogate's live rect.
         if let Some(session) = state.animation_manager.resize_sessions.get(id)
         {
-          if let Some((tint, blur_amount, corner_radius)) =
-            session.blur_overlay_params()
-          {
+          if let Some(params) = session.blur_overlay_params() {
             match session.current_rect() {
               Some(rect) => upsert_blur_overlay(
                 &mut state.blur_overlays,
                 *id,
-                tint,
-                blur_amount,
-                corner_radius,
+                params,
                 &rect,
               ),
               None => {
@@ -1107,12 +1103,17 @@ impl AnimationManager {
                     } else {
                       CornerStyle::Default.approx_radius_px()
                     };
-                    upsert_blur_overlay(
-                      &mut state.blur_overlays,
-                      window_id,
+                    let params = BlurOverlayParams {
                       tint,
                       blur_amount,
                       corner_radius,
+                      opacity: effect_cfg.blur_behind.opacity,
+                      saturation: effect_cfg.blur_behind.saturation,
+                    };
+                    upsert_blur_overlay(
+                      &mut state.blur_overlays,
+                      window_id,
+                      params,
                       rect,
                     );
                   }
@@ -1243,16 +1244,12 @@ impl AnimationManager {
       // pre-show/flush gap to plug here.
       for (id, _, session) in &state.animation_manager.pending_session_cleanup
       {
-        if let Some((tint, blur_amount, corner_radius)) =
-          session.blur_overlay_params()
-        {
+        if let Some(params) = session.blur_overlay_params() {
           match session.current_rect() {
             Some(rect) => upsert_blur_overlay(
               &mut state.blur_overlays,
               *id,
-              tint,
-              blur_amount,
-              corner_radius,
+              params,
               &rect,
             ),
             None => {
@@ -1357,19 +1354,22 @@ impl AnimationManager {
         } else {
           CornerStyle::Default.approx_radius_px()
         };
+        let params = BlurOverlayParams {
+          tint,
+          blur_amount,
+          corner_radius,
+          opacity: effect_cfg.blur_behind.opacity,
+          saturation: effect_cfg.blur_behind.saturation,
+        };
 
         match state.blur_overlays.entry(*id) {
           std::collections::hash_map::Entry::Occupied(e) => {
             let overlay = e.into_mut();
-            overlay.set_tint(tint);
-            overlay.set_blur_amount(blur_amount);
-            overlay.set_corner_radius(corner_radius);
+            overlay.apply(params);
             overlay.set_rect(rect);
           }
           std::collections::hash_map::Entry::Vacant(e) => {
-            if let Ok(overlay) =
-              NativeBlurOverlay::create(rect, tint, blur_amount, corner_radius)
-            {
+            if let Ok(overlay) = NativeBlurOverlay::create(rect, params) {
               e.insert(overlay);
             }
           }
@@ -1613,16 +1613,10 @@ impl AnimationManager {
     // matches the real window's rounded corners during the animation.
     #[cfg(target_os = "windows")]
     corner_style: CornerStyle,
-    // ABGR tint for the acrylic blur-overlay tracker, or `None` when
-    // blur-behind is not configured.
+    // Tint/blur-amount/corner-radius/opacity/saturation for the acrylic
+    // blur-overlay tracker, or `None` when blur-behind is not configured.
     #[cfg(target_os = "windows")]
-    acrylic_tint: Option<u32>,
-    // Blur radius/corner radius for the tracker; ignored when `acrylic_tint`
-    // is `None`.
-    #[cfg(target_os = "windows")]
-    blur_amount: f32,
-    #[cfg(target_os = "windows")]
-    corner_radius: f32,
+    blur_overlay: Option<BlurOverlayParams>,
     config: &UserConfig,
   ) -> (AnimationPositionResult, Option<OpacityValue>) {
     let existing_animation = self.get_animation(&window_id).cloned();
@@ -1694,9 +1688,7 @@ impl AnimationManager {
               corner_style,
               place_at_top: true,
               edge_color: cached_edge_color,
-              acrylic_tint,
-              blur_amount,
-              corner_radius,
+              blur_overlay,
             },
           ) {
             Ok(session) => {
@@ -2116,9 +2108,7 @@ impl AnimationManager {
     monitor_rect: Rect,
     effect_opacity: u8,
     corner_style: CornerStyle,
-    acrylic_tint: Option<u32>,
-    blur_amount: f32,
-    corner_radius: f32,
+    blur_overlay: Option<BlurOverlayParams>,
     config: &UserConfig,
     native_window: &NativeWindow,
   ) {
@@ -2198,9 +2188,7 @@ impl AnimationManager {
         // No cache for open animations: the window is new, so no prior
         // sample exists.
         edge_color: None,
-        acrylic_tint,
-        blur_amount,
-        corner_radius,
+        blur_overlay,
       },
     ) {
       Ok(mut session) => {
@@ -2252,9 +2240,7 @@ impl AnimationManager {
     current_rect: Rect,
     effect_opacity: u8,
     corner_style: CornerStyle,
-    acrylic_tint: Option<u32>,
-    blur_amount: f32,
-    corner_radius: f32,
+    blur_overlay: Option<BlurOverlayParams>,
     config: &UserConfig,
     native_window: &NativeWindow,
   ) {
@@ -2311,9 +2297,7 @@ impl AnimationManager {
         // Reuse a cached color when the closing window was recently
         // animated; otherwise sample — the window is still on screen.
         edge_color: self.cached_edge_color(native_window.hwnd().0),
-        acrylic_tint,
-        blur_amount,
-        corner_radius,
+        blur_overlay,
       },
     ) {
       Ok(mut session) => {

@@ -200,6 +200,15 @@ window_effects:
       # that's unavailable and the OS's fixed-intensity acrylic blur is
       # used instead.
       blur_amount: 30.0
+      # Opacity of the acrylic overlay itself (blur + tint together), from
+      # 0.0 to 1.0 -- not the same as transparency.opacity above, which
+      # fades the real window. Requires Windows.UI.Composition, same as
+      # blur_amount.
+      opacity: 1.0
+      # Saturation of the blurred backdrop, from 0.0 (grayscale) to 2.0
+      # (oversaturated); 1.0 is unchanged. Same Windows.UI.Composition
+      # requirement as blur_amount.
+      saturation: 1.0
       # The overlay's own corner radius isn't separately configurable --
       # it always follows corner_style so it matches the real window's
       # rendered corners on top of it.
@@ -221,6 +230,8 @@ window_effects:
       enabled: false
       style: "acrylic"
       blur_amount: 30.0
+      opacity: 1.0
+      saturation: 1.0
 
 window_behavior:
   # New windows are created in this state whenever possible.

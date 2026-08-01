@@ -24,8 +24,8 @@ use windows::Win32::{
 const EDGE_SAMPLE_INSET: i32 = 4;
 
 use crate::{
-  native_surrogate::to_logical, Color, CornerStyle, NativeSurrogate, Rect,
-  SurrogateBatch,
+  native_surrogate::to_logical, BlurOverlayParams, Color, CornerStyle,
+  NativeSurrogate, Rect, SurrogateBatch,
 };
 
 /// Options for [`ResizeSession::begin`].
@@ -51,19 +51,14 @@ pub struct SessionOptions {
   /// Pass `false` for close surrogates, which should remain below resize and
   /// open surrogates that fill the vacated space.
   pub place_at_top: bool,
-  /// ABGR tint for the acrylic blur overlay tracking this session, or `None`
-  /// when blur-behind isn't configured. Snapshotted (with `blur_amount`/
-  /// `corner_radius` below) rather than applied directly to the surrogate --
-  /// the actual blur comes from the external `NativeBlurOverlay` tracker in
-  /// `AnimationManager`/`platform_sync`, which needs these values even after
-  /// the window is detached from the layout tree (close animations).
-  pub acrylic_tint: Option<u32>,
-  /// Blur radius/intensity for the tracking overlay. Ignored when
-  /// `acrylic_tint` is `None`.
-  pub blur_amount: f32,
-  /// Corner radius for the tracking overlay. Ignored when `acrylic_tint` is
-  /// `None`.
-  pub corner_radius: f32,
+  /// Tint/blur-amount/corner-radius/opacity/saturation for the acrylic
+  /// blur overlay tracking this session, or `None` when blur-behind isn't
+  /// configured. Snapshotted rather than applied directly to the
+  /// surrogate -- the actual blur comes from the external
+  /// `NativeBlurOverlay` tracker in `AnimationManager`/`platform_sync`,
+  /// which needs these values even after the window is detached from the
+  /// layout tree (close animations).
+  pub blur_overlay: Option<BlurOverlayParams>,
 }
 
 /// Tracks a single window's resize/move animation and manages its surrogate
@@ -150,15 +145,12 @@ pub struct ResizeSession {
   /// Consumed by `defer_update` before `sync_registration` so the short-
   /// circuit check still works on the same tick.
   pending_thumbnail_dims: Option<(i32, i32)>,
-  /// ABGR tint for the acrylic blur overlay tracking this session, snapshotted
-  /// from `SessionOptions::acrylic_tint`. See [`blur_overlay_params`].
+  /// Tint/blur-amount/corner-radius/opacity/saturation for the acrylic
+  /// blur overlay tracking this session, snapshotted from
+  /// `SessionOptions::blur_overlay`. See [`blur_overlay_params`].
   ///
   /// [`blur_overlay_params`]: ResizeSession::blur_overlay_params
-  acrylic_tint: Option<u32>,
-  /// Blur radius for the tracking overlay, snapshotted from `SessionOptions`.
-  blur_amount: f32,
-  /// Corner radius for the tracking overlay, snapshotted from `SessionOptions`.
-  corner_radius: f32,
+  blur_overlay: Option<BlurOverlayParams>,
   /// Live logical (border-deflated) on-screen rect for the current frame,
   /// mirroring `WorkspaceSurrogate::current_rect`. `None` while there's
   /// nothing to show (no surrogate, or fully clipped off-screen). Ignored
@@ -251,21 +243,17 @@ impl ResizeSession {
       handoff_done: is_growing,
       session_cloaked: false,
       pending_thumbnail_dims: None,
-      acrylic_tint: options.acrylic_tint,
-      blur_amount: options.blur_amount,
-      corner_radius: options.corner_radius,
+      blur_overlay: options.blur_overlay,
       current_rect: None,
     })
   }
 
-  /// Returns the tint/blur-amount/corner-radius for the acrylic blur-overlay
-  /// tracker in `AnimationManager`, or `None` when blur-behind isn't
-  /// configured for this window.
+  /// Returns the tint/blur-amount/corner-radius/opacity/saturation for the
+  /// acrylic blur-overlay tracker in `AnimationManager`, or `None` when
+  /// blur-behind isn't configured for this window.
   #[must_use]
-  pub fn blur_overlay_params(&self) -> Option<(u32, f32, f32)> {
-    self
-      .acrylic_tint
-      .map(|tint| (tint, self.blur_amount, self.corner_radius))
+  pub fn blur_overlay_params(&self) -> Option<BlurOverlayParams> {
+    self.blur_overlay
   }
 
   /// Live on-screen rect (logical, border-deflated) for the acrylic-overlay
