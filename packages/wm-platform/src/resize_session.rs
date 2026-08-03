@@ -185,25 +185,44 @@ impl ResizeSession {
     let is_move_only = target_rect.width() == source_rect.width()
       && target_rect.height() == source_rect.height();
 
+    let effect_opacity = options.effect_opacity;
+
     // Sample the dominant background color near the trailing content edge
     // to use as the surrogate's solid backdrop. The backdrop fills any gap
     // between the animated rect and the registered thumbnail area (mixed
     // resizes) with a uniform color that blends into the app's own background.
-    // Skipped when the caller supplies a cached color — the sample costs two
-    // GPU→CPU `BitBlt` readbacks, which stack up when a relayout begins many
-    // sessions in the same keypress. Falls back to transparent (no backdrop)
-    // when sampling fails.
-    let edge_color = options.edge_color.or_else(|| {
-      let logical_src = to_logical(source_rect, &border_inset);
-      sample_edge_color(
-        logical_src.x(),
-        logical_src.y(),
-        logical_src.width(),
-        logical_src.height(),
-      )
-    });
-
-    let effect_opacity = options.effect_opacity;
+    //
+    // Skipped entirely when `options.blur_overlay` is `Some`: a live acrylic
+    // overlay is tracked behind this surrogate for the whole session (see
+    // `platform_sync`'s post-flush loop), and `apply_backdrop` paints the
+    // *entire* surrogate window with this color via `ACCENT_ENABLE_GRADIENT`,
+    // not just the gap. A fully opaque sample hides the tracked overlay
+    // outright; blending it at `effect_opacity` (the same ratio
+    // `transparency.opacity` applies everywhere else) was tried and still
+    // read as solid at typical (high) opacity values, since a
+    // mostly-opaque fill still dominates the blend visually. Leaving
+    // `surrogate_color` `None` keeps the surrogate's own background fully
+    // transparent instead (see `NativeSurrogate::create`), so the tracked
+    // overlay's live blur/tint/saturation is what actually shows through the
+    // gap, at the cost of the gap no longer sampling the app's own color.
+    //
+    // Otherwise skipped when the caller supplies a cached color — the sample
+    // costs two GPU→CPU `BitBlt` readbacks, which stack up when a relayout
+    // begins many sessions in the same keypress. Falls back to transparent
+    // (no backdrop) when sampling fails.
+    let edge_color = if options.blur_overlay.is_some() {
+      None
+    } else {
+      options.edge_color.or_else(|| {
+        let logical_src = to_logical(source_rect, &border_inset);
+        sample_edge_color(
+          logical_src.x(),
+          logical_src.y(),
+          logical_src.width(),
+          logical_src.height(),
+        )
+      })
+    };
 
     let insert_after = if options.place_at_top { HWND(0) } else { hwnd };
     // Thumbnail registered at source dims for all directions (see doc

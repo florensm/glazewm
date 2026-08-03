@@ -707,20 +707,15 @@ fn redraw_containers(
       // config at tracking time) since the close animation's direct-drive
       // loop runs after the window is detached from the container tree,
       // where `effect_cfg` can no longer be recomputed.
-      let blur_amount = effect_cfg.backdrop.blur_amount;
       let corner_radius = if effect_cfg.corner_style.enabled {
         effect_cfg.corner_style.style.approx_radius_px()
       } else {
         CornerStyle::Default.approx_radius_px()
       };
-      let blur_overlay =
-        effect_cfg.backdrop.acrylic_tint().map(|tint| BlurOverlayParams {
-          tint,
-          blur_amount,
-          corner_radius,
-          opacity: effect_cfg.backdrop.opacity,
-          saturation: effect_cfg.backdrop.saturation,
-        });
+      let blur_overlay = effect_cfg
+        .backdrop
+        .acrylic_tint()
+        .map(|tint| effect_cfg.backdrop.to_overlay_params(tint, corner_radius));
       (opacity, style, blur_overlay)
     };
 
@@ -1549,8 +1544,6 @@ fn sync_blur_overlays(
       continue;
     };
 
-    let blur_amount = effect_cfg.backdrop.blur_amount;
-
     // Mirrors `corner_style` (falling back to `CornerStyle::Default` when
     // disabled, same as `apply_corner_effect`) so the overlay's rounded
     // clip lines up with the real managed window's own DWM-rendered
@@ -1562,13 +1555,7 @@ fn sync_blur_overlays(
       CornerStyle::Default.approx_radius_px()
     };
 
-    let params = BlurOverlayParams {
-      tint,
-      blur_amount,
-      corner_radius,
-      opacity: effect_cfg.backdrop.opacity,
-      saturation: effect_cfg.backdrop.saturation,
-    };
+    let params = effect_cfg.backdrop.to_overlay_params(tint, corner_radius);
 
     wanted_ids.insert(window.id());
 

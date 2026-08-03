@@ -117,6 +117,57 @@ pub struct DxgiVsyncWaiter {
   pub last_wake: std::sync::Arc<std::sync::Mutex<Option<std::time::Instant>>>,
 }
 
+/// Process-wide cache for the `IDXGIFactory` used by
+/// [`DxgiVsyncWaiter::for_monitor`].
+///
+/// `CreateDXGIFactory` measured at ~11ms on real hardware with an external
+/// monitor attached (vs. ~0.2ms for the actual adapter/output enumeration
+/// that follows it) -- so re-running it on every single move/resize gesture
+/// (`for_monitor` is called fresh per gesture; see its doc comment for why
+/// the returned `IDXGIOutput` itself is deliberately *not* cached across
+/// idle gaps) was a real, measured stutter at the start of every gesture.
+/// The factory itself doesn't have that go-stale-and-hang risk `IDXGIOutput`
+/// does -- `IsCurrent` is the documented, cheap way to check whether a
+/// cached factory is still valid after a display topology change, so it's
+/// safe to reuse across gestures and even across monitors.
+#[cfg(target_os = "windows")]
+static DXGI_FACTORY: std::sync::OnceLock<
+  std::sync::Mutex<Option<windows::Win32::Graphics::Dxgi::IDXGIFactory>>,
+> = std::sync::OnceLock::new();
+
+/// Returns a live `IDXGIFactory`, reusing the cached one when
+/// `IDXGIFactory::IsCurrent` confirms it's still valid, recreating it
+/// otherwise. See [`DXGI_FACTORY`]'s doc comment for why this is cached but
+/// [`DxgiVsyncWaiter`]'s per-monitor `IDXGIOutput` is not.
+#[cfg(target_os = "windows")]
+fn cached_dxgi_factory(
+) -> windows::core::Result<windows::Win32::Graphics::Dxgi::IDXGIFactory> {
+  use windows::core::ComInterface;
+  use windows::Win32::Graphics::Dxgi::CreateDXGIFactory;
+
+  let cell = DXGI_FACTORY.get_or_init(|| std::sync::Mutex::new(None));
+  let mut guard = cell.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+
+  if let Some(factory) = guard.as_ref() {
+    // `IsCurrent` is declared on `IDXGIFactory1`, not the base
+    // `IDXGIFactory` -- every real DXGI factory implements it (available
+    // since Windows 8), so this cast never fails in practice.
+    let is_current = factory
+      .cast::<windows::Win32::Graphics::Dxgi::IDXGIFactory1>()
+      // SAFETY: `factory1` is a live `IDXGIFactory1` kept alive by this cache.
+      .is_ok_and(|factory1| unsafe { factory1.IsCurrent() }.as_bool());
+    if is_current {
+      return Ok(factory.clone());
+    }
+  }
+
+  // SAFETY: No preconditions for `CreateDXGIFactory`.
+  let factory: windows::Win32::Graphics::Dxgi::IDXGIFactory =
+    unsafe { CreateDXGIFactory()? };
+  *guard = Some(factory.clone());
+  Ok(factory)
+}
+
 #[cfg(target_os = "windows")]
 impl DxgiVsyncWaiter {
   /// Returns the `HMONITOR` handle this waiter was created for.
@@ -148,14 +199,10 @@ impl DxgiVsyncWaiter {
   /// DXGI is unavailable or no output matches the given handle.
   pub fn for_monitor(monitor_handle: isize) -> crate::Result<Self> {
     use windows::Win32::{
-      Graphics::{
-        Dxgi::{CreateDXGIFactory, IDXGIFactory, DXGI_OUTPUT_DESC},
-        Gdi::HMONITOR,
-      },
+      Graphics::{Dxgi::DXGI_OUTPUT_DESC, Gdi::HMONITOR},
     };
 
-    // SAFETY: No preconditions for `CreateDXGIFactory`.
-    let factory: IDXGIFactory = unsafe { CreateDXGIFactory()? };
+    let factory = cached_dxgi_factory()?;
 
     let mut ai = 0u32;
     loop {

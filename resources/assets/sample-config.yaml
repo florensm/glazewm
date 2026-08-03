@@ -209,6 +209,10 @@ window_effects:
       # (oversaturated); 1.0 is unchanged. Same Windows.UI.Composition
       # requirement as blur_amount.
       saturation: 1.0
+      # Exposure adjustment of the blurred backdrop, in EV stops (roughly
+      # -2.0 to 2.0); 0.0 is unchanged. Same Windows.UI.Composition
+      # requirement as blur_amount.
+      exposure: 0.0
       # The overlay's own corner radius isn't separately configurable --
       # it always follows corner_style so it matches the real window's
       # rendered corners on top of it.
@@ -232,6 +236,7 @@ window_effects:
       blur_amount: 30.0
       opacity: 1.0
       saturation: 1.0
+      exposure: 0.0
 
 window_behavior:
   # New windows are created in this state whenever possible.

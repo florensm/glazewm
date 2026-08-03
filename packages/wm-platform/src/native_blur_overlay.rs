@@ -177,8 +177,8 @@ fn try_create_composition(
 /// `SetWindowCompositionAttribute` with `ACCENT_ENABLE_ACRYLICBLURBEHIND`
 /// otherwise -- e.g. pre-Windows 10 1803, or if any step of the Composition
 /// setup fails. In the fallback, `blur_amount`/`corner_radius`/`opacity`/
-/// `saturation` become no-ops (the OS gives no such knobs for SWCA
-/// acrylic) but `tint` keeps working the same as before.
+/// `saturation`/`exposure` become no-ops (the OS gives no such knobs for
+/// SWCA acrylic) but `tint` keeps working the same as before.
 ///
 /// # Platform-specific
 ///
@@ -188,9 +188,9 @@ pub struct NativeBlurOverlay {
   /// `Send` even though `HWND` is not.
   hwnd: isize,
 
-  /// Current tint/blur-amount/corner-radius/opacity/saturation. Applied
-  /// via SWCA in the fallback path (tint only), or as the Composition
-  /// pipeline's live properties otherwise.
+  /// Current tint/blur-amount/corner-radius/opacity/saturation/exposure.
+  /// Applied via SWCA in the fallback path (tint only), or as the
+  /// Composition pipeline's live properties otherwise.
   params: BlurOverlayParams,
 
   /// Last rect applied via `set_rect`, used to skip redundant
@@ -407,6 +407,26 @@ impl NativeBlurOverlay {
     }
   }
 
+  /// Updates the exposure (EV stops) of the blurred backdrop; re-applies
+  /// only when the value changes. No-op when running the SWCA fallback (no
+  /// such knob exists).
+  ///
+  /// See `set_blur_amount` for why exact `f32` equality is intentional
+  /// here.
+  #[allow(clippy::float_cmp)]
+  pub fn set_exposure(&mut self, exposure: f32) {
+    if self.params.exposure == exposure {
+      return;
+    }
+    self.params.exposure = exposure;
+
+    if let Some(composition) = &mut self.composition {
+      if let Err(e) = composition.set_exposure(exposure) {
+        tracing::warn!("Blur overlay exposure update failed: {e}.");
+      }
+    }
+  }
+
   /// Applies `params`, re-applying only whichever fields actually changed
   /// (each setter no-ops internally on an unchanged value). Convenience
   /// for the call sites that already have a full `BlurOverlayParams`
@@ -417,6 +437,7 @@ impl NativeBlurOverlay {
     self.set_corner_radius(params.corner_radius);
     self.set_opacity(params.opacity);
     self.set_saturation(params.saturation);
+    self.set_exposure(params.exposure);
   }
 
   /// Hides the overlay without destroying it.

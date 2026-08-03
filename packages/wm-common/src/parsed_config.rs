@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use wm_platform::{
-  BackdropStyle, Color, CornerStyle, Key, Keybinding, LengthValue,
-  OpacityValue, RectDelta,
+  BackdropStyle, BlurOverlayParams, Color, CornerStyle, Key, Keybinding,
+  LengthValue, OpacityValue, RectDelta,
 };
 
 use crate::app_command::InvokeCommand;
@@ -307,6 +307,15 @@ pub struct BackdropEffectConfig {
   /// `blur_amount`.
   pub saturation: f32,
 
+  /// Exposure adjustment of the blurred backdrop, in EV stops (typically
+  /// `-2.0` to `2.0`); `0.0` leaves it unchanged. Values outside that
+  /// range aren't clamped, same as `saturation`.
+  ///
+  /// Ignored for `mica`/`mica_alt` and silently has no effect if the
+  /// `Windows.UI.Composition` rendering pipeline is unavailable, same as
+  /// `blur_amount`.
+  pub exposure: f32,
+
   // The acrylic overlay's own corner radius isn't independently
   // configurable -- it's derived from `corner_style` (see
   // `CornerStyle::approx_radius_px`) so it always matches the real managed
@@ -322,6 +331,7 @@ impl Default for BackdropEffectConfig {
       blur_amount: 30.0,
       opacity: 1.0,
       saturation: 1.0,
+      exposure: 0.0,
     }
   }
 }
@@ -345,6 +355,30 @@ impl BackdropEffectConfig {
         | (u32::from(c.g) << 8)
         | u32::from(c.r)
     }))
+  }
+
+  /// Builds a [`BlurOverlayParams`] from this config, given the
+  /// already-resolved `tint` (see `acrylic_tint`) and `corner_radius`
+  /// (derived from the sibling `corner_style` effect, not stored on this
+  /// struct -- see the trailing comment on this struct's definition).
+  ///
+  /// Consolidates the field list every `BlurOverlayParams` call site would
+  /// otherwise hand-write, so adding a new overlay knob only touches this
+  /// method and the config struct itself, not every call site.
+  #[must_use]
+  pub fn to_overlay_params(
+    &self,
+    tint: u32,
+    corner_radius: f32,
+  ) -> BlurOverlayParams {
+    BlurOverlayParams {
+      tint,
+      blur_amount: self.blur_amount,
+      corner_radius,
+      opacity: self.opacity,
+      saturation: self.saturation,
+      exposure: self.exposure,
+    }
   }
 }
 
@@ -1000,5 +1034,35 @@ where
   #[cfg(not(target_os = "macos"))]
   {
     Ok(method)
+  }
+}
+
+#[cfg(test)]
+mod tests {
+  use super::BackdropEffectConfig;
+
+  /// `to_overlay_params` must map every field through to the resulting
+  /// `BlurOverlayParams` unchanged (plus the two parameters passed in
+  /// separately, since neither is stored on `BackdropEffectConfig`
+  /// itself), since every `BlurOverlayParams` call site now depends on
+  /// this method rather than hand-writing the struct literal.
+  #[test]
+  fn to_overlay_params_maps_all_fields() {
+    let config = BackdropEffectConfig {
+      blur_amount: 42.0,
+      opacity: 0.5,
+      saturation: 1.5,
+      exposure: -1.0,
+      ..BackdropEffectConfig::default()
+    };
+
+    let params = config.to_overlay_params(0xAABB_CCDD, 12.0);
+
+    assert_eq!(params.tint, 0xAABB_CCDD);
+    assert_eq!(params.blur_amount, 42.0);
+    assert_eq!(params.corner_radius, 12.0);
+    assert_eq!(params.opacity, 0.5);
+    assert_eq!(params.saturation, 1.5);
+    assert_eq!(params.exposure, -1.0);
   }
 }

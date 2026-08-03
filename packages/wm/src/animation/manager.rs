@@ -1097,19 +1097,13 @@ impl AnimationManager {
                     &config.value.window_effects.other_windows
                   };
                   if let Some(tint) = effect_cfg.backdrop.acrylic_tint() {
-                    let blur_amount = effect_cfg.backdrop.blur_amount;
                     let corner_radius = if effect_cfg.corner_style.enabled {
                       effect_cfg.corner_style.style.approx_radius_px()
                     } else {
                       CornerStyle::Default.approx_radius_px()
                     };
-                    let params = BlurOverlayParams {
-                      tint,
-                      blur_amount,
-                      corner_radius,
-                      opacity: effect_cfg.backdrop.opacity,
-                      saturation: effect_cfg.backdrop.saturation,
-                    };
+                    let params =
+                      effect_cfg.backdrop.to_overlay_params(tint, corner_radius);
                     upsert_blur_overlay(
                       &mut state.blur_overlays,
                       window_id,
@@ -1348,19 +1342,12 @@ impl AnimationManager {
           continue;
         };
 
-        let blur_amount = effect_cfg.backdrop.blur_amount;
         let corner_radius = if effect_cfg.corner_style.enabled {
           effect_cfg.corner_style.style.approx_radius_px()
         } else {
           CornerStyle::Default.approx_radius_px()
         };
-        let params = BlurOverlayParams {
-          tint,
-          blur_amount,
-          corner_radius,
-          opacity: effect_cfg.backdrop.opacity,
-          saturation: effect_cfg.backdrop.saturation,
-        };
+        let params = effect_cfg.backdrop.to_overlay_params(tint, corner_radius);
 
         match state.blur_overlays.entry(*id) {
           std::collections::hash_map::Entry::Occupied(e) => {
@@ -1430,6 +1417,16 @@ impl AnimationManager {
       // DwmFlush when vsync is unavailable. Workspace-switch/iris clear their
       // own waiter above; this also covers move/resize, which has no
       // dedicated completion hook. Safe here because no animation is active.
+      //
+      // Tried caching the waiter across idle gaps instead (to skip the
+      // DXGI re-enumeration cost on every new gesture) -- reverted: a
+      // `DxgiVsyncWaiter` reused after sitting idle can go stale (e.g. once
+      // display topology settles differently than when it was created) and
+      // `WaitForVBlank` on a stale output can block far longer than a frame
+      // instead of erroring cleanly, stalling the tick thread and starving
+      // animations almost entirely. Not worth the risk -- eagerly clearing
+      // it is what guarantees `ensure_waiter_for` always creates a fresh,
+      // known-good waiter for the monitor actually being animated on.
       #[cfg(target_os = "windows")]
       {
         *state
@@ -1477,8 +1474,9 @@ impl AnimationManager {
     self.predictive_vsync_now().unwrap_or_else(Instant::now)
   }
 
-  /// Installs or upgrades the vsync waiter to the monitor with handle
-  /// `monitor_handle`.
+  /// Installs or switches the vsync waiter to the monitor with handle
+  /// `monitor_handle`, so animation ticks are always paced against whichever
+  /// monitor the animating window is actually on.
   ///
   /// No-op during workspace or iris switch (they own the waiter). Skips DXGI
   /// enumeration when the window is already on the installed monitor.
@@ -1503,24 +1501,32 @@ impl AnimationManager {
       }
     }
 
-    // Upgrade only — never downgrade to a slower refresh rate.
+    // Always switch to the target monitor's waiter here -- the fast path
+    // above already ruled out "no-op, same monitor", so by this point the
+    // animating window is confirmed to be on a *different* monitor than
+    // whatever's currently installed (or nothing is installed yet). A prior
+    // "upgrade only, never downgrade to a slower refresh rate" comparison
+    // used to gate this, intended to avoid needlessly slowing down
+    // in-flight animations -- but it meant that once a fast waiter (e.g. a
+    // laptop's high-refresh internal panel) was installed, later animations
+    // on a genuinely slower monitor (e.g. a fixed-60Hz external display)
+    // kept pacing against the wrong monitor's vblank signal until every
+    // animation fully idled out and the cache reset to `None`, which reads
+    // as stutter/lag specific to that monitor. Pacing must always follow
+    // the monitor actually being animated on, not whichever was fastest
+    // historically.
     match DxgiVsyncWaiter::for_monitor(monitor_handle) {
       Ok(new_waiter) => {
         let mut guard = self
           .animation_timer_vsync
           .lock()
           .unwrap_or_else(|e| e.into_inner());
-        let should_replace = guard
-          .as_ref()
-          .map_or(true, |w| new_waiter.frame_period_us() < w.frame_period_us());
-        if should_replace {
-          tracing::debug!(
-            monitor = monitor_handle,
-            period_us = new_waiter.frame_period_us(),
-            "vsync waiter upgraded"
-          );
-          *guard = Some(new_waiter);
-        }
+        tracing::debug!(
+          monitor = monitor_handle,
+          period_us = new_waiter.frame_period_us(),
+          "vsync waiter switched"
+        );
+        *guard = Some(new_waiter);
       }
       Err(err) => {
         tracing::warn!(?err, "failed to create vsync waiter for monitor");
