@@ -87,6 +87,21 @@ const SESSION_FADE_OUT: Duration = Duration::from_millis(100);
 #[cfg(target_os = "windows")]
 const HANDOFF_LEAD_MAX_MS: u64 = 100;
 
+/// Maximum number of real-window handoffs (`ResizeSession::maybe_handoff`)
+/// performed per redraw pass.
+///
+/// Each handoff issues a synchronous `SetWindowPos` plus a DWM thumbnail
+/// dims update on the WM thread. When a relayout brings many sessions past
+/// their handoff lead on the same tick (e.g. a workspace-wide resize), doing
+/// all of them in one pass can stack up enough synchronous work to stall
+/// that tick. Capping the count spreads the overflow across the next few
+/// ticks (each ~6-16 ms) instead of widening any individual window's lead --
+/// deferred windows retry every tick since `remaining_at` stays ≤ the lead
+/// until they're handed off, so the extra delay is at most a couple of
+/// frames, not a fraction of the animation's duration.
+#[cfg(target_os = "windows")]
+const MAX_HANDOFFS_PER_TICK: usize = 3;
+
 /// How long a sampled surrogate backdrop color stays valid per window.
 ///
 /// Sampling costs two GPU→CPU `BitBlt` readbacks on the WM thread; caching
@@ -1884,6 +1899,10 @@ impl AnimationManager {
   /// same DWM composition frame during multi-window relayouts; sequential
   /// per-surrogate `SetWindowPos` calls can straddle a composition boundary
   /// and let edges visibly desync for a frame.
+  ///
+  /// Real-window handoffs are capped at [`MAX_HANDOFFS_PER_TICK`] per pass;
+  /// see its docs for why. Surrogate position/opacity updates are never
+  /// throttled -- only the real-window handoff is deferred.
   #[cfg(target_os = "windows")]
   pub fn flush_surrogate_updates(&mut self) {
     if self.pending_surrogate_updates.is_empty() {
@@ -1891,12 +1910,14 @@ impl AnimationManager {
     }
 
     let mut batch = SurrogateBatch::new();
+    let mut handoffs_this_tick = 0usize;
     for update in std::mem::take(&mut self.pending_surrogate_updates) {
       if let Some(session) =
         self.resize_sessions.get_mut(&update.window_id)
       {
-        if update.handoff {
+        if update.handoff && handoffs_this_tick < MAX_HANDOFFS_PER_TICK {
           session.maybe_handoff();
+          handoffs_this_tick += 1;
         }
         session.defer_update(&mut batch, &update.rect, update.opacity);
       }
