@@ -269,20 +269,31 @@ fn redraw_containers(
       .unique_by(|window| window.id())
       .collect::<Vec<_>>();
 
-    let descendant_focus_order = state
-      .root_container
-      .descendant_focus_order()
-      .collect::<Vec<_>>();
+    // Sorting a single window is a no-op, and building the focus-order
+    // index below is an O(total windows) tree walk that runs on every
+    // redraw pass while any animation is active -- skip it unless there
+    // is actually more than one window to order relative to each other.
+    if windows.len() > 1 {
+      // Indexed once per pass instead of linearly scanned per window
+      // below: that scan made sorting O(windows_to_update x total
+      // windows), which showed up as input lag during relayouts that
+      // moved several windows on systems with many windows open.
+      let focus_order_index: std::collections::HashMap<uuid::Uuid, usize> =
+        state
+          .root_container
+          .descendant_focus_order()
+          .enumerate()
+          .map(|(i, container)| (container.id(), i))
+          .collect();
 
-    // Sort the windows to update by their focus order. The most recently
-    // focused window will be updated first.
-    // TODO: To reduce flicker, redraw windows that will be shown first,
-    // then redraw the ones to be hidden last.
-    windows.sort_by_key(|window| {
-      descendant_focus_order
-        .iter()
-        .position(|order| order.id() == window.id())
-    });
+      // Sort the windows to update by their focus order. The most recently
+      // focused window will be updated first.
+      // TODO: To reduce flicker, redraw windows that will be shown first,
+      // then redraw the ones to be hidden last.
+      windows.sort_by_key(|window| {
+        focus_order_index.get(&window.id()).copied()
+      });
+    }
 
     windows
   };
