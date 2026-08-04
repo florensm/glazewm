@@ -129,6 +129,14 @@ pub struct ResizeSession {
   ///
   /// [`maybe_handoff`]: ResizeSession::maybe_handoff
   handoff_done: bool,
+  /// Toggled on each `sync_registration` call that reaches the
+  /// `GetWindowRect` poll; the poll only actually runs on alternating
+  /// calls, halving its per-tick syscall cost during the handoff tail. A
+  /// window's actual resize landing one tick later than detected is
+  /// imperceptible, but the syscall itself is real per-session per-tick
+  /// cost that stacks up with concurrent handoffs — worse on high-refresh
+  /// monitors where ticks fire 2-3x as often as at 60 Hz.
+  poll_parity: bool,
   /// `true` once the session has successfully cloaked its source window.
   ///
   /// Used by `platform_sync` to skip the per-tick `DwmGetWindowAttribute`
@@ -260,6 +268,7 @@ impl ResizeSession {
       is_growing,
       zoom: false,
       handoff_done: is_growing,
+      poll_parity: false,
       session_cloaked: false,
       pending_thumbnail_dims: None,
       blur_overlay: options.blur_overlay,
@@ -493,6 +502,13 @@ impl ResizeSession {
       return;
     };
     if surrogate.content_size() == target_dims {
+      return;
+    }
+
+    // Throttle the poll itself to every other tick that reaches this
+    // point -- see the field doc comment on `poll_parity` for why.
+    self.poll_parity = !self.poll_parity;
+    if !self.poll_parity {
       return;
     }
 
