@@ -1,5 +1,8 @@
 use anyhow::Context;
 #[cfg(target_os = "windows")]
+use std::collections::HashSet;
+
+#[cfg(target_os = "windows")]
 use wm_common::WindowEffectConfig;
 use wm_common::{
   CursorJumpTrigger, DisplayState, HideCorner, HideMethod, UniqueExt,
@@ -8,7 +11,7 @@ use wm_common::{
 #[cfg(target_os = "windows")]
 use wm_platform::NativeWindowWindowsExt;
 #[cfg(target_os = "windows")]
-use wm_platform::{CornerStyle, OpacityValue};
+use wm_platform::{CornerStyle, NativeColorInvertOverlay, OpacityValue};
 use wm_platform::{Rect, WindowZOrder};
 
 use crate::{
@@ -73,9 +76,148 @@ pub fn platform_sync(
     }
   }
 
+  #[cfg(target_os = "windows")]
+  sync_color_invert_overlays(state);
+
   state.pending_sync.clear();
 
   Ok(())
+}
+
+/// Repositions/re-stacks `window`'s color invert overlay to `rect`, if it
+/// has one tracked. No-ops if `window` isn't currently tracked in
+/// [`WmState::color_invert_overlays`] (only ever populated by
+/// [`sync_color_invert_overlays`] for windows that actually want the
+/// effect, so presence there is a reliable proxy for wanting it).
+///
+/// Used to keep the overlay glued to `window` during an OS-driven
+/// interactive drag, called from `handle_window_moved_or_resized`'s
+/// active-drag branch -- dragged windows are dequeued from
+/// `platform_sync`'s normal per-tick redraw path entirely (see
+/// `update_drag_state`), so without this the overlay would only catch up
+/// once the drag ends.
+#[cfg(target_os = "windows")]
+pub(crate) fn sync_color_invert_overlay_rect(
+  window: &WindowContainer,
+  rect: &Rect,
+  state: &mut WmState,
+) {
+  if let Some(overlay) = state.color_invert_overlays.get_mut(&window.id()) {
+    overlay.set_rect(rect, &window.native());
+  }
+}
+
+/// Creates, updates, hides, or tears down each window's
+/// [`NativeColorInvertOverlay`], driven by [`WmState::color_invert_windows`]
+/// membership (toggled by the `set-color-invert` command).
+///
+/// Called unconditionally every `platform_sync` tick, mirroring how
+/// `apply_window_effects` above is windows-effects-driven rather than
+/// dirty-flag-driven: overlays need their z-order drift corrected (e.g. an
+/// unrelated window brought to the foreground) even on ticks where the
+/// tracked window itself didn't move, and `sync_z_order` is cheap enough
+/// (same-process `GetWindow` check) to call unconditionally.
+#[cfg(target_os = "windows")]
+fn sync_color_invert_overlays(state: &mut WmState) {
+  let all_windows = state.windows();
+
+  let redrawing_ids: HashSet<_> = state
+    .windows_to_redraw()
+    .iter()
+    .map(CommonGetters::id)
+    .collect();
+
+  let mut wanted_ids = HashSet::new();
+
+  for window in &all_windows {
+    let Some(&hue_rotate_degrees) =
+      state.color_invert_windows.get(&window.id())
+    else {
+      continue;
+    };
+
+    wanted_ids.insert(window.id());
+
+    // Hide (rather than destroy) for windows on inactive workspaces or
+    // minimized windows -- keep the entry alive so it can be re-shown
+    // immediately once the window is displayed/restored again.
+    let should_hide = matches!(window.state(), WindowState::Minimized)
+      || !window.workspace().is_some_and(|ws| ws.is_displayed());
+
+    if should_hide {
+      if let Some(overlay) =
+        state.color_invert_overlays.get_mut(&window.id())
+      {
+        overlay.hide();
+      }
+      continue;
+    }
+
+    let is_redrawing = redrawing_ids.contains(&window.id());
+    let had_overlay = state.color_invert_overlays.contains_key(&window.id());
+    let dispatcher = state.dispatcher.clone();
+
+    match state.color_invert_overlays.entry(window.id()) {
+      std::collections::hash_map::Entry::Occupied(e) => {
+        let overlay = e.into_mut();
+        overlay.set_hue_rotate(hue_rotate_degrees);
+
+        // Always re-query and re-show when the overlay isn't currently
+        // visible, even if this window isn't part of this tick's redraw --
+        // otherwise an overlay hidden on some earlier tick (e.g. while
+        // minimized) stays hidden indefinitely once `should_hide` clears,
+        // unless this exact window happens to be redrawn again for an
+        // unrelated reason.
+        if is_redrawing || !overlay.is_visible() {
+          match window.native().frame() {
+            Ok(rect) => overlay.set_rect(&rect, &window.native()),
+            Err(err) => tracing::debug!(
+              "Color invert overlay frame() query failed for {}: {err}.",
+              window.id()
+            ),
+          }
+        } else if let Err(err) = overlay.sync_z_order(&window.native()) {
+          tracing::debug!(
+            "Color invert overlay z-order sync failed for {}: {err}.",
+            window.id()
+          );
+        }
+      }
+      std::collections::hash_map::Entry::Vacant(e) => {
+        debug_assert!(!had_overlay);
+
+        let Ok(rect) = window.native().frame() else {
+          continue;
+        };
+
+        match NativeColorInvertOverlay::create(
+          &rect,
+          &window.native(),
+          hue_rotate_degrees,
+          &dispatcher,
+        ) {
+          Ok(overlay) => {
+            tracing::debug!(
+              "Color invert overlay created for {}.",
+              window.id()
+            );
+            e.insert(overlay);
+          }
+          Err(err) => tracing::debug!(
+            "Color invert overlay creation failed for {}: {err}.",
+            window.id()
+          ),
+        }
+      }
+    }
+  }
+
+  // Destroy overlays for windows that no longer want the effect or are no
+  // longer managed (window closed/unmanaged simply drops out of
+  // `all_windows`, so it drops out of `wanted_ids` too).
+  state
+    .color_invert_overlays
+    .retain(|id, _| wanted_ids.contains(id));
 }
 
 fn sync_focus(

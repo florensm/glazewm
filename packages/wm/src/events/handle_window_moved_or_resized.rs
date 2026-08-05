@@ -9,6 +9,8 @@ use wm_platform::NativeWindowWindowsExt;
 use wm_platform::{LengthValue, MouseButton, RectDelta};
 use wm_platform::{NativeWindow, Rect};
 
+#[cfg(target_os = "windows")]
+use crate::commands::general::sync_color_invert_overlay_rect;
 use crate::{
   commands::{
     container::{flatten_split_container, move_container_within_tree},
@@ -42,6 +44,15 @@ pub fn handle_window_moved_or_resized(
     window.update_native_properties(|properties| {
       properties.frame = frame_position.clone();
     });
+
+    // Keep a tracked color invert overlay glued to the window on every
+    // move/resize event, not just WM-driven ones or interactive drags --
+    // `frame_position` is fresh here regardless of cause, and windows that
+    // reposition/resize *themselves* (e.g. a WPF app's own layout pass)
+    // never get queued into `containers_to_redraw`, so `platform_sync`'s
+    // per-tick sync alone would never catch them.
+    #[cfg(target_os = "windows")]
+    sync_color_invert_overlay_rect(&window, &frame_position, state);
 
     // Handle windows that are actively being dragged.
     if !state.is_paused && window.active_drag().is_some() {

@@ -10,6 +10,8 @@ mod event_loop;
 mod keybinding_listener;
 mod models;
 mod mouse_listener;
+#[cfg(target_os = "windows")]
+mod native_color_invert_overlay;
 mod native_window;
 mod platform_event;
 mod platform_impl;
@@ -28,6 +30,10 @@ pub use event_loop::*;
 pub use keybinding_listener::*;
 pub use models::*;
 pub use mouse_listener::*;
+#[cfg(target_os = "windows")]
+pub use native_color_invert_overlay::{
+  NativeColorInvertOverlay, DEFAULT_HUE_ROTATE_DEGREES,
+};
 pub use native_window::*;
 pub use platform_event::*;
 pub use single_instance::*;

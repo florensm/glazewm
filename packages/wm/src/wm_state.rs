@@ -1,4 +1,6 @@
 use std::time::Instant;
+#[cfg(target_os = "windows")]
+use std::collections::HashMap;
 
 use anyhow::Context;
 use tokio::sync::mpsc::{self};
@@ -9,7 +11,9 @@ use wm_platform::{
   Direction, Dispatcher, Display, NativeWindow, Point, Rect,
 };
 #[cfg(target_os = "windows")]
-use wm_platform::{NativeWindowWindowsExt, OpacityValue};
+use wm_platform::{
+  NativeColorInvertOverlay, NativeWindowWindowsExt, OpacityValue,
+};
 
 use crate::{
   commands::{
@@ -61,6 +65,24 @@ pub struct WmState {
   /// `ignore` command.
   pub ignored_windows: Vec<NativeWindow>,
 
+  /// Windows that should have the `color_invert` effect applied, mapped to
+  /// the hue-rotation angle (in degrees) requested for each -- toggled/set
+  /// via the `set-color-invert` command's `enabled`/`hue-rotate` flags.
+  /// Read by `sync_color_invert_overlays` to decide which windows in
+  /// [`color_invert_overlays`] to create, update, or tear down.
+  ///
+  /// [`color_invert_overlays`]: WmState::color_invert_overlays
+  #[cfg(target_os = "windows")]
+  pub color_invert_windows: HashMap<Uuid, f32>,
+
+  /// Live color invert overlay per window, keyed by window ID. Entries are
+  /// created/updated/torn down by `sync_color_invert_overlays` based on
+  /// [`color_invert_windows`] membership.
+  ///
+  /// [`color_invert_windows`]: WmState::color_invert_windows
+  #[cfg(target_os = "windows")]
+  pub color_invert_overlays: HashMap<Uuid, NativeColorInvertOverlay>,
+
   /// Whether the WM is paused.
   pub is_paused: bool,
 
@@ -92,6 +114,10 @@ impl WmState {
       unmanaged_or_minimized_timestamp: None,
       binding_modes: Vec::new(),
       ignored_windows: Vec::new(),
+      #[cfg(target_os = "windows")]
+      color_invert_windows: HashMap::new(),
+      #[cfg(target_os = "windows")]
+      color_invert_overlays: HashMap::new(),
       is_paused: false,
       is_focus_synced: false,
       has_initialized: false,
@@ -191,6 +217,30 @@ impl WmState {
       .descendants()
       .filter_map(|container| container.try_into().ok())
       .collect()
+  }
+
+  /// Whether any window currently wants the color invert effect.
+  ///
+  /// Used to force a `platform_sync` pass even when nothing else marked
+  /// `pending_sync` dirty -- an active overlay's z-order can drift purely
+  /// from an unrelated window changing z-order (e.g. some other app's
+  /// popup showing), which doesn't necessarily dirty `pending_sync` on its
+  /// own, so without this the overlay's z-order could go uncorrected
+  /// until some other change happens to trigger a sync.
+  ///
+  /// # Platform-specific
+  ///
+  /// Always `false` on macOS (color invert is Windows-only).
+  #[must_use]
+  pub fn has_color_invert_windows(&self) -> bool {
+    #[cfg(target_os = "windows")]
+    {
+      !self.color_invert_windows.is_empty()
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+      false
+    }
   }
 
   /// Gets the monitor that encompasses the largest portion of a given

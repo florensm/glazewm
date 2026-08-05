@@ -173,6 +173,21 @@ pub enum InvokeCommand {
     #[clap(flatten)]
     new_config: InvokeUpdateWorkspaceConfig,
   },
+  SetColorInvert {
+    #[clap(long, default_missing_value = "true", require_equals = true, num_args = 0..=1)]
+    enabled: Option<bool>,
+
+    /// Hue-rotation angle in degrees, composed with the invert.
+    ///
+    /// The same 180-degree default that keeps colors like blue
+    /// recognizable is also what pushes skin tones/photos toward orange --
+    /// there's no independent knob for that (see
+    /// `wm_platform::invert_hue_rotate_matrix`'s doc comment). Tune this
+    /// per-app if the default trade-off doesn't work well for a given
+    /// window.
+    #[clap(long, allow_hyphen_values = true)]
+    hue_rotate: Option<f32>,
+  },
   SetFloating {
     #[clap(long, default_missing_value = "true", require_equals = true, num_args = 0..=1)]
     shown_on_top: Option<bool>,

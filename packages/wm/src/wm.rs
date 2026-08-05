@@ -9,7 +9,7 @@ use wm_common::{
   WmEvent,
 };
 #[cfg(target_os = "windows")]
-use wm_platform::NativeWindowWindowsExt;
+use wm_platform::{NativeWindowWindowsExt, DEFAULT_HUE_ROTATE_DEGREES};
 use wm_platform::{
   Dispatcher, LengthValue, PlatformEvent, RectDelta, WindowEvent,
 };
@@ -144,7 +144,10 @@ impl WindowManager {
       },
     }?;
 
-    if !state.is_paused && state.pending_sync.has_changes() {
+    if !state.is_paused
+      && (state.pending_sync.has_changes()
+        || state.has_color_invert_windows())
+    {
       platform_sync(state, config)?;
     }
 
@@ -176,7 +179,8 @@ impl WindowManager {
       config,
     )?;
 
-    if state.pending_sync.has_changes() {
+    if state.pending_sync.has_changes() || state.has_color_invert_windows()
+    {
       platform_sync(state, config)?;
     }
 
@@ -488,6 +492,28 @@ impl WindowManager {
             args.height.clone(),
             state,
           ),
+          _ => Ok(()),
+        }
+      }
+      // LINT: `enabled`/`hue_rotate` are only used on Windows.
+      #[cfg_attr(not(target_os = "windows"), allow(unused_variables))]
+      InvokeCommand::SetColorInvert {
+        enabled,
+        hue_rotate,
+      } => {
+        match subject_container.as_window_container() {
+          #[cfg(target_os = "windows")]
+          Ok(window) => {
+            if enabled.unwrap_or(true) {
+              state.color_invert_windows.insert(
+                window.id(),
+                hue_rotate.unwrap_or(DEFAULT_HUE_ROTATE_DEGREES),
+              );
+            } else {
+              state.color_invert_windows.remove(&window.id());
+            }
+            Ok(())
+          }
           _ => Ok(()),
         }
       }
