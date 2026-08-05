@@ -71,53 +71,86 @@ use crate::{BlurOverlayParams, Rect};
 const CLSID_D2D1_GAUSSIAN_BLUR: GUID =
   GUID::from_u128(0x1feb_6d69_2fe6_4ac9_8c58_1d7f_93e7_a6a5);
 
-/// D2D1 Gaussian-blur effect property indices. `CreateEffectFactory`
-/// validates the effect description against D2D1's registered schema for
-/// this built-in effect and fails with `E_INVALIDARG` unless all three are
-/// present, even though only `STANDARD_DEVIATION` is runtime-adjustable
-/// here (see `GetNamedPropertyMapping`).
-const PROP_STANDARD_DEVIATION: u32 = 0;
-const PROP_OPTIMIZATION: u32 = 1;
-const PROP_BORDER_MODE: u32 = 2;
-
 /// `D2D1_GAUSSIANBLUR_OPTIMIZATION_BALANCED`.
 const D2D1_GAUSSIANBLUR_OPTIMIZATION_BALANCED: u32 = 1;
 /// `D2D1_BORDER_MODE_SOFT`.
 const D2D1_BORDER_MODE_SOFT: u32 = 0;
 
-/// Hand-implemented D2D1 Gaussian-blur effect description.
+/// `CLSID_D2D1Saturation`, the built-in D2D1 saturation-adjustment effect.
+/// Value matches `windows::Win32::Graphics::Direct2D::CLSID_D2D1Saturation`
+/// (re-declared as a local `const` so it sits next to
+/// `CLSID_D2D1_GAUSSIAN_BLUR` and follows this module's naming convention).
+const CLSID_D2D1_SATURATION: GUID =
+  GUID::from_u128(0x5cb2_d9cf_327d_459f_a0ce_40c0_b208_6bf7);
+
+/// `CLSID_D2D1Exposure`, the built-in D2D1 exposure-adjustment effect.
+/// Value matches `windows::Win32::Graphics::Direct2D::CLSID_D2D1Exposure`
+/// (re-declared as a local `const`, same as `CLSID_D2D1_SATURATION`).
+const CLSID_D2D1_EXPOSURE: GUID =
+  GUID::from_u128(0xb56c_8cfa_f634_41ee_bee0_ffa6_1710_6004);
+
+/// Hand-implemented D2D1 effect description with exactly one
+/// runtime-adjustable scalar property (at index 0), plus any additional
+/// fixed (non-adjustable) properties a given effect's D2D1 schema requires
+/// but this code never tunes.
 ///
 /// `Compositor::CreateEffectFactory` takes an `IGraphicsEffect` describing
-/// an effect graph. `Win2D`'s `GaussianBlurEffect` convenience type
-/// requires the `Win2D` winmd, which `windows-rs`'s metadata-driven binding
-/// generator cannot consume -- so this hand-implements the
-/// `IGraphicsEffectD2D1Interop` COM shape directly against the D2D1
-/// built-in Gaussian-blur effect, the same approach Microsoft's own
-/// `Windows.UI.Composition-Win32-Samples` uses in C++.
+/// an effect graph. `Win2D`'s convenience effect types (`GaussianBlurEffect`,
+/// etc.) require the `Win2D` winmd, which `windows-rs`'s metadata-driven
+/// binding generator cannot consume -- so this hand-implements the
+/// `IGraphicsEffectD2D1Interop` COM shape directly against D2D1's built-in
+/// effects, the same approach Microsoft's own
+/// `Windows.UI.Composition-Win32-Samples` uses in C++. One instance of this
+/// type is used per built-in effect ([`CLSID_D2D1_GAUSSIAN_BLUR`],
+/// [`CLSID_D2D1_SATURATION`], [`CLSID_D2D1_EXPOSURE`]) chained in
+/// `build_effect_brush`.
 #[implement(IGraphicsEffect, IGraphicsEffectSource, IGraphicsEffectD2D1Interop)]
-struct GaussianBlurEffect {
+struct D2d1ScalarEffect {
+  effect_id: GUID,
   source: IGraphicsEffectSource,
-  /// Initial blur std-deviation baked into the effect graph at factory
-  /// creation. Runtime adjustment after that happens via the resulting
-  /// brush's `Properties().InsertScalar("Blur.BlurAmount", ..)`, not this
-  /// field -- see `GetNamedPropertyMapping`.
-  initial_amount: f32,
+  /// Name of the single runtime-adjustable scalar property, matched
+  /// against the dotted/bare property name in `GetNamedPropertyMapping`
+  /// (see its doc comment for why both forms are checked).
+  property_name: &'static str,
+  /// Initial value baked into the effect graph at factory creation.
+  /// Runtime adjustment rebuilds the whole brush rather than mutating this
+  /// in place -- see `BlurVisual::set_blur_amount`'s doc comment for why.
+  initial_value: f32,
+  /// Additional fixed `u32` properties required by the effect's D2D1
+  /// schema, in index order starting at index 1 (index 0 is always
+  /// `initial_value`). Empty for saturation/exposure; Gaussian blur needs
+  /// `[D2D1_GAUSSIANBLUR_OPTIMIZATION_BALANCED, D2D1_BORDER_MODE_SOFT]` --
+  /// `CreateEffectFactory` validates the description against D2D1's
+  /// registered schema for the effect and fails with `E_INVALIDARG` unless
+  /// all of them are present, even though only the scalar is
+  /// runtime-adjustable here.
+  extra_properties: &'static [u32],
   name: RefCell<HSTRING>,
 }
 
-impl GaussianBlurEffect {
-  fn new(source: IGraphicsEffectSource, initial_amount: f32) -> Self {
+impl D2d1ScalarEffect {
+  fn new(
+    effect_id: GUID,
+    effect_name: &str,
+    source: IGraphicsEffectSource,
+    property_name: &'static str,
+    initial_value: f32,
+    extra_properties: &'static [u32],
+  ) -> Self {
     Self {
+      effect_id,
       source,
-      initial_amount,
-      name: RefCell::new(HSTRING::from("Blur")),
+      property_name,
+      initial_value,
+      extra_properties,
+      name: RefCell::new(HSTRING::from(effect_name)),
     }
   }
 }
 
-impl IGraphicsEffectSource_Impl for GaussianBlurEffect {}
+impl IGraphicsEffectSource_Impl for D2d1ScalarEffect {}
 
-impl IGraphicsEffect_Impl for GaussianBlurEffect {
+impl IGraphicsEffect_Impl for D2d1ScalarEffect {
   fn Name(&self) -> windows::core::Result<HSTRING> {
     Ok(self.name.borrow().clone())
   }
@@ -128,9 +161,9 @@ impl IGraphicsEffect_Impl for GaussianBlurEffect {
   }
 }
 
-impl IGraphicsEffectD2D1Interop_Impl for GaussianBlurEffect {
+impl IGraphicsEffectD2D1Interop_Impl for D2d1ScalarEffect {
   fn GetEffectId(&self) -> windows::core::Result<GUID> {
-    Ok(CLSID_D2D1_GAUSSIAN_BLUR)
+    Ok(self.effect_id)
   }
 
   fn GetNamedPropertyMapping(
@@ -144,18 +177,18 @@ impl IGraphicsEffectD2D1Interop_Impl for GaussianBlurEffect {
     let name = unsafe { name.to_string() }.unwrap_or_default();
 
     // Observed empirically (not documented): the composition engine calls
-    // this with the *dotted* `"Blur.BlurAmount"` path -- `Blur` being this
-    // effect's `Name` -- not the bare property name alone. Match on the
-    // segment after the last `.` so this works regardless of which
-    // convention is actually in play (both dotted and bare names have been
-    // seen recommended in different Microsoft samples).
+    // this with the *dotted* `"<Name>.<property>"` path, not the bare
+    // property name alone. Match on the segment after the last `.` so this
+    // works regardless of which convention is actually in play (both
+    // dotted and bare names have been seen recommended in different
+    // Microsoft samples).
     let property_name = name.rsplit('.').next().unwrap_or(&name);
 
-    if property_name == "BlurAmount" {
+    if property_name == self.property_name {
       // SAFETY: `index`/`mapping` are valid out-parameters supplied by the
       // composition engine for this call.
       unsafe {
-        *index = PROP_STANDARD_DEVIATION;
+        *index = 0;
         *mapping = GRAPHICS_EFFECT_PROPERTY_MAPPING_DIRECT;
       }
       Ok(())
@@ -165,247 +198,21 @@ impl IGraphicsEffectD2D1Interop_Impl for GaussianBlurEffect {
   }
 
   fn GetPropertyCount(&self) -> windows::core::Result<u32> {
-    Ok(3)
+    #[allow(clippy::cast_possible_truncation)]
+    Ok(1 + self.extra_properties.len() as u32)
   }
 
   fn GetProperty(
     &self,
     index: u32,
   ) -> windows::core::Result<windows::Foundation::IPropertyValue> {
-    match index {
-      PROP_STANDARD_DEVIATION => {
-        PropertyValue::CreateSingle(self.initial_amount)?.cast()
-      }
-      PROP_OPTIMIZATION => {
-        PropertyValue::CreateUInt32(D2D1_GAUSSIANBLUR_OPTIMIZATION_BALANCED)?
-          .cast()
-      }
-      PROP_BORDER_MODE => {
-        PropertyValue::CreateUInt32(D2D1_BORDER_MODE_SOFT)?.cast()
-      }
-      _ => Err(windows::core::Error::from(E_INVALIDARG)),
-    }
-  }
-
-  fn GetSource(
-    &self,
-    index: u32,
-  ) -> windows::core::Result<IGraphicsEffectSource> {
     if index == 0 {
-      Ok(self.source.clone())
-    } else {
-      Err(windows::core::Error::from(E_INVALIDARG))
+      return PropertyValue::CreateSingle(self.initial_value)?.cast();
     }
-  }
 
-  fn GetSourceCount(&self) -> windows::core::Result<u32> {
-    Ok(1)
-  }
-}
-
-/// `CLSID_D2D1Saturation`, the built-in D2D1 saturation-adjustment effect.
-/// Value matches `windows::Win32::Graphics::Direct2D::CLSID_D2D1Saturation`
-/// (re-declared as a local `const` so it sits next to
-/// `CLSID_D2D1_GAUSSIAN_BLUR` and follows this module's naming convention).
-const CLSID_D2D1_SATURATION: GUID =
-  GUID::from_u128(0x5cb2_d9cf_327d_459f_a0ce_40c0_b208_6bf7);
-
-/// D2D1 saturation effect's one property index
-/// (`D2D1_SATURATION_PROP_SATURATION`).
-const PROP_SATURATION: u32 = 0;
-
-/// Hand-implemented D2D1 saturation effect description, chained after
-/// [`GaussianBlurEffect`] in the same effect graph -- see
-/// `build_effect_brush`. Mirrors `GaussianBlurEffect`'s shape; the only
-/// structural difference is `source` here is the blur effect's own
-/// `IGraphicsEffectSource` (an internal graph edge via `GetSource`), not a
-/// `CompositionEffectSourceParameter` (an external named binding) -- only
-/// the innermost node needs a named parameter for `SetSourceParameter` to
-/// bind the live host-backdrop brush to.
-#[implement(IGraphicsEffect, IGraphicsEffectSource, IGraphicsEffectD2D1Interop)]
-struct SaturationEffect {
-  source: IGraphicsEffectSource,
-  /// Initial saturation baked into the effect graph at factory creation.
-  /// Like `GaussianBlurEffect::initial_amount`, runtime adjustment
-  /// rebuilds the whole brush rather than mutating this in place -- see
-  /// `BlurVisual::set_saturation`.
-  initial_saturation: f32,
-  name: RefCell<HSTRING>,
-}
-
-impl SaturationEffect {
-  fn new(source: IGraphicsEffectSource, initial_saturation: f32) -> Self {
-    Self {
-      source,
-      initial_saturation,
-      name: RefCell::new(HSTRING::from("Saturation")),
-    }
-  }
-}
-
-impl IGraphicsEffectSource_Impl for SaturationEffect {}
-
-impl IGraphicsEffect_Impl for SaturationEffect {
-  fn Name(&self) -> windows::core::Result<HSTRING> {
-    Ok(self.name.borrow().clone())
-  }
-
-  fn SetName(&self, name: &HSTRING) -> windows::core::Result<()> {
-    *self.name.borrow_mut() = name.clone();
-    Ok(())
-  }
-}
-
-impl IGraphicsEffectD2D1Interop_Impl for SaturationEffect {
-  fn GetEffectId(&self) -> windows::core::Result<GUID> {
-    Ok(CLSID_D2D1_SATURATION)
-  }
-
-  fn GetNamedPropertyMapping(
-    &self,
-    name: &PCWSTR,
-    index: *mut u32,
-    mapping: *mut GRAPHICS_EFFECT_PROPERTY_MAPPING,
-  ) -> windows::core::Result<()> {
-    // SAFETY: `name` is a valid, null-terminated wide string for the
-    // duration of this call, per the WinRT effect-description contract.
-    let name = unsafe { name.to_string() }.unwrap_or_default();
-    let property_name = name.rsplit('.').next().unwrap_or(&name);
-
-    if property_name == "Saturation" {
-      // SAFETY: `index`/`mapping` are valid out-parameters supplied by the
-      // composition engine for this call.
-      unsafe {
-        *index = PROP_SATURATION;
-        *mapping = GRAPHICS_EFFECT_PROPERTY_MAPPING_DIRECT;
-      }
-      Ok(())
-    } else {
-      Err(windows::core::Error::from(E_INVALIDARG))
-    }
-  }
-
-  fn GetPropertyCount(&self) -> windows::core::Result<u32> {
-    Ok(1)
-  }
-
-  fn GetProperty(
-    &self,
-    index: u32,
-  ) -> windows::core::Result<windows::Foundation::IPropertyValue> {
-    match index {
-      PROP_SATURATION => {
-        PropertyValue::CreateSingle(self.initial_saturation)?.cast()
-      }
-      _ => Err(windows::core::Error::from(E_INVALIDARG)),
-    }
-  }
-
-  fn GetSource(
-    &self,
-    index: u32,
-  ) -> windows::core::Result<IGraphicsEffectSource> {
-    if index == 0 {
-      Ok(self.source.clone())
-    } else {
-      Err(windows::core::Error::from(E_INVALIDARG))
-    }
-  }
-
-  fn GetSourceCount(&self) -> windows::core::Result<u32> {
-    Ok(1)
-  }
-}
-
-/// `CLSID_D2D1Exposure`, the built-in D2D1 exposure-adjustment effect.
-/// Value matches `windows::Win32::Graphics::Direct2D::CLSID_D2D1Exposure`
-/// (re-declared as a local `const`, same as `CLSID_D2D1_SATURATION`).
-const CLSID_D2D1_EXPOSURE: GUID =
-  GUID::from_u128(0xb56c_8cfa_f634_41ee_bee0_ffa6_1710_6004);
-
-/// D2D1 exposure effect's one property index
-/// (`D2D1_EXPOSURE_PROP_EXPOSURE_VALUE`).
-const PROP_EXPOSURE_VALUE: u32 = 0;
-
-/// Hand-implemented D2D1 exposure effect description, chained after
-/// [`SaturationEffect`] in the same effect graph -- see `build_effect_brush`.
-/// Mirrors `SaturationEffect`'s shape exactly (single scalar property, in
-/// EV stops).
-#[implement(IGraphicsEffect, IGraphicsEffectSource, IGraphicsEffectD2D1Interop)]
-struct ExposureEffect {
-  source: IGraphicsEffectSource,
-  /// Initial exposure (EV stops) baked into the effect graph at factory
-  /// creation. Runtime adjustment rebuilds the whole brush -- see
-  /// `BlurVisual::set_exposure`.
-  initial_exposure: f32,
-  name: RefCell<HSTRING>,
-}
-
-impl ExposureEffect {
-  fn new(source: IGraphicsEffectSource, initial_exposure: f32) -> Self {
-    Self {
-      source,
-      initial_exposure,
-      name: RefCell::new(HSTRING::from("Exposure")),
-    }
-  }
-}
-
-impl IGraphicsEffectSource_Impl for ExposureEffect {}
-
-impl IGraphicsEffect_Impl for ExposureEffect {
-  fn Name(&self) -> windows::core::Result<HSTRING> {
-    Ok(self.name.borrow().clone())
-  }
-
-  fn SetName(&self, name: &HSTRING) -> windows::core::Result<()> {
-    *self.name.borrow_mut() = name.clone();
-    Ok(())
-  }
-}
-
-impl IGraphicsEffectD2D1Interop_Impl for ExposureEffect {
-  fn GetEffectId(&self) -> windows::core::Result<GUID> {
-    Ok(CLSID_D2D1_EXPOSURE)
-  }
-
-  fn GetNamedPropertyMapping(
-    &self,
-    name: &PCWSTR,
-    index: *mut u32,
-    mapping: *mut GRAPHICS_EFFECT_PROPERTY_MAPPING,
-  ) -> windows::core::Result<()> {
-    // SAFETY: `name` is a valid, null-terminated wide string for the
-    // duration of this call, per the WinRT effect-description contract.
-    let name = unsafe { name.to_string() }.unwrap_or_default();
-    let property_name = name.rsplit('.').next().unwrap_or(&name);
-
-    if property_name == "ExposureValue" {
-      // SAFETY: `index`/`mapping` are valid out-parameters supplied by the
-      // composition engine for this call.
-      unsafe {
-        *index = PROP_EXPOSURE_VALUE;
-        *mapping = GRAPHICS_EFFECT_PROPERTY_MAPPING_DIRECT;
-      }
-      Ok(())
-    } else {
-      Err(windows::core::Error::from(E_INVALIDARG))
-    }
-  }
-
-  fn GetPropertyCount(&self) -> windows::core::Result<u32> {
-    Ok(1)
-  }
-
-  fn GetProperty(
-    &self,
-    index: u32,
-  ) -> windows::core::Result<windows::Foundation::IPropertyValue> {
-    match index {
-      PROP_EXPOSURE_VALUE => {
-        PropertyValue::CreateSingle(self.initial_exposure)?.cast()
-      }
-      _ => Err(windows::core::Error::from(E_INVALIDARG)),
+    match self.extra_properties.get((index - 1) as usize) {
+      Some(&value) => PropertyValue::CreateUInt32(value)?.cast(),
+      None => Err(windows::core::Error::from(E_INVALIDARG)),
     }
   }
 
@@ -732,12 +539,33 @@ fn build_effect_brush(
 ) -> windows::core::Result<CompositionEffectBrush> {
   let source_param =
     CompositionEffectSourceParameter::Create(&HSTRING::from("Source"))?;
-  let blur_effect: IGraphicsEffectSource =
-    GaussianBlurEffect::new(source_param.cast()?, blur_amount).into();
-  let saturation_effect: IGraphicsEffectSource =
-    SaturationEffect::new(blur_effect, saturation).into();
-  let exposure_effect: IGraphicsEffect =
-    ExposureEffect::new(saturation_effect, exposure).into();
+  let blur_effect: IGraphicsEffectSource = D2d1ScalarEffect::new(
+    CLSID_D2D1_GAUSSIAN_BLUR,
+    "Blur",
+    source_param.cast()?,
+    "BlurAmount",
+    blur_amount,
+    &[D2D1_GAUSSIANBLUR_OPTIMIZATION_BALANCED, D2D1_BORDER_MODE_SOFT],
+  )
+  .into();
+  let saturation_effect: IGraphicsEffectSource = D2d1ScalarEffect::new(
+    CLSID_D2D1_SATURATION,
+    "Saturation",
+    blur_effect,
+    "Saturation",
+    saturation,
+    &[],
+  )
+  .into();
+  let exposure_effect: IGraphicsEffect = D2d1ScalarEffect::new(
+    CLSID_D2D1_EXPOSURE,
+    "Exposure",
+    saturation_effect,
+    "ExposureValue",
+    exposure,
+    &[],
+  )
+  .into();
   let effect_factory = compositor.CreateEffectFactory(&exposure_effect)?;
   let effect_brush = effect_factory.CreateBrush()?;
   effect_brush.SetSourceParameter(&HSTRING::from("Source"), host_backdrop)?;

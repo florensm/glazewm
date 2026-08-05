@@ -214,6 +214,39 @@ pub struct NativeBlurOverlay {
   composition: Option<BlurVisual>,
 }
 
+/// Generates a `NativeBlurOverlay` setter for a single `f32` knob shared
+/// with the `BlurVisual` composition pipeline: no-ops when `value` matches
+/// the last-applied `params.$field`, otherwise stores it and forwards to
+/// the matching `BlurVisual` setter (a no-op in the SWCA fallback, since
+/// `composition` is `None` there).
+///
+/// Not used for `set_tint`, which also has to re-apply via SWCA directly
+/// in the fallback case (`tint` is the only knob SWCA supports).
+macro_rules! blur_overlay_setter {
+  (
+    $(#[$doc:meta])*
+    $setter:ident, $field:ident
+  ) => {
+    $(#[$doc])*
+    #[allow(clippy::float_cmp)]
+    pub fn $setter(&mut self, value: f32) {
+      if self.params.$field == value {
+        return;
+      }
+      self.params.$field = value;
+
+      if let Some(composition) = &mut self.composition {
+        if let Err(e) = composition.$setter(value) {
+          tracing::warn!(
+            concat!("Blur overlay ", stringify!($field), " update failed: {e}."),
+            e = e
+          );
+        }
+      }
+    }
+  };
+}
+
 impl NativeBlurOverlay {
   /// Creates a new blur overlay sized and positioned to `rect`, with the
   /// given `params` (blur amount, corner radius, opacity, and saturation
@@ -327,105 +360,56 @@ impl NativeBlurOverlay {
     }
   }
 
-  /// Updates the blur radius/intensity; re-applies only when the value
-  /// changes. No-op when running the SWCA fallback (no such knob exists).
-  ///
-  /// Compares the raw `f32` for exact equality, same as `set_tint`'s ABGR
-  /// comparison -- the value only ever changes when a caller passes a
-  /// genuinely different, config-resolved number, not through any
-  /// arithmetic that could introduce drift.
-  #[allow(clippy::float_cmp)]
-  pub fn set_blur_amount(&mut self, blur_amount: f32) {
-    if self.params.blur_amount == blur_amount {
-      return;
-    }
-    self.params.blur_amount = blur_amount;
+  blur_overlay_setter!(
+    /// Updates the blur radius/intensity; re-applies only when the value
+    /// changes. No-op when running the SWCA fallback (no such knob exists).
+    ///
+    /// Compares the raw `f32` for exact equality, same as `set_tint`'s ABGR
+    /// comparison -- the value only ever changes when a caller passes a
+    /// genuinely different, config-resolved number, not through any
+    /// arithmetic that could introduce drift.
+    set_blur_amount, blur_amount
+  );
 
-    if let Some(composition) = &mut self.composition {
-      if let Err(e) = composition.set_blur_amount(blur_amount) {
-        tracing::warn!("Blur overlay blur-amount update failed: {e}.");
-      }
-    }
-  }
+  blur_overlay_setter!(
+    /// Updates the corner radius, in pixels; re-applies only when the
+    /// value changes. No-op when running the SWCA fallback (no such knob
+    /// exists).
+    ///
+    /// See `set_blur_amount` for why exact `f32` equality is intentional
+    /// here.
+    set_corner_radius, corner_radius
+  );
 
-  /// Updates the corner radius, in pixels; re-applies only when the value
-  /// changes. No-op when running the SWCA fallback (no such knob exists).
-  ///
-  /// See `set_blur_amount` for why exact `f32` equality is intentional
-  /// here.
-  #[allow(clippy::float_cmp)]
-  pub fn set_corner_radius(&mut self, corner_radius: f32) {
-    if self.params.corner_radius == corner_radius {
-      return;
-    }
-    self.params.corner_radius = corner_radius;
+  blur_overlay_setter!(
+    /// Updates the overlay's own opacity (blur + tint together, as one
+    /// unit); re-applies only when the value changes. No-op when running
+    /// the SWCA fallback (no such knob exists).
+    ///
+    /// See `set_blur_amount` for why exact `f32` equality is intentional
+    /// here.
+    set_opacity, opacity
+  );
 
-    if let Some(composition) = &self.composition {
-      if let Err(e) = composition.set_corner_radius(corner_radius) {
-        tracing::warn!("Blur overlay corner-radius update failed: {e}.");
-      }
-    }
-  }
+  blur_overlay_setter!(
+    /// Updates the saturation of the blurred backdrop; re-applies only
+    /// when the value changes. No-op when running the SWCA fallback (no
+    /// such knob exists).
+    ///
+    /// See `set_blur_amount` for why exact `f32` equality is intentional
+    /// here.
+    set_saturation, saturation
+  );
 
-  /// Updates the overlay's own opacity (blur + tint together, as one
-  /// unit); re-applies only when the value changes. No-op when running
-  /// the SWCA fallback (no such knob exists).
-  ///
-  /// See `set_blur_amount` for why exact `f32` equality is intentional
-  /// here.
-  #[allow(clippy::float_cmp)]
-  pub fn set_opacity(&mut self, opacity: f32) {
-    if self.params.opacity == opacity {
-      return;
-    }
-    self.params.opacity = opacity;
-
-    if let Some(composition) = &self.composition {
-      if let Err(e) = composition.set_opacity(opacity) {
-        tracing::warn!("Blur overlay opacity update failed: {e}.");
-      }
-    }
-  }
-
-  /// Updates the saturation of the blurred backdrop; re-applies only when
-  /// the value changes. No-op when running the SWCA fallback (no such
-  /// knob exists).
-  ///
-  /// See `set_blur_amount` for why exact `f32` equality is intentional
-  /// here.
-  #[allow(clippy::float_cmp)]
-  pub fn set_saturation(&mut self, saturation: f32) {
-    if self.params.saturation == saturation {
-      return;
-    }
-    self.params.saturation = saturation;
-
-    if let Some(composition) = &mut self.composition {
-      if let Err(e) = composition.set_saturation(saturation) {
-        tracing::warn!("Blur overlay saturation update failed: {e}.");
-      }
-    }
-  }
-
-  /// Updates the exposure (EV stops) of the blurred backdrop; re-applies
-  /// only when the value changes. No-op when running the SWCA fallback (no
-  /// such knob exists).
-  ///
-  /// See `set_blur_amount` for why exact `f32` equality is intentional
-  /// here.
-  #[allow(clippy::float_cmp)]
-  pub fn set_exposure(&mut self, exposure: f32) {
-    if self.params.exposure == exposure {
-      return;
-    }
-    self.params.exposure = exposure;
-
-    if let Some(composition) = &mut self.composition {
-      if let Err(e) = composition.set_exposure(exposure) {
-        tracing::warn!("Blur overlay exposure update failed: {e}.");
-      }
-    }
-  }
+  blur_overlay_setter!(
+    /// Updates the exposure (EV stops) of the blurred backdrop; re-applies
+    /// only when the value changes. No-op when running the SWCA fallback
+    /// (no such knob exists).
+    ///
+    /// See `set_blur_amount` for why exact `f32` equality is intentional
+    /// here.
+    set_exposure, exposure
+  );
 
   /// Applies `params`, re-applying only whichever fields actually changed
   /// (each setter no-ops internally on an unchanged value). Convenience
