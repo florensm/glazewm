@@ -1527,6 +1527,41 @@ pub(crate) fn upsert_blur_overlay(
   }
 }
 
+/// Resolves `window`'s acrylic overlay params from its focused/other-window
+/// backdrop config, or `None` when backdrop isn't configured/enabled or
+/// isn't set to `BackdropStyle::Acrylic` for it.
+///
+/// Shared by [`sync_blur_overlays`] (the per-tick static path) and the
+/// interactive-drag tracker in `handle_window_moved_or_resized`, which needs
+/// the same params to keep the overlay live while the OS drags the window
+/// outside of `GlazeWM`'s own redraw pipeline.
+#[cfg(target_os = "windows")]
+pub(crate) fn blur_overlay_params_for(
+  is_focused: bool,
+  config: &UserConfig,
+) -> Option<BlurOverlayParams> {
+  let effect_cfg = if is_focused {
+    &config.value.window_effects.focused_window
+  } else {
+    &config.value.window_effects.other_windows
+  };
+
+  let tint = effect_cfg.backdrop.acrylic_tint()?;
+
+  // Mirrors `corner_style` (falling back to `CornerStyle::Default` when
+  // disabled, same as `apply_corner_effect`) so the overlay's rounded clip
+  // lines up with the real managed window's own DWM-rendered corners
+  // sitting on top of it, rather than being an independently configured
+  // radius that can mismatch what's actually on screen.
+  let corner_radius = if effect_cfg.corner_style.enabled {
+    effect_cfg.corner_style.style.approx_radius_px()
+  } else {
+    CornerStyle::Default.approx_radius_px()
+  };
+
+  Some(effect_cfg.backdrop.to_overlay_params(tint, corner_radius))
+}
+
 #[cfg(target_os = "windows")]
 fn sync_blur_overlays(
   state: &mut WmState,
@@ -1545,28 +1580,10 @@ fn sync_blur_overlays(
 
   for window in &all_windows {
     let is_focused = window.id() == focused_container.id();
-    let effect_cfg = if is_focused {
-      &config.value.window_effects.focused_window
-    } else {
-      &config.value.window_effects.other_windows
-    };
 
-    let Some(tint) = effect_cfg.backdrop.acrylic_tint() else {
+    let Some(params) = blur_overlay_params_for(is_focused, config) else {
       continue;
     };
-
-    // Mirrors `corner_style` (falling back to `CornerStyle::Default` when
-    // disabled, same as `apply_corner_effect`) so the overlay's rounded
-    // clip lines up with the real managed window's own DWM-rendered
-    // corners sitting on top of it, rather than being an independently
-    // configured radius that can mismatch what's actually on screen.
-    let corner_radius = if effect_cfg.corner_style.enabled {
-      effect_cfg.corner_style.style.approx_radius_px()
-    } else {
-      CornerStyle::Default.approx_radius_px()
-    };
-
-    let params = effect_cfg.backdrop.to_overlay_params(tint, corner_radius);
 
     wanted_ids.insert(window.id());
 
