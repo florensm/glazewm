@@ -177,8 +177,8 @@ fn try_create_composition(
 /// `SetWindowCompositionAttribute` with `ACCENT_ENABLE_ACRYLICBLURBEHIND`
 /// otherwise -- e.g. pre-Windows 10 1803, or if any step of the Composition
 /// setup fails. In the fallback, `blur_amount`/`corner_radius`/`opacity`/
-/// `saturation`/`exposure` become no-ops (the OS gives no such knobs for
-/// SWCA acrylic) but `tint` keeps working the same as before.
+/// `saturation` become no-ops (the OS gives no such knobs for SWCA
+/// acrylic) but `tint` keeps working the same as before.
 ///
 /// # Platform-specific
 ///
@@ -188,7 +188,7 @@ pub struct NativeBlurOverlay {
   /// `Send` even though `HWND` is not.
   hwnd: isize,
 
-  /// Current tint/blur-amount/corner-radius/opacity/saturation/exposure.
+  /// Current tint/blur-amount/corner-radius/opacity/saturation.
   /// Applied via SWCA in the fallback path (tint only), or as the
   /// Composition pipeline's live properties otherwise.
   params: BlurOverlayParams,
@@ -401,16 +401,6 @@ impl NativeBlurOverlay {
     set_saturation, saturation
   );
 
-  blur_overlay_setter!(
-    /// Updates the exposure (EV stops) of the blurred backdrop; re-applies
-    /// only when the value changes. No-op when running the SWCA fallback
-    /// (no such knob exists).
-    ///
-    /// See `set_blur_amount` for why exact `f32` equality is intentional
-    /// here.
-    set_exposure, exposure
-  );
-
   /// Applies `params`, re-applying only whichever fields actually changed
   /// (each setter no-ops internally on an unchanged value). Convenience
   /// for the call sites that already have a full `BlurOverlayParams`
@@ -421,7 +411,6 @@ impl NativeBlurOverlay {
     self.set_corner_radius(params.corner_radius);
     self.set_opacity(params.opacity);
     self.set_saturation(params.saturation);
-    self.set_exposure(params.exposure);
   }
 
   /// Hides the overlay without destroying it.

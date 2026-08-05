@@ -24,7 +24,4 @@ pub struct BlurOverlayParams {
   /// Saturation of the blurred backdrop, from `0.0` (grayscale) to `2.0`
   /// (oversaturated); `1.0` is unchanged. No-op in the SWCA fallback.
   pub saturation: f32,
-  /// Exposure adjustment of the blurred backdrop, in EV stops (typically
-  /// `-2.0`..`2.0`); `0.0` is unchanged. No-op in the SWCA fallback.
-  pub exposure: f32,
 }

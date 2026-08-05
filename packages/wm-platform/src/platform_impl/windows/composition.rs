@@ -25,8 +25,7 @@
 //! callers are documented `WinRT` "agile" objects (`windows-rs` applies
 //! `unsafe impl Send + Sync` to each of them) -- so the frequent per-tick
 //! property updates (`set_rect`, `set_tint`, `set_blur_amount`,
-//! `set_corner_radius`, `set_opacity`, `set_saturation`, `set_exposure`)
-//! call directly
+//! `set_corner_radius`, `set_opacity`, `set_saturation`) call directly
 //! into them from the caller's thread with no cross-thread marshaling,
 //! keeping the hot path exactly as cheap as the SWCA path it replaces.
 
@@ -83,12 +82,6 @@ const D2D1_BORDER_MODE_SOFT: u32 = 0;
 const CLSID_D2D1_SATURATION: GUID =
   GUID::from_u128(0x5cb2_d9cf_327d_459f_a0ce_40c0_b208_6bf7);
 
-/// `CLSID_D2D1Exposure`, the built-in D2D1 exposure-adjustment effect.
-/// Value matches `windows::Win32::Graphics::Direct2D::CLSID_D2D1Exposure`
-/// (re-declared as a local `const`, same as `CLSID_D2D1_SATURATION`).
-const CLSID_D2D1_EXPOSURE: GUID =
-  GUID::from_u128(0xb56c_8cfa_f634_41ee_bee0_ffa6_1710_6004);
-
 /// Hand-implemented D2D1 effect description with exactly one
 /// runtime-adjustable scalar property (at index 0), plus any additional
 /// fixed (non-adjustable) properties a given effect's D2D1 schema requires
@@ -102,8 +95,7 @@ const CLSID_D2D1_EXPOSURE: GUID =
 /// effects, the same approach Microsoft's own
 /// `Windows.UI.Composition-Win32-Samples` uses in C++. One instance of this
 /// type is used per built-in effect ([`CLSID_D2D1_GAUSSIAN_BLUR`],
-/// [`CLSID_D2D1_SATURATION`], [`CLSID_D2D1_EXPOSURE`]) chained in
-/// `build_effect_brush`.
+/// [`CLSID_D2D1_SATURATION`]) chained in `build_effect_brush`.
 #[implement(IGraphicsEffect, IGraphicsEffectSource, IGraphicsEffectD2D1Interop)]
 struct D2d1ScalarEffect {
   effect_id: GUID,
@@ -118,7 +110,7 @@ struct D2d1ScalarEffect {
   initial_value: f32,
   /// Additional fixed `u32` properties required by the effect's D2D1
   /// schema, in index order starting at index 1 (index 0 is always
-  /// `initial_value`). Empty for saturation/exposure; Gaussian blur needs
+  /// `initial_value`). Empty for saturation; Gaussian blur needs
   /// `[D2D1_GAUSSIANBLUR_OPTIMIZATION_BALANCED, D2D1_BORDER_MODE_SOFT]` --
   /// `CreateEffectFactory` validates the description against D2D1's
   /// registered schema for the effect and fails with `E_INVALIDARG` unless
@@ -340,14 +332,11 @@ pub(crate) struct BlurVisual {
   tint_brush: CompositionColorBrush,
   rounded_geometry: CompositionRoundedRectangleGeometry,
 
-  /// Current blur amount, kept alongside `saturation`/`exposure` so any
-  /// one setter can rebuild the full effect graph using the others'
-  /// current values.
+  /// Current blur amount, kept alongside `saturation` so either setter can
+  /// rebuild the full effect graph using the other's current value.
   blur_amount: f32,
   /// Current saturation. See `blur_amount`.
   saturation: f32,
-  /// Current exposure (EV stops). See `blur_amount`.
-  exposure: f32,
 }
 
 impl BlurVisual {
@@ -426,10 +415,10 @@ impl BlurVisual {
   pub(crate) fn set_blur_amount(&mut self, value: f32) -> crate::Result<()> {
     let compositor = self.compositor.clone();
     let host_backdrop = self.host_backdrop.clone();
-    let (saturation, exposure) = (self.saturation, self.exposure);
+    let saturation = self.saturation;
 
     let effect_brush = run_on_composition_thread(&self.queue, move || {
-      build_effect_brush(&compositor, &host_backdrop, value, saturation, exposure)
+      build_effect_brush(&compositor, &host_backdrop, value, saturation)
     })?;
 
     self.blur_sprite.SetBrush(&effect_brush)?;
@@ -441,39 +430,21 @@ impl BlurVisual {
   /// Updates the live saturation by rebuilding the effect brush. Same
   /// rebuild-not-mutate approach as `set_blur_amount`, for the same
   /// reason (`InsertScalar` on a named effect property is not confirmed
-  /// working in this pipeline) -- all three knobs share the one effect
-  /// graph, so any setter rebuilds the whole thing using the others'
-  /// current stored values.
+  /// working in this pipeline) -- both knobs share the one effect graph,
+  /// so either setter rebuilds the whole thing using the other's current
+  /// stored value.
   pub(crate) fn set_saturation(&mut self, value: f32) -> crate::Result<()> {
     let compositor = self.compositor.clone();
     let host_backdrop = self.host_backdrop.clone();
-    let (blur_amount, exposure) = (self.blur_amount, self.exposure);
+    let blur_amount = self.blur_amount;
 
     let effect_brush = run_on_composition_thread(&self.queue, move || {
-      build_effect_brush(&compositor, &host_backdrop, blur_amount, value, exposure)
+      build_effect_brush(&compositor, &host_backdrop, blur_amount, value)
     })?;
 
     self.blur_sprite.SetBrush(&effect_brush)?;
     self.effect_brush = effect_brush;
     self.saturation = value;
-    Ok(())
-  }
-
-  /// Updates the live exposure (EV stops) by rebuilding the effect brush.
-  /// Same rebuild-not-mutate approach as `set_blur_amount` -- see its doc
-  /// comment.
-  pub(crate) fn set_exposure(&mut self, value: f32) -> crate::Result<()> {
-    let compositor = self.compositor.clone();
-    let host_backdrop = self.host_backdrop.clone();
-    let (blur_amount, saturation) = (self.blur_amount, self.saturation);
-
-    let effect_brush = run_on_composition_thread(&self.queue, move || {
-      build_effect_brush(&compositor, &host_backdrop, blur_amount, saturation, value)
-    })?;
-
-    self.blur_sprite.SetBrush(&effect_brush)?;
-    self.effect_brush = effect_brush;
-    self.exposure = value;
     Ok(())
   }
 
@@ -506,36 +477,40 @@ fn pixels_to_dips(pixels: i32) -> f32 {
 }
 
 /// Builds a fresh effect brush (`host_backdrop` -> Gaussian blur ->
-/// saturation -> exposure -> brush) at the given knob values. Split out
-/// from `build_visual_tree` so `BlurVisual::set_blur_amount`/
-/// `set_saturation`/`set_exposure` can call it again on demand -- see
-/// `set_blur_amount`'s doc comment for why a rebuild, not an in-place
-/// property update, is used.
+/// saturation -> brush) at the given knob values. Split out from
+/// `build_visual_tree` so `BlurVisual::set_blur_amount`/`set_saturation`
+/// can call it again on demand -- see `set_blur_amount`'s doc comment for
+/// why a rebuild, not an in-place property update, is used.
 ///
-/// All three stages are described in one `IGraphicsEffect` graph passed to
-/// a single `CreateEffectFactory` call, producing one brush -- not several
+/// Both stages are described in one `IGraphicsEffect` graph passed to a
+/// single `CreateEffectFactory` call, producing one brush -- not two
 /// independently-chained brushes. `SetSourceParameter("Source", ..)` binds
-/// `host_backdrop` to the *inner* (blur) node's named parameter; every
-/// other node's own source is the previous node's `IGraphicsEffectSource`
+/// `host_backdrop` to the *inner* (blur) node's named parameter; the outer
+/// (saturation) node's own source is the blur node's `IGraphicsEffectSource`
 /// directly (an internal graph edge via `GetSource`, not a named
 /// parameter), and the composition engine resolves the "Source" name
 /// lookup through to it regardless of nesting depth.
 ///
-/// `vignette` and `grain` were tried and dropped: `Windows.UI.Composition`'s
-/// `CreateEffectFactory` only accepts a curated subset of D2D1 built-in
-/// effects, and `CLSID_D2D1Vignette` plus the `Turbulence`/`Composite`
-/// combination grain needed both failed with `E_INVALIDARG`
-/// ("Unsupported effect type") at runtime, confirmed via bisection --
-/// `GaussianBlur`/`Saturation`/`Exposure` are accepted, those aren't.
-/// `HueRotation` was also tried and dropped -- CreateEffectFactory accepted
-/// it fine, but with no persistent tint the live desktop content behind the
+/// `exposure`, `vignette`, and `grain` were tried and dropped.
+/// `Windows.UI.Composition`'s `CreateEffectFactory` accepts a curated
+/// subset of D2D1 built-in effects at *construction* time, but `Exposure`
+/// (`CLSID_D2D1Exposure`) was a no-op at render time despite constructing
+/// without error and being byte-identical in its wrapper to `Saturation`,
+/// which renders correctly -- observed with no visible change even at
+/// extreme values well outside the documented `-2..2` range, so this
+/// isn't a subtlety-of-effect issue, just an unsupported effect that
+/// silently degrades to pass-through instead of failing loudly.
+/// `CLSID_D2D1Vignette` plus the `Turbulence`/`Composite` combination
+/// grain needed both failed outright with `E_INVALIDARG` ("Unsupported
+/// effect type") at construction, confirmed via bisection. `HueRotation`
+/// was also tried and dropped -- `CreateEffectFactory` accepted it fine,
+/// but with no persistent tint the live desktop content behind the
 /// overlay had too little color for a rotation to visibly do anything.
 fn build_effect_brush(
   compositor: &Compositor,
   host_backdrop: &CompositionBackdropBrush,
   blur_amount: f32,
   saturation: f32,
-  exposure: f32,
 ) -> windows::core::Result<CompositionEffectBrush> {
   let source_param =
     CompositionEffectSourceParameter::Create(&HSTRING::from("Source"))?;
@@ -548,7 +523,7 @@ fn build_effect_brush(
     &[D2D1_GAUSSIANBLUR_OPTIMIZATION_BALANCED, D2D1_BORDER_MODE_SOFT],
   )
   .into();
-  let saturation_effect: IGraphicsEffectSource = D2d1ScalarEffect::new(
+  let saturation_effect: IGraphicsEffect = D2d1ScalarEffect::new(
     CLSID_D2D1_SATURATION,
     "Saturation",
     blur_effect,
@@ -557,16 +532,7 @@ fn build_effect_brush(
     &[],
   )
   .into();
-  let exposure_effect: IGraphicsEffect = D2d1ScalarEffect::new(
-    CLSID_D2D1_EXPOSURE,
-    "Exposure",
-    saturation_effect,
-    "ExposureValue",
-    exposure,
-    &[],
-  )
-  .into();
-  let effect_factory = compositor.CreateEffectFactory(&exposure_effect)?;
+  let effect_factory = compositor.CreateEffectFactory(&saturation_effect)?;
   let effect_brush = effect_factory.CreateBrush()?;
   effect_brush.SetSourceParameter(&HSTRING::from("Source"), host_backdrop)?;
   Ok(effect_brush)
@@ -608,7 +574,6 @@ fn build_visual_tree(
     &host_backdrop,
     params.blur_amount,
     params.saturation,
-    params.exposure,
   )?;
 
   let blur_sprite = compositor.CreateSpriteVisual()?;
@@ -643,6 +608,5 @@ fn build_visual_tree(
     rounded_geometry,
     blur_amount: params.blur_amount,
     saturation: params.saturation,
-    exposure: params.exposure,
   })
 }

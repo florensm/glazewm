@@ -307,15 +307,6 @@ pub struct BackdropEffectConfig {
   /// `blur_amount`.
   pub saturation: f32,
 
-  /// Exposure adjustment of the blurred backdrop, in EV stops (typically
-  /// `-2.0` to `2.0`); `0.0` leaves it unchanged. Values outside that
-  /// range aren't clamped, same as `saturation`.
-  ///
-  /// Ignored for `mica`/`mica_alt` and silently has no effect if the
-  /// `Windows.UI.Composition` rendering pipeline is unavailable, same as
-  /// `blur_amount`.
-  pub exposure: f32,
-
   // The acrylic overlay's own corner radius isn't independently
   // configurable -- it's derived from `corner_style` (see
   // `CornerStyle::approx_radius_px`) so it always matches the real managed
@@ -331,7 +322,6 @@ impl Default for BackdropEffectConfig {
       blur_amount: 30.0,
       opacity: 1.0,
       saturation: 1.0,
-      exposure: 0.0,
     }
   }
 }
@@ -377,7 +367,6 @@ impl BackdropEffectConfig {
       corner_radius,
       opacity: self.opacity,
       saturation: self.saturation,
-      exposure: self.exposure,
     }
   }
 }
@@ -1052,7 +1041,6 @@ mod tests {
       blur_amount: 42.0,
       opacity: 0.5,
       saturation: 1.5,
-      exposure: -1.0,
       ..BackdropEffectConfig::default()
     };
 
@@ -1063,6 +1051,5 @@ mod tests {
     assert_eq!(params.corner_radius, 12.0);
     assert_eq!(params.opacity, 0.5);
     assert_eq!(params.saturation, 1.5);
-    assert_eq!(params.exposure, -1.0);
   }
 }
