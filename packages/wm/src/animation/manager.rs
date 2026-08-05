@@ -785,6 +785,12 @@ impl AnimationManager {
         .copied()
         .collect();
 
+      // Batches every closing window's acrylic-overlay reposition this tick
+      // into one `DeferWindowPos` transaction instead of each issuing its
+      // own synchronous `SetWindowPos` -- same reasoning as
+      // `platform_sync`'s per-tick blur-overlay sync passes.
+      let mut blur_batch = SurrogateBatch::new();
+
       for id in &close_in_progress {
         let is_zoom = state
           .animation_manager
@@ -832,6 +838,7 @@ impl AnimationManager {
                 *id,
                 params,
                 &rect,
+                &mut blur_batch,
               ),
               None => {
                 if let Some(overlay) = state.blur_overlays.get_mut(id) {
@@ -842,6 +849,8 @@ impl AnimationManager {
           }
         }
       }
+
+      blur_batch.commit();
     }
 
     // Finalize completed close animations before `remove_completed_animations`
@@ -1124,6 +1133,7 @@ impl AnimationManager {
                       window_id,
                       params,
                       rect,
+                      &mut ws_batch,
                     );
                   }
                 }
@@ -1250,7 +1260,9 @@ impl AnimationManager {
       // surrogate through the whole `pending_session_cleanup` tail, exactly
       // as it did through the active animation -- since the overlay is never
       // hidden to begin with, there's no `pending_ws_cleanup`-style
-      // pre-show/flush gap to plug here.
+      // pre-show/flush gap to plug here. Batched into one `DeferWindowPos`
+      // transaction, same reasoning as the other blur-overlay sync loops.
+      let mut fade_tail_batch = SurrogateBatch::new();
       for (id, _, session) in &state.animation_manager.pending_session_cleanup
       {
         if let Some(params) = session.blur_overlay_params() {
@@ -1260,6 +1272,7 @@ impl AnimationManager {
               *id,
               params,
               &rect,
+              &mut fade_tail_batch,
             ),
             None => {
               if let Some(overlay) = state.blur_overlays.get_mut(id) {
@@ -1269,6 +1282,7 @@ impl AnimationManager {
           }
         }
       }
+      fade_tail_batch.commit();
 
       let has_new_session_cleanup = state
         .animation_manager
@@ -1345,6 +1359,7 @@ impl AnimationManager {
 
       let focused_id = state.focused_container().map(|c| c.id());
       let mut pre_shown = false;
+      let mut pre_show_batch = SurrogateBatch::new();
 
       for (id, rect) in &incoming_acrylic_windows {
         let effect_cfg = if Some(*id) == focused_id {
@@ -1368,7 +1383,7 @@ impl AnimationManager {
           std::collections::hash_map::Entry::Occupied(e) => {
             let overlay = e.into_mut();
             overlay.apply(params);
-            overlay.set_rect(rect);
+            overlay.defer_rect(&mut pre_show_batch, rect);
           }
           std::collections::hash_map::Entry::Vacant(e) => {
             if let Ok(overlay) = NativeBlurOverlay::create(rect, params) {
@@ -1378,6 +1393,7 @@ impl AnimationManager {
         }
         pre_shown = true;
       }
+      pre_show_batch.commit();
 
       if pre_shown {
         wm_platform::dwm_flush();

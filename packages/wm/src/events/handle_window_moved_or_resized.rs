@@ -63,12 +63,19 @@ pub fn handle_window_moved_or_resized(
           .is_some_and(|container| container.id() == window.id());
 
         if let Some(params) = blur_overlay_params_for(is_focused, config) {
+          // Single window per drag event -- nothing else to batch this
+          // reposition with, so commit it alone (still routes through
+          // `SurrogateBatch` for a uniform `defer_rect` call, same as the
+          // multi-window sync paths).
+          let mut batch = wm_platform::SurrogateBatch::new();
           upsert_blur_overlay(
             &mut state.blur_overlays,
             window.id(),
             params,
             &frame_position,
+            &mut batch,
           );
+          batch.commit();
         }
       }
 

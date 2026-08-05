@@ -11,7 +11,7 @@ use wm_platform::NativeWindowWindowsExt;
 #[cfg(target_os = "windows")]
 use wm_platform::{
   BackdropStyle, BlurOverlayParams, CornerStyle, NativeBlurOverlay,
-  NativeIrisOverlay, OpacityValue, WorkspaceSurrogate,
+  NativeIrisOverlay, OpacityValue, SurrogateBatch, WorkspaceSurrogate,
 };
 use wm_platform::{Rect, WindowZOrder};
 
@@ -1081,22 +1081,39 @@ fn redraw_containers(
   // `AnimationManager::update_internal`'s direct-drive loop -- that path
   // never reaches `platform_sync` (closing windows are detached from the
   // layout tree), so skip them here to avoid a duplicate upsert this tick.
+  //
+  // Repositions are batched into one `DeferWindowPos` transaction (separate
+  // from the surrogate batch `flush_surrogate_updates` just committed above)
+  // rather than each overlay issuing its own synchronous `SetWindowPos` --
+  // that per-window cost scales with tick rate, which is most visible on
+  // high-refresh-rate displays where the animation manager ticks in
+  // lockstep with vsync.
   #[cfg(target_os = "windows")]
-  for (id, session) in &state.animation_manager.resize_sessions {
-    if state.animation_manager.has_close_animation(id) {
-      continue;
-    }
-    let Some(params) = session.blur_overlay_params() else {
-      continue;
-    };
-    match session.current_rect() {
-      Some(rect) => upsert_blur_overlay(&mut state.blur_overlays, *id, params, &rect),
-      None => {
-        if let Some(overlay) = state.blur_overlays.get_mut(id) {
-          overlay.hide();
+  {
+    let mut blur_batch = SurrogateBatch::new();
+    for (id, session) in &state.animation_manager.resize_sessions {
+      if state.animation_manager.has_close_animation(id) {
+        continue;
+      }
+      let Some(params) = session.blur_overlay_params() else {
+        continue;
+      };
+      match session.current_rect() {
+        Some(rect) => upsert_blur_overlay(
+          &mut state.blur_overlays,
+          *id,
+          params,
+          &rect,
+          &mut blur_batch,
+        ),
+        None => {
+          if let Some(overlay) = state.blur_overlays.get_mut(id) {
+            overlay.hide();
+          }
         }
       }
     }
+    blur_batch.commit();
   }
 
   // Apply effect opacity to outgoing surrogates now that the real windows
@@ -1506,12 +1523,13 @@ pub(crate) fn upsert_blur_overlay(
   window_id: uuid::Uuid,
   params: BlurOverlayParams,
   rect: &Rect,
+  batch: &mut SurrogateBatch,
 ) {
   match overlays.entry(window_id) {
     std::collections::hash_map::Entry::Occupied(e) => {
       let overlay = e.into_mut();
       overlay.apply(params);
-      overlay.set_rect(rect);
+      overlay.defer_rect(batch, rect);
     }
     std::collections::hash_map::Entry::Vacant(e) => {
       match NativeBlurOverlay::create(rect, params) {
@@ -1570,6 +1588,7 @@ fn sync_blur_overlays(
 ) {
   let all_windows = state.windows();
   let mut wanted_ids = std::collections::HashSet::new();
+  let mut batch = SurrogateBatch::new();
 
   // `containers_to_redraw()` may hold an ancestor (e.g. a whole workspace on
   // a workspace switch) rather than each window individually -- mirror the
@@ -1647,7 +1666,7 @@ fn sync_blur_overlays(
           // with the window's visible edge, clipping the invisible resize
           // border.
           match window.native().frame() {
-            Ok(rect) => overlay.set_rect(&rect),
+            Ok(rect) => overlay.defer_rect(&mut batch, &rect),
             Err(err) => debug!(
               "Blur overlay frame() query failed for {}: {err}.",
               window.id()
@@ -1677,4 +1696,6 @@ fn sync_blur_overlays(
 
   // Destroy overlays for windows that no longer need them.
   state.blur_overlays.retain(|id, _| wanted_ids.contains(id));
+
+  batch.commit();
 }

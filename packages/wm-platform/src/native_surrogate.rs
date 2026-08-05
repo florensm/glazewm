@@ -225,8 +225,14 @@ impl SurrogateBatch {
 
   /// Queues a reposition; applied on [`commit`].
   ///
+  /// Not surrogate-specific -- `hwnd` can be any top-level window this
+  /// process owns (used by [`NativeBlurOverlay::defer_rect`] to fold the
+  /// acrylic overlay's reposition into the same transaction as the
+  /// surrogates/real windows already batched this tick).
+  ///
   /// [`commit`]: SurrogateBatch::commit
-  fn push(&mut self, hwnd: isize, rect: Rect) {
+  /// [`NativeBlurOverlay::defer_rect`]: crate::NativeBlurOverlay::defer_rect
+  pub(crate) fn push(&mut self, hwnd: isize, rect: Rect) {
     self.entries.push((hwnd, rect));
   }
 

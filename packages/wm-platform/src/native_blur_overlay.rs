@@ -23,7 +23,7 @@ use crate::{
       ACCENT_ENABLE_HOSTBACKDROP,
     },
   },
-  BlurOverlayParams, Rect,
+  BlurOverlayParams, Rect, SurrogateBatch,
 };
 
 /// Ensures the blur-overlay window class is registered exactly once per
@@ -339,6 +339,47 @@ impl NativeBlurOverlay {
 
     self.rect = rect.clone();
     self.is_visible = true;
+  }
+
+  /// Queues a reposition into `batch` instead of issuing an immediate
+  /// `SetWindowPos`, for the common per-tick case where the overlay is
+  /// already visible and only its position/size changed.
+  ///
+  /// All overlays/surrogates queued into the same [`SurrogateBatch`] are
+  /// repositioned atomically when the batch is committed, so this overlay
+  /// moves in the same DWM composition frame as the window it's paired
+  /// with (and any other windows/surrogates relaid out the same tick),
+  /// instead of each issuing its own synchronous `SetWindowPos` -- cost
+  /// that scales with tick rate, most visible on high-refresh-rate
+  /// displays where the animation manager ticks in lockstep with vsync.
+  ///
+  /// Falls back to [`set_rect`] (immediate, unbatched) when the overlay
+  /// isn't currently visible: re-showing needs `SWP_SHOWWINDOW`, which
+  /// `SurrogateBatch::commit` doesn't apply (its flags are shared with
+  /// surrogates, which don't need it). This path is rare relative to the
+  /// steady-state reposition case -- it only fires on the first frame an
+  /// overlay is (re-)shown, not on every tick of an animation.
+  ///
+  /// [`set_rect`]: NativeBlurOverlay::set_rect
+  pub fn defer_rect(&mut self, batch: &mut SurrogateBatch, rect: &Rect) {
+    if !self.is_visible {
+      self.set_rect(rect);
+      return;
+    }
+
+    if &self.rect == rect {
+      return;
+    }
+
+    batch.push(self.hwnd, rect.clone());
+
+    if let Some(composition) = &self.composition {
+      if let Err(e) = composition.set_rect(rect) {
+        tracing::warn!("Blur overlay composition resize failed: {e}.");
+      }
+    }
+
+    self.rect = rect.clone();
   }
 
   /// Updates the ABGR tint; re-applies only when the value changes.
