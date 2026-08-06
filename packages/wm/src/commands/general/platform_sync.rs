@@ -12,6 +12,7 @@ use wm_platform::NativeWindowWindowsExt;
 use wm_platform::{
   BackdropStyle, BlurOverlayParams, CornerStyle, NativeBlurOverlay,
   NativeIrisOverlay, OpacityValue, SurrogateBatch, WorkspaceSurrogate,
+  HWND, HWND_TOPMOST,
 };
 use wm_platform::{Rect, WindowZOrder};
 
@@ -56,10 +57,19 @@ pub fn platform_sync(
   let focused_container =
     state.focused_container().context("No focused container.")?;
 
+  // Windows whose real (non-overlay) z-order was actually touched this
+  // cycle, either by `redraw_containers`'s `set_z_order` or by
+  // `sync_focus`'s `SetForegroundWindow` below. Passed to
+  // `sync_blur_overlays` so it only pays for a `sync_z_order` resync on the
+  // handful of windows that could plausibly have drifted, instead of every
+  // blur-configured window on every tick -- most commands (e.g. a plain
+  // focus change between tiled windows) touch at most one window's z-order.
+  let mut z_order_touched = std::collections::HashSet::new();
+
   if !state.pending_sync.containers_to_redraw().is_empty()
     || !state.pending_sync.workspaces_to_reorder().is_empty()
   {
-    redraw_containers(&focused_container, state, config)?;
+    redraw_containers(&focused_container, state, config, &mut z_order_touched)?;
   }
 
   // Focus is synced after `redraw_containers` so that the workspace-switch
@@ -69,7 +79,9 @@ pub fn platform_sync(
   // completes), preventing the OS from asynchronously uncloaking the
   // incoming focused window mid-animation.
   if state.pending_sync.needs_focus_update() {
-    sync_focus(&focused_container, state)?;
+    if let Some(id) = sync_focus(&focused_container, state)? {
+      z_order_touched.insert(id);
+    }
   }
 
   if state.pending_sync.needs_cursor_jump()
@@ -132,17 +144,24 @@ pub fn platform_sync(
   // Sync acrylic blur overlays every tick so they track window position
   // through moves, resizes, and workspace changes.
   #[cfg(target_os = "windows")]
-  sync_blur_overlays(state, config, &focused_container);
+  sync_blur_overlays(state, config, &focused_container, &z_order_touched);
 
   state.pending_sync.clear();
 
   Ok(())
 }
 
+/// Syncs OS input focus to `focused_container`.
+///
+/// Returns the ID of the window `SetForegroundWindow` was actually called
+/// on, if any -- this raises the window's real z-order independently of
+/// [`redraw_containers`]'s own `set_z_order` calls, so callers use it to
+/// know which windows' acrylic blur overlays may need a z-order resync (see
+/// `sync_blur_overlays`'s `z_order_touched` parameter).
 fn sync_focus(
   focused_container: &Container,
   state: &mut WmState,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<Option<uuid::Uuid>> {
   let native_window = focused_container.as_window_container().ok();
 
   // Defer `SetForegroundWindow` while the focused window is covered by an
@@ -163,7 +182,7 @@ fn sync_focus(
       .resize_sessions
       .contains_key(&window.id());
     if is_ws_incoming || has_resize_session {
-      return Ok(());
+      return Ok(None);
     }
   }
 
@@ -174,6 +193,7 @@ fn sync_focus(
   //
   // In either case, a `PlatformEvent::WindowFocused` event is subsequently
   // triggered.
+  let focused_window_id = native_window.as_ref().map(CommonGetters::id);
   let result = if let Some(window) = native_window {
     tracing::info!("Setting focus to window: {window}");
     window.native().focus()
@@ -190,7 +210,7 @@ fn sync_focus(
     focused_container: focused_container.to_dto()?,
   });
 
-  Ok(())
+  Ok(focused_window_id)
 }
 
 /// Finds windows that should be brought to the top of their workspace's
@@ -257,6 +277,8 @@ fn redraw_containers(
   focused_container: &Container,
   state: &mut WmState,
   config: &UserConfig,
+  #[cfg_attr(not(target_os = "windows"), allow(unused_variables))]
+  z_order_touched: &mut std::collections::HashSet<uuid::Uuid>,
 ) -> anyhow::Result<()> {
   let windows_to_redraw = state.windows_to_redraw();
   let windows_to_bring_to_front =
@@ -443,6 +465,12 @@ fn redraw_containers(
                 })
                 .ok()
               });
+            // New surrogates are always inserted at `HWND_TOP`, which can
+            // displace any other window's blur overlay out of its correct
+            // z-order slot -- flag a full resync (see the field doc).
+            if surrogate.is_some() {
+              state.animation_manager.blur_overlay_z_order_dirty = true;
+            }
             // Always register incoming windows even without a surrogate so
             // `is_frozen_by_ws_animation` is true for all of them — this
             // prevents the real window from being uncloaked before the
@@ -471,6 +499,11 @@ fn redraw_containers(
               e
             })
             .ok();
+            // See the matching comment in the incoming-surrogate branch
+            // above.
+            if surrogate.is_some() {
+              state.animation_manager.blur_overlay_z_order_dirty = true;
+            }
             ws_windows.push((id, surrogate, false));
           }
         }
@@ -604,6 +637,7 @@ fn redraw_containers(
     #[cfg(target_os = "windows")]
     if should_bring_to_front && !windows_to_redraw.contains(window) {
       tracing::info!("Updating window z-order: {window}");
+      z_order_touched.insert(window.id());
       if let Err(err) = window.native().set_z_order(&z_order) {
         tracing::warn!("Failed to set window z-order: {}", err);
       }
@@ -860,11 +894,48 @@ fn redraw_containers(
         if !already_cloaked_by_session
           && !window.native().is_cloaked().unwrap_or(false)
         {
+          // The surrogate is created hidden (`initially_visible: false`,
+          // see `SessionOptions`) specifically so this can anchor the blur
+          // overlay behind it *before* `ResizeSession::show` reveals it --
+          // the surrogate's `HWND` is already stable at this point even
+          // though it isn't visible yet, which is all `overlay_z_anchor`
+          // needs. Without this, showing the surrogate first (as a plain
+          // `initially_visible: true` session used to) leaves it visible
+          // with no correctly-positioned overlay behind it until this
+          // window's blur overlay upsert eventually catches up, giving DWM
+          // a real window to composite an unblurred frame in.
+          if let Some(session) =
+            state.animation_manager.resize_sessions.get(&window.id())
+          {
+            if let (Some(params), Some(anchor), Some(rect)) = (
+              session.blur_overlay_params(),
+              session.surrogate_hwnd(),
+              session.current_rect(),
+            ) {
+              let mut immediate_batch = SurrogateBatch::new();
+              upsert_blur_overlay(
+                &mut state.blur_overlays,
+                window.id(),
+                params,
+                &rect,
+                anchor,
+                &mut immediate_batch,
+              );
+              immediate_batch.commit();
+            }
+          }
+          if let Some(session) =
+            state.animation_manager.resize_sessions.get_mut(&window.id())
+          {
+            session.show();
+          }
+
           // Flush before cloaking so DWM renders one frame with the
-          // surrogate's thumbnail populated and the real window still
-          // visible. Without this, the thumbnail content may not be ready
-          // for the first composition after the cloak, producing a blank
-          // frame at animation start.
+          // surrogate (and its now-correctly-anchored blur overlay) and
+          // the surrogate's thumbnail populated while the real window is
+          // still visible. Without this, the thumbnail content may not be
+          // ready for the first composition after the cloak, producing a
+          // blank frame at animation start.
           wm_platform::dwm_flush();
           let _ = window.native().set_cloaked(true);
 
@@ -1098,12 +1169,16 @@ fn redraw_containers(
       let Some(params) = session.blur_overlay_params() else {
         continue;
       };
+      let Some(anchor) = session.surrogate_hwnd() else {
+        continue;
+      };
       match session.current_rect() {
         Some(rect) => upsert_blur_overlay(
           &mut state.blur_overlays,
           *id,
           params,
           &rect,
+          anchor,
           &mut blur_batch,
         ),
         None => {
@@ -1523,16 +1598,17 @@ pub(crate) fn upsert_blur_overlay(
   window_id: uuid::Uuid,
   params: BlurOverlayParams,
   rect: &Rect,
+  anchor: HWND,
   batch: &mut SurrogateBatch,
 ) {
   match overlays.entry(window_id) {
     std::collections::hash_map::Entry::Occupied(e) => {
       let overlay = e.into_mut();
       overlay.apply(params);
-      overlay.defer_rect(batch, rect);
+      overlay.defer_rect(batch, rect, anchor);
     }
     std::collections::hash_map::Entry::Vacant(e) => {
-      match NativeBlurOverlay::create(rect, params) {
+      match NativeBlurOverlay::create(rect, params, anchor) {
         Ok(overlay) => {
           debug!("Blur overlay created for {window_id}.");
           e.insert(overlay);
@@ -1580,15 +1656,54 @@ pub(crate) fn blur_overlay_params_for(
   Some(effect_cfg.backdrop.to_overlay_params(tint, corner_radius))
 }
 
+/// Resolves the z-order anchor to keep `window`'s acrylic overlay pinned
+/// directly behind it (see [`NativeBlurOverlay`]'s doc comment).
+///
+/// Windows keeps "always on top" windows in a separate band above every
+/// other window, and a *non*-topmost overlay wedged in via `window`'s own
+/// `HWND` doesn't reliably stay adjacent to a topmost `window` -- the OS can
+/// silently displace it out of that exact slot, which then shows the
+/// overlay itself (flat tint+blur, no live window content behind it)
+/// instead of it staying invisible behind the window. Returning
+/// `HWND_TOPMOST` here instead makes the overlay topmost too, so both stay
+/// pinned together in the same band -- mirroring `window.native().set_z_order`'s
+/// own `WindowZOrder::TopMost` case just above in this file.
+#[cfg(target_os = "windows")]
+pub(crate) fn overlay_z_anchor(window: &WindowContainer) -> HWND {
+  let is_topmost = matches!(
+    window.state(),
+    WindowState::Floating(config) if config.shown_on_top
+  ) || matches!(
+    window.state(),
+    WindowState::Fullscreen(config) if config.shown_on_top
+  );
+
+  if is_topmost {
+    HWND_TOPMOST
+  } else {
+    window.native().hwnd()
+  }
+}
+
 #[cfg(target_os = "windows")]
 fn sync_blur_overlays(
   state: &mut WmState,
   config: &UserConfig,
   focused_container: &Container,
+  z_order_touched: &std::collections::HashSet<uuid::Uuid>,
 ) {
   let all_windows = state.windows();
   let mut wanted_ids = std::collections::HashSet::new();
   let mut batch = SurrogateBatch::new();
+
+  // A surrogate created this cycle with `place_at_top: true` may have
+  // displaced any window's overlay, not just its own -- fall back to
+  // resyncing every non-redrawing window's z-order this one tick instead of
+  // only `z_order_touched`'s narrower set (see the field's doc comment).
+  // Consumed (not just read) here: cleared once acted on so it doesn't force
+  // a full resync on every subsequent tick.
+  let full_z_order_resync = state.animation_manager.blur_overlay_z_order_dirty;
+  state.animation_manager.blur_overlay_z_order_dirty = false;
 
   // `containers_to_redraw()` may hold an ancestor (e.g. a whole workspace on
   // a workspace switch) rather than each window individually -- mirror the
@@ -1649,6 +1764,7 @@ fn sync_blur_overlays(
 
     let is_redrawing = redrawing_ids.contains(&window.id());
     let had_overlay = state.blur_overlays.contains_key(&window.id());
+    let anchor = overlay_z_anchor(window);
 
     match state.blur_overlays.entry(window.id()) {
       std::collections::hash_map::Entry::Occupied(e) => {
@@ -1666,11 +1782,33 @@ fn sync_blur_overlays(
           // with the window's visible edge, clipping the invisible resize
           // border.
           match window.native().frame() {
-            Ok(rect) => overlay.defer_rect(&mut batch, &rect),
+            Ok(rect) => overlay.defer_rect(&mut batch, &rect, anchor),
             Err(err) => debug!(
               "Blur overlay frame() query failed for {}: {err}.",
               window.id()
             ),
+          }
+        } else if full_z_order_resync
+          || z_order_touched.contains(&window.id())
+        {
+          // `window`'s real z-order was actually touched this cycle (a
+          // `set_z_order` call in `redraw_containers`, or a
+          // `SetForegroundWindow` via `sync_focus`), or a `place_at_top`
+          // surrogate went up somewhere this cycle and could have displaced
+          // *any* window's overlay (`full_z_order_resync`) -- resync so the
+          // overlay follows it. Otherwise every other blur-configured
+          // window's overlay is skipped entirely: its own anchor didn't
+          // move, so it can't have drifted (see `sync_z_order`'s doc
+          // comment). Without this check, `sync_z_order` would run for
+          // every blur-configured window on every `platform_sync` call --
+          // including plain focus changes that touch just one window --
+          // issuing a `GetWindow` syscall per window that's a guaranteed
+          // no-op.
+          if let Err(err) = overlay.sync_z_order(anchor) {
+            debug!(
+              "Blur overlay z-order sync failed for {}: {err}.",
+              window.id()
+            );
           }
         }
       }
@@ -1681,7 +1819,7 @@ fn sync_blur_overlays(
           continue;
         };
 
-        match NativeBlurOverlay::create(&rect, params) {
+        match NativeBlurOverlay::create(&rect, params, anchor) {
           Ok(overlay) => {
             debug!("Blur overlay created for {}.", window.id());
             e.insert(overlay);

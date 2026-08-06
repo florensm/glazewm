@@ -6,11 +6,11 @@ use windows::{
     Foundation::{HWND, LPARAM, LRESULT, WPARAM},
     Graphics::Dwm::{DwmSetWindowAttribute, DWMWA_USE_HOSTBACKDROPBRUSH},
     UI::WindowsAndMessaging::{
-      CreateWindowExW, DefWindowProcW, DestroyWindow, RegisterClassW,
-      SetWindowPos, ShowWindow, HWND_BOTTOM, SWP_NOACTIVATE,
-      SWP_NOSENDCHANGING, SWP_SHOWWINDOW, SW_HIDE, WNDCLASSW,
-      WS_EX_NOACTIVATE, WS_EX_NOREDIRECTIONBITMAP, WS_EX_TOOLWINDOW,
-      WS_POPUP,
+      CreateWindowExW, DefWindowProcW, DestroyWindow, GetWindow,
+      RegisterClassW, SetWindowPos, ShowWindow, GW_HWNDPREV, SWP_NOACTIVATE,
+      SWP_NOMOVE, SWP_NOSENDCHANGING, SWP_NOSIZE, SWP_SHOWWINDOW, SW_HIDE,
+      WNDCLASSW, WS_EX_NOACTIVATE, WS_EX_NOREDIRECTIONBITMAP,
+      WS_EX_TOOLWINDOW, WS_POPUP,
     },
   },
 };
@@ -165,11 +165,23 @@ fn try_create_composition(
 /// A persistent backdrop window that provides an acrylic blur-behind effect
 /// for a paired managed window.
 ///
-/// Positioned at `HWND_BOTTOM` (behind all normal windows) and kept
-/// pixel-aligned with the managed window's DWM frame rect. When the managed
-/// window is semi-transparent (via the `transparency` window effect), the
-/// blurred desktop visible through the overlay shows through the window,
-/// producing a frosted-glass look.
+/// Positioned directly behind an `anchor` window in z-order (typically the
+/// managed window itself, or its surrogate while one is active -- see
+/// [`set_rect`]/[`sync_z_order`]) and kept pixel-aligned with its DWM frame
+/// rect. When the managed window is semi-transparent (via the
+/// `transparency` window effect), the blurred content visible through the
+/// overlay shows through the window, producing a frosted-glass look.
+///
+/// Anchoring directly behind the managed window (rather than e.g. the
+/// global `HWND_BOTTOM`) matters because `HostBackdropBrush` only ever
+/// samples whatever is visually behind the overlay *at the overlay's own
+/// z-position* -- pinned to the very bottom of the system z-order, it could
+/// only ever blur the bare desktop wallpaper; anchored directly behind its
+/// own window, it picks up whatever's actually stacked there, other real
+/// windows included.
+///
+/// [`set_rect`]: NativeBlurOverlay::set_rect
+/// [`sync_z_order`]: NativeBlurOverlay::sync_z_order
 ///
 /// Renders via a `Windows.UI.Composition` pipeline (live host-backdrop
 /// brush, a continuously adjustable Gaussian-blur effect graph, and a
@@ -196,6 +208,19 @@ pub struct NativeBlurOverlay {
   /// Last rect applied via `set_rect`, used to skip redundant
   /// `SetWindowPos` calls when the overlay hasn't actually moved.
   rect: Rect,
+
+  /// `HWND` of the window this overlay is positioned directly behind (its
+  /// z-order anchor), as raw `isize`. `HostBackdropBrush` samples whatever
+  /// is visually behind the overlay *at the overlay's own z-position* --
+  /// pinning the overlay directly behind its own managed window (rather
+  /// than e.g. the global `HWND_BOTTOM`) is what lets it pick up other real
+  /// windows stacked there, not just the desktop wallpaper. Tracked so
+  /// [`set_rect`]/[`sync_z_order`] can skip a redundant `SetWindowPos` when
+  /// the anchor hasn't changed.
+  ///
+  /// [`set_rect`]: NativeBlurOverlay::set_rect
+  /// [`sync_z_order`]: NativeBlurOverlay::sync_z_order
+  anchor: isize,
 
   /// Whether the overlay window is currently shown.
   ///
@@ -252,8 +277,14 @@ impl NativeBlurOverlay {
   /// given `params` (blur amount, corner radius, opacity, and saturation
   /// are only honored when the Composition pipeline is available).
   ///
-  /// The overlay is shown immediately at `HWND_BOTTOM`.
-  pub fn create(rect: &Rect, params: BlurOverlayParams) -> crate::Result<Self> {
+  /// The overlay is shown immediately, positioned directly behind `anchor`
+  /// (see the `anchor` field doc) -- typically the `HWND` of the managed
+  /// window it's tracking, or its surrogate's `HWND` while one is active.
+  pub fn create(
+    rect: &Rect,
+    params: BlurOverlayParams,
+    anchor: HWND,
+  ) -> crate::Result<Self> {
     let (hwnd, composition) =
       if let Some((hwnd, visual)) = try_create_composition(rect, params) {
         (hwnd, Some(visual))
@@ -267,7 +298,7 @@ impl NativeBlurOverlay {
     if let Err(e) = unsafe {
       SetWindowPos(
         hwnd,
-        HWND_BOTTOM,
+        anchor,
         rect.x(),
         rect.y(),
         rect.width(),
@@ -282,6 +313,7 @@ impl NativeBlurOverlay {
       hwnd: hwnd.0,
       params,
       rect: rect.clone(),
+      anchor: anchor.0,
       is_visible: true,
       composition,
     })
@@ -298,19 +330,27 @@ impl NativeBlurOverlay {
     self.is_visible
   }
 
-  /// Repositions and resizes the overlay to match `rect`, keeping it at
-  /// `HWND_BOTTOM`, and ensures it's shown.
+  /// Repositions and resizes the overlay to match `rect`, keeping it
+  /// directly behind `anchor` (see the `anchor` field doc), and ensures
+  /// it's shown.
   ///
-  /// No-op if `rect` matches the last-applied rect and the overlay is
+  /// No-op if neither `rect` nor `anchor` changed and the overlay is
   /// already visible, to avoid redundant `SetWindowPos` calls (and the DWM
   /// recomposite they trigger) on every sync tick for overlays that haven't
   /// actually moved. Always issues the call when re-showing after [`hide`],
-  /// even at an unchanged rect, since that's what reapplies
+  /// even at an unchanged rect/anchor, since that's what reapplies
   /// `SWP_SHOWWINDOW`.
   ///
+  /// Callers that only need to correct z-order drift (`anchor` may have
+  /// changed but `rect` hasn't, e.g. after an unrelated window steals
+  /// focus) without a full position sync should use [`sync_z_order`]
+  /// instead -- it skips the position arguments entirely and stays cheap
+  /// enough to call unconditionally every tick.
+  ///
   /// [`hide`]: NativeBlurOverlay::hide
-  pub fn set_rect(&mut self, rect: &Rect) {
-    if self.is_visible && &self.rect == rect {
+  /// [`sync_z_order`]: NativeBlurOverlay::sync_z_order
+  pub fn set_rect(&mut self, rect: &Rect, anchor: HWND) {
+    if self.is_visible && &self.rect == rect && self.anchor == anchor.0 {
       return;
     }
 
@@ -319,7 +359,7 @@ impl NativeBlurOverlay {
     if let Err(e) = unsafe {
       SetWindowPos(
         self.hwnd(),
-        HWND_BOTTOM,
+        anchor,
         rect.x(),
         rect.y(),
         rect.width(),
@@ -338,12 +378,14 @@ impl NativeBlurOverlay {
     }
 
     self.rect = rect.clone();
+    self.anchor = anchor.0;
     self.is_visible = true;
   }
 
   /// Queues a reposition into `batch` instead of issuing an immediate
   /// `SetWindowPos`, for the common per-tick case where the overlay is
-  /// already visible and only its position/size changed.
+  /// already visible, `anchor` hasn't changed, and only its position/size
+  /// changed.
   ///
   /// All overlays/surrogates queued into the same [`SurrogateBatch`] are
   /// repositioned atomically when the batch is committed, so this overlay
@@ -354,16 +396,23 @@ impl NativeBlurOverlay {
   /// displays where the animation manager ticks in lockstep with vsync.
   ///
   /// Falls back to [`set_rect`] (immediate, unbatched) when the overlay
-  /// isn't currently visible: re-showing needs `SWP_SHOWWINDOW`, which
-  /// `SurrogateBatch::commit` doesn't apply (its flags are shared with
-  /// surrogates, which don't need it). This path is rare relative to the
-  /// steady-state reposition case -- it only fires on the first frame an
-  /// overlay is (re-)shown, not on every tick of an animation.
+  /// isn't currently visible, or when `anchor` changed: re-showing needs
+  /// `SWP_SHOWWINDOW`, and an anchor change needs an actual z-order-moving
+  /// `SetWindowPos` -- neither of which `SurrogateBatch::commit` applies
+  /// (its flags are `SWP_NOZORDER` with no show/hide bit, shared with
+  /// surrogates, which need neither). Both fallback cases are rare
+  /// relative to the steady-state reposition case: a session's anchor is
+  /// set once and typically stays fixed for the animation's duration.
   ///
   /// [`set_rect`]: NativeBlurOverlay::set_rect
-  pub fn defer_rect(&mut self, batch: &mut SurrogateBatch, rect: &Rect) {
-    if !self.is_visible {
-      self.set_rect(rect);
+  pub fn defer_rect(
+    &mut self,
+    batch: &mut SurrogateBatch,
+    rect: &Rect,
+    anchor: HWND,
+  ) {
+    if !self.is_visible || self.anchor != anchor.0 {
+      self.set_rect(rect, anchor);
       return;
     }
 
@@ -380,6 +429,45 @@ impl NativeBlurOverlay {
     }
 
     self.rect = rect.clone();
+  }
+
+  /// Corrects z-order drift by re-positioning the overlay directly behind
+  /// `anchor` if it isn't already there, without touching its rect.
+  ///
+  /// `anchor` (typically the tracked window's own `HWND`) can drift out of
+  /// sync with the overlay even when the overlay's rect hasn't changed --
+  /// e.g. an unrelated window being brought to the foreground doesn't move
+  /// `anchor` itself, but `anchor` being independently re-raised elsewhere
+  /// (see `platform_sync`'s own z-order handling) does, and the overlay
+  /// isn't part of that call so it's left behind. Cheap to call
+  /// unconditionally every sync tick: `GetWindow`/`GW_HWNDPREV` is a
+  /// same-process, no-op-fast check, so this only issues a real
+  /// `SetWindowPos` when the overlay actually needs to move.
+  pub fn sync_z_order(&mut self, anchor: HWND) -> crate::Result<()> {
+    // SAFETY: `self.hwnd()` is a valid window handle for the lifetime of
+    // this struct.
+    let prev = unsafe { GetWindow(self.hwnd(), GW_HWNDPREV) };
+    if prev == anchor {
+      self.anchor = anchor.0;
+      return Ok(());
+    }
+
+    // SAFETY: `self.hwnd()` is a valid window handle for the lifetime of
+    // this struct.
+    unsafe {
+      SetWindowPos(
+        self.hwnd(),
+        anchor,
+        0,
+        0,
+        0,
+        0,
+        SWP_NOACTIVATE | SWP_NOSENDCHANGING | SWP_NOMOVE | SWP_NOSIZE,
+      )
+    }?;
+
+    self.anchor = anchor.0;
+    Ok(())
   }
 
   /// Updates the ABGR tint; re-applies only when the value changes.

@@ -21,7 +21,9 @@ use crate::{
   wm_state::WmState,
 };
 #[cfg(target_os = "windows")]
-use crate::commands::general::{blur_overlay_params_for, upsert_blur_overlay};
+use crate::commands::general::{
+  blur_overlay_params_for, overlay_z_anchor, upsert_blur_overlay,
+};
 
 #[allow(clippy::too_many_lines)]
 pub fn handle_window_moved_or_resized(
@@ -73,6 +75,7 @@ pub fn handle_window_moved_or_resized(
             window.id(),
             params,
             &frame_position,
+            overlay_z_anchor(&window),
             &mut batch,
           );
           batch.commit();
@@ -105,6 +108,24 @@ pub fn handle_window_moved_or_resized(
       }
 
       return update_drag_state(&window, &frame_position, state, config);
+    }
+
+    // A resize/move/open animation session owns this window's position for
+    // the duration of its `ResizeSession` -- the real window is frozen and
+    // cloaked behind a surrogate, repositioned only once via
+    // `ResizeSession::maybe_handoff`. That handoff's `SetWindowPos` uses
+    // `SWP_NOSENDCHANGING`, which suppresses `WM_WINDOWPOSCHANGING` but not
+    // the location-change notification this handler is driven by. Without
+    // this guard, that "invisible" handoff reposition gets fully
+    // reprocessed below as if it were an independent move -- state
+    // transitions, floating-position updates, redraw queueing -- fighting
+    // the animation still in flight on the same window. Most visible as a
+    // flicker on a window that's only being repositioned as a side effect
+    // of a sibling's drag/relayout (its own animated move, not an
+    // interactive drag, so it doesn't hit the `active_drag` branch above).
+    #[cfg(target_os = "windows")]
+    if state.animation_manager.resize_sessions.contains_key(&window.id()) {
+      return Ok(());
     }
 
     let old_is_maximized = window.native_properties().is_maximized;

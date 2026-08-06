@@ -122,6 +122,22 @@ pub struct ResizeSession {
   /// toward/away from the surrogate center instead of repositioning the
   /// surrogate window. Used for zoom-in (open) and zoom-out (close) effects.
   pub zoom: bool,
+  /// Last progress value passed to [`update_zoom_fade`] (0.0 = zero-size,
+  /// 1.0 = full surrogate). Defaults to `1.0` (fully shown) so non-`zoom`
+  /// sessions -- which never call `update_zoom_fade` -- read as unscaled.
+  ///
+  /// The blur overlay tracks this session's surrogate at a fixed full-size
+  /// `current_rect` throughout a zoom animation (see its doc comment) since
+  /// only the thumbnail's `rcDestination`, not the surrogate window itself,
+  /// actually animates in size -- so without this, the overlay would appear
+  /// at full opacity from the very first frame while the window it's
+  /// supposedly attached to is still a speck at the center. Scaling the
+  /// overlay's own opacity by this value in [`blur_overlay_params`] instead
+  /// fades it in/out in lockstep with the thumbnail's zoom.
+  ///
+  /// [`update_zoom_fade`]: ResizeSession::update_zoom_fade
+  /// [`blur_overlay_params`]: ResizeSession::blur_overlay_params
+  zoom_progress: f32,
   /// `true` once the real window has been repositioned at the current
   /// `target_rect` (at session start for growing curtain-reveals, or
   /// mid-animation via [`maybe_handoff`]). Reset whenever a redirect changes
@@ -267,6 +283,7 @@ impl ResizeSession {
       is_move_only,
       is_growing,
       zoom: false,
+      zoom_progress: 1.0,
       handoff_done: is_growing,
       poll_parity: false,
       session_cloaked: false,
@@ -279,9 +296,30 @@ impl ResizeSession {
   /// Returns the tint/blur-amount/corner-radius/opacity/saturation for the
   /// acrylic blur-overlay tracker in `AnimationManager`, or `None` when
   /// blur-behind isn't configured for this window.
+  ///
+  /// For `zoom` sessions, `opacity` is scaled by `zoom_progress` so the
+  /// overlay fades in/out alongside the thumbnail's own zoom instead of
+  /// sitting at full opacity for the whole animation -- see
+  /// `zoom_progress`'s doc comment.
   #[must_use]
   pub fn blur_overlay_params(&self) -> Option<BlurOverlayParams> {
-    self.blur_overlay
+    let mut params = self.blur_overlay?;
+    if self.zoom {
+      params.opacity *= self.zoom_progress;
+    }
+    Some(params)
+  }
+
+  /// `HWND` of this session's surrogate, or `None` when surrogate creation
+  /// failed.
+  ///
+  /// Used as the acrylic blur-overlay tracker's z-order anchor while a
+  /// session is active: the surrogate is what's actually visible on screen
+  /// (the real window is cloaked for the duration), so the overlay must sit
+  /// directly behind *it*, not the (hidden) real window.
+  #[must_use]
+  pub fn surrogate_hwnd(&self) -> Option<HWND> {
+    self.surrogate.as_ref().map(NativeSurrogate::hwnd)
   }
 
   /// Live on-screen rect (logical, border-deflated) for the acrylic-overlay
@@ -390,6 +428,8 @@ impl ResizeSession {
   /// surrogate). Used for zoom-in (open) and zoom-out (close) effects. The
   /// surrogate window itself stays fixed; only the thumbnail rect animates.
   pub fn update_zoom_fade(&mut self, progress: f32, opacity: u8) {
+    self.zoom_progress = progress;
+
     let Some(ref mut surrogate) = self.surrogate else {
       return;
     };

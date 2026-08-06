@@ -211,6 +211,17 @@ impl WorkspaceSurrogate {
     matches!(self.mode, SurrogateMode::Live)
   }
 
+  /// `HWND` of this surrogate.
+  ///
+  /// Used as the acrylic blur-overlay tracker's z-order anchor while a
+  /// workspace-switch animation is active: the surrogate is what's actually
+  /// visible on screen (the real window is cloaked for the duration), so the
+  /// overlay must sit directly behind *it*, not the (hidden) real window.
+  #[must_use]
+  pub fn hwnd(&self) -> HWND {
+    self.inner.hwnd()
+  }
+
   /// Hides the DWM thumbnail without destroying it or hiding the surrogate window.
   ///
   /// Called immediately before the post-animation `DwmFlush` so the flush
