@@ -14,7 +14,7 @@ use crate::{platform_impl, Rect};
 #[cfg(target_os = "macos")]
 use crate::{platform_impl::AXUIElementExt, ThreadBound};
 #[cfg(target_os = "windows")]
-use crate::{BackdropStyle, Color, CornerStyle, Delta, OpacityValue, RectDelta};
+use crate::{BackdropStyle, CornerStyle, Delta, OpacityValue, RectDelta};
 
 /// Unique identifier of a window.
 ///
@@ -298,13 +298,6 @@ pub trait NativeWindowWindowsExt {
   /// This method is only available on Windows.
   fn set_title_bar_visibility(&self, visible: bool) -> crate::Result<()>;
 
-  /// Sets the color of the window's border.
-  ///
-  /// # Platform-specific
-  ///
-  /// This method is only available on Windows.
-  fn set_border_color(&self, color: Option<&Color>) -> crate::Result<()>;
-
   /// Sets the corner style of the window.
   ///
   /// # Platform-specific
@@ -451,10 +444,6 @@ impl NativeWindowWindowsExt for NativeWindow {
 
   fn set_title_bar_visibility(&self, visible: bool) -> crate::Result<()> {
     self.inner.set_title_bar_visibility(visible)
-  }
-
-  fn set_border_color(&self, color: Option<&Color>) -> crate::Result<()> {
-    self.inner.set_border_color(color)
   }
 
   fn set_corner_style(

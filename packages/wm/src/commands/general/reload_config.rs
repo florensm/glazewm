@@ -1,7 +1,7 @@
 use anyhow::Context;
 use tracing::{info, warn};
 #[cfg(target_os = "windows")]
-use wm_common::{HideMethod, ParsedConfig};
+use wm_common::HideMethod;
 use wm_common::{WindowRuleEvent, WmEvent};
 #[cfg(target_os = "windows")]
 use wm_platform::NativeWindowWindowsExt;
@@ -38,7 +38,7 @@ pub fn reload_config(
   update_container_gaps(state, config);
 
   #[cfg(target_os = "windows")]
-  update_window_effects(&old_config, state, config)?;
+  update_window_effects(state);
 
   // Ensure all windows are shown when hide method is changed.
   #[cfg(target_os = "windows")]
@@ -155,43 +155,14 @@ fn update_container_gaps(state: &mut WmState, config: &UserConfig) {
   }
 }
 
+/// Queues a full window-effects reapplication after a config reload.
+///
+/// Border/backdrop effects don't need explicit reset-on-disable handling
+/// here -- they're overlay-based (`sync_border_overlays`/
+/// `sync_blur_overlays`, driven every `platform_sync` tick) and simply stop
+/// being created/get torn down the moment their config resolves to
+/// disabled, same as any other config-driven change.
 #[cfg(target_os = "windows")]
-fn update_window_effects(
-  old_config: &ParsedConfig,
-  state: &mut WmState,
-  config: &UserConfig,
-) -> anyhow::Result<()> {
-  let focused_container =
-    state.focused_container().context("No focused container.")?;
-
-  let window_effects = &config.value.window_effects;
-  let old_window_effects = &old_config.window_effects;
-
-  // Window border effects are left at system defaults if disabled in the
-  // config. However, when transitioning from colored borders to having
-  // them disabled, it's best to reset to the system defaults.
-  if !window_effects.focused_window.border.enabled
-    && old_window_effects.focused_window.border.enabled
-  {
-    if let Ok(window) = focused_container.as_window_container() {
-      _ = window.native().set_border_color(None);
-    }
-  }
-
-  if !window_effects.other_windows.border.enabled
-    && old_window_effects.other_windows.border.enabled
-  {
-    let unfocused_windows = state
-      .windows()
-      .into_iter()
-      .filter(|window| window.id() != focused_container.id());
-
-    for window in unfocused_windows {
-      _ = window.native().set_border_color(None);
-    }
-  }
-
+fn update_window_effects(state: &mut WmState) {
   state.pending_sync.queue_all_effects_update();
-
-  Ok(())
 }

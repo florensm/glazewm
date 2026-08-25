@@ -34,6 +34,10 @@ mod native_blur_overlay;
 #[cfg(target_os = "windows")]
 pub use native_blur_overlay::NativeBlurOverlay;
 #[cfg(target_os = "windows")]
+mod native_border_overlay;
+#[cfg(target_os = "windows")]
+pub use native_border_overlay::NativeBorderOverlay;
+#[cfg(target_os = "windows")]
 mod native_surrogate;
 #[cfg(target_os = "windows")]
 pub use native_surrogate::{NativeSurrogate, SurrogateBatch};

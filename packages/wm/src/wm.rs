@@ -324,9 +324,21 @@ impl WindowManager {
                 .backdrop
                 .acrylic_tint()
                 .map(|tint| effect_cfg.backdrop.to_overlay_params(tint, corner_radius));
+              let border_overlay = effect_cfg
+                .border
+                .abgr_color()
+                .map(|color| effect_cfg.border.to_overlay_params(color, corner_radius));
+
+              let margin_px = if effect_cfg.border.enabled {
+                effect_cfg.border.margin.to_px(0, None)
+              } else {
+                0
+              };
 
               if let Ok(rect) = window.to_rect().and_then(|r| {
-                window.total_border_delta().map(|d| r.apply_delta(&d, None))
+                window
+                  .total_border_delta()
+                  .map(|d| r.inset(margin_px).apply_delta(&d, None))
               }) {
                 let window_id = window.id();
 
@@ -341,6 +353,7 @@ impl WindowManager {
                     effect_opacity,
                     corner_style,
                     blur_overlay,
+                    border_overlay,
                     config,
                     &*native_ref,
                   );

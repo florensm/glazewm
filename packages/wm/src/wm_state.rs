@@ -9,7 +9,10 @@ use wm_platform::{
   Direction, Dispatcher, Display, NativeWindow, Point, Rect,
 };
 #[cfg(target_os = "windows")]
-use wm_platform::{NativeBlurOverlay, NativeWindowWindowsExt, OpacityValue};
+use wm_platform::{
+  NativeBlurOverlay, NativeBorderOverlay, NativeWindowWindowsExt,
+  OpacityValue,
+};
 
 use crate::{
   animation::AnimationManager,
@@ -84,6 +87,13 @@ pub struct WmState {
   #[cfg(target_os = "windows")]
   pub blur_overlays: HashMap<Uuid, NativeBlurOverlay>,
 
+  /// Border overlay windows keyed by managed-window UUID -- a persistent,
+  /// self-drawn stand-in for the OS's `DWMWA_BORDER_COLOR`, which isn't
+  /// carried along by DWM thumbnails and so vanishes during transitions.
+  /// See `NativeBorderOverlay`'s doc comment.
+  #[cfg(target_os = "windows")]
+  pub border_overlays: HashMap<Uuid, NativeBorderOverlay>,
+
   /// Whether the initial state has been populated.
   has_initialized: bool,
 
@@ -109,6 +119,8 @@ impl WmState {
       window_target_positions: HashMap::new(),
       #[cfg(target_os = "windows")]
       blur_overlays: HashMap::new(),
+      #[cfg(target_os = "windows")]
+      border_overlays: HashMap::new(),
       prev_effects_window: None,
       recent_workspace_name: None,
       unmanaged_or_minimized_timestamp: None,
@@ -739,7 +751,6 @@ impl Drop for WmState {
         }
 
         let _ = window.native().set_taskbar_visibility(true);
-        let _ = window.native().set_border_color(None);
         let _ = window
           .native()
           .set_transparency(&OpacityValue::from_alpha(u8::MAX));

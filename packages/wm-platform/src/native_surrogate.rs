@@ -100,7 +100,7 @@ fn apply_corner_preference(hwnd: HWND, corner_style: &CornerStyle) {
 /// is genuinely see-through.
 ///
 /// This is a no-op when the API is unavailable (pre-Windows 10 1607).
-fn apply_backdrop(hwnd: HWND, color: Option<&Color>) {
+pub(crate) fn apply_backdrop(hwnd: HWND, color: Option<&Color>) {
   let Some(c) = color else {
     return;
   };

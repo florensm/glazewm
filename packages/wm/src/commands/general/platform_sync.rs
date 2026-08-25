@@ -10,9 +10,9 @@ use wm_common::{
 use wm_platform::NativeWindowWindowsExt;
 #[cfg(target_os = "windows")]
 use wm_platform::{
-  BackdropStyle, BlurOverlayParams, CornerStyle, NativeBlurOverlay,
-  NativeIrisOverlay, OpacityValue, SurrogateBatch, WorkspaceSurrogate,
-  HWND, HWND_TOPMOST,
+  BackdropStyle, BlurOverlayParams, BorderOverlayParams, CornerStyle,
+  NativeBlurOverlay, NativeBorderOverlay, NativeIrisOverlay, OpacityValue,
+  SurrogateBatch, WorkspaceSurrogate, HWND, HWND_TOPMOST,
 };
 use wm_platform::{Rect, WindowZOrder};
 
@@ -145,6 +145,10 @@ pub fn platform_sync(
   // through moves, resizes, and workspace changes.
   #[cfg(target_os = "windows")]
   sync_blur_overlays(state, config, &focused_container, &z_order_touched);
+
+  // Same per-tick tracking for border overlays -- see `sync_border_overlays`.
+  #[cfg(target_os = "windows")]
+  sync_border_overlays(state, config, &focused_container, &z_order_touched);
 
   state.pending_sync.clear();
 
@@ -439,10 +443,17 @@ fn redraw_containers(
           };
 
           if is_incoming {
+            let margin_px = if effect_cfg.border.enabled {
+              effect_cfg.border.margin.to_px(0, None)
+            } else {
+              0
+            };
             let surrogate = window
               .to_rect()
               .and_then(|r| {
-                window.total_border_delta().map(|d| r.apply_delta(&d, None))
+                window
+                  .total_border_delta()
+                  .map(|d| r.inset(margin_px).apply_delta(&d, None))
               })
               .ok()
               .and_then(|rect| {
@@ -575,10 +586,26 @@ fn redraw_containers(
   let mut needs_transparency_flush = false;
 
   let cycle_has_resize = windows_to_update.iter().any(|window| {
+    #[cfg(target_os = "windows")]
+    let margin_px = {
+      let effect_cfg = if window.id() == focused_container.id() {
+        &config.value.window_effects.focused_window
+      } else {
+        &config.value.window_effects.other_windows
+      };
+      if effect_cfg.border.enabled {
+        effect_cfg.border.margin.to_px(0, None)
+      } else {
+        0
+      }
+    };
+    #[cfg(not(target_os = "windows"))]
+    let margin_px: i32 = 0;
+
     let target_rect = window.to_rect().and_then(|rect| {
       window
         .total_border_delta()
-        .map(|delta| rect.apply_delta(&delta, None))
+        .map(|delta| rect.inset(margin_px).apply_delta(&delta, None))
     });
 
     match (target_rect, state.window_target_positions.get(&window.id())) {
@@ -666,10 +693,31 @@ fn redraw_containers(
       };
     window.set_display_state(new_display_state);
 
+    // Shrinks the window into its tile by the configured border margin
+    // (Windows-only, like the rest of the border-overlay feature), so the
+    // border overlay's outset (already widened by this same margin in
+    // `to_overlay_params`) leaves a real colored gap around the content
+    // instead of the ring sitting flush against the window edge.
+    #[cfg(target_os = "windows")]
+    let margin_px = {
+      let effect_cfg = if window.id() == focused_container.id() {
+        &config.value.window_effects.focused_window
+      } else {
+        &config.value.window_effects.other_windows
+      };
+      if effect_cfg.border.enabled {
+        effect_cfg.border.margin.to_px(0, None)
+      } else {
+        0
+      }
+    };
+    #[cfg(not(target_os = "windows"))]
+    let margin_px: i32 = 0;
+
     let target_rect = window
       .to_rect()?
+      .inset(margin_px)
       .apply_delta(&window.total_border_delta()?, None);
-
 
     let is_visible = matches!(
       window.display_state(),
@@ -732,7 +780,7 @@ fn redraw_containers(
     // Compute effect opacity and corner style unconditionally — needed for
     // both the movement surrogate path and the fade-in path.
     #[cfg(target_os = "windows")]
-    let (effect_opacity, corner_style, blur_overlay) = {
+    let (effect_opacity, corner_style, blur_overlay, border_overlay) = {
       let effect_cfg = if window.id() == focused_container.id() {
         &config.value.window_effects.focused_window
       } else {
@@ -761,7 +809,11 @@ fn redraw_containers(
         .backdrop
         .acrylic_tint()
         .map(|tint| effect_cfg.backdrop.to_overlay_params(tint, corner_radius));
-      (opacity, style, blur_overlay)
+      let border_overlay = effect_cfg
+        .border
+        .abgr_color()
+        .map(|color| effect_cfg.border.to_overlay_params(color, corner_radius));
+      (opacity, style, blur_overlay, border_overlay)
     };
 
     // Start a slide-in animation for newly appearing tiling windows.
@@ -786,6 +838,7 @@ fn redraw_containers(
         effect_opacity,
         corner_style,
         blur_overlay,
+        border_overlay,
         config,
         &*native_ref,
       );
@@ -841,6 +894,7 @@ fn redraw_containers(
           effect_opacity,
           corner_style,
           blur_overlay,
+          border_overlay,
           config,
         )
       }
@@ -915,6 +969,22 @@ fn redraw_containers(
               let mut immediate_batch = SurrogateBatch::new();
               upsert_blur_overlay(
                 &mut state.blur_overlays,
+                window.id(),
+                params,
+                &rect,
+                anchor,
+                &mut immediate_batch,
+              );
+              immediate_batch.commit();
+            }
+            if let (Some(params), Some(anchor), Some(rect)) = (
+              session.border_overlay_params(),
+              session.surrogate_hwnd(),
+              session.current_rect(),
+            ) {
+              let mut immediate_batch = SurrogateBatch::new();
+              upsert_border_overlay(
+                &mut state.border_overlays,
                 window.id(),
                 params,
                 &rect,
@@ -1162,33 +1232,52 @@ fn redraw_containers(
   #[cfg(target_os = "windows")]
   {
     let mut blur_batch = SurrogateBatch::new();
+    let mut border_batch = SurrogateBatch::new();
     for (id, session) in &state.animation_manager.resize_sessions {
       if state.animation_manager.has_close_animation(id) {
         continue;
       }
-      let Some(params) = session.blur_overlay_params() else {
-        continue;
-      };
-      let Some(anchor) = session.surrogate_hwnd() else {
-        continue;
-      };
-      match session.current_rect() {
-        Some(rect) => upsert_blur_overlay(
-          &mut state.blur_overlays,
-          *id,
-          params,
-          &rect,
-          anchor,
-          &mut blur_batch,
-        ),
-        None => {
-          if let Some(overlay) = state.blur_overlays.get_mut(id) {
-            overlay.hide();
+      let anchor = session.surrogate_hwnd();
+      let rect = session.current_rect();
+
+      if let Some(params) = session.blur_overlay_params() {
+        match (anchor, rect.clone()) {
+          (Some(anchor), Some(rect)) => upsert_blur_overlay(
+            &mut state.blur_overlays,
+            *id,
+            params,
+            &rect,
+            anchor,
+            &mut blur_batch,
+          ),
+          _ => {
+            if let Some(overlay) = state.blur_overlays.get_mut(id) {
+              overlay.hide();
+            }
+          }
+        }
+      }
+
+      if let Some(params) = session.border_overlay_params() {
+        match (anchor, rect) {
+          (Some(anchor), Some(rect)) => upsert_border_overlay(
+            &mut state.border_overlays,
+            *id,
+            params,
+            &rect,
+            anchor,
+            &mut border_batch,
+          ),
+          _ => {
+            if let Some(overlay) = state.border_overlays.get_mut(id) {
+              overlay.hide();
+            }
           }
         }
       }
     }
     blur_batch.commit();
+    border_batch.commit();
   }
 
   // Apply effect opacity to outgoing surrogates now that the real windows
@@ -1418,16 +1507,6 @@ fn apply_window_effects(
     &window_effects.other_windows
   };
 
-  // Skip if both focused + non-focused window effects are disabled.
-  #[cfg(target_os = "windows")]
-  if window_effects.focused_window.border.enabled
-    || window_effects.other_windows.border.enabled
-    || window_effects.focused_window.backdrop.enabled
-    || window_effects.other_windows.backdrop.enabled
-  {
-    apply_border_effect(window, effect_config);
-  }
-
   #[cfg(target_os = "windows")]
   if window_effects.focused_window.hide_title_bar.enabled
     || window_effects.other_windows.hide_title_bar.enabled
@@ -1455,33 +1534,6 @@ fn apply_window_effects(
   {
     apply_backdrop_effect(window, effect_config);
   }
-}
-
-#[cfg(target_os = "windows")]
-fn apply_border_effect(
-  window: &WindowContainer,
-  effect_config: &WindowEffectConfig,
-) {
-  // Suppress the border when a blur-behind material is active so the
-  // colored frame doesn't clash with the acrylic/mica backdrop.
-  let border_color =
-    if effect_config.border.enabled && !effect_config.backdrop.enabled {
-      Some(&effect_config.border.color)
-    } else {
-      None
-    };
-
-  _ = window.native().set_border_color(border_color);
-
-  let native = window.native().clone();
-  let border_color = border_color.cloned();
-
-  // Re-apply border color after a short delay to better handle
-  // windows that change it themselves.
-  tokio::task::spawn(async move {
-    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-    _ = native.set_border_color(border_color.as_ref());
-  });
 }
 
 #[cfg(target_os = "windows")]
@@ -1619,6 +1671,70 @@ pub(crate) fn upsert_blur_overlay(
       }
     }
   }
+}
+
+/// Creates or updates a tracked border overlay for `window_id`, applying
+/// `color`/`width`/`corner_radius` and moving it to `rect`. Mirrors
+/// [`upsert_blur_overlay`] exactly -- see its doc comment for the shared
+/// rationale (used by both the workspace-switch live-tracking driver and
+/// the static per-tick path, and takes the overlay map directly so callers
+/// already holding an unrelated borrow into other `WmState` fields can pass
+/// `&mut state.border_overlays` without a borrow-checker conflict).
+#[cfg(target_os = "windows")]
+pub(crate) fn upsert_border_overlay(
+  overlays: &mut std::collections::HashMap<uuid::Uuid, NativeBorderOverlay>,
+  window_id: uuid::Uuid,
+  params: BorderOverlayParams,
+  rect: &Rect,
+  anchor: HWND,
+  batch: &mut SurrogateBatch,
+) {
+  match overlays.entry(window_id) {
+    std::collections::hash_map::Entry::Occupied(e) => {
+      let overlay = e.into_mut();
+      overlay.apply(params);
+      overlay.defer_rect(batch, rect, anchor);
+    }
+    std::collections::hash_map::Entry::Vacant(e) => {
+      match NativeBorderOverlay::create(rect, params, anchor) {
+        Ok(overlay) => {
+          debug!("Border overlay created for {window_id}.");
+          e.insert(overlay);
+        }
+        Err(err) => {
+          debug!("Border overlay creation failed for {window_id}: {err}.");
+        }
+      }
+    }
+  }
+}
+
+/// Resolves `window`'s border overlay params from its focused/other-window
+/// border config, or `None` when the border effect isn't enabled for it.
+/// Mirrors [`blur_overlay_params_for`].
+#[cfg(target_os = "windows")]
+pub(crate) fn border_overlay_params_for(
+  is_focused: bool,
+  config: &UserConfig,
+) -> Option<BorderOverlayParams> {
+  let effect_cfg = if is_focused {
+    &config.value.window_effects.focused_window
+  } else {
+    &config.value.window_effects.other_windows
+  };
+
+  let color = effect_cfg.border.abgr_color()?;
+
+  // Mirrors `corner_style` (falling back to `CornerStyle::Default` when
+  // disabled) so the overlay's outer radius lines up concentrically with
+  // the real managed window's own DWM-rendered corners.
+  let corner_radius = if effect_cfg.corner_style.enabled {
+    effect_cfg.corner_style.style.approx_radius_px()
+  } else {
+    CornerStyle::Default.approx_radius_px()
+  };
+
+  Some(effect_cfg.border.to_overlay_params(color, corner_radius))
 }
 
 /// Resolves `window`'s acrylic overlay params from its focused/other-window
@@ -1834,6 +1950,118 @@ fn sync_blur_overlays(
 
   // Destroy overlays for windows that no longer need them.
   state.blur_overlays.retain(|id, _| wanted_ids.contains(id));
+
+  batch.commit();
+}
+
+/// Creates, repositions, and removes border overlay windows so that every
+/// managed window with `border.enabled` has a matching ring overlay
+/// tracking its rect. Mirrors [`sync_blur_overlays`] exactly -- see its doc
+/// comment for the shared per-tick tracking rationale (the same live-
+/// surrogate/live-resize-tracker skip, the same inactive-workspace hide,
+/// and the same `z_order_touched`/`full_z_order_resync` gating apply here
+/// unchanged).
+#[cfg(target_os = "windows")]
+fn sync_border_overlays(
+  state: &mut WmState,
+  config: &UserConfig,
+  focused_container: &Container,
+  z_order_touched: &std::collections::HashSet<uuid::Uuid>,
+) {
+  let all_windows = state.windows();
+  let mut wanted_ids = std::collections::HashSet::new();
+  let mut batch = SurrogateBatch::new();
+
+  // Reuses the same dirty flag as blur overlays: a `place_at_top` surrogate
+  // can displace any overlay window out of its z-order slot regardless of
+  // which effect it belongs to, so `redraw_containers` sets it once for
+  // both. Only consumed (cleared) once here -- `sync_blur_overlays` (called
+  // just before this in `platform_sync`) already consumed it for its own
+  // pass, so this reads whatever's left, which is `false` in the common
+  // case where blur already handled the resync this tick. Border overlays
+  // still need their own read in case blur is disabled entirely (leaving
+  // this the only consumer).
+  let full_z_order_resync = state.animation_manager.blur_overlay_z_order_dirty;
+  state.animation_manager.blur_overlay_z_order_dirty = false;
+
+  let redrawing_ids: std::collections::HashSet<_> =
+    state.windows_to_redraw().iter().map(CommonGetters::id).collect();
+
+  for window in &all_windows {
+    let is_focused = window.id() == focused_container.id();
+
+    let Some(params) = border_overlay_params_for(is_focused, config) else {
+      continue;
+    };
+
+    wanted_ids.insert(window.id());
+
+    if state.animation_manager.has_live_ws_surrogate(&window.id())
+      || state.animation_manager.has_live_resize_tracker(&window.id())
+    {
+      continue;
+    }
+
+    let should_hide = state.animation_manager.has_active_surrogate(&window.id())
+      || !window.workspace().is_some_and(|ws| ws.is_displayed());
+
+    if should_hide {
+      if let Some(overlay) = state.border_overlays.get_mut(&window.id()) {
+        overlay.hide();
+      }
+      continue;
+    }
+
+    let is_redrawing = redrawing_ids.contains(&window.id());
+    let had_overlay = state.border_overlays.contains_key(&window.id());
+    let anchor = overlay_z_anchor(window);
+
+    match state.border_overlays.entry(window.id()) {
+      std::collections::hash_map::Entry::Occupied(e) => {
+        let overlay = e.into_mut();
+        overlay.apply(params);
+
+        if is_redrawing || !overlay.is_visible() {
+          match window.native().frame() {
+            Ok(rect) => overlay.defer_rect(&mut batch, &rect, anchor),
+            Err(err) => debug!(
+              "Border overlay frame() query failed for {}: {err}.",
+              window.id()
+            ),
+          }
+        } else if full_z_order_resync
+          || z_order_touched.contains(&window.id())
+        {
+          if let Err(err) = overlay.sync_z_order(anchor) {
+            debug!(
+              "Border overlay z-order sync failed for {}: {err}.",
+              window.id()
+            );
+          }
+        }
+      }
+      std::collections::hash_map::Entry::Vacant(e) => {
+        debug_assert!(!had_overlay);
+
+        let Ok(rect) = window.native().frame() else {
+          continue;
+        };
+
+        match NativeBorderOverlay::create(&rect, params, anchor) {
+          Ok(overlay) => {
+            debug!("Border overlay created for {}.", window.id());
+            e.insert(overlay);
+          }
+          Err(err) => {
+            debug!("Border overlay creation failed for {}: {err}.", window.id());
+          }
+        }
+      }
+    }
+  }
+
+  // Destroy overlays for windows that no longer need them.
+  state.border_overlays.retain(|id, _| wanted_ids.contains(id));
 
   batch.commit();
 }

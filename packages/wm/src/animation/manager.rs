@@ -124,9 +124,10 @@ use wm_common::{
 use wm_platform::{NativeWindow, OpacityValue, Rect};
 #[cfg(target_os = "windows")]
 use wm_platform::{
-  BlurOverlayParams, Color, CornerStyle, DxgiVsyncWaiter, NativeBlurOverlay,
-  NativeIrisOverlay, NativeWindowWindowsExt, ResizeSession, SessionOptions,
-  SurrogateBatch, WorkspaceSurrogate, HWND,
+  BlurOverlayParams, BorderOverlayParams, Color, CornerStyle, DxgiVsyncWaiter,
+  NativeBlurOverlay, NativeBorderOverlay, NativeIrisOverlay,
+  NativeWindowWindowsExt, ResizeSession, SessionOptions, SurrogateBatch,
+  WorkspaceSurrogate, HWND,
 };
 
 use crate::{
@@ -137,7 +138,9 @@ use crate::{
   wm_state::WmState,
 };
 #[cfg(target_os = "windows")]
-use crate::commands::general::{overlay_z_anchor, upsert_blur_overlay};
+use crate::commands::general::{
+  overlay_z_anchor, upsert_blur_overlay, upsert_border_overlay,
+};
 
 /// A single entry in the surrogate update queue built each redraw pass.
 #[cfg(target_os = "windows")]
@@ -474,37 +477,36 @@ impl AnimationManager {
         .any(|(id, _, _)| id == window_id)
   }
 
-  /// Returns `true` if `window_id` has a `Live`-mode (acrylic-tinted)
-  /// workspace-switch surrogate actively tracked this tick, or in its
-  /// `pending_ws_cleanup` grace tail.
+  /// Returns `true` if `window_id` has a workspace-switch surrogate
+  /// actively tracked this tick, or in its `pending_ws_cleanup` grace tail
+  /// -- regardless of whether that surrogate itself carries a live acrylic
+  /// tracker (`WorkspaceSurrogate::is_live`, checked separately by the
+  /// per-tick driver at its own blur-specific tracking step).
   ///
-  /// That tracked blur overlay is owned entirely by the per-tick driver in
-  /// `update_internal` for as long as this returns `true` -- `sync_blur_overlays`
-  /// must leave these windows alone rather than hiding/repositioning them.
+  /// Both the blur and border overlay for such a window are owned entirely
+  /// by the per-tick driver in `update_internal` for as long as this
+  /// returns `true` -- `sync_blur_overlays`/`sync_border_overlays` must
+  /// leave these windows alone rather than hiding/repositioning them, even
+  /// when only one of the two effects is actually configured for it.
   #[cfg(target_os = "windows")]
   pub fn has_live_ws_surrogate(&self, window_id: &Uuid) -> bool {
-    let is_live = |ws: &WorkspaceSwitchState| {
-      ws.windows
-        .get(window_id)
-        .is_some_and(|e| e.surrogate.as_ref().is_some_and(WorkspaceSurrogate::is_live))
+    let has_surrogate = |ws: &WorkspaceSwitchState| {
+      ws.windows.get(window_id).is_some_and(|e| e.surrogate.is_some())
     };
-    self.workspace_switch.as_ref().is_some_and(is_live)
-      || self.pending_ws_cleanup.as_ref().is_some_and(is_live)
+    self.workspace_switch.as_ref().is_some_and(has_surrogate)
+      || self.pending_ws_cleanup.as_ref().is_some_and(has_surrogate)
   }
 
-  /// Returns `true` if `window_id`'s active or fading-out `ResizeSession`
-  /// carries a live acrylic-blur tracker (i.e. `backdrop` was configured
-  /// when the session began). Mirrors `has_live_ws_surrogate`.
+  /// Returns `true` if `window_id` has an active or fading-out
+  /// `ResizeSession`, regardless of whether it carries a live blur/border
+  /// tracker. Mirrors `has_live_ws_surrogate`.
   #[cfg(target_os = "windows")]
   pub fn has_live_resize_tracker(&self, window_id: &Uuid) -> bool {
-    self
-      .resize_sessions
-      .get(window_id)
-      .is_some_and(|s| s.blur_overlay_params().is_some())
+    self.resize_sessions.contains_key(window_id)
       || self
         .pending_session_cleanup
         .iter()
-        .any(|(id, _, s)| id == window_id && s.blur_overlay_params().is_some())
+        .any(|(id, _, _)| id == window_id)
   }
 
   /// Removes a window's animation and any associated resize session.
@@ -806,6 +808,7 @@ impl AnimationManager {
       // own synchronous `SetWindowPos` -- same reasoning as
       // `platform_sync`'s per-tick blur-overlay sync passes.
       let mut blur_batch = SurrogateBatch::new();
+      let mut border_batch = SurrogateBatch::new();
 
       for id in &close_in_progress {
         let is_zoom = state
@@ -843,15 +846,17 @@ impl AnimationManager {
 
         // Close animations are detached from the layout tree, so they never
         // reach `platform_sync`'s per-window loop -- track the acrylic blur
-        // overlay directly here instead, mirroring `sync_blur_overlays`'
-        // steady-state behavior but following the surrogate's live rect.
+        // and border overlays directly here instead, mirroring
+        // `sync_blur_overlays`'/`sync_border_overlays`' steady-state
+        // behavior but following the surrogate's live rect.
         if let Some(session) = state.animation_manager.resize_sessions.get(id)
         {
-          if let (Some(params), Some(anchor)) =
-            (session.blur_overlay_params(), session.surrogate_hwnd())
-          {
-            match session.current_rect() {
-              Some(rect) => upsert_blur_overlay(
+          let anchor = session.surrogate_hwnd();
+          let rect = session.current_rect();
+
+          if let Some(params) = session.blur_overlay_params() {
+            match (anchor, rect.clone()) {
+              (Some(anchor), Some(rect)) => upsert_blur_overlay(
                 &mut state.blur_overlays,
                 *id,
                 params,
@@ -859,8 +864,26 @@ impl AnimationManager {
                 anchor,
                 &mut blur_batch,
               ),
-              None => {
+              _ => {
                 if let Some(overlay) = state.blur_overlays.get_mut(id) {
+                  overlay.hide();
+                }
+              }
+            }
+          }
+
+          if let Some(params) = session.border_overlay_params() {
+            match (anchor, rect) {
+              (Some(anchor), Some(rect)) => upsert_border_overlay(
+                &mut state.border_overlays,
+                *id,
+                params,
+                &rect,
+                anchor,
+                &mut border_batch,
+              ),
+              _ => {
+                if let Some(overlay) = state.border_overlays.get_mut(id) {
                   overlay.hide();
                 }
               }
@@ -870,6 +893,7 @@ impl AnimationManager {
       }
 
       blur_batch.commit();
+      border_batch.commit();
     }
 
     // Finalize completed close animations before `remove_completed_animations`
@@ -1165,6 +1189,46 @@ impl AnimationManager {
                 }
               }
             }
+
+            // Same live-tracking for the border overlay, independent of
+            // `is_live()` (a blur-specific flag) -- `current_rect()` is
+            // already kept current by the `update_*` call above regardless
+            // of whether this surrogate carries acrylic blur.
+            {
+              let effect_cfg = if Some(window_id) == focused_id_for_overlay {
+                &config.value.window_effects.focused_window
+              } else {
+                &config.value.window_effects.other_windows
+              };
+              if let Some(color) = effect_cfg.border.abgr_color() {
+                match s.current_rect() {
+                  Some(rect) => {
+                    let corner_radius = if effect_cfg.corner_style.enabled {
+                      effect_cfg.corner_style.style.approx_radius_px()
+                    } else {
+                      CornerStyle::Default.approx_radius_px()
+                    };
+                    let params =
+                      effect_cfg.border.to_overlay_params(color, corner_radius);
+                    upsert_border_overlay(
+                      &mut state.border_overlays,
+                      window_id,
+                      params,
+                      rect,
+                      s.hwnd(),
+                      &mut ws_batch,
+                    );
+                  }
+                  None => {
+                    if let Some(overlay) =
+                      state.border_overlays.get_mut(&window_id)
+                    {
+                      overlay.hide();
+                    }
+                  }
+                }
+              }
+            }
           }
         }
         ws_batch.commit();
@@ -1283,13 +1347,15 @@ impl AnimationManager {
       // pre-show/flush gap to plug here. Batched into one `DeferWindowPos`
       // transaction, same reasoning as the other blur-overlay sync loops.
       let mut fade_tail_batch = SurrogateBatch::new();
+      let mut border_fade_tail_batch = SurrogateBatch::new();
       for (id, _, session) in &state.animation_manager.pending_session_cleanup
       {
-        if let (Some(params), Some(anchor)) =
-          (session.blur_overlay_params(), session.surrogate_hwnd())
-        {
-          match session.current_rect() {
-            Some(rect) => upsert_blur_overlay(
+        let anchor = session.surrogate_hwnd();
+        let rect = session.current_rect();
+
+        if let Some(params) = session.blur_overlay_params() {
+          match (anchor, rect.clone()) {
+            (Some(anchor), Some(rect)) => upsert_blur_overlay(
               &mut state.blur_overlays,
               *id,
               params,
@@ -1297,8 +1363,26 @@ impl AnimationManager {
               anchor,
               &mut fade_tail_batch,
             ),
-            None => {
+            _ => {
               if let Some(overlay) = state.blur_overlays.get_mut(id) {
+                overlay.hide();
+              }
+            }
+          }
+        }
+
+        if let Some(params) = session.border_overlay_params() {
+          match (anchor, rect) {
+            (Some(anchor), Some(rect)) => upsert_border_overlay(
+              &mut state.border_overlays,
+              *id,
+              params,
+              &rect,
+              anchor,
+              &mut border_fade_tail_batch,
+            ),
+            _ => {
+              if let Some(overlay) = state.border_overlays.get_mut(id) {
                 overlay.hide();
               }
             }
@@ -1306,6 +1390,7 @@ impl AnimationManager {
         }
       }
       fade_tail_batch.commit();
+      border_fade_tail_batch.commit();
 
       let has_new_session_cleanup = state
         .animation_manager
@@ -1353,6 +1438,7 @@ impl AnimationManager {
 
       if !finishing_sessions.is_empty() {
         let mut finishing_batch = SurrogateBatch::new();
+        let mut border_finishing_batch = SurrogateBatch::new();
         for (id, rect) in &finishing_sessions {
           let Some(container) = state.container_by_id(*id) else {
             tracing::warn!("finishing_sessions: no container for {id}.");
@@ -1373,8 +1459,12 @@ impl AnimationManager {
           } else {
             tracing::warn!("finishing_sessions: no blur overlay for {id}.");
           }
+          if let Some(overlay) = state.border_overlays.get_mut(id) {
+            overlay.defer_rect(&mut border_finishing_batch, rect, anchor);
+          }
         }
         finishing_batch.commit();
+        border_finishing_batch.commit();
         wm_platform::dwm_flush();
       }
 
@@ -1447,7 +1537,10 @@ impl AnimationManager {
       let focused_id = state.focused_container().map(|c| c.id());
       let mut pre_shown = false;
       let mut pre_show_batch = SurrogateBatch::new();
+      let mut border_pre_show_batch = SurrogateBatch::new();
 
+      // Covers both blur and border overlays despite the name -- see the
+      // comment above where this is built.
       for (id, rect, anchor) in &incoming_acrylic_windows {
         let effect_cfg = if Some(*id) == focused_id {
           &config.value.window_effects.focused_window
@@ -1455,33 +1548,53 @@ impl AnimationManager {
           &config.value.window_effects.other_windows
         };
 
-        let Some(tint) = effect_cfg.backdrop.acrylic_tint() else {
-          continue;
-        };
-
         let corner_radius = if effect_cfg.corner_style.enabled {
           effect_cfg.corner_style.style.approx_radius_px()
         } else {
           CornerStyle::Default.approx_radius_px()
         };
-        let params = effect_cfg.backdrop.to_overlay_params(tint, corner_radius);
 
-        match state.blur_overlays.entry(*id) {
-          std::collections::hash_map::Entry::Occupied(e) => {
-            let overlay = e.into_mut();
-            overlay.apply(params);
-            overlay.defer_rect(&mut pre_show_batch, rect, *anchor);
-          }
-          std::collections::hash_map::Entry::Vacant(e) => {
-            if let Ok(overlay) = NativeBlurOverlay::create(rect, params, *anchor)
-            {
-              e.insert(overlay);
+        if let Some(tint) = effect_cfg.backdrop.acrylic_tint() {
+          let params = effect_cfg.backdrop.to_overlay_params(tint, corner_radius);
+
+          match state.blur_overlays.entry(*id) {
+            std::collections::hash_map::Entry::Occupied(e) => {
+              let overlay = e.into_mut();
+              overlay.apply(params);
+              overlay.defer_rect(&mut pre_show_batch, rect, *anchor);
+            }
+            std::collections::hash_map::Entry::Vacant(e) => {
+              if let Ok(overlay) = NativeBlurOverlay::create(rect, params, *anchor)
+              {
+                e.insert(overlay);
+              }
             }
           }
+          pre_shown = true;
         }
-        pre_shown = true;
+
+        if let Some(color) = effect_cfg.border.abgr_color() {
+          let params = effect_cfg.border.to_overlay_params(color, corner_radius);
+
+          match state.border_overlays.entry(*id) {
+            std::collections::hash_map::Entry::Occupied(e) => {
+              let overlay = e.into_mut();
+              overlay.apply(params);
+              overlay.defer_rect(&mut border_pre_show_batch, rect, *anchor);
+            }
+            std::collections::hash_map::Entry::Vacant(e) => {
+              if let Ok(overlay) =
+                NativeBorderOverlay::create(rect, params, *anchor)
+              {
+                e.insert(overlay);
+              }
+            }
+          }
+          pre_shown = true;
+        }
       }
       pre_show_batch.commit();
+      border_pre_show_batch.commit();
 
       if pre_shown {
         wm_platform::dwm_flush();
@@ -1502,6 +1615,7 @@ impl AnimationManager {
       // correction as a side effect; unfocused siblings get no such
       // incidental save).
       let mut final_anchor_batch = SurrogateBatch::new();
+      let mut border_final_anchor_batch = SurrogateBatch::new();
       for (id, rect, _) in &incoming_acrylic_windows {
         let Some(container) = state.container_by_id(*id) else {
           continue;
@@ -1510,12 +1624,15 @@ impl AnimationManager {
           continue;
         };
         let anchor = overlay_z_anchor(&window);
-        let Some(overlay) = state.blur_overlays.get_mut(id) else {
-          continue;
-        };
-        overlay.defer_rect(&mut final_anchor_batch, rect, anchor);
+        if let Some(overlay) = state.blur_overlays.get_mut(id) {
+          overlay.defer_rect(&mut final_anchor_batch, rect, anchor);
+        }
+        if let Some(overlay) = state.border_overlays.get_mut(id) {
+          overlay.defer_rect(&mut border_final_anchor_batch, rect, anchor);
+        }
       }
       final_anchor_batch.commit();
+      border_final_anchor_batch.commit();
       if !incoming_acrylic_windows.is_empty() {
         wm_platform::dwm_flush();
       }
@@ -1775,6 +1892,10 @@ impl AnimationManager {
     // blur-overlay tracker, or `None` when blur-behind is not configured.
     #[cfg(target_os = "windows")]
     blur_overlay: Option<BlurOverlayParams>,
+    // Color/width/corner-radius/opacity for the border-overlay tracker, or
+    // `None` when the border effect is not configured.
+    #[cfg(target_os = "windows")]
+    border_overlay: Option<BorderOverlayParams>,
     config: &UserConfig,
   ) -> (AnimationPositionResult, Option<OpacityValue>) {
     let existing_animation = self.get_animation(&window_id).cloned();
@@ -1853,6 +1974,7 @@ impl AnimationManager {
               place_at_top: true,
               edge_color: cached_edge_color,
               blur_overlay,
+              border_overlay,
             },
           ) {
             Ok(session) => {
@@ -2285,6 +2407,7 @@ impl AnimationManager {
     effect_opacity: u8,
     corner_style: CornerStyle,
     blur_overlay: Option<BlurOverlayParams>,
+    border_overlay: Option<BorderOverlayParams>,
     config: &UserConfig,
     native_window: &NativeWindow,
   ) {
@@ -2365,6 +2488,7 @@ impl AnimationManager {
         // sample exists.
         edge_color: None,
         blur_overlay,
+        border_overlay,
       },
     ) {
       Ok(mut session) => {
@@ -2423,6 +2547,7 @@ impl AnimationManager {
     effect_opacity: u8,
     corner_style: CornerStyle,
     blur_overlay: Option<BlurOverlayParams>,
+    border_overlay: Option<BorderOverlayParams>,
     config: &UserConfig,
     native_window: &NativeWindow,
   ) {
@@ -2480,6 +2605,7 @@ impl AnimationManager {
         // animated; otherwise sample — the window is still on screen.
         edge_color: self.cached_edge_color(native_window.hwnd().0),
         blur_overlay,
+        border_overlay,
       },
     ) {
       Ok(mut session) => {

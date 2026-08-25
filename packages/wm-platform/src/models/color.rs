@@ -18,6 +18,20 @@ impl Color {
     // SAFETY: An invalid hex value is unrepresentable.
     u32::from_str_radix(&bgr, 16).unwrap()
   }
+
+  /// Unpacks an ABGR-packed `u32` (alpha in the high byte, then blue,
+  /// green, red -- the packing `BorderOverlayParams`/`BlurOverlayParams`
+  /// use) into a `Color`.
+  #[must_use]
+  pub fn from_abgr(abgr: u32) -> Self {
+    #[allow(clippy::cast_possible_truncation)]
+    Color {
+      a: (abgr >> 24) as u8,
+      b: (abgr >> 16) as u8,
+      g: (abgr >> 8) as u8,
+      r: abgr as u8,
+    }
+  }
 }
 
 impl FromStr for Color {

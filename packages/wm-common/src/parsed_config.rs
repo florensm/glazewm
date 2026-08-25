@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use wm_platform::{
-  BackdropStyle, BlurOverlayParams, Color, CornerStyle, Key, Keybinding,
-  LengthValue, OpacityValue, RectDelta,
+  BackdropStyle, BlurOverlayParams, BorderOverlayParams, Color, CornerStyle,
+  Key, Keybinding, LengthValue, OpacityValue, RectDelta,
 };
 
 use crate::app_command::InvokeCommand;
@@ -379,6 +379,26 @@ pub struct BorderEffectConfig {
 
   /// Color of the window border.
   pub color: Color,
+
+  /// Thickness of the window border.
+  pub width: LengthValue,
+
+  /// Corner radius of the border ring's outer edge. When `None` (the
+  /// default), it's derived from the sibling `corner_style` effect's
+  /// radius plus `width` (and `margin`, if set), so the ring lines up
+  /// concentrically with the real window's own corners. Set explicitly to
+  /// use a different radius than that approximation -- e.g. a larger, more
+  /// rounded look than `corner_style`'s fixed presets
+  /// (`square`/`small_rounded`/`rounded`) allow.
+  pub radius: Option<LengthValue>,
+
+  /// Gap between the window's own content and the border ring, like CSS
+  /// padding -- the window is shrunk by this amount within its tile, and
+  /// the ring is pushed outward by the same amount so it still sits
+  /// `width` beyond the tile's original edge. Filled with the same
+  /// `color` as the ring itself. Defaults to `0px` (ring flush against
+  /// the window edge, matching pre-margin behavior).
+  pub margin: LengthValue,
 }
 
 impl Default for BorderEffectConfig {
@@ -391,6 +411,70 @@ impl Default for BorderEffectConfig {
         b: 255,
         a: 255,
       },
+      width: LengthValue::from_px(2),
+      radius: None,
+      margin: LengthValue::from_px(0),
+    }
+  }
+}
+
+impl BorderEffectConfig {
+  /// ABGR-packed border color, or `None` when the border effect is
+  /// disabled.
+  #[must_use]
+  pub fn abgr_color(&self) -> Option<u32> {
+    if !self.enabled {
+      return None;
+    }
+
+    let c = &self.color;
+    Some(
+      (u32::from(c.a) << 24)
+        | (u32::from(c.b) << 16)
+        | (u32::from(c.g) << 8)
+        | u32::from(c.r),
+    )
+  }
+
+  /// Builds a [`BorderOverlayParams`] from this config, given the
+  /// already-resolved `color` (see [`abgr_color`]) and the tracked window's
+  /// *own* corner radius (derived from the sibling `corner_style` effect,
+  /// not stored on this type).
+  ///
+  /// `width` and `margin` are combined into a single outset: the overlay
+  /// has no separate notion of "ring" vs. "margin gap" -- both are painted
+  /// with `color`, and the real window is expected to be shrunk by
+  /// `margin` (elsewhere, wherever the window's target rect is computed)
+  /// so the overlay's tracked `window_rect` already reflects the gap.
+  ///
+  /// The overlay's own outer corner radius is `self.radius` when set,
+  /// otherwise `window_corner_radius + outset` so the ring lines up
+  /// concentrically with the real window's own corners by default.
+  ///
+  /// [`abgr_color`]: BorderEffectConfig::abgr_color
+  #[must_use]
+  pub fn to_overlay_params(
+    &self,
+    color: u32,
+    window_corner_radius: f32,
+  ) -> BorderOverlayParams {
+    #[allow(clippy::cast_precision_loss)]
+    let width = self.width.to_px(0, None) as f32;
+    #[allow(clippy::cast_precision_loss)]
+    let margin = self.margin.to_px(0, None) as f32;
+    let outset = width + margin;
+
+    #[allow(clippy::cast_precision_loss)]
+    let corner_radius = self
+      .radius
+      .as_ref()
+      .map_or(window_corner_radius + outset, |r| r.to_px(0, None) as f32);
+
+    BorderOverlayParams {
+      color,
+      width: outset,
+      corner_radius,
+      opacity: 1.0,
     }
   }
 }

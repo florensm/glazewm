@@ -7,11 +7,11 @@ use windows::{
   Win32::{
     Foundation::{CloseHandle, BOOL, HWND, LPARAM, POINT, RECT},
     Graphics::Dwm::{
-      DwmGetWindowAttribute, DwmSetWindowAttribute, DWMWA_BORDER_COLOR,
-      DWMWA_CLOAKED, DWMWA_COLOR_NONE, DWMWA_EXTENDED_FRAME_BOUNDS,
-      DWMWA_SYSTEMBACKDROP_TYPE, DWMWA_WINDOW_CORNER_PREFERENCE, DWMWCP_DEFAULT,
-      DWMWCP_DONOTROUND, DWMWCP_ROUND, DWMWCP_ROUNDSMALL, DWMSBT_AUTO,
-      DWMSBT_MAINWINDOW, DWMSBT_TABBEDWINDOW,
+      DwmGetWindowAttribute, DwmSetWindowAttribute, DWMWA_CLOAKED,
+      DWMWA_EXTENDED_FRAME_BOUNDS, DWMWA_SYSTEMBACKDROP_TYPE,
+      DWMWA_WINDOW_CORNER_PREFERENCE, DWMWCP_DEFAULT, DWMWCP_DONOTROUND,
+      DWMWCP_ROUND, DWMWCP_ROUNDSMALL, DWMSBT_AUTO, DWMSBT_MAINWINDOW,
+      DWMSBT_TABBEDWINDOW,
     },
     System::Threading::{
       OpenProcess, QueryFullProcessImageNameW, PROCESS_NAME_WIN32,
@@ -46,8 +46,8 @@ use windows::{
 
 use super::com::{IApplicationView, COM_INIT};
 use crate::{
-  BackdropStyle, Color, CornerStyle, Delta, Dispatcher, LengthValue,
-  OpacityValue, Point, Rect, RectDelta, WindowId, WindowZOrder,
+  BackdropStyle, CornerStyle, Delta, Dispatcher, LengthValue, OpacityValue,
+  Point, Rect, RectDelta, WindowId, WindowZOrder,
 };
 
 /// Magic number used to identify programmatic mouse inputs from our own
@@ -649,29 +649,6 @@ impl NativeWindow {
             | SWP_ASYNCWINDOWPOS,
         )?;
       }
-    }
-
-    Ok(())
-  }
-
-  /// Implements [`NativeWindowWindowsExt::set_border_color`].
-  pub(crate) fn set_border_color(
-    &self,
-    color: Option<&Color>,
-  ) -> crate::Result<()> {
-    let bgr = match color {
-      Some(color) => color.to_bgr(),
-      None => DWMWA_COLOR_NONE,
-    };
-
-    unsafe {
-      #[allow(clippy::cast_possible_truncation)]
-      DwmSetWindowAttribute(
-        self.hwnd(),
-        DWMWA_BORDER_COLOR,
-        std::ptr::from_ref(&bgr).cast(),
-        std::mem::size_of::<u32>() as u32,
-      )?;
     }
 
     Ok(())

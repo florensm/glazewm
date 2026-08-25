@@ -160,10 +160,22 @@ window_effects:
   # Visual effects to apply to the focused window.
   focused_window:
     # Highlight the window with a colored border.
-    # ** Exclusive to Windows 11 due to API limitations.
+    # Rendered as a persistent, self-drawn overlay (not the OS's built-in
+    # border), so it stays visible through window-open/close, resize, and
+    # workspace-switch transitions instead of disappearing during them.
     border:
       enabled: true
       color: "#8dbcff"
+      width: "2px"
+      # Corner radius of the border's outer edge. If omitted, it's derived
+      # from corner_style's radius plus width (and margin, if set), so the
+      # ring lines up with the window's own corners. Set explicitly for a
+      # different look than corner_style's fixed presets allow.
+      # radius: "12px"
+      # Gap between the window's own content and the border ring, like CSS
+      # padding -- the window shrinks by this amount and the gap is filled
+      # with the same color as the ring.
+      # margin: "4px"
 
     # Remove the title bar from the window's frame. Note that this can
     # cause rendering issues for some applications.
@@ -218,6 +230,7 @@ window_effects:
     border:
       enabled: true
       color: "#a1a1a1"
+      width: "2px"
     hide_title_bar:
       enabled: false
     corner_style:

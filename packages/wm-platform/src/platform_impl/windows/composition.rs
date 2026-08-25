@@ -64,14 +64,22 @@ use windows::{
   },
 };
 
-use crate::{BlurOverlayParams, Rect};
+use crate::{BlurOverlayParams, BorderOverlayParams, Rect};
 
 /// `CLSID_D2D1GaussianBlur`, the built-in D2D1 Gaussian-blur effect.
 const CLSID_D2D1_GAUSSIAN_BLUR: GUID =
   GUID::from_u128(0x1feb_6d69_2fe6_4ac9_8c58_1d7f_93e7_a6a5);
 
-/// `D2D1_GAUSSIANBLUR_OPTIMIZATION_BALANCED`.
-const D2D1_GAUSSIANBLUR_OPTIMIZATION_BALANCED: u32 = 1;
+/// `D2D1_GAUSSIANBLUR_OPTIMIZATION_PERFORMANCE`. Trades some blur-kernel
+/// accuracy for a cheaper separable-pass approximation, vs. the `BALANCED`
+/// mode this used previously. A downsample-then-upscale approach (rendering
+/// the blur at reduced resolution) was also tried for a bigger win, but
+/// caused an intermittent `AppHangB1` under real use (confirmed via Windows
+/// Event Viewer) that couldn't be pinned down with diagnostic tracing in
+/// the time available -- reverted. This constant swap alone is a much
+/// smaller, lower-risk change: a static effect-graph parameter evaluated
+/// once at construction/rebuild time, not a per-frame property mutation.
+const D2D1_GAUSSIANBLUR_OPTIMIZATION_PERFORMANCE: u32 = 2;
 /// `D2D1_BORDER_MODE_SOFT`.
 const D2D1_BORDER_MODE_SOFT: u32 = 0;
 
@@ -111,7 +119,7 @@ struct D2d1ScalarEffect {
   /// Additional fixed `u32` properties required by the effect's D2D1
   /// schema, in index order starting at index 1 (index 0 is always
   /// `initial_value`). Empty for saturation; Gaussian blur needs
-  /// `[D2D1_GAUSSIANBLUR_OPTIMIZATION_BALANCED, D2D1_BORDER_MODE_SOFT]` --
+  /// `[D2D1_GAUSSIANBLUR_OPTIMIZATION_PERFORMANCE, D2D1_BORDER_MODE_SOFT]` --
   /// `CreateEffectFactory` validates the description against D2D1's
   /// registered schema for the effect and fails with `E_INVALIDARG` unless
   /// all of them are present, even though only the scalar is
@@ -520,7 +528,7 @@ fn build_effect_brush(
     source_param.cast()?,
     "BlurAmount",
     blur_amount,
-    &[D2D1_GAUSSIANBLUR_OPTIMIZATION_BALANCED, D2D1_BORDER_MODE_SOFT],
+    &[D2D1_GAUSSIANBLUR_OPTIMIZATION_PERFORMANCE, D2D1_BORDER_MODE_SOFT],
   )
   .into();
   let saturation_effect: IGraphicsEffect = D2d1ScalarEffect::new(
@@ -608,5 +616,146 @@ fn build_visual_tree(
     rounded_geometry,
     blur_amount: params.blur_amount,
     saturation: params.saturation,
+  })
+}
+
+/// A live `Windows.UI.Composition` visual tree providing a border overlay's
+/// rendering: a solid-colored sheet clipped to a continuous rounded
+/// rectangle matching the tracked window's own (outset) corner radius.
+/// Considerably lighter than [`BlurVisual`] -- no effect graph, no live
+/// backdrop sampling, just a flat color fill.
+///
+/// `NativeBorderOverlay` sizes and positions the overlay's `HWND` to the
+/// tracked window's rect *outset* by the configured border width, directly
+/// behind the real window in z-order (see its `anchor` field doc, same
+/// mechanism [`BlurVisual`]'s pairing already relies on). The real window's
+/// own opaque body then occludes this sheet everywhere except the outer
+/// margin band, producing a ring with no geometry subtraction/masking --
+/// `Windows.UI.Composition` has no direct "stroke a rounded rect" shape API
+/// available in this crate's bound surface (`ShapeVisual::Shapes` isn't
+/// present), so this reuses the exact fill+clip+occlude pattern
+/// [`BlurVisual`]'s own tint sprite already depends on, rather than
+/// inventing a second rendering mechanism.
+pub(crate) struct BorderVisual {
+  /// Binds the visual tree to the overlay's `HWND`. Kept alive but never
+  /// touched again -- dropping it would unbind composition from the window.
+  _target: DesktopWindowTarget,
+
+  root: ContainerVisual,
+  sprite: SpriteVisual,
+  color_brush: CompositionColorBrush,
+  rounded_geometry: CompositionRoundedRectangleGeometry,
+}
+
+impl BorderVisual {
+  /// Builds a new visual tree for `hwnd`, sized to `rect` (the overlay's
+  /// own, already-outset rect -- see the type doc), and roots it.
+  ///
+  /// Runs on the dedicated composition thread (see the module docs); the
+  /// returned `BorderVisual`'s composition objects are agile and can be
+  /// mutated from any thread afterwards.
+  pub(crate) fn create(
+    hwnd: HWND,
+    rect: &Rect,
+    params: BorderOverlayParams,
+  ) -> crate::Result<Self> {
+    let thread = composition_thread().ok_or_else(|| {
+      crate::Error::Platform(
+        "Composition pipeline unavailable.".to_string(),
+      )
+    })?;
+
+    let compositor = thread.compositor.clone();
+    let hwnd_raw = hwnd.0;
+    let rect = rect.clone();
+
+    run_on_composition_thread(&thread.queue, move || {
+      build_border_visual_tree(&compositor, HWND(hwnd_raw), &rect, params)
+    })
+  }
+
+  /// Resizes the visual tree's clip and sprite to match `rect`. Does not
+  /// reposition the `HWND` itself -- callers still issue their own
+  /// `SetWindowPos`.
+  pub(crate) fn set_rect(&self, rect: &Rect) -> crate::Result<()> {
+    let size = Vector2 {
+      X: pixels_to_dips(rect.width()),
+      Y: pixels_to_dips(rect.height()),
+    };
+    self.root.SetSize(size)?;
+    self.sprite.SetSize(size)?;
+    self.rounded_geometry.SetSize(size)?;
+    Ok(())
+  }
+
+  /// Updates the fill color.
+  pub(crate) fn set_color(&self, color: u32) -> crate::Result<()> {
+    self.color_brush.SetColor(unpack_abgr_tint(color))?;
+    Ok(())
+  }
+
+  /// Updates the clip's corner radius.
+  pub(crate) fn set_corner_radius(&self, value: f32) -> crate::Result<()> {
+    self
+      .rounded_geometry
+      .SetCornerRadius(Vector2 { X: value, Y: value })?;
+    Ok(())
+  }
+
+  /// Updates the overlay's own opacity.
+  pub(crate) fn set_opacity(&self, value: f32) -> crate::Result<()> {
+    self.root.SetOpacity(value)?;
+    Ok(())
+  }
+}
+
+/// Builds the full visual tree: a `ContainerVisual` rooting a single flat
+/// color `SpriteVisual`, clipped by a rounded rectangle geometry.
+fn build_border_visual_tree(
+  compositor: &Compositor,
+  hwnd: HWND,
+  rect: &Rect,
+  params: BorderOverlayParams,
+) -> windows::core::Result<BorderVisual> {
+  // SAFETY: `hwnd` is a valid, already-created top-level window.
+  let target = unsafe {
+    compositor
+      .cast::<ICompositorDesktopInterop>()?
+      .CreateDesktopWindowTarget(hwnd, false)?
+  };
+
+  let size = Vector2 {
+    X: pixels_to_dips(rect.width()),
+    Y: pixels_to_dips(rect.height()),
+  };
+
+  let rounded_geometry = compositor.CreateRoundedRectangleGeometry()?;
+  rounded_geometry.SetSize(size)?;
+  rounded_geometry.SetCornerRadius(Vector2 {
+    X: params.corner_radius,
+    Y: params.corner_radius,
+  })?;
+  let clip = compositor.CreateGeometricClipWithGeometry(&rounded_geometry)?;
+
+  let color_brush =
+    compositor.CreateColorBrushWithColor(unpack_abgr_tint(params.color))?;
+  let sprite = compositor.CreateSpriteVisual()?;
+  sprite.SetBrush(&color_brush)?;
+  sprite.SetSize(size)?;
+
+  let root = compositor.CreateContainerVisual()?;
+  root.SetSize(size)?;
+  root.SetClip(&clip)?;
+  root.SetOpacity(params.opacity)?;
+  root.Children()?.InsertAtTop(&sprite)?;
+
+  target.SetRoot(&root)?;
+
+  Ok(BorderVisual {
+    _target: target,
+    root,
+    sprite,
+    color_brush,
+    rounded_geometry,
   })
 }

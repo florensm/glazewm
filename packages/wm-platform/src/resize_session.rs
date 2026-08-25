@@ -24,8 +24,8 @@ use windows::Win32::{
 const EDGE_SAMPLE_INSET: i32 = 4;
 
 use crate::{
-  native_surrogate::to_logical, BlurOverlayParams, Color, CornerStyle,
-  NativeSurrogate, Rect, SurrogateBatch,
+  native_surrogate::to_logical, BlurOverlayParams, BorderOverlayParams,
+  Color, CornerStyle, NativeSurrogate, Rect, SurrogateBatch,
 };
 
 /// Options for [`ResizeSession::begin`].
@@ -59,6 +59,10 @@ pub struct SessionOptions {
   /// which needs these values even after the window is detached from the
   /// layout tree (close animations).
   pub blur_overlay: Option<BlurOverlayParams>,
+  /// Color/width/corner-radius/opacity for the border overlay tracking this
+  /// session, or `None` when the border effect isn't configured. Same
+  /// snapshot rationale as `blur_overlay`.
+  pub border_overlay: Option<BorderOverlayParams>,
 }
 
 /// Tracks a single window's resize/move animation and manages its surrogate
@@ -175,6 +179,12 @@ pub struct ResizeSession {
   ///
   /// [`blur_overlay_params`]: ResizeSession::blur_overlay_params
   blur_overlay: Option<BlurOverlayParams>,
+  /// Color/width/corner-radius/opacity for the border overlay tracking this
+  /// session, snapshotted from `SessionOptions::border_overlay`. See
+  /// [`border_overlay_params`].
+  ///
+  /// [`border_overlay_params`]: ResizeSession::border_overlay_params
+  border_overlay: Option<BorderOverlayParams>,
   /// Live logical (border-deflated) on-screen rect for the current frame,
   /// mirroring `WorkspaceSurrogate::current_rect`. `None` while there's
   /// nothing to show (no surrogate, or fully clipped off-screen). Ignored
@@ -289,6 +299,7 @@ impl ResizeSession {
       session_cloaked: false,
       pending_thumbnail_dims: None,
       blur_overlay: options.blur_overlay,
+      border_overlay: options.border_overlay,
       current_rect: None,
     })
   }
@@ -304,6 +315,21 @@ impl ResizeSession {
   #[must_use]
   pub fn blur_overlay_params(&self) -> Option<BlurOverlayParams> {
     let mut params = self.blur_overlay?;
+    if self.zoom {
+      params.opacity *= self.zoom_progress;
+    }
+    Some(params)
+  }
+
+  /// Returns the color/width/corner-radius/opacity for the border-overlay
+  /// tracker in `AnimationManager`, or `None` when the border effect isn't
+  /// configured for this window. Mirrors [`blur_overlay_params`] exactly,
+  /// including the `zoom_progress` opacity scaling.
+  ///
+  /// [`blur_overlay_params`]: ResizeSession::blur_overlay_params
+  #[must_use]
+  pub fn border_overlay_params(&self) -> Option<BorderOverlayParams> {
+    let mut params = self.border_overlay?;
     if self.zoom {
       params.opacity *= self.zoom_progress;
     }
