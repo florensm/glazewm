@@ -193,11 +193,16 @@ window_effects:
       opacity: "95%"
 
     # Apply a backdrop material to the window (blur/tint/mica).
-    # Uses DWMWA_SYSTEMBACKDROP_TYPE on Windows 11 22H2+ and falls back to
-    # SetWindowCompositionAttribute on Windows 10 1803+ (acrylic only).
-    # Both paths are DWM compositor-level, so the effect is captured by DWM
-    # thumbnails and persists across the cloak/uncloak cycle.
-    # ** Exclusive to Windows 10 1803+ (acrylic) / Windows 11 22H2+ (all styles).
+    # Acrylic renders via a persistent, self-drawn overlay (Windows.UI.
+    # Composition, same mechanism as the border above) positioned behind the
+    # window, so the live blur survives window-open/close, resize, and
+    # workspace-switch transitions instead of disappearing during them.
+    # Mica/MicaAlt instead use the OS's own DWMWA_SYSTEMBACKDROP_TYPE
+    # directly on the window -- no custom overlay, but no adjustable
+    # blur_amount/opacity/saturation either (those three are ignored for
+    # those styles).
+    # ** Acrylic requires Windows 10 1803+. Mica/MicaAlt require Windows 11
+    # ** 22H2+.
     backdrop:
       enabled: false
       # Allowed values: 'acrylic', 'mica', 'mica_alt'.
