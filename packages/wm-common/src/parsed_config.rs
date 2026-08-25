@@ -385,20 +385,12 @@ pub struct BorderEffectConfig {
 
   /// Corner radius of the border ring's outer edge. When `None` (the
   /// default), it's derived from the sibling `corner_style` effect's
-  /// radius plus `width` (and `margin`, if set), so the ring lines up
-  /// concentrically with the real window's own corners. Set explicitly to
-  /// use a different radius than that approximation -- e.g. a larger, more
-  /// rounded look than `corner_style`'s fixed presets
-  /// (`square`/`small_rounded`/`rounded`) allow.
+  /// radius plus `width`, so the ring lines up concentrically with the
+  /// real window's own corners. Set explicitly to use a different radius
+  /// than that approximation -- e.g. a larger, more rounded look than
+  /// `corner_style`'s fixed presets (`square`/`small_rounded`/`rounded`)
+  /// allow.
   pub radius: Option<LengthValue>,
-
-  /// Gap between the window's own content and the border ring, like CSS
-  /// padding -- the window is shrunk by this amount within its tile, and
-  /// the ring is pushed outward by the same amount so it still sits
-  /// `width` beyond the tile's original edge. Filled with the same
-  /// `color` as the ring itself. Defaults to `0px` (ring flush against
-  /// the window edge, matching pre-margin behavior).
-  pub margin: LengthValue,
 }
 
 impl Default for BorderEffectConfig {
@@ -413,7 +405,6 @@ impl Default for BorderEffectConfig {
       },
       width: LengthValue::from_px(2),
       radius: None,
-      margin: LengthValue::from_px(0),
     }
   }
 }
@@ -441,14 +432,8 @@ impl BorderEffectConfig {
   /// *own* corner radius (derived from the sibling `corner_style` effect,
   /// not stored on this type).
   ///
-  /// `width` and `margin` are combined into a single outset: the overlay
-  /// has no separate notion of "ring" vs. "margin gap" -- both are painted
-  /// with `color`, and the real window is expected to be shrunk by
-  /// `margin` (elsewhere, wherever the window's target rect is computed)
-  /// so the overlay's tracked `window_rect` already reflects the gap.
-  ///
   /// The overlay's own outer corner radius is `self.radius` when set,
-  /// otherwise `window_corner_radius + outset` so the ring lines up
+  /// otherwise `window_corner_radius + width` so the ring lines up
   /// concentrically with the real window's own corners by default.
   ///
   /// [`abgr_color`]: BorderEffectConfig::abgr_color
@@ -460,19 +445,16 @@ impl BorderEffectConfig {
   ) -> BorderOverlayParams {
     #[allow(clippy::cast_precision_loss)]
     let width = self.width.to_px(0, None) as f32;
-    #[allow(clippy::cast_precision_loss)]
-    let margin = self.margin.to_px(0, None) as f32;
-    let outset = width + margin;
 
     #[allow(clippy::cast_precision_loss)]
     let corner_radius = self
       .radius
       .as_ref()
-      .map_or(window_corner_radius + outset, |r| r.to_px(0, None) as f32);
+      .map_or(window_corner_radius + width, |r| r.to_px(0, None) as f32);
 
     BorderOverlayParams {
       color,
-      width: outset,
+      width,
       corner_radius,
       opacity: 1.0,
     }

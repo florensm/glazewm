@@ -443,17 +443,10 @@ fn redraw_containers(
           };
 
           if is_incoming {
-            let margin_px = if effect_cfg.border.enabled {
-              effect_cfg.border.margin.to_px(0, None)
-            } else {
-              0
-            };
             let surrogate = window
               .to_rect()
               .and_then(|r| {
-                window
-                  .total_border_delta()
-                  .map(|d| r.inset(margin_px).apply_delta(&d, None))
+                window.total_border_delta().map(|d| r.apply_delta(&d, None))
               })
               .ok()
               .and_then(|rect| {
@@ -586,26 +579,10 @@ fn redraw_containers(
   let mut needs_transparency_flush = false;
 
   let cycle_has_resize = windows_to_update.iter().any(|window| {
-    #[cfg(target_os = "windows")]
-    let margin_px = {
-      let effect_cfg = if window.id() == focused_container.id() {
-        &config.value.window_effects.focused_window
-      } else {
-        &config.value.window_effects.other_windows
-      };
-      if effect_cfg.border.enabled {
-        effect_cfg.border.margin.to_px(0, None)
-      } else {
-        0
-      }
-    };
-    #[cfg(not(target_os = "windows"))]
-    let margin_px: i32 = 0;
-
     let target_rect = window.to_rect().and_then(|rect| {
       window
         .total_border_delta()
-        .map(|delta| rect.inset(margin_px).apply_delta(&delta, None))
+        .map(|delta| rect.apply_delta(&delta, None))
     });
 
     match (target_rect, state.window_target_positions.get(&window.id())) {
@@ -693,30 +670,8 @@ fn redraw_containers(
       };
     window.set_display_state(new_display_state);
 
-    // Shrinks the window into its tile by the configured border margin
-    // (Windows-only, like the rest of the border-overlay feature), so the
-    // border overlay's outset (already widened by this same margin in
-    // `to_overlay_params`) leaves a real colored gap around the content
-    // instead of the ring sitting flush against the window edge.
-    #[cfg(target_os = "windows")]
-    let margin_px = {
-      let effect_cfg = if window.id() == focused_container.id() {
-        &config.value.window_effects.focused_window
-      } else {
-        &config.value.window_effects.other_windows
-      };
-      if effect_cfg.border.enabled {
-        effect_cfg.border.margin.to_px(0, None)
-      } else {
-        0
-      }
-    };
-    #[cfg(not(target_os = "windows"))]
-    let margin_px: i32 = 0;
-
     let target_rect = window
       .to_rect()?
-      .inset(margin_px)
       .apply_delta(&window.total_border_delta()?, None);
 
     let is_visible = matches!(

@@ -133,7 +133,7 @@ use wm_platform::{
 use crate::{
   animation::state::WindowAnimationState,
   commands::general::platform_sync,
-  traits::CommonGetters,
+  traits::{CommonGetters, WindowGetters},
   user_config::UserConfig,
   wm_state::WmState,
 };
@@ -1515,9 +1515,19 @@ impl AnimationManager {
       // two moments DWM can composite a frame with *no* blur behind the
       // (semi-transparent) real window at all -- a one-frame flicker at the
       // end of every switch. Pre-show the static overlay at its final rect
-      // (known from the surrogate, which is already positioned there) while
-      // the surrogate is still alive, so the two overlap for a flushed frame
-      // instead of leaving a gap.
+      // while the surrogate is still alive, so the two overlap for a
+      // flushed frame instead of leaving a gap.
+      //
+      // That final rect is read from the real window's own `frame()`
+      // (shadow-*excluded* visual bounds -- the same value steady-state
+      // overlay sync reads) rather than the surrogate's own `rect`, which
+      // is a *positioning* rect (`window.to_rect() + total_border_delta()`,
+      // including the OS's invisible drop-shadow expansion) meant for
+      // `SetWindowPos`, not overlay tracking. Using `surrogate.rect`
+      // directly here made blur/border overlays pop visibly larger right at
+      // the end of every workspace switch, then snap down once a later
+      // `platform_sync` tick re-synced them from `frame()`. Falls back to
+      // `surrogate.rect` only if the window/frame lookup fails.
       let incoming_acrylic_windows: Vec<(Uuid, Rect, HWND)> = state
         .animation_manager
         .pending_ws_cleanup
@@ -1528,7 +1538,12 @@ impl AnimationManager {
             .filter(|(_, entry)| entry.is_incoming)
             .filter_map(|(id, entry)| {
               let surrogate = entry.surrogate.as_ref()?;
-              Some((*id, surrogate.rect.clone(), surrogate.hwnd()))
+              let rect = state
+                .container_by_id(*id)
+                .and_then(|c| c.as_window_container().ok())
+                .and_then(|w| w.native().frame().ok())
+                .unwrap_or_else(|| surrogate.rect.clone());
+              Some((*id, rect, surrogate.hwnd()))
             })
             .collect()
         })

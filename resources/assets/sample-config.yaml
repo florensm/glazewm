@@ -168,14 +168,10 @@ window_effects:
       color: "#8dbcff"
       width: "2px"
       # Corner radius of the border's outer edge. If omitted, it's derived
-      # from corner_style's radius plus width (and margin, if set), so the
-      # ring lines up with the window's own corners. Set explicitly for a
-      # different look than corner_style's fixed presets allow.
+      # from corner_style's radius plus width, so the ring lines up with
+      # the window's own corners. Set explicitly for a different look than
+      # corner_style's fixed presets allow.
       # radius: "12px"
-      # Gap between the window's own content and the border ring, like CSS
-      # padding -- the window shrinks by this amount and the gap is filled
-      # with the same color as the ring.
-      # margin: "4px"
 
     # Remove the title bar from the window's frame. Note that this can
     # cause rendering issues for some applications.
