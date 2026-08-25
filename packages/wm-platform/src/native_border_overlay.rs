@@ -241,9 +241,9 @@ fn inner_hole_radius(params: &BorderOverlayParams) -> i32 {
 /// workspace-switch transitions.
 ///
 /// Sized to `window_rect` outset by `params.width` (the configured border
-/// width plus any configured margin, already combined by the caller) on
-/// every side, and positioned directly behind an `anchor` window in
-/// z-order -- same pairing mechanism [`NativeBlurOverlay`] uses. The
+/// width) on every side, and positioned directly behind an `anchor`
+/// window in z-order -- same pairing mechanism [`NativeBlurOverlay`] uses.
+/// The
 /// overlay renders a solid-colored, rounded-rect-clipped sheet across its
 /// whole (outset) area (see [`BorderVisual`]'s doc comment for why -- no
 /// stroke-shape API is available in this crate's bound
