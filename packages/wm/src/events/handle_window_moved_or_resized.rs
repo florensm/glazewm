@@ -22,7 +22,8 @@ use crate::{
 };
 #[cfg(target_os = "windows")]
 use crate::commands::general::{
-  blur_overlay_params_for, overlay_z_anchor, upsert_blur_overlay,
+  blur_overlay_params_for, border_overlay_params_for, overlay_z_anchor,
+  upsert_blur_overlay, upsert_border_overlay,
 };
 
 #[allow(clippy::too_many_lines)]
@@ -64,22 +65,43 @@ pub fn handle_window_moved_or_resized(
           .focused_container()
           .is_some_and(|container| container.id() == window.id());
 
+        // Single window per drag event -- nothing else to batch these
+        // repositions with, so commit them together alone (still routes
+        // through `SurrogateBatch` for a uniform `defer_rect` call, same as
+        // the multi-window sync paths). Both overlays share one batch/commit
+        // since they're independent windows anyway.
+        let mut batch = wm_platform::SurrogateBatch::new();
+        let anchor = overlay_z_anchor(&window);
+
         if let Some(params) = blur_overlay_params_for(is_focused, config) {
-          // Single window per drag event -- nothing else to batch this
-          // reposition with, so commit it alone (still routes through
-          // `SurrogateBatch` for a uniform `defer_rect` call, same as the
-          // multi-window sync paths).
-          let mut batch = wm_platform::SurrogateBatch::new();
           upsert_blur_overlay(
             &mut state.blur_overlays,
             window.id(),
             params,
             &frame_position,
-            overlay_z_anchor(&window),
+            anchor,
             &mut batch,
           );
-          batch.commit();
         }
+
+        // Same live re-sync as the blur overlay above -- without this, the
+        // border overlay is frozen at the pre-drag rect for the whole
+        // gesture whenever backdrop is disabled but the border effect is
+        // enabled, since `sync_border_overlays` only re-queries a window's
+        // rect when it's queued for redraw, and this window is dequeued for
+        // the duration of the drag.
+        if let Some(params) = border_overlay_params_for(is_focused, config) {
+          upsert_border_overlay(
+            &mut state.border_overlays,
+            window.id(),
+            params,
+            &frame_position,
+            anchor,
+            &mut batch,
+          );
+        }
+
+        batch.commit();
       }
 
       let is_drag_end = {
