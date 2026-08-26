@@ -602,7 +602,14 @@ impl NativeWindow {
 
     unsafe { SetWindowPos(self.hwnd(), z_order_hwnd, 0, 0, 0, 0, flags) }?;
 
-    // Z-order can sometimes still be incorrect after the above call.
+    // Z-order can sometimes still be incorrect after the above call --
+    // observed with some apps that briefly re-assert their own z-order in
+    // response to it. 10ms is a guess at long enough for that to have
+    // settled; no completion signal exists to wait on instead. Spawned as a
+    // detached `tokio` task rather than awaited here, so this delay never
+    // blocks the caller (`redraw_containers`, itself called from
+    // `platform_sync`) -- not on the resize/drag/workspace-switch hot path,
+    // which never awaits this task or otherwise waits on it.
     let handle = self.handle;
     task::spawn(async move {
       tokio::time::sleep(Duration::from_millis(10)).await;
