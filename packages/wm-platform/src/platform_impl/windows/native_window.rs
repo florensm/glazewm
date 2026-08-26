@@ -773,8 +773,17 @@ impl NativeWindow {
       None => DWMSBT_AUTO,
       Some(BackdropStyle::Mica) => DWMSBT_MAINWINDOW,
       Some(BackdropStyle::MicaAlt) => DWMSBT_TABBEDWINDOW,
+      // Acrylic is applied via a `NativeBlurOverlay`, never here -- the
+      // sole caller (`apply_backdrop_effect`) already filters this variant
+      // out, but a future caller forwarding a window's configured
+      // `BackdropStyle` directly should get a recoverable error rather than
+      // crashing the whole process.
       Some(BackdropStyle::Acrylic) => {
-        unreachable!("Acrylic is applied via a NativeBlurOverlay, never here")
+        return Err(crate::Error::Platform(
+          "BackdropStyle::Acrylic must be applied via NativeBlurOverlay, \
+           not NativeWindow::set_blur_behind."
+            .to_string(),
+        ));
       }
     };
 
