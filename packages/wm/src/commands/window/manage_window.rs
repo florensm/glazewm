@@ -1,6 +1,6 @@
 use anyhow::Context;
 use tracing::info;
-use wm_common::{try_warn, WindowRuleEvent, WindowState, WmEvent};
+use wm_common::{WindowRuleEvent, WindowState, WmEvent};
 use wm_platform::NativeWindow;
 #[cfg(target_os = "windows")]
 use wm_platform::NativeWindowWindowsExt;
@@ -36,19 +36,33 @@ pub fn manage_window(
   // window is repositioned and animated. Non-tiling windows are uncloaked
   // by `platform_sync` for their target position; tiling windows are
   // uncloaked by the slide-in animation. Uncloaked immediately below if
-  // window rules decide to ignore the window.
+  // window rules decide to ignore the window, or if window creation fails.
   #[cfg(target_os = "windows")]
   let _ = native_window.set_cloaked(true);
 
+  // Cloned so it can be uncloaked on the failure path below -- `create_window`
+  // consumes `native_window` and does not hand it back on `Err`.
+  #[cfg(target_os = "windows")]
+  let cloaked_window = native_window.clone();
+
   // Create the window instance. This may fail if the window handle has
-  // already been destroyed.
-  let window = try_warn!(create_window(
+  // already been destroyed, or if there's no nearest monitor/workspace to
+  // place it in (e.g. a monitor/workspace reconfiguration race).
+  let window = match create_window(
     native_window,
     native_properties,
     target_parent,
     state,
-    config
-  ));
+    config,
+  ) {
+    Ok(window) => window,
+    Err(err) => {
+      tracing::warn!("Operation failed: {:?}", err);
+      #[cfg(target_os = "windows")]
+      let _ = cloaked_window.set_cloaked(false);
+      return Ok(());
+    }
+  };
 
   // Set the newly added window as focus descendant. This means the window
   // rules will be run as if the window is focused.
