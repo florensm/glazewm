@@ -45,6 +45,27 @@ impl Color {
       r: abgr as u8,
     }
   }
+
+  /// Linearly interpolates each color channel toward `other` by `t`.
+  ///
+  /// `t` is clamped to `0.0..=1.0`; `0.0` returns `self`, `1.0` returns
+  /// `other`.
+  #[must_use]
+  pub fn lerp(&self, other: &Color, t: f32) -> Color {
+    let t = t.clamp(0.0, 1.0);
+
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    let lerp_channel = |from: u8, to: u8| -> u8 {
+      (f32::from(from) + (f32::from(to) - f32::from(from)) * t).round() as u8
+    };
+
+    Color {
+      r: lerp_channel(self.r, other.r),
+      g: lerp_channel(self.g, other.g),
+      b: lerp_channel(self.b, other.b),
+      a: lerp_channel(self.a, other.a),
+    }
+  }
 }
 
 impl FromStr for Color {
@@ -95,5 +116,37 @@ impl<'de> Deserialize<'de> for Color {
         Self::from_str(&str).map_err(serde::de::Error::custom)
       }
     }
+  }
+}
+
+#[cfg(test)]
+mod tests {
+  use super::Color;
+
+  #[test]
+  fn lerp_at_endpoints_returns_start_and_end() {
+    let start = Color { r: 0, g: 10, b: 20, a: 255 };
+    let end = Color { r: 100, g: 110, b: 120, a: 0 };
+
+    assert_eq!(start.lerp(&end, 0.0), start);
+    assert_eq!(start.lerp(&end, 1.0), end);
+  }
+
+  #[test]
+  fn lerp_at_midpoint_averages_channels() {
+    let start = Color { r: 0, g: 0, b: 0, a: 0 };
+    let end = Color { r: 100, g: 200, b: 50, a: 255 };
+
+    let mid = start.lerp(&end, 0.5);
+    assert_eq!(mid, Color { r: 50, g: 100, b: 25, a: 128 });
+  }
+
+  #[test]
+  fn lerp_clamps_out_of_range_t() {
+    let start = Color { r: 0, g: 0, b: 0, a: 0 };
+    let end = Color { r: 100, g: 100, b: 100, a: 100 };
+
+    assert_eq!(start.lerp(&end, -0.5), start);
+    assert_eq!(start.lerp(&end, 1.5), end);
   }
 }

@@ -130,6 +130,8 @@ use wm_platform::{
   WorkspaceSurrogate, HWND,
 };
 
+#[cfg(target_os = "windows")]
+use crate::animation::state::BorderTransitionState;
 use crate::{
   animation::state::WindowAnimationState,
   commands::general::platform_sync,
@@ -365,6 +367,14 @@ pub struct AnimationManager {
   /// Active iris-wipe workspace transition, or `None` when idle.
   #[cfg(target_os = "windows")]
   iris_switch: Option<IrisSwitchState>,
+  /// Each window's border overlay color/width transition, keyed by window
+  /// ID. An entry exists for every window whose border has ever been
+  /// resolved -- once settled (not actively animating), it doubles as the
+  /// cache `border_overlay_params_for` compares a freshly resolved target
+  /// against to detect when a new transition should start. See
+  /// [`BorderTransitionState`].
+  #[cfg(target_os = "windows")]
+  pub(crate) border_transitions: HashMap<Uuid, BorderTransitionState>,
 }
 
 impl Drop for AnimationManager {
@@ -419,6 +429,8 @@ impl AnimationManager {
       pending_close_windows: HashMap::new(),
       #[cfg(target_os = "windows")]
       iris_switch: None,
+      #[cfg(target_os = "windows")]
+      border_transitions: HashMap::new(),
     }
   }
 
@@ -518,6 +530,8 @@ impl AnimationManager {
     self.slide_in_monitor_rects.remove(window_id);
     #[cfg(target_os = "windows")]
     self.pending_close_windows.remove(window_id);
+    #[cfg(target_os = "windows")]
+    self.border_transitions.remove(window_id);
   }
 
   /// Removes all completed animations and returns their window IDs.
@@ -566,6 +580,15 @@ impl AnimationManager {
     #[cfg(target_os = "windows")]
     if !self.pending_session_cleanup.is_empty() {
       return true;
+    }
+    // A border color/width transition still animating needs ticks to
+    // advance it; a settled one (the common case) does not.
+    #[cfg(target_os = "windows")]
+    {
+      let now = Instant::now();
+      if self.border_transitions.values().any(|t| !t.is_complete_at(now)) {
+        return true;
+      }
     }
     false
   }
@@ -778,6 +801,33 @@ impl AnimationManager {
       if let Some(container) = state.container_by_id(*window_id) {
         if let Ok(window) = container.as_window_container() {
           state.pending_sync.queue_container_to_redraw(window);
+        }
+      }
+    }
+
+    // Queue windows with an in-progress border color/width transition for
+    // redraw too, so `platform_sync` (and thus `sync_border_overlays`,
+    // which reads the transition's live interpolated value through
+    // `border_overlay_params_for`) actually runs every tick while one is
+    // animating. Without this, a pure border-color transition with no
+    // accompanying position animation would only be applied on the single
+    // discrete event (e.g. focus change) that started it, never advancing.
+    #[cfg(target_os = "windows")]
+    {
+      let now = Instant::now();
+      let transitioning_ids: Vec<Uuid> = state
+        .animation_manager
+        .border_transitions
+        .iter()
+        .filter(|(_, t)| !t.is_complete_at(now))
+        .map(|(id, _)| *id)
+        .collect();
+
+      for window_id in transitioning_ids {
+        if let Some(container) = state.container_by_id(window_id) {
+          if let Ok(window) = container.as_window_container() {
+            state.pending_sync.queue_container_to_redraw(window);
+          }
         }
       }
     }

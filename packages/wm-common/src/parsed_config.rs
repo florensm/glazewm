@@ -374,8 +374,18 @@ pub struct BorderEffectConfig {
   /// Whether to enable the effect.
   pub enabled: bool,
 
-  /// Color of the window border.
+  /// Color of the window border. Ignored when `use_accent_color` is `true`.
   pub color: Color,
+
+  /// Use the OS's live accent/colorization color instead of `color`.
+  ///
+  /// Re-read every time the border's target color is resolved (on focus
+  /// change, or when `use_accent_color` itself is toggled via config
+  /// reload), so the border always tracks the current system accent color
+  /// with no need to restart the app when the user changes it.
+  ///
+  /// If the OS accent color can't be read, falls back to `color`.
+  pub use_accent_color: bool,
 
   /// Thickness of the window border.
   pub width: LengthValue,
@@ -388,6 +398,15 @@ pub struct BorderEffectConfig {
   /// `corner_style`'s fixed presets (`square`/`small_rounded`/`rounded`)
   /// allow.
   pub radius: Option<LengthValue>,
+
+  /// Duration, in milliseconds, of the animated transition when the
+  /// border's resolved color/width changes (e.g. on focus change).
+  ///
+  /// `0` applies the new color/width instantly, with no animation.
+  pub transition_duration_ms: u32,
+
+  /// Easing curve for the border color/width transition.
+  pub transition_easing: EasingFunction,
 }
 
 impl Default for BorderEffectConfig {
@@ -400,18 +419,36 @@ impl Default for BorderEffectConfig {
         b: 255,
         a: 255,
       },
+      use_accent_color: false,
       width: LengthValue::from_px(2),
       radius: None,
+      transition_duration_ms: 150,
+      transition_easing: EasingFunction::CubicBezier(0.42, 0.0, 0.58, 1.0),
     }
   }
 }
 
 impl BorderEffectConfig {
   /// Border color, or `None` when the border effect is disabled.
+  ///
+  /// When `use_accent_color` is set, reads the OS's live accent color via
+  /// [`wm_platform::system_accent_color`], falling back to `color` (logging
+  /// a warning) if that read fails -- e.g. on an OS version predating the
+  /// `DwmGetColorizationColor` API.
   #[must_use]
   pub fn abgr_color(&self) -> Option<Color> {
     if !self.enabled {
       return None;
+    }
+
+    if self.use_accent_color {
+      return Some(wm_platform::system_accent_color().unwrap_or_else(|err| {
+        tracing::warn!(
+          "Failed to read OS accent color, falling back to configured \
+           border color: {err}."
+        );
+        self.color
+      }));
     }
 
     Some(self.color)

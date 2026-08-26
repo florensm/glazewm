@@ -9,6 +9,9 @@ use wm_common::{
 #[cfg(target_os = "windows")]
 use wm_platform::NativeWindowWindowsExt;
 #[cfg(target_os = "windows")]
+use std::time::Instant;
+
+#[cfg(target_os = "windows")]
 use wm_platform::{
   BackdropStyle, BlurOverlayParams, BorderOverlayParams, CornerStyle,
   NativeBlurOverlay, NativeBorderOverlay, NativeIrisOverlay, OpacityValue,
@@ -16,6 +19,8 @@ use wm_platform::{
 };
 use wm_platform::{Rect, WindowZOrder};
 
+#[cfg(target_os = "windows")]
+use crate::animation::state::BorderTransitionState;
 #[cfg(target_os = "windows")]
 use crate::pending_sync::IrisSwitchRequest;
 use crate::{
@@ -25,6 +30,8 @@ use crate::{
   user_config::UserConfig,
   wm_state::WmState,
 };
+#[cfg(target_os = "windows")]
+use crate::animation::AnimationManager;
 
 /// Returns the smallest iris radius that fully covers the monitor from the
 /// origin — the distance to the farthest monitor corner.
@@ -1693,13 +1700,24 @@ pub(crate) fn upsert_border_overlay(
   }
 }
 
-/// Resolves `window`'s border overlay params from its focused/other-window
+/// Resolves `window_id`'s border overlay params from its focused/other-window
 /// border config, or `None` when the border effect isn't enabled for it.
 /// Mirrors [`blur_overlay_params_for`].
+///
+/// The returned color/width are not necessarily `effect_cfg.border`'s final
+/// target: this also owns starting/advancing `animation_manager`'s
+/// [`BorderTransitionState`] for `window_id`, so the *live, animated*
+/// in-between value is returned while a transition (e.g. from a recent focus
+/// change) is in progress, and the settled target once it completes. See
+/// [`BorderTransitionState`] for why one entry always exists per window
+/// rather than only while animating.
 #[cfg(target_os = "windows")]
+#[allow(clippy::float_cmp)]
 pub(crate) fn border_overlay_params_for(
+  window_id: uuid::Uuid,
   is_focused: bool,
   config: &UserConfig,
+  animation_manager: &mut AnimationManager,
 ) -> Option<BorderOverlayParams> {
   let effect_cfg = if is_focused {
     &config.value.window_effects.focused_window
@@ -1707,7 +1725,7 @@ pub(crate) fn border_overlay_params_for(
     &config.value.window_effects.other_windows
   };
 
-  let color = effect_cfg.border.abgr_color()?;
+  let target_color = effect_cfg.border.abgr_color()?;
 
   // Mirrors `corner_style` (falling back to `CornerStyle::Default` when
   // disabled) so the overlay's outer radius lines up concentrically with
@@ -1718,7 +1736,49 @@ pub(crate) fn border_overlay_params_for(
     CornerStyle::Default.approx_radius_px()
   };
 
-  Some(effect_cfg.border.to_overlay_params(color, corner_radius))
+  let target_params =
+    effect_cfg.border.to_overlay_params(target_color, corner_radius);
+
+  let now = Instant::now();
+  let (color, width) =
+    match animation_manager.border_transitions.get(&window_id) {
+      Some(existing)
+        if existing.target() == (target_params.color, target_params.width) =>
+      {
+        existing.current_state_at(now)
+      }
+      Some(existing) => {
+        let retargeted = existing.retarget(
+          now,
+          target_params.color,
+          target_params.width,
+          effect_cfg.border.transition_duration_ms,
+          effect_cfg.border.transition_easing.clone(),
+        );
+        let current = retargeted.current_state_at(now);
+        animation_manager.border_transitions.insert(window_id, retargeted);
+        current
+      }
+      // First time this window's border has been resolved: appear at the
+      // target immediately rather than animating in from a default.
+      None => {
+        animation_manager.border_transitions.insert(
+          window_id,
+          BorderTransitionState::settled(
+            target_params.color,
+            target_params.width,
+          ),
+        );
+        (target_params.color, target_params.width)
+      }
+    };
+
+  Some(BorderOverlayParams {
+    color,
+    width,
+    corner_radius: target_params.corner_radius,
+    opacity: target_params.opacity,
+  })
 }
 
 /// Resolves `window`'s acrylic overlay params from its focused/other-window
@@ -1807,9 +1867,19 @@ trait SyncableOverlay: Sized {
     state: &mut WmState,
   ) -> &mut std::collections::HashMap<uuid::Uuid, Self>;
 
-  /// Resolves `window`'s params from its focused/other-window config, or
+  /// Resolves `window_id`'s params from its focused/other-window config, or
   /// `None` when this effect isn't enabled for it.
-  fn params_for(is_focused: bool, config: &UserConfig) -> Option<Self::Params>;
+  ///
+  /// `animation_manager` is threaded through so [`NativeBorderOverlay`]'s
+  /// implementation can read/advance its per-window color/width transition
+  /// (see [`BorderTransitionState`]); [`NativeBlurOverlay`]'s implementation
+  /// ignores it.
+  fn params_for(
+    window_id: uuid::Uuid,
+    is_focused: bool,
+    config: &UserConfig,
+    animation_manager: &mut AnimationManager,
+  ) -> Option<Self::Params>;
 
   fn create(
     rect: &Rect,
@@ -1834,7 +1904,12 @@ impl SyncableOverlay for NativeBlurOverlay {
     &mut state.blur_overlays
   }
 
-  fn params_for(is_focused: bool, config: &UserConfig) -> Option<Self::Params> {
+  fn params_for(
+    _window_id: uuid::Uuid,
+    is_focused: bool,
+    config: &UserConfig,
+    _animation_manager: &mut AnimationManager,
+  ) -> Option<Self::Params> {
     blur_overlay_params_for(is_focused, config)
   }
 
@@ -1878,8 +1953,13 @@ impl SyncableOverlay for NativeBorderOverlay {
     &mut state.border_overlays
   }
 
-  fn params_for(is_focused: bool, config: &UserConfig) -> Option<Self::Params> {
-    border_overlay_params_for(is_focused, config)
+  fn params_for(
+    window_id: uuid::Uuid,
+    is_focused: bool,
+    config: &UserConfig,
+    animation_manager: &mut AnimationManager,
+  ) -> Option<Self::Params> {
+    border_overlay_params_for(window_id, is_focused, config, animation_manager)
   }
 
   fn create(
@@ -1975,7 +2055,12 @@ fn sync_overlays<O: SyncableOverlay>(
   for window in &all_windows {
     let is_focused = window.id() == focused_container.id();
 
-    let Some(params) = O::params_for(is_focused, config) else {
+    let Some(params) = O::params_for(
+      window.id(),
+      is_focused,
+      config,
+      &mut state.animation_manager,
+    ) else {
       continue;
     };
 
