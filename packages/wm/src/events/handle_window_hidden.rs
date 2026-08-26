@@ -3,8 +3,10 @@ use wm_common::{DisplayState, HideMethod};
 use wm_platform::NativeWindow;
 
 use crate::{
-  commands::window::unmanage_window, traits::WindowGetters,
-  user_config::UserConfig, wm_state::WmState,
+  commands::window::unmanage_window,
+  traits::{CommonGetters, WindowGetters},
+  user_config::UserConfig,
+  wm_state::WmState,
 };
 
 pub fn handle_window_hidden(
@@ -25,18 +27,26 @@ pub fn handle_window_hidden(
       return Ok(());
     }
 
-    // On Windows, skip unmanagement if the window is currently cloaked.
-    // Cloaking is used internally by GlazeWM (e.g. surrogate resize
-    // animations) and must not be interpreted as the app hiding itself.
-    // Workspace-switch cloaking (`HideMethod::Cloak`) is already handled
-    // above via the `Hiding` display-state guard, so this only fires for
+    // On Windows, skip unmanagement if GlazeWM itself is the one holding
+    // this window cloaked for an in-progress animation (resize/move/open/
+    // close surrogate, or a workspace-switch slide). Workspace-switch
+    // cloaking via `HideMethod::Cloak` is already handled above via the
+    // `Hiding` display-state guard, so this only matters for
     // surrogate-cloaked windows whose display state is still `Shown`.
+    //
+    // Checking `has_active_surrogate` instead of the raw `is_cloaked()`
+    // state matters because cloaking is not exclusively a GlazeWM signal:
+    // some UWP apps also self-cloak to indicate they've legitimately
+    // hidden (see `is_cloaked`'s doc comment), and a blanket `is_cloaked()`
+    // skip would leave such an app tracked forever. It would also silently
+    // drop a real hide event for a window the user minimized/hid while
+    // GlazeWM's own animation happened to have it cloaked at that instant
+    // -- `platform_sync` unconditionally uncloaks surrogate-tracked windows
+    // once their animation ends, which would then re-reveal a window the
+    // user tried to hide.
     #[cfg(target_os = "windows")]
-    {
-      use wm_platform::NativeWindowWindowsExt;
-      if window.native().is_cloaked().unwrap_or(false) {
-        return Ok(());
-      }
+    if state.animation_manager.has_active_surrogate(&window.id()) {
+      return Ok(());
     }
 
     // Unmanage the window if it's not in a display state transition. Also,
