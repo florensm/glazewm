@@ -509,6 +509,20 @@ impl NativeSurrogate {
     )
     .unwrap_or(0);
 
+    // Constructed before the final `SetWindowPos` call (rather than after) so
+    // that if it fails, `?`'s early return drops `this` — running `Drop`'s
+    // thumbnail-unregister and window-destroy cleanup — instead of leaking
+    // the overlay window and DWM thumbnail.
+    let this = Self {
+      hwnd: hwnd.0,
+      thumbnail,
+      content_size: (logical_thumb.width(), logical_thumb.height()),
+      border_inset,
+      is_visible: initially_visible,
+      last_opacity: opacity,
+      last_rect: None,
+    };
+
     // Set the initial Z-order position and optionally show the surrogate.
     // `insert_after` is caller-controlled: resize/open surrogates pass
     // `HWND(0)` (HWND_TOP) so they appear above any co-active close surrogate;
@@ -532,15 +546,7 @@ impl NativeSurrogate {
       )
     }?;
 
-    Ok(Self {
-      hwnd: hwnd.0,
-      thumbnail,
-      content_size: (logical_thumb.width(), logical_thumb.height()),
-      border_inset,
-      is_visible: initially_visible,
-      last_opacity: opacity,
-      last_rect: None,
-    })
+    Ok(this)
   }
 
   /// Returns the raw handle of the surrogate overlay window.
