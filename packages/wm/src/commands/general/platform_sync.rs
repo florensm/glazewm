@@ -20,7 +20,7 @@ use wm_platform::{
 use wm_platform::{Rect, WindowZOrder};
 
 #[cfg(target_os = "windows")]
-use crate::animation::state::BorderTransitionState;
+use crate::animation::state::{BlurTransitionState, BorderTransitionState};
 #[cfg(target_os = "windows")]
 use crate::pending_sync::IrisSwitchRequest;
 use crate::{
@@ -1700,21 +1700,24 @@ pub(crate) fn upsert_border_overlay(
   }
 }
 
-/// Upper bound on `BorderEffectConfig::transition_duration_ms`.
+/// Upper bound on `BorderEffectConfig::transition_duration_ms`, also reused
+/// to clamp the acrylic overlay's tint/blur-amount/opacity/saturation
+/// transition (see [`blur_overlay_params_for`]), which borrows this same
+/// config field rather than defining its own.
 ///
 /// The main event loop's `tokio::select!` (`main.rs`) is `biased`, checking
 /// animation ticks before keybinding/mouse/IPC event branches so animation
 /// frames are never delayed -- deliberate, and relied on by the
 /// frame-timing-critical resize/move/workspace-switch animations, which
 /// are normally well under a second. Animation ticks fire every ~5.7-16ms
-/// while any animation (including a border transition) is active, so for
-/// as long as one is running, that biased ordering effectively starves
-/// keybinding/mouse/IPC processing. A multi-second border-color transition
-/// duration would turn a purely decorative effect into a multi-second
-/// input freeze; a border fade has no legitimate reason to run that long,
-/// so it's clamped here rather than touching the shared scheduling logic
-/// other animations depend on.
-const MAX_BORDER_TRANSITION_DURATION_MS: u32 = 600;
+/// while any animation (including a border or backdrop transition) is
+/// active, so for as long as one is running, that biased ordering
+/// effectively starves keybinding/mouse/IPC processing. A multi-second
+/// border-color or backdrop transition duration would turn a purely
+/// decorative effect into a multi-second input freeze; neither has a
+/// legitimate reason to run that long, so it's clamped here rather than
+/// touching the shared scheduling logic other animations depend on.
+const MAX_EFFECT_TRANSITION_DURATION_MS: u32 = 600;
 
 /// Resolves `window_id`'s border overlay params from its focused/other-window
 /// border config, or `None` when the border effect isn't enabled for it.
@@ -1765,18 +1768,18 @@ pub(crate) fn border_overlay_params_for(
       }
       Some(existing) => {
         let duration_ms = effect_cfg.border.transition_duration_ms;
-        if duration_ms > MAX_BORDER_TRANSITION_DURATION_MS {
+        if duration_ms > MAX_EFFECT_TRANSITION_DURATION_MS {
           tracing::warn!(
             "border.transition_duration_ms of {duration_ms}ms exceeds the \
-             {MAX_BORDER_TRANSITION_DURATION_MS}ms cap and was clamped -- \
+             {MAX_EFFECT_TRANSITION_DURATION_MS}ms cap and was clamped -- \
              a longer-running animation keeps the WM's biased event loop \
              favoring animation frames over keybinding/mouse/IPC input for \
-             its whole duration (see MAX_BORDER_TRANSITION_DURATION_MS's \
+             its whole duration (see MAX_EFFECT_TRANSITION_DURATION_MS's \
              doc comment)."
           );
         }
         let duration_ms =
-          duration_ms.min(MAX_BORDER_TRANSITION_DURATION_MS);
+          duration_ms.min(MAX_EFFECT_TRANSITION_DURATION_MS);
 
         let retargeted = existing.retarget(
           now,
@@ -1818,18 +1821,32 @@ pub(crate) fn border_overlay_params_for(
   })
 }
 
-/// Resolves `window`'s acrylic overlay params from its focused/other-window
+/// Resolves `window_id`'s acrylic overlay params from its focused/other-window
 /// backdrop config, or `None` when backdrop isn't configured/enabled or
 /// isn't set to `BackdropStyle::Acrylic` for it.
+///
+/// The returned tint/blur-amount/opacity/saturation are not necessarily
+/// `effect_cfg.backdrop`'s final target: like [`border_overlay_params_for`],
+/// this also owns starting/advancing `animation_manager`'s
+/// [`BlurTransitionState`] for `window_id`, so the *live, animated*
+/// in-between value is returned while a transition (e.g. from a recent focus
+/// change) is in progress. There's no separate `backdrop.transition_*`
+/// config -- this reuses `effect_cfg.border`'s `transition_duration_ms`/
+/// `transition_easing` rather than adding a parallel pair of knobs, since
+/// both are "how fast should this focus-state's effects settle in" for the
+/// same `WindowEffectConfig`.
 ///
 /// Shared by [`sync_blur_overlays`] (the per-tick static path) and the
 /// interactive-drag tracker in `handle_window_moved_or_resized`, which needs
 /// the same params to keep the overlay live while the OS drags the window
 /// outside of `GlazeWM`'s own redraw pipeline.
 #[cfg(target_os = "windows")]
+#[allow(clippy::float_cmp)]
 pub(crate) fn blur_overlay_params_for(
+  window_id: uuid::Uuid,
   is_focused: bool,
   config: &UserConfig,
+  animation_manager: &mut AnimationManager,
 ) -> Option<BlurOverlayParams> {
   let effect_cfg = if is_focused {
     &config.value.window_effects.focused_window
@@ -1850,7 +1867,87 @@ pub(crate) fn blur_overlay_params_for(
     CornerStyle::Default.approx_radius_px()
   };
 
-  Some(effect_cfg.backdrop.to_overlay_params(tint, corner_radius))
+  let target_params = effect_cfg.backdrop.to_overlay_params(tint, corner_radius);
+
+  let now = Instant::now();
+  let (tint, blur_amount, opacity, saturation) =
+    match animation_manager.blur_transitions.get(&window_id) {
+      Some(existing)
+        if existing.target()
+          == (
+            target_params.tint,
+            target_params.blur_amount,
+            target_params.opacity,
+            target_params.saturation,
+          ) =>
+      {
+        existing.current_state_at(now)
+      }
+      Some(existing) => {
+        let duration_ms = effect_cfg.border.transition_duration_ms;
+        // Only warn here when border is disabled -- otherwise
+        // `border_overlay_params_for` already warned about this same
+        // shared config value.
+        if duration_ms > MAX_EFFECT_TRANSITION_DURATION_MS
+          && !effect_cfg.border.enabled
+        {
+          tracing::warn!(
+            "border.transition_duration_ms of {duration_ms}ms exceeds the \
+             {MAX_EFFECT_TRANSITION_DURATION_MS}ms cap and was clamped for \
+             the backdrop transition that reuses it -- a longer-running \
+             animation keeps the WM's biased event loop favoring animation \
+             frames over keybinding/mouse/IPC input for its whole duration \
+             (see MAX_EFFECT_TRANSITION_DURATION_MS's doc comment)."
+          );
+        }
+        let duration_ms = duration_ms.min(MAX_EFFECT_TRANSITION_DURATION_MS);
+
+        let retargeted = existing.retarget(
+          now,
+          target_params.tint,
+          target_params.blur_amount,
+          target_params.opacity,
+          target_params.saturation,
+          duration_ms,
+          effect_cfg.border.transition_easing.clone(),
+        );
+        let current = retargeted.current_state_at(now);
+        animation_manager.blur_transitions.insert(window_id, retargeted);
+        current
+      }
+      // First time this window's backdrop has been resolved: appear at the
+      // target immediately rather than animating in from a default.
+      None => {
+        animation_manager.blur_transitions.insert(
+          window_id,
+          BlurTransitionState::settled(
+            target_params.tint,
+            target_params.blur_amount,
+            target_params.opacity,
+            target_params.saturation,
+          ),
+        );
+        (
+          target_params.tint,
+          target_params.blur_amount,
+          target_params.opacity,
+          target_params.saturation,
+        )
+      }
+    };
+
+  // See the matching call in `border_overlay_params_for`: a newly
+  // (re)started transition needs the animation timer ticking to ever
+  // advance past this initial sample.
+  animation_manager.ensure_timer_running();
+
+  Some(BlurOverlayParams {
+    tint,
+    blur_amount,
+    corner_radius: target_params.corner_radius,
+    opacity,
+    saturation,
+  })
 }
 
 /// Resolves the z-order anchor to keep `window`'s acrylic overlay pinned
@@ -1942,12 +2039,12 @@ impl SyncableOverlay for NativeBlurOverlay {
   }
 
   fn params_for(
-    _window_id: uuid::Uuid,
+    window_id: uuid::Uuid,
     is_focused: bool,
     config: &UserConfig,
-    _animation_manager: &mut AnimationManager,
+    animation_manager: &mut AnimationManager,
   ) -> Option<Self::Params> {
-    blur_overlay_params_for(is_focused, config)
+    blur_overlay_params_for(window_id, is_focused, config, animation_manager)
   }
 
   fn create(

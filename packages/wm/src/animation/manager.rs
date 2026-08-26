@@ -131,7 +131,7 @@ use wm_platform::{
 };
 
 #[cfg(target_os = "windows")]
-use crate::animation::state::BorderTransitionState;
+use crate::animation::state::{BlurTransitionState, BorderTransitionState};
 use crate::{
   animation::state::WindowAnimationState,
   commands::general::platform_sync,
@@ -375,6 +375,11 @@ pub struct AnimationManager {
   /// [`BorderTransitionState`].
   #[cfg(target_os = "windows")]
   pub(crate) border_transitions: HashMap<Uuid, BorderTransitionState>,
+  /// Each window's acrylic overlay tint/blur-amount/opacity/saturation
+  /// transition, keyed by window ID. Mirrors `border_transitions` -- see
+  /// [`BlurTransitionState`].
+  #[cfg(target_os = "windows")]
+  pub(crate) blur_transitions: HashMap<Uuid, BlurTransitionState>,
 }
 
 impl Drop for AnimationManager {
@@ -431,6 +436,8 @@ impl AnimationManager {
       iris_switch: None,
       #[cfg(target_os = "windows")]
       border_transitions: HashMap::new(),
+      #[cfg(target_os = "windows")]
+      blur_transitions: HashMap::new(),
     }
   }
 
@@ -532,6 +539,8 @@ impl AnimationManager {
     self.pending_close_windows.remove(window_id);
     #[cfg(target_os = "windows")]
     self.border_transitions.remove(window_id);
+    #[cfg(target_os = "windows")]
+    self.blur_transitions.remove(window_id);
   }
 
   /// Removes all completed animations and returns their window IDs.
@@ -587,6 +596,9 @@ impl AnimationManager {
     {
       let now = Instant::now();
       if self.border_transitions.values().any(|t| !t.is_complete_at(now)) {
+        return true;
+      }
+      if self.blur_transitions.values().any(|t| !t.is_complete_at(now)) {
         return true;
       }
     }
@@ -818,6 +830,24 @@ impl AnimationManager {
       let transitioning_ids: Vec<Uuid> = state
         .animation_manager
         .border_transitions
+        .iter()
+        .filter(|(_, t)| !t.is_complete_at(now))
+        .map(|(id, _)| *id)
+        .collect();
+
+      for window_id in transitioning_ids {
+        if let Some(container) = state.container_by_id(window_id) {
+          if let Ok(window) = container.as_window_container() {
+            state.pending_sync.queue_container_to_redraw(window);
+          }
+        }
+      }
+
+      // Same as above, for an in-progress acrylic overlay transition (see
+      // `blur_overlay_params_for`), so it advances every tick too.
+      let transitioning_ids: Vec<Uuid> = state
+        .animation_manager
+        .blur_transitions
         .iter()
         .filter(|(_, t)| !t.is_complete_at(now))
         .map(|(id, _)| *id)

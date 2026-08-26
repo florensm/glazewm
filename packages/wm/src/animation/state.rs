@@ -309,6 +309,126 @@ impl BorderTransitionState {
   }
 }
 
+/// Tracks a window's acrylic overlay tint/blur-amount/opacity/saturation,
+/// animating toward a new target whenever [`retarget`] is called with a
+/// different one (e.g. on focus change) rather than snapping instantly.
+///
+/// Mirrors [`BorderTransitionState`] -- same "always-settled cache doubles
+/// as animate-from state" shape, same underlying `apply_easing`/
+/// `animation_progress_at` math -- just interpolating the acrylic overlay's
+/// four scalar/color knobs instead of the border's two. See
+/// `blur_overlay_params_for` in `commands/general/platform_sync.rs`.
+///
+/// [`retarget`]: BlurTransitionState::retarget
+#[cfg(target_os = "windows")]
+#[derive(Clone, Debug)]
+pub struct BlurTransitionState {
+  start_time: Instant,
+  duration: Duration,
+  easing: EasingFunction,
+  start_tint: Color,
+  target_tint: Color,
+  start_blur_amount: f32,
+  target_blur_amount: f32,
+  start_opacity: f32,
+  target_opacity: f32,
+  start_saturation: f32,
+  target_saturation: f32,
+}
+
+#[cfg(target_os = "windows")]
+impl BlurTransitionState {
+  /// Creates a state that is already at the given values, with no animation
+  /// in progress. Used the first time a window's backdrop is resolved, so it
+  /// appears immediately rather than animating in from a default.
+  pub fn settled(
+    tint: Color,
+    blur_amount: f32,
+    opacity: f32,
+    saturation: f32,
+  ) -> Self {
+    Self {
+      start_time: Instant::now(),
+      duration: Duration::ZERO,
+      easing: EasingFunction::default(),
+      start_tint: tint,
+      target_tint: tint,
+      start_blur_amount: blur_amount,
+      target_blur_amount: blur_amount,
+      start_opacity: opacity,
+      target_opacity: opacity,
+      start_saturation: saturation,
+      target_saturation: saturation,
+    }
+  }
+
+  /// Starts a new transition from this state's current values (at `now`)
+  /// toward the given targets, over `duration_ms` with `easing`. See
+  /// [`BorderTransitionState::retarget`] for why the current interpolated
+  /// value (rather than the previous target) is used as the new start.
+  #[must_use]
+  pub fn retarget(
+    &self,
+    now: Instant,
+    target_tint: Color,
+    target_blur_amount: f32,
+    target_opacity: f32,
+    target_saturation: f32,
+    duration_ms: u32,
+    easing: EasingFunction,
+  ) -> Self {
+    let (start_tint, start_blur_amount, start_opacity, start_saturation) =
+      self.current_state_at(now);
+    Self {
+      start_time: now,
+      duration: Duration::from_millis(u64::from(duration_ms)),
+      easing,
+      start_tint,
+      target_tint,
+      start_blur_amount,
+      target_blur_amount,
+      start_opacity,
+      target_opacity,
+      start_saturation,
+      target_saturation,
+    }
+  }
+
+  /// This transition's target values, regardless of progress.
+  ///
+  /// Compared against a freshly resolved target by `blur_overlay_params_for`
+  /// to decide whether a new [`retarget`] is needed.
+  ///
+  /// [`retarget`]: BlurTransitionState::retarget
+  pub fn target(&self) -> (Color, f32, f32, f32) {
+    (self.target_tint, self.target_blur_amount, self.target_opacity, self.target_saturation)
+  }
+
+  /// Gets the eased progress in `[0.0, 1.0]` at an explicit `now` instant.
+  pub fn eased_progress_at(&self, now: Instant) -> f32 {
+    apply_easing(animation_progress_at(self.start_time, self.duration, now), &self.easing)
+  }
+
+  /// Whether the transition has finished animating as of `now`.
+  pub fn is_complete_at(&self, now: Instant) -> bool {
+    self.eased_progress_at(now) >= 1.0
+  }
+
+  /// Gets the interpolated tint/blur-amount/opacity/saturation at an
+  /// explicit `now` instant.
+  pub fn current_state_at(&self, now: Instant) -> (Color, f32, f32, f32) {
+    let t = self.eased_progress_at(now);
+    let tint = self.start_tint.lerp(&self.target_tint, t);
+    let blur_amount = self.start_blur_amount
+      + (self.target_blur_amount - self.start_blur_amount) * t;
+    let opacity =
+      self.start_opacity + (self.target_opacity - self.start_opacity) * t;
+    let saturation = self.start_saturation
+      + (self.target_saturation - self.start_saturation) * t;
+    (tint, blur_amount, opacity, saturation)
+  }
+}
+
 #[cfg(test)]
 mod tests {
   use super::*;

@@ -73,7 +73,12 @@ pub fn handle_window_moved_or_resized(
         let mut batch = wm_platform::SurrogateBatch::new();
         let anchor = overlay_z_anchor(&window);
 
-        if let Some(params) = blur_overlay_params_for(is_focused, config) {
+        if let Some(params) = blur_overlay_params_for(
+          window.id(),
+          is_focused,
+          config,
+          &mut state.animation_manager,
+        ) {
           upsert_blur_overlay(
             &mut state.blur_overlays,
             window.id(),
