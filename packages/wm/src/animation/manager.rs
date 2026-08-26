@@ -2123,8 +2123,12 @@ impl AnimationManager {
         }
         Some((false, _, _)) => {
           // Thumbnail failed — drop the transparent surrogate and snap.
-          self.resize_sessions.remove(&window_id);
-          self.animations.remove(&window_id);
+          // Goes through `remove_animation` (rather than removing
+          // `resize_sessions`/`animations` by hand) so `slide_in_monitor_rects`
+          // is cleared too -- otherwise a later unrelated resize of the same
+          // window id would read the stale monitor rect and get incorrectly
+          // routed through `update_clipped`.
+          self.remove_animation(&window_id);
           return (AnimationPositionResult::Apply(target_rect), None);
         }
         None => {}
