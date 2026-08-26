@@ -933,6 +933,15 @@ impl AnimationManager {
         state.animation_manager.resize_sessions.remove(&id);
         state.animation_manager.pending_close_windows.remove(&id);
 
+        // The close-drive loop above populates these via
+        // `upsert_blur_overlay`/`upsert_border_overlay` since closing windows
+        // are detached from the layout tree and never reach
+        // `sync_blur_overlays`/`sync_border_overlays`'s normal retain-based
+        // cleanup. Remove them here too, or the overlay window they own is
+        // never destroyed and lingers on screen as a ghost.
+        state.blur_overlays.remove(&id);
+        state.border_overlays.remove(&id);
+
         // Reconstruct a `NativeWindow` from the stored HWND and send
         // `WM_CLOSE` to destroy the OS window. The layout was already
         // updated when the animation started, so no `unmanage_window` call
