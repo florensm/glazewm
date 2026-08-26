@@ -368,24 +368,81 @@ impl BackdropEffectConfig {
   }
 }
 
+/// Default/fallback border color: used both as [`BorderColorSource`]'s
+/// default and when a dynamic source (`"accent"` or `file`) fails to
+/// resolve.
+const DEFAULT_BORDER_COLOR: Color =
+  Color { r: 140, g: 190, b: 255, a: 255 };
+
+/// Where a border's color comes from.
+///
+/// Re-resolved every time the border's target color is needed (on focus
+/// change, or on a config reload), so a dynamic source tracks its live
+/// value with no restart needed.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(untagged)]
+pub enum BorderColorSource {
+  /// A static hex color (`"#rrggbb"`/`"#rrggbbaa"`), or the literal
+  /// `"accent"` for the OS's live accent/colorization color.
+  Value(String),
+
+  /// Reads a named CSS custom property (`--key: #hex;` or
+  /// `--key: rgb(r, g, b);`) from an external generated palette file --
+  /// e.g. matugen, pywal, or YASB's `yasb_colors.css`.
+  File {
+    /// Path to the palette file.
+    file: std::path::PathBuf,
+    /// The CSS custom property's name, including its leading `--`.
+    key: String,
+  },
+}
+
+impl Default for BorderColorSource {
+  fn default() -> Self {
+    Self::Value("#8cbeff".to_string())
+  }
+}
+
+impl BorderColorSource {
+  /// Resolves this source to a concrete [`Color`].
+  ///
+  /// Falls back to [`DEFAULT_BORDER_COLOR`] (logging a warning) if
+  /// resolution fails -- an unreadable file, a missing key, an
+  /// unrecognized value, an unparseable static hex string, or an OS
+  /// accent-color read failure (e.g. on an OS version predating the
+  /// `DwmGetColorizationColor` API).
+  #[must_use]
+  pub fn resolve(&self) -> Color {
+    let result: wm_platform::Result<Color> = match self {
+      Self::Value(value) if value.eq_ignore_ascii_case("accent") => {
+        wm_platform::system_accent_color()
+      }
+      Self::Value(value) => value.parse::<Color>().map_err(Into::into),
+      Self::File { file, key } => wm_platform::color_from_file(file, key),
+    };
+
+    result.unwrap_or_else(|err| {
+      tracing::warn!(
+        "Failed to resolve border color ({err}), falling back to a \
+         default color."
+      );
+      DEFAULT_BORDER_COLOR
+    })
+  }
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(default, rename_all(serialize = "camelCase"))]
 pub struct BorderEffectConfig {
   /// Whether to enable the effect.
   pub enabled: bool,
 
-  /// Color of the window border. Ignored when `use_accent_color` is `true`.
-  pub color: Color,
-
-  /// Use the OS's live accent/colorization color instead of `color`.
-  ///
-  /// Re-read every time the border's target color is resolved (on focus
-  /// change, or when `use_accent_color` itself is toggled via config
-  /// reload), so the border always tracks the current system accent color
-  /// with no need to restart the app when the user changes it.
-  ///
-  /// If the OS accent color can't be read, falls back to `color`.
-  pub use_accent_color: bool,
+  /// Color of the window border: a static hex string, the literal
+  /// `"accent"` for the OS's live accent/colorization color, or a
+  /// `{ file, key }` mapping to read a named CSS custom property from an
+  /// external generated palette file (matugen, pywal, YASB, etc.). See
+  /// [`BorderColorSource`].
+  pub color: BorderColorSource,
 
   /// Thickness of the window border.
   pub width: LengthValue,
@@ -413,13 +470,7 @@ impl Default for BorderEffectConfig {
   fn default() -> Self {
     BorderEffectConfig {
       enabled: false,
-      color: Color {
-        r: 140,
-        g: 190,
-        b: 255,
-        a: 255,
-      },
-      use_accent_color: false,
+      color: BorderColorSource::default(),
       width: LengthValue::from_px(2),
       radius: None,
       transition_duration_ms: 150,
@@ -431,27 +482,15 @@ impl Default for BorderEffectConfig {
 impl BorderEffectConfig {
   /// Border color, or `None` when the border effect is disabled.
   ///
-  /// When `use_accent_color` is set, reads the OS's live accent color via
-  /// [`wm_platform::system_accent_color`], falling back to `color` (logging
-  /// a warning) if that read fails -- e.g. on an OS version predating the
-  /// `DwmGetColorizationColor` API.
+  /// See [`BorderColorSource::resolve`] for how `color` is resolved,
+  /// including its fallback behavior on a failed dynamic read.
   #[must_use]
   pub fn abgr_color(&self) -> Option<Color> {
     if !self.enabled {
       return None;
     }
 
-    if self.use_accent_color {
-      return Some(wm_platform::system_accent_color().unwrap_or_else(|err| {
-        tracing::warn!(
-          "Failed to read OS accent color, falling back to configured \
-           border color: {err}."
-        );
-        self.color
-      }));
-    }
-
-    Some(self.color)
+    Some(self.color.resolve())
   }
 
   /// Builds a [`BorderOverlayParams`] from this config, given the

@@ -945,15 +945,14 @@ fn desktop_window() -> NativeWindow {
 }
 
 /// Reads the OS's current accent/colorization color via
-/// `DwmGetColorizationColor`, for `BorderEffectConfig`'s optional
-/// `use_accent_color` knob.
+/// `DwmGetColorizationColor`, for `BorderColorSource`'s `"accent"` value.
 ///
 /// Not tied to a specific window -- this is a system-wide color, the same
 /// one Windows uses to tint title bars/taskbar when the user has that
-/// personalization option enabled. Called fresh each time a border's
-/// target color is resolved (see `border_overlay_params_for` in
-/// `platform_sync.rs`) rather than cached, so callers see the live system
-/// color with no change-listener plumbing required.
+/// personalization option enabled. The public `system_accent_color`
+/// wrapper (`system_accent_color.rs`) caches this with a short TTL rather
+/// than calling straight through on every border resolution; this inner
+/// function itself performs no caching of its own.
 pub(crate) fn system_accent_color() -> crate::Result<Color> {
   let mut argb: u32 = 0;
   let mut opaque_blend = BOOL(0);

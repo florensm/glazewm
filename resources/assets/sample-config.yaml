@@ -165,12 +165,24 @@ window_effects:
     # workspace-switch transitions instead of disappearing during them.
     border:
       enabled: true
+      # Where the border's color comes from -- one of three shapes:
+      #   1. A static hex string, '#rrggbb' or '#rrggbbaa'.
+      #   2. The literal string 'accent', for the OS's live accent/
+      #      colorization color. Falls back to a default color (with a
+      #      warning) if it can't be read, e.g. on an OS version predating
+      #      the DwmGetColorizationColor API.
+      #   3. A { file, key } mapping to read a named CSS custom property
+      #      from an external generated palette file (matugen, pywal,
+      #      YASB's yasb_colors.css, etc.) -- '#hex' and 'rgb(r, g, b)'
+      #      property values are both recognized. Re-read whenever the
+      #      file's mtime changes, so it tracks the file live with no
+      #      restart needed. Falls back to a default color (with a
+      #      warning) if the file/key can't be read.
       color: "#8dbcff"
-      # Use the OS's live accent/colorization color instead of `color`
-      # above. Re-read every time the border's target color is resolved, so
-      # it tracks the current system accent color with no restart needed
-      # when the user changes it. Falls back to `color` if it can't be read.
-      use_accent_color: false
+      # color: "accent"
+      # color:
+      #   file: "C:/Users/me/.config/yasb/yasb_colors.css"
+      #   key: "--yasb-accent"
       width: "2px"
       # Corner radius of the border's outer edge. If omitted, it's derived
       # from corner_style's radius plus width, so the ring lines up with
@@ -179,7 +191,11 @@ window_effects:
       # radius: "12px"
       # Duration of the animated transition when the border's resolved
       # color/width changes (e.g. on focus change). '0' applies the new
-      # value instantly, with no animation.
+      # value instantly, with no animation. Capped at 600ms -- a
+      # longer-running animation keeps the WM's event loop favoring
+      # animation frames over keybinding/mouse/IPC input for its whole
+      # duration, so a longer configured value is clamped (with a warning)
+      # rather than honored.
       transition_duration_ms: 150
       # Easing curve for the border color/width transition. Allowed values:
       # 'linear', 'ease_in_out', 'ease_in', 'ease_out', 'ease_in_out_cubic',
@@ -245,7 +261,6 @@ window_effects:
     border:
       enabled: true
       color: "#a1a1a1"
-      use_accent_color: false
       width: "2px"
       transition_duration_ms: 150
       transition_easing: "ease_in_out"
