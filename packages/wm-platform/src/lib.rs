@@ -212,11 +212,15 @@ impl DxgiVsyncWaiter {
 
     let mut ai = 0u32;
     loop {
+      // SAFETY: `factory` is a valid `IDXGIFactory1`; an out-of-range `ai`
+      // just returns `DXGI_ERROR_NOT_FOUND`, handled below.
       let Ok(adapter) = (unsafe { factory.EnumAdapters(ai) }) else {
         break; // DXGI_ERROR_NOT_FOUND â€” no more adapters.
       };
       let mut oi = 0u32;
       loop {
+        // SAFETY: `adapter` is a valid `IDXGIAdapter` from `EnumAdapters`
+        // above; an out-of-range `oi` just returns an error, handled below.
         let Ok(output) = (unsafe { adapter.EnumOutputs(oi) }) else {
           break; // No more outputs on this adapter.
         };

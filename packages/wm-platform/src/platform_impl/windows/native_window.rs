@@ -552,6 +552,8 @@ impl NativeWindow {
     if z_order_hwnd == HWND_NOTOPMOST {
       // `HWND_NOTOPMOST` has no effect when the window is already
       // non-topmost.
+      // SAFETY: A stale `handle` (window destroyed since it was captured)
+      // just makes `GetWindowLongPtrW` return 0, not UB.
       let ex_style =
         unsafe { GetWindowLongPtrW(HWND(handle), GWL_EXSTYLE) };
       #[allow(clippy::cast_possible_wrap)]
@@ -560,6 +562,8 @@ impl NativeWindow {
     } else if z_order_hwnd.0 > 0 {
       // Already positioned directly below the requested insert-after
       // window.
+      // SAFETY: A stale `handle` just makes `GetWindow` return `HWND(0)`,
+      // not UB.
       let prev = unsafe { GetWindow(HWND(handle), GW_HWNDPREV) };
       prev == z_order_hwnd
     } else {
@@ -605,6 +609,8 @@ impl NativeWindow {
       // Re-check at fire time: the initial call has usually landed by now,
       // making this retry a no-op that would otherwise repaint the window.
       if !Self::is_z_order_correct(handle, z_order_hwnd) {
+        // SAFETY: A stale `handle` (window destroyed during the 10ms delay)
+        // just makes the call fail, which is discarded below.
         let _ = unsafe {
           SetWindowPos(HWND(handle), z_order_hwnd, 0, 0, 0, 0, flags)
         };
@@ -787,6 +793,9 @@ impl NativeWindow {
       }
     };
 
+    // SAFETY: `self.hwnd()` is a valid window handle. `backdrop_type.0` is a
+    // stack-allocated `i32` live for the duration of the call, and its size
+    // matches the `cbAttribute` argument passed below.
     if let Err(e) = unsafe {
       #[allow(clippy::cast_possible_truncation)]
       DwmSetWindowAttribute(
