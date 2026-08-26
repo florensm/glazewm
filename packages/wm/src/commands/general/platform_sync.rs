@@ -1773,6 +1773,13 @@ pub(crate) fn border_overlay_params_for(
       }
     };
 
+  // A newly (re)started transition needs the animation timer ticking to
+  // ever advance past this initial sample -- unlike open/close/move/resize
+  // animations, nothing else on the border-color-only path starts it.
+  // Idempotent/cheap when nothing is actually animating (see
+  // `ensure_timer_running`'s own gating), so unconditional here is fine.
+  animation_manager.ensure_timer_running();
+
   Some(BorderOverlayParams {
     color,
     width,
