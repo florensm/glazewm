@@ -10,10 +10,12 @@
 /// visible from both crate roots this crate builds under -- `lib.rs` for
 /// normal builds and the separate `test.rs` harness, which only declares a
 /// subset of modules but always re-exports `models::*`.
+use crate::Color;
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct BlurOverlayParams {
-  /// ABGR tint blended over the blurred backdrop.
-  pub tint: u32,
+  /// Tint blended over the blurred backdrop.
+  pub tint: Color,
   /// Blur radius/intensity. No-op in the SWCA fallback.
   pub blur_amount: f32,
   /// Corner radius, in pixels. No-op in the SWCA fallback.

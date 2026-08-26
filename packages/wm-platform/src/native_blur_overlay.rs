@@ -22,7 +22,7 @@ use crate::{
       ACCENT_ENABLE_HOSTBACKDROP,
     },
   },
-  window_class, BlurOverlayParams, Rect, SurrogateBatch,
+  window_class, BlurOverlayParams, Color, Rect, SurrogateBatch,
 };
 
 fn ensure_class_registered() {
@@ -267,7 +267,11 @@ impl NativeBlurOverlay {
         (hwnd, Some(visual))
       } else {
         let hwnd = create_window(rect, false)?;
-        apply_swca_accent(hwnd, ACCENT_ENABLE_ACRYLICBLURBEHIND, params.tint);
+        apply_swca_accent(
+          hwnd,
+          ACCENT_ENABLE_ACRYLICBLURBEHIND,
+          params.tint.to_abgr(),
+        );
         (hwnd, None)
       };
 
@@ -447,8 +451,8 @@ impl NativeBlurOverlay {
     Ok(())
   }
 
-  /// Updates the ABGR tint; re-applies only when the value changes.
-  pub fn set_tint(&mut self, tint: u32) {
+  /// Updates the tint; re-applies only when the value changes.
+  pub fn set_tint(&mut self, tint: Color) {
     if self.params.tint == tint {
       return;
     }
@@ -461,7 +465,11 @@ impl NativeBlurOverlay {
         }
       }
       None => {
-        apply_swca_accent(self.hwnd(), ACCENT_ENABLE_ACRYLICBLURBEHIND, tint);
+        apply_swca_accent(
+          self.hwnd(),
+          ACCENT_ENABLE_ACRYLICBLURBEHIND,
+          tint.to_abgr(),
+        );
       }
     }
   }

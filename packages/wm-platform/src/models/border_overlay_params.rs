@@ -9,10 +9,12 @@
 /// visible from both crate roots this crate builds under -- `lib.rs` for
 /// normal builds and the separate `test.rs` harness, which only declares a
 /// subset of modules but always re-exports `models::*`.
+use crate::Color;
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct BorderOverlayParams {
-  /// ABGR color of the border ring.
-  pub color: u32,
+  /// Color of the border ring.
+  pub color: Color,
   /// Ring thickness, in physical pixels.
   pub width: f32,
   /// Corner radius, in pixels, of the ring's outer edge. No-op in the SWCA

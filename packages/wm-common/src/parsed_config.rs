@@ -327,24 +327,21 @@ impl Default for BackdropEffectConfig {
 }
 
 impl BackdropEffectConfig {
-  /// Returns the ABGR-packed SWCA tint for the acrylic style.
+  /// Returns the SWCA tint for the acrylic style.
   ///
   /// Returns `None` when the effect is disabled or a non-acrylic style is
   /// configured. When no tint is set, falls back to near-transparent black
   /// (`alpha = 1`) to avoid the solid-fill rendering bug present on some
   /// Windows 10 builds.
   #[must_use]
-  pub fn acrylic_tint(&self) -> Option<u32> {
+  pub fn acrylic_tint(&self) -> Option<Color> {
     if !self.enabled || self.style != BackdropStyle::Acrylic {
       return None;
     }
 
-    Some(self.tint.as_ref().map_or(0x0100_0000, |c| {
-      (u32::from(c.a) << 24)
-        | (u32::from(c.b) << 16)
-        | (u32::from(c.g) << 8)
-        | u32::from(c.r)
-    }))
+    Some(
+      self.tint.unwrap_or(Color { r: 0, g: 0, b: 0, a: 1 }),
+    )
   }
 
   /// Builds a [`BlurOverlayParams`] from this config, given the
@@ -358,7 +355,7 @@ impl BackdropEffectConfig {
   #[must_use]
   pub fn to_overlay_params(
     &self,
-    tint: u32,
+    tint: Color,
     corner_radius: f32,
   ) -> BlurOverlayParams {
     BlurOverlayParams {
@@ -410,21 +407,14 @@ impl Default for BorderEffectConfig {
 }
 
 impl BorderEffectConfig {
-  /// ABGR-packed border color, or `None` when the border effect is
-  /// disabled.
+  /// Border color, or `None` when the border effect is disabled.
   #[must_use]
-  pub fn abgr_color(&self) -> Option<u32> {
+  pub fn abgr_color(&self) -> Option<Color> {
     if !self.enabled {
       return None;
     }
 
-    let c = &self.color;
-    Some(
-      (u32::from(c.a) << 24)
-        | (u32::from(c.b) << 16)
-        | (u32::from(c.g) << 8)
-        | u32::from(c.r),
-    )
+    Some(self.color)
   }
 
   /// Builds a [`BorderOverlayParams`] from this config, given the
@@ -440,7 +430,7 @@ impl BorderEffectConfig {
   #[must_use]
   pub fn to_overlay_params(
     &self,
-    color: u32,
+    color: Color,
     window_corner_radius: f32,
   ) -> BorderOverlayParams {
     #[allow(clippy::cast_precision_loss)]
@@ -1094,7 +1084,7 @@ where
 
 #[cfg(test)]
 mod tests {
-  use super::BackdropEffectConfig;
+  use super::{BackdropEffectConfig, Color};
 
   /// `to_overlay_params` must map every field through to the resulting
   /// `BlurOverlayParams` unchanged (plus the two parameters passed in
@@ -1110,9 +1100,10 @@ mod tests {
       ..BackdropEffectConfig::default()
     };
 
-    let params = config.to_overlay_params(0xAABB_CCDD, 12.0);
+    let tint = Color::from_abgr(0xAABB_CCDD);
+    let params = config.to_overlay_params(tint, 12.0);
 
-    assert_eq!(params.tint, 0xAABB_CCDD);
+    assert_eq!(params.tint, tint);
     assert_eq!(params.blur_amount, 42.0);
     assert_eq!(params.corner_radius, 12.0);
     assert_eq!(params.opacity, 0.5);

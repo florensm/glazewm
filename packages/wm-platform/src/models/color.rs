@@ -2,7 +2,7 @@ use std::str::FromStr;
 
 use serde::{Deserialize, Deserializer, Serialize};
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize)]
 pub struct Color {
   pub r: u8,
   pub g: u8,
@@ -19,9 +19,22 @@ impl Color {
     u32::from_str_radix(&bgr, 16).unwrap()
   }
 
-  /// Unpacks an ABGR-packed `u32` (alpha in the high byte, then blue,
-  /// green, red -- the packing `BorderOverlayParams`/`BlurOverlayParams`
-  /// use) into a `Color`.
+  /// Packs this color into ABGR order (alpha in the high byte, then blue,
+  /// green, red -- the order the raw Win32 `SetWindowCompositionAttribute`
+  /// gradient-color API requires). Inverse of [`from_abgr`].
+  ///
+  /// [`from_abgr`]: Color::from_abgr
+  #[must_use]
+  pub fn to_abgr(&self) -> u32 {
+    (u32::from(self.a) << 24)
+      | (u32::from(self.b) << 16)
+      | (u32::from(self.g) << 8)
+      | u32::from(self.r)
+  }
+
+  /// Unpacks an ABGR-packed `u32` (see [`to_abgr`]) into a `Color`.
+  ///
+  /// [`to_abgr`]: Color::to_abgr
   #[must_use]
   pub fn from_abgr(abgr: u32) -> Self {
     #[allow(clippy::cast_possible_truncation)]

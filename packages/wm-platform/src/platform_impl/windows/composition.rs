@@ -304,16 +304,10 @@ where
   Ok(result?)
 }
 
-/// Unpacks an ABGR-packed tint (see `BackdropEffectConfig::acrylic_tint`)
-/// into a `windows::UI::Color`.
-#[allow(clippy::cast_possible_truncation)]
-fn unpack_abgr_tint(tint: u32) -> Color {
-  Color {
-    A: (tint >> 24) as u8,
-    B: (tint >> 16) as u8,
-    G: (tint >> 8) as u8,
-    R: tint as u8,
-  }
+/// Converts our `crate::Color` into a `windows::UI::Color` for Composition
+/// brushes.
+fn to_ui_color(color: crate::Color) -> Color {
+  Color { A: color.a, B: color.b, G: color.g, R: color.r }
 }
 
 /// A live `Windows.UI.Composition` visual tree providing an acrylic blur
@@ -396,9 +390,9 @@ impl BlurVisual {
     Ok(())
   }
 
-  /// Updates the tint layer's color; no-op unless the ABGR value changed.
-  pub(crate) fn set_tint(&self, tint: u32) -> crate::Result<()> {
-    self.tint_brush.SetColor(unpack_abgr_tint(tint))?;
+  /// Updates the tint layer's color; no-op unless the value changed.
+  pub(crate) fn set_tint(&self, tint: crate::Color) -> crate::Result<()> {
+    self.tint_brush.SetColor(to_ui_color(tint))?;
     Ok(())
   }
 
@@ -589,7 +583,7 @@ fn build_visual_tree(
   blur_sprite.SetSize(size)?;
 
   let tint_brush =
-    compositor.CreateColorBrushWithColor(unpack_abgr_tint(params.tint))?;
+    compositor.CreateColorBrushWithColor(to_ui_color(params.tint))?;
   let tint_sprite = compositor.CreateSpriteVisual()?;
   tint_sprite.SetBrush(&tint_brush)?;
   tint_sprite.SetSize(size)?;
@@ -689,8 +683,8 @@ impl BorderVisual {
   }
 
   /// Updates the fill color.
-  pub(crate) fn set_color(&self, color: u32) -> crate::Result<()> {
-    self.color_brush.SetColor(unpack_abgr_tint(color))?;
+  pub(crate) fn set_color(&self, color: crate::Color) -> crate::Result<()> {
+    self.color_brush.SetColor(to_ui_color(color))?;
     Ok(())
   }
 
@@ -738,7 +732,7 @@ fn build_border_visual_tree(
   let clip = compositor.CreateGeometricClipWithGeometry(&rounded_geometry)?;
 
   let color_brush =
-    compositor.CreateColorBrushWithColor(unpack_abgr_tint(params.color))?;
+    compositor.CreateColorBrushWithColor(to_ui_color(params.color))?;
   let sprite = compositor.CreateSpriteVisual()?;
   sprite.SetBrush(&color_brush)?;
   sprite.SetSize(size)?;

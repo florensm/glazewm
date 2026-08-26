@@ -26,7 +26,7 @@ use windows::{
 
 use crate::{
   native_surrogate::apply_backdrop, platform_impl::composition::BorderVisual,
-  window_class, BorderOverlayParams, Rect, SurrogateBatch,
+  window_class, BorderOverlayParams, Color, Rect, SurrogateBatch,
 };
 
 fn ensure_class_registered() {
@@ -301,7 +301,7 @@ impl NativeBorderOverlay {
       } else {
         let hwnd = create_window(&outer, false)?;
         extend_glass_sheet(hwnd);
-        apply_backdrop(hwnd, Some(&crate::Color::from_abgr(params.color)));
+        apply_backdrop(hwnd, Some(&params.color));
         (hwnd, None)
       };
 
@@ -482,7 +482,7 @@ impl NativeBorderOverlay {
   }
 
   /// Updates the ring's color; re-applies only when the value changes.
-  pub fn set_color(&mut self, color: u32) {
+  pub fn set_color(&mut self, color: Color) {
     if self.params.color == color {
       return;
     }
@@ -495,7 +495,7 @@ impl NativeBorderOverlay {
         }
       }
       None => {
-        apply_backdrop(self.hwnd(), Some(&crate::Color::from_abgr(color)));
+        apply_backdrop(self.hwnd(), Some(&color));
       }
     }
   }

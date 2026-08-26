@@ -463,7 +463,8 @@ fn redraw_containers(
           // Carry the acrylic blur onto the surrogate so the frosted-glass
           // effect stays visible while the workspace slides. The static
           // blur overlay is hidden for the duration of the animation.
-          let acrylic_tint = effect_cfg.backdrop.acrylic_tint();
+          let acrylic_tint =
+            effect_cfg.backdrop.acrylic_tint().map(|c| c.to_abgr());
           let corner_style = if effect_cfg.corner_style.enabled {
             effect_cfg.corner_style.style.clone()
           } else {
