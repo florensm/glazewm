@@ -1700,6 +1700,22 @@ pub(crate) fn upsert_border_overlay(
   }
 }
 
+/// Upper bound on `BorderEffectConfig::transition_duration_ms`.
+///
+/// The main event loop's `tokio::select!` (`main.rs`) is `biased`, checking
+/// animation ticks before keybinding/mouse/IPC event branches so animation
+/// frames are never delayed -- deliberate, and relied on by the
+/// frame-timing-critical resize/move/workspace-switch animations, which
+/// are normally well under a second. Animation ticks fire every ~5.7-16ms
+/// while any animation (including a border transition) is active, so for
+/// as long as one is running, that biased ordering effectively starves
+/// keybinding/mouse/IPC processing. A multi-second border-color transition
+/// duration would turn a purely decorative effect into a multi-second
+/// input freeze; a border fade has no legitimate reason to run that long,
+/// so it's clamped here rather than touching the shared scheduling logic
+/// other animations depend on.
+const MAX_BORDER_TRANSITION_DURATION_MS: u32 = 600;
+
 /// Resolves `window_id`'s border overlay params from its focused/other-window
 /// border config, or `None` when the border effect isn't enabled for it.
 /// Mirrors [`blur_overlay_params_for`].
@@ -1748,11 +1764,25 @@ pub(crate) fn border_overlay_params_for(
         existing.current_state_at(now)
       }
       Some(existing) => {
+        let duration_ms = effect_cfg.border.transition_duration_ms;
+        if duration_ms > MAX_BORDER_TRANSITION_DURATION_MS {
+          tracing::warn!(
+            "border.transition_duration_ms of {duration_ms}ms exceeds the \
+             {MAX_BORDER_TRANSITION_DURATION_MS}ms cap and was clamped -- \
+             a longer-running animation keeps the WM's biased event loop \
+             favoring animation frames over keybinding/mouse/IPC input for \
+             its whole duration (see MAX_BORDER_TRANSITION_DURATION_MS's \
+             doc comment)."
+          );
+        }
+        let duration_ms =
+          duration_ms.min(MAX_BORDER_TRANSITION_DURATION_MS);
+
         let retargeted = existing.retarget(
           now,
           target_params.color,
           target_params.width,
-          effect_cfg.border.transition_duration_ms,
+          duration_ms,
           effect_cfg.border.transition_easing.clone(),
         );
         let current = retargeted.current_state_at(now);
