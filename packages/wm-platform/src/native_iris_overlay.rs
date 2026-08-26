@@ -12,19 +12,15 @@ use windows::{
     },
     UI::WindowsAndMessaging::{
       CreateWindowExW, DefWindowProcW, DestroyWindow, GetClientRect,
-      GetWindowLongPtrW, RegisterClassW, SetWindowLongPtrW, SetWindowPos,
-      GWLP_USERDATA, HWND_TOPMOST, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE,
-      SWP_SHOWWINDOW, WM_ERASEBKGND, WM_PAINT, WNDCLASSW, WS_EX_NOACTIVATE,
-      WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_EX_TRANSPARENT, WS_POPUP,
+      GetWindowLongPtrW, SetWindowLongPtrW, SetWindowPos, GWLP_USERDATA,
+      HWND_TOPMOST, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_SHOWWINDOW,
+      WM_ERASEBKGND, WM_PAINT, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW,
+      WS_EX_TOPMOST, WS_EX_TRANSPARENT, WS_POPUP,
     },
   },
 };
 
-use crate::Rect;
-
-/// Ensures the iris-overlay window class is registered exactly once per
-/// process.
-static IRIS_CLASS_REGISTERED: OnceLock<()> = OnceLock::new();
+use crate::{window_class, Rect};
 
 /// Window procedure for the iris overlay.
 ///
@@ -82,16 +78,12 @@ unsafe extern "system" fn iris_wnd_proc(
 
 /// Registers the iris-overlay window class on first use.
 fn ensure_class_registered() {
-  IRIS_CLASS_REGISTERED.get_or_init(|| {
-    let wnd_class = WNDCLASSW {
-      lpszClassName: w!("GlazeWM_Iris"),
-      lpfnWndProc: Some(iris_wnd_proc),
-      ..Default::default()
-    };
-    // SAFETY: `wnd_class` is initialized with a static class name and a valid
-    // window procedure.
-    unsafe { RegisterClassW(&raw const wnd_class) };
-  });
+  static REGISTERED: OnceLock<()> = OnceLock::new();
+  window_class::ensure_class_registered(
+    &REGISTERED,
+    w!("GlazeWM_Iris"),
+    iris_wnd_proc,
+  );
 }
 
 /// Captures the screen content of `monitor` into a new screen-compatible

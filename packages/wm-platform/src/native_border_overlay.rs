@@ -3,7 +3,7 @@ use std::sync::OnceLock;
 use windows::{
   core::w,
   Win32::{
-    Foundation::{BOOL, HWND, LPARAM, LRESULT, WPARAM},
+    Foundation::{BOOL, HWND},
     Graphics::{
       Dwm::DwmExtendFrameIntoClientArea,
       Gdi::{
@@ -14,10 +14,9 @@ use windows::{
     UI::{
       Controls::MARGINS,
       WindowsAndMessaging::{
-        CreateWindowExW, DefWindowProcW, DestroyWindow, GetWindow,
-        RegisterClassW, SetWindowPos, ShowWindow, GW_HWNDPREV,
-        SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSENDCHANGING, SWP_NOSIZE,
-        SWP_SHOWWINDOW, SW_HIDE, WNDCLASSW, WS_EX_NOACTIVATE,
+        CreateWindowExW, DestroyWindow, GetWindow, SetWindowPos, ShowWindow,
+        GW_HWNDPREV, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSENDCHANGING,
+        SWP_NOSIZE, SWP_SHOWWINDOW, SW_HIDE, WS_EX_NOACTIVATE,
         WS_EX_NOREDIRECTIONBITMAP, WS_EX_TOOLWINDOW, WS_EX_TRANSPARENT,
         WS_POPUP,
       },
@@ -27,38 +26,16 @@ use windows::{
 
 use crate::{
   native_surrogate::apply_backdrop, platform_impl::composition::BorderVisual,
-  BorderOverlayParams, Rect, SurrogateBatch,
+  window_class, BorderOverlayParams, Rect, SurrogateBatch,
 };
 
-/// Ensures the border-overlay window class is registered exactly once per
-/// process.
-static BORDER_OVERLAY_CLASS: OnceLock<()> = OnceLock::new();
-
-/// Default window procedure for the border-overlay class.
-unsafe extern "system" fn default_wnd_proc(
-  hwnd: HWND,
-  msg: u32,
-  wparam: WPARAM,
-  lparam: LPARAM,
-) -> LRESULT {
-  // SAFETY: All parameters are forwarded unchanged.
-  unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) }
-}
-
 fn ensure_class_registered() {
-  BORDER_OVERLAY_CLASS.get_or_init(|| {
-    let wnd_class = WNDCLASSW {
-      lpszClassName: w!("GlazeWM_BorderOverlay"),
-      lpfnWndProc: Some(default_wnd_proc),
-      // Null background brush: SWCA/Composition paint the ring; GDI never
-      // touches the client area.
-      ..Default::default()
-    };
-
-    // SAFETY: `wnd_class` is properly initialized with a static class name
-    // and a valid window procedure.
-    unsafe { RegisterClassW(&raw const wnd_class) };
-  });
+  static REGISTERED: OnceLock<()> = OnceLock::new();
+  window_class::ensure_class_registered(
+    &REGISTERED,
+    w!("GlazeWM_BorderOverlay"),
+    window_class::default_wnd_proc,
+  );
 }
 
 /// Creates the overlay's window, outset from `window_rect` by `width` on

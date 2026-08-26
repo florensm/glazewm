@@ -15,6 +15,8 @@ mod platform_event;
 mod platform_impl;
 mod single_instance;
 mod thread_bound;
+#[cfg(target_os = "windows")]
+mod window_class;
 mod window_listener;
 
 #[cfg(feature = "test_utils")]

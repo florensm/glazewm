@@ -3,7 +3,7 @@ use std::sync::OnceLock;
 use windows::{
   core::w,
   Win32::{
-    Foundation::{HWND, LPARAM, LRESULT, RECT, WPARAM},
+    Foundation::{HWND, RECT},
     Graphics::Dwm::{
       DwmExtendFrameIntoClientArea, DwmRegisterThumbnail, DwmSetWindowAttribute,
       DwmUnregisterThumbnail, DwmUpdateThumbnailProperties,
@@ -13,53 +13,27 @@ use windows::{
       DWM_TNP_VISIBLE,
     },
     UI::WindowsAndMessaging::{
-      BeginDeferWindowPos, CreateWindowExW, DefWindowProcW, DeferWindowPos,
-      DestroyWindow, EndDeferWindowPos, RegisterClassW, SetWindowPos,
-      SET_WINDOW_POS_FLAGS, SWP_NOACTIVATE, SWP_NOCOPYBITS, SWP_NOMOVE,
-      SWP_NOSENDCHANGING, SWP_NOSIZE, SWP_NOZORDER, SWP_SHOWWINDOW, WNDCLASSW,
-      WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TRANSPARENT, WS_POPUP,
+      BeginDeferWindowPos, CreateWindowExW, DeferWindowPos, DestroyWindow,
+      EndDeferWindowPos, SetWindowPos, SET_WINDOW_POS_FLAGS, SWP_NOACTIVATE,
+      SWP_NOCOPYBITS, SWP_NOMOVE, SWP_NOSENDCHANGING, SWP_NOSIZE, SWP_NOZORDER,
+      SWP_SHOWWINDOW, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TRANSPARENT,
+      WS_POPUP,
     },
   },
 };
 
-use crate::{Color, CornerStyle, Rect};
+use crate::{window_class, Color, CornerStyle, Rect};
 use crate::platform_impl::swca::{
   ACCENT_ENABLE_ACRYLICBLURBEHIND, ACCENT_ENABLE_GRADIENT, apply_swca_accent,
 };
 
-/// Ensures the surrogate window class is registered exactly once per
-/// process.
-static SURROGATE_CLASS_REGISTERED: OnceLock<()> = OnceLock::new();
-
-/// Default window procedure wrapper with the required `extern "system"`
-/// ABI.
-///
-/// `DefWindowProcW` in windows-rs is generic and cannot be coerced to a
-/// bare function pointer directly.
-unsafe extern "system" fn default_wnd_proc(
-  hwnd: HWND,
-  msg: u32,
-  wparam: WPARAM,
-  lparam: LPARAM,
-) -> LRESULT {
-  // SAFETY: All parameters are passed through unchanged.
-  unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) }
-}
-
 fn ensure_class_registered() {
-  SURROGATE_CLASS_REGISTERED.get_or_init(|| {
-    let wnd_class = WNDCLASSW {
-      lpszClassName: w!("GlazeWM_Surrogate"),
-      lpfnWndProc: Some(default_wnd_proc),
-      // Null background brush: DWM composites the thumbnail over the glass
-      // sheet; GDI never touches the client area.
-      ..Default::default()
-    };
-
-    // SAFETY: `wnd_class` is a properly initialized `WNDCLASSW` with a
-    // static class name and a valid window procedure.
-    unsafe { RegisterClassW(&raw const wnd_class) };
-  });
+  static REGISTERED: OnceLock<()> = OnceLock::new();
+  window_class::ensure_class_registered(
+    &REGISTERED,
+    w!("GlazeWM_Surrogate"),
+    window_class::default_wnd_proc,
+  );
 }
 
 /// Applies the DWM corner preference matching `corner_style` to `hwnd`.
