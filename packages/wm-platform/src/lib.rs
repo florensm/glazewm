@@ -14,6 +14,7 @@ mod native_window;
 mod platform_event;
 mod platform_impl;
 mod single_instance;
+mod system_accent_color;
 mod thread_bound;
 #[cfg(target_os = "windows")]
 mod window_class;
@@ -58,6 +59,7 @@ pub use native_iris_overlay::NativeIrisOverlay;
 
 pub use platform_event::*;
 pub use single_instance::*;
+pub use system_accent_color::*;
 pub use thread_bound::*;
 pub use window_listener::*;
 /// Waits for the next DWM composition frame to complete.

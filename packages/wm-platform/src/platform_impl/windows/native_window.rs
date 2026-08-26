@@ -7,8 +7,8 @@ use windows::{
   Win32::{
     Foundation::{CloseHandle, BOOL, HWND, LPARAM, POINT, RECT},
     Graphics::Dwm::{
-      DwmGetWindowAttribute, DwmSetWindowAttribute, DWMWA_CLOAKED,
-      DWMWA_EXTENDED_FRAME_BOUNDS, DWMWA_SYSTEMBACKDROP_TYPE,
+      DwmGetColorizationColor, DwmGetWindowAttribute, DwmSetWindowAttribute,
+      DWMWA_CLOAKED, DWMWA_EXTENDED_FRAME_BOUNDS, DWMWA_SYSTEMBACKDROP_TYPE,
       DWMWA_WINDOW_CORNER_PREFERENCE, DWMWCP_DEFAULT, DWMWCP_DONOTROUND,
       DWMWCP_ROUND, DWMWCP_ROUNDSMALL, DWMSBT_AUTO, DWMSBT_MAINWINDOW,
       DWMSBT_TABBEDWINDOW,
@@ -46,8 +46,8 @@ use windows::{
 
 use super::com::{IApplicationView, COM_INIT};
 use crate::{
-  BackdropStyle, CornerStyle, Delta, Dispatcher, LengthValue, OpacityValue,
-  Point, Rect, RectDelta, WindowId, WindowZOrder,
+  BackdropStyle, Color, CornerStyle, Delta, Dispatcher, LengthValue,
+  OpacityValue, Point, Rect, RectDelta, WindowId, WindowZOrder,
 };
 
 /// Magic number used to identify programmatic mouse inputs from our own
@@ -942,4 +942,33 @@ fn desktop_window() -> NativeWindow {
   };
 
   NativeWindow::new(handle.0)
+}
+
+/// Reads the OS's current accent/colorization color via
+/// `DwmGetColorizationColor`, for `BorderEffectConfig`'s optional
+/// `use_accent_color` knob.
+///
+/// Not tied to a specific window -- this is a system-wide color, the same
+/// one Windows uses to tint title bars/taskbar when the user has that
+/// personalization option enabled. Called fresh each time a border's
+/// target color is resolved (see `border_overlay_params_for` in
+/// `platform_sync.rs`) rather than cached, so callers see the live system
+/// color with no change-listener plumbing required.
+pub(crate) fn system_accent_color() -> crate::Result<Color> {
+  let mut argb: u32 = 0;
+  let mut opaque_blend = BOOL(0);
+
+  // SAFETY: `argb` and `opaque_blend` are stack-allocated out-params, live
+  // for the duration of this call.
+  unsafe {
+    DwmGetColorizationColor(&raw mut argb, &raw mut opaque_blend)
+  }?;
+
+  #[allow(clippy::cast_possible_truncation)]
+  Ok(Color {
+    r: ((argb >> 16) & 0xFF) as u8,
+    g: ((argb >> 8) & 0xFF) as u8,
+    b: (argb & 0xFF) as u8,
+    a: 255,
+  })
 }
