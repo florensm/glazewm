@@ -141,14 +141,42 @@ pub fn platform_sync(
     }
   }
 
-  // Sync acrylic blur overlays every tick so they track window position
-  // through moves, resizes, and workspace changes.
+  // A surrogate created this cycle with `place_at_top: true` may have
+  // displaced any window's overlay (of either kind), not just its own --
+  // fall back to resyncing every non-redrawing window's z-order this one
+  // tick instead of only `z_order_touched`'s narrower set (see the field's
+  // doc comment on `AnimationManager`). Read and cleared once here so both
+  // overlay kinds observe the same value regardless of call order --
+  // previously each of `sync_blur_overlays`/`sync_border_overlays` read and
+  // cleared this flag independently, so whichever ran first silently
+  // consumed it even when its own overlay kind wasn't configured for any
+  // window, leaving the other permanently starved of the full resync.
   #[cfg(target_os = "windows")]
-  sync_blur_overlays(state, config, &focused_container, &z_order_touched);
+  let full_z_order_resync = state.animation_manager.blur_overlay_z_order_dirty;
+  #[cfg(target_os = "windows")]
+  {
+    state.animation_manager.blur_overlay_z_order_dirty = false;
+  }
 
-  // Same per-tick tracking for border overlays -- see `sync_border_overlays`.
+  // Sync acrylic blur and border overlays every tick so they track window
+  // position through moves, resizes, and workspace changes. See
+  // `sync_overlays`.
   #[cfg(target_os = "windows")]
-  sync_border_overlays(state, config, &focused_container, &z_order_touched);
+  sync_overlays::<NativeBlurOverlay>(
+    state,
+    config,
+    &focused_container,
+    &z_order_touched,
+    full_z_order_resync,
+  );
+  #[cfg(target_os = "windows")]
+  sync_overlays::<NativeBorderOverlay>(
+    state,
+    config,
+    &focused_container,
+    &z_order_touched,
+    full_z_order_resync,
+  );
 
   state.pending_sync.clear();
 
@@ -1756,25 +1784,185 @@ pub(crate) fn overlay_z_anchor(window: &WindowContainer) -> HWND {
   }
 }
 
+/// A per-window overlay effect (acrylic blur or border) kept in sync with
+/// its window's rect and z-order every `platform_sync` tick.
+///
+/// Implemented for [`NativeBlurOverlay`] and [`NativeBorderOverlay`] so
+/// [`sync_overlays`] can drive both through one shared implementation
+/// instead of two ~160-line copies that had drifted enough to hide a real
+/// bug -- see `full_z_order_resync`'s doc comment at the `sync_overlays`
+/// call site.
 #[cfg(target_os = "windows")]
-fn sync_blur_overlays(
+trait SyncableOverlay: Sized {
+  /// Effect-specific config resolved from `WindowEffectConfig` (tint/blur
+  /// amount for blur, color/width for border).
+  type Params;
+
+  /// Label used in this overlay kind's debug log messages (e.g. `"Blur"`).
+  const LABEL: &'static str;
+
+  /// Borrows this overlay kind's tracked-overlay map out of `state`.
+  fn overlays(
+    state: &mut WmState,
+  ) -> &mut std::collections::HashMap<uuid::Uuid, Self>;
+
+  /// Resolves `window`'s params from its focused/other-window config, or
+  /// `None` when this effect isn't enabled for it.
+  fn params_for(is_focused: bool, config: &UserConfig) -> Option<Self::Params>;
+
+  fn create(
+    rect: &Rect,
+    params: Self::Params,
+    anchor: HWND,
+  ) -> wm_platform::Result<Self>;
+  fn apply(&mut self, params: Self::Params);
+  fn defer_rect(&mut self, batch: &mut SurrogateBatch, rect: &Rect, anchor: HWND);
+  fn sync_z_order(&mut self, anchor: HWND) -> wm_platform::Result<()>;
+  fn is_visible(&self) -> bool;
+  fn hide(&mut self);
+}
+
+#[cfg(target_os = "windows")]
+impl SyncableOverlay for NativeBlurOverlay {
+  type Params = BlurOverlayParams;
+  const LABEL: &'static str = "Blur";
+
+  fn overlays(
+    state: &mut WmState,
+  ) -> &mut std::collections::HashMap<uuid::Uuid, Self> {
+    &mut state.blur_overlays
+  }
+
+  fn params_for(is_focused: bool, config: &UserConfig) -> Option<Self::Params> {
+    blur_overlay_params_for(is_focused, config)
+  }
+
+  fn create(
+    rect: &Rect,
+    params: Self::Params,
+    anchor: HWND,
+  ) -> wm_platform::Result<Self> {
+    Self::create(rect, params, anchor)
+  }
+
+  fn apply(&mut self, params: Self::Params) {
+    Self::apply(self, params);
+  }
+
+  fn defer_rect(&mut self, batch: &mut SurrogateBatch, rect: &Rect, anchor: HWND) {
+    Self::defer_rect(self, batch, rect, anchor);
+  }
+
+  fn sync_z_order(&mut self, anchor: HWND) -> wm_platform::Result<()> {
+    Self::sync_z_order(self, anchor)
+  }
+
+  fn is_visible(&self) -> bool {
+    Self::is_visible(self)
+  }
+
+  fn hide(&mut self) {
+    Self::hide(self);
+  }
+}
+
+#[cfg(target_os = "windows")]
+impl SyncableOverlay for NativeBorderOverlay {
+  type Params = BorderOverlayParams;
+  const LABEL: &'static str = "Border";
+
+  fn overlays(
+    state: &mut WmState,
+  ) -> &mut std::collections::HashMap<uuid::Uuid, Self> {
+    &mut state.border_overlays
+  }
+
+  fn params_for(is_focused: bool, config: &UserConfig) -> Option<Self::Params> {
+    border_overlay_params_for(is_focused, config)
+  }
+
+  fn create(
+    rect: &Rect,
+    params: Self::Params,
+    anchor: HWND,
+  ) -> wm_platform::Result<Self> {
+    Self::create(rect, params, anchor)
+  }
+
+  fn apply(&mut self, params: Self::Params) {
+    Self::apply(self, params);
+  }
+
+  fn defer_rect(&mut self, batch: &mut SurrogateBatch, rect: &Rect, anchor: HWND) {
+    Self::defer_rect(self, batch, rect, anchor);
+  }
+
+  fn sync_z_order(&mut self, anchor: HWND) -> wm_platform::Result<()> {
+    Self::sync_z_order(self, anchor)
+  }
+
+  fn is_visible(&self) -> bool {
+    Self::is_visible(self)
+  }
+
+  fn hide(&mut self) {
+    Self::hide(self);
+  }
+}
+
+/// Creates, repositions, and removes overlay windows of kind `O` so every
+/// managed window with the matching effect enabled has an overlay tracking
+/// its rect and z-order. Shared by acrylic blur and border overlays -- see
+/// [`SyncableOverlay`].
+///
+/// Windows with a `Live`-mode (acrylic-tinted) workspace-switch surrogate
+/// are owned entirely by the per-tick tracker in
+/// `AnimationManager::update_internal` for the whole slide plus the
+/// `pending_ws_cleanup` grace tick -- it updates `tint`/`blur_amount`/
+/// `corner_radius`/`rect` every tick using the surrogate's own live position,
+/// which this function cannot do since it isn't invoked on most mid-slide
+/// ticks (only when `platform_sync` itself runs). Leave these overlays
+/// untouched here entirely: falling through to the hide logic below would
+/// hide them out from under the tracker, since the outgoing workspace's
+/// `!is_displayed()` flips true the instant the switch command runs, well
+/// before the animation completes.
+///
+/// Windows with an active or fading `ResizeSession` (move/resize/open/
+/// close) are likewise owned entirely by the trackers in `platform_sync`'s
+/// post-flush loop, `AnimationManager::update_internal`'s close direct-drive
+/// loop, and its `pending_session_cleanup` fade-tail loop -- same reasoning
+/// as the workspace-switch case above.
+///
+/// Otherwise, hides the static overlay while some other kind of
+/// surrogate/session is active for this window without a live tracker of
+/// its own (e.g. this effect not configured for it). When such a surrogate
+/// is running, the real window is cloaked at its target rect; reading
+/// `frame()` would return the target position while the surrogate is still
+/// mid-animation, causing the overlay to jump ahead. Also hides for windows
+/// on inactive workspaces; the entry stays alive so it can be re-shown
+/// immediately when the workspace returns.
+///
+/// `full_z_order_resync` is `true` for one tick after any `place_at_top`
+/// surrogate goes up, which can silently displace *any* window's overlay
+/// (of either kind) out of its z-order slot -- see the doc comment at the
+/// call site in `platform_sync`. Otherwise every other configured window's
+/// overlay is resynced only when `z_order_touched` names it (its own real
+/// z-order was actually touched this cycle by `redraw_containers` or
+/// `sync_focus`) -- an overlay whose anchor didn't move can't have drifted
+/// (see `sync_z_order`'s doc comment), and unconditionally resyncing every
+/// configured window on every tick would issue a `GetWindow` syscall per
+/// window that's a guaranteed no-op in the common case.
+#[cfg(target_os = "windows")]
+fn sync_overlays<O: SyncableOverlay>(
   state: &mut WmState,
   config: &UserConfig,
   focused_container: &Container,
   z_order_touched: &std::collections::HashSet<uuid::Uuid>,
+  full_z_order_resync: bool,
 ) {
   let all_windows = state.windows();
   let mut wanted_ids = std::collections::HashSet::new();
   let mut batch = SurrogateBatch::new();
-
-  // A surrogate created this cycle with `place_at_top: true` may have
-  // displaced any window's overlay, not just its own -- fall back to
-  // resyncing every non-redrawing window's z-order this one tick instead of
-  // only `z_order_touched`'s narrower set (see the field's doc comment).
-  // Consumed (not just read) here: cleared once acted on so it doesn't force
-  // a full resync on every subsequent tick.
-  let full_z_order_resync = state.animation_manager.blur_overlay_z_order_dirty;
-  state.animation_manager.blur_overlay_z_order_dirty = false;
 
   // `containers_to_redraw()` may hold an ancestor (e.g. a whole workspace on
   // a workspace switch) rather than each window individually -- mirror the
@@ -1786,58 +1974,33 @@ fn sync_blur_overlays(
   for window in &all_windows {
     let is_focused = window.id() == focused_container.id();
 
-    let Some(params) = blur_overlay_params_for(is_focused, config) else {
+    let Some(params) = O::params_for(is_focused, config) else {
       continue;
     };
 
     wanted_ids.insert(window.id());
 
-    // Windows with a `Live`-mode (acrylic-tinted) workspace-switch surrogate
-    // are owned entirely by the per-tick tracker in
-    // `AnimationManager::update_internal` for the whole slide plus the
-    // `pending_ws_cleanup` grace tick -- it updates tint/blur_amount/
-    // corner_radius/rect every tick using the surrogate's own live position,
-    // which this function cannot do since it isn't invoked on most mid-slide
-    // ticks (only when `platform_sync` itself runs). Leave these overlays
-    // untouched here entirely: falling through to the hide logic below would
-    // hide them out from under the tracker, since the outgoing workspace's
-    // `!is_displayed()` flips true the instant the switch command runs, well
-    // before the animation completes.
-    // Windows with an active or fading `ResizeSession` (move/resize/open/
-    // close) are likewise owned entirely by the trackers in `platform_sync`'s
-    // post-flush loop, `AnimationManager::update_internal`'s close direct-
-    // drive loop, and its `pending_session_cleanup` fade-tail loop -- same
-    // reasoning as the workspace-switch case above.
     if state.animation_manager.has_live_ws_surrogate(&window.id())
       || state.animation_manager.has_live_resize_tracker(&window.id())
     {
       continue;
     }
 
-    // Hide the static overlay while some other kind of surrogate/session is
-    // active for this window without a live blur tracker of its own (e.g.
-    // blur-behind not configured for it). When such a surrogate is running,
-    // the real window is cloaked at its target rect; reading frame() would
-    // return the target position while the surrogate is still mid-animation,
-    // causing the overlay to jump ahead.
-    //
-    // Also hide for windows on inactive workspaces; keep the entry alive
-    // so it can be re-shown immediately when the workspace returns.
     let should_hide = state.animation_manager.has_active_surrogate(&window.id())
       || !window.workspace().is_some_and(|ws| ws.is_displayed());
 
     if should_hide {
-      if let Some(overlay) = state.blur_overlays.get_mut(&window.id()) {
+      if let Some(overlay) = O::overlays(state).get_mut(&window.id()) {
         overlay.hide();
       }
       continue;
     }
 
     let is_redrawing = redrawing_ids.contains(&window.id());
-    let had_overlay = state.blur_overlays.contains_key(&window.id());
+    let had_overlay = O::overlays(state).contains_key(&window.id());
     let anchor = overlay_z_anchor(window);
 
-    match state.blur_overlays.entry(window.id()) {
+    match O::overlays(state).entry(window.id()) {
       std::collections::hash_map::Entry::Occupied(e) => {
         let overlay = e.into_mut();
         overlay.apply(params);
@@ -1855,29 +2018,18 @@ fn sync_blur_overlays(
           match window.native().frame() {
             Ok(rect) => overlay.defer_rect(&mut batch, &rect, anchor),
             Err(err) => debug!(
-              "Blur overlay frame() query failed for {}: {err}.",
+              "{} overlay frame() query failed for {}: {err}.",
+              O::LABEL,
               window.id()
             ),
           }
         } else if full_z_order_resync
           || z_order_touched.contains(&window.id())
         {
-          // `window`'s real z-order was actually touched this cycle (a
-          // `set_z_order` call in `redraw_containers`, or a
-          // `SetForegroundWindow` via `sync_focus`), or a `place_at_top`
-          // surrogate went up somewhere this cycle and could have displaced
-          // *any* window's overlay (`full_z_order_resync`) -- resync so the
-          // overlay follows it. Otherwise every other blur-configured
-          // window's overlay is skipped entirely: its own anchor didn't
-          // move, so it can't have drifted (see `sync_z_order`'s doc
-          // comment). Without this check, `sync_z_order` would run for
-          // every blur-configured window on every `platform_sync` call --
-          // including plain focus changes that touch just one window --
-          // issuing a `GetWindow` syscall per window that's a guaranteed
-          // no-op.
           if let Err(err) = overlay.sync_z_order(anchor) {
             debug!(
-              "Blur overlay z-order sync failed for {}: {err}.",
+              "{} overlay z-order sync failed for {}: {err}.",
+              O::LABEL,
               window.id()
             );
           }
@@ -1890,133 +2042,25 @@ fn sync_blur_overlays(
           continue;
         };
 
-        match NativeBlurOverlay::create(&rect, params, anchor) {
+        match O::create(&rect, params, anchor) {
           Ok(overlay) => {
-            debug!("Blur overlay created for {}.", window.id());
+            debug!("{} overlay created for {}.", O::LABEL, window.id());
             e.insert(overlay);
           }
           Err(err) => {
-            debug!("Blur overlay creation failed for {}: {err}.", window.id());
-          }
-        }
-      }
-    }
-  }
-
-  // Destroy overlays for windows that no longer need them.
-  state.blur_overlays.retain(|id, _| wanted_ids.contains(id));
-
-  batch.commit();
-}
-
-/// Creates, repositions, and removes border overlay windows so that every
-/// managed window with `border.enabled` has a matching ring overlay
-/// tracking its rect. Mirrors [`sync_blur_overlays`] exactly -- see its doc
-/// comment for the shared per-tick tracking rationale (the same live-
-/// surrogate/live-resize-tracker skip, the same inactive-workspace hide,
-/// and the same `z_order_touched`/`full_z_order_resync` gating apply here
-/// unchanged).
-#[cfg(target_os = "windows")]
-fn sync_border_overlays(
-  state: &mut WmState,
-  config: &UserConfig,
-  focused_container: &Container,
-  z_order_touched: &std::collections::HashSet<uuid::Uuid>,
-) {
-  let all_windows = state.windows();
-  let mut wanted_ids = std::collections::HashSet::new();
-  let mut batch = SurrogateBatch::new();
-
-  // Reuses the same dirty flag as blur overlays: a `place_at_top` surrogate
-  // can displace any overlay window out of its z-order slot regardless of
-  // which effect it belongs to, so `redraw_containers` sets it once for
-  // both. Only consumed (cleared) once here -- `sync_blur_overlays` (called
-  // just before this in `platform_sync`) already consumed it for its own
-  // pass, so this reads whatever's left, which is `false` in the common
-  // case where blur already handled the resync this tick. Border overlays
-  // still need their own read in case blur is disabled entirely (leaving
-  // this the only consumer).
-  let full_z_order_resync = state.animation_manager.blur_overlay_z_order_dirty;
-  state.animation_manager.blur_overlay_z_order_dirty = false;
-
-  let redrawing_ids: std::collections::HashSet<_> =
-    state.windows_to_redraw().iter().map(CommonGetters::id).collect();
-
-  for window in &all_windows {
-    let is_focused = window.id() == focused_container.id();
-
-    let Some(params) = border_overlay_params_for(is_focused, config) else {
-      continue;
-    };
-
-    wanted_ids.insert(window.id());
-
-    if state.animation_manager.has_live_ws_surrogate(&window.id())
-      || state.animation_manager.has_live_resize_tracker(&window.id())
-    {
-      continue;
-    }
-
-    let should_hide = state.animation_manager.has_active_surrogate(&window.id())
-      || !window.workspace().is_some_and(|ws| ws.is_displayed());
-
-    if should_hide {
-      if let Some(overlay) = state.border_overlays.get_mut(&window.id()) {
-        overlay.hide();
-      }
-      continue;
-    }
-
-    let is_redrawing = redrawing_ids.contains(&window.id());
-    let had_overlay = state.border_overlays.contains_key(&window.id());
-    let anchor = overlay_z_anchor(window);
-
-    match state.border_overlays.entry(window.id()) {
-      std::collections::hash_map::Entry::Occupied(e) => {
-        let overlay = e.into_mut();
-        overlay.apply(params);
-
-        if is_redrawing || !overlay.is_visible() {
-          match window.native().frame() {
-            Ok(rect) => overlay.defer_rect(&mut batch, &rect, anchor),
-            Err(err) => debug!(
-              "Border overlay frame() query failed for {}: {err}.",
-              window.id()
-            ),
-          }
-        } else if full_z_order_resync
-          || z_order_touched.contains(&window.id())
-        {
-          if let Err(err) = overlay.sync_z_order(anchor) {
             debug!(
-              "Border overlay z-order sync failed for {}: {err}.",
+              "{} overlay creation failed for {}: {err}.",
+              O::LABEL,
               window.id()
             );
           }
         }
       }
-      std::collections::hash_map::Entry::Vacant(e) => {
-        debug_assert!(!had_overlay);
-
-        let Ok(rect) = window.native().frame() else {
-          continue;
-        };
-
-        match NativeBorderOverlay::create(&rect, params, anchor) {
-          Ok(overlay) => {
-            debug!("Border overlay created for {}.", window.id());
-            e.insert(overlay);
-          }
-          Err(err) => {
-            debug!("Border overlay creation failed for {}: {err}.", window.id());
-          }
-        }
-      }
     }
   }
 
   // Destroy overlays for windows that no longer need them.
-  state.border_overlays.retain(|id, _| wanted_ids.contains(id));
+  O::overlays(state).retain(|id, _| wanted_ids.contains(id));
 
   batch.commit();
 }
