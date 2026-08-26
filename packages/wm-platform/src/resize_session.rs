@@ -469,8 +469,19 @@ impl ResizeSession {
     } else {
       let cx = w / 2;
       let cy = h / 2;
+      // `rcSource` samples from the real window's coordinate space, so it
+      // must carry the same `border_inset` offset as `register_thumbnail`/
+      // `update_thumbnail_dims` -- otherwise every zoom-fade frame samples a
+      // few pixels up-left of the true content area. `rcDestination` is
+      // destination-space within the surrogate's own client area (already
+      // sized to the logical rect), so it needs no such offset.
       surrogate.set_thumbnail_rects(
-        RECT { left: 0, top: 0, right: w, bottom: h },
+        RECT {
+          left: self.border_inset.left,
+          top: self.border_inset.top,
+          right: self.border_inset.left + w,
+          bottom: self.border_inset.top + h,
+        },
         RECT {
           left: cx - half_w,
           top: cy - half_h,
@@ -695,8 +706,18 @@ impl ResizeSession {
     let constrained_w = vis_right - vis_left;
     let constrained_h = vis_bottom - vis_top;
 
+    // `rcSource` samples from the real window's coordinate space, so it must
+    // carry the same `border_inset` offset as `register_thumbnail`/
+    // `update_thumbnail_dims` (see `update_zoom_fade`'s comment) --
+    // `src_left`/`src_top` above are the visible slice's offset within the
+    // *logical* rect, not yet shifted into the window's physical/source space.
     surrogate.set_thumbnail_rects(
-      RECT { left: src_left, top: src_top, right: src_left + constrained_w, bottom: src_top + constrained_h },
+      RECT {
+        left: self.border_inset.left + src_left,
+        top: self.border_inset.top + src_top,
+        right: self.border_inset.left + src_left + constrained_w,
+        bottom: self.border_inset.top + src_top + constrained_h,
+      },
       RECT { left: 0, top: 0, right: constrained_w, bottom: constrained_h },
     );
 
