@@ -314,144 +314,6 @@ impl WorkspaceSurrogate {
     self.inner.set_window_opacity(self.lerp_opacity(eased_progress, is_incoming));
   }
 
-  /// Advances the surrogate along the horizontal axis to `eased_progress`
-  /// (0.0 → 1.0).
-  ///
-  /// The visible strip is clipped to `[monitor_x, monitor_x + monitor_width]`.
-  /// In [`SurrogateMode::PinnedViewport`] mode this is done via
-  /// `rcSource`/`rcDestination` and the surrogate window itself does not
-  /// move; in [`SurrogateMode::Live`] mode the surrogate is moved/resized to
-  /// the clipped visible rect, batched via `batch`. `slide_distance` is the
-  /// effective travel distance (may be less than `monitor_width` to close the
-  /// seam gap between the two workspace panels).
-  #[allow(clippy::too_many_arguments)]
-  pub fn update_slide_horizontal(
-    &mut self,
-    batch: &mut SurrogateBatch,
-    eased_progress: f32,
-    is_incoming: bool,
-    direction: i32,
-    monitor_x: i32,
-    monitor_width: i32,
-    slide_distance: i32,
-  ) {
-    self.slide_axis(
-      batch,
-      eased_progress,
-      is_incoming,
-      direction,
-      monitor_x,
-      monitor_width,
-      slide_distance,
-      false,
-    );
-  }
-
-  /// Advances the surrogate along the vertical axis to `eased_progress`
-  /// (0.0 → 1.0).
-  ///
-  /// Behaviour mirrors [`update_slide_horizontal`] but on the y-axis:
-  /// `direction = +1` means the incoming workspace slides up from below.
-  ///
-  /// [`update_slide_horizontal`]: WorkspaceSurrogate::update_slide_horizontal
-  #[allow(clippy::too_many_arguments)]
-  pub fn update_slide_vertical(
-    &mut self,
-    batch: &mut SurrogateBatch,
-    eased_progress: f32,
-    is_incoming: bool,
-    direction: i32,
-    monitor_y: i32,
-    monitor_height: i32,
-    slide_distance: i32,
-  ) {
-    self.slide_axis(
-      batch,
-      eased_progress,
-      is_incoming,
-      direction,
-      monitor_y,
-      monitor_height,
-      slide_distance,
-      true,
-    );
-  }
-
-  /// Advances the surrogate along the horizontal axis with a simultaneous
-  /// whole-workspace scale to `eased_progress` (0.0 → 1.0).
-  ///
-  /// Each surrogate is positioned at the scaled screen coordinates of its
-  /// window (scaling from the monitor center), so the entire workspace
-  /// shrinks/grows as one unit. The outgoing workspace scales from `1.0` to
-  /// `1.0 - zoom_factor`; the incoming scales from `1.0 - zoom_factor` to
-  /// `1.0`. `slide_distance` controls horizontal travel (see
-  /// [`update_slide_horizontal`]).
-  ///
-  /// [`update_slide_horizontal`]: WorkspaceSurrogate::update_slide_horizontal
-  #[allow(clippy::too_many_arguments)]
-  pub fn update_slide_zoom_horizontal(
-    &mut self,
-    batch: &mut SurrogateBatch,
-    eased_progress: f32,
-    is_incoming: bool,
-    direction: i32,
-    monitor_x: i32,
-    monitor_width: i32,
-    monitor_y: i32,
-    monitor_height: i32,
-    slide_distance: i32,
-    zoom_factor: f32,
-  ) {
-    self.slide_zoom_axis(
-      batch,
-      eased_progress,
-      is_incoming,
-      direction,
-      monitor_x,
-      monitor_width,
-      monitor_y,
-      monitor_height,
-      slide_distance,
-      zoom_factor,
-      false,
-    );
-  }
-
-  /// Advances the surrogate along the vertical axis with a simultaneous
-  /// whole-workspace scale to `eased_progress` (0.0 → 1.0).
-  ///
-  /// Mirrors [`update_slide_zoom_horizontal`] on the y-axis.
-  ///
-  /// [`update_slide_zoom_horizontal`]: WorkspaceSurrogate::update_slide_zoom_horizontal
-  #[allow(clippy::too_many_arguments)]
-  pub fn update_slide_zoom_vertical(
-    &mut self,
-    batch: &mut SurrogateBatch,
-    eased_progress: f32,
-    is_incoming: bool,
-    direction: i32,
-    monitor_x: i32,
-    monitor_width: i32,
-    monitor_y: i32,
-    monitor_height: i32,
-    slide_distance: i32,
-    zoom_factor: f32,
-  ) {
-    self.slide_zoom_axis(
-      batch,
-      eased_progress,
-      is_incoming,
-      direction,
-      monitor_x,
-      monitor_width,
-      monitor_y,
-      monitor_height,
-      slide_distance,
-      zoom_factor,
-      true,
-    );
-  }
-
   /// Animates a zoom-from-center transition to `eased_progress` (0.0 → 1.0).
   ///
   /// Each surrogate independently zooms in (incoming) or out (outgoing) from
@@ -577,30 +439,34 @@ impl WorkspaceSurrogate {
     self.inner.set_visible(true);
   }
 
-  /// Shared implementation for [`update_slide_zoom_horizontal`] and
-  /// [`update_slide_zoom_vertical`].
+  /// Advances the surrogate along one axis with a simultaneous whole-workspace
+  /// scale to `eased_progress` (0.0 → 1.0); `is_vertical` selects the slide
+  /// axis (`false` = horizontal, `true` = vertical).
+  ///
+  /// Each surrogate is positioned at the scaled screen coordinates of its
+  /// window (scaling from the monitor center), so the entire workspace
+  /// shrinks/grows as one unit. The outgoing workspace scales from `1.0` to
+  /// `1.0 - zoom_factor`; the incoming scales from `1.0 - zoom_factor` to
+  /// `1.0`. `slide_distance` controls travel on the primary axis.
   ///
   /// Computes a per-frame scale from the monitor center (both axes) combined
-  /// with a slide offset on the primary axis (`is_vertical` selects which),
-  /// then routes the resulting visible rect through [`apply_visible_rect`].
-  ///
-  /// [`update_slide_zoom_horizontal`]: WorkspaceSurrogate::update_slide_zoom_horizontal
-  /// [`update_slide_zoom_vertical`]: WorkspaceSurrogate::update_slide_zoom_vertical
+  /// with a slide offset on the primary axis, then routes the resulting
+  /// visible rect through [`apply_visible_rect`].
   #[allow(clippy::too_many_arguments)]
-  fn slide_zoom_axis(
+  pub fn slide_zoom_axis(
     &mut self,
     batch: &mut SurrogateBatch,
     eased_progress: f32,
     is_incoming: bool,
     direction: i32,
-    monitor_x: i32,
-    monitor_width: i32,
-    monitor_y: i32,
-    monitor_height: i32,
+    monitor: &Rect,
     slide_distance: i32,
     zoom_factor: f32,
     is_vertical: bool,
   ) {
+    let (monitor_x, monitor_width, monitor_y, monitor_height) =
+      (monitor.x(), monitor.width(), monitor.y(), monitor.height());
+
     // Outgoing: scale 1.0 → (1 - zoom_factor) as it exits.
     // Incoming: scale (1 - zoom_factor) → 1.0 as it enters.
     let zoom_t = if is_incoming {
@@ -696,27 +562,36 @@ impl WorkspaceSurrogate {
     self.inner.set_window_opacity(self.lerp_opacity(eased_progress, is_incoming));
   }
 
-  /// Shared implementation for [`update_slide_horizontal`] and
-  /// [`update_slide_vertical`].
+  /// Advances the surrogate along one axis to `eased_progress` (0.0 → 1.0);
+  /// `is_vertical` selects the slide axis (`false` = horizontal, `true` =
+  /// vertical).
   ///
-  /// The visible strip of source content, clipped to
-  /// `[monitor_origin, monitor_origin + monitor_size]`, is routed through
+  /// The visible strip is clipped to `monitor`'s bounds along the slide
+  /// axis. In [`SurrogateMode::PinnedViewport`] mode this is done via
+  /// `rcSource`/`rcDestination` and the surrogate window itself does not
+  /// move; in [`SurrogateMode::Live`] mode the surrogate is moved/resized to
+  /// the clipped visible rect, batched via `batch`. `slide_distance` is the
+  /// effective travel distance (may be less than the monitor's size on that
+  /// axis to close the seam gap between the two workspace panels). The
+  /// visible strip of source content is routed through
   /// [`apply_visible_rect`].
-  ///
-  /// [`update_slide_horizontal`]: WorkspaceSurrogate::update_slide_horizontal
-  /// [`update_slide_vertical`]: WorkspaceSurrogate::update_slide_vertical
   #[allow(clippy::too_many_arguments)]
-  fn slide_axis(
+  pub fn slide_axis(
     &mut self,
     batch: &mut SurrogateBatch,
     eased_progress: f32,
     is_incoming: bool,
     direction: i32,
-    monitor_origin: i32,
-    monitor_size: i32,
+    monitor: &Rect,
     slide_distance: i32,
     is_vertical: bool,
   ) {
+    let (monitor_origin, monitor_size) = if is_vertical {
+      (monitor.y(), monitor.height())
+    } else {
+      (monitor.x(), monitor.width())
+    };
+
     // Incoming: start at +direction*slide_distance offset, end at 0.
     // Outgoing: start at 0, end at -direction*slide_distance offset.
     let offset = if is_incoming {
