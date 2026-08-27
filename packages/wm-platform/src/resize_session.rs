@@ -3,19 +3,27 @@ use std::{
   time::{Duration, Instant},
 };
 
-use windows::Win32::{
-  Foundation::{HWND, RECT},
-  Graphics::{
-    Dwm::{DwmGetWindowAttribute, DWMWA_EXTENDED_FRAME_BOUNDS},
-    Gdi::{
-      BitBlt, CreateCompatibleBitmap, CreateCompatibleDC, DeleteDC,
-      DeleteObject, GetDC, GetPixel, ReleaseDC, SelectObject, HGDIOBJ,
-      SRCCOPY,
+use windows::{
+  core::PWSTR,
+  Win32::{
+    Foundation::{CloseHandle, HWND, RECT},
+    Graphics::{
+      Dwm::{DwmGetWindowAttribute, DWMWA_EXTENDED_FRAME_BOUNDS},
+      Gdi::{
+        BitBlt, CreateCompatibleBitmap, CreateCompatibleDC, DeleteDC,
+        DeleteObject, GetDC, GetPixel, ReleaseDC, SelectObject, HGDIOBJ,
+        SRCCOPY,
+      },
     },
-  },
-  UI::WindowsAndMessaging::{
-    GetWindowRect, IsWindow, SetWindowPos, SWP_ASYNCWINDOWPOS, SWP_FRAMECHANGED,
-    SWP_NOACTIVATE, SWP_NOSENDCHANGING, SWP_NOZORDER,
+    System::Threading::{
+      OpenProcess, QueryFullProcessImageNameW, PROCESS_NAME_WIN32,
+      PROCESS_QUERY_LIMITED_INFORMATION,
+    },
+    UI::WindowsAndMessaging::{
+      GetWindowRect, GetWindowThreadProcessId, IsWindow, SetWindowPos,
+      SWP_ASYNCWINDOWPOS, SWP_FRAMECHANGED, SWP_NOACTIVATE,
+      SWP_NOSENDCHANGING, SWP_NOZORDER,
+    },
   },
 };
 
@@ -38,6 +46,51 @@ const EDGE_SAMPLE_INSET: i32 = 4;
 /// threshold is set low enough to catch that without false-alarming on
 /// ordinary scheduling jitter.
 const SLOW_SYNC_SETWINDOWPOS_THRESHOLD: Duration = Duration::from_millis(8);
+
+/// Best-effort process name (e.g. `"outlook"`) owning `hwnd`, for labeling
+/// [`SLOW_SYNC_SETWINDOWPOS_THRESHOLD`]'s warning -- `None` on any failure,
+/// in which case the caller falls back to logging the raw `hwnd`. Only ever
+/// called once the threshold has already been exceeded, so the extra
+/// `OpenProcess`/`QueryFullProcessImageNameW` cost never lands on the
+/// common (fast) path.
+fn process_name_for_warning(hwnd: HWND) -> Option<String> {
+  let mut process_id = 0u32;
+  // SAFETY: `hwnd` is a valid window handle for the lifetime of this call.
+  unsafe {
+    GetWindowThreadProcessId(hwnd, Some(&raw mut process_id));
+  }
+
+  // SAFETY: `process_id` was just populated above.
+  let process_handle = unsafe {
+    OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, process_id)
+  }
+  .ok()?;
+
+  let mut buffer = [0u16; 256];
+  let mut length = u32::try_from(buffer.len()).ok()?;
+
+  // SAFETY: `process_handle` is valid; `buffer`/`length` are stack-allocated
+  // and live for the duration of the call.
+  let query_res = unsafe {
+    QueryFullProcessImageNameW(
+      process_handle,
+      PROCESS_NAME_WIN32,
+      PWSTR(buffer.as_mut_ptr()),
+      &raw mut length,
+    )
+  };
+  // SAFETY: `process_handle` is a valid, open handle.
+  let _ = unsafe { CloseHandle(process_handle) };
+  query_res.ok()?;
+
+  let exe_path = String::from_utf16_lossy(&buffer[..length as usize]);
+  exe_path
+    .rsplit('\\')
+    .next()
+    .map(|file_name| {
+      file_name.split('.').next().unwrap_or(file_name).to_string()
+    })
+}
 
 use crate::{
   native_surrogate::to_logical, BlurOverlayParams, BorderOverlayParams,
@@ -949,12 +1002,13 @@ impl ResizeSession {
       }
       let elapsed = sync_start.elapsed();
       if elapsed > SLOW_SYNC_SETWINDOWPOS_THRESHOLD {
+        let process = process_name_for_warning(HWND(self.hwnd))
+          .unwrap_or_else(|| format!("hwnd {:#x}", self.hwnd));
         tracing::warn!(
-          "ResizeSession::pre_commit's synchronous SetWindowPos for hwnd \
-           {:#x} took {elapsed:?} -- likely blocked on the target \
+          "ResizeSession::pre_commit's synchronous SetWindowPos for \
+           {process} took {elapsed:?} -- likely blocked on the target \
            process's message queue, stalling the whole WM main loop for \
-           that long (see SLOW_SYNC_SETWINDOWPOS_THRESHOLD's doc comment).",
-          self.hwnd,
+           that long (see SLOW_SYNC_SETWINDOWPOS_THRESHOLD's doc comment)."
         );
       }
     }
