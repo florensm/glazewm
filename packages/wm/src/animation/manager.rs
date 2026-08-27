@@ -115,6 +115,26 @@ const EDGE_COLOR_CACHE_TTL: Duration = Duration::from_secs(30);
 #[cfg(target_os = "windows")]
 const EDGE_COLOR_CACHE_PRUNE_LEN: usize = 128;
 
+/// How long a window's surrogate stays warm in
+/// [`AnimationManager::warm_surrogates`] after its resize/move session ends,
+/// available for a follow-up resize of the same window to reuse instead of
+/// paying full `CreateWindowExW`/`DwmRegisterThumbnail` cost again.
+///
+/// Long enough to cover a realistic "resize, look at it, resize again"
+/// fine-tuning pause; short enough that a window resized once and never
+/// touched again doesn't keep its overlay window and DWM thumbnail
+/// registration alive indefinitely.
+#[cfg(target_os = "windows")]
+const WARM_SURROGATE_TTL: Duration = Duration::from_secs(8);
+
+/// Cache-size threshold above which stale warm-surrogate entries are pruned.
+/// Kept much smaller than [`EDGE_COLOR_CACHE_PRUNE_LEN`] -- a warm surrogate
+/// holds a real OS window and DWM thumbnail registration, not just a color
+/// value, so letting the cache grow large before pruning is a heavier idle
+/// cost.
+#[cfg(target_os = "windows")]
+const WARM_SURROGATE_PRUNE_LEN: usize = 16;
+
 /// Upper bound on the animation timer's effective tick rate, independent of
 /// the animating monitor's real refresh rate.
 ///
@@ -145,7 +165,7 @@ use wm_platform::{NativeWindow, OpacityValue, Rect};
 #[cfg(target_os = "windows")]
 use wm_platform::{
   BlurOverlayParams, BorderOverlayParams, Color, CornerStyle, DxgiVsyncWaiter,
-  NativeBlurOverlay, NativeBorderOverlay, NativeIrisOverlay,
+  NativeBlurOverlay, NativeBorderOverlay, NativeIrisOverlay, NativeSurrogate,
   NativeWindowWindowsExt, ResizeSession, SessionOptions, SurrogateBatch,
   WorkspaceSurrogate, HWND,
 };
@@ -347,6 +367,14 @@ pub struct AnimationManager {
   /// same keypress.
   #[cfg(target_os = "windows")]
   edge_color_cache: HashMap<isize, (Color, Instant)>,
+  /// Surrogates kept alive (hidden) after their resize/move session ends,
+  /// keyed by window ID, so a follow-up resize of the same window within
+  /// [`WARM_SURROGATE_TTL`] can reuse the existing overlay window and DWM
+  /// thumbnail registration via `NativeSurrogate::revive` instead of paying
+  /// full `CreateWindowExW`/`DwmRegisterThumbnail` cost again. See
+  /// `AnimationManager::reclaim_surrogate`/`stash_warm_surrogate`.
+  #[cfg(target_os = "windows")]
+  warm_surrogates: HashMap<Uuid, (NativeSurrogate, Instant)>,
   /// Surrogate updates queued during this redraw pass; committed atomically by
   /// [`flush_surrogate_updates`] so adjacent surrogates land in the same DWM
   /// composition frame.
@@ -425,6 +453,8 @@ impl AnimationManager {
       blur_overlay_z_order_dirty: false,
       #[cfg(target_os = "windows")]
       edge_color_cache: HashMap::new(),
+      #[cfg(target_os = "windows")]
+      warm_surrogates: HashMap::new(),
       #[cfg(target_os = "windows")]
       pending_surrogate_updates: Vec::new(),
       #[cfg(target_os = "windows")]
@@ -1533,6 +1563,11 @@ impl AnimationManager {
       // dropped here the static overlay needs a follow-up sync to reappear
       // (see the same reasoning below for workspace-switch cleanup).
       let mut dropped_session_ids: Vec<Uuid> = Vec::new();
+      // Surrogates reclaimed from sessions dropped below, stashed into
+      // `warm_surrogates` after `retain_mut` returns rather than inside its
+      // closure (which only holds `&mut pending_session_cleanup`, not
+      // `&mut AnimationManager`) -- see `stash_warm_surrogate`'s doc comment.
+      let mut reclaimed_surrogates: Vec<(Uuid, NativeSurrogate)> = Vec::new();
       state.animation_manager.pending_session_cleanup.retain_mut(
         |(id, fade_start, session)| {
           // Transparent windows were zeroed before the flush above; the
@@ -1543,6 +1578,9 @@ impl AnimationManager {
                effect_opacity={}).",
               session.effect_opacity,
             );
+            if let Some(surrogate) = session.take_surrogate() {
+              reclaimed_surrogates.push((*id, surrogate));
+            }
             dropped_session_ids.push(*id);
             return false;
           }
@@ -1554,6 +1592,9 @@ impl AnimationManager {
             tracing::warn!(
               "pending_session_cleanup: dropping {id} (fade complete).",
             );
+            if let Some(surrogate) = session.take_surrogate() {
+              reclaimed_surrogates.push((*id, surrogate));
+            }
             dropped_session_ids.push(*id);
             return false;
           }
@@ -1564,6 +1605,9 @@ impl AnimationManager {
           true
         },
       );
+      for (id, surrogate) in reclaimed_surrogates {
+        state.animation_manager.stash_warm_surrogate(id, surrogate);
+      }
 
       // `sync_blur_overlays` (called from `platform_sync` above) hides each
       // window's static acrylic overlay while its workspace-switch surrogate
@@ -2024,34 +2068,52 @@ impl AnimationManager {
         if let Some(session) = self.resize_sessions.get_mut(&window_id) {
           session.update_target(&start_rect, &target_rect);
         } else {
-          // Drop any still-fading surrogate from a just-completed animation
-          // of this window so two overlays don't stack.
-          self
-            .pending_session_cleanup
-            .retain(|(id, _, _)| id != &window_id);
           let hwnd = native_window.hwnd();
           let cached_edge_color = self.cached_edge_color(hwnd.0);
           let had_cached_color = cached_edge_color.is_some();
-          match ResizeSession::begin(
-            hwnd,
-            &start_rect,
-            &target_rect,
-            SessionOptions {
-              effect_opacity,
-              // `false`: the blur overlay is positioned behind the
-              // surrogate (in `platform_sync`'s `Frozen` handling) before
-              // the surrogate is revealed via `ResizeSession::show`, so
-              // the surrogate is never visible without its overlay
-              // correctly in place behind it -- closing the race at the
-              // source instead of chasing it with a fast follow-up.
-              initially_visible: false,
-              corner_style,
-              place_at_top: true,
-              edge_color: cached_edge_color,
-              blur_overlay,
-              border_overlay,
-            },
-          ) {
+          // Reuses a still-fading or recently-warm surrogate for this same
+          // window when one exists (see `reclaim_surrogate`'s doc comment),
+          // skipping `CreateWindowExW`/`DwmRegisterThumbnail` entirely in
+          // that case -- otherwise `begin_reusing_surrogate` falls through
+          // to a fresh `NativeSurrogate::create` on its own.
+          let session_result = match self.reclaim_surrogate(window_id) {
+            Some(warm_surrogate) => ResizeSession::begin_reusing_surrogate(
+              hwnd,
+              &start_rect,
+              &target_rect,
+              SessionOptions {
+                effect_opacity,
+                // `false`: the blur overlay is positioned behind the
+                // surrogate (in `platform_sync`'s `Frozen` handling) before
+                // the surrogate is revealed via `ResizeSession::show`, so
+                // the surrogate is never visible without its overlay
+                // correctly in place behind it -- closing the race at the
+                // source instead of chasing it with a fast follow-up.
+                initially_visible: false,
+                corner_style,
+                place_at_top: true,
+                edge_color: cached_edge_color,
+                blur_overlay,
+                border_overlay,
+              },
+              warm_surrogate,
+            ),
+            None => ResizeSession::begin(
+              hwnd,
+              &start_rect,
+              &target_rect,
+              SessionOptions {
+                effect_opacity,
+                initially_visible: false,
+                corner_style,
+                place_at_top: true,
+                edge_color: cached_edge_color,
+                blur_overlay,
+                border_overlay,
+              },
+            ),
+          };
+          match session_result {
             Ok(session) => {
               // Only cache on a miss so staleness stays bounded by the TTL
               // rather than sliding forward on every reuse.
@@ -2239,6 +2301,66 @@ impl AnimationManager {
         .retain(|_, (_, sampled_at)| sampled_at.elapsed() < EDGE_COLOR_CACHE_TTL);
     }
     self.edge_color_cache.insert(hwnd, (color, Instant::now()));
+  }
+
+  /// Reclaims a surrogate for `window_id` to reuse instead of building one
+  /// from scratch, checking (in order):
+  ///
+  /// 1. A still-fading `pending_session_cleanup` entry for the same window
+  ///    -- the caller is about to start a fresh animation on it anyway, so
+  ///    its fade is cancelled and its surrogate handed over directly rather
+  ///    than let it finish fading out only to be torn down a moment later.
+  /// 2. The [`warm_surrogates`] cache (see its doc comment), for a window
+  ///    whose previous session already finished fading.
+  ///
+  /// Returns `None` if neither has one, in which case the caller must
+  /// create a surrogate fresh via `NativeSurrogate::create`.
+  ///
+  /// [`warm_surrogates`]: AnimationManager::warm_surrogates
+  #[cfg(target_os = "windows")]
+  fn reclaim_surrogate(&mut self, window_id: Uuid) -> Option<NativeSurrogate> {
+    if let Some(idx) = self
+      .pending_session_cleanup
+      .iter()
+      .position(|(id, _, _)| *id == window_id)
+    {
+      let (_, _, mut session) = self.pending_session_cleanup.remove(idx);
+      if let Some(surrogate) = session.take_surrogate() {
+        return Some(surrogate);
+      }
+    }
+
+    let (surrogate, stashed_at) = self.warm_surrogates.remove(&window_id)?;
+    (stashed_at.elapsed() < WARM_SURROGATE_TTL).then_some(surrogate)
+  }
+
+  /// Stashes `surrogate` as `window_id`'s warm surrogate (see
+  /// [`warm_surrogates`]'s doc comment) instead of letting it drop -- and
+  /// with it, destroy its overlay window and unregister its DWM thumbnail
+  /// -- outright.
+  ///
+  /// Prunes expired entries once the cache exceeds
+  /// [`WARM_SURROGATE_PRUNE_LEN`] so windows that are never resized again
+  /// don't accumulate indefinitely.
+  ///
+  /// [`warm_surrogates`]: AnimationManager::warm_surrogates
+  #[cfg(target_os = "windows")]
+  fn stash_warm_surrogate(
+    &mut self,
+    window_id: Uuid,
+    mut surrogate: NativeSurrogate,
+  ) {
+    // Belt-and-suspenders: the caller's fade already zeroed the thumbnail's
+    // own opacity, but explicitly hide the overlay window too so it can't
+    // show up in z-order queries or alt-tab while sitting idle in the cache.
+    surrogate.set_visible(false);
+
+    if self.warm_surrogates.len() >= WARM_SURROGATE_PRUNE_LEN {
+      self
+        .warm_surrogates
+        .retain(|_, (_, stashed_at)| stashed_at.elapsed() < WARM_SURROGATE_TTL);
+    }
+    self.warm_surrogates.insert(window_id, (surrogate, Instant::now()));
   }
 
   /// Applies all surrogate updates queued during the current redraw pass in
