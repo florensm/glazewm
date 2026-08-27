@@ -34,25 +34,30 @@ use windows::{
 /// the same source strip.
 const EDGE_SAMPLE_INSET: i32 = 4;
 
-/// Above this duration, a synchronous `SetWindowPos` call to a real (not
-/// cloaked/surrogate) app window is logged as a warning.
+/// Upper bound on how long [`ResizeSession::pre_commit`] waits for the real
+/// window to confirm it actually reached `target_rect` before giving up and
+/// uncloaking anyway.
 ///
-/// `pre_commit`'s final move omits `SWP_ASYNCWINDOWPOS` as a correctness
-/// guarantee, which means it blocks the calling thread -- the WM's single
-/// async main loop -- until the target process's message queue processes
-/// the resize. Apps with a busy main thread (observed with Electron/
-/// Chromium-based apps) can take much longer here than a lightweight native
-/// app, stalling all mouse/keybinding/IPC handling for the duration. This
-/// threshold is set low enough to catch that without false-alarming on
-/// ordinary scheduling jitter.
-const SLOW_SYNC_SETWINDOWPOS_THRESHOLD: Duration = Duration::from_millis(8);
+/// `pre_commit` used to skip `SWP_ASYNCWINDOWPOS` entirely, as a correctness
+/// guarantee -- but that meant a plain `SetWindowPos` blocked the calling
+/// thread (the WM's single async main loop) until the target process's
+/// message queue processed the resize, with no upper bound at all. Apps with
+/// a busy main thread (Outlook, observed taking up to ~284ms; Electron/
+/// Chromium-based apps to a lesser degree) stalled all mouse/keybinding/IPC
+/// handling for that whole duration. `pre_commit` now issues the move
+/// asynchronously and polls (throttled, see `commit_poll_parity`) for it to land
+/// across subsequent ticks instead -- this bounds the rare case where an app
+/// never confirms (hung, or genuinely this slow) without reintroducing an
+/// unbounded main-loop stall. Generous relative to every real duration
+/// observed so far so it essentially never fires for a merely-slow (not
+/// hung) app.
+const COMMIT_CONFIRM_MAX_WAIT: Duration = Duration::from_millis(500);
 
 /// Best-effort process name (e.g. `"outlook"`) owning `hwnd`, for labeling
-/// [`SLOW_SYNC_SETWINDOWPOS_THRESHOLD`]'s warning -- `None` on any failure,
-/// in which case the caller falls back to logging the raw `hwnd`. Only ever
-/// called once the threshold has already been exceeded, so the extra
-/// `OpenProcess`/`QueryFullProcessImageNameW` cost never lands on the
-/// common (fast) path.
+/// [`COMMIT_CONFIRM_MAX_WAIT`]'s warning -- `None` on any failure, in which
+/// case the caller falls back to logging the raw `hwnd`. Only ever called
+/// once the wait has already timed out, so the extra `OpenProcess`/
+/// `QueryFullProcessImageNameW` cost never lands on the common (fast) path.
 fn process_name_for_warning(hwnd: HWND) -> Option<String> {
   let mut process_id = 0u32;
   // SAFETY: `hwnd` is a valid window handle for the lifetime of this call.
@@ -226,6 +231,12 @@ pub struct ResizeSession {
   /// cost that stacks up with concurrent handoffs — worse on high-refresh
   /// monitors where ticks fire 2-3x as often as at 60 Hz.
   poll_parity: bool,
+  /// Same throttling idea as `poll_parity`, for `pre_commit`'s own
+  /// `GetWindowRect` poll -- kept separate rather than shared, since the two
+  /// polls run in different (though normally non-overlapping) phases of a
+  /// session's life and sharing the flag would make each one's cadence
+  /// depend on how often the other happens to run too.
+  commit_poll_parity: bool,
   /// `true` once the session has successfully cloaked its source window.
   ///
   /// Used by `platform_sync` to skip the per-tick `DwmGetWindowAttribute`
@@ -261,6 +272,19 @@ pub struct ResizeSession {
   ///
   /// [`current_rect`]: ResizeSession::current_rect
   current_rect: Option<Rect>,
+  /// `true` once [`pre_commit`] has confirmed (or given up waiting for, see
+  /// [`COMMIT_CONFIRM_MAX_WAIT`]) the real window landing at `target_rect`.
+  /// The caller must not uncloak/fade the surrogate until this is `true`.
+  /// Reset to `false` by [`update_target`] on a redirect, since that
+  /// invalidates whatever commit was in flight for the old target.
+  ///
+  /// [`pre_commit`]: ResizeSession::pre_commit
+  /// [`update_target`]: ResizeSession::update_target
+  commit_confirmed: bool,
+  /// When `pre_commit`'s asynchronous move was issued, or `None` before the
+  /// first `pre_commit` call for the current target. See
+  /// [`COMMIT_CONFIRM_MAX_WAIT`].
+  commit_started_at: Option<Instant>,
 }
 
 impl ResizeSession {
@@ -365,11 +389,14 @@ impl ResizeSession {
       zoom_progress: 1.0,
       handoff_done: is_growing,
       poll_parity: false,
+      commit_poll_parity: false,
       session_cloaked: false,
       pending_thumbnail_dims: None,
       blur_overlay: options.blur_overlay,
       border_overlay: options.border_overlay,
       current_rect: None,
+      commit_confirmed: false,
+      commit_started_at: None,
     })
   }
 
@@ -840,6 +867,12 @@ impl ResizeSession {
     self.is_growing = new_is_growing;
     self.target_rect = new_target.clone();
 
+    // A commit in flight (or already confirmed) was for the old target --
+    // this window isn't done animating after all, so `pre_commit` needs to
+    // run its full first-call logic again once this new target completes.
+    self.commit_confirmed = false;
+    self.commit_started_at = None;
+
     if self.hwnd == 0 {
       return;
     }
@@ -945,48 +978,67 @@ impl ResizeSession {
     }
   }
 
-  /// Snaps the surrogate to the final target rect and ensures the real window
-  /// is at its target position, in preparation for `platform_sync` to uncloak
-  /// it.
+  /// Drives this session's final move toward `target_rect`, returning
+  /// `true` once it's safe for the caller to uncloak the real window and
+  /// start fading the surrogate out.
   ///
-  /// Checks `IsWindow` and nullifies the stored handle if the window has been
-  /// destroyed mid-animation, so that [`commit`] skips the `SetWindowPos`
-  /// call.
+  /// Safe to call every tick once the window's animation has completed:
   ///
-  /// [`commit`]: ResizeSession::commit
-  pub fn pre_commit(&mut self) {
+  /// - First call: if the real window is already at `target_rect`
+  ///   (`maybe_handoff`/the initial async preposition normally got it there
+  ///   already), finishes immediately. Otherwise issues an *asynchronous*
+  ///   move (`SWP_ASYNCWINDOWPOS`) and returns `false` -- unlike a plain
+  ///   `SetWindowPos`, this never blocks the calling thread on the target
+  ///   process's message queue, however slow it is.
+  /// - Later calls: polls (throttled, see `commit_poll_parity`'s doc
+  ///   comment) for
+  ///   the real window to have actually reached `target_rect`, finishing
+  ///   once it has. If [`COMMIT_CONFIRM_MAX_WAIT`] elapses without that
+  ///   happening (a hung app, or one that's genuinely this slow), gives up
+  ///   and finishes anyway -- seeing the caller uncloak a window that's not
+  ///   quite at its final rect yet is a much smaller cost than the
+  ///   unbounded main-loop stall this replaced.
+  ///
+  /// Checks `IsWindow` and nullifies the stored handle if the window has
+  /// been destroyed mid-animation, in which case there is nothing left to
+  /// wait for and this returns `true` immediately.
+  pub fn pre_commit(&mut self) -> bool {
+    if self.commit_confirmed {
+      return true;
+    }
+
     // SAFETY: `IsWindow` is safe to call with any `HWND` value.
     if !unsafe { IsWindow(HWND(self.hwnd)).as_bool() } {
       self.hwnd = 0;
-      return;
+      self.finish_commit();
+      return true;
     }
 
-    // Skip the synchronous move when the window is already at target.
-    // `maybe_handoff` (shrinking sessions) and the initial async preposition
-    // (growing sessions) have normally moved the window to `target_rect` well
-    // before the animation completes, so this is a no-op in the common case.
-    // Avoiding a redundant synchronous `SetWindowPos` eliminates the
-    // occasional cross-process stall at animation end for apps with slow
-    // message queues. The call is kept as a correctness fallback for the rare
-    // case where neither earlier move was processed in time.
-    //
-    // SAFETY: `HWND(self.hwnd)` is valid (verified above).
-    let mut current = RECT::default();
-    let already_at_target = unsafe {
-      GetWindowRect(
-        HWND(self.hwnd),
-        std::ptr::from_mut(&mut current).cast(),
-      )
-      .is_ok()
-    } && Rect::from_ltrb(
-      current.left,
-      current.top,
-      current.right,
-      current.bottom,
-    ) == self.target_rect;
+    let Some(started) = self.commit_started_at else {
+      // First call since this target was set. Skip the move entirely when
+      // the real window is already there -- `maybe_handoff` (shrinking
+      // sessions) and the initial async preposition (growing sessions)
+      // normally get it there well before the animation completes, so this
+      // is the common case.
+      //
+      // SAFETY: `HWND(self.hwnd)` is valid (verified above).
+      let mut current = RECT::default();
+      let at_target = unsafe {
+        GetWindowRect(HWND(self.hwnd), std::ptr::from_mut(&mut current).cast())
+          .is_ok()
+      } && Rect::from_ltrb(
+        current.left,
+        current.top,
+        current.right,
+        current.bottom,
+      ) == self.target_rect;
 
-    if !already_at_target {
-      let sync_start = Instant::now();
+      if at_target {
+        self.finish_commit();
+        return true;
+      }
+
+      self.commit_started_at = Some(Instant::now());
       // SAFETY: `HWND(self.hwnd)` is valid (verified above). `SWP_NOZORDER`
       // makes `hWndInsertAfter` irrelevant.
       unsafe {
@@ -997,26 +1049,64 @@ impl ResizeSession {
           self.target_rect.y(),
           self.target_rect.width(),
           self.target_rect.height(),
-          SWP_NOACTIVATE | SWP_NOSENDCHANGING | SWP_NOZORDER,
+          SWP_NOACTIVATE
+            | SWP_NOSENDCHANGING
+            | SWP_NOZORDER
+            | SWP_ASYNCWINDOWPOS,
         );
       }
-      let elapsed = sync_start.elapsed();
-      if elapsed > SLOW_SYNC_SETWINDOWPOS_THRESHOLD {
-        let process = process_name_for_warning(HWND(self.hwnd))
-          .unwrap_or_else(|| format!("hwnd {:#x}", self.hwnd));
-        tracing::warn!(
-          "ResizeSession::pre_commit's synchronous SetWindowPos for \
-           {process} took {elapsed:?} -- likely blocked on the target \
-           process's message queue, stalling the whole WM main loop for \
-           that long (see SLOW_SYNC_SETWINDOWPOS_THRESHOLD's doc comment)."
-        );
-      }
+      return false;
+    };
+
+    if started.elapsed() > COMMIT_CONFIRM_MAX_WAIT {
+      let process = process_name_for_warning(HWND(self.hwnd))
+        .unwrap_or_else(|| format!("hwnd {:#x}", self.hwnd));
+      tracing::warn!(
+        "ResizeSession commit for {process} did not land within \
+         {COMMIT_CONFIRM_MAX_WAIT:?} -- uncloaking anyway (see \
+         COMMIT_CONFIRM_MAX_WAIT's doc comment)."
+      );
+      self.finish_commit();
+      return true;
     }
 
-    // Flush any pending thumbnail dims so the `content_size` check below
-    // uses the current target (avoids a redundant dims update for a
-    // mismatch that was already queued but not yet consumed by
-    // `defer_update`).
+    // Throttle the poll itself to every other call reaching this point --
+    // see `commit_poll_parity`'s doc comment.
+    self.commit_poll_parity = !self.commit_poll_parity;
+    if !self.commit_poll_parity {
+      return false;
+    }
+
+    // SAFETY: `HWND(self.hwnd)` is valid (verified above).
+    let mut current = RECT::default();
+    let at_target = unsafe {
+      GetWindowRect(HWND(self.hwnd), std::ptr::from_mut(&mut current).cast())
+        .is_ok()
+    } && Rect::from_ltrb(
+      current.left,
+      current.top,
+      current.right,
+      current.bottom,
+    ) == self.target_rect;
+
+    if at_target {
+      self.finish_commit();
+      true
+    } else {
+      false
+    }
+  }
+
+  /// Finalizes the surrogate for teardown once the real window's placement
+  /// is confirmed (or [`COMMIT_CONFIRM_MAX_WAIT`] forces it through).
+  ///
+  /// Flushes any pending thumbnail dims, then syncs the thumbnail to the
+  /// target's exact content size and repositions the surrogate one last
+  /// time, so it becomes a pixel-aligned 1:1 mirror of the resized window
+  /// before the caller uncloaks it and starts the fade.
+  fn finish_commit(&mut self) {
+    self.commit_confirmed = true;
+
     if let Some((w, h)) = self.pending_thumbnail_dims.take() {
       if let Some(surrogate) = &mut self.surrogate {
         surrogate.update_thumbnail_dims(HWND(self.hwnd), w, h, self.border_inset);

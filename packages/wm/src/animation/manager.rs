@@ -540,30 +540,50 @@ impl AnimationManager {
     self.pending_close_windows.remove(window_id);
   }
 
-  /// Removes all completed animations and returns their window IDs.
+  /// Removes animations that have both finished their eased progress *and*
+  /// (on Windows, for a resize-session-backed animation) had their real
+  /// window's final move confirmed by `ResizeSession::pre_commit`. Returns
+  /// the window IDs actually removed this call.
   ///
-  /// Sessions for completed animations are moved to `pending_session_cleanup`
-  /// so they remain visible until after the final `platform_sync` call has
-  /// repositioned the real windows. `pre_commit` is called on each session
-  /// at this point to snapshot the window's liveness and position the
-  /// surrogate at the final target rect.
+  /// An animation whose eased progress is done but whose `pre_commit` is
+  /// still waiting on the real window (see `pre_commit`'s doc comment) is
+  /// left in place -- both `self.animations` and `self.resize_sessions`
+  /// keep their entries, and this is retried on a later tick. This is what
+  /// keeps `has_active_animations` (hence the tick timer) running and the
+  /// window correctly frozen/cloaked behind its surrogate for the whole
+  /// wait, without blocking this call itself.
+  ///
+  /// Once actually removed, a session is moved to `pending_session_cleanup`
+  /// so it remains visible until after the final `platform_sync` call has
+  /// repositioned the real window.
   pub fn remove_completed_animations(&mut self) -> Vec<Uuid> {
-    let completed_ids: Vec<Uuid> = self
+    let candidate_ids: Vec<Uuid> = self
       .animations
       .iter()
       .filter(|(_, anim)| anim.is_complete())
       .map(|(id, _)| *id)
       .collect();
 
-    for id in &completed_ids {
-      self.animations.remove(id);
+    let mut completed_ids = Vec::with_capacity(candidate_ids.len());
+
+    for id in &candidate_ids {
       #[cfg(target_os = "windows")]
-      if let Some(mut session) = self.resize_sessions.remove(id) {
-        session.pre_commit();
-        self.pending_session_cleanup.push((*id, None, session));
+      {
+        let ready =
+          self.resize_sessions.get_mut(id).map_or(true, ResizeSession::pre_commit);
+
+        if !ready {
+          continue;
+        }
+
+        if let Some(session) = self.resize_sessions.remove(id) {
+          self.pending_session_cleanup.push((*id, None, session));
+        }
+        self.slide_in_monitor_rects.remove(id);
       }
-      #[cfg(target_os = "windows")]
-      self.slide_in_monitor_rects.remove(id);
+
+      self.animations.remove(id);
+      completed_ids.push(*id);
     }
 
     completed_ids
