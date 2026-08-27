@@ -65,13 +65,6 @@ impl WindowAnimationState {
     }
   }
 
-  /// Sets the delay before this animation starts and returns `self`.
-  #[allow(dead_code)]
-  pub fn with_delay(mut self, delay: Duration) -> Self {
-    self.start_delay = delay;
-    self
-  }
-
   /// Gets the eased progress in [0.0, 1.0] at an explicit `now` instant.
   ///
   /// Allows callers to supply a predictive timestamp (e.g. vsync wake-up time
@@ -285,13 +278,13 @@ mod tests {
   /// (used by the window-open paint grace period).
   #[test]
   fn start_delay_holds_at_zero() {
-    let anim = WindowAnimationState::new_movement(
+    let mut anim = WindowAnimationState::new_movement(
       Rect::from_xy(0, 0, 100, 100),
       Rect::from_xy(1_000, 0, 100, 100),
       100,
       linear(),
-    )
-    .with_delay(Duration::from_millis(30));
+    );
+    anim.start_delay = Duration::from_millis(30);
 
     let t0 = Instant::now();
     // Anchors `start_time`; still within the delay window.
