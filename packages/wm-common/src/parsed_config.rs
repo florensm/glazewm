@@ -455,15 +455,6 @@ pub struct BorderEffectConfig {
   /// `corner_style`'s fixed presets (`square`/`small_rounded`/`rounded`)
   /// allow.
   pub radius: Option<LengthValue>,
-
-  /// Duration, in milliseconds, of the animated transition when the
-  /// border's resolved color/width changes (e.g. on focus change).
-  ///
-  /// `0` applies the new color/width instantly, with no animation.
-  pub transition_duration_ms: u32,
-
-  /// Easing curve for the border color/width transition.
-  pub transition_easing: EasingFunction,
 }
 
 impl Default for BorderEffectConfig {
@@ -473,8 +464,6 @@ impl Default for BorderEffectConfig {
       color: BorderColorSource::default(),
       width: LengthValue::from_px(2),
       radius: None,
-      transition_duration_ms: 150,
-      transition_easing: EasingFunction::CubicBezier(0.42, 0.0, 0.58, 1.0),
     }
   }
 }

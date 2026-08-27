@@ -4,8 +4,6 @@ use std::{
 };
 
 use wm_common::EasingFunction;
-#[cfg(target_os = "windows")]
-use wm_platform::Color;
 use wm_platform::{OpacityValue, Rect};
 
 use crate::animation::engine::{animation_progress_at, apply_easing};
@@ -210,105 +208,6 @@ impl WindowAnimationState {
   }
 }
 
-/// Tracks a window's border overlay color/width, animating toward a new
-/// target whenever [`retarget`] is called with a different one (e.g. on
-/// focus change) rather than snapping instantly.
-///
-/// Unlike [`WindowAnimationState`], an instance of this always exists once a
-/// window's border effect has been resolved at least once -- a "settled"
-/// state (start == target, zero duration) doubles as the cache of "what
-/// color/width is this border currently showing", which [`retarget`] reads
-/// to know where to animate *from*. See [`retarget`] and
-/// `border_overlay_params_for` in `commands/general/platform_sync.rs`.
-///
-/// [`retarget`]: BorderTransitionState::retarget
-#[cfg(target_os = "windows")]
-#[derive(Clone, Debug)]
-pub struct BorderTransitionState {
-  start_time: Instant,
-  duration: Duration,
-  easing: EasingFunction,
-  start_color: Color,
-  target_color: Color,
-  start_width: f32,
-  target_width: f32,
-}
-
-#[cfg(target_os = "windows")]
-impl BorderTransitionState {
-  /// Creates a state that is already at `color`/`width`, with no animation
-  /// in progress. Used the first time a window's border is resolved, so it
-  /// appears immediately rather than animating in from a default.
-  pub fn settled(color: Color, width: f32) -> Self {
-    Self {
-      start_time: Instant::now(),
-      duration: Duration::ZERO,
-      easing: EasingFunction::default(),
-      start_color: color,
-      target_color: color,
-      start_width: width,
-      target_width: width,
-    }
-  }
-
-  /// Starts a new transition from this state's current color/width (at
-  /// `now`) toward `target_color`/`target_width`, over `duration_ms` with
-  /// `easing`.
-  ///
-  /// Reading the *current* interpolated value as the new start (rather than
-  /// the previous target) means retargeting mid-animation redirects
-  /// smoothly instead of jumping back to where the last transition began --
-  /// relevant when focus changes rapidly (e.g. fast alt-tabbing).
-  #[must_use]
-  pub fn retarget(
-    &self,
-    now: Instant,
-    target_color: Color,
-    target_width: f32,
-    duration_ms: u32,
-    easing: EasingFunction,
-  ) -> Self {
-    let (start_color, start_width) = self.current_state_at(now);
-    Self {
-      start_time: now,
-      duration: Duration::from_millis(u64::from(duration_ms)),
-      easing,
-      start_color,
-      target_color,
-      start_width,
-      target_width,
-    }
-  }
-
-  /// This transition's target color/width, regardless of progress.
-  ///
-  /// Compared against a freshly resolved target by `border_overlay_params_for`
-  /// to decide whether a new [`retarget`] is needed.
-  ///
-  /// [`retarget`]: BorderTransitionState::retarget
-  pub fn target(&self) -> (Color, f32) {
-    (self.target_color, self.target_width)
-  }
-
-  /// Gets the eased progress in `[0.0, 1.0]` at an explicit `now` instant.
-  pub fn eased_progress_at(&self, now: Instant) -> f32 {
-    apply_easing(animation_progress_at(self.start_time, self.duration, now), &self.easing)
-  }
-
-  /// Whether the transition has finished animating as of `now`.
-  pub fn is_complete_at(&self, now: Instant) -> bool {
-    self.eased_progress_at(now) >= 1.0
-  }
-
-  /// Gets the interpolated color/width at an explicit `now` instant.
-  pub fn current_state_at(&self, now: Instant) -> (Color, f32) {
-    let t = self.eased_progress_at(now);
-    let color = self.start_color.lerp(&self.target_color, t);
-    let width = self.start_width + (self.target_width - self.start_width) * t;
-    (color, width)
-  }
-}
-
 #[cfg(test)]
 mod tests {
   use super::*;
@@ -409,58 +308,4 @@ mod tests {
     assert!((mid - 0.5).abs() < 1e-2, "got {mid}");
   }
 
-  #[cfg(target_os = "windows")]
-  mod border_transition {
-    use super::*;
-
-    fn color(r: u8) -> Color {
-      Color { r, g: 0, b: 0, a: 255 }
-    }
-
-    #[test]
-    fn settled_state_is_immediately_complete_at_target() {
-      let state = BorderTransitionState::settled(color(100), 2.0);
-      let now = Instant::now();
-
-      assert!(state.is_complete_at(now));
-      assert_eq!(state.current_state_at(now), (color(100), 2.0));
-      assert_eq!(state.target(), (color(100), 2.0));
-    }
-
-    #[test]
-    fn retarget_interpolates_from_current_value_toward_new_target() {
-      let settled = BorderTransitionState::settled(color(0), 0.0);
-      let t0 = Instant::now();
-      let transition = settled.retarget(t0, color(100), 10.0, 100, linear());
-
-      // First call anchors nothing extra here since `retarget` takes an
-      // explicit `now` rather than lazily latching a start time.
-      assert_eq!(transition.current_state_at(t0), (color(0), 0.0));
-      assert!(!transition.is_complete_at(t0));
-
-      let mid = transition.current_state_at(t0 + Duration::from_millis(50));
-      assert_eq!(mid, (color(50), 5.0));
-
-      let end = t0 + Duration::from_millis(100);
-      assert!(transition.is_complete_at(end));
-      assert_eq!(transition.current_state_at(end), (color(100), 10.0));
-    }
-
-    #[test]
-    fn retargeting_mid_animation_starts_from_the_current_interpolated_value()
-    {
-      let settled = BorderTransitionState::settled(color(0), 0.0);
-      let t0 = Instant::now();
-      let first = settled.retarget(t0, color(100), 10.0, 100, linear());
-
-      // Redirect halfway through the first transition, toward a new target.
-      let redirect_at = t0 + Duration::from_millis(50);
-      let second =
-        first.retarget(redirect_at, color(0), 0.0, 100, linear());
-
-      // The new transition must start from where the first one actually was
-      // (color(50)/5.0), not snap back to the first transition's own start.
-      assert_eq!(second.current_state_at(redirect_at), (color(50), 5.0));
-    }
-  }
 }

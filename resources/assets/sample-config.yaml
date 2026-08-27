@@ -189,19 +189,6 @@ window_effects:
       # the window's own corners. Set explicitly for a different look than
       # corner_style's fixed presets allow.
       # radius: "12px"
-      # Duration of the animated transition when the border's resolved
-      # color/width changes (e.g. on focus change). '0' applies the new
-      # value instantly, with no animation. Capped at 600ms -- a
-      # longer-running animation keeps the WM's event loop favoring
-      # animation frames over keybinding/mouse/IPC input for its whole
-      # duration, so a longer configured value is clamped (with a warning)
-      # rather than honored.
-      transition_duration_ms: 150
-      # Easing curve for the border color/width transition. Allowed values:
-      # 'linear', 'ease_in_out', 'ease_in', 'ease_out', 'ease_in_out_cubic',
-      # 'ease_in_cubic', 'ease_out_cubic', 'ease_out_spring', or a custom
-      # cubic-bezier like 'cubic_bezier(0.42, 0, 0.58, 1)'.
-      transition_easing: "ease_in_out"
 
     # Remove the title bar from the window's frame. Note that this can
     # cause rendering issues for some applications.
@@ -262,8 +249,6 @@ window_effects:
       enabled: true
       color: "#a1a1a1"
       width: "2px"
-      transition_duration_ms: 150
-      transition_easing: "ease_in_out"
     hide_title_bar:
       enabled: false
     corner_style:
