@@ -288,7 +288,41 @@ pub struct ResizeSession {
 }
 
 impl ResizeSession {
-  /// Creates a resize session with a DWM surrogate overlay.
+  /// Creates a resize session with a fresh DWM surrogate overlay.
+  ///
+  /// See [`begin_impl`] for the shared setup this and
+  /// [`begin_reusing_surrogate`] both build on.
+  ///
+  /// [`begin_impl`]: ResizeSession::begin_impl
+  /// [`begin_reusing_surrogate`]: ResizeSession::begin_reusing_surrogate
+  pub fn begin(
+    hwnd: HWND,
+    source_rect: &Rect,
+    target_rect: &Rect,
+    options: SessionOptions,
+  ) -> crate::Result<Self> {
+    Self::begin_impl(hwnd, source_rect, target_rect, options, None)
+  }
+
+  /// Like [`begin`], but reconfigures `warm_surrogate` (see
+  /// `AnimationManager::warm_surrogates`'s doc comment) via
+  /// [`NativeSurrogate::revive`] instead of creating a brand new surrogate
+  /// window and DWM thumbnail registration -- skips that cost entirely in
+  /// the common case where the reused thumbnail registration is still
+  /// valid.
+  ///
+  /// [`begin`]: ResizeSession::begin
+  pub fn begin_reusing_surrogate(
+    hwnd: HWND,
+    source_rect: &Rect,
+    target_rect: &Rect,
+    options: SessionOptions,
+    warm_surrogate: NativeSurrogate,
+  ) -> crate::Result<Self> {
+    Self::begin_impl(hwnd, source_rect, target_rect, options, Some(warm_surrogate))
+  }
+
+  /// Shared setup for [`begin`]/[`begin_reusing_surrogate`].
   ///
   /// The thumbnail is always registered at source dims — never larger than
   /// the real window's current content, since an oversampled `rcSource`
@@ -297,13 +331,17 @@ impl ResizeSession {
   /// target (curtain-reveal); `sync_registration` upgrades the registration
   /// to target dims once the window's actual geometry catches up, and the
   /// animated area beyond the source content shows the sampled backdrop
-  /// color until then. When surrogate creation fails the animation falls
-  /// back to direct repositioning.
-  pub fn begin(
+  /// color until then. When surrogate creation/revival fails the animation
+  /// falls back to direct repositioning.
+  ///
+  /// [`begin`]: ResizeSession::begin
+  /// [`begin_reusing_surrogate`]: ResizeSession::begin_reusing_surrogate
+  fn begin_impl(
     hwnd: HWND,
     source_rect: &Rect,
     target_rect: &Rect,
     options: SessionOptions,
+    warm_surrogate: Option<NativeSurrogate>,
   ) -> crate::Result<Self> {
     let border_inset = compute_border_inset(hwnd);
 
@@ -355,26 +393,56 @@ impl ResizeSession {
     // Thumbnail registered at source dims for all directions (see doc
     // comment): the window is only source-sized at this point, and
     // registering larger would oversample.
-    let surrogate = match NativeSurrogate::create(
-      hwnd,
-      source_rect,
-      source_rect,
-      edge_color.as_ref(),
-      effect_opacity,
-      options.initially_visible,
-      border_inset,
-      &options.corner_style,
-      insert_after,
-    ) {
-      Ok(s) => Some(s),
-      Err(err) => {
-        tracing::warn!(
-          "Failed to create surrogate: {err}. Falling back to direct \
-           animation."
-        );
-        None
-      }
-    };
+    //
+    // A revive failure falls through to a fresh `create` rather than
+    // giving up outright -- rare (would mean the warm surrogate's own
+    // window handle went bad), but a brand new surrogate window is a
+    // reasonable recovery, not just "no surrogate for this resize."
+    let surrogate = warm_surrogate
+      .and_then(|mut surrogate| {
+        match surrogate.revive(
+          hwnd,
+          source_rect,
+          source_rect,
+          edge_color.as_ref(),
+          effect_opacity,
+          options.initially_visible,
+          border_inset,
+          &options.corner_style,
+          insert_after,
+        ) {
+          Ok(()) => Some(surrogate),
+          Err(err) => {
+            tracing::warn!(
+              "Failed to revive warm surrogate: {err}. Creating a fresh \
+               one instead."
+            );
+            None
+          }
+        }
+      })
+      .or_else(|| {
+        match NativeSurrogate::create(
+          hwnd,
+          source_rect,
+          source_rect,
+          edge_color.as_ref(),
+          effect_opacity,
+          options.initially_visible,
+          border_inset,
+          &options.corner_style,
+          insert_after,
+        ) {
+          Ok(s) => Some(s),
+          Err(err) => {
+            tracing::warn!(
+              "Failed to create surrogate: {err}. Falling back to direct \
+               animation."
+            );
+            None
+          }
+        }
+      });
 
     Ok(Self {
       hwnd: hwnd.0,
@@ -522,6 +590,16 @@ impl ResizeSession {
   /// window behind the surrogate or fall back to direct repositioning.
   pub fn has_surrogate(&self) -> bool {
     self.surrogate.as_ref().map_or(false, |s| s.has_thumbnail())
+  }
+
+  /// Takes this session's surrogate, if any, for reuse via
+  /// [`begin_reusing_surrogate`] instead of letting `Drop` destroy the OS
+  /// window and unregister its DWM thumbnail outright. See
+  /// `AnimationManager::warm_surrogates`'s doc comment.
+  ///
+  /// [`begin_reusing_surrogate`]: ResizeSession::begin_reusing_surrogate
+  pub fn take_surrogate(&mut self) -> Option<NativeSurrogate> {
+    self.surrogate.take()
   }
 
   /// Makes the surrogate visible.

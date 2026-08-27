@@ -523,6 +523,116 @@ impl NativeSurrogate {
     Ok(this)
   }
 
+  /// Reconfigures this already-existing surrogate window (and its DWM
+  /// thumbnail registration, when still valid) to track a fresh resize/move
+  /// session on `source_hwnd`, instead of creating a brand new surrogate
+  /// window and re-registering a thumbnail from scratch.
+  ///
+  /// Used to reuse a warm surrogate (see `AnimationManager::warm_surrogates`)
+  /// for a follow-up resize of the same window shortly after its previous
+  /// session ended -- skips the `CreateWindowExW`/`DwmRegisterThumbnail` cost
+  /// entirely in the common case, since neither this surrogate window nor
+  /// the source window was destroyed in between, so the existing thumbnail
+  /// handle is still valid and only needs its rects/opacity updated. Falls
+  /// back to registering fresh only if the prior registration never
+  /// succeeded (`self.thumbnail == 0`).
+  ///
+  /// Parameters otherwise mirror [`create`]'s.
+  ///
+  /// [`create`]: NativeSurrogate::create
+  pub fn revive(
+    &mut self,
+    source_hwnd: HWND,
+    source_rect: &Rect,
+    thumbnail_rect: &Rect,
+    surrogate_color: Option<&Color>,
+    opacity: u8,
+    initially_visible: bool,
+    border_inset: RECT,
+    corner_style: &CornerStyle,
+    insert_after: HWND,
+  ) -> crate::Result<()> {
+    apply_backdrop(self.hwnd(), surrogate_color);
+    apply_corner_preference(self.hwnd(), corner_style);
+    self.border_inset = border_inset;
+
+    let logical_src = to_logical(source_rect, &border_inset);
+    let logical_thumb = to_logical(thumbnail_rect, &border_inset);
+
+    let show_flag = if initially_visible {
+      SWP_SHOWWINDOW
+    } else {
+      SET_WINDOW_POS_FLAGS::default()
+    };
+    // SAFETY: `self.hwnd()` is a valid window handle owned by this
+    // surrogate for its whole lifetime.
+    unsafe {
+      SetWindowPos(
+        self.hwnd(),
+        insert_after,
+        logical_src.x(),
+        logical_src.y(),
+        logical_src.width(),
+        logical_src.height(),
+        SWP_NOACTIVATE | show_flag,
+      )
+    }?;
+    self.is_visible = initially_visible;
+    self.last_rect = None;
+
+    if self.thumbnail == 0 {
+      self.thumbnail = register_thumbnail(
+        self.hwnd(),
+        source_hwnd,
+        logical_thumb.width(),
+        logical_thumb.height(),
+        border_inset,
+        opacity,
+      )
+      .unwrap_or(0);
+    } else {
+      // Single combined update (rects + opacity + visible), mirroring
+      // `register_thumbnail`'s initial setup -- bypasses
+      // `set_thumbnail_rects`/`set_window_opacity`'s unchanged-value skips,
+      // since a revived surrogate must always apply fresh values regardless
+      // of what its last session happened to leave behind.
+      let src_rect = RECT {
+        left: border_inset.left,
+        top: border_inset.top,
+        right: border_inset.left + logical_thumb.width(),
+        bottom: border_inset.top + logical_thumb.height(),
+      };
+      let dst_rect = RECT {
+        left: 0,
+        top: 0,
+        right: logical_thumb.width(),
+        bottom: logical_thumb.height(),
+      };
+      let props = DWM_THUMBNAIL_PROPERTIES {
+        dwFlags: DWM_TNP_RECTDESTINATION
+          | DWM_TNP_RECTSOURCE
+          | DWM_TNP_OPACITY
+          | DWM_TNP_VISIBLE
+          | DWM_TNP_SOURCECLIENTAREAONLY,
+        rcDestination: dst_rect,
+        rcSource: src_rect,
+        opacity,
+        fVisible: true.into(),
+        fSourceClientAreaOnly: false.into(),
+        ..Default::default()
+      };
+      // SAFETY: `self.thumbnail` is a valid handle (checked non-zero above).
+      unsafe {
+        let _ =
+          DwmUpdateThumbnailProperties(self.thumbnail, &raw const props);
+      }
+    }
+    self.last_opacity = opacity;
+    self.content_size = (logical_thumb.width(), logical_thumb.height());
+
+    Ok(())
+  }
+
   /// Returns the raw handle of the surrogate overlay window.
   pub fn hwnd(&self) -> HWND {
     HWND(self.hwnd)
