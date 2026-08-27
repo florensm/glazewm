@@ -135,6 +135,25 @@ const WARM_SURROGATE_TTL: Duration = Duration::from_secs(8);
 #[cfg(target_os = "windows")]
 const WARM_SURROGATE_PRUNE_LEN: usize = 16;
 
+/// Inserts `key`/`value` into a TTL-cache `map`, first pruning entries older
+/// than `ttl` once the map has grown to `prune_len`.
+///
+/// Shared by [`AnimationManager`]'s `edge_color_cache` and `warm_surrogates`
+/// maps, which both use this same size-then-age pruning strategy.
+#[cfg(target_os = "windows")]
+fn prune_and_insert<K: std::hash::Hash + Eq, V>(
+  map: &mut HashMap<K, (V, Instant)>,
+  prune_len: usize,
+  ttl: Duration,
+  key: K,
+  value: V,
+) {
+  if map.len() >= prune_len {
+    map.retain(|_, (_, inserted_at)| inserted_at.elapsed() < ttl);
+  }
+  map.insert(key, (value, Instant::now()));
+}
+
 /// Upper bound on the animation timer's effective tick rate, independent of
 /// the animating monitor's real refresh rate.
 ///
@@ -1169,56 +1188,58 @@ impl AnimationManager {
             }
             match ws.style {
               WorkspaceSwitchStyle::Slide => {
+                let monitor_rect = Rect::from_xy(
+                  ws.monitor_x,
+                  ws.monitor_y,
+                  ws.monitor_width,
+                  ws.monitor_height,
+                );
                 match ws.slide_direction {
                   WorkspaceSwitchDirection::Horizontal => {
                     if ws.zoom_factor > 0.0 {
-                      s.update_slide_zoom_horizontal(
+                      s.slide_zoom_axis(
                         &mut ws_batch,
                         eased_final,
                         entry.is_incoming,
                         ws.order_direction,
-                        ws.monitor_x,
-                        ws.monitor_width,
-                        ws.monitor_y,
-                        ws.monitor_height,
+                        &monitor_rect,
                         ws.slide_distance_h,
                         ws.zoom_factor,
+                        false,
                       );
                     } else {
-                      s.update_slide_horizontal(
+                      s.slide_axis(
                         &mut ws_batch,
                         eased_final,
                         entry.is_incoming,
                         ws.order_direction,
-                        ws.monitor_x,
-                        ws.monitor_width,
+                        &monitor_rect,
                         ws.slide_distance_h,
+                        false,
                       );
                     }
                   }
                   WorkspaceSwitchDirection::Vertical => {
                     if ws.zoom_factor > 0.0 {
-                      s.update_slide_zoom_vertical(
+                      s.slide_zoom_axis(
                         &mut ws_batch,
                         eased_final,
                         entry.is_incoming,
                         ws.order_direction,
-                        ws.monitor_x,
-                        ws.monitor_width,
-                        ws.monitor_y,
-                        ws.monitor_height,
+                        &monitor_rect,
                         ws.slide_distance_v,
                         ws.zoom_factor,
+                        true,
                       );
                     } else {
-                      s.update_slide_vertical(
+                      s.slide_axis(
                         &mut ws_batch,
                         eased_final,
                         entry.is_incoming,
                         ws.order_direction,
-                        ws.monitor_y,
-                        ws.monitor_height,
+                        &monitor_rect,
                         ws.slide_distance_v,
+                        true,
                       );
                     }
                   }
@@ -2295,12 +2316,13 @@ impl AnimationManager {
   /// indefinitely.
   #[cfg(target_os = "windows")]
   fn remember_edge_color(&mut self, hwnd: isize, color: Color) {
-    if self.edge_color_cache.len() >= EDGE_COLOR_CACHE_PRUNE_LEN {
-      self
-        .edge_color_cache
-        .retain(|_, (_, sampled_at)| sampled_at.elapsed() < EDGE_COLOR_CACHE_TTL);
-    }
-    self.edge_color_cache.insert(hwnd, (color, Instant::now()));
+    prune_and_insert(
+      &mut self.edge_color_cache,
+      EDGE_COLOR_CACHE_PRUNE_LEN,
+      EDGE_COLOR_CACHE_TTL,
+      hwnd,
+      color,
+    );
   }
 
   /// Reclaims a surrogate for `window_id` to reuse instead of building one
@@ -2355,12 +2377,13 @@ impl AnimationManager {
     // show up in z-order queries or alt-tab while sitting idle in the cache.
     surrogate.set_visible(false);
 
-    if self.warm_surrogates.len() >= WARM_SURROGATE_PRUNE_LEN {
-      self
-        .warm_surrogates
-        .retain(|_, (_, stashed_at)| stashed_at.elapsed() < WARM_SURROGATE_TTL);
-    }
-    self.warm_surrogates.insert(window_id, (surrogate, Instant::now()));
+    prune_and_insert(
+      &mut self.warm_surrogates,
+      WARM_SURROGATE_PRUNE_LEN,
+      WARM_SURROGATE_TTL,
+      window_id,
+      surrogate,
+    );
   }
 
   /// Applies all surrogate updates queued during the current redraw pass in
