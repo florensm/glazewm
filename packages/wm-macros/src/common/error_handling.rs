@@ -52,16 +52,9 @@ where
   }
 }
 
-// Very likely to be used in future.
-// TODO: Remove dead code allow
-#[allow(dead_code)]
 pub trait EmitError {
   /// Directly emits a warning message at the span of this object.
   fn emit_warning<D: Into<String>>(&self, message: D);
-  /// Emits a help message at the span of this object.
-  fn emit_help<D: Into<String>>(&self, message: D);
-  /// Emits a note message at the span of this object.
-  fn emit_note<D: Into<String>>(&self, message: D);
 }
 
 impl<T> EmitError for T
@@ -70,13 +63,5 @@ where
 {
   fn emit_warning<D: Into<String>>(&self, message: D) {
     self.span().unwrap().warning(message).emit();
-  }
-
-  fn emit_help<D: Into<String>>(&self, message: D) {
-    self.span().unwrap().help(message).emit();
-  }
-
-  fn emit_note<D: Into<String>>(&self, message: D) {
-    self.span().unwrap().note(message).emit();
   }
 }

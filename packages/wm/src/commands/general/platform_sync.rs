@@ -1,10 +1,11 @@
 use anyhow::Context;
+use itertools::Itertools;
 #[cfg(target_os = "windows")]
 use wm_common::{WindowEffectConfig, WorkspaceSwitchStyle};
 use tracing::{debug, warn};
 use wm_common::{
-  CursorJumpTrigger, DisplayState, HideCorner, HideMethod, UniqueExt,
-  WindowState, WmEvent,
+  CursorJumpTrigger, DisplayState, HideCorner, HideMethod, WindowState,
+  WmEvent,
 };
 #[cfg(target_os = "windows")]
 use wm_platform::NativeWindowWindowsExt;
