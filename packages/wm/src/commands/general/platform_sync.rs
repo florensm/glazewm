@@ -26,8 +26,6 @@ use crate::{
   user_config::UserConfig,
   wm_state::WmState,
 };
-#[cfg(target_os = "windows")]
-use crate::animation::AnimationManager;
 
 /// Returns the smallest iris radius that fully covers the monitor from the
 /// origin — the distance to the farthest monitor corner.
@@ -1701,10 +1699,8 @@ pub(crate) fn upsert_border_overlay(
 /// Mirrors [`blur_overlay_params_for`].
 #[cfg(target_os = "windows")]
 pub(crate) fn border_overlay_params_for(
-  _window_id: uuid::Uuid,
   is_focused: bool,
   config: &UserConfig,
-  _animation_manager: &mut AnimationManager,
 ) -> Option<BorderOverlayParams> {
   let effect_cfg = if is_focused {
     &config.value.window_effects.focused_window
@@ -1801,8 +1797,10 @@ pub(crate) fn overlay_z_anchor(window: &WindowContainer) -> HWND {
 #[cfg(target_os = "windows")]
 trait SyncableOverlay: Sized {
   /// Effect-specific config resolved from `WindowEffectConfig` (tint/blur
-  /// amount for blur, color/width for border).
-  type Params;
+  /// amount for blur, color/width for border). `Copy` so [`sync_overlays`]
+  /// can resolve it once per focus class (focused/other) instead of once
+  /// per window -- see the call site.
+  type Params: Copy;
 
   /// Label used in this overlay kind's debug log messages (e.g. `"Blur"`).
   const LABEL: &'static str;
@@ -1812,17 +1810,15 @@ trait SyncableOverlay: Sized {
     state: &mut WmState,
   ) -> &mut std::collections::HashMap<uuid::Uuid, Self>;
 
-  /// Resolves `window_id`'s params from its focused/other-window config, or
-  /// `None` when this effect isn't enabled for it.
+  /// Resolves the focused/other-window config's params, or `None` when this
+  /// effect isn't enabled for that focus class.
   ///
-  /// `window_id`/`animation_manager` are unused by both current
-  /// implementations, kept only so [`NativeBlurOverlay`] and
-  /// [`NativeBorderOverlay`] share one call signature.
+  /// Depends only on `is_focused` and `config`, not on any particular
+  /// window -- [`sync_overlays`] calls this twice per tick (once per focus
+  /// class) rather than once per window.
   fn params_for(
-    window_id: uuid::Uuid,
     is_focused: bool,
     config: &UserConfig,
-    animation_manager: &mut AnimationManager,
   ) -> Option<Self::Params>;
 
   fn create(
@@ -1849,10 +1845,8 @@ impl SyncableOverlay for NativeBlurOverlay {
   }
 
   fn params_for(
-    _window_id: uuid::Uuid,
     is_focused: bool,
     config: &UserConfig,
-    _animation_manager: &mut AnimationManager,
   ) -> Option<Self::Params> {
     blur_overlay_params_for(is_focused, config)
   }
@@ -1898,12 +1892,10 @@ impl SyncableOverlay for NativeBorderOverlay {
   }
 
   fn params_for(
-    window_id: uuid::Uuid,
     is_focused: bool,
     config: &UserConfig,
-    animation_manager: &mut AnimationManager,
   ) -> Option<Self::Params> {
-    border_overlay_params_for(window_id, is_focused, config, animation_manager)
+    border_overlay_params_for(is_focused, config)
   }
 
   fn create(
@@ -1996,15 +1988,19 @@ fn sync_overlays<O: SyncableOverlay>(
   let redrawing_ids: std::collections::HashSet<_> =
     state.windows_to_redraw().iter().map(CommonGetters::id).collect();
 
+  // `params_for` depends only on `is_focused`, not on any particular
+  // window -- resolved once per focus class here instead of once per
+  // window in the loop below, so a config with a `{ file, key }` color
+  // source pays its `fs::metadata` stat once per tick rather than once
+  // per tracked window.
+  let focused_params = O::params_for(true, config);
+  let other_params = O::params_for(false, config);
+
   for window in &all_windows {
     let is_focused = window.id() == focused_container.id();
 
-    let Some(params) = O::params_for(
-      window.id(),
-      is_focused,
-      config,
-      &mut state.animation_manager,
-    ) else {
+    let Some(params) = (if is_focused { focused_params } else { other_params })
+    else {
       continue;
     };
 

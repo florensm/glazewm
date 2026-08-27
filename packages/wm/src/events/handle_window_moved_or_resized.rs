@@ -90,12 +90,7 @@ pub fn handle_window_moved_or_resized(
         // enabled, since `sync_border_overlays` only re-queries a window's
         // rect when it's queued for redraw, and this window is dequeued for
         // the duration of the drag.
-        if let Some(params) = border_overlay_params_for(
-          window.id(),
-          is_focused,
-          config,
-          &mut state.animation_manager,
-        ) {
+        if let Some(params) = border_overlay_params_for(is_focused, config) {
           upsert_border_overlay(
             &mut state.border_overlays,
             window.id(),
