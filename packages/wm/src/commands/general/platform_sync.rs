@@ -8,6 +8,8 @@ use wm_common::{
 };
 #[cfg(target_os = "windows")]
 use wm_platform::NativeWindowWindowsExt;
+#[cfg(target_os = "windows")]
+use std::time::{Duration, Instant};
 
 #[cfg(target_os = "windows")]
 use wm_platform::{
@@ -1284,6 +1286,14 @@ fn redraw_containers(
   Ok(())
 }
 
+/// Above this duration, `reposition_window`'s synchronous (non-`ASYNCWINDOWPOS`)
+/// `SetWindowPos`/restore/minimize/maximize sequence is logged as a warning.
+/// See its `has_surrogate` doc comment for why this path can block on a slow
+/// app's message queue. Mirrors `wm_platform::resize_session`'s
+/// `SLOW_SYNC_SETWINDOWPOS_THRESHOLD`.
+#[cfg(target_os = "windows")]
+const SLOW_SYNC_REPOSITION_THRESHOLD: Duration = Duration::from_millis(8);
+
 fn reposition_window(
   window: &WindowContainer,
   rect: &Rect,
@@ -1380,6 +1390,7 @@ fn reposition_window(
       let mut swp_flags = SWP_NOACTIVATE
         | SWP_NOSENDCHANGING
         | if has_surrogate { Default::default() } else { SWP_ASYNCWINDOWPOS };
+      let sync_reposition_start = has_surrogate.then(Instant::now);
 
       match &window.state() {
         WindowState::Minimized => {
@@ -1421,6 +1432,18 @@ fn reposition_window(
             _ = window.native().reassert_transparency();
             window.set_has_pending_dpi_adjustment(false);
           }
+        }
+      }
+
+      if let Some(start) = sync_reposition_start {
+        let elapsed = start.elapsed();
+        if elapsed > SLOW_SYNC_REPOSITION_THRESHOLD {
+          tracing::warn!(
+            "Synchronous reposition for {window} took {elapsed:?} -- \
+             likely blocked on the target process's message queue, \
+             stalling the whole WM main loop for that long (see \
+             SLOW_SYNC_REPOSITION_THRESHOLD's doc comment)."
+          );
         }
       }
 

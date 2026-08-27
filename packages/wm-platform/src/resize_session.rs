@@ -1,4 +1,7 @@
-use std::collections::HashMap;
+use std::{
+  collections::HashMap,
+  time::{Duration, Instant},
+};
 
 use windows::Win32::{
   Foundation::{HWND, RECT},
@@ -22,6 +25,19 @@ use windows::Win32::{
 /// sampled backdrop and the (fallback) edge-extension thumbnails read from
 /// the same source strip.
 const EDGE_SAMPLE_INSET: i32 = 4;
+
+/// Above this duration, a synchronous `SetWindowPos` call to a real (not
+/// cloaked/surrogate) app window is logged as a warning.
+///
+/// `pre_commit`'s final move omits `SWP_ASYNCWINDOWPOS` as a correctness
+/// guarantee, which means it blocks the calling thread -- the WM's single
+/// async main loop -- until the target process's message queue processes
+/// the resize. Apps with a busy main thread (observed with Electron/
+/// Chromium-based apps) can take much longer here than a lightweight native
+/// app, stalling all mouse/keybinding/IPC handling for the duration. This
+/// threshold is set low enough to catch that without false-alarming on
+/// ordinary scheduling jitter.
+const SLOW_SYNC_SETWINDOWPOS_THRESHOLD: Duration = Duration::from_millis(8);
 
 use crate::{
   native_surrogate::to_logical, BlurOverlayParams, BorderOverlayParams,
@@ -917,6 +933,7 @@ impl ResizeSession {
     ) == self.target_rect;
 
     if !already_at_target {
+      let sync_start = Instant::now();
       // SAFETY: `HWND(self.hwnd)` is valid (verified above). `SWP_NOZORDER`
       // makes `hWndInsertAfter` irrelevant.
       unsafe {
@@ -928,6 +945,16 @@ impl ResizeSession {
           self.target_rect.width(),
           self.target_rect.height(),
           SWP_NOACTIVATE | SWP_NOSENDCHANGING | SWP_NOZORDER,
+        );
+      }
+      let elapsed = sync_start.elapsed();
+      if elapsed > SLOW_SYNC_SETWINDOWPOS_THRESHOLD {
+        tracing::warn!(
+          "ResizeSession::pre_commit's synchronous SetWindowPos for hwnd \
+           {:#x} took {elapsed:?} -- likely blocked on the target \
+           process's message queue, stalling the whole WM main loop for \
+           that long (see SLOW_SYNC_SETWINDOWPOS_THRESHOLD's doc comment).",
+          self.hwnd,
         );
       }
     }
