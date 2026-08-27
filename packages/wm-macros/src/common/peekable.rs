@@ -8,12 +8,11 @@
 // as a type. This allows peeking to work nicer with generics.
 
 pub mod prelude {
-  pub use super::{Peekable, TPeek};
+  pub use super::TPeek;
 }
 
 /// Trait for any stream that can peek at the next token.
 pub trait PeekableStream {
-  fn is_empty(&self) -> bool;
   fn peek<T: syn::parse::Peek>(&self, token: T) -> bool;
 }
 
@@ -21,45 +20,26 @@ impl PeekableStream for &syn::parse::ParseStream<'_> {
   fn peek<T: syn::parse::Peek>(&self, token: T) -> bool {
     (*self).peek(token)
   }
-  fn is_empty(&self) -> bool {
-    (*self).is_empty()
-  }
 }
 
 impl PeekableStream for syn::parse::ParseStream<'_> {
   fn peek<T: syn::parse::Peek>(&self, token: T) -> bool {
     (*self).peek(token)
   }
-
-  fn is_empty(&self) -> bool {
-    (*self).is_empty()
-  }
 }
 impl PeekableStream for syn::parse::ParseBuffer<'_> {
   fn peek<T: syn::parse::Peek>(&self, token: T) -> bool {
     self.peek(token)
-  }
-
-  fn is_empty(&self) -> bool {
-    self.is_empty()
   }
 }
 impl PeekableStream for syn::parse::Lookahead1<'_> {
   fn peek<T: syn::parse::Peek>(&self, token: T) -> bool {
     self.peek(token)
   }
-
-  fn is_empty(&self) -> bool {
-    self.peek(syn::parse::End)
-  }
 }
 impl PeekableStream for &syn::parse::Lookahead1<'_> {
   fn peek<T: syn::parse::Peek>(&self, token: T) -> bool {
     (*self).peek(token)
-  }
-
-  fn is_empty(&self) -> bool {
-    (*self).peek(syn::parse::End)
   }
 }
 
@@ -183,106 +163,3 @@ macro_rules! impl_syn_peek {
 }
 
 impl_syn_peek!(syn::Ident);
-impl_syn_peek!(syn::LitStr);
-// TODO: Other syn types
-
-// Copied from syn::Token!
-impl_syn_peek!(syn::Token![abstract]);
-impl_syn_peek!(syn::Token![as]);
-impl_syn_peek!(syn::Token![async]);
-impl_syn_peek!(syn::Token![auto]);
-impl_syn_peek!(syn::Token![await]);
-impl_syn_peek!(syn::Token![become]);
-impl_syn_peek!(syn::Token![box]);
-impl_syn_peek!(syn::Token![break]);
-impl_syn_peek!(syn::Token![const]);
-impl_syn_peek!(syn::Token![continue]);
-impl_syn_peek!(syn::Token![crate]);
-impl_syn_peek!(syn::Token![default]);
-impl_syn_peek!(syn::Token![do]);
-impl_syn_peek!(syn::Token![dyn]);
-impl_syn_peek!(syn::Token![else]);
-impl_syn_peek!(syn::Token![enum]);
-impl_syn_peek!(syn::Token![extern]);
-impl_syn_peek!(syn::Token![final]);
-impl_syn_peek!(syn::Token![fn]);
-impl_syn_peek!(syn::Token![for]);
-impl_syn_peek!(syn::Token![if]);
-impl_syn_peek!(syn::Token![impl]);
-impl_syn_peek!(syn::Token![in]);
-impl_syn_peek!(syn::Token![let]);
-impl_syn_peek!(syn::Token![loop]);
-impl_syn_peek!(syn::Token![macro]);
-impl_syn_peek!(syn::Token![match]);
-impl_syn_peek!(syn::Token![mod]);
-impl_syn_peek!(syn::Token![move]);
-impl_syn_peek!(syn::Token![mut]);
-impl_syn_peek!(syn::Token![override]);
-impl_syn_peek!(syn::Token![priv]);
-impl_syn_peek!(syn::Token![pub]);
-impl_syn_peek!(syn::Token![ref]);
-impl_syn_peek!(syn::Token![return]);
-impl_syn_peek!(syn::Token![Self]);
-impl_syn_peek!(syn::Token![self]);
-impl_syn_peek!(syn::Token![static]);
-impl_syn_peek!(syn::Token![struct]);
-impl_syn_peek!(syn::Token![super]);
-impl_syn_peek!(syn::Token![trait]);
-impl_syn_peek!(syn::Token![try]);
-impl_syn_peek!(syn::Token![type]);
-impl_syn_peek!(syn::Token![typeof]);
-impl_syn_peek!(syn::Token![union]);
-impl_syn_peek!(syn::Token![unsafe]);
-impl_syn_peek!(syn::Token![unsized]);
-impl_syn_peek!(syn::Token![use]);
-impl_syn_peek!(syn::Token![virtual]);
-impl_syn_peek!(syn::Token![where]);
-impl_syn_peek!(syn::Token![while]);
-impl_syn_peek!(syn::Token![yield]);
-impl_syn_peek!(syn::Token![&]);
-impl_syn_peek!(syn::Token![&&]);
-impl_syn_peek!(syn::Token![&=]);
-impl_syn_peek!(syn::Token![@]);
-impl_syn_peek!(syn::Token![^]);
-impl_syn_peek!(syn::Token![^=]);
-impl_syn_peek!(syn::Token![:]);
-impl_syn_peek!(syn::Token![,]);
-impl_syn_peek!(syn::Token![$]);
-impl_syn_peek!(syn::Token![.]);
-impl_syn_peek!(syn::Token![..]);
-impl_syn_peek!(syn::Token![...]);
-impl_syn_peek!(syn::Token![..=]);
-impl_syn_peek!(syn::Token![=]);
-impl_syn_peek!(syn::Token![==]);
-impl_syn_peek!(syn::Token![=>]);
-impl_syn_peek!(syn::Token![>=]);
-impl_syn_peek!(syn::Token![>]);
-impl_syn_peek!(syn::Token![<-]);
-impl_syn_peek!(syn::Token![<=]);
-impl_syn_peek!(syn::Token![<]);
-impl_syn_peek!(syn::Token![-]);
-impl_syn_peek!(syn::Token![-=]);
-impl_syn_peek!(syn::Token![!=]);
-impl_syn_peek!(syn::Token![!]);
-impl_syn_peek!(syn::Token![|]);
-impl_syn_peek!(syn::Token![|=]);
-impl_syn_peek!(syn::Token![||]);
-impl_syn_peek!(syn::Token![::]);
-impl_syn_peek!(syn::Token![%]);
-impl_syn_peek!(syn::Token![%=]);
-impl_syn_peek!(syn::Token![+]);
-impl_syn_peek!(syn::Token![+=]);
-impl_syn_peek!(syn::Token![#]);
-impl_syn_peek!(syn::Token![?]);
-impl_syn_peek!(syn::Token![->]);
-impl_syn_peek!(syn::Token![;]);
-impl_syn_peek!(syn::Token![<<]);
-impl_syn_peek!(syn::Token![<<=]);
-impl_syn_peek!(syn::Token![>>]);
-impl_syn_peek!(syn::Token![>>=]);
-impl_syn_peek!(syn::Token![/]);
-impl_syn_peek!(syn::Token![/=]);
-impl_syn_peek!(syn::Token![*]);
-impl_syn_peek!(syn::Token![*=]);
-impl_syn_peek!(syn::Token![~]);
-impl_syn_peek!(syn::Token![_]);
