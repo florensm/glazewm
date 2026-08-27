@@ -4,7 +4,6 @@ use std::{
 };
 
 use ambassador::Delegate;
-use enum_as_inner::EnumAsInner;
 use uuid::Uuid;
 use wm_common::{
   ActiveDrag, ContainerDto, DisplayState, GapsConfig, TilingDirection,
@@ -58,19 +57,12 @@ use crate::{
 ///   let container: Container = direction.into(); // Will be a `Container::Split`
 /// }
 /// ```
-#[derive(
-  Clone,
-  Debug,
-  EnumAsInner,
-  wm_macros::EnumFromInner,
-  Delegate,
-  wm_macros::SubEnum,
-)]
+#[derive(Clone, Debug, wm_macros::EnumFromInner, Delegate, wm_macros::SubEnum)]
 #[delegate(CommonGetters)]
 #[delegate(PositionGetters)]
 #[subenum(defaults, {
   /// Subenum of [Container]
-  #[derive(Clone, Debug, EnumAsInner, Delegate, wm_macros::EnumFromInner)]
+  #[derive(Clone, Debug, Delegate, wm_macros::EnumFromInner)]
   #[delegate(CommonGetters)]
   #[delegate(PositionGetters)]
 })]
@@ -116,6 +108,63 @@ impl PartialEq for Container {
 
 impl Eq for Container {}
 
+impl Container {
+  /// Returns `true` if this is a `Container::TilingWindow`.
+  #[must_use]
+  pub fn is_tiling_window(&self) -> bool {
+    matches!(self, Self::TilingWindow(_))
+  }
+
+  /// Returns `true` if this is a `Container::Split`.
+  #[must_use]
+  pub fn is_split(&self) -> bool {
+    matches!(self, Self::Split(_))
+  }
+
+  /// Returns `true` if this is a `Container::Workspace`.
+  #[must_use]
+  pub fn is_workspace(&self) -> bool {
+    matches!(self, Self::Workspace(_))
+  }
+
+  /// Returns the inner `SplitContainer` if this is a `Container::Split`.
+  #[must_use]
+  pub fn as_split(&self) -> Option<&SplitContainer> {
+    match self {
+      Self::Split(split) => Some(split),
+      _ => None,
+    }
+  }
+
+  /// Returns the inner `Workspace` if this is a `Container::Workspace`.
+  #[must_use]
+  pub fn as_workspace(&self) -> Option<&Workspace> {
+    match self {
+      Self::Workspace(workspace) => Some(workspace),
+      _ => None,
+    }
+  }
+
+  /// Returns the inner `Monitor` if this is a `Container::Monitor`.
+  #[must_use]
+  pub fn as_monitor(&self) -> Option<&Monitor> {
+    match self {
+      Self::Monitor(monitor) => Some(monitor),
+      _ => None,
+    }
+  }
+
+  /// Returns the inner `NonTilingWindow` if this is a
+  /// `Container::NonTilingWindow`.
+  #[must_use]
+  pub fn as_non_tiling_window(&self) -> Option<&NonTilingWindow> {
+    match self {
+      Self::NonTilingWindow(window) => Some(window),
+      _ => None,
+    }
+  }
+}
+
 impl PartialEq for TilingContainer {
   fn eq(&self, other: &Self) -> bool {
     self.id() == other.id()
@@ -124,6 +173,14 @@ impl PartialEq for TilingContainer {
 
 impl Eq for TilingContainer {}
 
+impl TilingContainer {
+  /// Returns `true` if this is a `TilingContainer::TilingWindow`.
+  #[must_use]
+  pub fn is_tiling_window(&self) -> bool {
+    matches!(self, Self::TilingWindow(_))
+  }
+}
+
 impl PartialEq for WindowContainer {
   fn eq(&self, other: &Self) -> bool {
     self.id() == other.id()
@@ -131,6 +188,24 @@ impl PartialEq for WindowContainer {
 }
 
 impl Eq for WindowContainer {}
+
+impl WindowContainer {
+  /// Returns `true` if this is a `WindowContainer::TilingWindow`.
+  #[must_use]
+  pub fn is_tiling_window(&self) -> bool {
+    matches!(self, Self::TilingWindow(_))
+  }
+
+  /// Returns the inner `NonTilingWindow` if this is a
+  /// `WindowContainer::NonTilingWindow`.
+  #[must_use]
+  pub fn as_non_tiling_window(&self) -> Option<&NonTilingWindow> {
+    match self {
+      Self::NonTilingWindow(window) => Some(window),
+      Self::TilingWindow(_) => None,
+    }
+  }
+}
 
 impl std::fmt::Display for WindowContainer {
   fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -178,6 +253,14 @@ impl PartialEq for DirectionContainer {
 }
 
 impl Eq for DirectionContainer {}
+
+impl DirectionContainer {
+  /// Returns `true` if this is a `DirectionContainer::Workspace`.
+  #[must_use]
+  pub fn is_workspace(&self) -> bool {
+    matches!(self, Self::Workspace(_))
+  }
+}
 
 /// Implements the `Debug` trait for a given container struct.
 ///
