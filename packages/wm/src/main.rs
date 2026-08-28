@@ -311,7 +311,10 @@ async fn start_wm(
 
 /// Initialize logging with the specified verbosity level.
 ///
-/// Error logs are saved to `~/.glzr/glazewm/errors.log`.
+/// Error and warning logs are saved to `~/.glzr/glazewm/errors.log`. `WARN`
+/// is included (not just `ERROR`) so perf-diagnostic warnings (e.g. slow
+/// synchronous window repositions) are captured even when the WM is running
+/// detached from a terminal, without needing `-v` for the full `DEBUG` firehose.
 fn setup_logging(verbosity: &Verbosity) -> anyhow::Result<()> {
   let error_log_dir = home::home_dir()
     .context("Unable to get home directory.")?
@@ -329,7 +332,7 @@ fn setup_logging(verbosity: &Verbosity) -> anyhow::Result<()> {
     .with(
       // Output to error log file.
       fmt::Layer::new()
-        .with_writer(error_writer.with_max_level(Level::ERROR)),
+        .with_writer(error_writer.with_max_level(Level::WARN)),
     );
 
   tracing::subscriber::set_global_default(subscriber)?;
