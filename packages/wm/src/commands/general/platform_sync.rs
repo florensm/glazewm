@@ -1355,7 +1355,7 @@ fn reposition_window(
     #[cfg(target_os = "windows")]
     {
       use wm_platform::{
-        SWP_ASYNCWINDOWPOS, SWP_FRAMECHANGED, SWP_NOACTIVATE,
+        SWP_ASYNCWINDOWPOS, SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOCOPYBITS,
         SWP_NOSENDCHANGING, WS_MAXIMIZEBOX,
       };
 
@@ -1388,9 +1388,22 @@ fn reposition_window(
       // position in lock-step with surrogate overlays (which update DWM
       // directly via `UpdateLayeredWindow`), closing the blank gap that
       // appears when async repositioning lags one frame behind the surrogate.
+      //
+      // `SWP_NOCOPYBITS` is only added for that same surrogate case: without
+      // it, DWM can briefly show the window's old bitmap stretched/offset
+      // over the new rect for one frame while it catches up to the
+      // surrogate. Applying it unconditionally would force a full repaint
+      // on every reposition -- including live interactive drag-resizing and
+      // plain sibling-window reflows that never had a surrogate or a gap to
+      // close -- which is needless repaint cost on the target app's own
+      // thread and a real source of resize/move lag.
       let mut swp_flags = SWP_NOACTIVATE
         | SWP_NOSENDCHANGING
-        | if has_surrogate { Default::default() } else { SWP_ASYNCWINDOWPOS };
+        | if has_surrogate {
+          SWP_NOCOPYBITS
+        } else {
+          SWP_ASYNCWINDOWPOS
+        };
       let sync_reposition_start = has_surrogate.then(Instant::now);
 
       match &window.state() {
