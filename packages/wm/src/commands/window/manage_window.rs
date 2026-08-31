@@ -27,7 +27,7 @@ pub fn manage_window(
   config: &mut UserConfig,
 ) -> anyhow::Result<()> {
   let Some(native_properties) =
-    check_is_manageable(&native_window).unwrap_or(None)
+    check_is_manageable(&native_window, config).unwrap_or(None)
   else {
     return Ok(());
   };
@@ -116,13 +116,26 @@ pub fn manage_window(
 
 /// Checks if a window is manageable and retrieves its native properties.
 ///
+/// Windows matched by a `force-manage` window rule skip the built-in
+/// manageability checks (visibility is still required).
+///
 /// Returns `Ok(Some(properties))` if the window is manageable and its
 /// properties were retrieved successfully.
 fn check_is_manageable(
   native_window: &NativeWindow,
+  config: &UserConfig,
 ) -> anyhow::Result<Option<NativeWindowProperties>> {
   if !native_window.is_visible()? {
     return Ok(None);
+  }
+
+  // Ensure window has a valid process name, title, etc.
+  let native_properties = NativeWindowProperties::try_from(native_window)?;
+
+  // Bypass the checks below for windows matched by a `force-manage`
+  // window rule.
+  if config.is_force_managed(&native_properties) {
+    return Ok(Some(native_properties));
   }
 
   #[cfg(target_os = "macos")]
@@ -133,12 +146,12 @@ fn check_is_manageable(
       && native_window.subrole()? == "AXStandardWindow";
 
     if !is_standard_window {
+      tracing::debug!(
+        "Skipping non-standard window: {native_properties:?}"
+      );
       return Ok(None);
     }
   }
-
-  // Ensure window has a valid process name, title, etc.
-  let native_properties = NativeWindowProperties::try_from(native_window)?;
 
   #[cfg(target_os = "windows")]
   {
@@ -147,33 +160,31 @@ fn check_is_manageable(
       WS_EX_TOOLWINDOW,
     };
 
-    // TODO: Temporary fix for managing Flow Launcher until a force manage
-    // command is added.
-    let is_flow_launcher = native_properties.process_name
-      == "Flow.Launcher"
-      && native_properties.title == "Flow.Launcher";
+    // Ensure window is top-level (i.e. not a child window). Ignore
+    // windows that cannot be focused or if they're unavailable in
+    // task switcher (alt+tab menu).
+    if native_window.has_window_style(WS_CHILD)
+      || native_window
+        .has_window_style_ex(WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW)
+    {
+      tracing::debug!(
+        "Skipping window with unmanageable styles (candidate for a `force-manage` rule): {native_properties:?}"
+      );
+      return Ok(None);
+    }
 
-    if !is_flow_launcher {
-      // Ensure window is top-level (i.e. not a child window). Ignore
-      // windows that cannot be focused or if they're unavailable in
-      // task switcher (alt+tab menu).
-      if native_window.has_window_style(WS_CHILD)
-        || native_window
-          .has_window_style_ex(WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW)
-      {
-        return Ok(None);
-      }
-
-      // Some applications spawn top-level windows for menus that
-      // should be ignored. This includes the autocomplete popup in
-      // Notepad++ and title bar menu in Keepass. Although not
-      // foolproof, these can typically be identified by having an
-      // owner window and no title bar.
-      if native_window.has_owner_window()
-        && !native_window.has_window_style(WS_CAPTION)
-      {
-        return Ok(None);
-      }
+    // Some applications spawn top-level windows for menus that
+    // should be ignored. This includes the autocomplete popup in
+    // Notepad++ and title bar menu in Keepass. Although not
+    // foolproof, these can typically be identified by having an
+    // owner window and no title bar.
+    if native_window.has_owner_window()
+      && !native_window.has_window_style(WS_CAPTION)
+    {
+      tracing::debug!(
+        "Skipping owned window without caption (candidate for a `force-manage` rule): {native_properties:?}"
+      );
+      return Ok(None);
     }
   }
 

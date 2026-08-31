@@ -451,6 +451,9 @@ impl WindowManager {
 
         Ok(())
       }
+      // No-op at runtime. `force-manage` is a marker that is evaluated
+      // before a window is managed (see `check_is_manageable`).
+      InvokeCommand::ForceManage => Ok(()),
       InvokeCommand::Ignore => {
         match subject_container.as_window_container() {
           Ok(window) => ignore_window(window, state),

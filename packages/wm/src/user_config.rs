@@ -7,7 +7,9 @@ use wm_common::{
 };
 
 use crate::{
-  models::{Monitor, WindowContainer, Workspace},
+  models::{
+    Monitor, NativeWindowProperties, WindowContainer, Workspace,
+  },
   traits::{CommonGetters, WindowGetters},
 };
 
@@ -83,7 +85,7 @@ impl UserConfig {
       config_path.parent().context("Invalid config path.")?;
 
     fs::create_dir_all(parent_dir).with_context(|| {
-      format!("Unable to create directory {}.", &config_path.display())
+      format!("Unable to create directory {}.", config_path.display())
     })?;
 
     fs::write(config_path, SAMPLE_CONFIG).with_context(|| {
@@ -224,64 +226,83 @@ impl UserConfig {
     window: &WindowContainer,
     event: &WindowRuleEvent,
   ) -> Vec<WindowRuleConfig> {
-    let window_title = window.native_properties().title;
-    #[cfg(target_os = "windows")]
-    let window_class = window.native_properties().class_name;
-    let window_process = window.native_properties().process_name;
+    let native_properties = window.native_properties();
 
-    let pending_window_rules = self
+    self
       .window_rules_by_event
       .get(event)
       .unwrap_or(&Vec::new())
       .iter()
       .filter(|rule| {
         // Skip if window has already ran the rule.
-        if window.done_window_rules().contains(rule) {
-          return false;
-        }
-
-        // Check if the window matches the rule.
-        rule.match_window.iter().any(|match_config| {
-          let is_process_match = match_config
-            .window_process
-            .as_ref()
-            .is_none_or(|match_type| {
-              // TODO: Temp fix for matching Zebar on both platforms with
-              // the same process name. Consider using lowercase for every
-              // `equals` match type.
-              if window_process == "Zebar" {
-                match_type.is_match("Zebar")
-                  || match_type.is_match("zebar")
-              } else {
-                match_type.is_match(&window_process)
-              }
-            });
-
-          let is_class_match = {
-            #[cfg(target_os = "windows")]
-            {
-              match_config.window_class.as_ref().is_none_or(|match_type| {
-                match_type.is_match(&window_class)
-              })
-            }
-            #[cfg(not(target_os = "windows"))]
-            {
-              match_config.window_class.is_none()
-            }
-          };
-
-          let is_title_match = match_config
-            .window_title
-            .as_ref()
-            .is_none_or(|match_type| match_type.is_match(&window_title));
-
-          is_process_match && is_class_match && is_title_match
-        })
+        !window.done_window_rules().contains(rule)
+          && Self::rule_matches(rule, &native_properties)
       })
       .cloned()
-      .collect::<Vec<_>>();
+      .collect()
+  }
 
-    pending_window_rules
+  /// Whether a window with the given native properties is matched by a
+  /// `force-manage` window rule on the `manage` event.
+  ///
+  /// Used to bypass the built-in manageability checks before the window
+  /// enters the window rule pipeline.
+  pub fn is_force_managed(
+    &self,
+    properties: &NativeWindowProperties,
+  ) -> bool {
+    self
+      .window_rules_by_event
+      .get(&WindowRuleEvent::Manage)
+      .is_some_and(|rules| {
+        rules.iter().any(|rule| {
+          rule.commands.contains(&InvokeCommand::ForceManage)
+            && Self::rule_matches(rule, properties)
+        })
+      })
+  }
+
+  /// Whether a window with the given native properties matches any of
+  /// the window rule's match configs.
+  fn rule_matches(
+    rule: &WindowRuleConfig,
+    properties: &NativeWindowProperties,
+  ) -> bool {
+    rule.match_window.iter().any(|match_config| {
+      let is_process_match = match_config
+        .window_process
+        .as_ref()
+        .is_none_or(|match_type| {
+          // TODO: Temp fix for matching Zebar on both platforms with
+          // the same process name. Consider using lowercase for every
+          // `equals` match type.
+          if properties.process_name == "Zebar" {
+            match_type.is_match("Zebar") || match_type.is_match("zebar")
+          } else {
+            match_type.is_match(&properties.process_name)
+          }
+        });
+
+      let is_class_match = {
+        #[cfg(target_os = "windows")]
+        {
+          match_config.window_class.as_ref().is_none_or(|match_type| {
+            match_type.is_match(&properties.class_name)
+          })
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+          match_config.window_class.is_none()
+        }
+      };
+
+      let is_title_match = match_config
+        .window_title
+        .as_ref()
+        .is_none_or(|match_type| match_type.is_match(&properties.title));
+
+      is_process_match && is_class_match && is_title_match
+    })
   }
 
   pub fn inactive_workspace_configs(
@@ -382,9 +403,9 @@ impl UserConfig {
 #[cfg(test)]
 mod tests {
   use wm_common::{ParsedConfig, WindowTransitionStyle, WorkspaceSwitchStyle};
-  use wm_platform::BackdropStyle;
+  use wm_platform::{BackdropStyle, Rect};
 
-  use super::SAMPLE_CONFIG;
+  use super::*;
 
   /// The bundled sample config (which uses the `type` key for animation
   /// transition types) must always parse.
@@ -466,5 +487,105 @@ window_effects:
       config.window_effects.focused_window.backdrop.style,
       BackdropStyle::Mica
     );
+  }
+
+  /// Creates `NativeWindowProperties` with the given process name and
+  /// title for testing.
+  fn test_properties(
+    process_name: &str,
+    title: &str,
+  ) -> NativeWindowProperties {
+    NativeWindowProperties {
+      title: title.to_string(),
+      #[cfg(target_os = "windows")]
+      class_name: "TestClass".to_string(),
+      process_name: process_name.to_string(),
+      frame: Rect::from_ltrb(0, 0, 100, 100),
+      is_minimized: false,
+      is_maximized: false,
+      is_resizable: true,
+      #[cfg(target_os = "windows")]
+      shadow_borders: wm_platform::RectDelta::zero(),
+    }
+  }
+
+  /// Creates a `UserConfig` with the given window rules for testing.
+  fn test_config(window_rules: Vec<WindowRuleConfig>) -> UserConfig {
+    let config_value = ParsedConfig {
+      window_rules,
+      ..ParsedConfig::default()
+    };
+
+    UserConfig {
+      path: PathBuf::new(),
+      window_rules_by_event: UserConfig::window_rules_by_event(
+        &config_value,
+      ),
+      value: config_value,
+      value_str: String::new(),
+    }
+  }
+
+  /// Creates a window rule with the given command matching the given
+  /// process name.
+  fn test_rule(
+    command: InvokeCommand,
+    process_name: &str,
+  ) -> WindowRuleConfig {
+    WindowRuleConfig {
+      commands: vec![command],
+      match_window: vec![WindowMatchConfig {
+        window_process: Some(MatchType::Equals {
+          equals: process_name.to_string(),
+        }),
+        ..WindowMatchConfig::default()
+      }],
+      on: vec![WindowRuleEvent::Manage],
+      run_once: true,
+    }
+  }
+
+  #[test]
+  fn force_manage_rule_matches_window() {
+    let config = test_config(vec![test_rule(
+      InvokeCommand::ForceManage,
+      "my-launcher",
+    )]);
+
+    assert!(
+      config.is_force_managed(&test_properties("my-launcher", "Launcher"))
+    );
+  }
+
+  #[test]
+  fn non_matching_window_is_not_force_managed() {
+    let config = test_config(vec![test_rule(
+      InvokeCommand::ForceManage,
+      "my-launcher",
+    )]);
+
+    assert!(
+      !config.is_force_managed(&test_properties("other-app", "Other"))
+    );
+  }
+
+  #[test]
+  fn matching_rule_without_force_manage_command_is_skipped() {
+    let config =
+      test_config(vec![test_rule(InvokeCommand::Ignore, "my-launcher")]);
+
+    assert!(
+      !config.is_force_managed(&test_properties("my-launcher", "Launcher"))
+    );
+  }
+
+  #[test]
+  fn no_windows_are_force_managed_by_default() {
+    let config = test_config(Vec::new());
+
+    assert!(!config.is_force_managed(&test_properties(
+      "Flow.Launcher",
+      "Flow.Launcher"
+    )));
   }
 }
