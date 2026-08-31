@@ -365,14 +365,6 @@ pub struct InvokeMoveCursorCommand {
 
 #[derive(Args, Clone, Debug, PartialEq, Serialize)]
 #[group(required = true, multiple = false)]
-pub struct InvokeMoveCursorCommand {
-  /// Move the cursor to the center of the currently focused window.
-  #[clap(long)]
-  pub direction: Option<Direction>,
-}
-
-#[derive(Args, Clone, Debug, PartialEq, Serialize)]
-#[group(required = true, multiple = false)]
 #[allow(clippy::struct_excessive_bools)]
 pub struct InvokeMoveCommand {
   /// Direction to move the window.
