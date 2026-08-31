@@ -1,5 +1,6 @@
 use std::{
   collections::HashMap,
+  sync::{Arc, Mutex},
   time::{Duration, Instant},
 };
 
@@ -371,23 +372,16 @@ impl ResizeSession {
     // overlay's live blur/tint/saturation is what actually shows through the
     // gap, at the cost of the gap no longer sampling the app's own color.
     //
-    // Otherwise skipped when the caller supplies a cached color — the sample
-    // costs two GPU→CPU `BitBlt` readbacks, which stack up when a relayout
-    // begins many sessions in the same keypress. Falls back to transparent
-    // (no backdrop) when sampling fails.
-    let edge_color = if options.blur_overlay.is_some() {
-      None
-    } else {
-      options.edge_color.or_else(|| {
-        let logical_src = to_logical(source_rect, &border_inset);
-        sample_edge_color(
-          logical_src.x(),
-          logical_src.y(),
-          logical_src.width(),
-          logical_src.height(),
-        )
-      })
-    };
+    // Otherwise falls back to transparent (no backdrop) when the caller has
+    // no cached color -- this never samples inline. The two-`BitBlt` GPU->CPU
+    // readback used to run synchronously right here, stalling the WM's single
+    // main thread for tens of milliseconds per window on the first resize of
+    // a burst (measured: 26-114ms per call). Callers now warm the cache in
+    // the background instead -- see `sample_edge_color_async` -- so a cache
+    // miss just means one animation plays with a transparent gap instead of
+    // blocking the keypress that started it.
+    let edge_color =
+      if options.blur_overlay.is_some() { None } else { options.edge_color };
 
     let insert_after = if options.place_at_top { HWND(0) } else { hwnd };
     // Thumbnail registered at source dims for all directions (see doc
@@ -1258,6 +1252,59 @@ impl ResizeSession {
 
     Ok(())
   }
+}
+
+/// Shared cache of recently sampled surrogate backdrop colors, keyed by
+/// window handle. Mirrors the shape `AnimationManager` stores on the WM's
+/// main thread; wrapped in `Arc<Mutex<_>>` so [`sample_edge_color_async`]'s
+/// background thread can insert into the same map the main thread reads
+/// from, without routing the result back through the event loop.
+pub type EdgeColorCache = Arc<Mutex<HashMap<isize, (Color, Instant)>>>;
+
+/// Samples `hwnd`'s surrogate backdrop color on a background thread and
+/// inserts it into `cache` once ready, instead of blocking the caller.
+///
+/// [`ResizeSession::begin_impl`] used to run this sample synchronously on
+/// the WM's single main thread the first time a window needed a backdrop
+/// color, stalling every other window's redraw (and keybinding processing)
+/// behind it for the duration of the two-`BitBlt` GPU->CPU readback --
+/// measured at 26-114ms per call. Callers now pass `None` for
+/// `SessionOptions::edge_color` on a cache miss (accepting a transparent
+/// backdrop for *this* session) and call this instead to warm the cache for
+/// the window's *next* session. No-op if sampling fails (e.g. the window is
+/// too small to sample).
+///
+/// `prune_len`/`ttl` mirror the caller's own cache-eviction policy (e.g.
+/// `AnimationManager`'s `EDGE_COLOR_CACHE_PRUNE_LEN`/`EDGE_COLOR_CACHE_TTL`)
+/// -- pruning happens here, on the background thread, rather than on the
+/// caller's next synchronous insert.
+#[cfg(target_os = "windows")]
+pub fn sample_edge_color_async(
+  hwnd: HWND,
+  source_rect: &Rect,
+  cache: EdgeColorCache,
+  prune_len: usize,
+  ttl: Duration,
+) {
+  let border_inset = compute_border_inset(hwnd);
+  let logical_src = to_logical(source_rect, &border_inset);
+  let (x, y, w, h) = (
+    logical_src.x(),
+    logical_src.y(),
+    logical_src.width(),
+    logical_src.height(),
+  );
+  let hwnd_raw = hwnd.0;
+  tokio::task::spawn_blocking(move || {
+    if let Some(color) = sample_edge_color(x, y, w, h) {
+      if let Ok(mut map) = cache.lock() {
+        if map.len() >= prune_len {
+          map.retain(|_, (_, inserted_at)| inserted_at.elapsed() < ttl);
+        }
+        map.insert(hwnd_raw, (color, Instant::now()));
+      }
+    }
+  });
 }
 
 /// Samples the dominant background color near the trailing content edge by

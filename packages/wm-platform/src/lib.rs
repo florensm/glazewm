@@ -49,7 +49,9 @@ pub use native_surrogate::{NativeSurrogate, SurrogateBatch};
 #[cfg(target_os = "windows")]
 mod resize_session;
 #[cfg(target_os = "windows")]
-pub use resize_session::{ResizeSession, SessionOptions};
+pub use resize_session::{
+  sample_edge_color_async, EdgeColorCache, ResizeSession, SessionOptions,
+};
 #[cfg(target_os = "windows")]
 mod workspace_surrogate;
 #[cfg(target_os = "windows")]

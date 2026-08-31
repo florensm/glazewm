@@ -104,12 +104,15 @@ const MAX_HANDOFFS_PER_TICK: usize = 3;
 
 /// How long a sampled surrogate backdrop color stays valid per window.
 ///
-/// Sampling costs two GPU→CPU `BitBlt` readbacks on the WM thread; caching
-/// removes them from the keypress path during bursts of relayouts. App
-/// background colors change rarely (theme switches), so a stale hit is a
-/// cosmetic-only risk bounded by this TTL.
+/// Sampling costs two GPU→CPU `BitBlt` readbacks; now always done on a
+/// background thread via `sample_edge_color_async` rather than blocking the
+/// WM's main thread, but a miss still means the *current* session plays with
+/// a transparent backdrop instead of a matched color. App background colors
+/// change rarely (theme switches), so a stale hit is a cosmetic-only risk --
+/// kept generous so a window resized only occasionally still benefits from
+/// the earlier background sample instead of re-paying for one every time.
 #[cfg(target_os = "windows")]
-const EDGE_COLOR_CACHE_TTL: Duration = Duration::from_secs(30);
+const EDGE_COLOR_CACHE_TTL: Duration = Duration::from_secs(300);
 
 /// Cache-size threshold above which stale edge-color entries are pruned.
 #[cfg(target_os = "windows")]
@@ -138,8 +141,10 @@ const WARM_SURROGATE_PRUNE_LEN: usize = 16;
 /// Inserts `key`/`value` into a TTL-cache `map`, first pruning entries older
 /// than `ttl` once the map has grown to `prune_len`.
 ///
-/// Shared by [`AnimationManager`]'s `edge_color_cache` and `warm_surrogates`
-/// maps, which both use this same size-then-age pruning strategy.
+/// Used by [`AnimationManager`]'s `warm_surrogates` map. `edge_color_cache`
+/// uses the same size-then-age strategy but applies it inline from
+/// `sample_edge_color_async`'s background thread instead, since that map is
+/// written to from there rather than from the main thread.
 #[cfg(target_os = "windows")]
 fn prune_and_insert<K: std::hash::Hash + Eq, V>(
   map: &mut HashMap<K, (V, Instant)>,
@@ -183,8 +188,9 @@ use wm_common::{
 use wm_platform::{NativeWindow, OpacityValue, Rect};
 #[cfg(target_os = "windows")]
 use wm_platform::{
-  BlurOverlayParams, BorderOverlayParams, Color, CornerStyle, DxgiVsyncWaiter,
-  NativeBlurOverlay, NativeBorderOverlay, NativeIrisOverlay, NativeSurrogate,
+  sample_edge_color_async, BlurOverlayParams, BorderOverlayParams, Color,
+  CornerStyle, DxgiVsyncWaiter, EdgeColorCache, NativeBlurOverlay,
+  NativeBorderOverlay, NativeIrisOverlay, NativeSurrogate,
   NativeWindowWindowsExt, ResizeSession, SessionOptions, SurrogateBatch,
   WorkspaceSurrogate, HWND,
 };
@@ -381,11 +387,12 @@ pub struct AnimationManager {
   /// Recently sampled surrogate backdrop colors keyed by window handle.
   ///
   /// Lets `ResizeSession::begin` skip its two-`BitBlt` screen sample for
-  /// windows resized again within [`EDGE_COLOR_CACHE_TTL`], removing the
-  /// GPU→CPU readback burst when a relayout begins many sessions in the
-  /// same keypress.
+  /// windows resized again within [`EDGE_COLOR_CACHE_TTL`]. Shared (rather
+  /// than owned outright) because `sample_edge_color_async`'s background
+  /// thread inserts into this same map directly once a sample completes,
+  /// instead of routing the result back through the event loop.
   #[cfg(target_os = "windows")]
-  edge_color_cache: HashMap<isize, (Color, Instant)>,
+  edge_color_cache: EdgeColorCache,
   /// Surrogates kept alive (hidden) after their resize/move session ends,
   /// keyed by window ID, so a follow-up resize of the same window within
   /// [`WARM_SURROGATE_TTL`] can reuse the existing overlay window and DWM
@@ -471,7 +478,7 @@ impl AnimationManager {
       #[cfg(target_os = "windows")]
       blur_overlay_z_order_dirty: false,
       #[cfg(target_os = "windows")]
-      edge_color_cache: HashMap::new(),
+      edge_color_cache: Arc::new(Mutex::new(HashMap::new())),
       #[cfg(target_os = "windows")]
       warm_surrogates: HashMap::new(),
       #[cfg(target_os = "windows")]
@@ -2136,12 +2143,23 @@ impl AnimationManager {
           };
           match session_result {
             Ok(session) => {
-              // Only cache on a miss so staleness stays bounded by the TTL
-              // rather than sliding forward on every reuse.
-              if !had_cached_color {
-                if let Some(color) = session.edge_color() {
-                  self.remember_edge_color(hwnd.0, color.clone());
-                }
+              // On a cache miss, this session itself plays with a
+              // transparent backdrop (see `begin_impl`'s doc comment) --
+              // warm the cache in the background instead of sampling
+              // synchronously, so the window's *next* resize has a real
+              // color ready. Only on a miss, so staleness stays bounded by
+              // the TTL rather than sliding forward on every reuse. Skipped
+              // when a live acrylic overlay is configured, mirroring
+              // `begin_impl`'s own skip: the sample would go unused there
+              // too.
+              if !had_cached_color && blur_overlay.is_none() {
+                sample_edge_color_async(
+                  hwnd,
+                  &start_rect,
+                  self.edge_color_cache.clone(),
+                  EDGE_COLOR_CACHE_PRUNE_LEN,
+                  EDGE_COLOR_CACHE_TTL,
+                );
               }
               // `place_at_top: true` above means the session's surrogate
               // (if any) was inserted at `HWND_TOP` -- see
@@ -2300,29 +2318,17 @@ impl AnimationManager {
 
   /// Returns the cached surrogate backdrop color for `hwnd` when still
   /// within [`EDGE_COLOR_CACHE_TTL`].
+  ///
+  /// `sample_edge_color_async`'s background thread populates this same map
+  /// directly (see `edge_color_cache`'s doc comment), so a lock failure here
+  /// (poisoned mutex) is treated the same as a miss rather than propagated.
   #[cfg(target_os = "windows")]
   fn cached_edge_color(&self, hwnd: isize) -> Option<Color> {
-    self
-      .edge_color_cache
+    let map = self.edge_color_cache.lock().ok()?;
+    map
       .get(&hwnd)
       .filter(|(_, sampled_at)| sampled_at.elapsed() < EDGE_COLOR_CACHE_TTL)
       .map(|(color, _)| color.clone())
-  }
-
-  /// Caches `color` as `hwnd`'s surrogate backdrop color.
-  ///
-  /// Prunes stale entries once the cache exceeds
-  /// [`EDGE_COLOR_CACHE_PRUNE_LEN`] so closed windows don't accumulate
-  /// indefinitely.
-  #[cfg(target_os = "windows")]
-  fn remember_edge_color(&mut self, hwnd: isize, color: Color) {
-    prune_and_insert(
-      &mut self.edge_color_cache,
-      EDGE_COLOR_CACHE_PRUNE_LEN,
-      EDGE_COLOR_CACHE_TTL,
-      hwnd,
-      color,
-    );
   }
 
   /// Reclaims a surrogate for `window_id` to reuse instead of building one
