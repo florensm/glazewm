@@ -82,6 +82,22 @@ pub fn unmanage_window(
   state.window_target_positions.remove(&window.id());
   state.animation_manager.remove_animation(&window.id());
 
+  // Destroy any static blur/border overlay owned by this window directly,
+  // rather than leaving it for `sync_overlays`'s retain-based cleanup on the
+  // next `platform_sync`. That cleanup only runs when `pending_sync` has
+  // changes, but `focus_target_after_removal` returns `None` -- queuing no
+  // change -- whenever the unmanaged window wasn't focused, which is common
+  // for a floating window that was closed, hidden, or found invalid in the
+  // background. Without this, the overlay window it owns is never destroyed
+  // and lingers on screen as a ghost until some unrelated later sync happens
+  // to run (mirrors the equivalent cleanup for completed close animations in
+  // `AnimationManager::update_internal`).
+  #[cfg(target_os = "windows")]
+  {
+    state.blur_overlays.remove(&window.id());
+    state.border_overlays.remove(&window.id());
+  }
+
   // After detaching the container, flatten any redundant split containers.
   // For example, in the layout V[1 H[2]] where container 1 is detached to
   // become V[H[2]], this will then need to be flattened to V[2].
