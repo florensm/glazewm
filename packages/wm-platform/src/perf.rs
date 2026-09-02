@@ -169,25 +169,70 @@ impl Stage {
       Stage::Tick => "tick",
       Stage::PlatformSync => "platform_sync",
       Stage::Redraw => "redraw",
-      Stage::RedrawPrep => "  redraw_prep",
-      Stage::RedrawLoop => "  redraw_loop",
-      Stage::AnimStep => "    anim_step",
-      Stage::RedrawFrozen => "    rd_frozen",
-      Stage::RedrawApply => "    rd_apply",
+      Stage::RedrawPrep => "redraw_prep",
+      Stage::RedrawLoop => "redraw_loop",
+      Stage::AnimStep => "anim_step",
+      Stage::RedrawFrozen => "rd_frozen",
+      Stage::RedrawApply => "rd_apply",
       Stage::BlurSync => "blur_sync",
       Stage::BorderSync => "border_sync",
       Stage::DwmFlush => "dwm_flush",
       Stage::SessionBegin => "session_begin",
       Stage::Cloak => "cloak",
       Stage::SurrogateFlush => "surrogate_flush",
-      Stage::BatchCommit => "  batch_commit",
+      Stage::BatchCommit => "batch_commit",
       Stage::SessionOverlays => "session_overlays",
       Stage::Cleanup => "cleanup",
       Stage::PreCommit => "pre_commit",
       Stage::NativeFrame => "native_frame",
-      Stage::OverlayRegion => "  ovl_region",
-      Stage::OverlayVisual => "  ovl_visual",
+      Stage::OverlayRegion => "ovl_region",
+      Stage::OverlayVisual => "ovl_visual",
     }
+  }
+
+  /// Indent depth in the report, for stages that genuinely nest inside the
+  /// stage above them.
+  ///
+  /// Only meaningful for stages where [`is_cross_cutting`] is `false`.
+  ///
+  /// [`is_cross_cutting`]: Stage::is_cross_cutting
+  const fn depth(self) -> usize {
+    match self {
+      Stage::Tick => 0,
+      Stage::PlatformSync | Stage::Cleanup => 1,
+      Stage::Redraw => 2,
+      Stage::RedrawPrep
+      | Stage::RedrawLoop
+      | Stage::SurrogateFlush
+      | Stage::SessionOverlays => 3,
+      Stage::AnimStep | Stage::RedrawFrozen | Stage::RedrawApply => 4,
+      _ => 0,
+    }
+  }
+
+  /// Whether this stage is called from several places rather than nesting
+  /// under one parent.
+  ///
+  /// These are reported separately: their time is already included in the
+  /// tree above, but attributing them to any single parent would be wrong.
+  /// `SurrogateBatch::commit`, for instance, runs from the surrogate flush,
+  /// both overlay sync passes, the cloak commit and the cleanup tail -- an
+  /// earlier version of this report indented it under `surrogate_flush`,
+  /// where its total exceeded its supposed parent's.
+  const fn is_cross_cutting(self) -> bool {
+    matches!(
+      self,
+      Stage::BatchCommit
+        | Stage::DwmFlush
+        | Stage::SessionBegin
+        | Stage::Cloak
+        | Stage::PreCommit
+        | Stage::NativeFrame
+        | Stage::OverlayRegion
+        | Stage::OverlayVisual
+        | Stage::BlurSync
+        | Stage::BorderSync
+    )
   }
 }
 
@@ -422,25 +467,55 @@ fn take_report(reason: &str) -> Option<String> {
   );
   let _ = writeln!(
     lines,
-    "  {:<16}{:>7}{:>11}{:>11}{:>11}",
+    "  {:<20}{:>7}{:>11}{:>11}{:>11}",
     "stage", "calls", "total", "per-frame", "worst",
   );
 
-  for stage in Stage::ALL {
+  // Nesting tree first: each stage's time includes the stages indented
+  // under it, so a parent is never the sum of its children.
+  fn row(
+    lines: &mut String,
+    summary: &Profiler,
+    frames: f64,
+    stage: Stage,
+    indent: usize,
+  ) {
     let index = stage.index();
     if summary.calls[index] == 0 {
-      continue;
+      return;
     }
-
+    let name = format!("{:indent$}{}", "", stage.label(), indent = indent);
+    // Writing into a `String` is infallible, so the result is discarded.
     let _ = writeln!(
       lines,
-      "  {:<16}{:>7}{:>9.1}ms{:>9.2}ms{:>9.2}ms",
-      stage.label(),
+      "  {:<20}{:>7}{:>9.1}ms{:>9.2}ms{:>9.2}ms",
+      name,
       summary.calls[index],
       summary.total[index].as_secs_f64() * 1000.0,
       summary.total[index].as_secs_f64() * 1000.0 / frames,
       summary.worst_frame[index].as_secs_f64() * 1000.0,
     );
+  }
+
+  for stage in Stage::ALL {
+    if !stage.is_cross_cutting() {
+      row(&mut lines, &summary, frames, stage, stage.depth() * 2);
+    }
+  }
+
+  // Cross-cutting stages are called from several parents, so they get their
+  // own section rather than a misleading indent. Their time is already
+  // counted inside the tree above.
+  if Stage::ALL
+    .into_iter()
+    .any(|s| s.is_cross_cutting() && summary.calls[s.index()] > 0)
+  {
+    let _ = writeln!(lines, "  -- called from several parents, already counted above --");
+    for stage in Stage::ALL {
+      if stage.is_cross_cutting() {
+        row(&mut lines, &summary, frames, stage, 2);
+      }
+    }
   }
 
   Some(lines.trim_end().to_string())
