@@ -90,6 +90,13 @@ pub enum Stage {
   RedrawPrep,
   /// `redraw_containers`' per-window loop itself.
   RedrawLoop,
+  /// `AnimationManager::start_animation_if_needed`: this frame's animation
+  /// math plus queueing the surrogate update.
+  AnimStep,
+  /// `redraw_containers`' `Frozen` arm, past the first-frame cloak.
+  RedrawFrozen,
+  /// `redraw_containers`' `Apply` arm, i.e. repositioning a real window.
+  RedrawApply,
   /// Acrylic blur overlay sync pass.
   BlurSync,
   /// Border overlay sync pass.
@@ -102,6 +109,9 @@ pub enum Stage {
   Cloak,
   /// `AnimationManager::flush_surrogate_updates`.
   SurrogateFlush,
+  /// `SurrogateBatch::commit` -- the `DeferWindowPos` transaction that
+  /// actually moves every surrogate and overlay window queued this frame.
+  BatchCommit,
   /// `platform_sync`'s post-flush loop tracking each live resize session's
   /// blur/border overlay onto its surrogate.
   SessionOverlays,
@@ -121,18 +131,22 @@ pub enum Stage {
 
 impl Stage {
   /// Every stage, in report order.
-  const ALL: [Stage; 17] = [
+  const ALL: [Stage; 21] = [
     Stage::Tick,
     Stage::PlatformSync,
     Stage::Redraw,
     Stage::RedrawPrep,
     Stage::RedrawLoop,
+    Stage::AnimStep,
+    Stage::RedrawFrozen,
+    Stage::RedrawApply,
     Stage::BlurSync,
     Stage::BorderSync,
     Stage::DwmFlush,
     Stage::SessionBegin,
     Stage::Cloak,
     Stage::SurrogateFlush,
+    Stage::BatchCommit,
     Stage::SessionOverlays,
     Stage::Cleanup,
     Stage::PreCommit,
@@ -157,12 +171,16 @@ impl Stage {
       Stage::Redraw => "redraw",
       Stage::RedrawPrep => "  redraw_prep",
       Stage::RedrawLoop => "  redraw_loop",
+      Stage::AnimStep => "    anim_step",
+      Stage::RedrawFrozen => "    rd_frozen",
+      Stage::RedrawApply => "    rd_apply",
       Stage::BlurSync => "blur_sync",
       Stage::BorderSync => "border_sync",
       Stage::DwmFlush => "dwm_flush",
       Stage::SessionBegin => "session_begin",
       Stage::Cloak => "cloak",
       Stage::SurrogateFlush => "surrogate_flush",
+      Stage::BatchCommit => "  batch_commit",
       Stage::SessionOverlays => "session_overlays",
       Stage::Cleanup => "cleanup",
       Stage::PreCommit => "pre_commit",
