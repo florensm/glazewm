@@ -1,9 +1,24 @@
 # GlazeWM resize-animation performance — investigation handoff
 
-Branch: `personal/main` (all work also cherry-picked to `feat/dcomp`).
-Machine: laptop, single 3440×1440 ultrawide @ 175 Hz (frame budget **5.7 ms**).
-Symptom being chased: multi-window resize animations lag, worst when one
-window goes full monitor width; disabling the resize animation feels instant.
+> ## WORK IN `feat/dcomp`. DO NOT EDIT `personal/main`.
+>
+> `personal/main` is a merge of several branches (force-manage, move-cursor,
+> and others). This issue is being chased in `feat/dcomp`, which is smaller
+> and easier to reason about. **Anything in `personal/main` that is not also
+> in `feat/dcomp` is out of scope — don't read it, don't fix it.**
+>
+> - **Worktree to use:** `C:\Users\FMN\glazewm\.claude\worktrees\border-overlay`
+>   (already checked out on `feat/dcomp`)
+> - **Binary it builds:** `<that worktree>\target\release\glazewm.exe`
+> - `C:\Users\FMN\glazewm` is the **`personal/main`** worktree — building there
+>   gives you a `personal/main` binary. That is exactly how the previous
+>   session drifted, so run `git rev-parse --abbrev-ref HEAD` before you edit
+>   or build.
+
+**Branch:** `feat/dcomp`, base `651143d5`. All the perf work below is on it.
+**Machine:** laptop, single 3440×1440 ultrawide @ 175 Hz (frame budget **5.7 ms**).
+**Symptom:** multi-window resize animations lag, worst when one window goes
+full monitor width; disabling the resize animation feels instant.
 
 ---
 
@@ -24,8 +39,10 @@ our own API usage does essentially nothing.
 A frame profiler is built in, opt-in, and costs nothing when off.
 
 ```powershell
+# ALWAYS the dcomp worktree's binary, never C:\Users\FMN\glazewm\target\...
+$D = "C:\Users\FMN\glazewm\.claude\worktrees\border-overlay\target\release\glazewm.exe"
 $env:GLAZEWM_PERF = "1"
-& C:\Users\FMN\glazewm\target\release\glazewm.exe start --config C:\Users\FMN\.glzr\glazewm\config-dcomp.yaml
+& $D start --config C:\Users\FMN\.glzr\glazewm\config-dcomp.yaml
 # reports land in ~/.glzr/glazewm/perf.log, one per animation burst
 ```
 
@@ -33,9 +50,9 @@ Repeatable benchmark (medians over many bursts, so noise doesn't fool you):
 
 ```powershell
 & C:\Users\FMN\.glzr\glazewm\perf-bench.ps1 `
-    -Exe C:\Users\FMN\glazewm\target\release\glazewm.exe `
+    -Exe $D `
     -Config C:\Users\FMN\.glzr\glazewm\config-dcomp.yaml `
-    -Mode fullwidth -Bursts 6 -TargetProcess explorer -Label "control"
+    -Mode fullwidth -Bursts 6 -TargetProcess msedge -Label "control"
 ```
 
 `-Mode resize` = grow/shrink one window's width. `-Mode fullwidth` = move a
@@ -45,7 +62,9 @@ window down so it spans the full monitor width (the worst case).
 
 1. **Pin the target window** (`-TargetProcess`). The script originally picked
    the *narrowest* window, which was a different app each run. Making a heavy
-   browser full-width costs far more than Explorer. This swamped real effects.
+   browser full-width costs far more than a light app. This swamped real
+   effects. The script now aborts if the named process isn't tiled — pick any
+   app that will still be open across all your runs and use it throughout.
 2. **The machine drifts hugely.** The identical config measured 30 ms, 87 ms,
    192 ms and 209 ms per frame at different points in one evening. **Trust
    ratios from back-to-back runs, never absolute milliseconds across time.**
@@ -59,6 +78,19 @@ window down so it spans the full monitor width (the worst case).
 ---
 
 ## 3. What the logs actually say
+
+> **Provenance:** the detailed stage tables below were captured on a
+> `personal/main` build (the previous session's drift). The headline finding
+> was afterwards **re-confirmed on a `feat/dcomp` build**, back to back, 9
+> windows, `-Mode fullwidth`:
+>
+> | dcomp build | `tick` ms/frame | frames/burst |
+> |---|---|---|
+> | borders on all windows | 64.1 | 11 |
+> | border on focused window only | **37.6** | **19** |
+>
+> Same shape, same ~1.7–2× ratio. The stage *proportions* below hold on dcomp;
+> re-measure absolutes on dcomp before quoting any specific number.
 
 Corrected report, 8 animating windows, one driven to full width. Indented
 stages nest inside their parent; the cross-cutting section is counted inside
@@ -218,11 +250,13 @@ probe failed (see §2.5). Would need in-process instrumentation to confirm.
 
 ## 8. Files and where things are
 
-**Code (committed on `personal/main`, cherry-picked to `feat/dcomp`):**
+**Code — all on `feat/dcomp` (base `651143d5`), 15 commits.** It also happens
+to exist on `personal/main`; ignore that copy.
 - `packages/wm-platform/src/perf.rs` — the profiler (`GLAZEWM_PERF=1`)
 - `packages/wm-platform/examples/surrogate_cost.rs` — the microbenchmark that
   killed the thumbnail-rewrite idea. Run:
   `cargo run -p wm-platform --release --example surrogate_cost`
+  (run from the `border-overlay` worktree)
 - Fixes in `native_blur_overlay.rs`, `native_border_overlay.rs`,
   `platform_sync.rs`, `animation/manager.rs`
 
