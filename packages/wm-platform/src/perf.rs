@@ -112,6 +112,13 @@ impl Stage {
   }
 }
 
+/// `tracing` target the profiler's reports are emitted under.
+///
+/// Distinct from the WM's own targets so a subscriber can route reports to
+/// their own sink without picking up unrelated `INFO` events -- see
+/// `setup_logging` in the `wm` crate.
+pub const LOG_TARGET: &str = "glazewm::perf";
+
 /// Whether profiling is on, resolved once from `GLAZEWM_PERF`.
 static ENABLED: OnceLock<bool> = OnceLock::new();
 
@@ -328,7 +335,7 @@ pub fn report(reason: &str) {
     );
   }
 
-  tracing::info!("{}", lines.trim_end());
+  tracing::info!(target: LOG_TARGET, "{}", lines.trim_end());
 }
 
 #[cfg(test)]

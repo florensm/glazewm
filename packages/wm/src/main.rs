@@ -18,7 +18,7 @@ use tokio::{process::Command, signal};
 use tracing::Level;
 use tracing_subscriber::{
   fmt::{self, writer::MakeWriterExt},
-  layer::SubscriberExt,
+  layer::{Layer, SubscriberExt},
 };
 use wm_common::{AppCommand, InvokeCommand, Verbosity, WmEvent};
 #[cfg(target_os = "macos")]
@@ -321,7 +321,25 @@ fn setup_logging(verbosity: &Verbosity) -> anyhow::Result<()> {
     .join(".glzr/glazewm/");
 
   let error_writer =
-    tracing_appender::rolling::never(error_log_dir, "errors.log");
+    tracing_appender::rolling::never(&error_log_dir, "errors.log");
+
+  // The frame profiler reports at `INFO`, which otherwise only reaches
+  // stdout -- and the release build is a `windows` subsystem binary, so a
+  // detached WM has nowhere to write it. Give it its own file when (and
+  // only when) profiling is enabled, filtered to the profiler's target so
+  // the file stays a clean run of frame reports rather than an `INFO`
+  // firehose, and errors.log stays reserved for actual problems.
+  let perf_layer = wm_platform::perf::is_enabled().then(|| {
+    fmt::Layer::new()
+      .with_writer(tracing_appender::rolling::never(
+        &error_log_dir,
+        "perf.log",
+      ))
+      .with_filter(
+        tracing_subscriber::filter::Targets::new()
+          .with_target(wm_platform::perf::LOG_TARGET, Level::INFO),
+      )
+  });
 
   let subscriber = tracing_subscriber::registry()
     .with(
@@ -333,7 +351,8 @@ fn setup_logging(verbosity: &Verbosity) -> anyhow::Result<()> {
       // Output to error log file.
       fmt::Layer::new()
         .with_writer(error_writer.with_max_level(Level::WARN)),
-    );
+    )
+    .with(perf_layer);
 
   tracing::subscriber::set_global_default(subscriber)?;
 
