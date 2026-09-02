@@ -1439,7 +1439,11 @@ impl AnimationManager {
       platform_sync(state, config)?;
     }
 
-    let cleanup_scope = perf::scope(Stage::Cleanup);
+    // Held in an `Option` so the nested `platform_sync` below can close it
+    // early: leaving it open there made `Cleanup` enclose a second
+    // `PlatformSync`, double-counting that time so the two stages summed to
+    // more than the enclosing `Tick`.
+    let mut cleanup_scope = Some(perf::scope(Stage::Cleanup));
 
     // Fade out pending sessions now that `platform_sync` has moved the real
     // windows to their final positions, then drop them. Dropping a session
@@ -1856,6 +1860,7 @@ impl AnimationManager {
           "Post-cleanup overlay re-sync: queued {queued} window(s) for \
            redraw, running follow-up platform_sync."
         );
+        drop(cleanup_scope.take());
         platform_sync(state, config)?;
       }
     }
