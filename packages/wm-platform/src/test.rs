@@ -12,6 +12,7 @@ mod keybinding_listener;
 mod models;
 mod mouse_listener;
 mod native_window;
+pub mod perf;
 mod platform_event;
 mod platform_impl;
 mod thread_bound;
