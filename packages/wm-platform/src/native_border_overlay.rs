@@ -169,6 +169,7 @@ fn apply_hole_region(
   outer_size: (i32, i32),
   outset: i32,
   inner_radius: i32,
+  redraw: bool,
 ) {
   let (w, h) = outer_size;
 
@@ -200,10 +201,21 @@ fn apply_hole_region(
       let _ = DeleteObject(HGDIOBJ(inner_rgn.0));
     }
 
-    // `bRedraw = TRUE`: the overlay's own content can change independently
-    // of its rect (color/opacity updates), so the newly (dis)covered area
-    // must be repainted, unlike the static-snapshot iris overlay.
-    SetWindowRgn(hwnd, outer_rgn, BOOL(1));
+    // `bRedraw` only matters for the SWCA fallback, whose accent brush
+    // composites into the window's GDI redirection surface -- there the
+    // newly (dis)covered area genuinely must be repainted, since the
+    // overlay's content can change independently of its rect (color/opacity
+    // updates).
+    //
+    // The `Windows.UI.Composition` path has no redirection surface at all
+    // (`WS_EX_NOREDIRECTIONBITMAP`); every pixel comes from the visual tree,
+    // which `defer_rect` has already resized. Asking for a redraw there buys
+    // nothing and costs a synchronous window-manager repaint pass -- paid
+    // once per window per frame for the whole animation, since a resize
+    // changes the hole shape on every frame. That was ~1.4ms per animating
+    // window per frame, i.e. the single largest per-window cost in a
+    // multi-window resize.
+    SetWindowRgn(hwnd, outer_rgn, BOOL(i32::from(redraw)));
   }
 }
 
@@ -331,7 +343,13 @@ impl NativeBorderOverlay {
     let outset = params.width.round() as i32;
     let hole_shape =
       (outer.width(), outer.height(), inner_hole_radius(&params));
-    apply_hole_region(hwnd, (hole_shape.0, hole_shape.1), outset, hole_shape.2);
+    apply_hole_region(
+      hwnd,
+      (hole_shape.0, hole_shape.1),
+      outset,
+      hole_shape.2,
+      composition.is_none(),
+    );
 
     Ok(Self {
       hwnd: hwnd.0,
@@ -362,7 +380,13 @@ impl NativeBorderOverlay {
       return;
     }
 
-    apply_hole_region(self.hwnd(), (shape.0, shape.1), outset, shape.2);
+    apply_hole_region(
+      self.hwnd(),
+      (shape.0, shape.1),
+      outset,
+      shape.2,
+      self.composition.is_none(),
+    );
     self.hole_shape = shape;
   }
 
