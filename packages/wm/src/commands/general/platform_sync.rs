@@ -1384,6 +1384,30 @@ fn redraw_containers(
       let anchor = session.surrogate_hwnd();
       let rect = session.current_rect();
 
+      // A session that carries no params for an overlay kind has no tracker
+      // for it, and `sync_overlays` will not step in: it skips every window
+      // with a live resize session outright (`has_live_resize_tracker`),
+      // assuming this loop owns it. Left alone, the overlay stays visible at
+      // the window's pre-animation rect for the whole animation -- a border
+      // outline, or a filled acrylic rect, stranded at the old position
+      // until the session ends. So hide it here, once, guarded on
+      // `is_visible` because `hide` issues a `ShowWindow` unconditionally.
+      if session.blur_overlay_params().is_none() {
+        if let Some(overlay) = state.blur_overlays.get_mut(id) {
+          if overlay.is_visible() {
+            overlay.hide();
+          }
+        }
+      }
+
+      if session.border_overlay_params().is_none() {
+        if let Some(overlay) = state.border_overlays.get_mut(id) {
+          if overlay.is_visible() {
+            overlay.hide();
+          }
+        }
+      }
+
       if let Some(params) = session.blur_overlay_params() {
         match (anchor, rect.clone()) {
           (Some(anchor), Some(rect)) => upsert_blur_overlay(
