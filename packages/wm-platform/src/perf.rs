@@ -212,10 +212,16 @@ pub fn scope(stage: Stage) -> Scope {
 /// Reported as a peak, so a session's worst-case concurrency is visible
 /// alongside its worst-case frame times.
 pub fn note_window_count(count: usize) {
-  if !is_enabled() {
-    return;
+  if is_enabled() {
+    record_window_count(count);
   }
+}
 
+/// [`note_window_count`] without the `GLAZEWM_PERF` gate.
+///
+/// The gate resolves once per process, so the recording logic is factored
+/// out here to stay reachable from tests.
+fn record_window_count(count: usize) {
   PROFILER.with(|profiler| {
     if let Ok(mut profiler) = profiler.try_borrow_mut() {
       profiler.peak_windows = profiler.peak_windows.max(count);
@@ -226,10 +232,13 @@ pub fn note_window_count(count: usize) {
 /// Marks the start of a frame, clearing the previous frame's per-stage
 /// accumulators.
 pub fn begin_frame() {
-  if !is_enabled() {
-    return;
+  if is_enabled() {
+    start_frame();
   }
+}
 
+/// [`begin_frame`] without the `GLAZEWM_PERF` gate.
+fn start_frame() {
   PROFILER.with(|profiler| {
     if let Ok(mut profiler) = profiler.try_borrow_mut() {
       profiler.frame_total = [Duration::ZERO; Stage::COUNT];
@@ -249,7 +258,17 @@ pub fn end_frame() {
     return;
   }
 
-  let should_auto_report = PROFILER.with(|profiler| {
+  if roll_up_frame() {
+    report("frame cap reached");
+  }
+}
+
+/// [`end_frame`] without the `GLAZEWM_PERF` gate.
+///
+/// Returns `true` once the session has reached [`AUTO_REPORT_FRAMES`], i.e.
+/// when the caller should report and reset.
+fn roll_up_frame() -> bool {
+  PROFILER.with(|profiler| {
     let Ok(mut profiler) = profiler.try_borrow_mut() else {
       return false;
     };
@@ -268,11 +287,7 @@ pub fn end_frame() {
     }
 
     profiler.frames >= AUTO_REPORT_FRAMES
-  });
-
-  if should_auto_report {
-    report("frame cap reached");
-  }
+  })
 }
 
 /// Logs the session's accumulated timings at `INFO` and resets them.
@@ -285,36 +300,47 @@ pub fn report(reason: &str) {
     return;
   }
 
-  let Some(summary) = PROFILER.with(|profiler| {
-    let Ok(mut profiler) = profiler.try_borrow_mut() else {
-      return None;
-    };
+  if let Some(report) = take_report(reason) {
+    tracing::info!(target: LOG_TARGET, "{report}");
+  }
+}
+
+/// Formats the session's accumulated timings and clears them, ungated by
+/// `GLAZEWM_PERF`.
+///
+/// Returns `None` when no frames have been recorded, so a caller that
+/// reports at every idle boundary emits nothing on the boundaries where
+/// nothing ran.
+fn take_report(reason: &str) -> Option<String> {
+  let summary = PROFILER.with(|profiler| {
+    let mut profiler = profiler.try_borrow_mut().ok()?;
     if profiler.frames == 0 {
       return None;
     }
     Some(std::mem::take(&mut *profiler))
-  }) else {
-    return;
-  };
+  })?;
 
   let elapsed = summary
     .started_at
     .map_or(Duration::ZERO, |started_at| started_at.elapsed());
   let frames = f64::from(summary.frames);
 
-  let mut lines = format!(
+  // Writing into a `String` is infallible, so the results are discarded.
+  let mut lines = String::new();
+  let _ = writeln!(
+    lines,
     "perf [{reason}]: {} frames in {:.1}ms, {} slow (>{:.0}ms), peak {} \
-     window(s) animating\n  {:<16}{:>7}{:>11}{:>11}{:>11}\n",
+     window(s) animating",
     summary.frames,
     elapsed.as_secs_f64() * 1000.0,
     summary.slow_frames,
     SLOW_FRAME_THRESHOLD.as_secs_f64() * 1000.0,
     summary.peak_windows,
-    "stage",
-    "calls",
-    "total",
-    "per-frame",
-    "worst",
+  );
+  let _ = writeln!(
+    lines,
+    "  {:<16}{:>7}{:>11}{:>11}{:>11}",
+    "stage", "calls", "total", "per-frame", "worst",
   );
 
   for stage in Stage::ALL {
@@ -323,7 +349,6 @@ pub fn report(reason: &str) {
       continue;
     }
 
-    // Writing into a `String` is infallible, so the result is discarded.
     let _ = writeln!(
       lines,
       "  {:<16}{:>7}{:>9.1}ms{:>9.2}ms{:>9.2}ms",
@@ -335,12 +360,21 @@ pub fn report(reason: &str) {
     );
   }
 
-  tracing::info!(target: LOG_TARGET, "{}", lines.trim_end());
+  Some(lines.trim_end().to_string())
 }
 
 #[cfg(test)]
 mod tests {
   use super::*;
+
+  /// Opens an ungated scope, so the recording path is exercised regardless
+  /// of `GLAZEWM_PERF` (whose value resolves once per process).
+  fn forced_scope(stage: Stage) -> Scope {
+    Scope {
+      stage,
+      start: Some(Instant::now()),
+    }
+  }
 
   #[test]
   fn stage_indices_are_dense_and_ordered() {
@@ -350,20 +384,60 @@ mod tests {
   }
 
   #[test]
-  fn disabled_profiler_records_nothing() {
-    // `GLAZEWM_PERF` is unset under `cargo test`, so every entry point must
-    // be inert and, critically, must not panic.
+  fn disabled_entry_points_are_inert() {
+    // `GLAZEWM_PERF` is unset under `cargo test`, so the public entry
+    // points must record nothing and, critically, must not panic.
     assert!(!is_enabled());
     begin_frame();
-    {
-      let _scope = scope(Stage::Tick);
-    }
+    drop(scope(Stage::Tick));
     note_window_count(4);
     end_frame();
     report("test");
 
-    PROFILER.with(|profiler| {
-      assert_eq!(profiler.borrow().frames, 0);
-    });
+    PROFILER.with(|profiler| assert_eq!(profiler.borrow().frames, 0));
+  }
+
+  #[test]
+  fn accumulates_stages_across_frames_then_resets() {
+    // Runs on its own thread so the thread-local profiler is untouched by
+    // the other tests in this module.
+    std::thread::spawn(|| {
+      start_frame();
+      drop(forced_scope(Stage::Tick));
+      drop(forced_scope(Stage::DwmFlush));
+      drop(forced_scope(Stage::DwmFlush));
+      record_window_count(3);
+      assert!(!roll_up_frame());
+
+      start_frame();
+      drop(forced_scope(Stage::Tick));
+      record_window_count(2);
+      assert!(!roll_up_frame());
+
+      PROFILER.with(|profiler| {
+        let profiler = profiler.borrow();
+        assert_eq!(profiler.frames, 2);
+        // Per-frame accumulators are cleared by `start_frame`, so the two
+        // `DwmFlush` calls land in the session totals exactly once.
+        assert_eq!(profiler.calls[Stage::DwmFlush.index()], 2);
+        assert_eq!(profiler.calls[Stage::Tick.index()], 2);
+        assert_eq!(profiler.calls[Stage::Redraw.index()], 0);
+        // A peak, not a last-write.
+        assert_eq!(profiler.peak_windows, 3);
+      });
+
+      let report = take_report("unit test").expect("frames were recorded");
+      assert!(report.starts_with("perf [unit test]: 2 frames in "));
+      assert!(report.contains("peak 3 window(s) animating"));
+      assert!(report.contains("dwm_flush"));
+      // Stages that never ran are omitted from the table.
+      assert!(!report.contains("border_sync"));
+
+      // Reporting resets the session, so a second report has nothing to say.
+      assert!(take_report("unit test").is_none());
+      PROFILER.with(|profiler| assert_eq!(profiler.borrow().frames, 0));
+    })
+    .join()
+    .expect("profiler test thread panicked");
   }
 }
