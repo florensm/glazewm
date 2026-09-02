@@ -131,7 +131,8 @@ impl KeybindingListener {
   /// Returns the next keybinding event if one is already queued.
   ///
   /// Unlike [`next_event`], never waits. Used by the main loop to service
-  /// events that piled up while the previous animation frame was running.
+  /// keybindings that piled up while the previous animation frame was
+  /// running, before it starts the next one.
   ///
   /// [`next_event`]: KeybindingListener::next_event
   pub fn try_next_event(&mut self) -> Option<KeybindingEvent> {
