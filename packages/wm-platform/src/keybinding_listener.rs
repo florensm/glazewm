@@ -128,6 +128,23 @@ impl KeybindingListener {
     event
   }
 
+  /// Returns the next keybinding event if one is already queued.
+  ///
+  /// Unlike [`next_event`], never waits. Used by the main loop to service
+  /// events that piled up while the previous animation frame was running.
+  ///
+  /// [`next_event`]: KeybindingListener::next_event
+  pub fn try_next_event(&mut self) -> Option<KeybindingEvent> {
+    let event = self.event_rx.try_recv().ok();
+
+    #[cfg(target_os = "windows")]
+    if event.is_some() {
+      crate::perf::record_event_dequeued(crate::perf::EventKind::Keybinding);
+    }
+
+    event
+  }
+
   /// Updates the keybindings for the keybinding listener.
   ///
   /// # Panics

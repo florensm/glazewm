@@ -120,6 +120,13 @@ general:
   # workspace when focusing the current workspace.
   toggle_workspace_on_refocus: false
 
+  # Whether to handle queued keyboard, mouse and window events before the
+  # next animation frame. While an animation is running, the main loop
+  # otherwise gives every frame priority over input, which can leave events
+  # waiting for a large part of the animation on a busy relayout.
+  # Enabling this trades a little animation frame time for responsiveness.
+  prioritize_events_over_animation: false
+
   cursor_jump:
     # Whether to automatically move the cursor on the specified trigger.
     enabled: true
