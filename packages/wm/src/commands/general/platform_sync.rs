@@ -1198,6 +1198,12 @@ fn redraw_containers(
         #[cfg(not(target_os = "windows"))]
         let already_positioned = false;
 
+        // Whether the uncloak below is still owed. `reposition_window`
+        // performs it itself under `HideMethod::Cloak`, and repeating the
+        // `DwmSetWindowAttribute` call is the single most expensive thing
+        // in this arm -- see `CloakState`.
+        let mut cloak_state = CloakState::Untouched;
+
         if !already_positioned {
           {
             // Attribute the reposition to the window's own process. When
@@ -1211,7 +1217,7 @@ fn redraw_containers(
               has_surrogate,
             );
 
-            if let Err(err) = reposition_window(
+            match reposition_window(
               window,
               apply_rect,
               *hide_corner,
@@ -1220,7 +1226,10 @@ fn redraw_containers(
               has_surrogate,
               config,
             ) {
-              tracing::warn!("Failed to set window position: {}", err);
+              Ok(state) => cloak_state = state,
+              Err(err) => {
+                tracing::warn!("Failed to set window position: {}", err);
+              }
             }
           }
 
@@ -1236,7 +1245,14 @@ fn redraw_containers(
         // calls `set_cloaked` internally inside `reposition_window`).
         #[cfg(target_os = "windows")]
         if is_visible {
-          let _ = window.native().set_cloaked(false);
+          let _uncloak_scope = perf::scope(Stage::ApplyUncloak);
+
+          // Skipped when `reposition_window` just applied the same cloak
+          // state: an identical `set_cloaked(false)` measured ~4.8ms of
+          // pure duplicate work per window.
+          if cloak_state == CloakState::Untouched {
+            let _ = window.native().set_cloaked(false);
+          }
 
           // Hide the workspace-switch surrogate thumbnail immediately after
           // uncloaking so both changes land in the same DWM composition frame.
@@ -1410,6 +1426,21 @@ fn redraw_containers(
 #[cfg(target_os = "windows")]
 const SLOW_SYNC_REPOSITION_THRESHOLD: Duration = Duration::from_millis(8);
 
+/// Whether [`reposition_window`] already applied the window's cloak state.
+///
+/// `redraw_containers`' `Apply` arm uncloaks visible windows itself, but
+/// `HideMethod::Cloak` means [`reposition_window`] has already done exactly
+/// that. The repeat `DwmSetWindowAttribute(DWMWA_CLOAK)` is not free: it
+/// measured ~4.8ms per window, ~27% of the whole `rd_apply` stage on an
+/// eight-window relayout.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum CloakState {
+  /// Applied by `reposition_window`; the caller must not repeat it.
+  Applied,
+  /// Untouched, so a visible window still needs uncloaking by the caller.
+  Untouched,
+}
+
 fn reposition_window(
   window: &WindowContainer,
   rect: &Rect,
@@ -1424,7 +1455,7 @@ fn reposition_window(
   #[cfg_attr(not(target_os = "windows"), allow(unused_variables))]
   has_surrogate: bool,
   config: &UserConfig,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<CloakState> {
   // For `HideMethod::PlaceInCorner`, we need to reposition hidden windows
   // to the corner of the monitor.
   if config.value.general.hide_method == HideMethod::PlaceInCorner
@@ -1458,8 +1489,10 @@ fn reposition_window(
       frame.height(),
     ))?;
 
-    return Ok(());
+    return Ok(CloakState::Untouched);
   }
+
+  let mut cloak_state = CloakState::Untouched;
 
   if window.active_drag().is_some() {
     window.native().resize(rect.width(), rect.height())?;
@@ -1476,6 +1509,7 @@ fn reposition_window(
 
       // Restore window if it's minimized/maximized and shouldn't be. This
       // is needed to be able to move and resize it.
+      let query_scope = perf::scope(Stage::RepositionQuery);
       let should_restore = match &window.state() {
         // Need to restore window if transitioning from maximized
         // fullscreen to non-maximized fullscreen.
@@ -1497,6 +1531,8 @@ fn reposition_window(
         // `SW_RESTORE`, but doesn't cause a flicker.
         window.native().restore(Some(rect))?;
       }
+
+      drop(query_scope);
 
       // During animation frames, omit `SWP_ASYNCWINDOWPOS` so that adjacent
       // windows are repositioned synchronously. This keeps their on-screen
@@ -1520,6 +1556,7 @@ fn reposition_window(
           SWP_ASYNCWINDOWPOS
         };
       let sync_reposition_start = has_surrogate.then(Instant::now);
+      let swp_scope = perf::scope(Stage::RepositionSwp);
 
       match &window.state() {
         WindowState::Minimized => {
@@ -1564,6 +1601,8 @@ fn reposition_window(
         }
       }
 
+      drop(swp_scope);
+
       if let Some(start) = sync_reposition_start {
         let elapsed = start.elapsed();
         if elapsed > SLOW_SYNC_REPOSITION_THRESHOLD {
@@ -1577,8 +1616,10 @@ fn reposition_window(
       }
 
       // Set visibility based on the hide method.
+      let _visibility_scope = perf::scope(Stage::RepositionVisibility);
       if config.value.general.hide_method == HideMethod::Cloak {
         window.native().set_cloaked(!is_visible)?;
+        cloak_state = CloakState::Applied;
       } else if is_visible {
         window.native().show()?;
       } else {
@@ -1587,7 +1628,7 @@ fn reposition_window(
     }
   }
 
-  Ok(())
+  Ok(cloak_state)
 }
 
 fn jump_cursor(
