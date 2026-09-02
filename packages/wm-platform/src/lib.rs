@@ -12,6 +12,7 @@ mod keybinding_listener;
 mod models;
 mod mouse_listener;
 mod native_window;
+pub mod perf;
 mod platform_event;
 mod platform_impl;
 mod single_instance;
@@ -72,6 +73,8 @@ pub use window_listener::*;
 /// the compositor on every rendered frame without timer-resolution jitter.
 /// On non-Windows platforms this is a no-op.
 pub fn dwm_flush() {
+  let _scope = perf::scope(perf::Stage::DwmFlush);
+
   #[cfg(target_os = "windows")]
   unsafe {
     // SAFETY: No preconditions; `DwmFlush` is safe to call from any thread
