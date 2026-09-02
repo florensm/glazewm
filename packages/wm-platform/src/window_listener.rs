@@ -33,6 +33,23 @@ impl WindowListener {
     event
   }
 
+  /// Returns the next window event if one is already queued.
+  ///
+  /// Unlike [`next_event`], never waits. Used by the main loop to service
+  /// events that piled up while the previous animation frame was running.
+  ///
+  /// [`next_event`]: WindowListener::next_event
+  pub fn try_next_event(&mut self) -> Option<WindowEvent> {
+    let event = self.event_rx.try_recv().ok();
+
+    #[cfg(target_os = "windows")]
+    if event.is_some() {
+      crate::perf::record_event_dequeued(crate::perf::EventKind::Window);
+    }
+
+    event
+  }
+
   /// Terminates the window listener.
   pub fn terminate(&mut self) {
     self.inner.terminate();
