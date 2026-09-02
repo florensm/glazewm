@@ -1,7 +1,7 @@
 use anyhow::Context;
 use itertools::Itertools;
 #[cfg(target_os = "windows")]
-use wm_common::{WindowEffectConfig, WorkspaceSwitchStyle};
+use wm_common::{OverlayTracking, WindowEffectConfig, WorkspaceSwitchStyle};
 use tracing::{debug, warn};
 use wm_common::{
   CursorJumpTrigger, DisplayState, HideCorner, HideMethod, WindowState,
@@ -1352,10 +1352,42 @@ fn redraw_containers(
 
     let mut blur_batch = SurrogateBatch::new();
     let mut border_batch = SurrogateBatch::new();
+
+    // Each animating window costs three composited surfaces, not one: its
+    // surrogate plus these two overlays, all repositioned every frame. See
+    // `OverlayTracking` for why that is the biggest lever on frame time.
+    let tracking = &config.value.animations.overlay_tracking;
+    let focused_id = state.focused_container().map(|container| container.id());
+
     for (id, session) in &state.animation_manager.resize_sessions {
       if state.animation_manager.has_close_animation(id) {
         continue;
       }
+
+      let is_tracked = match tracking {
+        OverlayTracking::All => true,
+        OverlayTracking::FocusedOnly => focused_id == Some(*id),
+        OverlayTracking::None => false,
+      };
+
+      // Hidden rather than left in place: an overlay that stops being
+      // repositioned would trail its window across the whole animation,
+      // which reads far worse than its absence. The normal sync pass
+      // re-shows it once the session ends, so the at-rest look is unchanged.
+      if !is_tracked {
+        if let Some(overlay) = state.blur_overlays.get_mut(id) {
+          if overlay.is_visible() {
+            overlay.hide();
+          }
+        }
+        if let Some(overlay) = state.border_overlays.get_mut(id) {
+          if overlay.is_visible() {
+            overlay.hide();
+          }
+        }
+        continue;
+      }
+
       let anchor = session.surrogate_hwnd();
       let rect = session.current_rect();
 

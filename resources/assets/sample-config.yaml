@@ -1,4 +1,15 @@
 animations:
+  # Which windows keep their blur/border overlays glued to them while they
+  # animate. Every animating window is composited as three surfaces -- its
+  # surrogate plus both overlays -- all repositioned every frame, so this is
+  # the biggest lever on animation smoothness with many windows tiled.
+  # Options:
+  #   'all'           (default) - every animating window keeps its overlays
+  #   'focused_only'            - only the focused window keeps them
+  #   'none'                    - all overlays hidden while animating
+  # Only affects windows while they animate; the at-rest look is unchanged.
+  overlay_tracking: "all"
+
   # Animation settings for pure window translations (position changes only).
   window_move:
     enabled: true
