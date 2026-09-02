@@ -443,6 +443,7 @@ fn redraw_containers(
   z_order_touched: &mut std::collections::HashSet<uuid::Uuid>,
 ) -> anyhow::Result<()> {
   let _scope = perf::scope(Stage::Redraw);
+  let prep_scope = perf::scope(Stage::RedrawPrep);
 
   let windows_to_redraw = state.windows_to_redraw();
   let windows_to_bring_to_front =
@@ -776,6 +777,9 @@ fn redraw_containers(
       _ => false,
     }
   });
+
+  drop(prep_scope);
+  let loop_scope = perf::scope(Stage::RedrawLoop);
 
   for window in windows_to_update.iter().rev() {
     let should_bring_to_front = windows_to_bring_to_front.contains(window);
@@ -1275,6 +1279,8 @@ fn redraw_containers(
     }
   }
 
+  drop(loop_scope);
+
   // Cloak every window that entered its first `Frozen` frame this pass,
   // behind a single shared `DwmFlush` barrier. See `pending_cloaks`.
   #[cfg(target_os = "windows")]
@@ -1306,6 +1312,8 @@ fn redraw_containers(
   // lockstep with vsync.
   #[cfg(target_os = "windows")]
   {
+    let _scope = perf::scope(Stage::SessionOverlays);
+
     let mut blur_batch = SurrogateBatch::new();
     let mut border_batch = SurrogateBatch::new();
     for (id, session) in &state.animation_manager.resize_sessions {

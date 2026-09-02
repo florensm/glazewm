@@ -1439,6 +1439,8 @@ impl AnimationManager {
       platform_sync(state, config)?;
     }
 
+    let cleanup_scope = perf::scope(Stage::Cleanup);
+
     // Fade out pending sessions now that `platform_sync` has moved the real
     // windows to their final positions, then drop them. Dropping a session
     // destroys its surrogate overlay.
@@ -1830,6 +1832,8 @@ impl AnimationManager {
         platform_sync(state, config)?;
       }
     }
+
+    drop(cleanup_scope);
 
     // Close the frame before deciding whether to report: `report` only
     // emits once at least one full frame has been rolled up.
