@@ -372,6 +372,8 @@ impl NativeBorderOverlay {
   /// on a pure reposition, since `SetWindowRgn` is comparatively expensive
   /// to call on every animation tick.
   fn refresh_hole(&mut self, outer: &Rect) {
+    let _scope = crate::perf::scope(crate::perf::Stage::OverlayRegion);
+
     #[allow(clippy::cast_possible_truncation)]
     let outset = self.params.width.round() as i32;
     let shape = (outer.width(), outer.height(), inner_hole_radius(&self.params));
@@ -472,6 +474,7 @@ impl NativeBorderOverlay {
     batch.push(self.hwnd, outer.clone());
 
     if let Some(composition) = &self.composition {
+      let _scope = crate::perf::scope(crate::perf::Stage::OverlayVisual);
       if let Err(e) = composition.set_rect(&outer) {
         tracing::warn!("Border overlay composition resize failed: {e}.");
       }

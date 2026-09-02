@@ -112,11 +112,16 @@ pub enum Stage {
   PreCommit,
   /// `NativeWindow::frame` -- a `DwmGetWindowAttribute` round-trip.
   NativeFrame,
+  /// The border overlay's `SetWindowRgn` hole, including building the two
+  /// GDI regions it combines.
+  OverlayRegion,
+  /// The border overlay's `Windows.UI.Composition` visual-tree resize.
+  OverlayVisual,
 }
 
 impl Stage {
   /// Every stage, in report order.
-  const ALL: [Stage; 15] = [
+  const ALL: [Stage; 17] = [
     Stage::Tick,
     Stage::PlatformSync,
     Stage::Redraw,
@@ -132,6 +137,8 @@ impl Stage {
     Stage::Cleanup,
     Stage::PreCommit,
     Stage::NativeFrame,
+    Stage::OverlayRegion,
+    Stage::OverlayVisual,
   ];
 
   /// Number of distinct stages, i.e. the width of the accumulator arrays.
@@ -160,6 +167,8 @@ impl Stage {
       Stage::Cleanup => "cleanup",
       Stage::PreCommit => "pre_commit",
       Stage::NativeFrame => "native_frame",
+      Stage::OverlayRegion => "  ovl_region",
+      Stage::OverlayVisual => "  ovl_visual",
     }
   }
 }
