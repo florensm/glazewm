@@ -386,6 +386,13 @@ struct Profiler {
   peak_windows: usize,
   /// When the session's first frame began.
   started_at: Option<Instant>,
+  /// Every frame's `Tick` time, for the distribution in the report.
+  ///
+  /// Retained in full rather than summarised online: a session is a few
+  /// hundred frames, and percentiles need the samples. Capped by
+  /// [`AUTO_REPORT_FRAMES`], which reports and resets long before this can
+  /// grow.
+  tick_samples: Vec<Duration>,
   /// Per-`(process, sync)` breakdown of the `RedrawApply` repositions.
   apply_samples: Vec<ApplySample>,
   /// Repositions that arrived after [`APPLY_SAMPLE_LIMIT`] distinct pairs
@@ -719,9 +726,11 @@ fn roll_up_frame() -> bool {
     }
 
     profiler.frames += 1;
+    let tick_total = profiler.frame_total[Stage::Tick.index()];
+    profiler.tick_samples.push(tick_total);
     let budget = frame_budget();
     profiler.budget = budget;
-    if profiler.frame_total[Stage::Tick.index()] > budget {
+    if tick_total > budget {
       profiler.slow_frames += 1;
     }
 
@@ -829,10 +838,71 @@ fn take_report(reason: &str) -> Option<String> {
     }
   }
 
+  write_tick_distribution(&mut lines, &summary);
   write_apply_breakdown(&mut lines, &summary);
   write_event_waits(&mut lines, &summary);
 
   Some(lines.trim_end().to_string())
+}
+
+/// Appends the frame-time distribution to the report.
+///
+/// The stage tree gives a mean and a single worst frame, which cannot tell
+/// a steadily slow animation from a smooth one broken by two enormous
+/// hitches -- and those feel completely different. Percentiles plus counts
+/// of frames over 2x and 4x the budget separate the two.
+fn write_tick_distribution(lines: &mut String, summary: &Profiler) {
+  if summary.tick_samples.is_empty() {
+    return;
+  }
+
+  let mut samples = summary.tick_samples.clone();
+  samples.sort_unstable();
+
+  let budget = summary.budget;
+  let over = |factor: u32| {
+    samples.iter().filter(|s| **s > budget * factor).count()
+  };
+
+  let _ = writeln!(
+    lines,
+    "  -- frame time distribution (budget {:.1}ms) --",
+    budget.as_secs_f64() * 1000.0
+  );
+  let _ = writeln!(
+    lines,
+    "  {:<20}{:>11}{:>11}{:>11}{:>11}",
+    "frame time", "p50", "p90", "p99", "max",
+  );
+  let _ = writeln!(
+    lines,
+    "  {:<20}{:>9.2}ms{:>9.2}ms{:>9.2}ms{:>9.2}ms",
+    "",
+    percentile(&samples, 50).as_secs_f64() * 1000.0,
+    percentile(&samples, 90).as_secs_f64() * 1000.0,
+    percentile(&samples, 99).as_secs_f64() * 1000.0,
+    samples.last().copied().unwrap_or_default().as_secs_f64() * 1000.0,
+  );
+  let _ = writeln!(
+    lines,
+    "  hitches: {} frame(s) >2x budget, {} >4x budget, out of {}",
+    over(2),
+    over(4),
+    samples.len(),
+  );
+}
+
+/// Returns the `percent`th percentile of an already-sorted, non-empty slice.
+///
+/// Nearest-rank, so the value returned is always one that actually occurred
+/// rather than an interpolation between two frames that did not.
+fn percentile(sorted: &[Duration], percent: usize) -> Duration {
+  if sorted.is_empty() {
+    return Duration::ZERO;
+  }
+
+  let rank = (percent * sorted.len()).div_ceil(100).max(1) - 1;
+  sorted[rank.min(sorted.len() - 1)]
 }
 
 /// Appends the per-process `rd_apply` breakdown to the report.
@@ -1137,6 +1207,47 @@ mod tests {
       let report = take_report("unit test").expect("frames were recorded");
       assert!(report.contains("event queue wait"));
       assert!(report.contains("1 unpaired -- SUSPECT"), "{report}");
+    })
+    .join()
+    .expect("profiler test thread panicked");
+  }
+
+  #[test]
+  fn percentiles_return_samples_that_occurred() {
+    let samples: Vec<Duration> = (1..=100).map(ms).collect();
+
+    // Nearest-rank, so every answer is a frame that actually happened.
+    assert_eq!(percentile(&samples, 50), ms(50));
+    assert_eq!(percentile(&samples, 90), ms(90));
+    assert_eq!(percentile(&samples, 99), ms(99));
+    assert_eq!(percentile(&samples, 100), ms(100));
+
+    // Degenerate inputs must not panic or index out of bounds.
+    assert_eq!(percentile(&[], 50), Duration::ZERO);
+    assert_eq!(percentile(&[ms(7)], 99), ms(7));
+  }
+
+  #[test]
+  fn distribution_separates_hitches_from_a_slow_average() {
+    std::thread::spawn(|| {
+      // 19 on-budget frames and one 20x hitch: the mean hides it, the
+      // distribution must not.
+      let mut profiler = Profiler {
+        budget: ms(5),
+        tick_samples: (0..19).map(|_| ms(4)).collect(),
+        frames: 20,
+        ..Profiler::default()
+      };
+      profiler.tick_samples.push(ms(100));
+
+      let mut lines = String::new();
+      write_tick_distribution(&mut lines, &profiler);
+
+      assert!(lines.contains("frame time"), "{lines}");
+      assert!(
+        lines.contains("1 frame(s) >2x budget, 1 >4x budget, out of 20"),
+        "{lines}"
+      );
     })
     .join()
     .expect("profiler test thread panicked");
