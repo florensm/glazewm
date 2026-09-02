@@ -23,7 +23,14 @@ impl WindowListener {
   ///
   /// This will block until a window event is available.
   pub async fn next_event(&mut self) -> Option<WindowEvent> {
-    self.event_rx.recv().await
+    let event = self.event_rx.recv().await;
+
+    #[cfg(target_os = "windows")]
+    if event.is_some() {
+      crate::perf::record_event_dequeued(crate::perf::EventKind::Window);
+    }
+
+    event
   }
 
   /// Terminates the window listener.

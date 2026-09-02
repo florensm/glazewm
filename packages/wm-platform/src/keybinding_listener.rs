@@ -118,7 +118,14 @@ impl KeybindingListener {
   ///
   /// This will block until a keybinding event is available.
   pub async fn next_event(&mut self) -> Option<KeybindingEvent> {
-    self.event_rx.recv().await
+    let event = self.event_rx.recv().await;
+
+    #[cfg(target_os = "windows")]
+    if event.is_some() {
+      crate::perf::record_event_dequeued(crate::perf::EventKind::Keybinding);
+    }
+
+    event
   }
 
   /// Updates the keybindings for the keybinding listener.
@@ -208,6 +215,9 @@ impl KeybindingListener {
         if has_extra_modifiers {
           return false;
         }
+
+        #[cfg(target_os = "windows")]
+        crate::perf::mark_event_queued(crate::perf::EventKind::Keybinding);
 
         let _ = event_tx.send(KeybindingEvent(longest_keybinding.clone()));
 

@@ -263,6 +263,7 @@ impl MouseListener {
       },
     };
 
+    crate::perf::mark_event_queued(crate::perf::EventKind::Mouse);
     let _ = callback_data.event_tx.send(mouse_event);
 
     if event_kind == MouseEventKind::Move {

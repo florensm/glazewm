@@ -1199,16 +1199,29 @@ fn redraw_containers(
         let already_positioned = false;
 
         if !already_positioned {
-          if let Err(err) = reposition_window(
-            window,
-            apply_rect,
-            *hide_corner,
-            &z_order,
-            is_visible,
-            has_surrogate,
-            config,
-          ) {
-            tracing::warn!("Failed to set window position: {}", err);
+          {
+            // Attribute the reposition to the window's own process. When
+            // `has_surrogate` is set the `SetWindowPos` is synchronous and
+            // blocks on that application's message pump, so a single slow
+            // app can dominate `rd_apply` -- the stage totals alone cannot
+            // show which one. Scoped tightly so only the reposition itself
+            // is counted.
+            let _apply_scope = perf::apply_scope(
+              || window.native_properties().process_name,
+              has_surrogate,
+            );
+
+            if let Err(err) = reposition_window(
+              window,
+              apply_rect,
+              *hide_corner,
+              &z_order,
+              is_visible,
+              has_surrogate,
+              config,
+            ) {
+              tracing::warn!("Failed to set window position: {}", err);
+            }
           }
 
           #[cfg(target_os = "windows")]

@@ -25,10 +25,12 @@
 
 use std::{
   cell::RefCell,
+  cmp::Reverse,
+  collections::VecDeque,
   fmt::Write,
   sync::{
-    atomic::{AtomicU64, Ordering},
-    OnceLock,
+    atomic::{AtomicU64, AtomicU32, Ordering},
+    Mutex, OnceLock,
   },
   time::{Duration, Instant},
 };
@@ -75,6 +77,87 @@ fn frame_budget() -> Duration {
 /// continuously-animating window) silently accumulating forever without
 /// ever logging anything.
 const AUTO_REPORT_FRAMES: u32 = 600;
+
+/// Maximum number of distinct `(process, sync)` pairs attributed in the
+/// `rd_apply` breakdown before the rest are lumped into one overflow row.
+///
+/// Bounds the table on a machine with many managed applications; the
+/// interesting case is always a handful of slow apps, so a cap this size
+/// never hides the culprit.
+const APPLY_SAMPLE_LIMIT: usize = 24;
+
+/// Maximum queued-event timestamps held per [`EventKind`].
+///
+/// The queues pair one-to-one with each listener's channel, so they only
+/// grow if a producer outruns the WM's main loop -- which is exactly the
+/// starvation being measured. The cap keeps a runaway producer (e.g. mouse
+/// moves while the loop is blocked) from growing without bound; overflow is
+/// counted so the report can say the numbers are incomplete.
+const EVENT_QUEUE_LIMIT: usize = 1024;
+
+/// A class of platform event whose queue wait is measured.
+///
+/// Each variant maps to exactly one listener channel with a single producer
+/// and a single consumer, which is what makes the FIFO timestamp pairing in
+/// [`mark_event_queued`]/[`record_event_dequeued`] sound.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum EventKind {
+  /// A matched keybinding, queued from the low-level keyboard hook.
+  Keybinding,
+  /// A mouse move or button event, queued from the low-level mouse hook.
+  Mouse,
+  /// A window event, queued from the win-event hook.
+  Window,
+  /// A display-settings-changed event.
+  Display,
+}
+
+impl EventKind {
+  /// Every event kind, in report order.
+  const ALL: [EventKind; 4] = [
+    EventKind::Keybinding,
+    EventKind::Mouse,
+    EventKind::Window,
+    EventKind::Display,
+  ];
+
+  /// Number of distinct event kinds, i.e. the width of the accumulators.
+  const COUNT: usize = Self::ALL.len();
+
+  /// Dense index of this kind into the accumulator arrays.
+  const fn index(self) -> usize {
+    self as usize
+  }
+
+  /// Short human-readable name used in the report.
+  const fn label(self) -> &'static str {
+    match self {
+      EventKind::Keybinding => "keybinding",
+      EventKind::Mouse => "mouse",
+      EventKind::Window => "window",
+      EventKind::Display => "display",
+    }
+  }
+}
+
+/// Enqueue timestamps awaiting their matching dequeue, one queue per
+/// [`EventKind`].
+///
+/// Shared across threads because events are queued on their listener's hook
+/// thread and consumed on the WM thread. Held behind a `Mutex` rather than a
+/// lock-free structure deliberately: the critical section is a single
+/// push/pop, and the producers include a low-level keyboard hook where a
+/// long stall would delay system-wide input.
+static EVENT_QUEUES: [Mutex<VecDeque<Instant>>; EventKind::COUNT] =
+  [const { Mutex::new(VecDeque::new()) }; EventKind::COUNT];
+
+/// Timestamps dropped because a queue hit [`EVENT_QUEUE_LIMIT`], per kind.
+///
+/// Non-zero means the FIFO pairing has slipped and the reported waits for
+/// that kind understate reality, so the report says so instead of quietly
+/// printing wrong numbers.
+static EVENT_QUEUE_OVERFLOW: [AtomicU32; EventKind::COUNT] =
+  [const { AtomicU32::new(0) }; EventKind::COUNT];
 
 /// A measurable segment of the WM thread's per-frame work.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -281,6 +364,60 @@ struct Profiler {
   peak_windows: usize,
   /// When the session's first frame began.
   started_at: Option<Instant>,
+  /// Per-`(process, sync)` breakdown of the `RedrawApply` repositions.
+  apply_samples: Vec<ApplySample>,
+  /// Repositions that arrived after [`APPLY_SAMPLE_LIMIT`] distinct pairs
+  /// were already tracked, collapsed into one bucket.
+  apply_overflow: ApplySample,
+  /// Queue wait accumulated per event kind.
+  event_wait: [EventWait; EventKind::COUNT],
+}
+
+/// One row of the `rd_apply` breakdown: every reposition of a given
+/// process's windows, split by whether the call was synchronous.
+///
+/// Split by `synchronous` because that is the whole point of the
+/// measurement -- an async `SetWindowPos` returns immediately, while a
+/// synchronous one blocks the WM thread on the target application's own
+/// message pump.
+#[derive(Default)]
+struct ApplySample {
+  /// Executable name of the window's process, empty for the overflow row.
+  process: String,
+  /// Whether `SWP_ASYNCWINDOWPOS` was omitted for these calls.
+  synchronous: bool,
+  /// Repositions recorded for this pair.
+  calls: u32,
+  /// Time spent in those repositions.
+  total: Duration,
+  /// Worst single reposition.
+  worst: Duration,
+}
+
+impl ApplySample {
+  /// Folds one reposition into this row.
+  fn record(&mut self, elapsed: Duration) {
+    self.calls += 1;
+    self.total += elapsed;
+    self.worst = self.worst.max(elapsed);
+  }
+}
+
+/// Time events of one [`EventKind`] spent queued before the main loop
+/// serviced them.
+#[derive(Clone, Copy, Default)]
+struct EventWait {
+  /// Events dequeued during the session.
+  count: u32,
+  /// Total time those events spent waiting.
+  total: Duration,
+  /// Worst single wait.
+  worst: Duration,
+  /// Dequeues that found no matching enqueue timestamp.
+  ///
+  /// Should always be zero; a non-zero value means the FIFO pairing is
+  /// broken and the other numbers in the row cannot be trusted.
+  unpaired: u32,
 }
 
 thread_local! {
@@ -331,6 +468,158 @@ pub fn scope(stage: Stage) -> Scope {
     stage,
     start: is_enabled().then(Instant::now),
   }
+}
+
+/// An in-flight real-window reposition, attributed to a process on drop.
+///
+/// Created by [`apply_scope`]. Holds no state when profiling is disabled.
+pub struct ApplyScope {
+  /// Executable name of the repositioned window's process.
+  process: Option<String>,
+  /// Whether `SWP_ASYNCWINDOWPOS` was omitted for this call.
+  synchronous: bool,
+  /// When the scope was opened, or `None` when profiling is disabled.
+  start: Option<Instant>,
+}
+
+impl Drop for ApplyScope {
+  /// Accumulates the elapsed time into the session's `rd_apply` breakdown.
+  fn drop(&mut self) {
+    let (Some(start), Some(process)) = (self.start, self.process.take())
+    else {
+      return;
+    };
+
+    record_apply(process, self.synchronous, start.elapsed());
+  }
+}
+
+/// Measures one real-window reposition and attributes it to the owning
+/// process, until the returned [`ApplyScope`] is dropped.
+///
+/// `process` is only invoked when profiling is enabled, so callers can pass
+/// a closure that clones the window's cached process name without paying for
+/// it in a normal build.
+///
+/// `synchronous` records whether `SWP_ASYNCWINDOWPOS` was omitted -- only
+/// synchronous calls can block on the target application's message pump, so
+/// the report keeps the two apart.
+///
+/// # Example usage
+///
+/// ```no_run
+/// use wm_platform::perf;
+///
+/// let _scope = perf::apply_scope(|| "explorer.exe".to_string(), true);
+/// // ...the `SetWindowPos` being measured...
+/// ```
+#[must_use]
+pub fn apply_scope<F>(process: F, synchronous: bool) -> ApplyScope
+where
+  F: FnOnce() -> String,
+{
+  if is_enabled() {
+    ApplyScope {
+      process: Some(process()),
+      synchronous,
+      start: Some(Instant::now()),
+    }
+  } else {
+    ApplyScope {
+      process: None,
+      synchronous,
+      start: None,
+    }
+  }
+}
+
+/// Folds one attributed reposition into the session's breakdown, ungated by
+/// `GLAZEWM_PERF`.
+fn record_apply(process: String, synchronous: bool, elapsed: Duration) {
+  PROFILER.with(|profiler| {
+    let Ok(mut profiler) = profiler.try_borrow_mut() else {
+      return;
+    };
+
+    if let Some(sample) = profiler
+      .apply_samples
+      .iter_mut()
+      .find(|s| s.synchronous == synchronous && s.process == process)
+    {
+      sample.record(elapsed);
+    } else if profiler.apply_samples.len() < APPLY_SAMPLE_LIMIT {
+      let mut sample = ApplySample {
+        process,
+        synchronous,
+        ..ApplySample::default()
+      };
+      sample.record(elapsed);
+      profiler.apply_samples.push(sample);
+    } else {
+      profiler.apply_overflow.record(elapsed);
+    }
+  });
+}
+
+/// Timestamps an event as it is pushed onto its listener's channel.
+///
+/// Called from the producing hook thread. Must be paired one-to-one with a
+/// [`record_event_dequeued`] of the same kind on the consuming thread; the
+/// queues are FIFO, so the pairing recovers each event's own wait without
+/// having to widen the channel's item type.
+pub fn mark_event_queued(kind: EventKind) {
+  if is_enabled() {
+    queue_event(kind);
+  }
+}
+
+/// [`mark_event_queued`] without the `GLAZEWM_PERF` gate.
+fn queue_event(kind: EventKind) {
+  let index = kind.index();
+  if let Ok(mut queue) = EVENT_QUEUES[index].lock() {
+    if queue.len() >= EVENT_QUEUE_LIMIT {
+      queue.pop_front();
+      EVENT_QUEUE_OVERFLOW[index].fetch_add(1, Ordering::Relaxed);
+    }
+    queue.push_back(Instant::now());
+  }
+}
+
+/// Records how long the event just taken off `kind`'s channel spent queued.
+///
+/// Called from the WM's main loop, immediately after the event is received.
+/// This is the only way to see whether the main loop's `biased` select is
+/// starving input while animation ticks saturate the thread: our own
+/// handling time shows up in the stage tree, but time an event spends
+/// *waiting to be looked at* does not.
+pub fn record_event_dequeued(kind: EventKind) {
+  if is_enabled() {
+    dequeue_event(kind);
+  }
+}
+
+/// [`record_event_dequeued`] without the `GLAZEWM_PERF` gate.
+fn dequeue_event(kind: EventKind) {
+  let index = kind.index();
+  let queued_at = EVENT_QUEUES[index]
+    .lock()
+    .ok()
+    .and_then(|mut queue| queue.pop_front());
+
+  PROFILER.with(|profiler| {
+    if let Ok(mut profiler) = profiler.try_borrow_mut() {
+      let wait = &mut profiler.event_wait[index];
+      match queued_at {
+        Some(queued_at) => {
+          let elapsed = queued_at.elapsed();
+          wait.count += 1;
+          wait.total += elapsed;
+          wait.worst = wait.worst.max(elapsed);
+        }
+        None => wait.unpaired += 1,
+      }
+    }
+  });
 }
 
 /// Records the number of windows animating simultaneously this frame.
@@ -518,7 +807,137 @@ fn take_report(reason: &str) -> Option<String> {
     }
   }
 
+  write_apply_breakdown(&mut lines, &summary);
+  write_event_waits(&mut lines, &summary);
+
   Some(lines.trim_end().to_string())
+}
+
+/// Appends the per-process `rd_apply` breakdown to the report.
+///
+/// A no-op when no reposition was attributed during the session.
+fn write_apply_breakdown(lines: &mut String, summary: &Profiler) {
+  // Which windows the `rd_apply` time actually went to. A synchronous
+  // reposition blocks the WM thread on the target application's message
+  // pump, so a single slow app can dominate the frame; the stage tree alone
+  // cannot show that.
+  if !summary.apply_samples.is_empty() {
+    let _ = writeln!(
+      lines,
+      "  -- rd_apply by process (sync = blocked on that app's message pump)        --"
+    );
+    let _ = writeln!(
+      lines,
+      "  {:<20}{:>7}{:>11}{:>11}{:>11}",
+      "process", "calls", "total", "per-call", "worst",
+    );
+
+    let mut samples = summary.apply_samples.iter().collect::<Vec<_>>();
+    samples.sort_by_key(|sample| Reverse(sample.total));
+
+    for sample in samples {
+      apply_row(
+        lines,
+        &format!(
+          "{} [{}]",
+          sample.process,
+          if sample.synchronous { "sync" } else { "async" }
+        ),
+        sample,
+      );
+    }
+
+    if summary.apply_overflow.calls > 0 {
+      apply_row(lines, "(other processes)", &summary.apply_overflow);
+    }
+  }
+}
+
+/// Appends the per-kind event queue-wait section to the report.
+///
+/// A no-op when no event was dequeued during the session.
+fn write_event_waits(lines: &mut String, summary: &Profiler) {
+  // How long events sat in their channel before the main loop looked at
+  // them. Our handling time is already in the tree above; this is the part
+  // that is invisible there, and the only direct evidence of whether the
+  // `biased` select starves input during an animation.
+  let event_rows = EventKind::ALL
+    .into_iter()
+    .filter(|kind| {
+      let wait = summary.event_wait[kind.index()];
+      wait.count > 0 || wait.unpaired > 0
+    })
+    .collect::<Vec<_>>();
+
+  if !event_rows.is_empty() {
+    let _ =
+      writeln!(lines, "  -- event queue wait (main-loop starvation) --");
+    let _ = writeln!(
+      lines,
+      "  {:<20}{:>7}{:>11}{:>11}{:>11}",
+      "event", "count", "total", "mean", "worst",
+    );
+
+    for kind in event_rows {
+      let wait = summary.event_wait[kind.index()];
+      let dropped = EVENT_QUEUE_OVERFLOW[kind.index()].swap(0, Ordering::Relaxed);
+      let mean = wait
+        .total
+        .checked_div(wait.count.max(1))
+        .unwrap_or(Duration::ZERO);
+
+      // Writing into a `String` is infallible, so the result is discarded.
+      let _ = writeln!(
+        lines,
+        "  {:<20}{:>7}{:>9.1}ms{:>9.2}ms{:>9.2}ms{}",
+        kind.label(),
+        wait.count,
+        wait.total.as_secs_f64() * 1000.0,
+        mean.as_secs_f64() * 1000.0,
+        wait.worst.as_secs_f64() * 1000.0,
+        suspect_suffix(wait.unpaired, dropped),
+      );
+    }
+  }
+}
+
+/// Writes one row of the `rd_apply` breakdown.
+///
+/// Averages over calls rather than frames: a reposition either happens for a
+/// given window this frame or it does not, so a per-frame average of a
+/// per-window cost would be meaningless.
+fn apply_row(lines: &mut String, name: &str, sample: &ApplySample) {
+  let per_call = sample
+    .total
+    .checked_div(sample.calls.max(1))
+    .unwrap_or(Duration::ZERO);
+
+  // Writing into a `String` is infallible, so the result is discarded.
+  let _ = writeln!(
+    lines,
+    "  {:<20}{:>7}{:>9.1}ms{:>9.2}ms{:>9.2}ms",
+    name,
+    sample.calls,
+    sample.total.as_secs_f64() * 1000.0,
+    per_call.as_secs_f64() * 1000.0,
+    sample.worst.as_secs_f64() * 1000.0,
+  );
+}
+
+/// Returns a trailing warning for an event row whose timestamp pairing
+/// slipped, or an empty string when the row is trustworthy.
+///
+/// Kept explicit in the report because a silently-skewed latency number is
+/// worse than no number at all.
+fn suspect_suffix(unpaired: u32, dropped: u32) -> String {
+  match (unpaired, dropped) {
+    (0, 0) => String::new(),
+    (unpaired, 0) => format!("  ({unpaired} unpaired -- SUSPECT)"),
+    (0, dropped) => format!("  ({dropped} dropped -- SUSPECT)"),
+    (unpaired, dropped) => {
+      format!("  ({unpaired} unpaired, {dropped} dropped -- SUSPECT)")
+    }
+  }
 }
 
 #[cfg(test)]
@@ -548,11 +967,19 @@ mod tests {
     assert!(!is_enabled());
     begin_frame();
     drop(scope(Stage::Tick));
+    drop(apply_scope(|| unreachable!("label built while disabled"), true));
     note_window_count(4);
+    mark_event_queued(EventKind::Window);
+    record_event_dequeued(EventKind::Window);
     end_frame();
     report("test");
 
-    PROFILER.with(|profiler| assert_eq!(profiler.borrow().frames, 0));
+    PROFILER.with(|profiler| {
+      let profiler = profiler.borrow();
+      assert_eq!(profiler.frames, 0);
+      assert!(profiler.apply_samples.is_empty());
+      assert_eq!(profiler.event_wait[EventKind::Window.index()].count, 0);
+    });
   }
 
   #[test]
@@ -597,5 +1024,104 @@ mod tests {
     })
     .join()
     .expect("profiler test thread panicked");
+  }
+
+  #[test]
+  fn attributes_repositions_per_process_and_sync_flag() {
+    std::thread::spawn(|| {
+      start_frame();
+      record_apply("explorer.exe".to_string(), true, ms(10));
+      record_apply("explorer.exe".to_string(), true, ms(30));
+      // Same process, different call flavour -- must not merge with the
+      // synchronous row, since only that one blocks the WM thread.
+      record_apply("explorer.exe".to_string(), false, ms(1));
+      record_apply("outlook.exe".to_string(), true, ms(5));
+      assert!(!roll_up_frame());
+
+      PROFILER.with(|profiler| {
+        let profiler = profiler.borrow();
+        // Three rows, not two: the async explorer call is kept apart from
+        // the synchronous ones, which are the only blocking kind.
+        assert_eq!(profiler.apply_samples.len(), 3);
+
+        let sync_explorer = profiler
+          .apply_samples
+          .iter()
+          .find(|s| s.process == "explorer.exe" && s.synchronous)
+          .expect("synchronous explorer row");
+        assert_eq!(sync_explorer.calls, 2);
+        assert_eq!(sync_explorer.total, ms(40));
+        assert_eq!(sync_explorer.worst, ms(30));
+      });
+
+      let report = take_report("unit test").expect("frames were recorded");
+      assert!(report.contains("rd_apply by process"));
+      // Sorted by total, so the 40ms synchronous explorer row leads.
+      let first_row = report
+        .lines()
+        .find(|line| line.contains(".exe ["))
+        .expect("at least one attributed row");
+      assert!(first_row.contains("explorer.exe [sync]"), "{first_row}");
+      assert!(report.contains("explorer.exe [async]"));
+      assert!(report.contains("outlook.exe [sync]"));
+    })
+    .join()
+    .expect("profiler test thread panicked");
+  }
+
+  #[test]
+  fn collapses_repositions_past_the_sample_limit() {
+    std::thread::spawn(|| {
+      start_frame();
+      for index in 0..=APPLY_SAMPLE_LIMIT {
+        record_apply(format!("app{index}.exe"), true, ms(1));
+      }
+      assert!(!roll_up_frame());
+
+      PROFILER.with(|profiler| {
+        let profiler = profiler.borrow();
+        assert_eq!(profiler.apply_samples.len(), APPLY_SAMPLE_LIMIT);
+        assert_eq!(profiler.apply_overflow.calls, 1);
+      });
+
+      let report = take_report("unit test").expect("frames were recorded");
+      assert!(report.contains("(other processes)"));
+    })
+    .join()
+    .expect("profiler test thread panicked");
+  }
+
+  #[test]
+  fn pairs_event_queue_timestamps_fifo() {
+    // Uses `Display` events, which no other test touches, because the
+    // enqueue queues are process-global rather than thread-local.
+    std::thread::spawn(|| {
+      start_frame();
+      queue_event(EventKind::Display);
+      queue_event(EventKind::Display);
+      dequeue_event(EventKind::Display);
+      dequeue_event(EventKind::Display);
+      // A third dequeue has nothing to pair with and must be flagged rather
+      // than silently reported as a zero-length wait.
+      dequeue_event(EventKind::Display);
+      assert!(!roll_up_frame());
+
+      PROFILER.with(|profiler| {
+        let wait = profiler.borrow().event_wait[EventKind::Display.index()];
+        assert_eq!(wait.count, 2);
+        assert_eq!(wait.unpaired, 1);
+      });
+
+      let report = take_report("unit test").expect("frames were recorded");
+      assert!(report.contains("event queue wait"));
+      assert!(report.contains("1 unpaired -- SUSPECT"), "{report}");
+    })
+    .join()
+    .expect("profiler test thread panicked");
+  }
+
+  /// Shorthand for a whole number of milliseconds.
+  fn ms(millis: u64) -> Duration {
+    Duration::from_millis(millis)
   }
 }

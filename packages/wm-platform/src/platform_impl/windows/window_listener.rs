@@ -179,6 +179,8 @@ impl WindowListener {
       _ => return,
     };
 
+    crate::perf::mark_event_queued(crate::perf::EventKind::Window);
+
     if let Err(err) = event_tx.send(event) {
       tracing::warn!("Failed to send window event: {}.", err);
     }
