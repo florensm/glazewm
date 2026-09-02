@@ -887,6 +887,11 @@ impl AnimationManager {
       })
       .collect();
 
+    // Recorded here rather than at the end of the tick: by then completed
+    // animations have already been drained, so a burst's real concurrency
+    // reads back as zero.
+    perf::note_window_count(active_window_ids.len());
+
     for window_id in &active_window_ids {
       if let Some(container) = state.container_by_id(*window_id) {
         if let Ok(window) = container.as_window_container() {
@@ -1828,7 +1833,6 @@ impl AnimationManager {
 
     // Close the frame before deciding whether to report: `report` only
     // emits once at least one full frame has been rolled up.
-    perf::note_window_count(state.animation_manager.animations.len());
     drop(tick_scope);
     perf::end_frame();
 
