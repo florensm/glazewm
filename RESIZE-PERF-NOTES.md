@@ -22,6 +22,47 @@ full monitor width; disabling the resize animation feels instant.
 
 ---
 
+## 0. Update — session 2 (2026-09-02)
+
+Two of §6's ranked ideas rested on wrong premises, and the third turned out
+to be a real defect. Read this before acting on §6.
+
+1. **§6.1's premise is false.** `rd_apply` was assumed to be a *synchronous*
+   cross-process `SetWindowPos` blocking on the target app's message pump.
+   The profiler now records that flag per call: across every burst of the
+   fullwidth benchmark, **zero** repositions were synchronous. `has_surrogate`
+   is already `false` by the time the `Apply` arm runs, because the resize
+   session is torn down first. Staggering "the synchronous commits" would
+   stagger nothing.
+2. **§6.3 already exists** as `animations.window_move.threshold_px` /
+   `window_resize.threshold_px` (default 10, Manhattan distance over
+   x+y+w+h, `manager.rs:should_start_new_animation`). It does nothing for the
+   fullwidth case, where every window moves hundreds of pixels.
+3. **§6.4 is real, was measured, and is now fixed behind a config flag.**
+   Window events waited a median ~210 ms and up to ~577 ms for the main
+   loop. See §9.
+
+What `rd_apply` actually is: the **animation-completion landing**, roughly
+once per window per animation, not a per-frame cost. Half its entries take
+the `already_positioned` shortcut and never reach `reposition_window` at all.
+Its breakdown now adds up (children 141.9 ms against a 142.1 ms parent, so
+nothing is hiding):
+
+```
+  rd_apply     142.1ms / 16 calls
+    rp_query     0.0ms   <-- is_minimized/is_maximized/restore: free
+    rp_swp      13.5ms   <-- the SetWindowPos itself
+    rp_visible  38.4ms   <-- set_cloaked inside reposition_window
+    uncloak     90.0ms   <-- set_cloaked AGAIN, in the Apply arm
+```
+
+Both large items are `DwmSetWindowAttribute(DWMWA_CLOAK)`, and for windows
+that go through `reposition_window` they were **the same call made twice**.
+Deduplicated — see §10. That reinforces §1 from a new angle: what remains in
+`rd_apply` is one unavoidable DWM round-trip per window.
+
+---
+
 ## 1. The one-paragraph conclusion
 
 **GlazeWM is not CPU-bound in its own code — it is bound by DWM (the Windows
@@ -74,6 +115,28 @@ window down so it spans the full monitor width (the worst case).
 4. Run-to-run variance is ~15 %, so anything under ~20 % is noise.
 5. `glazewm.exe query` from PowerShell takes 1.7–10 s (process spawn +
    Defender scanning a fresh binary). **Useless as a latency probe.**
+6. Today the same benchmark reported **~12 ms/frame and ~95 frames per
+   burst**, against 57 ms and 6 frames in session 1 — a ~5× swing in the
+   machine's state, not a code change. Trap 2 is not a footnote; it is the
+   main hazard.
+
+### What the report contains now
+
+Beyond the stage tree and the cross-cutting section:
+
+- **`rd_apply by process`** — every real-window reposition, keyed by the
+  owning process and by whether the call was `[sync]` or `[async]`, averaged
+  **per call** (a reposition is per-window, so a per-frame average would be
+  meaningless).
+- **`event queue wait`** — per event kind: how long each event sat in its
+  channel before the main loop serviced it. Enqueue timestamps are paired
+  FIFO with dequeues; if that pairing ever slips, the row is marked
+  **`SUSPECT`** rather than quietly printing a skewed number.
+- **`rp_query` / `rp_swp` / `rp_visible` / `uncloak`** — `rd_apply` split
+  into the actual Win32/DWM calls underneath it.
+
+Same arithmetic discipline as §5 applies: check the children sum to their
+parent before believing any of it.
 
 ---
 
@@ -186,61 +249,55 @@ instrumentation is lying.
 
 ## 6. Ideas worth trying next (ranked)
 
-### 6.1 Stagger the real-window repositions ← **best next idea, yours**
+> Superseded in places by §0. 6.1 and 6.3 are struck through with the reason;
+> 6.4 is done. What is actually worth doing next is §11.
 
-`rd_apply` is **20.8 ms/frame from ~1.6 calls (~13 ms each)**. In
-`platform_sync.rs`, the `AnimationPositionResult::Apply` arm *deliberately
-omits* `SWP_ASYNCWINDOWPOS` when a surrogate is active:
+### ~~6.1 Stagger the real-window repositions~~ — premise disproved
 
-```
-// Only omit `SWP_ASYNCWINDOWPOS` when a surrogate is active for this
-// window — adjacent windows must stay in lock-step with the overlay.
-```
+The idea was that the `Apply` arm's `SetWindowPos` is synchronous (it omits
+`SWP_ASYNCWINDOWPOS` when `has_surrogate`) and blocks on the target app's
+message pump, so the fix was to cap those commits per tick the way
+`MAX_HANDOFFS_PER_TICK = 3` caps handoffs.
 
-That makes it a **synchronous cross-process `SetWindowPos`**, which blocks the
-WM thread on the *target app's* message pump. Slow apps (Outlook was measured
-at 284 ms historically) stall everything.
+Measured: **every `rd_apply` call is async.** The resize session is already
+gone when the arm runs, so `has_surrogate` is `false` and the synchronous
+branch is never taken. There is nothing to stagger.
 
-Your proposal — only commit the focused/active window immediately, let the
-others keep showing their surrogate for a few more frames — is sound, and
-there is already a precedent in the codebase: `MAX_HANDOFFS_PER_TICK = 3`
-caps real-window handoffs per tick for exactly this reason. The surrogate is
-a live thumbnail already sitting at the final position, so a window uncloaking
-one or two frames late should be invisible.
-
-**Concretely:** cap or stagger the synchronous `Apply`-path commits the same
-way handoffs are capped, prioritising the focused window. Watch for edge
-desync between adjacent windows (that's what the comment is defending
-against) — verify visually, not just by numbers.
+Worse, staggering would now be actively harmful: with the session torn down
+there is no surrogate left standing in for the window, so deferring its
+`Apply` would defer its *uncloak* — the window would be invisible for the
+deferred frames rather than covered by a thumbnail. Do not implement this as
+written.
 
 ### 6.2 Shorten `window_resize.duration_ms`
 
-Doesn't reduce per-frame cost, but makes the rough patch briefer. Cheap to
-try (config only, currently 350 ms).
+Doesn't reduce per-frame cost, only shortens the rough patch. Dismissed as
+not worth it.
 
-### 6.3 Reduce animated surface area
+### ~~6.3 Reduce animated surface area~~ — already exists
 
-Since we're DWM-bound: don't animate windows whose rect barely changes, or
-skip the surrogate for windows below some area threshold and just snap them.
+The "don't animate windows whose rect barely changes" half is
+`animations.window_move.threshold_px` / `window_resize.threshold_px`
+(default 10, Manhattan distance over x+y+w+h, applied in
+`AnimationManager::should_start_new_animation`). It cannot help the
+fullwidth case, where every window moves hundreds of pixels.
 
-### 6.4 Investigate the `biased` select for input latency (unproven)
+The "skip the surrogate below an area threshold" half is unimplemented, but
+would also miss: in the benchmark all eight windows are 421px × full height,
+so no useful threshold excludes any of them.
 
-`main.rs` uses `tokio::select!` with `biased` and the animation tick branch
-**above** mouse/keybinding/IPC. A tick arrives every 5.7 ms and takes ~50 ms,
-so that branch is arguably always ready → input may be starved for the whole
-animation. **This is a hypothesis, not measured** — the CLI-based latency
-probe failed (see §2.5). Would need in-process instrumentation to confirm.
+### 6.4 The `biased` select starves input — **confirmed, fixed behind a flag**
+
+Was a hypothesis; is now measured. See §9.
 
 ---
 
 ## 7. Logging we could still add
 
-- **Wait-time for non-animation events.** Timestamp events when the listener
-  pushes them, measure the delta when the main loop pops them. This is the
-  only way to prove/disprove §6.4 — the "it feels delayed" symptom.
-- **Split `rd_apply` per window** (with process name), to see *which* app's
-  message pump is blocking us. `process_name_for_warning()` already exists in
-  `resize_session.rs`.
+- ~~Wait-time for non-animation events.~~ **Done** — "event queue wait" in
+  the report; see §9.
+- ~~Split `rd_apply` per window (with process name).~~ **Done** — "rd_apply
+  by process" in the report, split by sync/async; see §0 and §10.
 - **A DWM-pressure signal.** Time `EndDeferWindowPos` against the number and
   total pixel area of windows in the batch, to confirm the area hypothesis
   directly.
@@ -250,9 +307,11 @@ probe failed (see §2.5). Would need in-process instrumentation to confirm.
 
 ## 8. Files and where things are
 
-**Code — all on `feat/dcomp` (base `651143d5`), 15 commits.** It also happens
+**Code — all on `feat/dcomp` (base `651143d5`), 18 commits.** It also happens
 to exist on `personal/main`; ignore that copy.
-- `packages/wm-platform/src/perf.rs` — the profiler (`GLAZEWM_PERF=1`)
+- `packages/wm-platform/src/perf.rs` — the profiler (`GLAZEWM_PERF=1`),
+  including the `rd_apply` per-process breakdown and the event-queue wait
+- `packages/wm/src/main.rs` — `drain_platform_events` (§9)
 - `packages/wm-platform/examples/surrogate_cost.rs` — the microbenchmark that
   killed the thumbnail-rewrite idea. Run:
   `cargo run -p wm-platform --release --example surrogate_cost`
@@ -264,9 +323,14 @@ to exist on `personal/main`; ignore that copy.
 - `config-dcomp.yaml` — your original, untouched
 - `config-dcomp-perf.yaml` — **the tuned one** (focused-only border)
 - `config-dcomp-noborder.yaml` — all borders off, for measuring the ceiling
+- `config-dcomp-prioritize.yaml` — `config-dcomp.yaml` +
+  `prioritize_events_over_animation: true`, for A/B'ing §9
 
 **Scripts (`~/.glzr/glazewm/`):**
-- `perf-bench.ps1` — the repeatable benchmark
+- `perf-bench.ps1` — the repeatable benchmark. It aborts with
+  `TARGET PROCESS 'explorer' NOT TILED` when no File Explorer window is
+  open — open one first, since FPilot is the usual file manager here and
+  is a much heavier, less comparable target.
 
 **Logs — yes, still present in `~/.glzr/glazewm/`:**
 - `perf.log` (64 KB, current) — plus `perf-baseline.log`,
@@ -278,3 +342,96 @@ to exist on `personal/main`; ignore that copy.
 **Pre-existing unrelated test failure:** `user_config::tests::legacy_style_keys_parse`
 (`direction: 'slide_top'` parses as `SlideRight`). Came in with the
 force-manage merge, untouched by this work.
+
+---
+
+## 9. Event-queue starvation — measured and fixed (opt-in)
+
+`main.rs`' `select!` is `biased` with the animation tick above every event
+branch. A tick is ready again the instant the previous frame finishes, so for
+the whole of an animation the event branches are **never reached**. The
+comment defending that ordering ("so that window/input events never delay
+mid-animation frames") was paying for something that costs nothing.
+
+`general.prioritize_events_over_animation` (default **off**) drains queued
+platform events before each frame, capped at `MAX_PRIORITY_EVENTS_PER_FRAME
+= 8` so an event storm cannot starve the animation the other way, and checks
+keybindings first (the select checks them last).
+
+Fullwidth benchmark, 8 tiled windows, controls run either side:
+
+| run | tick ms/frame | event wait mean | event wait worst |
+|---|---|---|---|
+| control | 12.87 | ~207-282 ms | ~470-695 ms |
+| **candidate** | **11.66** | **~42-50 ms** | **~112-131 ms** |
+| control (after) | 11.34 | ~186-200 ms | ~450-481 ms |
+
+**~4× less waiting at no frame cost** — the candidate's tick sits between its
+two controls, i.e. inside noise. Handling events as they arrive costs no more
+than handling them in a burst at the end.
+
+Caveat on what was measured: the benchmark drives the WM over IPC, so it
+generates **window** events, not keypresses. Keybindings share the same
+select and sit *below* the window branch, so they can only have been starved
+at least as badly — but that specific number is inferred, not measured. To
+measure it directly, press a keybinding during an animation with
+`GLAZEWM_PERF=1` and read the `keybinding` row.
+
+`~/.glzr/glazewm/config-dcomp-prioritize.yaml` is `config-dcomp.yaml` with
+the flag on, for A/B runs.
+
+---
+
+## 10. The duplicate uncloak (landed, unconditional)
+
+`reposition_window` applies the window's cloak state itself under
+`HideMethod::Cloak`; the `Apply` arm then uncloaked the same visible window
+again immediately afterwards. The arm's own comment already noted that method
+"already calls `set_cloaked` internally" — the call ran anyway.
+`reposition_window` now returns a `CloakState` and the arm only uncloaks when
+it is still owed (the `already_positioned` path, where `reposition_window`
+never ran).
+
+Per `Apply` entry, back-to-back:
+
+| stage | before | after |
+|---|---|---|
+| `rd_apply` | 7.10 ms | 6.54 ms (**-8%**) |
+| `uncloak` | 4.78 ms | 3.83 ms (-20%) |
+| `rp_visible` | 3.30 ms | 3.86 ms (**+17%**) |
+
+Note the third row: the surviving cloak call gets *dearer*. DWM does the work
+once either way and the second call was only absorbing some of the
+back-pressure — another instance of §1. Net ~0.2 ms of a ~12 ms tick: real,
+strictly less work for identical behaviour, but not readable in the tick
+median above noise. Do not expect this alone to change how it feels.
+
+---
+
+## 11. What is actually worth doing next (re-ranked)
+
+Current shape of a ~12 ms tick on the fullwidth benchmark:
+
+```
+  tick               12.09
+    platform_sync     9.46
+      redraw_loop     2.48   (rd_apply 2.14)
+      surrogate_flush 2.70
+      session_overlays 3.85  <-- now the largest single child
+    cleanup           1.73
+  batch_commit        5.69   (cross-cutting, inside the above)
+```
+
+1. **`session_overlays` (3.85 ms/frame).** The largest remaining item, and
+   the one §3's config finding already points at — borders on all windows
+   cost 2.1× versus focused-only. Worth attacking in code now that
+   `rd_apply` is understood: it tracks every live session's blur/border
+   overlay onto its surrogate, every frame.
+2. **The keybinding latency number.** Cheap: one keypress during an
+   animation with `GLAZEWM_PERF=1` closes the last gap in §9.
+3. **A DWM-pressure signal** (§7), to test the surface-area hypothesis that
+   §1 rests on, rather than continuing to assume it.
+4. **Do not** revisit §6.1 as written, and do not expect anything from §6.2
+   or §6.3 (see §0).
+
+---
