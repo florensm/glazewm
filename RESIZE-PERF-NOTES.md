@@ -358,6 +358,28 @@ platform events before each frame, capped at `MAX_PRIORITY_EVENTS_PER_FRAME
 = 8` so an event storm cannot starve the animation the other way, and checks
 keybindings first (the select checks them last).
 
+### The workspace-switch gate — read this before widening it
+
+The first version drained **every** listener unconditionally. It made
+resizing visibly smoother (Florens, hands-on) but **broke workspace-switch
+slides and left workspaces reporting no windows to yasb**. The handlers for
+mouse/window/display events mutate layout state — display states, workspace
+membership, floating placement, unmanagement — and running them against a
+slide that is still moving the same windows corrupts it.
+
+Resize and move animations are *not* exposed to this:
+`handle_window_moved_or_resized` bails out early for any window holding a
+`ResizeSession`, so during a resize these events cost a rect query and
+nothing more. That asymmetry is the whole fix: while
+`is_workspace_switch_active()` (which includes the one-tick
+`pending_ws_cleanup`), only keybindings are drained; otherwise everything is.
+Re-checked every loop iteration, since handling an event can itself start or
+end a slide.
+
+A middle version that drained *only* keybindings was tried and rejected: it
+is safe but throws away the win, because it is window events that actually
+back up (~195 per burst versus a handful of keybindings).
+
 Fullwidth benchmark, 8 tiled windows, controls run either side:
 
 | run | tick ms/frame | event wait mean | event wait worst |
