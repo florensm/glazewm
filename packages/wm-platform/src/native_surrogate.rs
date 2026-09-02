@@ -219,6 +219,8 @@ impl SurrogateBatch {
       return;
     }
 
+    let _scope = crate::perf::scope(crate::perf::Stage::BatchCommit);
+
     let flags = SWP_NOACTIVATE
       | SWP_NOCOPYBITS
       | SWP_NOSENDCHANGING

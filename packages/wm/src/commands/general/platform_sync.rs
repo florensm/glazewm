@@ -1017,6 +1017,7 @@ fn redraw_containers(
 
     // Determine the rect to use for this frame.
     #[cfg_attr(not(target_os = "windows"), allow(unused_variables))]
+    let anim_scope = perf::scope(Stage::AnimStep);
     let (position_result, anim_opacity) = if should_use_animations {
       // Incoming workspace-switch windows: the surrogate handles all visuals
       // for the full animation duration — freeze the real window.
@@ -1057,10 +1058,14 @@ fn redraw_containers(
       (AnimationPositionResult::Apply(target_rect.clone()), None)
     };
 
+    drop(anim_scope);
+
     debug!("Updating window position: {window}");
 
     match position_result {
       AnimationPositionResult::Frozen => {
+        let _scope = perf::scope(Stage::RedrawFrozen);
+
         // A surrogate overlay is covering this window. On the first frame,
         // cloak the real window (so only the surrogate is visible) and
         // synchronously pre-position it at its target rect. Both operations
@@ -1156,6 +1161,8 @@ fn redraw_containers(
         }
       }
       AnimationPositionResult::Apply(ref apply_rect) => {
+        let _scope = perf::scope(Stage::RedrawApply);
+
         // Only omit `SWP_ASYNCWINDOWPOS` when a surrogate is active for this
         // window — adjacent windows must stay in lock-step with the overlay.
         // For pure moves (no surrogate) async is correct and avoids blocking
