@@ -18,7 +18,10 @@ use wm_platform::{
   NativeBlurOverlay, NativeBorderOverlay, NativeIrisOverlay, OpacityValue,
   SurrogateBatch, WorkspaceSurrogate, HWND, HWND_TOPMOST,
 };
-use wm_platform::{Rect, WindowZOrder};
+use wm_platform::{
+  perf::{self, Stage},
+  Rect, WindowZOrder,
+};
 
 #[cfg(target_os = "windows")]
 use crate::pending_sync::IrisSwitchRequest;
@@ -58,6 +61,8 @@ pub fn platform_sync(
   state: &mut WmState,
   config: &UserConfig,
 ) -> anyhow::Result<()> {
+  let _scope = perf::scope(Stage::PlatformSync);
+
   let focused_container =
     state.focused_container().context("No focused container.")?;
 
@@ -308,6 +313,127 @@ fn windows_to_bring_to_front(
   Ok(windows_to_bring_to_front)
 }
 
+/// A window queued by [`redraw_containers`] to be cloaked once this pass's
+/// shared `DwmFlush` barrier has run.
+///
+/// Carries everything the cloak-and-preposition step needs, so the step can
+/// run after the redraw loop has released its borrow on `windows_to_update`.
+#[cfg(target_os = "windows")]
+struct PendingCloak {
+  /// The window to cloak.
+  window: WindowContainer,
+  /// Z-order the window was resolved to this pass.
+  z_order: WindowZOrder,
+  /// Rect to pre-position the cloaked window at.
+  target_rect: Rect,
+}
+
+/// Cloaks and pre-positions every window [`redraw_containers`] queued this
+/// pass, behind one shared `DwmFlush`.
+///
+/// `blur_batch`/`border_batch` hold the overlay repositions that must be
+/// visible in the flushed frame; they are committed first so the flush
+/// covers them too. See `pending_cloaks`' declaration in
+/// [`redraw_containers`] for why the flush is hoisted out of the per-window
+/// loop.
+#[cfg(target_os = "windows")]
+fn commit_pending_cloaks(
+  state: &mut WmState,
+  pending: Vec<PendingCloak>,
+  blur_batch: SurrogateBatch,
+  border_batch: SurrogateBatch,
+) {
+  use wm_platform::{
+    SWP_ASYNCWINDOWPOS, SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOSENDCHANGING,
+    SWP_NOZORDER,
+  };
+
+  if pending.is_empty() {
+    return;
+  }
+
+  let _scope = perf::scope(Stage::Cloak);
+
+  blur_batch.commit();
+  border_batch.commit();
+
+  // Flush before cloaking so DWM renders one frame with every queued
+  // surrogate (and its now-correctly-anchored overlays) visible and its
+  // thumbnail populated while the real windows are still visible. Without
+  // this, thumbnail content may not be ready for the first composition
+  // after the cloak, producing a blank frame at animation start.
+  wm_platform::dwm_flush();
+
+  for PendingCloak {
+    window,
+    z_order,
+    target_rect,
+  } in pending
+  {
+    let _ = window.native().set_cloaked(true);
+
+    // Pre-position the cloaked window at its target rect so it appears
+    // there when uncloaked at animation end. Posted asynchronously — the
+    // animation duration (~300 ms) is far longer than any app's
+    // message-queue processing time.
+    //
+    // Growing resize sessions (both dimensions grow) pre-position so DWM
+    // captures the correctly-sized content during the curtain-reveal. Mixed
+    // and shrinking sessions use the clip/wipe approach (thumbnail at
+    // source), and stretch sessions sample source-sized content for the
+    // whole animation — both leave the window at source until `pre_commit`.
+    //
+    // The thumbnail stays registered at source dims until
+    // `sync_registration` confirms the resize landed, so a slow-to-respond
+    // app costs at most a few frames of backdrop fill in the newly revealed
+    // area — never a mis-sized capture. `pre_commit` issues a final
+    // synchronous move at animation end as a correctness guarantee.
+    let session_flags = state
+      .animation_manager
+      .resize_sessions
+      .get(&window.id())
+      .map(|session| (session.needs_preposition(), session.is_move_only()));
+
+    let swp_flags = match session_flags {
+      // No resize session (e.g. a workspace-switch frozen window): always
+      // pre-position, with a frame change.
+      None => Some(
+        SWP_NOZORDER
+          | SWP_FRAMECHANGED
+          | SWP_NOACTIVATE
+          | SWP_NOSENDCHANGING
+          | SWP_ASYNCWINDOWPOS,
+      ),
+      Some((true, is_move_only)) => {
+        let mut flags =
+          SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOSENDCHANGING | SWP_ASYNCWINDOWPOS;
+        // `SWP_FRAMECHANGED` forces `WM_NCCALCSIZE` plus a full repaint in
+        // the target app; a pure move needs neither, so multi-window
+        // relayouts skip that per-window repaint burst for windows that
+        // only change position.
+        if !is_move_only {
+          flags |= SWP_FRAMECHANGED;
+        }
+        Some(flags)
+      }
+      Some((false, _)) => None,
+    };
+
+    if let Some(swp_flags) = swp_flags {
+      let _ =
+        window.native().set_window_pos(&z_order, &target_rect, swp_flags);
+    }
+
+    // Mark the session cloaked so subsequent Frozen ticks skip the per-tick
+    // `DwmGetWindowAttribute` query.
+    if let Some(session) =
+      state.animation_manager.resize_sessions.get_mut(&window.id())
+    {
+      session.mark_session_cloaked();
+    }
+  }
+}
+
 #[allow(clippy::too_many_lines)]
 fn redraw_containers(
   focused_container: &Container,
@@ -316,6 +442,8 @@ fn redraw_containers(
   #[cfg_attr(not(target_os = "windows"), allow(unused_variables))]
   z_order_touched: &mut std::collections::HashSet<uuid::Uuid>,
 ) -> anyhow::Result<()> {
+  let _scope = perf::scope(Stage::Redraw);
+
   let windows_to_redraw = state.windows_to_redraw();
   let windows_to_bring_to_front =
     windows_to_bring_to_front(focused_container, state)?;
@@ -610,6 +738,28 @@ fn redraw_containers(
   // instead of leaving it to chance (or serializing a flush per window).
   #[cfg(target_os = "windows")]
   let mut needs_transparency_flush = false;
+
+  // Windows entering their first `Frozen` frame this pass, deferred out of
+  // the loop below so the whole relayout pays one `DwmFlush` instead of one
+  // per window.
+  //
+  // Each window's surrogate must be visible and its overlays anchored for
+  // one composited frame *before* the real window is cloaked, otherwise the
+  // cloak can land on a frame where the surrogate's thumbnail is not yet
+  // populated -- a blank flash at animation start. That barrier is a
+  // `DwmFlush`, which blocks until DWM's next composition (~16.7 ms at
+  // 60 Hz, ~5.7 ms at 175 Hz). Issued inline it multiplied by the number of
+  // windows in the relayout, so a five-window resize stalled the WM's
+  // single thread -- which also serves keybindings, mouse events and IPC --
+  // for five whole frames before the animation's first frame even rendered.
+  // The barrier is per-composition, not per-window, so one flush after the
+  // loop satisfies every queued window at once.
+  #[cfg(target_os = "windows")]
+  let mut pending_cloaks: Vec<PendingCloak> = Vec::new();
+  #[cfg(target_os = "windows")]
+  let mut cloak_blur_batch = SurrogateBatch::new();
+  #[cfg(target_os = "windows")]
+  let mut cloak_border_batch = SurrogateBatch::new();
 
   let cycle_has_resize = windows_to_update.iter().any(|window| {
     let target_rect = window.to_rect().and_then(|rect| {
@@ -936,6 +1086,8 @@ fn redraw_containers(
         if !already_cloaked_by_session
           && !window.native().is_cloaked().unwrap_or(false)
         {
+          let _scope = perf::scope(Stage::Cloak);
+
           // The surrogate is created hidden (`initially_visible: false`,
           // see `SessionOptions`) specifically so this can anchor the blur
           // overlay behind it *before* `ResizeSession::show` reveals it --
@@ -946,6 +1098,11 @@ fn redraw_containers(
           // with no correctly-positioned overlay behind it until this
           // window's blur overlay upsert eventually catches up, giving DWM
           // a real window to composite an unblurred frame in.
+          //
+          // Deferred into the pass-wide batches (rather than each window
+          // committing its own `SurrogateBatch`) so the whole relayout's
+          // overlay repositions land in one `DeferWindowPos` transaction --
+          // see `pending_cloaks`' declaration.
           if let Some(session) =
             state.animation_manager.resize_sessions.get(&window.id())
           {
@@ -954,32 +1111,28 @@ fn redraw_containers(
               session.surrogate_hwnd(),
               session.current_rect(),
             ) {
-              let mut immediate_batch = SurrogateBatch::new();
               upsert_blur_overlay(
                 &mut state.blur_overlays,
                 window.id(),
                 params,
                 &rect,
                 anchor,
-                &mut immediate_batch,
+                &mut cloak_blur_batch,
               );
-              immediate_batch.commit();
             }
             if let (Some(params), Some(anchor), Some(rect)) = (
               session.border_overlay_params(),
               session.surrogate_hwnd(),
               session.current_rect(),
             ) {
-              let mut immediate_batch = SurrogateBatch::new();
               upsert_border_overlay(
                 &mut state.border_overlays,
                 window.id(),
                 params,
                 &rect,
                 anchor,
-                &mut immediate_batch,
+                &mut cloak_border_batch,
               );
-              immediate_batch.commit();
             }
           }
           if let Some(session) =
@@ -988,90 +1141,14 @@ fn redraw_containers(
             session.show();
           }
 
-          // Flush before cloaking so DWM renders one frame with the
-          // surrogate (and its now-correctly-anchored blur overlay) and
-          // the surrogate's thumbnail populated while the real window is
-          // still visible. Without this, the thumbnail content may not be
-          // ready for the first composition after the cloak, producing a
-          // blank frame at animation start.
-          wm_platform::dwm_flush();
-          let _ = window.native().set_cloaked(true);
-
-          // Pre-position the cloaked window at its target rect so it
-          // appears there when uncloaked at animation end. Posted
-          // asynchronously — the animation duration (~300 ms) is far
-          // longer than any app's message-queue processing time.
-          let is_resize_session = state
-            .animation_manager
-            .resize_sessions
-            .contains_key(&window.id());
-          if !is_resize_session {
-            use wm_platform::{
-              SWP_ASYNCWINDOWPOS, SWP_FRAMECHANGED, SWP_NOACTIVATE,
-              SWP_NOSENDCHANGING, SWP_NOZORDER,
-            };
-            let _ = window.native().set_window_pos(
-              &z_order,
-              &target_rect,
-              SWP_NOZORDER
-                | SWP_FRAMECHANGED
-                | SWP_NOACTIVATE
-                | SWP_NOSENDCHANGING
-                | SWP_ASYNCWINDOWPOS,
-            );
-          } else {
-            // Growing resize sessions (both dimensions grow): pre-position the
-            // cloaked window at target asynchronously so DWM captures the
-            // correctly-sized content during the curtain-reveal. Mixed and
-            // shrinking sessions use the clip/wipe approach (thumbnail at
-            // source), and stretch sessions sample source-sized content for
-            // the whole animation — both leave the window at source until
-            // `pre_commit`.
-            let session_flags = state
-              .animation_manager
-              .resize_sessions
-              .get(&window.id())
-              .map(|s| (s.needs_preposition(), s.is_move_only()));
-
-            if let Some((true, is_move_only)) = session_flags {
-              // Post asynchronously: the thumbnail stays registered at
-              // source dims until `sync_registration` confirms the resize
-              // landed, so a slow-to-respond app costs at most a few frames
-              // of backdrop fill in the newly revealed area — never a
-              // mis-sized capture. `pre_commit` issues a final synchronous
-              // move at animation end as a correctness guarantee.
-              use wm_platform::{
-                SWP_ASYNCWINDOWPOS, SWP_FRAMECHANGED, SWP_NOACTIVATE,
-                SWP_NOSENDCHANGING, SWP_NOZORDER,
-              };
-              let mut swp_flags = SWP_NOZORDER
-                | SWP_NOACTIVATE
-                | SWP_NOSENDCHANGING
-                | SWP_ASYNCWINDOWPOS;
-              // `SWP_FRAMECHANGED` forces `WM_NCCALCSIZE` plus a full
-              // repaint in the target app; a pure move needs neither, so
-              // multi-window relayouts skip that per-window repaint burst
-              // for windows that only change position.
-              if !is_move_only {
-                swp_flags |= SWP_FRAMECHANGED;
-              }
-              let _ = window.native().set_window_pos(
-                &z_order,
-                &target_rect,
-                swp_flags,
-              );
-            }
-          }
-
-          // Mark the session cloaked so subsequent Frozen ticks skip the
-          // per-tick `DwmGetWindowAttribute` query.
-          if let Some(session) = state
-            .animation_manager
-            .resize_sessions
-            .get_mut(&window.id())
-          {
-            session.mark_session_cloaked();
-          }
+          // Queued rather than cloaked here: the cloak has to be preceded
+          // by a `DwmFlush`, and doing that inline blocks the WM thread for
+          // a full composition frame *per window*. See `pending_cloaks`.
+          pending_cloaks.push(PendingCloak {
+            window: (*window).clone(),
+            z_order: z_order.clone(),
+            target_rect: target_rect.clone(),
+          });
         }
       }
       AnimationPositionResult::Apply(ref apply_rect) => {
@@ -1197,6 +1274,16 @@ fn redraw_containers(
       }
     }
   }
+
+  // Cloak every window that entered its first `Frozen` frame this pass,
+  // behind a single shared `DwmFlush` barrier. See `pending_cloaks`.
+  #[cfg(target_os = "windows")]
+  commit_pending_cloaks(
+    state,
+    pending_cloaks,
+    cloak_blur_batch,
+    cloak_border_batch,
+  );
 
   // Commit all surrogate repositions queued during this pass in a single
   // `DeferWindowPos` transaction so adjacent windows' edges land in the
@@ -1842,6 +1929,9 @@ trait SyncableOverlay: Sized {
   /// Label used in this overlay kind's debug log messages (e.g. `"Blur"`).
   const LABEL: &'static str;
 
+  /// Profiler stage this overlay kind's [`sync_overlays`] pass reports as.
+  const PERF_STAGE: Stage;
+
   /// Borrows this overlay kind's tracked-overlay map out of `state`.
   fn overlays(
     state: &mut WmState,
@@ -1874,6 +1964,7 @@ trait SyncableOverlay: Sized {
 impl SyncableOverlay for NativeBlurOverlay {
   type Params = BlurOverlayParams;
   const LABEL: &'static str = "Blur";
+  const PERF_STAGE: Stage = Stage::BlurSync;
 
   fn overlays(
     state: &mut WmState,
@@ -1921,6 +2012,7 @@ impl SyncableOverlay for NativeBlurOverlay {
 impl SyncableOverlay for NativeBorderOverlay {
   type Params = BorderOverlayParams;
   const LABEL: &'static str = "Border";
+  const PERF_STAGE: Stage = Stage::BorderSync;
 
   fn overlays(
     state: &mut WmState,
@@ -2014,6 +2106,8 @@ fn sync_overlays<O: SyncableOverlay>(
   z_order_touched: &std::collections::HashSet<uuid::Uuid>,
   full_z_order_resync: bool,
 ) {
+  let _scope = perf::scope(O::PERF_STAGE);
+
   let all_windows = state.windows();
   let mut wanted_ids = std::collections::HashSet::new();
   let mut batch = SurrogateBatch::new();

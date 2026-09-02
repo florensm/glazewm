@@ -185,7 +185,10 @@ use wm_common::{
   EasingFunction, WindowTransitionStyle,
   WorkspaceSwitchDirection, WorkspaceSwitchStyle,
 };
-use wm_platform::{NativeWindow, OpacityValue, Rect};
+use wm_platform::{
+  perf::{self, Stage},
+  NativeWindow, OpacityValue, Rect,
+};
 #[cfg(target_os = "windows")]
 use wm_platform::{
   sample_edge_color_async, BlurOverlayParams, BorderOverlayParams, Color,
@@ -866,6 +869,9 @@ impl AnimationManager {
     if !state.animation_manager.has_active_animations() {
       return Ok(());
     }
+
+    perf::begin_frame();
+    let tick_scope = perf::scope(Stage::Tick);
 
     // Queue in-progress windows for redraw.
     let active_window_ids: Vec<_> = state
@@ -1559,23 +1565,25 @@ impl AnimationManager {
         let mut border_finishing_batch = SurrogateBatch::new();
         for (id, rect) in &finishing_sessions {
           let Some(container) = state.container_by_id(*id) else {
-            tracing::warn!("finishing_sessions: no container for {id}.");
+            tracing::debug!("finishing_sessions: no container for {id}.");
             continue;
           };
           let Ok(window) = container.as_window_container() else {
-            tracing::warn!("finishing_sessions: {id} not a window container.");
+            tracing::debug!(
+              "finishing_sessions: {id} not a window container."
+            );
             continue;
           };
           let anchor = overlay_z_anchor(&window);
           if let Some(overlay) = state.blur_overlays.get_mut(id) {
-            tracing::warn!(
+            tracing::debug!(
               "finishing_sessions: re-anchoring {id} to {:?} at {:?}.",
               anchor,
               rect,
             );
             overlay.defer_rect(&mut finishing_batch, rect, anchor);
           } else {
-            tracing::warn!("finishing_sessions: no blur overlay for {id}.");
+            tracing::debug!("finishing_sessions: no blur overlay for {id}.");
           }
           if let Some(overlay) = state.border_overlays.get_mut(id) {
             overlay.defer_rect(&mut border_finishing_batch, rect, anchor);
@@ -1601,7 +1609,7 @@ impl AnimationManager {
           // Transparent windows were zeroed before the flush above; the
           // flushed frame already shows the correct final composite. Drop now.
           if session.effect_opacity < u8::MAX {
-            tracing::warn!(
+            tracing::debug!(
               "pending_session_cleanup: dropping {id} (transparent, \
                effect_opacity={}).",
               session.effect_opacity,
@@ -1617,7 +1625,7 @@ impl AnimationManager {
           let progress = fade_now.saturating_duration_since(start).as_secs_f32()
             / SESSION_FADE_OUT.as_secs_f32();
           if progress >= 1.0 {
-            tracing::warn!(
+            tracing::debug!(
               "pending_session_cleanup: dropping {id} (fade complete).",
             );
             if let Some(surrogate) = session.take_surrogate() {
@@ -1818,11 +1826,20 @@ impl AnimationManager {
       }
     }
 
+    // Close the frame before deciding whether to report: `report` only
+    // emits once at least one full frame has been rolled up.
+    perf::note_window_count(state.animation_manager.animations.len());
+    drop(tick_scope);
+    perf::end_frame();
+
     // Keep the timer running while animations are active; stop it otherwise
     // so the background thread exits cleanly.
     if state.animation_manager.has_active_animations() {
       state.animation_manager.ensure_timer_running();
     } else {
+      // Last frame of this animation burst: emit the accumulated timings.
+      perf::report("animations idle");
+
       state
         .animation_manager
         .animation_timer_running
@@ -2104,6 +2121,7 @@ impl AnimationManager {
           // skipping `CreateWindowExW`/`DwmRegisterThumbnail` entirely in
           // that case -- otherwise `begin_reusing_surrogate` falls through
           // to a fresh `NativeSurrogate::create` on its own.
+          let begin_scope = perf::scope(Stage::SessionBegin);
           let session_result = match self.reclaim_surrogate(window_id) {
             Some(warm_surrogate) => ResizeSession::begin_reusing_surrogate(
               hwnd,
@@ -2141,6 +2159,8 @@ impl AnimationManager {
               },
             ),
           };
+          drop(begin_scope);
+
           match session_result {
             Ok(session) => {
               // On a cache miss, this session itself plays with a
@@ -2409,6 +2429,8 @@ impl AnimationManager {
     if self.pending_surrogate_updates.is_empty() {
       return;
     }
+
+    let _scope = perf::scope(Stage::SurrogateFlush);
 
     let mut batch = SurrogateBatch::new();
     let mut handoffs_this_tick = 0usize;
