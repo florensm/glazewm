@@ -667,6 +667,40 @@ pub struct AnimationsConfig {
   ///
   /// Only has an effect on Windows.
   pub window_close: WindowCloseConfig,
+
+  /// Which windows keep their effect overlays tracking during an animation.
+  ///
+  /// # Platform-specific
+  ///
+  /// Only has an effect on Windows.
+  pub overlay_tracking: OverlayTracking,
+}
+
+/// Which animating windows keep their blur and border overlays glued to them
+/// for the duration of an animation.
+///
+/// Every animating window is composited as three windows, not one: the
+/// surrogate thumbnail plus a blur overlay and a border overlay, each
+/// repositioned every frame. Since the animation is bound by how many
+/// surfaces DWM has to absorb, this is the largest lever available -- a
+/// measured 2.1x between borders on every window and borders on the focused
+/// window only.
+///
+/// Only affects windows *while they animate*; the static overlays are
+/// restored by the normal sync pass as soon as the animation ends, so the
+/// at-rest appearance is unchanged.
+#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum OverlayTracking {
+  /// Track every animating window's overlays. Smoothest at rest, most
+  /// expensive in motion.
+  #[default]
+  All,
+  /// Track only the focused window's overlays; other windows animate
+  /// without theirs.
+  FocusedOnly,
+  /// Track none of them; all overlays are hidden for the animation.
+  None,
 }
 
 impl Default for AnimationsConfig {
@@ -677,6 +711,7 @@ impl Default for AnimationsConfig {
       window_open: WindowOpenConfig::default(),
       workspace_switch: WorkspaceSwitchAnimationConfig::default(),
       window_close: WindowCloseConfig::default(),
+      overlay_tracking: OverlayTracking::default(),
     }
   }
 }
