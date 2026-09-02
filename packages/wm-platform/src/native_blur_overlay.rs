@@ -9,7 +9,8 @@ use windows::{
       CreateWindowExW, DestroyWindow, GetWindow, SetWindowPos, ShowWindow,
       GW_HWNDPREV, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSENDCHANGING,
       SWP_NOSIZE, SWP_SHOWWINDOW, SW_HIDE, WS_EX_NOACTIVATE,
-      WS_EX_NOREDIRECTIONBITMAP, WS_EX_TOOLWINDOW, WS_POPUP,
+      WS_EX_NOREDIRECTIONBITMAP, WS_EX_TOOLWINDOW, WS_EX_TRANSPARENT,
+      WS_POPUP,
     },
   },
 };
@@ -46,10 +47,22 @@ fn ensure_class_registered() {
 fn create_window(rect: &Rect, composition: bool) -> crate::Result<HWND> {
   ensure_class_registered();
 
+  // `WS_EX_TRANSPARENT` makes the overlay invisible to hit-testing. It is
+  // mandatory, not cosmetic: overlay windows are created on the WM's own
+  // thread, which runs a Tokio loop and never pumps a Win32 message queue,
+  // so Windows classifies every window it owns as hung. Without the flag,
+  // the cursor landing on this overlay shows the busy ("working in
+  // background") cursor and clicks are swallowed -- most visibly during a
+  // resize animation, where the real window is cloaked and the surrogate
+  // above this overlay is itself `WS_EX_TRANSPARENT`, so hit-tests fall
+  // straight through onto it.
   let ex_style = if composition {
-    WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW | WS_EX_NOREDIRECTIONBITMAP
+    WS_EX_NOACTIVATE
+      | WS_EX_TOOLWINDOW
+      | WS_EX_TRANSPARENT
+      | WS_EX_NOREDIRECTIONBITMAP
   } else {
-    WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW
+    WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW | WS_EX_TRANSPARENT
   };
 
   // SAFETY: All parameters are valid. The class is guaranteed registered
