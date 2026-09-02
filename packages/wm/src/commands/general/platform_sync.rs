@@ -947,13 +947,29 @@ fn redraw_containers(
       } else {
         CornerStyle::Default.approx_radius_px()
       };
+      // Decided here rather than in the tracking loop so the session is
+      // built knowing it has no live overlay. `ResizeSession::begin` skips
+      // the sampled backdrop color whenever `blur_overlay` is `Some`, on the
+      // grounds that the tracked acrylic will show through the gap between
+      // the animated rect and the thumbnail -- so an overlay that is
+      // declared but never tracked leaves that gap fully transparent, which
+      // reads as a hole straight through to the desktop. Passing `None`
+      // restores the sampled, app-matched fill instead.
+      let is_tracked = match config.value.animations.overlay_tracking {
+        OverlayTracking::All => true,
+        OverlayTracking::FocusedOnly => window.id() == focused_container.id(),
+        OverlayTracking::None => false,
+      };
+
       let blur_overlay = effect_cfg
         .backdrop
         .acrylic_tint()
+        .filter(|_| is_tracked)
         .map(|tint| effect_cfg.backdrop.to_overlay_params(tint, corner_radius));
       let border_overlay = effect_cfg
         .border
         .abgr_color()
+        .filter(|_| is_tracked)
         .map(|color| effect_cfg.border.to_overlay_params(color, corner_radius));
       (opacity, style, blur_overlay, border_overlay)
     };
@@ -1354,37 +1370,14 @@ fn redraw_containers(
     let mut border_batch = SurrogateBatch::new();
 
     // Each animating window costs three composited surfaces, not one: its
-    // surrogate plus these two overlays, all repositioned every frame. See
-    // `OverlayTracking` for why that is the biggest lever on frame time.
-    let tracking = &config.value.animations.overlay_tracking;
-    let focused_id = state.focused_container().map(|container| container.id());
-
+    // surrogate plus these two overlays, all repositioned every frame -- see
+    // `OverlayTracking`. Untracked windows are filtered out earlier, where
+    // the session's overlay params are decided, so a session simply has no
+    // params here and this loop skips it; `sync_overlays` hides the static
+    // overlay for the duration, exactly as it does for any window whose
+    // effect isn't configured.
     for (id, session) in &state.animation_manager.resize_sessions {
       if state.animation_manager.has_close_animation(id) {
-        continue;
-      }
-
-      let is_tracked = match tracking {
-        OverlayTracking::All => true,
-        OverlayTracking::FocusedOnly => focused_id == Some(*id),
-        OverlayTracking::None => false,
-      };
-
-      // Hidden rather than left in place: an overlay that stops being
-      // repositioned would trail its window across the whole animation,
-      // which reads far worse than its absence. The normal sync pass
-      // re-shows it once the session ends, so the at-rest look is unchanged.
-      if !is_tracked {
-        if let Some(overlay) = state.blur_overlays.get_mut(id) {
-          if overlay.is_visible() {
-            overlay.hide();
-          }
-        }
-        if let Some(overlay) = state.border_overlays.get_mut(id) {
-          if overlay.is_visible() {
-            overlay.hide();
-          }
-        }
         continue;
       }
 
