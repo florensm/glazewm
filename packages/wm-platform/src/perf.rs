@@ -26,15 +26,48 @@
 use std::{
   cell::RefCell,
   fmt::Write,
-  sync::OnceLock,
+  sync::{
+    atomic::{AtomicU64, Ordering},
+    OnceLock,
+  },
   time::{Duration, Instant},
 };
 
-/// A frame slower than this is counted as a dropped frame in the report.
+/// Fallback frame budget, used until [`set_frame_budget`] reports the real
+/// one.
 ///
-/// Roughly two 144 Hz frame periods: past this, a tick has certainly missed
-/// its own vblank and pushed the next one late as well.
-const SLOW_FRAME_THRESHOLD: Duration = Duration::from_millis(14);
+/// One 60 Hz frame period -- the most pessimistic common refresh rate, so an
+/// uncalibrated report over-counts slow frames rather than hiding them.
+const DEFAULT_FRAME_BUDGET: Duration = Duration::from_micros(16_667);
+
+/// The monitor's frame period, as last reported by [`set_frame_budget`].
+///
+/// A frame whose `Tick` exceeds this has missed its own vblank. Stored in
+/// microseconds so it can live in an atomic; the budget is refresh-rate
+/// dependent, and hard-coding one made "slow" meaningless on any monitor
+/// that did not happen to match it (a 14 ms constant chosen for 144 Hz
+/// flagged every perfectly on-budget frame on a 60 Hz panel).
+static FRAME_BUDGET_US: AtomicU64 =
+  AtomicU64::new(DEFAULT_FRAME_BUDGET.as_micros() as u64);
+
+/// Sets the frame budget slow frames are counted against, from the frame
+/// period of the monitor the animation is actually being paced by.
+///
+/// Cheap enough to call every time the pacing monitor changes; a zero or
+/// absurd period is ignored so a bad reading cannot disable the counter.
+pub fn set_frame_budget(period: Duration) {
+  let micros = period.as_micros();
+  if (1_000..=100_000).contains(&micros) {
+    if let Ok(micros) = u64::try_from(micros) {
+      FRAME_BUDGET_US.store(micros, Ordering::Relaxed);
+    }
+  }
+}
+
+/// Returns the frame budget slow frames are counted against.
+fn frame_budget() -> Duration {
+  Duration::from_micros(FRAME_BUDGET_US.load(Ordering::Relaxed))
+}
 
 /// Frames after which an in-progress session reports and resets on its own.
 ///
@@ -168,8 +201,10 @@ struct Profiler {
   worst_frame: [Duration; Stage::COUNT],
   /// Frames completed in the session.
   frames: u32,
-  /// Frames whose `Tick` exceeded [`SLOW_FRAME_THRESHOLD`].
+  /// Frames whose `Tick` exceeded the monitor's frame budget.
   slow_frames: u32,
+  /// Frame budget the session's slow frames were counted against.
+  budget: Duration,
   /// Highest simultaneously-animating window count seen this session.
   peak_windows: usize,
   /// When the session's first frame began.
@@ -301,7 +336,9 @@ fn roll_up_frame() -> bool {
     }
 
     profiler.frames += 1;
-    if profiler.frame_total[Stage::Tick.index()] > SLOW_FRAME_THRESHOLD {
+    let budget = frame_budget();
+    profiler.budget = budget;
+    if profiler.frame_total[Stage::Tick.index()] > budget {
       profiler.slow_frames += 1;
     }
 
@@ -348,12 +385,12 @@ fn take_report(reason: &str) -> Option<String> {
   let mut lines = String::new();
   let _ = writeln!(
     lines,
-    "perf [{reason}]: {} frames in {:.1}ms, {} slow (>{:.0}ms), peak {} \
+    "perf [{reason}]: {} frames in {:.1}ms, {} slow (>{:.1}ms), peak {} \
      window(s) animating",
     summary.frames,
     elapsed.as_secs_f64() * 1000.0,
     summary.slow_frames,
-    SLOW_FRAME_THRESHOLD.as_secs_f64() * 1000.0,
+    summary.budget.as_secs_f64() * 1000.0,
     summary.peak_windows,
   );
   let _ = writeln!(
