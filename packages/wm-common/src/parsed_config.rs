@@ -98,7 +98,8 @@ pub struct GeneralConfig {
   /// Affects which windows get shown in the native Windows taskbar.
   pub show_all_in_taskbar: bool,
 
-  /// Whether to service queued keybindings before the next animation frame.
+  /// Whether to service queued platform events before the next animation
+  /// frame.
   ///
   /// The main loop's `select!` is `biased` with the animation tick above
   /// the event branches, so while an animation is running a tick is ready
@@ -107,11 +108,11 @@ pub struct GeneralConfig {
   /// waiting a median ~210ms and up to ~577ms (`GLAZEWM_PERF=1`, "event
   /// queue wait" in the report).
   ///
-  /// Only keybindings are drained, capped per frame so a repeating binding
-  /// cannot starve the animation in the other direction. Mouse, window and
-  /// display events are deliberately left in the `select!`: their handlers
-  /// mutate layout state, and running them against an animation that is
-  /// still moving the same windows broke workspace-switch slides.
+  /// Draining them is capped per frame so an event burst cannot starve the
+  /// animation in the other direction, and is limited to keybindings while
+  /// a workspace-switch slide is running -- the other handlers mutate
+  /// layout state, which fights a slide that is still moving the same
+  /// windows.
   ///
   /// Off by default.
   pub prioritize_events_over_animation: bool,

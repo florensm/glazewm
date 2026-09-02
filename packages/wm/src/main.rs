@@ -193,9 +193,14 @@ async fn start_wm(
     // never reached -- window events were measured waiting a median ~210ms
     // and up to ~577ms on an eight-window relayout.
     if config.value.general.prioritize_events_over_animation {
-      if let Err(err) =
-        drain_keybinding_events(&mut wm, &mut config, &mut keybinding_listener)
-      {
+      if let Err(err) = drain_platform_events(
+        &mut wm,
+        &mut config,
+        &mut keybinding_listener,
+        &mut mouse_listener,
+        &mut window_listener,
+        &mut display_listener,
+      ) {
         tracing::error!("{:?}", err);
         dispatcher.show_error_dialog("Non-fatal error", &err.to_string());
       }
@@ -324,45 +329,84 @@ async fn start_wm(
   Ok(())
 }
 
-/// Maximum keybindings serviced ahead of one animation frame by
-/// [`drain_keybinding_events`].
+/// Maximum platform events serviced ahead of one animation frame by
+/// [`drain_platform_events`].
 ///
-/// Bounds the inversion this creates: without a cap, a held-down repeating
-/// keybinding could keep the drain busy and starve the animation tick,
-/// turning an input-latency fix into dropped frames. A person cannot
-/// out-type four bindings per frame, so in practice the cap never binds.
-const MAX_PRIORITY_EVENTS_PER_FRAME: usize = 4;
+/// Bounds the inversion this creates: without a cap, an application
+/// spamming location-change events could keep the drain busy and starve the
+/// animation tick, turning an input-latency fix into dropped frames. Eight
+/// is comfortably above the ~1.5 events per frame observed on an
+/// eight-window relayout, so in practice the queue empties first.
+const MAX_PRIORITY_EVENTS_PER_FRAME: usize = 8;
 
-/// Services up to [`MAX_PRIORITY_EVENTS_PER_FRAME`] already-queued
-/// keybindings before the next animation frame.
+/// Services up to [`MAX_PRIORITY_EVENTS_PER_FRAME`] already-queued platform
+/// events before the next animation frame.
 ///
-/// Returns as soon as the channel is empty, so a quiet loop iteration costs
-/// one non-blocking channel poll.
+/// Returns as soon as every eligible listener is empty, so a quiet loop
+/// iteration costs a handful of non-blocking channel polls.
 ///
-/// # Why only keybindings
+/// Keybindings are checked first because they are the only events a person
+/// is actively waiting on; the main loop's own `select!` checks them last.
 ///
-/// Keybindings are the only events a person is actively waiting on, and the
-/// only ones that cannot be produced by the window manager's own work. The
-/// other listeners were tried here too and pulled back out: window events in
-/// particular are largely self-inflicted (our own repositioning raises
-/// `EVENT_OBJECT_LOCATIONCHANGE`), and their handlers mutate layout state --
-/// display states, workspace membership, floating placement. Delivering them
-/// mid-animation runs those mutations against an animation that is still
-/// moving the same windows, and it broke workspace-switch slides and left
-/// workspaces reporting no windows. The `select!` below still handles them,
-/// after the frame, exactly as before.
-fn drain_keybinding_events(
+/// # Why the workspace-switch gate
+///
+/// Mouse, window and display handlers mutate layout state -- display states,
+/// workspace membership, floating placement, unmanagement. Resize and move
+/// animations are safe: `handle_window_moved_or_resized` bails out early for
+/// any window holding a `ResizeSession`, so those events cost a rect query
+/// and nothing more. A workspace-switch slide has no such guard on every
+/// path, and delivering these events mid-slide broke the animation and left
+/// workspaces reporting no windows.
+///
+/// So the gate is narrow on purpose: during a slide (and its one-tick
+/// cleanup) only keybindings are drained and everything else waits for the
+/// `select!`, exactly as it did before this option existed. A slide is brief,
+/// so the responsiveness win during resizes -- which is where the queue
+/// actually backs up, ~195 events per burst -- is kept intact.
+fn drain_platform_events(
   wm: &mut WindowManager,
   config: &mut UserConfig,
   keybinding_listener: &mut KeybindingListener,
+  mouse_listener: &mut MouseListener,
+  window_listener: &mut WindowListener,
+  display_listener: &mut DisplayListener,
 ) -> anyhow::Result<()> {
+  // Re-checked every iteration: handling an event below can start or end a
+  // slide, and the next event must be judged against that.
   for _ in 0..MAX_PRIORITY_EVENTS_PER_FRAME {
-    let Some(event) = keybinding_listener.try_next_event() else {
+    #[cfg(target_os = "windows")]
+    let layout_events_safe =
+      !wm.state.animation_manager.is_workspace_switch_active();
+    #[cfg(not(target_os = "windows"))]
+    let layout_events_safe = true;
+
+    let event = keybinding_listener
+      .try_next_event()
+      .map(PlatformEvent::Keybinding)
+      .or_else(|| {
+        if !layout_events_safe {
+          return None;
+        }
+
+        mouse_listener
+          .try_next_event()
+          .map(PlatformEvent::Mouse)
+          .or_else(|| {
+            window_listener.try_next_event().map(PlatformEvent::Window)
+          })
+          .or_else(|| {
+            display_listener
+              .try_next_event()
+              .map(|()| PlatformEvent::DisplaySettingsChanged)
+          })
+      });
+
+    let Some(event) = event else {
       break;
     };
 
-    tracing::debug!("Received keybinding ahead of tick: {:?}", event);
-    wm.process_event(PlatformEvent::Keybinding(event), config)?;
+    tracing::debug!("Received platform event ahead of tick: {:?}", event);
+    wm.process_event(event, config)?;
   }
 
   Ok(())
