@@ -51,8 +51,15 @@ fn ensure_class_registered() {
 fn create_window(outer_rect: &Rect, composition: bool) -> crate::Result<HWND> {
   ensure_class_registered();
 
+  // `WS_EX_TRANSPARENT` on both paths -- see the matching comment in
+  // `native_blur_overlay::create_window`. The composition path used to omit
+  // it, leaving the (window-outsetting) border overlay hit-testable and
+  // therefore showing the busy cursor over every window's border and gap.
   let ex_style = if composition {
-    WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW | WS_EX_NOREDIRECTIONBITMAP
+    WS_EX_NOACTIVATE
+      | WS_EX_TOOLWINDOW
+      | WS_EX_TRANSPARENT
+      | WS_EX_NOREDIRECTIONBITMAP
   } else {
     WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW | WS_EX_TRANSPARENT
   };
