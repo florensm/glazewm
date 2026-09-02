@@ -180,6 +180,16 @@ pub enum Stage {
   RedrawFrozen,
   /// `redraw_containers`' `Apply` arm, i.e. repositioning a real window.
   RedrawApply,
+  /// `reposition_window`'s minimized/maximized state queries and any
+  /// `restore` they trigger.
+  RepositionQuery,
+  /// `reposition_window`'s `SetWindowPos` itself, plus the transparency
+  /// reassert that has to follow `SWP_FRAMECHANGED`.
+  RepositionSwp,
+  /// `reposition_window`'s closing cloak/show/hide.
+  RepositionVisibility,
+  /// The `Apply` arm's own uncloak, after `reposition_window` returns.
+  ApplyUncloak,
   /// Acrylic blur overlay sync pass.
   BlurSync,
   /// Border overlay sync pass.
@@ -214,7 +224,7 @@ pub enum Stage {
 
 impl Stage {
   /// Every stage, in report order.
-  const ALL: [Stage; 21] = [
+  const ALL: [Stage; 25] = [
     Stage::Tick,
     Stage::PlatformSync,
     Stage::Redraw,
@@ -223,6 +233,10 @@ impl Stage {
     Stage::AnimStep,
     Stage::RedrawFrozen,
     Stage::RedrawApply,
+    Stage::RepositionQuery,
+    Stage::RepositionSwp,
+    Stage::RepositionVisibility,
+    Stage::ApplyUncloak,
     Stage::BlurSync,
     Stage::BorderSync,
     Stage::DwmFlush,
@@ -257,6 +271,10 @@ impl Stage {
       Stage::AnimStep => "anim_step",
       Stage::RedrawFrozen => "rd_frozen",
       Stage::RedrawApply => "rd_apply",
+      Stage::RepositionQuery => "rp_query",
+      Stage::RepositionSwp => "rp_swp",
+      Stage::RepositionVisibility => "rp_visible",
+      Stage::ApplyUncloak => "uncloak",
       Stage::BlurSync => "blur_sync",
       Stage::BorderSync => "border_sync",
       Stage::DwmFlush => "dwm_flush",
@@ -289,6 +307,10 @@ impl Stage {
       | Stage::SurrogateFlush
       | Stage::SessionOverlays => 3,
       Stage::AnimStep | Stage::RedrawFrozen | Stage::RedrawApply => 4,
+      Stage::RepositionQuery
+      | Stage::RepositionSwp
+      | Stage::RepositionVisibility
+      | Stage::ApplyUncloak => 5,
       _ => 0,
     }
   }
