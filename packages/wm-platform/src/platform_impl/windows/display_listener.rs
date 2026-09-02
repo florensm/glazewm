@@ -75,6 +75,9 @@ impl DisplayListener {
             };
 
             if should_emit {
+              crate::perf::mark_event_queued(
+                crate::perf::EventKind::Display,
+              );
               let _ = event_tx.send(());
             }
 

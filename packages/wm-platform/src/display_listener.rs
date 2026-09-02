@@ -25,7 +25,14 @@ impl DisplayListener {
   ///
   /// Returns `None` if the channel has been closed.
   pub async fn next_event(&mut self) -> Option<()> {
-    self.event_rx.recv().await
+    let event = self.event_rx.recv().await;
+
+    #[cfg(target_os = "windows")]
+    if event.is_some() {
+      crate::perf::record_event_dequeued(crate::perf::EventKind::Display);
+    }
+
+    event
   }
 
   /// Terminates the display listener.
