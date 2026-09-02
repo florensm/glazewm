@@ -513,6 +513,7 @@ impl NativeWindow {
   ///   `set_frame`), this can return those invalid values and might not
   ///   reflect the actual window size.
   pub fn frame(&self) -> crate::Result<Rect> {
+    let _scope = crate::perf::scope(crate::perf::Stage::NativeFrame);
     self.inner.frame()
   }
 

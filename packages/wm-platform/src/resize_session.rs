@@ -1075,6 +1075,8 @@ impl ResizeSession {
   /// been destroyed mid-animation, in which case there is nothing left to
   /// wait for and this returns `true` immediately.
   pub fn pre_commit(&mut self) -> bool {
+    let _scope = crate::perf::scope(crate::perf::Stage::PreCommit);
+
     if self.commit_confirmed {
       return true;
     }
