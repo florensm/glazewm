@@ -50,8 +50,13 @@ pub enum Stage {
   Tick,
   /// `platform_sync`, including everything nested below it.
   PlatformSync,
-  /// `redraw_containers`' per-window loop.
+  /// `redraw_containers`, including both stages below.
   Redraw,
+  /// `redraw_containers`' setup before its per-window loop: expanding the
+  /// redraw set, focus-order sorting, and the workspace-switch pre-pass.
+  RedrawPrep,
+  /// `redraw_containers`' per-window loop itself.
+  RedrawLoop,
   /// Acrylic blur overlay sync pass.
   BlurSync,
   /// Border overlay sync pass.
@@ -64,6 +69,12 @@ pub enum Stage {
   Cloak,
   /// `AnimationManager::flush_surrogate_updates`.
   SurrogateFlush,
+  /// `platform_sync`'s post-flush loop tracking each live resize session's
+  /// blur/border overlay onto its surrogate.
+  SessionOverlays,
+  /// `update_internal`'s post-`platform_sync` session/workspace cleanup and
+  /// surrogate fade-out tail.
+  Cleanup,
   /// `ResizeSession::pre_commit`.
   PreCommit,
   /// `NativeWindow::frame` -- a `DwmGetWindowAttribute` round-trip.
@@ -72,16 +83,20 @@ pub enum Stage {
 
 impl Stage {
   /// Every stage, in report order.
-  const ALL: [Stage; 11] = [
+  const ALL: [Stage; 15] = [
     Stage::Tick,
     Stage::PlatformSync,
     Stage::Redraw,
+    Stage::RedrawPrep,
+    Stage::RedrawLoop,
     Stage::BlurSync,
     Stage::BorderSync,
     Stage::DwmFlush,
     Stage::SessionBegin,
     Stage::Cloak,
     Stage::SurrogateFlush,
+    Stage::SessionOverlays,
+    Stage::Cleanup,
     Stage::PreCommit,
     Stage::NativeFrame,
   ];
@@ -100,12 +115,16 @@ impl Stage {
       Stage::Tick => "tick",
       Stage::PlatformSync => "platform_sync",
       Stage::Redraw => "redraw",
+      Stage::RedrawPrep => "  redraw_prep",
+      Stage::RedrawLoop => "  redraw_loop",
       Stage::BlurSync => "blur_sync",
       Stage::BorderSync => "border_sync",
       Stage::DwmFlush => "dwm_flush",
       Stage::SessionBegin => "session_begin",
       Stage::Cloak => "cloak",
       Stage::SurrogateFlush => "surrogate_flush",
+      Stage::SessionOverlays => "session_overlays",
+      Stage::Cleanup => "cleanup",
       Stage::PreCommit => "pre_commit",
       Stage::NativeFrame => "native_frame",
     }
