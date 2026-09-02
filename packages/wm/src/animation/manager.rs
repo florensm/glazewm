@@ -1523,14 +1523,25 @@ impl AnimationManager {
       fade_tail_batch.commit();
       border_fade_tail_batch.commit();
 
-      let has_new_session_cleanup = state
-        .animation_manager
-        .pending_session_cleanup
-        .iter()
-        .any(|(_, fade_start, _)| fade_start.is_none());
-      if has_new_session_cleanup
-        || state.animation_manager.pending_ws_cleanup.is_some()
-      {
+      // A session entering cleanup needs one composition between
+      // `platform_sync`'s uncloak and the first fade step, otherwise the
+      // frame can show a dimmed/absent surrogate over a still-cloaked
+      // window -- a blank flash at the end of the animation. That used to
+      // be bought with a `DwmFlush` right here, blocking the WM's single
+      // thread for a whole composition every time any session finished --
+      // which, during a burst of rapid resizes, is most ticks.
+      //
+      // The `retain_mut` below instead defers each session's first fade
+      // step to the *next* tick. The tick loop is already paced by the
+      // animation thread's own vblank wait, so the next tick is by
+      // construction a later composition: the same guarantee, without this
+      // thread waiting for it. Deferring costs nothing visually either --
+      // the first step's progress is ~0, so it was a no-op fade anyway.
+      //
+      // Workspace-switch cleanup still flushes: it tears its surrogates
+      // down in this same tick rather than across ticks, so it has no
+      // later tick to defer to.
+      if state.animation_manager.pending_ws_cleanup.is_some() {
         wm_platform::dwm_flush();
       }
 
@@ -1555,12 +1566,16 @@ impl AnimationManager {
         .pending_session_cleanup
         .iter()
         .filter_map(|(id, fade_start, session)| {
-          let is_finishing = session.effect_opacity < u8::MAX
-            || fade_start.is_some_and(|start| {
-              fade_now.saturating_duration_since(start).as_secs_f32()
+          // `fade_start.is_some()` gates both arms: a session on its very
+          // first cleanup tick is deferred (see the `retain_mut` below) and
+          // so is not dropped yet, and re-anchoring it here would fire this
+          // block's flush a tick before it is needed.
+          let is_finishing = fade_start.is_some_and(|start| {
+            session.effect_opacity < u8::MAX
+              || fade_now.saturating_duration_since(start).as_secs_f32()
                 / SESSION_FADE_OUT.as_secs_f32()
                 >= 1.0
-            });
+          });
           is_finishing
             .then(|| session.current_rect().map(|rect| (*id, rect)))
             .flatten()
@@ -1613,8 +1628,21 @@ impl AnimationManager {
       let mut reclaimed_surrogates: Vec<(Uuid, NativeSurrogate)> = Vec::new();
       state.animation_manager.pending_session_cleanup.retain_mut(
         |(id, fade_start, session)| {
-          // Transparent windows were zeroed before the flush above; the
-          // flushed frame already shows the correct final composite. Drop now.
+          // First tick in cleanup: `platform_sync` uncloaked the real window
+          // moments ago and DWM has not composited that yet. Record the
+          // start and act from the next tick -- the vsync-paced tick loop
+          // guarantees it is a later composition -- rather than blocking
+          // this thread on a `DwmFlush` to buy the same barrier. Transparent
+          // sessions were already zeroed by the loop above, so the frame
+          // that lands in between is the correct final composite for them
+          // too.
+          let Some(start) = *fade_start else {
+            *fade_start = Some(fade_now);
+            return true;
+          };
+
+          // Transparent windows were zeroed on the tick before this one, so
+          // the composite the user is looking at is already correct. Drop.
           if session.effect_opacity < u8::MAX {
             tracing::debug!(
               "pending_session_cleanup: dropping {id} (transparent, \
@@ -1628,7 +1656,6 @@ impl AnimationManager {
             return false;
           }
 
-          let start = *fade_start.get_or_insert(fade_now);
           let progress = fade_now.saturating_duration_since(start).as_secs_f32()
             / SESSION_FADE_OUT.as_secs_f32();
           if progress >= 1.0 {
@@ -1962,6 +1989,12 @@ impl AnimationManager {
           .animation_timer_vsync
           .lock()
           .unwrap_or_else(|e| e.into_inner());
+        // Slow frames are counted against the frame period of whichever
+        // monitor is actually pacing the animation, so the profiler stays
+        // meaningful across a 60 Hz panel and a 175 Hz one alike.
+        perf::set_frame_budget(Duration::from_micros(
+          new_waiter.frame_period_us(),
+        ));
         tracing::debug!(
           monitor = monitor_handle,
           period_us = new_waiter.frame_period_us(),
