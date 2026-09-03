@@ -14,9 +14,9 @@ use std::time::{Duration, Instant};
 
 #[cfg(target_os = "windows")]
 use wm_platform::{
-  BackdropStyle, BlurOverlayParams, BorderOverlayParams, CornerStyle,
-  NativeBlurOverlay, NativeBorderOverlay, NativeIrisOverlay, OpacityValue,
-  SurrogateBatch, WorkspaceSurrogate, HWND, HWND_TOPMOST,
+  BlurOverlayParams, BorderOverlayParams, CornerStyle, NativeBlurOverlay,
+  NativeBorderOverlay, NativeIrisOverlay, OpacityValue, SurrogateBatch,
+  WorkspaceSurrogate, HWND, HWND_TOPMOST,
 };
 use wm_platform::{
   perf::{self, Stage},
@@ -596,8 +596,8 @@ fn redraw_containers(
           // Carry the acrylic blur onto the surrogate so the frosted-glass
           // effect stays visible while the workspace slides. The static
           // blur overlay is hidden for the duration of the animation.
-          let acrylic_tint =
-            effect_cfg.backdrop.acrylic_tint().map(|c| c.to_abgr());
+          let overlay_tint =
+            effect_cfg.backdrop.overlay_tint().map(|c| c.to_abgr());
           let corner_style = if effect_cfg.corner_style.enabled {
             effect_cfg.corner_style.style.clone()
           } else {
@@ -621,7 +621,7 @@ fn redraw_containers(
                   opacity,
                   ws_config.opacity_incoming,
                   &corner_style,
-                  acrylic_tint,
+                  overlay_tint,
                 )
                 .map_err(|e| {
                   tracing::warn!(
@@ -658,7 +658,7 @@ fn redraw_containers(
               opacity,
               ws_config.opacity_outgoing,
               &corner_style,
-              acrylic_tint,
+              overlay_tint,
             )
             .map_err(|e| {
               tracing::warn!("Failed to create outgoing surrogate: {e}.");
@@ -963,7 +963,7 @@ fn redraw_containers(
 
       let blur_overlay = effect_cfg
         .backdrop
-        .acrylic_tint()
+        .overlay_tint()
         .filter(|_| is_tracked)
         .map(|tint| effect_cfg.backdrop.to_overlay_params(tint, corner_radius));
       let border_overlay = effect_cfg
@@ -1818,8 +1818,8 @@ fn apply_backdrop_effect(
   window: &WindowContainer,
   effect_config: &WindowEffectConfig,
 ) {
-  // `Acrylic` is handled via a persistent `NativeBlurOverlay` placed at
-  // `HWND_BOTTOM` behind the managed window — SWCA is not applied to the
+  // `Acrylic`/`Blur` are handled via a persistent `NativeBlurOverlay`
+  // placed directly behind the managed window — SWCA is not applied to the
   // managed window itself to avoid the `WS_EX_LAYERED`/SWCA compositing
   // conflict. `Mica`/`MicaAlt` use `DWMWA_SYSTEMBACKDROP_TYPE` directly
   // on the managed window (Win11 22H2+).
@@ -1827,9 +1827,7 @@ fn apply_backdrop_effect(
     effect_config.backdrop.enabled,
     &effect_config.backdrop.style,
   ) {
-    (true, BackdropStyle::Mica | BackdropStyle::MicaAlt) => {
-      Some(&effect_config.backdrop.style)
-    }
+    (true, style) if !style.is_overlay_backed() => Some(style),
     _ => None,
   };
 
@@ -1988,7 +1986,7 @@ pub(crate) fn blur_overlay_params_for(
     &config.value.window_effects.other_windows
   };
 
-  let tint = effect_cfg.backdrop.acrylic_tint()?;
+  let tint = effect_cfg.backdrop.overlay_tint()?;
 
   // Mirrors `corner_style` (falling back to `CornerStyle::Default` when
   // disabled, same as `apply_corner_effect`) so the overlay's rounded clip

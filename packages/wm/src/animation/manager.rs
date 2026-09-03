@@ -1292,7 +1292,7 @@ impl AnimationManager {
                   } else {
                     &config.value.window_effects.other_windows
                   };
-                  if let Some(tint) = effect_cfg.backdrop.acrylic_tint() {
+                  if let Some(tint) = effect_cfg.backdrop.overlay_tint() {
                     let corner_radius = if effect_cfg.corner_style.enabled {
                       effect_cfg.corner_style.style.approx_radius_px()
                     } else {
@@ -1747,7 +1747,7 @@ impl AnimationManager {
           CornerStyle::Default.approx_radius_px()
         };
 
-        if let Some(tint) = effect_cfg.backdrop.acrylic_tint() {
+        if let Some(tint) = effect_cfg.backdrop.overlay_tint() {
           let params = effect_cfg.backdrop.to_overlay_params(tint, corner_radius);
 
           match state.blur_overlays.entry(*id) {

@@ -11,6 +11,20 @@ use windows::{
 /// Accent state: solid-color fill, used for surrogate backdrops.
 pub(crate) const ACCENT_ENABLE_GRADIENT: u32 = 1;
 
+/// Accent state: translucent solid fill -- `gradient_color` blended over
+/// whatever is behind, with no blur pass at all.
+///
+/// The cheapest state that still renders something deliberate: DWM composites
+/// one flat translucent layer instead of sampling and blurring the content
+/// beneath it.
+pub(crate) const ACCENT_ENABLE_TRANSPARENTGRADIENT: u32 = 2;
+
+/// Accent state: plain blur-behind, the Win10-era Aero-style blur. Blurs
+/// live content behind the window without acrylic's extra noise-texture,
+/// tint, and saturation passes, so it composites markedly cheaper than
+/// `ACCENT_ENABLE_ACRYLICBLURBEHIND`.
+pub(crate) const ACCENT_ENABLE_BLURBEHIND: u32 = 3;
+
 /// Accent state: acrylic blur-behind, the Win10 frosted-glass equivalent.
 pub(crate) const ACCENT_ENABLE_ACRYLICBLURBEHIND: u32 = 4;
 
@@ -19,6 +33,15 @@ pub(crate) const ACCENT_ENABLE_ACRYLICBLURBEHIND: u32 = 4;
 /// up, rather than blurring a solid color like `ACCENT_ENABLE_ACRYLICBLURBEHIND`.
 /// The `gradient_color` field is unused for this accent state.
 pub(crate) const ACCENT_ENABLE_HOSTBACKDROP: u32 = 5;
+
+/// Accent flag telling the compositor that `AccentPolicy::gradient_color`
+/// is meaningful.
+///
+/// Required for `ACCENT_ENABLE_BLURBEHIND`, whose tint is otherwise
+/// ignored. Deliberately *not* set for `ACCENT_ENABLE_ACRYLICBLURBEHIND`,
+/// which reads the gradient color unconditionally and renders a flat,
+/// unblurred fill when the flag is present.
+pub(crate) const ACCENT_FLAG_USE_GRADIENT_COLOR: u32 = 2;
 
 /// `WCA_ACCENT_POLICY` attribute index for
 /// `SetWindowCompositionAttribute`.
@@ -77,7 +100,8 @@ fn get_set_wca() -> Option<SetWindowCompositionAttributeFn> {
 }
 
 /// Applies the given `accent_state` and `gradient_color` (ABGR) to `hwnd`
-/// via the undocumented `SetWindowCompositionAttribute` API.
+/// via the undocumented `SetWindowCompositionAttribute` API, with no accent
+/// flags set.
 ///
 /// Returns `true` if the call succeeded, `false` if the API is unavailable
 /// (pre-Windows 10 1607) or if the call itself failed.
@@ -86,13 +110,33 @@ pub(crate) fn apply_swca_accent(
   accent_state: u32,
   gradient_color: u32,
 ) -> bool {
+  apply_swca_accent_with_flags(hwnd, accent_state, 0, gradient_color)
+}
+
+/// Applies the given `accent_state`, `accent_flags`, and `gradient_color`
+/// (ABGR) to `hwnd` via the undocumented `SetWindowCompositionAttribute`
+/// API.
+///
+/// Callers that don't need a non-zero flag set should use
+/// [`apply_swca_accent`]; the only flag currently in use is
+/// [`ACCENT_FLAG_USE_GRADIENT_COLOR`], required by
+/// [`ACCENT_ENABLE_BLURBEHIND`].
+///
+/// Returns `true` if the call succeeded, `false` if the API is unavailable
+/// (pre-Windows 10 1607) or if the call itself failed.
+pub(crate) fn apply_swca_accent_with_flags(
+  hwnd: HWND,
+  accent_state: u32,
+  accent_flags: u32,
+  gradient_color: u32,
+) -> bool {
   let Some(set_wca) = get_set_wca() else {
     return false;
   };
 
   let mut policy = AccentPolicy {
     accent_state,
-    accent_flags: 0,
+    accent_flags,
     gradient_color,
     animation_id: 0,
   };

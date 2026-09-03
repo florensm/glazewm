@@ -98,8 +98,8 @@ impl WorkspaceSurrogate {
   /// [`SurrogateMode::PinnedViewport`] mode, where the surrogate spans the
   /// whole monitor and must not be rounded.
   ///
-  /// `acrylic_tint` is GlazeWM's own configured tint
-  /// (`BackdropEffectConfig::acrylic_tint`), or `None` when `backdrop`
+  /// `overlay_tint` is GlazeWM's own configured tint
+  /// (`BackdropEffectConfig::overlay_tint`), or `None` when `backdrop`
   /// isn't configured for this window. When `Some`, this switches the
   /// surrogate to [`SurrogateMode::Live`] -- sized/moved to its own footprint
   /// rather than pinned to the viewport -- so a live-tracking acrylic blur
@@ -128,9 +128,9 @@ impl WorkspaceSurrogate {
     opacity: u8,
     opacity_endpoint: f32,
     corner_style: &CornerStyle,
-    acrylic_tint: Option<u32>,
+    overlay_tint: Option<u32>,
   ) -> crate::Result<Self> {
-    let carries_live_backdrop = acrylic_tint.is_some();
+    let carries_live_backdrop = overlay_tint.is_some();
 
     let mode = if carries_live_backdrop {
       SurrogateMode::Live

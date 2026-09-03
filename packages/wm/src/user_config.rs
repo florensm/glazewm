@@ -467,4 +467,34 @@ window_effects:
       BackdropStyle::Mica
     );
   }
+
+  /// Every `BackdropStyle` variant must be reachable from the config using
+  /// its snake_case name, `blur` included.
+  #[test]
+  fn backdrop_styles_parse() {
+    for (value, expected) in [
+      ("acrylic", BackdropStyle::Acrylic),
+      ("blur", BackdropStyle::Blur),
+      ("mica", BackdropStyle::Mica),
+      ("mica_alt", BackdropStyle::MicaAlt),
+    ] {
+      let yaml = format!(
+        "
+window_effects:
+  focused_window:
+    backdrop:
+      enabled: true
+      style: '{value}'
+"
+      );
+
+      let config: ParsedConfig = serde_yaml::from_str(&yaml)
+        .unwrap_or_else(|e| panic!("`{value}` should parse: {e}"));
+
+      assert_eq!(
+        config.window_effects.focused_window.backdrop.style,
+        expected
+      );
+    }
+  }
 }
