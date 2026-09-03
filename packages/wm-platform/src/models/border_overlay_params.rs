@@ -23,4 +23,12 @@ pub struct BorderOverlayParams {
   /// Opacity of the overlay's whole composited visual, from `0.0` to
   /// `1.0`.
   pub opacity: f32,
+  /// Whether the tracked window is fully opaque, and so occludes the
+  /// overlay's center on its own.
+  ///
+  /// When `true` the ring needs no hole-punch region: the window's own body
+  /// hides the sheet everywhere except the outer margin band. When `false`
+  /// the region is required, since a translucent window leaves the
+  /// overlay's fill visible straight through its center.
+  pub window_is_opaque: bool,
 }

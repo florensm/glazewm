@@ -8,7 +8,7 @@ use windows::{
       Dwm::DwmExtendFrameIntoClientArea,
       Gdi::{
         CombineRgn, CreateRectRgn, CreateRoundRectRgn, DeleteObject,
-        HGDIOBJ, RGN_DIFF, SetWindowRgn,
+        HGDIOBJ, HRGN, RGN_DIFF, SetWindowRgn,
       },
     },
     UI::{
@@ -219,6 +219,21 @@ fn apply_hole_region(
   }
 }
 
+/// Removes any window region from `hwnd`, restoring it to a plain
+/// rectangle.
+///
+/// `redraw` carries the same meaning as in [`apply_hole_region`]: only the
+/// SWCA fallback, which composites into a real redirection surface, needs
+/// the newly covered area repainted.
+fn clear_hole_region(hwnd: HWND, redraw: bool) {
+  // SAFETY: `hwnd` is a valid window handle for the overlay's lifetime. A
+  // null region handle is `SetWindowRgn`'s documented way of clearing the
+  // region, and transfers no ownership.
+  unsafe {
+    SetWindowRgn(hwnd, HRGN(0), BOOL(i32::from(redraw)));
+  }
+}
+
 /// The radius to round the hole-punch's inner edge to, so it stays
 /// concentric with the ring's own outer `corner_radius` (itself outset by
 /// `width` from the tracked window's edge). Clamped to zero (a square
@@ -296,7 +311,10 @@ pub struct NativeBorderOverlay {
   /// whole `set_rect`/`defer_rect` call including `SetWindowPos`, this one
   /// only skips the (comparatively expensive) region recompute when the
   /// position moved but the shape didn't.
-  hole_shape: (i32, i32, i32),
+  ///
+  /// `None` when no region is applied at all, which is the case for an
+  /// opaque tracked window -- see `BorderOverlayParams::window_is_opaque`.
+  hole_shape: Option<(i32, i32, i32)>,
 }
 
 impl NativeBorderOverlay {
@@ -341,15 +359,18 @@ impl NativeBorderOverlay {
 
     #[allow(clippy::cast_possible_truncation)]
     let outset = params.width.round() as i32;
-    let hole_shape =
-      (outer.width(), outer.height(), inner_hole_radius(&params));
-    apply_hole_region(
-      hwnd,
-      (hole_shape.0, hole_shape.1),
-      outset,
-      hole_shape.2,
-      composition.is_none(),
-    );
+    let hole_shape = (!params.window_is_opaque).then(|| {
+      let shape =
+        (outer.width(), outer.height(), inner_hole_radius(&params));
+      apply_hole_region(
+        hwnd,
+        (shape.0, shape.1),
+        outset,
+        shape.2,
+        composition.is_none(),
+      );
+      shape
+    });
 
     Ok(Self {
       hwnd: hwnd.0,
@@ -374,11 +395,22 @@ impl NativeBorderOverlay {
   fn refresh_hole(&mut self, outer: &Rect) {
     let _scope = crate::perf::scope(crate::perf::Stage::OverlayRegion);
 
+    // An opaque window occludes the sheet's center by itself, so the region
+    // is pure cost -- and it is the per-frame kind, since a resize changes
+    // the hole's shape on every tick. Clear one left behind by params that
+    // were previously translucent.
+    if self.params.window_is_opaque {
+      if self.hole_shape.take().is_some() {
+        clear_hole_region(self.hwnd(), self.composition.is_none());
+      }
+      return;
+    }
+
     #[allow(clippy::cast_possible_truncation)]
     let outset = self.params.width.round() as i32;
     let shape = (outer.width(), outer.height(), inner_hole_radius(&self.params));
 
-    if shape == self.hole_shape {
+    if self.hole_shape == Some(shape) {
       return;
     }
 
@@ -389,7 +421,7 @@ impl NativeBorderOverlay {
       shape.2,
       self.composition.is_none(),
     );
-    self.hole_shape = shape;
+    self.hole_shape = Some(shape);
   }
 
   /// Returns whether the overlay window is currently shown.
@@ -596,6 +628,22 @@ impl NativeBorderOverlay {
     self.set_width(params.width);
     self.set_corner_radius(params.corner_radius);
     self.set_opacity(params.opacity);
+    self.set_window_opaque(params.window_is_opaque);
+  }
+
+  /// Updates whether the tracked window occludes the ring's center, adding
+  /// or dropping the hole-punch region to match.
+  ///
+  /// Only changes on a config reload, but the overlay outlives that, so the
+  /// region must follow rather than stay as it was created.
+  pub fn set_window_opaque(&mut self, value: bool) {
+    if self.params.window_is_opaque == value {
+      return;
+    }
+    self.params.window_is_opaque = value;
+
+    let outer = outer_rect(&self.rect, self.params.width);
+    self.refresh_hole(&outer);
   }
 
   /// Hides the overlay without destroying it.
