@@ -322,7 +322,7 @@ impl WindowManager {
               };
               let blur_overlay = effect_cfg
                 .backdrop
-                .acrylic_tint()
+                .overlay_tint()
                 .map(|tint| effect_cfg.backdrop.to_overlay_params(tint, corner_radius));
               let border_overlay = effect_cfg
                 .border

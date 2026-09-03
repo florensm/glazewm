@@ -19,11 +19,14 @@ use crate::{
   platform_impl::{
     composition::BlurVisual,
     swca::{
-      apply_swca_accent, ACCENT_ENABLE_ACRYLICBLURBEHIND,
-      ACCENT_ENABLE_HOSTBACKDROP,
+      apply_swca_accent, apply_swca_accent_with_flags,
+      ACCENT_ENABLE_ACRYLICBLURBEHIND, ACCENT_ENABLE_BLURBEHIND,
+      ACCENT_ENABLE_HOSTBACKDROP, ACCENT_ENABLE_TRANSPARENTGRADIENT,
+      ACCENT_FLAG_USE_GRADIENT_COLOR,
     },
   },
-  window_class, BlurOverlayParams, Color, Rect, SurrogateBatch,
+  window_class, BackdropStyle, BlurOverlayParams, Color, Rect,
+  SurrogateBatch,
 };
 
 fn ensure_class_registered() {
@@ -115,6 +118,72 @@ fn apply_hostbackdrop(hwnd: HWND) {
   }
 }
 
+/// Applies the SWCA accent matching `style` to `hwnd`.
+///
+/// [`BackdropStyle::Blur`] uses `ACCENT_ENABLE_BLURBEHIND`, whose tint is
+/// only honored when `ACCENT_FLAG_USE_GRADIENT_COLOR` is set. Every other
+/// style uses `ACCENT_ENABLE_ACRYLICBLURBEHIND` with no flags, which reads
+/// the tint unconditionally and renders a flat, unblurred fill if the flag
+/// is set.
+fn apply_swca_for_style(hwnd: HWND, style: BackdropStyle, tint: Color) {
+  match style {
+    BackdropStyle::Blur => {
+      apply_swca_accent_with_flags(
+        hwnd,
+        ACCENT_ENABLE_BLURBEHIND,
+        ACCENT_FLAG_USE_GRADIENT_COLOR,
+        tint.to_abgr(),
+      );
+    }
+    // The tint is the entire effect here, so the flag is mandatory: without
+    // it the fill renders with whatever color DWM last had for the window.
+    BackdropStyle::Solid => {
+      apply_swca_accent_with_flags(
+        hwnd,
+        ACCENT_ENABLE_TRANSPARENTGRADIENT,
+        ACCENT_FLAG_USE_GRADIENT_COLOR,
+        tint.to_abgr(),
+      );
+    }
+    // The Mica variants never reach here -- they're applied to the managed
+    // window via `DWMWA_SYSTEMBACKDROP_TYPE` and get no overlay at all (see
+    // `BackdropStyle::is_overlay_backed`) -- so acrylic is both the correct
+    // arm for `Acrylic` and a harmless catch-all.
+    BackdropStyle::Acrylic
+    | BackdropStyle::Transient
+    | BackdropStyle::Mica
+    | BackdropStyle::MicaAlt => {
+      apply_swca_accent(hwnd, ACCENT_ENABLE_ACRYLICBLURBEHIND, tint.to_abgr());
+    }
+  }
+}
+
+/// Creates the overlay's backing window plus, for
+/// [`BackdropStyle::Acrylic`], its `Windows.UI.Composition` pipeline.
+///
+/// [`BackdropStyle::Blur`] deliberately skips composition entirely and goes
+/// straight to SWCA -- that's the whole point of the style: no
+/// host-backdrop brush and no per-frame D2D Gaussian effect graph, just the
+/// OS's own fixed blur. Acrylic tries the Composition pipeline first and
+/// falls back to SWCA acrylic when any step of it is unavailable.
+///
+/// Returns the window handle and, on the Composition path only, the
+/// `BlurVisual` rooted to it.
+fn create_backing_window(
+  rect: &Rect,
+  params: BlurOverlayParams,
+) -> crate::Result<(HWND, Option<BlurVisual>)> {
+  if params.style != BackdropStyle::Blur {
+    if let Some((hwnd, visual)) = try_create_composition(rect, params) {
+      return Ok((hwnd, Some(visual)));
+    }
+  }
+
+  let hwnd = create_window(rect, false)?;
+  apply_swca_for_style(hwnd, params.style, params.tint);
+  Ok((hwnd, None))
+}
+
 /// Attempts to build the `Windows.UI.Composition` pipeline for a freshly
 /// created overlay window. On any failure, destroys `hwnd` (since it was
 /// created with `WS_EX_NOREDIRECTIONBITMAP`, unusable for the SWCA
@@ -152,8 +221,9 @@ fn try_create_composition(
   }
 }
 
-/// A persistent backdrop window that provides an acrylic blur-behind effect
-/// for a paired managed window.
+/// A persistent backdrop window that provides a blur-behind effect
+/// (acrylic or plain, per [`BlurOverlayParams::style`]) for a paired
+/// managed window.
 ///
 /// Positioned directly behind an `anchor` window in z-order (typically the
 /// managed window itself, or its surrogate while one is active -- see
@@ -173,14 +243,23 @@ fn try_create_composition(
 /// [`set_rect`]: NativeBlurOverlay::set_rect
 /// [`sync_z_order`]: NativeBlurOverlay::sync_z_order
 ///
-/// Renders via a `Windows.UI.Composition` pipeline (live host-backdrop
-/// brush, a continuously adjustable Gaussian-blur effect graph, and a
-/// continuous corner-radius clip) when available, falling back to
+/// For [`BackdropStyle::Acrylic`], renders via a
+/// `Windows.UI.Composition` pipeline (live host-backdrop brush, a
+/// continuously adjustable Gaussian-blur effect graph, and a continuous
+/// corner-radius clip) when available, falling back to
 /// `SetWindowCompositionAttribute` with `ACCENT_ENABLE_ACRYLICBLURBEHIND`
 /// otherwise -- e.g. pre-Windows 10 1803, or if any step of the Composition
-/// setup fails. In the fallback, `blur_amount`/`corner_radius`/`opacity`/
-/// `saturation` become no-ops (the OS gives no such knobs for SWCA
-/// acrylic) but `tint` keeps working the same as before.
+/// setup fails.
+///
+/// For [`BackdropStyle::Blur`], goes straight to
+/// `SetWindowCompositionAttribute` with `ACCENT_ENABLE_BLURBEHIND` and
+/// builds no Composition pipeline at all, which is what makes it the cheap
+/// style: DWM applies its own fixed blur instead of this process driving a
+/// D2D effect graph per frame.
+///
+/// Whenever there's no Composition pipeline (either style), `blur_amount`/
+/// `corner_radius`/`opacity`/`saturation` become no-ops -- the OS gives no
+/// such knobs for SWCA -- but `tint` keeps working.
 ///
 /// # Platform-specific
 ///
@@ -275,18 +354,7 @@ impl NativeBlurOverlay {
     params: BlurOverlayParams,
     anchor: HWND,
   ) -> crate::Result<Self> {
-    let (hwnd, composition) =
-      if let Some((hwnd, visual)) = try_create_composition(rect, params) {
-        (hwnd, Some(visual))
-      } else {
-        let hwnd = create_window(rect, false)?;
-        apply_swca_accent(
-          hwnd,
-          ACCENT_ENABLE_ACRYLICBLURBEHIND,
-          params.tint.to_abgr(),
-        );
-        (hwnd, None)
-      };
+    let (hwnd, composition) = create_backing_window(rect, params)?;
 
     // SAFETY: `hwnd` is a valid window just created above.
     if let Err(e) = unsafe {
@@ -478,11 +546,7 @@ impl NativeBlurOverlay {
         }
       }
       None => {
-        apply_swca_accent(
-          self.hwnd(),
-          ACCENT_ENABLE_ACRYLICBLURBEHIND,
-          tint.to_abgr(),
-        );
+        apply_swca_for_style(self.hwnd(), self.params.style, tint);
       }
     }
   }
@@ -528,11 +592,78 @@ impl NativeBlurOverlay {
     set_saturation, saturation
   );
 
+  /// Rebuilds the overlay's backing window for a changed
+  /// [`BlurOverlayParams::style`], preserving its current rect, z-order
+  /// anchor, and visibility.
+  ///
+  /// The style is the one param that can't be re-applied in place:
+  /// [`BackdropStyle::Acrylic`] roots a `Windows.UI.Composition` visual
+  /// tree on a `WS_EX_NOREDIRECTIONBITMAP` window, while
+  /// [`BackdropStyle::Blur`] composites through the very GDI redirection
+  /// surface that flag suppresses (see [`create_window`]). The new window
+  /// is fully built before the old one is torn down, so a failure here
+  /// leaves the existing overlay intact and the caller retries on the next
+  /// sync tick.
+  fn recreate(&mut self, params: BlurOverlayParams) -> crate::Result<()> {
+    let (hwnd, composition) = create_backing_window(&self.rect, params)?;
+
+    if self.is_visible {
+      // SAFETY: `hwnd` was just created above, and `self.anchor` is the
+      // handle this overlay is already anchored behind.
+      if let Err(e) = unsafe {
+        SetWindowPos(
+          hwnd,
+          HWND(self.anchor),
+          self.rect.x(),
+          self.rect.y(),
+          self.rect.width(),
+          self.rect.height(),
+          SWP_NOACTIVATE | SWP_NOSENDCHANGING | SWP_SHOWWINDOW,
+        )
+      } {
+        tracing::warn!(
+          "Blur overlay SetWindowPos failed on style change: {e}."
+        );
+      }
+    }
+
+    let previous_hwnd = self.hwnd();
+
+    // Drop the outgoing visual tree before destroying the window it's
+    // rooted to, same ordering as `Drop`.
+    self.composition.take();
+
+    // SAFETY: `previous_hwnd` is this overlay's own window, valid until
+    // now and no longer referenced once `self.hwnd` is reassigned below.
+    unsafe {
+      let _ = DestroyWindow(previous_hwnd);
+    }
+
+    self.hwnd = hwnd.0;
+    self.composition = composition;
+    self.params = params;
+
+    Ok(())
+  }
+
   /// Applies `params`, re-applying only whichever fields actually changed
   /// (each setter no-ops internally on an unchanged value). Convenience
   /// for the call sites that already have a full `BlurOverlayParams`
   /// rather than one field at a time.
+  ///
+  /// A changed `style` goes through [`recreate`] instead, since it selects
+  /// how the backing window itself is built; every other field is baked in
+  /// by that rebuild, so no setter runs afterwards.
+  ///
+  /// [`recreate`]: NativeBlurOverlay::recreate
   pub fn apply(&mut self, params: BlurOverlayParams) {
+    if self.params.style != params.style {
+      if let Err(e) = self.recreate(params) {
+        tracing::warn!("Blur overlay style change failed: {e}.");
+      }
+      return;
+    }
+
     self.set_tint(params.tint);
     self.set_blur_amount(params.blur_amount);
     self.set_corner_radius(params.corner_radius);
