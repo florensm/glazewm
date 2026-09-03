@@ -2119,6 +2119,8 @@ impl AnimationManager {
     );
 
     if should_start {
+      perf::note_animation_start(is_resize);
+
       if let Some(prev_target) = previous_target {
         // Start from the current animated position on cancel-and-replace so
         // the animation does not jump back to the original start.
