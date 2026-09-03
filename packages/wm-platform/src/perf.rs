@@ -400,6 +400,10 @@ struct Profiler {
   apply_overflow: ApplySample,
   /// Queue wait accumulated per event kind.
   event_wait: [EventWait; EventKind::COUNT],
+  /// Animations started this session that were pure translations.
+  gesture_moves: u32,
+  /// Animations started this session that also changed the window's size.
+  gesture_resizes: u32,
 }
 
 /// One row of the `rd_apply` breakdown: every reposition of a given
@@ -673,6 +677,36 @@ fn record_window_count(count: usize) {
   });
 }
 
+/// Records that an animation began, split by whether it resizes the window.
+///
+/// The two cost very differently: a pure translation leaves the border
+/// overlay's GDI region valid, so `refresh_hole` short-circuits and tracking
+/// it is nearly free, while a resize rebuilds that region every frame. This
+/// counter says how often each actually happens in real layouts, which is
+/// what decides whether a size-aware overlay gate is worth building -- in a
+/// tiling grid, moving one window commonly resizes its neighbours.
+pub fn note_animation_start(is_resize: bool) {
+  if is_enabled() {
+    record_animation_start(is_resize);
+  }
+}
+
+/// [`note_animation_start`] without the `GLAZEWM_PERF` gate.
+///
+/// The gate resolves once per process, so the recording logic is factored
+/// out here to stay reachable from tests.
+fn record_animation_start(is_resize: bool) {
+  PROFILER.with(|profiler| {
+    if let Ok(mut profiler) = profiler.try_borrow_mut() {
+      if is_resize {
+        profiler.gesture_resizes += 1;
+      } else {
+        profiler.gesture_moves += 1;
+      }
+    }
+  });
+}
+
 /// Marks the start of a frame, clearing the previous frame's per-stage
 /// accumulators.
 pub fn begin_frame() {
@@ -841,6 +875,7 @@ fn take_report(reason: &str) -> Option<String> {
   write_tick_distribution(&mut lines, &summary);
   write_apply_breakdown(&mut lines, &summary);
   write_event_waits(&mut lines, &summary);
+  write_gesture_split(&mut lines, &summary);
 
   Some(lines.trim_end().to_string())
 }
@@ -942,6 +977,36 @@ fn write_apply_breakdown(lines: &mut String, summary: &Profiler) {
     if summary.apply_overflow.calls > 0 {
       apply_row(lines, "(other processes)", &summary.apply_overflow);
     }
+  }
+}
+
+/// Appends the move-vs-resize split of the session's animations.
+///
+/// A no-op when no animation started during the session.
+fn write_gesture_split(lines: &mut String, summary: &Profiler) {
+  let total = summary.gesture_moves + summary.gesture_resizes;
+  if total == 0 {
+    return;
+  }
+
+  // Writing into a `String` is infallible, so the results are discarded.
+  let _ = writeln!(lines, "  -- animations started (move vs resize) --");
+  let _ = writeln!(
+    lines,
+    "  {:<20}{:>7}{:>11}",
+    "gesture", "count", "share",
+  );
+
+  for (label, count) in
+    [("move", summary.gesture_moves), ("resize", summary.gesture_resizes)]
+  {
+    let _ = writeln!(
+      lines,
+      "  {:<20}{:>7}{:>10.1}%",
+      label,
+      count,
+      f64::from(count) * 100.0 / f64::from(total),
+    );
   }
 }
 
@@ -1156,6 +1221,47 @@ mod tests {
       assert!(first_row.contains("explorer.exe [sync]"), "{first_row}");
       assert!(report.contains("explorer.exe [async]"));
       assert!(report.contains("outlook.exe [sync]"));
+    })
+    .join()
+    .expect("profiler test thread panicked");
+  }
+
+  #[test]
+  fn splits_started_animations_into_moves_and_resizes() {
+    std::thread::spawn(|| {
+      start_frame();
+      record_animation_start(false);
+      record_animation_start(true);
+      record_animation_start(true);
+      record_animation_start(true);
+      assert!(!roll_up_frame());
+
+      PROFILER.with(|profiler| {
+        let profiler = profiler.borrow();
+        assert_eq!(profiler.gesture_moves, 1);
+        assert_eq!(profiler.gesture_resizes, 3);
+      });
+
+      let report = take_report("unit test").expect("frames were recorded");
+      assert!(report.contains("animations started (move vs resize)"));
+      // Shares are of the started animations, not of the frames.
+      assert!(report.contains("move                      1      25.0%"));
+      assert!(report.contains("resize                    3      75.0%"));
+    })
+    .join()
+    .expect("profiler test thread panicked");
+  }
+
+  /// A session that animated nothing must not print an empty section.
+  #[test]
+  fn omits_the_gesture_split_when_no_animation_started() {
+    std::thread::spawn(|| {
+      start_frame();
+      record_window_count(1);
+      assert!(!roll_up_frame());
+
+      let report = take_report("unit test").expect("frames were recorded");
+      assert!(!report.contains("animations started"));
     })
     .join()
     .expect("profiler test thread panicked");
