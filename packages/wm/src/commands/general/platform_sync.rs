@@ -2248,15 +2248,38 @@ fn sync_overlays<O: SyncableOverlay>(
   let focused_params = O::params_for(true, config);
   let other_params = O::params_for(false, config);
 
+  // Whether the effect is configured for *either* focus state. When it is
+  // configured for neither it is off outright, and every overlay is
+  // destroyed below rather than kept hidden forever.
+  let effect_configured = focused_params.is_some() || other_params.is_some();
+
   for window in &all_windows {
     let is_focused = window.id() == focused_container.id();
 
+    // Every managed window keeps its overlay while the effect is configured
+    // at all, even on the focus side that doesn't currently want one, so a
+    // focus change hides and re-shows an existing overlay instead of
+    // destroying and rebuilding it. A rebuild costs `CreateWindowExW` plus,
+    // for the acrylic style, an entire `Windows.UI.Composition` effect graph
+    // -- visible as the window turning translucent a frame or more before
+    // its backdrop catches up. A hidden overlay is not composited, so the
+    // retained ones cost handles and memory rather than frame time.
+    if effect_configured {
+      wanted_ids.insert(window.id());
+    }
+
     let Some(params) = (if is_focused { focused_params } else { other_params })
     else {
+      // Configured, but not for this window's focus state: hide rather than
+      // destroy. Guarded on `is_visible` because `hide` issues a
+      // `ShowWindow` unconditionally.
+      if let Some(overlay) = O::overlays(state).get_mut(&window.id()) {
+        if overlay.is_visible() {
+          overlay.hide();
+        }
+      }
       continue;
     };
-
-    wanted_ids.insert(window.id());
 
     if state.animation_manager.has_live_ws_surrogate(&window.id())
       || state.animation_manager.has_live_resize_tracker(&window.id())
@@ -2337,7 +2360,9 @@ fn sync_overlays<O: SyncableOverlay>(
     }
   }
 
-  // Destroy overlays for windows that no longer need them.
+  // Destroy overlays for windows that are gone, or for every window once
+  // the effect is switched off entirely -- `wanted_ids` is empty in that
+  // case. A window that merely lost focus keeps its (hidden) overlay.
   O::overlays(state).retain(|id, _| wanted_ids.contains(id));
 
   batch.commit();
