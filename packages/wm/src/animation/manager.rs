@@ -1338,7 +1338,11 @@ impl AnimationManager {
                       CornerStyle::Default.approx_radius_px()
                     };
                     let params =
-                      effect_cfg.border.to_overlay_params(color, corner_radius);
+                      effect_cfg.border.to_overlay_params(
+                        color,
+                        corner_radius,
+                        effect_cfg.window_is_opaque(),
+                      );
                     upsert_border_overlay(
                       &mut state.border_overlays,
                       window_id,
@@ -1767,7 +1771,11 @@ impl AnimationManager {
         }
 
         if let Some(color) = effect_cfg.border.abgr_color() {
-          let params = effect_cfg.border.to_overlay_params(color, corner_radius);
+          let params = effect_cfg.border.to_overlay_params(
+            color,
+            corner_radius,
+            effect_cfg.window_is_opaque(),
+          );
 
           match state.border_overlays.entry(*id) {
             std::collections::hash_map::Entry::Occupied(e) => {

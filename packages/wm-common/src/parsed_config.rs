@@ -260,6 +260,21 @@ pub struct WindowEffectConfig {
   pub backdrop: BackdropEffectConfig,
 }
 
+impl WindowEffectConfig {
+  /// Whether a window carrying these effects is fully opaque.
+  ///
+  /// The border overlay renders as a sheet *behind* the window and lets the
+  /// window's own body occlude its center, which only holds while that body
+  /// is opaque. `NativeBorderOverlay` uses this to decide whether it must
+  /// also punch a hole-punch region -- a per-frame cost during a resize,
+  /// and pure waste for the overwhelmingly common opaque window.
+  #[must_use]
+  pub fn window_is_opaque(&self) -> bool {
+    !self.transparency.enabled
+      || self.transparency.opacity.to_alpha() == u8::MAX
+  }
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(default, rename_all(serialize = "camelCase"))]
 pub struct BackdropEffectConfig {
@@ -498,6 +513,7 @@ impl BorderEffectConfig {
     &self,
     color: Color,
     window_corner_radius: f32,
+    window_is_opaque: bool,
   ) -> BorderOverlayParams {
     #[allow(clippy::cast_precision_loss)]
     let width = self.width.to_px(0, None) as f32;
@@ -512,6 +528,7 @@ impl BorderEffectConfig {
       color,
       width,
       corner_radius,
+      window_is_opaque,
       opacity: 1.0,
     }
   }
@@ -1185,7 +1202,42 @@ where
 
 #[cfg(test)]
 mod tests {
-  use super::{BackdropEffectConfig, Color};
+  use super::{
+    BackdropEffectConfig, Color, OpacityValue, TransparencyEffectConfig,
+    WindowEffectConfig,
+  };
+
+  /// Builds a `WindowEffectConfig` whose only interesting field is its
+  /// transparency, which is all `window_is_opaque` reads.
+  fn with_transparency(
+    enabled: bool,
+    opacity: f32,
+  ) -> WindowEffectConfig {
+    WindowEffectConfig {
+      transparency: TransparencyEffectConfig {
+        enabled,
+        opacity: OpacityValue(opacity),
+      },
+      ..WindowEffectConfig::default()
+    }
+  }
+
+  /// The border overlay drops its hole-punch region for opaque windows, so
+  /// this predicate decides a correctness question, not just a fast path: a
+  /// false positive leaves the ring's fill visible through the window.
+  #[test]
+  fn transparency_at_full_opacity_still_counts_as_opaque() {
+    // Disabled outright: nothing to see through.
+    assert!(with_transparency(false, 0.5).window_is_opaque());
+
+    // Enabled but fully opaque -- the case in real configs that merely want
+    // the effect declared. The window still occludes the ring's center.
+    assert!(with_transparency(true, 1.0).window_is_opaque());
+
+    // Genuinely translucent: the region is required.
+    assert!(!with_transparency(true, 0.85).window_is_opaque());
+    assert!(!with_transparency(true, 0.0).window_is_opaque());
+  }
 
   /// `to_overlay_params` must map every field through to the resulting
   /// `BlurOverlayParams` unchanged (plus the two parameters passed in
