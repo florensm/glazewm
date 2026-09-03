@@ -11,11 +11,15 @@ mod external_color_source;
 mod keybinding_listener;
 mod models;
 mod mouse_listener;
+#[cfg(target_os = "windows")]
+mod native_surrogate;
 mod native_window;
 pub mod perf;
 mod platform_event;
 mod platform_impl;
 mod thread_bound;
+#[cfg(target_os = "windows")]
+mod window_class;
 mod window_listener;
 
 pub use dispatcher::*;
