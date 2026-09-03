@@ -404,11 +404,11 @@ pub struct AnimationManager {
   /// `AnimationManager::reclaim_surrogate`/`stash_warm_surrogate`.
   #[cfg(target_os = "windows")]
   warm_surrogates: HashMap<Uuid, (NativeSurrogate, Instant)>,
-  /// Surrogate updates queued during this redraw pass; committed atomically by
-  /// [`flush_surrogate_updates`] so adjacent surrogates land in the same DWM
-  /// composition frame.
+  /// Surrogate updates queued during this redraw pass; drained into the
+  /// pass's shared `SurrogateBatch` by [`queue_surrogate_updates`] so
+  /// adjacent surrogates land in the same DWM composition frame.
   ///
-  /// [`flush_surrogate_updates`]: AnimationManager::flush_surrogate_updates
+  /// [`queue_surrogate_updates`]: AnimationManager::queue_surrogate_updates
   #[cfg(target_os = "windows")]
   pending_surrogate_updates: Vec<PendingSurrogateUpdate>,
   /// Sessions that have been removed from `resize_sessions` after their
@@ -2322,9 +2322,10 @@ impl AnimationManager {
             session.update_clipped(&current_rect, &monitor_rect, opacity_u8);
           } else {
             // Queue instead of applying immediately: all surrogate
-            // repositions in this redraw pass are committed atomically by
-            // `flush_surrogate_updates` so adjacent windows' edges land in
-            // the same DWM composition frame.
+            // repositions in this redraw pass are drained into the pass's
+            // shared batch by `queue_surrogate_updates` and committed
+            // atomically, so adjacent windows' edges land in the same DWM
+            // composition frame.
             let handoff =
               self.animations.get(&window_id).map_or(false, |a| {
                 // Scale the lead with the animation duration so the handoff
@@ -2468,27 +2469,31 @@ impl AnimationManager {
     );
   }
 
-  /// Applies all surrogate updates queued during the current redraw pass in
-  /// a single `DeferWindowPos` transaction.
+  /// Queues every surrogate update recorded during the current redraw pass
+  /// into `batch`, leaving the commit to the caller.
   ///
-  /// Called at the end of each redraw pass. Committing all repositions
-  /// atomically guarantees that adjacent windows' surrogates move in the
-  /// same DWM composition frame during multi-window relayouts; sequential
-  /// per-surrogate `SetWindowPos` calls can straddle a composition boundary
-  /// and let edges visibly desync for a frame.
+  /// Called at the end of each redraw pass. The caller commits `batch` only
+  /// after it has also queued the blur/border overlays that ride along with
+  /// these surrogates, so window and overlays land in a single
+  /// `DeferWindowPos` transaction: sequential transactions can straddle a
+  /// composition boundary and let a surrogate move a frame ahead of its own
+  /// border outline, or adjacent windows' edges visibly desync.
+  ///
+  /// Each session's `current_rect` is updated here, at queue time rather
+  /// than at commit time, which is what lets the overlay pass read the live
+  /// rect before the batch is committed.
   ///
   /// Real-window handoffs are capped at [`MAX_HANDOFFS_PER_TICK`] per pass;
   /// see its docs for why. Surrogate position/opacity updates are never
   /// throttled -- only the real-window handoff is deferred.
   #[cfg(target_os = "windows")]
-  pub fn flush_surrogate_updates(&mut self) {
+  pub fn queue_surrogate_updates(&mut self, batch: &mut SurrogateBatch) {
     if self.pending_surrogate_updates.is_empty() {
       return;
     }
 
     let _scope = perf::scope(Stage::SurrogateFlush);
 
-    let mut batch = SurrogateBatch::new();
     let mut handoffs_this_tick = 0usize;
     for update in std::mem::take(&mut self.pending_surrogate_updates) {
       if let Some(session) =
@@ -2498,10 +2503,9 @@ impl AnimationManager {
           session.maybe_handoff();
           handoffs_this_tick += 1;
         }
-        session.defer_update(&mut batch, &update.rect, update.opacity);
+        session.defer_update(batch, &update.rect, update.opacity);
       }
     }
-    batch.commit();
   }
 
   /// Returns `true` while a workspace-switch slide animation is in progress

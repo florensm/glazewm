@@ -1349,31 +1349,35 @@ fn redraw_containers(
     cloak_border_batch,
   );
 
-  // Commit all surrogate repositions queued during this pass in a single
-  // `DeferWindowPos` transaction so adjacent windows' edges land in the
-  // same DWM composition frame.
-  #[cfg(target_os = "windows")]
-  state.animation_manager.flush_surrogate_updates();
-
-  // Keep the acrylic blur overlay tracking each move/resize/open session's
-  // surrogate at its just-flushed live rect, instead of leaving it hidden
-  // for the whole animation. Close sessions are tracked separately, inside
-  // `AnimationManager::update_internal`'s direct-drive loop -- that path
-  // never reaches `platform_sync` (closing windows are detached from the
-  // layout tree), so skip them here to avoid a duplicate upsert this tick.
+  // Every surrogate and overlay reposition queued during this pass goes
+  // into one `DeferWindowPos` transaction, committed at the end of this
+  // block.
   //
-  // Repositions are batched into one `DeferWindowPos` transaction (separate
-  // from the surrogate batch `flush_surrogate_updates` just committed above)
-  // rather than each overlay issuing its own synchronous `SetWindowPos` --
-  // that per-window cost scales with tick rate, which is most visible on
-  // high-refresh-rate displays where the animation manager ticks in
-  // lockstep with vsync.
+  // Splitting it -- surrogates in one transaction, overlays in another --
+  // lets the two land in different DWM composition frames, so a window's
+  // surrogate can move while its border outline is still drawn around the
+  // old position. Queuing everything first and committing once makes the
+  // window and its overlays move atomically, and hands DWM one transaction
+  // per frame instead of three.
+  //
+  // The ordering this relies on: `queue_surrogate_updates` updates each
+  // session's `current_rect` as it queues (`ResizeSession::defer_update`),
+  // not when the batch is committed, so the overlay loop below reads the
+  // same live rect it read before -- it just no longer has to wait on a
+  // commit to do so.
   #[cfg(target_os = "windows")]
   {
-    let _scope = perf::scope(Stage::SessionOverlays);
+    let mut batch = SurrogateBatch::new();
+    state.animation_manager.queue_surrogate_updates(&mut batch);
 
-    let mut blur_batch = SurrogateBatch::new();
-    let mut border_batch = SurrogateBatch::new();
+    // Keep the acrylic blur and border overlays tracking each
+    // move/resize/open session's surrogate at its live rect, instead of
+    // leaving them hidden for the whole animation. Close sessions are
+    // tracked separately, inside `AnimationManager::update_internal`'s
+    // direct-drive loop -- that path never reaches `platform_sync` (closing
+    // windows are detached from the layout tree), so skip them here to
+    // avoid a duplicate upsert this tick.
+    let overlay_scope = perf::scope(Stage::SessionOverlays);
 
     // Each animating window costs three composited surfaces, not one: its
     // surrogate plus these two overlays, all repositioned every frame -- see
@@ -1422,7 +1426,7 @@ fn redraw_containers(
             params,
             &rect,
             anchor,
-            &mut blur_batch,
+            &mut batch,
           ),
           _ => {
             if let Some(overlay) = state.blur_overlays.get_mut(id) {
@@ -1440,7 +1444,7 @@ fn redraw_containers(
             params,
             &rect,
             anchor,
-            &mut border_batch,
+            &mut batch,
           ),
           _ => {
             if let Some(overlay) = state.border_overlays.get_mut(id) {
@@ -1450,8 +1454,9 @@ fn redraw_containers(
         }
       }
     }
-    blur_batch.commit();
-    border_batch.commit();
+    drop(overlay_scope);
+
+    batch.commit();
   }
 
   // Apply effect opacity to outgoing surrogates now that the real windows

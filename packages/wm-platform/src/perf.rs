@@ -200,13 +200,15 @@ pub enum Stage {
   SessionBegin,
   /// Cloaking the real window and pre-positioning it at its target.
   Cloak,
-  /// `AnimationManager::flush_surrogate_updates`.
+  /// `AnimationManager::queue_surrogate_updates` -- queueing only; the
+  /// commit it feeds is reported under `BatchCommit`.
   SurrogateFlush,
   /// `SurrogateBatch::commit` -- the `DeferWindowPos` transaction that
   /// actually moves every surrogate and overlay window queued this frame.
   BatchCommit,
-  /// `platform_sync`'s post-flush loop tracking each live resize session's
-  /// blur/border overlay onto its surrogate.
+  /// `platform_sync`'s loop tracking each live resize session's blur/border
+  /// overlay onto its surrogate, queued into the same batch as the
+  /// surrogates themselves.
   SessionOverlays,
   /// `update_internal`'s post-`platform_sync` session/workspace cleanup and
   /// surrogate fade-out tail.
@@ -320,10 +322,11 @@ impl Stage {
   ///
   /// These are reported separately: their time is already included in the
   /// tree above, but attributing them to any single parent would be wrong.
-  /// `SurrogateBatch::commit`, for instance, runs from the surrogate flush,
-  /// both overlay sync passes, the cloak commit and the cleanup tail -- an
-  /// earlier version of this report indented it under `surrogate_flush`,
-  /// where its total exceeded its supposed parent's.
+  /// `SurrogateBatch::commit`, for instance, runs from the shared
+  /// surrogate/session-overlay batch, both overlay sync passes, the cloak
+  /// commit and the cleanup tail -- an earlier version of this report
+  /// indented it under `surrogate_flush`, where its total exceeded its
+  /// supposed parent's.
   const fn is_cross_cutting(self) -> bool {
     matches!(
       self,
