@@ -186,24 +186,23 @@ async fn start_wm(
     .set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
   loop {
-    // Opt-in: hand queued platform events the thread before the next
-    // animation frame. The `biased` select below puts the animation tick
-    // above every event branch, and a tick is ready again as soon as the
-    // previous frame finishes, so during an animation those branches are
-    // never reached -- window events were measured waiting a median ~210ms
-    // and up to ~577ms on an eight-window relayout.
-    if config.value.general.prioritize_events_over_animation {
-      if let Err(err) = drain_platform_events(
-        &mut wm,
-        &mut config,
-        &mut keybinding_listener,
-        &mut mouse_listener,
-        &mut window_listener,
-        &mut display_listener,
-      ) {
-        tracing::error!("{:?}", err);
-        dispatcher.show_error_dialog("Non-fatal error", &err.to_string());
-      }
+    // Hand queued platform events the thread before the next animation
+    // frame. The `biased` select below puts the animation tick above every
+    // event branch, and a tick is ready again as soon as the previous frame
+    // finishes, so during an animation those branches are never reached --
+    // window events were measured waiting a median ~210ms and up to ~577ms
+    // on an eight-window relayout. The drain is capped per frame so an
+    // event burst cannot starve the animation in the other direction.
+    if let Err(err) = drain_platform_events(
+      &mut wm,
+      &mut config,
+      &mut keybinding_listener,
+      &mut mouse_listener,
+      &mut window_listener,
+      &mut display_listener,
+    ) {
+      tracing::error!("{:?}", err);
+      dispatcher.show_error_dialog("Non-fatal error", &err.to_string());
     }
 
     let res = tokio::select! {

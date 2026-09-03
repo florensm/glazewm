@@ -98,24 +98,6 @@ pub struct GeneralConfig {
   /// Affects which windows get shown in the native Windows taskbar.
   pub show_all_in_taskbar: bool,
 
-  /// Whether to service queued platform events before the next animation
-  /// frame.
-  ///
-  /// The main loop's `select!` is `biased` with the animation tick above
-  /// the event branches, so while an animation is running a tick is ready
-  /// again the moment the previous frame finishes and the event branches
-  /// are never reached. On an eight-window relayout, events were measured
-  /// waiting a median ~210ms and up to ~577ms (`GLAZEWM_PERF=1`, "event
-  /// queue wait" in the report).
-  ///
-  /// Draining them is capped per frame so an event burst cannot starve the
-  /// animation in the other direction, and is limited to keybindings while
-  /// a workspace-switch slide is running -- the other handlers mutate
-  /// layout state, which fights a slide that is still moving the same
-  /// windows.
-  ///
-  /// Off by default.
-  pub prioritize_events_over_animation: bool,
 }
 
 impl Default for GeneralConfig {
@@ -138,7 +120,6 @@ impl Default for GeneralConfig {
         }
       },
       show_all_in_taskbar: false,
-      prioritize_events_over_animation: false,
     }
   }
 }
