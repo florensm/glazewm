@@ -970,13 +970,7 @@ fn redraw_containers(
         .border
         .abgr_color()
         .filter(|_| is_tracked)
-        .map(|color| {
-          effect_cfg.border.to_overlay_params(
-            color,
-            corner_radius,
-            effect_cfg.window_is_opaque(),
-          )
-        });
+        .map(|color| effect_cfg.border.to_overlay_params(color, corner_radius));
       (opacity, style, blur_overlay, border_overlay)
     };
 
@@ -1972,11 +1966,7 @@ pub(crate) fn border_overlay_params_for(
     CornerStyle::Default.approx_radius_px()
   };
 
-  Some(effect_cfg.border.to_overlay_params(
-    target_color,
-    corner_radius,
-    effect_cfg.window_is_opaque(),
-  ))
+  Some(effect_cfg.border.to_overlay_params(target_color, corner_radius))
 }
 
 /// Resolves `window`'s acrylic overlay params from its focused/other-window

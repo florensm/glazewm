@@ -327,13 +327,7 @@ impl WindowManager {
               let border_overlay = effect_cfg
                 .border
                 .abgr_color()
-                .map(|color| {
-                  effect_cfg.border.to_overlay_params(
-                    color,
-                    corner_radius,
-                    effect_cfg.window_is_opaque(),
-                  )
-                });
+                .map(|color| effect_cfg.border.to_overlay_params(color, corner_radius));
 
               if let Ok(rect) = window.to_rect().and_then(|r| {
                 window.total_border_delta().map(|d| r.apply_delta(&d, None))
