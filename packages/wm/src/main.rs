@@ -62,6 +62,12 @@ fn main() -> anyhow::Result<()> {
     verbosity,
   } = app_command
   {
+    // Before any window exists: our overlay windows live on a thread that
+    // never pumps a message queue, so Windows would otherwise substitute
+    // hit-testable "Not Responding" ghosts for them and swallow desktop
+    // mouse input. See `disable_window_ghosting`.
+    wm_platform::disable_window_ghosting();
+
     let rt = tokio::runtime::Runtime::new()?;
     let (event_loop, dispatcher) = EventLoop::new()?;
 

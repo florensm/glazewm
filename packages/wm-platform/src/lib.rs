@@ -67,6 +67,31 @@ pub use single_instance::*;
 pub use system_accent_color::*;
 pub use thread_bound::*;
 pub use window_listener::*;
+/// Stops Windows from creating "ghost" windows for this process.
+///
+/// Every overlay and surrogate window is created on the WM's own thread,
+/// which runs a Tokio loop and never pumps a Win32 message queue, so
+/// Windows classifies all of them as hung (see `NativeBlurOverlay`'s
+/// `create_window`). For a hung top-level window Windows substitutes a
+/// *ghost* window of its own — the "Not Responding" stand-in — and that
+/// ghost is a real, hit-testable window owned by user32, so the
+/// `WS_EX_TRANSPARENT` that makes our own overlays click-through does not
+/// apply to it. A ghost standing in for a full-screen surrogate swallows
+/// mouse input across the desktop, including the taskbar, while the
+/// keyboard hook keeps working because it is global and never reaches a
+/// window at all.
+///
+/// Call once, before any window is created. On non-Windows platforms this
+/// is a no-op.
+pub fn disable_window_ghosting() {
+  #[cfg(target_os = "windows")]
+  unsafe {
+    // SAFETY: No preconditions and no failure mode; the call takes no
+    // arguments, returns nothing, and only affects this process.
+    windows::Win32::UI::WindowsAndMessaging::DisableProcessWindowsGhosting();
+  }
+}
+
 /// Waits for the next DWM composition frame to complete.
 ///
 /// Used to synchronize animation ticks to vsync so surrogate updates reach
