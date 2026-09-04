@@ -99,19 +99,6 @@ fn get_set_wca() -> Option<SetWindowCompositionAttributeFn> {
   })
 }
 
-/// Applies the given `accent_state` and `gradient_color` (ABGR) to `hwnd`
-/// via the undocumented `SetWindowCompositionAttribute` API, with no accent
-/// flags set.
-///
-/// Returns `true` if the call succeeded, `false` if the API is unavailable
-/// (pre-Windows 10 1607) or if the call itself failed.
-pub(crate) fn apply_swca_accent(
-  hwnd: HWND,
-  accent_state: u32,
-  gradient_color: u32,
-) -> bool {
-  apply_swca_accent_with_flags(hwnd, accent_state, 0, gradient_color)
-}
 
 /// Applies the given `accent_state`, `accent_flags`, and `gradient_color`
 /// (ABGR) to `hwnd` via the undocumented `SetWindowCompositionAttribute`
@@ -124,7 +111,7 @@ pub(crate) fn apply_swca_accent(
 ///
 /// Returns `true` if the call succeeded, `false` if the API is unavailable
 /// (pre-Windows 10 1607) or if the call itself failed.
-pub(crate) fn apply_swca_accent_with_flags(
+pub(crate) fn apply_swca_accent(
   hwnd: HWND,
   accent_state: u32,
   accent_flags: u32,

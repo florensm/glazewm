@@ -86,7 +86,7 @@ pub(crate) fn apply_backdrop(hwnd: HWND, color: Option<&Color>) {
     | (u32::from(c.g) << 8)
     | u32::from(c.r);
 
-  apply_swca_accent(hwnd, ACCENT_ENABLE_GRADIENT, abgr);
+  apply_swca_accent(hwnd, ACCENT_ENABLE_GRADIENT, 0, abgr);
 }
 
 /// Registers a DWM thumbnail of `source_hwnd` onto `dest_hwnd`.
@@ -965,7 +965,12 @@ impl NativeSurrogate {
   ///
   /// This is a no-op when SWCA is unavailable (pre-Windows 10 1607).
   pub fn apply_swca(&self, tint: u32) {
-    apply_swca_accent(HWND(self.hwnd), ACCENT_ENABLE_ACRYLICBLURBEHIND, tint);
+    apply_swca_accent(
+      HWND(self.hwnd),
+      ACCENT_ENABLE_ACRYLICBLURBEHIND,
+      0,
+      tint,
+    );
   }
 }
 
