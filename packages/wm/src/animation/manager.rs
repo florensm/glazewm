@@ -666,6 +666,21 @@ impl AnimationManager {
     if !self.pending_session_cleanup.is_empty() {
       return true;
     }
+    // Anything still holding a surrogate needs ticks to be torn down, even
+    // once its animation entry is gone. `pending_ws_cleanup` is set a
+    // whole tick before it is cleared, with a fallible `platform_sync` in
+    // between: an error there leaves it set while `workspace_switch` is
+    // already `None`. Without these two checks the timer then parks with
+    // surrogates still up and the real windows still cloaked, which looks
+    // like every window being frozen in place -- unmovable, and clicks
+    // falling through the click-through surrogates into cloaked windows.
+    // It resolves only when some unrelated new animation restarts the
+    // timer and the pending teardown finally runs.
+    #[cfg(target_os = "windows")]
+    if !self.resize_sessions.is_empty() || self.pending_ws_cleanup.is_some()
+    {
+      return true;
+    }
     false
   }
 
