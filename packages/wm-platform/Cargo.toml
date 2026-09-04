@@ -30,6 +30,9 @@ libtest-mimic-collect = "0.3.2"
 windows = { version = "0.52", features = [
   "implement",
   "Foundation",
+  # Gates `ShapeVisual::Shapes` and `CompositionShapeCollection`, which the
+  # border overlay's stroked ring is built from.
+  "Foundation_Collections",
   "Foundation_Numerics",
   "Graphics_Effects",
   "System",
