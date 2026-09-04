@@ -19,7 +19,7 @@ use crate::{
   platform_impl::{
     composition::BlurVisual,
     swca::{
-      apply_swca_accent, apply_swca_accent_with_flags,
+      apply_swca_accent,
       ACCENT_ENABLE_ACRYLICBLURBEHIND, ACCENT_ENABLE_BLURBEHIND,
       ACCENT_ENABLE_HOSTBACKDROP, ACCENT_ENABLE_TRANSPARENTGRADIENT,
       ACCENT_FLAG_USE_GRADIENT_COLOR,
@@ -101,7 +101,7 @@ fn create_window(rect: &Rect, composition: bool) -> crate::Result<HWND> {
 /// `CompositionBackdropBrush` to sample live desktop content instead of
 /// rendering black/opaque.
 fn apply_hostbackdrop(hwnd: HWND) {
-  apply_swca_accent(hwnd, ACCENT_ENABLE_HOSTBACKDROP, 0);
+  apply_swca_accent(hwnd, ACCENT_ENABLE_HOSTBACKDROP, 0, 0);
 
   let value: windows::Win32::Foundation::BOOL = true.into();
   // `BOOL` is a 4-byte struct; the cast is always exact.
@@ -128,7 +128,7 @@ fn apply_hostbackdrop(hwnd: HWND) {
 fn apply_swca_for_style(hwnd: HWND, style: BackdropStyle, tint: Color) {
   match style {
     BackdropStyle::Blur => {
-      apply_swca_accent_with_flags(
+      apply_swca_accent(
         hwnd,
         ACCENT_ENABLE_BLURBEHIND,
         ACCENT_FLAG_USE_GRADIENT_COLOR,
@@ -138,7 +138,7 @@ fn apply_swca_for_style(hwnd: HWND, style: BackdropStyle, tint: Color) {
     // The tint is the entire effect here, so the flag is mandatory: without
     // it the fill renders with whatever color DWM last had for the window.
     BackdropStyle::Solid => {
-      apply_swca_accent_with_flags(
+      apply_swca_accent(
         hwnd,
         ACCENT_ENABLE_TRANSPARENTGRADIENT,
         ACCENT_FLAG_USE_GRADIENT_COLOR,
@@ -153,7 +153,12 @@ fn apply_swca_for_style(hwnd: HWND, style: BackdropStyle, tint: Color) {
     | BackdropStyle::Transient
     | BackdropStyle::Mica
     | BackdropStyle::MicaAlt => {
-      apply_swca_accent(hwnd, ACCENT_ENABLE_ACRYLICBLURBEHIND, tint.to_abgr());
+      apply_swca_accent(
+        hwnd,
+        ACCENT_ENABLE_ACRYLICBLURBEHIND,
+        0,
+        tint.to_abgr(),
+      );
     }
   }
 }
