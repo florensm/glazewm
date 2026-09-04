@@ -30,7 +30,7 @@
 //! keeping the hot path exactly as cheap as the SWCA path it replaces.
 
 use std::{
-  cell::RefCell,
+  cell::{Cell, RefCell},
   sync::{mpsc, OnceLock},
   time::Duration,
 };
@@ -48,7 +48,8 @@ use windows::{
     Composition::{
       CompositionBackdropBrush, CompositionColorBrush, CompositionEffectBrush,
       CompositionEffectSourceParameter, CompositionRoundedRectangleGeometry,
-      Compositor, ContainerVisual, Desktop::DesktopWindowTarget, SpriteVisual,
+      CompositionSpriteShape, Compositor, ContainerVisual,
+      Desktop::DesktopWindowTarget, ShapeVisual, SpriteVisual,
     },
   },
   Win32::{
@@ -613,32 +614,92 @@ fn build_visual_tree(
   })
 }
 
+
 /// A live `Windows.UI.Composition` visual tree providing a border overlay's
-/// rendering: a solid-colored sheet clipped to a continuous rounded
-/// rectangle matching the tracked window's own (outset) corner radius.
-/// Considerably lighter than [`BlurVisual`] -- no effect graph, no live
-/// backdrop sampling, just a flat color fill.
+/// rendering: a single rounded rectangle *stroked* with a solid color, so
+/// only the ring band is ever painted and the interior stays fully
+/// transparent. Considerably lighter than [`BlurVisual`] -- no effect
+/// graph, no live backdrop sampling, just one stroked shape.
 ///
 /// `NativeBorderOverlay` sizes and positions the overlay's `HWND` to the
 /// tracked window's rect *outset* by the configured border width, directly
 /// behind the real window in z-order (see its `anchor` field doc, same
-/// mechanism [`BlurVisual`]'s pairing already relies on). The real window's
-/// own opaque body then occludes this sheet everywhere except the outer
-/// margin band, producing a ring with no geometry subtraction/masking --
-/// `Windows.UI.Composition` has no direct "stroke a rounded rect" shape API
-/// available in this crate's bound surface (`ShapeVisual::Shapes` isn't
-/// present), so this reuses the exact fill+clip+occlude pattern
-/// [`BlurVisual`]'s own tint sprite already depends on, rather than
-/// inventing a second rendering mechanism.
+/// mechanism [`BlurVisual`]'s pairing already relies on). The stroke is
+/// that border width thick and its geometry is inset by half of it, so the
+/// ring's outer edge lands exactly on the overlay's outer rect and its
+/// inner edge exactly on the tracked window's own rect.
+///
+/// This replaces an earlier fill-plus-hole-punch design, whose
+/// `SetWindowRgn` region rebuild cost ~3.2ms per frame across a
+/// five-window resize burst -- the largest single border-attributable cost
+/// in that profile -- and whose `CreateRoundRectRgn` hole only
+/// approximated the inner curve. A stroked shape needs no window region at
+/// all, and rounds the ring's inner *and* outer corners exactly. An
+/// earlier version of this comment claimed `Windows.UI.Composition`
+/// exposed no stroke-shape API in this crate's bound surface; that was
+/// wrong -- `Compositor::CreateShapeVisual`,
+/// `CreateSpriteShapeWithGeometry` and `ShapeVisual::Shapes` are all bound
+/// in `windows` 0.52.
+///
+/// The SWCA fallback path has no equivalent, so `NativeBorderOverlay`
+/// keeps the region punch there and only there.
 pub(crate) struct BorderVisual {
   /// Binds the visual tree to the overlay's `HWND`. Kept alive but never
   /// touched again -- dropping it would unbind composition from the window.
   _target: DesktopWindowTarget,
 
-  root: ContainerVisual,
-  sprite: SpriteVisual,
-  color_brush: CompositionColorBrush,
-  rounded_geometry: CompositionRoundedRectangleGeometry,
+  /// Root of the tree, holding the single stroked shape. A `ShapeVisual`
+  /// derives `ContainerVisual`, so this doubles as the size/opacity knob
+  /// the previous design needed a separate `ContainerVisual` for.
+  root: ShapeVisual,
+  shape: CompositionSpriteShape,
+  stroke_brush: CompositionColorBrush,
+  geometry: CompositionRoundedRectangleGeometry,
+
+  /// Last-applied ring inputs, so any one of `set_rect`/`set_width`/
+  /// `set_corner_radius` can recompute the derived geometry (which depends
+  /// on all three) from the other two's current values.
+  ring: Cell<Ring>,
+}
+
+/// The inputs a stroked ring's geometry is derived from: the overlay's own
+/// (already-outset) size in pixels, the border width the stroke is drawn
+/// at, and the ring's *outer* corner radius.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct Ring {
+  size: Vector2,
+  width: f32,
+  corner_radius: f32,
+}
+
+/// Derives a [`Ring`]'s centerline geometry, i.e. the rounded rectangle a
+/// stroke of `ring.width` must follow for the resulting band to span
+/// exactly from the overlay's outer rect inwards to the tracked window's
+/// own rect.
+///
+/// A composition stroke straddles its geometry, half of it on either side,
+/// so the path is inset by half the width and its radius shrunk by the
+/// same amount -- leaving the band's outer edge at `ring.corner_radius`
+/// and its inner edge at `ring.corner_radius - ring.width`, both exact
+/// curves rather than the old hole punch's `CreateRoundRectRgn`
+/// approximation.
+///
+/// Returns `(offset, size, corner_radius)` for the geometry, each clamped
+/// so a width exceeding the overlay's own size (or its corner radius)
+/// degenerates gracefully instead of producing a negative extent, which
+/// composition rejects.
+fn ring_geometry(ring: Ring) -> (Vector2, Vector2, f32) {
+  let width = ring.width.max(0.0);
+  let inset = width / 2.0;
+
+  let offset = Vector2 { X: inset, Y: inset };
+  let size = Vector2 {
+    X: (ring.size.X - width).max(0.0),
+    Y: (ring.size.Y - width).max(0.0),
+  };
+  let corner_radius = (ring.corner_radius - inset).max(0.0);
+
+  (offset, size, corner_radius)
 }
 
 impl BorderVisual {
@@ -668,32 +729,54 @@ impl BorderVisual {
     })
   }
 
-  /// Resizes the visual tree's clip and sprite to match `rect`. Does not
-  /// reposition the `HWND` itself -- callers still issue their own
-  /// `SetWindowPos`.
+  /// Re-derives and applies the stroke thickness and geometry for `ring`,
+  /// storing it as the new baseline for the next partial update.
+  fn apply_ring(&self, ring: Ring) -> windows::core::Result<()> {
+    let (offset, size, corner_radius) = ring_geometry(ring);
+
+    self.root.SetSize(ring.size)?;
+    self.shape.SetStrokeThickness(ring.width.max(0.0))?;
+    self.geometry.SetOffset(offset)?;
+    self.geometry.SetSize(size)?;
+    self
+      .geometry
+      .SetCornerRadius(Vector2 { X: corner_radius, Y: corner_radius })?;
+
+    self.ring.set(ring);
+    Ok(())
+  }
+
+  /// Resizes the ring to match `rect`. Does not reposition the `HWND`
+  /// itself -- callers still issue their own `SetWindowPos`.
   pub(crate) fn set_rect(&self, rect: &Rect) -> crate::Result<()> {
     let size = Vector2 {
       X: pixels_to_dips(rect.width()),
       Y: pixels_to_dips(rect.height()),
     };
-    self.root.SetSize(size)?;
-    self.sprite.SetSize(size)?;
-    self.rounded_geometry.SetSize(size)?;
-    Ok(())
+
+    Ok(self.apply_ring(Ring { size, ..self.ring.get() })?)
   }
 
-  /// Updates the fill color.
+  /// Updates the ring's color.
   pub(crate) fn set_color(&self, color: crate::Color) -> crate::Result<()> {
-    self.color_brush.SetColor(to_ui_color(color))?;
+    self.stroke_brush.SetColor(to_ui_color(color))?;
     Ok(())
   }
 
-  /// Updates the clip's corner radius.
+  /// Updates the border width, i.e. the stroke's thickness.
+  ///
+  /// The overlay's `HWND` is outset by this same width, so callers must
+  /// resize the window (and hence call [`set_rect`]) to match -- this only
+  /// updates the band drawn inside it.
+  ///
+  /// [`set_rect`]: BorderVisual::set_rect
+  pub(crate) fn set_width(&self, width: f32) -> crate::Result<()> {
+    Ok(self.apply_ring(Ring { width, ..self.ring.get() })?)
+  }
+
+  /// Updates the ring's outer corner radius.
   pub(crate) fn set_corner_radius(&self, value: f32) -> crate::Result<()> {
-    self
-      .rounded_geometry
-      .SetCornerRadius(Vector2 { X: value, Y: value })?;
-    Ok(())
+    Ok(self.apply_ring(Ring { corner_radius: value, ..self.ring.get() })?)
   }
 
   /// Updates the overlay's own opacity.
@@ -703,8 +786,11 @@ impl BorderVisual {
   }
 }
 
-/// Builds the full visual tree: a `ContainerVisual` rooting a single flat
-/// color `SpriteVisual`, clipped by a rounded rectangle geometry.
+/// Builds the full visual tree: a `ShapeVisual` rooting a single
+/// `CompositionSpriteShape` that strokes a rounded rectangle in the border
+/// color. No fill brush is set, so the shape's interior stays transparent
+/// and the tracked window shows through with no window region, mask, or
+/// reliance on that window occluding a fill.
 fn build_border_visual_tree(
   compositor: &Compositor,
   hwnd: HWND,
@@ -718,38 +804,110 @@ fn build_border_visual_tree(
       .CreateDesktopWindowTarget(hwnd, false)?
   };
 
-  let size = Vector2 {
-    X: pixels_to_dips(rect.width()),
-    Y: pixels_to_dips(rect.height()),
-  };
+  let geometry = compositor.CreateRoundedRectangleGeometry()?;
 
-  let rounded_geometry = compositor.CreateRoundedRectangleGeometry()?;
-  rounded_geometry.SetSize(size)?;
-  rounded_geometry.SetCornerRadius(Vector2 {
-    X: params.corner_radius,
-    Y: params.corner_radius,
-  })?;
-  let clip = compositor.CreateGeometricClipWithGeometry(&rounded_geometry)?;
-
-  let color_brush =
+  let stroke_brush =
     compositor.CreateColorBrushWithColor(to_ui_color(params.color))?;
-  let sprite = compositor.CreateSpriteVisual()?;
-  sprite.SetBrush(&color_brush)?;
-  sprite.SetSize(size)?;
+  let shape = compositor.CreateSpriteShapeWithGeometry(&geometry)?;
+  shape.SetStrokeBrush(&stroke_brush)?;
 
-  let root = compositor.CreateContainerVisual()?;
-  root.SetSize(size)?;
-  root.SetClip(&clip)?;
+  let root = compositor.CreateShapeVisual()?;
   root.SetOpacity(params.opacity)?;
-  root.Children()?.InsertAtTop(&sprite)?;
+  root.Shapes()?.Append(&shape)?;
 
   target.SetRoot(&root)?;
 
-  Ok(BorderVisual {
+  let visual = BorderVisual {
     _target: target,
     root,
-    sprite,
-    color_brush,
-    rounded_geometry,
-  })
+    shape,
+    stroke_brush,
+    geometry,
+    ring: Cell::new(Ring {
+      size: Vector2 { X: 0.0, Y: 0.0 },
+      width: params.width,
+      corner_radius: params.corner_radius,
+    }),
+  };
+
+  // Sizes the root and derives the stroke geometry through the one place
+  // that math lives, rather than duplicating it here.
+  visual.apply_ring(Ring {
+    size: Vector2 {
+      X: pixels_to_dips(rect.width()),
+      Y: pixels_to_dips(rect.height()),
+    },
+    width: params.width,
+    corner_radius: params.corner_radius,
+  })?;
+
+  Ok(visual)
+}
+
+#[cfg(test)]
+mod tests {
+  use windows::Foundation::Numerics::Vector2;
+
+  use super::{ring_geometry, Ring};
+
+  /// A ring's stroke straddles its geometry, so the path sits half a width
+  /// inside the overlay on every side and its radius shrinks by that same
+  /// half -- putting the band's outer edge on the overlay's rect and its
+  /// inner edge on the tracked window's rect.
+  #[test]
+  fn geometry_is_inset_by_half_the_stroke() {
+    let (offset, size, corner_radius) = ring_geometry(Ring {
+      size: Vector2 { X: 800.0, Y: 600.0 },
+      width: 4.0,
+      corner_radius: 10.0,
+    });
+
+    assert_eq!(offset, Vector2 { X: 2.0, Y: 2.0 });
+    assert_eq!(size, Vector2 { X: 796.0, Y: 596.0 });
+    assert!((corner_radius - 8.0).abs() < f32::EPSILON);
+  }
+
+  /// A zero-width border collapses to a zero-thickness stroke over the
+  /// overlay's full rect, with the corner radius left untouched.
+  #[test]
+  fn zero_width_leaves_geometry_at_full_size() {
+    let (offset, size, corner_radius) = ring_geometry(Ring {
+      size: Vector2 { X: 800.0, Y: 600.0 },
+      width: 0.0,
+      corner_radius: 10.0,
+    });
+
+    assert_eq!(offset, Vector2 { X: 0.0, Y: 0.0 });
+    assert_eq!(size, Vector2 { X: 800.0, Y: 600.0 });
+    assert!((corner_radius - 10.0).abs() < f32::EPSILON);
+  }
+
+  /// A width wider than the overlay itself (or than its corner radius)
+  /// clamps to zero rather than producing a negative extent, which
+  /// composition rejects.
+  #[test]
+  fn oversized_width_clamps_instead_of_going_negative() {
+    let (_, size, corner_radius) = ring_geometry(Ring {
+      size: Vector2 { X: 20.0, Y: 10.0 },
+      width: 40.0,
+      corner_radius: 2.0,
+    });
+
+    assert_eq!(size, Vector2 { X: 0.0, Y: 0.0 });
+    assert!(corner_radius.abs() < f32::EPSILON);
+  }
+
+  /// A negative width (never configured, but cheap to defend against)
+  /// behaves exactly like zero rather than insetting outwards.
+  #[test]
+  fn negative_width_behaves_like_zero() {
+    let (offset, size, _) = ring_geometry(Ring {
+      size: Vector2 { X: 100.0, Y: 50.0 },
+      width: -8.0,
+      corner_radius: 4.0,
+    });
+
+    assert_eq!(offset, Vector2 { X: 0.0, Y: 0.0 });
+    assert_eq!(size, Vector2 { X: 100.0, Y: 50.0 });
+  }
 }

@@ -153,7 +153,7 @@ fn outer_rect(window_rect: &Rect, width: f32) -> Rect {
   window_rect.inset(-(width.round() as i32))
 }
 
-/// Restricts `hwnd`'s window region to a "picture frame": the full
+/// Restricts `hwnd`'s window region to a "picture frame" -- the full
 /// `outer_size` rect minus a rect inset by `outset` on every side (in
 /// `hwnd`'s own local coordinates), rounded by `inner_radius` so the hole
 /// stays concentric with the ring's own rounded outer edge -- a plain
@@ -164,12 +164,17 @@ fn outer_rect(window_rect: &Rect, width: f32) -> Rect {
 /// the moment the tracked window isn't fully opaque (e.g. `transparency`
 /// enabled), since there'd be nothing left to hide the overlay's own
 /// fill.
+///
+/// Only the SWCA fallback needs this: it paints a solid accent sheet
+/// across the whole overlay and has no stroke primitive to draw a band
+/// with, so the ring has to be cut out of the window's own shape. The
+/// `Windows.UI.Composition` path strokes the ring directly (see
+/// [`BorderVisual`]) and never calls this.
 fn apply_hole_region(
   hwnd: HWND,
   outer_size: (i32, i32),
   outset: i32,
   inner_radius: i32,
-  redraw: bool,
 ) {
   let (w, h) = outer_size;
 
@@ -201,21 +206,12 @@ fn apply_hole_region(
       let _ = DeleteObject(HGDIOBJ(inner_rgn.0));
     }
 
-    // `bRedraw` only matters for the SWCA fallback, whose accent brush
-    // composites into the window's GDI redirection surface -- there the
-    // newly (dis)covered area genuinely must be repainted, since the
-    // overlay's content can change independently of its rect (color/opacity
+    // `bRedraw` is always on here: the SWCA fallback's accent brush
+    // composites into the window's GDI redirection surface, so the newly
+    // (dis)covered area genuinely must be repainted -- the overlay's
+    // content can change independently of its rect (color/opacity
     // updates).
-    //
-    // The `Windows.UI.Composition` path has no redirection surface at all
-    // (`WS_EX_NOREDIRECTIONBITMAP`); every pixel comes from the visual tree,
-    // which `defer_rect` has already resized. Asking for a redraw there buys
-    // nothing and costs a synchronous window-manager repaint pass -- paid
-    // once per window per frame for the whole animation, since a resize
-    // changes the hole shape on every frame. That was ~1.4ms per animating
-    // window per frame, i.e. the single largest per-window cost in a
-    // multi-window resize.
-    SetWindowRgn(hwnd, outer_rgn, BOOL(i32::from(redraw)));
+    SetWindowRgn(hwnd, outer_rgn, BOOL(1));
   }
 }
 
@@ -230,6 +226,33 @@ fn inner_hole_radius(params: &BorderOverlayParams) -> i32 {
   }
 }
 
+/// How a [`NativeBorderOverlay`] actually paints its ring.
+///
+/// The two paths need genuinely different machinery, so this keeps the
+/// window-region state confined to the one that needs it rather than
+/// carrying a permanently-unused field on both.
+enum BorderRenderer {
+  /// The `Windows.UI.Composition` path: a stroked rounded rectangle whose
+  /// interior is simply never painted, so no window region is involved at
+  /// all.
+  Composition(BorderVisual),
+
+  /// The `SetWindowCompositionAttribute` fallback: a solid accent sheet
+  /// across the whole overlay, with the center cut out of the window's own
+  /// shape by [`apply_hole_region`].
+  Swca {
+    /// `(width, height, inner_radius)` of the hole-punch region last
+    /// applied, used to skip redundant `SetWindowRgn` calls when a
+    /// reposition doesn't actually change the overlay's shape -- e.g. a
+    /// pure translation during a workspace-switch slide. Distinct from
+    /// `NativeBorderOverlay::rect`/`is_visible`'s no-op check: that one
+    /// skips the whole `set_rect`/`defer_rect` call including
+    /// `SetWindowPos`, this one only skips the (comparatively expensive)
+    /// region recompute when the position moved but the shape didn't.
+    hole_shape: (i32, i32, i32),
+  },
+}
+
 /// A persistent overlay window that renders a colored border ring around a
 /// paired managed window -- a self-drawn stand-in for the OS's
 /// `DWMWA_BORDER_COLOR`, which isn't carried along by DWM thumbnails
@@ -239,20 +262,22 @@ fn inner_hole_radius(params: &BorderOverlayParams) -> i32 {
 /// Sized to `window_rect` outset by `params.width` (the configured border
 /// width) on every side, and positioned directly behind an `anchor`
 /// window in z-order -- same pairing mechanism [`NativeBlurOverlay`] uses.
-/// The
-/// overlay renders a solid-colored, rounded-rect-clipped sheet across its
-/// whole (outset) area (see [`BorderVisual`]'s doc comment for why -- no
-/// stroke-shape API is available in this crate's bound
-/// `Windows.UI.Composition` surface), but a `SetWindowRgn` "picture frame"
-/// region (outer bounds minus `window_rect`) excludes the center from the
-/// window's own shape, so only the ring band is ever actually painted --
-/// this holds regardless of the tracked window's own opacity or its
-/// z-order relative to other overlays (e.g. the acrylic backdrop).
 ///
 /// Renders via a `Windows.UI.Composition` pipeline when available, falling
 /// back to a `SetWindowCompositionAttribute` solid-color accent otherwise.
-/// In the fallback, `corner_radius` is a no-op (the OS gives no continuous
-/// corner-radius knob for SWCA) but `color`/`opacity` keep working.
+/// In the fallback, `corner_radius` is a no-op for the fill itself (the OS
+/// gives no continuous corner-radius knob for SWCA) but `color`/`opacity`
+/// keep working.
+///
+/// The two paths carve the ring out very differently, which
+/// [`BorderRenderer`] captures. Composition strokes a rounded rectangle
+/// directly ([`BorderVisual`]), leaving the interior unpainted. SWCA has
+/// no stroke primitive, so it paints a full sheet and a `SetWindowRgn`
+/// "picture frame" region (outer bounds minus `window_rect`) excludes the
+/// center from the window's own shape. Neither path relies on the tracked
+/// window occluding a fill, so both hold regardless of that window's own
+/// opacity or its z-order relative to other overlays (e.g. the acrylic
+/// backdrop).
 ///
 /// [`NativeBlurOverlay`]: crate::NativeBlurOverlay
 /// [`BorderVisual`]: crate::platform_impl::composition::BorderVisual
@@ -284,19 +309,9 @@ pub struct NativeBorderOverlay {
   /// explicitly rather than inferred from a rect change.
   is_visible: bool,
 
-  /// `Some` when the Composition pipeline is active for this overlay;
-  /// `None` when running the SWCA fallback.
-  composition: Option<BorderVisual>,
-
-  /// `(width, height, inner_radius)` of the hole-punch region last applied
-  /// via [`apply_hole_region`], used to skip redundant `SetWindowRgn`
-  /// calls when a reposition doesn't actually change the overlay's shape
-  /// -- e.g. a pure translation during a workspace-switch slide. Distinct
-  /// from `rect`/`is_visible`'s no-op check above: that one skips the
-  /// whole `set_rect`/`defer_rect` call including `SetWindowPos`, this one
-  /// only skips the (comparatively expensive) region recompute when the
-  /// position moved but the shape didn't.
-  hole_shape: (i32, i32, i32),
+  /// Which of the two rendering paths this overlay is running, plus any
+  /// state that path alone needs.
+  renderer: BorderRenderer,
 }
 
 impl NativeBorderOverlay {
@@ -314,14 +329,26 @@ impl NativeBorderOverlay {
   ) -> crate::Result<Self> {
     let outer = outer_rect(window_rect, params.width);
 
-    let (hwnd, composition) =
+    let (hwnd, renderer) =
       if let Some((hwnd, visual)) = try_create_composition(&outer, params) {
-        (hwnd, Some(visual))
+        (hwnd, BorderRenderer::Composition(visual))
       } else {
         let hwnd = create_window(&outer, false)?;
         extend_glass_sheet(hwnd);
         apply_backdrop(hwnd, Some(&params.color));
-        (hwnd, None)
+
+        #[allow(clippy::cast_possible_truncation)]
+        let outset = params.width.round() as i32;
+        let hole_shape =
+          (outer.width(), outer.height(), inner_hole_radius(&params));
+        apply_hole_region(
+          hwnd,
+          (hole_shape.0, hole_shape.1),
+          outset,
+          hole_shape.2,
+        );
+
+        (hwnd, BorderRenderer::Swca { hole_shape })
       };
 
     // SAFETY: `hwnd` is a valid window just created above.
@@ -339,26 +366,13 @@ impl NativeBorderOverlay {
       tracing::warn!("Border overlay SetWindowPos failed on create: {e}.");
     }
 
-    #[allow(clippy::cast_possible_truncation)]
-    let outset = params.width.round() as i32;
-    let hole_shape =
-      (outer.width(), outer.height(), inner_hole_radius(&params));
-    apply_hole_region(
-      hwnd,
-      (hole_shape.0, hole_shape.1),
-      outset,
-      hole_shape.2,
-      composition.is_none(),
-    );
-
     Ok(Self {
       hwnd: hwnd.0,
       params,
       rect: window_rect.clone(),
       anchor: anchor.0,
       is_visible: true,
-      composition,
-      hole_shape,
+      renderer,
     })
   }
 
@@ -367,29 +381,31 @@ impl NativeBorderOverlay {
     HWND(self.hwnd)
   }
 
-  /// Re-applies the hole-punch region for `outer` if its shape (size or
-  /// inner radius) actually changed since the last application -- skipped
-  /// on a pure reposition, since `SetWindowRgn` is comparatively expensive
-  /// to call on every animation tick.
+  /// Re-applies the SWCA fallback's hole-punch region for `outer` if its
+  /// shape (size or inner radius) actually changed since the last
+  /// application -- skipped on a pure reposition, since `SetWindowRgn` is
+  /// comparatively expensive to call on every animation tick.
+  ///
+  /// No-op on the Composition path, which strokes its ring and needs no
+  /// window region at all.
   fn refresh_hole(&mut self, outer: &Rect) {
-    let _scope = crate::perf::scope(crate::perf::Stage::OverlayRegion);
+    let hwnd = self.hwnd();
 
     #[allow(clippy::cast_possible_truncation)]
     let outset = self.params.width.round() as i32;
     let shape = (outer.width(), outer.height(), inner_hole_radius(&self.params));
 
-    if shape == self.hole_shape {
+    let BorderRenderer::Swca { hole_shape } = &mut self.renderer else {
+      return;
+    };
+
+    if shape == *hole_shape {
       return;
     }
 
-    apply_hole_region(
-      self.hwnd(),
-      (shape.0, shape.1),
-      outset,
-      shape.2,
-      self.composition.is_none(),
-    );
-    self.hole_shape = shape;
+    let _scope = crate::perf::scope(crate::perf::Stage::OverlayRegion);
+    apply_hole_region(hwnd, (shape.0, shape.1), outset, shape.2);
+    *hole_shape = shape;
   }
 
   /// Returns whether the overlay window is currently shown.
@@ -435,7 +451,7 @@ impl NativeBorderOverlay {
       return;
     }
 
-    if let Some(composition) = &self.composition {
+    if let BorderRenderer::Composition(composition) = &self.renderer {
       if let Err(e) = composition.set_rect(&outer) {
         tracing::warn!("Border overlay composition resize failed: {e}.");
       }
@@ -473,7 +489,7 @@ impl NativeBorderOverlay {
     let outer = outer_rect(window_rect, self.params.width);
     batch.push(self.hwnd, outer.clone());
 
-    if let Some(composition) = &self.composition {
+    if let BorderRenderer::Composition(composition) = &self.renderer {
       let _scope = crate::perf::scope(crate::perf::Stage::OverlayVisual);
       if let Err(e) = composition.set_rect(&outer) {
         tracing::warn!("Border overlay composition resize failed: {e}.");
@@ -522,13 +538,13 @@ impl NativeBorderOverlay {
     }
     self.params.color = color;
 
-    match &self.composition {
-      Some(composition) => {
+    match &self.renderer {
+      BorderRenderer::Composition(composition) => {
         if let Err(e) = composition.set_color(color) {
           tracing::warn!("Border overlay composition color update failed: {e}.");
         }
       }
-      None => {
+      BorderRenderer::Swca { .. } => {
         apply_backdrop(self.hwnd(), Some(&color));
       }
     }
@@ -538,12 +554,23 @@ impl NativeBorderOverlay {
   /// outset size (not just a composition property), this repositions/
   /// resizes the window immediately at the last-applied `rect`/`anchor`
   /// rather than deferring to the next `set_rect` call.
+  ///
+  /// On the Composition path the width is also the ring's stroke
+  /// thickness, so the visual is updated first -- the `set_rect` below
+  /// then re-derives the stroke's geometry from both at once.
   #[allow(clippy::float_cmp)]
   pub fn set_width(&mut self, width: f32) {
     if self.params.width == width {
       return;
     }
     self.params.width = width;
+
+    if let BorderRenderer::Composition(composition) = &self.renderer {
+      if let Err(e) = composition.set_width(width) {
+        tracing::warn!("Border overlay composition width update failed: {e}.");
+      }
+    }
+
     let anchor = HWND(self.anchor);
     let rect = self.rect.clone();
     self.is_visible = false; // force set_rect through despite unchanged rect.
@@ -551,9 +578,8 @@ impl NativeBorderOverlay {
   }
 
   /// Updates the ring's corner radius; re-applies only when the value
-  /// changes. No-op on the composition clip when running the SWCA
-  /// fallback (no such knob exists), but the hole-punch is re-applied
-  /// regardless, since it must stay concentric with `value` either way.
+  /// changes. On the SWCA fallback the sheet itself has no radius knob,
+  /// but its hole-punch does, and must stay concentric with `value`.
   #[allow(clippy::float_cmp)]
   pub fn set_corner_radius(&mut self, value: f32) {
     if self.params.corner_radius == value {
@@ -561,12 +587,13 @@ impl NativeBorderOverlay {
     }
     self.params.corner_radius = value;
 
-    if let Some(composition) = &self.composition {
+    if let BorderRenderer::Composition(composition) = &self.renderer {
       if let Err(e) = composition.set_corner_radius(value) {
         tracing::warn!(
           "Border overlay composition corner-radius update failed: {e}."
         );
       }
+      return;
     }
 
     let outer = outer_rect(&self.rect, self.params.width);
@@ -582,7 +609,7 @@ impl NativeBorderOverlay {
     }
     self.params.opacity = value;
 
-    if let Some(composition) = &self.composition {
+    if let BorderRenderer::Composition(composition) = &self.renderer {
       if let Err(e) = composition.set_opacity(value) {
         tracing::warn!("Border overlay composition opacity update failed: {e}.");
       }
@@ -611,8 +638,14 @@ impl NativeBorderOverlay {
 impl Drop for NativeBorderOverlay {
   fn drop(&mut self) {
     // Drop the Composition visual tree (if any) before destroying the
-    // window it's rooted to.
-    self.composition.take();
+    // window it's rooted to -- its `DesktopWindowTarget` is bound to that
+    // `HWND`. Swapping in the fallback variant is only a way to move the
+    // visual out from behind `&mut self`; nothing reads `renderer` again
+    // after this.
+    drop(std::mem::replace(
+      &mut self.renderer,
+      BorderRenderer::Swca { hole_shape: (0, 0, 0) },
+    ));
 
     // SAFETY: `self.hwnd()` is a valid window handle and `Drop` is called
     // at most once.
