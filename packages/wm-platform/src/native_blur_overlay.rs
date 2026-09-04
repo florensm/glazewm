@@ -178,7 +178,13 @@ fn create_backing_window(
   rect: &Rect,
   params: BlurOverlayParams,
 ) -> crate::Result<(HWND, Option<BlurVisual>)> {
-  if params.style != BackdropStyle::Blur {
+  // Only acrylic wants the composition pipeline. `BlurVisual` builds one
+  // fixed effect graph -- host-backdrop brush, Gaussian, saturation, tint --
+  // and does not branch on style, so sending any other style through it
+  // renders that style *as acrylic* while charging its full per-frame cost.
+  // `Blur` and `Solid` are defined as the cheap styles precisely because
+  // they skip it and take an SWCA accent instead.
+  if params.style == BackdropStyle::Acrylic {
     if let Some((hwnd, visual)) = try_create_composition(rect, params) {
       return Ok((hwnd, Some(visual)));
     }
