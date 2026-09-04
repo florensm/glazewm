@@ -35,15 +35,12 @@ pub fn manage_window(
   // Cloak as early as possible to minimise the visible flash before the
   // window is repositioned and animated. Non-tiling windows are uncloaked
   // by `platform_sync` for their target position; tiling windows are
-  // uncloaked by the slide-in animation. Uncloaked immediately below if
-  // window rules decide to ignore the window, or if window creation fails.
+  // uncloaked by the slide-in animation.
+  //
+  // Held by a guard so that every early return between here and a
+  // successful hand-off undoes the cloak. See `CloakGuard`.
   #[cfg(target_os = "windows")]
-  let _ = native_window.set_cloaked(true);
-
-  // Cloned so it can be uncloaked on the failure path below -- `create_window`
-  // consumes `native_window` and does not hand it back on `Err`.
-  #[cfg(target_os = "windows")]
-  let cloaked_window = native_window.clone();
+  let cloak_guard = CloakGuard::cloak(&native_window);
 
   // Create the window instance. This may fail if the window handle has
   // already been destroyed, or if there's no nearest monitor/workspace to
@@ -58,8 +55,7 @@ pub fn manage_window(
     Ok(window) => window,
     Err(err) => {
       tracing::warn!("Operation failed: {:?}", err);
-      #[cfg(target_os = "windows")]
-      let _ = cloaked_window.set_cloaked(false);
+      // `cloak_guard` undoes the cloak as it drops.
       return Ok(());
     }
   };
@@ -104,14 +100,70 @@ pub fn manage_window(
         window.into()
       },
     );
-  } else {
-    // Window was detached by an `ignore` rule — undo the early cloak so it
-    // continues to display normally without GlazeWM managing it.
+
+    // The window is managed and queued for redraw, so `platform_sync`
+    // (non-tiling) or the slide-in animation (tiling) now owns the
+    // uncloak. Every earlier return leaves the guard to undo it.
     #[cfg(target_os = "windows")]
-    let _ = window.native().set_cloaked(false);
+    cloak_guard.release();
   }
+  // Otherwise the window was detached by an `ignore` rule, and the guard
+  // uncloaks it so that it displays normally without GlazeWM managing it.
 
   Ok(())
+}
+
+/// Undoes [`manage_window`]'s early cloak unless explicitly released.
+///
+/// A window is cloaked before the WM knows whether it will end up managing
+/// it, so that there is no visible flash at the window's original
+/// position. Any path that gives up after that point has to undo the
+/// cloak, because nothing else can. A cloaked window keeps `WS_VISIBLE`,
+/// so [`NativeWindow::is_visible`] reports it as hidden while user32 still
+/// hit-tests it: the window becomes invisible *and* swallows every click
+/// over its rect. Neither `WmState`'s shutdown uncloak nor the watcher
+/// process can recover it, since both only know about managed windows.
+///
+/// Using a guard rather than an uncloak on each early return means paths
+/// added later are covered by construction.
+#[cfg(target_os = "windows")]
+struct CloakGuard {
+  /// The cloaked window, taken once the cloak becomes someone else's
+  /// responsibility.
+  window: Option<NativeWindow>,
+}
+
+#[cfg(target_os = "windows")]
+impl CloakGuard {
+  /// Cloaks `window` and returns a guard that uncloaks it on drop.
+  fn cloak(window: &NativeWindow) -> Self {
+    let _ = window.set_cloaked(true);
+
+    Self {
+      window: Some(window.clone()),
+    }
+  }
+
+  /// Hands responsibility for the uncloak to the caller, leaving the
+  /// window cloaked.
+  fn release(mut self) {
+    self.window = None;
+  }
+}
+
+#[cfg(target_os = "windows")]
+impl Drop for CloakGuard {
+  fn drop(&mut self) {
+    if let Some(window) = self.window.take() {
+      tracing::warn!(
+        "Uncloaking window {:?}: it was cloaked for management that did \
+         not complete.",
+        window.id()
+      );
+
+      let _ = window.set_cloaked(false);
+    }
+  }
 }
 
 /// Checks if a window is manageable and retrieves its native properties.
