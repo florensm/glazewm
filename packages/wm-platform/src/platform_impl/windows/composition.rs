@@ -37,7 +37,10 @@ use std::{
 
 use windows::{
   core::{implement, ComInterface, GUID, HSTRING, PCWSTR},
-  Foundation::{Numerics::Vector2, PropertyValue},
+  Foundation::{
+    Numerics::{Vector2, Vector3},
+    PropertyValue,
+  },
   Graphics::Effects::{
     IGraphicsEffect, IGraphicsEffect_Impl, IGraphicsEffectSource,
     IGraphicsEffectSource_Impl,
@@ -782,6 +785,24 @@ impl BorderVisual {
   /// Updates the overlay's own opacity.
   pub(crate) fn set_opacity(&self, value: f32) -> crate::Result<()> {
     self.root.SetOpacity(value)?;
+    Ok(())
+  }
+
+  /// Translates the ring within its `HWND`, in pixels relative to the
+  /// window's top-left.
+  ///
+  /// Used by the workspace-switch slide, where the overlay window stays
+  /// pinned to the monitor viewport and only its content moves: one
+  /// property write per frame instead of a `SetWindowPos` plus a geometry
+  /// rebuild. Content driven outside the window's bounds is clipped by the
+  /// `DesktopWindowTarget`, so a ring sliding off the monitor is cut at the
+  /// edge rather than spilling onto the neighbouring one.
+  pub(crate) fn set_offset(&self, x: i32, y: i32) -> crate::Result<()> {
+    self.root.SetOffset(Vector3 {
+      X: pixels_to_dips(x),
+      Y: pixels_to_dips(y),
+      Z: 0.0,
+    })?;
     Ok(())
   }
 }

@@ -208,6 +208,7 @@ use crate::{
 #[cfg(target_os = "windows")]
 use crate::commands::general::{
   overlay_z_anchor, upsert_blur_overlay, upsert_border_overlay,
+  upsert_pinned_border_overlay,
 };
 
 /// A single entry in the surrogate update queue built each redraw pass.
@@ -1217,6 +1218,14 @@ impl AnimationManager {
             // before the real windows are uncloaked.
             if ws_done && !entry.is_incoming {
               s.hide_thumbnail();
+
+              // The ring is pinned to the viewport at this point rather
+              // than tracking its window, so nothing else would move it
+              // off-screen with the thumbnail it was following.
+              if let Some(overlay) = state.border_overlays.get_mut(&window_id) {
+                overlay.hide();
+              }
+
               continue;
             }
             match ws.style {
@@ -1334,10 +1343,17 @@ impl AnimationManager {
               }
             }
 
-            // Same live-tracking for the border overlay, independent of
-            // `is_live()` (a blur-specific flag) -- `current_rect()` is
-            // already kept current by the `update_*` call above regardless
-            // of whether this surrogate carries acrylic blur.
+            // The border ring is a separate `HWND`, and a DWM thumbnail
+            // is captured with `DWM_TNP_SOURCECLIENTAREAONLY`, so the
+            // surrogate cannot carry it. Rather than hide it for the whole
+            // switch -- which read as the border popping out and back in
+            // -- the overlay is pinned to the monitor viewport and its ring
+            // slid within it by a composition offset. It follows the
+            // unclipped window rect, since the ring sits *outside* that
+            // rect and so is not described by the clipped visible strip.
+            //
+            // Independent of `is_live()`, which is blur-specific: the
+            // border tracks every surrogate regardless of acrylic backdrop.
             {
               let effect_cfg = if Some(window_id) == focused_id_for_overlay {
                 &config.value.window_effects.focused_window
@@ -1345,22 +1361,38 @@ impl AnimationManager {
                 &config.value.window_effects.other_windows
               };
               if let Some(color) = effect_cfg.border.abgr_color() {
-                match s.current_rect() {
+                match s.unclipped_rect() {
                   Some(rect) => {
                     let corner_radius = if effect_cfg.corner_style.enabled {
                       effect_cfg.corner_style.style.approx_radius_px()
                     } else {
                       CornerStyle::Default.approx_radius_px()
                     };
-                    let params =
+                    let mut params =
                       effect_cfg.border.to_overlay_params(color, corner_radius);
-                    upsert_border_overlay(
+
+                    // Fade the ring in step with the window it outlines,
+                    // so a configured `opacity_incoming`/`opacity_outgoing`
+                    // does not leave a full-strength border floating over a
+                    // half-faded window.
+                    params.opacity *=
+                      s.opacity_frac(eased_final, entry.is_incoming);
+
+                    let rect = rect.clone();
+                    let viewport = Rect::from_xy(
+                      ws.monitor_x,
+                      ws.monitor_y,
+                      ws.monitor_width,
+                      ws.monitor_height,
+                    );
+
+                    upsert_pinned_border_overlay(
                       &mut state.border_overlays,
                       window_id,
                       params,
-                      rect,
+                      &rect,
+                      &viewport,
                       s.hwnd(),
-                      &mut ws_batch,
                     );
                   }
                   None => {
