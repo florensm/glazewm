@@ -607,16 +607,19 @@ fn redraw_containers(
           if is_incoming {
             let surrogate = window
               .to_rect()
-              .and_then(|r| {
-                window.total_border_delta().map(|d| r.apply_delta(&d, None))
+              .and_then(|frame_rect| {
+                window
+                  .total_border_delta()
+                  .map(|d| (frame_rect.apply_delta(&d, None), frame_rect))
               })
               .ok()
-              .and_then(|rect| {
+              .and_then(|(rect, frame_rect)| {
                 let viewport =
                   Rect::from_xy(monitor_x, monitor_y, monitor_width, monitor_height);
                 WorkspaceSurrogate::new(
                   hwnd,
                   &rect,
+                  &frame_rect,
                   &viewport,
                   opacity,
                   ws_config.opacity_incoming,
@@ -651,8 +654,11 @@ fn redraw_containers(
               .unwrap_or_else(|| Rect::from_xy(0, 0, 0, 0));
             let viewport =
               Rect::from_xy(monitor_x, monitor_y, monitor_width, monitor_height);
+            // `current` is already a frame rect, so it doubles as
+            // `frame_rect` -- unlike the incoming branch above.
             let surrogate = WorkspaceSurrogate::new(
               hwnd,
+              &current,
               &current,
               &viewport,
               opacity,
@@ -1936,6 +1942,53 @@ pub(crate) fn upsert_border_overlay(
         }
       }
     }
+  }
+}
+
+/// Creates or updates `window_id`'s border overlay for one frame of a
+/// workspace-switch slide, keeping it pinned to `viewport` and sliding its
+/// ring to `rect` (the window's *unclipped* rect for this frame).
+///
+/// Unlike [`upsert_border_overlay`] this issues no `SetWindowPos` per frame
+/// and takes no [`SurrogateBatch`]: after the initial pin, a frame costs a
+/// single composition property write. See
+/// `NativeBorderOverlay::pin_to_viewport` for why the window is pinned
+/// rather than moved, and what happens on the SWCA fallback.
+#[cfg(target_os = "windows")]
+pub(crate) fn upsert_pinned_border_overlay(
+  overlays: &mut std::collections::HashMap<uuid::Uuid, NativeBorderOverlay>,
+  window_id: uuid::Uuid,
+  params: BorderOverlayParams,
+  rect: &Rect,
+  viewport: &Rect,
+  anchor: HWND,
+) {
+  let overlay = match overlays.entry(window_id) {
+    std::collections::hash_map::Entry::Occupied(e) => e.into_mut(),
+    std::collections::hash_map::Entry::Vacant(e) => {
+      match NativeBorderOverlay::create(rect, params, anchor) {
+        Ok(overlay) => {
+          debug!("Border overlay created for {window_id}.");
+          e.insert(overlay)
+        }
+        Err(err) => {
+          debug!("Border overlay creation failed for {window_id}: {err}.");
+          return;
+        }
+      }
+    }
+  };
+
+  // Applied before the pin: a width change re-runs `set_rect` internally,
+  // which drops the pin, and the re-pin below then puts it back.
+  overlay.apply(params);
+
+  if overlay.is_pinned() {
+    overlay.slide_to(rect);
+  } else if !overlay.pin_to_viewport(viewport, rect, anchor) {
+    // The SWCA fallback has no composition tree to offset, so it keeps the
+    // old behaviour of sitting the transition out.
+    overlay.hide();
   }
 }
 

@@ -78,6 +78,29 @@ pub struct WorkspaceSurrogate {
   /// applies there), and `None` whenever the visible strip is currently
   /// empty (fully off-screen, or zoomed to nothing).
   current_rect: Option<Rect>,
+
+  /// Full on-screen rect the source window occupies this animation frame,
+  /// *before* the monitor clip -- in both [`SurrogateMode`]s, unlike
+  /// `current_rect`. Lets the border overlay follow the window through a
+  /// slide: the ring hangs outside the window's own rect, so it has to be
+  /// placed from the unclipped position and clipped separately (see
+  /// `NativeBorderOverlay::pin_to_viewport`). `None` once the window is
+  /// entirely off-screen.
+  unclipped_rect: Option<Rect>,
+
+  /// Inset carrying `rect` to the window's *frame* rect, derived at
+  /// construction from the `frame_rect` the caller passed alongside it.
+  ///
+  /// It cannot be inferred from the mode: callers disagree on what `rect`
+  /// means. The incoming branch applies `total_border_delta` and so passes
+  /// a physical rect including the invisible resize border, while the
+  /// outgoing branch passes a frame rect that already excludes it.
+  ///
+  /// Only `unclipped_rect` uses it. The border overlay is placed from the
+  /// frame rect in steady state, so a ring built from a physical rect
+  /// bulges into the configured gap on every side and collides with its
+  /// neighbour's mid-slide.
+  frame_inset: RECT,
 }
 
 impl WorkspaceSurrogate {
@@ -86,6 +109,13 @@ impl WorkspaceSurrogate {
   /// `viewport` is the monitor rect; `rect` is the source window's screen
   /// rect, used as the thumbnail registration dimensions and the reference
   /// for per-frame coordinate math.
+  ///
+  /// `frame_rect` is the same window's frame rect (what
+  /// `DWMWA_EXTENDED_FRAME_BOUNDS` reports), which callers pass explicitly
+  /// because they disagree on whether `rect` includes the invisible resize
+  /// border. It is used only to place overlays that sit outside the window,
+  /// i.e. the border ring -- pass the same value as `rect` when the two
+  /// coincide.
   ///
   /// `opacity_endpoint` controls how far the opacity animates away from the
   /// effect opacity. For outgoing windows pass `config.opacity_outgoing`; for
@@ -124,6 +154,7 @@ impl WorkspaceSurrogate {
   pub fn new(
     hwnd: HWND,
     rect: &Rect,
+    frame_rect: &Rect,
     viewport: &Rect,
     opacity: u8,
     opacity_endpoint: f32,
@@ -185,6 +216,14 @@ impl WorkspaceSurrogate {
     // (`PinnedViewport` mode).
     let stored_rect = to_logical(rect, &border_inset);
 
+    // Derived before `stored_rect` is moved into the struct below.
+    let frame_inset = RECT {
+      left: frame_rect.left - stored_rect.left,
+      top: frame_rect.top - stored_rect.top,
+      right: stored_rect.right - frame_rect.right,
+      bottom: stored_rect.bottom - frame_rect.bottom,
+    };
+
     Ok(Self {
       inner,
       rect: stored_rect,
@@ -194,6 +233,8 @@ impl WorkspaceSurrogate {
       mode,
       border_inset,
       current_rect: None,
+      unclipped_rect: None,
+      frame_inset,
     })
   }
 
@@ -202,6 +243,28 @@ impl WorkspaceSurrogate {
   #[must_use]
   pub fn current_rect(&self) -> Option<&Rect> {
     self.current_rect.as_ref()
+  }
+
+  /// Full on-screen rect of the source window for the current animation
+  /// frame, before the monitor clip, in both [`SurrogateMode`]s. `None`
+  /// once the window is entirely off-screen.
+  #[must_use]
+  pub fn unclipped_rect(&self) -> Option<&Rect> {
+    self.unclipped_rect.as_ref()
+  }
+
+  /// The opacity fraction (0.0 - 1.0) this surrogate is being drawn at for
+  /// `progress`, so overlays tracking it can fade in step rather than
+  /// staying at full strength over a fading window.
+  #[must_use]
+  pub fn opacity_frac(&self, progress: f32, is_incoming: bool) -> f32 {
+    let (start_frac, end_frac): (f32, f32) = if is_incoming {
+      (self.opacity_endpoint, 1.0)
+    } else {
+      (1.0, self.opacity_endpoint)
+    };
+
+    (start_frac + (end_frac - start_frac) * progress).clamp(0.0, 1.0)
   }
 
   /// Whether this surrogate carries a live acrylic backdrop
@@ -342,6 +405,7 @@ impl WorkspaceSurrogate {
     if half_w <= 0 || half_h <= 0 {
       self.inner.set_visible(false);
       self.current_rect = None;
+      self.unclipped_rect = None;
       return;
     }
 
@@ -377,13 +441,8 @@ impl WorkspaceSurrogate {
   /// When `opacity_endpoint` is `1.0` (default), the result is constant
   /// `opacity` — no fade.
   fn lerp_opacity(&self, progress: f32, is_incoming: bool) -> u8 {
-    let (start_frac, end_frac): (f32, f32) = if is_incoming {
-      (self.opacity_endpoint, 1.0)
-    } else {
-      (1.0, self.opacity_endpoint)
-    };
-    let frac = start_frac + (end_frac - start_frac) * progress;
-    (self.opacity as f32 * frac.clamp(0.0, 1.0)).round() as u8
+    (self.opacity as f32 * self.opacity_frac(progress, is_incoming)).round()
+      as u8
   }
 
   /// Applies a visible-rect update for one animation frame, dispatching on
@@ -479,6 +538,7 @@ impl WorkspaceSurrogate {
     if scale <= 0.0 {
       self.inner.set_visible(false);
       self.current_rect = None;
+      self.unclipped_rect = None;
       return;
     }
 
@@ -529,8 +589,17 @@ impl WorkspaceSurrogate {
     if vis_left >= vis_right || vis_top >= vis_bottom {
       self.inner.set_visible(false);
       self.current_rect = None;
+      self.unclipped_rect = None;
       return;
     }
+
+    // Unclipped rect the window occupies this frame. The border ring hangs
+    // outside the window, so it cannot be placed from the clipped strip
+    // below -- it is positioned from this and clipped by its own target.
+    self.unclipped_rect = Some(to_logical(
+      &Rect::from_ltrb(final_left, final_top, final_right, final_bottom),
+      &self.frame_inset,
+    ));
 
     // Map the visible screen area back to source-window coordinates.
     // screen_x = final_left + src_x * scale  →  src_x = (screen_x - final_left) / scale
@@ -617,8 +686,21 @@ impl WorkspaceSurrogate {
     if vis_start >= vis_end {
       self.inner.set_visible(false);
       self.current_rect = None;
+      self.unclipped_rect = None;
       return;
     }
+
+    // Unclipped rect the window occupies this frame. The border ring hangs
+    // outside the window, so it cannot be placed from the clipped strip
+    // below -- it is positioned from this and clipped by its own target.
+    self.unclipped_rect = Some(to_logical(
+      &if is_vertical {
+        Rect::from_xy(perp_pos, current, perp_size, axis_size)
+      } else {
+        Rect::from_xy(current, perp_pos, axis_size, perp_size)
+      },
+      &self.frame_inset,
+    ));
 
     // Source-window-local start of the visible strip.
     let src_start = vis_start - current;

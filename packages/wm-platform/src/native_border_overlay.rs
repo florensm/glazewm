@@ -312,6 +312,13 @@ pub struct NativeBorderOverlay {
   /// Which of the two rendering paths this overlay is running, plus any
   /// state that path alone needs.
   renderer: BorderRenderer,
+
+  /// Monitor viewport the overlay window is currently pinned to for a
+  /// workspace-switch slide, or `None` in the normal window-tracking mode.
+  /// See [`pin_to_viewport`].
+  ///
+  /// [`pin_to_viewport`]: NativeBorderOverlay::pin_to_viewport
+  pinned: Option<Rect>,
 }
 
 impl NativeBorderOverlay {
@@ -373,6 +380,7 @@ impl NativeBorderOverlay {
       anchor: anchor.0,
       is_visible: true,
       renderer,
+      pinned: None,
     })
   }
 
@@ -427,6 +435,12 @@ impl NativeBorderOverlay {
   ///
   /// [`sync_z_order`]: NativeBorderOverlay::sync_z_order
   pub fn set_rect(&mut self, window_rect: &Rect, anchor: HWND) {
+    // A pinned overlay's `HWND` covers the whole viewport and its ring is
+    // positioned by a composition offset, so any normal reposition has to
+    // undo both before its own geometry means anything. Doing it here
+    // rather than only in `unpin` means no path can strand the pin.
+    self.clear_pin();
+
     if self.is_visible && &self.rect == window_rect && self.anchor == anchor.0
     {
       return;
@@ -477,7 +491,7 @@ impl NativeBorderOverlay {
     window_rect: &Rect,
     anchor: HWND,
   ) {
-    if !self.is_visible || self.anchor != anchor.0 {
+    if !self.is_visible || self.anchor != anchor.0 || self.pinned.is_some() {
       self.set_rect(window_rect, anchor);
       return;
     }
@@ -625,8 +639,154 @@ impl NativeBorderOverlay {
     self.set_opacity(params.opacity);
   }
 
+  /// Pins the overlay window to `viewport` and draws its ring for
+  /// `window_rect` as a composition offset within it, for the duration of a
+  /// workspace-switch slide.
+  ///
+  /// The border is a separate `HWND` and DWM thumbnails are captured with
+  /// `DWM_TNP_SOURCECLIENTAREAONLY`, so a surrogate can never carry the
+  /// ring with it. Moving the overlay window itself every frame would cost
+  /// a `SetWindowPos` and a geometry rebuild per window per frame, and
+  /// would need the monitor clip applied by hand. Pinning instead leaves
+  /// the window still and slides only its content: one property write per
+  /// frame, with the clip falling out of composition rendering nothing
+  /// outside the target.
+  ///
+  /// Returns `false` on the SWCA fallback, which has no composition tree to
+  /// offset -- callers should hide the overlay for the transition there.
+  ///
+  /// Undone by [`unpin`], or by any ordinary [`set_rect`]/[`defer_rect`].
+  ///
+  /// [`unpin`]: NativeBorderOverlay::unpin
+  /// [`set_rect`]: NativeBorderOverlay::set_rect
+  /// [`defer_rect`]: NativeBorderOverlay::defer_rect
+  pub fn pin_to_viewport(
+    &mut self,
+    viewport: &Rect,
+    window_rect: &Rect,
+    anchor: HWND,
+  ) -> bool {
+    if !matches!(self.renderer, BorderRenderer::Composition(_)) {
+      return false;
+    }
+
+    // SAFETY: `self.hwnd()` is a valid window handle for the lifetime of
+    // this struct.
+    if let Err(e) = unsafe {
+      SetWindowPos(
+        self.hwnd(),
+        anchor,
+        viewport.x(),
+        viewport.y(),
+        viewport.width(),
+        viewport.height(),
+        SWP_NOACTIVATE | SWP_NOSENDCHANGING | SWP_SHOWWINDOW,
+      )
+    } {
+      tracing::warn!("Border overlay viewport pin failed: {e}.");
+      return false;
+    }
+
+    self.pinned = Some(viewport.clone());
+    self.anchor = anchor.0;
+    self.is_visible = true;
+
+    // Force the ring's geometry and offset through: the window just
+    // changed size underneath it, so nothing about the previous state
+    // still applies.
+    self.rect = Rect::from_ltrb(0, 0, 0, 0);
+    self.slide_to(window_rect);
+
+    true
+  }
+
+  /// Whether the overlay is currently pinned to a viewport for a
+  /// workspace-switch slide.
+  #[must_use]
+  pub fn is_pinned(&self) -> bool {
+    self.pinned.is_some()
+  }
+
+  /// Moves the ring to `window_rect` while pinned, without touching the
+  /// overlay window. No-op when not pinned, or when the rect is unchanged.
+  ///
+  /// The ring's geometry is only rebuilt when the window's *size* changes
+  /// (a zooming slide); a pure translation costs a single property write.
+  pub fn slide_to(&mut self, window_rect: &Rect) {
+    let Some(viewport) = self.pinned.clone() else {
+      return;
+    };
+
+    if &self.rect == window_rect {
+      return;
+    }
+
+    let BorderRenderer::Composition(composition) = &self.renderer else {
+      return;
+    };
+
+    let _scope = crate::perf::scope(crate::perf::Stage::OverlayVisual);
+    let outer = outer_rect(window_rect, self.params.width);
+
+    if self.rect.width() != window_rect.width()
+      || self.rect.height() != window_rect.height()
+    {
+      if let Err(e) = composition.set_rect(&outer) {
+        tracing::warn!("Border overlay composition resize failed: {e}.");
+      }
+    }
+
+    if let Err(e) =
+      composition.set_offset(outer.x() - viewport.x(), outer.y() - viewport.y())
+    {
+      tracing::warn!("Border overlay composition offset failed: {e}.");
+      return;
+    }
+
+    self.rect = window_rect.clone();
+  }
+
+  /// Returns the overlay to normal window-tracking mode at `window_rect`,
+  /// undoing [`pin_to_viewport`]. No-op when not pinned.
+  ///
+  /// [`pin_to_viewport`]: NativeBorderOverlay::pin_to_viewport
+  pub fn unpin(&mut self, window_rect: &Rect, anchor: HWND) {
+    if self.pinned.is_none() {
+      return;
+    }
+
+    // `set_rect` clears the pin (resetting the offset) and, because
+    // `clear_pin` invalidates `is_visible`, cannot no-op away the move
+    // back to the overlay's own rect.
+    self.set_rect(window_rect, anchor);
+  }
+
+  /// Drops any viewport pin, returning the ring to its window's own
+  /// origin. Leaves the overlay marked not-visible so that the caller's
+  /// own reposition is not skipped by `set_rect`'s no-op guard -- while
+  /// pinned, `self.rect` describes a ring drawn at an offset inside a
+  /// viewport-sized window, which no longer matches the window itself.
+  fn clear_pin(&mut self) {
+    if self.pinned.take().is_none() {
+      return;
+    }
+
+    if let BorderRenderer::Composition(composition) = &self.renderer {
+      if let Err(e) = composition.set_offset(0, 0) {
+        tracing::warn!("Border overlay composition offset reset failed: {e}.");
+      }
+    }
+
+    self.is_visible = false;
+  }
+
   /// Hides the overlay without destroying it.
+  ///
+  /// Drops any viewport pin, so that a window sliding back into view is
+  /// re-pinned (and hence re-shown) rather than having its ring moved
+  /// inside a still-hidden window.
   pub fn hide(&mut self) {
+    self.clear_pin();
     self.is_visible = false;
     // SAFETY: `self.hwnd()` is a valid window handle.
     unsafe {
