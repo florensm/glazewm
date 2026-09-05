@@ -1889,33 +1889,18 @@ pub(crate) fn upsert_blur_overlay(
   anchor: HWND,
   batch: &mut SurrogateBatch,
 ) {
-  match overlays.entry(window_id) {
-    std::collections::hash_map::Entry::Occupied(e) => {
-      let overlay = e.into_mut();
-      overlay.apply(params);
-      overlay.defer_rect(batch, rect, anchor);
-    }
-    std::collections::hash_map::Entry::Vacant(e) => {
-      match NativeBlurOverlay::create(rect, params, anchor) {
-        Ok(overlay) => {
-          debug!("Blur overlay created for {window_id}.");
-          e.insert(overlay);
-        }
-        Err(err) => {
-          debug!("Blur overlay creation failed for {window_id}: {err}.");
-        }
-      }
-    }
+  if let Some(overlay) =
+    overlay_entry(overlays, window_id, params, rect, anchor)
+  {
+    overlay.apply(params);
+    overlay.defer_rect(batch, rect, anchor);
   }
 }
 
 /// Creates or updates a tracked border overlay for `window_id`, applying
 /// `color`/`width`/`corner_radius` and moving it to `rect`. Mirrors
 /// [`upsert_blur_overlay`] exactly -- see its doc comment for the shared
-/// rationale (used by both the workspace-switch live-tracking driver and
-/// the static per-tick path, and takes the overlay map directly so callers
-/// already holding an unrelated borrow into other `WmState` fields can pass
-/// `&mut state.border_overlays` without a borrow-checker conflict).
+/// rationale.
 #[cfg(target_os = "windows")]
 pub(crate) fn upsert_border_overlay(
   overlays: &mut std::collections::HashMap<uuid::Uuid, NativeBorderOverlay>,
@@ -1925,23 +1910,11 @@ pub(crate) fn upsert_border_overlay(
   anchor: HWND,
   batch: &mut SurrogateBatch,
 ) {
-  match overlays.entry(window_id) {
-    std::collections::hash_map::Entry::Occupied(e) => {
-      let overlay = e.into_mut();
-      overlay.apply(params);
-      overlay.defer_rect(batch, rect, anchor);
-    }
-    std::collections::hash_map::Entry::Vacant(e) => {
-      match NativeBorderOverlay::create(rect, params, anchor) {
-        Ok(overlay) => {
-          debug!("Border overlay created for {window_id}.");
-          e.insert(overlay);
-        }
-        Err(err) => {
-          debug!("Border overlay creation failed for {window_id}: {err}.");
-        }
-      }
-    }
+  if let Some(overlay) =
+    overlay_entry(overlays, window_id, params, rect, anchor)
+  {
+    overlay.apply(params);
+    overlay.defer_rect(batch, rect, anchor);
   }
 }
 
@@ -1952,8 +1925,8 @@ pub(crate) fn upsert_border_overlay(
 /// Unlike [`upsert_border_overlay`] this issues no `SetWindowPos` per frame
 /// and takes no [`SurrogateBatch`]: after the initial pin, a frame costs a
 /// single composition property write. See
-/// `NativeBorderOverlay::pin_to_viewport` for why the window is pinned
-/// rather than moved, and what happens on the SWCA fallback.
+/// `NativeBorderOverlay::pin_or_slide` for why the window is pinned rather
+/// than moved, and what happens on the SWCA fallback.
 #[cfg(target_os = "windows")]
 pub(crate) fn upsert_pinned_border_overlay(
   overlays: &mut std::collections::HashMap<uuid::Uuid, NativeBorderOverlay>,
@@ -1963,32 +1936,50 @@ pub(crate) fn upsert_pinned_border_overlay(
   viewport: &Rect,
   anchor: HWND,
 ) {
-  let overlay = match overlays.entry(window_id) {
-    std::collections::hash_map::Entry::Occupied(e) => e.into_mut(),
-    std::collections::hash_map::Entry::Vacant(e) => {
-      match NativeBorderOverlay::create(rect, params, anchor) {
-        Ok(overlay) => {
-          debug!("Border overlay created for {window_id}.");
-          e.insert(overlay)
-        }
-        Err(err) => {
-          debug!("Border overlay creation failed for {window_id}: {err}.");
-          return;
-        }
-      }
-    }
+  let Some(overlay) =
+    overlay_entry(overlays, window_id, params, rect, anchor)
+  else {
+    return;
   };
 
   // Applied before the pin: a width change re-runs `set_rect` internally,
   // which drops the pin, and the re-pin below then puts it back.
   overlay.apply(params);
 
-  if overlay.is_pinned() {
-    overlay.slide_to(rect);
-  } else if !overlay.pin_to_viewport(viewport, rect, anchor) {
-    // The SWCA fallback has no composition tree to offset, so it keeps the
-    // old behaviour of sitting the transition out.
+  // The SWCA fallback has no composition tree to offset, so it sits the
+  // transition out.
+  if !overlay.pin_or_slide(viewport, rect, anchor) {
     overlay.hide();
+  }
+}
+
+/// Returns `window_id`'s tracked overlay, creating it at `rect` with
+/// `params` when absent. `None` when creation failed, which is logged.
+#[cfg(target_os = "windows")]
+fn overlay_entry<'a, O: SyncableOverlay>(
+  overlays: &'a mut std::collections::HashMap<uuid::Uuid, O>,
+  window_id: uuid::Uuid,
+  params: O::Params,
+  rect: &Rect,
+  anchor: HWND,
+) -> Option<&'a mut O> {
+  match overlays.entry(window_id) {
+    std::collections::hash_map::Entry::Occupied(e) => Some(e.into_mut()),
+    std::collections::hash_map::Entry::Vacant(e) => {
+      match O::create(rect, params, anchor) {
+        Ok(overlay) => {
+          debug!("{} overlay created for {window_id}.", O::LABEL);
+          Some(e.insert(overlay))
+        }
+        Err(err) => {
+          debug!(
+            "{} overlay creation failed for {window_id}: {err}.",
+            O::LABEL
+          );
+          None
+        }
+      }
+    }
   }
 }
 

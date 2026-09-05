@@ -84,7 +84,7 @@ pub struct WorkspaceSurrogate {
   /// `current_rect`. Lets the border overlay follow the window through a
   /// slide: the ring hangs outside the window's own rect, so it has to be
   /// placed from the unclipped position and clipped separately (see
-  /// `NativeBorderOverlay::pin_to_viewport`). `None` once the window is
+  /// `NativeBorderOverlay::pin_or_slide`). `None` once the window is
   /// entirely off-screen.
   unclipped_rect: Option<Rect>,
 
@@ -253,6 +253,14 @@ impl WorkspaceSurrogate {
     self.unclipped_rect.as_ref()
   }
 
+  /// Hides the surrogate and clears both cached frame rects, for a frame
+  /// where the window has nothing visible left to draw.
+  fn clear_frame(&mut self) {
+    self.inner.set_visible(false);
+    self.current_rect = None;
+    self.unclipped_rect = None;
+  }
+
   /// The opacity fraction (0.0 - 1.0) this surrogate is being drawn at for
   /// `progress`, so overlays tracking it can fade in step rather than
   /// staying at full strength over a fading window.
@@ -403,9 +411,7 @@ impl WorkspaceSurrogate {
     let half_h = (h as f32 / 2.0 * t).round() as i32;
 
     if half_w <= 0 || half_h <= 0 {
-      self.inner.set_visible(false);
-      self.current_rect = None;
-      self.unclipped_rect = None;
+      self.clear_frame();
       return;
     }
 
@@ -536,9 +542,7 @@ impl WorkspaceSurrogate {
     let scale = 1.0 - zoom_factor * zoom_t;
 
     if scale <= 0.0 {
-      self.inner.set_visible(false);
-      self.current_rect = None;
-      self.unclipped_rect = None;
+      self.clear_frame();
       return;
     }
 
@@ -587,15 +591,10 @@ impl WorkspaceSurrogate {
     let vis_bottom = final_bottom.min(monitor_bottom);
 
     if vis_left >= vis_right || vis_top >= vis_bottom {
-      self.inner.set_visible(false);
-      self.current_rect = None;
-      self.unclipped_rect = None;
+      self.clear_frame();
       return;
     }
 
-    // Unclipped rect the window occupies this frame. The border ring hangs
-    // outside the window, so it cannot be placed from the clipped strip
-    // below -- it is positioned from this and clipped by its own target.
     self.unclipped_rect = Some(to_logical(
       &Rect::from_ltrb(final_left, final_top, final_right, final_bottom),
       &self.frame_inset,
@@ -684,15 +683,10 @@ impl WorkspaceSurrogate {
     let vis_end = (current + axis_size).min(monitor_end);
 
     if vis_start >= vis_end {
-      self.inner.set_visible(false);
-      self.current_rect = None;
-      self.unclipped_rect = None;
+      self.clear_frame();
       return;
     }
 
-    // Unclipped rect the window occupies this frame. The border ring hangs
-    // outside the window, so it cannot be placed from the clipped strip
-    // below -- it is positioned from this and clipped by its own target.
     self.unclipped_rect = Some(to_logical(
       &if is_vertical {
         Rect::from_xy(perp_pos, current, perp_size, axis_size)
