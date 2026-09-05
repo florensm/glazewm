@@ -1378,7 +1378,6 @@ impl AnimationManager {
                     params.opacity *=
                       s.opacity_frac(eased_final, entry.is_incoming);
 
-                    let rect = rect.clone();
                     let viewport = Rect::from_xy(
                       ws.monitor_x,
                       ws.monitor_y,
@@ -1390,7 +1389,7 @@ impl AnimationManager {
                       &mut state.border_overlays,
                       window_id,
                       params,
-                      &rect,
+                      rect,
                       &viewport,
                       s.hwnd(),
                     );
