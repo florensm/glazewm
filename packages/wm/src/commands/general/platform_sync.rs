@@ -1766,12 +1766,6 @@ fn apply_window_effects(
     apply_transparency_effect(window, effect_config);
   }
 
-  #[cfg(target_os = "windows")]
-  if window_effects.focused_window.backdrop.enabled
-    || window_effects.other_windows.backdrop.enabled
-  {
-    apply_backdrop_effect(window, effect_config);
-  }
 }
 
 #[cfg(target_os = "windows")]
@@ -1817,29 +1811,6 @@ fn apply_transparency_effect(
   );
 
   _ = window.native().set_transparency(transparency);
-}
-
-#[cfg(target_os = "windows")]
-fn apply_backdrop_effect(
-  window: &WindowContainer,
-  effect_config: &WindowEffectConfig,
-) {
-  // `Acrylic`/`Blur` are handled via a persistent `NativeBlurOverlay`
-  // placed directly behind the managed window — SWCA is not applied to the
-  // managed window itself to avoid the `WS_EX_LAYERED`/SWCA compositing
-  // conflict. `Mica`/`MicaAlt` use `DWMWA_SYSTEMBACKDROP_TYPE` directly
-  // on the managed window (Win11 22H2+).
-  let style = match (
-    effect_config.backdrop.enabled,
-    &effect_config.backdrop.style,
-  ) {
-    (true, style) if !style.is_overlay_backed() => Some(style),
-    _ => None,
-  };
-
-  if let Err(e) = window.native().set_blur_behind(style) {
-    warn!("Failed to set blur-behind on window: {e}.");
-  }
 }
 
 /// Creates, repositions, and removes acrylic blur overlay windows so that

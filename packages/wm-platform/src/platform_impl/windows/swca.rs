@@ -11,37 +11,17 @@ use windows::{
 /// Accent state: solid-color fill, used for surrogate backdrops.
 pub(crate) const ACCENT_ENABLE_GRADIENT: u32 = 1;
 
-/// Accent state: translucent solid fill -- `gradient_color` blended over
-/// whatever is behind, with no blur pass at all.
-///
-/// The cheapest state that still renders something deliberate: DWM composites
-/// one flat translucent layer instead of sampling and blurring the content
-/// beneath it.
-pub(crate) const ACCENT_ENABLE_TRANSPARENTGRADIENT: u32 = 2;
-
-/// Accent state: plain blur-behind, the Win10-era Aero-style blur. Blurs
-/// live content behind the window without acrylic's extra noise-texture,
-/// tint, and saturation passes, so it composites markedly cheaper than
-/// `ACCENT_ENABLE_ACRYLICBLURBEHIND`.
-pub(crate) const ACCENT_ENABLE_BLURBEHIND: u32 = 3;
-
-/// Accent state: acrylic blur-behind, the Win10 frosted-glass equivalent.
-pub(crate) const ACCENT_ENABLE_ACRYLICBLURBEHIND: u32 = 4;
-
 /// Accent state: host backdrop -- samples live desktop content from behind
 /// the window for a `Windows.UI.Composition` host-backdrop brush to pick
 /// up, rather than blurring a solid color like `ACCENT_ENABLE_ACRYLICBLURBEHIND`.
 /// The `gradient_color` field is unused for this accent state.
-pub(crate) const ACCENT_ENABLE_HOSTBACKDROP: u32 = 5;
+/// Acrylic blur-behind. No longer reachable from `BackdropStyle` -- every
+/// style renders through `Windows.UI.Composition` now -- but still used by
+/// `NativeSurrogate`, which paints a stand-in for a real window during
+/// animations and cannot root a visual tree of its own.
+pub(crate) const ACCENT_ENABLE_ACRYLICBLURBEHIND: u32 = 4;
 
-/// Accent flag telling the compositor that `AccentPolicy::gradient_color`
-/// is meaningful.
-///
-/// Required for `ACCENT_ENABLE_BLURBEHIND`, whose tint is otherwise
-/// ignored. Deliberately *not* set for `ACCENT_ENABLE_ACRYLICBLURBEHIND`,
-/// which reads the gradient color unconditionally and renders a flat,
-/// unblurred fill when the flag is present.
-pub(crate) const ACCENT_FLAG_USE_GRADIENT_COLOR: u32 = 2;
+pub(crate) const ACCENT_ENABLE_HOSTBACKDROP: u32 = 5;
 
 /// `WCA_ACCENT_POLICY` attribute index for
 /// `SetWindowCompositionAttribute`.

@@ -18,12 +18,7 @@ use windows::{
 use crate::{
   platform_impl::{
     composition::BlurVisual,
-    swca::{
-      apply_swca_accent,
-      ACCENT_ENABLE_ACRYLICBLURBEHIND, ACCENT_ENABLE_BLURBEHIND,
-      ACCENT_ENABLE_HOSTBACKDROP, ACCENT_ENABLE_TRANSPARENTGRADIENT,
-      ACCENT_FLAG_USE_GRADIENT_COLOR,
-    },
+    swca::{apply_swca_accent, ACCENT_ENABLE_HOSTBACKDROP},
   },
   window_class, BackdropStyle, BlurOverlayParams, Color, Rect,
   SurrogateBatch,
@@ -40,14 +35,10 @@ fn ensure_class_registered() {
 
 /// Creates the overlay's backdrop window.
 ///
-/// `composition` selects `WS_EX_NOREDIRECTIONBITMAP`, which skips the GDI
-/// redirection surface DWM would otherwise allocate -- correct for the
-/// `Windows.UI.Composition` path, whose visual tree replaces that surface
-/// entirely, but incompatible with SWCA, which composites into it. Callers
-/// falling back from a failed Composition attempt must create a *new*
-/// window with `composition: false` rather than reusing one created with
-/// the flag set.
-fn create_window(rect: &Rect, composition: bool) -> crate::Result<HWND> {
+/// `WS_EX_NOREDIRECTIONBITMAP` skips the GDI redirection surface DWM would
+/// otherwise allocate, which the composition visual tree replaces entirely.
+/// Every style renders through that tree, so the flag is unconditional.
+fn create_window(rect: &Rect) -> crate::Result<HWND> {
   ensure_class_registered();
 
   // `WS_EX_TRANSPARENT` makes the overlay invisible to hit-testing. It is
@@ -59,14 +50,10 @@ fn create_window(rect: &Rect, composition: bool) -> crate::Result<HWND> {
   // resize animation, where the real window is cloaked and the surrogate
   // above this overlay is itself `WS_EX_TRANSPARENT`, so hit-tests fall
   // straight through onto it.
-  let ex_style = if composition {
-    WS_EX_NOACTIVATE
-      | WS_EX_TOOLWINDOW
-      | WS_EX_TRANSPARENT
-      | WS_EX_NOREDIRECTIONBITMAP
-  } else {
-    WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW | WS_EX_TRANSPARENT
-  };
+  let ex_style = WS_EX_NOACTIVATE
+    | WS_EX_TOOLWINDOW
+    | WS_EX_TRANSPARENT
+    | WS_EX_NOREDIRECTIONBITMAP;
 
   // SAFETY: All parameters are valid. The class is guaranteed registered
   // by `ensure_class_registered`. No parent HWND is needed.
@@ -118,127 +105,38 @@ fn apply_hostbackdrop(hwnd: HWND) {
   }
 }
 
-/// Applies the SWCA accent matching `style` to `hwnd`.
+/// Creates the overlay's backing window and roots its
+/// `Windows.UI.Composition` visual tree on it.
 ///
-/// [`BackdropStyle::Blur`] uses `ACCENT_ENABLE_BLURBEHIND`, whose tint is
-/// only honored when `ACCENT_FLAG_USE_GRADIENT_COLOR` is set. Every other
-/// style uses `ACCENT_ENABLE_ACRYLICBLURBEHIND` with no flags, which reads
-/// the tint unconditionally and renders a flat, unblurred fill if the flag
-/// is set.
-fn apply_swca_for_style(hwnd: HWND, style: BackdropStyle, tint: Color) {
-  match style {
-    BackdropStyle::Blur => {
-      apply_swca_accent(
-        hwnd,
-        ACCENT_ENABLE_BLURBEHIND,
-        ACCENT_FLAG_USE_GRADIENT_COLOR,
-        tint.to_abgr(),
-      );
-    }
-    // The tint is the entire effect here, so the flag is mandatory: without
-    // it the fill renders with whatever color DWM last had for the window.
-    BackdropStyle::Solid => {
-      apply_swca_accent(
-        hwnd,
-        ACCENT_ENABLE_TRANSPARENTGRADIENT,
-        ACCENT_FLAG_USE_GRADIENT_COLOR,
-        tint.to_abgr(),
-      );
-    }
-    // The Mica variants never reach here -- they're applied to the managed
-    // window via `DWMWA_SYSTEMBACKDROP_TYPE` and get no overlay at all (see
-    // `BackdropStyle::is_overlay_backed`) -- so acrylic is both the correct
-    // arm for `Acrylic` and a harmless catch-all.
-    // `Wallpaper` only ever lands here having failed to build its
-    // composition pipeline, and SWCA acrylic is the nearest thing the OS
-    // can render without one.
-    BackdropStyle::Acrylic
-    | BackdropStyle::Wallpaper
-    | BackdropStyle::Transient
-    | BackdropStyle::Mica
-    | BackdropStyle::MicaAlt => {
-      apply_swca_accent(
-        hwnd,
-        ACCENT_ENABLE_ACRYLICBLURBEHIND,
-        0,
-        tint.to_abgr(),
-      );
-    }
-  }
-}
-
-/// Creates the overlay's backing window plus, for the two
-/// composition-rendered styles, its `Windows.UI.Composition` pipeline.
-///
-/// [`BackdropStyle::Blur`] deliberately skips composition entirely and goes
-/// straight to SWCA -- that's the whole point of the style: no
-/// host-backdrop brush and no per-frame D2D Gaussian effect graph, just the
-/// OS's own fixed blur. [`BackdropStyle::Acrylic`] and
-/// [`BackdropStyle::Wallpaper`] try the Composition pipeline first and fall
-/// back to SWCA acrylic when any step of it is unavailable.
-///
-/// Returns the window handle and, on the Composition path only, the
-/// `BlurVisual` rooted to it.
+/// There is no non-composition path: every style renders through the visual
+/// tree, so a system without `Windows.UI.Composition` (pre-Windows 10 1803)
+/// gets no overlay rather than a partial one. The alternative -- SWCA, which
+/// only ever approximated `Acrylic` and could express neither `Wallpaper`
+/// nor an opaque `Solid` -- would have degraded one style while leaving the
+/// other two blank, which is harder to reason about than nothing at all.
 fn create_backing_window(
   rect: &Rect,
   params: BlurOverlayParams,
-) -> crate::Result<(HWND, Option<BlurVisual>)> {
-  // Only the two composition-rendered styles want a visual tree.
-  // `BlurVisual` branches on exactly these two and treats anything else as
-  // acrylic, so sending `Blur` or `Solid` through it would render them *as
-  // acrylic* while charging its full per-frame cost -- those two are defined
-  // as the cheap styles precisely because they skip it for an SWCA accent.
-  if matches!(params.style, BackdropStyle::Acrylic | BackdropStyle::Wallpaper)
-  {
-    if let Some((hwnd, visual)) = try_create_composition(rect, params) {
-      return Ok((hwnd, Some(visual)));
-    }
-  }
+) -> crate::Result<(HWND, BlurVisual)> {
+  let hwnd = create_window(rect)?;
 
-  let hwnd = create_window(rect, false)?;
-  apply_swca_for_style(hwnd, params.style, params.tint);
-  Ok((hwnd, None))
-}
-
-/// Attempts to build the `Windows.UI.Composition` pipeline for a freshly
-/// created overlay window. On any failure, destroys `hwnd` (since it was
-/// created with `WS_EX_NOREDIRECTIONBITMAP`, unusable for the SWCA
-/// fallback) so the caller can create a fresh window for that path.
-fn try_create_composition(
-  rect: &Rect,
-  params: BlurOverlayParams,
-) -> Option<(HWND, BlurVisual)> {
-  let hwnd = match create_window(rect, true) {
-    Ok(hwnd) => hwnd,
-    Err(err) => {
-      tracing::warn!(
-        "Blur overlay composition window creation failed: {err}."
-      );
-      return None;
-    }
-  };
-
-  // Only acrylic samples what's behind the overlay. The wallpaper backdrop
-  // paints an opaque, pre-blurred surface, and marking its window as a host
+  // Only acrylic samples what is behind the overlay. The other styles paint
+  // an opaque surface of their own, and marking their window as a host
   // backdrop would ask DWM to keep compositing what sits beneath it -- the
-  // exact cost the style exists to remove.
+  // exact cost they exist to remove.
   if params.style == BackdropStyle::Acrylic {
     apply_hostbackdrop(hwnd);
   }
 
   match BlurVisual::create(hwnd, rect, params) {
-    Ok(visual) => Some((hwnd, visual)),
+    Ok(visual) => Ok((hwnd, visual)),
     Err(err) => {
-      tracing::warn!(
-        "Composition blur pipeline unavailable, falling back to SWCA \
-         acrylic: {err}."
-      );
       // SAFETY: `hwnd` was just created above and not yet handed to a
       // caller; safe to destroy immediately on this failure path.
       unsafe {
         let _ = DestroyWindow(hwnd);
       }
-      None
+      Err(err)
     }
   }
 }
@@ -325,8 +223,12 @@ pub struct NativeBlurOverlay {
   /// [`set_rect`]: NativeBlurOverlay::set_rect
   is_visible: bool,
 
-  /// `Some` when the Composition pipeline is active for this overlay;
-  /// `None` when running the SWCA fallback.
+  /// The overlay's composition visual tree.
+  ///
+  /// Optional only so that it can be dropped *before* the `HWND` it is
+  /// rooted to, in `recreate` and `Drop`; an overlay that failed to build
+  /// one is never constructed in the first place. Treat it as always
+  /// present.
   composition: Option<BlurVisual>,
 }
 
@@ -399,7 +301,7 @@ impl NativeBlurOverlay {
       rect: rect.clone(),
       anchor: anchor.0,
       is_visible: true,
-      composition,
+      composition: Some(composition),
     })
   }
 
@@ -561,14 +463,9 @@ impl NativeBlurOverlay {
     }
     self.params.tint = tint;
 
-    match &self.composition {
-      Some(composition) => {
-        if let Err(e) = composition.set_tint(tint) {
-          tracing::warn!("Blur overlay composition tint update failed: {e}.");
-        }
-      }
-      None => {
-        apply_swca_for_style(self.hwnd(), self.params.style, tint);
+    if let Some(composition) = &self.composition {
+      if let Err(e) = composition.set_tint(tint) {
+        tracing::warn!("Blur overlay composition tint update failed: {e}.");
       }
     }
   }
@@ -709,7 +606,7 @@ impl NativeBlurOverlay {
     }
 
     self.hwnd = hwnd.0;
-    self.composition = composition;
+    self.composition = Some(composition);
     self.params = params;
 
     Ok(())

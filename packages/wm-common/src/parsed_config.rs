@@ -377,14 +377,13 @@ impl BackdropEffectConfig {
   /// Returns the tint for the overlay-backed styles (`acrylic`, `blur`).
   ///
   /// Doubles as the "does this window get a `NativeBlurOverlay`?" predicate
-  /// for every overlay call site, so it returns `None` when the effect is
-  /// disabled or when a style DWM applies to the managed window directly
-  /// (`mica`/`mica_alt`) is configured. When no tint is set, falls back to
-  /// near-transparent black (`alpha = 1`) to avoid the solid-fill rendering
-  /// bug present on some Windows 10 builds.
+  /// for every overlay call site, so it returns `None` only when the effect
+  /// is disabled -- every remaining style is drawn by an overlay. When no
+  /// tint is set, falls back to near-transparent black (`alpha = 1`) to
+  /// avoid the solid-fill rendering bug present on some Windows 10 builds.
   #[must_use]
   pub fn overlay_tint(&self) -> Option<Color> {
-    if !self.enabled || !self.style.is_overlay_backed() {
+    if !self.enabled {
       return None;
     }
 
@@ -1279,19 +1278,15 @@ mod tests {
   }
 
   /// `overlay_tint` doubles as the "does this window get a
-  /// `NativeBlurOverlay`?" predicate, so it must resolve a tint for every
-  /// overlay-backed style (not just `acrylic`) and for none of the
-  /// DWM-applied ones -- and never while the effect is disabled.
+  /// `NativeBlurOverlay`?" predicate. Every surviving style is drawn by an
+  /// overlay, so it must resolve a tint for all of them -- and for none of
+  /// them while the effect is disabled.
   #[test]
-  fn overlay_tint_covers_every_overlay_backed_style() {
+  fn overlay_tint_covers_every_style() {
     for (style, expected) in [
-      (BackdropStyle::Acrylic, true),
       (BackdropStyle::Wallpaper, true),
-      (BackdropStyle::Blur, true),
+      (BackdropStyle::Acrylic, true),
       (BackdropStyle::Solid, true),
-      (BackdropStyle::Transient, false),
-      (BackdropStyle::Mica, false),
-      (BackdropStyle::MicaAlt, false),
     ] {
       let enabled = BackdropEffectConfig {
         enabled: true,

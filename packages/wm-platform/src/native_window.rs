@@ -14,7 +14,7 @@ use crate::{platform_impl, Rect};
 #[cfg(target_os = "macos")]
 use crate::{platform_impl::AXUIElementExt, ThreadBound};
 #[cfg(target_os = "windows")]
-use crate::{BackdropStyle, CornerStyle, Delta, OpacityValue, RectDelta};
+use crate::{CornerStyle, Delta, OpacityValue, RectDelta};
 
 /// Unique identifier of a window.
 ///
@@ -344,23 +344,6 @@ pub trait NativeWindowWindowsExt {
   ///
   /// This method is only available on Windows.
   fn reassert_transparency(&self) -> crate::Result<()>;
-
-  /// Applies a DWM system-backdrop material to the window.
-  ///
-  /// `Mica` and `MicaAlt` use `DWMWA_SYSTEMBACKDROP_TYPE` (Windows 11 22H2+)
-  /// and silently do nothing on unsupported builds. `None` clears any
-  /// previously applied effect.
-  ///
-  /// `Acrylic` is handled separately via a persistent `NativeBlurOverlay`
-  /// placed behind the window (see `sync_blur_overlays`) — applying SWCA
-  /// directly to the managed window itself would conflict with the
-  /// `WS_EX_LAYERED` style used by the `transparency` effect, so this method
-  /// is never called with `Acrylic`.
-  ///
-  /// # Platform-specific
-  ///
-  /// This method is only available on Windows.
-  fn set_blur_behind(&self, style: Option<&BackdropStyle>) -> crate::Result<()>;
 }
 
 #[cfg(target_os = "windows")]
@@ -471,9 +454,6 @@ impl NativeWindowWindowsExt for NativeWindow {
     self.inner.reassert_transparency()
   }
 
-  fn set_blur_behind(&self, style: Option<&BackdropStyle>) -> crate::Result<()> {
-    self.inner.set_blur_behind(style)
-  }
 }
 
 #[derive(Clone, Debug)]

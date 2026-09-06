@@ -169,7 +169,29 @@ struct WallpaperKey {
 struct CachedSurface {
   key: WallpaperKey,
   surface: CompositionDrawingSurface,
+
+  /// Value of [`CACHE_CLOCK`] when this entry was last handed out, so the
+  /// cap below evicts the least recently used rather than an arbitrary one.
+  last_used: u64,
 }
+
+/// Most baked surfaces kept alive at once.
+///
+/// A display needs two in normal use, since `focused_window` and
+/// `other_windows` can carry different knobs, so this covers a couple of
+/// them. The cap is not about steady state: it exists because changing a
+/// knob produces a *new* key rather than replacing an old one, so every
+/// config reload that touches the backdrop would otherwise leave its
+/// predecessor's surface -- ~20 MB on a 3440x1440 display -- cached for the
+/// life of the process.
+///
+/// Evicting is always safe: a surface a brush still points at stays alive
+/// through that reference, and dropping it from the cache only means a
+/// later request for the same key re-bakes instead of reusing it.
+const MAX_CACHED_SURFACES: usize = 4;
+
+/// Monotonic counter stamped onto entries as they are used.
+static CACHE_CLOCK: AtomicU64 = AtomicU64::new(0);
 
 thread_local! {
   /// Baked surfaces, one per distinct [`WallpaperKey`] -- in practice one
@@ -424,12 +446,17 @@ fn surface_for(
     knobs,
   };
 
+  let now = CACHE_CLOCK.fetch_add(1, Ordering::Relaxed);
+
   let cached = SURFACES.with(|cache| {
     cache
-      .borrow()
-      .iter()
+      .borrow_mut()
+      .iter_mut()
       .find(|entry| entry.key == key)
-      .map(|entry| entry.surface.clone())
+      .map(|entry| {
+        entry.last_used = now;
+        entry.surface.clone()
+      })
   });
 
   if let Some(surface) = cached {
@@ -461,10 +488,27 @@ fn surface_for(
       entry.key.wallpaper.monitor != key.wallpaper.monitor
         || entry.key.knobs != key.knobs
     });
+
     cache.push(CachedSurface {
       key,
       surface: surface.clone(),
+      last_used: now,
     });
+
+    // Anything above the cap is a knob set nothing is asking for any more --
+    // most often the values in force before the last config reload.
+    while cache.len() > MAX_CACHED_SURFACES {
+      let Some(oldest) = cache
+        .iter()
+        .enumerate()
+        .min_by_key(|(_, entry)| entry.last_used)
+        .map(|(index, _)| index)
+      else {
+        break;
+      };
+
+      cache.remove(oldest);
+    }
   });
 
   Ok(surface)

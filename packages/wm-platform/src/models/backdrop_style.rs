@@ -1,117 +1,53 @@
 use serde::{Deserialize, Serialize};
 
-/// Backdrop material applied behind a window via DWM or SWCA.
+/// Backdrop material rendered behind a window.
 ///
-/// `Acrylic` and `Blur` are both rendered by a persistent
-/// `NativeBlurOverlay` placed behind the managed window, rather than being
-/// applied to the managed window itself -- that avoids the
-/// `WS_EX_LAYERED`/SWCA conflict that arises when applying SWCA directly to
-/// a layered window (which the `transparency` effect makes it).
+/// Every style is drawn by a persistent `NativeBlurOverlay` sitting directly
+/// behind the managed window, through a `Windows.UI.Composition` visual
+/// tree. Nothing here is applied to the managed window itself: SWCA on a
+/// window the `transparency` effect has made `WS_EX_LAYERED` conflicts, and
+/// DWM's own materials only paint where an application leaves its surface
+/// unpainted, which nearly none do.
 ///
-/// `Acrylic` renders through a `Windows.UI.Composition` effect graph (live
-/// host-backdrop brush -> Gaussian blur -> saturation -> tint), falling back
-/// to SWCA's `ACCENT_ENABLE_ACRYLICBLURBEHIND` when that pipeline is
-/// unavailable. It's the richest material and by far the most expensive:
-/// DWM has to composite a blurred, noise-textured, translucent surface every
-/// frame, which shows up directly as `DwmFlush` wait time in the main loop.
+/// `Wallpaper` blurs the desktop wallpaper once, into an opaque per-monitor
+/// image, and shows each window the crop of it underneath that window. In a
+/// tiling layout nothing is behind a tiled window except the wallpaper, so
+/// this reproduces what acrylic samples while sampling nothing per frame --
+/// and being opaque, it lets DWM skip compositing what is behind the overlay
+/// rather than blending it every frame.
 ///
-/// `Wallpaper` is the tiling-aware counterpart to `Acrylic`: it blurs the
-/// desktop wallpaper *once*, into an opaque per-monitor surface, and gives
-/// each window the crop of it under that window. In a tiling layout nothing
-/// is behind a tiled window except the wallpaper, so this reproduces what
-/// acrylic samples while doing none of the per-frame sampling -- and being
-/// opaque, it lets DWM skip compositing what's behind the overlay instead of
-/// blending it every frame. Floating windows, which really do overlap other
-/// windows, are the case `Acrylic` still earns its cost on.
+/// `Acrylic` samples live desktop content through a host-backdrop brush and
+/// blurs it through a Gaussian effect graph, every frame. That is only worth
+/// paying for when something other than the wallpaper is behind the window,
+/// which in a tiling layout means floating windows -- the one case
+/// `Wallpaper` structurally cannot serve, since a wallpaper crop has no idea
+/// another window is stacked there.
 ///
-/// `Blur` goes straight to SWCA's `ACCENT_ENABLE_BLURBEHIND` and builds no
-/// composition graph at all -- the cheap, Win10-era Aero blur. It gives up
-/// `blur_amount`/`corner_radius`/`opacity`/`saturation` (the OS exposes no
-/// knobs for it) and keeps only `tint`, in exchange for skipping the
-/// per-frame D2D effect graph entirely.
-///
-/// `Mica` and `MicaAlt` use `DWMWA_SYSTEMBACKDROP_TYPE` on the managed
-/// window (Windows 11 22H2+) and create no overlay. They only ever affect
-/// the parts of the window DWM itself draws -- the non-client frame and any
-/// area the app leaves unpainted -- so a third-party app that paints its
-/// client area opaquely (nearly all of them do) shows no visible change.
+/// `Solid` fills the overlay with a flat color. At a fully opaque `tint` it
+/// is the cheapest style by a wide margin: one opaque visual, no sampling,
+/// no blur, and DWM skips everything behind it.
 ///
 /// # Platform-specific
 ///
-/// Only has an effect on Windows: 10 1607+ (`Blur`), 10 1803+ (`Acrylic`),
-/// or 11 22H2+ (`Mica`/`MicaAlt`). On unsupported platforms/versions the
+/// Only has an effect on Windows, and only where `Windows.UI.Composition` is
+/// available (10 1803+). On anything older no overlay is created and the
 /// effect is silently skipped.
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum BackdropStyle {
-  /// Frosted-glass acrylic that blurs content behind the window.
-  #[default]
-  Acrylic,
-
   /// The desktop wallpaper, blurred once per monitor into an opaque
   /// surface, of which each window shows the crop beneath it. Honors every
-  /// knob `Acrylic` does; unlike `Acrylic`, `blur_amount`/`saturation`
-  /// changes re-bake that surface rather than re-rendering per frame.
+  /// knob; `blur_amount`/`saturation`/`exposure`/`contrast`/`grain` are
+  /// baked into that image, so changing one re-renders it rather than
+  /// costing anything per frame.
+  #[default]
   Wallpaper,
 
-  /// Plain blur-behind: blurs content behind the window with none of
-  /// acrylic's noise/tint/saturation work, and no composition pipeline.
-  /// Markedly cheaper than [`BackdropStyle::Acrylic`], at the cost of the
-  /// `blur_amount`/`opacity`/`saturation` knobs.
-  Blur,
+  /// Frosted-glass acrylic that blurs live content behind the window, every
+  /// frame. The expensive style, and the only one that can blur other
+  /// windows rather than just the wallpaper.
+  Acrylic,
 
-  /// Translucent solid fill: `tint` blended over the content behind the
-  /// window, with no blur pass. The cheapest overlay-backed style -- DWM
-  /// composites one flat layer rather than sampling and blurring what is
-  /// beneath. Ignores every knob except `tint`.
+  /// Flat `tint` fill. Ignores every other knob.
   Solid,
-
-  /// Windows 11's own acrylic, applied by DWM to the managed window via
-  /// `DWMWA_SYSTEMBACKDROP_TYPE` rather than rendered into an overlay.
-  ///
-  /// Far cheaper than [`BackdropStyle::Acrylic`] because DWM owns the whole
-  /// effect, but it shares the Mica variants' limitation: DWM only paints it
-  /// where the application leaves its own surface unpainted, which most
-  /// third-party apps do not.
-  Transient,
-
-  /// Mica material that samples the desktop wallpaper.
-  Mica,
-
-  /// Tabbed Mica variant with a slightly stronger wallpaper tint.
-  MicaAlt,
-}
-
-impl BackdropStyle {
-  /// Whether this style is rendered by a `NativeBlurOverlay` window placed
-  /// behind the managed window, as opposed to a `DwmSetWindowAttribute`
-  /// call on the managed window itself.
-  #[must_use]
-  pub fn is_overlay_backed(self) -> bool {
-    matches!(self, Self::Acrylic | Self::Wallpaper | Self::Blur | Self::Solid)
-  }
-}
-
-#[cfg(test)]
-mod tests {
-  use super::BackdropStyle;
-
-  /// Only the SWCA/composition-rendered styles get an overlay window; the
-  /// DWM-applied ones go onto the managed window itself.
-  ///
-  /// This split is what decides whether a style renders at all on a
-  /// third-party window: an overlay is our own surface and always paints,
-  /// while DWM only paints its own materials where the application leaves
-  /// its surface unpainted.
-  #[test]
-  fn overlay_backed_styles() {
-    assert!(BackdropStyle::Acrylic.is_overlay_backed());
-    assert!(BackdropStyle::Wallpaper.is_overlay_backed());
-    assert!(BackdropStyle::Blur.is_overlay_backed());
-    assert!(BackdropStyle::Solid.is_overlay_backed());
-
-    assert!(!BackdropStyle::Transient.is_overlay_backed());
-    assert!(!BackdropStyle::Mica.is_overlay_backed());
-    assert!(!BackdropStyle::MicaAlt.is_overlay_backed());
-  }
 }
