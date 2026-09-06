@@ -149,7 +149,11 @@ fn apply_swca_for_style(hwnd: HWND, style: BackdropStyle, tint: Color) {
     // window via `DWMWA_SYSTEMBACKDROP_TYPE` and get no overlay at all (see
     // `BackdropStyle::is_overlay_backed`) -- so acrylic is both the correct
     // arm for `Acrylic` and a harmless catch-all.
+    // `Wallpaper` only ever lands here having failed to build its
+    // composition pipeline, and SWCA acrylic is the nearest thing the OS
+    // can render without one.
     BackdropStyle::Acrylic
+    | BackdropStyle::Wallpaper
     | BackdropStyle::Transient
     | BackdropStyle::Mica
     | BackdropStyle::MicaAlt => {
@@ -163,14 +167,15 @@ fn apply_swca_for_style(hwnd: HWND, style: BackdropStyle, tint: Color) {
   }
 }
 
-/// Creates the overlay's backing window plus, for
-/// [`BackdropStyle::Acrylic`], its `Windows.UI.Composition` pipeline.
+/// Creates the overlay's backing window plus, for the two
+/// composition-rendered styles, its `Windows.UI.Composition` pipeline.
 ///
 /// [`BackdropStyle::Blur`] deliberately skips composition entirely and goes
 /// straight to SWCA -- that's the whole point of the style: no
 /// host-backdrop brush and no per-frame D2D Gaussian effect graph, just the
-/// OS's own fixed blur. Acrylic tries the Composition pipeline first and
-/// falls back to SWCA acrylic when any step of it is unavailable.
+/// OS's own fixed blur. [`BackdropStyle::Acrylic`] and
+/// [`BackdropStyle::Wallpaper`] try the Composition pipeline first and fall
+/// back to SWCA acrylic when any step of it is unavailable.
 ///
 /// Returns the window handle and, on the Composition path only, the
 /// `BlurVisual` rooted to it.
@@ -178,13 +183,13 @@ fn create_backing_window(
   rect: &Rect,
   params: BlurOverlayParams,
 ) -> crate::Result<(HWND, Option<BlurVisual>)> {
-  // Only acrylic wants the composition pipeline. `BlurVisual` builds one
-  // fixed effect graph -- host-backdrop brush, Gaussian, saturation, tint --
-  // and does not branch on style, so sending any other style through it
-  // renders that style *as acrylic* while charging its full per-frame cost.
-  // `Blur` and `Solid` are defined as the cheap styles precisely because
-  // they skip it and take an SWCA accent instead.
-  if params.style == BackdropStyle::Acrylic {
+  // Only the two composition-rendered styles want a visual tree.
+  // `BlurVisual` branches on exactly these two and treats anything else as
+  // acrylic, so sending `Blur` or `Solid` through it would render them *as
+  // acrylic* while charging its full per-frame cost -- those two are defined
+  // as the cheap styles precisely because they skip it for an SWCA accent.
+  if matches!(params.style, BackdropStyle::Acrylic | BackdropStyle::Wallpaper)
+  {
     if let Some((hwnd, visual)) = try_create_composition(rect, params) {
       return Ok((hwnd, Some(visual)));
     }
@@ -213,7 +218,13 @@ fn try_create_composition(
     }
   };
 
-  apply_hostbackdrop(hwnd);
+  // Only acrylic samples what's behind the overlay. The wallpaper backdrop
+  // paints an opaque, pre-blurred surface, and marking its window as a host
+  // backdrop would ask DWM to keep compositing what sits beneath it -- the
+  // exact cost the style exists to remove.
+  if params.style == BackdropStyle::Acrylic {
+    apply_hostbackdrop(hwnd);
+  }
 
   match BlurVisual::create(hwnd, rect, params) {
     Ok(visual) => Some((hwnd, visual)),
@@ -444,7 +455,7 @@ impl NativeBlurOverlay {
       return;
     }
 
-    if let Some(composition) = &self.composition {
+    if let Some(composition) = &mut self.composition {
       if let Err(e) = composition.set_rect(rect) {
         tracing::warn!("Blur overlay composition resize failed: {e}.");
       }
@@ -495,7 +506,7 @@ impl NativeBlurOverlay {
 
     batch.push(self.hwnd, rect.clone());
 
-    if let Some(composition) = &self.composition {
+    if let Some(composition) = &mut self.composition {
       if let Err(e) = composition.set_rect(rect) {
         tracing::warn!("Blur overlay composition resize failed: {e}.");
       }
@@ -666,6 +677,9 @@ impl NativeBlurOverlay {
   /// how the backing window itself is built; every other field is baked in
   /// by that rebuild, so no setter runs afterwards.
   ///
+  /// Also the per-tick point at which a [`BackdropStyle::Wallpaper`] overlay
+  /// notices the desktop wallpaper changing underneath it.
+  ///
   /// [`recreate`]: NativeBlurOverlay::recreate
   pub fn apply(&mut self, params: BlurOverlayParams) {
     if self.params.style != params.style {
@@ -680,6 +694,16 @@ impl NativeBlurOverlay {
     self.set_corner_radius(params.corner_radius);
     self.set_opacity(params.opacity);
     self.set_saturation(params.saturation);
+
+    // Unlike the setters above, this reacts to a change *outside* the
+    // config -- the user swapping their wallpaper, or the displays being
+    // rearranged. `apply` is the one call every tracked overlay gets on
+    // every tick, which is what makes it the place to notice.
+    if let Some(composition) = &mut self.composition {
+      if let Err(e) = composition.sync_backdrop(&self.rect) {
+        tracing::warn!("Wallpaper backdrop refresh failed: {e}.");
+      }
+    }
   }
 
   /// Hides the overlay without destroying it.

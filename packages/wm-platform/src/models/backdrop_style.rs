@@ -15,6 +15,15 @@ use serde::{Deserialize, Serialize};
 /// DWM has to composite a blurred, noise-textured, translucent surface every
 /// frame, which shows up directly as `DwmFlush` wait time in the main loop.
 ///
+/// `Wallpaper` is the tiling-aware counterpart to `Acrylic`: it blurs the
+/// desktop wallpaper *once*, into an opaque per-monitor surface, and gives
+/// each window the crop of it under that window. In a tiling layout nothing
+/// is behind a tiled window except the wallpaper, so this reproduces what
+/// acrylic samples while doing none of the per-frame sampling -- and being
+/// opaque, it lets DWM skip compositing what's behind the overlay instead of
+/// blending it every frame. Floating windows, which really do overlap other
+/// windows, are the case `Acrylic` still earns its cost on.
+///
 /// `Blur` goes straight to SWCA's `ACCENT_ENABLE_BLURBEHIND` and builds no
 /// composition graph at all -- the cheap, Win10-era Aero blur. It gives up
 /// `blur_amount`/`corner_radius`/`opacity`/`saturation` (the OS exposes no
@@ -38,6 +47,12 @@ pub enum BackdropStyle {
   /// Frosted-glass acrylic that blurs content behind the window.
   #[default]
   Acrylic,
+
+  /// The desktop wallpaper, blurred once per monitor into an opaque
+  /// surface, of which each window shows the crop beneath it. Honors every
+  /// knob `Acrylic` does; unlike `Acrylic`, `blur_amount`/`saturation`
+  /// changes re-bake that surface rather than re-rendering per frame.
+  Wallpaper,
 
   /// Plain blur-behind: blurs content behind the window with none of
   /// acrylic's noise/tint/saturation work, and no composition pipeline.
@@ -73,7 +88,7 @@ impl BackdropStyle {
   /// call on the managed window itself.
   #[must_use]
   pub fn is_overlay_backed(self) -> bool {
-    matches!(self, Self::Acrylic | Self::Blur | Self::Solid)
+    matches!(self, Self::Acrylic | Self::Wallpaper | Self::Blur | Self::Solid)
   }
 }
 
@@ -91,6 +106,7 @@ mod tests {
   #[test]
   fn overlay_backed_styles() {
     assert!(BackdropStyle::Acrylic.is_overlay_backed());
+    assert!(BackdropStyle::Wallpaper.is_overlay_backed());
     assert!(BackdropStyle::Blur.is_overlay_backed());
     assert!(BackdropStyle::Solid.is_overlay_backed());
 

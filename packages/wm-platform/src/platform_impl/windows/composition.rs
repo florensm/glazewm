@@ -1,4 +1,5 @@
-//! `Windows.UI.Composition` based acrylic blur pipeline.
+//! `Windows.UI.Composition` based blur pipeline for the overlay-backed
+//! backdrop styles that render through a visual tree.
 //!
 //! Replaces SWCA's fixed-intensity `ACCENT_ENABLE_ACRYLICBLURBEHIND` with a
 //! host-backdrop brush fed through a hand-implemented Gaussian-blur effect
@@ -13,7 +14,9 @@
 //! A `Compositor` must be created on a thread that owns a dispatcher queue,
 //! and (confirmed empirically in the spike, not just per docs) that thread
 //! must keep pumping messages for async composition work -- e.g. the
-//! effect factory's shader-graph compile -- to ever complete.
+//! effect factory's shader-graph compile -- to ever complete. The
+//! wallpaper backdrop's D2D/WIC device stack (see `graphics_device`) is
+//! thread-affine besides, and lives on this same thread for that reason.
 //! `wm`'s main loop drives everything through `tokio::select!`/
 //! `rt.block_on`, which never pumps Win32 messages, so the entire
 //! composition pipeline (the `Compositor` itself, and every per-overlay
@@ -51,8 +54,9 @@ use windows::{
     Composition::{
       CompositionBackdropBrush, CompositionColorBrush, CompositionEffectBrush,
       CompositionEffectSourceParameter, CompositionRoundedRectangleGeometry,
-      CompositionSpriteShape, Compositor, ContainerVisual,
-      Desktop::DesktopWindowTarget, ShapeVisual, SpriteVisual,
+      CompositionSpriteShape, CompositionSurfaceBrush, Compositor,
+      ContainerVisual, Desktop::DesktopWindowTarget, ShapeVisual,
+      SpriteVisual,
     },
   },
   Win32::{
@@ -68,7 +72,8 @@ use windows::{
   },
 };
 
-use crate::{BlurOverlayParams, BorderOverlayParams, Rect};
+use super::wallpaper_surface;
+use crate::{BackdropStyle, BlurOverlayParams, BorderOverlayParams, Rect};
 
 /// `CLSID_D2D1GaussianBlur`, the built-in D2D1 Gaussian-blur effect.
 const CLSID_D2D1_GAUSSIAN_BLUR: GUID =
@@ -279,6 +284,29 @@ fn init_composition_thread() -> crate::Result<CompositionThread> {
   })
 }
 
+/// Runs `f` on the composition thread with that thread's `Compositor` and
+/// dispatcher queue, bringing the pipeline up on first use.
+///
+/// Every entry point into the pipeline needs the same three steps -- resolve
+/// the thread, clone its agile handles into the closure, dispatch -- so they
+/// live here rather than being repeated per visual type.
+pub(crate) fn with_composition_thread<T, F>(f: F) -> crate::Result<T>
+where
+  T: Send + 'static,
+  F: FnOnce(Compositor, DispatcherQueue) -> windows::core::Result<T>
+    + Send
+    + 'static,
+{
+  let thread = composition_thread().ok_or_else(|| {
+    crate::Error::Platform("Composition pipeline unavailable.".to_string())
+  })?;
+
+  let compositor = thread.compositor.clone();
+  let queue = thread.queue.clone();
+
+  run_on_composition_thread(&thread.queue, move || f(compositor, queue))
+}
+
 /// Runs `f` on the composition thread via its dispatcher queue and blocks
 /// the calling thread for the result. Used for the one-time, async-sensitive
 /// construction calls (`Compositor::new`, and per-overlay visual-tree
@@ -314,27 +342,59 @@ fn to_ui_color(color: crate::Color) -> Color {
   Color { A: color.a, B: color.b, G: color.g, R: color.r }
 }
 
-/// A live `Windows.UI.Composition` visual tree providing an acrylic blur
-/// overlay's rendering: a live host-backdrop brush, blurred through a
-/// Gaussian-blur effect graph, with a tint layer composited on top, both
-/// clipped to a continuous rounded rectangle.
+/// What paints the overlay's lower (blur) layer, and the state each source
+/// needs to keep to stay live.
+///
+/// The two are not variations on one pipeline: acrylic samples the desktop
+/// and blurs it every frame through a D2D effect graph, while the wallpaper
+/// backdrop is a plain brush over an image blurred once, ahead of time (see
+/// `wallpaper_surface`). Only the former has an effect graph to rebuild when
+/// a knob changes; only the latter has to follow the window across monitors.
+enum Backdrop {
+  /// Live host-backdrop brush fed through the Gaussian/saturation graph.
+  Acrylic {
+    /// The graph's source. Retained (rather than just used during `create`)
+    /// so `set_blur_amount`/`set_saturation` can rebuild the effect brush
+    /// around it -- see `set_blur_amount`'s doc comment for why a rebuild,
+    /// not an in-place property update, is used.
+    host_backdrop: CompositionBackdropBrush,
+    effect_brush: CompositionEffectBrush,
+  },
+
+  /// A crop of the monitor's pre-blurred, opaque wallpaper surface.
+  Wallpaper {
+    brush: CompositionSurfaceBrush,
+
+    /// Bounds of the monitor whose baked surface `brush` currently points
+    /// at. Tracked so the common case -- a window moving within one display
+    /// -- is a single offset write, with no monitor lookup and no cache
+    /// probe.
+    monitor: Rect,
+
+    /// `wallpaper_surface`'s generation counter as of the last bind. A
+    /// mismatch means the desktop wallpaper or the display layout changed
+    /// under us; see `sync_backdrop`.
+    generation: u64,
+  },
+}
+
+/// A live `Windows.UI.Composition` visual tree providing an overlay's
+/// rendering: a blur layer (see [`Backdrop`]) with a tint layer composited
+/// on top, both clipped to a continuous rounded rectangle.
 pub(crate) struct BlurVisual {
   /// Binds the visual tree to the overlay's `HWND`. Kept alive but never
   /// touched again -- dropping it would unbind composition from the window.
   _target: DesktopWindowTarget,
 
-  /// Retained (rather than just used during `create`) so
-  /// `set_blur_amount`/`set_saturation` can rebuild the effect brush --
-  /// see `set_blur_amount`'s doc comment for why a rebuild, not an
-  /// in-place property update, is used.
+  /// Retained (rather than just used during `create`) so the knob setters
+  /// can rebuild whatever their [`Backdrop`] needs rebuilt.
   compositor: Compositor,
   queue: DispatcherQueue,
-  host_backdrop: CompositionBackdropBrush,
+  backdrop: Backdrop,
   root: ContainerVisual,
   blur_sprite: SpriteVisual,
   tint_sprite: SpriteVisual,
 
-  effect_brush: CompositionEffectBrush,
   tint_brush: CompositionColorBrush,
   rounded_geometry: CompositionRoundedRectangleGeometry,
 
@@ -356,18 +416,10 @@ impl BlurVisual {
     rect: &Rect,
     params: BlurOverlayParams,
   ) -> crate::Result<Self> {
-    let thread = composition_thread().ok_or_else(|| {
-      crate::Error::Platform(
-        "Composition pipeline unavailable.".to_string(),
-      )
-    })?;
-
-    let compositor = thread.compositor.clone();
-    let queue = thread.queue.clone();
     let hwnd_raw = hwnd.0;
     let rect = rect.clone();
 
-    run_on_composition_thread(&thread.queue, move || {
+    with_composition_thread(move |compositor, queue| {
       build_visual_tree(&compositor, &queue, HWND(hwnd_raw), &rect, params)
     })
   }
@@ -382,7 +434,7 @@ impl BlurVisual {
   /// here left them pinned at their creation-time size while only the clip
   /// grew, showing blur/tint over just the original area and nothing over
   /// the rest whenever the overlay's `HWND` was resized after creation.
-  pub(crate) fn set_rect(&self, rect: &Rect) -> crate::Result<()> {
+  pub(crate) fn set_rect(&mut self, rect: &Rect) -> crate::Result<()> {
     let size = Vector2 {
       X: pixels_to_dips(rect.width()),
       Y: pixels_to_dips(rect.height()),
@@ -391,7 +443,114 @@ impl BlurVisual {
     self.blur_sprite.SetSize(size)?;
     self.tint_sprite.SetSize(size)?;
     self.rounded_geometry.SetSize(size)?;
+
+    self.sync_crop(rect)?;
     Ok(())
+  }
+
+  /// Keeps the wallpaper backdrop showing the part of the desktop the
+  /// overlay now covers. No-op for acrylic, which samples live and so needs
+  /// no notion of where it is.
+  ///
+  /// Re-binds to another monitor's baked surface only when the overlay has
+  /// actually crossed onto one -- checked arithmetically against the cached
+  /// bounds first, so the per-tick case during an animation costs one
+  /// property write and no system calls.
+  fn sync_crop(&mut self, rect: &Rect) -> crate::Result<()> {
+    let (blur_amount, saturation) = (self.blur_amount, self.saturation);
+    let compositor = self.compositor.clone();
+    let queue = self.queue.clone();
+
+    let current = wallpaper_surface::generation();
+
+    let Backdrop::Wallpaper { brush, monitor, generation } =
+      &mut self.backdrop
+    else {
+      return Ok(());
+    };
+
+    // The generation check has to force a re-bind even when the overlay has
+    // not moved: the monitor it sits on is unchanged, but the image baked
+    // for that monitor is no longer the one the desktop is showing.
+    if *generation != current || !monitor.contains_point(&rect.center_point())
+    {
+      let bounds = wallpaper_surface::monitor_bounds(rect);
+      let rebound = brush.clone();
+      let target = bounds.clone();
+
+      let result = run_on_composition_thread(&queue, move || {
+        wallpaper_surface::rebind(
+          &compositor,
+          &rebound,
+          &target,
+          blur_amount,
+          saturation,
+        )
+      });
+
+      // Recorded even when the bind failed, and before the error is
+      // propagated. `sync_backdrop` runs this on every tick, so leaving the
+      // state stale on failure would retry a blocking cross-thread dispatch
+      // -- one that can wait out its whole timeout -- on every tick from
+      // then on, turning one bad bake into a permanently stalled main loop.
+      *monitor = bounds;
+      *generation = current;
+
+      result?;
+    }
+
+    wallpaper_surface::set_crop(brush, rect, monitor);
+    Ok(())
+  }
+
+  /// Re-binds the wallpaper backdrop when the desktop it was baked from has
+  /// changed, and does nothing otherwise.
+  ///
+  /// Called on every sync tick, so the no-change path is deliberately one
+  /// relaxed atomic load and a discriminant check -- no shell query, no
+  /// filesystem stat, and no composition property write. Acrylic samples
+  /// live and has nothing to go stale.
+  pub(crate) fn sync_backdrop(&mut self, rect: &Rect) -> crate::Result<()> {
+    let Backdrop::Wallpaper { generation, .. } = &self.backdrop else {
+      return Ok(());
+    };
+
+    if *generation == wallpaper_surface::generation() {
+      return Ok(());
+    }
+
+    self.sync_crop(rect)
+  }
+
+  /// Re-bakes the wallpaper surface at the given knobs and points this
+  /// overlay's brush at the result. No-op for acrylic.
+  ///
+  /// Only reached on a config reload: `blur_amount` and `saturation` are
+  /// baked into the image rather than evaluated per frame, which is the
+  /// whole reason the style is cheap, so changing either means rendering a
+  /// new one.
+  fn rebake(
+    &self,
+    blur_amount: f32,
+    saturation: f32,
+  ) -> crate::Result<()> {
+    let Backdrop::Wallpaper { brush, monitor, .. } = &self.backdrop else {
+      return Ok(());
+    };
+
+    let compositor = self.compositor.clone();
+    let brush = brush.clone();
+    let monitor = monitor.clone();
+
+    run_on_composition_thread(&self.queue, move || {
+      wallpaper_surface::rebind(
+        &compositor,
+        &brush,
+        &monitor,
+        blur_amount,
+        saturation,
+      )
+    })
   }
 
   /// Updates the tint layer's color; no-op unless the value changed.
@@ -400,7 +559,12 @@ impl BlurVisual {
     Ok(())
   }
 
-  /// Updates the live blur radius by rebuilding the effect brush.
+  /// Updates the live blur radius.
+  ///
+  /// For acrylic this rebuilds the effect brush; the rest of this comment
+  /// is about why a rebuild rather than an in-place property update. The
+  /// wallpaper backdrop has no live graph to update at all and re-bakes its
+  /// surface instead (see `rebake`).
   ///
   /// The plan's original design mutated the existing brush in place via
   /// `effect_brush.Properties().InsertScalar("Blur.BlurAmount", value)`
@@ -419,37 +583,51 @@ impl BlurVisual {
   /// `GetProperty`-based initial-value path, which is confirmed working
   /// (overlays visibly render blur from their initial `blur_amount`).
   pub(crate) fn set_blur_amount(&mut self, value: f32) -> crate::Result<()> {
-    let compositor = self.compositor.clone();
-    let host_backdrop = self.host_backdrop.clone();
-    let saturation = self.saturation;
-
-    let effect_brush = run_on_composition_thread(&self.queue, move || {
-      build_effect_brush(&compositor, &host_backdrop, value, saturation)
-    })?;
-
-    self.blur_sprite.SetBrush(&effect_brush)?;
-    self.effect_brush = effect_brush;
+    self.reapply_knobs(value, self.saturation)?;
     self.blur_amount = value;
     Ok(())
   }
 
-  /// Updates the live saturation by rebuilding the effect brush. Same
-  /// rebuild-not-mutate approach as `set_blur_amount`, for the same
-  /// reason (`InsertScalar` on a named effect property is not confirmed
-  /// working in this pipeline) -- both knobs share the one effect graph,
-  /// so either setter rebuilds the whole thing using the other's current
-  /// stored value.
+  /// Re-renders the blur layer at the given knob values, however this
+  /// overlay's [`Backdrop`] produces it.
+  fn reapply_knobs(
+    &mut self,
+    blur_amount: f32,
+    saturation: f32,
+  ) -> crate::Result<()> {
+    match &self.backdrop {
+      Backdrop::Acrylic { host_backdrop, .. } => {
+        let compositor = self.compositor.clone();
+        let host_backdrop = host_backdrop.clone();
+
+        let effect_brush = run_on_composition_thread(&self.queue, move || {
+          build_effect_brush(
+            &compositor,
+            &host_backdrop,
+            blur_amount,
+            saturation,
+          )
+        })?;
+
+        self.blur_sprite.SetBrush(&effect_brush)?;
+
+        if let Backdrop::Acrylic { effect_brush: current, .. } =
+          &mut self.backdrop
+        {
+          *current = effect_brush;
+        }
+
+        Ok(())
+      }
+      Backdrop::Wallpaper { .. } => self.rebake(blur_amount, saturation),
+    }
+  }
+
+  /// Updates the live saturation. Both knobs feed one render -- acrylic's
+  /// effect graph or the wallpaper bake -- so either setter re-runs it
+  /// using the other's current stored value.
   pub(crate) fn set_saturation(&mut self, value: f32) -> crate::Result<()> {
-    let compositor = self.compositor.clone();
-    let host_backdrop = self.host_backdrop.clone();
-    let blur_amount = self.blur_amount;
-
-    let effect_brush = run_on_composition_thread(&self.queue, move || {
-      build_effect_brush(&compositor, &host_backdrop, blur_amount, value)
-    })?;
-
-    self.blur_sprite.SetBrush(&effect_brush)?;
-    self.effect_brush = effect_brush;
+    self.reapply_knobs(self.blur_amount, value)?;
     self.saturation = value;
     Ok(())
   }
@@ -545,9 +723,9 @@ fn build_effect_brush(
 }
 
 /// Builds the full visual tree: a `ContainerVisual` rooting a blur sprite
-/// (host-backdrop brush through the Gaussian-blur/saturation effect graph)
-/// and a tint sprite (flat color) stacked above it, both clipped by a
-/// shared rounded rectangle geometry.
+/// (whichever [`Backdrop`] `params.style` selects) and a tint sprite (flat
+/// color) stacked above it, both clipped by a shared rounded rectangle
+/// geometry.
 fn build_visual_tree(
   compositor: &Compositor,
   queue: &DispatcherQueue,
@@ -574,17 +752,35 @@ fn build_visual_tree(
   })?;
   let clip = compositor.CreateGeometricClipWithGeometry(&rounded_geometry)?;
 
-  let host_backdrop = compositor.CreateHostBackdropBrush()?;
-  let effect_brush = build_effect_brush(
-    compositor,
-    &host_backdrop,
-    params.blur_amount,
-    params.saturation,
-  )?;
-
   let blur_sprite = compositor.CreateSpriteVisual()?;
-  blur_sprite.SetBrush(&effect_brush)?;
   blur_sprite.SetSize(size)?;
+
+  let backdrop = if params.style == BackdropStyle::Wallpaper {
+    let (brush, monitor) = wallpaper_surface::crop_brush(
+      compositor,
+      rect,
+      params.blur_amount,
+      params.saturation,
+    )?;
+
+    blur_sprite.SetBrush(&brush)?;
+    Backdrop::Wallpaper {
+      brush,
+      monitor,
+      generation: wallpaper_surface::generation(),
+    }
+  } else {
+    let host_backdrop = compositor.CreateHostBackdropBrush()?;
+    let effect_brush = build_effect_brush(
+      compositor,
+      &host_backdrop,
+      params.blur_amount,
+      params.saturation,
+    )?;
+
+    blur_sprite.SetBrush(&effect_brush)?;
+    Backdrop::Acrylic { host_backdrop, effect_brush }
+  };
 
   let tint_brush =
     compositor.CreateColorBrushWithColor(to_ui_color(params.tint))?;
@@ -605,11 +801,10 @@ fn build_visual_tree(
     _target: target,
     compositor: compositor.clone(),
     queue: queue.clone(),
-    host_backdrop,
+    backdrop,
     root,
     blur_sprite,
     tint_sprite,
-    effect_brush,
     tint_brush,
     rounded_geometry,
     blur_amount: params.blur_amount,
@@ -717,17 +912,10 @@ impl BorderVisual {
     rect: &Rect,
     params: BorderOverlayParams,
   ) -> crate::Result<Self> {
-    let thread = composition_thread().ok_or_else(|| {
-      crate::Error::Platform(
-        "Composition pipeline unavailable.".to_string(),
-      )
-    })?;
-
-    let compositor = thread.compositor.clone();
     let hwnd_raw = hwnd.0;
     let rect = rect.clone();
 
-    run_on_composition_thread(&thread.queue, move || {
+    with_composition_thread(move |compositor, _| {
       build_border_visual_tree(&compositor, HWND(hwnd_raw), &rect, params)
     })
   }

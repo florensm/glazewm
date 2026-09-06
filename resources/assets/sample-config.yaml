@@ -225,6 +225,13 @@ window_effects:
     # Composition, same mechanism as the border above) positioned behind the
     # window, so the live blur survives window-open/close, resize, and
     # workspace-switch transitions instead of disappearing during them.
+    # Wallpaper uses the same overlay but blurs the desktop wallpaper once,
+    # up front, into an opaque per-monitor image and shows each window the
+    # crop of it underneath that window. In a tiling layout nothing is behind
+    # a tiled window except the wallpaper, so this looks like acrylic without
+    # sampling anything per frame -- and being opaque, it lets DWM skip
+    # compositing what's behind the window entirely. Floating windows, which
+    # really do overlap other windows, are what acrylic is still for.
     # Blur uses the same overlay window but skips that pipeline entirely and
     # asks DWM for its plain, Win10-era blur-behind instead -- much cheaper
     # to composite than acrylic (which is the single most expensive window
@@ -235,36 +242,43 @@ window_effects:
     # blur_amount/opacity/saturation either. Note that DWM only draws those
     # where the app itself leaves the surface unpainted, so most third-party
     # apps show no visible change at all.
-    # ** Blur requires Windows 10 1607+. Acrylic requires Windows 10 1803+.
+    # ** Blur requires Windows 10 1607+. Acrylic/Wallpaper require Windows
+    # ** 10 1803+.
     # ** Mica/MicaAlt require Windows 11 22H2+.
     backdrop:
       enabled: false
-      # Allowed values: 'acrylic', 'blur', 'solid', 'transient', 'mica',
-      # 'mica_alt'.
+      # Allowed values: 'acrylic', 'wallpaper', 'blur', 'solid',
+      # 'transient', 'mica', 'mica_alt'.
       #
       # Two families, and the difference decides whether a style is visible
-      # at all. 'acrylic'/'blur'/'solid' are drawn into an overlay window
-      # GlazeWM owns, so they always render. 'transient'/'mica'/'mica_alt'
-      # ask DWM to paint the managed window itself, which is far cheaper but
-      # only shows where the application leaves its own surface unpainted --
-      # most third-party apps paint theirs, so those often look like nothing
-      # happened.
+      # at all. 'acrylic'/'wallpaper'/'blur'/'solid' are drawn into an
+      # overlay window GlazeWM owns, so they always render.
+      # 'transient'/'mica'/'mica_alt' ask DWM to paint the managed window
+      # itself, which is far cheaper but only shows where the application
+      # leaves its own surface unpainted -- most third-party apps paint
+      # theirs, so those often look like nothing happened.
       #
       # Roughly cheapest to most expensive: mica/mica_alt/transient (DWM
-      # does the work), solid (one flat translucent layer, no blur), blur
-      # (the OS's plain Win10-era blur), acrylic (a live per-frame blur that
-      # is by far the most expensive window effect here).
+      # does the work), wallpaper (blurred once, then opaque -- so DWM
+      # composites less, not more), solid (one flat translucent layer, no
+      # blur), blur (the OS's plain Win10-era blur), acrylic (a live
+      # per-frame blur that is by far the most expensive window effect
+      # here).
       style: "acrylic"
-      # Blur radius/intensity of the acrylic overlay's live blur (acrylic
-      # only -- Blur/Mica/MicaAlt have no adjustable blur). Requires the
+      # Blur radius/intensity (acrylic and wallpaper only --
+      # Blur/Mica/MicaAlt have no adjustable blur). Requires the
       # Windows.UI.Composition rendering pipeline; silently ignored if
       # that's unavailable and the OS's fixed-intensity acrylic blur is
-      # used instead.
+      # used instead. For 'wallpaper' this is baked into the image, so
+      # changing it re-renders that image rather than costing anything per
+      # frame.
       blur_amount: 30.0
-      # Opacity of the acrylic overlay itself (blur + tint together), from
-      # 0.0 to 1.0 -- not the same as transparency.opacity above, which
-      # fades the real window. Requires Windows.UI.Composition, same as
-      # blur_amount.
+      # Opacity of the overlay itself (blur + tint together), from 0.0 to
+      # 1.0 -- not the same as transparency.opacity above, which fades the
+      # real window. Requires Windows.UI.Composition, same as blur_amount.
+      # Note that lowering this for 'wallpaper' makes the overlay
+      # translucent again, giving back the compositing saving that style
+      # exists for.
       opacity: 1.0
       # Saturation of the blurred backdrop, from 0.0 (grayscale) to 2.0
       # (oversaturated); 1.0 is unchanged. Same Windows.UI.Composition

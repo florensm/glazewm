@@ -276,7 +276,11 @@ pub struct BackdropEffectConfig {
   /// rendering bug present on some Windows 10 builds.
   pub tint: Option<Color>,
 
-  /// Blur radius/intensity of the acrylic overlay's live blur.
+  /// Blur radius/intensity of the overlay's blur.
+  ///
+  /// For `wallpaper` this is baked into the per-monitor image rather than
+  /// evaluated per frame, so changing it re-renders that image once and
+  /// costs nothing thereafter.
   ///
   /// Ignored for `mica`/`mica_alt` -- the OS gives no blur-radius knob for
   /// those, and there's no overlay window to attach a custom blur effect
@@ -1227,7 +1231,10 @@ mod tests {
   fn overlay_tint_covers_every_overlay_backed_style() {
     for (style, expected) in [
       (BackdropStyle::Acrylic, true),
+      (BackdropStyle::Wallpaper, true),
       (BackdropStyle::Blur, true),
+      (BackdropStyle::Solid, true),
+      (BackdropStyle::Transient, false),
       (BackdropStyle::Mica, false),
       (BackdropStyle::MicaAlt, false),
     ] {
