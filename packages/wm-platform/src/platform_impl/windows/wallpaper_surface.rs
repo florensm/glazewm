@@ -1,0 +1,1124 @@
+//! Bakes the desktop wallpaper into a blurred, opaque composition surface.
+//!
+//! # Why this exists at all
+//!
+//! Acrylic samples whatever sits behind a window and blurs it every frame.
+//! In a tiling layout nothing *is* behind a tiled window except the
+//! wallpaper, so for the common case that live sampling reproduces, frame
+//! after frame, an image that never changes. This module computes that
+//! image once instead.
+//!
+//! Two things follow from baking rather than sampling, and both matter
+//! more than the blur itself:
+//!
+//! - The surface can be **opaque**. A translucent surface forces DWM to
+//!   blend it against everything beneath it on every composition pass; an
+//!   opaque one lets DWM skip what's behind entirely. That removes a
+//!   blending layer rather than making one cheaper.
+//! - The blur happens **once**, at bake time, not per frame -- so the
+//!   overlay's visual tree is a plain surface brush with no effect graph
+//!   on it at all, unlike the acrylic path in `composition`.
+//!
+//! # Cropping
+//!
+//! One surface is baked per monitor, the full size of that monitor. Each
+//! window's overlay shows the part of it matching the window's position,
+//! by offsetting the shared brush -- a sprite offset, not a re-blur, so N
+//! windows on a monitor cost one bake between them.
+//!
+//! Full resolution costs `width * height * 4` bytes of VRAM per surface
+//! (~20 MB on a 3440x1440 display), and there is one surface per distinct
+//! set of knobs -- normally one, or two when `focused_window` and
+//! `other_windows` are configured differently. Baking at reduced
+//! resolution and letting the brush scale it back up would be nearly free
+//! visually, since the blur has already destroyed the detail, and is the
+//! obvious lever if that ever matters.
+//!
+//! # Threading
+//!
+//! Everything here runs on the composition thread, reached through
+//! `composition::run_on_composition_thread`. The cache and the graphics
+//! device are thread-locals of that thread.
+
+use std::{
+  cell::RefCell,
+  os::windows::ffi::OsStrExt,
+  path::Path,
+  sync::atomic::{AtomicU64, Ordering},
+};
+
+use windows::{
+  core::{ComInterface, PCWSTR},
+  Foundation::{
+    Numerics::{Matrix3x2, Vector2, Vector4},
+    TypedEventHandler,
+  },
+  Graphics::{
+    DirectX::{DirectXAlphaMode, DirectXPixelFormat},
+    SizeInt32,
+  },
+  Win32::{
+    Foundation::{GENERIC_READ, POINT},
+    Graphics::{
+      Direct2D::{
+        CLSID_D2D12DAffineTransform, CLSID_D2D1Border,
+        CLSID_D2D1Composite, CLSID_D2D1Crop, CLSID_D2D1Flood,
+        CLSID_D2D1GaussianBlur, CLSID_D2D1Saturation,
+        Common::{
+          D2D1_COLOR_F, D2D1_COMPOSITE_MODE_SOURCE_OVER, D2D_POINT_2F,
+          D2D_RECT_F,
+        },
+        ID2D1Bitmap, ID2D1DeviceContext, ID2D1Effect,
+        D2D1_2DAFFINETRANSFORM_PROP_INTERPOLATION_MODE,
+        D2D1_2DAFFINETRANSFORM_PROP_TRANSFORM_MATRIX,
+        D2D1_ANTIALIAS_MODE_ALIASED, D2D1_BORDER_EDGE_MODE_CLAMP,
+        D2D1_BORDER_EDGE_MODE_WRAP, D2D1_BORDER_PROP_EDGE_MODE_X,
+        D2D1_BORDER_PROP_EDGE_MODE_Y, D2D1_CROP_PROP_RECT,
+        D2D1_FLOOD_PROP_COLOR, D2D1_GAUSSIANBLUR_OPTIMIZATION_QUALITY,
+        D2D1_GAUSSIANBLUR_PROP_OPTIMIZATION,
+        D2D1_GAUSSIANBLUR_PROP_STANDARD_DEVIATION,
+        D2D1_INTERPOLATION_MODE_HIGH_QUALITY_CUBIC,
+        D2D1_INTERPOLATION_MODE_LINEAR, D2D1_PROPERTY_TYPE,
+        D2D1_PROPERTY_TYPE_ENUM, D2D1_PROPERTY_TYPE_FLOAT,
+        D2D1_PROPERTY_TYPE_MATRIX_3X2, D2D1_PROPERTY_TYPE_VECTOR4,
+        D2D1_SATURATION_PROP_SATURATION,
+      },
+      Gdi::{
+        GetMonitorInfoW, MonitorFromPoint, MONITORINFO,
+        MONITOR_DEFAULTTONEAREST,
+      },
+      Imaging::{
+        GUID_WICPixelFormat32bppPBGRA, WICConvertBitmapSource,
+        WICDecodeMetadataCacheOnLoad,
+      },
+    },
+    System::WinRT::Composition::ICompositionDrawingSurfaceInterop,
+    UI::WindowsAndMessaging::{
+      GetSystemMetrics, SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN,
+      SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN,
+    },
+  },
+  UI::Composition::{
+    CompositionDrawingSurface, CompositionStretch,
+    CompositionSurfaceBrush, Compositor,
+  },
+};
+
+use super::{
+  graphics_device::{self, with_graphics_device, GraphicsDevice},
+  wallpaper::{MonitorWallpaper, WallpaperFit},
+};
+use crate::Rect;
+
+/// Everything that determines a baked surface's pixels.
+///
+/// Compared for exact equality to decide whether an existing bake can be
+/// reused. The `f32` knobs are safe to compare that way for the same
+/// reason `NativeBlurOverlay`'s setters are: they only ever change when a
+/// caller passes a genuinely different, config-resolved number, never
+/// through arithmetic that could drift.
+#[derive(Clone, Debug, PartialEq)]
+struct WallpaperKey {
+  wallpaper: MonitorWallpaper,
+  blur_amount: f32,
+  saturation: f32,
+}
+
+/// A baked surface and the description it was baked from.
+struct CachedSurface {
+  key: WallpaperKey,
+  surface: CompositionDrawingSurface,
+}
+
+thread_local! {
+  /// Baked surfaces, one per distinct [`WallpaperKey`] -- in practice one
+  /// per monitor, since every window resolves its knobs from the same
+  /// config.
+  ///
+  /// A `Vec` rather than a map because the key is a structural description
+  /// with no cheap hash and the list is monitor-count long; a linear scan of
+  /// three entries on window creation is not worth a hashing story.
+  static SURFACES: RefCell<Vec<CachedSurface>> =
+    const { RefCell::new(Vec::new()) };
+}
+
+/// Bumped whenever something outside this module may have changed what the
+/// desktop looks like: the wallpaper itself, or the display layout the
+/// bakes are sized against.
+///
+/// Overlays compare their own stored value against this on each sync tick,
+/// so the steady-state cost of noticing a wallpaper change is one relaxed
+/// load per overlay -- nothing queries the shell or the filesystem until
+/// the counter actually moves.
+static GENERATION: AtomicU64 = AtomicU64::new(0);
+
+/// Marks every baked surface as possibly stale.
+///
+/// Cheap and safe to over-call: a bump only makes overlays re-query the
+/// wallpaper, and an unchanged description still hits the same cached
+/// surface without re-baking.
+pub(crate) fn invalidate() {
+  GENERATION.fetch_add(1, Ordering::Relaxed);
+}
+
+/// The current value of [`GENERATION`], for an overlay to store alongside
+/// whatever it bound.
+pub(crate) fn generation() -> u64 {
+  GENERATION.load(Ordering::Relaxed)
+}
+
+/// Returns a brush painting the blurred wallpaper for the monitor `rect`
+/// sits on, baking one if no matching surface is cached.
+///
+/// The brush is positioned by the caller via [`set_crop`]: it is returned
+/// aligned to the surface's top-left and unstretched, so an offset alone
+/// selects which part of the monitor-sized image shows.
+///
+/// Must be called on the composition thread.
+pub(crate) fn crop_brush(
+  compositor: &Compositor,
+  rect: &Rect,
+  blur_amount: f32,
+  saturation: f32,
+) -> windows::core::Result<(CompositionSurfaceBrush, Rect)> {
+  let monitor = monitor_bounds(rect);
+  let surface =
+    surface_for(compositor, &monitor, blur_amount, saturation)?;
+
+  let brush = compositor.CreateSurfaceBrushWithSurface(&surface)?;
+  brush.SetStretch(CompositionStretch::None)?;
+
+  // `Stretch::None` centers the surface in the sprite by default.
+  // Anchoring both axes to the top-left instead is what makes
+  // `SetOffset` mean "scroll the wallpaper", which is the whole cropping
+  // mechanism.
+  brush.SetHorizontalAlignmentRatio(0.0)?;
+  brush.SetVerticalAlignmentRatio(0.0)?;
+
+  set_crop(&brush, rect, &monitor);
+  Ok((brush, monitor))
+}
+
+/// Points `brush` at the part of `monitor`'s baked wallpaper that lies
+/// under `rect`, so the overlay shows exactly what the desktop shows
+/// there.
+///
+/// Cheap enough for the per-move path: a single agile property write, no
+/// device work and no re-bake.
+pub(crate) fn set_crop(
+  brush: &CompositionSurfaceBrush,
+  rect: &Rect,
+  monitor: &Rect,
+) {
+  #[allow(clippy::cast_precision_loss)]
+  let offset = Vector2 {
+    X: (monitor.x() - rect.x()) as f32,
+    Y: (monitor.y() - rect.y()) as f32,
+  };
+
+  if let Err(err) = brush.SetOffset(offset) {
+    tracing::warn!("Wallpaper backdrop crop update failed: {err}.");
+  }
+}
+
+/// Swaps `brush` onto another monitor's baked wallpaper, baking it if
+/// needed. Called when a window is moved across displays.
+///
+/// Must be called on the composition thread.
+pub(crate) fn rebind(
+  compositor: &Compositor,
+  brush: &CompositionSurfaceBrush,
+  monitor: &Rect,
+  blur_amount: f32,
+  saturation: f32,
+) -> windows::core::Result<()> {
+  let surface = surface_for(compositor, monitor, blur_amount, saturation)?;
+  brush.SetSurface(&surface)
+}
+
+/// The bounds of the monitor `rect` sits on.
+///
+/// Uses the rect's center rather than its origin so a window straddling
+/// two displays takes the wallpaper of the one it is mostly on, matching
+/// how the rest of the WM assigns windows to monitors.
+pub(crate) fn monitor_bounds(rect: &Rect) -> Rect {
+  let center = rect.center_point();
+  let point = POINT {
+    x: center.x,
+    y: center.y,
+  };
+
+  // SAFETY: `MonitorFromPoint` accepts any point and, with
+  // `MONITOR_DEFAULTTONEAREST`, always returns a valid monitor.
+  let monitor =
+    unsafe { MonitorFromPoint(point, MONITOR_DEFAULTTONEAREST) };
+
+  let mut info = MONITORINFO {
+    #[allow(clippy::cast_possible_truncation)]
+    cbSize: std::mem::size_of::<MONITORINFO>() as u32,
+    ..Default::default()
+  };
+
+  // SAFETY: `monitor` is valid and `info.cbSize` is set as documented.
+  let ok = unsafe { GetMonitorInfoW(monitor, &raw mut info) }.as_bool();
+  if !ok {
+    return virtual_screen();
+  }
+
+  Rect::from_ltrb(
+    info.rcMonitor.left,
+    info.rcMonitor.top,
+    info.rcMonitor.right,
+    info.rcMonitor.bottom,
+  )
+}
+
+/// The bounding rectangle of every display, which is the frame
+/// [`WallpaperFit::Span`] lays its image out across.
+fn virtual_screen() -> Rect {
+  // SAFETY: All four metrics are valid indices and return plain integers.
+  unsafe {
+    Rect::from_xy(
+      GetSystemMetrics(SM_XVIRTUALSCREEN),
+      GetSystemMetrics(SM_YVIRTUALSCREEN),
+      GetSystemMetrics(SM_CXVIRTUALSCREEN),
+      GetSystemMetrics(SM_CYVIRTUALSCREEN),
+    )
+  }
+}
+
+/// Returns the cached surface for `monitor` at these knobs, baking one if
+/// the wallpaper, the layout, or the knobs have changed since the last
+/// bake.
+///
+/// Compares the knobs exactly, matching `WallpaperKey`'s own `PartialEq`
+/// and `NativeBlurOverlay`'s setters: these are config-resolved numbers
+/// that are either the same value or a different one, never the result of
+/// arithmetic that could drift.
+#[allow(clippy::float_cmp)]
+fn surface_for(
+  compositor: &Compositor,
+  monitor: &Rect,
+  blur_amount: f32,
+  saturation: f32,
+) -> windows::core::Result<CompositionDrawingSurface> {
+  let key = WallpaperKey {
+    wallpaper: MonitorWallpaper::query(monitor, &virtual_screen()),
+    blur_amount,
+    saturation,
+  };
+
+  let cached = SURFACES.with(|cache| {
+    cache
+      .borrow()
+      .iter()
+      .find(|entry| entry.key == key)
+      .map(|entry| entry.surface.clone())
+  });
+
+  if let Some(surface) = cached {
+    return Ok(surface);
+  }
+
+  let surface = with_graphics_device(compositor, |device, is_new| {
+    if is_new {
+      subscribe_device_replaced(compositor, device)?;
+    }
+    bake(device, &key)
+  })
+  .inspect_err(|_| {
+    // Almost every failure below the composition layer means the GPU
+    // device went away; dropping it here is what lets the next attempt
+    // rebuild rather than re-failing forever against a dead device.
+    graphics_device::reset();
+  })?;
+
+  SURFACES.with(|cache| {
+    let mut cache = cache.borrow_mut();
+
+    // Drop only the entry this bake actually replaces: same monitor, same
+    // knobs, older wallpaper. Evicting every entry for the monitor instead
+    // would thrash whenever `focused_window` and `other_windows` are
+    // configured with different knobs -- the two would take turns baking
+    // each other out on every focus change.
+    cache.retain(|entry| {
+      entry.key.wallpaper.monitor != key.wallpaper.monitor
+        || entry.key.blur_amount != key.blur_amount
+        || entry.key.saturation != key.saturation
+    });
+    cache.push(CachedSurface {
+      key,
+      surface: surface.clone(),
+    });
+  });
+
+  Ok(surface)
+}
+
+/// Re-draws every cached surface when the composition graphics device
+/// replaces its rendering device.
+///
+/// The surfaces themselves survive a device swap -- brushes keep pointing
+/// at them -- but their *contents* do not, so without this every backdrop
+/// would go blank after a driver update or a TDR until something happened
+/// to force a re-bake.
+fn subscribe_device_replaced(
+  compositor: &Compositor,
+  device: &GraphicsDevice,
+) -> windows::core::Result<()> {
+  let compositor = compositor.clone();
+
+  device
+    .composition
+    .RenderingDeviceReplaced(&TypedEventHandler::new(move |_, _| {
+      let entries = SURFACES.with(|cache| {
+        cache
+          .borrow()
+          .iter()
+          .map(|entry| (entry.key.clone(), entry.surface.clone()))
+          .collect::<Vec<_>>()
+      });
+
+      for (key, surface) in entries {
+        let result = with_graphics_device(&compositor, |device, _| {
+          draw_into(device, &surface, &key)
+        });
+
+        if let Err(err) = result {
+          tracing::warn!(
+            "Wallpaper backdrop redraw after device loss failed: {err}."
+          );
+        }
+      }
+
+      Ok(())
+    }))?;
+
+  Ok(())
+}
+
+/// Allocates a monitor-sized surface and draws the blurred wallpaper into
+/// it.
+///
+/// `DirectXAlphaMode::Ignore` is the point of the whole style: it makes
+/// the surface opaque, which is what lets DWM stop compositing everything
+/// behind the overlay.
+fn bake(
+  device: &GraphicsDevice,
+  key: &WallpaperKey,
+) -> windows::core::Result<CompositionDrawingSurface> {
+  let monitor = &key.wallpaper.monitor;
+
+  let surface = device.composition.CreateDrawingSurface2(
+    SizeInt32 {
+      Width: monitor.width(),
+      Height: monitor.height(),
+    },
+    DirectXPixelFormat::B8G8R8A8UIntNormalized,
+    DirectXAlphaMode::Ignore,
+  )?;
+
+  if !draw_into(device, &surface, key)? {
+    // Not an error -- a color-only desktop renders exactly like this --
+    // but it is the answer to "why is my wallpaper backdrop a flat
+    // color?", so it is worth saying once per bake rather than leaving
+    // the user to guess.
+    tracing::debug!(
+      "Wallpaper backdrop for {:?} baked from the desktop background color        alone; no wallpaper image was drawn.",
+      key.wallpaper.monitor
+    );
+  }
+
+  Ok(surface)
+}
+
+/// Renders `key`'s wallpaper into an already-allocated `surface`,
+/// reporting whether a wallpaper image actually made it in (as opposed to
+/// the background color alone).
+///
+/// Split from [`bake`] so a device-loss redraw can refill the very
+/// surfaces existing brushes already point at, instead of allocating new
+/// ones and having to re-plumb every overlay.
+fn draw_into(
+  device: &GraphicsDevice,
+  surface: &CompositionDrawingSurface,
+  key: &WallpaperKey,
+) -> windows::core::Result<bool> {
+  let interop: ICompositionDrawingSurfaceInterop = surface.cast()?;
+  let mut origin = POINT::default();
+
+  // SAFETY: `interop` wraps a live surface; `origin` outlives the call,
+  // and the requested interface is the one `BeginDraw` documents.
+  let context: ID2D1DeviceContext =
+    unsafe { interop.BeginDraw(None, &raw mut origin) }?;
+
+  let drawn = draw(device, &context, origin, key);
+
+  // SAFETY: Paired with the `BeginDraw` above, and must run even when the
+  // draw failed -- leaving a surface open would wedge every later bake.
+  let ended = unsafe { interop.EndDraw() };
+
+  ended.and(drawn)
+}
+
+/// Draws the blurred wallpaper into the region of `context`'s atlas
+/// starting at `origin`, reporting whether an image was drawn over the
+/// background.
+///
+/// A composition surface hands back a device context targeting a *shared*
+/// atlas, of which only `origin`-plus-monitor-size belongs to this
+/// surface, so everything here is clipped to that region -- an unclipped
+/// `Clear` alone would wipe unrelated surfaces.
+fn draw(
+  device: &GraphicsDevice,
+  context: &ID2D1DeviceContext,
+  origin: POINT,
+  key: &WallpaperKey,
+) -> windows::core::Result<bool> {
+  let monitor = &key.wallpaper.monitor;
+
+  #[allow(clippy::cast_precision_loss)]
+  let (width, height) = (monitor.width() as f32, monitor.height() as f32);
+  #[allow(clippy::cast_precision_loss)]
+  let (left, top) = (origin.x as f32, origin.y as f32);
+
+  let clip = D2D_RECT_F {
+    left,
+    top,
+    right: left + width,
+    bottom: top + height,
+  };
+
+  // SAFETY: `context` is the live context `BeginDraw` returned.
+  // Composition surfaces are sized in raw pixels, so pinning DPI to 96
+  // makes one DIP one pixel and lets the layout math below stay in
+  // pixels throughout.
+  let background = to_color_f(key.wallpaper.background);
+
+  unsafe {
+    context.SetDpi(96.0, 96.0);
+    context
+      .PushAxisAlignedClip(&raw const clip, D2D1_ANTIALIAS_MODE_ALIASED);
+    context.Clear(Some(&raw const background));
+  }
+
+  let result =
+    draw_wallpaper(device, context, left, top, width, height, key);
+
+  // SAFETY: Paired with the `PushAxisAlignedClip` above; must run even on
+  // failure so the context is left balanced.
+  unsafe {
+    context.PopAxisAlignedClip();
+  }
+
+  result
+}
+
+/// Composes and draws the wallpaper image itself, returning whether it
+/// drew one. No-op when the desktop has no image, in which case the
+/// background `Clear` already produced the right result.
+#[allow(clippy::too_many_arguments)]
+fn draw_wallpaper(
+  device: &GraphicsDevice,
+  context: &ID2D1DeviceContext,
+  left: f32,
+  top: f32,
+  width: f32,
+  height: f32,
+  key: &WallpaperKey,
+) -> windows::core::Result<bool> {
+  let Some(path) = key.wallpaper.image.as_deref() else {
+    return Ok(false);
+  };
+
+  let (bitmap, size) = match load_bitmap(device, context, path) {
+    Ok(loaded) => loaded,
+    Err(err) => {
+      // A wallpaper path that can't be decoded (removed mid-slideshow, an
+      // unsupported codec) is a normal desktop state, not a pipeline
+      // failure: the background color alone is exactly what Windows itself
+      // would show, so this must not fall the whole style back to acrylic.
+      tracing::debug!(
+        "Wallpaper image {path:?} could not be decoded: {err}."
+      );
+      return Ok(false);
+    }
+  };
+
+  let placement = place(size, &key.wallpaper);
+  let desktop =
+    compose_desktop(context, &bitmap, placement, width, height, key)?;
+
+  let blur = effect(context, &CLSID_D2D1GaussianBlur, &desktop)?;
+  set_property(
+    &blur,
+    D2D1_GAUSSIANBLUR_PROP_STANDARD_DEVIATION.0,
+    D2D1_PROPERTY_TYPE_FLOAT,
+    key.blur_amount,
+  )?;
+  set_property(
+    &blur,
+    D2D1_GAUSSIANBLUR_PROP_OPTIMIZATION.0,
+    D2D1_PROPERTY_TYPE_ENUM,
+    D2D1_GAUSSIANBLUR_OPTIMIZATION_QUALITY.0 as u32,
+  )?;
+
+  let saturation = effect(context, &CLSID_D2D1Saturation, &blur)?;
+  set_property(
+    &saturation,
+    D2D1_SATURATION_PROP_SATURATION.0,
+    D2D1_PROPERTY_TYPE_FLOAT,
+    key.saturation,
+  )?;
+
+  // The blur's output extends infinitely (see `compose_desktop`), so it
+  // has to be cropped back to the monitor before it reaches the atlas --
+  // the clip pushed by `draw` would contain it, but relying on a clip to
+  // bound an infinite image makes D2D rasterize far more than it needs
+  // to.
+  let cropped = effect(context, &CLSID_D2D1Crop, &saturation)?;
+  set_property(
+    &cropped,
+    D2D1_CROP_PROP_RECT.0,
+    D2D1_PROPERTY_TYPE_VECTOR4,
+    Vector4 {
+      X: 0.0,
+      Y: 0.0,
+      Z: width,
+      W: height,
+    },
+  )?;
+
+  // SAFETY: Every effect above is live, and the target offset places the
+  // graph's (0, 0) at this surface's own corner of the atlas.
+  unsafe {
+    let output = cropped.GetOutput()?;
+    let target = D2D_POINT_2F { x: left, y: top };
+    context.DrawImage(
+      &output,
+      Some(&raw const target),
+      None,
+      D2D1_INTERPOLATION_MODE_LINEAR,
+      D2D1_COMPOSITE_MODE_SOURCE_OVER,
+    );
+  }
+
+  Ok(true)
+}
+
+/// Builds the effect graph reproducing what the desktop looks like on this
+/// monitor, with an infinite extent so the blur that follows has real
+/// pixels to sample past every edge.
+///
+/// Without that extension the blur would read transparent black just
+/// outside the monitor and fade the wallpaper out along all four borders
+/// -- the artifact is subtle in the middle of a screen and glaring at its
+/// edges, which is exactly where tiled windows sit.
+fn compose_desktop(
+  context: &ID2D1DeviceContext,
+  bitmap: &ID2D1Bitmap,
+  placement: Placement,
+  width: f32,
+  height: f32,
+  key: &WallpaperKey,
+) -> windows::core::Result<ID2D1Effect> {
+  let transform = effect(context, &CLSID_D2D12DAffineTransform, bitmap)?;
+  set_property(
+    &transform,
+    D2D1_2DAFFINETRANSFORM_PROP_TRANSFORM_MATRIX.0,
+    D2D1_PROPERTY_TYPE_MATRIX_3X2,
+    Matrix3x2 {
+      M11: placement.scale_x,
+      M12: 0.0,
+      M21: 0.0,
+      M22: placement.scale_y,
+      M31: placement.offset_x,
+      M32: placement.offset_y,
+    },
+  )?;
+  set_property(
+    &transform,
+    D2D1_2DAFFINETRANSFORM_PROP_INTERPOLATION_MODE.0,
+    D2D1_PROPERTY_TYPE_ENUM,
+    D2D1_INTERPOLATION_MODE_HIGH_QUALITY_CUBIC.0 as u32,
+  )?;
+
+  // Tiling is the one fit whose own repetition already covers the plane,
+  // so it extends by wrapping and needs no background underneath it at
+  // all.
+  if placement.tiled {
+    return border(
+      context,
+      &transform,
+      D2D1_BORDER_EDGE_MODE_WRAP.0 as u32,
+    );
+  }
+
+  // Every other fit can leave part of the monitor uncovered (`Fit` and
+  // `Center` letterbox; a smaller-than-monitor image at `Center` more so),
+  // where Windows shows the desktop background color -- so the color goes
+  // underneath as a flood, cropped to the monitor so the composite has a
+  // finite extent for the border below to clamp.
+  let flood = context_effect(context, &CLSID_D2D1Flood)?;
+  set_property(
+    &flood,
+    D2D1_FLOOD_PROP_COLOR.0,
+    D2D1_PROPERTY_TYPE_VECTOR4,
+    to_vector4(key.wallpaper.background),
+  )?;
+
+  let background = effect(context, &CLSID_D2D1Crop, &flood)?;
+  set_property(
+    &background,
+    D2D1_CROP_PROP_RECT.0,
+    D2D1_PROPERTY_TYPE_VECTOR4,
+    Vector4 {
+      X: 0.0,
+      Y: 0.0,
+      Z: width,
+      W: height,
+    },
+  )?;
+
+  let composite = context_effect(context, &CLSID_D2D1Composite)?;
+
+  // SAFETY: Both inputs are live effects; `Composite` takes exactly two,
+  // and input 1 is drawn over input 0.
+  unsafe {
+    composite.SetInput(0, &background.GetOutput()?, true);
+    composite.SetInput(1, &transform.GetOutput()?, true);
+  }
+
+  border(context, &composite, D2D1_BORDER_EDGE_MODE_CLAMP.0 as u32)
+}
+
+/// Extends `input` past its own extent in both axes with the given edge
+/// mode, making the result infinite.
+fn border(
+  context: &ID2D1DeviceContext,
+  input: &ID2D1Effect,
+  edge_mode: u32,
+) -> windows::core::Result<ID2D1Effect> {
+  let border = effect(context, &CLSID_D2D1Border, input)?;
+  set_property(
+    &border,
+    D2D1_BORDER_PROP_EDGE_MODE_X.0,
+    D2D1_PROPERTY_TYPE_ENUM,
+    edge_mode,
+  )?;
+  set_property(
+    &border,
+    D2D1_BORDER_PROP_EDGE_MODE_Y.0,
+    D2D1_PROPERTY_TYPE_ENUM,
+    edge_mode,
+  )?;
+  Ok(border)
+}
+
+/// Creates an effect with no input wired up yet.
+fn context_effect(
+  context: &ID2D1DeviceContext,
+  id: &windows::core::GUID,
+) -> windows::core::Result<ID2D1Effect> {
+  // SAFETY: `id` names a D2D built-in effect and `context` is live.
+  unsafe { context.CreateEffect(id) }
+}
+
+/// Creates an effect taking `input` (a bitmap or another effect's output)
+/// as its only input.
+fn effect<P>(
+  context: &ID2D1DeviceContext,
+  id: &windows::core::GUID,
+  input: &P,
+) -> windows::core::Result<ID2D1Effect>
+where
+  P: EffectInput,
+{
+  let effect = context_effect(context, id)?;
+  let image = input.as_image()?;
+
+  // SAFETY: `effect` was just created and every effect used here takes at
+  // least one input.
+  unsafe {
+    effect.SetInput(0, &image, true);
+  }
+
+  Ok(effect)
+}
+
+/// Anything that can feed a D2D effect: a decoded bitmap, or the output of
+/// an earlier effect in the graph.
+trait EffectInput {
+  fn as_image(
+    &self,
+  ) -> windows::core::Result<windows::Win32::Graphics::Direct2D::ID2D1Image>;
+}
+
+impl EffectInput for ID2D1Bitmap {
+  fn as_image(
+    &self,
+  ) -> windows::core::Result<windows::Win32::Graphics::Direct2D::ID2D1Image>
+  {
+    self.cast()
+  }
+}
+
+impl EffectInput for ID2D1Effect {
+  fn as_image(
+    &self,
+  ) -> windows::core::Result<windows::Win32::Graphics::Direct2D::ID2D1Image>
+  {
+    // SAFETY: `self` is a live effect; `GetOutput` is always valid on one.
+    unsafe { self.GetOutput() }
+  }
+}
+
+/// Writes one effect property from the raw bytes of `value`.
+///
+/// D2D's property system is untyped at the ABI: it takes a byte buffer
+/// whose length and layout have to match the property's declared type, so
+/// `kind` and `T` must agree or the call fails (or, worse, misreads).
+fn set_property<T: Copy>(
+  effect: &ID2D1Effect,
+  index: i32,
+  kind: D2D1_PROPERTY_TYPE,
+  value: T,
+) -> windows::core::Result<()> {
+  #[allow(clippy::cast_sign_loss)]
+  let index = index as u32;
+
+  // SAFETY: The slice covers exactly `value`'s own bytes and does not
+  // outlive it; `SetValue` copies out of it before returning.
+  unsafe {
+    let bytes = std::slice::from_raw_parts(
+      (&raw const value).cast::<u8>(),
+      std::mem::size_of::<T>(),
+    );
+    effect.SetValue(index, kind, bytes)
+  }
+}
+
+/// Decodes the wallpaper file into a D2D bitmap, returning it with its
+/// pixel dimensions.
+fn load_bitmap(
+  device: &GraphicsDevice,
+  context: &ID2D1DeviceContext,
+  path: &Path,
+) -> windows::core::Result<(ID2D1Bitmap, (u32, u32))> {
+  let wide: Vec<u16> = path
+    .as_os_str()
+    .encode_wide()
+    .chain(std::iter::once(0))
+    .collect();
+
+  // SAFETY: `wide` is a null-terminated path that outlives the call, and
+  // every interface below is used immediately after being handed back.
+  unsafe {
+    let decoder = device.imaging.CreateDecoderFromFilename(
+      PCWSTR(wide.as_ptr()),
+      None,
+      GENERIC_READ,
+      WICDecodeMetadataCacheOnLoad,
+    )?;
+
+    let frame = decoder.GetFrame(0)?;
+
+    // D2D can only take premultiplied BGRA; wallpapers are routinely
+    // 24-bit JPEG or indexed PNG, so the conversion is the common path
+    // rather than a fallback.
+    let converted =
+      WICConvertBitmapSource(&GUID_WICPixelFormat32bppPBGRA, &frame)?;
+
+    let (mut width, mut height) = (0, 0);
+    converted.GetSize(&raw mut width, &raw mut height)?;
+
+    let bitmap = context.CreateBitmapFromWicBitmap(&converted, None)?;
+    Ok((bitmap, (width, height)))
+  }
+}
+
+/// Where the wallpaper image lands within its monitor, in that monitor's
+/// own pixel coordinates.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct Placement {
+  scale_x: f32,
+  scale_y: f32,
+  offset_x: f32,
+  offset_y: f32,
+  /// Whether the placed image repeats to cover the monitor.
+  tiled: bool,
+}
+
+/// Reproduces Windows' own wallpaper layout for one monitor.
+///
+/// `Span` is the only fit laid out against the whole virtual desktop
+/// rather than a single monitor: one image covers every display, and each
+/// monitor shows its own slice of it. `Tile` anchors its repetition at the
+/// virtual origin -- the primary display's top-left corner, which Windows
+/// guarantees is `(0, 0)` -- so the pattern lines up seam-free across
+/// displays instead of restarting on each.
+#[allow(clippy::cast_precision_loss)]
+fn place(image: (u32, u32), wallpaper: &MonitorWallpaper) -> Placement {
+  let (image_width, image_height) = (image.0 as f32, image.1 as f32);
+  let monitor = &wallpaper.monitor;
+
+  // A zero-dimension image can't be laid out at all; scaling by 1 leaves
+  // it invisible rather than producing infinities.
+  if image_width <= 0.0 || image_height <= 0.0 {
+    return Placement {
+      scale_x: 1.0,
+      scale_y: 1.0,
+      offset_x: 0.0,
+      offset_y: 0.0,
+      tiled: false,
+    };
+  }
+
+  if wallpaper.fit == WallpaperFit::Tile {
+    return Placement {
+      scale_x: 1.0,
+      scale_y: 1.0,
+      offset_x: -(monitor.x() as f32).rem_euclid(image_width),
+      offset_y: -(monitor.y() as f32).rem_euclid(image_height),
+      tiled: true,
+    };
+  }
+
+  let frame = match wallpaper.fit {
+    WallpaperFit::Span => &wallpaper.virtual_screen,
+    _ => monitor,
+  };
+  let (frame_width, frame_height) =
+    (frame.width() as f32, frame.height() as f32);
+
+  let (scale_x, scale_y) = match wallpaper.fit {
+    WallpaperFit::Center => (1.0, 1.0),
+    WallpaperFit::Stretch => {
+      (frame_width / image_width, frame_height / image_height)
+    }
+    WallpaperFit::Fit => {
+      let scale =
+        (frame_width / image_width).min(frame_height / image_height);
+      (scale, scale)
+    }
+    // `Fill` and `Span` both cover their frame and crop the overflow.
+    _ => {
+      let scale =
+        (frame_width / image_width).max(frame_height / image_height);
+      (scale, scale)
+    }
+  };
+
+  let (drawn_width, drawn_height) =
+    (image_width * scale_x, image_height * scale_y);
+
+  Placement {
+    scale_x,
+    scale_y,
+    offset_x: (frame.x() - monitor.x()) as f32
+      + (frame_width - drawn_width) / 2.0,
+    offset_y: (frame.y() - monitor.y()) as f32
+      + (frame_height - drawn_height) / 2.0,
+    tiled: false,
+  }
+}
+
+/// Converts a color into the 0-1 float form D2D render targets take.
+fn to_color_f(color: crate::Color) -> D2D1_COLOR_F {
+  D2D1_COLOR_F {
+    r: f32::from(color.r) / 255.0,
+    g: f32::from(color.g) / 255.0,
+    b: f32::from(color.b) / 255.0,
+    a: f32::from(color.a) / 255.0,
+  }
+}
+
+/// Converts a color into the straight 0-1 float vector D2D effect
+/// properties take.
+fn to_vector4(color: crate::Color) -> Vector4 {
+  Vector4 {
+    X: f32::from(color.r) / 255.0,
+    Y: f32::from(color.g) / 255.0,
+    Z: f32::from(color.b) / 255.0,
+    W: f32::from(color.a) / 255.0,
+  }
+}
+
+#[cfg(test)]
+mod tests {
+  use super::{place, Placement};
+  use crate::{
+    platform_impl::wallpaper::{MonitorWallpaper, WallpaperFit},
+    Color, Rect,
+  };
+
+  /// A single 1920x1080 monitor at the virtual origin, plus a second one
+  /// to its right so `Span` and `Tile` have somewhere to continue onto.
+  fn wallpaper(fit: WallpaperFit, monitor: Rect) -> MonitorWallpaper {
+    MonitorWallpaper {
+      image: None,
+      modified: None,
+      fit,
+      background: Color {
+        r: 0,
+        g: 0,
+        b: 0,
+        a: 255,
+      },
+      monitor,
+      virtual_screen: Rect::from_xy(0, 0, 3840, 1080),
+    }
+  }
+
+  fn primary() -> Rect {
+    Rect::from_xy(0, 0, 1920, 1080)
+  }
+
+  fn secondary() -> Rect {
+    Rect::from_xy(1920, 0, 1920, 1080)
+  }
+
+  /// `Fill` covers the monitor on both axes and centers the overflow, so a
+  /// 16:10 image on a 16:9 monitor is scaled by width and bled off the top
+  /// and bottom equally.
+  #[test]
+  fn fill_covers_and_centers() {
+    let placed =
+      place((1920, 1200), &wallpaper(WallpaperFit::Fill, primary()));
+
+    assert!((placed.scale_x - 1.0).abs() < f32::EPSILON);
+    assert!((placed.scale_y - 1.0).abs() < f32::EPSILON);
+    assert!((placed.offset_x - 0.0).abs() < f32::EPSILON);
+    assert!((placed.offset_y - (1080.0 - 1200.0) / 2.0).abs() < 0.01);
+    assert!(!placed.tiled);
+  }
+
+  /// `Fit` scales down until the whole image is inside the monitor,
+  /// leaving the background color visible in the letterbox.
+  #[test]
+  fn fit_letterboxes() {
+    let placed =
+      place((3840, 1080), &wallpaper(WallpaperFit::Fit, primary()));
+
+    assert!((placed.scale_x - 0.5).abs() < 0.001);
+    assert!((placed.offset_x - 0.0).abs() < f32::EPSILON);
+    assert!((placed.offset_y - (1080.0 - 540.0) / 2.0).abs() < 0.01);
+  }
+
+  /// `Stretch` ignores aspect ratio and matches the monitor exactly.
+  #[test]
+  fn stretch_matches_monitor() {
+    let placed =
+      place((960, 2160), &wallpaper(WallpaperFit::Stretch, primary()));
+
+    assert!((placed.scale_x - 2.0).abs() < 0.001);
+    assert!((placed.scale_y - 0.5).abs() < 0.001);
+    assert!((placed.offset_x - 0.0).abs() < f32::EPSILON);
+    assert!((placed.offset_y - 0.0).abs() < f32::EPSILON);
+  }
+
+  /// `Span` lays one image over the whole virtual desktop, so the second
+  /// monitor sees it shifted left by that monitor's own origin -- this is
+  /// what makes the two halves line up across the seam.
+  #[test]
+  fn span_offsets_by_monitor_origin() {
+    let on_primary =
+      place((3840, 1080), &wallpaper(WallpaperFit::Span, primary()));
+    let on_secondary =
+      place((3840, 1080), &wallpaper(WallpaperFit::Span, secondary()));
+
+    assert!(
+      (on_primary.scale_x - on_secondary.scale_x).abs() < f32::EPSILON
+    );
+    assert!((on_primary.offset_x - 0.0).abs() < f32::EPSILON);
+    assert!((on_secondary.offset_x - -1920.0).abs() < 0.01);
+  }
+
+  /// Tiling anchors at the virtual origin rather than each monitor's own,
+  /// so a monitor whose origin isn't a whole number of tiles from `(0, 0)`
+  /// starts mid-tile instead of restarting the pattern.
+  #[test]
+  fn tile_anchors_at_virtual_origin() {
+    let placed =
+      place((512, 512), &wallpaper(WallpaperFit::Tile, secondary()));
+
+    assert!(placed.tiled);
+    assert!((placed.scale_x - 1.0).abs() < f32::EPSILON);
+    // 1920 mod 512 == 384.
+    assert!((placed.offset_x - -384.0).abs() < 0.01);
+    assert!((placed.offset_y - 0.0).abs() < f32::EPSILON);
+  }
+
+  /// A zero-sized decode must not produce infinities or NaNs downstream.
+  #[test]
+  fn degenerate_image_is_inert() {
+    let placed = place((0, 0), &wallpaper(WallpaperFit::Fill, primary()));
+
+    assert_eq!(
+      placed,
+      Placement {
+        scale_x: 1.0,
+        scale_y: 1.0,
+        offset_x: 0.0,
+        offset_y: 0.0,
+        tiled: false,
+      }
+    );
+  }
+
+  /// Bakes a surface for this machine's primary monitor, end to end: D3D11
+  /// device, D2D device, composition graphics device, WIC decode of
+  /// whatever wallpaper is actually set, and the whole effect graph.
+  ///
+  /// The graph is what this is really for. `CreateEffect` and `SetValue`
+  /// validate against D2D's registered schema for each built-in effect and
+  /// fail outright on a wrong property index, a mismatched property type,
+  /// or an unsupported effect -- none of which can be ruled out by
+  /// reading the code, and all of which would otherwise surface as the
+  /// style silently falling back to SWCA acrylic on a user's machine.
+  ///
+  /// Deliberately asserts nothing about the pixels: what the wallpaper
+  /// looks like is a property of the machine, not of this code. It does
+  /// assert that an image was *drawn* whenever this machine has one set,
+  /// so a decode that silently degrades to the background color can't
+  /// pass as a working bake.
+  #[test]
+  fn bakes_the_primary_monitor_end_to_end() {
+    let monitor = super::monitor_bounds(&Rect::from_xy(0, 0, 1, 1));
+    let virtual_screen = super::virtual_screen();
+    let expects_image = MonitorWallpaper::query(&monitor, &virtual_screen)
+      .image
+      .is_some();
+
+    let key = super::WallpaperKey {
+      wallpaper: MonitorWallpaper::query(&monitor, &virtual_screen),
+      blur_amount: 30.0,
+      saturation: 1.0,
+    };
+
+    let drew_image =
+      crate::platform_impl::composition::with_composition_thread(
+        move |compositor, _| {
+          super::with_graphics_device(&compositor, |device, _| {
+            let surface = device.composition.CreateDrawingSurface2(
+              super::SizeInt32 {
+                Width: key.wallpaper.monitor.width(),
+                Height: key.wallpaper.monitor.height(),
+              },
+              super::DirectXPixelFormat::B8G8R8A8UIntNormalized,
+              super::DirectXAlphaMode::Ignore,
+            )?;
+
+            super::draw_into(device, &surface, &key)
+          })
+        },
+      );
+
+    assert!(drew_image.is_ok(), "wallpaper bake failed: {drew_image:?}");
+    assert_eq!(
+      drew_image.unwrap_or(false),
+      expects_image,
+      "bake drew an image but the desktop has none, or vice versa"
+    );
+  }
+}

@@ -787,13 +787,14 @@ impl NativeWindow {
       Some(BackdropStyle::Transient) => DWMSBT_TRANSIENTWINDOW,
       Some(BackdropStyle::Mica) => DWMSBT_MAINWINDOW,
       Some(BackdropStyle::MicaAlt) => DWMSBT_TABBEDWINDOW,
-      // Acrylic/Blur/Solid are applied via a `NativeBlurOverlay`, never
-      // here -- the sole caller (`apply_backdrop_effect`) already filters
-      // these variants out, but a future caller forwarding a window's
-      // configured `BackdropStyle` directly should get a recoverable error
-      // rather than crashing the whole process.
+      // The overlay-backed styles are applied via a `NativeBlurOverlay`,
+      // never here -- the sole caller (`apply_backdrop_effect`) already
+      // filters these variants out, but a future caller forwarding a
+      // window's configured `BackdropStyle` directly should get a
+      // recoverable error rather than crashing the whole process.
       Some(
         style @ (BackdropStyle::Acrylic
+        | BackdropStyle::Wallpaper
         | BackdropStyle::Blur
         | BackdropStyle::Solid),
       ) => {

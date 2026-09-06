@@ -474,7 +474,10 @@ window_effects:
   fn backdrop_styles_parse() {
     for (value, expected) in [
       ("acrylic", BackdropStyle::Acrylic),
+      ("wallpaper", BackdropStyle::Wallpaper),
       ("blur", BackdropStyle::Blur),
+      ("solid", BackdropStyle::Solid),
+      ("transient", BackdropStyle::Transient),
       ("mica", BackdropStyle::Mica),
       ("mica_alt", BackdropStyle::MicaAlt),
     ] {
