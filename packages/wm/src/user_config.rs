@@ -456,7 +456,7 @@ window_effects:
   focused_window:
     blur_behind:
       enabled: true
-      style: 'mica'
+      style: 'solid'
 ";
     let config: ParsedConfig =
       serde_yaml::from_str(yaml).expect("legacy config should parse");
@@ -464,7 +464,7 @@ window_effects:
     assert!(config.window_effects.focused_window.backdrop.enabled);
     assert_eq!(
       config.window_effects.focused_window.backdrop.style,
-      BackdropStyle::Mica
+      BackdropStyle::Solid
     );
   }
 
@@ -473,13 +473,9 @@ window_effects:
   #[test]
   fn backdrop_styles_parse() {
     for (value, expected) in [
-      ("acrylic", BackdropStyle::Acrylic),
       ("wallpaper", BackdropStyle::Wallpaper),
-      ("blur", BackdropStyle::Blur),
+      ("acrylic", BackdropStyle::Acrylic),
       ("solid", BackdropStyle::Solid),
-      ("transient", BackdropStyle::Transient),
-      ("mica", BackdropStyle::Mica),
-      ("mica_alt", BackdropStyle::MicaAlt),
     ] {
       let yaml = format!(
         "

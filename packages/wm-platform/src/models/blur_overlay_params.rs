@@ -14,8 +14,7 @@ use crate::{BackdropStyle, Color};
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct BlurOverlayParams {
-  /// Which overlay-backed material to render (see
-  /// [`BackdropStyle::is_overlay_backed`]).
+  /// Which material to render.
   ///
   /// Unlike every other field here, this one cannot be re-applied to a
   /// live overlay: it selects how the overlay's backing window is created
@@ -24,19 +23,16 @@ pub struct BlurOverlayParams {
   pub style: BackdropStyle,
   /// Tint blended over the blurred backdrop.
   pub tint: Color,
-  /// Blur radius/intensity. No-op in the SWCA fallback and for
-  /// [`BackdropStyle::Blur`].
+  /// Blur radius/intensity. No-op for [`BackdropStyle::Solid`].
   pub blur_amount: f32,
-  /// Corner radius, in pixels. No-op in the SWCA fallback and for
-  /// [`BackdropStyle::Blur`].
+  /// Corner radius, in pixels.
   pub corner_radius: f32,
   /// Opacity of the overlay's whole composited visual (blur + tint
-  /// together), from `0.0` to `1.0`. No-op in the SWCA fallback and for
-  /// [`BackdropStyle::Blur`].
+  /// together), from `0.0` to `1.0`.
   pub opacity: f32,
   /// Saturation of the blurred backdrop, from `0.0` (grayscale) to `2.0`
-  /// (oversaturated); `1.0` is unchanged. No-op in the SWCA fallback and
-  /// for [`BackdropStyle::Blur`].
+  /// (oversaturated); `1.0` is unchanged. No-op for
+  /// [`BackdropStyle::Solid`].
   pub saturation: f32,
 
   /// Exposure adjustment in stops; `0.0` is unchanged, negative darkens.

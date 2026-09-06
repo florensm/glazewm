@@ -220,76 +220,56 @@ window_effects:
       # '0' or '0%' is fully transparent (and, by consequence, unfocusable).
       opacity: "95%"
 
-    # Apply a backdrop material to the window (blur/tint/mica).
-    # Acrylic renders via a persistent, self-drawn overlay (Windows.UI.
+    # Apply a backdrop material to the window.
+    # Every style is drawn into a persistent, self-drawn overlay (Windows.UI.
     # Composition, same mechanism as the border above) positioned behind the
-    # window, so the live blur survives window-open/close, resize, and
-    # workspace-switch transitions instead of disappearing during them.
-    # Wallpaper uses the same overlay but blurs the desktop wallpaper once,
-    # up front, into an opaque per-monitor image and shows each window the
-    # crop of it underneath that window. In a tiling layout nothing is behind
-    # a tiled window except the wallpaper, so this looks like acrylic without
-    # sampling anything per frame -- and being opaque, it lets DWM skip
-    # compositing what's behind the window entirely. Floating windows, which
-    # really do overlap other windows, are what acrylic is still for.
-    # Blur uses the same overlay window but skips that pipeline entirely and
-    # asks DWM for its plain, Win10-era blur-behind instead -- much cheaper
-    # to composite than acrylic (which is the single most expensive window
-    # effect here), at the cost of blur_amount/opacity/saturation, which are
-    # ignored for it.
-    # Mica/MicaAlt instead use the OS's own DWMWA_SYSTEMBACKDROP_TYPE
-    # directly on the window -- no custom overlay, but no adjustable
-    # blur_amount/opacity/saturation either. Note that DWM only draws those
-    # where the app itself leaves the surface unpainted, so most third-party
-    # apps show no visible change at all.
-    # ** Blur requires Windows 10 1607+. Acrylic/Wallpaper require Windows
-    # ** 10 1803+.
-    # ** Mica/MicaAlt require Windows 11 22H2+.
+    # window, so it survives window-open/close, resize, and workspace-switch
+    # transitions instead of disappearing during them.
+    # Wallpaper blurs the desktop wallpaper once, up front, into an opaque
+    # per-monitor image and shows each window the crop of it underneath that
+    # window. In a tiling layout nothing is behind a tiled window except the
+    # wallpaper, so this looks like acrylic while sampling nothing per frame
+    # -- and being opaque, it lets DWM skip compositing what's behind the
+    # window entirely.
+    # Acrylic samples live desktop content and blurs it every frame. That is
+    # only worth paying for when something other than the wallpaper is behind
+    # the window, which in a tiling layout means floating windows -- the one
+    # case wallpaper cannot serve, since a wallpaper crop has no idea another
+    # window is stacked there.
+    # Solid is a flat tint fill. At a fully opaque tint it is the cheapest by
+    # a wide margin: one opaque visual, nothing sampled and nothing blurred.
+    # ** Requires Windows 10 1803+. On anything older no overlay is created
+    # ** and the effect is silently skipped.
     backdrop:
       enabled: false
-      # Allowed values: 'acrylic', 'wallpaper', 'blur', 'solid',
-      # 'transient', 'mica', 'mica_alt'.
+      # Allowed values: 'wallpaper', 'acrylic', 'solid'.
       #
-      # Two families, and the difference decides whether a style is visible
-      # at all. 'acrylic'/'wallpaper'/'blur'/'solid' are drawn into an
-      # overlay window GlazeWM owns, so they always render.
-      # 'transient'/'mica'/'mica_alt' ask DWM to paint the managed window
-      # itself, which is far cheaper but only shows where the application
-      # leaves its own surface unpainted -- most third-party apps paint
-      # theirs, so those often look like nothing happened.
-      #
-      # Roughly cheapest to most expensive: mica/mica_alt/transient (DWM
-      # does the work), wallpaper (blurred once, then opaque -- so DWM
-      # composites less, not more), solid (one flat translucent layer, no
-      # blur), blur (the OS's plain Win10-era blur), acrylic (a live
-      # per-frame blur that is by far the most expensive window effect
-      # here).
-      style: "acrylic"
-      # Blur radius/intensity (acrylic and wallpaper only --
-      # Blur/Mica/MicaAlt have no adjustable blur). Requires the
-      # Windows.UI.Composition rendering pipeline; silently ignored if
-      # that's unavailable and the OS's fixed-intensity acrylic blur is
-      # used instead. For 'wallpaper' this is baked into the image, so
-      # changing it re-renders that image rather than costing anything per
-      # frame.
+      # Cheapest to most expensive: solid (one opaque visual), wallpaper
+      # (blurred once, then opaque -- so DWM composites less, not more),
+      # acrylic (a live per-frame blur, by far the most expensive window
+      # effect here).
+      style: "wallpaper"
+      # Blur radius/intensity. Ignored by 'solid'. For 'wallpaper' this is
+      # baked into the image, so changing it re-renders that image once
+      # rather than costing anything per frame -- and it has no lower bound
+      # to speak of, unlike the OS blur it replaces.
       blur_amount: 30.0
-      # Opacity of the overlay itself (blur + tint together), from 0.0 to
-      # 1.0 -- not the same as transparency.opacity above, which fades the
-      # real window. Requires Windows.UI.Composition, same as blur_amount.
-      # Note that lowering this for 'wallpaper' makes the overlay
-      # translucent again, giving back the compositing saving that style
-      # exists for.
+      # Opacity of the overlay itself (backdrop + tint together), from 0.0
+      # to 1.0 -- not the same as transparency.opacity above, which fades
+      # the real window. Note that lowering this for 'wallpaper' or 'solid'
+      # makes the overlay translucent again, giving back the compositing
+      # saving those styles exist for.
       opacity: 1.0
       # Saturation of the blurred backdrop, from 0.0 (grayscale) to 2.0
-      # (oversaturated); 1.0 is unchanged. Same Windows.UI.Composition
-      # requirement as blur_amount.
+      # (oversaturated); 1.0 is unchanged. Ignored by 'solid'.
       saturation: 1.0
       # The five knobs below are 'wallpaper' only. Acrylic builds its
       # effect graph through an API that accepts only a curated subset of
       # D2D's built-in effects, so these are either rejected or silently
       # ignored there; the wallpaper bake uses D2D directly and has no such
-      # limit. All except parallax are rendered into the image once, so any
-      # value costs the same at runtime: nothing.
+      # limit, and 'solid' has no image to apply them to. All except
+      # parallax are rendered into the image once, so any value costs the
+      # same at runtime: nothing.
       #
       # Exposure, in stops. 0.0 is unchanged, negative darkens.
       exposure: 0.0

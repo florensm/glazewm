@@ -361,6 +361,14 @@ enum Backdrop {
     effect_brush: CompositionEffectBrush,
   },
 
+  /// A flat colour fill. No sampling, no blur, no baked surface: at an
+  /// opaque `tint` this is one opaque visual and nothing else, which is why
+  /// it is the cheapest style rather than merely a cheap one.
+  ///
+  /// Carries no state -- the fill is `tint`, which `set_tint` already
+  /// applies to the sprite's brush.
+  Solid,
+
   /// A crop of the monitor's pre-blurred, opaque wallpaper surface.
   Wallpaper {
     brush: CompositionSurfaceBrush,
@@ -549,6 +557,16 @@ impl BlurVisual {
   /// Updates the tint layer's color; no-op unless the value changed.
   pub(crate) fn set_tint(&self, tint: crate::Color) -> crate::Result<()> {
     self.tint_brush.SetColor(to_ui_color(tint))?;
+
+    // For `Solid` the tint *is* the backdrop, so it has to reach the fill
+    // sprite too. Painting both leaves the colour composited over itself,
+    // which is a no-op at any alpha.
+    if matches!(self.backdrop, Backdrop::Solid) {
+      let fill =
+        self.compositor.CreateColorBrushWithColor(to_ui_color(tint))?;
+      self.blur_sprite.SetBrush(&fill)?;
+    }
+
     Ok(())
   }
 
@@ -613,6 +631,7 @@ impl BlurVisual {
         Ok(())
       }
       Backdrop::Wallpaper { .. } => self.rebake(knobs),
+      Backdrop::Solid => Ok(()),
     }
   }
 
@@ -682,7 +701,7 @@ impl BlurVisual {
     self.knobs = knobs;
 
     match &self.backdrop {
-      Backdrop::Acrylic { .. } => Ok(()),
+      Backdrop::Acrylic { .. } | Backdrop::Solid => Ok(()),
       Backdrop::Wallpaper { .. } => self.rebake(knobs),
     }
   }
@@ -810,7 +829,11 @@ fn build_visual_tree(
   let blur_sprite = compositor.CreateSpriteVisual()?;
   blur_sprite.SetSize(size)?;
 
-  let backdrop = if params.style == BackdropStyle::Wallpaper {
+  let backdrop = if params.style == BackdropStyle::Solid {
+    let fill = compositor.CreateColorBrushWithColor(to_ui_color(params.tint))?;
+    blur_sprite.SetBrush(&fill)?;
+    Backdrop::Solid
+  } else if params.style == BackdropStyle::Wallpaper {
     let (brush, monitor) =
       wallpaper_surface::crop_brush(compositor, rect, params)?;
 

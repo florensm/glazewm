@@ -8,10 +8,9 @@ use windows::{
     Foundation::{CloseHandle, BOOL, HWND, LPARAM, POINT, RECT},
     Graphics::Dwm::{
       DwmGetColorizationColor, DwmGetWindowAttribute, DwmSetWindowAttribute,
-      DWMWA_CLOAKED, DWMWA_EXTENDED_FRAME_BOUNDS, DWMWA_SYSTEMBACKDROP_TYPE,
+      DWMWA_CLOAKED, DWMWA_EXTENDED_FRAME_BOUNDS,
       DWMWA_WINDOW_CORNER_PREFERENCE, DWMWCP_DEFAULT, DWMWCP_DONOTROUND,
-      DWMWCP_ROUND, DWMWCP_ROUNDSMALL, DWMSBT_AUTO, DWMSBT_MAINWINDOW,
-      DWMSBT_TABBEDWINDOW, DWMSBT_TRANSIENTWINDOW,
+      DWMWCP_ROUND, DWMWCP_ROUNDSMALL,
     },
     System::Threading::{
       OpenProcess, QueryFullProcessImageNameW, PROCESS_NAME_WIN32,
@@ -46,8 +45,8 @@ use windows::{
 
 use super::com::{IApplicationView, COM_INIT};
 use crate::{
-  BackdropStyle, Color, CornerStyle, Delta, Dispatcher, LengthValue,
-  OpacityValue, Point, Rect, RectDelta, WindowId, WindowZOrder,
+  Color, CornerStyle, Delta, Dispatcher, LengthValue, OpacityValue, Point,
+  Rect, RectDelta, WindowId, WindowZOrder,
 };
 
 /// Magic number used to identify programmatic mouse inputs from our own
@@ -772,57 +771,6 @@ impl NativeWindow {
     // SAFETY: `self.hwnd()` is a valid window handle.
     unsafe {
       SetLayeredWindowAttributes(self.hwnd(), None, alpha, LWA_ALPHA)?;
-    }
-
-    Ok(())
-  }
-
-  /// Implements [`NativeWindowWindowsExt::set_blur_behind`].
-  pub(crate) fn set_blur_behind(
-    &self,
-    style: Option<&BackdropStyle>,
-  ) -> crate::Result<()> {
-    let backdrop_type = match style {
-      None => DWMSBT_AUTO,
-      Some(BackdropStyle::Transient) => DWMSBT_TRANSIENTWINDOW,
-      Some(BackdropStyle::Mica) => DWMSBT_MAINWINDOW,
-      Some(BackdropStyle::MicaAlt) => DWMSBT_TABBEDWINDOW,
-      // The overlay-backed styles are applied via a `NativeBlurOverlay`,
-      // never here -- the sole caller (`apply_backdrop_effect`) already
-      // filters these variants out, but a future caller forwarding a
-      // window's configured `BackdropStyle` directly should get a
-      // recoverable error rather than crashing the whole process.
-      Some(
-        style @ (BackdropStyle::Acrylic
-        | BackdropStyle::Wallpaper
-        | BackdropStyle::Blur
-        | BackdropStyle::Solid),
-      ) => {
-        return Err(crate::Error::Platform(format!(
-          "BackdropStyle::{style:?} must be applied via NativeBlurOverlay, \
-           not NativeWindow::set_blur_behind."
-        )));
-      }
-    };
-
-    // SAFETY: `self.hwnd()` is a valid window handle. `backdrop_type.0` is a
-    // stack-allocated `i32` live for the duration of the call, and its size
-    // matches the `cbAttribute` argument passed below.
-    if let Err(e) = unsafe {
-      #[allow(clippy::cast_possible_truncation)]
-      DwmSetWindowAttribute(
-        self.hwnd(),
-        DWMWA_SYSTEMBACKDROP_TYPE,
-        std::ptr::from_ref(&backdrop_type.0).cast(),
-        std::mem::size_of::<i32>() as u32,
-      )
-    } {
-      if style.is_some() {
-        warn!(
-          "DWMWA_SYSTEMBACKDROP_TYPE failed ({e}); \
-           Mica/MicaAlt requires Windows 11 22H2+."
-        );
-      }
     }
 
     Ok(())
