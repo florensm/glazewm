@@ -284,6 +284,30 @@ window_effects:
       # (oversaturated); 1.0 is unchanged. Same Windows.UI.Composition
       # requirement as blur_amount.
       saturation: 1.0
+      # The five knobs below are 'wallpaper' only. Acrylic builds its
+      # effect graph through an API that accepts only a curated subset of
+      # D2D's built-in effects, so these are either rejected or silently
+      # ignored there; the wallpaper bake uses D2D directly and has no such
+      # limit. All except parallax are rendered into the image once, so any
+      # value costs the same at runtime: nothing.
+      #
+      # Exposure, in stops. 0.0 is unchanged, negative darkens.
+      exposure: 0.0
+      # Contrast, -1.0 to 1.0. 0.0 is unchanged.
+      contrast: 0.0
+      # Darkened border around the image, 0.0 (off) to 1.0. The right knob
+      # for toning a bright wallpaper down behind text -- unlike opacity it
+      # keeps the overlay opaque, so DWM still skips what's behind it.
+      vignette: 0.0
+      # Monochrome noise over the blurred image, 0.0 (off) to 1.0. This is
+      # the grain that makes acrylic read as frosted glass rather than an
+      # out-of-focus photo; 0.04-0.10 is usually enough.
+      grain: 0.0
+      # How far the backdrop follows the window across its monitor. 1.0
+      # pins the image to the desktop, so a window looks like a hole onto
+      # the real wallpaper. Lower values let it drift as the window moves,
+      # which reads as depth.
+      parallax: 1.0
       # The overlay's own corner radius isn't separately configurable --
       # it always follows corner_style so it matches the real window's
       # rendered corners on top of it.

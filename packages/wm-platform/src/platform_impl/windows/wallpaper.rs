@@ -131,6 +131,63 @@ impl MonitorWallpaper {
   }
 }
 
+/// A monitor-independent fingerprint of the desktop's wallpaper settings.
+///
+/// Exists because the shell's `WM_SETTINGCHANGE` broadcast cannot be
+/// relied on: `SPI_SETDESKWALLPAPER` arrives for some ways of changing the
+/// wallpaper and not others (the Settings app, a slideshow rotation, and
+/// Windows Spotlight do not all announce themselves the same way). Polling
+/// this instead bounds how long a stale backdrop can persist, without
+/// needing to know which paths broadcast.
+///
+/// Deliberately ignores the per-monitor assignment: a change to any
+/// monitor also moves one of the fields here, and the per-monitor detail
+/// is re-queried during the re-bake that follows anyway.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct DesktopSignature {
+  image: Option<PathBuf>,
+  modified: Option<SystemTime>,
+  fit: WallpaperFit,
+  background: Color,
+}
+
+/// Fingerprints the desktop's current wallpaper settings.
+///
+/// One `CoCreateInstance` plus one `stat`; meant to be called on a timer,
+/// not per frame.
+pub(crate) fn desktop_signature() -> DesktopSignature {
+  let (image, fit, background) = match desktop_wallpaper() {
+    Some(wallpaper) => {
+      // SAFETY: `wallpaper` is a live interface pointer and neither call
+      // takes arguments.
+      let fit = unsafe { wallpaper.GetPosition() }
+        .map_or(WallpaperFit::Fill, WallpaperFit::from);
+
+      // SAFETY: As above.
+      let background = unsafe { wallpaper.GetBackgroundColor() }
+        .map_or_else(|_| system_background(), from_colorref);
+
+      (wallpaper_path(&wallpaper, None), fit, background)
+    }
+    None => (
+      legacy_wallpaper_path(),
+      WallpaperFit::Fill,
+      system_background(),
+    ),
+  };
+
+  let modified = image.as_ref().and_then(|path| {
+    std::fs::metadata(path).and_then(|m| m.modified()).ok()
+  });
+
+  DesktopSignature {
+    image,
+    modified,
+    fit,
+    background,
+  }
+}
+
 /// Creates a fresh `IDesktopWallpaper`, or `None` on a system/shell state
 /// that doesn't offer one.
 ///
