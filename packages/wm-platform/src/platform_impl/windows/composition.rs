@@ -72,7 +72,7 @@ use windows::{
   },
 };
 
-use super::wallpaper_surface;
+use super::wallpaper_surface::{self, BakeKnobs};
 use crate::{BackdropStyle, BlurOverlayParams, BorderOverlayParams, Rect};
 
 /// `CLSID_D2D1GaussianBlur`, the built-in D2D1 Gaussian-blur effect.
@@ -398,11 +398,16 @@ pub(crate) struct BlurVisual {
   tint_brush: CompositionColorBrush,
   rounded_geometry: CompositionRoundedRectangleGeometry,
 
-  /// Current blur amount, kept alongside `saturation` so either setter can
-  /// rebuild the full effect graph using the other's current value.
-  blur_amount: f32,
-  /// Current saturation. See `blur_amount`.
-  saturation: f32,
+  /// Everything baked into the wallpaper image. Kept whole so any one
+  /// setter can re-render using the others' current values -- acrylic reads
+  /// only `blur_amount`/`saturation` from it, since the remaining knobs are
+  /// unreachable through `CreateEffectFactory`.
+  knobs: BakeKnobs,
+
+  /// How far the wallpaper crop follows the window. Not part of `knobs`:
+  /// it selects a different region of an already-baked surface rather than
+  /// changing what was baked, so a change costs one property write.
+  parallax: f32,
 }
 
 impl BlurVisual {
@@ -457,10 +462,10 @@ impl BlurVisual {
   /// bounds first, so the per-tick case during an animation costs one
   /// property write and no system calls.
   fn sync_crop(&mut self, rect: &Rect) -> crate::Result<()> {
-    let (blur_amount, saturation) = (self.blur_amount, self.saturation);
+    let knobs = self.knobs;
+    let parallax = self.parallax;
     let compositor = self.compositor.clone();
     let queue = self.queue.clone();
-
     let current = wallpaper_surface::generation();
 
     let Backdrop::Wallpaper { brush, monitor, generation } =
@@ -479,13 +484,7 @@ impl BlurVisual {
       let target = bounds.clone();
 
       let result = run_on_composition_thread(&queue, move || {
-        wallpaper_surface::rebind(
-          &compositor,
-          &rebound,
-          &target,
-          blur_amount,
-          saturation,
-        )
+        wallpaper_surface::rebind(&compositor, &rebound, &target, knobs)
       });
 
       // Recorded even when the bind failed, and before the error is
@@ -499,7 +498,7 @@ impl BlurVisual {
       result?;
     }
 
-    wallpaper_surface::set_crop(brush, rect, monitor);
+    wallpaper_surface::set_crop(brush, rect, monitor, parallax);
     Ok(())
   }
 
@@ -515,6 +514,10 @@ impl BlurVisual {
       return Ok(());
     };
 
+    // Throttled internally to one shell query every couple of seconds, so
+    // calling it from every overlay on every tick is fine.
+    wallpaper_surface::poll_for_changes();
+
     if *generation == wallpaper_surface::generation() {
       return Ok(());
     }
@@ -529,11 +532,7 @@ impl BlurVisual {
   /// baked into the image rather than evaluated per frame, which is the
   /// whole reason the style is cheap, so changing either means rendering a
   /// new one.
-  fn rebake(
-    &self,
-    blur_amount: f32,
-    saturation: f32,
-  ) -> crate::Result<()> {
+  fn rebake(&self, knobs: BakeKnobs) -> crate::Result<()> {
     let Backdrop::Wallpaper { brush, monitor, .. } = &self.backdrop else {
       return Ok(());
     };
@@ -543,13 +542,7 @@ impl BlurVisual {
     let monitor = monitor.clone();
 
     run_on_composition_thread(&self.queue, move || {
-      wallpaper_surface::rebind(
-        &compositor,
-        &brush,
-        &monitor,
-        blur_amount,
-        saturation,
-      )
+      wallpaper_surface::rebind(&compositor, &brush, &monitor, knobs)
     })
   }
 
@@ -583,22 +576,22 @@ impl BlurVisual {
   /// `GetProperty`-based initial-value path, which is confirmed working
   /// (overlays visibly render blur from their initial `blur_amount`).
   pub(crate) fn set_blur_amount(&mut self, value: f32) -> crate::Result<()> {
-    self.reapply_knobs(value, self.saturation)?;
-    self.blur_amount = value;
-    Ok(())
+    let mut knobs = self.knobs;
+    knobs.blur_amount = value;
+    self.reapply_knobs(knobs)
   }
 
   /// Re-renders the blur layer at the given knob values, however this
   /// overlay's [`Backdrop`] produces it.
-  fn reapply_knobs(
-    &mut self,
-    blur_amount: f32,
-    saturation: f32,
-  ) -> crate::Result<()> {
+  fn reapply_knobs(&mut self, knobs: BakeKnobs) -> crate::Result<()> {
+    self.knobs = knobs;
+
     match &self.backdrop {
       Backdrop::Acrylic { host_backdrop, .. } => {
         let compositor = self.compositor.clone();
         let host_backdrop = host_backdrop.clone();
+        let (blur_amount, saturation) =
+          (knobs.blur_amount, knobs.saturation);
 
         let effect_brush = run_on_composition_thread(&self.queue, move || {
           build_effect_brush(
@@ -619,7 +612,7 @@ impl BlurVisual {
 
         Ok(())
       }
-      Backdrop::Wallpaper { .. } => self.rebake(blur_amount, saturation),
+      Backdrop::Wallpaper { .. } => self.rebake(knobs),
     }
   }
 
@@ -627,9 +620,71 @@ impl BlurVisual {
   /// effect graph or the wallpaper bake -- so either setter re-runs it
   /// using the other's current stored value.
   pub(crate) fn set_saturation(&mut self, value: f32) -> crate::Result<()> {
-    self.reapply_knobs(self.blur_amount, value)?;
-    self.saturation = value;
-    Ok(())
+    let mut knobs = self.knobs;
+    knobs.saturation = value;
+    self.reapply_knobs(knobs)
+  }
+
+  /// Updates the exposure baked into the wallpaper image. No-op for
+  /// acrylic, whose effect factory renders `Exposure` as a pass-through.
+  pub(crate) fn set_exposure(&mut self, value: f32) -> crate::Result<()> {
+    let mut knobs = self.knobs;
+    knobs.exposure = value;
+    self.rebake_only(knobs)
+  }
+
+  /// Updates the contrast baked into the wallpaper image. Wallpaper only,
+  /// same reason as [`set_exposure`].
+  ///
+  /// [`set_exposure`]: BlurVisual::set_exposure
+  pub(crate) fn set_contrast(&mut self, value: f32) -> crate::Result<()> {
+    let mut knobs = self.knobs;
+    knobs.contrast = value;
+    self.rebake_only(knobs)
+  }
+
+  /// Updates the vignette baked into the wallpaper image. Wallpaper only,
+  /// same reason as [`set_exposure`].
+  ///
+  /// [`set_exposure`]: BlurVisual::set_exposure
+  pub(crate) fn set_vignette(&mut self, value: f32) -> crate::Result<()> {
+    let mut knobs = self.knobs;
+    knobs.vignette = value;
+    self.rebake_only(knobs)
+  }
+
+  /// Updates the grain baked into the wallpaper image. Wallpaper only, same
+  /// reason as [`set_exposure`].
+  ///
+  /// [`set_exposure`]: BlurVisual::set_exposure
+  pub(crate) fn set_grain(&mut self, value: f32) -> crate::Result<()> {
+    let mut knobs = self.knobs;
+    knobs.grain = value;
+    self.rebake_only(knobs)
+  }
+
+  /// Updates how far the crop follows the window, re-applying it at
+  /// `rect` so the change shows without waiting for the window to move.
+  pub(crate) fn set_parallax(&mut self, value: f32, rect: &Rect) {
+    self.parallax = value;
+
+    if let Backdrop::Wallpaper { brush, monitor, .. } = &self.backdrop {
+      wallpaper_surface::set_crop(brush, rect, monitor, value);
+    }
+  }
+
+  /// Stores `knobs` and re-bakes, without acrylic's brush rebuild.
+  ///
+  /// For the four knobs acrylic cannot express at all, so that setting one
+  /// on an acrylic overlay does nothing rather than pointlessly rebuilding
+  /// an effect graph that would render identically.
+  fn rebake_only(&mut self, knobs: BakeKnobs) -> crate::Result<()> {
+    self.knobs = knobs;
+
+    match &self.backdrop {
+      Backdrop::Acrylic { .. } => Ok(()),
+      Backdrop::Wallpaper { .. } => self.rebake(knobs),
+    }
   }
 
   /// Updates the clip's corner radius.
@@ -756,12 +811,8 @@ fn build_visual_tree(
   blur_sprite.SetSize(size)?;
 
   let backdrop = if params.style == BackdropStyle::Wallpaper {
-    let (brush, monitor) = wallpaper_surface::crop_brush(
-      compositor,
-      rect,
-      params.blur_amount,
-      params.saturation,
-    )?;
+    let (brush, monitor) =
+      wallpaper_surface::crop_brush(compositor, rect, params)?;
 
     blur_sprite.SetBrush(&brush)?;
     Backdrop::Wallpaper {
@@ -807,8 +858,8 @@ fn build_visual_tree(
     tint_sprite,
     tint_brush,
     rounded_geometry,
-    blur_amount: params.blur_amount,
-    saturation: params.saturation,
+    knobs: params.into(),
+    parallax: params.parallax,
   })
 }
 

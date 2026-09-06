@@ -314,6 +314,41 @@ pub struct BackdropEffectConfig {
   /// as `blur_amount`.
   pub saturation: f32,
 
+  /// Exposure adjustment in stops; `0.0` is unchanged, negative darkens.
+  ///
+  /// `wallpaper` only. Acrylic's effect graph is built through
+  /// `Compositor::CreateEffectFactory`, which accepts only a curated subset
+  /// of D2D's built-in effects and renders this one as a pass-through; the
+  /// wallpaper bake uses D2D directly and has no such limit.
+  pub exposure: f32,
+
+  /// Contrast adjustment from `-1.0` to `1.0`; `0.0` is unchanged.
+  /// `wallpaper` only, same reason as `exposure`.
+  pub contrast: f32,
+
+  /// Strength of a darkened border around the baked image, from `0.0` (off)
+  /// to `1.0`. `wallpaper` only, same reason as `exposure`.
+  ///
+  /// The right knob for toning a bright wallpaper down behind text:
+  /// it is baked in and leaves the overlay opaque, where `opacity` would
+  /// make it translucent again and undo the style's whole reason for being.
+  pub vignette: f32,
+
+  /// Opacity of a monochrome noise layer over the blurred image, from `0.0`
+  /// (off) to `1.0`. `wallpaper` only, same reason as `exposure`.
+  ///
+  /// This is the grain that makes Windows' own acrylic read as frosted
+  /// glass rather than an out-of-focus photo.
+  pub grain: f32,
+
+  /// How much the backdrop follows the window across its monitor. `1.0`
+  /// pins the image to the desktop; lower values let it drift against the
+  /// window as it moves, which reads as depth. `wallpaper` only.
+  ///
+  /// Not baked -- it selects a different part of an already-rendered
+  /// image, so any value costs the same (nothing).
+  pub parallax: f32,
+
   // The acrylic overlay's own corner radius isn't independently
   // configurable -- it's derived from `corner_style` (see
   // `CornerStyle::approx_radius_px`) so it always matches the real managed
@@ -329,6 +364,11 @@ impl Default for BackdropEffectConfig {
       blur_amount: 30.0,
       opacity: 1.0,
       saturation: 1.0,
+      exposure: 0.0,
+      contrast: 0.0,
+      vignette: 0.0,
+      grain: 0.0,
+      parallax: 1.0,
     }
   }
 }
@@ -374,6 +414,11 @@ impl BackdropEffectConfig {
       corner_radius,
       opacity: self.opacity,
       saturation: self.saturation,
+      exposure: self.exposure,
+      contrast: self.contrast,
+      vignette: self.vignette,
+      grain: self.grain,
+      parallax: self.parallax,
     }
   }
 }
@@ -1209,6 +1254,11 @@ mod tests {
       blur_amount: 42.0,
       opacity: 0.5,
       saturation: 1.5,
+      exposure: -0.5,
+      contrast: 0.25,
+      vignette: 0.4,
+      grain: 0.1,
+      parallax: 0.8,
       ..BackdropEffectConfig::default()
     };
 
@@ -1221,6 +1271,11 @@ mod tests {
     assert_eq!(params.corner_radius, 12.0);
     assert_eq!(params.opacity, 0.5);
     assert_eq!(params.saturation, 1.5);
+    assert_eq!(params.exposure, -0.5);
+    assert_eq!(params.contrast, 0.25);
+    assert_eq!(params.vignette, 0.4);
+    assert_eq!(params.grain, 0.1);
+    assert_eq!(params.parallax, 0.8);
   }
 
   /// `overlay_tint` doubles as the "does this window get a
