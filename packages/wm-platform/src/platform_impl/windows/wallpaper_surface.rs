@@ -585,7 +585,7 @@ fn bake(
     // color?", so it is worth saying once per bake rather than leaving
     // the user to guess.
     tracing::debug!(
-      "Wallpaper backdrop for {:?} baked from the desktop background color        alone; no wallpaper image was drawn.",
+      "Wallpaper backdrop for {:?} baked from the desktop background        color alone; no wallpaper image was drawn.",
       key.wallpaper.monitor
     );
   }
