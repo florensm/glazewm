@@ -54,6 +54,7 @@ use windows::{
     Composition::{
       CompositionBackdropBrush, CompositionColorBrush, CompositionEffectBrush,
       CompositionEffectSourceParameter, CompositionRoundedRectangleGeometry,
+      CompositionMappingMode, CompositionRadialGradientBrush,
       CompositionSpriteShape, CompositionSurfaceBrush, Compositor,
       ContainerVisual, Desktop::DesktopWindowTarget, ShapeVisual,
       SpriteVisual,
@@ -404,6 +405,20 @@ pub(crate) struct BlurVisual {
   tint_sprite: SpriteVisual,
 
   tint_brush: CompositionColorBrush,
+
+  /// Darkens the overlay toward its own edges.
+  ///
+  /// A visual rather than a stage in the wallpaper bake, because the bake is
+  /// shared by every window on the monitor: baked in, the falloff anchors to
+  /// the screen, so a window at the edge gets a uniformly dark crop and one
+  /// in the middle gets the bright centre. Here it is measured from each
+  /// window's own rect, which is what a vignette means.
+  ///
+  /// `MappingMode::Relative` expresses the gradient in fractions of the
+  /// sprite, so a resize needs no update to the brush at all -- only the
+  /// sprite itself is resized, alongside the others in `set_rect`.
+  vignette_brush: CompositionRadialGradientBrush,
+  vignette_sprite: SpriteVisual,
   rounded_geometry: CompositionRoundedRectangleGeometry,
 
   /// Everything baked into the wallpaper image. Kept whole so any one
@@ -455,6 +470,7 @@ impl BlurVisual {
     self.root.SetSize(size)?;
     self.blur_sprite.SetSize(size)?;
     self.tint_sprite.SetSize(size)?;
+    self.vignette_sprite.SetSize(size)?;
     self.rounded_geometry.SetSize(size)?;
 
     self.sync_crop(rect)?;
@@ -662,14 +678,16 @@ impl BlurVisual {
     self.rebake_only(knobs)
   }
 
-  /// Updates the vignette baked into the wallpaper image. Wallpaper only,
-  /// same reason as [`set_exposure`].
+  /// Updates the vignette.
   ///
-  /// [`set_exposure`]: BlurVisual::set_exposure
+  /// Unlike the other grading knobs this touches no baked image, so it
+  /// applies to every style and costs one brush rebuild -- no re-render of
+  /// anything, and nothing per frame.
   pub(crate) fn set_vignette(&mut self, value: f32) -> crate::Result<()> {
-    let mut knobs = self.knobs;
-    knobs.vignette = value;
-    self.rebake_only(knobs)
+    let brush = build_vignette_brush(&self.compositor, value)?;
+    self.vignette_sprite.SetBrush(&brush)?;
+    self.vignette_brush = brush;
+    Ok(())
   }
 
   /// Updates the grain baked into the wallpaper image. Wallpaper only, same
@@ -723,6 +741,42 @@ impl BlurVisual {
     self.root.SetOpacity(value)?;
     Ok(())
   }
+}
+
+/// Builds the radial gradient that darkens an overlay toward its edges.
+///
+/// Transparent across the middle and reaching `strength` alpha at the
+/// corners. The ellipse is deliberately larger than the sprite
+/// (`radius > 0.5` in relative units) so the darkest point falls outside the
+/// visible area: a gradient that reached full strength exactly at the edge
+/// puts its steepest part on screen and reads as a ring rather than shading.
+///
+/// A `strength` of zero still builds a brush, fully transparent. Skipping
+/// the visual entirely would mean rebuilding the tree when the knob is first
+/// raised, and a transparent visual costs DWM nothing to composite.
+fn build_vignette_brush(
+  compositor: &Compositor,
+  strength: f32,
+) -> windows::core::Result<CompositionRadialGradientBrush> {
+  let brush = compositor.CreateRadialGradientBrush()?;
+
+  // Relative to the sprite, so resizing the overlay needs no update here.
+  brush.SetMappingMode(CompositionMappingMode::Relative)?;
+  brush.SetEllipseCenter(Vector2 { X: 0.5, Y: 0.5 })?;
+  brush.SetEllipseRadius(Vector2 { X: 0.75, Y: 0.75 })?;
+
+  #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+  let alpha = (strength.clamp(0.0, 1.0) * 255.0).round() as u8;
+
+  let clear = Color { A: 0, R: 0, G: 0, B: 0 };
+  let dark = Color { A: alpha, R: 0, G: 0, B: 0 };
+
+  let stops = brush.ColorStops()?;
+  stops.Append(&compositor.CreateColorGradientStopWithOffsetAndColor(0.0, clear)?)?;
+  stops.Append(&compositor.CreateColorGradientStopWithOffsetAndColor(0.45, clear)?)?;
+  stops.Append(&compositor.CreateColorGradientStopWithOffsetAndColor(1.0, dark)?)?;
+
+  Ok(brush)
 }
 
 /// `DesktopWindowTarget` sizes composition visuals 1:1 against the HWND's
@@ -862,12 +916,18 @@ fn build_visual_tree(
   tint_sprite.SetBrush(&tint_brush)?;
   tint_sprite.SetSize(size)?;
 
+  let vignette_brush = build_vignette_brush(compositor, params.vignette)?;
+  let vignette_sprite = compositor.CreateSpriteVisual()?;
+  vignette_sprite.SetBrush(&vignette_brush)?;
+  vignette_sprite.SetSize(size)?;
+
   let root = compositor.CreateContainerVisual()?;
   root.SetSize(size)?;
   root.SetClip(&clip)?;
   root.SetOpacity(params.opacity)?;
   root.Children()?.InsertAtTop(&blur_sprite)?;
   root.Children()?.InsertAtTop(&tint_sprite)?;
+  root.Children()?.InsertAtTop(&vignette_sprite)?;
 
   target.SetRoot(&root)?;
 
@@ -880,6 +940,8 @@ fn build_visual_tree(
     blur_sprite,
     tint_sprite,
     tint_brush,
+    vignette_brush,
+    vignette_sprite,
     rounded_geometry,
     knobs: params.into(),
     parallax: params.parallax,

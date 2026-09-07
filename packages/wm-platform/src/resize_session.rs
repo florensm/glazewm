@@ -506,6 +506,20 @@ impl ResizeSession {
     self.surrogate.as_ref().map(NativeSurrogate::hwnd)
   }
 
+  /// The session's real window, for callers that need to stack something
+  /// relative to it rather than to the surrogate standing in for it.
+  ///
+  /// Needed by the fade-out tail: the real window is uncloaked *beneath* the
+  /// still-visible surrogate and the surrogate then fades over it, so for
+  /// that stretch the window -- not the surrogate -- is what an overlay has
+  /// to sit behind. Anchoring to the surrogate there wedges the overlay
+  /// between the two, and an opaque overlay hides the window it belongs to
+  /// for the whole fade.
+  #[must_use]
+  pub fn window_hwnd(&self) -> Option<HWND> {
+    (self.hwnd != 0).then_some(HWND(self.hwnd))
+  }
+
   /// Live on-screen rect (logical, border-deflated) for the acrylic-overlay
   /// tracker to follow this tick, or `None` when there's nothing to show.
   ///

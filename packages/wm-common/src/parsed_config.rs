@@ -326,12 +326,17 @@ pub struct BackdropEffectConfig {
   /// `wallpaper` only, same reason as `exposure`.
   pub contrast: f32,
 
-  /// Strength of a darkened border around the baked image, from `0.0` (off)
-  /// to `1.0`. `wallpaper` only, same reason as `exposure`.
+  /// Strength of a darkening gradient toward each window's own edges, from
+  /// `0.0` (off) to `1.0`.
   ///
-  /// The right knob for toning a bright wallpaper down behind text:
-  /// it is baked in and leaves the overlay opaque, where `opacity` would
-  /// make it translucent again and undo the style's whole reason for being.
+  /// Applies to every style, and is the only one of these knobs that is not
+  /// baked: it is a gradient visual measured from the window's rect. Baking
+  /// it would anchor the falloff to the monitor instead, since one image is
+  /// shared by every window on it.
+  ///
+  /// The right knob for toning a bright backdrop down behind text -- it
+  /// leaves the overlay opaque, where `opacity` would make it translucent
+  /// again and undo the style's whole reason for being.
   pub vignette: f32,
 
   /// Opacity of a monochrome noise layer over the blurred image, from `0.0`
