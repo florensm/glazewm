@@ -16,8 +16,7 @@ use std::time::{Duration, Instant};
 use wm_platform::{
   BlurOverlayParams, BorderOverlayParams, CornerStyle, NativeBlurOverlay,
   NativeBorderOverlay, NativeIrisOverlay, OpacityValue, SurrogateBatch,
-  WorkspaceSurrogate, HWND, HWND_TOPMOST,
-};
+  WorkspaceSurrogate, HWND, };
 use wm_platform::{
   perf::{self, Stage},
   Rect, WindowZOrder,
@@ -66,19 +65,11 @@ pub fn platform_sync(
   let focused_container =
     state.focused_container().context("No focused container.")?;
 
-  // Windows whose real (non-overlay) z-order was actually touched this
-  // cycle, either by `redraw_containers`'s `set_z_order` or by
-  // `sync_focus`'s `SetForegroundWindow` below. Passed to
-  // `sync_blur_overlays` so it only pays for a `sync_z_order` resync on the
-  // handful of windows that could plausibly have drifted, instead of every
-  // blur-configured window on every tick -- most commands (e.g. a plain
-  // focus change between tiled windows) touch at most one window's z-order.
-  let mut z_order_touched = std::collections::HashSet::new();
 
   if !state.pending_sync.containers_to_redraw().is_empty()
     || !state.pending_sync.workspaces_to_reorder().is_empty()
   {
-    redraw_containers(&focused_container, state, config, &mut z_order_touched)?;
+    redraw_containers(&focused_container, state, config)?;
   }
 
   // Focus is synced after `redraw_containers` so that the workspace-switch
@@ -88,9 +79,7 @@ pub fn platform_sync(
   // completes), preventing the OS from asynchronously uncloaking the
   // incoming focused window mid-animation.
   if state.pending_sync.needs_focus_update() {
-    if let Some(id) = sync_focus(&focused_container, state)? {
-      z_order_touched.insert(id);
-    }
+    sync_focus(&focused_container, state)?;
   }
 
   if state.pending_sync.needs_cursor_jump()
@@ -161,8 +150,6 @@ pub fn platform_sync(
   // consumed it even when its own overlay kind wasn't configured for any
   // window, leaving the other permanently starved of the full resync.
   #[cfg(target_os = "windows")]
-  let full_z_order_resync = state.animation_manager.blur_overlay_z_order_dirty;
-  #[cfg(target_os = "windows")]
   {
     state.animation_manager.blur_overlay_z_order_dirty = false;
   }
@@ -171,21 +158,9 @@ pub fn platform_sync(
   // position through moves, resizes, and workspace changes. See
   // `sync_overlays`.
   #[cfg(target_os = "windows")]
-  sync_overlays::<NativeBlurOverlay>(
-    state,
-    config,
-    &focused_container,
-    &z_order_touched,
-    full_z_order_resync,
-  );
+  sync_overlays::<NativeBlurOverlay>(state, config, &focused_container);
   #[cfg(target_os = "windows")]
-  sync_overlays::<NativeBorderOverlay>(
-    state,
-    config,
-    &focused_container,
-    &z_order_touched,
-    full_z_order_resync,
-  );
+  sync_overlays::<NativeBorderOverlay>(state, config, &focused_container);
 
   state.pending_sync.clear();
 
@@ -439,8 +414,6 @@ fn redraw_containers(
   focused_container: &Container,
   state: &mut WmState,
   config: &UserConfig,
-  #[cfg_attr(not(target_os = "windows"), allow(unused_variables))]
-  z_order_touched: &mut std::collections::HashSet<uuid::Uuid>,
 ) -> anyhow::Result<()> {
   let _scope = perf::scope(Stage::Redraw);
   let prep_scope = perf::scope(Stage::RedrawPrep);
@@ -638,7 +611,6 @@ fn redraw_containers(
             // displace any other window's blur overlay out of its correct
             // z-order slot -- flag a full resync (see the field doc).
             if surrogate.is_some() {
-              state.animation_manager.blur_overlay_z_order_dirty = true;
             }
             // Always register incoming windows even without a surrogate so
             // `is_frozen_by_ws_animation` is true for all of them — this
@@ -674,7 +646,6 @@ fn redraw_containers(
             // See the matching comment in the incoming-surrogate branch
             // above.
             if surrogate.is_some() {
-              state.animation_manager.blur_overlay_z_order_dirty = true;
             }
             ws_windows.push((id, surrogate, false));
           }
@@ -834,7 +805,6 @@ fn redraw_containers(
     #[cfg(target_os = "windows")]
     if should_bring_to_front && !windows_to_redraw.contains(window) {
       tracing::info!("Updating window z-order: {window}");
-      z_order_touched.insert(window.id());
       if let Err(err) = window.native().set_z_order(&z_order) {
         tracing::warn!("Failed to set window z-order: {}", err);
       }
@@ -2017,33 +1987,23 @@ pub(crate) fn blur_overlay_params_for(
   Some(effect_cfg.backdrop.to_overlay_params(tint, corner_radius))
 }
 
-/// Resolves the z-order anchor to keep `window`'s acrylic overlay pinned
-/// directly behind it (see [`NativeBlurOverlay`]'s doc comment).
+/// Resolves the z-order anchor to keep `window`'s overlays pinned directly
+/// behind it (see [`NativeBlurOverlay`]'s doc comment).
 ///
-/// Windows keeps "always on top" windows in a separate band above every
-/// other window, and a *non*-topmost overlay wedged in via `window`'s own
-/// `HWND` doesn't reliably stay adjacent to a topmost `window` -- the OS can
-/// silently displace it out of that exact slot, which then shows the
-/// overlay itself (flat tint+blur, no live window content behind it)
-/// instead of it staying invisible behind the window. Returning
-/// `HWND_TOPMOST` here instead makes the overlay topmost too, so both stay
-/// pinned together in the same band -- mirroring `window.native().set_z_order`'s
-/// own `WindowZOrder::TopMost` case just above in this file.
+/// Always the window's own handle, including for "always on top" windows.
+/// Windows keeps those in a separate band above everything else, and an
+/// earlier version returned `HWND_TOPMOST` for them so the overlay would
+/// join that band -- but `HWND_TOPMOST` is an insert-after *pseudo-handle*
+/// meaning "top of the band", which put the overlay above the very window it
+/// belongs behind. It also made the overlay's own "am I already in the right
+/// place?" check unsatisfiable, since a pseudo-handle never equals a real
+/// one, so every sync issued a fresh `SetWindowPos` that re-raised it.
+///
+/// Band membership is handled separately, by `window_class::match_z_band`,
+/// which the overlays call before positioning themselves.
 #[cfg(target_os = "windows")]
 pub(crate) fn overlay_z_anchor(window: &WindowContainer) -> HWND {
-  let is_topmost = matches!(
-    window.state(),
-    WindowState::Floating(config) if config.shown_on_top
-  ) || matches!(
-    window.state(),
-    WindowState::Fullscreen(config) if config.shown_on_top
-  );
-
-  if is_topmost {
-    HWND_TOPMOST
-  } else {
-    window.native().hwnd()
-  }
+  window.native().hwnd()
 }
 
 /// A per-window overlay effect (acrylic blur or border) kept in sync with
@@ -2239,14 +2199,20 @@ fn sync_overlays<O: SyncableOverlay>(
   state: &mut WmState,
   config: &UserConfig,
   focused_container: &Container,
-  z_order_touched: &std::collections::HashSet<uuid::Uuid>,
-  full_z_order_resync: bool,
 ) {
   let _scope = perf::scope(O::PERF_STAGE);
 
   let all_windows = state.windows();
   let mut wanted_ids = std::collections::HashSet::new();
   let mut batch = SurrogateBatch::new();
+
+  // Overlays whose z-order needs re-asserting, applied *after* the batch
+  // below is committed. Issuing a `SetWindowPos` mid-loop would reorder an
+  // overlay while it still sits at its previous position -- the batch has
+  // not moved it yet -- so DWM composites a frame of it re-stacked but
+  // stale. Across a layout change that is every overlay flashing at once,
+  // which is exactly the artifact this ordering avoids.
+  let mut z_order_resyncs: Vec<(uuid::Uuid, HWND)> = Vec::new();
 
   // `containers_to_redraw()` may hold an ancestor (e.g. a whole workspace on
   // a workspace switch) rather than each window individually -- mirror the
@@ -2327,7 +2293,9 @@ fn sync_overlays<O: SyncableOverlay>(
         // surrogate was active) stays hidden indefinitely once `should_hide`
         // clears, unless this exact window happens to be redrawn again for
         // an unrelated reason (see `is_visible` doc comment).
-        if is_redrawing || !overlay.is_visible() {
+        let repositioned = is_redrawing || !overlay.is_visible();
+
+        if repositioned {
           // Use the DWM extended frame bounds so the overlay sits flush
           // with the window's visible edge, clipping the invisible resize
           // border.
@@ -2339,17 +2307,40 @@ fn sync_overlays<O: SyncableOverlay>(
               window.id()
             ),
           }
-        } else if full_z_order_resync
-          || z_order_touched.contains(&window.id())
-        {
-          if let Err(err) = overlay.sync_z_order(anchor) {
-            debug!(
-              "{} overlay z-order sync failed for {}: {err}.",
-              O::LABEL,
-              window.id()
-            );
-          }
         }
+
+        // A repositioned overlay has to re-assert its z-order too, and this
+        // is deliberately not an `else`. `defer_rect` batches through
+        // `DeferWindowPos` with `SWP_NOZORDER`, so it moves the overlay
+        // without restoring where it sits in the stack -- and a window being
+        // redrawn is exactly a window whose stack position the OS may have
+        // just changed underneath us (an interactive drag being the common
+        // case). Gating the resync on `z_order_touched` alone left a
+        // dragged window's overlay drifting above it until some *later*
+        // tick happened to touch that window's z-order for an unrelated
+        // reason, which is why nudging the window with the keyboard
+        // "fixed" it.
+        //
+        // This still honors the reason `z_order_touched` exists: the resync
+        // is paid for by windows redrawn this tick plus those whose z-order
+        // actually moved, not by every overlay on every tick. `sync_z_order`
+        // is itself a `GetWindow` check that only issues a `SetWindowPos`
+        // when the overlay has genuinely drifted.
+        // Unconditional, and that is the point. This used to run only when
+        // something *told* it to -- the window was repositioned, its z-order
+        // was touched, or a surrogate teardown raised a global flag. Any
+        // drift nobody thought to flag therefore went unrepaired forever,
+        // which is what "it is fine, then suddenly the overlay is on top,
+        // and clicking the window fixes it" was: the click was simply the
+        // first event that happened to set one of those flags.
+        //
+        // Checking instead of tracking is both cheaper to reason about and
+        // cheap outright: `sync_z_order` is a `GetWindow` plus two
+        // `GetWindowLongPtrW` reads, and only issues a `SetWindowPos` when
+        // the overlay has genuinely drifted -- so the steady state is three
+        // of the cheapest calls in USER32 per overlay per tick, and no
+        // composition work at all.
+        z_order_resyncs.push((window.id(), anchor));
       }
       std::collections::hash_map::Entry::Vacant(e) => {
         debug_assert!(!had_overlay);
@@ -2381,4 +2372,16 @@ fn sync_overlays<O: SyncableOverlay>(
   O::overlays(state).retain(|id, _| wanted_ids.contains(id));
 
   batch.commit();
+
+  // Now that every overlay is at its final position, put each back directly
+  // behind its window. Ordering matters in one direction only: a reposition
+  // that lands after a z-order fix is invisible, whereas a z-order fix that
+  // lands before the reposition is a visible flash.
+  for (id, anchor) in z_order_resyncs {
+    if let Some(overlay) = O::overlays(state).get_mut(&id) {
+      if let Err(err) = overlay.sync_z_order(anchor) {
+        debug!("{} overlay z-order sync failed for {id}: {err}.", O::LABEL);
+      }
+    }
+  }
 }
