@@ -430,6 +430,11 @@ impl NativeBlurOverlay {
   /// same-process, no-op-fast check, so this only issues a real
   /// `SetWindowPos` when the overlay actually needs to move.
   pub fn sync_z_order(&mut self, anchor: HWND) -> crate::Result<()> {
+    // `anchor` is always a real window handle, so the comparison below is
+    // meaningful -- but the overlay has to be in the anchor's band first,
+    // or the OS will refuse to leave it directly behind a topmost window.
+    window_class::match_z_band(self.hwnd(), anchor);
+
     // SAFETY: `self.hwnd()` is a valid window handle for the lifetime of
     // this struct.
     let prev = unsafe { GetWindow(self.hwnd(), GW_HWNDPREV) };

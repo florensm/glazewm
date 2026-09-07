@@ -102,6 +102,33 @@ pub fn handle_window_moved_or_resized(
         }
 
         batch.commit();
+
+        // `defer_rect` batches through `DeferWindowPos` with
+        // `SWP_NOZORDER`, so it moves an overlay without restoring where it
+        // sits in the stack -- and during an interactive drag the OS
+        // reorders the window itself while `platform_sync` has dequeued it
+        // from redraw, so nothing else would put the overlay back behind
+        // it.
+        //
+        // Deliberately here rather than inside `upsert_*_overlay`: those
+        // are also driven per frame by the animation manager, which anchors
+        // overlays to a *surrogate* and already owns their z-order for the
+        // duration of an animation. Re-anchoring there fought with it and
+        // left the overlay drawn over the surrogate instead of behind it.
+        //
+        // Cheap: `sync_z_order` is a `GetWindow` check that only issues a
+        // `SetWindowPos` when the overlay has actually drifted.
+        if let Some(overlay) = state.blur_overlays.get_mut(&window.id()) {
+          if let Err(err) = overlay.sync_z_order(anchor) {
+            tracing::debug!("Blur overlay z-order sync failed during drag: {err}.");
+          }
+        }
+
+        if let Some(overlay) = state.border_overlays.get_mut(&window.id()) {
+          if let Err(err) = overlay.sync_z_order(anchor) {
+            tracing::debug!("Border overlay z-order sync failed during drag: {err}.");
+          }
+        }
       }
 
       let is_drag_end = {
