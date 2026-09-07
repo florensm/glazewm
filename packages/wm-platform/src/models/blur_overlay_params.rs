@@ -51,16 +51,17 @@ pub struct BlurOverlayParams {
   /// [`exposure`]: BlurOverlayParams::exposure
   pub contrast: f32,
 
-  /// Strength of a darkened border around each monitor's baked image, from
-  /// `0.0` (off) to `1.0`. [`BackdropStyle::Wallpaper`] only (see
-  /// [`exposure`]).
+  /// Strength of a darkening gradient toward the overlay's own edges, from
+  /// `0.0` (off) to `1.0`. Honored by every style.
+  ///
+  /// The only grading knob that is not baked, because it is the only one
+  /// whose effect varies with position: one image is shared by every window
+  /// on a monitor, so baking it would anchor the falloff to the screen
+  /// rather than the window. Rendered as a radial-gradient visual instead.
   ///
   /// Preferable to lowering `opacity` for the same "calm it down" effect:
-  /// this is baked in and stays opaque, where `opacity` makes the whole
-  /// overlay translucent again and gives back the compositing saving the
-  /// style exists for.
-  ///
-  /// [`exposure`]: BlurOverlayParams::exposure
+  /// this keeps the overlay opaque, where `opacity` makes it translucent
+  /// again and gives back the compositing saving the style exists for.
   pub vignette: f32,
 
   /// Opacity of a monochrome noise layer over the blurred image, from

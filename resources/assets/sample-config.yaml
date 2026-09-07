@@ -275,9 +275,12 @@ window_effects:
       exposure: 0.0
       # Contrast, -1.0 to 1.0. 0.0 is unchanged.
       contrast: 0.0
-      # Darkened border around the image, 0.0 (off) to 1.0. The right knob
-      # for toning a bright wallpaper down behind text -- unlike opacity it
-      # keeps the overlay opaque, so DWM still skips what's behind it.
+      # Darkening toward each window's own edges, 0.0 (off) to 1.0. Unlike
+      # the knobs above this applies to every style and is not baked -- it
+      # is measured from the window's rect, since one baked image is shared
+      # by every window on a monitor. The right knob for toning a bright
+      # backdrop down behind text: unlike opacity it keeps the overlay
+      # opaque, so DWM still skips what's behind it.
       vignette: 0.0
       # Monochrome noise over the blurred image, 0.0 (off) to 1.0. This is
       # the grain that makes acrylic read as frosted glass rather than an

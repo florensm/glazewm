@@ -1531,7 +1531,19 @@ impl AnimationManager {
       let mut border_fade_tail_batch = SurrogateBatch::new();
       for (id, _, session) in &state.animation_manager.pending_session_cleanup
       {
-        let anchor = session.surrogate_hwnd();
+        // The real window, not the surrogate. A session only reaches
+        // `pending_session_cleanup` after `platform_sync` has uncloaked it,
+        // and it then spends `SESSION_FADE_OUT` sitting beneath a surrogate
+        // fading to zero. Anchoring the overlay to the surrogate through
+        // that stretch puts it *between* the two, so as the surrogate fades
+        // it reveals the overlay rather than the window -- a flash of
+        // backdrop on every window an animation touched, clearing only once
+        // the session is dropped and `sync_overlays` re-anchors it.
+        //
+        // The active-animation loop above is a different case and correctly
+        // still anchors to the surrogate: the real window is cloaked there,
+        // so the surrogate genuinely is what the overlay sits behind.
+        let anchor = session.window_hwnd().or_else(|| session.surrogate_hwnd());
         let rect = session.current_rect();
 
         if let Some(params) = session.blur_overlay_params() {

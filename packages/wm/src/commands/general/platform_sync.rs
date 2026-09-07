@@ -162,6 +162,7 @@ pub fn platform_sync(
   #[cfg(target_os = "windows")]
   sync_overlays::<NativeBorderOverlay>(state, config, &focused_container);
 
+
   state.pending_sync.clear();
 
   Ok(())
@@ -607,11 +608,6 @@ fn redraw_containers(
                 })
                 .ok()
               });
-            // New surrogates are always inserted at `HWND_TOP`, which can
-            // displace any other window's blur overlay out of its correct
-            // z-order slot -- flag a full resync (see the field doc).
-            if surrogate.is_some() {
-            }
             // Always register incoming windows even without a surrogate so
             // `is_frozen_by_ws_animation` is true for all of them — this
             // prevents the real window from being uncloaked before the
@@ -643,10 +639,6 @@ fn redraw_containers(
               e
             })
             .ok();
-            // See the matching comment in the incoming-surrogate branch
-            // above.
-            if surrogate.is_some() {
-            }
             ws_windows.push((id, surrogate, false));
           }
         }
@@ -1440,6 +1432,14 @@ fn redraw_containers(
   // compositor thread instead of leaving it to scheduling luck. One flush
   // covers every window that completed an animation this pass, rather than
   // blocking once per window.
+  //
+  // Distinct from the flush `perf(anim): defer a session's first fade step
+  // instead of blocking on DwmFlush` (1d249565) removed -- that one was in
+  // the animation-cleanup path, which has a later tick to defer to. This one
+  // has no such tick: the alpha it is closing over belongs to the frame
+  // being composed right now, and without it a window using the
+  // `transparency` effect composites at the wrong alpha for a frame on every
+  // move or resize landing.
   #[cfg(target_os = "windows")]
   if needs_transparency_flush {
     wm_platform::dwm_flush();
@@ -2371,6 +2371,24 @@ fn sync_overlays<O: SyncableOverlay>(
   // case. A window that merely lost focus keeps its (hidden) overlay.
   O::overlays(state).retain(|id, _| wanted_ids.contains(id));
 
+  // EXPERIMENT (overlay-vanishes bug): force one composed frame once every
+  // overlay has landed.
+  //
+  // The window and its overlay are moved by two separate calls -- the window
+  // earlier in the tick by `redraw_containers`, the overlays here. Normally
+  // both fall inside one composition interval and DWM never sees them
+  // disagree, which is what `defer_rect`'s doc means by "the same DWM
+  // composition frame as the window it's paired with". Occasionally they
+  // straddle a compose, and DWM draws a frame where an opaque overlay sits
+  // over a window that has already moved -- concluding the window is not
+  // visible, and caching that until something makes it look again. Alt+Tab
+  // makes it look again, which is why the window returns the instant the
+  // switcher opens without anything being selected.
+  //
+  // Flushing here removes the straddle: by the time DWM composes, both are
+  // where they belong. Gated on the batch having actually held something, so
+  // a config with no overlays at all -- backdrop and border both off -- never
+  // reaches it and keeps the tick it has today.
   batch.commit();
 
   // Now that every overlay is at its final position, put each back directly

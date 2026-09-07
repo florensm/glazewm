@@ -69,7 +69,6 @@ use windows::{
         CLSID_D2D1Composite, CLSID_D2D1Contrast, CLSID_D2D1Crop,
         CLSID_D2D1Exposure, CLSID_D2D1Flood, CLSID_D2D1GaussianBlur,
         CLSID_D2D1Opacity, CLSID_D2D1Saturation, CLSID_D2D1Turbulence,
-        CLSID_D2D1Vignette,
         Common::{
           D2D1_BLEND_MODE_OVERLAY, D2D1_COLOR_F,
           D2D1_COMPOSITE_MODE_SOURCE_OVER, D2D_POINT_2F, D2D_RECT_F,
@@ -93,8 +92,6 @@ use windows::{
         D2D1_SATURATION_PROP_SATURATION,
         D2D1_TURBULENCE_PROP_BASE_FREQUENCY,
         D2D1_TURBULENCE_PROP_NUM_OCTAVES, D2D1_TURBULENCE_PROP_SIZE,
-        D2D1_VIGNETTE_PROP_COLOR, D2D1_VIGNETTE_PROP_STRENGTH,
-        D2D1_VIGNETTE_PROP_TRANSITION_SIZE,
       },
       Gdi::{
         GetMonitorInfoW, MonitorFromPoint, MONITORINFO,
@@ -135,7 +132,6 @@ pub(crate) struct BakeKnobs {
   pub saturation: f32,
   pub exposure: f32,
   pub contrast: f32,
-  pub vignette: f32,
   pub grain: f32,
 }
 
@@ -146,7 +142,6 @@ impl From<BlurOverlayParams> for BakeKnobs {
       saturation: params.saturation,
       exposure: params.exposure,
       contrast: params.contrast,
-      vignette: params.vignette,
       grain: params.grain,
     }
   }
@@ -721,9 +716,9 @@ fn draw_wallpaper(
 
   // The blur output extends infinitely (see `compose_desktop`), so it is
   // bounded to the monitor here and then again at the end of the chain.
-  // This one is not just about extent: `Vignette` darkens toward the edges
-  // of whatever rectangle its input occupies, so that rectangle has to be
-  // the monitor for the falloff to land anywhere sensible.
+  // Bounding an infinite image with the clip alone would make D2D rasterize
+  // far more than it needs to, and the grain stage below needs a finite
+  // extent to generate over.
   let cropped = crop_to(context, &blur, width, height)?;
 
   let graded = grade(context, &cropped, key)?;
@@ -756,8 +751,15 @@ fn draw_wallpaper(
   Ok(true)
 }
 
-/// Applies the color-grading chain -- exposure, contrast, saturation, then
-/// vignette -- to the already-blurred, monitor-sized image.
+/// Applies the color-grading chain -- exposure, contrast, saturation -- to
+/// the already-blurred, monitor-sized image.
+///
+/// Vignette is deliberately absent. It is the one knob whose effect varies
+/// with position, so baking it into an image shared by every window on the
+/// monitor anchors the falloff to the *screen*: a window at the edge gets a
+/// uniformly dark crop and one in the middle gets the bright centre, and
+/// neither looks like a vignette on that window. It is applied per overlay
+/// instead, by a gradient visual in `composition`.
 ///
 /// Each stage is skipped at its neutral value rather than added as a no-op
 /// node, so a config that sets none of these knobs produces byte-identical
@@ -802,29 +804,6 @@ fn grade(
       key.knobs.saturation,
     )?;
     image = saturation;
-  }
-
-  if key.knobs.vignette > 0.0 {
-    let vignette = effect(context, &CLSID_D2D1Vignette, &image)?;
-    set_vector4(
-      &vignette,
-      D2D1_VIGNETTE_PROP_COLOR.0,
-      Vector4 {
-        X: 0.0,
-        Y: 0.0,
-        Z: 0.0,
-        W: 1.0,
-      },
-    )?;
-    set_float(
-      &vignette,
-      D2D1_VIGNETTE_PROP_STRENGTH.0,
-      key.knobs.vignette,
-    )?;
-    // Softens the falloff so the darkening reads as shading rather than a
-    // visible ring; the default is tight enough to look like a border.
-    set_float(&vignette, D2D1_VIGNETTE_PROP_TRANSITION_SIZE.0, 0.6_f32)?;
-    image = vignette;
   }
 
   Ok(image)
@@ -1441,7 +1420,6 @@ mod tests {
       saturation: 1.0,
       exposure: 0.0,
       contrast: 0.0,
-      vignette: 0.0,
       grain: 0.0,
     };
 
@@ -1469,13 +1447,6 @@ mod tests {
         },
       ),
       (
-        "vignette",
-        super::BakeKnobs {
-          vignette: 0.4,
-          ..neutral
-        },
-      ),
-      (
         "grain",
         super::BakeKnobs {
           grain: 0.1,
@@ -1488,7 +1459,6 @@ mod tests {
           saturation: 1.4,
           exposure: -0.3,
           contrast: 0.2,
-          vignette: 0.4,
           grain: 0.1,
           ..neutral
         },
