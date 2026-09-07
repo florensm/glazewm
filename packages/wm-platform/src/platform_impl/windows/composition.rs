@@ -678,6 +678,26 @@ impl BlurVisual {
     self.rebake_only(knobs)
   }
 
+  /// Updates the highlight recovery baked into the wallpaper image.
+  /// Wallpaper only, same reason as [`set_exposure`].
+  ///
+  /// [`set_exposure`]: BlurVisual::set_exposure
+  pub(crate) fn set_highlights(&mut self, value: f32) -> crate::Result<()> {
+    let mut knobs = self.knobs;
+    knobs.highlights = value;
+    self.rebake_only(knobs)
+  }
+
+  /// Updates the shadow lift baked into the wallpaper image. Wallpaper
+  /// only, same reason as [`set_exposure`].
+  ///
+  /// [`set_exposure`]: BlurVisual::set_exposure
+  pub(crate) fn set_shadows(&mut self, value: f32) -> crate::Result<()> {
+    let mut knobs = self.knobs;
+    knobs.shadows = value;
+    self.rebake_only(knobs)
+  }
+
   /// Updates the vignette.
   ///
   /// Unlike the other grading knobs this touches no baked image, so it

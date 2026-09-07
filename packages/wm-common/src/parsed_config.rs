@@ -326,6 +326,18 @@ pub struct BackdropEffectConfig {
   /// `wallpaper` only, same reason as `exposure`.
   pub contrast: f32,
 
+  /// Highlight recovery from `-1.0` to `1.0`; `0.0` is unchanged, negative
+  /// pulls bright areas down. `wallpaper` only, same reason as `exposure`.
+  ///
+  /// Tone-selective where `exposure` is not: it touches only the bright end,
+  /// so a blown-out sky can be brought down without dragging the whole
+  /// image toward black. The right knob for making text readable.
+  pub highlights: f32,
+
+  /// Shadow lift from `-1.0` to `1.0`; `0.0` is unchanged, positive opens
+  /// dark areas up. `wallpaper` only, same reason as `exposure`.
+  pub shadows: f32,
+
   /// Strength of a darkening gradient toward each window's own edges, from
   /// `0.0` (off) to `1.0`.
   ///
@@ -371,6 +383,8 @@ impl Default for BackdropEffectConfig {
       saturation: 1.0,
       exposure: 0.0,
       contrast: 0.0,
+      highlights: 0.0,
+      shadows: 0.0,
       vignette: 0.0,
       grain: 0.0,
       parallax: 1.0,
@@ -420,6 +434,8 @@ impl BackdropEffectConfig {
       saturation: self.saturation,
       exposure: self.exposure,
       contrast: self.contrast,
+      highlights: self.highlights,
+      shadows: self.shadows,
       vignette: self.vignette,
       grain: self.grain,
       parallax: self.parallax,
@@ -1260,6 +1276,8 @@ mod tests {
       saturation: 1.5,
       exposure: -0.5,
       contrast: 0.25,
+      highlights: -0.6,
+      shadows: 0.3,
       vignette: 0.4,
       grain: 0.1,
       parallax: 0.8,
@@ -1277,6 +1295,8 @@ mod tests {
     assert_eq!(params.saturation, 1.5);
     assert_eq!(params.exposure, -0.5);
     assert_eq!(params.contrast, 0.25);
+    assert_eq!(params.highlights, -0.6);
+    assert_eq!(params.shadows, 0.3);
     assert_eq!(params.vignette, 0.4);
     assert_eq!(params.grain, 0.1);
     assert_eq!(params.parallax, 0.8);
