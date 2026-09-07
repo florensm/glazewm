@@ -313,6 +313,38 @@ where
 /// construction calls (`Compositor::new`, and per-overlay visual-tree
 /// building, which touches the effect factory) -- see the module docs for
 /// why these specifically must run there.
+/// Queues `f` on the composition thread and returns immediately.
+///
+/// The blocking sibling below waits for a result on the WM's own thread,
+/// which is right when the caller needs the value -- building a visual tree,
+/// say. It is wrong for work whose only effect is on screen a frame or two
+/// later, because the wait lands on the main loop: swapping an overlay to a
+/// different baked surface used to block once per window per focus change,
+/// and once per window *at once* on a workspace switch, which is felt as the
+/// focus ring and backdrop lagging behind the keystroke.
+///
+/// Nothing observes the result, so failures are logged where they happen
+/// rather than returned.
+fn dispatch_on_composition_thread<F>(
+  queue: &DispatcherQueue,
+  f: F,
+) -> crate::Result<()>
+where
+  F: FnOnce() + Send + 'static,
+{
+  let mut slot = Some(f);
+
+  let handler = DispatcherQueueHandler::new(move || {
+    if let Some(f) = slot.take() {
+      f();
+    }
+    Ok(())
+  });
+
+  queue.TryEnqueue(&handler)?;
+  Ok(())
+}
+
 fn run_on_composition_thread<T, F>(
   queue: &DispatcherQueue,
   f: F,
@@ -507,19 +539,19 @@ impl BlurVisual {
       let rebound = brush.clone();
       let target = bounds.clone();
 
-      let result = run_on_composition_thread(&queue, move || {
-        wallpaper_surface::rebind(&compositor, &rebound, &target, knobs)
-      });
+      // Queued, not awaited: this runs from the per-tick sync path, and the
+      // new crop being on screen a frame later is invisible next to blocking
+      // the main loop until it is.
+      dispatch_on_composition_thread(&queue, move || {
+        if let Err(err) =
+          wallpaper_surface::rebind(&compositor, &rebound, &target, knobs)
+        {
+          tracing::warn!("Wallpaper backdrop re-bind failed: {err}.");
+        }
+      })?;
 
-      // Recorded even when the bind failed, and before the error is
-      // propagated. `sync_backdrop` runs this on every tick, so leaving the
-      // state stale on failure would retry a blocking cross-thread dispatch
-      // -- one that can wait out its whole timeout -- on every tick from
-      // then on, turning one bad bake into a permanently stalled main loop.
       *monitor = bounds;
       *generation = current;
-
-      result?;
     }
 
     wallpaper_surface::set_crop(brush, rect, monitor, parallax);
@@ -565,8 +597,12 @@ impl BlurVisual {
     let brush = brush.clone();
     let monitor = monitor.clone();
 
-    run_on_composition_thread(&self.queue, move || {
-      wallpaper_surface::rebind(&compositor, &brush, &monitor, knobs)
+    dispatch_on_composition_thread(&self.queue, move || {
+      if let Err(err) =
+        wallpaper_surface::rebind(&compositor, &brush, &monitor, knobs)
+      {
+        tracing::warn!("Wallpaper backdrop re-bake failed: {err}.");
+      }
     })
   }
 

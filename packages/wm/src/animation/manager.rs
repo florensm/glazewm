@@ -2566,6 +2566,17 @@ impl AnimationManager {
   /// are fully dropped, preventing a one-frame flash between animation
   /// completion and surrogate teardown.
   #[cfg(target_os = "windows")]
+  /// Whether any surrogate exists right now, of either kind.
+  ///
+  /// Surrogates are created at `HWND_TOP`, which displaces *other* windows'
+  /// overlays out of their z-order slot -- so while any are alive, every
+  /// overlay has to re-check where it sits rather than assume it has not
+  /// been moved. Losing that check is what stopped borders and backdrops
+  /// tracking their windows through a workspace switch.
+  pub fn has_any_surrogate(&self) -> bool {
+    !self.resize_sessions.is_empty() || self.is_workspace_switch_active()
+  }
+
   pub fn is_workspace_switch_active(&self) -> bool {
     self.workspace_switch.is_some() || self.pending_ws_cleanup.is_some()
   }
