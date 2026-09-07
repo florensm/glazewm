@@ -429,6 +429,53 @@ fn virtual_screen() -> Rect {
   }
 }
 
+thread_local! {
+  /// The last wallpaper description read for a monitor, and the generation
+  /// it was read at.
+  ///
+  /// `MonitorWallpaper::query` is a `CoCreateInstance` plus several COM
+  /// round-trips and a file stat, and `surface_for` needs the description on
+  /// every call -- including the ones that go on to hit the surface cache and
+  /// bake nothing at all. Since the only things that can change it also bump
+  /// [`GENERATION`] (the shell broadcast and the poll both do), a description
+  /// read at the current generation is still current by construction.
+  ///
+  /// Without this, switching focus between two windows whose backdrop knobs
+  /// differ pays a full shell query per overlay -- on the WM thread, which
+  /// blocks on the composition thread while it happens -- and a workspace
+  /// switch pays it once per window at once.
+  static WALLPAPER_MEMO: RefCell<Vec<(Rect, u64, MonitorWallpaper)>> =
+    const { RefCell::new(Vec::new()) };
+}
+
+/// The wallpaper on `monitor`, re-reading it only when the generation has
+/// moved since the last read.
+fn wallpaper_for(monitor: &Rect) -> MonitorWallpaper {
+  let current = generation();
+
+  let memo = WALLPAPER_MEMO.with(|memo| {
+    memo
+      .borrow()
+      .iter()
+      .find(|(rect, gen, _)| rect == monitor && *gen == current)
+      .map(|(_, _, wallpaper)| wallpaper.clone())
+  });
+
+  if let Some(wallpaper) = memo {
+    return wallpaper;
+  }
+
+  let wallpaper = MonitorWallpaper::query(monitor, &virtual_screen());
+
+  WALLPAPER_MEMO.with(|memo| {
+    let mut memo = memo.borrow_mut();
+    memo.retain(|(rect, _, _)| rect != monitor);
+    memo.push((monitor.clone(), current, wallpaper.clone()));
+  });
+
+  wallpaper
+}
+
 /// Returns the cached surface for `monitor` at these knobs, baking one if
 /// the wallpaper, the layout, or the knobs have changed since the last
 /// bake.
@@ -444,7 +491,7 @@ fn surface_for(
   knobs: BakeKnobs,
 ) -> windows::core::Result<CompositionDrawingSurface> {
   let key = WallpaperKey {
-    wallpaper: MonitorWallpaper::query(monitor, &virtual_screen()),
+    wallpaper: wallpaper_for(monitor),
     knobs,
   };
 
