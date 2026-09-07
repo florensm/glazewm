@@ -2214,6 +2214,8 @@ fn sync_overlays<O: SyncableOverlay>(
   // which is exactly the artifact this ordering avoids.
   let mut z_order_resyncs: Vec<(uuid::Uuid, HWND)> = Vec::new();
 
+  let surrogates_alive = state.animation_manager.has_any_surrogate();
+
   // `containers_to_redraw()` may hold an ancestor (e.g. a whole workspace on
   // a workspace switch) rather than each window individually -- mirror the
   // same descendant expansion `redraw_containers` uses via `windows_to_redraw`
@@ -2309,38 +2311,28 @@ fn sync_overlays<O: SyncableOverlay>(
           }
         }
 
-        // A repositioned overlay has to re-assert its z-order too, and this
-        // is deliberately not an `else`. `defer_rect` batches through
-        // `DeferWindowPos` with `SWP_NOZORDER`, so it moves the overlay
-        // without restoring where it sits in the stack -- and a window being
-        // redrawn is exactly a window whose stack position the OS may have
-        // just changed underneath us (an interactive drag being the common
-        // case). Gating the resync on `z_order_touched` alone left a
-        // dragged window's overlay drifting above it until some *later*
-        // tick happened to touch that window's z-order for an unrelated
-        // reason, which is why nudging the window with the keyboard
-        // "fixed" it.
+        // Overlays that moved this tick, plus every overlay while any
+        // surrogate is alive.
         //
-        // This still honors the reason `z_order_touched` exists: the resync
-        // is paid for by windows redrawn this tick plus those whose z-order
-        // actually moved, not by every overlay on every tick. `sync_z_order`
-        // is itself a `GetWindow` check that only issues a `SetWindowPos`
-        // when the overlay has genuinely drifted.
-        // Unconditional, and that is the point. This used to run only when
-        // something *told* it to -- the window was repositioned, its z-order
-        // was touched, or a surrogate teardown raised a global flag. Any
-        // drift nobody thought to flag therefore went unrepaired forever,
-        // which is what "it is fine, then suddenly the overlay is on top,
-        // and clicking the window fixes it" was: the click was simply the
-        // first event that happened to set one of those flags.
+        // `defer_rect` batches through `DeferWindowPos` with `SWP_NOZORDER`,
+        // so it moves an overlay without restoring where it sits in the
+        // stack -- that part still has to be re-asserted. But an overlay
+        // nobody moved has nothing to re-assert, and running the check on
+        // every overlay on every tick was three USER32 calls per window per
+        // frame in exchange for nothing: it was added for a z-order theory
+        // that later testing disproved (the overlay was never in front; DWM
+        // was caching a stale occlusion result), and the fix for that lives
+        // elsewhere.
         //
-        // Checking instead of tracking is both cheaper to reason about and
-        // cheap outright: `sync_z_order` is a `GetWindow` plus two
-        // `GetWindowLongPtrW` reads, and only issues a `SetWindowPos` when
-        // the overlay has genuinely drifted -- so the steady state is three
-        // of the cheapest calls in USER32 per overlay per tick, and no
-        // composition work at all.
-        z_order_resyncs.push((window.id(), anchor));
+        // The surrogate case is not that. Surrogates are created at
+        // `HWND_TOP`, which displaces *other* windows' overlays out of their
+        // slot -- a window nobody moved can still need putting back. So the
+        // check runs for everyone while any surrogate is alive, which is
+        // exactly the window in which a workspace switch or resize is on
+        // screen, and for nobody once they are gone.
+        if repositioned || surrogates_alive {
+          z_order_resyncs.push((window.id(), anchor));
+        }
       }
       std::collections::hash_map::Entry::Vacant(e) => {
         debug_assert!(!had_overlay);
