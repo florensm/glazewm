@@ -51,6 +51,27 @@ pub struct BlurOverlayParams {
   /// [`exposure`]: BlurOverlayParams::exposure
   pub contrast: f32,
 
+  /// Highlight recovery from `-1.0` to `1.0`; `0.0` is unchanged, negative
+  /// pulls bright areas down. [`BackdropStyle::Wallpaper`] only (see
+  /// [`exposure`]).
+  ///
+  /// Unlike `exposure`, which moves every pixel, this is tone-selective: it
+  /// only touches the bright end. That is what makes it the knob for a
+  /// wallpaper too bright to read text over -- it darkens the blown-out sky
+  /// without dragging the whole image toward black.
+  ///
+  /// [`exposure`]: BlurOverlayParams::exposure
+  pub highlights: f32,
+
+  /// Shadow lift from `-1.0` to `1.0`; `0.0` is unchanged, positive opens
+  /// dark areas up. [`BackdropStyle::Wallpaper`] only (see [`exposure`]).
+  ///
+  /// The counterpart to `highlights`, and the one to reach for when a dark
+  /// wallpaper turns the backdrop into a flat black rectangle.
+  ///
+  /// [`exposure`]: BlurOverlayParams::exposure
+  pub shadows: f32,
+
   /// Strength of a darkening gradient toward the overlay's own edges, from
   /// `0.0` (off) to `1.0`. Honored by every style.
   ///

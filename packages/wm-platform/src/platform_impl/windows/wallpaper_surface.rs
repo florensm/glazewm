@@ -68,6 +68,7 @@ use windows::{
         CLSID_D2D12DAffineTransform, CLSID_D2D1Blend, CLSID_D2D1Border,
         CLSID_D2D1Composite, CLSID_D2D1Contrast, CLSID_D2D1Crop,
         CLSID_D2D1Exposure, CLSID_D2D1Flood, CLSID_D2D1GaussianBlur,
+        CLSID_D2D1HighlightsShadows,
         CLSID_D2D1Opacity, CLSID_D2D1Saturation, CLSID_D2D1Turbulence,
         Common::{
           D2D1_BLEND_MODE_OVERLAY, D2D1_COLOR_F,
@@ -84,6 +85,8 @@ use windows::{
         D2D1_GAUSSIANBLUR_OPTIMIZATION_QUALITY,
         D2D1_GAUSSIANBLUR_PROP_OPTIMIZATION,
         D2D1_GAUSSIANBLUR_PROP_STANDARD_DEVIATION,
+        D2D1_HIGHLIGHTSANDSHADOWS_PROP_HIGHLIGHTS,
+        D2D1_HIGHLIGHTSANDSHADOWS_PROP_SHADOWS,
         D2D1_INTERPOLATION_MODE_CUBIC, D2D1_INTERPOLATION_MODE_LINEAR,
         D2D1_OPACITY_PROP_OPACITY, D2D1_PROPERTY_TYPE,
         D2D1_PROPERTY_TYPE_ENUM, D2D1_PROPERTY_TYPE_FLOAT,
@@ -132,6 +135,8 @@ pub(crate) struct BakeKnobs {
   pub saturation: f32,
   pub exposure: f32,
   pub contrast: f32,
+  pub highlights: f32,
+  pub shadows: f32,
   pub grain: f32,
 }
 
@@ -142,6 +147,8 @@ impl From<BlurOverlayParams> for BakeKnobs {
       saturation: params.saturation,
       exposure: params.exposure,
       contrast: params.contrast,
+      highlights: params.highlights,
+      shadows: params.shadows,
       grain: params.grain,
     }
   }
@@ -796,6 +803,24 @@ fn grade(
     image = contrast;
   }
 
+  // One node covers both, since the effect takes them together. Skipped
+  // only when neither is set -- unlike the others this is a tone-selective
+  // stage, so it is worth its own node whenever either end is being moved.
+  if key.knobs.highlights != 0.0 || key.knobs.shadows != 0.0 {
+    let tone = effect(context, &CLSID_D2D1HighlightsShadows, &image)?;
+    set_float(
+      &tone,
+      D2D1_HIGHLIGHTSANDSHADOWS_PROP_HIGHLIGHTS.0,
+      key.knobs.highlights,
+    )?;
+    set_float(
+      &tone,
+      D2D1_HIGHLIGHTSANDSHADOWS_PROP_SHADOWS.0,
+      key.knobs.shadows,
+    )?;
+    image = tone;
+  }
+
   if key.knobs.saturation != 1.0 {
     let saturation = effect(context, &CLSID_D2D1Saturation, &image)?;
     set_float(
@@ -1420,6 +1445,8 @@ mod tests {
       saturation: 1.0,
       exposure: 0.0,
       contrast: 0.0,
+      highlights: 0.0,
+      shadows: 0.0,
       grain: 0.0,
     };
 
@@ -1447,6 +1474,14 @@ mod tests {
         },
       ),
       (
+        "highlights/shadows",
+        super::BakeKnobs {
+          highlights: -0.5,
+          shadows: 0.3,
+          ..neutral
+        },
+      ),
+      (
         "grain",
         super::BakeKnobs {
           grain: 0.1,
@@ -1459,6 +1494,8 @@ mod tests {
           saturation: 1.4,
           exposure: -0.3,
           contrast: 0.2,
+          highlights: -0.5,
+          shadows: 0.3,
           grain: 0.1,
           ..neutral
         },

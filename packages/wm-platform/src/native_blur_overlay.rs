@@ -534,6 +534,19 @@ impl NativeBlurOverlay {
   );
 
   blur_overlay_setter!(
+    /// Updates the highlight recovery baked into the wallpaper backdrop:
+    /// negative pulls bright areas down, leaving the rest alone.
+    /// [`BackdropStyle::Wallpaper`] only, same reason as `set_exposure`.
+    set_highlights, highlights
+  );
+
+  blur_overlay_setter!(
+    /// Updates the shadow lift baked into the wallpaper backdrop.
+    /// [`BackdropStyle::Wallpaper`] only, same reason as `set_exposure`.
+    set_shadows, shadows
+  );
+
+  blur_overlay_setter!(
     /// Updates the vignette baked into the wallpaper backdrop.
     /// [`BackdropStyle::Wallpaper`] only, same reason as `set_exposure`.
     set_vignette, vignette
@@ -645,6 +658,8 @@ impl NativeBlurOverlay {
     self.set_saturation(params.saturation);
     self.set_exposure(params.exposure);
     self.set_contrast(params.contrast);
+    self.set_highlights(params.highlights);
+    self.set_shadows(params.shadows);
     self.set_vignette(params.vignette);
     self.set_grain(params.grain);
     self.set_parallax(params.parallax);

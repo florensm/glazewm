@@ -275,6 +275,16 @@ window_effects:
       exposure: 0.0
       # Contrast, -1.0 to 1.0. 0.0 is unchanged.
       contrast: 0.0
+      # Highlight recovery, -1.0 to 1.0. 0.0 is unchanged; negative pulls
+      # bright areas down. Unlike exposure this is tone-selective -- it only
+      # touches the bright end -- so it can bring a blown-out sky down
+      # without dragging the whole image toward black. The knob to reach for
+      # when a bright wallpaper makes text hard to read.
+      highlights: 0.0
+      # Shadow lift, -1.0 to 1.0. 0.0 is unchanged; positive opens dark
+      # areas up. The counterpart to highlights, for a wallpaper so dark the
+      # backdrop reads as a flat black rectangle.
+      shadows: 0.0
       # Darkening toward each window's own edges, 0.0 (off) to 1.0. Unlike
       # the knobs above this applies to every style and is not baked -- it
       # is measured from the window's rect, since one baked image is shared
