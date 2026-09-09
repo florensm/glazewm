@@ -943,6 +943,18 @@ impl NativeSurrogate {
     Ok(())
   }
 
+  /// Drops the solid fill, letting whatever sits behind the surrogate show
+  /// through again.
+  ///
+  /// Called once the DWM thumbnail covers the whole surrogate, so the fill
+  /// is no longer standing in for anything. Leaving it would keep tinting
+  /// the window through the thumbnail's own alpha for the rest of the
+  /// animation -- the fill is opaque, so it replaces the backdrop that the
+  /// window's `transparency` opacity should be revealing.
+  pub fn clear_backdrop(&self) {
+    apply_backdrop(self.hwnd(), None);
+  }
+
   /// Queues a reposition to `rect` into `batch` instead of issuing an
   /// immediate `SetWindowPos`.
   ///
