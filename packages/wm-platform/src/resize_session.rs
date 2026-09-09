@@ -354,34 +354,35 @@ impl ResizeSession {
     let effect_opacity = options.effect_opacity;
 
     // Sample the dominant background color near the trailing content edge
-    // to use as the surrogate's solid backdrop. The backdrop fills any gap
-    // between the animated rect and the registered thumbnail area (mixed
-    // resizes) with a uniform color that blends into the app's own background.
-    //
-    // Skipped entirely when `options.blur_overlay` is `Some`: a live acrylic
-    // overlay is tracked behind this surrogate for the whole session (see
-    // `platform_sync`'s post-flush loop), and `apply_backdrop` paints the
+    // to use as the surrogate's solid backdrop. `apply_backdrop` paints the
     // *entire* surrogate window with this color via `ACCENT_ENABLE_GRADIENT`,
-    // not just the gap. A fully opaque sample hides the tracked overlay
-    // outright; blending it at `effect_opacity` (the same ratio
-    // `transparency.opacity` applies everywhere else) was tried and still
-    // read as solid at typical (high) opacity values, since a
-    // mostly-opaque fill still dominates the blend visually. Leaving
-    // `surrogate_color` `None` keeps the surrogate's own background fully
-    // transparent instead (see `NativeSurrogate::create`), so the tracked
-    // overlay's live blur/tint/saturation is what actually shows through the
-    // gap, at the cost of the gap no longer sampling the app's own color.
+    // with the (possibly gap-having, mid-resize) thumbnail composited on top
+    // -- so it's the fill behind any area the thumbnail doesn't yet cover,
+    // not just a border strip.
     //
-    // Otherwise falls back to transparent (no backdrop) when the caller has
-    // no cached color -- this never samples inline. The two-`BitBlt` GPU->CPU
-    // readback used to run synchronously right here, stalling the WM's single
-    // main thread for tens of milliseconds per window on the first resize of
-    // a burst (measured: 26-114ms per call). Callers now warm the cache in
-    // the background instead -- see `sample_edge_color_async` -- so a cache
-    // miss just means one animation plays with a transparent gap instead of
+    // Used even when `options.blur_overlay` is `Some`: a live backdrop
+    // overlay is also tracked behind this surrogate for the whole session
+    // (see `platform_sync`'s post-flush loop) and was previously the only
+    // fill for that gap, on the theory that its live blur/tint would show
+    // through cleanly. In practice the overlay doesn't always stay
+    // perfectly aligned with the surrogate while it's actively resizing, so
+    // the gap could briefly show whatever is *behind* the overlay too (raw
+    // desktop content) instead of the backdrop -- visibly more saturated
+    // than the blurred/tinted steady state. This sampled color won't match
+    // the backdrop's own tone either (it's the app's own content near its
+    // edge, not the wallpaper), but it reads as a natural extension of the
+    // app rather than a glitch, which is the same tradeoff this sampling
+    // already makes for the no-backdrop case.
+    //
+    // Falls back to transparent (no backdrop) when the caller has no cached
+    // color -- this never samples inline. The two-`BitBlt` GPU->CPU readback
+    // used to run synchronously right here, stalling the WM's single main
+    // thread for tens of milliseconds per window on the first resize of a
+    // burst (measured: 26-114ms per call). Callers now warm the cache in the
+    // background instead -- see `sample_edge_color_async` -- so a cache miss
+    // just means one animation plays with a transparent gap instead of
     // blocking the keypress that started it.
-    let edge_color =
-      if options.blur_overlay.is_some() { None } else { options.edge_color };
+    let edge_color = options.edge_color;
 
     let insert_after = if options.place_at_top { HWND(0) } else { hwnd };
     // Thumbnail registered at source dims for all directions (see doc

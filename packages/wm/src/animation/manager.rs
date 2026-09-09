@@ -2274,11 +2274,11 @@ impl AnimationManager {
               // warm the cache in the background instead of sampling
               // synchronously, so the window's *next* resize has a real
               // color ready. Only on a miss, so staleness stays bounded by
-              // the TTL rather than sliding forward on every reuse. Skipped
-              // when a live acrylic overlay is configured, mirroring
-              // `begin_impl`'s own skip: the sample would go unused there
-              // too.
-              if !had_cached_color && blur_overlay.is_none() {
+              // the TTL rather than sliding forward on every reuse. Warmed
+              // even when a live backdrop overlay is configured now that
+              // `begin_impl` uses the sampled color as the surrogate's fill
+              // regardless -- see its doc comment.
+              if !had_cached_color {
                 sample_edge_color_async(
                   hwnd,
                   &start_rect,
