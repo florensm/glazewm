@@ -8,6 +8,10 @@ use windows::{
   core::{s, w},
 };
 
+/// Accent state: none. Clears any policy previously set on the window,
+/// returning it to DWM's default transparent backing store.
+pub(crate) const ACCENT_DISABLED: u32 = 0;
+
 /// Accent state: solid-color fill, used for surrogate backdrops.
 pub(crate) const ACCENT_ENABLE_GRADIENT: u32 = 1;
 
