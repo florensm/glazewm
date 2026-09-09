@@ -360,19 +360,21 @@ impl ResizeSession {
     // -- so it's the fill behind any area the thumbnail doesn't yet cover,
     // not just a border strip.
     //
-    // Used even when `options.blur_overlay` is `Some`: a live backdrop
-    // overlay is also tracked behind this surrogate for the whole session
-    // (see `platform_sync`'s post-flush loop) and was previously the only
-    // fill for that gap, on the theory that its live blur/tint would show
-    // through cleanly. In practice the overlay doesn't always stay
-    // perfectly aligned with the surrogate while it's actively resizing, so
-    // the gap could briefly show whatever is *behind* the overlay too (raw
-    // desktop content) instead of the backdrop -- visibly more saturated
-    // than the blurred/tinted steady state. This sampled color won't match
-    // the backdrop's own tone either (it's the app's own content near its
-    // edge, not the wallpaper), but it reads as a natural extension of the
-    // app rather than a glitch, which is the same tradeoff this sampling
-    // already makes for the no-backdrop case.
+    // Painting the whole window is also why the fill is only wanted when
+    // there is actually something to cover. It is opaque, so wherever the
+    // thumbnail *does* reach it sits underneath and cancels the window's
+    // `transparency` opacity -- the window reads as solid for the whole
+    // animation, and a configured backdrop never shows. Skipped in the two
+    // cases where nothing needs covering:
+    //
+    // - Pure moves: the thumbnail keeps the surrogate's exact size for the
+    //   whole session, so no gap ever opens.
+    // - A tracked backdrop overlay: `platform_sync`'s post-flush loop
+    //   keeps one at the surrogate's live rect, queued into the *same*
+    //   `DeferWindowPos` transaction as the surrogate itself (see
+    //   `AnimationManager::queue_surrogate_updates`), so it cannot land a
+    //   frame behind, and the gap shows the real backdrop instead of a
+    //   stand-in for it.
     //
     // Falls back to transparent (no backdrop) when the caller has no cached
     // color -- this never samples inline. The two-`BitBlt` GPU->CPU readback
@@ -382,7 +384,12 @@ impl ResizeSession {
     // background instead -- see `sample_edge_color_async` -- so a cache miss
     // just means one animation plays with a transparent gap instead of
     // blocking the keypress that started it.
-    let edge_color = options.edge_color;
+    let edge_color =
+      if is_move_only || options.blur_overlay.is_some() {
+        None
+      } else {
+        options.edge_color
+      };
 
     let insert_after = if options.place_at_top { HWND(0) } else { hwnd };
     // Thumbnail registered at source dims for all directions (see doc

@@ -24,7 +24,8 @@ use windows::{
 
 use crate::{window_class, Color, CornerStyle, Rect};
 use crate::platform_impl::swca::{
-  ACCENT_ENABLE_ACRYLICBLURBEHIND, ACCENT_ENABLE_GRADIENT, apply_swca_accent,
+  ACCENT_DISABLED, ACCENT_ENABLE_ACRYLICBLURBEHIND, ACCENT_ENABLE_GRADIENT,
+  apply_swca_accent,
 };
 
 fn ensure_class_registered() {
@@ -69,13 +70,18 @@ fn apply_corner_preference(hwnd: HWND, corner_style: &CornerStyle) {
 /// Applies a solid-color backdrop to `hwnd` via the undocumented
 /// `SetWindowCompositionAttribute` API (Windows 10 1607+).
 ///
-/// When `color` is `None`, no accent is applied — DWM's default transparent
-/// backing store is used so the border-extension area around the DWM thumbnail
-/// is genuinely see-through.
+/// When `color` is `None`, any accent already on the window is cleared so
+/// DWM's default transparent backing store shows through, leaving whatever
+/// sits behind the window visible around (and through) the DWM thumbnail.
+/// Clearing rather than returning matters because
+/// [`NativeSurrogate::revive`] reuses one window across sessions: a fill
+/// applied in a previous life would otherwise survive into a session that
+/// wants to be see-through.
 ///
 /// This is a no-op when the API is unavailable (pre-Windows 10 1607).
 pub(crate) fn apply_backdrop(hwnd: HWND, color: Option<&Color>) {
   let Some(c) = color else {
+    apply_swca_accent(hwnd, ACCENT_DISABLED, 0, 0);
     return;
   };
 
