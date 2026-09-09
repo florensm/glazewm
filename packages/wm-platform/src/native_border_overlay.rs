@@ -491,6 +491,21 @@ impl NativeBorderOverlay {
       if let Err(e) = composition.set_rect(&outer) {
         tracing::warn!("Border overlay composition resize failed: {e}.");
       }
+
+      // Unconditional, not just when this call just left a pinned state:
+      // `hide()` can also clear a pin (leaving the offset at its last
+      // slid value, since a hidden overlay composites nothing so it
+      // doesn't matter yet) and then this `set_rect` -- reached via
+      // `defer_rect`'s `!is_visible` fallback -- is what makes the overlay
+      // visible again. Skipping the reset there would show it at the old
+      // slide offset instead of the `outer` rect just set below. Done now
+      // that the `HWND` has actually been resized down to `outer` -- see
+      // `clear_pin`'s doc comment for why doing this any earlier races
+      // `SetWindowPos` and can flash the ring at the screen's top-left
+      // corner.
+      if let Err(e) = composition.set_offset(0, 0) {
+        tracing::warn!("Border overlay composition offset reset failed: {e}.");
+      }
     }
 
     self.refresh_hole(&outer);
@@ -782,15 +797,19 @@ impl NativeBorderOverlay {
   /// viewport-sized window, which no longer matches the window itself.
   /// That reposition is also what restores the window region dropped at
   /// pin time.
+  ///
+  /// Deliberately leaves the composition offset untouched: resetting it
+  /// here, ahead of the caller's own `SetWindowPos`, let DWM composite a
+  /// frame where the ring (sized for the window's small rect) had already
+  /// snapped to offset (0, 0) while the `HWND` was still viewport-sized from
+  /// the pin -- rendering the ring at the screen's top-left corner instead
+  /// of the window. Callers that reposition (`set_rect`) reset the offset
+  /// themselves once the window's new geometry is actually in place; `hide`
+  /// doesn't need to, since a hidden overlay composites nothing regardless
+  /// of its stale offset.
   fn clear_pin(&mut self) {
     if self.pinned.take().is_none() {
       return;
-    }
-
-    if let BorderRenderer::Composition(composition) = &self.renderer {
-      if let Err(e) = composition.set_offset(0, 0) {
-        tracing::warn!("Border overlay composition offset reset failed: {e}.");
-      }
     }
 
     self.is_visible = false;
