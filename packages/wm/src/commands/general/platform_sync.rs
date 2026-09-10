@@ -1187,6 +1187,8 @@ fn redraw_containers(
         // `DwmSetWindowAttribute` call is the single most expensive thing
         // in this arm -- see `CloakState`.
         let mut cloak_state = CloakState::Untouched;
+        #[cfg(target_os = "windows")]
+        let mut did_move = false;
 
         if !already_positioned {
           {
@@ -1210,7 +1212,13 @@ fn redraw_containers(
               has_surrogate,
               config,
             ) {
-              Ok(state) => cloak_state = state,
+              Ok(reposition) => {
+                cloak_state = reposition.cloak_state;
+                #[cfg(target_os = "windows")]
+                {
+                  did_move = reposition.moved;
+                }
+              }
               Err(err) => {
                 tracing::warn!("Failed to set window position: {}", err);
               }
@@ -1218,7 +1226,7 @@ fn redraw_containers(
           }
 
           #[cfg(target_os = "windows")]
-          if is_visible {
+          if is_visible && did_move {
             needs_transparency_flush = true;
           }
         }
@@ -1456,6 +1464,18 @@ fn redraw_containers(
 #[cfg(target_os = "windows")]
 const SLOW_SYNC_REPOSITION_THRESHOLD: Duration = Duration::from_millis(8);
 
+/// What [`reposition_window`] did, for the caller's follow-up work.
+struct Reposition {
+  /// Cloak state the window was left in.
+  cloak_state: CloakState,
+  /// Whether a geometry-changing `SetWindowPos` was actually issued.
+  /// Only such a call carries `SWP_FRAMECHANGED`, so the caller's
+  /// `DwmFlush` -- which exists only to close that flag's alpha race --
+  /// is owed only when this is `true`.
+  #[cfg(target_os = "windows")]
+  moved: bool,
+}
+
 /// Whether [`reposition_window`] already applied the window's cloak state.
 ///
 /// `redraw_containers`' `Apply` arm uncloaks visible windows itself, but
@@ -1485,7 +1505,7 @@ fn reposition_window(
   #[cfg_attr(not(target_os = "windows"), allow(unused_variables))]
   has_surrogate: bool,
   config: &UserConfig,
-) -> anyhow::Result<CloakState> {
+) -> anyhow::Result<Reposition> {
   // For `HideMethod::PlaceInCorner`, we need to reposition hidden windows
   // to the corner of the monitor.
   if config.value.general.hide_method == HideMethod::PlaceInCorner
@@ -1519,10 +1539,16 @@ fn reposition_window(
       frame.height(),
     ))?;
 
-    return Ok(CloakState::Untouched);
+    return Ok(Reposition {
+      cloak_state: CloakState::Untouched,
+      #[cfg(target_os = "windows")]
+      moved: true,
+    });
   }
 
   let mut cloak_state = CloakState::Untouched;
+  #[cfg(target_os = "windows")]
+  let mut moved = true;
 
   if window.active_drag().is_some() {
     window.native().resize(rect.width(), rect.height())?;
@@ -1564,6 +1590,23 @@ fn reposition_window(
 
       drop(query_scope);
 
+      // Whether the window already sits exactly where this pass wants
+      // it, making the geometry call below a no-op move. Compared
+      // against `GetWindowRect`: the space `set_window_pos` writes, and
+      // the one `rect` is in, since it carries the border delta. That
+      // read is kernel-side rather than a message-pump round-trip, so it
+      // is far cheaper than the call it guards.
+      //
+      // Visible-only, because the z-order call that stands in for the
+      // skipped one carries `SWP_SHOWWINDOW`, which must not land on a
+      // window this pass is hiding.
+      let already_at_rect = is_visible
+        && !window.has_pending_dpi_adjustment()
+        && window
+          .native()
+          .frame_with_shadows()
+          .is_ok_and(|frame| &frame == rect);
+
       // During animation frames, omit `SWP_ASYNCWINDOWPOS` so that adjacent
       // windows are repositioned synchronously. This keeps their on-screen
       // position in lock-step with surrogate overlays (which update DWM
@@ -1603,6 +1646,23 @@ fn reposition_window(
           }
 
           window.native().set_window_pos(z_order, rect, swp_flags)?;
+        }
+        // Already there, so skip the call -- the most expensive thing in
+        // this function. Under `has_surrogate` it is synchronous (see
+        // `swp_flags` above) and blocks the WM's whole main loop on the
+        // target app's message pump: `explorer.exe` measured 15-21ms per
+        // window against a 5.7ms frame budget. Every workspace-switch
+        // landing hits this, because `commit_pending_cloaks` already
+        // pre-positioned these windows at this rect when it cloaked them.
+        //
+        // Z-order still has to be applied: for windows being redrawn it
+        // rides on the geometry call, since `redraw_containers` calls
+        // `set_z_order` directly only for windows it is *not* redrawing.
+        // That call is async and returns early when the order is already
+        // correct, so it does not reintroduce the block.
+        _ if already_at_rect => {
+          moved = false;
+          window.native().set_z_order(z_order)?;
         }
         _ => {
           swp_flags |= SWP_FRAMECHANGED;
@@ -1658,7 +1718,11 @@ fn reposition_window(
     }
   }
 
-  Ok(cloak_state)
+  Ok(Reposition {
+    cloak_state,
+    #[cfg(target_os = "windows")]
+    moved,
+  })
 }
 
 fn jump_cursor(
