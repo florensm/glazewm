@@ -545,16 +545,6 @@ impl AnimationManager {
         .map(|ws| ws.windows.contains_key(window_id))
         .unwrap_or(false)
       || self.pending_close_windows.contains_key(window_id)
-      // A completed resize session's surrogate is moved here to fade out
-      // over the uncloaked real window (see `remove_completed_animations`)
-      // rather than being dropped immediately -- it's still alive and
-      // carrying its own live acrylic blur, so the static overlay must stay
-      // hidden until the fade finishes, not just until `resize_sessions` no
-      // longer holds the entry.
-      || self
-        .pending_session_cleanup
-        .iter()
-        .any(|(id, _, _)| id == window_id)
   }
 
   /// Returns `true` if `window_id` has a workspace-switch surrogate
@@ -577,16 +567,26 @@ impl AnimationManager {
       || self.pending_ws_cleanup.as_ref().is_some_and(has_surrogate)
   }
 
-  /// Returns `true` if `window_id` has an active or fading-out
-  /// `ResizeSession`, regardless of whether it carries a live blur/border
-  /// tracker. Mirrors `has_live_ws_surrogate`.
+  /// Returns `true` if `window_id` has a live `ResizeSession` whose
+  /// overlays the per-tick driver owns. Mirrors `has_live_ws_surrogate`.
+  ///
+  /// Deliberately does *not* cover `pending_session_cleanup`, the tail
+  /// where a finished session's surrogate fades out over the real window.
+  /// By then the real window is uncloaked at its final rect, and the
+  /// overlay driver in `platform_sync` no longer runs for it (that loop
+  /// walks `resize_sessions`) -- so counting the tail here left nobody
+  /// driving the backdrop overlay. It kept the z-anchor it had behind a
+  /// surrogate that was being destroyed, and the window rendered without
+  /// its backdrop until the tail ended: measured as a ~12ms flash at the
+  /// end of a move, in two runs out of three.
+  ///
+  /// The tail was originally covered because the surrogate carried its own
+  /// SWCA acrylic, and so supplied the backdrop itself. It no longer does
+  /// -- every style renders through a `Windows.UI.Composition` overlay
+  /// behind the window, and `NativeSurrogate::apply_swca` has no callers.
   #[cfg(target_os = "windows")]
   pub fn has_live_resize_tracker(&self, window_id: &Uuid) -> bool {
     self.resize_sessions.contains_key(window_id)
-      || self
-        .pending_session_cleanup
-        .iter()
-        .any(|(id, _, _)| id == window_id)
   }
 
   /// Removes a window's animation and any associated resize session.
