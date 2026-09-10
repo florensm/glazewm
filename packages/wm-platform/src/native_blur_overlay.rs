@@ -194,6 +194,18 @@ pub struct NativeBlurOverlay {
   /// Composition pipeline's live properties otherwise.
   params: BlurOverlayParams,
 
+  /// Whether the gap fill is currently painting anything.
+  ///
+  /// The fill belongs to a live resize session, but the overlay outlives
+  /// the session -- it is the window's own persistent backdrop. Left set,
+  /// the sprites keep covering the backdrop with a flat colour for as long
+  /// as the window exists, which is what they did until [`apply`] learned
+  /// to clear them. Tracked so that clearing costs a bool test per tick
+  /// rather than two composition writes.
+  ///
+  /// [`apply`]: NativeBlurOverlay::apply
+  gap_active: bool,
+
   /// Last rect applied via `set_rect`, used to skip redundant
   /// `SetWindowPos` calls when the overlay hasn't actually moved.
   rect: Rect,
@@ -301,6 +313,7 @@ impl NativeBlurOverlay {
       rect: rect.clone(),
       anchor: anchor.0,
       is_visible: true,
+      gap_active: false,
       composition: Some(composition),
     })
   }
@@ -481,6 +494,11 @@ impl NativeBlurOverlay {
     covered: (i32, i32),
     full: (i32, i32),
   ) {
+    let paints = color.is_some()
+      && (full.0 > covered.0 || full.1 > covered.1);
+    if !paints && !self.gap_active {
+      return;
+    }
     if let Some(composition) = &self.composition {
       let applied =
         composition.set_gap_fill(color, opacity, covered, full);
@@ -488,6 +506,23 @@ impl NativeBlurOverlay {
         tracing::warn!("Blur overlay gap fill update failed: {e}.");
       }
     }
+    self.gap_active = paints;
+  }
+
+  /// Clears the gap fill if it is painting anything.
+  ///
+  /// Called from [`apply`], which every path runs each tick: the static
+  /// per-window sync clears and leaves it cleared, while the per-session
+  /// driver clears and immediately re-sets from the live rects. That is
+  /// what bounds the fill to the animation instead of leaving it on the
+  /// window's backdrop for good.
+  ///
+  /// [`apply`]: NativeBlurOverlay::apply
+  fn clear_gap_fill(&mut self) {
+    if !self.gap_active {
+      return;
+    }
+    self.set_gap_fill(None, 0.0, (0, 0), (0, 0));
   }
 
   pub fn set_tint(&mut self, tint: Color) {
@@ -673,11 +708,15 @@ impl NativeBlurOverlay {
   /// [`recreate`]: NativeBlurOverlay::recreate
   pub fn apply(&mut self, params: BlurOverlayParams) {
     if self.params.style != params.style {
+      // A fresh visual tree starts with no gap sprites sized.
+      self.gap_active = false;
       if let Err(e) = self.recreate(params) {
         tracing::warn!("Blur overlay style change failed: {e}.");
       }
       return;
     }
+
+    self.clear_gap_fill();
 
     self.set_tint(params.tint);
     self.set_blur_amount(params.blur_amount);
