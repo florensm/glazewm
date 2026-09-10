@@ -2220,8 +2220,9 @@ impl AnimationManager {
           session.update_target(&start_rect, &target_rect);
         } else {
           let hwnd = native_window.hwnd();
-          let cached_edge_color = self.cached_edge_color(hwnd.0);
-          let had_cached_color = cached_edge_color.is_some();
+          let cached = self.cached_edge_color(hwnd.0);
+          let color_is_fresh = cached.as_ref().is_some_and(|(_, f)| *f);
+          let cached_edge_color = cached.map(|(color, _)| color);
           // Reuses a still-fading or recently-warm surrogate for this same
           // window when one exists (see `reclaim_surrogate`'s doc comment),
           // skipping `CreateWindowExW`/`DwmRegisterThumbnail` entirely in
@@ -2269,16 +2270,15 @@ impl AnimationManager {
 
           match session_result {
             Ok(session) => {
-              // On a cache miss, this session itself plays with a
-              // transparent backdrop (see `begin_impl`'s doc comment) --
-              // warm the cache in the background instead of sampling
-              // synchronously, so the window's *next* resize has a real
-              // color ready. Only on a miss, so staleness stays bounded by
-              // the TTL rather than sliding forward on every reuse. Warmed
-              // whatever the backdrop config, since `begin_impl` uses the
-              // color for any session that can uncover a gap -- see its
-              // doc comment.
-              if !had_cached_color {
+              // Refresh in the background whenever the color is missing or
+              // past its TTL, rather than sampling synchronously here --
+              // the two `BitBlt` readbacks cost 26-114ms on the WM's only
+              // thread. This session still plays with whatever was cached,
+              // stale or not (see `cached_edge_color`); the refresh is for
+              // the next one. Warmed whatever the backdrop config, since
+              // `begin_impl` uses the color for any session that can
+              // uncover a gap.
+              if !color_is_fresh {
                 sample_edge_color_async(
                   hwnd,
                   &start_rect,
@@ -2443,19 +2443,28 @@ impl AnimationManager {
       })
   }
 
-  /// Returns the cached surrogate backdrop color for `hwnd` when still
-  /// within [`EDGE_COLOR_CACHE_TTL`].
+  /// Returns the cached surrogate backdrop color for `hwnd`, paired with
+  /// whether it is still within [`EDGE_COLOR_CACHE_TTL`].
+  ///
+  /// A stale color is handed back rather than withheld. It only ever
+  /// stands in for window content in a strip the thumbnail has not reached
+  /// yet, and an app's background changes about as often as its theme --
+  /// so an old sample beats none, which leaves that strip showing the
+  /// backdrop raw and undimmed. Withholding it meant a window's first
+  /// animation after five idle minutes played unfilled, and five
+  /// minutes is a long time to leave a window alone: in practice that was
+  /// most animations, not the rare first one. The caller refreshes a stale
+  /// entry in the background.
   ///
   /// `sample_edge_color_async`'s background thread populates this same map
   /// directly (see `edge_color_cache`'s doc comment), so a lock failure here
-  /// (poisoned mutex) is treated the same as a miss rather than propagated.
+  /// is treated the same as a miss rather than propagated.
   #[cfg(target_os = "windows")]
-  fn cached_edge_color(&self, hwnd: isize) -> Option<Color> {
+  fn cached_edge_color(&self, hwnd: isize) -> Option<(Color, bool)> {
     let map = self.edge_color_cache.lock().ok()?;
-    map
-      .get(&hwnd)
-      .filter(|(_, sampled_at)| sampled_at.elapsed() < EDGE_COLOR_CACHE_TTL)
-      .map(|(color, _)| color.clone())
+    map.get(&hwnd).map(|(color, sampled_at)| {
+      (color.clone(), sampled_at.elapsed() < EDGE_COLOR_CACHE_TTL)
+    })
   }
 
   /// Reclaims a surrogate for `window_id` to reuse instead of building one
@@ -2976,7 +2985,9 @@ impl AnimationManager {
         place_at_top: false,
         // Reuse a cached color when the closing window was recently
         // animated; otherwise sample — the window is still on screen.
-        edge_color: self.cached_edge_color(native_window.hwnd().0),
+        edge_color: self
+          .cached_edge_color(native_window.hwnd().0)
+          .map(|(color, _)| color),
         blur_overlay,
         border_overlay,
       },
