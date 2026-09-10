@@ -724,6 +724,28 @@ impl BlurVisual {
     self.reapply_knobs(knobs)
   }
 
+  /// Applies every baked knob at once, re-rendering at most once.
+  ///
+  /// The per-knob setters below each re-render on their own, which is
+  /// right when one value changes but wrong when a caller has a whole new
+  /// set:
+  /// applying seven of them in sequence walks through six intermediate
+  /// combinations, and for `Wallpaper` each is a distinct cache key and so
+  /// a full-monitor bake that nothing will ever ask for again. With
+  /// `focused_window` and `other_windows` carrying different knobs that is
+  /// six wasted bakes per window on every focus change, which also evicts
+  /// the two surfaces actually in use (see `MAX_CACHED_SURFACES`).
+  pub(crate) fn set_bake_knobs(
+    &mut self,
+    params: BlurOverlayParams,
+  ) -> crate::Result<()> {
+    let knobs = BakeKnobs::from(params);
+    if knobs == self.knobs {
+      return Ok(());
+    }
+    self.reapply_knobs(knobs)
+  }
+
   /// Re-renders the blur layer at the given knob values, however this
   /// overlay's [`Backdrop`] produces it.
   fn reapply_knobs(&mut self, knobs: BakeKnobs) -> crate::Result<()> {
