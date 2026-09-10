@@ -23,7 +23,7 @@ use crate::{
 #[cfg(target_os = "windows")]
 use crate::commands::general::{
   blur_overlay_params_for, border_overlay_params_for, overlay_z_anchor,
-  upsert_border_overlay,
+  upsert_blur_overlay, upsert_border_overlay,
 };
 
 #[allow(clippy::too_many_lines)]
@@ -73,30 +73,30 @@ pub fn handle_window_moved_or_resized(
         let mut batch = wm_platform::SurrogateBatch::new();
         let anchor = overlay_z_anchor(&window);
 
-        // The backdrop is hidden for the gesture rather than dragged along
-        // with the window.
+        // Keep the backdrop glued to the window for the gesture, the same
+        // way the border below is.
         //
-        // An interactive drag is driven entirely by the OS: it moves the
-        // window and we only hear about it afterwards, one
-        // `MovedOrResized` event at a time. The overlay therefore always
-        // trails a motion it cannot predict. A thin border ring can absorb
-        // that -- it is a few pixels out of place for a frame -- but the
-        // backdrop is opaque and the size of the window, so trailing it
-        // leaves a block of blurred wallpaper standing where the window no
-        // longer is, and the window arriving somewhere its backdrop has not
-        // reached yet. That reads as flickering for the whole drag, and it
-        // is the one artifact that survives every ordering fix, because the
-        // lag is in the event loop rather than in the order of our calls.
+        // This used to hide it instead. An interactive drag is driven
+        // entirely by the OS -- it moves the window and we only hear about
+        // it afterwards, one `MovedOrResized` event at a time -- so the
+        // overlay always trails a motion it cannot predict, and a
+        // window-sized backdrop trailing was judged to read worse than no
+        // backdrop at all. It also left the window with no backdrop for
+        // the whole drag, and -- until the sync that restores it happened
+        // to run -- after it too.
         //
-        // `sync_overlays` brings it back on drop: it re-shows any overlay
-        // that is not currently visible, by which point the window is
-        // still again and the two can be placed together.
-        if blur_overlay_params_for(is_focused, config).is_some() {
-          if let Some(overlay) = state.blur_overlays.get_mut(&window.id()) {
-            if overlay.is_visible() {
-              overlay.hide();
-            }
-          }
+        // Both overlays go into the same batch and land in one
+        // `DeferWindowPos` commit below, so the backdrop cannot separate
+        // from the border ring it sits inside.
+        if let Some(params) = blur_overlay_params_for(is_focused, config) {
+          upsert_blur_overlay(
+            &mut state.blur_overlays,
+            window.id(),
+            params,
+            &frame_position,
+            anchor,
+            &mut batch,
+          );
         }
 
         // Same live re-sync as the blur overlay above -- without this, the
