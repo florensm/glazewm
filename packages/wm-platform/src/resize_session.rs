@@ -410,12 +410,19 @@ impl ResizeSession {
     // strips the thumbnail does not cover
     // (`NativeBlurOverlay::set_gap_fill`), so the surrogate stays clear.
     //
-    // Without a backdrop there is nothing behind but the desktop, and SWCA
-    // is the only fill available -- worth having there, since the
-    // alternative in an uncovered strip is raw desktop.
+    // With no backdrop there is nothing behind the surrogate but the
+    // desktop, and SWCA is the only fill available. It is worth having
+    // when the window is opaque anyway -- the alternative in an uncovered
+    // strip is raw desktop -- but not when the window is transparent. An
+    // opaque fill covers the whole surrogate, so it cancels the very
+    // `transparency` the window is configured for, and the window reads as
+    // solid for the entire animation. A transparent window in an uncovered
+    // strip shows the desktop, which is what it is showing through itself
+    // anyway; that is the smaller error by far.
+    let opaque_window = effect_opacity == u8::MAX;
     let surrogate_color = if options.blur_overlay.is_some() {
       None
-    } else if can_expose_gap {
+    } else if can_expose_gap && opaque_window {
       options.edge_color
     } else {
       None
