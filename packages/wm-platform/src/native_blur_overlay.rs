@@ -538,6 +538,28 @@ impl NativeBlurOverlay {
     }
   }
 
+  /// Applies all seven baked knobs together, re-rendering at most once.
+  ///
+  /// Kept separate from the per-knob setters so a caller with a whole new
+  /// `BlurOverlayParams` -- which is every caller in practice, since
+  /// params are resolved per focus state -- pays one bake rather than one
+  /// per changed knob.
+  fn set_bake_knobs(&mut self, params: BlurOverlayParams) {
+    self.params.blur_amount = params.blur_amount;
+    self.params.saturation = params.saturation;
+    self.params.exposure = params.exposure;
+    self.params.contrast = params.contrast;
+    self.params.highlights = params.highlights;
+    self.params.shadows = params.shadows;
+    self.params.grain = params.grain;
+
+    if let Some(composition) = &mut self.composition {
+      if let Err(e) = composition.set_bake_knobs(params) {
+        tracing::warn!("Blur overlay bake-knob update failed: {e}.");
+      }
+    }
+  }
+
   blur_overlay_setter!(
     /// Updates the blur radius/intensity; re-applies only when the value
     /// changes. No-op when running the SWCA fallback (no such knob exists).
@@ -719,16 +741,15 @@ impl NativeBlurOverlay {
     self.clear_gap_fill();
 
     self.set_tint(params.tint);
-    self.set_blur_amount(params.blur_amount);
     self.set_corner_radius(params.corner_radius);
     self.set_opacity(params.opacity);
-    self.set_saturation(params.saturation);
-    self.set_exposure(params.exposure);
-    self.set_contrast(params.contrast);
-    self.set_highlights(params.highlights);
-    self.set_shadows(params.shadows);
     self.set_vignette(params.vignette);
-    self.set_grain(params.grain);
+
+    // The seven baked knobs go in one call rather than one setter each.
+    // Applied singly they walk through six intermediate combinations, and
+    // for the `wallpaper` style every one of those is a separate
+    // full-monitor bake -- see `BlurVisual::set_bake_knobs`.
+    self.set_bake_knobs(params);
     self.set_parallax(params.parallax);
 
     // Unlike the setters above, this reacts to a change *outside* the
