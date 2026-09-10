@@ -398,11 +398,29 @@ impl ResizeSession {
     // background instead -- see `sample_edge_color_async` -- so a cache miss
     // just means one animation plays with a transparent gap instead of
     // blocking the keypress that started it.
-    let edge_color = if can_expose_gap {
+    // Two different things, deliberately: what the *surrogate* paints, and
+    // what the session remembers.
+    //
+    // The surrogate's own fill is SWCA, which renders opaque whatever
+    // alpha it is handed -- so wherever the thumbnail is part-transparent
+    // it shows through as a solid block instead of the window's
+    // `transparency`. With a backdrop overlay tracked behind the surrogate
+    // there is a better place for the fill: that overlay paints it as a
+    // real composited sprite, at the window's own opacity, in just the
+    // strips the thumbnail does not cover
+    // (`NativeBlurOverlay::set_gap_fill`), so the surrogate stays clear.
+    //
+    // Without a backdrop there is nothing behind but the desktop, and SWCA
+    // is the only fill available -- worth having there, since the
+    // alternative in an uncovered strip is raw desktop.
+    let surrogate_color = if options.blur_overlay.is_some() {
+      None
+    } else if can_expose_gap {
       options.edge_color
     } else {
       None
     };
+    let edge_color = options.edge_color;
 
     let insert_after = if options.place_at_top { HWND(0) } else { hwnd };
     // Thumbnail registered at source dims for all directions (see doc
@@ -419,7 +437,7 @@ impl ResizeSession {
           hwnd,
           source_rect,
           source_rect,
-          edge_color.as_ref(),
+          surrogate_color.as_ref(),
           effect_opacity,
           options.initially_visible,
           border_inset,
@@ -441,7 +459,7 @@ impl ResizeSession {
           hwnd,
           source_rect,
           source_rect,
-          edge_color.as_ref(),
+          surrogate_color.as_ref(),
           effect_opacity,
           options.initially_visible,
           border_inset,
@@ -585,6 +603,17 @@ impl ResizeSession {
   #[must_use]
   pub fn is_move_only(&self) -> bool {
     self.is_move_only
+  }
+
+  /// Size of the content the surrogate's DWM thumbnail currently draws,
+  /// in physical pixels, or `None` without a surrogate.
+  ///
+  /// Anchored top-left within the surrogate, so anything of the surrogate
+  /// beyond this is uncovered -- what `NativeBlurOverlay::set_gap_fill`
+  /// stands in for.
+  #[must_use]
+  pub fn covered_size(&self) -> Option<(i32, i32)> {
+    self.surrogate.as_ref().map(NativeSurrogate::content_size)
   }
 
   /// Returns the backdrop color in use by this session's surrogate, if any.
