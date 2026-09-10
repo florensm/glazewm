@@ -462,6 +462,34 @@ impl NativeBlurOverlay {
   }
 
   /// Updates the tint; re-applies only when the value changes.
+  /// Fills the strips a mid-animation surrogate's thumbnail does not cover
+  /// with `color` at `opacity`, or clears them when nothing is uncovered.
+  ///
+  /// `covered` is the thumbnail's size and `full` the overlay's, both in
+  /// physical pixels. The fill lives on this overlay rather than on the
+  /// surrogate because the surrogate can only get a solid backdrop through
+  /// SWCA, which ignores the alpha it is handed -- see
+  /// `BlurVisual::set_gap_fill`.
+  ///
+  /// Not cached against a previous value: the rects change every animation
+  /// frame anyway, and the calls are property writes on visuals already in
+  /// the tree.
+  pub fn set_gap_fill(
+    &mut self,
+    color: Option<Color>,
+    opacity: f32,
+    covered: (i32, i32),
+    full: (i32, i32),
+  ) {
+    if let Some(composition) = &self.composition {
+      let applied =
+        composition.set_gap_fill(color, opacity, covered, full);
+      if let Err(e) = applied {
+        tracing::warn!("Blur overlay gap fill update failed: {e}.");
+      }
+    }
+  }
+
   pub fn set_tint(&mut self, tint: Color) {
     if self.params.tint == tint {
       return;

@@ -1390,14 +1390,32 @@ fn redraw_containers(
 
       if let Some(params) = session.blur_overlay_params() {
         match (anchor, rect.clone()) {
-          (Some(anchor), Some(rect)) => upsert_blur_overlay(
-            &mut state.blur_overlays,
-            *id,
-            params,
-            &rect,
-            anchor,
-            &mut batch,
-          ),
+          (Some(anchor), Some(rect)) => {
+            upsert_blur_overlay(
+              &mut state.blur_overlays,
+              *id,
+              params,
+              &rect,
+              anchor,
+              &mut batch,
+            );
+
+            // Stand in for the window content the surrogate's thumbnail
+            // has not caught up to yet. Painted by the backdrop overlay
+            // rather than the surrogate, because only the overlay can
+            // put a solid colour down at a real opacity -- see
+            // `begin_impl`'s `surrogate_color`. Driven every frame: both
+            // the covered size and the overlay's own size move as the
+            // animation runs.
+            if let Some(overlay) = state.blur_overlays.get_mut(id) {
+              overlay.set_gap_fill(
+                session.edge_color().copied(),
+                f32::from(session.effect_opacity) / 255.0,
+                session.covered_size().unwrap_or((i32::MAX, i32::MAX)),
+                (rect.width(), rect.height()),
+              );
+            }
+          }
           _ => {
             if let Some(overlay) = state.blur_overlays.get_mut(id) {
               overlay.hide();

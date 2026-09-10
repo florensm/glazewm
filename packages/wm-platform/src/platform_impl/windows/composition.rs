@@ -453,6 +453,25 @@ pub(crate) struct BlurVisual {
   vignette_sprite: SpriteVisual,
   rounded_geometry: CompositionRoundedRectangleGeometry,
 
+  /// Stands in for the window content a mid-animation surrogate has not
+  /// captured yet, in the two strips its DWM thumbnail does not reach.
+  ///
+  /// Two sprites rather than one because the uncovered area is an L: the
+  /// thumbnail is anchored top-left, so what is left over is a strip down
+  /// the right and a strip along the bottom. A single sprite would have to
+  /// cover the thumbnail as well, and being composited *under* a
+  /// part-transparent thumbnail it would tint the content too -- the whole
+  /// window would read as solid, which is the bug this replaces.
+  ///
+  /// Painted here rather than on the surrogate because the surrogate can
+  /// only ask for a solid backdrop through SWCA, and an SWCA accent
+  /// renders opaque whatever alpha it is given. A sprite takes a real
+  /// opacity, so the fill can match the window's own `transparency` and
+  /// sit over the backdrop the way the settled window does.
+  gap_brush: CompositionColorBrush,
+  gap_right: SpriteVisual,
+  gap_bottom: SpriteVisual,
+
   /// Everything baked into the wallpaper image. Kept whole so any one
   /// setter can re-render using the others' current values -- acrylic reads
   /// only `blur_amount`/`saturation` from it, since the remaining knobs are
@@ -607,6 +626,60 @@ impl BlurVisual {
   }
 
   /// Updates the tint layer's color; no-op unless the value changed.
+  /// Paints `color` at `opacity` over the two strips of this overlay that
+  /// the surrogate's thumbnail does not cover, and clears them when there
+  /// is nothing uncovered.
+  ///
+  /// `covered` is the thumbnail's size, `full` the overlay's; both in
+  /// physical pixels, both anchored top-left, which is where DWM draws the
+  /// thumbnail. Passing a `covered` at least as large as `full` on both
+  /// axes hides the fill, which is the steady state for a pure move or a
+  /// shrink.
+  pub(crate) fn set_gap_fill(
+    &self,
+    color: Option<crate::Color>,
+    opacity: f32,
+    covered: (i32, i32),
+    full: (i32, i32),
+  ) -> crate::Result<()> {
+    let right_w = (full.0 - covered.0).max(0);
+    let bottom_h = (full.1 - covered.1).max(0);
+    let Some(color) = color.filter(|_| right_w > 0 || bottom_h > 0) else {
+      self.gap_right.SetSize(Vector2 { X: 0.0, Y: 0.0 })?;
+      self.gap_bottom.SetSize(Vector2 { X: 0.0, Y: 0.0 })?;
+      return Ok(());
+    };
+
+    self.gap_brush.SetColor(to_ui_color(color))?;
+
+    // The right strip takes the full height and the bottom strip only the
+    // covered width, so the two meet without overlapping -- overlapping
+    // would double-composite the corner and show it darker than the rest.
+    self.gap_right.SetOffset(Vector3 {
+      X: pixels_to_dips(covered.0),
+      Y: 0.0,
+      Z: 0.0,
+    })?;
+    self.gap_right.SetSize(Vector2 {
+      X: pixels_to_dips(right_w),
+      Y: pixels_to_dips(full.1),
+    })?;
+    self.gap_right.SetOpacity(opacity)?;
+
+    self.gap_bottom.SetOffset(Vector3 {
+      X: 0.0,
+      Y: pixels_to_dips(covered.1),
+      Z: 0.0,
+    })?;
+    self.gap_bottom.SetSize(Vector2 {
+      X: pixels_to_dips(covered.0.min(full.0)),
+      Y: pixels_to_dips(bottom_h),
+    })?;
+    self.gap_bottom.SetOpacity(opacity)?;
+
+    Ok(())
+  }
+
   pub(crate) fn set_tint(&self, tint: crate::Color) -> crate::Result<()> {
     self.tint_brush.SetColor(to_ui_color(tint))?;
 
@@ -977,6 +1050,18 @@ fn build_visual_tree(
   vignette_sprite.SetBrush(&vignette_brush)?;
   vignette_sprite.SetSize(size)?;
 
+  // Zero-sized until a resize session actually uncovers something; see the
+  // field docs. Topmost so the fill reads as window content sitting on the
+  // backdrop, not as another layer of backdrop.
+  let gap_brush =
+    compositor.CreateColorBrushWithColor(to_ui_color(params.tint))?;
+  let gap_right = compositor.CreateSpriteVisual()?;
+  gap_right.SetBrush(&gap_brush)?;
+  gap_right.SetSize(Vector2 { X: 0.0, Y: 0.0 })?;
+  let gap_bottom = compositor.CreateSpriteVisual()?;
+  gap_bottom.SetBrush(&gap_brush)?;
+  gap_bottom.SetSize(Vector2 { X: 0.0, Y: 0.0 })?;
+
   let root = compositor.CreateContainerVisual()?;
   root.SetSize(size)?;
   root.SetClip(&clip)?;
@@ -984,6 +1069,8 @@ fn build_visual_tree(
   root.Children()?.InsertAtTop(&blur_sprite)?;
   root.Children()?.InsertAtTop(&tint_sprite)?;
   root.Children()?.InsertAtTop(&vignette_sprite)?;
+  root.Children()?.InsertAtTop(&gap_right)?;
+  root.Children()?.InsertAtTop(&gap_bottom)?;
 
   target.SetRoot(&root)?;
 
@@ -998,6 +1085,9 @@ fn build_visual_tree(
     tint_brush,
     vignette_brush,
     vignette_sprite,
+    gap_brush,
+    gap_right,
+    gap_bottom,
     rounded_geometry,
     knobs: params.into(),
     parallax: params.parallax,
