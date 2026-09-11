@@ -836,6 +836,9 @@ pub struct WindowOpenConfig {
   /// - `none` / `fade`: no slide; combine with `opacity_from` for a pure
   ///   fade-in.
   /// - `zoom`: zoom in from the window center.
+  ///
+  /// Accepts `direction` as a legacy alias for this key.
+  #[serde(alias = "direction")]
   pub style: WindowTransitionStyle,
   /// Starting opacity (0.0–1.0). At `1.0` no fade is applied; at `0.0`
   /// the window fades in from fully transparent. Can be combined with
