@@ -7,8 +7,8 @@ use windows::{
   Win32::{
     Foundation::{CloseHandle, BOOL, HWND, LPARAM, POINT, RECT},
     Graphics::Dwm::{
-      DwmGetWindowAttribute, DwmSetWindowAttribute, DWMWA_BORDER_COLOR,
-      DWMWA_CLOAKED, DWMWA_COLOR_NONE, DWMWA_EXTENDED_FRAME_BOUNDS,
+      DwmGetColorizationColor, DwmGetWindowAttribute,
+      DwmSetWindowAttribute, DWMWA_CLOAKED, DWMWA_EXTENDED_FRAME_BOUNDS,
       DWMWA_WINDOW_CORNER_PREFERENCE, DWMWCP_DEFAULT, DWMWCP_DONOTROUND,
       DWMWCP_ROUND, DWMWCP_ROUNDSMALL,
     },
@@ -28,15 +28,15 @@ use windows::{
         IsZoomed, SendNotifyMessageW, SetForegroundWindow,
         SetLayeredWindowAttributes, SetWindowLongPtrW, SetWindowPlacement,
         SetWindowPos, ShowWindowAsync, WindowFromPoint, GA_ROOT,
-        GWL_EXSTYLE, GWL_STYLE, GW_OWNER, HWND_NOTOPMOST, HWND_TOP,
-        HWND_TOPMOST, LAYERED_WINDOW_ATTRIBUTES_FLAGS, LWA_ALPHA,
-        LWA_COLORKEY, SET_WINDOW_POS_FLAGS, SWP_ASYNCWINDOWPOS,
+        GWL_EXSTYLE, GWL_STYLE, GW_HWNDPREV, GW_OWNER, HWND_NOTOPMOST,
+        HWND_TOP, HWND_TOPMOST, LAYERED_WINDOW_ATTRIBUTES_FLAGS,
+        LWA_ALPHA, LWA_COLORKEY, SET_WINDOW_POS_FLAGS, SWP_ASYNCWINDOWPOS,
         SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOCOPYBITS, SWP_NOMOVE,
         SWP_NOOWNERZORDER, SWP_NOSENDCHANGING, SWP_NOSIZE, SWP_NOZORDER,
         SWP_SHOWWINDOW, SW_HIDE, SW_MAXIMIZE, SW_MINIMIZE, SW_RESTORE,
         SW_SHOWNA, WINDOWPLACEMENT, WINDOW_EX_STYLE, WINDOW_STYLE,
         WM_CLOSE, WPF_ASYNCWINDOWPLACEMENT, WS_DLGFRAME, WS_EX_LAYERED,
-        WS_THICKFRAME,
+        WS_EX_TOPMOST, WS_THICKFRAME,
       },
     },
   },
@@ -209,7 +209,6 @@ impl NativeWindow {
         rect.height(),
         SWP_NOACTIVATE
           | SWP_NOZORDER
-          | SWP_NOCOPYBITS
           | SWP_NOSENDCHANGING
           | SWP_ASYNCWINDOWPOS
           | SWP_FRAMECHANGED,
@@ -236,7 +235,6 @@ impl NativeWindow {
         SWP_NOACTIVATE
           | SWP_NOZORDER
           | SWP_NOMOVE
-          | SWP_NOCOPYBITS
           | SWP_NOSENDCHANGING
           | SWP_ASYNCWINDOWPOS
           | SWP_FRAMECHANGED,
@@ -259,7 +257,6 @@ impl NativeWindow {
         SWP_NOACTIVATE
           | SWP_NOZORDER
           | SWP_NOSIZE
-          | SWP_NOCOPYBITS
           | SWP_NOSENDCHANGING
           | SWP_ASYNCWINDOWPOS
           | SWP_FRAMECHANGED,
@@ -541,6 +538,37 @@ impl NativeWindow {
     }
   }
 
+  /// Returns `true` when the window is already at the requested z-order
+  /// position, making a `SetWindowPos` call redundant.
+  ///
+  /// Skipping redundant calls matters for flicker: focus changes reorder
+  /// every same-state window in the workspace, and each `SetWindowPos`
+  /// (even a positionally no-op one) can invalidate and repaint the target
+  /// window. Returns `false` for `HWND_TOP`/`HWND_TOPMOST`, whose exact
+  /// resulting position cannot be cheaply verified.
+  fn is_z_order_correct(handle: isize, z_order_hwnd: HWND) -> bool {
+    if z_order_hwnd == HWND_NOTOPMOST {
+      // `HWND_NOTOPMOST` has no effect when the window is already
+      // non-topmost.
+      // SAFETY: A stale `handle` (window destroyed since it was captured)
+      // just makes `GetWindowLongPtrW` return 0, not UB.
+      let ex_style =
+        unsafe { GetWindowLongPtrW(HWND(handle), GWL_EXSTYLE) };
+      #[allow(clippy::cast_possible_wrap)]
+      let is_topmost = ex_style & WS_EX_TOPMOST.0 as isize != 0;
+      !is_topmost
+    } else if z_order_hwnd.0 > 0 {
+      // Already positioned directly below the requested insert-after
+      // window.
+      // SAFETY: A stale `handle` just makes `GetWindow` return `HWND(0)`,
+      // not UB.
+      let prev = unsafe { GetWindow(HWND(handle), GW_HWNDPREV) };
+      prev == z_order_hwnd
+    } else {
+      false
+    }
+  }
+
   /// Implements [`NativeWindowWindowsExt::set_z_order`].
   pub(crate) fn set_z_order(
     &self,
@@ -553,8 +581,18 @@ impl NativeWindow {
       WindowZOrder::AfterWindow(window_id) => HWND(window_id.0),
     };
 
+    // Skip entirely when the window is already in the requested position.
+    // This avoids invalidating (and repainting) every window in the
+    // workspace on each focus change.
+    if Self::is_z_order_correct(self.handle, z_order_hwnd) {
+      return Ok(());
+    }
+
+    // `SWP_NOCOPYBITS` is deliberately omitted: the window does not move
+    // or resize, so its bits are unchanged — discarding them would
+    // force a full repaint of the client area, which flickers on
+    // slow-painting apps.
     let flags = SWP_NOACTIVATE
-      | SWP_NOCOPYBITS
       | SWP_ASYNCWINDOWPOS
       | SWP_SHOWWINDOW
       | SWP_NOMOVE
@@ -562,13 +600,27 @@ impl NativeWindow {
 
     unsafe { SetWindowPos(self.hwnd(), z_order_hwnd, 0, 0, 0, 0, flags) }?;
 
-    // Z-order can sometimes still be incorrect after the above call.
+    // Z-order can sometimes still be incorrect after the above call --
+    // observed with some apps that briefly re-assert their own z-order in
+    // response to it. 10ms is a guess at long enough for that to have
+    // settled; no completion signal exists to wait on instead. Spawned as
+    // a detached `tokio` task rather than awaited here, so this delay
+    // never blocks the caller (`redraw_containers`, itself called from
+    // `platform_sync`) -- not on the resize/drag/workspace-switch hot
+    // path, which never awaits this task or otherwise waits on it.
     let handle = self.handle;
     task::spawn(async move {
       tokio::time::sleep(Duration::from_millis(10)).await;
-      let _ = unsafe {
-        SetWindowPos(HWND(handle), z_order_hwnd, 0, 0, 0, 0, flags)
-      };
+      // Re-check at fire time: the initial call has usually landed by now,
+      // making this retry a no-op that would otherwise repaint the window.
+      if !Self::is_z_order_correct(handle, z_order_hwnd) {
+        // SAFETY: A stale `handle` (window destroyed during the 10ms
+        // delay) just makes the call fail, which is discarded
+        // below.
+        let _ = unsafe {
+          SetWindowPos(HWND(handle), z_order_hwnd, 0, 0, 0, 0, flags)
+        };
+      }
     });
 
     Ok(())
@@ -609,29 +661,6 @@ impl NativeWindow {
             | SWP_ASYNCWINDOWPOS,
         )?;
       }
-    }
-
-    Ok(())
-  }
-
-  /// Implements [`NativeWindowWindowsExt::set_border_color`].
-  pub(crate) fn set_border_color(
-    &self,
-    color: Option<&Color>,
-  ) -> crate::Result<()> {
-    let bgr = match color {
-      Some(color) => color.to_bgr(),
-      None => DWMWA_COLOR_NONE,
-    };
-
-    unsafe {
-      #[allow(clippy::cast_possible_truncation)]
-      DwmSetWindowAttribute(
-        self.hwnd(),
-        DWMWA_BORDER_COLOR,
-        std::ptr::from_ref(&bgr).cast(),
-        std::mem::size_of::<u32>() as u32,
-      )?;
     }
 
     Ok(())
@@ -715,11 +744,44 @@ impl NativeWindow {
     self.set_transparency(&OpacityValue::from_alpha(target_alpha))
   }
 
+  /// Implements [`NativeWindowWindowsExt::reassert_transparency`].
+  pub(crate) fn reassert_transparency(&self) -> crate::Result<()> {
+    if !self.has_window_style_ex(WS_EX_LAYERED) {
+      return Ok(());
+    }
+
+    let mut alpha = u8::MAX;
+    let mut flag = LAYERED_WINDOW_ATTRIBUTES_FLAGS::default();
+
+    // SAFETY: `self.hwnd()` is a valid window handle. `alpha` and `flag`
+    // are stack-allocated out-parameters live for the duration of the
+    // call.
+    unsafe {
+      GetLayeredWindowAttributes(
+        self.hwnd(),
+        None,
+        Some(&raw mut alpha),
+        Some(&raw mut flag),
+      )?;
+    }
+
+    if !flag.contains(LWA_ALPHA) {
+      return Ok(());
+    }
+
+    // SAFETY: `self.hwnd()` is a valid window handle.
+    unsafe {
+      SetLayeredWindowAttributes(self.hwnd(), None, alpha, LWA_ALPHA)?;
+    }
+
+    Ok(())
+  }
+
   /// Whether the window is cloaked. For some UWP apps, `WS_VISIBLE` will
   /// be present even if the window isn't actually visible. The
   /// `DWMWA_CLOAKED` attribute is used to check whether these apps are
   /// visible.
-  fn is_cloaked(&self) -> crate::Result<bool> {
+  pub(crate) fn is_cloaked(&self) -> crate::Result<bool> {
     let mut cloaked = 0u32;
 
     unsafe {
@@ -834,4 +896,32 @@ fn desktop_window() -> NativeWindow {
   };
 
   NativeWindow::new(handle.0)
+}
+
+/// Reads the OS's current accent/colorization color via
+/// `DwmGetColorizationColor`, for `BorderColorSource`'s `"accent"` value.
+///
+/// Not tied to a specific window -- this is a system-wide color, the same
+/// one Windows uses to tint title bars/taskbar when the user has that
+/// personalization option enabled. The public `system_accent_color`
+/// wrapper (`system_accent_color.rs`) caches this with a short TTL rather
+/// than calling straight through on every border resolution; this inner
+/// function itself performs no caching of its own.
+pub(crate) fn system_accent_color() -> crate::Result<Color> {
+  let mut argb: u32 = 0;
+  let mut opaque_blend = BOOL(0);
+
+  // SAFETY: `argb` and `opaque_blend` are stack-allocated out-params, live
+  // for the duration of this call.
+  unsafe {
+    DwmGetColorizationColor(&raw mut argb, &raw mut opaque_blend)
+  }?;
+
+  #[allow(clippy::cast_possible_truncation)]
+  Ok(Color {
+    r: ((argb >> 16) & 0xFF) as u8,
+    g: ((argb >> 8) & 0xFF) as u8,
+    b: (argb & 0xFF) as u8,
+    a: 255,
+  })
 }

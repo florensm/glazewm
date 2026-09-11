@@ -18,7 +18,7 @@ use tokio::{process::Command, signal};
 use tracing::Level;
 use tracing_subscriber::{
   fmt::{self, writer::MakeWriterExt},
-  layer::SubscriberExt,
+  layer::{Layer, SubscriberExt},
 };
 use wm_common::{AppCommand, InvokeCommand, Verbosity, WmEvent};
 #[cfg(target_os = "macos")]
@@ -34,6 +34,7 @@ use crate::{
   wm::WindowManager,
 };
 
+mod animation;
 mod commands;
 mod events;
 mod ipc_server;
@@ -61,6 +62,12 @@ fn main() -> anyhow::Result<()> {
     verbosity,
   } = app_command
   {
+    // Before any window exists: our overlay windows live on a thread that
+    // never pumps a message queue, so Windows would otherwise substitute
+    // hit-testable "Not Responding" ghosts for them and swallow desktop
+    // mouse input. See `disable_window_ghosting`.
+    wm_platform::disable_window_ghosting();
+
     let rt = tokio::runtime::Runtime::new()?;
     let (event_loop, dispatcher) = EventLoop::new()?;
 
@@ -185,7 +192,31 @@ async fn start_wm(
     .set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
   loop {
+    // Hand queued platform events the thread before the next animation
+    // frame. The `biased` select below puts the animation tick above every
+    // event branch, and a tick is ready again as soon as the previous
+    // frame finishes, so during an animation those branches are never
+    // reached -- window events were measured waiting a median ~210ms
+    // and up to ~577ms on an eight-window relayout. The drain is
+    // capped per frame so an event burst cannot starve the animation
+    // in the other direction.
+    if let Err(err) = drain_platform_events(
+      &mut wm,
+      &mut config,
+      &mut keybinding_listener,
+      &mut mouse_listener,
+      &mut window_listener,
+      &mut display_listener,
+    ) {
+      tracing::error!("{:?}", err);
+      dispatcher.show_error_dialog("Non-fatal error", &err.to_string());
+    }
+
     let res = tokio::select! {
+      // biased: evaluated top-to-bottom when multiple futures are ready
+      // simultaneously. Shutdown signals are checked first, animation ticks
+      // second so that window/input events never delay mid-animation frames.
+      biased;
       _ = signal::ctrl_c() => {
         tracing::info!("Received SIGINT signal.");
         break;
@@ -197,6 +228,12 @@ async fn start_wm(
       Some(()) = tray.exit_rx.recv() => {
         tracing::info!("Exiting through system tray.");
         break;
+      },
+      Some(()) = wm.animation_tick_rx.recv() => {
+        // Drain any stale ticks that piled up while the previous frame was
+        // processing, so each update_animations call covers the freshest state.
+        while wm.animation_tick_rx.try_recv().is_ok() {}
+        wm.update_animations(&config)
       },
       Some(event) = mouse_listener.next_event() => {
         tracing::debug!("Received mouse event: {:?}", event);
@@ -298,16 +335,121 @@ async fn start_wm(
   Ok(())
 }
 
+/// Maximum platform events serviced ahead of one animation frame by
+/// [`drain_platform_events`].
+///
+/// Bounds the inversion this creates: without a cap, an application
+/// spamming location-change events could keep the drain busy and starve
+/// the animation tick, turning an input-latency fix into dropped frames.
+/// Eight is comfortably above the ~1.5 events per frame observed on an
+/// eight-window relayout, so in practice the queue empties first.
+const MAX_PRIORITY_EVENTS_PER_FRAME: usize = 8;
+
+/// Services up to [`MAX_PRIORITY_EVENTS_PER_FRAME`] already-queued
+/// platform events before the next animation frame.
+///
+/// Returns as soon as every eligible listener is empty, so a quiet loop
+/// iteration costs a handful of non-blocking channel polls.
+///
+/// Keybindings are checked first because they are the only events a person
+/// is actively waiting on; the main loop's own `select!` checks them last.
+///
+/// # Why the workspace-switch gate
+///
+/// Mouse, window and display handlers mutate layout state -- display
+/// states, workspace membership, floating placement, unmanagement. Resize
+/// and move animations are safe: `handle_window_moved_or_resized` bails
+/// out early for any window holding a `ResizeSession`, so those events
+/// cost a rect query and nothing more. A workspace-switch slide has no
+/// such guard on every path, and delivering these events mid-slide broke
+/// the animation and left workspaces reporting no windows.
+///
+/// So the gate is narrow on purpose: during a slide (and its one-tick
+/// cleanup) only keybindings are drained and everything else waits for the
+/// `select!`, exactly as it did before this option existed. A slide is
+/// brief, so the responsiveness win during resizes -- which is where the
+/// queue actually backs up, ~195 events per burst -- is kept intact.
+fn drain_platform_events(
+  wm: &mut WindowManager,
+  config: &mut UserConfig,
+  keybinding_listener: &mut KeybindingListener,
+  mouse_listener: &mut MouseListener,
+  window_listener: &mut WindowListener,
+  display_listener: &mut DisplayListener,
+) -> anyhow::Result<()> {
+  // Re-checked every iteration: handling an event below can start or end a
+  // slide, and the next event must be judged against that.
+  for _ in 0..MAX_PRIORITY_EVENTS_PER_FRAME {
+    #[cfg(target_os = "windows")]
+    let layout_events_safe =
+      !wm.state.animation_manager.is_workspace_switch_active();
+    #[cfg(not(target_os = "windows"))]
+    let layout_events_safe = true;
+
+    let event = keybinding_listener
+      .try_next_event()
+      .map(PlatformEvent::Keybinding)
+      .or_else(|| {
+        if !layout_events_safe {
+          return None;
+        }
+
+        mouse_listener
+          .try_next_event()
+          .map(PlatformEvent::Mouse)
+          .or_else(|| {
+            window_listener.try_next_event().map(PlatformEvent::Window)
+          })
+          .or_else(|| {
+            display_listener
+              .try_next_event()
+              .map(|()| PlatformEvent::DisplaySettingsChanged)
+          })
+      });
+
+    let Some(event) = event else {
+      break;
+    };
+
+    tracing::debug!("Received platform event ahead of tick: {:?}", event);
+    wm.process_event(event, config)?;
+  }
+
+  Ok(())
+}
+
 /// Initialize logging with the specified verbosity level.
 ///
-/// Error logs are saved to `~/.glzr/glazewm/errors.log`.
+/// Error and warning logs are saved to `~/.glzr/glazewm/errors.log`.
+/// `WARN` is included (not just `ERROR`) so perf-diagnostic warnings (e.g.
+/// slow synchronous window repositions) are captured even when the WM is
+/// running detached from a terminal, without needing `-v` for the full
+/// `DEBUG` firehose.
 fn setup_logging(verbosity: &Verbosity) -> anyhow::Result<()> {
   let error_log_dir = home::home_dir()
     .context("Unable to get home directory.")?
     .join(".glzr/glazewm/");
 
   let error_writer =
-    tracing_appender::rolling::never(error_log_dir, "errors.log");
+    tracing_appender::rolling::never(&error_log_dir, "errors.log");
+
+  // The frame profiler reports at `INFO`, which otherwise only reaches
+  // stdout -- and the release build is a `windows` subsystem binary, so a
+  // detached WM has nowhere to write it. Give it its own file when (and
+  // only when) profiling is enabled, filtered to the profiler's target so
+  // the file stays a clean run of frame reports rather than an `INFO`
+  // firehose, and errors.log stays reserved for actual problems.
+  let perf_layer = wm_platform::perf::is_enabled().then(|| {
+    fmt::Layer::new()
+      .with_writer(tracing_appender::rolling::never(
+        &error_log_dir,
+        "perf.log",
+      ))
+      .with_filter(
+        tracing_subscriber::filter::Targets::new()
+          .with_target(wm_platform::perf::LOG_TARGET, Level::INFO),
+      )
+  });
 
   let subscriber = tracing_subscriber::registry()
     .with(
@@ -318,8 +460,9 @@ fn setup_logging(verbosity: &Verbosity) -> anyhow::Result<()> {
     .with(
       // Output to error log file.
       fmt::Layer::new()
-        .with_writer(error_writer.with_max_level(Level::ERROR)),
-    );
+        .with_writer(error_writer.with_max_level(Level::WARN)),
+    )
+    .with(perf_layer);
 
   tracing::subscriber::set_global_default(subscriber)?;
 

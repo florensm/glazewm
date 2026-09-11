@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use wm_platform::{
-  Color, CornerStyle, Key, Keybinding, LengthValue, OpacityValue,
-  RectDelta,
+  BackdropStyle, BlurOverlayParams, BorderOverlayParams, Color,
+  CornerStyle, Key, Keybinding, LengthValue, OpacityValue, RectDelta,
 };
 
 use crate::app_command::InvokeCommand;
@@ -9,6 +9,7 @@ use crate::app_command::InvokeCommand;
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 #[serde(default, rename_all(serialize = "camelCase"))]
 pub struct ParsedConfig {
+  pub animations: AnimationsConfig,
   pub binding_modes: Vec<BindingModeConfig>,
   pub gaps: GapsConfig,
   pub general: GeneralConfig,
@@ -252,6 +253,266 @@ pub struct WindowEffectConfig {
 
   /// Config for optionally applying transparency.
   pub transparency: TransparencyEffectConfig,
+
+  /// Config for optionally applying a DWM backdrop material.
+  #[serde(alias = "blur_behind")]
+  pub backdrop: BackdropEffectConfig,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(default, rename_all(serialize = "camelCase"))]
+pub struct BackdropEffectConfig {
+  /// Whether to enable the effect.
+  pub enabled: bool,
+
+  /// Backdrop material to apply.
+  pub style: BackdropStyle,
+
+  /// RGBA tint blended over the blurred backdrop.
+  ///
+  /// Accepts `#RRGGBB` (fully opaque) or `#RRGGBBAA`. When `None`, a
+  /// near-transparent black (`alpha = 1`) is used to avoid the solid-fill
+  /// rendering bug present on some Windows 10 builds.
+  pub tint: Option<Color>,
+
+  /// Blur radius/intensity of the overlay's blur.
+  ///
+  /// For `wallpaper` this is baked into the per-monitor image rather than
+  /// evaluated per frame, so changing it re-renders that image once and
+  /// costs nothing thereafter.
+  ///
+  /// Ignored for `mica`/`mica_alt` -- the OS gives no blur-radius knob
+  /// for those, and there's no overlay window to attach a custom blur
+  /// effect to for that path. Also ignored for `blur`, which
+  /// deliberately skips the `Windows.UI.Composition` pipeline entirely
+  /// and takes DWM's own fixed blur. Silently has no effect if that
+  /// rendering pipeline is unavailable on this system (falls back to
+  /// the OS's fixed-intensity acrylic blur).
+  pub blur_amount: f32,
+
+  /// Opacity of the acrylic overlay's own composited visual (blur and
+  /// tint together, as one unit), from `0.0` to `1.0`.
+  ///
+  /// Distinct from `tint`'s own alpha channel: `tint`'s alpha only blends
+  /// the flat tint layer over the blur layer beneath it, while this
+  /// scales the *entire* overlay -- unrelated to the real managed
+  /// window's own `transparency` effect, which fades the window itself
+  /// via `SetLayeredWindowAttributes`, not the overlay. Ignored for
+  /// `blur`/`mica`/`mica_alt` and silently has no effect if the
+  /// `Windows.UI.Composition` rendering pipeline is unavailable, same as
+  /// `blur_amount`.
+  pub opacity: f32,
+
+  /// Saturation of the blurred backdrop, from `0.0` (grayscale) to `2.0`
+  /// (oversaturated); `1.0` leaves it unchanged. Values outside that
+  /// range aren't clamped -- D2D1's `Saturation` effect accepts them but
+  /// the result is undefined/implementation-specific.
+  ///
+  /// Ignored for `blur`/`mica`/`mica_alt` and silently has no effect if
+  /// the `Windows.UI.Composition` rendering pipeline is unavailable, same
+  /// as `blur_amount`.
+  pub saturation: f32,
+
+  /// Exposure adjustment in stops; `0.0` is unchanged, negative darkens.
+  ///
+  /// `wallpaper` only. Acrylic's effect graph is built through
+  /// `Compositor::CreateEffectFactory`, which accepts only a curated
+  /// subset of D2D's built-in effects and renders this one as a
+  /// pass-through; the wallpaper bake uses D2D directly and has no such
+  /// limit.
+  pub exposure: f32,
+
+  /// Contrast adjustment from `-1.0` to `1.0`; `0.0` is unchanged.
+  /// `wallpaper` only, same reason as `exposure`.
+  pub contrast: f32,
+
+  /// Highlight recovery from `-1.0` to `1.0`; `0.0` is unchanged,
+  /// negative pulls bright areas down. `wallpaper` only, same reason as
+  /// `exposure`.
+  ///
+  /// Tone-selective where `exposure` is not: it touches only the bright
+  /// end, so a blown-out sky can be brought down without dragging the
+  /// whole image toward black. The right knob for making text readable.
+  pub highlights: f32,
+
+  /// Shadow lift from `-1.0` to `1.0`; `0.0` is unchanged, positive opens
+  /// dark areas up. `wallpaper` only, same reason as `exposure`.
+  pub shadows: f32,
+
+  /// Strength of a darkening gradient toward each window's own edges,
+  /// from `0.0` (off) to `1.0`.
+  ///
+  /// Applies to every style, and is the only one of these knobs that is
+  /// not baked: it is a gradient visual measured from the window's
+  /// rect. Baking it would anchor the falloff to the monitor instead,
+  /// since one image is shared by every window on it.
+  ///
+  /// The right knob for toning a bright backdrop down behind text -- it
+  /// leaves the overlay opaque, where `opacity` would make it translucent
+  /// again and undo the style's whole reason for being.
+  pub vignette: f32,
+
+  /// Opacity of a monochrome noise layer over the blurred image, from
+  /// `0.0` (off) to `1.0`. `wallpaper` only, same reason as `exposure`.
+  ///
+  /// This is the grain that makes Windows' own acrylic read as frosted
+  /// glass rather than an out-of-focus photo.
+  pub grain: f32,
+
+  /// How much the backdrop follows the window across its monitor. `1.0`
+  /// pins the image to the desktop; lower values let it drift against the
+  /// window as it moves, which reads as depth. `wallpaper` only.
+  ///
+  /// Not baked -- it selects a different part of an already-rendered
+  /// image, so any value costs the same (nothing).
+  pub parallax: f32,
+  // The acrylic overlay's own corner radius isn't independently
+  // configurable -- it's derived from `corner_style` (see
+  // `CornerStyle::approx_radius_px`) so it always matches the real
+  // managed window's own rendered corners instead of risking a visual
+  // mismatch.
+}
+
+impl Default for BackdropEffectConfig {
+  fn default() -> Self {
+    Self {
+      enabled: false,
+      style: BackdropStyle::default(),
+      tint: None,
+      blur_amount: 30.0,
+      opacity: 1.0,
+      saturation: 1.0,
+      exposure: 0.0,
+      contrast: 0.0,
+      highlights: 0.0,
+      shadows: 0.0,
+      vignette: 0.0,
+      grain: 0.0,
+      parallax: 1.0,
+    }
+  }
+}
+
+impl BackdropEffectConfig {
+  /// Returns the tint for the overlay-backed styles (`acrylic`, `blur`).
+  ///
+  /// Doubles as the "does this window get a `NativeBlurOverlay`?"
+  /// predicate for every overlay call site, so it returns `None` only
+  /// when the effect is disabled -- every remaining style is drawn by an
+  /// overlay. When no tint is set, falls back to near-transparent black
+  /// (`alpha = 1`) to avoid the solid-fill rendering bug present on some
+  /// Windows 10 builds.
+  #[must_use]
+  pub fn overlay_tint(&self) -> Option<Color> {
+    if !self.enabled {
+      return None;
+    }
+
+    Some(self.tint.unwrap_or(Color {
+      r: 0,
+      g: 0,
+      b: 0,
+      a: 1,
+    }))
+  }
+
+  /// Builds a [`BlurOverlayParams`] from this config, given the
+  /// already-resolved `tint` (see `overlay_tint`) and `corner_radius`
+  /// (derived from the sibling `corner_style` effect, not stored on this
+  /// struct -- see the trailing comment on this struct's definition).
+  ///
+  /// Consolidates the field list every `BlurOverlayParams` call site would
+  /// otherwise hand-write, so adding a new overlay knob only touches this
+  /// method and the config struct itself, not every call site.
+  #[must_use]
+  pub fn to_overlay_params(
+    &self,
+    tint: Color,
+    corner_radius: f32,
+  ) -> BlurOverlayParams {
+    BlurOverlayParams {
+      style: self.style,
+      tint,
+      blur_amount: self.blur_amount,
+      corner_radius,
+      opacity: self.opacity,
+      saturation: self.saturation,
+      exposure: self.exposure,
+      contrast: self.contrast,
+      highlights: self.highlights,
+      shadows: self.shadows,
+      vignette: self.vignette,
+      grain: self.grain,
+      parallax: self.parallax,
+    }
+  }
+}
+
+/// Default/fallback border color: used both as [`BorderColorSource`]'s
+/// default and when a dynamic source (`"accent"` or `file`) fails to
+/// resolve.
+const DEFAULT_BORDER_COLOR: Color = Color {
+  r: 140,
+  g: 190,
+  b: 255,
+  a: 255,
+};
+
+/// Where a border's color comes from.
+///
+/// Re-resolved every time the border's target color is needed (on focus
+/// change, or on a config reload), so a dynamic source tracks its live
+/// value with no restart needed.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(untagged)]
+pub enum BorderColorSource {
+  /// A static hex color (`"#rrggbb"`/`"#rrggbbaa"`), or the literal
+  /// `"accent"` for the OS's live accent/colorization color.
+  Value(String),
+
+  /// Reads a named CSS custom property (`--key: #hex;` or
+  /// `--key: rgb(r, g, b);`) from an external generated palette file --
+  /// e.g. matugen, pywal, or YASB's `yasb_colors.css`.
+  File {
+    /// Path to the palette file.
+    file: std::path::PathBuf,
+    /// The CSS custom property's name, including its leading `--`.
+    key: String,
+  },
+}
+
+impl Default for BorderColorSource {
+  fn default() -> Self {
+    Self::Value("#8cbeff".to_string())
+  }
+}
+
+impl BorderColorSource {
+  /// Resolves this source to a concrete [`Color`].
+  ///
+  /// Falls back to [`DEFAULT_BORDER_COLOR`] (logging a warning) if
+  /// resolution fails -- an unreadable file, a missing key, an
+  /// unrecognized value, an unparseable static hex string, or an OS
+  /// accent-color read failure (e.g. on an OS version predating the
+  /// `DwmGetColorizationColor` API).
+  #[must_use]
+  pub fn resolve(&self) -> Color {
+    let result: wm_platform::Result<Color> = match self {
+      Self::Value(value) if value.eq_ignore_ascii_case("accent") => {
+        wm_platform::system_accent_color()
+      }
+      Self::Value(value) => value.parse::<Color>().map_err(Into::into),
+      Self::File { file, key } => wm_platform::color_from_file(file, key),
+    };
+
+    result.unwrap_or_else(|err| {
+      tracing::warn!(
+        "Failed to resolve border color ({err}), falling back to a \
+         default color."
+      );
+      DEFAULT_BORDER_COLOR
+    })
+  }
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -260,20 +521,81 @@ pub struct BorderEffectConfig {
   /// Whether to enable the effect.
   pub enabled: bool,
 
-  /// Color of the window border.
-  pub color: Color,
+  /// Color of the window border: a static hex string, the literal
+  /// `"accent"` for the OS's live accent/colorization color, or a
+  /// `{ file, key }` mapping to read a named CSS custom property from an
+  /// external generated palette file (matugen, pywal, YASB, etc.). See
+  /// [`BorderColorSource`].
+  pub color: BorderColorSource,
+
+  /// Thickness of the window border.
+  pub width: LengthValue,
+
+  /// Corner radius of the border ring's outer edge. When `None` (the
+  /// default), it's derived from the sibling `corner_style` effect's
+  /// radius plus `width`, so the ring lines up concentrically with the
+  /// real window's own corners. Set explicitly to use a different radius
+  /// than that approximation -- e.g. a larger, more rounded look than
+  /// `corner_style`'s fixed presets (`square`/`small_rounded`/`rounded`)
+  /// allow.
+  pub radius: Option<LengthValue>,
 }
 
 impl Default for BorderEffectConfig {
   fn default() -> Self {
     BorderEffectConfig {
       enabled: false,
-      color: Color {
-        r: 140,
-        g: 190,
-        b: 255,
-        a: 255,
-      },
+      color: BorderColorSource::default(),
+      width: LengthValue::from_px(2),
+      radius: None,
+    }
+  }
+}
+
+impl BorderEffectConfig {
+  /// Border color, or `None` when the border effect is disabled.
+  ///
+  /// See [`BorderColorSource::resolve`] for how `color` is resolved,
+  /// including its fallback behavior on a failed dynamic read.
+  #[must_use]
+  pub fn abgr_color(&self) -> Option<Color> {
+    if !self.enabled {
+      return None;
+    }
+
+    Some(self.color.resolve())
+  }
+
+  /// Builds a [`BorderOverlayParams`] from this config, given the
+  /// already-resolved `color` (see [`abgr_color`]) and the tracked
+  /// window's *own* corner radius (derived from the sibling
+  /// `corner_style` effect, not stored on this type).
+  ///
+  /// The overlay's own outer corner radius is `self.radius` when set,
+  /// otherwise `window_corner_radius + width` so the ring lines up
+  /// concentrically with the real window's own corners by default.
+  ///
+  /// [`abgr_color`]: BorderEffectConfig::abgr_color
+  #[must_use]
+  pub fn to_overlay_params(
+    &self,
+    color: Color,
+    window_corner_radius: f32,
+  ) -> BorderOverlayParams {
+    #[allow(clippy::cast_precision_loss)]
+    let width = self.width.to_px(0, None) as f32;
+
+    #[allow(clippy::cast_precision_loss)]
+    let corner_radius = self
+      .radius
+      .as_ref()
+      .map_or(window_corner_radius + width, |r| r.to_px(0, None) as f32);
+
+    BorderOverlayParams {
+      color,
+      width,
+      corner_radius,
+      opacity: 1.0,
     }
   }
 }
@@ -387,6 +709,504 @@ pub struct WorkspaceConfig {
   pub keep_alive: bool,
 }
 
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(default, rename_all(serialize = "camelCase"))]
+pub struct AnimationsConfig {
+  /// Animation settings for pure window translations (position changes
+  /// only).
+  pub window_move: AnimationTypeConfig,
+  /// Animation settings for operations that change window size.
+  pub window_resize: WindowResizeConfig,
+  /// Animation settings for when a new window appears.
+  ///
+  /// # Platform-specific
+  ///
+  /// Only has an effect on Windows.
+  pub window_open: WindowOpenConfig,
+  /// Animation settings for workspace-switch slide transitions.
+  pub workspace_switch: WorkspaceSwitchAnimationConfig,
+  /// Animation settings for when a window is closed.
+  ///
+  /// # Platform-specific
+  ///
+  /// Only has an effect on Windows.
+  pub window_close: WindowCloseConfig,
+
+  /// Which windows keep their effect overlays tracking during an
+  /// animation.
+  ///
+  /// # Platform-specific
+  ///
+  /// Only has an effect on Windows.
+  pub overlay_tracking: OverlayTracking,
+}
+
+/// Which animating windows keep their blur and border overlays glued to
+/// them for the duration of an animation.
+///
+/// Every animating window is composited as three windows, not one: the
+/// surrogate thumbnail plus a blur overlay and a border overlay, each
+/// repositioned every frame. Since the animation is bound by how many
+/// surfaces DWM has to absorb, this is the largest lever available -- a
+/// measured 2.1x between borders on every window and borders on the
+/// focused window only.
+///
+/// Only affects windows *while they animate*; the static overlays are
+/// restored by the normal sync pass as soon as the animation ends, so the
+/// at-rest appearance is unchanged.
+#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum OverlayTracking {
+  /// Track every animating window's overlays. Smoothest at rest, most
+  /// expensive in motion.
+  #[default]
+  All,
+  /// Track only the focused window's overlays; other windows animate
+  /// without theirs.
+  FocusedOnly,
+  /// Track none of them; all overlays are hidden for the animation.
+  None,
+}
+
+impl Default for AnimationsConfig {
+  fn default() -> Self {
+    AnimationsConfig {
+      window_move: AnimationTypeConfig::default(),
+      window_resize: WindowResizeConfig::default(),
+      window_open: WindowOpenConfig::default(),
+      workspace_switch: WorkspaceSwitchAnimationConfig::default(),
+      window_close: WindowCloseConfig::default(),
+      overlay_tracking: OverlayTracking::default(),
+    }
+  }
+}
+
+/// Spatial style for window open/close transitions.
+///
+/// Used by both `WindowOpenConfig.style` and `WindowCloseConfig.style` so
+/// the same values apply symmetrically: a window that opens with
+/// `slide_right` (entering from the right) closes with `slide_right`
+/// (exiting to the right).
+#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum WindowTransitionStyle {
+  /// Slide in/out from/to the right edge (default).
+  #[default]
+  #[serde(alias = "right")]
+  SlideRight,
+  /// Slide in/out from/to the left edge.
+  #[serde(alias = "left")]
+  SlideLeft,
+  /// Slide in/out from/to the top edge.
+  #[serde(alias = "top")]
+  SlideTop,
+  /// Slide in/out from/to the bottom edge.
+  #[serde(alias = "bottom")]
+  SlideBottom,
+  /// No positional movement. Combine with `opacity_from`/`opacity_to` for
+  /// a pure fade. Accepts `"fade"` as a legacy alias.
+  #[serde(alias = "fade")]
+  None,
+  /// Zoom in/out from the window center. Combine with
+  /// `opacity_from`/`opacity_to` to also fade while zooming.
+  Zoom,
+}
+
+impl WindowTransitionStyle {
+  /// Returns `true` when the style has no positional slide component.
+  ///
+  /// Stationary styles keep the surrogate at the window's final position
+  /// for the full animation; the surrogate window itself never moves.
+  pub fn is_stationary(&self) -> bool {
+    matches!(self, Self::None | Self::Zoom)
+  }
+}
+
+/// Animation settings for when a new window appears (Windows only).
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(default, rename_all(serialize = "camelCase"))]
+pub struct WindowOpenConfig {
+  pub enabled: bool,
+  pub duration_ms: u32,
+  pub easing: EasingFunction,
+  /// Transition type for the open animation.
+  ///
+  /// - `slide_right` (default): slides in from the right.
+  /// - `slide_left` / `slide_top` / `slide_bottom`: slide from that edge.
+  /// - `none` / `fade`: no slide; combine with `opacity_from` for a pure
+  ///   fade-in.
+  /// - `zoom`: zoom in from the window center.
+  pub style: WindowTransitionStyle,
+  /// Starting opacity (0.0–1.0). At `1.0` no fade is applied; at `0.0`
+  /// the window fades in from fully transparent. Can be combined with
+  /// any style.
+  pub opacity_from: f32,
+}
+
+impl Default for WindowOpenConfig {
+  fn default() -> Self {
+    WindowOpenConfig {
+      enabled: true,
+      duration_ms: 150,
+      easing: EasingFunction::CubicBezier(0.16, 1.0, 0.3, 1.0),
+      style: WindowTransitionStyle::SlideRight,
+      opacity_from: 1.0,
+    }
+  }
+}
+
+/// Animation settings for when a window is closed.
+///
+/// # Platform-specific
+///
+/// Only has an effect on Windows.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(default, rename_all(serialize = "camelCase"))]
+pub struct WindowCloseConfig {
+  pub enabled: bool,
+  pub duration_ms: u32,
+  pub easing: EasingFunction,
+  /// Transition type for the close animation.
+  ///
+  /// - `none` / `fade` (default): no positional movement; combine with
+  ///   `opacity_to` for a pure fade-out.
+  /// - `zoom`: zoom out from the window center.
+  /// - `slide_right` / `slide_left` / `slide_top` / `slide_bottom`: slide
+  ///   off that edge.
+  pub style: WindowTransitionStyle,
+  /// Final opacity (0.0–1.0). At `0.0` the window fades to fully
+  /// transparent; at `1.0` no fade is applied.
+  pub opacity_to: f32,
+}
+
+impl Default for WindowCloseConfig {
+  fn default() -> Self {
+    WindowCloseConfig {
+      enabled: false,
+      duration_ms: 150,
+      easing: EasingFunction::CubicBezier(0.32, 0.0, 0.67, 0.0),
+      style: WindowTransitionStyle::None,
+      opacity_to: 0.0,
+    }
+  }
+}
+
+/// Motion style of the workspace-switch transition.
+#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum WorkspaceSwitchStyle {
+  /// Workspaces slide along the axis set by `direction` (default).
+  #[default]
+  Slide,
+  /// Pure crossfade; no positional slide. Both surrogates stay in place
+  /// and their opacities are driven by `opacity_outgoing` /
+  /// `opacity_incoming`.
+  Fade,
+  /// Outgoing workspace shrinks to the monitor center; incoming expands
+  /// from it. Opacities are also animated via `opacity_outgoing` /
+  /// `opacity_incoming`.
+  Zoom,
+  /// Iris wipe: a frozen snapshot of the outgoing workspace stays on top
+  /// while a circular hole grows from `iris_origin`, revealing the live
+  /// incoming workspace beneath. Requires Windows; falls back to an
+  /// instant switch when the monitor cannot be captured.
+  Iris,
+}
+
+impl WorkspaceSwitchStyle {
+  /// Returns `true` when the transition has no positional slide component.
+  pub fn is_no_slide(&self) -> bool {
+    matches!(self, Self::Fade | Self::Zoom)
+  }
+
+  /// Returns `true` for the iris-wipe style, which is driven by a single
+  /// snapshot overlay rather than per-window surrogates.
+  pub fn is_iris(&self) -> bool {
+    matches!(self, Self::Iris)
+  }
+}
+
+/// Origin point from which the iris-wipe circle grows.
+#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum WorkspaceSwitchIrisOrigin {
+  /// Grow from the center of the monitor (default).
+  #[default]
+  Center,
+  /// Grow from the current mouse-cursor position.
+  Cursor,
+  /// Grow from the center of the newly focused window on the incoming
+  /// workspace. Falls back to the monitor center when the incoming
+  /// workspace has no focusable window.
+  FocusedWindow,
+}
+
+/// Slide axis for the `slide` workspace-switch style.
+#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum WorkspaceSwitchDirection {
+  /// Slide left/right (default).
+  #[default]
+  Horizontal,
+  /// Slide up/down.
+  Vertical,
+}
+
+/// Animation config for workspace-switch transitions.
+///
+/// Outgoing workspaces translate off-screen (for the `slide` style) or
+/// stay in place (for `fade`/`zoom`) while the incoming workspace slides
+/// or crossfades in, all constrained to the monitor on which the switch
+/// occurs.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(default, rename_all(serialize = "camelCase"))]
+pub struct WorkspaceSwitchAnimationConfig {
+  pub enabled: bool,
+  pub duration_ms: u32,
+  pub easing: EasingFunction,
+  /// Motion type: `slide` (default), `fade`, `zoom`, or `iris`.
+  pub style: WorkspaceSwitchStyle,
+  /// Slide axis when `style` is `slide`: `horizontal` (default) or
+  /// `vertical`.
+  pub direction: WorkspaceSwitchDirection,
+  /// Origin of the iris circle when `style` is `iris`: `center`
+  /// (default), `cursor`, or `focused_window`. Ignored by other styles.
+  pub iris_origin: WorkspaceSwitchIrisOrigin,
+  /// Opacity at the end of the outgoing workspace's animation (0.0–1.0).
+  ///
+  /// At `1.0` (default) the outgoing workspace stays fully opaque. At
+  /// `0.0` it fades out to transparent. Any value in between produces a
+  /// partial fade. Applies to all `style` values.
+  pub opacity_outgoing: f32,
+  /// Opacity at the start of the incoming workspace's animation
+  /// (0.0–1.0).
+  ///
+  /// At `1.0` (default) the incoming workspace starts fully opaque. At
+  /// `0.0` it fades in from transparent. Any value in between produces
+  /// a partial fade. Applies to all `style` values.
+  pub opacity_incoming: f32,
+  /// Amount of workspace-level scale applied during `slide` transitions.
+  ///
+  /// The outgoing workspace shrinks from `1.0` to `1.0 - zoom_factor` as
+  /// it exits; the incoming grows from `1.0 - zoom_factor` to `1.0` as
+  /// it enters. Scaling is from the monitor center so all windows move
+  /// inward together, preserving the workspace-as-a-panel illusion. Has
+  /// no effect on `fade` or `zoom` styles. Valid range: `0.0` (no zoom)
+  /// to `1.0` (collapses to a point). Recommended range: `0.05`–`0.15`
+  /// for a subtle depth effect.
+  pub zoom_factor: f32,
+}
+
+impl Default for WorkspaceSwitchAnimationConfig {
+  fn default() -> Self {
+    WorkspaceSwitchAnimationConfig {
+      enabled: true,
+      duration_ms: 250,
+      easing: EasingFunction::CubicBezier(0.16, 1.0, 0.3, 1.0),
+      style: WorkspaceSwitchStyle::default(),
+      direction: WorkspaceSwitchDirection::default(),
+      iris_origin: WorkspaceSwitchIrisOrigin::default(),
+      opacity_outgoing: 1.0,
+      opacity_incoming: 1.0,
+      zoom_factor: 0.1,
+    }
+  }
+}
+
+/// Animation settings for window move operations.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(default, rename_all(serialize = "camelCase"))]
+pub struct AnimationTypeConfig {
+  pub enabled: bool,
+  pub duration_ms: u32,
+  pub easing: EasingFunction,
+  /// Minimum pixel distance required to trigger movement animations.
+  /// Helps prevent animations from starting on very small position
+  /// changes. Increase this value on high-DPI displays to reduce
+  /// sensitivity.
+  pub threshold_px: u32,
+}
+
+impl Default for AnimationTypeConfig {
+  fn default() -> Self {
+    AnimationTypeConfig {
+      enabled: true,
+      duration_ms: 150,
+      easing: EasingFunction::CubicBezier(0.42, 0.0, 0.58, 1.0),
+      threshold_px: 10,
+    }
+  }
+}
+
+/// Animation settings for window resize operations.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(default, rename_all(serialize = "camelCase"))]
+pub struct WindowResizeConfig {
+  pub enabled: bool,
+  pub duration_ms: u32,
+  pub easing: EasingFunction,
+  /// Minimum pixel distance required to trigger resize animations.
+  /// Increase this value on high-DPI displays to reduce sensitivity.
+  pub threshold_px: u32,
+}
+
+impl Default for WindowResizeConfig {
+  fn default() -> Self {
+    WindowResizeConfig {
+      enabled: true,
+      duration_ms: 150,
+      easing: EasingFunction::CubicBezier(0.42, 0.0, 0.58, 1.0),
+      threshold_px: 10,
+    }
+  }
+}
+
+/// Easing function for animations.
+///
+/// Named aliases map to their CSS cubic-bezier equivalents and can be used
+/// interchangeably with `cubic_bezier(x1, y1, x2, y2)` notation:
+/// `linear`, `ease_in`, `ease_out`, `ease_in_out`,
+/// `ease_in_cubic`, `ease_out_cubic`, `ease_in_out_cubic`,
+/// `ease_out_spring`.
+#[derive(Clone, Debug, PartialEq)]
+pub enum EasingFunction {
+  /// CSS cubic bezier curve: `cubic_bezier(x1, y1, x2, y2)`.
+  ///
+  /// Control points `(x1, y1)` and `(x2, y2)` define the shape between
+  /// the implicit anchors `(0, 0)` and `(1, 1)`. `x1` and `x2` must be
+  /// in `[0, 1]`; `y1` and `y2` may exceed that range to produce
+  /// overshoot.
+  CubicBezier(f32, f32, f32, f32),
+  /// Exponentially-decaying spring. Overshoots past 1.0 and oscillates
+  /// before settling. Runs to full wall-clock duration to preserve the
+  /// bounce.
+  EaseOutSpring,
+}
+
+impl Default for EasingFunction {
+  fn default() -> Self {
+    EasingFunction::CubicBezier(0.42, 0.0, 0.58, 1.0) // ease_in_out
+  }
+}
+
+impl Eq for EasingFunction {}
+
+impl EasingFunction {
+  /// Returns `true` when this function can produce values outside `[0,
+  /// 1]`.
+  ///
+  /// Non-overshooting functions are cut off at 99% eased progress to avoid
+  /// the "stuck at destination" look. Overshooting ones run to full
+  /// wall-clock duration to preserve their bounce.
+  pub fn can_overshoot(&self) -> bool {
+    match self {
+      EasingFunction::EaseOutSpring => true,
+      EasingFunction::CubicBezier(_, y1, _, y2) => {
+        *y1 < 0.0 || *y1 > 1.0 || *y2 < 0.0 || *y2 > 1.0
+      }
+    }
+  }
+}
+
+impl<'de> Deserialize<'de> for EasingFunction {
+  fn deserialize<D: serde::Deserializer<'de>>(
+    d: D,
+  ) -> Result<Self, D::Error> {
+    let s = String::deserialize(d)?;
+    // Named aliases expand to their CSS cubic-bezier control points.
+    match s.as_str() {
+      "linear" => Ok(EasingFunction::CubicBezier(0.0, 0.0, 1.0, 1.0)),
+      "ease_in_out" => {
+        Ok(EasingFunction::CubicBezier(0.42, 0.0, 0.58, 1.0))
+      }
+      "ease_in" => Ok(EasingFunction::CubicBezier(0.42, 0.0, 1.0, 1.0)),
+      "ease_out" => Ok(EasingFunction::CubicBezier(0.0, 0.0, 0.58, 1.0)),
+      "ease_in_out_cubic" => {
+        Ok(EasingFunction::CubicBezier(0.65, 0.0, 0.35, 1.0))
+      }
+      "ease_in_cubic" => {
+        Ok(EasingFunction::CubicBezier(0.32, 0.0, 0.67, 0.0))
+      }
+      "ease_out_cubic" => {
+        Ok(EasingFunction::CubicBezier(0.33, 1.0, 0.68, 1.0))
+      }
+      "ease_out_spring" => Ok(EasingFunction::EaseOutSpring),
+      s => {
+        if let Some(inner) = s
+          .strip_prefix("cubic_bezier(")
+          .and_then(|s| s.strip_suffix(')'))
+        {
+          let parts: Vec<&str> = inner.split(',').collect();
+          if parts.len() != 4 {
+            return Err(serde::de::Error::custom(
+              "cubic_bezier requires exactly 4 arguments: \
+               cubic_bezier(x1, y1, x2, y2)",
+            ));
+          }
+          let mut floats = [0f32; 4];
+          for (i, part) in parts.iter().enumerate() {
+            floats[i] = part.trim().parse::<f32>().map_err(|_| {
+              serde::de::Error::custom(format!(
+                "cubic_bezier argument {} is not a valid number: {}",
+                i + 1,
+                part.trim()
+              ))
+            })?;
+          }
+          let [x1, y1, x2, y2] = floats;
+          if !(0.0..=1.0).contains(&x1) || !(0.0..=1.0).contains(&x2) {
+            return Err(serde::de::Error::custom(
+              "cubic_bezier x1 and x2 must be in [0, 1]",
+            ));
+          }
+          Ok(EasingFunction::CubicBezier(x1, y1, x2, y2))
+        } else {
+          Err(serde::de::Error::custom(format!(
+            "unknown easing function '{s}'; valid values: linear, \
+             ease_in, ease_out, ease_in_out, ease_in_cubic, \
+             ease_out_cubic, ease_in_out_cubic, ease_out_spring, \
+             cubic_bezier(x1, y1, x2, y2)"
+          )))
+        }
+      }
+    }
+  }
+}
+
+impl Serialize for EasingFunction {
+  fn serialize<S: serde::Serializer>(
+    &self,
+    s: S,
+  ) -> Result<S::Ok, S::Error> {
+    match self {
+      EasingFunction::EaseOutSpring => s.serialize_str("ease_out_spring"),
+      EasingFunction::CubicBezier(x1, y1, x2, y2) => {
+        // Serialize back to a named alias when the control points match
+        // exactly, so round-tripped configs stay human-readable.
+        let repr = if *x1 == 0.0 && *y1 == 0.0 && *x2 == 1.0 && *y2 == 1.0
+        {
+          "linear".to_string()
+        } else if *x1 == 0.42 && *y1 == 0.0 && *x2 == 0.58 && *y2 == 1.0 {
+          "ease_in_out".to_string()
+        } else if *x1 == 0.42 && *y1 == 0.0 && *x2 == 1.0 && *y2 == 1.0 {
+          "ease_in".to_string()
+        } else if *x1 == 0.0 && *y1 == 0.0 && *x2 == 0.58 && *y2 == 1.0 {
+          "ease_out".to_string()
+        } else if *x1 == 0.65 && *y1 == 0.0 && *x2 == 0.35 && *y2 == 1.0 {
+          "ease_in_out_cubic".to_string()
+        } else if *x1 == 0.32 && *y1 == 0.0 && *x2 == 0.67 && *y2 == 0.0 {
+          "ease_in_cubic".to_string()
+        } else if *x1 == 0.33 && *y1 == 1.0 && *x2 == 0.68 && *y2 == 1.0 {
+          "ease_out_cubic".to_string()
+        } else {
+          format!("cubic_bezier({x1}, {y1}, {x2}, {y2})")
+        };
+        s.serialize_str(&repr)
+      }
+    }
+  }
+}
+
 /// Helper function for setting a default value for a boolean field.
 const fn default_bool<const V: bool>() -> bool {
   V
@@ -470,5 +1290,100 @@ where
   #[cfg(not(target_os = "macos"))]
   {
     Ok(method)
+  }
+}
+
+#[cfg(test)]
+mod tests {
+  use wm_platform::BackdropStyle;
+
+  use super::{BackdropEffectConfig, Color};
+
+  /// `to_overlay_params` must map every field through to the resulting
+  /// `BlurOverlayParams` unchanged (plus the two parameters passed in
+  /// separately, since neither is stored on `BackdropEffectConfig`
+  /// itself), since every `BlurOverlayParams` call site now depends on
+  /// this method rather than hand-writing the struct literal.
+  #[test]
+  fn to_overlay_params_maps_all_fields() {
+    let config = BackdropEffectConfig {
+      blur_amount: 42.0,
+      opacity: 0.5,
+      saturation: 1.5,
+      exposure: -0.5,
+      contrast: 0.25,
+      highlights: -0.6,
+      shadows: 0.3,
+      vignette: 0.4,
+      grain: 0.1,
+      parallax: 0.8,
+      ..BackdropEffectConfig::default()
+    };
+
+    let tint = Color::from_abgr(0xAABB_CCDD);
+    let params = config.to_overlay_params(tint, 12.0);
+
+    assert_eq!(params.style, config.style);
+    assert_eq!(params.tint, tint);
+    assert_eq!(params.blur_amount, 42.0);
+    assert_eq!(params.corner_radius, 12.0);
+    assert_eq!(params.opacity, 0.5);
+    assert_eq!(params.saturation, 1.5);
+    assert_eq!(params.exposure, -0.5);
+    assert_eq!(params.contrast, 0.25);
+    assert_eq!(params.highlights, -0.6);
+    assert_eq!(params.shadows, 0.3);
+    assert_eq!(params.vignette, 0.4);
+    assert_eq!(params.grain, 0.1);
+    assert_eq!(params.parallax, 0.8);
+  }
+
+  /// `overlay_tint` doubles as the "does this window get a
+  /// `NativeBlurOverlay`?" predicate. Every surviving style is drawn by an
+  /// overlay, so it must resolve a tint for all of them -- and for none of
+  /// them while the effect is disabled.
+  #[test]
+  fn overlay_tint_covers_every_style() {
+    for (style, expected) in [
+      (BackdropStyle::Wallpaper, true),
+      (BackdropStyle::Acrylic, true),
+      (BackdropStyle::Solid, true),
+    ] {
+      let enabled = BackdropEffectConfig {
+        enabled: true,
+        style,
+        ..BackdropEffectConfig::default()
+      };
+      assert_eq!(enabled.overlay_tint().is_some(), expected);
+
+      let disabled = BackdropEffectConfig {
+        enabled: false,
+        style,
+        ..BackdropEffectConfig::default()
+      };
+      assert!(disabled.overlay_tint().is_none());
+    }
+  }
+
+  /// With no explicit tint, the fallback is near-transparent black rather
+  /// than fully transparent -- SWCA renders a solid fill at `alpha = 0` on
+  /// some Windows 10 builds.
+  #[test]
+  fn overlay_tint_defaults_to_near_transparent_black() {
+    let config = BackdropEffectConfig {
+      enabled: true,
+      tint: None,
+      ..BackdropEffectConfig::default()
+    };
+
+    assert_eq!(
+      config.overlay_tint(),
+      Some(Color {
+        r: 0,
+        g: 0,
+        b: 0,
+        a: 1
+      })
+    );
   }
 }

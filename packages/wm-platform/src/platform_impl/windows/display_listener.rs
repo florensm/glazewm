@@ -7,8 +7,8 @@ use tokio::sync::mpsc;
 use tracing::warn;
 use windows::Win32::UI::WindowsAndMessaging::{
   DBT_DEVNODES_CHANGED, PBT_APMRESUMEAUTOMATIC, PBT_APMRESUMESUSPEND,
-  PBT_APMSUSPEND, SPI_SETWORKAREA, WM_DEVICECHANGE, WM_DISPLAYCHANGE,
-  WM_POWERBROADCAST, WM_SETTINGCHANGE,
+  PBT_APMSUSPEND, SPI_SETDESKWALLPAPER, SPI_SETWORKAREA, WM_DEVICECHANGE,
+  WM_DISPLAYCHANGE, WM_POWERBROADCAST, WM_SETTINGCHANGE,
 };
 
 use crate::{Dispatcher, DispatcherExtWindows};
@@ -47,6 +47,20 @@ impl DisplayListener {
             Some(0)
           }
           WM_DISPLAYCHANGE | WM_SETTINGCHANGE | WM_DEVICECHANGE => {
+            // The wallpaper backdrop bakes an image per monitor, so both a
+            // new wallpaper and a changed display layout invalidate it.
+            // This is deliberately separate from `should_emit` below: a
+            // wallpaper change is not a display change and must not cost
+            // the WM a full relayout, and the bump itself only makes
+            // overlays re-check on their next tick.
+            #[allow(clippy::cast_possible_truncation)]
+            if message == WM_DISPLAYCHANGE
+              || (message == WM_SETTINGCHANGE
+                && wparam as u32 == SPI_SETDESKWALLPAPER.0)
+            {
+              crate::platform_impl::wallpaper_surface::invalidate();
+            }
+
             let should_emit = {
               // Ignore display change messages if the system hasn't fully
               // resumed from sleep.
@@ -75,6 +89,9 @@ impl DisplayListener {
             };
 
             if should_emit {
+              crate::perf::mark_event_queued(
+                crate::perf::EventKind::Display,
+              );
               let _ = event_tx.send(());
             }
 

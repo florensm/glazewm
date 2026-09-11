@@ -9,6 +9,11 @@ use wm_platform::NativeWindowWindowsExt;
 use wm_platform::{LengthValue, MouseButton, RectDelta};
 use wm_platform::{NativeWindow, Rect};
 
+#[cfg(target_os = "windows")]
+use crate::commands::general::{
+  blur_overlay_params_for, border_overlay_params_for, overlay_z_anchor,
+  upsert_blur_overlay, upsert_border_overlay,
+};
 use crate::{
   commands::{
     container::{flatten_split_container, move_container_within_tree},
@@ -45,6 +50,77 @@ pub fn handle_window_moved_or_resized(
 
     // Handle windows that are actively being dragged.
     if !state.is_paused && window.active_drag().is_some() {
+      // Keep the acrylic blur overlay glued to the window for the whole
+      // gesture. An interactive drag moves the window entirely through
+      // native OS handling, not `platform_sync`'s own `SetWindowPos`
+      // calls, and `update_drag_state` below dequeues the window
+      // from redraw once it's floating -- so without this,
+      // `sync_blur_overlays` (which only re-queries a window's rect
+      // when it's actually queued for redraw) never observes the
+      // live position, leaving the overlay frozen at the
+      // pre-drag rect while the (semi-transparent) window itself moves
+      // away from it for the rest of the drag.
+      #[cfg(target_os = "windows")]
+      {
+        let is_focused = state
+          .focused_container()
+          .is_some_and(|container| container.id() == window.id());
+
+        // Single window per drag event -- nothing else to batch these
+        // repositions with, so commit them together alone (still routes
+        // through `SurrogateBatch` for a uniform `defer_rect` call, same
+        // as the multi-window sync paths). Both overlays share one
+        // batch/commit since they're independent windows anyway.
+        let mut batch = wm_platform::SurrogateBatch::new();
+        let anchor = overlay_z_anchor(&window);
+
+        // Keep the backdrop glued to the window for the gesture, the same
+        // way the border below is.
+        //
+        // This used to hide it instead. An interactive drag is driven
+        // entirely by the OS -- it moves the window and we only hear about
+        // it afterwards, one `MovedOrResized` event at a time -- so the
+        // overlay always trails a motion it cannot predict, and a
+        // window-sized backdrop trailing was judged to read worse than no
+        // backdrop at all. It also left the window with no backdrop for
+        // the whole drag, and -- until the sync that restores it happened
+        // to run -- after it too.
+        //
+        // Both overlays go into the same batch and land in one
+        // `DeferWindowPos` commit below, so the backdrop cannot separate
+        // from the border ring it sits inside.
+        if let Some(params) = blur_overlay_params_for(is_focused, config) {
+          upsert_blur_overlay(
+            &mut state.blur_overlays,
+            window.id(),
+            params,
+            &frame_position,
+            anchor,
+            &mut batch,
+          );
+        }
+
+        // Same live re-sync as the blur overlay above -- without this, the
+        // border overlay is frozen at the pre-drag rect for the whole
+        // gesture whenever backdrop is disabled but the border effect is
+        // enabled, since `sync_border_overlays` only re-queries a window's
+        // rect when it's queued for redraw, and this window is dequeued
+        // for the duration of the drag.
+        if let Some(params) = border_overlay_params_for(is_focused, config)
+        {
+          upsert_border_overlay(
+            &mut state.border_overlays,
+            window.id(),
+            params,
+            &frame_position,
+            anchor,
+            &mut batch,
+          );
+        }
+
+        batch.commit();
+      }
+
       let is_drag_end = {
         // On Windows, the drag operation has ended when
         // `is_interactive_end` is `true`. This corresponds to a
@@ -71,6 +147,29 @@ pub fn handle_window_moved_or_resized(
       }
 
       return update_drag_state(&window, &frame_position, state, config);
+    }
+
+    // A resize/move/open animation session owns this window's position for
+    // the duration of its `ResizeSession` -- the real window is frozen and
+    // cloaked behind a surrogate, repositioned only once via
+    // `ResizeSession::maybe_handoff`. That handoff's `SetWindowPos` uses
+    // `SWP_NOSENDCHANGING`, which suppresses `WM_WINDOWPOSCHANGING` but
+    // not the location-change notification this handler is driven by.
+    // Without this guard, that "invisible" handoff reposition gets
+    // fully reprocessed below as if it were an independent move --
+    // state transitions, floating-position updates, redraw queueing --
+    // fighting the animation still in flight on the same window. Most
+    // visible as a flicker on a window that's only being repositioned
+    // as a side effect of a sibling's drag/relayout (its own animated
+    // move, not an interactive drag, so it doesn't hit the
+    // `active_drag` branch above).
+    #[cfg(target_os = "windows")]
+    if state
+      .animation_manager
+      .resize_sessions
+      .contains_key(&window.id())
+    {
+      return Ok(());
     }
 
     let old_is_maximized = window.native_properties().is_maximized;

@@ -1,0 +1,126 @@
+use std::{ffi::c_void, sync::OnceLock};
+
+use windows::{
+  core::{s, w},
+  Win32::{
+    Foundation::HWND,
+    System::LibraryLoader::{GetModuleHandleW, GetProcAddress},
+  },
+};
+
+/// Accent state: none. Clears any policy previously set on the window,
+/// returning it to DWM's default transparent backing store.
+pub(crate) const ACCENT_DISABLED: u32 = 0;
+
+/// Accent state: solid-color fill, used for surrogate backdrops.
+pub(crate) const ACCENT_ENABLE_GRADIENT: u32 = 1;
+
+/// Accent state: host backdrop -- samples live desktop content from behind
+/// the window for a `Windows.UI.Composition` host-backdrop brush to pick
+/// up, rather than blurring a solid color like
+/// `ACCENT_ENABLE_ACRYLICBLURBEHIND`. The `gradient_color` field is unused
+/// for this accent state. Acrylic blur-behind. No longer reachable from
+/// `BackdropStyle` -- every style renders through `Windows.UI.Composition`
+/// now -- but still used by `NativeSurrogate`, which paints a stand-in for
+/// a real window during animations and cannot root a visual tree of its
+/// own.
+pub(crate) const ACCENT_ENABLE_ACRYLICBLURBEHIND: u32 = 4;
+
+pub(crate) const ACCENT_ENABLE_HOSTBACKDROP: u32 = 5;
+
+/// `WCA_ACCENT_POLICY` attribute index for
+/// `SetWindowCompositionAttribute`.
+const WCA_ACCENT_POLICY: u32 = 19;
+
+type SetWindowCompositionAttributeFn =
+  unsafe extern "system" fn(HWND, *mut WindowCompositionAttribData) -> i32;
+
+/// Cached pointer to `SetWindowCompositionAttribute` from user32.dll.
+static SET_WCA: OnceLock<Option<SetWindowCompositionAttributeFn>> =
+  OnceLock::new();
+
+/// Undocumented accent policy passed to `SetWindowCompositionAttribute`.
+#[repr(C)]
+struct AccentPolicy {
+  accent_state: u32,
+  accent_flags: u32,
+  /// ABGR tint applied over the blurred backdrop.
+  gradient_color: u32,
+  animation_id: u32,
+}
+
+/// Descriptor for `SetWindowCompositionAttribute`.
+#[repr(C)]
+struct WindowCompositionAttribData {
+  attrib: u32,
+  pv_data: *mut c_void,
+  cb_data: usize,
+}
+
+/// Retrieves the `SetWindowCompositionAttribute` function pointer from
+/// user32.dll, caching it in a `OnceLock` for subsequent calls.
+///
+/// Returns `None` when the export is unavailable (pre-Windows 10 1607).
+fn get_set_wca() -> Option<SetWindowCompositionAttributeFn> {
+  *SET_WCA.get_or_init(|| {
+    // SAFETY: user32.dll is always loaded in every Win32 process.
+    // `GetModuleHandleW` does not increment the reference count.
+    let module = unsafe { GetModuleHandleW(w!("user32.dll")).ok()? };
+
+    // SAFETY: `module` is a valid handle. The ASCII string is
+    // null-terminated via the `s!` macro.
+    let proc = unsafe {
+      GetProcAddress(module, s!("SetWindowCompositionAttribute"))
+    }?;
+
+    // SAFETY: `proc` is a valid export with the expected calling
+    // convention and parameter layout.
+    Some(unsafe {
+      std::mem::transmute::<
+        unsafe extern "system" fn() -> isize,
+        SetWindowCompositionAttributeFn,
+      >(proc)
+    })
+  })
+}
+
+/// Applies the given `accent_state`, `accent_flags`, and `gradient_color`
+/// (ABGR) to `hwnd` via the undocumented `SetWindowCompositionAttribute`
+/// API.
+///
+/// Callers that don't need a non-zero flag set should use
+/// [`apply_swca_accent`]; the only flag currently in use is
+/// [`ACCENT_FLAG_USE_GRADIENT_COLOR`], required by
+/// [`ACCENT_ENABLE_BLURBEHIND`].
+///
+/// Returns `true` if the call succeeded, `false` if the API is unavailable
+/// (pre-Windows 10 1607) or if the call itself failed.
+pub(crate) fn apply_swca_accent(
+  hwnd: HWND,
+  accent_state: u32,
+  accent_flags: u32,
+  gradient_color: u32,
+) -> bool {
+  let Some(set_wca) = get_set_wca() else {
+    return false;
+  };
+
+  let mut policy = AccentPolicy {
+    accent_state,
+    accent_flags,
+    gradient_color,
+    animation_id: 0,
+  };
+
+  let mut data = WindowCompositionAttribData {
+    attrib: WCA_ACCENT_POLICY,
+    pv_data: std::ptr::addr_of_mut!(policy).cast::<c_void>(),
+    cb_data: std::mem::size_of::<AccentPolicy>(),
+  };
+
+  // SAFETY: `hwnd` is a valid window handle. `data` and `policy` are
+  // stack-allocated and remain live for the duration of this call. The
+  // struct layout matches the undocumented Win32 ABI for
+  // `WCA_ACCENT_POLICY`.
+  unsafe { set_wca(hwnd, std::ptr::addr_of_mut!(data)) != 0 }
+}

@@ -7,9 +7,7 @@ use wm_common::{
 };
 
 use crate::{
-  models::{
-    Monitor, NativeWindowProperties, WindowContainer, Workspace,
-  },
+  models::{Monitor, NativeWindowProperties, WindowContainer, Workspace},
   traits::{CommonGetters, WindowGetters},
 };
 
@@ -402,8 +400,10 @@ impl UserConfig {
 
 #[cfg(test)]
 mod tests {
-  use wm_common::ParsedConfig;
-  use wm_platform::Rect;
+  use wm_common::{
+    ParsedConfig, WindowTransitionStyle, WorkspaceSwitchStyle,
+  };
+  use wm_platform::{BackdropStyle, Rect};
 
   use super::*;
 
@@ -492,9 +492,8 @@ mod tests {
     let config =
       test_config(vec![test_rule(InvokeCommand::Ignore, "my-launcher")]);
 
-    assert!(
-      !config.is_force_managed(&test_properties("my-launcher", "Launcher"))
-    );
+    assert!(!config
+      .is_force_managed(&test_properties("my-launcher", "Launcher")));
   }
 
   #[test]
@@ -507,10 +506,114 @@ mod tests {
     )));
   }
 
+  /// The bundled sample config (which uses the `type` key for animation
+  /// transition types) must always parse.
   #[test]
   fn sample_config_parses() {
-    let result = serde_yaml::from_str::<ParsedConfig>(SAMPLE_CONFIG);
+    let config: ParsedConfig = serde_yaml::from_str(SAMPLE_CONFIG)
+      .expect("sample config should parse");
 
-    assert!(result.is_ok(), "{:?}", result.err());
+    assert_eq!(
+      config.animations.window_open.style,
+      WindowTransitionStyle::SlideRight
+    );
+    assert_eq!(
+      config.animations.workspace_switch.style,
+      WorkspaceSwitchStyle::Slide
+    );
+  }
+
+  /// Configs written before the `style` -> `type` key rename must keep
+  /// parsing via the legacy aliases (including the older `direction` alias
+  /// on `window_open`).
+  #[test]
+  fn legacy_style_keys_parse() {
+    let yaml = r"
+animations:
+  window_open:
+    style: 'zoom'
+  window_close:
+    style: 'slide_left'
+  workspace_switch:
+    style: 'fade'
+";
+    let config: ParsedConfig =
+      serde_yaml::from_str(yaml).expect("legacy config should parse");
+
+    assert_eq!(
+      config.animations.window_open.style,
+      WindowTransitionStyle::Zoom
+    );
+    assert_eq!(
+      config.animations.window_close.style,
+      WindowTransitionStyle::SlideLeft
+    );
+    assert_eq!(
+      config.animations.workspace_switch.style,
+      WorkspaceSwitchStyle::Fade
+    );
+
+    let yaml_direction = r"
+animations:
+  window_open:
+    direction: 'slide_top'
+";
+    let config: ParsedConfig = serde_yaml::from_str(yaml_direction)
+      .expect("direction alias should parse");
+    assert_eq!(
+      config.animations.window_open.style,
+      WindowTransitionStyle::SlideTop
+    );
+  }
+
+  /// Configs written before the `blur_behind` -> `backdrop` key rename
+  /// must keep parsing via the `#[serde(alias = "blur_behind")]` on
+  /// `WindowEffectConfig::backdrop`.
+  #[test]
+  fn backdrop_key_alias_parses() {
+    let yaml = r"
+window_effects:
+  focused_window:
+    blur_behind:
+      enabled: true
+      style: 'solid'
+";
+    let config: ParsedConfig =
+      serde_yaml::from_str(yaml).expect("legacy config should parse");
+
+    assert!(config.window_effects.focused_window.backdrop.enabled);
+    assert_eq!(
+      config.window_effects.focused_window.backdrop.style,
+      BackdropStyle::Solid
+    );
+  }
+
+  /// Every `BackdropStyle` variant must be reachable from the config using
+  /// its snake_case name, `blur` included.
+  #[test]
+  fn backdrop_styles_parse() {
+    for (value, expected) in [
+      ("wallpaper", BackdropStyle::Wallpaper),
+      ("acrylic", BackdropStyle::Acrylic),
+      ("solid", BackdropStyle::Solid),
+    ] {
+      let yaml = format!(
+        "
+window_effects:
+  focused_window:
+    backdrop:
+      enabled: true
+      style: '{value}'
+"
+      );
+
+      let config: ParsedConfig = serde_yaml::from_str(&yaml)
+        .unwrap_or_else(|e| panic!("`{value}` should parse: {e}"));
+
+      assert_eq!(
+        config.window_effects.focused_window.backdrop.style,
+        expected
+      );
+    }
   }
 }

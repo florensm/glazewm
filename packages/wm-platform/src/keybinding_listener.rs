@@ -118,7 +118,36 @@ impl KeybindingListener {
   ///
   /// This will block until a keybinding event is available.
   pub async fn next_event(&mut self) -> Option<KeybindingEvent> {
-    self.event_rx.recv().await
+    let event = self.event_rx.recv().await;
+
+    #[cfg(target_os = "windows")]
+    if event.is_some() {
+      crate::perf::record_event_dequeued(
+        crate::perf::EventKind::Keybinding,
+      );
+    }
+
+    event
+  }
+
+  /// Returns the next keybinding event if one is already queued.
+  ///
+  /// Unlike [`next_event`], never waits. Used by the main loop to service
+  /// keybindings that piled up while the previous animation frame was
+  /// running, before it starts the next one.
+  ///
+  /// [`next_event`]: KeybindingListener::next_event
+  pub fn try_next_event(&mut self) -> Option<KeybindingEvent> {
+    let event = self.event_rx.try_recv().ok();
+
+    #[cfg(target_os = "windows")]
+    if event.is_some() {
+      crate::perf::record_event_dequeued(
+        crate::perf::EventKind::Keybinding,
+      );
+    }
+
+    event
   }
 
   /// Updates the keybindings for the keybinding listener.
@@ -208,6 +237,9 @@ impl KeybindingListener {
         if has_extra_modifiers {
           return false;
         }
+
+        #[cfg(target_os = "windows")]
+        crate::perf::mark_event_queued(crate::perf::EventKind::Keybinding);
 
         let _ = event_tx.send(KeybindingEvent(longest_keybinding.clone()));
 

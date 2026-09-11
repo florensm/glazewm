@@ -14,7 +14,7 @@ use crate::{platform_impl, Rect};
 #[cfg(target_os = "macos")]
 use crate::{platform_impl::AXUIElementExt, ThreadBound};
 #[cfg(target_os = "windows")]
-use crate::{Color, CornerStyle, Delta, OpacityValue, RectDelta};
+use crate::{CornerStyle, Delta, OpacityValue, RectDelta};
 
 /// Unique identifier of a window.
 ///
@@ -245,6 +245,17 @@ pub trait NativeWindowWindowsExt {
   /// This method is only available on Windows.
   fn set_cloaked(&self, cloaked: bool) -> crate::Result<()>;
 
+  /// Returns whether the window is currently cloaked by DWM.
+  ///
+  /// Cloaking hides the window visually while keeping `WS_VISIBLE` set.
+  /// GlazeWM uses this for workspace hiding (`HideMethod::Cloak`) and
+  /// surrogate animations.
+  ///
+  /// # Platform-specific
+  ///
+  /// This method is only available on Windows.
+  fn is_cloaked(&self) -> crate::Result<bool>;
+
   /// Marks the window as fullscreen.
   ///
   /// Causes the native Windows taskbar to be moved to the bottom of the
@@ -287,13 +298,6 @@ pub trait NativeWindowWindowsExt {
   /// This method is only available on Windows.
   fn set_title_bar_visibility(&self, visible: bool) -> crate::Result<()>;
 
-  /// Sets the color of the window's border.
-  ///
-  /// # Platform-specific
-  ///
-  /// This method is only available on Windows.
-  fn set_border_color(&self, color: Option<&Color>) -> crate::Result<()>;
-
   /// Sets the corner style of the window.
   ///
   /// # Platform-specific
@@ -323,6 +327,24 @@ pub trait NativeWindowWindowsExt {
     &self,
     opacity_delta: &Delta<OpacityValue>,
   ) -> crate::Result<()>;
+
+  /// Re-applies the window's current layered-window alpha, if any, without
+  /// changing its value.
+  ///
+  /// `SWP_FRAMECHANGED` (issued whenever a window is resized) forces a
+  /// non-client-area recalculation that can make DWM briefly composite the
+  /// window at full opacity before the existing `LWA_ALPHA` value is
+  /// reasserted — a one-frame flash to solid on every
+  /// resize/move/workspace- switch landing for any window using the
+  /// `transparency` effect. Calling this immediately after such a
+  /// `SetWindowPos` forces DWM to recomposite with the correct alpha
+  /// right away, closing that gap. No-op if the window isn't currently
+  /// layered.
+  ///
+  /// # Platform-specific
+  ///
+  /// This method is only available on Windows.
+  fn reassert_transparency(&self) -> crate::Result<()>;
 }
 
 #[cfg(target_os = "windows")]
@@ -384,6 +406,10 @@ impl NativeWindowWindowsExt for NativeWindow {
     self.inner.set_cloaked(cloaked)
   }
 
+  fn is_cloaked(&self) -> crate::Result<bool> {
+    self.inner.is_cloaked()
+  }
+
   fn mark_fullscreen(&self, fullscreen: bool) -> crate::Result<()> {
     self.inner.mark_fullscreen(fullscreen)
   }
@@ -402,10 +428,6 @@ impl NativeWindowWindowsExt for NativeWindow {
 
   fn set_title_bar_visibility(&self, visible: bool) -> crate::Result<()> {
     self.inner.set_title_bar_visibility(visible)
-  }
-
-  fn set_border_color(&self, color: Option<&Color>) -> crate::Result<()> {
-    self.inner.set_border_color(color)
   }
 
   fn set_corner_style(
@@ -427,6 +449,10 @@ impl NativeWindowWindowsExt for NativeWindow {
     opacity_delta: &Delta<OpacityValue>,
   ) -> crate::Result<()> {
     self.inner.adjust_transparency(opacity_delta)
+  }
+
+  fn reassert_transparency(&self) -> crate::Result<()> {
+    self.inner.reassert_transparency()
   }
 }
 
@@ -467,6 +493,7 @@ impl NativeWindow {
   ///   `set_frame`), this can return those invalid values and might not
   ///   reflect the actual window size.
   pub fn frame(&self) -> crate::Result<Rect> {
+    let _scope = crate::perf::scope(crate::perf::Stage::NativeFrame);
     self.inner.frame()
   }
 

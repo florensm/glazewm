@@ -7,19 +7,26 @@ mod dispatcher;
 mod display;
 mod error;
 mod event_loop;
+mod external_color_source;
 mod keybinding_listener;
 mod models;
 mod mouse_listener;
+#[cfg(target_os = "windows")]
+mod native_surrogate;
 mod native_window;
+pub mod perf;
 mod platform_event;
 mod platform_impl;
 mod thread_bound;
+#[cfg(target_os = "windows")]
+mod window_class;
 mod window_listener;
 
 pub use dispatcher::*;
 pub use display::*;
 pub use error::*;
 pub use event_loop::*;
+pub use external_color_source::*;
 pub use keybinding_listener::*;
 pub use models::*;
 pub use mouse_listener::*;

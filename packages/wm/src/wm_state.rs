@@ -1,4 +1,4 @@
-use std::time::Instant;
+use std::{collections::HashMap, time::Instant};
 
 use anyhow::Context;
 use tokio::sync::mpsc::{self};
@@ -9,9 +9,13 @@ use wm_platform::{
   Direction, Dispatcher, Display, NativeWindow, Point, Rect,
 };
 #[cfg(target_os = "windows")]
-use wm_platform::{NativeWindowWindowsExt, OpacityValue};
+use wm_platform::{
+  NativeBlurOverlay, NativeBorderOverlay, NativeWindowWindowsExt,
+  OpacityValue,
+};
 
 use crate::{
+  animation::AnimationManager,
   commands::{
     container::set_focused_descendant,
     general::platform_sync,
@@ -35,6 +39,13 @@ pub struct WmState {
   pub dispatcher: Dispatcher,
 
   pub pending_sync: PendingSync,
+
+  /// Manager for window animations.
+  pub animation_manager: AnimationManager,
+
+  /// Tracks the target position for each window to prevent animation
+  /// restart loops.
+  pub window_target_positions: HashMap<Uuid, Rect>,
 
   /// Name of the most recently focused workspace.
   ///
@@ -67,6 +78,25 @@ pub struct WmState {
   /// Whether the OS focused window is the same as the WM focused window.
   pub is_focus_synced: bool,
 
+  /// Acrylic blur overlay windows keyed by managed-window UUID.
+  ///
+  /// Each overlay is a `WS_POPUP` window with
+  /// `ACCENT_ENABLE_ACRYLICBLURBEHIND` applied via
+  /// `SetWindowCompositionAttribute`, positioned at `HWND_BOTTOM` flush
+  /// with the managed window's DWM frame rect. When the managed window
+  /// is semi-transparent (`transparency` effect), the overlay's
+  /// blurred-desktop content shows through, producing a frosted-glass
+  /// look.
+  #[cfg(target_os = "windows")]
+  pub blur_overlays: HashMap<Uuid, NativeBlurOverlay>,
+
+  /// Border overlay windows keyed by managed-window UUID -- a persistent,
+  /// self-drawn stand-in for the OS's `DWMWA_BORDER_COLOR`, which isn't
+  /// carried along by DWM thumbnails and so vanishes during transitions.
+  /// See `NativeBorderOverlay`'s doc comment.
+  #[cfg(target_os = "windows")]
+  pub border_overlays: HashMap<Uuid, NativeBorderOverlay>,
+
   /// Whether the initial state has been populated.
   has_initialized: bool,
 
@@ -82,11 +112,18 @@ impl WmState {
     dispatcher: Dispatcher,
     event_tx: mpsc::UnboundedSender<WmEvent>,
     exit_tx: mpsc::UnboundedSender<()>,
+    animation_tick_tx: mpsc::UnboundedSender<()>,
   ) -> Self {
     Self {
       root_container: RootContainer::new(),
       dispatcher,
       pending_sync: PendingSync::default(),
+      animation_manager: AnimationManager::new(animation_tick_tx),
+      window_target_positions: HashMap::new(),
+      #[cfg(target_os = "windows")]
+      blur_overlays: HashMap::new(),
+      #[cfg(target_os = "windows")]
+      border_overlays: HashMap::new(),
       prev_effects_window: None,
       recent_workspace_name: None,
       unmanaged_or_minimized_timestamp: None,
@@ -683,6 +720,17 @@ impl WmState {
 
 impl Drop for WmState {
   fn drop(&mut self) {
+    // Commit all active resize sessions before cleaning up windows so that
+    // surrogate overlays are destroyed and windows are moved to their
+    // target positions. This prevents invisible or mispositioned
+    // windows after a crash or forced exit.
+    #[cfg(target_os = "windows")]
+    for session in self.animation_manager.drain_all_sessions() {
+      if let Err(err) = session.commit() {
+        warn!("Failed to commit resize session on shutdown: {:?}", err);
+      }
+    }
+
     let managed_windows = self.windows();
 
     for window in &managed_windows {
@@ -697,12 +745,16 @@ impl Drop for WmState {
       // Reset any effects on Windows.
       #[cfg(target_os = "windows")]
       {
+        // Uncloak before showing — a surrogate animation may have cloaked
+        // this window. Without this, the window stays invisible after
+        // exit.
+        let _ = window.native().set_cloaked(false);
+
         if let Err(err) = window.native().show() {
           warn!("Failed to show window: {:?}", err);
         }
 
         let _ = window.native().set_taskbar_visibility(true);
-        let _ = window.native().set_border_color(None);
         let _ = window
           .native()
           .set_transparency(&OpacityValue::from_alpha(u8::MAX));

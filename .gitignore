@@ -13,6 +13,8 @@ out/
 # IDE files
 .vs/
 .idea/
+.claude/settings.local.json
+CLAUDE.local.md
 
 # vi files
 .*.swp

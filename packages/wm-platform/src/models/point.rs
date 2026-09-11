@@ -10,10 +10,7 @@ impl Point {
   /// point.
   #[must_use]
   pub fn distance_between(&self, other: &Point) -> f32 {
-    let dx = self.x - other.x;
-    let dy = self.y - other.y;
-
     #[allow(clippy::cast_precision_loss)]
-    ((dx * dx + dy * dy) as f32).sqrt()
+    f32::hypot((self.x - other.x) as f32, (self.y - other.y) as f32)
   }
 }

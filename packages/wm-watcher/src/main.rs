@@ -46,7 +46,6 @@ async fn main() -> anyhow::Result<()> {
         }
 
         let _ = window.set_taskbar_visibility(true);
-        let _ = window.set_border_color(None);
         let _ =
           window.set_transparency(&OpacityValue::from_alpha(u8::MAX));
       }

@@ -1,3 +1,6 @@
+mod backdrop_style;
+mod blur_overlay_params;
+mod border_overlay_params;
 mod color;
 mod corner_style;
 mod delta;
@@ -10,6 +13,9 @@ mod point;
 mod rect;
 mod rect_delta;
 
+pub use backdrop_style::*;
+pub use blur_overlay_params::*;
+pub use border_overlay_params::*;
 pub use color::*;
 pub use corner_style::*;
 pub use delta::*;
