@@ -2224,9 +2224,7 @@ impl AnimationManager {
           session.update_target(&start_rect, &target_rect);
         } else {
           let hwnd = native_window.hwnd();
-          let cached = self.cached_edge_color(hwnd.0);
-          let color_is_fresh = cached.as_ref().is_some_and(|(_, f)| *f);
-          let cached_edge_color = cached.map(|(color, _)| color);
+          let cached_edge_color = self.cached_edge_color(hwnd.0);
           // Reuses a still-fading or recently-warm surrogate for this same
           // window when one exists (see `reclaim_surrogate`'s doc comment),
           // skipping `CreateWindowExW`/`DwmRegisterThumbnail` entirely in
@@ -2274,23 +2272,25 @@ impl AnimationManager {
 
           match session_result {
             Ok(session) => {
-              // Refresh in the background whenever the color is missing or
-              // past its TTL, rather than sampling synchronously here --
-              // the two `BitBlt` readbacks cost 26-114ms on the WM's only
-              // thread. This session still plays with whatever was cached,
-              // stale or not (see `cached_edge_color`); the refresh is for
-              // the next one. Warmed whatever the backdrop config, since
-              // `begin_impl` uses the color for any session that can
+              // Re-sampled on every session rather than only once per TTL,
+              // so the cached color is never more than one animation behind
+              // the window it stands in for -- the fill is what a resize
+              // shows in the strip the thumbnail has not reached, and a
+              // five-minute-old sample of an app that has since changed
+              // theme reads as a wrong-coloured flash. Never sampled
+              // synchronously: the two `BitBlt` readbacks cost 26-114ms on
+              // the WM's only thread. This session plays with whatever was
+              // already cached (see `cached_edge_color`); the sample below
+              // is for the next one. Warmed whatever the backdrop config,
+              // since `begin_impl` uses the color for any session that can
               // uncover a gap.
-              if !color_is_fresh {
-                sample_edge_color_async(
-                  hwnd,
-                  &start_rect,
-                  self.edge_color_cache.clone(),
-                  EDGE_COLOR_CACHE_PRUNE_LEN,
-                  EDGE_COLOR_CACHE_TTL,
-                );
-              }
+              sample_edge_color_async(
+                hwnd,
+                &start_rect,
+                self.edge_color_cache.clone(),
+                EDGE_COLOR_CACHE_PRUNE_LEN,
+                EDGE_COLOR_CACHE_TTL,
+              );
               // `place_at_top: true` above means the session's surrogate
               // (if any) was inserted at `HWND_TOP` -- see
               // `blur_overlay_z_order_dirty`'s doc comment.
@@ -2447,28 +2447,23 @@ impl AnimationManager {
       })
   }
 
-  /// Returns the cached surrogate backdrop color for `hwnd`, paired with
-  /// whether it is still within [`EDGE_COLOR_CACHE_TTL`].
+  /// Returns the last sampled surrogate backdrop color for `hwnd`,
+  /// however old it is.
   ///
-  /// A stale color is handed back rather than withheld. It only ever
-  /// stands in for window content in a strip the thumbnail has not reached
-  /// yet, and an app's background changes about as often as its theme --
-  /// so an old sample beats none, which leaves that strip showing the
-  /// backdrop raw and undimmed. Withholding it meant a window's first
-  /// animation after five idle minutes played unfilled, and five
-  /// minutes is a long time to leave a window alone: in practice that was
-  /// most animations, not the rare first one. The caller refreshes a stale
-  /// entry in the background.
+  /// Age is not consulted: the color only ever stands in for window content
+  /// in a strip the thumbnail has not reached yet, and an app's background
+  /// changes about as often as its theme -- so the previous sample beats
+  /// none, which leaves that strip showing the backdrop raw and undimmed.
+  /// Callers re-sample on every session (see [`sample_edge_color_async`]),
+  /// so this entry is never more than one animation behind the window.
   ///
   /// `sample_edge_color_async`'s background thread populates this same map
   /// directly (see `edge_color_cache`'s doc comment), so a lock failure here
   /// is treated the same as a miss rather than propagated.
   #[cfg(target_os = "windows")]
-  fn cached_edge_color(&self, hwnd: isize) -> Option<(Color, bool)> {
+  fn cached_edge_color(&self, hwnd: isize) -> Option<Color> {
     let map = self.edge_color_cache.lock().ok()?;
-    map.get(&hwnd).map(|(color, sampled_at)| {
-      (color.clone(), sampled_at.elapsed() < EDGE_COLOR_CACHE_TTL)
-    })
+    map.get(&hwnd).map(|(color, _)| color.clone())
   }
 
   /// Reclaims a surrogate for `window_id` to reuse instead of building one
@@ -2991,9 +2986,7 @@ impl AnimationManager {
         place_at_top: false,
         // Reuse a cached color when the closing window was recently
         // animated; otherwise sample — the window is still on screen.
-        edge_color: self
-          .cached_edge_color(native_window.hwnd().0)
-          .map(|(color, _)| color),
+        edge_color: self.cached_edge_color(native_window.hwnd().0),
         blur_overlay,
         border_overlay,
       },
