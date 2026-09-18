@@ -530,6 +530,7 @@ fn redraw_containers(
         let mut monitor_y = 0i32;
         let mut monitor_height = 0i32;
         let mut monitor_handle = 0isize;
+        let mut monitor_work_area = Rect::from_xy(0, 0, 0, 0);
 
         for window in windows_to_update.iter() {
           let id = window.id();
@@ -551,6 +552,7 @@ fn redraw_containers(
               monitor_y = b.y();
               monitor_height = b.height();
               monitor_handle = props.handle;
+              monitor_work_area = props.working_area.clone();
             }
           }
 
@@ -695,6 +697,7 @@ fn redraw_containers(
             monitor_y,
             monitor_height,
             monitor_handle,
+            &monitor_work_area,
             config,
           );
         }

@@ -266,6 +266,17 @@ struct WorkspaceSwitchState {
   monitor_y: i32,
   /// Height of the animation monitor in screen pixels.
   monitor_height: i32,
+  /// Viewport the border overlays are pinned to for the slide, i.e. the
+  /// monitor's *working area* rather than its full bounds.
+  ///
+  /// A pinned overlay's `HWND` covers its whole viewport, and it is banded
+  /// with its surrogate (`window_class::match_z_band`) -- so pinning to the
+  /// full monitor puts a monitor-sized window above any ordinary-band
+  /// always-on-top bar for the length of every switch. Tiled windows live
+  /// inside the working area anyway, so clipping to it costs nothing but
+  /// keeps the overlays out of the reserved strip entirely. A floating
+  /// window overhanging that strip has its ring clipped there mid-slide.
+  border_viewport: Rect,
   /// Effective horizontal slide travel distance in screen pixels.
   ///
   /// Less than `monitor_width` by the sum of the outgoing workspace's
@@ -1378,19 +1389,12 @@ impl AnimationManager {
                     params.opacity *=
                       s.opacity_frac(eased_final, entry.is_incoming);
 
-                    let viewport = Rect::from_xy(
-                      ws.monitor_x,
-                      ws.monitor_y,
-                      ws.monitor_width,
-                      ws.monitor_height,
-                    );
-
                     upsert_pinned_border_overlay(
                       &mut state.border_overlays,
                       window_id,
                       params,
                       rect,
-                      &viewport,
+                      &ws.border_viewport,
                       s.hwnd(),
                     );
                   }
@@ -2641,6 +2645,7 @@ impl AnimationManager {
     monitor_y: i32,
     monitor_height: i32,
     monitor_handle: isize,
+    monitor_work_area: &Rect,
     config: &UserConfig,
   ) {
     self.workspace_switch = None;
@@ -2704,6 +2709,7 @@ impl AnimationManager {
         monitor_width,
         monitor_y,
         monitor_height,
+        border_viewport: monitor_work_area.clone(),
         slide_distance_h,
         slide_distance_v,
         zoom_factor: ws_config.zoom_factor.clamp(0.0, 1.0),
