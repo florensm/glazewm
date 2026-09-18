@@ -148,8 +148,9 @@ pub fn handle_window_moved_or_resized(
     }
 
     // A resize/move/open animation session owns this window's position for
-    // the duration of its `ResizeSession` -- the real window is frozen and
-    // cloaked behind a surrogate, repositioned only once via
+    // the duration of its `ResizeSession` and the fade-out tail that
+    // follows it -- the real window is frozen and cloaked behind a
+    // surrogate, repositioned only once via
     // `ResizeSession::maybe_handoff`. That handoff's `SetWindowPos` uses
     // `SWP_NOSENDCHANGING`, which suppresses `WM_WINDOWPOSCHANGING` but not
     // the location-change notification this handler is driven by. Without
@@ -161,7 +162,7 @@ pub fn handle_window_moved_or_resized(
     // of a sibling's drag/relayout (its own animated move, not an
     // interactive drag, so it doesn't hit the `active_drag` branch above).
     #[cfg(target_os = "windows")]
-    if state.animation_manager.resize_sessions.contains_key(&window.id()) {
+    if state.animation_manager.owns_window_position(&window.id()) {
       return Ok(());
     }
 

@@ -722,6 +722,12 @@ pub struct AnimationsConfig {
   ///
   /// Only has an effect on Windows.
   pub window_close: WindowCloseConfig,
+  /// Animation settings for when a window is minimized or restored.
+  ///
+  /// # Platform-specific
+  ///
+  /// Only has an effect on Windows.
+  pub window_minimize: WindowMinimizeConfig,
 
   /// Which windows keep their effect overlays tracking during an animation.
   ///
@@ -766,6 +772,7 @@ impl Default for AnimationsConfig {
       window_open: WindowOpenConfig::default(),
       workspace_switch: WorkspaceSwitchAnimationConfig::default(),
       window_close: WindowCloseConfig::default(),
+      window_minimize: WindowMinimizeConfig::default(),
       overlay_tracking: OverlayTracking::default(),
     }
   }
@@ -808,6 +815,54 @@ impl WindowTransitionStyle {
   /// the full animation; the surrogate window itself never moves.
   pub fn is_stationary(&self) -> bool {
     matches!(self, Self::None | Self::Zoom)
+  }
+}
+
+/// Resolved parameters for a one-shot window transition.
+///
+/// `window_open` and `window_minimize` drive the same entry animation and
+/// `window_close`/`window_minimize` the same exit animation; they differ only
+/// in which config block supplies the values. Resolving to this struct lets
+/// one driver serve all of them instead of branching on the config type.
+#[derive(Clone, Debug)]
+pub struct WindowTransitionParams {
+  pub duration_ms: u32,
+  pub easing: EasingFunction,
+  pub style: WindowTransitionStyle,
+  /// Opacity at the away end of the transition -- the value a window enters
+  /// from and exits to.
+  pub away_opacity: f32,
+}
+
+impl WindowTransitionParams {
+  #[must_use]
+  pub fn from_open(config: &WindowOpenConfig) -> Self {
+    Self {
+      duration_ms: config.duration_ms,
+      easing: config.easing.clone(),
+      style: config.style.clone(),
+      away_opacity: config.opacity_from,
+    }
+  }
+
+  #[must_use]
+  pub fn from_close(config: &WindowCloseConfig) -> Self {
+    Self {
+      duration_ms: config.duration_ms,
+      easing: config.easing.clone(),
+      style: config.style.clone(),
+      away_opacity: config.opacity_to,
+    }
+  }
+
+  #[must_use]
+  pub fn from_minimize(config: &WindowMinimizeConfig) -> Self {
+    Self {
+      duration_ms: config.duration_ms,
+      easing: config.easing.clone(),
+      style: config.style.clone(),
+      away_opacity: config.opacity_to,
+    }
   }
 }
 
@@ -874,6 +929,51 @@ impl Default for WindowCloseConfig {
       duration_ms: 150,
       easing: EasingFunction::CubicBezier(0.32, 0.0, 0.67, 0.0),
       style: WindowTransitionStyle::None,
+      opacity_to: 0.0,
+    }
+  }
+}
+
+/// Animation settings for when a window is minimized or restored from
+/// minimized.
+///
+/// One block drives both directions, the same way `WindowTransitionStyle` is
+/// shared between open and close: a window that minimizes with `slide_bottom`
+/// (exiting toward the bottom edge) restores by entering from that same edge.
+/// `opacity_to` is the minimize-out target, and is played in reverse as the
+/// restore-in starting opacity.
+///
+/// # Platform-specific
+///
+/// Only has an effect on Windows.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(default, rename_all(serialize = "camelCase"))]
+pub struct WindowMinimizeConfig {
+  pub enabled: bool,
+  pub duration_ms: u32,
+  pub easing: EasingFunction,
+  /// Transition style for the minimize/restore animation.
+  ///
+  /// - `zoom` (default): shrink toward the window center on minimize, grow
+  ///   back out on restore.
+  /// - `slide_bottom` / `slide_top` / `slide_left` / `slide_right`: slide off
+  ///   that edge on minimize, and back in from it on restore.
+  /// - `none` / `fade`: no movement; combine with `opacity_to` for a pure
+  ///   fade.
+  pub style: WindowTransitionStyle,
+  /// Opacity at the end of the minimize animation (0.0-1.0), and at the start
+  /// of the restore animation. At `0.0` the window fades fully out; at `1.0`
+  /// no fade is applied.
+  pub opacity_to: f32,
+}
+
+impl Default for WindowMinimizeConfig {
+  fn default() -> Self {
+    WindowMinimizeConfig {
+      enabled: true,
+      duration_ms: 150,
+      easing: EasingFunction::CubicBezier(0.32, 0.0, 0.67, 0.0),
+      style: WindowTransitionStyle::Zoom,
       opacity_to: 0.0,
     }
   }

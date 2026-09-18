@@ -1,7 +1,10 @@
 use anyhow::Context;
 use itertools::Itertools;
 #[cfg(target_os = "windows")]
-use wm_common::{OverlayTracking, WindowEffectConfig, WorkspaceSwitchStyle};
+use wm_common::{
+  OverlayTracking, WindowEffectConfig, WindowTransitionParams,
+  WorkspaceSwitchStyle,
+};
 use tracing::{debug, warn};
 use wm_common::{
   CursorJumpTrigger, DisplayState, HideCorner, HideMethod, WindowState,
@@ -824,6 +827,18 @@ fn redraw_containers(
       continue;
     }
 
+    // A minimize animation owns this window outright: the real window is
+    // already minimized behind a surrogate that `update_internal`'s
+    // direct-drive loop positions itself. This pass must not touch it -- the
+    // OS minimize event re-queues the window for redraw, and taking the
+    // non-animated path below would call `remove_animation` and tear the
+    // surrogate down mid-flight. A closing window avoids this by being
+    // detached from the tree; a minimizing one is still in it.
+    #[cfg(target_os = "windows")]
+    if state.animation_manager.has_minimize_animation(&window.id()) {
+      continue;
+    }
+
     // Capture display state before transition to detect opening windows
     let previous_display_state = window.display_state();
 
@@ -864,14 +879,27 @@ fn redraw_containers(
     // boundary so the transition is smooth rather than a teleport.
     let is_floating = matches!(window.state(), WindowState::Floating(_));
 
-    // Fullscreen windows are never animated: cloaking the real window (or
+    // Fullscreen windows are not animated: cloaking the real window (or
     // covering it with a surrogate) kicks exclusive-fullscreen games out of
     // fullscreen, reverting their resolution mode-set and re-triggering a
     // display-settings-changed relayout in a loop.
+    //
+    // The one exception is a fullscreen transition the *WM* initiated, via
+    // `set-fullscreen`/`toggle-fullscreen`. A game driving itself fullscreen
+    // is detected in `handle_window_moved_or_resized` and routed through
+    // `update_window_state`, so it sets `is_state_change` just like a command
+    // does -- only `is_wm_fullscreen_toggle` separates the two. Display-change
+    // cycles remain covered by `suppress_animations` regardless.
     let is_fullscreen =
       matches!(window.state(), WindowState::Fullscreen(_));
     let is_state_change =
       state.pending_sync.is_window_state_change(&window.id());
+    let is_wm_fullscreen_toggle =
+      state.pending_sync.is_wm_fullscreen_toggle(&window.id());
+    #[cfg(target_os = "windows")]
+    let is_window_restore =
+      state.pending_sync.is_window_restore(&window.id());
+
 
     let is_outgoing_switch =
       state.pending_sync.is_workspace_switch_outgoing(&window.id());
@@ -958,19 +986,46 @@ fn redraw_containers(
       (opacity, style, blur_overlay, border_overlay)
     };
 
-    // Start a slide-in animation for newly appearing tiling windows.
+    // Pick this window's entry animation, if it gets one: `window_open` for a
+    // newly appearing tiling window, or `window_minimize` played inwards for
+    // one coming back from minimized. Both run through
+    // `start_open_animation`, which only differs between them by the params
+    // it is handed.
+    //
     // `previous_target.is_none()` is true only on the first `platform_sync`
-    // call for this window, so the slide-in starts exactly once.
+    // call for a window, so an open starts exactly once. A restore cannot use
+    // that test -- the window kept the target position it had before it was
+    // minimized -- so it is flagged on `PendingSync` instead. A restore is
+    // also allowed for floating windows, which never slide in on open.
     #[cfg(target_os = "windows")]
-    if previous_target.is_none()
-      && is_visible
-      && !is_floating
+    let entry_transition = if is_visible
       && !is_fullscreen
       && !is_outgoing_switch
       && !is_frozen_by_ws_animation
       && !suppress_animations
-      && config.value.animations.window_open.enabled
     {
+      if is_window_restore
+        && config.value.animations.window_minimize.enabled
+      {
+        Some(WindowTransitionParams::from_minimize(
+          &config.value.animations.window_minimize,
+        ))
+      } else if previous_target.is_none()
+        && !is_floating
+        && config.value.animations.window_open.enabled
+      {
+        Some(WindowTransitionParams::from_open(
+          &config.value.animations.window_open,
+        ))
+      } else {
+        None
+      }
+    } else {
+      None
+    };
+
+    #[cfg(target_os = "windows")]
+    if let Some(params) = entry_transition {
       let monitor_rect = monitor.to_rect()?;
       let native_ref = window.native();
       state.animation_manager.start_open_animation(
@@ -981,7 +1036,7 @@ fn redraw_containers(
         corner_style,
         blur_overlay,
         border_overlay,
-        config,
+        &params,
         &*native_ref,
       );
     }
@@ -1009,7 +1064,7 @@ fn redraw_containers(
     // animation (and its surrogate) via `remove_animation` below.
     let should_use_animations = !is_outgoing_switch
       && (is_frozen_by_ws_animation
-        || (!is_fullscreen
+        || ((!is_fullscreen || is_wm_fullscreen_toggle || has_slide_in)
           && !suppress_animations
           && ((!is_floating && anim_enabled)
             || (is_state_change && anim_enabled)
@@ -2020,6 +2075,49 @@ fn overlay_entry<'a, O: SyncableOverlay>(
       }
     }
   }
+}
+
+/// Resolves the effects a surrogate needs to stand in for a window:
+/// `(effect_opacity, corner_style, blur_overlay, border_overlay)`.
+///
+/// Snapshotted onto the `ResizeSession` rather than re-read live, because the
+/// close and minimize direct-drive loops run once the window is detached from
+/// the container tree (close) or already minimized (minimize), where the
+/// per-window effect config can no longer be recomputed.
+#[cfg(target_os = "windows")]
+pub(crate) fn surrogate_effects_for(
+  is_focused: bool,
+  config: &UserConfig,
+) -> (
+  u8,
+  CornerStyle,
+  Option<BlurOverlayParams>,
+  Option<BorderOverlayParams>,
+) {
+  let effect_cfg = if is_focused {
+    &config.value.window_effects.focused_window
+  } else {
+    &config.value.window_effects.other_windows
+  };
+
+  let effect_opacity = if effect_cfg.transparency.enabled {
+    effect_cfg.transparency.opacity.to_alpha()
+  } else {
+    u8::MAX
+  };
+
+  let corner_style = if effect_cfg.corner_style.enabled {
+    effect_cfg.corner_style.style.clone()
+  } else {
+    CornerStyle::Default
+  };
+
+  (
+    effect_opacity,
+    corner_style,
+    blur_overlay_params_for(is_focused, config),
+    border_overlay_params_for(is_focused, config),
+  )
 }
 
 /// Resolves `window_id`'s border overlay params from its focused/other-window

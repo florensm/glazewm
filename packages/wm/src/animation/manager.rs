@@ -1,5 +1,5 @@
 use std::{
-  collections::HashMap,
+  collections::{HashMap, HashSet},
   sync::{
     atomic::{AtomicBool, Ordering},
     Arc, Mutex,
@@ -182,7 +182,7 @@ const MIN_TICK_INTERVAL: Duration =
 use tokio::sync::mpsc;
 use uuid::Uuid;
 use wm_common::{
-  EasingFunction, WindowTransitionStyle,
+  EasingFunction, WindowTransitionParams, WindowTransitionStyle,
   WorkspaceSwitchDirection, WorkspaceSwitchStyle,
 };
 use wm_platform::{
@@ -451,6 +451,14 @@ pub struct AnimationManager {
   /// sent after the fade finishes without borrowing the window container.
   #[cfg(target_os = "windows")]
   pending_close_windows: HashMap<Uuid, isize>,
+  /// Windows with an active minimize animation.
+  ///
+  /// Unlike a close, the real window is already minimized by the OS before
+  /// the animation starts (see `start_minimize_animation`), so nothing has to
+  /// be done to it when the animation finishes -- only the surrogate is torn
+  /// down. No `HWND` is stored for that reason.
+  #[cfg(target_os = "windows")]
+  pending_minimize_windows: HashSet<Uuid>,
   /// Active iris-wipe workspace transition, or `None` when idle.
   #[cfg(target_os = "windows")]
   iris_switch: Option<IrisSwitchState>,
@@ -508,6 +516,7 @@ impl AnimationManager {
       pending_ws_cleanup: None,
       #[cfg(target_os = "windows")]
       pending_close_windows: HashMap::new(),
+      pending_minimize_windows: HashSet::new(),
       #[cfg(target_os = "windows")]
       iris_switch: None,
     }
@@ -536,6 +545,17 @@ impl AnimationManager {
     self.pending_close_windows.contains_key(window_id)
   }
 
+  /// Returns `true` while a minimize animation is playing for `window_id`.
+  ///
+  /// `platform_sync` checks this to keep its hands off a window whose
+  /// surrogate is mid-minimize: the real window is already minimized, so any
+  /// move/resize animation it started for the same window would fight the
+  /// minimize surrogate over the same `ResizeSession` slot.
+  #[cfg(target_os = "windows")]
+  pub fn has_minimize_animation(&self, window_id: &Uuid) -> bool {
+    self.pending_minimize_windows.contains(window_id)
+  }
+
   /// Returns `true` if a DWM surrogate is currently covering `window_id`.
   ///
   /// Used by blur-overlay tracking to skip position updates and hide the
@@ -556,6 +576,7 @@ impl AnimationManager {
         .map(|ws| ws.windows.contains_key(window_id))
         .unwrap_or(false)
       || self.pending_close_windows.contains_key(window_id)
+      || self.pending_minimize_windows.contains(window_id)
   }
 
   /// Returns `true` if `window_id` has a workspace-switch surrogate
@@ -600,6 +621,27 @@ impl AnimationManager {
     self.resize_sessions.contains_key(window_id)
   }
 
+  /// Returns `true` while an animation still owns `window_id`'s real
+  /// position -- either a live `ResizeSession`, or the
+  /// `pending_session_cleanup` tail that outlives it.
+  ///
+  /// Covers the tail because the handoff `SetWindowPos` that parks the real
+  /// window at its final rect is asynchronous and cross-process: the
+  /// resulting location-change notification routinely arrives *after* the
+  /// session has been retired (measured ~344ms for a 250ms animation, i.e.
+  /// inside the fade-out tail). Reprocessing it as an independent move
+  /// rewrites a floating window's `floating_placement` to a mid-animation
+  /// rect and marks it `has_custom_floating_placement`, which permanently
+  /// suppresses `--centered` on every later `toggle-floating`.
+  #[cfg(target_os = "windows")]
+  pub fn owns_window_position(&self, window_id: &Uuid) -> bool {
+    self.resize_sessions.contains_key(window_id)
+      || self
+        .pending_session_cleanup
+        .iter()
+        .any(|(id, _, _)| id == window_id)
+  }
+
   /// Removes a window's animation and any associated resize session.
   pub fn remove_animation(&mut self, window_id: &Uuid) {
     self.animations.remove(window_id);
@@ -609,6 +651,8 @@ impl AnimationManager {
     self.slide_in_monitor_rects.remove(window_id);
     #[cfg(target_os = "windows")]
     self.pending_close_windows.remove(window_id);
+    #[cfg(target_os = "windows")]
+    self.pending_minimize_windows.remove(window_id);
   }
 
   /// Removes animations that have both finished their eased progress *and*
@@ -721,6 +765,7 @@ impl AnimationManager {
     // On WM shutdown close-animation windows are left open — only clear
     // the tracking state without sending WM_CLOSE.
     self.pending_close_windows.clear();
+    self.pending_minimize_windows.clear();
     // Drop the iris overlay (if any); the real windows are already at their
     // final positions, so tearing it down simply reveals them.
     self.iris_switch = None;
@@ -920,6 +965,19 @@ impl AnimationManager {
     perf::note_window_count(active_window_ids.len());
 
     for window_id in &active_window_ids {
+      // A minimizing window must not be queued for redraw. Unlike a closing
+      // one it is still in the layout tree, and `set_non_tiling` minimizes it
+      // *without* moving it to `WindowState::Minimized` -- that only happens
+      // once the OS minimize event comes back. `platform_sync` would
+      // therefore see a natively-minimized window whose WM state is still
+      // tiling/floating, decide it has to be restored before it can be
+      // repositioned, and un-minimize it mid-animation. The surrogate is
+      // driven directly below instead.
+      #[cfg(target_os = "windows")]
+      if state.animation_manager.has_minimize_animation(window_id) {
+        continue;
+      }
+
       if let Some(container) = state.container_by_id(*window_id) {
         if let Ok(window) = container.as_window_container() {
           state.pending_sync.queue_container_to_redraw(window);
@@ -927,17 +985,19 @@ impl AnimationManager {
       }
     }
 
-    // Drive close surrogates directly. These windows have been detached from
-    // the layout tree when the close animation started, so they are not
-    // queued for redraw by the loop above and cannot be driven through
-    // `platform_sync`. We replicate the same per-frame update logic used
-    // inside `start_animation_if_needed` for surrogate sessions.
+    // Drive close and minimize surrogates directly. Neither reaches the
+    // redraw loop above: a closing window was detached from the layout tree
+    // when its animation started, and a minimizing one is already minimized,
+    // so `platform_sync` has nothing to position for either. We replicate
+    // the same per-frame update logic used inside `start_animation_if_needed`
+    // for surrogate sessions.
     #[cfg(target_os = "windows")]
     {
       let close_in_progress: Vec<Uuid> = state
         .animation_manager
         .pending_close_windows
         .keys()
+        .chain(state.animation_manager.pending_minimize_windows.iter())
         .filter(|id| {
           state
             .animation_manager
@@ -1099,6 +1159,39 @@ impl AnimationManager {
             );
           }
         }
+      }
+    }
+
+    // Finalize completed minimize animations, for the same reason as the
+    // close block above: drop the session directly so it never reaches
+    // `pending_session_cleanup`, where `platform_sync` would reposition and
+    // uncloak a window that is deliberately minimized.
+    //
+    // The real window was minimized by the OS before the animation started,
+    // so there is nothing to do to it here -- only the surrogate and the
+    // overlays the drive loop created for it are torn down.
+    #[cfg(target_os = "windows")]
+    {
+      let minimize_done: Vec<Uuid> = state
+        .animation_manager
+        .pending_minimize_windows
+        .iter()
+        .filter(|id| {
+          state
+            .animation_manager
+            .get_animation(id)
+            .map_or(false, |a| a.is_complete())
+        })
+        .copied()
+        .collect();
+
+      for id in minimize_done {
+        state.animation_manager.animations.remove(&id);
+        state.animation_manager.resize_sessions.remove(&id);
+        state.animation_manager.pending_minimize_windows.remove(&id);
+        state.blur_overlays.remove(&id);
+        state.border_overlays.remove(&id);
+        tracing::debug!("Minimize animation complete for {id}.");
       }
     }
 
@@ -2791,16 +2884,15 @@ impl AnimationManager {
     corner_style: CornerStyle,
     blur_overlay: Option<BlurOverlayParams>,
     border_overlay: Option<BorderOverlayParams>,
-    config: &UserConfig,
+    params: &WindowTransitionParams,
     native_window: &NativeWindow,
   ) {
-    let anim_config = &config.value.animations.window_open;
-    let is_zoom = anim_config.style == WindowTransitionStyle::Zoom;
-    let is_stationary = anim_config.style.is_stationary();
+    let is_zoom = params.style == WindowTransitionStyle::Zoom;
+    let is_stationary = params.style.is_stationary();
 
     // Skip `None` style (no slide, no zoom) with no opacity change — nothing
     // would visually change for the duration.
-    if is_stationary && !is_zoom && anim_config.opacity_from >= 1.0 {
+    if is_stationary && !is_zoom && params.away_opacity >= 1.0 {
       return;
     }
 
@@ -2814,14 +2906,14 @@ impl AnimationManager {
     let start_rect = if is_stationary {
       target_rect.clone()
     } else {
-      Self::compute_transition_start_rect(&target_rect, &anim_config.style)
+      Self::compute_transition_start_rect(&target_rect, &params.style)
     };
 
     let mut anim = WindowAnimationState::new_movement(
       start_rect.clone(),
       target_rect.clone(),
-      anim_config.duration_ms,
-      anim_config.easing.clone(),
+      params.duration_ms,
+      params.easing.clone(),
     );
 
     // For `None`/fade style only: hold at progress 0.0 so the app can paint
@@ -2842,7 +2934,7 @@ impl AnimationManager {
     // makes the initial frames invisible (opacity=0 + tiny size = nothing to
     // see), which is why it felt unsmooth. Users can still set opacity_from
     // explicitly to combine fade with zoom.
-    let effective_opacity_from = anim_config.opacity_from;
+    let effective_opacity_from = params.away_opacity;
 
     if effective_opacity_from < 1.0 {
       let effect_frac = effect_opacity as f32 / 255.0;
@@ -2931,20 +3023,19 @@ impl AnimationManager {
     corner_style: CornerStyle,
     blur_overlay: Option<BlurOverlayParams>,
     border_overlay: Option<BorderOverlayParams>,
-    config: &UserConfig,
+    params: &WindowTransitionParams,
     native_window: &NativeWindow,
   ) {
     if self.pending_close_windows.contains_key(&window_id) {
       return;
     }
 
-    let anim_config = &config.value.animations.window_close;
-    let is_zoom = anim_config.style == WindowTransitionStyle::Zoom;
-    let is_stationary = anim_config.style.is_stationary();
+    let is_zoom = params.style == WindowTransitionStyle::Zoom;
+    let is_stationary = params.style.is_stationary();
 
     // Skip stationary style (no slide, no zoom) with no opacity change —
     // nothing would visually change for the duration.
-    if is_stationary && !is_zoom && anim_config.opacity_to >= 1.0 {
+    if is_stationary && !is_zoom && params.away_opacity >= 1.0 {
       return;
     }
 
@@ -2958,19 +3049,19 @@ impl AnimationManager {
     let target_rect = if is_stationary {
       current_rect.clone()
     } else {
-      Self::compute_transition_start_rect(&current_rect, &anim_config.style)
+      Self::compute_transition_start_rect(&current_rect, &params.style)
     };
 
     let mut anim = WindowAnimationState::new_movement(
       current_rect.clone(),
       target_rect.clone(),
-      anim_config.duration_ms,
-      anim_config.easing.clone(),
+      params.duration_ms,
+      params.easing.clone(),
     );
 
-    if anim_config.opacity_to < 1.0 {
+    if params.away_opacity < 1.0 {
       let effect_frac = effect_opacity as f32 / 255.0;
-      let target_frac = anim_config.opacity_to.clamp(0.0, 1.0) * effect_frac;
+      let target_frac = params.away_opacity.clamp(0.0, 1.0) * effect_frac;
       anim.start_opacity = Some(OpacityValue(effect_frac));
       anim.target_opacity = Some(OpacityValue(target_frac));
     }
@@ -3005,6 +3096,100 @@ impl AnimationManager {
         tracing::warn!(
           "Failed to begin close animation for {window_id}: {err}."
         );
+      }
+    }
+  }
+
+  /// Starts a minimize animation for a window, returning whether one began.
+  ///
+  /// Must be called while the window is still restored and on screen: the
+  /// surrogate captures it via a DWM thumbnail, and a minimized window has no
+  /// thumbnail left to capture. The caller minimizes the real window only
+  /// after this returns `true`, by which point the surrogate is already
+  /// covering it, so the handoff is invisible.
+  ///
+  /// The real window is therefore minimized for the whole animation and
+  /// nothing needs to be done to it on completion -- `update_internal` just
+  /// drops the surrogate. That also means this only covers a WM-initiated
+  /// minimize; a window minimized from its own title bar is already gone by
+  /// the time the WM hears about it, and keeps the OS animation.
+  #[cfg(target_os = "windows")]
+  pub fn start_minimize_animation(
+    &mut self,
+    window_id: Uuid,
+    current_rect: Rect,
+    effect_opacity: u8,
+    corner_style: CornerStyle,
+    blur_overlay: Option<BlurOverlayParams>,
+    border_overlay: Option<BorderOverlayParams>,
+    params: &WindowTransitionParams,
+    native_window: &NativeWindow,
+  ) -> bool {
+    if self.pending_minimize_windows.contains(&window_id) {
+      return false;
+    }
+
+    let is_zoom = params.style == WindowTransitionStyle::Zoom;
+    let is_stationary = params.style.is_stationary();
+
+    // Nothing would visually change for the duration.
+    if is_stationary && !is_zoom && params.away_opacity >= 1.0 {
+      return false;
+    }
+
+    self.ensure_waiter_for(DxgiVsyncWaiter::window_monitor(
+      native_window.hwnd(),
+    ));
+
+    let target_rect = if is_stationary {
+      current_rect.clone()
+    } else {
+      Self::compute_transition_start_rect(&current_rect, &params.style)
+    };
+
+    let mut anim = WindowAnimationState::new_movement(
+      current_rect.clone(),
+      target_rect.clone(),
+      params.duration_ms,
+      params.easing.clone(),
+    );
+
+    if params.away_opacity < 1.0 {
+      let effect_frac = effect_opacity as f32 / 255.0;
+      let target_frac = params.away_opacity.clamp(0.0, 1.0) * effect_frac;
+      anim.start_opacity = Some(OpacityValue(effect_frac));
+      anim.target_opacity = Some(OpacityValue(target_frac));
+    }
+
+    match ResizeSession::begin(
+      native_window.hwnd(),
+      &current_rect,
+      &target_rect,
+      SessionOptions {
+        effect_opacity,
+        initially_visible: false,
+        corner_style,
+        place_at_top: false,
+        edge_color: self.cached_edge_color(native_window.hwnd().0),
+        blur_overlay,
+        border_overlay,
+      },
+    ) {
+      Ok(mut session) => {
+        // Cover the still-visible window before the caller minimizes it.
+        session.show();
+        session.zoom = is_zoom;
+        self.animations.insert(window_id, anim);
+        self.resize_sessions.insert(window_id, session);
+        self.pending_minimize_windows.insert(window_id);
+        tracing::debug!("Started minimize animation for {window_id}.");
+        true
+      }
+      Err(err) => {
+        tracing::warn!(
+          "Failed to begin minimize animation for {window_id}: {err}."
+        );
+        false
       }
     }
   }

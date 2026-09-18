@@ -111,6 +111,28 @@ animations:
     # at 1.0 no fade is applied.
     opacity_to: 0.0
 
+  # Animation settings for minimizing and restoring a window. Windows only.
+  # One block drives both halves: minimizing plays the transition outwards,
+  # restoring plays the same transition inwards.
+  #
+  # Only applies to a minimize the WM performs itself (e.g. 'toggle-minimized').
+  # A window minimized from its own title bar is already gone by the time the
+  # WM hears about it, so it keeps the OS animation.
+  window_minimize:
+    enabled: false
+    duration_ms: 150
+    # See 'window_move.easing' for available options.
+    easing: "ease_in_cubic"
+    # Transition style. Options:
+    #   'zoom' (default)  - shrink to the window center, grow back on restore
+    #   'none' / 'fade'   - no movement; combine with opacity_to for a fade
+    #   'slide_bottom'    - slide off the bottom edge (toward the taskbar)
+    #   'slide_top' / 'slide_left' / 'slide_right' - slide off that edge
+    style: "zoom"
+    # Opacity at the minimized end (0.0–1.0). Minimizing fades to this value,
+    # restoring fades from it. At 1.0 no fade is applied.
+    opacity_to: 0.0
+
 general:
   # Commands to run when the WM has started. This is useful for running a
   # script or launching another application.

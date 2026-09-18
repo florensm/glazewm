@@ -290,44 +290,20 @@ impl WindowManager {
             if config.value.animations.window_close.enabled {
               use wm_platform::NativeWindowWindowsExt;
 
-              let effect_cfg = if window.id()
+              let is_focused = window.id()
                 == state
                   .focused_container()
                   .map(|c| c.id())
-                  .unwrap_or_default()
-              {
-                &config.value.window_effects.focused_window
-              } else {
-                &config.value.window_effects.other_windows
-              };
-              let effect_opacity = if effect_cfg.transparency.enabled {
-                effect_cfg.transparency.opacity.to_alpha()
-              } else {
-                u8::MAX
-              };
-              let corner_style = if effect_cfg.corner_style.enabled {
-                effect_cfg.corner_style.style.clone()
-              } else {
-                wm_platform::CornerStyle::Default
-              };
-              // Snapshotted onto the `ResizeSession` (rather than re-read
-              // live from config later) since the close animation's
-              // direct-drive loop runs after the window is detached from
-              // the container tree, where `effect_cfg` can no longer be
-              // recomputed.
-              let corner_radius = if effect_cfg.corner_style.enabled {
-                effect_cfg.corner_style.style.approx_radius_px()
-              } else {
-                wm_platform::CornerStyle::Default.approx_radius_px()
-              };
-              let blur_overlay = effect_cfg
-                .backdrop
-                .overlay_tint()
-                .map(|tint| effect_cfg.backdrop.to_overlay_params(tint, corner_radius));
-              let border_overlay = effect_cfg
-                .border
-                .abgr_color()
-                .map(|color| effect_cfg.border.to_overlay_params(color, corner_radius));
+                  .unwrap_or_default();
+
+              let (
+                effect_opacity,
+                corner_style,
+                blur_overlay,
+                border_overlay,
+              ) = crate::commands::general::surrogate_effects_for(
+                is_focused, config,
+              );
 
               if let Ok(rect) = window.to_rect().and_then(|r| {
                 window.total_border_delta().map(|d| r.apply_delta(&d, None))
@@ -346,7 +322,9 @@ impl WindowManager {
                     corner_style,
                     blur_overlay,
                     border_overlay,
-                    config,
+                    &wm_common::WindowTransitionParams::from_close(
+                      &config.value.animations.window_close,
+                    ),
                     &*native_ref,
                   );
                 }
@@ -667,7 +645,7 @@ impl WindowManager {
           let fullscreen_defaults =
             &config.value.window_behavior.state_defaults.fullscreen;
 
-          update_window_state(
+          let window = update_window_state(
             window.clone(),
             WindowState::Fullscreen(FullscreenStateConfig {
               maximized: maximized
@@ -678,6 +656,10 @@ impl WindowManager {
             state,
             config,
           )?;
+
+          // WM-initiated, so this transition is allowed to animate (see
+          // `PendingSync::wm_fullscreen_toggles`).
+          state.pending_sync.mark_wm_fullscreen_toggle(window.id());
 
           Ok(())
         }
@@ -811,12 +793,16 @@ impl WindowManager {
                 .unwrap_or(fullscreen_defaults.shown_on_top),
             });
 
-          update_window_state(
+          let window = update_window_state(
             window.clone(),
             window.toggled_state(target_state, config),
             state,
             config,
           )?;
+
+          // WM-initiated, so this transition is allowed to animate (see
+          // `PendingSync::wm_fullscreen_toggles`).
+          state.pending_sync.mark_wm_fullscreen_toggle(window.id());
 
           Ok(())
         }
