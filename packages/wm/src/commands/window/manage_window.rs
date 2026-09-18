@@ -9,7 +9,7 @@ use wm_platform::RectDelta;
 use crate::{
   commands::{
     container::{attach_container, set_focused_descendant},
-    window::run_window_rules,
+    window::{run_window_rules, update_window_state},
   },
   models::{
     Container, Monitor, NativeWindowProperties, NonTilingWindow,
@@ -75,6 +75,10 @@ pub fn manage_window(
   if let Some(window) = updated_window {
     info!("New window managed: {window}");
 
+    // Take the workspace out of fullscreen before the new window is laid
+    // out, so it doesn't open hidden behind a monitor-sized window.
+    exit_fullscreen_for_new_window(&window, state, config)?;
+
     state.emit_event(WmEvent::WindowManaged {
       managed_window: window.to_dto()?,
     });
@@ -109,6 +113,57 @@ pub fn manage_window(
   }
   // Otherwise the window was detached by an `ignore` rule, and the guard
   // uncloaks it so that it displays normally without GlazeWM managing it.
+
+  Ok(())
+}
+
+/// Takes every other fullscreen window on `window`'s workspace back out of
+/// fullscreen.
+///
+/// A fullscreen window covers the whole workspace, so a window spawned onto it
+/// would otherwise open invisible behind it -- and, being tiling, would shrink
+/// the fullscreen window's own tile without that being visible either. Each
+/// window returns to its previous state via `toggled_state`, the same path
+/// `toggle-fullscreen` uses.
+///
+/// Gated on `window_behavior.exit_fullscreen_on_new_window` (default `true`).
+fn exit_fullscreen_for_new_window(
+  window: &WindowContainer,
+  state: &mut WmState,
+  config: &UserConfig,
+) -> anyhow::Result<()> {
+  if !config.value.window_behavior.exit_fullscreen_on_new_window {
+    return Ok(());
+  }
+
+  let workspace = window.workspace().context("No workspace.")?;
+
+  // Collected before updating, since `update_window_state` replaces
+  // containers in the tree the iterator walks.
+  let fullscreen_windows = workspace
+    .descendants()
+    .filter_map(|descendant| descendant.as_window_container().ok())
+    .filter(|other| {
+      other.id() != window.id()
+        && matches!(other.state(), WindowState::Fullscreen(_))
+    })
+    .collect::<Vec<_>>();
+
+  for fullscreen_window in fullscreen_windows {
+    let target_state =
+      fullscreen_window.toggled_state(fullscreen_window.state(), config);
+
+    info!(
+      "Exiting fullscreen for {fullscreen_window}: new window on workspace."
+    );
+
+    update_window_state(
+      fullscreen_window,
+      target_state,
+      state,
+      config,
+    )?;
+  }
 
   Ok(())
 }

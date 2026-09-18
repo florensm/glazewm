@@ -1421,11 +1421,7 @@ impl AnimationManager {
                     &config.value.window_effects.other_windows
                   };
                   if let Some(tint) = effect_cfg.backdrop.overlay_tint() {
-                    let corner_radius = if effect_cfg.corner_style.enabled {
-                      effect_cfg.corner_style.style.approx_radius_px()
-                    } else {
-                      CornerStyle::Default.approx_radius_px()
-                    };
+                    let corner_radius = effect_cfg.window_corner_radius_px();
                     let params =
                       effect_cfg.backdrop.to_overlay_params(tint, corner_radius);
                     upsert_blur_overlay(
@@ -1467,11 +1463,7 @@ impl AnimationManager {
               if let Some(color) = effect_cfg.border.abgr_color() {
                 match s.unclipped_rect() {
                   Some(rect) => {
-                    let corner_radius = if effect_cfg.corner_style.enabled {
-                      effect_cfg.corner_style.style.approx_radius_px()
-                    } else {
-                      CornerStyle::Default.approx_radius_px()
-                    };
+                    let corner_radius = effect_cfg.window_corner_radius_px();
                     let mut params =
                       effect_cfg.border.to_overlay_params(color, corner_radius);
 
@@ -1896,11 +1888,7 @@ impl AnimationManager {
           &config.value.window_effects.other_windows
         };
 
-        let corner_radius = if effect_cfg.corner_style.enabled {
-          effect_cfg.corner_style.style.approx_radius_px()
-        } else {
-          CornerStyle::Default.approx_radius_px()
-        };
+        let corner_radius = effect_cfg.window_corner_radius_px();
 
         if let Some(tint) = effect_cfg.backdrop.overlay_tint() {
           let params = effect_cfg.backdrop.to_overlay_params(tint, corner_radius);

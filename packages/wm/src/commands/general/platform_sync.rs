@@ -577,11 +577,7 @@ fn redraw_containers(
           // blur overlay is hidden for the duration of the animation.
           let overlay_tint =
             effect_cfg.backdrop.overlay_tint().map(|c| c.to_abgr());
-          let corner_style = if effect_cfg.corner_style.enabled {
-            effect_cfg.corner_style.style.clone()
-          } else {
-            CornerStyle::Default
-          };
+          let corner_style = effect_cfg.resolved_corner_style();
 
           if is_incoming {
             let surrogate = window
@@ -945,20 +941,12 @@ fn redraw_containers(
       } else {
         u8::MAX
       };
-      let style = if effect_cfg.corner_style.enabled {
-        effect_cfg.corner_style.style.clone()
-      } else {
-        CornerStyle::Default
-      };
+      let style = effect_cfg.resolved_corner_style();
       // Snapshotted onto the `ResizeSession` (rather than re-read live from
       // config at tracking time) since the close animation's direct-drive
       // loop runs after the window is detached from the container tree,
       // where `effect_cfg` can no longer be recomputed.
-      let corner_radius = if effect_cfg.corner_style.enabled {
-        effect_cfg.corner_style.style.approx_radius_px()
-      } else {
-        CornerStyle::Default.approx_radius_px()
-      };
+      let corner_radius = effect_cfg.window_corner_radius_px();
       // Decided here rather than in the tracking loop so the session is
       // built knowing it has no live overlay. `ResizeSession::begin` skips
       // the sampled backdrop color whenever `blur_overlay` is `Some`, on the
@@ -982,6 +970,7 @@ fn redraw_containers(
         .border
         .abgr_color()
         .filter(|_| is_tracked)
+        .filter(|_| !border_hidden_for_fullscreen(window, config))
         .map(|color| effect_cfg.border.to_overlay_params(color, corner_radius));
       (opacity, style, blur_overlay, border_overlay)
     };
@@ -1875,9 +1864,13 @@ fn apply_window_effects(
     apply_hide_title_bar_effect(window, effect_config);
   }
 
+  // `corner_radius` counts as opting in on its own, so setting only the new
+  // knob still reaches `apply_corner_effect`.
   #[cfg(target_os = "windows")]
   if window_effects.focused_window.corner_style.enabled
     || window_effects.other_windows.corner_style.enabled
+    || window_effects.focused_window.corner_radius.is_some()
+    || window_effects.other_windows.corner_radius.is_some()
   {
     apply_corner_effect(window, effect_config);
   }
@@ -1906,13 +1899,9 @@ fn apply_corner_effect(
   window: &WindowContainer,
   effect_config: &WindowEffectConfig,
 ) {
-  let corner_style = if effect_config.corner_style.enabled {
-    &effect_config.corner_style.style
-  } else {
-    &CornerStyle::Default
-  };
-
-  _ = window.native().set_corner_style(corner_style);
+  _ = window
+    .native()
+    .set_corner_style(&effect_config.resolved_corner_style());
 }
 
 #[cfg(target_os = "windows")]
@@ -2106,11 +2095,7 @@ pub(crate) fn surrogate_effects_for(
     u8::MAX
   };
 
-  let corner_style = if effect_cfg.corner_style.enabled {
-    effect_cfg.corner_style.style.clone()
-  } else {
-    CornerStyle::Default
-  };
+  let corner_style = effect_cfg.resolved_corner_style();
 
   (
     effect_opacity,
@@ -2118,6 +2103,21 @@ pub(crate) fn surrogate_effects_for(
     blur_overlay_params_for(is_focused, config),
     border_overlay_params_for(is_focused, config),
   )
+}
+
+/// Whether `window`'s border ring is suppressed because it is fullscreen and
+/// `window_effects.hide_border_on_fullscreen` is set.
+///
+/// Applies to the static overlay path and to the surrogate that stands in for
+/// the window mid-animation, so a fullscreen transition doesn't animate a ring
+/// that the window won't have once it lands.
+#[cfg(target_os = "windows")]
+pub(crate) fn border_hidden_for_fullscreen(
+  window: &WindowContainer,
+  config: &UserConfig,
+) -> bool {
+  config.value.window_effects.hide_border_on_fullscreen
+    && matches!(window.state(), WindowState::Fullscreen(_))
 }
 
 /// Resolves `window_id`'s border overlay params from its focused/other-window
@@ -2139,11 +2139,7 @@ pub(crate) fn border_overlay_params_for(
   // Mirrors `corner_style` (falling back to `CornerStyle::Default` when
   // disabled) so the overlay's outer radius lines up concentrically with
   // the real managed window's own DWM-rendered corners.
-  let corner_radius = if effect_cfg.corner_style.enabled {
-    effect_cfg.corner_style.style.approx_radius_px()
-  } else {
-    CornerStyle::Default.approx_radius_px()
-  };
+  let corner_radius = effect_cfg.window_corner_radius_px();
 
   Some(effect_cfg.border.to_overlay_params(target_color, corner_radius))
 }
@@ -2174,11 +2170,7 @@ pub(crate) fn blur_overlay_params_for(
   // lines up with the real managed window's own DWM-rendered corners
   // sitting on top of it, rather than being an independently configured
   // radius that can mismatch what's actually on screen.
-  let corner_radius = if effect_cfg.corner_style.enabled {
-    effect_cfg.corner_style.style.approx_radius_px()
-  } else {
-    CornerStyle::Default.approx_radius_px()
-  };
+  let corner_radius = effect_cfg.window_corner_radius_px();
 
   Some(effect_cfg.backdrop.to_overlay_params(tint, corner_radius))
 }
@@ -2239,6 +2231,16 @@ trait SyncableOverlay: Sized {
     is_focused: bool,
     config: &UserConfig,
   ) -> Option<Self::Params>;
+
+  /// Whether this effect is suppressed for one specific window, despite
+  /// being configured for its focus class.
+  ///
+  /// The per-window escape hatch to [`params_for`]'s per-focus-class
+  /// resolution. A suppressed overlay is hidden rather than destroyed, the
+  /// same as one whose focus class doesn't want it.
+  fn suppressed_for(_window: &WindowContainer, _config: &UserConfig) -> bool {
+    false
+  }
 
   fn create(
     rect: &Rect,
@@ -2317,6 +2319,10 @@ impl SyncableOverlay for NativeBorderOverlay {
     config: &UserConfig,
   ) -> Option<Self::Params> {
     border_overlay_params_for(is_focused, config)
+  }
+
+  fn suppressed_for(window: &WindowContainer, config: &UserConfig) -> bool {
+    border_hidden_for_fullscreen(window, config)
   }
 
   fn create(
@@ -2447,11 +2453,13 @@ fn sync_overlays<O: SyncableOverlay>(
       wanted_ids.insert(window.id());
     }
 
-    let Some(params) = (if is_focused { focused_params } else { other_params })
-    else {
-      // Configured, but not for this window's focus state: hide rather than
-      // destroy. Guarded on `is_visible` because `hide` issues a
-      // `ShowWindow` unconditionally.
+    let params = (if is_focused { focused_params } else { other_params })
+      .filter(|_| !O::suppressed_for(window, config));
+
+    let Some(params) = params else {
+      // Configured, but not for this window's focus state, or suppressed for
+      // this particular window: hide rather than destroy. Guarded on
+      // `is_visible` because `hide` issues a `ShowWindow` unconditionally.
       if let Some(overlay) = O::overlays(state).get_mut(&window.id()) {
         if overlay.is_visible() {
           overlay.hide();
