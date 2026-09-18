@@ -711,6 +711,26 @@ impl NativeBorderOverlay {
     }
 
     if self.pinned.is_none() {
+      // The window is about to become viewport-sized with its ring drawn
+      // at an offset inside it, so a frame region cut for the window's own
+      // rect would clip that ring away. Dropped for the duration of the
+      // switch; `clear_pin` puts it back. The overlay is point-query
+      // visible in the meantime, which is the same few hundred ms in which
+      // the real windows are cloaked behind surrogates anyway.
+      self.clear_region();
+
+      // Driven to the pinned offset *before* the `SetWindowPos` below, for
+      // the same reason `clear_pin` defers its reset until after one:
+      // composition and Win32 geometry commit independently, so enlarging
+      // the `HWND` to the viewport first lets DWM catch a frame with the
+      // ring still at offset (0, 0) -- drawn in the monitor's top-left
+      // corner rather than on its window. In this order the worst a
+      // mid-commit frame shows is the ring clipped out of the not-yet-
+      // grown window for a tick.
+      self.pinned = Some(viewport.clone());
+      self.rect = Rect::from_ltrb(0, 0, 0, 0);
+      self.slide(window_rect);
+
       // SAFETY: `self.hwnd()` is a valid window handle for the lifetime of
       // this struct.
       if let Err(e) = unsafe {
@@ -725,25 +745,20 @@ impl NativeBorderOverlay {
         )
       } {
         tracing::warn!("Border overlay viewport pin failed: {e}.");
+
+        // The ring is offset for a viewport that never arrived. Drop the
+        // pin and mark the overlay not-visible so the next `set_rect`
+        // rebuilds the geometry and resets the offset instead of being
+        // skipped by its no-op guard.
+        self.pinned = None;
+        self.is_visible = false;
         return false;
       }
 
-      // The window is about to become viewport-sized with its ring drawn
-      // at an offset inside it, so a frame region cut for the window's own
-      // rect would clip that ring away. Dropped for the duration of the
-      // switch; `clear_pin` puts it back. The overlay is point-query
-      // visible in the meantime, which is the same few hundred ms in which
-      // the real windows are cloaked behind surrogates anyway.
-      self.clear_region();
-
-      self.pinned = Some(viewport.clone());
       self.anchor = anchor.0;
       self.is_visible = true;
 
-      // Force the ring's geometry and offset through: the window just
-      // changed size underneath it, so nothing about the previous state
-      // still applies.
-      self.rect = Rect::from_ltrb(0, 0, 0, 0);
+      return true;
     }
 
     self.slide(window_rect);
