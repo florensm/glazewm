@@ -2,6 +2,8 @@ use anyhow::Context;
 use tracing::{info, warn};
 use wm_common::WindowState;
 #[cfg(target_os = "windows")]
+use wm_common::WindowTransitionParams;
+#[cfg(target_os = "windows")]
 use wm_platform::NativeWindowWindowsExt;
 
 use crate::{
@@ -9,7 +11,9 @@ use crate::{
     move_container_within_tree, replace_container, resize_tiling_container,
   },
   models::{Container, InsertionTarget, WindowContainer},
-  traits::{CommonGetters, TilingSizeGetters, WindowGetters},
+  traits::{
+    CommonGetters, PositionGetters, TilingSizeGetters, WindowGetters,
+  },
   user_config::UserConfig,
   wm_state::WmState,
 };
@@ -35,10 +39,77 @@ pub fn update_window_state(
 
   info!("Updating window state: {:?}.", target_state);
 
+  // Capture the minimize surrogate while the window is still restored and on
+  // screen. `set_non_tiling` below calls the platform `minimize()`, after
+  // which the window has no DWM thumbnail left to clone.
+  #[cfg(target_os = "windows")]
+  if target_state == WindowState::Minimized
+    && !window.native_properties().is_minimized
+  {
+    start_minimize_animation(&window, state, config);
+  }
+
+  // Coming back from minimized: let `platform_sync` play the
+  // `window_minimize` transition inwards. Marked here rather than in
+  // `handle_window_minimize_ended` so it covers both ways a window comes
+  // back -- that handler only runs for an OS-driven restore (taskbar click),
+  // while `toggle-minimized` changes the state straight through this
+  // function and never produces a minimize-ended event.
+  if window.state() == WindowState::Minimized
+    && target_state != WindowState::Minimized
+  {
+    state.pending_sync.mark_window_restore(window.id());
+  }
+
   match target_state {
     WindowState::Tiling => set_tiling(&window, state, config),
     _ => set_non_tiling(window, target_state, state),
   }
+}
+
+/// Starts the minimize transition for a window that is still on screen.
+///
+/// Silent no-op when the animation is disabled, the window's rect can't be
+/// resolved, or the surrogate fails to capture -- the caller's platform
+/// `minimize()` then simply plays the OS animation instead.
+#[cfg(target_os = "windows")]
+fn start_minimize_animation(
+  window: &WindowContainer,
+  state: &mut WmState,
+  config: &UserConfig,
+) {
+  if !config.value.animations.window_minimize.enabled {
+    return;
+  }
+
+  let Ok(rect) = window.to_rect().and_then(|rect| {
+    window
+      .total_border_delta()
+      .map(|delta| rect.apply_delta(&delta, None))
+  }) else {
+    return;
+  };
+
+  let is_focused = state
+    .focused_container()
+    .is_some_and(|focused| focused.id() == window.id());
+
+  let (effect_opacity, corner_style, blur_overlay, border_overlay) =
+    crate::commands::general::surrogate_effects_for(is_focused, config);
+
+  let native_ref = window.native();
+  state.animation_manager.start_minimize_animation(
+    window.id(),
+    rect,
+    effect_opacity,
+    corner_style,
+    blur_overlay,
+    border_overlay,
+    &WindowTransitionParams::from_minimize(
+      &config.value.animations.window_minimize,
+    ),
+    &*native_ref,
+  );
 }
 
 /// Updates the state of a window to be `WindowState::Tiling`.

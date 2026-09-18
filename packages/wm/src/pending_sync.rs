@@ -66,6 +66,31 @@ pub struct PendingSync {
   /// the state boundary (e.g. tiling → floating or floating → tiling).
   window_state_changes: HashSet<Uuid>,
 
+  /// Window IDs whose fullscreen state was changed by a WM command this sync
+  /// cycle (`set-fullscreen` / `toggle-fullscreen`), as opposed to the app
+  /// driving itself fullscreen.
+  ///
+  /// Gates the one exception to the blanket "never animate fullscreen
+  /// windows" rule. That rule exists because exclusive-fullscreen games
+  /// mode-set the display, and cloaking one behind a surrogate kicks it out
+  /// of fullscreen, reverts the resolution and re-triggers the relayout in a
+  /// loop. An app driving itself fullscreen is detected in
+  /// `handle_window_moved_or_resized` and routed through
+  /// `update_window_state` -- the same path a WM command takes -- so
+  /// `window_state_changes` alone cannot tell the two apart. Only the
+  /// command path sets this, so a mode-setting game never reaches the
+  /// animated path.
+  wm_fullscreen_toggles: HashSet<Uuid>,
+
+  /// Window IDs that just came back from being minimized this sync cycle.
+  ///
+  /// `platform_sync` plays the `window_minimize` transition inwards for these
+  /// -- the same entry animation `window_open` uses for a brand-new window.
+  /// A restore cannot be inferred from `previous_target.is_none()` the way an
+  /// open can, because a restored window kept the target position it had
+  /// before it was minimized.
+  window_restores: HashSet<Uuid>,
+
   /// Pending iris-wipe workspace switch, consumed by `platform_sync` to create
   /// the snapshot overlay before the real windows are switched.
   iris_switch: Option<IrisSwitchRequest>,
@@ -103,6 +128,8 @@ impl PendingSync {
     self.workspace_switch_outgoing.clear();
     self.workspace_switch_direction = 0;
     self.window_state_changes.clear();
+    self.wm_fullscreen_toggles.clear();
+    self.window_restores.clear();
     self.iris_switch = None;
     self.animations_suppressed = false;
     self
@@ -205,6 +232,30 @@ impl PendingSync {
   /// Returns `true` if the window changed tiling/floating state this cycle.
   pub fn is_window_state_change(&self, id: &Uuid) -> bool {
     self.window_state_changes.contains(id)
+  }
+
+  /// Marks a window's fullscreen state as changed by a WM command, rather
+  /// than by the app driving itself fullscreen.
+  pub fn mark_wm_fullscreen_toggle(&mut self, id: Uuid) -> &mut Self {
+    self.wm_fullscreen_toggles.insert(id);
+    self
+  }
+
+  /// Returns `true` if a WM command changed this window's fullscreen state
+  /// this cycle.
+  pub fn is_wm_fullscreen_toggle(&self, id: &Uuid) -> bool {
+    self.wm_fullscreen_toggles.contains(id)
+  }
+
+  /// Marks a window as having just been restored from minimized.
+  pub fn mark_window_restore(&mut self, id: Uuid) -> &mut Self {
+    self.window_restores.insert(id);
+    self
+  }
+
+  /// Returns `true` if this window came back from minimized this cycle.
+  pub fn is_window_restore(&self, id: &Uuid) -> bool {
+    self.window_restores.contains(id)
   }
 
   /// Registers a window as an incoming workspace-switch target.
