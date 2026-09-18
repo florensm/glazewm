@@ -614,20 +614,33 @@ fn redraw_containers(
             // animation ends.
             ws_windows.push((id, surrogate, true));
           } else {
-            let current = state
-              .window_target_positions
-              .get(&id)
-              .cloned()
-              .or_else(|| window.native().frame().ok())
-              .unwrap_or_else(|| Rect::from_xy(0, 0, 0, 0));
+            // `window_target_positions` stores a *positioning* rect
+            // (`to_rect() + total_border_delta()`), inflated by the OS's
+            // invisible resize/shadow border -- not the frame rect that
+            // steady-state sync reads. Passing it as both would draw the
+            // border ring around the inflated rect for the whole slide and
+            // snap it down at settle. Only the `frame()` fallback
+            // legitimately doubles as both.
+            let (current, frame_rect) =
+              match state.window_target_positions.get(&id) {
+                Some(target) => (
+                  target.clone(),
+                  window.to_rect().unwrap_or_else(|_| target.clone()),
+                ),
+                None => {
+                  let frame = window
+                    .native()
+                    .frame()
+                    .unwrap_or_else(|_| Rect::from_xy(0, 0, 0, 0));
+                  (frame.clone(), frame)
+                }
+              };
             let viewport =
               Rect::from_xy(monitor_x, monitor_y, monitor_width, monitor_height);
-            // `current` is already a frame rect, so it doubles as
-            // `frame_rect` -- unlike the incoming branch above.
             let surrogate = WorkspaceSurrogate::new(
               hwnd,
               &current,
-              &current,
+              &frame_rect,
               &viewport,
               opacity,
               ws_config.opacity_outgoing,
