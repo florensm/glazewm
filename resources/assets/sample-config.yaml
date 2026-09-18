@@ -190,6 +190,11 @@ gaps:
     left: "20px"
 
 window_effects:
+  # Drop the border effect while a window is fullscreen. A fullscreen window
+  # has nothing beside it to be delimited from, so the ring reads as an inset
+  # frame drawn over its content rather than beside it. Windows only.
+  hide_border_on_fullscreen: false
+
   # Visual effects to apply to the focused window.
   focused_window:
     # Highlight the window with a colored border.
@@ -227,6 +232,14 @@ window_effects:
     # cause rendering issues for some applications.
     hide_title_bar:
       enabled: false
+
+    # How round this window's corners are -- one knob for the window itself
+    # AND every overlay drawn around it (border ring, backdrop), so the two
+    # can't disagree. Overlays follow this exactly; the window snaps to the
+    # nearest preset Windows allows (0px = square, <=4px = small_rounded,
+    # above = rounded), so a radius past ~8px rounds the ring further than
+    # the window can follow. Leave unset to use corner_style below instead.
+    # corner_radius: "0px"
 
     # Change the corner style of the window's frame.
     # ** Exclusive to Windows 11 due to API limitations.
@@ -349,6 +362,11 @@ window_effects:
       saturation: 1.0
 
 window_behavior:
+  # Take a fullscreen window back out of fullscreen when a new window opens on
+  # its workspace. A fullscreen window covers the whole workspace, so without
+  # this the new window opens hidden behind it. Matches Hyprland.
+  exit_fullscreen_on_new_window: true
+
   # New windows are created in this state whenever possible.
   # Allowed values: 'tiling', 'floating'.
   initial_state: "tiling"
@@ -362,7 +380,7 @@ window_behavior:
       centered: true
 
       # Whether to show floating windows as always on top.
-      shown_on_top: false
+      shown_on_top: true
 
     fullscreen:
       # Maximize the window if possible. If the window doesn't have a

@@ -165,7 +165,7 @@ pub struct KeybindingConfig {
   pub commands: Vec<InvokeCommand>,
 }
 
-#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(default, rename_all(serialize = "camelCase"))]
 pub struct WindowBehaviorConfig {
   /// New windows are created in this state whenever possible.
@@ -175,6 +175,24 @@ pub struct WindowBehaviorConfig {
   /// changes the defaults for when the state change commands, like
   /// `set_floating`, are used without any flags.
   pub state_defaults: WindowStateDefaultsConfig,
+
+  /// Whether a new window on a workspace takes any fullscreen window on that
+  /// workspace back out of fullscreen.
+  ///
+  /// A fullscreen window covers the entire workspace, so without this a
+  /// newly spawned window opens hidden behind it. Matches Hyprland, which
+  /// drops fullscreen as soon as another window joins the workspace.
+  pub exit_fullscreen_on_new_window: bool,
+}
+
+impl Default for WindowBehaviorConfig {
+  fn default() -> Self {
+    WindowBehaviorConfig {
+      initial_state: InitialWindowState::default(),
+      state_defaults: WindowStateDefaultsConfig::default(),
+      exit_fullscreen_on_new_window: true,
+    }
+  }
 }
 
 #[derive(Clone, Debug, Default, Deserialize, PartialEq, Serialize)]
@@ -206,7 +224,12 @@ impl Default for FloatingStateConfig {
   fn default() -> Self {
     FloatingStateConfig {
       centered: true,
-      shown_on_top: false,
+      // Defaults on because tiling windows fill the workspace: the z-order
+      // pass raises whichever state group the focused window belongs to, so
+      // focusing a tiling window otherwise buries every floating one behind
+      // a full-screen-width tile with no way to see it. Still an option --
+      // set `false` to get the old behaviour back.
+      shown_on_top: true,
     }
   }
 }
@@ -238,6 +261,17 @@ pub struct WindowEffectsConfig {
 
   /// Visual effects to apply to non-focused windows.
   pub other_windows: WindowEffectConfig,
+
+  /// Whether to drop the border effect while a window is fullscreen.
+  ///
+  /// A fullscreen window has nothing beside it to be delimited from, so the
+  /// ring reads as an inset frame around the screen -- and on a monitor-sized
+  /// window it is drawn over content rather than beside it.
+  ///
+  /// # Platform-specific
+  ///
+  /// Only has an effect on Windows.
+  pub hide_border_on_fullscreen: bool,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
@@ -258,6 +292,70 @@ pub struct WindowEffectConfig {
   /// Config for optionally applying a DWM backdrop material.
   #[serde(alias = "blur_behind")]
   pub backdrop: BackdropEffectConfig,
+
+  /// Single knob for how round this window's corners are.
+  ///
+  /// Drives the window's own corners *and* every overlay drawn around it, so
+  /// one value is enough where `corner_style` plus `border.radius` used to be
+  /// needed to keep the two in agreement.
+  ///
+  /// The overlays follow this value exactly. The window itself can only take
+  /// the three presets Windows exposes through
+  /// `DWMWA_WINDOW_CORNER_PREFERENCE`, so it snaps to the nearest one: `0`
+  /// gives square, up to [`CornerStyle::SmallRounded`]'s radius gives small
+  /// rounded, anything above gives rounded. A radius past roughly 8px
+  /// therefore rounds the ring further than the window can follow -- an OS
+  /// limit, not a config one.
+  ///
+  /// When unset, falls back to the `corner_style` block. `border.radius`
+  /// still overrides the ring on top of either.
+  ///
+  /// # Platform-specific
+  ///
+  /// Only has an effect on Windows.
+  pub corner_radius: Option<LengthValue>,
+}
+
+impl WindowEffectConfig {
+  /// The corner preference to hand the real window.
+  ///
+  /// `corner_radius` wins when set, snapped to the nearest preset; otherwise
+  /// the `corner_style` block decides, and `Default` means "leave whatever
+  /// the app asked for alone".
+  #[must_use]
+  pub fn resolved_corner_style(&self) -> CornerStyle {
+    match &self.corner_radius {
+      Some(radius) => {
+        #[allow(clippy::cast_precision_loss)]
+        let px = radius.to_px(0, None) as f32;
+
+        if px <= 0.0 {
+          CornerStyle::Square
+        } else if px <= CornerStyle::SmallRounded.approx_radius_px() {
+          CornerStyle::SmallRounded
+        } else {
+          CornerStyle::Rounded
+        }
+      }
+      None if self.corner_style.enabled => self.corner_style.style.clone(),
+      None => CornerStyle::Default,
+    }
+  }
+
+  /// Radius, in px, that overlays should treat the window's corners as
+  /// having, so they sit concentric with it.
+  ///
+  /// Follows `corner_radius` exactly when set -- deliberately *not* the
+  /// snapped preset's radius, so a ring can be rounder than the three presets
+  /// allow (which is the point of accepting a free-form radius at all).
+  #[must_use]
+  pub fn window_corner_radius_px(&self) -> f32 {
+    match &self.corner_radius {
+      #[allow(clippy::cast_precision_loss)]
+      Some(radius) => radius.to_px(0, None) as f32,
+      None => self.resolved_corner_style().approx_radius_px(),
+    }
+  }
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -1444,5 +1542,56 @@ mod tests {
       config.overlay_tint(),
       Some(Color { r: 0, g: 0, b: 0, a: 1 })
     );
+  }
+}
+
+#[cfg(test)]
+mod corner_radius_tests {
+  use wm_platform::{CornerStyle, LengthValue};
+
+  use super::{CornerEffectConfig, WindowEffectConfig};
+
+  fn with_radius(px: i32) -> WindowEffectConfig {
+    WindowEffectConfig {
+      corner_radius: Some(LengthValue::from_px(px)),
+      ..WindowEffectConfig::default()
+    }
+  }
+
+  /// `corner_radius` snaps the *window* to the nearest preset Windows
+  /// exposes, since `DWMWA_WINDOW_CORNER_PREFERENCE` takes no free radius.
+  #[test]
+  fn radius_snaps_window_to_nearest_preset() {
+    assert_eq!(with_radius(0).resolved_corner_style(), CornerStyle::Square);
+    assert_eq!(
+      with_radius(2).resolved_corner_style(),
+      CornerStyle::SmallRounded
+    );
+    assert_eq!(
+      with_radius(40).resolved_corner_style(),
+      CornerStyle::Rounded
+    );
+  }
+
+  /// Overlays follow the configured radius exactly rather than the snapped
+  /// preset's, so a ring can be rounder than the presets allow.
+  #[test]
+  fn overlays_follow_exact_radius() {
+    assert!((with_radius(40).window_corner_radius_px() - 40.0).abs() < 1e-3);
+    assert!((with_radius(0).window_corner_radius_px() - 0.0).abs() < 1e-3);
+  }
+
+  /// With `corner_radius` unset the older `corner_style` block still decides,
+  /// so existing configs keep working unchanged.
+  #[test]
+  fn falls_back_to_corner_style_when_unset() {
+    let mut config = WindowEffectConfig::default();
+    assert_eq!(config.resolved_corner_style(), CornerStyle::Default);
+
+    config.corner_style = CornerEffectConfig {
+      enabled: true,
+      style: CornerStyle::Square,
+    };
+    assert_eq!(config.resolved_corner_style(), CornerStyle::Square);
   }
 }
