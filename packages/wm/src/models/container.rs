@@ -57,7 +57,9 @@ use crate::{
 ///   let container: Container = direction.into(); // Will be a `Container::Split`
 /// }
 /// ```
-#[derive(Clone, Debug, wm_macros::EnumFromInner, Delegate, wm_macros::SubEnum)]
+#[derive(
+  Clone, Debug, wm_macros::EnumFromInner, Delegate, wm_macros::SubEnum,
+)]
 #[delegate(CommonGetters)]
 #[delegate(PositionGetters)]
 #[subenum(defaults, {

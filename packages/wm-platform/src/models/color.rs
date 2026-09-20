@@ -56,7 +56,8 @@ impl Color {
 
     #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
     let lerp_channel = |from: u8, to: u8| -> u8 {
-      (f32::from(from) + (f32::from(to) - f32::from(from)) * t).round() as u8
+      (f32::from(from) + (f32::from(to) - f32::from(from)) * t).round()
+        as u8
     };
 
     Color {
@@ -125,8 +126,18 @@ mod tests {
 
   #[test]
   fn lerp_at_endpoints_returns_start_and_end() {
-    let start = Color { r: 0, g: 10, b: 20, a: 255 };
-    let end = Color { r: 100, g: 110, b: 120, a: 0 };
+    let start = Color {
+      r: 0,
+      g: 10,
+      b: 20,
+      a: 255,
+    };
+    let end = Color {
+      r: 100,
+      g: 110,
+      b: 120,
+      a: 0,
+    };
 
     assert_eq!(start.lerp(&end, 0.0), start);
     assert_eq!(start.lerp(&end, 1.0), end);
@@ -134,17 +145,45 @@ mod tests {
 
   #[test]
   fn lerp_at_midpoint_averages_channels() {
-    let start = Color { r: 0, g: 0, b: 0, a: 0 };
-    let end = Color { r: 100, g: 200, b: 50, a: 255 };
+    let start = Color {
+      r: 0,
+      g: 0,
+      b: 0,
+      a: 0,
+    };
+    let end = Color {
+      r: 100,
+      g: 200,
+      b: 50,
+      a: 255,
+    };
 
     let mid = start.lerp(&end, 0.5);
-    assert_eq!(mid, Color { r: 50, g: 100, b: 25, a: 128 });
+    assert_eq!(
+      mid,
+      Color {
+        r: 50,
+        g: 100,
+        b: 25,
+        a: 128
+      }
+    );
   }
 
   #[test]
   fn lerp_clamps_out_of_range_t() {
-    let start = Color { r: 0, g: 0, b: 0, a: 0 };
-    let end = Color { r: 100, g: 100, b: 100, a: 100 };
+    let start = Color {
+      r: 0,
+      g: 0,
+      b: 0,
+      a: 0,
+    };
+    let end = Color {
+      r: 100,
+      g: 100,
+      b: 100,
+      a: 100,
+    };
 
     assert_eq!(start.lerp(&end, -0.5), start);
     assert_eq!(start.lerp(&end, 1.5), end);

@@ -1,6 +1,5 @@
 use anyhow::Context;
 use tracing::info;
-
 use wm_common::{WindowState, WorkspaceSwitchIrisOrigin};
 
 use super::activate_workspace;
@@ -78,9 +77,10 @@ pub fn focus_workspace(
       let ws_anim = &config.value.animations.workspace_switch;
 
       if ws_anim.enabled && ws_anim.style.is_iris() {
-        // Iris wipe: request a snapshot-overlay wipe and let the real windows
-        // switch instantly underneath. No per-window incoming/outgoing marking
-        // is done — the overlay (not surrogates) drives all the visuals.
+        // Iris wipe: request a snapshot-overlay wipe and let the real
+        // windows switch instantly underneath. No per-window
+        // incoming/outgoing marking is done — the overlay (not
+        // surrogates) drives all the visuals.
         if let Some(monitor) = target_workspace.monitor() {
           let props = monitor.native_properties();
           let bounds = &props.bounds;
@@ -88,8 +88,12 @@ pub fn focus_workspace(
             bounds.x() + bounds.width() / 2,
             bounds.y() + bounds.height() / 2,
           );
-          let (origin_x, origin_y) =
-            iris_origin_point(&ws_anim.iris_origin, bounds, center, &container_to_focus);
+          let (origin_x, origin_y) = iris_origin_point(
+            &ws_anim.iris_origin,
+            bounds,
+            center,
+            &container_to_focus,
+          );
           state.pending_sync.request_iris_switch(IrisSwitchRequest {
             monitor_x: bounds.x(),
             monitor_y: bounds.y(),
@@ -111,9 +115,9 @@ pub fn focus_workspace(
         state.pending_sync.set_workspace_switch_direction(direction);
 
         // Mark windows on the incoming workspace to slide in. Minimized
-        // windows are excluded — they have no visible content to animate and
-        // including them causes flicker when the animation system tries to
-        // snapshot them.
+        // windows are excluded — they have no visible content to animate
+        // and including them causes flicker when the animation
+        // system tries to snapshot them.
         for window in target_workspace
           .descendants()
           .filter_map(|c| c.as_window_container().ok())
@@ -124,9 +128,9 @@ pub fn focus_workspace(
             .setup_workspace_switch_incoming(window.id());
         }
 
-        // Cancel in-flight animations for outgoing windows and mark them for
-        // the outgoing surrogate slide-out. Minimized windows are excluded
-        // for the same reason as above.
+        // Cancel in-flight animations for outgoing windows and mark them
+        // for the outgoing surrogate slide-out. Minimized windows
+        // are excluded for the same reason as above.
         for window in displayed_workspace
           .descendants()
           .filter_map(|c| c.as_window_container().ok())
@@ -196,8 +200,8 @@ fn workspace_switch_direction(
 /// Computes the iris-wipe circle origin (screen pixels) for the configured
 /// mode.
 ///
-/// Falls back to `center` (the monitor center) when the cursor is on another
-/// monitor or the focused container is not a positioned window.
+/// Falls back to `center` (the monitor center) when the cursor is on
+/// another monitor or the focused container is not a positioned window.
 fn iris_origin_point(
   origin: &WorkspaceSwitchIrisOrigin,
   monitor_bounds: &wm_platform::Rect,

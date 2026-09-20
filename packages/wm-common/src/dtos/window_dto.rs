@@ -29,4 +29,7 @@ pub struct WindowDto {
   pub class_name: String,
   pub process_name: String,
   pub active_drag: Option<ActiveDrag>,
+  /// Whether the window has requested attention since it was last
+  /// focused.
+  pub is_urgent: bool,
 }

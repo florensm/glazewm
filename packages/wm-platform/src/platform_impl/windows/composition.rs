@@ -1,20 +1,21 @@
 //! `Windows.UI.Composition` based blur pipeline for the overlay-backed
 //! backdrop styles that render through a visual tree.
 //!
-//! Replaces SWCA's fixed-intensity `ACCENT_ENABLE_ACRYLICBLURBEHIND` with a
-//! host-backdrop brush fed through a hand-implemented Gaussian-blur effect
-//! graph, giving a continuously adjustable blur radius, plus a
+//! Replaces SWCA's fixed-intensity `ACCENT_ENABLE_ACRYLICBLURBEHIND` with
+//! a host-backdrop brush fed through a hand-implemented Gaussian-blur
+//! effect graph, giving a continuously adjustable blur radius, plus a
 //! `CompositionRoundedRectangleGeometry` clip for a continuous corner
 //! radius -- neither of which SWCA/Mica can provide. Validated in
 //! `packages/composition-blur-spike` before this port; see that crate's
-//! module docs for the concrete API findings this implementation relies on.
+//! module docs for the concrete API findings this implementation relies
+//! on.
 //!
 //! # Threading
 //!
-//! A `Compositor` must be created on a thread that owns a dispatcher queue,
-//! and (confirmed empirically in the spike, not just per docs) that thread
-//! must keep pumping messages for async composition work -- e.g. the
-//! effect factory's shader-graph compile -- to ever complete. The
+//! A `Compositor` must be created on a thread that owns a dispatcher
+//! queue, and (confirmed empirically in the spike, not just per docs) that
+//! thread must keep pumping messages for async composition work -- e.g.
+//! the effect factory's shader-graph compile -- to ever complete. The
 //! wallpaper backdrop's D2D/WIC device stack (see `graphics_device`) is
 //! thread-affine besides, and lives on this same thread for that reason.
 //! `wm`'s main loop drives everything through `tokio::select!`/
@@ -45,20 +46,11 @@ use windows::{
     PropertyValue,
   },
   Graphics::Effects::{
-    IGraphicsEffect, IGraphicsEffect_Impl, IGraphicsEffectSource,
-    IGraphicsEffectSource_Impl,
+    IGraphicsEffect, IGraphicsEffectSource, IGraphicsEffectSource_Impl,
+    IGraphicsEffect_Impl,
   },
-  System::{DispatcherQueue, DispatcherQueueController, DispatcherQueueHandler},
-  UI::{
-    Color,
-    Composition::{
-      CompositionBackdropBrush, CompositionColorBrush, CompositionEffectBrush,
-      CompositionEffectSourceParameter, CompositionRoundedRectangleGeometry,
-      CompositionMappingMode, CompositionRadialGradientBrush,
-      CompositionSpriteShape, CompositionSurfaceBrush, Compositor,
-      ContainerVisual, Desktop::DesktopWindowTarget, ShapeVisual,
-      SpriteVisual,
-    },
+  System::{
+    DispatcherQueue, DispatcherQueueController, DispatcherQueueHandler,
   },
   Win32::{
     Foundation::{E_INVALIDARG, HWND},
@@ -69,6 +61,17 @@ use windows::{
         GRAPHICS_EFFECT_PROPERTY_MAPPING,
         GRAPHICS_EFFECT_PROPERTY_MAPPING_DIRECT,
       },
+    },
+  },
+  UI::{
+    Color,
+    Composition::{
+      CompositionBackdropBrush, CompositionColorBrush,
+      CompositionEffectBrush, CompositionEffectSourceParameter,
+      CompositionMappingMode, CompositionRadialGradientBrush,
+      CompositionRoundedRectangleGeometry, CompositionSpriteShape,
+      CompositionSurfaceBrush, Compositor, ContainerVisual,
+      Desktop::DesktopWindowTarget, ShapeVisual, SpriteVisual,
     },
   },
 };
@@ -82,21 +85,23 @@ const CLSID_D2D1_GAUSSIAN_BLUR: GUID =
 
 /// `D2D1_GAUSSIANBLUR_OPTIMIZATION_PERFORMANCE`. Trades some blur-kernel
 /// accuracy for a cheaper separable-pass approximation, vs. the `BALANCED`
-/// mode this used previously. A downsample-then-upscale approach (rendering
-/// the blur at reduced resolution) was also tried for a bigger win, but
-/// caused an intermittent `AppHangB1` under real use (confirmed via Windows
-/// Event Viewer) that couldn't be pinned down with diagnostic tracing in
-/// the time available -- reverted. This constant swap alone is a much
-/// smaller, lower-risk change: a static effect-graph parameter evaluated
-/// once at construction/rebuild time, not a per-frame property mutation.
+/// mode this used previously. A downsample-then-upscale approach
+/// (rendering the blur at reduced resolution) was also tried for a bigger
+/// win, but caused an intermittent `AppHangB1` under real use (confirmed
+/// via Windows Event Viewer) that couldn't be pinned down with diagnostic
+/// tracing in the time available -- reverted. This constant swap alone is
+/// a much smaller, lower-risk change: a static effect-graph parameter
+/// evaluated once at construction/rebuild time, not a per-frame property
+/// mutation.
 const D2D1_GAUSSIANBLUR_OPTIMIZATION_PERFORMANCE: u32 = 2;
 /// `D2D1_BORDER_MODE_SOFT`.
 const D2D1_BORDER_MODE_SOFT: u32 = 0;
 
 /// `CLSID_D2D1Saturation`, the built-in D2D1 saturation-adjustment effect.
-/// Value matches `windows::Win32::Graphics::Direct2D::CLSID_D2D1Saturation`
-/// (re-declared as a local `const` so it sits next to
-/// `CLSID_D2D1_GAUSSIAN_BLUR` and follows this module's naming convention).
+/// Value matches
+/// `windows::Win32::Graphics::Direct2D::CLSID_D2D1Saturation` (re-declared
+/// as a local `const` so it sits next to `CLSID_D2D1_GAUSSIAN_BLUR` and
+/// follows this module's naming convention).
 const CLSID_D2D1_SATURATION: GUID =
   GUID::from_u128(0x5cb2_d9cf_327d_459f_a0ce_40c0_b208_6bf7);
 
@@ -106,15 +111,19 @@ const CLSID_D2D1_SATURATION: GUID =
 /// but this code never tunes.
 ///
 /// `Compositor::CreateEffectFactory` takes an `IGraphicsEffect` describing
-/// an effect graph. `Win2D`'s convenience effect types (`GaussianBlurEffect`,
-/// etc.) require the `Win2D` winmd, which `windows-rs`'s metadata-driven
-/// binding generator cannot consume -- so this hand-implements the
-/// `IGraphicsEffectD2D1Interop` COM shape directly against D2D1's built-in
-/// effects, the same approach Microsoft's own
-/// `Windows.UI.Composition-Win32-Samples` uses in C++. One instance of this
-/// type is used per built-in effect ([`CLSID_D2D1_GAUSSIAN_BLUR`],
+/// an effect graph. `Win2D`'s convenience effect types
+/// (`GaussianBlurEffect`, etc.) require the `Win2D` winmd, which
+/// `windows-rs`'s metadata-driven binding generator cannot consume -- so
+/// this hand-implements the `IGraphicsEffectD2D1Interop` COM shape
+/// directly against D2D1's built-in effects, the same approach Microsoft's
+/// own `Windows.UI.Composition-Win32-Samples` uses in C++. One instance of
+/// this type is used per built-in effect ([`CLSID_D2D1_GAUSSIAN_BLUR`],
 /// [`CLSID_D2D1_SATURATION`]) chained in `build_effect_brush`.
-#[implement(IGraphicsEffect, IGraphicsEffectSource, IGraphicsEffectD2D1Interop)]
+#[implement(
+  IGraphicsEffect,
+  IGraphicsEffectSource,
+  IGraphicsEffectD2D1Interop
+)]
 struct D2d1ScalarEffect {
   effect_id: GUID,
   source: IGraphicsEffectSource,
@@ -123,17 +132,18 @@ struct D2d1ScalarEffect {
   /// (see its doc comment for why both forms are checked).
   property_name: &'static str,
   /// Initial value baked into the effect graph at factory creation.
-  /// Runtime adjustment rebuilds the whole brush rather than mutating this
-  /// in place -- see `BlurVisual::set_blur_amount`'s doc comment for why.
+  /// Runtime adjustment rebuilds the whole brush rather than mutating
+  /// this in place -- see `BlurVisual::set_blur_amount`'s doc comment
+  /// for why.
   initial_value: f32,
   /// Additional fixed `u32` properties required by the effect's D2D1
   /// schema, in index order starting at index 1 (index 0 is always
   /// `initial_value`). Empty for saturation; Gaussian blur needs
-  /// `[D2D1_GAUSSIANBLUR_OPTIMIZATION_PERFORMANCE, D2D1_BORDER_MODE_SOFT]` --
-  /// `CreateEffectFactory` validates the description against D2D1's
-  /// registered schema for the effect and fails with `E_INVALIDARG` unless
-  /// all of them are present, even though only the scalar is
-  /// runtime-adjustable here.
+  /// `[D2D1_GAUSSIANBLUR_OPTIMIZATION_PERFORMANCE,
+  /// D2D1_BORDER_MODE_SOFT]` -- `CreateEffectFactory` validates the
+  /// description against D2D1's registered schema for the effect and
+  /// fails with `E_INVALIDARG` unless all of them are present, even
+  /// though only the scalar is runtime-adjustable here.
   extra_properties: &'static [u32],
   name: RefCell<HSTRING>,
 }
@@ -288,9 +298,9 @@ fn init_composition_thread() -> crate::Result<CompositionThread> {
 /// Runs `f` on the composition thread with that thread's `Compositor` and
 /// dispatcher queue, bringing the pipeline up on first use.
 ///
-/// Every entry point into the pipeline needs the same three steps -- resolve
-/// the thread, clone its agile handles into the closure, dispatch -- so they
-/// live here rather than being repeated per visual type.
+/// Every entry point into the pipeline needs the same three steps --
+/// resolve the thread, clone its agile handles into the closure, dispatch
+/// -- so they live here rather than being repeated per visual type.
 pub(crate) fn with_composition_thread<T, F>(f: F) -> crate::Result<T>
 where
   T: Send + 'static,
@@ -309,19 +319,20 @@ where
 }
 
 /// Runs `f` on the composition thread via its dispatcher queue and blocks
-/// the calling thread for the result. Used for the one-time, async-sensitive
-/// construction calls (`Compositor::new`, and per-overlay visual-tree
-/// building, which touches the effect factory) -- see the module docs for
-/// why these specifically must run there.
+/// the calling thread for the result. Used for the one-time,
+/// async-sensitive construction calls (`Compositor::new`, and per-overlay
+/// visual-tree building, which touches the effect factory) -- see the
+/// module docs for why these specifically must run there.
 /// Queues `f` on the composition thread and returns immediately.
 ///
 /// The blocking sibling below waits for a result on the WM's own thread,
-/// which is right when the caller needs the value -- building a visual tree,
-/// say. It is wrong for work whose only effect is on screen a frame or two
-/// later, because the wait lands on the main loop: swapping an overlay to a
-/// different baked surface used to block once per window per focus change,
-/// and once per window *at once* on a workspace switch, which is felt as the
-/// focus ring and backdrop lagging behind the keystroke.
+/// which is right when the caller needs the value -- building a visual
+/// tree, say. It is wrong for work whose only effect is on screen a frame
+/// or two later, because the wait lands on the main loop: swapping an
+/// overlay to a different baked surface used to block once per window per
+/// focus change, and once per window *at once* on a workspace switch,
+/// which is felt as the focus ring and backdrop lagging behind the
+/// keystroke.
 ///
 /// Nothing observes the result, so failures are logged where they happen
 /// rather than returned.
@@ -372,31 +383,38 @@ where
 /// Converts our `crate::Color` into a `windows::UI::Color` for Composition
 /// brushes.
 fn to_ui_color(color: crate::Color) -> Color {
-  Color { A: color.a, B: color.b, G: color.g, R: color.r }
+  Color {
+    A: color.a,
+    B: color.b,
+    G: color.g,
+    R: color.r,
+  }
 }
 
 /// What paints the overlay's lower (blur) layer, and the state each source
 /// needs to keep to stay live.
 ///
 /// The two are not variations on one pipeline: acrylic samples the desktop
-/// and blurs it every frame through a D2D effect graph, while the wallpaper
-/// backdrop is a plain brush over an image blurred once, ahead of time (see
-/// `wallpaper_surface`). Only the former has an effect graph to rebuild when
-/// a knob changes; only the latter has to follow the window across monitors.
+/// and blurs it every frame through a D2D effect graph, while the
+/// wallpaper backdrop is a plain brush over an image blurred once, ahead
+/// of time (see `wallpaper_surface`). Only the former has an effect graph
+/// to rebuild when a knob changes; only the latter has to follow the
+/// window across monitors.
 enum Backdrop {
   /// Live host-backdrop brush fed through the Gaussian/saturation graph.
   Acrylic {
-    /// The graph's source. Retained (rather than just used during `create`)
-    /// so `set_blur_amount`/`set_saturation` can rebuild the effect brush
-    /// around it -- see `set_blur_amount`'s doc comment for why a rebuild,
-    /// not an in-place property update, is used.
+    /// The graph's source. Retained (rather than just used during
+    /// `create`) so `set_blur_amount`/`set_saturation` can rebuild
+    /// the effect brush around it -- see `set_blur_amount`'s doc
+    /// comment for why a rebuild, not an in-place property update, is
+    /// used.
     host_backdrop: CompositionBackdropBrush,
     effect_brush: CompositionEffectBrush,
   },
 
   /// A flat colour fill. No sampling, no blur, no baked surface: at an
-  /// opaque `tint` this is one opaque visual and nothing else, which is why
-  /// it is the cheapest style rather than merely a cheap one.
+  /// opaque `tint` this is one opaque visual and nothing else, which is
+  /// why it is the cheapest style rather than merely a cheap one.
   ///
   /// Carries no state -- the fill is `tint`, which `set_tint` already
   /// applies to the sprite's brush.
@@ -407,9 +425,9 @@ enum Backdrop {
     brush: CompositionSurfaceBrush,
 
     /// Bounds of the monitor whose baked surface `brush` currently points
-    /// at. Tracked so the common case -- a window moving within one display
-    /// -- is a single offset write, with no monitor lookup and no cache
-    /// probe.
+    /// at. Tracked so the common case -- a window moving within one
+    /// display -- is a single offset write, with no monitor lookup
+    /// and no cache probe.
     monitor: Rect,
 
     /// `wallpaper_surface`'s generation counter as of the last bind. A
@@ -424,7 +442,8 @@ enum Backdrop {
 /// on top, both clipped to a continuous rounded rectangle.
 pub(crate) struct BlurVisual {
   /// Binds the visual tree to the overlay's `HWND`. Kept alive but never
-  /// touched again -- dropping it would unbind composition from the window.
+  /// touched again -- dropping it would unbind composition from the
+  /// window.
   _target: DesktopWindowTarget,
 
   /// Retained (rather than just used during `create`) so the knob setters
@@ -440,11 +459,12 @@ pub(crate) struct BlurVisual {
 
   /// Darkens the overlay toward its own edges.
   ///
-  /// A visual rather than a stage in the wallpaper bake, because the bake is
-  /// shared by every window on the monitor: baked in, the falloff anchors to
-  /// the screen, so a window at the edge gets a uniformly dark crop and one
-  /// in the middle gets the bright centre. Here it is measured from each
-  /// window's own rect, which is what a vignette means.
+  /// A visual rather than a stage in the wallpaper bake, because the bake
+  /// is shared by every window on the monitor: baked in, the falloff
+  /// anchors to the screen, so a window at the edge gets a uniformly
+  /// dark crop and one in the middle gets the bright centre. Here it is
+  /// measured from each window's own rect, which is what a vignette
+  /// means.
   ///
   /// `MappingMode::Relative` expresses the gradient in fractions of the
   /// sprite, so a resize needs no update to the brush at all -- only the
@@ -458,10 +478,10 @@ pub(crate) struct BlurVisual {
   ///
   /// Two sprites rather than one because the uncovered area is an L: the
   /// thumbnail is anchored top-left, so what is left over is a strip down
-  /// the right and a strip along the bottom. A single sprite would have to
-  /// cover the thumbnail as well, and being composited *under* a
-  /// part-transparent thumbnail it would tint the content too -- the whole
-  /// window would read as solid, which is the bug this replaces.
+  /// the right and a strip along the bottom. A single sprite would have
+  /// to cover the thumbnail as well, and being composited *under* a
+  /// part-transparent thumbnail it would tint the content too -- the
+  /// whole window would read as solid, which is the bug this replaces.
   ///
   /// Painted here rather than on the surrogate because the surrogate can
   /// only ask for a solid backdrop through SWCA, and an SWCA accent
@@ -473,14 +493,15 @@ pub(crate) struct BlurVisual {
   gap_bottom: SpriteVisual,
 
   /// Everything baked into the wallpaper image. Kept whole so any one
-  /// setter can re-render using the others' current values -- acrylic reads
-  /// only `blur_amount`/`saturation` from it, since the remaining knobs are
-  /// unreachable through `CreateEffectFactory`.
+  /// setter can re-render using the others' current values -- acrylic
+  /// reads only `blur_amount`/`saturation` from it, since the remaining
+  /// knobs are unreachable through `CreateEffectFactory`.
   knobs: BakeKnobs,
 
   /// How far the wallpaper crop follows the window. Not part of `knobs`:
-  /// it selects a different region of an already-baked surface rather than
-  /// changing what was baked, so a change costs one property write.
+  /// it selects a different region of an already-baked surface rather
+  /// than changing what was baked, so a change costs one property
+  /// write.
   parallax: f32,
 }
 
@@ -503,12 +524,12 @@ impl BlurVisual {
     })
   }
 
-  /// Resizes the visual tree's clip and both child visuals to match `rect`.
-  /// Does not reposition the `HWND` itself -- callers still issue their own
-  /// `SetWindowPos`, exactly as with the SWCA path.
+  /// Resizes the visual tree's clip and both child visuals to match
+  /// `rect`. Does not reposition the `HWND` itself -- callers still
+  /// issue their own `SetWindowPos`, exactly as with the SWCA path.
   ///
-  /// Must resize `root`/`blur_sprite`/`tint_sprite` in addition to the clip
-  /// geometry -- they're independently-sized visuals set once in
+  /// Must resize `root`/`blur_sprite`/`tint_sprite` in addition to the
+  /// clip geometry -- they're independently-sized visuals set once in
   /// `build_visual_tree` and never otherwise touched, so leaving them out
   /// here left them pinned at their creation-time size while only the clip
   /// grew, showing blur/tint over just the original area and nothing over
@@ -529,13 +550,13 @@ impl BlurVisual {
   }
 
   /// Keeps the wallpaper backdrop showing the part of the desktop the
-  /// overlay now covers. No-op for acrylic, which samples live and so needs
-  /// no notion of where it is.
+  /// overlay now covers. No-op for acrylic, which samples live and so
+  /// needs no notion of where it is.
   ///
   /// Re-binds to another monitor's baked surface only when the overlay has
-  /// actually crossed onto one -- checked arithmetically against the cached
-  /// bounds first, so the per-tick case during an animation costs one
-  /// property write and no system calls.
+  /// actually crossed onto one -- checked arithmetically against the
+  /// cached bounds first, so the per-tick case during an animation costs
+  /// one property write and no system calls.
   fn sync_crop(&mut self, rect: &Rect) -> crate::Result<()> {
     let knobs = self.knobs;
     let parallax = self.parallax;
@@ -543,24 +564,29 @@ impl BlurVisual {
     let queue = self.queue.clone();
     let current = wallpaper_surface::generation();
 
-    let Backdrop::Wallpaper { brush, monitor, generation } =
-      &mut self.backdrop
+    let Backdrop::Wallpaper {
+      brush,
+      monitor,
+      generation,
+    } = &mut self.backdrop
     else {
       return Ok(());
     };
 
-    // The generation check has to force a re-bind even when the overlay has
-    // not moved: the monitor it sits on is unchanged, but the image baked
-    // for that monitor is no longer the one the desktop is showing.
-    if *generation != current || !monitor.contains_point(&rect.center_point())
+    // The generation check has to force a re-bind even when the overlay
+    // has not moved: the monitor it sits on is unchanged, but the
+    // image baked for that monitor is no longer the one the desktop is
+    // showing.
+    if *generation != current
+      || !monitor.contains_point(&rect.center_point())
     {
       let bounds = wallpaper_surface::monitor_bounds(rect);
       let rebound = brush.clone();
       let target = bounds.clone();
 
-      // Queued, not awaited: this runs from the per-tick sync path, and the
-      // new crop being on screen a frame later is invisible next to blocking
-      // the main loop until it is.
+      // Queued, not awaited: this runs from the per-tick sync path, and
+      // the new crop being on screen a frame later is invisible next
+      // to blocking the main loop until it is.
       dispatch_on_composition_thread(&queue, move || {
         if let Err(err) =
           wallpaper_surface::rebind(&compositor, &rebound, &target, knobs)
@@ -577,14 +603,17 @@ impl BlurVisual {
     Ok(())
   }
 
-  /// Re-binds the wallpaper backdrop when the desktop it was baked from has
-  /// changed, and does nothing otherwise.
+  /// Re-binds the wallpaper backdrop when the desktop it was baked from
+  /// has changed, and does nothing otherwise.
   ///
   /// Called on every sync tick, so the no-change path is deliberately one
   /// relaxed atomic load and a discriminant check -- no shell query, no
   /// filesystem stat, and no composition property write. Acrylic samples
   /// live and has nothing to go stale.
-  pub(crate) fn sync_backdrop(&mut self, rect: &Rect) -> crate::Result<()> {
+  pub(crate) fn sync_backdrop(
+    &mut self,
+    rect: &Rect,
+  ) -> crate::Result<()> {
     let Backdrop::Wallpaper { generation, .. } = &self.backdrop else {
       return Ok(());
     };
@@ -687,8 +716,9 @@ impl BlurVisual {
     // sprite too. Painting both leaves the colour composited over itself,
     // which is a no-op at any alpha.
     if matches!(self.backdrop, Backdrop::Solid) {
-      let fill =
-        self.compositor.CreateColorBrushWithColor(to_ui_color(tint))?;
+      let fill = self
+        .compositor
+        .CreateColorBrushWithColor(to_ui_color(tint))?;
       self.blur_sprite.SetBrush(&fill)?;
     }
 
@@ -699,8 +729,8 @@ impl BlurVisual {
   ///
   /// For acrylic this rebuilds the effect brush; the rest of this comment
   /// is about why a rebuild rather than an in-place property update. The
-  /// wallpaper backdrop has no live graph to update at all and re-bakes its
-  /// surface instead (see `rebake`).
+  /// wallpaper backdrop has no live graph to update at all and re-bakes
+  /// its surface instead (see `rebake`).
   ///
   /// The plan's original design mutated the existing brush in place via
   /// `effect_brush.Properties().InsertScalar("Blur.BlurAmount", value)`
@@ -711,14 +741,18 @@ impl BlurVisual {
   /// `E_INVALIDARG` here, regardless of whether `GetNamedPropertyMapping`
   /// is queried with `"BlurAmount"` or `"Blur.BlurAmount"` -- consistent
   /// with `InsertScalar` needing the property to have been registered via
-  /// `Compositor::CreateEffectFactoryWithProperties`'s `animatableProperties`
-  /// list (which requires an `IIterable<HSTRING>`, not constructible from a
-  /// `Vec` in this `windows-rs` version without hand-implementing the
-  /// `WinRT` iterator interfaces) rather than the plain `CreateEffectFactory`
+  /// `Compositor::CreateEffectFactoryWithProperties`'s
+  /// `animatableProperties` list (which requires an
+  /// `IIterable<HSTRING>`, not constructible from a `Vec` in this
+  /// `windows-rs` version without hand-implementing the `WinRT` iterator
+  /// interfaces) rather than the plain `CreateEffectFactory`
   /// this code uses. Rebuilding the brush instead reuses only the
   /// `GetProperty`-based initial-value path, which is confirmed working
   /// (overlays visibly render blur from their initial `blur_amount`).
-  pub(crate) fn set_blur_amount(&mut self, value: f32) -> crate::Result<()> {
+  pub(crate) fn set_blur_amount(
+    &mut self,
+    value: f32,
+  ) -> crate::Result<()> {
     let mut knobs = self.knobs;
     knobs.blur_amount = value;
     self.reapply_knobs(knobs)
@@ -758,19 +792,22 @@ impl BlurVisual {
         let (blur_amount, saturation) =
           (knobs.blur_amount, knobs.saturation);
 
-        let effect_brush = run_on_composition_thread(&self.queue, move || {
-          build_effect_brush(
-            &compositor,
-            &host_backdrop,
-            blur_amount,
-            saturation,
-          )
-        })?;
+        let effect_brush =
+          run_on_composition_thread(&self.queue, move || {
+            build_effect_brush(
+              &compositor,
+              &host_backdrop,
+              blur_amount,
+              saturation,
+            )
+          })?;
 
         self.blur_sprite.SetBrush(&effect_brush)?;
 
-        if let Backdrop::Acrylic { effect_brush: current, .. } =
-          &mut self.backdrop
+        if let Backdrop::Acrylic {
+          effect_brush: current,
+          ..
+        } = &mut self.backdrop
         {
           *current = effect_brush;
         }
@@ -785,7 +822,10 @@ impl BlurVisual {
   /// Updates the live saturation. Both knobs feed one render -- acrylic's
   /// effect graph or the wallpaper bake -- so either setter re-runs it
   /// using the other's current stored value.
-  pub(crate) fn set_saturation(&mut self, value: f32) -> crate::Result<()> {
+  pub(crate) fn set_saturation(
+    &mut self,
+    value: f32,
+  ) -> crate::Result<()> {
     let mut knobs = self.knobs;
     knobs.saturation = value;
     self.reapply_knobs(knobs)
@@ -813,7 +853,10 @@ impl BlurVisual {
   /// Wallpaper only, same reason as [`set_exposure`].
   ///
   /// [`set_exposure`]: BlurVisual::set_exposure
-  pub(crate) fn set_highlights(&mut self, value: f32) -> crate::Result<()> {
+  pub(crate) fn set_highlights(
+    &mut self,
+    value: f32,
+  ) -> crate::Result<()> {
     let mut knobs = self.knobs;
     knobs.highlights = value;
     self.rebake_only(knobs)
@@ -841,8 +884,8 @@ impl BlurVisual {
     Ok(())
   }
 
-  /// Updates the grain baked into the wallpaper image. Wallpaper only, same
-  /// reason as [`set_exposure`].
+  /// Updates the grain baked into the wallpaper image. Wallpaper only,
+  /// same reason as [`set_exposure`].
   ///
   /// [`set_exposure`]: BlurVisual::set_exposure
   pub(crate) fn set_grain(&mut self, value: f32) -> crate::Result<()> {
@@ -898,13 +941,14 @@ impl BlurVisual {
 ///
 /// Transparent across the middle and reaching `strength` alpha at the
 /// corners. The ellipse is deliberately larger than the sprite
-/// (`radius > 0.5` in relative units) so the darkest point falls outside the
-/// visible area: a gradient that reached full strength exactly at the edge
-/// puts its steepest part on screen and reads as a ring rather than shading.
+/// (`radius > 0.5` in relative units) so the darkest point falls outside
+/// the visible area: a gradient that reached full strength exactly at the
+/// edge puts its steepest part on screen and reads as a ring rather than
+/// shading.
 ///
 /// A `strength` of zero still builds a brush, fully transparent. Skipping
-/// the visual entirely would mean rebuilding the tree when the knob is first
-/// raised, and a transparent visual costs DWM nothing to composite.
+/// the visual entirely would mean rebuilding the tree when the knob is
+/// first raised, and a transparent visual costs DWM nothing to composite.
 fn build_vignette_brush(
   compositor: &Compositor,
   strength: f32,
@@ -919,13 +963,29 @@ fn build_vignette_brush(
   #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
   let alpha = (strength.clamp(0.0, 1.0) * 255.0).round() as u8;
 
-  let clear = Color { A: 0, R: 0, G: 0, B: 0 };
-  let dark = Color { A: alpha, R: 0, G: 0, B: 0 };
+  let clear = Color {
+    A: 0,
+    R: 0,
+    G: 0,
+    B: 0,
+  };
+  let dark = Color {
+    A: alpha,
+    R: 0,
+    G: 0,
+    B: 0,
+  };
 
   let stops = brush.ColorStops()?;
-  stops.Append(&compositor.CreateColorGradientStopWithOffsetAndColor(0.0, clear)?)?;
-  stops.Append(&compositor.CreateColorGradientStopWithOffsetAndColor(0.45, clear)?)?;
-  stops.Append(&compositor.CreateColorGradientStopWithOffsetAndColor(1.0, dark)?)?;
+  stops.Append(
+    &compositor.CreateColorGradientStopWithOffsetAndColor(0.0, clear)?,
+  )?;
+  stops.Append(
+    &compositor.CreateColorGradientStopWithOffsetAndColor(0.45, clear)?,
+  )?;
+  stops.Append(
+    &compositor.CreateColorGradientStopWithOffsetAndColor(1.0, dark)?,
+  )?;
 
   Ok(brush)
 }
@@ -933,7 +993,8 @@ fn build_vignette_brush(
 /// `DesktopWindowTarget` sizes composition visuals 1:1 against the HWND's
 /// actual client pixel size (no DPI virtualization layer here, unlike
 /// XAML/UWP) -- so this is a passthrough today. Named/kept separate from a
-/// bare cast so a future DPI-aware sizing adjustment has a single call site.
+/// bare cast so a future DPI-aware sizing adjustment has a single call
+/// site.
 #[allow(clippy::cast_precision_loss, clippy::unnecessary_wraps)]
 fn pixels_to_dips(pixels: i32) -> f32 {
   pixels as f32
@@ -949,10 +1010,11 @@ fn pixels_to_dips(pixels: i32) -> f32 {
 /// single `CreateEffectFactory` call, producing one brush -- not two
 /// independently-chained brushes. `SetSourceParameter("Source", ..)` binds
 /// `host_backdrop` to the *inner* (blur) node's named parameter; the outer
-/// (saturation) node's own source is the blur node's `IGraphicsEffectSource`
-/// directly (an internal graph edge via `GetSource`, not a named
-/// parameter), and the composition engine resolves the "Source" name
-/// lookup through to it regardless of nesting depth.
+/// (saturation) node's own source is the blur node's
+/// `IGraphicsEffectSource` directly (an internal graph edge via
+/// `GetSource`, not a named parameter), and the composition engine
+/// resolves the "Source" name lookup through to it regardless of nesting
+/// depth.
 ///
 /// `exposure`, `vignette`, and `grain` were tried and dropped.
 /// `Windows.UI.Composition`'s `CreateEffectFactory` accepts a curated
@@ -983,7 +1045,10 @@ fn build_effect_brush(
     source_param.cast()?,
     "BlurAmount",
     blur_amount,
-    &[D2D1_GAUSSIANBLUR_OPTIMIZATION_PERFORMANCE, D2D1_BORDER_MODE_SOFT],
+    &[
+      D2D1_GAUSSIANBLUR_OPTIMIZATION_PERFORMANCE,
+      D2D1_BORDER_MODE_SOFT,
+    ],
   )
   .into();
   let saturation_effect: IGraphicsEffect = D2d1ScalarEffect::new(
@@ -995,9 +1060,11 @@ fn build_effect_brush(
     &[],
   )
   .into();
-  let effect_factory = compositor.CreateEffectFactory(&saturation_effect)?;
+  let effect_factory =
+    compositor.CreateEffectFactory(&saturation_effect)?;
   let effect_brush = effect_factory.CreateBrush()?;
-  effect_brush.SetSourceParameter(&HSTRING::from("Source"), host_backdrop)?;
+  effect_brush
+    .SetSourceParameter(&HSTRING::from("Source"), host_backdrop)?;
   Ok(effect_brush)
 }
 
@@ -1021,7 +1088,10 @@ fn build_visual_tree(
 
   let width = pixels_to_dips(rect.width());
   let height = pixels_to_dips(rect.height());
-  let size = Vector2 { X: width, Y: height };
+  let size = Vector2 {
+    X: width,
+    Y: height,
+  };
 
   let rounded_geometry = compositor.CreateRoundedRectangleGeometry()?;
   rounded_geometry.SetSize(size)?;
@@ -1029,13 +1099,15 @@ fn build_visual_tree(
     X: params.corner_radius,
     Y: params.corner_radius,
   })?;
-  let clip = compositor.CreateGeometricClipWithGeometry(&rounded_geometry)?;
+  let clip =
+    compositor.CreateGeometricClipWithGeometry(&rounded_geometry)?;
 
   let blur_sprite = compositor.CreateSpriteVisual()?;
   blur_sprite.SetSize(size)?;
 
   let backdrop = if params.style == BackdropStyle::Solid {
-    let fill = compositor.CreateColorBrushWithColor(to_ui_color(params.tint))?;
+    let fill =
+      compositor.CreateColorBrushWithColor(to_ui_color(params.tint))?;
     blur_sprite.SetBrush(&fill)?;
     Backdrop::Solid
   } else if params.style == BackdropStyle::Wallpaper {
@@ -1058,7 +1130,10 @@ fn build_visual_tree(
     )?;
 
     blur_sprite.SetBrush(&effect_brush)?;
-    Backdrop::Acrylic { host_backdrop, effect_brush }
+    Backdrop::Acrylic {
+      host_backdrop,
+      effect_brush,
+    }
   };
 
   let tint_brush =
@@ -1116,12 +1191,11 @@ fn build_visual_tree(
   })
 }
 
-
-/// A live `Windows.UI.Composition` visual tree providing a border overlay's
-/// rendering: a single rounded rectangle *stroked* with a solid color, so
-/// only the ring band is ever painted and the interior stays fully
-/// transparent. Considerably lighter than [`BlurVisual`] -- no effect
-/// graph, no live backdrop sampling, just one stroked shape.
+/// A live `Windows.UI.Composition` visual tree providing a border
+/// overlay's rendering: a single rounded rectangle *stroked* with a solid
+/// color, so only the ring band is ever painted and the interior stays
+/// fully transparent. Considerably lighter than [`BlurVisual`] -- no
+/// effect graph, no live backdrop sampling, just one stroked shape.
 ///
 /// `NativeBorderOverlay` sizes and positions the overlay's `HWND` to the
 /// tracked window's rect *outset* by the configured border width, directly
@@ -1147,7 +1221,8 @@ fn build_visual_tree(
 /// keeps the region punch there and only there.
 pub(crate) struct BorderVisual {
   /// Binds the visual tree to the overlay's `HWND`. Kept alive but never
-  /// touched again -- dropping it would unbind composition from the window.
+  /// touched again -- dropping it would unbind composition from the
+  /// window.
   _target: DesktopWindowTarget,
 
   /// Root of the tree, holding the single stroked shape. A `ShapeVisual`
@@ -1159,8 +1234,8 @@ pub(crate) struct BorderVisual {
   geometry: CompositionRoundedRectangleGeometry,
 
   /// Last-applied ring inputs, so any one of `set_rect`/`set_width`/
-  /// `set_corner_radius` can recompute the derived geometry (which depends
-  /// on all three) from the other two's current values.
+  /// `set_corner_radius` can recompute the derived geometry (which
+  /// depends on all three) from the other two's current values.
   ring: Cell<Ring>,
 }
 
@@ -1233,9 +1308,10 @@ impl BorderVisual {
     self.shape.SetStrokeThickness(ring.width.max(0.0))?;
     self.geometry.SetOffset(offset)?;
     self.geometry.SetSize(size)?;
-    self
-      .geometry
-      .SetCornerRadius(Vector2 { X: corner_radius, Y: corner_radius })?;
+    self.geometry.SetCornerRadius(Vector2 {
+      X: corner_radius,
+      Y: corner_radius,
+    })?;
 
     self.ring.set(ring);
     Ok(())
@@ -1249,11 +1325,17 @@ impl BorderVisual {
       Y: pixels_to_dips(rect.height()),
     };
 
-    Ok(self.apply_ring(Ring { size, ..self.ring.get() })?)
+    Ok(self.apply_ring(Ring {
+      size,
+      ..self.ring.get()
+    })?)
   }
 
   /// Updates the ring's color.
-  pub(crate) fn set_color(&self, color: crate::Color) -> crate::Result<()> {
+  pub(crate) fn set_color(
+    &self,
+    color: crate::Color,
+  ) -> crate::Result<()> {
     self.stroke_brush.SetColor(to_ui_color(color))?;
     Ok(())
   }
@@ -1266,12 +1348,18 @@ impl BorderVisual {
   ///
   /// [`set_rect`]: BorderVisual::set_rect
   pub(crate) fn set_width(&self, width: f32) -> crate::Result<()> {
-    Ok(self.apply_ring(Ring { width, ..self.ring.get() })?)
+    Ok(self.apply_ring(Ring {
+      width,
+      ..self.ring.get()
+    })?)
   }
 
   /// Updates the ring's outer corner radius.
   pub(crate) fn set_corner_radius(&self, value: f32) -> crate::Result<()> {
-    Ok(self.apply_ring(Ring { corner_radius: value, ..self.ring.get() })?)
+    Ok(self.apply_ring(Ring {
+      corner_radius: value,
+      ..self.ring.get()
+    })?)
   }
 
   /// Updates the overlay's own opacity.
@@ -1287,8 +1375,8 @@ impl BorderVisual {
   /// pinned to the monitor viewport and only its content moves: one
   /// property write per frame instead of a `SetWindowPos` plus a geometry
   /// rebuild. Content driven outside the window's bounds is clipped by the
-  /// `DesktopWindowTarget`, so a ring sliding off the monitor is cut at the
-  /// edge rather than spilling onto the neighbouring one.
+  /// `DesktopWindowTarget`, so a ring sliding off the monitor is cut at
+  /// the edge rather than spilling onto the neighbouring one.
   pub(crate) fn set_offset(&self, x: i32, y: i32) -> crate::Result<()> {
     self.root.SetOffset(Vector3 {
       X: pixels_to_dips(x),

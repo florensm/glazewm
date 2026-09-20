@@ -43,7 +43,8 @@ pub struct WmState {
   /// Manager for window animations.
   pub animation_manager: AnimationManager,
 
-  /// Tracks the target position for each window to prevent animation restart loops.
+  /// Tracks the target position for each window to prevent animation
+  /// restart loops.
   pub window_target_positions: HashMap<Uuid, Rect>,
 
   /// Name of the most recently focused workspace.
@@ -79,11 +80,13 @@ pub struct WmState {
 
   /// Acrylic blur overlay windows keyed by managed-window UUID.
   ///
-  /// Each overlay is a `WS_POPUP` window with `ACCENT_ENABLE_ACRYLICBLURBEHIND`
-  /// applied via `SetWindowCompositionAttribute`, positioned at `HWND_BOTTOM`
-  /// flush with the managed window's DWM frame rect. When the managed window
-  /// is semi-transparent (`transparency` effect), the overlay's blurred-desktop
-  /// content shows through, producing a frosted-glass look.
+  /// Each overlay is a `WS_POPUP` window with
+  /// `ACCENT_ENABLE_ACRYLICBLURBEHIND` applied via
+  /// `SetWindowCompositionAttribute`, positioned at `HWND_BOTTOM` flush
+  /// with the managed window's DWM frame rect. When the managed window
+  /// is semi-transparent (`transparency` effect), the overlay's
+  /// blurred-desktop content shows through, producing a frosted-glass
+  /// look.
   #[cfg(target_os = "windows")]
   pub blur_overlays: HashMap<Uuid, NativeBlurOverlay>,
 
@@ -499,19 +502,18 @@ impl WmState {
         )
       }
       WorkspaceTarget::Next => {
-        let workspaces = &config.value.workspaces;
+        let workspace_names =
+          config.ordered_workspace_names(&self.workspaces());
         let origin_name = origin_workspace.config().name.clone();
-        let origin_index = workspaces
+        let origin_index = workspace_names
           .iter()
-          .position(|workspace| workspace.name == origin_name)
+          .position(|name| *name == origin_name)
           .context("Failed to get index of given workspace.")?;
 
-        let next_workspace_config = workspaces
+        let next_workspace_name = workspace_names
           .get(origin_index + 1)
-          .or_else(|| workspaces.first());
-
-        let next_workspace_name =
-          next_workspace_config.map(|config| config.name.clone());
+          .or_else(|| workspace_names.first())
+          .cloned();
 
         let next_workspace = next_workspace_name
           .as_ref()
@@ -520,25 +522,73 @@ impl WmState {
         (next_workspace_name, next_workspace)
       }
       WorkspaceTarget::Previous => {
-        let workspaces = &config.value.workspaces;
+        let workspace_names =
+          config.ordered_workspace_names(&self.workspaces());
         let origin_name = origin_workspace.config().name.clone();
-        let origin_index = workspaces
+        let origin_index = workspace_names
           .iter()
-          .position(|workspace| workspace.name == origin_name)
+          .position(|name| *name == origin_name)
           .context("Failed to get index of given workspace.")?;
 
-        let previous_workspace_config = workspaces.get(
-          origin_index.checked_sub(1).unwrap_or(workspaces.len() - 1),
-        );
-
-        let previous_workspace_name =
-          previous_workspace_config.map(|config| config.name.clone());
+        let previous_workspace_name = workspace_names
+          .get(
+            origin_index
+              .checked_sub(1)
+              .unwrap_or(workspace_names.len() - 1),
+          )
+          .cloned();
 
         let previous_workspace = previous_workspace_name
           .as_ref()
           .and_then(|name| self.workspace_by_name(name));
 
         (previous_workspace_name, previous_workspace)
+      }
+      WorkspaceTarget::NextEmpty => {
+        let workspaces = self.workspaces();
+        let origin_monitor_id =
+          origin_workspace.monitor().map(|monitor| monitor.id());
+
+        // The origin is deliberately included; an already-empty origin
+        // makes this a no-op instead of bouncing between two empty
+        // workspaces on every invocation.
+        let empty_workspaces = self
+          .sorted_workspaces(config)
+          .into_iter()
+          .filter(|workspace| !workspace.has_children())
+          .collect::<Vec<_>>();
+
+        // Prefer an empty workspace on the origin's monitor, then a
+        // workspace config that isn't in use (which activates on the
+        // origin's monitor), then an empty workspace elsewhere, and
+        // finally a new dynamic workspace.
+        let empty_workspace = empty_workspaces.iter().find(|workspace| {
+          workspace.monitor().map(|monitor| monitor.id())
+            == origin_monitor_id
+        });
+
+        match empty_workspace {
+          Some(workspace) => {
+            (Some(workspace.config().name), Some(workspace.clone()))
+          }
+          None => match config.next_inactive_workspace_config(&workspaces)
+          {
+            Some(workspace_config) => {
+              (Some(workspace_config.name.clone()), None)
+            }
+            None => match empty_workspaces.first() {
+              Some(workspace) => {
+                (Some(workspace.config().name), Some(workspace.clone()))
+              }
+              None => (
+                config.value.general.dynamic_workspaces.then(|| {
+                  config.next_dynamic_workspace_name(&workspaces)
+                }),
+                None,
+              ),
+            },
+          },
+        }
       }
 
       WorkspaceTarget::Direction(direction) => {
@@ -718,9 +768,9 @@ impl WmState {
 impl Drop for WmState {
   fn drop(&mut self) {
     // Commit all active resize sessions before cleaning up windows so that
-    // surrogate overlays are destroyed and windows are moved to their target
-    // positions. This prevents invisible or mispositioned windows after a
-    // crash or forced exit.
+    // surrogate overlays are destroyed and windows are moved to their
+    // target positions. This prevents invisible or mispositioned
+    // windows after a crash or forced exit.
     #[cfg(target_os = "windows")]
     for session in self.animation_manager.drain_all_sessions() {
       if let Err(err) = session.commit() {
@@ -743,7 +793,8 @@ impl Drop for WmState {
       #[cfg(target_os = "windows")]
       {
         // Uncloak before showing — a surrogate animation may have cloaked
-        // this window. Without this, the window stays invisible after exit.
+        // this window. Without this, the window stays invisible after
+        // exit.
         let _ = window.native().set_cloaked(false);
 
         if let Err(err) = window.native().show() {

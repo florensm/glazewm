@@ -377,6 +377,9 @@ impl IpcServer {
       WmEvent::WindowUnmanaged { .. } => {
         SubscribableEvent::WindowUnmanaged
       }
+      WmEvent::WindowUrgencyChanged { .. } => {
+        SubscribableEvent::WindowUrgencyChanged
+      }
       WmEvent::WorkspaceActivated { .. } => {
         SubscribableEvent::WorkspaceActivated
       }

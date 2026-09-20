@@ -1,23 +1,34 @@
 use std::sync::OnceLock;
 
 use tokio::sync::mpsc;
-use windows::Win32::{
-  Foundation::HWND,
-  UI::{
-    Accessibility::{SetWinEventHook, UnhookWinEvent, HWINEVENTHOOK},
-    WindowsAndMessaging::{
-      EVENT_OBJECT_CLOAKED, EVENT_OBJECT_DESTROY, EVENT_OBJECT_HIDE,
-      EVENT_OBJECT_LOCATIONCHANGE, EVENT_OBJECT_NAMECHANGE,
-      EVENT_OBJECT_SHOW, EVENT_OBJECT_UNCLOAKED, EVENT_SYSTEM_FOREGROUND,
-      EVENT_SYSTEM_MINIMIZEEND, EVENT_SYSTEM_MINIMIZESTART,
-      EVENT_SYSTEM_MOVESIZEEND, EVENT_SYSTEM_MOVESIZESTART, OBJID_WINDOW,
-      WINEVENT_OUTOFCONTEXT, WINEVENT_SKIPOWNPROCESS,
+use windows::{
+  core::w,
+  Win32::{
+    Foundation::HWND,
+    UI::{
+      Accessibility::{SetWinEventHook, UnhookWinEvent, HWINEVENTHOOK},
+      WindowsAndMessaging::{
+        ChangeWindowMessageFilterEx, RegisterShellHookWindow,
+        RegisterWindowMessageW, EVENT_OBJECT_CLOAKED,
+        EVENT_OBJECT_DESTROY, EVENT_OBJECT_HIDE,
+        EVENT_OBJECT_LOCATIONCHANGE, EVENT_OBJECT_NAMECHANGE,
+        EVENT_OBJECT_SHOW, EVENT_OBJECT_UNCLOAKED,
+        EVENT_SYSTEM_FOREGROUND, EVENT_SYSTEM_MINIMIZEEND,
+        EVENT_SYSTEM_MINIMIZESTART, EVENT_SYSTEM_MOVESIZEEND,
+        EVENT_SYSTEM_MOVESIZESTART, HSHELL_HIGHBIT, HSHELL_REDRAW,
+        MSGFLT_ALLOW, OBJID_WINDOW, WINEVENT_OUTOFCONTEXT,
+        WINEVENT_SKIPOWNPROCESS,
+      },
     },
   },
 };
 
 use super::NativeWindow;
-use crate::{Dispatcher, WindowEvent, WindowId};
+use crate::{Dispatcher, DispatcherExtWindows, WindowEvent, WindowId};
+
+/// Shell hook notification for a window that is flashing its taskbar
+/// button, which the `windows` crate doesn't define.
+const HSHELL_FLASH: u32 = HSHELL_REDRAW | HSHELL_HIGHBIT;
 
 thread_local! {
   /// Sender for window events. For use with hook procedure.
@@ -32,6 +43,8 @@ pub struct WindowEventNotificationInner;
 #[derive(Debug)]
 pub(crate) struct WindowListener {
   hook_handles: Vec<HWINEVENTHOOK>,
+  shell_hook_callback_id: Option<usize>,
+  dispatcher: Dispatcher,
 }
 
 impl WindowListener {
@@ -40,6 +53,9 @@ impl WindowListener {
     event_tx: mpsc::UnboundedSender<WindowEvent>,
     dispatcher: &Dispatcher,
   ) -> crate::Result<Self> {
+    let shell_hook_callback_id =
+      Self::hook_shell_events(event_tx.clone(), dispatcher)?;
+
     let hook_handles = dispatcher.dispatch_sync(move || {
       EVENT_TX.with(|lock| lock.set(event_tx)).map_err(|_| {
         crate::Error::Platform(
@@ -50,7 +66,11 @@ impl WindowListener {
       Self::hook_win_events()
     })??;
 
-    Ok(Self { hook_handles })
+    Ok(Self {
+      hook_handles,
+      shell_hook_callback_id: Some(shell_hook_callback_id),
+      dispatcher: dispatcher.clone(),
+    })
   }
 
   /// Implements [`WindowListener::terminate`].
@@ -58,6 +78,78 @@ impl WindowListener {
     for handle in self.hook_handles.drain(..) {
       let _ = unsafe { UnhookWinEvent(handle) };
     }
+
+    // The shell hook itself is released when the event loop's message
+    // window is destroyed; `DeregisterShellHookWindow` is undocumented
+    // and isn't exposed by the `windows` crate.
+    if let Some(id) = self.shell_hook_callback_id.take() {
+      let _ = self.dispatcher.deregister_wndproc_callback(id);
+    }
+  }
+
+  /// Subscribes to shell hook notifications for the event loop's message
+  /// window.
+  ///
+  /// This is the only way to observe a window asking for attention;
+  /// `SetWinEventHook` has no equivalent event. The shell broadcasts these
+  /// notifications via a registered window message, so a window procedure
+  /// callback is used rather than the hook procedure below.
+  ///
+  /// Returns the ID of the registered window procedure callback.
+  fn hook_shell_events(
+    event_tx: mpsc::UnboundedSender<WindowEvent>,
+    dispatcher: &Dispatcher,
+  ) -> crate::Result<usize> {
+    let message_window = HWND(dispatcher.message_window_handle());
+
+    let shell_hook_message = dispatcher
+      .dispatch_sync(move || {
+        // SAFETY: `message_window` is a valid window handle owned by the
+        // event loop thread, which this closure runs on.
+        unsafe {
+          let message = RegisterWindowMessageW(w!("SHELLHOOK"));
+
+          // The WM is commonly run elevated while the shell isn't, so the
+          // notifications would otherwise be dropped by UIPI.
+          let _ = ChangeWindowMessageFilterEx(
+            message_window,
+            message,
+            MSGFLT_ALLOW,
+            None,
+          );
+
+          RegisterShellHookWindow(message_window)
+            .as_bool()
+            .then_some(message)
+        }
+      })?
+      .ok_or_else(|| {
+        crate::Error::Platform(
+          "Failed to register shell hook window.".to_string(),
+        )
+      })?;
+
+    dispatcher.register_wndproc_callback(Box::new(
+      move |_hwnd, message, wparam, lparam| {
+        if message != shell_hook_message {
+          return None;
+        }
+
+        #[allow(clippy::cast_possible_truncation)]
+        if wparam as u32 == HSHELL_FLASH {
+          let event = WindowEvent::AttentionRequested {
+            window: NativeWindow::new(lparam).into(),
+            notification: crate::WindowEventNotification(None),
+          };
+
+          if let Err(err) = event_tx.send(event) {
+            tracing::warn!("Failed to send window event: {}.", err);
+          }
+        }
+
+        Some(0)
+      },
+    ))
   }
 
   /// Creates several window event hooks via `SetWinEventHook`.

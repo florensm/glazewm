@@ -2,6 +2,7 @@ use std::{
   cell::{Ref, RefCell, RefMut},
   collections::VecDeque,
   rc::Rc,
+  time::Instant,
 };
 
 use anyhow::Context;
@@ -48,6 +49,7 @@ struct TilingWindowInner {
   gaps_config: GapsConfig,
   done_window_rules: Vec<WindowRuleConfig>,
   active_drag: Option<ActiveDrag>,
+  urgency_alert_at: Option<Instant>,
 }
 
 impl TilingWindow {
@@ -82,6 +84,7 @@ impl TilingWindow {
       gaps_config,
       done_window_rules,
       active_drag,
+      urgency_alert_at: None,
     };
 
     Self(Rc::new(RefCell::new(window)))
@@ -92,7 +95,7 @@ impl TilingWindow {
     state: WindowState,
     insertion_target: Option<InsertionTarget>,
   ) -> NonTilingWindow {
-    NonTilingWindow::new(
+    let window = NonTilingWindow::new(
       Some(self.id()),
       self.native().clone(),
       self.native_properties().clone(),
@@ -104,7 +107,10 @@ impl TilingWindow {
       self.has_custom_floating_placement(),
       self.done_window_rules(),
       self.active_drag(),
-    )
+    );
+
+    window.set_urgency_alert_at(self.urgency_alert_at());
+    window
   }
 
   pub fn to_dto(&self) -> anyhow::Result<ContainerDto> {
@@ -131,6 +137,7 @@ impl TilingWindow {
       class_name: self.native_properties().class_name,
       process_name: self.native_properties().process_name,
       active_drag: self.active_drag(),
+      is_urgent: self.is_urgent(),
     }))
   }
 }
