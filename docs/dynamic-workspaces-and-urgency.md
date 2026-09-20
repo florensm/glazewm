@@ -105,8 +105,14 @@ focused.
 
 It can't be prevented, only ended — the notification *is* "flashing
 started" — so an auto-hidden taskbar may still appear for a frame before
-retracting. The trade-off: without something rendering `isUrgent`, an
-urgent window then has no visible cue at all.
+retracting.
+
+This is unconditional rather than an option, because with the default
+`show_all_in_taskbar: false` the flashing button belongs to a window that
+has been pulled from the taskbar precisely so it isn't seen there. The
+flash is a cue for a button the user opted out of. The trade-off is that
+without something rendering `isUrgent`, an urgent window has no visible
+cue at all.
 
 ### Commands
 
