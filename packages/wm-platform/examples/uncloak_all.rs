@@ -1,11 +1,12 @@
-//! Recovery tool: un-cloaks every top-level window that GlazeWM left hidden.
+//! Recovery tool: un-cloaks every top-level window that GlazeWM left
+//! hidden.
 //!
 //! GlazeWM hides windows on inactive workspaces with
-//! `DwmSetWindowAttribute(DWMWA_CLOAK)`, which survives the process. Normally
-//! `wm-watcher` reverses that when the WM dies unexpectedly, but it can only
-//! restore windows the WM had reported as managed -- so a WM killed while its
-//! watcher was also killed leaves those windows alive, running, and invisible,
-//! with nothing left that knows about them.
+//! `DwmSetWindowAttribute(DWMWA_CLOAK)`, which survives the process.
+//! Normally `wm-watcher` reverses that when the WM dies unexpectedly, but
+//! it can only restore windows the WM had reported as managed -- so a WM
+//! killed while its watcher was also killed leaves those windows alive,
+//! running, and invisible, with nothing left that knows about them.
 //!
 //! This walks every top-level window and clears the cloak on the ones that
 //! look like real application windows.

@@ -1,18 +1,18 @@
-use crate::Color;
-
 #[cfg(target_os = "windows")]
 use std::{
   sync::{Mutex, OnceLock},
   time::{Duration, Instant},
 };
 
+use crate::Color;
+
 /// Minimum time between live `DwmGetColorizationColor` reads.
 ///
 /// `system_accent_color` is called from `border_overlay_params_for`, which
-/// runs on `platform_sync`'s per-tick overlay sync path (up to ~175Hz while
-/// any animation is active, for every managed window) -- not just on the
-/// occasional focus-change event this was designed around. Without a cache,
-/// `use_accent_color` would turn every animation (resize, move,
+/// runs on `platform_sync`'s per-tick overlay sync path (up to ~175Hz
+/// while any animation is active, for every managed window) -- not just on
+/// the occasional focus-change event this was designed around. Without a
+/// cache, `use_accent_color` would turn every animation (resize, move,
 /// workspace-switch, not just border transitions) into a live DWM syscall
 /// storm. The accent color only ever changes when the user picks a new one
 /// in Settings, so a coarse cache is imperceptible in practice.
@@ -27,8 +27,8 @@ static ACCENT_COLOR_CACHE: OnceLock<Mutex<Option<(Instant, Color)>>> =
 /// uses to tint title bars/taskbar/window borders when the user has that
 /// personalization option enabled.
 ///
-/// Cached for [`CACHE_TTL`] to keep this cheap on the per-tick overlay sync
-/// hot path; see that constant's doc comment. Read failures are never
+/// Cached for [`CACHE_TTL`] to keep this cheap on the per-tick overlay
+/// sync hot path; see that constant's doc comment. Read failures are never
 /// cached, so a transient error doesn't get stuck for the TTL window.
 ///
 /// # Platform-specific

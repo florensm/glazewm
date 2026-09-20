@@ -364,10 +364,99 @@ impl UserConfig {
       .position(|config| config.name == workspace_name)
   }
 
+  /// Sort key that orders configured workspaces by their config index,
+  /// followed by dynamic workspaces ordered by their numeric name.
+  ///
+  /// Dynamic workspaces have no config entry, so they'd otherwise all
+  /// share the same (missing) index.
+  fn workspace_sort_key(
+    &self,
+    workspace_name: &str,
+  ) -> (usize, u32, String) {
+    (
+      self
+        .workspace_config_index(workspace_name)
+        .unwrap_or(usize::MAX),
+      workspace_name.parse::<u32>().unwrap_or(u32::MAX),
+      workspace_name.to_string(),
+    )
+  }
+
   pub fn sort_workspaces(&self, workspaces: &mut [Workspace]) {
-    workspaces.sort_by_key(|workspace| {
-      self.workspace_config_index(&workspace.config().name)
+    workspaces.sort_by_cached_key(|workspace| {
+      self.workspace_sort_key(&workspace.config().name)
     });
+  }
+
+  /// Names of all workspaces in display order; the configured workspaces
+  /// plus any active dynamic workspaces.
+  ///
+  /// Used to cycle through workspaces with next/previous targets, which
+  /// would otherwise skip over (and fail to find an origin index for)
+  /// dynamic workspaces.
+  pub fn ordered_workspace_names(
+    &self,
+    active_workspaces: &[Workspace],
+  ) -> Vec<String> {
+    let mut names = self
+      .value
+      .workspaces
+      .iter()
+      .map(|config| config.name.clone())
+      .chain(
+        active_workspaces
+          .iter()
+          .map(|workspace| workspace.config().name)
+          .filter(|name| self.workspace_config_index(name).is_none()),
+      )
+      .collect::<Vec<_>>();
+
+    names.sort_by_cached_key(|name| self.workspace_sort_key(name));
+    names.dedup();
+
+    names
+  }
+
+  /// Config for a workspace that isn't declared in the user config.
+  ///
+  /// Returns `None` if dynamic workspaces are disabled, or if a workspace
+  /// with the given name is already active.
+  pub fn dynamic_workspace_config(
+    &self,
+    workspace_name: &str,
+    active_workspaces: &[Workspace],
+  ) -> Option<WorkspaceConfig> {
+    let is_available = self.value.general.dynamic_workspaces
+      && !active_workspaces
+        .iter()
+        .any(|workspace| workspace.config().name == workspace_name);
+
+    is_available.then(|| WorkspaceConfig {
+      name: workspace_name.to_string(),
+      display_name: None,
+      bind_to_monitor: None,
+      keep_alive: false,
+    })
+  }
+
+  /// Name for a new dynamic workspace.
+  ///
+  /// This is the lowest positive integer that isn't taken by a configured
+  /// or currently active workspace.
+  pub fn next_dynamic_workspace_name(
+    &self,
+    active_workspaces: &[Workspace],
+  ) -> String {
+    (1..=u32::MAX)
+      .map(|index| index.to_string())
+      .find(|name| {
+        self.workspace_config_index(name).is_none()
+          && !active_workspaces
+            .iter()
+            .any(|workspace| workspace.config().name == *name)
+      })
+      // Only reachable with `u32::MAX` workspaces, which can't happen.
+      .unwrap_or_default()
   }
 
   /// Keybinding configs that should be active for the current binding mode
@@ -400,12 +489,16 @@ impl UserConfig {
 
 #[cfg(test)]
 mod tests {
+  use std::path::PathBuf;
+
   use wm_common::{
-    ParsedConfig, WindowTransitionStyle, WorkspaceSwitchStyle,
+    ParsedConfig, WindowTransitionStyle, WorkspaceConfig,
+    WorkspaceSwitchStyle,
   };
   use wm_platform::{BackdropStyle, Rect};
 
   use super::*;
+  use crate::models::Workspace;
 
   /// The bundled sample config (which uses the `type` key for animation
   /// transition types) must always parse.
@@ -617,10 +710,92 @@ window_effects:
     )));
   }
 
-  #[test]
-  fn sample_config_parses() {
-    let result = serde_yaml::from_str::<ParsedConfig>(SAMPLE_CONFIG);
+  /// Creates a config with the given workspace names declared.
+  fn mock_config(
+    workspace_names: &[&str],
+    dynamic_workspaces: bool,
+  ) -> UserConfig {
+    let mut value = ParsedConfig::default();
+    value.general.dynamic_workspaces = dynamic_workspaces;
+    value.workspaces = workspace_names
+      .iter()
+      .map(|name| WorkspaceConfig {
+        name: (*name).to_string(),
+        display_name: None,
+        bind_to_monitor: None,
+        keep_alive: false,
+      })
+      .collect();
 
-    assert!(result.is_ok(), "{:?}", result.err());
+    UserConfig {
+      path: PathBuf::new(),
+      window_rules_by_event: UserConfig::window_rules_by_event(&value),
+      value_str: String::new(),
+      value,
+    }
+  }
+
+  fn mock_workspaces(names: &[&str]) -> Vec<Workspace> {
+    names
+      .iter()
+      .map(|name| Workspace::mock().name((*name).to_string()).call())
+      .collect()
+  }
+
+  #[test]
+  fn sorts_dynamic_workspaces_after_configured_ones() {
+    let config = mock_config(&["b", "a"], true);
+    let mut workspaces = mock_workspaces(&["11", "2", "a", "b"]);
+    config.sort_workspaces(&mut workspaces);
+
+    let names = workspaces
+      .iter()
+      .map(|workspace| workspace.config().name)
+      .collect::<Vec<_>>();
+
+    assert_eq!(names, vec!["b", "a", "2", "11"]);
+  }
+
+  #[test]
+  fn orders_configured_and_active_workspace_names() {
+    let config = mock_config(&["1", "2"], true);
+    let workspaces = mock_workspaces(&["2", "3"]);
+
+    assert_eq!(
+      config.ordered_workspace_names(&workspaces),
+      vec!["1", "2", "3"]
+    );
+  }
+
+  #[test]
+  fn picks_lowest_unused_dynamic_workspace_name() {
+    let config = mock_config(&["1", "3"], true);
+
+    assert_eq!(
+      config.next_dynamic_workspace_name(&mock_workspaces(&["2"])),
+      "4"
+    );
+    assert_eq!(config.next_dynamic_workspace_name(&[]), "2");
+  }
+
+  #[test]
+  fn only_creates_dynamic_configs_when_enabled() {
+    let workspaces = mock_workspaces(&["1"]);
+
+    assert!(mock_config(&["1"], false)
+      .dynamic_workspace_config("2", &workspaces)
+      .is_none());
+
+    // A workspace that's already active can't be created.
+    assert!(mock_config(&["1"], true)
+      .dynamic_workspace_config("1", &workspaces)
+      .is_none());
+
+    let dynamic_config = mock_config(&["1"], true)
+      .dynamic_workspace_config("2", &workspaces)
+      .expect("Dynamic workspace config.");
+
+    assert_eq!(dynamic_config.name, "2");
+    assert!(!dynamic_config.keep_alive);
   }
 }

@@ -1,11 +1,12 @@
-//! Microbenchmark: is moving N windows or updating N DWM thumbnails cheaper?
+//! Microbenchmark: is moving N windows or updating N DWM thumbnails
+//! cheaper?
 //!
 //! The animation tick's dominant cost is `EndDeferWindowPos` moving one
 //! surrogate window per animating window, every frame. The proposed
 //! alternative is one monitor-sized surrogate window holding N thumbnails,
-//! repositioned per frame with `DwmUpdateThumbnailProperties` and no window
-//! moves at all. This measures both so the rewrite can be judged before it
-//! is written.
+//! repositioned per frame with `DwmUpdateThumbnailProperties` and no
+//! window moves at all. This measures both so the rewrite can be judged
+//! before it is written.
 //!
 //! Run with `cargo run -p wm-platform --release --example surrogate_cost`.
 //! Windows are created off to the side and destroyed on exit.
@@ -17,21 +18,23 @@ use std::time::{Duration, Instant};
 use windows::{
   core::w,
   Win32::{
-    Foundation::{HWND, LPARAM, RECT, WPARAM, LRESULT, BOOL},
+    Foundation::{BOOL, HWND, LPARAM, LRESULT, RECT, WPARAM},
     Graphics::Dwm::{
       DwmExtendFrameIntoClientArea, DwmRegisterThumbnail,
       DwmUnregisterThumbnail, DwmUpdateThumbnailProperties,
-      DWM_THUMBNAIL_PROPERTIES, DWM_TNP_RECTDESTINATION, DWM_TNP_SOURCECLIENTAREAONLY,
-      DWM_TNP_VISIBLE,
+      DWM_THUMBNAIL_PROPERTIES, DWM_TNP_RECTDESTINATION,
+      DWM_TNP_SOURCECLIENTAREAONLY, DWM_TNP_VISIBLE,
     },
-    UI::Controls::MARGINS,
-    UI::WindowsAndMessaging::{
-      BeginDeferWindowPos, CreateWindowExW, DeferWindowPos, DefWindowProcW,
-      DestroyWindow, EndDeferWindowPos, EnumWindows, GetWindowRect,
-      GetWindowTextLengthW, IsWindowVisible, RegisterClassW, ShowWindow,
-      SW_SHOWNOACTIVATE, SWP_NOACTIVATE, SWP_NOCOPYBITS, SWP_NOSENDCHANGING,
-      SWP_NOZORDER, WNDCLASSW, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW,
-      WS_EX_TRANSPARENT, WS_POPUP,
+    UI::{
+      Controls::MARGINS,
+      WindowsAndMessaging::{
+        BeginDeferWindowPos, CreateWindowExW, DefWindowProcW,
+        DeferWindowPos, DestroyWindow, EndDeferWindowPos, EnumWindows,
+        GetWindowRect, GetWindowTextLengthW, IsWindowVisible,
+        RegisterClassW, ShowWindow, SWP_NOACTIVATE, SWP_NOCOPYBITS,
+        SWP_NOSENDCHANGING, SWP_NOZORDER, SW_SHOWNOACTIVATE, WNDCLASSW,
+        WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TRANSPARENT, WS_POPUP,
+      },
     },
   },
 };
@@ -39,7 +42,8 @@ use windows::{
 /// Frames measured per scenario.
 const FRAMES: usize = 300;
 
-/// Collects visible top-level windows to use as realistic thumbnail sources.
+/// Collects visible top-level windows to use as realistic thumbnail
+/// sources.
 unsafe extern "system" fn collect(hwnd: HWND, lparam: LPARAM) -> BOOL {
   // SAFETY: `lparam` is the `Vec<HWND>` passed by the caller below.
   let found = unsafe { &mut *(lparam.0 as *mut Vec<HWND>) };
@@ -122,11 +126,12 @@ fn main() {
       continue;
     }
 
-    // --- A: today's design. N surrogate-alike windows, each carrying a DWM
-    // thumbnail of a real window and an extended glass frame, moved *and
-    // resized* every frame -- a resize animation changes the surrogate's
-    // size on every tick, which is far more work for the compositor than
-    // the pure translation an earlier version of this benchmark measured.
+    // --- A: today's design. N surrogate-alike windows, each carrying a
+    // DWM thumbnail of a real window and an extended glass frame,
+    // moved *and resized* every frame -- a resize animation changes
+    // the surrogate's size on every tick, which is far more work for
+    // the compositor than the pure translation an earlier version of
+    // this benchmark measured.
     let windows: Vec<HWND> = (0..n)
       .map(|i| {
         #[allow(clippy::cast_possible_truncation)]
@@ -155,13 +160,20 @@ fn main() {
           dwFlags: DWM_TNP_RECTDESTINATION
             | DWM_TNP_VISIBLE
             | DWM_TNP_SOURCECLIENTAREAONLY,
-          rcDestination: RECT { left: 0, top: 0, right: 900, bottom: 700 },
+          rcDestination: RECT {
+            left: 0,
+            top: 0,
+            right: 900,
+            bottom: 700,
+          },
           fVisible: BOOL(1),
           fSourceClientAreaOnly: BOOL(0),
           ..Default::default()
         };
         // SAFETY: `t` was just registered.
-        unsafe { let _ = DwmUpdateThumbnailProperties(t, &raw const props); }
+        unsafe {
+          let _ = DwmUpdateThumbnailProperties(t, &raw const props);
+        }
         a_thumbs.push(t);
       }
     }
@@ -170,18 +182,33 @@ fn main() {
     for frame in 0..FRAMES {
       // Sweep the width like a resize animation does, rather than nudging
       // by a pixel at constant size.
-      #[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
+      #[allow(
+        clippy::cast_possible_truncation,
+        clippy::cast_possible_wrap
+      )]
       let w = 600 + ((frame % 60) as i32) * 10;
       let start = Instant::now();
       // SAFETY: all handles are windows created just above.
       unsafe {
         if let Ok(mut hdwp) = BeginDeferWindowPos(n as i32) {
           for (i, hwnd) in windows.iter().enumerate() {
-            #[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
+            #[allow(
+              clippy::cast_possible_truncation,
+              clippy::cast_possible_wrap
+            )]
             let x = 100 + (i as i32) * 40;
             match DeferWindowPos(
-              hdwp, *hwnd, HWND(0), x, 100, w, 700,
-              SWP_NOACTIVATE | SWP_NOCOPYBITS | SWP_NOSENDCHANGING | SWP_NOZORDER,
+              hdwp,
+              *hwnd,
+              HWND(0),
+              x,
+              100,
+              w,
+              700,
+              SWP_NOACTIVATE
+                | SWP_NOCOPYBITS
+                | SWP_NOSENDCHANGING
+                | SWP_NOZORDER,
             ) {
               Ok(next) => hdwp = next,
               Err(_) => break,
@@ -194,17 +221,23 @@ fn main() {
     }
     for t in &a_thumbs {
       // SAFETY: registered above.
-      unsafe { let _ = DwmUnregisterThumbnail(*t); }
+      unsafe {
+        let _ = DwmUnregisterThumbnail(*t);
+      }
     }
     for hwnd in &windows {
       // SAFETY: created above and not yet destroyed.
-      unsafe { let _ = DestroyWindow(*hwnd); }
+      unsafe {
+        let _ = DestroyWindow(*hwnd);
+      }
     }
 
     // --- B: one host window, N thumbnails, no window moves. ---
     let host = make_window(100, 100, 3000, 1400);
     // SAFETY: `host` was just created.
-    unsafe { let _ = ShowWindow(host, SW_SHOWNOACTIVATE); }
+    unsafe {
+      let _ = ShowWindow(host, SW_SHOWNOACTIVATE);
+    }
 
     let mut thumbs = Vec::with_capacity(n);
     for src in sources.iter().take(n) {
@@ -216,30 +249,47 @@ fn main() {
 
     let mut b = Vec::with_capacity(FRAMES);
     for frame in 0..FRAMES {
-      #[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
+      #[allow(
+        clippy::cast_possible_truncation,
+        clippy::cast_possible_wrap
+      )]
       let w = 600 + ((frame % 60) as i32) * 10;
       let start = Instant::now();
       for (i, t) in thumbs.iter().enumerate() {
-        #[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
+        #[allow(
+          clippy::cast_possible_truncation,
+          clippy::cast_possible_wrap
+        )]
         let x = (i as i32) * 40;
         let props = DWM_THUMBNAIL_PROPERTIES {
           dwFlags: DWM_TNP_RECTDESTINATION | DWM_TNP_VISIBLE,
-          rcDestination: RECT { left: x, top: 0, right: x + w, bottom: 700 },
+          rcDestination: RECT {
+            left: x,
+            top: 0,
+            right: x + w,
+            bottom: 700,
+          },
           fVisible: BOOL(1),
           ..Default::default()
         };
         // SAFETY: `*t` is a thumbnail registered just above.
-        unsafe { let _ = DwmUpdateThumbnailProperties(*t, &raw const props); }
+        unsafe {
+          let _ = DwmUpdateThumbnailProperties(*t, &raw const props);
+        }
       }
       b.push(start.elapsed());
     }
 
     for t in &thumbs {
       // SAFETY: registered above, not yet unregistered.
-      unsafe { let _ = DwmUnregisterThumbnail(*t); }
+      unsafe {
+        let _ = DwmUnregisterThumbnail(*t);
+      }
     }
     // SAFETY: created above; thumbnails already unregistered.
-    unsafe { let _ = DestroyWindow(host); }
+    unsafe {
+      let _ = DestroyWindow(host);
+    }
 
     let ma = median(a);
     let mb = median(b);

@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use wm_platform::{
-  BackdropStyle, BlurOverlayParams, BorderOverlayParams, Color, CornerStyle,
-  Key, Keybinding, LengthValue, OpacityValue, RectDelta,
+  BackdropStyle, BlurOverlayParams, BorderOverlayParams, Color,
+  CornerStyle, Key, Keybinding, LengthValue, OpacityValue, RectDelta,
 };
 
 use crate::app_command::InvokeCommand;
@@ -70,6 +70,7 @@ impl Default for GapsConfig {
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(default, rename_all(serialize = "camelCase"))]
+#[allow(clippy::struct_excessive_bools)]
 pub struct GeneralConfig {
   /// Config for automatically moving the cursor.
   pub cursor_jump: CursorJumpConfig,
@@ -80,6 +81,20 @@ pub struct GeneralConfig {
   /// Whether to switch back and forth between the previously focused
   /// workspace when focusing the current workspace.
   pub toggle_workspace_on_refocus: bool,
+
+  /// Whether to keep focus where it is when a window on a hidden
+  /// workspace forces itself into the foreground.
+  ///
+  /// The window is marked as urgent instead of being followed, which is
+  /// broadcast via the `window_urgency_changed` event.
+  pub ignore_focus_steal: bool,
+
+  /// Whether workspaces can be created on-demand beyond the ones declared
+  /// in the `workspaces` config.
+  ///
+  /// Dynamic workspaces are named with the lowest unused positive integer
+  /// and are destroyed once they become empty.
+  pub dynamic_workspaces: bool,
 
   /// Commands to run when the WM has started (e.g. to run a script or
   /// launch another application).
@@ -97,7 +112,6 @@ pub struct GeneralConfig {
 
   /// Affects which windows get shown in the native Windows taskbar.
   pub show_all_in_taskbar: bool,
-
 }
 
 impl Default for GeneralConfig {
@@ -106,6 +120,8 @@ impl Default for GeneralConfig {
       cursor_jump: CursorJumpConfig::default(),
       focus_follows_cursor: false,
       toggle_workspace_on_refocus: true,
+      dynamic_workspaces: false,
+      ignore_focus_steal: false,
       startup_commands: vec![],
       shutdown_commands: vec![],
       config_reload_commands: vec![],
@@ -176,8 +192,8 @@ pub struct WindowBehaviorConfig {
   /// `set_floating`, are used without any flags.
   pub state_defaults: WindowStateDefaultsConfig,
 
-  /// Whether a new window on a workspace takes any fullscreen window on that
-  /// workspace back out of fullscreen.
+  /// Whether a new window on a workspace takes any fullscreen window on
+  /// that workspace back out of fullscreen.
   ///
   /// A fullscreen window covers the entire workspace, so without this a
   /// newly spawned window opens hidden behind it. Matches Hyprland, which
@@ -225,10 +241,11 @@ impl Default for FloatingStateConfig {
     FloatingStateConfig {
       centered: true,
       // Defaults on because tiling windows fill the workspace: the z-order
-      // pass raises whichever state group the focused window belongs to, so
-      // focusing a tiling window otherwise buries every floating one behind
-      // a full-screen-width tile with no way to see it. Still an option --
-      // set `false` to get the old behaviour back.
+      // pass raises whichever state group the focused window belongs to,
+      // so focusing a tiling window otherwise buries every floating
+      // one behind a full-screen-width tile with no way to see it.
+      // Still an option -- set `false` to get the old behaviour
+      // back.
       shown_on_top: true,
     }
   }
@@ -264,9 +281,10 @@ pub struct WindowEffectsConfig {
 
   /// Whether to drop the border effect while a window is fullscreen.
   ///
-  /// A fullscreen window has nothing beside it to be delimited from, so the
-  /// ring reads as an inset frame around the screen -- and on a monitor-sized
-  /// window it is drawn over content rather than beside it.
+  /// A fullscreen window has nothing beside it to be delimited from, so
+  /// the ring reads as an inset frame around the screen -- and on a
+  /// monitor-sized window it is drawn over content rather than beside
+  /// it.
   ///
   /// # Platform-specific
   ///
@@ -295,17 +313,17 @@ pub struct WindowEffectConfig {
 
   /// Single knob for how round this window's corners are.
   ///
-  /// Drives the window's own corners *and* every overlay drawn around it, so
-  /// one value is enough where `corner_style` plus `border.radius` used to be
-  /// needed to keep the two in agreement.
+  /// Drives the window's own corners *and* every overlay drawn around it,
+  /// so one value is enough where `corner_style` plus `border.radius`
+  /// used to be needed to keep the two in agreement.
   ///
-  /// The overlays follow this value exactly. The window itself can only take
-  /// the three presets Windows exposes through
-  /// `DWMWA_WINDOW_CORNER_PREFERENCE`, so it snaps to the nearest one: `0`
-  /// gives square, up to [`CornerStyle::SmallRounded`]'s radius gives small
-  /// rounded, anything above gives rounded. A radius past roughly 8px
-  /// therefore rounds the ring further than the window can follow -- an OS
-  /// limit, not a config one.
+  /// The overlays follow this value exactly. The window itself can only
+  /// take the three presets Windows exposes through
+  /// `DWMWA_WINDOW_CORNER_PREFERENCE`, so it snaps to the nearest one:
+  /// `0` gives square, up to [`CornerStyle::SmallRounded`]'s radius
+  /// gives small rounded, anything above gives rounded. A radius past
+  /// roughly 8px therefore rounds the ring further than the window can
+  /// follow -- an OS limit, not a config one.
   ///
   /// When unset, falls back to the `corner_style` block. `border.radius`
   /// still overrides the ring on top of either.
@@ -319,9 +337,9 @@ pub struct WindowEffectConfig {
 impl WindowEffectConfig {
   /// The corner preference to hand the real window.
   ///
-  /// `corner_radius` wins when set, snapped to the nearest preset; otherwise
-  /// the `corner_style` block decides, and `Default` means "leave whatever
-  /// the app asked for alone".
+  /// `corner_radius` wins when set, snapped to the nearest preset;
+  /// otherwise the `corner_style` block decides, and `Default` means
+  /// "leave whatever the app asked for alone".
   #[must_use]
   pub fn resolved_corner_style(&self) -> CornerStyle {
     match &self.corner_radius {
@@ -346,8 +364,9 @@ impl WindowEffectConfig {
   /// having, so they sit concentric with it.
   ///
   /// Follows `corner_radius` exactly when set -- deliberately *not* the
-  /// snapped preset's radius, so a ring can be rounder than the three presets
-  /// allow (which is the point of accepting a free-form radius at all).
+  /// snapped preset's radius, so a ring can be rounder than the three
+  /// presets allow (which is the point of accepting a free-form radius
+  /// at all).
   #[must_use]
   pub fn window_corner_radius_px(&self) -> f32 {
     match &self.corner_radius {
@@ -380,13 +399,13 @@ pub struct BackdropEffectConfig {
   /// evaluated per frame, so changing it re-renders that image once and
   /// costs nothing thereafter.
   ///
-  /// Ignored for `mica`/`mica_alt` -- the OS gives no blur-radius knob for
-  /// those, and there's no overlay window to attach a custom blur effect
-  /// to for that path. Also ignored for `blur`, which deliberately skips
-  /// the `Windows.UI.Composition` pipeline entirely and takes DWM's own
-  /// fixed blur. Silently has no effect if that rendering pipeline is
-  /// unavailable on this system (falls back to the OS's fixed-intensity
-  /// acrylic blur).
+  /// Ignored for `mica`/`mica_alt` -- the OS gives no blur-radius knob
+  /// for those, and there's no overlay window to attach a custom blur
+  /// effect to for that path. Also ignored for `blur`, which
+  /// deliberately skips the `Windows.UI.Composition` pipeline entirely
+  /// and takes DWM's own fixed blur. Silently has no effect if that
+  /// rendering pipeline is unavailable on this system (falls back to
+  /// the OS's fixed-intensity acrylic blur).
   pub blur_amount: f32,
 
   /// Opacity of the acrylic overlay's own composited visual (blur and
@@ -415,42 +434,44 @@ pub struct BackdropEffectConfig {
   /// Exposure adjustment in stops; `0.0` is unchanged, negative darkens.
   ///
   /// `wallpaper` only. Acrylic's effect graph is built through
-  /// `Compositor::CreateEffectFactory`, which accepts only a curated subset
-  /// of D2D's built-in effects and renders this one as a pass-through; the
-  /// wallpaper bake uses D2D directly and has no such limit.
+  /// `Compositor::CreateEffectFactory`, which accepts only a curated
+  /// subset of D2D's built-in effects and renders this one as a
+  /// pass-through; the wallpaper bake uses D2D directly and has no such
+  /// limit.
   pub exposure: f32,
 
   /// Contrast adjustment from `-1.0` to `1.0`; `0.0` is unchanged.
   /// `wallpaper` only, same reason as `exposure`.
   pub contrast: f32,
 
-  /// Highlight recovery from `-1.0` to `1.0`; `0.0` is unchanged, negative
-  /// pulls bright areas down. `wallpaper` only, same reason as `exposure`.
+  /// Highlight recovery from `-1.0` to `1.0`; `0.0` is unchanged,
+  /// negative pulls bright areas down. `wallpaper` only, same reason as
+  /// `exposure`.
   ///
-  /// Tone-selective where `exposure` is not: it touches only the bright end,
-  /// so a blown-out sky can be brought down without dragging the whole
-  /// image toward black. The right knob for making text readable.
+  /// Tone-selective where `exposure` is not: it touches only the bright
+  /// end, so a blown-out sky can be brought down without dragging the
+  /// whole image toward black. The right knob for making text readable.
   pub highlights: f32,
 
   /// Shadow lift from `-1.0` to `1.0`; `0.0` is unchanged, positive opens
   /// dark areas up. `wallpaper` only, same reason as `exposure`.
   pub shadows: f32,
 
-  /// Strength of a darkening gradient toward each window's own edges, from
-  /// `0.0` (off) to `1.0`.
+  /// Strength of a darkening gradient toward each window's own edges,
+  /// from `0.0` (off) to `1.0`.
   ///
-  /// Applies to every style, and is the only one of these knobs that is not
-  /// baked: it is a gradient visual measured from the window's rect. Baking
-  /// it would anchor the falloff to the monitor instead, since one image is
-  /// shared by every window on it.
+  /// Applies to every style, and is the only one of these knobs that is
+  /// not baked: it is a gradient visual measured from the window's
+  /// rect. Baking it would anchor the falloff to the monitor instead,
+  /// since one image is shared by every window on it.
   ///
   /// The right knob for toning a bright backdrop down behind text -- it
   /// leaves the overlay opaque, where `opacity` would make it translucent
   /// again and undo the style's whole reason for being.
   pub vignette: f32,
 
-  /// Opacity of a monochrome noise layer over the blurred image, from `0.0`
-  /// (off) to `1.0`. `wallpaper` only, same reason as `exposure`.
+  /// Opacity of a monochrome noise layer over the blurred image, from
+  /// `0.0` (off) to `1.0`. `wallpaper` only, same reason as `exposure`.
   ///
   /// This is the grain that makes Windows' own acrylic read as frosted
   /// glass rather than an out-of-focus photo.
@@ -463,11 +484,11 @@ pub struct BackdropEffectConfig {
   /// Not baked -- it selects a different part of an already-rendered
   /// image, so any value costs the same (nothing).
   pub parallax: f32,
-
   // The acrylic overlay's own corner radius isn't independently
   // configurable -- it's derived from `corner_style` (see
-  // `CornerStyle::approx_radius_px`) so it always matches the real managed
-  // window's own rendered corners instead of risking a visual mismatch.
+  // `CornerStyle::approx_radius_px`) so it always matches the real
+  // managed window's own rendered corners instead of risking a visual
+  // mismatch.
 }
 
 impl Default for BackdropEffectConfig {
@@ -493,20 +514,24 @@ impl Default for BackdropEffectConfig {
 impl BackdropEffectConfig {
   /// Returns the tint for the overlay-backed styles (`acrylic`, `blur`).
   ///
-  /// Doubles as the "does this window get a `NativeBlurOverlay`?" predicate
-  /// for every overlay call site, so it returns `None` only when the effect
-  /// is disabled -- every remaining style is drawn by an overlay. When no
-  /// tint is set, falls back to near-transparent black (`alpha = 1`) to
-  /// avoid the solid-fill rendering bug present on some Windows 10 builds.
+  /// Doubles as the "does this window get a `NativeBlurOverlay`?"
+  /// predicate for every overlay call site, so it returns `None` only
+  /// when the effect is disabled -- every remaining style is drawn by an
+  /// overlay. When no tint is set, falls back to near-transparent black
+  /// (`alpha = 1`) to avoid the solid-fill rendering bug present on some
+  /// Windows 10 builds.
   #[must_use]
   pub fn overlay_tint(&self) -> Option<Color> {
     if !self.enabled {
       return None;
     }
 
-    Some(
-      self.tint.unwrap_or(Color { r: 0, g: 0, b: 0, a: 1 }),
-    )
+    Some(self.tint.unwrap_or(Color {
+      r: 0,
+      g: 0,
+      b: 0,
+      a: 1,
+    }))
   }
 
   /// Builds a [`BlurOverlayParams`] from this config, given the
@@ -544,8 +569,12 @@ impl BackdropEffectConfig {
 /// Default/fallback border color: used both as [`BorderColorSource`]'s
 /// default and when a dynamic source (`"accent"` or `file`) fails to
 /// resolve.
-const DEFAULT_BORDER_COLOR: Color =
-  Color { r: 140, g: 190, b: 255, a: 255 };
+const DEFAULT_BORDER_COLOR: Color = Color {
+  r: 140,
+  g: 190,
+  b: 255,
+  a: 255,
+};
 
 /// Where a border's color comes from.
 ///
@@ -656,9 +685,9 @@ impl BorderEffectConfig {
   }
 
   /// Builds a [`BorderOverlayParams`] from this config, given the
-  /// already-resolved `color` (see [`abgr_color`]) and the tracked window's
-  /// *own* corner radius (derived from the sibling `corner_style` effect,
-  /// not stored on this type).
+  /// already-resolved `color` (see [`abgr_color`]) and the tracked
+  /// window's *own* corner radius (derived from the sibling
+  /// `corner_style` effect, not stored on this type).
   ///
   /// The overlay's own outer corner radius is `self.radius` when set,
   /// otherwise `window_corner_radius + width` so the ring lines up
@@ -827,7 +856,8 @@ pub struct AnimationsConfig {
   /// Only has an effect on Windows.
   pub window_minimize: WindowMinimizeConfig,
 
-  /// Which windows keep their effect overlays tracking during an animation.
+  /// Which windows keep their effect overlays tracking during an
+  /// animation.
   ///
   /// # Platform-specific
   ///
@@ -835,15 +865,15 @@ pub struct AnimationsConfig {
   pub overlay_tracking: OverlayTracking,
 }
 
-/// Which animating windows keep their blur and border overlays glued to them
-/// for the duration of an animation.
+/// Which animating windows keep their blur and border overlays glued to
+/// them for the duration of an animation.
 ///
 /// Every animating window is composited as three windows, not one: the
 /// surrogate thumbnail plus a blur overlay and a border overlay, each
 /// repositioned every frame. Since the animation is bound by how many
 /// surfaces DWM has to absorb, this is the largest lever available -- a
-/// measured 2.1x between borders on every window and borders on the focused
-/// window only.
+/// measured 2.1x between borders on every window and borders on the
+/// focused window only.
 ///
 /// Only affects windows *while they animate*; the static overlays are
 /// restored by the normal sync pass as soon as the animation ends, so the
@@ -879,8 +909,9 @@ impl Default for AnimationsConfig {
 /// Spatial style for window open/close transitions.
 ///
 /// Used by both `WindowOpenConfig.style` and `WindowCloseConfig.style` so
-/// the same values apply symmetrically: a window that opens with `slide_right`
-/// (entering from the right) closes with `slide_right` (exiting to the right).
+/// the same values apply symmetrically: a window that opens with
+/// `slide_right` (entering from the right) closes with `slide_right`
+/// (exiting to the right).
 #[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum WindowTransitionStyle {
@@ -897,20 +928,20 @@ pub enum WindowTransitionStyle {
   /// Slide in/out from/to the bottom edge.
   #[serde(alias = "bottom")]
   SlideBottom,
-  /// No positional movement. Combine with `opacity_from`/`opacity_to` for a
-  /// pure fade. Accepts `"fade"` as a legacy alias.
+  /// No positional movement. Combine with `opacity_from`/`opacity_to` for
+  /// a pure fade. Accepts `"fade"` as a legacy alias.
   #[serde(alias = "fade")]
   None,
-  /// Zoom in/out from the window center. Combine with `opacity_from`/`opacity_to`
-  /// to also fade while zooming.
+  /// Zoom in/out from the window center. Combine with
+  /// `opacity_from`/`opacity_to` to also fade while zooming.
   Zoom,
 }
 
 impl WindowTransitionStyle {
   /// Returns `true` when the style has no positional slide component.
   ///
-  /// Stationary styles keep the surrogate at the window's final position for
-  /// the full animation; the surrogate window itself never moves.
+  /// Stationary styles keep the surrogate at the window's final position
+  /// for the full animation; the surrogate window itself never moves.
   pub fn is_stationary(&self) -> bool {
     matches!(self, Self::None | Self::Zoom)
   }
@@ -919,16 +950,17 @@ impl WindowTransitionStyle {
 /// Resolved parameters for a one-shot window transition.
 ///
 /// `window_open` and `window_minimize` drive the same entry animation and
-/// `window_close`/`window_minimize` the same exit animation; they differ only
-/// in which config block supplies the values. Resolving to this struct lets
-/// one driver serve all of them instead of branching on the config type.
+/// `window_close`/`window_minimize` the same exit animation; they differ
+/// only in which config block supplies the values. Resolving to this
+/// struct lets one driver serve all of them instead of branching on the
+/// config type.
 #[derive(Clone, Debug)]
 pub struct WindowTransitionParams {
   pub duration_ms: u32,
   pub easing: EasingFunction,
   pub style: WindowTransitionStyle,
-  /// Opacity at the away end of the transition -- the value a window enters
-  /// from and exits to.
+  /// Opacity at the away end of the transition -- the value a window
+  /// enters from and exits to.
   pub away_opacity: f32,
 }
 
@@ -982,8 +1014,9 @@ pub struct WindowOpenConfig {
   /// Accepts `direction` as a legacy alias for this key.
   #[serde(alias = "direction")]
   pub style: WindowTransitionStyle,
-  /// Starting opacity (0.0–1.0). At `1.0` no fade is applied; at `0.0` the
-  /// window fades in from fully transparent. Can be combined with any style.
+  /// Starting opacity (0.0–1.0). At `1.0` no fade is applied; at `0.0`
+  /// the window fades in from fully transparent. Can be combined with
+  /// any style.
   pub opacity_from: f32,
 }
 
@@ -1015,11 +1048,11 @@ pub struct WindowCloseConfig {
   /// - `none` / `fade` (default): no positional movement; combine with
   ///   `opacity_to` for a pure fade-out.
   /// - `zoom`: zoom out from the window center.
-  /// - `slide_right` / `slide_left` / `slide_top` / `slide_bottom`: slide off
-  ///   that edge.
+  /// - `slide_right` / `slide_left` / `slide_top` / `slide_bottom`: slide
+  ///   off that edge.
   pub style: WindowTransitionStyle,
-  /// Final opacity (0.0–1.0). At `0.0` the window fades to fully transparent;
-  /// at `1.0` no fade is applied.
+  /// Final opacity (0.0–1.0). At `0.0` the window fades to fully
+  /// transparent; at `1.0` no fade is applied.
   pub opacity_to: f32,
 }
 
@@ -1038,11 +1071,11 @@ impl Default for WindowCloseConfig {
 /// Animation settings for when a window is minimized or restored from
 /// minimized.
 ///
-/// One block drives both directions, the same way `WindowTransitionStyle` is
-/// shared between open and close: a window that minimizes with `slide_bottom`
-/// (exiting toward the bottom edge) restores by entering from that same edge.
-/// `opacity_to` is the minimize-out target, and is played in reverse as the
-/// restore-in starting opacity.
+/// One block drives both directions, the same way `WindowTransitionStyle`
+/// is shared between open and close: a window that minimizes with
+/// `slide_bottom` (exiting toward the bottom edge) restores by entering
+/// from that same edge. `opacity_to` is the minimize-out target, and is
+/// played in reverse as the restore-in starting opacity.
 ///
 /// # Platform-specific
 ///
@@ -1055,16 +1088,16 @@ pub struct WindowMinimizeConfig {
   pub easing: EasingFunction,
   /// Transition style for the minimize/restore animation.
   ///
-  /// - `zoom` (default): shrink toward the window center on minimize, grow
-  ///   back out on restore.
-  /// - `slide_bottom` / `slide_top` / `slide_left` / `slide_right`: slide off
-  ///   that edge on minimize, and back in from it on restore.
+  /// - `zoom` (default): shrink toward the window center on minimize,
+  ///   grow back out on restore.
+  /// - `slide_bottom` / `slide_top` / `slide_left` / `slide_right`: slide
+  ///   off that edge on minimize, and back in from it on restore.
   /// - `none` / `fade`: no movement; combine with `opacity_to` for a pure
   ///   fade.
   pub style: WindowTransitionStyle,
-  /// Opacity at the end of the minimize animation (0.0-1.0), and at the start
-  /// of the restore animation. At `0.0` the window fades fully out; at `1.0`
-  /// no fade is applied.
+  /// Opacity at the end of the minimize animation (0.0-1.0), and at the
+  /// start of the restore animation. At `0.0` the window fades fully
+  /// out; at `1.0` no fade is applied.
   pub opacity_to: f32,
 }
 
@@ -1087,16 +1120,18 @@ pub enum WorkspaceSwitchStyle {
   /// Workspaces slide along the axis set by `direction` (default).
   #[default]
   Slide,
-  /// Pure crossfade; no positional slide. Both surrogates stay in place and
-  /// their opacities are driven by `opacity_outgoing` / `opacity_incoming`.
+  /// Pure crossfade; no positional slide. Both surrogates stay in place
+  /// and their opacities are driven by `opacity_outgoing` /
+  /// `opacity_incoming`.
   Fade,
-  /// Outgoing workspace shrinks to the monitor center; incoming expands from
-  /// it. Opacities are also animated via `opacity_outgoing` / `opacity_incoming`.
+  /// Outgoing workspace shrinks to the monitor center; incoming expands
+  /// from it. Opacities are also animated via `opacity_outgoing` /
+  /// `opacity_incoming`.
   Zoom,
-  /// Iris wipe: a frozen snapshot of the outgoing workspace stays on top while
-  /// a circular hole grows from `iris_origin`, revealing the live incoming
-  /// workspace beneath. Requires Windows; falls back to an instant switch when
-  /// the monitor cannot be captured.
+  /// Iris wipe: a frozen snapshot of the outgoing workspace stays on top
+  /// while a circular hole grows from `iris_origin`, revealing the live
+  /// incoming workspace beneath. Requires Windows; falls back to an
+  /// instant switch when the monitor cannot be captured.
   Iris,
 }
 
@@ -1123,8 +1158,8 @@ pub enum WorkspaceSwitchIrisOrigin {
   /// Grow from the current mouse-cursor position.
   Cursor,
   /// Grow from the center of the newly focused window on the incoming
-  /// workspace. Falls back to the monitor center when the incoming workspace
-  /// has no focusable window.
+  /// workspace. Falls back to the monitor center when the incoming
+  /// workspace has no focusable window.
   FocusedWindow,
 }
 
@@ -1141,9 +1176,10 @@ pub enum WorkspaceSwitchDirection {
 
 /// Animation config for workspace-switch transitions.
 ///
-/// Outgoing workspaces translate off-screen (for the `slide` style) or stay in
-/// place (for `fade`/`zoom`) while the incoming workspace slides or crossfades
-/// in, all constrained to the monitor on which the switch occurs.
+/// Outgoing workspaces translate off-screen (for the `slide` style) or
+/// stay in place (for `fade`/`zoom`) while the incoming workspace slides
+/// or crossfades in, all constrained to the monitor on which the switch
+/// occurs.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(default, rename_all(serialize = "camelCase"))]
 pub struct WorkspaceSwitchAnimationConfig {
@@ -1152,31 +1188,34 @@ pub struct WorkspaceSwitchAnimationConfig {
   pub easing: EasingFunction,
   /// Motion type: `slide` (default), `fade`, `zoom`, or `iris`.
   pub style: WorkspaceSwitchStyle,
-  /// Slide axis when `style` is `slide`: `horizontal` (default) or `vertical`.
+  /// Slide axis when `style` is `slide`: `horizontal` (default) or
+  /// `vertical`.
   pub direction: WorkspaceSwitchDirection,
-  /// Origin of the iris circle when `style` is `iris`: `center` (default),
-  /// `cursor`, or `focused_window`. Ignored by other styles.
+  /// Origin of the iris circle when `style` is `iris`: `center`
+  /// (default), `cursor`, or `focused_window`. Ignored by other styles.
   pub iris_origin: WorkspaceSwitchIrisOrigin,
   /// Opacity at the end of the outgoing workspace's animation (0.0–1.0).
   ///
-  /// At `1.0` (default) the outgoing workspace stays fully opaque. At `0.0` it
-  /// fades out to transparent. Any value in between produces a partial fade.
-  /// Applies to all `style` values.
+  /// At `1.0` (default) the outgoing workspace stays fully opaque. At
+  /// `0.0` it fades out to transparent. Any value in between produces a
+  /// partial fade. Applies to all `style` values.
   pub opacity_outgoing: f32,
-  /// Opacity at the start of the incoming workspace's animation (0.0–1.0).
+  /// Opacity at the start of the incoming workspace's animation
+  /// (0.0–1.0).
   ///
-  /// At `1.0` (default) the incoming workspace starts fully opaque. At `0.0`
-  /// it fades in from transparent. Any value in between produces a partial
-  /// fade. Applies to all `style` values.
+  /// At `1.0` (default) the incoming workspace starts fully opaque. At
+  /// `0.0` it fades in from transparent. Any value in between produces
+  /// a partial fade. Applies to all `style` values.
   pub opacity_incoming: f32,
   /// Amount of workspace-level scale applied during `slide` transitions.
   ///
-  /// The outgoing workspace shrinks from `1.0` to `1.0 - zoom_factor` as it
-  /// exits; the incoming grows from `1.0 - zoom_factor` to `1.0` as it enters.
-  /// Scaling is from the monitor center so all windows move inward together,
-  /// preserving the workspace-as-a-panel illusion. Has no effect on `fade` or
-  /// `zoom` styles. Valid range: `0.0` (no zoom) to `1.0` (collapses to a
-  /// point). Recommended range: `0.05`–`0.15` for a subtle depth effect.
+  /// The outgoing workspace shrinks from `1.0` to `1.0 - zoom_factor` as
+  /// it exits; the incoming grows from `1.0 - zoom_factor` to `1.0` as
+  /// it enters. Scaling is from the monitor center so all windows move
+  /// inward together, preserving the workspace-as-a-panel illusion. Has
+  /// no effect on `fade` or `zoom` styles. Valid range: `0.0` (no zoom)
+  /// to `1.0` (collapses to a point). Recommended range: `0.05`–`0.15`
+  /// for a subtle depth effect.
   pub zoom_factor: f32,
 }
 
@@ -1249,17 +1288,20 @@ impl Default for WindowResizeConfig {
 /// Named aliases map to their CSS cubic-bezier equivalents and can be used
 /// interchangeably with `cubic_bezier(x1, y1, x2, y2)` notation:
 /// `linear`, `ease_in`, `ease_out`, `ease_in_out`,
-/// `ease_in_cubic`, `ease_out_cubic`, `ease_in_out_cubic`, `ease_out_spring`.
+/// `ease_in_cubic`, `ease_out_cubic`, `ease_in_out_cubic`,
+/// `ease_out_spring`.
 #[derive(Clone, Debug, PartialEq)]
 pub enum EasingFunction {
   /// CSS cubic bezier curve: `cubic_bezier(x1, y1, x2, y2)`.
   ///
-  /// Control points `(x1, y1)` and `(x2, y2)` define the shape between the
-  /// implicit anchors `(0, 0)` and `(1, 1)`. `x1` and `x2` must be in
-  /// `[0, 1]`; `y1` and `y2` may exceed that range to produce overshoot.
+  /// Control points `(x1, y1)` and `(x2, y2)` define the shape between
+  /// the implicit anchors `(0, 0)` and `(1, 1)`. `x1` and `x2` must be
+  /// in `[0, 1]`; `y1` and `y2` may exceed that range to produce
+  /// overshoot.
   CubicBezier(f32, f32, f32, f32),
-  /// Exponentially-decaying spring. Overshoots past 1.0 and oscillates before
-  /// settling. Runs to full wall-clock duration to preserve the bounce.
+  /// Exponentially-decaying spring. Overshoots past 1.0 and oscillates
+  /// before settling. Runs to full wall-clock duration to preserve the
+  /// bounce.
   EaseOutSpring,
 }
 
@@ -1272,11 +1314,12 @@ impl Default for EasingFunction {
 impl Eq for EasingFunction {}
 
 impl EasingFunction {
-  /// Returns `true` when this function can produce values outside `[0, 1]`.
+  /// Returns `true` when this function can produce values outside `[0,
+  /// 1]`.
   ///
   /// Non-overshooting functions are cut off at 99% eased progress to avoid
-  /// the "stuck at destination" look. Overshooting ones run to full wall-clock
-  /// duration to preserve their bounce.
+  /// the "stuck at destination" look. Overshooting ones run to full
+  /// wall-clock duration to preserve their bounce.
   pub fn can_overshoot(&self) -> bool {
     match self {
       EasingFunction::EaseOutSpring => true,
@@ -1288,17 +1331,27 @@ impl EasingFunction {
 }
 
 impl<'de> Deserialize<'de> for EasingFunction {
-  fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+  fn deserialize<D: serde::Deserializer<'de>>(
+    d: D,
+  ) -> Result<Self, D::Error> {
     let s = String::deserialize(d)?;
     // Named aliases expand to their CSS cubic-bezier control points.
     match s.as_str() {
       "linear" => Ok(EasingFunction::CubicBezier(0.0, 0.0, 1.0, 1.0)),
-      "ease_in_out" => Ok(EasingFunction::CubicBezier(0.42, 0.0, 0.58, 1.0)),
+      "ease_in_out" => {
+        Ok(EasingFunction::CubicBezier(0.42, 0.0, 0.58, 1.0))
+      }
       "ease_in" => Ok(EasingFunction::CubicBezier(0.42, 0.0, 1.0, 1.0)),
       "ease_out" => Ok(EasingFunction::CubicBezier(0.0, 0.0, 0.58, 1.0)),
-      "ease_in_out_cubic" => Ok(EasingFunction::CubicBezier(0.65, 0.0, 0.35, 1.0)),
-      "ease_in_cubic" => Ok(EasingFunction::CubicBezier(0.32, 0.0, 0.67, 0.0)),
-      "ease_out_cubic" => Ok(EasingFunction::CubicBezier(0.33, 1.0, 0.68, 1.0)),
+      "ease_in_out_cubic" => {
+        Ok(EasingFunction::CubicBezier(0.65, 0.0, 0.35, 1.0))
+      }
+      "ease_in_cubic" => {
+        Ok(EasingFunction::CubicBezier(0.32, 0.0, 0.67, 0.0))
+      }
+      "ease_out_cubic" => {
+        Ok(EasingFunction::CubicBezier(0.33, 1.0, 0.68, 1.0))
+      }
       "ease_out_spring" => Ok(EasingFunction::EaseOutSpring),
       s => {
         if let Some(inner) = s
@@ -1343,13 +1396,17 @@ impl<'de> Deserialize<'de> for EasingFunction {
 }
 
 impl Serialize for EasingFunction {
-  fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+  fn serialize<S: serde::Serializer>(
+    &self,
+    s: S,
+  ) -> Result<S::Ok, S::Error> {
     match self {
       EasingFunction::EaseOutSpring => s.serialize_str("ease_out_spring"),
       EasingFunction::CubicBezier(x1, y1, x2, y2) => {
-        // Serialize back to a named alias when the control points match exactly,
-        // so round-tripped configs stay human-readable.
-        let repr = if *x1 == 0.0 && *y1 == 0.0 && *x2 == 1.0 && *y2 == 1.0 {
+        // Serialize back to a named alias when the control points match
+        // exactly, so round-tripped configs stay human-readable.
+        let repr = if *x1 == 0.0 && *y1 == 0.0 && *x2 == 1.0 && *y2 == 1.0
+        {
           "linear".to_string()
         } else if *x1 == 0.42 && *y1 == 0.0 && *x2 == 0.58 && *y2 == 1.0 {
           "ease_in_out".to_string()
@@ -1543,7 +1600,12 @@ mod tests {
 
     assert_eq!(
       config.overlay_tint(),
-      Some(Color { r: 0, g: 0, b: 0, a: 1 })
+      Some(Color {
+        r: 0,
+        g: 0,
+        b: 0,
+        a: 1
+      })
     );
   }
 }
@@ -1565,7 +1627,10 @@ mod corner_radius_tests {
   /// exposes, since `DWMWA_WINDOW_CORNER_PREFERENCE` takes no free radius.
   #[test]
   fn radius_snaps_window_to_nearest_preset() {
-    assert_eq!(with_radius(0).resolved_corner_style(), CornerStyle::Square);
+    assert_eq!(
+      with_radius(0).resolved_corner_style(),
+      CornerStyle::Square
+    );
     assert_eq!(
       with_radius(2).resolved_corner_style(),
       CornerStyle::SmallRounded
@@ -1580,12 +1645,14 @@ mod corner_radius_tests {
   /// preset's, so a ring can be rounder than the presets allow.
   #[test]
   fn overlays_follow_exact_radius() {
-    assert!((with_radius(40).window_corner_radius_px() - 40.0).abs() < 1e-3);
+    assert!(
+      (with_radius(40).window_corner_radius_px() - 40.0).abs() < 1e-3
+    );
     assert!((with_radius(0).window_corner_radius_px() - 0.0).abs() < 1e-3);
   }
 
-  /// With `corner_radius` unset the older `corner_style` block still decides,
-  /// so existing configs keep working unchanged.
+  /// With `corner_radius` unset the older `corner_style` block still
+  /// decides, so existing configs keep working unchanged.
   #[test]
   fn falls_back_to_corner_style_when_unset() {
     let mut config = WindowEffectConfig::default();

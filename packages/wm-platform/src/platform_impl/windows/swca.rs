@@ -1,11 +1,11 @@
 use std::{ffi::c_void, sync::OnceLock};
 
 use windows::{
+  core::{s, w},
   Win32::{
     Foundation::HWND,
     System::LibraryLoader::{GetModuleHandleW, GetProcAddress},
   },
-  core::{s, w},
 };
 
 /// Accent state: none. Clears any policy previously set on the window,
@@ -17,12 +17,13 @@ pub(crate) const ACCENT_ENABLE_GRADIENT: u32 = 1;
 
 /// Accent state: host backdrop -- samples live desktop content from behind
 /// the window for a `Windows.UI.Composition` host-backdrop brush to pick
-/// up, rather than blurring a solid color like `ACCENT_ENABLE_ACRYLICBLURBEHIND`.
-/// The `gradient_color` field is unused for this accent state.
-/// Acrylic blur-behind. No longer reachable from `BackdropStyle` -- every
-/// style renders through `Windows.UI.Composition` now -- but still used by
-/// `NativeSurrogate`, which paints a stand-in for a real window during
-/// animations and cannot root a visual tree of its own.
+/// up, rather than blurring a solid color like
+/// `ACCENT_ENABLE_ACRYLICBLURBEHIND`. The `gradient_color` field is unused
+/// for this accent state. Acrylic blur-behind. No longer reachable from
+/// `BackdropStyle` -- every style renders through `Windows.UI.Composition`
+/// now -- but still used by `NativeSurrogate`, which paints a stand-in for
+/// a real window during animations and cannot root a visual tree of its
+/// own.
 pub(crate) const ACCENT_ENABLE_ACRYLICBLURBEHIND: u32 = 4;
 
 pub(crate) const ACCENT_ENABLE_HOSTBACKDROP: u32 = 5;
@@ -82,7 +83,6 @@ fn get_set_wca() -> Option<SetWindowCompositionAttributeFn> {
     })
   })
 }
-
 
 /// Applies the given `accent_state`, `accent_flags`, and `gradient_color`
 /// (ABGR) to `hwnd` via the undocumented `SetWindowCompositionAttribute`

@@ -1,24 +1,22 @@
 use std::time::{Duration, Instant};
+
 use wm_common::EasingFunction;
 
 /// Calculates the current progress of an animation (0.0 to 1.0).
 #[cfg(test)]
-pub fn animation_progress(
-  start_time: Instant,
-  duration: Duration,
-) -> f32 {
+pub fn animation_progress(start_time: Instant, duration: Duration) -> f32 {
   animation_progress_at(start_time, duration, Instant::now())
 }
 
 /// Calculates the animation progress at an explicit `now` instant (0.0 to
 /// 1.0).
 ///
-/// Allows callers to supply a predictive timestamp (e.g. vsync wake-up time
-/// plus an estimated pipeline offset) so the computed position aligns with
-/// the DWM composition event rather than the moment `update_internal` runs.
-/// Uses `saturating_duration_since` so a `now` that precedes `start_time`
-/// (possible on the first frame when `pipeline_offset` > elapsed) returns
-/// `0.0` instead of panicking.
+/// Allows callers to supply a predictive timestamp (e.g. vsync wake-up
+/// time plus an estimated pipeline offset) so the computed position aligns
+/// with the DWM composition event rather than the moment `update_internal`
+/// runs. Uses `saturating_duration_since` so a `now` that precedes
+/// `start_time` (possible on the first frame when `pipeline_offset` >
+/// elapsed) returns `0.0` instead of panicking.
 pub fn animation_progress_at(
   start_time: Instant,
   duration: Duration,
@@ -94,8 +92,9 @@ fn ease_out_spring(t: f32) -> f32 {
 
 #[cfg(test)]
 mod tests {
-  use super::*;
   use wm_platform::Rect;
+
+  use super::*;
 
   #[test]
   fn test_animation_progress() {
@@ -118,4 +117,3 @@ mod tests {
     assert_eq!(mid.height(), 150);
   }
 }
-

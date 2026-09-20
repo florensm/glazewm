@@ -3,10 +3,8 @@ use wm_common::{try_warn, WindowState};
 use wm_platform::NativeWindow;
 
 use crate::{
-  commands::window::update_window_state,
-  traits::WindowGetters,
-  user_config::UserConfig,
-  wm_state::WmState,
+  commands::window::update_window_state, traits::WindowGetters,
+  user_config::UserConfig, wm_state::WmState,
 };
 
 pub fn handle_window_minimize_ended(

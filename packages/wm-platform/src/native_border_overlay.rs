@@ -8,25 +8,26 @@ use windows::{
       Dwm::DwmExtendFrameIntoClientArea,
       Gdi::{
         CombineRgn, CreateRectRgn, CreateRoundRectRgn, DeleteObject,
-        HGDIOBJ, HRGN, RGN_DIFF, SetWindowRgn,
+        SetWindowRgn, HGDIOBJ, HRGN, RGN_DIFF,
       },
     },
     UI::{
       Controls::MARGINS,
       WindowsAndMessaging::{
-        CreateWindowExW, DestroyWindow, GetWindow, SetWindowPos, ShowWindow,
-        GW_HWNDPREV, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSENDCHANGING,
-        SWP_NOSIZE, SWP_SHOWWINDOW, SW_HIDE, WS_EX_NOACTIVATE,
-        WS_EX_NOREDIRECTIONBITMAP, WS_EX_TOOLWINDOW, WS_EX_TRANSPARENT,
-        WS_POPUP,
+        CreateWindowExW, DestroyWindow, GetWindow, SetWindowPos,
+        ShowWindow, GW_HWNDPREV, SWP_NOACTIVATE, SWP_NOMOVE,
+        SWP_NOSENDCHANGING, SWP_NOSIZE, SWP_SHOWWINDOW, SW_HIDE,
+        WS_EX_NOACTIVATE, WS_EX_NOREDIRECTIONBITMAP, WS_EX_TOOLWINDOW,
+        WS_EX_TRANSPARENT, WS_POPUP,
       },
     },
   },
 };
 
 use crate::{
-  native_surrogate::apply_backdrop, platform_impl::composition::BorderVisual,
-  window_class, BorderOverlayParams, Color, Rect, SurrogateBatch,
+  native_surrogate::apply_backdrop,
+  platform_impl::composition::BorderVisual, window_class,
+  BorderOverlayParams, Color, Rect, SurrogateBatch,
 };
 
 fn ensure_class_registered() {
@@ -44,17 +45,21 @@ fn ensure_class_registered() {
 /// `composition` selects `WS_EX_NOREDIRECTIONBITMAP`, which skips the GDI
 /// redirection surface DWM would otherwise allocate -- correct for the
 /// `Windows.UI.Composition` path, whose visual tree replaces that surface
-/// entirely, but incompatible with the SWCA fallback, which composites into
-/// it. Callers falling back from a failed Composition attempt must create a
-/// *new* window with `composition: false` rather than reusing one created
-/// with the flag set.
-fn create_window(outer_rect: &Rect, composition: bool) -> crate::Result<HWND> {
+/// entirely, but incompatible with the SWCA fallback, which composites
+/// into it. Callers falling back from a failed Composition attempt must
+/// create a *new* window with `composition: false` rather than reusing one
+/// created with the flag set.
+fn create_window(
+  outer_rect: &Rect,
+  composition: bool,
+) -> crate::Result<HWND> {
   ensure_class_registered();
 
   // `WS_EX_TRANSPARENT` on both paths -- see the matching comment in
-  // `native_blur_overlay::create_window`. The composition path used to omit
-  // it, leaving the (window-outsetting) border overlay hit-testable and
-  // therefore showing the busy cursor over every window's border and gap.
+  // `native_blur_overlay::create_window`. The composition path used to
+  // omit it, leaving the (window-outsetting) border overlay hit-testable
+  // and therefore showing the busy cursor over every window's border and
+  // gap.
   let ex_style = if composition {
     WS_EX_NOACTIVATE
       | WS_EX_TOOLWINDOW
@@ -166,15 +171,16 @@ fn outer_rect(window_rect: &Rect, width: f32) -> Rect {
 /// fill.
 ///
 /// Both renderers need the region, for different reasons. SWCA paints a
-/// solid accent sheet across the whole overlay and has no stroke primitive,
-/// so the ring only exists once the centre is cut away. Composition strokes
-/// the ring directly and leaves the interior unpainted, so there the region
-/// buys nothing visually -- it is what stops the overlay from answering
-/// point queries over the window it outlines. `WS_EX_TRANSPARENT` already
-/// excludes it from ordinary mouse routing, but `WindowFromPoint` does not
-/// honour that flag, and it does honour the region; without one, anything
-/// resolving "the window under the cursor" that way finds a
-/// window-plus-gap-sized overlay belonging to a thread that never answers.
+/// solid accent sheet across the whole overlay and has no stroke
+/// primitive, so the ring only exists once the centre is cut away.
+/// Composition strokes the ring directly and leaves the interior
+/// unpainted, so there the region buys nothing visually -- it is what
+/// stops the overlay from answering point queries over the window it
+/// outlines. `WS_EX_TRANSPARENT` already excludes it from ordinary mouse
+/// routing, but `WindowFromPoint` does not honour that flag, and it does
+/// honour the region; without one, anything resolving "the window under
+/// the cursor" that way finds a window-plus-gap-sized overlay belonging to
+/// a thread that never answers.
 ///
 /// `redraw` should be set only on the SWCA path -- see the call site.
 fn apply_hole_region(
@@ -286,19 +292,19 @@ pub struct NativeBorderOverlay {
   params: BorderOverlayParams,
 
   /// Last *window* rect (not outset) applied via `set_rect`, used to skip
-  /// redundant `SetWindowPos` calls when the tracked window hasn't actually
-  /// moved.
+  /// redundant `SetWindowPos` calls when the tracked window hasn't
+  /// actually moved.
   rect: Rect,
 
   /// `HWND` of the window this overlay is positioned directly behind (its
-  /// z-order anchor), as raw `isize`. See `NativeBlurOverlay::anchor`'s doc
-  /// comment for why anchoring directly behind the managed window (rather
-  /// than e.g. the global `HWND_BOTTOM`) matters.
+  /// z-order anchor), as raw `isize`. See `NativeBlurOverlay::anchor`'s
+  /// doc comment for why anchoring directly behind the managed window
+  /// (rather than e.g. the global `HWND_BOTTOM`) matters.
   anchor: isize,
 
   /// Whether the overlay window is currently shown. See
-  /// `NativeBlurOverlay::is_visible`'s doc comment for why this is tracked
-  /// explicitly rather than inferred from a rect change.
+  /// `NativeBlurOverlay::is_visible`'s doc comment for why this is
+  /// tracked explicitly rather than inferred from a rect change.
   is_visible: bool,
 
   /// Which of the two rendering paths this overlay is running, plus any
@@ -309,8 +315,8 @@ pub struct NativeBorderOverlay {
   /// applied, or `None` when the window currently has none -- before the
   /// first application, or for as long as it is pinned.
   ///
-  /// Skips redundant `SetWindowRgn` calls when a reposition doesn't change
-  /// the overlay's shape, e.g. a pure translation. Distinct from
+  /// Skips redundant `SetWindowRgn` calls when a reposition doesn't
+  /// change the overlay's shape, e.g. a pure translation. Distinct from
   /// `rect`/`is_visible`'s no-op check: that one skips the whole
   /// `set_rect`/`defer_rect` call including `SetWindowPos`, this one only
   /// skips the (comparatively expensive) region recompute when the
@@ -318,8 +324,8 @@ pub struct NativeBorderOverlay {
   hole_shape: Option<(i32, i32, i32)>,
 
   /// Monitor viewport the overlay window is currently pinned to for a
-  /// workspace-switch slide, or `None` in the normal window-tracking mode.
-  /// See [`pin_or_slide`].
+  /// workspace-switch slide, or `None` in the normal window-tracking
+  /// mode. See [`pin_or_slide`].
   ///
   /// [`pin_or_slide`]: NativeBorderOverlay::pin_or_slide
   pinned: Option<Rect>,
@@ -340,16 +346,17 @@ impl NativeBorderOverlay {
   ) -> crate::Result<Self> {
     let outer = outer_rect(window_rect, params.width);
 
-    let (hwnd, renderer) =
-      if let Some((hwnd, visual)) = try_create_composition(&outer, params) {
-        (hwnd, BorderRenderer::Composition(visual))
-      } else {
-        let hwnd = create_window(&outer, false)?;
-        extend_glass_sheet(hwnd);
-        apply_backdrop(hwnd, Some(&params.color));
+    let (hwnd, renderer) = if let Some((hwnd, visual)) =
+      try_create_composition(&outer, params)
+    {
+      (hwnd, BorderRenderer::Composition(visual))
+    } else {
+      let hwnd = create_window(&outer, false)?;
+      extend_glass_sheet(hwnd);
+      apply_backdrop(hwnd, Some(&params.color));
 
-        (hwnd, BorderRenderer::Swca)
-      };
+      (hwnd, BorderRenderer::Swca)
+    };
 
     // SAFETY: `hwnd` is a valid window just created above.
     if let Err(e) = unsafe {
@@ -395,15 +402,19 @@ impl NativeBorderOverlay {
   /// window region at all.
   fn refresh_hole(&mut self, outer: &Rect) {
     // A pinned overlay is viewport-sized with its ring drawn at an offset
-    // inside it, so `outer` doesn't describe its window at all. `clear_pin`
-    // restores the region on the way out.
+    // inside it, so `outer` doesn't describe its window at all.
+    // `clear_pin` restores the region on the way out.
     if self.pinned.is_some() {
       return;
     }
 
     #[allow(clippy::cast_possible_truncation)]
     let outset = self.params.width.round() as i32;
-    let shape = (outer.width(), outer.height(), inner_hole_radius(&self.params));
+    let shape = (
+      outer.width(),
+      outer.height(),
+      inner_hole_radius(&self.params),
+    );
 
     if self.hole_shape == Some(shape) {
       return;
@@ -419,7 +430,13 @@ impl NativeBorderOverlay {
     // its visual tree repaints itself.
     let redraw = matches!(self.renderer, BorderRenderer::Swca);
 
-    apply_hole_region(self.hwnd(), (shape.0, shape.1), outset, shape.2, redraw);
+    apply_hole_region(
+      self.hwnd(),
+      (shape.0, shape.1),
+      outset,
+      shape.2,
+      redraw,
+    );
     self.hole_shape = Some(shape);
   }
 
@@ -431,8 +448,8 @@ impl NativeBorderOverlay {
     }
 
     // SAFETY: `self.hwnd()` is a valid window handle for the lifetime of
-    // this struct. A null `HRGN` clears the region rather than setting one,
-    // so there is nothing to free.
+    // this struct. A null `HRGN` clears the region rather than setting
+    // one, so there is nothing to free.
     unsafe {
       SetWindowRgn(self.hwnd(), HRGN(0), BOOL(0));
     }
@@ -448,9 +465,9 @@ impl NativeBorderOverlay {
   /// the current border width), keeping it directly behind `anchor`, and
   /// ensures it's shown.
   ///
-  /// No-op if neither `window_rect` nor `anchor` changed and the overlay is
-  /// already visible -- see `NativeBlurOverlay::set_rect`'s doc comment for
-  /// why.
+  /// No-op if neither `window_rect` nor `anchor` changed and the overlay
+  /// is already visible -- see `NativeBlurOverlay::set_rect`'s doc
+  /// comment for why.
   ///
   /// Callers that only need to correct z-order drift should use
   /// [`sync_z_order`] instead.
@@ -463,7 +480,9 @@ impl NativeBorderOverlay {
     // rather than only in `unpin` means no path can strand the pin.
     self.clear_pin();
 
-    if self.is_visible && &self.rect == window_rect && self.anchor == anchor.0
+    if self.is_visible
+      && &self.rect == window_rect
+      && self.anchor == anchor.0
     {
       return;
     }
@@ -504,7 +523,9 @@ impl NativeBorderOverlay {
       // `SetWindowPos` and can flash the ring at the screen's top-left
       // corner.
       if let Err(e) = composition.set_offset(0, 0) {
-        tracing::warn!("Border overlay composition offset reset failed: {e}.");
+        tracing::warn!(
+          "Border overlay composition offset reset failed: {e}."
+        );
       }
     }
 
@@ -528,7 +549,8 @@ impl NativeBorderOverlay {
     window_rect: &Rect,
     anchor: HWND,
   ) {
-    if !self.is_visible || self.anchor != anchor.0 || self.pinned.is_some() {
+    if !self.is_visible || self.anchor != anchor.0 || self.pinned.is_some()
+    {
       self.set_rect(window_rect, anchor);
       return;
     }
@@ -597,7 +619,9 @@ impl NativeBorderOverlay {
     match &self.renderer {
       BorderRenderer::Composition(composition) => {
         if let Err(e) = composition.set_color(color) {
-          tracing::warn!("Border overlay composition color update failed: {e}.");
+          tracing::warn!(
+            "Border overlay composition color update failed: {e}."
+          );
         }
       }
       BorderRenderer::Swca => {
@@ -623,13 +647,16 @@ impl NativeBorderOverlay {
 
     if let BorderRenderer::Composition(composition) = &self.renderer {
       if let Err(e) = composition.set_width(width) {
-        tracing::warn!("Border overlay composition width update failed: {e}.");
+        tracing::warn!(
+          "Border overlay composition width update failed: {e}."
+        );
       }
     }
 
     let anchor = HWND(self.anchor);
     let rect = self.rect.clone();
-    self.is_visible = false; // force set_rect through despite unchanged rect.
+    self.is_visible = false; // force set_rect through despite unchanged
+                             // rect.
     self.set_rect(&rect, anchor);
   }
 
@@ -666,7 +693,9 @@ impl NativeBorderOverlay {
 
     if let BorderRenderer::Composition(composition) = &self.renderer {
       if let Err(e) = composition.set_opacity(value) {
-        tracing::warn!("Border overlay composition opacity update failed: {e}.");
+        tracing::warn!(
+          "Border overlay composition opacity update failed: {e}."
+        );
       }
     }
   }
@@ -693,8 +722,9 @@ impl NativeBorderOverlay {
   /// frame, with the clip falling out of composition rendering nothing
   /// outside the target.
   ///
-  /// Returns `false` on the SWCA fallback, which has no composition tree to
-  /// offset -- callers should hide the overlay for the transition there.
+  /// Returns `false` on the SWCA fallback, which has no composition tree
+  /// to offset -- callers should hide the overlay for the transition
+  /// there.
   ///
   /// Undone by any ordinary [`set_rect`]/[`defer_rect`].
   ///
@@ -795,8 +825,8 @@ impl NativeBorderOverlay {
       }
     }
 
-    if let Err(e) =
-      composition.set_offset(outer.x() - viewport.x(), outer.y() - viewport.y())
+    if let Err(e) = composition
+      .set_offset(outer.x() - viewport.x(), outer.y() - viewport.y())
     {
       tracing::warn!("Border overlay composition offset failed: {e}.");
       return;
@@ -816,12 +846,12 @@ impl NativeBorderOverlay {
   /// Deliberately leaves the composition offset untouched: resetting it
   /// here, ahead of the caller's own `SetWindowPos`, let DWM composite a
   /// frame where the ring (sized for the window's small rect) had already
-  /// snapped to offset (0, 0) while the `HWND` was still viewport-sized from
-  /// the pin -- rendering the ring at the screen's top-left corner instead
-  /// of the window. Callers that reposition (`set_rect`) reset the offset
-  /// themselves once the window's new geometry is actually in place; `hide`
-  /// doesn't need to, since a hidden overlay composites nothing regardless
-  /// of its stale offset.
+  /// snapped to offset (0, 0) while the `HWND` was still viewport-sized
+  /// from the pin -- rendering the ring at the screen's top-left corner
+  /// instead of the window. Callers that reposition (`set_rect`) reset
+  /// the offset themselves once the window's new geometry is actually in
+  /// place; `hide` doesn't need to, since a hidden overlay composites
+  /// nothing regardless of its stale offset.
   fn clear_pin(&mut self) {
     if self.pinned.take().is_none() {
       return;

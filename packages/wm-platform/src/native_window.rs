@@ -256,6 +256,15 @@ pub trait NativeWindowWindowsExt {
   /// This method is only available on Windows.
   fn is_cloaked(&self) -> crate::Result<bool>;
 
+  /// Stops the window's taskbar button from flashing.
+  ///
+  /// Has no effect if the window isn't flashing.
+  ///
+  /// # Platform-specific
+  ///
+  /// This method is only available on Windows.
+  fn stop_flashing(&self);
+
   /// Marks the window as fullscreen.
   ///
   /// Causes the native Windows taskbar to be moved to the bottom of the
@@ -334,11 +343,12 @@ pub trait NativeWindowWindowsExt {
   /// `SWP_FRAMECHANGED` (issued whenever a window is resized) forces a
   /// non-client-area recalculation that can make DWM briefly composite the
   /// window at full opacity before the existing `LWA_ALPHA` value is
-  /// reasserted — a one-frame flash to solid on every resize/move/workspace-
-  /// switch landing for any window using the `transparency` effect. Calling
-  /// this immediately after such a `SetWindowPos` forces DWM to recomposite
-  /// with the correct alpha right away, closing that gap. No-op if the
-  /// window isn't currently layered.
+  /// reasserted — a one-frame flash to solid on every
+  /// resize/move/workspace- switch landing for any window using the
+  /// `transparency` effect. Calling this immediately after such a
+  /// `SetWindowPos` forces DWM to recomposite with the correct alpha
+  /// right away, closing that gap. No-op if the window isn't currently
+  /// layered.
   ///
   /// # Platform-specific
   ///
@@ -350,6 +360,10 @@ pub trait NativeWindowWindowsExt {
 impl NativeWindowWindowsExt for NativeWindow {
   fn from_handle(handle: isize) -> Self {
     platform_impl::NativeWindow::new(handle).into()
+  }
+
+  fn stop_flashing(&self) {
+    self.inner.stop_flashing();
   }
 
   fn hwnd(&self) -> HWND {
@@ -453,7 +467,6 @@ impl NativeWindowWindowsExt for NativeWindow {
   fn reassert_transparency(&self) -> crate::Result<()> {
     self.inner.reassert_transparency()
   }
-
 }
 
 #[derive(Clone, Debug)]

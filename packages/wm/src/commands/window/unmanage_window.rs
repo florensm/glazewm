@@ -15,8 +15,8 @@ use crate::{
 /// siblings without removing the active close animation.
 ///
 /// Called at the start of a close animation so sibling windows begin their
-/// reflow animations immediately, in parallel with the close surrogate. The
-/// animation state is intentionally preserved here because
+/// reflow animations immediately, in parallel with the close surrogate.
+/// The animation state is intentionally preserved here because
 /// `AnimationManager::update_internal` continues driving the surrogate and
 /// sends `WM_CLOSE` once the animation completes.
 #[cfg(target_os = "windows")]
@@ -83,14 +83,15 @@ pub fn unmanage_window(
   state.animation_manager.remove_animation(&window.id());
 
   // Destroy any static blur/border overlay owned by this window directly,
-  // rather than leaving it for `sync_overlays`'s retain-based cleanup on the
-  // next `platform_sync`. That cleanup only runs when `pending_sync` has
-  // changes, but `focus_target_after_removal` returns `None` -- queuing no
-  // change -- whenever the unmanaged window wasn't focused, which is common
-  // for a floating window that was closed, hidden, or found invalid in the
-  // background. Without this, the overlay window it owns is never destroyed
-  // and lingers on screen as a ghost until some unrelated later sync happens
-  // to run (mirrors the equivalent cleanup for completed close animations in
+  // rather than leaving it for `sync_overlays`'s retain-based cleanup on
+  // the next `platform_sync`. That cleanup only runs when `pending_sync`
+  // has changes, but `focus_target_after_removal` returns `None` --
+  // queuing no change -- whenever the unmanaged window wasn't focused,
+  // which is common for a floating window that was closed, hidden, or
+  // found invalid in the background. Without this, the overlay window it
+  // owns is never destroyed and lingers on screen as a ghost until some
+  // unrelated later sync happens to run (mirrors the equivalent cleanup
+  // for completed close animations in
   // `AnimationManager::update_internal`).
   #[cfg(target_os = "windows")]
   {

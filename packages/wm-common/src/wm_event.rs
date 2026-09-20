@@ -50,6 +50,15 @@ pub enum WmEvent {
     unmanaged_id: Uuid,
     unmanaged_handle: isize,
   },
+  WindowUrgencyChanged {
+    updated_window: ContainerDto,
+    /// Name of the workspace that the window is on.
+    ///
+    /// The window's `parent_id` is its immediate parent, which can be a
+    /// split container, so the workspace is resolved here for the sake of
+    /// consumers that group by workspace.
+    workspace_name: Option<String>,
+  },
   WorkspaceActivated {
     activated_workspace: ContainerDto,
   },

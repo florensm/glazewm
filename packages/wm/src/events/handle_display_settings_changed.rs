@@ -116,9 +116,9 @@ pub fn handle_display_settings_changed(
 
   // Redraw full container tree. Animations are suppressed for this cycle:
   // animating a resolution/working-area relayout is visually meaningless,
-  // and the cloak/surrogate mechanism would kick exclusive-fullscreen games
-  // out of fullscreen — reverting the resolution and re-triggering this
-  // event in a loop.
+  // and the cloak/surrogate mechanism would kick exclusive-fullscreen
+  // games out of fullscreen — reverting the resolution and re-triggering
+  // this event in a loop.
   state
     .pending_sync
     .queue_container_to_redraw(state.root_container.clone())

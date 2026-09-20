@@ -102,6 +102,16 @@ fn update_workspace_configs(
   for workspace in &workspaces {
     let monitor = workspace.monitor().context("No monitor.")?;
 
+    // Dynamic workspaces intentionally have no config entry, so they keep
+    // their synthesized config across reloads.
+    if config.value.general.dynamic_workspaces
+      && config
+        .workspace_config_index(&workspace.config().name)
+        .is_none()
+    {
+      continue;
+    }
+
     let workspace_config = config
       .value
       .workspaces
@@ -159,8 +169,8 @@ fn update_container_gaps(state: &mut WmState, config: &UserConfig) {
 ///
 /// Border/backdrop effects don't need explicit reset-on-disable handling
 /// here -- they're overlay-based (`sync_border_overlays`/
-/// `sync_blur_overlays`, driven every `platform_sync` tick) and simply stop
-/// being created/get torn down the moment their config resolves to
+/// `sync_blur_overlays`, driven every `platform_sync` tick) and simply
+/// stop being created/get torn down the moment their config resolves to
 /// disabled, same as any other config-driven change.
 #[cfg(target_os = "windows")]
 fn update_window_effects(state: &mut WmState) {
