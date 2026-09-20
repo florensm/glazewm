@@ -18,6 +18,12 @@ general:
   # workspace when focusing the current workspace.
   toggle_workspace_on_refocus: false
 
+  # Whether to stop a window's taskbar button from flashing once the WM has
+  # flagged it as urgent. Useful when a status bar surfaces urgent windows,
+  # since the flashing button is then redundant (and holds an auto-hidden
+  # taskbar open until the window is focused). Windows-only.
+  suppress_taskbar_flash: false
+
   # Whether to keep focus where it is when a window on a hidden workspace
   # forces itself into the foreground (e.g. Discord on a notification).
   # The window is marked as urgent instead, which is broadcast via the

@@ -512,13 +512,13 @@ impl WmState {
         let origin_monitor_id =
           origin_workspace.monitor().map(|monitor| monitor.id());
 
+        // The origin is deliberately included; an already-empty origin
+        // makes this a no-op instead of bouncing between two empty
+        // workspaces on every invocation.
         let empty_workspaces = self
           .sorted_workspaces(config)
           .into_iter()
-          .filter(|workspace| {
-            !workspace.has_children()
-              && workspace.id() != origin_workspace.id()
-          })
+          .filter(|workspace| !workspace.has_children())
           .collect::<Vec<_>>();
 
         // Prefer an empty workspace on the origin's monitor, then a

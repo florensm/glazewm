@@ -81,6 +81,18 @@ pub struct GeneralConfig {
   /// workspace when focusing the current workspace.
   pub toggle_workspace_on_refocus: bool,
 
+  /// Whether to stop a window's taskbar button from flashing once the WM
+  /// has flagged it as urgent.
+  ///
+  /// Useful when a status bar surfaces urgent windows, since the flashing
+  /// taskbar button is then redundant (and pops open an auto-hidden
+  /// taskbar for as long as it lasts).
+  ///
+  /// # Platform-specific
+  ///
+  /// Only has an effect on Windows.
+  pub suppress_taskbar_flash: bool,
+
   /// Whether to keep focus where it is when a window on a hidden
   /// workspace forces itself into the foreground.
   ///
@@ -121,6 +133,7 @@ impl Default for GeneralConfig {
       toggle_workspace_on_refocus: true,
       dynamic_workspaces: false,
       ignore_focus_steal: false,
+      suppress_taskbar_flash: false,
       startup_commands: vec![],
       shutdown_commands: vec![],
       config_reload_commands: vec![],
