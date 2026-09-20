@@ -159,11 +159,23 @@ pub trait WindowGetters: CommonGetters {
 
   fn set_active_drag(&self, active_drag: Option<ActiveDrag>);
 
+  /// When the window last requested attention, or `None` if it isn't
+  /// urgent.
+  ///
+  /// A window stays urgent until it's focused, so this doubles as the
+  /// urgency flag; the timestamp is what lets repeat alerts be debounced.
+  fn urgency_alert_at(&self) -> Option<std::time::Instant>;
+
+  fn set_urgency_alert_at(
+    &self,
+    urgency_alert_at: Option<std::time::Instant>,
+  );
+
   /// Whether the window has requested attention since it was last
   /// focused.
-  fn is_urgent(&self) -> bool;
-
-  fn set_is_urgent(&self, is_urgent: bool);
+  fn is_urgent(&self) -> bool {
+    self.urgency_alert_at().is_some()
+  }
 
   /// Gets the cached native window properties.
   fn native_properties(&self) -> NativeWindowProperties;
@@ -178,7 +190,7 @@ pub trait WindowGetters: CommonGetters {
 ///
 /// Expects that the struct has a wrapping `RefCell` containing a struct
 /// with a `state`, `prev_state`, `native`, `has_pending_dpi_adjustment`,
-/// `border_delta`, `display_state`, `is_urgent`, and a
+/// `border_delta`, `display_state`, `urgency_alert_at`, and a
 /// `done_window_rules` field.
 #[macro_export]
 macro_rules! impl_window_getters {
@@ -273,12 +285,15 @@ macro_rules! impl_window_getters {
         self.0.borrow_mut().active_drag = active_drag;
       }
 
-      fn is_urgent(&self) -> bool {
-        self.0.borrow().is_urgent
+      fn urgency_alert_at(&self) -> Option<std::time::Instant> {
+        self.0.borrow().urgency_alert_at
       }
 
-      fn set_is_urgent(&self, is_urgent: bool) {
-        self.0.borrow_mut().is_urgent = is_urgent;
+      fn set_urgency_alert_at(
+        &self,
+        urgency_alert_at: Option<std::time::Instant>,
+      ) {
+        self.0.borrow_mut().urgency_alert_at = urgency_alert_at;
       }
 
       fn native_properties(&self) -> NativeWindowProperties {

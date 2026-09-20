@@ -2,6 +2,7 @@ use std::{
   cell::{Ref, RefCell, RefMut},
   collections::VecDeque,
   rc::Rc,
+  time::Instant,
 };
 
 use anyhow::Context;
@@ -42,7 +43,7 @@ struct NonTilingWindowInner {
   has_custom_floating_placement: bool,
   done_window_rules: Vec<WindowRuleConfig>,
   active_drag: Option<ActiveDrag>,
-  is_urgent: bool,
+  urgency_alert_at: Option<Instant>,
 }
 
 impl NonTilingWindow {
@@ -77,7 +78,7 @@ impl NonTilingWindow {
       has_custom_floating_placement,
       done_window_rules,
       active_drag,
-      is_urgent: false,
+      urgency_alert_at: None,
     };
 
     Self(Rc::new(RefCell::new(window)))
@@ -114,7 +115,7 @@ impl NonTilingWindow {
       self.active_drag(),
     );
 
-    window.set_is_urgent(self.is_urgent());
+    window.set_urgency_alert_at(self.urgency_alert_at());
     window
   }
 
