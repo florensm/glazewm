@@ -574,6 +574,20 @@ keybindings:
   - commands: ["focus --recent-workspace"]
     bindings: ["alt+d"]
 
+  # Focus the first workspace without any windows. With
+  # `general.dynamic_workspaces` enabled, a new one is created when every
+  # workspace is in use.
+  - commands: ["focus --next-empty-workspace"]
+    bindings: ["alt+n"]
+
+  # Send the focused window to the first empty workspace, staying put.
+  - commands: ["move --next-empty-workspace"]
+    bindings: ["alt+shift+n"]
+
+  # Focus the window that most recently asked for attention.
+  - commands: ["focus --urgent-window"]
+    bindings: ["alt+shift+u"]
+
   # Change focus to a workspace defined in `workspaces` config.
   - commands: ["focus --workspace 1"]
     bindings: ["alt+1"]
