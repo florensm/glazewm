@@ -82,17 +82,26 @@ pub fn activate_workspace(
 }
 
 /// Gets config for the workspace to activate.
+///
+/// A name that isn't declared in the user config is only valid when
+/// dynamic workspaces are enabled, in which case a config is synthesized
+/// for it.
 fn workspace_config(
   workspace_name: Option<&str>,
   target_monitor: Option<Monitor>,
   state: &mut WmState,
   config: &UserConfig,
 ) -> anyhow::Result<WorkspaceConfig> {
-  let found_config = match workspace_name {
+  match workspace_name {
     Some(workspace_name) => config
       .inactive_workspace_configs(&state.workspaces())
       .into_iter()
       .find(|config| config.name == workspace_name)
+      .cloned()
+      .or_else(|| {
+        config
+          .dynamic_workspace_config(workspace_name, &state.workspaces())
+      })
       .with_context(|| {
         format!(
           "Workspace with name '{workspace_name}' doesn't exist or is already active."
@@ -108,8 +117,13 @@ fn workspace_config(
       .or_else(|| {
         config.next_inactive_workspace_config(&state.workspaces())
       })
+      .cloned()
+      .or_else(|| {
+        config.dynamic_workspace_config(
+          &config.next_dynamic_workspace_name(&state.workspaces()),
+          &state.workspaces(),
+        )
+      })
       .context("No workspace config available to activate workspace."),
-  };
-
-  found_config.cloned()
+  }
 }

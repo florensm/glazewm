@@ -80,6 +80,13 @@ pub struct GeneralConfig {
   /// workspace when focusing the current workspace.
   pub toggle_workspace_on_refocus: bool,
 
+  /// Whether workspaces can be created on-demand beyond the ones declared
+  /// in the `workspaces` config.
+  ///
+  /// Dynamic workspaces are named with the lowest unused positive integer
+  /// and are destroyed once they become empty.
+  pub dynamic_workspaces: bool,
+
   /// Commands to run when the WM has started (e.g. to run a script or
   /// launch another application).
   pub startup_commands: Vec<InvokeCommand>,
@@ -104,6 +111,7 @@ impl Default for GeneralConfig {
       cursor_jump: CursorJumpConfig::default(),
       focus_follows_cursor: false,
       toggle_workspace_on_refocus: true,
+      dynamic_workspaces: false,
       startup_commands: vec![],
       shutdown_commands: vec![],
       config_reload_commands: vec![],

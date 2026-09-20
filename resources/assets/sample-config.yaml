@@ -18,6 +18,11 @@ general:
   # workspace when focusing the current workspace.
   toggle_workspace_on_refocus: false
 
+  # Whether workspaces can be created on-demand beyond the ones declared
+  # under `workspaces`. Dynamic workspaces are named with the lowest unused
+  # positive integer and are destroyed once they become empty.
+  dynamic_workspaces: false
+
   cursor_jump:
     # Whether to automatically move the cursor on the specified trigger.
     enabled: true

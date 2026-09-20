@@ -345,6 +345,11 @@ pub struct InvokeFocusCommand {
 
   #[clap(long)]
   pub recent_workspace: bool,
+
+  /// Focus the first workspace without any windows, creating one if
+  /// dynamic workspaces are enabled and none is available.
+  #[clap(long)]
+  pub next_empty_workspace: bool,
 }
 
 #[derive(Args, Clone, Debug, PartialEq, Serialize)]
@@ -391,6 +396,11 @@ pub struct InvokeMoveCommand {
 
   #[clap(long)]
   pub recent_workspace: bool,
+
+  /// Move the window to the first workspace without any windows, creating
+  /// one if dynamic workspaces are enabled and none is available.
+  #[clap(long)]
+  pub next_empty_workspace: bool,
 }
 
 #[derive(Args, Clone, Debug, PartialEq, Serialize)]

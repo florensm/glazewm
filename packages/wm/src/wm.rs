@@ -313,6 +313,10 @@ impl WindowManager {
           focus_workspace(WorkspaceTarget::Recent, state, config)?;
         }
 
+        if args.next_empty_workspace {
+          focus_workspace(WorkspaceTarget::NextEmpty, state, config)?;
+        }
+
         if args.next_active_workspace_on_monitor {
           focus_workspace(
             WorkspaceTarget::NextActiveInMonitor,
@@ -413,6 +417,15 @@ impl WindowManager {
               move_window_to_workspace(
                 window.clone(),
                 WorkspaceTarget::Recent,
+                state,
+                config,
+              )?;
+            }
+
+            if args.next_empty_workspace {
+              move_window_to_workspace(
+                window.clone(),
+                WorkspaceTarget::NextEmpty,
                 state,
                 config,
               )?;
