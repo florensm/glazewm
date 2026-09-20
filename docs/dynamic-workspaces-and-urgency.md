@@ -148,6 +148,10 @@ The whole contract is: subscribe, keep a set, clear on focus.
    based on `updatedWindow.isUrgent`.
 3. Seed the set at startup from `query workspaces` by scanning descendants
    for `isUrgent`.
+4. Drop urgent windows on `window_unmanaged`. A window that's closed while
+   urgent emits no clearing `window_urgency_changed` — the container is
+   simply gone — so a widget tracking windows rather than workspaces has to
+   handle that itself.
 
 Dynamic workspaces need no widget changes as long as the workspace list is
 rendered from `query workspaces` rather than a hardcoded range.
