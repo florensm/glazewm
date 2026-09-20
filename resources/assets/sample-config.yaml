@@ -18,6 +18,12 @@ general:
   # workspace when focusing the current workspace.
   toggle_workspace_on_refocus: false
 
+  # Whether to keep focus where it is when a window on a hidden workspace
+  # forces itself into the foreground (e.g. Discord on a notification).
+  # The window is marked as urgent instead, which is broadcast via the
+  # `window_urgency_changed` IPC event.
+  ignore_focus_steal: false
+
   # Whether workspaces can be created on-demand beyond the ones declared
   # under `workspaces`. Dynamic workspaces are named with the lowest unused
   # positive integer and are destroyed once they become empty.

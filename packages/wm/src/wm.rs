@@ -38,7 +38,8 @@ use crate::{
   },
   events::{
     handle_display_settings_changed, handle_mouse_move,
-    handle_window_destroyed, handle_window_focused, handle_window_hidden,
+    handle_window_attention_requested, handle_window_destroyed,
+    handle_window_focused, handle_window_hidden,
     handle_window_minimize_ended, handle_window_minimized,
     handle_window_moved_or_resized, handle_window_shown,
     handle_window_title_changed,
@@ -137,6 +138,9 @@ impl WindowManager {
         }
         WindowEvent::TitleChanged { window, .. } => {
           handle_window_title_changed(&window, state, config)
+        }
+        WindowEvent::AttentionRequested { window, .. } => {
+          handle_window_attention_requested(&window, state)
         }
         WindowEvent::Destroyed { window_id, .. } => {
           handle_window_destroyed(window_id, state)

@@ -544,11 +544,9 @@ impl WmState {
                 (Some(workspace.config().name), Some(workspace.clone()))
               }
               None => (
-                config
-                  .value
-                  .general
-                  .dynamic_workspaces
-                  .then(|| config.next_dynamic_workspace_name(&workspaces)),
+                config.value.general.dynamic_workspaces.then(|| {
+                  config.next_dynamic_workspace_name(&workspaces)
+                }),
                 None,
               ),
             },

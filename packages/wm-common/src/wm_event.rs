@@ -50,6 +50,9 @@ pub enum WmEvent {
     unmanaged_id: Uuid,
     unmanaged_handle: isize,
   },
+  WindowUrgencyChanged {
+    updated_window: ContainerDto,
+  },
   WorkspaceActivated {
     activated_workspace: ContainerDto,
   },

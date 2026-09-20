@@ -147,6 +147,7 @@ pub enum SubscribableEvent {
   UserConfigChanged,
   WindowManaged,
   WindowUnmanaged,
+  WindowUrgencyChanged,
   WorkspaceActivated,
   WorkspaceDeactivated,
   WorkspaceUpdated,

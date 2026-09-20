@@ -159,6 +159,12 @@ pub trait WindowGetters: CommonGetters {
 
   fn set_active_drag(&self, active_drag: Option<ActiveDrag>);
 
+  /// Whether the window has requested attention since it was last
+  /// focused.
+  fn is_urgent(&self) -> bool;
+
+  fn set_is_urgent(&self, is_urgent: bool);
+
   /// Gets the cached native window properties.
   fn native_properties(&self) -> NativeWindowProperties;
 
@@ -172,7 +178,8 @@ pub trait WindowGetters: CommonGetters {
 ///
 /// Expects that the struct has a wrapping `RefCell` containing a struct
 /// with a `state`, `prev_state`, `native`, `has_pending_dpi_adjustment`,
-/// `border_delta`, `display_state`, and a `done_window_rules` field.
+/// `border_delta`, `display_state`, `is_urgent`, and a
+/// `done_window_rules` field.
 #[macro_export]
 macro_rules! impl_window_getters {
   ($struct_name:ident) => {
@@ -264,6 +271,14 @@ macro_rules! impl_window_getters {
 
       fn set_active_drag(&self, active_drag: Option<ActiveDrag>) {
         self.0.borrow_mut().active_drag = active_drag;
+      }
+
+      fn is_urgent(&self) -> bool {
+        self.0.borrow().is_urgent
+      }
+
+      fn set_is_urgent(&self, is_urgent: bool) {
+        self.0.borrow_mut().is_urgent = is_urgent;
       }
 
       fn native_properties(&self) -> NativeWindowProperties {

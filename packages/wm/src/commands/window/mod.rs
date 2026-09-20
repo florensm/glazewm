@@ -6,6 +6,7 @@ mod resize_window;
 mod run_window_rules;
 mod set_window_position;
 mod set_window_size;
+mod set_window_urgency;
 mod unmanage_window;
 mod update_window_state;
 
@@ -17,5 +18,6 @@ pub use resize_window::*;
 pub use run_window_rules::*;
 pub use set_window_position::*;
 pub use set_window_size::*;
+pub use set_window_urgency::*;
 pub use unmanage_window::*;
 pub use update_window_state::*;

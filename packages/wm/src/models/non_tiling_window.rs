@@ -42,6 +42,7 @@ struct NonTilingWindowInner {
   has_custom_floating_placement: bool,
   done_window_rules: Vec<WindowRuleConfig>,
   active_drag: Option<ActiveDrag>,
+  is_urgent: bool,
 }
 
 impl NonTilingWindow {
@@ -76,6 +77,7 @@ impl NonTilingWindow {
       has_custom_floating_placement,
       done_window_rules,
       active_drag,
+      is_urgent: false,
     };
 
     Self(Rc::new(RefCell::new(window)))
@@ -99,7 +101,7 @@ impl NonTilingWindow {
       Some(self.state())
     };
 
-    TilingWindow::new(
+    let window = TilingWindow::new(
       Some(self.id()),
       self.native().clone(),
       self.native_properties().clone(),
@@ -110,7 +112,10 @@ impl NonTilingWindow {
       gaps_config,
       self.done_window_rules(),
       self.active_drag(),
-    )
+    );
+
+    window.set_is_urgent(self.is_urgent());
+    window
   }
 
   pub fn to_dto(&self) -> anyhow::Result<ContainerDto> {
@@ -137,6 +142,7 @@ impl NonTilingWindow {
       class_name: self.native_properties().class_name,
       process_name: self.native_properties().process_name,
       active_drag: self.active_drag(),
+      is_urgent: self.is_urgent(),
     }))
   }
 }

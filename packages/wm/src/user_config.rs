@@ -350,7 +350,10 @@ impl UserConfig {
   ///
   /// Dynamic workspaces have no config entry, so they'd otherwise all
   /// share the same (missing) index.
-  fn workspace_sort_key(&self, workspace_name: &str) -> (usize, u32, String) {
+  fn workspace_sort_key(
+    &self,
+    workspace_name: &str,
+  ) -> (usize, u32, String) {
     (
       self
         .workspace_config_index(workspace_name)

@@ -69,6 +69,7 @@ impl Default for GapsConfig {
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(default, rename_all(serialize = "camelCase"))]
+#[allow(clippy::struct_excessive_bools)]
 pub struct GeneralConfig {
   /// Config for automatically moving the cursor.
   pub cursor_jump: CursorJumpConfig,
@@ -79,6 +80,13 @@ pub struct GeneralConfig {
   /// Whether to switch back and forth between the previously focused
   /// workspace when focusing the current workspace.
   pub toggle_workspace_on_refocus: bool,
+
+  /// Whether to keep focus where it is when a window on a hidden
+  /// workspace forces itself into the foreground.
+  ///
+  /// The window is marked as urgent instead of being followed, which is
+  /// broadcast via the `window_urgency_changed` event.
+  pub ignore_focus_steal: bool,
 
   /// Whether workspaces can be created on-demand beyond the ones declared
   /// in the `workspaces` config.
@@ -112,6 +120,7 @@ impl Default for GeneralConfig {
       focus_follows_cursor: false,
       toggle_workspace_on_refocus: true,
       dynamic_workspaces: false,
+      ignore_focus_steal: false,
       startup_commands: vec![],
       shutdown_commands: vec![],
       config_reload_commands: vec![],
