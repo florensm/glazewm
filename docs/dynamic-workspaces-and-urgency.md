@@ -90,20 +90,23 @@ WM is commonly run elevated while the shell is not.
 general:
   # Mark a window urgent instead of following it to its workspace.
   ignore_focus_steal: true
-
-  # Stop the taskbar button flashing once the window is flagged.
-  suppress_taskbar_flash: true
 ```
 
 `ignore_focus_steal` also re-hides the window: the OS uncloaks a window as
 part of giving it the foreground, so it's queued for redraw and focus is
 handed back to the WM's focus target.
 
-`suppress_taskbar_flash` is Windows-only. The flashing can't be prevented,
-only ended — the notification *is* "flashing started" — so an auto-hidden
-taskbar may still appear briefly before retracting. Leave it off until
-something else surfaces urgency, or an urgent window has no visible cue at
-all.
+### The taskbar flash is stopped
+
+Once a window is flagged, its taskbar button is stopped from flashing
+(Windows only). The flashing is redundant for anyone surfacing urgency
+elsewhere, and it holds an auto-hidden taskbar open until the window is
+focused.
+
+It can't be prevented, only ended — the notification *is* "flashing
+started" — so an auto-hidden taskbar may still appear for a frame before
+retracting. The trade-off: without something rendering `isUrgent`, an
+urgent window then has no visible cue at all.
 
 ### Commands
 
@@ -187,4 +190,4 @@ rendered from `query workspaces` rather than a hardcoded range.
 | Dynamic workspaces | yes | yes |
 | Urgency via flashing | yes | never fires — no equivalent notification |
 | Urgency via focus steal | yes | yes |
-| `suppress_taskbar_flash` | yes | no-op |
+| Stopping the taskbar flash | yes | no-op |

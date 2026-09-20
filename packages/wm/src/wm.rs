@@ -141,7 +141,7 @@ impl WindowManager {
           handle_window_title_changed(&window, state, config)
         }
         WindowEvent::AttentionRequested { window, .. } => {
-          handle_window_attention_requested(&window, state, config)
+          handle_window_attention_requested(&window, state)
         }
         WindowEvent::Destroyed { window_id, .. } => {
           handle_window_destroyed(window_id, state)
