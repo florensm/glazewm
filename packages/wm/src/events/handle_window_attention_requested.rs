@@ -3,10 +3,8 @@ use wm_platform::NativeWindow;
 use wm_platform::NativeWindowWindowsExt;
 
 use crate::{
-  commands::window::set_window_urgency,
-  traits::{CommonGetters, WindowGetters},
-  user_config::UserConfig,
-  wm_state::WmState,
+  commands::window::set_window_urgency, traits::WindowGetters,
+  user_config::UserConfig, wm_state::WmState,
 };
 
 /// Handles a window asking for the user's attention.
@@ -23,13 +21,6 @@ pub fn handle_window_attention_requested(
   let Some(window) = state.window_from_native(native_window) else {
     return Ok(());
   };
-
-  // A window that's already focused has nothing to notify about. Windows
-  // can flash their taskbar button while focused (e.g. to acknowledge a
-  // denied action).
-  if window.has_focus(None) {
-    return Ok(());
-  }
 
   set_window_urgency(&window, true, state)?;
 

@@ -35,6 +35,13 @@ pub fn set_window_urgency(
   let alert_at = window.urgency_alert_at();
 
   if is_urgent {
+    // A window you're looking at isn't waiting for attention. Windows can
+    // flash while focused (e.g. to acknowledge a denied action), and a
+    // window rule can fire on a focused window.
+    if window.has_focus(None) {
+      return Ok(());
+    }
+
     // Deliberately leaves the existing timestamp in place, so that a
     // continuously flashing window broadcasts once per interval rather
     // than pushing the interval ahead of itself and never broadcasting.

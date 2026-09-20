@@ -27,9 +27,10 @@ use crate::{
     },
     monitor::focus_monitor,
     window::{
-      ignore_window, move_window_in_direction, move_window_to_workspace,
-      resize_window, set_window_position, set_window_size,
-      update_window_state, WindowPositionTarget,
+      focus_urgent_window, ignore_window, move_window_in_direction,
+      move_window_to_workspace, resize_window, set_window_position,
+      set_window_size, set_window_urgency, update_window_state,
+      WindowPositionTarget,
     },
     workspace::{
       focus_workspace, move_workspace_in_direction,
@@ -319,6 +320,10 @@ impl WindowManager {
 
         if args.next_empty_workspace {
           focus_workspace(WorkspaceTarget::NextEmpty, state, config)?;
+        }
+
+        if args.urgent_window {
+          focus_urgent_window(state, config)?;
         }
 
         if args.next_active_workspace_on_monitor {
@@ -611,6 +616,16 @@ impl WindowManager {
               state,
               config,
             )?;
+
+            Ok(())
+          }
+          _ => Ok(()),
+        }
+      }
+      InvokeCommand::SetUrgency { urgent } => {
+        match subject_container.as_window_container() {
+          Ok(window) => {
+            set_window_urgency(&window, urgent.unwrap_or(true), state)?;
 
             Ok(())
           }

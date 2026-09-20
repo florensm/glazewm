@@ -149,6 +149,14 @@ workspaces:
   - name: '9'
 
 window_rules:
+  # Flag a window as urgent when its title changes, for apps that signal a
+  # new message that way rather than by flashing their taskbar button.
+  # Jump to it with the `focus --urgent-window` command.
+  # - commands: ['set-urgency']
+  #   on: ['title_change']
+  #   match:
+  #     - window_process: { equals: 'Discord' }
+  #       window_title: { regex: '^\(\d+\)' }
   - commands: ['ignore']
     match:
       # Ignores any Zebar windows.

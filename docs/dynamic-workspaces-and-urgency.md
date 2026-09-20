@@ -105,6 +105,28 @@ taskbar may still appear briefly before retracting. Leave it off until
 something else surfaces urgency, or an urgent window has no visible cue at
 all.
 
+### Commands
+
+| Command | Behaviour |
+| --- | --- |
+| `focus --urgent-window` | Focus the window that most recently asked for attention, switching to its workspace first if needed. Does nothing if none is urgent. |
+| `set-urgency` | Flag the subject window. `set-urgency --urgent=false` clears it. |
+
+`set-urgency` exists for apps the WM can't observe. A window rule turns a
+title change into the same signal:
+
+```yaml
+window_rules:
+  - commands: ['set-urgency']
+    on: ['title_change']
+    match:
+      - window_process: { equals: 'Discord' }
+        window_title: { regex: '^\(\d+\)' }
+```
+
+A focused window is never flagged, by any path — it isn't waiting for
+attention — so a rule like the above is safe on a window you're using.
+
 ### Reading it
 
 `isUrgent` appears on every window in `query windows` and on the windows
