@@ -438,6 +438,44 @@ impl NativeBorderOverlay {
     }
   }
 
+  /// Hides the overlay window, leaving every tracked field alone.
+  ///
+  /// A hidden overlay composites nothing, which is what makes it safe to
+  /// change its `HWND` geometry and its ring's composition offset in the
+  /// same breath -- see [`set_rect`].
+  ///
+  /// [`set_rect`]: NativeBorderOverlay::set_rect
+  fn hide_window(&self) {
+    // SAFETY: `self.hwnd()` is a valid window handle for the lifetime of
+    // this struct.
+    unsafe {
+      let _ = ShowWindow(self.hwnd(), SW_HIDE);
+    }
+  }
+
+  /// Resizes the ring to `outer`, and with `reset_offset` also returns it
+  /// to its window's own origin. No-op on the SWCA fallback, which has no
+  /// visual tree to drive.
+  ///
+  /// Only a call that reveals a hidden overlay passes `reset_offset`: a
+  /// pin leaves the offset at its last slid value, and the reveal is the
+  /// first moment the window is back to tracking its own rect.
+  fn apply_ring_rect(&self, outer: &Rect, reset_offset: bool) {
+    let BorderRenderer::Composition(composition) = &self.renderer else {
+      return;
+    };
+
+    if let Err(e) = composition.set_rect(outer) {
+      tracing::warn!("Border overlay composition resize failed: {e}.");
+    }
+
+    if reset_offset {
+      if let Err(e) = composition.set_offset(0, 0) {
+        tracing::warn!("Border overlay composition offset reset failed: {e}.");
+      }
+    }
+  }
+
   /// Returns whether the overlay window is currently shown.
   #[must_use]
   pub fn is_visible(&self) -> bool {
@@ -461,6 +499,7 @@ impl NativeBorderOverlay {
     // positioned by a composition offset, so any normal reposition has to
     // undo both before its own geometry means anything. Doing it here
     // rather than only in `unpin` means no path can strand the pin.
+    let was_pinned = self.pinned.is_some();
     self.clear_pin();
 
     if self.is_visible && &self.rect == window_rect && self.anchor == anchor.0
@@ -469,6 +508,32 @@ impl NativeBorderOverlay {
     }
 
     let outer = outer_rect(window_rect, self.params.width);
+
+    // Leaving the pin has to shrink the `HWND` and re-zero the ring's
+    // offset together, and those commit on independent schedules: Win32
+    // geometry reaches DWM by itself, the composition tree through the
+    // compositor. Either can land first, so one of the two mixed frames is
+    // always reachable, and the bad one -- a still-viewport-sized window
+    // holding a ring already back at offset (0, 0) -- draws the ring in
+    // the monitor's top-left corner. No call order rules it out (resetting
+    // after the `SetWindowPos` was tried, and the offset still won the
+    // race), so take the overlay out of composition instead: a hidden
+    // overlay composites nothing, whichever side has committed.
+    if was_pinned {
+      self.hide_window();
+      self.is_visible = false;
+    }
+
+    // A hidden overlay gets its ring in place *before* the reveal, so the
+    // `SetWindowPos` below -- which carries `SWP_SHOWWINDOW` and the new
+    // geometry in one window-state update DWM cannot split -- can only
+    // ever show a ring already matching it. A visible overlay is merely
+    // moving, and is resized after the window so a pure translation costs
+    // no ring rebuild.
+    let revealing = !self.is_visible;
+    if revealing {
+      self.apply_ring_rect(&outer, true);
+    }
 
     // SAFETY: `self.hwnd()` is a valid window handle for the lifetime of
     // this struct.
@@ -487,25 +552,8 @@ impl NativeBorderOverlay {
       return;
     }
 
-    if let BorderRenderer::Composition(composition) = &self.renderer {
-      if let Err(e) = composition.set_rect(&outer) {
-        tracing::warn!("Border overlay composition resize failed: {e}.");
-      }
-
-      // Unconditional, not just when this call just left a pinned state:
-      // `hide()` can also clear a pin (leaving the offset at its last
-      // slid value, since a hidden overlay composites nothing so it
-      // doesn't matter yet) and then this `set_rect` -- reached via
-      // `defer_rect`'s `!is_visible` fallback -- is what makes the overlay
-      // visible again. Skipping the reset there would show it at the old
-      // slide offset instead of the `outer` rect just set below. Done now
-      // that the `HWND` has actually been resized down to `outer` -- see
-      // `clear_pin`'s doc comment for why doing this any earlier races
-      // `SetWindowPos` and can flash the ring at the screen's top-left
-      // corner.
-      if let Err(e) = composition.set_offset(0, 0) {
-        tracing::warn!("Border overlay composition offset reset failed: {e}.");
-      }
+    if !revealing {
+      self.apply_ring_rect(&outer, false);
     }
 
     self.refresh_hole(&outer);
@@ -711,6 +759,19 @@ impl NativeBorderOverlay {
     }
 
     if self.pinned.is_none() {
+      // Growing to the viewport and offsetting the ring inside it is the
+      // same two-sided change `set_rect` makes on the way out, and carries
+      // the same hazard: composition and Win32 geometry commit on
+      // independent schedules, so DWM can catch a frame pairing the
+      // viewport-sized window with a ring still at offset (0, 0) -- drawn
+      // in the monitor's top-left corner rather than on its window.
+      // Ordering the two doesn't rule it out, since either can land first,
+      // so the overlay sits the change out hidden: it composites nothing
+      // until the `SetWindowPos` below reveals it, and that one call
+      // carries `SWP_SHOWWINDOW` and the viewport geometry together.
+      self.hide_window();
+      self.is_visible = false;
+
       // The window is about to become viewport-sized with its ring drawn
       // at an offset inside it, so a frame region cut for the window's own
       // rect would clip that ring away. Dropped for the duration of the
@@ -719,14 +780,9 @@ impl NativeBorderOverlay {
       // the real windows are cloaked behind surrogates anyway.
       self.clear_region();
 
-      // Driven to the pinned offset *before* the `SetWindowPos` below, for
-      // the same reason `clear_pin` defers its reset until after one:
-      // composition and Win32 geometry commit independently, so enlarging
-      // the `HWND` to the viewport first lets DWM catch a frame with the
-      // ring still at offset (0, 0) -- drawn in the monitor's top-left
-      // corner rather than on its window. In this order the worst a
-      // mid-commit frame shows is the ring clipped out of the not-yet-
-      // grown window for a tick.
+      // Force the ring's geometry and offset through: the window is about
+      // to change size underneath it, so nothing about the previous state
+      // still applies.
       self.pinned = Some(viewport.clone());
       self.rect = Rect::from_ltrb(0, 0, 0, 0);
       self.slide(window_rect);
@@ -813,14 +869,11 @@ impl NativeBorderOverlay {
   /// That reposition is also what restores the window region dropped at
   /// pin time.
   ///
-  /// Deliberately leaves the composition offset untouched: resetting it
-  /// here, ahead of the caller's own `SetWindowPos`, let DWM composite a
-  /// frame where the ring (sized for the window's small rect) had already
-  /// snapped to offset (0, 0) while the `HWND` was still viewport-sized from
-  /// the pin -- rendering the ring at the screen's top-left corner instead
-  /// of the window. Callers that reposition (`set_rect`) reset the offset
-  /// themselves once the window's new geometry is actually in place; `hide`
-  /// doesn't need to, since a hidden overlay composites nothing regardless
+  /// Deliberately leaves the composition offset untouched: re-zeroing it
+  /// is only safe while the overlay composites nothing, so `set_rect` does
+  /// it hidden, between taking the overlay out of composition and the
+  /// `SetWindowPos` that reveals it at the window's own rect. `hide` needs
+  /// no reset at all, since a hidden overlay composites nothing regardless
   /// of its stale offset.
   fn clear_pin(&mut self) {
     if self.pinned.take().is_none() {
@@ -838,10 +891,7 @@ impl NativeBorderOverlay {
   pub fn hide(&mut self) {
     self.clear_pin();
     self.is_visible = false;
-    // SAFETY: `self.hwnd()` is a valid window handle.
-    unsafe {
-      let _ = ShowWindow(self.hwnd(), SW_HIDE);
-    }
+    self.hide_window();
   }
 }
 
