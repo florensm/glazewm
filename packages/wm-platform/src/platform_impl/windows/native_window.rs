@@ -7,9 +7,9 @@ use windows::{
   Win32::{
     Foundation::{CloseHandle, BOOL, HWND, LPARAM, POINT, RECT},
     Graphics::Dwm::{
-      DwmGetColorizationColor, DwmGetWindowAttribute, DwmSetWindowAttribute,
-      DWMWA_BORDER_COLOR, DWMWA_CLOAKED, DWMWA_COLOR_DEFAULT,
-      DWMWA_COLOR_NONE, DWMWA_EXTENDED_FRAME_BOUNDS,
+      DwmGetColorizationColor, DwmGetWindowAttribute,
+      DwmSetWindowAttribute, DWMWA_BORDER_COLOR, DWMWA_CLOAKED,
+      DWMWA_COLOR_DEFAULT, DWMWA_COLOR_NONE, DWMWA_EXTENDED_FRAME_BOUNDS,
       DWMWA_WINDOW_CORNER_PREFERENCE, DWMWCP_DEFAULT, DWMWCP_DONOTROUND,
       DWMWCP_ROUND, DWMWCP_ROUNDSMALL,
     },
@@ -30,9 +30,8 @@ use windows::{
         SetLayeredWindowAttributes, SetWindowLongPtrW, SetWindowPlacement,
         SetWindowPos, ShowWindowAsync, WindowFromPoint, GA_ROOT,
         GWL_EXSTYLE, GWL_STYLE, GW_HWNDPREV, GW_OWNER, HWND_NOTOPMOST,
-        HWND_TOP,
-        HWND_TOPMOST, LAYERED_WINDOW_ATTRIBUTES_FLAGS, LWA_ALPHA,
-        LWA_COLORKEY, SET_WINDOW_POS_FLAGS, SWP_ASYNCWINDOWPOS,
+        HWND_TOP, HWND_TOPMOST, LAYERED_WINDOW_ATTRIBUTES_FLAGS,
+        LWA_ALPHA, LWA_COLORKEY, SET_WINDOW_POS_FLAGS, SWP_ASYNCWINDOWPOS,
         SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOCOPYBITS, SWP_NOMOVE,
         SWP_NOOWNERZORDER, SWP_NOSENDCHANGING, SWP_NOSIZE, SWP_NOZORDER,
         SWP_SHOWWINDOW, SW_HIDE, SW_MAXIMIZE, SW_MINIMIZE, SW_RESTORE,
@@ -590,10 +589,10 @@ impl NativeWindow {
       return Ok(());
     }
 
-    // `SWP_NOCOPYBITS` is deliberately omitted: the window does not move or
-    // resize, so its bits are unchanged — discarding them would force a
-    // full repaint of the client area, which flickers on slow-painting
-    // apps.
+    // `SWP_NOCOPYBITS` is deliberately omitted: the window does not move
+    // or resize, so its bits are unchanged — discarding them would
+    // force a full repaint of the client area, which flickers on
+    // slow-painting apps.
     let flags = SWP_NOACTIVATE
       | SWP_ASYNCWINDOWPOS
       | SWP_SHOWWINDOW
@@ -605,19 +604,20 @@ impl NativeWindow {
     // Z-order can sometimes still be incorrect after the above call --
     // observed with some apps that briefly re-assert their own z-order in
     // response to it. 10ms is a guess at long enough for that to have
-    // settled; no completion signal exists to wait on instead. Spawned as a
-    // detached `tokio` task rather than awaited here, so this delay never
-    // blocks the caller (`redraw_containers`, itself called from
-    // `platform_sync`) -- not on the resize/drag/workspace-switch hot path,
-    // which never awaits this task or otherwise waits on it.
+    // settled; no completion signal exists to wait on instead. Spawned as
+    // a detached `tokio` task rather than awaited here, so this delay
+    // never blocks the caller (`redraw_containers`, itself called from
+    // `platform_sync`) -- not on the resize/drag/workspace-switch hot
+    // path, which never awaits this task or otherwise waits on it.
     let handle = self.handle;
     task::spawn(async move {
       tokio::time::sleep(Duration::from_millis(10)).await;
       // Re-check at fire time: the initial call has usually landed by now,
       // making this retry a no-op that would otherwise repaint the window.
       if !Self::is_z_order_correct(handle, z_order_hwnd) {
-        // SAFETY: A stale `handle` (window destroyed during the 10ms delay)
-        // just makes the call fail, which is discarded below.
+        // SAFETY: A stale `handle` (window destroyed during the 10ms
+        // delay) just makes the call fail, which is discarded
+        // below.
         let _ = unsafe {
           SetWindowPos(HWND(handle), z_order_hwnd, 0, 0, 0, 0, flags)
         };
@@ -795,8 +795,9 @@ impl NativeWindow {
     let mut alpha = u8::MAX;
     let mut flag = LAYERED_WINDOW_ATTRIBUTES_FLAGS::default();
 
-    // SAFETY: `self.hwnd()` is a valid window handle. `alpha` and `flag` are
-    // stack-allocated out-parameters live for the duration of the call.
+    // SAFETY: `self.hwnd()` is a valid window handle. `alpha` and `flag`
+    // are stack-allocated out-parameters live for the duration of the
+    // call.
     unsafe {
       GetLayeredWindowAttributes(
         self.hwnd(),

@@ -1,11 +1,11 @@
 use std::{ffi::c_void, sync::OnceLock};
 
 use windows::{
+  core::{s, w},
   Win32::{
     Foundation::HWND,
     System::LibraryLoader::{GetModuleHandleW, GetProcAddress},
   },
-  core::{s, w},
 };
 
 /// Accent state: none. Clears any policy previously set on the window,

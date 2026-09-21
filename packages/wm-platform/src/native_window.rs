@@ -346,11 +346,12 @@ pub trait NativeWindowWindowsExt {
   /// `SWP_FRAMECHANGED` (issued whenever a window is resized) forces a
   /// non-client-area recalculation that can make DWM briefly composite the
   /// window at full opacity before the existing `LWA_ALPHA` value is
-  /// reasserted — a one-frame flash to solid on every resize/move/workspace-
-  /// switch landing for any window using the `transparency` effect. Calling
-  /// this immediately after such a `SetWindowPos` forces DWM to recomposite
-  /// with the correct alpha right away, closing that gap. No-op if the
-  /// window isn't currently layered.
+  /// reasserted — a one-frame flash to solid on every
+  /// resize/move/workspace- switch landing for any window using the
+  /// `transparency` effect. Calling this immediately after such a
+  /// `SetWindowPos` forces DWM to recomposite with the correct alpha
+  /// right away, closing that gap. No-op if the window isn't currently
+  /// layered.
   ///
   /// # Platform-specific
   ///
@@ -469,7 +470,6 @@ impl NativeWindowWindowsExt for NativeWindow {
   fn reassert_transparency(&self) -> crate::Result<()> {
     self.inner.reassert_transparency()
   }
-
 }
 
 #[derive(Clone, Debug)]

@@ -41,21 +41,22 @@ pub struct BackdropOverlayParams {
   pub exposure: f32,
   /// Contrast adjustment from `-1.0` to `1.0`; `0.0` is unchanged.
   pub contrast: f32,
-  /// Highlight recovery from `-1.0` to `1.0`; `0.0` is unchanged, negative
-  /// pulls bright areas down.
+  /// Highlight recovery from `-1.0` to `1.0`; `0.0` is unchanged,
+  /// negative pulls bright areas down.
   pub highlights: f32,
   /// Shadow lift from `-1.0` to `1.0`; `0.0` is unchanged, positive opens
   /// dark areas up.
   pub shadows: f32,
-  /// Strength of a darkening gradient toward the overlay's own edges, from
-  /// `0.0` (off) to `1.0`. Rendered as a radial-gradient visual rather
-  /// than baked, since it is measured from the window's own rect.
+  /// Strength of a darkening gradient toward the overlay's own edges,
+  /// from `0.0` (off) to `1.0`. Rendered as a radial-gradient visual
+  /// rather than baked, since it is measured from the window's own
+  /// rect.
   pub vignette: f32,
   /// Opacity of a monochrome noise layer over the blurred image, from
   /// `0.0` (off) to `1.0`.
   pub grain: f32,
-  /// How much the backdrop crop follows the window, as a multiplier on the
-  /// window's offset within its monitor. Not baked -- it selects a
+  /// How much the backdrop crop follows the window, as a multiplier on
+  /// the window's offset within its monitor. Not baked -- it selects a
   /// different part of an already-rendered surface, so it costs one
   /// property write on move and nothing at all otherwise.
   pub parallax: f32,

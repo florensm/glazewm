@@ -43,7 +43,8 @@ pub struct WmState {
   /// Manager for window animations.
   pub animation_manager: AnimationManager,
 
-  /// Tracks the target position for each window to prevent animation restart loops.
+  /// Tracks the target position for each window to prevent animation
+  /// restart loops.
   pub window_target_positions: HashMap<Uuid, Rect>,
 
   /// Name of the most recently focused workspace.
@@ -719,9 +720,9 @@ impl WmState {
 impl Drop for WmState {
   fn drop(&mut self) {
     // Commit all active resize sessions before cleaning up windows so that
-    // surrogate overlays are destroyed and windows are moved to their target
-    // positions. This prevents invisible or mispositioned windows after a
-    // crash or forced exit.
+    // surrogate overlays are destroyed and windows are moved to their
+    // target positions. This prevents invisible or mispositioned
+    // windows after a crash or forced exit.
     #[cfg(target_os = "windows")]
     for session in self.animation_manager.drain_all_sessions() {
       if let Err(err) = session.commit() {
@@ -744,7 +745,8 @@ impl Drop for WmState {
       #[cfg(target_os = "windows")]
       {
         // Uncloak before showing — a surrogate animation may have cloaked
-        // this window. Without this, the window stays invisible after exit.
+        // this window. Without this, the window stays invisible after
+        // exit.
         let _ = window.native().set_cloaked(false);
 
         if let Err(err) = window.native().show() {

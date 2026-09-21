@@ -1,14 +1,14 @@
 pub(crate) mod com;
 pub(crate) mod composition;
 mod display;
-pub(crate) mod graphics_device;
-pub(crate) mod swca;
 mod display_listener;
 mod event_loop;
+pub(crate) mod graphics_device;
 mod keyboard_hook;
 mod mouse_listener;
 mod native_window;
 mod single_instance;
+pub(crate) mod swca;
 pub(crate) mod wallpaper;
 pub(crate) mod wallpaper_surface;
 mod window_listener;

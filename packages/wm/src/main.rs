@@ -194,11 +194,12 @@ async fn start_wm(
   loop {
     // Hand queued platform events the thread before the next animation
     // frame. The `biased` select below puts the animation tick above every
-    // event branch, and a tick is ready again as soon as the previous frame
-    // finishes, so during an animation those branches are never reached --
-    // window events were measured waiting a median ~210ms and up to ~577ms
-    // on an eight-window relayout. The drain is capped per frame so an
-    // event burst cannot starve the animation in the other direction.
+    // event branch, and a tick is ready again as soon as the previous
+    // frame finishes, so during an animation those branches are never
+    // reached -- window events were measured waiting a median ~210ms
+    // and up to ~577ms on an eight-window relayout. The drain is
+    // capped per frame so an event burst cannot starve the animation
+    // in the other direction.
     if let Err(err) = drain_platform_events(
       &mut wm,
       &mut config,
@@ -338,14 +339,14 @@ async fn start_wm(
 /// [`drain_platform_events`].
 ///
 /// Bounds the inversion this creates: without a cap, an application
-/// spamming location-change events could keep the drain busy and starve the
-/// animation tick, turning an input-latency fix into dropped frames. Eight
-/// is comfortably above the ~1.5 events per frame observed on an
+/// spamming location-change events could keep the drain busy and starve
+/// the animation tick, turning an input-latency fix into dropped frames.
+/// Eight is comfortably above the ~1.5 events per frame observed on an
 /// eight-window relayout, so in practice the queue empties first.
 const MAX_PRIORITY_EVENTS_PER_FRAME: usize = 8;
 
-/// Services up to [`MAX_PRIORITY_EVENTS_PER_FRAME`] already-queued platform
-/// events before the next animation frame.
+/// Services up to [`MAX_PRIORITY_EVENTS_PER_FRAME`] already-queued
+/// platform events before the next animation frame.
 ///
 /// Returns as soon as every eligible listener is empty, so a quiet loop
 /// iteration costs a handful of non-blocking channel polls.
@@ -355,19 +356,19 @@ const MAX_PRIORITY_EVENTS_PER_FRAME: usize = 8;
 ///
 /// # Why the workspace-switch gate
 ///
-/// Mouse, window and display handlers mutate layout state -- display states,
-/// workspace membership, floating placement, unmanagement. Resize and move
-/// animations are safe: `handle_window_moved_or_resized` bails out early for
-/// any window holding a `ResizeSession`, so those events cost a rect query
-/// and nothing more. A workspace-switch slide has no such guard on every
-/// path, and delivering these events mid-slide broke the animation and left
-/// workspaces reporting no windows.
+/// Mouse, window and display handlers mutate layout state -- display
+/// states, workspace membership, floating placement, unmanagement. Resize
+/// and move animations are safe: `handle_window_moved_or_resized` bails
+/// out early for any window holding a `ResizeSession`, so those events
+/// cost a rect query and nothing more. A workspace-switch slide has no
+/// such guard on every path, and delivering these events mid-slide broke
+/// the animation and left workspaces reporting no windows.
 ///
 /// So the gate is narrow on purpose: during a slide (and its one-tick
 /// cleanup) only keybindings are drained and everything else waits for the
-/// `select!`, exactly as it did before this option existed. A slide is brief,
-/// so the responsiveness win during resizes -- which is where the queue
-/// actually backs up, ~195 events per burst -- is kept intact.
+/// `select!`, exactly as it did before this option existed. A slide is
+/// brief, so the responsiveness win during resizes -- which is where the
+/// queue actually backs up, ~195 events per burst -- is kept intact.
 fn drain_platform_events(
   wm: &mut WindowManager,
   config: &mut UserConfig,
@@ -419,10 +420,11 @@ fn drain_platform_events(
 
 /// Initialize logging with the specified verbosity level.
 ///
-/// Error and warning logs are saved to `~/.glzr/glazewm/errors.log`. `WARN`
-/// is included (not just `ERROR`) so perf-diagnostic warnings (e.g. slow
-/// synchronous window repositions) are captured even when the WM is running
-/// detached from a terminal, without needing `-v` for the full `DEBUG` firehose.
+/// Error and warning logs are saved to `~/.glzr/glazewm/errors.log`.
+/// `WARN` is included (not just `ERROR`) so perf-diagnostic warnings (e.g.
+/// slow synchronous window repositions) are captured even when the WM is
+/// running detached from a terminal, without needing `-v` for the full
+/// `DEBUG` firehose.
 fn setup_logging(verbosity: &Verbosity) -> anyhow::Result<()> {
   let error_log_dir = home::home_dir()
     .context("Unable to get home directory.")?

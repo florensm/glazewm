@@ -45,7 +45,6 @@ impl Color {
       r: abgr as u8,
     }
   }
-
 }
 
 impl FromStr for Color {
@@ -98,4 +97,3 @@ impl<'de> Deserialize<'de> for Color {
     }
   }
 }
-

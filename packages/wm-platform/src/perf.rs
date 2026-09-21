@@ -1,9 +1,10 @@
 //! Opt-in frame profiler for the window-manager thread.
 //!
-//! The WM runs every relayout, animation frame, keybinding, and IPC message
-//! on a single thread, so any blocking call made there directly becomes
-//! input lag. This module measures where that thread's time actually goes
-//! during an animation, without costing anything when disabled.
+//! The WM runs every relayout, animation frame, keybinding, and IPC
+//! message on a single thread, so any blocking call made there directly
+//! becomes input lag. This module measures where that thread's time
+//! actually goes during an animation, without costing anything when
+//! disabled.
 //!
 //! Enabled by setting the `GLAZEWM_PERF` environment variable to anything
 //! other than `0`. When disabled every entry point is a single cached
@@ -29,7 +30,7 @@ use std::{
   collections::VecDeque,
   fmt::Write,
   sync::{
-    atomic::{AtomicU64, AtomicU32, Ordering},
+    atomic::{AtomicU32, AtomicU64, Ordering},
     Mutex, OnceLock,
   },
   time::{Duration, Instant},
@@ -38,8 +39,8 @@ use std::{
 /// Fallback frame budget, used until [`set_frame_budget`] reports the real
 /// one.
 ///
-/// One 60 Hz frame period -- the most pessimistic common refresh rate, so an
-/// uncalibrated report over-counts slow frames rather than hiding them.
+/// One 60 Hz frame period -- the most pessimistic common refresh rate, so
+/// an uncalibrated report over-counts slow frames rather than hiding them.
 const DEFAULT_FRAME_BUDGET: Duration = Duration::from_micros(16_667);
 
 /// The monitor's frame period, as last reported by [`set_frame_budget`].
@@ -71,7 +72,8 @@ fn frame_budget() -> Duration {
   Duration::from_micros(FRAME_BUDGET_US.load(Ordering::Relaxed))
 }
 
-/// Frames after which an in-progress session reports and resets on its own.
+/// Frames after which an in-progress session reports and resets on its
+/// own.
 ///
 /// Guards against a session that never reaches an idle point (e.g. a
 /// continuously-animating window) silently accumulating forever without
@@ -91,15 +93,15 @@ const APPLY_SAMPLE_LIMIT: usize = 24;
 /// The queues pair one-to-one with each listener's channel, so they only
 /// grow if a producer outruns the WM's main loop -- which is exactly the
 /// starvation being measured. The cap keeps a runaway producer (e.g. mouse
-/// moves while the loop is blocked) from growing without bound; overflow is
-/// counted so the report can say the numbers are incomplete.
+/// moves while the loop is blocked) from growing without bound; overflow
+/// is counted so the report can say the numbers are incomplete.
 const EVENT_QUEUE_LIMIT: usize = 1024;
 
 /// A class of platform event whose queue wait is measured.
 ///
-/// Each variant maps to exactly one listener channel with a single producer
-/// and a single consumer, which is what makes the FIFO timestamp pairing in
-/// [`mark_event_queued`]/[`record_event_dequeued`] sound.
+/// Each variant maps to exactly one listener channel with a single
+/// producer and a single consumer, which is what makes the FIFO timestamp
+/// pairing in [`mark_event_queued`]/[`record_event_dequeued`] sound.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum EventKind {
   /// A matched keybinding, queued from the low-level keyboard hook.
@@ -143,11 +145,11 @@ impl EventKind {
 /// Enqueue timestamps awaiting their matching dequeue, one queue per
 /// [`EventKind`].
 ///
-/// Shared across threads because events are queued on their listener's hook
-/// thread and consumed on the WM thread. Held behind a `Mutex` rather than a
-/// lock-free structure deliberately: the critical section is a single
-/// push/pop, and the producers include a low-level keyboard hook where a
-/// long stall would delay system-wide input.
+/// Shared across threads because events are queued on their listener's
+/// hook thread and consumed on the WM thread. Held behind a `Mutex` rather
+/// than a lock-free structure deliberately: the critical section is a
+/// single push/pop, and the producers include a low-level keyboard hook
+/// where a long stall would delay system-wide input.
 static EVENT_QUEUES: [Mutex<VecDeque<Instant>>; EventKind::COUNT] =
   [const { Mutex::new(VecDeque::new()) }; EventKind::COUNT];
 
@@ -173,8 +175,8 @@ pub enum Stage {
   RedrawPrep,
   /// `redraw_containers`' per-window loop itself.
   RedrawLoop,
-  /// `AnimationManager::start_animation_if_needed`: this frame's animation
-  /// math plus queueing the surrogate update.
+  /// `AnimationManager::start_animation_if_needed`: this frame's
+  /// animation math plus queueing the surrogate update.
   AnimStep,
   /// `redraw_containers`' `Frozen` arm, past the first-frame cloak.
   RedrawFrozen,
@@ -210,8 +212,8 @@ pub enum Stage {
   /// backdrop/border overlay onto its surrogate, queued into the same
   /// batch as the surrogates themselves.
   SessionOverlays,
-  /// `update_internal`'s post-`platform_sync` session/workspace cleanup and
-  /// surrogate fade-out tail.
+  /// `update_internal`'s post-`platform_sync` session/workspace cleanup
+  /// and surrogate fade-out tail.
   Cleanup,
   /// `ResizeSession::pre_commit`.
   PreCommit,
@@ -365,8 +367,8 @@ pub fn is_enabled() -> bool {
   })
 }
 
-/// Per-stage totals for the frame in progress, plus the session totals they
-/// roll up into.
+/// Per-stage totals for the frame in progress, plus the session totals
+/// they roll up into.
 #[derive(Default)]
 struct Profiler {
   /// Time accumulated in each stage during the frame in progress.
@@ -393,8 +395,8 @@ struct Profiler {
   ///
   /// Retained in full rather than summarised online: a session is a few
   /// hundred frames, and percentiles need the samples. Capped by
-  /// [`AUTO_REPORT_FRAMES`], which reports and resets long before this can
-  /// grow.
+  /// [`AUTO_REPORT_FRAMES`], which reports and resets long before this
+  /// can grow.
   tick_samples: Vec<Duration>,
   /// Per-`(process, sync)` breakdown of the `RedrawApply` repositions.
   apply_samples: Vec<ApplySample>,
@@ -533,13 +535,13 @@ impl Drop for ApplyScope {
 /// Measures one real-window reposition and attributes it to the owning
 /// process, until the returned [`ApplyScope`] is dropped.
 ///
-/// `process` is only invoked when profiling is enabled, so callers can pass
-/// a closure that clones the window's cached process name without paying for
-/// it in a normal build.
+/// `process` is only invoked when profiling is enabled, so callers can
+/// pass a closure that clones the window's cached process name without
+/// paying for it in a normal build.
 ///
 /// `synchronous` records whether `SWP_ASYNCWINDOWPOS` was omitted -- only
-/// synchronous calls can block on the target application's message pump, so
-/// the report keeps the two apart.
+/// synchronous calls can block on the target application's message pump,
+/// so the report keeps the two apart.
 ///
 /// # Example usage
 ///
@@ -569,8 +571,8 @@ where
   }
 }
 
-/// Folds one attributed reposition into the session's breakdown, ungated by
-/// `GLAZEWM_PERF`.
+/// Folds one attributed reposition into the session's breakdown, ungated
+/// by `GLAZEWM_PERF`.
 fn record_apply(process: String, synchronous: bool, elapsed: Duration) {
   PROFILER.with(|profiler| {
     let Ok(mut profiler) = profiler.try_borrow_mut() else {
@@ -621,12 +623,13 @@ fn queue_event(kind: EventKind) {
   }
 }
 
-/// Records how long the event just taken off `kind`'s channel spent queued.
+/// Records how long the event just taken off `kind`'s channel spent
+/// queued.
 ///
-/// Called from the WM's main loop, immediately after the event is received.
-/// This is the only way to see whether the main loop's `biased` select is
-/// starving input while animation ticks saturate the thread: our own
-/// handling time shows up in the stage tree, but time an event spends
+/// Called from the WM's main loop, immediately after the event is
+/// received. This is the only way to see whether the main loop's `biased`
+/// select is starving input while animation ticks saturate the thread: our
+/// own handling time shows up in the stage tree, but time an event spends
 /// *waiting to be looked at* does not.
 pub fn record_event_dequeued(kind: EventKind) {
   if is_enabled() {
@@ -680,14 +683,16 @@ fn record_window_count(count: usize) {
   });
 }
 
-/// Records that an animation began, split by whether it resizes the window.
+/// Records that an animation began, split by whether it resizes the
+/// window.
 ///
 /// The two cost very differently: a pure translation leaves the border
-/// overlay's GDI region valid, so `refresh_hole` short-circuits and tracking
-/// it is nearly free, while a resize rebuilds that region every frame. This
-/// counter says how often each actually happens in real layouts, which is
-/// what decides whether a size-aware overlay gate is worth building -- in a
-/// tiling grid, moving one window commonly resizes its neighbours.
+/// overlay's GDI region valid, so `refresh_hole` short-circuits and
+/// tracking it is nearly free, while a resize rebuilds that region every
+/// frame. This counter says how often each actually happens in real
+/// layouts, which is what decides whether a size-aware overlay gate is
+/// worth building -- in a tiling grid, moving one window commonly resizes
+/// its neighbours.
 pub fn note_animation_start(is_resize: bool) {
   if is_enabled() {
     record_animation_start(is_resize);
@@ -732,8 +737,8 @@ fn start_frame() {
 /// Rolls the completed frame's per-stage accumulators into the session
 /// totals.
 ///
-/// Auto-reports every [`AUTO_REPORT_FRAMES`] frames so a session that never
-/// idles still produces output.
+/// Auto-reports every [`AUTO_REPORT_FRAMES`] frames so a session that
+/// never idles still produces output.
 pub fn end_frame() {
   if !is_enabled() {
     return;
@@ -746,8 +751,8 @@ pub fn end_frame() {
 
 /// [`end_frame`] without the `GLAZEWM_PERF` gate.
 ///
-/// Returns `true` once the session has reached [`AUTO_REPORT_FRAMES`], i.e.
-/// when the caller should report and reset.
+/// Returns `true` once the session has reached [`AUTO_REPORT_FRAMES`],
+/// i.e. when the caller should report and reset.
 fn roll_up_frame() -> bool {
   PROFILER.with(|profiler| {
     let Ok(mut profiler) = profiler.try_borrow_mut() else {
@@ -860,14 +865,17 @@ fn take_report(reason: &str) -> Option<String> {
     }
   }
 
-  // Cross-cutting stages are called from several parents, so they get their
-  // own section rather than a misleading indent. Their time is already
-  // counted inside the tree above.
+  // Cross-cutting stages are called from several parents, so they get
+  // their own section rather than a misleading indent. Their time is
+  // already counted inside the tree above.
   if Stage::ALL
     .into_iter()
     .any(|s| s.is_cross_cutting() && summary.calls[s.index()] > 0)
   {
-    let _ = writeln!(lines, "  -- called from several parents, already counted above --");
+    let _ = writeln!(
+      lines,
+      "  -- called from several parents, already counted above --"
+    );
     for stage in Stage::ALL {
       if stage.is_cross_cutting() {
         row(&mut lines, &summary, frames, stage, 2);
@@ -898,9 +906,8 @@ fn write_tick_distribution(lines: &mut String, summary: &Profiler) {
   samples.sort_unstable();
 
   let budget = summary.budget;
-  let over = |factor: u32| {
-    samples.iter().filter(|s| **s > budget * factor).count()
-  };
+  let over =
+    |factor: u32| samples.iter().filter(|s| **s > budget * factor).count();
 
   let _ = writeln!(
     lines,
@@ -930,10 +937,11 @@ fn write_tick_distribution(lines: &mut String, summary: &Profiler) {
   );
 }
 
-/// Returns the `percent`th percentile of an already-sorted, non-empty slice.
+/// Returns the `percent`th percentile of an already-sorted, non-empty
+/// slice.
 ///
-/// Nearest-rank, so the value returned is always one that actually occurred
-/// rather than an interpolation between two frames that did not.
+/// Nearest-rank, so the value returned is always one that actually
+/// occurred rather than an interpolation between two frames that did not.
 fn percentile(sorted: &[Duration], percent: usize) -> Duration {
   if sorted.is_empty() {
     return Duration::ZERO;
@@ -949,8 +957,8 @@ fn percentile(sorted: &[Duration], percent: usize) -> Duration {
 fn write_apply_breakdown(lines: &mut String, summary: &Profiler) {
   // Which windows the `rd_apply` time actually went to. A synchronous
   // reposition blocks the WM thread on the target application's message
-  // pump, so a single slow app can dominate the frame; the stage tree alone
-  // cannot show that.
+  // pump, so a single slow app can dominate the frame; the stage tree
+  // alone cannot show that.
   if !summary.apply_samples.is_empty() {
     let _ = writeln!(
       lines,
@@ -994,15 +1002,13 @@ fn write_gesture_split(lines: &mut String, summary: &Profiler) {
 
   // Writing into a `String` is infallible, so the results are discarded.
   let _ = writeln!(lines, "  -- animations started (move vs resize) --");
-  let _ = writeln!(
-    lines,
-    "  {:<20}{:>7}{:>11}",
-    "gesture", "count", "share",
-  );
+  let _ =
+    writeln!(lines, "  {:<20}{:>7}{:>11}", "gesture", "count", "share",);
 
-  for (label, count) in
-    [("move", summary.gesture_moves), ("resize", summary.gesture_resizes)]
-  {
+  for (label, count) in [
+    ("move", summary.gesture_moves),
+    ("resize", summary.gesture_resizes),
+  ] {
     let _ = writeln!(
       lines,
       "  {:<20}{:>7}{:>10.1}%",
@@ -1040,7 +1046,8 @@ fn write_event_waits(lines: &mut String, summary: &Profiler) {
 
     for kind in event_rows {
       let wait = summary.event_wait[kind.index()];
-      let dropped = EVENT_QUEUE_OVERFLOW[kind.index()].swap(0, Ordering::Relaxed);
+      let dropped =
+        EVENT_QUEUE_OVERFLOW[kind.index()].swap(0, Ordering::Relaxed);
       let mean = wait
         .total
         .checked_div(wait.count.max(1))
@@ -1063,8 +1070,8 @@ fn write_event_waits(lines: &mut String, summary: &Profiler) {
 
 /// Writes one row of the `rd_apply` breakdown.
 ///
-/// Averages over calls rather than frames: a reposition either happens for a
-/// given window this frame or it does not, so a per-frame average of a
+/// Averages over calls rather than frames: a reposition either happens for
+/// a given window this frame or it does not, so a per-frame average of a
 /// per-window cost would be meaningless.
 fn apply_row(lines: &mut String, name: &str, sample: &ApplySample) {
   let per_call = sample
@@ -1127,7 +1134,10 @@ mod tests {
     assert!(!is_enabled());
     begin_frame();
     drop(scope(Stage::Tick));
-    drop(apply_scope(|| unreachable!("label built while disabled"), true));
+    drop(apply_scope(
+      || unreachable!("label built while disabled"),
+      true,
+    ));
     note_window_count(4);
     mark_event_queued(EventKind::Window);
     record_event_dequeued(EventKind::Window);
@@ -1178,7 +1188,8 @@ mod tests {
       // Stages that never ran are omitted from the table.
       assert!(!report.contains("border_sync"));
 
-      // Reporting resets the session, so a second report has nothing to say.
+      // Reporting resets the session, so a second report has nothing to
+      // say.
       assert!(take_report("unit test").is_none());
       PROFILER.with(|profiler| assert_eq!(profiler.borrow().frames, 0));
     })
@@ -1302,13 +1313,14 @@ mod tests {
       queue_event(EventKind::Display);
       dequeue_event(EventKind::Display);
       dequeue_event(EventKind::Display);
-      // A third dequeue has nothing to pair with and must be flagged rather
-      // than silently reported as a zero-length wait.
+      // A third dequeue has nothing to pair with and must be flagged
+      // rather than silently reported as a zero-length wait.
       dequeue_event(EventKind::Display);
       assert!(!roll_up_frame());
 
       PROFILER.with(|profiler| {
-        let wait = profiler.borrow().event_wait[EventKind::Display.index()];
+        let wait =
+          profiler.borrow().event_wait[EventKind::Display.index()];
         assert_eq!(wait.count, 2);
         assert_eq!(wait.unpaired, 1);
       });

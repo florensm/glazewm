@@ -8,16 +8,16 @@
 //!
 //! # Threading
 //!
-//! A `Compositor` must be created on a thread that owns a dispatcher queue,
-//! and (confirmed empirically in the spike, not just per docs) that thread
-//! must keep pumping messages for async composition work to ever complete.
-//! The wallpaper backdrop's D2D/WIC device stack (see `graphics_device`)
-//! is thread-affine besides, and lives on this same thread for that
-//! reason. `wm`'s main loop drives everything through `tokio::select!`/
-//! `rt.block_on`, which never pumps Win32 messages, so the entire
-//! composition pipeline (the `Compositor` itself, and every per-overlay
-//! visual-tree build) is constructed on a dedicated, self-pumping OS
-//! thread obtained via
+//! A `Compositor` must be created on a thread that owns a dispatcher
+//! queue, and (confirmed empirically in the spike, not just per docs) that
+//! thread must keep pumping messages for async composition work to ever
+//! complete. The wallpaper backdrop's D2D/WIC device stack (see
+//! `graphics_device`) is thread-affine besides, and lives on this same
+//! thread for that reason. `wm`'s main loop drives everything through
+//! `tokio::select!`/ `rt.block_on`, which never pumps Win32 messages, so
+//! the entire composition pipeline (the `Compositor` itself, and every
+//! per-overlay visual-tree build) is constructed on a dedicated,
+//! self-pumping OS thread obtained via
 //! `DispatcherQueueController::CreateOnDedicatedThread`.
 //!
 //! Once created, `Compositor` and every composition object handed back to
@@ -37,20 +37,22 @@ use std::{
 use windows::{
   core::ComInterface,
   Foundation::Numerics::{Vector2, Vector3},
-  System::{DispatcherQueue, DispatcherQueueController, DispatcherQueueHandler},
-  UI::{
-    Color,
-    Composition::{
-      CompositionColorBrush, CompositionRoundedRectangleGeometry,
-      CompositionMappingMode, CompositionRadialGradientBrush,
-      CompositionSpriteShape, CompositionSurfaceBrush, Compositor,
-      ContainerVisual, Desktop::DesktopWindowTarget, ShapeVisual,
-      SpriteVisual,
-    },
+  System::{
+    DispatcherQueue, DispatcherQueueController, DispatcherQueueHandler,
   },
   Win32::{
     Foundation::HWND,
     System::WinRT::Composition::ICompositorDesktopInterop,
+  },
+  UI::{
+    Color,
+    Composition::{
+      CompositionColorBrush, CompositionMappingMode,
+      CompositionRadialGradientBrush, CompositionRoundedRectangleGeometry,
+      CompositionSpriteShape, CompositionSurfaceBrush, Compositor,
+      ContainerVisual, Desktop::DesktopWindowTarget, ShapeVisual,
+      SpriteVisual,
+    },
   },
 };
 
@@ -102,9 +104,9 @@ fn init_composition_thread() -> crate::Result<CompositionThread> {
 /// Runs `f` on the composition thread with that thread's `Compositor` and
 /// dispatcher queue, bringing the pipeline up on first use.
 ///
-/// Every entry point into the pipeline needs the same three steps -- resolve
-/// the thread, clone its agile handles into the closure, dispatch -- so they
-/// live here rather than being repeated per visual type.
+/// Every entry point into the pipeline needs the same three steps --
+/// resolve the thread, clone its agile handles into the closure, dispatch
+/// -- so they live here rather than being repeated per visual type.
 pub(crate) fn with_composition_thread<T, F>(f: F) -> crate::Result<T>
 where
   T: Send + 'static,
@@ -188,7 +190,12 @@ where
 /// Converts our `crate::Color` into a `windows::UI::Color` for Composition
 /// brushes.
 fn to_ui_color(color: crate::Color) -> Color {
-  Color { A: color.a, B: color.b, G: color.g, R: color.r }
+  Color {
+    A: color.a,
+    B: color.b,
+    G: color.g,
+    R: color.r,
+  }
 }
 
 /// What paints the overlay's lower (blur) layer: a crop of the monitor's
@@ -218,7 +225,8 @@ struct Backdrop {
 /// on top, both clipped to a continuous rounded rectangle.
 pub(crate) struct BackdropVisual {
   /// Binds the visual tree to the overlay's `HWND`. Kept alive but never
-  /// touched again -- dropping it would unbind composition from the window.
+  /// touched again -- dropping it would unbind composition from the
+  /// window.
   _target: DesktopWindowTarget,
 
   /// Retained (rather than just used during `create`) so the knob setters
@@ -234,11 +242,12 @@ pub(crate) struct BackdropVisual {
 
   /// Darkens the overlay toward its own edges.
   ///
-  /// A visual rather than a stage in the wallpaper bake, because the bake is
-  /// shared by every window on the monitor: baked in, the falloff anchors to
-  /// the screen, so a window at the edge gets a uniformly dark crop and one
-  /// in the middle gets the bright centre. Here it is measured from each
-  /// window's own rect, which is what a vignette means.
+  /// A visual rather than a stage in the wallpaper bake, because the bake
+  /// is shared by every window on the monitor: baked in, the falloff
+  /// anchors to the screen, so a window at the edge gets a uniformly
+  /// dark crop and one in the middle gets the bright centre. Here it is
+  /// measured from each window's own rect, which is what a vignette
+  /// means.
   ///
   /// `MappingMode::Relative` expresses the gradient in fractions of the
   /// sprite, so a resize needs no update to the brush at all -- only the
@@ -252,10 +261,10 @@ pub(crate) struct BackdropVisual {
   ///
   /// Two sprites rather than one because the uncovered area is an L: the
   /// thumbnail is anchored top-left, so what is left over is a strip down
-  /// the right and a strip along the bottom. A single sprite would have to
-  /// cover the thumbnail as well, and being composited *under* a
-  /// part-transparent thumbnail it would tint the content too -- the whole
-  /// window would read as solid, which is the bug this replaces.
+  /// the right and a strip along the bottom. A single sprite would have
+  /// to cover the thumbnail as well, and being composited *under* a
+  /// part-transparent thumbnail it would tint the content too -- the
+  /// whole window would read as solid, which is the bug this replaces.
   ///
   /// Painted here rather than on the surrogate because the surrogate can
   /// only ask for a solid backdrop through SWCA, and an SWCA accent
@@ -271,8 +280,9 @@ pub(crate) struct BackdropVisual {
   knobs: BakeKnobs,
 
   /// How far the wallpaper crop follows the window. Not part of `knobs`:
-  /// it selects a different region of an already-baked surface rather than
-  /// changing what was baked, so a change costs one property write.
+  /// it selects a different region of an already-baked surface rather
+  /// than changing what was baked, so a change costs one property
+  /// write.
   parallax: f32,
 }
 
@@ -324,9 +334,9 @@ impl BackdropVisual {
   /// overlay now covers.
   ///
   /// Re-binds to another monitor's baked surface only when the overlay has
-  /// actually crossed onto one -- checked arithmetically against the cached
-  /// bounds first, so the per-tick case during an animation costs one
-  /// property write and no system calls.
+  /// actually crossed onto one -- checked arithmetically against the
+  /// cached bounds first, so the per-tick case during an animation costs
+  /// one property write and no system calls.
   fn sync_crop(&mut self, rect: &Rect) -> crate::Result<()> {
     let knobs = self.knobs;
     let parallax = self.parallax;
@@ -334,20 +344,26 @@ impl BackdropVisual {
     let queue = self.queue.clone();
     let current = wallpaper_surface::generation();
 
-    let Backdrop { brush, monitor, generation } = &mut self.backdrop;
+    let Backdrop {
+      brush,
+      monitor,
+      generation,
+    } = &mut self.backdrop;
 
-    // The generation check has to force a re-bind even when the overlay has
-    // not moved: the monitor it sits on is unchanged, but the image baked
-    // for that monitor is no longer the one the desktop is showing.
-    if *generation != current || !monitor.contains_point(&rect.center_point())
+    // The generation check has to force a re-bind even when the overlay
+    // has not moved: the monitor it sits on is unchanged, but the
+    // image baked for that monitor is no longer the one the desktop is
+    // showing.
+    if *generation != current
+      || !monitor.contains_point(&rect.center_point())
     {
       let bounds = wallpaper_surface::monitor_bounds(rect);
       let rebound = brush.clone();
       let target = bounds.clone();
 
-      // Queued, not awaited: this runs from the per-tick sync path, and the
-      // new crop being on screen a frame later is invisible next to blocking
-      // the main loop until it is.
+      // Queued, not awaited: this runs from the per-tick sync path, and
+      // the new crop being on screen a frame later is invisible next
+      // to blocking the main loop until it is.
       dispatch_on_composition_thread(&queue, move || {
         if let Err(err) =
           wallpaper_surface::rebind(&compositor, &rebound, &target, knobs)
@@ -364,13 +380,16 @@ impl BackdropVisual {
     Ok(())
   }
 
-  /// Re-binds the wallpaper backdrop when the desktop it was baked from has
-  /// changed, and does nothing otherwise.
+  /// Re-binds the wallpaper backdrop when the desktop it was baked from
+  /// has changed, and does nothing otherwise.
   ///
   /// Called on every sync tick, so the no-change path is deliberately one
   /// relaxed atomic load and a comparison -- no shell query, no filesystem
   /// stat, and no composition property write.
-  pub(crate) fn sync_backdrop(&mut self, rect: &Rect) -> crate::Result<()> {
+  pub(crate) fn sync_backdrop(
+    &mut self,
+    rect: &Rect,
+  ) -> crate::Result<()> {
     // Throttled internally to one shell query every couple of seconds, so
     // calling it from every overlay on every tick is fine.
     wallpaper_surface::poll_for_changes();
@@ -468,7 +487,10 @@ impl BackdropVisual {
 
   /// Updates the blur radius, which is baked into the wallpaper surface
   /// rather than evaluated per frame, so this re-bakes it (see `rebake`).
-  pub(crate) fn set_blur_amount(&mut self, value: f32) -> crate::Result<()> {
+  pub(crate) fn set_blur_amount(
+    &mut self,
+    value: f32,
+  ) -> crate::Result<()> {
     let mut knobs = self.knobs;
     knobs.blur_amount = value;
     self.reapply_knobs(knobs)
@@ -505,7 +527,10 @@ impl BackdropVisual {
   /// Updates the saturation baked into the wallpaper image. It shares one
   /// bake with `blur_amount`, so either setter re-runs it using the
   /// other's current stored value.
-  pub(crate) fn set_saturation(&mut self, value: f32) -> crate::Result<()> {
+  pub(crate) fn set_saturation(
+    &mut self,
+    value: f32,
+  ) -> crate::Result<()> {
     let mut knobs = self.knobs;
     knobs.saturation = value;
     self.reapply_knobs(knobs)
@@ -532,7 +557,10 @@ impl BackdropVisual {
   /// Wallpaper only, same reason as [`set_exposure`].
   ///
   /// [`set_exposure`]: BackdropVisual::set_exposure
-  pub(crate) fn set_highlights(&mut self, value: f32) -> crate::Result<()> {
+  pub(crate) fn set_highlights(
+    &mut self,
+    value: f32,
+  ) -> crate::Result<()> {
     let mut knobs = self.knobs;
     knobs.highlights = value;
     self.reapply_knobs(knobs)
@@ -559,8 +587,8 @@ impl BackdropVisual {
     Ok(())
   }
 
-  /// Updates the grain baked into the wallpaper image. Wallpaper only, same
-  /// reason as [`set_exposure`].
+  /// Updates the grain baked into the wallpaper image. Wallpaper only,
+  /// same reason as [`set_exposure`].
   ///
   /// [`set_exposure`]: BackdropVisual::set_exposure
   pub(crate) fn set_grain(&mut self, value: f32) -> crate::Result<()> {
@@ -601,13 +629,14 @@ impl BackdropVisual {
 ///
 /// Transparent across the middle and reaching `strength` alpha at the
 /// corners. The ellipse is deliberately larger than the sprite
-/// (`radius > 0.5` in relative units) so the darkest point falls outside the
-/// visible area: a gradient that reached full strength exactly at the edge
-/// puts its steepest part on screen and reads as a ring rather than shading.
+/// (`radius > 0.5` in relative units) so the darkest point falls outside
+/// the visible area: a gradient that reached full strength exactly at the
+/// edge puts its steepest part on screen and reads as a ring rather than
+/// shading.
 ///
 /// A `strength` of zero still builds a brush, fully transparent. Skipping
-/// the visual entirely would mean rebuilding the tree when the knob is first
-/// raised, and a transparent visual costs DWM nothing to composite.
+/// the visual entirely would mean rebuilding the tree when the knob is
+/// first raised, and a transparent visual costs DWM nothing to composite.
 fn build_vignette_brush(
   compositor: &Compositor,
   strength: f32,
@@ -622,13 +651,29 @@ fn build_vignette_brush(
   #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
   let alpha = (strength.clamp(0.0, 1.0) * 255.0).round() as u8;
 
-  let clear = Color { A: 0, R: 0, G: 0, B: 0 };
-  let dark = Color { A: alpha, R: 0, G: 0, B: 0 };
+  let clear = Color {
+    A: 0,
+    R: 0,
+    G: 0,
+    B: 0,
+  };
+  let dark = Color {
+    A: alpha,
+    R: 0,
+    G: 0,
+    B: 0,
+  };
 
   let stops = brush.ColorStops()?;
-  stops.Append(&compositor.CreateColorGradientStopWithOffsetAndColor(0.0, clear)?)?;
-  stops.Append(&compositor.CreateColorGradientStopWithOffsetAndColor(0.45, clear)?)?;
-  stops.Append(&compositor.CreateColorGradientStopWithOffsetAndColor(1.0, dark)?)?;
+  stops.Append(
+    &compositor.CreateColorGradientStopWithOffsetAndColor(0.0, clear)?,
+  )?;
+  stops.Append(
+    &compositor.CreateColorGradientStopWithOffsetAndColor(0.45, clear)?,
+  )?;
+  stops.Append(
+    &compositor.CreateColorGradientStopWithOffsetAndColor(1.0, dark)?,
+  )?;
 
   Ok(brush)
 }
@@ -636,7 +681,8 @@ fn build_vignette_brush(
 /// `DesktopWindowTarget` sizes composition visuals 1:1 against the HWND's
 /// actual client pixel size (no DPI virtualization layer here, unlike
 /// XAML/UWP) -- so this is a passthrough today. Named/kept separate from a
-/// bare cast so a future DPI-aware sizing adjustment has a single call site.
+/// bare cast so a future DPI-aware sizing adjustment has a single call
+/// site.
 #[allow(clippy::cast_precision_loss, clippy::unnecessary_wraps)]
 fn pixels_to_dips(pixels: i32) -> f32 {
   pixels as f32
@@ -661,7 +707,10 @@ fn build_visual_tree(
 
   let width = pixels_to_dips(rect.width());
   let height = pixels_to_dips(rect.height());
-  let size = Vector2 { X: width, Y: height };
+  let size = Vector2 {
+    X: width,
+    Y: height,
+  };
 
   let rounded_geometry = compositor.CreateRoundedRectangleGeometry()?;
   rounded_geometry.SetSize(size)?;
@@ -669,7 +718,8 @@ fn build_visual_tree(
     X: params.corner_radius,
     Y: params.corner_radius,
   })?;
-  let clip = compositor.CreateGeometricClipWithGeometry(&rounded_geometry)?;
+  let clip =
+    compositor.CreateGeometricClipWithGeometry(&rounded_geometry)?;
 
   let backdrop_sprite = compositor.CreateSpriteVisual()?;
   backdrop_sprite.SetSize(size)?;
@@ -739,7 +789,6 @@ fn build_visual_tree(
   })
 }
 
-
 /// A live `Windows.UI.Composition` visual tree providing a border
 /// overlay's rendering: a single rounded rectangle *stroked* with a solid
 /// color, so only the ring band is ever painted and the interior stays
@@ -770,7 +819,8 @@ fn build_visual_tree(
 /// keeps the region punch there and only there.
 pub(crate) struct BorderVisual {
   /// Binds the visual tree to the overlay's `HWND`. Kept alive but never
-  /// touched again -- dropping it would unbind composition from the window.
+  /// touched again -- dropping it would unbind composition from the
+  /// window.
   _target: DesktopWindowTarget,
 
   /// Root of the tree, holding the single stroked shape. A `ShapeVisual`
@@ -782,8 +832,8 @@ pub(crate) struct BorderVisual {
   geometry: CompositionRoundedRectangleGeometry,
 
   /// Last-applied ring inputs, so any one of `set_rect`/`set_width`/
-  /// `set_corner_radius` can recompute the derived geometry (which depends
-  /// on all three) from the other two's current values.
+  /// `set_corner_radius` can recompute the derived geometry (which
+  /// depends on all three) from the other two's current values.
   ring: Cell<Ring>,
 }
 
@@ -856,9 +906,10 @@ impl BorderVisual {
     self.shape.SetStrokeThickness(ring.width.max(0.0))?;
     self.geometry.SetOffset(offset)?;
     self.geometry.SetSize(size)?;
-    self
-      .geometry
-      .SetCornerRadius(Vector2 { X: corner_radius, Y: corner_radius })?;
+    self.geometry.SetCornerRadius(Vector2 {
+      X: corner_radius,
+      Y: corner_radius,
+    })?;
 
     self.ring.set(ring);
     Ok(())
@@ -872,11 +923,17 @@ impl BorderVisual {
       Y: pixels_to_dips(rect.height()),
     };
 
-    Ok(self.apply_ring(Ring { size, ..self.ring.get() })?)
+    Ok(self.apply_ring(Ring {
+      size,
+      ..self.ring.get()
+    })?)
   }
 
   /// Updates the ring's color.
-  pub(crate) fn set_color(&self, color: crate::Color) -> crate::Result<()> {
+  pub(crate) fn set_color(
+    &self,
+    color: crate::Color,
+  ) -> crate::Result<()> {
     self.stroke_brush.SetColor(to_ui_color(color))?;
     Ok(())
   }
@@ -889,12 +946,18 @@ impl BorderVisual {
   ///
   /// [`set_rect`]: BorderVisual::set_rect
   pub(crate) fn set_width(&self, width: f32) -> crate::Result<()> {
-    Ok(self.apply_ring(Ring { width, ..self.ring.get() })?)
+    Ok(self.apply_ring(Ring {
+      width,
+      ..self.ring.get()
+    })?)
   }
 
   /// Updates the ring's outer corner radius.
   pub(crate) fn set_corner_radius(&self, value: f32) -> crate::Result<()> {
-    Ok(self.apply_ring(Ring { corner_radius: value, ..self.ring.get() })?)
+    Ok(self.apply_ring(Ring {
+      corner_radius: value,
+      ..self.ring.get()
+    })?)
   }
 
   /// Updates the overlay's own opacity.
@@ -910,8 +973,8 @@ impl BorderVisual {
   /// pinned to the monitor viewport and only its content moves: one
   /// property write per frame instead of a `SetWindowPos` plus a geometry
   /// rebuild. Content driven outside the window's bounds is clipped by the
-  /// `DesktopWindowTarget`, so a ring sliding off the monitor is cut at the
-  /// edge rather than spilling onto the neighbouring one.
+  /// `DesktopWindowTarget`, so a ring sliding off the monitor is cut at
+  /// the edge rather than spilling onto the neighbouring one.
   pub(crate) fn set_offset(&self, x: i32, y: i32) -> crate::Result<()> {
     self.root.SetOffset(Vector3 {
       X: pixels_to_dips(x),
