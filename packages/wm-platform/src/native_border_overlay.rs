@@ -391,8 +391,9 @@ impl NativeBorderOverlay {
   /// application -- skipped on a pure reposition, since `SetWindowRgn` is
   /// comparatively expensive to call on every animation tick.
   ///
-  /// No-op on the Composition path, which strokes its ring and needs no
-  /// window region at all.
+  /// Applied on both renderers, for different reasons: SWCA needs the
+  /// centre cut away for the ring to exist at all, and Composition needs it
+  /// to stay out of `WindowFromPoint`. See [`apply_hole_region`].
   fn refresh_hole(&mut self, outer: &Rect) {
     // A pinned overlay is viewport-sized with its ring drawn at an offset
     // inside it, so `outer` doesn't describe its window at all. `clear_pin`
