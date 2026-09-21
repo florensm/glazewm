@@ -456,7 +456,7 @@ window_effects:
   focused_window:
     blur_behind:
       enabled: true
-      style: 'solid'
+      style: 'wallpaper'
 ";
     let config: ParsedConfig =
       serde_yaml::from_str(yaml).expect("legacy config should parse");
@@ -464,19 +464,15 @@ window_effects:
     assert!(config.window_effects.focused_window.backdrop.enabled);
     assert_eq!(
       config.window_effects.focused_window.backdrop.style,
-      BackdropStyle::Solid
+      BackdropStyle::Wallpaper
     );
   }
 
   /// Every `BackdropStyle` variant must be reachable from the config using
-  /// its snake_case name, `blur` included.
+  /// its snake_case name.
   #[test]
   fn backdrop_styles_parse() {
-    for (value, expected) in [
-      ("wallpaper", BackdropStyle::Wallpaper),
-      ("acrylic", BackdropStyle::Acrylic),
-      ("solid", BackdropStyle::Solid),
-    ] {
+    for (value, expected) in [("wallpaper", BackdropStyle::Wallpaper)] {
       let yaml = format!(
         "
 window_effects:

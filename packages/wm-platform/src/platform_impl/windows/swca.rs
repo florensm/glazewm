@@ -25,8 +25,6 @@ pub(crate) const ACCENT_ENABLE_GRADIENT: u32 = 1;
 /// animations and cannot root a visual tree of its own.
 pub(crate) const ACCENT_ENABLE_ACRYLICBLURBEHIND: u32 = 4;
 
-pub(crate) const ACCENT_ENABLE_HOSTBACKDROP: u32 = 5;
-
 /// `WCA_ACCENT_POLICY` attribute index for
 /// `SetWindowCompositionAttribute`.
 const WCA_ACCENT_POLICY: u32 = 19;

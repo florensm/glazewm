@@ -4,7 +4,6 @@ use windows::{
   core::w,
   Win32::{
     Foundation::HWND,
-    Graphics::Dwm::{DwmSetWindowAttribute, DWMWA_USE_HOSTBACKDROPBRUSH},
     UI::WindowsAndMessaging::{
       CreateWindowExW, DestroyWindow, GetWindow, SetWindowPos, ShowWindow,
       GW_HWNDPREV, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSENDCHANGING,
@@ -16,12 +15,8 @@ use windows::{
 };
 
 use crate::{
-  platform_impl::{
-    composition::BlurVisual,
-    swca::{apply_swca_accent, ACCENT_ENABLE_HOSTBACKDROP},
-  },
-  window_class, BackdropStyle, BlurOverlayParams, Color, Rect,
-  SurrogateBatch,
+  platform_impl::composition::BlurVisual, window_class, BlurOverlayParams,
+  Color, Rect, SurrogateBatch,
 };
 
 fn ensure_class_registered() {
@@ -83,50 +78,22 @@ fn create_window(rect: &Rect) -> crate::Result<HWND> {
   Ok(hwnd)
 }
 
-/// Applies `ACCENT_ENABLE_HOSTBACKDROP` (+ its Win11 documented equivalent,
-/// `DWMWA_USE_HOSTBACKDROPBRUSH`) to `hwnd`, required for a
-/// `CompositionBackdropBrush` to sample live desktop content instead of
-/// rendering black/opaque.
-fn apply_hostbackdrop(hwnd: HWND) {
-  apply_swca_accent(hwnd, ACCENT_ENABLE_HOSTBACKDROP, 0, 0);
-
-  let value: windows::Win32::Foundation::BOOL = true.into();
-  // `BOOL` is a 4-byte struct; the cast is always exact.
-  #[allow(clippy::cast_possible_truncation)]
-  let size = std::mem::size_of::<windows::Win32::Foundation::BOOL>() as u32;
-  // SAFETY: `hwnd` is valid; `value` is a 4-byte BOOL matching `size`.
-  unsafe {
-    let _ = DwmSetWindowAttribute(
-      hwnd,
-      DWMWA_USE_HOSTBACKDROPBRUSH,
-      std::ptr::addr_of!(value).cast(),
-      size,
-    );
-  }
-}
-
 /// Creates the overlay's backing window and roots its
 /// `Windows.UI.Composition` visual tree on it.
 ///
-/// There is no non-composition path: every style renders through the visual
-/// tree, so a system without `Windows.UI.Composition` (pre-Windows 10 1803)
-/// gets no overlay rather than a partial one. The alternative -- SWCA, which
-/// only ever approximated `Acrylic` and could express neither `Wallpaper`
-/// nor an opaque `Solid` -- would have degraded one style while leaving the
-/// other two blank, which is harder to reason about than nothing at all.
+/// There is no non-composition path: the backdrop renders through the
+/// visual tree, so a system without `Windows.UI.Composition` (pre-Windows
+/// 10 1803) gets no overlay rather than a partial one. The alternative --
+/// SWCA -- could not express an opaque wallpaper crop at all.
+///
+/// The window is deliberately not marked as a host backdrop: the wallpaper
+/// crop is opaque, and asking DWM to keep compositing what sits beneath it
+/// is the exact cost this style exists to remove.
 fn create_backing_window(
   rect: &Rect,
   params: BlurOverlayParams,
 ) -> crate::Result<(HWND, BlurVisual)> {
   let hwnd = create_window(rect)?;
-
-  // Only acrylic samples what is behind the overlay. The other styles paint
-  // an opaque surface of their own, and marking their window as a host
-  // backdrop would ask DWM to keep compositing what sits beneath it -- the
-  // exact cost they exist to remove.
-  if params.style == BackdropStyle::Acrylic {
-    apply_hostbackdrop(hwnd);
-  }
 
   match BlurVisual::create(hwnd, rect, params) {
     Ok(visual) => Ok((hwnd, visual)),
@@ -141,45 +108,22 @@ fn create_backing_window(
   }
 }
 
-/// A persistent backdrop window that provides a blur-behind effect
-/// (acrylic or plain, per [`BlurOverlayParams::style`]) for a paired
-/// managed window.
+/// A persistent backdrop window rendering a crop of the pre-blurred
+/// wallpaper surface behind a paired managed window.
 ///
 /// Positioned directly behind an `anchor` window in z-order (typically the
 /// managed window itself, or its surrogate while one is active -- see
 /// [`set_rect`]/[`sync_z_order`]) and kept pixel-aligned with its DWM frame
 /// rect. When the managed window is semi-transparent (via the
-/// `transparency` window effect), the blurred content visible through the
-/// overlay shows through the window, producing a frosted-glass look.
+/// `transparency` window effect), the backdrop shows through the window,
+/// producing a frosted-glass look.
 ///
-/// Anchoring directly behind the managed window (rather than e.g. the
-/// global `HWND_BOTTOM`) matters because `HostBackdropBrush` only ever
-/// samples whatever is visually behind the overlay *at the overlay's own
-/// z-position* -- pinned to the very bottom of the system z-order, it could
-/// only ever blur the bare desktop wallpaper; anchored directly behind its
-/// own window, it picks up whatever's actually stacked there, other real
-/// windows included.
+/// Renders entirely through a `Windows.UI.Composition` visual tree, so a
+/// system without it (pre-Windows 10 1803) gets no overlay at all rather
+/// than a degraded one.
 ///
 /// [`set_rect`]: NativeBlurOverlay::set_rect
 /// [`sync_z_order`]: NativeBlurOverlay::sync_z_order
-///
-/// For [`BackdropStyle::Acrylic`], renders via a
-/// `Windows.UI.Composition` pipeline (live host-backdrop brush, a
-/// continuously adjustable Gaussian-blur effect graph, and a continuous
-/// corner-radius clip) when available, falling back to
-/// `SetWindowCompositionAttribute` with `ACCENT_ENABLE_ACRYLICBLURBEHIND`
-/// otherwise -- e.g. pre-Windows 10 1803, or if any step of the Composition
-/// setup fails.
-///
-/// For [`BackdropStyle::Blur`], goes straight to
-/// `SetWindowCompositionAttribute` with `ACCENT_ENABLE_BLURBEHIND` and
-/// builds no Composition pipeline at all, which is what makes it the cheap
-/// style: DWM applies its own fixed blur instead of this process driving a
-/// D2D effect graph per frame.
-///
-/// Whenever there's no Composition pipeline (either style), `blur_amount`/
-/// `corner_radius`/`opacity`/`saturation` become no-ops -- the OS gives no
-/// such knobs for SWCA -- but `tint` keeps working.
 ///
 /// # Platform-specific
 ///

@@ -1506,11 +1506,7 @@ mod tests {
   /// them while the effect is disabled.
   #[test]
   fn overlay_tint_covers_every_style() {
-    for (style, expected) in [
-      (BackdropStyle::Wallpaper, true),
-      (BackdropStyle::Acrylic, true),
-      (BackdropStyle::Solid, true),
-    ] {
+    for (style, expected) in [(BackdropStyle::Wallpaper, true)] {
       let enabled = BackdropEffectConfig {
         enabled: true,
         style,
