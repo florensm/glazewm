@@ -1,6 +1,5 @@
 use std::str::FromStr;
 
-use regex::Regex;
 use serde::{Deserialize, Deserializer, Serialize};
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -65,33 +64,33 @@ impl FromStr for LengthValue {
   /// assert_eq!(parsed.unwrap(), check);
   /// ```
   fn from_str(unparsed: &str) -> Result<Self, crate::ParseError> {
-    let units_regex =
-      Regex::new(r"([+-]?\d+)(%|px)?").expect("Invalid regex.");
+    let error = || crate::ParseError::Length(unparsed.to_string());
+    let value = unparsed.trim();
 
-    let captures = units_regex
-      .captures(unparsed)
-      .ok_or(crate::ParseError::Length(unparsed.to_string()))?;
-
-    let unit = match captures.get(2).map_or("", |m| m.as_str()) {
-      "px" | "" => LengthUnit::Pixel,
-      "%" => LengthUnit::Percentage,
-      _ => return Err(crate::ParseError::Length(unparsed.to_string())),
+    let (amount, unit) = match value.strip_suffix('%') {
+      Some(amount) => (amount, LengthUnit::Percentage),
+      None => {
+        (value.strip_suffix("px").unwrap_or(value), LengthUnit::Pixel)
+      }
     };
 
-    let amount = captures
-      .get(1)
-      .and_then(|m| m.as_str().parse::<f32>().ok())
-      // Store percentage units as a fraction of 1.
-      .map(|amount| {
-        if unit == LengthUnit::Percentage {
-          amount / 100.0
-        } else {
-          amount
-        }
-      })
-      .ok_or(crate::ParseError::Length(unparsed.to_string()))?;
+    let amount = amount.trim().parse::<f32>().map_err(|_| error())?;
 
-    Ok(LengthValue { amount, unit })
+    // `f32::from_str` also accepts `inf`/`NaN`, which are meaningless as a
+    // length and would propagate silently through `to_px`.
+    if !amount.is_finite() {
+      return Err(error());
+    }
+
+    Ok(LengthValue {
+      // Store percentage units as a fraction of 1.
+      amount: if unit == LengthUnit::Percentage {
+        amount / 100.0
+      } else {
+        amount
+      },
+      unit,
+    })
   }
 }
 
@@ -113,6 +112,61 @@ impl<'de> Deserialize<'de> for LengthValue {
       LengthValueDe::String(str) => {
         Self::from_str(&str).map_err(serde::de::Error::custom)
       }
+    }
+  }
+}
+
+#[cfg(test)]
+mod tests {
+  use std::str::FromStr;
+
+  use super::{LengthUnit, LengthValue};
+
+  #[test]
+  fn parses_pixels_with_and_without_the_unit() {
+    for input in ["100px", "100"] {
+      let parsed = LengthValue::from_str(input).unwrap();
+      assert_eq!(parsed.unit, LengthUnit::Pixel);
+      assert!((parsed.amount - 100.0).abs() < f32::EPSILON);
+    }
+  }
+
+  /// Percentages are stored as a fraction of 1, not as the written number.
+  #[test]
+  fn parses_percentages_as_a_fraction() {
+    let parsed = LengthValue::from_str("95%").unwrap();
+    assert_eq!(parsed.unit, LengthUnit::Percentage);
+    assert!((parsed.amount - 0.95).abs() < f32::EPSILON);
+  }
+
+  #[test]
+  fn parses_signed_values() {
+    let negative = LengthValue::from_str("-2%").unwrap();
+    assert!((negative.amount - -0.02).abs() < f32::EPSILON);
+
+    let positive = LengthValue::from_str("+5px").unwrap();
+    assert!((positive.amount - 5.0).abs() < f32::EPSILON);
+  }
+
+  /// Surrounding and pre-unit whitespace was tolerated by the previous
+  /// regex-based parser, so config values keep parsing either way.
+  #[test]
+  fn tolerates_surrounding_whitespace() {
+    for input in ["  100px  ", "100 px"] {
+      let parsed = LengthValue::from_str(input).unwrap();
+      assert_eq!(parsed.unit, LengthUnit::Pixel);
+      assert!((parsed.amount - 100.0).abs() < f32::EPSILON);
+    }
+  }
+
+  /// `f32::from_str` accepts these; a length must not.
+  #[test]
+  fn rejects_non_finite_and_unparseable_values() {
+    for input in ["inf", "-inf", "NaN", "", "px", "%", "abc", "100pt"] {
+      assert!(
+        LengthValue::from_str(input).is_err(),
+        "expected {input:?} to be rejected"
+      );
     }
   }
 }
