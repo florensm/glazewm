@@ -381,7 +381,9 @@ impl UserConfig {
 
 #[cfg(test)]
 mod tests {
-  use wm_common::{ParsedConfig, WindowTransitionStyle, WorkspaceSwitchStyle};
+  use wm_common::{
+    ParsedConfig, WindowTransitionStyle, WorkspaceSwitchStyle,
+  };
 
   use super::SAMPLE_CONFIG;
 

@@ -1,4 +1,4 @@
-﻿#![warn(clippy::all, clippy::pedantic)]
+#![warn(clippy::all, clippy::pedantic)]
 #![allow(clippy::missing_errors_doc)]
 #![feature(iterator_try_collect)]
 
@@ -61,7 +61,6 @@ pub use workspace_surrogate::WorkspaceSurrogate;
 mod native_iris_overlay;
 #[cfg(target_os = "windows")]
 pub use native_iris_overlay::NativeIrisOverlay;
-
 pub use platform_event::*;
 pub use single_instance::*;
 pub use system_accent_color::*;
@@ -88,7 +87,8 @@ pub fn disable_window_ghosting() {
   unsafe {
     // SAFETY: No preconditions and no failure mode; the call takes no
     // arguments, returns nothing, and only affects this process.
-    windows::Win32::UI::WindowsAndMessaging::DisableProcessWindowsGhosting();
+    windows::Win32::UI::WindowsAndMessaging::DisableProcessWindowsGhosting(
+    );
   }
 }
 
@@ -110,8 +110,8 @@ pub fn dwm_flush() {
 
 /// Returns the current cursor position in virtual-screen pixels.
 ///
-/// Returns `None` if the position cannot be queried. On non-Windows platforms
-/// this always returns `None`.
+/// Returns `None` if the position cannot be queried. On non-Windows
+/// platforms this always returns `None`.
 pub fn cursor_position() -> Option<(i32, i32)> {
   #[cfg(target_os = "windows")]
   {
@@ -146,15 +146,18 @@ pub struct DxgiVsyncWaiter {
   monitor_handle: isize,
   /// Monitor refresh period in microseconds, shared across clones.
   ///
-  /// Initialized from `query_frame_period_us`; refined downward in `wait` if
-  /// the measured vblank delta is smaller (truer). Defaults to `16_667` (60 Hz).
+  /// Initialized from `query_frame_period_us`; refined downward in `wait`
+  /// if the measured vblank delta is smaller (truer). Defaults to
+  /// `16_667` (60 Hz).
   period_us: std::sync::Arc<std::sync::atomic::AtomicU64>,
   /// Timestamp of the most recent successful `WaitForVBlank` wake-up.
   ///
   /// Written by the timer thread immediately after vsync fires. Read by
-  /// `predictive_vsync_now` to lead the animation clock by a fraction of a
-  /// frame so the computed position aligns with the next DWM composition.
-  pub last_wake: std::sync::Arc<std::sync::Mutex<Option<std::time::Instant>>>,
+  /// `predictive_vsync_now` to lead the animation clock by a fraction of
+  /// a frame so the computed position aligns with the next DWM
+  /// composition.
+  pub last_wake:
+    std::sync::Arc<std::sync::Mutex<Option<std::time::Instant>>>,
 }
 
 /// Process-wide cache for the `IDXGIFactory` used by
@@ -162,14 +165,14 @@ pub struct DxgiVsyncWaiter {
 ///
 /// `CreateDXGIFactory` measured at ~11ms on real hardware with an external
 /// monitor attached (vs. ~0.2ms for the actual adapter/output enumeration
-/// that follows it) -- so re-running it on every single move/resize gesture
-/// (`for_monitor` is called fresh per gesture; see its doc comment for why
-/// the returned `IDXGIOutput` itself is deliberately *not* cached across
-/// idle gaps) was a real, measured stutter at the start of every gesture.
-/// The factory itself doesn't have that go-stale-and-hang risk `IDXGIOutput`
-/// does -- `IsCurrent` is the documented, cheap way to check whether a
-/// cached factory is still valid after a display topology change, so it's
-/// safe to reuse across gestures and even across monitors.
+/// that follows it) -- so re-running it on every single move/resize
+/// gesture (`for_monitor` is called fresh per gesture; see its doc comment
+/// for why the returned `IDXGIOutput` itself is deliberately *not* cached
+/// across idle gaps) was a real, measured stutter at the start of every
+/// gesture. The factory itself doesn't have that go-stale-and-hang risk
+/// `IDXGIOutput` does -- `IsCurrent` is the documented, cheap way to check
+/// whether a cached factory is still valid after a display topology
+/// change, so it's safe to reuse across gestures and even across monitors.
 #[cfg(target_os = "windows")]
 static DXGI_FACTORY: std::sync::OnceLock<
   std::sync::Mutex<Option<windows::Win32::Graphics::Dxgi::IDXGIFactory>>,
@@ -177,16 +180,19 @@ static DXGI_FACTORY: std::sync::OnceLock<
 
 /// Returns a live `IDXGIFactory`, reusing the cached one when
 /// `IDXGIFactory::IsCurrent` confirms it's still valid, recreating it
-/// otherwise. See [`DXGI_FACTORY`]'s doc comment for why this is cached but
-/// [`DxgiVsyncWaiter`]'s per-monitor `IDXGIOutput` is not.
+/// otherwise. See [`DXGI_FACTORY`]'s doc comment for why this is cached
+/// but [`DxgiVsyncWaiter`]'s per-monitor `IDXGIOutput` is not.
 #[cfg(target_os = "windows")]
 fn cached_dxgi_factory(
 ) -> windows::core::Result<windows::Win32::Graphics::Dxgi::IDXGIFactory> {
-  use windows::core::ComInterface;
-  use windows::Win32::Graphics::Dxgi::CreateDXGIFactory;
+  use windows::{
+    core::ComInterface, Win32::Graphics::Dxgi::CreateDXGIFactory,
+  };
 
   let cell = DXGI_FACTORY.get_or_init(|| std::sync::Mutex::new(None));
-  let mut guard = cell.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+  let mut guard = cell
+    .lock()
+    .unwrap_or_else(std::sync::PoisonError::into_inner);
 
   if let Some(factory) = guard.as_ref() {
     // `IsCurrent` is declared on `IDXGIFactory1`, not the base
@@ -194,7 +200,8 @@ fn cached_dxgi_factory(
     // since Windows 8), so this cast never fails in practice.
     let is_current = factory
       .cast::<windows::Win32::Graphics::Dxgi::IDXGIFactory1>()
-      // SAFETY: `factory1` is a live `IDXGIFactory1` kept alive by this cache.
+      // SAFETY: `factory1` is a live `IDXGIFactory1` kept alive by this
+      // cache.
       .is_ok_and(|factory1| unsafe { factory1.IsCurrent() }.as_bool());
     if is_current {
       return Ok(factory.clone());
@@ -228,8 +235,8 @@ impl DxgiVsyncWaiter {
     use windows::Win32::Graphics::Gdi::{
       MonitorFromWindow, MONITOR_DEFAULTTONEAREST,
     };
-    // SAFETY: `MonitorFromWindow` accepts any `HWND`; invalid handles yield
-    // a null `HMONITOR`.
+    // SAFETY: `MonitorFromWindow` accepts any `HWND`; invalid handles
+    // yield a null `HMONITOR`.
     unsafe { MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST) }.0
   }
 
@@ -238,8 +245,8 @@ impl DxgiVsyncWaiter {
   /// Enumerates all DXGI adapters and their outputs. Returns `Err` when
   /// DXGI is unavailable or no output matches the given handle.
   pub fn for_monitor(monitor_handle: isize) -> crate::Result<Self> {
-    use windows::Win32::{
-      Graphics::{Dxgi::DXGI_OUTPUT_DESC, Gdi::HMONITOR},
+    use windows::Win32::Graphics::{
+      Dxgi::DXGI_OUTPUT_DESC, Gdi::HMONITOR,
     };
 
     let factory = cached_dxgi_factory()?;
@@ -254,13 +261,15 @@ impl DxgiVsyncWaiter {
       let mut oi = 0u32;
       loop {
         // SAFETY: `adapter` is a valid `IDXGIAdapter` from `EnumAdapters`
-        // above; an out-of-range `oi` just returns an error, handled below.
+        // above; an out-of-range `oi` just returns an error, handled
+        // below.
         let Ok(output) = (unsafe { adapter.EnumOutputs(oi) }) else {
           break; // No more outputs on this adapter.
         };
         let mut desc = DXGI_OUTPUT_DESC::default();
-        // SAFETY: `output` is a valid `IDXGIOutput`; `desc` is stack-allocated
-        // and passed as an out-parameter per the windows-rs 0.52 convention.
+        // SAFETY: `output` is a valid `IDXGIOutput`; `desc` is
+        // stack-allocated and passed as an out-parameter per the
+        // windows-rs 0.52 convention.
         if unsafe { output.GetDesc(&mut desc) }.is_ok()
           && desc.Monitor == HMONITOR(monitor_handle)
         {
@@ -281,12 +290,12 @@ impl DxgiVsyncWaiter {
     Err(crate::Error::DisplayNotFound)
   }
 
-  /// Queries the current refresh period (microseconds per vblank) for the GDI
-  /// device named by `device_name`.
+  /// Queries the current refresh period (microseconds per vblank) for the
+  /// GDI device named by `device_name`.
   ///
   /// Reads the active display mode via `EnumDisplaySettingsW`. Returns the
-  /// 60 Hz period (`16_667`) when the rate is unavailable or reported as the
-  /// hardware-default sentinel (`0` or `1`).
+  /// 60 Hz period (`16_667`) when the rate is unavailable or reported as
+  /// the hardware-default sentinel (`0` or `1`).
   fn query_frame_period_us(device_name: &[u16; 32]) -> u64 {
     use windows::{
       core::PCWSTR,
@@ -303,8 +312,8 @@ impl DxgiVsyncWaiter {
     };
 
     // SAFETY: `device_name` is a null-terminated wide string from
-    // `DXGI_OUTPUT_DESC`; `devmode` is stack-allocated with `dmSize` set per
-    // the `EnumDisplaySettingsW` contract.
+    // `DXGI_OUTPUT_DESC`; `devmode` is stack-allocated with `dmSize` set
+    // per the `EnumDisplaySettingsW` contract.
     let ok = unsafe {
       EnumDisplaySettingsW(
         PCWSTR(device_name.as_ptr()),
@@ -358,8 +367,8 @@ impl DxgiVsyncWaiter {
 ///
 /// Obtain via [`try_set_thread_mmcss`]. Dropping this guard calls
 /// `AvRevertMmThread`, restoring the thread to normal scheduling. This
-/// ensures cleanup even if the animation thread exits through an early-return
-/// path.
+/// ensures cleanup even if the animation thread exits through an
+/// early-return path.
 #[cfg(target_os = "windows")]
 pub struct MmcssGuard(isize);
 
@@ -391,13 +400,14 @@ impl Drop for MmcssGuard {
       return;
     };
 
-    // SAFETY: `self.0` is a valid AVRT handle from `AvSetMmThreadCharacteristicsW`.
+    // SAFETY: `self.0` is a valid AVRT handle from
+    // `AvSetMmThreadCharacteristicsW`.
     unsafe { f(self.0) };
   }
 }
 
-/// Registers the calling thread with the Multimedia Class Scheduler Service
-/// (MMCSS) for display post-processing.
+/// Registers the calling thread with the Multimedia Class Scheduler
+/// Service (MMCSS) for display post-processing.
 ///
 /// MMCSS gives the thread near-real-time scheduling guarantees beyond
 /// `THREAD_PRIORITY_HIGHEST`, reducing OS scheduling jitter after a vsync
@@ -421,8 +431,7 @@ pub fn try_set_thread_mmcss() -> Option<MmcssGuard> {
   let f = (*FN.get_or_init(|| {
     // SAFETY: `avrt.dll` is a standard system library present on Vista+.
     unsafe {
-      let module =
-        LoadLibraryW(windows::core::w!("avrt.dll")).ok()?;
+      let module = LoadLibraryW(windows::core::w!("avrt.dll")).ok()?;
       let proc = GetProcAddress(
         module,
         windows::core::s!("AvSetMmThreadCharacteristicsW"),
@@ -465,18 +474,19 @@ pub fn set_thread_priority_highest() {
     // lifetime of the calling thread. `SetThreadPriority` has no
     // preconditions beyond a valid handle and a recognised priority value.
     unsafe {
-      let _ = SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_HIGHEST);
+      let _ =
+        SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_HIGHEST);
     }
   }
 }
 
 // TODO: Avoid exposing `windows` crate types in the public API.
 #[cfg(target_os = "windows")]
-pub use windows::Win32::UI::WindowsAndMessaging::{
-  HWND_TOPMOST, SET_WINDOW_POS_FLAGS, SWP_ASYNCWINDOWPOS, SWP_FRAMECHANGED,
-  SWP_NOACTIVATE, SWP_NOCOPYBITS, SWP_NOSENDCHANGING, SWP_NOZORDER,
-  WINDOW_EX_STYLE, WINDOW_STYLE, WS_CAPTION, WS_CHILD, WS_EX_NOACTIVATE,
-  WS_EX_TOOLWINDOW, WS_MAXIMIZEBOX,
-};
-#[cfg(target_os = "windows")]
 pub use windows::Win32::Foundation::HWND;
+#[cfg(target_os = "windows")]
+pub use windows::Win32::UI::WindowsAndMessaging::{
+  HWND_TOPMOST, SET_WINDOW_POS_FLAGS, SWP_ASYNCWINDOWPOS,
+  SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOCOPYBITS, SWP_NOSENDCHANGING,
+  SWP_NOZORDER, WINDOW_EX_STYLE, WINDOW_STYLE, WS_CAPTION, WS_CHILD,
+  WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_MAXIMIZEBOX,
+};

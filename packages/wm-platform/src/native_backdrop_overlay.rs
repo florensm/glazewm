@@ -113,8 +113,8 @@ fn create_backing_window(
 ///
 /// Positioned directly behind an `anchor` window in z-order (typically the
 /// managed window itself, or its surrogate while one is active -- see
-/// [`set_rect`]/[`sync_z_order`]) and kept pixel-aligned with its DWM frame
-/// rect. When the managed window is semi-transparent (via the
+/// [`set_rect`]/[`sync_z_order`]) and kept pixel-aligned with its DWM
+/// frame rect. When the managed window is semi-transparent (via the
 /// `transparency` window effect), the backdrop shows through the window,
 /// producing a frosted-glass look.
 ///
@@ -133,18 +133,18 @@ pub struct NativeBackdropOverlay {
   /// is `Send` even though `HWND` is not.
   hwnd: isize,
 
-  /// Current tint/blur-amount/corner-radius/opacity/saturation, applied as
-  /// the composition tree's live properties.
+  /// Current tint/blur-amount/corner-radius/opacity/saturation, applied
+  /// as the composition tree's live properties.
   params: BackdropOverlayParams,
 
   /// Whether the gap fill is currently painting anything.
   ///
   /// The fill belongs to a live resize session, but the overlay outlives
   /// the session -- it is the window's own persistent backdrop. Left set,
-  /// the sprites keep covering the backdrop with a flat colour for as long
-  /// as the window exists, which is what they did until [`apply`] learned
-  /// to clear them. Tracked so that clearing costs a bool test per tick
-  /// rather than two composition writes.
+  /// the sprites keep covering the backdrop with a flat colour for as
+  /// long as the window exists, which is what they did until [`apply`]
+  /// learned to clear them. Tracked so that clearing costs a bool test
+  /// per tick rather than two composition writes.
   ///
   /// [`apply`]: NativeBackdropOverlay::apply
   gap_active: bool,
@@ -157,10 +157,10 @@ pub struct NativeBackdropOverlay {
   /// z-order anchor), as raw `isize`.
   ///
   /// Anchored to its own managed window rather than the global
-  /// `HWND_BOTTOM`: the backdrop is opaque, so pinned to the bottom of the
-  /// z-order it would be hidden behind every other window instead of
-  /// showing through the one it belongs to, and it has to be occluded by
-  /// whatever legitimately sits above that window.
+  /// `HWND_BOTTOM`: the backdrop is opaque, so pinned to the bottom of
+  /// the z-order it would be hidden behind every other window instead
+  /// of showing through the one it belongs to, and it has to be
+  /// occluded by whatever legitimately sits above that window.
   ///
   /// Tracked so [`set_rect`]/[`sync_z_order`] can skip a redundant
   /// `SetWindowPos` when the anchor hasn't changed.
@@ -172,10 +172,11 @@ pub struct NativeBackdropOverlay {
   /// Whether the overlay window is currently shown.
   ///
   /// Tracked explicitly (rather than inferred from a change in `rect`) so
-  /// that a caller re-showing the overlay after [`hide`] with an unchanged
-  /// rect still issues the `SetWindowPos` needed to reapply
-  /// `SWP_SHOWWINDOW` -- the rect-unchanged fast path in [`set_rect`] would
-  /// otherwise skip that call entirely, leaving the overlay hidden.
+  /// that a caller re-showing the overlay after [`hide`] with an
+  /// unchanged rect still issues the `SetWindowPos` needed to reapply
+  /// `SWP_SHOWWINDOW` -- the rect-unchanged fast path in [`set_rect`]
+  /// would otherwise skip that call entirely, leaving the overlay
+  /// hidden.
   ///
   /// [`hide`]: NativeBackdropOverlay::hide
   /// [`set_rect`]: NativeBackdropOverlay::set_rect
@@ -283,10 +284,10 @@ impl NativeBackdropOverlay {
   ///
   /// No-op if neither `rect` nor `anchor` changed and the overlay is
   /// already visible, to avoid redundant `SetWindowPos` calls (and the DWM
-  /// recomposite they trigger) on every sync tick for overlays that haven't
-  /// actually moved. Always issues the call when re-showing after [`hide`],
-  /// even at an unchanged rect/anchor, since that's what reapplies
-  /// `SWP_SHOWWINDOW`.
+  /// recomposite they trigger) on every sync tick for overlays that
+  /// haven't actually moved. Always issues the call when re-showing
+  /// after [`hide`], even at an unchanged rect/anchor, since that's what
+  /// reapplies `SWP_SHOWWINDOW`.
   ///
   /// Callers that only need to correct z-order drift (`anchor` may have
   /// changed but `rect` hasn't, e.g. after an unrelated window steals
@@ -442,8 +443,8 @@ impl NativeBackdropOverlay {
     covered: (i32, i32),
     full: (i32, i32),
   ) {
-    let paints = color.is_some()
-      && (full.0 > covered.0 || full.1 > covered.1);
+    let paints =
+      color.is_some() && (full.0 > covered.0 || full.1 > covered.1);
     if !paints && !self.gap_active {
       return;
     }
@@ -514,11 +515,12 @@ impl NativeBackdropOverlay {
     /// Updates the blur radius/intensity; re-applies only when the value
     /// changes.
     ///
-    /// Compares the raw `f32` for exact equality, same as `set_tint`'s ABGR
-    /// comparison -- the value only ever changes when a caller passes a
-    /// genuinely different, config-resolved number, not through any
-    /// arithmetic that could introduce drift.
-    set_blur_amount, blur_amount
+    /// Compares the raw `f32` for exact equality, same as `set_tint`'s
+    /// ABGR comparison -- the value only ever changes when a caller
+    /// passes a genuinely different, config-resolved number, not
+    /// through any arithmetic that could introduce drift.
+    set_blur_amount,
+    blur_amount
   );
 
   backdrop_overlay_setter!(
@@ -527,7 +529,8 @@ impl NativeBackdropOverlay {
     ///
     /// See `set_blur_amount` for why exact `f32` equality is intentional
     /// here.
-    set_corner_radius, corner_radius
+    set_corner_radius,
+    corner_radius
   );
 
   backdrop_overlay_setter!(
@@ -536,7 +539,8 @@ impl NativeBackdropOverlay {
     ///
     /// See `set_blur_amount` for why exact `f32` equality is intentional
     /// here.
-    set_opacity, opacity
+    set_opacity,
+    opacity
   );
 
   backdrop_overlay_setter!(
@@ -545,38 +549,45 @@ impl NativeBackdropOverlay {
     ///
     /// See `set_blur_amount` for why exact `f32` equality is intentional
     /// here.
-    set_saturation, saturation
+    set_saturation,
+    saturation
   );
 
   backdrop_overlay_setter!(
     /// Updates the exposure baked into the wallpaper backdrop, in stops.
-    set_exposure, exposure
+    set_exposure,
+    exposure
   );
 
   backdrop_overlay_setter!(
     /// Updates the contrast baked into the wallpaper backdrop.
-    set_contrast, contrast
+    set_contrast,
+    contrast
   );
 
   backdrop_overlay_setter!(
     /// Updates the highlight recovery baked into the wallpaper backdrop:
     /// negative pulls bright areas down, leaving the rest alone.
-    set_highlights, highlights
+    set_highlights,
+    highlights
   );
 
   backdrop_overlay_setter!(
     /// Updates the shadow lift baked into the wallpaper backdrop.
-    set_shadows, shadows
+    set_shadows,
+    shadows
   );
 
   backdrop_overlay_setter!(
     /// Updates the vignette baked into the wallpaper backdrop.
-    set_vignette, vignette
+    set_vignette,
+    vignette
   );
 
   backdrop_overlay_setter!(
     /// Updates the grain baked into the wallpaper backdrop.
-    set_grain, grain
+    set_grain,
+    grain
   );
 
   /// Updates how far the wallpaper backdrop's crop follows the window.

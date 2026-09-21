@@ -67,8 +67,8 @@ use windows::{
         CLSID_D2D12DAffineTransform, CLSID_D2D1Blend, CLSID_D2D1Border,
         CLSID_D2D1Composite, CLSID_D2D1Contrast, CLSID_D2D1Crop,
         CLSID_D2D1Exposure, CLSID_D2D1Flood, CLSID_D2D1GaussianBlur,
-        CLSID_D2D1HighlightsShadows,
-        CLSID_D2D1Opacity, CLSID_D2D1Saturation, CLSID_D2D1Turbulence,
+        CLSID_D2D1HighlightsShadows, CLSID_D2D1Opacity,
+        CLSID_D2D1Saturation, CLSID_D2D1Turbulence,
         Common::{
           D2D1_BLEND_MODE_OVERLAY, D2D1_COLOR_F,
           D2D1_COMPOSITE_MODE_SOURCE_OVER, D2D_POINT_2F, D2D_RECT_F,
@@ -173,7 +173,8 @@ struct CachedSurface {
   surface: CompositionDrawingSurface,
 
   /// Value of [`CACHE_CLOCK`] when this entry was last handed out, so the
-  /// cap below evicts the least recently used rather than an arbitrary one.
+  /// cap below evicts the least recently used rather than an arbitrary
+  /// one.
   last_used: u64,
 }
 
@@ -184,8 +185,8 @@ struct CachedSurface {
 /// them. The cap is not about steady state: it exists because changing a
 /// knob produces a *new* key rather than replacing an old one, so every
 /// config reload that touches the backdrop would otherwise leave its
-/// predecessor's surface -- ~20 MB on a 3440x1440 display -- cached for the
-/// life of the process.
+/// predecessor's surface -- ~20 MB on a 3440x1440 display -- cached for
+/// the life of the process.
 ///
 /// Evicting is always safe: a surface a brush still points at stays alive
 /// through that reference, and dropping it from the cache only means a
@@ -544,8 +545,8 @@ fn surface_for(
       last_used: now,
     });
 
-    // Anything above the cap is a knob set nothing is asking for any more --
-    // most often the values in force before the last config reload.
+    // Anything above the cap is a knob set nothing is asking for any more
+    // -- most often the values in force before the last config reload.
     while cache.len() > MAX_CACHED_SURFACES {
       let Some(oldest) = cache
         .iter()
@@ -770,9 +771,9 @@ fn draw_wallpaper(
 
   // The blur output extends infinitely (see `compose_desktop`), so it is
   // bounded to the monitor here and then again at the end of the chain.
-  // Bounding an infinite image with the clip alone would make D2D rasterize
-  // far more than it needs to, and the grain stage below needs a finite
-  // extent to generate over.
+  // Bounding an infinite image with the clip alone would make D2D
+  // rasterize far more than it needs to, and the grain stage below needs
+  // a finite extent to generate over.
   let cropped = crop_to(context, &blur, width, height)?;
 
   let graded = grade(context, &cropped, key)?;
@@ -810,8 +811,8 @@ fn draw_wallpaper(
 ///
 /// Vignette is deliberately absent. It is the one knob whose effect varies
 /// with position, so baking it into an image shared by every window on the
-/// monitor anchors the falloff to the *screen*: a window at the edge gets a
-/// uniformly dark crop and one in the middle gets the bright centre, and
+/// monitor anchors the falloff to the *screen*: a window at the edge gets
+/// a uniformly dark crop and one in the middle gets the bright centre, and
 /// neither looks like a vignette on that window. It is applied per overlay
 /// instead, by a gradient visual in `composition`.
 ///

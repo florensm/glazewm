@@ -122,7 +122,9 @@ impl KeybindingListener {
 
     #[cfg(target_os = "windows")]
     if event.is_some() {
-      crate::perf::record_event_dequeued(crate::perf::EventKind::Keybinding);
+      crate::perf::record_event_dequeued(
+        crate::perf::EventKind::Keybinding,
+      );
     }
 
     event
@@ -140,7 +142,9 @@ impl KeybindingListener {
 
     #[cfg(target_os = "windows")]
     if event.is_some() {
-      crate::perf::record_event_dequeued(crate::perf::EventKind::Keybinding);
+      crate::perf::record_event_dequeued(
+        crate::perf::EventKind::Keybinding,
+      );
     }
 
     event

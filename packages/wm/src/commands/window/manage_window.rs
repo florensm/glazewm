@@ -1,10 +1,9 @@
 use anyhow::Context;
 use tracing::info;
 use wm_common::{WindowRuleEvent, WindowState, WmEvent};
-use wm_platform::NativeWindow;
 #[cfg(target_os = "windows")]
 use wm_platform::NativeWindowWindowsExt;
-use wm_platform::RectDelta;
+use wm_platform::{NativeWindow, RectDelta};
 
 use crate::{
   commands::{
@@ -120,13 +119,14 @@ pub fn manage_window(
 /// Takes every other fullscreen window on `window`'s workspace back out of
 /// fullscreen.
 ///
-/// A fullscreen window covers the whole workspace, so a window spawned onto it
-/// would otherwise open invisible behind it -- and, being tiling, would shrink
-/// the fullscreen window's own tile without that being visible either. Each
-/// window returns to its previous state via `toggled_state`, the same path
-/// `toggle-fullscreen` uses.
+/// A fullscreen window covers the whole workspace, so a window spawned
+/// onto it would otherwise open invisible behind it -- and, being tiling,
+/// would shrink the fullscreen window's own tile without that being
+/// visible either. Each window returns to its previous state via
+/// `toggled_state`, the same path `toggle-fullscreen` uses.
 ///
-/// Gated on `window_behavior.exit_fullscreen_on_new_window` (default `true`).
+/// Gated on `window_behavior.exit_fullscreen_on_new_window` (default
+/// `true`).
 fn exit_fullscreen_for_new_window(
   window: &WindowContainer,
   state: &mut WmState,
@@ -157,12 +157,7 @@ fn exit_fullscreen_for_new_window(
       "Exiting fullscreen for {fullscreen_window}: new window on workspace."
     );
 
-    update_window_state(
-      fullscreen_window,
-      target_state,
-      state,
-      config,
-    )?;
+    update_window_state(fullscreen_window, target_state, state, config)?;
   }
 
   Ok(())
@@ -450,8 +445,8 @@ fn window_state_to_create(
 /// Rules:
 /// - For non-tiling windows: Always append to the workspace.
 /// - For tiling windows:
-///   1. Try to insert after the focused tiling window (or its parent stack)
-///      if one exists.
+///   1. Try to insert after the focused tiling window (or its parent
+///      stack) if one exists.
 ///   2. If a non-tiling window is focused, try to insert after the first
 ///      tiling window found.
 ///   3. If no tiling windows exist, append to the workspace.

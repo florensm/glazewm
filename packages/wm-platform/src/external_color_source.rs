@@ -10,8 +10,9 @@ use crate::Color;
 
 type CacheKey = (PathBuf, String);
 
-static COLOR_FILE_CACHE: OnceLock<Mutex<HashMap<CacheKey, (SystemTime, Color)>>> =
-  OnceLock::new();
+static COLOR_FILE_CACHE: OnceLock<
+  Mutex<HashMap<CacheKey, (SystemTime, Color)>>,
+> = OnceLock::new();
 
 /// Reads a named CSS custom property from an external generated palette
 /// file -- e.g. matugen, pywal, or YASB's `yasb_colors.css` -- for the
@@ -19,8 +20,8 @@ static COLOR_FILE_CACHE: OnceLock<Mutex<HashMap<CacheKey, (SystemTime, Color)>>>
 /// including its leading `--` (e.g. `"--yasb-accent"`).
 ///
 /// Cached per `(path, key)`, keyed on the file's mtime: the file is only
-/// re-read/re-parsed when its mtime changes since the last call, since this
-/// runs on the same per-tick overlay sync hot path as
+/// re-read/re-parsed when its mtime changes since the last call, since
+/// this runs on the same per-tick overlay sync hot path as
 /// [`crate::system_accent_color`] (an mtime `stat()` every call is cheap;
 /// re-parsing file content every call would not be).
 ///
@@ -92,8 +93,9 @@ fn parse_color_value(value: &str) -> Option<Color> {
     return Color::from_str(value).ok();
   }
 
-  let inner =
-    value.strip_prefix("rgb(").and_then(|s| s.strip_suffix(')'))?;
+  let inner = value
+    .strip_prefix("rgb(")
+    .and_then(|s| s.strip_suffix(')'))?;
 
   let mut parts = inner.split(',').map(|p| p.trim().parse::<u8>());
   let r = parts.next()?.ok()?;
@@ -134,7 +136,15 @@ mod tests {
     );
 
     let color = color_from_file(&path, "--accent").unwrap();
-    assert_eq!(color, Color { r: 0xab, g: 0x62, b: 0x19, a: 255 });
+    assert_eq!(
+      color,
+      Color {
+        r: 0xab,
+        g: 0x62,
+        b: 0x19,
+        a: 255
+      }
+    );
   }
 
   #[test]
@@ -145,7 +155,15 @@ mod tests {
     );
 
     let color = color_from_file(&path, "--yasb-accent").unwrap();
-    assert_eq!(color, Color { r: 171, g: 98, b: 25, a: 255 });
+    assert_eq!(
+      color,
+      Color {
+        r: 171,
+        g: 98,
+        b: 25,
+        a: 255
+      }
+    );
   }
 
   #[test]
@@ -157,12 +175,21 @@ mod tests {
     );
 
     let color = color_from_file(&path, "--accent").unwrap();
-    assert_eq!(color, Color { r: 9, g: 9, b: 9, a: 255 });
+    assert_eq!(
+      color,
+      Color {
+        r: 9,
+        g: 9,
+        b: 9,
+        a: 255
+      }
+    );
   }
 
   #[test]
   fn errors_when_key_not_found() {
-    let path = temp_css_file("missing", ":root {\n  --other: #ffffff;\n}\n");
+    let path =
+      temp_css_file("missing", ":root {\n  --other: #ffffff;\n}\n");
 
     let err = color_from_file(&path, "--accent").unwrap_err();
     assert!(err.to_string().contains("not found"));

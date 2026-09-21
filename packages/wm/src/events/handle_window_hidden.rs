@@ -37,13 +37,13 @@ pub fn handle_window_hidden(
     // Checking `has_active_surrogate` instead of the raw `is_cloaked()`
     // state matters because cloaking is not exclusively a GlazeWM signal:
     // some UWP apps also self-cloak to indicate they've legitimately
-    // hidden (see `is_cloaked`'s doc comment), and a blanket `is_cloaked()`
-    // skip would leave such an app tracked forever. It would also silently
-    // drop a real hide event for a window the user minimized/hid while
-    // GlazeWM's own animation happened to have it cloaked at that instant
-    // -- `platform_sync` unconditionally uncloaks surrogate-tracked windows
-    // once their animation ends, which would then re-reveal a window the
-    // user tried to hide.
+    // hidden (see `is_cloaked`'s doc comment), and a blanket
+    // `is_cloaked()` skip would leave such an app tracked forever. It
+    // would also silently drop a real hide event for a window the user
+    // minimized/hid while GlazeWM's own animation happened to have it
+    // cloaked at that instant -- `platform_sync` unconditionally
+    // uncloaks surrogate-tracked windows once their animation ends,
+    // which would then re-reveal a window the user tried to hide.
     #[cfg(target_os = "windows")]
     if state.animation_manager.has_active_surrogate(&window.id()) {
       return Ok(());

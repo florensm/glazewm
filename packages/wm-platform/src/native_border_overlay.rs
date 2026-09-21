@@ -5,8 +5,8 @@ use windows::{
   Win32::{
     Foundation::{BOOL, HWND},
     Graphics::Gdi::{
-      CombineRgn, CreateRectRgn, CreateRoundRectRgn, DeleteObject, HGDIOBJ,
-      HRGN, RGN_DIFF, SetWindowRgn,
+      CombineRgn, CreateRectRgn, CreateRoundRectRgn, DeleteObject,
+      SetWindowRgn, HGDIOBJ, HRGN, RGN_DIFF,
     },
     UI::WindowsAndMessaging::{
       CreateWindowExW, DestroyWindow, GetWindow, SetWindowPos, ShowWindow,
@@ -216,8 +216,8 @@ pub struct NativeBorderOverlay {
   params: BorderOverlayParams,
 
   /// Last *window* rect (not outset) applied via `set_rect`, used to skip
-  /// redundant `SetWindowPos` calls when the tracked window hasn't actually
-  /// moved.
+  /// redundant `SetWindowPos` calls when the tracked window hasn't
+  /// actually moved.
   rect: Rect,
 
   /// `HWND` of the window this overlay is positioned directly behind (its
@@ -243,8 +243,8 @@ pub struct NativeBorderOverlay {
   /// applied, or `None` when the window currently has none -- before the
   /// first application, or for as long as it is pinned.
   ///
-  /// Skips redundant `SetWindowRgn` calls when a reposition doesn't change
-  /// the overlay's shape, e.g. a pure translation. Distinct from
+  /// Skips redundant `SetWindowRgn` calls when a reposition doesn't
+  /// change the overlay's shape, e.g. a pure translation. Distinct from
   /// `rect`/`is_visible`'s no-op check: that one skips the whole
   /// `set_rect`/`defer_rect` call including `SetWindowPos`, this one only
   /// skips the (comparatively expensive) region recompute when the
@@ -252,8 +252,8 @@ pub struct NativeBorderOverlay {
   hole_shape: Option<(i32, i32, i32)>,
 
   /// Monitor viewport the overlay window is currently pinned to for a
-  /// workspace-switch slide, or `None` in the normal window-tracking mode.
-  /// See [`pin_or_slide`].
+  /// workspace-switch slide, or `None` in the normal window-tracking
+  /// mode. See [`pin_or_slide`].
   ///
   /// [`pin_or_slide`]: NativeBorderOverlay::pin_or_slide
   pinned: Option<Rect>,
@@ -320,15 +320,19 @@ impl NativeBorderOverlay {
   /// [`apply_hole_region`].
   fn refresh_hole(&mut self, outer: &Rect) {
     // A pinned overlay is viewport-sized with its ring drawn at an offset
-    // inside it, so `outer` doesn't describe its window at all. `clear_pin`
-    // restores the region on the way out.
+    // inside it, so `outer` doesn't describe its window at all.
+    // `clear_pin` restores the region on the way out.
     if self.pinned.is_some() {
       return;
     }
 
     #[allow(clippy::cast_possible_truncation)]
     let outset = self.params.width.round() as i32;
-    let shape = (outer.width(), outer.height(), inner_hole_radius(&self.params));
+    let shape = (
+      outer.width(),
+      outer.height(),
+      inner_hole_radius(&self.params),
+    );
 
     if self.hole_shape == Some(shape) {
       return;
@@ -348,8 +352,8 @@ impl NativeBorderOverlay {
     }
 
     // SAFETY: `self.hwnd()` is a valid window handle for the lifetime of
-    // this struct. A null `HRGN` clears the region rather than setting one,
-    // so there is nothing to free.
+    // this struct. A null `HRGN` clears the region rather than setting
+    // one, so there is nothing to free.
     unsafe {
       SetWindowRgn(self.hwnd(), HRGN(0), BOOL(0));
     }
@@ -387,7 +391,9 @@ impl NativeBorderOverlay {
 
     if reset_offset {
       if let Err(e) = composition.set_offset(0, 0) {
-        tracing::warn!("Border overlay composition offset reset failed: {e}.");
+        tracing::warn!(
+          "Border overlay composition offset reset failed: {e}."
+        );
       }
     }
   }
@@ -418,7 +424,9 @@ impl NativeBorderOverlay {
     let was_pinned = self.pinned.is_some();
     self.clear_pin();
 
-    if self.is_visible && &self.rect == window_rect && self.anchor == anchor.0
+    if self.is_visible
+      && &self.rect == window_rect
+      && self.anchor == anchor.0
     {
       return;
     }
@@ -492,7 +500,8 @@ impl NativeBorderOverlay {
     window_rect: &Rect,
     anchor: HWND,
   ) {
-    if !self.is_visible || self.anchor != anchor.0 || self.pinned.is_some() {
+    if !self.is_visible || self.anchor != anchor.0 || self.pinned.is_some()
+    {
       self.set_rect(window_rect, anchor);
       return;
     }
@@ -584,13 +593,16 @@ impl NativeBorderOverlay {
 
     if let Some(composition) = &self.composition {
       if let Err(e) = composition.set_width(width) {
-        tracing::warn!("Border overlay composition width update failed: {e}.");
+        tracing::warn!(
+          "Border overlay composition width update failed: {e}."
+        );
       }
     }
 
     let anchor = HWND(self.anchor);
     let rect = self.rect.clone();
-    self.is_visible = false; // force set_rect through despite unchanged rect.
+    self.is_visible = false; // force set_rect through despite unchanged
+                             // rect.
     self.set_rect(&rect, anchor);
   }
 
@@ -627,7 +639,9 @@ impl NativeBorderOverlay {
 
     if let Some(composition) = &self.composition {
       if let Err(e) = composition.set_opacity(value) {
-        tracing::warn!("Border overlay composition opacity update failed: {e}.");
+        tracing::warn!(
+          "Border overlay composition opacity update failed: {e}."
+        );
       }
     }
   }
@@ -761,8 +775,8 @@ impl NativeBorderOverlay {
       }
     }
 
-    if let Err(e) =
-      composition.set_offset(outer.x() - viewport.x(), outer.y() - viewport.y())
+    if let Err(e) = composition
+      .set_offset(outer.x() - viewport.x(), outer.y() - viewport.y())
     {
       tracing::warn!("Border overlay composition offset failed: {e}.");
       return;
