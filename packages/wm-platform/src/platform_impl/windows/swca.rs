@@ -15,16 +15,6 @@ pub(crate) const ACCENT_DISABLED: u32 = 0;
 /// Accent state: solid-color fill, used for surrogate backdrops.
 pub(crate) const ACCENT_ENABLE_GRADIENT: u32 = 1;
 
-/// Accent state: host backdrop -- samples live desktop content from behind
-/// the window for a `Windows.UI.Composition` host-backdrop brush to pick
-/// up, rather than blurring a solid color like `ACCENT_ENABLE_ACRYLICBLURBEHIND`.
-/// The `gradient_color` field is unused for this accent state.
-/// Acrylic blur-behind. No longer reachable from `BackdropStyle` -- every
-/// style renders through `Windows.UI.Composition` now -- but still used by
-/// `NativeSurrogate`, which paints a stand-in for a real window during
-/// animations and cannot root a visual tree of its own.
-pub(crate) const ACCENT_ENABLE_ACRYLICBLURBEHIND: u32 = 4;
-
 /// `WCA_ACCENT_POLICY` attribute index for
 /// `SetWindowCompositionAttribute`.
 const WCA_ACCENT_POLICY: u32 = 19;
@@ -81,22 +71,18 @@ fn get_set_wca() -> Option<SetWindowCompositionAttributeFn> {
   })
 }
 
-
-/// Applies the given `accent_state`, `accent_flags`, and `gradient_color`
-/// (ABGR) to `hwnd` via the undocumented `SetWindowCompositionAttribute`
-/// API.
+/// Applies the given `accent_state` and `gradient_color` (ABGR) to `hwnd`
+/// via the undocumented `SetWindowCompositionAttribute` API.
 ///
-/// Callers that don't need a non-zero flag set should use
-/// [`apply_swca_accent`]; the only flag currently in use is
-/// [`ACCENT_FLAG_USE_GRADIENT_COLOR`], required by
-/// [`ACCENT_ENABLE_BLURBEHIND`].
+/// `accent_flags` is always sent as `0`: the only state this codebase
+/// still uses is [`ACCENT_ENABLE_GRADIENT`], which reads `gradient_color`
+/// unconditionally and defines no flags of its own.
 ///
 /// Returns `true` if the call succeeded, `false` if the API is unavailable
 /// (pre-Windows 10 1607) or if the call itself failed.
 pub(crate) fn apply_swca_accent(
   hwnd: HWND,
   accent_state: u32,
-  accent_flags: u32,
   gradient_color: u32,
 ) -> bool {
   let Some(set_wca) = get_set_wca() else {
@@ -105,7 +91,7 @@ pub(crate) fn apply_swca_accent(
 
   let mut policy = AccentPolicy {
     accent_state,
-    accent_flags,
+    accent_flags: 0,
     gradient_color,
     animation_id: 0,
   };

@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use wm_platform::{
-  BackdropStyle, BlurOverlayParams, BorderOverlayParams, Color, CornerStyle,
-  Key, Keybinding, LengthValue, OpacityValue, RectDelta,
+  BackdropOverlayParams, BorderOverlayParams, Color, CornerStyle, Key,
+  Keybinding, LengthValue, OpacityValue, RectDelta,
 };
 
 use crate::app_command::InvokeCommand;
@@ -358,14 +358,29 @@ impl WindowEffectConfig {
   }
 }
 
+/// Backdrop rendered behind a window: a crop of the desktop wallpaper,
+/// blurred once per monitor into an opaque image.
+///
+/// In a tiling layout nothing sits behind a tiled window except the
+/// wallpaper, so the image never changes and is computed once rather than
+/// per frame. Being opaque, it also lets DWM skip compositing what is
+/// behind the overlay rather than blending it every frame.
+///
+/// Drawn by a persistent overlay window behind the managed window, never
+/// applied to the window itself: SWCA on a window the `transparency`
+/// effect has made `WS_EX_LAYERED` conflicts, and DWM's own materials only
+/// paint where an application leaves its surface unpainted, which nearly
+/// none do.
+///
+/// The overlay's own corner radius is deliberately not configurable here:
+/// it is derived from `corner_style` (see `CornerStyle::approx_radius_px`)
+/// so it always matches the real managed window's rendered corners instead
+/// of risking a visual mismatch.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(default, rename_all(serialize = "camelCase"))]
 pub struct BackdropEffectConfig {
   /// Whether to enable the effect.
   pub enabled: bool,
-
-  /// Backdrop material to apply.
-  pub style: BackdropStyle,
 
   /// RGBA tint blended over the blurred backdrop.
   ///
@@ -374,58 +389,36 @@ pub struct BackdropEffectConfig {
   /// rendering bug present on some Windows 10 builds.
   pub tint: Option<Color>,
 
-  /// Blur radius/intensity of the overlay's blur.
+  /// Blur radius/intensity.
   ///
-  /// For `wallpaper` this is baked into the per-monitor image rather than
-  /// evaluated per frame, so changing it re-renders that image once and
-  /// costs nothing thereafter.
-  ///
-  /// Ignored for `mica`/`mica_alt` -- the OS gives no blur-radius knob for
-  /// those, and there's no overlay window to attach a custom blur effect
-  /// to for that path. Also ignored for `blur`, which deliberately skips
-  /// the `Windows.UI.Composition` pipeline entirely and takes DWM's own
-  /// fixed blur. Silently has no effect if that rendering pipeline is
-  /// unavailable on this system (falls back to the OS's fixed-intensity
-  /// acrylic blur).
+  /// Baked into the per-monitor image rather than evaluated per frame, so
+  /// changing it re-renders that image once and costs nothing thereafter.
   pub blur_amount: f32,
 
-  /// Opacity of the acrylic overlay's own composited visual (blur and
+  /// Opacity of the backdrop overlay's own composited visual (blur and
   /// tint together, as one unit), from `0.0` to `1.0`.
   ///
   /// Distinct from `tint`'s own alpha channel: `tint`'s alpha only blends
   /// the flat tint layer over the blur layer beneath it, while this
   /// scales the *entire* overlay -- unrelated to the real managed
   /// window's own `transparency` effect, which fades the window itself
-  /// via `SetLayeredWindowAttributes`, not the overlay. Ignored for
-  /// `blur`/`mica`/`mica_alt` and silently has no effect if the
-  /// `Windows.UI.Composition` rendering pipeline is unavailable, same as
-  /// `blur_amount`.
+  /// via `SetLayeredWindowAttributes`, not the overlay.
   pub opacity: f32,
 
   /// Saturation of the blurred backdrop, from `0.0` (grayscale) to `2.0`
   /// (oversaturated); `1.0` leaves it unchanged. Values outside that
   /// range aren't clamped -- D2D1's `Saturation` effect accepts them but
   /// the result is undefined/implementation-specific.
-  ///
-  /// Ignored for `blur`/`mica`/`mica_alt` and silently has no effect if
-  /// the `Windows.UI.Composition` rendering pipeline is unavailable, same
-  /// as `blur_amount`.
   pub saturation: f32,
 
   /// Exposure adjustment in stops; `0.0` is unchanged, negative darkens.
-  ///
-  /// `wallpaper` only. Acrylic's effect graph is built through
-  /// `Compositor::CreateEffectFactory`, which accepts only a curated subset
-  /// of D2D's built-in effects and renders this one as a pass-through; the
-  /// wallpaper bake uses D2D directly and has no such limit.
   pub exposure: f32,
 
   /// Contrast adjustment from `-1.0` to `1.0`; `0.0` is unchanged.
-  /// `wallpaper` only, same reason as `exposure`.
   pub contrast: f32,
 
   /// Highlight recovery from `-1.0` to `1.0`; `0.0` is unchanged, negative
-  /// pulls bright areas down. `wallpaper` only, same reason as `exposure`.
+  /// pulls bright areas down.
   ///
   /// Tone-selective where `exposure` is not: it touches only the bright end,
   /// so a blown-out sky can be brought down without dragging the whole
@@ -433,48 +426,42 @@ pub struct BackdropEffectConfig {
   pub highlights: f32,
 
   /// Shadow lift from `-1.0` to `1.0`; `0.0` is unchanged, positive opens
-  /// dark areas up. `wallpaper` only, same reason as `exposure`.
+  /// dark areas up.
   pub shadows: f32,
 
   /// Strength of a darkening gradient toward each window's own edges, from
   /// `0.0` (off) to `1.0`.
   ///
-  /// Applies to every style, and is the only one of these knobs that is not
-  /// baked: it is a gradient visual measured from the window's rect. Baking
-  /// it would anchor the falloff to the monitor instead, since one image is
-  /// shared by every window on it.
+  /// The only one of these knobs that is not baked: it is a gradient
+  /// visual measured from the window's rect. Baking it would anchor the
+  /// falloff to the monitor instead, since one image is shared by every
+  /// window on it.
   ///
   /// The right knob for toning a bright backdrop down behind text -- it
   /// leaves the overlay opaque, where `opacity` would make it translucent
-  /// again and undo the style's whole reason for being.
+  /// again and undo the backdrop's whole reason for being.
   pub vignette: f32,
 
   /// Opacity of a monochrome noise layer over the blurred image, from `0.0`
-  /// (off) to `1.0`. `wallpaper` only, same reason as `exposure`.
+  /// (off) to `1.0`.
   ///
-  /// This is the grain that makes Windows' own acrylic read as frosted
-  /// glass rather than an out-of-focus photo.
+  /// A fine dither is what makes a blurred image read as frosted glass
+  /// rather than an out-of-focus photo.
   pub grain: f32,
 
   /// How much the backdrop follows the window across its monitor. `1.0`
   /// pins the image to the desktop; lower values let it drift against the
-  /// window as it moves, which reads as depth. `wallpaper` only.
+  /// window as it moves, which reads as depth.
   ///
   /// Not baked -- it selects a different part of an already-rendered
   /// image, so any value costs the same (nothing).
   pub parallax: f32,
-
-  // The acrylic overlay's own corner radius isn't independently
-  // configurable -- it's derived from `corner_style` (see
-  // `CornerStyle::approx_radius_px`) so it always matches the real managed
-  // window's own rendered corners instead of risking a visual mismatch.
 }
 
 impl Default for BackdropEffectConfig {
   fn default() -> Self {
     Self {
       enabled: false,
-      style: BackdropStyle::default(),
       tint: None,
       blur_amount: 30.0,
       opacity: 1.0,
@@ -491,13 +478,14 @@ impl Default for BackdropEffectConfig {
 }
 
 impl BackdropEffectConfig {
-  /// Returns the tint for the overlay-backed styles (`acrylic`, `blur`).
+  /// Returns the tint for the backdrop overlay.
   ///
-  /// Doubles as the "does this window get a `NativeBlurOverlay`?" predicate
-  /// for every overlay call site, so it returns `None` only when the effect
-  /// is disabled -- every remaining style is drawn by an overlay. When no
-  /// tint is set, falls back to near-transparent black (`alpha = 1`) to
-  /// avoid the solid-fill rendering bug present on some Windows 10 builds.
+  /// Doubles as the "does this window get a `NativeBackdropOverlay`?"
+  /// predicate for every overlay call site, so it returns `None` only when
+  /// the effect is disabled -- every remaining style is drawn by an
+  /// overlay. When no tint is set, falls back to near-transparent black
+  /// (`alpha = 1`) to avoid the solid-fill rendering bug present on some
+  /// Windows 10 builds.
   #[must_use]
   pub fn overlay_tint(&self) -> Option<Color> {
     if !self.enabled {
@@ -509,22 +497,21 @@ impl BackdropEffectConfig {
     )
   }
 
-  /// Builds a [`BlurOverlayParams`] from this config, given the
+  /// Builds a [`BackdropOverlayParams`] from this config, given the
   /// already-resolved `tint` (see `overlay_tint`) and `corner_radius`
   /// (derived from the sibling `corner_style` effect, not stored on this
   /// struct -- see the trailing comment on this struct's definition).
   ///
-  /// Consolidates the field list every `BlurOverlayParams` call site would
-  /// otherwise hand-write, so adding a new overlay knob only touches this
-  /// method and the config struct itself, not every call site.
+  /// Consolidates the field list every `BackdropOverlayParams` call site
+  /// would otherwise hand-write, so adding a new overlay knob only touches
+  /// this method and the config struct itself, not every call site.
   #[must_use]
   pub fn to_overlay_params(
     &self,
     tint: Color,
     corner_radius: f32,
-  ) -> BlurOverlayParams {
-    BlurOverlayParams {
-      style: self.style,
+  ) -> BackdropOverlayParams {
+    BackdropOverlayParams {
       tint,
       blur_amount: self.blur_amount,
       corner_radius,
@@ -835,15 +822,15 @@ pub struct AnimationsConfig {
   pub overlay_tracking: OverlayTracking,
 }
 
-/// Which animating windows keep their blur and border overlays glued to them
-/// for the duration of an animation.
+/// Which animating windows keep their backdrop and border overlays glued
+/// to them for the duration of an animation.
 ///
 /// Every animating window is composited as three windows, not one: the
-/// surrogate thumbnail plus a blur overlay and a border overlay, each
+/// surrogate thumbnail plus a backdrop overlay and a border overlay, each
 /// repositioned every frame. Since the animation is bound by how many
 /// surfaces DWM has to absorb, this is the largest lever available -- a
-/// measured 2.1x between borders on every window and borders on the focused
-/// window only.
+/// measured 2.1x between borders on every window and borders on the
+/// focused window only.
 ///
 /// Only affects windows *while they animate*; the static overlays are
 /// restored by the normal sync pass as soon as the animation ends, so the
@@ -1457,14 +1444,12 @@ where
 
 #[cfg(test)]
 mod tests {
-  use wm_platform::BackdropStyle;
-
   use super::{BackdropEffectConfig, Color};
 
   /// `to_overlay_params` must map every field through to the resulting
-  /// `BlurOverlayParams` unchanged (plus the two parameters passed in
+  /// `BackdropOverlayParams` unchanged (plus the two parameters passed in
   /// separately, since neither is stored on `BackdropEffectConfig`
-  /// itself), since every `BlurOverlayParams` call site now depends on
+  /// itself), since every `BackdropOverlayParams` call site now depends on
   /// this method rather than hand-writing the struct literal.
   #[test]
   fn to_overlay_params_maps_all_fields() {
@@ -1485,7 +1470,6 @@ mod tests {
     let tint = Color::from_abgr(0xAABB_CCDD);
     let params = config.to_overlay_params(tint, 12.0);
 
-    assert_eq!(params.style, config.style);
     assert_eq!(params.tint, tint);
     assert_eq!(params.blur_amount, 42.0);
     assert_eq!(params.corner_radius, 12.0);
@@ -1501,26 +1485,21 @@ mod tests {
   }
 
   /// `overlay_tint` doubles as the "does this window get a
-  /// `NativeBlurOverlay`?" predicate. Every surviving style is drawn by an
-  /// overlay, so it must resolve a tint for all of them -- and for none of
-  /// them while the effect is disabled.
+  /// `NativeBackdropOverlay`?" predicate, so it must resolve a tint
+  /// whenever the effect is enabled and none at all while it is disabled.
   #[test]
-  fn overlay_tint_covers_every_style() {
-    for (style, expected) in [(BackdropStyle::Wallpaper, true)] {
-      let enabled = BackdropEffectConfig {
-        enabled: true,
-        style,
-        ..BackdropEffectConfig::default()
-      };
-      assert_eq!(enabled.overlay_tint().is_some(), expected);
+  fn overlay_tint_tracks_enabled() {
+    let enabled = BackdropEffectConfig {
+      enabled: true,
+      ..BackdropEffectConfig::default()
+    };
+    assert!(enabled.overlay_tint().is_some());
 
-      let disabled = BackdropEffectConfig {
-        enabled: false,
-        style,
-        ..BackdropEffectConfig::default()
-      };
-      assert!(disabled.overlay_tint().is_none());
-    }
+    let disabled = BackdropEffectConfig {
+      enabled: false,
+      ..BackdropEffectConfig::default()
+    };
+    assert!(disabled.overlay_tint().is_none());
   }
 
   /// With no explicit tint, the fallback is near-transparent black rather

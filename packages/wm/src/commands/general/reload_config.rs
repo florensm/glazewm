@@ -158,10 +158,10 @@ fn update_container_gaps(state: &mut WmState, config: &UserConfig) {
 /// Queues a full window-effects reapplication after a config reload.
 ///
 /// Border/backdrop effects don't need explicit reset-on-disable handling
-/// here -- they're overlay-based (`sync_border_overlays`/
-/// `sync_blur_overlays`, driven every `platform_sync` tick) and simply stop
-/// being created/get torn down the moment their config resolves to
-/// disabled, same as any other config-driven change.
+/// here -- they're overlay-based (`sync_overlays`, driven every
+/// `platform_sync` tick) and simply stop being created/get torn down the
+/// moment their config resolves to disabled, same as any other
+/// config-driven change.
 #[cfg(target_os = "windows")]
 fn update_window_effects(state: &mut WmState) {
   state.pending_sync.queue_all_effects_update();

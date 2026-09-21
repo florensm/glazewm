@@ -99,7 +99,7 @@ fn process_name_for_warning(hwnd: HWND) -> Option<String> {
 }
 
 use crate::{
-  native_surrogate::to_logical, BlurOverlayParams, BorderOverlayParams,
+  native_surrogate::to_logical, BackdropOverlayParams, BorderOverlayParams,
   Color, CornerStyle, NativeSurrogate, Rect, SurrogateBatch,
 };
 
@@ -126,17 +126,17 @@ pub struct SessionOptions {
   /// Pass `false` for close surrogates, which should remain below resize and
   /// open surrogates that fill the vacated space.
   pub place_at_top: bool,
-  /// Tint/blur-amount/corner-radius/opacity/saturation for the acrylic
-  /// blur overlay tracking this session, or `None` when blur-behind isn't
-  /// configured. Snapshotted rather than applied directly to the
-  /// surrogate -- the actual blur comes from the external
-  /// `NativeBlurOverlay` tracker in `AnimationManager`/`platform_sync`,
-  /// which needs these values even after the window is detached from the
-  /// layout tree (close animations).
-  pub blur_overlay: Option<BlurOverlayParams>,
+  /// Tint/blur-amount/corner-radius/opacity/saturation for the backdrop
+  /// overlay tracking this session, or `None` when no backdrop is
+  /// configured. Snapshotted rather than applied directly to the surrogate
+  /// -- the actual blur comes from the external `NativeBackdropOverlay`
+  /// tracker in `AnimationManager`/`platform_sync`, which needs these
+  /// values even after the window is detached from the layout tree (close
+  /// animations).
+  pub backdrop_overlay: Option<BackdropOverlayParams>,
   /// Color/width/corner-radius/opacity for the border overlay tracking this
   /// session, or `None` when the border effect isn't configured. Same
-  /// snapshot rationale as `blur_overlay`.
+  /// snapshot rationale as `backdrop_overlay`.
   pub border_overlay: Option<BorderOverlayParams>,
 }
 
@@ -205,17 +205,18 @@ pub struct ResizeSession {
   /// 1.0 = full surrogate). Defaults to `1.0` (fully shown) so non-`zoom`
   /// sessions -- which never call `update_zoom_fade` -- read as unscaled.
   ///
-  /// The blur overlay tracks this session's surrogate at a fixed full-size
-  /// `current_rect` throughout a zoom animation (see its doc comment) since
-  /// only the thumbnail's `rcDestination`, not the surrogate window itself,
-  /// actually animates in size -- so without this, the overlay would appear
-  /// at full opacity from the very first frame while the window it's
-  /// supposedly attached to is still a speck at the center. Scaling the
-  /// overlay's own opacity by this value in [`blur_overlay_params`] instead
-  /// fades it in/out in lockstep with the thumbnail's zoom.
+  /// The backdrop overlay tracks this session's surrogate at a fixed
+  /// full-size `current_rect` throughout a zoom animation (see its doc
+  /// comment) since only the thumbnail's `rcDestination`, not the
+  /// surrogate window itself, actually animates in size -- so without
+  /// this, the overlay would appear at full opacity from the very first
+  /// frame while the window it's supposedly attached to is still a speck
+  /// at the center. Scaling the overlay's own opacity by this value in
+  /// [`backdrop_overlay_params`] instead fades it in/out in lockstep with
+  /// the thumbnail's zoom.
   ///
   /// [`update_zoom_fade`]: ResizeSession::update_zoom_fade
-  /// [`blur_overlay_params`]: ResizeSession::blur_overlay_params
+  /// [`backdrop_overlay_params`]: ResizeSession::backdrop_overlay_params
   zoom_progress: f32,
   /// `true` once the real window has been repositioned at the current
   /// `target_rect` (at session start for growing curtain-reveals, or
@@ -260,12 +261,12 @@ pub struct ResizeSession {
   /// Consumed by `defer_update` before `sync_registration` so the short-
   /// circuit check still works on the same tick.
   pending_thumbnail_dims: Option<(i32, i32)>,
-  /// Tint/blur-amount/corner-radius/opacity/saturation for the acrylic
-  /// blur overlay tracking this session, snapshotted from
-  /// `SessionOptions::blur_overlay`. See [`blur_overlay_params`].
+  /// Tint/blur-amount/corner-radius/opacity/saturation for the backdrop
+  /// overlay tracking this session, snapshotted from
+  /// `SessionOptions::backdrop_overlay`. See [`backdrop_overlay_params`].
   ///
-  /// [`blur_overlay_params`]: ResizeSession::blur_overlay_params
-  blur_overlay: Option<BlurOverlayParams>,
+  /// [`backdrop_overlay_params`]: ResizeSession::backdrop_overlay_params
+  backdrop_overlay: Option<BackdropOverlayParams>,
   /// Color/width/corner-radius/opacity for the border overlay tracking this
   /// session, snapshotted from `SessionOptions::border_overlay`. See
   /// [`border_overlay_params`].
@@ -365,23 +366,23 @@ impl ResizeSession {
     let effect_opacity = options.effect_opacity;
 
     // Sample the dominant background color near the trailing content edge
-    // to use as the surrogate's solid backdrop. `apply_backdrop` paints the
-    // *entire* surrogate window with this color via `ACCENT_ENABLE_GRADIENT`,
-    // with the (possibly gap-having, mid-resize) thumbnail composited on top
-    // -- so it's the fill behind any area the thumbnail doesn't yet cover,
-    // not just a border strip.
+    // to use as the surrogate's solid backdrop. `apply_backdrop` paints
+    // the *entire* surrogate window with this color via
+    // `ACCENT_ENABLE_GRADIENT`, with the (possibly gap-having, mid-resize)
+    // thumbnail composited on top -- so it's the fill behind any area the
+    // thumbnail doesn't yet cover, not just a border strip.
     //
     // Painting the whole window is also what makes the fill costly to
     // leave on. It is opaque, so wherever the thumbnail *does* reach it
     // sits underneath and cancels the window's `transparency` opacity --
-    // the window reads as solid, and a configured backdrop never shows.
-    // So it is scoped to exactly when a gap can exist:
+    // the window reads as solid, and a configured backdrop never shows. So
+    // it is scoped to exactly when a gap can exist:
     //
     // - Applied only when the target exceeds the source on some axis.
-    //   Pure moves and pure shrinks never uncover anything (the thumbnail
-    //   is clipped, not outrun), so they get no fill at all.
+    // Pure moves and pure shrinks never uncover anything (the thumbnail is
+    // clipped, not outrun), so they get no fill at all.
     // - Dropped by `sync_registration` the moment the thumbnail upgrades
-    //   to target dims and covers the surrogate outright.
+    // to target dims and covers the surrogate outright.
     //
     // What it stands in for meanwhile is the settled window, and the
     // sample is read off the screen -- so it is the window's own color
@@ -390,16 +391,16 @@ impl ResizeSession {
     // undimmed: measured on a grow, a (131,175,237) flash against a
     // settled (34,44,82).
     //
-    // Falls back to transparent (no backdrop) when the caller has no cached
-    // color -- this never samples inline. The two-`BitBlt` GPU->CPU readback
-    // used to run synchronously right here, stalling the WM's single main
-    // thread for tens of milliseconds per window on the first resize of a
-    // burst (measured: 26-114ms per call). Callers now warm the cache in the
-    // background instead -- see `sample_edge_color_async` -- so a cache miss
-    // just means one animation plays with a transparent gap instead of
-    // blocking the keypress that started it.
-    // Two different things, deliberately: what the *surrogate* paints, and
-    // what the session remembers.
+    // Falls back to transparent (no backdrop) when the caller has no
+    // cached color -- this never samples inline. The two-`BitBlt` GPU->CPU
+    // readback used to run synchronously right here, stalling the WM's
+    // single main thread for tens of milliseconds per window on the first
+    // resize of a burst (measured: 26-114ms per call). Callers now warm
+    // the cache in the background instead -- see `sample_edge_color_async`
+    // -- so a cache miss just means one animation plays with a transparent
+    // gap instead of blocking the keypress that started it. Two different
+    // things, deliberately: what the *surrogate* paints, and what the
+    // session remembers.
     //
     // The surrogate's own fill is SWCA, which renders opaque whatever
     // alpha it is handed -- so wherever the thumbnail is part-transparent
@@ -408,7 +409,8 @@ impl ResizeSession {
     // there is a better place for the fill: that overlay paints it as a
     // real composited sprite, at the window's own opacity, in just the
     // strips the thumbnail does not cover
-    // (`NativeBlurOverlay::set_gap_fill`), so the surrogate stays clear.
+    // (`NativeBackdropOverlay::set_gap_fill`), so the surrogate stays
+    // clear.
     //
     // With no backdrop there is nothing behind the surrogate but the
     // desktop, and SWCA is the only fill available. It is worth having
@@ -420,7 +422,7 @@ impl ResizeSession {
     // strip shows the desktop, which is what it is showing through itself
     // anyway; that is the smaller error by far.
     let opaque_window = effect_opacity == u8::MAX;
-    let surrogate_color = if options.blur_overlay.is_some() {
+    let surrogate_color = if options.backdrop_overlay.is_some() {
       None
     } else if can_expose_gap && opaque_window {
       options.edge_color
@@ -501,7 +503,7 @@ impl ResizeSession {
       commit_poll_parity: false,
       session_cloaked: false,
       pending_thumbnail_dims: None,
-      blur_overlay: options.blur_overlay,
+      backdrop_overlay: options.backdrop_overlay,
       border_overlay: options.border_overlay,
       current_rect: None,
       commit_confirmed: false,
@@ -510,16 +512,16 @@ impl ResizeSession {
   }
 
   /// Returns the tint/blur-amount/corner-radius/opacity/saturation for the
-  /// acrylic blur-overlay tracker in `AnimationManager`, or `None` when
-  /// blur-behind isn't configured for this window.
+  /// backdrop-overlay tracker in `AnimationManager`, or `None` when no
+  /// backdrop is configured for this window.
   ///
   /// For `zoom` sessions, `opacity` is scaled by `zoom_progress` so the
   /// overlay fades in/out alongside the thumbnail's own zoom instead of
   /// sitting at full opacity for the whole animation -- see
   /// `zoom_progress`'s doc comment.
   #[must_use]
-  pub fn blur_overlay_params(&self) -> Option<BlurOverlayParams> {
-    let mut params = self.blur_overlay?;
+  pub fn backdrop_overlay_params(&self) -> Option<BackdropOverlayParams> {
+    let mut params = self.backdrop_overlay?;
     if self.zoom {
       params.opacity *= self.zoom_progress;
     }
@@ -528,10 +530,10 @@ impl ResizeSession {
 
   /// Returns the color/width/corner-radius/opacity for the border-overlay
   /// tracker in `AnimationManager`, or `None` when the border effect isn't
-  /// configured for this window. Mirrors [`blur_overlay_params`] exactly,
-  /// including the `zoom_progress` opacity scaling.
+  /// configured for this window. Mirrors [`backdrop_overlay_params`]
+  /// exactly, including the `zoom_progress` opacity scaling.
   ///
-  /// [`blur_overlay_params`]: ResizeSession::blur_overlay_params
+  /// [`backdrop_overlay_params`]: ResizeSession::backdrop_overlay_params
   #[must_use]
   pub fn border_overlay_params(&self) -> Option<BorderOverlayParams> {
     let mut params = self.border_overlay?;
@@ -544,7 +546,7 @@ impl ResizeSession {
   /// `HWND` of this session's surrogate, or `None` when surrogate creation
   /// failed.
   ///
-  /// Used as the acrylic blur-overlay tracker's z-order anchor while a
+  /// Used as the backdrop-overlay tracker's z-order anchor while a
   /// session is active: the surrogate is what's actually visible on screen
   /// (the real window is cloaked for the duration), so the overlay must sit
   /// directly behind *it*, not the (hidden) real window.
@@ -567,8 +569,9 @@ impl ResizeSession {
     (self.hwnd != 0).then_some(HWND(self.hwnd))
   }
 
-  /// Live on-screen rect (logical, border-deflated) for the acrylic-overlay
-  /// tracker to follow this tick, or `None` when there's nothing to show.
+  /// Live on-screen rect (logical, border-deflated) for the
+  /// backdrop-overlay tracker to follow this tick, or `None` when there's
+  /// nothing to show.
   ///
   /// Zoom sessions never move their surrogate window -- only the DWM
   /// thumbnail's `rcDestination` animates within a surrogate fixed at
@@ -612,12 +615,12 @@ impl ResizeSession {
     self.is_move_only
   }
 
-  /// Size of the content the surrogate's DWM thumbnail currently draws,
-  /// in physical pixels, or `None` without a surrogate.
+  /// Size of the content the surrogate's DWM thumbnail currently draws, in
+  /// physical pixels, or `None` without a surrogate.
   ///
   /// Anchored top-left within the surrogate, so anything of the surrogate
-  /// beyond this is uncovered -- what `NativeBlurOverlay::set_gap_fill`
-  /// stands in for.
+  /// beyond this is uncovered -- what
+  /// `NativeBackdropOverlay::set_gap_fill` stands in for.
   #[must_use]
   pub fn covered_size(&self) -> Option<(i32, i32)> {
     self.surrogate.as_ref().map(NativeSurrogate::content_size)

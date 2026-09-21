@@ -191,9 +191,10 @@ use wm_platform::{
 };
 #[cfg(target_os = "windows")]
 use wm_platform::{
-  sample_edge_color_async, BlurOverlayParams, BorderOverlayParams, Color,
-  CornerStyle, DxgiVsyncWaiter, EdgeColorCache, NativeBlurOverlay,
-  NativeBorderOverlay, NativeIrisOverlay, NativeSurrogate,
+  sample_edge_color_async, BackdropOverlayParams, BorderOverlayParams,
+  Color, CornerStyle, DxgiVsyncWaiter, EdgeColorCache,
+  NativeBackdropOverlay, NativeBorderOverlay, NativeIrisOverlay,
+  NativeSurrogate,
   NativeWindowWindowsExt, ResizeSession, SessionOptions, SurrogateBatch,
   WorkspaceSurrogate, HWND,
 };
@@ -207,7 +208,7 @@ use crate::{
 };
 #[cfg(target_os = "windows")]
 use crate::commands::general::{
-  overlay_z_anchor, upsert_blur_overlay, upsert_border_overlay,
+  overlay_z_anchor, upsert_overlay,
   upsert_pinned_border_overlay,
 };
 
@@ -389,16 +390,15 @@ pub struct AnimationManager {
   /// true` (workspace-switch, or a resize/move/open session -- see
   /// `SessionOptions::place_at_top`) -- such surrogates are inserted at
   /// `HWND_TOP`, which can silently displace *any* other window's static
-  /// blur overlay out of its correct just-behind-its-own-window z-order
-  /// slot, not just the surrogate's own window. `sync_blur_overlays` checks
-  /// this to fall back to a full per-window z-order resync for one tick
-  /// instead of its normal narrowly-targeted one (see its `z_order_touched`
-  /// parameter), then clears it. Not cleared on its own -- callers that
-  /// create such a surrogate are responsible for setting it,
-  /// `sync_blur_overlays` is responsible for resetting it after acting on
-  /// it.
+  /// backdrop overlay out of its correct just-behind-its-own-window
+  /// z-order slot, not just the surrogate's own window. `sync_overlays`
+  /// checks this to fall back to a full per-window z-order resync for one
+  /// tick instead of its normal narrowly-targeted one, then clears it. Not
+  /// cleared on its own -- callers that create such a surrogate are
+  /// responsible for setting it, `platform_sync` for resetting it once
+  /// both overlay kinds have acted on it.
   #[cfg(target_os = "windows")]
-  pub(crate) blur_overlay_z_order_dirty: bool,
+  pub(crate) backdrop_overlay_z_order_dirty: bool,
   /// Recently sampled surrogate backdrop colors keyed by window handle.
   ///
   /// Lets `ResizeSession::begin` skip its two-`BitBlt` screen sample for
@@ -499,7 +499,7 @@ impl AnimationManager {
       #[cfg(target_os = "windows")]
       resize_sessions: HashMap::new(),
       #[cfg(target_os = "windows")]
-      blur_overlay_z_order_dirty: false,
+      backdrop_overlay_z_order_dirty: false,
       #[cfg(target_os = "windows")]
       edge_color_cache: Arc::new(Mutex::new(HashMap::new())),
       #[cfg(target_os = "windows")]
@@ -558,10 +558,10 @@ impl AnimationManager {
 
   /// Returns `true` if a DWM surrogate is currently covering `window_id`.
   ///
-  /// Used by blur-overlay tracking to skip position updates and hide the
-  /// overlay while the real window is cloaked — preventing the overlay from
-  /// jumping to the window's pre-positioned target rect while the surrogate
-  /// is still mid-animation.
+  /// Used by backdrop-overlay tracking to skip position updates and hide
+  /// the overlay while the real window is cloaked — preventing the
+  /// overlay from jumping to the window's pre-positioned target rect while
+  /// the surrogate is still mid-animation.
   #[cfg(target_os = "windows")]
   pub fn has_active_surrogate(&self, window_id: &Uuid) -> bool {
     self.resize_sessions.contains_key(window_id)
@@ -581,15 +581,15 @@ impl AnimationManager {
 
   /// Returns `true` if `window_id` has a workspace-switch surrogate
   /// actively tracked this tick, or in its `pending_ws_cleanup` grace tail
-  /// -- regardless of whether that surrogate itself carries a live acrylic
-  /// tracker (`WorkspaceSurrogate::is_live`, checked separately by the
-  /// per-tick driver at its own blur-specific tracking step).
+  /// -- regardless of whether that surrogate is `Live`-mode and so has a
+  /// backdrop overlay tracking it (`WorkspaceSurrogate::is_live`, checked
+  /// separately by the per-tick driver at its own backdrop tracking step).
   ///
-  /// Both the blur and border overlay for such a window are owned entirely
-  /// by the per-tick driver in `update_internal` for as long as this
-  /// returns `true` -- `sync_blur_overlays`/`sync_border_overlays` must
-  /// leave these windows alone rather than hiding/repositioning them, even
-  /// when only one of the two effects is actually configured for it.
+  /// Both the backdrop and border overlay for such a window are owned
+  /// entirely by the per-tick driver in `update_internal` for as long as
+  /// this returns `true` -- `sync_overlays` must leave these windows alone
+  /// rather than hiding/repositioning them, even when only one of the two
+  /// effects is actually configured for it.
   #[cfg(target_os = "windows")]
   pub fn has_live_ws_surrogate(&self, window_id: &Uuid) -> bool {
     let has_surrogate = |ws: &WorkspaceSwitchState| {
@@ -614,8 +614,8 @@ impl AnimationManager {
   ///
   /// The tail was originally covered because the surrogate carried its own
   /// SWCA acrylic, and so supplied the backdrop itself. It no longer does
-  /// -- every style renders through a `Windows.UI.Composition` overlay
-  /// behind the window, and `NativeSurrogate::apply_swca` has no callers.
+  /// -- the backdrop renders through a `Windows.UI.Composition` overlay
+  /// behind the window, and the SWCA acrylic path is gone entirely.
   #[cfg(target_os = "windows")]
   pub fn has_live_resize_tracker(&self, window_id: &Uuid) -> bool {
     self.resize_sessions.contains_key(window_id)
@@ -1008,11 +1008,11 @@ impl AnimationManager {
         .copied()
         .collect();
 
-      // Batches every closing window's acrylic-overlay reposition this tick
-      // into one `DeferWindowPos` transaction instead of each issuing its
-      // own synchronous `SetWindowPos` -- same reasoning as
-      // `platform_sync`'s per-tick blur-overlay sync passes.
-      let mut blur_batch = SurrogateBatch::new();
+      // Batches every closing window's backdrop-overlay reposition this
+      // tick into one `DeferWindowPos` transaction instead of each issuing
+      // its own synchronous `SetWindowPos` -- same reasoning as
+      // `platform_sync`'s per-tick backdrop-overlay sync passes.
+      let mut backdrop_batch = SurrogateBatch::new();
       let mut border_batch = SurrogateBatch::new();
 
       for id in &close_in_progress {
@@ -1050,27 +1050,29 @@ impl AnimationManager {
         }
 
         // Close animations are detached from the layout tree, so they never
-        // reach `platform_sync`'s per-window loop -- track the acrylic blur
+        // reach `platform_sync`'s per-window loop -- track the backdrop
         // and border overlays directly here instead, mirroring
-        // `sync_blur_overlays`'/`sync_border_overlays`' steady-state
-        // behavior but following the surrogate's live rect.
+        // `sync_overlays`' steady-state behavior but following the
+        // surrogate's live rect.
         if let Some(session) = state.animation_manager.resize_sessions.get(id)
         {
           let anchor = session.surrogate_hwnd();
           let rect = session.current_rect();
 
-          if let Some(params) = session.blur_overlay_params() {
+          if let Some(params) = session.backdrop_overlay_params() {
             match (anchor, rect.clone()) {
-              (Some(anchor), Some(rect)) => upsert_blur_overlay(
-                &mut state.blur_overlays,
+              (Some(anchor), Some(rect)) => upsert_overlay(
+                &mut state.backdrop_overlays,
                 *id,
                 params,
                 &rect,
                 anchor,
-                &mut blur_batch,
+                &mut backdrop_batch,
               ),
               _ => {
-                if let Some(overlay) = state.blur_overlays.get_mut(id) {
+                if let Some(overlay) =
+                  state.backdrop_overlays.get_mut(id)
+                {
                   overlay.hide();
                 }
               }
@@ -1079,7 +1081,7 @@ impl AnimationManager {
 
           if let Some(params) = session.border_overlay_params() {
             match (anchor, rect) {
-              (Some(anchor), Some(rect)) => upsert_border_overlay(
+              (Some(anchor), Some(rect)) => upsert_overlay(
                 &mut state.border_overlays,
                 *id,
                 params,
@@ -1097,7 +1099,7 @@ impl AnimationManager {
         }
       }
 
-      blur_batch.commit();
+      backdrop_batch.commit();
       border_batch.commit();
     }
 
@@ -1139,12 +1141,12 @@ impl AnimationManager {
         state.animation_manager.pending_close_windows.remove(&id);
 
         // The close-drive loop above populates these via
-        // `upsert_blur_overlay`/`upsert_border_overlay` since closing windows
+        // `upsert_overlay` since closing windows
         // are detached from the layout tree and never reach
-        // `sync_blur_overlays`/`sync_border_overlays`'s normal retain-based
-        // cleanup. Remove them here too, or the overlay window they own is
-        // never destroyed and lingers on screen as a ghost.
-        state.blur_overlays.remove(&id);
+        // `sync_overlays`'s normal retain-based cleanup. Remove them here
+        // too, or the overlay window they own is never destroyed and
+        // lingers on screen as a ghost.
+        state.backdrop_overlays.remove(&id);
         state.border_overlays.remove(&id);
 
         // Reconstruct a `NativeWindow` from the stored HWND and send
@@ -1189,7 +1191,7 @@ impl AnimationManager {
         state.animation_manager.animations.remove(&id);
         state.animation_manager.resize_sessions.remove(&id);
         state.animation_manager.pending_minimize_windows.remove(&id);
-        state.blur_overlays.remove(&id);
+        state.backdrop_overlays.remove(&id);
         state.border_overlays.remove(&id);
         tracing::debug!("Minimize animation complete for {id}.");
       }
@@ -1241,9 +1243,9 @@ impl AnimationManager {
       let ws_vsync_now =
         state.animation_manager.predictive_vsync_now();
 
-      // Likewise precomputed before the mutable borrow below -- needed by the
-      // live blur-overlay tracker to pick `focused_window` vs `other_windows`
-      // config per surrogate.
+      // Likewise precomputed before the mutable borrow below -- needed by
+      // the live backdrop-overlay tracker to pick `focused_window` vs
+      // `other_windows` config per surrogate.
       let focused_id_for_overlay = state.focused_container().map(|c| c.id());
 
       if let Some(ws) = &mut state.animation_manager.workspace_switch {
@@ -1306,8 +1308,9 @@ impl AnimationManager {
         let eased_final = if ws_done { 1.0 } else { eased };
 
         // Batches every workspace-switch surrogate's `SetWindowPos` (only
-        // issued by surrogates carrying a live acrylic backdrop, tracking
-        // their own footprint instead of staying pinned to the viewport)
+        // issued by `Live`-mode surrogates, which track their own
+        // footprint instead of staying pinned to the viewport so the
+        // backdrop overlay has something to follow)
         // into one `DeferWindowPos` transaction per tick — mirrors the
         // `SurrogateBatch` already used for move/resize relayouts. Surrogates
         // with no live backdrop never push into this batch, so it stays
@@ -1403,9 +1406,9 @@ impl AnimationManager {
               WorkspaceSwitchStyle::Iris => {}
             }
 
-            // `Live`-mode surrogates carry no blur of their own (see
+            // `Live`-mode surrogates carry no backdrop of their own (see
             // `WorkspaceSurrogate::new`'s doc comment) -- instead, the same
-            // acrylic blur overlay used in steady state is kept alive and
+            // backdrop overlay used in steady state is kept alive and
             // repositioned to follow the surrogate's own live footprint every
             // tick, computed by the `update_*` call just above. This is what
             // keeps `blur_amount`/tint/corner_radius correct and continuous
@@ -1424,8 +1427,8 @@ impl AnimationManager {
                     let corner_radius = effect_cfg.window_corner_radius_px();
                     let params =
                       effect_cfg.backdrop.to_overlay_params(tint, corner_radius);
-                    upsert_blur_overlay(
-                      &mut state.blur_overlays,
+                    upsert_overlay(
+                      &mut state.backdrop_overlays,
                       window_id,
                       params,
                       rect,
@@ -1435,7 +1438,8 @@ impl AnimationManager {
                   }
                 }
                 None => {
-                  if let Some(overlay) = state.blur_overlays.get_mut(&window_id)
+                  if let Some(overlay) =
+                    state.backdrop_overlays.get_mut(&window_id)
                   {
                     overlay.hide();
                   }
@@ -1452,8 +1456,9 @@ impl AnimationManager {
             // unclipped window rect, since the ring sits *outside* that
             // rect and so is not described by the clipped visible strip.
             //
-            // Independent of `is_live()`, which is blur-specific: the
-            // border tracks every surrogate regardless of acrylic backdrop.
+            // Independent of `is_live()`, which is backdrop-specific: the
+            // border tracks every surrogate whether or not one is
+            // configured.
             {
               let effect_cfg = if Some(window_id) == focused_id_for_overlay {
                 &config.value.window_effects.focused_window
@@ -1601,7 +1606,7 @@ impl AnimationManager {
       // a surrogate at 80 % over a real window at 80 % would appear ~96 %
       // opaque in the flushed frame instead of the intended 80 %. Zero out
       // those surrogates before the flush so the rendered frame already
-      // shows the correct real-window + blur-overlay composite.
+      // shows the correct real-window + backdrop-overlay composite.
       for (_, fade_start, session) in
         &mut state.animation_manager.pending_session_cleanup
       {
@@ -1610,12 +1615,13 @@ impl AnimationManager {
         }
       }
 
-      // Keep the acrylic blur overlay tracking each fading session's own
-      // surrogate through the whole `pending_session_cleanup` tail, exactly
-      // as it did through the active animation -- since the overlay is never
-      // hidden to begin with, there's no `pending_ws_cleanup`-style
-      // pre-show/flush gap to plug here. Batched into one `DeferWindowPos`
-      // transaction, same reasoning as the other blur-overlay sync loops.
+      // Keep the backdrop overlay tracking each fading session's own
+      // surrogate through the whole `pending_session_cleanup` tail,
+      // exactly as it did through the active animation -- since the
+      // overlay is never hidden to begin with, there's no
+      // `pending_ws_cleanup`-style pre-show/flush gap to plug here.
+      // Batched into one `DeferWindowPos` transaction, same reasoning as
+      // the other backdrop-overlay sync loops.
       let mut fade_tail_batch = SurrogateBatch::new();
       let mut border_fade_tail_batch = SurrogateBatch::new();
       for (id, _, session) in &state.animation_manager.pending_session_cleanup
@@ -1635,10 +1641,10 @@ impl AnimationManager {
         let anchor = session.window_hwnd().or_else(|| session.surrogate_hwnd());
         let rect = session.current_rect();
 
-        if let Some(params) = session.blur_overlay_params() {
+        if let Some(params) = session.backdrop_overlay_params() {
           match (anchor, rect.clone()) {
-            (Some(anchor), Some(rect)) => upsert_blur_overlay(
-              &mut state.blur_overlays,
+            (Some(anchor), Some(rect)) => upsert_overlay(
+              &mut state.backdrop_overlays,
               *id,
               params,
               &rect,
@@ -1646,7 +1652,7 @@ impl AnimationManager {
               &mut fade_tail_batch,
             ),
             _ => {
-              if let Some(overlay) = state.blur_overlays.get_mut(id) {
+              if let Some(overlay) = state.backdrop_overlays.get_mut(id) {
                 overlay.hide();
               }
             }
@@ -1655,7 +1661,7 @@ impl AnimationManager {
 
         if let Some(params) = session.border_overlay_params() {
           match (anchor, rect) {
-            (Some(anchor), Some(rect)) => upsert_border_overlay(
+            (Some(anchor), Some(rect)) => upsert_overlay(
               &mut state.border_overlays,
               *id,
               params,
@@ -1704,7 +1710,7 @@ impl AnimationManager {
 
       // Re-anchor to the real window's own `HWND` any session whose
       // surrogate is about to be destroyed this tick -- same hazard, same
-      // fix as the workspace-switch cleanup's `incoming_acrylic_windows`
+      // fix as the workspace-switch cleanup's `incoming_backdrop_windows`
       // loop above: the `retain_mut` below drops (and thereby destroys the
       // surrogate of) any session that's done fading or skips fading
       // outright, and without re-anchoring first the overlay is left
@@ -1748,7 +1754,7 @@ impl AnimationManager {
             continue;
           };
           let anchor = overlay_z_anchor(&window);
-          if let Some(overlay) = state.blur_overlays.get_mut(id) {
+          if let Some(overlay) = state.backdrop_overlays.get_mut(id) {
             tracing::debug!(
               "finishing_sessions: re-anchoring {id} to {:?} at {:?}.",
               anchor,
@@ -1756,7 +1762,9 @@ impl AnimationManager {
             );
             overlay.defer_rect(&mut finishing_batch, rect, anchor);
           } else {
-            tracing::debug!("finishing_sessions: no blur overlay for {id}.");
+            tracing::debug!(
+              "finishing_sessions: no backdrop overlay for {id}."
+            );
           }
           if let Some(overlay) = state.border_overlays.get_mut(id) {
             overlay.defer_rect(&mut border_finishing_batch, rect, anchor);
@@ -1830,30 +1838,32 @@ impl AnimationManager {
         state.animation_manager.stash_warm_surrogate(id, surrogate);
       }
 
-      // `sync_blur_overlays` (called from `platform_sync` above) hides each
-      // window's static acrylic overlay while its workspace-switch surrogate
-      // is alive, including this `pending_ws_cleanup` grace period. The
-      // surrogate itself carries a live SWCA acrylic blur throughout, so
-      // that's fine while it's alive -- but dropping `pending_ws_cleanup`
-      // below destroys the surrogate outright, and nothing shows the static
-      // overlay again until a later `platform_sync` call runs. Between those
-      // two moments DWM can composite a frame with *no* blur behind the
-      // (semi-transparent) real window at all -- a one-frame flicker at the
-      // end of every switch. Pre-show the static overlay at its final rect
-      // while the surrogate is still alive, so the two overlap for a
-      // flushed frame instead of leaving a gap.
+      // `sync_overlays` (called from `platform_sync` above) hides each
+      // window's static backdrop overlay while its workspace-switch
+      // surrogate is alive, including this `pending_ws_cleanup` grace
+      // period. The backdrop overlay is repositioned onto the surrogate's
+      // own footprint throughout, so that's fine while it's alive -- but
+      // dropping `pending_ws_cleanup` below destroys the surrogate
+      // outright, and nothing shows the static overlay again until a later
+      // `platform_sync` call runs. Between those two moments DWM can
+      // composite a frame with *no* backdrop behind the (semi-transparent)
+      // real window at all -- a one-frame flicker at the end of every
+      // switch. Pre-show the static overlay at its final rect while the
+      // surrogate is still alive, so the two overlap for a flushed frame
+      // instead of leaving a gap.
       //
       // That final rect is read from the real window's own `frame()`
       // (shadow-*excluded* visual bounds -- the same value steady-state
       // overlay sync reads) rather than the surrogate's own `rect`, which
-      // is a *positioning* rect (`window.to_rect() + total_border_delta()`,
-      // including the OS's invisible drop-shadow expansion) meant for
-      // `SetWindowPos`, not overlay tracking. Using `surrogate.rect`
-      // directly here made blur/border overlays pop visibly larger right at
-      // the end of every workspace switch, then snap down once a later
-      // `platform_sync` tick re-synced them from `frame()`. Falls back to
-      // `surrogate.rect` only if the window/frame lookup fails.
-      let incoming_acrylic_windows: Vec<(Uuid, Rect, HWND)> = state
+      // is a *positioning* rect (`window.to_rect() +
+      // total_border_delta()`, including the OS's invisible drop-shadow
+      // expansion) meant for `SetWindowPos`, not overlay tracking. Using
+      // `surrogate.rect` directly here made backdrop/border overlays pop
+      // visibly larger right at the end of every workspace switch, then
+      // snap down once a later `platform_sync` tick re-synced them from
+      // `frame()`. Falls back to `surrogate.rect` only if the window/frame
+      // lookup fails.
+      let incoming_backdrop_windows: Vec<(Uuid, Rect, HWND)> = state
         .animation_manager
         .pending_ws_cleanup
         .as_ref()
@@ -1879,9 +1889,9 @@ impl AnimationManager {
       let mut pre_show_batch = SurrogateBatch::new();
       let mut border_pre_show_batch = SurrogateBatch::new();
 
-      // Covers both blur and border overlays despite the name -- see the
-      // comment above where this is built.
-      for (id, rect, anchor) in &incoming_acrylic_windows {
+      // Covers both backdrop and border overlays despite the name -- see
+      // the comment above where this is built.
+      for (id, rect, anchor) in &incoming_backdrop_windows {
         let effect_cfg = if Some(*id) == focused_id {
           &config.value.window_effects.focused_window
         } else {
@@ -1893,14 +1903,15 @@ impl AnimationManager {
         if let Some(tint) = effect_cfg.backdrop.overlay_tint() {
           let params = effect_cfg.backdrop.to_overlay_params(tint, corner_radius);
 
-          match state.blur_overlays.entry(*id) {
+          match state.backdrop_overlays.entry(*id) {
             std::collections::hash_map::Entry::Occupied(e) => {
               let overlay = e.into_mut();
               overlay.apply(params);
               overlay.defer_rect(&mut pre_show_batch, rect, *anchor);
             }
             std::collections::hash_map::Entry::Vacant(e) => {
-              if let Ok(overlay) = NativeBlurOverlay::create(rect, params, *anchor)
+              if let Ok(overlay) =
+                NativeBackdropOverlay::create(rect, params, *anchor)
               {
                 e.insert(overlay);
               }
@@ -1942,7 +1953,7 @@ impl AnimationManager {
       // its DWM thumbnail -- without re-anchoring first, there's a window
       // where the overlay is left anchored to a `HWND` that no longer
       // exists until the follow-up `platform_sync` call eventually
-      // corrects it via the normal `sync_blur_overlays` path. DWM can
+      // corrects it via the normal `sync_overlays` path. DWM can
       // composite a frame in that gap showing the overlay in whatever
       // stale z-slot that leaves it -- a one-frame flicker at the end of
       // every switch, on every incoming window (masked on the focused one
@@ -1952,7 +1963,7 @@ impl AnimationManager {
       // incidental save).
       let mut final_anchor_batch = SurrogateBatch::new();
       let mut border_final_anchor_batch = SurrogateBatch::new();
-      for (id, rect, _) in &incoming_acrylic_windows {
+      for (id, rect, _) in &incoming_backdrop_windows {
         let Some(container) = state.container_by_id(*id) else {
           continue;
         };
@@ -1960,7 +1971,7 @@ impl AnimationManager {
           continue;
         };
         let anchor = overlay_z_anchor(&window);
-        if let Some(overlay) = state.blur_overlays.get_mut(id) {
+        if let Some(overlay) = state.backdrop_overlays.get_mut(id) {
           overlay.defer_rect(&mut final_anchor_batch, rect, anchor);
         }
         if let Some(overlay) = state.border_overlays.get_mut(id) {
@@ -1969,7 +1980,7 @@ impl AnimationManager {
       }
       final_anchor_batch.commit();
       border_final_anchor_batch.commit();
-      if !incoming_acrylic_windows.is_empty() {
+      if !incoming_backdrop_windows.is_empty() {
         wm_platform::dwm_flush();
       }
 
@@ -2241,10 +2252,10 @@ impl AnimationManager {
     // matches the real window's rounded corners during the animation.
     #[cfg(target_os = "windows")]
     corner_style: CornerStyle,
-    // Tint/blur-amount/corner-radius/opacity/saturation for the acrylic
-    // blur-overlay tracker, or `None` when blur-behind is not configured.
+    // Tint/blur-amount/corner-radius/opacity/saturation for the
+    // backdrop-overlay tracker, or `None` when no backdrop is configured.
     #[cfg(target_os = "windows")]
-    blur_overlay: Option<BlurOverlayParams>,
+    backdrop_overlay: Option<BackdropOverlayParams>,
     // Color/width/corner-radius/opacity for the border-overlay tracker, or
     // `None` when the border effect is not configured.
     #[cfg(target_os = "windows")]
@@ -2319,7 +2330,7 @@ impl AnimationManager {
               &target_rect,
               SessionOptions {
                 effect_opacity,
-                // `false`: the blur overlay is positioned behind the
+                // `false`: the backdrop overlay is positioned behind the
                 // surrogate (in `platform_sync`'s `Frozen` handling) before
                 // the surrogate is revealed via `ResizeSession::show`, so
                 // the surrogate is never visible without its overlay
@@ -2329,7 +2340,7 @@ impl AnimationManager {
                 corner_style,
                 place_at_top: true,
                 edge_color: cached_edge_color,
-                blur_overlay,
+                backdrop_overlay,
                 border_overlay,
               },
               warm_surrogate,
@@ -2344,7 +2355,7 @@ impl AnimationManager {
                 corner_style,
                 place_at_top: true,
                 edge_color: cached_edge_color,
-                blur_overlay,
+                backdrop_overlay,
                 border_overlay,
               },
             ),
@@ -2374,9 +2385,9 @@ impl AnimationManager {
               );
               // `place_at_top: true` above means the session's surrogate
               // (if any) was inserted at `HWND_TOP` -- see
-              // `blur_overlay_z_order_dirty`'s doc comment.
+              // `backdrop_overlay_z_order_dirty`'s doc comment.
               if session.surrogate_hwnd().is_some() {
-                self.blur_overlay_z_order_dirty = true;
+                self.backdrop_overlay_z_order_dirty = true;
               }
               self.resize_sessions.insert(window_id, session);
             }
@@ -2611,20 +2622,20 @@ impl AnimationManager {
   /// Queues every surrogate update recorded during the current redraw pass
   /// into `batch`, leaving the commit to the caller.
   ///
-  /// Called at the end of each redraw pass. The caller commits `batch` only
-  /// after it has also queued the blur/border overlays that ride along with
-  /// these surrogates, so window and overlays land in a single
+  /// Called at the end of each redraw pass. The caller commits `batch`
+  /// only after it has also queued the backdrop/border overlays that ride
+  /// along with these surrogates, so window and overlays land in a single
   /// `DeferWindowPos` transaction: sequential transactions can straddle a
-  /// composition boundary and let a surrogate move a frame ahead of its own
-  /// border outline, or adjacent windows' edges visibly desync.
+  /// composition boundary and let a surrogate move a frame ahead of its
+  /// own border outline, or adjacent windows' edges visibly desync.
   ///
   /// Each session's `current_rect` is updated here, at queue time rather
-  /// than at commit time, which is what lets the overlay pass read the live
-  /// rect before the batch is committed.
+  /// than at commit time, which is what lets the overlay pass read the
+  /// live rect before the batch is committed.
   ///
-  /// Real-window handoffs are capped at [`MAX_HANDOFFS_PER_TICK`] per pass;
-  /// see its docs for why. Surrogate position/opacity updates are never
-  /// throttled -- only the real-window handoff is deferred.
+  /// Real-window handoffs are capped at [`MAX_HANDOFFS_PER_TICK`] per
+  /// pass; see its docs for why. Surrogate position/opacity updates are
+  /// never throttled -- only the real-window handoff is deferred.
   #[cfg(target_os = "windows")]
   pub fn queue_surrogate_updates(&mut self, batch: &mut SurrogateBatch) {
     if self.pending_surrogate_updates.is_empty() {
@@ -2870,7 +2881,7 @@ impl AnimationManager {
     monitor_rect: Rect,
     effect_opacity: u8,
     corner_style: CornerStyle,
-    blur_overlay: Option<BlurOverlayParams>,
+    backdrop_overlay: Option<BackdropOverlayParams>,
     border_overlay: Option<BorderOverlayParams>,
     params: &WindowTransitionParams,
     native_window: &NativeWindow,
@@ -2950,7 +2961,7 @@ impl AnimationManager {
         // No cache for open animations: the window is new, so no prior
         // sample exists.
         edge_color: None,
-        blur_overlay,
+        backdrop_overlay,
         border_overlay,
       },
     ) {
@@ -2962,14 +2973,14 @@ impl AnimationManager {
         if effective_opacity_from < 1.0 {
           session.update(&start_rect, initial_opacity_u8);
         }
-        // For zoom: the drive loop handles the first frame. update_zoom_fade
-        // is NOT called here so the surrogate stays hidden until the first
-        // animation tick sets the correct progress.
-        // `place_at_top: true` above means the session's surrogate (if any)
-        // was inserted at `HWND_TOP` -- see `blur_overlay_z_order_dirty`'s
-        // doc comment.
+        // For zoom: the drive loop handles the first frame.
+        // update_zoom_fade is NOT called here so the surrogate stays
+        // hidden until the first animation tick sets the correct progress.
+        // `place_at_top: true` above means the session's surrogate (if
+        // any) was inserted at `HWND_TOP` -- see
+        // `backdrop_overlay_z_order_dirty`'s doc comment.
         if session.surrogate_hwnd().is_some() {
-          self.blur_overlay_z_order_dirty = true;
+          self.backdrop_overlay_z_order_dirty = true;
         }
         self.animations.insert(window_id, anim);
         self.resize_sessions.insert(window_id, session);
@@ -3009,7 +3020,7 @@ impl AnimationManager {
     current_rect: Rect,
     effect_opacity: u8,
     corner_style: CornerStyle,
-    blur_overlay: Option<BlurOverlayParams>,
+    backdrop_overlay: Option<BackdropOverlayParams>,
     border_overlay: Option<BorderOverlayParams>,
     params: &WindowTransitionParams,
     native_window: &NativeWindow,
@@ -3066,7 +3077,7 @@ impl AnimationManager {
         // Reuse a cached color when the closing window was recently
         // animated; otherwise sample — the window is still on screen.
         edge_color: self.cached_edge_color(native_window.hwnd().0),
-        blur_overlay,
+        backdrop_overlay,
         border_overlay,
       },
     ) {
@@ -3108,7 +3119,7 @@ impl AnimationManager {
     current_rect: Rect,
     effect_opacity: u8,
     corner_style: CornerStyle,
-    blur_overlay: Option<BlurOverlayParams>,
+    backdrop_overlay: Option<BackdropOverlayParams>,
     border_overlay: Option<BorderOverlayParams>,
     params: &WindowTransitionParams,
     native_window: &NativeWindow,
@@ -3159,7 +3170,7 @@ impl AnimationManager {
         corner_style,
         place_at_top: false,
         edge_color: self.cached_edge_color(native_window.hwnd().0),
-        blur_overlay,
+        backdrop_overlay,
         border_overlay,
       },
     ) {

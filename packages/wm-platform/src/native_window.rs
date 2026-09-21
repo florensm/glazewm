@@ -298,6 +298,18 @@ pub trait NativeWindowWindowsExt {
   /// This method is only available on Windows.
   fn set_title_bar_visibility(&self, visible: bool) -> crate::Result<()>;
 
+  /// Hides or restores the window's own OS-drawn border, so it doesn't
+  /// show as a second line inside a [`NativeBorderOverlay`] ring.
+  ///
+  /// # Platform-specific
+  ///
+  /// This method is only available on Windows, and only does anything on
+  /// Windows 11 (build 22000) and later -- earlier builds draw no such
+  /// border and return `Err`.
+  ///
+  /// [`NativeBorderOverlay`]: crate::NativeBorderOverlay
+  fn set_native_border_hidden(&self, hidden: bool) -> crate::Result<()>;
+
   /// Sets the corner style of the window.
   ///
   /// # Platform-specific
@@ -427,6 +439,10 @@ impl NativeWindowWindowsExt for NativeWindow {
 
   fn set_title_bar_visibility(&self, visible: bool) -> crate::Result<()> {
     self.inner.set_title_bar_visibility(visible)
+  }
+
+  fn set_native_border_hidden(&self, hidden: bool) -> crate::Result<()> {
+    self.inner.set_native_border_hidden(hidden)
   }
 
   fn set_corner_style(

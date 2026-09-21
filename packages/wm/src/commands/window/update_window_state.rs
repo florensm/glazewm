@@ -94,7 +94,7 @@ fn start_minimize_animation(
     .focused_container()
     .is_some_and(|focused| focused.id() == window.id());
 
-  let (effect_opacity, corner_style, blur_overlay, border_overlay) =
+  let (effect_opacity, corner_style, backdrop_overlay, border_overlay) =
     crate::commands::general::surrogate_effects_for(is_focused, config);
 
   let native_ref = window.native();
@@ -103,7 +103,7 @@ fn start_minimize_animation(
     rect,
     effect_opacity,
     corner_style,
-    blur_overlay,
+    backdrop_overlay,
     border_overlay,
     &WindowTransitionParams::from_minimize(
       &config.value.animations.window_minimize,

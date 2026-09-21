@@ -15,14 +15,15 @@ use windows::{
 /// Registers a window class with `wnd_proc` and `class_name`, exactly once
 /// per process for the given `registered` cell.
 ///
-/// Shared by the overlay window types ([`NativeSurrogate`], [`NativeBlurOverlay`],
+/// Shared by the overlay window types ([`NativeSurrogate`],
+/// [`NativeBackdropOverlay`],
 /// [`NativeBorderOverlay`], [`NativeIrisOverlay`]), which each need a distinct
 /// class name and (for the iris overlay) window procedure, but otherwise
-/// register identically -- previously each copy-pasted its own `OnceLock` +
-/// `WNDCLASSW` + `RegisterClassW` call.
+/// register identically -- previously each copy-pasted its own `OnceLock`
+/// + `WNDCLASSW` + `RegisterClassW` call.
 ///
 /// [`NativeSurrogate`]: crate::NativeSurrogate
-/// [`NativeBlurOverlay`]: crate::NativeBlurOverlay
+/// [`NativeBackdropOverlay`]: crate::NativeBackdropOverlay
 /// [`NativeBorderOverlay`]: crate::NativeBorderOverlay
 /// [`NativeIrisOverlay`]: crate::NativeIrisOverlay
 pub(crate) fn ensure_class_registered(
@@ -90,7 +91,7 @@ fn is_topmost(hwnd: HWND) -> bool {
 /// The alternative, passing `HWND_TOPMOST` as the insert-after target, moves
 /// the overlay to the *top* of that band -- above the very window it is
 /// supposed to sit behind. With an opaque backdrop that reads as the window
-/// disappearing and being replaced by its own blur.
+/// disappearing and being replaced by its own backdrop.
 pub(crate) fn match_z_band(overlay: HWND, anchor: HWND) {
   let wanted = is_topmost(anchor);
 

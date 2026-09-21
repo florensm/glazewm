@@ -12,7 +12,7 @@ use std::{
 /// runs on `platform_sync`'s per-tick overlay sync path (up to ~175Hz while
 /// any animation is active, for every managed window) -- not just on the
 /// occasional focus-change event this was designed around. Without a cache,
-/// `use_accent_color` would turn every animation (resize, move,
+/// a `color: 'accent'` border would turn every animation (resize, move,
 /// workspace-switch, not just border transitions) into a live DWM syscall
 /// storm. The accent color only ever changes when the user picks a new one
 /// in Settings, so a coarse cache is imperceptible in practice.

@@ -10,14 +10,14 @@ enum SurrogateMode {
   /// The surrogate spans the whole monitor viewport, created once and never
   /// repositioned; all motion is expressed via `rcSource`/`rcDestination`
   /// clipping, avoiding any per-frame `SetWindowPos` call. Used for windows
-  /// with no live acrylic backdrop (the common case).
+  /// with no backdrop configured (the common case).
   PinnedViewport,
   /// The surrogate is sized to the window's own (clipped-to-monitor) visible
   /// rect and genuinely moved/resized every frame via a batched
-  /// `SetWindowPos`. Used when the surrogate carries a live SWCA acrylic
-  /// backdrop from GlazeWM's own `backdrop` config — pinning it to the
-  /// full viewport would blur the entire monitor instead of just the
-  /// window's current footprint.
+  /// `SetWindowPos`. Used when the window has a `backdrop` configured, so
+  /// the backdrop overlay can be repositioned onto this surrogate's own
+  /// footprint each frame — pinning the surrogate to the full viewport
+  /// would leave the overlay nothing meaningful to follow.
   Live,
 }
 
@@ -63,7 +63,7 @@ pub struct WorkspaceSurrogate {
   /// fades out or in.
   opacity_endpoint: f32,
   /// Positioning strategy, chosen once at creation based on whether the
-  /// surrogate carries a live acrylic backdrop.
+  /// window has a backdrop configured.
   mode: SurrogateMode,
   /// Invisible border insets of the source window, in physical pixels.
   /// Zero in [`SurrogateMode::PinnedViewport`] mode. Used to offset every
@@ -71,7 +71,7 @@ pub struct WorkspaceSurrogate {
   /// deflation already baked into `rect` and the surrogate's created size.
   border_inset: RECT,
   /// Live on-screen rect for the current animation frame, in
-  /// [`SurrogateMode::Live`] mode only -- lets a caller (the acrylic blur
+  /// [`SurrogateMode::Live`] mode only -- lets a caller (the backdrop
   /// overlay tracker in `AnimationManager::update_internal`) follow the
   /// surrogate's actual footprint instead of only its final `rect`. `None`
   /// in [`SurrogateMode::PinnedViewport`] mode (no single "screen rect"
@@ -132,7 +132,7 @@ impl WorkspaceSurrogate {
   /// (`BackdropEffectConfig::overlay_tint`), or `None` when `backdrop`
   /// isn't configured for this window. When `Some`, this switches the
   /// surrogate to [`SurrogateMode::Live`] -- sized/moved to its own footprint
-  /// rather than pinned to the viewport -- so a live-tracking acrylic blur
+  /// rather than pinned to the viewport -- so a live-tracking backdrop
   /// overlay (see [`current_rect`], driven from `AnimationManager`) has a
   /// meaningful per-frame rect to follow. This no longer applies SWCA to the
   /// surrogate itself: SWCA has no adjustable blur radius, so the actual
@@ -275,7 +275,7 @@ impl WorkspaceSurrogate {
     (start_frac + (end_frac - start_frac) * progress).clamp(0.0, 1.0)
   }
 
-  /// Whether this surrogate carries a live acrylic backdrop
+  /// Whether this surrogate is tracked by a backdrop overlay
   /// ([`SurrogateMode::Live`]), as opposed to [`SurrogateMode::PinnedViewport`].
   #[must_use]
   pub fn is_live(&self) -> bool {
@@ -284,7 +284,7 @@ impl WorkspaceSurrogate {
 
   /// `HWND` of this surrogate.
   ///
-  /// Used as the acrylic blur-overlay tracker's z-order anchor while a
+  /// Used as the backdrop-overlay tracker's z-order anchor while a
   /// workspace-switch animation is active: the surrogate is what's actually
   /// visible on screen (the real window is cloaked for the duration), so the
   /// overlay must sit directly behind *it*, not the (hidden) real window.

@@ -2,11 +2,10 @@
 //!
 //! # Why this exists at all
 //!
-//! Acrylic samples whatever sits behind a window and blurs it every frame.
-//! In a tiling layout nothing *is* behind a tiled window except the
-//! wallpaper, so for the common case that live sampling reproduces, frame
-//! after frame, an image that never changes. This module computes that
-//! image once instead.
+//! In a tiling layout nothing sits behind a tiled window except the
+//! wallpaper, so the blurred image a window needs behind it never changes.
+//! Sampling and blurring the desktop live would recompute it frame after
+//! frame; this module computes it once instead.
 //!
 //! Two things follow from baking rather than sampling, and both matter
 //! more than the blur itself:
@@ -17,7 +16,7 @@
 //!   blending layer rather than making one cheaper.
 //! - The blur happens **once**, at bake time, not per frame -- so the
 //!   overlay's visual tree is a plain surface brush with no effect graph
-//!   on it at all, unlike the acrylic path in `composition`.
+//!   on it at all.
 //!
 //! # Cropping
 //!
@@ -121,10 +120,11 @@ use super::{
   graphics_device::{self, with_graphics_device, GraphicsDevice},
   wallpaper::{DesktopSignature, MonitorWallpaper, WallpaperFit},
 };
-use crate::{BlurOverlayParams, Rect};
+use crate::{BackdropOverlayParams, Rect};
 
-/// The subset of [`BlurOverlayParams`] rendered *into* the baked image,
-/// and so the part that decides whether an existing bake can be reused.
+/// The subset of [`BackdropOverlayParams`] rendered *into* the baked
+/// image, and so the part that decides whether an existing bake can be
+/// reused.
 ///
 /// Everything left out -- tint, opacity, corner radius, parallax -- is
 /// applied live by the visual tree or by the crop, and changing one of
@@ -140,8 +140,8 @@ pub(crate) struct BakeKnobs {
   pub grain: f32,
 }
 
-impl From<BlurOverlayParams> for BakeKnobs {
-  fn from(params: BlurOverlayParams) -> Self {
+impl From<BackdropOverlayParams> for BakeKnobs {
+  fn from(params: BackdropOverlayParams) -> Self {
     Self {
       blur_amount: params.blur_amount,
       saturation: params.saturation,
@@ -158,9 +158,9 @@ impl From<BlurOverlayParams> for BakeKnobs {
 ///
 /// Compared for exact equality to decide whether an existing bake can be
 /// reused. The `f32` knobs are safe to compare that way for the same
-/// reason `NativeBlurOverlay`'s setters are: they only ever change when a
-/// caller passes a genuinely different, config-resolved number, never
-/// through arithmetic that could drift.
+/// reason `NativeBackdropOverlay`'s setters are: they only ever change
+/// when a caller passes a genuinely different, config-resolved number,
+/// never through arithmetic that could drift.
 #[derive(Clone, Debug, PartialEq)]
 struct WallpaperKey {
   wallpaper: MonitorWallpaper,
@@ -318,7 +318,7 @@ pub(crate) fn poll_for_changes() {
 pub(crate) fn crop_brush(
   compositor: &Compositor,
   rect: &Rect,
-  params: BlurOverlayParams,
+  params: BackdropOverlayParams,
 ) -> windows::core::Result<(CompositionSurfaceBrush, Rect)> {
   let monitor = monitor_bounds(rect);
   let surface = surface_for(compositor, &monitor, params.into())?;
@@ -481,9 +481,9 @@ fn wallpaper_for(monitor: &Rect) -> MonitorWallpaper {
 /// bake.
 ///
 /// Compares the knobs exactly, matching `WallpaperKey`'s own `PartialEq`
-/// and `NativeBlurOverlay`'s setters: these are config-resolved numbers
-/// that are either the same value or a different one, never the result of
-/// arithmetic that could drift.
+/// and `NativeBackdropOverlay`'s setters: these are config-resolved
+/// numbers that are either the same value or a different one, never the
+/// result of arithmetic that could drift.
 #[allow(clippy::float_cmp)]
 fn surface_for(
   compositor: &Compositor,
@@ -608,7 +608,7 @@ fn subscribe_device_replaced(
 /// Allocates a monitor-sized surface and draws the blurred wallpaper into
 /// it.
 ///
-/// `DirectXAlphaMode::Ignore` is the point of the whole style: it makes
+/// `DirectXAlphaMode::Ignore` is the point of the whole backdrop: it makes
 /// the surface opaque, which is what lets DWM stop compositing everything
 /// behind the overlay.
 fn bake(
@@ -744,7 +744,7 @@ fn draw_wallpaper(
       // A wallpaper path that can't be decoded (removed mid-slideshow, an
       // unsupported codec) is a normal desktop state, not a pipeline
       // failure: the background color alone is exactly what Windows itself
-      // would show, so this must not fall the whole style back to acrylic.
+      // would show, so this must not fail the backdrop outright.
       tracing::debug!(
         "Wallpaper image {path:?} could not be decoded: {err}."
       );
@@ -1481,7 +1481,7 @@ mod tests {
   /// fail outright on a wrong property index, a mismatched property type,
   /// or an unsupported effect -- none of which can be ruled out by
   /// reading the code, and all of which would otherwise surface as the
-  /// style silently falling back to SWCA acrylic on a user's machine.
+  /// backdrop silently not rendering on a user's machine.
   ///
   /// Each optional stage is baked on its own so a failure names the effect
   /// that caused it instead of just the combined chain.

@@ -22,7 +22,7 @@ impl CornerStyle {
   ///
   /// Windows exposes no API for the actual radius -- these are
   /// community-measured approximations. Used to match the composition-based
-  /// acrylic overlay's own corner radius to the real managed window's
+  /// backdrop overlay's own corner radius to the real managed window's
   /// rendered corners, so the two don't visually mismatch.
   #[must_use]
   pub fn approx_radius_px(&self) -> f32 {

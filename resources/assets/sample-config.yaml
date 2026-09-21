@@ -255,72 +255,61 @@ window_effects:
       # '0' or '0%' is fully transparent (and, by consequence, unfocusable).
       opacity: "95%"
 
-    # Apply a backdrop material to the window.
-    # Drawn into a persistent, self-drawn overlay (Windows.UI.Composition,
-    # same mechanism as the border above) positioned behind the window, so it
-    # survives window-open/close, resize, and workspace-switch transitions
-    # instead of disappearing during them.
-    # Wallpaper blurs the desktop wallpaper once, up front, into an opaque
-    # per-monitor image and shows each window the crop of it underneath that
-    # window. In a tiling layout nothing is behind a tiled window except the
-    # wallpaper, so this looks like acrylic while sampling nothing per frame
-    # -- and being opaque, it lets DWM skip compositing what's behind the
-    # window entirely.
-    # ** Requires Windows 10 1803+. On anything older no overlay is created
-    # ** and the effect is silently skipped.
+    # Show a blurred crop of the desktop wallpaper behind the window.
+    # The wallpaper is blurred once, up front, into an opaque per-monitor
+    # image; each window is shown the part of it that sits underneath. In a
+    # tiling layout nothing is behind a tiled window except the wallpaper,
+    # so the image never changes and is computed once, not per frame.
+    # Drawn into a self-drawn overlay behind the window (same mechanism as
+    # the border above), so it survives open/close, resize, and
+    # workspace-switch animations instead of disappearing during them.
+    # The overlay's corner radius always follows corner_style, so it can't
+    # disagree with the window's own rendered corners.
+    # ** Requires Windows 10 1803+. On anything older the effect is
+    # ** silently skipped.
     backdrop:
       enabled: false
-      # Allowed values: 'wallpaper'.
-      style: "wallpaper"
-      # Blur radius/intensity. Baked into the image, so changing it
-      # re-renders that image once rather than costing anything per frame --
-      # and it has no lower bound to speak of, unlike the OS blur it
-      # replaces.
+      # Tint blended over the blurred wallpaper, '#rrggbb' or '#rrggbbaa'.
+      # Left unset, the backdrop is the wallpaper's own colors.
+      # tint: "#00000060"
+      # Blur radius/intensity.
       blur_amount: 30.0
-      # Opacity of the overlay itself (backdrop + tint together), from 0.0
-      # to 1.0 -- not the same as transparency.opacity above, which fades
-      # the real window. Note that lowering this makes the overlay
-      # translucent again, giving back the compositing saving it exists for.
+      # Opacity of the overlay itself, 0.0 to 1.0. Not the same as
+      # transparency.opacity above, which fades the real window. Lowering
+      # this makes the overlay translucent again, giving back the
+      # compositing saving it exists for -- prefer vignette below.
       opacity: 1.0
-      # Saturation of the blurred backdrop, from 0.0 (grayscale) to 2.0
-      # (oversaturated); 1.0 is unchanged.
+      # Saturation, 0.0 (grayscale) to 2.0 (oversaturated). 1.0 is
+      # unchanged.
       saturation: 1.0
-      # All of the knobs below except parallax are rendered into the image
-      # once, so any value costs the same at runtime: nothing.
-      #
       # Exposure, in stops. 0.0 is unchanged, negative darkens.
       exposure: 0.0
       # Contrast, -1.0 to 1.0. 0.0 is unchanged.
       contrast: 0.0
       # Highlight recovery, -1.0 to 1.0. 0.0 is unchanged; negative pulls
-      # bright areas down. Unlike exposure this is tone-selective -- it only
-      # touches the bright end -- so it can bring a blown-out sky down
-      # without dragging the whole image toward black. The knob to reach for
-      # when a bright wallpaper makes text hard to read.
+      # bright areas down. Tone-selective where exposure is not, so it can
+      # bring a blown-out sky down without dragging the whole image toward
+      # black. The knob to reach for when a bright wallpaper makes text
+      # hard to read.
       highlights: 0.0
       # Shadow lift, -1.0 to 1.0. 0.0 is unchanged; positive opens dark
-      # areas up. The counterpart to highlights, for a wallpaper so dark the
-      # backdrop reads as a flat black rectangle.
+      # areas up. The counterpart to highlights, for a wallpaper so dark
+      # the backdrop reads as a flat black rectangle.
       shadows: 0.0
-      # Darkening toward each window's own edges, 0.0 (off) to 1.0. Unlike
-      # the knobs above this applies to every style and is not baked -- it
-      # is measured from the window's rect, since one baked image is shared
-      # by every window on a monitor. The right knob for toning a bright
-      # backdrop down behind text: unlike opacity it keeps the overlay
-      # opaque, so DWM still skips what's behind it.
+      # Darkening toward each window's own edges, 0.0 (off) to 1.0. The
+      # right knob for toning a bright backdrop down behind text: unlike
+      # opacity it keeps the overlay opaque, so DWM still skips what's
+      # behind it.
       vignette: 0.0
-      # Monochrome noise over the blurred image, 0.0 (off) to 1.0. This is
-      # the grain that makes acrylic read as frosted glass rather than an
-      # out-of-focus photo; 0.04-0.10 is usually enough.
+      # Monochrome noise over the blurred image, 0.0 (off) to 1.0. A fine
+      # dither is what makes a blurred image read as frosted glass rather
+      # than an out-of-focus photo; 0.04-0.10 is usually enough.
       grain: 0.0
       # How far the backdrop follows the window across its monitor. 1.0
       # pins the image to the desktop, so a window looks like a hole onto
       # the real wallpaper. Lower values let it drift as the window moves,
       # which reads as depth.
       parallax: 1.0
-      # The overlay's own corner radius isn't separately configurable --
-      # it always follows corner_style so it matches the real window's
-      # rendered corners on top of it.
 
   # Visual effects to apply to non-focused windows.
   other_windows:
@@ -336,12 +325,9 @@ window_effects:
     transparency:
       enabled: false
       opacity: "0%"
+    # Takes the same keys as focused_window.backdrop above.
     backdrop:
       enabled: false
-      style: "wallpaper"
-      blur_amount: 30.0
-      opacity: 1.0
-      saturation: 1.0
 
 window_behavior:
   # Take a fullscreen window back out of fullscreen when a new window opens on
