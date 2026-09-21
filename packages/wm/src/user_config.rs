@@ -382,7 +382,6 @@ impl UserConfig {
 #[cfg(test)]
 mod tests {
   use wm_common::{ParsedConfig, WindowTransitionStyle, WorkspaceSwitchStyle};
-  use wm_platform::BackdropStyle;
 
   use super::SAMPLE_CONFIG;
 
@@ -446,11 +445,14 @@ animations:
     );
   }
 
-  /// Configs written before the `blur_behind` -> `backdrop` key rename must
-  /// keep parsing via the `#[serde(alias = "blur_behind")]` on
-  /// `WindowEffectConfig::backdrop`.
+  /// Configs written before the `blur_behind` -> `backdrop` key rename
+  /// must keep parsing via the `#[serde(alias = "blur_behind")]` on
+  /// `WindowEffectConfig::backdrop`, and the since-removed `style` key
+  /// must be ignored rather than rejected -- no config struct here sets
+  /// `deny_unknown_fields`, which is what keeps an existing config loading
+  /// after a key is dropped.
   #[test]
-  fn backdrop_key_alias_parses() {
+  fn legacy_backdrop_config_parses() {
     let yaml = r"
 window_effects:
   focused_window:
@@ -462,34 +464,5 @@ window_effects:
       serde_yaml::from_str(yaml).expect("legacy config should parse");
 
     assert!(config.window_effects.focused_window.backdrop.enabled);
-    assert_eq!(
-      config.window_effects.focused_window.backdrop.style,
-      BackdropStyle::Wallpaper
-    );
-  }
-
-  /// Every `BackdropStyle` variant must be reachable from the config using
-  /// its snake_case name.
-  #[test]
-  fn backdrop_styles_parse() {
-    for (value, expected) in [("wallpaper", BackdropStyle::Wallpaper)] {
-      let yaml = format!(
-        "
-window_effects:
-  focused_window:
-    backdrop:
-      enabled: true
-      style: '{value}'
-"
-      );
-
-      let config: ParsedConfig = serde_yaml::from_str(&yaml)
-        .unwrap_or_else(|e| panic!("`{value}` should parse: {e}"));
-
-      assert_eq!(
-        config.window_effects.focused_window.backdrop.style,
-        expected
-      );
-    }
   }
 }

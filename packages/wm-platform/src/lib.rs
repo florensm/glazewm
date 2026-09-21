@@ -36,9 +36,9 @@ pub use models::*;
 pub use mouse_listener::*;
 pub use native_window::*;
 #[cfg(target_os = "windows")]
-mod native_blur_overlay;
+mod native_backdrop_overlay;
 #[cfg(target_os = "windows")]
-pub use native_blur_overlay::NativeBlurOverlay;
+pub use native_backdrop_overlay::NativeBackdropOverlay;
 #[cfg(target_os = "windows")]
 mod native_border_overlay;
 #[cfg(target_os = "windows")]
@@ -71,7 +71,7 @@ pub use window_listener::*;
 ///
 /// Every overlay and surrogate window is created on the WM's own thread,
 /// which runs a Tokio loop and never pumps a Win32 message queue, so
-/// Windows classifies all of them as hung (see `NativeBlurOverlay`'s
+/// Windows classifies all of them as hung (see `NativeBackdropOverlay`'s
 /// `create_window`). For a hung top-level window Windows substitutes a
 /// *ghost* window of its own — the "Not Responding" stand-in — and that
 /// ghost is a real, hit-testable window owned by user32, so the
@@ -279,19 +279,6 @@ impl DxgiVsyncWaiter {
       ai += 1;
     }
     Err(crate::Error::DisplayNotFound)
-  }
-
-  /// Locates the `IDXGIOutput` for the monitor that `hwnd` currently occupies.
-  ///
-  /// Delegates to [`window_monitor`] then [`for_monitor`]. Returns `Err`
-  /// when DXGI is unavailable or no output matches the window's monitor.
-  ///
-  /// [`window_monitor`]: DxgiVsyncWaiter::window_monitor
-  /// [`for_monitor`]: DxgiVsyncWaiter::for_monitor
-  pub fn for_window(
-    hwnd: windows::Win32::Foundation::HWND,
-  ) -> crate::Result<Self> {
-    Self::for_monitor(Self::window_monitor(hwnd))
   }
 
   /// Queries the current refresh period (microseconds per vblank) for the GDI

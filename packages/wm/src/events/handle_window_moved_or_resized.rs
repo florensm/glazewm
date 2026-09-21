@@ -22,8 +22,8 @@ use crate::{
 };
 #[cfg(target_os = "windows")]
 use crate::commands::general::{
-  blur_overlay_params_for, border_overlay_params_for, overlay_z_anchor,
-  upsert_blur_overlay, upsert_border_overlay,
+  backdrop_overlay_params_for, border_overlay_params_for, overlay_z_anchor,
+  upsert_overlay,
 };
 
 #[allow(clippy::too_many_lines)]
@@ -50,11 +50,11 @@ pub fn handle_window_moved_or_resized(
 
     // Handle windows that are actively being dragged.
     if !state.is_paused && window.active_drag().is_some() {
-      // Keep the acrylic blur overlay glued to the window for the whole
+      // Keep the backdrop overlay glued to the window for the whole
       // gesture. An interactive drag moves the window entirely through
       // native OS handling, not `platform_sync`'s own `SetWindowPos` calls,
       // and `update_drag_state` below dequeues the window from redraw once
-      // it's floating -- so without this, `sync_blur_overlays` (which only
+      // it's floating -- so without this, `sync_overlays` (which only
       // re-queries a window's rect when it's actually queued for redraw)
       // never observes the live position, leaving the overlay frozen at the
       // pre-drag rect while the (semi-transparent) window itself moves away
@@ -88,9 +88,11 @@ pub fn handle_window_moved_or_resized(
         // Both overlays go into the same batch and land in one
         // `DeferWindowPos` commit below, so the backdrop cannot separate
         // from the border ring it sits inside.
-        if let Some(params) = blur_overlay_params_for(is_focused, config) {
-          upsert_blur_overlay(
-            &mut state.blur_overlays,
+        if let Some(params) =
+          backdrop_overlay_params_for(is_focused, config)
+        {
+          upsert_overlay(
+            &mut state.backdrop_overlays,
             window.id(),
             params,
             &frame_position,
@@ -99,14 +101,14 @@ pub fn handle_window_moved_or_resized(
           );
         }
 
-        // Same live re-sync as the blur overlay above -- without this, the
-        // border overlay is frozen at the pre-drag rect for the whole
+        // Same live re-sync as the backdrop overlay above -- without this,
+        // the border overlay is frozen at the pre-drag rect for the whole
         // gesture whenever backdrop is disabled but the border effect is
-        // enabled, since `sync_border_overlays` only re-queries a window's
-        // rect when it's queued for redraw, and this window is dequeued for
-        // the duration of the drag.
+        // enabled, since `sync_overlays` only re-queries a window's rect
+        // when it's queued for redraw, and this window is dequeued for the
+        // duration of the drag.
         if let Some(params) = border_overlay_params_for(is_focused, config) {
-          upsert_border_overlay(
+          upsert_overlay(
             &mut state.border_overlays,
             window.id(),
             params,

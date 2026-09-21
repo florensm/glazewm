@@ -299,7 +299,7 @@ impl WindowManager {
               let (
                 effect_opacity,
                 corner_style,
-                blur_overlay,
+                backdrop_overlay,
                 border_overlay,
               ) = crate::commands::general::surrogate_effects_for(
                 is_focused, config,
@@ -320,7 +320,7 @@ impl WindowManager {
                     rect,
                     effect_opacity,
                     corner_style,
-                    blur_overlay,
+                    backdrop_overlay,
                     border_overlay,
                     &wm_common::WindowTransitionParams::from_close(
                       &config.value.animations.window_close,

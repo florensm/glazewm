@@ -15,24 +15,24 @@ use windows::{
 };
 
 use crate::{
-  platform_impl::composition::BlurVisual, window_class, BlurOverlayParams,
-  Color, Rect, SurrogateBatch,
+  platform_impl::composition::BackdropVisual, window_class,
+  BackdropOverlayParams, Color, Rect, SurrogateBatch,
 };
 
 fn ensure_class_registered() {
   static REGISTERED: OnceLock<()> = OnceLock::new();
   window_class::ensure_class_registered(
     &REGISTERED,
-    w!("GlazeWM_BlurOverlay"),
+    w!("GlazeWM_BackdropOverlay"),
     window_class::default_wnd_proc,
   );
 }
 
 /// Creates the overlay's backdrop window.
 ///
-/// `WS_EX_NOREDIRECTIONBITMAP` skips the GDI redirection surface DWM would
-/// otherwise allocate, which the composition visual tree replaces entirely.
-/// Every style renders through that tree, so the flag is unconditional.
+/// `WS_EX_NOREDIRECTIONBITMAP` skips the GDI redirection surface DWM
+/// would otherwise allocate, which the composition visual tree replaces
+/// entirely.
 fn create_window(rect: &Rect) -> crate::Result<HWND> {
   ensure_class_registered();
 
@@ -55,7 +55,7 @@ fn create_window(rect: &Rect) -> crate::Result<HWND> {
   let hwnd = unsafe {
     CreateWindowExW(
       ex_style,
-      w!("GlazeWM_BlurOverlay"),
+      w!("GlazeWM_BackdropOverlay"),
       w!(""),
       WS_POPUP,
       rect.x(),
@@ -71,7 +71,7 @@ fn create_window(rect: &Rect) -> crate::Result<HWND> {
 
   if hwnd.0 == 0 {
     return Err(crate::Error::Platform(
-      "Failed to create blur overlay window.".to_string(),
+      "Failed to create backdrop overlay window.".to_string(),
     ));
   }
 
@@ -88,14 +88,14 @@ fn create_window(rect: &Rect) -> crate::Result<HWND> {
 ///
 /// The window is deliberately not marked as a host backdrop: the wallpaper
 /// crop is opaque, and asking DWM to keep compositing what sits beneath it
-/// is the exact cost this style exists to remove.
+/// is the exact cost the backdrop exists to remove.
 fn create_backing_window(
   rect: &Rect,
-  params: BlurOverlayParams,
-) -> crate::Result<(HWND, BlurVisual)> {
+  params: BackdropOverlayParams,
+) -> crate::Result<(HWND, BackdropVisual)> {
   let hwnd = create_window(rect)?;
 
-  match BlurVisual::create(hwnd, rect, params) {
+  match BackdropVisual::create(hwnd, rect, params) {
     Ok(visual) => Ok((hwnd, visual)),
     Err(err) => {
       // SAFETY: `hwnd` was just created above and not yet handed to a
@@ -122,21 +122,20 @@ fn create_backing_window(
 /// system without it (pre-Windows 10 1803) gets no overlay at all rather
 /// than a degraded one.
 ///
-/// [`set_rect`]: NativeBlurOverlay::set_rect
-/// [`sync_z_order`]: NativeBlurOverlay::sync_z_order
+/// [`set_rect`]: NativeBackdropOverlay::set_rect
+/// [`sync_z_order`]: NativeBackdropOverlay::sync_z_order
 ///
 /// # Platform-specific
 ///
 /// Only available on Windows.
-pub struct NativeBlurOverlay {
-  /// Raw window handle stored as `isize` so that `NativeBlurOverlay` is
-  /// `Send` even though `HWND` is not.
+pub struct NativeBackdropOverlay {
+  /// Raw window handle stored as `isize` so that `NativeBackdropOverlay`
+  /// is `Send` even though `HWND` is not.
   hwnd: isize,
 
-  /// Current tint/blur-amount/corner-radius/opacity/saturation.
-  /// Applied via SWCA in the fallback path (tint only), or as the
-  /// Composition pipeline's live properties otherwise.
-  params: BlurOverlayParams,
+  /// Current tint/blur-amount/corner-radius/opacity/saturation, applied as
+  /// the composition tree's live properties.
+  params: BackdropOverlayParams,
 
   /// Whether the gap fill is currently painting anything.
   ///
@@ -147,7 +146,7 @@ pub struct NativeBlurOverlay {
   /// to clear them. Tracked so that clearing costs a bool test per tick
   /// rather than two composition writes.
   ///
-  /// [`apply`]: NativeBlurOverlay::apply
+  /// [`apply`]: NativeBackdropOverlay::apply
   gap_active: bool,
 
   /// Last rect applied via `set_rect`, used to skip redundant
@@ -155,16 +154,19 @@ pub struct NativeBlurOverlay {
   rect: Rect,
 
   /// `HWND` of the window this overlay is positioned directly behind (its
-  /// z-order anchor), as raw `isize`. `HostBackdropBrush` samples whatever
-  /// is visually behind the overlay *at the overlay's own z-position* --
-  /// pinning the overlay directly behind its own managed window (rather
-  /// than e.g. the global `HWND_BOTTOM`) is what lets it pick up other real
-  /// windows stacked there, not just the desktop wallpaper. Tracked so
-  /// [`set_rect`]/[`sync_z_order`] can skip a redundant `SetWindowPos` when
-  /// the anchor hasn't changed.
+  /// z-order anchor), as raw `isize`.
   ///
-  /// [`set_rect`]: NativeBlurOverlay::set_rect
-  /// [`sync_z_order`]: NativeBlurOverlay::sync_z_order
+  /// Anchored to its own managed window rather than the global
+  /// `HWND_BOTTOM`: the backdrop is opaque, so pinned to the bottom of the
+  /// z-order it would be hidden behind every other window instead of
+  /// showing through the one it belongs to, and it has to be occluded by
+  /// whatever legitimately sits above that window.
+  ///
+  /// Tracked so [`set_rect`]/[`sync_z_order`] can skip a redundant
+  /// `SetWindowPos` when the anchor hasn't changed.
+  ///
+  /// [`set_rect`]: NativeBackdropOverlay::set_rect
+  /// [`sync_z_order`]: NativeBackdropOverlay::sync_z_order
   anchor: isize,
 
   /// Whether the overlay window is currently shown.
@@ -175,28 +177,23 @@ pub struct NativeBlurOverlay {
   /// `SWP_SHOWWINDOW` -- the rect-unchanged fast path in [`set_rect`] would
   /// otherwise skip that call entirely, leaving the overlay hidden.
   ///
-  /// [`hide`]: NativeBlurOverlay::hide
-  /// [`set_rect`]: NativeBlurOverlay::set_rect
+  /// [`hide`]: NativeBackdropOverlay::hide
+  /// [`set_rect`]: NativeBackdropOverlay::set_rect
   is_visible: bool,
 
   /// The overlay's composition visual tree.
   ///
   /// Optional only so that it can be dropped *before* the `HWND` it is
-  /// rooted to, in `recreate` and `Drop`; an overlay that failed to build
-  /// one is never constructed in the first place. Treat it as always
-  /// present.
-  composition: Option<BlurVisual>,
+  /// rooted to, in `Drop`; an overlay that failed to build one is never
+  /// constructed in the first place. Treat it as always present.
+  composition: Option<BackdropVisual>,
 }
 
-/// Generates a `NativeBlurOverlay` setter for a single `f32` knob shared
-/// with the `BlurVisual` composition pipeline: no-ops when `value` matches
-/// the last-applied `params.$field`, otherwise stores it and forwards to
-/// the matching `BlurVisual` setter (a no-op in the SWCA fallback, since
-/// `composition` is `None` there).
-///
-/// Not used for `set_tint`, which also has to re-apply via SWCA directly
-/// in the fallback case (`tint` is the only knob SWCA supports).
-macro_rules! blur_overlay_setter {
+/// Generates a `NativeBackdropOverlay` setter for a single `f32` knob
+/// shared with the `BackdropVisual` composition pipeline: no-ops when
+/// `value` matches the last-applied `params.$field`, otherwise stores it
+/// and forwards to the matching `BackdropVisual` setter.
+macro_rules! backdrop_overlay_setter {
   (
     $(#[$doc:meta])*
     $setter:ident, $field:ident
@@ -212,7 +209,11 @@ macro_rules! blur_overlay_setter {
       if let Some(composition) = &mut self.composition {
         if let Err(e) = composition.$setter(value) {
           tracing::warn!(
-            concat!("Blur overlay ", stringify!($field), " update failed: {e}."),
+            concat!(
+              "Backdrop overlay ",
+              stringify!($field),
+              " update failed: {e}."
+            ),
             e = e
           );
         }
@@ -221,17 +222,18 @@ macro_rules! blur_overlay_setter {
   };
 }
 
-impl NativeBlurOverlay {
-  /// Creates a new blur overlay sized and positioned to `rect`, with the
-  /// given `params` (blur amount, corner radius, opacity, and saturation
-  /// are only honored when the Composition pipeline is available).
+impl NativeBackdropOverlay {
+  /// Creates a new backdrop overlay sized and positioned to `rect`, with
+  /// the given `params` (blur amount, corner radius, opacity, and
+  /// saturation are only honored when the Composition pipeline is
+  /// available).
   ///
   /// The overlay is shown immediately, positioned directly behind `anchor`
   /// (see the `anchor` field doc) -- typically the `HWND` of the managed
   /// window it's tracking, or its surrogate's `HWND` while one is active.
   pub fn create(
     rect: &Rect,
-    params: BlurOverlayParams,
+    params: BackdropOverlayParams,
     anchor: HWND,
   ) -> crate::Result<Self> {
     let (hwnd, composition) = create_backing_window(rect, params)?;
@@ -248,7 +250,9 @@ impl NativeBlurOverlay {
         SWP_NOACTIVATE | SWP_NOSENDCHANGING | SWP_SHOWWINDOW,
       )
     } {
-      tracing::warn!("Blur overlay SetWindowPos failed on create: {e}.");
+      tracing::warn!(
+        "Backdrop overlay SetWindowPos failed on create: {e}."
+      );
     }
 
     Ok(Self {
@@ -290,8 +294,8 @@ impl NativeBlurOverlay {
   /// instead -- it skips the position arguments entirely and stays cheap
   /// enough to call unconditionally every tick.
   ///
-  /// [`hide`]: NativeBlurOverlay::hide
-  /// [`sync_z_order`]: NativeBlurOverlay::sync_z_order
+  /// [`hide`]: NativeBackdropOverlay::hide
+  /// [`sync_z_order`]: NativeBackdropOverlay::sync_z_order
   pub fn set_rect(&mut self, rect: &Rect, anchor: HWND) {
     if self.is_visible && &self.rect == rect && self.anchor == anchor.0 {
       return;
@@ -310,13 +314,13 @@ impl NativeBlurOverlay {
         SWP_NOACTIVATE | SWP_NOSENDCHANGING | SWP_SHOWWINDOW,
       )
     } {
-      tracing::warn!("Blur overlay SetWindowPos failed: {e}.");
+      tracing::warn!("Backdrop overlay SetWindowPos failed: {e}.");
       return;
     }
 
     if let Some(composition) = &mut self.composition {
       if let Err(e) = composition.set_rect(rect) {
-        tracing::warn!("Blur overlay composition resize failed: {e}.");
+        tracing::warn!("Backdrop overlay composition resize failed: {e}.");
       }
     }
 
@@ -347,7 +351,7 @@ impl NativeBlurOverlay {
   /// relative to the steady-state reposition case: a session's anchor is
   /// set once and typically stays fixed for the animation's duration.
   ///
-  /// [`set_rect`]: NativeBlurOverlay::set_rect
+  /// [`set_rect`]: NativeBackdropOverlay::set_rect
   pub fn defer_rect(
     &mut self,
     batch: &mut SurrogateBatch,
@@ -367,7 +371,7 @@ impl NativeBlurOverlay {
 
     if let Some(composition) = &mut self.composition {
       if let Err(e) = composition.set_rect(rect) {
-        tracing::warn!("Blur overlay composition resize failed: {e}.");
+        tracing::warn!("Backdrop overlay composition resize failed: {e}.");
       }
     }
 
@@ -426,7 +430,7 @@ impl NativeBlurOverlay {
   /// physical pixels. The fill lives on this overlay rather than on the
   /// surrogate because the surrogate can only get a solid backdrop through
   /// SWCA, which ignores the alpha it is handed -- see
-  /// `BlurVisual::set_gap_fill`.
+  /// `BackdropVisual::set_gap_fill`.
   ///
   /// Not cached against a previous value: the rects change every animation
   /// frame anyway, and the calls are property writes on visuals already in
@@ -447,7 +451,7 @@ impl NativeBlurOverlay {
       let applied =
         composition.set_gap_fill(color, opacity, covered, full);
       if let Err(e) = applied {
-        tracing::warn!("Blur overlay gap fill update failed: {e}.");
+        tracing::warn!("Backdrop overlay gap fill update failed: {e}.");
       }
     }
     self.gap_active = paints;
@@ -461,7 +465,7 @@ impl NativeBlurOverlay {
   /// what bounds the fill to the animation instead of leaving it on the
   /// window's backdrop for good.
   ///
-  /// [`apply`]: NativeBlurOverlay::apply
+  /// [`apply`]: NativeBackdropOverlay::apply
   fn clear_gap_fill(&mut self) {
     if !self.gap_active {
       return;
@@ -477,7 +481,9 @@ impl NativeBlurOverlay {
 
     if let Some(composition) = &self.composition {
       if let Err(e) = composition.set_tint(tint) {
-        tracing::warn!("Blur overlay composition tint update failed: {e}.");
+        tracing::warn!(
+          "Backdrop overlay composition tint update failed: {e}."
+        );
       }
     }
   }
@@ -485,10 +491,10 @@ impl NativeBlurOverlay {
   /// Applies all seven baked knobs together, re-rendering at most once.
   ///
   /// Kept separate from the per-knob setters so a caller with a whole new
-  /// `BlurOverlayParams` -- which is every caller in practice, since
+  /// `BackdropOverlayParams` -- which is every caller in practice, since
   /// params are resolved per focus state -- pays one bake rather than one
   /// per changed knob.
-  fn set_bake_knobs(&mut self, params: BlurOverlayParams) {
+  fn set_bake_knobs(&mut self, params: BackdropOverlayParams) {
     self.params.blur_amount = params.blur_amount;
     self.params.saturation = params.saturation;
     self.params.exposure = params.exposure;
@@ -499,14 +505,14 @@ impl NativeBlurOverlay {
 
     if let Some(composition) = &mut self.composition {
       if let Err(e) = composition.set_bake_knobs(params) {
-        tracing::warn!("Blur overlay bake-knob update failed: {e}.");
+        tracing::warn!("Backdrop overlay bake-knob update failed: {e}.");
       }
     }
   }
 
-  blur_overlay_setter!(
+  backdrop_overlay_setter!(
     /// Updates the blur radius/intensity; re-applies only when the value
-    /// changes. No-op when running the SWCA fallback (no such knob exists).
+    /// changes.
     ///
     /// Compares the raw `f32` for exact equality, same as `set_tint`'s ABGR
     /// comparison -- the value only ever changes when a caller passes a
@@ -515,82 +521,68 @@ impl NativeBlurOverlay {
     set_blur_amount, blur_amount
   );
 
-  blur_overlay_setter!(
+  backdrop_overlay_setter!(
     /// Updates the corner radius, in pixels; re-applies only when the
-    /// value changes. No-op when running the SWCA fallback (no such knob
-    /// exists).
+    /// value changes.
     ///
     /// See `set_blur_amount` for why exact `f32` equality is intentional
     /// here.
     set_corner_radius, corner_radius
   );
 
-  blur_overlay_setter!(
+  backdrop_overlay_setter!(
     /// Updates the overlay's own opacity (blur + tint together, as one
-    /// unit); re-applies only when the value changes. No-op when running
-    /// the SWCA fallback (no such knob exists).
+    /// unit); re-applies only when the value changes.
     ///
     /// See `set_blur_amount` for why exact `f32` equality is intentional
     /// here.
     set_opacity, opacity
   );
 
-  blur_overlay_setter!(
+  backdrop_overlay_setter!(
     /// Updates the saturation of the blurred backdrop; re-applies only
-    /// when the value changes. No-op when running the SWCA fallback (no
-    /// such knob exists).
+    /// when the value changes.
     ///
     /// See `set_blur_amount` for why exact `f32` equality is intentional
     /// here.
     set_saturation, saturation
   );
 
-  blur_overlay_setter!(
+  backdrop_overlay_setter!(
     /// Updates the exposure baked into the wallpaper backdrop, in stops.
-    ///
-    /// [`BackdropStyle::Wallpaper`] only. Acrylic builds its graph through
-    /// `Compositor::CreateEffectFactory`, which accepts a curated subset of
-    /// D2D's built-in effects and renders `Exposure` as a pass-through, so
-    /// this is a no-op there rather than a knob that quietly does nothing
-    /// visible.
     set_exposure, exposure
   );
 
-  blur_overlay_setter!(
+  backdrop_overlay_setter!(
     /// Updates the contrast baked into the wallpaper backdrop.
-    /// [`BackdropStyle::Wallpaper`] only, same reason as `set_exposure`.
     set_contrast, contrast
   );
 
-  blur_overlay_setter!(
+  backdrop_overlay_setter!(
     /// Updates the highlight recovery baked into the wallpaper backdrop:
     /// negative pulls bright areas down, leaving the rest alone.
-    /// [`BackdropStyle::Wallpaper`] only, same reason as `set_exposure`.
     set_highlights, highlights
   );
 
-  blur_overlay_setter!(
+  backdrop_overlay_setter!(
     /// Updates the shadow lift baked into the wallpaper backdrop.
-    /// [`BackdropStyle::Wallpaper`] only, same reason as `set_exposure`.
     set_shadows, shadows
   );
 
-  blur_overlay_setter!(
+  backdrop_overlay_setter!(
     /// Updates the vignette baked into the wallpaper backdrop.
-    /// [`BackdropStyle::Wallpaper`] only, same reason as `set_exposure`.
     set_vignette, vignette
   );
 
-  blur_overlay_setter!(
+  backdrop_overlay_setter!(
     /// Updates the grain baked into the wallpaper backdrop.
-    /// [`BackdropStyle::Wallpaper`] only, same reason as `set_exposure`.
     set_grain, grain
   );
 
   /// Updates how far the wallpaper backdrop's crop follows the window.
   ///
-  /// Not generated by [`blur_overlay_setter`] because it is the one knob
-  /// that needs the overlay's current rect to re-apply: it re-aims an
+  /// Not generated by [`backdrop_overlay_setter`] because it is the one
+  /// knob that needs the overlay's current rect to re-apply: it re-aims an
   /// existing surface rather than re-rendering one, so there is nothing to
   /// rebuild, only a new offset to compute.
   #[allow(clippy::float_cmp)]
@@ -605,83 +597,14 @@ impl NativeBlurOverlay {
     }
   }
 
-  /// Rebuilds the overlay's backing window for a changed
-  /// [`BlurOverlayParams::style`], preserving its current rect, z-order
-  /// anchor, and visibility.
-  ///
-  /// The style is the one param that can't be re-applied in place:
-  /// [`BackdropStyle::Acrylic`] roots a `Windows.UI.Composition` visual
-  /// tree on a `WS_EX_NOREDIRECTIONBITMAP` window, while
-  /// [`BackdropStyle::Blur`] composites through the very GDI redirection
-  /// surface that flag suppresses (see [`create_window`]). The new window
-  /// is fully built before the old one is torn down, so a failure here
-  /// leaves the existing overlay intact and the caller retries on the next
-  /// sync tick.
-  fn recreate(&mut self, params: BlurOverlayParams) -> crate::Result<()> {
-    let (hwnd, composition) = create_backing_window(&self.rect, params)?;
-
-    if self.is_visible {
-      // SAFETY: `hwnd` was just created above, and `self.anchor` is the
-      // handle this overlay is already anchored behind.
-      if let Err(e) = unsafe {
-        SetWindowPos(
-          hwnd,
-          HWND(self.anchor),
-          self.rect.x(),
-          self.rect.y(),
-          self.rect.width(),
-          self.rect.height(),
-          SWP_NOACTIVATE | SWP_NOSENDCHANGING | SWP_SHOWWINDOW,
-        )
-      } {
-        tracing::warn!(
-          "Blur overlay SetWindowPos failed on style change: {e}."
-        );
-      }
-    }
-
-    let previous_hwnd = self.hwnd();
-
-    // Drop the outgoing visual tree before destroying the window it's
-    // rooted to, same ordering as `Drop`.
-    self.composition.take();
-
-    // SAFETY: `previous_hwnd` is this overlay's own window, valid until
-    // now and no longer referenced once `self.hwnd` is reassigned below.
-    unsafe {
-      let _ = DestroyWindow(previous_hwnd);
-    }
-
-    self.hwnd = hwnd.0;
-    self.composition = Some(composition);
-    self.params = params;
-
-    Ok(())
-  }
-
   /// Applies `params`, re-applying only whichever fields actually changed
   /// (each setter no-ops internally on an unchanged value). Convenience
-  /// for the call sites that already have a full `BlurOverlayParams`
+  /// for the call sites that already have a full `BackdropOverlayParams`
   /// rather than one field at a time.
   ///
-  /// A changed `style` goes through [`recreate`] instead, since it selects
-  /// how the backing window itself is built; every other field is baked in
-  /// by that rebuild, so no setter runs afterwards.
-  ///
-  /// Also the per-tick point at which a [`BackdropStyle::Wallpaper`] overlay
-  /// notices the desktop wallpaper changing underneath it.
-  ///
-  /// [`recreate`]: NativeBlurOverlay::recreate
-  pub fn apply(&mut self, params: BlurOverlayParams) {
-    if self.params.style != params.style {
-      // A fresh visual tree starts with no gap sprites sized.
-      self.gap_active = false;
-      if let Err(e) = self.recreate(params) {
-        tracing::warn!("Blur overlay style change failed: {e}.");
-      }
-      return;
-    }
-
+  /// Also the per-tick point at which the overlay notices the desktop
+  /// wallpaper changing underneath it.
+  pub fn apply(&mut self, params: BackdropOverlayParams) {
     self.clear_gap_fill();
 
     self.set_tint(params.tint);
@@ -690,9 +613,9 @@ impl NativeBlurOverlay {
     self.set_vignette(params.vignette);
 
     // The seven baked knobs go in one call rather than one setter each.
-    // Applied singly they walk through six intermediate combinations, and
-    // for the `wallpaper` style every one of those is a separate
-    // full-monitor bake -- see `BlurVisual::set_bake_knobs`.
+    // Applied singly they walk through six intermediate combinations, each
+    // of which is a separate full-monitor bake -- see
+    // `BackdropVisual::set_bake_knobs`.
     self.set_bake_knobs(params);
     self.set_parallax(params.parallax);
 
@@ -717,7 +640,7 @@ impl NativeBlurOverlay {
   }
 }
 
-impl Drop for NativeBlurOverlay {
+impl Drop for NativeBackdropOverlay {
   fn drop(&mut self) {
     // Drop the Composition visual tree (if any) before destroying the
     // window it's rooted to.

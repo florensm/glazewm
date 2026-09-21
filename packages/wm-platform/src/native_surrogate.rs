@@ -7,6 +7,7 @@ use windows::{
     Graphics::Dwm::{
       DwmExtendFrameIntoClientArea, DwmRegisterThumbnail, DwmSetWindowAttribute,
       DwmUnregisterThumbnail, DwmUpdateThumbnailProperties,
+      DWMWA_BORDER_COLOR, DWMWA_COLOR_NONE,
       DWMWA_WINDOW_CORNER_PREFERENCE, DWMWCP_DONOTROUND, DWMWCP_ROUND,
       DWMWCP_ROUNDSMALL, DWM_THUMBNAIL_PROPERTIES, DWM_TNP_OPACITY,
       DWM_TNP_RECTDESTINATION, DWM_TNP_RECTSOURCE, DWM_TNP_SOURCECLIENTAREAONLY,
@@ -24,7 +25,7 @@ use windows::{
 
 use crate::{window_class, Color, CornerStyle, Rect};
 use crate::platform_impl::swca::{
-  ACCENT_DISABLED, ACCENT_ENABLE_ACRYLICBLURBEHIND, ACCENT_ENABLE_GRADIENT,
+  ACCENT_DISABLED, ACCENT_ENABLE_GRADIENT,
   apply_swca_accent,
 };
 
@@ -67,6 +68,35 @@ fn apply_corner_preference(hwnd: HWND, corner_style: &CornerStyle) {
   }
 }
 
+/// Suppresses the surrogate's own Windows 11 border.
+///
+/// A surrogate is a rounded `WS_POPUP` with the DWM frame extended over
+/// its whole client area, which is enough for DWM to draw its 1px border
+/// around it. During an animation the real window is cloaked and the
+/// surrogate is what's on screen, so without this the border overlay's
+/// ring has a second line inside it for the length of every transition --
+/// the same artifact [`set_native_border_hidden`] removes on the real
+/// window, applied to the stand-in that replaces it.
+///
+/// This is a no-op before Windows 11 (build 22000), which draws no such
+/// border.
+///
+/// [`set_native_border_hidden`]:
+///     crate::NativeWindowWindowsExt::set_native_border_hidden
+fn suppress_native_border(hwnd: HWND) {
+  // SAFETY: `hwnd` is a valid window handle. `color` is a stack-allocated
+  // `u32` live for the duration of the call.
+  unsafe {
+    let color = DWMWA_COLOR_NONE;
+    let _ = DwmSetWindowAttribute(
+      hwnd,
+      DWMWA_BORDER_COLOR,
+      std::ptr::from_ref(&color).cast(),
+      std::mem::size_of::<u32>() as u32,
+    );
+  }
+}
+
 /// Applies a solid-color backdrop to `hwnd` via the undocumented
 /// `SetWindowCompositionAttribute` API (Windows 10 1607+).
 ///
@@ -81,7 +111,7 @@ fn apply_corner_preference(hwnd: HWND, corner_style: &CornerStyle) {
 /// This is a no-op when the API is unavailable (pre-Windows 10 1607).
 pub(crate) fn apply_backdrop(hwnd: HWND, color: Option<&Color>) {
   let Some(c) = color else {
-    apply_swca_accent(hwnd, ACCENT_DISABLED, 0, 0);
+    apply_swca_accent(hwnd, ACCENT_DISABLED, 0);
     return;
   };
 
@@ -92,7 +122,7 @@ pub(crate) fn apply_backdrop(hwnd: HWND, color: Option<&Color>) {
     | (u32::from(c.g) << 8)
     | u32::from(c.r);
 
-  apply_swca_accent(hwnd, ACCENT_ENABLE_GRADIENT, 0, abgr);
+  apply_swca_accent(hwnd, ACCENT_ENABLE_GRADIENT, abgr);
 }
 
 /// Registers a DWM thumbnail of `source_hwnd` onto `dest_hwnd`.
@@ -206,12 +236,13 @@ impl SurrogateBatch {
   /// Queues a reposition; applied on [`commit`].
   ///
   /// Not surrogate-specific -- `hwnd` can be any top-level window this
-  /// process owns (used by [`NativeBlurOverlay::defer_rect`] to fold the
-  /// acrylic overlay's reposition into the same transaction as the
+  /// process owns (used by [`NativeBackdropOverlay::defer_rect`] to fold
+  /// the backdrop overlay's reposition into the same transaction as the
   /// surrogates/real windows already batched this tick).
   ///
   /// [`commit`]: SurrogateBatch::commit
-  /// [`NativeBlurOverlay::defer_rect`]: crate::NativeBlurOverlay::defer_rect
+  /// [`NativeBackdropOverlay::defer_rect`]:
+  ///     crate::NativeBackdropOverlay::defer_rect
   pub(crate) fn push(&mut self, hwnd: isize, rect: Rect) {
     self.entries.push((hwnd, rect));
   }
@@ -385,9 +416,9 @@ pub(crate) fn to_logical(rect: &Rect, inset: &RECT) -> Rect {
 ///
 /// # Platform-specific
 ///
-/// Only available on Windows. Acrylic requires Windows 10 1803+; on older
-/// versions the backdrop degrades gracefully (no blur, thumbnail still
-/// shown).
+/// Only available on Windows. The solid gap fill requires Windows 10 1607+
+/// for `SetWindowCompositionAttribute`; on older versions it degrades
+/// gracefully (no fill, thumbnail still shown).
 pub struct NativeSurrogate {
   /// Handle to the overlay window.
   hwnd: isize,
@@ -519,6 +550,7 @@ impl NativeSurrogate {
 
     apply_backdrop(hwnd, surrogate_color);
     apply_corner_preference(hwnd, corner_style);
+    suppress_native_border(hwnd);
 
     // Register the DWM thumbnail at `thumbnail_rect` dimensions. For shrinking
     // animations this equals `source_rect` so the thumbnail fills the whole
@@ -613,6 +645,7 @@ impl NativeSurrogate {
   ) -> crate::Result<()> {
     apply_backdrop(self.hwnd(), surrogate_color);
     apply_corner_preference(self.hwnd(), corner_style);
+    suppress_native_border(self.hwnd());
     self.border_inset = border_inset;
 
     let logical_src = to_logical(source_rect, &border_inset);
@@ -781,7 +814,8 @@ impl NativeSurrogate {
   /// Sets the DWM thumbnail opacity via `DWM_TNP_OPACITY`.
   ///
   /// `opacity` ranges from 0 (fully transparent) to 255 (fully opaque). The
-  /// SWCA acrylic backdrop is unaffected — only the thumbnail content fades.
+  /// surrogate's own gap fill is unaffected — only the thumbnail content
+  /// fades.
   /// No-op when `opacity` matches the last applied value or when no thumbnail
   /// is registered.
   pub fn set_window_opacity(&mut self, opacity: u8) {
@@ -974,22 +1008,6 @@ impl NativeSurrogate {
     self.last_rect = Some(rect.clone());
   }
 
-  /// Applies SWCA acrylic blur-behind directly to this surrogate window.
-  ///
-  /// Replaces the DWM glass backdrop (extended via `DwmExtendFrameIntoClientArea`)
-  /// with an acrylic blur layer. The DWM thumbnail is composited on top at the
-  /// current opacity. Call once after creation; the effect persists for the
-  /// lifetime of the surrogate.
-  ///
-  /// This is a no-op when SWCA is unavailable (pre-Windows 10 1607).
-  pub fn apply_swca(&self, tint: u32) {
-    apply_swca_accent(
-      HWND(self.hwnd),
-      ACCENT_ENABLE_ACRYLICBLURBEHIND,
-      0,
-      tint,
-    );
-  }
 }
 
 impl Drop for NativeSurrogate {

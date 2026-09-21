@@ -2,9 +2,8 @@
 //!
 //! `Windows.UI.Composition` can only hand out a drawable surface through a
 //! `CompositionGraphicsDevice`, and that in turn only wraps a real D2D
-//! device -- so the wallpaper backdrop, unlike acrylic's host-backdrop
-//! brush, needs a rendering stack of its own: D3D11 -> DXGI -> D2D1, plus
-//! a WIC factory to decode the wallpaper file.
+//! device -- so the wallpaper backdrop needs a rendering stack of its own:
+//! D3D11 -> DXGI -> D2D1, plus a WIC factory to decode the wallpaper file.
 //!
 //! # Threading
 //!

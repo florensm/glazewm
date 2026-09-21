@@ -10,16 +10,15 @@
 //!
 //! A `Compositor` must be created on a thread that owns a dispatcher queue,
 //! and (confirmed empirically in the spike, not just per docs) that thread
-//! must keep pumping messages for async composition work -- e.g. the
-//! effect factory's shader-graph compile -- to ever complete. The
-//! wallpaper backdrop's D2D/WIC device stack (see `graphics_device`) is
-//! thread-affine besides, and lives on this same thread for that reason.
-//! `wm`'s main loop drives everything through `tokio::select!`/
+//! must keep pumping messages for async composition work to ever complete.
+//! The wallpaper backdrop's D2D/WIC device stack (see `graphics_device`)
+//! is thread-affine besides, and lives on this same thread for that
+//! reason. `wm`'s main loop drives everything through `tokio::select!`/
 //! `rt.block_on`, which never pumps Win32 messages, so the entire
 //! composition pipeline (the `Compositor` itself, and every per-overlay
-//! visual-tree build, which touches the same async-sensitive effect
-//! factory) is constructed on a dedicated, self-pumping OS thread obtained
-//! via `DispatcherQueueController::CreateOnDedicatedThread`.
+//! visual-tree build) is constructed on a dedicated, self-pumping OS
+//! thread obtained via
+//! `DispatcherQueueController::CreateOnDedicatedThread`.
 //!
 //! Once created, `Compositor` and every composition object handed back to
 //! callers are documented `WinRT` "agile" objects (`windows-rs` applies
@@ -56,7 +55,7 @@ use windows::{
 };
 
 use super::wallpaper_surface::{self, BakeKnobs};
-use crate::{BlurOverlayParams, BorderOverlayParams, Rect};
+use crate::{BackdropOverlayParams, BorderOverlayParams, Rect};
 
 /// The dedicated, self-pumping composition thread and its `Compositor`.
 struct CompositionThread {
@@ -80,8 +79,7 @@ fn composition_thread() -> Option<&'static CompositionThread> {
       Ok(thread) => Some(thread),
       Err(err) => {
         tracing::warn!(
-          "Composition-based acrylic blur unavailable, falling back to \
-           SWCA: {err}"
+          "Composition unavailable, skipping the window backdrop: {err}"
         );
         None
       }
@@ -124,20 +122,16 @@ where
   run_on_composition_thread(&thread.queue, move || f(compositor, queue))
 }
 
-/// Runs `f` on the composition thread via its dispatcher queue and blocks
-/// the calling thread for the result. Used for the one-time, async-sensitive
-/// construction calls (`Compositor::new`, and per-overlay visual-tree
-/// building, which touches the effect factory) -- see the module docs for
-/// why these specifically must run there.
 /// Queues `f` on the composition thread and returns immediately.
 ///
-/// The blocking sibling below waits for a result on the WM's own thread,
-/// which is right when the caller needs the value -- building a visual tree,
-/// say. It is wrong for work whose only effect is on screen a frame or two
-/// later, because the wait lands on the main loop: swapping an overlay to a
-/// different baked surface used to block once per window per focus change,
-/// and once per window *at once* on a workspace switch, which is felt as the
-/// focus ring and backdrop lagging behind the keystroke.
+/// [`run_on_composition_thread`] waits for a result on the WM's own
+/// thread, which is right when the caller needs the value -- building a
+/// visual tree, say. It is wrong for work whose only effect is on screen a
+/// frame or two later, because the wait lands on the main loop: swapping
+/// an overlay to a different baked surface used to block once per window
+/// per focus change, and once per window *at once* on a workspace switch,
+/// which is felt as the focus ring and backdrop lagging behind the
+/// keystroke.
 ///
 /// Nothing observes the result, so failures are logged where they happen
 /// rather than returned.
@@ -161,6 +155,12 @@ where
   Ok(())
 }
 
+/// Runs `f` on the composition thread via its dispatcher queue and blocks
+/// the calling thread for the result.
+///
+/// Used for the one-time, async-sensitive construction calls
+/// (`Compositor::new`, and per-overlay visual-tree building) -- see the
+/// module docs for why these specifically must run there.
 fn run_on_composition_thread<T, F>(
   queue: &DispatcherQueue,
   f: F,
@@ -216,7 +216,7 @@ struct Backdrop {
 /// A live `Windows.UI.Composition` visual tree providing an overlay's
 /// rendering: a blur layer (see [`Backdrop`]) with a tint layer composited
 /// on top, both clipped to a continuous rounded rectangle.
-pub(crate) struct BlurVisual {
+pub(crate) struct BackdropVisual {
   /// Binds the visual tree to the overlay's `HWND`. Kept alive but never
   /// touched again -- dropping it would unbind composition from the window.
   _target: DesktopWindowTarget,
@@ -227,7 +227,7 @@ pub(crate) struct BlurVisual {
   queue: DispatcherQueue,
   backdrop: Backdrop,
   root: ContainerVisual,
-  blur_sprite: SpriteVisual,
+  backdrop_sprite: SpriteVisual,
   tint_sprite: SpriteVisual,
 
   tint_brush: CompositionColorBrush,
@@ -267,9 +267,7 @@ pub(crate) struct BlurVisual {
   gap_bottom: SpriteVisual,
 
   /// Everything baked into the wallpaper image. Kept whole so any one
-  /// setter can re-render using the others' current values -- acrylic reads
-  /// only `blur_amount`/`saturation` from it, since the remaining knobs are
-  /// unreachable through `CreateEffectFactory`.
+  /// setter can re-render using the others' current values.
   knobs: BakeKnobs,
 
   /// How far the wallpaper crop follows the window. Not part of `knobs`:
@@ -278,16 +276,16 @@ pub(crate) struct BlurVisual {
   parallax: f32,
 }
 
-impl BlurVisual {
+impl BackdropVisual {
   /// Builds a new visual tree for `hwnd`, sized to `rect`, and roots it.
   ///
   /// Runs on the dedicated composition thread (see the module docs); the
-  /// returned `BlurVisual`'s composition objects are agile and can be
+  /// returned `BackdropVisual`'s composition objects are agile and can be
   /// mutated from any thread afterwards.
   pub(crate) fn create(
     hwnd: HWND,
     rect: &Rect,
-    params: BlurOverlayParams,
+    params: BackdropOverlayParams,
   ) -> crate::Result<Self> {
     let hwnd_raw = hwnd.0;
     let rect = rect.clone();
@@ -297,12 +295,12 @@ impl BlurVisual {
     })
   }
 
-  /// Resizes the visual tree's clip and both child visuals to match `rect`.
-  /// Does not reposition the `HWND` itself -- callers still issue their own
-  /// `SetWindowPos`, exactly as with the SWCA path.
+  /// Resizes the visual tree's clip and both child visuals to match
+  /// `rect`. Does not reposition the `HWND` itself -- callers still issue
+  /// their own `SetWindowPos`, exactly as with the SWCA path.
   ///
-  /// Must resize `root`/`blur_sprite`/`tint_sprite` in addition to the clip
-  /// geometry -- they're independently-sized visuals set once in
+  /// Must resize `root`/`backdrop_sprite`/`tint_sprite` in addition to the
+  /// clip geometry -- they're independently-sized visuals set once in
   /// `build_visual_tree` and never otherwise touched, so leaving them out
   /// here left them pinned at their creation-time size while only the clip
   /// grew, showing blur/tint over just the original area and nothing over
@@ -313,7 +311,7 @@ impl BlurVisual {
       Y: pixels_to_dips(rect.height()),
     };
     self.root.SetSize(size)?;
-    self.blur_sprite.SetSize(size)?;
+    self.backdrop_sprite.SetSize(size)?;
     self.tint_sprite.SetSize(size)?;
     self.vignette_sprite.SetSize(size)?;
     self.rounded_geometry.SetSize(size)?;
@@ -323,8 +321,7 @@ impl BlurVisual {
   }
 
   /// Keeps the wallpaper backdrop showing the part of the desktop the
-  /// overlay now covers. No-op for acrylic, which samples live and so needs
-  /// no notion of where it is.
+  /// overlay now covers.
   ///
   /// Re-binds to another monitor's baked surface only when the overlay has
   /// actually crossed onto one -- checked arithmetically against the cached
@@ -390,8 +387,8 @@ impl BlurVisual {
   ///
   /// Only reached on a config reload: `blur_amount` and `saturation` are
   /// baked into the image rather than evaluated per frame, which is the
-  /// whole reason the style is cheap, so changing either means rendering a
-  /// new one.
+  /// whole reason the backdrop is cheap, so changing either means
+  /// rendering a new one.
   fn rebake(&self, knobs: BakeKnobs) -> crate::Result<()> {
     let Backdrop { brush, monitor, .. } = &self.backdrop;
 
@@ -490,7 +487,7 @@ impl BlurVisual {
   /// the two surfaces actually in use (see `MAX_CACHED_SURFACES`).
   pub(crate) fn set_bake_knobs(
     &mut self,
-    params: BlurOverlayParams,
+    params: BackdropOverlayParams,
   ) -> crate::Result<()> {
     let knobs = BakeKnobs::from(params);
     if knobs == self.knobs {
@@ -505,17 +502,16 @@ impl BlurVisual {
     self.rebake(knobs)
   }
 
-  /// Updates the live saturation. Both knobs feed one render -- acrylic's
-  /// effect graph or the wallpaper bake -- so either setter re-runs it
-  /// using the other's current stored value.
+  /// Updates the saturation baked into the wallpaper image. It shares one
+  /// bake with `blur_amount`, so either setter re-runs it using the
+  /// other's current stored value.
   pub(crate) fn set_saturation(&mut self, value: f32) -> crate::Result<()> {
     let mut knobs = self.knobs;
     knobs.saturation = value;
     self.reapply_knobs(knobs)
   }
 
-  /// Updates the exposure baked into the wallpaper image. No-op for
-  /// acrylic, whose effect factory renders `Exposure` as a pass-through.
+  /// Updates the exposure baked into the wallpaper image.
   pub(crate) fn set_exposure(&mut self, value: f32) -> crate::Result<()> {
     let mut knobs = self.knobs;
     knobs.exposure = value;
@@ -525,7 +521,7 @@ impl BlurVisual {
   /// Updates the contrast baked into the wallpaper image. Wallpaper only,
   /// same reason as [`set_exposure`].
   ///
-  /// [`set_exposure`]: BlurVisual::set_exposure
+  /// [`set_exposure`]: BackdropVisual::set_exposure
   pub(crate) fn set_contrast(&mut self, value: f32) -> crate::Result<()> {
     let mut knobs = self.knobs;
     knobs.contrast = value;
@@ -535,7 +531,7 @@ impl BlurVisual {
   /// Updates the highlight recovery baked into the wallpaper image.
   /// Wallpaper only, same reason as [`set_exposure`].
   ///
-  /// [`set_exposure`]: BlurVisual::set_exposure
+  /// [`set_exposure`]: BackdropVisual::set_exposure
   pub(crate) fn set_highlights(&mut self, value: f32) -> crate::Result<()> {
     let mut knobs = self.knobs;
     knobs.highlights = value;
@@ -545,7 +541,7 @@ impl BlurVisual {
   /// Updates the shadow lift baked into the wallpaper image. Wallpaper
   /// only, same reason as [`set_exposure`].
   ///
-  /// [`set_exposure`]: BlurVisual::set_exposure
+  /// [`set_exposure`]: BackdropVisual::set_exposure
   pub(crate) fn set_shadows(&mut self, value: f32) -> crate::Result<()> {
     let mut knobs = self.knobs;
     knobs.shadows = value;
@@ -554,9 +550,8 @@ impl BlurVisual {
 
   /// Updates the vignette.
   ///
-  /// Unlike the other grading knobs this touches no baked image, so it
-  /// applies to every style and costs one brush rebuild -- no re-render of
-  /// anything, and nothing per frame.
+  /// Unlike the other grading knobs this touches no baked image: it costs
+  /// one brush rebuild -- no re-render of anything, and nothing per frame.
   pub(crate) fn set_vignette(&mut self, value: f32) -> crate::Result<()> {
     let brush = build_vignette_brush(&self.compositor, value)?;
     self.vignette_sprite.SetBrush(&brush)?;
@@ -567,7 +562,7 @@ impl BlurVisual {
   /// Updates the grain baked into the wallpaper image. Wallpaper only, same
   /// reason as [`set_exposure`].
   ///
-  /// [`set_exposure`]: BlurVisual::set_exposure
+  /// [`set_exposure`]: BackdropVisual::set_exposure
   pub(crate) fn set_grain(&mut self, value: f32) -> crate::Result<()> {
     let mut knobs = self.knobs;
     knobs.grain = value;
@@ -592,10 +587,10 @@ impl BlurVisual {
   }
 
   /// Updates the overlay's own opacity. `root` sits above both
-  /// `blur_sprite` and `tint_sprite`, so this fades the whole composited
-  /// overlay (blur + tint together) as one unit -- a plain `Visual`
-  /// property, not an effect-graph one, so unlike `set_blur_amount` this
-  /// never needs a brush rebuild.
+  /// `backdrop_sprite` and `tint_sprite`, so this fades the whole
+  /// composited overlay (blur + tint together) as one unit -- a plain
+  /// `Visual` property, not an effect-graph one, so unlike
+  /// `set_blur_amount` this never needs a brush rebuild.
   pub(crate) fn set_opacity(&self, value: f32) -> crate::Result<()> {
     self.root.SetOpacity(value)?;
     Ok(())
@@ -647,17 +642,16 @@ fn pixels_to_dips(pixels: i32) -> f32 {
   pixels as f32
 }
 
-/// Builds the full visual tree: a `ContainerVisual` rooting a blur sprite
-/// (whichever [`Backdrop`] `params.style` selects) and a tint sprite (flat
-/// color) stacked above it, both clipped by a shared rounded rectangle
-/// geometry.
+/// Builds the full visual tree: a `ContainerVisual` rooting the
+/// [`Backdrop`] sprite and a tint sprite (flat color) stacked above it,
+/// both clipped by a shared rounded rectangle geometry.
 fn build_visual_tree(
   compositor: &Compositor,
   queue: &DispatcherQueue,
   hwnd: HWND,
   rect: &Rect,
-  params: BlurOverlayParams,
-) -> windows::core::Result<BlurVisual> {
+  params: BackdropOverlayParams,
+) -> windows::core::Result<BackdropVisual> {
   // SAFETY: `hwnd` is a valid, already-created top-level window.
   let target = unsafe {
     compositor
@@ -677,12 +671,12 @@ fn build_visual_tree(
   })?;
   let clip = compositor.CreateGeometricClipWithGeometry(&rounded_geometry)?;
 
-  let blur_sprite = compositor.CreateSpriteVisual()?;
-  blur_sprite.SetSize(size)?;
+  let backdrop_sprite = compositor.CreateSpriteVisual()?;
+  backdrop_sprite.SetSize(size)?;
 
   let (brush, monitor) =
     wallpaper_surface::crop_brush(compositor, rect, params)?;
-  blur_sprite.SetBrush(&brush)?;
+  backdrop_sprite.SetBrush(&brush)?;
 
   let backdrop = Backdrop {
     brush,
@@ -717,7 +711,7 @@ fn build_visual_tree(
   root.SetSize(size)?;
   root.SetClip(&clip)?;
   root.SetOpacity(params.opacity)?;
-  root.Children()?.InsertAtTop(&blur_sprite)?;
+  root.Children()?.InsertAtTop(&backdrop_sprite)?;
   root.Children()?.InsertAtTop(&tint_sprite)?;
   root.Children()?.InsertAtTop(&vignette_sprite)?;
   root.Children()?.InsertAtTop(&gap_right)?;
@@ -725,13 +719,13 @@ fn build_visual_tree(
 
   target.SetRoot(&root)?;
 
-  Ok(BlurVisual {
+  Ok(BackdropVisual {
     _target: target,
     compositor: compositor.clone(),
     queue: queue.clone(),
     backdrop,
     root,
-    blur_sprite,
+    backdrop_sprite,
     tint_sprite,
     tint_brush,
     vignette_brush,
@@ -746,18 +740,18 @@ fn build_visual_tree(
 }
 
 
-/// A live `Windows.UI.Composition` visual tree providing a border overlay's
-/// rendering: a single rounded rectangle *stroked* with a solid color, so
-/// only the ring band is ever painted and the interior stays fully
-/// transparent. Considerably lighter than [`BlurVisual`] -- no effect
-/// graph, no live backdrop sampling, just one stroked shape.
+/// A live `Windows.UI.Composition` visual tree providing a border
+/// overlay's rendering: a single rounded rectangle *stroked* with a solid
+/// color, so only the ring band is ever painted and the interior stays
+/// fully transparent. Considerably lighter than [`BackdropVisual`] -- no
+/// effect graph, no live backdrop sampling, just one stroked shape.
 ///
 /// `NativeBorderOverlay` sizes and positions the overlay's `HWND` to the
 /// tracked window's rect *outset* by the configured border width, directly
 /// behind the real window in z-order (see its `anchor` field doc, same
-/// mechanism [`BlurVisual`]'s pairing already relies on). The stroke is
-/// that border width thick and its geometry is inset by half of it, so the
-/// ring's outer edge lands exactly on the overlay's outer rect and its
+/// mechanism [`BackdropVisual`]'s pairing already relies on). The stroke
+/// is that border width thick and its geometry is inset by half of it, so
+/// the ring's outer edge lands exactly on the overlay's outer rect and its
 /// inner edge exactly on the tracked window's own rect.
 ///
 /// This replaces an earlier fill-plus-hole-punch design, whose

@@ -190,8 +190,8 @@ pub enum Stage {
   RepositionVisibility,
   /// The `Apply` arm's own uncloak, after `reposition_window` returns.
   ApplyUncloak,
-  /// Acrylic blur overlay sync pass.
-  BlurSync,
+  /// Backdrop overlay sync pass.
+  BackdropSync,
   /// Border overlay sync pass.
   BorderSync,
   /// `DwmFlush` -- blocks until the next DWM composition frame.
@@ -206,9 +206,9 @@ pub enum Stage {
   /// `SurrogateBatch::commit` -- the `DeferWindowPos` transaction that
   /// actually moves every surrogate and overlay window queued this frame.
   BatchCommit,
-  /// `platform_sync`'s loop tracking each live resize session's blur/border
-  /// overlay onto its surrogate, queued into the same batch as the
-  /// surrogates themselves.
+  /// `platform_sync`'s loop tracking each live resize session's
+  /// backdrop/border overlay onto its surrogate, queued into the same
+  /// batch as the surrogates themselves.
   SessionOverlays,
   /// `update_internal`'s post-`platform_sync` session/workspace cleanup and
   /// surrogate fade-out tail.
@@ -239,7 +239,7 @@ impl Stage {
     Stage::RepositionSwp,
     Stage::RepositionVisibility,
     Stage::ApplyUncloak,
-    Stage::BlurSync,
+    Stage::BackdropSync,
     Stage::BorderSync,
     Stage::DwmFlush,
     Stage::SessionBegin,
@@ -277,7 +277,7 @@ impl Stage {
       Stage::RepositionSwp => "rp_swp",
       Stage::RepositionVisibility => "rp_visible",
       Stage::ApplyUncloak => "uncloak",
-      Stage::BlurSync => "blur_sync",
+      Stage::BackdropSync => "backdrop_sync",
       Stage::BorderSync => "border_sync",
       Stage::DwmFlush => "dwm_flush",
       Stage::SessionBegin => "session_begin",
@@ -338,7 +338,7 @@ impl Stage {
         | Stage::NativeFrame
         | Stage::OverlayRegion
         | Stage::OverlayVisual
-        | Stage::BlurSync
+        | Stage::BackdropSync
         | Stage::BorderSync
     )
   }

@@ -1,11 +1,9 @@
-//! Desktop-wallpaper discovery for [`BackdropStyle::Wallpaper`].
+//! Desktop-wallpaper discovery for the window backdrop.
 //!
 //! Reports what the OS is actually showing behind everything else: which
 //! image file is assigned to a given monitor, how Windows lays it out
 //! there, and the solid color painted wherever the image doesn't reach.
 //! Rendering that description is `wallpaper_surface`'s job.
-//!
-//! [`BackdropStyle::Wallpaper`]: crate::BackdropStyle::Wallpaper
 
 use std::{path::PathBuf, time::SystemTime};
 

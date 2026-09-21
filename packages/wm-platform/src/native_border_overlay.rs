@@ -4,29 +4,23 @@ use windows::{
   core::w,
   Win32::{
     Foundation::{BOOL, HWND},
-    Graphics::{
-      Dwm::DwmExtendFrameIntoClientArea,
-      Gdi::{
-        CombineRgn, CreateRectRgn, CreateRoundRectRgn, DeleteObject,
-        HGDIOBJ, HRGN, RGN_DIFF, SetWindowRgn,
-      },
+    Graphics::Gdi::{
+      CombineRgn, CreateRectRgn, CreateRoundRectRgn, DeleteObject, HGDIOBJ,
+      HRGN, RGN_DIFF, SetWindowRgn,
     },
-    UI::{
-      Controls::MARGINS,
-      WindowsAndMessaging::{
-        CreateWindowExW, DestroyWindow, GetWindow, SetWindowPos, ShowWindow,
-        GW_HWNDPREV, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSENDCHANGING,
-        SWP_NOSIZE, SWP_SHOWWINDOW, SW_HIDE, WS_EX_NOACTIVATE,
-        WS_EX_NOREDIRECTIONBITMAP, WS_EX_TOOLWINDOW, WS_EX_TRANSPARENT,
-        WS_POPUP,
-      },
+    UI::WindowsAndMessaging::{
+      CreateWindowExW, DestroyWindow, GetWindow, SetWindowPos, ShowWindow,
+      GW_HWNDPREV, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSENDCHANGING,
+      SWP_NOSIZE, SWP_SHOWWINDOW, SW_HIDE, WS_EX_NOACTIVATE,
+      WS_EX_NOREDIRECTIONBITMAP, WS_EX_TOOLWINDOW, WS_EX_TRANSPARENT,
+      WS_POPUP,
     },
   },
 };
 
 use crate::{
-  native_surrogate::apply_backdrop, platform_impl::composition::BorderVisual,
-  window_class, BorderOverlayParams, Color, Rect, SurrogateBatch,
+  platform_impl::composition::BorderVisual, window_class,
+  BorderOverlayParams, Color, Rect, SurrogateBatch,
 };
 
 fn ensure_class_registered() {
@@ -41,28 +35,20 @@ fn ensure_class_registered() {
 /// Creates the overlay's window, outset from `window_rect` by `width` on
 /// every side.
 ///
-/// `composition` selects `WS_EX_NOREDIRECTIONBITMAP`, which skips the GDI
-/// redirection surface DWM would otherwise allocate -- correct for the
-/// `Windows.UI.Composition` path, whose visual tree replaces that surface
-/// entirely, but incompatible with the SWCA fallback, which composites into
-/// it. Callers falling back from a failed Composition attempt must create a
-/// *new* window with `composition: false` rather than reusing one created
-/// with the flag set.
-fn create_window(outer_rect: &Rect, composition: bool) -> crate::Result<HWND> {
+/// `WS_EX_NOREDIRECTIONBITMAP` skips the GDI redirection surface DWM would
+/// otherwise allocate, which the composition visual tree replaces
+/// entirely.
+fn create_window(outer_rect: &Rect) -> crate::Result<HWND> {
   ensure_class_registered();
 
-  // `WS_EX_TRANSPARENT` on both paths -- see the matching comment in
-  // `native_blur_overlay::create_window`. The composition path used to omit
-  // it, leaving the (window-outsetting) border overlay hit-testable and
+  // `WS_EX_TRANSPARENT` -- see the matching comment in
+  // `native_backdrop_overlay::create_window`. This used to be omitted,
+  // leaving the (window-outsetting) border overlay hit-testable and
   // therefore showing the busy cursor over every window's border and gap.
-  let ex_style = if composition {
-    WS_EX_NOACTIVATE
-      | WS_EX_TOOLWINDOW
-      | WS_EX_TRANSPARENT
-      | WS_EX_NOREDIRECTIONBITMAP
-  } else {
-    WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW | WS_EX_TRANSPARENT
-  };
+  let ex_style = WS_EX_NOACTIVATE
+    | WS_EX_TOOLWINDOW
+    | WS_EX_TRANSPARENT
+    | WS_EX_NOREDIRECTIONBITMAP;
 
   // SAFETY: All parameters are valid. The class is guaranteed registered
   // by `ensure_class_registered`. No parent HWND is needed.
@@ -92,57 +78,28 @@ fn create_window(outer_rect: &Rect, composition: bool) -> crate::Result<HWND> {
   Ok(hwnd)
 }
 
-/// Attempts to build the `Windows.UI.Composition` pipeline for a freshly
-/// created overlay window. On any failure, destroys `hwnd` (since it was
-/// created with `WS_EX_NOREDIRECTIONBITMAP`, unusable for the SWCA
-/// fallback) so the caller can create a fresh window for that path.
-fn try_create_composition(
+/// Creates the overlay's window and roots its `Windows.UI.Composition`
+/// visual tree on it.
+///
+/// There is no non-composition path: a system without
+/// `Windows.UI.Composition` (pre-Windows 10 1803) gets no border overlay
+/// rather than a degraded one, matching the backdrop.
+fn create_backing_window(
   outer_rect: &Rect,
   params: BorderOverlayParams,
-) -> Option<(HWND, BorderVisual)> {
-  let hwnd = match create_window(outer_rect, true) {
-    Ok(hwnd) => hwnd,
-    Err(err) => {
-      tracing::warn!(
-        "Border overlay composition window creation failed: {err}."
-      );
-      return None;
-    }
-  };
+) -> crate::Result<(HWND, BorderVisual)> {
+  let hwnd = create_window(outer_rect)?;
 
   match BorderVisual::create(hwnd, outer_rect, params) {
-    Ok(visual) => Some((hwnd, visual)),
+    Ok(visual) => Ok((hwnd, visual)),
     Err(err) => {
-      tracing::warn!(
-        "Composition border pipeline unavailable, falling back to SWCA: \
-         {err}."
-      );
       // SAFETY: `hwnd` was just created above and not yet handed to a
       // caller; safe to destroy immediately on this failure path.
       unsafe {
         let _ = DestroyWindow(hwnd);
       }
-      None
+      Err(err)
     }
-  }
-}
-
-/// Extends the DWM glass sheet over the whole client area, needed by the
-/// SWCA fallback so the ring window is transparent outside wherever
-/// `apply_backdrop`'s accent tint paints -- the `Windows.UI.Composition`
-/// path doesn't need this (`WS_EX_NOREDIRECTIONBITMAP` windows have no GDI
-/// backing surface to begin with).
-fn extend_glass_sheet(hwnd: HWND) {
-  let margins = MARGINS {
-    cxLeftWidth: -1,
-    cxRightWidth: -1,
-    cyTopHeight: -1,
-    cyBottomHeight: -1,
-  };
-  // SAFETY: `hwnd` is a valid window handle. `margins` is stack-allocated
-  // and live for the duration of this call.
-  unsafe {
-    let _ = DwmExtendFrameIntoClientArea(hwnd, &raw const margins);
   }
 }
 
@@ -165,24 +122,19 @@ fn outer_rect(window_rect: &Rect, width: f32) -> Rect {
 /// enabled), since there'd be nothing left to hide the overlay's own
 /// fill.
 ///
-/// Both renderers need the region, for different reasons. SWCA paints a
-/// solid accent sheet across the whole overlay and has no stroke primitive,
-/// so the ring only exists once the centre is cut away. Composition strokes
-/// the ring directly and leaves the interior unpainted, so there the region
-/// buys nothing visually -- it is what stops the overlay from answering
-/// point queries over the window it outlines. `WS_EX_TRANSPARENT` already
-/// excludes it from ordinary mouse routing, but `WindowFromPoint` does not
+/// The region buys nothing visually -- composition strokes the ring
+/// directly and leaves the interior unpainted. It is what stops the
+/// overlay from answering point queries over the window it outlines.
+/// `WS_EX_TRANSPARENT` already excludes it from ordinary mouse routing,
+/// but `WindowFromPoint` does not
 /// honour that flag, and it does honour the region; without one, anything
 /// resolving "the window under the cursor" that way finds a
 /// window-plus-gap-sized overlay belonging to a thread that never answers.
-///
-/// `redraw` should be set only on the SWCA path -- see the call site.
 fn apply_hole_region(
   hwnd: HWND,
   outer_size: (i32, i32),
   outset: i32,
   inner_radius: i32,
-  redraw: bool,
 ) {
   let (w, h) = outer_size;
 
@@ -214,7 +166,9 @@ fn apply_hole_region(
       let _ = DeleteObject(HGDIOBJ(inner_rgn.0));
     }
 
-    SetWindowRgn(hwnd, outer_rgn, BOOL(i32::from(redraw)));
+    // No repaint: the composition visual tree has no GDI redirection
+    // surface (`WS_EX_NOREDIRECTIONBITMAP`) and repaints itself.
+    SetWindowRgn(hwnd, outer_rgn, BOOL(0));
   }
 }
 
@@ -229,22 +183,6 @@ fn inner_hole_radius(params: &BorderOverlayParams) -> i32 {
   }
 }
 
-/// How a [`NativeBorderOverlay`] actually paints its ring.
-///
-/// The two paths need genuinely different machinery, so this keeps the
-/// window-region state confined to the one that needs it rather than
-/// carrying a permanently-unused field on both.
-enum BorderRenderer {
-  /// The `Windows.UI.Composition` path: a stroked rounded rectangle whose
-  /// interior is simply never painted.
-  Composition(BorderVisual),
-
-  /// The `SetWindowCompositionAttribute` fallback: a solid accent sheet
-  /// across the whole overlay, whose centre only becomes a ring once
-  /// [`apply_hole_region`] cuts it out.
-  Swca,
-}
-
 /// A persistent overlay window that renders a colored border ring around a
 /// paired managed window -- a self-drawn stand-in for the OS's
 /// `DWMWA_BORDER_COLOR`, which isn't carried along by DWM thumbnails
@@ -252,26 +190,18 @@ enum BorderRenderer {
 /// workspace-switch transitions.
 ///
 /// Sized to `window_rect` outset by `params.width` (the configured border
-/// width) on every side, and positioned directly behind an `anchor`
-/// window in z-order -- same pairing mechanism [`NativeBlurOverlay`] uses.
+/// width) on every side, and positioned directly behind an `anchor` window
+/// in z-order -- same pairing mechanism [`NativeBackdropOverlay`] uses.
 ///
-/// Renders via a `Windows.UI.Composition` pipeline when available, falling
-/// back to a `SetWindowCompositionAttribute` solid-color accent otherwise.
-/// In the fallback, `corner_radius` is a no-op for the fill itself (the OS
-/// gives no continuous corner-radius knob for SWCA) but `color`/`opacity`
-/// keep working.
+/// Renders through a `Windows.UI.Composition` pipeline, which strokes a
+/// rounded rectangle directly ([`BorderVisual`]) and leaves the interior
+/// unpainted. A `SetWindowRgn` "picture frame" region additionally
+/// excludes the centre from the window's own shape, so the overlay stays
+/// out of `WindowFromPoint`. Nothing relies on the tracked window
+/// occluding a fill, so the ring holds regardless of that window's own
+/// opacity or its z-order relative to other overlays (e.g. the backdrop).
 ///
-/// The two paths carve the ring out very differently, which
-/// [`BorderRenderer`] captures. Composition strokes a rounded rectangle
-/// directly ([`BorderVisual`]), leaving the interior unpainted. SWCA has
-/// no stroke primitive, so it paints a full sheet and a `SetWindowRgn`
-/// "picture frame" region (outer bounds minus `window_rect`) excludes the
-/// center from the window's own shape. Neither path relies on the tracked
-/// window occluding a fill, so both hold regardless of that window's own
-/// opacity or its z-order relative to other overlays (e.g. the acrylic
-/// backdrop).
-///
-/// [`NativeBlurOverlay`]: crate::NativeBlurOverlay
+/// [`NativeBackdropOverlay`]: crate::NativeBackdropOverlay
 /// [`BorderVisual`]: crate::platform_impl::composition::BorderVisual
 ///
 /// # Platform-specific
@@ -291,19 +221,23 @@ pub struct NativeBorderOverlay {
   rect: Rect,
 
   /// `HWND` of the window this overlay is positioned directly behind (its
-  /// z-order anchor), as raw `isize`. See `NativeBlurOverlay::anchor`'s doc
-  /// comment for why anchoring directly behind the managed window (rather
-  /// than e.g. the global `HWND_BOTTOM`) matters.
+  /// z-order anchor), as raw `isize`. See
+  /// `NativeBackdropOverlay::anchor`'s doc comment for why anchoring
+  /// directly behind the managed window (rather than e.g. the global
+  /// `HWND_BOTTOM`) matters.
   anchor: isize,
 
   /// Whether the overlay window is currently shown. See
-  /// `NativeBlurOverlay::is_visible`'s doc comment for why this is tracked
-  /// explicitly rather than inferred from a rect change.
+  /// `NativeBackdropOverlay::is_visible`'s doc comment for why this is
+  /// tracked explicitly rather than inferred from a rect change.
   is_visible: bool,
 
-  /// Which of the two rendering paths this overlay is running, plus any
-  /// state that path alone needs.
-  renderer: BorderRenderer,
+  /// The overlay's composition visual tree.
+  ///
+  /// Optional only so that it can be dropped *before* the `HWND` it is
+  /// rooted to, in `Drop`; an overlay that failed to build one is never
+  /// constructed in the first place. Treat it as always present.
+  composition: Option<BorderVisual>,
 
   /// `(width, height, inner_radius)` of the picture-frame region last
   /// applied, or `None` when the window currently has none -- before the
@@ -340,16 +274,7 @@ impl NativeBorderOverlay {
   ) -> crate::Result<Self> {
     let outer = outer_rect(window_rect, params.width);
 
-    let (hwnd, renderer) =
-      if let Some((hwnd, visual)) = try_create_composition(&outer, params) {
-        (hwnd, BorderRenderer::Composition(visual))
-      } else {
-        let hwnd = create_window(&outer, false)?;
-        extend_glass_sheet(hwnd);
-        apply_backdrop(hwnd, Some(&params.color));
-
-        (hwnd, BorderRenderer::Swca)
-      };
+    let (hwnd, composition) = create_backing_window(&outer, params)?;
 
     // SAFETY: `hwnd` is a valid window just created above.
     if let Err(e) = unsafe {
@@ -372,7 +297,7 @@ impl NativeBorderOverlay {
       rect: window_rect.clone(),
       anchor: anchor.0,
       is_visible: true,
-      renderer,
+      composition: Some(composition),
       hole_shape: None,
       pinned: None,
     };
@@ -391,9 +316,8 @@ impl NativeBorderOverlay {
   /// application -- skipped on a pure reposition, since `SetWindowRgn` is
   /// comparatively expensive to call on every animation tick.
   ///
-  /// Applied on both renderers, for different reasons: SWCA needs the
-  /// centre cut away for the ring to exist at all, and Composition needs it
-  /// to stay out of `WindowFromPoint`. See [`apply_hole_region`].
+  /// Applied so the overlay stays out of `WindowFromPoint`. See
+  /// [`apply_hole_region`].
   fn refresh_hole(&mut self, outer: &Rect) {
     // A pinned overlay is viewport-sized with its ring drawn at an offset
     // inside it, so `outer` doesn't describe its window at all. `clear_pin`
@@ -412,15 +336,7 @@ impl NativeBorderOverlay {
 
     let _scope = crate::perf::scope(crate::perf::Stage::OverlayRegion);
 
-    // `bRedraw` only on the SWCA path, whose accent brush composites into
-    // the window's GDI redirection surface: the newly (dis)covered area
-    // genuinely must be repainted there, since that content changes
-    // independently of the rect (color/opacity updates). The Composition
-    // path has no redirection surface (`WS_EX_NOREDIRECTIONBITMAP`) and
-    // its visual tree repaints itself.
-    let redraw = matches!(self.renderer, BorderRenderer::Swca);
-
-    apply_hole_region(self.hwnd(), (shape.0, shape.1), outset, shape.2, redraw);
+    apply_hole_region(self.hwnd(), (shape.0, shape.1), outset, shape.2);
     self.hole_shape = Some(shape);
   }
 
@@ -455,14 +371,13 @@ impl NativeBorderOverlay {
   }
 
   /// Resizes the ring to `outer`, and with `reset_offset` also returns it
-  /// to its window's own origin. No-op on the SWCA fallback, which has no
-  /// visual tree to drive.
+  /// to its window's own origin.
   ///
   /// Only a call that reveals a hidden overlay passes `reset_offset`: a
   /// pin leaves the offset at its last slid value, and the reveal is the
   /// first moment the window is back to tracking its own rect.
   fn apply_ring_rect(&self, outer: &Rect, reset_offset: bool) {
-    let BorderRenderer::Composition(composition) = &self.renderer else {
+    let Some(composition) = &self.composition else {
       return;
     };
 
@@ -487,9 +402,9 @@ impl NativeBorderOverlay {
   /// the current border width), keeping it directly behind `anchor`, and
   /// ensures it's shown.
   ///
-  /// No-op if neither `window_rect` nor `anchor` changed and the overlay is
-  /// already visible -- see `NativeBlurOverlay::set_rect`'s doc comment for
-  /// why.
+  /// No-op if neither `window_rect` nor `anchor` changed and the overlay
+  /// is already visible -- see `NativeBackdropOverlay::set_rect`'s doc
+  /// comment for why.
   ///
   /// Callers that only need to correct z-order drift should use
   /// [`sync_z_order`] instead.
@@ -565,10 +480,10 @@ impl NativeBorderOverlay {
   }
 
   /// Queues a reposition into `batch` instead of issuing an immediate
-  /// `SetWindowPos` -- see `NativeBlurOverlay::defer_rect`'s doc comment
-  /// for the batching rationale. Falls back to [`set_rect`] (immediate,
-  /// unbatched) when the overlay isn't currently visible, or when `anchor`
-  /// changed.
+  /// `SetWindowPos` -- see `NativeBackdropOverlay::defer_rect`'s doc
+  /// comment for the batching rationale. Falls back to [`set_rect`]
+  /// (immediate, unbatched) when the overlay isn't currently visible, or
+  /// when `anchor` changed.
   ///
   /// [`set_rect`]: NativeBorderOverlay::set_rect
   pub fn defer_rect(
@@ -589,7 +504,7 @@ impl NativeBorderOverlay {
     let outer = outer_rect(window_rect, self.params.width);
     batch.push(self.hwnd, outer.clone());
 
-    if let BorderRenderer::Composition(composition) = &self.renderer {
+    if let Some(composition) = &self.composition {
       let _scope = crate::perf::scope(crate::perf::Stage::OverlayVisual);
       if let Err(e) = composition.set_rect(&outer) {
         tracing::warn!("Border overlay composition resize failed: {e}.");
@@ -603,7 +518,7 @@ impl NativeBorderOverlay {
 
   /// Corrects z-order drift by re-positioning the overlay directly behind
   /// `anchor` if it isn't already there, without touching its rect. See
-  /// `NativeBlurOverlay::sync_z_order`'s doc comment.
+  /// `NativeBackdropOverlay::sync_z_order`'s doc comment.
   pub fn sync_z_order(&mut self, anchor: HWND) -> crate::Result<()> {
     // `anchor` is always a real window handle, so the comparison below is
     // meaningful -- but the overlay has to be in the anchor's band first,
@@ -643,14 +558,11 @@ impl NativeBorderOverlay {
     }
     self.params.color = color;
 
-    match &self.renderer {
-      BorderRenderer::Composition(composition) => {
-        if let Err(e) = composition.set_color(color) {
-          tracing::warn!("Border overlay composition color update failed: {e}.");
-        }
-      }
-      BorderRenderer::Swca => {
-        apply_backdrop(self.hwnd(), Some(&color));
+    if let Some(composition) = &self.composition {
+      if let Err(e) = composition.set_color(color) {
+        tracing::warn!(
+          "Border overlay composition color update failed: {e}."
+        );
       }
     }
   }
@@ -670,7 +582,7 @@ impl NativeBorderOverlay {
     }
     self.params.width = width;
 
-    if let BorderRenderer::Composition(composition) = &self.renderer {
+    if let Some(composition) = &self.composition {
       if let Err(e) = composition.set_width(width) {
         tracing::warn!("Border overlay composition width update failed: {e}.");
       }
@@ -683,8 +595,8 @@ impl NativeBorderOverlay {
   }
 
   /// Updates the ring's corner radius; re-applies only when the value
-  /// changes. On the SWCA fallback the sheet itself has no radius knob,
-  /// but its hole-punch does, and must stay concentric with `value`.
+  /// changes. The hole-punch radius must stay concentric with `value`, so
+  /// this refreshes the window region too.
   #[allow(clippy::float_cmp)]
   pub fn set_corner_radius(&mut self, value: f32) {
     if self.params.corner_radius == value {
@@ -692,7 +604,7 @@ impl NativeBorderOverlay {
     }
     self.params.corner_radius = value;
 
-    if let BorderRenderer::Composition(composition) = &self.renderer {
+    if let Some(composition) = &self.composition {
       if let Err(e) = composition.set_corner_radius(value) {
         tracing::warn!(
           "Border overlay composition corner-radius update failed: {e}."
@@ -705,7 +617,7 @@ impl NativeBorderOverlay {
   }
 
   /// Updates the overlay's opacity; re-applies only when the value
-  /// changes. No-op when running the SWCA fallback (no such knob exists).
+  /// changes.
   #[allow(clippy::float_cmp)]
   pub fn set_opacity(&mut self, value: f32) {
     if self.params.opacity == value {
@@ -713,7 +625,7 @@ impl NativeBorderOverlay {
     }
     self.params.opacity = value;
 
-    if let BorderRenderer::Composition(composition) = &self.renderer {
+    if let Some(composition) = &self.composition {
       if let Err(e) = composition.set_opacity(value) {
         tracing::warn!("Border overlay composition opacity update failed: {e}.");
       }
@@ -742,9 +654,6 @@ impl NativeBorderOverlay {
   /// frame, with the clip falling out of composition rendering nothing
   /// outside the target.
   ///
-  /// Returns `false` on the SWCA fallback, which has no composition tree to
-  /// offset -- callers should hide the overlay for the transition there.
-  ///
   /// Undone by any ordinary [`set_rect`]/[`defer_rect`].
   ///
   /// [`set_rect`]: NativeBorderOverlay::set_rect
@@ -755,7 +664,7 @@ impl NativeBorderOverlay {
     window_rect: &Rect,
     anchor: HWND,
   ) -> bool {
-    if !matches!(self.renderer, BorderRenderer::Composition(_)) {
+    if self.composition.is_none() {
       return false;
     }
 
@@ -837,7 +746,7 @@ impl NativeBorderOverlay {
       return;
     }
 
-    let BorderRenderer::Composition(composition) = &self.renderer else {
+    let Some(composition) = &self.composition else {
       return;
     };
 
@@ -898,12 +807,9 @@ impl NativeBorderOverlay {
 
 impl Drop for NativeBorderOverlay {
   fn drop(&mut self) {
-    // Drop the Composition visual tree (if any) before destroying the
-    // window it's rooted to -- its `DesktopWindowTarget` is bound to that
-    // `HWND`. Swapping in the fallback variant is only a way to move the
-    // visual out from behind `&mut self`; nothing reads `renderer` again
-    // after this.
-    drop(std::mem::replace(&mut self.renderer, BorderRenderer::Swca));
+    // Drop the composition visual tree before destroying the window it's
+    // rooted to -- its `DesktopWindowTarget` is bound to that `HWND`.
+    self.composition.take();
 
     // SAFETY: `self.hwnd()` is a valid window handle and `Drop` is called
     // at most once.

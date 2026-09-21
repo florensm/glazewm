@@ -10,7 +10,7 @@ use wm_platform::{
 };
 #[cfg(target_os = "windows")]
 use wm_platform::{
-  NativeBlurOverlay, NativeBorderOverlay, NativeWindowWindowsExt,
+  NativeBackdropOverlay, NativeBorderOverlay, NativeWindowWindowsExt,
   OpacityValue,
 };
 
@@ -77,15 +77,16 @@ pub struct WmState {
   /// Whether the OS focused window is the same as the WM focused window.
   pub is_focus_synced: bool,
 
-  /// Acrylic blur overlay windows keyed by managed-window UUID.
+  /// Backdrop overlay windows keyed by managed-window UUID.
   ///
-  /// Each overlay is a `WS_POPUP` window with `ACCENT_ENABLE_ACRYLICBLURBEHIND`
-  /// applied via `SetWindowCompositionAttribute`, positioned at `HWND_BOTTOM`
-  /// flush with the managed window's DWM frame rect. When the managed window
-  /// is semi-transparent (`transparency` effect), the overlay's blurred-desktop
-  /// content shows through, producing a frosted-glass look.
+  /// Each overlay is a `WS_POPUP` window rooting a
+  /// `Windows.UI.Composition` visual tree, positioned directly behind its
+  /// managed window in z-order and flush with that window's DWM frame
+  /// rect. It renders a crop of the pre-blurred desktop wallpaper, so a
+  /// window left semi-transparent by the `transparency` effect reads as
+  /// frosted glass over it.
   #[cfg(target_os = "windows")]
-  pub blur_overlays: HashMap<Uuid, NativeBlurOverlay>,
+  pub backdrop_overlays: HashMap<Uuid, NativeBackdropOverlay>,
 
   /// Border overlay windows keyed by managed-window UUID -- a persistent,
   /// self-drawn stand-in for the OS's `DWMWA_BORDER_COLOR`, which isn't
@@ -118,7 +119,7 @@ impl WmState {
       animation_manager: AnimationManager::new(animation_tick_tx),
       window_target_positions: HashMap::new(),
       #[cfg(target_os = "windows")]
-      blur_overlays: HashMap::new(),
+      backdrop_overlays: HashMap::new(),
       #[cfg(target_os = "windows")]
       border_overlays: HashMap::new(),
       prev_effects_window: None,
@@ -754,6 +755,12 @@ impl Drop for WmState {
         let _ = window
           .native()
           .set_transparency(&OpacityValue::from_alpha(u8::MAX));
+
+        // Give back the OS border that `apply_native_border_effect`
+        // suppressed. `DWMWA_BORDER_COLOR` outlives this process, so a
+        // window left with it set keeps no border for the rest of its
+        // life -- same class of leak as the cloak reset above.
+        let _ = window.native().set_native_border_hidden(false);
       }
     }
   }

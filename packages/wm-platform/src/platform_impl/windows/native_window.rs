@@ -8,7 +8,8 @@ use windows::{
     Foundation::{CloseHandle, BOOL, HWND, LPARAM, POINT, RECT},
     Graphics::Dwm::{
       DwmGetColorizationColor, DwmGetWindowAttribute, DwmSetWindowAttribute,
-      DWMWA_CLOAKED, DWMWA_EXTENDED_FRAME_BOUNDS,
+      DWMWA_BORDER_COLOR, DWMWA_CLOAKED, DWMWA_COLOR_DEFAULT,
+      DWMWA_COLOR_NONE, DWMWA_EXTENDED_FRAME_BOUNDS,
       DWMWA_WINDOW_CORNER_PREFERENCE, DWMWCP_DEFAULT, DWMWCP_DONOTROUND,
       DWMWCP_ROUND, DWMWCP_ROUNDSMALL,
     },
@@ -661,6 +662,47 @@ impl NativeWindow {
             | SWP_ASYNCWINDOWPOS,
         )?;
       }
+    }
+
+    Ok(())
+  }
+
+  /// Implements [`NativeWindowWindowsExt::set_native_border_hidden`].
+  ///
+  /// Windows 11 draws a 1px border on the window's outer edge, inside the
+  /// area a self-drawn border overlay rings. With both present the two are
+  /// visible as separate lines, so the OS one is suppressed wherever
+  /// `GlazeWM` draws its own.
+  ///
+  /// Suppressed via `DWMWA_COLOR_NONE` rather than by matching the
+  /// overlay's color: the overlay's radius, width and color are all
+  /// independently configurable, so no OS border value makes the two
+  /// agree.
+  ///
+  /// `DWMWA_BORDER_COLOR` is Windows 11 (build 22000) and later. On
+  /// earlier builds `DwmSetWindowAttribute` fails and the `Err` is
+  /// returned for the caller to ignore -- there is no OS border there.
+  pub(crate) fn set_native_border_hidden(
+    &self,
+    hidden: bool,
+  ) -> crate::Result<()> {
+    let color = if hidden {
+      DWMWA_COLOR_NONE
+    } else {
+      DWMWA_COLOR_DEFAULT
+    };
+
+    // SAFETY: `hwnd` is a valid window handle, and `color` is a
+    // stack-allocated `u32` live for the duration of the call -- the size
+    // `DWMWA_BORDER_COLOR` expects.
+    unsafe {
+      #[allow(clippy::cast_possible_truncation)]
+      DwmSetWindowAttribute(
+        self.hwnd(),
+        DWMWA_BORDER_COLOR,
+        std::ptr::from_ref(&color).cast(),
+        std::mem::size_of::<u32>() as u32,
+      )?;
     }
 
     Ok(())
