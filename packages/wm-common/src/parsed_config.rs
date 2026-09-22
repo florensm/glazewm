@@ -70,6 +70,7 @@ impl Default for GapsConfig {
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(default, rename_all(serialize = "camelCase"))]
+#[allow(clippy::struct_excessive_bools)]
 pub struct GeneralConfig {
   /// Config for automatically moving the cursor.
   pub cursor_jump: CursorJumpConfig,
@@ -80,6 +81,20 @@ pub struct GeneralConfig {
   /// Whether to switch back and forth between the previously focused
   /// workspace when focusing the current workspace.
   pub toggle_workspace_on_refocus: bool,
+
+  /// Whether to keep focus where it is when a window on a hidden
+  /// workspace forces itself into the foreground.
+  ///
+  /// The window is marked as urgent instead of being followed, which is
+  /// broadcast via the `window_urgency_changed` event.
+  pub ignore_focus_steal: bool,
+
+  /// Whether workspaces can be created on-demand beyond the ones declared
+  /// in the `workspaces` config.
+  ///
+  /// Dynamic workspaces are named with the lowest unused positive integer
+  /// and are destroyed once they become empty.
+  pub dynamic_workspaces: bool,
 
   /// Commands to run when the WM has started (e.g. to run a script or
   /// launch another application).
@@ -105,6 +120,8 @@ impl Default for GeneralConfig {
       cursor_jump: CursorJumpConfig::default(),
       focus_follows_cursor: false,
       toggle_workspace_on_refocus: true,
+      dynamic_workspaces: false,
+      ignore_focus_steal: false,
       startup_commands: vec![],
       shutdown_commands: vec![],
       config_reload_commands: vec![],
@@ -977,6 +994,9 @@ pub struct WindowOpenConfig {
   /// - `none` / `fade`: no slide; combine with `opacity_from` for a pure
   ///   fade-in.
   /// - `zoom`: zoom in from the window center.
+  ///
+  /// Accepts `direction` as a legacy alias for this key.
+  #[serde(alias = "direction")]
   pub style: WindowTransitionStyle,
   /// Starting opacity (0.0–1.0). At `1.0` no fade is applied; at `0.0`
   /// the window fades in from fully transparent. Can be combined with

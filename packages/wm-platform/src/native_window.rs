@@ -256,6 +256,15 @@ pub trait NativeWindowWindowsExt {
   /// This method is only available on Windows.
   fn is_cloaked(&self) -> crate::Result<bool>;
 
+  /// Stops the window's taskbar button from flashing.
+  ///
+  /// Has no effect if the window isn't flashing.
+  ///
+  /// # Platform-specific
+  ///
+  /// This method is only available on Windows.
+  fn stop_flashing(&self);
+
   /// Marks the window as fullscreen.
   ///
   /// Causes the native Windows taskbar to be moved to the bottom of the
@@ -363,6 +372,10 @@ pub trait NativeWindowWindowsExt {
 impl NativeWindowWindowsExt for NativeWindow {
   fn from_handle(handle: isize) -> Self {
     platform_impl::NativeWindow::new(handle).into()
+  }
+
+  fn stop_flashing(&self) {
+    self.inner.stop_flashing();
   }
 
   fn hwnd(&self) -> HWND {

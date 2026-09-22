@@ -24,13 +24,15 @@ use crate::{
     },
     general::{
       cycle_focus, disable_binding_mode, enable_binding_mode,
-      platform_sync, reload_config, shell_exec, toggle_pause,
+      move_cursor_to_active_window, platform_sync, reload_config,
+      shell_exec, toggle_pause,
     },
     monitor::focus_monitor,
     window::{
-      ignore_window, move_window_in_direction, move_window_to_workspace,
-      resize_window, set_window_position, set_window_size,
-      update_window_state, WindowPositionTarget,
+      focus_urgent_window, ignore_window, move_window_in_direction,
+      move_window_to_workspace, resize_window, set_window_position,
+      set_window_size, set_window_urgency, update_window_state,
+      WindowPositionTarget,
     },
     workspace::{
       focus_workspace, move_workspace_in_direction,
@@ -39,7 +41,8 @@ use crate::{
   },
   events::{
     handle_display_settings_changed, handle_mouse_move,
-    handle_window_destroyed, handle_window_focused, handle_window_hidden,
+    handle_window_attention_requested, handle_window_destroyed,
+    handle_window_focused, handle_window_hidden,
     handle_window_minimize_ended, handle_window_minimized,
     handle_window_moved_or_resized, handle_window_shown,
     handle_window_title_changed,
@@ -147,6 +150,9 @@ impl WindowManager {
         }
         WindowEvent::TitleChanged { window, .. } => {
           handle_window_title_changed(&window, state, config)
+        }
+        WindowEvent::AttentionRequested { window, .. } => {
+          handle_window_attention_requested(&window, state)
         }
         WindowEvent::Destroyed { window_id, .. } => {
           handle_window_destroyed(window_id, state)
@@ -409,6 +415,14 @@ impl WindowManager {
           focus_workspace(WorkspaceTarget::Recent, state, config)?;
         }
 
+        if args.next_empty_workspace {
+          focus_workspace(WorkspaceTarget::NextEmpty, state, config)?;
+        }
+
+        if args.urgent_window {
+          focus_urgent_window(state, config)?;
+        }
+
         if args.next_active_workspace_on_monitor {
           focus_workspace(
             WorkspaceTarget::NextActiveInMonitor,
@@ -427,11 +441,20 @@ impl WindowManager {
 
         Ok(())
       }
+      // No-op at runtime. `force-manage` is a marker that is evaluated
+      // before a window is managed (see `check_is_manageable`).
+      InvokeCommand::ForceManage => Ok(()),
       InvokeCommand::Ignore => {
         match subject_container.as_window_container() {
           Ok(window) => ignore_window(window, state),
           _ => Ok(()),
         }
+      }
+      InvokeCommand::MoveCursor(args) => {
+        if args.direction.is_some() {
+          move_cursor_to_active_window(state)?;
+        }
+        Ok(())
       }
       InvokeCommand::Move(args) => {
         match subject_container.as_window_container() {
@@ -503,6 +526,15 @@ impl WindowManager {
               move_window_to_workspace(
                 window.clone(),
                 WorkspaceTarget::Recent,
+                state,
+                config,
+              )?;
+            }
+
+            if args.next_empty_workspace {
+              move_window_to_workspace(
+                window.clone(),
+                WorkspaceTarget::NextEmpty,
                 state,
                 config,
               )?;
@@ -688,6 +720,16 @@ impl WindowManager {
               state,
               config,
             )?;
+
+            Ok(())
+          }
+          _ => Ok(()),
+        }
+      }
+      InvokeCommand::SetUrgency { urgent } => {
+        match subject_container.as_window_container() {
+          Ok(window) => {
+            set_window_urgency(&window, urgent.unwrap_or(true), state)?;
 
             Ok(())
           }

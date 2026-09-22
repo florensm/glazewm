@@ -147,6 +147,7 @@ pub enum SubscribableEvent {
   UserConfigChanged,
   WindowManaged,
   WindowUnmanaged,
+  WindowUrgencyChanged,
   WorkspaceActivated,
   WorkspaceDeactivated,
   WorkspaceUpdated,
@@ -158,7 +159,15 @@ pub enum InvokeCommand {
   AdjustBorders(InvokeAdjustBordersCommand),
   Close,
   Focus(InvokeFocusCommand),
+  /// Marker command for window rules that forces matching windows to be
+  /// managed, bypassing the built-in manageability checks (e.g. the
+  /// `WS_EX_TOOLWINDOW` style check on Windows).
+  ///
+  /// Evaluated *before* a window is managed; running it against an
+  /// already-managed window is a no-op.
+  ForceManage,
   Ignore,
+  MoveCursor(InvokeMoveCursorCommand),
   Move(InvokeMoveCommand),
   MoveWorkspace {
     #[clap(long)]
@@ -200,6 +209,15 @@ pub enum InvokeCommand {
   },
   SetMinimized,
   SetTiling,
+  /// Marks the window as having requested attention, or clears it with
+  /// `--urgent=false`.
+  ///
+  /// Useful from a window rule, to flag windows that signal in ways the
+  /// WM can't observe (e.g. a title change).
+  SetUrgency {
+    #[clap(long, default_missing_value = "true", require_equals = true, num_args = 0..=1)]
+    urgent: Option<bool>,
+  },
   SetTitleBarVisibility {
     #[clap(required = true, value_enum)]
     visibility: TitleBarVisibility,
@@ -344,6 +362,24 @@ pub struct InvokeFocusCommand {
 
   #[clap(long)]
   pub recent_workspace: bool,
+
+  /// Focus the first workspace without any windows, creating one if
+  /// dynamic workspaces are enabled and none is available.
+  #[clap(long)]
+  pub next_empty_workspace: bool,
+
+  /// Focus the window that most recently requested attention, switching
+  /// to its workspace if needed.
+  #[clap(long)]
+  pub urgent_window: bool,
+}
+
+#[derive(Args, Clone, Debug, PartialEq, Serialize)]
+#[group(required = true, multiple = false)]
+pub struct InvokeMoveCursorCommand {
+  /// Move the cursor to the center of the currently focused window.
+  #[clap(long)]
+  pub direction: Option<Direction>,
 }
 
 #[derive(Args, Clone, Debug, PartialEq, Serialize)]
@@ -382,6 +418,11 @@ pub struct InvokeMoveCommand {
 
   #[clap(long)]
   pub recent_workspace: bool,
+
+  /// Move the window to the first workspace without any windows, creating
+  /// one if dynamic workspaces are enabled and none is available.
+  #[clap(long)]
+  pub next_empty_workspace: bool,
 }
 
 #[derive(Args, Clone, Debug, PartialEq, Serialize)]
@@ -431,4 +472,17 @@ pub struct InvokeUpdateWorkspaceConfig {
 
   #[clap(long)]
   pub keep_alive: Option<bool>,
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+
+  #[test]
+  fn parses_force_manage_command() {
+    let command = InvokeCommand::try_parse_from(["", "force-manage"])
+      .expect("Failed to parse `force-manage` command.");
+
+    assert_eq!(command, InvokeCommand::ForceManage);
+  }
 }

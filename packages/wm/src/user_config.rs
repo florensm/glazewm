@@ -7,7 +7,7 @@ use wm_common::{
 };
 
 use crate::{
-  models::{Monitor, WindowContainer, Workspace},
+  models::{Monitor, NativeWindowProperties, WindowContainer, Workspace},
   traits::{CommonGetters, WindowGetters},
 };
 
@@ -83,7 +83,7 @@ impl UserConfig {
       config_path.parent().context("Invalid config path.")?;
 
     fs::create_dir_all(parent_dir).with_context(|| {
-      format!("Unable to create directory {}.", &config_path.display())
+      format!("Unable to create directory {}.", config_path.display())
     })?;
 
     fs::write(config_path, SAMPLE_CONFIG).with_context(|| {
@@ -224,64 +224,83 @@ impl UserConfig {
     window: &WindowContainer,
     event: &WindowRuleEvent,
   ) -> Vec<WindowRuleConfig> {
-    let window_title = window.native_properties().title;
-    #[cfg(target_os = "windows")]
-    let window_class = window.native_properties().class_name;
-    let window_process = window.native_properties().process_name;
+    let native_properties = window.native_properties();
 
-    let pending_window_rules = self
+    self
       .window_rules_by_event
       .get(event)
       .unwrap_or(&Vec::new())
       .iter()
       .filter(|rule| {
         // Skip if window has already ran the rule.
-        if window.done_window_rules().contains(rule) {
-          return false;
-        }
-
-        // Check if the window matches the rule.
-        rule.match_window.iter().any(|match_config| {
-          let is_process_match = match_config
-            .window_process
-            .as_ref()
-            .is_none_or(|match_type| {
-              // TODO: Temp fix for matching Zebar on both platforms with
-              // the same process name. Consider using lowercase for every
-              // `equals` match type.
-              if window_process == "Zebar" {
-                match_type.is_match("Zebar")
-                  || match_type.is_match("zebar")
-              } else {
-                match_type.is_match(&window_process)
-              }
-            });
-
-          let is_class_match = {
-            #[cfg(target_os = "windows")]
-            {
-              match_config.window_class.as_ref().is_none_or(|match_type| {
-                match_type.is_match(&window_class)
-              })
-            }
-            #[cfg(not(target_os = "windows"))]
-            {
-              match_config.window_class.is_none()
-            }
-          };
-
-          let is_title_match = match_config
-            .window_title
-            .as_ref()
-            .is_none_or(|match_type| match_type.is_match(&window_title));
-
-          is_process_match && is_class_match && is_title_match
-        })
+        !window.done_window_rules().contains(rule)
+          && Self::rule_matches(rule, &native_properties)
       })
       .cloned()
-      .collect::<Vec<_>>();
+      .collect()
+  }
 
-    pending_window_rules
+  /// Whether a window with the given native properties is matched by a
+  /// `force-manage` window rule on the `manage` event.
+  ///
+  /// Used to bypass the built-in manageability checks before the window
+  /// enters the window rule pipeline.
+  pub fn is_force_managed(
+    &self,
+    properties: &NativeWindowProperties,
+  ) -> bool {
+    self
+      .window_rules_by_event
+      .get(&WindowRuleEvent::Manage)
+      .is_some_and(|rules| {
+        rules.iter().any(|rule| {
+          rule.commands.contains(&InvokeCommand::ForceManage)
+            && Self::rule_matches(rule, properties)
+        })
+      })
+  }
+
+  /// Whether a window with the given native properties matches any of
+  /// the window rule's match configs.
+  fn rule_matches(
+    rule: &WindowRuleConfig,
+    properties: &NativeWindowProperties,
+  ) -> bool {
+    rule.match_window.iter().any(|match_config| {
+      let is_process_match = match_config
+        .window_process
+        .as_ref()
+        .is_none_or(|match_type| {
+          // TODO: Temp fix for matching Zebar on both platforms with
+          // the same process name. Consider using lowercase for every
+          // `equals` match type.
+          if properties.process_name == "Zebar" {
+            match_type.is_match("Zebar") || match_type.is_match("zebar")
+          } else {
+            match_type.is_match(&properties.process_name)
+          }
+        });
+
+      let is_class_match = {
+        #[cfg(target_os = "windows")]
+        {
+          match_config.window_class.as_ref().is_none_or(|match_type| {
+            match_type.is_match(&properties.class_name)
+          })
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+          match_config.window_class.is_none()
+        }
+      };
+
+      let is_title_match = match_config
+        .window_title
+        .as_ref()
+        .is_none_or(|match_type| match_type.is_match(&properties.title));
+
+      is_process_match && is_class_match && is_title_match
+    })
   }
 
   pub fn inactive_workspace_configs(
@@ -345,10 +364,99 @@ impl UserConfig {
       .position(|config| config.name == workspace_name)
   }
 
+  /// Sort key that orders configured workspaces by their config index,
+  /// followed by dynamic workspaces ordered by their numeric name.
+  ///
+  /// Dynamic workspaces have no config entry, so they'd otherwise all
+  /// share the same (missing) index.
+  fn workspace_sort_key(
+    &self,
+    workspace_name: &str,
+  ) -> (usize, u32, String) {
+    (
+      self
+        .workspace_config_index(workspace_name)
+        .unwrap_or(usize::MAX),
+      workspace_name.parse::<u32>().unwrap_or(u32::MAX),
+      workspace_name.to_string(),
+    )
+  }
+
   pub fn sort_workspaces(&self, workspaces: &mut [Workspace]) {
-    workspaces.sort_by_key(|workspace| {
-      self.workspace_config_index(&workspace.config().name)
+    workspaces.sort_by_cached_key(|workspace| {
+      self.workspace_sort_key(&workspace.config().name)
     });
+  }
+
+  /// Names of all workspaces in display order; the configured workspaces
+  /// plus any active dynamic workspaces.
+  ///
+  /// Used to cycle through workspaces with next/previous targets, which
+  /// would otherwise skip over (and fail to find an origin index for)
+  /// dynamic workspaces.
+  pub fn ordered_workspace_names(
+    &self,
+    active_workspaces: &[Workspace],
+  ) -> Vec<String> {
+    let mut names = self
+      .value
+      .workspaces
+      .iter()
+      .map(|config| config.name.clone())
+      .chain(
+        active_workspaces
+          .iter()
+          .map(|workspace| workspace.config().name)
+          .filter(|name| self.workspace_config_index(name).is_none()),
+      )
+      .collect::<Vec<_>>();
+
+    names.sort_by_cached_key(|name| self.workspace_sort_key(name));
+    names.dedup();
+
+    names
+  }
+
+  /// Config for a workspace that isn't declared in the user config.
+  ///
+  /// Returns `None` if dynamic workspaces are disabled, or if a workspace
+  /// with the given name is already active.
+  pub fn dynamic_workspace_config(
+    &self,
+    workspace_name: &str,
+    active_workspaces: &[Workspace],
+  ) -> Option<WorkspaceConfig> {
+    let is_available = self.value.general.dynamic_workspaces
+      && !active_workspaces
+        .iter()
+        .any(|workspace| workspace.config().name == workspace_name);
+
+    is_available.then(|| WorkspaceConfig {
+      name: workspace_name.to_string(),
+      display_name: None,
+      bind_to_monitor: None,
+      keep_alive: false,
+    })
+  }
+
+  /// Name for a new dynamic workspace.
+  ///
+  /// This is the lowest positive integer that isn't taken by a configured
+  /// or currently active workspace.
+  pub fn next_dynamic_workspace_name(
+    &self,
+    active_workspaces: &[Workspace],
+  ) -> String {
+    (1..=u32::MAX)
+      .map(|index| index.to_string())
+      .find(|name| {
+        self.workspace_config_index(name).is_none()
+          && !active_workspaces
+            .iter()
+            .any(|workspace| workspace.config().name == *name)
+      })
+      // Only reachable with `u32::MAX` workspaces, which can't happen.
+      .unwrap_or_default()
   }
 
   /// Keybinding configs that should be active for the current binding mode
@@ -381,11 +489,16 @@ impl UserConfig {
 
 #[cfg(test)]
 mod tests {
-  use wm_common::{
-    ParsedConfig, WindowTransitionStyle, WorkspaceSwitchStyle,
-  };
+  use std::path::PathBuf;
 
-  use super::SAMPLE_CONFIG;
+  use wm_common::{
+    ParsedConfig, WindowTransitionStyle, WorkspaceConfig,
+    WorkspaceSwitchStyle,
+  };
+  use wm_platform::Rect;
+
+  use super::*;
+  use crate::models::Workspace;
 
   /// The bundled sample config (which uses the `type` key for animation
   /// transition types) must always parse.
@@ -466,5 +579,193 @@ window_effects:
       serde_yaml::from_str(yaml).expect("legacy config should parse");
 
     assert!(config.window_effects.focused_window.backdrop.enabled);
+  }
+
+  /// Creates `NativeWindowProperties` with the given process name and
+  /// title for testing.
+  fn test_properties(
+    process_name: &str,
+    title: &str,
+  ) -> NativeWindowProperties {
+    NativeWindowProperties {
+      title: title.to_string(),
+      #[cfg(target_os = "windows")]
+      class_name: "TestClass".to_string(),
+      process_name: process_name.to_string(),
+      frame: Rect::from_ltrb(0, 0, 100, 100),
+      is_minimized: false,
+      is_maximized: false,
+      is_resizable: true,
+      #[cfg(target_os = "windows")]
+      shadow_borders: wm_platform::RectDelta::zero(),
+    }
+  }
+
+  /// Creates a `UserConfig` with the given window rules for testing.
+  fn test_config(window_rules: Vec<WindowRuleConfig>) -> UserConfig {
+    let config_value = ParsedConfig {
+      window_rules,
+      ..ParsedConfig::default()
+    };
+
+    UserConfig {
+      path: PathBuf::new(),
+      window_rules_by_event: UserConfig::window_rules_by_event(
+        &config_value,
+      ),
+      value: config_value,
+      value_str: String::new(),
+    }
+  }
+
+  /// Creates a window rule with the given command matching the given
+  /// process name.
+  fn test_rule(
+    command: InvokeCommand,
+    process_name: &str,
+  ) -> WindowRuleConfig {
+    WindowRuleConfig {
+      commands: vec![command],
+      match_window: vec![WindowMatchConfig {
+        window_process: Some(MatchType::Equals {
+          equals: process_name.to_string(),
+        }),
+        ..WindowMatchConfig::default()
+      }],
+      on: vec![WindowRuleEvent::Manage],
+      run_once: true,
+    }
+  }
+
+  #[test]
+  fn force_manage_rule_matches_window() {
+    let config = test_config(vec![test_rule(
+      InvokeCommand::ForceManage,
+      "my-launcher",
+    )]);
+
+    assert!(
+      config.is_force_managed(&test_properties("my-launcher", "Launcher"))
+    );
+  }
+
+  #[test]
+  fn non_matching_window_is_not_force_managed() {
+    let config = test_config(vec![test_rule(
+      InvokeCommand::ForceManage,
+      "my-launcher",
+    )]);
+
+    assert!(
+      !config.is_force_managed(&test_properties("other-app", "Other"))
+    );
+  }
+
+  #[test]
+  fn matching_rule_without_force_manage_command_is_skipped() {
+    let config =
+      test_config(vec![test_rule(InvokeCommand::Ignore, "my-launcher")]);
+
+    assert!(!config
+      .is_force_managed(&test_properties("my-launcher", "Launcher")));
+  }
+
+  #[test]
+  fn no_windows_are_force_managed_by_default() {
+    let config = test_config(Vec::new());
+
+    assert!(!config.is_force_managed(&test_properties(
+      "Flow.Launcher",
+      "Flow.Launcher"
+    )));
+  }
+
+  /// Creates a config with the given workspace names declared.
+  fn mock_config(
+    workspace_names: &[&str],
+    dynamic_workspaces: bool,
+  ) -> UserConfig {
+    let mut value = ParsedConfig::default();
+    value.general.dynamic_workspaces = dynamic_workspaces;
+    value.workspaces = workspace_names
+      .iter()
+      .map(|name| WorkspaceConfig {
+        name: (*name).to_string(),
+        display_name: None,
+        bind_to_monitor: None,
+        keep_alive: false,
+      })
+      .collect();
+
+    UserConfig {
+      path: PathBuf::new(),
+      window_rules_by_event: UserConfig::window_rules_by_event(&value),
+      value_str: String::new(),
+      value,
+    }
+  }
+
+  fn mock_workspaces(names: &[&str]) -> Vec<Workspace> {
+    names
+      .iter()
+      .map(|name| Workspace::mock().name((*name).to_string()).call())
+      .collect()
+  }
+
+  #[test]
+  fn sorts_dynamic_workspaces_after_configured_ones() {
+    let config = mock_config(&["b", "a"], true);
+    let mut workspaces = mock_workspaces(&["11", "2", "a", "b"]);
+    config.sort_workspaces(&mut workspaces);
+
+    let names = workspaces
+      .iter()
+      .map(|workspace| workspace.config().name)
+      .collect::<Vec<_>>();
+
+    assert_eq!(names, vec!["b", "a", "2", "11"]);
+  }
+
+  #[test]
+  fn orders_configured_and_active_workspace_names() {
+    let config = mock_config(&["1", "2"], true);
+    let workspaces = mock_workspaces(&["2", "3"]);
+
+    assert_eq!(
+      config.ordered_workspace_names(&workspaces),
+      vec!["1", "2", "3"]
+    );
+  }
+
+  #[test]
+  fn picks_lowest_unused_dynamic_workspace_name() {
+    let config = mock_config(&["1", "3"], true);
+
+    assert_eq!(
+      config.next_dynamic_workspace_name(&mock_workspaces(&["2"])),
+      "4"
+    );
+    assert_eq!(config.next_dynamic_workspace_name(&[]), "2");
+  }
+
+  #[test]
+  fn only_creates_dynamic_configs_when_enabled() {
+    let workspaces = mock_workspaces(&["1"]);
+
+    assert!(mock_config(&["1"], false)
+      .dynamic_workspace_config("2", &workspaces)
+      .is_none());
+
+    // A workspace that's already active can't be created.
+    assert!(mock_config(&["1"], true)
+      .dynamic_workspace_config("1", &workspaces)
+      .is_none());
+
+    let dynamic_config = mock_config(&["1"], true)
+      .dynamic_workspace_config("2", &workspaces)
+      .expect("Dynamic workspace config.");
+
+    assert_eq!(dynamic_config.name, "2");
+    assert!(!dynamic_config.keep_alive);
   }
 }

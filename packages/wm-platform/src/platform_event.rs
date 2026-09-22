@@ -70,6 +70,19 @@ pub enum WindowEvent {
     notification: WindowEventNotification,
   },
 
+  /// Window requested the user's attention (e.g. a background window
+  /// that was denied focus by the OS).
+  ///
+  /// # Platform-specific
+  ///
+  /// - **Windows**: Corresponds to the `HSHELL_FLASH` shell hook
+  ///   notification, which fires when a window's taskbar button flashes.
+  /// - **macOS**: Never emitted.
+  AttentionRequested {
+    window: NativeWindow,
+    notification: WindowEventNotification,
+  },
+
   /// Window was destroyed.
   Destroyed {
     window_id: WindowId,
@@ -89,7 +102,8 @@ impl WindowEvent {
       | Self::Minimized { window, .. }
       | Self::MinimizeEnded { window, .. }
       | Self::Shown { window, .. }
-      | Self::TitleChanged { window, .. } => Some(window),
+      | Self::TitleChanged { window, .. }
+      | Self::AttentionRequested { window, .. } => Some(window),
       Self::Destroyed { .. } => None,
     }
   }
@@ -105,6 +119,7 @@ impl WindowEvent {
       | Self::MinimizeEnded { notification, .. }
       | Self::Shown { notification, .. }
       | Self::TitleChanged { notification, .. }
+      | Self::AttentionRequested { notification, .. }
       | Self::Destroyed { notification, .. } => notification,
     }
   }
