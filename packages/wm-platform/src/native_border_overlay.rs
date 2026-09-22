@@ -526,9 +526,14 @@ impl NativeBorderOverlay {
   }
 
   /// Corrects z-order drift by re-positioning the overlay directly behind
-  /// `anchor` if it isn't already there, without touching its rect. See
+  /// `anchor` if it isn't already there, without touching its rect, or
+  /// unconditionally when `force` is set. See
   /// `NativeBackdropOverlay::sync_z_order`'s doc comment.
-  pub fn sync_z_order(&mut self, anchor: HWND) -> crate::Result<()> {
+  pub fn sync_z_order(
+    &mut self,
+    anchor: HWND,
+    force: bool,
+  ) -> crate::Result<()> {
     // `anchor` is always a real window handle, so the comparison below is
     // meaningful -- but the overlay has to be in the anchor's band first,
     // or the OS will refuse to leave it directly behind a topmost window.
@@ -537,7 +542,7 @@ impl NativeBorderOverlay {
     // SAFETY: `self.hwnd()` is a valid window handle for the lifetime of
     // this struct.
     let prev = unsafe { GetWindow(self.hwnd(), GW_HWNDPREV) };
-    if prev == anchor {
+    if !force && prev == anchor {
       self.anchor = anchor.0;
       return Ok(());
     }

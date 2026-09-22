@@ -391,7 +391,21 @@ impl NativeBackdropOverlay {
   /// unconditionally every sync tick: `GetWindow`/`GW_HWNDPREV` is a
   /// same-process, no-op-fast check, so this only issues a real
   /// `SetWindowPos` when the overlay actually needs to move.
-  pub fn sync_z_order(&mut self, anchor: HWND) -> crate::Result<()> {
+  ///
+  /// `force` skips that check and re-asserts the placement regardless.
+  /// Callers pass it when they know `anchor`'s own z-order was changed
+  /// earlier in the same tick: `NativeWindow::set_z_order` issues that
+  /// change with `SWP_ASYNCWINDOWPOS`, so it may not have landed yet and
+  /// `GW_HWNDPREV` can still report the pre-move ordering. The check would
+  /// then read "already correct", skip, and leave the overlay stranded in
+  /// front of its window once the move does land -- visible as an opaque
+  /// backdrop covering the window's contents until something reorders it
+  /// again.
+  pub fn sync_z_order(
+    &mut self,
+    anchor: HWND,
+    force: bool,
+  ) -> crate::Result<()> {
     // `anchor` is always a real window handle, so the comparison below is
     // meaningful -- but the overlay has to be in the anchor's band first,
     // or the OS will refuse to leave it directly behind a topmost window.
@@ -400,7 +414,7 @@ impl NativeBackdropOverlay {
     // SAFETY: `self.hwnd()` is a valid window handle for the lifetime of
     // this struct.
     let prev = unsafe { GetWindow(self.hwnd(), GW_HWNDPREV) };
-    if prev == anchor {
+    if !force && prev == anchor {
       self.anchor = anchor.0;
       return Ok(());
     }
