@@ -162,7 +162,8 @@ general:
   # Whether workspaces can be created on-demand beyond the ones declared
   # under `workspaces`. Dynamic workspaces are named with the lowest unused
   # positive integer and are destroyed once they become empty.
-  dynamic_workspaces: false
+  # Bound to alt+n (`focus --next-empty-workspace`) below.
+  dynamic_workspaces: true
 
   cursor_jump:
     # Whether to automatically move the cursor on the specified trigger.
