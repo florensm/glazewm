@@ -19,3 +19,6 @@ tracing-subscriber = { workspace = true }
 wm-common = { path = "../wm-common" }
 wm-ipc-client = { path = "../wm-ipc-client" }
 wm-platform = { path = "../wm-platform" }
+
+[lints]
+workspace = true

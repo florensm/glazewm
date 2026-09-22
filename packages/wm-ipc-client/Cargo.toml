@@ -14,3 +14,6 @@ tokio = { workspace = true }
 tokio-tungstenite = { workspace = true }
 uuid = { workspace = true }
 wm-common = { path = "../wm-common" }
+
+[lints]
+workspace = true

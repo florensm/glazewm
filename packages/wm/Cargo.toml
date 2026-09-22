@@ -47,3 +47,6 @@ shell-util = "0.0"
 [dev-dependencies]
 bon = "3"
 wm-platform = { path = "../wm-platform", features = ["test_utils"] }
+
+[lints]
+workspace = true
