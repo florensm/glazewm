@@ -102,6 +102,16 @@ fn update_workspace_configs(
   for workspace in &workspaces {
     let monitor = workspace.monitor().context("No monitor.")?;
 
+    // Dynamic workspaces intentionally have no config entry, so they keep
+    // their synthesized config across reloads.
+    if config.value.general.dynamic_workspaces
+      && config
+        .workspace_config_index(&workspace.config().name)
+        .is_none()
+    {
+      continue;
+    }
+
     let workspace_config = config
       .value
       .workspaces

@@ -5,7 +5,8 @@ use wm_platform::NativeWindow;
 
 use crate::{
   commands::{
-    container::set_focused_descendant, window::run_window_rules,
+    container::set_focused_descendant,
+    window::{run_window_rules, set_window_urgency},
     workspace::focus_workspace,
   },
   models::WorkspaceTarget,
@@ -58,6 +59,31 @@ pub fn handle_window_focused(
 
   if let Some(window) = found_window {
     let workspace = window.workspace().context("No workspace")?;
+
+    // Handle focus events from windows on hidden workspaces. For example,
+    // if Discord is forcefully shown by the OS when it's on a hidden
+    // workspace, mark it as urgent and revert focus to the WM's focus
+    // target instead of following the window to its workspace.
+    //
+    // NOTE: The window's display state is not checked here, since the OS
+    // uncloaks a window as part of giving it foreground; by the time this
+    // event arrives, the window is no longer marked as hidden.
+    if config.value.general.ignore_focus_steal && !workspace.is_displayed()
+    {
+      info!("Ignoring focus steal from off-screen window: {window}");
+
+      set_window_urgency(&window, true, state)?;
+
+      // Re-hide the window that the OS uncloaked, and hand focus back to
+      // the WM's focus target.
+      state.pending_sync.queue_container_to_redraw(window);
+      state.pending_sync.queue_focus_change();
+
+      return Ok(());
+    }
+
+    // Focusing a window is an acknowledgement of its attention request.
+    set_window_urgency(&window, false, state)?;
 
     // Native focus has been synced to the WM's focused container.
     if focused_container == window.clone().into() {
