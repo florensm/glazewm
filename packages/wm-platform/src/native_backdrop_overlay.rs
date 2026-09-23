@@ -1,112 +1,10 @@
-use std::sync::OnceLock;
-
-use windows::{
-  core::w,
-  Win32::{
-    Foundation::HWND,
-    UI::WindowsAndMessaging::{
-      CreateWindowExW, DestroyWindow, GetWindow, SetWindowPos, ShowWindow,
-      GW_HWNDPREV, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSENDCHANGING,
-      SWP_NOSIZE, SWP_SHOWWINDOW, SW_HIDE, WS_EX_NOACTIVATE,
-      WS_EX_NOREDIRECTIONBITMAP, WS_EX_TOOLWINDOW, WS_EX_TRANSPARENT,
-      WS_POPUP,
-    },
-  },
-};
+use windows::Win32::Foundation::HWND;
 
 use crate::{
-  platform_impl::composition::BackdropVisual, window_class,
+  overlay_window::{OverlayKind, OverlayWindow},
+  platform_impl::composition::BackdropVisual,
   BackdropOverlayParams, Color, Rect, SurrogateBatch,
 };
-
-fn ensure_class_registered() {
-  static REGISTERED: OnceLock<()> = OnceLock::new();
-  window_class::ensure_class_registered(
-    &REGISTERED,
-    w!("GlazeWM_BackdropOverlay"),
-    window_class::default_wnd_proc,
-  );
-}
-
-/// Creates the overlay's backdrop window.
-///
-/// `WS_EX_NOREDIRECTIONBITMAP` skips the GDI redirection surface DWM
-/// would otherwise allocate, which the composition visual tree replaces
-/// entirely.
-fn create_window(rect: &Rect) -> crate::Result<HWND> {
-  ensure_class_registered();
-
-  // `WS_EX_TRANSPARENT` makes the overlay invisible to hit-testing. It is
-  // mandatory, not cosmetic: overlay windows are created on the WM's own
-  // thread, which runs a Tokio loop and never pumps a Win32 message queue,
-  // so Windows classifies every window it owns as hung. Without the flag,
-  // the cursor landing on this overlay shows the busy ("working in
-  // background") cursor and clicks are swallowed -- most visibly during a
-  // resize animation, where the real window is cloaked and the surrogate
-  // above this overlay is itself `WS_EX_TRANSPARENT`, so hit-tests fall
-  // straight through onto it.
-  let ex_style = WS_EX_NOACTIVATE
-    | WS_EX_TOOLWINDOW
-    | WS_EX_TRANSPARENT
-    | WS_EX_NOREDIRECTIONBITMAP;
-
-  // SAFETY: All parameters are valid. The class is guaranteed registered
-  // by `ensure_class_registered`. No parent HWND is needed.
-  let hwnd = unsafe {
-    CreateWindowExW(
-      ex_style,
-      w!("GlazeWM_BackdropOverlay"),
-      w!(""),
-      WS_POPUP,
-      rect.x(),
-      rect.y(),
-      rect.width(),
-      rect.height(),
-      None,
-      None,
-      None,
-      None,
-    )
-  };
-
-  if hwnd.0 == 0 {
-    return Err(crate::Error::Platform(
-      "Failed to create backdrop overlay window.".to_string(),
-    ));
-  }
-
-  Ok(hwnd)
-}
-
-/// Creates the overlay's backing window and roots its
-/// `Windows.UI.Composition` visual tree on it.
-///
-/// There is no non-composition path: the backdrop renders through the
-/// visual tree, so a system without `Windows.UI.Composition` (pre-Windows
-/// 10 1803) gets no overlay rather than a partial one. The alternative --
-/// SWCA -- could not express an opaque wallpaper crop at all.
-///
-/// The window is deliberately not marked as a host backdrop: the wallpaper
-/// crop is opaque, and asking DWM to keep compositing what sits beneath it
-/// is the exact cost the backdrop exists to remove.
-fn create_backing_window(
-  rect: &Rect,
-  params: BackdropOverlayParams,
-) -> crate::Result<(HWND, BackdropVisual)> {
-  let hwnd = create_window(rect)?;
-
-  match BackdropVisual::create(hwnd, rect, params) {
-    Ok(visual) => Ok((hwnd, visual)),
-    Err(err) => {
-      // SAFETY: `hwnd` was just created above and not yet handed to a
-      // caller; safe to destroy immediately on this failure path.
-      unsafe {
-        let _ = DestroyWindow(hwnd);
-      }
-      Err(err)
-    }
-  }
-}
 
 /// A persistent backdrop window rendering a crop of the pre-blurred
 /// wallpaper surface behind a paired managed window.
@@ -129,53 +27,23 @@ fn create_backing_window(
 ///
 /// Only available on Windows.
 pub struct NativeBackdropOverlay {
-  /// Raw window handle stored as `isize` so that `NativeBackdropOverlay`
-  /// is `Send` even though `HWND` is not.
-  hwnd: isize,
+  /// The overlay's visual tree. Declared before `window`: fields drop in
+  /// declaration order, and the tree must go before the `HWND` it is
+  /// rooted to.
+  composition: BackdropVisual,
+
+  /// Anchored behind its own managed window rather than `HWND_BOTTOM`:
+  /// the backdrop is opaque, so at the bottom it would sit behind every
+  /// other window instead of showing through the one it belongs to.
+  window: OverlayWindow,
 
   /// Current tint/blur-amount/corner-radius/opacity/saturation, applied
   /// as the composition tree's live properties.
   params: BackdropOverlayParams,
 
-  /// Last rect applied via `set_rect`, used to skip redundant
-  /// `SetWindowPos` calls when the overlay hasn't actually moved.
+  /// Last rect applied, used to skip redundant `SetWindowPos` calls when
+  /// the overlay hasn't actually moved.
   rect: Rect,
-
-  /// `HWND` of the window this overlay is positioned directly behind (its
-  /// z-order anchor), as raw `isize`.
-  ///
-  /// Anchored to its own managed window rather than the global
-  /// `HWND_BOTTOM`: the backdrop is opaque, so pinned to the bottom of
-  /// the z-order it would be hidden behind every other window instead
-  /// of showing through the one it belongs to, and it has to be
-  /// occluded by whatever legitimately sits above that window.
-  ///
-  /// Tracked so [`set_rect`]/[`sync_z_order`] can skip a redundant
-  /// `SetWindowPos` when the anchor hasn't changed.
-  ///
-  /// [`set_rect`]: NativeBackdropOverlay::set_rect
-  /// [`sync_z_order`]: NativeBackdropOverlay::sync_z_order
-  anchor: isize,
-
-  /// Whether the overlay window is currently shown.
-  ///
-  /// Tracked explicitly (rather than inferred from a change in `rect`) so
-  /// that a caller re-showing the overlay after [`hide`] with an
-  /// unchanged rect still issues the `SetWindowPos` needed to reapply
-  /// `SWP_SHOWWINDOW` -- the rect-unchanged fast path in [`set_rect`]
-  /// would otherwise skip that call entirely, leaving the overlay
-  /// hidden.
-  ///
-  /// [`hide`]: NativeBackdropOverlay::hide
-  /// [`set_rect`]: NativeBackdropOverlay::set_rect
-  is_visible: bool,
-
-  /// The overlay's composition visual tree.
-  ///
-  /// Optional only so that it can be dropped *before* the `HWND` it is
-  /// rooted to, in `Drop`; an overlay that failed to build one is never
-  /// constructed in the first place. Treat it as always present.
-  composition: Option<BackdropVisual>,
 }
 
 /// Generates a `NativeBackdropOverlay` setter for a single `f32` knob
@@ -195,126 +63,81 @@ macro_rules! backdrop_overlay_setter {
       }
       self.params.$field = value;
 
-      if let Some(composition) = &mut self.composition {
-        if let Err(e) = composition.$setter(value) {
-          tracing::warn!(
-            concat!(
-              "Backdrop overlay ",
-              stringify!($field),
-              " update failed: {e}."
-            ),
-            e = e
-          );
-        }
+      if let Err(e) = self.composition.$setter(value) {
+        tracing::warn!(
+          concat!(
+            "Backdrop overlay ",
+            stringify!($field),
+            " update failed: {e}."
+          ),
+          e = e
+        );
       }
     }
   };
 }
 
 impl NativeBackdropOverlay {
-  /// Creates a new backdrop overlay sized and positioned to `rect`, with
-  /// the given `params` (blur amount, corner radius, opacity, and
-  /// saturation are only honored when the Composition pipeline is
-  /// available).
+  /// Creates a new backdrop overlay sized and positioned to `rect`, shown
+  /// directly behind `anchor` -- typically the managed window it tracks,
+  /// or its surrogate while one is active.
   ///
-  /// The overlay is shown immediately, positioned directly behind `anchor`
-  /// (see the `anchor` field doc) -- typically the `HWND` of the managed
-  /// window it's tracking, or its surrogate's `HWND` while one is active.
+  /// There is no non-composition path: without `Windows.UI.Composition`
+  /// (pre-Windows 10 1803) there is no overlay rather than a partial one.
+  /// The window is deliberately not a host backdrop: the wallpaper crop is
+  /// opaque, and keeping what sits beneath it composited is the exact cost
+  /// the backdrop exists to remove.
   pub fn create(
     rect: &Rect,
     params: BackdropOverlayParams,
     anchor: HWND,
   ) -> crate::Result<Self> {
-    let (hwnd, composition) = create_backing_window(rect, params)?;
+    let mut window =
+      OverlayWindow::create(OverlayKind::Backdrop, rect, anchor)?;
+    let composition = BackdropVisual::create(window.hwnd(), rect, params)?;
 
-    // SAFETY: `hwnd` is a valid window just created above.
-    if let Err(e) = unsafe {
-      SetWindowPos(
-        hwnd,
-        window_class::insert_after_point(anchor),
-        rect.x(),
-        rect.y(),
-        rect.width(),
-        rect.height(),
-        SWP_NOACTIVATE | SWP_NOSENDCHANGING | SWP_SHOWWINDOW,
-      )
-    } {
-      tracing::warn!(
-        "Backdrop overlay SetWindowPos failed on create: {e}."
-      );
+    if let Err(err) = window.place(rect, anchor) {
+      tracing::warn!("{err}");
     }
 
     Ok(Self {
-      hwnd: hwnd.0,
+      composition,
+      window,
       params,
       rect: rect.clone(),
-      anchor: anchor.0,
-      is_visible: true,
-      composition: Some(composition),
     })
-  }
-
-  /// Returns the `HWND` for this overlay.
-  fn hwnd(&self) -> HWND {
-    HWND(self.hwnd)
   }
 
   /// Returns whether the overlay window is currently shown.
   #[must_use]
   pub fn is_visible(&self) -> bool {
-    self.is_visible
+    self.window.is_visible()
   }
 
-  /// Repositions and resizes the overlay to match `rect`, keeping it
-  /// directly behind `anchor` (see the `anchor` field doc), and ensures
-  /// it's shown.
+  /// Repositions and resizes the overlay to match `rect` behind `anchor`,
+  /// and ensures it's shown.
   ///
   /// No-op if neither `rect` nor `anchor` changed and the overlay is
-  /// already visible, to avoid redundant `SetWindowPos` calls (and the DWM
-  /// recomposite they trigger) on every sync tick for overlays that
-  /// haven't actually moved. Always issues the call when re-showing
-  /// after [`hide`], even at an unchanged rect/anchor, since that's what
-  /// reapplies `SWP_SHOWWINDOW`.
+  /// already visible, sparing a `SetWindowPos` (and the DWM recomposite it
+  /// triggers) on every sync tick. Callers that only need to correct
+  /// z-order drift should use [`sync_z_order`] instead.
   ///
-  /// Callers that only need to correct z-order drift (`anchor` may have
-  /// changed but `rect` hasn't, e.g. after an unrelated window steals
-  /// focus) without a full position sync should use [`sync_z_order`]
-  /// instead -- it skips the position arguments entirely and stays cheap
-  /// enough to call unconditionally every tick.
-  ///
-  /// [`hide`]: NativeBackdropOverlay::hide
   /// [`sync_z_order`]: NativeBackdropOverlay::sync_z_order
   pub fn set_rect(&mut self, rect: &Rect, anchor: HWND) {
-    if self.is_visible && &self.rect == rect && self.anchor == anchor.0 {
+    if self.window.is_placed_behind(anchor) && &self.rect == rect {
       return;
     }
 
-    // SAFETY: `self.hwnd()` is a valid window handle for the lifetime of
-    // this struct.
-    if let Err(e) = unsafe {
-      SetWindowPos(
-        self.hwnd(),
-        window_class::insert_after_point(anchor),
-        rect.x(),
-        rect.y(),
-        rect.width(),
-        rect.height(),
-        SWP_NOACTIVATE | SWP_NOSENDCHANGING | SWP_SHOWWINDOW,
-      )
-    } {
-      tracing::warn!("Backdrop overlay SetWindowPos failed: {e}.");
+    if let Err(err) = self.window.place(rect, anchor) {
+      tracing::warn!("{err}");
       return;
     }
 
-    if let Some(composition) = &mut self.composition {
-      if let Err(e) = composition.set_rect(rect) {
-        tracing::warn!("Backdrop overlay composition resize failed: {e}.");
-      }
+    if let Err(e) = self.composition.set_rect(rect) {
+      tracing::warn!("Backdrop overlay composition resize failed: {e}.");
     }
 
     self.rect = rect.clone();
-    self.anchor = anchor.0;
-    self.is_visible = true;
   }
 
   /// Queues a reposition into `batch` instead of issuing an immediate
@@ -325,19 +148,14 @@ impl NativeBackdropOverlay {
   /// All overlays/surrogates queued into the same [`SurrogateBatch`] are
   /// repositioned atomically when the batch is committed, so this overlay
   /// moves in the same DWM composition frame as the window it's paired
-  /// with (and any other windows/surrogates relaid out the same tick),
-  /// instead of each issuing its own synchronous `SetWindowPos` -- cost
-  /// that scales with tick rate, most visible on high-refresh-rate
+  /// with, instead of each issuing its own synchronous `SetWindowPos` --
+  /// cost that scales with tick rate, most visible on high-refresh-rate
   /// displays where the animation manager ticks in lockstep with vsync.
   ///
-  /// Falls back to [`set_rect`] (immediate, unbatched) when the overlay
-  /// isn't currently visible, or when `anchor` changed: re-showing needs
-  /// `SWP_SHOWWINDOW`, and an anchor change needs an actual z-order-moving
-  /// `SetWindowPos` -- neither of which `SurrogateBatch::commit` applies
-  /// (its flags are `SWP_NOZORDER` with no show/hide bit, shared with
-  /// surrogates, which need neither). Both fallback cases are rare
-  /// relative to the steady-state reposition case: a session's anchor is
-  /// set once and typically stays fixed for the animation's duration.
+  /// Falls back to [`set_rect`] when the overlay is hidden or `anchor`
+  /// changed: re-showing needs `SWP_SHOWWINDOW` and an anchor change needs
+  /// a z-order move, and the batch applies neither (its flags are
+  /// `SWP_NOZORDER` with no show bit, shared with surrogates).
   ///
   /// [`set_rect`]: NativeBackdropOverlay::set_rect
   pub fn defer_rect(
@@ -346,7 +164,7 @@ impl NativeBackdropOverlay {
     rect: &Rect,
     anchor: HWND,
   ) {
-    if !self.is_visible || self.anchor != anchor.0 {
+    if !self.window.is_placed_behind(anchor) {
       self.set_rect(rect, anchor);
       return;
     }
@@ -355,74 +173,24 @@ impl NativeBackdropOverlay {
       return;
     }
 
-    batch.push(self.hwnd, rect.clone());
+    batch.push(self.window.hwnd().0, rect.clone());
 
-    if let Some(composition) = &mut self.composition {
-      if let Err(e) = composition.set_rect(rect) {
-        tracing::warn!("Backdrop overlay composition resize failed: {e}.");
-      }
+    if let Err(e) = self.composition.set_rect(rect) {
+      tracing::warn!("Backdrop overlay composition resize failed: {e}.");
     }
 
     self.rect = rect.clone();
   }
 
-  /// Corrects z-order drift by re-positioning the overlay directly behind
-  /// `anchor` if it isn't already there, without touching its rect.
-  ///
-  /// `anchor` (typically the tracked window's own `HWND`) can drift out of
-  /// sync with the overlay even when the overlay's rect hasn't changed --
-  /// e.g. an unrelated window being brought to the foreground doesn't move
-  /// `anchor` itself, but `anchor` being independently re-raised elsewhere
-  /// (see `platform_sync`'s own z-order handling) does, and the overlay
-  /// isn't part of that call so it's left behind. Cheap to call
-  /// unconditionally every sync tick: `GetWindow`/`GW_HWNDPREV` is a
-  /// same-process, no-op-fast check, so this only issues a real
-  /// `SetWindowPos` when the overlay actually needs to move.
-  ///
-  /// `force` skips that check and re-asserts the placement regardless.
-  /// Callers pass it when they know `anchor`'s own z-order was changed
-  /// earlier in the same tick: `NativeWindow::set_z_order` issues that
-  /// change with `SWP_ASYNCWINDOWPOS`, so it may not have landed yet and
-  /// `GW_HWNDPREV` can still report the pre-move ordering. The check would
-  /// then read "already correct", skip, and leave the overlay stranded in
-  /// front of its window once the move does land -- visible as an opaque
-  /// backdrop covering the window's contents until something reorders it
-  /// again.
+  /// Corrects z-order drift by putting the overlay back directly behind
+  /// `anchor`, without touching its rect. See
+  /// [`OverlayWindow::sync_z_order`] for `force`.
   pub fn sync_z_order(
     &mut self,
     anchor: HWND,
     force: bool,
   ) -> crate::Result<()> {
-    // `anchor` is always a real window handle, so the comparison below is
-    // meaningful -- but the overlay has to be in the anchor's band first,
-    // or the OS will refuse to leave it directly behind a topmost window.
-    window_class::match_z_band(self.hwnd(), anchor);
-
-    // SAFETY: `self.hwnd()` is a valid window handle for the lifetime of
-    // this struct.
-    let prev = unsafe { GetWindow(self.hwnd(), GW_HWNDPREV) };
-    let insert_after = window_class::insert_after_point(anchor);
-    if !force && prev == insert_after {
-      self.anchor = anchor.0;
-      return Ok(());
-    }
-
-    // SAFETY: `self.hwnd()` is a valid window handle for the lifetime of
-    // this struct.
-    unsafe {
-      SetWindowPos(
-        self.hwnd(),
-        insert_after,
-        0,
-        0,
-        0,
-        0,
-        SWP_NOACTIVATE | SWP_NOSENDCHANGING | SWP_NOMOVE | SWP_NOSIZE,
-      )
-    }?;
-
-    self.anchor = anchor.0;
-    Ok(())
+    self.window.sync_z_order(anchor, force)
   }
 
   /// Updates the tint; re-applies only when the value changes.
@@ -432,12 +200,10 @@ impl NativeBackdropOverlay {
     }
     self.params.tint = tint;
 
-    if let Some(composition) = &self.composition {
-      if let Err(e) = composition.set_tint(tint) {
-        tracing::warn!(
-          "Backdrop overlay composition tint update failed: {e}."
-        );
-      }
+    if let Err(e) = self.composition.set_tint(tint) {
+      tracing::warn!(
+        "Backdrop overlay composition tint update failed: {e}."
+      );
     }
   }
 
@@ -456,10 +222,8 @@ impl NativeBackdropOverlay {
     self.params.shadows = params.shadows;
     self.params.grain = params.grain;
 
-    if let Some(composition) = &mut self.composition {
-      if let Err(e) = composition.set_bake_knobs(params) {
-        tracing::warn!("Backdrop overlay bake-knob update failed: {e}.");
-      }
+    if let Err(e) = self.composition.set_bake_knobs(params) {
+      tracing::warn!("Backdrop overlay bake-knob update failed: {e}.");
     }
   }
 
@@ -555,9 +319,7 @@ impl NativeBackdropOverlay {
     }
     self.params.parallax = value;
 
-    if let Some(composition) = &mut self.composition {
-      composition.set_parallax(value, &self.rect);
-    }
+    self.composition.set_parallax(value, &self.rect);
   }
 
   /// Applies `params`, re-applying only whichever fields actually changed
@@ -584,33 +346,13 @@ impl NativeBackdropOverlay {
     // config -- the user swapping their wallpaper, or the displays being
     // rearranged. `apply` is the one call every tracked overlay gets on
     // every tick, which is what makes it the place to notice.
-    if let Some(composition) = &mut self.composition {
-      if let Err(e) = composition.sync_backdrop(&self.rect) {
-        tracing::warn!("Wallpaper backdrop refresh failed: {e}.");
-      }
+    if let Err(e) = self.composition.sync_backdrop(&self.rect) {
+      tracing::warn!("Wallpaper backdrop refresh failed: {e}.");
     }
   }
 
   /// Hides the overlay without destroying it.
   pub fn hide(&mut self) {
-    self.is_visible = false;
-    // SAFETY: `self.hwnd()` is a valid window handle.
-    unsafe {
-      let _ = ShowWindow(self.hwnd(), SW_HIDE);
-    }
-  }
-}
-
-impl Drop for NativeBackdropOverlay {
-  fn drop(&mut self) {
-    // Drop the Composition visual tree (if any) before destroying the
-    // window it's rooted to.
-    self.composition.take();
-
-    // SAFETY: `self.hwnd()` is a valid window handle and `Drop` is called
-    // at most once.
-    unsafe {
-      let _ = DestroyWindow(self.hwnd());
-    }
+    self.window.hide();
   }
 }

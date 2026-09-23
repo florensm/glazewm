@@ -811,8 +811,8 @@ impl SurrogateFill {
 ///
 /// `NativeBorderOverlay` sizes and positions the overlay's `HWND` to the
 /// tracked window's rect *outset* by the configured border width, directly
-/// behind the real window in z-order (see its `anchor` field doc, same
-/// mechanism [`BackdropVisual`]'s pairing already relies on). The stroke
+/// behind the real window in z-order (same `OverlayWindow` pairing as
+/// [`BackdropVisual`]'s). The stroke
 /// is that border width thick and its geometry is inset by half of it, so
 /// the ring's outer edge lands exactly on the overlay's outer rect and its
 /// inner edge exactly on the tracked window's own rect.
