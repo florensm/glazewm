@@ -137,18 +137,6 @@ pub struct NativeBackdropOverlay {
   /// as the composition tree's live properties.
   params: BackdropOverlayParams,
 
-  /// Whether the gap fill is currently painting anything.
-  ///
-  /// The fill belongs to a live resize session, but the overlay outlives
-  /// the session -- it is the window's own persistent backdrop. Left set,
-  /// the sprites keep covering the backdrop with a flat colour for as
-  /// long as the window exists, which is what they did until [`apply`]
-  /// learned to clear them. Tracked so that clearing costs a bool test
-  /// per tick rather than two composition writes.
-  ///
-  /// [`apply`]: NativeBackdropOverlay::apply
-  gap_active: bool,
-
   /// Last rect applied via `set_rect`, used to skip redundant
   /// `SetWindowPos` calls when the overlay hasn't actually moved.
   rect: Rect,
@@ -262,7 +250,6 @@ impl NativeBackdropOverlay {
       rect: rect.clone(),
       anchor: anchor.0,
       is_visible: true,
-      gap_active: false,
       composition: Some(composition),
     })
   }
@@ -438,56 +425,6 @@ impl NativeBackdropOverlay {
   }
 
   /// Updates the tint; re-applies only when the value changes.
-  /// Fills the strips a mid-animation surrogate's thumbnail does not cover
-  /// with `color` at `opacity`, or clears them when nothing is uncovered.
-  ///
-  /// `covered` is the thumbnail's size and `full` the overlay's, both in
-  /// physical pixels. The fill lives on this overlay rather than on the
-  /// surrogate because the surrogate can only get a solid backdrop through
-  /// SWCA, which ignores the alpha it is handed -- see
-  /// `BackdropVisual::set_gap_fill`.
-  ///
-  /// Not cached against a previous value: the rects change every animation
-  /// frame anyway, and the calls are property writes on visuals already in
-  /// the tree.
-  pub fn set_gap_fill(
-    &mut self,
-    color: Option<Color>,
-    opacity: f32,
-    covered: (i32, i32),
-    full: (i32, i32),
-  ) {
-    let paints =
-      color.is_some() && (full.0 > covered.0 || full.1 > covered.1);
-    if !paints && !self.gap_active {
-      return;
-    }
-    if let Some(composition) = &self.composition {
-      let applied =
-        composition.set_gap_fill(color, opacity, covered, full);
-      if let Err(e) = applied {
-        tracing::warn!("Backdrop overlay gap fill update failed: {e}.");
-      }
-    }
-    self.gap_active = paints;
-  }
-
-  /// Clears the gap fill if it is painting anything.
-  ///
-  /// Called from [`apply`], which every path runs each tick: the static
-  /// per-window sync clears and leaves it cleared, while the per-session
-  /// driver clears and immediately re-sets from the live rects. That is
-  /// what bounds the fill to the animation instead of leaving it on the
-  /// window's backdrop for good.
-  ///
-  /// [`apply`]: NativeBackdropOverlay::apply
-  fn clear_gap_fill(&mut self) {
-    if !self.gap_active {
-      return;
-    }
-    self.set_gap_fill(None, 0.0, (0, 0), (0, 0));
-  }
-
   pub fn set_tint(&mut self, tint: Color) {
     if self.params.tint == tint {
       return;
@@ -630,8 +567,6 @@ impl NativeBackdropOverlay {
   /// Also the per-tick point at which the overlay notices the desktop
   /// wallpaper changing underneath it.
   pub fn apply(&mut self, params: BackdropOverlayParams) {
-    self.clear_gap_fill();
-
     self.set_tint(params.tint);
     self.set_corner_radius(params.corner_radius);
     self.set_opacity(params.opacity);

@@ -75,7 +75,7 @@ pub(crate) unsafe extern "system" fn default_wnd_proc(
 }
 
 /// Whether `hwnd` currently sits in the always-on-top band.
-fn is_topmost(hwnd: HWND) -> bool {
+pub(crate) fn is_topmost(hwnd: HWND) -> bool {
   // SAFETY: `hwnd` is a valid window handle; `GetWindowLongPtrW` only
   // reads.
   let ex_style = unsafe { GetWindowLongPtrW(hwnd, GWL_EXSTYLE) };

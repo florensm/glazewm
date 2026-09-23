@@ -76,6 +76,15 @@ pub fn platform_sync(
   // and without marking it for redraw, so `sync_overlays` has no other way
   // to know the pairing was broken.
   //
+  // Windows repositioned this pass. Their move carries an async z-order
+  // too, so their overlays settle alongside `z_order_touched`'s.
+  #[cfg(target_os = "windows")]
+  let repositioned: Vec<uuid::Uuid> = state
+    .windows_to_redraw()
+    .iter()
+    .map(CommonGetters::id)
+    .collect();
+
   // LINT: only read on Windows, where the overlays exist.
   #[cfg_attr(not(target_os = "windows"), allow(unused_mut))]
   let mut z_order_touched: std::collections::HashSet<uuid::Uuid> =
@@ -193,6 +202,13 @@ pub fn platform_sync(
     &focused_container,
     full_z_order_resync,
     &z_order_touched,
+  );
+
+  // The overlays above were stacked against where each window is *now*;
+  // its own async move may not have landed yet.
+  #[cfg(target_os = "windows")]
+  state.animation_manager.settle_overlay_z_order(
+    repositioned.into_iter().chain(z_order_touched),
   );
 
   state.pending_sync.clear();
@@ -469,6 +485,8 @@ fn redraw_containers(
 ) -> anyhow::Result<std::collections::HashSet<uuid::Uuid>> {
   let _scope = perf::scope(Stage::Redraw);
   let prep_scope = perf::scope(Stage::RedrawPrep);
+
+  state.animation_manager.begin_redraw_pass();
 
   // Windows given a bare `set_z_order` below, which moves them in the
   // stack while leaving their overlays where they were. Reported to
@@ -855,14 +873,8 @@ fn redraw_containers(
       .map(|(_, hide_corner)| hide_corner)
       .context("Monitor not found in hide corner map.")?;
 
-    // Whether the window should be shown above all other windows.
     let z_order = match window.state() {
-      WindowState::Floating(config) if config.shown_on_top => {
-        WindowZOrder::TopMost
-      }
-      WindowState::Fullscreen(config) if config.shown_on_top => {
-        WindowZOrder::TopMost
-      }
+      _ if is_shown_on_top(window) => WindowZOrder::TopMost,
       _ if should_bring_to_front => {
         let focused_descendant = workspace
           .descendant_focus_order()
@@ -1562,32 +1574,14 @@ fn redraw_containers(
 
       if let Some(params) = session.backdrop_overlay_params() {
         match (anchor, rect.clone()) {
-          (Some(anchor), Some(rect)) => {
-            upsert_overlay(
-              &mut state.backdrop_overlays,
-              *id,
-              params,
-              &rect,
-              anchor,
-              &mut batch,
-            );
-
-            // Stand in for the window content the surrogate's thumbnail
-            // has not caught up to yet. Painted by the backdrop overlay
-            // rather than the surrogate, because only the overlay can
-            // put a solid colour down at a real opacity -- see
-            // `begin_impl`'s `surrogate_color`. Driven every frame: both
-            // the covered size and the overlay's own size move as the
-            // animation runs.
-            if let Some(overlay) = state.backdrop_overlays.get_mut(id) {
-              overlay.set_gap_fill(
-                session.edge_color().copied(),
-                f32::from(session.effect_opacity) / 255.0,
-                session.covered_size().unwrap_or((i32::MAX, i32::MAX)),
-                (rect.width(), rect.height()),
-              );
-            }
-          }
+          (Some(anchor), Some(rect)) => upsert_overlay(
+            &mut state.backdrop_overlays,
+            *id,
+            params,
+            &rect,
+            anchor,
+            &mut batch,
+          ),
           _ => {
             if let Some(overlay) = state.backdrop_overlays.get_mut(id) {
               overlay.hide();
@@ -2280,6 +2274,16 @@ pub(crate) fn backdrop_overlay_params_for(
   Some(effect_cfg.backdrop.to_overlay_params(tint, corner_radius))
 }
 
+/// Whether the window should be shown above all other windows, i.e. in the
+/// always-on-top band.
+fn is_shown_on_top(window: &WindowContainer) -> bool {
+  match window.state() {
+    WindowState::Floating(config) => config.shown_on_top,
+    WindowState::Fullscreen(config) => config.shown_on_top,
+    _ => false,
+  }
+}
+
 /// Resolves the z-order anchor to keep `window`'s overlays pinned directly
 /// behind it (see [`NativeBackdropOverlay`]'s doc comment).
 ///
@@ -2790,5 +2794,69 @@ fn sync_overlays<O: SyncableOverlay>(
         );
       }
     }
+  }
+}
+
+/// Puts the overlays of every window still settling after a z-order change
+/// back behind it, once per animation tick. See
+/// `AnimationManager::settle_overlay_z_order`.
+///
+/// `sync_z_order` re-matches the topmost band before re-stacking, which is
+/// what repairs a band change that landed after the pass that stacked the
+/// overlay. With both overlays present each tick re-stacks both (each
+/// displaces the other from "directly behind"), which for our own windows
+/// is a cheap no-op move.
+///
+/// The settle is extended rather than left to run out while it cannot
+/// finish yet: while the window still has a surrogate (the animation code
+/// anchors its overlays itself, so they are skipped here -- and they need
+/// re-checking once it is gone, since the tail anchors without matching
+/// bands), and while the window's own band change has not landed. Letting
+/// either expire left a floating window's border in the normal band, where
+/// the next tiled window to be raised covered it.
+#[cfg(target_os = "windows")]
+pub(crate) fn resync_settling_overlays(state: &mut WmState) {
+  for id in state.animation_manager.settling_overlay_windows() {
+    if state.animation_manager.has_active_surrogate(&id) {
+      state.animation_manager.extend_overlay_z_settle(&id);
+      continue;
+    }
+
+    let Some(window) = state
+      .container_by_id(id)
+      .and_then(|container| container.as_window_container().ok())
+    else {
+      continue;
+    };
+    let anchor = overlay_z_anchor(&window);
+
+    if window.native().is_topmost() != is_shown_on_top(&window) {
+      state.animation_manager.extend_overlay_z_settle(&id);
+    }
+
+    // Backdrop first, then border, matching `platform_sync`, so both end
+    // up in the same order: window, border, backdrop.
+    resync_overlay::<NativeBackdropOverlay>(state, id, anchor);
+    resync_overlay::<NativeBorderOverlay>(state, id, anchor);
+  }
+}
+
+#[cfg(target_os = "windows")]
+fn resync_overlay<O: SyncableOverlay>(
+  state: &mut WmState,
+  id: uuid::Uuid,
+  anchor: HWND,
+) {
+  let Some(overlay) = O::overlays(state).get_mut(&id) else {
+    return;
+  };
+  if !overlay.is_visible() {
+    return;
+  }
+  if let Err(err) = overlay.sync_z_order(anchor, false) {
+    debug!(
+      "{} overlay z-order settle failed for {id}: {err}.",
+      O::LABEL
+    );
   }
 }

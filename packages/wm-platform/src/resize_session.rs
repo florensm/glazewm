@@ -173,12 +173,14 @@ pub struct ResizeSession {
   /// fade component, so the thumbnail matches the real window's
   /// `SetLayeredWindowAttributes` opacity throughout the move/resize.
   pub effect_opacity: u8,
-  /// Backdrop color applied to the surrogate, either passed in via
-  /// [`SessionOptions`] or freshly sampled at session start.
+  /// Color the surrogate's gap fill paints, from [`SessionOptions`] or
+  /// picked up later via [`set_edge_color`] once a background sample
+  /// lands.
   ///
   /// Exposed via [`edge_color`] so callers can cache it per window and
   /// skip the two-`BitBlt` screen sample on subsequent sessions.
   ///
+  /// [`set_edge_color`]: ResizeSession::set_edge_color
   /// [`edge_color`]: ResizeSession::edge_color
   edge_color: Option<Color>,
   /// `true` while every target this session has been given matches the
@@ -242,12 +244,6 @@ pub struct ResizeSession {
   /// phases of a session's life and sharing the flag would make each
   /// one's cadence depend on how often the other happens to run too.
   commit_poll_parity: bool,
-  /// `true` once the surrogate's solid fill has been dropped, or was
-  /// never applied. Keeps [`drop_fill_when_covered`] to a single SWCA
-  /// call instead of one per animation tick.
-  ///
-  /// [`drop_fill_when_covered`]: ResizeSession::drop_fill_when_covered
-  fill_dropped: bool,
   /// `true` once the session has successfully cloaked its source window.
   ///
   /// Used by `platform_sync` to skip the per-tick `DwmGetWindowAttribute`
@@ -368,78 +364,17 @@ impl ResizeSession {
       && target_rect.height() >= source_rect.height();
     let is_move_only = target_rect.width() == source_rect.width()
       && target_rect.height() == source_rect.height();
-    // A gap can only open where the surrogate grows past the thumbnail
-    // drawn into it, which is exactly where the target exceeds the source
-    // on either axis.
-    let can_expose_gap = target_rect.width() > source_rect.width()
-      || target_rect.height() > source_rect.height();
 
     let effect_opacity = options.effect_opacity;
 
-    // Sample the dominant background color near the trailing content edge
-    // to use as the surrogate's solid backdrop. `apply_backdrop` paints
-    // the *entire* surrogate window with this color via
-    // `ACCENT_ENABLE_GRADIENT`, with the (possibly gap-having, mid-resize)
-    // thumbnail composited on top -- so it's the fill behind any area the
-    // thumbnail doesn't yet cover, not just a border strip.
-    //
-    // Painting the whole window is also what makes the fill costly to
-    // leave on. It is opaque, so wherever the thumbnail *does* reach it
-    // sits underneath and cancels the window's `transparency` opacity --
-    // the window reads as solid, and a configured backdrop never shows. So
-    // it is scoped to exactly when a gap can exist:
-    //
-    // - Applied only when the target exceeds the source on some axis.
-    // Pure moves and pure shrinks never uncover anything (the thumbnail is
-    // clipped, not outrun), so they get no fill at all.
-    // - Dropped by `sync_registration` the moment the thumbnail upgrades
-    // to target dims and covers the surrogate outright.
-    //
-    // What it stands in for meanwhile is the settled window, and the
-    // sample is read off the screen -- so it is the window's own color
-    // already composited over its backdrop, not the raw app color. Much
-    // closer than leaving the gap transparent, which shows the backdrop
-    // undimmed: measured on a grow, a (131,175,237) flash against a
-    // settled (34,44,82).
-    //
-    // Falls back to transparent (no backdrop) when the caller has no
-    // cached color -- this never samples inline. The two-`BitBlt` GPU->CPU
-    // readback used to run synchronously right here, stalling the WM's
-    // single main thread for tens of milliseconds per window on the first
-    // resize of a burst (measured: 26-114ms per call). Callers now warm
-    // the cache in the background instead -- see `sample_edge_color_async`
-    // -- so a cache miss just means one animation plays with a transparent
-    // gap instead of blocking the keypress that started it. Two different
-    // things, deliberately: what the *surrogate* paints, and what the
-    // session remembers.
-    //
-    // The surrogate's own fill is SWCA, which renders opaque whatever
-    // alpha it is handed -- so wherever the thumbnail is part-transparent
-    // it shows through as a solid block instead of the window's
-    // `transparency`. With a backdrop overlay tracked behind the surrogate
-    // there is a better place for the fill: that overlay paints it as a
-    // real composited sprite, at the window's own opacity, in just the
-    // strips the thumbnail does not cover
-    // (`NativeBackdropOverlay::set_gap_fill`), so the surrogate stays
-    // clear.
-    //
-    // With no backdrop there is nothing behind the surrogate but the
-    // desktop, and SWCA is the only fill available. It is worth having
-    // when the window is opaque anyway -- the alternative in an uncovered
-    // strip is raw desktop -- but not when the window is transparent. An
-    // opaque fill covers the whole surrogate, so it cancels the very
-    // `transparency` the window is configured for, and the window reads as
-    // solid for the entire animation. A transparent window in an uncovered
-    // strip shows the desktop, which is what it is showing through itself
-    // anyway; that is the smaller error by far.
-    let opaque_window = effect_opacity == u8::MAX;
-    let surrogate_color = if options.backdrop_overlay.is_some() {
-      None
-    } else if can_expose_gap && opaque_window {
-      options.edge_color
-    } else {
-      None
-    };
+    // The fill stands in for the settled window in whatever strip the
+    // thumbnail has not reached, so it is the window's own color as
+    // sampled off the screen -- already composited over its backdrop.
+    // It sits on the surrogate beneath the thumbnail, at the
+    // thumbnail's opacity, so it is correct whether or not the window
+    // is transparent or has a backdrop overlay behind it. A cache miss
+    // starts without one; `set_edge_color` fills it in when the
+    // background sample lands.
     let edge_color = options.edge_color;
 
     let insert_after = if options.place_at_top { HWND(0) } else { hwnd };
@@ -457,7 +392,6 @@ impl ResizeSession {
           hwnd,
           source_rect,
           source_rect,
-          surrogate_color.as_ref(),
           effect_opacity,
           options.initially_visible,
           border_inset,
@@ -479,7 +413,6 @@ impl ResizeSession {
           hwnd,
           source_rect,
           source_rect,
-          surrogate_color.as_ref(),
           effect_opacity,
           options.initially_visible,
           border_inset,
@@ -497,14 +430,13 @@ impl ResizeSession {
         }
       });
 
-    Ok(Self {
+    let mut session = Self {
       hwnd: hwnd.0,
       target_rect: target_rect.clone(),
       surrogate,
       border_inset,
       effect_opacity,
       edge_color,
-      fill_dropped: !can_expose_gap,
       is_move_only,
       is_growing,
       zoom: false,
@@ -519,7 +451,9 @@ impl ResizeSession {
       current_rect: None,
       commit_confirmed: false,
       commit_started_at: None,
-    })
+    };
+    session.sync_fill();
+    Ok(session)
   }
 
   /// Returns the tint/blur-amount/corner-radius/opacity/saturation for the
@@ -627,19 +561,37 @@ impl ResizeSession {
     self.is_move_only
   }
 
-  /// Size of the content the surrogate's DWM thumbnail currently draws, in
-  /// physical pixels, or `None` without a surrogate.
-  ///
-  /// Anchored top-left within the surrogate, so anything of the surrogate
-  /// beyond this is uncovered -- what
-  /// `NativeBackdropOverlay::set_gap_fill` stands in for.
-  #[must_use]
-  pub fn covered_size(&self) -> Option<(i32, i32)> {
-    self.surrogate.as_ref().map(NativeSurrogate::content_size)
+  /// Gives a session that started without a fill color (a cache miss) the
+  /// one its background sample produced, so the fill appears mid-animation
+  /// instead of waiting for the window's next session. No-op once the
+  /// session has a color.
+  pub fn set_edge_color(&mut self, color: Color) {
+    if self.edge_color.is_some() {
+      return;
+    }
+    self.edge_color = Some(color);
+    self.sync_fill();
   }
 
-  /// Returns the backdrop color in use by this session's surrogate, if
-  /// any.
+  /// Applies the fill color this session's state calls for.
+  ///
+  /// Every non-zoom session gets one, shrinks and pure moves included: a
+  /// gap is not only a grow outrunning the thumbnail, it also opens when
+  /// `maybe_handoff` shrinks the thumbnail to the target while the
+  /// surrogate is still wider -- which on a shrink showed as the window
+  /// edge snapping to its target a few frames early. Uncovered or not, an
+  /// idle fill is zero-sized and costs nothing to composite.
+  ///
+  /// Zoom sessions never fill: their thumbnail is scaled about the centre
+  /// rather than anchored top-left, so there is no strip to stand in for.
+  fn sync_fill(&mut self) {
+    let color = self.edge_color.filter(|_| !self.zoom);
+    if let Some(surrogate) = &mut self.surrogate {
+      surrogate.set_fill_color(color.as_ref());
+    }
+  }
+
+  /// Returns the fill color in use by this session's surrogate, if any.
   ///
   /// Callers cache this per window so subsequent sessions can skip the
   /// two-`BitBlt` screen sample via [`SessionOptions::edge_color`].
@@ -715,6 +667,7 @@ impl ResizeSession {
   /// thumbnail rect animates.
   pub fn update_zoom_fade(&mut self, progress: f32, opacity: u8) {
     self.zoom_progress = progress;
+    self.sync_fill();
 
     let Some(ref mut surrogate) = self.surrogate else {
       return;
@@ -845,7 +798,6 @@ impl ResizeSession {
       return;
     };
     if surrogate.content_size() == target_dims {
-      self.drop_fill_when_covered();
       return;
     }
 
@@ -890,26 +842,7 @@ impl ResizeSession {
         target_dims.1,
         self.border_inset,
       );
-      self.drop_fill_when_covered();
     }
-  }
-
-  /// Drops the surrogate's solid fill, once, now that the thumbnail covers
-  /// the whole surrogate.
-  ///
-  /// The fill only ever stood in for the area the thumbnail had not
-  /// reached yet. Left on, it would keep showing through the thumbnail's
-  /// own alpha for the rest of the animation -- it is opaque, so it takes
-  /// the place of the backdrop that the window's `transparency` opacity
-  /// should reveal.
-  fn drop_fill_when_covered(&mut self) {
-    if self.fill_dropped {
-      return;
-    }
-    if let Some(surrogate) = &self.surrogate {
-      surrogate.clear_backdrop();
-    }
-    self.fill_dropped = true;
   }
 
   /// Updates the surrogate to the current animation frame position and

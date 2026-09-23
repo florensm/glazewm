@@ -5,8 +5,7 @@ use windows::{
   Win32::{
     Foundation::{HWND, RECT},
     Graphics::Dwm::{
-      DwmExtendFrameIntoClientArea, DwmRegisterThumbnail,
-      DwmSetWindowAttribute, DwmUnregisterThumbnail,
+      DwmRegisterThumbnail, DwmSetWindowAttribute, DwmUnregisterThumbnail,
       DwmUpdateThumbnailProperties, DWMWA_BORDER_COLOR, DWMWA_COLOR_NONE,
       DWMWA_WINDOW_CORNER_PREFERENCE, DWMWCP_DONOTROUND, DWMWCP_ROUND,
       DWMWCP_ROUNDSMALL, DWM_THUMBNAIL_PROPERTIES, DWM_TNP_OPACITY,
@@ -18,16 +17,15 @@ use windows::{
       EndDeferWindowPos, SetWindowPos, SET_WINDOW_POS_FLAGS,
       SWP_NOACTIVATE, SWP_NOCOPYBITS, SWP_NOMOVE, SWP_NOSENDCHANGING,
       SWP_NOSIZE, SWP_NOZORDER, SWP_SHOWWINDOW, WS_EX_NOACTIVATE,
-      WS_EX_TOOLWINDOW, WS_EX_TRANSPARENT, WS_POPUP,
+      WS_EX_NOREDIRECTIONBITMAP, WS_EX_TOOLWINDOW, WS_EX_TRANSPARENT,
+      WS_POPUP,
     },
   },
 };
 
 use crate::{
-  platform_impl::swca::{
-    apply_swca_accent, ACCENT_DISABLED, ACCENT_ENABLE_GRADIENT,
-  },
-  window_class, Color, CornerStyle, Rect,
+  platform_impl::composition::SurrogateFill, window_class, Color,
+  CornerStyle, Rect,
 };
 
 fn ensure_class_registered() {
@@ -73,13 +71,12 @@ fn apply_corner_preference(hwnd: HWND, corner_style: &CornerStyle) {
 
 /// Suppresses the surrogate's own Windows 11 border.
 ///
-/// A surrogate is a rounded `WS_POPUP` with the DWM frame extended over
-/// its whole client area, which is enough for DWM to draw its 1px border
-/// around it. During an animation the real window is cloaked and the
-/// surrogate is what's on screen, so without this the border overlay's
-/// ring has a second line inside it for the length of every transition --
-/// the same artifact [`set_native_border_hidden`] removes on the real
-/// window, applied to the stand-in that replaces it.
+/// A surrogate is a rounded `WS_POPUP`, which is enough for DWM to draw
+/// its 1px border around it. During an animation the real window is
+/// cloaked and the surrogate is what's on screen, so without this the
+/// border overlay's ring has a second line inside it for the length of
+/// every transition -- the same artifact [`set_native_border_hidden`]
+/// removes on the real window, applied to the stand-in that replaces it.
 ///
 /// This is a no-op before Windows 11 (build 22000), which draws no such
 /// border.
@@ -98,34 +95,6 @@ fn suppress_native_border(hwnd: HWND) {
       std::mem::size_of::<u32>() as u32,
     );
   }
-}
-
-/// Applies a solid-color backdrop to `hwnd` via the undocumented
-/// `SetWindowCompositionAttribute` API (Windows 10 1607+).
-///
-/// When `color` is `None`, any accent already on the window is cleared so
-/// DWM's default transparent backing store shows through, leaving whatever
-/// sits behind the window visible around (and through) the DWM thumbnail.
-/// Clearing rather than returning matters because
-/// [`NativeSurrogate::revive`] reuses one window across sessions: a fill
-/// applied in a previous life would otherwise survive into a session that
-/// wants to be see-through.
-///
-/// This is a no-op when the API is unavailable (pre-Windows 10 1607).
-pub(crate) fn apply_backdrop(hwnd: HWND, color: Option<&Color>) {
-  let Some(c) = color else {
-    apply_swca_accent(hwnd, ACCENT_DISABLED, 0);
-    return;
-  };
-
-  // The undocumented `gradient_color` field uses ABGR byte order:
-  // alpha in the high byte, then blue, green, red in the low bytes.
-  let abgr = (u32::from(c.a) << 24)
-    | (u32::from(c.b) << 16)
-    | (u32::from(c.g) << 8)
-    | u32::from(c.r);
-
-  apply_swca_accent(hwnd, ACCENT_ENABLE_GRADIENT, abgr);
 }
 
 /// Registers a DWM thumbnail of `source_hwnd` onto `dest_hwnd`.
@@ -405,18 +374,19 @@ pub(crate) fn to_logical(rect: &Rect, inset: &RECT) -> Rect {
 ///
 /// Wherever the animated rect extends past the registered content (growing
 /// sessions before the real window's resize lands, or the grown axis of a
-/// mixed resize), the exposed area is filled by a solid-color backdrop
-/// (sampled from the window's trailing edge at animation start) so the
-/// rect reads as one continuous surface instead of exposing the desktop
-/// behind it.
+/// mixed resize), the exposed area is painted by a [`SurrogateFill`] (see
+/// [`set_fill_color`]) so the rect reads as one continuous surface instead
+/// of exposing whatever is behind it.
+///
+/// [`set_fill_color`]: NativeSurrogate::set_fill_color
 ///
 /// [`update_thumbnail_dims`]: NativeSurrogate::update_thumbnail_dims
 ///
 /// GlazeWM cloaks the real window while the overlay is active.
 ///
 /// Per-frame cost is one [`SetWindowPos`] call (plus one
-/// `DwmUpdateThumbnailProperties` when the thumbnail handle is valid). No
-/// GDI allocations occur.
+/// `DwmUpdateThumbnailProperties` when the thumbnail handle is valid). The
+/// fill sizes itself relative to the window, so it adds nothing per frame.
 ///
 /// When the animation finishes the real window is uncloaked and this
 /// surrogate is dropped, which unregisters the thumbnail and destroys the
@@ -424,9 +394,8 @@ pub(crate) fn to_logical(rect: &Rect, inset: &RECT) -> Rect {
 ///
 /// # Platform-specific
 ///
-/// Only available on Windows. The solid gap fill requires Windows 10 1607+
-/// for `SetWindowCompositionAttribute`; on older versions it degrades
-/// gracefully (no fill, thumbnail still shown).
+/// Only available on Windows. The gap fill needs `Windows.UI.Composition`
+/// (Windows 10 1803+); without it the surrogate still shows its thumbnail.
 pub struct NativeSurrogate {
   /// Handle to the overlay window.
   hwnd: isize,
@@ -450,6 +419,16 @@ pub struct NativeSurrogate {
   /// Last rect passed to `SetWindowPos` via `reposition`; used to skip
   /// redundant calls when the position and size have not changed.
   last_rect: Option<Rect>,
+  /// Extent of the thumbnail's destination rect from the surrogate's
+  /// top-left, i.e. how much of the surrogate the fill must leave clear.
+  covered: (i32, i32),
+  /// Gap fill, built on the first [`set_fill_color`] with a color and
+  /// kept for the surrogate's lifetime (including warm reuse).
+  ///
+  /// [`set_fill_color`]: NativeSurrogate::set_fill_color
+  fill: Option<SurrogateFill>,
+  /// Color the fill currently shows, or `None` while hidden.
+  fill_color: Option<Color>,
 }
 
 impl NativeSurrogate {
@@ -457,9 +436,8 @@ impl NativeSurrogate {
   ///
   /// The overlay is shown without activating it. A DWM thumbnail of
   /// `source_hwnd` is registered and the surrogate window starts at
-  /// `source_rect`. When `surrogate_color` is `Some`, the backdrop is a
-  /// solid-color fill; when `None`, the backdrop is fully transparent so
-  /// only the DWM thumbnail is visible.
+  /// `source_rect`. Everything the thumbnail does not cover is transparent
+  /// until [`set_fill_color`] is given a color.
   ///
   /// `thumbnail_rect` controls the DWM thumbnail registration size. It
   /// must not exceed the source window's actual dimensions — an
@@ -496,13 +474,13 @@ impl NativeSurrogate {
   ///
   /// Returns an error if window creation fails.
   ///
+  /// [`set_fill_color`]: NativeSurrogate::set_fill_color
   /// [`set_visible`]: NativeSurrogate::set_visible
   /// [`update_thumbnail_dims`]: NativeSurrogate::update_thumbnail_dims
   pub fn create(
     source_hwnd: HWND,
     source_rect: &Rect,
     thumbnail_rect: &Rect,
-    surrogate_color: Option<&Color>,
     opacity: u8,
     initially_visible: bool,
     border_inset: RECT,
@@ -518,10 +496,17 @@ impl NativeSurrogate {
     let logical_src = to_logical(source_rect, &border_inset);
     let logical_thumb = to_logical(thumbnail_rect, &border_inset);
 
+    // `WS_EX_NOREDIRECTIONBITMAP` leaves the window with no GDI surface at
+    // all, so everything outside the thumbnail is transparent, and lets
+    // the gap fill root a composition tree on it.
+    //
     // SAFETY: Class name is the static literal registered above.
     let hwnd = unsafe {
       CreateWindowExW(
-        WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW | WS_EX_TRANSPARENT,
+        WS_EX_NOACTIVATE
+          | WS_EX_TOOLWINDOW
+          | WS_EX_TRANSPARENT
+          | WS_EX_NOREDIRECTIONBITMAP,
         w!("GlazeWM_Surrogate"),
         w!(""),
         WS_POPUP,
@@ -542,28 +527,6 @@ impl NativeSurrogate {
       ));
     }
 
-    // Extend the DWM glass sheet over the entire client area so that
-    // regions not covered by the DWM thumbnail are transparent rather
-    // than opaque black (which is the GDI default for a `WS_POPUP`
-    // with a null background brush). The thumbnail is composited on
-    // top of this transparent sheet, so only the thumbnail area shows
-    // content; everything else is see-through.
-    {
-      use windows::Win32::UI::Controls::MARGINS;
-      let margins = MARGINS {
-        cxLeftWidth: -1,
-        cxRightWidth: -1,
-        cyTopHeight: -1,
-        cyBottomHeight: -1,
-      };
-      // SAFETY: `hwnd` is a valid window handle. `margins` is
-      // stack-allocated and live for the duration of this call.
-      unsafe {
-        let _ = DwmExtendFrameIntoClientArea(hwnd, &raw const margins);
-      }
-    }
-
-    apply_backdrop(hwnd, surrogate_color);
     apply_corner_preference(hwnd, corner_style);
     suppress_native_border(hwnd);
 
@@ -578,8 +541,8 @@ impl NativeSurrogate {
     // rendered frame shows the correct transparency without a separate
     // `DwmUpdateThumbnailProperties` call.
     //
-    // Failure is non-fatal: the surrogate still shows its backdrop color
-    // if configured.
+    // Failure is non-fatal: the surrogate still shows its fill if given a
+    // color.
     let thumbnail = register_thumbnail(
       hwnd,
       source_hwnd,
@@ -602,6 +565,9 @@ impl NativeSurrogate {
       is_visible: initially_visible,
       last_opacity: opacity,
       last_rect: None,
+      covered: (logical_thumb.width(), logical_thumb.height()),
+      fill: None,
+      fill_color: None,
     };
 
     // Set the initial Z-order position and optionally show the surrogate.
@@ -654,14 +620,15 @@ impl NativeSurrogate {
     source_hwnd: HWND,
     source_rect: &Rect,
     thumbnail_rect: &Rect,
-    surrogate_color: Option<&Color>,
     opacity: u8,
     initially_visible: bool,
     border_inset: RECT,
     corner_style: &CornerStyle,
     insert_after: HWND,
   ) -> crate::Result<()> {
-    apply_backdrop(self.hwnd(), surrogate_color);
+    // A fill left on from the previous session must not show before this
+    // one decides whether it wants one.
+    self.set_fill_color(None);
     apply_corner_preference(self.hwnd(), corner_style);
     suppress_native_border(self.hwnd());
     self.border_inset = border_inset;
@@ -739,8 +706,9 @@ impl NativeSurrogate {
           DwmUpdateThumbnailProperties(self.thumbnail, &raw const props);
       }
     }
-    self.last_opacity = opacity;
+    self.set_fill_opacity(opacity);
     self.content_size = (logical_thumb.width(), logical_thumb.height());
+    self.set_covered(self.content_size);
 
     Ok(())
   }
@@ -841,15 +809,13 @@ impl NativeSurrogate {
   /// Sets the DWM thumbnail opacity via `DWM_TNP_OPACITY`.
   ///
   /// `opacity` ranges from 0 (fully transparent) to 255 (fully opaque).
-  /// The surrogate's own gap fill is unaffected — only the thumbnail
-  /// content fades.
-  /// No-op when `opacity` matches the last applied value or when no
-  /// thumbnail is registered.
+  /// The gap fill follows, since it stands in for the same content.
+  /// No-op when `opacity` matches the last applied value.
   pub fn set_window_opacity(&mut self, opacity: u8) {
     if opacity == self.last_opacity {
       return;
     }
-    self.last_opacity = opacity;
+    self.set_fill_opacity(opacity);
     if self.thumbnail == 0 {
       return;
     }
@@ -876,10 +842,11 @@ impl NativeSurrogate {
   /// when no thumbnail was registered.
   ///
   /// [`set_window_opacity`]: NativeSurrogate::set_window_opacity
-  pub fn set_thumbnail_rects(&self, rc_src: RECT, rc_dst: RECT) {
+  pub fn set_thumbnail_rects(&mut self, rc_src: RECT, rc_dst: RECT) {
     if self.thumbnail == 0 {
       return;
     }
+    self.set_covered((rc_dst.right, rc_dst.bottom));
     let props = DWM_THUMBNAIL_PROPERTIES {
       dwFlags: DWM_TNP_RECTSOURCE
         | DWM_TNP_RECTDESTINATION
@@ -961,6 +928,7 @@ impl NativeSurrogate {
       return;
     }
     self.content_size = (logical_width, logical_height);
+    self.set_covered(self.content_size);
     self.border_inset = border_inset;
     self.last_rect = None;
   }
@@ -1000,6 +968,7 @@ impl NativeSurrogate {
     )
     .unwrap_or(0);
     self.content_size = (logical_width, logical_height);
+    self.set_covered(self.content_size);
     self.border_inset = border_inset;
     // Force the next reposition call through even if the rect is
     // unchanged, ensuring the surrogate is repositioned after a
@@ -1016,16 +985,65 @@ impl NativeSurrogate {
     Ok(())
   }
 
-  /// Drops the solid fill, letting whatever sits behind the surrogate show
-  /// through again.
+  /// Paints everything the thumbnail does not cover in `color`, at the
+  /// thumbnail's own opacity, or clears it when `None`.
   ///
-  /// Called once the DWM thumbnail covers the whole surrogate, so the fill
-  /// is no longer standing in for anything. Leaving it would keep tinting
-  /// the window through the thumbnail's own alpha for the rest of the
-  /// animation -- the fill is opaque, so it replaces the backdrop that the
-  /// window's `transparency` opacity should be revealing.
-  pub fn clear_backdrop(&self) {
-    apply_backdrop(self.hwnd(), None);
+  /// The fill is rooted on the surrogate itself, so it can never lag the
+  /// surrogate, and it is sized relative to the window, so it costs
+  /// nothing per frame. The first color builds the composition tree, one
+  /// blocking hop to the composition thread per surrogate; a failure
+  /// leaves the surrogate without a fill.
+  pub fn set_fill_color(&mut self, color: Option<&Color>) {
+    if self.fill_color.as_ref() == color {
+      return;
+    }
+
+    if color.is_some() && self.fill.is_none() {
+      let fill = match SurrogateFill::create(self.hwnd()) {
+        Ok(fill) => fill,
+        Err(err) => {
+          tracing::warn!("Failed to create surrogate fill: {err}.");
+          return;
+        }
+      };
+      let initialized = fill.set_covered(self.covered).and_then(|()| {
+        fill.set_opacity(f32::from(self.last_opacity) / 255.0)
+      });
+      if let Err(err) = initialized {
+        tracing::warn!("Failed to initialize surrogate fill: {err}.");
+      }
+      self.fill = Some(fill);
+    }
+
+    self.fill_color = color.copied();
+    if let Some(fill) = &self.fill {
+      if let Err(err) = fill.set_color(self.fill_color) {
+        tracing::warn!("Surrogate fill color update failed: {err}.");
+      }
+    }
+  }
+
+  /// Records the thumbnail opacity and mirrors it onto the fill.
+  fn set_fill_opacity(&mut self, opacity: u8) {
+    self.last_opacity = opacity;
+    if let Some(fill) = &self.fill {
+      if let Err(err) = fill.set_opacity(f32::from(opacity) / 255.0) {
+        tracing::warn!("Surrogate fill opacity update failed: {err}.");
+      }
+    }
+  }
+
+  /// Records the thumbnail's covered extent and mirrors it onto the fill.
+  fn set_covered(&mut self, covered: (i32, i32)) {
+    if self.covered == covered {
+      return;
+    }
+    self.covered = covered;
+    if let Some(fill) = &self.fill {
+      if let Err(err) = fill.set_covered(covered) {
+        tracing::warn!("Surrogate fill resize failed: {err}.");
+      }
+    }
   }
 
   /// Queues a reposition to `rect` into `batch` instead of issuing an
@@ -1050,6 +1068,10 @@ impl NativeSurrogate {
 
 impl Drop for NativeSurrogate {
   fn drop(&mut self) {
+    // The fill's composition tree must go before the window it is rooted
+    // to.
+    self.fill.take();
+
     // SAFETY: All thumbnail handles and `self.hwnd` are valid handles
     // created by this type. Thumbnails must be unregistered before the
     // destination window is destroyed.
