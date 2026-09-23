@@ -14,7 +14,7 @@ use windows::{
   },
 };
 
-use crate::{window_class, Rect};
+use crate::{window_class, Rect, SurrogateBatch};
 
 /// Which overlay an [`OverlayWindow`] backs; each gets its own window
 /// class so the overlays can be told apart in z-order dumps.
@@ -245,4 +245,54 @@ impl Drop for OverlayWindow {
       let _ = DestroyWindow(self.hwnd());
     }
   }
+}
+
+/// An overlay window kept directly behind a managed window
+/// ([`NativeBackdropOverlay`], [`NativeBorderOverlay`]), so the WM can
+/// drive every kind through one generic path.
+///
+/// [`NativeBackdropOverlay`]: crate::NativeBackdropOverlay
+/// [`NativeBorderOverlay`]: crate::NativeBorderOverlay
+pub trait Overlay: Sized {
+  /// Appearance settings, resolved from the user config.
+  type Params: Copy;
+
+  /// Creates the overlay for a window at `rect`, shown directly behind
+  /// `anchor` -- the managed window, or its surrogate while one is active.
+  fn create(
+    rect: &Rect,
+    params: Self::Params,
+    anchor: HWND,
+  ) -> crate::Result<Self>;
+
+  /// Applies `params`; each setting is only re-applied when it changed.
+  fn apply(&mut self, params: Self::Params);
+
+  /// Queues a reposition into `batch` instead of an immediate
+  /// `SetWindowPos`, so the overlay moves in the same DWM frame as its
+  /// window and every other overlay/surrogate committed with it.
+  ///
+  /// Falls back to an immediate reposition when the overlay is hidden or
+  /// `anchor` changed: the batch's `SWP_NOZORDER` flags carry neither the
+  /// show bit nor a z-order move.
+  fn defer_rect(
+    &mut self,
+    batch: &mut SurrogateBatch,
+    rect: &Rect,
+    anchor: HWND,
+  );
+
+  /// Puts the overlay back directly behind `anchor` if it has drifted,
+  /// without touching its rect. See [`OverlayWindow::sync_z_order`] for
+  /// `force`.
+  fn sync_z_order(
+    &mut self,
+    anchor: HWND,
+    force: bool,
+  ) -> crate::Result<()>;
+
+  fn is_visible(&self) -> bool;
+
+  /// Hides the overlay without destroying it.
+  fn hide(&mut self);
 }

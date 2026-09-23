@@ -229,8 +229,8 @@ use wm_platform::{
   sample_edge_color_async, BackdropOverlayParams, BorderOverlayParams,
   Color, CornerStyle, DxgiVsyncWaiter, EdgeColorCache,
   NativeBackdropOverlay, NativeBorderOverlay, NativeIrisOverlay,
-  NativeSurrogate, NativeWindowWindowsExt, ResizeSession, SessionOptions,
-  SurrogateBatch, WorkspaceSurrogate, HWND,
+  NativeSurrogate, NativeWindowWindowsExt, Overlay, ResizeSession,
+  SessionOptions, SurrogateBatch, WorkspaceSurrogate, HWND,
 };
 
 #[cfg(target_os = "windows")]

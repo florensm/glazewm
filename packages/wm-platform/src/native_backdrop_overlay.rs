@@ -1,7 +1,7 @@
 use windows::Win32::Foundation::HWND;
 
 use crate::{
-  overlay_window::{OverlayKind, OverlayWindow},
+  overlay_window::{Overlay, OverlayKind, OverlayWindow},
   platform_impl::composition::BackdropVisual,
   BackdropOverlayParams, Color, Rect, SurrogateBatch,
 };
@@ -78,42 +78,6 @@ macro_rules! backdrop_overlay_setter {
 }
 
 impl NativeBackdropOverlay {
-  /// Creates a new backdrop overlay sized and positioned to `rect`, shown
-  /// directly behind `anchor` -- typically the managed window it tracks,
-  /// or its surrogate while one is active.
-  ///
-  /// There is no non-composition path: without `Windows.UI.Composition`
-  /// (pre-Windows 10 1803) there is no overlay rather than a partial one.
-  /// The window is deliberately not a host backdrop: the wallpaper crop is
-  /// opaque, and keeping what sits beneath it composited is the exact cost
-  /// the backdrop exists to remove.
-  pub fn create(
-    rect: &Rect,
-    params: BackdropOverlayParams,
-    anchor: HWND,
-  ) -> crate::Result<Self> {
-    let mut window =
-      OverlayWindow::create(OverlayKind::Backdrop, rect, anchor)?;
-    let composition = BackdropVisual::create(window.hwnd(), rect, params)?;
-
-    if let Err(err) = window.place(rect, anchor) {
-      tracing::warn!("{err}");
-    }
-
-    Ok(Self {
-      composition,
-      window,
-      params,
-      rect: rect.clone(),
-    })
-  }
-
-  /// Returns whether the overlay window is currently shown.
-  #[must_use]
-  pub fn is_visible(&self) -> bool {
-    self.window.is_visible()
-  }
-
   /// Repositions and resizes the overlay to match `rect` behind `anchor`,
   /// and ensures it's shown.
   ///
@@ -138,59 +102,6 @@ impl NativeBackdropOverlay {
     }
 
     self.rect = rect.clone();
-  }
-
-  /// Queues a reposition into `batch` instead of issuing an immediate
-  /// `SetWindowPos`, for the common per-tick case where the overlay is
-  /// already visible, `anchor` hasn't changed, and only its position/size
-  /// changed.
-  ///
-  /// All overlays/surrogates queued into the same [`SurrogateBatch`] are
-  /// repositioned atomically when the batch is committed, so this overlay
-  /// moves in the same DWM composition frame as the window it's paired
-  /// with, instead of each issuing its own synchronous `SetWindowPos` --
-  /// cost that scales with tick rate, most visible on high-refresh-rate
-  /// displays where the animation manager ticks in lockstep with vsync.
-  ///
-  /// Falls back to [`set_rect`] when the overlay is hidden or `anchor`
-  /// changed: re-showing needs `SWP_SHOWWINDOW` and an anchor change needs
-  /// a z-order move, and the batch applies neither (its flags are
-  /// `SWP_NOZORDER` with no show bit, shared with surrogates).
-  ///
-  /// [`set_rect`]: NativeBackdropOverlay::set_rect
-  pub fn defer_rect(
-    &mut self,
-    batch: &mut SurrogateBatch,
-    rect: &Rect,
-    anchor: HWND,
-  ) {
-    if !self.window.is_placed_behind(anchor) {
-      self.set_rect(rect, anchor);
-      return;
-    }
-
-    if &self.rect == rect {
-      return;
-    }
-
-    batch.push(self.window.hwnd().0, rect.clone());
-
-    if let Err(e) = self.composition.set_rect(rect) {
-      tracing::warn!("Backdrop overlay composition resize failed: {e}.");
-    }
-
-    self.rect = rect.clone();
-  }
-
-  /// Corrects z-order drift by putting the overlay back directly behind
-  /// `anchor`, without touching its rect. See
-  /// [`OverlayWindow::sync_z_order`] for `force`.
-  pub fn sync_z_order(
-    &mut self,
-    anchor: HWND,
-    force: bool,
-  ) -> crate::Result<()> {
-    self.window.sync_z_order(anchor, force)
   }
 
   /// Updates the tint; re-applies only when the value changes.
@@ -321,15 +232,40 @@ impl NativeBackdropOverlay {
 
     self.composition.set_parallax(value, &self.rect);
   }
+}
 
-  /// Applies `params`, re-applying only whichever fields actually changed
-  /// (each setter no-ops internally on an unchanged value). Convenience
-  /// for the call sites that already have a full `BackdropOverlayParams`
-  /// rather than one field at a time.
-  ///
+impl Overlay for NativeBackdropOverlay {
+  type Params = BackdropOverlayParams;
+
+  /// There is no non-composition path: without `Windows.UI.Composition`
+  /// (pre-Windows 10 1803) there is no overlay rather than a partial one.
+  /// The window is deliberately not a host backdrop: the wallpaper crop is
+  /// opaque, and keeping what sits beneath it composited is the exact cost
+  /// the backdrop exists to remove.
+  fn create(
+    rect: &Rect,
+    params: BackdropOverlayParams,
+    anchor: HWND,
+  ) -> crate::Result<Self> {
+    let mut window =
+      OverlayWindow::create(OverlayKind::Backdrop, rect, anchor)?;
+    let composition = BackdropVisual::create(window.hwnd(), rect, params)?;
+
+    if let Err(err) = window.place(rect, anchor) {
+      tracing::warn!("{err}");
+    }
+
+    Ok(Self {
+      composition,
+      window,
+      params,
+      rect: rect.clone(),
+    })
+  }
+
   /// Also the per-tick point at which the overlay notices the desktop
   /// wallpaper changing underneath it.
-  pub fn apply(&mut self, params: BackdropOverlayParams) {
+  fn apply(&mut self, params: BackdropOverlayParams) {
     self.set_tint(params.tint);
     self.set_corner_radius(params.corner_radius);
     self.set_opacity(params.opacity);
@@ -351,8 +287,43 @@ impl NativeBackdropOverlay {
     }
   }
 
-  /// Hides the overlay without destroying it.
-  pub fn hide(&mut self) {
+  fn defer_rect(
+    &mut self,
+    batch: &mut SurrogateBatch,
+    rect: &Rect,
+    anchor: HWND,
+  ) {
+    if !self.window.is_placed_behind(anchor) {
+      self.set_rect(rect, anchor);
+      return;
+    }
+
+    if &self.rect == rect {
+      return;
+    }
+
+    batch.push(self.window.hwnd().0, rect.clone());
+
+    if let Err(e) = self.composition.set_rect(rect) {
+      tracing::warn!("Backdrop overlay composition resize failed: {e}.");
+    }
+
+    self.rect = rect.clone();
+  }
+
+  fn sync_z_order(
+    &mut self,
+    anchor: HWND,
+    force: bool,
+  ) -> crate::Result<()> {
+    self.window.sync_z_order(anchor, force)
+  }
+
+  fn is_visible(&self) -> bool {
+    self.window.is_visible()
+  }
+
+  fn hide(&mut self) {
     self.window.hide();
   }
 }

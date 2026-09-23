@@ -7,7 +7,7 @@ use windows::Win32::{
 };
 
 use crate::{
-  overlay_window::{OverlayKind, OverlayWindow},
+  overlay_window::{Overlay, OverlayKind, OverlayWindow},
   platform_impl::composition::BorderVisual,
   BorderOverlayParams, Color, Rect, SurrogateBatch,
 };
@@ -152,39 +152,6 @@ pub struct NativeBorderOverlay {
 }
 
 impl NativeBorderOverlay {
-  /// Creates a new border overlay tracking `window_rect`, shown directly
-  /// behind `anchor` -- typically the managed window it tracks, or its
-  /// surrogate while one is active.
-  ///
-  /// There is no non-composition path, matching the backdrop.
-  pub fn create(
-    window_rect: &Rect,
-    params: BorderOverlayParams,
-    anchor: HWND,
-  ) -> crate::Result<Self> {
-    let outer = outer_rect(window_rect, params.width);
-
-    let mut window =
-      OverlayWindow::create(OverlayKind::Border, &outer, anchor)?;
-    let composition = BorderVisual::create(window.hwnd(), &outer, params)?;
-
-    if let Err(err) = window.place(&outer, anchor) {
-      tracing::warn!("{err}");
-    }
-
-    let mut overlay = Self {
-      composition,
-      window,
-      params,
-      rect: window_rect.clone(),
-      hole_shape: None,
-      pinned: None,
-    };
-    overlay.refresh_hole(&outer);
-
-    Ok(overlay)
-  }
-
   /// Re-applies the picture-frame window region for `outer` if its
   /// shape (size or inner radius) actually changed since the last
   /// application -- skipped on a pure reposition, since `SetWindowRgn` is
@@ -260,12 +227,6 @@ impl NativeBorderOverlay {
     }
   }
 
-  /// Returns whether the overlay window is currently shown.
-  #[must_use]
-  pub fn is_visible(&self) -> bool {
-    self.window.is_visible()
-  }
-
   /// Repositions and resizes the overlay to track `window_rect` (outset by
   /// the current border width), keeping it directly behind `anchor`, and
   /// ensures it's shown.
@@ -328,53 +289,6 @@ impl NativeBorderOverlay {
     self.refresh_hole(&outer);
 
     self.rect = window_rect.clone();
-  }
-
-  /// Queues a reposition into `batch` instead of issuing an immediate
-  /// `SetWindowPos` -- see `NativeBackdropOverlay::defer_rect`. Falls back
-  /// to [`set_rect`] when the overlay is hidden, pinned, or `anchor`
-  /// changed.
-  ///
-  /// [`set_rect`]: NativeBorderOverlay::set_rect
-  pub fn defer_rect(
-    &mut self,
-    batch: &mut SurrogateBatch,
-    window_rect: &Rect,
-    anchor: HWND,
-  ) {
-    if !self.window.is_placed_behind(anchor) || self.pinned.is_some() {
-      self.set_rect(window_rect, anchor);
-      return;
-    }
-
-    if &self.rect == window_rect {
-      return;
-    }
-
-    let outer = outer_rect(window_rect, self.params.width);
-    batch.push(self.window.hwnd().0, outer.clone());
-
-    {
-      let _scope = crate::perf::scope(crate::perf::Stage::OverlayVisual);
-      if let Err(e) = self.composition.set_rect(&outer) {
-        tracing::warn!("Border overlay composition resize failed: {e}.");
-      }
-    }
-
-    self.refresh_hole(&outer);
-
-    self.rect = window_rect.clone();
-  }
-
-  /// Corrects z-order drift by putting the overlay back directly behind
-  /// `anchor`, without touching its rect. See
-  /// [`OverlayWindow::sync_z_order`] for `force`.
-  pub fn sync_z_order(
-    &mut self,
-    anchor: HWND,
-    force: bool,
-  ) -> crate::Result<()> {
-    self.window.sync_z_order(anchor, force)
   }
 
   /// Updates the ring's color; re-applies only when the value changes.
@@ -452,15 +366,6 @@ impl NativeBorderOverlay {
         "Border overlay composition opacity update failed: {e}."
       );
     }
-  }
-
-  /// Applies `params`, re-applying only whichever fields actually changed
-  /// (each setter no-ops internally on an unchanged value).
-  pub fn apply(&mut self, params: BorderOverlayParams) {
-    self.set_color(params.color);
-    self.set_width(params.width);
-    self.set_corner_radius(params.corner_radius);
-    self.set_opacity(params.opacity);
   }
 
   /// Pins the overlay window to `viewport` (when it isn't already) and
@@ -589,13 +494,93 @@ impl NativeBorderOverlay {
 
     self.window.mark_stale();
   }
+}
 
-  /// Hides the overlay without destroying it.
-  ///
-  /// Drops any viewport pin, so that a window sliding back into view is
-  /// re-pinned (and hence re-shown) rather than having its ring moved
-  /// inside a still-hidden window.
-  pub fn hide(&mut self) {
+impl Overlay for NativeBorderOverlay {
+  type Params = BorderOverlayParams;
+
+  /// There is no non-composition path, matching the backdrop.
+  fn create(
+    window_rect: &Rect,
+    params: BorderOverlayParams,
+    anchor: HWND,
+  ) -> crate::Result<Self> {
+    let outer = outer_rect(window_rect, params.width);
+
+    let mut window =
+      OverlayWindow::create(OverlayKind::Border, &outer, anchor)?;
+    let composition = BorderVisual::create(window.hwnd(), &outer, params)?;
+
+    if let Err(err) = window.place(&outer, anchor) {
+      tracing::warn!("{err}");
+    }
+
+    let mut overlay = Self {
+      composition,
+      window,
+      params,
+      rect: window_rect.clone(),
+      hole_shape: None,
+      pinned: None,
+    };
+    overlay.refresh_hole(&outer);
+
+    Ok(overlay)
+  }
+
+  fn apply(&mut self, params: BorderOverlayParams) {
+    self.set_color(params.color);
+    self.set_width(params.width);
+    self.set_corner_radius(params.corner_radius);
+    self.set_opacity(params.opacity);
+  }
+
+  fn defer_rect(
+    &mut self,
+    batch: &mut SurrogateBatch,
+    window_rect: &Rect,
+    anchor: HWND,
+  ) {
+    // A pinned overlay has to be unpinned by `set_rect` first.
+    if !self.window.is_placed_behind(anchor) || self.pinned.is_some() {
+      self.set_rect(window_rect, anchor);
+      return;
+    }
+
+    if &self.rect == window_rect {
+      return;
+    }
+
+    let outer = outer_rect(window_rect, self.params.width);
+    batch.push(self.window.hwnd().0, outer.clone());
+
+    {
+      let _scope = crate::perf::scope(crate::perf::Stage::OverlayVisual);
+      if let Err(e) = self.composition.set_rect(&outer) {
+        tracing::warn!("Border overlay composition resize failed: {e}.");
+      }
+    }
+
+    self.refresh_hole(&outer);
+
+    self.rect = window_rect.clone();
+  }
+
+  fn sync_z_order(
+    &mut self,
+    anchor: HWND,
+    force: bool,
+  ) -> crate::Result<()> {
+    self.window.sync_z_order(anchor, force)
+  }
+
+  fn is_visible(&self) -> bool {
+    self.window.is_visible()
+  }
+
+  fn hide(&mut self) {
+    // Unpinned so a window sliding back into view is re-pinned (and so
+    // re-shown), rather than having its ring moved in a hidden window.
     self.clear_pin();
     self.window.hide();
   }
