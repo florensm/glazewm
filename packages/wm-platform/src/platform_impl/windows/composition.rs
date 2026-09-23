@@ -130,9 +130,8 @@ where
 /// thread, which is right when the caller needs the value -- building a
 /// visual tree, say. It is wrong for work whose only effect is on screen a
 /// frame or two later, because the wait lands on the main loop: swapping
-/// an overlay to a different baked surface used to block once per window
-/// per focus change, and once per window *at once* on a workspace switch,
-/// which is felt as the focus ring and backdrop lagging behind the
+/// overlays to a different baked surface would block once per window per
+/// focus change, felt as the focus ring and backdrop lagging behind the
 /// keystroke.
 ///
 /// Nothing observes the result, so failures are logged where they happen

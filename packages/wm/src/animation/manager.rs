@@ -2365,18 +2365,10 @@ impl AnimationManager {
     // Always switch to the target monitor's waiter here -- the fast path
     // above already ruled out "no-op, same monitor", so by this point the
     // animating window is confirmed to be on a *different* monitor than
-    // whatever's currently installed (or nothing is installed yet). A
-    // prior "upgrade only, never downgrade to a slower refresh rate"
-    // comparison used to gate this, intended to avoid needlessly
-    // slowing down in-flight animations -- but it meant that once a
-    // fast waiter (e.g. a laptop's high-refresh internal panel) was
-    // installed, later animations on a genuinely slower monitor (e.g.
-    // a fixed-60Hz external display) kept pacing against the wrong
-    // monitor's vblank signal until every animation fully idled out
-    // and the cache reset to `None`, which reads as stutter/lag
-    // specific to that monitor. Pacing must always follow the monitor
-    // actually being animated on, not whichever was fastest
-    // historically.
+    // whatever's currently installed (or nothing is installed yet).
+    // Always switch, even to a slower refresh rate: keeping a faster
+    // waiter paces a 60Hz monitor's animations against the wrong vblank,
+    // which reads as stutter specific to that monitor.
     match DxgiVsyncWaiter::for_monitor(monitor_handle) {
       Ok(new_waiter) => {
         let mut guard = self

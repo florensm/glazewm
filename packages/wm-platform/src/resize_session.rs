@@ -39,19 +39,12 @@ const EDGE_SAMPLE_INSET: i32 = 4;
 /// real window to confirm it actually reached `target_rect` before giving
 /// up and uncloaking anyway.
 ///
-/// `pre_commit` used to skip `SWP_ASYNCWINDOWPOS` entirely, as a
-/// correctness guarantee -- but that meant a plain `SetWindowPos` blocked
-/// the calling thread (the WM's single async main loop) until the target
-/// process's message queue processed the resize, with no upper bound at
-/// all. Apps with a busy main thread (Outlook, observed taking up to
-/// ~284ms; Electron/ Chromium-based apps to a lesser degree) stalled all
-/// mouse/keybinding/IPC handling for that whole duration. `pre_commit` now
-/// issues the move asynchronously and polls (throttled, see
-/// `commit_poll_parity`) for it to land across subsequent ticks instead --
-/// this bounds the rare case where an app never confirms (hung, or
-/// genuinely this slow) without reintroducing an unbounded main-loop
-/// stall. Generous relative to every real duration observed so far so it
-/// essentially never fires for a merely-slow (not hung) app.
+/// `pre_commit` moves the window with `SWP_ASYNCWINDOWPOS` and polls
+/// (throttled, see `commit_poll_parity`) for it to land: a synchronous
+/// `SetWindowPos` blocks the WM's main loop until the target app processes
+/// the resize, observed at up to ~284ms for Outlook. This bounds the case
+/// where an app never confirms (hung). Generous relative to every real
+/// duration observed, so it essentially never fires for a merely slow app.
 const COMMIT_CONFIRM_MAX_WAIT: Duration = Duration::from_millis(500);
 
 /// Best-effort process name (e.g. `"outlook"`) owning `hwnd`, for labeling
@@ -1365,15 +1358,11 @@ pub type EdgeColorCache = Arc<Mutex<HashMap<isize, (Color, Instant)>>>;
 /// Samples `hwnd`'s surrogate backdrop color on a background thread and
 /// inserts it into `cache` once ready, instead of blocking the caller.
 ///
-/// [`ResizeSession::begin_impl`] used to run this sample synchronously on
-/// the WM's single main thread the first time a window needed a backdrop
-/// color, stalling every other window's redraw (and keybinding processing)
-/// behind it for the duration of the two-`BitBlt` GPU->CPU readback --
-/// measured at 26-114ms per call. Callers now pass `None` for
-/// `SessionOptions::edge_color` on a cache miss (accepting a transparent
-/// backdrop for *this* session) and call this instead to warm the cache
-/// for the window's *next* session. No-op if sampling fails (e.g. the
-/// window is too small to sample).
+/// The two-`BitBlt` GPU->CPU readback takes 26-114ms, too long for the
+/// WM's main thread. On a cache miss callers pass `None` for
+/// `SessionOptions::edge_color` (a transparent backdrop for *this*
+/// session) and call this to warm the cache for the window's *next*
+/// session. No-op if sampling fails (e.g. the window is too small).
 ///
 /// `prune_len`/`ttl` mirror the caller's own cache-eviction policy (e.g.
 /// `AnimationManager`'s

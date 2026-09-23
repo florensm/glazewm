@@ -314,8 +314,7 @@ pub struct WindowEffectConfig {
   /// Single knob for how round this window's corners are.
   ///
   /// Drives the window's own corners *and* every overlay drawn around it,
-  /// so one value is enough where `corner_style` plus `border.radius`
-  /// used to be needed to keep the two in agreement.
+  /// so the two always agree.
   ///
   /// The overlays follow this value exactly. The window itself can only
   /// take the three presets Windows exposes through
@@ -404,8 +403,7 @@ pub struct BackdropEffectConfig {
   /// RGBA tint blended over the blurred backdrop.
   ///
   /// Accepts `#RRGGBB` (fully opaque) or `#RRGGBBAA`. When `None`, a
-  /// near-transparent black (`alpha = 1`) is used to avoid the solid-fill
-  /// rendering bug present on some Windows 10 builds.
+  /// near-transparent black (`alpha = 1`) is used.
   pub tint: Option<Color>,
 
   /// Blur radius/intensity.
