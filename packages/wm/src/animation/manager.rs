@@ -679,11 +679,6 @@ impl AnimationManager {
   /// surrogate that was being destroyed, and the window rendered without
   /// its backdrop until the tail ended: measured as a ~12ms flash at the
   /// end of a move, in two runs out of three.
-  ///
-  /// The tail was originally covered because the surrogate carried its own
-  /// SWCA acrylic, and so supplied the backdrop itself. It no longer does
-  /// -- the backdrop renders through a `Windows.UI.Composition` overlay
-  /// behind the window, and the SWCA acrylic path is gone entirely.
   #[cfg(target_os = "windows")]
   pub fn has_live_resize_tracker(&self, window_id: &Uuid) -> bool {
     self.resize_sessions.contains_key(window_id)

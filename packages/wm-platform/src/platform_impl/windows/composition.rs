@@ -26,7 +26,7 @@
 //! property updates (`set_rect`, `set_tint`, `set_blur_amount`,
 //! `set_corner_radius`, `set_opacity`, `set_saturation`) call directly
 //! into them from the caller's thread with no cross-thread marshaling,
-//! keeping the hot path exactly as cheap as the SWCA path it replaces.
+//! keeping the per-tick hot path cheap.
 
 use std::{
   cell::Cell,
@@ -71,7 +71,7 @@ struct CompositionThread {
 
 /// Lazily initializes the composition thread on first use, caching failure
 /// too (as `None`) so later overlay creations don't retry an unavailable
-/// pipeline on every call. Falls back to the SWCA path on failure.
+/// pipeline on every call. On failure no overlay is created at all.
 fn composition_thread() -> Option<&'static CompositionThread> {
   static COMPOSITION_THREAD: OnceLock<Option<CompositionThread>> =
     OnceLock::new();
@@ -817,20 +817,10 @@ impl SurrogateFill {
 /// the ring's outer edge lands exactly on the overlay's outer rect and its
 /// inner edge exactly on the tracked window's own rect.
 ///
-/// This replaces an earlier fill-plus-hole-punch design, whose
-/// `SetWindowRgn` region rebuild cost ~3.2ms per frame across a
-/// five-window resize burst -- the largest single border-attributable cost
-/// in that profile -- and whose `CreateRoundRectRgn` hole only
-/// approximated the inner curve. A stroked shape needs no window region at
-/// all, and rounds the ring's inner *and* outer corners exactly. An
-/// earlier version of this comment claimed `Windows.UI.Composition`
-/// exposed no stroke-shape API in this crate's bound surface; that was
-/// wrong -- `Compositor::CreateShapeVisual`,
-/// `CreateSpriteShapeWithGeometry` and `ShapeVisual::Shapes` are all bound
-/// in `windows` 0.52.
-///
-/// The SWCA fallback path has no equivalent, so `NativeBorderOverlay`
-/// keeps the region punch there and only there.
+/// A stroke rounds the ring's inner *and* outer corners exactly, which a
+/// fill clipped by a `CreateRoundRectRgn` hole only approximated. The
+/// window region `NativeBorderOverlay` still sets is for hit-testing only
+/// (see its `apply_hole_region`), and is skipped on pure translations.
 pub(crate) struct BorderVisual {
   /// Binds the visual tree to the overlay's `HWND`. Kept alive but never
   /// touched again -- dropping it would unbind composition from the

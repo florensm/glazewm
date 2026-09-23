@@ -2100,7 +2100,7 @@ pub(crate) fn upsert_overlay<O: SyncableOverlay>(
 /// and takes no [`SurrogateBatch`]: after the initial pin, a frame costs a
 /// single composition property write. See
 /// `NativeBorderOverlay::pin_or_slide` for why the window is pinned rather
-/// than moved, and what happens on the SWCA fallback.
+/// than moved.
 #[cfg(target_os = "windows")]
 pub(crate) fn upsert_pinned_border_overlay(
   overlays: &mut std::collections::HashMap<
@@ -2123,8 +2123,7 @@ pub(crate) fn upsert_pinned_border_overlay(
   // which drops the pin, and the re-pin below then puts it back.
   overlay.apply(params);
 
-  // The SWCA fallback has no composition tree to offset, so it sits the
-  // transition out.
+  // A pin that failed to apply sits the transition out.
   if !overlay.pin_or_slide(viewport, rect, anchor) {
     overlay.hide();
   }
@@ -2583,10 +2582,7 @@ fn sync_overlays<O: SyncableOverlay>(
         // re-asserted. But an overlay nobody moved has nothing to
         // re-assert, and running the check on every overlay on
         // every tick was three USER32 calls per window per
-        // frame in exchange for nothing: it was added for a z-order theory
-        // that later testing disproved (the overlay was never in front;
-        // DWM was caching a stale occlusion result), and the fix
-        // for that lives elsewhere.
+        // frame in exchange for nothing.
         //
         // The surrogate case is not that. Surrogates are created at
         // `HWND_TOP`, which displaces *other* windows' overlays out of
