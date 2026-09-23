@@ -231,7 +231,7 @@ impl NativeBackdropOverlay {
     if let Err(e) = unsafe {
       SetWindowPos(
         hwnd,
-        anchor,
+        window_class::insert_after_point(anchor),
         rect.x(),
         rect.y(),
         rect.width(),
@@ -294,7 +294,7 @@ impl NativeBackdropOverlay {
     if let Err(e) = unsafe {
       SetWindowPos(
         self.hwnd(),
-        anchor,
+        window_class::insert_after_point(anchor),
         rect.x(),
         rect.y(),
         rect.width(),
@@ -401,7 +401,8 @@ impl NativeBackdropOverlay {
     // SAFETY: `self.hwnd()` is a valid window handle for the lifetime of
     // this struct.
     let prev = unsafe { GetWindow(self.hwnd(), GW_HWNDPREV) };
-    if !force && prev == anchor {
+    let insert_after = window_class::insert_after_point(anchor);
+    if !force && prev == insert_after {
       self.anchor = anchor.0;
       return Ok(());
     }
@@ -411,7 +412,7 @@ impl NativeBackdropOverlay {
     unsafe {
       SetWindowPos(
         self.hwnd(),
-        anchor,
+        insert_after,
         0,
         0,
         0,

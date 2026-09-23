@@ -47,8 +47,8 @@ use windows::{
 
 use super::com::{IApplicationView, COM_INIT};
 use crate::{
-  Color, CornerStyle, Delta, Dispatcher, LengthValue, OpacityValue, Point,
-  Rect, RectDelta, WindowId, WindowZOrder,
+  window_class, Color, CornerStyle, Delta, Dispatcher, LengthValue,
+  OpacityValue, Point, Rect, RectDelta, WindowId, WindowZOrder,
 };
 
 /// Magic number used to identify programmatic mouse inputs from our own
@@ -401,7 +401,9 @@ impl NativeWindow {
       WindowZOrder::TopMost => HWND_TOPMOST,
       WindowZOrder::Top => HWND_TOP,
       WindowZOrder::Normal => HWND_NOTOPMOST,
-      WindowZOrder::AfterWindow(window_id) => HWND(window_id.0),
+      WindowZOrder::AfterWindow(window_id) => {
+        window_class::insert_after_point(HWND(window_id.0))
+      }
     };
 
     unsafe {
@@ -597,7 +599,9 @@ impl NativeWindow {
       WindowZOrder::TopMost => HWND_TOPMOST,
       WindowZOrder::Top => HWND_TOP,
       WindowZOrder::Normal => HWND_NOTOPMOST,
-      WindowZOrder::AfterWindow(window_id) => HWND(window_id.0),
+      WindowZOrder::AfterWindow(window_id) => {
+        window_class::insert_after_point(HWND(window_id.0))
+      }
     };
 
     // Skip entirely when the window is already in the requested position.
