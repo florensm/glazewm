@@ -5,11 +5,11 @@ use windows::{
   Win32::{
     Foundation::HWND,
     UI::WindowsAndMessaging::{
-      CreateWindowExW, DestroyWindow, GetWindow, SetWindowPos, ShowWindow,
-      GW_HWNDPREV, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSENDCHANGING,
-      SWP_NOSIZE, SWP_SHOWWINDOW, SW_HIDE, WS_EX_NOACTIVATE,
-      WS_EX_NOREDIRECTIONBITMAP, WS_EX_TOOLWINDOW, WS_EX_TRANSPARENT,
-      WS_POPUP,
+      CreateWindowExW, DestroyWindow, GetClassNameW, GetWindow,
+      SetWindowPos, ShowWindow, GW_HWNDPREV, SWP_NOACTIVATE, SWP_NOMOVE,
+      SWP_NOSENDCHANGING, SWP_NOSIZE, SWP_SHOWWINDOW, SW_HIDE,
+      WS_EX_NOACTIVATE, WS_EX_NOREDIRECTIONBITMAP, WS_EX_TOOLWINDOW,
+      WS_EX_TRANSPARENT, WS_POPUP,
     },
   },
 };
@@ -30,6 +30,20 @@ impl OverlayKind {
       Self::Backdrop => w!("GlazeWM_BackdropOverlay"),
       Self::Border => w!("GlazeWM_BorderOverlay"),
     }
+  }
+
+  /// Whether `hwnd` is a backdrop or border overlay window.
+  fn is_overlay(hwnd: HWND) -> bool {
+    let mut buf = [0u16; 32];
+    // SAFETY: `buf` outlives the call; a stale `hwnd` just returns 0.
+    let len = unsafe { GetClassNameW(hwnd, &mut buf) };
+    let name = &buf[..usize::try_from(len).unwrap_or(0)];
+
+    [Self::Backdrop, Self::Border].iter().any(|kind| {
+      let class_name = kind.class_name();
+      // SAFETY: `class_name` returns a static, null-terminated literal.
+      unsafe { class_name.as_wide() == name }
+    })
   }
 
   fn registered(self) -> &'static OnceLock<()> {
@@ -209,7 +223,16 @@ impl OverlayWindow {
 
     // SAFETY: `self.hwnd()` is valid for the lifetime of `self`.
     let prev = unsafe { GetWindow(self.hwnd(), GW_HWNDPREV) };
-    if force || prev != insert_after {
+
+    // The window's other overlay may sit in between: backdrop and border
+    // don't overlap, so their relative order is invisible, and insisting
+    // on one made each re-stack displace the other every tick.
+    let is_settled = prev == insert_after
+      || (OverlayKind::is_overlay(prev)
+        // SAFETY: A stale `prev` just makes `GetWindow` return `HWND(0)`.
+        && unsafe { GetWindow(prev, GW_HWNDPREV) } == insert_after);
+
+    if force || !is_settled {
       // SAFETY: `self.hwnd()` is valid for the lifetime of `self`.
       unsafe {
         SetWindowPos(
