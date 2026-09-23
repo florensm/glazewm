@@ -1,107 +1,16 @@
-use std::sync::OnceLock;
-
-use windows::{
-  core::w,
-  Win32::{
-    Foundation::{BOOL, HWND},
-    Graphics::Gdi::{
-      CombineRgn, CreateRectRgn, CreateRoundRectRgn, DeleteObject,
-      SetWindowRgn, HGDIOBJ, HRGN, RGN_DIFF,
-    },
-    UI::WindowsAndMessaging::{
-      CreateWindowExW, DestroyWindow, GetWindow, SetWindowPos, ShowWindow,
-      GW_HWNDPREV, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSENDCHANGING,
-      SWP_NOSIZE, SWP_SHOWWINDOW, SW_HIDE, WS_EX_NOACTIVATE,
-      WS_EX_NOREDIRECTIONBITMAP, WS_EX_TOOLWINDOW, WS_EX_TRANSPARENT,
-      WS_POPUP,
-    },
+use windows::Win32::{
+  Foundation::{BOOL, HWND},
+  Graphics::Gdi::{
+    CombineRgn, CreateRectRgn, CreateRoundRectRgn, DeleteObject,
+    SetWindowRgn, HGDIOBJ, HRGN, RGN_DIFF,
   },
 };
 
 use crate::{
-  platform_impl::composition::BorderVisual, window_class,
+  overlay_window::{OverlayKind, OverlayWindow},
+  platform_impl::composition::BorderVisual,
   BorderOverlayParams, Color, Rect, SurrogateBatch,
 };
-
-fn ensure_class_registered() {
-  static REGISTERED: OnceLock<()> = OnceLock::new();
-  window_class::ensure_class_registered(
-    &REGISTERED,
-    w!("GlazeWM_BorderOverlay"),
-    window_class::default_wnd_proc,
-  );
-}
-
-/// Creates the overlay's window, outset from `window_rect` by `width` on
-/// every side.
-///
-/// `WS_EX_NOREDIRECTIONBITMAP` skips the GDI redirection surface DWM would
-/// otherwise allocate, which the composition visual tree replaces
-/// entirely.
-fn create_window(outer_rect: &Rect) -> crate::Result<HWND> {
-  ensure_class_registered();
-
-  // `WS_EX_TRANSPARENT` -- see the matching comment in
-  // `native_backdrop_overlay::create_window`. This used to be omitted,
-  // leaving the (window-outsetting) border overlay hit-testable and
-  // therefore showing the busy cursor over every window's border and gap.
-  let ex_style = WS_EX_NOACTIVATE
-    | WS_EX_TOOLWINDOW
-    | WS_EX_TRANSPARENT
-    | WS_EX_NOREDIRECTIONBITMAP;
-
-  // SAFETY: All parameters are valid. The class is guaranteed registered
-  // by `ensure_class_registered`. No parent HWND is needed.
-  let hwnd = unsafe {
-    CreateWindowExW(
-      ex_style,
-      w!("GlazeWM_BorderOverlay"),
-      w!(""),
-      WS_POPUP,
-      outer_rect.x(),
-      outer_rect.y(),
-      outer_rect.width(),
-      outer_rect.height(),
-      None,
-      None,
-      None,
-      None,
-    )
-  };
-
-  if hwnd.0 == 0 {
-    return Err(crate::Error::Platform(
-      "Failed to create border overlay window.".to_string(),
-    ));
-  }
-
-  Ok(hwnd)
-}
-
-/// Creates the overlay's window and roots its `Windows.UI.Composition`
-/// visual tree on it.
-///
-/// There is no non-composition path: a system without
-/// `Windows.UI.Composition` (pre-Windows 10 1803) gets no border overlay
-/// rather than a degraded one, matching the backdrop.
-fn create_backing_window(
-  outer_rect: &Rect,
-  params: BorderOverlayParams,
-) -> crate::Result<(HWND, BorderVisual)> {
-  let hwnd = create_window(outer_rect)?;
-
-  match BorderVisual::create(hwnd, outer_rect, params) {
-    Ok(visual) => Ok((hwnd, visual)),
-    Err(err) => {
-      // SAFETY: `hwnd` was just created above and not yet handed to a
-      // caller; safe to destroy immediately on this failure path.
-      unsafe {
-        let _ = DestroyWindow(hwnd);
-      }
-      Err(err)
-    }
-  }
-}
 
 /// Computes the overlay's own rect: `window_rect` outset by `width` on
 /// every side.
@@ -208,36 +117,19 @@ fn inner_hole_radius(params: &BorderOverlayParams) -> i32 {
 ///
 /// Only available on Windows.
 pub struct NativeBorderOverlay {
-  /// Raw window handle stored as `isize` so that `NativeBorderOverlay` is
-  /// `Send` even though `HWND` is not.
-  hwnd: isize,
+  /// The overlay's visual tree. Declared before `window`: fields drop in
+  /// declaration order, and the tree must go before the `HWND` it is
+  /// rooted to.
+  composition: BorderVisual,
+
+  window: OverlayWindow,
 
   /// Current color/width/corner-radius/opacity.
   params: BorderOverlayParams,
 
-  /// Last *window* rect (not outset) applied via `set_rect`, used to skip
-  /// redundant `SetWindowPos` calls when the tracked window hasn't
-  /// actually moved.
+  /// Last *window* rect (not outset) applied, used to skip redundant
+  /// `SetWindowPos` calls when the tracked window hasn't actually moved.
   rect: Rect,
-
-  /// `HWND` of the window this overlay is positioned directly behind (its
-  /// z-order anchor), as raw `isize`. See
-  /// `NativeBackdropOverlay::anchor`'s doc comment for why anchoring
-  /// directly behind the managed window (rather than e.g. the global
-  /// `HWND_BOTTOM`) matters.
-  anchor: isize,
-
-  /// Whether the overlay window is currently shown. See
-  /// `NativeBackdropOverlay::is_visible`'s doc comment for why this is
-  /// tracked explicitly rather than inferred from a rect change.
-  is_visible: bool,
-
-  /// The overlay's composition visual tree.
-  ///
-  /// Optional only so that it can be dropped *before* the `HWND` it is
-  /// rooted to, in `Drop`; an overlay that failed to build one is never
-  /// constructed in the first place. Treat it as always present.
-  composition: Option<BorderVisual>,
 
   /// `(width, height, inner_radius)` of the picture-frame region last
   /// applied, or `None` when the window currently has none -- before the
@@ -260,13 +152,11 @@ pub struct NativeBorderOverlay {
 }
 
 impl NativeBorderOverlay {
-  /// Creates a new border overlay tracking `window_rect`, with the given
-  /// `params` (`corner_radius`/`opacity` are only honored when the
-  /// Composition pipeline is available).
+  /// Creates a new border overlay tracking `window_rect`, shown directly
+  /// behind `anchor` -- typically the managed window it tracks, or its
+  /// surrogate while one is active.
   ///
-  /// The overlay is shown immediately, positioned directly behind `anchor`
-  /// (see the `anchor` field doc) -- typically the `HWND` of the managed
-  /// window it's tracking, or its surrogate's `HWND` while one is active.
+  /// There is no non-composition path, matching the backdrop.
   pub fn create(
     window_rect: &Rect,
     params: BorderOverlayParams,
@@ -274,41 +164,25 @@ impl NativeBorderOverlay {
   ) -> crate::Result<Self> {
     let outer = outer_rect(window_rect, params.width);
 
-    let (hwnd, composition) = create_backing_window(&outer, params)?;
+    let mut window =
+      OverlayWindow::create(OverlayKind::Border, &outer, anchor)?;
+    let composition = BorderVisual::create(window.hwnd(), &outer, params)?;
 
-    // SAFETY: `hwnd` is a valid window just created above.
-    if let Err(e) = unsafe {
-      SetWindowPos(
-        hwnd,
-        window_class::insert_after_point(anchor),
-        outer.x(),
-        outer.y(),
-        outer.width(),
-        outer.height(),
-        SWP_NOACTIVATE | SWP_NOSENDCHANGING | SWP_SHOWWINDOW,
-      )
-    } {
-      tracing::warn!("Border overlay SetWindowPos failed on create: {e}.");
+    if let Err(err) = window.place(&outer, anchor) {
+      tracing::warn!("{err}");
     }
 
     let mut overlay = Self {
-      hwnd: hwnd.0,
+      composition,
+      window,
       params,
       rect: window_rect.clone(),
-      anchor: anchor.0,
-      is_visible: true,
-      composition: Some(composition),
       hole_shape: None,
       pinned: None,
     };
     overlay.refresh_hole(&outer);
 
     Ok(overlay)
-  }
-
-  /// Returns the `HWND` for this overlay.
-  fn hwnd(&self) -> HWND {
-    HWND(self.hwnd)
   }
 
   /// Re-applies the picture-frame window region for `outer` if its
@@ -340,7 +214,12 @@ impl NativeBorderOverlay {
 
     let _scope = crate::perf::scope(crate::perf::Stage::OverlayRegion);
 
-    apply_hole_region(self.hwnd(), (shape.0, shape.1), outset, shape.2);
+    apply_hole_region(
+      self.window.hwnd(),
+      (shape.0, shape.1),
+      outset,
+      shape.2,
+    );
     self.hole_shape = Some(shape);
   }
 
@@ -351,26 +230,11 @@ impl NativeBorderOverlay {
       return;
     }
 
-    // SAFETY: `self.hwnd()` is a valid window handle for the lifetime of
-    // this struct. A null `HRGN` clears the region rather than setting
-    // one, so there is nothing to free.
+    // SAFETY: The overlay's `HWND` is valid for the lifetime of `self`. A
+    // null `HRGN` clears the region rather than setting one, so there is
+    // nothing to free.
     unsafe {
-      SetWindowRgn(self.hwnd(), HRGN(0), BOOL(0));
-    }
-  }
-
-  /// Hides the overlay window, leaving every tracked field alone.
-  ///
-  /// A hidden overlay composites nothing, which is what makes it safe to
-  /// change its `HWND` geometry and its ring's composition offset in the
-  /// same breath -- see [`set_rect`].
-  ///
-  /// [`set_rect`]: NativeBorderOverlay::set_rect
-  fn hide_window(&self) {
-    // SAFETY: `self.hwnd()` is a valid window handle for the lifetime of
-    // this struct.
-    unsafe {
-      let _ = ShowWindow(self.hwnd(), SW_HIDE);
+      SetWindowRgn(self.window.hwnd(), HRGN(0), BOOL(0));
     }
   }
 
@@ -381,9 +245,7 @@ impl NativeBorderOverlay {
   /// pin leaves the offset at its last slid value, and the reveal is the
   /// first moment the window is back to tracking its own rect.
   fn apply_ring_rect(&self, outer: &Rect, reset_offset: bool) {
-    let Some(composition) = &self.composition else {
-      return;
-    };
+    let composition = &self.composition;
 
     if let Err(e) = composition.set_rect(outer) {
       tracing::warn!("Border overlay composition resize failed: {e}.");
@@ -401,7 +263,7 @@ impl NativeBorderOverlay {
   /// Returns whether the overlay window is currently shown.
   #[must_use]
   pub fn is_visible(&self) -> bool {
-    self.is_visible
+    self.window.is_visible()
   }
 
   /// Repositions and resizes the overlay to track `window_rect` (outset by
@@ -409,8 +271,7 @@ impl NativeBorderOverlay {
   /// ensures it's shown.
   ///
   /// No-op if neither `window_rect` nor `anchor` changed and the overlay
-  /// is already visible -- see `NativeBackdropOverlay::set_rect`'s doc
-  /// comment for why.
+  /// is already visible.
   ///
   /// Callers that only need to correct z-order drift should use
   /// [`sync_z_order`] instead.
@@ -424,10 +285,7 @@ impl NativeBorderOverlay {
     let was_pinned = self.pinned.is_some();
     self.clear_pin();
 
-    if self.is_visible
-      && &self.rect == window_rect
-      && self.anchor == anchor.0
-    {
+    if self.window.is_placed_behind(anchor) && &self.rect == window_rect {
       return;
     }
 
@@ -444,8 +302,7 @@ impl NativeBorderOverlay {
     // race), so take the overlay out of composition instead: a hidden
     // overlay composites nothing, whichever side has committed.
     if was_pinned {
-      self.hide_window();
-      self.is_visible = false;
+      self.window.hide();
     }
 
     // A hidden overlay gets its ring in place *before* the reveal, so the
@@ -454,25 +311,13 @@ impl NativeBorderOverlay {
     // ever show a ring already matching it. A visible overlay is merely
     // moving, and is resized after the window so a pure translation costs
     // no ring rebuild.
-    let revealing = !self.is_visible;
+    let revealing = !self.window.is_visible();
     if revealing {
       self.apply_ring_rect(&outer, true);
     }
 
-    // SAFETY: `self.hwnd()` is a valid window handle for the lifetime of
-    // this struct.
-    if let Err(e) = unsafe {
-      SetWindowPos(
-        self.hwnd(),
-        window_class::insert_after_point(anchor),
-        outer.x(),
-        outer.y(),
-        outer.width(),
-        outer.height(),
-        SWP_NOACTIVATE | SWP_NOSENDCHANGING | SWP_SHOWWINDOW,
-      )
-    } {
-      tracing::warn!("Border overlay SetWindowPos failed: {e}.");
+    if let Err(err) = self.window.place(&outer, anchor) {
+      tracing::warn!("{err}");
       return;
     }
 
@@ -483,15 +328,12 @@ impl NativeBorderOverlay {
     self.refresh_hole(&outer);
 
     self.rect = window_rect.clone();
-    self.anchor = anchor.0;
-    self.is_visible = true;
   }
 
   /// Queues a reposition into `batch` instead of issuing an immediate
-  /// `SetWindowPos` -- see `NativeBackdropOverlay::defer_rect`'s doc
-  /// comment for the batching rationale. Falls back to [`set_rect`]
-  /// (immediate, unbatched) when the overlay isn't currently visible, or
-  /// when `anchor` changed.
+  /// `SetWindowPos` -- see `NativeBackdropOverlay::defer_rect`. Falls back
+  /// to [`set_rect`] when the overlay is hidden, pinned, or `anchor`
+  /// changed.
   ///
   /// [`set_rect`]: NativeBorderOverlay::set_rect
   pub fn defer_rect(
@@ -500,8 +342,7 @@ impl NativeBorderOverlay {
     window_rect: &Rect,
     anchor: HWND,
   ) {
-    if !self.is_visible || self.anchor != anchor.0 || self.pinned.is_some()
-    {
+    if !self.window.is_placed_behind(anchor) || self.pinned.is_some() {
       self.set_rect(window_rect, anchor);
       return;
     }
@@ -511,11 +352,11 @@ impl NativeBorderOverlay {
     }
 
     let outer = outer_rect(window_rect, self.params.width);
-    batch.push(self.hwnd, outer.clone());
+    batch.push(self.window.hwnd().0, outer.clone());
 
-    if let Some(composition) = &self.composition {
+    {
       let _scope = crate::perf::scope(crate::perf::Stage::OverlayVisual);
-      if let Err(e) = composition.set_rect(&outer) {
+      if let Err(e) = self.composition.set_rect(&outer) {
         tracing::warn!("Border overlay composition resize failed: {e}.");
       }
     }
@@ -525,45 +366,15 @@ impl NativeBorderOverlay {
     self.rect = window_rect.clone();
   }
 
-  /// Corrects z-order drift by re-positioning the overlay directly behind
-  /// `anchor` if it isn't already there, without touching its rect, or
-  /// unconditionally when `force` is set. See
-  /// `NativeBackdropOverlay::sync_z_order`'s doc comment.
+  /// Corrects z-order drift by putting the overlay back directly behind
+  /// `anchor`, without touching its rect. See
+  /// [`OverlayWindow::sync_z_order`] for `force`.
   pub fn sync_z_order(
     &mut self,
     anchor: HWND,
     force: bool,
   ) -> crate::Result<()> {
-    // `anchor` is always a real window handle, so the comparison below is
-    // meaningful -- but the overlay has to be in the anchor's band first,
-    // or the OS will refuse to leave it directly behind a topmost window.
-    window_class::match_z_band(self.hwnd(), anchor);
-
-    // SAFETY: `self.hwnd()` is a valid window handle for the lifetime of
-    // this struct.
-    let prev = unsafe { GetWindow(self.hwnd(), GW_HWNDPREV) };
-    let insert_after = window_class::insert_after_point(anchor);
-    if !force && prev == insert_after {
-      self.anchor = anchor.0;
-      return Ok(());
-    }
-
-    // SAFETY: `self.hwnd()` is a valid window handle for the lifetime of
-    // this struct.
-    unsafe {
-      SetWindowPos(
-        self.hwnd(),
-        insert_after,
-        0,
-        0,
-        0,
-        0,
-        SWP_NOACTIVATE | SWP_NOSENDCHANGING | SWP_NOMOVE | SWP_NOSIZE,
-      )
-    }?;
-
-    self.anchor = anchor.0;
-    Ok(())
+    self.window.sync_z_order(anchor, force)
   }
 
   /// Updates the ring's color; re-applies only when the value changes.
@@ -573,12 +384,10 @@ impl NativeBorderOverlay {
     }
     self.params.color = color;
 
-    if let Some(composition) = &self.composition {
-      if let Err(e) = composition.set_color(color) {
-        tracing::warn!(
-          "Border overlay composition color update failed: {e}."
-        );
-      }
+    if let Err(e) = self.composition.set_color(color) {
+      tracing::warn!(
+        "Border overlay composition color update failed: {e}."
+      );
     }
   }
 
@@ -597,18 +406,15 @@ impl NativeBorderOverlay {
     }
     self.params.width = width;
 
-    if let Some(composition) = &self.composition {
-      if let Err(e) = composition.set_width(width) {
-        tracing::warn!(
-          "Border overlay composition width update failed: {e}."
-        );
-      }
+    if let Err(e) = self.composition.set_width(width) {
+      tracing::warn!(
+        "Border overlay composition width update failed: {e}."
+      );
     }
 
-    let anchor = HWND(self.anchor);
+    let anchor = self.window.anchor();
     let rect = self.rect.clone();
-    self.is_visible = false; // force set_rect through despite unchanged
-                             // rect.
+    self.window.mark_stale();
     self.set_rect(&rect, anchor);
   }
 
@@ -622,12 +428,10 @@ impl NativeBorderOverlay {
     }
     self.params.corner_radius = value;
 
-    if let Some(composition) = &self.composition {
-      if let Err(e) = composition.set_corner_radius(value) {
-        tracing::warn!(
-          "Border overlay composition corner-radius update failed: {e}."
-        );
-      }
+    if let Err(e) = self.composition.set_corner_radius(value) {
+      tracing::warn!(
+        "Border overlay composition corner-radius update failed: {e}."
+      );
     }
 
     let outer = outer_rect(&self.rect, self.params.width);
@@ -643,12 +447,10 @@ impl NativeBorderOverlay {
     }
     self.params.opacity = value;
 
-    if let Some(composition) = &self.composition {
-      if let Err(e) = composition.set_opacity(value) {
-        tracing::warn!(
-          "Border overlay composition opacity update failed: {e}."
-        );
-      }
+    if let Err(e) = self.composition.set_opacity(value) {
+      tracing::warn!(
+        "Border overlay composition opacity update failed: {e}."
+      );
     }
   }
 
@@ -684,10 +486,6 @@ impl NativeBorderOverlay {
     window_rect: &Rect,
     anchor: HWND,
   ) -> bool {
-    if self.composition.is_none() {
-      return false;
-    }
-
     if self.pinned.is_none() {
       // Growing to the viewport and offsetting the ring inside it is the
       // same two-sided change `set_rect` makes on the way out, and carries
@@ -699,8 +497,7 @@ impl NativeBorderOverlay {
       // so the overlay sits the change out hidden: it composites nothing
       // until the `SetWindowPos` below reveals it, and that one call
       // carries `SWP_SHOWWINDOW` and the viewport geometry together.
-      self.hide_window();
-      self.is_visible = false;
+      self.window.hide();
 
       // The window is about to become viewport-sized with its ring drawn
       // at an offset inside it, so a frame region cut for the window's own
@@ -717,32 +514,15 @@ impl NativeBorderOverlay {
       self.rect = Rect::from_ltrb(0, 0, 0, 0);
       self.slide(window_rect);
 
-      // SAFETY: `self.hwnd()` is a valid window handle for the lifetime of
-      // this struct.
-      if let Err(e) = unsafe {
-        SetWindowPos(
-          self.hwnd(),
-          window_class::insert_after_point(anchor),
-          viewport.x(),
-          viewport.y(),
-          viewport.width(),
-          viewport.height(),
-          SWP_NOACTIVATE | SWP_NOSENDCHANGING | SWP_SHOWWINDOW,
-        )
-      } {
-        tracing::warn!("Border overlay viewport pin failed: {e}.");
+      if let Err(err) = self.window.place(viewport, anchor) {
+        tracing::warn!("Border overlay viewport pin failed: {err}");
 
-        // The ring is offset for a viewport that never arrived. Drop the
-        // pin and mark the overlay not-visible so the next `set_rect`
-        // rebuilds the geometry and resets the offset instead of being
-        // skipped by its no-op guard.
+        // The ring is offset for a viewport that never arrived. Dropping
+        // the pin leaves the overlay hidden, so the next `set_rect`
+        // rebuilds the geometry and resets the offset.
         self.pinned = None;
-        self.is_visible = false;
         return false;
       }
-
-      self.anchor = anchor.0;
-      self.is_visible = true;
 
       return true;
     }
@@ -766,10 +546,7 @@ impl NativeBorderOverlay {
       return;
     }
 
-    let Some(composition) = &self.composition else {
-      return;
-    };
-
+    let composition = &self.composition;
     let _scope = crate::perf::scope(crate::perf::Stage::OverlayVisual);
     let outer = outer_rect(window_rect, self.params.width);
 
@@ -810,7 +587,7 @@ impl NativeBorderOverlay {
       return;
     }
 
-    self.is_visible = false;
+    self.window.mark_stale();
   }
 
   /// Hides the overlay without destroying it.
@@ -820,21 +597,6 @@ impl NativeBorderOverlay {
   /// inside a still-hidden window.
   pub fn hide(&mut self) {
     self.clear_pin();
-    self.is_visible = false;
-    self.hide_window();
-  }
-}
-
-impl Drop for NativeBorderOverlay {
-  fn drop(&mut self) {
-    // Drop the composition visual tree before destroying the window it's
-    // rooted to -- its `DesktopWindowTarget` is bound to that `HWND`.
-    self.composition.take();
-
-    // SAFETY: `self.hwnd()` is a valid window handle and `Drop` is called
-    // at most once.
-    unsafe {
-      let _ = DestroyWindow(self.hwnd());
-    }
+    self.window.hide();
   }
 }
