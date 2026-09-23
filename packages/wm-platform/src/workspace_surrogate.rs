@@ -207,7 +207,6 @@ impl WorkspaceSurrogate {
       hwnd,
       source_rect,
       thumbnail_rect,
-      None,
       opacity,
       false,
       border_inset,

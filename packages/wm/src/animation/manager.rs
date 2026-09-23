@@ -137,6 +137,33 @@ const EDGE_COLOR_CACHE_PRUNE_LEN: usize = 128;
 #[cfg(target_os = "windows")]
 const WARM_SURROGATE_TTL: Duration = Duration::from_secs(8);
 
+/// How long a window's overlays keep being re-asserted behind it after its
+/// own z-order last changed, or after its surrogate went away. See
+/// `AnimationManager::settle_overlay_z_order`.
+///
+/// Covers the asynchronous move itself, `set_z_order`'s 10ms retry, and
+/// apps that briefly re-assert their own z-order in response; measured
+/// cases land within a few frames.
+#[cfg(target_os = "windows")]
+const OVERLAY_Z_SETTLE: Duration = Duration::from_millis(200);
+
+/// Upper bound on how long a window's overlays keep settling, however
+/// often the settle is extended -- so a window that never reaches its
+/// intended band (an app that refuses `HWND_TOPMOST`) cannot keep the
+/// animation timer ticking forever.
+#[cfg(target_os = "windows")]
+const OVERLAY_Z_SETTLE_MAX: Duration = Duration::from_secs(2);
+
+/// Deadlines for one window in `AnimationManager::overlay_z_settle`.
+#[cfg(target_os = "windows")]
+#[derive(Clone, Copy, Debug)]
+struct SettleWindow {
+  /// When re-checking stops, unless extended.
+  until: Instant,
+  /// When re-checking stops regardless; see [`OVERLAY_Z_SETTLE_MAX`].
+  cap: Instant,
+}
+
 /// Cache-size threshold above which stale warm-surrogate entries are
 /// pruned. Kept much smaller than [`EDGE_COLOR_CACHE_PRUNE_LEN`] -- a warm
 /// surrogate holds a real OS window and DWM thumbnail registration, not
@@ -208,7 +235,8 @@ use wm_platform::{
 
 #[cfg(target_os = "windows")]
 use crate::commands::general::{
-  overlay_z_anchor, upsert_overlay, upsert_pinned_border_overlay,
+  overlay_z_anchor, resync_settling_overlays, upsert_overlay,
+  upsert_pinned_border_overlay,
 };
 use crate::{
   animation::state::WindowAnimationState,
@@ -377,6 +405,18 @@ pub struct AnimationManager {
   timer_thread: Mutex<Option<std::thread::JoinHandle<()>>>,
   /// Signals the persistent timer thread to exit. Set on drop.
   timer_shutdown: Arc<AtomicBool>,
+  /// The timestamp every window is evaluated at in the current redraw
+  /// pass; see [`frame_now`]. Cleared by [`begin_redraw_pass`].
+  ///
+  /// [`frame_now`]: AnimationManager::frame_now
+  /// [`begin_redraw_pass`]: AnimationManager::begin_redraw_pass
+  pass_now: Option<Instant>,
+  /// Windows whose own z-order was changed recently, mapped to when their
+  /// overlays stop being re-checked. See [`settle_overlay_z_order`].
+  ///
+  /// [`settle_overlay_z_order`]: AnimationManager::settle_overlay_z_order
+  #[cfg(target_os = "windows")]
+  overlay_z_settle: HashMap<Uuid, SettleWindow>,
   /// DXGI vsync waiter for the animation monitor.
   ///
   /// When `Some`, the timer thread calls `WaitForVBlank` on this output
@@ -514,6 +554,9 @@ impl AnimationManager {
       animation_timer_running: Arc::new(AtomicBool::new(false)),
       timer_thread: Mutex::new(None),
       timer_shutdown: Arc::new(AtomicBool::new(false)),
+      pass_now: None,
+      #[cfg(target_os = "windows")]
+      overlay_z_settle: HashMap::new(),
       #[cfg(target_os = "windows")]
       animation_timer_vsync: Arc::new(Mutex::new(None)),
       #[cfg(target_os = "windows")]
@@ -767,7 +810,65 @@ impl AnimationManager {
     {
       return true;
     }
+    // Settling overlays are re-checked from the tick; see
+    // `settle_overlay_z_order`.
+    #[cfg(target_os = "windows")]
+    if !self.overlay_z_settle.is_empty() {
+      return true;
+    }
     false
+  }
+
+  /// Keeps re-asserting the overlays of `window_ids` behind their windows
+  /// on every tick for [`OVERLAY_Z_SETTLE`], after their own z-order was
+  /// changed.
+  ///
+  /// `set_z_order` moves the real window with `SWP_ASYNCWINDOWPOS` (plus a
+  /// delayed retry), so it lands only after the same pass has already put
+  /// the overlays behind the window's *old* position. A move that then
+  /// takes the window down past them -- `AfterWindow` behind the focused
+  /// window, or leaving the topmost band when a `shown_on_top` floating
+  /// window is tiled again -- leaves its own opaque backdrop on top of it,
+  /// and nothing else looks again. There is no completion signal to wait
+  /// on, so the overlays are re-checked until the move has surely landed.
+  #[cfg(target_os = "windows")]
+  pub fn settle_overlay_z_order(
+    &mut self,
+    window_ids: impl IntoIterator<Item = Uuid>,
+  ) {
+    let now = Instant::now();
+    let settle = SettleWindow {
+      until: now + OVERLAY_Z_SETTLE,
+      cap: now + OVERLAY_Z_SETTLE_MAX,
+    };
+    self
+      .overlay_z_settle
+      .extend(window_ids.into_iter().map(|id| (id, settle)));
+
+    if !self.overlay_z_settle.is_empty() {
+      self.ensure_timer_running();
+    }
+  }
+
+  /// Pushes `window_id`'s settle deadline out by another
+  /// [`OVERLAY_Z_SETTLE`] from now, within its cap.
+  ///
+  /// For a window whose overlays cannot be judged settled yet: one still
+  /// behind a surrogate (the fade-out tail anchors its overlays itself),
+  /// or one whose async band change has not landed.
+  #[cfg(target_os = "windows")]
+  pub fn extend_overlay_z_settle(&mut self, window_id: &Uuid) {
+    if let Some(settle) = self.overlay_z_settle.get_mut(window_id) {
+      settle.until = (Instant::now() + OVERLAY_Z_SETTLE).min(settle.cap);
+    }
+  }
+
+  /// Windows whose overlays are still settling, dropping expired ones.
+  #[cfg(target_os = "windows")]
+  pub fn settling_overlay_windows(&mut self) -> Vec<Uuid> {
+    let now = Instant::now();
+    self.overlay_z_settle.retain(|_, settle| settle.until > now);
+    self.overlay_z_settle.keys().copied().collect()
   }
 
   /// Returns all active animation window IDs.
@@ -1659,6 +1760,9 @@ impl AnimationManager {
       platform_sync(state, config)?;
     }
 
+    #[cfg(target_os = "windows")]
+    resync_settling_overlays(state);
+
     // Held in an `Option` so the nested `platform_sync` below can close it
     // early: leaving it open there made `Cleanup` enclose a second
     // `PlatformSync`, double-counting that time so the two stages summed
@@ -2202,11 +2306,37 @@ impl AnimationManager {
     Some(last_wake + lead)
   }
 
-  /// Returns the predictive vsync instant if available, else wall-clock
-  /// now.
-  #[cfg(target_os = "windows")]
-  fn predictive_now(&self) -> Instant {
-    self.predictive_vsync_now().unwrap_or_else(Instant::now)
+  /// Starts a new redraw pass, so the next [`frame_now`] takes a fresh
+  /// reading.
+  ///
+  /// [`frame_now`]: AnimationManager::frame_now
+  pub fn begin_redraw_pass(&mut self) {
+    self.pass_now = None;
+  }
+
+  /// The timestamp this redraw pass evaluates every window at: the
+  /// predictive vsync instant on Windows when one is available, else
+  /// wall-clock now -- read once per pass and shared.
+  ///
+  /// Shared because a window's animation clock starts at its first
+  /// evaluation. Read per window, the reading lands after that window's
+  /// session setup (surrogate creation, fill, preposition) and the ones
+  /// before it, so windows relaid out together started up to a frame
+  /// apart: measured 11ms between a shrinking window and the growing
+  /// neighbour started after it, which the steep start of the easing
+  /// curve turned into a ~190px hole between them on the first frame.
+  fn frame_now(&mut self) -> Instant {
+    if let Some(now) = self.pass_now {
+      return now;
+    }
+
+    #[cfg(target_os = "windows")]
+    let now = self.predictive_vsync_now().unwrap_or_else(Instant::now);
+    #[cfg(not(target_os = "windows"))]
+    let now = Instant::now();
+
+    self.pass_now = Some(now);
+    now
   }
 
   /// Installs or switches the vsync waiter to the monitor with handle
@@ -2533,12 +2663,8 @@ impl AnimationManager {
 
     // Evaluate this frame's position at a predictive timestamp so the
     // surrogate aligns with the next DWM composition rather than lagging
-    // by one pipeline delay. On non-Windows there is no vsync clock,
-    // so this is just `Instant::now()`.
-    #[cfg(target_os = "windows")]
-    let now = self.predictive_now();
-    #[cfg(not(target_os = "windows"))]
-    let now = Instant::now();
+    // by one pipeline delay -- the same one for every window this pass.
+    let now = self.frame_now();
 
     // Re-fetch the animation after potentially starting a new one.
     if let Some(animation) = self.get_animation(&window_id) {
@@ -2779,11 +2905,29 @@ impl AnimationManager {
 
     let _scope = perf::scope(Stage::SurrogateFlush);
 
+    // Locked only when some session is still waiting on its fill color
+    // (a cache miss at `begin`), so that color shows up the tick its
+    // background sample lands rather than one animation later.
+    let mut edge_colors = None;
+
     let mut handoffs_this_tick = 0usize;
     for update in std::mem::take(&mut self.pending_surrogate_updates) {
       if let Some(session) =
         self.resize_sessions.get_mut(&update.window_id)
       {
+        if session.edge_color().is_none() {
+          let color = session.window_hwnd().and_then(|hwnd| {
+            edge_colors
+              .get_or_insert_with(|| self.edge_color_cache.lock().ok())
+              .as_ref()?
+              .get(&hwnd.0)
+              .map(|(color, _)| *color)
+          });
+          if let Some(color) = color {
+            session.set_edge_color(color);
+          }
+        }
+
         if update.handoff && handoffs_this_tick < MAX_HANDOFFS_PER_TICK {
           session.maybe_handoff();
           handoffs_this_tick += 1;

@@ -256,6 +256,13 @@ pub trait NativeWindowWindowsExt {
   /// This method is only available on Windows.
   fn is_cloaked(&self) -> crate::Result<bool>;
 
+  /// Whether the window currently sits in the always-on-top band.
+  ///
+  /// # Platform-specific
+  ///
+  /// This method is only available on Windows.
+  fn is_topmost(&self) -> bool;
+
   /// Stops the window's taskbar button from flashing.
   ///
   /// Has no effect if the window isn't flashing.
@@ -433,6 +440,10 @@ impl NativeWindowWindowsExt for NativeWindow {
 
   fn is_cloaked(&self) -> crate::Result<bool> {
     self.inner.is_cloaked()
+  }
+
+  fn is_topmost(&self) -> bool {
+    crate::window_class::is_topmost(self.inner.hwnd())
   }
 
   fn mark_fullscreen(&self, fullscreen: bool) -> crate::Result<()> {

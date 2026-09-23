@@ -235,8 +235,6 @@ pub(crate) struct BackdropVisual {
   queue: DispatcherQueue,
   backdrop: Backdrop,
   root: ContainerVisual,
-  backdrop_sprite: SpriteVisual,
-  tint_sprite: SpriteVisual,
 
   tint_brush: CompositionColorBrush,
 
@@ -250,30 +248,10 @@ pub(crate) struct BackdropVisual {
   /// means.
   ///
   /// `MappingMode::Relative` expresses the gradient in fractions of the
-  /// sprite, so a resize needs no update to the brush at all -- only the
-  /// sprite itself is resized, alongside the others in `set_rect`.
+  /// sprite, so a resize needs no update to the brush at all.
   vignette_brush: CompositionRadialGradientBrush,
   vignette_sprite: SpriteVisual,
   rounded_geometry: CompositionRoundedRectangleGeometry,
-
-  /// Stands in for the window content a mid-animation surrogate has not
-  /// captured yet, in the two strips its DWM thumbnail does not reach.
-  ///
-  /// Two sprites rather than one because the uncovered area is an L: the
-  /// thumbnail is anchored top-left, so what is left over is a strip down
-  /// the right and a strip along the bottom. A single sprite would have
-  /// to cover the thumbnail as well, and being composited *under* a
-  /// part-transparent thumbnail it would tint the content too -- the
-  /// whole window would read as solid, which is the bug this replaces.
-  ///
-  /// Painted here rather than on the surrogate because the surrogate can
-  /// only ask for a solid backdrop through SWCA, and an SWCA accent
-  /// renders opaque whatever alpha it is given. A sprite takes a real
-  /// opacity, so the fill can match the window's own `transparency` and
-  /// sit over the backdrop the way the settled window does.
-  gap_brush: CompositionColorBrush,
-  gap_right: SpriteVisual,
-  gap_bottom: SpriteVisual,
 
   /// Everything baked into the wallpaper image. Kept whole so any one
   /// setter can re-render using the others' current values.
@@ -305,26 +283,19 @@ impl BackdropVisual {
     })
   }
 
-  /// Resizes the visual tree's clip and both child visuals to match
-  /// `rect`. Does not reposition the `HWND` itself -- callers still issue
-  /// their own `SetWindowPos`, exactly as with the SWCA path.
+  /// Resizes the clip and re-aims the wallpaper crop to match `rect`. Does
+  /// not reposition the `HWND` itself -- callers still issue their own
+  /// `SetWindowPos`.
   ///
-  /// Must resize `root`/`backdrop_sprite`/`tint_sprite` in addition to the
-  /// clip geometry -- they're independently-sized visuals set once in
-  /// `build_visual_tree` and never otherwise touched, so leaving them out
-  /// here left them pinned at their creation-time size while only the clip
-  /// grew, showing blur/tint over just the original area and nothing over
-  /// the rest whenever the overlay's `HWND` was resized after creation.
+  /// The visuals themselves need no write: they are sized relative to the
+  /// window (see `build_visual_tree`), so DWM resizes them in the same
+  /// frame as the `HWND`. Only the clip geometry, which has no relative
+  /// sizing, is set explicitly.
   pub(crate) fn set_rect(&mut self, rect: &Rect) -> crate::Result<()> {
-    let size = Vector2 {
+    self.rounded_geometry.SetSize(Vector2 {
       X: pixels_to_dips(rect.width()),
       Y: pixels_to_dips(rect.height()),
-    };
-    self.root.SetSize(size)?;
-    self.backdrop_sprite.SetSize(size)?;
-    self.tint_sprite.SetSize(size)?;
-    self.vignette_sprite.SetSize(size)?;
-    self.rounded_geometry.SetSize(size)?;
+    })?;
 
     self.sync_crop(rect)?;
     Ok(())
@@ -424,61 +395,7 @@ impl BackdropVisual {
     })
   }
 
-  /// Updates the tint layer's color; no-op unless the value changed.
-  /// Paints `color` at `opacity` over the two strips of this overlay that
-  /// the surrogate's thumbnail does not cover, and clears them when there
-  /// is nothing uncovered.
-  ///
-  /// `covered` is the thumbnail's size, `full` the overlay's; both in
-  /// physical pixels, both anchored top-left, which is where DWM draws the
-  /// thumbnail. Passing a `covered` at least as large as `full` on both
-  /// axes hides the fill, which is the steady state for a pure move or a
-  /// shrink.
-  pub(crate) fn set_gap_fill(
-    &self,
-    color: Option<crate::Color>,
-    opacity: f32,
-    covered: (i32, i32),
-    full: (i32, i32),
-  ) -> crate::Result<()> {
-    let right_w = (full.0 - covered.0).max(0);
-    let bottom_h = (full.1 - covered.1).max(0);
-    let Some(color) = color.filter(|_| right_w > 0 || bottom_h > 0) else {
-      self.gap_right.SetSize(Vector2 { X: 0.0, Y: 0.0 })?;
-      self.gap_bottom.SetSize(Vector2 { X: 0.0, Y: 0.0 })?;
-      return Ok(());
-    };
-
-    self.gap_brush.SetColor(to_ui_color(color))?;
-
-    // The right strip takes the full height and the bottom strip only the
-    // covered width, so the two meet without overlapping -- overlapping
-    // would double-composite the corner and show it darker than the rest.
-    self.gap_right.SetOffset(Vector3 {
-      X: pixels_to_dips(covered.0),
-      Y: 0.0,
-      Z: 0.0,
-    })?;
-    self.gap_right.SetSize(Vector2 {
-      X: pixels_to_dips(right_w),
-      Y: pixels_to_dips(full.1),
-    })?;
-    self.gap_right.SetOpacity(opacity)?;
-
-    self.gap_bottom.SetOffset(Vector3 {
-      X: 0.0,
-      Y: pixels_to_dips(covered.1),
-      Z: 0.0,
-    })?;
-    self.gap_bottom.SetSize(Vector2 {
-      X: pixels_to_dips(covered.0.min(full.0)),
-      Y: pixels_to_dips(bottom_h),
-    })?;
-    self.gap_bottom.SetOpacity(opacity)?;
-
-    Ok(())
-  }
-
+  /// Updates the tint layer's color.
   pub(crate) fn set_tint(&self, tint: crate::Color) -> crate::Result<()> {
     self.tint_brush.SetColor(to_ui_color(tint))?;
 
@@ -688,9 +605,18 @@ fn pixels_to_dips(pixels: i32) -> f32 {
   pixels as f32
 }
 
+/// `RelativeSizeAdjustment` making a visual track its parent's size (or,
+/// for a target's root, the `HWND`'s) with no explicit size writes.
+const FILL_PARENT: Vector2 = Vector2 { X: 1.0, Y: 1.0 };
+
 /// Builds the full visual tree: a `ContainerVisual` rooting the
 /// [`Backdrop`] sprite and a tint sprite (flat color) stacked above it,
 /// both clipped by a shared rounded rectangle geometry.
+///
+/// Every visual is sized relative to the window rather than given an
+/// explicit size, so a resize of the `HWND` resizes them in the same DWM
+/// frame with no property writes at all -- only the clip geometry, which
+/// has no relative sizing, follows through `set_rect`.
 fn build_visual_tree(
   compositor: &Compositor,
   queue: &DispatcherQueue,
@@ -705,15 +631,11 @@ fn build_visual_tree(
       .CreateDesktopWindowTarget(hwnd, false)?
   };
 
-  let width = pixels_to_dips(rect.width());
-  let height = pixels_to_dips(rect.height());
-  let size = Vector2 {
-    X: width,
-    Y: height,
-  };
-
   let rounded_geometry = compositor.CreateRoundedRectangleGeometry()?;
-  rounded_geometry.SetSize(size)?;
+  rounded_geometry.SetSize(Vector2 {
+    X: pixels_to_dips(rect.width()),
+    Y: pixels_to_dips(rect.height()),
+  })?;
   rounded_geometry.SetCornerRadius(Vector2 {
     X: params.corner_radius,
     Y: params.corner_radius,
@@ -721,11 +643,9 @@ fn build_visual_tree(
   let clip =
     compositor.CreateGeometricClipWithGeometry(&rounded_geometry)?;
 
-  let backdrop_sprite = compositor.CreateSpriteVisual()?;
-  backdrop_sprite.SetSize(size)?;
-
   let (brush, monitor) =
     wallpaper_surface::crop_brush(compositor, rect, params)?;
+  let backdrop_sprite = compositor.CreateSpriteVisual()?;
   backdrop_sprite.SetBrush(&brush)?;
 
   let backdrop = Backdrop {
@@ -738,34 +658,19 @@ fn build_visual_tree(
     compositor.CreateColorBrushWithColor(to_ui_color(params.tint))?;
   let tint_sprite = compositor.CreateSpriteVisual()?;
   tint_sprite.SetBrush(&tint_brush)?;
-  tint_sprite.SetSize(size)?;
 
   let vignette_brush = build_vignette_brush(compositor, params.vignette)?;
   let vignette_sprite = compositor.CreateSpriteVisual()?;
   vignette_sprite.SetBrush(&vignette_brush)?;
-  vignette_sprite.SetSize(size)?;
-
-  // Zero-sized until a resize session actually uncovers something; see the
-  // field docs. Topmost so the fill reads as window content sitting on the
-  // backdrop, not as another layer of backdrop.
-  let gap_brush =
-    compositor.CreateColorBrushWithColor(to_ui_color(params.tint))?;
-  let gap_right = compositor.CreateSpriteVisual()?;
-  gap_right.SetBrush(&gap_brush)?;
-  gap_right.SetSize(Vector2 { X: 0.0, Y: 0.0 })?;
-  let gap_bottom = compositor.CreateSpriteVisual()?;
-  gap_bottom.SetBrush(&gap_brush)?;
-  gap_bottom.SetSize(Vector2 { X: 0.0, Y: 0.0 })?;
 
   let root = compositor.CreateContainerVisual()?;
-  root.SetSize(size)?;
+  root.SetRelativeSizeAdjustment(FILL_PARENT)?;
   root.SetClip(&clip)?;
   root.SetOpacity(params.opacity)?;
-  root.Children()?.InsertAtTop(&backdrop_sprite)?;
-  root.Children()?.InsertAtTop(&tint_sprite)?;
-  root.Children()?.InsertAtTop(&vignette_sprite)?;
-  root.Children()?.InsertAtTop(&gap_right)?;
-  root.Children()?.InsertAtTop(&gap_bottom)?;
+  for sprite in [&backdrop_sprite, &tint_sprite, &vignette_sprite] {
+    sprite.SetRelativeSizeAdjustment(FILL_PARENT)?;
+    root.Children()?.InsertAtTop(sprite)?;
+  }
 
   target.SetRoot(&root)?;
 
@@ -775,18 +680,127 @@ fn build_visual_tree(
     queue: queue.clone(),
     backdrop,
     root,
-    backdrop_sprite,
-    tint_sprite,
     tint_brush,
     vignette_brush,
     vignette_sprite,
-    gap_brush,
-    gap_right,
-    gap_bottom,
     rounded_geometry,
     knobs: params.into(),
     parallax: params.parallax,
   })
+}
+
+/// A surrogate's gap fill: a solid color painted over the part of the
+/// surrogate its DWM thumbnail does not cover, standing in for window
+/// content the thumbnail has not caught up to yet mid-resize.
+///
+/// Rooted on the surrogate's own `HWND`, underneath the thumbnail (DWM
+/// draws thumbnails above a non-topmost `DesktopWindowTarget`), so it
+/// moves with the surrogate atomically and never tints the content above
+/// it.
+///
+/// The uncovered area is an L -- the thumbnail is anchored top-left -- so
+/// it is two sprites: a full-height strip right of the covered width, and
+/// a bottom strip under it only as wide as the covered width, so the two
+/// never overlap and double-composite the corner. Both size themselves
+/// relative to the window, offset by the covered size: a per-frame resize
+/// of the surrogate needs no composition write at all, and a strip whose
+/// relative size goes negative (the surrogate narrower than the thumbnail)
+/// simply renders nothing.
+pub(crate) struct SurrogateFill {
+  /// Binds the visual tree to the surrogate's `HWND`. Kept alive but
+  /// never touched again -- dropping it would unbind composition from
+  /// the window.
+  _target: DesktopWindowTarget,
+  root: ContainerVisual,
+  brush: CompositionColorBrush,
+  right: SpriteVisual,
+  bottom: SpriteVisual,
+}
+
+impl SurrogateFill {
+  /// Builds a hidden fill rooted on `hwnd`, which must have been created
+  /// with `WS_EX_NOREDIRECTIONBITMAP`.
+  pub(crate) fn create(hwnd: HWND) -> crate::Result<Self> {
+    let hwnd_raw = hwnd.0;
+
+    with_composition_thread(move |compositor, _| {
+      // SAFETY: `hwnd` is a valid, already-created top-level window.
+      let target = unsafe {
+        compositor
+          .cast::<ICompositorDesktopInterop>()?
+          .CreateDesktopWindowTarget(HWND(hwnd_raw), false)?
+      };
+
+      let brush = compositor.CreateColorBrush()?;
+      let right = compositor.CreateSpriteVisual()?;
+      right.SetBrush(&brush)?;
+      right.SetRelativeSizeAdjustment(FILL_PARENT)?;
+      let bottom = compositor.CreateSpriteVisual()?;
+      bottom.SetBrush(&brush)?;
+      bottom.SetRelativeSizeAdjustment(Vector2 { X: 0.0, Y: 1.0 })?;
+
+      let root = compositor.CreateContainerVisual()?;
+      root.SetRelativeSizeAdjustment(FILL_PARENT)?;
+      root.SetIsVisible(false)?;
+      root.Children()?.InsertAtTop(&right)?;
+      root.Children()?.InsertAtTop(&bottom)?;
+      target.SetRoot(&root)?;
+
+      Ok(Self {
+        _target: target,
+        root,
+        brush,
+        right,
+        bottom,
+      })
+    })
+  }
+
+  /// Shows the fill in `color`, or hides it when `None`.
+  pub(crate) fn set_color(
+    &self,
+    color: Option<crate::Color>,
+  ) -> crate::Result<()> {
+    if let Some(color) = color {
+      self.brush.SetColor(to_ui_color(color))?;
+    }
+    self.root.SetIsVisible(color.is_some())?;
+    Ok(())
+  }
+
+  /// Sets the thumbnail's covered size, in physical pixels from the
+  /// surrogate's top-left.
+  pub(crate) fn set_covered(
+    &self,
+    covered: (i32, i32),
+  ) -> crate::Result<()> {
+    let (width, height) =
+      (pixels_to_dips(covered.0), pixels_to_dips(covered.1));
+
+    self.right.SetOffset(Vector3 {
+      X: width,
+      Y: 0.0,
+      Z: 0.0,
+    })?;
+    self.right.SetSize(Vector2 { X: -width, Y: 0.0 })?;
+    self.bottom.SetOffset(Vector3 {
+      X: 0.0,
+      Y: height,
+      Z: 0.0,
+    })?;
+    self.bottom.SetSize(Vector2 {
+      X: width,
+      Y: -height,
+    })?;
+    Ok(())
+  }
+
+  /// Sets the fill's opacity, which tracks the thumbnail's so the fill
+  /// fades with the content it stands in for.
+  pub(crate) fn set_opacity(&self, opacity: f32) -> crate::Result<()> {
+    self.root.SetOpacity(opacity)?;
+    Ok(())
+  }
 }
 
 /// A live `Windows.UI.Composition` visual tree providing a border
