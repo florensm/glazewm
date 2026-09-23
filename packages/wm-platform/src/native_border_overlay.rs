@@ -280,7 +280,7 @@ impl NativeBorderOverlay {
     if let Err(e) = unsafe {
       SetWindowPos(
         hwnd,
-        anchor,
+        window_class::insert_after_point(anchor),
         outer.x(),
         outer.y(),
         outer.width(),
@@ -464,7 +464,7 @@ impl NativeBorderOverlay {
     if let Err(e) = unsafe {
       SetWindowPos(
         self.hwnd(),
-        anchor,
+        window_class::insert_after_point(anchor),
         outer.x(),
         outer.y(),
         outer.width(),
@@ -542,7 +542,8 @@ impl NativeBorderOverlay {
     // SAFETY: `self.hwnd()` is a valid window handle for the lifetime of
     // this struct.
     let prev = unsafe { GetWindow(self.hwnd(), GW_HWNDPREV) };
-    if !force && prev == anchor {
+    let insert_after = window_class::insert_after_point(anchor);
+    if !force && prev == insert_after {
       self.anchor = anchor.0;
       return Ok(());
     }
@@ -552,7 +553,7 @@ impl NativeBorderOverlay {
     unsafe {
       SetWindowPos(
         self.hwnd(),
-        anchor,
+        insert_after,
         0,
         0,
         0,
@@ -721,7 +722,7 @@ impl NativeBorderOverlay {
       if let Err(e) = unsafe {
         SetWindowPos(
           self.hwnd(),
-          anchor,
+          window_class::insert_after_point(anchor),
           viewport.x(),
           viewport.y(),
           viewport.width(),
