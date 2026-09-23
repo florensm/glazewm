@@ -326,9 +326,7 @@ impl Stage {
   /// tree above, but attributing them to any single parent would be wrong.
   /// `SurrogateBatch::commit`, for instance, runs from the shared
   /// surrogate/session-overlay batch, both overlay sync passes, the cloak
-  /// commit and the cleanup tail -- an earlier version of this report
-  /// indented it under `surrogate_flush`, where its total exceeded its
-  /// supposed parent's.
+  /// commit and the cleanup tail.
   const fn is_cross_cutting(self) -> bool {
     matches!(
       self,

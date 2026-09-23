@@ -174,11 +174,8 @@ pub fn platform_sync(
   // fall back to resyncing every non-redrawing window's z-order this one
   // tick instead of only `z_order_touched`'s narrower set (see the field's
   // doc comment on `AnimationManager`). Read and cleared once here so both
-  // overlay kinds observe the same value regardless of call order --
-  // previously each `sync_overlays` instantiation read and
-  // cleared this flag independently, so whichever ran first silently
-  // consumed it even when its own overlay kind wasn't configured for any
-  // window, leaving the other permanently starved of the full resync.
+  // overlay kinds see it: clearing it per `sync_overlays` call let
+  // whichever ran first consume it and starve the other.
   #[cfg(target_os = "windows")]
   let full_z_order_resync = std::mem::take(
     &mut state.animation_manager.backdrop_overlay_z_order_dirty,
@@ -1625,13 +1622,10 @@ fn redraw_containers(
   // flush covers every window that completed an animation this pass,
   // rather than blocking once per window.
   //
-  // Distinct from the flush `perf(anim): defer a session's first fade step
-  // instead of blocking on DwmFlush` (1d249565) removed -- that one was in
-  // the animation-cleanup path, which has a later tick to defer to. This
-  // one has no such tick: the alpha it is closing over belongs to the
-  // frame being composed right now, and without it a window using the
-  // `transparency` effect composites at the wrong alpha for a frame on
-  // every move or resize landing.
+  // Unlike the cleanup path's flush, this one cannot be deferred to a
+  // later tick: the alpha belongs to the frame being composed now, and
+  // without it a window using the `transparency` effect composites at the
+  // wrong alpha for a frame on every move or resize landing.
   #[cfg(target_os = "windows")]
   if needs_transparency_flush {
     wm_platform::dwm_flush();
@@ -2286,15 +2280,11 @@ fn is_shown_on_top(window: &WindowContainer) -> bool {
 /// Resolves the z-order anchor to keep `window`'s overlays pinned directly
 /// behind it (see [`NativeBackdropOverlay`]'s doc comment).
 ///
-/// Always the window's own handle, including for "always on top" windows.
-/// Windows keeps those in a separate band above everything else, and an
-/// earlier version returned `HWND_TOPMOST` for them so the overlay would
-/// join that band -- but `HWND_TOPMOST` is an insert-after *pseudo-handle*
-/// meaning "top of the band", which put the overlay above the very window
-/// it belongs behind. It also made the overlay's own "am I already in the
-/// right place?" check unsatisfiable, since a pseudo-handle never equals a
-/// real one, so every sync issued a fresh `SetWindowPos` that re-raised
-/// it.
+/// Always the window's own handle, including for "always on top" windows:
+/// `HWND_TOPMOST` is an insert-after *pseudo-handle* meaning "top of the
+/// band", which would put the overlay above the very window it belongs
+/// behind, and never equals a real handle in the "already in place?"
+/// check.
 ///
 /// Band membership is handled separately, by `window_class::match_z_band`,
 /// which the overlays call before positioning themselves.

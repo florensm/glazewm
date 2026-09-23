@@ -77,14 +77,9 @@ pub fn handle_window_moved_or_resized(
         // Keep the backdrop glued to the window for the gesture, the same
         // way the border below is.
         //
-        // This used to hide it instead. An interactive drag is driven
-        // entirely by the OS -- it moves the window and we only hear about
-        // it afterwards, one `MovedOrResized` event at a time -- so the
-        // overlay always trails a motion it cannot predict, and a
-        // window-sized backdrop trailing was judged to read worse than no
-        // backdrop at all. It also left the window with no backdrop for
-        // the whole drag, and -- until the sync that restores it happened
-        // to run -- after it too.
+        // The overlay trails an OS-driven drag by an event, but hiding it
+        // instead leaves the window without a backdrop for the whole drag,
+        // and after it until the next sync restores it.
         //
         // Both overlays go into the same batch and land in one
         // `DeferWindowPos` commit below, so the backdrop cannot separate
