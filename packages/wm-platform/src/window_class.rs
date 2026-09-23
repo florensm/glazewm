@@ -17,12 +17,9 @@ use windows::{
 /// per process for the given `registered` cell.
 ///
 /// Shared by the overlay window types ([`NativeSurrogate`],
-/// [`NativeBackdropOverlay`],
-/// [`NativeBorderOverlay`], [`NativeIrisOverlay`]), which each need a
-/// distinct class name and (for the iris overlay) window procedure, but
-/// otherwise register identically -- previously each copy-pasted its own
-/// `OnceLock`
-/// + `WNDCLASSW` + `RegisterClassW` call.
+/// [`NativeBackdropOverlay`], [`NativeBorderOverlay`],
+/// [`NativeIrisOverlay`]), which differ only in class name and (for the
+/// iris overlay) window procedure.
 ///
 /// [`NativeSurrogate`]: crate::NativeSurrogate
 /// [`NativeBackdropOverlay`]: crate::NativeBackdropOverlay
@@ -42,9 +39,8 @@ pub(crate) fn ensure_class_registered(
     let wnd_class = WNDCLASSW {
       lpszClassName: class_name,
       lpfnWndProc: Some(wnd_proc),
-      // Null background brush: SWCA/Composition (or, for the surrogate,
-      // the DWM thumbnail) paint the client area; GDI never touches
-      // it.
+      // Null background brush: composition (or, for the surrogate, the
+      // DWM thumbnail) paints the client area; GDI never touches it.
       ..Default::default()
     };
 

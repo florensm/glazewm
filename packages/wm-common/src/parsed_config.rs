@@ -1559,9 +1559,7 @@ mod tests {
     assert!(disabled.overlay_tint().is_none());
   }
 
-  /// With no explicit tint, the fallback is near-transparent black rather
-  /// than fully transparent -- SWCA renders a solid fill at `alpha = 0` on
-  /// some Windows 10 builds.
+  /// With no explicit tint, the fallback is near-transparent black.
   #[test]
   fn overlay_tint_defaults_to_near_transparent_black() {
     let config = BackdropEffectConfig {

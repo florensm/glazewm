@@ -139,14 +139,10 @@ impl WorkspaceSurrogate {
   /// surrogate to [`SurrogateMode::Live`] -- sized/moved to its own
   /// footprint rather than pinned to the viewport -- so a live-tracking
   /// backdrop overlay (see [`current_rect`], driven from
-  /// `AnimationManager`) has a meaningful per-frame rect to follow. This
-  /// no longer applies SWCA to the surrogate itself: SWCA has no
-  /// adjustable blur radius, so the actual frosted-glass backdrop
-  /// instead comes from the same `Windows.UI.Composition`-based overlay
-  /// used in steady state, kept alive and repositioned to this
-  /// surrogate's footprint for the whole slide instead of being hidden
-  /// -- avoiding both the fixed-intensity mismatch and the handoff flash
-  /// a separate SWCA application would cause.
+  /// `AnimationManager`) has a meaningful per-frame rect to follow. The
+  /// backdrop is the same overlay used in steady state, kept alive and
+  /// repositioned to this surrogate's footprint for the whole slide, so
+  /// there is no handoff flash between two backdrops.
   ///
   /// [`current_rect`]: WorkspaceSurrogate::current_rect
   ///

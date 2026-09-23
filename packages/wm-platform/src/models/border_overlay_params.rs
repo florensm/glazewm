@@ -19,8 +19,7 @@ pub struct BorderOverlayParams {
   pub color: Color,
   /// Ring thickness, in physical pixels.
   pub width: f32,
-  /// Corner radius, in pixels, of the ring's outer edge. No-op in the
-  /// SWCA fallback.
+  /// Corner radius, in pixels, of the ring's outer edge.
   pub corner_radius: f32,
   /// Opacity of the overlay's whole composited visual, from `0.0` to
   /// `1.0`.
