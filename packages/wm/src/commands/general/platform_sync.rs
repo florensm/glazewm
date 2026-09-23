@@ -22,7 +22,7 @@ use wm_platform::{
 use wm_platform::{
   BackdropOverlayParams, BorderOverlayParams, CornerStyle,
   NativeBackdropOverlay, NativeBorderOverlay, NativeIrisOverlay,
-  OpacityValue, SurrogateBatch, WorkspaceSurrogate, HWND,
+  OpacityValue, Overlay, SurrogateBatch, WorkspaceSurrogate, HWND,
 };
 
 #[cfg(target_os = "windows")]
@@ -2304,26 +2304,12 @@ pub(crate) fn overlay_z_anchor(window: &WindowContainer) -> HWND {
   window.native().hwnd()
 }
 
-/// A per-window overlay effect (backdrop or border) kept in sync with its
-/// window's rect and z-order every `platform_sync` tick.
-///
-/// Implemented for [`NativeBackdropOverlay`] and [`NativeBorderOverlay`]
-/// so
-/// [`sync_overlays`] can drive both through one shared implementation
-/// instead of two ~160-line copies that had drifted enough to hide a real
-/// bug -- see `full_z_order_resync`'s doc comment at the `sync_overlays`
-/// call site.
+/// The WM-side half of an [`Overlay`]: where its instances live in
+/// `WmState` and how its params are resolved from the user config, so
+/// [`sync_overlays`] drives the backdrop and border through one path.
 #[cfg(target_os = "windows")]
-pub(crate) trait SyncableOverlay: Sized {
-  /// Effect-specific config resolved from `WindowEffectConfig`
-  /// (tint/blur-amount for the backdrop, color/width for the border).
-  /// `Copy` so [`sync_overlays`]
-  /// can resolve it once per focus class (focused/other) instead of once
-  /// per window -- see the call site.
-  type Params: Copy;
-
-  /// Label used in this overlay kind's debug log messages (e.g.
-  /// `"Backdrop"`).
+pub(crate) trait SyncableOverlay: Overlay {
+  /// Label used in this overlay kind's debug log messages.
   const LABEL: &'static str;
 
   /// Profiler stage this overlay kind's [`sync_overlays`] pass reports as.
@@ -2334,54 +2320,28 @@ pub(crate) trait SyncableOverlay: Sized {
     state: &mut WmState,
   ) -> &mut std::collections::HashMap<uuid::Uuid, Self>;
 
-  /// Resolves the focused/other-window config's params, or `None` when
-  /// this effect isn't enabled for that focus class.
-  ///
-  /// Depends only on `is_focused` and `config`, not on any particular
-  /// window -- [`sync_overlays`] calls this twice per tick (once per focus
-  /// class) rather than once per window.
+  /// Resolves the focused/other-window params, or `None` when this effect
+  /// isn't enabled for that focus class. Depends only on its arguments,
+  /// so [`sync_overlays`] resolves it once per focus class, not per
+  /// window.
   fn params_for(
     is_focused: bool,
     config: &UserConfig,
   ) -> Option<Self::Params>;
 
-  /// Whether this effect is suppressed for one specific window, despite
-  /// being configured for its focus class.
-  ///
-  /// The per-window escape hatch to [`params_for`]'s per-focus-class
-  /// resolution. A suppressed overlay is hidden rather than destroyed, the
-  /// same as one whose focus class doesn't want it.
+  /// Whether this effect is suppressed for one specific window despite
+  /// being configured for its focus class. A suppressed overlay is hidden
+  /// rather than destroyed.
   fn suppressed_for(
     _window: &WindowContainer,
     _config: &UserConfig,
   ) -> bool {
     false
   }
-
-  fn create(
-    rect: &Rect,
-    params: Self::Params,
-    anchor: HWND,
-  ) -> wm_platform::Result<Self>;
-  fn apply(&mut self, params: Self::Params);
-  fn defer_rect(
-    &mut self,
-    batch: &mut SurrogateBatch,
-    rect: &Rect,
-    anchor: HWND,
-  );
-  fn sync_z_order(
-    &mut self,
-    anchor: HWND,
-    force: bool,
-  ) -> wm_platform::Result<()>;
-  fn is_visible(&self) -> bool;
-  fn hide(&mut self);
 }
 
 #[cfg(target_os = "windows")]
 impl SyncableOverlay for NativeBackdropOverlay {
-  type Params = BackdropOverlayParams;
   const LABEL: &'static str = "Backdrop";
   const PERF_STAGE: Stage = Stage::BackdropSync;
 
@@ -2397,48 +2357,10 @@ impl SyncableOverlay for NativeBackdropOverlay {
   ) -> Option<Self::Params> {
     backdrop_overlay_params_for(is_focused, config)
   }
-
-  fn create(
-    rect: &Rect,
-    params: Self::Params,
-    anchor: HWND,
-  ) -> wm_platform::Result<Self> {
-    Self::create(rect, params, anchor)
-  }
-
-  fn apply(&mut self, params: Self::Params) {
-    Self::apply(self, params);
-  }
-
-  fn defer_rect(
-    &mut self,
-    batch: &mut SurrogateBatch,
-    rect: &Rect,
-    anchor: HWND,
-  ) {
-    Self::defer_rect(self, batch, rect, anchor);
-  }
-
-  fn sync_z_order(
-    &mut self,
-    anchor: HWND,
-    force: bool,
-  ) -> wm_platform::Result<()> {
-    Self::sync_z_order(self, anchor, force)
-  }
-
-  fn is_visible(&self) -> bool {
-    Self::is_visible(self)
-  }
-
-  fn hide(&mut self) {
-    Self::hide(self);
-  }
 }
 
 #[cfg(target_os = "windows")]
 impl SyncableOverlay for NativeBorderOverlay {
-  type Params = BorderOverlayParams;
   const LABEL: &'static str = "Border";
   const PERF_STAGE: Stage = Stage::BorderSync;
 
@@ -2460,43 +2382,6 @@ impl SyncableOverlay for NativeBorderOverlay {
     config: &UserConfig,
   ) -> bool {
     border_hidden_for_fullscreen(window, config)
-  }
-
-  fn create(
-    rect: &Rect,
-    params: Self::Params,
-    anchor: HWND,
-  ) -> wm_platform::Result<Self> {
-    Self::create(rect, params, anchor)
-  }
-
-  fn apply(&mut self, params: Self::Params) {
-    Self::apply(self, params);
-  }
-
-  fn defer_rect(
-    &mut self,
-    batch: &mut SurrogateBatch,
-    rect: &Rect,
-    anchor: HWND,
-  ) {
-    Self::defer_rect(self, batch, rect, anchor);
-  }
-
-  fn sync_z_order(
-    &mut self,
-    anchor: HWND,
-    force: bool,
-  ) -> wm_platform::Result<()> {
-    Self::sync_z_order(self, anchor, force)
-  }
-
-  fn is_visible(&self) -> bool {
-    Self::is_visible(self)
-  }
-
-  fn hide(&mut self) {
-    Self::hide(self);
   }
 }
 
