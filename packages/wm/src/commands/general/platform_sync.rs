@@ -2684,9 +2684,7 @@ fn sync_overlays<O: SyncableOverlay>(
 ///
 /// `sync_z_order` re-matches the topmost band before re-stacking, which is
 /// what repairs a band change that landed after the pass that stacked the
-/// overlay. With both overlays present each tick re-stacks both (each
-/// displaces the other from "directly behind"), which for our own windows
-/// is a cheap no-op move.
+/// overlay.
 ///
 /// The settle is extended rather than left to run out while it cannot
 /// finish yet: while the window still has a surrogate (the animation code
