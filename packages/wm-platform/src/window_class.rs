@@ -149,6 +149,85 @@ pub(crate) fn insert_above_point(anchor: HWND, overlay: HWND) -> HWND {
   }
 }
 
+/// Where to put `overlay` so it covers `anchor`: whether it belongs in the
+/// always-on-top band, and the insert-after handle within it.
+///
+/// While `anchor` is the highest visible window of the normal band, the
+/// overlay goes to the *bottom* of the topmost band rather than directly
+/// above `anchor`. On screen that's the same spot, but Windows lifts a
+/// window to the top of its band whenever one of its owned popups opens (a
+/// dropdown, a menu, a tooltip): in the same band, that lift covers the
+/// overlay until it's noticed and undone, which shows as a flash of the
+/// untouched window. As soon as any other visible window is above
+/// `anchor`, the overlay goes back directly above it, so it never covers
+/// unrelated windows.
+pub(crate) fn above_placement(
+  anchor: HWND,
+  overlay: HWND,
+) -> (bool, HWND) {
+  if is_topmost(anchor) {
+    return (true, insert_above_point(anchor, overlay));
+  }
+
+  let mut current = anchor;
+
+  for _ in 0..MAX_INSERT_AFTER_WALK {
+    // SAFETY: A stale handle just makes `GetWindow` return `HWND(0)`.
+    current = unsafe { GetWindow(current, GW_HWNDPREV) };
+
+    // Nothing is topmost at all: the top of the topmost band is also its
+    // bottom.
+    if current.0 == 0 {
+      return (true, HWND_TOPMOST);
+    }
+
+    if current == overlay {
+      continue;
+    }
+
+    // The lowest topmost window: insert right below it.
+    if is_topmost(current) {
+      return (true, current);
+    }
+
+    // SAFETY: A stale handle just makes `IsWindowVisible` return false.
+    if unsafe { IsWindowVisible(current) }.as_bool() {
+      break;
+    }
+  }
+
+  (false, insert_above_point(anchor, overlay))
+}
+
+/// Moves `window` into or out of the always-on-top band, if it isn't
+/// there already.
+pub(crate) fn set_topmost(window: HWND, topmost: bool) {
+  if is_topmost(window) == topmost {
+    return;
+  }
+
+  let band = if topmost {
+    HWND_TOPMOST
+  } else {
+    HWND_NOTOPMOST
+  };
+
+  // SAFETY: `window` is valid; the flags only move it between bands.
+  if let Err(err) = unsafe {
+    SetWindowPos(
+      window,
+      band,
+      0,
+      0,
+      0,
+      0,
+      SWP_NOACTIVATE | SWP_NOSENDCHANGING | SWP_NOMOVE | SWP_NOSIZE,
+    )
+  } {
+    tracing::warn!("Overlay topmost-band change failed: {err}.");
+  }
+}
+
 /// Whether `anchor` is the first *visible* window below `overlay`.
 ///
 /// Hidden windows in between don't count: apps keep hidden IME helper

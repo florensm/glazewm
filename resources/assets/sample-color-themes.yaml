@@ -21,7 +21,8 @@ themes:
     foreground: "#d4d4d4"
 
     # Pixels more saturated than this (0.0-1.0) skip the ramp, which keeps
-    # images and icons in their original colors.
+    # images and icons in their original colors. Light pixels get a higher
+    # threshold, so pale tints (hover and selection highlights) darken too.
     saturation_threshold: 0.15
 
     # Explicit color -> color mappings, applied on top of the ramp (up to

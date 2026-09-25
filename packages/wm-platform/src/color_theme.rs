@@ -17,6 +17,17 @@ pub const MAX_COLOR_OVERRIDES: usize = 16;
 /// blue (the most chromatic sRGB primary).
 const MAX_CHROMA: f32 = 0.32;
 
+/// OKLab lightness over which a color goes from judged by the configured
+/// saturation threshold to judged as a pale tint (see [`tint_threshold`]).
+const TINT_LIGHTNESS_START: f32 = 0.8;
+const TINT_LIGHTNESS_FULL: f32 = 0.9;
+
+/// How much a pale tint's saturation threshold is scaled up, and the
+/// saturation it's capped at so vivid light colors (yellow, amber, light
+/// green) still keep their color.
+const TINT_THRESHOLD_SCALE: f32 = 2.5;
+const TINT_THRESHOLD_MAX: f32 = 0.4;
+
 /// OKLab distance between the darkest and lightest neighbor over which a
 /// pixel goes from flat to fully treated as an anti-aliased edge.
 const EDGE_START: f32 = 0.02;
@@ -197,7 +208,8 @@ impl ColorTheme {
     if c.ramp_enabled != 0 {
       let chroma = lab[1].hypot(lab[2]);
       let saturation = (chroma / MAX_CHROMA).min(1.0);
-      let weight = ramp_weight(saturation, c.saturation_threshold);
+      let threshold = tint_threshold(c.saturation_threshold, lab[0]);
+      let weight = ramp_weight(saturation, threshold);
 
       // Lightness picks the spot on the ramp; the source's own chroma is
       // carried over so faintly tinted grays keep their tint.
@@ -559,6 +571,22 @@ fn ramp_weight(saturation: f32, threshold: f32) -> f32 {
   }
 }
 
+/// Saturation threshold for a color of OKLab `lightness`: `threshold`,
+/// raised for light colors.
+///
+/// Pale tints (hover and selection highlights, tinted panels) are surfaces
+/// that text sits on. Leaving one light while the text on it turns light
+/// makes that text unreadable, so they are ramped like grays.
+fn tint_threshold(threshold: f32, lightness: f32) -> f32 {
+  let tint = threshold
+    .max((threshold * TINT_THRESHOLD_SCALE).min(TINT_THRESHOLD_MAX));
+  lerp(
+    threshold,
+    tint,
+    smoothstep(TINT_LIGHTNESS_START, TINT_LIGHTNESS_FULL, lightness),
+  )
+}
+
 /// How much of an override applies at OKLab `distance` from its `from`
 /// color: fully at an exact match, easing out to none at `tolerance`.
 fn override_weight(distance: f32, tolerance: f32) -> f32 {
@@ -766,6 +794,26 @@ mod tests {
   }
 
   #[test]
+  fn pale_tints_are_ramped_like_grays() {
+    let theme = winter();
+
+    // WPF hover, pressed, and selection backgrounds.
+    for hex in ["#bee6fd", "#c4e5f6", "#cce8ff"] {
+      let themed = srgb_to_oklab(theme.apply(rgb(hex)));
+      assert!(themed[0] < 0.4, "{hex} stayed light: {themed:?}");
+    }
+  }
+
+  #[test]
+  fn vivid_light_colors_keep_their_color() {
+    let theme = winter();
+
+    for hex in ["#fff100", "#ffb900", "#90ee90"] {
+      assert_close(theme.apply(rgb(hex)), rgb(hex));
+    }
+  }
+
+  #[test]
   fn threshold_zero_disables_the_ramp() {
     let theme = ColorTheme::new(
       Some((color("#1e1e1e"), color("#d4d4d4"))),
@@ -775,6 +823,7 @@ mod tests {
     .expect("valid theme");
 
     assert_close(theme.apply(rgb("#ffffff")), rgb("#ffffff"));
+    assert_close(theme.apply(rgb("#bee6fd")), rgb("#bee6fd"));
   }
 
   #[test]

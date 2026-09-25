@@ -3,7 +3,7 @@ use std::collections::HashSet;
 use uuid::Uuid;
 use wm_common::WindowState;
 use wm_platform::{
-  ColorTheme, NativeColorThemeOverlay, NativeWindow,
+  Color, ColorTheme, NativeColorThemeOverlay, NativeWindow,
   NativeWindowWindowsExt, SurrogateBatch, WindowId, HWND,
 };
 
@@ -148,14 +148,16 @@ fn place_overlay(
       overlay.set_fill(fill.map(|color| theme.apply_color(color)));
       overlay.set_rect(&rect, surrogate);
     }
-    // The window is already at its final rect, under the surrogate.
+    // The window is already at its final rect, under the surrogate. Its
+    // last frame may still be at the old size, so the fill stays until a
+    // full-size one arrives.
     Some(ColorThemePlacement::FadingOut { surrogate }) => {
-      overlay.set_fill(None);
       set_rect_to_frame(overlay, window, surrogate);
+      overlay.release_fill();
     }
     Some(ColorThemePlacement::Hidden) => overlay.hide(),
     None => {
-      overlay.set_fill(None);
+      overlay.release_fill();
 
       if is_redrawing || !overlay.is_visible() {
         set_rect_to_frame(overlay, window, window.hwnd());
@@ -266,6 +268,14 @@ pub fn sync_color_theme_popup(
 
   match NativeColorThemeOverlay::create(hwnd, &rect, &theme, hwnd) {
     Ok(overlay) => {
+      // Popups are almost always light-backed, and would show unthemed
+      // until capture delivers its first frame.
+      overlay.set_placeholder(theme.apply_color(Color {
+        r: 255,
+        g: 255,
+        b: 255,
+        a: 255,
+      }));
       state
         .color_theme_popups
         .insert(hwnd.0, ColorThemePopup { owner, overlay });
