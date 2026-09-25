@@ -128,33 +128,7 @@ impl ThemedCapture {
     rect: &Rect,
     theme: &ColorTheme,
   ) -> crate::Result<Self> {
-    if !GraphicsCaptureSession::IsSupported()? {
-      return Err(crate::Error::Platform(
-        "Windows.Graphics.Capture is not supported on this system."
-          .to_string(),
-      ));
-    }
-
-    if is_more_elevated(source) {
-      return Err(crate::Error::Platform(
-        "Window belongs to an elevated process, which cannot be captured \
-         without running the WM as administrator."
-          .to_string(),
-      ));
-    }
-
-    // A window excluded from capture arrives as solid black, which the
-    // theme would turn into an opaque slab over the real window.
-    let mut affinity = 0u32;
-    // SAFETY: `affinity` outlives the call; a stale `source` just fails.
-    if unsafe { GetWindowDisplayAffinity(source, &raw mut affinity) }
-      .is_ok()
-      && affinity != WDA_NONE.0
-    {
-      return Err(crate::Error::Platform(
-        "Window blocks screen capture (display affinity).".to_string(),
-      ));
-    }
+    ensure_capturable(source)?;
 
     let failed = Arc::new(AtomicBool::new(false));
     let size = (
@@ -289,6 +263,39 @@ impl Drop for ThemedCapture {
     let _ = self.session.Close();
     let _ = self.frame_pool.Close();
   }
+}
+
+/// Fails for windows the capture can't theme correctly, so they are left
+/// alone rather than covered.
+fn ensure_capturable(source: HWND) -> crate::Result<()> {
+  if !GraphicsCaptureSession::IsSupported()? {
+    return Err(crate::Error::Platform(
+      "Windows.Graphics.Capture is not supported on this system."
+        .to_string(),
+    ));
+  }
+
+  if is_more_elevated(source) {
+    return Err(crate::Error::Platform(
+      "Window belongs to an elevated process, which cannot be captured \
+       without running the WM as administrator."
+        .to_string(),
+    ));
+  }
+
+  // A window excluded from capture arrives as solid black, which the
+  // theme would turn into an opaque slab over the real window.
+  let mut affinity = 0u32;
+  // SAFETY: `affinity` outlives the call; a stale `source` just fails.
+  if unsafe { GetWindowDisplayAffinity(source, &raw mut affinity) }.is_ok()
+    && affinity != WDA_NONE.0
+  {
+    return Err(crate::Error::Platform(
+      "Window blocks screen capture (display affinity).".to_string(),
+    ));
+  }
+
+  Ok(())
 }
 
 /// The D3D11 objects a themed frame is rendered with.
