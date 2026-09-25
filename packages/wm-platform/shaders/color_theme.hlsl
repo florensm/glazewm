@@ -19,6 +19,8 @@
 #define HUE_MIN_CHROMA 0.03
 #define HUE_AGREEMENT_START 0.6
 #define HUE_AGREEMENT_FULL 0.85
+#define PAPER_FRINGE_AGREEMENT_START 0.3
+#define PAPER_FRINGE_AGREEMENT_FULL 0.5
 #define INVERSION_FULL 0.1
 
 // Mirrors `ThemeConstants`.
@@ -163,6 +165,18 @@ float hue_agreement(float3 pixels[NEIGHBORHOOD_SIZE], float3 paper, float extrem
   return chroma_sum > 0.0 ? length(hue_sum) / chroma_sum : 1.0;
 }
 
+// Mirrors `channel_extreme`.
+float channel_extreme(float3 color, float extreme) {
+  return extreme > 0.5
+    ? max(max(color.r, color.g), color.b)
+    : min(min(color.r, color.g), color.b);
+}
+
+// Mirrors `neutral`.
+float3 neutral(float3 srgb) {
+  return oklab_to_srgb(float3(srgb_to_oklab(srgb).x, 0.0, 0.0));
+}
+
 // Mirrors `estimate_ink`.
 float3 estimate_ink(float3 endpoint, float3 paper, float extreme, float mixed_hues) {
   float3 span = paper - extreme;
@@ -179,15 +193,15 @@ float3 estimate_ink(float3 endpoint, float3 paper, float extreme, float mixed_hu
     (1.0 - smoothstep(SUBPIXEL_STEP_START, SUBPIXEL_STEP_FULL, channel_step))
     * mixed_hues;
 
-  float ink = extreme > 0.5
-    ? max(max(endpoint.r, endpoint.g), endpoint.b)
-    : min(min(endpoint.r, endpoint.g), endpoint.b);
-
-  return lerp(endpoint, ink, fringe);
+  return lerp(endpoint, channel_extreme(endpoint, extreme), fringe);
 }
 
 // Mirrors `edge_colors`.
-void edge_colors(float3 pixels[NEIGHBORHOOD_SIZE], out float3 dark, out float3 light) {
+void edge_colors(
+  float3 pixels[NEIGHBORHOOD_SIZE],
+  float paper_fringes,
+  out float3 dark,
+  out float3 light) {
   float3 center = pixels[NEIGHBORHOOD_SIZE / 2];
   dark = center;
   light = center;
@@ -215,8 +229,11 @@ void edge_colors(float3 pixels[NEIGHBORHOOD_SIZE], out float3 dark, out float3 l
   float mean_lightness = lightness_sum / NEIGHBORHOOD_SIZE;
   bool paper_is_light =
     (light_lightness - mean_lightness) < (mean_lightness - dark_lightness);
-  float3 paper = paper_is_light ? light : dark;
   float extreme = paper_is_light ? 0.0 : 1.0;
+  float3 paper = lerp(
+    paper_is_light ? light : dark,
+    channel_extreme(paper_is_light ? light : dark, 1.0 - extreme),
+    paper_fringes);
 
   float mixed_hues = 1.0 - smoothstep(
     HUE_AGREEMENT_START,
@@ -224,9 +241,11 @@ void edge_colors(float3 pixels[NEIGHBORHOOD_SIZE], out float3 dark, out float3 l
     hue_agreement(pixels, paper, extreme));
 
   if (paper_is_light) {
-    dark = estimate_ink(dark, light, 0.0, mixed_hues);
+    dark = estimate_ink(dark, paper, 0.0, mixed_hues);
+    light = paper;
   } else {
-    light = estimate_ink(light, dark, 1.0, mixed_hues);
+    dark = paper;
+    light = estimate_ink(light, paper, 1.0, mixed_hues);
   }
 }
 
@@ -246,9 +265,22 @@ float3 apply_neighborhood(float3 pixels[NEIGHBORHOOD_SIZE]) {
     return themed_center;
   }
 
+  float neutral_agreement = hue_agreement(pixels, float3(1.0, 1.0, 1.0), 0.0);
+  float fringes = 1.0 - smoothstep(
+    HUE_AGREEMENT_START,
+    HUE_AGREEMENT_FULL,
+    neutral_agreement);
+
   float3 dark;
   float3 light;
-  edge_colors(pixels, dark, light);
+  edge_colors(
+    pixels,
+    1.0 - smoothstep(
+      PAPER_FRINGE_AGREEMENT_START,
+      PAPER_FRINGE_AGREEMENT_FULL,
+      neutral_agreement),
+    dark,
+    light);
 
   float edge = smoothstep(
     EDGE_START,
@@ -296,7 +328,9 @@ float3 apply_neighborhood(float3 pixels[NEIGHBORHOOD_SIZE]) {
     inverted);
 
   float3 remixed = lerp(themed_light, themed_dark, remix_coverage);
-  return lerp(themed_center, remixed, edge * fit);
+  float3 unexplained =
+    lerp(themed_center, apply_theme(neutral(center)), edge * fringes);
+  return lerp(unexplained, remixed, edge * fit);
 }
 
 // Straight-alpha color at `position`, clamped to the captured content.

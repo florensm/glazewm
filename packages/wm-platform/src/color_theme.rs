@@ -55,6 +55,12 @@ const HUE_MIN_CHROMA: f32 = 0.03;
 const HUE_AGREEMENT_START: f32 = 0.6;
 const HUE_AGREEMENT_FULL: f32 = 0.85;
 
+/// Hue agreement against neutral below which the paper side is taken to
+/// be a fringe, fully at `START`. Stricter than [`HUE_AGREEMENT_START`]:
+/// colored paper with `ClearType` text on it agrees ~0.7.
+const PAPER_FRINGE_AGREEMENT_START: f32 = 0.3;
+const PAPER_FRINGE_AGREEMENT_FULL: f32 = 0.5;
+
 /// Coverage gamma for edges the theme turns light-on-dark, which read
 /// thinner than the same coverage dark-on-light.
 const INVERTED_TEXT_GAMMA: f32 = 1.4;
@@ -250,6 +256,7 @@ impl ColorTheme {
   /// and white steps harder and is left as real color. Where the theme
   /// flips dark ink to light, coverage is boosted the way native text
   /// renderers do, since light-on-dark text otherwise reads thinner.
+  /// Fringes the re-mix can't explain are themed by lightness alone.
   #[must_use]
   pub fn apply_neighborhood(
     &self,
@@ -271,7 +278,27 @@ impl ColorTheme {
       return themed_center;
     }
 
-    let (dark, light) = edge_colors(pixels);
+    // How consistent the window's hues are against neutral; opposing
+    // `ClearType` fringes cancel out. Judged against neutral rather than
+    // the paper: text too dense for the window to show any paper leaves
+    // only fringes to pick it from.
+    let neutral_agreement = hue_agreement(pixels, [1.0; 3], 0.0);
+    let fringes = 1.0
+      - smoothstep(
+        HUE_AGREEMENT_START,
+        HUE_AGREEMENT_FULL,
+        neutral_agreement,
+      );
+
+    let (dark, light) = edge_colors(
+      pixels,
+      1.0
+        - smoothstep(
+          PAPER_FRINGE_AGREEMENT_START,
+          PAPER_FRINGE_AGREEMENT_FULL,
+          neutral_agreement,
+        ),
+    );
 
     let edge = smoothstep(
       EDGE_START,
@@ -353,7 +380,13 @@ impl ColorTheme {
     );
 
     let remixed = lerp3(themed_light, themed_dark, coverage);
-    lerp3(themed_center, remixed, edge * fit)
+
+    // A fringe the re-mix can't explain would otherwise keep its
+    // `ClearType` color, being too saturated for the ramp. Its lightness
+    // still says how much ink it holds, so it is themed as that gray.
+    let unexplained =
+      lerp3(themed_center, self.apply(neutral(center)), edge * fringes);
+    lerp3(unexplained, remixed, edge * fit)
   }
 }
 
@@ -363,9 +396,12 @@ impl ColorTheme {
 ///
 /// Hairline text never fully covers a pixel, so the ink side can be a
 /// fringe rather than the ink. Paper covers more of the window than ink,
-/// so it is the side the mean lightness sits closer to.
+/// so it is the side the mean lightness sits closer to. Between two close
+/// stems no paper shows at all, so the paper side is neutralized as far
+/// as `paper_fringes` says it is one.
 fn edge_colors(
   pixels: &[[f32; 3]; NEIGHBORHOOD_SIZE],
+  paper_fringes: f32,
 ) -> ([f32; 3], [f32; 3]) {
   let center = pixels[NEIGHBORHOOD_SIZE / 2];
   let mut dark = center;
@@ -399,6 +435,12 @@ fn edge_colors(
     (dark, 1.0)
   };
 
+  let paper = lerp3(
+    paper,
+    [channel_extreme(paper, 1.0 - extreme); 3],
+    paper_fringes,
+  );
+
   let mixed_hues = 1.0
     - smoothstep(
       HUE_AGREEMENT_START,
@@ -407,9 +449,18 @@ fn edge_colors(
     );
 
   if paper_is_light {
-    (estimate_ink(dark, light, 0.0, mixed_hues), light)
+    (estimate_ink(dark, paper, 0.0, mixed_hues), paper)
   } else {
-    (dark, estimate_ink(light, dark, 1.0, mixed_hues))
+    (paper, estimate_ink(light, paper, 1.0, mixed_hues))
+  }
+}
+
+/// `color`'s lightest channel for `extreme` 1, its darkest for 0.
+fn channel_extreme(color: [f32; 3], extreme: f32) -> f32 {
+  if extreme > 0.5 {
+    color[0].max(color[1]).max(color[2])
+  } else {
+    color[0].min(color[1]).min(color[2])
   }
 }
 
@@ -488,13 +539,13 @@ fn estimate_ink(
     - smoothstep(SUBPIXEL_STEP_START, SUBPIXEL_STEP_FULL, channel_step))
     * mixed_hues;
 
-  let ink = if extreme > 0.5 {
-    endpoint[0].max(endpoint[1]).max(endpoint[2])
-  } else {
-    endpoint[0].min(endpoint[1]).min(endpoint[2])
-  };
+  lerp3(endpoint, [channel_extreme(endpoint, extreme); 3], fringe)
+}
 
-  lerp3(endpoint, [ink; 3], fringe)
+/// The gray with `srgb`'s OKLab lightness.
+fn neutral(srgb: [f32; 3]) -> [f32; 3] {
+  let lightness = srgb_to_oklab(srgb)[0];
+  oklab_to_srgb([lightness, 0.0, 0.0])
 }
 
 /// How much of the gray ramp applies at `saturation`: fully below half the
@@ -970,6 +1021,48 @@ mod tests {
 
     assert!(spread < 0.02, "hairline stayed colored: {out:?}");
     assert!(out[0] > 0.5, "hairline should read as light ink: {out:?}");
+  }
+
+  /// A neighborhood from three rows of five hex colors.
+  fn hex_rows(rows: [[&str; 5]; 3]) -> [[f32; 3]; NEIGHBORHOOD_SIZE] {
+    let mut pixels = [[0.0; 3]; NEIGHBORHOOD_SIZE];
+    for (index, pixel) in pixels.iter_mut().enumerate() {
+      *pixel = rgb(rows[index / 5][index % 5]);
+    }
+    pixels
+  }
+
+  fn assert_gray(out: [f32; 3]) {
+    let spread = out.iter().fold(0.0_f32, |m, c| m.max(*c))
+      - out.iter().fold(1.0_f32, |m, c| m.min(*c));
+    assert!(spread < 0.03, "fringe stayed colored: {out:?}");
+  }
+
+  #[test]
+  fn dense_diagonal_fringes_become_grayscale() {
+    // Measured on the diagonal of a WPF "k", where ink outweighs paper.
+    let out = winter().apply_neighborhood(&hex_rows([
+      ["#ffffb5", "#630034", "#8ddada", "#8d3400", "#63b5ff"],
+      ["#ffffb5", "#630034", "#343400", "#348dda", "#ffffff"],
+      ["#ffffb5", "#630000", "#343434", "#0063b5", "#ffffff"],
+    ]));
+
+    assert_gray(out);
+    assert!(out[0] > 0.4, "diagonal should read as light ink: {out:?}");
+  }
+
+  #[test]
+  fn fringes_between_close_stems_become_grayscale() {
+    // Measured between the "i" and "l" of a WPF "File": no paper shows.
+    let row = ["#f0f0b1", "#6f214a", "#91d0f0", "#f0f0b1", "#6f214a"];
+    assert_gray(winter().apply_neighborhood(&hex_rows([row, row, row])));
+
+    // Measured between two stems of "Right-click", paper side a fringe.
+    assert_gray(winter().apply_neighborhood(&hex_rows([
+      ["#5e0032", "#86d0f3", "#f3f3ac", "#5e0032", "#86ac86"],
+      ["#000032", "#86d0f3", "#f3f3ac", "#5e0000", "#003286"],
+      ["#5e0032", "#86d0f3", "#f3f3ac", "#5e0032", "#86d0f3"],
+    ])));
   }
 
   #[test]
