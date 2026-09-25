@@ -6,11 +6,11 @@ use windows::{
     Foundation::{COLORREF, HWND},
     UI::WindowsAndMessaging::{
       CreateWindowExW, DestroyWindow, GetClassNameW, GetWindow,
-      SetLayeredWindowAttributes, SetWindowPos, ShowWindow, GW_HWNDNEXT,
-      GW_HWNDPREV, LWA_ALPHA, SWP_NOACTIVATE, SWP_NOMOVE,
-      SWP_NOSENDCHANGING, SWP_NOSIZE, SWP_SHOWWINDOW, SW_HIDE,
-      WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_NOREDIRECTIONBITMAP,
-      WS_EX_TOOLWINDOW, WS_EX_TRANSPARENT, WS_POPUP,
+      SetLayeredWindowAttributes, SetWindowPos, ShowWindow, GW_HWNDPREV,
+      LWA_ALPHA, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSENDCHANGING,
+      SWP_NOSIZE, SWP_SHOWWINDOW, SW_HIDE, WS_EX_LAYERED,
+      WS_EX_NOACTIVATE, WS_EX_NOREDIRECTIONBITMAP, WS_EX_TOOLWINDOW,
+      WS_EX_TRANSPARENT, WS_POPUP,
     },
   },
 };
@@ -324,11 +324,7 @@ impl OverlayWindow {
   ) -> crate::Result<()> {
     window_class::match_z_band(self.hwnd(), anchor);
 
-    // SAFETY: `self.hwnd()` is valid for the lifetime of `self`.
-    let is_settled =
-      unsafe { GetWindow(self.hwnd(), GW_HWNDNEXT) } == anchor;
-
-    if !is_settled {
+    if !window_class::is_directly_above(self.hwnd(), anchor) {
       // SAFETY: `self.hwnd()` is valid for the lifetime of `self`.
       unsafe {
         SetWindowPos(

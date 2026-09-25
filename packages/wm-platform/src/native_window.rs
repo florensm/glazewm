@@ -185,6 +185,20 @@ pub trait NativeWindowWindowsExt {
   /// This method is only available on Windows.
   fn has_owner_window(&self) -> bool;
 
+  /// ID of the process that owns the window, or 0 if the window is gone.
+  ///
+  /// # Platform-specific
+  ///
+  /// This method is only available on Windows.
+  fn process_id(&self) -> u32;
+
+  /// Whether the window is a top-level window rather than a child.
+  ///
+  /// # Platform-specific
+  ///
+  /// This method is only available on Windows.
+  fn is_top_level(&self) -> bool;
+
   /// Whether the window has the given window style flag(s) set.
   ///
   /// # Platform-specific
@@ -403,6 +417,14 @@ impl NativeWindowWindowsExt for NativeWindow {
 
   fn has_owner_window(&self) -> bool {
     self.inner.has_owner_window()
+  }
+
+  fn process_id(&self) -> u32 {
+    self.inner.process_id()
+  }
+
+  fn is_top_level(&self) -> bool {
+    self.inner.is_top_level()
   }
 
   fn has_window_style(&self, style: WINDOW_STYLE) -> bool {

@@ -157,6 +157,11 @@ impl WindowManager {
         WindowEvent::Destroyed { window_id, .. } => {
           handle_window_destroyed(window_id, state)
         }
+        WindowEvent::ZOrderChanged { .. } => {
+          #[cfg(target_os = "windows")]
+          crate::commands::general::resync_color_theme_z_order(state);
+          Ok(())
+        }
       },
     }?;
 

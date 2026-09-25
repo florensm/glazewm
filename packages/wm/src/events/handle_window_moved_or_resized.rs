@@ -40,6 +40,16 @@ pub fn handle_window_moved_or_resized(
 ) -> anyhow::Result<()> {
   let found_window = state.window_from_native(native_window);
 
+  // Keeps a themed popup on top of its window as it moves.
+  #[cfg(target_os = "windows")]
+  if found_window.is_none() {
+    crate::commands::general::sync_color_theme_popup(
+      native_window,
+      state,
+      config,
+    );
+  }
+
   if let Some(window) = found_window {
     let old_frame_position = window.native_properties().frame;
     let frame_position = try_warn!(window.native().frame());

@@ -88,6 +88,20 @@ pub enum WindowEvent {
     window_id: WindowId,
     notification: WindowEventNotification,
   },
+
+  /// The stacking order of top-level windows changed.
+  ///
+  /// Fires for any restack, including an app raising its own
+  /// already-focused window, which produces no focus event.
+  ///
+  /// # Platform-specific
+  ///
+  /// - **Windows**: Corresponds to `EVENT_OBJECT_REORDER` on the desktop
+  ///   window.
+  /// - **macOS**: Never emitted.
+  ZOrderChanged {
+    notification: WindowEventNotification,
+  },
 }
 
 impl WindowEvent {
@@ -104,7 +118,7 @@ impl WindowEvent {
       | Self::Shown { window, .. }
       | Self::TitleChanged { window, .. }
       | Self::AttentionRequested { window, .. } => Some(window),
-      Self::Destroyed { .. } => None,
+      Self::Destroyed { .. } | Self::ZOrderChanged { .. } => None,
     }
   }
 
@@ -120,7 +134,8 @@ impl WindowEvent {
       | Self::Shown { notification, .. }
       | Self::TitleChanged { notification, .. }
       | Self::AttentionRequested { notification, .. }
-      | Self::Destroyed { notification, .. } => notification,
+      | Self::Destroyed { notification, .. }
+      | Self::ZOrderChanged { notification } => notification,
     }
   }
 }

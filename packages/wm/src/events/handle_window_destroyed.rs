@@ -12,6 +12,12 @@ pub fn handle_window_destroyed(
   native_window_id: WindowId,
   state: &mut WmState,
 ) -> anyhow::Result<()> {
+  #[cfg(target_os = "windows")]
+  crate::commands::general::remove_color_theme_popup(
+    native_window_id,
+    state,
+  );
+
   let found_window = state
     .windows()
     .into_iter()

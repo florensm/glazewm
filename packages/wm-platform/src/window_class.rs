@@ -5,9 +5,9 @@ use windows::{
   Win32::{
     Foundation::{HWND, LPARAM, LRESULT, WPARAM},
     UI::WindowsAndMessaging::{
-      DefWindowProcW, GetWindow, GetWindowLongPtrW, RegisterClassW,
-      SetWindowPos, GWL_EXSTYLE, GW_HWNDNEXT, GW_HWNDPREV, HWND_NOTOPMOST,
-      HWND_TOP, HWND_TOPMOST, SWP_NOACTIVATE, SWP_NOMOVE,
+      DefWindowProcW, GetWindow, GetWindowLongPtrW, IsWindowVisible,
+      RegisterClassW, SetWindowPos, GWL_EXSTYLE, GW_HWNDNEXT, GW_HWNDPREV,
+      HWND_NOTOPMOST, HWND_TOP, HWND_TOPMOST, SWP_NOACTIVATE, SWP_NOMOVE,
       SWP_NOSENDCHANGING, SWP_NOSIZE, WNDCLASSW, WS_EX_TOPMOST,
     },
   },
@@ -147,6 +147,31 @@ pub(crate) fn insert_above_point(anchor: HWND, overlay: HWND) -> HWND {
   } else {
     prev
   }
+}
+
+/// Whether `anchor` is the first *visible* window below `overlay`.
+///
+/// Hidden windows in between don't count: apps keep hidden IME helper
+/// windows directly above themselves, and Windows keeps owned windows
+/// above their owner, so demanding strict adjacency would restack the
+/// overlay on every check for nothing.
+pub(crate) fn is_directly_above(overlay: HWND, anchor: HWND) -> bool {
+  let mut current = overlay;
+
+  for _ in 0..MAX_INSERT_AFTER_WALK {
+    current = next_in_z_order(current);
+
+    // SAFETY: A stale handle just makes `IsWindowVisible` return false.
+    if current.0 == 0 || current == anchor {
+      return current == anchor;
+    }
+
+    if unsafe { IsWindowVisible(current) }.as_bool() {
+      return false;
+    }
+  }
+
+  false
 }
 
 fn next_in_z_order(hwnd: HWND) -> HWND {

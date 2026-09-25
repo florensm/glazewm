@@ -16,6 +16,12 @@ pub fn handle_window_hidden(
 ) -> anyhow::Result<()> {
   let found_window = state.window_from_native(native_window);
 
+  #[cfg(target_os = "windows")]
+  crate::commands::general::remove_color_theme_popup(
+    native_window.id(),
+    state,
+  );
+
   if let Some(window) = found_window {
     info!("Window hidden: {window}");
 

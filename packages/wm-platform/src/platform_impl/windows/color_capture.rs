@@ -135,8 +135,8 @@ impl ThemedCapture {
       u32::try_from(rect.width().max(1))?,
       u32::try_from(rect.height().max(1))?,
     );
-    let device = GpuDevice::create(theme, size)?;
-    let swap_chain = AssertSend(device.swap_chain.clone());
+    let output = CaptureOutput::create(theme, size)?;
+    let swap_chain = AssertSend(output.swap_chain.clone());
     let source_raw = source.0;
     let overlay_raw = overlay.0;
 
@@ -183,7 +183,7 @@ impl ThemedCapture {
 
     let item_size = item.Size()?;
     let frame_pool = Direct3D11CaptureFramePool::CreateFreeThreaded(
-      &device.winrt_device,
+      &output.winrt_device,
       PIXEL_FORMAT,
       FRAME_POOL_BUFFERS,
       item_size,
@@ -202,7 +202,7 @@ impl ThemedCapture {
     }
 
     let renderer = Arc::new(Mutex::new(AssertSend(Renderer {
-      device,
+      output,
       sprite,
       pool_size: item_size,
       last_frame: None,
@@ -298,38 +298,55 @@ fn ensure_capturable(source: HWND) -> crate::Result<()> {
   Ok(())
 }
 
-/// The D3D11 objects a themed frame is rendered with.
-struct GpuDevice {
+/// The D3D11 device and pipeline every themed capture renders with.
+///
+/// Shared process-wide: creating a device takes tens of milliseconds, too
+/// slow to pay on the WM's thread for every menu and tooltip. Its
+/// immediate context is single-threaded, so every use holds
+/// [`SharedGpu`]'s lock.
+struct Gpu {
   device: ID3D11Device,
   context: ID3D11DeviceContext,
 
-  /// `device`, as the frame pool needs it.
+  /// `device`, as frame pools need it.
   winrt_device: IDirect3DDevice,
 
   vertex_shader: ID3D11VertexShader,
   pixel_shader: ID3D11PixelShader,
-  constants: ID3D11Buffer,
-
-  /// [`FrameConstants`] for the current `swap_chain_size`.
-  frame_constants: ID3D11Buffer,
-
-  swap_chain: IDXGISwapChain1,
-  swap_chain_size: (u32, u32),
-
-  /// View of the swap chain's current back buffer. With the flip model,
-  /// buffer 0 always refers to it, so this stays valid across presents
-  /// until the buffers are resized.
-  render_target: Option<ID3D11RenderTargetView>,
 }
 
-impl GpuDevice {
-  fn create(theme: &ColorTheme, size: (u32, u32)) -> crate::Result<Self> {
+// SAFETY: `AssertSend` because D3D11 interfaces aren't `Send`; the device
+// is free-threaded, and its context is only used under the mutex.
+type SharedGpu = Arc<Mutex<AssertSend<Gpu>>>;
+
+/// The shared [`Gpu`], created on first use and again after the GPU device
+/// was lost (driver update, TDR).
+fn shared_gpu() -> crate::Result<SharedGpu> {
+  static GPU: Mutex<Option<SharedGpu>> = Mutex::new(None);
+
+  let mut slot = GPU.lock().unwrap_or_else(PoisonError::into_inner);
+
+  if let Some(gpu) = slot.as_ref() {
+    let guard = gpu.lock().unwrap_or_else(PoisonError::into_inner);
+    // SAFETY: The device is alive for as long as the `Gpu` holds it.
+    if unsafe { guard.0.device.GetDeviceRemovedReason() }.is_ok() {
+      return Ok(gpu.clone());
+    }
+  }
+
+  let gpu = Arc::new(Mutex::new(AssertSend(Gpu::create()?)));
+  *slot = Some(gpu.clone());
+  Ok(gpu)
+}
+
+impl Gpu {
+  fn create() -> crate::Result<Self> {
     let device = create_d3d_device()?;
 
     // SAFETY: `device` is a live device.
     let context = unsafe { device.GetImmediateContext()? };
 
-    // WGC copies into the frame pool's textures from its own threads
+    // WGC copies into the frame pools' textures from its own threads
     // while frames are themed on the thread pool.
     // SAFETY: Every D3D11.4+ device implements `ID3D11Multithread`.
     unsafe {
@@ -362,14 +379,52 @@ impl GpuDevice {
       )?;
     }
 
-    let constants = create_constant_buffer(&device, theme.constants())?;
+    Ok(Self {
+      device,
+      context,
+      winrt_device,
+      vertex_shader: created(vertex_shader)?,
+      pixel_shader: created(pixel_shader)?,
+    })
+  }
+}
+
+/// One capture's rendering target on the shared [`Gpu`].
+struct CaptureOutput {
+  gpu: SharedGpu,
+
+  /// The shared device, as the frame pool needs it; cloned so pool calls
+  /// don't need the lock.
+  winrt_device: IDirect3DDevice,
+
+  constants: ID3D11Buffer,
+
+  /// [`FrameConstants`] for the current `swap_chain_size`.
+  frame_constants: ID3D11Buffer,
+
+  swap_chain: IDXGISwapChain1,
+  swap_chain_size: (u32, u32),
+
+  /// View of the swap chain's current back buffer. With the flip model,
+  /// buffer 0 always refers to it, so this stays valid across presents
+  /// until the buffers are resized.
+  render_target: Option<ID3D11RenderTargetView>,
+}
+
+impl CaptureOutput {
+  fn create(theme: &ColorTheme, size: (u32, u32)) -> crate::Result<Self> {
+    let gpu = shared_gpu()?;
+    let guard = gpu.lock().unwrap_or_else(PoisonError::into_inner);
+    let device = &guard.0.device;
+
+    let constants = create_constant_buffer(device, theme.constants())?;
     let frame_constants =
-      create_constant_buffer(&device, &FrameConstants::new(size))?;
+      create_constant_buffer(device, &FrameConstants::new(size))?;
 
     // SAFETY: The adapter's parent is the factory that created it, and
     // every DXGI 1.2+ factory implements `IDXGIFactory2`.
     let factory: IDXGIFactory2 =
-      unsafe { dxgi_device.GetAdapter()?.GetParent()? };
+      unsafe { device.cast::<IDXGIDevice>()?.GetAdapter()?.GetParent()? };
 
     let desc = DXGI_SWAP_CHAIN_DESC1 {
       Width: size.0,
@@ -391,18 +446,18 @@ impl GpuDevice {
     // outlives the call.
     let swap_chain = unsafe {
       factory.CreateSwapChainForComposition(
-        &device,
+        device,
         &raw const desc,
         None,
       )?
     };
 
+    let winrt_device = guard.0.winrt_device.clone();
+    drop(guard);
+
     Ok(Self {
-      device,
-      context,
+      gpu,
       winrt_device,
-      vertex_shader: created(vertex_shader)?,
-      pixel_shader: created(pixel_shader)?,
       constants,
       frame_constants,
       swap_chain,
@@ -411,6 +466,23 @@ impl GpuDevice {
     })
   }
 
+  /// Uploads `theme` for the next render.
+  fn set_theme(&self, theme: &ColorTheme) {
+    let gpu = self.gpu.lock().unwrap_or_else(PoisonError::into_inner);
+
+    // SAFETY: The source is a `ThemeConstants`, exactly the buffer's
+    // size, and the context is only used under the lock held above.
+    unsafe {
+      gpu.0.context.UpdateSubresource(
+        &self.constants,
+        0,
+        None,
+        std::ptr::from_ref(theme.constants()).cast(),
+        0,
+        0,
+      );
+    }
+  }
   /// Themes the top-left `size` of `texture` into the swap chain and
   /// presents it.
   fn render(
@@ -418,6 +490,16 @@ impl GpuDevice {
     texture: &ID3D11Texture2D,
     size: (u32, u32),
   ) -> crate::Result<()> {
+    let gpu = self.gpu.clone();
+    let guard = gpu.lock().unwrap_or_else(PoisonError::into_inner);
+    let Gpu {
+      device,
+      context,
+      vertex_shader,
+      pixel_shader,
+      ..
+    } = &guard.0;
+
     if self.swap_chain_size != size {
       self.render_target = None;
 
@@ -425,7 +507,7 @@ impl GpuDevice {
       // references to the old back buffers, which `ResizeBuffers`
       // requires.
       unsafe {
-        self.context.ClearState();
+        context.ClearState();
         self.swap_chain.ResizeBuffers(
           0,
           size.0,
@@ -436,9 +518,9 @@ impl GpuDevice {
       }
 
       // SAFETY: The source is a `FrameConstants`, exactly the buffer's
-      // size, and the context is only used under the caller's lock.
+      // size, and the context is only used under the lock held above.
       unsafe {
-        self.context.UpdateSubresource(
+        context.UpdateSubresource(
           &self.frame_constants,
           0,
           None,
@@ -457,7 +539,7 @@ impl GpuDevice {
       // buffer, and `view` outlives the call.
       unsafe {
         let back_buffer: ID3D11Texture2D = self.swap_chain.GetBuffer(0)?;
-        self.device.CreateRenderTargetView(
+        device.CreateRenderTargetView(
           &back_buffer,
           None,
           Some(&raw mut view),
@@ -471,7 +553,7 @@ impl GpuDevice {
     // SAFETY: `texture` is a live frame-pool texture and `source`
     // outlives the call.
     unsafe {
-      self.device.CreateShaderResourceView(
+      device.CreateShaderResourceView(
         texture,
         None,
         Some(&raw mut source),
@@ -489,15 +571,13 @@ impl GpuDevice {
     };
 
     // SAFETY: Every bound object is alive for the duration of the draw,
-    // and access to the immediate context is serialized by the caller's
-    // lock.
+    // and the immediate context is only used under the lock held above.
     unsafe {
-      let context = &self.context;
       context.IASetInputLayout(None);
       context
         .IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
-      context.VSSetShader(&self.vertex_shader, None);
-      context.PSSetShader(&self.pixel_shader, None);
+      context.VSSetShader(vertex_shader, None);
+      context.PSSetShader(pixel_shader, None);
       context.PSSetConstantBuffers(
         0,
         Some(&[
@@ -523,7 +603,7 @@ impl GpuDevice {
 /// Per-capture state, shared between the frame-arrived callback and the
 /// WM thread.
 struct Renderer {
-  device: GpuDevice,
+  output: CaptureOutput,
 
   /// The visual presenting the swap chain; hidden until the first frame
   /// has been themed.
@@ -579,7 +659,7 @@ impl Renderer {
       self.last_frame = None;
       drop(frame);
       pool.Recreate(
-        &self.device.winrt_device,
+        &self.output.winrt_device,
         PIXEL_FORMAT,
         FRAME_POOL_BUFFERS,
         content_size,
@@ -595,18 +675,7 @@ impl Renderer {
       return Ok(());
     }
 
-    // SAFETY: The source is a `ThemeConstants`, exactly the buffer's
-    // size, and the context is only used under the caller's lock.
-    unsafe {
-      self.device.context.UpdateSubresource(
-        &self.device.constants,
-        0,
-        None,
-        std::ptr::from_ref(theme.constants()).cast(),
-        0,
-        0,
-      );
-    }
+    self.output.set_theme(theme);
 
     if let Some((_, texture, size)) = self.last_frame.clone() {
       self.present(&texture, size)?;
@@ -620,7 +689,7 @@ impl Renderer {
     texture: &ID3D11Texture2D,
     size: (u32, u32),
   ) -> crate::Result<()> {
-    self.device.render(texture, size)?;
+    self.output.render(texture, size)?;
 
     if !self.is_shown {
       self.sprite.SetIsVisible(true)?;

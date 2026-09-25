@@ -17,6 +17,8 @@ use wm_platform::{
   NativeWindowWindowsExt, OpacityValue,
 };
 
+#[cfg(target_os = "windows")]
+use crate::commands::general::ColorThemePopup;
 use crate::{
   animation::AnimationManager,
   commands::{
@@ -114,6 +116,11 @@ pub struct WmState {
   #[cfg(target_os = "windows")]
   pub color_theme_failures: HashSet<Uuid>,
 
+  /// Themed popups (menus, dropdowns, tooltips) of themed windows'
+  /// processes, keyed by the popup's raw `HWND`.
+  #[cfg(target_os = "windows")]
+  pub color_theme_popups: HashMap<isize, ColorThemePopup>,
+
   /// Whether the initial state has been populated.
   has_initialized: bool,
 
@@ -147,6 +154,8 @@ impl WmState {
       color_theme_overlays: HashMap::new(),
       #[cfg(target_os = "windows")]
       color_theme_failures: HashSet::new(),
+      #[cfg(target_os = "windows")]
+      color_theme_popups: HashMap::new(),
       prev_effects_window: None,
       recent_workspace_name: None,
       unmanaged_or_minimized_timestamp: None,

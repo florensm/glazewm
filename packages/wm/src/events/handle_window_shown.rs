@@ -26,8 +26,17 @@ pub fn handle_window_shown(
       state.pending_sync.queue_container_to_redraw(window);
     }
   } else if !state.ignored_windows.contains(&native_window) {
+    // Popups are never managed, but still belong to a themed app.
+    #[cfg(target_os = "windows")]
+    let popup = native_window.clone();
+
     // If the window is not managed and not explicitly ignored, manage it.
     manage_window(native_window, None, state, config)?;
+
+    #[cfg(target_os = "windows")]
+    crate::commands::general::sync_color_theme_popup(
+      &popup, state, config,
+    );
   }
 
   Ok(())

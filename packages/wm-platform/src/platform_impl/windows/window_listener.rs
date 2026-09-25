@@ -8,11 +8,11 @@ use windows::{
     UI::{
       Accessibility::{SetWinEventHook, UnhookWinEvent, HWINEVENTHOOK},
       WindowsAndMessaging::{
-        ChangeWindowMessageFilterEx, RegisterShellHookWindow,
-        RegisterWindowMessageW, EVENT_OBJECT_CLOAKED,
-        EVENT_OBJECT_DESTROY, EVENT_OBJECT_HIDE,
+        ChangeWindowMessageFilterEx, GetDesktopWindow,
+        RegisterShellHookWindow, RegisterWindowMessageW,
+        EVENT_OBJECT_CLOAKED, EVENT_OBJECT_DESTROY, EVENT_OBJECT_HIDE,
         EVENT_OBJECT_LOCATIONCHANGE, EVENT_OBJECT_NAMECHANGE,
-        EVENT_OBJECT_SHOW, EVENT_OBJECT_UNCLOAKED,
+        EVENT_OBJECT_REORDER, EVENT_OBJECT_SHOW, EVENT_OBJECT_UNCLOAKED,
         EVENT_SYSTEM_FOREGROUND, EVENT_SYSTEM_MINIMIZEEND,
         EVENT_SYSTEM_MINIMIZESTART, EVENT_SYSTEM_MOVESIZEEND,
         EVENT_SYSTEM_MOVESIZESTART, HSHELL_HIGHBIT, HSHELL_REDRAW,
@@ -158,7 +158,7 @@ impl WindowListener {
   /// than a single hook covering all events.
   fn hook_win_events() -> crate::Result<Vec<HWINEVENTHOOK>> {
     let event_ranges = [
-      (EVENT_OBJECT_DESTROY, EVENT_OBJECT_HIDE),
+      (EVENT_OBJECT_DESTROY, EVENT_OBJECT_REORDER),
       (EVENT_SYSTEM_MINIMIZESTART, EVENT_SYSTEM_MINIMIZEEND),
       (EVENT_SYSTEM_MOVESIZESTART, EVENT_SYSTEM_MOVESIZEEND),
       (EVENT_SYSTEM_FOREGROUND, EVENT_SYSTEM_FOREGROUND),
@@ -206,6 +206,21 @@ impl WindowListener {
     _event_thread: u32,
     _event_time: u32,
   ) {
+    // Top-level restacks are reported on the desktop window's client
+    // object, not on the windows that moved.
+    if event_type == EVENT_OBJECT_REORDER {
+      // SAFETY: No preconditions.
+      if handle == unsafe { GetDesktopWindow() } {
+        if let Some(event_tx) = EVENT_TX.with(|lock| lock.get().cloned()) {
+          let _ = event_tx.send(WindowEvent::ZOrderChanged {
+            notification: crate::WindowEventNotification(None),
+          });
+        }
+      }
+
+      return;
+    }
+
     // Check whether the event is associated with a window object rather
     // than a UI control.
     let is_window_event =

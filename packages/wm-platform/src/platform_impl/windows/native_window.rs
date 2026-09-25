@@ -367,6 +367,23 @@ impl NativeWindow {
     unsafe { GetWindow(self.hwnd(), GW_OWNER) }.0 != 0
   }
 
+  /// Implements [`NativeWindowWindowsExt::process_id`].
+  pub(crate) fn process_id(&self) -> u32 {
+    let mut process_id = 0u32;
+    // SAFETY: `process_id` outlives the call; a stale handle leaves it 0.
+    unsafe {
+      GetWindowThreadProcessId(self.hwnd(), Some(&raw mut process_id));
+    }
+    process_id
+  }
+
+  /// Implements [`NativeWindowWindowsExt::is_top_level`].
+  pub(crate) fn is_top_level(&self) -> bool {
+    // SAFETY: A stale handle just makes `GetAncestor` return `HWND(0)`.
+    let root = unsafe { GetAncestor(self.hwnd(), GA_ROOT) };
+    root == self.hwnd()
+  }
+
   /// Implements [`NativeWindowWindowsExt::has_window_style`].
   pub(crate) fn has_window_style(&self, style: WINDOW_STYLE) -> bool {
     let current_style =
