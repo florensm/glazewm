@@ -289,13 +289,15 @@ impl OverlayWindow {
     rect: &Rect,
     anchor: HWND,
   ) -> crate::Result<()> {
-    window_class::match_z_band(self.hwnd(), anchor);
+    let (topmost, insert_after) =
+      window_class::above_placement(anchor, self.hwnd());
+    window_class::set_topmost(self.hwnd(), topmost);
 
     // SAFETY: `self.hwnd()` is valid for the lifetime of `self`.
     unsafe {
       SetWindowPos(
         self.hwnd(),
-        window_class::insert_above_point(anchor, self.hwnd()),
+        insert_after,
         rect.x(),
         rect.y(),
         rect.width(),
@@ -315,21 +317,27 @@ impl OverlayWindow {
     Ok(())
   }
 
-  /// Puts the window back directly above `anchor` if it has drifted --
-  /// most commonly because `anchor` was activated and raised over it --
-  /// without touching its rect.
+  /// Puts the window back above `anchor` (see
+  /// [`window_class::above_placement`]) if it has drifted -- most commonly
+  /// because `anchor` was raised over it -- without touching its rect.
   pub(crate) fn sync_z_order_above(
     &mut self,
     anchor: HWND,
   ) -> crate::Result<()> {
-    window_class::match_z_band(self.hwnd(), anchor);
+    let (topmost, insert_after) =
+      window_class::above_placement(anchor, self.hwnd());
 
-    if !window_class::is_directly_above(self.hwnd(), anchor) {
+    let is_settled = window_class::is_topmost(self.hwnd()) == topmost
+      && window_class::is_directly_above(self.hwnd(), anchor);
+
+    if !is_settled {
+      window_class::set_topmost(self.hwnd(), topmost);
+
       // SAFETY: `self.hwnd()` is valid for the lifetime of `self`.
       unsafe {
         SetWindowPos(
           self.hwnd(),
-          window_class::insert_above_point(anchor, self.hwnd()),
+          insert_after,
           0,
           0,
           0,
