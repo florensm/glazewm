@@ -1073,6 +1073,12 @@ impl Renderer {
       return Ok(());
     }
 
+    tracing::debug!(
+      "Color theme keeps {} of {} images in their colors: {pictures:?}.",
+      pictures.len(),
+      found.len(),
+    );
+
     self.output.set_images(&pictures);
     self.images = pictures;
     self.present(&texture, size)
