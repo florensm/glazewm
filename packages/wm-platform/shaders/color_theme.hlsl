@@ -11,6 +11,15 @@
 #define MIX_ERROR_START 0.03
 #define MIX_ERROR_FULL 0.1
 #define MIN_CHANNEL_SPAN 0.02
+#define SUBPIXEL_STEP_START 0.55
+#define SUBPIXEL_STEP_FULL 0.75
+#define INVERTED_TEXT_GAMMA 1.4
+#define NEIGHBORHOOD_SIZE 15
+#define FLAT_RANGE 0.01
+#define HUE_MIN_CHROMA 0.03
+#define HUE_AGREEMENT_START 0.6
+#define HUE_AGREEMENT_FULL 0.85
+#define INVERSION_FULL 0.1
 
 // Mirrors `ThemeConstants`.
 cbuffer Theme : register(b0) {
@@ -126,19 +135,71 @@ float3 apply_theme(float3 srgb) {
   return saturate(oklab_to_srgb(result));
 }
 
-// Mirrors `ColorTheme::apply_neighborhood`.
-float3 apply_neighborhood(float3 pixels[9]) {
-  float3 center = pixels[4];
-  float3 themed_center = apply_theme(center);
+// Mirrors `hue_agreement`.
+float hue_agreement(float3 pixels[NEIGHBORHOOD_SIZE], float3 paper, float extreme) {
+  float paper_mean = dot(paper, 1.0 / 3.0);
+  float span = extreme - paper_mean;
 
-  float3 dark = center;
-  float3 light = center;
+  float2 hue_sum = float2(0.0, 0.0);
+  float chroma_sum = 0.0;
+
+  [unroll]
+  for (int i = 0; i < NEIGHBORHOOD_SIZE; i++) {
+    float mean = dot(pixels[i], 1.0 / 3.0);
+    float t = abs(span) > MIN_CHANNEL_SPAN
+      ? saturate((mean - paper_mean) / span)
+      : 0.0;
+
+    float2 deviation = srgb_to_oklab(pixels[i]).yz
+      - srgb_to_oklab(lerp(paper, extreme, t)).yz;
+    float chroma = length(deviation);
+
+    if (chroma > HUE_MIN_CHROMA) {
+      hue_sum += deviation;
+      chroma_sum += chroma;
+    }
+  }
+
+  return chroma_sum > 0.0 ? length(hue_sum) / chroma_sum : 1.0;
+}
+
+// Mirrors `estimate_ink`.
+float3 estimate_ink(float3 endpoint, float3 paper, float extreme, float mixed_hues) {
+  float3 span = paper - extreme;
+
+  if (any(abs(span) <= MIN_CHANNEL_SPAN)) {
+    return endpoint;
+  }
+
+  float3 coverage = saturate((paper - endpoint) / span);
+  float channel_step = max(
+    abs(coverage.r - coverage.g),
+    abs(coverage.g - coverage.b));
+  float fringe =
+    (1.0 - smoothstep(SUBPIXEL_STEP_START, SUBPIXEL_STEP_FULL, channel_step))
+    * mixed_hues;
+
+  float ink = extreme > 0.5
+    ? max(max(endpoint.r, endpoint.g), endpoint.b)
+    : min(min(endpoint.r, endpoint.g), endpoint.b);
+
+  return lerp(endpoint, ink, fringe);
+}
+
+// Mirrors `edge_colors`.
+void edge_colors(float3 pixels[NEIGHBORHOOD_SIZE], out float3 dark, out float3 light) {
+  float3 center = pixels[NEIGHBORHOOD_SIZE / 2];
+  dark = center;
+  light = center;
   float dark_lightness = srgb_to_oklab(center).x;
   float light_lightness = dark_lightness;
 
+  float lightness_sum = 0.0;
+
   [unroll]
-  for (int i = 0; i < 9; i++) {
+  for (int i = 0; i < NEIGHBORHOOD_SIZE; i++) {
     float lightness = srgb_to_oklab(pixels[i]).x;
+    lightness_sum += lightness;
 
     if (lightness < dark_lightness) {
       dark = pixels[i];
@@ -150,6 +211,44 @@ float3 apply_neighborhood(float3 pixels[9]) {
       light_lightness = lightness;
     }
   }
+
+  float mean_lightness = lightness_sum / NEIGHBORHOOD_SIZE;
+  bool paper_is_light =
+    (light_lightness - mean_lightness) < (mean_lightness - dark_lightness);
+  float3 paper = paper_is_light ? light : dark;
+  float extreme = paper_is_light ? 0.0 : 1.0;
+
+  float mixed_hues = 1.0 - smoothstep(
+    HUE_AGREEMENT_START,
+    HUE_AGREEMENT_FULL,
+    hue_agreement(pixels, paper, extreme));
+
+  if (paper_is_light) {
+    dark = estimate_ink(dark, light, 0.0, mixed_hues);
+  } else {
+    light = estimate_ink(light, dark, 1.0, mixed_hues);
+  }
+}
+
+// Mirrors `ColorTheme::apply_neighborhood`.
+float3 apply_neighborhood(float3 pixels[NEIGHBORHOOD_SIZE]) {
+  float3 center = pixels[NEIGHBORHOOD_SIZE / 2];
+  float3 themed_center = apply_theme(center);
+
+  float range = 0.0;
+  [unroll]
+  for (int f = 0; f < NEIGHBORHOOD_SIZE; f++) {
+    float3 difference = abs(pixels[f] - center);
+    range = max(range, max(difference.r, max(difference.g, difference.b)));
+  }
+
+  if (range < FLAT_RANGE) {
+    return themed_center;
+  }
+
+  float3 dark;
+  float3 light;
+  edge_colors(pixels, dark, light);
 
   float edge = smoothstep(
     EDGE_START,
@@ -169,22 +268,34 @@ float3 apply_neighborhood(float3 pixels[9]) {
   float mean_coverage =
     valid_count > 0.0 ? dot(coverage, 1.0) / valid_count : 0.0;
 
-  float3 row_average = lerp(lerp(pixels[3], pixels[5], 0.5), center, 1.0 / 3.0);
-  float3 row_lab = srgb_to_oklab(row_average);
-  float neutral = ramp_weight(
-    min(length(row_lab.yz) / MAX_CHROMA, 1.0),
-    saturation_threshold);
+  coverage = valid > 0.0 ? coverage : mean_coverage;
 
-  float3 own = valid > 0.0 ? coverage : mean_coverage;
-  coverage = lerp(mean_coverage, own, neutral);
+  float channel_step = max(
+    abs(coverage.r - coverage.g),
+    abs(coverage.g - coverage.b));
+  float subpixel =
+    1.0 - smoothstep(SUBPIXEL_STEP_START, SUBPIXEL_STEP_FULL, channel_step);
 
-  float3 reconstructed = lerp(light, dark, coverage);
+  float3 reconstructed =
+    lerp(light, dark, lerp(mean_coverage, coverage, subpixel));
   float fit = 1.0 - smoothstep(
     MIX_ERROR_START,
     MIX_ERROR_FULL,
     distance(center, reconstructed));
 
-  float3 remixed = lerp(apply_theme(light), apply_theme(dark), coverage);
+  float3 themed_dark = apply_theme(dark);
+  float3 themed_light = apply_theme(light);
+
+  float inverted = smoothstep(
+    0.0,
+    INVERSION_FULL,
+    srgb_to_oklab(themed_dark).x - srgb_to_oklab(themed_light).x);
+  float remix_coverage = lerp(
+    mean_coverage,
+    pow(mean_coverage, 1.0 / INVERTED_TEXT_GAMMA),
+    inverted);
+
+  float3 remixed = lerp(themed_light, themed_dark, remix_coverage);
   return lerp(themed_center, remixed, edge * fit);
 }
 
@@ -207,13 +318,13 @@ float4 ps_main(float4 position : SV_Position) : SV_Target {
   }
 
   float3 center = color.rgb / color.a;
-  float3 pixels[9];
+  float3 pixels[NEIGHBORHOOD_SIZE];
 
   [unroll]
   for (int y = -1; y <= 1; y++) {
     [unroll]
-    for (int x = -1; x <= 1; x++) {
-      pixels[(y + 1) * 3 + (x + 1)] = load_straight(xy + int2(x, y), center);
+    for (int x = -2; x <= 2; x++) {
+      pixels[(y + 1) * 5 + (x + 2)] = load_straight(xy + int2(x, y), center);
     }
   }
 

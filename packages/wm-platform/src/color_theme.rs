@@ -32,6 +32,37 @@ const MIX_ERROR_FULL: f32 = 0.1;
 /// borrows the other channels' coverage instead.
 const MIN_CHANNEL_SPAN: f32 = 0.02;
 
+/// Pixels in the window [`ColorTheme::apply_neighborhood`] reads: 5 wide,
+/// 3 tall.
+pub const NEIGHBORHOOD_SIZE: usize = 15;
+
+/// Largest coverage step between adjacent channels over which a pixel
+/// goes from plausible subpixel text to real color. Measured `ClearType`
+/// fringes step up to ~0.45; a vivid color between black and white steps
+/// ~0.85.
+const SUBPIXEL_STEP_START: f32 = 0.55;
+const SUBPIXEL_STEP_FULL: f32 = 0.75;
+
+/// sRGB range within which a window counts as flat and skips edge
+/// handling; small enough to sit well below [`EDGE_START`].
+const FLAT_RANGE: f32 = 0.01;
+
+/// OKLab chroma below which a pixel has no meaningful hue.
+const HUE_MIN_CHROMA: f32 = 0.03;
+
+/// Chroma-weighted hue agreement (0-1) over which a window goes from
+/// mixed-hue `ClearType` fringes to consistently colored content.
+const HUE_AGREEMENT_START: f32 = 0.6;
+const HUE_AGREEMENT_FULL: f32 = 0.85;
+
+/// Coverage gamma for edges the theme turns light-on-dark, which read
+/// thinner than the same coverage dark-on-light.
+const INVERTED_TEXT_GAMMA: f32 = 1.4;
+
+/// OKLab lightness by which the themed ink must exceed the themed paper
+/// for [`INVERTED_TEXT_GAMMA`] to fully apply.
+const INVERSION_FULL: f32 = 0.1;
+
 /// Override tolerances are configured as OKLab distance times 100, so they
 /// read like the familiar CIE ΔE scale (~2 is barely noticeable).
 const TOLERANCE_SCALE: f32 = 100.0;
@@ -192,38 +223,43 @@ impl ColorTheme {
     oklab_to_srgb(result).map(|channel| channel.clamp(0.0, 1.0))
   }
 
-  /// Maps the center of a 3×3 neighborhood (row-major, straight-alpha
-  /// sRGB) through the theme, keeping anti-aliased edges intact.
+  /// Maps the center of a 5×3 neighborhood (row-major, straight-alpha
+  /// sRGB) through the theme, keeping anti-aliased edges intact. Five
+  /// wide, because `ClearType` fringes reach two pixels from the ink.
   ///
   /// An edge pixel is a mix of the colors on either side of it, so it is
   /// re-mixed from those colors' *themed* values at the same coverage,
-  /// rather than themed as a color of its own. Coverage is per channel
-  /// where the row averages out gray, which is what subpixel (ClearType)
-  /// text looks like; elsewhere a single coverage is used, so a colored
-  /// pixel between black and white isn't misread as a fringe.
+  /// rather than themed as a color of its own.
+  ///
+  /// Subpixel (`ClearType`) fringes are recognized as text by how gently
+  /// coverage steps between adjacent channels, and re-mixed as grayscale:
+  /// `ClearType` is tuned for dark-on-light, and replaying its color
+  /// fringes light-on-dark makes them loud. A vivid pixel between black
+  /// and white steps harder and is left as real color. Where the theme
+  /// flips dark ink to light, coverage is boosted the way native text
+  /// renderers do, since light-on-dark text otherwise reads thinner.
   #[must_use]
-  pub fn apply_neighborhood(&self, pixels: &[[f32; 3]; 9]) -> [f32; 3] {
-    let center = pixels[4];
+  pub fn apply_neighborhood(
+    &self,
+    pixels: &[[f32; 3]; NEIGHBORHOOD_SIZE],
+  ) -> [f32; 3] {
+    let center = pixels[NEIGHBORHOOD_SIZE / 2];
     let themed_center = self.apply(center);
 
-    let mut dark = center;
-    let mut light = center;
-    let mut dark_lightness = srgb_to_oklab(center)[0];
-    let mut light_lightness = dark_lightness;
-
+    // Most of a window is flat, and the edge path below leaves flat areas
+    // alone anyway: skip it on the cheap.
+    let mut range = 0.0_f32;
     for pixel in pixels {
-      let lightness = srgb_to_oklab(*pixel)[0];
-
-      if lightness < dark_lightness {
-        dark = *pixel;
-        dark_lightness = lightness;
-      }
-
-      if lightness > light_lightness {
-        light = *pixel;
-        light_lightness = lightness;
+      for c in 0..3 {
+        range = range.max((pixel[c] - center[c]).abs());
       }
     }
+
+    if range < FLAT_RANGE {
+      return themed_center;
+    }
+
+    let (dark, light) = edge_colors(pixels);
 
     let edge = smoothstep(
       EDGE_START,
@@ -259,22 +295,31 @@ impl ColorTheme {
       0.0
     };
 
-    // Subpixel fringes cancel out across the row; real color doesn't.
-    let row_average =
-      lerp3(lerp3(pixels[3], pixels[5], 0.5), center, 1.0 / 3.0);
-    let row_lab = srgb_to_oklab(row_average);
-    let neutral = ramp_weight(
-      (row_lab[1].hypot(row_lab[2]) / MAX_CHROMA).min(1.0),
-      self.constants.saturation_threshold,
-    );
+    for c in 0..3 {
+      if !valid[c] {
+        coverage[c] = mean_coverage;
+      }
+    }
 
+    // The `ClearType` filter smears ink across neighboring subpixels, so a
+    // fringe's adjacent channels differ only moderately; real color
+    // between the same two colors jumps.
+    let channel_step = (coverage[0] - coverage[1])
+      .abs()
+      .max((coverage[1] - coverage[2]).abs());
+    let subpixel = 1.0
+      - smoothstep(SUBPIXEL_STEP_START, SUBPIXEL_STEP_FULL, channel_step);
+
+    // How well the pixel is explained as a mix of `dark` and `light`,
+    // allowing per-channel coverage only for subpixel text.
     let mut error_sq = 0.0;
 
     for c in 0..3 {
-      let own = if valid[c] { coverage[c] } else { mean_coverage };
-      coverage[c] = lerp(mean_coverage, own, neutral);
-
-      let reconstructed = lerp(light[c], dark[c], coverage[c]);
+      let reconstructed = lerp(
+        light[c],
+        dark[c],
+        lerp(mean_coverage, coverage[c], subpixel),
+      );
       error_sq +=
         (center[c] - reconstructed) * (center[c] - reconstructed);
     }
@@ -284,14 +329,160 @@ impl ColorTheme {
     let themed_dark = self.apply(dark);
     let themed_light = self.apply(light);
 
-    let remixed = [
-      lerp(themed_light[0], themed_dark[0], coverage[0]),
-      lerp(themed_light[1], themed_dark[1], coverage[1]),
-      lerp(themed_light[2], themed_dark[2], coverage[2]),
-    ];
+    let inverted = smoothstep(
+      0.0,
+      INVERSION_FULL,
+      srgb_to_oklab(themed_dark)[0] - srgb_to_oklab(themed_light)[0],
+    );
+    let coverage = lerp(
+      mean_coverage,
+      mean_coverage.powf(1.0 / INVERTED_TEXT_GAMMA),
+      inverted,
+    );
 
+    let remixed = lerp3(themed_light, themed_dark, coverage);
     lerp3(themed_center, remixed, edge * fit)
   }
+}
+
+/// The two colors the window's edge pixels are a mix of, as `(dark,
+/// light)`: its darkest and lightest pixels, with the ink side corrected
+/// by [`estimate_ink`].
+///
+/// Hairline text never fully covers a pixel, so the ink side can be a
+/// fringe rather than the ink. Paper covers more of the window than ink,
+/// so it is the side the mean lightness sits closer to.
+fn edge_colors(
+  pixels: &[[f32; 3]; NEIGHBORHOOD_SIZE],
+) -> ([f32; 3], [f32; 3]) {
+  let center = pixels[NEIGHBORHOOD_SIZE / 2];
+  let mut dark = center;
+  let mut light = center;
+  let mut dark_lightness = srgb_to_oklab(center)[0];
+  let mut light_lightness = dark_lightness;
+  let mut lightness_sum = 0.0;
+
+  for pixel in pixels {
+    let lightness = srgb_to_oklab(*pixel)[0];
+    lightness_sum += lightness;
+
+    if lightness < dark_lightness {
+      dark = *pixel;
+      dark_lightness = lightness;
+    }
+
+    if lightness > light_lightness {
+      light = *pixel;
+      light_lightness = lightness;
+    }
+  }
+
+  #[allow(clippy::cast_precision_loss)]
+  let mean_lightness = lightness_sum / NEIGHBORHOOD_SIZE as f32;
+  let paper_is_light =
+    (light_lightness - mean_lightness) < (mean_lightness - dark_lightness);
+  let (paper, extreme) = if paper_is_light {
+    (light, 0.0)
+  } else {
+    (dark, 1.0)
+  };
+
+  let mixed_hues = 1.0
+    - smoothstep(
+      HUE_AGREEMENT_START,
+      HUE_AGREEMENT_FULL,
+      hue_agreement(pixels, paper, extreme),
+    );
+
+  if paper_is_light {
+    (estimate_ink(dark, light, 0.0, mixed_hues), light)
+  } else {
+    (dark, estimate_ink(light, dark, 1.0, mixed_hues))
+  }
+}
+
+/// How consistently the window's pixels deviate in hue from a plain mix of
+/// `paper` and neutral ink (`extreme`), chroma-weighted: near 1 for
+/// colored text or shapes, low for `ClearType` fringes, which deviate in
+/// opposing hues. Measured as deviations so the paper's own color, however
+/// saturated, doesn't count.
+fn hue_agreement(
+  pixels: &[[f32; 3]; NEIGHBORHOOD_SIZE],
+  paper: [f32; 3],
+  extreme: f32,
+) -> f32 {
+  let paper_mean = (paper[0] + paper[1] + paper[2]) / 3.0;
+  let span = extreme - paper_mean;
+
+  let mut hue_sum = [0.0_f32; 2];
+  let mut chroma_sum = 0.0;
+
+  for pixel in pixels {
+    let mean = (pixel[0] + pixel[1] + pixel[2]) / 3.0;
+    let t = if span.abs() > MIN_CHANNEL_SPAN {
+      ((mean - paper_mean) / span).clamp(0.0, 1.0)
+    } else {
+      0.0
+    };
+
+    let lab = srgb_to_oklab(*pixel);
+    let model = srgb_to_oklab(lerp3(paper, [extreme; 3], t));
+    let deviation = [lab[1] - model[1], lab[2] - model[2]];
+    let chroma = deviation[0].hypot(deviation[1]);
+
+    if chroma > HUE_MIN_CHROMA {
+      hue_sum[0] += deviation[0];
+      hue_sum[1] += deviation[1];
+      chroma_sum += chroma;
+    }
+  }
+
+  if chroma_sum > 0.0 {
+    hue_sum[0].hypot(hue_sum[1]) / chroma_sum
+  } else {
+    1.0
+  }
+}
+
+/// Pulls `endpoint` towards the neutral ink a `ClearType` fringe implies,
+/// against `paper`, when it looks like one.
+///
+/// A fringe's most-covered channel shows the ink level (the darkest
+/// channel for dark ink, `extreme` 0; the lightest for light ink, 1). Only
+/// applied as far as the window's hues disagree (`mixed_hues`), so the
+/// darkest pixel of genuinely colored text keeps its color.
+fn estimate_ink(
+  endpoint: [f32; 3],
+  paper: [f32; 3],
+  extreme: f32,
+  mixed_hues: f32,
+) -> [f32; 3] {
+  let mut coverage = [0.0; 3];
+
+  for c in 0..3 {
+    let span = paper[c] - extreme;
+
+    if span.abs() <= MIN_CHANNEL_SPAN {
+      return endpoint;
+    }
+
+    coverage[c] = ((paper[c] - endpoint[c]) / span).clamp(0.0, 1.0);
+  }
+
+  let channel_step = (coverage[0] - coverage[1])
+    .abs()
+    .max((coverage[1] - coverage[2]).abs());
+  let fringe = (1.0
+    - smoothstep(SUBPIXEL_STEP_START, SUBPIXEL_STEP_FULL, channel_step))
+    * mixed_hues;
+
+  let ink = if extreme > 0.5 {
+    endpoint[0].max(endpoint[1]).max(endpoint[2])
+  } else {
+    endpoint[0].min(endpoint[1]).min(endpoint[2])
+  };
+
+  lerp3(endpoint, [ink; 3], fringe)
 }
 
 /// How much of the gray ramp applies at `saturation`: fully below half the
@@ -623,16 +814,23 @@ mod tests {
     assert!(ColorTheme::new(None, 0.1, &many).is_err());
   }
 
-  /// A neighborhood with `center` in the middle, `left` in the left
-  /// column and `right` in the right one.
+  /// A neighborhood repeating `row` on all three lines.
+  fn rows(row: [[f32; 3]; 5]) -> [[f32; 3]; NEIGHBORHOOD_SIZE] {
+    let mut pixels = [[0.0; 3]; NEIGHBORHOOD_SIZE];
+    for (index, pixel) in pixels.iter_mut().enumerate() {
+      *pixel = row[index % 5];
+    }
+    pixels
+  }
+
+  /// A neighborhood with `center` in the middle column, `left` left of
+  /// it and `right` right of it.
   fn edge_block(
     left: [f32; 3],
     center: [f32; 3],
     right: [f32; 3],
-  ) -> [[f32; 3]; 9] {
-    [
-      left, center, right, left, center, right, left, center, right,
-    ]
+  ) -> [[f32; 3]; NEIGHBORHOOD_SIZE] {
+    rows([left, left, center, right, right])
   }
 
   fn lerp_rgb(
@@ -649,27 +847,44 @@ mod tests {
 
     for hex in ["#ffffff", "#7f7f7f", "#0078d4"] {
       assert_close(
-        theme.apply_neighborhood(&[rgb(hex); 9]),
+        theme.apply_neighborhood(&[rgb(hex); NEIGHBORHOOD_SIZE]),
         theme.apply(rgb(hex)),
       );
     }
   }
 
-  #[test]
-  fn grayscale_antialiasing_keeps_its_coverage() {
-    let theme = winter();
-    let (black, white) = (rgb("#000000"), rgb("#ffffff"));
-
-    // A 25%-covered text edge re-mixes the themed text and page colors at
-    // that same 25%, rather than landing wherever the ramp puts `#bfbfbf`.
-    let edge = [0.75; 3];
-    let out = theme.apply_neighborhood(&edge_block(black, edge, white));
-
-    assert_close(out, lerp_rgb(rgb("#1e1e1e"), rgb("#d4d4d4"), [0.25; 3]));
+  /// Coverage after the boost for edges the theme turns light-on-dark.
+  fn inverted(coverage: f32) -> [f32; 3] {
+    [coverage.powf(1.0 / INVERTED_TEXT_GAMMA); 3]
   }
 
   #[test]
-  fn subpixel_fringes_keep_their_per_channel_coverage() {
+  fn grayscale_antialiasing_keeps_its_coverage() {
+    let (black, white) = (rgb("#000000"), rgb("#ffffff"));
+    let edge = [0.75; 3];
+
+    // A 25%-covered text edge re-mixes the themed text and page colors at
+    // that same 25%, rather than landing wherever the ramp puts `#bfbfbf`.
+    let same_polarity = ColorTheme::new(
+      Some((color("#fdf6e3"), color("#073642"))),
+      0.15,
+      &[],
+    )
+    .expect("valid theme");
+    assert_close(
+      same_polarity.apply_neighborhood(&edge_block(black, edge, white)),
+      lerp_rgb(rgb("#fdf6e3"), rgb("#073642"), [0.25; 3]),
+    );
+
+    // Flipped to light-on-dark, the same edge is boosted.
+    assert_close(
+      winter().apply_neighborhood(&edge_block(black, edge, white)),
+      lerp_rgb(rgb("#1e1e1e"), rgb("#d4d4d4"), inverted(0.25)),
+    );
+  }
+
+  #[test]
+  fn subpixel_fringes_become_grayscale() {
     let theme = winter();
     let (black, white) = (rgb("#000000"), rgb("#ffffff"));
 
@@ -677,17 +892,136 @@ mod tests {
     // which together average out gray across the row.
     let blue = [0.2, 0.6, 1.0];
     let orange = [1.0, 0.6, 0.2];
-    let out = theme.apply_neighborhood(&[
-      black, black, white, //
-      black, blue, orange, //
-      black, black, black,
-    ]);
+    let out =
+      theme.apply_neighborhood(&rows([black, black, blue, orange, white]));
 
-    // Each channel keeps its own coverage in the new colors.
+    // Recognized as text rather than color, at its mean coverage.
     assert_close(
       out,
-      lerp_rgb(rgb("#1e1e1e"), rgb("#d4d4d4"), [0.8, 0.4, 0.0]),
+      lerp_rgb(rgb("#1e1e1e"), rgb("#d4d4d4"), inverted(0.4)),
     );
+  }
+
+  #[test]
+  fn wpf_cleartype_fringes_become_grayscale() {
+    let theme = winter();
+    let px = |r: u8, g: u8, b: u8| [r, g, b].map(|c| f32::from(c) / 255.0);
+    let (black, white) = (px(0, 0, 0), px(255, 255, 255));
+
+    // Measured across the left edge of a WPF "T" stroke: page, yellow
+    // fringe, red fringe, ink.
+    let (yellow, red) = (px(255, 255, 186), px(106, 0, 0));
+    for (center, row) in [
+      (yellow, [white, white, yellow, red, black]),
+      (red, [white, yellow, red, black, black]),
+    ] {
+      let out = theme.apply_neighborhood(&rows(row));
+      let spread = out.iter().fold(0.0_f32, |m, c| m.max(*c))
+        - out.iter().fold(1.0_f32, |m, c| m.min(*c));
+
+      assert!(spread < 0.02, "fringe {center:?} stayed colored: {out:?}");
+    }
+  }
+
+  #[test]
+  fn wpf_hairline_without_full_ink_becomes_grayscale() {
+    let theme = winter();
+    let px = |r: u8, g: u8, b: u8| [r, g, b].map(|c| f32::from(c) / 255.0);
+    let white = px(255, 255, 255);
+
+    // Measured across a WPF hairline stem that never reaches full ink.
+    let out = theme.apply_neighborhood(&rows([
+      white,
+      px(255, 255, 186),
+      px(106, 0, 106),
+      px(186, 255, 255),
+      white,
+    ]));
+    let spread = out.iter().fold(0.0_f32, |m, c| m.max(*c))
+      - out.iter().fold(1.0_f32, |m, c| m.min(*c));
+
+    assert!(spread < 0.02, "hairline stayed colored: {out:?}");
+    assert!(out[0] > 0.5, "hairline should read as light ink: {out:?}");
+  }
+
+  #[test]
+  fn highlight_paper_between_letters_stays_highlighted() {
+    let theme = ColorTheme::new(
+      Some((color("#1e1e1e"), color("#d4d4d4"))),
+      0.15,
+      &[ColorOverride {
+        from: color("#fff3b0"),
+        to: color("#5a4a00"),
+        tolerance: 10.0,
+      }],
+    )
+    .expect("valid theme");
+    let px = |r: u8, g: u8, b: u8| [r, g, b].map(|c| f32::from(c) / 255.0);
+    let paper = px(255, 243, 176);
+
+    // Measured between two WPF letters on a `#fff3b0` highlight.
+    let out = theme.apply_neighborhood(&rows([
+      paper,
+      px(0, 0, 11),
+      px(255, 243, 170),
+      px(178, 91, 6),
+      paper,
+    ]));
+
+    // Still (nearly) the themed highlight, not a neutral gray.
+    assert!(
+      distance(srgb_to_oklab(out), srgb_to_oklab(rgb("#5a4a00"))) < 0.05,
+      "highlight paper lost its color: {out:?}"
+    );
+  }
+
+  #[test]
+  fn hairline_on_highlight_becomes_grayscale() {
+    let theme = winter();
+    let px = |r: u8, g: u8, b: u8| [r, g, b].map(|c| f32::from(c) / 255.0);
+    let paper = px(255, 243, 176);
+
+    // Measured across the "l" of "highlighted" on a `#fff3b0` highlight.
+    let stem = px(140, 53, 49);
+    let out = theme.apply_neighborhood(&rows([
+      paper,
+      px(255, 238, 146),
+      stem,
+      px(160, 212, 176),
+      paper,
+    ]));
+
+    // The stem reads as neutral ink, not as the dark red fringe.
+    let spread = out.iter().fold(0.0_f32, |m, c| m.max(*c))
+      - out.iter().fold(1.0_f32, |m, c| m.min(*c));
+    assert!(spread < 0.05, "stem stayed colored: {out:?}");
+    assert!(out[0] > 0.4, "stem should read as light ink: {out:?}");
+  }
+
+  #[test]
+  fn thin_colored_text_keeps_its_color() {
+    let theme = ColorTheme::new(
+      Some((color("#1e1e1e"), color("#d4d4d4"))),
+      0.15,
+      &[ColorOverride {
+        from: color("#0078d4"),
+        to: color("#4aa3ff"),
+        tolerance: 6.0,
+      }],
+    )
+    .expect("valid theme");
+
+    // A `#0078d4` link stroke with its own `ClearType` fringes.
+    let ink = rgb("#0078d4");
+    let out = theme.apply_neighborhood(&rows([
+      rgb("#ffffff"),
+      [0.7, 0.68, 0.85],
+      ink,
+      [0.1, 0.68, 0.95],
+      rgb("#ffffff"),
+    ]));
+
+    assert_close(out, rgb("#4aa3ff"));
   }
 
   #[test]
@@ -734,7 +1068,7 @@ mod tests {
 
     assert_close(
       theme.apply_neighborhood(&edge_block(blue, corner, white)),
-      lerp_rgb(rgb("#1e1e1e"), rgb("#4aa3ff"), [0.5; 3]),
+      lerp_rgb(rgb("#1e1e1e"), rgb("#4aa3ff"), inverted(0.5)),
     );
   }
 
