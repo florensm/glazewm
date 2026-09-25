@@ -2,12 +2,19 @@
 # Windows (Windows PowerShell 5.1 or PowerShell 7), no SDK needed.
 #
 #   powershell -ExecutionPolicy Bypass -File tools\color-theme-showcase\Showcase.ps1
+#
+# -ImagePath shows a photo of your own on the Images tab instead of the
+# drawn stand-in portrait.
+
+param([string] $ImagePath)
 
 $ErrorActionPreference = 'Stop'
 
 # WPF needs a single-threaded apartment.
 if ([Threading.Thread]::CurrentThread.GetApartmentState() -ne 'STA') {
-  powershell.exe -STA -ExecutionPolicy Bypass -File $PSCommandPath
+  $arguments = @('-STA', '-ExecutionPolicy', 'Bypass', '-File', $PSCommandPath)
+  if ($ImagePath) { $arguments += @('-ImagePath', $ImagePath) }
+  powershell.exe @arguments
   return
 }
 
@@ -88,6 +95,21 @@ foreach ($column in 'Name', 'Role', 'City') { [void] $people.Columns.Add($column
   @('Linus Torvalds', 'Maintainer', 'Portland', 54)
 ) | ForEach-Object { [void] $people.Rows.Add($_) }
 (Get-Control 'People').ItemsSource = $people.DefaultView
+
+if ($ImagePath) {
+  $photo = New-Object Windows.Media.Imaging.BitmapImage
+  $photo.BeginInit()
+  $photo.UriSource = New-Object Uri ((Resolve-Path $ImagePath).Path)
+  $photo.CacheOption = 'OnLoad'
+  $photo.EndInit()
+  $window.Resources['Portrait'] = $photo
+}
+
+(Get-Control 'PeopleWithAvatars').ItemsSource = @(
+  'Ada Lovelace', 'Alan Turing', 'Grace Hopper', 'Edsger Dijkstra',
+  'Barbara Liskov', 'Donald Knuth', 'Margaret Hamilton', 'Linus Torvalds',
+  'Katherine Johnson', 'Dennis Ritchie', 'Frances Allen', 'Ken Thompson'
+)
 
 # Repaints every second, so the capture keeps delivering frames even when
 # nothing else changes.
