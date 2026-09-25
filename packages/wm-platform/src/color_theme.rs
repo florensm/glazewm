@@ -100,6 +100,23 @@ const INVERTED_TEXT_GAMMA: f32 = 1.4;
 /// for [`INVERTED_TEXT_GAMMA`] to fully apply.
 const INVERSION_FULL: f32 = 0.1;
 
+/// OKLab distance from a page color over which a pixel inside an image
+/// goes from page (themed) to image content (kept). Tight: a photo's own
+/// near-white must stay, the page's flat color matches almost exactly.
+const IMAGE_PAPER_MATCH_START: f32 = 0.01;
+const IMAGE_PAPER_MATCH_FULL: f32 = 0.03;
+
+/// Fewest non-page pixels for an image to be judged a picture at all.
+const PICTURE_MIN_CONTENT_PIXELS: usize = 16;
+
+/// sRGB distance from the page -> ink line beyond which a pixel is one no
+/// single ink explains.
+const PICTURE_OFF_LINE: f32 = 0.1;
+
+/// Share of an image's non-page pixels no single ink explains over which
+/// it is a picture. Anti-aliased icons stay near 0; photos are far above.
+const PICTURE_MIN_UNEXPLAINED: f32 = 0.2;
+
 /// Override tolerances are configured as OKLab distance times 100, so they
 /// read like the familiar CIE ΔE scale (~2 is barely noticeable).
 const TOLERANCE_SCALE: f32 = 100.0;
@@ -420,6 +437,151 @@ impl ColorTheme {
       lerp3(themed_center, self.apply(neutral(center)), edge * fringes);
     lerp3(unexplained, remixed, edge * fit)
   }
+
+  /// Maps the center of a 5×3 neighborhood inside an image through the
+  /// theme: its own colors are kept, and only pixels matching one of
+  /// `papers` (the page colors sampled around the image) are themed.
+  ///
+  /// Images are reported as rectangles, while their content is often
+  /// round or rounded; the page showing through their corners is themed
+  /// with the rest of the page. Where the image's edge is anti-aliased
+  /// into the page, the pixel is re-mixed from the themed page and the
+  /// kept image color at the same coverage.
+  #[must_use]
+  pub fn apply_image_neighborhood(
+    &self,
+    pixels: &[[f32; 3]; NEIGHBORHOOD_SIZE],
+    papers: &[[f32; 3]],
+  ) -> [f32; 3] {
+    let center = pixels[NEIGHBORHOOD_SIZE / 2];
+    let themed_center = self.apply_image(center, papers);
+
+    let mut paper = center;
+    let mut paper_weight = image_paper_weight(center, papers);
+
+    for pixel in pixels {
+      let weight = image_paper_weight(*pixel, papers);
+
+      if weight > paper_weight {
+        paper = *pixel;
+        paper_weight = weight;
+      }
+    }
+
+    if paper_weight <= 0.0 {
+      return themed_center;
+    }
+
+    // The image side of the edge: the pixel least like the page.
+    let mut content = paper;
+    let mut content_distance = 0.0;
+
+    for pixel in pixels {
+      let gap = distance(*pixel, paper);
+
+      if gap > content_distance {
+        content = *pixel;
+        content_distance = gap;
+      }
+    }
+
+    if content_distance < MIN_CHANNEL_SPAN {
+      return themed_center;
+    }
+
+    let mut along = 0.0;
+
+    for c in 0..3 {
+      along += (center[c] - paper[c]) * (content[c] - paper[c]);
+    }
+
+    let coverage =
+      (along / (content_distance * content_distance)).clamp(0.0, 1.0);
+    let fit = 1.0
+      - smoothstep(
+        MIX_ERROR_START,
+        MIX_ERROR_FULL,
+        distance(center, lerp3(paper, content, coverage)),
+      );
+
+    let remixed = lerp3(
+      self.apply_image(paper, papers),
+      self.apply_image(content, papers),
+      coverage,
+    );
+    lerp3(themed_center, remixed, fit * paper_weight)
+  }
+
+  /// [`apply`](Self::apply) for a pixel inside an image: themed only as
+  /// far as it matches one of `papers`.
+  fn apply_image(&self, srgb: [f32; 3], papers: &[[f32; 3]]) -> [f32; 3] {
+    lerp3(srgb, self.apply(srgb), image_paper_weight(srgb, papers))
+  }
+}
+
+/// Whether an image's pixels are a picture to keep in its own colors,
+/// rather than an icon to theme like text.
+///
+/// An icon is drawn in one ink over the page, so its pixels all lie
+/// between one of `papers` and that ink; a picture has too many pixels
+/// no single ink explains. Images that are mostly page count as icons.
+#[must_use]
+pub fn is_picture(pixels: &[[f32; 3]], papers: &[[f32; 3]]) -> bool {
+  let content: Vec<[f32; 3]> = pixels
+    .iter()
+    .copied()
+    .filter(|pixel| image_paper_weight(*pixel, papers) < 0.5)
+    .collect();
+
+  if content.len() < PICTURE_MIN_CONTENT_PIXELS {
+    return false;
+  }
+
+  // The page the image sits on, and the ink farthest from it.
+  let paper = papers.first().copied().unwrap_or([1.0; 3]);
+  let ink = content.iter().copied().fold(paper, |farthest, pixel| {
+    if distance(pixel, paper) > distance(farthest, paper) {
+      pixel
+    } else {
+      farthest
+    }
+  });
+
+  let span = distance(ink, paper);
+  if span < MIN_CHANNEL_SPAN {
+    return false;
+  }
+
+  let unexplained = content
+    .iter()
+    .filter(|pixel| {
+      let mut along = 0.0;
+      for c in 0..3 {
+        along += (pixel[c] - paper[c]) * (ink[c] - paper[c]);
+      }
+      let coverage = (along / (span * span)).clamp(0.0, 1.0);
+      distance(**pixel, lerp3(paper, ink, coverage)) > PICTURE_OFF_LINE
+    })
+    .count();
+
+  #[allow(clippy::cast_precision_loss)]
+  let unexplained_share = unexplained as f32 / content.len() as f32;
+  unexplained_share > PICTURE_MIN_UNEXPLAINED
+}
+
+/// How closely `srgb` matches one of `papers`: 1 up to
+/// [`IMAGE_PAPER_MATCH_START`], easing out to 0 at
+/// [`IMAGE_PAPER_MATCH_FULL`].
+fn image_paper_weight(srgb: [f32; 3], papers: &[[f32; 3]]) -> f32 {
+  let lab = srgb_to_oklab(srgb);
+
+  papers.iter().fold(0.0, |weight, paper| {
+    let gap = distance(lab, srgb_to_oklab(*paper));
+    weight.max(
+      1.0
+        - smoothstep(IMAGE_PAPER_MATCH_START, IMAGE_PAPER_MATCH_FULL, gap),
+    )
+  })
 }
 
 /// The two colors the window's edge pixels are a mix of, as `(dark,
@@ -1416,6 +1578,93 @@ mod tests {
       out[1].hypot(out[2]) < 0.03,
       "fringe took a color of its own: {out:?}"
     );
+  }
+
+  #[test]
+  fn image_content_keeps_its_colors() {
+    let theme = winter();
+    let papers = [rgb("#fbfbfb")];
+
+    // Skin, gray, and near-white photo pixels are not the page.
+    for hex in ["#e0b89a", "#808080", "#2b2b2b", "#f0ece4"] {
+      assert_close(
+        theme.apply_image_neighborhood(
+          &[rgb(hex); NEIGHBORHOOD_SIZE],
+          &papers,
+        ),
+        rgb(hex),
+      );
+    }
+
+    // Nor is an edge within the image.
+    let (gray, dark) = (rgb("#808080"), rgb("#404040"));
+    let mix = lerp3(gray, dark, 0.5);
+    assert_close(
+      theme
+        .apply_image_neighborhood(&edge_block(gray, mix, dark), &papers),
+      mix,
+    );
+  }
+
+  #[test]
+  fn page_inside_an_image_rect_is_themed() {
+    let theme = winter();
+    let paper = rgb("#fbfbfb");
+
+    // The corner of a round avatar's bounding rect shows the page.
+    assert_close(
+      theme
+        .apply_image_neighborhood(&[paper; NEIGHBORHOOD_SIZE], &[paper]),
+      theme.apply(paper),
+    );
+  }
+
+  #[test]
+  fn round_image_edge_blends_into_the_themed_page() {
+    let theme = winter();
+    let (paper, skin) = (rgb("#fbfbfb"), rgb("#e0b89a"));
+    let edge = lerp3(paper, skin, 0.5);
+
+    // The anti-aliased rim of a circle-clipped photo: half page, half
+    // face.
+    assert_close(
+      theme.apply_image_neighborhood(
+        &edge_block(paper, edge, skin),
+        &[paper],
+      ),
+      lerp3(theme.apply(paper), skin, 0.5),
+    );
+  }
+
+  #[test]
+  fn monochrome_icon_is_not_a_picture() {
+    let (paper, ink) = (rgb("#fbfbfb"), rgb("#1f1f1f"));
+
+    // A glyph: page, ink, and anti-aliased mixes of the two.
+    let pixels: Vec<[f32; 3]> = (0..64)
+      .map(|i| lerp3(paper, ink, f32::from(i % 9_u8) / 8.0))
+      .collect();
+
+    assert!(!is_picture(&pixels, &[paper]));
+  }
+
+  #[test]
+  fn photo_is_a_picture() {
+    let paper = rgb("#fbfbfb");
+    let tones = ["#e0b89a", "#3c2415", "#b4875b", "#f0ece4", "#5d8fbf"];
+
+    let pixels: Vec<[f32; 3]> =
+      (0..64).map(|i| rgb(tones[i % tones.len()])).collect();
+
+    assert!(is_picture(&pixels, &[paper]));
+  }
+
+  #[test]
+  fn blank_image_is_not_a_picture() {
+    let paper = rgb("#fbfbfb");
+
+    // Not loaded yet: nothing but page.
+    assert!(!is_picture(&[paper; 64], &[paper]));
   }
 
   #[test]

@@ -15,6 +15,7 @@ pixel shader, and shown in a click-through overlay directly above it.
 | `color-themes.yaml` loading + hot reload | `packages/wm/src/color_themes.rs`, schema in `packages/wm-common/src/color_themes_config.rs` |
 | `set-color-theme` command | `packages/wm-common/src/app_command.rs`, handled in `packages/wm/src/wm.rs` |
 | Per-tick sync, popups, z-order resync | `packages/wm/src/commands/general/sync_color_themes.rs` |
+| Images kept in their own colors (UI Automation) | `packages/wm-platform/src/platform_impl/windows/image_finder.rs` |
 | Sample themes | `resources/assets/sample-color-themes.yaml` |
 
 ## Done and verified on the dev machine
@@ -91,6 +92,27 @@ Open questions for the Windows test:
 - A session with `effect_opacity < 255` (transparent windows) gets an
   opaque overlay over its translucent surrogate.
 
+## Images keep their colors (implemented, needs Windows verification)
+
+A photo's skin, hair and gray tones are low-saturation, so the ramp
+inverted them. Now:
+
+1. `image_finder.rs` asks UI Automation for the themed window's `Image`
+   elements (one cached `FindAll`, on its own thread, only after a captured
+   frame arrived and at most every 200 ms; 1 s timeout for hung apps).
+2. `color_capture.rs` reads each image back from the last frame and keeps
+   only pictures (`is_picture`): an icon is one ink over the page, so it's
+   still themed like text; a photo has many pixels no single ink explains.
+3. The shader themes a picture's pixels only where they match the page
+   sampled around its rect (`apply_image_neighborhood`), so a round
+   avatar's corners turn dark with the page, and its anti-aliased rim is
+   re-mixed with the themed page instead of showing a square.
+
+Limits: a picture's own pure-page-colored pixels (a white shirt on a white
+page) are themed too; while scrolling, kept rects lag up to ~200 ms; only
+apps exposing `Image` elements to UI Automation (WPF, WinForms, UWP,
+Chromium on demand) benefit.
+
 ## Next (optional): follow workspace-switch slides
 
 Currently hidden during the slide. To follow: `WorkspaceSurrogate::hwnd()`
@@ -103,7 +125,9 @@ Build needs the Windows SDK's `fxc.exe` (or `FXC=<path>`).
 
 On Linux, `cargo check`/`clippy --target x86_64-pc-windows-msvc` work for
 type-checking with `FXC` pointing at a stub that writes an empty file to
-the `/Fo` path.
+the `/Fo` path. The shader can be syntax-checked with Microsoft's Linux
+`dxc` release (`dxc -T ps_6_0 -E ps_main -HV 2018 -WX`); it isn't `fxc`,
+so SM4-only issues still need the Windows build.
 
 ```
 cargo fmt --all
@@ -128,3 +152,6 @@ Manual checks with a themed WPF window:
    the main window stays themed after they close.
 4. Minimize/restore and switch workspaces: overlay hides and returns.
 5. Edit `color-themes.yaml` while it's open: updates within ~1 second.
+6. Showcase's Images tab: avatars and the photo keep their colors with no
+   square around the round ones; the home and bell icons invert; scroll
+   the avatar list and the kept images follow.

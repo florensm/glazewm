@@ -26,7 +26,9 @@ mod window_listener;
 #[cfg(feature = "test_utils")]
 pub mod test_utils;
 
-pub use color_theme::{ColorOverride, ColorTheme, MAX_COLOR_OVERRIDES};
+pub use color_theme::{
+  is_picture, ColorOverride, ColorTheme, MAX_COLOR_OVERRIDES,
+};
 pub use dispatcher::*;
 pub use display::*;
 pub use display_listener::*;
