@@ -103,8 +103,10 @@ A photo's skin, hair and gray tones are low-saturation, so the ramp
 inverted them. Now:
 
 1. `image_finder.rs` asks UI Automation for the themed window's `Image`
-   elements (one cached `FindAll`, on its own thread, only after a captured
-   frame arrived and at most every 200 ms; 1 s timeout for hung apps).
+   elements (one cached `FindAll`, on its own thread; only after the
+   content changed and then stayed still for 0.5 s, at least 3 s apart, at
+   most 10 s late for a window that never settles; 1 s timeout for hung
+   apps). An idle window is never queried.
 2. `color_capture.rs` reads each image back from the last frame and keeps
    only pictures (`is_picture`): an icon is one ink over the page, so it's
    still themed like text; a photo has many pixels no single ink explains.
@@ -114,7 +116,8 @@ inverted them. Now:
    re-mixed with the themed page instead of showing a square.
 
 Limits: a picture's own pure-page-colored pixels (a white shirt on a white
-page) are themed too; while scrolling, kept rects lag up to ~200 ms; only
+page) are themed too; while scrolling, pictures show themed until the
+list settles (0.5-3 s); only
 apps exposing `Image` elements to UI Automation (WPF, WinForms, UWP,
 Chromium on demand) benefit.
 

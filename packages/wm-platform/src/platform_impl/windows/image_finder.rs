@@ -2,10 +2,10 @@
 //! theme can leave pictures in their own colors.
 //!
 //! Queries run on a dedicated thread: they are cross-process calls into
-//! the app's UI thread, which can be slow or hang with the app. A query
-//! only runs after the window's content changed (a captured frame
-//! arrived), at most every [`QUERY_INTERVAL`], so an idle window costs
-//! nothing and a busy one is never flooded.
+//! the app's UI thread, which can be slow or hang with the app. They are
+//! kept rare: a query only follows a change of the window's content (a
+//! captured frame arrived), once it has settled, and never sooner than
+//! [`MIN_INTERVAL`] after the last one. An idle window costs nothing.
 
 use std::{
   mem::ManuallyDrop,
@@ -37,10 +37,16 @@ use windows::{
 
 use crate::Rect;
 
-/// Shortest time between two queries of the same window. Each query runs
-/// on the app's UI thread, so this bounds the load put on it while its
-/// content keeps changing (e.g. scrolling).
-const QUERY_INTERVAL: Duration = Duration::from_millis(200);
+/// Shortest time between two queries of the same window.
+const MIN_INTERVAL: Duration = Duration::from_secs(3);
+
+/// How long the content must stay unchanged before a query, so scrolling
+/// or typing is looked at once when it stops rather than throughout.
+const SETTLE: Duration = Duration::from_millis(500);
+
+/// Longest a change waits for the content to settle; bounds how stale
+/// the images get in a window that never stops animating.
+const MAX_WAIT: Duration = Duration::from_secs(10);
 
 /// How long a single query may block on an unresponsive app.
 const QUERY_TIMEOUT_MS: u32 = 1000;
@@ -60,8 +66,12 @@ struct Shared {
 }
 
 struct FinderState {
-  /// The window's content changed since the last query.
-  dirty: bool,
+  /// When the content first changed since the last query, if it did.
+  changed_since: Option<Instant>,
+
+  /// When the content last changed.
+  last_change: Instant,
+
   stopped: bool,
 }
 
@@ -75,7 +85,8 @@ impl ImageFinder {
   ) -> crate::Result<Self> {
     let shared = Arc::new(Shared {
       state: Mutex::new(FinderState {
-        dirty: true,
+        changed_since: Some(Instant::now()),
+        last_change: Instant::now(),
         stopped: false,
       }),
       wake: Condvar::new(),
@@ -102,7 +113,9 @@ impl ImageFinder {
       .state
       .lock()
       .unwrap_or_else(PoisonError::into_inner);
-    state.dirty = true;
+    let now = Instant::now();
+    state.changed_since.get_or_insert(now);
+    state.last_change = now;
     self.shared.wake.notify_one();
   }
 
@@ -160,34 +173,36 @@ fn run(
       let mut state =
         shared.state.lock().unwrap_or_else(PoisonError::into_inner);
 
-      while !state.dirty && !state.stopped {
-        state = shared
-          .wake
-          .wait(state)
-          .unwrap_or_else(PoisonError::into_inner);
-      }
+      loop {
+        if state.stopped {
+          return Ok(());
+        }
 
-      // Throttle: wait out the rest of the interval, still stoppable.
-      if let Some(deadline) = last_query.map(|at| at + QUERY_INTERVAL) {
-        while !state.stopped {
-          let now = Instant::now();
-          if now >= deadline {
-            break;
-          }
-
+        let Some(changed_since) = state.changed_since else {
           state = shared
             .wake
-            .wait_timeout(state, deadline - now)
-            .unwrap_or_else(PoisonError::into_inner)
-            .0;
+            .wait(state)
+            .unwrap_or_else(PoisonError::into_inner);
+          continue;
+        };
+
+        // Re-evaluated on every change, which can move it.
+        let deadline =
+          next_query_at(changed_since, state.last_change, last_query);
+        let now = Instant::now();
+
+        if now >= deadline {
+          break;
         }
+
+        state = shared
+          .wake
+          .wait_timeout(state, deadline - now)
+          .unwrap_or_else(PoisonError::into_inner)
+          .0;
       }
 
-      if state.stopped {
-        return Ok(());
-      }
-
-      state.dirty = false;
+      state.changed_since = None;
     }
 
     last_query = Some(Instant::now());
@@ -201,6 +216,18 @@ fn run(
       }
     }
   }
+}
+
+/// When to query after the content changed since `changed_since` and
+/// last changed at `last_change`: once it settled (or waited long
+/// enough), and spaced out from the `last_query`.
+fn next_query_at(
+  changed_since: Instant,
+  last_change: Instant,
+  last_query: Option<Instant>,
+) -> Instant {
+  let settled = (last_change + SETTLE).min(changed_since + MAX_WAIT);
+  last_query.map_or(settled, |at| settled.max(at + MIN_INTERVAL))
 }
 
 /// The UI Automation objects a query needs, created once per thread.
@@ -356,4 +383,39 @@ fn extended_frame_bounds(source: HWND) -> crate::Result<RECT> {
   }
 
   Ok(rect)
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+
+  #[test]
+  fn queries_once_the_content_settles() {
+    let start = Instant::now();
+
+    // Scrolling for a second: looked at half a second after it stops.
+    let last_change = start + Duration::from_secs(1);
+    assert_eq!(
+      next_query_at(start, last_change, None),
+      last_change + SETTLE
+    );
+  }
+
+  #[test]
+  fn never_queries_sooner_than_the_interval() {
+    let start = Instant::now();
+
+    assert_eq!(
+      next_query_at(start, start, Some(start)),
+      start + MIN_INTERVAL,
+    );
+  }
+
+  #[test]
+  fn a_window_that_never_settles_still_gets_queried() {
+    let start = Instant::now();
+    let last_change = start + Duration::from_secs(60);
+
+    assert_eq!(next_query_at(start, last_change, None), start + MAX_WAIT,);
+  }
 }

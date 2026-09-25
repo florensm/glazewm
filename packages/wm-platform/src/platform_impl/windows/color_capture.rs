@@ -81,7 +81,10 @@ use super::{
   composition::{to_ui_color, with_composition_thread, FILL_PARENT},
   image_finder::ImageFinder,
 };
-use crate::{color_theme::ColorTheme, is_picture, Color, Rect};
+use crate::{
+  color_theme::{is_picture, ColorTheme},
+  Color, Rect,
+};
 
 const VERTEX_SHADER: &[u8] =
   include_bytes!(concat!(env!("OUT_DIR"), "/color_theme_vs.cso"));
