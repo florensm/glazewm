@@ -1,0 +1,35 @@
+# Color themes for the `set-color-theme <name>` command.
+#
+# Copy to `%userprofile%/.glzr/glazewm/color-themes.yaml` (next to
+# `config.yaml`). Changes are picked up automatically; an invalid edit is
+# reported in `errors.log` and the previous themes are kept.
+#
+# Apply a theme from a keybinding or a window rule in `config.yaml`:
+#
+#   window_rules:
+#     - commands: ["set-color-theme winter"]
+#       match:
+#         - window_process: { equals: "MyApp" }
+#
+# Colors are compared in OKLab, a perceptual color space.
+themes:
+  # A dark theme for light apps.
+  winter:
+    # Gray ramp: white maps to `background`, black to `foreground`, and the
+    # grays in between are interpolated. Omit both to disable the ramp.
+    background: "#1e1e1e"
+    foreground: "#d4d4d4"
+
+    # Pixels more saturated than this (0.0-1.0) skip the ramp, which keeps
+    # images and icons in their original colors.
+    saturation_threshold: 0.15
+
+    # Explicit color -> color mappings, applied on top of the ramp (up to
+    # 16). `tolerance` is an OKLab distance times 100 (~2 is barely
+    # noticeable, default 5): pixels within it blend towards `to`, fading
+    # out towards the edge of the tolerance.
+    overrides:
+      # Yellow highlight -> dark olive.
+      - { from: "#fff3b0", to: "#5a4a00", tolerance: 10 }
+      # Windows accent blue -> a lighter blue that reads on dark.
+      - { from: "#0078d4", to: "#4aa3ff", tolerance: 6 }

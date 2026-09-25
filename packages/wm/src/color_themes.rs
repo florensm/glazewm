@@ -132,6 +132,16 @@ themes:
   }
 
   #[test]
+  fn sample_file_is_valid() {
+    let themes = parse(include_str!(
+      "../../../resources/assets/sample-color-themes.yaml"
+    ))
+    .expect("sample color themes should parse");
+
+    assert!(themes.contains_key("winter"));
+  }
+
+  #[test]
   fn empty_file_has_no_themes() {
     assert!(parse("").expect("valid").is_empty());
     assert!(parse("# nothing yet\n").expect("valid").is_empty());
