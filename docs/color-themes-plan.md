@@ -38,8 +38,13 @@ pixel shader, and shown in a click-through overlay directly above it.
   windows.
 - Zen Browser still loses the theme on some clicks. Parked (WPF is the
   target).
-- Colored text (e.g. a blue link) can keep faint `ClearType` fringes; gray
-  text in dense glyphs (`k`, close stems) is grayed since `5779983`.
+- Gray text in dense glyphs (`k`, close stems) is grayed since `5779983`.
+  Thin colored text (e.g. a blue link) recovers its ink's hue from the
+  neighborhood's summed deviation from the paper, so its fringes no longer
+  stay purple/cyan.
+- Edges where three colors meet (a bordered colored shape on a light page)
+  can leave a stray off-color pixel: the fit allows per-channel coverage,
+  the re-mix uses the mean.
 
 ## Phase 2: follow window movement (implemented, needs Windows verification)
 

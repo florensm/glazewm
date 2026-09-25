@@ -193,7 +193,12 @@ float3 neutral(float3 srgb) {
 }
 
 // Mirrors `estimate_ink`.
-float3 estimate_ink(float3 endpoint, float3 paper, float extreme, float mixed_hues) {
+float3 estimate_ink(
+  float3 pixels[NEIGHBORHOOD_SIZE],
+  float3 endpoint,
+  float3 paper,
+  float extreme,
+  float mixed_hues) {
   float3 span = paper - extreme;
 
   if (any(abs(span) <= MIN_CHANNEL_SPAN)) {
@@ -201,14 +206,35 @@ float3 estimate_ink(float3 endpoint, float3 paper, float extreme, float mixed_hu
   }
 
   float3 coverage = saturate((paper - endpoint) / span);
+
+  float3 deviation_sum = float3(0.0, 0.0, 0.0);
+
+  [unroll]
+  for (int i = 0; i < NEIGHBORHOOD_SIZE; i++) {
+    deviation_sum += pixels[i] - paper;
+  }
+
+  float3 valid = (float3)(abs(deviation_sum) > MIN_CHANNEL_SPAN);
+  float full_scale = 0.0;
+
+  [unroll]
+  for (int j = 0; j < NEIGHBORHOOD_SIZE; j++) {
+    float3 ratio =
+      valid * (pixels[j] - paper) / (valid > 0.0 ? deviation_sum : 1.0);
+    full_scale = max(full_scale, max(ratio.r, max(ratio.g, ratio.b)));
+  }
+
+  float3 colored = paper + deviation_sum * full_scale;
+
   float channel_step = max(
     abs(coverage.r - coverage.g),
     abs(coverage.g - coverage.b));
   float fringe =
-    (1.0 - smoothstep(SUBPIXEL_STEP_START, SUBPIXEL_STEP_FULL, channel_step))
-    * mixed_hues;
+    1.0 - smoothstep(SUBPIXEL_STEP_START, SUBPIXEL_STEP_FULL, channel_step);
+  float3 neutral_ink =
+    lerp(endpoint, channel_extreme(endpoint, extreme), fringe);
 
-  return lerp(endpoint, channel_extreme(endpoint, extreme), fringe);
+  return saturate(lerp(colored, neutral_ink, mixed_hues));
 }
 
 // Mirrors `edge_colors`.
@@ -256,11 +282,11 @@ void edge_colors(
     hue_agreement(pixels, paper, extreme));
 
   if (paper_is_light) {
-    dark = estimate_ink(dark, paper, 0.0, mixed_hues);
+    dark = estimate_ink(pixels, dark, paper, 0.0, mixed_hues);
     light = paper;
   } else {
     dark = paper;
-    light = estimate_ink(light, paper, 1.0, mixed_hues);
+    light = estimate_ink(pixels, light, paper, 1.0, mixed_hues);
   }
 }
 

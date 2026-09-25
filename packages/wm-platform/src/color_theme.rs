@@ -461,9 +461,9 @@ fn edge_colors(
     );
 
   if paper_is_light {
-    (estimate_ink(dark, paper, 0.0, mixed_hues), paper)
+    (estimate_ink(pixels, dark, paper, 0.0, mixed_hues), paper)
   } else {
-    (paper, estimate_ink(light, paper, 1.0, mixed_hues))
+    (paper, estimate_ink(pixels, light, paper, 1.0, mixed_hues))
   }
 }
 
@@ -519,14 +519,19 @@ fn hue_agreement(
   }
 }
 
-/// Pulls `endpoint` towards the neutral ink a `ClearType` fringe implies,
-/// against `paper`, when it looks like one.
+/// The ink the window's edge pixels are a mix of, against `paper`, when
+/// `endpoint` (its most ink-like pixel) may only be a fringe of it.
 ///
-/// A fringe's most-covered channel shows the ink level (the darkest
-/// channel for dark ink, `extreme` 0; the lightest for light ink, 1). Only
-/// applied as far as the window's hues disagree (`mixed_hues`), so the
-/// darkest pixel of genuinely colored text keeps its color.
+/// Thin strokes never fully cover a pixel, so the endpoint is too light
+/// and, under `ClearType`, the wrong hue. Anti-aliasing shifts coverage
+/// between pixels without changing the total, so the window's summed
+/// deviation from `paper` points along the ink's color; scaled until the
+/// most-covered channel is full, it is the palest ink that explains every
+/// pixel. Fringes of neutral ink disagree in hue (`mixed_hues`) and aren't
+/// energy-balanced across channels, so they instead take the endpoint's
+/// most-covered channel as a neutral ink level.
 fn estimate_ink(
+  pixels: &[[f32; 3]; NEIGHBORHOOD_SIZE],
   endpoint: [f32; 3],
   paper: [f32; 3],
   extreme: f32,
@@ -544,14 +549,37 @@ fn estimate_ink(
     coverage[c] = ((paper[c] - endpoint[c]) / span).clamp(0.0, 1.0);
   }
 
+  let mut deviation_sum = [0.0_f32; 3];
+
+  for pixel in pixels {
+    for c in 0..3 {
+      deviation_sum[c] += pixel[c] - paper[c];
+    }
+  }
+
+  let mut full_scale = 0.0_f32;
+
+  for pixel in pixels {
+    for c in 0..3 {
+      if deviation_sum[c].abs() > MIN_CHANNEL_SPAN {
+        full_scale =
+          full_scale.max((pixel[c] - paper[c]) / deviation_sum[c]);
+      }
+    }
+  }
+
+  let colored =
+    [0, 1, 2].map(|c| paper[c] + deviation_sum[c] * full_scale);
+
   let channel_step = (coverage[0] - coverage[1])
     .abs()
     .max((coverage[1] - coverage[2]).abs());
-  let fringe = (1.0
-    - smoothstep(SUBPIXEL_STEP_START, SUBPIXEL_STEP_FULL, channel_step))
-    * mixed_hues;
+  let fringe = 1.0
+    - smoothstep(SUBPIXEL_STEP_START, SUBPIXEL_STEP_FULL, channel_step);
+  let neutral =
+    lerp3(endpoint, [channel_extreme(endpoint, extreme); 3], fringe);
 
-  lerp3(endpoint, [channel_extreme(endpoint, extreme); 3], fringe)
+  lerp3(colored, neutral, mixed_hues).map(|c| c.clamp(0.0, 1.0))
 }
 
 /// The gray with `srgb`'s OKLab lightness.
@@ -1192,6 +1220,46 @@ mod tests {
     ]));
 
     assert_close(out, rgb("#4aa3ff"));
+  }
+
+  #[test]
+  fn hairline_colored_text_keeps_its_hue() {
+    let theme = ColorTheme::new(
+      Some((color("#1e1e1e"), color("#d4d4d4"))),
+      0.15,
+      &[ColorOverride {
+        from: color("#0078d4"),
+        to: color("#4aa3ff"),
+        tolerance: 6.0,
+      }],
+    )
+    .expect("valid theme");
+    let px = |r: u8, g: u8, b: u8| [r, g, b].map(|c| f32::from(c) / 255.0);
+    let (white, purple, cyan) =
+      (px(255, 255, 255), px(162, 162, 219), px(57, 188, 245));
+    let ink = srgb_to_oklab(rgb("#4aa3ff"));
+
+    // A 1.2px `#0078d4` `ClearType` stroke: no pixel is fully covered, so
+    // both of its pixels are fringes.
+    for (center, row) in [
+      (
+        purple,
+        [white, px(255, 254, 249), purple, cyan, px(241, 255, 255)],
+      ),
+      (
+        cyan,
+        [px(255, 254, 249), purple, cyan, px(241, 255, 255), white],
+      ),
+    ] {
+      let out = srgb_to_oklab(theme.apply_neighborhood(&rows(row)));
+      let hue_error = (out[2].atan2(out[1]) - ink[2].atan2(ink[1])).abs();
+
+      assert!(out[0] < 0.7, "fringe {center:?} stayed light: {out:?}");
+      assert!(
+        hue_error < 0.15,
+        "fringe {center:?} lost the ink's hue: {out:?}"
+      );
+    }
   }
 
   #[test]
