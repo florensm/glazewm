@@ -6,6 +6,10 @@
 
 // Mirror the constants of the same names.
 #define MAX_CHROMA 0.32
+#define TINT_LIGHTNESS_START 0.8
+#define TINT_LIGHTNESS_FULL 0.9
+#define TINT_THRESHOLD_SCALE 2.5
+#define TINT_THRESHOLD_MAX 0.4
 #define EDGE_START 0.02
 #define EDGE_FULL 0.06
 #define MIX_ERROR_START 0.03
@@ -96,6 +100,16 @@ float ramp_weight(float saturation, float threshold) {
     : 1.0 - smoothstep(threshold * 0.5, threshold, saturation);
 }
 
+// Mirrors `tint_threshold`.
+float tint_threshold(float threshold, float lightness) {
+  float tint = max(
+    threshold, min(threshold * TINT_THRESHOLD_SCALE, TINT_THRESHOLD_MAX));
+  return lerp(
+    threshold,
+    tint,
+    smoothstep(TINT_LIGHTNESS_START, TINT_LIGHTNESS_FULL, lightness));
+}
+
 // Mirrors `override_weight`.
 float override_weight(float dist, float tolerance) {
   return dist >= tolerance ? 0.0 : 1.0 - smoothstep(0.0, tolerance, dist);
@@ -108,7 +122,8 @@ float3 apply_theme(float3 srgb) {
 
   if (ramp_enabled != 0) {
     float saturation = min(length(lab.yz) / MAX_CHROMA, 1.0);
-    float weight = ramp_weight(saturation, saturation_threshold);
+    float threshold = tint_threshold(saturation_threshold, lab.x);
+    float weight = ramp_weight(saturation, threshold);
 
     float t = saturate(lab.x);
     float3 ramped = lerp(foreground.xyz, background.xyz, t);
