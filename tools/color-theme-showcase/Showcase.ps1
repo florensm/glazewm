@@ -97,12 +97,15 @@ foreach ($column in 'Name', 'Role', 'City') { [void] $people.Columns.Add($column
 (Get-Control 'People').ItemsSource = $people.DefaultView
 
 if ($ImagePath) {
-  $photo = New-Object Windows.Media.Imaging.BitmapImage
+  $photo = [Windows.Media.Imaging.BitmapImage]::new()
   $photo.BeginInit()
-  $photo.UriSource = New-Object Uri ((Resolve-Path $ImagePath).Path)
+  $photo.UriSource = [Uri]::new((Resolve-Path -LiteralPath $ImagePath).Path)
   $photo.CacheOption = 'OnLoad'
   $photo.EndInit()
-  $window.Resources['Portrait'] = $photo
+
+  # The cast unwraps PowerShell's `PSObject`, which WPF can't use as an
+  # image once stored in a resource dictionary.
+  $window.Resources['Portrait'] = [Windows.Media.ImageSource] $photo
 }
 
 (Get-Control 'PeopleWithAvatars').ItemsSource = @(
