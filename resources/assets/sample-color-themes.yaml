@@ -30,7 +30,9 @@ themes:
     # Explicit color -> color mappings, applied on top of the ramp (up to
     # 16). `tolerance` is an OKLab distance times 100 (~2 is barely
     # noticeable, default 5): pixels within it blend towards `to`, fading
-    # out towards the edge of the tolerance.
+    # out towards the edge of the tolerance. A `from` is also taken as a
+    # known text color: small text in it (e.g. a link) is re-drawn from it
+    # exactly, instead of guessed from its anti-aliased edges.
     overrides:
       # Yellow highlight -> dark olive.
       - { from: "#fff3b0", to: "#5a4a00", tolerance: 10 }

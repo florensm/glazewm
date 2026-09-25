@@ -35,6 +35,12 @@
 #define INK_BALANCE_COLORED 0.38
 #define INK_BALANCE_NEUTRAL 0.5
 #define INK_OVERSHOOT_FULL 0.1
+#define KNOWN_INK_MIN_CONTRAST 0.1
+#define KNOWN_INK_PAGE_REACH 0.5
+#define KNOWN_INK_FIT_START 0.03
+#define KNOWN_INK_FIT_FULL 0.08
+#define KNOWN_INK_EVIDENCE_START 0.3
+#define KNOWN_INK_EVIDENCE_FULL 0.6
 #define IMAGE_PAPER_MATCH_START 0.01
 #define IMAGE_PAPER_MATCH_FULL 0.03
 
@@ -47,6 +53,7 @@ cbuffer Theme : register(b0) {
   uint ramp_enabled;
   uint padding;
   float4 overrides[MAX_COLOR_OVERRIDES * 2];
+  float4 override_inks[MAX_COLOR_OVERRIDES];
 };
 
 // Mirrors `FrameConstants`.
@@ -345,6 +352,80 @@ void edge_colors(
   }
 }
 
+// Mirrors `known_ink_coverage`.
+float known_ink_coverage(float3 pixel, float3 ink, float3 paper) {
+  float3 span = paper - ink;
+  float3 valid = (float3)(abs(span) > MIN_CHANNEL_SPAN);
+  float count = dot(valid, 1.0);
+  float3 coverage =
+    saturate((paper - pixel) / (valid > 0.0 ? span : 1.0));
+
+  return count > 0.0 ? dot(coverage * valid, 1.0) / count : 0.0;
+}
+
+// Mirrors `ColorTheme::known_ink_remix`; the weight is in `w`.
+float4 known_ink_remix(float3 pixels[NEIGHBORHOOD_SIZE]) {
+  float3 center = pixels[NEIGHBORHOOD_SIZE / 2];
+  float4 best = float4(0.0, 0.0, 0.0, 0.0);
+
+  [loop]
+  for (uint i = 0; i < override_count; i++) {
+    float3 ink = override_inks[i].xyz;
+
+    [unroll]
+    for (int polarity = 0; polarity < 2; polarity++) {
+      bool page_is_light = polarity == 0;
+      float3 paper = ink;
+
+      [unroll]
+      for (int j = 0; j < NEIGHBORHOOD_SIZE; j++) {
+        paper = page_is_light ? max(paper, pixels[j]) : min(paper, pixels[j]);
+      }
+
+      bool3 reaches = page_is_light
+        ? paper >= lerp(ink, 1.0, KNOWN_INK_PAGE_REACH)
+        : paper <= lerp(ink, 0.0, KNOWN_INK_PAGE_REACH);
+
+      if (!all(reaches) || distance(paper, ink) < KNOWN_INK_MIN_CONTRAST) {
+        continue;
+      }
+
+      float violation = 0.0;
+      float most_ink = 0.0;
+
+      [unroll]
+      for (int k = 0; k < NEIGHBORHOOD_SIZE; k++) {
+        float3 past = (pixels[k] - ink) * sign(ink - paper);
+        violation = max(violation, max(max(past.r, past.g), past.b));
+        most_ink = max(most_ink, known_ink_coverage(pixels[k], ink, paper));
+      }
+
+      float weight =
+        (1.0 - smoothstep(KNOWN_INK_FIT_START, KNOWN_INK_FIT_FULL, violation))
+        * smoothstep(KNOWN_INK_EVIDENCE_START, KNOWN_INK_EVIDENCE_FULL, most_ink);
+
+      if (weight > best.w) {
+        float3 themed_ink = apply_theme(ink);
+        float3 themed_paper = apply_theme(paper);
+        float coverage = known_ink_coverage(center, ink, paper);
+
+        float inverted = smoothstep(
+          0.0,
+          INVERSION_FULL,
+          srgb_to_oklab(themed_ink).x - srgb_to_oklab(themed_paper).x);
+        coverage = lerp(
+          coverage,
+          pow(coverage, 1.0 / INVERTED_TEXT_GAMMA),
+          inverted);
+
+        best = float4(lerp(themed_paper, themed_ink, coverage), weight);
+      }
+    }
+  }
+
+  return best;
+}
+
 // Mirrors `ColorTheme::apply_neighborhood`.
 float3 apply_neighborhood(float3 pixels[NEIGHBORHOOD_SIZE]) {
   float3 center = pixels[NEIGHBORHOOD_SIZE / 2];
@@ -426,7 +507,10 @@ float3 apply_neighborhood(float3 pixels[NEIGHBORHOOD_SIZE]) {
   float3 remixed = lerp(themed_light, themed_dark, remix_coverage);
   float3 unexplained =
     lerp(themed_center, apply_theme(neutral(center)), edge * fringes);
-  return lerp(unexplained, remixed, edge * fit);
+  float3 estimated = lerp(unexplained, remixed, edge * fit);
+
+  float4 known = known_ink_remix(pixels);
+  return lerp(estimated, known.rgb, known.w);
 }
 
 // Mirrors `image_paper_weight`, with the papers already in OKLab.

@@ -46,6 +46,11 @@ pixel shader, and shown in a click-through overlay directly above it.
   neutral ones; they're told apart by how unbalanced that deviation is
   across channels (`wpf_link_keeps_its_color`, measured on a `#1976d2`
   link: gray pixels 80 -> 28, off-hue 8 -> 1).
+- Overrides as known inks (`known_ink_remix`): where a window is an
+  override's `from` over the page channel by channel, it's re-mixed from
+  that exact ink. On the measured `#1976d2` link: mean error vs. the
+  ideal 0.024 -> 0.000, worst pixel 0.33 -> 0.008; the rest of the
+  screenshot (gray text, a photo) is unchanged.
 - Edges where three colors meet (a bordered colored shape on a light page)
   can leave a stray off-color pixel: the fit allows per-channel coverage,
   the re-mix uses the mean.

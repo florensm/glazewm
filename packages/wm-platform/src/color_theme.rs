@@ -117,6 +117,25 @@ const PICTURE_OFF_LINE: f32 = 0.1;
 /// it is a picture. Anti-aliased icons stay near 0; photos are far above.
 const PICTURE_MIN_UNEXPLAINED: f32 = 0.2;
 
+/// sRGB distance between an override's `from` and the page below which
+/// it isn't tried as ink: too close to tell coverage apart.
+const KNOWN_INK_MIN_CONTRAST: f32 = 0.1;
+
+/// Share of the way from an override's `from` to white (or black) the
+/// page must reach in every channel to be taken as a page.
+const KNOWN_INK_PAGE_REACH: f32 = 0.5;
+
+/// sRGB amount any pixel lies past an override's `from`, over which the
+/// window goes from that ink on the page to something else.
+const KNOWN_INK_FIT_START: f32 = 0.03;
+const KNOWN_INK_FIT_FULL: f32 = 0.08;
+
+/// Most ink coverage in the window over which it goes from no evidence
+/// of the ink to enough; keeps faint page-like colors from passing as
+/// a trace of it.
+const KNOWN_INK_EVIDENCE_START: f32 = 0.3;
+const KNOWN_INK_EVIDENCE_FULL: f32 = 0.6;
+
 /// Override tolerances are configured as OKLab distance times 100, so they
 /// read like the familiar CIE ΔE scale (~2 is barely noticeable).
 const TOLERANCE_SCALE: f32 = 100.0;
@@ -160,6 +179,10 @@ pub(crate) struct ThemeConstants {
   /// Per override: `from` OKLab with the tolerance (as an OKLab distance)
   /// in `w`, then `to` OKLab.
   overrides: [[f32; 4]; MAX_COLOR_OVERRIDES * 2],
+
+  /// Per override: `from` in sRGB, tried as the ink of anti-aliased edges
+  /// (see [`ColorTheme::known_ink_remix`]).
+  override_inks: [[f32; 4]; MAX_COLOR_OVERRIDES],
 }
 
 impl ColorTheme {
@@ -193,6 +216,7 @@ impl ColorTheme {
       ramp_enabled: 0,
       _padding: 0,
       overrides: [[0.0; 4]; MAX_COLOR_OVERRIDES * 2],
+      override_inks: [[0.0; 4]; MAX_COLOR_OVERRIDES],
     };
 
     if let Some((background, foreground)) = ramp {
@@ -219,6 +243,8 @@ impl ColorTheme {
       );
       constants.overrides[index * 2 + 1] =
         with_w(srgb_to_oklab(to_rgb(color_override.to)), 0.0);
+      constants.override_inks[index] =
+        with_w(to_rgb(color_override.from), 0.0);
     }
 
     // Bounded by `MAX_COLOR_OVERRIDES` above.
@@ -435,7 +461,113 @@ impl ColorTheme {
     // still says how much ink it holds, so it is themed as that gray.
     let unexplained =
       lerp3(themed_center, self.apply(neutral(center)), edge * fringes);
-    lerp3(unexplained, remixed, edge * fit)
+    let estimated = lerp3(unexplained, remixed, edge * fit);
+
+    let (known, known_weight) = self.known_ink_remix(pixels);
+    lerp3(estimated, known, known_weight)
+  }
+
+  /// Re-mixes the window's center as one of the overrides' `from` colors
+  /// used as ink over the page, weighted by how well that explains the
+  /// whole window.
+  ///
+  /// The estimate in [`apply_neighborhood`](Self::apply_neighborhood)
+  /// has to guess the ink, and thin colored strokes never show it
+  /// whole. An override's `from` is a color the user says the window
+  /// uses, so where every pixel lies between it and the page channel by
+  /// channel (as `ClearType` fringes do), the ink is known exactly.
+  /// Black text, images, and other colors fall outside and are left to
+  /// the estimate.
+  fn known_ink_remix(
+    &self,
+    pixels: &[[f32; 3]; NEIGHBORHOOD_SIZE],
+  ) -> ([f32; 3], f32) {
+    let c = &self.constants;
+    let center = pixels[NEIGHBORHOOD_SIZE / 2];
+    let mut best = ([0.0; 3], 0.0);
+
+    for ink in &c.override_inks[..c.override_count as usize] {
+      let ink = xyz(*ink);
+
+      // The page is lighter than the ink in every channel, or darker in
+      // every channel; each channel's extreme over the window is its
+      // level, since ink only ever pulls a channel towards itself.
+      for page_is_light in [true, false] {
+        let mut paper = ink;
+        for pixel in pixels {
+          for ch in 0..3 {
+            paper[ch] = if page_is_light {
+              paper[ch].max(pixel[ch])
+            } else {
+              paper[ch].min(pixel[ch])
+            };
+          }
+        }
+
+        // A page reaches at least partway from the ink towards white (or
+        // black) in every channel; else the window is something darker
+        // (or lighter) than a page, e.g. an image, not ink on one.
+        let reaches = (0..3).all(|ch| {
+          if page_is_light {
+            paper[ch] >= lerp(ink[ch], 1.0, KNOWN_INK_PAGE_REACH)
+          } else {
+            paper[ch] <= lerp(ink[ch], 0.0, KNOWN_INK_PAGE_REACH)
+          }
+        });
+
+        if !reaches || distance(paper, ink) < KNOWN_INK_MIN_CONTRAST {
+          continue;
+        }
+
+        // How far any pixel lies past the ink (the page side can't be
+        // passed by construction), and how much ink the window holds.
+        let mut violation = 0.0_f32;
+        let mut most_ink = 0.0_f32;
+
+        for pixel in pixels {
+          for ch in 0..3 {
+            let past =
+              (pixel[ch] - ink[ch]) * (ink[ch] - paper[ch]).signum();
+            violation = violation.max(past);
+          }
+
+          most_ink = most_ink.max(known_ink_coverage(*pixel, ink, paper));
+        }
+
+        let weight = (1.0
+          - smoothstep(
+            KNOWN_INK_FIT_START,
+            KNOWN_INK_FIT_FULL,
+            violation,
+          ))
+          * smoothstep(
+            KNOWN_INK_EVIDENCE_START,
+            KNOWN_INK_EVIDENCE_FULL,
+            most_ink,
+          );
+
+        if weight > best.1 {
+          let themed_ink = self.apply(ink);
+          let themed_paper = self.apply(paper);
+          let coverage = known_ink_coverage(center, ink, paper);
+
+          let inverted = smoothstep(
+            0.0,
+            INVERSION_FULL,
+            srgb_to_oklab(themed_ink)[0] - srgb_to_oklab(themed_paper)[0],
+          );
+          let coverage = lerp(
+            coverage,
+            coverage.powf(1.0 / INVERTED_TEXT_GAMMA),
+            inverted,
+          );
+
+          best = (lerp3(themed_paper, themed_ink, coverage), weight);
+        }
+      }
+    }
+
+    best
   }
 
   /// Maps the center of a 5×3 neighborhood inside an image through the
@@ -567,6 +699,32 @@ pub fn is_picture(pixels: &[[f32; 3]], papers: &[[f32; 3]]) -> bool {
   #[allow(clippy::cast_precision_loss)]
   let unexplained_share = unexplained as f32 / content.len() as f32;
   unexplained_share > PICTURE_MIN_UNEXPLAINED
+}
+
+/// Mean coverage of `ink` over `paper` in `pixel`, across the channels
+/// where the two differ.
+fn known_ink_coverage(
+  pixel: [f32; 3],
+  ink: [f32; 3],
+  paper: [f32; 3],
+) -> f32 {
+  let mut sum = 0.0;
+  let mut count = 0.0;
+
+  for ch in 0..3 {
+    let span = paper[ch] - ink[ch];
+
+    if span.abs() > MIN_CHANNEL_SPAN {
+      sum += ((paper[ch] - pixel[ch]) / span).clamp(0.0, 1.0);
+      count += 1.0;
+    }
+  }
+
+  if count > 0.0 {
+    sum / count
+  } else {
+    0.0
+  }
 }
 
 /// How closely `srgb` matches one of `papers`: 1 up to
@@ -1667,6 +1825,76 @@ mod tests {
     assert!(!is_picture(&[paper; 64], &[paper]));
   }
 
+  /// `winter` plus a `#1976d2` -> `#8ab4f8` link override.
+  fn winter_with_link() -> ColorTheme {
+    ColorTheme::new(
+      Some((color("#1e1e1e"), color("#d4d4d4"))),
+      0.15,
+      &[ColorOverride {
+        from: color("#1976d2"),
+        to: color("#8ab4f8"),
+        tolerance: 20.0,
+      }],
+    )
+    .expect("valid theme")
+  }
+
+  fn hex_window(rows: [[&str; 5]; 3]) -> [[f32; 3]; NEIGHBORHOOD_SIZE] {
+    let mut pixels = [[0.0; 3]; NEIGHBORHOOD_SIZE];
+    for (index, pixel) in pixels.iter_mut().enumerate() {
+      *pixel = rgb(rows[index / 5][index % 5]);
+    }
+    pixels
+  }
+
+  #[test]
+  fn override_ink_remixes_thin_colored_text_exactly() {
+    let theme = winter_with_link();
+    let (paper, ink) = (rgb("#fbfbfb"), rgb("#1976d2"));
+
+    // Measured on a WPF `#1976d2` link: the "l" stem, which no pixel
+    // covers fully, between `ClearType` fringes.
+    let stem = hex_window([
+      ["#96d9fb", "#fbd9df", "#478adf", "#d5fbfb", "#fbc2da"],
+      ["#fbfbfb", "#fbd9df", "#478adf", "#d5fbfb", "#d5afd6"],
+      ["#fbfbfb", "#fbd9df", "#478adf", "#d5fbfb", "#d5afd6"],
+    ]);
+    let coverage = known_ink_coverage(rgb("#478adf"), ink, paper);
+
+    // The override's ink at the stem's coverage, boosted as light text.
+    assert_close(
+      theme.apply_neighborhood(&stem),
+      lerp_rgb(
+        theme.apply(paper),
+        rgb("#8ab4f8"),
+        [coverage.powf(1.0 / INVERTED_TEXT_GAMMA); 3],
+      ),
+    );
+  }
+
+  #[test]
+  fn override_ink_leaves_other_content_alone() {
+    let with_link = winter_with_link();
+    let without = winter();
+
+    // Black text, and dark hair in a photo, measured beside that link:
+    // neither is `#1976d2` over the page.
+    let (black, white) = (rgb("#000000"), rgb("#ffffff"));
+    let text = edge_block(black, [0.5; 3], white);
+    let hair = hex_window([
+      ["#0e0805", "#0f0805", "#110904", "#170c06", "#3d2819"],
+      ["#0c0704", "#0c0704", "#0e0905", "#0c0603", "#0e0805"],
+      ["#150d09", "#120b06", "#100a06", "#0d0805", "#0a0704"],
+    ]);
+
+    for window in [text, hair] {
+      assert_close(
+        with_link.apply_neighborhood(&window),
+        without.apply_neighborhood(&window),
+      );
+    }
+  }
+
   #[test]
   fn colored_pixel_between_black_and_white_is_not_a_fringe() {
     let theme = winter();
@@ -1718,10 +1946,10 @@ mod tests {
   #[test]
   fn constants_match_the_shader_layout() {
     // `cbuffer Theme`: two float4s, one packed register, then the
-    // override float4 array.
+    // override float4 arrays.
     assert_eq!(
       std::mem::size_of::<ThemeConstants>(),
-      16 * (3 + MAX_COLOR_OVERRIDES * 2)
+      16 * (3 + MAX_COLOR_OVERRIDES * 3)
     );
   }
 }
