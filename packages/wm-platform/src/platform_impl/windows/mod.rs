@@ -1,3 +1,4 @@
+pub(crate) mod color_capture;
 pub(crate) mod com;
 pub(crate) mod composition;
 mod display;

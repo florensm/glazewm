@@ -3,13 +3,14 @@ use std::sync::OnceLock;
 use windows::{
   core::{w, PCWSTR},
   Win32::{
-    Foundation::HWND,
+    Foundation::{COLORREF, HWND},
     UI::WindowsAndMessaging::{
       CreateWindowExW, DestroyWindow, GetClassNameW, GetWindow,
-      SetWindowPos, ShowWindow, GW_HWNDPREV, SWP_NOACTIVATE, SWP_NOMOVE,
+      SetLayeredWindowAttributes, SetWindowPos, ShowWindow, GW_HWNDNEXT,
+      GW_HWNDPREV, LWA_ALPHA, SWP_NOACTIVATE, SWP_NOMOVE,
       SWP_NOSENDCHANGING, SWP_NOSIZE, SWP_SHOWWINDOW, SW_HIDE,
-      WS_EX_NOACTIVATE, WS_EX_NOREDIRECTIONBITMAP, WS_EX_TOOLWINDOW,
-      WS_EX_TRANSPARENT, WS_POPUP,
+      WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_NOREDIRECTIONBITMAP,
+      WS_EX_TOOLWINDOW, WS_EX_TRANSPARENT, WS_POPUP,
     },
   },
 };
@@ -18,10 +19,13 @@ use crate::{window_class, Rect, SurrogateBatch};
 
 /// Which overlay an [`OverlayWindow`] backs; each gets its own window
 /// class so the overlays can be told apart in z-order dumps.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum OverlayKind {
   Backdrop,
   Border,
+
+  /// Sits *above* its window, covering it with a recolored copy.
+  ColorTheme,
 }
 
 impl OverlayKind {
@@ -29,10 +33,12 @@ impl OverlayKind {
     match self {
       Self::Backdrop => w!("GlazeWM_BackdropOverlay"),
       Self::Border => w!("GlazeWM_BorderOverlay"),
+      Self::ColorTheme => w!("GlazeWM_ColorThemeOverlay"),
     }
   }
 
-  /// Whether `hwnd` is a backdrop or border overlay window.
+  /// Whether `hwnd` is a backdrop or border overlay window, i.e. one kept
+  /// behind its window.
   fn is_overlay(hwnd: HWND) -> bool {
     let mut buf = [0u16; 32];
     // SAFETY: `buf` outlives the call; a stale `hwnd` just returns 0.
@@ -49,10 +55,12 @@ impl OverlayKind {
   fn registered(self) -> &'static OnceLock<()> {
     static BACKDROP: OnceLock<()> = OnceLock::new();
     static BORDER: OnceLock<()> = OnceLock::new();
+    static COLOR_THEME: OnceLock<()> = OnceLock::new();
 
     match self {
       Self::Backdrop => &BACKDROP,
       Self::Border => &BORDER,
+      Self::ColorTheme => &COLOR_THEME,
     }
   }
 
@@ -61,13 +69,15 @@ impl OverlayKind {
     match self {
       Self::Backdrop => "Backdrop overlay",
       Self::Border => "Border overlay",
+      Self::ColorTheme => "Color theme overlay",
     }
   }
 }
 
-/// The Win32 window behind a backdrop or border overlay: a click-through
-/// popup, rendered entirely by a composition visual tree, kept directly
-/// behind an anchor window in z-order.
+/// The Win32 window behind an overlay: a click-through popup, rendered
+/// entirely by a composition visual tree, kept directly behind (or, for
+/// [`OverlayKind::ColorTheme`], directly above) an anchor window in
+/// z-order.
 ///
 /// Destroys the window on drop. An overlay must drop its visual tree
 /// first, since that is rooted to this `HWND`.
@@ -106,10 +116,18 @@ impl OverlayWindow {
     // treats them as hung. A hit-testable overlay shows the busy cursor
     // and swallows clicks. `WS_EX_NOREDIRECTIONBITMAP` skips the GDI
     // surface the composition visual tree replaces.
-    let ex_style = WS_EX_NOACTIVATE
+    //
+    // An overlay above its window additionally needs `WS_EX_LAYERED`: only
+    // the combination of the two makes a top-level window invisible to
+    // mouse hit-testing, so input reaches the window underneath.
+    let mut ex_style = WS_EX_NOACTIVATE
       | WS_EX_TOOLWINDOW
       | WS_EX_TRANSPARENT
       | WS_EX_NOREDIRECTIONBITMAP;
+
+    if kind == OverlayKind::ColorTheme {
+      ex_style |= WS_EX_LAYERED;
+    }
 
     // SAFETY: The class is registered above. No parent `HWND` is needed.
     let hwnd = unsafe {
@@ -136,12 +154,23 @@ impl OverlayWindow {
       )));
     }
 
-    Ok(Self {
+    let window = Self {
       hwnd: hwnd.0,
       kind,
       anchor: anchor.0,
       is_visible: false,
-    })
+    };
+
+    if ex_style.contains(WS_EX_LAYERED) {
+      // A layered window stays invisible until its attributes are set;
+      // fully opaque, since the visual tree supplies its own alpha.
+      // SAFETY: `hwnd` was just created by this thread.
+      unsafe {
+        SetLayeredWindowAttributes(hwnd, COLORREF(0), 255, LWA_ALPHA)
+      }?;
+    }
+
+    Ok(window)
   }
 
   pub(crate) fn hwnd(&self) -> HWND {
@@ -238,6 +267,73 @@ impl OverlayWindow {
         SetWindowPos(
           self.hwnd(),
           insert_after,
+          0,
+          0,
+          0,
+          0,
+          SWP_NOACTIVATE | SWP_NOSENDCHANGING | SWP_NOMOVE | SWP_NOSIZE,
+        )
+      }?;
+    }
+
+    self.anchor = anchor.0;
+    Ok(())
+  }
+
+  /// Moves the window to `rect` directly above `anchor` and shows it.
+  ///
+  /// Leaves the tracked state untouched on failure, so the next call
+  /// retries.
+  pub(crate) fn place_above(
+    &mut self,
+    rect: &Rect,
+    anchor: HWND,
+  ) -> crate::Result<()> {
+    window_class::match_z_band(self.hwnd(), anchor);
+
+    // SAFETY: `self.hwnd()` is valid for the lifetime of `self`.
+    unsafe {
+      SetWindowPos(
+        self.hwnd(),
+        window_class::insert_above_point(anchor, self.hwnd()),
+        rect.x(),
+        rect.y(),
+        rect.width(),
+        rect.height(),
+        SWP_NOACTIVATE | SWP_NOSENDCHANGING | SWP_SHOWWINDOW,
+      )
+    }
+    .map_err(|err| {
+      crate::Error::Platform(format!(
+        "{} SetWindowPos failed: {err}.",
+        self.kind.label()
+      ))
+    })?;
+
+    self.anchor = anchor.0;
+    self.is_visible = true;
+    Ok(())
+  }
+
+  /// Puts the window back directly above `anchor` if it has drifted --
+  /// most commonly because `anchor` was activated and raised over it --
+  /// without touching its rect.
+  pub(crate) fn sync_z_order_above(
+    &mut self,
+    anchor: HWND,
+  ) -> crate::Result<()> {
+    window_class::match_z_band(self.hwnd(), anchor);
+
+    // SAFETY: `self.hwnd()` is valid for the lifetime of `self`.
+    let is_settled =
+      unsafe { GetWindow(self.hwnd(), GW_HWNDNEXT) } == anchor;
+
+    if !is_settled {
+      // SAFETY: `self.hwnd()` is valid for the lifetime of `self`.
+      unsafe {
+        SetWindowPos(
+          self.hwnd(),
+          window_class::insert_above_point(anchor, self.hwnd()),
           0,
           0,
           0,

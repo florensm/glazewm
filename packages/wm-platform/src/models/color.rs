@@ -51,9 +51,12 @@ impl FromStr for Color {
   type Err = crate::ParseError;
 
   fn from_str(unparsed: &str) -> Result<Self, crate::ParseError> {
-    let mut chars = unparsed.chars();
-
-    if chars.next() != Some('#') {
+    // Checked up front: the slicing below would panic on a short or
+    // non-ASCII string.
+    if !unparsed.starts_with('#')
+      || !matches!(unparsed.len(), 7 | 9)
+      || !unparsed.is_ascii()
+    {
       return Err(crate::ParseError::Color(unparsed.to_string()));
     }
 

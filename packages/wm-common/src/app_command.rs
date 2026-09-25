@@ -181,6 +181,15 @@ pub enum InvokeCommand {
     #[clap(flatten)]
     new_config: InvokeUpdateWorkspaceConfig,
   },
+  /// Recolors the window with a theme from `color-themes.yaml`, or
+  /// removes it with `--off`.
+  SetColorTheme {
+    #[clap(required_unless_present = "off", conflicts_with = "off")]
+    name: Option<String>,
+
+    #[clap(long)]
+    off: bool,
+  },
   SetFloating {
     #[clap(long, default_missing_value = "true", require_equals = true, num_args = 0..=1)]
     shown_on_top: Option<bool>,
@@ -484,5 +493,37 @@ mod tests {
       .expect("Failed to parse `force-manage` command.");
 
     assert_eq!(command, InvokeCommand::ForceManage);
+  }
+
+  #[test]
+  fn parses_set_color_theme_command() {
+    assert_eq!(
+      InvokeCommand::try_parse_from(["", "set-color-theme", "winter"])
+        .expect("Failed to parse `set-color-theme winter`."),
+      InvokeCommand::SetColorTheme {
+        name: Some("winter".to_string()),
+        off: false,
+      }
+    );
+
+    assert_eq!(
+      InvokeCommand::try_parse_from(["", "set-color-theme", "--off"])
+        .expect("Failed to parse `set-color-theme --off`."),
+      InvokeCommand::SetColorTheme {
+        name: None,
+        off: true,
+      }
+    );
+
+    assert!(
+      InvokeCommand::try_parse_from(["", "set-color-theme"]).is_err()
+    );
+    assert!(InvokeCommand::try_parse_from([
+      "",
+      "set-color-theme",
+      "winter",
+      "--off"
+    ])
+    .is_err());
   }
 }

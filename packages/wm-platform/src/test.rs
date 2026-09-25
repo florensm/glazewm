@@ -3,6 +3,7 @@
 #[macro_use]
 extern crate libtest_mimic_collect;
 
+mod color_theme;
 mod dispatcher;
 mod display;
 mod error;

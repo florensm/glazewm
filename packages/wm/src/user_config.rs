@@ -7,6 +7,7 @@ use wm_common::{
 };
 
 use crate::{
+  color_themes::ColorThemes,
   models::{Monitor, NativeWindowProperties, WindowContainer, Workspace},
   traits::{CommonGetters, WindowGetters},
 };
@@ -25,6 +26,10 @@ pub struct UserConfig {
 
   /// Unparsed user config string.
   pub value_str: String,
+
+  /// Themes for the `set-color-theme` command, from their own
+  /// hot-reloaded file next to the config.
+  pub color_themes: ColorThemes,
 
   /// Hashmap of window rule event types (e.g. `WindowRuleEvent::Manage`)
   /// and the corresponding window rules of that type.
@@ -48,11 +53,13 @@ impl UserConfig {
     let (config_value, config_str) = Self::read(&config_path)?;
 
     let window_rules_by_event = Self::window_rules_by_event(&config_value);
+    let color_themes = ColorThemes::new(&config_path);
 
     Ok(Self {
       path: config_path,
       value: config_value,
       value_str: config_str,
+      color_themes,
       window_rules_by_event,
     })
   }
@@ -615,6 +622,7 @@ window_effects:
       ),
       value: config_value,
       value_str: String::new(),
+      color_themes: ColorThemes::default(),
     }
   }
 
@@ -702,6 +710,7 @@ window_effects:
       window_rules_by_event: UserConfig::window_rules_by_event(&value),
       value_str: String::new(),
       value,
+      color_themes: ColorThemes::default(),
     }
   }
 

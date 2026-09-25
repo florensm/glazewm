@@ -208,6 +208,9 @@ pub fn platform_sync(
     repositioned.into_iter().chain(z_order_touched),
   );
 
+  #[cfg(target_os = "windows")]
+  super::sync_color_themes(state, config);
+
   state.pending_sync.clear();
 
   Ok(())
@@ -2707,6 +2710,18 @@ pub(crate) fn resync_settling_overlays(state: &mut WmState) {
     // up in the same order: window, border, backdrop.
     resync_overlay::<NativeBackdropOverlay>(state, id, anchor);
     resync_overlay::<NativeBorderOverlay>(state, id, anchor);
+
+    // Kept above the real window, not the surrogate `anchor`: it is
+    // hidden whenever a surrogate is up.
+    if let Some(overlay) = state.color_theme_overlays.get_mut(&id) {
+      if overlay.is_visible() {
+        if let Err(err) = overlay.sync_z_order(window.native().hwnd()) {
+          debug!(
+            "Color theme overlay z-order settle failed for {id}: {err}."
+          );
+        }
+      }
+    }
   }
 }
 

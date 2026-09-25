@@ -169,6 +169,20 @@ impl WindowManager {
     Ok(())
   }
 
+  /// Re-reads `color-themes.yaml` if it changed, and re-applies the themes
+  /// to their windows.
+  pub fn reload_color_themes(&mut self, config: &mut UserConfig) {
+    let changed = config.color_themes.reload_if_changed();
+
+    #[cfg(target_os = "windows")]
+    if changed && !self.state.is_paused {
+      crate::commands::general::sync_color_themes(&mut self.state, config);
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    let _ = changed;
+  }
+
   /// Updates all active animations and redraws windows that are animating.
   pub fn update_animations(
     &mut self,
@@ -610,6 +624,36 @@ impl WindowManager {
             args.height.clone(),
             state,
           ),
+          _ => Ok(()),
+        }
+      }
+      // LINT: `name`/`off` are only used on Windows.
+      #[cfg_attr(not(target_os = "windows"), allow(unused_variables))]
+      InvokeCommand::SetColorTheme { name, off } => {
+        match subject_container.as_window_container() {
+          #[cfg(target_os = "windows")]
+          Ok(window) => {
+            let id = window.id();
+            state.color_theme_failures.remove(&id);
+
+            match name.as_ref().filter(|_| !*off) {
+              Some(name) => {
+                if config.color_themes.get(name).is_none() {
+                  warn!(
+                    "Color theme '{name}' is not defined in \
+                     color-themes.yaml; it applies once it is."
+                  );
+                }
+                state.color_theme_windows.insert(id, name.clone());
+              }
+              None => {
+                state.color_theme_windows.remove(&id);
+              }
+            }
+
+            crate::commands::general::sync_color_themes(state, config);
+            Ok(())
+          }
           _ => Ok(()),
         }
       }

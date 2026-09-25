@@ -1,4 +1,7 @@
-use std::{collections::HashMap, time::Instant};
+use std::{
+  collections::{HashMap, HashSet},
+  time::Instant,
+};
 
 use anyhow::Context;
 use tokio::sync::mpsc::{self};
@@ -10,8 +13,8 @@ use wm_platform::{
 };
 #[cfg(target_os = "windows")]
 use wm_platform::{
-  NativeBackdropOverlay, NativeBorderOverlay, NativeWindowWindowsExt,
-  OpacityValue,
+  NativeBackdropOverlay, NativeBorderOverlay, NativeColorThemeOverlay,
+  NativeWindowWindowsExt, OpacityValue,
 };
 
 use crate::{
@@ -96,6 +99,21 @@ pub struct WmState {
   #[cfg(target_os = "windows")]
   pub border_overlays: HashMap<Uuid, NativeBorderOverlay>,
 
+  /// Color theme name per window, set by the set-color-theme command.
+  /// Kept even while the theme is missing from color-themes.yaml, so it
+  /// applies as soon as a reload adds it.
+  #[cfg(target_os = "windows")]
+  pub color_theme_windows: HashMap<Uuid, String>,
+
+  /// Live overlays for [`Self::color_theme_windows`].
+  #[cfg(target_os = "windows")]
+  pub color_theme_overlays: HashMap<Uuid, NativeColorThemeOverlay>,
+
+  /// Windows whose color theme failed (e.g. an elevated app); not retried
+  /// until the theme is set on them again, so the failure is logged once.
+  #[cfg(target_os = "windows")]
+  pub color_theme_failures: HashSet<Uuid>,
+
   /// Whether the initial state has been populated.
   has_initialized: bool,
 
@@ -123,6 +141,12 @@ impl WmState {
       backdrop_overlays: HashMap::new(),
       #[cfg(target_os = "windows")]
       border_overlays: HashMap::new(),
+      #[cfg(target_os = "windows")]
+      color_theme_windows: HashMap::new(),
+      #[cfg(target_os = "windows")]
+      color_theme_overlays: HashMap::new(),
+      #[cfg(target_os = "windows")]
+      color_theme_failures: HashSet::new(),
       prev_effects_window: None,
       recent_workspace_name: None,
       unmanaged_or_minimized_timestamp: None,

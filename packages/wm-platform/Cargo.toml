@@ -32,6 +32,11 @@ windows = { version = "0.52", features = [
   # border overlay's stroked ring is built from.
   "Foundation_Collections",
   "Foundation_Numerics",
+  # Color themes: `Windows.Graphics.Capture` frames of the themed window,
+  # delivered as D3D11 surfaces (`SizeInt32` lives in `Graphics`).
+  "Graphics",
+  "Graphics_Capture",
+  "Graphics_DirectX_Direct3D11",
   "Graphics_Effects",
   # `DirectXPixelFormat`/`DirectXAlphaMode`, which `CompositionGraphicsDevice`
   # takes when allocating the wallpaper backdrop's drawing surface.
@@ -64,7 +69,11 @@ windows = { version = "0.52", features = [
   "Win32_System_Threading",
   "Win32_System_WinRT",
   "Win32_System_WinRT_Composition",
+  # Color themes: `CreateForWindow` and the D3D11 <-> WinRT device/surface
+  # interop the capture frame pool needs.
+  "Win32_System_WinRT_Direct3D11",
   "Win32_System_WinRT_Graphics",
+  "Win32_System_WinRT_Graphics_Capture",
   "Win32_System_WinRT_Graphics_Direct2D",
   "Win32_UI_Accessibility",
   "Win32_UI_Controls",

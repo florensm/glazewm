@@ -2,6 +2,7 @@
 #![allow(clippy::missing_errors_doc)]
 #![feature(iterator_try_collect)]
 
+mod color_theme;
 mod dispatcher;
 mod display;
 mod display_listener;
@@ -25,6 +26,7 @@ mod window_listener;
 #[cfg(feature = "test_utils")]
 pub mod test_utils;
 
+pub use color_theme::{ColorOverride, ColorTheme, MAX_COLOR_OVERRIDES};
 pub use dispatcher::*;
 pub use display::*;
 pub use display_listener::*;
@@ -39,6 +41,10 @@ pub use native_window::*;
 mod native_backdrop_overlay;
 #[cfg(target_os = "windows")]
 pub use native_backdrop_overlay::NativeBackdropOverlay;
+#[cfg(target_os = "windows")]
+mod native_color_theme_overlay;
+#[cfg(target_os = "windows")]
+pub use native_color_theme_overlay::NativeColorThemeOverlay;
 #[cfg(target_os = "windows")]
 mod native_border_overlay;
 #[cfg(target_os = "windows")]

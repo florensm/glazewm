@@ -35,6 +35,7 @@ use crate::{
 };
 
 mod animation;
+mod color_themes;
 mod commands;
 mod events;
 mod ipc_server;
@@ -191,6 +192,12 @@ async fn start_wm(
   cleanup_interval
     .set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
+  // Polls `color-themes.yaml` for edits; one `stat` per tick.
+  let mut color_themes_interval =
+    tokio::time::interval(Duration::from_secs(1));
+  color_themes_interval
+    .set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+
   loop {
     // Hand queued platform events the thread before the next animation
     // frame. The `biased` select below puts the animation tick above every
@@ -251,6 +258,10 @@ async fn start_wm(
         tracing::debug!("Received keyboard event: {:?}", event);
         wm.process_event(PlatformEvent::Keybinding(event), &mut config)
       }
+      _ = color_themes_interval.tick() => {
+        wm.reload_color_themes(&mut config);
+        Ok(())
+      },
       _ = cleanup_interval.tick() => {
         if wm.state.is_paused {
           Ok(())

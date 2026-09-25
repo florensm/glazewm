@@ -5,6 +5,8 @@ mod move_cursor;
 mod platform_sync;
 mod reload_config;
 mod shell_exec;
+#[cfg(target_os = "windows")]
+mod sync_color_themes;
 mod toggle_pause;
 
 pub use cycle_focus::*;
@@ -14,4 +16,6 @@ pub use move_cursor::*;
 pub use platform_sync::*;
 pub use reload_config::*;
 pub use shell_exec::*;
+#[cfg(target_os = "windows")]
+pub use sync_color_themes::*;
 pub use toggle_pause::*;

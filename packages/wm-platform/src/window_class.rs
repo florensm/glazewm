@@ -6,9 +6,9 @@ use windows::{
     Foundation::{HWND, LPARAM, LRESULT, WPARAM},
     UI::WindowsAndMessaging::{
       DefWindowProcW, GetWindow, GetWindowLongPtrW, RegisterClassW,
-      SetWindowPos, GWL_EXSTYLE, GW_HWNDNEXT, HWND_NOTOPMOST,
-      HWND_TOPMOST, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSENDCHANGING,
-      SWP_NOSIZE, WNDCLASSW, WS_EX_TOPMOST,
+      SetWindowPos, GWL_EXSTYLE, GW_HWNDNEXT, GW_HWNDPREV, HWND_NOTOPMOST,
+      HWND_TOP, HWND_TOPMOST, SWP_NOACTIVATE, SWP_NOMOVE,
+      SWP_NOSENDCHANGING, SWP_NOSIZE, WNDCLASSW, WS_EX_TOPMOST,
     },
   },
 };
@@ -124,6 +124,29 @@ pub(crate) fn insert_after_point(anchor: HWND) -> HWND {
   }
 
   anchor
+}
+
+/// Insert-after handle that places `overlay` directly above `anchor`.
+///
+/// Falls back to `HWND_TOP` when `anchor` is the highest window of its
+/// band: inserting after a topmost window from below would pull the
+/// overlay into the topmost band instead.
+pub(crate) fn insert_above_point(anchor: HWND, overlay: HWND) -> HWND {
+  // SAFETY: A stale handle just makes `GetWindow` return `HWND(0)`.
+  let mut prev = unsafe { GetWindow(anchor, GW_HWNDPREV) };
+
+  // Already in place (e.g. hidden in its slot): `SetWindowPos` silently
+  // ignores a window inserted after itself -- `SWP_SHOWWINDOW` included.
+  if prev == overlay {
+    // SAFETY: As above.
+    prev = unsafe { GetWindow(overlay, GW_HWNDPREV) };
+  }
+
+  if prev.0 == 0 || (is_topmost(prev) && !is_topmost(anchor)) {
+    HWND_TOP
+  } else {
+    prev
+  }
 }
 
 fn next_in_z_order(hwnd: HWND) -> HWND {
