@@ -81,6 +81,11 @@ const INK_BALANCE_NEUTRAL: f32 = 0.5;
 /// taken as a real color.
 const INK_OVERSHOOT_FULL: f32 = 0.1;
 
+/// Largest channel gap between the paper pixel and the window's channel
+/// extremes over which the paper goes from those extremes to the pixel.
+const PAPER_ENVELOPE_START: f32 = 0.2;
+const PAPER_ENVELOPE_FULL: f32 = 0.35;
+
 /// Hue agreement against neutral below which the paper side is taken to
 /// be a fringe, fully at `START`. Stricter than [`HUE_AGREEMENT_START`]:
 /// colored paper with `ClearType` text on it agrees ~0.7.
@@ -461,6 +466,31 @@ fn edge_colors(
   } else {
     (dark, 1.0)
   };
+
+  // Anti-aliasing only moves channels from the paper towards the ink, so
+  // each channel's paper level is its extreme over the window. That holds
+  // where dense text leaves only fringes to pick the paper from; a window
+  // spanning two unrelated colors lands far from any pixel instead.
+  let mut envelope = paper;
+
+  for pixel in pixels {
+    for c in 0..3 {
+      envelope[c] = if paper_is_light {
+        envelope[c].max(pixel[c])
+      } else {
+        envelope[c].min(pixel[c])
+      };
+    }
+  }
+
+  let envelope_gap = (0..3)
+    .map(|c| (envelope[c] - paper[c]).abs())
+    .fold(0.0_f32, f32::max);
+  let paper = lerp3(
+    envelope,
+    paper,
+    smoothstep(PAPER_ENVELOPE_START, PAPER_ENVELOPE_FULL, envelope_gap),
+  );
 
   let paper = lerp3(
     paper,
@@ -1372,6 +1402,19 @@ mod tests {
     assert!(
       out[1].hypot(out[2]) > 0.05 && hue_error < 0.3,
       "stem lost the link color: {out:?}"
+    );
+
+    // The cyan fringe right of that stem, in a window too dense to show
+    // any plain paper: still (nearly) the themed paper, not dark teal.
+    let fringe = hex([
+      ["#fbd9df", "#478adf", "#d5fbfb", "#fbc2da", "#1976da"],
+      ["#fbd9df", "#478adf", "#d5fbfb", "#d5afd6", "#72c2fb"],
+      ["#fbd9df", "#478adf", "#d5fbfb", "#d5afd6", "#72c2fb"],
+    ]);
+    let out = srgb_to_oklab(theme.apply_neighborhood(&fringe));
+    assert!(
+      out[1].hypot(out[2]) < 0.03,
+      "fringe took a color of its own: {out:?}"
     );
   }
 

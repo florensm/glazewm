@@ -26,6 +26,8 @@
 #define PAPER_FRINGE_AGREEMENT_START 0.3
 #define PAPER_FRINGE_AGREEMENT_FULL 0.5
 #define INVERSION_FULL 0.1
+#define PAPER_ENVELOPE_START 0.2
+#define PAPER_ENVELOPE_FULL 0.35
 #define SOLID_INK_START 0.75
 #define SOLID_INK_FULL 0.9
 #define INK_BALANCE_COLORED 0.38
@@ -296,10 +298,26 @@ void edge_colors(
   bool paper_is_light =
     (light_lightness - mean_lightness) < (mean_lightness - dark_lightness);
   float extreme = paper_is_light ? 0.0 : 1.0;
-  float3 paper = lerp(
-    paper_is_light ? light : dark,
-    channel_extreme(paper_is_light ? light : dark, 1.0 - extreme),
-    paper_fringes);
+  float3 paper = paper_is_light ? light : dark;
+  float3 envelope = paper;
+
+  [unroll]
+  for (int j = 0; j < NEIGHBORHOOD_SIZE; j++) {
+    envelope = paper_is_light
+      ? max(envelope, pixels[j])
+      : min(envelope, pixels[j]);
+  }
+
+  float3 envelope_gap = abs(envelope - paper);
+  paper = lerp(
+    envelope,
+    paper,
+    smoothstep(
+      PAPER_ENVELOPE_START,
+      PAPER_ENVELOPE_FULL,
+      max(max(envelope_gap.r, envelope_gap.g), envelope_gap.b)));
+
+  paper = lerp(paper, channel_extreme(paper, 1.0 - extreme), paper_fringes);
 
   float mixed_hues = 1.0 - smoothstep(
     HUE_AGREEMENT_START,
