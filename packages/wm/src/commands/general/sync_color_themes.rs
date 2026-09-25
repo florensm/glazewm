@@ -3,7 +3,7 @@ use std::collections::HashSet;
 use uuid::Uuid;
 use wm_common::WindowState;
 use wm_platform::{
-  ColorTheme, NativeColorThemeOverlay, NativeWindow,
+  Color, ColorTheme, NativeColorThemeOverlay, NativeWindow,
   NativeWindowWindowsExt, SurrogateBatch, WindowId, HWND,
 };
 
@@ -268,6 +268,14 @@ pub fn sync_color_theme_popup(
 
   match NativeColorThemeOverlay::create(hwnd, &rect, &theme, hwnd) {
     Ok(overlay) => {
+      // Popups are almost always light-backed, and would show unthemed
+      // until capture delivers its first frame.
+      overlay.set_placeholder(theme.apply_color(Color {
+        r: 255,
+        g: 255,
+        b: 255,
+        a: 255,
+      }));
       state
         .color_theme_popups
         .insert(hwnd.0, ColorThemePopup { owner, overlay });

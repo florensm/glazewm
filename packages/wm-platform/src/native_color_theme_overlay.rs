@@ -87,6 +87,17 @@ impl NativeColorThemeOverlay {
     self.capture.release_fill_when_covered(size);
   }
 
+  /// Covers the overlay with `color` until the first themed frame
+  /// arrives, instead of leaving it transparent; `color` should already
+  /// be themed.
+  pub fn set_placeholder(&self, color: Color) {
+    let size = (
+      u32::try_from(self.rect.width()).unwrap_or(0),
+      u32::try_from(self.rect.height()).unwrap_or(0),
+    );
+    self.capture.set_placeholder(color, size);
+  }
+
   /// Moves the overlay to `rect` directly above `anchor`, and shows it.
   ///
   /// Only re-asserts z-order if neither changed and the overlay is already

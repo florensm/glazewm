@@ -224,6 +224,7 @@ impl ThemedCapture {
       fill_brush,
       fill_color: None,
       fill_until_covered: None,
+      fill_before_first_frame: false,
       pool_size: item_size,
       last_frame: None,
       is_shown: false,
@@ -282,6 +283,7 @@ impl ThemedCapture {
 
     renderer.0.fill_color = color;
     renderer.0.fill_until_covered = None;
+    renderer.0.fill_before_first_frame = false;
 
     if let Err(err) = renderer.0.sync_fill() {
       renderer.0.fail(&err);
@@ -300,6 +302,25 @@ impl ThemedCapture {
 
     if renderer.0.fill_color.is_some() {
       renderer.0.fill_until_covered = Some(size);
+    }
+  }
+
+  /// Shows `color` as the fill right away, even before the first frame,
+  /// until a frame of at least `size` has been presented.
+  ///
+  /// For windows that appear abruptly (menus, dropdowns): capture takes a
+  /// few frames to start, during which the overlay would otherwise be
+  /// transparent and show the unthemed window.
+  pub(crate) fn set_placeholder(&self, color: Color, size: (u32, u32)) {
+    let mut renderer =
+      self.renderer.lock().unwrap_or_else(PoisonError::into_inner);
+
+    renderer.0.fill_color = Some(color);
+    renderer.0.fill_until_covered = Some(size);
+    renderer.0.fill_before_first_frame = true;
+
+    if let Err(err) = renderer.0.sync_fill() {
+      renderer.0.fail(&err);
     }
   }
 
@@ -661,8 +682,9 @@ struct Renderer {
   /// has been themed.
   sprite: SpriteVisual,
 
-  /// Solid fill beneath `sprite`, shown only along with it, so a failed
-  /// or not yet started pipeline never leaves an opaque slab.
+  /// Solid fill beneath `sprite`, shown only along with it (unless
+  /// `fill_before_first_frame`), so a failed or not yet started pipeline
+  /// never leaves an opaque slab.
   fill: SpriteVisual,
   fill_brush: CompositionColorBrush,
   fill_color: Option<Color>,
@@ -670,6 +692,10 @@ struct Renderer {
   /// Overlay size the fill is kept for; see
   /// [`ThemedCapture::release_fill_when_covered`].
   fill_until_covered: Option<(u32, u32)>,
+
+  /// Shows the fill before the first frame; see
+  /// [`ThemedCapture::set_placeholder`].
+  fill_before_first_frame: bool,
 
   /// Size the frame pool's buffers were last created at.
   pool_size: SizeInt32,
@@ -765,6 +791,7 @@ impl Renderer {
     {
       self.fill_color = None;
       self.fill_until_covered = None;
+      self.fill_before_first_frame = false;
       self.sync_fill()?;
     }
 
@@ -772,9 +799,10 @@ impl Renderer {
   }
 
   fn sync_fill(&self) -> crate::Result<()> {
-    let color = self
-      .fill_color
-      .filter(|_| self.is_shown && !self.failed.load(Ordering::Relaxed));
+    let color = self.fill_color.filter(|_| {
+      (self.is_shown || self.fill_before_first_frame)
+        && !self.failed.load(Ordering::Relaxed)
+    });
 
     if let Some(color) = color {
       self.fill_brush.SetColor(to_ui_color(color))?;
