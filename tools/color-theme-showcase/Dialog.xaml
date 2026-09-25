@@ -1,5 +1,4 @@
-<Window x:Class="ColorThemeShowcase.DialogWindow"
-        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+<Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         Width="380" Height="260" ResizeMode="CanResize"
         WindowStartupLocation="CenterOwner"
@@ -8,11 +7,9 @@
   <DockPanel Margin="12">
     <StackPanel DockPanel.Dock="Bottom" Orientation="Horizontal"
                 HorizontalAlignment="Right">
-      <Button Content="Nested dialog" Padding="10,3" Margin="0,0,8,0"
-              Click="Nested_Click" />
-      <Button Content="OK" IsDefault="True" Width="72" Margin="0,0,8,0"
-              Click="Close_Click" />
-      <Button Content="Cancel" IsCancel="True" Width="72" Click="Close_Click" />
+      <Button x:Name="Nested" Content="Nested dialog" Padding="10,3" Margin="0,0,8,0" />
+      <Button x:Name="Ok" Content="OK" IsDefault="True" Width="72" Margin="0,0,8,0" />
+      <Button x:Name="Cancel" Content="Cancel" IsCancel="True" Width="72" />
     </StackPanel>
     <StackPanel>
       <TextBlock Text="Dialog with its own popups" FontWeight="SemiBold"
