@@ -3630,3 +3630,33 @@ impl AnimationManager {
     }
   }
 }
+
+#[cfg(all(test, target_os = "windows"))]
+mod tests {
+  use super::*;
+
+  fn manager() -> AnimationManager {
+    AnimationManager::new(mpsc::unbounded_channel().0)
+  }
+
+  #[test]
+  fn color_theme_placement_is_none_when_not_animating() {
+    assert_eq!(manager().color_theme_placement(&Uuid::new_v4()), None);
+  }
+
+  #[test]
+  fn color_theme_placement_hides_for_close_and_minimize() {
+    let mut manager = manager();
+    let closing = Uuid::new_v4();
+    let minimizing = Uuid::new_v4();
+    manager.pending_close_windows.insert(closing, 0);
+    manager.pending_minimize_windows.insert(minimizing);
+
+    for id in [closing, minimizing] {
+      assert_eq!(
+        manager.color_theme_placement(&id),
+        Some(ColorThemePlacement::Hidden)
+      );
+    }
+  }
+}
