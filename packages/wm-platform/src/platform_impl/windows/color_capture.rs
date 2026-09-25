@@ -67,7 +67,9 @@ use windows::{
         Graphics::Capture::IGraphicsCaptureItemInterop,
       },
     },
-    UI::WindowsAndMessaging::GetWindowThreadProcessId,
+    UI::WindowsAndMessaging::{
+      GetWindowDisplayAffinity, GetWindowThreadProcessId, WDA_NONE,
+    },
   },
   UI::Composition::{
     CompositionStretch, Desktop::DesktopWindowTarget, SpriteVisual,
@@ -138,6 +140,19 @@ impl ThemedCapture {
         "Window belongs to an elevated process, which cannot be captured \
          without running the WM as administrator."
           .to_string(),
+      ));
+    }
+
+    // A window excluded from capture arrives as solid black, which the
+    // theme would turn into an opaque slab over the real window.
+    let mut affinity = 0u32;
+    // SAFETY: `affinity` outlives the call; a stale `source` just fails.
+    if unsafe { GetWindowDisplayAffinity(source, &raw mut affinity) }
+      .is_ok()
+      && affinity != WDA_NONE.0
+    {
+      return Err(crate::Error::Platform(
+        "Window blocks screen capture (display affinity).".to_string(),
       ));
     }
 
