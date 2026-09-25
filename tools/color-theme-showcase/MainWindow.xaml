@@ -25,7 +25,7 @@
       <Setter Property="BorderThickness" Value="1" />
     </Style>
 
-    <ContextMenu x:Key="SampleContextMenu" x:Shared="False">
+    <ContextMenu x:Key="SampleContextMenu">
       <MenuItem Header="Cut" InputGestureText="Ctrl+X" />
       <MenuItem Header="Copy" InputGestureText="Ctrl+C" />
       <MenuItem Header="Paste" InputGestureText="Ctrl+V" />
