@@ -223,6 +223,18 @@ impl ColorTheme {
     oklab_to_srgb(result).map(|channel| channel.clamp(0.0, 1.0))
   }
 
+  /// [`apply`](Self::apply) for a single opaque color, keeping its alpha.
+  #[must_use]
+  pub fn apply_color(&self, color: Color) -> Color {
+    let [r, g, b] = self.apply(to_rgb(color)).map(to_byte);
+    Color {
+      r,
+      g,
+      b,
+      a: color.a,
+    }
+  }
+
   /// Maps the center of a 5×3 neighborhood (row-major, straight-alpha
   /// sRGB) through the theme, keeping anti-aliased edges intact. Five
   /// wide, because `ClearType` fringes reach two pixels from the ink.
@@ -540,6 +552,13 @@ fn to_rgb(color: Color) -> [f32; 3] {
   [color.r, color.g, color.b].map(|channel| f32::from(channel) / 255.0)
 }
 
+/// Inverse of [`to_rgb`] for one channel.
+// LINT: Clamped to `0.0..=255.0` first, so the cast can't truncate.
+#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+fn to_byte(channel: f32) -> u8 {
+  (channel.clamp(0.0, 1.0) * 255.0).round() as u8
+}
+
 fn srgb_to_linear(c: f32) -> f32 {
   if c <= 0.04045 {
     c / 12.92
@@ -661,6 +680,15 @@ mod tests {
 
     let mid = theme.apply([0.5, 0.5, 0.5])[0];
     assert!(mid > background + 0.1 && mid < foreground - 0.1);
+  }
+
+  #[test]
+  fn apply_color_matches_apply_and_keeps_alpha() {
+    let theme = winter();
+
+    assert_eq!(theme.apply_color(color("#ffffff80")), color("#1e1e1e80"));
+    assert_eq!(theme.apply_color(color("#000000")), color("#d4d4d4"));
+    assert_eq!(theme.apply_color(color("#0078d4")), color("#0078d4"));
   }
 
   #[test]

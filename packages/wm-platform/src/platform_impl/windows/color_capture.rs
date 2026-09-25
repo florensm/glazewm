@@ -14,9 +14,7 @@ use std::sync::{
 
 use windows::{
   core::{factory, ComInterface, IInspectable},
-  Foundation::{
-    EventRegistrationToken, Numerics::Vector2, TypedEventHandler,
-  },
+  Foundation::{EventRegistrationToken, TypedEventHandler},
   Graphics::{
     Capture::{
       Direct3D11CaptureFrame, Direct3D11CaptureFramePool,
@@ -72,12 +70,15 @@ use windows::{
     },
   },
   UI::Composition::{
-    CompositionStretch, Desktop::DesktopWindowTarget, SpriteVisual,
+    CompositionColorBrush, CompositionStretch,
+    Desktop::DesktopWindowTarget, SpriteVisual,
   },
 };
 
-use super::composition::with_composition_thread;
-use crate::{color_theme::ColorTheme, Rect};
+use super::composition::{
+  to_ui_color, with_composition_thread, FILL_PARENT,
+};
+use crate::{color_theme::ColorTheme, Color, Rect};
 
 const VERTEX_SHADER: &[u8] =
   include_bytes!(concat!(env!("OUT_DIR"), "/color_theme_vs.cso"));
@@ -108,6 +109,10 @@ unsafe impl<T> Send for AssertSend<T> {}
 /// is hidden again if the pipeline fails, so the overlay never shows
 /// anything but a correctly themed frame: the real window underneath
 /// always shows through otherwise.
+///
+/// Beneath the frame sits an optional solid fill, covering whatever part
+/// of the overlay the last frame doesn't reach (e.g. while it grows ahead
+/// of the window during an animation).
 pub(crate) struct ThemedCapture {
   session: GraphicsCaptureSession,
   frame_pool: Direct3D11CaptureFramePool,
@@ -142,7 +147,7 @@ impl ThemedCapture {
 
     // Composition and WGC objects are agile, but are created on the
     // composition thread since it is guaranteed to have WinRT initialized.
-    let (target, sprite, item) =
+    let (target, sprite, fill, fill_brush, item) =
       with_composition_thread(move |compositor, _| {
         // SAFETY: `overlay` is a live top-level window.
         let target = unsafe {
@@ -168,9 +173,20 @@ impl ThemedCapture {
 
         let sprite = compositor.CreateSpriteVisual()?;
         sprite.SetBrush(&brush)?;
-        sprite.SetRelativeSizeAdjustment(Vector2 { X: 1.0, Y: 1.0 })?;
+        sprite.SetRelativeSizeAdjustment(FILL_PARENT)?;
         sprite.SetIsVisible(false)?;
-        target.SetRoot(&sprite)?;
+
+        let fill_brush = compositor.CreateColorBrush()?;
+        let fill = compositor.CreateSpriteVisual()?;
+        fill.SetBrush(&fill_brush)?;
+        fill.SetRelativeSizeAdjustment(FILL_PARENT)?;
+        fill.SetIsVisible(false)?;
+
+        let root = compositor.CreateContainerVisual()?;
+        root.SetRelativeSizeAdjustment(FILL_PARENT)?;
+        root.Children()?.InsertAtBottom(&fill)?;
+        root.Children()?.InsertAtTop(&sprite)?;
+        target.SetRoot(&root)?;
 
         let interop =
           factory::<GraphicsCaptureItem, IGraphicsCaptureItemInterop>()?;
@@ -178,7 +194,7 @@ impl ThemedCapture {
         let item: GraphicsCaptureItem =
           unsafe { interop.CreateForWindow(HWND(source_raw))? };
 
-        Ok((target, sprite, item))
+        Ok((target, sprite, fill, fill_brush, item))
       })?;
 
     let item_size = item.Size()?;
@@ -204,6 +220,9 @@ impl ThemedCapture {
     let renderer = Arc::new(Mutex::new(AssertSend(Renderer {
       output,
       sprite,
+      fill,
+      fill_brush,
+      fill_color: None,
       pool_size: item_size,
       last_frame: None,
       is_shown: false,
@@ -247,6 +266,22 @@ impl ThemedCapture {
       self.renderer.lock().unwrap_or_else(PoisonError::into_inner);
 
     if let Err(err) = renderer.0.set_theme(theme) {
+      renderer.0.fail(&err);
+    }
+  }
+
+  /// Sets the fill beneath the frame, or removes it with `None`.
+  pub(crate) fn set_fill(&self, color: Option<Color>) {
+    let mut renderer =
+      self.renderer.lock().unwrap_or_else(PoisonError::into_inner);
+
+    if renderer.0.fill_color == color {
+      return;
+    }
+
+    renderer.0.fill_color = color;
+
+    if let Err(err) = renderer.0.sync_fill() {
       renderer.0.fail(&err);
     }
   }
@@ -609,6 +644,12 @@ struct Renderer {
   /// has been themed.
   sprite: SpriteVisual,
 
+  /// Solid fill beneath `sprite`, shown only along with it, so a failed
+  /// or not yet started pipeline never leaves an opaque slab.
+  fill: SpriteVisual,
+  fill_brush: CompositionColorBrush,
+  fill_color: Option<Color>,
+
   /// Size the frame pool's buffers were last created at.
   pool_size: SizeInt32,
 
@@ -694,8 +735,22 @@ impl Renderer {
     if !self.is_shown {
       self.sprite.SetIsVisible(true)?;
       self.is_shown = true;
+      self.sync_fill()?;
     }
 
+    Ok(())
+  }
+
+  fn sync_fill(&self) -> crate::Result<()> {
+    let color = self
+      .fill_color
+      .filter(|_| self.is_shown && !self.failed.load(Ordering::Relaxed));
+
+    if let Some(color) = color {
+      self.fill_brush.SetColor(to_ui_color(color))?;
+    }
+
+    self.fill.SetIsVisible(color.is_some())?;
     Ok(())
   }
 
@@ -709,8 +764,10 @@ impl Renderer {
     tracing::warn!("Color theme stopped: {err}.");
     self.last_frame = None;
 
-    if let Err(err) = self.sprite.SetIsVisible(false) {
-      tracing::warn!("Failed to hide color theme visual: {err}.");
+    for visual in [&self.sprite, &self.fill] {
+      if let Err(err) = visual.SetIsVisible(false) {
+        tracing::warn!("Failed to hide color theme visual: {err}.");
+      }
     }
   }
 }

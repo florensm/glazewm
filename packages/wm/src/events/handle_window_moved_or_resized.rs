@@ -58,6 +58,24 @@ pub fn handle_window_moved_or_resized(
       properties.frame = frame_position.clone();
     });
 
+    // Keeps the color theme overlay on the window through drags and
+    // app-initiated moves, which `platform_sync` never sees. Animations
+    // place the overlay themselves.
+    #[cfg(target_os = "windows")]
+    if state
+      .animation_manager
+      .color_theme_placement(&window.id())
+      .is_none()
+    {
+      if let Some(overlay) =
+        state.color_theme_overlays.get_mut(&window.id())
+      {
+        if overlay.is_visible() {
+          overlay.set_rect(&frame_position, native_window.hwnd());
+        }
+      }
+    }
+
     // Handle windows that are actively being dragged.
     if !state.is_paused && window.active_drag().is_some() {
       // Keep the backdrop overlay glued to the window for the whole

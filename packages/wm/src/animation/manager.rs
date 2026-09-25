@@ -384,6 +384,27 @@ pub enum AnimationPositionResult {
   Frozen,
 }
 
+/// Where a window's color theme overlay belongs while an animation owns
+/// the window; see [`AnimationManager::color_theme_placement`].
+#[cfg(target_os = "windows")]
+#[derive(Debug, Clone, PartialEq)]
+pub enum ColorThemePlacement {
+  /// Directly above the move/resize surrogate, at its live rect. `fill`
+  /// is the surrogate's (unthemed) fill for the area its thumbnail
+  /// doesn't cover yet.
+  Following {
+    surrogate: HWND,
+    rect: Rect,
+    fill: Option<Color>,
+  },
+  /// Above the surrogate fading out over the real window, which is
+  /// already at its final rect.
+  FadingOut { surrogate: HWND },
+  /// Workspace switch, close, minimize, zoom, or a session without a
+  /// surrogate: nothing the overlay can follow.
+  Hidden,
+}
+
 /// Manages animations for all windows.
 pub struct AnimationManager {
   /// Active animations keyed by window ID.
@@ -704,6 +725,53 @@ impl AnimationManager {
         .pending_session_cleanup
         .iter()
         .any(|(id, _, _)| id == window_id)
+  }
+
+  /// Where `window_id`'s color theme overlay belongs this tick, or `None`
+  /// when no surrogate stands in for the window.
+  #[cfg(target_os = "windows")]
+  #[must_use]
+  pub fn color_theme_placement(
+    &self,
+    window_id: &Uuid,
+  ) -> Option<ColorThemePlacement> {
+    // Close and minimize run through `resize_sessions` too, so they are
+    // ruled out first.
+    let in_ws_switch =
+      |ws: &WorkspaceSwitchState| ws.windows.contains_key(window_id);
+
+    if self.pending_close_windows.contains_key(window_id)
+      || self.pending_minimize_windows.contains(window_id)
+      || self.workspace_switch.as_ref().is_some_and(in_ws_switch)
+      || self.pending_ws_cleanup.as_ref().is_some_and(in_ws_switch)
+    {
+      return Some(ColorThemePlacement::Hidden);
+    }
+
+    if let Some(session) = self.resize_sessions.get(window_id) {
+      // A zoom scales the thumbnail about its center within a fixed
+      // surrogate, which a 1:1 copy can't match.
+      let placement =
+        match (session.surrogate_hwnd(), session.current_rect()) {
+          (Some(surrogate), Some(rect)) if !session.zoom => {
+            ColorThemePlacement::Following {
+              surrogate,
+              rect,
+              fill: session.edge_color().copied(),
+            }
+          }
+          _ => ColorThemePlacement::Hidden,
+        };
+
+      return Some(placement);
+    }
+
+    self
+      .pending_session_cleanup
+      .iter()
+      .find(|(id, _, _)| id == window_id)
+      .and_then(|(_, _, session)| session.surrogate_hwnd())
+      .map(|surrogate| ColorThemePlacement::FadingOut { surrogate })
   }
 
   /// Removes a window's animation and any associated resize session.
@@ -2222,6 +2290,12 @@ impl AnimationManager {
         platform_sync(state, config)?;
       }
     }
+
+    // After every surrogate moved, faded, or was dropped this tick. The
+    // fade-out tail and the end of an animation don't always reach
+    // `platform_sync`, which syncs the overlays otherwise.
+    #[cfg(target_os = "windows")]
+    crate::commands::general::sync_color_themes(state, config);
 
     drop(cleanup_scope);
 

@@ -3,7 +3,7 @@ use windows::Win32::Foundation::HWND;
 use crate::{
   overlay_window::{OverlayKind, OverlayWindow},
   platform_impl::color_capture::ThemedCapture,
-  ColorTheme, Rect,
+  Color, ColorTheme, Rect, SurrogateBatch,
 };
 
 /// A click-through window directly above a managed window, showing a live
@@ -65,6 +65,15 @@ impl NativeColorThemeOverlay {
     self.capture.set_theme(theme);
   }
 
+  /// Sets a solid fill for the part of the overlay the themed frame
+  /// doesn't cover, or removes it with `None`.
+  ///
+  /// Meant for animations, where the overlay can grow ahead of the
+  /// window it copies; `color` should already be themed.
+  pub fn set_fill(&self, color: Option<Color>) {
+    self.capture.set_fill(color);
+  }
+
   /// Moves the overlay to `rect` directly above `anchor`, and shows it.
   ///
   /// Only re-asserts z-order if neither changed and the overlay is already
@@ -87,6 +96,28 @@ impl NativeColorThemeOverlay {
     }
 
     self.rect = rect.clone();
+  }
+
+  /// Queues a move to `rect` into `batch`, so it lands in the same DWM
+  /// frame as the surrogate it covers.
+  ///
+  /// Falls back to [`set_rect`](Self::set_rect) when the overlay isn't
+  /// already shown above `anchor`: the batch only moves windows.
+  pub fn defer_rect(
+    &mut self,
+    batch: &mut SurrogateBatch,
+    rect: &Rect,
+    anchor: HWND,
+  ) {
+    if !self.window.is_visible() || self.window.anchor() != anchor {
+      self.set_rect(rect, anchor);
+      return;
+    }
+
+    if &self.rect != rect {
+      batch.push(self.window.hwnd().0, rect.clone());
+      self.rect = rect.clone();
+    }
   }
 
   /// Puts the overlay back directly above `anchor` if it has drifted.
