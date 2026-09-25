@@ -66,6 +66,21 @@ const HUE_MIN_CHROMA: f32 = 0.03;
 const HUE_AGREEMENT_START: f32 = 0.6;
 const HUE_AGREEMENT_FULL: f32 = 0.85;
 
+/// How far the window's most ink-like pixel reaches towards the estimated
+/// ink over which it goes from a fringe to the ink itself.
+const SOLID_INK_START: f32 = 0.75;
+const SOLID_INK_FULL: f32 = 0.9;
+
+/// Ratio of the least to the most covered channel, summed over the
+/// window, over which an ink estimate goes from colored to neutral.
+/// Measured: WPF `ClearType` on gray text 0.43+, on `#1976d2` links 0.37-.
+const INK_BALANCE_COLORED: f32 = 0.38;
+const INK_BALANCE_NEUTRAL: f32 = 0.5;
+
+/// sRGB distance outside the gamut at which an ink estimate is no longer
+/// taken as a real color.
+const INK_OVERSHOOT_FULL: f32 = 0.1;
+
 /// Hue agreement against neutral below which the paper side is taken to
 /// be a fringe, fully at `START`. Stricter than [`HUE_AGREEMENT_START`]:
 /// colored paper with `ClearType` text on it agrees ~0.7.
@@ -527,9 +542,9 @@ fn hue_agreement(
 /// between pixels without changing the total, so the window's summed
 /// deviation from `paper` points along the ink's color; scaled until the
 /// most-covered channel is full, it is the palest ink that explains every
-/// pixel. Fringes of neutral ink disagree in hue (`mixed_hues`) and aren't
-/// energy-balanced across channels, so they instead take the endpoint's
-/// most-covered channel as a neutral ink level.
+/// pixel. Neutral ink's fringes aren't energy-balanced across channels, so
+/// where the window looks like neutral ink, the endpoint's most-covered
+/// channel is taken as a neutral ink level instead.
 fn estimate_ink(
   pixels: &[[f32; 3]; NEIGHBORHOOD_SIZE],
   endpoint: [f32; 3],
@@ -568,8 +583,30 @@ fn estimate_ink(
     }
   }
 
-  let colored =
+  let estimated =
     [0, 1, 2].map(|c| paper[c] + deviation_sum[c] * full_scale);
+
+  // How far `endpoint` reaches along paper -> estimate. Where it is full
+  // ink already, its own color is exact, while the estimate carries the
+  // fringes' channel imbalance (enough to miss an override).
+  let mut along = 0.0;
+  let mut length_sq = 0.0;
+
+  for c in 0..3 {
+    along += (endpoint[c] - paper[c]) * (estimated[c] - paper[c]);
+    length_sq += (estimated[c] - paper[c]) * (estimated[c] - paper[c]);
+  }
+
+  let reach = if length_sq > 0.0 {
+    along / length_sq
+  } else {
+    1.0
+  };
+  let colored = lerp3(
+    estimated,
+    endpoint,
+    smoothstep(SOLID_INK_START, SOLID_INK_FULL, reach),
+  );
 
   let channel_step = (coverage[0] - coverage[1])
     .abs()
@@ -579,7 +616,33 @@ fn estimate_ink(
   let neutral =
     lerp3(endpoint, [channel_extreme(endpoint, extreme); 3], fringe);
 
-  lerp3(colored, neutral, mixed_hues).map(|c| c.clamp(0.0, 1.0))
+  // `ClearType` fringes of neutral ink disagree in hue, but so do those of
+  // colored ink under WPF's strong filter. What sets colored ink apart is
+  // a strongly unbalanced summed deviation that still lands on a real
+  // color; neutral fringes only unbalance it mildly, or overshoot the
+  // gamut when the window catches one side of a stroke.
+  let mut ratio_min = f32::MAX;
+  let mut ratio_max = 0.0_f32;
+  let mut overshoot = 0.0_f32;
+
+  for c in 0..3 {
+    let ratio = deviation_sum[c] / (extreme - paper[c]);
+    ratio_min = ratio_min.min(ratio);
+    ratio_max = ratio_max.max(ratio);
+    overshoot = overshoot.max(-estimated[c]).max(estimated[c] - 1.0);
+  }
+
+  let balance = if ratio_max > 0.0 {
+    ratio_min / ratio_max
+  } else {
+    1.0
+  };
+  let colored_ink = (1.0
+    - smoothstep(INK_BALANCE_COLORED, INK_BALANCE_NEUTRAL, balance))
+    * (1.0 - smoothstep(0.0, INK_OVERSHOOT_FULL, overshoot));
+
+  lerp3(colored, neutral, mixed_hues * (1.0 - colored_ink))
+    .map(|c| c.clamp(0.0, 1.0))
 }
 
 /// The gray with `srgb`'s OKLab lightness.
@@ -1260,6 +1323,56 @@ mod tests {
         "fringe {center:?} lost the ink's hue: {out:?}"
       );
     }
+  }
+
+  #[test]
+  fn wpf_link_keeps_its_color() {
+    let theme = ColorTheme::new(
+      Some((color("#1e1e1e"), color("#d4d4d4"))),
+      0.15,
+      &[ColorOverride {
+        from: color("#1976d2"),
+        to: color("#8ab4f8"),
+        tolerance: 6.0,
+      }],
+    )
+    .expect("valid theme");
+    let hex = |rows: [[&str; 5]; 3]| {
+      let mut pixels = [[0.0; 3]; NEIGHBORHOOD_SIZE];
+      for (index, pixel) in pixels.iter_mut().enumerate() {
+        *pixel = rgb(rows[index / 5][index % 5]);
+      }
+      pixels
+    };
+    let target = srgb_to_oklab(rgb("#8ab4f8"));
+
+    // Measured on a WPF `#1976d2` link on `#fbfbfb`: the bar of an "F",
+    // whose fully covered pixels must still hit the override.
+    let bar = hex([
+      ["#fbfbed", "#968ad6", "#96d9fb", "#fbfbfb", "#fbfbfb"],
+      ["#fbfbed", "#968ad2", "#1976d2", "#1976d2", "#1976d6"],
+      ["#fbfbed", "#968ad6", "#96d9fb", "#fbfbfb", "#fbfbfb"],
+    ]);
+    let out = srgb_to_oklab(theme.apply_neighborhood(&bar));
+    assert!(
+      distance(out, target) < 0.03,
+      "ink missed the override: {out:?}"
+    );
+
+    // The stem of an "l", which never fully covers a pixel and whose
+    // fringes disagree in hue: still the link color, not gray.
+    let stem = hex([
+      ["#96d9fb", "#fbd9df", "#478adf", "#d5fbfb", "#fbc2da"],
+      ["#fbfbfb", "#fbd9df", "#478adf", "#d5fbfb", "#d5afd6"],
+      ["#fbfbfb", "#fbd9df", "#478adf", "#d5fbfb", "#d5afd6"],
+    ]);
+    let out = srgb_to_oklab(theme.apply_neighborhood(&stem));
+    let hue_error =
+      (out[2].atan2(out[1]) - target[2].atan2(target[1])).abs();
+    assert!(
+      out[1].hypot(out[2]) > 0.05 && hue_error < 0.3,
+      "stem lost the link color: {out:?}"
+    );
   }
 
   #[test]

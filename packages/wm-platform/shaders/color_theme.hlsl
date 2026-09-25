@@ -26,6 +26,11 @@
 #define PAPER_FRINGE_AGREEMENT_START 0.3
 #define PAPER_FRINGE_AGREEMENT_FULL 0.5
 #define INVERSION_FULL 0.1
+#define SOLID_INK_START 0.75
+#define SOLID_INK_FULL 0.9
+#define INK_BALANCE_COLORED 0.38
+#define INK_BALANCE_NEUTRAL 0.5
+#define INK_OVERSHOOT_FULL 0.1
 
 // Mirrors `ThemeConstants`.
 cbuffer Theme : register(b0) {
@@ -224,7 +229,16 @@ float3 estimate_ink(
     full_scale = max(full_scale, max(ratio.r, max(ratio.g, ratio.b)));
   }
 
-  float3 colored = paper + deviation_sum * full_scale;
+  float3 estimated = paper + deviation_sum * full_scale;
+
+  float length_sq = dot(estimated - paper, estimated - paper);
+  float reach = length_sq > 0.0
+    ? dot(endpoint - paper, estimated - paper) / length_sq
+    : 1.0;
+  float3 colored = lerp(
+    estimated,
+    endpoint,
+    smoothstep(SOLID_INK_START, SOLID_INK_FULL, reach));
 
   float channel_step = max(
     abs(coverage.r - coverage.g),
@@ -234,7 +248,18 @@ float3 estimate_ink(
   float3 neutral_ink =
     lerp(endpoint, channel_extreme(endpoint, extreme), fringe);
 
-  return saturate(lerp(colored, neutral_ink, mixed_hues));
+  float3 ratio = deviation_sum / (extreme - paper);
+  float ratio_max = max(max(ratio.r, ratio.g), ratio.b);
+  float balance = ratio_max > 0.0
+    ? min(min(ratio.r, ratio.g), ratio.b) / ratio_max
+    : 1.0;
+  float3 outside = max(-estimated, estimated - 1.0);
+  float overshoot = max(max(max(outside.r, outside.g), outside.b), 0.0);
+  float colored_ink =
+    (1.0 - smoothstep(INK_BALANCE_COLORED, INK_BALANCE_NEUTRAL, balance))
+    * (1.0 - smoothstep(0.0, INK_OVERSHOOT_FULL, overshoot));
+
+  return saturate(lerp(colored, neutral_ink, mixed_hues * (1.0 - colored_ink)));
 }
 
 // Mirrors `edge_colors`.

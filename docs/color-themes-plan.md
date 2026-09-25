@@ -41,7 +41,10 @@ pixel shader, and shown in a click-through overlay directly above it.
 - Gray text in dense glyphs (`k`, close stems) is grayed since `5779983`.
   Thin colored text (e.g. a blue link) recovers its ink's hue from the
   neighborhood's summed deviation from the paper, so its fringes no longer
-  stay purple/cyan.
+  stay purple/cyan. WPF's fringes on colored text disagree in hue like
+  neutral ones; they're told apart by how unbalanced that deviation is
+  across channels (`wpf_link_keeps_its_color`, measured on a `#1976d2`
+  link: gray pixels 80 -> 28, off-hue 8 -> 1).
 - Edges where three colors meet (a bordered colored shape on a light page)
   can leave a stray off-color pixel: the fit allows per-channel coverage,
   the re-mix uses the mean.
