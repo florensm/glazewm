@@ -38,7 +38,8 @@ pixel shader, and shown in a click-through overlay directly above it.
   windows.
 - Zen Browser still loses the theme on some clicks. Parked (WPF is the
   target).
-- A few faint colored specks remain on some small glyphs.
+- Colored text (e.g. a blue link) can keep faint `ClearType` fringes; gray
+  text in dense glyphs (`k`, close stems) is grayed since `5779983`.
 
 ## Phase 2: follow window movement (implemented, needs Windows verification)
 
