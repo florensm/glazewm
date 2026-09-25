@@ -148,14 +148,16 @@ fn place_overlay(
       overlay.set_fill(fill.map(|color| theme.apply_color(color)));
       overlay.set_rect(&rect, surrogate);
     }
-    // The window is already at its final rect, under the surrogate.
+    // The window is already at its final rect, under the surrogate. Its
+    // last frame may still be at the old size, so the fill stays until a
+    // full-size one arrives.
     Some(ColorThemePlacement::FadingOut { surrogate }) => {
-      overlay.set_fill(None);
       set_rect_to_frame(overlay, window, surrogate);
+      overlay.release_fill();
     }
     Some(ColorThemePlacement::Hidden) => overlay.hide(),
     None => {
-      overlay.set_fill(None);
+      overlay.release_fill();
 
       if is_redrawing || !overlay.is_visible() {
         set_rect_to_frame(overlay, window, window.hwnd());

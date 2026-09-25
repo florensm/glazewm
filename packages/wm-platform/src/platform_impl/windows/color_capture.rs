@@ -223,6 +223,7 @@ impl ThemedCapture {
       fill,
       fill_brush,
       fill_color: None,
+      fill_until_covered: None,
       pool_size: item_size,
       last_frame: None,
       is_shown: false,
@@ -280,9 +281,25 @@ impl ThemedCapture {
     }
 
     renderer.0.fill_color = color;
+    renderer.0.fill_until_covered = None;
 
     if let Err(err) = renderer.0.sync_fill() {
       renderer.0.fail(&err);
+    }
+  }
+
+  /// Keeps the current fill until a frame of at least `size` has been
+  /// presented, then removes it.
+  ///
+  /// For the end of an animation: the window has just been resized, and
+  /// the last frame, still at the old size, would otherwise leave the
+  /// unthemed window showing around it until the app repaints.
+  pub(crate) fn release_fill_when_covered(&self, size: (u32, u32)) {
+    let mut renderer =
+      self.renderer.lock().unwrap_or_else(PoisonError::into_inner);
+
+    if renderer.0.fill_color.is_some() {
+      renderer.0.fill_until_covered = Some(size);
     }
   }
 
@@ -650,6 +667,10 @@ struct Renderer {
   fill_brush: CompositionColorBrush,
   fill_color: Option<Color>,
 
+  /// Overlay size the fill is kept for; see
+  /// [`ThemedCapture::release_fill_when_covered`].
+  fill_until_covered: Option<(u32, u32)>,
+
   /// Size the frame pool's buffers were last created at.
   pool_size: SizeInt32,
 
@@ -735,6 +756,15 @@ impl Renderer {
     if !self.is_shown {
       self.sprite.SetIsVisible(true)?;
       self.is_shown = true;
+      self.sync_fill()?;
+    }
+
+    if self
+      .fill_until_covered
+      .is_some_and(|until| size.0 >= until.0 && size.1 >= until.1)
+    {
+      self.fill_color = None;
+      self.fill_until_covered = None;
       self.sync_fill()?;
     }
 

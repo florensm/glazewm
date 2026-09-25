@@ -74,6 +74,19 @@ impl NativeColorThemeOverlay {
     self.capture.set_fill(color);
   }
 
+  /// Keeps the current fill until the themed frame covers the whole
+  /// overlay again, then removes it.
+  ///
+  /// For the end of an animation, when the window has just been resized
+  /// and the last frame is still at its old size.
+  pub fn release_fill(&self) {
+    let size = (
+      u32::try_from(self.rect.width()).unwrap_or(0),
+      u32::try_from(self.rect.height()).unwrap_or(0),
+    );
+    self.capture.release_fill_when_covered(size);
+  }
+
   /// Moves the overlay to `rect` directly above `anchor`, and shows it.
   ///
   /// Only re-asserts z-order if neither changed and the overlay is already
