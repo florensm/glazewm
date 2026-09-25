@@ -1,11 +1,16 @@
-// Per-window color theme pass. A direct port of `ColorTheme::apply` in
-// `src/color_theme.rs`, which is the unit-tested reference: keep the two
-// in sync.
+// Per-window color theme pass. A direct port of
+// `ColorTheme::apply_neighborhood` in `src/color_theme.rs`, which is the
+// unit-tested reference: keep the two in sync.
 
 #define MAX_COLOR_OVERRIDES 16
 
-// OKLab chroma treated as fully saturated. Mirrors `MAX_CHROMA`.
+// Mirror the constants of the same names.
 #define MAX_CHROMA 0.32
+#define EDGE_START 0.02
+#define EDGE_FULL 0.06
+#define MIX_ERROR_START 0.03
+#define MIX_ERROR_FULL 0.1
+#define MIN_CHANNEL_SPAN 0.02
 
 // Mirrors `ThemeConstants`.
 cbuffer Theme : register(b0) {
@@ -16,6 +21,13 @@ cbuffer Theme : register(b0) {
   uint ramp_enabled;
   uint padding;
   float4 overrides[MAX_COLOR_OVERRIDES * 2];
+};
+
+// Mirrors `FrameConstants`.
+cbuffer Frame : register(b1) {
+  // Captured content size; the frame pool's texture can be larger.
+  uint2 frame_size;
+  uint2 frame_padding;
 };
 
 Texture2D<float4> source : register(t0);
@@ -114,15 +126,97 @@ float3 apply_theme(float3 srgb) {
   return saturate(oklab_to_srgb(result));
 }
 
+// Mirrors `ColorTheme::apply_neighborhood`.
+float3 apply_neighborhood(float3 pixels[9]) {
+  float3 center = pixels[4];
+  float3 themed_center = apply_theme(center);
+
+  float3 dark = center;
+  float3 light = center;
+  float dark_lightness = srgb_to_oklab(center).x;
+  float light_lightness = dark_lightness;
+
+  [unroll]
+  for (int i = 0; i < 9; i++) {
+    float lightness = srgb_to_oklab(pixels[i]).x;
+
+    if (lightness < dark_lightness) {
+      dark = pixels[i];
+      dark_lightness = lightness;
+    }
+
+    if (lightness > light_lightness) {
+      light = pixels[i];
+      light_lightness = lightness;
+    }
+  }
+
+  float edge = smoothstep(
+    EDGE_START,
+    EDGE_FULL,
+    distance(srgb_to_oklab(dark), srgb_to_oklab(light)));
+
+  if (edge <= 0.0) {
+    return themed_center;
+  }
+
+  float3 span = dark - light;
+  float3 valid = step(MIN_CHANNEL_SPAN, abs(span));
+  float3 coverage =
+    valid * saturate((center - light) / (valid > 0.0 ? span : 1.0));
+
+  float valid_count = dot(valid, 1.0);
+  float mean_coverage =
+    valid_count > 0.0 ? dot(coverage, 1.0) / valid_count : 0.0;
+
+  float3 row_average = lerp(lerp(pixels[3], pixels[5], 0.5), center, 1.0 / 3.0);
+  float3 row_lab = srgb_to_oklab(row_average);
+  float neutral = ramp_weight(
+    min(length(row_lab.yz) / MAX_CHROMA, 1.0),
+    saturation_threshold);
+
+  float3 own = valid > 0.0 ? coverage : mean_coverage;
+  coverage = lerp(mean_coverage, own, neutral);
+
+  float3 reconstructed = lerp(light, dark, coverage);
+  float fit = 1.0 - smoothstep(
+    MIX_ERROR_START,
+    MIX_ERROR_FULL,
+    distance(center, reconstructed));
+
+  float3 remixed = lerp(apply_theme(light), apply_theme(dark), coverage);
+  return lerp(themed_center, remixed, edge * fit);
+}
+
+// Straight-alpha color at `position`, clamped to the captured content.
+// Fully transparent pixels (rounded window corners) stand in as `fallback`.
+float3 load_straight(int2 position, float3 fallback) {
+  int2 clamped = clamp(position, int2(0, 0), int2(frame_size) - 1);
+  float4 color = source.Load(int3(clamped, 0));
+  return color.a > 0.0 ? color.rgb / color.a : fallback;
+}
+
 float4 ps_main(float4 position : SV_Position) : SV_Target {
   // Captured frames are premultiplied; theme the straight color and
   // re-premultiply so rounded window corners stay transparent.
-  float4 color = source.Load(int3(position.xy, 0));
+  int2 xy = int2(position.xy);
+  float4 color = source.Load(int3(xy, 0));
 
   if (color.a <= 0.0) {
     return float4(0.0, 0.0, 0.0, 0.0);
   }
 
-  float3 themed = apply_theme(color.rgb / color.a);
+  float3 center = color.rgb / color.a;
+  float3 pixels[9];
+
+  [unroll]
+  for (int y = -1; y <= 1; y++) {
+    [unroll]
+    for (int x = -1; x <= 1; x++) {
+      pixels[(y + 1) * 3 + (x + 1)] = load_straight(xy + int2(x, y), center);
+    }
+  }
+
+  float3 themed = apply_neighborhood(pixels);
   return float4(themed * color.a, color.a);
 }

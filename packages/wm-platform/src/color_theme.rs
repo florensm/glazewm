@@ -1,10 +1,11 @@
 //! Per-window color themes: the color math, as a CPU reference for the
 //! pixel shader in `shaders/color_theme.hlsl`.
 //!
-//! The shader is a line-for-line port of [`ColorTheme::apply`] and reads
-//! the exact [`ThemeConstants`] this module builds, so the unit tests here
-//! cover what the GPU computes. Any change to one must be mirrored in the
-//! other.
+//! The shader is a line-for-line port of
+//! [`ColorTheme::apply_neighborhood`] (and the [`ColorTheme::apply`] it
+//! builds on) and reads the exact [`ThemeConstants`] this module builds,
+//! so the unit tests here cover what the GPU computes. Any change to one
+//! must be mirrored in the other.
 
 use crate::Color;
 
@@ -15,6 +16,21 @@ pub const MAX_COLOR_OVERRIDES: usize = 16;
 /// OKLab chroma treated as fully saturated, roughly that of pure sRGB
 /// blue (the most chromatic sRGB primary).
 const MAX_CHROMA: f32 = 0.32;
+
+/// OKLab distance between the darkest and lightest neighbor over which a
+/// pixel goes from flat to fully treated as an anti-aliased edge.
+const EDGE_START: f32 = 0.02;
+const EDGE_FULL: f32 = 0.06;
+
+/// sRGB error, reconstructing a pixel as a mix of its darkest and lightest
+/// neighbor, over which that reconstruction goes from trusted to ignored
+/// (e.g. a third color meeting the edge).
+const MIX_ERROR_START: f32 = 0.03;
+const MIX_ERROR_FULL: f32 = 0.1;
+
+/// Channel span below which a channel can't tell the two colors apart and
+/// borrows the other channels' coverage instead.
+const MIN_CHANNEL_SPAN: f32 = 0.02;
 
 /// Override tolerances are configured as OKLab distance times 100, so they
 /// read like the familiar CIE ΔE scale (~2 is barely noticeable).
@@ -174,6 +190,107 @@ impl ColorTheme {
 
     result = lerp3(result, best_to, best_weight);
     oklab_to_srgb(result).map(|channel| channel.clamp(0.0, 1.0))
+  }
+
+  /// Maps the center of a 3×3 neighborhood (row-major, straight-alpha
+  /// sRGB) through the theme, keeping anti-aliased edges intact.
+  ///
+  /// An edge pixel is a mix of the colors on either side of it, so it is
+  /// re-mixed from those colors' *themed* values at the same coverage,
+  /// rather than themed as a color of its own. Coverage is per channel
+  /// where the row averages out gray, which is what subpixel (ClearType)
+  /// text looks like; elsewhere a single coverage is used, so a colored
+  /// pixel between black and white isn't misread as a fringe.
+  #[must_use]
+  pub fn apply_neighborhood(&self, pixels: &[[f32; 3]; 9]) -> [f32; 3] {
+    let center = pixels[4];
+    let themed_center = self.apply(center);
+
+    let mut dark = center;
+    let mut light = center;
+    let mut dark_lightness = srgb_to_oklab(center)[0];
+    let mut light_lightness = dark_lightness;
+
+    for pixel in pixels {
+      let lightness = srgb_to_oklab(*pixel)[0];
+
+      if lightness < dark_lightness {
+        dark = *pixel;
+        dark_lightness = lightness;
+      }
+
+      if lightness > light_lightness {
+        light = *pixel;
+        light_lightness = lightness;
+      }
+    }
+
+    let edge = smoothstep(
+      EDGE_START,
+      EDGE_FULL,
+      distance(srgb_to_oklab(dark), srgb_to_oklab(light)),
+    );
+
+    if edge <= 0.0 {
+      return themed_center;
+    }
+
+    // Per-channel coverage of `dark` over `light`, with channels too close
+    // to call borrowing the mean of the others.
+    let mut coverage = [0.0; 3];
+    let mut valid = [false; 3];
+    let mut coverage_sum = 0.0;
+    let mut valid_count = 0.0;
+
+    for c in 0..3 {
+      let span = dark[c] - light[c];
+
+      if span.abs() > MIN_CHANNEL_SPAN {
+        coverage[c] = ((center[c] - light[c]) / span).clamp(0.0, 1.0);
+        valid[c] = true;
+        coverage_sum += coverage[c];
+        valid_count += 1.0;
+      }
+    }
+
+    let mean_coverage = if valid_count > 0.0 {
+      coverage_sum / valid_count
+    } else {
+      0.0
+    };
+
+    // Subpixel fringes cancel out across the row; real color doesn't.
+    let row_average =
+      lerp3(lerp3(pixels[3], pixels[5], 0.5), center, 1.0 / 3.0);
+    let row_lab = srgb_to_oklab(row_average);
+    let neutral = ramp_weight(
+      (row_lab[1].hypot(row_lab[2]) / MAX_CHROMA).min(1.0),
+      self.constants.saturation_threshold,
+    );
+
+    let mut error_sq = 0.0;
+
+    for c in 0..3 {
+      let own = if valid[c] { coverage[c] } else { mean_coverage };
+      coverage[c] = lerp(mean_coverage, own, neutral);
+
+      let reconstructed = lerp(light[c], dark[c], coverage[c]);
+      error_sq +=
+        (center[c] - reconstructed) * (center[c] - reconstructed);
+    }
+
+    let fit =
+      1.0 - smoothstep(MIX_ERROR_START, MIX_ERROR_FULL, error_sq.sqrt());
+    let themed_dark = self.apply(dark);
+    let themed_light = self.apply(light);
+
+    let remixed = [
+      lerp(themed_light[0], themed_dark[0], coverage[0]),
+      lerp(themed_light[1], themed_dark[1], coverage[1]),
+      lerp(themed_light[2], themed_dark[2], coverage[2]),
+    ];
+
+    lerp3(themed_center, remixed, edge * fit)
   }
 }
 
@@ -504,6 +621,121 @@ mod tests {
       MAX_COLOR_OVERRIDES + 1
     ];
     assert!(ColorTheme::new(None, 0.1, &many).is_err());
+  }
+
+  /// A neighborhood with `center` in the middle, `left` in the left
+  /// column and `right` in the right one.
+  fn edge_block(
+    left: [f32; 3],
+    center: [f32; 3],
+    right: [f32; 3],
+  ) -> [[f32; 3]; 9] {
+    [
+      left, center, right, left, center, right, left, center, right,
+    ]
+  }
+
+  fn lerp_rgb(
+    from: [f32; 3],
+    to: [f32; 3],
+    coverage: [f32; 3],
+  ) -> [f32; 3] {
+    [0, 1, 2].map(|c| lerp(from[c], to[c], coverage[c]))
+  }
+
+  #[test]
+  fn flat_neighborhood_matches_apply() {
+    let theme = winter();
+
+    for hex in ["#ffffff", "#7f7f7f", "#0078d4"] {
+      assert_close(
+        theme.apply_neighborhood(&[rgb(hex); 9]),
+        theme.apply(rgb(hex)),
+      );
+    }
+  }
+
+  #[test]
+  fn grayscale_antialiasing_keeps_its_coverage() {
+    let theme = winter();
+    let (black, white) = (rgb("#000000"), rgb("#ffffff"));
+
+    // A 25%-covered text edge re-mixes the themed text and page colors at
+    // that same 25%, rather than landing wherever the ramp puts `#bfbfbf`.
+    let edge = [0.75; 3];
+    let out = theme.apply_neighborhood(&edge_block(black, edge, white));
+
+    assert_close(out, lerp_rgb(rgb("#1e1e1e"), rgb("#d4d4d4"), [0.25; 3]));
+  }
+
+  #[test]
+  fn subpixel_fringes_keep_their_per_channel_coverage() {
+    let theme = winter();
+    let (black, white) = (rgb("#000000"), rgb("#ffffff"));
+
+    // ClearType: a blue fringe between a black stroke and an orange one,
+    // which together average out gray across the row.
+    let blue = [0.2, 0.6, 1.0];
+    let orange = [1.0, 0.6, 0.2];
+    let out = theme.apply_neighborhood(&[
+      black, black, white, //
+      black, blue, orange, //
+      black, black, black,
+    ]);
+
+    // Each channel keeps its own coverage in the new colors.
+    assert_close(
+      out,
+      lerp_rgb(rgb("#1e1e1e"), rgb("#d4d4d4"), [0.8, 0.4, 0.0]),
+    );
+  }
+
+  #[test]
+  fn colored_pixel_between_black_and_white_is_not_a_fringe() {
+    let theme = winter();
+    let red = rgb("#e81123");
+    let out = theme.apply_neighborhood(&edge_block(
+      rgb("#000000"),
+      red,
+      rgb("#ffffff"),
+    ));
+
+    // The row is far from gray, so this is real color, left untouched.
+    assert_close(out, red);
+  }
+
+  #[test]
+  fn colorful_image_edges_are_untouched() {
+    let theme = winter();
+    let (red, green) = (rgb("#e81123"), rgb("#16c60c"));
+    let mix = lerp3(red, green, 0.5);
+
+    assert_close(
+      theme.apply_neighborhood(&edge_block(red, mix, green)),
+      mix,
+    );
+  }
+
+  #[test]
+  fn button_edges_blend_between_themed_colors() {
+    let theme = ColorTheme::new(
+      Some((color("#1e1e1e"), color("#d4d4d4"))),
+      0.15,
+      &[ColorOverride {
+        from: color("#0078d4"),
+        to: color("#4aa3ff"),
+        tolerance: 6.0,
+      }],
+    )
+    .expect("valid theme");
+
+    let (blue, white) = (rgb("#0078d4"), rgb("#ffffff"));
+    let corner = lerp3(blue, white, 0.5);
+
+    assert_close(
+      theme.apply_neighborhood(&edge_block(blue, corner, white)),
+      lerp_rgb(rgb("#1e1e1e"), rgb("#4aa3ff"), [0.5; 3]),
+    );
   }
 
   #[test]

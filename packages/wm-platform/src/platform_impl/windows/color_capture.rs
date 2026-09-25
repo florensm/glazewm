@@ -75,10 +75,7 @@ use windows::{
 };
 
 use super::composition::with_composition_thread;
-use crate::{
-  color_theme::{ColorTheme, ThemeConstants},
-  Rect,
-};
+use crate::{color_theme::ColorTheme, Rect};
 
 const VERTEX_SHADER: &[u8] =
   include_bytes!(concat!(env!("OUT_DIR"), "/color_theme_vs.cso"));
@@ -290,6 +287,10 @@ struct GpuDevice {
   vertex_shader: ID3D11VertexShader,
   pixel_shader: ID3D11PixelShader,
   constants: ID3D11Buffer,
+
+  /// [`FrameConstants`] for the current `swap_chain_size`.
+  frame_constants: ID3D11Buffer,
+
   swap_chain: IDXGISwapChain1,
   swap_chain_size: (u32, u32),
 
@@ -340,6 +341,8 @@ impl GpuDevice {
     }
 
     let constants = create_constant_buffer(&device, theme.constants())?;
+    let frame_constants =
+      create_constant_buffer(&device, &FrameConstants::new(size))?;
 
     // SAFETY: The adapter's parent is the factory that created it, and
     // every DXGI 1.2+ factory implements `IDXGIFactory2`.
@@ -379,6 +382,7 @@ impl GpuDevice {
       vertex_shader: created(vertex_shader)?,
       pixel_shader: created(pixel_shader)?,
       constants,
+      frame_constants,
       swap_chain,
       swap_chain_size: size,
       render_target: None,
@@ -407,6 +411,19 @@ impl GpuDevice {
           DXGI_FORMAT_UNKNOWN,
           0,
         )?;
+      }
+
+      // SAFETY: The source is a `FrameConstants`, exactly the buffer's
+      // size, and the context is only used under the caller's lock.
+      unsafe {
+        self.context.UpdateSubresource(
+          &self.frame_constants,
+          0,
+          None,
+          std::ptr::from_ref(&FrameConstants::new(size)).cast(),
+          0,
+          0,
+        );
       }
 
       self.swap_chain_size = size;
@@ -459,8 +476,13 @@ impl GpuDevice {
         .IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
       context.VSSetShader(&self.vertex_shader, None);
       context.PSSetShader(&self.pixel_shader, None);
-      context
-        .PSSetConstantBuffers(0, Some(&[Some(self.constants.clone())]));
+      context.PSSetConstantBuffers(
+        0,
+        Some(&[
+          Some(self.constants.clone()),
+          Some(self.frame_constants.clone()),
+        ]),
+      );
       context.PSSetShaderResources(0, Some(&[source]));
       context.OMSetRenderTargets(Some(&[render_target]), None);
       context.RSSetViewports(Some(&[viewport]));
@@ -616,12 +638,28 @@ fn frame_texture(
   Ok(unsafe { access.GetInterface()? })
 }
 
-fn create_constant_buffer(
+/// Constant buffer layout shared with `cbuffer Frame` in the shader.
+#[repr(C)]
+struct FrameConstants {
+  size: [u32; 2],
+  _padding: [u32; 2],
+}
+
+impl FrameConstants {
+  fn new(size: (u32, u32)) -> Self {
+    Self {
+      size: [size.0, size.1],
+      _padding: [0; 2],
+    }
+  }
+}
+
+fn create_constant_buffer<T>(
   device: &ID3D11Device,
-  constants: &ThemeConstants,
+  constants: &T,
 ) -> crate::Result<ID3D11Buffer> {
   let desc = D3D11_BUFFER_DESC {
-    ByteWidth: u32::try_from(std::mem::size_of::<ThemeConstants>())?,
+    ByteWidth: u32::try_from(std::mem::size_of::<T>())?,
     Usage: D3D11_USAGE_DEFAULT,
     #[allow(clippy::cast_sign_loss)]
     BindFlags: D3D11_BIND_CONSTANT_BUFFER.0 as u32,
