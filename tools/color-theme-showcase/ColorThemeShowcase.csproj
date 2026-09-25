@@ -1,0 +1,15 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <UseWPF>true</UseWPF>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <!-- Lets the project also build (not run) on Linux/macOS. -->
+    <EnableWindowsTargeting>true</EnableWindowsTargeting>
+    <AssemblyName>ColorThemeShowcase</AssemblyName>
+    <RootNamespace>ColorThemeShowcase</RootNamespace>
+  </PropertyGroup>
+
+</Project>
