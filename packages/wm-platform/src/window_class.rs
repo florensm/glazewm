@@ -3,15 +3,21 @@ use std::sync::OnceLock;
 use windows::{
   core::PCWSTR,
   Win32::{
-    Foundation::{HWND, LPARAM, LRESULT, WPARAM},
+    Foundation::{HWND, LPARAM, LRESULT, RECT, WPARAM},
+    Graphics::Dwm::{
+      DwmGetWindowAttribute, DWMWA_CLOAKED, DWMWA_EXTENDED_FRAME_BOUNDS,
+    },
     UI::WindowsAndMessaging::{
-      DefWindowProcW, GetWindow, GetWindowLongPtrW, IsWindowVisible,
-      RegisterClassW, SetWindowPos, GWL_EXSTYLE, GW_HWNDNEXT, GW_HWNDPREV,
-      HWND_NOTOPMOST, HWND_TOP, HWND_TOPMOST, SWP_NOACTIVATE, SWP_NOMOVE,
-      SWP_NOSENDCHANGING, SWP_NOSIZE, WNDCLASSW, WS_EX_TOPMOST,
+      DefWindowProcW, GetWindow, GetWindowLongPtrW, GetWindowRect,
+      IsWindowVisible, RegisterClassW, SetWindowPos, GWL_EXSTYLE,
+      GW_HWNDNEXT, GW_HWNDPREV, HWND_NOTOPMOST, HWND_TOP, HWND_TOPMOST,
+      SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSENDCHANGING, SWP_NOSIZE,
+      WNDCLASSW, WS_EX_TOPMOST,
     },
   },
 };
+
+use crate::overlay_window::OverlayKind;
 
 /// Registers a window class with `wnd_proc` and `class_name`, exactly once
 /// per process for the given `registered` cell.
@@ -158,9 +164,9 @@ pub(crate) fn insert_above_point(anchor: HWND, overlay: HWND) -> HWND {
 /// window to the top of its band whenever one of its owned popups opens (a
 /// dropdown, a menu, a tooltip): in the same band, that lift covers the
 /// overlay until it's noticed and undone, which shows as a flash of the
-/// untouched window. As soon as any other visible window is above
-/// `anchor`, the overlay goes back directly above it, so it never covers
-/// unrelated windows.
+/// untouched window. As soon as another window on screen overlaps
+/// `anchor` from above, the overlay goes back directly above `anchor`, so
+/// it never covers unrelated windows.
 pub(crate) fn above_placement(
   anchor: HWND,
   overlay: HWND,
@@ -169,6 +175,7 @@ pub(crate) fn above_placement(
     return (true, insert_above_point(anchor, overlay));
   }
 
+  let area = frame_bounds(anchor);
   let mut current = anchor;
 
   for _ in 0..MAX_INSERT_AFTER_WALK {
@@ -190,8 +197,11 @@ pub(crate) fn above_placement(
       return (true, current);
     }
 
-    // SAFETY: A stale handle just makes `IsWindowVisible` return false.
-    if unsafe { IsWindowVisible(current) }.as_bool() {
+    if is_shown_over(current, area.as_ref()) {
+      tracing::debug!(
+        "Color theme overlay kept in the normal band: {current:?} is above \
+         its window."
+      );
       break;
     }
   }
@@ -228,13 +238,15 @@ pub(crate) fn set_topmost(window: HWND, topmost: bool) {
   }
 }
 
-/// Whether `anchor` is the first *visible* window below `overlay`.
+/// Whether nothing on screen over `anchor` sits between it and `overlay`
+/// (see [`is_shown_over`]).
 ///
-/// Hidden windows in between don't count: apps keep hidden IME helper
+/// Other windows in between don't count: apps keep hidden IME helper
 /// windows directly above themselves, and Windows keeps owned windows
 /// above their owner, so demanding strict adjacency would restack the
 /// overlay on every check for nothing.
 pub(crate) fn is_directly_above(overlay: HWND, anchor: HWND) -> bool {
+  let area = frame_bounds(anchor);
   let mut current = overlay;
 
   for _ in 0..MAX_INSERT_AFTER_WALK {
@@ -245,12 +257,80 @@ pub(crate) fn is_directly_above(overlay: HWND, anchor: HWND) -> bool {
       return current == anchor;
     }
 
-    if unsafe { IsWindowVisible(current) }.as_bool() {
+    if is_shown_over(current, area.as_ref()) {
       return false;
     }
   }
 
   false
+}
+
+/// Whether `hwnd` actually shows over part of `area`, i.e. whether an
+/// overlay placed above it could hide it.
+///
+/// `IsWindowVisible` alone isn't enough: Windows keeps cloaked windows
+/// (suspended UWP apps, shell hosts, windows on other virtual desktops)
+/// visible and high in the z-order, and the WM's own border and backdrop
+/// overlays sit above their windows' neighbors. Counting those would keep
+/// the overlay out of the topmost band for good. With no `area`, every
+/// visible, uncloaked window counts.
+fn is_shown_over(hwnd: HWND, area: Option<&RECT>) -> bool {
+  // SAFETY: A stale handle just makes `IsWindowVisible` return false.
+  if !unsafe { IsWindowVisible(hwnd) }.as_bool()
+    || is_cloaked(hwnd)
+    || OverlayKind::is_overlay(hwnd)
+  {
+    return false;
+  }
+
+  match (area, frame_bounds(hwnd)) {
+    (Some(area), Some(bounds)) => {
+      bounds.left < area.right
+        && area.left < bounds.right
+        && bounds.top < area.bottom
+        && area.top < bounds.bottom
+    }
+    _ => true,
+  }
+}
+
+fn is_cloaked(hwnd: HWND) -> bool {
+  let mut cloaked = 0u32;
+
+  // SAFETY: `cloaked` outlives the call and matches the attribute's size;
+  // a stale handle just makes the call fail.
+  #[allow(clippy::cast_possible_truncation)]
+  let result = unsafe {
+    DwmGetWindowAttribute(
+      hwnd,
+      DWMWA_CLOAKED,
+      std::ptr::from_mut(&mut cloaked).cast(),
+      std::mem::size_of::<u32>() as u32,
+    )
+  };
+
+  result.is_ok() && cloaked != 0
+}
+
+/// The window's visible bounds, without the invisible resize borders
+/// `GetWindowRect` includes, which overlap tiled neighbors.
+fn frame_bounds(hwnd: HWND) -> Option<RECT> {
+  let mut rect = RECT::default();
+
+  // SAFETY: `rect` outlives the calls and matches the attribute's size; a
+  // stale handle just makes them fail.
+  #[allow(clippy::cast_possible_truncation)]
+  let result = unsafe {
+    DwmGetWindowAttribute(
+      hwnd,
+      DWMWA_EXTENDED_FRAME_BOUNDS,
+      std::ptr::from_mut(&mut rect).cast(),
+      std::mem::size_of::<RECT>() as u32,
+    )
+    .or_else(|_| GetWindowRect(hwnd, std::ptr::from_mut(&mut rect)))
+  };
+
+  result.ok().map(|()| rect)
 }
 
 fn next_in_z_order(hwnd: HWND) -> HWND {
