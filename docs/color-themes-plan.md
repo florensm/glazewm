@@ -40,9 +40,12 @@ pixel shader, and shown in a click-through overlay directly above it.
   is kept as a test page (its "keeps its colors" labels describe that
   feature).
 
-- A new popup shows its original colors for about one frame: Windows draws
-  it before the capture can see it. Avoiding that means modifying the app's
-  windows.
+- A new popup or dialog can still show its original colors for about one
+  frame: Windows draws it before the WM hears of it. Its overlay now shows
+  a themed fill as soon as it exists, before the capture is set up, and a
+  window opening with an animation gets its overlay right away, as a fill
+  following the animation (frames held back) instead of after it.
+  Removing the last frame would mean modifying the app's windows.
 - Zen Browser still loses the theme on some clicks. Parked (WPF is the
   target).
 - Gray text in dense glyphs (`k`, close stems) is grayed since `5779983`.

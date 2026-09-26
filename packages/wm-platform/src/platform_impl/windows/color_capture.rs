@@ -127,11 +127,23 @@ pub(crate) struct ThemedCapture {
 impl ThemedCapture {
   /// Starts capturing `source` into a visual rooted on `overlay`, which
   /// must have been created with `WS_EX_NOREDIRECTIONBITMAP`.
+  ///
+  /// With a `placeholder`, the overlay shows it until the first themed
+  /// frame of at least `rect`'s size is presented; with `frames_held`,
+  /// frames wait for [`set_frames_held`](Self::set_frames_held) to
+  /// release them. `show` is called as
+  /// soon as the placeholder is in place, before the slow part (GPU
+  /// resources and the capture itself): a new window is on screen
+  /// already, so the sooner its overlay shows, the shorter it flashes its
+  /// original colors.
   pub(crate) fn start(
     source: HWND,
     overlay: HWND,
     rect: &Rect,
     theme: &ColorTheme,
+    placeholder: Option<Color>,
+    frames_held: bool,
+    show: impl FnOnce(),
   ) -> crate::Result<Self> {
     ensure_capturable(source)?;
 
@@ -140,62 +152,13 @@ impl ThemedCapture {
       u32::try_from(rect.width().max(1))?,
       u32::try_from(rect.height().max(1))?,
     );
+    let (target, sprite, fill, fill_brush) =
+      create_visuals(overlay, placeholder)?;
+
+    show();
+
     let output = CaptureOutput::create(theme, size)?;
-    let swap_chain = AssertSend(output.swap_chain.clone());
-    let source_raw = source.0;
-    let overlay_raw = overlay.0;
-
-    // Composition and WGC objects are agile, but are created on the
-    // composition thread since it is guaranteed to have WinRT initialized.
-    let (target, sprite, fill, fill_brush, item) =
-      with_composition_thread(move |compositor, _| {
-        // SAFETY: `overlay` is a live top-level window.
-        let target = unsafe {
-          compositor
-            .cast::<ICompositorDesktopInterop>()?
-            .CreateDesktopWindowTarget(HWND(overlay_raw), false)?
-        };
-
-        // SAFETY: `swap_chain` is a composition swap chain that nothing
-        // presents to until the capture below starts.
-        let surface = unsafe {
-          compositor
-            .cast::<ICompositorInterop>()?
-            .CreateCompositionSurfaceForSwapChain(&swap_chain.0)?
-        };
-
-        // Drawn 1:1 from the top-left corner: the swap chain always
-        // matches the captured window's size, which the overlay does too.
-        let brush = compositor.CreateSurfaceBrushWithSurface(&surface)?;
-        brush.SetStretch(CompositionStretch::None)?;
-        brush.SetHorizontalAlignmentRatio(0.0)?;
-        brush.SetVerticalAlignmentRatio(0.0)?;
-
-        let sprite = compositor.CreateSpriteVisual()?;
-        sprite.SetBrush(&brush)?;
-        sprite.SetRelativeSizeAdjustment(FILL_PARENT)?;
-        sprite.SetIsVisible(false)?;
-
-        let fill_brush = compositor.CreateColorBrush()?;
-        let fill = compositor.CreateSpriteVisual()?;
-        fill.SetBrush(&fill_brush)?;
-        fill.SetRelativeSizeAdjustment(FILL_PARENT)?;
-        fill.SetIsVisible(false)?;
-
-        let root = compositor.CreateContainerVisual()?;
-        root.SetRelativeSizeAdjustment(FILL_PARENT)?;
-        root.Children()?.InsertAtBottom(&fill)?;
-        root.Children()?.InsertAtTop(&sprite)?;
-        target.SetRoot(&root)?;
-
-        let interop =
-          factory::<GraphicsCaptureItem, IGraphicsCaptureItemInterop>()?;
-        // SAFETY: `source` is a window handle; a stale one just fails.
-        let item: GraphicsCaptureItem =
-          unsafe { interop.CreateForWindow(HWND(source_raw))? };
-
-        Ok((target, sprite, fill, fill_brush, item))
-      })?;
+    let item = attach_capture(source, &sprite, &output.swap_chain)?;
 
     let item_size = item.Size()?;
     let frame_pool = Direct3D11CaptureFramePool::CreateFreeThreaded(
@@ -222,9 +185,10 @@ impl ThemedCapture {
       sprite,
       fill,
       fill_brush,
-      fill_color: None,
-      fill_until_covered: None,
-      fill_before_first_frame: false,
+      fill_color: placeholder,
+      fill_until_covered: placeholder.map(|_| size),
+      fill_before_first_frame: placeholder.is_some(),
+      frames_held,
       pool_size: item_size,
       last_frame: None,
       is_shown: false,
@@ -305,21 +269,20 @@ impl ThemedCapture {
     }
   }
 
-  /// Shows `color` as the fill right away, even before the first frame,
-  /// until a frame of at least `size` has been presented.
-  ///
-  /// For windows that appear abruptly (menus, dropdowns): capture takes a
-  /// few frames to start, during which the overlay would otherwise be
-  /// transparent and show the unthemed window.
-  pub(crate) fn set_placeholder(&self, color: Color, size: (u32, u32)) {
+  /// Holds frames back while `held`, showing only the fill: the capture
+  /// can't follow an animation, and a frame would be at the wrong place
+  /// until it ends. Releasing shows the current frame right away.
+  pub(crate) fn set_frames_held(&self, held: bool) {
     let mut renderer =
       self.renderer.lock().unwrap_or_else(PoisonError::into_inner);
 
-    renderer.0.fill_color = Some(color);
-    renderer.0.fill_until_covered = Some(size);
-    renderer.0.fill_before_first_frame = true;
+    if renderer.0.frames_held == held {
+      return;
+    }
 
-    if let Err(err) = renderer.0.sync_fill() {
+    renderer.0.frames_held = held;
+
+    if let Err(err) = renderer.0.release_held_frame() {
       renderer.0.fail(&err);
     }
   }
@@ -336,6 +299,93 @@ impl Drop for ThemedCapture {
     let _ = self.session.Close();
     let _ = self.frame_pool.Close();
   }
+}
+
+/// The visual tree an overlay shows: a sprite for the themed frames
+/// (hidden until the first one) above a solid fill, showing `placeholder`
+/// right away if given.
+fn create_visuals(
+  overlay: HWND,
+  placeholder: Option<Color>,
+) -> crate::Result<(
+  DesktopWindowTarget,
+  SpriteVisual,
+  SpriteVisual,
+  CompositionColorBrush,
+)> {
+  let overlay_raw = overlay.0;
+
+  // Composition objects are agile, but are created on the composition
+  // thread since it is guaranteed to have WinRT initialized.
+  with_composition_thread(move |compositor, _| {
+    // SAFETY: `overlay` is a live top-level window.
+    let target = unsafe {
+      compositor
+        .cast::<ICompositorDesktopInterop>()?
+        .CreateDesktopWindowTarget(HWND(overlay_raw), false)?
+    };
+
+    // Its brush is set once the swap chain exists.
+    let sprite = compositor.CreateSpriteVisual()?;
+    sprite.SetRelativeSizeAdjustment(FILL_PARENT)?;
+    sprite.SetIsVisible(false)?;
+
+    let fill_brush = compositor.CreateColorBrush()?;
+    let fill = compositor.CreateSpriteVisual()?;
+    fill.SetBrush(&fill_brush)?;
+    fill.SetRelativeSizeAdjustment(FILL_PARENT)?;
+    fill.SetIsVisible(false)?;
+
+    if let Some(color) = placeholder {
+      fill_brush.SetColor(to_ui_color(color))?;
+      fill.SetIsVisible(true)?;
+    }
+
+    let root = compositor.CreateContainerVisual()?;
+    root.SetRelativeSizeAdjustment(FILL_PARENT)?;
+    root.Children()?.InsertAtBottom(&fill)?;
+    root.Children()?.InsertAtTop(&sprite)?;
+    target.SetRoot(&root)?;
+
+    Ok((target, sprite, fill, fill_brush))
+  })
+}
+
+/// Points `sprite` at `swap_chain`, and creates the capture item for
+/// `source`.
+fn attach_capture(
+  source: HWND,
+  sprite: &SpriteVisual,
+  swap_chain: &IDXGISwapChain1,
+) -> crate::Result<GraphicsCaptureItem> {
+  let swap_chain = AssertSend(swap_chain.clone());
+  let sprite = sprite.clone();
+  let source_raw = source.0;
+
+  // WGC objects are agile too; created on the composition thread for the
+  // same reason.
+  with_composition_thread(move |compositor, _| {
+    // SAFETY: `swap_chain` is a composition swap chain that nothing
+    // presents to until the capture starts.
+    let surface = unsafe {
+      compositor
+        .cast::<ICompositorInterop>()?
+        .CreateCompositionSurfaceForSwapChain(&swap_chain.0)?
+    };
+
+    // Drawn 1:1 from the top-left corner: the swap chain always matches
+    // the captured window's size, which the overlay does too.
+    let brush = compositor.CreateSurfaceBrushWithSurface(&surface)?;
+    brush.SetStretch(CompositionStretch::None)?;
+    brush.SetHorizontalAlignmentRatio(0.0)?;
+    brush.SetVerticalAlignmentRatio(0.0)?;
+    sprite.SetBrush(&brush)?;
+
+    let interop =
+      factory::<GraphicsCaptureItem, IGraphicsCaptureItemInterop>()?;
+    // SAFETY: `source` is a window handle; a stale one just fails.
+    Ok(unsafe { interop.CreateForWindow(HWND(source_raw))? })
+  })
 }
 
 /// Fails for windows the capture can't theme correctly, so they are left
@@ -693,9 +743,13 @@ struct Renderer {
   /// [`ThemedCapture::release_fill_when_covered`].
   fill_until_covered: Option<(u32, u32)>,
 
-  /// Shows the fill before the first frame; see
-  /// [`ThemedCapture::set_placeholder`].
+  /// Shows the fill before the first frame (a placeholder; see
+  /// [`ThemedCapture::start`]).
   fill_before_first_frame: bool,
+
+  /// Frames are rendered but not shown, and the fill stays; see
+  /// [`ThemedCapture::set_frames_held`].
+  frames_held: bool,
 
   /// Size the frame pool's buffers were last created at.
   pool_size: SizeInt32,
@@ -779,6 +833,10 @@ impl Renderer {
   ) -> crate::Result<()> {
     self.output.render(texture, size)?;
 
+    if self.frames_held {
+      return Ok(());
+    }
+
     if !self.is_shown {
       self.sprite.SetIsVisible(true)?;
       self.is_shown = true;
@@ -798,9 +856,22 @@ impl Renderer {
     Ok(())
   }
 
+  /// Shows the current frame once frames are no longer held, or keeps
+  /// the fill up while they are.
+  fn release_held_frame(&mut self) -> crate::Result<()> {
+    if self.frames_held {
+      return self.sync_fill();
+    }
+
+    match self.last_frame.clone() {
+      Some((_, texture, size)) => self.present(&texture, size),
+      None => self.sync_fill(),
+    }
+  }
+
   fn sync_fill(&self) -> crate::Result<()> {
     let color = self.fill_color.filter(|_| {
-      (self.is_shown || self.fill_before_first_frame)
+      (self.is_shown || self.fill_before_first_frame || self.frames_held)
         && !self.failed.load(Ordering::Relaxed)
     });
 

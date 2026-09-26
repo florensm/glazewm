@@ -92,17 +92,31 @@ pub fn sync_color_themes(state: &mut WmState, config: &UserConfig) {
       continue;
     }
 
-    // Started once the animation is over: mid-animation, the capture's
-    // first frames would lag behind the surrogate it has to cover.
-    if placement.is_some() {
-      continue;
-    }
-
-    let Ok(rect) = window.native().frame() else {
-      continue;
+    // A new window, or one whose theme was just switched on. Mid-animation
+    // (e.g. opening), the overlay follows the surrogate as a plain fill:
+    // the capture shows the window at its final place, so its frames are
+    // held back until the animation ends.
+    let (rect, anchor, is_animating) = match placement {
+      None => {
+        let Ok(rect) = window.native().frame() else {
+          continue;
+        };
+        (rect, hwnd, false)
+      }
+      Some(ColorThemePlacement::Following {
+        surrogate, rect, ..
+      }) => (rect, surrogate, true),
+      Some(_) => continue,
     };
 
-    match NativeColorThemeOverlay::create(hwnd, &rect, &theme, hwnd) {
+    match NativeColorThemeOverlay::create(
+      hwnd,
+      &rect,
+      &theme,
+      anchor,
+      Some(placeholder(&theme)),
+      is_animating,
+    ) {
       Ok(overlay) => {
         tracing::info!("Color theme applied to {window}.");
         state.color_theme_overlays.insert(id, overlay);
@@ -131,6 +145,17 @@ pub fn sync_color_themes(state: &mut WmState, config: &UserConfig) {
     .retain(|id| live_ids.contains(id));
 }
 
+/// What a new overlay shows until its first themed frame: the page color
+/// windows and popups are almost always backed by, themed.
+fn placeholder(theme: &ColorTheme) -> Color {
+  theme.apply_color(Color {
+    r: 255,
+    g: 255,
+    b: 255,
+    a: 255,
+  })
+}
+
 /// Places a shown window's overlay per its animation `placement`.
 fn place_overlay(
   overlay: &mut NativeColorThemeOverlay,
@@ -145,7 +170,12 @@ fn place_overlay(
       rect,
       fill,
     }) => {
-      overlay.set_fill(fill.map(|color| theme.apply_color(color)));
+      // Held frames leave only the fill to cover the surrogate.
+      let fill = fill
+        .map(|color| theme.apply_color(color))
+        .or_else(|| overlay.frames_held().then(|| placeholder(theme)));
+
+      overlay.set_fill(fill);
       overlay.set_rect(&rect, surrogate);
     }
     // The window is already at its final rect, under the surrogate. Its
@@ -153,10 +183,12 @@ fn place_overlay(
     // full-size one arrives.
     Some(ColorThemePlacement::FadingOut { surrogate }) => {
       set_rect_to_frame(overlay, window, surrogate);
+      overlay.set_frames_held(false);
       overlay.release_fill();
     }
     Some(ColorThemePlacement::Hidden) => overlay.hide(),
     None => {
+      overlay.set_frames_held(false);
       overlay.release_fill();
 
       if is_redrawing || !overlay.is_visible() {
@@ -266,16 +298,16 @@ pub fn sync_color_theme_popup(
     return;
   };
 
-  match NativeColorThemeOverlay::create(hwnd, &rect, &theme, hwnd) {
+  // Popups appear abruptly, and are almost always light-backed.
+  match NativeColorThemeOverlay::create(
+    hwnd,
+    &rect,
+    &theme,
+    hwnd,
+    Some(placeholder(&theme)),
+    false,
+  ) {
     Ok(overlay) => {
-      // Popups are almost always light-backed, and would show unthemed
-      // until capture delivers its first frame.
-      overlay.set_placeholder(theme.apply_color(Color {
-        r: 255,
-        g: 255,
-        b: 255,
-        a: 255,
-      }));
       state
         .color_theme_popups
         .insert(hwnd.0, ColorThemePopup { owner, overlay });
