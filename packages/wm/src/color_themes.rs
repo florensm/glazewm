@@ -222,22 +222,20 @@ themes:
     detect_colors: true
     skip_if_dark: true
     elements:
-      image: original
+      hyperlink: original
       edit: input
-      min_image_size: 32
 "##,
     )
     .expect("valid themes");
 
     let winter = &themes["winter"];
     assert!(winter.detect_colors() && winter.skip_if_dark());
-    assert_eq!(winter.min_image_size(), 32);
   }
 
   #[test]
   fn rejects_invalid_references() {
     // Unknown element theme, palette and parent.
-    assert!(parse("themes: { a: { elements: { image: nope } } }").is_err());
+    assert!(parse("themes: { a: { elements: { edit: nope } } }").is_err());
     assert!(parse("themes: { a: { palette: nope } }").is_err());
     assert!(parse("themes: { a: { extends: nope } }").is_err());
     // Circular `extends`.

@@ -65,13 +65,14 @@
 #                         app's accessibility tree (UI Automation): per
 #                         kind, `original` (the app's own colors) or the
 #                         name of a theme whose colors it takes instead (at
-#                         most 3 distinct themes). Kinds: image, edit,
-#                         document, button, hyperlink, check_box,
-#                         radio_button, combo_box, list_item, tree_item,
-#                         tab_item, menu_item, data_item, header, tool_bar,
-#                         status_bar, title_bar.
-#                         `min_image_size` (48): smaller images count as
-#                         icons and keep the theme's colors.
+#                         most 3 distinct themes). Kinds: edit, document,
+#                         button, hyperlink, check_box, radio_button,
+#                         combo_box, list_item, tree_item, tab_item,
+#                         menu_item, data_item, header, tool_bar,
+#                         status_bar, title_bar. Images are always themed:
+#                         UI Automation reports their bounds unclipped and
+#                         as rectangles, so keeping their colors also kept
+#                         whatever they overlapped.
 #                         Works best with WPF, WinForms, Win32 and WinUI
 #                         apps. Element positions update shortly after the
 #                         content changes, so they can briefly lag while
@@ -116,7 +117,7 @@ themes:
       - { from: "#0078d4", to: "#4aa3ff", tolerance: 6 }
 
   # Catppuccin Mocha: separate surface colors, readable accents in the
-  # palette's colors, and photos left untouched.
+  # palette's colors, and lighter text boxes.
   catppuccin:
     ramp:
       - { from: "#ffffff", to: "#1e1e2e" } # Page.
@@ -131,7 +132,6 @@ themes:
     detect_colors: true
     skip_if_dark: true
     elements:
-      image: original
       edit: catppuccin-input
 
   # Text boxes of `catppuccin`, a shade lighter than the page.

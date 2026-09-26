@@ -92,7 +92,6 @@ pub struct ColorOverrideConfig {
 #[derive(Clone, Debug, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ElementsConfig {
-  pub image: Option<String>,
   pub edit: Option<String>,
   pub document: Option<String>,
   pub button: Option<String>,
@@ -109,18 +108,11 @@ pub struct ElementsConfig {
   pub tool_bar: Option<String>,
   pub status_bar: Option<String>,
   pub title_bar: Option<String>,
-
-  /// Images smaller than this (physical pixels, either side) are treated
-  /// as icons and keep the theme's own colors.
-  pub min_image_size: Option<u32>,
 }
 
 fn default_tolerance() -> f32 {
   5.0
 }
-
-/// Default for `elements.min_image_size`.
-const DEFAULT_MIN_IMAGE_SIZE: u32 = 48;
 
 impl ColorThemesConfig {
   /// Validates every theme, failing on the first invalid one.
@@ -169,9 +161,6 @@ impl ColorThemesConfig {
     Ok(ColorTheme::new(ColorThemeOptions {
       filter,
       elements: treatments,
-      min_image_size: elements
-        .min_image_size
-        .unwrap_or(DEFAULT_MIN_IMAGE_SIZE),
       detect_colors: theme.detect_colors.unwrap_or(false),
       skip_if_dark: theme.skip_if_dark.unwrap_or(false),
     })?)
@@ -336,7 +325,6 @@ impl ColorThemeConfig {
 impl ElementsConfig {
   fn merged_over(self, parent: Self) -> Self {
     Self {
-      image: self.image.or(parent.image),
       edit: self.edit.or(parent.edit),
       document: self.document.or(parent.document),
       button: self.button.or(parent.button),
@@ -353,13 +341,11 @@ impl ElementsConfig {
       tool_bar: self.tool_bar.or(parent.tool_bar),
       status_bar: self.status_bar.or(parent.status_bar),
       title_bar: self.title_bar.or(parent.title_bar),
-      min_image_size: self.min_image_size.or(parent.min_image_size),
     }
   }
 
-  fn entries(&self) -> [(UiElementKind, Option<&str>); 17] {
+  fn entries(&self) -> [(UiElementKind, Option<&str>); 16] {
     [
-      (UiElementKind::Image, self.image.as_deref()),
       (UiElementKind::Edit, self.edit.as_deref()),
       (UiElementKind::Document, self.document.as_deref()),
       (UiElementKind::Button, self.button.as_deref()),

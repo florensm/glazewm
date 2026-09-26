@@ -892,7 +892,6 @@ impl ColorFilter {
 /// that a theme can render differently.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum UiElementKind {
-  Image,
   Edit,
   Document,
   Button,
@@ -912,8 +911,7 @@ pub enum UiElementKind {
 }
 
 impl UiElementKind {
-  pub const ALL: [Self; 17] = [
-    Self::Image,
+  pub const ALL: [Self; 16] = [
     Self::Edit,
     Self::Document,
     Self::Button,
@@ -959,11 +957,6 @@ pub struct ColorThemeOptions {
 
   /// Per element kind, how to render it instead of with `filter`.
   pub elements: Vec<(UiElementKind, ElementTreatment)>,
-
-  /// Images smaller than this (in physical pixels, either side) keep
-  /// `filter`: small ones are mostly icons drawn for the original
-  /// background.
-  pub min_image_size: u32,
 
   /// Measure the window's own paper and ink colors instead of assuming
   /// black on white.
@@ -1050,11 +1043,6 @@ impl ColorTheme {
     self.options.detect_colors || self.options.skip_if_dark
   }
 
-  #[must_use]
-  pub fn min_image_size(&self) -> u32 {
-    self.options.min_image_size
-  }
-
   /// Element kinds rendered differently, with the filter slot each uses
   /// (see [`Self::filter_constants`]), or [`SLOT_ORIGINAL`].
   #[cfg(any(target_os = "windows", test))]
@@ -1107,8 +1095,6 @@ impl ColorTheme {
     let slots = self.element_slots();
     let width = i32::try_from(size.0).unwrap_or(i32::MAX);
     let height = i32::try_from(size.1).unwrap_or(i32::MAX);
-    let min_image_size =
-      i32::try_from(self.options.min_image_size).unwrap_or(i32::MAX);
 
     let mut regions = elements
       .iter()
@@ -1119,16 +1105,6 @@ impl ColorTheme {
           .map(|(_, slot)| *slot)?;
 
         let [left, top, right, bottom] = element.ltrb;
-
-        // Measured before clipping: a large image scrolled half out of
-        // view is still an image, not an icon.
-        if element.kind == UiElementKind::Image
-          && (right - left < min_image_size
-            || bottom - top < min_image_size)
-        {
-          return None;
-        }
-
         let clipped = [
           left.max(0),
           top.max(0),
@@ -2853,7 +2829,6 @@ mod tests {
     ColorTheme::new(ColorThemeOptions {
       filter: winter(),
       elements,
-      min_image_size: 0,
       detect_colors: false,
       skip_if_dark: false,
     })
@@ -2869,7 +2844,7 @@ mod tests {
   #[test]
   fn element_filters_share_slots() {
     let theme = theme_with(vec![
-      (UiElementKind::Image, ElementTreatment::Original),
+      (UiElementKind::Hyperlink, ElementTreatment::Original),
       (
         UiElementKind::Edit,
         ElementTreatment::Filter(tinted("#202040")),
@@ -2889,7 +2864,7 @@ mod tests {
     assert_eq!(
       theme.element_slots(),
       vec![
-        (UiElementKind::Image, SLOT_ORIGINAL),
+        (UiElementKind::Hyperlink, SLOT_ORIGINAL),
         (UiElementKind::Edit, 1),
         (UiElementKind::Button, 2),
         (UiElementKind::ComboBox, 1),
@@ -2924,8 +2899,8 @@ mod tests {
     assert!(theme_with(too_many).is_err());
 
     assert!(theme_with(vec![
-      (UiElementKind::Image, ElementTreatment::Original),
-      (UiElementKind::Image, ElementTreatment::Filter(winter())),
+      (UiElementKind::Button, ElementTreatment::Original),
+      (UiElementKind::Button, ElementTreatment::Filter(winter())),
     ])
     .is_err());
   }
@@ -2935,13 +2910,12 @@ mod tests {
     let theme = ColorTheme::new(ColorThemeOptions {
       filter: winter(),
       elements: vec![
-        (UiElementKind::Image, ElementTreatment::Original),
+        (UiElementKind::Button, ElementTreatment::Original),
         (
           UiElementKind::Edit,
           ElementTreatment::Filter(tinted("#202040")),
         ),
       ],
-      min_image_size: 48,
       detect_colors: false,
       skip_if_dark: false,
     })
@@ -2950,13 +2924,11 @@ mod tests {
     let element = |kind, ltrb| ElementRect { kind, ltrb };
     let regions = theme.element_regions(
       &[
-        // An icon, too small to keep its colors.
-        element(UiElementKind::Image, [10, 10, 42, 42]),
-        // A photo half scrolled out of view: still an image.
-        element(UiElementKind::Image, [-100, 50, 100, 250]),
+        // Partly left of the frame.
+        element(UiElementKind::Button, [-100, 50, 100, 250]),
         element(UiElementKind::Edit, [0, 0, 400, 30]),
         // Not configured.
-        element(UiElementKind::Button, [0, 0, 50, 50]),
+        element(UiElementKind::ListItem, [0, 0, 50, 50]),
         // Entirely outside the frame.
         element(UiElementKind::Edit, [900, 900, 950, 950]),
       ],

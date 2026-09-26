@@ -37,12 +37,12 @@ use windows::Win32::{
     UIA_DataItemControlTypeId, UIA_DocumentControlTypeId,
     UIA_EditControlTypeId, UIA_HeaderControlTypeId,
     UIA_HeaderItemControlTypeId, UIA_HyperlinkControlTypeId,
-    UIA_ImageControlTypeId, UIA_IsOffscreenPropertyId,
-    UIA_ListItemControlTypeId, UIA_MenuItemControlTypeId,
-    UIA_RadioButtonControlTypeId, UIA_SplitButtonControlTypeId,
-    UIA_StatusBarControlTypeId, UIA_TabItemControlTypeId,
-    UIA_TitleBarControlTypeId, UIA_ToolBarControlTypeId,
-    UIA_TreeItemControlTypeId, UIA_CONTROLTYPE_ID,
+    UIA_IsOffscreenPropertyId, UIA_ListItemControlTypeId,
+    UIA_MenuItemControlTypeId, UIA_RadioButtonControlTypeId,
+    UIA_SplitButtonControlTypeId, UIA_StatusBarControlTypeId,
+    UIA_TabItemControlTypeId, UIA_TitleBarControlTypeId,
+    UIA_ToolBarControlTypeId, UIA_TreeItemControlTypeId,
+    UIA_CONTROLTYPE_ID,
   },
 };
 
@@ -453,7 +453,6 @@ fn frame_origin(source: HWND) -> crate::Result<(i32, i32)> {
 /// UIA control types reported as `kind`.
 fn control_types(kind: UiElementKind) -> &'static [UIA_CONTROLTYPE_ID] {
   match kind {
-    UiElementKind::Image => &[UIA_ImageControlTypeId],
     UiElementKind::Edit => &[UIA_EditControlTypeId],
     UiElementKind::Document => &[UIA_DocumentControlTypeId],
     UiElementKind::Button => {

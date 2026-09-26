@@ -54,6 +54,10 @@ All options are documented in `resources/assets/sample-color-themes.yaml`.
   after content changed, throttled to 20× the last query's duration, 1 s
   UIA timeouts). Rects go to the shader as up to 64 regions, largest
   first; each maps to `original` or one of up to 3 extra filter slots.
+  No `image` kind: an `image: original` version on this branch showed
+  the same problems as the reverted attempt below (unclipped
+  `UniformToFill` bounds keeping text below a photo light, square
+  corners around round avatars), so it was removed.
 - Shader parity: the HLSL was compiled with DXC to SPIR-V and run on
   lavapipe against the Rust reference (1113 neighborhoods × 8 themes, all
   slots): max difference 0.00002.
@@ -63,8 +67,8 @@ All options are documented in `resources/assets/sample-color-themes.yaml`.
 1. `fxc` still compiles `ps_main` at `ps_4_0` (dynamic cbuffer struct
    indexing, loops over filter slots and regions).
 2. A light WPF app with `catppuccin`: page, panels and text land on the
-   ramp stops; links are light and in the palette's hue; photos keep
-   their colors, small icons don't; text boxes use `catppuccin-input`.
+   ramp stops; links are light and in the palette's hue; text boxes use
+   `catppuccin-input`.
 3. An off-white app with `detect_colors`: background exactly
    `background`. Switch the app to its own dark mode with `skip_if_dark`:
    the overlay passes through within ~0.5 s.
