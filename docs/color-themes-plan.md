@@ -36,7 +36,9 @@ pixel shader, and shown in a click-through overlay directly above it.
 - Images are themed like everything else. Keeping pictures (photos,
   avatars) in their own colors via UI Automation was built and removed
   again to keep the feature focused on text; it lives in commits
-  `0a27f92`..`d4c5fb1` if it's picked up later.
+  `0a27f92`..`d4c5fb1` if it's picked up later. The showcase's Images tab
+  is kept as a test page (its "keeps its colors" labels describe that
+  feature).
 
 - A new popup shows its original colors for about one frame: Windows draws
   it before the capture can see it. Avoiding that means modifying the app's
