@@ -121,6 +121,12 @@ const PICTURE_MIN_UNEXPLAINED: f32 = 0.2;
 /// white band); a longer gap separates it from overflow content.
 const MAX_GAP_WITHIN_PICTURE: usize = 2;
 
+/// OKLab chroma off the page -> ink mix over which a pixel has a hue
+/// that can mark it as a `ClearType` fringe. Lower than
+/// [`HUE_MIN_CHROMA`]: fringes of colored text (e.g. blue links) are
+/// only faintly off their ink's own hue.
+const FRINGE_MIN_CHROMA: f32 = 0.015;
+
 /// A row or column of an image counts as blank page with at most one in
 /// this many of its pixels being anything else (noise, a stray AA pixel).
 const BLANK_LINE_MAX_CONTENT_SHARE_INV: usize = 50;
@@ -684,7 +690,11 @@ pub fn picture_extent(
 
   let row_kinds: Vec<LineKind> = (0..height)
     .map(|y| {
-      line_kind(&(0..width).map(|x| at(x, y)).collect::<Vec<_>>(), papers)
+      line_kind(
+        &(0..width).map(|x| at(x, y)).collect::<Vec<_>>(),
+        true,
+        papers,
+      )
     })
     .collect();
   let (top, bottom) = picture_band(&row_kinds).unwrap_or((0, height));
@@ -693,6 +703,7 @@ pub fn picture_extent(
     .map(|x| {
       line_kind(
         &(top..bottom).map(|y| at(x, y)).collect::<Vec<_>>(),
+        false,
         papers,
       )
     })
@@ -704,7 +715,8 @@ pub fn picture_extent(
     .map(|(x, y)| at(x, y))
     .collect();
 
-  is_picture(&kept, papers).then_some([left, top, right, bottom])
+  is_picture(&kept, right - left, papers)
+    .then_some([left, top, right, bottom])
 }
 
 /// The `[start, end)` of the band of `lines` with the most picture lines
@@ -773,7 +785,13 @@ enum LineKind {
   Other,
 }
 
-fn line_kind(pixels: &[[f32; 3]], papers: &[[f32; 3]]) -> LineKind {
+/// `is_row`: whether `pixels` run horizontally, which `ClearType`
+/// fringes are recognized along.
+fn line_kind(
+  pixels: &[[f32; 3]],
+  is_row: bool,
+  papers: &[[f32; 3]],
+) -> LineKind {
   let content = pixels
     .iter()
     .filter(|pixel| image_paper_weight(**pixel, papers) < 0.5)
@@ -781,61 +799,134 @@ fn line_kind(pixels: &[[f32; 3]], papers: &[[f32; 3]]) -> LineKind {
 
   if content * BLANK_LINE_MAX_CONTENT_SHARE_INV <= pixels.len() {
     LineKind::Blank
-  } else if is_picture(pixels, papers) {
+  } else if is_picture(
+    pixels,
+    if is_row { pixels.len() } else { 1 },
+    papers,
+  ) {
     LineKind::Picture
   } else {
     LineKind::Other
   }
 }
 
-/// Whether an image's pixels are a picture to keep in its own colors,
-/// rather than an icon to theme like text.
+/// Whether an image's pixels (`width`-wide, row-major) are a picture to
+/// keep in its own colors, rather than an icon to theme like text.
 ///
 /// An icon is drawn in one ink over the page, so its pixels all lie
 /// between one of `papers` and that ink; a picture has too many pixels
-/// no single ink explains. Images that are mostly page count as icons.
+/// no single ink explains. `ClearType` text isn't a picture either,
+/// though its fringes are off that line: they lie between page and ink
+/// channel by channel, off the plain mix in opposite hues on either side
+/// of a stroke, where a picture's neighboring colors agree. Images that
+/// are mostly page count as icons.
 #[must_use]
-pub fn is_picture(pixels: &[[f32; 3]], papers: &[[f32; 3]]) -> bool {
-  let content: Vec<[f32; 3]> = pixels
-    .iter()
-    .copied()
-    .filter(|pixel| image_paper_weight(*pixel, papers) < 0.5)
-    .collect();
+pub fn is_picture(
+  pixels: &[[f32; 3]],
+  width: usize,
+  papers: &[[f32; 3]],
+) -> bool {
+  if width == 0 {
+    return false;
+  }
 
-  if content.len() < PICTURE_MIN_CONTENT_PIXELS {
+  let is_content =
+    |pixel: [f32; 3]| image_paper_weight(pixel, papers) < 0.5;
+  let content = pixels.iter().filter(|pixel| is_content(**pixel)).count();
+
+  if content < PICTURE_MIN_CONTENT_PIXELS {
     return false;
   }
 
   // The page the image sits on, and the ink farthest from it.
   let paper = papers.first().copied().unwrap_or([1.0; 3]);
-  let ink = content.iter().copied().fold(paper, |farthest, pixel| {
-    if distance(pixel, paper) > distance(farthest, paper) {
-      pixel
-    } else {
-      farthest
-    }
-  });
+  let ink = pixels
+    .iter()
+    .copied()
+    .filter(|pixel| is_content(*pixel))
+    .fold(paper, |farthest, pixel| {
+      if distance(pixel, paper) > distance(farthest, paper) {
+        pixel
+      } else {
+        farthest
+      }
+    });
 
   let span = distance(ink, paper);
   if span < MIN_CHANNEL_SPAN {
     return false;
   }
 
-  let unexplained = content
-    .iter()
-    .filter(|pixel| {
-      let mut along = 0.0;
-      for c in 0..3 {
-        along += (pixel[c] - paper[c]) * (ink[c] - paper[c]);
+  let coverage_of = |pixel: [f32; 3]| {
+    let mut along = 0.0;
+    for c in 0..3 {
+      along += (pixel[c] - paper[c]) * (ink[c] - paper[c]);
+    }
+    (along / (span * span)).clamp(0.0, 1.0)
+  };
+
+  // Hue off the plain mix of page and ink at the pixel's own coverage.
+  let hue_deviation = |pixel: [f32; 3]| {
+    let hue = xy_of(srgb_to_oklab(pixel));
+    let model =
+      xy_of(srgb_to_oklab(lerp3(paper, ink, coverage_of(pixel))));
+    [hue[0] - model[0], hue[1] - model[1]]
+  };
+
+  // Hue off neutral, for text whose farthest pixel is itself a fringe
+  // (black text's thinnest strokes), which skews the page -> ink mix.
+  let neutral_deviation = |pixel: [f32; 3]| xy_of(srgb_to_oklab(pixel));
+
+  let opposes =
+    |index: usize, deviation: &dyn Fn([f32; 3]) -> [f32; 2]| {
+      let here = deviation(pixels[index]);
+      if here[0].hypot(here[1]) <= FRINGE_MIN_CHROMA {
+        return false;
       }
-      let coverage = (along / (span * span)).clamp(0.0, 1.0);
-      distance(**pixel, lerp3(paper, ink, coverage)) > PICTURE_OFF_LINE
+
+      let x = index % width;
+      let row = index - x;
+      (x.saturating_sub(2)..(x + 3).min(width))
+        .filter(|&other| other != x)
+        .any(|other| {
+          let other = deviation(pixels[row + other]);
+          other[0].hypot(other[1]) > FRINGE_MIN_CHROMA
+            && here[0] * other[0] + here[1] * other[1] < 0.0
+        })
+    };
+
+  let is_fringe = |index: usize| {
+    let pixel = pixels[index];
+    let between = (0..3).all(|c| {
+      pixel[c] >= paper[c].min(ink[c]) - MIN_CHANNEL_SPAN
+        && pixel[c] <= paper[c].max(ink[c]) + MIN_CHANNEL_SPAN
+    });
+
+    between
+      && (opposes(index, &hue_deviation)
+        || opposes(index, &neutral_deviation))
+  };
+
+  let unexplained = (0..pixels.len())
+    .filter(|&index| {
+      let pixel = pixels[index];
+      if !is_content(pixel) {
+        return false;
+      }
+
+      distance(pixel, lerp3(paper, ink, coverage_of(pixel)))
+        > PICTURE_OFF_LINE
+        && !is_fringe(index)
     })
     .count();
 
   #[allow(clippy::cast_precision_loss)]
-  let unexplained_share = unexplained as f32 / content.len() as f32;
+  let unexplained_share = unexplained as f32 / content as f32;
   unexplained_share > PICTURE_MIN_UNEXPLAINED
+}
+
+fn xy_of(lab: [f32; 3]) -> [f32; 2] {
+  [lab[1], lab[2]]
 }
 
 /// Mean coverage of `ink` over `paper` in `pixel`, across the channels
@@ -1940,7 +2031,49 @@ mod tests {
       .map(|i| lerp3(paper, ink, f32::from(i % 9_u8) / 8.0))
       .collect();
 
-    assert!(!is_picture(&pixels, &[paper]));
+    assert!(!is_picture(&pixels, pixels.len(), &[paper]));
+  }
+
+  /// Pixels of `rows`, each a line of space-separated hex colors.
+  fn hex_grid(rows: &[&str]) -> (Vec<[f32; 3]>, usize) {
+    let width = rows[0].split(' ').count();
+    let pixels = rows
+      .iter()
+      .flat_map(|row| row.split(' '))
+      .map(|hex| rgb(&format!("#{hex}")));
+    (pixels.collect(), width)
+  }
+
+  #[test]
+  fn cleartype_text_is_not_a_picture() {
+    // Measured `ClearType` text: "11" of a status bar clock on `#f1eded`,
+    // and "Fl" of a `#1976d2` link on `#fbfbfb`. Their fringes are far
+    // off gray, in opposite hues across each stroke.
+    let clock = hex_grid(&[
+      "f1eded f1eded f1eded f1eded f1a85c 00005c abeded f1eded f1eded f1eded f1a85c 00005c abeded f1eded",
+      "f1eded f1eded f1edcb 853000 005c5c 5e005c abeded f1eded f1edcb 853000 005c5c 5e005c abeded f1eded",
+      "f1eded f1eded f1eded f1eded f1eda8 5e005c abeded f1eded f1eded f1eded f1eda8 5e005c abeded f1eded",
+      "f1eded f1eded f1eded f1eded f1eda8 5e005c abeded f1eded f1eded f1eded f1eda8 5e005c abeded f1eded",
+      "f1eded f1eded f1eded f1eded f1eda8 5e005c abeded f1eded f1eded f1eded f1eda8 5e005c abeded f1eded",
+      "f1eded f1eded f1eded f1eded f1eda8 5e005c abeded f1eded f1eded f1eded f1eda8 5e005c abeded f1eded",
+      "f1eded f1eded f1eded f1eded f1eda8 5e005c abeded f1eded f1eded f1eded f1eda8 5e005c abeded f1eded",
+      "f1eded f1eded f1eded f1eded f1eda8 5e005c abeded f1eded f1eded f1eded f1eda8 5e005c abeded f1eded",
+    ]);
+    let link = hex_grid(&[
+      "fbfbfb fbfbed 968ad2 1976d2 1976d2 1976d2 72c2fb fbd9df 478adf d5fbfb fbfbfb fbfbfb",
+      "fbfbfb fbfbed 968ad6 96d9fb fbfbfb fbfbfb fbfbfb fbd9df 478adf d5fbfb fbfbfb fbfbfb",
+      "fbfbfb fbfbed 968ad6 96d9fb fbfbfb fbfbfb fbfbfb fbd9df 478adf d5fbfb fbfbfb fbfbfb",
+      "fbfbfb fbfbed 968ad6 96d9fb fbfbfb fbfbfb fbfbfb fbd9df 478adf d5fbfb fbfbfb fbc2da",
+      "fbfbfb fbfbed 968ad2 1976d2 1976d2 1976d6 96d9fb fbd9df 478adf d5fbfb fbc2da 1976da",
+      "fbfbfb fbfbed 968ad6 96d9fb fbfbfb fbfbfb fbfbfb fbd9df 478adf d5fbfb d5afd6 72c2fb",
+      "fbfbfb fbfbed 968ad6 96d9fb fbfbfb fbfbfb fbfbfb fbd9df 478adf d5fbfb d5afd6 72c2fb",
+      "fbfbfb fbfbed 968ad6 96d9fb fbfbfb fbfbfb fbfbfb fbd9df 478adf d5fbfb fbc2da 1976da",
+    ]);
+
+    for ((pixels, width), paper) in [(clock, "#f1eded"), (link, "#fbfbfb")]
+    {
+      assert!(!is_picture(&pixels, width, &[rgb(paper)]), "{paper}");
+    }
   }
 
   #[test]
@@ -1948,10 +2081,11 @@ mod tests {
     let paper = rgb("#fbfbfb");
     let tones = ["#e0b89a", "#3c2415", "#b4875b", "#f0ece4", "#5d8fbf"];
 
+    // Patches, as neighboring pixels of a photo mostly agree.
     let pixels: Vec<[f32; 3]> =
-      (0..64).map(|i| rgb(tones[i % tones.len()])).collect();
+      (0..64).map(|i| rgb(tones[(i / 8) % tones.len()])).collect();
 
-    assert!(is_picture(&pixels, &[paper]));
+    assert!(is_picture(&pixels, pixels.len(), &[paper]));
   }
 
   #[test]
@@ -1959,7 +2093,7 @@ mod tests {
     let paper = rgb("#fbfbfb");
 
     // Not loaded yet: nothing but page.
-    assert!(!is_picture(&[paper; 64], &[paper]));
+    assert!(!is_picture(&[paper; 64], 64, &[paper]));
   }
 
   /// `winter` plus a `#1976d2` -> `#8ab4f8` link override.
@@ -2040,9 +2174,10 @@ mod tests {
     rows.iter().flat_map(|row| (0..width).map(row)).collect()
   }
 
+  /// A row of a photo: patches of skin, hair, and background tones.
   fn photo_pixel(x: usize) -> [f32; 3] {
     let tones = ["#e0b89a", "#3c2415", "#b4875b", "#5d8fbf", "#c9d3dc"];
-    rgb(tones[x % tones.len()])
+    rgb(tones[(x / 8) % tones.len()])
   }
 
   #[test]
