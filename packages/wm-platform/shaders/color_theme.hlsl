@@ -415,7 +415,7 @@ float4 known_ink_remix(float3 pixels[NEIGHBORHOOD_SIZE]) {
           srgb_to_oklab(themed_ink).x - srgb_to_oklab(themed_paper).x);
         coverage = lerp(
           coverage,
-          pow(coverage, 1.0 / INVERTED_TEXT_GAMMA),
+          pow(saturate(coverage), 1.0 / INVERTED_TEXT_GAMMA),
           inverted);
 
         best = float4(lerp(themed_paper, themed_ink, coverage), weight);
@@ -639,7 +639,7 @@ float4 ps_main(float4 position : SV_Position) : SV_Target {
     if (all(xy >= rect.xy) && all(xy < rect.zw)) {
       // Page colors just outside the image's rect: its corners, and the
       // middle of each side. Samples off the frame are skipped.
-      int2 middle = (rect.xy + rect.zw) / 2;
+      int2 middle = (rect.xy + rect.zw) >> 1;
       int2 samples[IMAGE_PAPER_SAMPLES] = {
         int2(rect.x - 2, rect.y - 2), int2(middle.x, rect.y - 2),
         int2(rect.z + 1, rect.y - 2), int2(rect.x - 2, middle.y),
