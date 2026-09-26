@@ -6,6 +6,7 @@ mod display_listener;
 mod event_loop;
 pub(crate) mod graphics_device;
 mod image_finder;
+mod image_tracking;
 mod keyboard_hook;
 mod mouse_listener;
 mod native_window;

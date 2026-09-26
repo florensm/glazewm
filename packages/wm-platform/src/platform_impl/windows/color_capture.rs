@@ -80,6 +80,7 @@ use windows::{
 use super::{
   composition::{to_ui_color, with_composition_thread, FILL_PARENT},
   image_finder::ImageFinder,
+  image_tracking::{Fingerprint, Region},
 };
 use crate::{
   color_theme::{picture_extent, ColorTheme},
@@ -97,6 +98,10 @@ const PIXEL_FORMAT: DirectXPixelFormat =
 /// Most images per window the shader keeps in their own colors; sizes its
 /// constant buffer.
 pub(crate) const MAX_IMAGE_RECTS: usize = 32;
+
+/// Farthest a kept picture is looked for, up or down, when the content
+/// moved (e.g. scrolled) between two frames.
+const MAX_PICTURE_SHIFT: i32 = 192;
 
 /// Most pixels an image is judged from; larger images are sampled on a
 /// grid.
@@ -1008,8 +1013,8 @@ struct Renderer {
   last_frame:
     Option<(Direct3D11CaptureFrame, ID3D11Texture2D, (u32, u32))>,
 
-  /// Rects of the pictures currently kept in their own colors.
-  images: Vec<Rect>,
+  /// The pictures currently kept in their own colors.
+  images: Vec<KeptImage>,
 
   is_shown: bool,
   failed: Arc<AtomicBool>,
@@ -1043,6 +1048,15 @@ impl Renderer {
     }
 
     let texture = frame_texture(&frame)?;
+
+    // Pictures are a refinement: on failure, the window stays fully
+    // themed rather than losing its theme.
+    if let Err(err) = self.follow_images(&texture, (width, height)) {
+      tracing::debug!("Could not follow color theme images: {err}.");
+      self.images.clear();
+      self.output.set_images(&[]);
+    }
+
     self.present(&texture, (width, height))?;
 
     if content_size == self.pool_size {
@@ -1101,7 +1115,10 @@ impl Renderer {
       }
     }
 
-    if pictures == self.images {
+    if pictures
+      .iter()
+      .eq(self.images.iter().map(|image| &image.rect))
+    {
       return Ok(());
     }
 
@@ -1111,9 +1128,99 @@ impl Renderer {
       found.len(),
     );
 
-    self.output.set_images(&pictures);
-    self.images = pictures;
+    let mut images = Vec::with_capacity(pictures.len());
+
+    for rect in pictures {
+      let pixels = self.output.read_straight(&texture, &rect)?;
+      let fingerprint = Fingerprint::sample(
+        &rect,
+        &Region {
+          rect: &rect,
+          pixels: &pixels,
+        },
+      );
+      images.push(KeptImage { rect, fingerprint });
+    }
+
+    self.images = images;
+    self.sync_images();
     self.present(&texture, size)
+  }
+
+  /// Moves the kept pictures along with the content of the new frame
+  /// `texture` (whose content is `size`), dropping those no longer
+  /// found; see `image_tracking`.
+  fn follow_images(
+    &mut self,
+    texture: &ID3D11Texture2D,
+    size: (u32, u32),
+  ) -> crate::Result<()> {
+    if self.images.is_empty() {
+      return Ok(());
+    }
+
+    let frame = Rect::from_ltrb(
+      0,
+      0,
+      i32::try_from(size.0)?,
+      i32::try_from(size.1)?,
+    );
+    let mut moved = false;
+    let mut followed = Vec::with_capacity(self.images.len());
+
+    for image in self.images.drain(..) {
+      let search = Rect::from_ltrb(
+        image.rect.left.max(0),
+        (image.rect.top - MAX_PICTURE_SHIFT).max(0),
+        image.rect.right.min(frame.right),
+        (image.rect.bottom + MAX_PICTURE_SHIFT).min(frame.bottom),
+      );
+
+      if search.width() <= 0 || search.height() <= 0 {
+        moved = true;
+        continue;
+      }
+
+      let pixels = self.output.read_straight(texture, &search)?;
+      let region = Region {
+        rect: &search,
+        pixels: &pixels,
+      };
+
+      match image.fingerprint.find_shift(
+        &image.rect,
+        &region,
+        MAX_PICTURE_SHIFT,
+      ) {
+        Some(0) => followed.push(image),
+        Some(shift) => {
+          moved = true;
+          followed.push(KeptImage {
+            rect: image.rect.translate_to_coordinates(
+              image.rect.left,
+              image.rect.top + shift,
+            ),
+            ..image
+          });
+        }
+        None => moved = true,
+      }
+    }
+
+    self.images = followed;
+
+    if moved {
+      self.sync_images();
+    }
+
+    Ok(())
+  }
+
+  /// Uploads the kept pictures' rects for the next render.
+  fn sync_images(&self) {
+    let rects: Vec<Rect> =
+      self.images.iter().map(|image| image.rect.clone()).collect();
+    self.output.set_images(&rects);
   }
 
   fn present(
@@ -1172,6 +1279,13 @@ impl Renderer {
       }
     }
   }
+}
+
+/// A picture kept in its own colors, and how to find it again once the
+/// content moves.
+struct KeptImage {
+  rect: Rect,
+  fingerprint: Fingerprint,
 }
 
 /// Unwraps a D3D out-parameter, which is only `None` if the call that

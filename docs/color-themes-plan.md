@@ -16,6 +16,7 @@ pixel shader, and shown in a click-through overlay directly above it.
 | `set-color-theme` command | `packages/wm-common/src/app_command.rs`, handled in `packages/wm/src/wm.rs` |
 | Per-tick sync, popups, z-order resync | `packages/wm/src/commands/general/sync_color_themes.rs` |
 | Images kept in their own colors (UI Automation) | `packages/wm-platform/src/platform_impl/windows/image_finder.rs` |
+| Kept pictures following scrolled content | `packages/wm-platform/src/platform_impl/windows/image_tracking.rs` |
 | Sample themes | `resources/assets/sample-color-themes.yaml` |
 
 ## Done and verified on the dev machine
@@ -119,9 +120,14 @@ inverted them. Now:
    avatar's corners turn dark with the page, and its anti-aliased rim is
    re-mixed with the themed page instead of showing a square.
 
+4. Between queries, each frame looks for every kept picture again, shifted
+   up to 192 px vertically, by a 12x12 grid of samples taken when it was
+   found (`image_tracking.rs`): found, the rect follows it (scrolling);
+   not found, it's dropped, so a stale rect never covers text.
+
 Limits: a picture's own pure-page-colored pixels (a white shirt on a white
-page) are themed too; while scrolling, pictures show themed until the
-list settles (0.5-3 s); only
+page) are themed too; pictures scrolled into view are themed until the
+next query finds them (0.5-3 s after scrolling stops); only
 apps exposing `Image` elements to UI Automation (WPF, WinForms, UWP,
 Chromium on demand) benefit.
 
