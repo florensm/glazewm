@@ -3,8 +3,6 @@
 // unit-tested reference: keep the two in sync.
 
 #define MAX_COLOR_OVERRIDES 16
-#define MAX_IMAGE_RECTS 32
-#define IMAGE_PAPER_SAMPLES 8
 
 // Mirror the constants of the same names.
 #define MAX_CHROMA 0.32
@@ -41,8 +39,6 @@
 #define KNOWN_INK_FIT_FULL 0.08
 #define KNOWN_INK_EVIDENCE_START 0.3
 #define KNOWN_INK_EVIDENCE_FULL 0.6
-#define IMAGE_PAPER_MATCH_START 0.01
-#define IMAGE_PAPER_MATCH_FULL 0.03
 
 // Mirrors `ThemeConstants`.
 cbuffer Theme : register(b0) {
@@ -61,14 +57,6 @@ cbuffer Frame : register(b1) {
   // Captured content size; the frame pool's texture can be larger.
   uint2 frame_size;
   uint2 frame_padding;
-};
-
-// Mirrors `ImageConstants`.
-cbuffer Images : register(b2) {
-  uint image_count;
-  uint3 image_padding;
-  // `(left, top, right, bottom)` in frame pixels, right/bottom exclusive.
-  int4 image_rects[MAX_IMAGE_RECTS];
 };
 
 Texture2D<float4> source : register(t0);
@@ -513,96 +501,6 @@ float3 apply_neighborhood(float3 pixels[NEIGHBORHOOD_SIZE]) {
   return lerp(estimated, known.rgb, known.w);
 }
 
-// Mirrors `image_paper_weight`, with the papers already in OKLab.
-// Samples whose `valid` is 0 (off the frame) are skipped.
-float image_paper_weight(
-  float3 srgb,
-  float3 paper_labs[IMAGE_PAPER_SAMPLES],
-  float valid[IMAGE_PAPER_SAMPLES]) {
-  float3 lab = srgb_to_oklab(srgb);
-  float weight = 0.0;
-
-  [unroll]
-  for (int i = 0; i < IMAGE_PAPER_SAMPLES; i++) {
-    weight = max(
-      weight,
-      valid[i] * (1.0 - smoothstep(
-        IMAGE_PAPER_MATCH_START,
-        IMAGE_PAPER_MATCH_FULL,
-        distance(lab, paper_labs[i]))));
-  }
-
-  return weight;
-}
-
-// Mirrors `ColorTheme::apply_image`.
-float3 apply_image(
-  float3 srgb,
-  float3 paper_labs[IMAGE_PAPER_SAMPLES],
-  float valid[IMAGE_PAPER_SAMPLES]) {
-  return lerp(
-    srgb,
-    apply_theme(srgb),
-    image_paper_weight(srgb, paper_labs, valid));
-}
-
-// Mirrors `ColorTheme::apply_image_neighborhood`.
-float3 apply_image_neighborhood(
-  float3 pixels[NEIGHBORHOOD_SIZE],
-  float3 paper_labs[IMAGE_PAPER_SAMPLES],
-  float valid[IMAGE_PAPER_SAMPLES]) {
-  float3 center = pixels[NEIGHBORHOOD_SIZE / 2];
-  float3 themed_center = apply_image(center, paper_labs, valid);
-
-  float3 paper = center;
-  float paper_weight = image_paper_weight(center, paper_labs, valid);
-
-  [unroll]
-  for (int i = 0; i < NEIGHBORHOOD_SIZE; i++) {
-    float weight = image_paper_weight(pixels[i], paper_labs, valid);
-
-    if (weight > paper_weight) {
-      paper = pixels[i];
-      paper_weight = weight;
-    }
-  }
-
-  if (paper_weight <= 0.0) {
-    return themed_center;
-  }
-
-  float3 content = paper;
-  float content_distance = 0.0;
-
-  [unroll]
-  for (int j = 0; j < NEIGHBORHOOD_SIZE; j++) {
-    float gap = distance(pixels[j], paper);
-
-    if (gap > content_distance) {
-      content = pixels[j];
-      content_distance = gap;
-    }
-  }
-
-  if (content_distance < MIN_CHANNEL_SPAN) {
-    return themed_center;
-  }
-
-  float coverage = saturate(
-    dot(center - paper, content - paper)
-    / (content_distance * content_distance));
-  float fit = 1.0 - smoothstep(
-    MIX_ERROR_START,
-    MIX_ERROR_FULL,
-    distance(center, lerp(paper, content, coverage)));
-
-  float3 remixed = lerp(
-    apply_image(paper, paper_labs, valid),
-    apply_image(content, paper_labs, valid),
-    coverage);
-  return lerp(themed_center, remixed, fit * paper_weight);
-}
-
 // Straight-alpha color at `position`, clamped to the captured content.
 // Fully transparent pixels (rounded window corners) stand in as `fallback`.
 float3 load_straight(int2 position, float3 fallback) {
@@ -629,40 +527,6 @@ float4 ps_main(float4 position : SV_Position) : SV_Target {
     [unroll]
     for (int x = -2; x <= 2; x++) {
       pixels[(y + 1) * 5 + (x + 2)] = load_straight(xy + int2(x, y), center);
-    }
-  }
-
-  [loop]
-  for (uint r = 0; r < image_count; r++) {
-    int4 rect = image_rects[r];
-
-    if (all(xy >= rect.xy) && all(xy < rect.zw)) {
-      // Page colors just outside the image's rect: its corners, and the
-      // middle of each side. Samples off the frame are skipped.
-      int2 middle = (rect.xy + rect.zw) >> 1;
-      int2 samples[IMAGE_PAPER_SAMPLES] = {
-        int2(rect.x - 2, rect.y - 2), int2(middle.x, rect.y - 2),
-        int2(rect.z + 1, rect.y - 2), int2(rect.x - 2, middle.y),
-        int2(rect.z + 1, middle.y), int2(rect.x - 2, rect.w + 1),
-        int2(middle.x, rect.w + 1), int2(rect.z + 1, rect.w + 1),
-      };
-
-      float3 paper_labs[IMAGE_PAPER_SAMPLES];
-      float valid[IMAGE_PAPER_SAMPLES];
-
-      [unroll]
-      for (int k = 0; k < IMAGE_PAPER_SAMPLES; k++) {
-        float4 texel = source.Load(int3(samples[k], 0));
-        bool inside = all(samples[k] >= 0)
-          && all(samples[k] < int2(frame_size))
-          && texel.a > 0.0;
-
-        valid[k] = inside ? 1.0 : 0.0;
-        paper_labs[k] = srgb_to_oklab(texel.rgb / max(texel.a, 1e-6));
-      }
-
-      float3 kept = apply_image_neighborhood(pixels, paper_labs, valid);
-      return float4(kept * color.a, color.a);
     }
   }
 

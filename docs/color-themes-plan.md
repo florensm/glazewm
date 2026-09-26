@@ -15,8 +15,6 @@ pixel shader, and shown in a click-through overlay directly above it.
 | `color-themes.yaml` loading + hot reload | `packages/wm/src/color_themes.rs`, schema in `packages/wm-common/src/color_themes_config.rs` |
 | `set-color-theme` command | `packages/wm-common/src/app_command.rs`, handled in `packages/wm/src/wm.rs` |
 | Per-tick sync, popups, z-order resync | `packages/wm/src/commands/general/sync_color_themes.rs` |
-| Images kept in their own colors (UI Automation) | `packages/wm-platform/src/platform_impl/windows/image_finder.rs` |
-| Kept pictures following scrolled content | `packages/wm-platform/src/platform_impl/windows/image_tracking.rs` |
 | Sample themes | `resources/assets/sample-color-themes.yaml` |
 
 ## Done and verified on the dev machine
@@ -34,6 +32,11 @@ pixel shader, and shown in a click-through overlay directly above it.
 - Skipped, logged once: elevated windows, windows with a display affinity.
 
 ## Known limitations (not planned)
+
+- Images are themed like everything else. Keeping pictures (photos,
+  avatars) in their own colors via UI Automation was built and removed
+  again to keep the feature focused on text; it lives in commits
+  `0a27f92`..`d4c5fb1` if it's picked up later.
 
 - A new popup shows its original colors for about one frame: Windows draws
   it before the capture can see it. Avoiding that means modifying the app's
@@ -98,42 +101,6 @@ Open questions for the Windows test:
 - A session with `effect_opacity < 255` (transparent windows) gets an
   opaque overlay over its translucent surrogate.
 
-## Images keep their colors (implemented, needs Windows verification)
-
-A photo's skin, hair and gray tones are low-saturation, so the ramp
-inverted them. Now:
-
-1. `image_finder.rs` asks UI Automation for the themed window's `Image`
-   elements and the scrollable areas around them, as one cached, filtered
-   tree, and cuts each image to its scroll areas: UI Automation reports
-   images scrolled out of view (list items kept around for smooth
-   scrolling) at positions over other content (on its own thread; only after the
-   content changed and then stayed still for 0.5 s, at least 3 s apart, at
-   most 10 s late for a window that never settles; 1 s timeout for hung
-   apps). An idle window is never queried.
-2. `color_capture.rs` reads each image back from the last frame and keeps
-   only pictures (`is_picture`): an icon is one ink over the page, so it's
-   still themed like text; a photo has many pixels no single ink explains.
-   UI Automation reports an image's unclipped content bounds (a photo
-   scaled to fill its box overflows it), so `picture_extent` trims each
-   rect to the band that is most picture, split at blank gaps; measured on
-   the showcase, a 240x160 photo reported as 240x341 trims back exactly.
-3. The shader themes a picture's pixels only where they match the page
-   sampled around its rect (`apply_image_neighborhood`), so a round
-   avatar's corners turn dark with the page, and its anti-aliased rim is
-   re-mixed with the themed page instead of showing a square.
-
-4. Between queries, each frame looks for every kept picture again, shifted
-   up to 192 px vertically, by a 12x12 grid of samples taken when it was
-   found (`image_tracking.rs`): found, the rect follows it (scrolling);
-   not found, it's dropped, so a stale rect never covers text.
-
-Limits: a picture's own pure-page-colored pixels (a white shirt on a white
-page) are themed too; pictures scrolled into view are themed until the
-next query finds them (0.5-3 s after scrolling stops); only
-apps exposing `Image` elements to UI Automation (WPF, WinForms, UWP,
-Chromium on demand) benefit.
-
 ## Next (optional): follow workspace-switch slides
 
 Currently hidden during the slide. To follow: `WorkspaceSurrogate::hwnd()`
@@ -146,9 +113,7 @@ Build needs the Windows SDK's `fxc.exe` (or `FXC=<path>`).
 
 On Linux, `cargo check`/`clippy --target x86_64-pc-windows-msvc` work for
 type-checking with `FXC` pointing at a stub that writes an empty file to
-the `/Fo` path. The shader can be syntax-checked with Microsoft's Linux
-`dxc` release (`dxc -T ps_6_0 -E ps_main -HV 2018 -WX`); it isn't `fxc`,
-so SM4-only issues still need the Windows build.
+the `/Fo` path.
 
 ```
 cargo fmt --all
@@ -173,6 +138,3 @@ Manual checks with a themed WPF window:
    the main window stays themed after they close.
 4. Minimize/restore and switch workspaces: overlay hides and returns.
 5. Edit `color-themes.yaml` while it's open: updates within ~1 second.
-6. Showcase's Images tab: avatars and the photo keep their colors with no
-   square around the round ones; the home and bell icons invert; scroll
-   the avatar list and the kept images follow.

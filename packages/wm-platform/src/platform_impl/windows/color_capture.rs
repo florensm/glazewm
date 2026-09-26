@@ -9,7 +9,7 @@
 
 use std::sync::{
   atomic::{AtomicBool, Ordering},
-  Arc, Mutex, PoisonError, Weak,
+  Arc, Mutex, PoisonError,
 };
 
 use windows::{
@@ -34,11 +34,9 @@ use windows::{
         D3D11CreateDevice, ID3D11Buffer, ID3D11Device,
         ID3D11DeviceContext, ID3D11Multithread, ID3D11PixelShader,
         ID3D11RenderTargetView, ID3D11Texture2D, ID3D11VertexShader,
-        D3D11_BIND_CONSTANT_BUFFER, D3D11_BOX, D3D11_BUFFER_DESC,
-        D3D11_CPU_ACCESS_READ, D3D11_CREATE_DEVICE_BGRA_SUPPORT,
-        D3D11_MAPPED_SUBRESOURCE, D3D11_MAP_READ, D3D11_SDK_VERSION,
-        D3D11_SUBRESOURCE_DATA, D3D11_TEXTURE2D_DESC, D3D11_USAGE_DEFAULT,
-        D3D11_USAGE_STAGING, D3D11_VIEWPORT,
+        D3D11_BIND_CONSTANT_BUFFER, D3D11_BUFFER_DESC,
+        D3D11_CREATE_DEVICE_BGRA_SUPPORT, D3D11_SDK_VERSION,
+        D3D11_SUBRESOURCE_DATA, D3D11_USAGE_DEFAULT, D3D11_VIEWPORT,
       },
       Dxgi::{
         Common::{
@@ -77,15 +75,10 @@ use windows::{
   },
 };
 
-use super::{
-  composition::{to_ui_color, with_composition_thread, FILL_PARENT},
-  image_finder::{FoundImage, ImageFinder},
-  image_tracking::{Fingerprint, Region},
+use super::composition::{
+  to_ui_color, with_composition_thread, FILL_PARENT,
 };
-use crate::{
-  color_theme::{picture_extent, ColorTheme},
-  Color, Rect,
-};
+use crate::{color_theme::ColorTheme, Color, Rect};
 
 const VERTEX_SHADER: &[u8] =
   include_bytes!(concat!(env!("OUT_DIR"), "/color_theme_vs.cso"));
@@ -94,18 +87,6 @@ const PIXEL_SHADER: &[u8] =
 
 const PIXEL_FORMAT: DirectXPixelFormat =
   DirectXPixelFormat::B8G8R8A8UIntNormalized;
-
-/// Most images per window the shader keeps in their own colors; sizes its
-/// constant buffer.
-pub(crate) const MAX_IMAGE_RECTS: usize = 32;
-
-/// Farthest a kept picture is looked for, up or down, when the content
-/// moved (e.g. scrolled) between two frames.
-const MAX_PICTURE_SHIFT: i32 = 192;
-
-/// Most pixels an image is judged from; larger images are sampled on a
-/// grid.
-const PICTURE_MAX_SAMPLES: i32 = 512 * 512;
 
 /// One buffer is held back as the last frame (see `Renderer::last_frame`),
 /// leaving one free for WGC to fill.
@@ -138,10 +119,6 @@ pub(crate) struct ThemedCapture {
   frame_arrived: EventRegistrationToken,
   renderer: Arc<Mutex<AssertSend<Renderer>>>,
   failed: Arc<AtomicBool>,
-
-  /// Finds the window's pictures, kept in their own colors; `None` if
-  /// its thread couldn't start, in which case everything is themed.
-  images: Option<Arc<ImageFinder>>,
 
   /// Binds the visual to the overlay's `HWND`; dropping it unbinds.
   _target: DesktopWindowTarget,
@@ -250,14 +227,28 @@ impl ThemedCapture {
       fill_before_first_frame: false,
       pool_size: item_size,
       last_frame: None,
-      images: Vec::new(),
       is_shown: false,
       failed: failed.clone(),
     })));
 
-    let images = start_image_finder(source, Arc::downgrade(&renderer));
-    let frame_arrived = frame_pool
-      .FrameArrived(&frame_handler(renderer.clone(), images.clone()))?;
+    let handler_renderer = renderer.clone();
+    let frame_arrived =
+      frame_pool.FrameArrived(&TypedEventHandler::<
+        Direct3D11CaptureFramePool,
+        IInspectable,
+      >::new(move |pool, _| {
+        if let Some(pool) = pool {
+          let mut renderer = handler_renderer
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+
+          if let Err(err) = renderer.0.on_frame_arrived(pool) {
+            renderer.0.fail(&err);
+          }
+        }
+
+        Ok(())
+      }))?;
 
     session.StartCapture()?;
 
@@ -267,7 +258,6 @@ impl ThemedCapture {
       frame_arrived,
       renderer,
       failed,
-      images,
       _target: target,
     })
   }
@@ -345,65 +335,6 @@ impl Drop for ThemedCapture {
     let _ = self.frame_pool.RemoveFrameArrived(self.frame_arrived);
     let _ = self.session.Close();
     let _ = self.frame_pool.Close();
-
-    // Stops the finder even if the frame handler still holds it.
-    if let Some(images) = self.images.take() {
-      images.stop();
-    }
-  }
-}
-
-/// Themes each frame as it arrives, and has `images` look again, since
-/// images may have moved with the content.
-fn frame_handler(
-  renderer: Arc<Mutex<AssertSend<Renderer>>>,
-  images: Option<Arc<ImageFinder>>,
-) -> TypedEventHandler<Direct3D11CaptureFramePool, IInspectable> {
-  TypedEventHandler::new(
-    move |pool: &Option<Direct3D11CaptureFramePool>, _| {
-      if let Some(pool) = pool {
-        let mut renderer =
-          renderer.lock().unwrap_or_else(PoisonError::into_inner);
-
-        if let Err(err) = renderer.0.on_frame_arrived(pool) {
-          renderer.0.fail(&err);
-        }
-      }
-
-      if let Some(images) = &images {
-        images.content_changed();
-      }
-
-      Ok(())
-    },
-  )
-}
-
-/// Starts finding `source`'s images for `renderer`, or logs why not.
-fn start_image_finder(
-  source: HWND,
-  renderer: Weak<Mutex<AssertSend<Renderer>>>,
-) -> Option<Arc<ImageFinder>> {
-  let finder = ImageFinder::start(source, move |found| {
-    let Some(renderer) = renderer.upgrade() else {
-      return;
-    };
-    let mut renderer =
-      renderer.lock().unwrap_or_else(PoisonError::into_inner);
-
-    // Pictures are a refinement: on failure, the window stays fully
-    // themed rather than losing its theme.
-    if let Err(err) = renderer.0.update_images(&found) {
-      tracing::debug!("Could not update color theme images: {err}.");
-    }
-  });
-
-  match finder {
-    Ok(finder) => Some(Arc::new(finder)),
-    Err(err) => {
-      tracing::warn!("Images won't keep their colors: {err}.");
-      None
-    }
   }
 }
 
@@ -544,9 +475,6 @@ struct CaptureOutput {
   /// [`FrameConstants`] for the current `swap_chain_size`.
   frame_constants: ID3D11Buffer,
 
-  /// [`ImageConstants`] for the pictures kept in their own colors.
-  image_constants: ID3D11Buffer,
-
   swap_chain: IDXGISwapChain1,
   swap_chain_size: (u32, u32),
 
@@ -565,8 +493,6 @@ impl CaptureOutput {
     let constants = create_constant_buffer(device, theme.constants())?;
     let frame_constants =
       create_constant_buffer(device, &FrameConstants::new(size))?;
-    let image_constants =
-      create_constant_buffer(device, &ImageConstants::new(&[]))?;
 
     // SAFETY: The adapter's parent is the factory that created it, and
     // every DXGI 1.2+ factory implements `IDXGIFactory2`.
@@ -607,7 +533,6 @@ impl CaptureOutput {
       winrt_device,
       constants,
       frame_constants,
-      image_constants,
       swap_chain,
       swap_chain_size: size,
       render_target: None,
@@ -631,238 +556,6 @@ impl CaptureOutput {
       );
     }
   }
-
-  /// Uploads the `pictures` to keep in their own colors for the next
-  /// render.
-  fn set_images(&self, pictures: &[Rect]) {
-    let gpu = self.gpu.lock().unwrap_or_else(PoisonError::into_inner);
-
-    // SAFETY: The source is an `ImageConstants`, exactly the buffer's
-    // size, and the context is only used under the lock held above.
-    unsafe {
-      gpu.0.context.UpdateSubresource(
-        &self.image_constants,
-        0,
-        None,
-        std::ptr::from_ref(&ImageConstants::new(pictures)).cast(),
-        0,
-        0,
-      );
-    }
-  }
-
-  /// The part of the image reported at `rect` of `texture` (whose content
-  /// is `size`) that shows a picture, or `None` for an icon; see
-  /// [`picture_extent`].
-  ///
-  /// Reads the image and a 2px margin of page around it back from the
-  /// GPU, the margin sampled at the same points the shader uses.
-  fn picture_rect(
-    &self,
-    texture: &ID3D11Texture2D,
-    size: (u32, u32),
-    rect: &Rect,
-  ) -> crate::Result<Option<Rect>> {
-    let frame = Rect::from_ltrb(
-      0,
-      0,
-      i32::try_from(size.0)?,
-      i32::try_from(size.1)?,
-    );
-    let region = Rect::from_ltrb(
-      (rect.left - 2).max(0),
-      (rect.top - 2).max(0),
-      (rect.right + 2).min(frame.right),
-      (rect.bottom + 2).min(frame.bottom),
-    );
-
-    if region.width() <= 0 || region.height() <= 0 {
-      return Ok(None);
-    }
-
-    let pixels = self.read_straight(texture, &region)?;
-    let at = |x: i32, y: i32| -> Option<[f32; 3]> {
-      if x < region.left
-        || y < region.top
-        || x >= region.right
-        || y >= region.bottom
-      {
-        return None;
-      }
-
-      let index = usize::try_from(
-        (y - region.top) * region.width() + (x - region.left),
-      )
-      .ok()?;
-      pixels.get(index).copied().flatten()
-    };
-
-    let middle = (
-      rect.left.midpoint(rect.right),
-      rect.top.midpoint(rect.bottom),
-    );
-    let papers: Vec<[f32; 3]> = [
-      (rect.left - 2, rect.top - 2),
-      (middle.0, rect.top - 2),
-      (rect.right + 1, rect.top - 2),
-      (rect.left - 2, middle.1),
-      (rect.right + 1, middle.1),
-      (rect.left - 2, rect.bottom + 1),
-      (middle.0, rect.bottom + 1),
-      (rect.right + 1, rect.bottom + 1),
-    ]
-    .into_iter()
-    .filter_map(|(x, y)| at(x, y))
-    .collect();
-
-    // Transparent pixels (off the frame, rounded corners) read as page.
-    let page = papers.first().copied().unwrap_or([1.0; 3]);
-    let area = i64::from(rect.width()) * i64::from(rect.height());
-    #[allow(
-      clippy::cast_possible_truncation,
-      clippy::cast_precision_loss,
-      clippy::cast_sign_loss
-    )]
-    let step = (area as f64 / f64::from(PICTURE_MAX_SAMPLES))
-      .sqrt()
-      .ceil()
-      .max(1.0) as usize;
-
-    let columns: Vec<i32> =
-      (rect.left..rect.right).step_by(step).collect();
-    let content: Vec<[f32; 3]> = (rect.top..rect.bottom)
-      .step_by(step)
-      .flat_map(|y| columns.iter().map(move |&x| (x, y)))
-      .map(|(x, y)| at(x, y).unwrap_or(page))
-      .collect();
-
-    let Some([left, top, right, bottom]) =
-      picture_extent(&content, columns.len(), &papers)
-    else {
-      return Ok(None);
-    };
-
-    // Back from sample indices to frame pixels.
-    let to_frame =
-      |index: usize, start: i32, end: i32| -> crate::Result<i32> {
-        Ok((start + i32::try_from(index * step)?).min(end))
-      };
-
-    Ok(Some(Rect::from_ltrb(
-      to_frame(left, rect.left, rect.right)?,
-      to_frame(top, rect.top, rect.bottom)?,
-      to_frame(right, rect.left, rect.right)?,
-      to_frame(bottom, rect.top, rect.bottom)?,
-    )))
-  }
-
-  /// Straight-alpha sRGB of `region` of `texture`, row-major; fully
-  /// transparent pixels are `None`.
-  fn read_straight(
-    &self,
-    texture: &ID3D11Texture2D,
-    region: &Rect,
-  ) -> crate::Result<Vec<Option<[f32; 3]>>> {
-    let width = u32::try_from(region.width())?;
-    let height = u32::try_from(region.height())?;
-
-    let gpu = self.gpu.lock().unwrap_or_else(PoisonError::into_inner);
-    let Gpu {
-      device, context, ..
-    } = &gpu.0;
-
-    let desc = D3D11_TEXTURE2D_DESC {
-      Width: width,
-      Height: height,
-      MipLevels: 1,
-      ArraySize: 1,
-      Format: DXGI_FORMAT_B8G8R8A8_UNORM,
-      SampleDesc: DXGI_SAMPLE_DESC {
-        Count: 1,
-        Quality: 0,
-      },
-      Usage: D3D11_USAGE_STAGING,
-      BindFlags: 0,
-      #[allow(clippy::cast_sign_loss)]
-      CPUAccessFlags: D3D11_CPU_ACCESS_READ.0 as u32,
-      MiscFlags: 0,
-    };
-
-    let mut staging = None;
-    // SAFETY: `desc` describes a valid staging texture and both pointers
-    // outlive the call.
-    unsafe {
-      device.CreateTexture2D(
-        &raw const desc,
-        None,
-        Some(&raw mut staging),
-      )?;
-    }
-    let staging = created(staging)?;
-
-    let source_box = D3D11_BOX {
-      left: u32::try_from(region.left)?,
-      top: u32::try_from(region.top)?,
-      front: 0,
-      right: u32::try_from(region.right)?,
-      bottom: u32::try_from(region.bottom)?,
-      back: 1,
-    };
-
-    let mut mapped = D3D11_MAPPED_SUBRESOURCE::default();
-    // SAFETY: The box lies within the frame's content, which the frame
-    // texture covers, and the destination is exactly the box's size. The
-    // context is only used under the lock held above.
-    unsafe {
-      context.CopySubresourceRegion(
-        &staging,
-        0,
-        0,
-        0,
-        0,
-        texture,
-        0,
-        Some(&raw const source_box),
-      );
-      context.Map(
-        &staging,
-        0,
-        D3D11_MAP_READ,
-        0,
-        Some(&raw mut mapped),
-      )?;
-    }
-
-    let row_pitch = usize::try_from(mapped.RowPitch)?;
-    let (width, height) =
-      (usize::try_from(width)?, usize::try_from(height)?);
-    let mut pixels = Vec::with_capacity(width * height);
-
-    for y in 0..height {
-      // SAFETY: A mapped staging texture holds `height` rows of
-      // `row_pitch` bytes, each starting with `width` BGRA pixels, and
-      // stays mapped until `Unmap` below.
-      let row = unsafe {
-        std::slice::from_raw_parts(
-          mapped.pData.cast::<u8>().add(y * row_pitch),
-          width * 4,
-        )
-      };
-
-      pixels.extend(row.as_chunks::<4>().0.iter().map(|bgra| {
-        let alpha = f32::from(bgra[3]);
-        (alpha > 0.0).then(|| {
-          [bgra[2], bgra[1], bgra[0]].map(|c| f32::from(c) / alpha)
-        })
-      }));
-    }
-
-    // SAFETY: Mapped above, and not read from past this point.
-    unsafe { context.Unmap(&staging, 0) };
-
-    Ok(pixels)
-  }
-
   /// Themes the top-left `size` of `texture` into the swap chain and
   /// presents it.
   fn render(
@@ -963,7 +656,6 @@ impl CaptureOutput {
         Some(&[
           Some(self.constants.clone()),
           Some(self.frame_constants.clone()),
-          Some(self.image_constants.clone()),
         ]),
       );
       context.PSSetShaderResources(0, Some(&[source]));
@@ -1013,9 +705,6 @@ struct Renderer {
   last_frame:
     Option<(Direct3D11CaptureFrame, ID3D11Texture2D, (u32, u32))>,
 
-  /// The pictures currently kept in their own colors.
-  images: Vec<KeptImage>,
-
   is_shown: bool,
   failed: Arc<AtomicBool>,
 }
@@ -1048,15 +737,6 @@ impl Renderer {
     }
 
     let texture = frame_texture(&frame)?;
-
-    // Pictures are a refinement: on failure, the window stays fully
-    // themed rather than losing its theme.
-    if let Err(err) = self.follow_images(&texture, (width, height)) {
-      tracing::debug!("Could not follow color theme images: {err}.");
-      self.images.clear();
-      self.output.set_images(&[]);
-    }
-
     self.present(&texture, (width, height))?;
 
     if content_size == self.pool_size {
@@ -1090,160 +770,6 @@ impl Renderer {
     }
 
     Ok(())
-  }
-
-  /// Keeps the pictures among the `found` images in their own colors,
-  /// re-rendering the current frame if that changed which ones.
-  fn update_images(&mut self, found: &[FoundImage]) -> crate::Result<()> {
-    if self.failed.load(Ordering::Relaxed) {
-      return Ok(());
-    }
-
-    // Judged on the current frame; without one, the next frame triggers
-    // another query.
-    let Some((_, texture, size)) = self.last_frame.clone() else {
-      return Ok(());
-    };
-
-    let mut pictures = Vec::new();
-
-    for image in found {
-      if let Some(picture) =
-        self.output.picture_rect(&texture, size, &image.rect)?
-      {
-        pictures.push((picture, image.view.clone()));
-      }
-    }
-
-    if pictures
-      .iter()
-      .map(|(rect, _)| rect)
-      .eq(self.images.iter().map(|image| &image.rect))
-    {
-      return Ok(());
-    }
-
-    tracing::debug!(
-      "Color theme keeps {} of {} images in their colors: {pictures:?}.",
-      pictures.len(),
-      found.len(),
-    );
-
-    let mut images = Vec::with_capacity(pictures.len());
-
-    for (rect, view) in pictures {
-      let pixels = self.output.read_straight(&texture, &rect)?;
-      let fingerprint = Fingerprint::sample(
-        &rect,
-        &Region {
-          rect: &rect,
-          pixels: &pixels,
-        },
-      );
-      images.push(KeptImage {
-        rect,
-        view,
-        fingerprint,
-      });
-    }
-
-    self.images = images;
-    self.sync_images();
-    self.present(&texture, size)
-  }
-
-  /// Moves the kept pictures along with the content of the new frame
-  /// `texture` (whose content is `size`), dropping those no longer
-  /// found; see `image_tracking`.
-  fn follow_images(
-    &mut self,
-    texture: &ID3D11Texture2D,
-    size: (u32, u32),
-  ) -> crate::Result<()> {
-    if self.images.is_empty() {
-      return Ok(());
-    }
-
-    let frame = Rect::from_ltrb(
-      0,
-      0,
-      i32::try_from(size.0)?,
-      i32::try_from(size.1)?,
-    );
-    let mut moved = false;
-    let mut followed = Vec::with_capacity(self.images.len());
-
-    for image in self.images.drain(..) {
-      // Within its view: it's cut off beyond it.
-      let search = Rect::from_ltrb(
-        image.rect.left.max(image.view.left).max(0),
-        (image.rect.top - MAX_PICTURE_SHIFT)
-          .max(image.view.top)
-          .max(0),
-        image.rect.right.min(image.view.right).min(frame.right),
-        (image.rect.bottom + MAX_PICTURE_SHIFT)
-          .min(image.view.bottom)
-          .min(frame.bottom),
-      );
-
-      if search.width() <= 0 || search.height() <= 0 {
-        moved = true;
-        continue;
-      }
-
-      let pixels = self.output.read_straight(texture, &search)?;
-      let region = Region {
-        rect: &search,
-        pixels: &pixels,
-      };
-
-      match image.fingerprint.find_shift(
-        &image.rect,
-        &image.view,
-        &region,
-        MAX_PICTURE_SHIFT,
-      ) {
-        Some(0) => followed.push(image),
-        Some(shift) => {
-          moved = true;
-          followed.push(KeptImage {
-            rect: image.rect.translate_to_coordinates(
-              image.rect.left,
-              image.rect.top + shift,
-            ),
-            ..image
-          });
-        }
-        None => moved = true,
-      }
-    }
-
-    self.images = followed;
-
-    if moved {
-      self.sync_images();
-    }
-
-    Ok(())
-  }
-
-  /// Uploads the kept pictures' rects, cut to their views, for the next
-  /// render.
-  fn sync_images(&self) {
-    let rects: Vec<Rect> = self
-      .images
-      .iter()
-      .map(|image| {
-        Rect::from_ltrb(
-          image.rect.left.max(image.view.left),
-          image.rect.top.max(image.view.top),
-          image.rect.right.min(image.view.right),
-          image.rect.bottom.min(image.view.bottom),
-        )
-      })
-      .filter(|rect| rect.width() > 0 && rect.height() > 0)
-      .collect();
-    self.output.set_images(&rects);
   }
 
   fn present(
@@ -1304,17 +830,6 @@ impl Renderer {
   }
 }
 
-/// A picture kept in its own colors, and how to find it again once the
-/// content moves.
-struct KeptImage {
-  rect: Rect,
-
-  /// The area it scrolls in; it's cut off beyond it.
-  view: Rect,
-
-  fingerprint: Fingerprint,
-}
-
 /// Unwraps a D3D out-parameter, which is only `None` if the call that
 /// should have filled it failed.
 fn created<T>(value: Option<T>) -> crate::Result<T> {
@@ -1327,39 +842,6 @@ fn frame_texture(
   let access: IDirect3DDxgiInterfaceAccess = frame.Surface()?.cast()?;
   // SAFETY: WGC surfaces wrap a D3D11 texture on the pool's device.
   Ok(unsafe { access.GetInterface()? })
-}
-
-/// Constant buffer layout shared with `cbuffer Images` in the shader.
-#[repr(C)]
-struct ImageConstants {
-  count: u32,
-  _padding: [u32; 3],
-
-  /// `(left, top, right, bottom)` in frame pixels.
-  rects: [[i32; 4]; MAX_IMAGE_RECTS],
-}
-
-// `cbuffer Images`: one packed register, then the rect `int4` array.
-const _: () = assert!(
-  std::mem::size_of::<ImageConstants>() == 16 * (1 + MAX_IMAGE_RECTS)
-);
-
-impl ImageConstants {
-  fn new(pictures: &[Rect]) -> Self {
-    let mut rects = [[0; 4]; MAX_IMAGE_RECTS];
-
-    for (slot, rect) in rects.iter_mut().zip(pictures) {
-      *slot = [rect.left, rect.top, rect.right, rect.bottom];
-    }
-
-    Self {
-      // Bounded by `MAX_IMAGE_RECTS`.
-      #[allow(clippy::cast_possible_truncation)]
-      count: pictures.len().min(MAX_IMAGE_RECTS) as u32,
-      _padding: [0; 3],
-      rects,
-    }
-  }
 }
 
 /// Constant buffer layout shared with `cbuffer Frame` in the shader.
