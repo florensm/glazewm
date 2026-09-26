@@ -42,7 +42,7 @@ pub fn sync_color_themes(state: &mut WmState, config: &UserConfig) {
       .color_theme_windows
       .get(&id)
       .and_then(|name| config.color_themes.get(name))
-      .copied()
+      .cloned()
     else {
       continue;
     };
@@ -183,7 +183,7 @@ pub fn sync_color_theme_popup(
         .get(state.color_theme_windows.get(&window.id())?)?;
 
       (overlay.is_visible() && window.native().process_id() == process_id)
-        .then_some((window.id(), *theme))
+        .then_some((window.id(), theme.clone()))
     })
   else {
     return;

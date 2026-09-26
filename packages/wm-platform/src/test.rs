@@ -3,6 +3,8 @@
 #[macro_use]
 extern crate libtest_mimic_collect;
 
+#[cfg(target_os = "windows")]
+mod color_levels;
 mod color_theme;
 mod dispatcher;
 mod display;

@@ -50,7 +50,7 @@ impl NativeColorThemeOverlay {
     Ok(Self {
       capture,
       window,
-      theme: *theme,
+      theme: theme.clone(),
       rect: rect.clone(),
     })
   }
@@ -61,7 +61,7 @@ impl NativeColorThemeOverlay {
       return;
     }
 
-    self.theme = *theme;
+    self.theme = theme.clone();
     self.capture.set_theme(theme);
   }
 

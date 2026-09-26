@@ -11,25 +11,185 @@
 #       match:
 #         - window_process: { equals: "MyApp" }
 #
-# Colors are compared in OKLab, a perceptual color space.
+# Colors are compared in OKLab, a perceptual color space: lightness 0 is
+# black, 1 is white, and "chroma" is how colorful a color is.
+#
+# Every setting is optional. In order of application:
+#
+#   extends               Start from another theme's settings.
+#   background/foreground Gray ramp shorthand: white -> background,
+#                         black -> foreground.
+#   ramp                  Gray ramp with 2-8 stops, `{ from, to }`: grays
+#                         as light as `from` become `to`, in between is
+#                         interpolated. Use instead of background/foreground.
+#   saturation_threshold  0-1 (0.15). Pixels more colorful than this skip
+#                         the ramp: images, icons, accent colors.
+#   accent_lightness      0-1 (0). How far colors that skip the ramp still
+#                         take on its lightness, keeping their hue. 1 turns
+#                         dark blue links into light blue ones on dark.
+#   saturation            0-4 (1). Chroma multiplier; 0 is grayscale.
+#   vibrance              -1-1 (0). Boosts dull colors more than vivid ones.
+#   hue_shift             Degrees (0). Rotates every hue.
+#   palette               Palette name (see `palettes`) or a color list.
+#                         Colors snap towards the palette hue nearest to
+#                         theirs; the palette's grays are ignored.
+#   palette_strength      0-1 (1). How far colors move to the palette.
+#   palette_lightness     0-1 (0). How far they also take its lightness.
+#   brightness            0-2 (1). Lightness multiplier.
+#   contrast              0-3 (1). Lightness contrast around mid-gray.
+#   min_contrast          0-1 (0). Lightness difference to the themed
+#                         background that text and icons keep, capped at the
+#                         difference they had originally (so subtle panels
+#                         and borders stay subtle). ~0.45 reads well.
+#   warmth                -1-1 (0). Cool (blue) to warm (amber).
+#   overrides             Up to 16 exact `{ from, to, tolerance }` color
+#                         mappings, matched against the app's own colors
+#                         and applied last. `tolerance` is an OKLab
+#                         distance times 100 (~2 is barely noticeable,
+#                         default 5); matches fade out towards its edge.
+#   detect_colors         true/false (false). Measure the app's own
+#                         background and text colors and treat those as
+#                         white and black, so an off-white app lands
+#                         exactly on `background`. Also re-themes apps that
+#                         are already dark into your colors.
+#   skip_if_dark          true/false (false). Leave the window alone while
+#                         its background is dark (e.g. the app switched to
+#                         its own dark mode).
+#   elements              Render UI elements differently, found through the
+#                         app's accessibility tree (UI Automation): per
+#                         kind, `original` (the app's own colors) or the
+#                         name of a theme whose colors it takes instead (at
+#                         most 3 distinct themes). Kinds: image, edit,
+#                         document, button, hyperlink, check_box,
+#                         radio_button, combo_box, list_item, tree_item,
+#                         tab_item, menu_item, data_item, header, tool_bar,
+#                         status_bar, title_bar.
+#                         `min_image_size` (48): smaller images count as
+#                         icons and keep the theme's colors.
+#                         Works best with WPF, WinForms, Win32 and WinUI
+#                         apps. Element positions update shortly after the
+#                         content changes, so they can briefly lag while
+#                         scrolling. Chromium/Electron apps build their
+#                         accessibility tree only for clients like this,
+#                         which slows them down: prefer not to use
+#                         `elements` for them.
+
+# Named color lists for `palette`.
+palettes:
+  catppuccin-mocha: [
+    "#f5c2e7", "#cba6f7", "#f38ba8", "#eba0ac", "#fab387", "#f9e2af",
+    "#a6e3a1", "#94e2d5", "#89dceb", "#74c7ec", "#89b4fa", "#b4befe",
+  ]
+  nord: [
+    "#8fbcbb", "#88c0d0", "#81a1c1", "#5e81ac",
+    "#bf616a", "#d08770", "#ebcb8b", "#a3be8c", "#b48ead",
+  ]
+  gruvbox-dark: [
+    "#fb4934", "#b8bb26", "#fabd2f", "#83a598", "#d3869b", "#8ec07c",
+    "#fe8019",
+  ]
+  dracula: [
+    "#8be9fd", "#50fa7b", "#ffb86c", "#ff79c6", "#bd93f9", "#ff5555",
+    "#f1fa8c",
+  ]
+  tokyo-night: [
+    "#7aa2f7", "#7dcfff", "#9ece6a", "#bb9af7", "#f7768e", "#ff9e64",
+    "#e0af68", "#73daca",
+  ]
+
 themes:
-  # A dark theme for light apps.
+  # A plain dark theme for light apps.
   winter:
-    # Gray ramp: white maps to `background`, black to `foreground`, and the
-    # grays in between are interpolated. Omit both to disable the ramp.
     background: "#1e1e1e"
     foreground: "#d4d4d4"
-
-    # Pixels more saturated than this (0.0-1.0) skip the ramp, which keeps
-    # images and icons in their original colors.
     saturation_threshold: 0.15
-
-    # Explicit color -> color mappings, applied on top of the ramp (up to
-    # 16). `tolerance` is an OKLab distance times 100 (~2 is barely
-    # noticeable, default 5): pixels within it blend towards `to`, fading
-    # out towards the edge of the tolerance.
     overrides:
       # Yellow highlight -> dark olive.
       - { from: "#fff3b0", to: "#5a4a00", tolerance: 10 }
       # Windows accent blue -> a lighter blue that reads on dark.
       - { from: "#0078d4", to: "#4aa3ff", tolerance: 6 }
+
+  # Catppuccin Mocha: separate surface colors, readable accents in the
+  # palette's colors, and photos left untouched.
+  catppuccin:
+    ramp:
+      - { from: "#ffffff", to: "#1e1e2e" } # Page.
+      - { from: "#f0f0f0", to: "#181825" } # Side panels.
+      - { from: "#d0d0d0", to: "#45475a" } # Borders, separators.
+      - { from: "#000000", to: "#cdd6f4" } # Text.
+    accent_lightness: 0.8
+    vibrance: 0.3
+    palette: catppuccin-mocha
+    palette_strength: 0.8
+    min_contrast: 0.45
+    detect_colors: true
+    skip_if_dark: true
+    elements:
+      image: original
+      edit: catppuccin-input
+
+  # Text boxes of `catppuccin`, a shade lighter than the page.
+  catppuccin-input:
+    ramp:
+      - { from: "#ffffff", to: "#313244" }
+      - { from: "#000000", to: "#cdd6f4" }
+
+  nord:
+    ramp:
+      - { from: "#ffffff", to: "#2e3440" }
+      - { from: "#f0f0f0", to: "#3b4252" }
+      - { from: "#000000", to: "#eceff4" }
+    accent_lightness: 0.8
+    palette: nord
+    palette_strength: 0.7
+    min_contrast: 0.45
+    detect_colors: true
+    skip_if_dark: true
+
+  gruvbox:
+    background: "#282828"
+    foreground: "#ebdbb2"
+    accent_lightness: 0.8
+    palette: gruvbox-dark
+    palette_strength: 0.7
+    warmth: 0.15
+    detect_colors: true
+    skip_if_dark: true
+
+  # Everything from `gruvbox`, with Dracula's colors.
+  dracula:
+    extends: gruvbox
+    background: "#282a36"
+    foreground: "#f8f8f2"
+    palette: dracula
+    warmth: 0
+
+  tokyo-night:
+    ramp:
+      - { from: "#ffffff", to: "#1a1b26" }
+      - { from: "#f0f0f0", to: "#16161e" }
+      - { from: "#000000", to: "#c0caf5" }
+    accent_lightness: 0.8
+    vibrance: 0.2
+    palette: tokyo-night
+    palette_strength: 0.7
+    min_contrast: 0.45
+    detect_colors: true
+    skip_if_dark: true
+
+  # A light, paper-like theme for reading: warm off-white instead of pure
+  # white, dark brown text.
+  sepia:
+    background: "#f4ecd8"
+    foreground: "#5b4636"
+    saturation: 0.8
+    detect_colors: true
+
+  # Keeps the app's own look, dimmer and warmer for the evening.
+  night:
+    brightness: 0.85
+    warmth: 0.5
+
+  # No color, for focus.
+  grayscale:
+    saturation: 0

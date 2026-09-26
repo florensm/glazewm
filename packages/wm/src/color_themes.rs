@@ -163,6 +163,103 @@ themes:
   }
 
   #[test]
+  fn extends_inherits_and_overrides_settings() {
+    let themes = parse(
+      r##"
+themes:
+  base:
+    background: "#1e1e1e"
+    foreground: "#d4d4d4"
+    vibrance: 0.3
+  child:
+    extends: base
+    vibrance: 0.5
+  copy:
+    extends: base
+  switched:
+    extends: base
+    ramp:
+      - { from: "#ffffff", to: "#101010" }
+      - { from: "#000000", to: "#f0f0f0" }
+"##,
+    )
+    .expect("valid themes");
+
+    assert_eq!(themes["copy"], themes["base"]);
+    assert_ne!(themes["child"], themes["base"]);
+    assert_ne!(themes["switched"], themes["base"]);
+  }
+
+  #[test]
+  fn named_and_inline_palettes_match() {
+    let themes = parse(
+      r##"
+palettes:
+  mocha: ["#89b4fa", "#f38ba8", "#a6e3a1", "#1e1e2e"]
+themes:
+  named:
+    palette: mocha
+  inline:
+    palette: ["#89b4fa", "#f38ba8", "#a6e3a1", "#1e1e2e"]
+"##,
+    )
+    .expect("valid themes");
+
+    assert_eq!(themes["named"], themes["inline"]);
+  }
+
+  #[test]
+  fn elements_reference_other_themes() {
+    let themes = parse(
+      r##"
+themes:
+  input:
+    background: "#2a2a3a"
+    foreground: "#ffffff"
+  winter:
+    background: "#1e1e1e"
+    foreground: "#d4d4d4"
+    detect_colors: true
+    skip_if_dark: true
+    elements:
+      image: original
+      edit: input
+      min_image_size: 32
+"##,
+    )
+    .expect("valid themes");
+
+    let winter = &themes["winter"];
+    assert!(winter.detect_colors() && winter.skip_if_dark());
+    assert_eq!(winter.min_image_size(), 32);
+  }
+
+  #[test]
+  fn rejects_invalid_references() {
+    // Unknown element theme, palette and parent.
+    assert!(parse("themes: { a: { elements: { image: nope } } }").is_err());
+    assert!(parse("themes: { a: { palette: nope } }").is_err());
+    assert!(parse("themes: { a: { extends: nope } }").is_err());
+    // Circular `extends`.
+    assert!(
+      parse("themes: { a: { extends: b }, b: { extends: a } }").is_err()
+    );
+    // Reserved name.
+    assert!(parse("themes: { original: {} }").is_err());
+    // Unknown element kind.
+    assert!(
+      parse("themes: { a: { elements: { picture: original } } }").is_err()
+    );
+    // Both ramp forms.
+    assert!(parse(
+      "themes: { a: { background: '#000000', foreground: '#ffffff', \
+       ramp: [{ from: '#ffffff', to: '#000000' }, \
+       { from: '#000000', to: '#ffffff' }] } }"
+    )
+    .is_err());
+  }
+
+  #[test]
   fn invalid_edit_keeps_previous_themes() {
     let dir = std::env::temp_dir()
       .join(format!("glazewm_color_themes_test_{}", std::process::id()));

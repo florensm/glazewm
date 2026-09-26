@@ -22,9 +22,10 @@ mod shaders {
 
   /// `(entry point, profile, output file)`. Shader model 4.0 runs on every
   /// D3D11 device, down to feature level 10.0 and WARP.
-  const STAGES: [(&str, &str, &str); 2] = [
+  const STAGES: [(&str, &str, &str); 3] = [
     ("vs_main", "vs_4_0", "color_theme_vs.cso"),
     ("ps_main", "ps_4_0", "color_theme_ps.cso"),
+    ("ps_sample", "ps_4_0", "color_theme_sample_ps.cso"),
   ];
 
   pub fn compile() {

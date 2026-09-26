@@ -2,6 +2,8 @@
 #![allow(clippy::missing_errors_doc)]
 #![feature(iterator_try_collect)]
 
+#[cfg(target_os = "windows")]
+mod color_levels;
 mod color_theme;
 mod dispatcher;
 mod display;
@@ -26,7 +28,12 @@ mod window_listener;
 #[cfg(feature = "test_utils")]
 pub mod test_utils;
 
-pub use color_theme::{ColorOverride, ColorTheme, MAX_COLOR_OVERRIDES};
+pub use color_theme::{
+  ColorFilter, ColorFilterOptions, ColorOverride, ColorTheme,
+  ColorThemeOptions, ElementTreatment, RampStop, SourceLevels,
+  UiElementKind, MAX_COLOR_OVERRIDES, MAX_ELEMENT_FILTERS,
+  MAX_PALETTE_COLORS, MAX_RAMP_STOPS,
+};
 pub use dispatcher::*;
 pub use display::*;
 pub use display_listener::*;

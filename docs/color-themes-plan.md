@@ -10,7 +10,9 @@ pixel shader, and shown in a click-through overlay directly above it.
 | --- | --- |
 | Color math (CPU reference, unit-tested) | `packages/wm-platform/src/color_theme.rs` |
 | Shader (direct port of the above) | `packages/wm-platform/shaders/color_theme.hlsl`, compiled by `build.rs` with `fxc` |
-| Capture → shader → composition swap chain | `packages/wm-platform/src/platform_impl/windows/color_capture.rs` |
+| Capture → shader → composition swap chain, color measuring worker | `packages/wm-platform/src/platform_impl/windows/color_capture.rs` |
+| Paper/ink estimation from a frame sample | `packages/wm-platform/src/color_levels.rs` |
+| UI Automation element rects (background worker) | `packages/wm-platform/src/platform_impl/windows/ui_elements.rs` |
 | Overlay window (layered, click-through, above its anchor) | `packages/wm-platform/src/native_color_theme_overlay.rs`, `overlay_window.rs`, `window_class.rs` |
 | `color-themes.yaml` loading + hot reload | `packages/wm/src/color_themes.rs`, schema in `packages/wm-common/src/color_themes_config.rs` |
 | `set-color-theme` command | `packages/wm-common/src/app_command.rs`, handled in `packages/wm/src/wm.rs` |
@@ -30,6 +32,43 @@ pixel shader, and shown in a click-through overlay directly above it.
   fixed "theme disappears after a click" in WPF and Helium.
 - One shared D3D11 device for all overlays.
 - Skipped, logged once: elevated windows, windows with a display affinity.
+
+## Done, not yet verified on Windows: filters, color detection, elements
+
+All options are documented in `resources/assets/sample-color-themes.yaml`.
+
+- **Filter** (`ColorFilter`, per pixel, in OKLab): multi-stop gray ramp,
+  `accent_lightness`, `saturation`, `vibrance`, `hue_shift`, palette
+  snapping (named `palettes` or inline), `brightness`, `contrast`,
+  `min_contrast`, `warmth`, gamut mapping by chroma reduction, overrides.
+- **Config**: `extends` (field-wise inheritance, cycle-checked), named
+  `palettes`.
+- **Color detection** (`detect_colors`, `skip_if_dark`): the frame is
+  point-sampled to 64×64 and read back on a worker thread every 500 ms
+  while the window changes (and synchronously before the first frame, so
+  a dark app doesn't flash inverted); `color_levels.rs` estimates paper
+  (histogram mode) and ink, with hysteresis. Levels normalize the ramp's
+  input lightness; `skip_if_dark` passes pixels through unchanged.
+- **Elements** (`elements`): a UIA worker thread queries the themed
+  window's elements of the configured kinds (one cached `FindAll`, only
+  after content changed, throttled to 20× the last query's duration, 1 s
+  UIA timeouts). Rects go to the shader as up to 64 regions, largest
+  first; each maps to `original` or one of up to 3 extra filter slots.
+- Shader parity: the HLSL was compiled with DXC to SPIR-V and run on
+  lavapipe against the Rust reference (1113 neighborhoods × 8 themes, all
+  slots): max difference 0.00002.
+
+### To verify on Windows
+
+1. `fxc` still compiles `ps_main` at `ps_4_0` (dynamic cbuffer struct
+   indexing, loops over filter slots and regions).
+2. A light WPF app with `catppuccin`: page, panels and text land on the
+   ramp stops; links are light and in the palette's hue; photos keep
+   their colors, small icons don't; text boxes use `catppuccin-input`.
+3. An off-white app with `detect_colors`: background exactly
+   `background`. Switch the app to its own dark mode with `skip_if_dark`:
+   the overlay passes through within ~0.5 s.
+4. Frame time and app responsiveness with `elements` on a large window.
 
 ## Known limitations (not planned)
 
@@ -67,8 +106,9 @@ colors) stands in for the cloaked real window.
    forwarded by `NativeColorThemeOverlay::set_fill`. It covers the area the
    last themed frame doesn't while the window grows, where the surrogate
    paints its sampled edge color.
-2. **`ColorTheme::apply_color(Color) -> Color`** in `color_theme.rs`:
-   converts to `[f32; 3]`, calls `apply`, converts back. Add a unit test.
+2. **`ColorFilter::apply_color(Color, SourceLevels) -> Color`** in
+   `color_theme.rs`: converts to `[f32; 3]`, calls `apply`, converts
+   back. Add a unit test.
 3. **Placement accessor** on `AnimationManager`
    (`packages/wm/src/animation/manager.rs`):
    ```rust
@@ -92,7 +132,7 @@ colors) stands in for the cloaked real window.
 4. **`sync_color_themes`**: replace the surrogate/tracker conditions in
    `should_hide` with the placement:
    - `Some(Hidden)` → hide.
-   - `Some(Following { .. })` → `set_fill(fill.map(|c| theme.apply_color(c)))`
+   - `Some(Following { .. })` → `set_fill(fill.map(|c| filter.apply_color(c, levels)))`
      and `set_rect(&rect, surrogate)`.
    - `Some(FadingOut { .. })` → `set_fill(None)` and
      `set_rect(&window.native().frame()?, surrogate)`, so the overlay sits
