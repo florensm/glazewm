@@ -104,7 +104,10 @@ A photo's skin, hair and gray tones are low-saturation, so the ramp
 inverted them. Now:
 
 1. `image_finder.rs` asks UI Automation for the themed window's `Image`
-   elements (one cached `FindAll`, on its own thread; only after the
+   elements and the scrollable areas around them, as one cached, filtered
+   tree, and cuts each image to its scroll areas: UI Automation reports
+   images scrolled out of view (list items kept around for smooth
+   scrolling) at positions over other content (on its own thread; only after the
    content changed and then stayed still for 0.5 s, at least 3 s apart, at
    most 10 s late for a window that never settles; 1 s timeout for hung
    apps). An idle window is never queried.

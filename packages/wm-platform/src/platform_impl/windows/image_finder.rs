@@ -16,21 +16,24 @@ use std::{
 use windows::{
   core::ComInterface,
   Win32::{
-    Foundation::{HWND, RECT},
+    Foundation::{HWND, RECT, VARIANT_TRUE},
     Graphics::Dwm::{DwmGetWindowAttribute, DWMWA_EXTENDED_FRAME_BOUNDS},
     System::{
       Com::{
         CoCreateInstance, CoInitializeEx, CoUninitialize,
         CLSCTX_INPROC_SERVER, COINIT_MULTITHREADED,
       },
-      Variant::{VARIANT, VARIANT_0, VARIANT_0_0, VARIANT_0_0_0, VT_I4},
+      Variant::{
+        VARIANT, VARIANT_0, VARIANT_0_0, VARIANT_0_0_0, VT_BOOL, VT_I4,
+      },
     },
     UI::Accessibility::{
       AutomationElementMode_None, CUIAutomation, CUIAutomation8,
       IUIAutomation, IUIAutomation2, IUIAutomationCacheRequest,
-      IUIAutomationCondition, IUIAutomationElement, TreeScope_Descendants,
+      IUIAutomationElement, TreeScope_Subtree,
       UIA_BoundingRectanglePropertyId, UIA_ControlTypePropertyId,
       UIA_ImageControlTypeId, UIA_IsOffscreenPropertyId,
+      UIA_IsScrollPatternAvailablePropertyId,
     },
   },
 };
@@ -50,6 +53,17 @@ const MAX_WAIT: Duration = Duration::from_secs(10);
 
 /// How long a single query may block on an unresponsive app.
 const QUERY_TIMEOUT_MS: u32 = 1000;
+
+/// An image a query found, relative to the window's frame.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct FoundImage {
+  /// The part of it in view.
+  pub rect: Rect,
+
+  /// The view it's shown in: the intersection of the scrollable areas
+  /// around it, beyond which it's cut off when drawn.
+  pub view: Rect,
+}
 
 /// Watches one window for its images, reporting their rects relative to
 /// the window's captured frame to a callback on its own thread.
@@ -81,7 +95,7 @@ impl ImageFinder {
   /// `DWMWA_EXTENDED_FRAME_BOUNDS`, which the capture starts at).
   pub(crate) fn start(
     source: HWND,
-    on_query: impl FnMut(Vec<Rect>) + Send + 'static,
+    on_query: impl FnMut(Vec<FoundImage>) + Send + 'static,
   ) -> crate::Result<Self> {
     let shared = Arc::new(Shared {
       state: Mutex::new(FinderState {
@@ -161,7 +175,7 @@ impl Drop for ComApartment {
 fn run(
   source: HWND,
   shared: &Shared,
-  mut on_query: impl FnMut(Vec<Rect>),
+  mut on_query: impl FnMut(Vec<FoundImage>),
 ) -> crate::Result<()> {
   let _apartment = ComApartment::enter()?;
   let query = ImageQuery::new()?;
@@ -208,7 +222,7 @@ fn run(
     last_query = Some(Instant::now());
 
     match query.find(source, &mut root) {
-      Ok(rects) => on_query(rects),
+      Ok(images) => on_query(images),
       Err(err) => {
         // The window may be closing or busy; retry on the next change.
         tracing::debug!("Image query failed: {err}.");
@@ -233,7 +247,6 @@ fn next_query_at(
 /// The UI Automation objects a query needs, created once per thread.
 struct ImageQuery {
   automation: IUIAutomation,
-  condition: IUIAutomationCondition,
   cache: IUIAutomationCacheRequest,
 }
 
@@ -256,40 +269,49 @@ impl ImageQuery {
       }
     }
 
-    // SAFETY: `automation` is live; the variant holds a plain integer,
-    // which needs no clearing.
-    let (condition, cache) = unsafe {
-      let condition = automation.CreatePropertyCondition(
+    // SAFETY: `automation` is live; the variants hold plain values, which
+    // need no clearing.
+    let cache = unsafe {
+      // Images, and the scrollable areas that cut them off: UI Automation
+      // reports an image's full bounds even where one of those hides it.
+      let images = automation.CreatePropertyCondition(
         UIA_ControlTypePropertyId,
         int_variant(i32::try_from(UIA_ImageControlTypeId.0)?),
       )?;
+      let scrollables = automation.CreatePropertyCondition(
+        UIA_IsScrollPatternAvailablePropertyId,
+        true_variant(),
+      )?;
 
-      // Only the two properties are fetched, in the same round trip as
-      // the search, with no live element references kept.
+      // One round trip caches just those elements, as a tree of their own
+      // (the rest is skipped over), with three properties each and no
+      // live element references kept.
       let cache = automation.CreateCacheRequest()?;
+      cache.SetTreeScope(TreeScope_Subtree)?;
+      cache.SetTreeFilter(
+        &automation.CreateOrCondition(&images, &scrollables)?,
+      )?;
       cache.AddProperty(UIA_BoundingRectanglePropertyId)?;
       cache.AddProperty(UIA_IsOffscreenPropertyId)?;
+      cache.AddProperty(UIA_ControlTypePropertyId)?;
       cache.SetAutomationElementMode(AutomationElementMode_None)?;
-
-      (condition, cache)
+      cache
     };
 
-    Ok(Self {
-      automation,
-      condition,
-      cache,
-    })
+    Ok(Self { automation, cache })
   }
 
-  /// The on-screen images of `source`, relative to its frame, largest
+  /// The images of `source` in view, relative to its frame, largest
   /// first and at most `MAX_IMAGE_RECTS`. `root` caches the window's
   /// element across queries.
   fn find(
     &self,
     source: HWND,
     root: &mut Option<IUIAutomationElement>,
-  ) -> crate::Result<Vec<Rect>> {
+  ) -> crate::Result<Vec<FoundImage>> {
     let frame = extended_frame_bounds(source)?;
+    let frame =
+      Rect::from_ltrb(frame.left, frame.top, frame.right, frame.bottom);
 
     let element = if let Some(element) = root {
       element.clone()
@@ -300,54 +322,113 @@ impl ImageQuery {
       element
     };
 
-    // SAFETY: All objects are live, and the cached properties read below
-    // are the ones `self.cache` requested.
-    let found = unsafe {
-      element.FindAllBuildCache(
-        TreeScope_Descendants,
-        &self.condition,
-        &self.cache,
-      )?
-    };
+    // SAFETY: Both objects are live.
+    let tree = unsafe { element.BuildUpdatedCache(&self.cache)? };
 
-    // SAFETY: `found` is a live element array.
-    let count = unsafe { found.Length()? };
-    let mut rects = Vec::new();
+    let mut images = Vec::new();
+    collect_images(&tree, &frame, &mut images)?;
 
-    for index in 0..count {
-      // SAFETY: `index` is within the array's length, and both
-      // properties were cached by the search.
-      let (offscreen, bounds) = unsafe {
-        let image = found.GetElement(index)?;
-        (
-          image.CachedIsOffscreen()?.as_bool(),
-          image.CachedBoundingRectangle()?,
-        )
-      };
-
-      if offscreen {
-        continue;
-      }
-
-      // Relative to the frame, and clipped to it.
-      let rect = Rect::from_ltrb(
-        bounds.left.max(frame.left) - frame.left,
-        bounds.top.max(frame.top) - frame.top,
-        bounds.right.min(frame.right) - frame.left,
-        bounds.bottom.min(frame.bottom) - frame.top,
+    // Relative to the frame.
+    for image in &mut images {
+      image.rect = image.rect.translate_to_coordinates(
+        image.rect.left - frame.left,
+        image.rect.top - frame.top,
       );
-
-      if rect.width() > 0 && rect.height() > 0 {
-        rects.push(rect);
-      }
+      image.view = image.view.translate_to_coordinates(
+        image.view.left - frame.left,
+        image.view.top - frame.top,
+      );
     }
 
-    rects.sort_by_key(|rect| {
-      std::cmp::Reverse(i64::from(rect.width()) * i64::from(rect.height()))
+    images.sort_by_key(|image| {
+      std::cmp::Reverse(
+        i64::from(image.rect.width()) * i64::from(image.rect.height()),
+      )
     });
-    rects.truncate(super::color_capture::MAX_IMAGE_RECTS);
+    images.truncate(super::color_capture::MAX_IMAGE_RECTS);
 
-    Ok(rects)
+    Ok(images)
+  }
+}
+
+/// Adds the images under `node` of a cached tree of images and scrollable
+/// areas to `images`, each cut down to `view` and the scrollable areas
+/// between it and `node`.
+fn collect_images(
+  node: &IUIAutomationElement,
+  view: &Rect,
+  images: &mut Vec<FoundImage>,
+) -> crate::Result<()> {
+  // SAFETY: `node` is a live element from a cache request that included
+  // its children and these three properties.
+  let Ok(children) = (unsafe { node.GetCachedChildren() }) else {
+    return Ok(());
+  };
+
+  // SAFETY: `children` is a live element array.
+  for index in 0..unsafe { children.Length()? } {
+    // SAFETY: `index` is within the array's length, and the properties
+    // were cached.
+    let (child, control_type, offscreen, bounds) = unsafe {
+      let child = children.GetElement(index)?;
+      let control_type = child.CachedControlType()?;
+      let offscreen = child.CachedIsOffscreen()?.as_bool();
+      let bounds = child.CachedBoundingRectangle()?;
+      (child, control_type, offscreen, bounds)
+    };
+
+    let bounds = Rect::from_ltrb(
+      bounds.left,
+      bounds.top,
+      bounds.right,
+      bounds.bottom,
+    );
+    let Some(visible) = intersection(&bounds, view) else {
+      continue;
+    };
+
+    if control_type == UIA_ImageControlTypeId {
+      if !offscreen {
+        images.push(FoundImage {
+          rect: visible,
+          view: view.clone(),
+        });
+      }
+    } else {
+      // A scrollable area: what's under it is cut off at its bounds.
+      collect_images(&child, &visible, images)?;
+    }
+  }
+
+  Ok(())
+}
+
+/// The overlap of `a` and `b`, if any.
+fn intersection(a: &Rect, b: &Rect) -> Option<Rect> {
+  let rect = Rect::from_ltrb(
+    a.left.max(b.left),
+    a.top.max(b.top),
+    a.right.min(b.right),
+    a.bottom.min(b.bottom),
+  );
+
+  (rect.width() > 0 && rect.height() > 0).then_some(rect)
+}
+
+/// A `VT_BOOL` true variant.
+fn true_variant() -> VARIANT {
+  VARIANT {
+    Anonymous: VARIANT_0 {
+      Anonymous: ManuallyDrop::new(VARIANT_0_0 {
+        vt: VT_BOOL,
+        wReserved1: 0,
+        wReserved2: 0,
+        wReserved3: 0,
+        Anonymous: VARIANT_0_0_0 {
+          boolVal: VARIANT_TRUE,
+        },
+      }),
+    },
   }
 }
 

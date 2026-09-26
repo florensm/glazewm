@@ -78,11 +78,14 @@ impl Fingerprint {
   /// The vertical shift, within `max_shift`, at which the picture last
   /// seen at `picture` is found in `region`; `None` if it isn't.
   ///
-  /// Shifts are tried nearest first, so a picture that looks the same at
-  /// several shifts (flat, or repeating) keeps the smallest.
+  /// Only what's shown in `view` (the area it scrolls in) counts, and
+  /// most of the picture must still be there. Shifts are tried nearest
+  /// first, so a picture that looks the same at several shifts (flat, or
+  /// repeating) keeps the smallest.
   pub(crate) fn find_shift(
     &self,
     picture: &Rect,
+    view: &Rect,
     region: &Region,
     max_shift: i32,
   ) -> Option<i32> {
@@ -91,7 +94,7 @@ impl Fingerprint {
     }
 
     if self
-      .difference_at(picture, region, 0)
+      .difference_at(picture, view, region, 0)
       .is_some_and(|difference| difference <= UNCHANGED_MAX_DIFFERENCE)
     {
       return Some(0);
@@ -105,7 +108,8 @@ impl Fingerprint {
           continue;
         }
 
-        let Some(difference) = self.difference_at(picture, region, shift)
+        let Some(difference) =
+          self.difference_at(picture, view, region, shift)
         else {
           continue;
         };
@@ -122,10 +126,11 @@ impl Fingerprint {
   }
 
   /// Mean difference of the samples with the picture moved down by
-  /// `shift`, or `None` if too few of them land in `region`.
+  /// `shift`, or `None` if too few of them land in `view` and `region`.
   fn difference_at(
     &self,
     picture: &Rect,
+    view: &Rect,
     region: &Region,
     shift: i32,
   ) -> Option<f32> {
@@ -133,9 +138,17 @@ impl Fingerprint {
     let mut count = 0_usize;
 
     for &(x, y, color) in &self.samples {
-      if let Some(found) =
-        region.at(picture.left + x, picture.top + y + shift)
+      let (x, y) = (picture.left + x, picture.top + y + shift);
+
+      if x < view.left
+        || y < view.top
+        || x >= view.right
+        || y >= view.bottom
       {
+        continue;
+      }
+
+      if let Some(found) = region.at(x, y) {
         sum += (0..3)
           .map(|c| (found[c] - color[c]).abs())
           .fold(0.0_f32, f32::max);
@@ -200,7 +213,10 @@ mod tests {
       pixels: &after,
     };
 
-    assert_eq!(fingerprint.find_shift(&picture, &region, 64), Some(-25));
+    assert_eq!(
+      fingerprint.find_shift(&picture, &rect, &region, 64),
+      Some(-25)
+    );
   }
 
   #[test]
@@ -233,7 +249,31 @@ mod tests {
       pixels: &after,
     };
 
-    assert_eq!(fingerprint.find_shift(&picture, &region, 64), None);
+    assert_eq!(fingerprint.find_shift(&picture, &rect, &region, 64), None);
+  }
+
+  #[test]
+  fn loses_a_picture_scrolled_out_of_its_view() {
+    let picture = Rect::from_ltrb(10, 60, 50, 100);
+    let (rect, before) = page_with_picture(60);
+    let fingerprint = Fingerprint::sample(
+      &picture,
+      &Region {
+        rect: &rect,
+        pixels: &before,
+      },
+    );
+
+    // Scrolled up by 35 px in a list whose view starts at y = 50: only
+    // its bottom quarter still shows.
+    let (rect, after) = page_with_picture(25);
+    let view = Rect::from_ltrb(0, 50, 60, 200);
+    let region = Region {
+      rect: &rect,
+      pixels: &after,
+    };
+
+    assert_eq!(fingerprint.find_shift(&picture, &view, &region, 64), None);
   }
 
   #[test]
@@ -246,6 +286,9 @@ mod tests {
     };
     let fingerprint = Fingerprint::sample(&picture, &region);
 
-    assert_eq!(fingerprint.find_shift(&picture, &region, 64), Some(0));
+    assert_eq!(
+      fingerprint.find_shift(&picture, &rect, &region, 64),
+      Some(0)
+    );
   }
 }

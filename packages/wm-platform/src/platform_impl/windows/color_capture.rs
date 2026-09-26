@@ -79,7 +79,7 @@ use windows::{
 
 use super::{
   composition::{to_ui_color, with_composition_thread, FILL_PARENT},
-  image_finder::ImageFinder,
+  image_finder::{FoundImage, ImageFinder},
   image_tracking::{Fingerprint, Region},
 };
 use crate::{
@@ -1094,7 +1094,7 @@ impl Renderer {
 
   /// Keeps the pictures among the `found` images in their own colors,
   /// re-rendering the current frame if that changed which ones.
-  fn update_images(&mut self, found: &[Rect]) -> crate::Result<()> {
+  fn update_images(&mut self, found: &[FoundImage]) -> crate::Result<()> {
     if self.failed.load(Ordering::Relaxed) {
       return Ok(());
     }
@@ -1107,16 +1107,17 @@ impl Renderer {
 
     let mut pictures = Vec::new();
 
-    for rect in found {
+    for image in found {
       if let Some(picture) =
-        self.output.picture_rect(&texture, size, rect)?
+        self.output.picture_rect(&texture, size, &image.rect)?
       {
-        pictures.push(picture);
+        pictures.push((picture, image.view.clone()));
       }
     }
 
     if pictures
       .iter()
+      .map(|(rect, _)| rect)
       .eq(self.images.iter().map(|image| &image.rect))
     {
       return Ok(());
@@ -1130,7 +1131,7 @@ impl Renderer {
 
     let mut images = Vec::with_capacity(pictures.len());
 
-    for rect in pictures {
+    for (rect, view) in pictures {
       let pixels = self.output.read_straight(&texture, &rect)?;
       let fingerprint = Fingerprint::sample(
         &rect,
@@ -1139,7 +1140,11 @@ impl Renderer {
           pixels: &pixels,
         },
       );
-      images.push(KeptImage { rect, fingerprint });
+      images.push(KeptImage {
+        rect,
+        view,
+        fingerprint,
+      });
     }
 
     self.images = images;
@@ -1169,11 +1174,16 @@ impl Renderer {
     let mut followed = Vec::with_capacity(self.images.len());
 
     for image in self.images.drain(..) {
+      // Within its view: it's cut off beyond it.
       let search = Rect::from_ltrb(
-        image.rect.left.max(0),
-        (image.rect.top - MAX_PICTURE_SHIFT).max(0),
-        image.rect.right.min(frame.right),
-        (image.rect.bottom + MAX_PICTURE_SHIFT).min(frame.bottom),
+        image.rect.left.max(image.view.left).max(0),
+        (image.rect.top - MAX_PICTURE_SHIFT)
+          .max(image.view.top)
+          .max(0),
+        image.rect.right.min(image.view.right).min(frame.right),
+        (image.rect.bottom + MAX_PICTURE_SHIFT)
+          .min(image.view.bottom)
+          .min(frame.bottom),
       );
 
       if search.width() <= 0 || search.height() <= 0 {
@@ -1189,6 +1199,7 @@ impl Renderer {
 
       match image.fingerprint.find_shift(
         &image.rect,
+        &image.view,
         &region,
         MAX_PICTURE_SHIFT,
       ) {
@@ -1216,10 +1227,22 @@ impl Renderer {
     Ok(())
   }
 
-  /// Uploads the kept pictures' rects for the next render.
+  /// Uploads the kept pictures' rects, cut to their views, for the next
+  /// render.
   fn sync_images(&self) {
-    let rects: Vec<Rect> =
-      self.images.iter().map(|image| image.rect.clone()).collect();
+    let rects: Vec<Rect> = self
+      .images
+      .iter()
+      .map(|image| {
+        Rect::from_ltrb(
+          image.rect.left.max(image.view.left),
+          image.rect.top.max(image.view.top),
+          image.rect.right.min(image.view.right),
+          image.rect.bottom.min(image.view.bottom),
+        )
+      })
+      .filter(|rect| rect.width() > 0 && rect.height() > 0)
+      .collect();
     self.output.set_images(&rects);
   }
 
@@ -1285,6 +1308,10 @@ impl Renderer {
 /// content moves.
 struct KeptImage {
   rect: Rect,
+
+  /// The area it scrolls in; it's cut off beyond it.
+  view: Rect,
+
   fingerprint: Fingerprint,
 }
 
