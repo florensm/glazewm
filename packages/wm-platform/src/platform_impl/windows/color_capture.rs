@@ -82,7 +82,7 @@ use super::{
   image_finder::ImageFinder,
 };
 use crate::{
-  color_theme::{is_picture, ColorTheme},
+  color_theme::{picture_extent, ColorTheme},
   Color, Rect,
 };
 
@@ -98,9 +98,9 @@ const PIXEL_FORMAT: DirectXPixelFormat =
 /// constant buffer.
 pub(crate) const MAX_IMAGE_RECTS: usize = 32;
 
-/// Most pixels read back per side of an image to judge whether it is a
-/// picture; larger images are sampled.
-const PICTURE_SAMPLES_PER_SIDE: i32 = 64;
+/// Most pixels an image is judged from; larger images are sampled on a
+/// grid.
+const PICTURE_MAX_SAMPLES: i32 = 512 * 512;
 
 /// One buffer is held back as the last frame (see `Renderer::last_frame`),
 /// leaving one free for WGC to fill.
@@ -646,17 +646,18 @@ impl CaptureOutput {
     }
   }
 
-  /// Whether `rect` of `texture` (whose content is `size`) shows a
-  /// picture rather than an icon; see [`is_picture`].
+  /// The part of the image reported at `rect` of `texture` (whose content
+  /// is `size`) that shows a picture, or `None` for an icon; see
+  /// [`picture_extent`].
   ///
   /// Reads the image and a 2px margin of page around it back from the
   /// GPU, the margin sampled at the same points the shader uses.
-  fn is_picture(
+  fn picture_rect(
     &self,
     texture: &ID3D11Texture2D,
     size: (u32, u32),
     rect: &Rect,
-  ) -> crate::Result<bool> {
+  ) -> crate::Result<Option<Rect>> {
     let frame = Rect::from_ltrb(
       0,
       0,
@@ -671,7 +672,7 @@ impl CaptureOutput {
     );
 
     if region.width() <= 0 || region.height() <= 0 {
-      return Ok(false);
+      return Ok(None);
     }
 
     let pixels = self.read_straight(texture, &region)?;
@@ -709,19 +710,45 @@ impl CaptureOutput {
     .filter_map(|(x, y)| at(x, y))
     .collect();
 
-    let step_x =
-      usize::try_from((rect.width() / PICTURE_SAMPLES_PER_SIDE).max(1))?;
-    let step_y =
-      usize::try_from((rect.height() / PICTURE_SAMPLES_PER_SIDE).max(1))?;
+    // Transparent pixels (off the frame, rounded corners) read as page.
+    let page = papers.first().copied().unwrap_or([1.0; 3]);
+    let area = i64::from(rect.width()) * i64::from(rect.height());
+    #[allow(
+      clippy::cast_possible_truncation,
+      clippy::cast_precision_loss,
+      clippy::cast_sign_loss
+    )]
+    let step = (area as f64 / f64::from(PICTURE_MAX_SAMPLES))
+      .sqrt()
+      .ceil()
+      .max(1.0) as usize;
+
+    let columns: Vec<i32> =
+      (rect.left..rect.right).step_by(step).collect();
     let content: Vec<[f32; 3]> = (rect.top..rect.bottom)
-      .step_by(step_y)
-      .flat_map(|y| {
-        (rect.left..rect.right).step_by(step_x).map(move |x| (x, y))
-      })
-      .filter_map(|(x, y)| at(x, y))
+      .step_by(step)
+      .flat_map(|y| columns.iter().map(move |&x| (x, y)))
+      .map(|(x, y)| at(x, y).unwrap_or(page))
       .collect();
 
-    Ok(is_picture(&content, &papers))
+    let Some([left, top, right, bottom]) =
+      picture_extent(&content, columns.len(), &papers)
+    else {
+      return Ok(None);
+    };
+
+    // Back from sample indices to frame pixels.
+    let to_frame =
+      |index: usize, start: i32, end: i32| -> crate::Result<i32> {
+        Ok((start + i32::try_from(index * step)?).min(end))
+      };
+
+    Ok(Some(Rect::from_ltrb(
+      to_frame(left, rect.left, rect.right)?,
+      to_frame(top, rect.top, rect.bottom)?,
+      to_frame(right, rect.left, rect.right)?,
+      to_frame(bottom, rect.top, rect.bottom)?,
+    )))
   }
 
   /// Straight-alpha sRGB of `region` of `texture`, row-major; fully
@@ -1067,8 +1094,10 @@ impl Renderer {
     let mut pictures = Vec::new();
 
     for rect in found {
-      if self.output.is_picture(&texture, size, rect)? {
-        pictures.push(rect.clone());
+      if let Some(picture) =
+        self.output.picture_rect(&texture, size, rect)?
+      {
+        pictures.push(picture);
       }
     }
 

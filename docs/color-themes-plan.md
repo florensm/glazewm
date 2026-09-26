@@ -110,6 +110,10 @@ inverted them. Now:
 2. `color_capture.rs` reads each image back from the last frame and keeps
    only pictures (`is_picture`): an icon is one ink over the page, so it's
    still themed like text; a photo has many pixels no single ink explains.
+   UI Automation reports an image's unclipped content bounds (a photo
+   scaled to fill its box overflows it), so `picture_extent` trims each
+   rect to the band that is most picture, split at blank gaps; measured on
+   the showcase, a 240x160 photo reported as 240x341 trims back exactly.
 3. The shader themes a picture's pixels only where they match the page
    sampled around its rect (`apply_image_neighborhood`), so a round
    avatar's corners turn dark with the page, and its anti-aliased rim is

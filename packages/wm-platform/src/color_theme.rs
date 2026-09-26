@@ -117,6 +117,14 @@ const PICTURE_OFF_LINE: f32 = 0.1;
 /// it is a picture. Anti-aliased icons stay near 0; photos are far above.
 const PICTURE_MIN_UNEXPLAINED: f32 = 0.2;
 
+/// Most blank rows or columns a picture may have inside it (e.g. a thin
+/// white band); a longer gap separates it from overflow content.
+const MAX_GAP_WITHIN_PICTURE: usize = 2;
+
+/// A row or column of an image counts as blank page with at most one in
+/// this many of its pixels being anything else (noise, a stray AA pixel).
+const BLANK_LINE_MAX_CONTENT_SHARE_INV: usize = 50;
+
 /// sRGB distance between an override's `from` and the page below which
 /// it isn't tried as ink: too close to tell coverage apart.
 const KNOWN_INK_MIN_CONTRAST: f32 = 0.1;
@@ -648,6 +656,135 @@ impl ColorTheme {
   /// far as it matches one of `papers`.
   fn apply_image(&self, srgb: [f32; 3], papers: &[[f32; 3]]) -> [f32; 3] {
     lerp3(srgb, self.apply(srgb), image_paper_weight(srgb, papers))
+  }
+}
+
+/// The part of an image to keep in its own colors, as `[left, top,
+/// right, bottom)` within its `width`-wide, row-major `pixels`, or `None`
+/// if it isn't a picture (see [`is_picture`]).
+///
+/// UI Automation reports an image's full content bounds, which can reach
+/// well past what it shows: a photo scaled to fill a box overflows it,
+/// clipped only when drawn. The overflow covers the page around it (text,
+/// other images), which layout keeps apart from the picture with blank
+/// gaps. So rows, then columns, are split into bands at blank gaps, and
+/// the band that is most picture is kept.
+#[must_use]
+pub fn picture_extent(
+  pixels: &[[f32; 3]],
+  width: usize,
+  papers: &[[f32; 3]],
+) -> Option<[usize; 4]> {
+  if width == 0 || !pixels.len().is_multiple_of(width) {
+    return None;
+  }
+
+  let height = pixels.len() / width;
+  let at = |x: usize, y: usize| pixels[y * width + x];
+
+  let row_kinds: Vec<LineKind> = (0..height)
+    .map(|y| {
+      line_kind(&(0..width).map(|x| at(x, y)).collect::<Vec<_>>(), papers)
+    })
+    .collect();
+  let (top, bottom) = picture_band(&row_kinds).unwrap_or((0, height));
+
+  let column_kinds: Vec<LineKind> = (0..width)
+    .map(|x| {
+      line_kind(
+        &(top..bottom).map(|y| at(x, y)).collect::<Vec<_>>(),
+        papers,
+      )
+    })
+    .collect();
+  let (left, right) = picture_band(&column_kinds).unwrap_or((0, width));
+
+  let kept: Vec<[f32; 3]> = (top..bottom)
+    .flat_map(|y| (left..right).map(move |x| (x, y)))
+    .map(|(x, y)| at(x, y))
+    .collect();
+
+  is_picture(&kept, papers).then_some([left, top, right, bottom])
+}
+
+/// The `[start, end)` of the band of `lines` with the most picture lines
+/// (ties: the longest), bands being split at gaps of more than
+/// [`MAX_GAP_WITHIN_PICTURE`] blank lines; `None` if no single line looks
+/// like a picture on its own (e.g. a gradient only varies along the other
+/// axis), leaving the whole range to the overall check.
+fn picture_band(lines: &[LineKind]) -> Option<(usize, usize)> {
+  let mut best: Option<(usize, usize, usize)> = None;
+  let mut band: Option<(usize, usize, usize)> = None;
+  let mut blank_run = 0;
+
+  for (index, kind) in lines.iter().enumerate() {
+    if matches!(kind, LineKind::Blank) {
+      blank_run += 1;
+
+      if blank_run > MAX_GAP_WITHIN_PICTURE {
+        if let Some(done) = band.take() {
+          best = Some(better_band(best, done));
+        }
+      }
+
+      continue;
+    }
+
+    blank_run = 0;
+    let is_picture = usize::from(matches!(kind, LineKind::Picture));
+    band = Some(match band {
+      Some((start, _, pictures)) => {
+        (start, index + 1, pictures + is_picture)
+      }
+      None => (index, index + 1, is_picture),
+    });
+  }
+
+  if let Some(done) = band {
+    best = Some(better_band(best, done));
+  }
+
+  best
+    .filter(|&(_, _, pictures)| pictures > 0)
+    .map(|(start, end, _)| (start, end))
+}
+
+/// `(start, end, picture lines)` of whichever band is more picture.
+fn better_band(
+  best: Option<(usize, usize, usize)>,
+  band: (usize, usize, usize),
+) -> (usize, usize, usize) {
+  match best {
+    Some(best)
+      if (best.2, best.1 - best.0) >= (band.2, band.1 - band.0) =>
+    {
+      best
+    }
+    _ => band,
+  }
+}
+
+/// What a row or column of an image shows, for [`picture_extent`].
+enum LineKind {
+  /// Only page.
+  Blank,
+  Picture,
+  /// Text or other page content, or too little to tell.
+  Other,
+}
+
+fn line_kind(pixels: &[[f32; 3]], papers: &[[f32; 3]]) -> LineKind {
+  let content = pixels
+    .iter()
+    .filter(|pixel| image_paper_weight(**pixel, papers) < 0.5)
+    .count();
+
+  if content * BLANK_LINE_MAX_CONTENT_SHARE_INV <= pixels.len() {
+    LineKind::Blank
+  } else if is_picture(pixels, papers) {
+    LineKind::Picture
+  } else {
+    LineKind::Other
   }
 }
 
@@ -1893,6 +2030,62 @@ mod tests {
         without.apply_neighborhood(&window),
       );
     }
+  }
+
+  /// A `width`-wide image of `rows`, each given as a function of `x`.
+  fn image(
+    width: usize,
+    rows: &[&dyn Fn(usize) -> [f32; 3]],
+  ) -> Vec<[f32; 3]> {
+    rows.iter().flat_map(|row| (0..width).map(row)).collect()
+  }
+
+  fn photo_pixel(x: usize) -> [f32; 3] {
+    let tones = ["#e0b89a", "#3c2415", "#b4875b", "#5d8fbf", "#c9d3dc"];
+    rgb(tones[x % tones.len()])
+  }
+
+  #[test]
+  fn picture_extent_trims_overflow_down_to_the_gap() {
+    let paper = rgb("#fbfbfb");
+    let blank = |_: usize| paper;
+    let text = |x: usize| if x % 4 == 0 { rgb("#1f1f1f") } else { paper };
+
+    // A photo whose reported bounds also cover a gap and a line of text
+    // below it, as with a scaled-to-fill image.
+    let mut rows: Vec<&dyn Fn(usize) -> [f32; 3]> = vec![&photo_pixel; 10];
+    rows.extend([&blank as &dyn Fn(usize) -> [f32; 3]; 3]);
+    rows.extend([&text as &dyn Fn(usize) -> [f32; 3]; 4]);
+
+    assert_eq!(
+      picture_extent(&image(40, &rows), 40, &[paper]),
+      Some([0, 0, 40, 10])
+    );
+  }
+
+  #[test]
+  fn picture_extent_keeps_a_picture_without_overflow() {
+    let paper = rgb("#fbfbfb");
+
+    // Its edge rows are a single dark color (like the top of a head),
+    // with no blank gap: nothing to trim.
+    let hair = |_: usize| rgb("#3b2a1f");
+    let mut rows: Vec<&dyn Fn(usize) -> [f32; 3]> = vec![&hair; 2];
+    rows.extend([&photo_pixel as &dyn Fn(usize) -> [f32; 3]; 8]);
+
+    assert_eq!(
+      picture_extent(&image(40, &rows), 40, &[paper]),
+      Some([0, 0, 40, 10])
+    );
+  }
+
+  #[test]
+  fn picture_extent_rejects_icons() {
+    let paper = rgb("#fbfbfb");
+    let glyph = |x: usize| if x % 3 == 0 { rgb("#1f1f1f") } else { paper };
+    let rows: Vec<&dyn Fn(usize) -> [f32; 3]> = vec![&glyph; 24];
+
+    assert_eq!(picture_extent(&image(24, &rows), 24, &[paper]), None);
   }
 
   #[test]

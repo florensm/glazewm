@@ -27,7 +27,8 @@ mod window_listener;
 pub mod test_utils;
 
 pub use color_theme::{
-  is_picture, ColorOverride, ColorTheme, MAX_COLOR_OVERRIDES,
+  is_picture, picture_extent, ColorOverride, ColorTheme,
+  MAX_COLOR_OVERRIDES,
 };
 pub use dispatcher::*;
 pub use display::*;
