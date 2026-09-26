@@ -89,10 +89,8 @@ use super::{
 };
 use crate::{
   color_levels::{estimate_levels, LevelsTracker},
-  color_theme::{
-    ColorTheme, ElementRect, FilterConstants, SourceLevels,
-    MAX_FILTER_SLOTS, MAX_REGIONS,
-  },
+  color_theme::{ColorTheme, SourceLevels},
+  theme_layout::{self, ElementRect, MAX_REGIONS},
   Color, Rect,
 };
 
@@ -227,7 +225,7 @@ impl ThemedCapture {
       elements: Vec::new(),
       content_changed: None,
     })));
-    analysis_worker().register(&renderer);
+    analysis_worker().register_if_needed(&renderer);
 
     let handler_renderer = renderer.clone();
     let frame_arrived =
@@ -268,16 +266,14 @@ impl ThemedCapture {
   /// Switches to `theme`, re-rendering the current frame with it.
   pub(crate) fn set_theme(&mut self, theme: &ColorTheme) {
     self.with_renderer(|renderer| renderer.set_theme(theme));
+    analysis_worker().register_if_needed(&self.renderer);
     self.sync_element_watch(theme);
   }
 
   /// Starts, updates or stops the accessibility queries `theme` needs.
   fn sync_element_watch(&mut self, theme: &ColorTheme) {
-    let kinds = theme
-      .element_slots()
-      .into_iter()
-      .map(|(kind, _)| kind)
-      .collect::<Vec<_>>();
+    let kinds =
+      theme.options().elements.keys().copied().collect::<Vec<_>>();
 
     if kinds.is_empty() {
       if self.elements.take().is_some() {
@@ -615,9 +611,6 @@ impl Gpu {
   }
 }
 
-/// Constant buffer layout shared with `cbuffer Filters` in the shader.
-type FilterSlots = [FilterConstants; MAX_FILTER_SLOTS];
-
 /// Constant buffer layout shared with `cbuffer Frame` in the shader.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -637,6 +630,13 @@ struct RegionConstants {
 
   /// Filter slot of each region in `x`.
   slots: [[u32; 4]; MAX_REGIONS],
+}
+
+impl RegionConstants {
+  const EMPTY: Self = Self {
+    rects: [[0; 4]; MAX_REGIONS],
+    slots: [[0; 4]; MAX_REGIONS],
+  };
 }
 
 /// Render target and CPU-readable copy for sampling a frame.
@@ -688,16 +688,10 @@ impl CaptureOutput {
       levels: [1.0, 0.0, 0.0, 0.0],
     };
 
-    let filters: FilterSlots = theme.filter_constants();
-    let filters = create_constant_buffer(device, &filters)?;
+    let filters =
+      create_constant_buffer(device, &theme_layout::filter_slots(theme))?;
     let frame_constants = create_constant_buffer(device, &frame)?;
-    let regions = create_constant_buffer(
-      device,
-      &RegionConstants {
-        rects: [[0; 4]; MAX_REGIONS],
-        slots: [[0; 4]; MAX_REGIONS],
-      },
-    )?;
+    let regions = create_constant_buffer(device, &RegionConstants::EMPTY)?;
 
     // SAFETY: The adapter's parent is the factory that created it, and
     // every DXGI 1.2+ factory implements `IDXGIFactory2`.
@@ -747,31 +741,33 @@ impl CaptureOutput {
     })
   }
 
-  /// Uploads `theme`'s filters for the next render.
-  fn set_theme(&self, theme: &ColorTheme) {
+  /// Overwrites `buffer`, created by [`create_constant_buffer`] for a
+  /// `T`, with `value`.
+  fn upload<T>(&self, buffer: &ID3D11Buffer, value: &T) {
     let gpu = self.gpu.lock().unwrap_or_else(PoisonError::into_inner);
-    let filters: FilterSlots = theme.filter_constants();
 
-    // SAFETY: The source is a `FilterSlots`, exactly the buffer's size,
-    // and the context is only used under the lock held above.
+    // SAFETY: `buffer` holds exactly one `T`, and the context is only
+    // used under the lock held above.
     unsafe {
       gpu.0.context.UpdateSubresource(
-        &self.filters,
+        buffer,
         0,
         None,
-        std::ptr::from_ref(&filters).cast(),
+        std::ptr::from_ref(value).cast(),
         0,
         0,
       );
     }
   }
 
+  /// Uploads `theme`'s filters for the next render.
+  fn set_theme(&self, theme: &ColorTheme) {
+    self.upload(&self.filters, &theme_layout::filter_slots(theme));
+  }
+
   /// Uploads UI element regions, as `(ltrb, slot)`, for the next render.
   fn set_regions(&mut self, regions: &[([i32; 4], u32)]) {
-    let mut constants = RegionConstants {
-      rects: [[0; 4]; MAX_REGIONS],
-      slots: [[0; 4]; MAX_REGIONS],
-    };
+    let mut constants = RegionConstants::EMPTY;
 
     for (index, (rect, slot)) in
       regions.iter().take(MAX_REGIONS).enumerate()
@@ -780,22 +776,7 @@ impl CaptureOutput {
       constants.slots[index][0] = *slot;
     }
 
-    {
-      let gpu = self.gpu.lock().unwrap_or_else(PoisonError::into_inner);
-
-      // SAFETY: The source is a `RegionConstants`, exactly the buffer's
-      // size, and the context is only used under the lock held above.
-      unsafe {
-        gpu.0.context.UpdateSubresource(
-          &self.regions,
-          0,
-          None,
-          std::ptr::from_ref(&constants).cast(),
-          0,
-          0,
-        );
-      }
-    }
+    self.upload(&self.regions, &constants);
 
     // Bounded by `MAX_REGIONS`.
     #[allow(clippy::cast_possible_truncation)]
@@ -822,20 +803,7 @@ impl CaptureOutput {
     }
 
     self.frame = frame;
-    let gpu = self.gpu.lock().unwrap_or_else(PoisonError::into_inner);
-
-    // SAFETY: The source is a `FrameConstants`, exactly the buffer's
-    // size, and the context is only used under the lock held above.
-    unsafe {
-      gpu.0.context.UpdateSubresource(
-        &self.frame_constants,
-        0,
-        None,
-        std::ptr::from_ref(&self.frame).cast(),
-        0,
-        0,
-      );
-    }
+    self.upload(&self.frame_constants, &frame);
   }
 
   /// Themes the top-left `size` of `texture` into the swap chain and
@@ -1167,6 +1135,9 @@ struct Analysis {
 
   /// Whether a frame arrived since the colors were last measured.
   is_due: bool,
+
+  /// Whether the analysis worker currently looks after this window.
+  is_registered: bool,
 }
 
 impl Renderer {
@@ -1301,7 +1272,7 @@ impl Renderer {
   /// Uploads the measured levels and passthrough, as far as the theme
   /// uses them.
   fn apply_levels(&mut self) {
-    let levels = if self.theme.detect_colors() {
+    let levels = if self.theme.options().detect_colors {
       self.analysis.levels.levels()
     } else {
       SourceLevels::default()
@@ -1309,13 +1280,14 @@ impl Renderer {
 
     self.output.set_levels(
       levels,
-      self.theme.skip_if_dark() && self.analysis.levels.is_dark(),
+      self.theme.options().skip_if_dark && self.analysis.levels.is_dark(),
     );
   }
 
   fn upload_regions(&mut self) {
     let size = self.output.swap_chain_size;
-    let regions = self.theme.element_regions(&self.elements, size);
+    let regions =
+      theme_layout::element_regions(&self.theme, &self.elements, size);
     self.output.set_regions(&regions);
   }
 
@@ -1405,7 +1377,8 @@ impl Renderer {
 
 /// Re-measures the colors of every themed window that changed, every
 /// [`ANALYSIS_INTERVAL`], on a thread of its own: reading pixels back
-/// waits for the GPU, which the frame path must never do.
+/// waits for the GPU, which the frame path must never do. Only windows
+/// whose theme measures colors are tracked, so it sleeps otherwise.
 struct AnalysisWorker {
   renderers: Mutex<Vec<Weak<Mutex<AssertSend<Renderer>>>>>,
   registered: Condvar,
@@ -1431,7 +1404,18 @@ fn analysis_worker() -> &'static AnalysisWorker {
 }
 
 impl AnalysisWorker {
-  fn register(&self, renderer: &SharedRenderer) {
+  /// Starts tracking `renderer` if its theme measures colors and it
+  /// isn't tracked yet.
+  fn register_if_needed(&self, renderer: &SharedRenderer) {
+    let mut guard =
+      renderer.lock().unwrap_or_else(PoisonError::into_inner);
+    let state = &mut guard.0;
+
+    if state.analysis.is_registered || !state.theme.needs_analysis() {
+      return;
+    }
+
+    state.analysis.is_registered = true;
     self
       .renderers
       .lock()
@@ -1449,7 +1433,8 @@ impl AnalysisWorker {
           .unwrap_or_else(PoisonError::into_inner);
         renderers.retain(|renderer| renderer.strong_count() > 0);
 
-        // Sleep until a capture exists rather than ticking for nothing.
+        // Sleep until a window needs measuring rather than ticking for
+        // nothing.
         while renderers.is_empty() {
           renderers = self
             .registered
@@ -1460,9 +1445,25 @@ impl AnalysisWorker {
         renderers.clone()
       };
 
-      for renderer in renderers.iter().filter_map(Weak::upgrade) {
+      for weak in &renderers {
+        let Some(renderer) = weak.upgrade() else {
+          continue;
+        };
         let mut renderer =
           renderer.lock().unwrap_or_else(PoisonError::into_inner);
+
+        // The theme changed to one that doesn't measure colors. Removed
+        // under the renderer's lock, the order `register_if_needed`
+        // locks in, so a theme switching back can't be lost.
+        if !renderer.0.theme.needs_analysis() {
+          renderer.0.analysis.is_registered = false;
+          self
+            .renderers
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .retain(|other| !other.ptr_eq(weak));
+          continue;
+        }
 
         if let Err(err) = renderer.0.analyze_if_due() {
           renderer.0.fail(&err);

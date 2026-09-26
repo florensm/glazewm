@@ -20,6 +20,8 @@ mod platform_event;
 mod platform_impl;
 mod single_instance;
 mod system_accent_color;
+#[cfg(target_os = "windows")]
+mod theme_layout;
 mod thread_bound;
 #[cfg(target_os = "windows")]
 mod window_class;
@@ -31,8 +33,7 @@ pub mod test_utils;
 pub use color_theme::{
   ColorFilter, ColorFilterOptions, ColorOverride, ColorTheme,
   ColorThemeOptions, ElementTreatment, RampStop, SourceLevels,
-  UiElementKind, MAX_COLOR_OVERRIDES, MAX_ELEMENT_FILTERS,
-  MAX_PALETTE_COLORS, MAX_RAMP_STOPS,
+  UiElementKind, MAX_COLOR_OVERRIDES,
 };
 pub use dispatcher::*;
 pub use display::*;

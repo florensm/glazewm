@@ -229,7 +229,9 @@ themes:
     .expect("valid themes");
 
     let winter = &themes["winter"];
-    assert!(winter.detect_colors() && winter.skip_if_dark());
+    let options = winter.options();
+    assert!(options.detect_colors && options.skip_if_dark);
+    assert_eq!(options.elements.len(), 2);
   }
 
   #[test]

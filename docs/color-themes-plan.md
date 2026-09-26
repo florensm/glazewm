@@ -13,6 +13,7 @@ pixel shader, and shown in a click-through overlay directly above it.
 | Capture → shader → composition swap chain, color measuring worker | `packages/wm-platform/src/platform_impl/windows/color_capture.rs` |
 | Paper/ink estimation from a frame sample | `packages/wm-platform/src/color_levels.rs` |
 | UI Automation element rects (background worker) | `packages/wm-platform/src/platform_impl/windows/ui_elements.rs` |
+| Theme → shader layout (filter slots, element regions) | `packages/wm-platform/src/theme_layout.rs` |
 | Overlay window (layered, click-through, above its anchor) | `packages/wm-platform/src/native_color_theme_overlay.rs`, `overlay_window.rs`, `window_class.rs` |
 | `color-themes.yaml` loading + hot reload | `packages/wm/src/color_themes.rs`, schema in `packages/wm-common/src/color_themes_config.rs` |
 | `set-color-theme` command | `packages/wm-common/src/app_command.rs`, handled in `packages/wm/src/wm.rs` |

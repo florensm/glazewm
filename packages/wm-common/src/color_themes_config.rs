@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 
 use serde::Deserialize;
 use wm_platform::{
@@ -58,7 +58,9 @@ pub struct ColorThemeConfig {
   pub overrides: Option<Vec<ColorOverrideConfig>>,
   pub detect_colors: Option<bool>,
   pub skip_if_dark: Option<bool>,
-  pub elements: Option<ElementsConfig>,
+  /// Per UI element kind, `original` or the name of a theme whose colors
+  /// it takes instead.
+  pub elements: Option<BTreeMap<UiElementKind, String>>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -87,29 +89,6 @@ pub struct ColorOverrideConfig {
   pub tolerance: f32,
 }
 
-/// Per UI element kind, `original` or the name of a theme whose colors it
-/// takes instead.
-#[derive(Clone, Debug, Default, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct ElementsConfig {
-  pub edit: Option<String>,
-  pub document: Option<String>,
-  pub button: Option<String>,
-  pub hyperlink: Option<String>,
-  pub check_box: Option<String>,
-  pub radio_button: Option<String>,
-  pub combo_box: Option<String>,
-  pub list_item: Option<String>,
-  pub tree_item: Option<String>,
-  pub tab_item: Option<String>,
-  pub menu_item: Option<String>,
-  pub data_item: Option<String>,
-  pub header: Option<String>,
-  pub tool_bar: Option<String>,
-  pub status_bar: Option<String>,
-  pub title_bar: Option<String>,
-}
-
 fn default_tolerance() -> f32 {
   5.0
 }
@@ -136,31 +115,31 @@ impl ColorThemesConfig {
   fn compile_theme(&self, name: &str) -> anyhow::Result<ColorTheme> {
     let theme = self.resolve(name)?;
     let filter = self.compile_filter(&theme)?;
-    let elements = theme.elements.clone().unwrap_or_default();
-
-    let treatments = elements
-      .entries()
-      .into_iter()
-      .filter_map(|(kind, value)| value.map(|value| (kind, value)))
+    let elements = theme
+      .elements
+      .iter()
+      .flatten()
       .map(|(kind, value)| {
         let treatment = if value == ORIGINAL {
           ElementTreatment::Original
         } else {
-          let other = self.resolve(value).map_err(|err| {
-            anyhow::anyhow!("Element theme '{value}': {err}")
-          })?;
-          ElementTreatment::Filter(self.compile_filter(&other).map_err(
-            |err| anyhow::anyhow!("Element theme '{value}': {err}"),
-          )?)
+          ElementTreatment::Filter(
+            self
+              .resolve(value)
+              .and_then(|other| self.compile_filter(&other))
+              .map_err(|err| {
+                anyhow::anyhow!("Element theme '{value}': {err}")
+              })?,
+          )
         };
 
-        Ok((kind, treatment))
+        Ok((*kind, treatment))
       })
-      .collect::<anyhow::Result<Vec<_>>>()?;
+      .collect::<anyhow::Result<_>>()?;
 
     Ok(ColorTheme::new(ColorThemeOptions {
       filter,
-      elements: treatments,
+      elements,
       detect_colors: theme.detect_colors.unwrap_or(false),
       skip_if_dark: theme.skip_if_dark.unwrap_or(false),
     })?)
@@ -211,11 +190,11 @@ impl ColorThemesConfig {
         .collect(),
       (None, Some(background), Some(foreground)) => vec![
         RampStop {
-          from: white(),
+          from: WHITE,
           to: background,
         },
         RampStop {
-          from: black(),
+          from: BLACK,
           to: foreground,
         },
       ],
@@ -314,72 +293,27 @@ impl ColorThemeConfig {
       overrides: self.overrides.or(parent.overrides),
       detect_colors: self.detect_colors.or(parent.detect_colors),
       skip_if_dark: self.skip_if_dark.or(parent.skip_if_dark),
-      elements: match (self.elements, parent.elements) {
-        (Some(child), Some(parent)) => Some(child.merged_over(parent)),
-        (child, parent) => child.or(parent),
+      elements: match (parent.elements, self.elements) {
+        (Some(mut parent), Some(child)) => {
+          parent.extend(child);
+          Some(parent)
+        }
+        (parent, child) => child.or(parent),
       },
     }
   }
 }
 
-impl ElementsConfig {
-  fn merged_over(self, parent: Self) -> Self {
-    Self {
-      edit: self.edit.or(parent.edit),
-      document: self.document.or(parent.document),
-      button: self.button.or(parent.button),
-      hyperlink: self.hyperlink.or(parent.hyperlink),
-      check_box: self.check_box.or(parent.check_box),
-      radio_button: self.radio_button.or(parent.radio_button),
-      combo_box: self.combo_box.or(parent.combo_box),
-      list_item: self.list_item.or(parent.list_item),
-      tree_item: self.tree_item.or(parent.tree_item),
-      tab_item: self.tab_item.or(parent.tab_item),
-      menu_item: self.menu_item.or(parent.menu_item),
-      data_item: self.data_item.or(parent.data_item),
-      header: self.header.or(parent.header),
-      tool_bar: self.tool_bar.or(parent.tool_bar),
-      status_bar: self.status_bar.or(parent.status_bar),
-      title_bar: self.title_bar.or(parent.title_bar),
-    }
-  }
+const WHITE: Color = Color {
+  r: 255,
+  g: 255,
+  b: 255,
+  a: 255,
+};
 
-  fn entries(&self) -> [(UiElementKind, Option<&str>); 16] {
-    [
-      (UiElementKind::Edit, self.edit.as_deref()),
-      (UiElementKind::Document, self.document.as_deref()),
-      (UiElementKind::Button, self.button.as_deref()),
-      (UiElementKind::Hyperlink, self.hyperlink.as_deref()),
-      (UiElementKind::CheckBox, self.check_box.as_deref()),
-      (UiElementKind::RadioButton, self.radio_button.as_deref()),
-      (UiElementKind::ComboBox, self.combo_box.as_deref()),
-      (UiElementKind::ListItem, self.list_item.as_deref()),
-      (UiElementKind::TreeItem, self.tree_item.as_deref()),
-      (UiElementKind::TabItem, self.tab_item.as_deref()),
-      (UiElementKind::MenuItem, self.menu_item.as_deref()),
-      (UiElementKind::DataItem, self.data_item.as_deref()),
-      (UiElementKind::Header, self.header.as_deref()),
-      (UiElementKind::ToolBar, self.tool_bar.as_deref()),
-      (UiElementKind::StatusBar, self.status_bar.as_deref()),
-      (UiElementKind::TitleBar, self.title_bar.as_deref()),
-    ]
-  }
-}
-
-fn white() -> Color {
-  Color {
-    r: 255,
-    g: 255,
-    b: 255,
-    a: 255,
-  }
-}
-
-fn black() -> Color {
-  Color {
-    r: 0,
-    g: 0,
-    b: 0,
-    a: 255,
-  }
-}
+const BLACK: Color = Color {
+  r: 0,
+  g: 0,
+  b: 0,
+  a: 255,
+};

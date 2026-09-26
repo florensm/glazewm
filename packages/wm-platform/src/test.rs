@@ -22,6 +22,7 @@ mod overlay_window;
 pub mod perf;
 mod platform_event;
 mod platform_impl;
+mod theme_layout;
 mod thread_bound;
 #[cfg(target_os = "windows")]
 mod window_class;

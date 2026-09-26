@@ -91,7 +91,9 @@ impl NativeColorThemeOverlay {
 
   /// Switches to `theme`; no-op when unchanged.
   pub fn set_theme(&mut self, theme: &ColorTheme) {
-    if &self.theme == theme {
+    // Runs every tick: a pointer check, since a changed theme is always
+    // a newly loaded one.
+    if self.theme.is_same(theme) {
       return;
     }
 

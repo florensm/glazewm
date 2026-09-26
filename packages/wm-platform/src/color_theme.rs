@@ -7,7 +7,7 @@
 //! so the unit tests here cover what the GPU computes. Any change to one
 //! must be mirrored in the other.
 
-use std::sync::Arc;
+use std::{collections::BTreeMap, sync::Arc};
 
 use crate::Color;
 
@@ -24,20 +24,6 @@ pub const MAX_PALETTE_COLORS: usize = 16;
 /// Maximum number of distinct filters a theme can assign to UI elements,
 /// on top of its own.
 pub const MAX_ELEMENT_FILTERS: usize = 3;
-
-/// Filters one window renders with: the theme's own, then its element
-/// filters.
-#[cfg(any(target_os = "windows", test))]
-pub(crate) const MAX_FILTER_SLOTS: usize = 1 + MAX_ELEMENT_FILTERS;
-
-/// Element slot that shows the captured pixels unchanged.
-#[cfg(any(target_os = "windows", test))]
-pub(crate) const SLOT_ORIGINAL: u32 = u32::MAX;
-
-/// Maximum number of UI element regions per window; sizes the shader's
-/// constant buffer.
-#[cfg(any(target_os = "windows", test))]
-pub(crate) const MAX_REGIONS: usize = 64;
 
 /// OKLab chroma treated as fully saturated, roughly that of pure sRGB
 /// blue (the most chromatic sRGB primary).
@@ -261,7 +247,7 @@ impl Default for ColorFilterOptions {
 #[derive(Clone, Debug, PartialEq)]
 pub struct ColorFilter {
   /// Shared, since themes are cloned into every overlay.
-  constants: Arc<FilterConstants>,
+  pub(crate) constants: Arc<FilterConstants>,
 }
 
 /// Constant buffer layout shared with `struct Filter` in the shader. Only
@@ -304,7 +290,7 @@ pub(crate) struct FilterConstants {
 }
 
 impl FilterConstants {
-  const IDENTITY: Self = Self {
+  pub(crate) const IDENTITY: Self = Self {
     counts: [0; 4],
     tone: [0.0, 0.0, 1.0, 0.0],
     hue: [1.0, 0.0, 0.0, 0.0],
@@ -571,11 +557,6 @@ impl ColorFilter {
     Ok(Self {
       constants: Arc::new(constants),
     })
-  }
-
-  #[cfg(test)]
-  fn constants(&self) -> &FilterConstants {
-    &self.constants
   }
 
   /// Maps one straight-alpha sRGB color (components in `0.0..=1.0`)
@@ -890,7 +871,18 @@ impl ColorFilter {
 
 /// A kind of UI element, as reported by the app's accessibility tree,
 /// that a theme can render differently.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(
+  Clone,
+  Copy,
+  Debug,
+  PartialEq,
+  Eq,
+  Hash,
+  PartialOrd,
+  Ord,
+  serde::Deserialize,
+)]
+#[serde(rename_all = "snake_case")]
 pub enum UiElementKind {
   Edit,
   Document,
@@ -941,22 +933,13 @@ pub enum ElementTreatment {
   Filter(ColorFilter),
 }
 
-/// A UI element's bounds within the captured frame, in physical pixels
-/// (right and bottom exclusive).
-#[cfg(any(target_os = "windows", test))]
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct ElementRect {
-  pub kind: UiElementKind,
-  pub ltrb: [i32; 4],
-}
-
 /// Settings of a [`ColorTheme`].
 #[derive(Clone, Debug, PartialEq)]
 pub struct ColorThemeOptions {
   pub filter: ColorFilter,
 
   /// Per element kind, how to render it instead of with `filter`.
-  pub elements: Vec<(UiElementKind, ElementTreatment)>,
+  pub elements: BTreeMap<UiElementKind, ElementTreatment>,
 
   /// Measure the window's own paper and ink colors instead of assuming
   /// black on white.
@@ -968,48 +951,40 @@ pub struct ColorThemeOptions {
 
 /// Everything a themed window renders with: a [`ColorFilter`], per-element
 /// treatments, and whether to measure the window's colors.
+///
+/// Cheap to clone; see [`Self::is_same`].
 #[derive(Clone, Debug, PartialEq)]
 pub struct ColorTheme {
-  options: ColorThemeOptions,
-
-  /// Distinct element filters, in slot order after the theme's own.
-  element_filters: Vec<ColorFilter>,
+  options: Arc<ColorThemeOptions>,
 }
 
 impl ColorTheme {
   /// Validates a theme.
   pub fn new(options: ColorThemeOptions) -> crate::Result<Self> {
-    let mut element_filters: Vec<ColorFilter> = Vec::new();
+    let count = element_filters(&options).len();
 
-    for (index, (kind, treatment)) in options.elements.iter().enumerate() {
-      if options.elements[..index]
-        .iter()
-        .any(|(other, _)| other == kind)
-      {
-        return Err(crate::Error::Platform(format!(
-          "UI element {kind:?} is configured twice."
-        )));
-      }
-
-      if let ElementTreatment::Filter(filter) = treatment {
-        if filter != &options.filter && !element_filters.contains(filter) {
-          element_filters.push(filter.clone());
-        }
-      }
-    }
-
-    if element_filters.len() > MAX_ELEMENT_FILTERS {
+    if count > MAX_ELEMENT_FILTERS {
       return Err(crate::Error::Platform(format!(
         "UI elements can use at most {MAX_ELEMENT_FILTERS} distinct \
-         themes, got {}.",
-        element_filters.len()
+         themes, got {count}."
       )));
     }
 
     Ok(Self {
-      options,
-      element_filters,
+      options: Arc::new(options),
     })
+  }
+
+  #[must_use]
+  pub fn options(&self) -> &ColorThemeOptions {
+    &self.options
+  }
+
+  /// Whether `other` is this very theme (not an equal copy), without
+  /// comparing its contents; a reloaded theme is a new one.
+  #[must_use]
+  pub fn is_same(&self, other: &Self) -> bool {
+    Arc::ptr_eq(&self.options, &other.options)
   }
 
   /// Maps `color` through the theme's own filter, as for black-on-white
@@ -1022,108 +997,29 @@ impl ColorTheme {
       .apply_color(color, SourceLevels::default())
   }
 
-  #[must_use]
-  pub fn filter(&self) -> &ColorFilter {
-    &self.options.filter
-  }
-
-  #[must_use]
-  pub fn detect_colors(&self) -> bool {
-    self.options.detect_colors
-  }
-
-  #[must_use]
-  pub fn skip_if_dark(&self) -> bool {
-    self.options.skip_if_dark
-  }
-
   /// Whether the window's pixels need to be measured.
   #[must_use]
   pub fn needs_analysis(&self) -> bool {
     self.options.detect_colors || self.options.skip_if_dark
   }
+}
 
-  /// Element kinds rendered differently, with the filter slot each uses
-  /// (see [`Self::filter_constants`]), or [`SLOT_ORIGINAL`].
-  #[cfg(any(target_os = "windows", test))]
-  pub(crate) fn element_slots(&self) -> Vec<(UiElementKind, u32)> {
-    self
-      .options
-      .elements
-      .iter()
-      .map(|(kind, treatment)| {
-        let slot = match treatment {
-          ElementTreatment::Original => SLOT_ORIGINAL,
-          ElementTreatment::Filter(filter) => self
-            .element_filters
-            .iter()
-            .position(|other| other == filter)
-            // Bounded by `MAX_ELEMENT_FILTERS`.
-            .map_or(0, |index| u32::try_from(index + 1).unwrap_or(0)),
-        };
+/// The distinct filters `options` gives UI elements, other than its own,
+/// in the order their slots are numbered.
+pub(crate) fn element_filters(
+  options: &ColorThemeOptions,
+) -> Vec<&ColorFilter> {
+  let mut filters: Vec<&ColorFilter> = Vec::new();
 
-        (*kind, slot)
-      })
-      .collect()
-  }
-
-  /// The filter in each slot: the theme's own first, then its element
-  /// filters. Unused slots are the identity.
-  #[cfg(any(target_os = "windows", test))]
-  pub(crate) fn filter_constants(
-    &self,
-  ) -> [FilterConstants; MAX_FILTER_SLOTS] {
-    let mut slots = [FilterConstants::IDENTITY; MAX_FILTER_SLOTS];
-    slots[0] = *self.options.filter.constants;
-
-    for (slot, filter) in slots[1..].iter_mut().zip(&self.element_filters)
-    {
-      *slot = *filter.constants;
+  for treatment in options.elements.values() {
+    if let ElementTreatment::Filter(filter) = treatment {
+      if filter != &options.filter && !filters.contains(&filter) {
+        filters.push(filter);
+      }
     }
-
-    slots
   }
-  /// The regions `elements` render with, as `(ltrb, slot)`: clipped to
-  /// the `size` of the frame, largest first so nested elements win in the
-  /// shader, and capped at [`MAX_REGIONS`] (dropping the smallest).
-  #[cfg(any(target_os = "windows", test))]
-  pub(crate) fn element_regions(
-    &self,
-    elements: &[ElementRect],
-    size: (u32, u32),
-  ) -> Vec<([i32; 4], u32)> {
-    let slots = self.element_slots();
-    let width = i32::try_from(size.0).unwrap_or(i32::MAX);
-    let height = i32::try_from(size.1).unwrap_or(i32::MAX);
 
-    let mut regions = elements
-      .iter()
-      .filter_map(|element| {
-        let slot = slots
-          .iter()
-          .find(|(kind, _)| *kind == element.kind)
-          .map(|(_, slot)| *slot)?;
-
-        let [left, top, right, bottom] = element.ltrb;
-        let clipped = [
-          left.max(0),
-          top.max(0),
-          right.min(width),
-          bottom.min(height),
-        ];
-
-        (clipped[0] < clipped[2] && clipped[1] < clipped[3])
-          .then_some((clipped, slot))
-      })
-      .collect::<Vec<_>>();
-
-    let area = |ltrb: &[i32; 4]| {
-      i64::from(ltrb[2] - ltrb[0]) * i64::from(ltrb[3] - ltrb[1])
-    };
-    regions.sort_by_key(|(ltrb, _)| std::cmp::Reverse(area(ltrb)));
-    regions.truncate(MAX_REGIONS);
-    regions
-  }
+  filters
 }
 
 /// Mean coverage of `ink` over `paper` in `pixel`, across the channels
@@ -2823,121 +2719,31 @@ mod tests {
     }
   }
 
-  fn theme_with(
-    elements: Vec<(UiElementKind, ElementTreatment)>,
-  ) -> crate::Result<ColorTheme> {
-    ColorTheme::new(ColorThemeOptions {
+  #[test]
+  fn rejects_too_many_element_filters() {
+    let tinted = |hex: &str| {
+      new_filter(&ColorFilterOptions {
+        ramp: vec![stop("#ffffff", hex), stop("#000000", "#ffffff")],
+        ..options()
+      })
+    };
+    let elements = [
+      UiElementKind::Edit,
+      UiElementKind::Button,
+      UiElementKind::TabItem,
+      UiElementKind::ListItem,
+    ]
+    .into_iter()
+    .zip(["#100000", "#200000", "#300000", "#400000"])
+    .map(|(kind, hex)| (kind, ElementTreatment::Filter(tinted(hex))))
+    .collect();
+
+    assert!(ColorTheme::new(ColorThemeOptions {
       filter: winter(),
       elements,
       detect_colors: false,
       skip_if_dark: false,
     })
-  }
-
-  fn tinted(hex: &str) -> ColorFilter {
-    new_filter(&ColorFilterOptions {
-      ramp: vec![stop("#ffffff", hex), stop("#000000", "#ffffff")],
-      ..options()
-    })
-  }
-
-  #[test]
-  fn element_filters_share_slots() {
-    let theme = theme_with(vec![
-      (UiElementKind::Hyperlink, ElementTreatment::Original),
-      (
-        UiElementKind::Edit,
-        ElementTreatment::Filter(tinted("#202040")),
-      ),
-      (
-        UiElementKind::Button,
-        ElementTreatment::Filter(tinted("#402020")),
-      ),
-      (
-        UiElementKind::ComboBox,
-        ElementTreatment::Filter(tinted("#202040")),
-      ),
-      (UiElementKind::TabItem, ElementTreatment::Filter(winter())),
-    ])
-    .expect("valid theme");
-
-    assert_eq!(
-      theme.element_slots(),
-      vec![
-        (UiElementKind::Hyperlink, SLOT_ORIGINAL),
-        (UiElementKind::Edit, 1),
-        (UiElementKind::Button, 2),
-        (UiElementKind::ComboBox, 1),
-        (UiElementKind::TabItem, 0),
-      ]
-    );
-
-    let slots = theme.filter_constants();
-    assert_eq!(slots[0], *winter().constants());
-    assert_eq!(slots[1], *tinted("#202040").constants());
-    assert_eq!(slots[3], FilterConstants::IDENTITY);
-  }
-
-  #[test]
-  fn rejects_invalid_elements() {
-    let too_many = (0..=MAX_ELEMENT_FILTERS)
-      .map(|index| {
-        let kind = [
-          UiElementKind::Edit,
-          UiElementKind::Button,
-          UiElementKind::TabItem,
-          UiElementKind::ListItem,
-        ][index];
-        (
-          kind,
-          ElementTreatment::Filter(tinted(
-            ["#100000", "#200000", "#300000", "#400000"][index],
-          )),
-        )
-      })
-      .collect();
-    assert!(theme_with(too_many).is_err());
-
-    assert!(theme_with(vec![
-      (UiElementKind::Button, ElementTreatment::Original),
-      (UiElementKind::Button, ElementTreatment::Filter(winter())),
-    ])
     .is_err());
-  }
-
-  #[test]
-  fn element_regions_are_filtered_clipped_and_ordered() {
-    let theme = ColorTheme::new(ColorThemeOptions {
-      filter: winter(),
-      elements: vec![
-        (UiElementKind::Button, ElementTreatment::Original),
-        (
-          UiElementKind::Edit,
-          ElementTreatment::Filter(tinted("#202040")),
-        ),
-      ],
-      detect_colors: false,
-      skip_if_dark: false,
-    })
-    .expect("valid theme");
-
-    let element = |kind, ltrb| ElementRect { kind, ltrb };
-    let regions = theme.element_regions(
-      &[
-        // Partly left of the frame.
-        element(UiElementKind::Button, [-100, 50, 100, 250]),
-        element(UiElementKind::Edit, [0, 0, 400, 30]),
-        // Not configured.
-        element(UiElementKind::ListItem, [0, 0, 50, 50]),
-        // Entirely outside the frame.
-        element(UiElementKind::Edit, [900, 900, 950, 950]),
-      ],
-      (800, 600),
-    );
-
-    assert_eq!(
-      regions,
-      vec![([0, 50, 100, 250], SLOT_ORIGINAL), ([0, 0, 400, 30], 1)]
-    );
   }
 }

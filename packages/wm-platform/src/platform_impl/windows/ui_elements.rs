@@ -19,8 +19,7 @@ use std::{
 };
 
 use windows::Win32::{
-  Foundation::{HWND, RECT},
-  Graphics::Dwm::{DwmGetWindowAttribute, DWMWA_EXTENDED_FRAME_BOUNDS},
+  Foundation::HWND,
   System::{
     Com::{
       CoCreateInstance, CoInitializeEx, CLSCTX_INPROC_SERVER,
@@ -46,7 +45,8 @@ use windows::Win32::{
   },
 };
 
-use crate::color_theme::{ElementRect, UiElementKind};
+use super::NativeWindow;
+use crate::{color_theme::UiElementKind, theme_layout::ElementRect};
 
 /// Shortest time between two queries of the same window.
 const MIN_QUERY_INTERVAL: Duration = Duration::from_millis(400);
@@ -356,7 +356,8 @@ impl Client {
         )?
     };
 
-    let origin = frame_origin(source)?;
+    // What WGC captures, so element rects line up with the frame.
+    let frame = NativeWindow::new(source.0).frame()?;
     // SAFETY: Plain COM call on a live array.
     let count = unsafe { found.Length()? };
     let mut elements = Vec::new();
@@ -387,10 +388,10 @@ impl Client {
       elements.push(ElementRect {
         kind,
         ltrb: [
-          rect.left - origin.0,
-          rect.top - origin.1,
-          rect.right - origin.0,
-          rect.bottom - origin.1,
+          rect.left - frame.left,
+          rect.top - frame.top,
+          rect.right - frame.left,
+          rect.bottom - frame.top,
         ],
       });
     }
@@ -430,24 +431,6 @@ impl Client {
 
     Ok(condition)
   }
-}
-
-/// Top-left corner of `source`'s frame in screen coordinates.
-fn frame_origin(source: HWND) -> crate::Result<(i32, i32)> {
-  let mut rect = RECT::default();
-
-  // SAFETY: `rect` is a `RECT`, exactly the size passed, and outlives the
-  // call; a stale `source` just fails.
-  unsafe {
-    DwmGetWindowAttribute(
-      source,
-      DWMWA_EXTENDED_FRAME_BOUNDS,
-      std::ptr::from_mut(&mut rect).cast(),
-      u32::try_from(std::mem::size_of::<RECT>())?,
-    )?;
-  }
-
-  Ok((rect.left, rect.top))
 }
 
 /// UIA control types reported as `kind`.
