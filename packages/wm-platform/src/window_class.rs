@@ -11,8 +11,8 @@ use windows::{
       DefWindowProcW, GetWindow, GetWindowLongPtrW, GetWindowRect,
       IsWindowVisible, RegisterClassW, SetWindowPos, GWL_EXSTYLE,
       GW_HWNDNEXT, GW_HWNDPREV, HWND_NOTOPMOST, HWND_TOP, HWND_TOPMOST,
-      SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSENDCHANGING, SWP_NOSIZE,
-      WNDCLASSW, WS_EX_TOPMOST,
+      SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOOWNERZORDER, SWP_NOSENDCHANGING,
+      SWP_NOSIZE, WNDCLASSW, WS_EX_TOPMOST,
     },
   },
 };
@@ -211,6 +211,9 @@ pub(crate) fn above_placement(
 
 /// Moves `window` into or out of the always-on-top band, if it isn't
 /// there already.
+///
+/// Leaves the owner of an owned `window` where it is: it's another app's
+/// window, which could also be hung.
 pub(crate) fn set_topmost(window: HWND, topmost: bool) {
   if is_topmost(window) == topmost {
     return;
@@ -231,7 +234,11 @@ pub(crate) fn set_topmost(window: HWND, topmost: bool) {
       0,
       0,
       0,
-      SWP_NOACTIVATE | SWP_NOSENDCHANGING | SWP_NOMOVE | SWP_NOSIZE,
+      SWP_NOACTIVATE
+        | SWP_NOSENDCHANGING
+        | SWP_NOOWNERZORDER
+        | SWP_NOMOVE
+        | SWP_NOSIZE,
     )
   } {
     tracing::warn!("Overlay topmost-band change failed: {err}.");

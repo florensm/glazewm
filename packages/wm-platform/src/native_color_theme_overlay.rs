@@ -3,7 +3,7 @@ use windows::Win32::Foundation::HWND;
 use crate::{
   overlay_window::{OverlayKind, OverlayWindow},
   platform_impl::color_capture::ThemedCapture,
-  Color, ColorTheme, Rect, SurrogateBatch,
+  window_class, Color, ColorTheme, Rect, SurrogateBatch,
 };
 
 /// A click-through window directly above a managed window, showing a live
@@ -30,6 +30,12 @@ pub struct NativeColorThemeOverlay {
 
   /// See [`set_frames_held`](Self::set_frames_held).
   frames_held: bool,
+
+  /// The themed window, as a raw handle so the overlay stays `Send`.
+  source: isize,
+
+  /// See [`create`](Self::create).
+  follows_lifts: bool,
 }
 
 impl NativeColorThemeOverlay {
@@ -42,6 +48,11 @@ impl NativeColorThemeOverlay {
   /// dialogs), which would otherwise show their original colors meanwhile.
   /// With `frames_held`, it starts out as if
   /// [`set_frames_held`](Self::set_frames_held) was called.
+  ///
+  /// With `follows_lifts`, the overlay stays above `source` even while
+  /// it's topmost, when Windows lifts it for one of its popups. That costs
+  /// a thread per overlay, so it's meant for managed windows, not their
+  /// short-lived popups.
   pub fn create(
     source: HWND,
     rect: &Rect,
@@ -49,9 +60,19 @@ impl NativeColorThemeOverlay {
     anchor: HWND,
     placeholder: Option<Color>,
     frames_held: bool,
+    follows_lifts: bool,
   ) -> crate::Result<Self> {
-    let mut window =
-      OverlayWindow::create(OverlayKind::ColorTheme, rect, anchor)?;
+    let mut window = if follows_lifts {
+      OverlayWindow::create_on_own_thread(
+        OverlayKind::ColorTheme,
+        rect,
+        anchor,
+      )?
+    } else {
+      OverlayWindow::create(OverlayKind::ColorTheme, rect, anchor)?
+    };
+
+    window.set_owner(lift_owner(follows_lifts, source, anchor));
     let overlay = window.hwnd();
     let mut placed = false;
 
@@ -86,6 +107,8 @@ impl NativeColorThemeOverlay {
       theme: *theme,
       rect: rect.clone(),
       frames_held,
+      source: source.0,
+      follows_lifts,
     })
   }
 
@@ -144,6 +167,8 @@ impl NativeColorThemeOverlay {
   /// visible: a redraw can raise the window over its overlay without
   /// moving it.
   pub fn set_rect(&mut self, rect: &Rect, anchor: HWND) {
+    self.sync_owner(anchor);
+
     if self.window.is_visible()
       && self.window.anchor() == anchor
       && &self.rect == rect
@@ -186,7 +211,16 @@ impl NativeColorThemeOverlay {
 
   /// Puts the overlay back directly above `anchor` if it has drifted.
   pub fn sync_z_order(&mut self, anchor: HWND) -> crate::Result<()> {
+    self.sync_owner(anchor);
     self.window.sync_z_order_above(anchor)
+  }
+
+  fn sync_owner(&mut self, anchor: HWND) {
+    self.window.set_owner(lift_owner(
+      self.follows_lifts,
+      HWND(self.source),
+      anchor,
+    ));
   }
 
   #[must_use]
@@ -205,4 +239,21 @@ impl NativeColorThemeOverlay {
   pub fn has_failed(&self) -> bool {
     self.capture.has_failed()
   }
+}
+
+/// The window that should own an overlay placed above `anchor`: `source`
+/// itself while it's topmost and the overlay covers it directly (not a
+/// surrogate).
+///
+/// A normal-band window needs no owner: its overlay sits in the topmost
+/// band, out of reach of the lift (see [`window_class::above_placement`]).
+/// A topmost one has nothing above its band to escape to, so only being
+/// owned keeps the overlay above it.
+fn lift_owner(
+  follows_lifts: bool,
+  source: HWND,
+  anchor: HWND,
+) -> Option<HWND> {
+  (follows_lifts && anchor == source && window_class::is_topmost(source))
+    .then_some(source)
 }

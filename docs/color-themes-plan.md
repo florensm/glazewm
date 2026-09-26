@@ -46,13 +46,12 @@ pixel shader, and shown in a click-through overlay directly above it.
   window opening with an animation gets its overlay right away, as a fill
   following the animation (frames held back) instead of after it.
   Removing the last frame would mean modifying the app's windows.
-- Always-on-top windows (floating with `shown_on_top: true`) still flash
-  their original colors when a dropdown or dialog opens: Windows lifts the
-  window to the top of the topmost band, over its overlay, until the
-  z-order resync. Normal windows are safe, because their overlay sits at
-  the bottom of the topmost band. The fix would be making the app's window
-  own the overlay, which links the WM's input handling to the app's, so
-  overlays would need their own thread first.
+- Always-on-top windows (floating with `shown_on_top: true`) have nothing
+  above their band for the overlay to escape the popup lift to, so while
+  topmost they own their overlay instead: Windows keeps owned windows
+  above their owner and lifts them along. Owning across processes
+  attaches input queues, so each managed window's overlay lives on its
+  own message-pumping thread, never the WM's (which doesn't pump).
 - Zen Browser still loses the theme on some clicks. Parked (WPF is the
   target).
 - Gray text in dense glyphs (`k`, close stems) is grayed since `5779983`.

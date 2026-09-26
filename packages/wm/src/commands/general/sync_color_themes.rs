@@ -116,6 +116,7 @@ pub fn sync_color_themes(state: &mut WmState, config: &UserConfig) {
       anchor,
       Some(placeholder(&theme)),
       is_animating,
+      true,
     ) {
       Ok(overlay) => {
         tracing::info!("Color theme applied to {window}.");
@@ -305,6 +306,7 @@ pub fn sync_color_theme_popup(
     &theme,
     hwnd,
     Some(placeholder(&theme)),
+    false,
     false,
   ) {
     Ok(overlay) => {

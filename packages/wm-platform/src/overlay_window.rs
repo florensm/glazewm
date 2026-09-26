@@ -1,14 +1,20 @@
-use std::sync::OnceLock;
+use std::{
+  sync::{mpsc, OnceLock},
+  thread,
+};
 
 use windows::{
   core::{w, PCWSTR},
   Win32::{
-    Foundation::{COLORREF, HWND},
+    Foundation::{COLORREF, HWND, LPARAM, WPARAM},
+    System::Threading::GetCurrentThreadId,
     UI::WindowsAndMessaging::{
-      CreateWindowExW, DestroyWindow, GetClassNameW, GetWindow,
-      SetLayeredWindowAttributes, SetWindowPos, ShowWindow, GW_HWNDPREV,
-      LWA_ALPHA, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSENDCHANGING,
-      SWP_NOSIZE, SWP_SHOWWINDOW, SW_HIDE, WS_EX_LAYERED,
+      CreateWindowExW, DestroyWindow, DispatchMessageW, GetClassNameW,
+      GetMessageW, GetWindow, PostThreadMessageW,
+      SetLayeredWindowAttributes, SetWindowLongPtrW, SetWindowPos,
+      ShowWindow, GWLP_HWNDPARENT, GW_HWNDPREV, LWA_ALPHA, MSG,
+      SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOOWNERZORDER, SWP_NOSENDCHANGING,
+      SWP_NOSIZE, SWP_SHOWWINDOW, SW_HIDE, WM_QUIT, WS_EX_LAYERED,
       WS_EX_NOACTIVATE, WS_EX_NOREDIRECTIONBITMAP, WS_EX_TOOLWINDOW,
       WS_EX_TRANSPARENT, WS_POPUP,
     },
@@ -95,6 +101,14 @@ pub(crate) struct OverlayWindow {
   /// rect change, so re-showing at an unchanged rect still goes through
   /// [`place`](Self::place) and reapplies `SWP_SHOWWINDOW`.
   is_visible: bool,
+
+  /// The thread that created the window and pumps its messages, if not
+  /// the WM's own (see
+  /// [`create_on_own_thread`](Self::create_on_own_thread)).
+  thread: Option<WindowThread>,
+
+  /// Current owner window set by [`set_owner`](Self::set_owner), or 0.
+  owner: isize,
 }
 
 impl OverlayWindow {
@@ -105,17 +119,50 @@ impl OverlayWindow {
     rect: &Rect,
     anchor: HWND,
   ) -> crate::Result<Self> {
+    let hwnd = Self::create_hwnd(kind, rect)?;
+
+    Ok(Self {
+      hwnd: hwnd.0,
+      kind,
+      anchor: anchor.0,
+      is_visible: false,
+      thread: None,
+      owner: 0,
+    })
+  }
+
+  /// Like [`create`](Self::create), but on a dedicated thread that pumps
+  /// the window's messages, which [`set_owner`](Self::set_owner) needs.
+  pub(crate) fn create_on_own_thread(
+    kind: OverlayKind,
+    rect: &Rect,
+    anchor: HWND,
+  ) -> crate::Result<Self> {
+    let (hwnd, thread) = WindowThread::spawn(kind, rect)?;
+
+    Ok(Self {
+      hwnd: hwnd.0,
+      kind,
+      anchor: anchor.0,
+      is_visible: false,
+      thread: Some(thread),
+      owner: 0,
+    })
+  }
+
+  /// Creates the hidden window on the calling thread.
+  fn create_hwnd(kind: OverlayKind, rect: &Rect) -> crate::Result<HWND> {
     window_class::ensure_class_registered(
       kind.registered(),
       kind.class_name(),
       window_class::default_wnd_proc,
     );
 
-    // `WS_EX_TRANSPARENT` is mandatory, not cosmetic: overlays live on the
-    // WM's thread, which never pumps a Win32 message queue, so Windows
-    // treats them as hung. A hit-testable overlay shows the busy cursor
-    // and swallows clicks. `WS_EX_NOREDIRECTIONBITMAP` skips the GDI
-    // surface the composition visual tree replaces.
+    // `WS_EX_TRANSPARENT` is mandatory, not cosmetic: most overlays live
+    // on the WM's thread, which never pumps a Win32 message queue, so
+    // Windows treats them as hung. A hit-testable overlay shows the busy
+    // cursor and swallows clicks. `WS_EX_NOREDIRECTIONBITMAP` skips the
+    // GDI surface the composition visual tree replaces.
     //
     // An overlay above its window additionally needs `WS_EX_LAYERED`: only
     // the combination of the two makes a top-level window invisible to
@@ -154,23 +201,20 @@ impl OverlayWindow {
       )));
     }
 
-    let window = Self {
-      hwnd: hwnd.0,
-      kind,
-      anchor: anchor.0,
-      is_visible: false,
-    };
-
     if ex_style.contains(WS_EX_LAYERED) {
       // A layered window stays invisible until its attributes are set;
       // fully opaque, since the visual tree supplies its own alpha.
       // SAFETY: `hwnd` was just created by this thread.
-      unsafe {
+      if let Err(err) = unsafe {
         SetLayeredWindowAttributes(hwnd, COLORREF(0), 255, LWA_ALPHA)
-      }?;
+      } {
+        // SAFETY: As above.
+        let _ = unsafe { DestroyWindow(hwnd) };
+        return Err(err.into());
+      }
     }
 
-    Ok(window)
+    Ok(hwnd)
   }
 
   pub(crate) fn hwnd(&self) -> HWND {
@@ -280,6 +324,31 @@ impl OverlayWindow {
     Ok(())
   }
 
+  /// Makes `owner` (or no window) own the overlay. Windows keeps owned
+  /// windows above their owner and lifts them along with it, e.g. when
+  /// the owner opens a popup of its own.
+  ///
+  /// Only takes effect on a window from
+  /// [`create_on_own_thread`](Self::create_on_own_thread): owning across
+  /// threads attaches the threads' input queues, and one the WM's
+  /// thread (which never pumps messages) joined would stall the app's
+  /// input. That thread only serves this window, so no two apps' input
+  /// gets tied together through it either.
+  pub(crate) fn set_owner(&mut self, owner: Option<HWND>) {
+    let owner = owner.map_or(0, |owner| owner.0);
+
+    if self.thread.is_none() || self.owner == owner {
+      return;
+    }
+
+    // SAFETY: `self.hwnd()` is a top-level window of this process, for
+    // which `GWLP_HWNDPARENT` sets the owner. The previous value (the old
+    // owner) is not needed; failure leaves `self.owner` stale, so the
+    // next call retries.
+    unsafe { SetWindowLongPtrW(self.hwnd(), GWLP_HWNDPARENT, owner) };
+    self.owner = owner;
+  }
+
   /// Moves the window to `rect` directly above `anchor` and shows it.
   ///
   /// Leaves the tracked state untouched on failure, so the next call
@@ -302,7 +371,10 @@ impl OverlayWindow {
         rect.y(),
         rect.width(),
         rect.height(),
-        SWP_NOACTIVATE | SWP_NOSENDCHANGING | SWP_SHOWWINDOW,
+        SWP_NOACTIVATE
+          | SWP_NOSENDCHANGING
+          | SWP_NOOWNERZORDER
+          | SWP_SHOWWINDOW,
       )
     }
     .map_err(|err| {
@@ -342,7 +414,11 @@ impl OverlayWindow {
           0,
           0,
           0,
-          SWP_NOACTIVATE | SWP_NOSENDCHANGING | SWP_NOMOVE | SWP_NOSIZE,
+          SWP_NOACTIVATE
+            | SWP_NOSENDCHANGING
+            | SWP_NOOWNERZORDER
+            | SWP_NOMOVE
+            | SWP_NOSIZE,
         )
       }?;
     }
@@ -363,10 +439,80 @@ impl OverlayWindow {
 
 impl Drop for OverlayWindow {
   fn drop(&mut self) {
+    // A window on its own thread can only be destroyed there; dropping
+    // `self.thread` has it do so.
+    if self.thread.is_some() {
+      return;
+    }
+
     // SAFETY: `self.hwnd()` is valid and `Drop` runs at most once.
     unsafe {
       let _ = DestroyWindow(self.hwnd());
     }
+  }
+}
+
+/// A thread that owns a single overlay window and pumps its messages
+/// until dropped, then destroys the window.
+struct WindowThread {
+  thread_id: u32,
+}
+
+impl WindowThread {
+  /// Spawns the thread and creates the window on it, returning once the
+  /// window exists.
+  fn spawn(kind: OverlayKind, rect: &Rect) -> crate::Result<(HWND, Self)> {
+    let (sender, receiver) = mpsc::channel();
+    let rect = rect.clone();
+
+    thread::Builder::new()
+      .name(kind.label().to_string())
+      .spawn(move || {
+        let hwnd = match OverlayWindow::create_hwnd(kind, &rect) {
+          Ok(hwnd) => hwnd,
+          Err(err) => {
+            let _ = sender.send(Err(err.to_string()));
+            return;
+          }
+        };
+
+        // SAFETY: No preconditions.
+        let thread_id = unsafe { GetCurrentThreadId() };
+
+        // The WM gave up waiting; nothing will ever use the window.
+        if sender.send(Ok((hwnd.0, thread_id))).is_ok() {
+          let mut msg = MSG::default();
+
+          // SAFETY: `msg` outlives each call. `GetMessageW` returns 0 on
+          // `WM_QUIT` and -1 on failure, both of which end the loop.
+          while unsafe { GetMessageW(&raw mut msg, None, 0, 0) }.0 > 0 {
+            // SAFETY: `msg` was just filled in by `GetMessageW`.
+            unsafe { DispatchMessageW(&raw const msg) };
+          }
+        }
+
+        // SAFETY: The window was created by this thread. It is already
+        // gone if its owner was destroyed, which just fails the call.
+        let _ = unsafe { DestroyWindow(hwnd) };
+      })?;
+
+    match receiver.recv() {
+      Ok(Ok((hwnd, thread_id))) => Ok((HWND(hwnd), Self { thread_id })),
+      Ok(Err(err)) => Err(crate::Error::Platform(err)),
+      Err(_) => Err(crate::Error::Platform(format!(
+        "{} thread exited before creating its window.",
+        kind.label()
+      ))),
+    }
+  }
+}
+
+impl Drop for WindowThread {
+  fn drop(&mut self) {
+    // SAFETY: A thread that already exited just makes the call fail.
+    let _ = unsafe {
+      PostThreadMessageW(self.thread_id, WM_QUIT, WPARAM(0), LPARAM(0))
+    };
   }
 }
 
