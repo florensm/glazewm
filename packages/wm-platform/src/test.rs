@@ -17,6 +17,8 @@ mod mouse_listener;
 #[cfg(target_os = "windows")]
 mod native_surrogate;
 mod native_window;
+#[cfg(target_os = "windows")]
+mod overlay_window;
 pub mod perf;
 mod platform_event;
 mod platform_impl;
@@ -25,6 +27,7 @@ mod thread_bound;
 mod window_class;
 mod window_listener;
 
+pub use color_theme::*;
 pub use dispatcher::*;
 pub use display::*;
 pub use error::*;
@@ -33,6 +36,8 @@ pub use external_color_source::*;
 pub use keybinding_listener::*;
 pub use models::*;
 pub use mouse_listener::*;
+#[cfg(target_os = "windows")]
+pub use native_surrogate::SurrogateBatch;
 pub use native_window::*;
 pub use platform_event::*;
 pub use thread_bound::*;

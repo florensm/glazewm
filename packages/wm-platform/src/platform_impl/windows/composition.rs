@@ -188,7 +188,7 @@ where
 
 /// Converts our `crate::Color` into a `windows::UI::Color` for Composition
 /// brushes.
-fn to_ui_color(color: crate::Color) -> Color {
+pub(crate) fn to_ui_color(color: crate::Color) -> Color {
   Color {
     A: color.a,
     B: color.b,
@@ -606,7 +606,7 @@ fn pixels_to_dips(pixels: i32) -> f32 {
 
 /// `RelativeSizeAdjustment` making a visual track its parent's size (or,
 /// for a target's root, the `HWND`'s) with no explicit size writes.
-const FILL_PARENT: Vector2 = Vector2 { X: 1.0, Y: 1.0 };
+pub(crate) const FILL_PARENT: Vector2 = Vector2 { X: 1.0, Y: 1.0 };
 
 /// Builds the full visual tree: a `ContainerVisual` rooting the
 /// [`Backdrop`] sprite and a tint sprite (flat color) stacked above it,

@@ -72,81 +72,87 @@ All options are documented in `resources/assets/sample-color-themes.yaml`.
 
 ## Known limitations (not planned)
 
-- A new popup shows its original colors for about one frame: Windows draws
-  it before the capture can see it. Avoiding that means modifying the app's
-  windows.
+- Images are themed like everything else. Keeping pictures (photos,
+  avatars) in their own colors via UI Automation was built and removed
+  again to keep the feature focused on text; it lives in commits
+  `0a27f92`..`d4c5fb1` if it's picked up later. The showcase's Images tab
+  is kept as a test page (its "keeps its colors" labels describe that
+  feature).
+
+- A new popup or dialog can still show its original colors for about one
+  frame: Windows draws it before the WM hears of it. Its overlay now shows
+  a themed fill as soon as it exists, before the capture is set up, and a
+  window opening with an animation gets its overlay right away, as a fill
+  following the animation (frames held back) instead of after it.
+  Removing the last frame would mean modifying the app's windows.
+- Always-on-top windows (floating with `shown_on_top: true`) still flash
+  their original colors when a dropdown or dialog opens: Windows lifts the
+  window to the top of the topmost band, over its overlay, until the
+  z-order resync. Normal windows are safe, because their overlay sits at
+  the bottom of the topmost band. The fix would be making the app's window
+  own the overlay, which links the WM's input handling to the app's, so
+  overlays would need their own thread first.
 - Zen Browser still loses the theme on some clicks. Parked (WPF is the
   target).
-- A few faint colored specks remain on some small glyphs.
+- Gray text in dense glyphs (`k`, close stems) is grayed since `5779983`.
+  Thin colored text (e.g. a blue link) recovers its ink's hue from the
+  neighborhood's summed deviation from the paper, so its fringes no longer
+  stay purple/cyan. WPF's fringes on colored text disagree in hue like
+  neutral ones; they're told apart by how unbalanced that deviation is
+  across channels (`wpf_link_keeps_its_color`, measured on a `#1976d2`
+  link: gray pixels 80 -> 28, off-hue 8 -> 1).
+- Overrides as known inks (`known_ink_remix`): where a window is an
+  override's `from` over the page channel by channel, it's re-mixed from
+  that exact ink. On the measured `#1976d2` link: mean error vs. the
+  ideal 0.024 -> 0.000, worst pixel 0.33 -> 0.008; the rest of the
+  screenshot (gray text, a photo) is unchanged.
+- Edges where three colors meet (a bordered colored shape on a light page)
+  can leave a stray off-color pixel: the fit allows per-channel coverage,
+  the re-mix uses the mean.
 
-## Next: follow window movement (phase 2)
+## Phase 2: follow window movement (implemented, needs Windows verification)
 
-Symptom: dragging a themed window leaves the overlay behind; during GlazeWM's
-move/resize animations the overlay is hidden, so the window shows its
-original (white) colors, then snaps back to themed.
+Symptom it fixes: dragging a themed window left the overlay behind; during
+GlazeWM's move/resize animations the overlay was hidden, so the window
+showed its original (white) colors, then snapped back to themed.
 
-### 1. Follow interactive drags
+- **Drags and app-initiated moves**: `handle_window_moved_or_resized`
+  moves a shown overlay to the new frame whenever no animation owns the
+  window (before the active-drag branch, so drags are covered).
+- **`AnimationManager::color_theme_placement`** returns
+  `Following { surrogate, rect, fill }` for a move/resize session,
+  `FadingOut { surrogate }` for its fade-out tail, `Hidden` for workspace
+  switches, close, minimize, zoom, or a session without a surrogate, and
+  `None` otherwise. Close/minimize are checked first since they also live
+  in `resize_sessions`.
+- **Fill layer** (`color_capture.rs`): a `ContainerVisual` root with a
+  `CompositionColorBrush` sprite beneath the swap-chain sprite.
+  `NativeColorThemeOverlay::set_fill` takes the surrogate's edge color,
+  themed via `ColorTheme::apply_color`. The fill only shows while a themed
+  frame is shown, so a failed or not yet started pipeline never leaves a
+  solid slab.
+- **Same-frame movement**: `defer_color_theme_overlays` queues following
+  overlays into `redraw_containers`' `SurrogateBatch`, so overlay and
+  surrogate move in one `DeferWindowPos` transaction (a separate
+  `SetWindowPos` can land a DWM frame later and show a white sliver of the
+  surrogate at the leading edge). `sync_color_themes` then handles showing,
+  re-anchoring, and the fill.
+- **Per tick**: `sync_color_themes` also runs at the end of
+  `update_internal`, since the fade-out tail doesn't always reach
+  `platform_sync`.
+- **Z-order resyncs** (`resync_color_theme_z_order`,
+  `resync_settling_overlays`) anchor to the surrogate while one stands in
+  for the window (`color_theme_anchor`).
+- New overlays are only created when the placement is `None`.
 
-`packages/wm/src/events/handle_window_moved_or_resized.rs`: when the window
-is managed and has an entry in `state.color_theme_overlays`, and the
-animation manager doesn't own it (step 2), call
-`overlay.set_rect(&frame_position, window.native().hwnd())` with the frame
-the handler already queries. Must run in the active-drag branch too, since
-dragged windows are skipped by `platform_sync`.
+Open questions for the Windows test:
 
-### 2. Follow move/resize animations
+- WGC may not deliver frames for the cloaked real window mid-animation; the
+  last frame stays up, and the fill covers any growth.
+- A session with `effect_opacity < 255` (transparent windows) gets an
+  opaque overlay over its translucent surrogate.
 
-During an animation, a surrogate window (a DWM thumbnail in the *original*
-colors) stands in for the cloaked real window.
-
-1. **Fill layer** in `color_capture.rs`. Root the visual tree on a
-   `ContainerVisual` with a `SpriteVisual` + `CompositionColorBrush` fill at
-   the bottom (relative size 1×1, hidden by default) and the existing
-   swap-chain sprite on top. Expose `ThemedCapture::set_fill(Option<Color>)`,
-   forwarded by `NativeColorThemeOverlay::set_fill`. It covers the area the
-   last themed frame doesn't while the window grows, where the surrogate
-   paints its sampled edge color.
-2. **`ColorFilter::apply_color(Color, SourceLevels) -> Color`** in
-   `color_theme.rs`: converts to `[f32; 3]`, calls `apply`, converts
-   back. Add a unit test.
-3. **Placement accessor** on `AnimationManager`
-   (`packages/wm/src/animation/manager.rs`):
-   ```rust
-   pub enum ColorThemePlacement {
-     /// Follow the move/resize surrogate.
-     Following { surrogate: HWND, rect: Rect, fill: Option<Color> },
-     /// The surrogate fades out above the real window, now at its final rect.
-     FadingOut { surrogate: HWND },
-     /// Workspace switch, close, minimize: stay hidden.
-     Hidden,
-   }
-   pub fn color_theme_placement(&self, id: &Uuid) -> Option<ColorThemePlacement>
-   ```
-   - `resize_sessions[id]` → `Following` from `surrogate_hwnd()`,
-     `current_rect()` and `edge_color()`; `Hidden` if either is `None`.
-   - `pending_session_cleanup` entry for `id` → `FadingOut` from its
-     session's `surrogate_hwnd()`.
-   - `workspace_switch` / `pending_ws_cleanup` windows,
-     `pending_close_windows`, `pending_minimize_windows` → `Hidden`.
-   - Otherwise `None` (not animating).
-4. **`sync_color_themes`**: replace the surrogate/tracker conditions in
-   `should_hide` with the placement:
-   - `Some(Hidden)` → hide.
-   - `Some(Following { .. })` → `set_fill(fill.map(|c| filter.apply_color(c, levels)))`
-     and `set_rect(&rect, surrogate)`.
-   - `Some(FadingOut { .. })` → `set_fill(None)` and
-     `set_rect(&window.native().frame()?, surrogate)`, so the overlay sits
-     above the fading surrogate instead of flashing white under it.
-   - `None` → `set_fill(None)` and the current behavior.
-   - Only create new overlays when the placement is `None`.
-5. **Run it every animation frame**: call `sync_color_themes(state, config)`
-   in `AnimationManager::update_internal` just before `drop(cleanup_scope)`
-   (the end of the tick, after surrogates moved), under
-   `#[cfg(target_os = "windows")]`.
-6. **`resync_color_theme_z_order`**: skip windows whose placement is `Some`
-   (anchoring them to the real window mid-animation is wrong).
-
-### 3. Workspace-switch slides (optional, after 1–2)
+## Next (optional): follow workspace-switch slides
 
 Currently hidden during the slide. To follow: `WorkspaceSurrogate::hwnd()`
 plus `unclipped_rect()`; the surrogate is clipped to the monitor, so the
@@ -155,6 +161,10 @@ frame needs an offset. Only worth it if the flash is noticeable.
 ## Verification (run on Windows)
 
 Build needs the Windows SDK's `fxc.exe` (or `FXC=<path>`).
+
+On Linux, `cargo check`/`clippy --target x86_64-pc-windows-msvc` work for
+type-checking with `FXC` pointing at a stub that writes an empty file to
+the `/Fo` path.
 
 ```
 cargo fmt --all

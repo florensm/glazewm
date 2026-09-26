@@ -3,10 +3,12 @@ use std::collections::HashSet;
 use uuid::Uuid;
 use wm_common::WindowState;
 use wm_platform::{
-  NativeColorThemeOverlay, NativeWindow, NativeWindowWindowsExt, WindowId,
+  Color, ColorTheme, NativeColorThemeOverlay, NativeWindow,
+  NativeWindowWindowsExt, SurrogateBatch, WindowId, HWND,
 };
 
 use crate::{
+  animation::ColorThemePlacement,
   traits::{CommonGetters, WindowGetters},
   user_config::UserConfig,
   wm_state::WmState,
@@ -16,9 +18,10 @@ use crate::{
 /// [`NativeColorThemeOverlay`] to match
 /// [`WmState::color_theme_windows`] and the loaded themes.
 ///
-/// The overlay is hidden, not destroyed, while its window is minimized,
-/// on a hidden workspace, or animating through a surrogate: surrogates
-/// show the window's original colors, and the overlay can't follow them.
+/// The overlay is hidden, not destroyed, while its window is minimized
+/// or on a hidden workspace. While a move/resize surrogate stands in for
+/// the window, the overlay covers the surrogate instead, which shows the
+/// window's original colors.
 pub fn sync_color_themes(state: &mut WmState, config: &UserConfig) {
   if state.color_theme_windows.is_empty()
     && state.color_theme_overlays.is_empty()
@@ -53,11 +56,11 @@ pub fn sync_color_themes(state: &mut WmState, config: &UserConfig) {
 
     wanted_ids.insert(id);
 
+    let placement = state.animation_manager.color_theme_placement(&id);
+
     let should_hide = matches!(window.state(), WindowState::Minimized)
       || !window.workspace().is_some_and(|ws| ws.is_displayed())
-      || state.animation_manager.has_active_surrogate(&id)
-      || state.animation_manager.has_live_ws_surrogate(&id)
-      || state.animation_manager.has_live_resize_tracker(&id);
+      || placement == Some(ColorThemePlacement::Hidden);
 
     if should_hide {
       if let Some(overlay) = state.color_theme_overlays.get_mut(&id) {
@@ -79,28 +82,41 @@ pub fn sync_color_themes(state: &mut WmState, config: &UserConfig) {
       }
 
       overlay.set_theme(&theme);
-
-      if redrawing_ids.contains(&id) || !overlay.is_visible() {
-        match window.native().frame() {
-          Ok(rect) => overlay.set_rect(&rect, hwnd),
-          Err(err) => tracing::debug!(
-            "Color theme overlay frame() query failed for {id}: {err}."
-          ),
-        }
-      } else if let Err(err) = overlay.sync_z_order(hwnd) {
-        tracing::debug!(
-          "Color theme overlay z-order sync failed for {id}: {err}."
-        );
-      }
-
+      place_overlay(
+        overlay,
+        placement,
+        &theme,
+        &window.native(),
+        redrawing_ids.contains(&id),
+      );
       continue;
     }
 
-    let Ok(rect) = window.native().frame() else {
-      continue;
+    // A new window, or one whose theme was just switched on. Mid-animation
+    // (e.g. opening), the overlay follows the surrogate as a plain fill:
+    // the capture shows the window at its final place, so its frames are
+    // held back until the animation ends.
+    let (rect, anchor, is_animating) = match placement {
+      None => {
+        let Ok(rect) = window.native().frame() else {
+          continue;
+        };
+        (rect, hwnd, false)
+      }
+      Some(ColorThemePlacement::Following {
+        surrogate, rect, ..
+      }) => (rect, surrogate, true),
+      Some(_) => continue,
     };
 
-    match NativeColorThemeOverlay::create(hwnd, &rect, &theme, hwnd) {
+    match NativeColorThemeOverlay::create(
+      hwnd,
+      &rect,
+      &theme,
+      anchor,
+      Some(placeholder(&theme)),
+      is_animating,
+    ) {
       Ok(overlay) => {
         tracing::info!("Color theme applied to {window}.");
         state.color_theme_overlays.insert(id, overlay);
@@ -127,6 +143,99 @@ pub fn sync_color_themes(state: &mut WmState, config: &UserConfig) {
   state
     .color_theme_failures
     .retain(|id| live_ids.contains(id));
+}
+
+/// What a new overlay shows until its first themed frame: the page color
+/// windows and popups are almost always backed by, themed.
+fn placeholder(theme: &ColorTheme) -> Color {
+  theme.apply_color(Color {
+    r: 255,
+    g: 255,
+    b: 255,
+    a: 255,
+  })
+}
+
+/// Places a shown window's overlay per its animation `placement`.
+fn place_overlay(
+  overlay: &mut NativeColorThemeOverlay,
+  placement: Option<ColorThemePlacement>,
+  theme: &ColorTheme,
+  window: &NativeWindow,
+  is_redrawing: bool,
+) {
+  match placement {
+    Some(ColorThemePlacement::Following {
+      surrogate,
+      rect,
+      fill,
+    }) => {
+      // Held frames leave only the fill to cover the surrogate.
+      let fill = fill
+        .map(|color| theme.apply_color(color))
+        .or_else(|| overlay.frames_held().then(|| placeholder(theme)));
+
+      overlay.set_fill(fill);
+      overlay.set_rect(&rect, surrogate);
+    }
+    // The window is already at its final rect, under the surrogate. Its
+    // last frame may still be at the old size, so the fill stays until a
+    // full-size one arrives.
+    Some(ColorThemePlacement::FadingOut { surrogate }) => {
+      set_rect_to_frame(overlay, window, surrogate);
+      overlay.set_frames_held(false);
+      overlay.release_fill();
+    }
+    Some(ColorThemePlacement::Hidden) => overlay.hide(),
+    None => {
+      overlay.set_frames_held(false);
+      overlay.release_fill();
+
+      if is_redrawing || !overlay.is_visible() {
+        set_rect_to_frame(overlay, window, window.hwnd());
+      } else if let Err(err) = overlay.sync_z_order(window.hwnd()) {
+        tracing::debug!("Color theme overlay z-order sync failed: {err}.");
+      }
+    }
+  }
+}
+
+/// Moves `overlay` to `window`'s frame, directly above `anchor`.
+fn set_rect_to_frame(
+  overlay: &mut NativeColorThemeOverlay,
+  window: &NativeWindow,
+  anchor: HWND,
+) {
+  match window.frame() {
+    Ok(rect) => overlay.set_rect(&rect, anchor),
+    Err(err) => {
+      tracing::debug!("Color theme overlay frame() query failed: {err}.");
+    }
+  }
+}
+
+/// Queues each overlay that follows a move/resize surrogate into the
+/// surrogates' own `batch`, so both move in the same DWM frame and no
+/// sliver of the unthemed surrogate shows at the leading edge.
+///
+/// Only moves overlays already shown; [`sync_color_themes`] decides the
+/// rest later in the same pass.
+pub fn defer_color_theme_overlays(
+  state: &mut WmState,
+  batch: &mut SurrogateBatch,
+) {
+  for (id, overlay) in &mut state.color_theme_overlays {
+    if !overlay.is_visible() {
+      continue;
+    }
+
+    if let Some(ColorThemePlacement::Following {
+      surrogate, rect, ..
+    }) = state.animation_manager.color_theme_placement(id)
+    {
+      overlay.defer_rect(batch, &rect, surrogate);
+    }
+  }
 }
 
 /// An unmanaged popup (menu, dropdown, tooltip) of a themed window's
@@ -189,7 +298,15 @@ pub fn sync_color_theme_popup(
     return;
   };
 
-  match NativeColorThemeOverlay::create(hwnd, &rect, &theme, hwnd) {
+  // Popups appear abruptly, and are almost always light-backed.
+  match NativeColorThemeOverlay::create(
+    hwnd,
+    &rect,
+    &theme,
+    hwnd,
+    Some(placeholder(&theme)),
+    false,
+  ) {
     Ok(overlay) => {
       state
         .color_theme_popups
@@ -256,10 +373,16 @@ pub fn resync_color_theme_z_order(state: &mut WmState) {
   }
 
   for window in state.windows() {
+    let Some(anchor) =
+      color_theme_anchor(state, &window.id(), &window.native())
+    else {
+      continue;
+    };
+
     if let Some(overlay) = state.color_theme_overlays.get_mut(&window.id())
     {
       if overlay.is_visible() {
-        if let Err(err) = overlay.sync_z_order(window.native().hwnd()) {
+        if let Err(err) = overlay.sync_z_order(anchor) {
           tracing::debug!(
             "Color theme overlay z-order sync failed: {err}."
           );
@@ -273,5 +396,24 @@ pub fn resync_color_theme_z_order(state: &mut WmState) {
     {
       tracing::debug!("Color theme popup z-order sync failed: {err}.");
     }
+  }
+}
+
+/// The window a shown color theme overlay belongs directly above: the
+/// surrogate standing in for the window, if any, else the window itself.
+///
+/// `None` while the overlay is hidden for an animation.
+pub fn color_theme_anchor(
+  state: &WmState,
+  id: &Uuid,
+  window: &NativeWindow,
+) -> Option<HWND> {
+  match state.animation_manager.color_theme_placement(id) {
+    None => Some(window.hwnd()),
+    Some(
+      ColorThemePlacement::Following { surrogate, .. }
+      | ColorThemePlacement::FadingOut { surrogate },
+    ) => Some(surrogate),
+    Some(ColorThemePlacement::Hidden) => None,
   }
 }

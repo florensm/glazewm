@@ -1610,6 +1610,8 @@ fn redraw_containers(
     }
     drop(overlay_scope);
 
+    super::defer_color_theme_overlays(state, &mut batch);
+
     batch.commit();
   }
 
@@ -2711,11 +2713,15 @@ pub(crate) fn resync_settling_overlays(state: &mut WmState) {
     resync_overlay::<NativeBackdropOverlay>(state, id, anchor);
     resync_overlay::<NativeBorderOverlay>(state, id, anchor);
 
-    // Kept above the real window, not the surrogate `anchor`: it is
-    // hidden whenever a surrogate is up.
-    if let Some(overlay) = state.color_theme_overlays.get_mut(&id) {
+    // Stacked above, not behind, so it has an anchor of its own.
+    let color_theme_anchor =
+      super::color_theme_anchor(state, &id, &window.native());
+
+    if let (Some(anchor), Some(overlay)) =
+      (color_theme_anchor, state.color_theme_overlays.get_mut(&id))
+    {
       if overlay.is_visible() {
-        if let Err(err) = overlay.sync_z_order(window.native().hwnd()) {
+        if let Err(err) = overlay.sync_z_order(anchor) {
           debug!(
             "Color theme overlay z-order settle failed for {id}: {err}."
           );

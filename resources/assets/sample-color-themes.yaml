@@ -23,7 +23,9 @@
 #                         as light as `from` become `to`, in between is
 #                         interpolated. Use instead of background/foreground.
 #   saturation_threshold  0-1 (0.15). Pixels more colorful than this skip
-#                         the ramp: images, icons, accent colors.
+#                         the ramp: images, icons, accent colors. Light
+#                         pixels get a higher threshold, so pale tints
+#                         (hover and selection highlights) darken too.
 #   accent_lightness      0-1 (0). How far colors that skip the ramp still
 #                         take on its lightness, keeping their hue. 1 turns
 #                         dark blue links into light blue ones on dark.
@@ -47,6 +49,10 @@
 #                         and applied last. `tolerance` is an OKLab
 #                         distance times 100 (~2 is barely noticeable,
 #                         default 5); matches fade out towards its edge.
+#                         A `from` is also taken as a known text color:
+#                         small text in it (e.g. a link) is re-drawn from
+#                         it exactly, instead of guessed from its
+#                         anti-aliased edges.
 #   detect_colors         true/false (false). Measure the app's own
 #                         background and text colors and treat those as
 #                         white and black, so an off-white app lands
