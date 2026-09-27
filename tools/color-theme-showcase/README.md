@@ -5,6 +5,12 @@ colors, images (round avatars, a photo, icons, a scrolling list), and every
 popup kind (ComboBox, `Popup`, tooltip, menus, context menus, DatePicker,
 owned/modeless/unowned dialogs, message box, file dialog).
 
+The Pictures tab is for themes with `keep_pictures` (e.g.
+`catppuccin-pictures`): generated photos with captions, an object on white,
+a dark banner, UI and a flat drawing that should be themed, and a scrolling
+gallery. The pictures come from `Pictures.ps1` and are generated the first
+time the tab opens, which takes a few seconds.
+
 A PowerShell script over the WPF that ships with Windows; no SDK needed.
 
 ```powershell

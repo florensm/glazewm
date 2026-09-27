@@ -20,6 +20,8 @@ if ([Threading.Thread]::CurrentThread.GetApartmentState() -ne 'STA') {
 
 Add-Type -AssemblyName PresentationFramework, PresentationCore, WindowsBase
 
+. (Join-Path $PSScriptRoot 'Pictures.ps1')
+
 # Every window title starts with this, so one window rule matches them all.
 $TitlePrefix = 'Color Theme Showcase'
 
@@ -113,6 +115,74 @@ if ($ImagePath) {
   'Barbara Liskov', 'Donald Knuth', 'Margaret Hamilton', 'Linus Torvalds',
   'Katherine Johnson', 'Dennis Ritchie', 'Frances Allen', 'Ken Thompson'
 )
+
+function New-Picture([int] $Width, [int] $Height, [string] $Kind, [int] $Seed) {
+  $pixels = New-PicturePixels $Width $Height $Kind $Seed
+  $bitmap = [Windows.Media.Imaging.BitmapSource]::Create($Width, $Height, 96, 96,
+    [Windows.Media.PixelFormats]::Bgr32, $null, $pixels, $Width * 4)
+  $bitmap.Freeze()
+  $bitmap
+}
+
+function New-TextBlock([string] $Text, [switch] $Bold, [switch] $Dim) {
+  $block = New-Object Windows.Controls.TextBlock
+  $block.Text = $Text
+  if ($Bold) { $block.FontWeight = [Windows.FontWeights]::SemiBold }
+  if ($Dim) { $block.Foreground = New-Object Windows.Media.SolidColorBrush (
+    [Windows.Media.Color]::FromRgb(0x61, 0x61, 0x61)) }
+  $block
+}
+
+# Generated the first time the Pictures tab opens: a few seconds of
+# PowerShell, not worth paying at startup.
+$script:picturesMade = $false
+(Get-Control 'PicturesPage').Add_Loaded({
+  if ($script:picturesMade) { return }
+  $script:picturesMade = $true
+
+  $pictureStyle = $window.FindResource('Picture')
+  $photos = Get-Control 'Photos'
+  @(
+    @('landscape', 11, 'Hills at noon', 'A landscape with sky and grass'),
+    @('night', 12, 'Street at night', 'Dark, with bright lamps'),
+    @('portrait', 13, 'Portrait', 'A face on a colored background')
+  ) | ForEach-Object {
+    $card = New-Object Windows.Controls.StackPanel
+    $card.Margin = [Windows.Thickness]::new(0, 0, 16, 8)
+    $image = New-Object Windows.Controls.Image
+    $image.Style = $pictureStyle
+    $image.Width = 240
+    $image.Height = 160
+    $image.Source = New-Picture 96 64 $_[0] $_[1]
+    [void] $card.Children.Add($image)
+    [void] $card.Children.Add((New-TextBlock $_[2] -Bold))
+    [void] $card.Children.Add((New-TextBlock $_[3] -Dim))
+    [void] $photos.Children.Add($card)
+  }
+
+  (Get-Control 'ObjectPhoto').Source = New-Picture 96 64 'object' 14
+
+  $gallery = Get-Control 'Gallery'
+  $kinds = 'landscape', 'object', 'night', 'portrait'
+  for ($i = 0; $i -lt 12; $i++) {
+    $row = New-Object Windows.Controls.StackPanel
+    $row.Orientation = [Windows.Controls.Orientation]::Horizontal
+    $row.Margin = [Windows.Thickness]::new(2)
+    $image = New-Object Windows.Controls.Image
+    $image.Style = $pictureStyle
+    $image.Width = 96
+    $image.Height = 64
+    $image.Source = New-Picture 48 32 $kinds[$i % 4] (100 + $i)
+    [void] $row.Children.Add($image)
+    $text = New-Object Windows.Controls.StackPanel
+    $text.Margin = [Windows.Thickness]::new(10, 0, 0, 0)
+    $text.VerticalAlignment = [Windows.VerticalAlignment]::Center
+    [void] $text.Children.Add((New-TextBlock "Picture $($i + 1)" -Bold))
+    [void] $text.Children.Add((New-TextBlock "Generated $($kinds[$i % 4]), seed $(100 + $i)" -Dim))
+    [void] $row.Children.Add($text)
+    [void] $gallery.Items.Add($row)
+  }
+})
 
 # Repaints every second, so the capture keeps delivering frames even when
 # nothing else changes.

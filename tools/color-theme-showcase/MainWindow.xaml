@@ -111,6 +111,13 @@
       <Setter Property="VerticalAlignment" Value="Center" />
     </Style>
 
+    <!-- Generated pictures (see Pictures.ps1), upscaled smoothly. -->
+    <Style x:Key="Picture" TargetType="Image">
+      <Setter Property="Stretch" Value="Fill" />
+      <Setter Property="RenderOptions.BitmapScalingMode" Value="Linear" />
+      <Setter Property="HorizontalAlignment" Value="Left" />
+    </Style>
+
     <ContextMenu x:Key="SampleContextMenu">
       <MenuItem Header="Cut" InputGestureText="Ctrl+X" />
       <MenuItem Header="Copy" InputGestureText="Ctrl+C" />
@@ -381,7 +388,7 @@
             </Image>
 
             <TextBlock FontWeight="SemiBold" Margin="0,12,0,4"
-                       Text="Rectangular photo: keeps its colors" />
+                       Text="Rectangular picture: a drawing unless -ImagePath gives a photo" />
             <Image Style="{StaticResource Avatar}" Width="240" Height="160"
                    HorizontalAlignment="Left" />
 
@@ -411,6 +418,64 @@
                 </DataTemplate>
               </ListBox.ItemTemplate>
             </ListBox>
+          </StackPanel>
+        </ScrollViewer>
+      </TabItem>
+
+      <TabItem Header="Pictures">
+        <ScrollViewer x:Name="PicturesPage" VerticalScrollBarVisibility="Auto">
+          <StackPanel Margin="12">
+            <TextBlock TextWrapping="Wrap" Margin="0,0,0,12"
+                       Text="For themes with keep_pictures: pictures keep their colors, everything else is themed. The pictures are generated when this tab first opens, so they are the same everywhere." />
+
+            <TextBlock FontWeight="SemiBold" Margin="0,0,0,4"
+                       Text="Photos: kept; the captions next to them are themed" />
+            <WrapPanel x:Name="Photos" />
+
+            <TextBlock FontWeight="SemiBold" Margin="0,8,0,4"
+                       Text="Object on white: the object and its shadow are kept, the white around it is page" />
+            <Image x:Name="ObjectPhoto" Style="{StaticResource Picture}"
+                   Width="240" Height="160" />
+
+            <TextBlock FontWeight="SemiBold" Margin="0,12,0,4"
+                       Text="Dark banner: kept, with its text" />
+            <Border Background="#0b2545" Padding="16" Width="520"
+                    HorizontalAlignment="Left">
+              <StackPanel>
+                <TextBlock Foreground="White" FontSize="20" FontWeight="SemiBold"
+                           Text="Banners keep their colors" />
+                <TextBlock Foreground="#c8d3e0" Margin="0,4,0,10" TextWrapping="Wrap"
+                           Text="Big dark areas on a light page stay as they are, text and all." />
+                <Border Background="#f2c14e" CornerRadius="3" Padding="12,4"
+                        HorizontalAlignment="Left">
+                  <TextBlock Foreground="#0b2545" FontWeight="SemiBold" Text="Learn more" />
+                </Border>
+              </StackPanel>
+            </Border>
+
+            <TextBlock FontWeight="SemiBold" Margin="0,12,0,4"
+                       Text="UI and flat drawings: themed like text" />
+            <StackPanel Orientation="Horizontal">
+              <Border Width="300" Height="36" BorderBrush="#a0a0a0" BorderThickness="1"
+                      Margin="0,0,12,0">
+                <Border.Background>
+                  <LinearGradientBrush StartPoint="0,0" EndPoint="0,1">
+                    <GradientStop Color="#fdfdfd" Offset="0" />
+                    <GradientStop Color="#dcdfe4" Offset="1" />
+                  </LinearGradientBrush>
+                </Border.Background>
+                <TextBlock VerticalAlignment="Center" Margin="10,0" Text="Gradient toolbar" />
+              </Border>
+              <Canvas Width="96" Height="64" Background="#e8f1fb">
+                <Ellipse Canvas.Left="8" Canvas.Top="8" Width="28" Height="28" Fill="#f2c14e" />
+                <Rectangle Canvas.Left="0" Canvas.Top="40" Width="96" Height="24" Fill="#5aa469" />
+                <Polygon Points="44,40 66,14 88,40" Fill="#8d6e63" />
+              </Canvas>
+            </StackPanel>
+
+            <TextBlock FontWeight="SemiBold" Margin="0,12,0,4"
+                       Text="Scrolling: pictures follow the list, the text beside them stays themed" />
+            <ListBox x:Name="Gallery" Height="260" Width="460" HorizontalAlignment="Left" />
           </StackPanel>
         </ScrollViewer>
       </TabItem>
