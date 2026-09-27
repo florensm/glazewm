@@ -122,6 +122,10 @@ palettes:
   ]
 
 themes:
+  # Every theme below keeps pictures (`keep_pictures`) except `night` and
+  # `grayscale`, which are meant to change everything; remove the line to
+  # theme pictures too.
+
   # A plain dark theme for light apps.
   winter:
     background: "#1e1e1e"
@@ -132,6 +136,7 @@ themes:
       - { from: "#fff3b0", to: "#5a4a00", tolerance: 10 }
       # Windows accent blue -> a lighter blue that reads on dark.
       - { from: "#0078d4", to: "#4aa3ff", tolerance: 6 }
+    keep_pictures: true
 
   # Catppuccin Mocha: separate surface colors, and readable accents in
   # the palette's colors.
@@ -148,10 +153,6 @@ themes:
     min_contrast: 0.45
     detect_colors: true
     skip_if_dark: true
-
-  # `catppuccin`, with photos left as they are.
-  catppuccin-pictures:
-    extends: catppuccin
     keep_pictures: true
 
   nord:
@@ -165,6 +166,7 @@ themes:
     min_contrast: 0.45
     detect_colors: true
     skip_if_dark: true
+    keep_pictures: true
 
   gruvbox:
     background: "#282828"
@@ -175,6 +177,7 @@ themes:
     warmth: 0.15
     detect_colors: true
     skip_if_dark: true
+    keep_pictures: true
 
   # Everything from `gruvbox`, with Dracula's colors.
   dracula:
@@ -196,6 +199,7 @@ themes:
     min_contrast: 0.45
     detect_colors: true
     skip_if_dark: true
+    keep_pictures: true
 
   # Well-known editor themes, with their surfaces, text and accent colors.
 
@@ -211,6 +215,7 @@ themes:
     min_contrast: 0.45
     detect_colors: true
     skip_if_dark: true
+    keep_pictures: true
 
   solarized-dark:
     ramp:
@@ -224,6 +229,7 @@ themes:
     min_contrast: 0.45
     detect_colors: true
     skip_if_dark: true
+    keep_pictures: true
 
   rose-pine:
     ramp:
@@ -238,6 +244,7 @@ themes:
     min_contrast: 0.45
     detect_colors: true
     skip_if_dark: true
+    keep_pictures: true
 
   everforest:
     ramp:
@@ -251,6 +258,7 @@ themes:
     min_contrast: 0.45
     detect_colors: true
     skip_if_dark: true
+    keep_pictures: true
 
   kanagawa:
     ramp:
@@ -265,6 +273,7 @@ themes:
     warmth: 0.1
     detect_colors: true
     skip_if_dark: true
+    keep_pictures: true
 
   github-dark:
     ramp:
@@ -278,9 +287,9 @@ themes:
     min_contrast: 0.45
     detect_colors: true
     skip_if_dark: true
+    keep_pictures: true
 
-  # Original dark themes. Any theme keeps pictures with a variant like
-  # `catppuccin-pictures`: `extends` it and set `keep_pictures: true`.
+  # Original dark themes.
 
   # Deep navy-black with bright, cool neon accents.
   midnight:
@@ -296,6 +305,7 @@ themes:
     min_contrast: 0.5
     detect_colors: true
     skip_if_dark: true
+    keep_pictures: true
 
   # Warm charcoal with cream text and ember accents, easy on the eyes late.
   ember:
@@ -311,6 +321,7 @@ themes:
     warmth: 0.2
     detect_colors: true
     skip_if_dark: true
+    keep_pictures: true
 
   # Neutral soft gray with muted colors and gentle contrast, for long
   # reading and spreadsheets.
@@ -325,6 +336,7 @@ themes:
     min_contrast: 0.4
     detect_colors: true
     skip_if_dark: true
+    keep_pictures: true
 
   # A light, paper-like theme for reading: warm off-white instead of pure
   # white, dark brown text.
@@ -333,6 +345,7 @@ themes:
     foreground: "#5b4636"
     saturation: 0.8
     detect_colors: true
+    keep_pictures: true
 
   # Keeps the app's own look, dimmer and warmer for the evening.
   night:

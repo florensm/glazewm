@@ -139,7 +139,8 @@ themes:
     .expect("sample color themes should parse");
 
     assert!(themes.contains_key("winter"));
-    assert!(themes["catppuccin-pictures"].options().keep_pictures);
+    assert!(themes["catppuccin"].options().keep_pictures);
+    assert!(!themes["grayscale"].options().keep_pictures);
   }
 
   #[test]

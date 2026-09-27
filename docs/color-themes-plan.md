@@ -90,7 +90,7 @@ All options are documented in `resources/assets/sample-color-themes.yaml`.
 3. An off-white app with `detect_colors`: background exactly
    `background`. Switch the app to its own dark mode with `skip_if_dark`:
    the overlay passes through within ~0.5 s.
-4. `catppuccin-pictures` on a photo-heavy page: photos unchanged, text
+4. `catppuccin` (which keeps pictures) on a photo-heavy page: photos unchanged, text
    beside them themed, no picture edges trailing while scrolling; GPU
    and CPU use similar to `catppuccin` (Task Manager).
 
