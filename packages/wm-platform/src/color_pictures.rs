@@ -510,7 +510,7 @@ pub(crate) mod reference {
 
   /// Mirror the shader's constants of the same names.
   const SMOOTH_STEP_MIN: f32 = 0.008;
-  const SMOOTH_STEP_MAX: f32 = 0.05;
+  const SMOOTH_STEP_MAX: f32 = 0.12;
   const SURFACE_TOLERANCE: f32 = 0.02;
   const GROW: usize = 16;
   const SOLID_RADIUS: i32 = 3;
@@ -976,6 +976,33 @@ mod tests {
       image.at(15, 40),
       "page next to the photo is themed"
     );
+  }
+
+  #[test]
+  fn keeps_small_detailed_pictures_at_any_grid_alignment() {
+    // A 28 px avatar with fine detail (steps of 20/255), like a shrunk
+    // photo; list rows 36 px apart put it at both half-block offsets.
+    #[allow(clippy::cast_possible_truncation)]
+    let detailed =
+      |x: usize, y: usize| [(120 + 20 * ((x + y) % 2)) as u8, 80, 60];
+
+    for top in [16, 20] {
+      let mut image = white_page(96, 64);
+      fill(&mut image, (16, top, 28, 28), detailed);
+
+      let out = keep_pictures(
+        &image,
+        &surfaces(),
+        &filter(),
+        SourceLevels::default(),
+      );
+
+      assert_eq!(
+        out[(top + 14) * image.width + 30],
+        image.at(30, top + 14),
+        "avatar at y {top} is kept"
+      );
+    }
   }
 
   #[test]

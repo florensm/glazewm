@@ -18,10 +18,11 @@
 #define PIXEL_PAGE 4
 
 // Steps between neighboring pixels in this range (sRGB distance) are
-// smooth shading. The lower end is above one step of 8-bit dithering,
-// which browsers add to CSS gradients.
+// photo-like shading. The lower end is above one step of 8-bit dithering,
+// which browsers add to CSS gradients; the upper end admits the detail of
+// a photo shrunk to a small avatar.
 #define SMOOTH_STEP_MIN 0.008
-#define SMOOTH_STEP_MAX 0.05
+#define SMOOTH_STEP_MAX 0.12
 // Distance within which a pixel is of a background or dark surface.
 #define SURFACE_TOLERANCE 0.02
 // How far (in steps through pixels that aren't page) a picture reaches

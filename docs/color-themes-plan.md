@@ -58,7 +58,7 @@ All options are documented in `resources/assets/sample-color-themes.yaml`.
   scrolling, so the regions never lined up with what was on screen.
 - **Keeping pictures** (`keep_pictures`), from pixels alone, per frame:
   1. `ps_blocks` counts per 8×8 block: smooth steps (sRGB distance
-     0.008..0.05) along each axis, background pixels, dark-surface pixels.
+     0.008..0.12) along each axis, background pixels, dark-surface pixels.
      Backgrounds (the page and big flat colors near its lightness) and
      dark surfaces (big flat dark colors on a light page) come from the
      64×64 analysis sample (`estimate_surfaces`).
@@ -76,7 +76,7 @@ All options are documented in `resources/assets/sample-color-themes.yaml`.
      is `ps_main`'s theming (`themed_at`, shared; `ps_main`'s bytecode is
      unchanged).
   GPU parity: all three shaders on lavapipe vs `color_pictures::reference`
-  on 13 screenshots (news sites, Wikipedia, Apple, Win11 Settings, a
+  on 26 screenshots (news sites, Wikipedia, Apple, Win11 Settings, a
   WPF-style app): identical block counts and pixel flags, output within
   0.24/255. Weak spots: flat graphics (logos, maps) are themed; a
   picture's page-colored parts next to the page can be themed.
