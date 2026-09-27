@@ -72,6 +72,13 @@ const SOLID_DARK_SHARE: f32 = 0.9;
 /// to them isn't taken.
 const MIN_DARK_SHARE: f32 = 0.3;
 
+/// Background share from which a block is plain page.
+const PAGE_BLOCK_SHARE: f32 = 0.95;
+
+/// Largest share of the grid a region cut off by the window's edge can
+/// take to be a hole; see `Grid::fill_holes`.
+const MAX_EDGE_HOLE_SHARE: f32 = 0.1;
+
 /// How far, in blocks, kept pixels can be from a picture block: seeds lie
 /// in blocks next to one, and `cs_keep` grows them by up to 16 px.
 const BAND_BLOCKS: usize = 3;
@@ -245,6 +252,7 @@ impl PictureBlocks {
     let mut foreground = vec![false; width * height];
     let mut solid_dark = vec![false; width * height];
     let mut dark_share = vec![0.0; width * height];
+    let mut is_page = vec![false; width * height];
 
     for y in 0..height {
       for x in 0..width {
@@ -279,6 +287,7 @@ impl PictureBlocks {
 
         foreground[index] =
           background / pixels < MAX_FOREGROUND_BACKGROUND_SHARE;
+        is_page[index] = background / pixels >= PAGE_BLOCK_SHARE;
         seeds[index] = foreground[index] && smoothness > MIN_SMOOTH_SHARE;
         solid_dark[index] = dark / pixels >= SOLID_DARK_SHARE;
         dark_share[index] = dark / pixels;
@@ -303,27 +312,23 @@ impl PictureBlocks {
       .zip(&dark)
       .map(|(picture, dark)| *picture || *dark)
       .collect::<Vec<_>>();
-    grid.fill_holes(&mut mask);
+    grid.fill_holes(&mut mask, &is_page);
 
-    let near_counts = (0..width * height)
-      .map(|index| {
-        grid
-          .neighborhood(index, 1)
-          .filter(|neighbor| neighbor.is_some_and(|n| mask[n]))
-          .count()
-      })
-      .collect::<Vec<_>>();
     let within_band = grid.dilate(&mask, BAND_BLOCKS);
 
     let mut flags = vec![0u8; width * height];
     for (index, flag) in flags.iter_mut().enumerate() {
-      if near_counts[index] == 9 {
+      let mut neighbors = grid.neighborhood(index, 1);
+
+      // Outside the window counts as picture: a picture the window's edge
+      // cuts off is still whole up to that edge.
+      if neighbors.all(|neighbor| neighbor.is_none_or(|n| mask[n])) {
         *flag |= BLOCK_INTERIOR;
       } else if within_band[index] {
         *flag |= BLOCK_BAND;
       }
 
-      if near_counts[index] > 0 {
+      if grid.neighborhood(index, 1).flatten().any(|n| mask[n]) {
         *flag |= BLOCK_NEAR;
       }
     }
@@ -379,41 +384,56 @@ impl Grid {
     mask
   }
 
-  /// Adds the blocks the grid's border can't reach without crossing
-  /// `mask` (e.g. white text inside a banner).
-  fn fill_holes(&self, mask: &mut [bool]) {
-    let mut outside = vec![false; mask.len()];
-    let mut stack = (0..mask.len())
-      .filter(|index| {
+  /// Adds the regions `mask` encloses (e.g. white text inside a banner):
+  /// those the grid's border can't reach without crossing it, and small
+  /// ones the border cuts off without a block of plain page, like a
+  /// banner's text scrolled halfway out of the window.
+  fn fill_holes(&self, mask: &mut [bool], is_page: &[bool]) {
+    let mut seen = vec![false; mask.len()];
+
+    for start in 0..mask.len() {
+      if mask[start] || seen[start] {
+        continue;
+      }
+
+      // The 4-connected region of non-mask blocks around `start`.
+      let mut region = vec![start];
+      seen[start] = true;
+      let mut next = 0;
+
+      while let Some(&index) = region.get(next) {
+        next += 1;
         let (x, y) = (index % self.width, index / self.width);
-        (x == 0 || y == 0 || x == self.width - 1 || y == self.height - 1)
-          && !mask[*index]
-      })
-      .collect::<Vec<_>>();
+        let neighbors = [
+          (x > 0).then(|| index - 1),
+          (x + 1 < self.width).then(|| index + 1),
+          (y > 0).then(|| index - self.width),
+          (y + 1 < self.height).then(|| index + self.width),
+        ];
 
-    for index in &stack {
-      outside[*index] = true;
-    }
-
-    while let Some(index) = stack.pop() {
-      let (x, y) = (index % self.width, index / self.width);
-      let neighbors = [
-        (x > 0).then(|| index - 1),
-        (x + 1 < self.width).then(|| index + 1),
-        (y > 0).then(|| index - self.width),
-        (y + 1 < self.height).then(|| index + self.width),
-      ];
-
-      for neighbor in neighbors.into_iter().flatten() {
-        if !mask[neighbor] && !outside[neighbor] {
-          outside[neighbor] = true;
-          stack.push(neighbor);
+        for neighbor in neighbors.into_iter().flatten() {
+          if !mask[neighbor] && !seen[neighbor] {
+            seen[neighbor] = true;
+            region.push(neighbor);
+          }
         }
       }
-    }
 
-    for (block, is_outside) in mask.iter_mut().zip(outside) {
-      *block |= !is_outside;
+      let touches_border = region.iter().any(|index| {
+        let (x, y) = (index % self.width, index / self.width);
+        x == 0 || y == 0 || x == self.width - 1 || y == self.height - 1
+      });
+      #[allow(clippy::cast_precision_loss)]
+      let is_small =
+        region.len() as f32 <= mask.len() as f32 * MAX_EDGE_HOLE_SHARE;
+
+      if !touches_border
+        || (is_small && !region.iter().any(|index| is_page[*index]))
+      {
+        for index in region {
+          mask[index] = true;
+        }
+      }
     }
   }
 
@@ -995,6 +1015,28 @@ mod tests {
     assert_eq!(at(50, 20), sample(NAVY), "banner is kept");
     assert_eq!(at(50, 36), sample(WHITE), "its text is kept");
     assert_ne!(at(50, 80), sample([0, 0, 0]), "page text is themed");
+  }
+
+  #[test]
+  fn keeps_banner_text_cut_off_by_the_window_edge() {
+    let mut image = white_page(160, 96);
+    fill(&mut image, (0, 48, 160, 48), |_, _| NAVY);
+    // White text on the banner, running out of the window's bottom edge.
+    for x in (40..120).step_by(4) {
+      fill(&mut image, (x, 84, 2, 12), |_, _| WHITE);
+    }
+
+    let out = keep_pictures(
+      &image,
+      &surfaces(),
+      &filter(),
+      SourceLevels::default(),
+    );
+    let at = |x: usize, y: usize| out[y * image.width + x];
+
+    assert_eq!(at(40, 95), sample(WHITE), "text at the edge is kept");
+    assert_eq!(at(42, 95), sample(NAVY), "the banner around it too");
+    assert_ne!(at(40, 20), sample(WHITE), "the page is themed");
   }
 
   #[test]
