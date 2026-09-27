@@ -90,6 +90,36 @@ palettes:
     "#7aa2f7", "#7dcfff", "#9ece6a", "#bb9af7", "#f7768e", "#ff9e64",
     "#e0af68", "#73daca",
   ]
+  one-dark: [
+    "#e06c75", "#98c379", "#e5c07b", "#61afef", "#c678dd", "#56b6c2",
+    "#d19a66",
+  ]
+  solarized: [
+    "#b58900", "#cb4b16", "#dc322f", "#d33682", "#6c71c4", "#268bd2",
+    "#2aa198", "#859900",
+  ]
+  rose-pine: [
+    "#eb6f92", "#f6c177", "#ebbcba", "#31748f", "#9ccfd8", "#c4a7e7",
+  ]
+  everforest: [
+    "#e67e80", "#e69875", "#dbbc7f", "#a7c080", "#83c092", "#7fbbb3",
+    "#d699b6",
+  ]
+  kanagawa: [
+    "#e46876", "#ffa066", "#e6c384", "#98bb6c", "#7aa89f", "#7e9cd8",
+    "#957fb8", "#d27e99",
+  ]
+  github-dark: [
+    "#58a6ff", "#3fb950", "#f85149", "#d29922", "#bc8cff", "#db6d28",
+    "#39c5cf",
+  ]
+  # For the `midnight` and `ember` themes below.
+  neon: [
+    "#5ccfe6", "#7aa2ff", "#b48cff", "#ff7ab2", "#ffcc66", "#8be28b",
+  ]
+  embers: [
+    "#f28c52", "#e8b44c", "#d9695f", "#b7c26b", "#7fb3a8", "#c9a0dc",
+  ]
 
 themes:
   # A plain dark theme for light apps.
@@ -164,6 +194,135 @@ themes:
     palette: tokyo-night
     palette_strength: 0.7
     min_contrast: 0.45
+    detect_colors: true
+    skip_if_dark: true
+
+  # Well-known editor themes, with their surfaces, text and accent colors.
+
+  one-dark:
+    ramp:
+      - { from: "#ffffff", to: "#282c34" }
+      - { from: "#f0f0f0", to: "#21252b" }
+      - { from: "#d0d0d0", to: "#3e4451" }
+      - { from: "#000000", to: "#abb2bf" }
+    accent_lightness: 0.8
+    palette: one-dark
+    palette_strength: 0.8
+    min_contrast: 0.45
+    detect_colors: true
+    skip_if_dark: true
+
+  solarized-dark:
+    ramp:
+      - { from: "#ffffff", to: "#002b36" }
+      - { from: "#f0f0f0", to: "#073642" }
+      - { from: "#d0d0d0", to: "#586e75" }
+      - { from: "#000000", to: "#93a1a1" }
+    accent_lightness: 0.7
+    palette: solarized
+    palette_strength: 0.8
+    min_contrast: 0.45
+    detect_colors: true
+    skip_if_dark: true
+
+  rose-pine:
+    ramp:
+      - { from: "#ffffff", to: "#191724" }
+      - { from: "#f0f0f0", to: "#1f1d2e" }
+      - { from: "#d0d0d0", to: "#26233a" }
+      - { from: "#000000", to: "#e0def4" }
+    accent_lightness: 0.8
+    vibrance: 0.2
+    palette: rose-pine
+    palette_strength: 0.8
+    min_contrast: 0.45
+    detect_colors: true
+    skip_if_dark: true
+
+  everforest:
+    ramp:
+      - { from: "#ffffff", to: "#2d353b" }
+      - { from: "#f0f0f0", to: "#232a2e" }
+      - { from: "#d0d0d0", to: "#475258" }
+      - { from: "#000000", to: "#d3c6aa" }
+    accent_lightness: 0.75
+    palette: everforest
+    palette_strength: 0.8
+    min_contrast: 0.45
+    detect_colors: true
+    skip_if_dark: true
+
+  kanagawa:
+    ramp:
+      - { from: "#ffffff", to: "#1f1f28" }
+      - { from: "#f0f0f0", to: "#16161d" }
+      - { from: "#d0d0d0", to: "#54546d" }
+      - { from: "#000000", to: "#dcd7ba" }
+    accent_lightness: 0.75
+    palette: kanagawa
+    palette_strength: 0.8
+    min_contrast: 0.45
+    warmth: 0.1
+    detect_colors: true
+    skip_if_dark: true
+
+  github-dark:
+    ramp:
+      - { from: "#ffffff", to: "#0d1117" }
+      - { from: "#f0f0f0", to: "#010409" }
+      - { from: "#d0d0d0", to: "#30363d" }
+      - { from: "#000000", to: "#e6edf3" }
+    accent_lightness: 0.8
+    palette: github-dark
+    palette_strength: 0.8
+    min_contrast: 0.45
+    detect_colors: true
+    skip_if_dark: true
+
+  # Original dark themes. Any theme keeps pictures with a variant like
+  # `catppuccin-pictures`: `extends` it and set `keep_pictures: true`.
+
+  # Deep navy-black with bright, cool neon accents.
+  midnight:
+    ramp:
+      - { from: "#ffffff", to: "#0b0f1a" }
+      - { from: "#f0f0f0", to: "#070a12" }
+      - { from: "#d0d0d0", to: "#1c2433" }
+      - { from: "#000000", to: "#d6e2f0" }
+    accent_lightness: 0.85
+    vibrance: 0.4
+    palette: neon
+    palette_strength: 0.9
+    min_contrast: 0.5
+    detect_colors: true
+    skip_if_dark: true
+
+  # Warm charcoal with cream text and ember accents, easy on the eyes late.
+  ember:
+    ramp:
+      - { from: "#ffffff", to: "#1c1714" }
+      - { from: "#f0f0f0", to: "#15110f" }
+      - { from: "#d0d0d0", to: "#3a2f28" }
+      - { from: "#000000", to: "#e8d9c5" }
+    accent_lightness: 0.75
+    palette: embers
+    palette_strength: 0.85
+    min_contrast: 0.45
+    warmth: 0.2
+    detect_colors: true
+    skip_if_dark: true
+
+  # Neutral soft gray with muted colors and gentle contrast, for long
+  # reading and spreadsheets.
+  graphite:
+    ramp:
+      - { from: "#ffffff", to: "#26272b" }
+      - { from: "#f0f0f0", to: "#1f2023" }
+      - { from: "#d0d0d0", to: "#3a3c42" }
+      - { from: "#000000", to: "#c9ccd1" }
+    accent_lightness: 0.7
+    saturation: 0.7
+    min_contrast: 0.4
     detect_colors: true
     skip_if_dark: true
 
