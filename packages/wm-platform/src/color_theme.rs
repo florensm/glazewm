@@ -7,7 +7,7 @@
 //! so the unit tests here cover what the GPU computes. Any change to one
 //! must be mirrored in the other.
 
-use std::{collections::BTreeMap, sync::Arc};
+use std::sync::Arc;
 
 use crate::Color;
 
@@ -20,10 +20,6 @@ pub const MAX_RAMP_STOPS: usize = 8;
 
 /// Maximum number of (non-gray) palette colors per filter.
 pub const MAX_PALETTE_COLORS: usize = 16;
-
-/// Maximum number of distinct filters a theme can assign to UI elements,
-/// on top of its own.
-pub const MAX_ELEMENT_FILTERS: usize = 3;
 
 /// OKLab chroma treated as fully saturated, roughly that of pure sRGB
 /// blue (the most chromatic sRGB primary).
@@ -869,77 +865,10 @@ impl ColorFilter {
   }
 }
 
-/// A kind of UI element, as reported by the app's accessibility tree,
-/// that a theme can render differently.
-#[derive(
-  Clone,
-  Copy,
-  Debug,
-  PartialEq,
-  Eq,
-  Hash,
-  PartialOrd,
-  Ord,
-  serde::Deserialize,
-)]
-#[serde(rename_all = "snake_case")]
-pub enum UiElementKind {
-  Edit,
-  Document,
-  Button,
-  Hyperlink,
-  CheckBox,
-  RadioButton,
-  ComboBox,
-  ListItem,
-  TreeItem,
-  TabItem,
-  MenuItem,
-  DataItem,
-  Header,
-  ToolBar,
-  StatusBar,
-  TitleBar,
-}
-
-impl UiElementKind {
-  pub const ALL: [Self; 16] = [
-    Self::Edit,
-    Self::Document,
-    Self::Button,
-    Self::Hyperlink,
-    Self::CheckBox,
-    Self::RadioButton,
-    Self::ComboBox,
-    Self::ListItem,
-    Self::TreeItem,
-    Self::TabItem,
-    Self::MenuItem,
-    Self::DataItem,
-    Self::Header,
-    Self::ToolBar,
-    Self::StatusBar,
-    Self::TitleBar,
-  ];
-}
-
-/// How a theme renders one kind of UI element.
-#[derive(Clone, Debug, PartialEq)]
-pub enum ElementTreatment {
-  /// The app's own colors, unchanged.
-  Original,
-
-  /// A filter of its own instead of the theme's.
-  Filter(ColorFilter),
-}
-
 /// Settings of a [`ColorTheme`].
 #[derive(Clone, Debug, PartialEq)]
 pub struct ColorThemeOptions {
   pub filter: ColorFilter,
-
-  /// Per element kind, how to render it instead of with `filter`.
-  pub elements: BTreeMap<UiElementKind, ElementTreatment>,
 
   /// Measure the window's own paper and ink colors instead of assuming
   /// black on white.
@@ -949,8 +878,8 @@ pub struct ColorThemeOptions {
   pub skip_if_dark: bool,
 }
 
-/// Everything a themed window renders with: a [`ColorFilter`], per-element
-/// treatments, and whether to measure the window's colors.
+/// Everything a themed window renders with: a [`ColorFilter`], and
+/// whether to measure the window's colors.
 ///
 /// Cheap to clone; see [`Self::is_same`].
 #[derive(Clone, Debug, PartialEq)]
@@ -959,20 +888,11 @@ pub struct ColorTheme {
 }
 
 impl ColorTheme {
-  /// Validates a theme.
-  pub fn new(options: ColorThemeOptions) -> crate::Result<Self> {
-    let count = element_filters(&options).len();
-
-    if count > MAX_ELEMENT_FILTERS {
-      return Err(crate::Error::Platform(format!(
-        "UI elements can use at most {MAX_ELEMENT_FILTERS} distinct \
-         themes, got {count}."
-      )));
-    }
-
-    Ok(Self {
+  #[must_use]
+  pub fn new(options: ColorThemeOptions) -> Self {
+    Self {
       options: Arc::new(options),
-    })
+    }
   }
 
   #[must_use]
@@ -1002,24 +922,6 @@ impl ColorTheme {
   pub fn needs_analysis(&self) -> bool {
     self.options.detect_colors || self.options.skip_if_dark
   }
-}
-
-/// The distinct filters `options` gives UI elements, other than its own,
-/// in the order their slots are numbered.
-pub(crate) fn element_filters(
-  options: &ColorThemeOptions,
-) -> Vec<&ColorFilter> {
-  let mut filters: Vec<&ColorFilter> = Vec::new();
-
-  for treatment in options.elements.values() {
-    if let ElementTreatment::Filter(filter) = treatment {
-      if filter != &options.filter && !filters.contains(&filter) {
-        filters.push(filter);
-      }
-    }
-  }
-
-  filters
 }
 
 /// Mean coverage of `ink` over `paper` in `pixel`, across the channels
@@ -2717,33 +2619,5 @@ mod tests {
     ] {
       assert!(ColorFilter::new(&invalid).is_err(), "{invalid:?}");
     }
-  }
-
-  #[test]
-  fn rejects_too_many_element_filters() {
-    let tinted = |hex: &str| {
-      new_filter(&ColorFilterOptions {
-        ramp: vec![stop("#ffffff", hex), stop("#000000", "#ffffff")],
-        ..options()
-      })
-    };
-    let elements = [
-      UiElementKind::Edit,
-      UiElementKind::Button,
-      UiElementKind::TabItem,
-      UiElementKind::ListItem,
-    ]
-    .into_iter()
-    .zip(["#100000", "#200000", "#300000", "#400000"])
-    .map(|(kind, hex)| (kind, ElementTreatment::Filter(tinted(hex))))
-    .collect();
-
-    assert!(ColorTheme::new(ColorThemeOptions {
-      filter: winter(),
-      elements,
-      detect_colors: false,
-      skip_if_dark: false,
-    })
-    .is_err());
   }
 }

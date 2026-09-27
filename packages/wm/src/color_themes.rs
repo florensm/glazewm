@@ -209,47 +209,34 @@ themes:
   }
 
   #[test]
-  fn elements_reference_other_themes() {
+  fn detection_settings_apply() {
     let themes = parse(
       r##"
 themes:
-  input:
-    background: "#2a2a3a"
-    foreground: "#ffffff"
   winter:
     background: "#1e1e1e"
     foreground: "#d4d4d4"
     detect_colors: true
     skip_if_dark: true
-    elements:
-      hyperlink: original
-      edit: input
 "##,
     )
     .expect("valid themes");
 
-    let winter = &themes["winter"];
-    let options = winter.options();
+    let options = themes["winter"].options();
     assert!(options.detect_colors && options.skip_if_dark);
-    assert_eq!(options.elements.len(), 2);
   }
 
   #[test]
   fn rejects_invalid_references() {
-    // Unknown element theme, palette and parent.
-    assert!(parse("themes: { a: { elements: { edit: nope } } }").is_err());
+    // Unknown palette and parent.
     assert!(parse("themes: { a: { palette: nope } }").is_err());
     assert!(parse("themes: { a: { extends: nope } }").is_err());
     // Circular `extends`.
     assert!(
       parse("themes: { a: { extends: b }, b: { extends: a } }").is_err()
     );
-    // Reserved name.
-    assert!(parse("themes: { original: {} }").is_err());
-    // Unknown element kind.
-    assert!(
-      parse("themes: { a: { elements: { picture: original } } }").is_err()
-    );
+    // Removed option.
+    assert!(parse("themes: { a: { elements: { edit: a } } }").is_err());
     // Both ramp forms.
     assert!(parse(
       "themes: { a: { background: '#000000', foreground: '#ffffff', \

@@ -12,8 +12,6 @@ pixel shader, and shown in a click-through overlay directly above it.
 | Shader (direct port of the above) | `packages/wm-platform/shaders/color_theme.hlsl`, compiled by `build.rs` with `fxc` |
 | Capture → shader → composition swap chain, color measuring worker | `packages/wm-platform/src/platform_impl/windows/color_capture.rs` |
 | Paper/ink estimation from a frame sample | `packages/wm-platform/src/color_levels.rs` |
-| UI Automation element rects (background worker) | `packages/wm-platform/src/platform_impl/windows/ui_elements.rs` |
-| Theme → shader layout (filter slots, element regions) | `packages/wm-platform/src/theme_layout.rs` |
 | Overlay window (layered, click-through, above its anchor) | `packages/wm-platform/src/native_color_theme_overlay.rs`, `overlay_window.rs`, `window_class.rs` |
 | `color-themes.yaml` loading + hot reload | `packages/wm/src/color_themes.rs`, schema in `packages/wm-common/src/color_themes_config.rs` |
 | `set-color-theme` command | `packages/wm-common/src/app_command.rs`, handled in `packages/wm/src/wm.rs` |
@@ -34,7 +32,7 @@ pixel shader, and shown in a click-through overlay directly above it.
 - One shared D3D11 device for all overlays.
 - Skipped, logged once: elevated windows, windows with a display affinity.
 
-## Done, not yet verified on Windows: filters, color detection, elements
+## Done, not yet verified on Windows: filters, color detection
 
 All options are documented in `resources/assets/sample-color-themes.yaml`.
 
@@ -50,30 +48,22 @@ All options are documented in `resources/assets/sample-color-themes.yaml`.
   a dark app doesn't flash inverted); `color_levels.rs` estimates paper
   (histogram mode) and ink, with hysteresis. Levels normalize the ramp's
   input lightness; `skip_if_dark` passes pixels through unchanged.
-- **Elements** (`elements`): a UIA worker thread queries the themed
-  window's elements of the configured kinds (one cached `FindAll`, only
-  after content changed, throttled to 20× the last query's duration, 1 s
-  UIA timeouts). Rects go to the shader as up to 64 regions, largest
-  first; each maps to `original` or one of up to 3 extra filter slots.
-  No `image` kind: an `image: original` version on this branch showed
-  the same problems as the reverted attempt below (unclipped
-  `UniformToFill` bounds keeping text below a photo light, square
-  corners around round avatars), so it was removed.
 - Shader parity: the HLSL was compiled with DXC to SPIR-V and run on
-  lavapipe against the Rust reference (1113 neighborhoods × 8 themes, all
-  slots): max difference 0.00002.
+  lavapipe against the Rust reference (1113 neighborhoods × 6 themes):
+  max difference 0.00002.
+- **No UI Automation.** Per-element themes (`elements`: text boxes,
+  buttons, images, ...) were built on this branch and removed again: UIA
+  bounds are unclipped, rectangular, and trail the pixels while
+  scrolling, so the regions never lined up with what was on screen.
 
 ### To verify on Windows
 
-1. `fxc` still compiles `ps_main` at `ps_4_0` (dynamic cbuffer struct
-   indexing, loops over filter slots and regions).
+1. `fxc` still compiles `ps_main` at `ps_4_0`.
 2. A light WPF app with `catppuccin`: page, panels and text land on the
-   ramp stops; links are light and in the palette's hue; text boxes use
-   `catppuccin-input`.
+   ramp stops; links are light and in the palette's hue.
 3. An off-white app with `detect_colors`: background exactly
    `background`. Switch the app to its own dark mode with `skip_if_dark`:
    the overlay passes through within ~0.5 s.
-4. Frame time and app responsiveness with `elements` on a large window.
 
 ## Known limitations (not planned)
 

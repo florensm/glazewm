@@ -9,7 +9,6 @@ mod keyboard_hook;
 mod mouse_listener;
 mod native_window;
 mod single_instance;
-pub(crate) mod ui_elements;
 pub(crate) mod wallpaper;
 pub(crate) mod wallpaper_surface;
 mod window_listener;

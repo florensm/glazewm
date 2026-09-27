@@ -83,14 +83,12 @@ use windows::{
   },
 };
 
-use super::{
-  composition::{to_ui_color, with_composition_thread, FILL_PARENT},
-  ui_elements::{ContentChanged, ElementWatch},
+use super::composition::{
+  to_ui_color, with_composition_thread, FILL_PARENT,
 };
 use crate::{
   color_levels::{estimate_levels, LevelsTracker},
   color_theme::{ColorTheme, SourceLevels},
-  theme_layout::{self, ElementRect, MAX_REGIONS},
   Color, Rect,
 };
 
@@ -137,15 +135,11 @@ unsafe impl<T> Send for AssertSend<T> {}
 /// of the overlay the last frame doesn't reach (e.g. while it grows ahead
 /// of the window during an animation).
 pub(crate) struct ThemedCapture {
-  source: HWND,
   session: GraphicsCaptureSession,
   frame_pool: Direct3D11CaptureFramePool,
   frame_arrived: EventRegistrationToken,
   renderer: SharedRenderer,
   failed: Arc<AtomicBool>,
-
-  /// Accessibility queries for the theme's UI elements, while it has any.
-  elements: Option<ElementWatch>,
 
   /// Binds the visual to the overlay's `HWND`; dropping it unbinds.
   _target: DesktopWindowTarget,
@@ -222,8 +216,6 @@ impl ThemedCapture {
       failed: failed.clone(),
       theme: theme.clone(),
       analysis: Analysis::default(),
-      elements: Vec::new(),
-      content_changed: None,
     })));
     analysis_worker().register_if_needed(&renderer);
 
@@ -248,81 +240,28 @@ impl ThemedCapture {
 
     session.StartCapture()?;
 
-    let mut capture = Self {
-      source,
+    Ok(Self {
       session,
       frame_pool,
       frame_arrived,
       renderer,
       failed,
-      elements: None,
       _target: target,
-    };
-    capture.sync_element_watch(theme);
-
-    Ok(capture)
+    })
   }
 
   /// Switches to `theme`, re-rendering the current frame with it.
   pub(crate) fn set_theme(&mut self, theme: &ColorTheme) {
-    self.with_renderer(|renderer| renderer.set_theme(theme));
+    {
+      let mut renderer =
+        self.renderer.lock().unwrap_or_else(PoisonError::into_inner);
+
+      if let Err(err) = renderer.0.set_theme(theme) {
+        renderer.0.fail(&err);
+      }
+    }
+
     analysis_worker().register_if_needed(&self.renderer);
-    self.sync_element_watch(theme);
-  }
-
-  /// Starts, updates or stops the accessibility queries `theme` needs.
-  fn sync_element_watch(&mut self, theme: &ColorTheme) {
-    let kinds =
-      theme.options().elements.keys().copied().collect::<Vec<_>>();
-
-    if kinds.is_empty() {
-      if self.elements.take().is_some() {
-        self.with_renderer(|renderer| {
-          renderer.content_changed = None;
-          renderer.set_elements(Vec::new())
-        });
-      }
-      return;
-    }
-
-    if let Some(watch) = &self.elements {
-      watch.set_kinds(kinds);
-      return;
-    }
-
-    let renderer = Arc::downgrade(&self.renderer);
-    let watch = ElementWatch::start(self.source, kinds, move |elements| {
-      if let Some(renderer) = renderer.upgrade() {
-        let mut renderer =
-          renderer.lock().unwrap_or_else(PoisonError::into_inner);
-
-        if let Err(err) = renderer.0.set_elements(elements) {
-          renderer.0.fail(&err);
-        }
-      }
-    });
-
-    // Not touching the elements: the first query may have already
-    // reported them.
-    let content_changed = watch.content_changed();
-    self.with_renderer(|renderer| {
-      renderer.content_changed = Some(content_changed);
-      Ok(())
-    });
-    self.elements = Some(watch);
-  }
-
-  /// Runs `f` on the renderer, stopping the pipeline if it fails.
-  fn with_renderer(
-    &self,
-    f: impl FnOnce(&mut Renderer) -> crate::Result<()>,
-  ) {
-    let mut renderer =
-      self.renderer.lock().unwrap_or_else(PoisonError::into_inner);
-
-    if let Err(err) = f(&mut renderer.0) {
-      renderer.0.fail(&err);
-    }
   }
 
   /// Sets the fill beneath the frame, or removes it with `None`.
@@ -617,26 +556,10 @@ impl Gpu {
 struct FrameConstants {
   size: [u32; 2],
   passthrough: u32,
-  region_count: u32,
+  _padding: u32,
 
   /// Source paper and ink lightness, then padding.
   levels: [f32; 4],
-}
-
-/// Constant buffer layout shared with `cbuffer Regions` in the shader.
-#[repr(C)]
-struct RegionConstants {
-  rects: [[i32; 4]; MAX_REGIONS],
-
-  /// Filter slot of each region in `x`.
-  slots: [[u32; 4]; MAX_REGIONS],
-}
-
-impl RegionConstants {
-  const EMPTY: Self = Self {
-    rects: [[0; 4]; MAX_REGIONS],
-    slots: [[0; 4]; MAX_REGIONS],
-  };
 }
 
 /// Render target and CPU-readable copy for sampling a frame.
@@ -654,14 +577,11 @@ struct CaptureOutput {
   /// don't need the lock.
   winrt_device: IDirect3DDevice,
 
-  /// [`FilterSlots`] of the current theme.
-  filters: ID3D11Buffer,
+  /// `FilterConstants` of the current theme.
+  filter: ID3D11Buffer,
 
   frame: FrameConstants,
   frame_constants: ID3D11Buffer,
-
-  /// [`RegionConstants`] of the current UI elements.
-  regions: ID3D11Buffer,
 
   swap_chain: IDXGISwapChain1,
   swap_chain_size: (u32, u32),
@@ -684,14 +604,13 @@ impl CaptureOutput {
     let frame = FrameConstants {
       size: [size.0, size.1],
       passthrough: 0,
-      region_count: 0,
+      _padding: 0,
       levels: [1.0, 0.0, 0.0, 0.0],
     };
 
-    let filters =
-      create_constant_buffer(device, &theme_layout::filter_slots(theme))?;
+    let filter =
+      create_constant_buffer(device, &*theme.options().filter.constants)?;
     let frame_constants = create_constant_buffer(device, &frame)?;
-    let regions = create_constant_buffer(device, &RegionConstants::EMPTY)?;
 
     // SAFETY: The adapter's parent is the factory that created it, and
     // every DXGI 1.2+ factory implements `IDXGIFactory2`.
@@ -730,10 +649,9 @@ impl CaptureOutput {
     Ok(Self {
       gpu,
       winrt_device,
-      filters,
+      filter,
       frame,
       frame_constants,
-      regions,
       swap_chain,
       swap_chain_size: size,
       render_target: None,
@@ -760,31 +678,9 @@ impl CaptureOutput {
     }
   }
 
-  /// Uploads `theme`'s filters for the next render.
+  /// Uploads `theme`'s filter for the next render.
   fn set_theme(&self, theme: &ColorTheme) {
-    self.upload(&self.filters, &theme_layout::filter_slots(theme));
-  }
-
-  /// Uploads UI element regions, as `(ltrb, slot)`, for the next render.
-  fn set_regions(&mut self, regions: &[([i32; 4], u32)]) {
-    let mut constants = RegionConstants::EMPTY;
-
-    for (index, (rect, slot)) in
-      regions.iter().take(MAX_REGIONS).enumerate()
-    {
-      constants.rects[index] = *rect;
-      constants.slots[index][0] = *slot;
-    }
-
-    self.upload(&self.regions, &constants);
-
-    // Bounded by `MAX_REGIONS`.
-    #[allow(clippy::cast_possible_truncation)]
-    let count = regions.len().min(MAX_REGIONS) as u32;
-    self.update_frame(FrameConstants {
-      region_count: count,
-      ..self.frame
-    });
+    self.upload(&self.filter, &*theme.options().filter.constants);
   }
 
   /// Sets the source levels and passthrough for the next render.
@@ -920,9 +816,8 @@ impl CaptureOutput {
       context.PSSetConstantBuffers(
         0,
         Some(&[
-          Some(self.filters.clone()),
+          Some(self.filter.clone()),
           Some(self.frame_constants.clone()),
-          Some(self.regions.clone()),
         ]),
       );
       context.PSSetShaderResources(0, Some(&[source]));
@@ -1117,12 +1012,6 @@ struct Renderer {
   theme: ColorTheme,
   /// Measurements of the window's own colors.
   analysis: Analysis,
-
-  /// The UI elements last reported for the window.
-  elements: Vec<ElementRect>,
-
-  /// Tells the accessibility worker the window's content changed.
-  content_changed: Option<ContentChanged>,
 }
 
 /// What is known of a window's own colors.
@@ -1170,10 +1059,6 @@ impl Renderer {
     let texture = frame_texture(&frame)?;
     self.analysis.is_due = true;
 
-    if let Some(content_changed) = &self.content_changed {
-      content_changed.notify();
-    }
-
     // Measured before the first frame is shown, so an already-dark window
     // doesn't flash inverted until the analysis worker gets to it.
     if !self.analysis.is_measured && self.theme.needs_analysis() {
@@ -1209,21 +1094,7 @@ impl Renderer {
     self.theme = theme.clone();
     self.output.set_theme(theme);
     self.apply_levels();
-    self.upload_regions();
     self.analysis.is_due = true;
-    self.rerender()
-  }
-
-  fn set_elements(
-    &mut self,
-    elements: Vec<ElementRect>,
-  ) -> crate::Result<()> {
-    if self.failed.load(Ordering::Relaxed) || elements == self.elements {
-      return Ok(());
-    }
-
-    self.elements = elements;
-    self.upload_regions();
     self.rerender()
   }
 
@@ -1282,13 +1153,6 @@ impl Renderer {
       levels,
       self.theme.options().skip_if_dark && self.analysis.levels.is_dark(),
     );
-  }
-
-  fn upload_regions(&mut self) {
-    let size = self.output.swap_chain_size;
-    let regions =
-      theme_layout::element_regions(&self.theme, &self.elements, size);
-    self.output.set_regions(&regions);
   }
 
   /// Re-renders the last frame, if any, with the current settings.

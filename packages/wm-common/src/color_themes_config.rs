@@ -1,13 +1,10 @@
-use std::collections::{BTreeMap, HashMap};
+use std::collections::HashMap;
 
 use serde::Deserialize;
 use wm_platform::{
   Color, ColorFilter, ColorFilterOptions, ColorOverride, ColorTheme,
-  ColorThemeOptions, ElementTreatment, RampStop, UiElementKind,
+  ColorThemeOptions, RampStop,
 };
-
-/// Element value that keeps an element's original colors.
-const ORIGINAL: &str = "original";
 
 /// Longest `extends` chain, which also catches cycles.
 const MAX_EXTENDS_DEPTH: usize = 16;
@@ -58,9 +55,6 @@ pub struct ColorThemeConfig {
   pub overrides: Option<Vec<ColorOverrideConfig>>,
   pub detect_colors: Option<bool>,
   pub skip_if_dark: Option<bool>,
-  /// Per UI element kind, `original` or the name of a theme whose colors
-  /// it takes instead.
-  pub elements: Option<BTreeMap<UiElementKind, String>>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -96,10 +90,6 @@ fn default_tolerance() -> f32 {
 impl ColorThemesConfig {
   /// Validates every theme, failing on the first invalid one.
   pub fn compile(&self) -> anyhow::Result<HashMap<String, ColorTheme>> {
-    if self.themes.contains_key(ORIGINAL) {
-      anyhow::bail!("`{ORIGINAL}` is reserved and can't name a theme.");
-    }
-
     self
       .themes
       .keys()
@@ -115,34 +105,11 @@ impl ColorThemesConfig {
   fn compile_theme(&self, name: &str) -> anyhow::Result<ColorTheme> {
     let theme = self.resolve(name)?;
     let filter = self.compile_filter(&theme)?;
-    let elements = theme
-      .elements
-      .iter()
-      .flatten()
-      .map(|(kind, value)| {
-        let treatment = if value == ORIGINAL {
-          ElementTreatment::Original
-        } else {
-          ElementTreatment::Filter(
-            self
-              .resolve(value)
-              .and_then(|other| self.compile_filter(&other))
-              .map_err(|err| {
-                anyhow::anyhow!("Element theme '{value}': {err}")
-              })?,
-          )
-        };
-
-        Ok((*kind, treatment))
-      })
-      .collect::<anyhow::Result<_>>()?;
-
     Ok(ColorTheme::new(ColorThemeOptions {
       filter,
-      elements,
       detect_colors: theme.detect_colors.unwrap_or(false),
       skip_if_dark: theme.skip_if_dark.unwrap_or(false),
-    })?)
+    }))
   }
 
   /// `name`'s settings with its `extends` chain merged in.
@@ -293,13 +260,6 @@ impl ColorThemeConfig {
       overrides: self.overrides.or(parent.overrides),
       detect_colors: self.detect_colors.or(parent.detect_colors),
       skip_if_dark: self.skip_if_dark.or(parent.skip_if_dark),
-      elements: match (parent.elements, self.elements) {
-        (Some(mut parent), Some(child)) => {
-          parent.extend(child);
-          Some(parent)
-        }
-        (parent, child) => child.or(parent),
-      },
     }
   }
 }

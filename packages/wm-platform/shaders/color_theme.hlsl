@@ -6,9 +6,6 @@
 #define MAX_COLOR_OVERRIDES 16
 #define MAX_RAMP_STOPS 8
 #define MAX_PALETTE_COLORS 16
-#define MAX_FILTER_SLOTS 4
-#define SLOT_ORIGINAL 0xFFFFFFFF
-#define MAX_REGIONS 64
 #define ANALYSIS_SIZE 64
 
 #define MAX_CHROMA 0.32
@@ -64,9 +61,8 @@ struct Filter {
   float4 override_inks[MAX_COLOR_OVERRIDES];
 };
 
-// Mirrors `FilterSlots`: the theme's own filter, then its element filters.
-cbuffer Filters : register(b0) {
-  Filter filters[MAX_FILTER_SLOTS];
+cbuffer Theme : register(b0) {
+  Filter filter;
 };
 
 // Mirrors `FrameConstants`.
@@ -75,17 +71,9 @@ cbuffer Frame : register(b1) {
   uint2 frame_size;
   // Non-zero to show the captured pixels unchanged.
   uint passthrough;
-  uint region_count;
+  uint frame_padding;
   // Source paper and ink lightness in `x` and `y`.
   float4 levels;
-};
-
-// Mirrors `RegionConstants`: UI element rects in frame pixels (right and
-// bottom exclusive), and the filter slot of each in `x`, sorted so later
-// (smaller) regions win.
-cbuffer Regions : register(b2) {
-  int4 region_rects[MAX_REGIONS];
-  uint4 region_slots[MAX_REGIONS];
 };
 
 Texture2D<float4> source : register(t0);
@@ -213,13 +201,13 @@ float normalize_lightness(float lightness) {
 }
 
 // Mirrors `FilterConstants::ramp_at`.
-float3 ramp_at(uint slot, float t) {
-  float3 result = filters[slot].ramp[0].xyz;
+float3 ramp_at(float t) {
+  float3 result = filter.ramp[0].xyz;
 
   [loop]
-  for (uint i = 1; i < filters[slot].counts.x; i++) {
-    float4 low = filters[slot].ramp[i - 1];
-    float4 high = filters[slot].ramp[i];
+  for (uint i = 1; i < filter.counts.x; i++) {
+    float4 low = filter.ramp[i - 1];
+    float4 high = filter.ramp[i];
 
     if (t > low.w) {
       float progress = min((t - low.w) / (high.w - low.w), 1.0);
@@ -231,7 +219,7 @@ float3 ramp_at(uint slot, float t) {
 }
 
 // Mirrors `FilterConstants::snap_to_palette`.
-float3 snap_to_palette(uint slot, float3 lab) {
+float3 snap_to_palette(float3 lab) {
   float chroma = length(lab.yz);
 
   if (chroma < 1e-4) {
@@ -245,8 +233,8 @@ float3 snap_to_palette(uint slot, float3 lab) {
   float lightness_sum = 0.0;
 
   [loop]
-  for (uint i = 0; i < filters[slot].counts.y; i++) {
-    float4 entry = filters[slot].palette[i];
+  for (uint i = 0; i < filter.counts.y; i++) {
+    float4 entry = filter.palette[i];
     float2 entry_direction = entry.yz / entry.w;
     float weight = exp((dot(direction, entry_direction) - 1.0) * PALETTE_SHARPNESS);
 
@@ -261,51 +249,51 @@ float3 snap_to_palette(uint slot, float3 lab) {
     sum_length > 1e-4 ? direction_sum / sum_length : direction;
   float target_chroma = chroma_sum / weight_sum;
 
-  float amount = filters[slot].hue.z
+  float amount = filter.hue.z
     * smoothstep(PALETTE_CHROMA_START, PALETTE_CHROMA_FULL, chroma);
 
   return float3(
-    lerp(lab.x, lightness_sum / weight_sum, amount * filters[slot].hue.w),
+    lerp(lab.x, lightness_sum / weight_sum, amount * filter.hue.w),
     lerp(lab.yz, target_direction * target_chroma, amount));
 }
 
 // Mirrors `FilterConstants::tone_map`.
-float3 tone_map(uint slot, float3 lab, float t) {
+float3 tone_map(float3 lab, float t) {
   float3 result = lab;
 
-  if (filters[slot].counts.x > 0) {
+  if (filter.counts.x > 0) {
     float saturation = min(length(lab.yz) / MAX_CHROMA, 1.0);
-    float threshold = tint_threshold(filters[slot].tone.x, lab.x);
+    float threshold = tint_threshold(filter.tone.x, lab.x);
     float weight = ramp_weight(saturation, threshold);
 
-    float3 stop = ramp_at(slot, t);
+    float3 stop = ramp_at(t);
     float3 ramped = float3(stop.x, stop.yz + lab.yz);
-    float3 accent = float3(lerp(lab.x, stop.x, filters[slot].tone.y), lab.yz);
+    float3 accent = float3(lerp(lab.x, stop.x, filter.tone.y), lab.yz);
     result = lerp(accent, ramped, weight);
   }
 
   float saturation = min(length(result.yz) / MAX_CHROMA, 1.0);
-  float scale = filters[slot].tone.z
-    * (1.0 + filters[slot].tone.w * (1.0 - saturation) * (1.0 - saturation));
+  float scale = filter.tone.z
+    * (1.0 + filter.tone.w * (1.0 - saturation) * (1.0 - saturation));
   float2 ab = result.yz * scale;
-  float2 rotation = filters[slot].hue.xy;
+  float2 rotation = filter.hue.xy;
   result.yz = float2(
     ab.x * rotation.x - ab.y * rotation.y,
     ab.x * rotation.y + ab.y * rotation.x);
 
-  if (filters[slot].counts.y > 0) {
-    result = snap_to_palette(slot, result);
+  if (filter.counts.y > 0) {
+    result = snap_to_palette(result);
   }
 
-  float4 lightness = filters[slot].lightness;
+  float4 lightness = filter.lightness;
   result.x = ((result.x - 0.5) * lightness.y + 0.5) * lightness.x;
   return result;
 }
 
 // Mirrors `FilterConstants::keep_contrast`.
-float3 keep_contrast(uint slot, float3 lab, float source_contrast) {
-  float target = min(filters[slot].lightness.z, source_contrast);
-  float paper = filters[slot].lightness.w;
+float3 keep_contrast(float3 lab, float source_contrast) {
+  float target = min(filter.lightness.z, source_contrast);
+  float paper = filter.lightness.w;
   float difference = lab.x - paper;
 
   if (target <= 0.0 || abs(difference) >= target) {
@@ -325,8 +313,8 @@ float3 keep_contrast(uint slot, float3 lab, float source_contrast) {
 }
 
 // Mirrors `FilterConstants::warm`.
-float3 warm(uint slot, float3 lab) {
-  float4 gains = filters[slot].warmth;
+float3 warm(float3 lab) {
+  float4 gains = filter.warmth;
 
   if (gains.w != 0.0) {
     lab = linear_to_oklab(oklab_to_linear(lab) * gains.xyz);
@@ -336,24 +324,24 @@ float3 warm(uint slot, float3 lab) {
 }
 
 // Mirrors `ColorFilter::apply`.
-float3 apply_theme(uint slot, float3 srgb) {
+float3 apply_theme(float3 srgb) {
   float3 lab = srgb_to_oklab(srgb);
-  float3 result = tone_map(slot, lab, normalize_lightness(lab.x));
+  float3 result = tone_map(lab, normalize_lightness(lab.x));
 
-  result = keep_contrast(slot, result, abs(lab.x - levels.x));
-  result = warm(slot, result);
+  result = keep_contrast(result, abs(lab.x - levels.x));
+  result = warm(result);
 
   float best_weight = 0.0;
   float3 best_to = float3(0.0, 0.0, 0.0);
 
   [loop]
-  for (uint i = 0; i < filters[slot].counts.z; i++) {
-    float4 from = filters[slot].overrides[i * 2];
+  for (uint i = 0; i < filter.counts.z; i++) {
+    float4 from = filter.overrides[i * 2];
     float weight = override_weight(distance(lab, from.xyz), from.w);
 
     if (weight > best_weight) {
       best_weight = weight;
-      best_to = filters[slot].overrides[i * 2 + 1].xyz;
+      best_to = filter.overrides[i * 2 + 1].xyz;
     }
   }
 
@@ -547,13 +535,13 @@ float known_ink_coverage(float3 pixel, float3 ink, float3 paper) {
 }
 
 // Mirrors `ColorFilter::known_ink_remix`; the weight is in `w`.
-float4 known_ink_remix(uint slot, float3 pixels[NEIGHBORHOOD_SIZE]) {
+float4 known_ink_remix(float3 pixels[NEIGHBORHOOD_SIZE]) {
   float3 center = pixels[NEIGHBORHOOD_SIZE / 2];
   float4 best = float4(0.0, 0.0, 0.0, 0.0);
 
   [loop]
-  for (uint i = 0; i < filters[slot].counts.z; i++) {
-    float3 ink = filters[slot].override_inks[i].xyz;
+  for (uint i = 0; i < filter.counts.z; i++) {
+    float3 ink = filter.override_inks[i].xyz;
 
     [unroll]
     for (int polarity = 0; polarity < 2; polarity++) {
@@ -591,8 +579,8 @@ float4 known_ink_remix(uint slot, float3 pixels[NEIGHBORHOOD_SIZE]) {
         * smoothstep(KNOWN_INK_EVIDENCE_START, KNOWN_INK_EVIDENCE_FULL, most_ink);
 
       if (weight > best.w) {
-        float3 themed_ink = apply_theme(slot, ink);
-        float3 themed_paper = apply_theme(slot, paper);
+        float3 themed_ink = apply_theme(ink);
+        float3 themed_paper = apply_theme(paper);
         float coverage = known_ink_coverage(center, ink, paper);
 
         float inverted = smoothstep(
@@ -613,9 +601,9 @@ float4 known_ink_remix(uint slot, float3 pixels[NEIGHBORHOOD_SIZE]) {
 }
 
 // Mirrors `ColorFilter::apply_neighborhood`.
-float3 apply_neighborhood(uint slot, float3 pixels[NEIGHBORHOOD_SIZE]) {
+float3 apply_neighborhood(float3 pixels[NEIGHBORHOOD_SIZE]) {
   float3 center = pixels[NEIGHBORHOOD_SIZE / 2];
-  float3 themed_center = apply_theme(slot, center);
+  float3 themed_center = apply_theme(center);
 
   float range = 0.0;
   [unroll]
@@ -678,8 +666,8 @@ float3 apply_neighborhood(uint slot, float3 pixels[NEIGHBORHOOD_SIZE]) {
     MIX_ERROR_FULL,
     distance(center, reconstructed));
 
-  float3 themed_dark = apply_theme(slot, dark);
-  float3 themed_light = apply_theme(slot, light);
+  float3 themed_dark = apply_theme(dark);
+  float3 themed_light = apply_theme(light);
 
   float inverted = smoothstep(
     0.0,
@@ -692,10 +680,10 @@ float3 apply_neighborhood(uint slot, float3 pixels[NEIGHBORHOOD_SIZE]) {
 
   float3 remixed = lerp(themed_light, themed_dark, remix_coverage);
   float3 unexplained =
-    lerp(themed_center, apply_theme(slot, neutral(center)), edge * fringes);
+    lerp(themed_center, apply_theme(neutral(center)), edge * fringes);
   float3 estimated = lerp(unexplained, remixed, edge * fit);
 
-  float4 known = known_ink_remix(slot, pixels);
+  float4 known = known_ink_remix(pixels);
   return lerp(estimated, known.rgb, known.w);
 }
 
@@ -705,22 +693,6 @@ float3 load_straight(int2 position, float3 fallback) {
   int2 clamped = clamp(position, int2(0, 0), int2(frame_size) - 1);
   float4 color = source.Load(int3(clamped, 0));
   return color.a > 0.0 ? color.rgb / color.a : fallback;
-}
-
-// Filter slot of the UI element at `position`, or 0 outside all of them.
-uint slot_at(int2 position) {
-  uint slot = 0;
-
-  [loop]
-  for (uint i = 0; i < region_count; i++) {
-    int4 rect = region_rects[i];
-
-    if (all(position >= rect.xy) && all(position < rect.zw)) {
-      slot = region_slots[i].x;
-    }
-  }
-
-  return slot;
 }
 
 float4 ps_main(float4 position : SV_Position) : SV_Target {
@@ -733,9 +705,7 @@ float4 ps_main(float4 position : SV_Position) : SV_Target {
     return float4(0.0, 0.0, 0.0, 0.0);
   }
 
-  uint slot = passthrough != 0 ? SLOT_ORIGINAL : slot_at(xy);
-
-  if (slot == SLOT_ORIGINAL) {
+  if (passthrough != 0) {
     return color;
   }
 
@@ -750,7 +720,7 @@ float4 ps_main(float4 position : SV_Position) : SV_Target {
     }
   }
 
-  float3 themed = apply_neighborhood(slot, pixels);
+  float3 themed = apply_neighborhood(pixels);
   return float4(themed * color.a, color.a);
 }
 
