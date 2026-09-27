@@ -55,6 +55,7 @@ pub struct ColorThemeConfig {
   pub overrides: Option<Vec<ColorOverrideConfig>>,
   pub detect_colors: Option<bool>,
   pub skip_if_dark: Option<bool>,
+  pub keep_pictures: Option<bool>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -109,6 +110,7 @@ impl ColorThemesConfig {
       filter,
       detect_colors: theme.detect_colors.unwrap_or(false),
       skip_if_dark: theme.skip_if_dark.unwrap_or(false),
+      keep_pictures: theme.keep_pictures.unwrap_or(false),
     }))
   }
 
@@ -260,6 +262,7 @@ impl ColorThemeConfig {
       overrides: self.overrides.or(parent.overrides),
       detect_colors: self.detect_colors.or(parent.detect_colors),
       skip_if_dark: self.skip_if_dark.or(parent.skip_if_dark),
+      keep_pictures: self.keep_pictures.or(parent.keep_pictures),
     }
   }
 }

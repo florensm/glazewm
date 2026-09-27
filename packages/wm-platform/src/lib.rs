@@ -4,6 +4,8 @@
 
 #[cfg(target_os = "windows")]
 mod color_levels;
+#[cfg(target_os = "windows")]
+mod color_pictures;
 mod color_theme;
 mod dispatcher;
 mod display;

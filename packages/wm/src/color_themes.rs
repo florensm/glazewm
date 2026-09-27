@@ -139,6 +139,7 @@ themes:
     .expect("sample color themes should parse");
 
     assert!(themes.contains_key("winter"));
+    assert!(themes["catppuccin-pictures"].options().keep_pictures);
   }
 
   #[test]
@@ -218,12 +219,19 @@ themes:
     foreground: "#d4d4d4"
     detect_colors: true
     skip_if_dark: true
+  photos:
+    extends: winter
+    keep_pictures: true
 "##,
     )
     .expect("valid themes");
 
     let options = themes["winter"].options();
     assert!(options.detect_colors && options.skip_if_dark);
+    assert!(!options.keep_pictures);
+
+    let options = themes["photos"].options();
+    assert!(options.detect_colors && options.keep_pictures);
   }
 
   #[test]

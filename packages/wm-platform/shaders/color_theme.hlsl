@@ -695,6 +695,21 @@ float3 load_straight(int2 position, float3 fallback) {
   return color.a > 0.0 ? color.rgb / color.a : fallback;
 }
 
+// The themed color of the pixel at `xy`, whose straight color is `center`.
+float3 themed_at(int2 xy, float3 center) {
+  float3 pixels[NEIGHBORHOOD_SIZE];
+
+  [unroll]
+  for (int y = -1; y <= 1; y++) {
+    [unroll]
+    for (int x = -2; x <= 2; x++) {
+      pixels[(y + 1) * 5 + (x + 2)] = load_straight(xy + int2(x, y), center);
+    }
+  }
+
+  return apply_neighborhood(pixels);
+}
+
 float4 ps_main(float4 position : SV_Position) : SV_Target {
   // Captured frames are premultiplied; theme the straight color and
   // re-premultiply so rounded window corners stay transparent.
@@ -709,18 +724,7 @@ float4 ps_main(float4 position : SV_Position) : SV_Target {
     return color;
   }
 
-  float3 center = color.rgb / color.a;
-  float3 pixels[NEIGHBORHOOD_SIZE];
-
-  [unroll]
-  for (int y = -1; y <= 1; y++) {
-    [unroll]
-    for (int x = -2; x <= 2; x++) {
-      pixels[(y + 1) * 5 + (x + 2)] = load_straight(xy + int2(x, y), center);
-    }
-  }
-
-  float3 themed = apply_neighborhood(pixels);
+  float3 themed = themed_at(xy, color.rgb / color.a);
   return float4(themed * color.a, color.a);
 }
 

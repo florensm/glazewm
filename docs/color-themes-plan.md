@@ -12,6 +12,7 @@ pixel shader, and shown in a click-through overlay directly above it.
 | Shader (direct port of the above) | `packages/wm-platform/shaders/color_theme.hlsl`, compiled by `build.rs` with `fxc` |
 | Capture → shader → composition swap chain, color measuring worker | `packages/wm-platform/src/platform_impl/windows/color_capture.rs` |
 | Paper/ink estimation from a frame sample | `packages/wm-platform/src/color_levels.rs` |
+| Keeping pictures: surfaces, picture blocks, CPU mirror of the shaders | `packages/wm-platform/src/color_pictures.rs`, shaders `color_theme_pictures.hlsl`, `color_theme_keep.hlsl` |
 | Overlay window (layered, click-through, above its anchor) | `packages/wm-platform/src/native_color_theme_overlay.rs`, `overlay_window.rs`, `window_class.rs` |
 | `color-themes.yaml` loading + hot reload | `packages/wm/src/color_themes.rs`, schema in `packages/wm-common/src/color_themes_config.rs` |
 | `set-color-theme` command | `packages/wm-common/src/app_command.rs`, handled in `packages/wm/src/wm.rs` |
@@ -55,6 +56,31 @@ All options are documented in `resources/assets/sample-color-themes.yaml`.
   buttons, images, ...) were built on this branch and removed again: UIA
   bounds are unclipped, rectangular, and trail the pixels while
   scrolling, so the regions never lined up with what was on screen.
+- **Keeping pictures** (`keep_pictures`), from pixels alone, per frame:
+  1. `ps_blocks` counts per 8×8 block: smooth steps (sRGB distance
+     0.008..0.05) along each axis, background pixels, dark-surface pixels.
+     Backgrounds (the page and big flat colors near its lightness) and
+     dark surfaces (big flat dark colors on a light page) come from the
+     64×64 analysis sample (`estimate_surfaces`).
+  2. The counts are read back (blocking, ~1 ms: the flags must match
+     this frame, or picture edges would trail while scrolling), and
+     `PictureBlocks::new` finds picture blocks on the CPU: smooth along
+     both axes (UI gradients shade along one), grown through
+     non-background blocks; dark surfaces grown through their own color;
+     enclosed holes filled.
+  3. `cs_keep` (compute, feature level 11.0) runs on 16×16 tiles near
+     picture edges: seeds grown up to 16 px through non-page pixels, so
+     text beside a picture isn't reached.
+  4. `ps_pictures`: picture pixels are the captured ones, bit for bit;
+     the 2 px anti-aliased rim is re-mixed from the themed page; the rest
+     is `ps_main`'s theming (`themed_at`, shared; `ps_main`'s bytecode is
+     unchanged).
+  GPU parity: all three shaders on lavapipe vs `color_pictures::reference`
+  on 13 screenshots (news sites, Wikipedia, Apple, Win11 Settings, a
+  WPF-style app): identical block counts and pixel flags, output within
+  0.24/255. Weak spots: flat graphics (logos, maps) are themed; a
+  picture's page-colored parts next to the page can be themed.
+  Below feature level 11.0 the theme shows without it (logged once).
 
 ### To verify on Windows
 
@@ -64,15 +90,14 @@ All options are documented in `resources/assets/sample-color-themes.yaml`.
 3. An off-white app with `detect_colors`: background exactly
    `background`. Switch the app to its own dark mode with `skip_if_dark`:
    the overlay passes through within ~0.5 s.
+4. `catppuccin-pictures` on a photo-heavy page: photos unchanged, text
+   beside them themed, no picture edges trailing while scrolling; GPU
+   and CPU use similar to `catppuccin` (Task Manager).
 
 ## Known limitations (not planned)
 
-- Images are themed like everything else. Keeping pictures (photos,
-  avatars) in their own colors via UI Automation was built and removed
-  again to keep the feature focused on text; it lives in commits
-  `0a27f92`..`d4c5fb1` if it's picked up later. The showcase's Images tab
-  is kept as a test page (its "keeps its colors" labels describe that
-  feature).
+- Without `keep_pictures`, images are themed like everything else. The
+  showcase's Images tab is a test page for it.
 
 - A new popup or dialog can still show its original colors for about one
   frame: Windows draws it before the WM hears of it. Its overlay now shows

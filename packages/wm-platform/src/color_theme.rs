@@ -876,6 +876,10 @@ pub struct ColorThemeOptions {
 
   /// Leave the window unchanged while its paper is dark.
   pub skip_if_dark: bool,
+
+  /// Leave pictures (photos, illustrations, dark banners) in their own
+  /// colors, found from the window's pixels.
+  pub keep_pictures: bool,
 }
 
 /// Everything a themed window renders with: a [`ColorFilter`], and
@@ -920,7 +924,9 @@ impl ColorTheme {
   /// Whether the window's pixels need to be measured.
   #[must_use]
   pub fn needs_analysis(&self) -> bool {
-    self.options.detect_colors || self.options.skip_if_dark
+    self.options.detect_colors
+      || self.options.skip_if_dark
+      || self.options.keep_pictures
   }
 }
 

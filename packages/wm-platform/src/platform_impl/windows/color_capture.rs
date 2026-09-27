@@ -3,7 +3,8 @@
 //! swap chain shown by the overlay above that window.
 //!
 //! Frames never leave the GPU, except for a small sample read back to
-//! measure the window's own colors (see `analysis_worker`). The frame pool
+//! measure the window's own colors (see `analysis_worker`), and per-block
+//! counts for finding pictures (see `color_pictures`). The frame pool
 //! is free-threaded, so frames are themed and presented on a system
 //! thread-pool thread as they arrive, independent of the WM's own loop;
 //! WGC only delivers a frame when the window's content changed, so an
@@ -32,23 +33,33 @@ use windows::{
     Foundation::{CloseHandle, E_FAIL, HANDLE, HWND},
     Graphics::{
       Direct3D::{
-        D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST, D3D_DRIVER_TYPE,
-        D3D_DRIVER_TYPE_HARDWARE, D3D_DRIVER_TYPE_WARP,
+        D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST, D3D11_SRV_DIMENSION_BUFFER,
+        D3D_DRIVER_TYPE, D3D_DRIVER_TYPE_HARDWARE, D3D_DRIVER_TYPE_WARP,
+        D3D_FEATURE_LEVEL_11_0,
       },
       Direct3D11::{
-        D3D11CreateDevice, ID3D11Buffer, ID3D11Device,
-        ID3D11DeviceContext, ID3D11Multithread, ID3D11PixelShader,
-        ID3D11RenderTargetView, ID3D11Texture2D, ID3D11VertexShader,
-        D3D11_BIND_CONSTANT_BUFFER, D3D11_BIND_RENDER_TARGET,
-        D3D11_BUFFER_DESC, D3D11_CPU_ACCESS_READ,
-        D3D11_CREATE_DEVICE_BGRA_SUPPORT, D3D11_MAPPED_SUBRESOURCE,
-        D3D11_MAP_READ, D3D11_SDK_VERSION, D3D11_SUBRESOURCE_DATA,
+        D3D11CreateDevice, ID3D11Buffer, ID3D11ComputeShader,
+        ID3D11Device, ID3D11DeviceContext, ID3D11Multithread,
+        ID3D11PixelShader, ID3D11RenderTargetView,
+        ID3D11ShaderResourceView, ID3D11Texture2D,
+        ID3D11UnorderedAccessView, ID3D11VertexShader,
+        D3D11_BIND_CONSTANT_BUFFER, D3D11_BIND_FLAG,
+        D3D11_BIND_RENDER_TARGET, D3D11_BIND_SHADER_RESOURCE,
+        D3D11_BIND_UNORDERED_ACCESS, D3D11_BOX, D3D11_BUFFER_DESC,
+        D3D11_BUFFER_SRV, D3D11_BUFFER_SRV_0, D3D11_BUFFER_SRV_1,
+        D3D11_CPU_ACCESS_READ, D3D11_CREATE_DEVICE_BGRA_SUPPORT,
+        D3D11_CS_DISPATCH_MAX_THREAD_GROUPS_PER_DIMENSION,
+        D3D11_MAPPED_SUBRESOURCE, D3D11_MAP_READ, D3D11_SDK_VERSION,
+        D3D11_SHADER_RESOURCE_VIEW_DESC,
+        D3D11_SHADER_RESOURCE_VIEW_DESC_0, D3D11_SUBRESOURCE_DATA,
         D3D11_TEXTURE2D_DESC, D3D11_USAGE_DEFAULT, D3D11_USAGE_STAGING,
         D3D11_VIEWPORT,
       },
       Dxgi::{
         Common::{
-          DXGI_ALPHA_MODE_PREMULTIPLIED, DXGI_FORMAT_B8G8R8A8_UNORM,
+          DXGI_ALPHA_MODE_PREMULTIPLIED, DXGI_FORMAT,
+          DXGI_FORMAT_B8G8R8A8_UNORM, DXGI_FORMAT_R32_UINT,
+          DXGI_FORMAT_R8G8B8A8_UINT, DXGI_FORMAT_R8_UINT,
           DXGI_FORMAT_UNKNOWN, DXGI_SAMPLE_DESC,
         },
         IDXGIDevice, IDXGIFactory2, IDXGISwapChain1, DXGI_SCALING_STRETCH,
@@ -88,6 +99,10 @@ use super::composition::{
 };
 use crate::{
   color_levels::{estimate_levels, LevelsTracker},
+  color_pictures::{
+    block_grid, estimate_surfaces, PictureBlocks, PictureConstants,
+    PictureSurfaces, TILE_BLOCKS,
+  },
   color_theme::{ColorTheme, SourceLevels},
   Color, Rect,
 };
@@ -98,6 +113,12 @@ const PIXEL_SHADER: &[u8] =
   include_bytes!(concat!(env!("OUT_DIR"), "/color_theme_ps.cso"));
 const SAMPLE_SHADER: &[u8] =
   include_bytes!(concat!(env!("OUT_DIR"), "/color_theme_sample_ps.cso"));
+const BLOCKS_SHADER: &[u8] =
+  include_bytes!(concat!(env!("OUT_DIR"), "/color_theme_blocks_ps.cso"));
+const KEEP_SHADER: &[u8] =
+  include_bytes!(concat!(env!("OUT_DIR"), "/color_theme_keep_cs.cso"));
+const PICTURES_SHADER: &[u8] =
+  include_bytes!(concat!(env!("OUT_DIR"), "/color_theme_pictures_ps.cso"));
 
 /// Side of the square the window is sampled into to measure its colors.
 /// Mirrors the shader's `ANALYSIS_SIZE`.
@@ -467,6 +488,56 @@ struct Gpu {
 
   /// Point-samples a frame for measuring its colors.
   sample_shader: ID3D11PixelShader,
+
+  /// `keep_pictures`' shaders; `None` below feature level 11.0, where
+  /// themes show without it.
+  picture_shaders: Option<PictureShaders>,
+}
+
+/// The shaders keeping pictures in their own colors; see
+/// `color_pictures`.
+struct PictureShaders {
+  /// Counts per block, read back to find picture blocks.
+  blocks: ID3D11PixelShader,
+
+  /// Finds the pictures' exact pixels near picture blocks.
+  keep: ID3D11ComputeShader,
+
+  /// `pixel_shader`, leaving the pictures unchanged.
+  compose: ID3D11PixelShader,
+}
+
+impl PictureShaders {
+  fn create(device: &ID3D11Device) -> crate::Result<Self> {
+    let mut blocks = None;
+    let mut keep = None;
+    let mut compose = None;
+    // SAFETY: The bytecode was produced by fxc for these exact stages, and
+    // the out-parameters outlive the calls.
+    unsafe {
+      device.CreatePixelShader(
+        BLOCKS_SHADER,
+        None,
+        Some(&raw mut blocks),
+      )?;
+      device.CreateComputeShader(
+        KEEP_SHADER,
+        None,
+        Some(&raw mut keep),
+      )?;
+      device.CreatePixelShader(
+        PICTURES_SHADER,
+        None,
+        Some(&raw mut compose),
+      )?;
+    }
+
+    Ok(Self {
+      blocks: created(blocks)?,
+      keep: created(keep)?,
+      compose: created(compose)?,
+    })
+  }
 }
 
 // SAFETY: `AssertSend` because D3D11 interfaces aren't `Send`; the device
@@ -539,6 +610,14 @@ impl Gpu {
       )?;
     }
 
+    // SAFETY: `device` is a live device.
+    let feature_level = unsafe { device.GetFeatureLevel() };
+    let picture_shaders = if feature_level.0 >= D3D_FEATURE_LEVEL_11_0.0 {
+      Some(PictureShaders::create(&device)?)
+    } else {
+      None
+    };
+
     Ok(Self {
       device,
       context,
@@ -546,6 +625,7 @@ impl Gpu {
       vertex_shader: created(vertex_shader)?,
       pixel_shader: created(pixel_shader)?,
       sample_shader: created(sample_shader)?,
+      picture_shaders,
     })
   }
 }
@@ -567,6 +647,26 @@ struct AnalysisTarget {
   texture: ID3D11Texture2D,
   view: ID3D11RenderTargetView,
   staging: ID3D11Texture2D,
+}
+
+/// `keep_pictures`' per-frame resources, for one frame size.
+struct PictureTargets {
+  size: (u32, u32),
+
+  /// `ps_blocks`' counts, one texel per block, and a CPU-readable copy.
+  counts: AnalysisTarget,
+
+  /// `BLOCK_*` flags per block, uploaded from `PictureBlocks`.
+  block_flags: ID3D11Texture2D,
+  block_flags_view: ID3D11ShaderResourceView,
+
+  /// `PIXEL_*` flags, written by `cs_keep` and read by `ps_pictures`.
+  pixel_flags_access: ID3D11UnorderedAccessView,
+  pixel_flags_view: ID3D11ShaderResourceView,
+
+  /// `PictureBlocks::tiles`, with room for every tile of the frame.
+  tiles: ID3D11Buffer,
+  tiles_view: ID3D11ShaderResourceView,
 }
 
 /// One capture's rendering target on the shared [`Gpu`].
@@ -593,6 +693,15 @@ struct CaptureOutput {
 
   /// Created on first use, for themes that measure the window's colors.
   analysis: Option<AnalysisTarget>,
+
+  /// The window's measured surfaces, and the frame's tile count, for
+  /// `keep_pictures`.
+  picture_constants: PictureConstants,
+  picture_buffer: ID3D11Buffer,
+
+  /// Created on first use at the frame's size, for themes that keep
+  /// pictures.
+  pictures: Option<PictureTargets>,
 }
 
 impl CaptureOutput {
@@ -611,6 +720,9 @@ impl CaptureOutput {
     let filter =
       create_constant_buffer(device, &*theme.options().filter.constants)?;
     let frame_constants = create_constant_buffer(device, &frame)?;
+    let picture_constants = PictureSurfaces::default().constants();
+    let picture_buffer =
+      create_constant_buffer(device, &picture_constants)?;
 
     // SAFETY: The adapter's parent is the factory that created it, and
     // every DXGI 1.2+ factory implements `IDXGIFactory2`.
@@ -656,6 +768,9 @@ impl CaptureOutput {
       swap_chain_size: size,
       render_target: None,
       analysis: None,
+      picture_constants,
+      picture_buffer,
+      pictures: None,
     })
   }
 
@@ -663,19 +778,13 @@ impl CaptureOutput {
   /// `T`, with `value`.
   fn upload<T>(&self, buffer: &ID3D11Buffer, value: &T) {
     let gpu = self.gpu.lock().unwrap_or_else(PoisonError::into_inner);
+    write_constants(&gpu.0.context, buffer, value);
+  }
 
-    // SAFETY: `buffer` holds exactly one `T`, and the context is only
-    // used under the lock held above.
-    unsafe {
-      gpu.0.context.UpdateSubresource(
-        buffer,
-        0,
-        None,
-        std::ptr::from_ref(value).cast(),
-        0,
-        0,
-      );
-    }
+  /// Sets the window's surfaces for `keep_pictures`; uploaded with the
+  /// next frame.
+  fn set_surfaces(&mut self, surfaces: &PictureSurfaces) {
+    self.picture_constants = surfaces.constants();
   }
 
   /// Uploads `theme`'s filter for the next render.
@@ -703,11 +812,12 @@ impl CaptureOutput {
   }
 
   /// Themes the top-left `size` of `texture` into the swap chain and
-  /// presents it.
+  /// presents it, leaving pictures unchanged with `keep_pictures`.
   fn render(
     &mut self,
     texture: &ID3D11Texture2D,
     size: (u32, u32),
+    keep_pictures: bool,
   ) -> crate::Result<()> {
     self.update_frame(FrameConstants {
       size: [size.0, size.1],
@@ -758,13 +868,36 @@ impl CaptureOutput {
       self.render_target = Some(created(view)?);
     }
 
-    self.draw(
-      &guard.0,
-      texture,
-      pixel_shader,
-      self.render_target.clone(),
-      size,
-    )?;
+    let source = shader_resource_view(device, texture)?;
+
+    let pictures = match &guard.0.picture_shaders {
+      Some(shaders) if keep_pictures && self.frame.passthrough == 0 => {
+        self.find_pictures(&guard.0, shaders, &source, size)?
+      }
+      Some(_) | None => {
+        if keep_pictures {
+          warn_pictures_unsupported();
+        }
+        None
+      }
+    };
+
+    match (&guard.0.picture_shaders, pictures) {
+      (Some(shaders), Some([block_flags, pixel_flags])) => self.draw(
+        &guard.0,
+        &shaders.compose,
+        &[Some(source), Some(block_flags), Some(pixel_flags)],
+        self.render_target.clone(),
+        size,
+      ),
+      _ => self.draw(
+        &guard.0,
+        pixel_shader,
+        &[Some(source)],
+        self.render_target.clone(),
+        size,
+      ),
+    }
 
     // SAFETY: Presents the back buffer drawn above.
     unsafe { self.swap_chain.Present(1, 0).ok()? };
@@ -772,26 +905,178 @@ impl CaptureOutput {
     Ok(())
   }
 
-  /// Draws a full-target pass of `pixel_shader` over `texture`.
+  /// Finds the pictures in the frame viewed by `source`, for
+  /// `shaders.compose`. Returns the block and pixel flags it reads, or
+  /// `None` if the frame has no pictures.
+  ///
+  /// Reads the block counts back, so waits for the GPU: the flags must
+  /// describe this very frame, or picture edges would trail while
+  /// scrolling. The counts are one texel per 8×8 pixels, and the wait
+  /// takes about a millisecond.
+  fn find_pictures(
+    &mut self,
+    gpu: &Gpu,
+    shaders: &PictureShaders,
+    source: &ID3D11ShaderResourceView,
+    size: (u32, u32),
+  ) -> crate::Result<Option<[ID3D11ShaderResourceView; 2]>> {
+    if self
+      .pictures
+      .as_ref()
+      .is_none_or(|targets| targets.size != size)
+    {
+      // Released first, so the old and new resources never coexist.
+      self.pictures = None;
+      self.pictures = Some(PictureTargets::create(&gpu.device, size)?);
+    }
+
+    let Some(targets) = &self.pictures else {
+      return Ok(None);
+    };
+
+    // `ps_blocks` reads the surfaces; the tile count follows below.
+    write_constants(
+      &gpu.context,
+      &self.picture_buffer,
+      &self.picture_constants,
+    );
+
+    let grid = block_grid(size);
+    self.draw(
+      gpu,
+      &shaders.blocks,
+      &[Some(source.clone())],
+      Some(targets.counts.view.clone()),
+      grid,
+    );
+
+    let counts = read_back(&gpu.context, &targets.counts, grid)?;
+    let blocks = PictureBlocks::new(&counts, size);
+
+    if blocks.flags.iter().all(|flags| *flags == 0) {
+      return Ok(None);
+    }
+
+    let tile_count = u32::try_from(blocks.tiles.len())?;
+    self.picture_constants.set_tile_count(tile_count);
+
+    let context = &gpu.context;
+    write_constants(
+      context,
+      &self.picture_buffer,
+      &self.picture_constants,
+    );
+
+    // SAFETY: `flags` holds one byte per texel of the block grid, and
+    // `tiles` fits the buffer, sized for every tile of the frame.
+    unsafe {
+      context.UpdateSubresource(
+        &targets.block_flags,
+        0,
+        None,
+        blocks.flags.as_ptr().cast(),
+        grid.0,
+        0,
+      );
+
+      if tile_count > 0 {
+        let tiles_box = D3D11_BOX {
+          left: 0,
+          top: 0,
+          front: 0,
+          right: tile_count * 4,
+          bottom: 1,
+          back: 1,
+        };
+        context.UpdateSubresource(
+          &targets.tiles,
+          0,
+          Some(&raw const tiles_box),
+          blocks.tiles.as_ptr().cast(),
+          0,
+          0,
+        );
+      }
+    }
+
+    if tile_count > 0 {
+      self.dispatch_keep(context, shaders, source, targets, tile_count);
+    }
+
+    Ok(Some([
+      targets.block_flags_view.clone(),
+      targets.pixel_flags_view.clone(),
+    ]))
+  }
+
+  /// Runs `cs_keep` on `tile_count` tiles, writing the pixel flags.
+  fn dispatch_keep(
+    &self,
+    context: &ID3D11DeviceContext,
+    shaders: &PictureShaders,
+    source: &ID3D11ShaderResourceView,
+    targets: &PictureTargets,
+    tile_count: u32,
+  ) {
+    let max_groups = D3D11_CS_DISPATCH_MAX_THREAD_GROUPS_PER_DIMENSION;
+    let access = Some(targets.pixel_flags_access.clone());
+    let no_access: Option<ID3D11UnorderedAccessView> = None;
+
+    // SAFETY: Every bound object is alive for the duration of the
+    // dispatch, and the context is only used under the GPU lock, which
+    // the caller holds. The flags' UAV is unbound again before
+    // `ps_pictures` reads them.
+    unsafe {
+      context.CSSetShader(&shaders.keep, None);
+      context.CSSetConstantBuffers(
+        0,
+        Some(&[
+          Some(self.filter.clone()),
+          Some(self.frame_constants.clone()),
+          Some(self.picture_buffer.clone()),
+        ]),
+      );
+      context.CSSetShaderResources(
+        0,
+        Some(&[
+          Some(source.clone()),
+          Some(targets.block_flags_view.clone()),
+          None,
+          Some(targets.tiles_view.clone()),
+        ]),
+      );
+      context.CSSetUnorderedAccessViews(
+        0,
+        1,
+        Some(&raw const access),
+        None,
+      );
+      context.Dispatch(
+        tile_count.min(max_groups),
+        tile_count.div_ceil(max_groups),
+        1,
+      );
+
+      context.CSSetUnorderedAccessViews(
+        0,
+        1,
+        Some(&raw const no_access),
+        None,
+      );
+      context.CSSetShaderResources(0, Some(&[None, None, None, None]));
+    }
+  }
+
+  /// Draws a full-target pass of `pixel_shader` over `resources` (the
+  /// frame first).
   fn draw(
     &self,
     gpu: &Gpu,
-    texture: &ID3D11Texture2D,
     pixel_shader: &ID3D11PixelShader,
+    resources: &[Option<ID3D11ShaderResourceView>],
     target: Option<ID3D11RenderTargetView>,
     size: (u32, u32),
-  ) -> crate::Result<()> {
-    let mut source = None;
-    // SAFETY: `texture` is a live frame-pool texture and `source`
-    // outlives the call.
-    unsafe {
-      gpu.device.CreateShaderResourceView(
-        texture,
-        None,
-        Some(&raw mut source),
-      )?;
-    }
-
+  ) {
     #[allow(clippy::cast_precision_loss)]
     let viewport = D3D11_VIEWPORT {
       TopLeftX: 0.0,
@@ -818,18 +1103,22 @@ impl CaptureOutput {
         Some(&[
           Some(self.filter.clone()),
           Some(self.frame_constants.clone()),
+          Some(self.picture_buffer.clone()),
         ]),
       );
-      context.PSSetShaderResources(0, Some(&[source]));
+      context.PSSetShaderResources(0, Some(resources));
       context.OMSetRenderTargets(Some(&[target]), None);
       context.RSSetViewports(Some(&[viewport]));
       context.Draw(3, 0);
 
-      // Unbound so the frame pool can hand the texture back out.
-      context.PSSetShaderResources(0, Some(&[None]));
+      // Unbound so the frame pool can hand the texture back out, and the
+      // pixel flags can be written again.
+      context.PSSetShaderResources(
+        0,
+        Some(&[None, None, None][..resources.len()]),
+      );
+      context.OMSetRenderTargets(None, None);
     }
-
-    Ok(())
   }
 
   /// Point-samples the top-left `size` of `texture` into an
@@ -851,7 +1140,11 @@ impl CaptureOutput {
     let guard = gpu.lock().unwrap_or_else(PoisonError::into_inner);
 
     if self.analysis.is_none() {
-      self.analysis = Some(create_analysis_target(&guard.0.device)?);
+      self.analysis = Some(create_analysis_target(
+        &guard.0.device,
+        (ANALYSIS_SIZE, ANALYSIS_SIZE),
+        DXGI_FORMAT_B8G8R8A8_UNORM,
+      )?);
     }
 
     let Some(analysis) = &self.analysis else {
@@ -860,94 +1153,230 @@ impl CaptureOutput {
 
     self.draw(
       &guard.0,
-      texture,
       &guard.0.sample_shader,
+      &[Some(shader_resource_view(&guard.0.device, texture)?)],
       Some(analysis.view.clone()),
+      (ANALYSIS_SIZE, ANALYSIS_SIZE),
+    );
+
+    let texels = read_back(
+      &guard.0.context,
+      analysis,
       (ANALYSIS_SIZE, ANALYSIS_SIZE),
     )?;
 
-    let context = &guard.0.context;
-    let mut mapped = D3D11_MAPPED_SUBRESOURCE::default();
-
-    // SAFETY: Both textures are alive and the same size and format, and
-    // `mapped` outlives the call.
-    unsafe {
-      context.CopyResource(&analysis.staging, &analysis.texture);
-      context.Map(
-        &analysis.staging,
-        0,
-        D3D11_MAP_READ,
-        0,
-        Some(&raw mut mapped),
-      )?;
-    }
-
-    let row_pitch = mapped.RowPitch as usize;
-    let texels_per_row = ANALYSIS_SIZE as usize;
-
-    // SAFETY: A mapped `ANALYSIS_SIZE` square of 4-byte texels, with rows
-    // `RowPitch` apart, stays valid until `Unmap` below.
-    let bytes = unsafe {
-      std::slice::from_raw_parts(
-        mapped.pData.cast::<u8>(),
-        row_pitch * (texels_per_row - 1) + texels_per_row * 4,
-      )
-    };
-
-    let samples = (0..texels_per_row)
-      .flat_map(|y| {
-        let row =
-          &bytes[y * row_pitch..y * row_pitch + texels_per_row * 4];
-        row.as_chunks::<4>().0.iter()
-      })
-      // BGRA.
-      .filter(|texel| texel[3] >= 128)
-      .map(|texel| {
-        [texel[2], texel[1], texel[0]].map(|c| f32::from(c) / 255.0)
-      })
-      .collect();
-
-    // SAFETY: Mapped above.
-    unsafe { context.Unmap(&analysis.staging, 0) };
-
-    Ok(samples)
+    Ok(
+      texels
+        .iter()
+        // BGRA.
+        .filter(|texel| texel[3] >= 128)
+        .map(|texel| {
+          [texel[2], texel[1], texel[0]].map(|c| f32::from(c) / 255.0)
+        })
+        .collect(),
+    )
   }
 }
 
-fn create_analysis_target(
+impl PictureTargets {
+  fn create(
+    device: &ID3D11Device,
+    size: (u32, u32),
+  ) -> crate::Result<Self> {
+    let grid = block_grid(size);
+    let counts =
+      create_analysis_target(device, grid, DXGI_FORMAT_R8G8B8A8_UINT)?;
+
+    let block_flags = create_texture(
+      device,
+      grid,
+      DXGI_FORMAT_R8_UINT,
+      D3D11_BIND_SHADER_RESOURCE,
+    )?;
+    let pixel_flags = create_texture(
+      device,
+      size,
+      DXGI_FORMAT_R8_UINT,
+      D3D11_BIND_FLAG(
+        D3D11_BIND_SHADER_RESOURCE.0 | D3D11_BIND_UNORDERED_ACCESS.0,
+      ),
+    )?;
+
+    let max_tiles =
+      grid.0.div_ceil(TILE_BLOCKS) * grid.1.div_ceil(TILE_BLOCKS);
+    let tiles_desc = D3D11_BUFFER_DESC {
+      ByteWidth: max_tiles * 4,
+      Usage: D3D11_USAGE_DEFAULT,
+      #[allow(clippy::cast_sign_loss)]
+      BindFlags: D3D11_BIND_SHADER_RESOURCE.0 as u32,
+      ..Default::default()
+    };
+    let tiles_view_desc = D3D11_SHADER_RESOURCE_VIEW_DESC {
+      Format: DXGI_FORMAT_R32_UINT,
+      ViewDimension: D3D11_SRV_DIMENSION_BUFFER,
+      Anonymous: D3D11_SHADER_RESOURCE_VIEW_DESC_0 {
+        Buffer: D3D11_BUFFER_SRV {
+          Anonymous1: D3D11_BUFFER_SRV_0 { FirstElement: 0 },
+          Anonymous2: D3D11_BUFFER_SRV_1 {
+            NumElements: max_tiles,
+          },
+        },
+      },
+    };
+
+    let mut tiles = None;
+    let mut tiles_view = None;
+    let mut pixel_flags_access = None;
+
+    // SAFETY: The descriptions are valid for their resources, and every
+    // pointer outlives its call.
+    unsafe {
+      device.CreateBuffer(
+        &raw const tiles_desc,
+        None,
+        Some(&raw mut tiles),
+      )?;
+      let tiles = created(tiles.clone())?;
+      device.CreateShaderResourceView(
+        &tiles,
+        Some(&raw const tiles_view_desc),
+        Some(&raw mut tiles_view),
+      )?;
+      device.CreateUnorderedAccessView(
+        &pixel_flags,
+        None,
+        Some(&raw mut pixel_flags_access),
+      )?;
+    }
+
+    Ok(Self {
+      size,
+      counts,
+      block_flags_view: shader_resource_view(device, &block_flags)?,
+      block_flags,
+      pixel_flags_access: created(pixel_flags_access)?,
+      pixel_flags_view: shader_resource_view(device, &pixel_flags)?,
+      tiles: created(tiles)?,
+      tiles_view: created(tiles_view)?,
+    })
+  }
+}
+
+/// Overwrites `buffer`, created by [`create_constant_buffer`] for a `T`,
+/// with `value`. The caller holds the GPU lock.
+fn write_constants<T>(
+  context: &ID3D11DeviceContext,
+  buffer: &ID3D11Buffer,
+  value: &T,
+) {
+  // SAFETY: `buffer` holds exactly one `T`, and the context is only used
+  // under the GPU lock, which the caller holds.
+  unsafe {
+    context.UpdateSubresource(
+      buffer,
+      0,
+      None,
+      std::ptr::from_ref(value).cast(),
+      0,
+      0,
+    );
+  }
+}
+
+fn shader_resource_view(
   device: &ID3D11Device,
-) -> crate::Result<AnalysisTarget> {
-  let mut desc = D3D11_TEXTURE2D_DESC {
-    Width: ANALYSIS_SIZE,
-    Height: ANALYSIS_SIZE,
-    MipLevels: 1,
-    ArraySize: 1,
-    Format: DXGI_FORMAT_B8G8R8A8_UNORM,
-    SampleDesc: DXGI_SAMPLE_DESC {
-      Count: 1,
-      Quality: 0,
-    },
-    Usage: D3D11_USAGE_DEFAULT,
-    #[allow(clippy::cast_sign_loss)]
-    BindFlags: D3D11_BIND_RENDER_TARGET.0 as u32,
-    ..Default::default()
+  texture: &ID3D11Texture2D,
+) -> crate::Result<ID3D11ShaderResourceView> {
+  let mut view = None;
+  // SAFETY: `texture` is a live texture bindable as a shader resource,
+  // and `view` outlives the call.
+  unsafe {
+    device.CreateShaderResourceView(texture, None, Some(&raw mut view))?;
+  }
+  created(view)
+}
+
+/// Copies `target`'s top-left `size` of 4-byte texels to the CPU, row by
+/// row. Blocks until the GPU has drawn it.
+fn read_back(
+  context: &ID3D11DeviceContext,
+  target: &AnalysisTarget,
+  size: (u32, u32),
+) -> crate::Result<Vec<[u8; 4]>> {
+  let mut mapped = D3D11_MAPPED_SUBRESOURCE::default();
+
+  // SAFETY: Both textures are alive and the same size and format, and
+  // `mapped` outlives the call.
+  unsafe {
+    context.CopyResource(&target.staging, &target.texture);
+    context.Map(
+      &target.staging,
+      0,
+      D3D11_MAP_READ,
+      0,
+      Some(&raw mut mapped),
+    )?;
+  }
+
+  let row_pitch = mapped.RowPitch as usize;
+  let (width, height) = (size.0 as usize, size.1 as usize);
+
+  // SAFETY: A mapped texture of at least `size` 4-byte texels, with rows
+  // `RowPitch` apart, stays valid until `Unmap` below.
+  let bytes = unsafe {
+    std::slice::from_raw_parts(
+      mapped.pData.cast::<u8>(),
+      row_pitch * (height - 1) + width * 4,
+    )
   };
 
-  let mut texture = None;
+  let texels = (0..height)
+    .flat_map(|y| {
+      bytes[y * row_pitch..y * row_pitch + width * 4]
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .copied()
+    })
+    .collect();
+
+  // SAFETY: Mapped above.
+  unsafe { context.Unmap(&target.staging, 0) };
+
+  Ok(texels)
+}
+
+/// Logs once that the GPU can't keep pictures.
+fn warn_pictures_unsupported() {
+  static WARNED: AtomicBool = AtomicBool::new(false);
+
+  if !WARNED.swap(true, Ordering::Relaxed) {
+    tracing::warn!(
+      "Color themes can't keep pictures: the GPU is below Direct3D feature \
+       level 11.0."
+    );
+  }
+}
+
+/// A render target of `size` and `format` with a CPU-readable copy.
+fn create_analysis_target(
+  device: &ID3D11Device,
+  size: (u32, u32),
+  format: DXGI_FORMAT,
+) -> crate::Result<AnalysisTarget> {
+  let texture =
+    create_texture(device, size, format, D3D11_BIND_RENDER_TARGET)?;
+
+  let mut desc = D3D11_TEXTURE2D_DESC::default();
   let mut view = None;
   let mut staging = None;
 
-  // SAFETY: `desc` describes a valid texture and every pointer outlives
-  // its call.
+  // SAFETY: `texture` is live, the description is read from it, and every
+  // pointer outlives its call.
   unsafe {
-    device.CreateTexture2D(
-      &raw const desc,
-      None,
-      Some(&raw mut texture),
-    )?;
-    let texture = created(texture.clone())?;
     device.CreateRenderTargetView(&texture, None, Some(&raw mut view))?;
 
+    texture.GetDesc(&raw mut desc);
     desc.Usage = D3D11_USAGE_STAGING;
     desc.BindFlags = 0;
     #[allow(clippy::cast_sign_loss)]
@@ -962,10 +1391,45 @@ fn create_analysis_target(
   }
 
   Ok(AnalysisTarget {
-    texture: created(texture)?,
+    texture,
     view: created(view)?,
     staging: created(staging)?,
   })
+}
+
+fn create_texture(
+  device: &ID3D11Device,
+  size: (u32, u32),
+  format: DXGI_FORMAT,
+  bind: D3D11_BIND_FLAG,
+) -> crate::Result<ID3D11Texture2D> {
+  let desc = D3D11_TEXTURE2D_DESC {
+    Width: size.0,
+    Height: size.1,
+    MipLevels: 1,
+    ArraySize: 1,
+    Format: format,
+    SampleDesc: DXGI_SAMPLE_DESC {
+      Count: 1,
+      Quality: 0,
+    },
+    Usage: D3D11_USAGE_DEFAULT,
+    #[allow(clippy::cast_sign_loss)]
+    BindFlags: bind.0 as u32,
+    ..Default::default()
+  };
+
+  let mut texture = None;
+  // SAFETY: `desc` describes a valid texture and both pointers outlive
+  // the call.
+  unsafe {
+    device.CreateTexture2D(
+      &raw const desc,
+      None,
+      Some(&raw mut texture),
+    )?;
+  }
+  created(texture)
 }
 
 type SharedRenderer = Arc<Mutex<AssertSend<Renderer>>>;
@@ -1018,6 +1482,9 @@ struct Renderer {
 #[derive(Default)]
 struct Analysis {
   levels: LevelsTracker,
+
+  /// Big flat colors, for `keep_pictures`; `None` until measured.
+  surfaces: Option<PictureSurfaces>,
 
   /// Whether the colors were measured at least once.
   is_measured: bool,
@@ -1120,7 +1587,7 @@ impl Renderer {
   }
 
   /// Measures the window's colors from `texture`. Returns whether the
-  /// levels or passthrough changed.
+  /// levels, passthrough or surfaces changed.
   fn analyze(
     &mut self,
     texture: &ID3D11Texture2D,
@@ -1130,11 +1597,23 @@ impl Renderer {
     self.analysis.is_measured = true;
 
     let samples = self.output.sample(texture, size)?;
-    let changed = estimate_levels(&samples)
+    let mut changed = estimate_levels(&samples)
       .is_some_and(|estimate| self.analysis.levels.update(estimate));
 
     if changed {
       self.apply_levels();
+    }
+
+    if self.theme.options().keep_pictures {
+      if let Some(surfaces) =
+        estimate_surfaces(&samples).filter(|surfaces| {
+          self.analysis.surfaces.as_ref() != Some(surfaces)
+        })
+      {
+        self.output.set_surfaces(&surfaces);
+        self.analysis.surfaces = Some(surfaces);
+        changed = true;
+      }
     }
 
     Ok(changed)
@@ -1169,7 +1648,9 @@ impl Renderer {
     texture: &ID3D11Texture2D,
     size: (u32, u32),
   ) -> crate::Result<()> {
-    self.output.render(texture, size)?;
+    let keep_pictures = self.theme.options().keep_pictures
+      && self.analysis.surfaces.is_some();
+    self.output.render(texture, size, keep_pictures)?;
 
     if self.frames_held {
       return Ok(());
@@ -1241,7 +1722,8 @@ impl Renderer {
 
 /// Re-measures the colors of every themed window that changed, every
 /// [`ANALYSIS_INTERVAL`], on a thread of its own: reading pixels back
-/// waits for the GPU, which the frame path must never do. Only windows
+/// waits for the GPU, which the frame path only does for what must match
+/// the frame (`CaptureOutput::find_pictures`). Only windows
 /// whose theme measures colors are tracked, so it sleeps otherwise.
 struct AnalysisWorker {
   renderers: Mutex<Vec<Weak<Mutex<AssertSend<Renderer>>>>>,

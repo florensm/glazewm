@@ -18,18 +18,60 @@ mod shaders {
     process::Command,
   };
 
-  const SOURCE: &str = "shaders/color_theme.hlsl";
+  /// Every shader source, for rebuilds; the picture shaders include the
+  /// theme's.
+  const SOURCES: [&str; 3] = [
+    "shaders/color_theme.hlsl",
+    "shaders/color_theme_pictures.hlsl",
+    "shaders/color_theme_keep.hlsl",
+  ];
 
-  /// `(entry point, profile, output file)`. Shader model 4.0 runs on every
-  /// D3D11 device, down to feature level 10.0 and WARP.
-  const STAGES: [(&str, &str, &str); 3] = [
-    ("vs_main", "vs_4_0", "color_theme_vs.cso"),
-    ("ps_main", "ps_4_0", "color_theme_ps.cso"),
-    ("ps_sample", "ps_4_0", "color_theme_sample_ps.cso"),
+  /// `(source, entry point, profile, output file)`. Shader model 4.0 runs
+  /// on every D3D11 device, down to feature level 10.0 and WARP; only
+  /// `keep_pictures`' compute shader needs 5.0 (feature level 11.0).
+  const STAGES: [(&str, &str, &str, &str); 6] = [
+    (
+      "shaders/color_theme.hlsl",
+      "vs_main",
+      "vs_4_0",
+      "color_theme_vs.cso",
+    ),
+    (
+      "shaders/color_theme.hlsl",
+      "ps_main",
+      "ps_4_0",
+      "color_theme_ps.cso",
+    ),
+    (
+      "shaders/color_theme.hlsl",
+      "ps_sample",
+      "ps_4_0",
+      "color_theme_sample_ps.cso",
+    ),
+    (
+      "shaders/color_theme_pictures.hlsl",
+      "ps_blocks",
+      "ps_4_0",
+      "color_theme_blocks_ps.cso",
+    ),
+    (
+      "shaders/color_theme_pictures.hlsl",
+      "ps_pictures",
+      "ps_4_0",
+      "color_theme_pictures_ps.cso",
+    ),
+    (
+      "shaders/color_theme_keep.hlsl",
+      "cs_keep",
+      "cs_5_0",
+      "color_theme_keep_cs.cso",
+    ),
   ];
 
   pub fn compile() {
-    println!("cargo:rerun-if-changed={SOURCE}");
+    for source in SOURCES {
+      println!("cargo:rerun-if-changed={source}");
+    }
     println!("cargo:rerun-if-env-changed=FXC");
 
     let out_dir =
@@ -41,14 +83,14 @@ mod shaders {
       )
     });
 
-    for (entry, profile, output) in STAGES {
+    for (source, entry, profile, output) in STAGES {
       let status = Command::new(&fxc)
         .args([
           "/nologo", "/O3", "/WX", "/Ges", "/T", profile, "/E", entry,
         ])
         .arg("/Fo")
         .arg(out_dir.join(output))
-        .arg(SOURCE)
+        .arg(source)
         .status()
         .unwrap_or_else(|err| {
           panic!("Failed to run {}: {err}", fxc.display())
@@ -56,7 +98,7 @@ mod shaders {
 
       assert!(
         status.success(),
-        "fxc failed to compile {entry} in {SOURCE}"
+        "fxc failed to compile {entry} in {source}"
       );
     }
   }

@@ -61,6 +61,12 @@
 #   skip_if_dark          true/false (false). Leave the window alone while
 #                         its background is dark (e.g. the app switched to
 #                         its own dark mode).
+#   keep_pictures         true/false (false). Leave photos, illustrations
+#                         and dark banners in their own colors, found from
+#                         the window's pixels: areas shaded smoothly in two
+#                         directions, and big dark areas on a light page.
+#                         Flat graphics (logos, maps) are themed like text.
+#                         Needs a Direct3D 11 GPU.
 
 # Named color lists for `palette`.
 palettes:
@@ -112,6 +118,11 @@ themes:
     min_contrast: 0.45
     detect_colors: true
     skip_if_dark: true
+
+  # `catppuccin`, with photos left as they are.
+  catppuccin-pictures:
+    extends: catppuccin
+    keep_pictures: true
 
   nord:
     ramp:
