@@ -80,6 +80,8 @@ impl NativeColorThemeOverlay {
       }
     }
 
+    crate::window_class::register_theme_overlay(window.hwnd(), source);
+
     Ok(Self {
       capture,
       window,
@@ -206,5 +208,11 @@ impl NativeColorThemeOverlay {
   #[must_use]
   pub fn has_failed(&self) -> bool {
     self.capture.has_failed()
+  }
+}
+
+impl Drop for NativeColorThemeOverlay {
+  fn drop(&mut self) {
+    crate::window_class::unregister_theme_overlay(self.window.hwnd());
   }
 }

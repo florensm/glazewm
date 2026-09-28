@@ -1,4 +1,4 @@
-use std::sync::OnceLock;
+use std::sync::{Mutex, OnceLock, PoisonError};
 
 use windows::{
   core::PCWSTR,
@@ -74,6 +74,51 @@ pub(crate) unsafe extern "system" fn default_wnd_proc(
 ) -> LRESULT {
   // SAFETY: All parameters are forwarded unchanged.
   unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) }
+}
+
+/// Every color theme overlay, as `(overlay, themed window)`, so z-order
+/// decisions can tell a themed window (hidden under its own overlay) from
+/// one showing its own pixels.
+static THEME_OVERLAYS: Mutex<Vec<(isize, isize)>> = Mutex::new(Vec::new());
+
+pub(crate) fn register_theme_overlay(overlay: HWND, source: HWND) {
+  THEME_OVERLAYS
+    .lock()
+    .unwrap_or_else(PoisonError::into_inner)
+    .push((overlay.0, source.0));
+}
+
+pub(crate) fn unregister_theme_overlay(overlay: HWND) {
+  THEME_OVERLAYS
+    .lock()
+    .unwrap_or_else(PoisonError::into_inner)
+    .retain(|(registered, _)| *registered != overlay.0);
+}
+
+/// The window `hwnd` themes, if it is a color theme overlay.
+fn themed_by(hwnd: HWND) -> Option<HWND> {
+  THEME_OVERLAYS
+    .lock()
+    .unwrap_or_else(PoisonError::into_inner)
+    .iter()
+    .find(|(overlay, _)| *overlay == hwnd.0)
+    .map(|(_, source)| HWND(*source))
+}
+
+/// Whether `hwnd` is covered by its own color theme overlay from the
+/// topmost band, which then shows it in its place.
+fn is_themed_from_top(hwnd: HWND) -> bool {
+  let overlay = THEME_OVERLAYS
+    .lock()
+    .unwrap_or_else(PoisonError::into_inner)
+    .iter()
+    .find(|(_, source)| *source == hwnd.0)
+    .map(|(overlay, _)| HWND(*overlay));
+
+  // SAFETY: A stale handle just makes `IsWindowVisible` return false.
+  overlay.is_some_and(|overlay| {
+    unsafe { IsWindowVisible(overlay) }.as_bool() && is_topmost(overlay)
+  })
 }
 
 /// Whether `hwnd` currently sits in the always-on-top band.
@@ -167,6 +212,12 @@ pub(crate) fn insert_above_point(anchor: HWND, overlay: HWND) -> HWND {
 /// untouched window. As soon as another window on screen overlaps
 /// `anchor` from above, the overlay goes back directly above `anchor`, so
 /// it never covers unrelated windows.
+///
+/// Windows above `anchor` that are themed from the topmost band don't
+/// count: their own overlays, kept above this one, show them. An overlay
+/// placed between a window and its owned windows doesn't stay there (seen
+/// with a WPF app's child windows, which left the main window unthemed);
+/// this keeps a themed main window themed under its themed child windows.
 pub(crate) fn above_placement(
   anchor: HWND,
   overlay: HWND,
@@ -178,11 +229,14 @@ pub(crate) fn above_placement(
   let area = frame_bounds(anchor);
   let mut current = anchor;
 
+  // Themed windows above `anchor`, whose overlays belong above this one.
+  let mut themed_above = Vec::new();
+
   for _ in 0..MAX_INSERT_AFTER_WALK {
     // SAFETY: A stale handle just makes `GetWindow` return `HWND(0)`.
     current = unsafe { GetWindow(current, GW_HWNDPREV) };
 
-    // Nothing is topmost at all: the top of the topmost band is also its
+    // Nothing (else) is topmost: the top of the topmost band is also its
     // bottom.
     if current.0 == 0 {
       return (true, HWND_TOPMOST);
@@ -192,9 +246,21 @@ pub(crate) fn above_placement(
       continue;
     }
 
-    // The lowest topmost window: insert right below it.
     if is_topmost(current) {
+      // The overlay of a window below `anchor`: this one goes above it.
+      if themed_by(current)
+        .is_some_and(|source| !themed_above.contains(&source))
+      {
+        continue;
+      }
+
+      // The lowest topmost window left: insert right below it.
       return (true, current);
+    }
+
+    if is_themed_from_top(current) {
+      themed_above.push(current);
+      continue;
     }
 
     if is_shown_over(current, area.as_ref()) {
@@ -244,10 +310,15 @@ pub(crate) fn set_topmost(window: HWND, topmost: bool) {
 /// Other windows in between don't count: apps keep hidden IME helper
 /// windows directly above themselves, and Windows keeps owned windows
 /// above their owner, so demanding strict adjacency would restack the
-/// overlay on every check for nothing.
+/// overlay on every check for nothing. Neither do windows themed from the
+/// topmost band whose overlays are above this one (see
+/// [`above_placement`]), nor other color theme overlays.
 pub(crate) fn is_directly_above(overlay: HWND, anchor: HWND) -> bool {
   let area = frame_bounds(anchor);
   let mut current = overlay;
+
+  // Windows whose color theme overlays are below this one.
+  let mut themed_below = Vec::new();
 
   for _ in 0..MAX_INSERT_AFTER_WALK {
     current = next_in_z_order(current);
@@ -255,6 +326,15 @@ pub(crate) fn is_directly_above(overlay: HWND, anchor: HWND) -> bool {
     // SAFETY: A stale handle just makes `IsWindowVisible` return false.
     if current.0 == 0 || current == anchor {
       return current == anchor;
+    }
+
+    if let Some(source) = themed_by(current) {
+      themed_below.push(source);
+      continue;
+    }
+
+    if is_themed_from_top(current) && !themed_below.contains(&current) {
+      continue;
     }
 
     if is_shown_over(current, area.as_ref()) {
