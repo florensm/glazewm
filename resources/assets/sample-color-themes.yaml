@@ -52,7 +52,10 @@
 #                         A `from` is also taken as a known text color:
 #                         small text in it (e.g. a link) is re-drawn from
 #                         it exactly, instead of guessed from its
-#                         anti-aliased edges.
+#                         anti-aliased edges. So avoid a `from` that
+#                         lighter surfaces are shades of (e.g. an accent
+#                         blue under light-blue badges): white text on
+#                         those would be taken for page.
 #   detect_colors         true/false (false). Measure the app's own
 #                         background and text colors and treat those as
 #                         white and black, so an off-white app lands
@@ -134,8 +137,6 @@ themes:
     overrides:
       # Yellow highlight -> dark olive.
       - { from: "#fff3b0", to: "#5a4a00", tolerance: 10 }
-      # Windows accent blue -> a lighter blue that reads on dark.
-      - { from: "#0078d4", to: "#4aa3ff", tolerance: 6 }
     keep_pictures: true
 
   # Catppuccin Mocha: separate surface colors, and readable accents in

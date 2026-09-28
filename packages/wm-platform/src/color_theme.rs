@@ -145,6 +145,30 @@ const PALETTE_MIN_CHROMA: f32 = 0.05;
 /// palette hues blend instead of banding.
 const PALETTE_SHARPNESS: f32 = 10.7;
 
+/// OKLab lightness difference that text keeps from the surface it's on
+/// where the theme treats the two differently (see
+/// [`ColorFilter::keep_text_contrast`]), capped at their original
+/// difference.
+const MIN_TEXT_CONTRAST: f32 = 0.4;
+
+/// OKLab lightness within which text counts as far enough from its
+/// surface, or a target lightness as within range, so rounding doesn't
+/// move text that already has its contrast.
+const TEXT_CONTRAST_SLACK: f32 = 0.002;
+
+/// Difference in how the theme treats text and its surface (ramp or
+/// override share) over which the text goes from left to the theme to
+/// kept readable (see [`ColorFilter::keep_text_contrast`]).
+const TREATMENT_MISMATCH_FULL: f32 = 0.5;
+
+/// OKLab lightness a surface must move towards the other end over which
+/// text on it switches sides (see [`ColorFilter::keep_text_contrast`]).
+const SURFACE_FLIP: f32 = 0.2;
+
+/// Share of the lightness span from paper to ink within which window
+/// pixels count as the surface text sits on (see [`surface_color`]).
+const SURFACE_REACH: f32 = 0.2;
+
 /// Smallest source lightness span between paper and ink that measured
 /// levels are applied over; closer levels leave lightness as is.
 const MIN_LEVELS_SPAN: f32 = 0.05;
@@ -304,10 +328,7 @@ impl FilterConstants {
     let mut result = lab;
 
     if self.counts[0] > 0 {
-      let chroma = lab[1].hypot(lab[2]);
-      let saturation = (chroma / MAX_CHROMA).min(1.0);
-      let threshold = tint_threshold(self.tone[0], lab[0]);
-      let weight = ramp_weight(saturation, threshold);
+      let weight = self.ramp_share(lab);
 
       // The source's own chroma is carried over so faintly tinted grays
       // keep their tint.
@@ -401,6 +422,30 @@ impl FilterConstants {
       lerp(lab[1], target_direction[0] * target_chroma, amount),
       lerp(lab[2], target_direction[1] * target_chroma, amount),
     ]
+  }
+
+  /// How much of the gray ramp applies to OKLab `lab` (see
+  /// [`tone_map`](Self::tone_map)); 0 without a ramp.
+  fn ramp_share(&self, lab: [f32; 3]) -> f32 {
+    if self.counts[0] == 0 {
+      return 0.0;
+    }
+
+    let saturation = (lab[1].hypot(lab[2]) / MAX_CHROMA).min(1.0);
+    ramp_weight(saturation, tint_threshold(self.tone[0], lab[0]))
+  }
+
+  /// How much the closest override applies to OKLab `lab`.
+  fn override_share(&self, lab: [f32; 3]) -> f32 {
+    let mut share = 0.0_f32;
+
+    for index in 0..self.counts[2] as usize {
+      let from = self.overrides[index * 2];
+      share =
+        share.max(override_weight(distance(lab, xyz(from)), from[3]));
+    }
+
+    share
   }
 
   /// Keeps `lab` at least `min_contrast` in lightness from the themed
@@ -648,7 +693,7 @@ impl ColorFilter {
         neutral_agreement,
       );
 
-    let (dark, light) = edge_colors(
+    let (dark, light, paper_is_light) = edge_colors(
       pixels,
       1.0
         - smoothstep(
@@ -723,8 +768,8 @@ impl ColorFilter {
 
     let fit =
       1.0 - smoothstep(MIX_ERROR_START, MIX_ERROR_FULL, error_sq.sqrt());
-    let themed_dark = self.apply(dark, levels);
-    let themed_light = self.apply(light, levels);
+    let (themed_dark, themed_light) =
+      self.themed_edge_colors(pixels, dark, light, paper_is_light, levels);
 
     let inverted = smoothstep(
       0.0,
@@ -751,6 +796,107 @@ impl ColorFilter {
 
     let (known, known_weight) = self.known_ink_remix(pixels, levels);
     lerp3(estimated, known, known_weight)
+  }
+
+  /// `dark` and `light` themed, with the ink side kept readable on the
+  /// surface around it (see
+  /// [`keep_text_contrast`](Self::keep_text_contrast)).
+  fn themed_edge_colors(
+    &self,
+    pixels: &[[f32; 3]; NEIGHBORHOOD_SIZE],
+    dark: [f32; 3],
+    light: [f32; 3],
+    paper_is_light: bool,
+    levels: SourceLevels,
+  ) -> ([f32; 3], [f32; 3]) {
+    let themed_dark = self.apply(dark, levels);
+    let themed_light = self.apply(light, levels);
+
+    if paper_is_light {
+      let surface = surface_color(pixels, dark, light);
+      (
+        self.keep_text_contrast(themed_dark, dark, surface, levels),
+        themed_light,
+      )
+    } else {
+      let surface = surface_color(pixels, light, dark);
+      (
+        themed_dark,
+        self.keep_text_contrast(themed_light, light, surface, levels),
+      )
+    }
+  }
+
+  /// Moves `themed_ink` (sRGB) to the right side of the themed `surface`
+  /// in lightness, where the theme treats the two differently: black text
+  /// on a light-blue tab the ramp skips, white text on a blue badge, gold
+  /// text on a pale-yellow box an override darkens. Text and surface
+  /// treated alike (gray on gray, or any colors under a theme without a
+  /// ramp) keep the theme's own mapping.
+  ///
+  /// The text ends up [`MIN_TEXT_CONTRAST`] (at most their original
+  /// difference) from the surface, on the side it was on, or the other
+  /// side if the theme moved the surface towards it (see
+  /// [`SURFACE_FLIP`]).
+  fn keep_text_contrast(
+    &self,
+    themed_ink: [f32; 3],
+    ink: [f32; 3],
+    surface: [f32; 3],
+    levels: SourceLevels,
+  ) -> [f32; 3] {
+    let c = &*self.constants;
+    let themed_surface = srgb_to_oklab(self.apply(surface, levels))[0];
+    let themed = srgb_to_oklab(themed_ink);
+    let ink = srgb_to_oklab(ink);
+    let surface = srgb_to_oklab(surface);
+
+    let mismatch = smoothstep(
+      0.0,
+      TREATMENT_MISMATCH_FULL,
+      (c.ramp_share(ink) - c.ramp_share(surface))
+        .abs()
+        .max((c.override_share(ink) - c.override_share(surface)).abs()),
+    );
+    let target = MIN_TEXT_CONTRAST.min((ink[0] - surface[0]).abs());
+
+    if mismatch <= 0.0 {
+      return themed_ink;
+    }
+
+    // A light surface the theme darkens (or a dark one it lightens)
+    // takes the text across with it; one left in place keeps it where it
+    // was. Room permitting, see below.
+    let shift = themed_surface - surface[0];
+    let surface_flipped =
+      shift * (surface[0] - 0.5) < 0.0 && shift.abs() > SURFACE_FLIP;
+    let mut side = if (ink[0] > surface[0]) == surface_flipped {
+      -1.0
+    } else {
+      1.0
+    };
+
+    if !(-TEXT_CONTRAST_SLACK..=1.0 + TEXT_CONTRAST_SLACK)
+      .contains(&(themed_surface + side * target))
+    {
+      side = -side;
+    }
+
+    // Enough contrast on the wrong side (white text turned dark on a blue
+    // badge that stayed blue) still reads as the wrong text.
+    if (themed[0] - themed_surface) * side >= target - TEXT_CONTRAST_SLACK
+    {
+      return themed_ink;
+    }
+
+    let lightness = lerp(
+      themed[0],
+      (themed_surface + side * target).clamp(0.0, 1.0),
+      mismatch,
+    );
+
+    oklab_to_srgb(gamut_clip([lightness, themed[1], themed[2]]))
+      .map(|channel| channel.clamp(0.0, 1.0))
   }
 
   /// Re-mixes the window's center as one of the overrides' `from` colors
@@ -956,9 +1102,63 @@ fn known_ink_coverage(
   }
 }
 
+/// The window's pixel near `paper` in lightness that is closest to their
+/// mean, weighted towards the nearest: the surface text in `ink` sits on,
+/// as rendered around it.
+///
+/// The estimated paper can be a lone 1px highlight or `ClearType` fringe;
+/// the mean follows the majority. An actual pixel rather than the mean
+/// itself, so overrides still match it.
+fn surface_color(
+  pixels: &[[f32; 3]; NEIGHBORHOOD_SIZE],
+  ink: [f32; 3],
+  paper: [f32; 3],
+) -> [f32; 3] {
+  let paper_lightness = srgb_to_oklab(paper)[0];
+  let reach =
+    (srgb_to_oklab(ink)[0] - paper_lightness).abs() * SURFACE_REACH;
+  let mut gaps = [0.0; NEIGHBORHOOD_SIZE];
+  let mut sum = [0.0; 3];
+  let mut weight_sum = 0.0;
+
+  for (index, pixel) in pixels.iter().enumerate() {
+    gaps[index] = (srgb_to_oklab(*pixel)[0] - paper_lightness).abs();
+
+    if gaps[index] <= reach {
+      // Halved, so the farthest still count: two pixels alone would
+      // otherwise both be exactly as close to their mean.
+      let weight = reach - gaps[index] * 0.5;
+
+      for c in 0..3 {
+        sum[c] += pixel[c] * weight;
+      }
+      weight_sum += weight;
+    }
+  }
+
+  if weight_sum <= 0.0 {
+    return paper;
+  }
+
+  let mean = sum.map(|channel| channel / weight_sum);
+  let mut surface = paper;
+  let mut best = f32::MAX;
+
+  for (index, pixel) in pixels.iter().enumerate() {
+    let gap = distance(*pixel, mean);
+
+    if gaps[index] <= reach && gap < best {
+      surface = *pixel;
+      best = gap;
+    }
+  }
+
+  surface
+}
+
 /// The two colors the window's edge pixels are a mix of, as `(dark,
-/// light)`: its darkest and lightest pixels, with the ink side corrected
-/// by [`estimate_ink`].
+/// light, paper_is_light)`: its darkest and lightest pixels, with the ink
+/// side corrected by [`estimate_ink`], and which of the two is the paper.
 ///
 /// Hairline text never fully covers a pixel, so the ink side can be a
 /// fringe rather than the ink. Paper covers more of the window than ink,
@@ -968,7 +1168,7 @@ fn known_ink_coverage(
 fn edge_colors(
   pixels: &[[f32; 3]; NEIGHBORHOOD_SIZE],
   paper_fringes: f32,
-) -> ([f32; 3], [f32; 3]) {
+) -> ([f32; 3], [f32; 3], bool) {
   let center = pixels[NEIGHBORHOOD_SIZE / 2];
   let mut dark = center;
   let mut light = center;
@@ -1040,9 +1240,17 @@ fn edge_colors(
     );
 
   if paper_is_light {
-    (estimate_ink(pixels, dark, paper, 0.0, mixed_hues), paper)
+    (
+      estimate_ink(pixels, dark, paper, 0.0, mixed_hues),
+      paper,
+      paper_is_light,
+    )
   } else {
-    (paper, estimate_ink(pixels, light, paper, 1.0, mixed_hues))
+    (
+      paper,
+      estimate_ink(pixels, light, paper, 1.0, mixed_hues),
+      paper_is_light,
+    )
   }
 }
 
@@ -2024,6 +2232,98 @@ mod tests {
       - out.iter().fold(1.0_f32, |m, c| m.min(*c));
     assert!(spread < 0.05, "stem stayed colored: {out:?}");
     assert!(out[0] > 0.4, "stem should read as light ink: {out:?}");
+  }
+
+  /// OKLab lightness of `srgb`.
+  fn lightness(srgb: [f32; 3]) -> f32 {
+    srgb_to_oklab(srgb)[0]
+  }
+
+  #[test]
+  fn dark_text_on_colored_surface_stays_dark() {
+    let theme = winter();
+    let px = |r: u8, g: u8, b: u8| [r, g, b].map(|c| f32::from(c) / 255.0);
+    let tab = px(167, 193, 225);
+    let highlight = px(196, 209, 226);
+    let ink = px(0, 0, 0);
+
+    // A black stem on a light-blue tab the ramp skips, below its lighter
+    // 1px top highlight.
+    let mut pixels = rows([tab, tab, ink, tab, tab]);
+    pixels[..5].fill(highlight);
+
+    let surface = lightness(theme.apply(tab, LEVELS));
+    let out = theme.apply_neighborhood(&pixels, LEVELS);
+
+    assert!(
+      lightness(out) < surface - MIN_TEXT_CONTRAST + 0.01,
+      "text lost contrast with its tab: {out:?}"
+    );
+  }
+
+  #[test]
+  fn light_text_on_colored_surface_stays_light() {
+    let theme = winter();
+    let px = |r: u8, g: u8, b: u8| [r, g, b].map(|c| f32::from(c) / 255.0);
+    let badge = px(56, 160, 221);
+
+    let surface = lightness(theme.apply(badge, LEVELS));
+    let out = theme.apply_neighborhood(
+      &rows([badge, badge, px(255, 255, 255), badge, badge]),
+      LEVELS,
+    );
+
+    assert!(
+      lightness(out) > surface + 0.2,
+      "white text turned dark on its badge: {out:?}"
+    );
+  }
+
+  #[test]
+  fn colored_text_on_darkened_surface_turns_light() {
+    let theme = legacy(
+      Some((color("#1e1e1e"), color("#d4d4d4"))),
+      0.15,
+      &[ColorOverride {
+        from: color("#fff3b0"),
+        to: color("#5a4a00"),
+        tolerance: 10.0,
+      }],
+    )
+    .expect("valid theme");
+    let px = |r: u8, g: u8, b: u8| [r, g, b].map(|c| f32::from(c) / 255.0);
+    let highlight = px(255, 243, 205);
+
+    // Dark-gold text keeps its lightness as a color, while the highlight
+    // behind it is overridden to dark olive.
+    let surface = lightness(theme.apply(highlight, LEVELS));
+    let out = theme.apply_neighborhood(
+      &rows([highlight, highlight, px(133, 100, 4), highlight, highlight]),
+      LEVELS,
+    );
+
+    assert!(
+      lightness(out) > surface + MIN_TEXT_CONTRAST - 0.01,
+      "text lost contrast with its highlight: {out:?}"
+    );
+  }
+
+  #[test]
+  fn text_contrast_is_left_to_themes_without_a_ramp() {
+    let theme = ColorFilter::new(&ColorFilterOptions {
+      brightness: 0.5,
+      ..ColorFilterOptions::default()
+    })
+    .expect("valid theme");
+    let px = |r: u8, g: u8, b: u8| [r, g, b].map(|c| f32::from(c) / 255.0);
+    let ink = px(0, 0, 0);
+    let themed = theme.apply(ink, LEVELS);
+
+    // Dimming squeezes all contrast alike, which is what it's for.
+    assert_eq!(
+      theme.keep_text_contrast(themed, ink, px(167, 193, 225), LEVELS),
+      themed
+    );
   }
 
   #[test]

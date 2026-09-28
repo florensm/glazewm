@@ -135,6 +135,18 @@ All options are documented in `resources/assets/sample-color-themes.yaml`.
   that exact ink. On the measured `#1976d2` link: mean error vs. the
   ideal 0.024 -> 0.000, worst pixel 0.33 -> 0.008; the rest of the
   screenshot (gray text, a photo) is unchanged.
+- Text on colored surfaces (`keep_text_contrast`): where the theme treats
+  text and the surface right behind it differently (one ramped, the other
+  kept as a color, or overridden), the text is moved to 0.4 OKLab
+  lightness from the themed surface, on its original side unless the
+  surface was flipped. Fixes black text on light-blue tabs, white text on
+  blue badges, gold text on overridden yellow. The surface is the window's
+  pixel near the paper's lightness closest to their weighted mean, so a
+  1px highlight doesn't stand in for it. Only edge pixels: the flat
+  interior of strokes wider than ~5 px keeps the plain mapping.
+  An override `from` that lighter surfaces are shades of (e.g. `#0078d4`
+  under light-blue badges) makes white text on them read as page, so the
+  sample `winter` no longer has one.
 - Edges where three colors meet (a bordered colored shape on a light page)
   can leave a stray off-color pixel: the fit allows per-channel coverage,
   the re-mix uses the mean.

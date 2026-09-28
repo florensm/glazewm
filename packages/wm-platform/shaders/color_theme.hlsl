@@ -47,6 +47,11 @@
 #define KNOWN_INK_FIT_FULL 0.08
 #define KNOWN_INK_EVIDENCE_START 0.3
 #define KNOWN_INK_EVIDENCE_FULL 0.6
+#define MIN_TEXT_CONTRAST 0.4
+#define SURFACE_FLIP 0.2
+#define TREATMENT_MISMATCH_FULL 0.5
+#define TEXT_CONTRAST_SLACK 0.002
+#define SURFACE_REACH 0.2
 
 // Mirrors `FilterConstants`.
 struct Filter {
@@ -257,14 +262,22 @@ float3 snap_to_palette(float3 lab) {
     lerp(lab.yz, target_direction * target_chroma, amount));
 }
 
+// Mirrors `FilterConstants::ramp_share`.
+float ramp_share(float3 lab) {
+  if (filter.counts.x == 0) {
+    return 0.0;
+  }
+
+  float saturation = min(length(lab.yz) / MAX_CHROMA, 1.0);
+  return ramp_weight(saturation, tint_threshold(filter.tone.x, lab.x));
+}
+
 // Mirrors `FilterConstants::tone_map`.
 float3 tone_map(float3 lab, float t) {
   float3 result = lab;
 
   if (filter.counts.x > 0) {
-    float saturation = min(length(lab.yz) / MAX_CHROMA, 1.0);
-    float threshold = tint_threshold(filter.tone.x, lab.x);
-    float weight = ramp_weight(saturation, threshold);
+    float weight = ramp_share(lab);
 
     float3 stop = ramp_at(t);
     float3 ramped = float3(stop.x, stop.yz + lab.yz);
@@ -459,7 +472,8 @@ void edge_colors(
   float3 pixels[NEIGHBORHOOD_SIZE],
   float paper_fringes,
   out float3 dark,
-  out float3 light) {
+  out float3 light,
+  out bool paper_is_light) {
   float3 center = pixels[NEIGHBORHOOD_SIZE / 2];
   dark = center;
   light = center;
@@ -485,7 +499,7 @@ void edge_colors(
   }
 
   float mean_lightness = lightness_sum / NEIGHBORHOOD_SIZE;
-  bool paper_is_light =
+  paper_is_light =
     (light_lightness - mean_lightness) < (mean_lightness - dark_lightness);
   float extreme = paper_is_light ? 0.0 : 1.0;
   float3 paper = paper_is_light ? light : dark;
@@ -520,6 +534,125 @@ void edge_colors(
   } else {
     dark = paper;
     light = estimate_ink(pixels, light, paper, 1.0, mixed_hues);
+  }
+}
+
+// Mirrors `surface_color`.
+float3 surface_color(float3 pixels[NEIGHBORHOOD_SIZE], float3 ink, float3 paper) {
+  float paper_lightness = srgb_to_oklab(paper).x;
+  float reach =
+    abs(srgb_to_oklab(ink).x - paper_lightness) * SURFACE_REACH;
+  float gaps[NEIGHBORHOOD_SIZE];
+  float3 sum = float3(0.0, 0.0, 0.0);
+  float weight_sum = 0.0;
+
+  [unroll]
+  for (int i = 0; i < NEIGHBORHOOD_SIZE; i++) {
+    gaps[i] = abs(srgb_to_oklab(pixels[i]).x - paper_lightness);
+
+    if (gaps[i] <= reach) {
+      float weight = reach - gaps[i] * 0.5;
+      sum += pixels[i] * weight;
+      weight_sum += weight;
+    }
+  }
+
+  if (weight_sum <= 0.0) {
+    return paper;
+  }
+
+  float3 mean = sum / weight_sum;
+  float3 surface = paper;
+  float best = 3.402823466e+38;
+
+  [unroll]
+  for (int j = 0; j < NEIGHBORHOOD_SIZE; j++) {
+    float gap = distance(pixels[j], mean);
+
+    if (gaps[j] <= reach && gap < best) {
+      surface = pixels[j];
+      best = gap;
+    }
+  }
+
+  return surface;
+}
+
+// Mirrors `FilterConstants::override_share`.
+float override_share(float3 lab) {
+  float share = 0.0;
+
+  [loop]
+  for (uint i = 0; i < filter.counts.z; i++) {
+    float4 from = filter.overrides[i * 2];
+    share = max(share, override_weight(distance(lab, from.xyz), from.w));
+  }
+
+  return share;
+}
+
+// Mirrors `ColorFilter::keep_text_contrast`.
+float3 keep_text_contrast(float3 themed_ink, float3 ink, float3 surface) {
+  float themed_surface = srgb_to_oklab(apply_theme(surface)).x;
+  float3 themed = srgb_to_oklab(themed_ink);
+  float3 ink_lab = srgb_to_oklab(ink);
+  float3 surface_lab = srgb_to_oklab(surface);
+
+  float mismatch = smoothstep(
+    0.0,
+    TREATMENT_MISMATCH_FULL,
+    max(
+      abs(ramp_share(ink_lab) - ramp_share(surface_lab)),
+      abs(override_share(ink_lab) - override_share(surface_lab))));
+  float target = min(MIN_TEXT_CONTRAST, abs(ink_lab.x - surface_lab.x));
+
+  if (mismatch <= 0.0) {
+    return themed_ink;
+  }
+
+  float shift = themed_surface - surface_lab.x;
+  bool surface_flipped =
+    shift * (surface_lab.x - 0.5) < 0.0 && abs(shift) > SURFACE_FLIP;
+  float side = (ink_lab.x > surface_lab.x) == surface_flipped ? -1.0 : 1.0;
+  float desired = themed_surface + side * target;
+
+  if (desired < -TEXT_CONTRAST_SLACK || desired > 1.0 + TEXT_CONTRAST_SLACK) {
+    side = -side;
+  }
+
+  if ((themed.x - themed_surface) * side >= target - TEXT_CONTRAST_SLACK) {
+    return themed_ink;
+  }
+
+  float lightness = lerp(
+    themed.x,
+    clamp(themed_surface + side * target, 0.0, 1.0),
+    mismatch);
+
+  return saturate(oklab_to_srgb(gamut_clip(float3(lightness, themed.yz))));
+}
+
+// Mirrors `ColorFilter::themed_edge_colors`.
+void themed_edge_colors(
+  float3 pixels[NEIGHBORHOOD_SIZE],
+  float3 dark,
+  float3 light,
+  bool paper_is_light,
+  out float3 themed_dark,
+  out float3 themed_light) {
+  themed_dark = apply_theme(dark);
+  themed_light = apply_theme(light);
+
+  if (paper_is_light) {
+    themed_dark = keep_text_contrast(
+      themed_dark,
+      dark,
+      surface_color(pixels, dark, light));
+  } else {
+    themed_light = keep_text_contrast(
+      themed_light,
+      light,
+      surface_color(pixels, light, dark));
   }
 }
 
@@ -624,6 +757,7 @@ float3 apply_neighborhood(float3 pixels[NEIGHBORHOOD_SIZE]) {
 
   float3 dark;
   float3 light;
+  bool paper_is_light;
   edge_colors(
     pixels,
     1.0 - smoothstep(
@@ -631,7 +765,8 @@ float3 apply_neighborhood(float3 pixels[NEIGHBORHOOD_SIZE]) {
       PAPER_FRINGE_AGREEMENT_FULL,
       neutral_agreement),
     dark,
-    light);
+    light,
+    paper_is_light);
 
   float edge = smoothstep(
     EDGE_START,
@@ -666,8 +801,15 @@ float3 apply_neighborhood(float3 pixels[NEIGHBORHOOD_SIZE]) {
     MIX_ERROR_FULL,
     distance(center, reconstructed));
 
-  float3 themed_dark = apply_theme(dark);
-  float3 themed_light = apply_theme(light);
+  float3 themed_dark;
+  float3 themed_light;
+  themed_edge_colors(
+    pixels,
+    dark,
+    light,
+    paper_is_light,
+    themed_dark,
+    themed_light);
 
   float inverted = smoothstep(
     0.0,
