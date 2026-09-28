@@ -159,7 +159,7 @@ impl WindowManager {
         }
         WindowEvent::ZOrderChanged { .. } => {
           #[cfg(target_os = "windows")]
-          crate::commands::general::resync_color_theme_z_order(state);
+          crate::commands::general::settle_color_theme_z_order(state);
           Ok(())
         }
       },

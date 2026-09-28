@@ -211,34 +211,40 @@ pub(crate) fn insert_above_point(anchor: HWND, overlay: HWND) -> HWND {
 /// overlay until it's noticed and undone, which shows as a flash of the
 /// untouched window. As soon as another window on screen overlaps
 /// `anchor` from above, the overlay goes back directly above `anchor`, so
-/// it never covers unrelated windows.
+/// it never covers unrelated windows. A topmost `anchor` has no band above
+/// it, so its overlay goes directly above it.
 ///
 /// Windows above `anchor` that are themed from the topmost band don't
 /// count: their own overlays, kept above this one, show them. An overlay
 /// placed between a window and its owned windows doesn't stay there (seen
-/// with a WPF app's child windows, which left the main window unthemed);
-/// this keeps a themed main window themed under its themed child windows.
+/// with a WPF app's child windows and dropdowns, which left the main
+/// window unthemed until they closed), so past themed windows, the overlay
+/// goes directly below the next window it must stay under instead.
 pub(crate) fn above_placement(
   anchor: HWND,
   overlay: HWND,
 ) -> (bool, HWND) {
-  if is_topmost(anchor) {
-    return (true, insert_above_point(anchor, overlay));
-  }
-
+  let is_anchor_topmost = is_topmost(anchor);
   let area = frame_bounds(anchor);
   let mut current = anchor;
 
   // Themed windows above `anchor`, whose overlays belong above this one.
   let mut themed_above = Vec::new();
 
+  // Whether themed windows or other windows' overlays were passed, so
+  // "directly above `anchor`" would be the wrong spot.
+  let mut has_passed_themed = false;
+
   for _ in 0..MAX_INSERT_AFTER_WALK {
     // SAFETY: A stale handle just makes `GetWindow` return `HWND(0)`.
     current = unsafe { GetWindow(current, GW_HWNDPREV) };
 
-    // Nothing (else) is topmost: the top of the topmost band is also its
-    // bottom.
+    // Nothing (else) above to stay under.
     if current.0 == 0 {
+      if is_anchor_topmost && !has_passed_themed {
+        break;
+      }
+
       return (true, HWND_TOPMOST);
     }
 
@@ -246,33 +252,44 @@ pub(crate) fn above_placement(
       continue;
     }
 
-    if is_topmost(current) {
-      // The overlay of a window below `anchor`: this one goes above it.
-      if themed_by(current)
-        .is_some_and(|source| !themed_above.contains(&source))
-      {
-        continue;
+    if let Some(source) = themed_by(current) {
+      // The overlay of a themed window above: stay under it.
+      if themed_above.contains(&source) {
+        return (true, current);
       }
 
-      // The lowest topmost window left: insert right below it.
+      // The overlay of a window below `anchor`: this one goes above it.
+      has_passed_themed = true;
+      continue;
+    }
+
+    // The lowest topmost window: a normal window's overlay goes right
+    // below it.
+    if !is_anchor_topmost && is_topmost(current) {
       return (true, current);
     }
 
     if is_themed_from_top(current) {
       themed_above.push(current);
+      has_passed_themed = true;
       continue;
     }
 
     if is_shown_over(current, area.as_ref()) {
       tracing::debug!(
-        "Color theme overlay kept in the normal band: {current:?} is above \
-         its window."
+        "Color theme overlay kept directly above its window: {current:?} \
+         is above it."
       );
+
+      if has_passed_themed {
+        return (is_topmost(current), current);
+      }
+
       break;
     }
   }
 
-  (false, insert_above_point(anchor, overlay))
+  (is_anchor_topmost, insert_above_point(anchor, overlay))
 }
 
 /// Moves `window` into or out of the always-on-top band, if it isn't

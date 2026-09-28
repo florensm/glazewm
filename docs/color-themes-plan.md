@@ -106,12 +106,21 @@ All options are documented in `resources/assets/sample-color-themes.yaml`.
   following the animation (frames held back) instead of after it.
   Removing the last frame would mean modifying the app's windows.
 - Always-on-top windows (floating with `shown_on_top: true`) still flash
-  their original colors when a dropdown or dialog opens: Windows lifts the
-  window to the top of the topmost band, over its overlay, until the
-  z-order resync. Normal windows are safe, because their overlay sits at
-  the bottom of the topmost band. The fix would be making the app's window
-  own the overlay, which links the WM's input handling to the app's, so
-  overlays would need their own thread first.
+  their original colors for a frame or two when a dropdown or dialog
+  opens, or when they're clicked: Windows lifts the window to the top of
+  the topmost band, over its overlay, until the z-order resync. Normal
+  windows are safe, because their overlay sits at the bottom of the
+  topmost band. The fix would be making the app's window own the overlay,
+  which links the WM's input handling to the app's, so overlays would need
+  their own thread first.
+- An overlay can't sit between a window and its owned windows (child
+  windows, dropdowns): it ended up under the window, which stayed
+  unthemed until they closed. Themed windows above (`above_placement`,
+  via the `window_class` overlay registry) are skipped; past them, the
+  overlay goes directly below the next window it must stay under. After an
+  app's restack, and after a popup's overlay is created (the WM's own
+  restacks raise no event), every theme overlay is re-placed and
+  re-checked for `OVERLAY_Z_SETTLE`.
 - Zen Browser still loses the theme on some clicks. Parked (WPF is the
   target).
 - Gray text in dense glyphs (`k`, close stems) is grayed since `5779983`.

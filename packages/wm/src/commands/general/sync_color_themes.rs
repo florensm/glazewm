@@ -311,6 +311,11 @@ pub fn sync_color_theme_popup(
       state
         .color_theme_popups
         .insert(hwnd.0, ColorThemePopup { owner, overlay });
+
+      // The WM's own restacks raise no z-order event, so the other
+      // overlays are re-placed now that this popup counts as themed (see
+      // `above_placement`).
+      resync_color_theme_z_order(state);
     }
     // Popups come and go constantly; one that can't be captured isn't
     // worth more than a debug line.
@@ -397,6 +402,27 @@ pub fn resync_color_theme_z_order(state: &mut WmState) {
       tracing::debug!("Color theme popup z-order sync failed: {err}.");
     }
   }
+}
+
+/// Re-places every color theme overlay after a restack by an app, and
+/// keeps re-checking the windows' overlays for a moment: an app's restack
+/// can land in steps (a dropdown opening lifts its owner too), and the
+/// event can arrive before the last one.
+pub fn settle_color_theme_z_order(state: &mut WmState) {
+  if state.color_theme_overlays.is_empty() {
+    return;
+  }
+
+  resync_color_theme_z_order(state);
+
+  let shown_ids = state
+    .color_theme_overlays
+    .iter()
+    .filter(|(_, overlay)| overlay.is_visible())
+    .map(|(id, _)| *id)
+    .collect::<Vec<_>>();
+
+  state.animation_manager.settle_overlay_z_order(shown_ids);
 }
 
 /// The window a shown color theme overlay belongs directly above: the
