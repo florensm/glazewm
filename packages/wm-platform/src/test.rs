@@ -3,6 +3,8 @@
 #[macro_use]
 extern crate libtest_mimic_collect;
 
+#[cfg(target_os = "windows")]
+mod companion;
 mod dispatcher;
 mod display;
 mod error;
