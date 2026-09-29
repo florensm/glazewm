@@ -374,6 +374,13 @@ impl NativeWindow {
     unsafe { GetAncestor(self.hwnd(), GA_PARENT) == GetDesktopWindow() }
   }
 
+  /// Implements [`NativeWindowWindowsExt::root_window`].
+  pub(crate) fn root_window(&self) -> Option<Self> {
+    // SAFETY: A stale handle just makes `GetAncestor` return `HWND(0)`.
+    let root = unsafe { GetAncestor(self.hwnd(), GA_ROOT) };
+    (root.0 != 0).then(|| Self::new(root.0))
+  }
+
   /// Implements [`NativeWindowWindowsExt::has_window_style`].
   pub(crate) fn has_window_style(&self, style: WINDOW_STYLE) -> bool {
     let current_style =

@@ -6,8 +6,9 @@ use wm_platform::NativeWindowWindowsExt;
 
 #[cfg(target_os = "windows")]
 use crate::{
-  commands::window::unmanage_window, events::handle_window_shown,
-  models::WindowContainer, traits::WindowGetters,
+  commands::window::unmanage_window_passively,
+  events::handle_window_shown, models::WindowContainer,
+  traits::WindowGetters,
 };
 use crate::{user_config::UserConfig, wm_state::WmState};
 
@@ -54,6 +55,20 @@ pub fn unmanage_if_embedded(
   }
 
   info!("Window embedded into another window: {window}");
-  unmanage_window(window, state)?;
+
+  // Focus goes to the window it was embedded into, when managed.
+  let host = window
+    .native()
+    .root_window()
+    .and_then(|root| state.window_from_native(&root))
+    .map(Into::into);
+
+  // The WM may be holding it cloaked for an animation, which unmanaging
+  // cancels; left cloaked, it would stay invisible in its new parent.
+  if window.native().is_cloaked().unwrap_or(false) {
+    let _ = window.native().set_cloaked(false);
+  }
+
+  unmanage_window_passively(window, host, state)?;
   Ok(true)
 }

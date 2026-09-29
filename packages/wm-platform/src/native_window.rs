@@ -193,6 +193,14 @@ pub trait NativeWindowWindowsExt {
   /// This method is only available on Windows.
   fn is_top_level(&self) -> bool;
 
+  /// The top-level window this window belongs to: itself when top-level,
+  /// otherwise the window it is embedded into.
+  ///
+  /// # Platform-specific
+  ///
+  /// This method is only available on Windows.
+  fn root_window(&self) -> Option<NativeWindow>;
+
   /// Whether the window has the given window style flag(s) set.
   ///
   /// # Platform-specific
@@ -415,6 +423,10 @@ impl NativeWindowWindowsExt for NativeWindow {
 
   fn is_top_level(&self) -> bool {
     self.inner.is_top_level()
+  }
+
+  fn root_window(&self) -> Option<NativeWindow> {
+    self.inner.root_window().map(Into::into)
   }
 
   fn has_window_style(&self, style: WINDOW_STYLE) -> bool {

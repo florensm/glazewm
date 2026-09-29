@@ -6,7 +6,7 @@ use crate::{
     detach_container, flatten_child_split_containers,
     set_focused_descendant,
   },
-  models::WindowContainer,
+  models::{Container, WindowContainer},
   traits::{CommonGetters, WindowGetters},
   wm_state::WmState,
 };
@@ -65,16 +65,42 @@ pub fn detach_window_for_close(
   Ok(())
 }
 
-#[allow(clippy::needless_pass_by_value)]
 pub fn unmanage_window(
   window: WindowContainer,
   state: &mut WmState,
 ) -> anyhow::Result<()> {
-  // Create iterator of parent, grandparent, and great-grandparent.
-  let ancestors = window.ancestors().take(3).collect::<Vec<_>>();
-
   // Get container to switch focus to after the window has been removed.
   let focus_target = state.focus_target_after_removal(&window.clone());
+
+  unmanage(window, focus_target, true, state)
+}
+
+/// Unmanages a window another app has taken over (e.g. embedded into one
+/// of its own windows). If it was focused, the WM's focus moves to
+/// `preferred_target`, or the usual target without one, but nothing is
+/// activated: the other app decides what is in the foreground, and
+/// activating another window would take focus from it.
+pub fn unmanage_window_passively(
+  window: WindowContainer,
+  preferred_target: Option<Container>,
+  state: &mut WmState,
+) -> anyhow::Result<()> {
+  let focus_target = state
+    .focus_target_after_removal(&window.clone())
+    .map(|default_target| preferred_target.unwrap_or(default_target));
+
+  unmanage(window, focus_target, false, state)
+}
+
+#[allow(clippy::needless_pass_by_value)]
+fn unmanage(
+  window: WindowContainer,
+  focus_target: Option<Container>,
+  activate_focus_target: bool,
+  state: &mut WmState,
+) -> anyhow::Result<()> {
+  // Create iterator of parent, grandparent, and great-grandparent.
+  let ancestors = window.ancestors().take(3).collect::<Vec<_>>();
 
   detach_container(window.clone().into())?;
 
@@ -115,9 +141,14 @@ pub fn unmanage_window(
   // Reassign focus to suitable target.
   if let Some(focus_target) = focus_target {
     set_focused_descendant(&focus_target, None);
-    state.pending_sync.queue_focus_change();
-    state.unmanaged_or_minimized_timestamp =
-      Some(std::time::Instant::now());
+
+    if activate_focus_target {
+      state.pending_sync.queue_focus_change();
+      state.unmanaged_or_minimized_timestamp =
+        Some(std::time::Instant::now());
+    } else {
+      state.pending_sync.queue_focused_effect_update();
+    }
   }
 
   // Sibling containers need to be redrawn if the window was tiling.
