@@ -44,8 +44,9 @@ use crate::{
     handle_window_attention_requested, handle_window_destroyed,
     handle_window_focused, handle_window_hidden,
     handle_window_minimize_ended, handle_window_minimized,
-    handle_window_moved_or_resized, handle_window_shown,
-    handle_window_title_changed,
+    handle_window_moved_or_resized, handle_window_reparented,
+    handle_window_shown, handle_window_title_changed,
+    handle_z_order_changed,
   },
   ipc_server::IpcServer,
   models::{Container, WorkspaceTarget},
@@ -153,6 +154,13 @@ impl WindowManager {
         }
         WindowEvent::AttentionRequested { window, .. } => {
           handle_window_attention_requested(&window, state)
+        }
+        WindowEvent::Reparented { window, .. } => {
+          handle_window_reparented(window, state, config)
+        }
+        WindowEvent::ZOrderChanged { .. } => {
+          handle_z_order_changed(state);
+          Ok(())
         }
         WindowEvent::Destroyed { window_id, .. } => {
           handle_window_destroyed(window_id, state)

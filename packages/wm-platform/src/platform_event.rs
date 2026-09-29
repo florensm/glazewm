@@ -83,6 +83,29 @@ pub enum WindowEvent {
     notification: WindowEventNotification,
   },
 
+  /// Window got a new parent, e.g. another app embedded it into one of
+  /// its own windows, or released it back to the desktop.
+  ///
+  /// # Platform-specific
+  ///
+  /// - **Windows**: Corresponds to `EVENT_OBJECT_PARENTCHANGE`.
+  /// - **macOS**: Never emitted.
+  Reparented {
+    window: NativeWindow,
+    notification: WindowEventNotification,
+  },
+
+  /// Another process changed the stacking order of top-level windows.
+  ///
+  /// # Platform-specific
+  ///
+  /// - **Windows**: Corresponds to `EVENT_OBJECT_REORDER` on the desktop
+  ///   window. Restacks by the WM itself are not reported.
+  /// - **macOS**: Never emitted.
+  ZOrderChanged {
+    notification: WindowEventNotification,
+  },
+
   /// Window was destroyed.
   Destroyed {
     window_id: WindowId,
@@ -92,7 +115,7 @@ pub enum WindowEvent {
 
 impl WindowEvent {
   /// Get the window handle if available (not available for
-  /// `WindowEvent::Destroyed`).
+  /// `WindowEvent::Destroyed` and `WindowEvent::ZOrderChanged`).
   #[must_use]
   pub fn window(&self) -> Option<&NativeWindow> {
     match self {
@@ -103,8 +126,9 @@ impl WindowEvent {
       | Self::MinimizeEnded { window, .. }
       | Self::Shown { window, .. }
       | Self::TitleChanged { window, .. }
-      | Self::AttentionRequested { window, .. } => Some(window),
-      Self::Destroyed { .. } => None,
+      | Self::AttentionRequested { window, .. }
+      | Self::Reparented { window, .. } => Some(window),
+      Self::Destroyed { .. } | Self::ZOrderChanged { .. } => None,
     }
   }
 
@@ -120,6 +144,8 @@ impl WindowEvent {
       | Self::Shown { notification, .. }
       | Self::TitleChanged { notification, .. }
       | Self::AttentionRequested { notification, .. }
+      | Self::Reparented { notification, .. }
+      | Self::ZOrderChanged { notification }
       | Self::Destroyed { notification, .. } => notification,
     }
   }

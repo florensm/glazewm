@@ -8,10 +8,11 @@ use windows::{
     UI::{
       Accessibility::{SetWinEventHook, UnhookWinEvent, HWINEVENTHOOK},
       WindowsAndMessaging::{
-        ChangeWindowMessageFilterEx, RegisterShellHookWindow,
-        RegisterWindowMessageW, EVENT_OBJECT_CLOAKED,
-        EVENT_OBJECT_DESTROY, EVENT_OBJECT_HIDE,
+        ChangeWindowMessageFilterEx, GetDesktopWindow,
+        RegisterShellHookWindow, RegisterWindowMessageW,
+        EVENT_OBJECT_CLOAKED, EVENT_OBJECT_DESTROY, EVENT_OBJECT_HIDE,
         EVENT_OBJECT_LOCATIONCHANGE, EVENT_OBJECT_NAMECHANGE,
+        EVENT_OBJECT_PARENTCHANGE, EVENT_OBJECT_REORDER,
         EVENT_OBJECT_SHOW, EVENT_OBJECT_UNCLOAKED,
         EVENT_SYSTEM_FOREGROUND, EVENT_SYSTEM_MINIMIZEEND,
         EVENT_SYSTEM_MINIMIZESTART, EVENT_SYSTEM_MOVESIZEEND,
@@ -158,11 +159,15 @@ impl WindowListener {
   /// than a single hook covering all events.
   fn hook_win_events() -> crate::Result<Vec<HWINEVENTHOOK>> {
     let event_ranges = [
-      (EVENT_OBJECT_DESTROY, EVENT_OBJECT_HIDE),
+      (EVENT_OBJECT_DESTROY, EVENT_OBJECT_REORDER),
       (EVENT_SYSTEM_MINIMIZESTART, EVENT_SYSTEM_MINIMIZEEND),
       (EVENT_SYSTEM_MOVESIZESTART, EVENT_SYSTEM_MOVESIZEEND),
       (EVENT_SYSTEM_FOREGROUND, EVENT_SYSTEM_FOREGROUND),
       (EVENT_OBJECT_LOCATIONCHANGE, EVENT_OBJECT_NAMECHANGE),
+      // Own hook: the events between it and `EVENT_OBJECT_NAMECHANGE`
+      // include `EVENT_OBJECT_VALUECHANGE`, which controls fire
+      // constantly.
+      (EVENT_OBJECT_PARENTCHANGE, EVENT_OBJECT_PARENTCHANGE),
       (EVENT_OBJECT_CLOAKED, EVENT_OBJECT_UNCLOAKED),
     ];
 
@@ -206,6 +211,19 @@ impl WindowListener {
     _event_thread: u32,
     _event_time: u32,
   ) {
+    // Top-level restacks are reported on the desktop window, not on the
+    // windows that moved; restacks of other apps' child windows are
+    // reported on their parent and don't matter.
+    if event_type == EVENT_OBJECT_REORDER {
+      // SAFETY: No preconditions.
+      if handle == unsafe { GetDesktopWindow() } {
+        Self::send_event(WindowEvent::ZOrderChanged {
+          notification: crate::WindowEventNotification(None),
+        });
+      }
+      return;
+    }
+
     // Check whether the event is associated with a window object rather
     // than a UI control.
     let is_window_event =
@@ -214,10 +232,6 @@ impl WindowListener {
     if !is_window_event {
       return;
     }
-
-    let Some(event_tx) = EVENT_TX.with(|lock| lock.get().cloned()) else {
-      return;
-    };
 
     let notification = crate::WindowEventNotification(None);
 
@@ -268,7 +282,19 @@ impl WindowListener {
         window: NativeWindow::new(handle.0).into(),
         notification,
       },
+      EVENT_OBJECT_PARENTCHANGE => WindowEvent::Reparented {
+        window: NativeWindow::new(handle.0).into(),
+        notification,
+      },
       _ => return,
+    };
+
+    Self::send_event(event);
+  }
+
+  fn send_event(event: WindowEvent) {
+    let Some(event_tx) = EVENT_TX.with(|lock| lock.get().cloned()) else {
+      return;
     };
 
     crate::perf::mark_event_queued(crate::perf::EventKind::Window);

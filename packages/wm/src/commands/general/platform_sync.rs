@@ -2086,6 +2086,96 @@ pub(crate) fn upsert_overlay<O: SyncableOverlay>(
   }
 }
 
+/// Moves `window`'s backdrop and border overlays to `frame` in one
+/// `DeferWindowPos` commit, for a move the WM did not make itself (an
+/// interactive drag, or the app moving its own window).
+///
+/// [`sync_overlays`] only re-queries the rect of windows it is redrawing
+/// this tick, so it never observes such a move. It also misses a move of
+/// its own that landed late: `set_frame` is asynchronous, and an app whose
+/// UI thread is busy applies it after `sync_overlays` read the old rect.
+#[cfg(target_os = "windows")]
+pub(crate) fn follow_window_frame(
+  window: &WindowContainer,
+  frame: &Rect,
+  state: &mut WmState,
+  config: &UserConfig,
+) {
+  let is_focused = state
+    .focused_container()
+    .is_some_and(|container| container.id() == window.id());
+
+  let mut batch = SurrogateBatch::new();
+  follow_frame::<NativeBackdropOverlay>(
+    window, frame, is_focused, state, config, &mut batch,
+  );
+  follow_frame::<NativeBorderOverlay>(
+    window, frame, is_focused, state, config, &mut batch,
+  );
+  batch.commit();
+}
+
+#[cfg(target_os = "windows")]
+fn follow_frame<O: SyncableOverlay>(
+  window: &WindowContainer,
+  frame: &Rect,
+  is_focused: bool,
+  state: &mut WmState,
+  config: &UserConfig,
+  batch: &mut SurrogateBatch,
+) {
+  let params = O::params_for(is_focused, config)
+    .filter(|_| !O::suppressed_for(window, config));
+
+  if let Some(params) = params {
+    upsert_overlay(
+      O::overlays(state),
+      window.id(),
+      params,
+      frame,
+      overlay_z_anchor(window),
+      batch,
+    );
+  }
+}
+
+/// Puts shown overlays of kind `O` back directly behind their windows
+/// after another process restacked windows.
+///
+/// `sync_overlays` only re-asserts z-order for windows the WM restacked
+/// itself, so an app raising or lowering its own window (e.g. a tabbing
+/// app keeping its host above its tabs' apps) would otherwise leave the
+/// overlay in the old slot. Settled overlays cost a few USER32 reads.
+#[cfg(target_os = "windows")]
+pub(crate) fn resync_overlay_z_order<O: SyncableOverlay>(
+  state: &mut WmState,
+) {
+  for window in state.windows() {
+    // Animated windows' overlays are owned by their animation driver.
+    if state.animation_manager.has_active_surrogate(&window.id()) {
+      continue;
+    }
+
+    let Some(overlay) = O::overlays(state).get_mut(&window.id()) else {
+      continue;
+    };
+
+    if !overlay.is_visible() {
+      continue;
+    }
+
+    if let Err(err) =
+      overlay.sync_z_order(overlay_z_anchor(&window), false)
+    {
+      debug!(
+        "{} overlay z-order resync failed for {}: {err}.",
+        O::LABEL,
+        window.id()
+      );
+    }
+  }
+}
+
 /// Creates or updates `window_id`'s border overlay for one frame of a
 /// workspace-switch slide, keeping it pinned to `viewport` and sliding its
 /// ring to `rect` (the window's *unclipped* rect for this frame).
