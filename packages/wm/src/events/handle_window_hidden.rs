@@ -2,6 +2,8 @@ use tracing::info;
 use wm_common::{DisplayState, HideMethod};
 use wm_platform::NativeWindow;
 
+#[cfg(target_os = "windows")]
+use crate::events::unmanage_if_embedded;
 use crate::{
   commands::window::unmanage_window,
   traits::{CommonGetters, WindowGetters},
@@ -18,6 +20,13 @@ pub fn handle_window_hidden(
 
   if let Some(window) = found_window {
     info!("Window hidden: {window}");
+
+    // Hidden while being embedded into another window. Checked before the
+    // display-state guards below, which would keep it managed.
+    #[cfg(target_os = "windows")]
+    if unmanage_if_embedded(window.clone(), state)? {
+      return Ok(());
+    }
 
     // Update the display state.
     if config.value.general.hide_method != HideMethod::PlaceInCorner
