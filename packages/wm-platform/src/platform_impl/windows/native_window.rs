@@ -39,7 +39,7 @@ use windows::{
         SW_HIDE, SW_MAXIMIZE, SW_MINIMIZE, SW_RESTORE, SW_SHOWNA,
         WINDOWPLACEMENT, WINDOW_EX_STYLE, WINDOW_STYLE, WM_CLOSE,
         WPF_ASYNCWINDOWPLACEMENT, WS_DLGFRAME, WS_EX_LAYERED,
-        WS_EX_TOPMOST, WS_THICKFRAME,
+        WS_EX_TOPMOST, WS_EX_TRANSPARENT, WS_THICKFRAME,
       },
     },
   },
@@ -54,6 +54,10 @@ use crate::{
 /// Magic number used to identify programmatic mouse inputs from our own
 /// process.
 pub(crate) const FOREGROUND_INPUT_IDENTIFIER: u32 = 6379;
+
+/// Guard against a pathological z-order in
+/// [`NativeWindow::is_top_of_band`].
+const MAX_TOP_OF_BAND_WALK: usize = 512;
 
 /// Platform-specific implementation of [`NativeWindow`].
 #[derive(Clone, Debug)]
@@ -420,6 +424,14 @@ impl NativeWindow {
       }
     };
 
+    // Moving must not restack a window already in place, for the same
+    // reason `set_z_order` skips it (see `is_top_of_band`).
+    let flags = if Self::is_z_order_correct(self.handle, z_order_hwnd) {
+      flags | SWP_NOZORDER
+    } else {
+      flags
+    };
+
     unsafe {
       SetWindowPos(
         self.hwnd(),
@@ -579,10 +591,14 @@ impl NativeWindow {
   /// Skipping redundant calls matters for flicker: focus changes reorder
   /// every same-state window in the workspace, and each `SetWindowPos`
   /// (even a positionally no-op one) can invalidate and repaint the target
-  /// window. Returns `false` for `HWND_TOP`/`HWND_TOPMOST`, whose exact
-  /// resulting position cannot be cheaply verified.
+  /// window.
   fn is_z_order_correct(handle: isize, z_order_hwnd: HWND) -> bool {
-    if z_order_hwnd == HWND_NOTOPMOST {
+    if z_order_hwnd == HWND_TOPMOST {
+      window_class::is_topmost(HWND(handle))
+        && Self::is_top_of_band(HWND(handle))
+    } else if z_order_hwnd == HWND_TOP {
+      Self::is_top_of_band(HWND(handle))
+    } else if z_order_hwnd == HWND_NOTOPMOST {
       // `HWND_NOTOPMOST` has no effect when the window is already
       // non-topmost.
       // SAFETY: A stale `handle` (window destroyed since it was captured)
@@ -602,6 +618,71 @@ impl NativeWindow {
     } else {
       false
     }
+  }
+
+  /// Whether no window above `hwnd` in its band could hide it, i.e.
+  /// whether `HWND_TOP`/`HWND_TOPMOST` would change nothing on screen.
+  ///
+  /// Click-through (`WS_EX_TRANSPARENT`) windows don't count: they are
+  /// overlays drawn on purpose above other windows, such as this WM's own
+  /// or a third-party one that recolors `hwnd` by covering it exactly.
+  /// Re-raising `hwnd` above such an overlay only for it to restack itself
+  /// shows as a flicker on every redraw of an "always on top" window.
+  /// Windows owned by `hwnd` don't count either, since Windows keeps them
+  /// above their owner regardless.
+  fn is_top_of_band(hwnd: HWND) -> bool {
+    let is_topmost = window_class::is_topmost(hwnd);
+    let mut current = hwnd;
+
+    for _ in 0..MAX_TOP_OF_BAND_WALK {
+      // SAFETY: A stale handle just makes `GetWindow` return `HWND(0)`.
+      current = unsafe { GetWindow(current, GW_HWNDPREV) };
+
+      // Reached the top of the z-order, or of the normal band.
+      if current.0 == 0
+        || (!is_topmost && window_class::is_topmost(current))
+      {
+        return true;
+      }
+
+      let window = NativeWindow::new(current.0);
+
+      // SAFETY: Only reads; a stale handle returns 0.
+      let ex_style = unsafe { GetWindowLongPtrW(current, GWL_EXSTYLE) };
+      #[allow(clippy::cast_possible_wrap)]
+      let is_click_through = ex_style & WS_EX_TRANSPARENT.0 as isize != 0;
+
+      if !window.is_visible().unwrap_or(false)
+        || is_click_through
+        || Self::is_owned_by(current, hwnd)
+      {
+        continue;
+      }
+
+      return false;
+    }
+
+    false
+  }
+
+  /// Whether `hwnd`'s owner chain includes `owner`.
+  fn is_owned_by(hwnd: HWND, owner: HWND) -> bool {
+    let mut current = hwnd;
+
+    for _ in 0..MAX_TOP_OF_BAND_WALK {
+      // SAFETY: A stale handle just makes `GetWindow` return `HWND(0)`.
+      current = unsafe { GetWindow(current, GW_OWNER) };
+
+      if current.0 == 0 {
+        return false;
+      }
+
+      if current == owner {
+        return true;
+      }
+    }
+
+    false
   }
 
   /// Implements [`NativeWindowWindowsExt::set_z_order`].
