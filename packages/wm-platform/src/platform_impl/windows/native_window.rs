@@ -426,11 +426,12 @@ impl NativeWindow {
 
     // Moving must not restack a window already in place, for the same
     // reason `set_z_order` skips it (see `is_top_of_band`).
-    let flags = if Self::is_z_order_correct(self.handle, z_order_hwnd) {
-      flags | SWP_NOZORDER
-    } else {
-      flags
-    };
+    let flags =
+      if Self::is_z_order_correct(self.handle, z_order_hwnd, Some(rect)) {
+        flags | SWP_NOZORDER
+      } else {
+        flags
+      };
 
     unsafe {
       SetWindowPos(
@@ -592,12 +593,20 @@ impl NativeWindow {
   /// every same-state window in the workspace, and each `SetWindowPos`
   /// (even a positionally no-op one) can invalidate and repaint the target
   /// window.
-  fn is_z_order_correct(handle: isize, z_order_hwnd: HWND) -> bool {
-    if z_order_hwnd == HWND_TOPMOST {
-      window_class::is_topmost(HWND(handle))
-        && Self::is_top_of_band(HWND(handle))
-    } else if z_order_hwnd == HWND_TOP {
-      Self::is_top_of_band(HWND(handle))
+  ///
+  /// `area` is where the window is (or is about to be) on screen; `None`
+  /// reads its current frame.
+  fn is_z_order_correct(
+    handle: isize,
+    z_order_hwnd: HWND,
+    area: Option<&Rect>,
+  ) -> bool {
+    if z_order_hwnd == HWND_TOPMOST || z_order_hwnd == HWND_TOP {
+      let window = NativeWindow::new(handle);
+      let area = area.cloned().or_else(|| window.frame().ok());
+
+      (z_order_hwnd == HWND_TOP || window_class::is_topmost(HWND(handle)))
+        && Self::is_top_of_band(HWND(handle), area.as_ref())
     } else if z_order_hwnd == HWND_NOTOPMOST {
       // `HWND_NOTOPMOST` has no effect when the window is already
       // non-topmost.
@@ -620,17 +629,20 @@ impl NativeWindow {
     }
   }
 
-  /// Whether no window above `hwnd` in its band could hide it, i.e.
-  /// whether `HWND_TOP`/`HWND_TOPMOST` would change nothing on screen.
+  /// Whether no window above `hwnd` in its band covers any of `area`,
+  /// i.e. whether `HWND_TOP`/`HWND_TOPMOST` would change nothing on
+  /// screen.
   ///
-  /// Click-through (`WS_EX_TRANSPARENT`) windows don't count: they are
-  /// overlays drawn on purpose above other windows, such as this WM's own
-  /// or a third-party one that recolors `hwnd` by covering it exactly.
-  /// Re-raising `hwnd` above such an overlay only for it to restack itself
-  /// shows as a flicker on every redraw of an "always on top" window.
-  /// Windows owned by `hwnd` don't count either, since Windows keeps them
-  /// above their owner regardless.
-  fn is_top_of_band(hwnd: HWND) -> bool {
+  /// Only windows that actually overlap `area` count: the topmost band
+  /// always holds the taskbar and other always-on-top windows, so
+  /// demanding the literal top of the band re-raised every "always on top"
+  /// window on each focus change and move. Click-through
+  /// (`WS_EX_TRANSPARENT`) windows don't count either; they are overlays
+  /// meant to stay above other windows, and raising a window over one only
+  /// makes it restack itself, which flickers. Nor do windows owned by
+  /// `hwnd`, which Windows keeps above their owner regardless. With no
+  /// `area`, every other shown window counts.
+  fn is_top_of_band(hwnd: HWND, area: Option<&Rect>) -> bool {
     let is_topmost = window_class::is_topmost(hwnd);
     let mut current = hwnd;
 
@@ -652,8 +664,15 @@ impl NativeWindow {
       #[allow(clippy::cast_possible_wrap)]
       let is_click_through = ex_style & WS_EX_TRANSPARENT.0 as isize != 0;
 
-      if !window.is_visible().unwrap_or(false)
-        || is_click_through
+      let is_outside_area = area.is_some_and(|area| {
+        window
+          .frame()
+          .is_ok_and(|frame| frame.intersection_area(area) == 0)
+      });
+
+      if is_click_through
+        || is_outside_area
+        || !window.is_visible().unwrap_or(false)
         || Self::is_owned_by(current, hwnd)
       {
         continue;
@@ -702,7 +721,7 @@ impl NativeWindow {
     // Skip entirely when the window is already in the requested position.
     // This avoids invalidating (and repainting) every window in the
     // workspace on each focus change.
-    if Self::is_z_order_correct(self.handle, z_order_hwnd) {
+    if Self::is_z_order_correct(self.handle, z_order_hwnd, None) {
       return Ok(());
     }
 
@@ -731,7 +750,7 @@ impl NativeWindow {
       tokio::time::sleep(Duration::from_millis(10)).await;
       // Re-check at fire time: the initial call has usually landed by now,
       // making this retry a no-op that would otherwise repaint the window.
-      if !Self::is_z_order_correct(handle, z_order_hwnd) {
+      if !Self::is_z_order_correct(handle, z_order_hwnd, None) {
         // SAFETY: A stale `handle` (window destroyed during the 10ms
         // delay) just makes the call fail, which is discarded
         // below.
