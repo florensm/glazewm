@@ -1,5 +1,7 @@
 use anyhow::Context;
 use wm_common::{WindowState, WmEvent};
+#[cfg(target_os = "windows")]
+use wm_platform::NativeWindowWindowsExt;
 
 use crate::{
   commands::container::{
@@ -133,4 +135,25 @@ pub fn unmanage_window(
   }
 
   Ok(())
+}
+
+/// Unmanages `window` if another app has embedded it into one of its own
+/// windows. Returns whether it did.
+///
+/// Tabbing apps reparent a window, then hide and re-show it within
+/// milliseconds. By the time the hide event is handled the window is
+/// visible again, so without this check it stays managed: tiled, bordered
+/// and positioned as if it were still top-level.
+#[cfg(target_os = "windows")]
+pub fn unmanage_if_embedded(
+  window: WindowContainer,
+  state: &mut WmState,
+) -> anyhow::Result<bool> {
+  if window.native().is_top_level() {
+    return Ok(false);
+  }
+
+  tracing::info!("Window embedded into another window: {window}");
+  unmanage_window(window, state)?;
+  Ok(true)
 }

@@ -3,7 +3,7 @@ use wm_common::{DisplayState, HideMethod};
 use wm_platform::NativeWindow;
 
 #[cfg(target_os = "windows")]
-use crate::events::unmanage_if_embedded;
+use crate::commands::window::unmanage_if_embedded;
 use crate::{
   commands::window::unmanage_window,
   traits::{CommonGetters, WindowGetters},

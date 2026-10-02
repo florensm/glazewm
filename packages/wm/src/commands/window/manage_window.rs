@@ -234,6 +234,14 @@ fn check_is_manageable(
   // Ensure window has a valid process name, title, etc.
   let native_properties = NativeWindowProperties::try_from(native_window)?;
 
+  // Checked before the `force-manage` bypass: a window another app has
+  // embedded (e.g. a tabbing app) is laid out by that app, never the WM.
+  #[cfg(target_os = "windows")]
+  if !native_window.is_top_level() {
+    tracing::debug!("Skipping embedded window: {native_properties:?}");
+    return Ok(None);
+  }
+
   // Bypass the checks below for windows matched by a `force-manage`
   // window rule.
   if config.is_force_managed(&native_properties) {
