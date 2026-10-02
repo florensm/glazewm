@@ -476,6 +476,11 @@ window_rules:
       - window_process: { equals: 'Flow.Launcher' }
         window_title: { equals: 'Flow.Launcher' }
 
+  # Keep an app's stacked windows usable while it shows a blocking popup.
+  # - commands: ["stay-interactive"]
+  #   match:
+  #     - window_process: { equals: "MyWpfApp" }
+
 binding_modes:
   # When enabled, the focused window can be stacked with its neighbors.
   - name: "stack"

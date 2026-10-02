@@ -250,6 +250,9 @@ pub enum InvokeCommand {
   ToggleTiling,
   /// Toggle the focused tiling window into or out of a stack container.
   ToggleStack,
+  /// Keep the window usable while it is in a stack and its app shows a
+  /// blocking popup. Meant for window rules.
+  StayInteractive,
   /// Cycle focus to the next or previous window within the parent stack.
   CycleStackFocus {
     #[clap(long, default_value_t = false)]

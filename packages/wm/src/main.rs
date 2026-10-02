@@ -41,6 +41,8 @@ mod events;
 mod ipc_server;
 mod models;
 mod pending_sync;
+#[cfg(target_os = "windows")]
+mod stay_interactive;
 mod sys_tray;
 #[cfg(target_os = "windows")]
 mod tab_bars;
