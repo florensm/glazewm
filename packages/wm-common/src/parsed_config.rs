@@ -53,6 +53,9 @@ pub struct StackConfig {
   /// Background of a hovered inactive tab.
   pub tab_hover_background: BorderColorSource,
 
+  /// Background of an inactive tab whose window requests attention.
+  pub tab_urgent_background: BorderColorSource,
+
   /// Background of inactive tabs. Transparent by default, so they show
   /// the strip.
   pub tab_inactive_background: BorderColorSource,
@@ -119,6 +122,7 @@ impl Default for StackConfig {
       tab_bar_opacity: OpacityValue(0.92),
       tab_active_background: color("#3a3a3a"),
       tab_hover_background: color("#2c2c2c"),
+      tab_urgent_background: color("#8a5a00"),
       tab_inactive_background: color("#00000000"),
       tab_text_color: color("#ffffff"),
       tab_inactive_text_color: color("#a0a0a0"),

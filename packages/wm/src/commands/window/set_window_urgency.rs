@@ -60,6 +60,14 @@ pub fn set_window_urgency(
     info!("Window urgency cleared: {window}");
   }
 
+  // Highlights or clears the window's tab.
+  if window
+    .parent()
+    .is_some_and(|parent| parent.as_stack().is_some())
+  {
+    state.pending_sync.queue_tab_bar_update();
+  }
+
   state.emit_event(WmEvent::WindowUrgencyChanged {
     updated_window: window.to_dto()?,
     workspace_name: window
