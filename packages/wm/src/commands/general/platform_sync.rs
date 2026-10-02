@@ -1843,7 +1843,11 @@ fn reposition_window(
 
       match &window.state() {
         WindowState::Minimized => {
-          if !window.native().is_minimized()? {
+          // A minimized stack only minimizes its active window; the hidden
+          // tabs stay as they are, as minimizing moves focus.
+          if !is_inactive_stack_child(window)
+            && !window.native().is_minimized()?
+          {
             window.native().minimize()?;
           }
         }

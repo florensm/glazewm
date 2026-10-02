@@ -6,8 +6,8 @@ use wm_platform::NativeWindowWindowsExt;
 
 use crate::{
   commands::container::{
-    attach_container, detach_container, resize_tiling_container,
-    set_focused_descendant,
+    attach_container, detach_container, flatten_child_split_containers,
+    resize_tiling_container, set_focused_descendant,
   },
   models::{
     Container, InsertionTarget, StackContainer, WindowContainer, Workspace,
@@ -111,7 +111,13 @@ fn untile_stack(
     .and_then(|child| child.as_window_container().ok())
     .map(|window| window.floating_placement());
 
+  let ancestors = stack.ancestors().take(3).collect::<Vec<_>>();
   detach_container(stack.clone().into())?;
+
+  // E.g. a split left with a single child.
+  for ancestor in ancestors.iter().rev() {
+    flatten_child_split_containers(ancestor)?;
+  }
 
   for window in stack.windows() {
     if let WindowContainer::TilingWindow(window) = &window {
@@ -463,5 +469,115 @@ mod tests {
     .unwrap();
 
     assert_eq!(tiled.parent().unwrap().id(), s.stack.id());
+  }
+
+  #[test]
+  fn emptying_a_floating_stack_leaves_the_layout_alone() {
+    let mut s = setup();
+    s.stack.set_name("details".to_string());
+    update_stack_state(&s.stack, floating(), &mut s.state, &s.config)
+      .unwrap();
+
+    for window in s.stack.windows() {
+      crate::commands::container::detach_container(window.into()).unwrap();
+    }
+
+    assert!(s.stack.is_detached());
+    assert!(approx_eq(s.left.tiling_size(), 1.0));
+    assert_eq!(s.workspace.child_count(), 1);
+  }
+
+  #[test]
+  fn a_floated_stack_tiles_back_into_its_split() {
+    let left = TilingWindow::mock().call();
+    let other = TilingWindow::mock().call();
+    let tab = TilingWindow::mock().call();
+    let stack = StackContainer::mock()
+      .tiling_containers(vec![tab.into()])
+      .call();
+    let split = crate::models::SplitContainer::mock()
+      .tiling_direction(wm_common::TilingDirection::Vertical)
+      .tiling_containers(vec![stack.clone().into(), other.clone().into()])
+      .call();
+    let workspace = Workspace::mock()
+      .tiling_containers(vec![left.into(), split.clone().into()])
+      .call();
+    let monitor =
+      Monitor::mock().workspaces(vec![workspace.clone()]).call();
+    let mut state =
+      std::mem::ManuallyDrop::new(WmState::mock(vec![monitor]));
+    let config = UserConfig::from_parsed(ParsedConfig::default());
+
+    update_stack_state(&stack, floating(), &mut state, &config).unwrap();
+    assert_eq!(workspace.tiling_children().count(), 2);
+
+    update_stack_state(&stack, WindowState::Tiling, &mut state, &config)
+      .unwrap();
+
+    assert_eq!(stack.parent().unwrap().id(), split.id());
+    assert_eq!(stack.index(), 0);
+    assert_eq!(other.parent().unwrap().id(), split.id());
+  }
+
+  #[test]
+  fn a_minimized_stack_comes_back_to_its_slot() {
+    let mut s = setup();
+    let tab = s.stack.windows()[1].clone();
+    tab.update_native_properties(|properties| {
+      properties.is_minimized = true;
+    });
+
+    let tab = update_window_state(
+      tab,
+      WindowState::Minimized,
+      &mut s.state,
+      &s.config,
+    )
+    .unwrap();
+
+    assert!(s
+      .stack
+      .windows()
+      .iter()
+      .all(|w| w.state() == WindowState::Minimized));
+    assert!(!s.stack.shows_tab_bar());
+    assert!(approx_eq(s.left.tiling_size(), 1.0));
+
+    tab.update_native_properties(|properties| {
+      properties.is_minimized = false;
+    });
+    update_window_state(tab, WindowState::Tiling, &mut s.state, &s.config)
+      .unwrap();
+
+    assert!(s.stack.is_tiling());
+    assert!(approx_eq(s.stack.tiling_size(), 0.7));
+  }
+
+  #[test]
+  fn joining_a_minimized_stack_restores_it() {
+    let mut s = setup();
+    s.stack.windows()[1].update_native_properties(|properties| {
+      properties.is_minimized = true;
+    });
+    update_stack_state(
+      &s.stack,
+      WindowState::Minimized,
+      &mut s.state,
+      &s.config,
+    )
+    .unwrap();
+
+    let joined = join_stack(
+      s.left.clone().into(),
+      &s.stack,
+      0,
+      &mut s.state,
+      &s.config,
+    )
+    .unwrap();
+
+    assert!(s.stack.is_tiling());
+    assert_eq!(joined.parent().unwrap().id(), s.stack.id());
+    assert_eq!(s.stack.child_count(), 3);
   }
 }
