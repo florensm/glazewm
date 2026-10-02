@@ -27,7 +27,7 @@ use wm_platform::{
 
 use crate::{
   animation::AnimationPositionResult,
-  models::{Container, WindowContainer},
+  models::{is_inactive_stack_child, Container, WindowContainer},
   traits::{CommonGetters, PositionGetters, WindowGetters},
   user_config::UserConfig,
   wm_state::WmState,
@@ -212,6 +212,9 @@ pub fn platform_sync(
   state.animation_manager.settle_overlay_z_order(
     repositioned.into_iter().chain(z_order_touched),
   );
+
+  #[cfg(target_os = "windows")]
+  sync_tab_bars(state, config);
 
   state.pending_sync.clear();
 
@@ -543,12 +546,14 @@ fn redraw_containers(
           .map(|(i, container)| (container.id(), i))
           .collect();
 
-      // Sort the windows to update by their focus order. The most recently
-      // focused window will be updated first.
-      // TODO: To reduce flicker, redraw windows that will be shown first,
-      // then redraw the ones to be hidden last.
+      // Sort by focus order, with windows that will be shown last so that
+      // the reversed iteration below shows them before hiding the others.
+      // Hiding first leaves a blank frame, e.g. when switching stack tabs.
       windows.sort_by_key(|window| {
-        focus_order_index.get(&window.id()).copied()
+        let will_show = !is_inactive_stack_child(*window)
+          && window.workspace().is_some_and(|w| w.is_displayed());
+
+        (will_show, focus_order_index.get(&window.id()).copied())
       });
     }
 
@@ -954,9 +959,11 @@ fn redraw_containers(
     let previous_display_state = window.display_state();
 
     // Transition display state depending on whether window will be
-    // shown or hidden.
+    // shown or hidden. Only the active tab of a stack is shown.
+    let should_show =
+      workspace.is_displayed() && !is_inactive_stack_child(*window);
     let new_display_state =
-      match (previous_display_state.clone(), workspace.is_displayed()) {
+      match (previous_display_state.clone(), should_show) {
         (DisplayState::Hidden | DisplayState::Hiding, true) => {
           DisplayState::Showing
         }
@@ -2633,7 +2640,8 @@ fn sync_overlays<O: SyncableOverlay>(
 
     let should_hide =
       state.animation_manager.has_active_surrogate(&window.id())
-        || !window.workspace().is_some_and(|ws| ws.is_displayed());
+        || !window.workspace().is_some_and(|ws| ws.is_displayed())
+        || is_inactive_stack_child(window);
 
     if should_hide {
       if let Some(overlay) = O::overlays(state).get_mut(&window.id()) {
@@ -2838,5 +2846,144 @@ fn resync_overlay<O: SyncableOverlay>(
       "{} overlay z-order settle failed for {id}: {err}.",
       O::LABEL
     );
+  }
+}
+
+/// A stack's tab bar contents and placement for this tick.
+#[cfg(target_os = "windows")]
+struct TabBarFrame {
+  rect: Rect,
+  tabs: Vec<wm_platform::TabInfo>,
+  active_index: usize,
+  /// Whether the bar is shown: its workspace is displayed and no
+  /// workspace-switch animation is running.
+  is_visible: bool,
+}
+
+#[cfg(target_os = "windows")]
+impl TabBarFrame {
+  /// Resolves the tab bar for `stack`, or `None` when it has no tab bar
+  /// or no tabs.
+  fn for_stack(
+    stack: &crate::models::StackContainer,
+    is_ws_switch_active: bool,
+  ) -> Option<Self> {
+    use wm_common::TabBarPosition;
+
+    let height = stack.tab_bar_height_px();
+    if height <= 0 {
+      return None;
+    }
+
+    let stack_rect = stack.to_rect().ok()?;
+    let rect = match stack.tab_bar_position() {
+      TabBarPosition::Top => Rect::from_ltrb(
+        stack_rect.left,
+        stack_rect.top,
+        stack_rect.right,
+        stack_rect.top + height,
+      ),
+      TabBarPosition::Bottom => Rect::from_ltrb(
+        stack_rect.left,
+        stack_rect.bottom - height,
+        stack_rect.right,
+        stack_rect.bottom,
+      ),
+    };
+
+    let children = stack.children();
+    let active_index = stack
+      .active_child()
+      .and_then(|active| children.iter().position(|c| *c == active))
+      .unwrap_or(0);
+
+    let tabs = children
+      .iter()
+      .filter_map(Container::as_tiling_window)
+      .map(|window| wm_platform::TabInfo {
+        title: window.native_properties().title,
+        hwnd: window.native().id().0,
+      })
+      .collect::<Vec<_>>();
+
+    if tabs.is_empty() {
+      return None;
+    }
+
+    let is_visible = !is_ws_switch_active
+      && stack.workspace().is_some_and(|ws| ws.is_displayed());
+
+    Some(Self {
+      rect,
+      tabs,
+      active_index,
+      is_visible,
+    })
+  }
+}
+
+/// Creates, updates, hides or destroys the tab bar of every stack.
+///
+/// Bars of stacks on hidden workspaces are kept (hidden) rather than
+/// recreated on every workspace switch.
+#[cfg(target_os = "windows")]
+fn sync_tab_bars(state: &mut WmState, config: &UserConfig) {
+  use wm_platform::{NativeStackTabBar, TabBarColors};
+
+  let is_ws_switch_active =
+    state.animation_manager.is_workspace_switch_active();
+
+  let frames = state
+    .root_container
+    .descendants()
+    .filter_map(|container| container.as_stack().cloned())
+    .filter_map(|stack| {
+      TabBarFrame::for_stack(&stack, is_ws_switch_active)
+        .map(|frame| (stack.id(), frame))
+    })
+    .collect::<std::collections::HashMap<_, _>>();
+
+  state.tab_bars.retain(|id, _| frames.contains_key(id));
+
+  let colors = TabBarColors {
+    background: config.value.stack.tab_bar_background,
+    active: config.value.stack.tab_active_background,
+    inactive: config.value.stack.tab_inactive_background,
+    text: config.value.stack.tab_text_color,
+  };
+
+  for (stack_id, frame) in frames {
+    if let Some(bar) = state.tab_bars.get_mut(&stack_id) {
+      if frame.is_visible {
+        bar.update(&frame.rect, frame.tabs, frame.active_index);
+      } else {
+        bar.hide();
+      }
+
+      continue;
+    }
+
+    if !frame.is_visible {
+      continue;
+    }
+
+    let tab_click_tx = state.tab_click_tx.clone();
+    let on_click = Box::new(move |index: usize| {
+      let _ = tab_click_tx.send((stack_id, index));
+    });
+
+    match NativeStackTabBar::create(
+      &state.dispatcher,
+      &frame.rect,
+      frame.tabs,
+      frame.active_index,
+      colors,
+      on_click,
+    ) {
+      Ok(bar) => {
+        state.tab_bars.insert(stack_id, bar);
+      }
+      Err(err) => tracing::warn!("Failed to create tab bar: {err}"),
+    }
   }
 }
