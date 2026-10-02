@@ -30,11 +30,11 @@ use crate::{
     monitor::focus_monitor,
     window::{
       cycle_stack_focus, focus_stack_index, focus_urgent_window,
-      ignore_window, move_to_stack, move_window_in_direction,
-      move_window_to_workspace, resize_window, set_window_position,
-      set_window_size, set_window_urgency, stack_absorb_neighbor,
-      stack_insert, toggle_stack, update_window_state,
-      WindowPositionTarget,
+      ignore_window, manage_held_window, move_to_stack,
+      move_window_in_direction, move_window_to_workspace, resize_window,
+      set_window_position, set_window_size, set_window_urgency,
+      stack_absorb_neighbor, stack_insert, toggle_stack,
+      update_window_state, WindowPositionTarget,
     },
     workspace::{
       focus_workspace, move_workspace_in_direction,
@@ -101,6 +101,29 @@ impl WindowManager {
       state,
       tab_click_rx,
     })
+  }
+
+  /// Places the windows held back for auto-stacking whose wait for a
+  /// title ran out.
+  pub fn process_auto_stack_timeouts(
+    &mut self,
+    config: &mut UserConfig,
+  ) -> anyhow::Result<()> {
+    let state = &mut self.state;
+
+    for native_window in
+      state.auto_stack.expired(std::time::Instant::now())
+    {
+      manage_held_window(native_window, state, config)?;
+    }
+
+    if !state.is_paused && state.pending_sync.has_changes() {
+      platform_sync(state, config)?;
+    }
+
+    self.state.animation_manager.ensure_timer_running();
+
+    Ok(())
   }
 
   pub fn process_event(
@@ -961,7 +984,12 @@ impl WindowManager {
         if let Ok(window) = subject_container.as_window_container() {
           let tiling = ensure_tiling(window, state, config)?;
           move_to_stack(&tiling, name, state, config)?;
-          state.pending_sync.queue_focus_change();
+
+          // Only re-assert focus for the focused window, so a rule run on
+          // a background window doesn't steal focus.
+          if tiling.has_focus(None) {
+            state.pending_sync.queue_focus_change();
+          }
         }
         Ok(())
       }

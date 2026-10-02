@@ -11,16 +11,17 @@ GlazeWM: only the active tab is shown, the other tabs are cloaked.
 | `toggle-stack` | Wrap the focused window in a new stack, or take it out of its stack. |
 | `stack-insert` | Stack the focused window with the most recently focused other tiling window. |
 | `stack-absorb-neighbor --direction <dir>` | Pull the neighbouring window in `<dir>` into the focused window's stack. |
-| `move-to-stack --name <name>` | Move the focused window into the named stack, creating it if needed. |
+| `move-to-stack --name <name>` | Move the focused window into the named stack, on any workspace. Creates the stack in place if it doesn't exist. |
 | `cycle-stack-focus [--prev]` | Focus the next (or previous) tab, wrapping around. |
 | `focus-stack-index --index <n>` | Focus the tab at zero-based index `n`. |
 
 Moving or resizing a window in a stack moves or resizes the stack as a
 whole. Directional focus enters a stack through its active tab.
 
-An unnamed stack is removed once it holds a single window. A named stack
-(`move-to-stack`) is kept until it is empty, so it stays a target for
-windows that open later.
+Closing or removing a tab never changes the stack's size. An unnamed stack
+is removed once it holds a single window, which then takes over the
+stack's whole slot. A named stack is kept until it is empty, so it stays a
+target for windows that open later.
 
 ## Config
 
@@ -38,3 +39,44 @@ stack:
 
 The tab bar height scales with the monitor's DPI when
 `gaps.scale_with_dpi` is enabled. The tab bar is only drawn on Windows.
+
+## Auto-stacking
+
+`stack.auto_stack` puts matching windows into a named stack as they open:
+
+```yaml
+stack:
+  auto_stack:
+    - name: "tickets"
+      match:
+        - window_process: { equals: "Gensys" }
+          window_title: { regex: "^Ticket details for" }
+      # Optional: windows that never join, even if they match.
+      exclude: []
+      # Optional: where to create the stack if it doesn't exist yet.
+      # Defaults to where the window would otherwise open.
+      workspace: "1"
+      # Optional: let windows with an owner window join (default false).
+      allow_owned: false
+  # How long an untitled window that could still match is held back.
+  auto_stack_title_timeout_ms: 1500
+```
+
+- There is one stack per name across all workspaces and monitors. A
+  matching window joins it wherever it opens.
+- A matching window is attached straight into the stack, with no tiling
+  step in between, and becomes its active tab. It only takes focus if the
+  OS made it the foreground window, i.e. you opened it yourself.
+- Some apps (often WPF) show a window before giving it a title. A window
+  with an empty title whose process and class match a rule is held back,
+  hidden, until it gets a title or `auto_stack_title_timeout_ms` passes.
+  It is then stacked or placed normally.
+- A window that only gets a matching title after it was placed joins the
+  stack once.
+- Dialogs (`#32770`, modal frames), tool windows and, unless
+  `allow_owned` is set, owned windows are never stacked.
+- Each window joins at most once: a window you take out of its stack is
+  never pulled back in.
+- Window rules that would move a stacked window or change its state
+  (`set-floating`, `move --workspace`, ...) are skipped when it is
+  auto-stacked.

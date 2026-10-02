@@ -12,6 +12,8 @@ pub fn handle_window_destroyed(
   native_window_id: WindowId,
   state: &mut WmState,
 ) -> anyhow::Result<()> {
+  state.auto_stack.forget(native_window_id);
+
   let found_window = state
     .windows()
     .into_iter()

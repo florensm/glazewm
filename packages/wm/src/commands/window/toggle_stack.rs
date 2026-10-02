@@ -5,7 +5,7 @@ use crate::{
     flatten_stack_container, wrap_in_stack_container,
   },
   models::{StackContainer, TilingContainer, TilingWindow},
-  traits::{CommonGetters, TilingSizeGetters},
+  traits::{CommonGetters, TilingSizeGetters, WindowGetters},
   user_config::UserConfig,
   wm_state::WmState,
 };
@@ -41,6 +41,9 @@ pub fn toggle_stack(
       .tiling_children()
       .filter(|c| c.id() != window.id())
       .collect();
+
+    // A window taken out of a stack is never auto-stacked again.
+    state.auto_stack.mark_settled(window.native().id());
 
     // Remove the window from the stack.
     stack
