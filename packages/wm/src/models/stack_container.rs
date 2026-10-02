@@ -255,4 +255,26 @@ mod tests {
     assert!(stack.is_detached());
     assert_eq!(workspace.child_count(), 0);
   }
+
+  #[test]
+  fn closing_a_tab_keeps_the_layout() {
+    let left = TilingWindow::mock().tiling_size(0.3).call();
+    let first = TilingWindow::mock().call();
+    let second = TilingWindow::mock().call();
+    let stack = StackContainer::mock()
+      .tiling_containers(vec![first.clone().into(), second.clone().into()])
+      .call();
+    stack.set_tiling_size(0.7);
+    let _workspace = Workspace::mock()
+      .tiling_containers(vec![left.clone().into(), stack.clone().into()])
+      .call();
+    left.set_tiling_size(0.3);
+    stack.set_tiling_size(0.7);
+
+    detach_container(second.into()).unwrap();
+
+    assert!(stack.is_detached());
+    assert!(approx_eq(first.tiling_size(), 0.7));
+    assert!(approx_eq(left.tiling_size(), 0.3));
+  }
 }
