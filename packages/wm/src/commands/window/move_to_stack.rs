@@ -52,7 +52,7 @@ pub fn move_to_stack(
   config: &UserConfig,
 ) -> anyhow::Result<WindowContainer> {
   if let Some(stack) = find_named_stack(state, name) {
-    let index = stack.child_count();
+    let index = stack.new_tab_index(config.value.stack.new_tab_position);
     return join_stack(window, &stack, index, state, config);
   }
 

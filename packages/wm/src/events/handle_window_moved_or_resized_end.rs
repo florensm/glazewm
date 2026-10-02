@@ -353,7 +353,7 @@ fn drop_onto_tab_bar(
     let joined = join_stack(
       moved_window,
       &target,
-      target.child_count(),
+      target.new_tab_index(config.value.stack.new_tab_position),
       state,
       config,
     )?;

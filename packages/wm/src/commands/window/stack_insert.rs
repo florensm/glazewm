@@ -55,7 +55,8 @@ pub fn stack_insert(
     stack
   };
 
-  join_stack(window, &stack, 0, state, config)?;
+  let index = stack.new_tab_index(config.value.stack.new_tab_position);
+  join_stack(window, &stack, index, state, config)?;
 
   Ok(())
 }

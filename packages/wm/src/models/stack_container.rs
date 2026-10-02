@@ -7,7 +7,8 @@ use std::{
 use anyhow::Context;
 use uuid::Uuid;
 use wm_common::{
-  ContainerDto, GapsConfig, StackContainerDto, TabBarPosition, WindowState,
+  ContainerDto, GapsConfig, NewTabPosition, StackContainerDto,
+  TabBarPosition, WindowState,
 };
 use wm_platform::{LengthValue, Rect};
 
@@ -117,6 +118,16 @@ impl StackContainer {
   /// Returns the active tab, i.e. the most recently focused child.
   pub fn active_child(&self) -> Option<Container> {
     self.child_focus_order().next()
+  }
+
+  /// Index among the tabs for a window added to the stack.
+  pub fn new_tab_index(&self, position: NewTabPosition) -> usize {
+    match position {
+      NewTabPosition::End => self.child_count(),
+      NewTabPosition::AfterActive => self
+        .active_child()
+        .map_or(self.child_count(), |active| active.index() + 1),
+    }
   }
 
   /// The stack's windows, in tab order.

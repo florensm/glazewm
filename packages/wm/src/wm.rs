@@ -31,10 +31,11 @@ use crate::{
     window::{
       cycle_stack_focus, float_out_of_stack, focus_stack_index,
       focus_urgent_window, ignore_window, manage_held_window,
-      move_to_stack, move_window_in_direction, move_window_to_workspace,
-      resize_window, set_window_position, set_window_size,
-      set_window_urgency, stack_absorb_neighbor, stack_insert,
-      toggle_stack, update_window_state, WindowPositionTarget,
+      move_stack_tab, move_to_stack, move_window_in_direction,
+      move_window_to_workspace, resize_window, set_window_position,
+      set_window_size, set_window_urgency, stack_absorb_neighbor,
+      stack_all, stack_insert, toggle_stack, unstack_all,
+      update_window_state, WindowPositionTarget,
     },
     workspace::{
       focus_workspace, move_workspace_in_direction,
@@ -1057,6 +1058,24 @@ impl WindowManager {
             state.pending_sync.queue_focus_change();
           }
         }
+        Ok(())
+      }
+      InvokeCommand::StackAll => {
+        if let Some(workspace) = subject_container.workspace() {
+          stack_all(&workspace, state, config)?;
+          state.pending_sync.queue_focus_change();
+        }
+        Ok(())
+      }
+      InvokeCommand::UnstackAll => {
+        if let Some(workspace) = subject_container.workspace() {
+          unstack_all(&workspace, state)?;
+          state.pending_sync.queue_focus_change();
+        }
+        Ok(())
+      }
+      InvokeCommand::MoveStackTab { prev } => {
+        move_stack_tab(&subject_container, *prev, state);
         Ok(())
       }
       InvokeCommand::FloatOutOfStack => {

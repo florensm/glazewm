@@ -30,6 +30,19 @@ pub enum TabBarPosition {
   Bottom,
 }
 
+/// Where a window added to a stack is placed among its tabs.
+#[derive(
+  Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum NewTabPosition {
+  /// After the last tab.
+  #[default]
+  End,
+  /// Right after the active tab.
+  AfterActive,
+}
+
 /// Configuration for stacks and their tab bar.
 #[allow(clippy::struct_excessive_bools)]
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -106,6 +119,9 @@ pub struct StackConfig {
   /// joins that stack. Otherwise it is tiled next to the stack.
   pub new_windows_join_focused_stack: bool,
 
+  /// Where windows added to a stack are placed among its tabs.
+  pub new_tab_position: NewTabPosition,
+
   /// Whether popups opened by an app that has windows in a stack (windows
   /// with an owner window from that app) open as floating windows.
   pub float_owned_popups: bool,
@@ -138,6 +154,7 @@ impl Default for StackConfig {
       auto_stack: Vec::new(),
       auto_stack_title_timeout_ms: 1500,
       new_windows_join_focused_stack: false,
+      new_tab_position: NewTabPosition::End,
       float_owned_popups: true,
     }
   }

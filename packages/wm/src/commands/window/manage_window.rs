@@ -283,7 +283,7 @@ fn auto_stack_placement(
     }
 
     return Ok(Placement {
-      index: stack.child_count(),
+      index: stack.new_tab_index(config.value.stack.new_tab_position),
       parent: stack.into(),
       created_stack: None,
     });
