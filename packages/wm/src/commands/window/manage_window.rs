@@ -70,30 +70,24 @@ fn manage_window_inner(
     return Ok(());
   };
 
-  let auto_stack_rule = if state.auto_stack.is_settled(native_window.id())
-  {
-    None
+  let decision = if state.auto_stack.is_settled(native_window.id()) {
+    AutoStackDecision::Skip
   } else {
     let traits = WindowTraits::of(&native_window, &native_properties);
-
-    match decide(
-      &config.value.stack.auto_stack,
-      &native_properties,
-      traits,
-    ) {
-      AutoStackDecision::Join(rule) => Some(rule.clone()),
-      // Holding relies on cloaking, which only exists on Windows.
-      AutoStackDecision::Wait
-        if cfg!(target_os = "windows")
-          && may_hold
-          && target_parent.is_none() =>
-      {
-        hold_window(&native_window, state, config);
-        return Ok(());
-      }
-      AutoStackDecision::Wait | AutoStackDecision::Skip => None,
-    }
+    decide(&config.value.stack.auto_stack, &native_properties, traits)
   };
+
+  // Holding relies on cloaking, which only exists on Windows.
+  if decision == AutoStackDecision::Wait
+    && cfg!(target_os = "windows")
+    && may_hold
+    && target_parent.is_none()
+  {
+    hold_window(&native_window, state, config);
+    return Ok(());
+  }
+
+  let auto_stack_rule = join_rule(&decision, &native_properties.title);
 
   state.auto_stack.release(native_window.id());
 
@@ -298,6 +292,22 @@ fn auto_stack_placement(
     index: 0,
     created_stack: Some(stack),
   })
+}
+
+/// The rule whose stack a window joins, logging why a matching window
+/// doesn't.
+fn join_rule(
+  decision: &AutoStackDecision<'_>,
+  title: &str,
+) -> Option<AutoStackRuleConfig> {
+  match decision {
+    AutoStackDecision::Join(rule) => Some((*rule).clone()),
+    AutoStackDecision::Blocked(reason) => {
+      info!("Not auto-stacking window '{title}' because {reason}.");
+      None
+    }
+    AutoStackDecision::Wait | AutoStackDecision::Skip => None,
+  }
 }
 
 /// Holds `native_window` back, cloaked, until it gets a title.

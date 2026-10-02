@@ -113,11 +113,18 @@ pub fn auto_stack_managed_window(
   let properties = window.native_properties();
   let traits = WindowTraits::of(&window.native(), &properties);
 
-  let AutoStackDecision::Join(rule) =
-    decide(&config.value.stack.auto_stack, &properties, traits)
-  else {
-    return Ok(());
-  };
+  let rule =
+    match decide(&config.value.stack.auto_stack, &properties, traits) {
+      AutoStackDecision::Join(rule) => rule,
+      AutoStackDecision::Blocked(reason) => {
+        info!(
+          "Not auto-stacking window '{}' because {reason}.",
+          properties.title
+        );
+        return Ok(());
+      }
+      AutoStackDecision::Wait | AutoStackDecision::Skip => return Ok(()),
+    };
 
   let name = rule.name.clone();
   let had_focus = window.has_focus(None);
@@ -149,4 +156,12 @@ pub fn auto_stack_managed_window(
   state.pending_sync.queue_container_to_redraw(stack);
 
   Ok(())
+}
+
+/// Whether `window` was put in its current stack by an auto-stack rule.
+pub fn is_auto_stacked(window: &WindowContainer, state: &WmState) -> bool {
+  state.auto_stack.is_settled(window.native().id())
+    && window
+      .parent()
+      .is_some_and(|parent| parent.as_stack().is_some())
 }
