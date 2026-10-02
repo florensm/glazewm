@@ -76,6 +76,10 @@ pub struct WmState {
   /// Windows held back or placed by `stack.auto_stack` rules.
   pub auto_stack: AutoStackState,
 
+  /// Windows kept usable while their app shows a blocking popup.
+  #[cfg(target_os = "windows")]
+  pub stay_interactive: crate::stay_interactive::StayInteractive,
+
   /// Whether the WM is paused.
   pub is_paused: bool,
 
@@ -145,6 +149,9 @@ impl WmState {
       binding_modes: Vec::new(),
       ignored_windows: Vec::new(),
       auto_stack: AutoStackState::default(),
+      #[cfg(target_os = "windows")]
+      stay_interactive: crate::stay_interactive::StayInteractive::default(
+      ),
       is_paused: false,
       is_focus_synced: false,
       has_initialized: false,

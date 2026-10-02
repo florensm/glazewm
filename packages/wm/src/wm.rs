@@ -220,10 +220,25 @@ impl WindowManager {
       }
       PlatformEvent::Window(window_event) => match window_event {
         WindowEvent::Focused { window, .. } => {
-          handle_window_focused(&window, state, config)
+          handle_window_focused(&window, state, config).and_then(|()| {
+            #[cfg(target_os = "windows")]
+            crate::stay_interactive::keep_stacked_windows_interactive(
+              &window, state, config,
+            )?;
+            Ok(())
+          })
         }
         WindowEvent::Shown { window, .. } => {
-          handle_window_shown(window, state, config)
+          #[cfg(target_os = "windows")]
+          let shown = window.clone();
+
+          handle_window_shown(window, state, config).and_then(|()| {
+            #[cfg(target_os = "windows")]
+            crate::stay_interactive::keep_stacked_windows_interactive(
+              &shown, state, config,
+            )?;
+            Ok(())
+          })
         }
         WindowEvent::Hidden { window, .. } => {
           handle_window_hidden(&window, state, config)
@@ -1049,6 +1064,13 @@ impl WindowManager {
           if tiling.has_focus(None) {
             state.pending_sync.queue_focus_change();
           }
+        }
+        Ok(())
+      }
+      InvokeCommand::StayInteractive => {
+        #[cfg(target_os = "windows")]
+        if let Ok(window) = subject_container.as_window_container() {
+          state.stay_interactive.mark(window.native().id());
         }
         Ok(())
       }

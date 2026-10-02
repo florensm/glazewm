@@ -370,6 +370,32 @@ impl NativeWindow {
     unsafe { GetWindow(self.hwnd(), GW_OWNER) }.0 != 0
   }
 
+  /// Implements [`NativeWindowWindowsExt::process_id`].
+  pub(crate) fn process_id(&self) -> u32 {
+    let mut process_id = 0u32;
+    // SAFETY: `process_id` outlives the call; a stale handle leaves it 0.
+    unsafe {
+      GetWindowThreadProcessId(self.hwnd(), Some(&raw mut process_id));
+    }
+    process_id
+  }
+
+  /// Implements [`NativeWindowWindowsExt::is_enabled`].
+  pub(crate) fn is_enabled(&self) -> bool {
+    // SAFETY: A stale handle just returns false.
+    unsafe {
+      windows::Win32::UI::Input::KeyboardAndMouse::IsWindowEnabled(
+        self.hwnd(),
+      )
+    }
+    .as_bool()
+  }
+
+  /// Implements [`NativeWindowWindowsExt::enable_async`].
+  pub(crate) fn enable_async(&self) {
+    super::window_enabler::enable_async(self.handle);
+  }
+
   /// Implements [`NativeWindowWindowsExt::is_top_level`].
   pub(crate) fn is_top_level(&self) -> bool {
     // `GA_PARENT`, unlike `GetParent`, never returns the owner window.

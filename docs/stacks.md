@@ -138,3 +138,30 @@ stack:
 - Window rules that would move a stacked window or change its state
   (`set-floating`, `move --workspace`, ...) are skipped when it is
   auto-stacked.
+
+## Staying usable while a popup is open
+
+Apps such as WPF apps disable all their windows while a blocking popup
+(e.g. "Add Activity") is open, including the ones in a stack. Mark an
+app's windows with the `stay-interactive` window rule command to keep its
+stacked windows usable meanwhile:
+
+```yaml
+window_rules:
+  - commands: ["stay-interactive"]
+    match:
+      - window_process: { equals: "MyApp" }
+```
+
+- When a window of the app is shown or focused while its marked stacked
+  windows are disabled, they are re-enabled. Only windows that are in a
+  stack are affected.
+- The popup is made floating and shown on top, so it stays visible when
+  you click back into a stacked window.
+- If the app keeps disabling the windows (e.g. while busy), they are left
+  disabled after three attempts per popup.
+- Once the popup closes, the app re-enables its windows itself.
+
+The app doesn't expect input in its other windows while the popup is
+open, so actions there that conflict with the popup may misbehave. Only
+enable this for apps you've checked.
