@@ -4,7 +4,7 @@ use std::{
 };
 
 use windows::{
-  core::{w, PCWSTR},
+  core::{w, PCWSTR, PWSTR},
   Win32::{
     Foundation::{
       COLORREF, HWND, LPARAM, LRESULT, POINT, RECT, SIZE, WPARAM,
@@ -14,12 +14,17 @@ use windows::{
       DeleteObject, DrawTextW, SelectObject, SetBkMode, SetTextColor,
       AC_SRC_ALPHA, AC_SRC_OVER, BITMAPINFO, BITMAPINFOHEADER, BI_RGB,
       BLENDFUNCTION, CLEARTYPE_QUALITY, CLIP_DEFAULT_PRECIS,
-      DEFAULT_CHARSET, DIB_RGB_COLORS, DT_END_ELLIPSIS, DT_LEFT,
-      DT_NOPREFIX, DT_SINGLELINE, DT_VCENTER, FW_NORMAL, FW_SEMIBOLD, HDC,
-      HFONT, OUT_DEFAULT_PRECIS, TRANSPARENT,
+      DEFAULT_CHARSET, DIB_RGB_COLORS, DT_CALCRECT, DT_END_ELLIPSIS,
+      DT_LEFT, DT_NOPREFIX, DT_SINGLELINE, DT_VCENTER, FW_NORMAL,
+      FW_SEMIBOLD, HDC, HFONT, OUT_DEFAULT_PRECIS, TRANSPARENT,
     },
     UI::{
-      Controls::WM_MOUSELEAVE,
+      Controls::{
+        InitCommonControlsEx, ICC_WIN95_CLASSES, INITCOMMONCONTROLSEX,
+        NMHDR, NMTTDISPINFOW, TOOLTIPS_CLASSW, TTF_SUBCLASS, TTM_ADDTOOLW,
+        TTM_DELTOOLW, TTM_POP, TTM_SETMAXTIPWIDTH, TTN_GETDISPINFOW,
+        TTS_ALWAYSTIP, TTS_NOPREFIX, TTTOOLINFOW, WM_MOUSELEAVE,
+      },
       Input::KeyboardAndMouse::{
         ReleaseCapture, SetCapture, TrackMouseEvent, TME_LEAVE,
         TRACKMOUSEEVENT,
@@ -28,17 +33,18 @@ use windows::{
         AppendMenuW, CreatePopupMenu, CreateWindowExW, DefWindowProcW,
         DestroyMenu, DestroyWindow, DrawIconEx, GetCursorPos,
         GetSystemMetrics, GetWindowLongPtrW, KillTimer, LoadCursorW,
-        PostMessageW, RegisterClassW, SetForegroundWindow, SetTimer,
-        SetWindowLongPtrW, SetWindowPos, ShowWindow, TrackPopupMenu,
-        UpdateLayeredWindow, CREATESTRUCTW, DI_NORMAL, GWLP_USERDATA,
-        IDC_ARROW, MA_NOACTIVATE, MF_STRING, SM_CXDRAG, SM_CYDRAG,
-        SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSENDCHANGING, SWP_NOSIZE,
-        SW_HIDE, SW_SHOWNOACTIVATE, TPM_NONOTIFY, TPM_RETURNCMD,
-        TPM_RIGHTBUTTON, ULW_ALPHA, WM_APP, WM_CAPTURECHANGED, WM_CLOSE,
-        WM_CREATE, WM_DESTROY, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MBUTTONUP,
-        WM_MOUSEACTIVATE, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_RBUTTONUP,
-        WM_TIMER, WNDCLASSW, WS_EX_LAYERED, WS_EX_NOACTIVATE,
-        WS_EX_TOOLWINDOW, WS_POPUP,
+        PostMessageW, RegisterClassW, SendMessageW, SetForegroundWindow,
+        SetTimer, SetWindowLongPtrW, SetWindowPos, ShowWindow,
+        TrackPopupMenu, UpdateLayeredWindow, CREATESTRUCTW, DI_NORMAL,
+        GWLP_USERDATA, IDC_ARROW, MA_NOACTIVATE, MF_STRING, SM_CXDRAG,
+        SM_CYDRAG, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSENDCHANGING,
+        SWP_NOSIZE, SW_HIDE, SW_SHOWNOACTIVATE, TPM_NONOTIFY,
+        TPM_RETURNCMD, TPM_RIGHTBUTTON, ULW_ALPHA, WINDOW_STYLE, WM_APP,
+        WM_CAPTURECHANGED, WM_CLOSE, WM_CREATE, WM_DESTROY,
+        WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MBUTTONUP, WM_MOUSEACTIVATE,
+        WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_NOTIFY, WM_RBUTTONUP, WM_TIMER,
+        WNDCLASSW, WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW,
+        WS_EX_TOPMOST, WS_POPUP,
       },
     },
   },
@@ -80,6 +86,9 @@ pub struct TabInfo {
 
   /// Handle of the tab's window, for its icon.
   pub hwnd: isize,
+
+  /// Whether the window requests attention, which highlights its tab.
+  pub is_urgent: bool,
 }
 
 /// When tabs show a close button.
@@ -100,6 +109,7 @@ pub struct TabBarStyle {
   pub active_background: Color,
   pub hover_background: Color,
   pub inactive_background: Color,
+  pub urgent_background: Color,
   pub text: Color,
   pub inactive_text: Color,
   pub font_family: String,
@@ -152,6 +162,14 @@ struct BarState {
   pill_slide: Option<PillSlide>,
   /// Highlight drawn last, where a slide starts from.
   last_pill: Option<TabRect>,
+  /// Tooltip control showing the full title of a cut-off tab.
+  tooltip: HWND,
+  /// Tooltip tools registered, one per tab, with the tab index as ID.
+  tool_count: usize,
+  /// Per tab index, whether its title didn't fit, as of the last render.
+  truncated: Vec<bool>,
+  /// Text handed to the tooltip; must outlive the notification.
+  tooltip_text: Vec<u16>,
   on_action: Box<dyn Fn(TabAction) + Send + 'static>,
 }
 
@@ -197,6 +215,10 @@ impl NativeStackTabBar {
       drag: None,
       pill_slide: None,
       last_pill: None,
+      tooltip: HWND(0),
+      tool_count: 0,
+      truncated: Vec::new(),
+      tooltip_text: vec![0],
       on_action,
     });
 
@@ -232,6 +254,12 @@ impl NativeStackTabBar {
           return Err(crate::Error::Platform(
             "Failed to create tab bar window.".to_string(),
           ));
+        }
+
+        // SAFETY: The window owns the state now and lives on this thread,
+        // where it is only touched from here and its window procedure.
+        unsafe {
+          (*(state_ptr as *mut BarState)).tooltip = create_tooltip(hwnd);
         }
 
         Ok(hwnd.0)
@@ -304,7 +332,117 @@ fn ensure_class_registered() {
   });
 }
 
+/// Creates the tooltip control of the bar `owner`. Its window is
+/// destroyed along with the bar.
+///
+/// # Safety
+///
+/// Must be called on the bar's thread.
+unsafe fn create_tooltip(owner: HWND) -> HWND {
+  static COMMON_CONTROLS: OnceLock<()> = OnceLock::new();
+  COMMON_CONTROLS.get_or_init(|| {
+    let controls = INITCOMMONCONTROLSEX {
+      dwSize: u32::try_from(std::mem::size_of::<INITCOMMONCONTROLSEX>())
+        .unwrap_or_default(),
+      dwICC: ICC_WIN95_CLASSES,
+    };
+    let _ = InitCommonControlsEx(&raw const controls);
+  });
+
+  let tooltip = CreateWindowExW(
+    WS_EX_TOPMOST | WS_EX_TOOLWINDOW,
+    TOOLTIPS_CLASSW,
+    PCWSTR::null(),
+    WS_POPUP | WINDOW_STYLE(TTS_NOPREFIX | TTS_ALWAYSTIP),
+    0,
+    0,
+    0,
+    0,
+    owner,
+    None,
+    None,
+    None,
+  );
+
+  // Long titles wrap rather than spanning the screen.
+  SendMessageW(tooltip, TTM_SETMAXTIPWIDTH, WPARAM(0), LPARAM(600));
+  tooltip
+}
+
+/// Info of the tooltip tool for tab `index` of `bar`.
+fn tool_info(bar: HWND, index: usize, rect: TabRect) -> TTTOOLINFOW {
+  TTTOOLINFOW {
+    cbSize: u32::try_from(std::mem::size_of::<TTTOOLINFOW>())
+      .unwrap_or_default(),
+    uFlags: TTF_SUBCLASS,
+    hwnd: bar,
+    uId: index,
+    rect: RECT {
+      left: rect.left,
+      top: rect.top,
+      right: rect.right,
+      bottom: rect.bottom,
+    },
+    // `LPSTR_TEXTCALLBACKW`: the text is asked for when shown.
+    lpszText: PWSTR(std::ptr::without_provenance_mut(usize::MAX)),
+    ..Default::default()
+  }
+}
+
 impl BarState {
+  /// Registers one tooltip tool per tab, over the tab's current slot.
+  ///
+  /// # Safety
+  ///
+  /// `bar` must be the bar's window, called on its thread.
+  unsafe fn sync_tooltip_tools(&mut self, bar: HWND) {
+    if self.tooltip.0 == 0 {
+      return;
+    }
+
+    for index in 0..self.tool_count {
+      let info = tool_info(bar, index, TabRect::default());
+      SendMessageW(
+        self.tooltip,
+        TTM_DELTOOLW,
+        WPARAM(0),
+        LPARAM(std::ptr::addr_of!(info) as isize),
+      );
+    }
+
+    let order = self.display_order();
+    for (position, index) in order.iter().enumerate() {
+      let Some(slot) = self.layout.slots.get(position) else {
+        continue;
+      };
+
+      let info = tool_info(bar, *index, slot.pill);
+      SendMessageW(
+        self.tooltip,
+        TTM_ADDTOOLW,
+        WPARAM(0),
+        LPARAM(std::ptr::addr_of!(info) as isize),
+      );
+    }
+
+    self.tool_count = order.len();
+  }
+
+  /// Points `info` at the full title of its tab if it was cut off, and
+  /// at an empty text, which shows no tooltip, otherwise.
+  fn fill_tooltip(&mut self, info: &mut NMTTDISPINFOW) {
+    let index = info.hdr.idFrom;
+    let title = self
+      .frame
+      .as_ref()
+      .and_then(|frame| frame.tabs.get(index))
+      .filter(|_| self.truncated.get(index).copied().unwrap_or(false))
+      .map_or_else(String::new, |tab| tab.title.clone());
+
+    self.tooltip_text = title.encode_utf16().chain([0]).collect();
+    info.lpszText = PWSTR(self.tooltip_text.as_mut_ptr());
+  }
+
   fn relayout(&mut self) {
     let Some(frame) = &self.frame else {
       return;
@@ -454,7 +592,7 @@ unsafe fn render(hwnd: HWND, state: &mut BarState) {
   // GDI zeroes the alpha of every pixel it draws, so it is restored after
   // drawing text and icons, which only ever land on opaque parts.
   let alpha = pixels.iter().map(|p| p >> 24).collect::<Vec<_>>();
-  paint_text_and_icons(mem_dc, hwnd, state, &frame);
+  state.truncated = paint_text_and_icons(mem_dc, hwnd, state, &frame);
   for (pixel, alpha) in pixels.iter_mut().zip(alpha) {
     *pixel = (*pixel & 0x00ff_ffff) | (alpha << 24);
   }
@@ -553,8 +691,12 @@ fn paint_shapes(
       .as_ref()
       .is_some_and(|drag| drag.is_moving && drag.index == index);
 
+    let is_urgent = frame.tabs.get(index).is_some_and(|tab| tab.is_urgent);
+
     let color = if is_hovered {
       style.hover_background
+    } else if is_urgent {
+      style.urgent_background
     } else {
       style.inactive_background
     };
@@ -581,7 +723,8 @@ unsafe fn paint_text_and_icons(
   hwnd: HWND,
   state: &BarState,
   frame: &TabFrame,
-) {
+) -> Vec<bool> {
+  let mut truncated = vec![false; frame.tabs.len()];
   let style = &frame.style;
   let regular = create_font(style, false);
   let bold = create_font(style, true);
@@ -616,6 +759,10 @@ unsafe fn paint_text_and_icons(
     }
 
     if slot.text.width() <= 0 {
+      // Icon-only tabs show their title as a tooltip.
+      if let Some(is_truncated) = truncated.get_mut(index) {
+        *is_truncated = true;
+      }
       continue;
     }
 
@@ -642,6 +789,17 @@ unsafe fn paint_text_and_icons(
       bottom: slot.text.bottom,
     };
 
+    let mut needed = rect;
+    DrawTextW(
+      dc,
+      &mut text.clone(),
+      &raw mut needed,
+      DT_LEFT | DT_SINGLELINE | DT_NOPREFIX | DT_CALCRECT,
+    );
+    if let Some(is_truncated) = truncated.get_mut(index) {
+      *is_truncated = needed.right > rect.right;
+    }
+
     DrawTextW(
       dc,
       &mut text,
@@ -653,6 +811,7 @@ unsafe fn paint_text_and_icons(
   SelectObject(dc, old_font);
   let _ = DeleteObject(regular);
   let _ = DeleteObject(bold);
+  truncated
 }
 
 /// Creates the tab title font, bold for the active tab.
@@ -789,6 +948,7 @@ unsafe fn apply_frame(
 
   let old_pill = state.last_pill;
   state.relayout();
+  state.sync_tooltip_tools(hwnd);
 
   let active_changed = previous.as_ref().is_some_and(|previous| {
     state.frame.as_ref().is_some_and(|current| {
@@ -952,6 +1112,7 @@ unsafe fn on_mouse_move(
       || (position.1 - drag.start.1).abs() > threshold.1;
 
     if drag.is_moving {
+      SendMessageW(state.tooltip, TTM_POP, WPARAM(0), LPARAM(0));
       render(hwnd, state);
     }
     return;
@@ -1147,6 +1308,16 @@ unsafe extern "system" fn wnd_proc(
       )]
       let delta = (wparam.0 >> 16) as u16 as i16;
       (state.on_action)(TabAction::Cycle { prev: delta > 0 });
+      LRESULT(0)
+    }
+    WM_NOTIFY => {
+      let header = &*(lparam.0 as *const NMHDR);
+      if header.hwndFrom == state.tooltip
+        && header.code == TTN_GETDISPINFOW
+      {
+        // SAFETY: `TTN_GETDISPINFOW` comes with an `NMTTDISPINFOW`.
+        state.fill_tooltip(&mut *(lparam.0 as *mut NMTTDISPINFOW));
+      }
       LRESULT(0)
     }
     WM_CLOSE => {

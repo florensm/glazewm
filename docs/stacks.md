@@ -63,6 +63,10 @@ active tab is highlighted, and the highlight slides when it changes.
   to take its window out of the stack, floating where you let go.
 - Right-click a tab for a menu with "Close", "Float window" and "Remove
   from stack".
+- Hovering a tab whose title is cut off (or that only shows its icon)
+  shows the full title in a tooltip.
+- A tab whose window requests attention (e.g. flashes in the taskbar) is
+  highlighted with `tab_urgent_background` until the window is shown.
 - Tabs show their window's icon. Icons that apps set at runtime (as WPF
   apps do) are fetched in the background, so a busy app never stalls the
   bar; until then the window class icon is shown.
@@ -84,6 +88,7 @@ stack:
   tab_bar_opacity: "92%"
   tab_active_background: "#3a3a3a"
   tab_hover_background: "#2c2c2c"
+  tab_urgent_background: "#8a5a00"
   tab_inactive_background: "#00000000"
   tab_text_color: "#ffffff"
   tab_inactive_text_color: "#a0a0a0"

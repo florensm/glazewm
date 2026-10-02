@@ -21,6 +21,7 @@ pub struct TabBarSettings {
   opacity: u8,
   active_background: Color,
   hover_background: Color,
+  urgent_background: Color,
   inactive_background: Color,
   text: Color,
   inactive_text: Color,
@@ -54,6 +55,7 @@ impl TabBarSettings {
       opacity: config.tab_bar_opacity.to_alpha(),
       active_background: config.tab_active_background.resolve(),
       hover_background: config.tab_hover_background.resolve(),
+      urgent_background: config.tab_urgent_background.resolve(),
       inactive_background: config.tab_inactive_background.resolve(),
       text: config.tab_text_color.resolve(),
       inactive_text: config.tab_inactive_text_color.resolve(),
@@ -89,6 +91,7 @@ impl TabBarSettings {
       opacity: self.opacity,
       active_background: self.active_background,
       hover_background: self.hover_background,
+      urgent_background: self.urgent_background,
       inactive_background: self.inactive_background,
       text: self.text,
       inactive_text: self.inactive_text,
@@ -148,6 +151,7 @@ fn tab_frame(
     .map(|window| TabInfo {
       title: settings.tab_title(&window.native_properties().title),
       hwnd: window.native().id().0,
+      is_urgent: window.urgency_alert_at().is_some(),
     })
     .collect();
 

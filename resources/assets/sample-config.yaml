@@ -216,6 +216,8 @@ stack:
   tab_bar_opacity: "92%"
   tab_active_background: "#3a3a3a"
   tab_hover_background: "#2c2c2c"
+  # Background of a tab whose window requests attention (e.g. flashes).
+  tab_urgent_background: "#8a5a00"
   tab_text_color: "#ffffff"
   tab_inactive_text_color: "#a0a0a0"
 
