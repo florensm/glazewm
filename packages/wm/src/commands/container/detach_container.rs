@@ -20,6 +20,8 @@ pub fn detach_container(child_to_remove: Container) -> anyhow::Result<()> {
     .parent()
     .and_then(|parent| parent.as_stack().cloned())
   {
+    let was_tiling = stack.is_tiling();
+
     stack
       .borrow_children_mut()
       .retain(|c| c.id() != child_to_remove.id());
@@ -31,7 +33,22 @@ pub fn detach_container(child_to_remove: Container) -> anyhow::Result<()> {
     *child_to_remove.borrow_parent_mut() = None;
 
     if !stack.has_children() {
-      return detach_container(stack.into());
+      if was_tiling {
+        return detach_container(stack.into());
+      }
+
+      // Empty, the stack would count as tiling, but it held non-tiling
+      // windows and so has no tiling slot to give back.
+      let parent = stack.parent().context("No parent.")?;
+      parent
+        .borrow_children_mut()
+        .retain(|c| c.id() != stack.id());
+      parent
+        .borrow_child_focus_order_mut()
+        .retain(|id| *id != stack.id());
+      *stack.borrow_parent_mut() = None;
+
+      return Ok(());
     }
 
     if stack.is_redundant_with(stack.child_count()) {
