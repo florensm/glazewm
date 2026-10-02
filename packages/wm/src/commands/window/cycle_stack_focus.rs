@@ -51,5 +51,5 @@ pub(crate) fn activate_stack_child(
 
   state
     .pending_sync
-    .queue_containers_to_redraw(stack.tiling_children());
+    .queue_containers_to_redraw(stack.windows());
 }

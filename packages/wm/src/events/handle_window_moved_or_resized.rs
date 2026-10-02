@@ -17,7 +17,7 @@ use crate::{
     window::update_window_state,
   },
   events::handle_window_moved_or_resized_end,
-  models::{Monitor, NonTilingWindow, WindowContainer},
+  models::{Container, Monitor, NonTilingWindow, WindowContainer},
   traits::{CommonGetters, WindowGetters},
   user_config::UserConfig,
   wm_state::WmState,
@@ -441,10 +441,18 @@ pub fn update_floating_window_position(
       "Floating window moved to new workspace: {updated_workspace}",
     );
 
-    window.set_insertion_target(None);
+    // A window of a floating stack takes its stack along.
+    let moved: Container = if let Some(stack) =
+      window.parent().filter(|parent| parent.as_stack().is_some())
+    {
+      stack
+    } else {
+      window.set_insertion_target(None);
+      window.clone().into()
+    };
 
     move_container_within_tree(
-      &window.clone().into(),
+      &moved,
       &updated_workspace.clone().into(),
       updated_workspace.child_count(),
       state,

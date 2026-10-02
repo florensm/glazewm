@@ -8,7 +8,7 @@ use crate::{
     detach_container, flatten_child_split_containers,
     set_focused_descendant,
   },
-  models::WindowContainer,
+  models::{other_stack_tabs, WindowContainer},
   traits::{CommonGetters, WindowGetters},
   wm_state::WmState,
 };
@@ -28,8 +28,10 @@ pub fn detach_window_for_close(
 ) -> anyhow::Result<()> {
   let ancestors = window.ancestors().take(3).collect::<Vec<_>>();
   let focus_target = state.focus_target_after_removal(&window.clone());
+  let other_tabs = other_stack_tabs(&window);
 
   detach_container(window.clone().into())?;
+  state.pending_sync.queue_containers_to_redraw(other_tabs);
 
   state.window_target_positions.remove(&window.id());
   // NOTE: `state.animation_manager.remove_animation` is intentionally
@@ -77,8 +79,10 @@ pub fn unmanage_window(
 
   // Get container to switch focus to after the window has been removed.
   let focus_target = state.focus_target_after_removal(&window.clone());
+  let other_tabs = other_stack_tabs(&window);
 
   detach_container(window.clone().into())?;
+  state.pending_sync.queue_containers_to_redraw(other_tabs);
 
   // Clean up animation tracking data.
   state.window_target_positions.remove(&window.id());

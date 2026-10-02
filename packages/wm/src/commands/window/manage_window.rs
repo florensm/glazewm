@@ -15,8 +15,8 @@ use crate::{
       attach_container, detach_container, set_focused_descendant,
     },
     window::{
-      find_named_stack, new_named_stack, run_window_rules_except,
-      update_window_state,
+      find_named_stack, new_named_stack, restored_state,
+      run_window_rules_except, update_stack_state, update_window_state,
     },
   },
   models::{
@@ -111,7 +111,11 @@ fn manage_window_inner(
   };
 
   let state_override = initial_state_override(
-    auto_stack_rule.is_some(),
+    placement
+      .as_ref()
+      .filter(|_| auto_stack_rule.is_some())
+      .and_then(|placement| placement.parent.as_stack())
+      .map(StackContainer::state),
     &native_window,
     &native_properties,
     state,
@@ -268,6 +272,16 @@ fn auto_stack_placement(
   config: &UserConfig,
 ) -> anyhow::Result<Placement> {
   if let Some(stack) = find_named_stack(state, &rule.name) {
+    // A new window shows up in its stack, so a minimized stack comes back.
+    if stack.state() == WindowState::Minimized {
+      update_stack_state(
+        &stack,
+        restored_state(&stack, config),
+        state,
+        config,
+      )?;
+    }
+
     return Ok(Placement {
       index: stack.child_count(),
       parent: stack.into(),
@@ -317,17 +331,17 @@ fn join_rule(
 /// Window state a new window is created in regardless of its native
 /// state, if any.
 ///
-/// Stacked windows are always tiled within their stack. Popups of an app
+/// Auto-stacked windows take the state of their stack. Popups of an app
 /// with stacked windows float, as they would over a `StackTabs` host.
 fn initial_state_override(
-  is_auto_stacked: bool,
+  auto_stack_state: Option<WindowState>,
   native_window: &NativeWindow,
   properties: &NativeWindowProperties,
   state: &WmState,
   config: &UserConfig,
 ) -> Option<WindowState> {
-  if is_auto_stacked {
-    Some(WindowState::Tiling)
+  if auto_stack_state.is_some() {
+    auto_stack_state
   } else if is_popup_of_stacked_app(
     native_window,
     properties,
@@ -730,11 +744,26 @@ fn create_window(
     .into(),
   };
 
+  // Joining a non-tiling stack, the window takes the place of the others.
+  let template = target_parent
+    .as_stack()
+    .filter(|stack| !stack.is_tiling())
+    .and_then(|stack| stack.windows().into_iter().next());
+
   attach_container(
     &window_container.clone().into(),
     &target_parent,
     Some(target_index),
   )?;
+
+  if let (WindowContainer::NonTilingWindow(window), Some(template)) =
+    (&window_container, template)
+  {
+    window.set_prev_state(
+      template.prev_state().unwrap_or(WindowState::Tiling),
+    );
+    window.set_own_floating_placement(template.floating_placement());
+  }
 
   // The OS might spawn the window on a different monitor to the target
   // parent, so adjustments might need to be made because of DPI.

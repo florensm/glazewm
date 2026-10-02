@@ -139,7 +139,26 @@ pub trait WindowGetters: CommonGetters {
 
   fn floating_placement(&self) -> Rect;
 
-  fn set_floating_placement(&self, floating_placement: Rect);
+  /// Sets where the window goes when floating.
+  ///
+  /// Windows in a stack share one placement, so that a floating stack
+  /// moves and resizes as one window.
+  fn set_floating_placement(&self, floating_placement: Rect) {
+    let stack =
+      self.parent().and_then(|parent| parent.as_stack().cloned());
+
+    match stack {
+      Some(stack) => {
+        for window in stack.windows() {
+          window.set_own_floating_placement(floating_placement.clone());
+        }
+      }
+      None => self.set_own_floating_placement(floating_placement),
+    }
+  }
+
+  /// Sets the floating placement of this window alone.
+  fn set_own_floating_placement(&self, floating_placement: Rect);
 
   fn has_custom_floating_placement(&self) -> bool;
 
@@ -250,7 +269,7 @@ macro_rules! impl_window_getters {
         self.0.borrow().floating_placement.clone()
       }
 
-      fn set_floating_placement(&self, floating_placement: Rect) {
+      fn set_own_floating_placement(&self, floating_placement: Rect) {
         self.0.borrow_mut().floating_placement = floating_placement;
       }
 

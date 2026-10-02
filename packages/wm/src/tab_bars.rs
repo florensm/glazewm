@@ -117,7 +117,7 @@ fn tab_frame(
   config: &StackConfig,
 ) -> Option<TabFrame> {
   let height = stack.tab_bar_height_px();
-  if height <= 0 {
+  if height <= 0 || !stack.shows_tab_bar() {
     return None;
   }
 
@@ -137,11 +137,7 @@ fn tab_frame(
     ),
   };
 
-  let windows = stack
-    .children()
-    .into_iter()
-    .filter_map(|child| child.as_tiling_window().cloned())
-    .collect::<Vec<_>>();
+  let windows = stack.windows();
 
   let active = stack.active_child()?;
   let active_index = windows.iter().position(|w| w.id() == active.id())?;

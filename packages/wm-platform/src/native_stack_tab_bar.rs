@@ -68,6 +68,7 @@ const PILL_SLIDE: Duration = Duration::from_millis(150);
 
 const MENU_CLOSE: usize = 1;
 const MENU_DETACH: usize = 2;
+const MENU_FLOAT: usize = 3;
 
 static CLASS_REGISTERED: OnceLock<()> = OnceLock::new();
 
@@ -862,7 +863,10 @@ fn finish_left_click(state: &mut BarState, (x, y): (i32, i32)) {
   let is_torn_off = y < -height || y > height * 2;
 
   if is_torn_off {
-    (state.on_action)(TabAction::Detach(drag.index));
+    (state.on_action)(TabAction::Float {
+      index: drag.index,
+      at_cursor: true,
+    });
     return;
   }
 
@@ -886,6 +890,7 @@ unsafe fn show_context_menu(hwnd: HWND, state: &BarState, index: usize) {
   };
 
   let _ = AppendMenuW(menu, MF_STRING, MENU_CLOSE, w!("Close"));
+  let _ = AppendMenuW(menu, MF_STRING, MENU_FLOAT, w!("Float window"));
   let _ =
     AppendMenuW(menu, MF_STRING, MENU_DETACH, w!("Remove from stack"));
 
@@ -910,6 +915,10 @@ unsafe fn show_context_menu(hwnd: HWND, state: &BarState, index: usize) {
   match usize::try_from(command.0).unwrap_or(0) {
     MENU_CLOSE => (state.on_action)(TabAction::Close(index)),
     MENU_DETACH => (state.on_action)(TabAction::Detach(index)),
+    MENU_FLOAT => (state.on_action)(TabAction::Float {
+      index,
+      at_cursor: false,
+    }),
     _ => {}
   }
 }

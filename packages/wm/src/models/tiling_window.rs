@@ -8,8 +8,8 @@ use std::{
 use anyhow::Context;
 use uuid::Uuid;
 use wm_common::{
-  ActiveDrag, ContainerDto, DisplayState, GapsConfig, TabBarPosition,
-  TilingDirection, WindowDto, WindowRuleConfig, WindowState,
+  ActiveDrag, ContainerDto, DisplayState, GapsConfig, TilingDirection,
+  WindowDto, WindowRuleConfig, WindowState,
 };
 use wm_platform::{NativeWindow, Rect, RectDelta};
 
@@ -152,25 +152,7 @@ impl PositionGetters for TilingWindow {
 
     // All children of a stack share the stack rect inset by the tab bar.
     if let Some(stack) = parent.as_stack() {
-      let stack_rect = stack.to_rect()?;
-      let tab_h = stack.tab_bar_height_px();
-      if tab_h > 0 {
-        return Ok(match stack.tab_bar_position() {
-          TabBarPosition::Top => Rect::from_ltrb(
-            stack_rect.left,
-            stack_rect.top + tab_h,
-            stack_rect.right,
-            stack_rect.bottom,
-          ),
-          TabBarPosition::Bottom => Rect::from_ltrb(
-            stack_rect.left,
-            stack_rect.top,
-            stack_rect.right,
-            stack_rect.bottom - tab_h,
-          ),
-        });
-      }
-      return Ok(stack_rect);
+      return Ok(stack.content_rect(&stack.to_rect()?));
     }
 
     // Otherwise, use the normal tiling position calculation (same as

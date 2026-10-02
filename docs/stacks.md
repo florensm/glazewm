@@ -8,10 +8,11 @@ GlazeWM: only the active tab is shown, the other tabs are cloaked.
 
 | Command | Behaviour |
 | --- | --- |
-| `toggle-stack` | Wrap the focused window in a new stack, or take it out of its stack. |
-| `stack-insert` | Stack the focused window with the most recently focused other tiling window. |
+| `toggle-stack` | Wrap the focused window in a new stack, or take it out of its stack. A floating window gets a floating stack. |
+| `stack-insert` | Stack the focused window with the most recently focused other window, joining its stack if it has one. |
 | `stack-absorb-neighbor --direction <dir>` | Pull the neighbouring window in `<dir>` into the focused window's stack. |
 | `move-to-stack --name <name>` | Move the focused window into the named stack, on any workspace. Creates the stack in place if it doesn't exist. |
+| `float-out-of-stack` | Take the focused window out of its stack as a floating window. |
 | `cycle-stack-focus [--prev]` | Focus the next (or previous) tab, wrapping around. |
 | `focus-stack-index --index <n>` | Focus the tab at zero-based index `n`. |
 
@@ -22,6 +23,31 @@ Closing or removing a tab never changes the stack's size. An unnamed stack
 is removed once it holds a single window, which then takes over the
 stack's whole slot. A named stack is kept until it is empty, so it stays a
 target for windows that open later.
+
+## A stack acts as one window
+
+All windows of a stack share one state, so commands and events that change
+a window's state change the whole stack:
+
+- `toggle-floating` floats the stack, tab bar included, at the size of its
+  active window. Toggled again, the stack tiles back into its old slot.
+- Dragging a stacked window, or resizing it, drags or resizes the whole
+  stack, whether it is tiling or floating. A dragged tiling stack drops
+  into the layout like a single window.
+- `toggle-fullscreen` (or maximizing a stacked window) makes the stack
+  fullscreen, without its tab bar; tabs can still be switched with
+  `cycle-stack-focus`.
+- Minimizing a stacked window minimizes the stack. Restoring it, or
+  activating any of its windows from the taskbar, restores the stack.
+- A fullscreen stack moved to another monitor goes as a whole.
+
+To take a single window out, use `float-out-of-stack`, the tab's "Float
+window" menu item, or drag its tab off the bar. A window floated out of a
+tiling stack goes back into it with `toggle-floating`.
+
+Drop a window onto a stack's tab bar to add it to the stack; a floating
+window joins a floating stack as is. Dropping a stacked window there brings
+its whole stack along.
 
 ## Tab bar
 
@@ -34,8 +60,9 @@ active tab is highlighted, and the highlight slides when it changes.
   hovered tab by default) or a middle click. This sends it a normal
   `WM_CLOSE`.
 - Drag a tab sideways to reorder it; drag it well above or below the bar
-  to take its window out of the stack.
-- Right-click a tab for a menu with "Close" and "Remove from stack".
+  to take its window out of the stack, floating where you let go.
+- Right-click a tab for a menu with "Close", "Float window" and "Remove
+  from stack".
 - Tabs show their window's icon. Icons that apps set at runtime (as WPF
   apps do) are fetched in the background, so a busy app never stalls the
   bar; until then the window class icon is shown.
