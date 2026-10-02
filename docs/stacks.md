@@ -72,7 +72,11 @@ stack:
   hidden, until it gets a title or `auto_stack_title_timeout_ms` passes.
   It is then stacked or placed normally.
 - A window that only gets a matching title after it was placed joins the
-  stack once.
+  stack once. Reloading the config also applies the rules to windows that
+  are already open.
+- A window that matches but is never stacked (see below) is logged with
+  the reason, e.g. `Not auto-stacking window '...' because it has an owner
+  window`.
 - Dialogs (`#32770`, modal frames), tool windows and, unless
   `allow_owned` is set, owned windows are never stacked.
 - Each window joins at most once: a window you take out of its stack is

@@ -58,6 +58,10 @@ pub enum AutoStackDecision<'a> {
   /// window could still turn out to belong in a stack.
   Wait,
 
+  /// A rule matches, but the window is of a kind that is never stacked.
+  /// Carries the reason, for logging.
+  Blocked(&'static str),
+
   /// Place the window normally.
   Skip,
 }
@@ -69,17 +73,9 @@ pub fn decide<'a>(
   props: &NativeWindowProperties,
   traits: WindowTraits,
 ) -> AutoStackDecision<'a> {
-  if traits.is_dialog || traits.is_tool_window {
-    return AutoStackDecision::Skip;
-  }
-
   let mut could_match_later = false;
 
   for rule in rules {
-    if traits.has_owner && !rule.allow_owned {
-      continue;
-    }
-
     let matches_any = |configs: &[WindowMatchConfig]| {
       configs
         .iter()
@@ -87,6 +83,24 @@ pub fn decide<'a>(
     };
 
     if matches_any(&rule.exclude) {
+      continue;
+    }
+
+    let blocked_reason = if traits.is_dialog {
+      Some("it is a dialog")
+    } else if traits.is_tool_window {
+      Some("it is a tool window")
+    } else if traits.has_owner && !rule.allow_owned {
+      Some("it has an owner window (set `allow_owned: true` to allow)")
+    } else {
+      None
+    };
+
+    if let Some(reason) = blocked_reason {
+      if matches_any(&rule.match_window) {
+        return AutoStackDecision::Blocked(reason);
+      }
+
       continue;
     }
 
@@ -297,7 +311,10 @@ mod tests {
         ..WindowTraits::default()
       },
     ] {
-      assert_eq!(decide(&rules, &props, traits), AutoStackDecision::Skip);
+      assert!(matches!(
+        decide(&rules, &props, traits),
+        AutoStackDecision::Blocked(_)
+      ));
     }
   }
 

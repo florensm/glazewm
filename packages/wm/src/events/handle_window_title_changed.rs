@@ -4,7 +4,8 @@ use wm_platform::NativeWindow;
 
 use crate::{
   commands::window::{
-    auto_stack_managed_window, manage_window, run_window_rules,
+    auto_stack_managed_window, is_auto_stacked, is_placement_command,
+    manage_window, run_window_rules_except,
   },
   traits::WindowGetters,
   user_config::UserConfig,
@@ -41,8 +42,17 @@ pub fn handle_window_title_changed(
     return Ok(());
   };
 
-  // Run window rules for title change events.
-  run_window_rules(window, &WindowRuleEvent::TitleChange, state, config)?;
+  // Run window rules for title change events. Windows placed by an
+  // auto-stack rule keep their placement.
+  let is_auto_stacked = is_auto_stacked(&window, state);
+
+  run_window_rules_except(
+    window,
+    &WindowRuleEvent::TitleChange,
+    |command| is_auto_stacked && is_placement_command(command),
+    state,
+    config,
+  )?;
 
   Ok(())
 }
