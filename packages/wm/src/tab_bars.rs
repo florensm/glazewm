@@ -8,7 +8,7 @@ use wm_platform::{
 };
 
 use crate::{
-  models::StackContainer,
+  models::{NativeWindowProperties, StackContainer},
   traits::{CommonGetters, PositionGetters, WindowGetters},
   user_config::UserConfig,
   wm_state::WmState,
@@ -77,6 +77,18 @@ impl TabBarSettings {
       title.trim().to_string()
     } else {
       trimmed.to_string()
+    }
+  }
+
+  /// Label of the tab of a window: its title, or its process name for a
+  /// window without one.
+  fn tab_label(&self, properties: &NativeWindowProperties) -> String {
+    let title = self.tab_title(&properties.title);
+
+    if title.is_empty() {
+      properties.process_name.clone()
+    } else {
+      title
     }
   }
 
@@ -149,7 +161,7 @@ fn tab_frame(
   let tabs = windows
     .iter()
     .map(|window| TabInfo {
-      title: settings.tab_title(&window.native_properties().title),
+      title: settings.tab_label(&window.native_properties()),
       hwnd: window.native().id().0,
       is_urgent: window.urgency_alert_at().is_some(),
     })

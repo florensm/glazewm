@@ -772,6 +772,12 @@ unsafe fn paint_text_and_icons(
       tab.title.clone()
     };
 
+    // An empty slice's dangling pointer must never reach `DrawTextW`,
+    // which reads through it on some systems (e.g. Wine).
+    if title.is_empty() {
+      continue;
+    }
+
     let color = if is_active {
       style.text
     } else {
