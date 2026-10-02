@@ -25,14 +25,16 @@ use wm_platform::{
   OpacityValue, Overlay, SurrogateBatch, WorkspaceSurrogate, HWND,
 };
 
-#[cfg(target_os = "windows")]
-use crate::pending_sync::IrisSwitchRequest;
 use crate::{
   animation::AnimationPositionResult,
   models::{Container, WindowContainer},
   traits::{CommonGetters, PositionGetters, WindowGetters},
   user_config::UserConfig,
   wm_state::WmState,
+};
+#[cfg(target_os = "windows")]
+use crate::{
+  commands::window::unmanage_if_embedded, pending_sync::IrisSwitchRequest,
 };
 
 /// Returns the smallest iris radius that fully covers the monitor from the
@@ -64,6 +66,9 @@ pub fn platform_sync(
   config: &UserConfig,
 ) -> anyhow::Result<()> {
   let _scope = perf::scope(Stage::PlatformSync);
+
+  #[cfg(target_os = "windows")]
+  unmanage_embedded_windows(state)?;
 
   let focused_container =
     state.focused_container().context("No focused container.")?;
@@ -475,6 +480,22 @@ fn commit_pending_cloaks(
 /// window this pass also redraws is not included: its overlay is already
 /// resynced on the strength of having moved.
 #[allow(clippy::too_many_lines)]
+/// Unmanages windows queued for redraw that another app has since
+/// embedded into one of its own windows.
+///
+/// The reparent and hide events that normally unmanage them race with the
+/// window's show event when a tabbing app embeds a window right after it
+/// opens. Left managed, each workspace switch would cloak the embedded
+/// window and move it in its parent's client coordinates.
+#[cfg(target_os = "windows")]
+fn unmanage_embedded_windows(state: &mut WmState) -> anyhow::Result<()> {
+  for window in state.windows_to_redraw() {
+    unmanage_if_embedded(window, state)?;
+  }
+
+  Ok(())
+}
+
 fn redraw_containers(
   focused_container: &Container,
   state: &mut WmState,
