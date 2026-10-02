@@ -277,12 +277,21 @@ pub fn float_out_of_stack(
 
   let non_tiling: NonTilingWindow = match window {
     WindowContainer::TilingWindow(window) => {
+      // Where the window goes if the stack is removed: into the stack's
+      // slot if it was the only tab (of a named stack), otherwise next to
+      // the window left over, which takes the slot.
       let stack_parent = stack.parent().context("No parent.")?;
+      let was_only_tab = stack.child_count() == 1;
       let stack_target = InsertionTarget {
         target_parent: stack_parent,
-        target_index: stack.index() + 1,
-        prev_tiling_size: stack.tiling_size() / 2.0,
-        prev_sibling_count: stack.tiling_siblings().count() + 1,
+        target_index: stack.index() + usize::from(!was_only_tab),
+        prev_tiling_size: if was_only_tab {
+          stack.tiling_size()
+        } else {
+          stack.tiling_size() / 2.0
+        },
+        prev_sibling_count: stack.tiling_siblings().count()
+          + usize::from(!was_only_tab),
       };
       let tab_target = InsertionTarget {
         target_parent: stack.clone().into(),
@@ -293,8 +302,6 @@ pub fn float_out_of_stack(
 
       detach_container(window.clone().into())?;
 
-      // A stack left with one window is removed; the window then goes
-      // next to the one left over instead.
       let insertion_target = if stack.is_detached() {
         stack_target
       } else {
