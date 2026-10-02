@@ -29,9 +29,11 @@ use crate::{
     },
     monitor::focus_monitor,
     window::{
-      focus_urgent_window, ignore_window, move_window_in_direction,
+      cycle_stack_focus, focus_stack_index, focus_urgent_window,
+      ignore_window, move_to_stack, move_window_in_direction,
       move_window_to_workspace, resize_window, set_window_position,
-      set_window_size, set_window_urgency, update_window_state,
+      set_window_size, set_window_urgency, stack_absorb_neighbor,
+      stack_insert, toggle_stack, update_window_state,
       WindowPositionTarget,
     },
     workspace::{
@@ -49,7 +51,7 @@ use crate::{
     handle_z_order_changed,
   },
   ipc_server::IpcServer,
-  models::{Container, WorkspaceTarget},
+  models::{Container, WindowContainer, WorkspaceTarget},
   traits::{CommonGetters, PositionGetters, WindowGetters},
   user_config::UserConfig,
   wm_state::WmState,
@@ -60,6 +62,12 @@ pub struct WindowManager {
   pub exit_rx: mpsc::UnboundedReceiver<()>,
   pub animation_tick_rx: mpsc::UnboundedReceiver<()>,
   pub state: WmState,
+  /// Receiver for tab click events routed from the event-loop thread.
+  ///
+  /// Always present (not cfg-gated) so that the `tokio::select!` arm in
+  /// `main.rs` compiles on all platforms. On non-Windows the sender is
+  /// never used, so this receiver never yields an item.
+  pub tab_click_rx: mpsc::UnboundedReceiver<(uuid::Uuid, usize)>,
 }
 
 impl WindowManager {
@@ -70,9 +78,15 @@ impl WindowManager {
     let (event_tx, event_rx) = mpsc::unbounded_channel();
     let (exit_tx, exit_rx) = mpsc::unbounded_channel();
     let (animation_tick_tx, animation_tick_rx) = mpsc::unbounded_channel();
+    let (tab_click_tx, tab_click_rx) = mpsc::unbounded_channel();
 
-    let mut state =
-      WmState::new(dispatcher, event_tx, exit_tx, animation_tick_tx);
+    let mut state = WmState::new(
+      dispatcher,
+      event_tx,
+      exit_tx,
+      animation_tick_tx,
+      tab_click_tx,
+    );
     state.populate(config)?;
 
     // Start animation timer if `populate` created any animations. This
@@ -85,6 +99,7 @@ impl WindowManager {
       exit_rx,
       animation_tick_rx,
       state,
+      tab_click_rx,
     })
   }
 
@@ -887,6 +902,69 @@ impl WindowManager {
           _ => Ok(()),
         }
       }
+      InvokeCommand::ToggleStack => {
+        if let Ok(window) = subject_container.as_window_container() {
+          let tiling = match window {
+            WindowContainer::TilingWindow(ref w) => w.clone(),
+            WindowContainer::NonTilingWindow(_) => {
+              // Convert floating → tiling. If the window's saved
+              // insertion target puts it back into an existing stack,
+              // it is already in a good state — don't toggle it back out.
+              let converted = update_window_state(
+                window,
+                WindowState::Tiling,
+                state,
+                config,
+              )?;
+              let WindowContainer::TilingWindow(w) = converted else {
+                return Ok(());
+              };
+              if w.parent().is_some_and(|p| p.as_stack().is_some()) {
+                state.pending_sync.queue_focus_change();
+                return Ok(());
+              }
+              w
+            }
+          };
+          toggle_stack(&tiling, state, config)?;
+          state.pending_sync.queue_focus_change();
+        }
+        Ok(())
+      }
+      InvokeCommand::CycleStackFocus { prev } => {
+        cycle_stack_focus(&subject_container, *prev, state);
+        state.pending_sync.queue_focus_change();
+        Ok(())
+      }
+      InvokeCommand::FocusStackIndex { index } => {
+        focus_stack_index(&subject_container, *index, state);
+        state.pending_sync.queue_focus_change();
+        Ok(())
+      }
+      InvokeCommand::StackAbsorbNeighbor { direction } => {
+        if let Some(window) = subject_container.as_tiling_window().cloned()
+        {
+          stack_absorb_neighbor(&window, direction, state, config)?;
+          state.pending_sync.queue_focus_change();
+        }
+        Ok(())
+      }
+      InvokeCommand::StackInsert => {
+        if let Ok(window) = subject_container.as_window_container() {
+          let tiling = ensure_tiling(window, state, config)?;
+          stack_insert(&tiling, state, config)?;
+          state.pending_sync.queue_focus_change();
+        }
+        Ok(())
+      }
+      InvokeCommand::MoveToStack { name } => {
+        if let Ok(window) = subject_container.as_window_container() {
+          let tiling = ensure_tiling(window, state, config)?;
+          move_to_stack(&tiling, name, state, config)?;
+          state.pending_sync.queue_focus_change();
+        }
+        Ok(())
+      }
       InvokeCommand::ToggleTilingDirection => {
         toggle_tiling_direction(subject_container, state, config)
       }
@@ -964,6 +1042,28 @@ impl WindowManager {
 
       if let Err(err) = ipc_server.process_event(wm_event) {
         tracing::warn!("{:?}", err);
+      }
+    }
+  }
+}
+
+/// Ensures `window` is a `TilingWindow`, converting it from any non-tiling
+/// state (floating, fullscreen, minimized) if needed.
+fn ensure_tiling(
+  window: WindowContainer,
+  state: &mut WmState,
+  config: &UserConfig,
+) -> anyhow::Result<crate::models::TilingWindow> {
+  match window {
+    WindowContainer::TilingWindow(w) => Ok(w),
+    WindowContainer::NonTilingWindow(_) => {
+      let converted =
+        update_window_state(window, WindowState::Tiling, state, config)?;
+      match converted {
+        WindowContainer::TilingWindow(w) => Ok(w),
+        WindowContainer::NonTilingWindow(_) => {
+          anyhow::bail!("Window could not be converted to tiling.")
+        }
       }
     }
   }

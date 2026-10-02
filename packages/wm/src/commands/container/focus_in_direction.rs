@@ -89,10 +89,16 @@ fn tiling_focus_target(
   // Traverse upwards from the focused container. Stop searching when a
   // workspace is encountered.
   while !origin_or_ancestor.is_workspace() {
-    let parent = origin_or_ancestor
+    let parent_container = origin_or_ancestor
       .parent()
-      .and_then(|parent| parent.as_direction_container().ok())
-      .context("No direction container.")?;
+      .context("No parent container.")?;
+
+    // Non-direction containers (e.g. `StackContainer`) are transparent to
+    // directional navigation — skip past them to their own parent.
+    let Ok(parent) = parent_container.as_direction_container() else {
+      origin_or_ancestor = parent_container;
+      continue;
+    };
 
     // Skip if the tiling direction doesn't match.
     if parent.tiling_direction() != tiling_direction {
@@ -117,6 +123,10 @@ fn tiling_focus_target(
           TilingContainer::TilingWindow(_) => Some(target.into()),
           TilingContainer::Split(split) => split
             .descendant_in_direction(&direction.inverse())
+            .map(Into::into),
+          TilingContainer::Stack(stack) => stack
+            .child_focus_order()
+            .find_map(|c| c.as_tiling_window().cloned())
             .map(Into::into),
         });
       }

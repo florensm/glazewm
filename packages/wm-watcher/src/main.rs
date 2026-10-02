@@ -41,6 +41,10 @@ async fn main() -> anyhow::Result<()> {
         managed_handles.into_iter().map(NativeWindow::from_handle);
 
       for window in managed_windows {
+        // Cloaked windows (other workspaces, inactive stack tabs) stay
+        // invisible after `show` unless the cloak is removed too.
+        let _ = window.set_cloaked(false);
+
         if let Err(err) = window.show() {
           tracing::warn!("Failed to show window: {:?}", err);
         }
