@@ -1855,7 +1855,11 @@ fn reposition_window(
           if fullscreen.maximized
             && window.native().has_window_style(WS_MAXIMIZEBOX) =>
         {
-          if !window.native().is_maximized()? {
+          // As with minimizing, a stack's hidden tabs are left alone,
+          // since maximizing activates the window.
+          if !is_inactive_stack_child(window)
+            && !window.native().is_maximized()?
+          {
             window.native().maximize()?;
           }
 

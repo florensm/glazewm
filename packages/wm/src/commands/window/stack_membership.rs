@@ -2,7 +2,9 @@ use anyhow::Context;
 use wm_common::{FloatingStateConfig, WindowState};
 use wm_platform::Rect;
 
-use super::{keep_tab_bar_on_screen, update_stack_state};
+use super::{
+  keep_tab_bar_on_screen, remove_from_tiling_stack, update_stack_state,
+};
 use crate::{
   commands::container::{
     attach_container, detach_container, move_container_within_tree,
@@ -18,6 +20,27 @@ use crate::{
   user_config::UserConfig,
   wm_state::WmState,
 };
+
+/// Creates an empty, unnamed stack per the config.
+pub fn new_stack(config: &UserConfig) -> StackContainer {
+  StackContainer::new(
+    config.value.gaps.clone(),
+    config.value.stack.tab_bar_height.clone(),
+    config.value.stack.tab_bar_position.clone(),
+  )
+}
+
+/// Gives `window`, joining a non-tiling stack, the state and placement of
+/// the stack's other windows, of which `template` is one.
+pub fn match_stack_tabs(
+  window: &NonTilingWindow,
+  template: &WindowContainer,
+) {
+  window.set_state(template.state());
+  window
+    .set_prev_state(template.prev_state().unwrap_or(WindowState::Tiling));
+  window.set_own_floating_placement(template.floating_placement());
+}
 
 /// Moves `window` into `stack` at `index`, giving it the stack's state: a
 /// floating window joins a floating stack as is, and joins a tiling stack
@@ -93,11 +116,7 @@ pub fn join_stack(
   if let (WindowContainer::NonTilingWindow(window), Some(template)) =
     (&joined, &template)
   {
-    window.set_state(template.state());
-    window.set_prev_state(
-      template.prev_state().unwrap_or(WindowState::Tiling),
-    );
-    window.set_own_floating_placement(template.floating_placement());
+    match_stack_tabs(window, template);
   }
 
   if had_focus {
@@ -125,13 +144,14 @@ pub fn join_stack(
   Ok(joined)
 }
 
-/// Puts `window`, which isn't in a stack, into the new, empty `stack` in
-/// its place.
+/// Puts `window` into the new, empty `stack` in its place. A window in
+/// another stack leaves that stack first, keeping its state.
 pub fn wrap_window_in_stack(
   window: &WindowContainer,
   stack: &StackContainer,
   state: &mut WmState,
 ) -> anyhow::Result<()> {
+  leave_stack(window, state)?;
   let parent = window.parent().context("No parent.")?;
 
   match window {
@@ -173,11 +193,44 @@ pub fn wrap_window_in_stack(
   Ok(())
 }
 
+/// Takes `window` out of its stack, if any, keeping its state: next to
+/// the stack if tiling, on its own if not.
+fn leave_stack(
+  window: &WindowContainer,
+  state: &mut WmState,
+) -> anyhow::Result<()> {
+  let Some(stack) = window.parent().and_then(|p| p.as_stack().cloned())
+  else {
+    return Ok(());
+  };
+
+  match window {
+    WindowContainer::TilingWindow(window) => {
+      remove_from_tiling_stack(window, &stack, state)
+    }
+    WindowContainer::NonTilingWindow(_) => {
+      let other_tabs = other_stack_tabs(window);
+      let workspace = window.workspace().context("No workspace.")?;
+
+      move_container_within_tree(
+        &window.clone().into(),
+        &workspace.clone().into(),
+        workspace.child_count(),
+        state,
+      )?;
+
+      state.pending_sync.queue_containers_to_redraw(other_tabs);
+      Ok(())
+    }
+  }
+}
+
 /// Takes `window` out of its stack as a floating window, placed at the
 /// cursor if `at_cursor`, otherwise slightly offset from the stack.
 ///
 /// A window taken out of a tiling stack goes back into it when tiled
-/// again (e.g. with `toggle-floating`).
+/// again (e.g. with `toggle-floating`), or next to the window left over
+/// if the stack was removed.
 pub fn float_out_of_stack(
   window: &WindowContainer,
   at_cursor: bool,
@@ -224,7 +277,14 @@ pub fn float_out_of_stack(
 
   let non_tiling: NonTilingWindow = match window {
     WindowContainer::TilingWindow(window) => {
-      let insertion_target = InsertionTarget {
+      let stack_parent = stack.parent().context("No parent.")?;
+      let stack_target = InsertionTarget {
+        target_parent: stack_parent,
+        target_index: stack.index() + 1,
+        prev_tiling_size: stack.tiling_size() / 2.0,
+        prev_sibling_count: stack.tiling_siblings().count() + 1,
+      };
+      let tab_target = InsertionTarget {
         target_parent: stack.clone().into(),
         target_index: window.index(),
         prev_tiling_size: window.tiling_size(),
@@ -232,6 +292,15 @@ pub fn float_out_of_stack(
       };
 
       detach_container(window.clone().into())?;
+
+      // A stack left with one window is removed; the window then goes
+      // next to the one left over instead.
+      let insertion_target = if stack.is_detached() {
+        stack_target
+      } else {
+        tab_target
+      };
+
       window.to_non_tiling(floating_state, Some(insertion_target))
     }
     WindowContainer::NonTilingWindow(window) => {

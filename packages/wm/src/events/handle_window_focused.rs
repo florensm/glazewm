@@ -6,7 +6,10 @@ use wm_platform::NativeWindow;
 use crate::{
   commands::{
     container::set_focused_descendant,
-    window::{run_window_rules, set_window_urgency, update_window_state},
+    window::{
+      restored_state, run_window_rules, set_window_urgency,
+      update_window_state,
+    },
     workspace::focus_workspace,
   },
   models::WorkspaceTarget,
@@ -125,20 +128,15 @@ pub fn handle_window_focused(
 
     // A tab of a minimized stack activated by the OS (e.g. from the
     // taskbar) restores the whole stack.
-    let window = if stack.is_some()
-      && window.state() == WindowState::Minimized
-      && !window.native().is_minimized().unwrap_or(true)
-    {
-      let restored_state = window
-        .prev_state()
-        .filter(|state| *state != WindowState::Minimized)
-        .unwrap_or_else(|| {
-          WindowState::default_from_config(&config.value)
-        });
-
-      update_window_state(window, restored_state, state, config)?
-    } else {
-      window
+    let window = match &stack {
+      Some(stack)
+        if window.state() == WindowState::Minimized
+          && !window.native().is_minimized().unwrap_or(true) =>
+      {
+        let target_state = restored_state(stack, config);
+        update_window_state(window, target_state, state, config)?
+      }
+      _ => window,
     };
 
     // Run window rules for focus events.

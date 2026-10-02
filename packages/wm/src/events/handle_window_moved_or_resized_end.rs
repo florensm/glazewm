@@ -1,6 +1,7 @@
 use anyhow::Context;
 use wm_common::{
-  try_warn, FullscreenStateConfig, TilingDirection, WindowState,
+  try_warn, ActiveDragOperation, FullscreenStateConfig, TilingDirection,
+  WindowState,
 };
 use wm_platform::{LengthValue, Point, Rect};
 
@@ -43,7 +44,10 @@ pub fn handle_window_moved_or_resized_end(
 
   match &window {
     WindowContainer::NonTilingWindow(window) => {
-      if drop_onto_tab_bar(window, state, config)? {
+      let is_move =
+        matches!(active_drag.operation, Some(ActiveDragOperation::Move));
+
+      if is_move && drop_onto_tab_bar(window, state, config)? {
         return Ok(());
       }
 
@@ -346,14 +350,18 @@ fn drop_onto_tab_bar(
   let moved = own_stack
     .map_or_else(|| vec![window.clone().into()], |stack| stack.windows());
 
-  for moved_window in moved {
+  // Kept in their order, wherever they go among the tabs.
+  let first_index =
+    target.new_tab_index(config.value.stack.new_tab_position);
+
+  for (offset, moved_window) in moved.into_iter().enumerate() {
     let is_dragged = moved_window.id() == window.id();
     moved_window.set_active_drag(None);
 
     let joined = join_stack(
       moved_window,
       &target,
-      target.new_tab_index(config.value.stack.new_tab_position),
+      first_index + offset,
       state,
       config,
     )?;

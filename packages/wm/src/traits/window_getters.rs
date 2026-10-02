@@ -141,11 +141,13 @@ pub trait WindowGetters: CommonGetters {
 
   /// Sets where the window goes when floating.
   ///
-  /// Windows in a stack share one placement, so that a floating stack
-  /// moves and resizes as one window.
+  /// Windows of a non-tiling stack share one placement, so that it moves
+  /// and resizes as one window. Tabs of a tiling stack keep their own.
   fn set_floating_placement(&self, floating_placement: Rect) {
-    let stack =
-      self.parent().and_then(|parent| parent.as_stack().cloned());
+    let stack = self
+      .parent()
+      .and_then(|parent| parent.as_stack().cloned())
+      .filter(|stack| !stack.is_tiling());
 
     match stack {
       Some(stack) => {

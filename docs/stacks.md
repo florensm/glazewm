@@ -59,10 +59,11 @@ a window's state change the whole stack:
 
 To take a single window out, use `float-out-of-stack`, the tab's "Float
 window" menu item, or drag its tab off the bar. A window floated out of a
-tiling stack goes back into it with `toggle-floating`.
+tiling stack goes back into it with `toggle-floating` (or next to the
+window left over, if the stack was removed when it had one window left).
 
-Drop a window onto a stack's tab bar to add it to the stack; a floating
-window joins a floating stack as is. Dropping a stacked window there brings
+Drop a window onto a stack's tab bar (by moving it, not resizing it) to add
+it to the stack; a floating window joins a floating stack as is. Dropping a stacked window there brings
 its whole stack along.
 
 ## Tab bar

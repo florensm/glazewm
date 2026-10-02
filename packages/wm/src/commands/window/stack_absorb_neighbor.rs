@@ -1,13 +1,13 @@
 use anyhow::Context;
 use wm_platform::Direction;
 
-use super::join_stack;
+use super::{join_stack, new_stack};
 use crate::{
   commands::container::wrap_in_stack_container,
   models::{
     StackContainer, TilingContainer, TilingWindow, WindowContainer,
   },
-  traits::{CommonGetters, TilingSizeGetters},
+  traits::CommonGetters,
   user_config::UserConfig,
   wm_state::WmState,
 };
@@ -56,11 +56,7 @@ pub fn stack_absorb_neighbor(
     s
   } else {
     let pivot_parent = pivot.parent().context("No parent.")?;
-    let new_stack = StackContainer::new(
-      window.gaps_config().clone(),
-      config.value.stack.tab_bar_height.clone(),
-      config.value.stack.tab_bar_position.clone(),
-    );
+    let new_stack = new_stack(config);
     wrap_in_stack_container(
       &new_stack,
       &pivot_parent,
@@ -69,9 +65,18 @@ pub fn stack_absorb_neighbor(
     new_stack
   };
 
-  for absorbed_window in absorbed {
-    let index = stack.new_tab_index(config.value.stack.new_tab_position);
-    join_stack(absorbed_window, &stack, index, state, config)?;
+  // Kept in their order, wherever they go among the tabs.
+  let first_index =
+    stack.new_tab_index(config.value.stack.new_tab_position);
+
+  for (offset, absorbed_window) in absorbed.into_iter().enumerate() {
+    join_stack(
+      absorbed_window,
+      &stack,
+      first_index + offset,
+      state,
+      config,
+    )?;
   }
 
   // Redraw all stack children and the surrounding layout.

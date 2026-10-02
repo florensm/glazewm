@@ -15,7 +15,7 @@ use crate::{
       attach_container, detach_container, set_focused_descendant,
     },
     window::{
-      find_named_stack, new_named_stack, restored_state,
+      find_named_stack, match_stack_tabs, new_named_stack, restored_state,
       run_window_rules_except, update_stack_state, update_window_state,
     },
   },
@@ -302,7 +302,7 @@ fn auto_stack_placement(
     None => insertion_target(&WindowState::Tiling, false, state)?,
   };
 
-  let stack = new_named_stack(&rule.name, &config.value.gaps, config);
+  let stack = new_named_stack(&rule.name, config);
   attach_container(&stack.clone().into(), &parent, Some(index))?;
 
   Ok(Placement {
@@ -759,10 +759,7 @@ fn create_window(
   if let (WindowContainer::NonTilingWindow(window), Some(template)) =
     (&window_container, template)
   {
-    window.set_prev_state(
-      template.prev_state().unwrap_or(WindowState::Tiling),
-    );
-    window.set_own_floating_placement(template.floating_placement());
+    match_stack_tabs(window, &template);
   }
 
   // The OS might spawn the window on a different monitor to the target

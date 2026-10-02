@@ -1,9 +1,9 @@
 use wm_common::{VecDequeExt, WindowState};
 
-use super::{join_stack, wrap_window_in_stack};
+use super::{join_stack, new_stack, wrap_window_in_stack};
 use crate::{
   commands::container::flatten_stack_container,
-  models::{Container, StackContainer, Workspace},
+  models::{Container, Workspace},
   traits::{CommonGetters, WindowGetters},
   user_config::UserConfig,
   wm_state::WmState,
@@ -31,11 +31,7 @@ pub fn stack_all(
   {
     stack
   } else {
-    let stack = StackContainer::new(
-      config.value.gaps.clone(),
-      config.value.stack.tab_bar_height.clone(),
-      config.value.stack.tab_bar_position.clone(),
-    );
+    let stack = new_stack(config);
 
     wrap_window_in_stack(&anchor, &stack, state)?;
     stack

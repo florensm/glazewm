@@ -1,9 +1,9 @@
 use anyhow::Context;
 use wm_common::WindowState;
 
-use super::{join_stack, wrap_window_in_stack};
+use super::{join_stack, new_stack, wrap_window_in_stack};
 use crate::{
-  models::{StackContainer, WindowContainer},
+  models::WindowContainer,
   traits::{CommonGetters, WindowGetters},
   user_config::UserConfig,
   wm_state::WmState,
@@ -45,11 +45,7 @@ pub fn stack_insert(
   {
     stack
   } else {
-    let stack = StackContainer::new(
-      config.value.gaps.clone(),
-      config.value.stack.tab_bar_height.clone(),
-      config.value.stack.tab_bar_position.clone(),
-    );
+    let stack = new_stack(config);
 
     wrap_window_in_stack(&target, &stack, state)?;
     stack
