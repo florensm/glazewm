@@ -1,35 +1,101 @@
 use anyhow::Context;
 use tracing::info;
-use wm_common::{WindowRuleEvent, WindowState, WmEvent};
+use wm_common::{
+  AutoStackRuleConfig, InvokeCommand, WindowRuleEvent, WindowState,
+  WmEvent,
+};
 #[cfg(target_os = "windows")]
 use wm_platform::NativeWindowWindowsExt;
 use wm_platform::{NativeWindow, RectDelta};
 
 use crate::{
+  auto_stack::{decide, AutoStackDecision, WindowTraits},
   commands::{
-    container::{attach_container, set_focused_descendant},
-    window::{run_window_rules, update_window_state},
+    container::{
+      attach_container, detach_container, set_focused_descendant,
+    },
+    window::{
+      find_named_stack, new_named_stack, run_window_rules_except,
+      update_window_state,
+    },
   },
   models::{
     Container, Monitor, NativeWindowProperties, NonTilingWindow,
-    TilingWindow, WindowContainer,
+    StackContainer, TilingWindow, WindowContainer,
   },
   traits::{CommonGetters, PositionGetters, WindowGetters},
   user_config::UserConfig,
   wm_state::WmState,
 };
 
+/// Manages a newly shown window.
+///
+/// A window that could still match a `stack.auto_stack` rule once it has
+/// a title is held back, cloaked, until it gets one or the wait runs out.
 pub fn manage_window(
   native_window: NativeWindow,
   target_parent: Option<Container>,
   state: &mut WmState,
   config: &mut UserConfig,
 ) -> anyhow::Result<()> {
+  manage_window_inner(native_window, target_parent, true, state, config)
+}
+
+/// Manages a window whose wait for a title ran out, placing it normally
+/// unless its current title matches an auto-stack rule.
+pub fn manage_held_window(
+  native_window: NativeWindow,
+  state: &mut WmState,
+  config: &mut UserConfig,
+) -> anyhow::Result<()> {
+  manage_window_inner(native_window, None, false, state, config)
+}
+
+fn manage_window_inner(
+  native_window: NativeWindow,
+  target_parent: Option<Container>,
+  may_hold: bool,
+  state: &mut WmState,
+  config: &mut UserConfig,
+) -> anyhow::Result<()> {
+  let is_held = state.auto_stack.is_held(native_window.id());
+
   let Some(native_properties) =
-    check_is_manageable(&native_window, config).unwrap_or(None)
+    check_is_manageable(&native_window, is_held, config).unwrap_or(None)
   else {
+    if state.auto_stack.release(native_window.id()).is_some() {
+      uncloak_held_window(&native_window);
+    }
+
     return Ok(());
   };
+
+  let auto_stack_rule = if state.auto_stack.is_settled(native_window.id())
+  {
+    None
+  } else {
+    let traits = WindowTraits::of(&native_window, &native_properties);
+
+    match decide(
+      &config.value.stack.auto_stack,
+      &native_properties,
+      traits,
+    ) {
+      AutoStackDecision::Join(rule) => Some(rule.clone()),
+      // Holding relies on cloaking, which only exists on Windows.
+      AutoStackDecision::Wait
+        if cfg!(target_os = "windows")
+          && may_hold
+          && target_parent.is_none() =>
+      {
+        hold_window(&native_window, state, config);
+        return Ok(());
+      }
+      AutoStackDecision::Wait | AutoStackDecision::Skip => None,
+    }
+  };
+
+  state.auto_stack.release(native_window.id());
 
   // Cloak as early as possible to minimise the visible flash before the
   // window is repositioned and animated. Non-tiling windows are uncloaked
@@ -41,68 +107,88 @@ pub fn manage_window(
   #[cfg(target_os = "windows")]
   let cloak_guard = CloakGuard::cloak(&native_window);
 
+  let placement = match &auto_stack_rule {
+    Some(rule) => Some(auto_stack_placement(rule, state, config)?),
+    None => target_parent.map(|parent| Placement {
+      parent,
+      index: 0,
+      created_stack: None,
+    }),
+  };
+
+  // Stacked windows are always tiled within their stack.
+  let state_override =
+    auto_stack_rule.as_ref().map(|_| WindowState::Tiling);
+
   // Create the window instance. This may fail if the window handle has
   // already been destroyed, or if there's no nearest monitor/workspace to
   // place it in (e.g. a monitor/workspace reconfiguration race).
   let window = match create_window(
     native_window,
     native_properties,
-    target_parent,
+    placement.clone(),
+    state_override,
     state,
     config,
   ) {
     Ok(window) => window,
     Err(err) => {
       tracing::warn!("Operation failed: {:?}", err);
+
+      // Don't leave behind a stack that was only created for this window.
+      if let Some(stack) = placement.and_then(|p| p.created_stack) {
+        if !stack.has_children() {
+          detach_container(stack.into())?;
+        }
+      }
+
       // `cloak_guard` undoes the cloak as it drops.
       return Ok(());
     }
   };
 
+  if let Some(rule) = &auto_stack_rule {
+    info!("Auto-stacking window into stack '{}': {window}", rule.name);
+    state.auto_stack.mark_settled(window.native().id());
+  }
+
+  // A stacked window only takes focus if the OS already gave it the
+  // foreground, i.e. the user opened it. Otherwise it becomes the active
+  // tab without pulling focus away from another app.
+  let takes_focus =
+    auto_stack_rule.is_none() || is_foreground(&window, state);
+
   // Set the newly added window as focus descendant. This means the window
   // rules will be run as if the window is focused.
-  set_focused_descendant(&window.clone().into(), None);
+  if takes_focus {
+    set_focused_descendant(&window.clone().into(), None);
+  } else if let Some(stack) = window.parent() {
+    set_focused_descendant(&window.clone().into(), Some(&stack));
+  }
+
+  // A stacked window keeps the placement its stack gives it, so window
+  // rules that would move it or change its state are skipped.
+  let is_placement_command = |command: &InvokeCommand| {
+    auto_stack_rule.is_some() && is_placement_command(command)
+  };
 
   // Window might be detached if `ignore` command has been invoked.
-  let updated_window = run_window_rules(
+  let updated_window = run_window_rules_except(
     window.clone(),
     &WindowRuleEvent::Manage,
+    is_placement_command,
     state,
     config,
   )?;
 
   if let Some(window) = updated_window {
-    info!("New window managed: {window}");
-
-    // Take the workspace out of fullscreen before the new window is laid
-    // out, so it doesn't open hidden behind a monitor-sized window.
-    exit_fullscreen_for_new_window(&window, state, config)?;
-
-    state.emit_event(WmEvent::WindowManaged {
-      managed_window: window.to_dto()?,
-    });
-
-    // OS focus should be set to the newly added window in case it's not
-    // already focused.
-    state.pending_sync.queue_focus_change();
-
-    // Normally, a `PlatformEvent::WindowFocused` event is what triggers
-    // focus effects and workspace reordering to be applied. However, when
-    // a window is first launched, this event can come before the
-    // window is managed, and so we need to force an update here.
-    state.pending_sync.queue_focused_effect_update();
-    state.pending_sync.queue_workspace_to_reorder(
-      window.workspace().context("No workspace.")?,
-    );
-
-    // Sibling containers need to be redrawn if the window is tiling.
-    state.pending_sync.queue_container_to_redraw(
-      if window.state() == WindowState::Tiling {
-        window.parent().context("No parent.")?
-      } else {
-        window.into()
-      },
-    );
+    queue_managed_window_sync(
+      &window,
+      takes_focus,
+      placement.and_then(|p| p.created_stack),
+      state,
+      config,
+    )?;
 
     // The window is managed and queued for redraw, so `platform_sync`
     // (non-tiling) or the slide-in animation (tiling) now owns the
@@ -114,6 +200,163 @@ pub fn manage_window(
   // uncloaks it so that it displays normally without GlazeWM managing it.
 
   Ok(())
+}
+
+/// Emits the managed event and queues the redraw and focus updates for a
+/// newly managed window.
+fn queue_managed_window_sync(
+  window: &WindowContainer,
+  takes_focus: bool,
+  created_stack: Option<StackContainer>,
+  state: &mut WmState,
+  config: &UserConfig,
+) -> anyhow::Result<()> {
+  info!("New window managed: {window}");
+
+  // Take the workspace out of fullscreen before the new window is laid
+  // out, so it doesn't open hidden behind a monitor-sized window.
+  exit_fullscreen_for_new_window(window, state, config)?;
+
+  state.emit_event(WmEvent::WindowManaged {
+    managed_window: window.to_dto()?,
+  });
+
+  if takes_focus {
+    // OS focus should be set to the newly added window in case it's not
+    // already focused.
+    state.pending_sync.queue_focus_change();
+
+    // Normally, a `PlatformEvent::WindowFocused` event is what triggers
+    // focus effects and workspace reordering to be applied. However,
+    // when a window is first launched, this event can come before the
+    // window is managed, and so we need to force an update here.
+    state.pending_sync.queue_focused_effect_update();
+    state.pending_sync.queue_workspace_to_reorder(
+      window.workspace().context("No workspace.")?,
+    );
+  }
+
+  // Sibling containers need to be redrawn if the window is tiling. A
+  // newly created stack also resizes its siblings.
+  let redraw_target = match created_stack {
+    Some(stack) => stack.parent().context("No parent.")?,
+    None if window.state() == WindowState::Tiling => {
+      window.parent().context("No parent.")?
+    }
+    None => window.clone().into(),
+  };
+
+  state.pending_sync.queue_container_to_redraw(redraw_target);
+
+  Ok(())
+}
+
+/// Where a new window is attached in the container tree.
+#[derive(Clone)]
+struct Placement {
+  parent: Container,
+  index: usize,
+
+  /// Stack created to receive the window, if the target stack didn't
+  /// exist yet.
+  created_stack: Option<StackContainer>,
+}
+
+/// Resolves the named stack that `rule` puts windows into, creating it
+/// when it doesn't exist yet.
+fn auto_stack_placement(
+  rule: &AutoStackRuleConfig,
+  state: &mut WmState,
+  config: &UserConfig,
+) -> anyhow::Result<Placement> {
+  if let Some(stack) = find_named_stack(state, &rule.name) {
+    return Ok(Placement {
+      index: stack.child_count(),
+      parent: stack.into(),
+      created_stack: None,
+    });
+  }
+
+  let configured_workspace = rule
+    .workspace
+    .as_ref()
+    .and_then(|name| state.workspace_by_name(name));
+
+  let (parent, index) = match configured_workspace {
+    Some(workspace) => {
+      let index = workspace.child_count();
+      (workspace.into(), index)
+    }
+    None => insertion_target(&WindowState::Tiling, state)?,
+  };
+
+  let stack = new_named_stack(&rule.name, &config.value.gaps, config);
+  attach_container(&stack.clone().into(), &parent, Some(index))?;
+
+  Ok(Placement {
+    parent: stack.clone().into(),
+    index: 0,
+    created_stack: Some(stack),
+  })
+}
+
+/// Holds `native_window` back, cloaked, until it gets a title.
+fn hold_window(
+  native_window: &NativeWindow,
+  state: &mut WmState,
+  config: &UserConfig,
+) {
+  if !state.auto_stack.is_held(native_window.id()) {
+    info!(
+      "Holding untitled window back for auto-stacking: {:?}",
+      native_window.id()
+    );
+
+    #[cfg(target_os = "windows")]
+    let _ = native_window.set_cloaked(true);
+  }
+
+  let timeout = std::time::Duration::from_millis(
+    config.value.stack.auto_stack_title_timeout_ms,
+  );
+
+  state.auto_stack.hold(native_window, timeout);
+}
+
+/// Undoes the cloak of a window that was held back and won't be managed.
+pub fn uncloak_held_window(native_window: &NativeWindow) {
+  #[cfg(target_os = "windows")]
+  let _ = native_window.set_cloaked(false);
+
+  #[cfg(not(target_os = "windows"))]
+  let _ = native_window;
+}
+
+/// Whether `window` is the OS foreground window.
+fn is_foreground(window: &WindowContainer, state: &WmState) -> bool {
+  state
+    .dispatcher
+    .focused_window()
+    .is_ok_and(|foreground| foreground.id() == window.native().id())
+}
+
+/// Whether `command` moves a window or changes its window state.
+pub fn is_placement_command(command: &InvokeCommand) -> bool {
+  matches!(
+    command,
+    InvokeCommand::Move(_)
+      | InvokeCommand::MoveToStack { .. }
+      | InvokeCommand::SetFloating { .. }
+      | InvokeCommand::SetFullscreen { .. }
+      | InvokeCommand::SetMinimized
+      | InvokeCommand::SetTiling
+      | InvokeCommand::StackInsert
+      | InvokeCommand::ToggleFloating { .. }
+      | InvokeCommand::ToggleFullscreen { .. }
+      | InvokeCommand::ToggleMinimized
+      | InvokeCommand::ToggleStack
+      | InvokeCommand::ToggleTiling
+  )
 }
 
 /// Takes every other fullscreen window on `window`'s workspace back out of
@@ -225,9 +468,25 @@ impl Drop for CloakGuard {
 /// properties were retrieved successfully.
 fn check_is_manageable(
   native_window: &NativeWindow,
+  is_held: bool,
   config: &UserConfig,
 ) -> anyhow::Result<Option<NativeWindowProperties>> {
-  if !native_window.is_visible()? {
+  // A held window is cloaked by the WM itself, which `is_visible` would
+  // report as hidden.
+  #[cfg(target_os = "windows")]
+  let is_visible = if is_held {
+    use wm_platform::WS_VISIBLE;
+    native_window.has_window_style(WS_VISIBLE)
+  } else {
+    native_window.is_visible()?
+  };
+  #[cfg(not(target_os = "windows"))]
+  let is_visible = {
+    let _ = is_held;
+    native_window.is_visible()?
+  };
+
+  if !is_visible {
     return Ok(None);
   }
 
@@ -304,7 +563,8 @@ fn check_is_manageable(
 fn create_window(
   native_window: NativeWindow,
   native_properties: NativeWindowProperties,
-  target_parent: Option<Container>,
+  placement: Option<Placement>,
+  state_override: Option<WindowState>,
   state: &mut WmState,
   config: &UserConfig,
 ) -> anyhow::Result<WindowContainer> {
@@ -317,13 +577,17 @@ fn create_window(
     .context("No nearest workspace.")?;
 
   let gaps_config = config.value.gaps.clone();
-  let window_state =
-    window_state_to_create(&native_properties, &nearest_monitor, config)?;
+  let window_state = match state_override {
+    Some(window_state) => window_state,
+    None => {
+      window_state_to_create(&native_properties, &nearest_monitor, config)?
+    }
+  };
 
-  // Attach the new window as the first child of the target parent (if
-  // provided), otherwise, add as a sibling of the focused container.
-  let (target_parent, target_index) = match target_parent {
-    Some(parent) => (parent, 0),
+  // Attach the new window at the given placement (if provided),
+  // otherwise, add as a sibling of the focused container.
+  let (target_parent, target_index) = match placement {
+    Some(placement) => (placement.parent, placement.index),
     None => insertion_target(&window_state, state)?,
   };
 
@@ -506,4 +770,109 @@ fn insertion_target(
     focused_workspace.clone().into(),
     focused_workspace.child_count(),
   ))
+}
+
+#[cfg(test)]
+mod tests {
+  use wm_common::{AutoStackRuleConfig, ParsedConfig};
+
+  use super::auto_stack_placement;
+  use crate::{
+    commands::container::set_focused_descendant,
+    models::{Monitor, StackContainer, TilingWindow, Workspace},
+    traits::CommonGetters,
+    user_config::UserConfig,
+    wm_state::WmState,
+  };
+
+  fn details_rule(workspace: Option<&str>) -> AutoStackRuleConfig {
+    AutoStackRuleConfig {
+      name: "details".to_string(),
+      match_window: vec![],
+      exclude: vec![],
+      workspace: workspace.map(ToString::to_string),
+      allow_owned: false,
+    }
+  }
+
+  fn config() -> UserConfig {
+    UserConfig::from_parsed(ParsedConfig::default())
+  }
+
+  #[test]
+  fn joins_the_named_stack_on_another_workspace() {
+    let stacked = TilingWindow::mock().call();
+    let stack = StackContainer::mock()
+      .name("details".to_string())
+      .tiling_containers(vec![stacked.into()])
+      .call();
+    let first = Workspace::mock().name("1".to_string()).call();
+    let second = Workspace::mock()
+      .name("2".to_string())
+      .tiling_containers(vec![stack.clone().into()])
+      .call();
+    let monitor = Monitor::mock()
+      .workspaces(vec![first.clone(), second])
+      .call();
+    let mut state = WmState::mock(vec![monitor]);
+    set_focused_descendant(&first.into(), None);
+
+    let placement =
+      auto_stack_placement(&details_rule(None), &mut state, &config())
+        .unwrap();
+
+    assert_eq!(placement.parent.id(), stack.id());
+    assert_eq!(placement.index, 1);
+    assert!(placement.created_stack.is_none());
+
+    // Dropping `WmState` would restore its mock windows via Win32 calls.
+    std::mem::forget(state);
+  }
+
+  #[test]
+  fn creates_the_stack_on_its_configured_workspace() {
+    let first = Workspace::mock().name("1".to_string()).call();
+    let second = Workspace::mock().name("2".to_string()).call();
+    let monitor = Monitor::mock()
+      .workspaces(vec![first.clone(), second.clone()])
+      .call();
+    let mut state = WmState::mock(vec![monitor]);
+    set_focused_descendant(&first.into(), None);
+
+    let placement = auto_stack_placement(
+      &details_rule(Some("2")),
+      &mut state,
+      &config(),
+    )
+    .unwrap();
+
+    let stack = placement.created_stack.unwrap();
+    assert_eq!(stack.name().as_deref(), Some("details"));
+    assert_eq!(stack.parent().unwrap().id(), second.id());
+    assert_eq!(placement.parent.id(), stack.id());
+
+    std::mem::forget(state);
+  }
+
+  #[test]
+  fn creates_the_stack_next_to_the_focused_window() {
+    let focused = TilingWindow::mock().call();
+    let workspace = Workspace::mock()
+      .tiling_containers(vec![focused.clone().into()])
+      .call();
+    let monitor =
+      Monitor::mock().workspaces(vec![workspace.clone()]).call();
+    let mut state = WmState::mock(vec![monitor]);
+    set_focused_descendant(&focused.into(), None);
+
+    let placement =
+      auto_stack_placement(&details_rule(None), &mut state, &config())
+        .unwrap();
+
+    let stack = placement.created_stack.unwrap();
+    assert_eq!(stack.parent().unwrap().id(), workspace.id());
+    assert_eq!(stack.index(), 1);
+
+    std::mem::forget(state);
+  }
 }

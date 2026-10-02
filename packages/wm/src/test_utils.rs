@@ -18,6 +18,7 @@ use crate::{
     TilingWindow, Workspace,
   },
   traits::TilingSizeGetters,
+  wm_state::WmState,
 };
 
 pub const MOCK_MONITOR_WIDTH: i32 = 1680;
@@ -286,5 +287,35 @@ impl Workspace {
     }
 
     workspace
+  }
+}
+
+impl WmState {
+  /// Creates a `WmState` whose root holds `monitors`, with channels whose
+  /// receiving ends are dropped.
+  pub fn mock(monitors: Vec<Monitor>) -> Self {
+    let (event_tx, _) = tokio::sync::mpsc::unbounded_channel();
+    let (exit_tx, _) = tokio::sync::mpsc::unbounded_channel();
+    let (animation_tick_tx, _) = tokio::sync::mpsc::unbounded_channel();
+    let (tab_click_tx, _) = tokio::sync::mpsc::unbounded_channel();
+
+    let state = Self::new(
+      wm_platform::Dispatcher::mock(),
+      event_tx,
+      exit_tx,
+      animation_tick_tx,
+      tab_click_tx,
+    );
+
+    for monitor in monitors {
+      attach_container(
+        &monitor.into(),
+        &state.root_container.clone().into(),
+        None,
+      )
+      .unwrap();
+    }
+
+    state
   }
 }

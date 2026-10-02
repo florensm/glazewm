@@ -30,7 +30,7 @@ pub enum TabBarPosition {
   Bottom,
 }
 
-/// Configuration for the stack tab bar.
+/// Configuration for stacks and their tab bar.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(default, rename_all(serialize = "camelCase"))]
 pub struct StackConfig {
@@ -51,20 +51,61 @@ pub struct StackConfig {
 
   /// Foreground (text) color of tab labels.
   pub tab_text_color: Color,
+
+  /// Rules that put matching windows into a named stack as they open.
+  pub auto_stack: Vec<AutoStackRuleConfig>,
+
+  /// How long a window that could still match an `auto_stack` rule is
+  /// held back while its title is empty, before it is placed normally.
+  pub auto_stack_title_timeout_ms: u64,
 }
 
 impl Default for StackConfig {
   fn default() -> Self {
-    use std::str::FromStr;
+    let rgb = |r, g, b| Color {
+      r,
+      g,
+      b,
+      a: u8::MAX,
+    };
+
     Self {
       tab_bar_height: LengthValue::from_px(0),
       tab_bar_position: TabBarPosition::Top,
-      tab_bar_background: Color::from_str("#2d2d2d").unwrap(),
-      tab_active_background: Color::from_str("#4a4a6a").unwrap(),
-      tab_inactive_background: Color::from_str("#1e1e2e").unwrap(),
-      tab_text_color: Color::from_str("#cdd6f4").unwrap(),
+      tab_bar_background: rgb(0x2d, 0x2d, 0x2d),
+      tab_active_background: rgb(0x4a, 0x4a, 0x6a),
+      tab_inactive_background: rgb(0x1e, 0x1e, 0x2e),
+      tab_text_color: rgb(0xcd, 0xd6, 0xf4),
+      auto_stack: Vec::new(),
+      auto_stack_title_timeout_ms: 1500,
     }
   }
+}
+
+/// A rule that puts matching windows into a named stack when they open.
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(rename_all(serialize = "camelCase"))]
+pub struct AutoStackRuleConfig {
+  /// Name of the stack. One stack exists per name, across all workspaces.
+  pub name: String,
+
+  /// Windows matching any of these join the stack.
+  #[serde(rename = "match")]
+  pub match_window: Vec<WindowMatchConfig>,
+
+  /// Windows matching any of these never join the stack.
+  #[serde(default)]
+  pub exclude: Vec<WindowMatchConfig>,
+
+  /// Workspace to create the stack on when it doesn't exist yet. Defaults
+  /// to the workspace the window would otherwise open on.
+  #[serde(default)]
+  pub workspace: Option<String>,
+
+  /// Whether windows that have an owner window may join. Owned windows
+  /// are usually dialogs, so they are skipped by default.
+  #[serde(default)]
+  pub allow_owned: bool,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]

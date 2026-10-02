@@ -16,6 +16,7 @@ use wm_platform::{
 
 use crate::{
   animation::AnimationManager,
+  auto_stack::AutoStackState,
   commands::{
     container::set_focused_descendant,
     general::platform_sync,
@@ -71,6 +72,9 @@ pub struct WmState {
   /// Windows that the WM should ignore. Windows can be added via the
   /// `ignore` command.
   pub ignored_windows: Vec<NativeWindow>,
+
+  /// Windows held back or placed by `stack.auto_stack` rules.
+  pub auto_stack: AutoStackState,
 
   /// Whether the WM is paused.
   pub is_paused: bool,
@@ -140,6 +144,7 @@ impl WmState {
       unmanaged_or_minimized_timestamp: None,
       binding_modes: Vec::new(),
       ignored_windows: Vec::new(),
+      auto_stack: AutoStackState::default(),
       is_paused: false,
       is_focus_synced: false,
       has_initialized: false,
@@ -790,6 +795,12 @@ impl Drop for WmState {
       if let Err(err) = session.commit() {
         warn!("Failed to commit resize session on shutdown: {:?}", err);
       }
+    }
+
+    // Windows held back for auto-stacking are cloaked but not managed.
+    #[cfg(target_os = "windows")]
+    for native_window in self.auto_stack.release_all() {
+      let _ = native_window.set_cloaked(false);
     }
 
     let managed_windows = self.windows();

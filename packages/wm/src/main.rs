@@ -35,6 +35,7 @@ use crate::{
 };
 
 mod animation;
+mod auto_stack;
 mod commands;
 mod events;
 mod ipc_server;
@@ -212,6 +213,8 @@ async fn start_wm(
       dispatcher.show_error_dialog("Non-fatal error", &err.to_string());
     }
 
+    let auto_stack_deadline = wm.state.auto_stack.next_deadline();
+
     let res = tokio::select! {
       // biased: evaluated top-to-bottom when multiple futures are ready
       // simultaneously. Shutdown signals are checked first, animation ticks
@@ -276,6 +279,9 @@ async fn start_wm(
         }
 
         Ok(())
+      },
+      () = sleep_until(auto_stack_deadline) => {
+        wm.process_auto_stack_timeouts(&mut config)
       },
       Some((stack_id, tab_index)) = wm.tab_click_rx.recv() => {
         wm.process_commands(
@@ -531,5 +537,13 @@ fn update_path_env() {
     tracing::warn!(
       "Failed to query login shell for PATH. Keeping existing PATH."
     );
+  }
+}
+
+/// Sleeps until `deadline`, or forever when there is none.
+async fn sleep_until(deadline: Option<std::time::Instant>) {
+  match deadline {
+    Some(deadline) => tokio::time::sleep_until(deadline.into()).await,
+    None => std::future::pending().await,
   }
 }
