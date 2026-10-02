@@ -1,11 +1,12 @@
 use anyhow::Context;
 use wm_platform::Direction;
 
+use super::join_stack;
 use crate::{
-  commands::container::{
-    move_container_within_tree, wrap_in_stack_container,
+  commands::container::wrap_in_stack_container,
+  models::{
+    StackContainer, TilingContainer, TilingWindow, WindowContainer,
   },
-  models::{StackContainer, TilingContainer, TilingWindow},
   traits::{CommonGetters, TilingSizeGetters},
   user_config::UserConfig,
   wm_state::WmState,
@@ -16,8 +17,8 @@ use crate::{
 ///
 /// If the focused window is already in a `StackContainer`, the neighbor is
 /// added to that stack. Otherwise a new stack is created containing both.
-/// Only `TilingWindow` neighbors are supported; `SplitContainer` and
-/// `StackContainer` neighbors are ignored.
+/// A neighbouring stack is merged in; a `SplitContainer` neighbor is
+/// ignored.
 pub fn stack_absorb_neighbor(
   window: &TilingWindow,
   direction: &Direction,
@@ -43,9 +44,11 @@ pub fn stack_absorb_neighbor(
   }
   .context("No tiling neighbor in that direction.")?;
 
-  // Only absorb bare tiling windows for now.
-  let TilingContainer::TilingWindow(neighbor_window) = neighbor else {
-    return Ok(());
+  // A neighbouring stack is merged in, a split isn't absorbed.
+  let absorbed: Vec<WindowContainer> = match neighbor {
+    TilingContainer::TilingWindow(window) => vec![window.into()],
+    TilingContainer::Stack(stack) => stack.windows(),
+    TilingContainer::Split(_) => return Ok(()),
   };
 
   // Get or create the stack to absorb into.
@@ -66,20 +69,16 @@ pub fn stack_absorb_neighbor(
     new_stack
   };
 
-  let stack_container: crate::models::Container = stack.clone().into();
-
-  move_container_within_tree(
-    &neighbor_window.into(),
-    &stack_container,
-    0,
-    state,
-  )?;
+  for absorbed_window in absorbed {
+    let index = stack.new_tab_index(config.value.stack.new_tab_position);
+    join_stack(absorbed_window, &stack, index, state, config)?;
+  }
 
   // Redraw all stack children and the surrounding layout.
   let stack_parent = stack.parent().context("Stack has no parent.")?;
-  for child in stack.tiling_children() {
-    state.pending_sync.queue_container_to_redraw(child);
-  }
+  state
+    .pending_sync
+    .queue_containers_to_redraw(stack.windows());
   state
     .pending_sync
     .queue_containers_to_redraw(stack_parent.tiling_children());

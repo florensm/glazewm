@@ -10,11 +10,14 @@ GlazeWM: only the active tab is shown, the other tabs are cloaked.
 | --- | --- |
 | `toggle-stack` | Wrap the focused window in a new stack, or take it out of its stack. A floating window gets a floating stack. |
 | `stack-insert` | Stack the focused window with the most recently focused other window, joining its stack if it has one. |
-| `stack-absorb-neighbor --direction <dir>` | Pull the neighbouring window in `<dir>` into the focused window's stack. |
+| `stack-absorb-neighbor --direction <dir>` | Pull the neighbouring window in `<dir>` into the focused window's stack. A neighbouring stack is merged in. |
+| `stack-all` | Put all tiling windows of the workspace into one stack (the focused window's). |
+| `unstack-all` | Take apart every stack on the workspace. Windows of a floating stack are cascaded. |
 | `move-to-stack --name <name>` | Move the focused window into the named stack, on any workspace. Creates the stack in place if it doesn't exist. |
 | `float-out-of-stack` | Take the focused window out of its stack as a floating window. |
 | `cycle-stack-focus [--prev]` | Focus the next (or previous) tab, wrapping around. |
 | `focus-stack-index --index <n>` | Focus the tab at zero-based index `n`. |
+| `move-stack-tab [--prev]` | Move the active tab one position right (or left), wrapping around. |
 
 Moving or resizing a window in a stack moves or resizes the stack as a
 whole. Directional focus enters a stack through its active tab.
@@ -23,6 +26,19 @@ Closing or removing a tab never changes the stack's size. An unnamed stack
 is removed once it holds a single window, which then takes over the
 stack's whole slot. A named stack is kept until it is empty, so it stays a
 target for windows that open later.
+
+### Coming from other window managers
+
+| GlazeWM | komorebi | Hyprland | i3 / sway |
+| --- | --- | --- | --- |
+| `toggle-stack` | `stack` / `unstack` | `togglegroup` | `layout tabbed` / `layout toggle split` |
+| `stack-absorb-neighbor --direction <dir>` | `stack <dir>` | `moveintogroup <dir>` | `move <dir>` into a tabbed container |
+| `float-out-of-stack` | `unstack` | `moveoutofgroup` | `move` out + `floating enable` |
+| `cycle-stack-focus [--prev]` | `cycle-stack next/previous` | `changegroupactive f/b` | `focus left/right` |
+| `focus-stack-index --index <n>` | `focus-stack-window <n>` | `changegroupactive <n>` | — |
+| `move-stack-tab [--prev]` | — | `movegroupwindow f/b` | `move left/right` |
+| `stack-all` / `unstack-all` | `stack-all` / `unstack-all` | — | — |
+| `stack.new_tab_position: after_active` | — | `group:insert_after_current` | — |
 
 ## A stack acts as one window
 
@@ -121,6 +137,9 @@ stack:
   # A new tiling window opened while a stacked window is focused is tiled
   # next to the stack. Set to true to open it inside the stack instead.
   new_windows_join_focused_stack: false
+  # Where windows added to a stack go among its tabs: "end" or
+  # "after_active" (right after the active tab).
+  new_tab_position: "end"
   # Popups (windows with an owner) of an app that has windows in a stack
   # open floating instead of being tiled.
   float_owned_popups: true

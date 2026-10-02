@@ -255,6 +255,15 @@ pub enum InvokeCommand {
   StayInteractive,
   /// Take the window out of its stack as a floating window.
   FloatOutOfStack,
+  /// Put all tiling windows of the workspace into one stack.
+  StackAll,
+  /// Take apart every stack on the workspace.
+  UnstackAll,
+  /// Move the active tab one position right (or left), wrapping around.
+  MoveStackTab {
+    #[clap(long, default_value_t = false)]
+    prev: bool,
+  },
   /// Cycle focus to the next or previous window within the parent stack.
   CycleStackFocus {
     #[clap(long, default_value_t = false)]

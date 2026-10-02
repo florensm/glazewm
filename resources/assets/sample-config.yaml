@@ -235,6 +235,10 @@ stack:
   # joins that stack, rather than being tiled next to it.
   new_windows_join_focused_stack: false
 
+  # Where windows added to a stack go among its tabs: "end" or
+  # "after_active".
+  new_tab_position: "end"
+
   # Whether popups (windows with an owner) of an app that has windows in a
   # stack open floating.
   float_owned_popups: true
@@ -501,6 +505,17 @@ binding_modes:
         bindings: ["n"]
       - commands: ["cycle-stack-focus --prev"]
         bindings: ["p"]
+      # Move the active tab right/left among the tabs.
+      - commands: ["move-stack-tab"]
+        bindings: ["shift+n"]
+      - commands: ["move-stack-tab --prev"]
+        bindings: ["shift+p"]
+      # Stack every tiling window of the workspace, or take all stacks
+      # apart.
+      - commands: ["stack-all"]
+        bindings: ["a"]
+      - commands: ["unstack-all"]
+        bindings: ["u"]
       # Toggle the focused window out of the stack.
       - commands: ["toggle-stack"]
         bindings: ["g"]
