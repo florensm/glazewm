@@ -1987,6 +1987,14 @@ impl AnimationManager {
           // that lands in between is the correct final composite for them
           // too.
           let Some(start) = *fade_start else {
+            // The surrogate shows the window's companion, whose owner
+            // puts it back on screen only once it notices the uncloak.
+            if session.effect_opacity == u8::MAX
+              && session.awaits_companion()
+            {
+              return true;
+            }
+
             *fade_start = Some(fade_now);
             return true;
           };
