@@ -110,9 +110,13 @@ fn manage_window_inner(
     }),
   };
 
-  // Stacked windows are always tiled within their stack.
-  let state_override =
-    auto_stack_rule.as_ref().map(|_| WindowState::Tiling);
+  let state_override = initial_state_override(
+    auto_stack_rule.is_some(),
+    &native_window,
+    &native_properties,
+    state,
+    config,
+  );
 
   // Create the window instance. This may fail if the window handle has
   // already been destroyed, or if there's no nearest monitor/workspace to
@@ -281,7 +285,7 @@ fn auto_stack_placement(
       let index = workspace.child_count();
       (workspace.into(), index)
     }
-    None => insertion_target(&WindowState::Tiling, state)?,
+    None => insertion_target(&WindowState::Tiling, false, state)?,
   };
 
   let stack = new_named_stack(&rule.name, &config.value.gaps, config);
@@ -308,6 +312,61 @@ fn join_rule(
     }
     AutoStackDecision::Wait | AutoStackDecision::Skip => None,
   }
+}
+
+/// Window state a new window is created in regardless of its native
+/// state, if any.
+///
+/// Stacked windows are always tiled within their stack. Popups of an app
+/// with stacked windows float, as they would over a `StackTabs` host.
+fn initial_state_override(
+  is_auto_stacked: bool,
+  native_window: &NativeWindow,
+  properties: &NativeWindowProperties,
+  state: &WmState,
+  config: &UserConfig,
+) -> Option<WindowState> {
+  if is_auto_stacked {
+    Some(WindowState::Tiling)
+  } else if is_popup_of_stacked_app(
+    native_window,
+    properties,
+    state,
+    config,
+  ) {
+    Some(WindowState::Floating(
+      config.value.window_behavior.state_defaults.floating.clone(),
+    ))
+  } else {
+    None
+  }
+}
+
+/// Whether `native_window` is a popup (a window with an owner) of an app
+/// that has windows in a stack.
+fn is_popup_of_stacked_app(
+  native_window: &NativeWindow,
+  properties: &NativeWindowProperties,
+  state: &WmState,
+  config: &UserConfig,
+) -> bool {
+  #[cfg(target_os = "windows")]
+  let has_owner = native_window.has_owner_window();
+  #[cfg(not(target_os = "windows"))]
+  let has_owner = {
+    let _ = native_window;
+    false
+  };
+
+  config.value.stack.float_owned_popups
+    && has_owner
+    && state.windows().iter().any(|window| {
+      window
+        .parent()
+        .is_some_and(|parent| parent.as_stack().is_some())
+        && window.native_properties().process_name
+          == properties.process_name
+    })
 }
 
 /// Holds `native_window` back, cloaked, until it gets a title.
@@ -598,7 +657,11 @@ fn create_window(
   // otherwise, add as a sibling of the focused container.
   let (target_parent, target_index) = match placement {
     Some(placement) => (placement.parent, placement.index),
-    None => insertion_target(&window_state, state)?,
+    None => insertion_target(
+      &window_state,
+      config.value.stack.new_windows_join_focused_stack,
+      state,
+    )?,
   };
 
   let target_workspace =
@@ -751,6 +814,7 @@ fn window_state_to_create(
 /// Returns tuple of (parent container, insertion index).
 fn insertion_target(
   window_state: &WindowState,
+  joins_focused_stack: bool,
   state: &WmState,
 ) -> anyhow::Result<(Container, usize)> {
   let focused_container =
@@ -771,6 +835,14 @@ fn insertion_target(
 
     if let Some(sibling) = sibling {
       let parent = sibling.parent().context("No parent.")?;
+
+      // Tile next to the sibling's stack rather than inside it, unless
+      // configured otherwise.
+      if parent.as_stack().is_some() && !joins_focused_stack {
+        let stack_parent = parent.parent().context("No parent.")?;
+        return Ok((stack_parent, parent.index() + 1));
+      }
+
       return Ok((parent, sibling.index() + 1));
     }
   }
@@ -784,9 +856,9 @@ fn insertion_target(
 
 #[cfg(test)]
 mod tests {
-  use wm_common::{AutoStackRuleConfig, ParsedConfig};
+  use wm_common::{AutoStackRuleConfig, ParsedConfig, WindowState};
 
-  use super::auto_stack_placement;
+  use super::{auto_stack_placement, insertion_target};
   use crate::{
     commands::container::set_focused_descendant,
     models::{Monitor, StackContainer, TilingWindow, Workspace},
@@ -882,6 +954,33 @@ mod tests {
     let stack = placement.created_stack.unwrap();
     assert_eq!(stack.parent().unwrap().id(), workspace.id());
     assert_eq!(stack.index(), 1);
+
+    std::mem::forget(state);
+  }
+
+  #[test]
+  fn new_windows_tile_next_to_a_focused_stack() {
+    let stacked = TilingWindow::mock().call();
+    let stack = StackContainer::mock()
+      .tiling_containers(vec![stacked.clone().into()])
+      .call();
+    let workspace = Workspace::mock()
+      .tiling_containers(vec![stack.clone().into()])
+      .call();
+    let monitor =
+      Monitor::mock().workspaces(vec![workspace.clone()]).call();
+    let state = WmState::mock(vec![monitor]);
+    set_focused_descendant(&stacked.into(), None);
+
+    let (parent, index) =
+      insertion_target(&WindowState::Tiling, false, &state).unwrap();
+    assert_eq!(parent.id(), workspace.id());
+    assert_eq!(index, stack.index() + 1);
+
+    let (parent, index) =
+      insertion_target(&WindowState::Tiling, true, &state).unwrap();
+    assert_eq!(parent.id(), stack.id());
+    assert_eq!(index, 1);
 
     std::mem::forget(state);
   }

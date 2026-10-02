@@ -216,6 +216,14 @@ stack:
   tab_inactive_background: "#1e1e2e"
   tab_text_color: "#cdd6f4"
 
+  # Whether a new tiling window opened while a stacked window is focused
+  # joins that stack, rather than being tiled next to it.
+  new_windows_join_focused_stack: false
+
+  # Whether popups (windows with an owner) of an app that has windows in a
+  # stack open floating.
+  float_owned_popups: true
+
   # Put matching windows into a named stack as they open. There is one
   # stack per name, across all workspaces.
   auto_stack: []

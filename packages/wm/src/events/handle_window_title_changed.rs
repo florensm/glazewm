@@ -7,7 +7,7 @@ use crate::{
     auto_stack_managed_window, is_auto_stacked, is_placement_command,
     manage_window, run_window_rules_except,
   },
-  traits::WindowGetters,
+  traits::{CommonGetters, WindowGetters},
   user_config::UserConfig,
   wm_state::WmState,
 };
@@ -34,6 +34,15 @@ pub fn handle_window_title_changed(
   window.update_native_properties(|properties| {
     properties.title = title;
   });
+
+  // Tab bars are synced on redraw, so redraw a stacked window to update
+  // its tab's title.
+  if window
+    .parent()
+    .is_some_and(|parent| parent.as_stack().is_some())
+  {
+    state.pending_sync.queue_container_to_redraw(window.clone());
+  }
 
   auto_stack_managed_window(window.clone(), state, config)?;
 

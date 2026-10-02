@@ -170,10 +170,13 @@ impl NativeWindow {
   }
 
   /// Implements [`NativeWindow::is_visible`].
+  #[allow(clippy::unnecessary_wraps)]
   pub(crate) fn is_visible(&self) -> crate::Result<bool> {
     let is_visible = unsafe { IsWindowVisible(self.hwnd()) }.as_bool();
 
-    Ok(is_visible && !self.is_cloaked()?)
+    // A failed cloak query (e.g. no DWM, as under Wine) is taken as not
+    // cloaked rather than hiding every window.
+    Ok(is_visible && !self.is_cloaked().unwrap_or(false))
   }
 
   /// Implements [`NativeWindow::is_minimized`].
