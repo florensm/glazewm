@@ -10,20 +10,23 @@ use crate::{
 /// Removes a `StackContainer` from the tree and moves its children into
 /// the parent container.
 ///
-/// The children will be resized to fit the size of the stack container.
+/// The stack's size is split evenly between its children.
 #[allow(clippy::needless_pass_by_value)]
 pub fn flatten_stack_container(
   stack: StackContainer,
 ) -> anyhow::Result<()> {
   let parent = stack.parent().context("No parent.")?;
 
+  // Tabs all fill the stack, so their own tiling sizes carry no layout
+  // information. Split the stack's slot evenly instead.
+  #[allow(clippy::cast_precision_loss)]
+  let child_size = stack.tiling_size() / stack.child_count().max(1) as f32;
+
   let updated_children = stack.children().into_iter().inspect(|child| {
     *child.borrow_parent_mut() = Some(parent.clone());
 
-    // Resize tiling children to fit the size of the stack container.
     if let Ok(tiling_child) = child.as_tiling_container() {
-      tiling_child
-        .set_tiling_size(stack.tiling_size() * tiling_child.tiling_size());
+      tiling_child.set_tiling_size(child_size);
     }
   });
 
