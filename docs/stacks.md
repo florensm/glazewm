@@ -37,6 +37,18 @@ stack:
   tab_text_color: "#cdd6f4"
 ```
 
+### New windows and popups
+
+```yaml
+stack:
+  # A new tiling window opened while a stacked window is focused is tiled
+  # next to the stack. Set to true to open it inside the stack instead.
+  new_windows_join_focused_stack: false
+  # Popups (windows with an owner) of an app that has windows in a stack
+  # open floating instead of being tiled.
+  float_owned_popups: true
+```
+
 The tab bar height scales with the monitor's DPI when
 `gaps.scale_with_dpi` is enabled. The tab bar is only drawn on Windows.
 

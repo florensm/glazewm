@@ -58,6 +58,14 @@ pub struct StackConfig {
   /// How long a window that could still match an `auto_stack` rule is
   /// held back while its title is empty, before it is placed normally.
   pub auto_stack_title_timeout_ms: u64,
+
+  /// Whether a new tiling window opened while a stacked window has focus
+  /// joins that stack. Otherwise it is tiled next to the stack.
+  pub new_windows_join_focused_stack: bool,
+
+  /// Whether popups opened by an app that has windows in a stack (windows
+  /// with an owner window from that app) open as floating windows.
+  pub float_owned_popups: bool,
 }
 
 impl Default for StackConfig {
@@ -78,6 +86,8 @@ impl Default for StackConfig {
       tab_text_color: rgb(0xcd, 0xd6, 0xf4),
       auto_stack: Vec::new(),
       auto_stack_title_timeout_ms: 1500,
+      new_windows_join_focused_stack: false,
+      float_owned_popups: true,
     }
   }
 }
