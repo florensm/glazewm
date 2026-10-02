@@ -655,4 +655,39 @@ mod tests {
     let ids = stack.windows().iter().map(|w| w.id()).collect::<Vec<_>>();
     assert_eq!(ids, vec![left.id(), order[0], order[1]]);
   }
+
+  #[test]
+  fn the_only_tab_of_a_named_stack_tiles_back_into_its_slot() {
+    let mut s = setup();
+    s.stack.set_name("details".to_string());
+    let first = s.stack.windows()[0].clone();
+    crate::commands::window::toggle_stack(&first, &mut s.state, &s.config)
+      .unwrap();
+    let tab = s.stack.windows()[0].clone();
+    let tab_id = tab.id();
+    let stack_size = s.stack.tiling_size();
+    let stack_index = s.stack.index();
+
+    float_out_of_stack(&tab, false, &mut s.state, &s.config).unwrap();
+    assert!(s.stack.is_detached());
+
+    let floated = s
+      .workspace
+      .children()
+      .into_iter()
+      .find(|c| c.id() == tab_id)
+      .and_then(|c| c.as_window_container().ok())
+      .unwrap();
+    let tiled = update_window_state(
+      floated,
+      WindowState::Tiling,
+      &mut s.state,
+      &s.config,
+    )
+    .unwrap();
+
+    assert_eq!(tiled.index(), stack_index);
+    let tiled = tiled.as_tiling_container().unwrap();
+    assert!(approx_eq(tiled.tiling_size(), stack_size));
+  }
 }
