@@ -18,13 +18,13 @@ use crate::platform_impl::NativeWindow;
 
 /// Window property another app sets on its own overlay window to declare
 /// it the companion of the window it draws over (the value is that
-/// window's handle), e.g. recolor's recolored copy of a window.
+/// window's handle), e.g. shades' recolored copy of a window.
 ///
 /// The contract: the companion covers exactly the window's DWM extended
 /// frame bounds, and while the window is cloaked the companion stays shown
 /// but cloaked, so DWM keeps rendering it for thumbnails. Animations then
 /// show the companion in the window's place.
-const COMPANION_PROPERTY: PCWSTR = w!("GlazeWM.CompanionOf");
+const COMPANION_PROPERTY: PCWSTR = w!("shades.CompanionOf");
 
 /// How long a scan for companions is reused. A workspace switch creates a
 /// surrogate per window in one tick, which then costs one `EnumWindows`
