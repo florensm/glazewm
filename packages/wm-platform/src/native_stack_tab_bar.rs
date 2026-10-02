@@ -1112,7 +1112,9 @@ unsafe fn on_mouse_move(
       || (position.1 - drag.start.1).abs() > threshold.1;
 
     if drag.is_moving {
-      SendMessageW(state.tooltip, TTM_POP, WPARAM(0), LPARAM(0));
+      // Posted, since a sent message would come back to this window as a
+      // notification while its state is borrowed.
+      let _ = PostMessageW(state.tooltip, TTM_POP, WPARAM(0), LPARAM(0));
       render(hwnd, state);
     }
     return;
@@ -1235,6 +1237,27 @@ unsafe extern "system" fn wnd_proc(
     return DefWindowProcW(hwnd, msg, wparam, lparam);
   }
 
+  // The tooltip sends notifications from within the bar's own calls to
+  // it, while the state is borrowed, so they are handled before the state
+  // is borrowed here. Only `TTN_GETDISPINFOW` reads the state, and it only
+  // comes from the tooltip's own timer, never from within such a call.
+  if msg == WM_NOTIFY {
+    // SAFETY: `WM_NOTIFY` comes with an `NMHDR`.
+    let header = &*(lparam.0 as *const NMHDR);
+
+    if header.code == TTN_GETDISPINFOW {
+      // SAFETY: The state lives until `WM_DESTROY` and isn't borrowed
+      // during this notification (see above). `TTN_GETDISPINFOW` comes
+      // with an `NMTTDISPINFOW`.
+      let state = &mut *state_ptr;
+      if header.hwndFrom == state.tooltip {
+        state.fill_tooltip(&mut *(lparam.0 as *mut NMTTDISPINFOW));
+      }
+    }
+
+    return LRESULT(0);
+  }
+
   // SAFETY: The state lives until `WM_DESTROY` and is only touched on
   // this thread.
   let state = &mut *state_ptr;
@@ -1308,16 +1331,6 @@ unsafe extern "system" fn wnd_proc(
       )]
       let delta = (wparam.0 >> 16) as u16 as i16;
       (state.on_action)(TabAction::Cycle { prev: delta > 0 });
-      LRESULT(0)
-    }
-    WM_NOTIFY => {
-      let header = &*(lparam.0 as *const NMHDR);
-      if header.hwndFrom == state.tooltip
-        && header.code == TTN_GETDISPINFOW
-      {
-        // SAFETY: `TTN_GETDISPINFOW` comes with an `NMTTDISPINFOW`.
-        state.fill_tooltip(&mut *(lparam.0 as *mut NMTTDISPINFOW));
-      }
       LRESULT(0)
     }
     WM_CLOSE => {

@@ -580,4 +580,79 @@ mod tests {
     assert_eq!(joined.parent().unwrap().id(), s.stack.id());
     assert_eq!(s.stack.child_count(), 3);
   }
+
+  #[test]
+  fn a_tab_of_a_stack_can_start_a_new_named_stack() {
+    let mut s = setup();
+    update_stack_state(&s.stack, floating(), &mut s.state, &s.config)
+      .unwrap();
+    let tab = s.stack.windows()[0].clone();
+
+    let moved = crate::commands::window::move_to_stack(
+      tab,
+      "notes",
+      &mut s.state,
+      &s.config,
+    )
+    .unwrap();
+
+    let notes = moved.parent().unwrap();
+    assert_eq!(notes.as_stack().unwrap().name().as_deref(), Some("notes"));
+    assert_eq!(notes.parent().unwrap().id(), s.workspace.id());
+    assert!(matches!(moved.state(), WindowState::Floating(_)));
+  }
+
+  #[test]
+  fn a_tab_floated_out_of_a_removed_stack_tiles_back_beside_it() {
+    let mut s = setup();
+    let tab = s.stack.windows()[0].clone();
+    let tab_id = tab.id();
+    let other = s.stack.windows()[1].clone();
+
+    float_out_of_stack(&tab, false, &mut s.state, &s.config).unwrap();
+    assert!(s.stack.is_detached());
+
+    let floated = s
+      .workspace
+      .children()
+      .into_iter()
+      .find(|c| c.id() == tab_id)
+      .and_then(|c| c.as_window_container().ok())
+      .unwrap();
+    let tiled = update_window_state(
+      floated,
+      WindowState::Tiling,
+      &mut s.state,
+      &s.config,
+    )
+    .unwrap();
+
+    assert_eq!(tiled.parent().unwrap().id(), s.workspace.id());
+    assert_eq!(tiled.index(), other.index() + 1);
+    // Half of the stack it left.
+    let tiled = tiled.as_tiling_container().unwrap();
+    assert!(approx_eq(tiled.tiling_size(), 0.35));
+  }
+
+  #[test]
+  fn absorbing_a_stack_keeps_its_tab_order() {
+    let mut s = setup();
+    s.config.value.stack.new_tab_position =
+      wm_common::NewTabPosition::AfterActive;
+    let left = s.left.clone();
+    let order =
+      s.stack.windows().iter().map(|w| w.id()).collect::<Vec<_>>();
+
+    crate::commands::window::stack_absorb_neighbor(
+      &left,
+      &wm_platform::Direction::Right,
+      &mut s.state,
+      &s.config,
+    )
+    .unwrap();
+
+    let stack = left.parent().unwrap().as_stack().cloned().unwrap();
+    let ids = stack.windows().iter().map(|w| w.id()).collect::<Vec<_>>();
+    assert_eq!(ids, vec![left.id(), order[0], order[1]]);
+  }
 }

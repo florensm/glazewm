@@ -1,7 +1,7 @@
 use anyhow::Context;
 use tracing::info;
 
-use super::{join_stack, wrap_window_in_stack};
+use super::{join_stack, new_stack, wrap_window_in_stack};
 use crate::{
   auto_stack::{decide, AutoStackDecision, WindowTraits},
   commands::container::set_focused_descendant,
@@ -24,16 +24,8 @@ pub fn find_named_stack(
 }
 
 /// Creates an empty stack named `name`, ready to receive windows.
-pub fn new_named_stack(
-  name: &str,
-  gaps_config: &wm_common::GapsConfig,
-  config: &UserConfig,
-) -> StackContainer {
-  let stack = StackContainer::new(
-    gaps_config.clone(),
-    config.value.stack.tab_bar_height.clone(),
-    config.value.stack.tab_bar_position.clone(),
-  );
+pub fn new_named_stack(name: &str, config: &UserConfig) -> StackContainer {
+  let stack = new_stack(config);
 
   stack.set_name(name.to_string());
   stack
@@ -56,7 +48,7 @@ pub fn move_to_stack(
     return join_stack(window, &stack, index, state, config);
   }
 
-  let stack = new_named_stack(name, &config.value.gaps, config);
+  let stack = new_named_stack(name, config);
   wrap_window_in_stack(&window, &stack, state)?;
   Ok(window)
 }

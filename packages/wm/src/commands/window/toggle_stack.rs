@@ -1,7 +1,7 @@
 use anyhow::Context;
 use wm_common::WindowState;
 
-use super::{float_out_of_stack, wrap_window_in_stack};
+use super::{float_out_of_stack, new_stack, wrap_window_in_stack};
 use crate::{
   commands::container::flatten_stack_container,
   models::{StackContainer, TilingWindow, WindowContainer},
@@ -30,20 +30,12 @@ pub fn toggle_stack(
       float_out_of_stack(window, false, state, config)
     }
     (_, None) if window.state() == WindowState::Minimized => Ok(()),
-    (_, None) => {
-      let stack = StackContainer::new(
-        config.value.gaps.clone(),
-        config.value.stack.tab_bar_height.clone(),
-        config.value.stack.tab_bar_position.clone(),
-      );
-
-      wrap_window_in_stack(window, &stack, state)
-    }
+    (_, None) => wrap_window_in_stack(window, &new_stack(config), state),
   }
 }
 
 /// Moves `window` out of its tiling `stack`, tiled right after it.
-fn remove_from_tiling_stack(
+pub(crate) fn remove_from_tiling_stack(
   window: &TilingWindow,
   stack: &StackContainer,
   state: &mut WmState,

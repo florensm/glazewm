@@ -283,13 +283,31 @@ fn move_to_workspace_in_direction(
     // window is moved out. For example, if the focus order is 1. tiling
     // window and 2. fullscreen window, then we'd want to retain focus on a
     // tiling window on move.
-    let focus_target = state.focus_target_after_removal(window_to_move);
-
     // A window of a fullscreen stack takes its stack along.
     let moved: Container = window_to_move
       .parent()
       .filter(|parent| parent.as_stack().is_some())
       .unwrap_or_else(|| window_to_move.clone().into());
+
+    let is_moved = |container: &Container| {
+      container
+        .self_and_ancestors()
+        .any(|ancestor| ancestor.id() == moved.id())
+    };
+
+    // The focus target can't be another tab moving along.
+    let focus_target = state
+      .focus_target_after_removal(window_to_move)
+      .map(|target| {
+        if is_moved(&target) {
+          workspace
+            .descendant_focus_order()
+            .find(|container| !is_moved(container))
+            .unwrap_or_else(|| workspace.clone().into())
+        } else {
+          target
+        }
+      });
 
     move_container_within_tree(
       &moved,
@@ -307,7 +325,7 @@ fn move_to_workspace_in_direction(
 
     state
       .pending_sync
-      .queue_container_to_redraw(window_to_move.clone())
+      .queue_container_to_redraw(moved.clone())
       .queue_containers_to_redraw(target_workspace.tiling_children())
       .queue_containers_to_redraw(parent.tiling_children())
       .queue_cursor_jump()
