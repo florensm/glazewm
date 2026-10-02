@@ -70,7 +70,17 @@ pub use native_iris_overlay::NativeIrisOverlay;
 #[cfg(target_os = "windows")]
 mod native_stack_tab_bar;
 #[cfg(target_os = "windows")]
-pub use native_stack_tab_bar::{NativeStackTabBar, TabBarColors, TabInfo};
+pub use native_stack_tab_bar::{
+  NativeStackTabBar, TabBarStyle, TabCloseMode, TabFrame, TabInfo,
+};
+#[cfg(target_os = "windows")]
+mod tab_icons;
+// Only `TabAction` is used off Windows, where there are no tab bars.
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+mod tab_layout;
+pub use tab_layout::TabAction;
+#[cfg(target_os = "windows")]
+mod tab_paint;
 pub use platform_event::*;
 pub use single_instance::*;
 pub use system_accent_color::*;

@@ -33,6 +33,11 @@ pub fn reload_config(
   // Re-evaluate user config file and set its values in state.
   config.reload()?;
 
+  #[cfg(target_os = "windows")]
+  {
+    state.tab_bar_settings = None;
+  }
+
   // Re-run auto-stack and window rules on all active windows. Windows in
   // a stack from an auto-stack rule keep their placement, as on manage.
   for window in state.windows() {

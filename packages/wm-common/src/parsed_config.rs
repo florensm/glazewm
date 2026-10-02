@@ -31,26 +31,66 @@ pub enum TabBarPosition {
 }
 
 /// Configuration for stacks and their tab bar.
+#[allow(clippy::struct_excessive_bools)]
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(default, rename_all(serialize = "camelCase"))]
 pub struct StackConfig {
-  /// Height of the tab bar in pixels (0 = disabled).
+  /// Height of the tab bar (0 = disabled).
   pub tab_bar_height: LengthValue,
 
   /// Whether the tab bar appears above or below the stack content.
   pub tab_bar_position: TabBarPosition,
 
-  /// Background color of the tab bar.
-  pub tab_bar_background: Color,
+  /// Background of the tab bar strip.
+  pub tab_bar_background: BorderColorSource,
 
-  /// Background color of the active (focused) tab.
-  pub tab_active_background: Color,
+  /// Opacity of the whole tab bar.
+  pub tab_bar_opacity: OpacityValue,
 
-  /// Background color of inactive tabs.
-  pub tab_inactive_background: Color,
+  /// Background of the active tab's highlight.
+  pub tab_active_background: BorderColorSource,
 
-  /// Foreground (text) color of tab labels.
-  pub tab_text_color: Color,
+  /// Background of a hovered inactive tab.
+  pub tab_hover_background: BorderColorSource,
+
+  /// Background of inactive tabs. Transparent by default, so they show
+  /// the strip.
+  pub tab_inactive_background: BorderColorSource,
+
+  /// Text color of the active tab.
+  pub tab_text_color: BorderColorSource,
+
+  /// Text color of inactive tabs.
+  pub tab_inactive_text_color: BorderColorSource,
+
+  /// Font family of tab titles.
+  pub tab_font_family: String,
+
+  /// Font size of tab titles.
+  pub tab_font_size: LengthValue,
+
+  /// Corner radius of the strip and the tab highlights.
+  pub tab_corner_radius: LengthValue,
+
+  /// Narrowest a tab gets before the bar scrolls. Below about 60px, tabs
+  /// only show their icon.
+  pub tab_min_width: LengthValue,
+
+  /// Widest a tab gets (0 = tabs share the whole bar).
+  pub tab_max_width: LengthValue,
+
+  /// Whether tabs show their window's icon.
+  pub show_tab_icons: bool,
+
+  /// Whether tab titles are prefixed with their position ("1. Title").
+  pub show_tab_numbers: bool,
+
+  /// When tabs show a close button.
+  pub tab_close_button: TabCloseButton,
+
+  /// Regex replacements applied to window titles before they are shown on
+  /// tabs, in order.
+  pub tab_title_overrides: Vec<TabTitleOverride>,
 
   /// Rules that put matching windows into a named stack as they open.
   pub auto_stack: Vec<AutoStackRuleConfig>,
@@ -70,26 +110,60 @@ pub struct StackConfig {
 
 impl Default for StackConfig {
   fn default() -> Self {
-    let rgb = |r, g, b| Color {
-      r,
-      g,
-      b,
-      a: u8::MAX,
-    };
+    let color = |hex: &str| BorderColorSource::Value(hex.to_string());
 
     Self {
-      tab_bar_height: LengthValue::from_px(0),
+      tab_bar_height: LengthValue::from_px(28),
       tab_bar_position: TabBarPosition::Top,
-      tab_bar_background: rgb(0x2d, 0x2d, 0x2d),
-      tab_active_background: rgb(0x4a, 0x4a, 0x6a),
-      tab_inactive_background: rgb(0x1e, 0x1e, 0x2e),
-      tab_text_color: rgb(0xcd, 0xd6, 0xf4),
+      tab_bar_background: color("#1f1f1f"),
+      tab_bar_opacity: OpacityValue(0.92),
+      tab_active_background: color("#3a3a3a"),
+      tab_hover_background: color("#2c2c2c"),
+      tab_inactive_background: color("#00000000"),
+      tab_text_color: color("#ffffff"),
+      tab_inactive_text_color: color("#a0a0a0"),
+      tab_font_family: "Segoe UI".to_string(),
+      tab_font_size: LengthValue::from_px(12),
+      tab_corner_radius: LengthValue::from_px(8),
+      tab_min_width: LengthValue::from_px(48),
+      tab_max_width: LengthValue::from_px(0),
+      show_tab_icons: true,
+      show_tab_numbers: false,
+      tab_close_button: TabCloseButton::Hover,
+      tab_title_overrides: Vec::new(),
       auto_stack: Vec::new(),
       auto_stack_title_timeout_ms: 1500,
       new_windows_join_focused_stack: false,
       float_owned_popups: true,
     }
   }
+}
+
+/// When tabs show a close button.
+#[derive(
+  Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum TabCloseButton {
+  /// On the active tab and the hovered tab.
+  #[default]
+  Hover,
+  /// On every tab.
+  Always,
+  /// Never; tabs are closed with a middle click or the context menu.
+  Never,
+}
+
+/// A regex replacement applied to window titles shown on tabs.
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(rename_all(serialize = "camelCase"))]
+pub struct TabTitleOverride {
+  /// Pattern to replace (Rust `regex` syntax).
+  pub regex: String,
+
+  /// Replacement text; `$1` etc. refer to capture groups.
+  #[serde(default)]
+  pub replace: String,
 }
 
 /// A rule that puts matching windows into a named stack when they open.

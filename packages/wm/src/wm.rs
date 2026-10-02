@@ -62,12 +62,10 @@ pub struct WindowManager {
   pub exit_rx: mpsc::UnboundedReceiver<()>,
   pub animation_tick_rx: mpsc::UnboundedReceiver<()>,
   pub state: WmState,
-  /// Receiver for tab click events routed from the event-loop thread.
-  ///
-  /// Always present (not cfg-gated) so that the `tokio::select!` arm in
-  /// `main.rs` compiles on all platforms. On non-Windows the sender is
-  /// never used, so this receiver never yields an item.
-  pub tab_click_rx: mpsc::UnboundedReceiver<(uuid::Uuid, usize)>,
+  /// Actions taken in tab bars, keyed by stack ID. Never yields on
+  /// platforms without tab bars.
+  pub tab_action_rx:
+    mpsc::UnboundedReceiver<(uuid::Uuid, wm_platform::TabAction)>,
 }
 
 impl WindowManager {
@@ -78,14 +76,14 @@ impl WindowManager {
     let (event_tx, event_rx) = mpsc::unbounded_channel();
     let (exit_tx, exit_rx) = mpsc::unbounded_channel();
     let (animation_tick_tx, animation_tick_rx) = mpsc::unbounded_channel();
-    let (tab_click_tx, tab_click_rx) = mpsc::unbounded_channel();
+    let (tab_action_tx, tab_action_rx) = mpsc::unbounded_channel();
 
     let mut state = WmState::new(
       dispatcher,
       event_tx,
       exit_tx,
       animation_tick_tx,
-      tab_click_tx,
+      tab_action_tx,
     );
     state.populate(config)?;
 
@@ -99,8 +97,69 @@ impl WindowManager {
       exit_rx,
       animation_tick_rx,
       state,
-      tab_click_rx,
+      tab_action_rx,
     })
+  }
+
+  /// Carries out an action taken in the tab bar of stack `stack_id`.
+  pub fn process_tab_action(
+    &mut self,
+    stack_id: Uuid,
+    action: wm_platform::TabAction,
+    config: &mut UserConfig,
+  ) -> anyhow::Result<()> {
+    use wm_common::VecDequeExt;
+    use wm_platform::TabAction;
+
+    use crate::models::StackContainer;
+
+    let Some(stack) = self.state.container_by_id(stack_id) else {
+      return Ok(());
+    };
+
+    let tab = |index| {
+      stack
+        .children()
+        .into_iter()
+        .filter(|child| child.as_tiling_window().is_some())
+        .nth(index)
+    };
+
+    let (command, subject) = match action {
+      TabAction::Activate(index) => (
+        InvokeCommand::FocusStackIndex { index },
+        Some(stack.clone()),
+      ),
+      TabAction::Close(index) => (InvokeCommand::Close, tab(index)),
+      TabAction::Detach(index) => (InvokeCommand::ToggleStack, tab(index)),
+      TabAction::Cycle { prev } => (
+        InvokeCommand::CycleStackFocus { prev },
+        stack.as_stack().and_then(StackContainer::active_child),
+      ),
+      TabAction::Move { from, to } => {
+        let Some(moved) = tab(from) else {
+          return Ok(());
+        };
+
+        stack.borrow_children_mut().shift_to_index(to, moved);
+
+        let state = &mut self.state;
+        state.pending_sync.queue_container_to_redraw(stack);
+        if !state.is_paused {
+          platform_sync(state, config)?;
+        }
+
+        return Ok(());
+      }
+    };
+
+    let Some(subject) = subject else {
+      return Ok(());
+    };
+
+    self
+      .process_commands(&vec![command], Some(subject.id()), config)
+      .map(|_| ())
   }
 
   /// Places the windows held back for auto-stacking whose wait for a
