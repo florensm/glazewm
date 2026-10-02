@@ -1,18 +1,12 @@
 use anyhow::Context;
 use tracing::info;
-use wm_common::WindowState;
 
-use super::update_window_state;
+use super::{join_stack, wrap_window_in_stack};
 use crate::{
   auto_stack::{decide, AutoStackDecision, WindowTraits},
-  commands::container::{
-    move_container_within_tree, set_focused_descendant,
-    wrap_in_stack_container,
-  },
-  models::{
-    StackContainer, TilingContainer, TilingWindow, WindowContainer,
-  },
-  traits::{CommonGetters, TilingSizeGetters, WindowGetters},
+  commands::container::set_focused_descendant,
+  models::{StackContainer, WindowContainer},
+  traits::{CommonGetters, WindowGetters},
   user_config::UserConfig,
   wm_state::WmState,
 };
@@ -46,52 +40,25 @@ pub fn new_named_stack(
 }
 
 /// Moves `window` into the stack named `name`, which may be on any
-/// workspace.
+/// workspace, giving it the stack's state.
 ///
-/// When no such stack exists, one is created in place of the window. No-op
-/// if the window is already in it.
+/// When no such stack exists, one is created in place of the window.
+/// Returns the window, which is a new container if its state changed
+/// between tiling and non-tiling.
 pub fn move_to_stack(
-  window: &TilingWindow,
+  window: WindowContainer,
   name: &str,
   state: &mut WmState,
   config: &UserConfig,
-) -> anyhow::Result<()> {
-  let Some(stack) = find_named_stack(state, name) else {
-    let stack = new_named_stack(name, &window.gaps_config(), config);
-    let parent = window.parent().context("No parent.")?;
-
-    wrap_in_stack_container(
-      &stack,
-      &parent,
-      &[TilingContainer::TilingWindow(window.clone())],
-    )?;
-
-    state.pending_sync.queue_container_to_redraw(stack);
-    return Ok(());
-  };
-
-  if window
-    .parent()
-    .is_some_and(|parent| parent.id() == stack.id())
-  {
-    return Ok(());
+) -> anyhow::Result<WindowContainer> {
+  if let Some(stack) = find_named_stack(state, name) {
+    let index = stack.child_count();
+    return join_stack(window, &stack, index, state, config);
   }
 
-  let previous_workspace = window.workspace().context("No workspace.")?;
-
-  move_container_within_tree(
-    &window.clone().into(),
-    &stack.clone().into(),
-    stack.child_count(),
-    state,
-  )?;
-
-  state
-    .pending_sync
-    .queue_container_to_redraw(previous_workspace)
-    .queue_container_to_redraw(stack.parent().context("No parent.")?);
-
-  Ok(())
+  let stack = new_named_stack(name, &config.value.gaps, config);
+  wrap_window_in_stack(&window, &stack, state)?;
+  Ok(window)
 }
 
 /// Moves an already managed window into its auto-stack, if its current
@@ -130,22 +97,7 @@ pub fn auto_stack_managed_window(
   let had_focus = window.has_focus(None);
   info!("Auto-stacking window into stack '{name}': {window}");
 
-  let window = match window {
-    WindowContainer::TilingWindow(window) => window,
-    WindowContainer::NonTilingWindow(_) => {
-      match update_window_state(
-        window,
-        WindowState::Tiling,
-        state,
-        config,
-      )? {
-        WindowContainer::TilingWindow(window) => window,
-        WindowContainer::NonTilingWindow(_) => return Ok(()),
-      }
-    }
-  };
-
-  move_to_stack(&window, &name, state, config)?;
+  let window = move_to_stack(window, &name, state, config)?;
   state.auto_stack.mark_settled(native_id);
 
   // Make it the active tab, without taking focus from another window.

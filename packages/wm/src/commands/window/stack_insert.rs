@@ -1,77 +1,61 @@
 use anyhow::Context;
+use wm_common::WindowState;
 
+use super::{join_stack, wrap_window_in_stack};
 use crate::{
-  commands::container::{
-    move_container_within_tree, wrap_in_stack_container,
-  },
-  models::{StackContainer, TilingWindow},
-  traits::{CommonGetters, TilingSizeGetters},
+  models::{StackContainer, WindowContainer},
+  traits::{CommonGetters, WindowGetters},
   user_config::UserConfig,
   wm_state::WmState,
 };
 
-/// Moves the focused tiling window into a stack with the most-recently-
-/// focused other tiling window on the same workspace.
+/// Moves `window` into a stack with the most recently focused other
+/// window on the same workspace.
 ///
-/// If the target window already belongs to a `StackContainer`, the focused
-/// window is added to that stack. Otherwise a new `StackContainer` is
-/// created wrapping the target, and the focused window is added to it.
+/// If that window is in a stack, `window` joins it; otherwise both are put
+/// in a new stack in its place. The stack keeps the other window's state,
+/// so stacking onto a floating window makes a floating stack.
 ///
-/// No-op when no other tiling window exists on the workspace.
+/// No-op when no other window that isn't minimized exists on the
+/// workspace.
 pub fn stack_insert(
-  window: &TilingWindow,
+  window: WindowContainer,
   state: &mut WmState,
   config: &UserConfig,
 ) -> anyhow::Result<()> {
   let workspace = window.workspace().context("No workspace.")?;
+  let own_stack =
+    window.parent().filter(|parent| parent.as_stack().is_some());
 
-  // Find the most-recently-focused tiling window on the workspace that is
-  // not the current window.
-  let focus_order: Vec<_> = workspace.descendant_focus_order().collect();
-  let target = focus_order
-    .iter()
-    .filter_map(|c| c.as_tiling_window().cloned())
-    .find(|w| w.id() != window.id());
+  let target = workspace
+    .descendant_focus_order()
+    .filter_map(|container| container.as_window_container().ok())
+    .find(|other| {
+      other.id() != window.id()
+        && other.state() != WindowState::Minimized
+        && other.parent() != own_stack
+    });
 
   let Some(target) = target else {
     return Ok(());
   };
 
-  let target_parent = target.parent().context("No parent.")?;
+  let stack = if let Some(stack) =
+    target.parent().and_then(|p| p.as_stack().cloned())
+  {
+    stack
+  } else {
+    let stack = StackContainer::new(
+      config.value.gaps.clone(),
+      config.value.stack.tab_bar_height.clone(),
+      config.value.stack.tab_bar_position.clone(),
+    );
 
-  let stack: StackContainer =
-    if let Some(s) = target_parent.as_stack().cloned() {
-      s
-    } else {
-      let new_stack = StackContainer::new(
-        target.gaps_config().clone(),
-        config.value.stack.tab_bar_height.clone(),
-        config.value.stack.tab_bar_position.clone(),
-      );
-      wrap_in_stack_container(
-        &new_stack,
-        &target_parent,
-        &[target.clone().into()],
-      )?;
-      new_stack
-    };
+    wrap_window_in_stack(&target, &stack, state)?;
+    stack
+  };
 
-  move_container_within_tree(
-    &window.clone().into(),
-    &stack.clone().into(),
-    0,
-    state,
-  )?;
-
-  for child in stack.tiling_children() {
-    state.pending_sync.queue_container_to_redraw(child);
-  }
-
-  if let Some(p) = stack.parent() {
-    state
-      .pending_sync
-      .queue_containers_to_redraw(p.tiling_children());
-  }
+  join_stack(window, &stack, 0, state, config)?;
 
   Ok(())
 }

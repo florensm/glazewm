@@ -502,6 +502,20 @@ binding_modes:
       # Toggle the focused window out of the stack.
       - commands: ["toggle-stack"]
         bindings: ["g"]
+      # Take the focused window out of the stack as a floating window.
+      - commands: ["float-out-of-stack"]
+        bindings: ["f"]
+      # Show the stack's first to fifth tab.
+      - commands: ["focus-stack-index --index 0"]
+        bindings: ["1"]
+      - commands: ["focus-stack-index --index 1"]
+        bindings: ["2"]
+      - commands: ["focus-stack-index --index 2"]
+        bindings: ["3"]
+      - commands: ["focus-stack-index --index 3"]
+        bindings: ["4"]
+      - commands: ["focus-stack-index --index 4"]
+        bindings: ["5"]
       # Press enter/escape to return to default keybindings.
       - commands: ["wm-disable-binding-mode --name stack"]
         bindings: ["escape", "enter"]
@@ -568,7 +582,9 @@ keybindings:
   - commands: ["toggle-tiling-direction"]
     bindings: ["alt+v"]
 
-  # Toggle the focused window into/out of a stack container.
+  # Toggle the focused window into/out of a stack container. A stack acts as
+  # one window: toggle-floating, toggle-fullscreen and toggle-minimized on
+  # a stacked window apply to its whole stack.
   - commands: ["toggle-stack"]
     bindings: ["alt+g"]
 

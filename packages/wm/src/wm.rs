@@ -29,12 +29,12 @@ use crate::{
     },
     monitor::focus_monitor,
     window::{
-      cycle_stack_focus, focus_stack_index, focus_urgent_window,
-      ignore_window, manage_held_window, move_to_stack,
-      move_window_in_direction, move_window_to_workspace, resize_window,
-      set_window_position, set_window_size, set_window_urgency,
-      stack_absorb_neighbor, stack_insert, toggle_stack,
-      update_window_state, WindowPositionTarget,
+      cycle_stack_focus, float_out_of_stack, focus_stack_index,
+      focus_urgent_window, ignore_window, manage_held_window,
+      move_to_stack, move_window_in_direction, move_window_to_workspace,
+      resize_window, set_window_position, set_window_size,
+      set_window_urgency, stack_absorb_neighbor, stack_insert,
+      toggle_stack, update_window_state, WindowPositionTarget,
     },
     workspace::{
       focus_workspace, move_workspace_in_direction,
@@ -51,7 +51,7 @@ use crate::{
     handle_z_order_changed,
   },
   ipc_server::IpcServer,
-  models::{Container, WindowContainer, WorkspaceTarget},
+  models::{Container, WorkspaceTarget},
   traits::{CommonGetters, PositionGetters, WindowGetters},
   user_config::UserConfig,
   wm_state::WmState,
@@ -119,10 +119,8 @@ impl WindowManager {
 
     let tab = |index| {
       stack
-        .children()
-        .into_iter()
-        .filter(|child| child.as_tiling_window().is_some())
-        .nth(index)
+        .as_stack()
+        .and_then(|stack| stack.windows().into_iter().nth(index))
     };
 
     let (command, subject) = match action {
@@ -130,8 +128,25 @@ impl WindowManager {
         InvokeCommand::FocusStackIndex { index },
         Some(stack.clone()),
       ),
-      TabAction::Close(index) => (InvokeCommand::Close, tab(index)),
-      TabAction::Detach(index) => (InvokeCommand::ToggleStack, tab(index)),
+      TabAction::Close(index) => {
+        (InvokeCommand::Close, tab(index).map(Into::into))
+      }
+      TabAction::Detach(index) => {
+        (InvokeCommand::ToggleStack, tab(index).map(Into::into))
+      }
+      TabAction::Float { index, at_cursor } => {
+        let Some(window) = tab(index) else {
+          return Ok(());
+        };
+
+        let state = &mut self.state;
+        float_out_of_stack(&window, at_cursor, state, config)?;
+        if !state.is_paused {
+          platform_sync(state, config)?;
+        }
+
+        return Ok(());
+      }
       TabAction::Cycle { prev } => (
         InvokeCommand::CycleStackFocus { prev },
         stack.as_stack().and_then(StackContainer::active_child),
@@ -140,6 +155,7 @@ impl WindowManager {
         let Some(moved) = tab(from) else {
           return Ok(());
         };
+        let moved: Container = moved.into();
 
         stack.borrow_children_mut().shift_to_index(to, moved);
 
@@ -1001,29 +1017,7 @@ impl WindowManager {
       }
       InvokeCommand::ToggleStack => {
         if let Ok(window) = subject_container.as_window_container() {
-          let tiling = match window {
-            WindowContainer::TilingWindow(ref w) => w.clone(),
-            WindowContainer::NonTilingWindow(_) => {
-              // Convert floating → tiling. If the window's saved
-              // insertion target puts it back into an existing stack,
-              // it is already in a good state — don't toggle it back out.
-              let converted = update_window_state(
-                window,
-                WindowState::Tiling,
-                state,
-                config,
-              )?;
-              let WindowContainer::TilingWindow(w) = converted else {
-                return Ok(());
-              };
-              if w.parent().is_some_and(|p| p.as_stack().is_some()) {
-                state.pending_sync.queue_focus_change();
-                return Ok(());
-              }
-              w
-            }
-          };
-          toggle_stack(&tiling, state, config)?;
+          toggle_stack(&window, state, config)?;
           state.pending_sync.queue_focus_change();
         }
         Ok(())
@@ -1048,22 +1042,26 @@ impl WindowManager {
       }
       InvokeCommand::StackInsert => {
         if let Ok(window) = subject_container.as_window_container() {
-          let tiling = ensure_tiling(window, state, config)?;
-          stack_insert(&tiling, state, config)?;
+          stack_insert(window, state, config)?;
           state.pending_sync.queue_focus_change();
         }
         Ok(())
       }
       InvokeCommand::MoveToStack { name } => {
         if let Ok(window) = subject_container.as_window_container() {
-          let tiling = ensure_tiling(window, state, config)?;
-          move_to_stack(&tiling, name, state, config)?;
+          let window = move_to_stack(window, name, state, config)?;
 
           // Only re-assert focus for the focused window, so a rule run on
           // a background window doesn't steal focus.
-          if tiling.has_focus(None) {
+          if window.has_focus(None) {
             state.pending_sync.queue_focus_change();
           }
+        }
+        Ok(())
+      }
+      InvokeCommand::FloatOutOfStack => {
+        if let Ok(window) = subject_container.as_window_container() {
+          float_out_of_stack(&window, false, state, config)?;
         }
         Ok(())
       }
@@ -1151,28 +1149,6 @@ impl WindowManager {
 
       if let Err(err) = ipc_server.process_event(wm_event) {
         tracing::warn!("{:?}", err);
-      }
-    }
-  }
-}
-
-/// Ensures `window` is a `TilingWindow`, converting it from any non-tiling
-/// state (floating, fullscreen, minimized) if needed.
-fn ensure_tiling(
-  window: WindowContainer,
-  state: &mut WmState,
-  config: &UserConfig,
-) -> anyhow::Result<crate::models::TilingWindow> {
-  match window {
-    WindowContainer::TilingWindow(w) => Ok(w),
-    WindowContainer::NonTilingWindow(_) => {
-      let converted =
-        update_window_state(window, WindowState::Tiling, state, config)?;
-      match converted {
-        WindowContainer::TilingWindow(w) => Ok(w),
-        WindowContainer::NonTilingWindow(_) => {
-          anyhow::bail!("Window could not be converted to tiling.")
-        }
       }
     }
   }

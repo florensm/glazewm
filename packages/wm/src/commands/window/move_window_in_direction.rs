@@ -9,8 +9,8 @@ use crate::{
     set_focused_descendant, wrap_in_split_container,
   },
   models::{
-    DirectionContainer, Monitor, NonTilingWindow, SplitContainer,
-    TilingContainer, TilingWindow, WindowContainer,
+    Container, DirectionContainer, Monitor, NonTilingWindow,
+    SplitContainer, TilingContainer, TilingWindow, WindowContainer,
   },
   traits::{
     CommonGetters, PositionGetters, TilingDirectionGetters, WindowGetters,
@@ -285,8 +285,14 @@ fn move_to_workspace_in_direction(
     // tiling window on move.
     let focus_target = state.focus_target_after_removal(window_to_move);
 
+    // A window of a fullscreen stack takes its stack along.
+    let moved: Container = window_to_move
+      .parent()
+      .filter(|parent| parent.as_stack().is_some())
+      .unwrap_or_else(|| window_to_move.clone().into());
+
     move_container_within_tree(
-      &window_to_move.clone().into(),
+      &moved,
       &target_workspace.clone().into(),
       target_index,
       state,

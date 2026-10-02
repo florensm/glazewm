@@ -7,20 +7,19 @@ use std::{
 use anyhow::Context;
 use uuid::Uuid;
 use wm_common::{
-  ContainerDto, GapsConfig, StackContainerDto, TabBarPosition,
-  TilingDirection,
+  ContainerDto, GapsConfig, StackContainerDto, TabBarPosition, WindowState,
 };
 use wm_platform::{LengthValue, Rect};
 
 use crate::{
-  impl_common_getters, impl_container_debug,
-  impl_position_getters_as_resizable, impl_tiling_size_getters,
+  impl_common_getters, impl_container_debug, impl_tiling_size_getters,
   models::{
-    Container, DirectionContainer, TilingContainer, WindowContainer,
+    Container, DirectionContainer, InsertionTarget, TilingContainer,
+    WindowContainer,
   },
   traits::{
-    CommonGetters, PositionGetters, TilingDirectionGetters,
-    TilingSizeGetters,
+    tiling_rect, CommonGetters, PositionGetters, TilingSizeGetters,
+    WindowGetters,
   },
 };
 
@@ -39,6 +38,9 @@ struct StackContainerInner {
   /// Optional user-assigned name for targeting via `move-to-stack
   /// --name`.
   name: Option<String>,
+  /// Where the stack goes back to in the tiling layout once its windows
+  /// tile again.
+  insertion_target: Option<InsertionTarget>,
 }
 
 impl StackContainer {
@@ -58,6 +60,7 @@ impl StackContainer {
       tab_bar_height,
       tab_bar_position,
       name: None,
+      insertion_target: None,
     };
 
     Self(Rc::new(RefCell::new(stack)))
@@ -116,6 +119,101 @@ impl StackContainer {
     self.child_focus_order().next()
   }
 
+  /// The stack's windows, in tab order.
+  pub fn windows(&self) -> Vec<WindowContainer> {
+    self
+      .children()
+      .into_iter()
+      .filter_map(|child| child.as_window_container().ok())
+      .collect()
+  }
+
+  /// Whether the stack is part of the tiling layout.
+  ///
+  /// All windows of a stack share one state, so a stack of floating,
+  /// fullscreen or minimized windows floats, fullscreens or minimizes as
+  /// a whole.
+  pub fn is_tiling(&self) -> bool {
+    !self
+      .0
+      .borrow()
+      .children
+      .iter()
+      .any(|child| matches!(child, Container::NonTilingWindow(_)))
+  }
+
+  /// The state shared by the stack's windows.
+  pub fn state(&self) -> WindowState {
+    self
+      .windows()
+      .first()
+      .map_or(WindowState::Tiling, WindowGetters::state)
+  }
+
+  /// Whether the tab bar is drawn, which it isn't for a fullscreen or
+  /// minimized stack.
+  pub fn shows_tab_bar(&self) -> bool {
+    matches!(self.state(), WindowState::Tiling | WindowState::Floating(_))
+  }
+
+  pub fn insertion_target(&self) -> Option<InsertionTarget> {
+    self.0.borrow().insertion_target.clone()
+  }
+
+  pub fn set_insertion_target(
+    &self,
+    insertion_target: Option<InsertionTarget>,
+  ) {
+    self.0.borrow_mut().insertion_target = insertion_target;
+  }
+
+  /// The part of `stack_rect` left to the windows next to the tab bar.
+  pub fn content_rect(&self, stack_rect: &Rect) -> Rect {
+    let height = self.tab_bar_height_px();
+    if height <= 0 || !self.shows_tab_bar() {
+      return stack_rect.clone();
+    }
+
+    match self.tab_bar_position() {
+      TabBarPosition::Top => Rect::from_ltrb(
+        stack_rect.left,
+        stack_rect.top + height,
+        stack_rect.right,
+        stack_rect.bottom,
+      ),
+      TabBarPosition::Bottom => Rect::from_ltrb(
+        stack_rect.left,
+        stack_rect.top,
+        stack_rect.right,
+        stack_rect.bottom - height,
+      ),
+    }
+  }
+
+  /// Inverse of `content_rect`: the stack rect around windows at
+  /// `content_rect`.
+  pub fn outer_rect(&self, content_rect: &Rect) -> Rect {
+    let height = self.tab_bar_height_px();
+    if height <= 0 || !self.shows_tab_bar() {
+      return content_rect.clone();
+    }
+
+    match self.tab_bar_position() {
+      TabBarPosition::Top => Rect::from_ltrb(
+        content_rect.left,
+        content_rect.top - height,
+        content_rect.right,
+        content_rect.bottom,
+      ),
+      TabBarPosition::Bottom => Rect::from_ltrb(
+        content_rect.left,
+        content_rect.top,
+        content_rect.right,
+        content_rect.bottom + height,
+      ),
+    }
+  }
+
   /// Converts this `StackContainer` to a `ContainerDto` for IPC and debug
   /// logging.
   pub fn to_dto(&self) -> anyhow::Result<ContainerDto> {
@@ -152,10 +250,50 @@ pub fn is_inactive_stack_child(container: &impl CommonGetters) -> bool {
     .is_some_and(|active| active.id() != container.id())
 }
 
+/// The other windows of the stack `container` is in, one of which is
+/// shown once `container` leaves.
+///
+/// Taken before `container` leaves, since that can flatten the stack and
+/// empty it.
+pub fn other_stack_tabs(
+  container: &impl CommonGetters,
+) -> Vec<WindowContainer> {
+  container
+    .parent()
+    .and_then(|parent| parent.as_stack().map(StackContainer::windows))
+    .unwrap_or_default()
+    .into_iter()
+    .filter(|tab| tab.id() != container.id())
+    .collect()
+}
+
 impl_container_debug!(StackContainer);
 impl_common_getters!(StackContainer);
 impl_tiling_size_getters!(StackContainer);
-impl_position_getters_as_resizable!(StackContainer);
+
+impl PositionGetters for StackContainer {
+  fn to_rect(&self) -> anyhow::Result<Rect> {
+    if self.is_tiling() {
+      return tiling_rect(self);
+    }
+
+    // A non-tiling stack is wherever its windows are.
+    let active = self
+      .active_child()
+      .and_then(|child| child.as_window_container().ok())
+      .context("Stack has no active window.")?;
+
+    // Follow the window live while it's dragged, rather than its
+    // placement from before the drag.
+    let content_rect = if active.active_drag().is_some() {
+      active.native_properties().frame
+    } else {
+      active.to_rect()?
+    };
+
+    Ok(self.outer_rect(&content_rect))
+  }
+}
 
 #[cfg(test)]
 mod tests {

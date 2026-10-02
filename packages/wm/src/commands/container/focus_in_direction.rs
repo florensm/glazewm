@@ -53,24 +53,49 @@ fn floating_focus_target(
   origin_container: &Container,
   direction: &Direction,
 ) -> Option<Container> {
-  let is_floating = |sibling: &Container| {
-    sibling.as_non_tiling_window().is_some_and(|window| {
+  // A floating stack is one floating window to its neighbours.
+  let origin_container = &origin_container
+    .parent()
+    .filter(|parent| parent.as_stack().is_some())
+    .unwrap_or_else(|| origin_container.clone());
+
+  let is_floating = |sibling: &Container| match sibling {
+    Container::NonTilingWindow(window) => {
       matches!(window.state(), WindowState::Floating(_))
-    })
+    }
+    Container::Stack(stack) => {
+      matches!(stack.state(), WindowState::Floating(_))
+    }
+    _ => false,
   };
 
+  let target = floating_sibling(origin_container, direction, is_floating)?;
+
+  match target.as_stack() {
+    Some(stack) => stack.active_child(),
+    None => Some(target),
+  }
+}
+
+/// Next floating sibling of `origin_container` in `direction`, wrapping
+/// around.
+fn floating_sibling(
+  origin_container: &Container,
+  direction: &Direction,
+  is_floating: impl Fn(&Container) -> bool,
+) -> Option<Container> {
   let mut floating_siblings =
-    origin_container.siblings().filter(is_floating);
+    origin_container.siblings().filter(&is_floating);
 
   // Wrap if next/previous floating window is not found.
   match direction {
     Direction::Left => origin_container
       .next_siblings()
-      .find(is_floating)
+      .find(&is_floating)
       .or_else(|| floating_siblings.last()),
     Direction::Right => origin_container
       .prev_siblings()
-      .find(is_floating)
+      .find(&is_floating)
       .or_else(|| floating_siblings.next()),
     // Cannot focus vertically from a floating window.
     _ => None,
