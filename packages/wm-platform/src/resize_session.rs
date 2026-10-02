@@ -632,12 +632,6 @@ impl ResizeSession {
     self.surrogate.as_ref().map_or(false, |s| s.has_thumbnail())
   }
 
-  /// Takes this session's surrogate, if any, for reuse via
-  /// [`begin_reusing_surrogate`] instead of letting `Drop` destroy the OS
-  /// window and unregister its DWM thumbnail outright. See
-  /// `AnimationManager::warm_surrogates`'s doc comment.
-  ///
-  /// [`begin_reusing_surrogate`]: ResizeSession::begin_reusing_surrogate
   /// Whether the fade-out tail should keep the surrogate fully opaque a
   /// little longer: it shows the window's companion (see
   /// [`NativeSurrogate::is_companion_off_screen`]), which is not back on
@@ -658,6 +652,12 @@ impl ResizeSession {
     started.elapsed() < COMPANION_HANDOFF_MAX_WAIT
   }
 
+  /// Takes this session's surrogate, if any, for reuse via
+  /// [`begin_reusing_surrogate`] instead of letting `Drop` destroy the OS
+  /// window and unregister its DWM thumbnail outright. See
+  /// `AnimationManager::warm_surrogates`'s doc comment.
+  ///
+  /// [`begin_reusing_surrogate`]: ResizeSession::begin_reusing_surrogate
   pub fn take_surrogate(&mut self) -> Option<NativeSurrogate> {
     self.surrogate.take()
   }
