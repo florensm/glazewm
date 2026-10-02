@@ -18,6 +18,7 @@ ui_access = []
 tauri-winres = { workspace = true }
 
 [dependencies]
+regex = { workspace = true }
 anyhow = { workspace = true }
 auto-launch = "0.5"
 ambassador = "0.4"

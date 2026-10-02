@@ -23,19 +23,64 @@ is removed once it holds a single window, which then takes over the
 stack's whole slot. A named stack is kept until it is empty, so it stays a
 target for windows that open later.
 
+## Tab bar
+
+Each stack has a tab bar, a rounded strip with one tab per window; the
+active tab is highlighted, and the highlight slides when it changes.
+
+- Click a tab to show it; scroll the mouse wheel over the bar to switch to
+  the next or previous tab.
+- Close a tab's window with its close button (shown on the active and the
+  hovered tab by default) or a middle click. This sends it a normal
+  `WM_CLOSE`.
+- Drag a tab sideways to reorder it; drag it well above or below the bar
+  to take its window out of the stack.
+- Right-click a tab for a menu with "Close" and "Remove from stack".
+- Tabs show their window's icon. Icons that apps set at runtime (as WPF
+  apps do) are fetched in the background, so a busy app never stalls the
+  bar; until then the window class icon is shown.
+
+The bar sits directly behind the stack's active window in z-order, so
+windows that cover the stack cover its tab bar too.
+
 ## Config
 
 ```yaml
 stack:
   # Height of the tab bar (0px = no tab bar).
-  tab_bar_height: "30px"
+  tab_bar_height: "28px"
   # "top" | "bottom"
   tab_bar_position: "top"
-  tab_bar_background: "#2d2d2d"
-  tab_active_background: "#4a4a6a"
-  tab_inactive_background: "#1e1e2e"
-  tab_text_color: "#cdd6f4"
+  # Colors accept a hex value, "accent", or a palette file like borders:
+  # { file: "path/to/yasb_colors.css", key: "--yasb-accent-light1" }
+  tab_bar_background: "#1f1f1f"
+  tab_bar_opacity: "92%"
+  tab_active_background: "#3a3a3a"
+  tab_hover_background: "#2c2c2c"
+  tab_inactive_background: "#00000000"
+  tab_text_color: "#ffffff"
+  tab_inactive_text_color: "#a0a0a0"
+  tab_font_family: "Segoe UI"
+  tab_font_size: "12px"
+  tab_corner_radius: "8px"
+  # Tabs share the bar; they scroll once narrower than `tab_min_width`, and
+  # show only their icon below ~60px.
+  tab_min_width: "48px"
+  # Widest a tab gets (0px = no limit).
+  tab_max_width: "0px"
+  show_tab_icons: true
+  # Prefix titles with their position ("1. Title").
+  show_tab_numbers: false
+  # "hover" (active and hovered tab) | "always" | "never"
+  tab_close_button: "hover"
+  # Regex replacements applied to tab titles, in order.
+  tab_title_overrides:
+    - regex: " - Mozilla Firefox$"
+      replace: ""
 ```
+
+All sizes scale with the monitor's DPI. The tab bar is only drawn on
+Windows.
 
 ### New windows and popups
 
@@ -48,9 +93,6 @@ stack:
   # open floating instead of being tiled.
   float_owned_popups: true
 ```
-
-The tab bar height scales with the monitor's DPI when
-`gaps.scale_with_dpi` is enabled. The tab bar is only drawn on Windows.
 
 ## Auto-stacking
 

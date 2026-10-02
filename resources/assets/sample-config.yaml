@@ -204,17 +204,30 @@ gaps:
 stack:
   # Height of the tab bar shown for stacked windows (0px = disabled).
   # ** Only rendered on Windows.
-  tab_bar_height: "30px"
+  tab_bar_height: "28px"
 
   # Whether the tab bar appears above or below the stacked windows.
   # Possible values: "top" | "bottom"
   tab_bar_position: "top"
 
-  # Tab bar colors.
-  tab_bar_background: "#2d2d2d"
-  tab_active_background: "#4a4a6a"
-  tab_inactive_background: "#1e1e2e"
-  tab_text_color: "#cdd6f4"
+  # Tab bar colors. Like border colors, these accept a hex value, "accent",
+  # or a palette file: { file: "path/to/colors.css", key: "--accent" }.
+  tab_bar_background: "#1f1f1f"
+  tab_bar_opacity: "92%"
+  tab_active_background: "#3a3a3a"
+  tab_hover_background: "#2c2c2c"
+  tab_text_color: "#ffffff"
+  tab_inactive_text_color: "#a0a0a0"
+
+  tab_font_family: "Segoe UI"
+  tab_font_size: "12px"
+  tab_corner_radius: "8px"
+
+  # When tabs show a close button: "hover" | "always" | "never".
+  tab_close_button: "hover"
+
+  # Regex replacements applied to window titles shown on tabs.
+  tab_title_overrides: []
 
   # Whether a new tiling window opened while a stacked window is focused
   # joins that stack, rather than being tiled next to it.

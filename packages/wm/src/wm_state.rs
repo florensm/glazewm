@@ -6,7 +6,7 @@ use tracing::warn;
 use uuid::Uuid;
 use wm_common::{BindingModeConfig, HideCorner, WindowState, WmEvent};
 use wm_platform::{
-  Direction, Dispatcher, Display, NativeWindow, Point, Rect,
+  Direction, Dispatcher, Display, NativeWindow, Point, Rect, TabAction,
 };
 #[cfg(target_os = "windows")]
 use wm_platform::{
@@ -109,16 +109,16 @@ pub struct WmState {
   /// Sender for gracefully shutting down the WM.
   exit_tx: mpsc::UnboundedSender<()>,
 
-  /// Sender half of the tab-click channel.
-  ///
-  /// Always present so that the channel stays open (preventing
-  /// `tab_click_rx.recv()` from immediately returning `None`). Only
-  /// actually used to send events on Windows when a tab is clicked.
-  pub tab_click_tx: mpsc::UnboundedSender<(Uuid, usize)>,
+  /// Sender for actions taken in tab bars, keyed by stack ID.
+  pub tab_action_tx: mpsc::UnboundedSender<(Uuid, TabAction)>,
 
   /// Live tab bar windows keyed by their `StackContainer` ID.
   #[cfg(target_os = "windows")]
   pub tab_bars: HashMap<Uuid, NativeStackTabBar>,
+
+  /// Tab bar settings resolved from the config, cleared on reload.
+  #[cfg(target_os = "windows")]
+  pub tab_bar_settings: Option<crate::tab_bars::TabBarSettings>,
 }
 
 impl WmState {
@@ -127,7 +127,7 @@ impl WmState {
     event_tx: mpsc::UnboundedSender<WmEvent>,
     exit_tx: mpsc::UnboundedSender<()>,
     animation_tick_tx: mpsc::UnboundedSender<()>,
-    tab_click_tx: mpsc::UnboundedSender<(Uuid, usize)>,
+    tab_action_tx: mpsc::UnboundedSender<(Uuid, TabAction)>,
   ) -> Self {
     Self {
       root_container: RootContainer::new(),
@@ -150,9 +150,11 @@ impl WmState {
       has_initialized: false,
       event_tx,
       exit_tx,
-      tab_click_tx,
+      tab_action_tx,
       #[cfg(target_os = "windows")]
       tab_bars: HashMap::new(),
+      #[cfg(target_os = "windows")]
+      tab_bar_settings: None,
     }
   }
 

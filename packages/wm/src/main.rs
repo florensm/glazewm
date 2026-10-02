@@ -42,6 +42,8 @@ mod ipc_server;
 mod models;
 mod pending_sync;
 mod sys_tray;
+#[cfg(target_os = "windows")]
+mod tab_bars;
 mod traits;
 mod user_config;
 mod wm;
@@ -283,12 +285,8 @@ async fn start_wm(
       () = sleep_until(auto_stack_deadline) => {
         wm.process_auto_stack_timeouts(&mut config)
       },
-      Some((stack_id, tab_index)) = wm.tab_click_rx.recv() => {
-        wm.process_commands(
-          &vec![InvokeCommand::FocusStackIndex { index: tab_index }],
-          Some(stack_id),
-          &mut config,
-        ).map(|_| ())
+      Some((stack_id, action)) = wm.tab_action_rx.recv() => {
+        wm.process_tab_action(stack_id, action, &mut config)
       },
       Some(wm_event) = wm.event_rx.recv() => {
         tracing::debug!("Received WM event: {:?}", wm_event);
