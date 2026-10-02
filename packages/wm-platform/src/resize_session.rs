@@ -47,11 +47,6 @@ const EDGE_SAMPLE_INSET: i32 = 4;
 /// duration observed, so it essentially never fires for a merely slow app.
 const COMMIT_CONFIRM_MAX_WAIT: Duration = Duration::from_millis(500);
 
-/// Upper bound on how long the fade-out tail holds a surrogate showing a
-/// companion (see [`ResizeSession::awaits_companion`]), for a companion
-/// owner that never puts it back on screen.
-const COMPANION_HANDOFF_MAX_WAIT: Duration = Duration::from_millis(200);
-
 /// Best-effort process name (e.g. `"outlook"`) owning `hwnd`, for labeling
 /// [`COMMIT_CONFIRM_MAX_WAIT`]'s warning -- `None` on any failure, in
 /// which case the caller falls back to logging the raw `hwnd`. Only ever
@@ -291,10 +286,6 @@ pub struct ResizeSession {
   /// the first `pre_commit` call for the current target. See
   /// [`COMMIT_CONFIRM_MAX_WAIT`].
   commit_started_at: Option<Instant>,
-  /// When [`awaits_companion`] first found the companion off screen.
-  ///
-  /// [`awaits_companion`]: ResizeSession::awaits_companion
-  companion_wait_started_at: Option<Instant>,
 }
 
 impl ResizeSession {
@@ -453,7 +444,6 @@ impl ResizeSession {
       current_rect: None,
       commit_confirmed: false,
       commit_started_at: None,
-      companion_wait_started_at: None,
     };
     session.sync_fill();
     Ok(session)
@@ -638,26 +628,6 @@ impl ResizeSession {
   /// `AnimationManager::warm_surrogates`'s doc comment.
   ///
   /// [`begin_reusing_surrogate`]: ResizeSession::begin_reusing_surrogate
-  /// Whether the fade-out tail should keep the surrogate fully opaque a
-  /// little longer: it shows the window's companion (see
-  /// [`NativeSurrogate::is_companion_off_screen`]), which is not back on
-  /// screen yet, so fading now would reveal the window's own pixels.
-  pub fn awaits_companion(&mut self) -> bool {
-    if !self
-      .surrogate
-      .as_ref()
-      .is_some_and(NativeSurrogate::is_companion_off_screen)
-    {
-      return false;
-    }
-
-    let started = *self
-      .companion_wait_started_at
-      .get_or_insert_with(Instant::now);
-
-    started.elapsed() < COMPANION_HANDOFF_MAX_WAIT
-  }
-
   pub fn take_surrogate(&mut self) -> Option<NativeSurrogate> {
     self.surrogate.take()
   }
