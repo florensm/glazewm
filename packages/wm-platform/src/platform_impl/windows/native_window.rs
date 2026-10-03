@@ -370,6 +370,13 @@ impl NativeWindow {
     unsafe { GetWindow(self.hwnd(), GW_OWNER) }.0 != 0
   }
 
+  /// Implements [`NativeWindowWindowsExt::owner_window_id`].
+  pub(crate) fn owner_window_id(&self) -> Option<WindowId> {
+    // SAFETY: A stale handle just returns no owner.
+    let owner = unsafe { GetWindow(self.hwnd(), GW_OWNER) };
+    (owner.0 != 0).then_some(WindowId(owner.0))
+  }
+
   /// Implements [`NativeWindowWindowsExt::process_id`].
   pub(crate) fn process_id(&self) -> u32 {
     let mut process_id = 0u32;

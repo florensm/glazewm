@@ -185,6 +185,13 @@ pub trait NativeWindowWindowsExt {
   /// This method is only available on Windows.
   fn has_owner_window(&self) -> bool;
 
+  /// ID of the window's owner window, if it has one.
+  ///
+  /// # Platform-specific
+  ///
+  /// This method is only available on Windows.
+  fn owner_window_id(&self) -> Option<WindowId>;
+
   /// Whether the window's parent is the desktop, rather than another
   /// window it was embedded into (e.g. via `SetParent`).
   ///
@@ -435,6 +442,10 @@ impl NativeWindowWindowsExt for NativeWindow {
 
   fn has_owner_window(&self) -> bool {
     self.inner.has_owner_window()
+  }
+
+  fn owner_window_id(&self) -> Option<WindowId> {
+    self.inner.owner_window_id()
   }
 
   fn is_top_level(&self) -> bool {
