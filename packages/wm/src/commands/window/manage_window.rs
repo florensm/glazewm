@@ -433,7 +433,6 @@ pub fn is_placement_command(command: &InvokeCommand) -> bool {
       | InvokeCommand::SetFullscreen { .. }
       | InvokeCommand::SetMinimized
       | InvokeCommand::SetTiling
-      | InvokeCommand::StackInsert
       | InvokeCommand::ToggleFloating { .. }
       | InvokeCommand::ToggleFullscreen { .. }
       | InvokeCommand::ToggleMinimized
@@ -834,8 +833,8 @@ fn window_state_to_create(
 ///   3. If no tiling windows exist, append to the workspace.
 ///
 /// New windows are never inserted into an existing `StackContainer`
-/// automatically. Stacking is always an explicit user action via
-/// `stack-insert` or `stack-absorb-neighbor`.
+/// automatically, unless configured. Stacking is otherwise an explicit
+/// user action, e.g. via `toggle-stack` or `stack-absorb-neighbor`.
 ///
 /// Returns tuple of (parent container, insertion index).
 fn insertion_target(

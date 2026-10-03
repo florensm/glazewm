@@ -505,34 +505,14 @@ binding_modes:
         bindings: ["n"]
       - commands: ["cycle-stack-focus --prev"]
         bindings: ["p"]
-      # Move the active tab right/left among the tabs.
-      - commands: ["move-stack-tab"]
-        bindings: ["shift+n"]
-      - commands: ["move-stack-tab --prev"]
-        bindings: ["shift+p"]
-      # Stack every tiling window of the workspace, or take all stacks
-      # apart.
-      - commands: ["stack-all"]
-        bindings: ["a"]
-      - commands: ["unstack-all"]
-        bindings: ["u"]
       # Toggle the focused window out of the stack.
       - commands: ["toggle-stack"]
         bindings: ["g"]
       # Take the focused window out of the stack as a floating window.
       - commands: ["float-out-of-stack"]
         bindings: ["f"]
-      # Show the stack's first to fifth tab.
-      - commands: ["focus-stack-index --index 0"]
-        bindings: ["1"]
-      - commands: ["focus-stack-index --index 1"]
-        bindings: ["2"]
-      - commands: ["focus-stack-index --index 2"]
-        bindings: ["3"]
-      - commands: ["focus-stack-index --index 3"]
-        bindings: ["4"]
-      - commands: ["focus-stack-index --index 4"]
-        bindings: ["5"]
+      # More stack commands (stack-all, unstack-all, move-stack-tab,
+      # focus-stack-index, move-to-stack) are listed in docs/stacks.md.
       # Press enter/escape to return to default keybindings.
       - commands: ["wm-disable-binding-mode --name stack"]
         bindings: ["escape", "enter"]
@@ -604,10 +584,6 @@ keybindings:
   # a stacked window apply to its whole stack.
   - commands: ["toggle-stack"]
     bindings: ["alt+g"]
-
-  # Stack the focused window with the most-recently-focused other window.
-  - commands: ["stack-insert"]
-    bindings: ["alt+shift+v"]
 
   # Enter stack mode to absorb neighbors or cycle focus within the stack.
   - commands: ["wm-enable-binding-mode --name stack"]
