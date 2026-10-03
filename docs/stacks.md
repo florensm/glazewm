@@ -155,6 +155,10 @@ stack:
   float_owned_popups: true
 ```
 
+A popup opened by a window in a hidden tab (e.g. a dialog of a background
+ticket) shows that tab along with it: Windows hides a window's popups
+together with the window, so the popup would otherwise stay invisible.
+
 ## Auto-stacking
 
 `stack.auto_stack` puts matching windows into a named stack as they open:
