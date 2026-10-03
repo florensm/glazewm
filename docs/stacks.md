@@ -6,18 +6,27 @@ GlazeWM: only the active tab is shown, the other tabs are cloaked.
 
 ## Commands
 
+These cover everyday use and are bound in the sample config:
+
 | Command | Behaviour |
 | --- | --- |
 | `toggle-stack` | Wrap the focused window in a new stack, or take it out of its stack. A floating window gets a floating stack. |
-| `stack-insert` | Stack the focused window with the most recently focused other window, joining its stack if it has one. |
 | `stack-absorb-neighbor --direction <dir>` | Pull the neighbouring window in `<dir>` into the focused window's stack. A neighbouring stack is merged in. |
-| `stack-all` | Put all tiling windows of the workspace into one stack (the focused window's). |
-| `unstack-all` | Take apart every stack on the workspace. Windows of a floating stack are cascaded. |
-| `move-to-stack --name <name>` | Move the focused window into the named stack, on any workspace. Creates the stack in place if it doesn't exist. |
-| `float-out-of-stack` | Take the focused window out of its stack as a floating window. |
 | `cycle-stack-focus [--prev]` | Focus the next (or previous) tab, wrapping around. |
+| `float-out-of-stack` | Take the focused window out of its stack as a floating window. |
+
+With the mouse, the tab bar does the same: click a tab, drag a tab off the
+bar, drop a window onto a bar, and drag tabs to reorder them.
+
+These are available for your own bindings or scripts:
+
+| Command | Behaviour |
+| --- | --- |
 | `focus-stack-index --index <n>` | Focus the tab at zero-based index `n`. |
 | `move-stack-tab [--prev]` | Move the active tab one position right (or left), wrapping around. |
+| `move-to-stack --name <name>` | Move the focused window into the named stack, on any workspace. Creates the stack in place if it doesn't exist. |
+| `stack-all` | Put all tiling windows of the workspace into one stack (the focused window's). |
+| `unstack-all` | Take apart every stack on the workspace. Windows of a floating stack are cascaded. |
 
 Moving or resizing a window in a stack moves or resizes the stack as a
 whole. Directional focus enters a stack through its active tab.

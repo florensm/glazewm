@@ -34,7 +34,7 @@ use crate::{
       move_stack_tab, move_to_stack, move_window_in_direction,
       move_window_to_workspace, resize_window, set_window_position,
       set_window_size, set_window_urgency, stack_absorb_neighbor,
-      stack_all, stack_insert, toggle_stack, unstack_all,
+      stack_all, toggle_stack, unstack_all,
       update_window_state, WindowPositionTarget,
     },
     workspace::{
@@ -1037,13 +1037,6 @@ impl WindowManager {
         if let Some(window) = subject_container.as_tiling_window().cloned()
         {
           stack_absorb_neighbor(&window, direction, state, config)?;
-          state.pending_sync.queue_focus_change();
-        }
-        Ok(())
-      }
-      InvokeCommand::StackInsert => {
-        if let Ok(window) = subject_container.as_window_container() {
-          stack_insert(window, state, config)?;
           state.pending_sync.queue_focus_change();
         }
         Ok(())
