@@ -1,0 +1,47 @@
+name: Stack e2e (Windows)
+
+# Drives GlazeWM's stacks on a real Windows desktop: see `.github/e2e`.
+on:
+  workflow_dispatch:
+  push:
+    branches: [feat/stack-layout-v2]
+    paths:
+      - 'packages/**'
+      - 'resources/**'
+      - 'Cargo.lock'
+      - '.github/e2e/**'
+      - '.github/workflows/stack-e2e.yaml'
+
+jobs:
+  e2e:
+    runs-on: windows-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@21dc36fb71dd22e3317045c0c31a3f4249868b17
+        with:
+          targets: x86_64-pc-windows-msvc
+          toolchain: nightly
+
+      - uses: swatinem/rust-cache@f0deed1e0edfc6a9be95417288c0e1099b1eeec3
+        with:
+          shared-key: e2e-${{ hashFiles('Cargo.lock') }}
+
+      - name: Unit tests
+        run: |
+          cargo test --locked -p wm
+          cargo test --locked -p wm-platform tab_
+
+      - name: Build
+        run: cargo build --locked -p wm -p wm-cli
+
+      - name: Stack end-to-end test
+        shell: powershell
+        run: .github/e2e/stacks.ps1 -Bin target/debug
+
+      - uses: actions/upload-artifact@v6
+        if: always()
+        with:
+          name: stack-e2e
+          path: e2e-out
