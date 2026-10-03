@@ -291,7 +291,7 @@ try {
   Check ($CliTimeouts -eq 0) "GlazeWM answered every CLI call ($CliTimeouts timed out)"
 }
 catch {
-  Check $false "test aborted: $_"
+  Check $false "test aborted: $_ $($_.ScriptStackTrace)"
 }
 finally {
   Invoke-Cli @('command', 'wm-exit') | Out-Null
