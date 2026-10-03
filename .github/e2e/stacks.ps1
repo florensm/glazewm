@@ -260,10 +260,17 @@ try {
   # A single tab floats out and goes back in.
   $outId = (Get-TicketStack).children[1].id
   Send-WmCommand $outId 'float-out-of-stack'
-  $out = Get-Tickets | Where-Object id -eq $outId
-  Check ($out.state.type -eq 'floating' -and @((Get-TicketStack).children).Count -eq 2) 'float-out-of-stack takes one tab out, floating'
+  $floated = Get-Tickets | Where-Object id -eq $outId
+  Check ($floated.state.type -eq 'floating' -and @((Get-TicketStack).children).Count -eq 2) 'float-out-of-stack takes one tab out, floating'
   Send-WmCommand $outId 'toggle-floating'
   Check (@((Get-TicketStack).children).Count -eq 3) 'toggle-floating puts the tab back into its stack'
+
+  # The dialog's owner, ticket 1, is a hidden tab when the dialog opens.
+  $owner = Get-Tickets | Where-Object title -eq 'Ticket details for 1'
+  if ((Get-ShownTab (Get-TicketStack)).id -eq $owner.id) {
+    Send-WmCommand $owner.id 'cycle-stack-focus'
+  }
+  Check ((Get-ShownTab (Get-TicketStack)).id -ne $owner.id) 'the dialog owner is a hidden tab'
 
   # Stacked windows stay usable while the app shows a blocking dialog.
   New-Item -ItemType File $Trigger | Out-Null
@@ -273,6 +280,7 @@ try {
   $dialog = Get-All | Where-Object { $_.type -eq 'window' -and $_.title -eq 'Add Activity' }
   if ($dialog) {
     Check ($dialog.state.type -eq 'floating') 'the dialog opens floating, outside the stack'
+    Check ((Get-ShownTab (Get-TicketStack)).id -eq $owner.id) 'a popup of a hidden tab shows that tab'
     $disabled = @((Get-TicketStack).children | Where-Object { -not [Native]::IsWindowEnabled([IntPtr]$_.handle) })
     Check ($disabled.Count -eq 0) 'stay-interactive keeps stacked tickets enabled'
     Save-State 'dialog'
