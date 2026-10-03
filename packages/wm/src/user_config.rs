@@ -93,6 +93,17 @@ impl UserConfig {
     Ok(())
   }
 
+  /// Creates a `UserConfig` from an already parsed config, for tests.
+  #[cfg(test)]
+  pub fn from_parsed(value: ParsedConfig) -> Self {
+    Self {
+      path: PathBuf::new(),
+      window_rules_by_event: Self::window_rules_by_event(&value),
+      value,
+      value_str: String::new(),
+    }
+  }
+
   pub fn reload(&mut self) -> anyhow::Result<()> {
     let (config_value, config_str) = Self::read(&self.path)?;
 
@@ -266,41 +277,51 @@ impl UserConfig {
     rule: &WindowRuleConfig,
     properties: &NativeWindowProperties,
   ) -> bool {
-    rule.match_window.iter().any(|match_config| {
-      let is_process_match = match_config
-        .window_process
-        .as_ref()
-        .is_none_or(|match_type| {
-          // TODO: Temp fix for matching Zebar on both platforms with
-          // the same process name. Consider using lowercase for every
-          // `equals` match type.
-          if properties.process_name == "Zebar" {
-            match_type.is_match("Zebar") || match_type.is_match("zebar")
-          } else {
-            match_type.is_match(&properties.process_name)
-          }
-        });
+    rule
+      .match_window
+      .iter()
+      .any(|match_config| Self::window_matches(match_config, properties))
+  }
 
-      let is_class_match = {
-        #[cfg(target_os = "windows")]
-        {
-          match_config.window_class.as_ref().is_none_or(|match_type| {
-            match_type.is_match(&properties.class_name)
-          })
+  /// Whether a window with the given native properties satisfies every
+  /// field of `match_config`.
+  pub fn window_matches(
+    match_config: &WindowMatchConfig,
+    properties: &NativeWindowProperties,
+  ) -> bool {
+    let is_process_match = match_config
+      .window_process
+      .as_ref()
+      .is_none_or(|match_type| {
+        // TODO: Temp fix for matching Zebar on both platforms with the
+        // same process name. Consider using lowercase for every `equals`
+        // match type.
+        if properties.process_name == "Zebar" {
+          match_type.is_match("Zebar") || match_type.is_match("zebar")
+        } else {
+          match_type.is_match(&properties.process_name)
         }
-        #[cfg(not(target_os = "windows"))]
-        {
-          match_config.window_class.is_none()
-        }
-      };
+      });
 
-      let is_title_match = match_config
-        .window_title
-        .as_ref()
-        .is_none_or(|match_type| match_type.is_match(&properties.title));
+    let is_class_match = {
+      #[cfg(target_os = "windows")]
+      {
+        match_config.window_class.as_ref().is_none_or(|match_type| {
+          match_type.is_match(&properties.class_name)
+        })
+      }
+      #[cfg(not(target_os = "windows"))]
+      {
+        match_config.window_class.is_none()
+      }
+    };
 
-      is_process_match && is_class_match && is_title_match
-    })
+    let is_title_match = match_config
+      .window_title
+      .as_ref()
+      .is_none_or(|match_type| match_type.is_match(&properties.title));
+
+    is_process_match && is_class_match && is_title_match
   }
 
   pub fn inactive_workspace_configs(

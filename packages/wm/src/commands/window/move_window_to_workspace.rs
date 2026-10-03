@@ -7,7 +7,7 @@ use crate::{
     container::{move_container_within_tree, set_focused_descendant},
     workspace::activate_workspace,
   },
-  models::{WindowContainer, WorkspaceTarget},
+  models::{other_stack_tabs, WindowContainer, WorkspaceTarget},
   traits::{CommonGetters, PositionGetters, WindowGetters},
   user_config::UserConfig,
   wm_state::WmState,
@@ -60,9 +60,10 @@ pub fn move_window_to_workspace(
       window.set_has_pending_dpi_adjustment(true);
     }
 
-    // Update floating placement if the window has to cross monitors.
+    // Update floating placement if the window has to cross monitors. Set
+    // for this window alone, since it leaves any stack it is in.
     if target_monitor.id() != current_monitor.id() {
-      window.set_floating_placement(
+      window.set_own_floating_placement(
         window
           .floating_placement()
           .translate_to_center(&target_workspace.to_rect()?),
@@ -75,6 +76,8 @@ pub fn move_window_to_workspace(
 
     // Focus target is `None` if the window is not focused.
     let focus_target = state.focus_target_after_removal(&window);
+
+    let old_tabs = other_stack_tabs(&window);
 
     let focus_reset_target = if target_workspace.is_displayed() {
       None
@@ -141,6 +144,7 @@ pub fn move_window_to_workspace(
 
     state
       .pending_sync
+      .queue_containers_to_redraw(old_tabs)
       .queue_workspace_to_reorder(target_workspace);
   }
 

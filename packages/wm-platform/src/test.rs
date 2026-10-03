@@ -19,6 +19,8 @@ mod native_window;
 pub mod perf;
 mod platform_event;
 mod platform_impl;
+mod tab_layout;
+mod tab_paint;
 mod thread_bound;
 #[cfg(target_os = "windows")]
 mod window_class;

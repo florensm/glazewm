@@ -6,6 +6,7 @@ use crate::{
   commands::{
     container::set_focused_descendant, window::update_window_state,
   },
+  models::is_inactive_stack_child,
   traits::WindowGetters,
   user_config::UserConfig,
   wm_state::WmState,
@@ -26,7 +27,11 @@ pub fn handle_window_minimized(
       properties.is_minimized = is_minimized;
     });
 
-    if is_minimized && window.state() != WindowState::Minimized {
+    // Only a stack's active window minimizes the stack.
+    if is_minimized
+      && window.state() != WindowState::Minimized
+      && !is_inactive_stack_child(&window)
+    {
       info!("Window minimized: {window}");
 
       let window = update_window_state(

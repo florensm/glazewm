@@ -29,9 +29,12 @@ use crate::{
     },
     monitor::focus_monitor,
     window::{
-      focus_urgent_window, ignore_window, move_window_in_direction,
+      cycle_stack_focus, float_out_of_stack, focus_stack_index,
+      focus_urgent_window, ignore_window, manage_held_window,
+      move_stack_tab, move_to_stack, move_window_in_direction,
       move_window_to_workspace, resize_window, set_window_position,
-      set_window_size, set_window_urgency, update_window_state,
+      set_window_size, set_window_urgency, stack_absorb_neighbor,
+      stack_all, toggle_stack, unstack_all, update_window_state,
       WindowPositionTarget,
     },
     workspace::{
@@ -60,6 +63,10 @@ pub struct WindowManager {
   pub exit_rx: mpsc::UnboundedReceiver<()>,
   pub animation_tick_rx: mpsc::UnboundedReceiver<()>,
   pub state: WmState,
+  /// Actions taken in tab bars, keyed by stack ID. Never yields on
+  /// platforms without tab bars.
+  pub tab_action_rx:
+    mpsc::UnboundedReceiver<(uuid::Uuid, wm_platform::TabAction)>,
 }
 
 impl WindowManager {
@@ -70,9 +77,15 @@ impl WindowManager {
     let (event_tx, event_rx) = mpsc::unbounded_channel();
     let (exit_tx, exit_rx) = mpsc::unbounded_channel();
     let (animation_tick_tx, animation_tick_rx) = mpsc::unbounded_channel();
+    let (tab_action_tx, tab_action_rx) = mpsc::unbounded_channel();
 
-    let mut state =
-      WmState::new(dispatcher, event_tx, exit_tx, animation_tick_tx);
+    let mut state = WmState::new(
+      dispatcher,
+      event_tx,
+      exit_tx,
+      animation_tick_tx,
+      tab_action_tx,
+    );
     state.populate(config)?;
 
     // Start animation timer if `populate` created any animations. This
@@ -85,7 +98,108 @@ impl WindowManager {
       exit_rx,
       animation_tick_rx,
       state,
+      tab_action_rx,
     })
+  }
+
+  /// Carries out an action taken in the tab bar of stack `stack_id`.
+  pub fn process_tab_action(
+    &mut self,
+    stack_id: Uuid,
+    action: wm_platform::TabAction,
+    config: &mut UserConfig,
+  ) -> anyhow::Result<()> {
+    use wm_common::VecDequeExt;
+    use wm_platform::TabAction;
+
+    use crate::models::StackContainer;
+
+    let Some(stack) = self.state.container_by_id(stack_id) else {
+      return Ok(());
+    };
+
+    let tab = |index| {
+      stack
+        .as_stack()
+        .and_then(|stack| stack.windows().into_iter().nth(index))
+    };
+
+    let (command, subject) = match action {
+      TabAction::Activate(index) => (
+        InvokeCommand::FocusStackIndex { index },
+        Some(stack.clone()),
+      ),
+      TabAction::Close(index) => {
+        (InvokeCommand::Close, tab(index).map(Into::into))
+      }
+      TabAction::Detach(index) => {
+        (InvokeCommand::ToggleStack, tab(index).map(Into::into))
+      }
+      TabAction::Float { index, at_cursor } => {
+        let Some(window) = tab(index) else {
+          return Ok(());
+        };
+
+        let state = &mut self.state;
+        float_out_of_stack(&window, at_cursor, state, config)?;
+        if !state.is_paused {
+          platform_sync(state, config)?;
+        }
+
+        return Ok(());
+      }
+      TabAction::Cycle { prev } => (
+        InvokeCommand::CycleStackFocus { prev },
+        stack.as_stack().and_then(StackContainer::active_child),
+      ),
+      TabAction::Move { from, to } => {
+        let Some(moved) = tab(from) else {
+          return Ok(());
+        };
+        let moved: Container = moved.into();
+
+        stack.borrow_children_mut().shift_to_index(to, moved);
+
+        let state = &mut self.state;
+        state.pending_sync.queue_container_to_redraw(stack);
+        if !state.is_paused {
+          platform_sync(state, config)?;
+        }
+
+        return Ok(());
+      }
+    };
+
+    let Some(subject) = subject else {
+      return Ok(());
+    };
+
+    self
+      .process_commands(&vec![command], Some(subject.id()), config)
+      .map(|_| ())
+  }
+
+  /// Places the windows held back for auto-stacking whose wait for a
+  /// title ran out.
+  pub fn process_auto_stack_timeouts(
+    &mut self,
+    config: &mut UserConfig,
+  ) -> anyhow::Result<()> {
+    let state = &mut self.state;
+
+    for native_window in
+      state.auto_stack.expired(std::time::Instant::now())
+    {
+      manage_held_window(native_window, state, config)?;
+    }
+
+    if !state.is_paused && state.pending_sync.has_changes() {
+      platform_sync(state, config)?;
+    }
+
+    self.state.animation_manager.ensure_timer_running();
+
+    Ok(())
   }
 
   pub fn process_event(
@@ -123,10 +237,25 @@ impl WindowManager {
       }
       PlatformEvent::Window(window_event) => match window_event {
         WindowEvent::Focused { window, .. } => {
-          handle_window_focused(&window, state, config)
+          handle_window_focused(&window, state, config).and_then(|()| {
+            #[cfg(target_os = "windows")]
+            crate::stay_interactive::keep_stacked_windows_interactive(
+              &window, state, config,
+            )?;
+            Ok(())
+          })
         }
         WindowEvent::Shown { window, .. } => {
-          handle_window_shown(window, state, config)
+          #[cfg(target_os = "windows")]
+          let shown = window.clone();
+
+          handle_window_shown(window, state, config).and_then(|()| {
+            #[cfg(target_os = "windows")]
+            crate::stay_interactive::keep_stacked_windows_interactive(
+              &shown, state, config,
+            )?;
+            Ok(())
+          })
         }
         WindowEvent::Hidden { window, .. } => {
           handle_window_hidden(&window, state, config)
@@ -886,6 +1015,74 @@ impl WindowManager {
           }
           _ => Ok(()),
         }
+      }
+      InvokeCommand::ToggleStack => {
+        if let Ok(window) = subject_container.as_window_container() {
+          toggle_stack(&window, state, config)?;
+          state.pending_sync.queue_focus_change();
+        }
+        Ok(())
+      }
+      InvokeCommand::CycleStackFocus { prev } => {
+        cycle_stack_focus(&subject_container, *prev, state);
+        state.pending_sync.queue_focus_change();
+        Ok(())
+      }
+      InvokeCommand::FocusStackIndex { index } => {
+        focus_stack_index(&subject_container, *index, state);
+        state.pending_sync.queue_focus_change();
+        Ok(())
+      }
+      InvokeCommand::StackAbsorbNeighbor { direction } => {
+        if let Some(window) = subject_container.as_tiling_window().cloned()
+        {
+          stack_absorb_neighbor(&window, direction, state, config)?;
+          state.pending_sync.queue_focus_change();
+        }
+        Ok(())
+      }
+      InvokeCommand::MoveToStack { name } => {
+        if let Ok(window) = subject_container.as_window_container() {
+          let window = move_to_stack(window, name, state, config)?;
+
+          // Only re-assert focus for the focused window, so a rule run on
+          // a background window doesn't steal focus.
+          if window.has_focus(None) {
+            state.pending_sync.queue_focus_change();
+          }
+        }
+        Ok(())
+      }
+      InvokeCommand::StackAll => {
+        if let Some(workspace) = subject_container.workspace() {
+          stack_all(&workspace, state, config)?;
+          state.pending_sync.queue_focus_change();
+        }
+        Ok(())
+      }
+      InvokeCommand::UnstackAll => {
+        if let Some(workspace) = subject_container.workspace() {
+          unstack_all(&workspace, state)?;
+          state.pending_sync.queue_focus_change();
+        }
+        Ok(())
+      }
+      InvokeCommand::MoveStackTab { prev } => {
+        move_stack_tab(&subject_container, *prev, state);
+        Ok(())
+      }
+      InvokeCommand::FloatOutOfStack => {
+        if let Ok(window) = subject_container.as_window_container() {
+          float_out_of_stack(&window, false, state, config)?;
+        }
+        Ok(())
+      }
+      InvokeCommand::StayInteractive => {
+        #[cfg(target_os = "windows")]
+        if let Ok(window) = subject_container.as_window_container() {
+          state.stay_interactive.mark(window.native().id());
+        }
+        Ok(())
       }
       InvokeCommand::ToggleTilingDirection => {
         toggle_tiling_direction(subject_container, state, config)

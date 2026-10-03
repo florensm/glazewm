@@ -185,6 +185,13 @@ pub trait NativeWindowWindowsExt {
   /// This method is only available on Windows.
   fn has_owner_window(&self) -> bool;
 
+  /// ID of the window's owner window, if it has one.
+  ///
+  /// # Platform-specific
+  ///
+  /// This method is only available on Windows.
+  fn owner_window_id(&self) -> Option<WindowId>;
+
   /// Whether the window's parent is the desktop, rather than another
   /// window it was embedded into (e.g. via `SetParent`).
   ///
@@ -192,6 +199,30 @@ pub trait NativeWindowWindowsExt {
   ///
   /// This method is only available on Windows.
   fn is_top_level(&self) -> bool;
+
+  /// ID of the process that owns the window.
+  ///
+  /// # Platform-specific
+  ///
+  /// This method is only available on Windows.
+  fn process_id(&self) -> u32;
+
+  /// Whether the window accepts mouse and keyboard input, i.e. it hasn't
+  /// been disabled with `EnableWindow`.
+  ///
+  /// # Platform-specific
+  ///
+  /// This method is only available on Windows.
+  fn is_enabled(&self) -> bool;
+
+  /// Re-enables input to a window its app disabled, without blocking:
+  /// `EnableWindow` waits for the app to handle `WM_ENABLE`, so it is
+  /// called from a worker thread.
+  ///
+  /// # Platform-specific
+  ///
+  /// This method is only available on Windows.
+  fn enable_async(&self);
 
   /// Whether the window has the given window style flag(s) set.
   ///
@@ -413,8 +444,24 @@ impl NativeWindowWindowsExt for NativeWindow {
     self.inner.has_owner_window()
   }
 
+  fn owner_window_id(&self) -> Option<WindowId> {
+    self.inner.owner_window_id()
+  }
+
   fn is_top_level(&self) -> bool {
     self.inner.is_top_level()
+  }
+
+  fn process_id(&self) -> u32 {
+    self.inner.process_id()
+  }
+
+  fn is_enabled(&self) -> bool {
+    self.inner.is_enabled()
+  }
+
+  fn enable_async(&self) {
+    self.inner.enable_async();
   }
 
   fn has_window_style(&self, style: WINDOW_STYLE) -> bool {

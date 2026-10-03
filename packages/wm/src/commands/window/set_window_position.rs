@@ -22,9 +22,22 @@ pub fn set_window_position(
     let placement = window.floating_placement();
 
     let new_placement = match target {
-      WindowPositionTarget::Centered => placement.translate_to_center(
-        &window.workspace().context("No workspace.")?.to_rect()?,
-      ),
+      WindowPositionTarget::Centered => {
+        let workspace_rect =
+          window.workspace().context("No workspace.")?.to_rect()?;
+
+        // A stacked window is centered with its tab bar.
+        match window.parent().and_then(|p| p.as_stack().cloned()) {
+          Some(stack) => {
+            let outer = stack
+              .outer_rect(&placement)
+              .translate_to_center(&workspace_rect);
+            let content = stack.content_rect(&outer);
+            placement.translate_to_coordinates(content.x(), content.y())
+          }
+          None => placement.translate_to_center(&workspace_rect),
+        }
+      }
       WindowPositionTarget::Coordinates(target_x, target_y) => {
         Rect::from_xy(
           target_x.unwrap_or(placement.x()),

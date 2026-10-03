@@ -7,7 +7,13 @@ use wm_common::{WindowRuleEvent, WmEvent};
 use wm_platform::NativeWindowWindowsExt;
 
 use crate::{
-  commands::{window::run_window_rules, workspace::sort_workspaces},
+  commands::{
+    window::{
+      auto_stack_managed_window, is_auto_stacked, is_placement_command,
+      run_window_rules_except,
+    },
+    workspace::sort_workspaces,
+  },
   traits::{CommonGetters, TilingSizeGetters, WindowGetters},
   user_config::UserConfig,
   wm::WindowManager,
@@ -27,10 +33,31 @@ pub fn reload_config(
   // Re-evaluate user config file and set its values in state.
   config.reload()?;
 
-  // Re-run window rules on all active windows.
+  #[cfg(target_os = "windows")]
+  {
+    state.tab_bar_settings = None;
+  }
+
+  // Re-run auto-stack and window rules on all active windows. Windows in
+  // a stack from an auto-stack rule keep their placement, as on manage.
   for window in state.windows() {
     window.set_done_window_rules(Vec::new());
-    run_window_rules(window, &WindowRuleEvent::Manage, state, config)?;
+    auto_stack_managed_window(window.clone(), state, config)?;
+
+    // The window may have been replaced while joining its stack.
+    let Some(window) = state.window_from_native(&window.native()) else {
+      continue;
+    };
+
+    let is_auto_stacked = is_auto_stacked(&window, state);
+
+    run_window_rules_except(
+      window,
+      &WindowRuleEvent::Manage,
+      |command| is_auto_stacked && is_placement_command(command),
+      state,
+      config,
+    )?;
   }
 
   update_workspace_configs(state, config)?;

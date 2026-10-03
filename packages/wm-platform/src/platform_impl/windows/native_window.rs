@@ -170,10 +170,13 @@ impl NativeWindow {
   }
 
   /// Implements [`NativeWindow::is_visible`].
+  #[allow(clippy::unnecessary_wraps)]
   pub(crate) fn is_visible(&self) -> crate::Result<bool> {
     let is_visible = unsafe { IsWindowVisible(self.hwnd()) }.as_bool();
 
-    Ok(is_visible && !self.is_cloaked()?)
+    // A failed cloak query (e.g. no DWM, as under Wine) is taken as not
+    // cloaked rather than hiding every window.
+    Ok(is_visible && !self.is_cloaked().unwrap_or(false))
   }
 
   /// Implements [`NativeWindow::is_minimized`].
@@ -365,6 +368,39 @@ impl NativeWindow {
   /// Implements [`NativeWindowWindowsExt::has_owner_window`].
   pub(crate) fn has_owner_window(&self) -> bool {
     unsafe { GetWindow(self.hwnd(), GW_OWNER) }.0 != 0
+  }
+
+  /// Implements [`NativeWindowWindowsExt::owner_window_id`].
+  pub(crate) fn owner_window_id(&self) -> Option<WindowId> {
+    // SAFETY: A stale handle just returns no owner.
+    let owner = unsafe { GetWindow(self.hwnd(), GW_OWNER) };
+    (owner.0 != 0).then_some(WindowId(owner.0))
+  }
+
+  /// Implements [`NativeWindowWindowsExt::process_id`].
+  pub(crate) fn process_id(&self) -> u32 {
+    let mut process_id = 0u32;
+    // SAFETY: `process_id` outlives the call; a stale handle leaves it 0.
+    unsafe {
+      GetWindowThreadProcessId(self.hwnd(), Some(&raw mut process_id));
+    }
+    process_id
+  }
+
+  /// Implements [`NativeWindowWindowsExt::is_enabled`].
+  pub(crate) fn is_enabled(&self) -> bool {
+    // SAFETY: A stale handle just returns false.
+    unsafe {
+      windows::Win32::UI::Input::KeyboardAndMouse::IsWindowEnabled(
+        self.hwnd(),
+      )
+    }
+    .as_bool()
+  }
+
+  /// Implements [`NativeWindowWindowsExt::enable_async`].
+  pub(crate) fn enable_async(&self) {
+    super::window_enabler::enable_async(self.handle);
   }
 
   /// Implements [`NativeWindowWindowsExt::is_top_level`].

@@ -1,18 +1,22 @@
 use anyhow::Context;
 use wm_common::{
-  try_warn, FullscreenStateConfig, TilingDirection, WindowState,
+  try_warn, ActiveDragOperation, FullscreenStateConfig, TilingDirection,
+  WindowState,
 };
 use wm_platform::{LengthValue, Point, Rect};
 
 use crate::{
   commands::{
-    container::{move_container_within_tree, wrap_in_split_container},
-    window::{set_window_size, update_window_state},
+    container::{
+      move_container_within_tree, set_focused_descendant,
+      wrap_in_split_container,
+    },
+    window::{join_stack, set_window_size, update_window_state},
   },
   events::update_floating_window_position,
   models::{
-    DirectionContainer, NonTilingWindow, SplitContainer, TilingContainer,
-    WindowContainer,
+    Container, DirectionContainer, NonTilingWindow, SplitContainer,
+    StackContainer, TilingContainer, WindowContainer,
   },
   traits::{
     CommonGetters, PositionGetters, TilingDirectionGetters, WindowGetters,
@@ -40,6 +44,13 @@ pub fn handle_window_moved_or_resized_end(
 
   match &window {
     WindowContainer::NonTilingWindow(window) => {
+      let is_move =
+        matches!(active_drag.operation, Some(ActiveDragOperation::Move));
+
+      if is_move && drop_onto_tab_bar(window, state, config)? {
+        return Ok(());
+      }
+
       let is_maximized = try_warn!(window.native().is_maximized());
 
       window.update_native_properties(|properties| {
@@ -166,6 +177,15 @@ fn drop_as_tiling_window(
     moved_window.as_window_container()?
   );
 
+  // A window of a stack carries its whole stack.
+  let moved_stack = moved_window
+    .parent()
+    .and_then(|parent| parent.as_stack().cloned());
+
+  let moved_id = moved_stack
+    .as_ref()
+    .map_or(moved_window.id(), CommonGetters::id);
+
   let mouse_pos = state.dispatcher.cursor_position()?;
   let mouse_workspace = state
     .monitor_at_point(&mouse_pos)
@@ -178,7 +198,11 @@ fn drop_as_tiling_window(
   let containers_at_pos = state
     .containers_at_point(&mouse_workspace.clone().into(), &mouse_pos)
     .into_iter()
-    .filter(|container| container.id() != moved_window.id());
+    .filter(|container| {
+      !container
+        .self_and_ancestors()
+        .any(|ancestor| ancestor.id() == moved_id)
+    });
 
   // Get the deepest direction container under the dragged window.
   let target_parent: DirectionContainer = containers_at_pos
@@ -194,14 +218,20 @@ fn drop_as_tiling_window(
   // If the target parent has no children (i.e. an empty workspace), then
   // add the window directly.
   if target_parent.tiling_children().count() == 0 {
+    let moved: Container = if let Some(stack) = &moved_stack {
+      stack.set_insertion_target(None);
+      stack.clone().into()
+    } else {
+      moved_window.set_insertion_target(None);
+      moved_window.clone().into()
+    };
+
     move_container_within_tree(
-      &moved_window.clone().into(),
+      &moved,
       &target_parent.clone().into(),
       0,
       state,
     )?;
-
-    moved_window.set_insertion_target(None);
 
     return update_window_state(
       moved_window.as_window_container()?,
@@ -237,6 +267,11 @@ fn drop_as_tiling_window(
     config,
   )?;
 
+  let moved: Container = match &moved_stack {
+    Some(stack) => stack.clone().into(),
+    None => moved_window.clone().into(),
+  };
+
   let should_split = nearest_container.is_tiling_window()
     && match tiling_direction {
       TilingDirection::Horizontal => {
@@ -267,7 +302,7 @@ fn drop_as_tiling_window(
     };
 
     move_container_within_tree(
-      &moved_window.clone().into(),
+      &moved,
       &split_container.into(),
       target_index,
       state,
@@ -279,7 +314,7 @@ fn drop_as_tiling_window(
     };
 
     move_container_within_tree(
-      &moved_window.clone().into(),
+      &moved,
       &target_parent.clone().into(),
       target_index,
       state,
@@ -289,6 +324,86 @@ fn drop_as_tiling_window(
   state.pending_sync.queue_container_to_redraw(target_parent);
 
   Ok(moved_window)
+}
+
+/// Moves a dragged window into the stack whose tab bar it was dropped on.
+/// A window of a stack brings its whole stack along.
+///
+/// Returns whether the window was dropped onto a tab bar.
+fn drop_onto_tab_bar(
+  window: &NonTilingWindow,
+  state: &mut WmState,
+  config: &UserConfig,
+) -> anyhow::Result<bool> {
+  let cursor = state.dispatcher.cursor_position()?;
+  let own_stack = window.parent().and_then(|p| p.as_stack().cloned());
+
+  let Some(target) = tab_bar_at(&cursor, own_stack.as_ref(), state) else {
+    return Ok(false);
+  };
+
+  tracing::info!(
+    "Window dropped onto a tab bar: {}",
+    window.as_window_container()?
+  );
+
+  let moved = own_stack
+    .map_or_else(|| vec![window.clone().into()], |stack| stack.windows());
+
+  // Kept in their order, wherever they go among the tabs.
+  let first_index =
+    target.new_tab_index(config.value.stack.new_tab_position);
+
+  for (offset, moved_window) in moved.into_iter().enumerate() {
+    let is_dragged = moved_window.id() == window.id();
+    moved_window.set_active_drag(None);
+
+    let joined = join_stack(
+      moved_window,
+      &target,
+      first_index + offset,
+      state,
+      config,
+    )?;
+
+    // A window taken in like this is never auto-stacked elsewhere.
+    state.auto_stack.mark_settled(joined.native().id());
+
+    if is_dragged {
+      set_focused_descendant(&joined.into(), None);
+    }
+  }
+
+  state
+    .pending_sync
+    .queue_containers_to_redraw(target.windows())
+    .queue_focus_change();
+
+  Ok(true)
+}
+
+/// The stack, other than `exclude`, whose tab bar is at `point` on a
+/// displayed workspace.
+fn tab_bar_at(
+  point: &Point,
+  exclude: Option<&StackContainer>,
+  state: &WmState,
+) -> Option<StackContainer> {
+  state
+    .root_container
+    .descendants()
+    .filter_map(|container| container.as_stack().cloned())
+    .filter(|stack| {
+      exclude.is_none_or(|exclude| exclude.id() != stack.id())
+        && stack.shows_tab_bar()
+        && stack.workspace().is_some_and(|ws| ws.is_displayed())
+    })
+    .find(|stack| {
+      stack.to_rect().is_ok_and(|rect| {
+        rect.contains_point(point)
+          && !stack.content_rect(&rect).contains_point(point)
+      })
+    })
 }
 
 /// Represents where the window was dropped over another.

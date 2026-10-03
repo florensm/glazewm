@@ -27,7 +27,7 @@ use wm_platform::{
 
 use crate::{
   animation::AnimationPositionResult,
-  models::{Container, WindowContainer},
+  models::{is_inactive_stack_child, Container, WindowContainer},
   traits::{CommonGetters, PositionGetters, WindowGetters},
   user_config::UserConfig,
   wm_state::WmState,
@@ -212,6 +212,9 @@ pub fn platform_sync(
   state.animation_manager.settle_overlay_z_order(
     repositioned.into_iter().chain(z_order_touched),
   );
+
+  #[cfg(target_os = "windows")]
+  crate::tab_bars::sync_tab_bars(state, config);
 
   state.pending_sync.clear();
 
@@ -543,12 +546,14 @@ fn redraw_containers(
           .map(|(i, container)| (container.id(), i))
           .collect();
 
-      // Sort the windows to update by their focus order. The most recently
-      // focused window will be updated first.
-      // TODO: To reduce flicker, redraw windows that will be shown first,
-      // then redraw the ones to be hidden last.
+      // Sort by focus order, with windows that will be shown last so that
+      // the reversed iteration below shows them before hiding the others.
+      // Hiding first leaves a blank frame, e.g. when switching stack tabs.
       windows.sort_by_key(|window| {
-        focus_order_index.get(&window.id()).copied()
+        let will_show = !is_inactive_stack_child(*window)
+          && window.workspace().is_some_and(|w| w.is_displayed());
+
+        (will_show, focus_order_index.get(&window.id()).copied())
       });
     }
 
@@ -954,9 +959,11 @@ fn redraw_containers(
     let previous_display_state = window.display_state();
 
     // Transition display state depending on whether window will be
-    // shown or hidden.
+    // shown or hidden. Only the active tab of a stack is shown.
+    let should_show =
+      workspace.is_displayed() && !is_inactive_stack_child(*window);
     let new_display_state =
-      match (previous_display_state.clone(), workspace.is_displayed()) {
+      match (previous_display_state.clone(), should_show) {
         (DisplayState::Hidden | DisplayState::Hiding, true) => {
           DisplayState::Showing
         }
@@ -1767,6 +1774,9 @@ fn reposition_window(
       // is needed to be able to move and resize it.
       let query_scope = perf::scope(Stage::RepositionQuery);
       let should_restore = match &window.state() {
+        // A stack's hidden tabs are restored once shown, since restoring
+        // activates the window.
+        _ if is_inactive_stack_child(window) => false,
         // Need to restore window if transitioning from maximized
         // fullscreen to non-maximized fullscreen.
         WindowState::Fullscreen(fullscreen) => {
@@ -1836,7 +1846,11 @@ fn reposition_window(
 
       match &window.state() {
         WindowState::Minimized => {
-          if !window.native().is_minimized()? {
+          // A minimized stack only minimizes its active window; the hidden
+          // tabs stay as they are, as minimizing moves focus.
+          if !is_inactive_stack_child(window)
+            && !window.native().is_minimized()?
+          {
             window.native().minimize()?;
           }
         }
@@ -1844,7 +1858,11 @@ fn reposition_window(
           if fullscreen.maximized
             && window.native().has_window_style(WS_MAXIMIZEBOX) =>
         {
-          if !window.native().is_maximized()? {
+          // As with minimizing, a stack's hidden tabs are left alone,
+          // since maximizing activates the window.
+          if !is_inactive_stack_child(window)
+            && !window.native().is_maximized()?
+          {
             window.native().maximize()?;
           }
 
@@ -2633,7 +2651,8 @@ fn sync_overlays<O: SyncableOverlay>(
 
     let should_hide =
       state.animation_manager.has_active_surrogate(&window.id())
-        || !window.workspace().is_some_and(|ws| ws.is_displayed());
+        || !window.workspace().is_some_and(|ws| ws.is_displayed())
+        || is_inactive_stack_child(window);
 
     if should_hide {
       if let Some(overlay) = O::overlays(state).get_mut(&window.id()) {
