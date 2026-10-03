@@ -37,6 +37,7 @@ jobs:
         run: cargo build --locked -p wm -p wm-cli
 
       - name: Stack end-to-end test
+        timeout-minutes: 15
         shell: powershell
         run: .github/e2e/stacks.ps1 -Bin target/debug
 

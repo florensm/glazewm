@@ -17,7 +17,10 @@ use crate::{
     window::update_window_state,
   },
   events::handle_window_moved_or_resized_end,
-  models::{Container, Monitor, NonTilingWindow, WindowContainer},
+  models::{
+    is_inactive_stack_child, Container, Monitor, NonTilingWindow,
+    WindowContainer,
+  },
   traits::{CommonGetters, WindowGetters},
   user_config::UserConfig,
   wm_state::WmState,
@@ -44,6 +47,13 @@ pub fn handle_window_moved_or_resized(
     window.update_native_properties(|properties| {
       properties.frame = frame_position.clone();
     });
+
+    // Only a stack's active window drives the stack's state. The hidden
+    // tabs are moved along with it without being e.g. maximized, so their
+    // own events would undo the state.
+    if is_inactive_stack_child(&window) {
+      return Ok(());
+    }
 
     // Handle windows that are actively being dragged.
     if !state.is_paused && window.active_drag().is_some() {

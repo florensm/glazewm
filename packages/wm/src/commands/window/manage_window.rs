@@ -465,16 +465,27 @@ fn exit_fullscreen_for_new_window(
 
   // Collected before updating, since `update_window_state` replaces
   // containers in the tree the iterator walks.
-  let fullscreen_windows = workspace
+  let fullscreen_ids = workspace
     .descendants()
     .filter_map(|descendant| descendant.as_window_container().ok())
     .filter(|other| {
       other.id() != window.id()
         && matches!(other.state(), WindowState::Fullscreen(_))
     })
+    .map(|other| other.id())
     .collect::<Vec<_>>();
 
-  for fullscreen_window in fullscreen_windows {
+  for id in fullscreen_ids {
+    // Looked up again: exiting fullscreen for a stacked window does so for
+    // its whole stack, replacing the containers of the other tabs.
+    let Some(fullscreen_window) = state
+      .container_by_id(id)
+      .and_then(|container| container.as_window_container().ok())
+      .filter(|other| matches!(other.state(), WindowState::Fullscreen(_)))
+    else {
+      continue;
+    };
+
     let target_state =
       fullscreen_window.toggled_state(fullscreen_window.state(), config);
 

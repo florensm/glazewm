@@ -34,8 +34,8 @@ use crate::{
       move_stack_tab, move_to_stack, move_window_in_direction,
       move_window_to_workspace, resize_window, set_window_position,
       set_window_size, set_window_urgency, stack_absorb_neighbor,
-      stack_all, toggle_stack, unstack_all,
-      update_window_state, WindowPositionTarget,
+      stack_all, toggle_stack, unstack_all, update_window_state,
+      WindowPositionTarget,
     },
     workspace::{
       focus_workspace, move_workspace_in_direction,

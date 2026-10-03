@@ -1774,6 +1774,9 @@ fn reposition_window(
       // is needed to be able to move and resize it.
       let query_scope = perf::scope(Stage::RepositionQuery);
       let should_restore = match &window.state() {
+        // A stack's hidden tabs are restored once shown, since restoring
+        // activates the window.
+        _ if is_inactive_stack_child(window) => false,
         // Need to restore window if transitioning from maximized
         // fullscreen to non-maximized fullscreen.
         WindowState::Fullscreen(fullscreen) => {

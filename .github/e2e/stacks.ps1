@@ -21,11 +21,14 @@ using System.Runtime.InteropServices;
 public static class Native {
   [DllImport("user32.dll")] public static extern bool IsWindowEnabled(IntPtr hwnd);
   [DllImport("user32.dll")] public static extern bool IsIconic(IntPtr hwnd);
+  [DllImport("user32.dll")] public static extern bool SetCursorPos(int x, int y);
+  [DllImport("user32.dll")] public static extern void mouse_event(uint flags, int dx, int dy, uint data, UIntPtr extra);
 }
 '@
 
 $Failures = New-Object System.Collections.Generic.List[string]
 $Step = 0
+$CliTimeouts = 0
 
 function Check([bool]$Condition, [string]$Message) {
   if ($Condition) {
@@ -36,10 +39,31 @@ function Check([bool]$Condition, [string]$Message) {
   }
 }
 
-function Invoke-Cli([string[]]$Arguments) {
-  $raw = & $Cli @Arguments 2>$null | Out-String
-  if (-not $raw.Trim()) { return $null }
-  return $raw | ConvertFrom-Json
+# Runs the CLI with a timeout, so a WM that stops answering fails the
+# check instead of hanging the job. Returns its parsed JSON output.
+function Invoke-Cli([string[]]$Arguments, [int]$TimeoutSeconds = 15) {
+  $info = New-Object Diagnostics.ProcessStartInfo
+  $info.FileName = $Cli
+  $info.Arguments = ($Arguments | ForEach-Object { '"' + $_ + '"' }) -join ' '
+  $info.RedirectStandardOutput = $true
+  $info.RedirectStandardError = $true
+  $info.UseShellExecute = $false
+  $info.CreateNoWindow = $true
+
+  $process = [Diagnostics.Process]::Start($info)
+  $output = $process.StandardOutput.ReadToEndAsync()
+
+  if (-not $process.WaitForExit($TimeoutSeconds * 1000)) {
+    $process.Kill()
+    Write-Host "CLI timed out: $($Arguments -join ' ')" -ForegroundColor Yellow
+    $script:CliTimeouts++
+    return $null
+  }
+
+  $raw = $output.Result
+  if (-not $raw -or -not $raw.Trim()) { return $null }
+
+  try { return $raw | ConvertFrom-Json } catch { return $null }
 }
 
 function Send-WmCommand([string]$Id, [string]$Command) {
@@ -104,6 +128,53 @@ function Wait-Until([scriptblock]$Condition, [int]$Seconds = 15) {
   return $false
 }
 
+# Mouse input on the tab bar, which sits in the top `$TabBarHeight` pixels
+# of a tiling stack and splits its width evenly between the tabs.
+$TabBarHeight = 30
+$MouseLeftDown = 0x2; $MouseLeftUp = 0x4; $MouseMiddleDown = 0x20; $MouseMiddleUp = 0x40
+
+function Get-TabPoint($Stack, [int]$Index) {
+  $count = @($Stack.children).Count
+  $x = [int]($Stack.x + $Stack.width * (2 * $Index + 1) / (2 * $count))
+  $y = [int]($Stack.y + $TabBarHeight / 2)
+  return @($x, $y)
+}
+
+function Send-Mouse([uint32]$Flags) {
+  [Native]::mouse_event($Flags, 0, 0, 0, [UIntPtr]::Zero)
+  Start-Sleep -Milliseconds 80
+}
+
+function Click-Tab($Stack, [int]$Index, [switch]$Middle) {
+  $x, $y = Get-TabPoint $Stack $Index
+  [void][Native]::SetCursorPos($x, $y)
+  Start-Sleep -Milliseconds 200
+  if ($Middle) {
+    Send-Mouse $MouseMiddleDown; Send-Mouse $MouseMiddleUp
+  } else {
+    Send-Mouse $MouseLeftDown; Send-Mouse $MouseLeftUp
+  }
+  Start-Sleep -Milliseconds 1500
+}
+
+# Drags tab `$Index` straight down by `$Distance` pixels, in a few steps.
+function Drag-Tab($Stack, [int]$Index, [int]$Distance) {
+  $x, $y = Get-TabPoint $Stack $Index
+  [void][Native]::SetCursorPos($x, $y)
+  Start-Sleep -Milliseconds 200
+  Send-Mouse $MouseLeftDown
+  foreach ($step in 1..8) {
+    [void][Native]::SetCursorPos($x, $y + [int]($Distance * $step / 8))
+    Start-Sleep -Milliseconds 60
+  }
+  Send-Mouse $MouseLeftUp
+  Start-Sleep -Milliseconds 1500
+}
+
+function Get-ShownTab($Stack) {
+  @($Stack.children | Where-Object { $_.displayState -in 'shown', 'showing' })[0]
+}
+
 function States($Stack) { @($Stack.children | ForEach-Object { $_.state.type } | Sort-Object -Unique) }
 
 $wmProcess = Start-Process $Wm -ArgumentList 'start', '--config', (Join-Path $Root 'config.yaml') `
@@ -136,6 +207,24 @@ try {
   Send-WmCommand $tab 'cycle-stack-focus'
   $activeAfter = @((Get-TicketStack).children | Where-Object { $_.displayState -in 'shown', 'showing' })
   Check ($activeAfter.Count -eq 1 -and $activeAfter[0].id -ne $activeBefore) 'cycle-stack-focus shows the next tab'
+
+  # Clicking a tab shows it.
+  $stack = Get-TicketStack
+  $target = @($stack.children | Where-Object id -ne (Get-ShownTab $stack).id)[0]
+  $targetIndex = [array]::IndexOf(@($stack.children | ForEach-Object id), $target.id)
+  Click-Tab $stack $targetIndex
+  Check ((Get-ShownTab (Get-TicketStack)).id -eq $target.id) 'clicking a tab shows it'
+  Save-State 'tab-clicked'
+
+  # Dragging a tab off the bar floats its window out of the stack.
+  $stack = Get-TicketStack
+  $dragged = $stack.children[2]
+  Drag-Tab $stack 2 250
+  $draggedNow = Get-Tickets | Where-Object id -eq $dragged.id
+  Check ($draggedNow.state.type -eq 'floating' -and @((Get-TicketStack).children).Count -eq 2) 'dragging a tab off the bar floats it out'
+  Save-State 'tab-dragged-off'
+  Send-WmCommand $dragged.id 'toggle-floating'
+  Check (@((Get-TicketStack).children).Count -eq 3) 'the dragged-off window tiles back into the stack'
 
   # Floating floats the whole stack, with its tab bar on screen.
   Send-WmCommand $tab 'toggle-floating --centered'
@@ -190,15 +279,16 @@ try {
     Send-WmCommand $dialog.id 'close'
   }
 
-  # Closing a tab keeps the layout.
+  # Middle-clicking a tab closes its window and keeps the layout.
   $before = Get-TicketStack
-  Send-WmCommand $before.children[0].id 'close'
+  Click-Tab $before 0 -Middle
   $after = Get-TicketStack
-  Check (@($after.children).Count -eq 2) 'closing a tab removes only that tab'
+  Check (@($after.children).Count -eq 2) 'middle-clicking a tab closes only that tab'
   Check ($after.width -eq $before.width -and $after.x -eq $before.x) 'closing a tab keeps the stack size'
   Save-State 'after-close'
 
   Check (-not $wmProcess.HasExited) 'GlazeWM is still running'
+  Check ($CliTimeouts -eq 0) "GlazeWM answered every CLI call ($CliTimeouts timed out)"
 }
 catch {
   Check $false "test aborted: $_"
