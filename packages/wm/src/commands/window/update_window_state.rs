@@ -33,6 +33,18 @@ pub fn update_window_state(
   state: &mut WmState,
   config: &UserConfig,
 ) -> anyhow::Result<WindowContainer> {
+  // A window whose stack changed state since the caller got it (e.g. one
+  // of several windows updated in a loop) was replaced by a container of
+  // the same ID.
+  let window = if window.is_detached() {
+    state
+      .container_by_id(window.id())
+      .and_then(|container| container.as_window_container().ok())
+      .context("Window is no longer managed.")?
+  } else {
+    window
+  };
+
   if window.state() == target_state {
     return Ok(window);
   }
