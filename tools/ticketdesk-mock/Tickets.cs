@@ -2,7 +2,7 @@ using System;
 using System.Collections.ObjectModel;
 using System.Linq;
 
-namespace GensysMock;
+namespace TicketDeskMock;
 
 public sealed class Activity
 {
@@ -24,7 +24,7 @@ public sealed class Ticket
 
   /// <summary>Title of the ticket's details window.</summary>
   public string DetailsTitle =>
-    $"Ticket details for ticket: {Number} — {Customer} — Gensys";
+    $"Ticket details for ticket: {Number} — {Customer} — TicketDesk";
 }
 
 public static class TicketStore

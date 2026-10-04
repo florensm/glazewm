@@ -3,7 +3,7 @@ using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Threading;
 
-namespace GensysMock;
+namespace TicketDeskMock;
 
 /// <summary>A ticket's details window, titled "Ticket details for ...",
 /// which is what GlazeWM stacks.</summary>

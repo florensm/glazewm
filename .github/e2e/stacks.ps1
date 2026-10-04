@@ -4,8 +4,8 @@
 # log to `e2e-out`, and exits non-zero if a check failed.
 param(
   [string]$Bin = 'target/debug',
-  # The WPF stand-in for the ticketing app (tools/gensys-mock).
-  [string]$App = 'mock/Gensys.exe'
+  # The WPF stand-in for the ticketing app (tools/ticketdesk-mock).
+  [string]$App = 'mock/TicketDesk.exe'
 )
 
 $ErrorActionPreference = 'Stop'

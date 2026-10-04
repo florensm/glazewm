@@ -10,7 +10,7 @@ on:
       - 'resources/**'
       - 'Cargo.lock'
       - '.github/e2e/**'
-      - 'tools/gensys-mock/**'
+      - 'tools/ticketdesk-mock/**'
       - '.github/workflows/stack-e2e.yaml'
 
 jobs:
@@ -38,17 +38,17 @@ jobs:
         run: cargo build --locked -p wm -p wm-cli
 
       - name: Build the ticketing app stand-in
-        run: dotnet build tools/gensys-mock -c Release -o mock
+        run: dotnet build tools/ticketdesk-mock -c Release -o mock
 
       - uses: actions/upload-artifact@v6
         with:
-          name: gensys-mock
-          path: mock/Gensys.exe
+          name: ticketdesk-mock
+          path: mock/TicketDesk.exe
 
       - name: Stack end-to-end test
         timeout-minutes: 15
         shell: powershell
-        run: .github/e2e/stacks.ps1 -Bin target/debug -App mock/Gensys.exe
+        run: .github/e2e/stacks.ps1 -Bin target/debug -App mock/TicketDesk.exe
 
       - uses: actions/upload-artifact@v6
         if: always()

@@ -290,7 +290,7 @@ mod tests {
 
     assert_eq!(
       settings
-        .tab_title("Ticket details for ticket: 4711 — ACME — Gensys"),
+        .tab_title("Ticket details for ticket: 4711 — ACME — TicketDesk"),
       "4711"
     );
   }

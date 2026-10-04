@@ -4,13 +4,13 @@
     Stand-in for the WPF ticketing app used with GlazeWM's stacks: ticket
     windows titled "Ticket details for ...", and a modal "Add Activity"
     dialog that disables the app's other windows like WPF's `ShowDialog`.
-    Named Gensys.exe so window rules matching the real app apply to it.
+    Named TicketDesk.exe so window rules matching the real app apply to it.
   -->
   <PropertyGroup>
     <OutputType>WinExe</OutputType>
     <TargetFramework>net48</TargetFramework>
-    <AssemblyName>Gensys</AssemblyName>
-    <RootNamespace>GensysMock</RootNamespace>
+    <AssemblyName>TicketDesk</AssemblyName>
+    <RootNamespace>TicketDeskMock</RootNamespace>
     <LangVersion>latest</LangVersion>
     <Nullable>enable</Nullable>
     <EnableWindowsTargeting>true</EnableWindowsTargeting>

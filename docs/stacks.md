@@ -168,7 +168,7 @@ stack:
   auto_stack:
     - name: "tickets"
       match:
-        - window_process: { equals: "Gensys" }
+        - window_process: { equals: "TicketDesk" }
           window_title: { regex: "^Ticket details for" }
       # Optional: windows that never join, even if they match.
       exclude: []
@@ -215,7 +215,7 @@ stacked windows usable meanwhile:
 window_rules:
   - commands: ["stay-interactive"]
     match:
-      - window_process: { equals: "Gensys" }
+      - window_process: { equals: "TicketDesk" }
 ```
 
 - When a window of the app is shown or focused while its marked stacked

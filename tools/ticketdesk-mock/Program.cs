@@ -4,7 +4,7 @@ using System.Linq;
 using System.Windows;
 using System.Windows.Threading;
 
-namespace GensysMock;
+namespace TicketDeskMock;
 
 /// <summary>Command-line options, mainly for scripted tests.</summary>
 public sealed class Options
@@ -41,7 +41,7 @@ public sealed class Options
           MessageBox.Show(
             $"Unknown option '{args[i]}'.\n\n"
               + "Options: --tickets <n>, --late-titles, --dialog-trigger <file>",
-            "Gensys"
+            "TicketDesk"
           );
           Environment.Exit(1);
           break;

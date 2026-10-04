@@ -6,7 +6,7 @@ using System.Windows.Data;
 using System.Windows.Input;
 using System.Windows.Media;
 
-namespace GensysMock;
+namespace TicketDeskMock;
 
 /// <summary>The app's main window: the ticket queue.</summary>
 public sealed class MainWindow : Window
@@ -22,7 +22,7 @@ public sealed class MainWindow : Window
   {
     _options = options;
 
-    Title = "Gensys";
+    Title = "TicketDesk";
     Width = 1000;
     Height = 600;
     Background = Ui.Window;
