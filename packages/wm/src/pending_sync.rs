@@ -48,8 +48,9 @@ pub struct PendingSync {
   /// user config).
   needs_cursor_jump: bool,
 
-  /// Whether stack tab bars need redrawing for a change that doesn't
-  /// move any window (e.g. a tab's urgency).
+  /// Whether stack tab bars need redrawing and restacking for a change
+  /// that doesn't move any window (e.g. a tab's urgency, or the end of a
+  /// drag that raised the stack's window).
   needs_tab_bar_update: bool,
 
   /// Window IDs on the incoming workspace that should slide in.
@@ -227,6 +228,10 @@ impl PendingSync {
 
   pub fn needs_cursor_jump(&self) -> bool {
     self.needs_cursor_jump
+  }
+
+  pub fn needs_tab_bar_update(&self) -> bool {
+    self.needs_tab_bar_update
   }
 
   pub fn containers_to_redraw(&self) -> &HashMap<Uuid, Container> {

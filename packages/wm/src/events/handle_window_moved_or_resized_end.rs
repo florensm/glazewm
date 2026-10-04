@@ -42,6 +42,15 @@ pub fn handle_window_moved_or_resized_end(
     return Ok(());
   };
 
+  // The drag raised the window, so its stack's tab bar is put back behind
+  // it wherever the stack ends up.
+  if window
+    .parent()
+    .is_some_and(|parent| parent.as_stack().is_some())
+  {
+    state.pending_sync.queue_tab_bar_update();
+  }
+
   match &window {
     WindowContainer::NonTilingWindow(window) => {
       let is_move =

@@ -180,11 +180,27 @@ fn tab_frame(
   })
 }
 
+/// Which tab bars `sync_tab_bars` puts back behind their stack's window.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Restack {
+  None,
+  All,
+  /// The bar of this stack, e.g. one whose window is being dragged.
+  Stack(uuid::Uuid),
+}
+
 /// Creates, updates, hides or destroys the tab bar of every stack.
 ///
 /// Bars of stacks on hidden workspaces are kept, hidden, rather than
 /// recreated on every workspace switch.
-pub fn sync_tab_bars(state: &mut WmState, config: &UserConfig) {
+///
+/// Bars are put back directly behind their stack's active window after a
+/// focus change, and per `restack` otherwise.
+pub fn sync_tab_bars(
+  state: &mut WmState,
+  config: &UserConfig,
+  restack: Restack,
+) {
   let settings = state.tab_bar_settings.get_or_insert_with(|| {
     TabBarSettings::from_config(&config.value.stack)
   });
@@ -194,7 +210,8 @@ pub fn sync_tab_bars(state: &mut WmState, config: &UserConfig) {
 
   // A focus change can raise other windows over the bar's anchor, so the
   // bar is put back behind it.
-  let restack = state.pending_sync.needs_focus_update();
+  let restack_all = matches!(restack, Restack::All)
+    || state.pending_sync.needs_focus_update();
 
   let frames = state
     .root_container
@@ -223,6 +240,7 @@ pub fn sync_tab_bars(state: &mut WmState, config: &UserConfig) {
     };
 
     if let Some(bar) = state.tab_bars.get_mut(&stack_id) {
+      let restack = restack_all || restack == Restack::Stack(stack_id);
       bar.update(frame, restack);
       continue;
     }

@@ -214,7 +214,12 @@ pub fn platform_sync(
   );
 
   #[cfg(target_os = "windows")]
-  crate::tab_bars::sync_tab_bars(state, config);
+  let restack = if state.pending_sync.needs_tab_bar_update() {
+    crate::tab_bars::Restack::All
+  } else {
+    crate::tab_bars::Restack::None
+  };
+  crate::tab_bars::sync_tab_bars(state, config, restack);
 
   state.pending_sync.clear();
 
