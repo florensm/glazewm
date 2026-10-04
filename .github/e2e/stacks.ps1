@@ -32,11 +32,26 @@ public static class Native {
   [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr hwnd, out RECT rect);
   [StructLayout(LayoutKind.Sequential)] public struct RECT { public int Left, Top, Right, Bottom; }
 
-  // The first visible window below `hwnd` in z-order.
-  public static IntPtr NextVisible(IntPtr hwnd) {
-    var next = GetWindow(hwnd, 2);
-    while (next != IntPtr.Zero && !IsWindowVisible(next)) next = GetWindow(next, 2);
-    return next;
+  [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr hwnd, out uint pid);
+  [DllImport("user32.dll")] public static extern bool SystemParametersInfo(uint action, uint param, IntPtr value, uint flags);
+  [DllImport("dwmapi.dll")] public static extern int DwmGetWindowAttribute(IntPtr hwnd, int attribute, out int value, int size);
+
+  static bool IsShown(IntPtr hwnd) {
+    int cloaked;
+    var isCloaked = DwmGetWindowAttribute(hwnd, 14, out cloaked, 4) == 0 && cloaked != 0;
+    return IsWindowVisible(hwnd) && !isCloaked;
+  }
+
+  // Whether `bar` comes right after `hwnd` in z-order, skipping hidden
+  // windows and the WM's own (overlays).
+  public static bool IsRightBehind(IntPtr hwnd, IntPtr bar, uint wmPid) {
+    for (var next = GetWindow(hwnd, 2); next != IntPtr.Zero; next = GetWindow(next, 2)) {
+      if (next == bar) return true;
+      uint pid;
+      GetWindowThreadProcessId(next, out pid);
+      if (IsShown(next) && pid != wmPid) return false;
+    }
+    return false;
   }
   [DllImport("user32.dll")] public static extern void mouse_event(uint flags, int dx, int dy, uint data, UIntPtr extra);
 }
@@ -245,6 +260,9 @@ try {
   Check (@((Get-TicketStack).children).Count -eq 3) 'the dragged-off window tiles back into the stack'
 
   # Dragging a stacked window drags its tab bar along, above other windows.
+  # Windows are shown while dragged, as on most desktops, rather than as an
+  # outline (SPI_SETDRAGFULLWINDOWS).
+  [void][Native]::SystemParametersInfo(0x25, 1, [IntPtr]::Zero, 2)
   $stack = Get-TicketStack
   $active = Get-ShownTab $stack
   $hwnd = [IntPtr][long]$active.handle
@@ -265,13 +283,15 @@ try {
   [void][Native]::GetWindowRect($bar, [ref]$barRect)
   Save-State 'stack-dragged'
   Check ([math]::Abs($barRect.Left - $windowRect.Left) -le 20 -and [math]::Abs($barRect.Bottom - $windowRect.Top) -le 20) "the tab bar moves along with a dragged stack (bar $($barRect.Left),$($barRect.Bottom), window $($windowRect.Left),$($windowRect.Top))"
-  Check ([Native]::NextVisible($hwnd) -eq $bar) 'the tab bar stays directly behind the dragged window, above other windows'
+  Check ([Native]::IsRightBehind($hwnd, $bar, [uint32]$wmProcess.Id)) 'the tab bar stays directly behind the dragged window, above other windows'
   Send-Mouse $MouseLeftUp
   Start-Sleep -Milliseconds 1500
   $stack = Get-TicketStack
   [void][Native]::GetWindowRect($bar, [ref]$barRect)
   Check (((States $stack) -join ',') -eq 'tiling') 'a dropped stack tiles again'
   Check ([math]::Abs($barRect.Top - $stack.y) -le 20) 'the tab bar is back on top of the dropped stack'
+  $shown = [IntPtr][long](Get-ShownTab $stack).handle
+  Check ([Native]::IsRightBehind($shown, $bar, [uint32]$wmProcess.Id)) 'after the drop, the tab bar is directly behind its window'
 
   # Floating floats the whole stack, with its tab bar on screen.
   Send-WmCommand $tab 'toggle-floating --centered'
