@@ -2,7 +2,11 @@
 # ticket test app and drives the stack through the CLI, checking the
 # window tree after each step. Writes screenshots, tree dumps and the WM
 # log to `e2e-out`, and exits non-zero if a check failed.
-param([string]$Bin = 'target/debug')
+param(
+  [string]$Bin = 'target/debug',
+  # The WPF stand-in for the ticketing app (tools/gensys-mock).
+  [string]$App = 'mock/Gensys.exe'
+)
 
 $ErrorActionPreference = 'Stop'
 
@@ -188,8 +192,10 @@ try {
   if (-not $ready) { throw 'GlazeWM did not start.' }
 
   # Opened after the WM, so they are auto-stacked as they open.
-  $appProcess = Start-Process powershell.exe -PassThru -ArgumentList `
-    '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', (Join-Path $Root 'ticket-app.ps1'), '-Trigger', $Trigger
+  # Titles arrive late, as with the real app, so auto-stacking has to hold
+  # the windows until they are titled.
+  $appProcess = Start-Process (Resolve-Path $App) -PassThru -ArgumentList `
+    '--tickets', '3', '--late-titles', '--dialog-trigger', $Trigger
 
   $stacked = Wait-Until { $s = Get-TicketStack; $s -and @($s.children).Count -eq 3 } 30
   Check $stacked 'auto-stack: 3 ticket windows open into one stack'
@@ -266,7 +272,8 @@ try {
   Check (@((Get-TicketStack).children).Count -eq 3) 'toggle-floating puts the tab back into its stack'
 
   # The dialog's owner, ticket 1, is a hidden tab when the dialog opens.
-  $owner = Get-Tickets | Where-Object title -eq 'Ticket details for 1'
+  # The app opens the dialog from its first ticket.
+  $owner = Get-Tickets | Where-Object title -like 'Ticket details for ticket: 4711 *'
   if ((Get-ShownTab (Get-TicketStack)).id -eq $owner.id) {
     Send-WmCommand $owner.id 'cycle-stack-focus'
   }

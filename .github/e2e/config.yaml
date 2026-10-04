@@ -21,4 +21,5 @@ stack:
   auto_stack:
     - name: "tickets"
       match:
-        - window_title: { regex: "^Ticket details for" }
+        - window_process: { equals: "Gensys" }
+          window_title: { regex: "^Ticket details for" }

@@ -19,3 +19,7 @@ CLAUDE.local.md
 # vi files
 .*.swp
 .*.swo
+
+# Build output of the ticketing app stand-in.
+tools/gensys-mock/bin/
+tools/gensys-mock/obj/
