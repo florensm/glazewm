@@ -39,6 +39,12 @@ impl StayInteractive {
     self.marked.contains(&id)
   }
 
+  /// Unmarks every window.
+  pub fn unmark_all(&mut self) {
+    self.marked.clear();
+    self.attempts.clear();
+  }
+
   /// Drops everything known about a destroyed window.
   pub fn forget(&mut self, id: WindowId) {
     self.marked.remove(&id);
@@ -143,6 +149,16 @@ mod tests {
 
     assert!(stay
       .windows_to_enable(POPUP, 7, &[tab(1, false), unstacked])
+      .is_empty());
+  }
+
+  #[test]
+  fn unmarked_windows_are_left_disabled() {
+    let mut stay = marked(&[1]);
+    stay.unmark_all();
+
+    assert!(stay
+      .windows_to_enable(POPUP, 7, &[tab(1, false)])
       .is_empty());
   }
 
