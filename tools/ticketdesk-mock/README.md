@@ -36,6 +36,11 @@ dotnet build tools/ticketdesk-mock -c Release -o mock
 
 ## GlazeWM config to try it with
 
+[`config.yaml`](config.yaml) is the default config with the stack settings
+for this app filled in. Copy it to `%USERPROFILE%\.glzr\glazewm\config.yaml`
+(back up your own first) and press `alt+shift+r` to reload it, or
+restart GlazeWM. It differs from the default config only in:
+
 ```yaml
 window_rules:
   # Keep the stacked tickets usable while "Add Activity" is open.
@@ -56,3 +61,6 @@ stack:
     - regex: " — TicketDesk$"
       replace: ""
 ```
+
+To use it with the real app, add a match with its process name (Task
+Manager > Details, without `.exe`) to both rules.
