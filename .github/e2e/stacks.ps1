@@ -42,14 +42,20 @@ public static class Native {
     return IsWindowVisible(hwnd) && !isCloaked;
   }
 
-  // What sits between `hwnd` and `bar` in z-order, skipping hidden
+  // What covers `bar` between it and `hwnd` in z-order, skipping hidden
   // windows and the WM's own (overlays): empty if nothing does.
   public static string WindowBetween(IntPtr hwnd, IntPtr bar, uint wmPid) {
+    RECT barRect;
+    GetWindowRect(bar, out barRect);
     for (var next = GetWindow(hwnd, 2); next != IntPtr.Zero; next = GetWindow(next, 2)) {
       if (next == bar) return "";
       uint pid;
       GetWindowThreadProcessId(next, out pid);
-      if (IsShown(next) && pid != wmPid) {
+      RECT rect;
+      GetWindowRect(next, out rect);
+      var overlaps = rect.Left < barRect.Right && barRect.Left < rect.Right
+        && rect.Top < barRect.Bottom && barRect.Top < rect.Bottom;
+      if (IsShown(next) && pid != wmPid && overlaps) {
         var cls = new System.Text.StringBuilder(256);
         var title = new System.Text.StringBuilder(256);
         GetClassName(next, cls, 256);

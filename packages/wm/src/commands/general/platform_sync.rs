@@ -2803,8 +2803,8 @@ fn sync_overlays<O: SyncableOverlay>(
   }
 }
 
-/// Puts the overlays of every window still settling after a z-order change
-/// back behind it, once per animation tick. See
+/// Puts the overlays and tab bar of every window still settling after a
+/// z-order change back behind it, once per animation tick. See
 /// `AnimationManager::settle_overlay_z_order`.
 ///
 /// `sync_z_order` re-matches the topmost band before re-stacking, which is
@@ -2842,6 +2842,15 @@ pub(crate) fn resync_settling_overlays(state: &mut WmState) {
     // up in the same order: window, border, backdrop.
     resync_overlay::<NativeBackdropOverlay>(state, id, anchor);
     resync_overlay::<NativeBorderOverlay>(state, id, anchor);
+
+    // E.g. a stack being dragged is moved to the topmost band.
+    if let Some(bar) = window
+      .parent()
+      .filter(|parent| parent.as_stack().is_some())
+      .and_then(|stack| state.tab_bars.get(&stack.id()))
+    {
+      bar.keep_behind_anchor();
+    }
   }
 }
 
