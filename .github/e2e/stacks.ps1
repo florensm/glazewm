@@ -42,17 +42,25 @@ public static class Native {
     return IsWindowVisible(hwnd) && !isCloaked;
   }
 
-  // Whether `bar` comes right after `hwnd` in z-order, skipping hidden
-  // windows and the WM's own (overlays).
-  public static bool IsRightBehind(IntPtr hwnd, IntPtr bar, uint wmPid) {
+  // What sits between `hwnd` and `bar` in z-order, skipping hidden
+  // windows and the WM's own (overlays): empty if nothing does.
+  public static string WindowBetween(IntPtr hwnd, IntPtr bar, uint wmPid) {
     for (var next = GetWindow(hwnd, 2); next != IntPtr.Zero; next = GetWindow(next, 2)) {
-      if (next == bar) return true;
+      if (next == bar) return "";
       uint pid;
       GetWindowThreadProcessId(next, out pid);
-      if (IsShown(next) && pid != wmPid) return false;
+      if (IsShown(next) && pid != wmPid) {
+        var cls = new System.Text.StringBuilder(256);
+        var title = new System.Text.StringBuilder(256);
+        GetClassName(next, cls, 256);
+        GetWindowText(next, title, 256);
+        return cls + " '" + title + "'";
+      }
     }
-    return false;
+    return "the bar is above the window";
   }
+  [DllImport("user32.dll", CharSet = CharSet.Unicode)] public static extern int GetClassName(IntPtr hwnd, System.Text.StringBuilder name, int max);
+  [DllImport("user32.dll", CharSet = CharSet.Unicode)] public static extern int GetWindowText(IntPtr hwnd, System.Text.StringBuilder text, int max);
   [DllImport("user32.dll")] public static extern void mouse_event(uint flags, int dx, int dy, uint data, UIntPtr extra);
 }
 '@
@@ -283,7 +291,8 @@ try {
   [void][Native]::GetWindowRect($bar, [ref]$barRect)
   Save-State 'stack-dragged'
   Check ([math]::Abs($barRect.Left - $windowRect.Left) -le 20 -and [math]::Abs($barRect.Bottom - $windowRect.Top) -le 20) "the tab bar moves along with a dragged stack (bar $($barRect.Left),$($barRect.Bottom), window $($windowRect.Left),$($windowRect.Top))"
-  Check ([Native]::IsRightBehind($hwnd, $bar, [uint32]$wmProcess.Id)) 'the tab bar stays directly behind the dragged window, above other windows'
+  $between = [Native]::WindowBetween($hwnd, $bar, [uint32]$wmProcess.Id)
+  Check ($between -eq '') "the tab bar stays directly behind the dragged window, above other windows $between"
   Send-Mouse $MouseLeftUp
   Start-Sleep -Milliseconds 1500
   $stack = Get-TicketStack
@@ -291,7 +300,8 @@ try {
   Check (((States $stack) -join ',') -eq 'tiling') 'a dropped stack tiles again'
   Check ([math]::Abs($barRect.Top - $stack.y) -le 20) 'the tab bar is back on top of the dropped stack'
   $shown = [IntPtr][long](Get-ShownTab $stack).handle
-  Check ([Native]::IsRightBehind($shown, $bar, [uint32]$wmProcess.Id)) 'after the drop, the tab bar is directly behind its window'
+  $between = [Native]::WindowBetween($shown, $bar, [uint32]$wmProcess.Id)
+  Check ($between -eq '') "after the drop, the tab bar is directly behind its window $between"
 
   # Floating floats the whole stack, with its tab bar on screen.
   Send-WmCommand $tab 'toggle-floating --centered'
