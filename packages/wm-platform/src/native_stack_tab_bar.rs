@@ -32,25 +32,26 @@ use windows::{
       WindowsAndMessaging::{
         AppendMenuW, CreatePopupMenu, CreateWindowExW, DefWindowProcW,
         DestroyMenu, DestroyWindow, DrawIconEx, GetCursorPos,
-        GetSystemMetrics, GetWindowLongPtrW, KillTimer, LoadCursorW,
-        PostMessageW, RegisterClassW, SendMessageW, SetForegroundWindow,
-        SetTimer, SetWindowLongPtrW, SetWindowPos, ShowWindow,
-        TrackPopupMenu, UpdateLayeredWindow, CREATESTRUCTW, DI_NORMAL,
-        GWLP_USERDATA, IDC_ARROW, MA_NOACTIVATE, MF_STRING, SM_CXDRAG,
-        SM_CYDRAG, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSENDCHANGING,
-        SWP_NOSIZE, SW_HIDE, SW_SHOWNOACTIVATE, TPM_NONOTIFY,
-        TPM_RETURNCMD, TPM_RIGHTBUTTON, ULW_ALPHA, WINDOW_STYLE, WM_APP,
-        WM_CAPTURECHANGED, WM_CLOSE, WM_CREATE, WM_DESTROY,
-        WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MBUTTONUP, WM_MOUSEACTIVATE,
-        WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_NOTIFY, WM_RBUTTONUP, WM_TIMER,
-        WNDCLASSW, WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW,
-        WS_EX_TOPMOST, WS_POPUP,
+        GetSystemMetrics, GetWindow, GetWindowLongPtrW, KillTimer,
+        LoadCursorW, PostMessageW, RegisterClassW, SendMessageW,
+        SetForegroundWindow, SetTimer, SetWindowLongPtrW, SetWindowPos,
+        ShowWindow, TrackPopupMenu, UpdateLayeredWindow, CREATESTRUCTW,
+        DI_NORMAL, GWLP_USERDATA, GW_HWNDNEXT, GW_HWNDPREV, IDC_ARROW,
+        MA_NOACTIVATE, MF_STRING, SM_CXDRAG, SM_CYDRAG, SWP_NOACTIVATE,
+        SWP_NOMOVE, SWP_NOSENDCHANGING, SWP_NOSIZE, SW_HIDE,
+        SW_SHOWNOACTIVATE, TPM_NONOTIFY, TPM_RETURNCMD, TPM_RIGHTBUTTON,
+        ULW_ALPHA, WINDOW_STYLE, WM_APP, WM_CAPTURECHANGED, WM_CLOSE,
+        WM_CREATE, WM_DESTROY, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MBUTTONUP,
+        WM_MOUSEACTIVATE, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_NOTIFY,
+        WM_RBUTTONUP, WM_TIMER, WNDCLASSW, WS_EX_LAYERED,
+        WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP,
       },
     },
   },
 };
 
 use crate::{
+  overlay_window::OverlayKind,
   tab_icons,
   tab_layout::{TabAction, TabHit, TabLayout, TabLayoutParams, TabRect},
   tab_paint::{Canvas, Rgba},
@@ -66,6 +67,13 @@ const WM_HIDE_TABS: u32 = WM_APP + 2;
 
 /// Posted by the icon thread once an icon is cached.
 const WM_ICON_READY: u32 = WM_APP + 3;
+
+/// Posted to put the bar back behind its anchor if it was pushed away.
+const WM_RESTACK_TABS: u32 = WM_APP + 4;
+
+/// Bound on the walk over the overlays behind the anchor; a window has at
+/// most a backdrop and a border.
+const MAX_OVERLAY_WALK: usize = 8;
 
 const PILL_TIMER_ID: usize = 1;
 
@@ -289,6 +297,24 @@ impl NativeStackTabBar {
         WM_UPDATE_TABS,
         WPARAM(frame),
         LPARAM(isize::from(restack)),
+      );
+    }
+  }
+
+  /// Puts the shown bar back behind its anchor, if other windows were
+  /// raised in between (e.g. an app restacking its own windows).
+  pub fn keep_behind_anchor(&self) {
+    if self.last_frame.is_none() {
+      return;
+    }
+
+    // SAFETY: Posting to a destroyed window just fails.
+    unsafe {
+      let _ = PostMessageW(
+        HWND(self.hwnd),
+        WM_RESTACK_TABS,
+        WPARAM(0),
+        LPARAM(0),
       );
     }
   }
@@ -983,22 +1009,57 @@ unsafe fn apply_frame(
     state.frame.as_ref().map(|frame| HWND(frame.anchor))
   {
     if restack || anchor_changed || !was_visible {
-      window_class::match_z_band(hwnd, anchor);
-      let _ = SetWindowPos(
-        hwnd,
-        window_class::insert_after_point(anchor),
-        0,
-        0,
-        0,
-        0,
-        SWP_NOACTIVATE | SWP_NOMOVE | SWP_NOSIZE | SWP_NOSENDCHANGING,
-      );
+      restack_behind(hwnd, anchor);
     }
   }
 
   if !was_visible {
     ShowWindow(hwnd, SW_SHOWNOACTIVATE);
   }
+}
+
+/// Puts the bar directly behind `anchor` and the WM's overlays of it,
+/// unless it is already there.
+///
+/// Going behind the overlays rather than between them and the window
+/// keeps them settled, so they don't restack in turn.
+///
+/// # Safety
+///
+/// `hwnd` must be the bar's window.
+unsafe fn restack_behind(hwnd: HWND, anchor: HWND) {
+  window_class::match_z_band(hwnd, anchor);
+  let target = window_class::insert_after_point(anchor);
+
+  let mut prev = GetWindow(hwnd, GW_HWNDPREV);
+  for _ in 0..MAX_OVERLAY_WALK {
+    if prev == target {
+      return;
+    }
+    if !OverlayKind::is_overlay(prev) {
+      break;
+    }
+    prev = GetWindow(prev, GW_HWNDPREV);
+  }
+
+  let mut insert_after = target;
+  for _ in 0..MAX_OVERLAY_WALK {
+    let next = GetWindow(insert_after, GW_HWNDNEXT);
+    if next == hwnd || !OverlayKind::is_overlay(next) {
+      break;
+    }
+    insert_after = next;
+  }
+
+  let _ = SetWindowPos(
+    hwnd,
+    insert_after,
+    0,
+    0,
+    0,
+    0,
+    SWP_NOACTIVATE | SWP_NOMOVE | SWP_NOSIZE | SWP_NOSENDCHANGING,
+  );
 }
 
 /// Handles a left-button release: a click, the end of a drag, or a close
@@ -1285,6 +1346,12 @@ unsafe extern "system" fn wnd_proc(
     }
     WM_ICON_READY => {
       render(hwnd, state);
+      LRESULT(0)
+    }
+    WM_RESTACK_TABS => {
+      if let Some(anchor) = state.frame.as_ref().map(|f| HWND(f.anchor)) {
+        restack_behind(hwnd, anchor);
+      }
       LRESULT(0)
     }
     WM_TIMER if wparam.0 == PILL_TIMER_ID => {
