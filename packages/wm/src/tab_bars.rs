@@ -290,7 +290,7 @@ mod tests {
 
     assert_eq!(
       settings
-        .tab_title("Ticket details for ticket: 4711 — ACME — TicketDesk"),
+        .tab_title("Ticket details for ticket: 4711 — ACME — MyWpfApp"),
       "4711"
     );
   }

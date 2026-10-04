@@ -215,7 +215,7 @@ mod tests {
       name: "tickets".to_string(),
       match_window: vec![WindowMatchConfig {
         window_process: Some(MatchType::Equals {
-          equals: "TicketDesk".to_string(),
+          equals: "MyWpfApp".to_string(),
         }),
         window_title: Some(MatchType::Regex {
           regex: "^Ticket details for".to_string(),
@@ -243,7 +243,7 @@ mod tests {
   #[test]
   fn matching_window_joins() {
     let rules = [tickets_rule()];
-    let props = window("TicketDesk", "Ticket details for ticket: 42");
+    let props = window("MyWpfApp", "Ticket details for ticket: 42");
 
     assert_eq!(
       decide(&rules, &props, WindowTraits::default()),
@@ -256,8 +256,8 @@ mod tests {
     let rules = [tickets_rule()];
 
     for props in [
-      window("TicketDesk", "TicketDesk Management System"),
-      window("TicketDesk", "Ticket: 42"),
+      window("MyWpfApp", "MyWpfApp"),
+      window("MyWpfApp", "Ticket: 42"),
       window("notepad", "Ticket details for ticket: 42"),
     ] {
       assert_eq!(
@@ -272,7 +272,7 @@ mod tests {
     let rules = [tickets_rule()];
 
     assert_eq!(
-      decide(&rules, &window("TicketDesk", ""), WindowTraits::default()),
+      decide(&rules, &window("MyWpfApp", ""), WindowTraits::default()),
       AutoStackDecision::Wait
     );
     assert_eq!(
@@ -285,7 +285,7 @@ mod tests {
   fn excluded_window_is_skipped() {
     let rules = [tickets_rule()];
     let props =
-      window("TicketDesk", "Ticket details for ticket: 42 (read-only)");
+      window("MyWpfApp", "Ticket details for ticket: 42 (read-only)");
 
     assert_eq!(
       decide(&rules, &props, WindowTraits::default()),
@@ -296,7 +296,7 @@ mod tests {
   #[test]
   fn dialogs_tool_and_owned_windows_are_skipped() {
     let rules = [tickets_rule()];
-    let props = window("TicketDesk", "Ticket details for ticket: 42");
+    let props = window("MyWpfApp", "Ticket details for ticket: 42");
 
     for traits in [
       WindowTraits {
@@ -325,7 +325,7 @@ mod tests {
       allow_owned: true,
       ..tickets_rule()
     }];
-    let props = window("TicketDesk", "Ticket details for ticket: 42");
+    let props = window("MyWpfApp", "Ticket details for ticket: 42");
     let traits = WindowTraits {
       has_owner: true,
       ..WindowTraits::default()
