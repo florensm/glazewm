@@ -36,6 +36,10 @@ pub fn reload_config(
   #[cfg(target_os = "windows")]
   {
     state.tab_bar_settings = None;
+
+    // Marks are re-applied by the window rules below, so that removing
+    // the rule takes effect.
+    state.stay_interactive.unmark_all();
   }
 
   // Re-run auto-stack and window rules on all active windows. Windows in
