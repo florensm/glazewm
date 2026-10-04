@@ -26,6 +26,18 @@ public static class Native {
   [DllImport("user32.dll")] public static extern bool IsWindowEnabled(IntPtr hwnd);
   [DllImport("user32.dll")] public static extern bool IsIconic(IntPtr hwnd);
   [DllImport("user32.dll")] public static extern bool SetCursorPos(int x, int y);
+  [DllImport("user32.dll")] public static extern IntPtr FindWindow(string cls, string title);
+  [DllImport("user32.dll")] public static extern IntPtr GetWindow(IntPtr hwnd, uint cmd);
+  [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr hwnd);
+  [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr hwnd, out RECT rect);
+  [StructLayout(LayoutKind.Sequential)] public struct RECT { public int Left, Top, Right, Bottom; }
+
+  // The first visible window below `hwnd` in z-order.
+  public static IntPtr NextVisible(IntPtr hwnd) {
+    var next = GetWindow(hwnd, 2);
+    while (next != IntPtr.Zero && !IsWindowVisible(next)) next = GetWindow(next, 2);
+    return next;
+  }
   [DllImport("user32.dll")] public static extern void mouse_event(uint flags, int dx, int dy, uint data, UIntPtr extra);
 }
 '@
@@ -231,6 +243,35 @@ try {
   Save-State 'tab-dragged-off'
   Send-WmCommand $dragged.id 'toggle-floating'
   Check (@((Get-TicketStack).children).Count -eq 3) 'the dragged-off window tiles back into the stack'
+
+  # Dragging a stacked window drags its tab bar along, above other windows.
+  $stack = Get-TicketStack
+  $active = Get-ShownTab $stack
+  $hwnd = [IntPtr][long]$active.handle
+  $bar = [Native]::FindWindow('GlazeWM_TabBar', $null)
+  $grabX = [int]($active.x + $active.width / 2)
+  $grabY = [int]($active.y + 12)
+  [void][Native]::SetCursorPos($grabX, $grabY)
+  Start-Sleep -Milliseconds 200
+  Send-Mouse $MouseLeftDown
+  foreach ($step in 1..10) {
+    [void][Native]::SetCursorPos($grabX - 15 * $step, $grabY + 12 * $step)
+    Start-Sleep -Milliseconds 60
+  }
+  Start-Sleep -Milliseconds 500
+  $windowRect = New-Object Native+RECT
+  $barRect = New-Object Native+RECT
+  [void][Native]::GetWindowRect($hwnd, [ref]$windowRect)
+  [void][Native]::GetWindowRect($bar, [ref]$barRect)
+  Save-State 'stack-dragged'
+  Check ([math]::Abs($barRect.Left - $windowRect.Left) -le 20 -and [math]::Abs($barRect.Bottom - $windowRect.Top) -le 20) "the tab bar moves along with a dragged stack (bar $($barRect.Left),$($barRect.Bottom), window $($windowRect.Left),$($windowRect.Top))"
+  Check ([Native]::NextVisible($hwnd) -eq $bar) 'the tab bar stays directly behind the dragged window, above other windows'
+  Send-Mouse $MouseLeftUp
+  Start-Sleep -Milliseconds 1500
+  $stack = Get-TicketStack
+  [void][Native]::GetWindowRect($bar, [ref]$barRect)
+  Check (((States $stack) -join ',') -eq 'tiling') 'a dropped stack tiles again'
+  Check ([math]::Abs($barRect.Top - $stack.y) -le 20) 'the tab bar is back on top of the dropped stack'
 
   # Floating floats the whole stack, with its tab bar on screen.
   Send-WmCommand $tab 'toggle-floating --centered'
