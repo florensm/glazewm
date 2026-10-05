@@ -1189,10 +1189,12 @@ fn redraw_containers(
     // break its invariants. Fullscreen windows and suppressed cycles
     // otherwise always take the non-animated path, which also cancels
     // any in-flight animation (and its surrogate) via
-    // `remove_animation` below.
+    // `remove_animation` below. So do hidden windows, e.g. a stack's
+    // inactive tabs: a surrogate would show them while they are cloaked.
     let should_use_animations = !is_outgoing_switch
       && (is_frozen_by_ws_animation
-        || ((!is_fullscreen || is_wm_fullscreen_toggle || has_slide_in)
+        || (is_visible
+          && (!is_fullscreen || is_wm_fullscreen_toggle || has_slide_in)
           && !suppress_animations
           && ((!is_floating && anim_enabled)
             || (is_state_change && anim_enabled)
