@@ -370,6 +370,29 @@ window_behavior:
       # Whether to show fullscreen windows as always on top.
       shown_on_top: false
 
+# Overview of the focused workspace's windows, opened by `toggle-overview`.
+# Pick a window by clicking it, or with the arrow keys and enter. Escape
+# closes it without changing focus. Only available on Windows.
+overview:
+  # Scrim covering the monitor while the overview is open.
+  background_color: "#000000b3"
+
+  # Space around and between the window previews.
+  gap: "24px"
+
+  # Highlight behind the preview under the cursor or picked with the arrow
+  # keys.
+  selection_color: "#ffffff1f"
+
+  # Ring around the focused window's preview. Same values as a border's
+  # color: a hex color, "accent" for the OS accent color, or a file and key.
+  focused_border_color: "accent"
+
+  # Window titles.
+  text_color: "#ffffff"
+  font_family: "Segoe UI"
+  font_size: "13px"
+
 workspaces:
   - name: "1"
   - name: "2"
@@ -471,7 +494,7 @@ keybindings:
   - commands: ["resize --width +2%"]
     bindings: ["alt+p"]
   - commands: ["resize --height +2%"]
-    bindings: ["alt+o"]
+    bindings: ["alt+shift+o"]
   - commands: ["resize --height -2%"]
     bindings: ["alt+i"]
 
@@ -494,6 +517,10 @@ keybindings:
   # Change focus from tiling windows -> floating -> fullscreen.
   - commands: ["wm-cycle-focus"]
     bindings: ["alt+space"]
+
+  # Show the focused workspace's windows side by side to pick one.
+  - commands: ["toggle-overview"]
+    bindings: ["alt+o"]
 
   # Change the focused window to be floating.
   - commands: ["toggle-floating --centered"]
