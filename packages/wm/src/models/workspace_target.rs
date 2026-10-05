@@ -12,6 +12,5 @@ pub enum WorkspaceTarget {
   /// First workspace without any windows, creating a new one if dynamic
   /// workspaces are enabled and none is available.
   NextEmpty,
-  #[allow(dead_code)]
   Direction(Direction),
 }

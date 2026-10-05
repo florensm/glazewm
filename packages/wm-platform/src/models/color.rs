@@ -11,17 +11,9 @@ pub struct Color {
 }
 
 impl Color {
-  #[must_use]
-  #[allow(clippy::missing_panics_doc)]
-  pub fn to_bgr(&self) -> u32 {
-    let bgr = format!("{:02x}{:02x}{:02x}", self.b, self.g, self.r);
-    // SAFETY: An invalid hex value is unrepresentable.
-    u32::from_str_radix(&bgr, 16).unwrap()
-  }
-
   /// Packs this color into ABGR order (alpha in the high byte, then blue,
-  /// green, red -- the order the raw Win32 `SetWindowCompositionAttribute`
-  /// gradient-color API requires). Inverse of [`from_abgr`].
+  /// green, red), as the backdrop tint is passed around. Inverse of
+  /// [`from_abgr`].
   ///
   /// [`from_abgr`]: Color::from_abgr
   #[must_use]

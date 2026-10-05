@@ -20,7 +20,7 @@ where
 
       // Adjust for when the target index becomes out of bounds because of
       // the removal above.
-      self.insert(target_index.clamp(0, self.len()), value);
+      self.insert(target_index.min(self.len()), value);
     }
   }
 }

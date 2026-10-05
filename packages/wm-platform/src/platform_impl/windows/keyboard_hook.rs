@@ -33,10 +33,6 @@ pub struct KeyEvent {
   /// The key that was pressed or released.
   pub key: Key,
 
-  /// Key code that generated this event.
-  #[allow(dead_code)]
-  pub key_code: KeyCode,
-
   /// Whether the event is for a key press or release.
   pub is_keypress: bool,
 }
@@ -171,11 +167,7 @@ impl KeyboardHook {
       return unsafe { CallNextHookEx(None, code, wparam, lparam) };
     };
 
-    let key_event = KeyEvent {
-      key,
-      key_code,
-      is_keypress,
-    };
+    let key_event = KeyEvent { key, is_keypress };
 
     let should_intercept = HOOK.with(|state| {
       if let Some(callback) = state.take() {
