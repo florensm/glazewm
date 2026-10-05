@@ -177,6 +177,12 @@ stack:
       workspace: "1"
       # Optional: let windows with an owner window join (default false).
       allow_owned: false
+      # Optional: keys pressed once in each new window after it joins,
+      # in keybinding syntax.
+      send_keys_on_join: ["ctrl+p"]
+      # Optional: "close_older" closes tabs with the same title as a
+      # window joining the stack (default "keep").
+      duplicates: "close_older"
   # How long an untitled window that could still match is held back.
   auto_stack_title_timeout_ms: 1500
 ```
@@ -203,6 +209,16 @@ stack:
 - Window rules that would move a stacked window or change its state
   (`set-floating`, `move --workspace`, ...) are skipped when it is
   auto-stacked.
+- `send_keys_on_join` and `duplicates` only apply to windows that open
+  while GlazeWM is running, never to windows stacked at startup or on a
+  config reload.
+- The `send_keys_on_join` keys are pressed about 250ms after the window
+  joins, and only while it is the foreground window, since key presses go
+  to whichever window is in front. If it doesn't get the foreground within
+  5 seconds, they are skipped and a log line says so.
+- `duplicates: "close_older"` closes the other tabs of the stack whose
+  process and title are exactly the same, as if their close button was
+  clicked. An app may still ask to save them first.
 
 ## Staying usable while a popup is open
 

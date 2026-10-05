@@ -1,8 +1,8 @@
 use anyhow::Context;
 use tracing::info;
 use wm_common::{
-  AutoStackRuleConfig, InvokeCommand, WindowRuleEvent, WindowState,
-  WmEvent,
+  AutoStackRuleConfig, DuplicateTabs, InvokeCommand, WindowRuleEvent,
+  WindowState, WmEvent,
 };
 #[cfg(target_os = "windows")]
 use wm_platform::NativeWindowWindowsExt;
@@ -89,6 +89,9 @@ fn manage_window_inner(
 
   let auto_stack_rule = join_rule(&decision, &native_properties.title);
 
+  // Windows already open at startup are given a workspace to go to.
+  let is_new = target_parent.is_none();
+
   state.auto_stack.release(native_window.id());
 
   // Cloak as early as possible to minimise the visible flash before the
@@ -150,8 +153,7 @@ fn manage_window_inner(
   };
 
   if let Some(rule) = &auto_stack_rule {
-    info!("Auto-stacking window into stack '{}': {window}", rule.name);
-    state.auto_stack.mark_settled(window.native().id());
+    on_auto_stacked(&window, rule, is_new, state);
   }
 
   // A stacked window only takes focus if the OS already gave it the
@@ -413,6 +415,70 @@ pub fn uncloak_held_window(native_window: &NativeWindow) {
 
   #[cfg(not(target_os = "windows"))]
   let _ = native_window;
+}
+
+/// Records that `window` joined its stack by `rule`. A window that just
+/// opened (`is_new`) also gets the rule's `duplicates` and
+/// `send_keys_on_join` applied.
+fn on_auto_stacked(
+  window: &WindowContainer,
+  rule: &AutoStackRuleConfig,
+  is_new: bool,
+  state: &mut WmState,
+) {
+  info!("Auto-stacking window into stack '{}': {window}", rule.name);
+  state.auto_stack.mark_settled(window.native().id());
+
+  if !is_new {
+    return;
+  }
+
+  if rule.duplicates == DuplicateTabs::CloseOlder {
+    close_duplicate_tabs(window);
+  }
+
+  #[cfg(target_os = "windows")]
+  if !rule.send_keys_on_join.is_empty() {
+    state
+      .auto_stack
+      .queue_keys(&window.native(), rule.send_keys_on_join.clone());
+  }
+}
+
+/// Closes the other windows in `window`'s stack that have the same process
+/// and title.
+fn close_duplicate_tabs(window: &WindowContainer) {
+  let Some(stack) = window.parent().and_then(|p| p.as_stack().cloned())
+  else {
+    return;
+  };
+
+  let properties = window.native_properties();
+
+  for other in stack.windows() {
+    let other_properties = other.native_properties();
+
+    if other.id() != window.id()
+      && is_duplicate(&properties, &other_properties)
+    {
+      info!("Closing tab duplicated by a new window: {other}");
+
+      if let Err(err) = other.native().close() {
+        tracing::warn!("Failed to close duplicate tab: {err}");
+      }
+    }
+  }
+}
+
+/// Whether two windows have the same process and the same, non-empty
+/// title.
+fn is_duplicate(
+  a: &NativeWindowProperties,
+  b: &NativeWindowProperties,
+) -> bool {
+  !a.title.trim().is_empty()
+    && a.title == b.title
+    && a.process_name == b.process_name
 }
 
 /// Whether `window` is the OS foreground window.
@@ -892,7 +958,9 @@ fn insertion_target(
 
 #[cfg(test)]
 mod tests {
-  use wm_common::{AutoStackRuleConfig, ParsedConfig, WindowState};
+  use wm_common::{
+    AutoStackRuleConfig, DuplicateTabs, ParsedConfig, WindowState,
+  };
 
   use super::{auto_stack_placement, insertion_target};
   use crate::{
@@ -910,6 +978,8 @@ mod tests {
       exclude: vec![],
       workspace: workspace.map(ToString::to_string),
       allow_owned: false,
+      send_keys_on_join: Vec::new(),
+      duplicates: DuplicateTabs::Keep,
     }
   }
 
@@ -1019,5 +1089,33 @@ mod tests {
     assert_eq!(index, 1);
 
     std::mem::forget(state);
+  }
+
+  #[test]
+  fn duplicates_need_the_same_process_and_title() {
+    use super::is_duplicate;
+    use crate::models::NativeWindowProperties;
+
+    let window = |process: &str, title: &str| {
+      NativeWindowProperties::mock()
+        .process_name(process.to_string())
+        .title(title.to_string())
+        .call()
+    };
+    let original = window("MyApp", "Details for item 42");
+
+    assert!(is_duplicate(
+      &original,
+      &window("MyApp", "Details for item 42")
+    ));
+    assert!(!is_duplicate(
+      &original,
+      &window("MyApp", "Details for item 43")
+    ));
+    assert!(!is_duplicate(
+      &original,
+      &window("notepad", "Details for item 42")
+    ));
+    assert!(!is_duplicate(&window("MyApp", ""), &window("MyApp", "")));
   }
 }

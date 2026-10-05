@@ -4,7 +4,7 @@ use std::{
 };
 
 use wm_common::{AutoStackRuleConfig, WindowMatchConfig};
-use wm_platform::{NativeWindow, WindowId};
+use wm_platform::{Keybinding, NativeWindow, WindowId};
 
 use crate::{models::NativeWindowProperties, user_config::UserConfig};
 
@@ -133,6 +133,33 @@ struct HeldWindow {
   deadline: Instant,
 }
 
+/// How long after joining a new window gets its `send_keys_on_join`, so
+/// that the app is ready for input.
+const SEND_KEYS_DELAY: Duration = Duration::from_millis(250);
+
+/// How long `send_keys_on_join` keeps waiting for the window to be in the
+/// foreground before giving up.
+const SEND_KEYS_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// How long until a pending key press is tried again: the next key
+/// combination, or a re-check for the foreground.
+const SEND_KEYS_RETRY: Duration = Duration::from_millis(150);
+
+/// Key combinations waiting to be pressed in a window that joined a stack.
+pub struct PendingKeys {
+  pub native: NativeWindow,
+  pub keys: Vec<Keybinding>,
+  due: Instant,
+  give_up: Instant,
+}
+
+impl PendingKeys {
+  /// Whether it is too late to retry.
+  pub fn is_expired(&self, now: Instant) -> bool {
+    now >= self.give_up
+  }
+}
+
 /// Auto-stacking bookkeeping that outlives a single event.
 #[derive(Default)]
 pub struct AutoStackState {
@@ -143,6 +170,9 @@ pub struct AutoStackState {
   /// out of one. They are never auto-stacked again, so a window removed
   /// from its stack isn't pulled back in by a later title change.
   settled: HashSet<WindowId>,
+
+  /// Key combinations to press in windows that just joined a stack.
+  pending_keys: Vec<PendingKeys>,
 }
 
 impl AutoStackState {
@@ -166,9 +196,44 @@ impl AutoStackState {
     self.held.contains_key(&id)
   }
 
-  /// Earliest deadline of the held windows.
+  /// Earliest deadline of the held windows and pending key presses.
   pub fn next_deadline(&self) -> Option<Instant> {
-    self.held.values().map(|held| held.deadline).min()
+    self
+      .held
+      .values()
+      .map(|held| held.deadline)
+      .chain(self.pending_keys.iter().map(|pending| pending.due))
+      .min()
+  }
+
+  /// Presses `keys` in `native` shortly, once it is in the foreground.
+  pub fn queue_keys(
+    &mut self,
+    native: &NativeWindow,
+    keys: Vec<Keybinding>,
+  ) {
+    let now = Instant::now();
+    self.pending_keys.push(PendingKeys {
+      native: native.clone(),
+      keys,
+      due: now + SEND_KEYS_DELAY,
+      give_up: now + SEND_KEYS_TIMEOUT,
+    });
+  }
+
+  /// Removes and returns the key presses that are due.
+  pub fn take_due_keys(&mut self, now: Instant) -> Vec<PendingKeys> {
+    let (due, waiting) = std::mem::take(&mut self.pending_keys)
+      .into_iter()
+      .partition(|pending| pending.due <= now);
+    self.pending_keys = waiting;
+    due
+  }
+
+  /// Tries `pending` again shortly, with the time limit it started with.
+  pub fn retry_keys(&mut self, mut pending: PendingKeys, now: Instant) {
+    pending.due = now + SEND_KEYS_RETRY;
+    self.pending_keys.push(pending);
   }
 
   /// Held windows whose deadline has passed. They stay held until they
@@ -200,12 +265,17 @@ impl AutoStackState {
   pub fn forget(&mut self, id: WindowId) {
     self.held.remove(&id);
     self.settled.remove(&id);
+    self
+      .pending_keys
+      .retain(|pending| pending.native.id() != id);
   }
 }
 
 #[cfg(test)]
 mod tests {
-  use wm_common::{AutoStackRuleConfig, MatchType, WindowMatchConfig};
+  use wm_common::{
+    AutoStackRuleConfig, DuplicateTabs, MatchType, WindowMatchConfig,
+  };
 
   use super::{decide, AutoStackDecision, WindowTraits};
   use crate::models::NativeWindowProperties;
@@ -230,6 +300,8 @@ mod tests {
       }],
       workspace: None,
       allow_owned: false,
+      send_keys_on_join: Vec::new(),
+      duplicates: DuplicateTabs::Keep,
     }
   }
 
@@ -334,5 +406,37 @@ mod tests {
       decide(&rules, &props, traits),
       AutoStackDecision::Join(&rules[0])
     );
+  }
+
+  #[test]
+  fn pending_keys_wait_then_retry_until_they_expire() {
+    use std::time::{Duration, Instant};
+
+    use wm_platform::{Key, Keybinding, NativeWindow};
+
+    use super::AutoStackState;
+
+    let native = NativeWindow::mock();
+    let mut auto_stack = AutoStackState::default();
+    let start = Instant::now();
+    auto_stack.queue_keys(
+      &native,
+      vec![Keybinding::new(vec![Key::Ctrl, Key::P]).unwrap()],
+    );
+
+    assert!(auto_stack.next_deadline().is_some());
+    assert!(auto_stack.take_due_keys(start).is_empty());
+
+    let due = auto_stack.take_due_keys(start + Duration::from_secs(1));
+    assert_eq!(due.len(), 1);
+    assert!(auto_stack.next_deadline().is_none());
+
+    let pending = due.into_iter().next().unwrap();
+    assert!(!pending.is_expired(start + Duration::from_secs(1)));
+    assert!(pending.is_expired(start + Duration::from_secs(6)));
+
+    auto_stack.retry_keys(pending, start + Duration::from_secs(1));
+    auto_stack.forget(native.id());
+    assert!(auto_stack.next_deadline().is_none());
   }
 }

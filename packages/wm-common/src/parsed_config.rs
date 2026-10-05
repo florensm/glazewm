@@ -211,6 +211,34 @@ pub struct AutoStackRuleConfig {
   /// are usually dialogs, so they are skipped by default.
   #[serde(default)]
   pub allow_owned: bool,
+
+  /// Key combinations (e.g. `ctrl+p`) pressed in a window once, after it
+  /// opens and joins the stack.
+  #[serde(
+    default,
+    deserialize_with = "deserialize_bindings",
+    serialize_with = "serialize_bindings"
+  )]
+  pub send_keys_on_join: Vec<Keybinding>,
+
+  /// What happens to tabs with the same title as a window joining the
+  /// stack.
+  #[serde(default)]
+  pub duplicates: DuplicateTabs,
+}
+
+/// What happens to tabs with the same title as a window joining a stack.
+#[derive(
+  Clone, Copy, Debug, Default, Deserialize, PartialEq, Serialize,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum DuplicateTabs {
+  /// Both are kept.
+  #[default]
+  Keep,
+
+  /// The older windows are closed.
+  CloseOlder,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]

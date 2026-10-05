@@ -19,7 +19,12 @@ use windows::{
     },
     UI::{
       Input::KeyboardAndMouse::{
-        SendInput, INPUT, INPUT_0, INPUT_MOUSE, MOUSEINPUT,
+        SendInput, INPUT, INPUT_0, INPUT_KEYBOARD, INPUT_MOUSE,
+        KEYBDINPUT, KEYBD_EVENT_FLAGS, KEYEVENTF_EXTENDEDKEY,
+        KEYEVENTF_KEYUP, MOUSEINPUT, VIRTUAL_KEY, VK_APPS, VK_DELETE,
+        VK_DIVIDE, VK_DOWN, VK_END, VK_HOME, VK_INSERT, VK_LEFT, VK_LWIN,
+        VK_NEXT, VK_NUMLOCK, VK_PRIOR, VK_RCONTROL, VK_RIGHT, VK_RMENU,
+        VK_RWIN, VK_UP,
       },
       WindowsAndMessaging::{
         EnumWindows, FlashWindowEx, GetAncestor, GetClassNameW,
@@ -45,10 +50,14 @@ use windows::{
   },
 };
 
-use super::com::{IApplicationView, COM_INIT};
+use super::{
+  com::{IApplicationView, COM_INIT},
+  SENT_KEY_MARKER,
+};
 use crate::{
-  window_class, Color, CornerStyle, Delta, Dispatcher, LengthValue,
-  OpacityValue, Point, Rect, RectDelta, WindowId, WindowZOrder,
+  window_class, Color, CornerStyle, Delta, Dispatcher, Key, KeyCode,
+  LengthValue, OpacityValue, Point, Rect, RectDelta, WindowId,
+  WindowZOrder,
 };
 
 /// Magic number used to identify programmatic mouse inputs from our own
@@ -401,6 +410,63 @@ impl NativeWindow {
     let is_shown = unsafe { IsWindowVisible(self.hwnd()) }.as_bool();
 
     queried && is_shown && cloaked == CLOAKED_INHERITED
+  }
+
+  /// Implements [`NativeWindowWindowsExt::press_keys`].
+  pub(crate) fn press_keys(&self, keys: &[Key]) -> crate::Result<bool> {
+    let codes = keys
+      .iter()
+      .map(|key| KeyCode::try_from(*key).map(|code| VIRTUAL_KEY(code.0)))
+      .collect::<Result<Vec<_>, _>>()
+      .map_err(|_| crate::Error::InvalidKeybinding)?;
+
+    // Checked as late as possible: if another window took the foreground,
+    // the keys would land in it instead.
+    // SAFETY: No preconditions.
+    if unsafe { GetForegroundWindow() } != self.hwnd() {
+      return Ok(false);
+    }
+
+    let input = |vk: VIRTUAL_KEY, is_release: bool| {
+      let mut flags = KEYBD_EVENT_FLAGS(0);
+      if is_release {
+        flags |= KEYEVENTF_KEYUP;
+      }
+      if is_extended_key(vk) {
+        flags |= KEYEVENTF_EXTENDEDKEY;
+      }
+
+      INPUT {
+        r#type: INPUT_KEYBOARD,
+        Anonymous: INPUT_0 {
+          ki: KEYBDINPUT {
+            wVk: vk,
+            wScan: 0,
+            dwFlags: flags,
+            time: 0,
+            dwExtraInfo: SENT_KEY_MARKER,
+          },
+        },
+      }
+    };
+
+    // Pressed in order and released in reverse, as a person would.
+    let inputs = codes
+      .iter()
+      .map(|vk| input(*vk, false))
+      .chain(codes.iter().rev().map(|vk| input(*vk, true)))
+      .collect::<Vec<_>>();
+
+    // SAFETY: `inputs` outlives the call and `cbsize` matches `INPUT`.
+    #[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
+    let sent =
+      unsafe { SendInput(&inputs, std::mem::size_of::<INPUT>() as i32) };
+
+    if sent as usize != inputs.len() {
+      return Err(windows::core::Error::from_win32().into());
+    }
+
+    Ok(true)
   }
 
   /// Implements [`NativeWindowWindowsExt::process_id`].
@@ -985,6 +1051,31 @@ pub(crate) fn focused_window(
 ) -> crate::Result<crate::NativeWindow> {
   let handle = unsafe { GetForegroundWindow() };
   Ok(NativeWindow::new(handle.0).into())
+}
+
+/// Whether `vk` is sent with `KEYEVENTF_EXTENDEDKEY`, without which e.g.
+/// the arrow keys arrive as their numpad counterparts.
+fn is_extended_key(vk: VIRTUAL_KEY) -> bool {
+  [
+    VK_LEFT,
+    VK_RIGHT,
+    VK_UP,
+    VK_DOWN,
+    VK_HOME,
+    VK_END,
+    VK_PRIOR,
+    VK_NEXT,
+    VK_INSERT,
+    VK_DELETE,
+    VK_DIVIDE,
+    VK_NUMLOCK,
+    VK_RCONTROL,
+    VK_RMENU,
+    VK_LWIN,
+    VK_RWIN,
+    VK_APPS,
+  ]
+  .contains(&vk)
 }
 
 /// Implements [`Dispatcher::window_from_point`].

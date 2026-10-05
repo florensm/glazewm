@@ -789,4 +789,51 @@ window_effects:
     assert_eq!(dynamic_config.name, "2");
     assert!(!dynamic_config.keep_alive);
   }
+
+  #[test]
+  fn auto_stack_join_options_parse() {
+    let yaml = r#"
+stack:
+  auto_stack:
+    - name: "details"
+      match:
+        - window_process: { equals: "MyApp" }
+      send_keys_on_join: ["ctrl+p", "f5"]
+      duplicates: "close_older"
+"#;
+    let config: ParsedConfig =
+      serde_yaml::from_str(yaml).expect("auto-stack options should parse");
+    let rule = &config.stack.auto_stack[0];
+
+    let keys = rule
+      .send_keys_on_join
+      .iter()
+      .map(|binding| binding.keys().to_vec())
+      .collect::<Vec<_>>();
+    assert_eq!(
+      keys,
+      vec![
+        vec![wm_platform::Key::Ctrl, wm_platform::Key::P],
+        vec![wm_platform::Key::F5]
+      ]
+    );
+    assert_eq!(rule.duplicates, wm_common::DuplicateTabs::CloseOlder);
+  }
+
+  #[test]
+  fn auto_stack_join_options_default_to_off() {
+    let yaml = r#"
+stack:
+  auto_stack:
+    - name: "details"
+      match:
+        - window_process: { equals: "MyApp" }
+"#;
+    let config: ParsedConfig =
+      serde_yaml::from_str(yaml).expect("auto-stack rule should parse");
+    let rule = &config.stack.auto_stack[0];
+
+    assert!(rule.send_keys_on_join.is_empty());
+    assert_eq!(rule.duplicates, wm_common::DuplicateTabs::Keep);
+  }
 }

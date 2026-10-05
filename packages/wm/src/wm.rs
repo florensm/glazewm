@@ -180,7 +180,7 @@ impl WindowManager {
   }
 
   /// Places the windows held back for auto-stacking whose wait for a
-  /// title ran out.
+  /// title ran out, and presses the `send_keys_on_join` keys that are due.
   pub fn process_auto_stack_timeouts(
     &mut self,
     config: &mut UserConfig,
@@ -192,6 +192,9 @@ impl WindowManager {
     {
       manage_held_window(native_window, state, config)?;
     }
+
+    #[cfg(target_os = "windows")]
+    send_due_keys(state);
 
     if !state.is_paused && state.pending_sync.has_changes() {
       platform_sync(state, config)?;
@@ -1161,6 +1164,45 @@ impl WindowManager {
 
       if let Err(err) = ipc_server.process_event(wm_event) {
         tracing::warn!("{:?}", err);
+      }
+    }
+  }
+}
+
+/// Presses the next due `send_keys_on_join` key combination in windows
+/// that are in the foreground, retrying the others until they time out.
+#[cfg(target_os = "windows")]
+fn send_due_keys(state: &mut WmState) {
+  let now = std::time::Instant::now();
+
+  for mut pending in state.auto_stack.take_due_keys(now) {
+    let Some(window) = state.window_from_native(&pending.native) else {
+      continue;
+    };
+
+    let Some(keybinding) = pending.keys.first() else {
+      continue;
+    };
+
+    let result = window.native().press_keys(keybinding.keys());
+
+    match result {
+      Ok(true) => {
+        pending.keys.remove(0);
+
+        if pending.keys.is_empty() {
+          tracing::info!("Sent keys on join to window: {window}");
+        } else {
+          state.auto_stack.retry_keys(pending, now);
+        }
+      }
+      Ok(false) if pending.is_expired(now) => tracing::info!(
+        "Not sending keys on join to window, since it never got focus: \
+         {window}"
+      ),
+      Ok(false) => state.auto_stack.retry_keys(pending, now),
+      Err(err) => {
+        tracing::warn!("Failed to send keys on join to {window}: {err}");
       }
     }
   }

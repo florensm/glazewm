@@ -201,6 +201,17 @@ pub trait NativeWindowWindowsExt {
   /// This method is only available on Windows.
   fn is_cloaked_by_owner(&self) -> bool;
 
+  /// Presses `keys` together (e.g. `ctrl+p`) in the window, if it is the
+  /// foreground window.
+  ///
+  /// Returns `false` without sending anything if it isn't, since key
+  /// presses always go to the foreground window.
+  ///
+  /// # Platform-specific
+  ///
+  /// This method is only available on Windows.
+  fn press_keys(&self, keys: &[crate::Key]) -> crate::Result<bool>;
+
   /// Whether the window's parent is the desktop, rather than another
   /// window it was embedded into (e.g. via `SetParent`).
   ///
@@ -459,6 +470,10 @@ impl NativeWindowWindowsExt for NativeWindow {
 
   fn is_cloaked_by_owner(&self) -> bool {
     self.inner.is_cloaked_by_owner()
+  }
+
+  fn press_keys(&self, keys: &[crate::Key]) -> crate::Result<bool> {
+    self.inner.press_keys(keys)
   }
 
   fn is_top_level(&self) -> bool {

@@ -254,6 +254,10 @@ stack:
   #     # Windows that never join, even if they match.
   #     exclude:
   #       - window_title: { includes: "Picture-in-Picture" }
+  #     # Keys pressed once in each new window after it joins.
+  #     send_keys_on_join: ["ctrl+t"]
+  #     # Close tabs with the same title as a joining window.
+  #     duplicates: "close_older"
 
 window_effects:
   # Drop the border effect while a window is fullscreen. A fullscreen window
