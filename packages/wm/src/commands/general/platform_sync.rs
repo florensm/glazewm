@@ -22,11 +22,12 @@ use wm_platform::{
 use wm_platform::{
   BackdropOverlayParams, BorderOverlayParams, CornerStyle,
   NativeBackdropOverlay, NativeBorderOverlay, NativeIrisOverlay,
-  OpacityValue, Overlay, SurrogateBatch, WorkspaceSurrogate, HWND,
+  OpacityValue, Overlay, StyleBlend, SurrogateBatch, WorkspaceSurrogate,
+  HWND,
 };
 
 use crate::{
-  animation::AnimationPositionResult,
+  animation::{AnimationPositionResult, WorkspaceSwitchEntry},
   models::{Container, WindowContainer},
   traits::{CommonGetters, PositionGetters, WindowGetters},
   user_config::UserConfig,
@@ -124,54 +125,8 @@ pub fn platform_sync(
   if state.pending_sync.needs_focused_effect_update()
     || state.pending_sync.needs_all_effects_update()
   {
-    // Keep reference to the previous window that had focus effects
-    // applied.
-    let prev_effects_window = state.prev_effects_window.clone();
-
-    if let Ok(window) = focused_container.as_window_container() {
-      apply_window_effects(&window, true, config);
-      state.prev_effects_window = Some(window.clone());
-    } else {
-      state.prev_effects_window = None;
-    }
-
-    // Get windows that should have the unfocused border applied to them.
-    // For the sake of performance, we only update the border of the
-    // previously focused window. If the `reset_window_effects` flag is
-    // passed, the unfocused border is applied to all unfocused windows.
-    let unfocused_windows =
-      if state.pending_sync.needs_all_effects_update() {
-        state.windows()
-      } else {
-        prev_effects_window.into_iter().collect()
-      }
-      .into_iter()
-      .filter(|window| window.id() != focused_container.id());
-
-    for window in unfocused_windows {
-      apply_window_effects(&window, false, config);
-    }
-
-    // Re-apply animation-driven opacity for the focused window if an
-    // opacity focus animation is running. `apply_window_effects` above
-    // may have reset the transparency to the config value; overriding it
-    // here ensures the animated opacity is visible on the first frame.
-    #[cfg(target_os = "windows")]
-    if let Ok(window) = focused_container.as_window_container() {
-      if let Some(anim) =
-        state.animation_manager.get_animation(&window.id())
-      {
-        if let (_, Some(opacity)) = anim.current_state() {
-          debug!(
-            "Overriding transparency for {} with in-progress animation \
-             opacity: alpha={}.",
-            window.id(),
-            opacity.to_alpha()
-          );
-          let _ = window.native().set_transparency(&opacity);
-        }
-      }
-    }
+    let all_windows = state.pending_sync.needs_all_effects_update();
+    apply_focus_effects(state, &focused_container, all_windows, config);
   }
 
   // A surrogate created this cycle with `place_at_top: true` may have
@@ -216,6 +171,63 @@ pub fn platform_sync(
   state.pending_sync.clear();
 
   Ok(())
+}
+
+/// Applies the focused-window effects to `focused_container` and the
+/// unfocused ones to the window that previously had them (or to every
+/// other window when `all_windows` is set).
+pub(crate) fn apply_focus_effects(
+  state: &mut WmState,
+  focused_container: &Container,
+  all_windows: bool,
+  config: &UserConfig,
+) {
+  // Keep reference to the previous window that had focus effects
+  // applied.
+  let prev_effects_window = state.prev_effects_window.clone();
+
+  if let Ok(window) = focused_container.as_window_container() {
+    apply_window_effects(&window, true, config);
+    state.prev_effects_window = Some(window.clone());
+  } else {
+    state.prev_effects_window = None;
+  }
+
+  // Get windows that should have the unfocused border applied to them.
+  // For the sake of performance, we only update the border of the
+  // previously focused window. If the `reset_window_effects` flag is
+  // passed, the unfocused border is applied to all unfocused windows.
+  let unfocused_windows = if all_windows {
+    state.windows()
+  } else {
+    prev_effects_window.into_iter().collect()
+  }
+  .into_iter()
+  .filter(|window| window.id() != focused_container.id());
+
+  for window in unfocused_windows {
+    apply_window_effects(&window, false, config);
+  }
+
+  // Re-apply animation-driven opacity for the focused window if an
+  // opacity focus animation is running. `apply_window_effects` above
+  // may have reset the transparency to the config value; overriding it
+  // here ensures the animated opacity is visible on the first frame.
+  #[cfg(target_os = "windows")]
+  if let Ok(window) = focused_container.as_window_container() {
+    if let Some(anim) = state.animation_manager.get_animation(&window.id())
+    {
+      if let (_, Some(opacity)) = anim.current_state() {
+        debug!(
+          "Overriding transparency for {} with in-progress animation \
+           opacity: alpha={}.",
+          window.id(),
+          opacity.to_alpha()
+        );
+        let _ = window.native().set_transparency(&opacity);
+      }
+    }
+  }
 }
 
 /// Syncs OS input focus to `focused_container`.
@@ -624,11 +636,8 @@ fn redraw_containers(
 
       if has_ws_windows {
         let is_no_slide = ws_config.style.is_no_slide();
-        let mut ws_windows: Vec<(
-          uuid::Uuid,
-          Option<WorkspaceSurrogate>,
-          bool,
-        )> = Vec::new();
+        let mut ws_windows: Vec<(uuid::Uuid, WorkspaceSwitchEntry)> =
+          Vec::new();
         let mut monitor_x = 0i32;
         let mut monitor_width = 0i32;
         let mut monitor_y = 0i32;
@@ -662,23 +671,27 @@ fn redraw_containers(
 
           let hwnd = window.native().hwnd();
 
-          let effect_cfg = if window.id() == focused_container.id() {
-            &config.value.window_effects.focused_window
-          } else {
-            &config.value.window_effects.other_windows
-          };
-          let opacity = if effect_cfg.transparency.enabled {
-            effect_cfg.transparency.opacity.to_alpha()
-          } else {
-            u8::MAX
-          };
-          // A configured backdrop switches the surrogate to `Live` mode,
-          // so the steady-state backdrop overlay is repositioned onto its
-          // footprint each tick and the frosted-glass effect stays visible
-          // while the workspace slides.
+          // The switch blends each window from the focus style it is
+          // showing now to the one it ends on (see
+          // `WorkspaceSwitchEntry::was_focused`). Focus has already moved
+          // in the tree, but `prev_effects_window` is only updated once
+          // the OS confirms it, so it still names the window
+          // wearing the focused style.
+          let was_focused = state
+            .prev_effects_window
+            .as_ref()
+            .is_some_and(|w| w.id() == id);
+          let (opacity, _, from_backdrop, _) =
+            surrogate_effects_for(was_focused, config);
+          let (_, corner_style, to_backdrop, _) =
+            surrogate_effects_for(id == focused_container.id(), config);
+
+          // A backdrop on either side switches the surrogate to `Live`
+          // mode, so the steady-state backdrop overlay is repositioned
+          // onto its footprint each tick and the frosted-glass effect
+          // stays visible (and can fade) while the workspace slides.
           let overlay_tint =
-            effect_cfg.backdrop.overlay_tint().map(|c| c.to_abgr());
-          let corner_style = effect_cfg.resolved_corner_style();
+            from_backdrop.or(to_backdrop).map(|p| p.tint.to_abgr());
 
           if is_incoming {
             let surrogate = window
@@ -718,7 +731,14 @@ fn redraw_containers(
             // `is_frozen_by_ws_animation` is true for all of them — this
             // prevents the real window from being uncloaked before the
             // animation ends.
-            ws_windows.push((id, surrogate, true));
+            ws_windows.push((
+              id,
+              WorkspaceSwitchEntry {
+                surrogate,
+                is_incoming: true,
+                was_focused,
+              },
+            ));
           } else {
             // `window_target_positions` stores a *positioning* rect
             // (`to_rect() + total_border_delta()`), inflated by the OS's
@@ -762,14 +782,21 @@ fn redraw_containers(
               e
             })
             .ok();
-            ws_windows.push((id, surrogate, false));
+            ws_windows.push((
+              id,
+              WorkspaceSwitchEntry {
+                surrogate,
+                is_incoming: false,
+                was_focused,
+              },
+            ));
           }
         }
 
         let has_outgoing =
-          ws_windows.iter().any(|(_, _, is_incoming)| !*is_incoming);
+          ws_windows.iter().any(|(_, entry)| !entry.is_incoming);
         let has_incoming =
-          ws_windows.iter().any(|(_, _, is_incoming)| *is_incoming);
+          ws_windows.iter().any(|(_, entry)| entry.is_incoming);
 
         // For slide styles, skip when direction == 0: workspace names were
         // not found in the config so the slide offset would be 0,
@@ -784,9 +811,9 @@ fn redraw_containers(
           // warm. For stationary (non-slide) styles, also show
           // incoming surrogates at their start opacity so DWM
           // warms their thumbnails before the loop.
-          for (_, ref mut surrogate, is_incoming) in &mut ws_windows {
-            if let Some(s) = surrogate {
-              if !*is_incoming {
+          for (_, entry) in &mut ws_windows {
+            if let Some(s) = &mut entry.surrogate {
+              if !entry.is_incoming {
                 s.show_initial();
               } else if ws_config.style != WorkspaceSwitchStyle::Slide {
                 s.show_incoming();
@@ -2099,10 +2126,30 @@ pub(crate) fn upsert_overlay<O: SyncableOverlay>(
   anchor: HWND,
   batch: &mut SurrogateBatch,
 ) {
+  upsert_blended_overlay(
+    overlays,
+    window_id,
+    StyleBlend::settled(params),
+    rect,
+    anchor,
+    batch,
+  );
+}
+
+/// [`upsert_overlay`] for a style mid-transition.
+#[cfg(target_os = "windows")]
+pub(crate) fn upsert_blended_overlay<O: SyncableOverlay>(
+  overlays: &mut std::collections::HashMap<uuid::Uuid, O>,
+  window_id: uuid::Uuid,
+  blend: StyleBlend<O::Params>,
+  rect: &Rect,
+  anchor: HWND,
+  batch: &mut SurrogateBatch,
+) {
   if let Some(overlay) =
-    overlay_entry(overlays, window_id, params, rect, anchor)
+    overlay_entry(overlays, window_id, blend.from, rect, anchor)
   {
-    overlay.apply(params);
+    overlay.apply_blend(blend);
     overlay.defer_rect(batch, rect, anchor);
   }
 }
@@ -2213,20 +2260,20 @@ pub(crate) fn upsert_pinned_border_overlay(
     NativeBorderOverlay,
   >,
   window_id: uuid::Uuid,
-  params: BorderOverlayParams,
+  blend: StyleBlend<BorderOverlayParams>,
   rect: &Rect,
   viewport: &Rect,
   anchor: HWND,
 ) {
   let Some(overlay) =
-    overlay_entry(overlays, window_id, params, rect, anchor)
+    overlay_entry(overlays, window_id, blend.from, rect, anchor)
   else {
     return;
   };
 
-  // Applied before the pin: a width change re-runs `set_rect` internally,
-  // which drops the pin, and the re-pin below then puts it back.
-  overlay.apply(params);
+  // Applied before the pin: on an unpinned overlay a width change re-runs
+  // `set_rect` internally, and the pin below then takes over.
+  overlay.apply_blend(blend);
 
   // A pin that failed to apply sits the transition out.
   if !overlay.pin_or_slide(viewport, rect, anchor) {
@@ -2438,6 +2485,10 @@ pub(crate) trait SyncableOverlay: Overlay {
   ) -> bool {
     false
   }
+
+  /// `params` at zero opacity: what a transition fades from or to when
+  /// the effect is off on one side of it.
+  fn transparent(params: Self::Params) -> Self::Params;
 }
 
 #[cfg(target_os = "windows")]
@@ -2456,6 +2507,13 @@ impl SyncableOverlay for NativeBackdropOverlay {
     config: &UserConfig,
   ) -> Option<Self::Params> {
     backdrop_overlay_params_for(is_focused, config)
+  }
+
+  fn transparent(params: Self::Params) -> Self::Params {
+    BackdropOverlayParams {
+      opacity: 0.0,
+      ..params
+    }
   }
 }
 
@@ -2482,6 +2540,13 @@ impl SyncableOverlay for NativeBorderOverlay {
     config: &UserConfig,
   ) -> bool {
     border_hidden_for_fullscreen(window, config)
+  }
+
+  fn transparent(params: Self::Params) -> Self::Params {
+    BorderOverlayParams {
+      opacity: 0.0,
+      ..params
+    }
   }
 }
 
@@ -2603,6 +2668,17 @@ fn sync_overlays<O: SyncableOverlay>(
       wanted_ids.insert(window.id());
     }
 
+    // The animation trackers own these overlays outright -- including
+    // fading one out whose effect is off on the window's new focus side,
+    // which the hide below would otherwise cut short on the first tick.
+    if state.animation_manager.has_live_ws_surrogate(&window.id())
+      || state
+        .animation_manager
+        .has_live_resize_tracker(&window.id())
+    {
+      continue;
+    }
+
     let params = (if is_focused {
       focused_params
     } else {
@@ -2622,14 +2698,6 @@ fn sync_overlays<O: SyncableOverlay>(
       }
       continue;
     };
-
-    if state.animation_manager.has_live_ws_surrogate(&window.id())
-      || state
-        .animation_manager
-        .has_live_resize_tracker(&window.id())
-    {
-      continue;
-    }
 
     let should_hide =
       state.animation_manager.has_active_surrogate(&window.id())

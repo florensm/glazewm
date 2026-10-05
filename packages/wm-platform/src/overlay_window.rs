@@ -14,7 +14,7 @@ use windows::{
   },
 };
 
-use crate::{window_class, Rect, SurrogateBatch};
+use crate::{window_class, Rect, StyleBlend, SurrogateBatch};
 
 /// Which overlay an [`OverlayWindow`] backs; each gets its own window
 /// class so the overlays can be told apart in z-order dumps.
@@ -289,7 +289,13 @@ pub trait Overlay: Sized {
   ) -> crate::Result<Self>;
 
   /// Applies `params`; each setting is only re-applied when it changed.
-  fn apply(&mut self, params: Self::Params);
+  fn apply(&mut self, params: Self::Params) {
+    self.apply_blend(StyleBlend::settled(params));
+  }
+
+  /// Applies a style partway through a transition, for animating between
+  /// focus states rather than snapping.
+  fn apply_blend(&mut self, blend: StyleBlend<Self::Params>);
 
   /// Queues a reposition into `batch` instead of an immediate
   /// `SetWindowPos`, so the overlay moves in the same DWM frame as its

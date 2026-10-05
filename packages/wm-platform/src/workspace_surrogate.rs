@@ -348,6 +348,13 @@ impl WorkspaceSurrogate {
     self.inner.set_window_opacity(self.opacity);
   }
 
+  /// Retargets the effect opacity, for a window whose transparency
+  /// transitions with its focus state during the switch. Takes effect
+  /// with the next per-frame update.
+  pub fn set_effect_opacity(&mut self, opacity: u8) {
+    self.opacity = opacity;
+  }
+
   /// Shows the surrogate at the incoming animation start opacity, with the
   /// thumbnail pre-positioned at the window's location within the monitor
   /// viewport.
