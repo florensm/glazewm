@@ -149,6 +149,12 @@ const SEND_KEYS_RETRY: Duration = Duration::from_millis(150);
 pub struct PendingKeys {
   pub native: NativeWindow,
   pub keys: Vec<Keybinding>,
+
+  /// Duplicate tabs closed once the keys are done, since closing them
+  /// can take the foreground away from `native` before the keys are
+  /// pressed.
+  pub then_close: Vec<NativeWindow>,
+
   due: Instant,
   give_up: Instant,
 }
@@ -211,11 +217,13 @@ impl AutoStackState {
     &mut self,
     native: &NativeWindow,
     keys: Vec<Keybinding>,
+    then_close: Vec<NativeWindow>,
   ) {
     let now = Instant::now();
     self.pending_keys.push(PendingKeys {
       native: native.clone(),
       keys,
+      then_close,
       due: now + SEND_KEYS_DELAY,
       give_up: now + SEND_KEYS_TIMEOUT,
     });
@@ -422,6 +430,7 @@ mod tests {
     auto_stack.queue_keys(
       &native,
       vec![Keybinding::new(vec![Key::Ctrl, Key::P]).unwrap()],
+      Vec::new(),
     );
 
     assert!(auto_stack.next_deadline().is_some());

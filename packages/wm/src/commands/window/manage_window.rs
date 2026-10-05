@@ -433,39 +433,58 @@ pub fn on_auto_stacked(
     return;
   }
 
-  if rule.duplicates == DuplicateTabs::CloseOlder {
-    close_duplicate_tabs(window);
-  }
+  let duplicates = if rule.duplicates == DuplicateTabs::CloseOlder {
+    duplicate_tabs(window)
+  } else {
+    Vec::new()
+  };
 
+  // The duplicates are closed after the keys are pressed, since closing
+  // them can move the foreground to another window first.
   #[cfg(target_os = "windows")]
   if !rule.send_keys_on_join.is_empty() {
-    state
-      .auto_stack
-      .queue_keys(&window.native(), rule.send_keys_on_join.clone());
+    state.auto_stack.queue_keys(
+      &window.native(),
+      rule.send_keys_on_join.clone(),
+      duplicates,
+    );
+    return;
   }
+
+  close_duplicate_tabs(&duplicates);
 }
 
-/// Closes the other windows in `window`'s stack that have the same process
-/// and title.
-fn close_duplicate_tabs(window: &WindowContainer) {
+/// The other windows in `window`'s stack that have the same process and
+/// title.
+fn duplicate_tabs(window: &WindowContainer) -> Vec<NativeWindow> {
   let Some(stack) = window.parent().and_then(|p| p.as_stack().cloned())
   else {
-    return;
+    return Vec::new();
   };
 
   let properties = window.native_properties();
 
-  for other in stack.windows() {
-    let other_properties = other.native_properties();
+  stack
+    .windows()
+    .into_iter()
+    .filter(|other| {
+      other.id() != window.id()
+        && is_duplicate(&properties, &other.native_properties())
+    })
+    .map(|other| other.native().clone())
+    .collect()
+}
 
-    if other.id() != window.id()
-      && is_duplicate(&properties, &other_properties)
-    {
-      info!("Closing tab duplicated by a new window: {other}");
+/// Closes tabs duplicated by a window that joined their stack.
+pub fn close_duplicate_tabs(duplicates: &[NativeWindow]) {
+  for duplicate in duplicates {
+    info!(
+      "Closing tab duplicated by a new window: '{}'",
+      duplicate.title().unwrap_or_default()
+    );
 
-      if let Err(err) = other.native().close() {
-        tracing::warn!("Failed to close duplicate tab: {err}");
-      }
+    if let Err(err) = duplicate.close() {
+      tracing::warn!("Failed to close duplicate tab: {err}");
     }
   }
 }

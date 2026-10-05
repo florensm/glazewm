@@ -218,7 +218,9 @@ stack:
   5 seconds, they are skipped and a log line says so.
 - `duplicates: "close_older"` closes the other tabs of the stack whose
   process and title are exactly the same, as if their close button was
-  clicked. An app may still ask to save them first.
+  clicked. An app may still ask to save them first. With
+  `send_keys_on_join`, they are closed once the keys are pressed, since
+  closing them can take the foreground away from the new window.
 
 ## Staying usable while a popup is open
 

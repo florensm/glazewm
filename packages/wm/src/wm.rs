@@ -15,6 +15,8 @@ use wm_platform::{
 };
 
 #[cfg(target_os = "windows")]
+use crate::commands::window::close_duplicate_tabs;
+#[cfg(target_os = "windows")]
 use crate::commands::window::detach_window_for_close;
 use crate::{
   commands::{
@@ -1171,16 +1173,19 @@ impl WindowManager {
 
 /// Presses the next due `send_keys_on_join` key combination in windows
 /// that are in the foreground, retrying the others until they time out.
+/// Once a window is done, the duplicate tabs it replaces are closed.
 #[cfg(target_os = "windows")]
 fn send_due_keys(state: &mut WmState) {
   let now = std::time::Instant::now();
 
   for mut pending in state.auto_stack.take_due_keys(now) {
     let Some(window) = state.window_from_native(&pending.native) else {
+      close_duplicate_tabs(&pending.then_close);
       continue;
     };
 
     let Some(keybinding) = pending.keys.first() else {
+      close_duplicate_tabs(&pending.then_close);
       continue;
     };
 
@@ -1192,17 +1197,22 @@ fn send_due_keys(state: &mut WmState) {
 
         if pending.keys.is_empty() {
           tracing::info!("Sent keys on join to window: {window}");
+          close_duplicate_tabs(&pending.then_close);
         } else {
           state.auto_stack.retry_keys(pending, now);
         }
       }
-      Ok(false) if pending.is_expired(now) => tracing::info!(
-        "Not sending keys on join to window, since it never got focus: \
-         {window}"
-      ),
+      Ok(false) if pending.is_expired(now) => {
+        tracing::info!(
+          "Not sending keys on join to window, since it never got focus: \
+           {window}"
+        );
+        close_duplicate_tabs(&pending.then_close);
+      }
       Ok(false) => state.auto_stack.retry_keys(pending, now),
       Err(err) => {
         tracing::warn!("Failed to send keys on join to {window}: {err}");
+        close_duplicate_tabs(&pending.then_close);
       }
     }
   }
