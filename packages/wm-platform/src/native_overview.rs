@@ -948,31 +948,24 @@ unsafe fn update(
   state: &mut OverviewState,
   frame: OverviewFrame,
 ) {
-  if state.frame.is_none() {
-    return;
-  }
-
-  let Some(previous) = state.frame.replace(frame) else {
-    return;
-  };
-
-  let selected_hwnd = previous.items.get(state.selected).map(|i| i.hwnd);
-  let Some(current) = &state.frame else {
+  let Some(previous) = &state.frame else {
     return;
   };
 
   for item in &previous.items {
-    if !current.items.contains(item) {
+    if !frame.items.contains(item) {
       window_icons::invalidate(item.hwnd);
     }
   }
 
-  state.selected = current
+  let selected_hwnd = previous.items.get(state.selected).map(|i| i.hwnd);
+  state.selected = frame
     .items
     .iter()
     .position(|item| Some(item.hwnd) == selected_hwnd)
     .unwrap_or(state.selected)
-    .min(current.items.len().saturating_sub(1));
+    .min(frame.items.len().saturating_sub(1));
+  state.frame = Some(frame);
   state.press = None;
 
   state.relayout();
@@ -1145,7 +1138,9 @@ unsafe extern "system" fn wnd_proc(
         close(hwnd, state);
         state.send(OverviewAction::Deactivated);
       }
-      LRESULT(0)
+
+      // Gives the window keyboard focus on activation.
+      DefWindowProcW(hwnd, msg, wparam, lparam)
     }
     // Releasing the Alt key of the binding that opened the overview would
     // otherwise enter menu mode, swallowing the next key press.
