@@ -213,6 +213,11 @@ pub fn platform_sync(
     repositioned.into_iter().chain(z_order_touched),
   );
 
+  // After focus is synced, so the overview never hides while it is still
+  // the foreground window.
+  #[cfg(target_os = "windows")]
+  crate::overview::sync_overview(state, config);
+
   state.pending_sync.clear();
 
   Ok(())
