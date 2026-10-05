@@ -480,7 +480,6 @@ fn setup_logging(verbosity: &Verbosity) -> anyhow::Result<()> {
 ///
 /// This assumes the watcher binary exists in the same directory as the
 /// WM binary.
-#[allow(unused)]
 fn start_watcher_process() -> anyhow::Result<tokio::process::Child, Error>
 {
   let watcher_path = env::current_exe()?

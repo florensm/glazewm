@@ -377,7 +377,6 @@ pub enum AnimationPositionResult {
   ///
   /// The carried `Rect` is the current animated position, available for
   /// callers that bypass the surrogate path (e.g. future macOS support).
-  #[allow(dead_code)]
   Apply(Rect),
   /// The surrogate overlay is handling all visuals; skip repositioning
   /// the real window this frame.
