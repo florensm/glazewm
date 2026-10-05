@@ -37,6 +37,103 @@ impl Color {
       r: abgr as u8,
     }
   }
+
+  /// Interpolates `t` of the way to `to`, in premultiplied alpha so a
+  /// fully transparent endpoint contributes no hue of its own.
+  #[must_use]
+  pub fn lerp(&self, to: &Color, t: f32) -> Color {
+    if t <= 0.0 {
+      return *self;
+    }
+    if t >= 1.0 {
+      return *to;
+    }
+
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    let to_u8 = |value: f32| value.round().clamp(0.0, 255.0) as u8;
+
+    let alpha = crate::lerp_f32(f32::from(self.a), f32::from(to.a), t);
+    let channel = |from_channel: u8, to_channel: u8| {
+      if alpha <= 0.0 {
+        return 0;
+      }
+
+      let premultiplied = crate::lerp_f32(
+        f32::from(from_channel) * f32::from(self.a),
+        f32::from(to_channel) * f32::from(to.a),
+        t,
+      );
+
+      to_u8(premultiplied / alpha)
+    };
+
+    Color {
+      r: channel(self.r, to.r),
+      g: channel(self.g, to.g),
+      b: channel(self.b, to.b),
+      a: to_u8(alpha),
+    }
+  }
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+
+  #[test]
+  fn lerp_blends_opaque_colors_per_channel() {
+    let from = Color {
+      r: 0,
+      g: 100,
+      b: 200,
+      a: 255,
+    };
+    let to = Color {
+      r: 200,
+      g: 100,
+      b: 0,
+      a: 255,
+    };
+
+    assert_eq!(from.lerp(&to, 0.0), from);
+    assert_eq!(from.lerp(&to, 1.0), to);
+    assert_eq!(
+      from.lerp(&to, 0.5),
+      Color {
+        r: 100,
+        g: 100,
+        b: 100,
+        a: 255
+      }
+    );
+  }
+
+  #[test]
+  fn lerp_ignores_hue_of_transparent_endpoint() {
+    let clear_black = Color {
+      r: 0,
+      g: 0,
+      b: 0,
+      a: 0,
+    };
+    let red = Color {
+      r: 255,
+      g: 0,
+      b: 0,
+      a: 200,
+    };
+
+    // Straight-alpha lerp would darken toward black on the way in.
+    assert_eq!(
+      clear_black.lerp(&red, 0.5),
+      Color {
+        r: 255,
+        g: 0,
+        b: 0,
+        a: 100
+      }
+    );
+  }
 }
 
 impl FromStr for Color {
