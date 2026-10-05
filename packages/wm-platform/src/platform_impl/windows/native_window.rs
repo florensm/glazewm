@@ -283,22 +283,7 @@ impl NativeWindow {
 
   /// Implements [`NativeWindow::focus`].
   pub(crate) fn focus(&self) -> crate::Result<()> {
-    let input = [INPUT {
-      r#type: INPUT_MOUSE,
-      Anonymous: INPUT_0 {
-        mi: MOUSEINPUT {
-          dwExtraInfo: FOREGROUND_INPUT_IDENTIFIER as usize,
-          ..Default::default()
-        },
-      },
-    }];
-
-    // Bypass restriction for setting the foreground window by sending an
-    // input to our own process first.
-    #[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
-    unsafe {
-      SendInput(&input, std::mem::size_of::<INPUT>() as i32)
-    };
+    send_foreground_input();
 
     // Set as the foreground window.
     unsafe { SetForegroundWindow(self.hwnd()) }.ok()?;
@@ -952,6 +937,30 @@ pub(crate) fn window_from_point(
 /// Implements [`Dispatcher::reset_focus`].
 pub(crate) fn reset_focus(_dispatcher: &Dispatcher) -> crate::Result<()> {
   desktop_window().focus()
+}
+
+/// Lets this process set the foreground window, by sending an input to
+/// it first.
+///
+/// Must not be called on the event loop thread: `SendInput` waits on the
+/// low-level hooks, which run there.
+pub(crate) fn send_foreground_input() {
+  let input = [INPUT {
+    r#type: INPUT_MOUSE,
+    Anonymous: INPUT_0 {
+      mi: MOUSEINPUT {
+        dwExtraInfo: FOREGROUND_INPUT_IDENTIFIER as usize,
+        ..Default::default()
+      },
+    },
+  }];
+
+  // SAFETY: `input` is a valid, fully initialized array that outlives the
+  // call.
+  #[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
+  unsafe {
+    SendInput(&input, std::mem::size_of::<INPUT>() as i32)
+  };
 }
 
 /// Gets the `NativeWindow` instance of the desktop window.

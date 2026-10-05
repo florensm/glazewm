@@ -67,6 +67,20 @@ pub use workspace_surrogate::WorkspaceSurrogate;
 mod native_iris_overlay;
 #[cfg(target_os = "windows")]
 pub use native_iris_overlay::NativeIrisOverlay;
+#[cfg(target_os = "windows")]
+mod native_overview;
+#[cfg(target_os = "windows")]
+pub use native_overview::{
+  NativeOverview, OverviewFrame, OverviewItem, OverviewStyle,
+};
+// Only `OverviewAction` is used off Windows, where there is no overview.
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+mod overview_layout;
+pub use overview_layout::OverviewAction;
+#[cfg(target_os = "windows")]
+mod paint;
+#[cfg(target_os = "windows")]
+mod window_icons;
 pub use platform_event::*;
 pub use single_instance::*;
 pub use system_accent_color::*;
