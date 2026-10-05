@@ -213,7 +213,6 @@ stack:
   # Tab bar colors. Like border colors, these accept a hex value, "accent",
   # or a palette file: { file: "path/to/colors.css", key: "--accent" }.
   tab_bar_background: "#1f1f1f"
-  tab_bar_opacity: "92%"
   tab_active_background: "#3a3a3a"
   tab_hover_background: "#2c2c2c"
   # Background of a tab whose window requests attention (e.g. flashes).

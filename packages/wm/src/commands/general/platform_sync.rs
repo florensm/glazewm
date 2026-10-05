@@ -2176,7 +2176,7 @@ fn follow_frame<O: SyncableOverlay>(
       O::overlays(state),
       window.id(),
       params,
-      frame,
+      &O::overlay_rect(window, frame),
       overlay_z_anchor(window),
       batch,
     );
@@ -2461,6 +2461,11 @@ pub(crate) trait SyncableOverlay: Overlay {
   ) -> bool {
     false
   }
+
+  /// The rect this overlay tracks for `window` shown at `frame`.
+  fn overlay_rect(_window: &WindowContainer, frame: &Rect) -> Rect {
+    frame.clone()
+  }
 }
 
 #[cfg(target_os = "windows")]
@@ -2505,6 +2510,12 @@ impl SyncableOverlay for NativeBorderOverlay {
     config: &UserConfig,
   ) -> bool {
     border_hidden_for_fullscreen(window, config)
+  }
+
+  /// Takes in the tab bar of the stack `window` is the active tab of, so
+  /// the bar is framed as part of its window.
+  fn overlay_rect(window: &WindowContainer, frame: &Rect) -> Rect {
+    crate::tab_bars::window_with_tab_bar(window, frame)
   }
 }
 
@@ -2689,7 +2700,11 @@ fn sync_overlays<O: SyncableOverlay>(
           // with the window's visible edge, clipping the invisible resize
           // border.
           match window.native().frame() {
-            Ok(rect) => overlay.defer_rect(&mut batch, &rect, anchor),
+            Ok(rect) => overlay.defer_rect(
+              &mut batch,
+              &O::overlay_rect(window, &rect),
+              anchor,
+            ),
             Err(err) => debug!(
               "{} overlay frame() query failed for {}: {err}.",
               O::LABEL,
@@ -2741,7 +2756,7 @@ fn sync_overlays<O: SyncableOverlay>(
           continue;
         };
 
-        match O::create(&rect, params, anchor) {
+        match O::create(&O::overlay_rect(window, &rect), params, anchor) {
           Ok(overlay) => {
             debug!("{} overlay created for {}.", O::LABEL, window.id());
             e.insert(overlay);

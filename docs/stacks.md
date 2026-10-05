@@ -100,6 +100,13 @@ active tab is highlighted, and the highlight slides when it changes.
 The bar sits directly behind the stack's active window in z-order, so
 windows that cover the stack cover its tab bar too.
 
+The bar is drawn as part of its window: it is opaque, square where it
+meets the window, and reaches a few pixels under the window to fill in
+the window's rounded corners. With a window border configured
+(`window_effects.*.border`), the border goes around the window and its
+tab bar together, and the bar's outer corners follow the border. With
+`transparency` on the window, the edge of the bar shows through it.
+
 ## Config
 
 ```yaml
@@ -111,7 +118,6 @@ stack:
   # Colors accept a hex value, "accent", or a palette file like borders:
   # { file: "path/to/yasb_colors.css", key: "--yasb-accent-light1" }
   tab_bar_background: "#1f1f1f"
-  tab_bar_opacity: "92%"
   tab_active_background: "#3a3a3a"
   tab_hover_background: "#2c2c2c"
   tab_urgent_background: "#8a5a00"

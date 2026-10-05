@@ -54,11 +54,8 @@ pub struct StackConfig {
   /// Whether the tab bar appears above or below the stack content.
   pub tab_bar_position: TabBarPosition,
 
-  /// Background of the tab bar strip.
+  /// Background of the tab bar strip. Always drawn opaque.
   pub tab_bar_background: BorderColorSource,
-
-  /// Opacity of the whole tab bar.
-  pub tab_bar_opacity: OpacityValue,
 
   /// Background of the active tab's highlight.
   pub tab_active_background: BorderColorSource,
@@ -85,7 +82,8 @@ pub struct StackConfig {
   /// Font size of tab titles.
   pub tab_font_size: LengthValue,
 
-  /// Corner radius of the strip and the tab highlights.
+  /// Corner radius of the tab highlights and the strip's outer corners. A
+  /// strip inside a window border follows the border's corners instead.
   pub tab_corner_radius: LengthValue,
 
   /// Narrowest a tab gets before the bar scrolls. Below about 60px, tabs
@@ -135,7 +133,6 @@ impl Default for StackConfig {
       tab_bar_height: LengthValue::from_px(28),
       tab_bar_position: TabBarPosition::Top,
       tab_bar_background: color("#1f1f1f"),
-      tab_bar_opacity: OpacityValue(0.92),
       tab_active_background: color("#3a3a3a"),
       tab_hover_background: color("#2c2c2c"),
       tab_urgent_background: color("#8a5a00"),

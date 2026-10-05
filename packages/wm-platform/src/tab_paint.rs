@@ -15,6 +15,41 @@ pub struct Rgba {
   pub a: u8,
 }
 
+/// Radius of each corner of a rounded rect.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct CornerRadii {
+  pub top_left: i32,
+  pub top_right: i32,
+  pub bottom_right: i32,
+  pub bottom_left: i32,
+}
+
+impl CornerRadii {
+  /// The same `radius` on every corner.
+  #[must_use]
+  pub fn uniform(radius: i32) -> Self {
+    Self {
+      top_left: radius,
+      top_right: radius,
+      bottom_right: radius,
+      bottom_left: radius,
+    }
+  }
+
+  /// Limits each radius to half of `rect`'s shorter side.
+  fn clamped(self, rect: TabRect) -> Self {
+    let max = rect.width().min(rect.height()) / 2;
+    let clamp = |radius: i32| radius.clamp(0, max.max(0));
+
+    Self {
+      top_left: clamp(self.top_left),
+      top_right: clamp(self.top_right),
+      bottom_right: clamp(self.bottom_right),
+      bottom_left: clamp(self.bottom_left),
+    }
+  }
+}
+
 /// A pixel buffer of `width` x `height` premultiplied pixels.
 pub struct Canvas<'a> {
   pub pixels: &'a mut [u32],
@@ -66,12 +101,21 @@ impl Canvas<'_> {
     radius: i32,
     color: Rgba,
   ) {
-    let radius =
-      radius.min(rect.width() / 2).min(rect.height() / 2).max(0);
+    self.fill_rect_with_corners(rect, CornerRadii::uniform(radius), color);
+  }
+
+  /// Fills `rect` with `color`, rounding each corner by its own radius.
+  pub fn fill_rect_with_corners(
+    &mut self,
+    rect: TabRect,
+    radii: CornerRadii,
+    color: Rgba,
+  ) {
+    let radii = radii.clamped(rect);
 
     for y in rect.top.max(0)..rect.bottom.min(self.height) {
       for x in rect.left.max(0)..rect.right.min(self.width) {
-        let coverage = rounded_rect_coverage(x, y, rect, radius);
+        let coverage = rounded_rect_coverage(x, y, rect, radii);
         self.blend(x, y, color, coverage);
       }
     }
@@ -114,10 +158,28 @@ fn rounded_rect_coverage(
   x: i32,
   y: i32,
   rect: TabRect,
-  radius: i32,
+  radii: CornerRadii,
 ) -> f32 {
-  let in_corner_x = x < rect.left + radius || x >= rect.right - radius;
-  let in_corner_y = y < rect.top + radius || y >= rect.bottom - radius;
+  let is_left = x < rect.left + rect.width() / 2;
+  let is_top = y < rect.top + rect.height() / 2;
+
+  let radius = match (is_left, is_top) {
+    (true, true) => radii.top_left,
+    (false, true) => radii.top_right,
+    (false, false) => radii.bottom_right,
+    (true, false) => radii.bottom_left,
+  };
+
+  let in_corner_x = if is_left {
+    x < rect.left + radius
+  } else {
+    x >= rect.right - radius
+  };
+  let in_corner_y = if is_top {
+    y < rect.top + radius
+  } else {
+    y >= rect.bottom - radius
+  };
 
   if radius == 0 || !(in_corner_x && in_corner_y) {
     return 1.0;
@@ -125,12 +187,12 @@ fn rounded_rect_coverage(
 
   #[allow(clippy::cast_precision_loss)]
   let (center_x, center_y, radius) = (
-    if x < rect.left + radius {
+    if is_left {
       (rect.left + radius) as f32
     } else {
       (rect.right - radius) as f32
     },
-    if y < rect.top + radius {
+    if is_top {
       (rect.top + radius) as f32
     } else {
       (rect.bottom - radius) as f32
@@ -179,7 +241,7 @@ fn distance_to_segment(
 
 #[cfg(test)]
 mod tests {
-  use super::{Canvas, Rgba};
+  use super::{Canvas, CornerRadii, Rgba};
   use crate::tab_layout::TabRect;
 
   const WHITE: Rgba = Rgba {
@@ -213,6 +275,32 @@ mod tests {
     assert_eq!(pixels[0] >> 24, 0, "corner pixel stays transparent");
     let edge_alpha = pixels[2 * 20 + 2] >> 24;
     assert!(edge_alpha > 0 && edge_alpha < 255, "edge is anti-aliased");
+  }
+
+  #[test]
+  fn square_corners_stay_filled() {
+    let mut pixels = vec![0u32; 20 * 20];
+    let mut canvas = Canvas {
+      pixels: &mut pixels,
+      width: 20,
+      height: 20,
+    };
+
+    let radii = CornerRadii {
+      top_left: 8,
+      top_right: 8,
+      ..CornerRadii::default()
+    };
+    canvas.fill_rect_with_corners(rect(0, 0, 20, 20), radii, WHITE);
+
+    assert_eq!(pixels[0] >> 24, 0, "rounded corner stays transparent");
+    assert_eq!(pixels[19] >> 24, 0, "rounded corner stays transparent");
+    assert_eq!(pixels[19 * 20], 0xffff_ffff, "square corner is filled");
+    assert_eq!(
+      pixels[19 * 20 + 19],
+      0xffff_ffff,
+      "square corner is filled"
+    );
   }
 
   #[test]

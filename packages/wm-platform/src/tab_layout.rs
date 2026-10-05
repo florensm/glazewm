@@ -1,7 +1,8 @@
 //! Geometry of a stack's tab bar: where each tab, icon, title and close
 //! button goes, and what a point in the bar hits.
 //!
-//! All values are physical pixels relative to the bar's top-left corner.
+//! All values are physical pixels relative to the bar window's top-left
+//! corner.
 
 /// What the user asked for through the tab bar.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -41,6 +42,16 @@ impl TabRect {
     self.bottom - self.top
   }
 
+  /// This rect moved down by `dy`.
+  #[must_use]
+  pub fn offset_y(self, dy: i32) -> Self {
+    Self {
+      top: self.top + dy,
+      bottom: self.bottom + dy,
+      ..self
+    }
+  }
+
   #[must_use]
   pub fn contains(&self, x: i32, y: i32) -> bool {
     x >= self.left && x < self.right && y >= self.top && y < self.bottom
@@ -50,6 +61,8 @@ impl TabRect {
 /// Inputs of a tab bar layout.
 #[derive(Clone, Copy, Debug)]
 pub struct TabLayoutParams {
+  /// Where the tabs start in the bar's window, which can reach past them.
+  pub top: i32,
   pub width: i32,
   pub height: i32,
   pub tab_count: usize,
@@ -235,12 +248,18 @@ impl TabLayout {
       }
     };
 
+    let top = params.top;
+
     TabSlot {
-      cell,
-      pill,
-      icon,
-      text,
-      close,
+      cell: cell.offset_y(top),
+      pill: pill.offset_y(top),
+      icon: icon.map(|icon| icon.offset_y(top)),
+      text: if is_icon_only {
+        text
+      } else {
+        text.offset_y(top)
+      },
+      close: close.map(|close| close.offset_y(top)),
     }
   }
 
@@ -290,6 +309,7 @@ mod tests {
 
   fn params(width: i32, tab_count: usize) -> TabLayoutParams {
     TabLayoutParams {
+      top: 0,
       width,
       height: 28,
       tab_count,
@@ -380,5 +400,18 @@ mod tests {
     assert_eq!(layout.drop_index(-50), 0);
     assert_eq!(layout.drop_index(250), 1);
     assert_eq!(layout.drop_index(5000), 2);
+  }
+
+  #[test]
+  fn offset_layout_moves_tabs_and_hits() {
+    let flat = TabLayout::new(&params(900, 3));
+    let offset = TabLayout::new(&TabLayoutParams {
+      top: 10,
+      ..params(900, 3)
+    });
+
+    assert_eq!(offset.slots[1].pill, flat.slots[1].pill.offset_y(10));
+    assert_eq!(offset.hit_test(450, 5, |_| false), TabHit::Empty);
+    assert_eq!(offset.hit_test(450, 15, |_| false), TabHit::Tab(1));
   }
 }

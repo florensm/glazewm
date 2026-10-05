@@ -3,12 +3,13 @@ use std::collections::HashMap;
 use regex::Regex;
 use wm_common::{StackConfig, TabBarPosition, TabCloseButton};
 use wm_platform::{
-  Color, NativeStackTabBar, Rect, TabBarStyle, TabCloseMode, TabFrame,
-  TabInfo,
+  BorderOverlayParams, Color, CornerRadii, NativeStackTabBar, Rect,
+  TabBarStyle, TabCloseMode, TabFrame, TabInfo,
 };
 
 use crate::{
-  models::{NativeWindowProperties, StackContainer},
+  commands::general::border_overlay_params_for,
+  models::{NativeWindowProperties, StackContainer, WindowContainer},
   traits::{CommonGetters, PositionGetters, WindowGetters},
   user_config::UserConfig,
   wm_state::WmState,
@@ -18,7 +19,6 @@ use crate::{
 /// sync: colors can come from files, and title overrides are compiled.
 pub struct TabBarSettings {
   background: Color,
-  opacity: u8,
   active_background: Color,
   hover_background: Color,
   urgent_background: Color,
@@ -51,8 +51,11 @@ impl TabBarSettings {
       .collect();
 
     Self {
-      background: config.tab_bar_background.resolve(),
-      opacity: config.tab_bar_opacity.to_alpha(),
+      // Opaque, so the bar reads as part of its window.
+      background: Color {
+        a: u8::MAX,
+        ..config.tab_bar_background.resolve()
+      },
       active_background: config.tab_active_background.resolve(),
       hover_background: config.tab_hover_background.resolve(),
       urgent_background: config.tab_urgent_background.resolve(),
@@ -92,15 +95,22 @@ impl TabBarSettings {
     }
   }
 
-  /// Tab bar style at `scale_factor`.
-  fn style(&self, config: &StackConfig, scale_factor: f32) -> TabBarStyle {
+  /// Tab bar style at `scale_factor`, framed by `border` when the
+  /// stack's window has one.
+  fn style(
+    &self,
+    config: &StackConfig,
+    scale_factor: f32,
+    position: &TabBarPosition,
+    border: Option<&BorderOverlayParams>,
+  ) -> TabBarStyle {
     let px = |length: &wm_platform::LengthValue| {
       length.to_px(0, Some(scale_factor))
     };
+    let corner_radius = px(&config.tab_corner_radius);
 
     TabBarStyle {
       background: self.background,
-      opacity: self.opacity,
       active_background: self.active_background,
       hover_background: self.hover_background,
       urgent_background: self.urgent_background,
@@ -109,7 +119,8 @@ impl TabBarSettings {
       inactive_text: self.inactive_text,
       font_family: config.tab_font_family.clone(),
       font_size: px(&config.tab_font_size),
-      corner_radius: px(&config.tab_corner_radius),
+      corner_radius,
+      strip_radii: strip_radii(position, corner_radius, border),
       min_tab_width: px(&config.tab_min_width),
       max_tab_width: px(&config.tab_max_width),
       show_icons: config.show_tab_icons,
@@ -124,12 +135,79 @@ impl TabBarSettings {
   }
 }
 
+/// Corners of the tab bar's strip: square where it meets its window, and
+/// on the outer side rounded like the inside of the window's `border`, or
+/// by `corner_radius` without one.
+fn strip_radii(
+  position: &TabBarPosition,
+  corner_radius: i32,
+  border: Option<&BorderOverlayParams>,
+) -> CornerRadii {
+  // The ring's inner edge, which the strip sits against.
+  #[allow(clippy::cast_possible_truncation)]
+  let outer = border.map_or(corner_radius, |border| {
+    (border.corner_radius - border.width).round().max(0.0) as i32
+  });
+
+  match position {
+    TabBarPosition::Top => CornerRadii {
+      top_left: outer,
+      top_right: outer,
+      ..CornerRadii::default()
+    },
+    TabBarPosition::Bottom => CornerRadii {
+      bottom_right: outer,
+      bottom_left: outer,
+      ..CornerRadii::default()
+    },
+  }
+}
+
+/// `bar` extended by `overlap` towards its window.
+fn reach_under_window(
+  bar: &Rect,
+  position: &TabBarPosition,
+  overlap: i32,
+) -> Rect {
+  match position {
+    TabBarPosition::Top => {
+      Rect::from_ltrb(bar.left, bar.top, bar.right, bar.bottom + overlap)
+    }
+    TabBarPosition::Bottom => {
+      Rect::from_ltrb(bar.left, bar.top - overlap, bar.right, bar.bottom)
+    }
+  }
+}
+
+/// The rect the border of `window` shown at `frame` goes around: the
+/// window plus its stack's tab bar when it is the stack's active tab.
+pub fn window_with_tab_bar(
+  window: &WindowContainer,
+  frame: &Rect,
+) -> Rect {
+  let stack = window
+    .parent()
+    .and_then(|parent| parent.as_stack().cloned());
+
+  match stack {
+    Some(stack)
+      if stack
+        .active_child()
+        .is_some_and(|active| active.id() == window.id()) =>
+    {
+      stack.outer_rect(frame)
+    }
+    _ => frame.clone(),
+  }
+}
+
 /// The tab bar of `stack`, or `None` when it has no tab bar, no tabs or
 /// isn't shown.
 fn tab_frame(
   stack: &StackContainer,
   settings: &TabBarSettings,
-  config: &StackConfig,
+  config: &UserConfig,
+  focused_id: Option<uuid::Uuid>,
 ) -> Option<TabFrame> {
   let height = stack.tab_bar_height_px();
   if height <= 0 || !stack.shows_tab_bar() {
@@ -137,7 +215,8 @@ fn tab_frame(
   }
 
   let stack_rect = stack.to_rect().ok()?;
-  let rect = match stack.tab_bar_position() {
+  let position = stack.tab_bar_position();
+  let rect = match position {
     TabBarPosition::Top => Rect::from_ltrb(
       stack_rect.left,
       stack_rect.top,
@@ -156,7 +235,15 @@ fn tab_frame(
 
   let active = stack.active_child()?;
   let active_index = windows.iter().position(|w| w.id() == active.id())?;
-  let anchor = windows.get(active_index)?.native().id().0;
+  let active_window = windows.get(active_index)?;
+  let anchor = active_window.native().id().0;
+  let is_focused = focused_id == Some(active_window.id());
+  let border = border_overlay_params_for(is_focused, config);
+  let window_effects = if is_focused {
+    &config.value.window_effects.focused_window
+  } else {
+    &config.value.window_effects.other_windows
+  };
 
   let tabs = windows
     .iter()
@@ -171,12 +258,24 @@ fn tab_frame(
     .monitor()
     .map_or(1.0, |monitor| monitor.native_properties().scale_factor);
 
+  // The strip reaches under the window's rounded corners, so they don't
+  // leave a notch next to the bar.
+  #[allow(clippy::cast_possible_truncation)]
+  let overlap = (window_effects.window_corner_radius_px().ceil() as i32)
+    .clamp(0, (stack_rect.height() - height).max(0));
+
   Some(TabFrame {
+    outer_rect: reach_under_window(&rect, &position, overlap),
     rect,
     tabs,
     active_index,
     anchor,
-    style: settings.style(config, scale_factor),
+    style: settings.style(
+      &config.value.stack,
+      scale_factor,
+      &position,
+      border.as_ref(),
+    ),
   })
 }
 
@@ -201,6 +300,7 @@ pub fn sync_tab_bars(
   config: &UserConfig,
   restack: Restack,
 ) {
+  let focused_id = state.focused_container().map(|c| c.id());
   let settings = state.tab_bar_settings.get_or_insert_with(|| {
     TabBarSettings::from_config(&config.value.stack)
   });
@@ -222,7 +322,7 @@ pub fn sync_tab_bars(
         && stack.workspace().is_some_and(|ws| ws.is_displayed());
 
       let frame = is_shown
-        .then(|| tab_frame(&stack, settings, &config.value.stack))
+        .then(|| tab_frame(&stack, settings, config, focused_id))
         .flatten();
 
       (stack.id(), frame)
@@ -262,9 +362,90 @@ pub fn sync_tab_bars(
 
 #[cfg(test)]
 mod tests {
-  use wm_common::{StackConfig, TabTitleOverride};
+  use wm_common::{StackConfig, TabBarPosition, TabTitleOverride};
+  use wm_platform::{
+    BorderOverlayParams, Color, CornerRadii, LengthValue, Rect,
+  };
 
-  use super::TabBarSettings;
+  use super::{
+    reach_under_window, strip_radii, window_with_tab_bar, TabBarSettings,
+  };
+  use crate::{
+    models::{StackContainer, TilingWindow},
+    traits::CommonGetters,
+  };
+
+  #[test]
+  fn border_goes_around_the_active_tab_and_its_bar() {
+    let stack = StackContainer::mock()
+      .tab_bar_height(LengthValue::from_px(28))
+      .tiling_containers(vec![
+        TilingWindow::mock().call().into(),
+        TilingWindow::mock().call().into(),
+      ])
+      .call();
+
+    let active = stack.active_child().unwrap();
+    let inactive = stack
+      .windows()
+      .into_iter()
+      .find(|window| window.id() != active.id())
+      .unwrap();
+    let active = active.as_window_container().unwrap();
+    let frame = Rect::from_ltrb(0, 28, 300, 200);
+
+    assert_eq!(
+      window_with_tab_bar(&active, &frame),
+      Rect::from_ltrb(0, 0, 300, 200)
+    );
+    assert_eq!(window_with_tab_bar(&inactive, &frame), frame);
+  }
+
+  #[test]
+  fn bar_reaches_under_its_window() {
+    let bar = Rect::from_ltrb(0, 100, 300, 128);
+
+    assert_eq!(
+      reach_under_window(&bar, &TabBarPosition::Top, 8),
+      Rect::from_ltrb(0, 100, 300, 136)
+    );
+    assert_eq!(
+      reach_under_window(&bar, &TabBarPosition::Bottom, 8),
+      Rect::from_ltrb(0, 92, 300, 128)
+    );
+  }
+
+  #[test]
+  fn strip_is_square_where_it_meets_its_window() {
+    let border = BorderOverlayParams {
+      color: Color {
+        r: 0,
+        g: 0,
+        b: 0,
+        a: 255,
+      },
+      width: 2.0,
+      corner_radius: 10.0,
+      opacity: 1.0,
+    };
+
+    assert_eq!(
+      strip_radii(&TabBarPosition::Bottom, 6, Some(&border)),
+      CornerRadii {
+        bottom_right: 8,
+        bottom_left: 8,
+        ..CornerRadii::default()
+      }
+    );
+    assert_eq!(
+      strip_radii(&TabBarPosition::Top, 6, None),
+      CornerRadii {
+        top_left: 6,
+        top_right: 6,
+        ..CornerRadii::default()
+      }
+    );
+  }
 
   #[test]
   fn title_overrides_apply_in_order() {

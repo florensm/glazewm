@@ -84,6 +84,8 @@ mod tab_paint;
 pub use platform_event::*;
 pub use single_instance::*;
 pub use system_accent_color::*;
+#[cfg(target_os = "windows")]
+pub use tab_paint::CornerRadii;
 pub use thread_bound::*;
 pub use window_listener::*;
 /// Stops Windows from creating "ghost" windows for this process.

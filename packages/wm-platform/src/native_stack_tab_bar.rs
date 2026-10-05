@@ -1,7 +1,4 @@
-use std::{
-  sync::OnceLock,
-  time::{Duration, Instant},
-};
+use std::sync::OnceLock;
 
 use windows::{
   core::{w, PCWSTR, PWSTR},
@@ -32,19 +29,19 @@ use windows::{
       WindowsAndMessaging::{
         AppendMenuW, CreatePopupMenu, CreateWindowExW, DefWindowProcW,
         DestroyMenu, DestroyWindow, DrawIconEx, GetCursorPos,
-        GetSystemMetrics, GetWindow, GetWindowLongPtrW, KillTimer,
-        LoadCursorW, PostMessageW, RegisterClassW, SendMessageW,
-        SetForegroundWindow, SetTimer, SetWindowLongPtrW, SetWindowPos,
-        ShowWindow, TrackPopupMenu, UpdateLayeredWindow, CREATESTRUCTW,
-        DI_NORMAL, GWLP_USERDATA, GW_HWNDNEXT, GW_HWNDPREV, IDC_ARROW,
-        MA_NOACTIVATE, MF_STRING, SM_CXDRAG, SM_CYDRAG, SWP_NOACTIVATE,
-        SWP_NOMOVE, SWP_NOSENDCHANGING, SWP_NOSIZE, SW_HIDE,
-        SW_SHOWNOACTIVATE, TPM_NONOTIFY, TPM_RETURNCMD, TPM_RIGHTBUTTON,
-        ULW_ALPHA, WINDOW_STYLE, WM_APP, WM_CAPTURECHANGED, WM_CLOSE,
-        WM_CREATE, WM_DESTROY, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MBUTTONUP,
+        GetSystemMetrics, GetWindow, GetWindowLongPtrW, LoadCursorW,
+        PostMessageW, RegisterClassW, SendMessageW, SetForegroundWindow,
+        SetWindowLongPtrW, SetWindowPos, ShowWindow, TrackPopupMenu,
+        UpdateLayeredWindow, CREATESTRUCTW, DI_NORMAL, GWLP_USERDATA,
+        GW_HWNDNEXT, GW_HWNDPREV, IDC_ARROW, MA_NOACTIVATE, MF_STRING,
+        SM_CXDRAG, SM_CYDRAG, SWP_NOACTIVATE, SWP_NOMOVE,
+        SWP_NOSENDCHANGING, SWP_NOSIZE, SW_HIDE, SW_SHOWNOACTIVATE,
+        TPM_NONOTIFY, TPM_RETURNCMD, TPM_RIGHTBUTTON, ULW_ALPHA,
+        WINDOW_STYLE, WM_APP, WM_CAPTURECHANGED, WM_CLOSE, WM_CREATE,
+        WM_DESTROY, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MBUTTONUP,
         WM_MOUSEACTIVATE, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_NOTIFY,
-        WM_RBUTTONUP, WM_TIMER, WNDCLASSW, WS_EX_LAYERED,
-        WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP,
+        WM_RBUTTONUP, WNDCLASSW, WS_EX_LAYERED, WS_EX_NOACTIVATE,
+        WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP,
       },
     },
   },
@@ -54,7 +51,7 @@ use crate::{
   overlay_window::OverlayKind,
   tab_icons,
   tab_layout::{TabAction, TabHit, TabLayout, TabLayoutParams, TabRect},
-  tab_paint::{Canvas, Rgba},
+  tab_paint::{Canvas, CornerRadii, Rgba},
   window_class, Color, Dispatcher, Rect,
 };
 
@@ -74,11 +71,6 @@ const WM_RESTACK_TABS: u32 = WM_APP + 4;
 /// Bound on the walk over the overlays behind the anchor; a window has at
 /// most a backdrop and a border.
 const MAX_OVERLAY_WALK: usize = 8;
-
-const PILL_TIMER_ID: usize = 1;
-
-/// How long the active tab's highlight takes to slide to a new tab.
-const PILL_SLIDE: Duration = Duration::from_millis(150);
 
 const MENU_CLOSE: usize = 1;
 const MENU_DETACH: usize = 2;
@@ -112,8 +104,6 @@ pub enum TabCloseMode {
 #[derive(Clone, Debug, PartialEq)]
 pub struct TabBarStyle {
   pub background: Color,
-  /// Opacity of the whole bar.
-  pub opacity: u8,
   pub active_background: Color,
   pub hover_background: Color,
   pub inactive_background: Color,
@@ -122,7 +112,10 @@ pub struct TabBarStyle {
   pub inactive_text: Color,
   pub font_family: String,
   pub font_size: i32,
+  /// Corner radius of the tab highlights.
   pub corner_radius: i32,
+  /// Corners of the strip, e.g. square where it meets its window.
+  pub strip_radii: CornerRadii,
   pub min_tab_width: i32,
   /// 0 lets tabs share the whole bar.
   pub max_tab_width: i32,
@@ -136,7 +129,11 @@ pub struct TabBarStyle {
 /// Everything shown by a tab bar, posted to its thread as a whole.
 #[derive(Clone, Debug, PartialEq)]
 pub struct TabFrame {
+  /// Where the tabs are shown.
   pub rect: Rect,
+  /// The bar's window: `rect`, plus strip reaching under the stack's
+  /// window to fill in its rounded corners.
+  pub outer_rect: Rect,
   pub tabs: Vec<TabInfo>,
   pub active_index: usize,
   /// The stack's active window. The bar is kept directly behind it in
@@ -153,12 +150,6 @@ struct Drag {
   is_moving: bool,
 }
 
-/// The active highlight sliding from one tab to another.
-struct PillSlide {
-  from: TabRect,
-  started: Instant,
-}
-
 /// State of a bar, owned by its window on the event-loop thread.
 struct BarState {
   frame: Option<TabFrame>,
@@ -167,9 +158,6 @@ struct BarState {
   is_tracking_leave: bool,
   pressed_close: Option<usize>,
   drag: Option<Drag>,
-  pill_slide: Option<PillSlide>,
-  /// Highlight drawn last, where a slide starts from.
-  last_pill: Option<TabRect>,
   /// Tooltip control showing the full title of a cut-off tab.
   tooltip: HWND,
   /// Tooltip tools registered, one per tab, with the tab index as ID.
@@ -207,6 +195,7 @@ impl NativeStackTabBar {
     let state = Box::new(BarState {
       frame: None,
       layout: TabLayout::new(&TabLayoutParams {
+        top: 0,
         width: 0,
         height: 0,
         tab_count: 0,
@@ -221,8 +210,6 @@ impl NativeStackTabBar {
       is_tracking_leave: false,
       pressed_close: None,
       drag: None,
-      pill_slide: None,
-      last_pill: None,
       tooltip: HWND(0),
       tool_count: 0,
       truncated: Vec::new(),
@@ -481,6 +468,7 @@ impl BarState {
     };
 
     self.layout = TabLayout::new(&TabLayoutParams {
+      top: frame.rect.top - frame.outer_rect.top,
       width: frame.rect.width(),
       height: frame.rect.height(),
       tab_count: frame.tabs.len(),
@@ -528,37 +516,12 @@ impl BarState {
     order
   }
 
-  /// Highlight of the active tab, sliding if a slide is running.
+  /// Highlight of the active tab.
   fn active_pill(&self) -> Option<TabRect> {
     let frame = self.frame.as_ref()?;
     let order = self.display_order();
     let position = order.iter().position(|i| *i == frame.active_index)?;
-    let target = self.layout.slots.get(position)?.pill;
-
-    let Some(slide) = &self.pill_slide else {
-      return Some(target);
-    };
-
-    let progress = (slide.started.elapsed().as_secs_f32()
-      / PILL_SLIDE.as_secs_f32())
-    .min(1.0);
-    let eased = 1.0 - (1.0 - progress).powi(3);
-
-    let lerp = |from: i32, to: i32| {
-      #[allow(
-        clippy::cast_possible_truncation,
-        clippy::cast_precision_loss
-      )]
-      let value =
-        (from as f32 + (to - from) as f32 * eased).round() as i32;
-      value
-    };
-
-    Some(TabRect {
-      left: lerp(slide.from.left, target.left),
-      right: lerp(slide.from.right, target.right),
-      ..target
-    })
+    self.layout.slots.get(position).map(|slot| slot.pill)
   }
 }
 
@@ -572,7 +535,8 @@ unsafe fn render(hwnd: HWND, state: &mut BarState) {
     return;
   };
 
-  let (width, height) = (frame.rect.width(), frame.rect.height());
+  let (width, height) =
+    (frame.outer_rect.width(), frame.outer_rect.height());
   if width <= 0 || height <= 0 {
     return;
   }
@@ -628,13 +592,13 @@ unsafe fn render(hwnd: HWND, state: &mut BarState) {
   let blend = BLENDFUNCTION {
     BlendOp: u8::try_from(AC_SRC_OVER).unwrap_or_default(),
     BlendFlags: 0,
-    SourceConstantAlpha: frame.style.opacity,
+    SourceConstantAlpha: u8::MAX,
     AlphaFormat: u8::try_from(AC_SRC_ALPHA).unwrap_or_default(),
   };
 
   let position = POINT {
-    x: frame.rect.x(),
-    y: frame.rect.y(),
+    x: frame.outer_rect.x(),
+    y: frame.outer_rect.y(),
   };
   let size = SIZE {
     cx: width,
@@ -687,14 +651,14 @@ fn paint_shapes(
     height,
   };
 
-  canvas.fill_rounded_rect(
+  canvas.fill_rect_with_corners(
     TabRect {
       left: 0,
       top: 0,
       right: width,
       bottom: height,
     },
-    style.corner_radius,
+    style.strip_radii,
     rgba(style.background),
   );
 
@@ -978,29 +942,10 @@ unsafe fn apply_frame(
     }
   }
 
-  let old_pill = state.last_pill;
   state.relayout();
   state.sync_tooltip_tools(hwnd);
 
-  let active_changed = previous.as_ref().is_some_and(|previous| {
-    state.frame.as_ref().is_some_and(|current| {
-      previous.active_index != current.active_index
-        || previous.tabs.len() != current.tabs.len()
-    })
-  });
-
-  if was_visible && active_changed {
-    if let Some(from) = old_pill {
-      state.pill_slide = Some(PillSlide {
-        from,
-        started: Instant::now(),
-      });
-      SetTimer(hwnd, PILL_TIMER_ID, 16, None);
-    }
-  }
-
   render(hwnd, state);
-  state.last_pill = state.active_pill();
 
   let anchor_changed = previous.as_ref().map(|p| p.anchor)
     != state.frame.as_ref().map(|f| f.anchor);
@@ -1086,7 +1031,11 @@ fn finish_left_click(state: &mut BarState, (x, y): (i32, i32)) {
     return;
   }
 
-  let height = state.frame.as_ref().map_or(0, |f| f.rect.height());
+  let (top, height) = state
+    .frame
+    .as_ref()
+    .map_or((0, 0), |f| (f.rect.top - f.outer_rect.top, f.rect.height()));
+  let y = y - top;
   let is_torn_off = y < -height || y > height * 2;
 
   if is_torn_off {
@@ -1223,34 +1172,12 @@ unsafe fn on_left_button_down(
   }
 }
 
-/// Advances the active highlight's slide.
-///
-/// # Safety
-///
-/// `hwnd` must be the bar's window, called on its thread.
-unsafe fn on_pill_timer(hwnd: HWND, state: &mut BarState) {
-  let is_done = state
-    .pill_slide
-    .as_ref()
-    .is_none_or(|slide| slide.started.elapsed() >= PILL_SLIDE);
-
-  if is_done {
-    state.pill_slide = None;
-    let _ = KillTimer(hwnd, PILL_TIMER_ID);
-  }
-
-  render(hwnd, state);
-  state.last_pill = state.active_pill();
-}
-
 /// Frees the bar's state as its window is destroyed.
 ///
 /// # Safety
 ///
 /// `state_ptr` must be the state allocated in `create`, freed only here.
 unsafe fn on_destroy(hwnd: HWND, state_ptr: *mut BarState) {
-  let _ = KillTimer(hwnd, PILL_TIMER_ID);
-
   // Cleared first, so no stray message reaches freed state.
   SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0);
 
@@ -1340,7 +1267,6 @@ unsafe extern "system" fn wnd_proc(
       state.frame = None;
       state.drag = None;
       state.hover = TabHit::Empty;
-      state.last_pill = None;
       ShowWindow(hwnd, SW_HIDE);
       LRESULT(0)
     }
@@ -1352,10 +1278,6 @@ unsafe extern "system" fn wnd_proc(
       if let Some(anchor) = state.frame.as_ref().map(|f| HWND(f.anchor)) {
         restack_behind(hwnd, anchor);
       }
-      LRESULT(0)
-    }
-    WM_TIMER if wparam.0 == PILL_TIMER_ID => {
-      on_pill_timer(hwnd, state);
       LRESULT(0)
     }
     WM_MOUSEACTIVATE => {
