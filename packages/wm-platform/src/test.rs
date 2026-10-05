@@ -16,6 +16,8 @@ mod mouse_listener;
 #[cfg(target_os = "windows")]
 mod native_surrogate;
 mod native_window;
+mod overview_layout;
+mod paint;
 pub mod perf;
 mod platform_event;
 mod platform_impl;
@@ -33,6 +35,7 @@ pub use keybinding_listener::*;
 pub use models::*;
 pub use mouse_listener::*;
 pub use native_window::*;
+pub use overview_layout::OverviewAction;
 pub use platform_event::*;
 pub use thread_bound::*;
 pub use window_listener::*;
