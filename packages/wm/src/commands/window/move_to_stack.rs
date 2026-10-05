@@ -1,7 +1,9 @@
 use anyhow::Context;
 use tracing::info;
 
-use super::{join_stack, new_stack, wrap_window_in_stack};
+use super::{
+  join_stack, new_stack, on_auto_stacked, wrap_window_in_stack,
+};
 use crate::{
   auto_stack::{decide, AutoStackDecision, WindowTraits},
   commands::container::set_focused_descendant,
@@ -58,8 +60,11 @@ pub fn move_to_stack(
 ///
 /// Covers windows whose title only matched after they were placed. Each
 /// window joins at most once, so one taken out of its stack stays out.
+/// `is_new` is false for a config reload, which leaves out the rule's
+/// actions for new windows (see `on_auto_stacked`).
 pub fn auto_stack_managed_window(
   window: WindowContainer,
+  is_new: bool,
   state: &mut WmState,
   config: &mut UserConfig,
 ) -> anyhow::Result<()> {
@@ -85,12 +90,11 @@ pub fn auto_stack_managed_window(
       AutoStackDecision::Wait | AutoStackDecision::Skip => return Ok(()),
     };
 
-  let name = rule.name.clone();
+  let rule = rule.clone();
   let had_focus = window.has_focus(None);
-  info!("Auto-stacking window into stack '{name}': {window}");
 
-  let window = move_to_stack(window, &name, state, config)?;
-  state.auto_stack.mark_settled(native_id);
+  let window = move_to_stack(window, &rule.name, state, config)?;
+  on_auto_stacked(&window, &rule, is_new, state);
 
   // Make it the active tab, without taking focus from another window.
   let stack = window.parent().context("No parent.")?;

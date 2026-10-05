@@ -420,7 +420,7 @@ pub fn uncloak_held_window(native_window: &NativeWindow) {
 /// Records that `window` joined its stack by `rule`. A window that just
 /// opened (`is_new`) also gets the rule's `duplicates` and
 /// `send_keys_on_join` applied.
-fn on_auto_stacked(
+pub fn on_auto_stacked(
   window: &WindowContainer,
   rule: &AutoStackRuleConfig,
   is_new: bool,

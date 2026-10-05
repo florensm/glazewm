@@ -46,7 +46,7 @@ pub fn reload_config(
   // a stack from an auto-stack rule keep their placement, as on manage.
   for window in state.windows() {
     window.set_done_window_rules(Vec::new());
-    auto_stack_managed_window(window.clone(), state, config)?;
+    auto_stack_managed_window(window.clone(), false, state, config)?;
 
     // The window may have been replaced while joining its stack.
     let Some(window) = state.window_from_native(&window.native()) else {

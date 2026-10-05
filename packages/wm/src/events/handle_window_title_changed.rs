@@ -44,7 +44,7 @@ pub fn handle_window_title_changed(
     state.pending_sync.queue_container_to_redraw(window.clone());
   }
 
-  auto_stack_managed_window(window.clone(), state, config)?;
+  auto_stack_managed_window(window.clone(), true, state, config)?;
 
   // The window may have been replaced while joining its stack.
   let Some(window) = state.window_from_native(native_window) else {
