@@ -14,6 +14,7 @@ pub struct ParsedConfig {
   pub gaps: GapsConfig,
   pub general: GeneralConfig,
   pub keybindings: Vec<KeybindingConfig>,
+  pub overview: OverviewConfig,
   pub window_behavior: WindowBehaviorConfig,
   pub window_effects: WindowEffectsConfig,
   pub window_rules: Vec<WindowRuleConfig>,
@@ -179,6 +180,65 @@ pub struct KeybindingConfig {
 
   /// WM commands to run when the keybinding is triggered.
   pub commands: Vec<InvokeCommand>,
+}
+
+/// Look of the window overview opened by `toggle-overview`.
+///
+/// # Platform-specific
+///
+/// Only has an effect on Windows.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(default, rename_all(serialize = "camelCase"))]
+pub struct OverviewConfig {
+  /// Scrim covering the monitor while the overview is open.
+  pub background_color: Color,
+
+  /// Space around and between the window previews.
+  pub gap: LengthValue,
+
+  /// Highlight behind the preview under the cursor or picked with the
+  /// arrow keys.
+  pub selection_color: Color,
+
+  /// Ring around the focused window's preview, given like a border's
+  /// color (see [`BorderColorSource`]).
+  pub focused_border_color: BorderColorSource,
+
+  /// Color of the window titles.
+  pub text_color: Color,
+
+  pub font_family: String,
+
+  pub font_size: LengthValue,
+}
+
+impl Default for OverviewConfig {
+  fn default() -> Self {
+    OverviewConfig {
+      background_color: Color {
+        r: 0,
+        g: 0,
+        b: 0,
+        a: 0xb3,
+      },
+      gap: LengthValue::from_px(24),
+      selection_color: Color {
+        r: 0xff,
+        g: 0xff,
+        b: 0xff,
+        a: 0x1f,
+      },
+      focused_border_color: BorderColorSource::Value("accent".to_string()),
+      text_color: Color {
+        r: 0xff,
+        g: 0xff,
+        b: 0xff,
+        a: 0xff,
+      },
+      font_family: "Segoe UI".to_string(),
+      font_size: LengthValue::from_px(13),
+    }
+  }
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]

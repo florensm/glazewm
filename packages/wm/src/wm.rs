@@ -3,6 +3,8 @@ use tokio::sync::mpsc::{self};
 use tracing::warn;
 use uuid::Uuid;
 #[cfg(target_os = "windows")]
+use wm_common::InvokeFocusCommand;
+#[cfg(target_os = "windows")]
 use wm_common::TitleBarVisibility;
 use wm_common::{
   FloatingStateConfig, FullscreenStateConfig, InvokeCommand, WindowState,
@@ -11,7 +13,8 @@ use wm_common::{
 #[cfg(target_os = "windows")]
 use wm_platform::NativeWindowWindowsExt;
 use wm_platform::{
-  Dispatcher, LengthValue, PlatformEvent, RectDelta, WindowEvent,
+  Dispatcher, LengthValue, OverviewAction, PlatformEvent, RectDelta,
+  WindowEvent,
 };
 
 #[cfg(target_os = "windows")]
@@ -59,6 +62,9 @@ pub struct WindowManager {
   pub event_rx: mpsc::UnboundedReceiver<WmEvent>,
   pub exit_rx: mpsc::UnboundedReceiver<()>,
   pub animation_tick_rx: mpsc::UnboundedReceiver<()>,
+  /// Actions taken in the overview, with their session. Never yields on
+  /// platforms without the overview.
+  pub overview_action_rx: mpsc::UnboundedReceiver<(u64, OverviewAction)>,
   pub state: WmState,
 }
 
@@ -70,9 +76,16 @@ impl WindowManager {
     let (event_tx, event_rx) = mpsc::unbounded_channel();
     let (exit_tx, exit_rx) = mpsc::unbounded_channel();
     let (animation_tick_tx, animation_tick_rx) = mpsc::unbounded_channel();
+    let (overview_action_tx, overview_action_rx) =
+      mpsc::unbounded_channel();
 
-    let mut state =
-      WmState::new(dispatcher, event_tx, exit_tx, animation_tick_tx);
+    let mut state = WmState::new(
+      dispatcher,
+      event_tx,
+      exit_tx,
+      animation_tick_tx,
+      overview_action_tx,
+    );
     state.populate(config)?;
 
     // Start animation timer if `populate` created any animations. This
@@ -84,8 +97,64 @@ impl WindowManager {
       event_rx,
       exit_rx,
       animation_tick_rx,
+      overview_action_rx,
       state,
     })
+  }
+
+  /// Carries out an action taken in the overview, unless it comes from an
+  /// earlier session than the open one.
+  pub fn process_overview_action(
+    &mut self,
+    session: u64,
+    action: OverviewAction,
+    config: &mut UserConfig,
+  ) -> anyhow::Result<()> {
+    #[cfg(not(target_os = "windows"))]
+    {
+      let _ = (session, action, config);
+      Ok(())
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+      let state = &mut self.state;
+      if state.overview.open_session() != Some(session) {
+        return Ok(());
+      }
+
+      match action {
+        OverviewAction::Pick(hwnd) => {
+          let picked = state
+            .overview
+            .close(Some(hwnd))
+            .filter(|id| state.container_by_id(*id).is_some());
+
+          if let Some(container_id) = picked {
+            let focus = InvokeCommand::Focus(InvokeFocusCommand {
+              container_id: Some(container_id),
+              ..Default::default()
+            });
+
+            return self
+              .process_commands(&vec![focus], None, config)
+              .map(|_| ());
+          }
+
+          state.pending_sync.queue_focus_change();
+        }
+        OverviewAction::Cancel => {
+          state.overview.close(None);
+          state.pending_sync.queue_focus_change();
+        }
+        // Focus went elsewhere and the overview closed itself.
+        OverviewAction::Deactivated => {
+          state.overview.close(None);
+        }
+      }
+
+      platform_sync(state, config)
+    }
   }
 
   pub fn process_event(
@@ -871,6 +940,15 @@ impl WindowManager {
           }
           _ => Ok(()),
         }
+      }
+      InvokeCommand::ToggleOverview => {
+        #[cfg(target_os = "windows")]
+        crate::overview::toggle_overview(state, config)?;
+
+        #[cfg(not(target_os = "windows"))]
+        tracing::warn!("The overview is only available on Windows.");
+
+        Ok(())
       }
       InvokeCommand::ToggleTiling => {
         match subject_container.as_window_container() {

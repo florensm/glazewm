@@ -247,6 +247,9 @@ pub enum InvokeCommand {
     maximized: Option<bool>,
   },
   ToggleMinimized,
+  /// Opens the overview of the focused workspace's windows, or closes it
+  /// if open.
+  ToggleOverview,
   ToggleTiling,
   ToggleTilingDirection,
   SetTilingDirection {
@@ -323,7 +326,7 @@ pub struct InvokeAdjustBordersCommand {
   pub left: Option<LengthValue>,
 }
 
-#[derive(Args, Clone, Debug, PartialEq, Serialize)]
+#[derive(Args, Clone, Debug, Default, PartialEq, Serialize)]
 #[group(required = true, multiple = false)]
 #[allow(clippy::struct_excessive_bools)]
 pub struct InvokeFocusCommand {

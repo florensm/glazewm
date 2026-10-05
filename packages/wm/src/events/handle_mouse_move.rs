@@ -76,6 +76,12 @@ pub fn handle_mouse_move(
       return Ok(());
     }
 
+    // The cursor is over the overview while it is open.
+    #[cfg(target_os = "windows")]
+    if state.overview.is_open() {
+      return Ok(());
+    }
+
     let window_under_cursor = {
       #[cfg(target_os = "macos")]
       {
