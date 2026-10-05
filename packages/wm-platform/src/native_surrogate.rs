@@ -140,7 +140,7 @@ fn sampled_rects(
 /// Returns the opaque thumbnail handle, or `None` if registration fails
 /// (e.g. same-window, invalid handle). The caller is responsible for
 /// calling [`DwmUnregisterThumbnail`] when done.
-fn register_thumbnail(
+pub(crate) fn register_thumbnail(
   dest_hwnd: HWND,
   source_hwnd: HWND,
   companion: Option<Companion>,
