@@ -278,3 +278,47 @@ fn overview_frame(
     rect: monitor.working_area,
   })
 }
+
+#[cfg(test)]
+mod tests {
+  use wm_common::WindowState;
+
+  use super::overview_windows;
+  use crate::{
+    models::{NonTilingWindow, SplitContainer, TilingWindow, Workspace},
+    traits::WindowGetters,
+  };
+
+  fn tiling(title: &str) -> TilingWindow {
+    TilingWindow::mock().title(title.to_string()).call()
+  }
+
+  #[test]
+  fn windows_are_tiling_in_layout_order_then_others() {
+    let split = SplitContainer::mock()
+      .tiling_containers(vec![tiling("b").into(), tiling("c").into()])
+      .call();
+
+    let workspace = Workspace::mock()
+      .tiling_containers(vec![
+        tiling("a").into(),
+        split.into(),
+        tiling("d").into(),
+      ])
+      .non_tiling_windows(vec![
+        NonTilingWindow::mock().title("floating".to_string()).call(),
+        NonTilingWindow::mock()
+          .title("minimized".to_string())
+          .state(WindowState::Minimized)
+          .call(),
+      ])
+      .call();
+
+    let titles = overview_windows(&workspace)
+      .iter()
+      .map(|window| window.native_properties().title)
+      .collect::<Vec<_>>();
+
+    assert_eq!(titles, ["a", "b", "c", "d", "floating"]);
+  }
+}
