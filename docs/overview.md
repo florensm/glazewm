@@ -1,64 +1,120 @@
 # Window overview
 
-A full-screen view of the focused workspace's windows, side by side as live
-previews, to pick one to focus. Only available on Windows.
+A full-screen view of the focused monitor's workspaces, one card each,
+showing their windows live and where the layout puts them. Switch to a
+workspace or window, move windows between workspaces, search them by title,
+or close them. Only available on Windows.
+
+On open, the windows of the focused workspace shrink from where they are
+into its card, while the wallpaper behind them blurs.
+
+## Layouts
+
+- **Carousel** (default): the cards in a row, the selected one centered and
+  larger than the rest. Looking inside a workspace zooms its card in further.
+- **Grid**: every card at once, `grid_columns` per row.
+
+`Tab` switches between them while open.
 
 ## Usage
 
+### Commands
+
+| Command | Behaviour |
+| --- | --- |
+| `toggle-overview` (`alt+o` in the sample config) | Open the overview as a carousel. While open, switch to the carousel, or close it if already showing it. |
+| `toggle-overview --grid` | Same, for the grid. |
+
+### Mouse
+
 | Input | Behaviour |
 | --- | --- |
-| `toggle-overview` (`alt+o` in the sample config) | Open the overview, or close it if open. |
-| Hover a preview | Select it. |
-| Click a preview | Focus its window and close. |
-| Arrow keys | Move the selection. Left and right step through the previews in order; up and down go to the nearest preview in the row above or below. |
-| `Enter` | Focus the selected window and close. |
-| `Escape`, or a click on the background | Close without changing focus. |
+| Click a window | Focus it, switching to its workspace, and close. |
+| Click a card elsewhere | Switch to its workspace and close. |
+| Click the background | Close without changing anything. |
+| Drag a window onto another card | Move it to that workspace. The overview stays open. |
+| Middle-click a window | Close the window. |
+| Wheel | Select the next or previous workspace. |
 
-The overview covers the working area of the focused monitor, over a dark
-scrim. It shows the focused workspace's tiling windows in layout order, then
-its floating and fullscreen windows; minimized windows are left out. Each
-preview keeps its window's aspect ratio and is never shown larger than the
-window itself. The focused window's preview has a ring around it, and is
-selected when the overview opens.
+### Keyboard
 
-Previews are live DWM thumbnails, so they keep updating while the overview is
-open. A window with a companion overlay (e.g. a recolored copy drawn by a
-theming tool) is shown through its companion, as during animations. A window
-that closes or is minimized while the overview is open drops out of it, and
-the others are laid out again. A window opening takes focus, which closes the
-overview.
+The keyboard goes one step deeper with each `Space`: browsing workspaces,
+picking a window inside one, then carrying that window to another
+workspace. The line under the cards shows the keys for the current step.
+
+| Key | Browsing workspaces | Picking a window | Carrying a window |
+| --- | --- | --- | --- |
+| `←` `→` (or `h` `l`) | Select a workspace. | Select a window, left to right. | Select a workspace. |
+| `↑` `↓` (or `k` `j`) | Select a workspace a row up or down (grid). | Select a window, top to bottom. | Same as browsing. |
+| `Home` / `End` | First / last workspace. | First / last window. | First / last workspace. |
+| `1`–`9`, `0` | Switch to that workspace (`0` is the tenth) and close. | Same. | Select that workspace. |
+| `Space` | Look inside the selected workspace. | Pick up the selected window. | Drop it on the selected workspace. |
+| `Enter` | Switch to the selected workspace and close. | Focus the selected window and close. | Drop it on the selected workspace. |
+| `x` | | Close the selected window. | |
+| `Backspace` | | Back to browsing. | Put the window down. |
+| `Tab` | Switch between carousel and grid. | Same, back to browsing in the grid. | Same. |
+| `Escape` | Close without changing anything. | Same. | Same. |
+
+### Search
+
+`/` starts a search: type to match window titles and process names; matches
+are outlined in `search_color` and the rest fade. `Enter` ends typing and
+selects the best match, after which `n` / `N` step through the matches.
+While typing, `Escape` clears the search and `Backspace` on an empty query
+ends it. While carrying a
+window, a search picks the workspace to drop it on.
+
+### Focus
 
 Closing the overview without a pick gives focus back to the window that had
-it. Focusing another window some other way (e.g. clicking the taskbar, or a
-keybinding that changes focus) closes the overview and leaves focus where it
-went. Focus-follows-cursor is paused while the overview is open.
+it. Focusing another window some other way (e.g. clicking the taskbar)
+closes the overview. Focus-follows-cursor is paused while it is open.
+
+Workspaces and windows changing while it is open (a window opening,
+closing, or being moved) show up in it right away.
 
 ## Config
 
 ```yaml
 overview:
-  # Scrim covering the monitor while the overview is open.
-  background_color: "#000000b3"
+  # Blur radius of the wallpaper behind the cards.
+  backdrop_blur: 40
 
-  # Space around and between the window previews.
-  gap: "24px"
+  # Tint over the blurred wallpaper; its alpha is how dark it gets.
+  backdrop_tint: "#00000066"
 
-  # Highlight behind the preview under the cursor or picked with the arrow
-  # keys.
-  selection_color: "#ffffff1f"
+  # Selection and highlights: a hex color, "accent" for the OS accent
+  # color, or a `{ file, key }` mapping, as for border colors.
+  accent_color: "accent"
 
-  # Ring around the focused window's preview: a hex color, "accent" for the
-  # OS accent color, or a `{ file, key }` mapping, as for border colors.
-  focused_border_color: "accent"
+  # Background of a workspace card.
+  card_color: "#221e24e6"
 
-  # Window titles.
-  text_color: "#ffffff"
+  # Background of a hovered card, and of a window without a preview.
+  surface_color: "#2d292eff"
+
+  # Strip a window's title sits on.
+  caption_color: "#161217c7"
+
+  text_color: "#e8e0e8ff"
+
+  # Secondary text, e.g. the key hints under the cards.
+  subtext_color: "#cdc3ceff"
+
+  # Outline of windows matching a search.
+  search_color: "#89b4faff"
+
   font_family: "Segoe UI"
-  font_size: "13px"
+
+  # Columns of the grid of every workspace.
+  grid_columns: 5
+
+  # Length of the zoom out on open; 0 opens it instantly.
+  open_duration_ms: 250
 ```
 
-Colors take an optional alpha (`#rrggbbaa`). Lengths in `px` are scaled by
-the monitor's DPI. Every key is optional; the values above are the defaults.
+Colors take an optional alpha (`#rrggbbaa`). Every key is optional; the
+values above are the defaults.
 
 ```yaml
 keybindings:
@@ -71,21 +127,38 @@ to make room for it.
 
 ## How it works
 
-The overview is one layered, topmost window on the WM's event loop thread,
-which draws it and handles its input; the WM thread only posts to it. Its
-scrim, highlights and titles are drawn into a bitmap shown with
-`UpdateLayeredWindow`, and DWM composites a thumbnail of each window on top.
-It takes the foreground while open, so keyboard input goes to it rather than
-to the window behind it; picks and cancels are sent back to the WM, which
-focuses through the regular `focus --container-id` path and only then hides
-the overview, so the OS never picks a window to activate in between.
+The overview runs on a thread of its own, with its own message loop, so
+drawing and animating it never waits on the WM. The WM thread posts it what
+to show, and gets the user's picks back through its event loop, which
+carries them out through the regular commands (`focus`, `move`, `close`).
+
+Everything on screen is composited by DWM, so a frame of the animation only
+moves things around and never redraws pixels:
+
+- The window previews are DWM thumbnails of the real windows (or of their
+  companion overlay, e.g. a recolored copy drawn by a theming tool, as during
+  animations).
+- The card backgrounds, captions, borders and hints are drawn once into
+  hidden layered windows, and shown as thumbnails of those, so they scale
+  with their card.
+- The backdrop is a composition visual of the wallpaper, sharp at first,
+  with a blurred copy and the tint fading in over it.
+
+Animations step once per display refresh, and the loop sleeps while
+nothing moves. The cards move on critically damped springs, so a key press
+mid-animation retargets them smoothly.
+
+The overview takes the foreground while open, so keys go to it rather than
+to the window behind it. When a pick changes focus, the WM focuses the new
+window first and only then hides the overview, so the OS never picks a
+window to activate in between.
 
 ## Follow-ups
 
-Not in this first version:
+Not in this version:
 
-- Windows of all workspaces and monitors.
-- Dragging a window onto another workspace.
-- Typing to filter windows by title.
-- Open and close animations.
-- A blurred backdrop instead of a plain scrim.
+- Workspaces of all monitors at once.
+- Windows growing back into place on close.
+- Fading highlights on hover and selection.
+- Picking minimized windows with the mouse (they are listed on their card,
+  and reachable by search).
