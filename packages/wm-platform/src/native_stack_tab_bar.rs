@@ -514,11 +514,18 @@ unsafe fn apply_frame(
 /// Going behind the overlays rather than between them and the window
 /// keeps them settled, so they don't restack in turn.
 ///
+/// The walk past them stays in `anchor`'s band: inserting after a normal
+/// window drops a topmost one out of its band. Overlays sinking behind
+/// their own window can briefly top the normal band, right below a topmost
+/// anchor's, which left an always-on-top floating stack's bar under the
+/// next tiled window raised.
+///
 /// # Safety
 ///
 /// `hwnd` must be the bar's window.
 unsafe fn restack_behind(hwnd: HWND, anchor: HWND) {
   window_class::match_z_band(hwnd, anchor);
+  let is_topmost = window_class::is_topmost(anchor);
   let target = window_class::insert_after_point(anchor);
 
   let mut prev = GetWindow(hwnd, GW_HWNDPREV);
@@ -535,7 +542,10 @@ unsafe fn restack_behind(hwnd: HWND, anchor: HWND) {
   let mut insert_after = target;
   for _ in 0..MAX_OVERLAY_WALK {
     let next = GetWindow(insert_after, GW_HWNDNEXT);
-    if next == hwnd || !OverlayKind::is_overlay(next) {
+    if next == hwnd
+      || !OverlayKind::is_overlay(next)
+      || window_class::is_topmost(next) != is_topmost
+    {
       break;
     }
     insert_after = next;
