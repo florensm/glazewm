@@ -258,21 +258,22 @@ impl Interaction {
       Key::End => self.edge(true, workspaces),
       Key::Enter => return self.enter(workspaces),
       Key::Digit(digit) => {
-        // 1-9 are the first nine workspaces, 0 the tenth.
-        let index = if digit == 0 {
-          9
-        } else {
-          usize::from(digit) - 1
-        };
-        let workspace = workspaces.get(index)?;
+        let name = digit_target(digit, workspaces)?.name.clone();
 
-        if self.mode == Mode::Carrying {
-          self.select(index);
-        } else {
-          return Some(OverviewAction::FocusWorkspace(
-            workspace.name.clone(),
-          ));
-        }
+        return match self.mode {
+          Mode::Spaces => Some(OverviewAction::FocusWorkspace(name)),
+          Mode::Windows => match self.selected_window {
+            Some(hwnd) => self.send(hwnd, name, workspaces),
+            None => Some(OverviewAction::FocusWorkspace(name)),
+          },
+          Mode::Carrying => {
+            let action = self
+              .carried
+              .and_then(|hwnd| move_action(hwnd, name, workspaces));
+            self.put_down();
+            action
+          }
+        };
       }
       Key::Text(_) => {}
     }
@@ -360,21 +361,48 @@ impl Interaction {
     workspaces: &[OverviewWorkspace],
   ) -> Option<OverviewAction> {
     let action = self.carried.and_then(|hwnd| {
-      let (from, _) = find(workspaces, hwnd)?;
       let to = workspaces.get(self.selected)?;
-
-      (from != self.selected).then(|| OverviewAction::MoveWindow {
-        hwnd,
-        workspace: to.name.clone(),
-      })
+      move_action(hwnd, to.name.clone(), workspaces)
     });
 
+    self.put_down();
+    action
+  }
+
+  /// Ends carrying, back to browsing workspaces.
+  fn put_down(&mut self) {
     self.mode = Mode::Spaces;
     self.carried = None;
     self.selected_window = None;
     self.searching = false;
     self.query.clear();
-    action
+  }
+
+  /// Sends the picked window `hwnd` to workspace `name`, and moves the
+  /// cursor on to its neighbour so the rest can be sorted in a row.
+  fn send(
+    &mut self,
+    hwnd: isize,
+    name: String,
+    workspaces: &[OverviewWorkspace],
+  ) -> Option<OverviewAction> {
+    let action = move_action(hwnd, name, workspaces)?;
+
+    let windows = workspaces
+      .get(self.selected)
+      .map_or_else(Vec::new, |workspace| ordered(workspace, Axis::Across));
+    let position = windows.iter().position(|window| window.hwnd == hwnd);
+    let neighbour = position.and_then(|position| {
+      windows
+        .get(position + 1)
+        .or_else(|| windows.get(position.checked_sub(1)?))
+    });
+
+    self.selected_window = neighbour.map(|window| window.hwnd);
+    if self.selected_window.is_none() {
+      self.mode = Mode::Spaces;
+    }
+    Some(action)
   }
 
   fn select(&mut self, index: usize) {
@@ -671,13 +699,13 @@ impl Interaction {
     match (self.mode, self.layout) {
       (Mode::Carrying, _) => (
         format!(
-          "carrying \"{}\"   \u{b7}   \u{2190}\u{2192} or / to pick a workspace   \u{b7}   space to drop   \u{b7}   \u{232b} back",
+          "carrying \"{}\"   \u{b7}   \u{2190}\u{2192} or / to pick a workspace   \u{b7}   space to drop   \u{b7}   1\u{2013}9 drop on that one   \u{b7}   \u{232b} back",
           title(self.carried)
         ),
         HintTone::Accent,
       ),
       (Mode::Windows, _) => (
-        "\u{2190}\u{2192} pick a window   \u{b7}   space to lift it   \u{b7}   \u{23ce} jump to it   \u{b7}   x close   \u{b7}   \u{232b} back   \u{b7}   esc close"
+        "\u{2190}\u{2192} pick a window   \u{b7}   1\u{2013}9 send it there   \u{b7}   space to lift it   \u{b7}   \u{23ce} jump to it   \u{b7}   x close   \u{b7}   \u{232b} back"
           .to_string(),
         HintTone::Quiet,
       ),
@@ -719,6 +747,44 @@ fn ordered(
     Axis::Down => (window.rect.top, window.rect.left),
   });
   windows
+}
+
+/// Moves window `hwnd` to workspace `name`, unless it is already there.
+fn move_action(
+  hwnd: isize,
+  name: String,
+  workspaces: &[OverviewWorkspace],
+) -> Option<OverviewAction> {
+  let (from, _) = find(workspaces, hwnd)?;
+  let is_there = workspaces
+    .get(from)
+    .is_some_and(|workspace| workspace.name == name);
+
+  (!is_there).then_some(OverviewAction::MoveWindow {
+    hwnd,
+    workspace: name,
+  })
+}
+
+/// Workspace digit key `digit` stands for, 0 being the tenth: the one
+/// named after it when workspaces are numbered, else the one at its
+/// position.
+fn digit_target(
+  digit: u8,
+  workspaces: &[OverviewWorkspace],
+) -> Option<&OverviewWorkspace> {
+  let number = if digit == 0 { 10 } else { usize::from(digit) };
+  let is_numbered = workspaces
+    .iter()
+    .any(|workspace| workspace.name.parse::<usize>().is_ok());
+
+  if is_numbered {
+    workspaces
+      .iter()
+      .find(|workspace| workspace.name.parse::<usize>() == Ok(number))
+  } else {
+    workspaces.get(number - 1)
+  }
 }
 
 /// The workspace index and window with handle `hwnd`.
@@ -778,6 +844,7 @@ mod tests {
         name: "1".to_string(),
         label: "1".to_string(),
         is_focused: false,
+        is_new: false,
         windows: vec![
           window(12, "Editor", Rect::from_xy(960, 0, 960, 1000)),
           window(11, "Terminal", Rect::from_xy(0, 0, 960, 1000)),
@@ -787,6 +854,7 @@ mod tests {
         name: "2".to_string(),
         label: "2".to_string(),
         is_focused: true,
+        is_new: false,
         windows: vec![window(
           21,
           "Browser",
@@ -797,6 +865,7 @@ mod tests {
         name: "3".to_string(),
         label: "3".to_string(),
         is_focused: false,
+        is_new: false,
         windows: vec![],
       },
     ]
@@ -854,6 +923,105 @@ mod tests {
       Some(OverviewAction::FocusWorkspace("3".to_string()))
     );
     assert_eq!(press(&mut state, &[Key::Digit(9)]), None);
+  }
+
+  #[test]
+  fn digits_go_by_name_when_workspaces_are_numbered() {
+    let mut workspaces = workspaces();
+    workspaces.remove(1);
+    let mut state =
+      Interaction::new(&workspaces, OverviewLayoutMode::Carousel, 5, 6.0);
+
+    assert_eq!(
+      state.key(Key::Digit(3), &workspaces),
+      Some(OverviewAction::FocusWorkspace("3".to_string()))
+    );
+    assert_eq!(state.key(Key::Digit(2), &workspaces), None, "not shown");
+  }
+
+  #[test]
+  fn digits_go_by_position_when_workspaces_are_named() {
+    let mut workspaces = workspaces();
+    for (workspace, name) in
+      workspaces.iter_mut().zip(["web", "code", "chat"])
+    {
+      workspace.name = name.to_string();
+    }
+    let mut state =
+      Interaction::new(&workspaces, OverviewLayoutMode::Carousel, 5, 6.0);
+
+    assert_eq!(
+      state.key(Key::Digit(1), &workspaces),
+      Some(OverviewAction::FocusWorkspace("web".to_string()))
+    );
+  }
+
+  #[test]
+  fn digits_send_the_picked_window_and_move_on() {
+    let mut state = interaction();
+    press(&mut state, &[Key::Left, Key::Space]);
+
+    assert_eq!(
+      press(&mut state, &[Key::Digit(1)]),
+      None,
+      "already on workspace 1"
+    );
+    assert_eq!(
+      press(&mut state, &[Key::Digit(3)]),
+      Some(OverviewAction::MoveWindow {
+        hwnd: 11,
+        workspace: "3".to_string(),
+      })
+    );
+    assert_eq!(state.mode, Mode::Windows);
+    assert_eq!(state.selected_window, Some(12), "next window picked");
+  }
+
+  #[test]
+  fn digits_drop_a_carried_window() {
+    let mut state = interaction();
+
+    assert_eq!(
+      press(&mut state, &[Key::Space, Key::Space, Key::Digit(1)]),
+      Some(OverviewAction::MoveWindow {
+        hwnd: 21,
+        workspace: "1".to_string(),
+      })
+    );
+    assert_eq!(state.mode, Mode::Spaces);
+    assert_eq!(state.carried, None);
+  }
+
+  #[test]
+  fn a_new_workspace_is_picked_like_any_other() {
+    let mut workspaces = workspaces();
+    workspaces.push(OverviewWorkspace {
+      name: "4".to_string(),
+      label: "4".to_string(),
+      is_focused: false,
+      is_new: true,
+      windows: vec![],
+    });
+    let mut state =
+      Interaction::new(&workspaces, OverviewLayoutMode::Carousel, 5, 6.0);
+
+    let mut press = |keys: &[Key]| {
+      keys
+        .iter()
+        .fold(None, |_, key| state.key(*key, &workspaces))
+    };
+
+    assert_eq!(
+      press(&[Key::Space, Key::Space, Key::End, Key::Space]),
+      Some(OverviewAction::MoveWindow {
+        hwnd: 21,
+        workspace: "4".to_string(),
+      })
+    );
+    assert_eq!(
+      press(&[Key::End, Key::Enter]),
+      Some(OverviewAction::FocusWorkspace("4".to_string()))
+    );
   }
 
   #[test]

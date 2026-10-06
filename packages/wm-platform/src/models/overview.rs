@@ -28,6 +28,10 @@ pub struct OverviewWorkspace {
 
   pub is_focused: bool,
 
+  /// Not active yet: shown as a "+" card, and picking it or dropping a
+  /// window on it activates (or creates) the workspace.
+  pub is_new: bool,
+
   /// Tiling windows in layout order, then the rest, which are drawn above
   /// them.
   pub windows: Vec<OverviewWindow>,

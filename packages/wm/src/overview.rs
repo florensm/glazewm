@@ -15,7 +15,9 @@ use wm_platform::{
 };
 
 use crate::{
-  models::{Container, Monitor, WindowContainer, Workspace},
+  models::{
+    Container, Monitor, WindowContainer, Workspace, WorkspaceTarget,
+  },
   traits::{CommonGetters, PositionGetters, WindowGetters},
   user_config::UserConfig,
   wm_state::WmState,
@@ -164,7 +166,7 @@ fn overview_frame(
     .and_then(CommonGetters::workspace)
     .map(|workspace| workspace.id());
 
-  let workspaces = monitor
+  let mut workspaces = monitor
     .workspaces()
     .iter()
     .map(|workspace| {
@@ -174,13 +176,16 @@ fn overview_frame(
         label: config.display_name.unwrap_or_else(|| config.name.clone()),
         name: config.name,
         is_focused: focused_workspace == Some(workspace.id()),
+        is_new: false,
         windows: overview_windows(workspace)
           .iter()
           .map(overview_window)
           .collect(),
       }
     })
-    .collect();
+    .collect::<Vec<_>>();
+
+  workspaces.extend(new_workspace(state, monitor, config));
 
   let overview = &config.value.overview;
 
@@ -206,6 +211,37 @@ fn overview_frame(
       open_duration_ms: overview.open_duration_ms,
     },
   }
+}
+
+/// The "+" card: the workspace `move --next-empty-workspace` would
+/// activate or create from `monitor`. `None` when that is an existing
+/// workspace, which has a card of its own, or when there is none.
+fn new_workspace(
+  state: &WmState,
+  monitor: &Monitor,
+  config: &UserConfig,
+) -> Option<OverviewWorkspace> {
+  let origin = monitor.displayed_workspace()?;
+  let (name, existing) = state
+    .workspace_by_target(&origin, WorkspaceTarget::NextEmpty, config)
+    .ok()?;
+
+  let name = name.filter(|_| existing.is_none())?;
+  let label = config
+    .value
+    .workspaces
+    .iter()
+    .find(|workspace| workspace.name == name)
+    .and_then(|workspace| workspace.display_name.clone())
+    .unwrap_or_else(|| name.clone());
+
+  Some(OverviewWorkspace {
+    name,
+    label,
+    is_focused: false,
+    is_new: true,
+    windows: Vec::new(),
+  })
 }
 
 fn overview_window(window: &WindowContainer) -> OverviewWindow {

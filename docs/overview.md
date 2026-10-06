@@ -14,6 +14,14 @@ into its card, while the wallpaper behind them blurs.
   larger than the rest. Looking inside a workspace zooms its card in further.
 - **Grid**: every card at once, `grid_columns` per row.
 
+After the last workspace there is a **+** card for a new one: the workspace
+`move --next-empty-workspace` would use, i.e. an unused workspace from the
+config or, with `general.dynamic_workspaces` on, a new dynamic one (see
+[Dynamic workspaces](./dynamic-workspaces-and-urgency.md)). Drop or send a
+window on it to move the window there, or pick it to switch to it. There is
+no **+** card when the monitor already shows an empty workspace, or when
+there is nowhere to go.
+
 `Tab` switches between them while open.
 
 ## Usage
@@ -47,13 +55,16 @@ workspace. The line under the cards shows the keys for the current step.
 | `←` `→` (or `h` `l`) | Select a workspace. | Select a window, left to right. | Select a workspace. |
 | `↑` `↓` (or `k` `j`) | Select a workspace a row up or down (grid). | Select a window, top to bottom. | Same as browsing. |
 | `Home` / `End` | First / last workspace. | First / last window. | First / last workspace. |
-| `1`–`9`, `0` | Switch to that workspace (`0` is the tenth) and close. | Same. | Select that workspace. |
+| `1`–`9`, `0` | Switch to that workspace and close. | Send the selected window there; the next window gets selected. | Drop it there. |
 | `Space` | Look inside the selected workspace. | Pick up the selected window. | Drop it on the selected workspace. |
 | `Enter` | Switch to the selected workspace and close. | Focus the selected window and close. | Drop it on the selected workspace. |
 | `x` | | Close the selected window. | |
 | `Backspace` | | Back to browsing. | Put the window down. |
 | `Tab` | Switch between carousel and grid. | Same, back to browsing in the grid. | Same. |
 | `Escape` | Close without changing anything. | Same. | Same. |
+
+Digits go to the workspace named after them (`0` is `10`). When no
+workspace on the monitor has a numeric name, they go by position instead.
 
 ### Search
 

@@ -153,6 +153,10 @@ pub(crate) struct CardPicture {
 
   /// Whether this is the focused workspace.
   pub is_focused: bool,
+
+  /// Whether it is the "+" card of a workspace yet to be activated.
+  pub is_new: bool,
+
   pub is_hovered: bool,
   pub is_drop_target: bool,
   pub is_selected: bool,
@@ -249,15 +253,13 @@ pub(crate) fn draw_card(
   let radius = round(units.px(14.0));
 
   let (fill, border, border_width) = if picture.is_drop_target {
-    (with_alpha(style.accent, 0.22), style.accent, 2.0)
+    (with_alpha(style.accent, 0.22), style.accent, 3.0)
   } else if picture.is_focused {
-    (
-      with_alpha(style.accent, 0.12),
-      with_alpha(style.accent, 0.45),
-      1.0,
-    )
+    (with_alpha(style.accent, 0.12), style.accent, 1.0)
   } else if picture.is_hovered {
-    (style.surface, with_alpha(style.accent, 0.2), 1.0)
+    (style.surface, with_alpha(style.accent, 0.35), 1.0)
+  } else if picture.is_new {
+    (fade(style.card, 0.5), with_alpha(style.accent, 0.2), 1.0)
   } else {
     (style.card, with_alpha(style.accent, 0.2), 1.0)
   };
@@ -276,6 +278,15 @@ pub(crate) fn draw_card(
   let mut fonts = Fonts::new(&style.font_family);
   draw_header(surface, &mut fonts, picture, units, style, notify);
 
+  if picture.is_new {
+    let color = if picture.is_drop_target || picture.is_selected {
+      style.accent
+    } else {
+      with_alpha(style.subtext, 0.5)
+    };
+    draw_plus(surface, &units.rect(&metrics.tile_area()), units, color);
+  }
+
   // Previews are cut out in stacking order, so a floating window's hole
   // clears what was drawn for the tiled window under it.
   for tile in &picture.tiles {
@@ -286,8 +297,42 @@ pub(crate) fn draw_card(
     surface.canvas().stroke_rounded_rect(
       &card,
       radius,
-      round(units.px(2.0)).max(1),
-      with_alpha(style.accent, 0.9),
+      round(units.px(3.0)).max(1),
+      style.accent,
+    );
+  }
+}
+
+/// Draws a "+" in the middle of `area`.
+fn draw_plus(
+  surface: &mut Surface,
+  area: &Rect,
+  units: Units,
+  color: Color,
+) {
+  let length = round(
+    units
+      .px(44.0)
+      .min(to_f32(area.height()) * 0.4)
+      .min(to_f32(area.width()) * 0.4),
+  );
+  let thickness = round(units.px(4.0)).max(1);
+  let (center_x, center_y) = (
+    i32::midpoint(area.left, area.right),
+    i32::midpoint(area.top, area.bottom),
+  );
+
+  let mut canvas = surface.canvas();
+  for (width, height) in [(length, thickness), (thickness, length)] {
+    canvas.fill_rounded_rect(
+      &Rect::from_xy(
+        center_x - width / 2,
+        center_y - height / 2,
+        width,
+        height,
+      ),
+      thickness / 2,
+      color,
     );
   }
 }
@@ -318,6 +363,18 @@ fn draw_header(
     },
     DT_LEFT,
   );
+
+  if picture.is_new {
+    draw_text(
+      surface,
+      fonts.get(units.px(10.0), false),
+      "new",
+      &RectF::new(half, 0.0, half - units.px(12.0), header).to_rect(),
+      with_alpha(style.subtext, 0.6),
+      DT_RIGHT,
+    );
+    return;
+  }
 
   if picture.window_count == 0 {
     return;
