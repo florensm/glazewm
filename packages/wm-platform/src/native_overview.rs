@@ -883,9 +883,9 @@ impl Overview {
     if force || self.hint_drawn.as_ref() != Some(&hint) {
       let (text, tone) = &hint;
       let color = match tone {
-        HintTone::Quiet => with_alpha(style.subtext, 0.6),
+        HintTone::Quiet => with_alpha(style.subtext, 0.85),
         HintTone::Accent => with_alpha(style.accent, 0.9),
-        HintTone::Search => with_alpha(style.search, 0.6),
+        HintTone::Search => with_alpha(style.search, 0.85),
       };
       let scale_factor = self.metrics.scale_factor;
 
@@ -975,10 +975,8 @@ impl Overview {
             (3.0, search)
           } else if is_marked {
             (3.0, accent)
-          } else if is_picked {
-            (2.0, with_alpha(accent, 0.9))
-          } else if is_cursor || is_focused {
-            (2.0, with_alpha(accent, 0.6))
+          } else if is_picked || is_cursor || is_focused {
+            (2.0, accent)
           } else {
             (1.0, with_alpha(caption, 0.6))
           };
@@ -1008,6 +1006,7 @@ impl Overview {
       scale: card.map_or(1.0, |card| card.scale.target.max(0.05)),
       label: workspace.map_or_else(String::new, |w| w.label.clone()),
       is_focused: workspace.is_some_and(|w| w.is_focused),
+      is_new: workspace.is_some_and(|w| w.is_new),
       is_hovered: interaction.hover == Some(index),
       is_drop_target: interaction.is_drop_target(index),
       is_selected,
