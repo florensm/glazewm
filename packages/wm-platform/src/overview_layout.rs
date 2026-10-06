@@ -1,497 +1,648 @@
-//! Geometry of the window overview: a grid of window previews fitted into
-//! the overview's area, what a point in it hits, and how the selection
-//! moves between previews.
+//! Geometry of the window overview: a card per workspace, laid out as a
+//! carousel or a grid, each showing its windows where they really sit,
+//! scaled down.
 //!
-//! All values are physical pixels relative to the overview's top-left
-//! corner.
+//! Values are physical pixels relative to the overview's top-left corner,
+//! kept fractional so animated positions don't snap to whole pixels until
+//! drawn.
 
-use std::ops::Range;
-
-use crate::{Direction, Rect};
-
-/// What the user did in the overview.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum OverviewAction {
-  /// Focus the window with this handle.
-  Pick(isize),
-
-  /// Close the overview, giving focus back to the window that had it.
-  Cancel,
-
-  /// Another window took focus, which closed the overview.
-  Deactivated,
+/// A rectangle with fractional coordinates.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub(crate) struct RectF {
+  pub x: f32,
+  pub y: f32,
+  pub w: f32,
+  pub h: f32,
 }
 
-/// Inputs of an overview layout.
-#[derive(Clone, Copy, Debug)]
-pub struct OverviewLayoutParams<'a> {
-  pub width: i32,
-  pub height: i32,
+impl RectF {
+  pub const fn new(x: f32, y: f32, w: f32, h: f32) -> Self {
+    Self { x, y, w, h }
+  }
 
-  /// Space around and between previews.
-  pub gap: i32,
+  pub fn right(&self) -> f32 {
+    self.x + self.w
+  }
 
-  /// Space between a preview's thumbnail and the edge of its highlight.
-  pub padding: i32,
+  pub fn bottom(&self) -> f32 {
+    self.y + self.h
+  }
 
-  /// Height of the title under each thumbnail.
-  pub title_height: i32,
+  pub fn contains(&self, x: f32, y: f32) -> bool {
+    x >= self.x && x < self.right() && y >= self.y && y < self.bottom()
+  }
 
-  /// Size of each window, in display order.
-  pub window_sizes: &'a [(i32, i32)],
+  /// This rect shrunk by `by` on every side.
+  pub fn inset(&self, by: f32) -> Self {
+    Self::new(
+      self.x + by,
+      self.y + by,
+      (self.w - 2.0 * by).max(0.0),
+      (self.h - 2.0 * by).max(0.0),
+    )
+  }
+
+  /// The overlap of two rects, if any.
+  pub fn intersect(&self, other: &Self) -> Option<Self> {
+    let left = self.x.max(other.x);
+    let top = self.y.max(other.y);
+    let right = self.right().min(other.right());
+    let bottom = self.bottom().min(other.bottom());
+
+    (right > left && bottom > top)
+      .then(|| Self::new(left, top, right - left, bottom - top))
+  }
+
+  /// Edges rounded to whole pixels, so adjacent rects stay adjacent.
+  #[allow(clippy::cast_possible_truncation)]
+  pub fn to_rect(self) -> crate::Rect {
+    crate::Rect::from_ltrb(
+      self.x.round() as i32,
+      self.y.round() as i32,
+      self.right().round() as i32,
+      self.bottom().round() as i32,
+    )
+  }
+
+  #[allow(clippy::cast_precision_loss)]
+  pub fn from_rect(rect: &crate::Rect) -> Self {
+    Self::new(
+      rect.left as f32,
+      rect.top as f32,
+      rect.width() as f32,
+      rect.height() as f32,
+    )
+  }
 }
 
-/// Geometry of one window's preview.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct OverviewCell {
-  /// The preview's highlight, used for hit-testing: thumbnail and title,
-  /// plus padding.
-  pub cell: Rect,
-
-  /// Where the window's thumbnail goes, keeping its aspect ratio.
-  pub thumbnail: Rect,
-
-  /// Title area under the thumbnail.
-  pub title: Rect,
+/// Fixed sizes of a card at scale 1, derived from the overview's size.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct CardMetrics {
+  pub width: f32,
+  pub height: f32,
+  /// Height of the strip above the windows holding the workspace's name.
+  pub header: f32,
+  pub padding: f32,
+  /// Width over height of the area a card maps, i.e. the monitor's.
+  pub aspect: f32,
+  pub spacing: f32,
+  pub scale_factor: f32,
+  /// Size of the overview itself.
+  pub view: (f32, f32),
 }
 
-/// Where a preview's icon and title text go within its title area.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct OverviewLabel {
-  /// Icon square, if there is room for one.
-  pub icon: Option<Rect>,
-  pub text: Rect,
-}
-
-/// Laid-out overview.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct OverviewLayout {
-  /// One cell per window, in display order.
-  pub cells: Vec<OverviewCell>,
-
-  /// Ranges of `cells` making up each grid row, top to bottom.
-  pub rows: Vec<Range<usize>>,
-}
-
-impl OverviewLayout {
-  /// Lays out one preview per window in a grid of equal slots.
-  ///
-  /// Picks the column count that shows the windows largest overall.
-  /// Thumbnails keep their window's aspect ratio and are never shown
-  /// larger than the window itself. A short last row is centered.
-  #[must_use]
-  pub fn new(params: &OverviewLayoutParams) -> Self {
-    let count = params.window_sizes.len();
-
-    // On a tie, e.g. when every window fits at full size, the later and
-    // wider grid wins.
-    let columns = (1..=count)
-      .filter_map(|columns| Some((columns, total_area(params, columns)?)))
-      .max_by(|(_, a), (_, b)| a.total_cmp(b))
-      .map(|(columns, _)| columns);
-
-    let Some(columns) = columns else {
-      return Self::default();
+impl CardMetrics {
+  /// Cards for an overview of `width` x `height` covering a monitor with
+  /// that same area: about a quarter of its width, in a sensible range.
+  pub fn new(width: f32, height: f32, scale_factor: f32) -> Self {
+    let width = width.max(1.0);
+    let height = height.max(1.0);
+    let scale_factor = if scale_factor.is_finite() && scale_factor > 0.0 {
+      scale_factor
+    } else {
+      1.0
     };
+    let px = |length: f32| length * scale_factor;
 
-    let slot = Slot::new(params, columns);
-    let cells = params
-      .window_sizes
-      .iter()
-      .enumerate()
-      .map(|(index, size)| {
-        let row = index / columns;
-        let in_row = columns.min(count - row * columns);
-        slot.cell(params, row, index % columns, in_row, *size)
-      })
-      .collect();
-
-    let rows = (0..count)
-      .step_by(columns)
-      .map(|start| start..(start + columns).min(count))
-      .collect();
-
-    Self { cells, rows }
-  }
-
-  /// Index of the preview at (`x`, `y`), or `None` for the background.
-  #[must_use]
-  pub fn hit_test(&self, x: i32, y: i32) -> Option<usize> {
-    self.cells.iter().position(|cell| {
-      let cell = &cell.cell;
-      x >= cell.left && x < cell.right && y >= cell.top && y < cell.bottom
-    })
-  }
-
-  /// Index of the preview the selection moves to from `from`.
-  ///
-  /// Left and right step through the previews in reading order. Up and
-  /// down move to the horizontally nearest preview in the adjacent row.
-  /// The selection stays put at the edges.
-  #[must_use]
-  pub fn move_selection(
-    &self,
-    from: usize,
-    direction: &Direction,
-  ) -> usize {
-    let Some(last) = self.cells.len().checked_sub(1) else {
-      return from;
-    };
-    let from = from.min(last);
-
-    match direction {
-      Direction::Left => from.saturating_sub(1),
-      Direction::Right => (from + 1).min(last),
-      Direction::Up | Direction::Down => {
-        let Some(row) =
-          self.rows.iter().position(|row| row.contains(&from))
-        else {
-          return from;
-        };
-
-        let target = match direction {
-          Direction::Up => row.checked_sub(1),
-          _ => Some(row + 1),
-        }
-        .and_then(|row| self.rows.get(row));
-
-        let center = self.center_x(from);
-        target
-          .and_then(|row| {
-            row.clone().min_by_key(|index| {
-              (self.center_x(*index) - center).unsigned_abs()
-            })
-          })
-          .unwrap_or(from)
-      }
-    }
-  }
-
-  fn center_x(&self, index: usize) -> i32 {
-    self
-      .cells
-      .get(index)
-      .map_or(0, |cell| i32::midpoint(cell.cell.left, cell.cell.right))
-  }
-}
-
-/// Places an icon of `icon_size` and a title `text_width` wide, side by
-/// side and centered, within `title`. The text is cut to the room left.
-#[must_use]
-pub fn label_layout(
-  title: &Rect,
-  icon_size: Option<i32>,
-  spacing: i32,
-  text_width: i32,
-) -> OverviewLabel {
-  let icon_size = icon_size.filter(|size| {
-    *size > 0
-      && *size + spacing <= title.width()
-      && *size <= title.height()
-  });
-  let icon_width = icon_size.map_or(0, |size| size + spacing);
-  let text_width = text_width.clamp(0, title.width() - icon_width);
-  let left = title.left + (title.width() - icon_width - text_width) / 2;
-
-  OverviewLabel {
-    icon: icon_size.map(|size| {
-      Rect::from_xy(
-        left,
-        title.top + (title.height() - size) / 2,
-        size,
-        size,
-      )
-    }),
-    text: Rect::from_ltrb(
-      left + icon_width,
-      title.top,
-      left + icon_width + text_width,
-      title.bottom,
-    ),
-  }
-}
-
-/// Size of a grid slot, and the room in it for a thumbnail.
-struct Slot {
-  width: i32,
-  height: i32,
-  thumbnail_width: i32,
-  thumbnail_height: i32,
-  columns: i32,
-}
-
-impl Slot {
-  fn new(params: &OverviewLayoutParams, columns: usize) -> Self {
-    let rows = params.window_sizes.len().div_ceil(columns);
-    let columns = i32::try_from(columns).unwrap_or(i32::MAX);
-    let rows = i32::try_from(rows).unwrap_or(i32::MAX);
-
-    let width =
-      (params.width - params.gap.saturating_mul(columns + 1)) / columns;
-    let height =
-      (params.height - params.gap.saturating_mul(rows + 1)) / rows.max(1);
+    let card_width = (width * 0.26).clamp(px(380.0), px(900.0));
+    let header = px(28.0);
+    let padding = px(9.0);
+    let aspect = width / height;
 
     Self {
-      width,
-      height,
-      thumbnail_width: width - 2 * params.padding,
-      thumbnail_height: height - 2 * params.padding - params.title_height,
-      columns,
+      width: card_width,
+      height: header + (card_width - 2.0 * padding) / aspect + padding,
+      header,
+      padding,
+      aspect,
+      spacing: px(12.0),
+      scale_factor,
+      view: (width, height),
     }
   }
 
-  fn fits(&self) -> bool {
-    self.thumbnail_width > 0 && self.thumbnail_height > 0
+  /// Where windows are drawn within a card at scale 1.
+  pub fn tile_area(&self) -> RectF {
+    let width = self.width - 2.0 * self.padding;
+    RectF::new(self.padding, self.header, width, width / self.aspect)
   }
 
-  /// Cell of the window of `size` in `column` of `row`, which holds
-  /// `in_row` windows.
-  fn cell(
-    &self,
-    params: &OverviewLayoutParams,
-    row: usize,
-    column: usize,
-    in_row: usize,
-    size: (i32, i32),
-  ) -> OverviewCell {
-    let to_i32 = |value: usize| i32::try_from(value).unwrap_or(0);
-    let stride_x = self.width + params.gap;
-    let stride_y = self.height + params.gap;
-
-    let row_offset = (self.columns - to_i32(in_row)) * stride_x / 2;
-    let slot_left = params.gap + to_i32(column) * stride_x + row_offset;
-    let slot_top = params.gap + to_i32(row) * stride_y;
-
-    let (width, height) = self.fit(size);
-    let cell_width = width + 2 * params.padding;
-    let cell_height = height + params.title_height + 2 * params.padding;
-    let left = slot_left + (self.width - cell_width) / 2;
-    let top = slot_top + (self.height - cell_height) / 2;
-
-    let thumbnail = Rect::from_xy(
-      left + params.padding,
-      top + params.padding,
-      width,
-      height,
-    );
-    let title = Rect::from_ltrb(
-      thumbnail.left,
-      thumbnail.bottom,
-      thumbnail.right,
-      thumbnail.bottom + params.title_height,
-    );
-
-    OverviewCell {
-      cell: Rect::from_xy(left, top, cell_width, cell_height),
-      thumbnail,
-      title,
-    }
-  }
-
-  /// Scale at which a window of `size` fits the slot, at most 1.
-  fn scale(&self, (width, height): (i32, i32)) -> f64 {
-    let (width, height) =
-      (f64::from(width.max(1)), f64::from(height.max(1)));
-
-    (f64::from(self.thumbnail_width) / width)
-      .min(f64::from(self.thumbnail_height) / height)
-      .min(1.0)
-  }
-
-  /// Thumbnail size of a window of `size`, at least 1x1.
-  fn fit(&self, size: (i32, i32)) -> (i32, i32) {
-    let scale = self.scale(size);
-
-    #[allow(clippy::cast_possible_truncation)]
-    let scaled = |length: i32| {
-      ((f64::from(length.max(1)) * scale).round() as i32).max(1)
-    };
-
-    (scaled(size.0), scaled(size.1))
+  fn px(&self, length: f32) -> f32 {
+    length * self.scale_factor
   }
 }
 
-/// Total thumbnail area with `columns` columns, or `None` if the slots
-/// have no room for a thumbnail.
-fn total_area(
-  params: &OverviewLayoutParams,
+/// Where a card sits: its center and scale.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct Placement {
+  pub cx: f32,
+  pub cy: f32,
+  pub scale: f32,
+}
+
+impl Placement {
+  /// The card's rect in the overview.
+  pub fn rect(&self, metrics: &CardMetrics) -> RectF {
+    let (width, height) =
+      (metrics.width * self.scale, metrics.height * self.scale);
+    RectF::new(
+      self.cx - width / 2.0,
+      self.cy - height / 2.0,
+      width,
+      height,
+    )
+  }
+
+  /// `local`, in the coordinates of a card at scale 1, in the overview.
+  pub fn map(&self, metrics: &CardMetrics, local: &RectF) -> RectF {
+    let card = self.rect(metrics);
+    RectF::new(
+      card.x + local.x * self.scale,
+      card.y + local.y * self.scale,
+      local.w * self.scale,
+      local.h * self.scale,
+    )
+  }
+
+  /// The overview point (`x`, `y`) in card coordinates at scale 1, if it
+  /// is over this card.
+  pub fn unmap(
+    &self,
+    metrics: &CardMetrics,
+    x: f32,
+    y: f32,
+  ) -> Option<(f32, f32)> {
+    let card = self.rect(metrics);
+    if !card.contains(x, y) || self.scale <= 0.0 {
+      return None;
+    }
+    Some(((x - card.x) / self.scale, (y - card.y) / self.scale))
+  }
+}
+
+/// Where every card goes, and the line of key hints under them.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct Targets {
+  pub cards: Vec<Placement>,
+  pub hint_y: f32,
+}
+
+/// One row of cards with the `selected` one in the middle at full size.
+///
+/// `zoomed` is for looking inside the selected workspace: it grows to
+/// 1.5x and its neighbours sit far back.
+pub(crate) fn carousel(
+  metrics: &CardMetrics,
+  count: usize,
+  selected: usize,
+  zoomed: bool,
+) -> Targets {
+  let selected = selected.min(count.saturating_sub(1));
+  let scale_of = |index: usize| match (index == selected, zoomed) {
+    (true, true) => 1.5,
+    (true, false) => 1.0,
+    (false, true) => 0.32,
+    (false, false) => 0.66,
+  };
+
+  let mut starts = Vec::with_capacity(count);
+  let mut x = 0.0;
+  for index in 0..count {
+    starts.push(x);
+    x += metrics.width * scale_of(index) + metrics.spacing;
+  }
+
+  let selected_width = metrics.width * scale_of(selected);
+  let offset = metrics.view.0 / 2.0
+    - (starts.get(selected).copied().unwrap_or(0.0)
+      + selected_width / 2.0);
+
+  // The row grows with the zoom, so a busy workspace gets the room it
+  // needs.
+  let row_height = metrics.height * if zoomed { 1.5 } else { 1.02 };
+  let top = (metrics.view.1 - row_height - metrics.px(30.0)) / 2.0;
+  let cy = top + row_height / 2.0;
+
+  Targets {
+    cards: starts
+      .iter()
+      .enumerate()
+      .map(|(index, start)| {
+        let scale = scale_of(index);
+        Placement {
+          cx: start + metrics.width * scale / 2.0 + offset,
+          cy,
+          scale,
+        }
+      })
+      .collect(),
+    hint_y: top + row_height + metrics.px(16.0),
+  }
+}
+
+/// Every card at once, `columns` per row, as large as fits.
+#[allow(clippy::cast_precision_loss)]
+pub(crate) fn grid(
+  metrics: &CardMetrics,
+  count: usize,
   columns: usize,
-) -> Option<f64> {
-  let slot = Slot::new(params, columns);
-  if !slot.fits() {
+) -> Targets {
+  let columns = columns.clamp(1, count.max(1));
+  let rows = count.div_ceil(columns).max(1);
+  let gap = metrics.px(14.0);
+  let (columns_f, rows_f) = (columns as f32, rows as f32);
+
+  // Room is left for the hint line and a carried window parked at the
+  // bottom.
+  let available_width = metrics.view.0 - metrics.px(120.0);
+  let available_height = metrics.view.1 - metrics.px(320.0);
+  let scale = ((available_width - gap * (columns_f - 1.0))
+    / (columns_f * metrics.width))
+    .min(
+      (available_height - gap * (rows_f - 1.0))
+        / (rows_f * metrics.height),
+    )
+    .clamp(0.1, 1.0);
+
+  let (width, height) = (metrics.width * scale, metrics.height * scale);
+  let total_width = columns_f * width + (columns_f - 1.0) * gap;
+  let total_height = rows_f * height + (rows_f - 1.0) * gap;
+  let left = (metrics.view.0 - total_width) / 2.0;
+  let top = (metrics.view.1 - total_height - metrics.px(30.0)) / 2.0;
+
+  Targets {
+    cards: (0..count)
+      .map(|index| {
+        let (row, column) = (index / columns, index % columns);
+        // A short last row is centered rather than hanging off the left.
+        let in_row = columns.min(count - row * columns) as f32;
+        let row_left = left + (columns_f - in_row) * (width + gap) / 2.0;
+
+        Placement {
+          cx: row_left + column as f32 * (width + gap) + width / 2.0,
+          cy: top + row as f32 * (height + gap) + height / 2.0,
+          scale,
+        }
+      })
+      .collect(),
+    hint_y: top + total_height + metrics.px(16.0),
+  }
+}
+
+/// A window's place within a card at scale 1.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct Tile {
+  pub rect: RectF,
+
+  /// The part of the window the tile shows, as fractions of its size;
+  /// less than all of it when it reaches past its workspace.
+  pub crop: RectF,
+}
+
+/// Where a window at `window` (screen coordinates) goes on the card of a
+/// workspace covering `area`: where it actually sits, scaled down. `None`
+/// for a window entirely outside the area.
+pub(crate) fn tile(
+  metrics: &CardMetrics,
+  area: &RectF,
+  window: &RectF,
+) -> Option<Tile> {
+  if window.w <= 0.0 || window.h <= 0.0 || area.w <= 0.0 || area.h <= 0.0 {
     return None;
   }
 
-  Some(
-    params
-      .window_sizes
-      .iter()
-      .map(|size| {
-        let (width, height) = slot.fit(*size);
-        f64::from(width) * f64::from(height)
-      })
-      .sum(),
-  )
+  let visible = window.intersect(area)?;
+  let tiles = metrics.tile_area();
+  let (scale_x, scale_y) = (tiles.w / area.w, tiles.h / area.h);
+
+  let rect = RectF::new(
+    tiles.x + (visible.x - area.x) * scale_x,
+    tiles.y + (visible.y - area.y) * scale_y,
+    visible.w * scale_x,
+    visible.h * scale_y,
+  );
+
+  Some(Tile {
+    rect,
+    crop: RectF::new(
+      (visible.x - window.x) / window.w,
+      (visible.y - window.y) / window.h,
+      visible.w / window.w,
+      visible.h / window.h,
+    ),
+  })
+}
+
+/// The zoom the overview opens with: at progress 0 it shows `from` filling
+/// `to`, and at 1 everything sits where it belongs.
+///
+/// With `from` the focused workspace's tiles and `to` the monitor, the
+/// windows start out exactly where they are on screen and shrink into
+/// their card, with the other cards flying in around it.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct Camera {
+  scale_x: f32,
+  scale_y: f32,
+  offset_x: f32,
+  offset_y: f32,
+}
+
+impl Camera {
+  pub const IDENTITY: Self = Self {
+    scale_x: 1.0,
+    scale_y: 1.0,
+    offset_x: 0.0,
+    offset_y: 0.0,
+  };
+
+  /// The zoom at eased `progress` from 0 to 1.
+  pub fn zoom(from: &RectF, to: &RectF, progress: f32) -> Self {
+    if from.w <= 0.0 || from.h <= 0.0 {
+      return Self::IDENTITY;
+    }
+
+    let progress = progress.clamp(0.0, 1.0);
+    let lerp = |a: f32, b: f32| a + (b - a) * progress;
+    let (start_x, start_y) = (to.w / from.w, to.h / from.h);
+
+    Self {
+      scale_x: lerp(start_x, 1.0),
+      scale_y: lerp(start_y, 1.0),
+      offset_x: lerp(to.x - from.x * start_x, 0.0),
+      offset_y: lerp(to.y - from.y * start_y, 0.0),
+    }
+  }
+
+  /// The point `apply` maps onto (`x`, `y`).
+  pub fn unapply(&self, x: f32, y: f32) -> (f32, f32) {
+    (
+      (x - self.offset_x) / self.scale_x,
+      (y - self.offset_y) / self.scale_y,
+    )
+  }
+
+  pub fn apply(&self, rect: &RectF) -> RectF {
+    RectF::new(
+      rect.x * self.scale_x + self.offset_x,
+      rect.y * self.scale_y + self.offset_y,
+      rect.w * self.scale_x,
+      rect.h * self.scale_y,
+    )
+  }
+}
+
+/// Fast start, gentle stop.
+pub(crate) fn ease_out_cubic(progress: f32) -> f32 {
+  1.0 - (1.0 - progress.clamp(0.0, 1.0)).powi(3)
+}
+
+/// A number that eases toward its target instead of jumping to it.
+///
+/// Critically damped, so it settles without overshooting, and retargeting
+/// it mid-flight keeps its velocity rather than restarting the curve.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct Spring {
+  pub value: f32,
+  pub target: f32,
+  velocity: f32,
+  stiffness: f32,
+  damping: f32,
+  /// How close to its target, in its own units, it counts as settled.
+  epsilon: f32,
+}
+
+impl Spring {
+  /// A spring resting at `value` that settles within about
+  /// `settle_ms`.
+  pub fn new(value: f32, settle_ms: f32, epsilon: f32) -> Self {
+    let omega = 4.6 / (settle_ms.max(1.0) / 1000.0);
+
+    Self {
+      value,
+      target: value,
+      velocity: 0.0,
+      stiffness: omega * omega,
+      damping: 2.0 * omega,
+      epsilon,
+    }
+  }
+
+  pub fn snap(&mut self, value: f32) {
+    self.value = value;
+    self.target = value;
+    self.velocity = 0.0;
+  }
+
+  #[allow(clippy::float_cmp)]
+  pub fn is_settled(&self) -> bool {
+    self.value == self.target && self.velocity == 0.0
+  }
+
+  /// Advances by `dt` seconds. Returns whether it is still moving.
+  pub fn step(&mut self, dt: f32) -> bool {
+    if self.is_settled() {
+      return false;
+    }
+
+    let acceleration = (self.target - self.value) * self.stiffness
+      - self.velocity * self.damping;
+    self.velocity += acceleration * dt;
+    self.value += self.velocity * dt;
+
+    if (self.target - self.value).abs() < self.epsilon
+      && self.velocity.abs() < self.epsilon * 4.0
+    {
+      self.snap(self.target);
+    }
+
+    true
+  }
 }
 
 #[cfg(test)]
 mod tests {
-  use super::{label_layout, OverviewLayout, OverviewLayoutParams};
-  use crate::{Direction, Rect};
+  use super::{
+    carousel, ease_out_cubic, grid, tile, Camera, CardMetrics, RectF,
+    Spring,
+  };
 
-  fn layout(
-    width: i32,
-    height: i32,
-    sizes: &[(i32, i32)],
-  ) -> OverviewLayout {
-    OverviewLayout::new(&OverviewLayoutParams {
-      width,
-      height,
-      gap: 20,
-      padding: 10,
-      title_height: 30,
-      window_sizes: sizes,
-    })
+  fn metrics() -> CardMetrics {
+    CardMetrics::new(1920.0, 1040.0, 1.0)
   }
 
-  fn row_lengths(layout: &OverviewLayout) -> Vec<usize> {
-    layout.rows.iter().map(ExactSizeIterator::len).collect()
+  fn assert_close(a: f32, b: f32) {
+    assert!((a - b).abs() < 0.01, "{a} != {b}");
   }
 
-  #[test]
-  fn no_windows_is_empty() {
-    assert_eq!(layout(1920, 1080, &[]), OverviewLayout::default());
+  fn assert_rect_close(a: &RectF, b: &RectF) {
+    assert_close(a.x, b.x);
+    assert_close(a.y, b.y);
+    assert_close(a.w, b.w);
+    assert_close(a.h, b.h);
   }
 
   #[test]
-  fn four_landscape_windows_form_a_square_grid() {
-    let layout = layout(1920, 1080, &[(1920, 1080); 4]);
-    assert_eq!(row_lengths(&layout), [2, 2]);
+  fn card_keeps_the_monitor_aspect() {
+    let metrics = metrics();
+    let tiles = metrics.tile_area();
+
+    assert_close(metrics.width, 1920.0 * 0.26);
+    assert_close(tiles.w / tiles.h, 1920.0 / 1040.0);
+    assert_close(metrics.height, tiles.bottom() + metrics.padding);
   }
 
   #[test]
-  fn tall_windows_share_one_row() {
-    let layout = layout(1920, 1080, &[(600, 1400); 3]);
-    assert_eq!(row_lengths(&layout), [3]);
-  }
+  fn carousel_centers_the_selected_card() {
+    let metrics = metrics();
+    let targets = carousel(&metrics, 5, 2, false);
 
-  #[test]
-  fn small_windows_are_not_upscaled() {
-    let layout = layout(1920, 1080, &[(400, 300), (200, 100)]);
-    assert_eq!(row_lengths(&layout), [2]);
-    assert_eq!(layout.cells[0].thumbnail.width(), 400);
-    assert_eq!(layout.cells[0].thumbnail.height(), 300);
-    assert_eq!(layout.cells[1].thumbnail.width(), 200);
-  }
+    assert_close(targets.cards[2].cx, 960.0);
+    assert_close(targets.cards[2].scale, 1.0);
+    assert_close(targets.cards[1].scale, 0.66);
 
-  #[test]
-  fn thumbnails_keep_aspect_ratio_and_fit_their_cells() {
-    let sizes = [(1920, 1080), (800, 1200), (1000, 1000), (3000, 500)];
-    let layout = layout(1920, 1080, &sizes);
-
-    for (cell, (width, height)) in layout.cells.iter().zip(sizes) {
-      let thumbnail = &cell.thumbnail;
-      let expected = f64::from(width) / f64::from(height);
-      let actual =
-        f64::from(thumbnail.width()) / f64::from(thumbnail.height());
-      assert!((expected - actual).abs() / expected < 0.02, "{cell:?}");
-
-      assert!(cell.cell.contains_rect(thumbnail));
-      assert!(cell.cell.contains_rect(&cell.title));
-      assert_eq!(cell.title.top, thumbnail.bottom);
-      assert!(Rect::from_ltrb(0, 0, 1920, 1080).contains_rect(&cell.cell));
+    for pair in targets.cards.windows(2) {
+      let (left, right) = (pair[0].rect(&metrics), pair[1].rect(&metrics));
+      assert_close(right.x - left.right(), metrics.spacing);
     }
   }
 
   #[test]
-  fn cells_do_not_overlap() {
-    let layout = layout(1920, 1080, &[(1280, 720); 7]);
+  fn zoomed_carousel_grows_the_selected_card() {
+    let metrics = metrics();
+    let targets = carousel(&metrics, 3, 0, true);
 
-    for (index, cell) in layout.cells.iter().enumerate() {
-      for other in &layout.cells[index + 1..] {
-        assert_eq!(cell.cell.intersection_area(&other.cell), 0);
-      }
-    }
-  }
-
-  #[test]
-  fn short_last_row_is_centered() {
-    let layout = layout(1920, 1080, &[(1920, 1080); 5]);
-    assert_eq!(row_lengths(&layout), [3, 2]);
-
-    let last_row = &layout.cells[3..];
-    let left_margin = last_row[0].cell.left;
-    let right_margin = 1920 - last_row[1].cell.right;
-    assert!((left_margin - right_margin).abs() <= 2);
-  }
-
-  #[test]
-  fn too_small_an_area_is_empty() {
-    assert_eq!(layout(50, 50, &[(800, 600)]), OverviewLayout::default());
-  }
-
-  #[test]
-  fn hit_test_finds_cells_and_background() {
-    let layout = layout(1920, 1080, &[(1920, 1080); 2]);
-    let cell = &layout.cells[1].cell;
-
-    assert_eq!(layout.hit_test(cell.left, cell.top), Some(1));
-    assert_eq!(layout.hit_test(cell.right - 1, cell.bottom - 1), Some(1));
-    assert_eq!(layout.hit_test(cell.right, cell.top), None);
-    assert_eq!(layout.hit_test(0, 0), None);
-  }
-
-  #[test]
-  fn left_and_right_step_in_reading_order() {
-    let layout = layout(1920, 1080, &[(1920, 1080); 5]);
-
-    assert_eq!(layout.move_selection(2, &Direction::Right), 3);
-    assert_eq!(layout.move_selection(3, &Direction::Left), 2);
-    assert_eq!(layout.move_selection(0, &Direction::Left), 0);
-    assert_eq!(layout.move_selection(4, &Direction::Right), 4);
-  }
-
-  #[test]
-  fn up_and_down_pick_the_nearest_column() {
-    // Rows of 3 and 2; the short row is centered under the gaps.
-    let layout = layout(1920, 1080, &[(1920, 1080); 5]);
-
-    assert_eq!(layout.move_selection(0, &Direction::Down), 3);
-    assert_eq!(layout.move_selection(2, &Direction::Down), 4);
-    assert_eq!(layout.move_selection(4, &Direction::Up), 1);
-    assert_eq!(layout.move_selection(1, &Direction::Up), 1);
-    assert_eq!(layout.move_selection(3, &Direction::Down), 3);
-  }
-
-  #[test]
-  fn selection_out_of_range_is_clamped() {
-    let layout = layout(1920, 1080, &[(1920, 1080); 2]);
-    assert_eq!(layout.move_selection(9, &Direction::Left), 0);
-    assert_eq!(
-      OverviewLayout::default().move_selection(3, &Direction::Up),
-      3
+    assert_close(targets.cards[0].scale, 1.5);
+    assert_close(targets.cards[1].scale, 0.32);
+    assert_close(targets.cards[0].cx, 960.0);
+    assert!(
+      targets.hint_y > targets.cards[0].rect(&metrics).bottom(),
+      "hints sit under the cards"
     );
   }
 
   #[test]
-  fn label_centers_icon_and_text() {
-    let title = Rect::from_ltrb(100, 0, 300, 30);
-    let label = label_layout(&title, Some(20), 6, 74);
+  fn grid_centers_a_short_last_row() {
+    let metrics = metrics();
+    let targets = grid(&metrics, 7, 5);
+    let rects = targets
+      .cards
+      .iter()
+      .map(|card| card.rect(&metrics))
+      .collect::<Vec<_>>();
 
-    assert_eq!(label.icon, Some(Rect::from_xy(150, 5, 20, 20)));
-    assert_eq!(label.text, Rect::from_ltrb(176, 0, 250, 30));
+    assert_close(rects[0].y, rects[4].y);
+    assert!(rects[5].y > rects[0].bottom());
+    assert_close(
+      rects[5].x - rects[0].x,
+      rects[4].right() - rects[6].right(),
+    );
+
+    for rect in &rects {
+      assert!(rect.x >= 0.0 && rect.right() <= 1920.0);
+      assert!(rect.y >= 0.0 && rect.bottom() <= 1040.0);
+    }
   }
 
   #[test]
-  fn label_cuts_long_text_and_drops_icon_without_room() {
-    let title = Rect::from_ltrb(0, 0, 100, 30);
+  fn grid_never_upscales_cards() {
+    let targets = grid(&metrics(), 2, 5);
+    assert!(targets.cards.iter().all(|card| card.scale <= 1.0));
+  }
 
-    let label = label_layout(&title, Some(20), 6, 500);
-    assert_eq!(label.text, Rect::from_ltrb(26, 0, 100, 30));
+  #[test]
+  fn tiles_keep_the_layout_of_the_workspace() {
+    let metrics = metrics();
+    let area = RectF::new(0.0, 40.0, 1920.0, 1040.0);
+    let tiles = metrics.tile_area();
 
-    let narrow = Rect::from_ltrb(0, 0, 15, 30);
-    let label = label_layout(&narrow, Some(20), 6, 500);
-    assert_eq!(label.icon, None);
-    assert_eq!(label.text, narrow);
+    let left =
+      tile(&metrics, &area, &RectF::new(0.0, 40.0, 960.0, 1040.0))
+        .unwrap_or_else(|| unreachable!());
+    let right =
+      tile(&metrics, &area, &RectF::new(960.0, 40.0, 960.0, 1040.0))
+        .unwrap_or_else(|| unreachable!());
+
+    assert_rect_close(
+      &left.rect,
+      &RectF::new(tiles.x, tiles.y, tiles.w / 2.0, tiles.h),
+    );
+    assert_close(right.rect.x, left.rect.right());
+    assert_rect_close(&left.crop, &RectF::new(0.0, 0.0, 1.0, 1.0));
+  }
+
+  #[test]
+  fn tiles_crop_windows_reaching_past_the_workspace() {
+    let metrics = metrics();
+    let area = RectF::new(0.0, 0.0, 1920.0, 1040.0);
+    let window = RectF::new(-200.0, 0.0, 400.0, 1040.0);
+
+    let tile =
+      tile(&metrics, &area, &window).unwrap_or_else(|| unreachable!());
+
+    assert_close(tile.rect.x, metrics.tile_area().x);
+    assert_rect_close(&tile.crop, &RectF::new(0.5, 0.0, 0.5, 1.0));
+  }
+
+  #[test]
+  fn windows_outside_the_workspace_get_no_tile() {
+    let metrics = metrics();
+    let area = RectF::new(0.0, 0.0, 1920.0, 1040.0);
+
+    assert_eq!(
+      tile(&metrics, &area, &RectF::new(3000.0, 0.0, 100.0, 100.0)),
+      None
+    );
+  }
+
+  #[test]
+  fn zoom_starts_with_windows_where_they_are() {
+    let metrics = metrics();
+    let view = RectF::new(0.0, 0.0, 1920.0, 1040.0);
+    let card = carousel(&metrics, 3, 1, false).cards[1];
+    let tiles = card.map(&metrics, &metrics.tile_area());
+
+    let window = RectF::new(960.0, 0.0, 960.0, 520.0);
+    let on_card = card.map(
+      &metrics,
+      &tile(&metrics, &view, &window)
+        .unwrap_or_else(|| unreachable!())
+        .rect,
+    );
+
+    let start = Camera::zoom(&tiles, &view, 0.0);
+    assert_rect_close(&start.apply(&on_card), &window);
+    assert_rect_close(&start.apply(&tiles), &view);
+
+    let end = Camera::zoom(&tiles, &view, 1.0);
+    assert_rect_close(&end.apply(&on_card), &on_card);
+
+    let (x, y) = start.unapply(window.x, window.y);
+    assert_close(x, on_card.x);
+    assert_close(y, on_card.y);
+  }
+
+  #[test]
+  fn easing_runs_from_zero_to_one() {
+    assert_close(ease_out_cubic(0.0), 0.0);
+    assert_close(ease_out_cubic(1.0), 1.0);
+    assert!(ease_out_cubic(0.5) > 0.5);
+    assert_close(ease_out_cubic(2.0), 1.0);
+  }
+
+  #[test]
+  fn spring_settles_on_target_without_overshoot() {
+    let mut spring = Spring::new(0.0, 260.0, 0.25);
+    spring.target = 100.0;
+
+    let mut frames = 0;
+    while spring.step(1.0 / 60.0) {
+      assert!(spring.value <= 100.0 + f32::EPSILON);
+      frames += 1;
+      assert!(frames < 120, "spring never settled");
+    }
+
+    assert_close(spring.value, 100.0);
+    assert!(frames > 5, "spring moved instantly");
+    assert!(!spring.step(1.0 / 60.0));
   }
 }

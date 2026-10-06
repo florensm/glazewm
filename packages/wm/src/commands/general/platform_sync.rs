@@ -234,6 +234,13 @@ fn sync_focus(
   focused_container: &Container,
   state: &mut WmState,
 ) -> anyhow::Result<Option<uuid::Uuid>> {
+  // The overview holds the foreground while open, and gives it back when
+  // it closes.
+  #[cfg(target_os = "windows")]
+  if state.overview.is_open() {
+    return Ok(None);
+  }
+
   let native_window = focused_container.as_window_container().ok();
 
   // Defer `SetForegroundWindow` while the focused window is covered by an

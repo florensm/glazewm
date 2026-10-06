@@ -132,20 +132,24 @@ pub(crate) fn icon_for(
   class_icon(HWND(window))
 }
 
-/// Drops the cached icon of `window`, so it is fetched again next time
-/// (e.g. after its title changed, which apps often do with their icon).
-pub(crate) fn invalidate(window: isize) {
-  let removed = cache()
-    .lock()
-    .unwrap_or_else(PoisonError::into_inner)
-    .remove(&window);
+/// Drops the cached icons of every window `keep` returns false for, e.g.
+/// windows that have since closed.
+pub(crate) fn retain(keep: impl Fn(isize) -> bool) {
+  let mut cache = cache().lock().unwrap_or_else(PoisonError::into_inner);
 
-  if let Some(CachedIcon::Ready(Some(icon))) = removed {
-    // SAFETY: The cache owns this copy and no longer hands it out.
-    unsafe {
-      let _ = DestroyIcon(HICON(icon));
+  cache.retain(|window, cached| {
+    if keep(*window) {
+      return true;
     }
-  }
+
+    if let CachedIcon::Ready(Some(icon)) = cached {
+      // SAFETY: The cache owns this copy and no longer hands it out.
+      unsafe {
+        let _ = DestroyIcon(HICON(*icon));
+      }
+    }
+    false
+  });
 }
 
 /// Asks `window` for its icon, falling back to its class icon. Returns an

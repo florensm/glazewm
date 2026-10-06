@@ -3,13 +3,13 @@ use tokio::sync::mpsc::{self};
 use tracing::warn;
 use uuid::Uuid;
 #[cfg(target_os = "windows")]
-use wm_common::InvokeFocusCommand;
-#[cfg(target_os = "windows")]
 use wm_common::TitleBarVisibility;
 use wm_common::{
   FloatingStateConfig, FullscreenStateConfig, InvokeCommand, WindowState,
   WmEvent,
 };
+#[cfg(target_os = "windows")]
+use wm_common::{InvokeFocusCommand, InvokeMoveCommand};
 #[cfg(target_os = "windows")]
 use wm_platform::NativeWindowWindowsExt;
 use wm_platform::{
@@ -123,37 +123,86 @@ impl WindowManager {
         return Ok(());
       }
 
-      match action {
-        OverviewAction::Pick(hwnd) => {
-          let picked = state
-            .overview
-            .close(Some(hwnd))
-            .filter(|id| state.container_by_id(*id).is_some());
+      let focused_workspace = state
+        .focused_container()
+        .and_then(|focused| focused.workspace())
+        .map(|workspace| workspace.config().name);
+      let window = window_by_handle(state, &action);
 
-          if let Some(container_id) = picked {
-            let focus = InvokeCommand::Focus(InvokeFocusCommand {
-              container_id: Some(container_id),
-              ..Default::default()
-            });
+      let (commands, subject) = match action {
+        OverviewAction::FocusWindow(_) => {
+          state.overview.close();
+          let Some(window) = window else {
+            state.pending_sync.queue_focus_change();
+            return platform_sync(state, config);
+          };
 
-            return self
-              .process_commands(&vec![focus], None, config)
-              .map(|_| ());
+          let workspace = window.workspace().map(|w| w.config().name);
+          let mut commands = Vec::new();
+
+          // A window-level focus doesn't switch the displayed workspace
+          // on its own.
+          if let Some(name) = workspace
+            .filter(|name| Some(name) != focused_workspace.as_ref())
+          {
+            commands.push(focus_workspace_command(name));
           }
 
-          state.pending_sync.queue_focus_change();
+          commands.push(InvokeCommand::Focus(InvokeFocusCommand {
+            container_id: Some(window.id()),
+            ..Default::default()
+          }));
+
+          // The overview was the transition; the switch behind it is
+          // instant.
+          state.pending_sync.suppress_animations();
+          (commands, None)
+        }
+        OverviewAction::FocusWorkspace(name) => {
+          state.overview.close();
+
+          // Focusing the focused workspace would toggle back to the
+          // previous one when `toggle_workspace_on_refocus` is set.
+          if Some(&name) == focused_workspace.as_ref() {
+            state.pending_sync.queue_focus_change();
+            return platform_sync(state, config);
+          }
+
+          state.pending_sync.suppress_animations();
+          (vec![focus_workspace_command(name)], None)
+        }
+        OverviewAction::MoveWindow { workspace, .. } => {
+          let Some(window) = window else {
+            return Ok(());
+          };
+
+          let command = InvokeCommand::Move(InvokeMoveCommand {
+            workspace: Some(workspace),
+            ..Default::default()
+          });
+          (vec![command], Some(window.id()))
+        }
+        OverviewAction::CloseWindow(_) => {
+          let Some(window) = window else {
+            return Ok(());
+          };
+          (vec![InvokeCommand::Close], Some(window.id()))
         }
         OverviewAction::Cancel => {
-          state.overview.close(None);
+          state.overview.close();
           state.pending_sync.queue_focus_change();
+          return platform_sync(state, config);
         }
         // Focus went elsewhere and the overview closed itself.
         OverviewAction::Deactivated => {
-          state.overview.close(None);
+          state.overview.close();
+          return platform_sync(state, config);
         }
-      }
+      };
 
-      platform_sync(state, config)
+      self
+        .process_commands(&commands, subject, config)
+        .map(|_| ())
     }
   }
 
@@ -941,12 +990,23 @@ impl WindowManager {
           _ => Ok(()),
         }
       }
-      InvokeCommand::ToggleOverview => {
+      InvokeCommand::ToggleOverview { grid } => {
         #[cfg(target_os = "windows")]
-        crate::overview::toggle_overview(state, config)?;
+        crate::overview::toggle_overview(
+          state,
+          config,
+          if *grid {
+            wm_platform::OverviewLayoutMode::Grid
+          } else {
+            wm_platform::OverviewLayoutMode::Carousel
+          },
+        )?;
 
         #[cfg(not(target_os = "windows"))]
-        tracing::warn!("The overview is only available on Windows.");
+        {
+          let _ = grid;
+          tracing::warn!("The overview is only available on Windows.");
+        }
 
         Ok(())
       }
@@ -1045,4 +1105,32 @@ impl WindowManager {
       }
     }
   }
+}
+
+/// The managed window an overview action refers to, if any.
+#[cfg(target_os = "windows")]
+fn window_by_handle(
+  state: &WmState,
+  action: &OverviewAction,
+) -> Option<crate::models::WindowContainer> {
+  let hwnd = match action {
+    OverviewAction::FocusWindow(hwnd)
+    | OverviewAction::CloseWindow(hwnd)
+    | OverviewAction::MoveWindow { hwnd, .. } => *hwnd,
+    _ => return None,
+  };
+
+  state
+    .windows()
+    .into_iter()
+    .find(|window| window.native().id().0 == hwnd)
+}
+
+/// `focus --workspace <name>`.
+#[cfg(target_os = "windows")]
+fn focus_workspace_command(name: String) -> InvokeCommand {
+  InvokeCommand::Focus(InvokeFocusCommand {
+    workspace: Some(name),
+    ..Default::default()
+  })
 }

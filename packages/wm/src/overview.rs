@@ -1,27 +1,25 @@
-//! The window overview: live previews of the focused workspace's windows,
-//! to pick one to focus.
+//! The window overview: a card per workspace of the focused monitor,
+//! showing its windows live where they sit, to switch to a workspace or
+//! window, or move windows between workspaces.
 //!
-//! The overview is drawn and driven by `NativeOverview` on the event loop
-//! thread; the WM decides what it shows and carries out what is picked.
+//! The overview is drawn and driven by `NativeOverview` on a thread of its
+//! own; the WM decides what it shows and carries out what is picked.
 
 use anyhow::Context;
 use tokio::sync::mpsc;
 use uuid::Uuid;
 use wm_common::WindowState;
 use wm_platform::{
-  Color, Dispatcher, NativeOverview, OverviewAction, OverviewFrame,
-  OverviewItem, OverviewStyle,
+  Color, NativeOverview, OverviewAction, OverviewFrame,
+  OverviewLayoutMode, OverviewStyle, OverviewWindow, OverviewWorkspace,
 };
 
 use crate::{
-  models::{Container, WindowContainer, Workspace},
-  traits::{CommonGetters, WindowGetters},
+  models::{Container, Monitor, WindowContainer, Workspace},
+  traits::{CommonGetters, PositionGetters, WindowGetters},
   user_config::UserConfig,
   wm_state::WmState,
 };
-
-/// Container IDs of the windows an overview shows, by window handle.
-type ShownWindows = Vec<(isize, Uuid)>;
 
 /// The WM's side of the overview.
 pub struct Overview {
@@ -36,12 +34,10 @@ pub struct Overview {
 }
 
 struct OpenOverview {
-  workspace_id: Uuid,
-
-  windows: ShownWindows,
+  monitor_id: Uuid,
 
   /// Resolved once per open, since it can be read from a file.
-  focused_border: Color,
+  accent: Color,
 }
 
 impl Overview {
@@ -68,11 +64,17 @@ impl Overview {
       .map(NativeOverview::session)
   }
 
+  /// Marks the overview closed.
+  ///
+  /// The native overview stays up until the next [`sync_overview`], so it
+  /// only hides once focus has moved on; hiding the foreground window
+  /// first would let the OS pick the next one.
+  pub fn close(&mut self) {
+    self.open = None;
+  }
+
   /// The native overview, created on first use.
-  fn native(
-    &mut self,
-    dispatcher: &Dispatcher,
-  ) -> anyhow::Result<&mut NativeOverview> {
+  fn native(&mut self) -> anyhow::Result<&mut NativeOverview> {
     if self.native.is_none() {
       let action_tx = self.action_tx.clone();
       let on_action = Box::new(move |session, action| {
@@ -81,94 +83,65 @@ impl Overview {
         }
       });
 
-      self.native = Some(NativeOverview::create(dispatcher, on_action)?);
+      self.native = Some(NativeOverview::create(on_action)?);
     }
 
     self.native.as_mut().context("No native overview.")
   }
-
-  /// Marks the overview closed, returning the container ID of the shown
-  /// window with handle `picked`, if any.
-  ///
-  /// The native overview stays up until the next [`sync_overview`], so it
-  /// only hides once focus has moved on; hiding the foreground window
-  /// first would let the OS pick the next one.
-  pub fn close(&mut self, picked: Option<isize>) -> Option<Uuid> {
-    let open = self.open.take()?;
-
-    open
-      .windows
-      .iter()
-      .find(|(hwnd, _)| Some(*hwnd) == picked)
-      .map(|(_, id)| *id)
-  }
 }
 
-/// Opens the overview on the focused workspace, or closes it if open,
-/// giving focus back to the focused window.
+/// Opens the overview on the focused monitor, laid out as `layout`.
+///
+/// While open, it switches to `layout` instead, or closes when it already
+/// shows that, giving focus back to the focused window.
 pub fn toggle_overview(
   state: &mut WmState,
   config: &UserConfig,
+  layout: OverviewLayoutMode,
 ) -> anyhow::Result<()> {
-  if !state.overview.is_open() {
-    return open_overview(state, config);
+  if state.overview.is_open() {
+    if let Some(native) = &state.overview.native {
+      native.toggle(layout);
+    }
+    return Ok(());
   }
 
-  state.overview.close(None);
-  state.pending_sync.queue_focus_change();
-  Ok(())
-}
-
-fn open_overview(
-  state: &mut WmState,
-  config: &UserConfig,
-) -> anyhow::Result<()> {
-  let workspace_id = state
+  let monitor = state
     .focused_container()
-    .and_then(|focused| focused.workspace())
-    .context("No focused workspace.")?
-    .id();
+    .and_then(|focused| focused.monitor())
+    .context("No focused monitor.")?;
 
-  let mut open = OpenOverview {
-    workspace_id,
-    windows: Vec::new(),
-    focused_border: config.value.overview.focused_border_color.resolve(),
+  let open = OpenOverview {
+    monitor_id: monitor.id(),
+    accent: config.value.overview.accent_color.resolve(),
   };
+  let frame = overview_frame(state, &monitor, open.accent, config);
 
-  let Some((frame, windows)) = current_frame(state, &open, config)? else {
-    tracing::info!("No windows to show in the overview.");
-    return Ok(());
-  };
-  open.windows = windows;
-
-  state.overview.native(&state.dispatcher)?.show(frame);
+  state.overview.native()?.open(frame, layout);
   state.overview.open = Some(open);
   Ok(())
 }
 
 /// Brings the native overview in line with the WM's state: hides it once
-/// closed, and shows windows as they come, go or change while open.
+/// closed, and shows workspaces and windows as they change while open.
 ///
 /// Called at the end of a platform sync, after focus has been synced.
 pub fn sync_overview(state: &mut WmState, config: &UserConfig) {
-  let frame = state
-    .overview
-    .open
-    .as_ref()
-    .map(|open| current_frame(state, open, config));
+  // `None` once closed, or once the monitor it was on is gone.
+  let frame = state.overview.open.as_ref().and_then(|open| {
+    let monitor = state
+      .monitors()
+      .into_iter()
+      .find(|monitor| monitor.id() == open.monitor_id)?;
+
+    Some(overview_frame(state, &monitor, open.accent, config))
+  });
 
   let overview = &mut state.overview;
 
-  match (frame, &mut overview.open, &mut overview.native) {
-    (Some(Ok(Some((frame, windows)))), Some(open), Some(native)) => {
-      open.windows = windows;
-      native.show(frame);
-    }
-    (frame, _, native) => {
-      if let Some(Err(err)) = frame {
-        tracing::warn!("Closing the overview: {err:?}");
-      }
-
+  match (frame, &mut overview.native) {
+    (Some(frame), Some(native)) => native.update(frame),
+    (_, native) => {
       overview.open = None;
       if let Some(native) = native {
         native.hide();
@@ -177,32 +150,80 @@ pub fn sync_overview(state: &mut WmState, config: &UserConfig) {
   }
 }
 
-/// What the open overview shows now, with the IDs of its windows, or
-/// `None` once its workspace lost focus or has no windows left.
-fn current_frame(
+/// What the overview shows for `monitor`.
+fn overview_frame(
   state: &WmState,
-  open: &OpenOverview,
+  monitor: &Monitor,
+  accent: Color,
   config: &UserConfig,
-) -> anyhow::Result<Option<(OverviewFrame, ShownWindows)>> {
-  let Some(workspace) = state
-    .focused_container()
-    .and_then(|focused| focused.workspace())
-    .filter(|workspace| workspace.id() == open.workspace_id)
-  else {
-    return Ok(None);
-  };
+) -> OverviewFrame {
+  let properties = monitor.native_properties();
+  let focused = state.focused_container();
+  let focused_workspace = focused
+    .as_ref()
+    .and_then(CommonGetters::workspace)
+    .map(|workspace| workspace.id());
 
-  let windows = overview_windows(&workspace);
-  if windows.is_empty() {
-    return Ok(None);
+  let workspaces = monitor
+    .workspaces()
+    .iter()
+    .map(|workspace| {
+      let config = workspace.config();
+
+      OverviewWorkspace {
+        label: config.display_name.unwrap_or_else(|| config.name.clone()),
+        name: config.name,
+        is_focused: focused_workspace == Some(workspace.id()),
+        windows: overview_windows(workspace)
+          .iter()
+          .map(overview_window)
+          .collect(),
+      }
+    })
+    .collect();
+
+  let overview = &config.value.overview;
+
+  OverviewFrame {
+    rect: properties.working_area,
+    scale_factor: properties.scale_factor,
+    workspaces,
+    focused_window: focused
+      .and_then(|focused| focused.as_window_container().ok())
+      .map(|window| window.native().id().0),
+    style: OverviewStyle {
+      backdrop_blur: overview.backdrop_blur,
+      backdrop_tint: overview.backdrop_tint,
+      accent,
+      card: overview.card_color,
+      surface: overview.surface_color,
+      caption: overview.caption_color,
+      text: overview.text_color,
+      subtext: overview.subtext_color,
+      search: overview.search_color,
+      font_family: overview.font_family.clone(),
+      grid_columns: overview.grid_columns,
+      open_duration_ms: overview.open_duration_ms,
+    },
   }
-
-  let frame = overview_frame(state, &workspace, &windows, open, config)?;
-  Ok(Some((frame, window_ids(&windows))))
 }
 
-/// Windows the overview shows on `workspace`: tiling windows in layout
-/// order, then the others, without minimized ones.
+fn overview_window(window: &WindowContainer) -> OverviewWindow {
+  let properties = window.native_properties();
+
+  OverviewWindow {
+    hwnd: window.native().id().0,
+    title: properties.title.trim().to_string(),
+    process_name: properties.process_name.clone(),
+    // Where the layout puts it, which is also where it sits on a hidden
+    // workspace.
+    rect: window.to_rect().unwrap_or(properties.frame),
+    is_minimized: window.state() == WindowState::Minimized,
+  }
+}
+
+/// Windows of `workspace`: tiling windows in layout order, then the
+/// others, which are drawn above them.
 fn overview_windows(workspace: &Workspace) -> Vec<WindowContainer> {
   fn collect(container: &Container, windows: &mut Vec<WindowContainer>) {
     for child in container.children() {
@@ -216,67 +237,8 @@ fn overview_windows(workspace: &Workspace) -> Vec<WindowContainer> {
   let mut windows = Vec::new();
   collect(&workspace.as_container(), &mut windows);
 
-  windows.retain(|window| window.state() != WindowState::Minimized);
   windows.sort_by_key(|window| window.state() != WindowState::Tiling);
   windows
-}
-
-fn window_ids(windows: &[WindowContainer]) -> ShownWindows {
-  windows
-    .iter()
-    .map(|window| (window.native().id().0, window.id()))
-    .collect()
-}
-
-/// What the overview shows for `windows` of `workspace`.
-fn overview_frame(
-  state: &WmState,
-  workspace: &Workspace,
-  windows: &[WindowContainer],
-  open: &OpenOverview,
-  config: &UserConfig,
-) -> anyhow::Result<OverviewFrame> {
-  let monitor = workspace.monitor().context("No monitor.")?;
-  let monitor = monitor.native_properties();
-  let scale = Some(monitor.scale_factor);
-  let overview = &config.value.overview;
-
-  let focused_id = state.focused_container().map(|focused| focused.id());
-
-  let items = windows
-    .iter()
-    .map(|window| {
-      let properties = window.native_properties();
-      let title = properties.title.trim();
-
-      OverviewItem {
-        hwnd: window.native().id().0,
-        title: if title.is_empty() {
-          properties.process_name.clone()
-        } else {
-          title.to_string()
-        },
-      }
-    })
-    .collect();
-
-  Ok(OverviewFrame {
-    focused_index: windows
-      .iter()
-      .position(|window| Some(window.id()) == focused_id),
-    items,
-    style: OverviewStyle {
-      background: overview.background_color,
-      selection: overview.selection_color,
-      focused_border: open.focused_border,
-      text: overview.text_color,
-      font_family: overview.font_family.clone(),
-      font_size: overview.font_size.to_px(0, scale),
-      gap: overview.gap.to_px(monitor.working_area.width(), scale),
-      scale_factor: monitor.scale_factor,
-    },
-    rect: monitor.working_area,
-  })
 }
 
 #[cfg(test)]
@@ -319,6 +281,6 @@ mod tests {
       .map(|window| window.native_properties().title)
       .collect::<Vec<_>>();
 
-    assert_eq!(titles, ["a", "b", "c", "d", "floating"]);
+    assert_eq!(titles, ["a", "b", "c", "d", "floating", "minimized"]);
   }
 }

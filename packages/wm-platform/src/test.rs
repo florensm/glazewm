@@ -16,7 +16,13 @@ mod mouse_listener;
 #[cfg(target_os = "windows")]
 mod native_surrogate;
 mod native_window;
+// Pure parts of the overview, here for their tests; the rest of them is
+// only used through the Windows-only overview.
+#[allow(dead_code)]
 mod overview_layout;
+#[allow(dead_code)]
+mod overview_state;
+#[allow(dead_code)]
 mod paint;
 pub mod perf;
 mod platform_event;
@@ -35,7 +41,6 @@ pub use keybinding_listener::*;
 pub use models::*;
 pub use mouse_listener::*;
 pub use native_window::*;
-pub use overview_layout::OverviewAction;
 pub use platform_event::*;
 pub use thread_bound::*;
 pub use window_listener::*;

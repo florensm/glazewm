@@ -19,11 +19,6 @@ pub(crate) struct Canvas<'a> {
 }
 
 impl Canvas<'_> {
-  /// Sets every pixel to `color`.
-  pub fn fill(&mut self, color: Color) {
-    self.pixels.fill(premultiply(color, color.a));
-  }
-
   /// Fills `rect` with `color`, rounding its corners by `radius`.
   pub fn fill_rounded_rect(
     &mut self,
@@ -106,13 +101,15 @@ impl Canvas<'_> {
   }
 
   /// Composites premultiplied `source` pixels, `source_width` pixels wide,
-  /// over the canvas with their top-left at (`left`, `top`).
+  /// over the canvas with their top-left at (`left`, `top`), faded to
+  /// `opacity`.
   pub fn draw_premultiplied(
     &mut self,
     left: i32,
     top: i32,
     source: &[u32],
     source_width: i32,
+    opacity: f32,
   ) {
     let Ok(row_len) = usize::try_from(source_width) else {
       return;
@@ -121,10 +118,32 @@ impl Canvas<'_> {
       return;
     }
 
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    let opacity = (opacity.clamp(0.0, 1.0) * 255.0).round() as u32;
+
     for (row, pixels) in (0..).zip(source.chunks_exact(row_len)) {
       for (column, pixel) in (0..).zip(pixels) {
         if let Some(target) = self.pixel_mut(left + column, top + row) {
-          *target = over(*pixel, *target);
+          *target = over(scale(*pixel, opacity), *target);
+        }
+      }
+    }
+  }
+
+  /// Makes `rect`, with its corners rounded by `radius`, transparent:
+  /// a hole for whatever is composited underneath the canvas.
+  pub fn erase_rounded_rect(&mut self, rect: &Rect, radius: i32) {
+    let radius = clamp_radius(rect, radius);
+
+    for y in rect.top.max(0)..rect.bottom.min(self.height) {
+      for x in rect.left.max(0)..rect.right.min(self.width) {
+        let coverage = rounded_rect_coverage(x, y, rect, radius);
+
+        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+        let keep = ((1.0 - coverage) * 255.0).round() as u32;
+
+        if let Some(pixel) = self.pixel_mut(x, y) {
+          *pixel = scale(*pixel, keep);
         }
       }
     }
@@ -163,6 +182,17 @@ fn premultiply(color: Color, alpha: u8) -> u32 {
     | (channel(color.r) << 16)
     | (channel(color.g) << 8)
     | channel(color.b)
+}
+
+/// Premultiplied `pixel` with every channel scaled by `factor` / 255.
+fn scale(pixel: u32, factor: u32) -> u32 {
+  if factor >= 255 {
+    return pixel;
+  }
+
+  [24, 16, 8, 0].into_iter().fold(0, |result, shift| {
+    result | ((((pixel >> shift) & 0xff) * factor / 255) << shift)
+  })
 }
 
 /// Premultiplied `source` composited over `target`.
@@ -304,12 +334,16 @@ mod tests {
   #[test]
   fn fill_is_premultiplied() {
     let mut pixels = vec![0u32; 4];
-    canvas(&mut pixels, 2).fill(Color {
-      r: 200,
-      g: 100,
-      b: 0,
-      a: 128,
-    });
+    canvas(&mut pixels, 2).fill_rounded_rect(
+      &Rect::from_ltrb(0, 0, 2, 2),
+      0,
+      Color {
+        r: 200,
+        g: 100,
+        b: 0,
+        a: 128,
+      },
+    );
 
     assert_eq!(pixels[0] >> 24, 128);
     assert_eq!((pixels[0] >> 16) & 0xff, 200 * 128 / 255);
@@ -353,12 +387,16 @@ mod tests {
   fn translucent_blend_composites_over_existing_pixels() {
     let mut pixels = vec![0u32; 1];
     let mut canvas = canvas(&mut pixels, 1);
-    canvas.fill(Color {
-      r: 0,
-      g: 0,
-      b: 0,
-      a: 128,
-    });
+    canvas.fill_rounded_rect(
+      &Rect::from_ltrb(0, 0, 1, 1),
+      0,
+      Color {
+        r: 0,
+        g: 0,
+        b: 0,
+        a: 128,
+      },
+    );
     canvas.fill_rounded_rect(
       &Rect::from_ltrb(0, 0, 1, 1),
       0,
@@ -386,9 +424,36 @@ mod tests {
       1,
       &[0x8080_8080, 0xffff_ffff],
       2,
+      1.0,
     );
 
     assert_eq!(pixels, [0, 0, 0, 0x8080_8080]);
+  }
+
+  #[test]
+  fn premultiplied_source_fades_with_opacity() {
+    let mut pixels = vec![0u32; 1];
+    canvas(&mut pixels, 1).draw_premultiplied(
+      0,
+      0,
+      &[0xffff_ffff],
+      1,
+      0.5,
+    );
+
+    assert_eq!(pixels, [0x8080_8080]);
+  }
+
+  #[test]
+  fn erase_punches_a_rounded_hole() {
+    let mut pixels = vec![0xffff_ffffu32; 20 * 20];
+    canvas(&mut pixels, 20)
+      .erase_rounded_rect(&Rect::from_ltrb(0, 0, 20, 20), 8);
+
+    assert_eq!(pixels[10 * 20 + 10], 0, "middle is cleared");
+    assert_eq!(pixels[0], 0xffff_ffff, "corner outside stays");
+    let edge = pixels[2 * 20 + 2] >> 24;
+    assert!(edge > 0 && edge < 255, "edge is anti-aliased");
   }
 
   #[test]

@@ -517,7 +517,9 @@ mod tests {
     );
     assert_eq!(config.overview.font_family, "Segoe UI");
     assert!(config.keybindings.iter().any(|keybinding| {
-      keybinding.commands.contains(&InvokeCommand::ToggleOverview)
+      keybinding.commands.iter().any(|command| {
+        matches!(command, InvokeCommand::ToggleOverview { .. })
+      })
     }));
   }
 
