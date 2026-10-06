@@ -225,6 +225,10 @@ pub struct OverviewConfig {
   /// Length of the zoom out when the overview opens; `0` opens it
   /// instantly.
   pub open_duration_ms: u32,
+
+  /// Length of the zoom into the picked workspace when the overview
+  /// closes; `0` closes it instantly.
+  pub close_duration_ms: u32,
 }
 
 impl Default for OverviewConfig {
@@ -248,6 +252,7 @@ impl Default for OverviewConfig {
       font_family: "Segoe UI".to_string(),
       grid_columns: 5,
       open_duration_ms: 250,
+      close_duration_ms: 200,
     }
   }
 }

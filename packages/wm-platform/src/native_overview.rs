@@ -53,8 +53,8 @@ use crate::{
     TilePicture, GHOST_SIZE, HINT_HEIGHT,
   },
   overview_layout::{
-    carousel, cover_crop, ease_out_cubic, grid, tile, Camera, CardMetrics,
-    Placement, RectF, Spring, Tile,
+    carousel, cover_crop, grid, tile, Camera, CardMetrics, Placement,
+    RectF, Spring, Tile, Zoom,
   },
   overview_state::{HintTone, Hit, Interaction, Key, Mode},
   overview_thumbnails::{
@@ -392,11 +392,9 @@ struct Overview {
   hint_y: Spring,
   ghost: Option<Ghost>,
 
-  /// When the zoom out on open started, while it runs.
-  opening: Option<Instant>,
-
-  /// The focused workspace's tiles, which the zoom out starts from.
-  zoom_from: RectF,
+  /// The zoom out on open or into a card on close, and when it started,
+  /// while it runs.
+  zoom: Option<(Zoom, Instant)>,
 
   last_tick: Instant,
 
@@ -442,8 +440,7 @@ impl Overview {
       hint_drawn: None,
       hint_y: Spring::new(0.0, SETTLE_MS, 0.25),
       ghost: None,
-      opening: None,
-      zoom_from: RectF::default(),
+      zoom: None,
       last_tick: Instant::now(),
       is_dirty: false,
       open_cursor: (0, 0),
@@ -487,7 +484,8 @@ impl Overview {
     self.session = session;
     self.is_done = false;
 
-    let animate = frame.style.open_duration_ms > 0;
+    let open_duration = frame.style.open_duration_ms;
+    let animate = open_duration > 0;
     self.sync_backdrop(&frame, if animate { 0.0 } else { 1.0 });
 
     window_icons::retain(|hwnd| {
@@ -500,15 +498,12 @@ impl Overview {
     self.rebuild_cards();
     self.retarget(true);
 
-    self.opening = animate.then(Instant::now);
-    self.zoom_from = self
-      .cards
-      .get(self.interaction.selected)
-      .map_or_else(RectF::default, |card| {
-        card
-          .placement()
-          .map(&self.metrics, &self.metrics.tile_area())
-      });
+    self.zoom = animate.then(|| {
+      (
+        Zoom::open(self.interaction.selected, open_duration),
+        Instant::now(),
+      )
+    });
 
     self.register_thumbnails();
     self.refresh_pictures(true);
@@ -556,7 +551,7 @@ impl Overview {
     }
 
     self.interaction.sync(&old.workspaces, &frame.workspaces);
-    self.sync_backdrop(&frame, self.open_progress());
+    self.sync_backdrop(&frame, self.openness());
 
     let is_restyled = old.style != frame.style;
     self.frame = Some(frame);
@@ -601,7 +596,7 @@ impl Overview {
       hint.thumbnail = None;
     }
     self.ghost = None;
-    self.opening = None;
+    self.zoom = None;
     self.vsync = None;
     self.is_tracking_leave = false;
   }
@@ -1019,34 +1014,68 @@ impl Overview {
     }
   }
 
-  fn open_progress(&self) -> f32 {
-    let Some(started) = self.opening else {
-      return 1.0;
-    };
-    let duration = self
-      .style()
-      .map_or(0, |style| style.open_duration_ms)
-      .max(1);
-
-    #[allow(clippy::cast_precision_loss)]
-    let progress =
-      started.elapsed().as_secs_f32() * 1000.0 / duration as f32;
-    progress.min(1.0)
+  /// How far the overview is open, from 0 (a card's windows fill the
+  /// screen) to 1 (every card in place).
+  fn openness(&self) -> f32 {
+    self
+      .zoom
+      .map_or(1.0, |(zoom, started)| zoom.openness(elapsed_ms(started)))
   }
 
-  /// The zoom out on open, at the current progress.
-  fn camera(&self) -> Camera {
-    if self.opening.is_none() {
-      return Camera::IDENTITY;
-    }
+  fn is_closing(&self) -> bool {
+    self.zoom.is_some_and(|(zoom, _)| zoom.is_closing)
+  }
 
+  /// The zoom between the screen and the zoomed card's windows, at the
+  /// current openness. Follows the card if it is still moving.
+  fn camera(&self) -> Camera {
+    let card = self.zoom.and_then(|(zoom, _)| self.cards.get(zoom.card));
+    let Some(card) = card else {
+      return Camera::IDENTITY;
+    };
+
+    let tiles = card
+      .placement()
+      .map(&self.metrics, &self.metrics.tile_area());
     let view =
       RectF::new(0.0, 0.0, self.metrics.view.0, self.metrics.view.1);
-    Camera::zoom(
-      &self.zoom_from,
-      &view,
-      ease_out_cubic(self.open_progress()),
-    )
+    Camera::zoom(&tiles, &view, self.openness())
+  }
+
+  /// Zooms into card `index` until its windows fill the screen, then
+  /// hides, by when the WM has those windows in place behind it.
+  ///
+  /// Without a card or a close duration, the overview stays up until the
+  /// WM hides it once focus has moved on.
+  fn start_closing(&mut self, index: Option<usize>) {
+    let duration = self.style().map_or(0, |style| style.close_duration_ms);
+    let Some(index) = index.filter(|_| duration > 0) else {
+      return;
+    };
+
+    let zoom = Zoom::close(index, self.openness(), duration);
+    self.zoom = Some((zoom, Instant::now()));
+    self.is_dirty = true;
+  }
+
+  /// Card the overview zooms into when it closes for `action`.
+  fn closing_card(&self, action: &OverviewAction) -> Option<usize> {
+    let workspaces = self.workspaces();
+
+    match action {
+      OverviewAction::FocusWindow(hwnd) => {
+        workspaces.iter().position(|workspace| {
+          workspace.windows.iter().any(|window| window.hwnd == *hwnd)
+        })
+      }
+      OverviewAction::FocusWorkspace(name) => workspaces
+        .iter()
+        .position(|workspace| workspace.name == *name),
+      OverviewAction::Cancel => {
+        workspaces.iter().position(|workspace| workspace.is_focused)
+      }
+      _ => None,
+    }
   }
 
   /// Steps animations and places everything. Returns whether anything is
@@ -1075,14 +1104,20 @@ impl Overview {
       is_moving |= ghost.y.step(dt);
     }
 
-    if self.opening.is_some() {
+    if let Some((zoom, started)) = self.zoom {
       is_moving = true;
-      let progress = self.open_progress();
+      let elapsed = elapsed_ms(started);
+
       if let Some(backdrop) = &self.backdrop {
-        let _ = backdrop.set_progress(ease_out_cubic(progress));
+        let _ = backdrop.set_progress(zoom.openness(elapsed));
       }
-      if progress >= 1.0 {
-        self.opening = None;
+
+      if zoom.is_finished(elapsed) {
+        self.zoom = None;
+        if zoom.is_closing {
+          self.close();
+          return false;
+        }
       }
     }
 
@@ -1097,7 +1132,7 @@ impl Overview {
   /// Places every thumbnail where its animation has it now.
   fn place(&mut self) {
     let camera = self.camera();
-    let fade = ease_out_cubic(self.open_progress());
+    let fade = self.openness();
     let view =
       RectF::new(0.0, 0.0, self.metrics.view.0, self.metrics.view.1);
     let metrics = self.metrics;
@@ -1185,8 +1220,13 @@ impl Overview {
           | OverviewAction::FocusWorkspace(_)
           | OverviewAction::Cancel
       );
+      let card = self.closing_card(&action);
       self.send(action);
-      self.is_done |= is_final;
+
+      if is_final {
+        self.is_done = true;
+        self.start_closing(card);
+      }
     }
 
     self.retarget(false);
@@ -1318,15 +1358,22 @@ impl Overview {
       } else {
         OverviewLayoutMode::Carousel
       }),
-      WM_HIDE_OVERVIEW => self.close(),
+      WM_HIDE_OVERVIEW => {
+        // A closing overview hides itself once its zoom ends.
+        if !self.is_closing() {
+          self.close();
+        }
+      }
       WM_ICON_READY => {
         self.icons += 1;
         self.refresh_pictures(false);
       }
       WM_ACTIVATE => {
         // The low word of `wparam` is the activation state.
+        // While closing, the window it zooms into has just been focused.
         if (wparam.0 & 0xffff) == WA_INACTIVE as usize
           && self.frame.is_some()
+          && !self.is_closing()
         {
           let was_done = self.is_done;
           self.close();
@@ -1417,6 +1464,11 @@ fn to_key(key: VIRTUAL_KEY) -> Option<Key> {
     }
     _ => None,
   }
+}
+
+/// Milliseconds since `started`.
+fn elapsed_ms(started: Instant) -> f32 {
+  started.elapsed().as_secs_f32() * 1000.0
 }
 
 /// Signed client coordinates packed into a mouse message's `LPARAM`.

@@ -411,6 +411,62 @@ pub(crate) fn cover_crop(source: (f32, f32), dest: (f32, f32)) -> RectF {
   }
 }
 
+/// A zoom between a card's windows filling the screen (openness 0) and
+/// every card in place (openness 1): out of the card on open, into it on
+/// close.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct Zoom {
+  /// Card whose windows fill the screen at openness 0.
+  pub card: usize,
+  pub is_closing: bool,
+  from: f32,
+  duration_ms: f32,
+}
+
+impl Zoom {
+  /// Zooms out of `card` over `duration_ms`.
+  #[allow(clippy::cast_precision_loss)]
+  pub fn open(card: usize, duration_ms: u32) -> Self {
+    Self {
+      card,
+      is_closing: false,
+      from: 0.0,
+      duration_ms: duration_ms as f32,
+    }
+  }
+
+  /// Zooms into `card` from openness `from`. A partly open overview
+  /// closes in that part of `duration_ms`, at the same pace.
+  #[allow(clippy::cast_precision_loss)]
+  pub fn close(card: usize, from: f32, duration_ms: u32) -> Self {
+    let from = from.clamp(0.0, 1.0);
+    Self {
+      card,
+      is_closing: true,
+      from,
+      duration_ms: duration_ms as f32 * from,
+    }
+  }
+
+  /// Openness `elapsed_ms` in, eased.
+  pub fn openness(&self, elapsed_ms: f32) -> f32 {
+    let to = if self.is_closing { 0.0 } else { 1.0 };
+    self.from
+      + (to - self.from) * ease_out_cubic(self.progress(elapsed_ms))
+  }
+
+  pub fn is_finished(&self, elapsed_ms: f32) -> bool {
+    self.progress(elapsed_ms) >= 1.0
+  }
+
+  fn progress(&self, elapsed_ms: f32) -> f32 {
+    if self.duration_ms <= 0.0 {
+      return 1.0;
+    }
+    (elapsed_ms / self.duration_ms).clamp(0.0, 1.0)
+  }
+}
+
 /// Fast start, gentle stop.
 pub(crate) fn ease_out_cubic(progress: f32) -> f32 {
   1.0 - (1.0 - progress.clamp(0.0, 1.0)).powi(3)
@@ -483,7 +539,7 @@ impl Spring {
 mod tests {
   use super::{
     carousel, cover_crop, ease_out_cubic, grid, tile, Camera, CardMetrics,
-    RectF, Spring,
+    RectF, Spring, Zoom,
   };
 
   fn metrics() -> CardMetrics {
@@ -652,6 +708,32 @@ mod tests {
     let full = RectF::new(0.0, 0.0, 1.0, 1.0);
     assert_eq!(cover_crop((0.0, 0.0), (200.0, 100.0)), full);
     assert_eq!(cover_crop((800.0, 600.0), (0.0, 100.0)), full);
+  }
+
+  #[test]
+  fn zoom_opens_out_of_a_card_and_closes_back_in() {
+    let open = Zoom::open(2, 250);
+    assert_close(open.openness(0.0), 0.0);
+    assert!(open.openness(100.0) > 0.5, "fast start");
+    assert_close(open.openness(250.0), 1.0);
+    assert!(open.is_finished(250.0) && !open.is_finished(249.0));
+
+    let close = Zoom::close(2, 1.0, 200);
+    assert!(close.is_closing);
+    assert_close(close.openness(0.0), 1.0);
+    assert_close(close.openness(200.0), 0.0);
+  }
+
+  #[test]
+  fn zoom_closes_a_half_open_overview_in_half_the_time() {
+    let close = Zoom::close(0, 0.5, 200);
+    assert_close(close.openness(0.0), 0.5);
+    assert!(close.is_finished(100.0));
+    assert_close(close.openness(100.0), 0.0);
+
+    let instant = Zoom::close(0, 1.0, 0);
+    assert!(instant.is_finished(0.0));
+    assert_close(instant.openness(0.0), 0.0);
   }
 
   #[test]

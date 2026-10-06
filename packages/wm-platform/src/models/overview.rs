@@ -86,6 +86,10 @@ pub struct OverviewStyle {
 
   /// Length of the zoom out when opening; 0 opens instantly.
   pub open_duration_ms: u32,
+
+  /// Length of the zoom into the picked workspace when closing; 0 closes
+  /// instantly.
+  pub close_duration_ms: u32,
 }
 
 /// How the overview lays out its cards.
