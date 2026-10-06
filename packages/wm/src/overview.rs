@@ -194,6 +194,7 @@ fn overview_frame(
     rect: properties.working_area,
     scale_factor: properties.scale_factor,
     workspaces,
+    digit_workspaces: digit_workspaces(state, monitor, config),
     focused_window: focused
       .and_then(|focused| focused.as_window_container().ok())
       .map(|window| window.native().id().0),
@@ -244,6 +245,29 @@ fn new_workspace(
     is_new: true,
     windows: Vec::new(),
   })
+}
+
+/// Workspaces named "1" to "10" without a card on `monitor` that the
+/// overview's digit keys can still go to: active on another monitor, or
+/// inactive in the config.
+fn digit_workspaces(
+  state: &WmState,
+  monitor: &Monitor,
+  config: &UserConfig,
+) -> Vec<String> {
+  let workspaces = state.workspaces();
+  let inactive = config.inactive_workspace_configs(&workspaces);
+
+  (1..=10)
+    .map(|number: usize| number.to_string())
+    .filter(|name| {
+      let is_elsewhere = workspaces.iter().any(|workspace| {
+        workspace.config().name == *name
+          && workspace.monitor().map(|m| m.id()) != Some(monitor.id())
+      });
+      is_elsewhere || inactive.iter().any(|config| config.name == *name)
+    })
+    .collect()
 }
 
 fn overview_window(window: &WindowContainer) -> OverviewWindow {

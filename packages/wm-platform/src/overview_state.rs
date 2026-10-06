@@ -110,6 +110,9 @@ pub(crate) struct Interaction {
   /// Cursor travel before a press becomes a drag.
   drag_threshold: f32,
 
+  /// Numbered workspaces without a card that digit keys still reach.
+  pub digit_workspaces: Vec<String>,
+
   grid_columns: usize,
 }
 
@@ -137,6 +140,7 @@ impl Interaction {
       press: None,
       drag: None,
       drag_threshold,
+      digit_workspaces: Vec::new(),
       grid_columns: grid_columns.max(1),
     }
   }
@@ -258,7 +262,8 @@ impl Interaction {
       Key::End => self.edge(true, workspaces),
       Key::Enter => return self.enter(workspaces),
       Key::Digit(digit) => {
-        let name = digit_target(digit, workspaces)?.name.clone();
+        let name =
+          digit_target(digit, workspaces, &self.digit_workspaces)?;
 
         return match self.mode {
           Mode::Spaces => Some(OverviewAction::FocusWorkspace(name)),
@@ -766,25 +771,32 @@ fn move_action(
   })
 }
 
-/// Workspace digit key `digit` stands for, 0 being the tenth: the one
-/// named after it when workspaces are numbered, else the one at its
-/// position.
+/// Name of the workspace digit key `digit` stands for, 0 being the tenth:
+/// the one named after it when workspaces are numbered, whether it has a
+/// card or is one of `others`, else the card at its position.
 fn digit_target(
   digit: u8,
   workspaces: &[OverviewWorkspace],
-) -> Option<&OverviewWorkspace> {
+  others: &[String],
+) -> Option<String> {
   let number = if digit == 0 { 10 } else { usize::from(digit) };
-  let is_numbered = workspaces
-    .iter()
-    .any(|workspace| workspace.name.parse::<usize>().is_ok());
-
-  if is_numbered {
-    workspaces
+  let is_numbered = !others.is_empty()
+    || workspaces
       .iter()
-      .find(|workspace| workspace.name.parse::<usize>() == Ok(number))
-  } else {
-    workspaces.get(number - 1)
+      .any(|workspace| workspace.name.parse::<usize>().is_ok());
+
+  if !is_numbered {
+    return workspaces
+      .get(number - 1)
+      .map(|workspace| workspace.name.clone());
   }
+
+  workspaces
+    .iter()
+    .map(|workspace| &workspace.name)
+    .chain(others)
+    .find(|name| name.parse::<usize>() == Ok(number))
+    .cloned()
 }
 
 /// The workspace index and window with handle `hwnd`.
@@ -953,6 +965,25 @@ mod tests {
     assert_eq!(
       state.key(Key::Digit(1), &workspaces),
       Some(OverviewAction::FocusWorkspace("web".to_string()))
+    );
+  }
+
+  #[test]
+  fn digits_reach_workspaces_without_a_card() {
+    let mut state = interaction();
+    state.digit_workspaces = vec!["5".to_string()];
+
+    assert_eq!(
+      press(&mut state, &[Key::Digit(5)]),
+      Some(OverviewAction::FocusWorkspace("5".to_string()))
+    );
+    assert_eq!(press(&mut state, &[Key::Digit(6)]), None);
+    assert_eq!(
+      press(&mut state, &[Key::Space, Key::Digit(5)]),
+      Some(OverviewAction::MoveWindow {
+        hwnd: 21,
+        workspace: "5".to_string(),
+      })
     );
   }
 

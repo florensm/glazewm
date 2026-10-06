@@ -65,8 +65,10 @@ workspace. The line under the cards shows the keys for the current step.
 | `Tab` | Switch between carousel and grid. | Same, back to browsing in the grid. | Same. |
 | `Escape` | Close without changing anything. | Same. | Same. |
 
-Digits go to the workspace named after them (`0` is `10`). When no
-workspace on the monitor has a numeric name, they go by position instead.
+Digits go to the workspace named after them (`0` is `10`), like a
+`focus --workspace` binding would: one with a card, an inactive one from
+the config, or one on another monitor. When no workspace has a numeric
+name, they go by the cards' positions instead.
 
 ### Search
 
