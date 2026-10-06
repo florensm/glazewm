@@ -139,31 +139,6 @@ impl<T> ThreadBound<T> {
     self.dispatcher.dispatch_sync(|| f(&self.value))
   }
 
-  /// Execute a closure with `&mut T` on the event loop thread.
-  ///
-  /// Runs synchronously and returns the closure's result.
-  #[inline]
-  #[allow(
-    clippy::borrow_as_ptr,
-    clippy::ptr_as_ptr,
-    clippy::as_conversions
-  )]
-  pub fn with_mut<F, R>(&mut self, f: F) -> crate::Result<R>
-  where
-    F: Send + FnOnce(&mut T) -> R,
-    R: Send,
-  {
-    // TODO: This is pretty cursed. Should be a better way.
-    let value_ptr =
-      std::ptr::from_mut::<ManuallyDrop<T>>(&mut self.value) as usize;
-    self.dispatcher.dispatch_sync(|| unsafe {
-      // SAFETY: The closure executes on the event loop thread where the
-      // value was created, and we only create a unique mutable reference.
-      let value_mut: &mut T = &mut *(value_ptr as *mut T);
-      f(value_mut)
-    })
-  }
-
   /// Returns `true` if called on the event loop thread.
   #[inline]
   #[must_use]

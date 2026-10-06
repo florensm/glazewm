@@ -9,7 +9,7 @@ use windows::Win32::{
 use crate::{
   overlay_window::{Overlay, OverlayKind, OverlayWindow},
   platform_impl::composition::BorderVisual,
-  BorderOverlayParams, Color, Rect, SurrogateBatch,
+  BorderOverlayParams, Color, Rect, StyleBlend, SurrogateBatch,
 };
 
 /// Computes the overlay's own rect: `window_rect` outset by `width` on
@@ -313,6 +313,12 @@ impl NativeBorderOverlay {
   /// On the Composition path the width is also the ring's stroke
   /// thickness, so the visual is updated first -- the `set_rect` below
   /// then re-derives the stroke's geometry from both at once.
+  ///
+  /// While pinned, the viewport-sized window already has room for any
+  /// width, so only the ring is rebuilt. Going through `set_rect` there
+  /// would unpin, and a width animating across a workspace switch would
+  /// then cost an unpin and re-pin -- two `SetWindowPos` calls and a
+  /// hidden frame -- on every tick.
   #[allow(clippy::float_cmp)]
   pub fn set_width(&mut self, width: f32) {
     if self.params.width == width {
@@ -324,6 +330,15 @@ impl NativeBorderOverlay {
       tracing::warn!(
         "Border overlay composition width update failed: {e}."
       );
+    }
+
+    if self.pinned.is_some() {
+      // Resetting `rect` makes `slide` re-derive the ring's size and
+      // offset from the new outset rather than skip an unmoved window.
+      let window_rect =
+        std::mem::replace(&mut self.rect, Rect::from_ltrb(0, 0, 0, 0));
+      self.slide(&window_rect);
+      return;
     }
 
     let anchor = self.window.anchor();
@@ -528,7 +543,8 @@ impl Overlay for NativeBorderOverlay {
     Ok(overlay)
   }
 
-  fn apply(&mut self, params: BorderOverlayParams) {
+  fn apply_blend(&mut self, blend: StyleBlend<BorderOverlayParams>) {
+    let params = blend.from.lerp(&blend.to, blend.t);
     self.set_color(params.color);
     self.set_width(params.width);
     self.set_corner_radius(params.corner_radius);

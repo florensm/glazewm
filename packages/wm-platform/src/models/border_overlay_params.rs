@@ -25,3 +25,20 @@ pub struct BorderOverlayParams {
   /// `1.0`.
   pub opacity: f32,
 }
+
+impl BorderOverlayParams {
+  /// Interpolates every knob `t` of the way to `to`.
+  #[must_use]
+  pub fn lerp(&self, to: &Self, t: f32) -> Self {
+    Self {
+      color: self.color.lerp(&to.color, t),
+      width: crate::lerp_f32(self.width, to.width, t),
+      corner_radius: crate::lerp_f32(
+        self.corner_radius,
+        to.corner_radius,
+        t,
+      ),
+      opacity: crate::lerp_f32(self.opacity, to.opacity, t),
+    }
+  }
+}

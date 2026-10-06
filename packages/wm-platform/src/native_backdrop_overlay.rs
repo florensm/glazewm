@@ -1,9 +1,10 @@
 use windows::Win32::Foundation::HWND;
 
 use crate::{
+  lerp_f32,
   overlay_window::{Overlay, OverlayKind, OverlayWindow},
   platform_impl::composition::BackdropVisual,
-  BackdropOverlayParams, Color, Rect, SurrogateBatch,
+  BackdropOverlayParams, Rect, StyleBlend, SurrogateBatch,
 };
 
 /// A persistent backdrop window rendering a crop of the pre-blurred
@@ -37,44 +38,15 @@ pub struct NativeBackdropOverlay {
   /// other window instead of showing through the one it belongs to.
   window: OverlayWindow,
 
-  /// Current tint/blur-amount/corner-radius/opacity/saturation, applied
-  /// as the composition tree's live properties.
+  /// Last-applied knobs. Only the live ones (tint, corner radius,
+  /// opacity, vignette, parallax) are read back, to skip unchanged
+  /// writes; the visual tree tracks what its layers were baked with
+  /// itself.
   params: BackdropOverlayParams,
 
   /// Last rect applied, used to skip redundant `SetWindowPos` calls when
   /// the overlay hasn't actually moved.
   rect: Rect,
-}
-
-/// Generates a `NativeBackdropOverlay` setter for a single `f32` knob
-/// shared with the `BackdropVisual` composition pipeline: no-ops when
-/// `value` matches the last-applied `params.$field`, otherwise stores it
-/// and forwards to the matching `BackdropVisual` setter.
-macro_rules! backdrop_overlay_setter {
-  (
-    $(#[$doc:meta])*
-    $setter:ident, $field:ident
-  ) => {
-    $(#[$doc])*
-    #[allow(clippy::float_cmp)]
-    pub fn $setter(&mut self, value: f32) {
-      if self.params.$field == value {
-        return;
-      }
-      self.params.$field = value;
-
-      if let Err(e) = self.composition.$setter(value) {
-        tracing::warn!(
-          concat!(
-            "Backdrop overlay ",
-            stringify!($field),
-            " update failed: {e}."
-          ),
-          e = e
-        );
-      }
-    }
-  };
 }
 
 impl NativeBackdropOverlay {
@@ -104,133 +76,39 @@ impl NativeBackdropOverlay {
     self.rect = rect.clone();
   }
 
-  /// Updates the tint; re-applies only when the value changes.
-  pub fn set_tint(&mut self, tint: Color) {
-    if self.params.tint == tint {
-      return;
-    }
-    self.params.tint = tint;
-
-    if let Err(e) = self.composition.set_tint(tint) {
-      tracing::warn!(
-        "Backdrop overlay composition tint update failed: {e}."
-      );
-    }
-  }
-
-  /// Applies all seven baked knobs together, re-rendering at most once.
-  ///
-  /// Kept separate from the per-knob setters so a caller with a whole new
-  /// `BackdropOverlayParams` -- which is every caller in practice, since
-  /// params are resolved per focus state -- pays one bake rather than one
-  /// per changed knob.
-  fn set_bake_knobs(&mut self, params: BackdropOverlayParams) {
-    self.params.blur_amount = params.blur_amount;
-    self.params.saturation = params.saturation;
-    self.params.exposure = params.exposure;
-    self.params.contrast = params.contrast;
-    self.params.highlights = params.highlights;
-    self.params.shadows = params.shadows;
-    self.params.grain = params.grain;
-
-    if let Err(e) = self.composition.set_bake_knobs(params) {
-      tracing::warn!("Backdrop overlay bake-knob update failed: {e}.");
-    }
-  }
-
-  backdrop_overlay_setter!(
-    /// Updates the blur radius/intensity; re-applies only when the value
-    /// changes.
-    ///
-    /// Compares the raw `f32` for exact equality, same as `set_tint`'s
-    /// ABGR comparison -- the value only ever changes when a caller
-    /// passes a genuinely different, config-resolved number, not
-    /// through any arithmetic that could introduce drift.
-    set_blur_amount,
-    blur_amount
-  );
-
-  backdrop_overlay_setter!(
-    /// Updates the corner radius, in pixels; re-applies only when the
-    /// value changes.
-    ///
-    /// See `set_blur_amount` for why exact `f32` equality is intentional
-    /// here.
-    set_corner_radius,
-    corner_radius
-  );
-
-  backdrop_overlay_setter!(
-    /// Updates the overlay's own opacity (blur + tint together, as one
-    /// unit); re-applies only when the value changes.
-    ///
-    /// See `set_blur_amount` for why exact `f32` equality is intentional
-    /// here.
-    set_opacity,
-    opacity
-  );
-
-  backdrop_overlay_setter!(
-    /// Updates the saturation of the blurred backdrop; re-applies only
-    /// when the value changes.
-    ///
-    /// See `set_blur_amount` for why exact `f32` equality is intentional
-    /// here.
-    set_saturation,
-    saturation
-  );
-
-  backdrop_overlay_setter!(
-    /// Updates the exposure baked into the wallpaper backdrop, in stops.
-    set_exposure,
-    exposure
-  );
-
-  backdrop_overlay_setter!(
-    /// Updates the contrast baked into the wallpaper backdrop.
-    set_contrast,
-    contrast
-  );
-
-  backdrop_overlay_setter!(
-    /// Updates the highlight recovery baked into the wallpaper backdrop:
-    /// negative pulls bright areas down, leaving the rest alone.
-    set_highlights,
-    highlights
-  );
-
-  backdrop_overlay_setter!(
-    /// Updates the shadow lift baked into the wallpaper backdrop.
-    set_shadows,
-    shadows
-  );
-
-  backdrop_overlay_setter!(
-    /// Updates the vignette baked into the wallpaper backdrop.
-    set_vignette,
-    vignette
-  );
-
-  backdrop_overlay_setter!(
-    /// Updates the grain baked into the wallpaper backdrop.
-    set_grain,
-    grain
-  );
-
-  /// Updates how far the wallpaper backdrop's crop follows the window.
-  ///
-  /// Not generated by [`backdrop_overlay_setter`] because it is the one
-  /// knob that needs the overlay's current rect to re-apply: it re-aims an
-  /// existing surface rather than re-rendering one, so there is nothing to
-  /// rebuild, only a new offset to compute.
+  /// Applies the knobs the visual tree renders live, each only when it
+  /// changed. The baked knobs are left to
+  /// `BackdropVisual::set_bake_blend`.
   #[allow(clippy::float_cmp)]
-  pub fn set_parallax(&mut self, value: f32) {
-    if self.params.parallax == value {
-      return;
-    }
-    self.params.parallax = value;
+  fn apply_live_knobs(&mut self, params: BackdropOverlayParams) {
+    let current = self.params;
+    let composition = &mut self.composition;
 
-    self.composition.set_parallax(value, &self.rect);
+    let result = (|| -> crate::Result<()> {
+      if current.tint != params.tint {
+        composition.set_tint(params.tint)?;
+      }
+      if current.corner_radius != params.corner_radius {
+        composition.set_corner_radius(params.corner_radius)?;
+      }
+      if current.opacity != params.opacity {
+        composition.set_opacity(params.opacity)?;
+      }
+      if current.vignette != params.vignette {
+        composition.set_vignette(params.vignette)?;
+      }
+      Ok(())
+    })();
+
+    if let Err(e) = result {
+      tracing::warn!("Backdrop overlay composition update failed: {e}.");
+    }
+
+    if current.parallax != params.parallax {
+      composition.set_parallax(params.parallax, &self.rect);
+    }
+
+    self.params = params;
   }
 }
 
@@ -265,23 +143,31 @@ impl Overlay for NativeBackdropOverlay {
 
   /// Also the per-tick point at which the overlay notices the desktop
   /// wallpaper changing underneath it.
-  fn apply(&mut self, params: BackdropOverlayParams) {
-    self.set_tint(params.tint);
-    self.set_corner_radius(params.corner_radius);
-    self.set_opacity(params.opacity);
-    self.set_vignette(params.vignette);
+  fn apply_blend(&mut self, blend: StyleBlend<BackdropOverlayParams>) {
+    let StyleBlend { from, to, t } = blend;
 
-    // The seven baked knobs go in one call rather than one setter each.
-    // Applied singly they walk through six intermediate combinations, each
-    // of which is a separate full-monitor bake -- see
-    // `BackdropVisual::set_bake_knobs`.
-    self.set_bake_knobs(params);
-    self.set_parallax(params.parallax);
+    // The baked knobs travel unblended: they select a surface rather than
+    // describe one, so in-between values would each be a full-monitor
+    // bake. `set_bake_blend` crossfades the two surfaces instead.
+    self.apply_live_knobs(BackdropOverlayParams {
+      tint: from.tint.lerp(&to.tint, t),
+      corner_radius: lerp_f32(from.corner_radius, to.corner_radius, t),
+      opacity: lerp_f32(from.opacity, to.opacity, t),
+      vignette: lerp_f32(from.vignette, to.vignette, t),
+      parallax: lerp_f32(from.parallax, to.parallax, t),
+      ..to
+    });
 
-    // Unlike the setters above, this reacts to a change *outside* the
+    if let Err(e) =
+      self.composition.set_bake_blend(from.into(), to.into(), t)
+    {
+      tracing::warn!("Backdrop overlay bake-knob update failed: {e}.");
+    }
+
+    // Unlike the knobs above, this reacts to a change *outside* the
     // config -- the user swapping their wallpaper, or the displays being
-    // rearranged. `apply` is the one call every tracked overlay gets on
-    // every tick, which is what makes it the place to notice.
+    // rearranged. `apply_blend` is the one call every tracked overlay gets
+    // on every tick, which is what makes it the place to notice.
     if let Err(e) = self.composition.sync_backdrop(&self.rect) {
       tracing::warn!("Wallpaper backdrop refresh failed: {e}.");
     }

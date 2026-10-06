@@ -12,6 +12,7 @@ mod overview;
 mod point;
 mod rect;
 mod rect_delta;
+mod style_blend;
 
 pub use backdrop_overlay_params::*;
 pub use border_overlay_params::*;
@@ -27,3 +28,4 @@ pub use overview::*;
 pub use point::*;
 pub use rect::*;
 pub use rect_delta::*;
+pub use style_blend::*;

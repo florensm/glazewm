@@ -220,23 +220,25 @@ use wm_common::{
   EasingFunction, WindowTransitionParams, WindowTransitionStyle,
   WorkspaceSwitchDirection, WorkspaceSwitchStyle,
 };
+#[cfg(target_os = "windows")]
+use wm_platform::{
+  lerp_f32, sample_edge_color_async, BackdropOverlayParams,
+  BorderOverlayParams, Color, CornerStyle, DxgiVsyncWaiter,
+  EdgeColorCache, NativeBackdropOverlay, NativeBorderOverlay,
+  NativeIrisOverlay, NativeSurrogate, NativeWindowWindowsExt, Overlay,
+  ResizeSession, SessionOptions, StyleBlend, SurrogateBatch,
+  WorkspaceSurrogate, HWND,
+};
 use wm_platform::{
   perf::{self, Stage},
   NativeWindow, OpacityValue, Rect,
 };
-#[cfg(target_os = "windows")]
-use wm_platform::{
-  sample_edge_color_async, BackdropOverlayParams, BorderOverlayParams,
-  Color, CornerStyle, DxgiVsyncWaiter, EdgeColorCache,
-  NativeBackdropOverlay, NativeBorderOverlay, NativeIrisOverlay,
-  NativeSurrogate, NativeWindowWindowsExt, Overlay, ResizeSession,
-  SessionOptions, SurrogateBatch, WorkspaceSurrogate, HWND,
-};
 
 #[cfg(target_os = "windows")]
 use crate::commands::general::{
-  overlay_z_anchor, resync_settling_overlays, upsert_overlay,
-  upsert_pinned_border_overlay,
+  apply_focus_effects, overlay_z_anchor, resync_settling_overlays,
+  surrogate_effects_for, upsert_blended_overlay, upsert_overlay,
+  upsert_pinned_border_overlay, SyncableOverlay,
 };
 use crate::{
   animation::state::WindowAnimationState,
@@ -259,11 +261,17 @@ struct PendingSurrogateUpdate {
 /// Tracks a single window's participation in the current workspace-switch
 /// slide animation.
 #[cfg(target_os = "windows")]
-struct WorkspaceSwitchEntry {
+pub(crate) struct WorkspaceSwitchEntry {
   /// Surrogate overlay that slides across the monitor each frame.
-  surrogate: Option<WorkspaceSurrogate>,
+  pub surrogate: Option<WorkspaceSurrogate>,
   /// `true` for windows on the incoming workspace, `false` for outgoing.
-  is_incoming: bool,
+  pub is_incoming: bool,
+  /// Whether the window wore the focused style when the switch began.
+  ///
+  /// Its border, backdrop, and transparency blend from that style to the
+  /// one for its post-switch focus state over the switch, rather than
+  /// snapping on the first frame.
+  pub was_focused: bool,
 }
 
 /// Shared state for all windows in a workspace-switch animation.
@@ -377,7 +385,6 @@ pub enum AnimationPositionResult {
   ///
   /// The carried `Rect` is the current animated position, available for
   /// callers that bypass the surrogate path (e.g. future macOS support).
-  #[allow(dead_code)]
   Apply(Rect),
   /// The surrogate overlay is handling all visuals; skip repositioning
   /// the real window this frame.
@@ -1490,6 +1497,27 @@ impl AnimationManager {
 
               continue;
             }
+
+            let is_focused = Some(window_id) == focused_id_for_overlay;
+            let (from_alpha, _, from_backdrop, from_border) =
+              surrogate_effects_for(entry.was_focused, config);
+            let (to_alpha, _, to_backdrop, to_border) =
+              surrogate_effects_for(is_focused, config);
+
+            // Set before the motion update below, which applies it.
+            #[allow(
+              clippy::cast_possible_truncation,
+              clippy::cast_sign_loss
+            )]
+            s.set_effect_opacity(
+              lerp_f32(
+                f32::from(from_alpha),
+                f32::from(to_alpha),
+                eased_final,
+              )
+              .round() as u8,
+            );
+
             match ws.style {
               WorkspaceSwitchStyle::Slide => {
                 let monitor_rect = Rect::from_xy(
@@ -1578,22 +1606,16 @@ impl AnimationManager {
             if s.is_live() {
               match s.current_rect() {
                 Some(rect) => {
-                  let effect_cfg =
-                    if Some(window_id) == focused_id_for_overlay {
-                      &config.value.window_effects.focused_window
-                    } else {
-                      &config.value.window_effects.other_windows
-                    };
-                  if let Some(tint) = effect_cfg.backdrop.overlay_tint() {
-                    let corner_radius =
-                      effect_cfg.window_corner_radius_px();
-                    let params = effect_cfg
-                      .backdrop
-                      .to_overlay_params(tint, corner_radius);
-                    upsert_overlay(
+                  if let Some(blend) = StyleBlend::between(
+                    from_backdrop,
+                    to_backdrop,
+                    eased_final,
+                    NativeBackdropOverlay::transparent,
+                  ) {
+                    upsert_blended_overlay(
                       &mut state.backdrop_overlays,
                       window_id,
-                      params,
+                      blend,
                       rect,
                       s.hwnd(),
                       &mut ws_batch,
@@ -1623,45 +1645,37 @@ impl AnimationManager {
             // Independent of `is_live()`, which is backdrop-specific: the
             // border tracks every surrogate whether or not one is
             // configured.
-            {
-              let effect_cfg = if Some(window_id) == focused_id_for_overlay
-              {
-                &config.value.window_effects.focused_window
-              } else {
-                &config.value.window_effects.other_windows
-              };
-              if let Some(color) = effect_cfg.border.abgr_color() {
-                match s.unclipped_rect() {
-                  Some(rect) => {
-                    let corner_radius =
-                      effect_cfg.window_corner_radius_px();
-                    let mut params = effect_cfg
-                      .border
-                      .to_overlay_params(color, corner_radius);
+            if let Some(mut blend) = StyleBlend::between(
+              from_border,
+              to_border,
+              eased_final,
+              NativeBorderOverlay::transparent,
+            ) {
+              match s.unclipped_rect() {
+                Some(rect) => {
+                  // Fade the ring in step with the window it outlines, so
+                  // a configured `opacity_incoming`/`opacity_outgoing`
+                  // does not leave a full-strength border floating over a
+                  // half-faded window.
+                  let frac =
+                    s.opacity_frac(eased_final, entry.is_incoming);
+                  blend.from.opacity *= frac;
+                  blend.to.opacity *= frac;
 
-                    // Fade the ring in step with the window it outlines,
-                    // so a configured
-                    // `opacity_incoming`/`opacity_outgoing`
-                    // does not leave a full-strength border floating over
-                    // a half-faded window.
-                    params.opacity *=
-                      s.opacity_frac(eased_final, entry.is_incoming);
-
-                    upsert_pinned_border_overlay(
-                      &mut state.border_overlays,
-                      window_id,
-                      params,
-                      rect,
-                      &ws.border_viewport,
-                      s.hwnd(),
-                    );
-                  }
-                  None => {
-                    if let Some(overlay) =
-                      state.border_overlays.get_mut(&window_id)
-                    {
-                      overlay.hide();
-                    }
+                  upsert_pinned_border_overlay(
+                    &mut state.border_overlays,
+                    window_id,
+                    blend,
+                    rect,
+                    &ws.border_viewport,
+                    s.hwnd(),
+                  );
+                }
+                None => {
+                  if let Some(overlay) =
+                    state.border_overlays.get_mut(&window_id)
+                  {
+                    overlay.hide();
                   }
                 }
               }
@@ -1703,6 +1717,15 @@ impl AnimationManager {
       // windows are about to be uncloaked, it is safe to transfer OS
       // focus.
       state.pending_sync.queue_focus_change();
+
+      // The surrogates ended on the post-switch focus styles. Apply them
+      // to the real windows now, while they are still cloaked: queued for
+      // the uncloaking sync instead, they would be applied a step after
+      // the uncloak and show their old style (e.g. transparency) for a
+      // frame.
+      if let Some(focused) = state.focused_container() {
+        apply_focus_effects(state, &focused, false, config);
+      }
     }
 
     // Drive the iris-wipe overlay. The incoming workspace was already
@@ -3002,7 +3025,7 @@ impl AnimationManager {
   #[cfg(target_os = "windows")]
   pub fn start_workspace_switch(
     &mut self,
-    windows: Vec<(Uuid, Option<WorkspaceSurrogate>, bool)>,
+    windows: Vec<(Uuid, WorkspaceSwitchEntry)>,
     order_direction: i32,
     monitor_x: i32,
     monitor_width: i32,
@@ -3027,18 +3050,8 @@ impl AnimationManager {
     let slide_distance_h = monitor_width.max(1);
     let slide_distance_v = monitor_height.max(1);
 
-    let ws_windows: HashMap<Uuid, WorkspaceSwitchEntry> = windows
-      .into_iter()
-      .map(|(id, surrogate, is_incoming)| {
-        (
-          id,
-          WorkspaceSwitchEntry {
-            surrogate,
-            is_incoming,
-          },
-        )
-      })
-      .collect();
+    let ws_windows: HashMap<Uuid, WorkspaceSwitchEntry> =
+      windows.into_iter().collect();
 
     if !ws_windows.is_empty() {
       tracing::info!(
