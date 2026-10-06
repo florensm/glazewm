@@ -54,8 +54,19 @@ impl WindowListener {
     event_tx: mpsc::UnboundedSender<WindowEvent>,
     dispatcher: &Dispatcher,
   ) -> crate::Result<Self> {
+    // Only taskbar-flash detection depends on the shell hook, so the WM
+    // keeps running without it (e.g. under a replacement shell or Wine).
     let shell_hook_callback_id =
-      Self::hook_shell_events(event_tx.clone(), dispatcher)?;
+      match Self::hook_shell_events(event_tx.clone(), dispatcher) {
+        Ok(id) => Some(id),
+        Err(err) => {
+          tracing::warn!(
+            "Shell hook unavailable; attention requests won't be \
+             detected: {err}"
+          );
+          None
+        }
+      };
 
     let hook_handles = dispatcher.dispatch_sync(move || {
       EVENT_TX.with(|lock| lock.set(event_tx)).map_err(|_| {
@@ -69,7 +80,7 @@ impl WindowListener {
 
     Ok(Self {
       hook_handles,
-      shell_hook_callback_id: Some(shell_hook_callback_id),
+      shell_hook_callback_id,
       dispatcher: dispatcher.clone(),
     })
   }

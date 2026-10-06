@@ -14,5 +14,11 @@ pub fn handle_z_order_changed(state: &mut WmState) {
   {
     resync_overlay_z_order::<NativeBackdropOverlay>(state);
     resync_overlay_z_order::<NativeBorderOverlay>(state);
+
+    // E.g. the OS raising a window when a drag starts on it, or an app
+    // raising its own main window over a stack.
+    for bar in state.tab_bars.values() {
+      bar.keep_behind_anchor();
+    }
   }
 }

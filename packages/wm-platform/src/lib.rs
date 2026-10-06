@@ -72,6 +72,8 @@ mod native_overview;
 #[cfg(target_os = "windows")]
 pub use native_overview::NativeOverview;
 #[cfg(target_os = "windows")]
+mod native_stack_tab_bar;
+#[cfg(target_os = "windows")]
 mod overview_chrome;
 #[cfg(target_os = "windows")]
 mod overview_layout;
@@ -83,9 +85,23 @@ mod overview_thumbnails;
 mod paint;
 #[cfg(target_os = "windows")]
 mod window_icons;
+#[cfg(target_os = "windows")]
+pub use native_stack_tab_bar::{
+  NativeStackTabBar, TabBarStyle, TabCloseMode, TabFrame, TabInfo,
+};
+#[cfg(target_os = "windows")]
+mod tab_icons;
+// Only `TabAction` is used off Windows, where there are no tab bars.
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+mod tab_layout;
+pub use tab_layout::TabAction;
+#[cfg(target_os = "windows")]
+mod tab_paint;
 pub use platform_event::*;
 pub use single_instance::*;
 pub use system_accent_color::*;
+#[cfg(target_os = "windows")]
+pub use tab_paint::CornerRadii;
 pub use thread_bound::*;
 pub use window_listener::*;
 /// Stops Windows from creating "ghost" windows for this process.
@@ -510,5 +526,6 @@ pub use windows::Win32::UI::WindowsAndMessaging::{
   HWND_TOPMOST, SET_WINDOW_POS_FLAGS, SWP_ASYNCWINDOWPOS,
   SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOCOPYBITS, SWP_NOSENDCHANGING,
   SWP_NOZORDER, WINDOW_EX_STYLE, WINDOW_STYLE, WS_CAPTION, WS_CHILD,
-  WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_MAXIMIZEBOX,
+  WS_EX_DLGMODALFRAME, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_MAXIMIZEBOX,
+  WS_VISIBLE,
 };

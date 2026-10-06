@@ -7,18 +7,19 @@ use uuid::Uuid;
 use wm_common::{BindingModeConfig, HideCorner, WindowState, WmEvent};
 use wm_platform::{
   Direction, Dispatcher, Display, NativeWindow, OverviewAction, Point,
-  Rect,
+  Rect, TabAction,
 };
 #[cfg(target_os = "windows")]
 use wm_platform::{
-  NativeBackdropOverlay, NativeBorderOverlay, NativeWindowWindowsExt,
-  OpacityValue,
+  NativeBackdropOverlay, NativeBorderOverlay, NativeStackTabBar,
+  NativeWindowWindowsExt, OpacityValue,
 };
 
 #[cfg(target_os = "windows")]
 use crate::overview::Overview;
 use crate::{
   animation::AnimationManager,
+  auto_stack::AutoStackState,
   commands::{
     container::set_focused_descendant,
     general::platform_sync,
@@ -75,6 +76,13 @@ pub struct WmState {
   /// `ignore` command.
   pub ignored_windows: Vec<NativeWindow>,
 
+  /// Windows held back or placed by `stack.auto_stack` rules.
+  pub auto_stack: AutoStackState,
+
+  /// Windows kept usable while their app shows a blocking popup.
+  #[cfg(target_os = "windows")]
+  pub stay_interactive: crate::stay_interactive::StayInteractive,
+
   /// Whether the WM is paused.
   pub is_paused: bool,
 
@@ -111,6 +119,17 @@ pub struct WmState {
 
   /// Sender for gracefully shutting down the WM.
   exit_tx: mpsc::UnboundedSender<()>,
+
+  /// Sender for actions taken in tab bars, keyed by stack ID.
+  pub tab_action_tx: mpsc::UnboundedSender<(Uuid, TabAction)>,
+
+  /// Live tab bar windows keyed by their `StackContainer` ID.
+  #[cfg(target_os = "windows")]
+  pub tab_bars: HashMap<Uuid, NativeStackTabBar>,
+
+  /// Tab bar settings resolved from the config, cleared on reload.
+  #[cfg(target_os = "windows")]
+  pub tab_bar_settings: Option<crate::tab_bars::TabBarSettings>,
 }
 
 impl WmState {
@@ -120,6 +139,7 @@ impl WmState {
     exit_tx: mpsc::UnboundedSender<()>,
     animation_tick_tx: mpsc::UnboundedSender<()>,
     overview_action_tx: mpsc::UnboundedSender<(u64, OverviewAction)>,
+    tab_action_tx: mpsc::UnboundedSender<(Uuid, TabAction)>,
   ) -> Self {
     // Without an overview, its actions channel is closed right away.
     #[cfg(not(target_os = "windows"))]
@@ -142,11 +162,20 @@ impl WmState {
       unmanaged_or_minimized_timestamp: None,
       binding_modes: Vec::new(),
       ignored_windows: Vec::new(),
+      auto_stack: AutoStackState::default(),
+      #[cfg(target_os = "windows")]
+      stay_interactive: crate::stay_interactive::StayInteractive::default(
+      ),
       is_paused: false,
       is_focus_synced: false,
       has_initialized: false,
       event_tx,
       exit_tx,
+      tab_action_tx,
+      #[cfg(target_os = "windows")]
+      tab_bars: HashMap::new(),
+      #[cfg(target_os = "windows")]
+      tab_bar_settings: None,
     }
   }
 
@@ -789,6 +818,12 @@ impl Drop for WmState {
       if let Err(err) = session.commit() {
         warn!("Failed to commit resize session on shutdown: {:?}", err);
       }
+    }
+
+    // Windows held back for auto-stacking are cloaked but not managed.
+    #[cfg(target_os = "windows")]
+    for native_window in self.auto_stack.release_all() {
+      let _ = native_window.set_cloaked(false);
     }
 
     let managed_windows = self.windows();

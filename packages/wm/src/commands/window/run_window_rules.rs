@@ -1,5 +1,5 @@
 use tracing::info;
-use wm_common::WindowRuleEvent;
+use wm_common::{InvokeCommand, WindowRuleEvent};
 
 use crate::{
   models::WindowContainer,
@@ -17,6 +17,18 @@ pub fn run_window_rules(
   state: &mut WmState,
   config: &mut UserConfig,
 ) -> anyhow::Result<Option<WindowContainer>> {
+  run_window_rules_except(window, event_type, |_| false, state, config)
+}
+
+/// Same as [`run_window_rules`], but skips the commands for which
+/// `is_skipped` returns `true`.
+pub fn run_window_rules_except(
+  window: WindowContainer,
+  event_type: &WindowRuleEvent,
+  is_skipped: impl Fn(&InvokeCommand) -> bool,
+  state: &mut WmState,
+  config: &mut UserConfig,
+) -> anyhow::Result<Option<WindowContainer>> {
   let pending_window_rules =
     config.pending_window_rules(&window, event_type);
 
@@ -26,6 +38,13 @@ pub fn run_window_rules(
     info!("Running window rule with commands: {:?}.", rule.commands);
 
     for command in &rule.commands {
+      if is_skipped(command) {
+        info!(
+          "Skipping window rule command for stacked window: {command:?}."
+        );
+        continue;
+      }
+
       WindowManager::run_command(
         command,
         subject_window.clone().into(),

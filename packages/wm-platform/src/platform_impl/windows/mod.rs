@@ -10,6 +10,7 @@ mod native_window;
 mod single_instance;
 pub(crate) mod wallpaper;
 pub(crate) mod wallpaper_surface;
+mod window_enabler;
 mod window_listener;
 
 pub(crate) use display::*;

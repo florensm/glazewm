@@ -19,7 +19,12 @@ use windows::{
     },
     UI::{
       Input::KeyboardAndMouse::{
-        SendInput, INPUT, INPUT_0, INPUT_MOUSE, MOUSEINPUT,
+        SendInput, INPUT, INPUT_0, INPUT_KEYBOARD, INPUT_MOUSE,
+        KEYBDINPUT, KEYBD_EVENT_FLAGS, KEYEVENTF_EXTENDEDKEY,
+        KEYEVENTF_KEYUP, MOUSEINPUT, VIRTUAL_KEY, VK_APPS, VK_DELETE,
+        VK_DIVIDE, VK_DOWN, VK_END, VK_HOME, VK_INSERT, VK_LEFT, VK_LWIN,
+        VK_NEXT, VK_NUMLOCK, VK_PRIOR, VK_RCONTROL, VK_RIGHT, VK_RMENU,
+        VK_RWIN, VK_UP,
       },
       WindowsAndMessaging::{
         EnumWindows, FlashWindowEx, GetAncestor, GetClassNameW,
@@ -45,10 +50,14 @@ use windows::{
   },
 };
 
-use super::com::{IApplicationView, COM_INIT};
+use super::{
+  com::{IApplicationView, COM_INIT},
+  SENT_KEY_MARKER,
+};
 use crate::{
-  window_class, Color, CornerStyle, Delta, Dispatcher, LengthValue,
-  OpacityValue, Point, Rect, RectDelta, WindowId, WindowZOrder,
+  window_class, Color, CornerStyle, Delta, Dispatcher, Key, KeyCode,
+  LengthValue, OpacityValue, Point, Rect, RectDelta, WindowId,
+  WindowZOrder,
 };
 
 /// Magic number used to identify programmatic mouse inputs from our own
@@ -170,10 +179,13 @@ impl NativeWindow {
   }
 
   /// Implements [`NativeWindow::is_visible`].
+  #[allow(clippy::unnecessary_wraps)]
   pub(crate) fn is_visible(&self) -> crate::Result<bool> {
     let is_visible = unsafe { IsWindowVisible(self.hwnd()) }.as_bool();
 
-    Ok(is_visible && !self.is_cloaked()?)
+    // A failed cloak query (e.g. no DWM, as under Wine) is taken as not
+    // cloaked rather than hiding every window.
+    Ok(is_visible && !self.is_cloaked().unwrap_or(false))
   }
 
   /// Implements [`NativeWindow::is_minimized`].
@@ -350,6 +362,122 @@ impl NativeWindow {
   /// Implements [`NativeWindowWindowsExt::has_owner_window`].
   pub(crate) fn has_owner_window(&self) -> bool {
     unsafe { GetWindow(self.hwnd(), GW_OWNER) }.0 != 0
+  }
+
+  /// Implements [`NativeWindowWindowsExt::owner_window_id`].
+  pub(crate) fn owner_window_id(&self) -> Option<WindowId> {
+    // SAFETY: A stale handle just returns no owner.
+    let owner = unsafe { GetWindow(self.hwnd(), GW_OWNER) };
+    (owner.0 != 0).then_some(WindowId(owner.0))
+  }
+
+  /// Implements [`NativeWindowWindowsExt::is_cloaked_by_owner`].
+  pub(crate) fn is_cloaked_by_owner(&self) -> bool {
+    // `DWM_CLOAKED_INHERITED`, which the `windows` crate doesn't export.
+    const CLOAKED_INHERITED: u32 = 0x4;
+
+    let mut cloaked = 0u32;
+
+    // SAFETY: `cloaked` outlives the call and matches the attribute's
+    // size; a stale handle just fails the query.
+    #[allow(clippy::cast_possible_truncation)]
+    let queried = unsafe {
+      DwmGetWindowAttribute(
+        self.hwnd(),
+        DWMWA_CLOAKED,
+        std::ptr::from_mut::<u32>(&mut cloaked).cast(),
+        std::mem::size_of::<u32>() as u32,
+      )
+    }
+    .is_ok();
+
+    // SAFETY: No preconditions; a stale handle returns false.
+    let is_shown = unsafe { IsWindowVisible(self.hwnd()) }.as_bool();
+
+    queried && is_shown && cloaked == CLOAKED_INHERITED
+  }
+
+  /// Implements [`NativeWindowWindowsExt::press_keys`].
+  pub(crate) fn press_keys(&self, keys: &[Key]) -> crate::Result<bool> {
+    let codes = keys
+      .iter()
+      .map(|key| KeyCode::try_from(*key).map(|code| VIRTUAL_KEY(code.0)))
+      .collect::<Result<Vec<_>, _>>()
+      .map_err(|_| crate::Error::InvalidKeybinding)?;
+
+    // Checked as late as possible: if another window took the foreground,
+    // the keys would land in it instead.
+    // SAFETY: No preconditions.
+    if unsafe { GetForegroundWindow() } != self.hwnd() {
+      return Ok(false);
+    }
+
+    let input = |vk: VIRTUAL_KEY, is_release: bool| {
+      let mut flags = KEYBD_EVENT_FLAGS(0);
+      if is_release {
+        flags |= KEYEVENTF_KEYUP;
+      }
+      if is_extended_key(vk) {
+        flags |= KEYEVENTF_EXTENDEDKEY;
+      }
+
+      INPUT {
+        r#type: INPUT_KEYBOARD,
+        Anonymous: INPUT_0 {
+          ki: KEYBDINPUT {
+            wVk: vk,
+            wScan: 0,
+            dwFlags: flags,
+            time: 0,
+            dwExtraInfo: SENT_KEY_MARKER,
+          },
+        },
+      }
+    };
+
+    // Pressed in order and released in reverse, as a person would.
+    let inputs = codes
+      .iter()
+      .map(|vk| input(*vk, false))
+      .chain(codes.iter().rev().map(|vk| input(*vk, true)))
+      .collect::<Vec<_>>();
+
+    // SAFETY: `inputs` outlives the call and `cbsize` matches `INPUT`.
+    #[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
+    let sent =
+      unsafe { SendInput(&inputs, std::mem::size_of::<INPUT>() as i32) };
+
+    if sent as usize != inputs.len() {
+      return Err(windows::core::Error::from_win32().into());
+    }
+
+    Ok(true)
+  }
+
+  /// Implements [`NativeWindowWindowsExt::process_id`].
+  pub(crate) fn process_id(&self) -> u32 {
+    let mut process_id = 0u32;
+    // SAFETY: `process_id` outlives the call; a stale handle leaves it 0.
+    unsafe {
+      GetWindowThreadProcessId(self.hwnd(), Some(&raw mut process_id));
+    }
+    process_id
+  }
+
+  /// Implements [`NativeWindowWindowsExt::is_enabled`].
+  pub(crate) fn is_enabled(&self) -> bool {
+    // SAFETY: A stale handle just returns false.
+    unsafe {
+      windows::Win32::UI::Input::KeyboardAndMouse::IsWindowEnabled(
+        self.hwnd(),
+      )
+    }
+    .as_bool()
+  }
+
+  /// Implements [`NativeWindowWindowsExt::enable_async`].
+  pub(crate) fn enable_async(&self) {
+    super::window_enabler::enable_async(self.handle);
   }
 
   /// Implements [`NativeWindowWindowsExt::is_top_level`].
@@ -908,6 +1036,31 @@ pub(crate) fn focused_window(
 ) -> crate::Result<crate::NativeWindow> {
   let handle = unsafe { GetForegroundWindow() };
   Ok(NativeWindow::new(handle.0).into())
+}
+
+/// Whether `vk` is sent with `KEYEVENTF_EXTENDEDKEY`, without which e.g.
+/// the arrow keys arrive as their numpad counterparts.
+fn is_extended_key(vk: VIRTUAL_KEY) -> bool {
+  [
+    VK_LEFT,
+    VK_RIGHT,
+    VK_UP,
+    VK_DOWN,
+    VK_HOME,
+    VK_END,
+    VK_PRIOR,
+    VK_NEXT,
+    VK_INSERT,
+    VK_DELETE,
+    VK_DIVIDE,
+    VK_NUMLOCK,
+    VK_RCONTROL,
+    VK_RMENU,
+    VK_LWIN,
+    VK_RWIN,
+    VK_APPS,
+  ]
+  .contains(&vk)
 }
 
 /// Implements [`Dispatcher::window_from_point`].

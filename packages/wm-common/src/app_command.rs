@@ -256,6 +256,44 @@ pub enum InvokeCommand {
     grid: bool,
   },
   ToggleTiling,
+  /// Toggle the focused tiling window into or out of a stack container.
+  ToggleStack,
+  /// Keep the window usable while it is in a stack and its app shows a
+  /// blocking popup. Meant for window rules.
+  StayInteractive,
+  /// Take the window out of its stack as a floating window.
+  FloatOutOfStack,
+  /// Put all tiling windows of the workspace into one stack.
+  StackAll,
+  /// Take apart every stack on the workspace.
+  UnstackAll,
+  /// Move the active tab one position right (or left), wrapping around.
+  MoveStackTab {
+    #[clap(long, default_value_t = false)]
+    prev: bool,
+  },
+  /// Cycle focus to the next or previous window within the parent stack.
+  CycleStackFocus {
+    #[clap(long, default_value_t = false)]
+    prev: bool,
+  },
+  /// Focus the stack child at a specific zero-based index.
+  FocusStackIndex {
+    #[clap(long)]
+    index: usize,
+  },
+  /// Absorb the adjacent tiling neighbor in the given direction into a
+  /// stack with the focused window.
+  StackAbsorbNeighbor {
+    #[clap(long)]
+    direction: Direction,
+  },
+  /// Move the focused tiling window into the named stack on the current
+  /// workspace. Creates a new named stack if none exists yet.
+  MoveToStack {
+    #[clap(long)]
+    name: String,
+  },
   ToggleTilingDirection,
   SetTilingDirection {
     #[clap(required = true)]

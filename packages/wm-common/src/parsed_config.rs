@@ -15,10 +15,228 @@ pub struct ParsedConfig {
   pub general: GeneralConfig,
   pub keybindings: Vec<KeybindingConfig>,
   pub overview: OverviewConfig,
+  pub stack: StackConfig,
   pub window_behavior: WindowBehaviorConfig,
   pub window_effects: WindowEffectsConfig,
   pub window_rules: Vec<WindowRuleConfig>,
   pub workspaces: Vec<WorkspaceConfig>,
+}
+
+/// Position of the stack tab bar relative to the stack content.
+#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum TabBarPosition {
+  #[default]
+  Top,
+  Bottom,
+}
+
+/// Where a window added to a stack is placed among its tabs.
+#[derive(
+  Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum NewTabPosition {
+  /// After the last tab.
+  #[default]
+  End,
+  /// Right after the active tab.
+  AfterActive,
+}
+
+/// Configuration for stacks and their tab bar.
+#[allow(clippy::struct_excessive_bools)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(default, rename_all(serialize = "camelCase"))]
+pub struct StackConfig {
+  /// Height of the tab bar (0 = disabled).
+  pub tab_bar_height: LengthValue,
+
+  /// Whether the tab bar appears above or below the stack content.
+  pub tab_bar_position: TabBarPosition,
+
+  /// Background of the tab bar strip. Always drawn opaque.
+  pub tab_bar_background: BorderColorSource,
+
+  /// Background of the active tab's highlight.
+  pub tab_active_background: BorderColorSource,
+
+  /// Background of a hovered inactive tab.
+  pub tab_hover_background: BorderColorSource,
+
+  /// Background of an inactive tab whose window requests attention.
+  pub tab_urgent_background: BorderColorSource,
+
+  /// Background of inactive tabs. Transparent by default, so they show
+  /// the strip.
+  pub tab_inactive_background: BorderColorSource,
+
+  /// Text color of the active tab.
+  pub tab_text_color: BorderColorSource,
+
+  /// Text color of inactive tabs.
+  pub tab_inactive_text_color: BorderColorSource,
+
+  /// Font family of tab titles.
+  pub tab_font_family: String,
+
+  /// Font size of tab titles.
+  pub tab_font_size: LengthValue,
+
+  /// Corner radius of the tab highlights and the strip's outer corners. A
+  /// strip inside a window border follows the border's corners instead.
+  pub tab_corner_radius: LengthValue,
+
+  /// Narrowest a tab gets before the bar scrolls. Below about 60px, tabs
+  /// only show their icon.
+  pub tab_min_width: LengthValue,
+
+  /// Widest a tab gets (0 = tabs share the whole bar).
+  pub tab_max_width: LengthValue,
+
+  /// Whether tabs show their window's icon.
+  pub show_tab_icons: bool,
+
+  /// Whether tab titles are prefixed with their position ("1. Title").
+  pub show_tab_numbers: bool,
+
+  /// When tabs show a close button.
+  pub tab_close_button: TabCloseButton,
+
+  /// Regex replacements applied to window titles before they are shown on
+  /// tabs, in order.
+  pub tab_title_overrides: Vec<TabTitleOverride>,
+
+  /// Rules that put matching windows into a named stack as they open.
+  pub auto_stack: Vec<AutoStackRuleConfig>,
+
+  /// How long a window that could still match an `auto_stack` rule is
+  /// held back while its title is empty, before it is placed normally.
+  pub auto_stack_title_timeout_ms: u64,
+
+  /// Whether a new tiling window opened while a stacked window has focus
+  /// joins that stack. Otherwise it is tiled next to the stack.
+  pub new_windows_join_focused_stack: bool,
+
+  /// Where windows added to a stack are placed among its tabs.
+  pub new_tab_position: NewTabPosition,
+
+  /// Whether popups opened by an app that has windows in a stack (windows
+  /// with an owner window from that app) open as floating windows.
+  pub float_owned_popups: bool,
+}
+
+impl Default for StackConfig {
+  fn default() -> Self {
+    let color = |hex: &str| BorderColorSource::Value(hex.to_string());
+
+    Self {
+      tab_bar_height: LengthValue::from_px(28),
+      tab_bar_position: TabBarPosition::Top,
+      tab_bar_background: color("#1f1f1f"),
+      tab_active_background: color("#3a3a3a"),
+      tab_hover_background: color("#2c2c2c"),
+      tab_urgent_background: color("#8a5a00"),
+      tab_inactive_background: color("#00000000"),
+      tab_text_color: color("#ffffff"),
+      tab_inactive_text_color: color("#a0a0a0"),
+      tab_font_family: "Segoe UI".to_string(),
+      tab_font_size: LengthValue::from_px(12),
+      tab_corner_radius: LengthValue::from_px(8),
+      tab_min_width: LengthValue::from_px(48),
+      tab_max_width: LengthValue::from_px(0),
+      show_tab_icons: true,
+      show_tab_numbers: false,
+      tab_close_button: TabCloseButton::Hover,
+      tab_title_overrides: Vec::new(),
+      auto_stack: Vec::new(),
+      auto_stack_title_timeout_ms: 1500,
+      new_windows_join_focused_stack: false,
+      new_tab_position: NewTabPosition::End,
+      float_owned_popups: true,
+    }
+  }
+}
+
+/// When tabs show a close button.
+#[derive(
+  Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum TabCloseButton {
+  /// On the active tab and the hovered tab.
+  #[default]
+  Hover,
+  /// On every tab.
+  Always,
+  /// Never; tabs are closed with a middle click or the context menu.
+  Never,
+}
+
+/// A regex replacement applied to window titles shown on tabs.
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(rename_all(serialize = "camelCase"))]
+pub struct TabTitleOverride {
+  /// Pattern to replace (Rust `regex` syntax).
+  pub regex: String,
+
+  /// Replacement text; `$1` etc. refer to capture groups.
+  #[serde(default)]
+  pub replace: String,
+}
+
+/// A rule that puts matching windows into a named stack when they open.
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(rename_all(serialize = "camelCase"))]
+pub struct AutoStackRuleConfig {
+  /// Name of the stack. One stack exists per name, across all workspaces.
+  pub name: String,
+
+  /// Windows matching any of these join the stack.
+  #[serde(rename = "match")]
+  pub match_window: Vec<WindowMatchConfig>,
+
+  /// Windows matching any of these never join the stack.
+  #[serde(default)]
+  pub exclude: Vec<WindowMatchConfig>,
+
+  /// Workspace to create the stack on when it doesn't exist yet. Defaults
+  /// to the workspace the window would otherwise open on.
+  #[serde(default)]
+  pub workspace: Option<String>,
+
+  /// Whether windows that have an owner window may join. Owned windows
+  /// are usually dialogs, so they are skipped by default.
+  #[serde(default)]
+  pub allow_owned: bool,
+
+  /// Key combinations (e.g. `ctrl+p`) pressed in a window once, after it
+  /// opens and joins the stack.
+  #[serde(
+    default,
+    deserialize_with = "deserialize_bindings",
+    serialize_with = "serialize_bindings"
+  )]
+  pub send_keys_on_join: Vec<Keybinding>,
+
+  /// What happens to tabs with the same title as a window joining the
+  /// stack.
+  #[serde(default)]
+  pub duplicates: DuplicateTabs,
+}
+
+/// What happens to tabs with the same title as a window joining a stack.
+#[derive(
+  Clone, Copy, Debug, Default, Deserialize, PartialEq, Serialize,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum DuplicateTabs {
+  /// Both are kept.
+  #[default]
+  Keep,
+
+  /// The older windows are closed.
+  CloseOlder,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]

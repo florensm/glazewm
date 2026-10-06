@@ -48,6 +48,11 @@ pub struct PendingSync {
   /// user config).
   needs_cursor_jump: bool,
 
+  /// Whether stack tab bars need redrawing and restacking for a change
+  /// that doesn't move any window (e.g. a tab's urgency, or the end of a
+  /// drag that raised the stack's window).
+  needs_tab_bar_update: bool,
+
   /// Window IDs on the incoming workspace that should slide in.
   workspace_switch_incoming: HashSet<Uuid>,
 
@@ -117,6 +122,7 @@ impl PendingSync {
       || self.needs_focused_effect_update
       || self.needs_all_effects_update
       || self.needs_cursor_jump
+      || self.needs_tab_bar_update
       || self.iris_switch.is_some()
   }
 
@@ -127,6 +133,7 @@ impl PendingSync {
     self.needs_focused_effect_update = false;
     self.needs_all_effects_update = false;
     self.needs_cursor_jump = false;
+    self.needs_tab_bar_update = false;
     self.workspace_switch_incoming.clear();
     self.workspace_switch_outgoing.clear();
     self.workspace_switch_direction = 0;
@@ -202,6 +209,11 @@ impl PendingSync {
     self
   }
 
+  pub fn queue_tab_bar_update(&mut self) -> &mut Self {
+    self.needs_tab_bar_update = true;
+    self
+  }
+
   pub fn needs_focus_update(&self) -> bool {
     self.needs_focus_update
   }
@@ -216,6 +228,10 @@ impl PendingSync {
 
   pub fn needs_cursor_jump(&self) -> bool {
     self.needs_cursor_jump
+  }
+
+  pub fn needs_tab_bar_update(&self) -> bool {
+    self.needs_tab_bar_update
   }
 
   pub fn containers_to_redraw(&self) -> &HashMap<Uuid, Container> {

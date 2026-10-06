@@ -1,6 +1,8 @@
 use tracing::info;
 use wm_common::{DisplayState, HideMethod};
 use wm_platform::NativeWindow;
+#[cfg(target_os = "windows")]
+use wm_platform::NativeWindowWindowsExt;
 
 #[cfg(target_os = "windows")]
 use crate::commands::window::unmanage_if_embedded;
@@ -55,6 +57,14 @@ pub fn handle_window_hidden(
     // which would then re-reveal a window the user tried to hide.
     #[cfg(target_os = "windows")]
     if state.animation_manager.has_active_surrogate(&window.id()) {
+      return Ok(());
+    }
+
+    // DWM cloaks owned windows along with their owner, e.g. while the WM
+    // animates the owner. The window itself is still shown, and unmanaging
+    // it would re-manage it as a new window once the owner is uncloaked.
+    #[cfg(target_os = "windows")]
+    if window.native().is_cloaked_by_owner() {
       return Ok(());
     }
 
