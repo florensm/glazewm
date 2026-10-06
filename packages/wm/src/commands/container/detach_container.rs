@@ -1,6 +1,6 @@
 use anyhow::Context;
 
-use super::flatten_split_container;
+use super::{flatten_split_container, flatten_stack_container};
 use crate::{
   models::Container,
   traits::{CommonGetters, TilingSizeGetters, MIN_TILING_SIZE},
@@ -12,6 +12,52 @@ use crate::{
 /// fill the freed up space. Will flatten empty parent split containers.
 #[allow(clippy::needless_pass_by_value)]
 pub fn detach_container(child_to_remove: Container) -> anyhow::Result<()> {
+  // All tabs of a stack share its rect, so removing one leaves the stack's
+  // size, and thereby the rest of the layout, untouched. A stack that is
+  // redundant afterwards is replaced by its remaining window, which takes
+  // over the stack's whole slot.
+  if let Some(stack) = child_to_remove
+    .parent()
+    .and_then(|parent| parent.as_stack().cloned())
+  {
+    let was_tiling = stack.is_tiling();
+
+    stack
+      .borrow_children_mut()
+      .retain(|c| c.id() != child_to_remove.id());
+
+    stack
+      .borrow_child_focus_order_mut()
+      .retain(|id| *id != child_to_remove.id());
+
+    *child_to_remove.borrow_parent_mut() = None;
+
+    if !stack.has_children() {
+      if was_tiling {
+        return detach_container(stack.into());
+      }
+
+      // Empty, the stack would count as tiling, but it held non-tiling
+      // windows and so has no tiling slot to give back.
+      let parent = stack.parent().context("No parent.")?;
+      parent
+        .borrow_children_mut()
+        .retain(|c| c.id() != stack.id());
+      parent
+        .borrow_child_focus_order_mut()
+        .retain(|id| *id != stack.id());
+      *stack.borrow_parent_mut() = None;
+
+      return Ok(());
+    }
+
+    if stack.is_redundant_with(stack.child_count()) {
+      flatten_stack_container(stack)?;
+    }
+
+    return Ok(());
+  }
+
   // Flatten the parent split container if it'll be empty after removing
   // the child.
   if let Some(split_parent) = child_to_remove

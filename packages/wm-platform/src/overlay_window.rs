@@ -33,7 +33,7 @@ impl OverlayKind {
   }
 
   /// Whether `hwnd` is a backdrop or border overlay window.
-  fn is_overlay(hwnd: HWND) -> bool {
+  pub(crate) fn is_overlay(hwnd: HWND) -> bool {
     let mut buf = [0u16; 32];
     // SAFETY: `buf` outlives the call; a stale `hwnd` just returns 0.
     let len = unsafe { GetClassNameW(hwnd, &mut buf) };

@@ -97,7 +97,7 @@ pub trait CommonGetters {
       self
         .children()
         .into_iter()
-        .filter_map(|container| container.try_into().ok()),
+        .filter_map(|container| container.as_tiling_container().ok()),
     )
   }
 
@@ -204,7 +204,7 @@ pub trait CommonGetters {
     Box::new(
       self
         .siblings()
-        .filter_map(|container| container.try_into().ok()),
+        .filter_map(|container| container.as_tiling_container().ok()),
     )
   }
 
@@ -325,7 +325,15 @@ macro_rules! impl_common_getters {
       }
 
       fn as_tiling_container(&self) -> anyhow::Result<TilingContainer> {
-        TryInto::<TilingContainer>::try_into(self.as_container())
+        let container = self.as_container();
+
+        // A stack of floating, fullscreen or minimized windows is out of
+        // the tiling layout, like any such window.
+        if container.as_stack().is_some_and(|stack| !stack.is_tiling()) {
+          anyhow::bail!("Stack is not tiling.");
+        }
+
+        TryInto::<TilingContainer>::try_into(container)
           .map_err(anyhow::Error::msg)
       }
 

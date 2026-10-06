@@ -3280,6 +3280,7 @@ dependencies = [
  "futures-util",
  "home",
  "image",
+ "regex",
  "serde",
  "serde_json",
  "serde_yaml",

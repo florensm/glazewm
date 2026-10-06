@@ -17,7 +17,10 @@ use crate::{
     window::update_window_state,
   },
   events::handle_window_moved_or_resized_end,
-  models::{Monitor, NonTilingWindow, WindowContainer},
+  models::{
+    is_inactive_stack_child, Container, Monitor, NonTilingWindow,
+    WindowContainer,
+  },
   traits::{CommonGetters, WindowGetters},
   user_config::UserConfig,
   wm_state::WmState,
@@ -44,6 +47,13 @@ pub fn handle_window_moved_or_resized(
     window.update_native_properties(|properties| {
       properties.frame = frame_position.clone();
     });
+
+    // Only a stack's active window drives the stack's state. The hidden
+    // tabs are moved along with it without being e.g. maximized, so their
+    // own events would undo the state.
+    if is_inactive_stack_child(&window) {
+      return Ok(());
+    }
 
     // Handle windows that are actively being dragged.
     if !state.is_paused && window.active_drag().is_some() {
@@ -78,7 +88,12 @@ pub fn handle_window_moved_or_resized(
         return handle_window_moved_or_resized_end(&window, state, config);
       }
 
-      return update_drag_state(&window, &frame_position, state, config);
+      update_drag_state(&window, &frame_position, state, config)?;
+
+      #[cfg(target_os = "windows")]
+      follow_drag_with_tab_bar(native_window, state, config);
+
+      return Ok(());
     }
 
     // A resize/move/open animation session owns this window's position for
@@ -391,6 +406,30 @@ pub fn handle_window_moved_or_resized(
   Ok(())
 }
 
+/// Moves the tab bar along with a stacked window being dragged, since the
+/// drag doesn't go through `platform_sync`. The bar is kept directly
+/// behind the window, which the drag raises above other windows.
+#[cfg(target_os = "windows")]
+fn follow_drag_with_tab_bar(
+  native_window: &NativeWindow,
+  state: &mut WmState,
+  config: &UserConfig,
+) {
+  let stack_id = state
+    .window_from_native(native_window)
+    .and_then(|window| window.parent())
+    .filter(|parent| parent.as_stack().is_some())
+    .map(|stack| stack.id());
+
+  if let Some(stack_id) = stack_id {
+    crate::tab_bars::sync_tab_bars(
+      state,
+      config,
+      crate::tab_bars::Restack::Stack(stack_id),
+    );
+  }
+}
+
 /// Keeps a shown window's overlays on it after a move nothing queued a
 /// redraw for: the app moved its own window, or the WM's asynchronous
 /// move landed after `platform_sync` had placed the overlays.
@@ -441,10 +480,18 @@ pub fn update_floating_window_position(
       "Floating window moved to new workspace: {updated_workspace}",
     );
 
-    window.set_insertion_target(None);
+    // A window of a floating stack takes its stack along.
+    let moved: Container = if let Some(stack) =
+      window.parent().filter(|parent| parent.as_stack().is_some())
+    {
+      stack
+    } else {
+      window.set_insertion_target(None);
+      window.clone().into()
+    };
 
     move_container_within_tree(
-      &window.clone().into(),
+      &moved,
       &updated_workspace.clone().into(),
       updated_workspace.child_count(),
       state,

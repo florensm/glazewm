@@ -15,7 +15,7 @@ use wm_platform::{Direction, NativeWindow, Rect, RectDelta};
 use crate::{
   models::{
     Monitor, NativeWindowProperties, NonTilingWindow, RootContainer,
-    SplitContainer, TilingWindow, Workspace,
+    SplitContainer, StackContainer, TilingWindow, Workspace,
   },
   traits::*,
   user_config::UserConfig,
@@ -96,6 +96,8 @@ pub enum Container {
   Workspace(Workspace),
   #[subenum(TilingContainer, DirectionContainer)]
   Split(SplitContainer),
+  #[subenum(TilingContainer)]
+  Stack(StackContainer),
   #[subenum(TilingContainer, WindowContainer)]
   TilingWindow(TilingWindow),
   #[subenum(WindowContainer)]
@@ -134,6 +136,25 @@ impl Container {
   pub fn as_split(&self) -> Option<&SplitContainer> {
     match self {
       Self::Split(split) => Some(split),
+      _ => None,
+    }
+  }
+
+  /// Returns the inner `StackContainer` if this is a `Container::Stack`.
+  #[must_use]
+  pub fn as_stack(&self) -> Option<&StackContainer> {
+    match self {
+      Self::Stack(stack) => Some(stack),
+      _ => None,
+    }
+  }
+
+  /// Returns the inner `TilingWindow` if this is a
+  /// `Container::TilingWindow`.
+  #[must_use]
+  pub fn as_tiling_window(&self) -> Option<&TilingWindow> {
+    match self {
+      Self::TilingWindow(window) => Some(window),
       _ => None,
     }
   }

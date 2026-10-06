@@ -35,12 +35,17 @@ use crate::{
 };
 
 mod animation;
+mod auto_stack;
 mod commands;
 mod events;
 mod ipc_server;
 mod models;
 mod pending_sync;
+#[cfg(target_os = "windows")]
+mod stay_interactive;
 mod sys_tray;
+#[cfg(target_os = "windows")]
+mod tab_bars;
 mod traits;
 mod user_config;
 mod wm;
@@ -212,6 +217,8 @@ async fn start_wm(
       dispatcher.show_error_dialog("Non-fatal error", &err.to_string());
     }
 
+    let auto_stack_deadline = wm.state.auto_stack.next_deadline();
+
     let res = tokio::select! {
       // biased: evaluated top-to-bottom when multiple futures are ready
       // simultaneously. Shutdown signals are checked first, animation ticks
@@ -276,6 +283,12 @@ async fn start_wm(
         }
 
         Ok(())
+      },
+      () = sleep_until(auto_stack_deadline) => {
+        wm.process_auto_stack_timeouts(&mut config)
+      },
+      Some((stack_id, action)) = wm.tab_action_rx.recv() => {
+        wm.process_tab_action(stack_id, action, &mut config)
       },
       Some(wm_event) = wm.event_rx.recv() => {
         tracing::debug!("Received WM event: {:?}", wm_event);
@@ -523,5 +536,13 @@ fn update_path_env() {
     tracing::warn!(
       "Failed to query login shell for PATH. Keeping existing PATH."
     );
+  }
+}
+
+/// Sleeps until `deadline`, or forever when there is none.
+async fn sleep_until(deadline: Option<std::time::Instant>) {
+  match deadline {
+    Some(deadline) => tokio::time::sleep_until(deadline.into()).await,
+    None => std::future::pending().await,
   }
 }

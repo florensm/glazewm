@@ -5,19 +5,20 @@
 
 use bon::bon;
 use wm_common::{
-  FloatingStateConfig, GapsConfig, TilingDirection, WindowState,
-  WorkspaceConfig,
+  FloatingStateConfig, GapsConfig, TabBarPosition, TilingDirection,
+  WindowState, WorkspaceConfig,
 };
-use wm_platform::{Display, NativeWindow, Rect, RectDelta};
+use wm_platform::{Display, LengthValue, NativeWindow, Rect, RectDelta};
 
 use crate::{
   commands::container::attach_container,
   models::{
     Monitor, NativeMonitorProperties, NativeWindowProperties,
-    NonTilingWindow, SplitContainer, TilingContainer, TilingWindow,
-    Workspace,
+    NonTilingWindow, SplitContainer, StackContainer, TilingContainer,
+    TilingWindow, Workspace,
   },
   traits::TilingSizeGetters,
+  wm_state::WmState,
 };
 
 pub const MOCK_MONITOR_WIDTH: i32 = 1680;
@@ -191,6 +192,34 @@ impl SplitContainer {
 }
 
 #[bon]
+impl StackContainer {
+  #[builder]
+  pub fn mock(
+    name: Option<String>,
+    #[builder(default = LengthValue::from_px(0))]
+    tab_bar_height: LengthValue,
+    #[builder(default = vec![])] tiling_containers: Vec<TilingContainer>,
+  ) -> Self {
+    let stack = Self::new(
+      GapsConfig::default(),
+      tab_bar_height,
+      TabBarPosition::Top,
+    );
+
+    if let Some(name) = name {
+      stack.set_name(name);
+    }
+
+    for child in tiling_containers {
+      attach_container(&child.into(), &stack.clone().into(), None)
+        .unwrap();
+    }
+
+    stack
+  }
+}
+
+#[bon]
 impl TilingWindow {
   #[builder]
   pub fn mock(
@@ -258,5 +287,35 @@ impl Workspace {
     }
 
     workspace
+  }
+}
+
+impl WmState {
+  /// Creates a `WmState` whose root holds `monitors`, with channels whose
+  /// receiving ends are dropped.
+  pub fn mock(monitors: Vec<Monitor>) -> Self {
+    let (event_tx, _) = tokio::sync::mpsc::unbounded_channel();
+    let (exit_tx, _) = tokio::sync::mpsc::unbounded_channel();
+    let (animation_tick_tx, _) = tokio::sync::mpsc::unbounded_channel();
+    let (tab_action_tx, _) = tokio::sync::mpsc::unbounded_channel();
+
+    let state = Self::new(
+      wm_platform::Dispatcher::mock(),
+      event_tx,
+      exit_tx,
+      animation_tick_tx,
+      tab_action_tx,
+    );
+
+    for monitor in monitors {
+      attach_container(
+        &monitor.into(),
+        &state.root_container.clone().into(),
+        None,
+      )
+      .unwrap();
+    }
+
+    state
   }
 }

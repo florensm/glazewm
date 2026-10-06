@@ -1,12 +1,15 @@
 use anyhow::Context;
 use tracing::info;
-use wm_common::{DisplayState, WindowRuleEvent, WmEvent};
+use wm_common::{DisplayState, WindowRuleEvent, WindowState, WmEvent};
 use wm_platform::NativeWindow;
 
 use crate::{
   commands::{
     container::set_focused_descendant,
-    window::{run_window_rules, set_window_urgency},
+    window::{
+      restored_state, run_window_rules, set_window_urgency,
+      update_window_state,
+    },
     workspace::focus_workspace,
   },
   models::WorkspaceTarget,
@@ -111,6 +114,30 @@ pub fn handle_window_focused(
 
     // Update the WM's focus state.
     set_focused_descendant(&window.clone().into(), None);
+
+    // If the focused window is inside a stack, queue all children for
+    // redraw so the newly-active child is uncloaked and siblings are
+    // cloaked. This handles OS-driven focus (e.g. taskbar click on a
+    // cloaked stack window after a lock/unlock cycle).
+    let stack = window.parent().and_then(|p| p.as_stack().cloned());
+    if let Some(stack) = &stack {
+      state
+        .pending_sync
+        .queue_containers_to_redraw(stack.windows());
+    }
+
+    // A tab of a minimized stack activated by the OS (e.g. from the
+    // taskbar) restores the whole stack.
+    let window = match &stack {
+      Some(stack)
+        if window.state() == WindowState::Minimized
+          && !window.native().is_minimized().unwrap_or(true) =>
+      {
+        let target_state = restored_state(stack, config);
+        update_window_state(window, target_state, state, config)?
+      }
+      _ => window,
+    };
 
     // Run window rules for focus events.
     run_window_rules(

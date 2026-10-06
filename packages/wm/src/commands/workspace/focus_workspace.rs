@@ -7,7 +7,9 @@ use crate::{
   commands::{
     container::set_focused_descendant, workspace::deactivate_workspace,
   },
-  models::{Container, WorkspaceTarget},
+  models::{
+    is_inactive_stack_child, Container, WindowContainer, WorkspaceTarget,
+  },
   pending_sync::IrisSwitchRequest,
   traits::{CommonGetters, PositionGetters, WindowGetters},
   user_config::UserConfig,
@@ -114,14 +116,11 @@ pub fn focus_workspace(
         );
         state.pending_sync.set_workspace_switch_direction(direction);
 
-        // Mark windows on the incoming workspace to slide in. Minimized
-        // windows are excluded — they have no visible content to animate
-        // and including them causes flicker when the animation
-        // system tries to snapshot them.
+        // Mark windows on the incoming workspace to slide in.
         for window in target_workspace
           .descendants()
           .filter_map(|c| c.as_window_container().ok())
-          .filter(|w| w.state() != WindowState::Minimized)
+          .filter(is_switch_animated)
         {
           state
             .pending_sync
@@ -129,12 +128,11 @@ pub fn focus_workspace(
         }
 
         // Cancel in-flight animations for outgoing windows and mark them
-        // for the outgoing surrogate slide-out. Minimized windows
-        // are excluded for the same reason as above.
+        // for the outgoing surrogate slide-out.
         for window in displayed_workspace
           .descendants()
           .filter_map(|c| c.as_window_container().ok())
-          .filter(|w| w.state() != WindowState::Minimized)
+          .filter(is_switch_animated)
         {
           state.animation_manager.remove_animation(&window.id());
           state
@@ -225,4 +223,13 @@ fn iris_origin_point(
       .map(|r| (r.x() + r.width() / 2, r.y() + r.height() / 2))
       .unwrap_or(center),
   }
+}
+
+/// Whether `window` takes part in the workspace-switch animation.
+///
+/// Minimized windows and inactive stack tabs have no visible content to
+/// animate, and snapshotting them causes flicker.
+fn is_switch_animated(window: &WindowContainer) -> bool {
+  window.state() != WindowState::Minimized
+    && !is_inactive_stack_child(window)
 }

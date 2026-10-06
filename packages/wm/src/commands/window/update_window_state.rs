@@ -7,10 +7,14 @@ use wm_common::WindowTransitionParams;
 use wm_platform::NativeWindowWindowsExt;
 
 use crate::{
-  commands::container::{
-    move_container_within_tree, replace_container, resize_tiling_container,
+  commands::{
+    container::{
+      move_container_within_tree, replace_container,
+      resize_tiling_container,
+    },
+    window::update_stack_state,
   },
-  models::{Container, InsertionTarget, WindowContainer},
+  models::{Container, InsertionTarget, StackContainer, WindowContainer},
   traits::{
     CommonGetters, PositionGetters, TilingSizeGetters, WindowGetters,
   },
@@ -29,6 +33,18 @@ pub fn update_window_state(
   state: &mut WmState,
   config: &UserConfig,
 ) -> anyhow::Result<WindowContainer> {
+  // A window whose stack changed state since the caller got it (e.g. one
+  // of several windows updated in a loop) was replaced by a container of
+  // the same ID.
+  let window = if window.is_detached() {
+    state
+      .container_by_id(window.id())
+      .and_then(|container| container.as_window_container().ok())
+      .context("Window is no longer managed.")?
+  } else {
+    window
+  };
+
   if window.state() == target_state {
     return Ok(window);
   }
@@ -62,10 +78,47 @@ pub fn update_window_state(
     state.pending_sync.mark_window_restore(window.id());
   }
 
+  // A stack changes state as a whole, like a single window.
+  if let Some(stack) = window
+    .parent()
+    .and_then(|parent| parent.as_stack().cloned())
+  {
+    return set_stack_state(window, &stack, target_state, state, config);
+  }
+
   match target_state {
     WindowState::Tiling => set_tiling(&window, state, config),
     _ => set_non_tiling(window, target_state, state),
   }
+}
+
+/// Updates the state of `window`'s whole stack.
+#[allow(clippy::needless_pass_by_value)]
+fn set_stack_state(
+  window: WindowContainer,
+  stack: &StackContainer,
+  target_state: WindowState,
+  state: &mut WmState,
+  config: &UserConfig,
+) -> anyhow::Result<WindowContainer> {
+  // As for a single window, the minimized state follows the native one.
+  if target_state == WindowState::Minimized
+    && !window.native_properties().is_minimized
+  {
+    if let Err(err) = window.native().minimize() {
+      warn!("Failed to minimize window: {}", err);
+    }
+
+    return Ok(window);
+  }
+
+  update_stack_state(stack, target_state, state, config)?;
+
+  stack
+    .windows()
+    .into_iter()
+    .find(|tab| tab.id() == window.id())
+    .context("Window is no longer in its stack.")
 }
 
 /// Starts the minimize transition for a window that is still on screen.
@@ -127,13 +180,18 @@ fn set_tiling(
   let workspace =
     window.workspace().context("Window has no workspace.")?;
 
-  // Check whether insertion target is still valid.
+  // Check whether insertion target is still valid. A stack that is no
+  // longer tiling can't take a tiling window.
   let insertion_target =
     window.insertion_target().filter(|insertion_target| {
       insertion_target
         .target_parent
         .workspace()
         .is_some_and(|workspace| workspace.is_displayed())
+        && insertion_target
+          .target_parent
+          .as_stack()
+          .is_none_or(StackContainer::is_tiling)
     });
 
   // Get the position in the tree to insert the new tiling window. This

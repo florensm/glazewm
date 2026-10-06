@@ -1,9 +1,11 @@
 use tauri_winres::VersionInfo;
 
 fn main() {
-  if cfg!(not(target_os = "windows")) {
-    panic!("wm-watcher is only supported on Windows.");
-  }
+  // `cfg!` in a build script describes the host, not the target.
+  assert!(
+    std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows"),
+    "wm-watcher is only supported on Windows."
+  );
 
   println!("cargo:rerun-if-env-changed=VERSION_NUMBER");
   let mut res = tauri_winres::WindowsResource::new();

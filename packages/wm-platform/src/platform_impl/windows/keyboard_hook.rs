@@ -16,6 +16,10 @@ use windows::Win32::{
 
 use crate::{Dispatcher, Key, KeyCode};
 
+/// Tag (`dwExtraInfo`) on key presses the WM sends itself, which the hook
+/// passes through so that they never trigger a keybinding.
+pub(crate) const SENT_KEY_MARKER: usize = 0x474C_5A57;
+
 /// Callback stored in [`HOOK`] for intercepting keyboard events.
 type HookCallback = Box<dyn Fn(KeyEvent) -> bool>;
 
@@ -156,6 +160,10 @@ impl KeyboardHook {
 
     // Get struct with the keyboard input event.
     let input = unsafe { *(lparam.0 as *const KBDLLHOOKSTRUCT) };
+
+    if input.dwExtraInfo == SENT_KEY_MARKER {
+      return unsafe { CallNextHookEx(None, code, wparam, lparam) };
+    }
 
     #[allow(clippy::cast_possible_truncation)]
     let key_code = KeyCode(input.vkCode as u16);

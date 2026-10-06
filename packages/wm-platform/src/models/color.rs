@@ -11,6 +11,15 @@ pub struct Color {
 }
 
 impl Color {
+  /// Packs this color into the `0x00BBGGRR` order of a Win32 `COLORREF`,
+  /// dropping its alpha.
+  #[must_use]
+  pub fn to_bgr(&self) -> u32 {
+    u32::from(self.r)
+      | (u32::from(self.g) << 8)
+      | (u32::from(self.b) << 16)
+  }
+
   /// Packs this color into ABGR order (alpha in the high byte, then blue,
   /// green, red), as the backdrop tint is passed around. Inverse of
   /// [`from_abgr`].
@@ -79,6 +88,17 @@ impl Color {
 #[cfg(test)]
 mod tests {
   use super::*;
+
+  #[test]
+  fn to_bgr_packs_like_a_colorref() {
+    let color = Color {
+      r: 0x12,
+      g: 0x34,
+      b: 0x56,
+      a: 0x78,
+    };
+    assert_eq!(color.to_bgr(), 0x0056_3412);
+  }
 
   #[test]
   fn lerp_blends_opaque_colors_per_channel() {
