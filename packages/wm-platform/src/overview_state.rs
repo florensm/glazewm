@@ -104,6 +104,9 @@ pub(crate) struct Interaction {
   /// Workspace under the cursor.
   pub hover: Option<usize>,
 
+  /// Window under the cursor.
+  hover_window: Option<isize>,
+
   press: Option<Press>,
   pub drag: Option<Drag>,
 
@@ -137,6 +140,7 @@ impl Interaction {
       query: String::new(),
       match_index: None,
       hover: None,
+      hover_window: None,
       press: None,
       drag: None,
       drag_threshold,
@@ -218,6 +222,14 @@ impl Interaction {
         self.searching = true;
         self.query.clear();
         self.match_index = None;
+      }
+      Key::Text('p') => {
+        let hwnd = match self.mode {
+          Mode::Windows => self.selected_window,
+          Mode::Spaces => self.hover_window,
+          Mode::Carrying => None,
+        };
+        return hwnd.map(OverviewAction::TogglePin);
       }
       Key::Text('n') => self.goto_match(1, workspaces),
       Key::Text('N') => self.goto_match(-1, workspaces),
@@ -584,6 +596,7 @@ impl Interaction {
   ) -> bool {
     let changed = self.hover != hit.workspace;
     self.hover = hit.workspace;
+    self.hover_window = hit.window;
 
     let pressed_window = self
       .press
@@ -658,6 +671,7 @@ impl Interaction {
 
   pub fn mouse_leave(&mut self) {
     self.hover = None;
+    self.hover_window = None;
   }
 
   /// The keys for the current step, shown under the cards.
@@ -710,7 +724,7 @@ impl Interaction {
         HintTone::Accent,
       ),
       (Mode::Windows, _) => (
-        "\u{2190}\u{2192} pick a window   \u{b7}   1\u{2013}9 send it there   \u{b7}   space to lift it   \u{b7}   \u{23ce} jump to it   \u{b7}   x close   \u{b7}   \u{232b} back"
+        "\u{2190}\u{2192} pick a window   \u{b7}   1\u{2013}9 send it there   \u{b7}   space to lift it   \u{b7}   \u{23ce} jump to it   \u{b7}   p pin   \u{b7}   x close   \u{b7}   \u{232b} back"
           .to_string(),
         HintTone::Quiet,
       ),
@@ -1166,6 +1180,37 @@ mod tests {
     assert_eq!(
       press(&mut state, &[Key::Space, Key::Text('x')]),
       Some(OverviewAction::CloseWindow(21))
+    );
+  }
+
+  #[test]
+  fn p_pins_the_picked_or_hovered_window() {
+    let mut state = interaction();
+    let workspaces = workspaces();
+
+    assert_eq!(
+      press(&mut state, &[Key::Text('p')]),
+      None,
+      "nothing hovered"
+    );
+
+    state.mouse_move(
+      (10.0, 10.0),
+      Hit {
+        workspace: Some(0),
+        window: Some(12),
+      },
+      false,
+    );
+    assert_eq!(
+      state.key(Key::Text('p'), &workspaces),
+      Some(OverviewAction::TogglePin(12))
+    );
+
+    assert_eq!(
+      press(&mut state, &[Key::Space, Key::Text('p')]),
+      Some(OverviewAction::TogglePin(21)),
+      "the picked window wins"
     );
   }
 

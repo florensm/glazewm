@@ -61,6 +61,7 @@ workspace. The line under the cards shows the keys for the current step.
 | `Space` | Look inside the selected workspace. | Pick up the selected window. | Drop it on the selected workspace. |
 | `Enter` | Switch to the selected workspace and close. | Focus the selected window and close. | Drop it on the selected workspace. |
 | `x` | | Close the selected window. | |
+| `p` | Pin or unpin the window under the cursor. | Pin or unpin the selected window. | |
 | `Backspace` | | Back to browsing. | Put the window down. |
 | `Tab` | Switch between carousel and grid. | Same, back to browsing in the grid. | Same. |
 | `Escape` | Close without changing anything. | Same. | Same. |
@@ -90,6 +91,28 @@ closing, or being moved) show up in it right away.
 
 Previews of other workspaces need `general.hide_method: "cloak"` (the
 default): with `"hide"`, their windows have nothing for DWM to show.
+
+## Pinning
+
+One window at a time can be pinned. It stays where it is in its workspace,
+but while it is out of sight (its workspace isn't shown, and it isn't
+minimized), a small live preview of it floats on top of everything, in the
+pin's accent color with rounded corners on Windows 11.
+
+| Input | Behaviour |
+| --- | --- |
+| `toggle-pin` (`alt+shift+b` in the sample config) | Pin the focused window, or unpin it if it is pinned. Pinning another window replaces the pin. |
+| `focus --pinned-window` (`alt+b`) | Go to the pinned window, switching to its workspace. When already on it, go back to where you were. |
+| `p` in the overview | Pin or unpin a window, see [Keyboard](#keyboard). The pinned window has a dot in its corner. |
+| Click the preview | Go to the pinned window. |
+| Drag the preview | Move it; it stays there until unpinned. |
+| Right-click the preview | Unpin. |
+
+The preview first shows up in the bottom-right corner of the monitor the
+window was pinned on, `pin_width` wide and as tall as the window's shape
+needs. It hides while the overview is open, and goes away when the window
+closes. Like the overview's previews, it needs `general.hide_method:
+"cloak"`.
 
 ## Config
 
@@ -135,6 +158,9 @@ overview:
   # Length of the zoom into the picked workspace on close; 0 closes it
   # instantly.
   close_duration_ms: 200
+
+  # Width of the pinned window's preview, in logical pixels.
+  pin_width: 320
 ```
 
 Colors take an optional alpha (`#rrggbbaa`). Every key is optional; the
@@ -144,6 +170,10 @@ values above are the defaults.
 keybindings:
   - commands: ["toggle-overview"]
     bindings: ["alt+o"]
+  - commands: ["toggle-pin"]
+    bindings: ["alt+shift+b"]
+  - commands: ["focus --pinned-window"]
+    bindings: ["alt+b"]
 ```
 
 The sample config moves `resize --height +2%` from `alt+o` to `alt+shift+o`

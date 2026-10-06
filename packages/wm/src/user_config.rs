@@ -516,11 +516,20 @@ mod tests {
       WorkspaceSwitchStyle::Slide
     );
     assert_eq!(config.overview.font_family, "Segoe UI");
-    assert!(config.keybindings.iter().any(|keybinding| {
-      keybinding.commands.iter().any(|command| {
+    for is_command in [
+      |command: &InvokeCommand| {
         matches!(command, InvokeCommand::ToggleOverview { .. })
-      })
-    }));
+      },
+      |command: &InvokeCommand| {
+        matches!(command, InvokeCommand::TogglePin)
+      },
+      |command: &InvokeCommand| matches!(command, InvokeCommand::Focus(focus) if focus.pinned_window),
+    ] {
+      assert!(config
+        .keybindings
+        .iter()
+        .any(|keybinding| { keybinding.commands.iter().any(is_command) }));
+    }
   }
 
   /// Configs written before the `style` -> `type` key rename must keep
