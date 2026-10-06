@@ -247,6 +247,10 @@ pub enum InvokeCommand {
     maximized: Option<bool>,
   },
   ToggleMinimized,
+  /// Pins the focused window, or unpins it if it is pinned. While a
+  /// pinned window is out of sight, a live preview of it floats on
+  /// screen; pinning another window replaces it.
+  TogglePin,
   /// Opens the overview of the focused monitor's workspaces, or closes it
   /// if open.
   ToggleOverview {
@@ -380,6 +384,11 @@ pub struct InvokeFocusCommand {
   /// to its workspace if needed.
   #[clap(long)]
   pub urgent_window: bool,
+
+  /// Focus the pinned window, switching to its workspace if needed; if it
+  /// is already focused, go back to what was focused before.
+  #[clap(long)]
+  pub pinned_window: bool,
 }
 
 #[derive(Args, Clone, Debug, PartialEq, Serialize)]
