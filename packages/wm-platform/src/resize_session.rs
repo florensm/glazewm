@@ -8,13 +8,10 @@ use windows::{
   core::PWSTR,
   Win32::{
     Foundation::{CloseHandle, HWND, RECT},
-    Graphics::{
-      Dwm::{DwmGetWindowAttribute, DWMWA_EXTENDED_FRAME_BOUNDS},
-      Gdi::{
-        BitBlt, CreateCompatibleBitmap, CreateCompatibleDC, DeleteDC,
-        DeleteObject, GetDC, GetPixel, ReleaseDC, SelectObject, HGDIOBJ,
-        SRCCOPY,
-      },
+    Graphics::Gdi::{
+      BitBlt, CreateCompatibleBitmap, CreateCompatibleDC, DeleteDC,
+      DeleteObject, GetDC, GetPixel, ReleaseDC, SelectObject, HGDIOBJ,
+      SRCCOPY,
     },
     System::Threading::{
       OpenProcess, QueryFullProcessImageNameW, PROCESS_NAME_WIN32,
@@ -95,7 +92,7 @@ fn process_name_for_warning(hwnd: HWND) -> Option<String> {
 }
 
 use crate::{
-  native_surrogate::to_logical, BackdropOverlayParams,
+  native_surrogate::to_logical, window_class, BackdropOverlayParams,
   BorderOverlayParams, Color, CornerStyle, NativeSurrogate, Rect,
   SurrogateBatch,
 };
@@ -1593,30 +1590,14 @@ fn sample_edge_color(
 ///
 /// Returns a zeroed `RECT` if either API call fails.
 pub(crate) fn compute_border_inset(hwnd: HWND) -> RECT {
-  let mut window = RECT::default();
-  let mut frame = RECT::default();
-
-  // SAFETY: `hwnd` is a valid window handle. Both output pointers are
-  // valid stack-allocated `RECT`s live for the duration of the call.
-  let ok = unsafe {
-    GetWindowRect(hwnd, std::ptr::from_mut(&mut window).cast()).is_ok()
-      && DwmGetWindowAttribute(
-        hwnd,
-        DWMWA_EXTENDED_FRAME_BOUNDS,
-        std::ptr::addr_of_mut!(frame).cast(),
-        std::mem::size_of::<RECT>() as u32,
-      )
-      .is_ok()
+  let Some((window, frame)) = window_class::bounds_and_frame(hwnd) else {
+    return RECT::default();
   };
 
-  if ok {
-    RECT {
-      left: (frame.left - window.left).max(0),
-      top: (frame.top - window.top).max(0),
-      right: (window.right - frame.right).max(0),
-      bottom: (window.bottom - frame.bottom).max(0),
-    }
-  } else {
-    RECT::default()
+  RECT {
+    left: (frame.left - window.left).max(0),
+    top: (frame.top - window.top).max(0),
+    right: (window.right - frame.right).max(0),
+    bottom: (window.bottom - frame.bottom).max(0),
   }
 }

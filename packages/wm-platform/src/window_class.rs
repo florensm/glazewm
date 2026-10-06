@@ -3,10 +3,11 @@ use std::sync::OnceLock;
 use windows::{
   core::PCWSTR,
   Win32::{
-    Foundation::{HWND, LPARAM, LRESULT, WPARAM},
+    Foundation::{HWND, LPARAM, LRESULT, RECT, WPARAM},
+    Graphics::Dwm::{DwmGetWindowAttribute, DWMWA_EXTENDED_FRAME_BOUNDS},
     UI::WindowsAndMessaging::{
-      DefWindowProcW, GetWindow, GetWindowLongPtrW, LoadCursorW,
-      RegisterClassW, SetWindowPos, GWL_EXSTYLE, GW_HWNDNEXT,
+      DefWindowProcW, GetWindow, GetWindowLongPtrW, GetWindowRect,
+      LoadCursorW, RegisterClassW, SetWindowPos, GWL_EXSTYLE, GW_HWNDNEXT,
       HWND_NOTOPMOST, HWND_TOPMOST, IDC_ARROW, SWP_NOACTIVATE, SWP_NOMOVE,
       SWP_NOSENDCHANGING, SWP_NOSIZE, WNDCLASSW, WS_EX_TOPMOST,
     },
@@ -64,6 +65,28 @@ pub(crate) unsafe extern "system" fn default_wnd_proc(
 ) -> LRESULT {
   // SAFETY: All parameters are forwarded unchanged.
   unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) }
+}
+
+/// `hwnd`'s window rect, which includes its invisible resize borders,
+/// and its visible frame (DWM's extended frame bounds), on screen.
+pub(crate) fn bounds_and_frame(hwnd: HWND) -> Option<(RECT, RECT)> {
+  let mut bounds = RECT::default();
+  let mut frame = RECT::default();
+
+  // SAFETY: Both rects outlive the calls and match the queried sizes; a
+  // stale handle just makes them fail.
+  unsafe {
+    GetWindowRect(hwnd, &raw mut bounds).ok()?;
+    DwmGetWindowAttribute(
+      hwnd,
+      DWMWA_EXTENDED_FRAME_BOUNDS,
+      std::ptr::from_mut(&mut frame).cast(),
+      u32::try_from(std::mem::size_of::<RECT>()).ok()?,
+    )
+    .ok()?;
+  }
+
+  Some((bounds, frame))
 }
 
 /// Signed client coordinates packed into a mouse message's `LPARAM`.

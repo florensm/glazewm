@@ -8,16 +8,15 @@ use windows::{
   Win32::{
     Foundation::{BOOL, HWND, POINT, RECT},
     Graphics::Dwm::{
-      DwmGetWindowAttribute, DwmRegisterThumbnail, DwmSetWindowAttribute,
-      DwmUnregisterThumbnail, DwmUpdateThumbnailProperties, DWMWA_CLOAK,
-      DWMWA_EXTENDED_FRAME_BOUNDS, DWM_THUMBNAIL_PROPERTIES,
+      DwmRegisterThumbnail, DwmSetWindowAttribute, DwmUnregisterThumbnail,
+      DwmUpdateThumbnailProperties, DWMWA_CLOAK, DWM_THUMBNAIL_PROPERTIES,
       DWM_TNP_OPACITY, DWM_TNP_RECTDESTINATION, DWM_TNP_RECTSOURCE,
       DWM_TNP_SOURCECLIENTAREAONLY, DWM_TNP_VISIBLE,
     },
     UI::WindowsAndMessaging::{
-      CreateWindowExW, DestroyWindow, GetWindowRect, ShowWindow,
-      SW_SHOWNOACTIVATE, WS_EX_LAYERED, WS_EX_NOACTIVATE,
-      WS_EX_TOOLWINDOW, WS_EX_TRANSPARENT, WS_POPUP,
+      CreateWindowExW, DestroyWindow, ShowWindow, SW_SHOWNOACTIVATE,
+      WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW,
+      WS_EX_TRANSPARENT, WS_POPUP,
     },
   },
 };
@@ -301,7 +300,7 @@ impl Preview {
 /// `hwnd`'s visible frame, without its invisible resize borders, in the
 /// window's own coordinates.
 pub(crate) fn visible_frame(hwnd: HWND) -> Option<RECT> {
-  let (bounds, frame) = window_and_frame(hwnd)?;
+  let (bounds, frame) = window_class::bounds_and_frame(hwnd)?;
 
   let visible = RECT {
     left: frame.left - bounds.left,
@@ -317,7 +316,7 @@ pub(crate) fn visible_frame(hwnd: HWND) -> Option<RECT> {
 /// `hwnd`'s visible frame on screen.
 #[allow(clippy::cast_precision_loss)]
 pub(crate) fn visible_frame_on_screen(hwnd: HWND) -> Option<RectF> {
-  let (_, frame) = window_and_frame(hwnd)?;
+  let (_, frame) = window_class::bounds_and_frame(hwnd)?;
 
   (frame.right > frame.left && frame.bottom > frame.top).then(|| {
     RectF::new(
@@ -327,27 +326,6 @@ pub(crate) fn visible_frame_on_screen(hwnd: HWND) -> Option<RectF> {
       (frame.bottom - frame.top) as f32,
     )
   })
-}
-
-/// `hwnd`'s window rect and its DWM extended frame bounds.
-fn window_and_frame(hwnd: HWND) -> Option<(RECT, RECT)> {
-  let mut bounds = RECT::default();
-  let mut frame = RECT::default();
-
-  // SAFETY: Both rects outlive the calls and match the queried sizes; a
-  // stale handle just makes them fail.
-  unsafe {
-    GetWindowRect(hwnd, &raw mut bounds).ok()?;
-    DwmGetWindowAttribute(
-      hwnd,
-      DWMWA_EXTENDED_FRAME_BOUNDS,
-      std::ptr::from_mut(&mut frame).cast(),
-      u32::try_from(std::mem::size_of::<RECT>()).ok()?,
-    )
-    .ok()?;
-  }
-
-  Some((bounds, frame))
 }
 
 fn to_win32(rect: &RectF) -> RECT {

@@ -7,14 +7,13 @@ use windows::{
   core::{w, PCWSTR},
   Win32::{
     Foundation::{BOOL, HWND, LPARAM, RECT, TRUE},
-    Graphics::Dwm::{DwmGetWindowAttribute, DWMWA_EXTENDED_FRAME_BOUNDS},
     UI::WindowsAndMessaging::{
       EnumWindows, GetPropW, GetWindowRect, IsWindowVisible,
     },
   },
 };
 
-use crate::platform_impl::NativeWindow;
+use crate::{platform_impl::NativeWindow, window_class};
 
 /// Window property another app sets on its own overlay window to declare
 /// it the companion of the window it draws over (the value is that
@@ -159,22 +158,7 @@ fn map_rects(
 /// Where `window`'s visible frame starts within its own rect: past its
 /// invisible left and top resize borders.
 fn frame_origin(window: HWND) -> Option<(i32, i32)> {
-  let mut bounds = RECT::default();
-  let mut frame = RECT::default();
-
-  // SAFETY: Both rects outlive the calls and match the queried sizes; a
-  // stale handle just makes them fail.
-  unsafe {
-    GetWindowRect(window, &raw mut bounds).ok()?;
-    DwmGetWindowAttribute(
-      window,
-      DWMWA_EXTENDED_FRAME_BOUNDS,
-      std::ptr::from_mut(&mut frame).cast(),
-      u32::try_from(std::mem::size_of::<RECT>()).ok()?,
-    )
-    .ok()?;
-  }
-
+  let (bounds, frame) = window_class::bounds_and_frame(window)?;
   Some((frame.left - bounds.left, frame.top - bounds.top))
 }
 
