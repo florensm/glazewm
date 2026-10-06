@@ -40,6 +40,8 @@ mod commands;
 mod events;
 mod ipc_server;
 mod models;
+#[cfg(target_os = "windows")]
+mod overview;
 mod pending_sync;
 #[cfg(target_os = "windows")]
 mod stay_interactive;
@@ -257,6 +259,10 @@ async fn start_wm(
       Some(event) = keybinding_listener.next_event() => {
         tracing::debug!("Received keyboard event: {:?}", event);
         wm.process_event(PlatformEvent::Keybinding(event), &mut config)
+      }
+      Some((session, action)) = wm.overview_action_rx.recv() => {
+        tracing::debug!("Received overview action: {:?}", action);
+        wm.process_overview_action(session, action, &mut config)
       }
       _ = cleanup_interval.tick() => {
         if wm.state.is_paused {

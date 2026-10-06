@@ -68,24 +68,38 @@ mod native_iris_overlay;
 #[cfg(target_os = "windows")]
 pub use native_iris_overlay::NativeIrisOverlay;
 #[cfg(target_os = "windows")]
+mod native_overview;
+#[cfg(target_os = "windows")]
+pub use native_overview::NativeOverview;
+#[cfg(target_os = "windows")]
 mod native_stack_tab_bar;
 #[cfg(target_os = "windows")]
-pub use native_stack_tab_bar::{
-  NativeStackTabBar, TabBarStyle, TabCloseMode, TabFrame, TabInfo,
-};
+mod overview_chrome;
 #[cfg(target_os = "windows")]
-mod tab_icons;
+mod overview_layout;
+#[cfg(target_os = "windows")]
+mod overview_state;
+#[cfg(target_os = "windows")]
+mod overview_tab_bars;
+#[cfg(target_os = "windows")]
+mod overview_thumbnails;
+#[cfg(target_os = "windows")]
+mod paint;
+#[cfg(target_os = "windows")]
+mod surface;
+#[cfg(target_os = "windows")]
+mod tab_bar_paint;
+#[cfg(target_os = "windows")]
+mod window_icons;
+#[cfg(target_os = "windows")]
+pub use native_stack_tab_bar::NativeStackTabBar;
 // Only `TabAction` is used off Windows, where there are no tab bars.
 #[cfg_attr(not(target_os = "windows"), allow(dead_code))]
 mod tab_layout;
-pub use tab_layout::TabAction;
-#[cfg(target_os = "windows")]
-mod tab_paint;
 pub use platform_event::*;
 pub use single_instance::*;
 pub use system_accent_color::*;
-#[cfg(target_os = "windows")]
-pub use tab_paint::CornerRadii;
+pub use tab_layout::TabAction;
 pub use thread_bound::*;
 pub use window_listener::*;
 /// Stops Windows from creating "ghost" windows for this process.

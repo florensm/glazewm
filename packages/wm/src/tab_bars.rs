@@ -202,8 +202,8 @@ pub fn window_with_tab_bar(
 }
 
 /// The tab bar of `stack`, or `None` when it has no tab bar, no tabs or
-/// isn't shown.
-fn tab_frame(
+/// isn't shown. The overview draws the same bar on its cards.
+pub fn tab_frame(
   stack: &StackContainer,
   settings: &TabBarSettings,
   config: &UserConfig,

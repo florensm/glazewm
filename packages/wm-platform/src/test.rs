@@ -16,13 +16,23 @@ mod mouse_listener;
 #[cfg(target_os = "windows")]
 mod native_surrogate;
 mod native_window;
+// Pure parts of the overview, here for their tests; the rest of them is
+// only used through the Windows-only overview.
+#[allow(dead_code)]
+mod overview_layout;
+#[allow(dead_code)]
+mod overview_state;
+#[allow(dead_code)]
+mod paint;
 pub mod perf;
 mod platform_event;
 mod platform_impl;
+// Only used through the Windows-only tab bars and overview.
+#[allow(dead_code)]
 mod tab_layout;
-mod tab_paint;
 mod thread_bound;
 #[cfg(target_os = "windows")]
+#[allow(dead_code)]
 mod window_class;
 mod window_listener;
 

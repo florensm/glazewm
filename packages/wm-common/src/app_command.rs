@@ -247,6 +247,14 @@ pub enum InvokeCommand {
     maximized: Option<bool>,
   },
   ToggleMinimized,
+  /// Opens the overview of the focused monitor's workspaces, or closes it
+  /// if open.
+  ToggleOverview {
+    /// Open on the grid of every workspace rather than the carousel;
+    /// while open, switches to it instead of closing.
+    #[clap(long, action)]
+    grid: bool,
+  },
   ToggleTiling,
   /// Toggle the focused tiling window into or out of a stack container.
   ToggleStack,
@@ -361,7 +369,7 @@ pub struct InvokeAdjustBordersCommand {
   pub left: Option<LengthValue>,
 }
 
-#[derive(Args, Clone, Debug, PartialEq, Serialize)]
+#[derive(Args, Clone, Debug, Default, PartialEq, Serialize)]
 #[group(required = true, multiple = false)]
 #[allow(clippy::struct_excessive_bools)]
 pub struct InvokeFocusCommand {
@@ -420,7 +428,7 @@ pub struct InvokeMoveCursorCommand {
   pub direction: Option<Direction>,
 }
 
-#[derive(Args, Clone, Debug, PartialEq, Serialize)]
+#[derive(Args, Clone, Debug, Default, PartialEq, Serialize)]
 #[group(required = true, multiple = false)]
 #[allow(clippy::struct_excessive_bools)]
 pub struct InvokeMoveCommand {

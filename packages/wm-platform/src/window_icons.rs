@@ -1,9 +1,10 @@
-//! Icons of tabbed windows, fetched off the UI thread.
+//! Icons of managed windows, fetched off the UI thread.
 //!
 //! Apps such as WPF set their icon with `WM_SETICON`, so the class icon is
 //! often empty and the real one has to be asked for with `WM_GETICON`.
-//! That is a cross-process message, which would freeze the tab bar's
-//! thread (the WM's event loop) while a busy app takes its time to answer.
+//! That is a cross-process message, which would freeze the thread drawing
+//! the WM's own windows (its event loop) while a busy app takes its time
+//! to answer.
 //! It is therefore sent from a worker thread with `SMTO_ABORTIFHUNG` and a
 //! short timeout, and the result cached per window.
 
@@ -19,7 +20,7 @@ use std::{
 use windows::Win32::{
   Foundation::{HWND, LPARAM, WPARAM},
   UI::WindowsAndMessaging::{
-    CopyIcon, DestroyIcon, GetClassLongPtrW, PostMessageW,
+    CopyIcon, DestroyIcon, GetClassLongPtrW, IsWindow, PostMessageW,
     SendMessageTimeoutW, GCLP_HICON, GCLP_HICONSM, HICON, ICON_BIG,
     ICON_SMALL, ICON_SMALL2, SMTO_ABORTIFHUNG, SMTO_BLOCK, WM_GETICON,
   },
@@ -57,7 +58,7 @@ fn worker() -> Option<&'static Mutex<Sender<Request>>> {
       let (sender, receiver) = mpsc::channel::<Request>();
 
       let spawned = thread::Builder::new()
-        .name("tab-icons".to_string())
+        .name("window-icons".to_string())
         .spawn(move || {
           for request in receiver {
             let icon = fetch_icon(HWND(request.window));
@@ -82,7 +83,7 @@ fn worker() -> Option<&'static Mutex<Sender<Request>>> {
       match spawned {
         Ok(_) => Some(Mutex::new(sender)),
         Err(err) => {
-          tracing::warn!("Failed to start tab icon thread: {err}");
+          tracing::warn!("Failed to start window icon thread: {err}");
           None
         }
       }
@@ -145,6 +146,26 @@ pub(crate) fn invalidate(window: isize) {
       let _ = DestroyIcon(HICON(icon));
     }
   }
+}
+
+/// Drops the cached icons of windows that have since been destroyed.
+pub(crate) fn forget_closed() {
+  let mut cache = cache().lock().unwrap_or_else(PoisonError::into_inner);
+
+  cache.retain(|window, cached| {
+    // SAFETY: Any handle value may be checked; a stale one returns false.
+    if unsafe { IsWindow(HWND(*window)) }.as_bool() {
+      return true;
+    }
+
+    if let CachedIcon::Ready(Some(icon)) = cached {
+      // SAFETY: The cache owns this copy and no longer hands it out.
+      unsafe {
+        let _ = DestroyIcon(HICON(*icon));
+      }
+    }
+    false
+  });
 }
 
 /// Asks `window` for its icon, falling back to its class icon. Returns an

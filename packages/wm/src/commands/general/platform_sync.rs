@@ -174,7 +174,13 @@ pub fn platform_sync(
   } else {
     crate::tab_bars::Restack::None
   };
+  #[cfg(target_os = "windows")]
   crate::tab_bars::sync_tab_bars(state, config, restack);
+
+  // After focus is synced, so the overview never hides while it is still
+  // the foreground window.
+  #[cfg(target_os = "windows")]
+  crate::overview::sync_overview(state, config);
 
   state.pending_sync.clear();
 
@@ -249,6 +255,13 @@ fn sync_focus(
   focused_container: &Container,
   state: &mut WmState,
 ) -> anyhow::Result<Option<uuid::Uuid>> {
+  // The overview holds the foreground while open, and gives it back when
+  // it closes.
+  #[cfg(target_os = "windows")]
+  if state.overview.is_open() {
+    return Ok(None);
+  }
+
   let native_window = focused_container.as_window_container().ok();
 
   // Defer `SetForegroundWindow` while the focused window is covered by an

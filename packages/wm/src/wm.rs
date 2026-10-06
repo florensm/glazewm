@@ -9,9 +9,12 @@ use wm_common::{
   WmEvent,
 };
 #[cfg(target_os = "windows")]
+use wm_common::{InvokeFocusCommand, InvokeMoveCommand};
+#[cfg(target_os = "windows")]
 use wm_platform::NativeWindowWindowsExt;
 use wm_platform::{
-  Dispatcher, LengthValue, PlatformEvent, RectDelta, WindowEvent,
+  Dispatcher, LengthValue, OverviewAction, PlatformEvent, RectDelta,
+  WindowEvent,
 };
 
 #[cfg(target_os = "windows")]
@@ -64,6 +67,9 @@ pub struct WindowManager {
   pub event_rx: mpsc::UnboundedReceiver<WmEvent>,
   pub exit_rx: mpsc::UnboundedReceiver<()>,
   pub animation_tick_rx: mpsc::UnboundedReceiver<()>,
+  /// Actions taken in the overview, with their session. Never yields on
+  /// platforms without the overview.
+  pub overview_action_rx: mpsc::UnboundedReceiver<(u64, OverviewAction)>,
   pub state: WmState,
   /// Actions taken in tab bars, keyed by stack ID. Never yields on
   /// platforms without tab bars.
@@ -79,6 +85,8 @@ impl WindowManager {
     let (event_tx, event_rx) = mpsc::unbounded_channel();
     let (exit_tx, exit_rx) = mpsc::unbounded_channel();
     let (animation_tick_tx, animation_tick_rx) = mpsc::unbounded_channel();
+    let (overview_action_tx, overview_action_rx) =
+      mpsc::unbounded_channel();
     let (tab_action_tx, tab_action_rx) = mpsc::unbounded_channel();
 
     let mut state = WmState::new(
@@ -86,6 +94,7 @@ impl WindowManager {
       event_tx,
       exit_tx,
       animation_tick_tx,
+      overview_action_tx,
       tab_action_tx,
     );
     state.populate(config)?;
@@ -99,9 +108,114 @@ impl WindowManager {
       event_rx,
       exit_rx,
       animation_tick_rx,
+      overview_action_rx,
       state,
       tab_action_rx,
     })
+  }
+
+  /// Carries out an action taken in the overview, unless it comes from an
+  /// earlier session than the open one.
+  pub fn process_overview_action(
+    &mut self,
+    session: u64,
+    action: OverviewAction,
+    config: &mut UserConfig,
+  ) -> anyhow::Result<()> {
+    #[cfg(not(target_os = "windows"))]
+    {
+      let _ = (session, action, config);
+      Ok(())
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+      let state = &mut self.state;
+      if state.overview.open_session() != Some(session) {
+        return Ok(());
+      }
+
+      let focused_workspace = state
+        .focused_container()
+        .and_then(|focused| focused.workspace())
+        .map(|workspace| workspace.config().name);
+      let window = window_by_handle(state, &action);
+
+      let (commands, subject) = match action {
+        OverviewAction::FocusWindow(_) => {
+          state.overview.close();
+          let Some(window) = window else {
+            state.pending_sync.queue_focus_change();
+            return platform_sync(state, config);
+          };
+
+          let workspace = window.workspace().map(|w| w.config().name);
+          let mut commands = Vec::new();
+
+          // A window-level focus doesn't switch the displayed workspace
+          // on its own.
+          if let Some(name) = workspace
+            .filter(|name| Some(name) != focused_workspace.as_ref())
+          {
+            commands.push(focus_workspace_command(name));
+          }
+
+          commands.push(InvokeCommand::Focus(InvokeFocusCommand {
+            container_id: Some(window.id()),
+            ..Default::default()
+          }));
+
+          // The overview was the transition; the switch behind it is
+          // instant.
+          state.pending_sync.suppress_animations();
+          (commands, None)
+        }
+        OverviewAction::FocusWorkspace(name) => {
+          state.overview.close();
+
+          // Focusing the focused workspace would toggle back to the
+          // previous one when `toggle_workspace_on_refocus` is set.
+          if Some(&name) == focused_workspace.as_ref() {
+            state.pending_sync.queue_focus_change();
+            return platform_sync(state, config);
+          }
+
+          state.pending_sync.suppress_animations();
+          (vec![focus_workspace_command(name)], None)
+        }
+        OverviewAction::MoveWindow { workspace, .. } => {
+          let Some(window) = window else {
+            return Ok(());
+          };
+
+          let command = InvokeCommand::Move(InvokeMoveCommand {
+            workspace: Some(workspace),
+            ..Default::default()
+          });
+          (vec![command], Some(window.id()))
+        }
+        OverviewAction::CloseWindow(_) => {
+          let Some(window) = window else {
+            return Ok(());
+          };
+          (vec![InvokeCommand::Close], Some(window.id()))
+        }
+        OverviewAction::Cancel => {
+          state.overview.close();
+          state.pending_sync.queue_focus_change();
+          return platform_sync(state, config);
+        }
+        // Focus went elsewhere and the overview closed itself.
+        OverviewAction::Deactivated => {
+          state.overview.close();
+          return platform_sync(state, config);
+        }
+      };
+
+      self
+        .process_commands(&commands, subject, config)
+        .map(|_| ())
+    }
   }
 
   /// Carries out an action taken in the tab bar of stack `stack_id`.
@@ -1006,6 +1120,26 @@ impl WindowManager {
           _ => Ok(()),
         }
       }
+      InvokeCommand::ToggleOverview { grid } => {
+        #[cfg(target_os = "windows")]
+        crate::overview::toggle_overview(
+          state,
+          config,
+          if *grid {
+            wm_platform::OverviewLayoutMode::Grid
+          } else {
+            wm_platform::OverviewLayoutMode::Carousel
+          },
+        )?;
+
+        #[cfg(not(target_os = "windows"))]
+        {
+          let _ = grid;
+          tracing::warn!("The overview is only available on Windows.");
+        }
+
+        Ok(())
+      }
       InvokeCommand::ToggleTiling => {
         match subject_container.as_window_container() {
           Ok(window) => {
@@ -1169,6 +1303,34 @@ impl WindowManager {
       }
     }
   }
+}
+
+/// The managed window an overview action refers to, if any.
+#[cfg(target_os = "windows")]
+fn window_by_handle(
+  state: &WmState,
+  action: &OverviewAction,
+) -> Option<crate::models::WindowContainer> {
+  let hwnd = match action {
+    OverviewAction::FocusWindow(hwnd)
+    | OverviewAction::CloseWindow(hwnd)
+    | OverviewAction::MoveWindow { hwnd, .. } => *hwnd,
+    _ => return None,
+  };
+
+  state
+    .windows()
+    .into_iter()
+    .find(|window| window.native().id().0 == hwnd)
+}
+
+/// `focus --workspace <name>`.
+#[cfg(target_os = "windows")]
+fn focus_workspace_command(name: String) -> InvokeCommand {
+  InvokeCommand::Focus(InvokeFocusCommand {
+    workspace: Some(name),
+    ..Default::default()
+  })
 }
 
 /// Presses the next due `send_keys_on_join` key combination in windows

@@ -14,6 +14,7 @@ pub struct ParsedConfig {
   pub gaps: GapsConfig,
   pub general: GeneralConfig,
   pub keybindings: Vec<KeybindingConfig>,
+  pub overview: OverviewConfig,
   pub stack: StackConfig,
   pub window_behavior: WindowBehaviorConfig,
   pub window_effects: WindowEffectsConfig,
@@ -397,6 +398,82 @@ pub struct KeybindingConfig {
 
   /// WM commands to run when the keybinding is triggered.
   pub commands: Vec<InvokeCommand>,
+}
+
+/// Look of the window overview opened by `toggle-overview`.
+///
+/// # Platform-specific
+///
+/// Only has an effect on Windows.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(default, rename_all(serialize = "camelCase"))]
+pub struct OverviewConfig {
+  /// Blur radius of the wallpaper behind the cards.
+  pub backdrop_blur: f32,
+
+  /// Tint over the blurred wallpaper; its alpha is how dark it gets.
+  pub backdrop_tint: Color,
+
+  /// Selection and highlights, given like a border's color (see
+  /// [`BorderColorSource`]). The focused window's border color when
+  /// `None`.
+  pub accent_color: Option<BorderColorSource>,
+
+  /// Background of a workspace card.
+  pub card_color: Color,
+
+  /// Background of a hovered card, and of a window without a preview.
+  pub surface_color: Color,
+
+  /// Strip a window's title sits on.
+  pub caption_color: Color,
+
+  pub text_color: Color,
+
+  /// Secondary text, e.g. the key hints under the cards.
+  pub subtext_color: Color,
+
+  /// Border of windows matching a search.
+  pub search_color: Color,
+
+  pub font_family: String,
+
+  /// Columns of the grid of every workspace.
+  pub grid_columns: usize,
+
+  /// Length of the zoom out when the overview opens; `0` opens it
+  /// instantly.
+  pub open_duration_ms: u32,
+
+  /// Length of the zoom into the picked workspace when the overview
+  /// closes; `0` closes it instantly.
+  pub close_duration_ms: u32,
+}
+
+impl Default for OverviewConfig {
+  fn default() -> Self {
+    // `0xRRGGBBAA`, as in the config.
+    let color = |hex: u32| {
+      let [r, g, b, a] = hex.to_be_bytes();
+      Color { r, g, b, a }
+    };
+
+    OverviewConfig {
+      backdrop_blur: 40.0,
+      backdrop_tint: color(0x0000_0066),
+      accent_color: None,
+      card_color: color(0x221e_24e6),
+      surface_color: color(0x2d29_2eff),
+      caption_color: color(0x1612_17c7),
+      text_color: color(0xe8e0_e8ff),
+      subtext_color: color(0xcdc3_ceff),
+      search_color: color(0x89b4_faff),
+      font_family: "Segoe UI".to_string(),
+      grid_columns: 5,
+      open_duration_ms: 250,
+      close_duration_ms: 200,
+    }
+  }
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]

@@ -58,6 +58,12 @@ impl TabRect {
   }
 }
 
+impl From<TabRect> for crate::Rect {
+  fn from(rect: TabRect) -> Self {
+    Self::from_ltrb(rect.left, rect.top, rect.right, rect.bottom)
+  }
+}
+
 /// Inputs of a tab bar layout.
 #[derive(Clone, Copy, Debug)]
 pub struct TabLayoutParams {
@@ -125,6 +131,29 @@ pub struct TabLayout {
 }
 
 impl TabLayout {
+  /// Lays out the tabs of the bar `frame` describes.
+  #[must_use]
+  pub fn for_frame(frame: &crate::TabFrame) -> Self {
+    let scale = |px: f32| {
+      #[allow(clippy::cast_possible_truncation)]
+      let scaled = (px * frame.style.scale_factor).round() as i32;
+      scaled
+    };
+
+    Self::new(&TabLayoutParams {
+      top: frame.rect.top - frame.outer_rect.top,
+      width: frame.rect.width(),
+      height: frame.rect.height(),
+      tab_count: frame.tabs.len(),
+      active_index: frame.active_index,
+      min_tab_width: frame.style.min_tab_width,
+      max_tab_width: frame.style.max_tab_width,
+      icon_only_width: scale(60.0),
+      close_min_width: scale(80.0),
+      show_icons: frame.style.show_icons,
+    })
+  }
+
   /// Lays out the tabs of a bar.
   #[must_use]
   pub fn new(params: &TabLayoutParams) -> Self {

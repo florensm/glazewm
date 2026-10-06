@@ -427,6 +427,42 @@ window_behavior:
       # Whether to show fullscreen windows as always on top.
       shown_on_top: false
 
+# Overview of the focused monitor's workspaces, opened by `toggle-overview`.
+# Click a window or workspace to go there, drag windows between workspaces,
+# or use the keys shown under the cards. Only available on Windows.
+overview:
+  # Blur radius of the wallpaper behind the cards.
+  backdrop_blur: 40
+
+  # Tint over the blurred wallpaper; its alpha is how dark it gets.
+  backdrop_tint: "#00000066"
+
+  # Selection and highlights. Same values as a border's color: a hex color,
+  # "accent" for the OS accent color, or a file and key. Left out, it is
+  # the focused window's border color.
+  # accent_color: "accent"
+
+  # Workspace cards, hovered cards and window title strips.
+  card_color: "#221e24e6"
+  surface_color: "#2d292eff"
+  caption_color: "#161217c7"
+
+  # Text, secondary text (e.g. key hints), and the outline of windows
+  # matching a search.
+  text_color: "#e8e0e8ff"
+  subtext_color: "#cdc3ceff"
+  search_color: "#89b4faff"
+  font_family: "Segoe UI"
+
+  # Columns of the grid of every workspace (`toggle-overview --grid`, or tab
+  # while open).
+  grid_columns: 5
+
+  # Length of the zoom out on open, and of the zoom into the picked
+  # workspace on close; 0 makes it instant.
+  open_duration_ms: 250
+  close_duration_ms: 200
+
 workspaces:
   - name: "1"
   - name: "2"
@@ -562,7 +598,7 @@ keybindings:
   - commands: ["resize --width +2%"]
     bindings: ["alt+p"]
   - commands: ["resize --height +2%"]
-    bindings: ["alt+o"]
+    bindings: ["alt+shift+o"]
   - commands: ["resize --height -2%"]
     bindings: ["alt+i"]
 
@@ -601,6 +637,11 @@ keybindings:
   # Change focus from tiling windows -> floating -> fullscreen.
   - commands: ["wm-cycle-focus"]
     bindings: ["alt+space"]
+
+  # Show the focused monitor's workspaces and their windows, to switch to
+  # one or move windows between them.
+  - commands: ["toggle-overview"]
+    bindings: ["alt+o"]
 
   # Change the focused window to be floating.
   - commands: ["toggle-floating --centered"]

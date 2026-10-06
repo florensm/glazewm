@@ -6,7 +6,8 @@ use tracing::warn;
 use uuid::Uuid;
 use wm_common::{BindingModeConfig, HideCorner, WindowState, WmEvent};
 use wm_platform::{
-  Direction, Dispatcher, Display, NativeWindow, Point, Rect, TabAction,
+  Direction, Dispatcher, Display, NativeWindow, OverviewAction, Point,
+  Rect, TabAction,
 };
 #[cfg(target_os = "windows")]
 use wm_platform::{
@@ -14,6 +15,8 @@ use wm_platform::{
   NativeWindowWindowsExt, OpacityValue,
 };
 
+#[cfg(target_os = "windows")]
+use crate::overview::Overview;
 use crate::{
   animation::AnimationManager,
   auto_stack::AutoStackState,
@@ -104,6 +107,10 @@ pub struct WmState {
   #[cfg(target_os = "windows")]
   pub border_overlays: HashMap<Uuid, NativeBorderOverlay>,
 
+  /// Overview of the focused workspace's windows.
+  #[cfg(target_os = "windows")]
+  pub overview: Overview,
+
   /// Whether the initial state has been populated.
   has_initialized: bool,
 
@@ -131,8 +138,13 @@ impl WmState {
     event_tx: mpsc::UnboundedSender<WmEvent>,
     exit_tx: mpsc::UnboundedSender<()>,
     animation_tick_tx: mpsc::UnboundedSender<()>,
+    overview_action_tx: mpsc::UnboundedSender<(u64, OverviewAction)>,
     tab_action_tx: mpsc::UnboundedSender<(Uuid, TabAction)>,
   ) -> Self {
+    // Without an overview, its actions channel is closed right away.
+    #[cfg(not(target_os = "windows"))]
+    drop(overview_action_tx);
+
     Self {
       root_container: RootContainer::new(),
       dispatcher,
@@ -143,6 +155,8 @@ impl WmState {
       backdrop_overlays: HashMap::new(),
       #[cfg(target_os = "windows")]
       border_overlays: HashMap::new(),
+      #[cfg(target_os = "windows")]
+      overview: Overview::new(overview_action_tx),
       prev_effects_window: None,
       recent_workspace_name: None,
       unmanaged_or_minimized_timestamp: None,

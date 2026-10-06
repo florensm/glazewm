@@ -297,6 +297,7 @@ impl WmState {
     let (event_tx, _) = tokio::sync::mpsc::unbounded_channel();
     let (exit_tx, _) = tokio::sync::mpsc::unbounded_channel();
     let (animation_tick_tx, _) = tokio::sync::mpsc::unbounded_channel();
+    let (overview_action_tx, _) = tokio::sync::mpsc::unbounded_channel();
     let (tab_action_tx, _) = tokio::sync::mpsc::unbounded_channel();
 
     let state = Self::new(
@@ -304,6 +305,7 @@ impl WmState {
       event_tx,
       exit_tx,
       animation_tick_tx,
+      overview_action_tx,
       tab_action_tx,
     );
 

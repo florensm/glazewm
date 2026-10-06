@@ -3,12 +3,13 @@ use std::sync::OnceLock;
 use windows::{
   core::PCWSTR,
   Win32::{
-    Foundation::{HWND, LPARAM, LRESULT, WPARAM},
+    Foundation::{HWND, LPARAM, LRESULT, RECT, WPARAM},
+    Graphics::Dwm::{DwmGetWindowAttribute, DWMWA_EXTENDED_FRAME_BOUNDS},
     UI::WindowsAndMessaging::{
-      DefWindowProcW, GetWindow, GetWindowLongPtrW, RegisterClassW,
-      SetWindowPos, GWL_EXSTYLE, GW_HWNDNEXT, HWND_NOTOPMOST,
-      HWND_TOPMOST, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSENDCHANGING,
-      SWP_NOSIZE, WNDCLASSW, WS_EX_TOPMOST,
+      DefWindowProcW, GetWindow, GetWindowLongPtrW, GetWindowRect,
+      LoadCursorW, RegisterClassW, SetWindowPos, GWL_EXSTYLE, GW_HWNDNEXT,
+      HWND_NOTOPMOST, HWND_TOPMOST, IDC_ARROW, SWP_NOACTIVATE, SWP_NOMOVE,
+      SWP_NOSENDCHANGING, SWP_NOSIZE, WNDCLASSW, WS_EX_TOPMOST,
     },
   },
 };
@@ -16,15 +17,9 @@ use windows::{
 /// Registers a window class with `wnd_proc` and `class_name`, exactly once
 /// per process for the given `registered` cell.
 ///
-/// Shared by the overlay window types ([`NativeSurrogate`],
-/// [`NativeBackdropOverlay`], [`NativeBorderOverlay`],
-/// [`NativeIrisOverlay`]), which differ only in class name and (for the
-/// iris overlay) window procedure.
-///
-/// [`NativeSurrogate`]: crate::NativeSurrogate
-/// [`NativeBackdropOverlay`]: crate::NativeBackdropOverlay
-/// [`NativeBorderOverlay`]: crate::NativeBorderOverlay
-/// [`NativeIrisOverlay`]: crate::NativeIrisOverlay
+/// Shared by every window the WM creates of its own: overlays, the
+/// overview and its pictures, and tab bars. Their cursor is the arrow,
+/// which windows that show another set it on `WM_SETCURSOR`.
 pub(crate) fn ensure_class_registered(
   registered: &OnceLock<()>,
   class_name: PCWSTR,
@@ -39,8 +34,10 @@ pub(crate) fn ensure_class_registered(
     let wnd_class = WNDCLASSW {
       lpszClassName: class_name,
       lpfnWndProc: Some(wnd_proc),
-      // Null background brush: composition (or, for the surrogate, the
-      // DWM thumbnail) paints the client area; GDI never touches it.
+      // SAFETY: `IDC_ARROW` is a system cursor.
+      hCursor: unsafe { LoadCursorW(None, IDC_ARROW) }.unwrap_or_default(),
+      // Null background brush: composition, DWM thumbnails or layered
+      // bitmaps paint the client area; GDI never touches it.
       ..Default::default()
     };
 
@@ -68,6 +65,35 @@ pub(crate) unsafe extern "system" fn default_wnd_proc(
 ) -> LRESULT {
   // SAFETY: All parameters are forwarded unchanged.
   unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) }
+}
+
+/// `hwnd`'s window rect, which includes its invisible resize borders,
+/// and its visible frame (DWM's extended frame bounds), on screen.
+pub(crate) fn bounds_and_frame(hwnd: HWND) -> Option<(RECT, RECT)> {
+  let mut bounds = RECT::default();
+  let mut frame = RECT::default();
+
+  // SAFETY: Both rects outlive the calls and match the queried sizes; a
+  // stale handle just makes them fail.
+  unsafe {
+    GetWindowRect(hwnd, &raw mut bounds).ok()?;
+    DwmGetWindowAttribute(
+      hwnd,
+      DWMWA_EXTENDED_FRAME_BOUNDS,
+      std::ptr::from_mut(&mut frame).cast(),
+      u32::try_from(std::mem::size_of::<RECT>()).ok()?,
+    )
+    .ok()?;
+  }
+
+  Some((bounds, frame))
+}
+
+/// Signed client coordinates packed into a mouse message's `LPARAM`.
+pub(crate) fn mouse_position(lparam: LPARAM) -> (i32, i32) {
+  #[allow(clippy::cast_possible_truncation)]
+  let (x, y) = (lparam.0 as i16, (lparam.0 >> 16) as i16);
+  (i32::from(x), i32::from(y))
 }
 
 /// Whether `hwnd` currently sits in the always-on-top band.

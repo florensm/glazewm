@@ -536,6 +536,12 @@ mod tests {
       config.animations.workspace_switch.style,
       WorkspaceSwitchStyle::Slide
     );
+    assert_eq!(config.overview.font_family, "Segoe UI");
+    assert!(config.keybindings.iter().any(|keybinding| {
+      keybinding.commands.iter().any(|command| {
+        matches!(command, InvokeCommand::ToggleOverview { .. })
+      })
+    }));
   }
 
   /// Configs written before the `style` -> `type` key rename must keep
