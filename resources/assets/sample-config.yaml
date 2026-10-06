@@ -406,9 +406,6 @@ overview:
   open_duration_ms: 250
   close_duration_ms: 200
 
-  # Width of the pinned window's preview (`toggle-pin`), in pixels.
-  pin_width: 320
-
 workspaces:
   - name: "1"
   - name: "2"
@@ -538,16 +535,6 @@ keybindings:
   # one or move windows between them.
   - commands: ["toggle-overview"]
     bindings: ["alt+o"]
-
-  # Pin the focused window: while it's out of sight, a live preview of it
-  # floats on screen. Click the preview to go back to it, drag to move it,
-  # right-click to unpin.
-  - commands: ["toggle-pin"]
-    bindings: ["alt+shift+b"]
-
-  # Go to the pinned window, or back to where you were if already on it.
-  - commands: ["focus --pinned-window"]
-    bindings: ["alt+b"]
 
   # Change the focused window to be floating.
   - commands: ["toggle-floating --centered"]

@@ -178,9 +178,6 @@ pub(crate) struct TilePicture {
   pub opacity: f32,
   pub border_width: f32,
   pub border: Color,
-
-  /// Whether it is the pinned window, marked with a dot in its corner.
-  pub is_pinned: bool,
 }
 
 /// Pixel size of a card's picture.
@@ -419,26 +416,6 @@ fn draw_tile(
     round(units.px(tile.border_width)).max(1),
     fade(tile.border, opacity),
   );
-
-  if tile.is_pinned {
-    let size = round(units.px(12.0));
-    let inset = round(units.px(7.0));
-    let dot = Rect::from_xy(
-      rect.right - inset - size,
-      rect.top + inset,
-      size,
-      size,
-    );
-
-    let mut canvas = surface.canvas();
-    canvas.fill_rounded_rect(&dot, size / 2, fade(style.accent, opacity));
-    canvas.stroke_rounded_rect(
-      &dot,
-      size / 2,
-      round(units.px(2.0)).max(1),
-      fade(style.card, opacity),
-    );
-  }
 }
 
 /// Draws the picture of a dragged or carried window titled `title` into

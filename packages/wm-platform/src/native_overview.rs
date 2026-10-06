@@ -61,10 +61,9 @@ use crate::{
     visible_frame, visible_frame_on_screen, Picture, Preview, Thumbnail,
     FALLBACK_FRAME,
   },
-  pin_preview::PinPreview,
   platform_impl::{self, composition::OverviewBackdrop},
   window_icons, DxgiVsyncWaiter, OverviewAction, OverviewFrame,
-  OverviewLayoutMode, OverviewStyle, OverviewWorkspace, PinFrame,
+  OverviewLayoutMode, OverviewStyle, OverviewWorkspace,
 };
 
 /// Posted with a `Box<Open>` in `WPARAM`.
@@ -82,10 +81,6 @@ const WM_HIDE_OVERVIEW: u32 = WM_APP + 4;
 
 /// Posted by the icon thread once an icon is cached.
 const WM_ICON_READY: u32 = WM_APP + 5;
-
-/// Posted with a `Box<Option<PinFrame>>` in `WPARAM` to show, change or
-/// remove the pinned window's preview.
-const WM_SET_PIN: u32 = WM_APP + 6;
 
 /// How long card moves and zooms take to settle.
 const SETTLE_MS: f32 = 260.0;
@@ -113,9 +108,6 @@ pub struct NativeOverview {
   /// Incremented on each open, so actions from an earlier session can be
   /// told apart.
   session: u64,
-
-  /// Pin last posted, to skip posting identical ones.
-  last_pin: Option<PinFrame>,
 }
 
 impl NativeOverview {
@@ -138,7 +130,6 @@ impl NativeOverview {
       hwnd,
       last_frame: None,
       session: 0,
-      last_pin: None,
     })
   }
 
@@ -191,18 +182,6 @@ impl NativeOverview {
     if self.last_frame.take().is_some() {
       self.post(WM_HIDE_OVERVIEW, 0);
     }
-  }
-
-  /// Shows `pin`'s preview while its window is out of sight, or removes
-  /// the preview with `None`. The preview hides while the overview is
-  /// open.
-  pub fn set_pin(&mut self, pin: Option<PinFrame>) {
-    if self.last_pin == pin {
-      return;
-    }
-
-    self.last_pin.clone_from(&pin);
-    self.post(WM_SET_PIN, Box::into_raw(Box::new(pin)) as usize);
   }
 
   /// Session of the last open, which the actions of that open carry.
@@ -300,12 +279,6 @@ fn wait_for_frame(waiter: Option<&DxgiVsyncWaiter>) {
   if started.elapsed() < Duration::from_millis(2) {
     thread::sleep(Duration::from_millis(4));
   }
-}
-
-/// Handles a message of the pinned window's preview. Returns `None` for
-/// the default handling.
-pub(crate) fn on_pin_message(msg: u32) -> Option<LRESULT> {
-  with_overview(|overview| overview.handle_pin(msg)).flatten()
 }
 
 /// Runs `f` on the overview, unless it is already borrowed further up the
@@ -443,9 +416,6 @@ struct Overview {
 
   /// Paces animation frames to the overview's monitor.
   vsync: Option<DxgiVsyncWaiter>,
-
-  /// The pinned window's preview, if a window is pinned.
-  pin: Option<PinPreview>,
 }
 
 impl Overview {
@@ -478,7 +448,6 @@ impl Overview {
       is_done: false,
       icons: 0,
       vsync: None,
-      pin: None,
     }
   }
 
@@ -500,10 +469,7 @@ impl Overview {
     frame: OverviewFrame,
     layout: OverviewLayoutMode,
   ) {
-    self.clear();
-    if let Some(pin) = &mut self.pin {
-      pin.hide();
-    }
+    self.close();
 
     let scale_factor = frame.scale_factor;
     self.area = RectF::from_rect(&frame.rect);
@@ -618,15 +584,8 @@ impl Overview {
     }
   }
 
-  /// Hides the overview, and shows the pin's preview again if it is
-  /// wanted.
-  fn close(&mut self) {
-    self.clear();
-    self.sync_pin();
-  }
-
   /// Hides the overview, keeping its pictures for the next open.
-  fn clear(&mut self) {
+  fn close(&mut self) {
     if self.frame.take().is_none() {
       return;
     }
@@ -648,39 +607,6 @@ impl Overview {
     self.zoom = None;
     self.vsync = None;
     self.is_tracking_leave = false;
-  }
-
-  /// Creates, changes or removes the pin's preview.
-  fn set_pin(&mut self, pin: Option<PinFrame>) {
-    match (pin, &mut self.pin) {
-      (None, _) => self.pin = None,
-      (Some(pin), Some(preview)) if preview.hwnd() == pin.hwnd => {
-        preview.update(pin);
-      }
-      (Some(pin), _) => self.pin = PinPreview::new(pin),
-    }
-
-    self.sync_pin();
-  }
-
-  /// Shows the pin's preview when it is wanted and the overview is
-  /// closed.
-  fn sync_pin(&mut self) {
-    let is_open = self.frame.is_some();
-
-    if let Some(pin) = &mut self.pin {
-      if pin.is_wanted() && !is_open {
-        pin.show();
-      } else {
-        pin.hide();
-      }
-    }
-  }
-
-  fn handle_pin(&mut self, msg: u32) -> Option<LRESULT> {
-    let (on_action, session) = (&self.on_action, self.session);
-    let send = |action| on_action(session, action);
-    self.pin.as_mut()?.handle(msg, &send)
   }
 
   fn sync_backdrop(&mut self, frame: &OverviewFrame, progress: f32) {
@@ -1022,8 +948,6 @@ impl Overview {
       (style.accent, style.search, style.caption);
     let focused_window =
       self.frame.as_ref().and_then(|frame| frame.focused_window);
-    let pinned_window =
-      self.frame.as_ref().and_then(|frame| frame.pinned_window);
 
     let tiles = card.map_or_else(Vec::new, |card| {
       card
@@ -1074,7 +998,6 @@ impl Overview {
             opacity,
             border_width,
             border,
-            is_pinned: pinned_window == Some(preview.hwnd),
           }
         })
         .collect()
@@ -1448,12 +1371,6 @@ impl Overview {
         if !self.is_closing() {
           self.close();
         }
-      }
-      WM_SET_PIN => {
-        // SAFETY: Posted by `NativeOverview::set_pin` with an owned pin.
-        let pin =
-          unsafe { Box::from_raw(wparam.0 as *mut Option<PinFrame>) };
-        self.set_pin(*pin);
       }
       WM_ICON_READY => {
         self.icons += 1;
