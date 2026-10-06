@@ -6,7 +6,9 @@ workspace or window, move windows between workspaces, search them by title,
 or close them. Only available on Windows.
 
 On open, the windows of the focused workspace shrink from where they are
-into its card, while the wallpaper behind them blurs.
+into its card, while the wallpaper behind them blurs. On close, it zooms
+back into the workspace you picked (or the one you were on, when
+cancelled) until its windows sit where they really are.
 
 ## Layouts
 
@@ -125,6 +127,10 @@ overview:
 
   # Length of the zoom out on open; 0 opens it instantly.
   open_duration_ms: 250
+
+  # Length of the zoom into the picked workspace on close; 0 closes it
+  # instantly.
+  close_duration_ms: 200
 ```
 
 Colors take an optional alpha (`#rrggbbaa`). Every key is optional; the
@@ -163,16 +169,17 @@ nothing moves. The cards move on critically damped springs, so a key press
 mid-animation retargets them smoothly.
 
 The overview takes the foreground while open, so keys go to it rather than
-to the window behind it. When a pick changes focus, the WM focuses the new
-window first and only then hides the overview, so the OS never picks a
-window to activate in between.
+to the window behind it. When a pick changes focus, the WM switches
+workspace and focuses the new window right away, behind the overview's
+zoom into that workspace; the overview only hides once the zoom ends, so
+the OS never picks a window to activate in between, and the real windows
+are already where their previews end up.
 
 ## Follow-ups
 
 Not in this version:
 
 - Workspaces of all monitors at once.
-- Windows growing back into place on close.
 - Fading highlights on hover and selection.
 - Picking minimized windows with the mouse (they are listed on their card,
   and reachable by search).

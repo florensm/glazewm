@@ -68,9 +68,10 @@ impl Overview {
 
   /// Marks the overview closed.
   ///
-  /// The native overview stays up until the next [`sync_overview`], so it
-  /// only hides once focus has moved on; hiding the foreground window
-  /// first would let the OS pick the next one.
+  /// The native overview stays up until the next [`sync_overview`] (or
+  /// until its zoom into the picked workspace ends), so it only hides
+  /// once focus has moved on; hiding the foreground window first would
+  /// let the OS pick the next one.
   pub fn close(&mut self) {
     self.open = None;
   }
@@ -209,6 +210,7 @@ fn overview_frame(
       font_family: overview.font_family.clone(),
       grid_columns: overview.grid_columns,
       open_duration_ms: overview.open_duration_ms,
+      close_duration_ms: overview.close_duration_ms,
     },
   }
 }

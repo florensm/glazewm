@@ -400,8 +400,10 @@ overview:
   # while open).
   grid_columns: 5
 
-  # Length of the zoom out on open; 0 opens it instantly.
+  # Length of the zoom out on open, and of the zoom into the picked
+  # workspace on close; 0 makes it instant.
   open_duration_ms: 250
+  close_duration_ms: 200
 
 workspaces:
   - name: "1"
