@@ -19,6 +19,9 @@ pub struct OverviewFrame {
   /// Handle of the focused window, if any.
   pub focused_window: Option<isize>,
 
+  /// Handle of the pinned window, if any.
+  pub pinned_window: Option<isize>,
+
   pub style: OverviewStyle,
 }
 
@@ -129,4 +132,38 @@ pub enum OverviewAction {
 
   /// Another window took focus, which closed the overview.
   Deactivated,
+
+  /// Pin the window with this handle, or unpin it if it is the pinned
+  /// one. The overview stays open.
+  TogglePin(isize),
+
+  /// The pinned window's preview was clicked. Sent outside any overview
+  /// session.
+  JumpToPin,
+
+  /// The pinned window's preview was dismissed. Sent outside any overview
+  /// session.
+  Unpin,
+}
+
+/// The pinned window's preview: a small live thumbnail of it, floating
+/// above everything while the window itself is out of sight.
+#[derive(Clone, Debug, PartialEq)]
+pub struct PinFrame {
+  /// Handle of the pinned window.
+  pub hwnd: isize,
+
+  /// Working area in whose bottom-right corner the preview first shows
+  /// up. It stays wherever it is dragged to after that.
+  pub area: Rect,
+
+  pub scale_factor: f32,
+
+  /// Width in logical pixels; the height follows the window's shape.
+  pub width: f32,
+
+  pub border: Color,
+
+  /// Whether it shows: only while the window is out of sight.
+  pub is_visible: bool,
 }

@@ -82,6 +82,8 @@ mod overview_thumbnails;
 #[cfg(target_os = "windows")]
 mod paint;
 #[cfg(target_os = "windows")]
+mod pin_preview;
+#[cfg(target_os = "windows")]
 mod window_icons;
 pub use platform_event::*;
 pub use single_instance::*;

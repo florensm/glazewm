@@ -4,6 +4,9 @@
 //!
 //! The overview is drawn and driven by `NativeOverview` on a thread of its
 //! own; the WM decides what it shows and carries out what is picked.
+//!
+//! The same thread hosts the pinned window's preview: a live thumbnail of
+//! one window that floats on screen while the window is out of sight.
 
 use anyhow::Context;
 use tokio::sync::mpsc;
@@ -12,9 +15,13 @@ use wm_common::WindowState;
 use wm_platform::{
   Color, NativeOverview, OverviewAction, OverviewFrame,
   OverviewLayoutMode, OverviewStyle, OverviewWindow, OverviewWorkspace,
+  PinFrame, Rect,
 };
 
 use crate::{
+  commands::{
+    container::focus_container_by_id, workspace::focus_workspace,
+  },
   models::{
     Container, Monitor, WindowContainer, Workspace, WorkspaceTarget,
   },
@@ -33,6 +40,25 @@ pub struct Overview {
 
   /// Where the native overview sends user actions, with their session.
   action_tx: mpsc::UnboundedSender<(u64, OverviewAction)>,
+
+  pin: Option<Pin>,
+}
+
+/// The pinned window.
+struct Pin {
+  window_id: Uuid,
+
+  /// Working area and scale of the monitor it was pinned on, where its
+  /// preview first shows up.
+  area: Rect,
+  scale_factor: f32,
+
+  /// Resolved once when pinned, since it can be read from a file.
+  border: Color,
+
+  /// What was focused before jumping to the pinned window, to jump back
+  /// to.
+  return_to: Option<Uuid>,
 }
 
 struct OpenOverview {
@@ -50,6 +76,7 @@ impl Overview {
       native: None,
       open: None,
       action_tx,
+      pin: None,
     }
   }
 
@@ -116,13 +143,7 @@ pub fn toggle_overview(
 
   let open = OpenOverview {
     monitor_id: monitor.id(),
-    accent: config
-      .value
-      .overview
-      .accent_color
-      .as_ref()
-      .unwrap_or(&config.value.window_effects.focused_window.border.color)
-      .resolve(),
+    accent: accent_color(config),
   };
   let frame = overview_frame(state, &monitor, open.accent, config);
 
@@ -157,6 +178,147 @@ pub fn sync_overview(state: &mut WmState, config: &UserConfig) {
       }
     }
   }
+
+  sync_pin(state, config);
+}
+
+/// Pins `window`, or unpins it if it is the pinned one. Pinning replaces
+/// any earlier pin.
+pub fn toggle_pin(
+  window: &WindowContainer,
+  state: &mut WmState,
+  config: &UserConfig,
+) -> anyhow::Result<()> {
+  if state
+    .overview
+    .pin
+    .as_ref()
+    .is_some_and(|pin| pin.window_id == window.id())
+  {
+    state.overview.pin = None;
+    return Ok(());
+  }
+
+  let properties = state
+    .focused_container()
+    .and_then(|focused| focused.monitor())
+    .context("No focused monitor.")?
+    .native_properties();
+
+  state.overview.pin = Some(Pin {
+    window_id: window.id(),
+    area: properties.working_area,
+    scale_factor: properties.scale_factor,
+    border: accent_color(config),
+    return_to: None,
+  });
+  Ok(())
+}
+
+pub fn unpin(state: &mut WmState) {
+  state.overview.pin = None;
+}
+
+/// Focuses the pinned window, switching to its workspace if needed; or,
+/// when it is already focused, goes back to what was focused before
+/// jumping to it.
+pub fn focus_pinned_window(
+  state: &mut WmState,
+  config: &UserConfig,
+) -> anyhow::Result<()> {
+  let Some(pin) = &state.overview.pin else {
+    return Ok(());
+  };
+
+  let focused = state.focused_container();
+  let is_on_pin = focused
+    .as_ref()
+    .is_some_and(|focused| focused.id() == pin.window_id);
+
+  let target = if is_on_pin {
+    pin.return_to.and_then(|id| state.container_by_id(id))
+  } else {
+    state.container_by_id(pin.window_id)
+  };
+
+  if !is_on_pin {
+    let return_to = focused.map(|focused| focused.id());
+    if let Some(pin) = &mut state.overview.pin {
+      pin.return_to = return_to;
+    }
+  }
+
+  let Some(target) = target else {
+    return Ok(());
+  };
+
+  if let Some(workspace) = target.workspace() {
+    if !workspace.is_displayed() {
+      focus_workspace(
+        WorkspaceTarget::Name(workspace.config().name),
+        state,
+        config,
+      )?;
+    }
+  }
+
+  focus_container_by_id(&target.id(), state)
+}
+
+/// Shows, updates or hides the pinned window's preview, which shows only
+/// while the window is out of sight. Drops the pin once its window is
+/// gone.
+fn sync_pin(state: &mut WmState, config: &UserConfig) {
+  let frame = state.overview.pin.as_ref().and_then(|pin| {
+    let window = state
+      .container_by_id(pin.window_id)?
+      .as_window_container()
+      .ok()?;
+    let is_on_screen = window
+      .workspace()
+      .is_some_and(|workspace| workspace.is_displayed());
+
+    let hwnd = window.native().id().0;
+
+    #[allow(clippy::cast_precision_loss)]
+    let width = config.value.overview.pin_width as f32;
+
+    Some(PinFrame {
+      hwnd,
+      area: pin.area.clone(),
+      scale_factor: pin.scale_factor,
+      width,
+      border: pin.border,
+      is_visible: !is_on_screen
+        && window.state() != WindowState::Minimized,
+    })
+  });
+
+  let overview = &mut state.overview;
+  if frame.is_none() {
+    overview.pin = None;
+
+    // The overview's thread is only started for a pin or an open.
+    if overview.native.is_none() {
+      return;
+    }
+  }
+
+  match overview.native() {
+    Ok(native) => native.set_pin(frame),
+    Err(err) => tracing::warn!("Failed to show the pinned window: {err}"),
+  }
+}
+
+/// Color of the overview's highlights and the pin's border.
+fn accent_color(config: &UserConfig) -> Color {
+  config
+    .value
+    .overview
+    .accent_color
+    .as_ref()
+    .unwrap_or(&config.value.window_effects.focused_window.border.color)
+    .resolve()
 }
 
 /// What the overview shows for `monitor`.
@@ -203,6 +365,13 @@ fn overview_frame(
     digit_workspaces: digit_workspaces(state, monitor, config),
     focused_window: focused
       .and_then(|focused| focused.as_window_container().ok())
+      .map(|window| window.native().id().0),
+    pinned_window: state
+      .overview
+      .pin
+      .as_ref()
+      .and_then(|pin| state.container_by_id(pin.window_id))
+      .and_then(|pinned| pinned.as_window_container().ok())
       .map(|window| window.native().id().0),
     style: OverviewStyle {
       backdrop_blur: overview.backdrop_blur,
