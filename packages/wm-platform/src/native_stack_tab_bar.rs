@@ -3,18 +3,7 @@ use std::sync::OnceLock;
 use windows::{
   core::{w, PCWSTR, PWSTR},
   Win32::{
-    Foundation::{
-      COLORREF, HWND, LPARAM, LRESULT, POINT, RECT, SIZE, WPARAM,
-    },
-    Graphics::Gdi::{
-      CreateCompatibleDC, CreateDIBSection, CreateFontW, DeleteDC,
-      DeleteObject, DrawTextW, SelectObject, SetBkMode, SetTextColor,
-      AC_SRC_ALPHA, AC_SRC_OVER, BITMAPINFO, BITMAPINFOHEADER, BI_RGB,
-      BLENDFUNCTION, CLEARTYPE_QUALITY, CLIP_DEFAULT_PRECIS,
-      DEFAULT_CHARSET, DIB_RGB_COLORS, DT_CALCRECT, DT_END_ELLIPSIS,
-      DT_LEFT, DT_NOPREFIX, DT_SINGLELINE, DT_VCENTER, FW_NORMAL,
-      FW_SEMIBOLD, HDC, HFONT, OUT_DEFAULT_PRECIS, TRANSPARENT,
-    },
+    Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, WPARAM},
     UI::{
       Controls::{
         InitCommonControlsEx, ICC_WIN95_CLASSES, INITCOMMONCONTROLSEX,
@@ -28,19 +17,17 @@ use windows::{
       },
       WindowsAndMessaging::{
         AppendMenuW, CreatePopupMenu, CreateWindowExW, DefWindowProcW,
-        DestroyMenu, DestroyWindow, DrawIconEx, GetCursorPos,
-        GetSystemMetrics, GetWindow, GetWindowLongPtrW, LoadCursorW,
-        PostMessageW, RegisterClassW, SendMessageW, SetForegroundWindow,
-        SetWindowLongPtrW, SetWindowPos, ShowWindow, TrackPopupMenu,
-        UpdateLayeredWindow, CREATESTRUCTW, DI_NORMAL, GWLP_USERDATA,
-        GW_HWNDNEXT, GW_HWNDPREV, IDC_ARROW, MA_NOACTIVATE, MF_STRING,
-        SM_CXDRAG, SM_CYDRAG, SWP_NOACTIVATE, SWP_NOMOVE,
-        SWP_NOSENDCHANGING, SWP_NOSIZE, SW_HIDE, SW_SHOWNOACTIVATE,
-        TPM_NONOTIFY, TPM_RETURNCMD, TPM_RIGHTBUTTON, ULW_ALPHA,
-        WINDOW_STYLE, WM_APP, WM_CAPTURECHANGED, WM_CLOSE, WM_CREATE,
-        WM_DESTROY, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MBUTTONUP,
-        WM_MOUSEACTIVATE, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_NOTIFY,
-        WM_RBUTTONUP, WNDCLASSW, WS_EX_LAYERED, WS_EX_NOACTIVATE,
+        DestroyMenu, DestroyWindow, GetCursorPos, GetSystemMetrics,
+        GetWindow, GetWindowLongPtrW, PostMessageW, SendMessageW,
+        SetForegroundWindow, SetWindowLongPtrW, SetWindowPos, ShowWindow,
+        TrackPopupMenu, CREATESTRUCTW, GWLP_USERDATA, GW_HWNDNEXT,
+        GW_HWNDPREV, MA_NOACTIVATE, MF_STRING, SM_CXDRAG, SM_CYDRAG,
+        SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSENDCHANGING, SWP_NOSIZE,
+        SW_HIDE, SW_SHOWNOACTIVATE, TPM_NONOTIFY, TPM_RETURNCMD,
+        TPM_RIGHTBUTTON, WINDOW_STYLE, WM_APP, WM_CAPTURECHANGED,
+        WM_CLOSE, WM_CREATE, WM_DESTROY, WM_LBUTTONDOWN, WM_LBUTTONUP,
+        WM_MBUTTONUP, WM_MOUSEACTIVATE, WM_MOUSEMOVE, WM_MOUSEWHEEL,
+        WM_NOTIFY, WM_RBUTTONUP, WS_EX_LAYERED, WS_EX_NOACTIVATE,
         WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP,
       },
     },
@@ -49,10 +36,11 @@ use windows::{
 
 use crate::{
   overlay_window::OverlayKind,
-  paint::Canvas,
+  surface::Surface,
+  tab_bar_paint::{paint_tab_bar, TabBarView},
   tab_layout::{TabAction, TabHit, TabLayout, TabLayoutParams, TabRect},
-  window_class, window_icons, Dispatcher, Rect, TabBarStyle, TabCloseMode,
-  TabFrame,
+  window_class::{self, mouse_position},
+  window_icons, Dispatcher, TabCloseMode, TabFrame,
 };
 
 /// Posted with a `Box<TabFrame>` in `WPARAM` to show the bar with new
@@ -267,18 +255,11 @@ impl Drop for NativeStackTabBar {
 }
 
 fn ensure_class_registered() {
-  CLASS_REGISTERED.get_or_init(|| {
-    let class = WNDCLASSW {
-      lpszClassName: w!("GlazeWM_TabBar"),
-      lpfnWndProc: Some(wnd_proc),
-      // SAFETY: `IDC_ARROW` is a system cursor.
-      hCursor: unsafe { LoadCursorW(None, IDC_ARROW) }.unwrap_or_default(),
-      ..Default::default()
-    };
-
-    // SAFETY: `class` is fully initialized with a static class name.
-    unsafe { RegisterClassW(&raw const class) };
-  });
+  window_class::ensure_class_registered(
+    &CLASS_REGISTERED,
+    w!("GlazeWM_TabBar"),
+    wnd_proc,
+  );
 }
 
 /// Creates the tooltip control of the bar `owner`. Its window is
@@ -393,28 +374,9 @@ impl BarState {
   }
 
   fn relayout(&mut self) {
-    let Some(frame) = &self.frame else {
-      return;
-    };
-
-    let scale = |px: f32| {
-      #[allow(clippy::cast_possible_truncation)]
-      let scaled = (px * frame.style.scale_factor).round() as i32;
-      scaled
-    };
-
-    self.layout = TabLayout::new(&TabLayoutParams {
-      top: frame.rect.top - frame.outer_rect.top,
-      width: frame.rect.width(),
-      height: frame.rect.height(),
-      tab_count: frame.tabs.len(),
-      active_index: frame.active_index,
-      min_tab_width: frame.style.min_tab_width,
-      max_tab_width: frame.style.max_tab_width,
-      icon_only_width: scale(60.0),
-      close_min_width: scale(80.0),
-      show_icons: frame.style.show_icons,
-    });
+    if let Some(frame) = &self.frame {
+      self.layout = TabLayout::for_frame(frame);
+    }
   }
 
   fn is_close_visible(&self, index: usize) -> bool {
@@ -451,14 +413,6 @@ impl BarState {
 
     order
   }
-
-  /// Highlight of the active tab.
-  fn active_pill(&self) -> Option<TabRect> {
-    let frame = self.frame.as_ref()?;
-    let order = self.display_order();
-    let position = order.iter().position(|i| *i == frame.active_index)?;
-    self.layout.slots.get(position).map(|slot| slot.pill)
-  }
 }
 
 /// Draws the bar into a layered bitmap and shows it at its frame's rect.
@@ -471,369 +425,38 @@ unsafe fn render(hwnd: HWND, state: &mut BarState) {
     return;
   };
 
-  let (width, height) =
-    (frame.outer_rect.width(), frame.outer_rect.height());
-  if width <= 0 || height <= 0 {
-    return;
-  }
-
-  let info = BITMAPINFO {
-    bmiHeader: BITMAPINFOHEADER {
-      biSize: u32::try_from(std::mem::size_of::<BITMAPINFOHEADER>())
-        .unwrap_or_default(),
-      biWidth: width,
-      // Negative height: top-down rows.
-      biHeight: -height,
-      biPlanes: 1,
-      biBitCount: 32,
-      biCompression: BI_RGB.0,
-      ..Default::default()
-    },
-    ..Default::default()
-  };
-
-  let mem_dc = CreateCompatibleDC(None);
-  let mut bits = std::ptr::null_mut();
-  let Ok(bitmap) = CreateDIBSection(
-    mem_dc,
-    &raw const info,
-    DIB_RGB_COLORS,
-    &raw mut bits,
-    None,
-    0,
-  ) else {
-    let _ = DeleteDC(mem_dc);
+  let outer = &frame.outer_rect;
+  let Some(mut surface) = Surface::new(outer.width(), outer.height())
+  else {
     return;
   };
 
-  let old_bitmap = SelectObject(mem_dc, bitmap);
-  let pixel_count = usize::try_from(width * height).unwrap_or(0);
-
-  // SAFETY: The DIB section holds `width * height` 32-bit pixels, owned by
-  // `bitmap` until it is deleted below.
-  let pixels =
-    std::slice::from_raw_parts_mut(bits.cast::<u32>(), pixel_count);
-  paint_shapes(pixels, width, height, state, &frame);
-
-  // GDI zeroes the alpha of every pixel it draws, so it is restored after
-  // drawing text and icons, which only ever land on opaque parts.
-  let alpha = pixels.iter().map(|p| p >> 24).collect::<Vec<_>>();
-  state.truncated = paint_text_and_icons(mem_dc, hwnd, state, &frame);
-  for (pixel, alpha) in pixels.iter_mut().zip(alpha) {
-    *pixel = (*pixel & 0x00ff_ffff) | (alpha << 24);
-  }
-
-  paint_close_buttons(pixels, width, height, state, &frame);
-
-  let blend = BLENDFUNCTION {
-    BlendOp: u8::try_from(AC_SRC_OVER).unwrap_or_default(),
-    BlendFlags: 0,
-    SourceConstantAlpha: u8::MAX,
-    AlphaFormat: u8::try_from(AC_SRC_ALPHA).unwrap_or_default(),
-  };
-
-  let position = POINT {
-    x: frame.outer_rect.x(),
-    y: frame.outer_rect.y(),
-  };
-  let size = SIZE {
-    cx: width,
-    cy: height,
-  };
-  let source = POINT { x: 0, y: 0 };
-
-  if let Err(err) = UpdateLayeredWindow(
-    hwnd,
-    None,
-    Some(&raw const position),
-    Some(&raw const size),
-    mem_dc,
-    Some(&raw const source),
-    COLORREF(0),
-    Some(&raw const blend),
-    ULW_ALPHA,
-  ) {
-    tracing::warn!("Failed to draw tab bar: {err}");
-  }
-
-  SelectObject(mem_dc, old_bitmap);
-  let _ = DeleteObject(bitmap);
-  let _ = DeleteDC(mem_dc);
-}
-
-/// Draws the strip and the tab highlights.
-fn paint_shapes(
-  pixels: &mut [u32],
-  width: i32,
-  height: i32,
-  state: &BarState,
-  frame: &TabFrame,
-) {
-  pixels.fill(0);
-
-  let style = &frame.style;
-  let mut canvas = Canvas {
-    pixels,
-    width,
-    height,
-  };
-
-  canvas.fill_rect_with_corners(
-    &Rect::from_ltrb(0, 0, width, height),
-    style.strip_radii,
-    style.background,
-  );
-
-  let pill_radius = (style.corner_radius - 2).max(0);
-
-  for (position, index) in state.display_order().into_iter().enumerate() {
-    let Some(slot) = state.layout.slots.get(position) else {
-      continue;
-    };
-
-    if index == frame.active_index {
-      continue;
-    }
-
-    let is_hovered = matches!(
-      state.hover,
-      TabHit::Tab(hovered) | TabHit::Close(hovered) if hovered == index
-    ) || state
+  let order = state.display_order();
+  let close_visible = (0..frame.tabs.len())
+    .map(|index| state.is_close_visible(index))
+    .collect::<Vec<_>>();
+  let view = TabBarView {
+    layout: &state.layout,
+    order: &order,
+    hover: state.hover,
+    dragged: state
       .drag
       .as_ref()
-      .is_some_and(|drag| drag.is_moving && drag.index == index);
-
-    let is_urgent = frame.tabs.get(index).is_some_and(|tab| tab.is_urgent);
-
-    let color = if is_hovered {
-      style.hover_background
-    } else if is_urgent {
-      style.urgent_background
-    } else {
-      style.inactive_background
-    };
-
-    canvas.fill_rounded_rect(&slot.pill.into(), pill_radius, color);
-  }
-
-  if let Some(pill) = state.active_pill() {
-    canvas.fill_rounded_rect(
-      &pill.into(),
-      pill_radius,
-      style.active_background,
-    );
-  }
-}
-
-/// Draws titles and icons with GDI.
-///
-/// # Safety
-///
-/// `dc` must have the bar's bitmap selected.
-unsafe fn paint_text_and_icons(
-  dc: HDC,
-  hwnd: HWND,
-  state: &BarState,
-  frame: &TabFrame,
-) -> Vec<bool> {
-  let mut truncated = vec![false; frame.tabs.len()];
-  let style = &frame.style;
-  let regular = create_font(style, false);
-  let bold = create_font(style, true);
-  let old_font = SelectObject(dc, regular);
-  SetBkMode(dc, TRANSPARENT);
-
-  for (position, index) in state.display_order().into_iter().enumerate() {
-    let (Some(slot), Some(tab)) =
-      (state.layout.slots.get(position), frame.tabs.get(index))
-    else {
-      continue;
-    };
-
-    let is_active = index == frame.active_index;
-
-    if let Some(icon_rect) = slot.icon {
-      if let Some(icon) =
-        window_icons::icon_for(tab.hwnd, hwnd, WM_ICON_READY)
-      {
-        let _ = DrawIconEx(
-          dc,
-          icon_rect.left,
-          icon_rect.top,
-          icon,
-          icon_rect.width(),
-          icon_rect.height(),
-          0,
-          None,
-          DI_NORMAL,
-        );
-      }
-    }
-
-    if slot.text.width() <= 0 {
-      // Icon-only tabs show their title as a tooltip.
-      if let Some(is_truncated) = truncated.get_mut(index) {
-        *is_truncated = true;
-      }
-      continue;
-    }
-
-    let title = if style.show_numbers {
-      format!("{}. {}", index + 1, tab.title)
-    } else {
-      tab.title.clone()
-    };
-
-    // An empty slice's dangling pointer must never reach `DrawTextW`,
-    // which reads through it on some systems (e.g. Wine).
-    if title.is_empty() {
-      continue;
-    }
-
-    let color = if is_active {
-      style.text
-    } else {
-      style.inactive_text
-    };
-
-    SelectObject(dc, if is_active { bold } else { regular });
-    SetTextColor(dc, COLORREF(color.to_bgr()));
-
-    let mut text = title.encode_utf16().collect::<Vec<_>>();
-    let mut rect = RECT {
-      left: slot.text.left,
-      top: slot.text.top,
-      right: slot.text.right,
-      bottom: slot.text.bottom,
-    };
-
-    let mut needed = rect;
-    DrawTextW(
-      dc,
-      &mut text.clone(),
-      &raw mut needed,
-      DT_LEFT | DT_SINGLELINE | DT_NOPREFIX | DT_CALCRECT,
-    );
-    if let Some(is_truncated) = truncated.get_mut(index) {
-      *is_truncated = needed.right > rect.right;
-    }
-
-    DrawTextW(
-      dc,
-      &mut text,
-      &raw mut rect,
-      DT_LEFT | DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS | DT_NOPREFIX,
-    );
-  }
-
-  SelectObject(dc, old_font);
-  let _ = DeleteObject(regular);
-  let _ = DeleteObject(bold);
-  truncated
-}
-
-/// Creates the tab title font, bold for the active tab.
-///
-/// # Safety
-///
-/// The returned font must be deleted by the caller.
-unsafe fn create_font(style: &TabBarStyle, is_bold: bool) -> HFONT {
-  let family = style
-    .font_family
-    .encode_utf16()
-    .chain(std::iter::once(0))
-    .collect::<Vec<_>>();
-
-  let weight = if is_bold { FW_SEMIBOLD } else { FW_NORMAL };
-
-  CreateFontW(
-    // Negative: character height rather than cell height.
-    -style.font_size.max(1),
-    0,
-    0,
-    0,
-    i32::try_from(weight.0).unwrap_or(400),
-    0,
-    0,
-    0,
-    u32::from(DEFAULT_CHARSET.0),
-    u32::from(OUT_DEFAULT_PRECIS.0),
-    u32::from(CLIP_DEFAULT_PRECIS.0),
-    u32::from(CLEARTYPE_QUALITY.0),
-    0,
-    PCWSTR(family.as_ptr()),
-  )
-}
-
-/// Draws the close buttons' crosses, anti-aliased.
-fn paint_close_buttons(
-  pixels: &mut [u32],
-  width: i32,
-  height: i32,
-  state: &BarState,
-  frame: &TabFrame,
-) {
-  let mut canvas = Canvas {
-    pixels,
-    width,
-    height,
+      .filter(|drag| drag.is_moving)
+      .map(|drag| drag.index),
+    close_visible: &close_visible,
   };
 
-  for (position, index) in state.display_order().into_iter().enumerate() {
-    let Some(close) =
-      state.layout.slots.get(position).and_then(|slot| slot.close)
-    else {
-      continue;
-    };
+  state.truncated =
+    paint_tab_bar(&mut surface, &frame, &view, (hwnd, WM_ICON_READY));
 
-    if !state.is_close_visible(index) {
-      continue;
-    }
-
-    if state.hover == TabHit::Close(index) {
-      canvas.fill_rounded_rect(
-        &close.into(),
-        close.width() / 4,
-        frame.style.hover_background,
-      );
-    }
-
-    let color = if index == frame.active_index {
-      frame.style.text
-    } else {
-      frame.style.inactive_text
-    };
-
-    #[allow(clippy::cast_precision_loss)]
-    let (inset, left, top, right, bottom) = (
-      close.width() as f32 * 0.3,
-      close.left as f32,
-      close.top as f32,
-      close.right as f32,
-      close.bottom as f32,
-    );
-    let thickness = (frame.style.scale_factor * 1.3).max(1.0);
-
-    canvas.stroke_line(
-      (left + inset, top + inset),
-      (right - inset, bottom - inset),
-      thickness,
-      color,
-    );
-    canvas.stroke_line(
-      (right - inset, top + inset),
-      (left + inset, bottom - inset),
-      thickness,
-      color,
-    );
+  let position = POINT {
+    x: outer.x(),
+    y: outer.y(),
+  };
+  if let Err(err) = surface.show_on(hwnd, position) {
+    tracing::warn!("Failed to draw tab bar: {err}");
   }
-}
-
-/// Signed client coordinates packed into a mouse message's `LPARAM`.
-fn mouse_position(lparam: LPARAM) -> (i32, i32) {
-  #[allow(clippy::cast_possible_truncation)]
-  let (x, y) = (lparam.0 as i16, (lparam.0 >> 16) as i16);
-  (i32::from(x), i32::from(y))
 }
 
 /// Applies a newly posted frame.

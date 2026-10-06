@@ -14,13 +14,11 @@ use windows::{
   Win32::{
     Foundation::{COLORREF, HWND, RECT},
     Graphics::Gdi::{
-      CreateCompatibleDC, CreateDIBSection, CreateFontW, DeleteDC,
-      DeleteObject, DrawTextW, GdiFlush, SelectObject, SetBkMode,
-      SetTextColor, ANTIALIASED_QUALITY, BITMAPINFO, BITMAPINFOHEADER,
-      BI_RGB, CLIP_DEFAULT_PRECIS, DEFAULT_CHARSET, DIB_RGB_COLORS,
-      DRAW_TEXT_FORMAT, DT_CENTER, DT_END_ELLIPSIS, DT_LEFT, DT_NOPREFIX,
-      DT_SINGLELINE, DT_VCENTER, FW_NORMAL, FW_SEMIBOLD, HBITMAP, HDC,
-      HFONT, HGDIOBJ, OUT_DEFAULT_PRECIS, TRANSPARENT,
+      CreateFontW, DeleteObject, DrawTextW, SelectObject, SetBkMode,
+      SetTextColor, ANTIALIASED_QUALITY, CLIP_DEFAULT_PRECIS,
+      DEFAULT_CHARSET, DRAW_TEXT_FORMAT, DT_CENTER, DT_END_ELLIPSIS,
+      DT_LEFT, DT_NOPREFIX, DT_SINGLELINE, DT_VCENTER, FW_NORMAL,
+      FW_SEMIBOLD, HFONT, OUT_DEFAULT_PRECIS, TRANSPARENT,
     },
     UI::WindowsAndMessaging::{DrawIconEx, DI_NORMAL, HICON},
   },
@@ -28,7 +26,8 @@ use windows::{
 
 use crate::{
   overview_layout::{CardMetrics, RectF},
-  paint::{self, Canvas},
+  paint,
+  surface::Surface,
   window_icons, Color, OverviewStyle, Rect,
 };
 
@@ -43,101 +42,6 @@ pub(crate) const GHOST_SIZE: (f32, f32) = (200.0, 124.0);
 
 /// Height of the key hints line, in logical pixels.
 pub(crate) const HINT_HEIGHT: f32 = 20.0;
-
-/// A 32-bit top-down DIB section selected into its own memory DC.
-pub(crate) struct Surface {
-  pub dc: HDC,
-  bitmap: HBITMAP,
-  old_bitmap: HGDIOBJ,
-  bits: *mut u32,
-  pub width: i32,
-  pub height: i32,
-}
-
-impl Surface {
-  pub fn new(width: i32, height: i32) -> Option<Self> {
-    if width <= 0 || height <= 0 {
-      return None;
-    }
-
-    let info = BITMAPINFO {
-      bmiHeader: BITMAPINFOHEADER {
-        biSize: u32::try_from(std::mem::size_of::<BITMAPINFOHEADER>())
-          .ok()?,
-        biWidth: width,
-        // Negative height: top-down rows.
-        biHeight: -height,
-        biPlanes: 1,
-        biBitCount: 32,
-        biCompression: BI_RGB.0,
-        ..Default::default()
-      },
-      ..Default::default()
-    };
-
-    // SAFETY: `info` describes a valid 32-bit DIB and outlives the calls.
-    // The DC and bitmap are released in `Drop`, or below on failure.
-    unsafe {
-      let dc = CreateCompatibleDC(None);
-      if dc.is_invalid() {
-        return None;
-      }
-
-      let mut bits = std::ptr::null_mut();
-      let Ok(bitmap) = CreateDIBSection(
-        dc,
-        &raw const info,
-        DIB_RGB_COLORS,
-        &raw mut bits,
-        None,
-        0,
-      ) else {
-        let _ = DeleteDC(dc);
-        return None;
-      };
-
-      Some(Self {
-        dc,
-        bitmap,
-        old_bitmap: SelectObject(dc, bitmap),
-        bits: bits.cast(),
-        width,
-        height,
-      })
-    }
-  }
-
-  pub fn pixels(&mut self) -> &mut [u32] {
-    let len = usize::try_from(self.width * self.height).unwrap_or(0);
-
-    // SAFETY: The DIB section holds `width * height` 32-bit pixels, owned
-    // by `bitmap` until `Drop`, and GDI has finished drawing into it.
-    unsafe {
-      let _ = GdiFlush();
-      std::slice::from_raw_parts_mut(self.bits, len)
-    }
-  }
-
-  pub fn canvas(&mut self) -> Canvas<'_> {
-    let (width, height) = (self.width, self.height);
-    Canvas {
-      pixels: self.pixels(),
-      width,
-      height,
-    }
-  }
-}
-
-impl Drop for Surface {
-  fn drop(&mut self) {
-    // SAFETY: Both handles were created in `new` and are released once.
-    unsafe {
-      SelectObject(self.dc, self.old_bitmap);
-      let _ = DeleteObject(self.bitmap);
-      let _ = DeleteDC(self.dc);
-    }
-  }
-}
 
 /// Everything a card's picture depends on, so it is only redrawn when
 /// something in it changes.

@@ -32,14 +32,13 @@ use windows::{
       WindowsAndMessaging::{
         CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW,
         GetCursorPos, LoadCursorW, PeekMessageW, PostMessageW,
-        PostQuitMessage, RegisterClassW, SetCursor, SetForegroundWindow,
-        SetWindowPos, ShowWindow, TranslateMessage, WaitMessage, HTCLIENT,
-        HWND_TOPMOST, IDC_ARROW, IDC_HAND, IDC_SIZEALL, MSG, PM_REMOVE,
-        SC_KEYMENU, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE,
-        SWP_SHOWWINDOW, SW_HIDE, WA_INACTIVE, WM_ACTIVATE, WM_APP,
-        WM_CHAR, WM_CLOSE, WM_DESTROY, WM_KEYDOWN, WM_LBUTTONDOWN,
-        WM_LBUTTONUP, WM_MBUTTONDOWN, WM_MOUSEMOVE, WM_MOUSEWHEEL,
-        WM_QUIT, WM_SETCURSOR, WM_SYSCOMMAND, WNDCLASSW,
+        PostQuitMessage, SetCursor, SetForegroundWindow, SetWindowPos,
+        ShowWindow, TranslateMessage, WaitMessage, HTCLIENT, HWND_TOPMOST,
+        IDC_ARROW, IDC_HAND, IDC_SIZEALL, MSG, PM_REMOVE, SC_KEYMENU,
+        SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_SHOWWINDOW, SW_HIDE,
+        WA_INACTIVE, WM_ACTIVATE, WM_APP, WM_CHAR, WM_CLOSE, WM_DESTROY,
+        WM_KEYDOWN, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MBUTTONDOWN,
+        WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_QUIT, WM_SETCURSOR, WM_SYSCOMMAND,
         WS_EX_NOREDIRECTIONBITMAP, WS_EX_TOOLWINDOW, WS_EX_TOPMOST,
         WS_POPUP,
       },
@@ -62,6 +61,7 @@ use crate::{
     FALLBACK_FRAME,
   },
   platform_impl::{self, composition::OverviewBackdrop},
+  window_class::{self, mouse_position},
   window_icons, DxgiVsyncWaiter, OverviewAction, OverviewFrame,
   OverviewLayoutMode, OverviewStyle, OverviewWorkspace,
 };
@@ -292,18 +292,11 @@ fn with_overview<T>(f: impl FnOnce(&mut Overview) -> T) -> Option<T> {
 
 fn create_window() -> crate::Result<HWND> {
   static REGISTERED: OnceLock<()> = OnceLock::new();
-  REGISTERED.get_or_init(|| {
-    let class = WNDCLASSW {
-      lpszClassName: w!("GlazeWM_Overview"),
-      lpfnWndProc: Some(wnd_proc),
-      // SAFETY: `IDC_ARROW` is a system cursor.
-      hCursor: unsafe { LoadCursorW(None, IDC_ARROW) }.unwrap_or_default(),
-      ..Default::default()
-    };
-
-    // SAFETY: `class` is fully initialized with a static class name.
-    unsafe { RegisterClassW(&raw const class) };
-  });
+  window_class::ensure_class_registered(
+    &REGISTERED,
+    w!("GlazeWM_Overview"),
+    wnd_proc,
+  );
 
   // `WS_EX_NOREDIRECTIONBITMAP`: the backdrop is a composition visual tree
   // rooted on the window, with the thumbnails drawn above it.
@@ -1473,13 +1466,6 @@ fn to_key(key: VIRTUAL_KEY) -> Option<Key> {
 /// Milliseconds since `started`.
 fn elapsed_ms(started: Instant) -> f32 {
   started.elapsed().as_secs_f32() * 1000.0
-}
-
-/// Signed client coordinates packed into a mouse message's `LPARAM`.
-fn mouse_position(lparam: LPARAM) -> (i32, i32) {
-  #[allow(clippy::cast_possible_truncation)]
-  let (x, y) = (lparam.0 as i16, (lparam.0 >> 16) as i16);
-  (i32::from(x), i32::from(y))
 }
 
 /// Cursor position in `hwnd`'s client coordinates.

@@ -84,6 +84,10 @@ mod overview_thumbnails;
 #[cfg(target_os = "windows")]
 mod paint;
 #[cfg(target_os = "windows")]
+mod surface;
+#[cfg(target_os = "windows")]
+mod tab_bar_paint;
+#[cfg(target_os = "windows")]
 mod window_icons;
 #[cfg(target_os = "windows")]
 pub use native_stack_tab_bar::NativeStackTabBar;

@@ -6,31 +6,26 @@ use std::sync::OnceLock;
 use windows::{
   core::w,
   Win32::{
-    Foundation::{BOOL, COLORREF, HWND, POINT, RECT, SIZE},
-    Graphics::{
-      Dwm::{
-        DwmGetWindowAttribute, DwmRegisterThumbnail,
-        DwmSetWindowAttribute, DwmUnregisterThumbnail,
-        DwmUpdateThumbnailProperties, DWMWA_CLOAK,
-        DWMWA_EXTENDED_FRAME_BOUNDS, DWM_THUMBNAIL_PROPERTIES,
-        DWM_TNP_OPACITY, DWM_TNP_RECTDESTINATION, DWM_TNP_RECTSOURCE,
-        DWM_TNP_SOURCECLIENTAREAONLY, DWM_TNP_VISIBLE,
-      },
-      Gdi::{AC_SRC_ALPHA, AC_SRC_OVER, BLENDFUNCTION},
+    Foundation::{BOOL, HWND, POINT, RECT},
+    Graphics::Dwm::{
+      DwmGetWindowAttribute, DwmRegisterThumbnail, DwmSetWindowAttribute,
+      DwmUnregisterThumbnail, DwmUpdateThumbnailProperties, DWMWA_CLOAK,
+      DWMWA_EXTENDED_FRAME_BOUNDS, DWM_THUMBNAIL_PROPERTIES,
+      DWM_TNP_OPACITY, DWM_TNP_RECTDESTINATION, DWM_TNP_RECTSOURCE,
+      DWM_TNP_SOURCECLIENTAREAONLY, DWM_TNP_VISIBLE,
     },
     UI::WindowsAndMessaging::{
-      CreateWindowExW, DestroyWindow, GetWindowRect, RegisterClassW,
-      ShowWindow, UpdateLayeredWindow, SW_SHOWNOACTIVATE, ULW_ALPHA,
-      WNDCLASSW, WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW,
-      WS_EX_TRANSPARENT, WS_POPUP,
+      CreateWindowExW, DestroyWindow, GetWindowRect, ShowWindow,
+      SW_SHOWNOACTIVATE, WS_EX_LAYERED, WS_EX_NOACTIVATE,
+      WS_EX_TOOLWINDOW, WS_EX_TRANSPARENT, WS_POPUP,
     },
   },
 };
 
 use crate::{
   companion::Companion,
-  overview_chrome::Surface,
   overview_layout::{RectF, Tile},
+  surface::Surface,
   window_class,
 };
 
@@ -47,16 +42,11 @@ pub(crate) const FALLBACK_FRAME: RECT = RECT {
 /// composing it, so the overview can show it as a thumbnail.
 fn create_picture_window() -> Option<HWND> {
   static REGISTERED: OnceLock<()> = OnceLock::new();
-  REGISTERED.get_or_init(|| {
-    let class = WNDCLASSW {
-      lpszClassName: w!("GlazeWM_OverviewPicture"),
-      lpfnWndProc: Some(window_class::default_wnd_proc),
-      ..Default::default()
-    };
-
-    // SAFETY: `class` is fully initialized with a static class name.
-    unsafe { RegisterClassW(&raw const class) };
-  });
+  window_class::ensure_class_registered(
+    &REGISTERED,
+    w!("GlazeWM_OverviewPicture"),
+    window_class::default_wnd_proc,
+  );
 
   // SAFETY: The class is registered above, and the attribute matches its
   // documented `BOOL` size.
@@ -212,33 +202,7 @@ impl Picture {
     };
     draw(surface);
 
-    let blend = BLENDFUNCTION {
-      BlendOp: u8::try_from(AC_SRC_OVER).unwrap_or_default(),
-      BlendFlags: 0,
-      SourceConstantAlpha: u8::MAX,
-      AlphaFormat: u8::try_from(AC_SRC_ALPHA).unwrap_or_default(),
-    };
-    let size = SIZE {
-      cx: surface.width,
-      cy: surface.height,
-    };
-    let origin = POINT::default();
-
-    // SAFETY: The window and the surface's DC are valid, and every
-    // pointer outlives the call.
-    if let Err(err) = unsafe {
-      UpdateLayeredWindow(
-        self.window,
-        None,
-        Some(&raw const origin),
-        Some(&raw const size),
-        surface.dc,
-        Some(&raw const origin),
-        COLORREF(0),
-        Some(&raw const blend),
-        ULW_ALPHA,
-      )
-    } {
+    if let Err(err) = surface.show_on(self.window, POINT::default()) {
       tracing::warn!("Failed to draw an overview picture: {err}");
     }
   }

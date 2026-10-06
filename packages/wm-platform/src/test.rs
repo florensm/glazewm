@@ -27,9 +27,12 @@ mod paint;
 pub mod perf;
 mod platform_event;
 mod platform_impl;
+// Only used through the Windows-only tab bars and overview.
+#[allow(dead_code)]
 mod tab_layout;
 mod thread_bound;
 #[cfg(target_os = "windows")]
+#[allow(dead_code)]
 mod window_class;
 mod window_listener;
 
