@@ -481,6 +481,10 @@ impl Overview {
       frame.style.grid_columns,
       6.0 * scale_factor,
     );
+    self
+      .interaction
+      .digit_workspaces
+      .clone_from(&frame.digit_workspaces);
     self.session = session;
     self.is_done = false;
 
@@ -551,6 +555,10 @@ impl Overview {
     }
 
     self.interaction.sync(&old.workspaces, &frame.workspaces);
+    self
+      .interaction
+      .digit_workspaces
+      .clone_from(&frame.digit_workspaces);
     self.sync_backdrop(&frame, self.openness());
 
     let is_restyled = old.style != frame.style;

@@ -11,6 +11,11 @@ pub struct OverviewFrame {
   /// The monitor's workspaces, in order.
   pub workspaces: Vec<OverviewWorkspace>,
 
+  /// Workspaces named "1" to "10" without a card here that digit keys can
+  /// still go to: inactive ones from the config, or ones on another
+  /// monitor.
+  pub digit_workspaces: Vec<String>,
+
   /// Handle of the focused window, if any.
   pub focused_window: Option<isize>,
 
