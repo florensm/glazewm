@@ -91,6 +91,19 @@ closing, or being moved) show up in it right away.
 Previews of other workspaces need `general.hide_method: "cloak"` (the
 default): with `"hide"`, their windows have nothing for DWM to show.
 
+### Stacks
+
+A [stack](./stacks.md) shows on its card the way it does on screen: its
+shown window, with its tab bar drawn by the same code as the real one.
+
+- The arrow keys pass over a stack as one window, its shown tab.
+- Click a tab on a card's tab bar to switch to that window, or drag it
+  off to move that window out of its stack and onto another workspace.
+- Search finds the other tabs too; the one picked is highlighted on its
+  stack's tab bar, and `Enter` switches to it.
+- The border of a stack's window goes around its tab bar as well, which
+  takes the place of its title strip.
+
 ## Config
 
 ```yaml

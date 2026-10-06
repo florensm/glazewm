@@ -12,12 +12,15 @@ use wm_common::WindowState;
 use wm_platform::{
   Color, NativeOverview, OverviewAction, OverviewFrame,
   OverviewLayoutMode, OverviewStyle, OverviewWindow, OverviewWorkspace,
+  TabFrame,
 };
 
 use crate::{
   models::{
-    Container, Monitor, WindowContainer, Workspace, WorkspaceTarget,
+    is_inactive_stack_child, Container, Monitor, WindowContainer,
+    Workspace, WorkspaceTarget,
   },
+  tab_bars::{tab_frame, TabBarSettings},
   traits::{CommonGetters, PositionGetters, WindowGetters},
   user_config::UserConfig,
   wm_state::WmState,
@@ -177,17 +180,20 @@ fn overview_frame(
     .workspaces()
     .iter()
     .map(|workspace| {
-      let config = workspace.config();
+      let workspace_config = workspace.config();
 
       OverviewWorkspace {
-        label: config.display_name.unwrap_or_else(|| config.name.clone()),
-        name: config.name,
+        label: workspace_config
+          .display_name
+          .unwrap_or_else(|| workspace_config.name.clone()),
+        name: workspace_config.name,
         is_focused: focused_workspace == Some(workspace.id()),
         is_new: false,
         windows: overview_windows(workspace)
           .iter()
           .map(overview_window)
           .collect(),
+        tab_bars: workspace_tab_bars(state, workspace, config),
       }
     })
     .collect::<Vec<_>>();
@@ -250,6 +256,7 @@ fn new_workspace(
     is_focused: false,
     is_new: true,
     windows: Vec::new(),
+    tab_bars: Vec::new(),
   })
 }
 
@@ -287,7 +294,31 @@ fn overview_window(window: &WindowContainer) -> OverviewWindow {
     // workspace.
     rect: window.to_rect().unwrap_or(properties.frame),
     is_minimized: window.state() == WindowState::Minimized,
+    is_hidden_tab: is_inactive_stack_child(window),
   }
+}
+
+/// Tab bars of the stacks on `workspace`, as their own bars draw them.
+fn workspace_tab_bars(
+  state: &WmState,
+  workspace: &Workspace,
+  config: &UserConfig,
+) -> Vec<TabFrame> {
+  // Resolved by the first sync of the tab bars, which may not have run.
+  let resolved;
+  let settings = if let Some(settings) = &state.tab_bar_settings {
+    settings
+  } else {
+    resolved = TabBarSettings::from_config(&config.value.stack);
+    &resolved
+  };
+  let focused_id = state.focused_container().map(|focused| focused.id());
+
+  workspace
+    .descendants()
+    .filter_map(|container| container.as_stack().cloned())
+    .filter_map(|stack| tab_frame(&stack, settings, config, focused_id))
+    .collect()
 }
 
 /// Windows of `workspace`: tiling windows in layout order, then the

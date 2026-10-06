@@ -56,11 +56,13 @@ use crate::{
     RectF, Spring, Tile, Zoom,
   },
   overview_state::{HintTone, Hit, Interaction, Key, Mode},
+  overview_tab_bars::CardTabBar,
   overview_thumbnails::{
     visible_frame, visible_frame_on_screen, Picture, Preview, Thumbnail,
     FALLBACK_FRAME,
   },
   platform_impl::{self, composition::OverviewBackdrop},
+  tab_layout::TabHit,
   window_class::{self, mouse_position},
   window_icons, DxgiVsyncWaiter, OverviewAction, OverviewFrame,
   OverviewLayoutMode, OverviewStyle, OverviewWorkspace,
@@ -334,6 +336,10 @@ struct Card {
   cy: Spring,
   scale: Spring,
   previews: Vec<Preview>,
+
+  /// Its stacks' tab bars, each under its stack's window.
+  tab_bars: Vec<CardTabBar>,
+
   picture: Picture,
 
   /// What `picture` shows, to skip redrawing it unchanged.
@@ -341,6 +347,16 @@ struct Card {
 }
 
 impl Card {
+  /// Its pictures, unregistered, for reuse.
+  fn into_pictures(self) -> impl Iterator<Item = Picture> {
+    std::iter::once(self.picture)
+      .chain(self.tab_bars.into_iter().map(|bar| bar.picture))
+      .map(|mut picture| {
+        picture.thumbnail = None;
+        picture
+      })
+  }
+
   fn placement(&self) -> Placement {
     Placement {
       cx: self.cx.value,
@@ -585,9 +601,8 @@ impl Overview {
       let _ = ReleaseCapture();
     }
 
-    for mut card in self.cards.drain(..) {
-      card.picture.thumbnail = None;
-      self.spare.push(card.picture);
+    for card in self.cards.drain(..) {
+      self.spare.extend(card.into_pictures());
     }
     if let Some(hint) = &mut self.hint {
       hint.thumbnail = None;
@@ -639,7 +654,7 @@ impl Overview {
       let previews = workspace
         .windows
         .iter()
-        .filter(|window| !window.is_minimized)
+        .filter(|window| !window.is_minimized && !window.is_hidden_tab)
         .filter_map(|window| {
           let rect = if workspace.is_focused {
             // Measured, so the zoom out starts exactly where the window
@@ -655,8 +670,18 @@ impl Overview {
         })
         .collect::<Vec<_>>();
 
+      let old_tab_bars = cards
+        .get_mut(index)
+        .map_or_else(Vec::new, |card| std::mem::take(&mut card.tab_bars));
+      let tab_bars = self.rebuild_tab_bars(
+        &workspace.tab_bars,
+        old_tab_bars,
+        &mut spare,
+      );
+
       if let Some(card) = cards.get_mut(index) {
         card.previews = previews;
+        card.tab_bars = tab_bars;
         continue;
       }
 
@@ -670,28 +695,71 @@ impl Overview {
         cy: Spring::new(0.0, SETTLE_MS, 0.25),
         scale: Spring::new(1.0, SETTLE_MS, 0.001),
         previews,
+        tab_bars,
         picture,
         drawn: None,
       });
     }
 
-    for mut card in cards.drain(frame.workspaces.len().min(cards.len())..)
-    {
-      card.picture.thumbnail = None;
-      spare.push(card.picture);
+    for card in cards.drain(frame.workspaces.len().min(cards.len())..) {
+      spare.extend(card.into_pictures());
     }
 
     self.cards = cards;
     self.spare = spare;
   }
 
-  /// Registers every thumbnail again, in stacking order: each card's
-  /// previews then its picture, then the hints, then the floating window.
+  /// A card's tab bars for `frames`, reusing the bars in `old` that
+  /// belong to the same stack (by its shown window), and pictures from
+  /// `spare` for new ones.
+  fn rebuild_tab_bars(
+    &self,
+    frames: &[crate::TabFrame],
+    mut old: Vec<CardTabBar>,
+    spare: &mut Vec<Picture>,
+  ) -> Vec<CardTabBar> {
+    let tab_bars = frames
+      .iter()
+      .filter_map(|frame| {
+        let reused = old
+          .iter()
+          .position(|bar| bar.frame.anchor == frame.anchor)
+          .map(|index| old.swap_remove(index));
+
+        if let Some(mut bar) = reused {
+          bar.update(frame.clone(), &self.metrics, &self.area);
+          return Some(bar);
+        }
+
+        let picture = spare.pop().or_else(Picture::new)?;
+        Some(CardTabBar::new(
+          frame.clone(),
+          &self.metrics,
+          &self.area,
+          picture,
+        ))
+      })
+      .collect();
+
+    spare.extend(old.into_iter().map(|bar| {
+      let mut picture = bar.picture;
+      picture.thumbnail = None;
+      picture
+    }));
+    tab_bars
+  }
+
+  /// Registers every thumbnail again, in stacking order: each card's tab
+  /// bars, previews then picture, then the hints, then the floating
+  /// window.
   fn register_thumbnails(&mut self) {
     let host = self.hwnd;
 
     for card in &mut self.cards {
       card.picture.thumbnail = None;
+      for bar in &mut card.tab_bars {
+        bar.picture.thumbnail = None;
+      }
       for preview in &mut card.previews {
         preview.thumbnail = None;
       }
@@ -701,6 +769,11 @@ impl Overview {
     }
 
     for card in &mut self.cards {
+      // Under the windows, which cover the strip reaching under them.
+      for bar in &mut card.tab_bars {
+        bar.picture.thumbnail =
+          Thumbnail::register(host, bar.picture.window);
+      }
       for preview in &mut card.previews {
         preview.register(host);
       }
@@ -859,6 +932,17 @@ impl Overview {
         preview.opacity = tile.opacity;
       }
 
+      // A hidden tab picked with the keyboard (e.g. found by a search)
+      // shows on its stack's bar.
+      let cursor = self.interaction.selected_window;
+      for bar in &mut card.tab_bars {
+        let hover = cursor
+          .and_then(|hwnd| bar.tab_index(hwnd))
+          .filter(|index| *index != bar.frame.active_index)
+          .map_or(TabHit::Empty, TabHit::Tab);
+        bar.draw(hover, self.icons, notify);
+      }
+
       if !force && card.drawn.as_ref() == Some(&picture) {
         continue;
       }
@@ -973,10 +1057,20 @@ impl Overview {
             (1.0, with_alpha(caption, 0.6))
           };
 
+          // A stack's window is outlined with its tab bar, which shows
+          // its title.
+          let tab_bar = card
+            .tab_bars
+            .iter()
+            .find(|bar| bar.frame.anchor == preview.hwnd);
+
           TilePicture {
             hwnd: preview.hwnd,
             rect: preview.tile.rect,
-            title: window.map_or_else(String::new, |w| {
+            outline: tab_bar.map_or(preview.tile.rect, |bar| {
+              preview.tile.rect.union(&bar.bar_rect())
+            }),
+            title: window.filter(|_| tab_bar.is_none()).map(|w| {
               if w.title.is_empty() {
                 w.process_name.clone()
               } else {
@@ -1007,6 +1101,9 @@ impl Overview {
           .collect()
       }),
       tiles,
+      tab_bars: card.map_or_else(Vec::new, |card| {
+        card.tab_bars.iter().map(CardTabBar::hole).collect()
+      }),
       icons: self.icons,
     }
   }
@@ -1149,6 +1246,22 @@ impl Overview {
         }
       }
 
+      for bar in &mut card.tab_bars {
+        // Faded with its stack's shown window.
+        let opacity = card
+          .previews
+          .iter()
+          .find(|preview| preview.hwnd == bar.frame.anchor)
+          .map_or(1.0, |preview| preview.opacity);
+        let dest = camera.apply(&placement.map(&metrics, &bar.rect));
+
+        if is_visible {
+          bar.picture.place(&dest, opacity);
+        } else if let Some(thumbnail) = &mut bar.picture.thumbnail {
+          thumbnail.hide();
+        }
+      }
+
       if is_visible {
         card.picture.place(&rect, fade);
       } else if let Some(thumbnail) = &mut card.picture.thumbnail {
@@ -1192,12 +1305,20 @@ impl Overview {
         continue;
       };
 
+      // Windows cover the strip of their tab bar reaching under them.
       let window = card
         .previews
         .iter()
         .rev()
         .find(|preview| preview.tile.rect.contains(local_x, local_y))
-        .map(|preview| preview.hwnd);
+        .map(|preview| preview.hwnd)
+        .or_else(|| {
+          card
+            .tab_bars
+            .iter()
+            .rev()
+            .find_map(|bar| bar.hit(local_x, local_y))
+        });
 
       return Hit {
         workspace: Some(index),

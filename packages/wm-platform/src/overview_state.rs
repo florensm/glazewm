@@ -502,11 +502,13 @@ impl Interaction {
       .iter()
       .enumerate()
       .flat_map(|(index, workspace)| {
-        let minimized =
-          workspace.windows.iter().filter(|w| w.is_minimized);
+        let unshown = workspace
+          .windows
+          .iter()
+          .filter(|window| window.is_minimized || window.is_hidden_tab);
         ordered(workspace, Axis::Across)
           .into_iter()
-          .chain(minimized)
+          .chain(unshown)
           .filter_map(move |window| {
             let score = match_score(window, &self.query)?;
             Some((score, index, window))
@@ -736,7 +738,8 @@ enum Axis {
   Down,
 }
 
-/// Visible windows of `workspace` in on-screen order.
+/// Shown windows of `workspace` in on-screen order: not minimized, and of
+/// a stack only its shown tab.
 fn ordered(
   workspace: &OverviewWorkspace,
   axis: Axis,
@@ -744,7 +747,11 @@ fn ordered(
   let mut windows = workspace
     .windows
     .iter()
-    .filter(|window| !window.is_minimized && window.rect.width() > 0)
+    .filter(|window| {
+      !window.is_minimized
+        && !window.is_hidden_tab
+        && window.rect.width() > 0
+    })
     .collect::<Vec<_>>();
 
   windows.sort_by_key(|window| match axis {
@@ -845,6 +852,7 @@ mod tests {
       process_name: format!("{title}.exe"),
       rect,
       is_minimized: false,
+      is_hidden_tab: false,
     }
   }
 
@@ -857,6 +865,7 @@ mod tests {
         label: "1".to_string(),
         is_focused: false,
         is_new: false,
+        tab_bars: vec![],
         windows: vec![
           window(12, "Editor", Rect::from_xy(960, 0, 960, 1000)),
           window(11, "Terminal", Rect::from_xy(0, 0, 960, 1000)),
@@ -867,6 +876,7 @@ mod tests {
         label: "2".to_string(),
         is_focused: true,
         is_new: false,
+        tab_bars: vec![],
         windows: vec![window(
           21,
           "Browser",
@@ -878,6 +888,7 @@ mod tests {
         label: "3".to_string(),
         is_focused: false,
         is_new: false,
+        tab_bars: vec![],
         windows: vec![],
       },
     ]
@@ -1032,6 +1043,7 @@ mod tests {
       is_focused: false,
       is_new: true,
       windows: vec![],
+      tab_bars: vec![],
     });
     let mut state =
       Interaction::new(&workspaces, OverviewLayoutMode::Carousel, 5, 6.0);
@@ -1052,6 +1064,40 @@ mod tests {
     assert_eq!(
       press(&[Key::End, Key::Enter]),
       Some(OverviewAction::FocusWorkspace("4".to_string()))
+    );
+  }
+
+  #[test]
+  fn hidden_tabs_are_skipped_but_found() {
+    let mut workspaces = workspaces();
+    workspaces[0].windows.push(OverviewWindow {
+      is_hidden_tab: true,
+      ..window(13, "Docs", Rect::from_xy(0, 0, 960, 1000))
+    });
+    let mut state =
+      Interaction::new(&workspaces, OverviewLayoutMode::Carousel, 5, 6.0);
+    let press = |state: &mut Interaction, keys: &[Key]| {
+      keys
+        .iter()
+        .fold(None, |_, key| state.key(*key, &workspaces))
+    };
+
+    press(&mut state, &[Key::Left, Key::Space, Key::Right, Key::Right]);
+    assert_eq!(
+      state.selected_window,
+      Some(12),
+      "steps over the hidden tab"
+    );
+
+    press(&mut state, &[Key::Backspace, Key::Text('/')]);
+    press(
+      &mut state,
+      &"docs".chars().map(Key::Text).collect::<Vec<_>>(),
+    );
+    assert_eq!(
+      press(&mut state, &[Key::Enter, Key::Enter]),
+      Some(OverviewAction::FocusWindow(13)),
+      "search finds it"
     );
   }
 

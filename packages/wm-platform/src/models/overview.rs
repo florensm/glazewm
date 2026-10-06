@@ -1,4 +1,4 @@
-use crate::{Color, Rect};
+use crate::{Color, Rect, TabFrame};
 
 /// What the window overview shows, sent by the WM as a whole.
 #[derive(Clone, Debug, PartialEq)]
@@ -23,7 +23,7 @@ pub struct OverviewFrame {
 }
 
 /// A workspace shown as a card in the overview.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct OverviewWorkspace {
   /// Name to address it by.
   pub name: String,
@@ -40,6 +40,9 @@ pub struct OverviewWorkspace {
   /// Tiling windows in layout order, then the rest, which are drawn above
   /// them.
   pub windows: Vec<OverviewWindow>,
+
+  /// Tab bars of its stacks, as the stacks' own bars draw them.
+  pub tab_bars: Vec<TabFrame>,
 }
 
 /// A window shown in the overview.
@@ -55,6 +58,10 @@ pub struct OverviewWindow {
   pub rect: Rect,
 
   pub is_minimized: bool,
+
+  /// A tab of a stack other than its shown one: it has no preview of its
+  /// own, and shows as a tab in its stack's tab bar.
+  pub is_hidden_tab: bool,
 }
 
 /// Look of the overview.

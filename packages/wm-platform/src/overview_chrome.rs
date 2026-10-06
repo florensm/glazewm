@@ -28,7 +28,7 @@ use crate::{
   overview_layout::{CardMetrics, RectF},
   paint,
   surface::Surface,
-  window_icons, Color, OverviewStyle, Rect,
+  window_icons, Color, CornerRadii, OverviewStyle, Rect,
 };
 
 /// Height and font size of the title strip under a window on a card.
@@ -65,6 +65,10 @@ pub(crate) struct CardPicture {
 
   pub tiles: Vec<TilePicture>,
 
+  /// Where its stacks' tab bars show, cut out like the previews, with the
+  /// bars' corners.
+  pub tab_bars: Vec<(RectF, CornerRadii)>,
+
   /// Bumped as window icons arrive, so cards showing them redraw.
   pub icons: u64,
 }
@@ -73,8 +77,16 @@ pub(crate) struct CardPicture {
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct TilePicture {
   pub hwnd: isize,
+
+  /// Where its preview shows.
   pub rect: RectF,
-  pub title: String,
+
+  /// What its border goes around: `rect`, plus its stack's tab bar.
+  pub outline: RectF,
+
+  /// Title on a strip along its bottom; `None` for a stack's window,
+  /// whose tab bar shows it.
+  pub title: Option<String>,
 
   /// Whether its live preview shows; the card is cut out for it.
   pub has_preview: bool,
@@ -173,6 +185,13 @@ pub(crate) fn draw_card(
     draw_plus(surface, &metrics.tile_area().to_rect(), units, color);
   }
 
+  {
+    let mut canvas = surface.canvas();
+    for (rect, radii) in &picture.tab_bars {
+      canvas.erase_rect_with_corners(&rect.to_rect(), *radii);
+    }
+  }
+
   // Previews are cut out in stacking order, so a floating window's hole
   // clears what was drawn for the tiled window under it.
   for tile in &picture.tiles {
@@ -259,7 +278,8 @@ fn draw_header(
 }
 
 /// Draws a window on a card: a hole for its preview (or its icon when it
-/// has none), its title along the bottom, and a border.
+/// has none), its title along the bottom, and a border around it and its
+/// stack's tab bar.
 fn draw_tile(
   surface: &mut Surface,
   fonts: &mut Fonts,
@@ -300,22 +320,24 @@ fn draw_tile(
     );
   }
 
-  draw_caption(
-    surface,
-    fonts,
-    &tile.title,
-    &rect,
-    (
-      units.px(TILE_CAPTION.0),
-      units.px(TILE_CAPTION.1),
-      units.px(4.0),
-    ),
-    style,
-    opacity,
-  );
+  if let Some(title) = &tile.title {
+    draw_caption(
+      surface,
+      fonts,
+      title,
+      &rect,
+      (
+        units.px(TILE_CAPTION.0),
+        units.px(TILE_CAPTION.1),
+        units.px(4.0),
+      ),
+      style,
+      opacity,
+    );
+  }
 
   surface.canvas().stroke_rounded_rect(
-    &rect,
+    &tile.outline.to_rect(),
     radius,
     round(units.px(tile.border_width)).max(1),
     fade(tile.border, opacity),

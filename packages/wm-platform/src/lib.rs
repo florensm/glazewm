@@ -80,6 +80,8 @@ mod overview_layout;
 #[cfg(target_os = "windows")]
 mod overview_state;
 #[cfg(target_os = "windows")]
+mod overview_tab_bars;
+#[cfg(target_os = "windows")]
 mod overview_thumbnails;
 #[cfg(target_os = "windows")]
 mod paint;

@@ -53,6 +53,18 @@ impl RectF {
       .then(|| Self::new(left, top, right - left, bottom - top))
   }
 
+  /// The smallest rect containing both.
+  pub fn union(&self, other: &Self) -> Self {
+    let left = self.x.min(other.x);
+    let top = self.y.min(other.y);
+    Self::new(
+      left,
+      top,
+      self.right().max(other.right()) - left,
+      self.bottom().max(other.bottom()) - top,
+    )
+  }
+
   /// Edges rounded to whole pixels, so adjacent rects stay adjacent.
   #[allow(clippy::cast_possible_truncation)]
   pub fn to_rect(self) -> crate::Rect {
@@ -287,6 +299,25 @@ pub(crate) fn grid(
       .collect(),
     hint_y: top + total_height + metrics.px(16.0),
   }
+}
+
+/// `rect` (screen coordinates) on the card of a workspace covering
+/// `area`, at scale 1: like a window's tile, but never clipped to the
+/// area, so it keeps its shape.
+pub(crate) fn to_card(
+  metrics: &CardMetrics,
+  area: &RectF,
+  rect: &RectF,
+) -> RectF {
+  let tiles = metrics.tile_area();
+  let (scale_x, scale_y) = (tiles.w / area.w, tiles.h / area.h);
+
+  RectF::new(
+    tiles.x + (rect.x - area.x) * scale_x,
+    tiles.y + (rect.y - area.y) * scale_y,
+    rect.w * scale_x,
+    rect.h * scale_y,
+  )
 }
 
 /// A window's place within a card at scale 1.
@@ -538,8 +569,8 @@ impl Spring {
 #[cfg(test)]
 mod tests {
   use super::{
-    carousel, cover_crop, ease_out_cubic, grid, tile, Camera, CardMetrics,
-    RectF, Spring, Zoom,
+    carousel, cover_crop, ease_out_cubic, grid, tile, to_card, Camera,
+    CardMetrics, RectF, Spring, Zoom,
   };
 
   fn metrics() -> CardMetrics {
@@ -734,6 +765,34 @@ mod tests {
     let instant = Zoom::close(0, 1.0, 0);
     assert!(instant.is_finished(0.0));
     assert_close(instant.openness(0.0), 0.0);
+  }
+
+  #[test]
+  fn to_card_maps_like_a_tile_without_clipping() {
+    let metrics = metrics();
+    let area = RectF::new(0.0, 0.0, 1920.0, 1040.0);
+    let inside = RectF::new(100.0, 50.0, 800.0, 30.0);
+
+    let mapped = to_card(&metrics, &area, &inside);
+    let tiled = tile(&metrics, &area, &inside).expect("tile").rect;
+    assert_close(mapped.x, tiled.x);
+    assert_close(mapped.w, tiled.w);
+
+    let past_edge = RectF::new(1800.0, 50.0, 400.0, 30.0);
+    assert_close(
+      to_card(&metrics, &area, &past_edge).w,
+      400.0 * metrics.tile_area().w / 1920.0,
+    );
+  }
+
+  #[test]
+  fn union_spans_both_rects() {
+    let window = RectF::new(10.0, 40.0, 100.0, 60.0);
+    let tab_bar = RectF::new(10.0, 30.0, 100.0, 12.0);
+    assert_eq!(
+      window.union(&tab_bar),
+      RectF::new(10.0, 30.0, 100.0, 70.0)
+    );
   }
 
   #[test]
