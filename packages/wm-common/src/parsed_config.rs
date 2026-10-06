@@ -197,8 +197,9 @@ pub struct OverviewConfig {
   pub backdrop_tint: Color,
 
   /// Selection and highlights, given like a border's color (see
-  /// [`BorderColorSource`]).
-  pub accent_color: BorderColorSource,
+  /// [`BorderColorSource`]). The focused window's border color when
+  /// `None`.
+  pub accent_color: Option<BorderColorSource>,
 
   /// Background of a workspace card.
   pub card_color: Color,
@@ -242,7 +243,7 @@ impl Default for OverviewConfig {
     OverviewConfig {
       backdrop_blur: 40.0,
       backdrop_tint: color(0x0000_0066),
-      accent_color: BorderColorSource::Value("accent".to_string()),
+      accent_color: None,
       card_color: color(0x221e_24e6),
       surface_color: color(0x2d29_2eff),
       caption_color: color(0x1612_17c7),
