@@ -467,32 +467,6 @@ impl Zoom {
   }
 }
 
-/// Size of a pinned window's preview `width` wide, for a window of size
-/// `source`: its shape, kept between a wide strip and a tall card.
-pub(crate) fn pin_size(width: f32, source: (f32, f32)) -> (f32, f32) {
-  let aspect = source.0 / source.1;
-  let height = if aspect.is_finite() && aspect > 0.0 {
-    width / aspect
-  } else {
-    width * 0.625
-  };
-
-  (width, height.clamp(width * 0.4, width * 1.25))
-}
-
-/// Top-left corner closest to `position` that keeps a `size` rect inside
-/// `area`, or at its top-left corner when it doesn't fit.
-pub(crate) fn keep_inside(
-  position: (f32, f32),
-  size: (f32, f32),
-  area: &RectF,
-) -> (f32, f32) {
-  (
-    position.0.min(area.right() - size.0).max(area.x),
-    position.1.min(area.bottom() - size.1).max(area.y),
-  )
-}
-
 /// Fast start, gentle stop.
 pub(crate) fn ease_out_cubic(progress: f32) -> f32 {
   1.0 - (1.0 - progress.clamp(0.0, 1.0)).powi(3)
@@ -564,8 +538,8 @@ impl Spring {
 #[cfg(test)]
 mod tests {
   use super::{
-    carousel, cover_crop, ease_out_cubic, grid, keep_inside, pin_size,
-    tile, Camera, CardMetrics, RectF, Spring, Zoom,
+    carousel, cover_crop, ease_out_cubic, grid, tile, Camera, CardMetrics,
+    RectF, Spring, Zoom,
   };
 
   fn metrics() -> CardMetrics {
@@ -760,32 +734,6 @@ mod tests {
     let instant = Zoom::close(0, 1.0, 0);
     assert!(instant.is_finished(0.0));
     assert_close(instant.openness(0.0), 0.0);
-  }
-
-  #[test]
-  fn pin_size_follows_the_window_within_limits() {
-    assert_eq!(pin_size(320.0, (1600.0, 1000.0)), (320.0, 200.0));
-    assert_eq!(pin_size(320.0, (400.0, 2000.0)), (320.0, 400.0), "tall");
-    assert_eq!(pin_size(320.0, (4000.0, 200.0)), (320.0, 128.0), "wide");
-    assert_eq!(pin_size(320.0, (0.0, 0.0)), (320.0, 200.0));
-  }
-
-  #[test]
-  fn keep_inside_pulls_a_rect_back_onto_the_area() {
-    let area = RectF::new(0.0, 0.0, 1920.0, 1040.0);
-    let size = (320.0, 200.0);
-
-    assert_eq!(keep_inside((100.0, 100.0), size, &area), (100.0, 100.0));
-    assert_eq!(
-      keep_inside((1800.0, 1000.0), size, &area),
-      (1600.0, 840.0)
-    );
-    assert_eq!(keep_inside((-50.0, -50.0), size, &area), (0.0, 0.0));
-    assert_eq!(
-      keep_inside((10.0, 10.0), (4000.0, 4000.0), &area),
-      (0.0, 0.0),
-      "too big to fit"
-    );
   }
 
   #[test]

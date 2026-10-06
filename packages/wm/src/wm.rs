@@ -119,13 +119,7 @@ impl WindowManager {
     #[cfg(target_os = "windows")]
     {
       let state = &mut self.state;
-
-      // The pin's preview acts outside any overview session.
-      let is_from_pin = matches!(
-        action,
-        OverviewAction::JumpToPin | OverviewAction::Unpin
-      );
-      if !is_from_pin && state.overview.open_session() != Some(session) {
+      if state.overview.open_session() != Some(session) {
         return Ok(());
       }
 
@@ -202,20 +196,6 @@ impl WindowManager {
         // Focus went elsewhere and the overview closed itself.
         OverviewAction::Deactivated => {
           state.overview.close();
-          return platform_sync(state, config);
-        }
-        OverviewAction::TogglePin(_) => {
-          if let Some(window) = window {
-            crate::overview::toggle_pin(&window, state, config)?;
-          }
-          return platform_sync(state, config);
-        }
-        OverviewAction::JumpToPin => {
-          crate::overview::focus_pinned_window(state, config)?;
-          return platform_sync(state, config);
-        }
-        OverviewAction::Unpin => {
-          crate::overview::unpin(state);
           return platform_sync(state, config);
         }
       };
@@ -567,14 +547,6 @@ impl WindowManager {
 
         if args.urgent_window {
           focus_urgent_window(state, config)?;
-        }
-
-        if args.pinned_window {
-          #[cfg(target_os = "windows")]
-          crate::overview::focus_pinned_window(state, config)?;
-
-          #[cfg(not(target_os = "windows"))]
-          tracing::warn!("Pinning windows is only available on Windows.");
         }
 
         if args.next_active_workspace_on_monitor {
@@ -1038,17 +1010,6 @@ impl WindowManager {
 
         Ok(())
       }
-      InvokeCommand::TogglePin => {
-        #[cfg(target_os = "windows")]
-        if let Ok(window) = subject_container.as_window_container() {
-          crate::overview::toggle_pin(&window, state, config)?;
-        }
-
-        #[cfg(not(target_os = "windows"))]
-        tracing::warn!("Pinning windows is only available on Windows.");
-
-        Ok(())
-      }
       InvokeCommand::ToggleTiling => {
         match subject_container.as_window_container() {
           Ok(window) => {
@@ -1155,7 +1116,6 @@ fn window_by_handle(
   let hwnd = match action {
     OverviewAction::FocusWindow(hwnd)
     | OverviewAction::CloseWindow(hwnd)
-    | OverviewAction::TogglePin(hwnd)
     | OverviewAction::MoveWindow { hwnd, .. } => *hwnd,
     _ => return None,
   };

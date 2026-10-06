@@ -230,9 +230,6 @@ pub struct OverviewConfig {
   /// Length of the zoom into the picked workspace when the overview
   /// closes; `0` closes it instantly.
   pub close_duration_ms: u32,
-
-  /// Width of the pinned window's preview, in logical pixels.
-  pub pin_width: u32,
 }
 
 impl Default for OverviewConfig {
@@ -257,7 +254,6 @@ impl Default for OverviewConfig {
       grid_columns: 5,
       open_duration_ms: 250,
       close_duration_ms: 200,
-      pin_width: 320,
     }
   }
 }
