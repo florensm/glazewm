@@ -197,14 +197,15 @@ fn to_ui_color(color: crate::Color) -> Color {
   }
 }
 
-/// What paints the overlay's lower (blur) layer: a crop of the monitor's
-/// pre-blurred, opaque wallpaper surface, plus the state it keeps to stay
-/// live.
+/// One of an overlay's two blur layers: a sprite painting a crop of a
+/// monitor's pre-blurred, opaque wallpaper surface, plus the state it
+/// keeps to stay live.
 ///
 /// The image is blurred once, ahead of time (see `wallpaper_surface`), so
 /// nothing here samples or blurs per frame; what it does have to do is
 /// follow the window across monitors.
-struct Backdrop {
+struct BackdropLayer {
+  sprite: SpriteVisual,
   brush: CompositionSurfaceBrush,
 
   /// Bounds of the monitor whose baked surface `brush` currently points
@@ -217,11 +218,119 @@ struct Backdrop {
   /// mismatch means the desktop wallpaper or the display layout changed
   /// under us; see `sync_backdrop`.
   generation: u64,
+
+  /// What the surface `brush` points at was baked with.
+  knobs: BakeKnobs,
+
+  /// Last opacity written to `sprite`.
+  opacity: f32,
+}
+
+impl BackdropLayer {
+  /// Must be called on the composition thread.
+  fn create(
+    compositor: &Compositor,
+    rect: &Rect,
+    knobs: BakeKnobs,
+    parallax: f32,
+    opacity: f32,
+  ) -> windows::core::Result<Self> {
+    let (brush, monitor) =
+      wallpaper_surface::crop_brush(compositor, rect, knobs, parallax)?;
+
+    let sprite = compositor.CreateSpriteVisual()?;
+    sprite.SetBrush(&brush)?;
+    sprite.SetRelativeSizeAdjustment(FILL_PARENT)?;
+    sprite.SetOpacity(opacity)?;
+
+    Ok(Self {
+      sprite,
+      brush,
+      monitor,
+      generation: wallpaper_surface::generation(),
+      knobs,
+      opacity,
+    })
+  }
+
+  /// Points the layer at the surface baked with `knobs`, baking it if no
+  /// cached one matches.
+  ///
+  /// Queued, not awaited: the new surface is on screen a frame or so
+  /// later, which beats blocking the main loop on a bake.
+  fn rebind(
+    &mut self,
+    compositor: &Compositor,
+    queue: &DispatcherQueue,
+    knobs: BakeKnobs,
+  ) -> crate::Result<()> {
+    let compositor = compositor.clone();
+    let brush = self.brush.clone();
+    let monitor = self.monitor.clone();
+
+    dispatch_on_composition_thread(queue, move || {
+      if let Err(err) =
+        wallpaper_surface::rebind(&compositor, &brush, &monitor, knobs)
+      {
+        tracing::warn!("Wallpaper backdrop re-bake failed: {err}.");
+      }
+    })?;
+
+    self.knobs = knobs;
+    Ok(())
+  }
+
+  /// Keeps the layer showing the part of the desktop `rect` covers.
+  ///
+  /// Re-binds to another monitor's baked surface only when the overlay has
+  /// actually crossed onto one -- checked arithmetically against the
+  /// cached bounds first, so the per-tick case during an animation costs
+  /// one property write and no system calls.
+  fn sync_crop(
+    &mut self,
+    compositor: &Compositor,
+    queue: &DispatcherQueue,
+    rect: &Rect,
+    parallax: f32,
+  ) -> crate::Result<()> {
+    let current = wallpaper_surface::generation();
+
+    // The generation check has to force a re-bind even when the overlay
+    // has not moved: the monitor it sits on is unchanged, but the image
+    // baked for that monitor is no longer the one the desktop is showing.
+    if self.generation != current
+      || !self.monitor.contains_point(&rect.center_point())
+    {
+      self.monitor = wallpaper_surface::monitor_bounds(rect);
+      self.generation = current;
+      self.rebind(compositor, queue, self.knobs)?;
+    }
+
+    wallpaper_surface::set_crop(
+      &self.brush,
+      rect,
+      &self.monitor,
+      parallax,
+    );
+    Ok(())
+  }
+
+  fn set_opacity(&mut self, value: f32) -> crate::Result<()> {
+    #[allow(clippy::float_cmp)]
+    if self.opacity == value {
+      return Ok(());
+    }
+
+    self.sprite.SetOpacity(value)?;
+    self.opacity = value;
+    Ok(())
+  }
 }
 
 /// A live `Windows.UI.Composition` visual tree providing an overlay's
-/// rendering: a blur layer (see [`Backdrop`]) with a tint layer composited
-/// on top, both clipped to a continuous rounded rectangle.
+/// rendering: two blur layers (see [`BackdropLayer`]) with a tint layer
+/// and a vignette composited on top, all clipped to a continuous rounded
+/// rectangle.
 pub(crate) struct BackdropVisual {
   /// Binds the visual tree to the overlay's `HWND`. Kept alive but never
   /// touched again -- dropping it would unbind composition from the
@@ -229,11 +338,26 @@ pub(crate) struct BackdropVisual {
   _target: DesktopWindowTarget,
 
   /// Retained (rather than just used during `create`) so the knob setters
-  /// can rebuild whatever their [`Backdrop`] needs rebuilt.
+  /// can rebuild whatever their layers need rebuilt.
   compositor: Compositor,
   queue: DispatcherQueue,
-  backdrop: Backdrop,
   root: ContainerVisual,
+
+  /// Two blur layers, so a change of baked knobs can crossfade between
+  /// two finished surfaces: the knobs are baked into the image, so there
+  /// is no in-between image to animate through, and re-baking per frame
+  /// would cost a full-monitor render each time.
+  ///
+  /// Outside a crossfade one layer is opaque and the other transparent.
+  /// The transparent one keeps its surface, so flipping back to the
+  /// previous knobs -- e.g. focus returning to a window -- needs no bake
+  /// and no re-bind, and lands in the same frame as the tint.
+  layers: [BackdropLayer; 2],
+
+  /// Index of the layer composited above the other. A crossfade fades the
+  /// upper layer in over an opaque lower one; fading two opaque layers
+  /// against each other would let the desktop show through mid-way.
+  top: usize,
 
   tint_brush: CompositionColorBrush,
 
@@ -246,20 +370,15 @@ pub(crate) struct BackdropVisual {
   /// measured from each window's own rect, which is what a vignette
   /// means.
   ///
-  /// `MappingMode::Relative` expresses the gradient in fractions of the
-  /// sprite, so a resize needs no update to the brush at all.
-  vignette_brush: CompositionRadialGradientBrush,
+  /// Its brush is built once at full strength, and the strength is the
+  /// sprite's opacity, so changing it is a property write rather than a
+  /// brush rebuild.
   vignette_sprite: SpriteVisual,
   rounded_geometry: CompositionRoundedRectangleGeometry,
 
-  /// Everything baked into the wallpaper image. Kept whole so any one
-  /// setter can re-render using the others' current values.
-  knobs: BakeKnobs,
-
-  /// How far the wallpaper crop follows the window. Not part of `knobs`:
-  /// it selects a different region of an already-baked surface rather
-  /// than changing what was baked, so a change costs one property
-  /// write.
+  /// How far the wallpaper crop follows the window. Not a baked knob: it
+  /// selects a different region of an already-baked surface rather than
+  /// changing what was baked, so a change costs one property write.
   parallax: f32,
 }
 
@@ -296,57 +415,23 @@ impl BackdropVisual {
       Y: pixels_to_dips(rect.height()),
     })?;
 
-    self.sync_crop(rect)?;
-    Ok(())
+    self.sync_crop(rect)
   }
 
-  /// Keeps the wallpaper backdrop showing the part of the desktop the
-  /// overlay now covers.
+  /// Keeps both layers showing the part of the desktop the overlay now
+  /// covers.
   ///
-  /// Re-binds to another monitor's baked surface only when the overlay has
-  /// actually crossed onto one -- checked arithmetically against the
-  /// cached bounds first, so the per-tick case during an animation costs
-  /// one property write and no system calls.
+  /// The transparent layer is kept current too: it is what a focus change
+  /// flips to, and a stale crop would show for the frame it flips.
   fn sync_crop(&mut self, rect: &Rect) -> crate::Result<()> {
-    let knobs = self.knobs;
-    let parallax = self.parallax;
-    let compositor = self.compositor.clone();
-    let queue = self.queue.clone();
-    let current = wallpaper_surface::generation();
-
-    let Backdrop {
-      brush,
-      monitor,
-      generation,
-    } = &mut self.backdrop;
-
-    // The generation check has to force a re-bind even when the overlay
-    // has not moved: the monitor it sits on is unchanged, but the
-    // image baked for that monitor is no longer the one the desktop is
-    // showing.
-    if *generation != current
-      || !monitor.contains_point(&rect.center_point())
-    {
-      let bounds = wallpaper_surface::monitor_bounds(rect);
-      let rebound = brush.clone();
-      let target = bounds.clone();
-
-      // Queued, not awaited: this runs from the per-tick sync path, and
-      // the new crop being on screen a frame later is invisible next
-      // to blocking the main loop until it is.
-      dispatch_on_composition_thread(&queue, move || {
-        if let Err(err) =
-          wallpaper_surface::rebind(&compositor, &rebound, &target, knobs)
-        {
-          tracing::warn!("Wallpaper backdrop re-bind failed: {err}.");
-        }
-      })?;
-
-      *monitor = bounds;
-      *generation = current;
+    for layer in &mut self.layers {
+      layer.sync_crop(
+        &self.compositor,
+        &self.queue,
+        rect,
+        self.parallax,
+      )?;
     }
-
-    wallpaper_surface::set_crop(brush, rect, monitor, parallax);
     Ok(())
   }
 
@@ -354,8 +439,8 @@ impl BackdropVisual {
   /// has changed, and does nothing otherwise.
   ///
   /// Called on every sync tick, so the no-change path is deliberately one
-  /// relaxed atomic load and a comparison -- no shell query, no filesystem
-  /// stat, and no composition property write.
+  /// relaxed atomic load and a comparison per layer -- no shell query, no
+  /// filesystem stat, and no composition property write.
   pub(crate) fn sync_backdrop(
     &mut self,
     rect: &Rect,
@@ -364,153 +449,107 @@ impl BackdropVisual {
     // calling it from every overlay on every tick is fine.
     wallpaper_surface::poll_for_changes();
 
-    if self.backdrop.generation == wallpaper_surface::generation() {
+    let current = wallpaper_surface::generation();
+    if self.layers.iter().all(|layer| layer.generation == current) {
       return Ok(());
     }
 
     self.sync_crop(rect)
   }
 
-  /// Re-bakes the wallpaper surface at the given knobs and points this
-  /// overlay's brush at the result.
-  ///
-  /// Only reached on a config reload: `blur_amount` and `saturation` are
-  /// baked into the image rather than evaluated per frame, which is the
-  /// whole reason the backdrop is cheap, so changing either means
-  /// rendering a new one.
-  fn rebake(&self, knobs: BakeKnobs) -> crate::Result<()> {
-    let Backdrop { brush, monitor, .. } = &self.backdrop;
-
-    let compositor = self.compositor.clone();
-    let brush = brush.clone();
-    let monitor = monitor.clone();
-
-    dispatch_on_composition_thread(&self.queue, move || {
-      if let Err(err) =
-        wallpaper_surface::rebind(&compositor, &brush, &monitor, knobs)
-      {
-        tracing::warn!("Wallpaper backdrop re-bake failed: {err}.");
-      }
-    })
-  }
-
   /// Updates the tint layer's color.
   pub(crate) fn set_tint(&self, tint: crate::Color) -> crate::Result<()> {
     self.tint_brush.SetColor(to_ui_color(tint))?;
-
     Ok(())
   }
 
-  /// Updates the blur radius, which is baked into the wallpaper surface
-  /// rather than evaluated per frame, so this re-bakes it (see `rebake`).
-  pub(crate) fn set_blur_amount(
-    &mut self,
-    value: f32,
-  ) -> crate::Result<()> {
-    let mut knobs = self.knobs;
-    knobs.blur_amount = value;
-    self.reapply_knobs(knobs)
-  }
-
-  /// Applies every baked knob at once, re-rendering at most once.
+  /// Shows the blur baked with `from`'s knobs crossfading `t` of the way
+  /// into the one baked with `to`'s.
   ///
-  /// The per-knob setters below each re-render on their own, which is
-  /// right when one value changes but wrong when a caller has a whole new
-  /// set:
-  /// applying seven of them in sequence walks through six intermediate
-  /// combinations, and for `Wallpaper` each is a distinct cache key and so
-  /// a full-monitor bake that nothing will ever ask for again. With
-  /// `focused_window` and `other_windows` carrying different knobs that is
-  /// six wasted bakes per window on every focus change, which also evicts
-  /// the two surfaces actually in use (see `MAX_CACHED_SURFACES`).
-  pub(crate) fn set_bake_knobs(
+  /// Settled (`t >= 1.0`, or the two equal) this shows a single layer,
+  /// and is the steady-state path too. Each layer keeps whatever it was
+  /// last bound to, so a knob set either layer already holds costs only
+  /// opacity writes; anything else is baked, or fetched from the surface
+  /// cache, asynchronously.
+  pub(crate) fn set_bake_blend(
     &mut self,
-    params: BackdropOverlayParams,
+    from: BakeKnobs,
+    to: BakeKnobs,
+    t: f32,
   ) -> crate::Result<()> {
-    let knobs = BakeKnobs::from(params);
-    if knobs == self.knobs {
-      return Ok(());
+    if t >= 1.0 || from == to {
+      return self.show_single(if t >= 1.0 { to } else { from });
     }
-    self.reapply_knobs(knobs)
+    if t <= 0.0 {
+      return self.show_single(from);
+    }
+
+    let base = match (self.layer_with(from), self.layer_with(to)) {
+      (Some(base), _) => base,
+      // Keep `to` where it already is and re-bind only the other layer.
+      (None, Some(fading)) => 1 - fading,
+      (None, None) => self.most_visible(),
+    };
+    let fading = 1 - base;
+
+    if self.layers[base].knobs != from {
+      self.layers[base].rebind(&self.compositor, &self.queue, from)?;
+    }
+    if self.layers[fading].knobs != to {
+      self.layers[fading].rebind(&self.compositor, &self.queue, to)?;
+    }
+
+    if self.top != fading {
+      self.raise(fading)?;
+    }
+
+    self.layers[base].set_opacity(1.0)?;
+    self.layers[fading].set_opacity(t)
   }
 
-  /// Re-renders the blur layer at the given knob values.
-  fn reapply_knobs(&mut self, knobs: BakeKnobs) -> crate::Result<()> {
-    self.knobs = knobs;
-    self.rebake(knobs)
+  /// Shows only the layer holding `knobs`, re-binding the visible layer in
+  /// place when neither holds them (e.g. after a config reload).
+  fn show_single(&mut self, knobs: BakeKnobs) -> crate::Result<()> {
+    let shown = if let Some(index) = self.layer_with(knobs) {
+      index
+    } else {
+      let index = self.most_visible();
+      self.layers[index].rebind(&self.compositor, &self.queue, knobs)?;
+      index
+    };
+
+    self.layers[shown].set_opacity(1.0)?;
+    self.layers[1 - shown].set_opacity(0.0)
   }
 
-  /// Updates the saturation baked into the wallpaper image. It shares one
-  /// bake with `blur_amount`, so either setter re-runs it using the
-  /// other's current stored value.
-  pub(crate) fn set_saturation(
-    &mut self,
-    value: f32,
-  ) -> crate::Result<()> {
-    let mut knobs = self.knobs;
-    knobs.saturation = value;
-    self.reapply_knobs(knobs)
+  /// Index of a layer bound to `knobs`, preferring the more visible one.
+  fn layer_with(&self, knobs: BakeKnobs) -> Option<usize> {
+    let visible = self.most_visible();
+    [visible, 1 - visible]
+      .into_iter()
+      .find(|&index| self.layers[index].knobs == knobs)
   }
 
-  /// Updates the exposure baked into the wallpaper image.
-  pub(crate) fn set_exposure(&mut self, value: f32) -> crate::Result<()> {
-    let mut knobs = self.knobs;
-    knobs.exposure = value;
-    self.reapply_knobs(knobs)
+  fn most_visible(&self) -> usize {
+    usize::from(self.layers[1].opacity > self.layers[0].opacity)
   }
 
-  /// Updates the contrast baked into the wallpaper image. Wallpaper only,
-  /// same reason as [`set_exposure`].
-  ///
-  /// [`set_exposure`]: BackdropVisual::set_exposure
-  pub(crate) fn set_contrast(&mut self, value: f32) -> crate::Result<()> {
-    let mut knobs = self.knobs;
-    knobs.contrast = value;
-    self.reapply_knobs(knobs)
-  }
+  /// Moves layer `index` directly above the other one, beneath the tint.
+  fn raise(&mut self, index: usize) -> crate::Result<()> {
+    let children = self.root.Children()?;
+    let raised = &self.layers[index].sprite;
 
-  /// Updates the highlight recovery baked into the wallpaper image.
-  /// Wallpaper only, same reason as [`set_exposure`].
-  ///
-  /// [`set_exposure`]: BackdropVisual::set_exposure
-  pub(crate) fn set_highlights(
-    &mut self,
-    value: f32,
-  ) -> crate::Result<()> {
-    let mut knobs = self.knobs;
-    knobs.highlights = value;
-    self.reapply_knobs(knobs)
-  }
+    children.Remove(raised)?;
+    children.InsertAbove(raised, &self.layers[1 - index].sprite)?;
 
-  /// Updates the shadow lift baked into the wallpaper image. Wallpaper
-  /// only, same reason as [`set_exposure`].
-  ///
-  /// [`set_exposure`]: BackdropVisual::set_exposure
-  pub(crate) fn set_shadows(&mut self, value: f32) -> crate::Result<()> {
-    let mut knobs = self.knobs;
-    knobs.shadows = value;
-    self.reapply_knobs(knobs)
-  }
-
-  /// Updates the vignette.
-  ///
-  /// Unlike the other grading knobs this touches no baked image: it costs
-  /// one brush rebuild -- no re-render of anything, and nothing per frame.
-  pub(crate) fn set_vignette(&mut self, value: f32) -> crate::Result<()> {
-    let brush = build_vignette_brush(&self.compositor, value)?;
-    self.vignette_sprite.SetBrush(&brush)?;
-    self.vignette_brush = brush;
+    self.top = index;
     Ok(())
   }
 
-  /// Updates the grain baked into the wallpaper image. Wallpaper only,
-  /// same reason as [`set_exposure`].
-  ///
-  /// [`set_exposure`]: BackdropVisual::set_exposure
-  pub(crate) fn set_grain(&mut self, value: f32) -> crate::Result<()> {
-    let mut knobs = self.knobs;
-    knobs.grain = value;
-    self.reapply_knobs(knobs)
+  /// Updates the vignette's strength, from `0.0` (off) to `1.0`.
+  pub(crate) fn set_vignette(&self, value: f32) -> crate::Result<()> {
+    self.vignette_sprite.SetOpacity(value.clamp(0.0, 1.0))?;
+    Ok(())
   }
 
   /// Updates how far the crop follows the window, re-applying it at
@@ -518,8 +557,14 @@ impl BackdropVisual {
   pub(crate) fn set_parallax(&mut self, value: f32, rect: &Rect) {
     self.parallax = value;
 
-    let Backdrop { brush, monitor, .. } = &self.backdrop;
-    wallpaper_surface::set_crop(brush, rect, monitor, value);
+    for layer in &self.layers {
+      wallpaper_surface::set_crop(
+        &layer.brush,
+        rect,
+        &layer.monitor,
+        value,
+      );
+    }
   }
 
   /// Updates the clip's corner radius.
@@ -530,32 +575,26 @@ impl BackdropVisual {
     Ok(())
   }
 
-  /// Updates the overlay's own opacity. `root` sits above both
-  /// `backdrop_sprite` and `tint_sprite`, so this fades the whole
-  /// composited overlay (blur + tint together) as one unit -- a plain
-  /// `Visual` property, not an effect-graph one, so unlike
-  /// `set_blur_amount` this never needs a brush rebuild.
+  /// Updates the overlay's own opacity. `root` sits above every layer, so
+  /// this fades the whole composited overlay (blur + tint together) as
+  /// one unit -- a plain `Visual` property, so it never needs a brush
+  /// rebuild.
   pub(crate) fn set_opacity(&self, value: f32) -> crate::Result<()> {
     self.root.SetOpacity(value)?;
     Ok(())
   }
 }
 
-/// Builds the radial gradient that darkens an overlay toward its edges.
+/// Builds the radial gradient that darkens an overlay toward its edges, at
+/// full strength -- the vignette sprite's opacity scales it down.
 ///
-/// Transparent across the middle and reaching `strength` alpha at the
-/// corners. The ellipse is deliberately larger than the sprite
-/// (`radius > 0.5` in relative units) so the darkest point falls outside
-/// the visible area: a gradient that reached full strength exactly at the
-/// edge puts its steepest part on screen and reads as a ring rather than
-/// shading.
-///
-/// A `strength` of zero still builds a brush, fully transparent. Skipping
-/// the visual entirely would mean rebuilding the tree when the knob is
-/// first raised, and a transparent visual costs DWM nothing to composite.
+/// Transparent across the middle and opaque black at the corners. The
+/// ellipse is deliberately larger than the sprite (`radius > 0.5` in
+/// relative units) so the darkest point falls outside the visible area: a
+/// gradient that reached full strength exactly at the edge puts its
+/// steepest part on screen and reads as a ring rather than shading.
 fn build_vignette_brush(
   compositor: &Compositor,
-  strength: f32,
 ) -> windows::core::Result<CompositionRadialGradientBrush> {
   let brush = compositor.CreateRadialGradientBrush()?;
 
@@ -564,9 +603,6 @@ fn build_vignette_brush(
   brush.SetEllipseCenter(Vector2 { X: 0.5, Y: 0.5 })?;
   brush.SetEllipseRadius(Vector2 { X: 0.75, Y: 0.75 })?;
 
-  #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-  let alpha = (strength.clamp(0.0, 1.0) * 255.0).round() as u8;
-
   let clear = Color {
     A: 0,
     R: 0,
@@ -574,7 +610,7 @@ fn build_vignette_brush(
     B: 0,
   };
   let dark = Color {
-    A: alpha,
+    A: u8::MAX,
     R: 0,
     G: 0,
     B: 0,
@@ -608,9 +644,9 @@ fn pixels_to_dips(pixels: i32) -> f32 {
 /// for a target's root, the `HWND`'s) with no explicit size writes.
 const FILL_PARENT: Vector2 = Vector2 { X: 1.0, Y: 1.0 };
 
-/// Builds the full visual tree: a `ContainerVisual` rooting the
-/// [`Backdrop`] sprite and a tint sprite (flat color) stacked above it,
-/// both clipped by a shared rounded rectangle geometry.
+/// Builds the full visual tree: a `ContainerVisual` rooting the two
+/// [`BackdropLayer`] sprites, a tint sprite (flat color) and the vignette
+/// stacked above them, all clipped by a shared rounded rectangle geometry.
 ///
 /// Every visual is sized relative to the window rather than given an
 /// explicit size, so a resize of the `HWND` resizes them in the same DWM
@@ -642,33 +678,35 @@ fn build_visual_tree(
   let clip =
     compositor.CreateGeometricClipWithGeometry(&rounded_geometry)?;
 
-  let (brush, monitor) =
-    wallpaper_surface::crop_brush(compositor, rect, params)?;
-  let backdrop_sprite = compositor.CreateSpriteVisual()?;
-  backdrop_sprite.SetBrush(&brush)?;
-
-  let backdrop = Backdrop {
-    brush,
-    monitor,
-    generation: wallpaper_surface::generation(),
-  };
+  // Both layers start on the same surface: the second costs a brush and a
+  // sprite, not a bake, until a crossfade first binds it elsewhere.
+  let knobs = BakeKnobs::from(params);
+  let layers = [
+    BackdropLayer::create(compositor, rect, knobs, params.parallax, 1.0)?,
+    BackdropLayer::create(compositor, rect, knobs, params.parallax, 0.0)?,
+  ];
 
   let tint_brush =
     compositor.CreateColorBrushWithColor(to_ui_color(params.tint))?;
   let tint_sprite = compositor.CreateSpriteVisual()?;
   tint_sprite.SetBrush(&tint_brush)?;
 
-  let vignette_brush = build_vignette_brush(compositor, params.vignette)?;
   let vignette_sprite = compositor.CreateSpriteVisual()?;
-  vignette_sprite.SetBrush(&vignette_brush)?;
+  vignette_sprite.SetBrush(&build_vignette_brush(compositor)?)?;
+  vignette_sprite.SetOpacity(params.vignette.clamp(0.0, 1.0))?;
 
   let root = compositor.CreateContainerVisual()?;
   root.SetRelativeSizeAdjustment(FILL_PARENT)?;
   root.SetClip(&clip)?;
   root.SetOpacity(params.opacity)?;
-  for sprite in [&backdrop_sprite, &tint_sprite, &vignette_sprite] {
+
+  let children = root.Children()?;
+  for layer in &layers {
+    children.InsertAtTop(&layer.sprite)?;
+  }
+  for sprite in [&tint_sprite, &vignette_sprite] {
     sprite.SetRelativeSizeAdjustment(FILL_PARENT)?;
-    root.Children()?.InsertAtTop(sprite)?;
+    children.InsertAtTop(sprite)?;
   }
 
   target.SetRoot(&root)?;
@@ -677,13 +715,12 @@ fn build_visual_tree(
     _target: target,
     compositor: compositor.clone(),
     queue: queue.clone(),
-    backdrop,
     root,
+    layers,
+    top: 1,
     tint_brush,
-    vignette_brush,
     vignette_sprite,
     rounded_geometry,
-    knobs: params.into(),
     parallax: params.parallax,
   })
 }
@@ -1079,25 +1116,15 @@ pub(crate) struct OverviewBackdrop {
 /// Bake knobs of the overview's wallpaper copies: blurred by `blur`, and
 /// otherwise as the desktop shows it.
 #[cfg_attr(test, allow(dead_code))]
-fn overview_wallpaper_params(blur: f32) -> BackdropOverlayParams {
-  BackdropOverlayParams {
-    tint: crate::Color {
-      r: 0,
-      g: 0,
-      b: 0,
-      a: 0,
-    },
+fn overview_wallpaper_knobs(blur: f32) -> BakeKnobs {
+  BakeKnobs {
     blur_amount: blur,
-    corner_radius: 0.0,
-    opacity: 1.0,
     saturation: 1.0,
     exposure: 0.0,
     contrast: 0.0,
     highlights: 0.0,
     shadows: 0.0,
-    vignette: 0.0,
     grain: 0.0,
-    parallax: 1.0,
   }
 }
 
@@ -1123,15 +1150,18 @@ impl OverviewBackdrop {
           .CreateDesktopWindowTarget(HWND(hwnd_raw), false)?
       };
 
+      // Parallax 1: the image stays put against the desktop.
       let (sharp, monitor) = wallpaper_surface::crop_brush(
         &compositor,
         &rect,
-        overview_wallpaper_params(0.0),
+        overview_wallpaper_knobs(0.0),
+        1.0,
       )?;
       let (blurred, _) = wallpaper_surface::crop_brush(
         &compositor,
         &rect,
-        overview_wallpaper_params(blur),
+        overview_wallpaper_knobs(blur),
+        1.0,
       )?;
       let tint_brush =
         compositor.CreateColorBrushWithColor(to_ui_color(tint))?;
@@ -1207,14 +1237,14 @@ impl OverviewBackdrop {
           &compositor,
           &sharp,
           &target,
-          overview_wallpaper_params(0.0).into(),
+          overview_wallpaper_knobs(0.0),
         )
         .and_then(|()| {
           wallpaper_surface::rebind(
             &compositor,
             &blurred,
             &target,
-            overview_wallpaper_params(blur).into(),
+            overview_wallpaper_knobs(blur),
           )
         });
 

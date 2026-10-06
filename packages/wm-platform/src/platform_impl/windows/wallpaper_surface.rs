@@ -319,10 +319,11 @@ pub(crate) fn poll_for_changes() {
 pub(crate) fn crop_brush(
   compositor: &Compositor,
   rect: &Rect,
-  params: BackdropOverlayParams,
+  knobs: BakeKnobs,
+  parallax: f32,
 ) -> windows::core::Result<(CompositionSurfaceBrush, Rect)> {
   let monitor = monitor_bounds(rect);
-  let surface = surface_for(compositor, &monitor, params.into())?;
+  let surface = surface_for(compositor, &monitor, knobs)?;
 
   let brush = compositor.CreateSurfaceBrushWithSurface(&surface)?;
   brush.SetStretch(CompositionStretch::None)?;
@@ -334,7 +335,7 @@ pub(crate) fn crop_brush(
   brush.SetHorizontalAlignmentRatio(0.0)?;
   brush.SetVerticalAlignmentRatio(0.0)?;
 
-  set_crop(&brush, rect, &monitor, params.parallax);
+  set_crop(&brush, rect, &monitor, parallax);
   Ok((brush, monitor))
 }
 

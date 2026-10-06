@@ -289,15 +289,6 @@ macro_rules! impl_key_parsing {
         }
       }
     }
-
-    impl Key {
-      /// Returns all string aliases for this key variant.
-      pub fn all_aliases(&self) -> Option<&'static [&'static str]> {
-        match self {
-          $(Key::$variant => Some(&[$($str_name),+]),)*
-        }
-      }
-    }
   };
 }
 
