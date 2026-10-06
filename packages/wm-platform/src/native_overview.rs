@@ -53,8 +53,8 @@ use crate::{
     TilePicture, GHOST_SIZE, HINT_HEIGHT,
   },
   overview_layout::{
-    carousel, ease_out_cubic, grid, tile, Camera, CardMetrics, Placement,
-    RectF, Spring, Tile,
+    carousel, cover_crop, ease_out_cubic, grid, tile, Camera, CardMetrics,
+    Placement, RectF, Spring, Tile,
   },
   overview_state::{HintTone, Hit, Interaction, Key, Mode},
   overview_thumbnails::{
@@ -809,11 +809,21 @@ impl Overview {
     let (view_width, view_height) = self.metrics.view;
 
     let frame = visible_frame(HWND(hwnd)).unwrap_or(FALLBACK_FRAME);
+    let inset = px(2.0) * 2.0;
+
+    #[allow(clippy::cast_precision_loss)]
+    let crop = cover_crop(
+      (
+        (frame.right - frame.left) as f32,
+        (frame.bottom - frame.top) as f32,
+      ),
+      (width - inset, height - inset),
+    );
     let mut preview = Preview::new(
       hwnd,
       Tile {
         rect: RectF::default(),
-        crop: RectF::new(0.0, 0.0, 1.0, 1.0),
+        crop,
       },
     );
     preview.frame = frame;

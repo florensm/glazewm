@@ -391,6 +391,26 @@ impl Camera {
   }
 }
 
+/// The part of a `source`-sized image that fills `dest` without
+/// stretching, as fractions of `source`: centered across and kept to the
+/// top, so a window keeps its title bar.
+pub(crate) fn cover_crop(source: (f32, f32), dest: (f32, f32)) -> RectF {
+  let source_aspect = source.0 / source.1;
+  let dest_aspect = dest.0 / dest.1;
+
+  let is_valid = |aspect: f32| aspect.is_finite() && aspect > 0.0;
+  if !is_valid(source_aspect) || !is_valid(dest_aspect) {
+    return RectF::new(0.0, 0.0, 1.0, 1.0);
+  }
+
+  if source_aspect > dest_aspect {
+    let width = dest_aspect / source_aspect;
+    RectF::new((1.0 - width) / 2.0, 0.0, width, 1.0)
+  } else {
+    RectF::new(0.0, 0.0, 1.0, source_aspect / dest_aspect)
+  }
+}
+
 /// Fast start, gentle stop.
 pub(crate) fn ease_out_cubic(progress: f32) -> f32 {
   1.0 - (1.0 - progress.clamp(0.0, 1.0)).powi(3)
@@ -462,8 +482,8 @@ impl Spring {
 #[cfg(test)]
 mod tests {
   use super::{
-    carousel, ease_out_cubic, grid, tile, Camera, CardMetrics, RectF,
-    Spring,
+    carousel, cover_crop, ease_out_cubic, grid, tile, Camera, CardMetrics,
+    RectF, Spring,
   };
 
   fn metrics() -> CardMetrics {
@@ -619,6 +639,19 @@ mod tests {
     let (x, y) = start.unapply(window.x, window.y);
     assert_close(x, on_card.x);
     assert_close(y, on_card.y);
+  }
+
+  #[test]
+  fn cover_crop_fills_without_stretching() {
+    let wide = cover_crop((2000.0, 500.0), (200.0, 100.0));
+    assert_eq!(wide, RectF::new(0.25, 0.0, 0.5, 1.0), "centered across");
+
+    let tall = cover_crop((1000.0, 1000.0), (200.0, 100.0));
+    assert_eq!(tall, RectF::new(0.0, 0.0, 1.0, 0.5), "kept to the top");
+
+    let full = RectF::new(0.0, 0.0, 1.0, 1.0);
+    assert_eq!(cover_crop((0.0, 0.0), (200.0, 100.0)), full);
+    assert_eq!(cover_crop((800.0, 600.0), (0.0, 100.0)), full);
   }
 
   #[test]
