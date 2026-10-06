@@ -1046,6 +1046,194 @@ fn build_border_visual_tree(
   Ok(visual)
 }
 
+/// The window overview's background: the monitor's wallpaper as it is,
+/// with a blurred, tinted copy of it fading in on top.
+///
+/// The plain copy is what lets the overview cover the real windows from
+/// its first frame without anything visibly changing: their previews sit
+/// exactly over them, and around them is what the desktop shows anyway.
+// The test harness compiles this module without the overview.
+#[cfg_attr(test, allow(dead_code))]
+pub(crate) struct OverviewBackdrop {
+  /// Binds the visual tree to the overview's `HWND`. Kept alive but never
+  /// touched again -- dropping it would unbind composition from the
+  /// window.
+  _target: DesktopWindowTarget,
+  compositor: Compositor,
+  queue: DispatcherQueue,
+  sharp: CompositionSurfaceBrush,
+  blurred: CompositionSurfaceBrush,
+  blurred_sprite: SpriteVisual,
+  tint_brush: CompositionColorBrush,
+  tint_sprite: SpriteVisual,
+
+  /// Bounds of the monitor whose wallpaper both brushes show.
+  monitor: Rect,
+
+  /// `wallpaper_surface`'s generation counter as of the last bind.
+  generation: u64,
+
+  blur: f32,
+}
+
+/// Bake knobs of the overview's wallpaper copies: blurred by `blur`, and
+/// otherwise as the desktop shows it.
+#[cfg_attr(test, allow(dead_code))]
+fn overview_wallpaper_params(blur: f32) -> BackdropOverlayParams {
+  BackdropOverlayParams {
+    tint: crate::Color {
+      r: 0,
+      g: 0,
+      b: 0,
+      a: 0,
+    },
+    blur_amount: blur,
+    corner_radius: 0.0,
+    opacity: 1.0,
+    saturation: 1.0,
+    exposure: 0.0,
+    contrast: 0.0,
+    highlights: 0.0,
+    shadows: 0.0,
+    vignette: 0.0,
+    grain: 0.0,
+    parallax: 1.0,
+  }
+}
+
+#[cfg_attr(test, allow(dead_code))]
+impl OverviewBackdrop {
+  /// Builds the background for the overview `hwnd`, which covers `rect`
+  /// and was created with `WS_EX_NOREDIRECTIONBITMAP`. Starts out showing
+  /// the plain wallpaper.
+  pub(crate) fn create(
+    hwnd: HWND,
+    rect: &Rect,
+    blur: f32,
+    tint: crate::Color,
+  ) -> crate::Result<Self> {
+    let hwnd_raw = hwnd.0;
+    let rect = rect.clone();
+
+    with_composition_thread(move |compositor, queue| {
+      // SAFETY: `hwnd` is a valid, already-created top-level window.
+      let target = unsafe {
+        compositor
+          .cast::<ICompositorDesktopInterop>()?
+          .CreateDesktopWindowTarget(HWND(hwnd_raw), false)?
+      };
+
+      let (sharp, monitor) = wallpaper_surface::crop_brush(
+        &compositor,
+        &rect,
+        overview_wallpaper_params(0.0),
+      )?;
+      let (blurred, _) = wallpaper_surface::crop_brush(
+        &compositor,
+        &rect,
+        overview_wallpaper_params(blur),
+      )?;
+      let tint_brush =
+        compositor.CreateColorBrushWithColor(to_ui_color(tint))?;
+
+      let sharp_sprite = compositor.CreateSpriteVisual()?;
+      sharp_sprite.SetBrush(&sharp)?;
+      let blurred_sprite = compositor.CreateSpriteVisual()?;
+      blurred_sprite.SetBrush(&blurred)?;
+      blurred_sprite.SetOpacity(0.0)?;
+      let tint_sprite = compositor.CreateSpriteVisual()?;
+      tint_sprite.SetBrush(&tint_brush)?;
+      tint_sprite.SetOpacity(0.0)?;
+
+      let root = compositor.CreateContainerVisual()?;
+      root.SetRelativeSizeAdjustment(FILL_PARENT)?;
+      for sprite in [&sharp_sprite, &blurred_sprite, &tint_sprite] {
+        sprite.SetRelativeSizeAdjustment(FILL_PARENT)?;
+        root.Children()?.InsertAtTop(sprite)?;
+      }
+      target.SetRoot(&root)?;
+
+      Ok(Self {
+        _target: target,
+        compositor: compositor.clone(),
+        queue: queue.clone(),
+        sharp,
+        blurred,
+        blurred_sprite,
+        tint_brush,
+        tint_sprite,
+        monitor,
+        generation: wallpaper_surface::generation(),
+        blur,
+      })
+    })
+  }
+
+  /// Fades the blurred, tinted copy in, from 0 (plain wallpaper) to 1.
+  pub(crate) fn set_progress(&self, progress: f32) -> crate::Result<()> {
+    let progress = progress.clamp(0.0, 1.0);
+    self.blurred_sprite.SetOpacity(progress)?;
+    self.tint_sprite.SetOpacity(progress)?;
+    Ok(())
+  }
+
+  /// Shows the wallpaper under `rect` with the given blur and tint,
+  /// re-baking only when the monitor, the wallpaper or the blur changed.
+  #[allow(clippy::float_cmp)]
+  pub(crate) fn update(
+    &mut self,
+    rect: &Rect,
+    blur: f32,
+    tint: crate::Color,
+  ) -> crate::Result<()> {
+    self.tint_brush.SetColor(to_ui_color(tint))?;
+    wallpaper_surface::poll_for_changes();
+
+    let current = wallpaper_surface::generation();
+    let monitor = wallpaper_surface::monitor_bounds(rect);
+
+    if current != self.generation
+      || monitor != self.monitor
+      || blur != self.blur
+    {
+      let compositor = self.compositor.clone();
+      let (sharp, blurred) = (self.sharp.clone(), self.blurred.clone());
+      let target = monitor.clone();
+
+      // Queued, not awaited: the new image showing a frame later beats
+      // blocking the overview until it is baked.
+      dispatch_on_composition_thread(&self.queue, move || {
+        let rebound = wallpaper_surface::rebind(
+          &compositor,
+          &sharp,
+          &target,
+          overview_wallpaper_params(0.0).into(),
+        )
+        .and_then(|()| {
+          wallpaper_surface::rebind(
+            &compositor,
+            &blurred,
+            &target,
+            overview_wallpaper_params(blur).into(),
+          )
+        });
+
+        if let Err(err) = rebound {
+          tracing::warn!("Overview backdrop re-bind failed: {err}.");
+        }
+      })?;
+
+      self.monitor = monitor;
+      self.generation = current;
+      self.blur = blur;
+    }
+
+    wallpaper_surface::set_crop(&self.sharp, rect, &self.monitor, 1.0);
+    wallpaper_surface::set_crop(&self.blurred, rect, &self.monitor, 1.0);
+    Ok(())
+  }
+}
+
 #[cfg(test)]
 mod tests {
   use windows::Foundation::Numerics::Vector2;

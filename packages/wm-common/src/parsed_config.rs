@@ -190,53 +190,64 @@ pub struct KeybindingConfig {
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(default, rename_all(serialize = "camelCase"))]
 pub struct OverviewConfig {
-  /// Scrim covering the monitor while the overview is open.
-  pub background_color: Color,
+  /// Blur radius of the wallpaper behind the cards.
+  pub backdrop_blur: f32,
 
-  /// Space around and between the window previews.
-  pub gap: LengthValue,
+  /// Tint over the blurred wallpaper; its alpha is how dark it gets.
+  pub backdrop_tint: Color,
 
-  /// Highlight behind the preview under the cursor or picked with the
-  /// arrow keys.
-  pub selection_color: Color,
+  /// Selection and highlights, given like a border's color (see
+  /// [`BorderColorSource`]).
+  pub accent_color: BorderColorSource,
 
-  /// Ring around the focused window's preview, given like a border's
-  /// color (see [`BorderColorSource`]).
-  pub focused_border_color: BorderColorSource,
+  /// Background of a workspace card.
+  pub card_color: Color,
 
-  /// Color of the window titles.
+  /// Background of a hovered card, and of a window without a preview.
+  pub surface_color: Color,
+
+  /// Strip a window's title sits on.
+  pub caption_color: Color,
+
   pub text_color: Color,
+
+  /// Secondary text, e.g. the key hints under the cards.
+  pub subtext_color: Color,
+
+  /// Border of windows matching a search.
+  pub search_color: Color,
 
   pub font_family: String,
 
-  pub font_size: LengthValue,
+  /// Columns of the grid of every workspace.
+  pub grid_columns: usize,
+
+  /// Length of the zoom out when the overview opens; `0` opens it
+  /// instantly.
+  pub open_duration_ms: u32,
 }
 
 impl Default for OverviewConfig {
   fn default() -> Self {
+    // `0xRRGGBBAA`, as in the config.
+    let color = |hex: u32| {
+      let [r, g, b, a] = hex.to_be_bytes();
+      Color { r, g, b, a }
+    };
+
     OverviewConfig {
-      background_color: Color {
-        r: 0,
-        g: 0,
-        b: 0,
-        a: 0xb3,
-      },
-      gap: LengthValue::from_px(24),
-      selection_color: Color {
-        r: 0xff,
-        g: 0xff,
-        b: 0xff,
-        a: 0x1f,
-      },
-      focused_border_color: BorderColorSource::Value("accent".to_string()),
-      text_color: Color {
-        r: 0xff,
-        g: 0xff,
-        b: 0xff,
-        a: 0xff,
-      },
+      backdrop_blur: 40.0,
+      backdrop_tint: color(0x0000_0066),
+      accent_color: BorderColorSource::Value("accent".to_string()),
+      card_color: color(0x221e_24e6),
+      surface_color: color(0x2d29_2eff),
+      caption_color: color(0x1612_17c7),
+      text_color: color(0xe8e0_e8ff),
+      subtext_color: color(0xcdc3_ceff),
+      search_color: color(0x89b4_faff),
       font_family: "Segoe UI".to_string(),
-      font_size: LengthValue::from_px(13),
+      grid_columns: 5,
+      open_duration_ms: 250,
     }
   }
 }

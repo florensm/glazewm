@@ -70,13 +70,15 @@ pub use native_iris_overlay::NativeIrisOverlay;
 #[cfg(target_os = "windows")]
 mod native_overview;
 #[cfg(target_os = "windows")]
-pub use native_overview::{
-  NativeOverview, OverviewFrame, OverviewItem, OverviewStyle,
-};
-// Only `OverviewAction` is used off Windows, where there is no overview.
-#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+pub use native_overview::NativeOverview;
+#[cfg(target_os = "windows")]
+mod overview_chrome;
+#[cfg(target_os = "windows")]
 mod overview_layout;
-pub use overview_layout::OverviewAction;
+#[cfg(target_os = "windows")]
+mod overview_state;
+#[cfg(target_os = "windows")]
+mod overview_thumbnails;
 #[cfg(target_os = "windows")]
 mod paint;
 #[cfg(target_os = "windows")]

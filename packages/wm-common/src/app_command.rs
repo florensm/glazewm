@@ -247,9 +247,14 @@ pub enum InvokeCommand {
     maximized: Option<bool>,
   },
   ToggleMinimized,
-  /// Opens the overview of the focused workspace's windows, or closes it
+  /// Opens the overview of the focused monitor's workspaces, or closes it
   /// if open.
-  ToggleOverview,
+  ToggleOverview {
+    /// Open on the grid of every workspace rather than the carousel;
+    /// while open, switches to it instead of closing.
+    #[clap(long, action)]
+    grid: bool,
+  },
   ToggleTiling,
   ToggleTilingDirection,
   SetTilingDirection {
@@ -385,7 +390,7 @@ pub struct InvokeMoveCursorCommand {
   pub direction: Option<Direction>,
 }
 
-#[derive(Args, Clone, Debug, PartialEq, Serialize)]
+#[derive(Args, Clone, Debug, Default, PartialEq, Serialize)]
 #[group(required = true, multiple = false)]
 #[allow(clippy::struct_excessive_bools)]
 pub struct InvokeMoveCommand {
