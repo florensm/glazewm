@@ -116,7 +116,13 @@ pub fn toggle_overview(
 
   let open = OpenOverview {
     monitor_id: monitor.id(),
-    accent: config.value.overview.accent_color.resolve(),
+    accent: config
+      .value
+      .overview
+      .accent_color
+      .as_ref()
+      .unwrap_or(&config.value.window_effects.focused_window.border.color)
+      .resolve(),
   };
   let frame = overview_frame(state, &monitor, open.accent, config);
 

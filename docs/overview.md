@@ -102,8 +102,10 @@ overview:
   backdrop_tint: "#00000066"
 
   # Selection and highlights: a hex color, "accent" for the OS accent
-  # color, or a `{ file, key }` mapping, as for border colors.
-  accent_color: "accent"
+  # color, or a `{ file, key }` mapping, as for border colors. Left out, it
+  # is `window_effects.focused_window.border.color`, so the overview
+  # matches your borders.
+  # accent_color: "accent"
 
   # Background of a workspace card.
   card_color: "#221e24e6"

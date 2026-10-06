@@ -381,8 +381,9 @@ overview:
   backdrop_tint: "#00000066"
 
   # Selection and highlights. Same values as a border's color: a hex color,
-  # "accent" for the OS accent color, or a file and key.
-  accent_color: "accent"
+  # "accent" for the OS accent color, or a file and key. Left out, it is
+  # the focused window's border color.
+  # accent_color: "accent"
 
   # Workspace cards, hovered cards and window title strips.
   card_color: "#221e24e6"
