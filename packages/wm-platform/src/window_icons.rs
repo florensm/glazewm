@@ -20,7 +20,7 @@ use std::{
 use windows::Win32::{
   Foundation::{HWND, LPARAM, WPARAM},
   UI::WindowsAndMessaging::{
-    CopyIcon, DestroyIcon, GetClassLongPtrW, PostMessageW,
+    CopyIcon, DestroyIcon, GetClassLongPtrW, IsWindow, PostMessageW,
     SendMessageTimeoutW, GCLP_HICON, GCLP_HICONSM, HICON, ICON_BIG,
     ICON_SMALL, ICON_SMALL2, SMTO_ABORTIFHUNG, SMTO_BLOCK, WM_GETICON,
   },
@@ -132,13 +132,29 @@ pub(crate) fn icon_for(
   class_icon(HWND(window))
 }
 
-/// Drops the cached icons of every window `keep` returns false for, e.g.
-/// windows that have since closed.
-pub(crate) fn retain(keep: impl Fn(isize) -> bool) {
+/// Drops the cached icon of `window`, so it is fetched again next time
+/// (e.g. after its title changed, which apps often do with their icon).
+pub(crate) fn invalidate(window: isize) {
+  let removed = cache()
+    .lock()
+    .unwrap_or_else(PoisonError::into_inner)
+    .remove(&window);
+
+  if let Some(CachedIcon::Ready(Some(icon))) = removed {
+    // SAFETY: The cache owns this copy and no longer hands it out.
+    unsafe {
+      let _ = DestroyIcon(HICON(icon));
+    }
+  }
+}
+
+/// Drops the cached icons of windows that have since been destroyed.
+pub(crate) fn forget_closed() {
   let mut cache = cache().lock().unwrap_or_else(PoisonError::into_inner);
 
   cache.retain(|window, cached| {
-    if keep(*window) {
+    // SAFETY: Any handle value may be checked; a stale one returns false.
+    if unsafe { IsWindow(HWND(*window)) }.as_bool() {
       return true;
     }
 

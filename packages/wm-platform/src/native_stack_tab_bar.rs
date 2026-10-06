@@ -49,10 +49,10 @@ use windows::{
 
 use crate::{
   overlay_window::OverlayKind,
-  tab_icons,
+  paint::Canvas,
   tab_layout::{TabAction, TabHit, TabLayout, TabLayoutParams, TabRect},
-  tab_paint::{Canvas, CornerRadii, Rgba},
-  window_class, Color, Dispatcher, Rect,
+  window_class, window_icons, Dispatcher, Rect, TabBarStyle, TabCloseMode,
+  TabFrame,
 };
 
 /// Posted with a `Box<TabFrame>` in `WPARAM` to show the bar with new
@@ -77,70 +77,6 @@ const MENU_DETACH: usize = 2;
 const MENU_FLOAT: usize = 3;
 
 static CLASS_REGISTERED: OnceLock<()> = OnceLock::new();
-
-/// A tab of the bar.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct TabInfo {
-  /// Title shown on the tab.
-  pub title: String,
-
-  /// Handle of the tab's window, for its icon.
-  pub hwnd: isize,
-
-  /// Whether the window requests attention, which highlights its tab.
-  pub is_urgent: bool,
-}
-
-/// When tabs show a close button.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum TabCloseMode {
-  /// On the active and the hovered tab.
-  Hover,
-  Always,
-  Never,
-}
-
-/// Look of a tab bar, in physical pixels.
-#[derive(Clone, Debug, PartialEq)]
-pub struct TabBarStyle {
-  pub background: Color,
-  pub active_background: Color,
-  pub hover_background: Color,
-  pub inactive_background: Color,
-  pub urgent_background: Color,
-  pub text: Color,
-  pub inactive_text: Color,
-  pub font_family: String,
-  pub font_size: i32,
-  /// Corner radius of the tab highlights.
-  pub corner_radius: i32,
-  /// Corners of the strip, e.g. square where it meets its window.
-  pub strip_radii: CornerRadii,
-  pub min_tab_width: i32,
-  /// 0 lets tabs share the whole bar.
-  pub max_tab_width: i32,
-  pub show_icons: bool,
-  pub show_numbers: bool,
-  pub close_button: TabCloseMode,
-  /// Scale factor of the bar's monitor, for the size thresholds.
-  pub scale_factor: f32,
-}
-
-/// Everything shown by a tab bar, posted to its thread as a whole.
-#[derive(Clone, Debug, PartialEq)]
-pub struct TabFrame {
-  /// Where the tabs are shown.
-  pub rect: Rect,
-  /// The bar's window: `rect`, plus strip reaching under the stack's
-  /// window to fill in its rounded corners.
-  pub outer_rect: Rect,
-  pub tabs: Vec<TabInfo>,
-  pub active_index: usize,
-  /// The stack's active window. The bar is kept directly behind it in
-  /// z-order, so it is covered by whatever covers the window.
-  pub anchor: isize,
-  pub style: TabBarStyle,
-}
 
 /// A tab being dragged with the left button.
 struct Drag {
@@ -625,15 +561,6 @@ unsafe fn render(hwnd: HWND, state: &mut BarState) {
   let _ = DeleteDC(mem_dc);
 }
 
-fn rgba(color: Color) -> Rgba {
-  Rgba {
-    r: color.r,
-    g: color.g,
-    b: color.b,
-    a: color.a,
-  }
-}
-
 /// Draws the strip and the tab highlights.
 fn paint_shapes(
   pixels: &mut [u32],
@@ -652,14 +579,9 @@ fn paint_shapes(
   };
 
   canvas.fill_rect_with_corners(
-    TabRect {
-      left: 0,
-      top: 0,
-      right: width,
-      bottom: height,
-    },
+    &Rect::from_ltrb(0, 0, width, height),
     style.strip_radii,
-    rgba(style.background),
+    style.background,
   );
 
   let pill_radius = (style.corner_radius - 2).max(0);
@@ -691,14 +613,14 @@ fn paint_shapes(
       style.inactive_background
     };
 
-    canvas.fill_rounded_rect(slot.pill, pill_radius, rgba(color));
+    canvas.fill_rounded_rect(&slot.pill.into(), pill_radius, color);
   }
 
   if let Some(pill) = state.active_pill() {
     canvas.fill_rounded_rect(
-      pill,
+      &pill.into(),
       pill_radius,
-      rgba(style.active_background),
+      style.active_background,
     );
   }
 }
@@ -732,7 +654,7 @@ unsafe fn paint_text_and_icons(
 
     if let Some(icon_rect) = slot.icon {
       if let Some(icon) =
-        tab_icons::icon_for(tab.hwnd, hwnd, WM_ICON_READY)
+        window_icons::icon_for(tab.hwnd, hwnd, WM_ICON_READY)
       {
         let _ = DrawIconEx(
           dc,
@@ -870,9 +792,9 @@ fn paint_close_buttons(
 
     if state.hover == TabHit::Close(index) {
       canvas.fill_rounded_rect(
-        close,
+        &close.into(),
         close.width() / 4,
-        rgba(frame.style.hover_background),
+        frame.style.hover_background,
       );
     }
 
@@ -896,13 +818,13 @@ fn paint_close_buttons(
       (left + inset, top + inset),
       (right - inset, bottom - inset),
       thickness,
-      rgba(color),
+      color,
     );
     canvas.stroke_line(
       (right - inset, top + inset),
       (left + inset, bottom - inset),
       thickness,
-      rgba(color),
+      color,
     );
   }
 }
@@ -937,7 +859,7 @@ unsafe fn apply_frame(
         .iter()
         .any(|new| new.hwnd == old.hwnd && new.title == old.title);
       if !is_unchanged {
-        tab_icons::invalidate(old.hwnd);
+        window_icons::invalidate(old.hwnd);
       }
     }
   }
@@ -1184,7 +1106,7 @@ unsafe fn on_destroy(hwnd: HWND, state_ptr: *mut BarState) {
   let state = Box::from_raw(state_ptr);
   if let Some(frame) = &state.frame {
     for tab in &frame.tabs {
-      tab_icons::invalidate(tab.hwnd);
+      window_icons::invalidate(tab.hwnd);
     }
   }
 }

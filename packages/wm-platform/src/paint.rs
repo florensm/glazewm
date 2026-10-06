@@ -1,12 +1,12 @@
 //! Anti-aliased drawing into a premultiplied 32-bit pixel buffer, for
-//! shapes GDI can only draw aliased (rounded corners, rings) and for
-//! compositing GDI output onto translucent pixels, which GDI itself
-//! can't do.
+//! shapes GDI can only draw aliased (rounded corners, rings, diagonal
+//! strokes) and for compositing GDI output onto translucent pixels, which
+//! GDI itself can't do. Shared by the overview and stack tab bars.
 //!
 //! Pixels are `0xAARRGGBB`, premultiplied by alpha, top-down, as used by a
 //! 32-bit DIB section passed to `UpdateLayeredWindow`.
 
-use crate::{Color, Rect};
+use crate::{Color, CornerRadii, Rect};
 
 /// Samples per axis when estimating a pixel's coverage.
 const SUBSAMPLES: i32 = 4;
@@ -26,11 +26,21 @@ impl Canvas<'_> {
     radius: i32,
     color: Color,
   ) {
-    let radius = clamp_radius(rect, radius);
+    self.fill_rect_with_corners(rect, CornerRadii::uniform(radius), color);
+  }
+
+  /// Fills `rect` with `color`, rounding each corner by its own radius.
+  pub fn fill_rect_with_corners(
+    &mut self,
+    rect: &Rect,
+    radii: CornerRadii,
+    color: Color,
+  ) {
+    let radii = radii.clamped(rect.width(), rect.height());
 
     for y in rect.top.max(0)..rect.bottom.min(self.height) {
       for x in rect.left.max(0)..rect.right.min(self.width) {
-        let coverage = rounded_rect_coverage(x, y, rect, radius);
+        let coverage = rounded_rect_coverage(x, y, rect, radii);
         self.blend(x, y, color, coverage);
       }
     }
@@ -45,9 +55,11 @@ impl Canvas<'_> {
     thickness: i32,
     color: Color,
   ) {
-    let radius = clamp_radius(rect, radius);
+    let radii =
+      CornerRadii::uniform(radius).clamped(rect.width(), rect.height());
     let inner = rect.inset(thickness);
-    let inner_radius = clamp_radius(&inner, radius - thickness);
+    let inner_radii = CornerRadii::uniform(radii.top_left - thickness)
+      .clamped(inner.width(), inner.height());
 
     for y in rect.top.max(0)..rect.bottom.min(self.height) {
       for x in rect.left.max(0)..rect.right.min(self.width) {
@@ -57,14 +69,45 @@ impl Canvas<'_> {
           && y < inner.bottom;
 
         let inner_coverage = if is_inside_inner {
-          rounded_rect_coverage(x, y, &inner, inner_radius)
+          rounded_rect_coverage(x, y, &inner, inner_radii)
         } else {
           0.0
         };
 
         let coverage =
-          rounded_rect_coverage(x, y, rect, radius) - inner_coverage;
+          rounded_rect_coverage(x, y, rect, radii) - inner_coverage;
         self.blend(x, y, color, coverage);
+      }
+    }
+  }
+
+  /// Draws a line from (`x0`, `y0`) to (`x1`, `y1`) of the given
+  /// `thickness`, with round caps.
+  pub fn stroke_line(
+    &mut self,
+    (x0, y0): (f32, f32),
+    (x1, y1): (f32, f32),
+    thickness: f32,
+    color: Color,
+  ) {
+    let half = thickness / 2.0;
+
+    #[allow(clippy::cast_possible_truncation)]
+    let (left, top, right, bottom) = (
+      (x0.min(x1) - half).floor() as i32,
+      (y0.min(y1) - half).floor() as i32,
+      (x0.max(x1) + half).ceil() as i32,
+      (y0.max(y1) + half).ceil() as i32,
+    );
+
+    for y in top..=bottom {
+      for x in left..=right {
+        #[allow(clippy::cast_precision_loss)]
+        let (px, py) = (x as f32 + 0.5, y as f32 + 0.5);
+        let distance = distance_to_segment((px, py), (x0, y0), (x1, y1));
+
+        // One pixel of falloff gives a smooth edge.
+        self.blend(x, y, color, half + 0.5 - distance);
       }
     }
   }
@@ -133,11 +176,21 @@ impl Canvas<'_> {
   /// Makes `rect`, with its corners rounded by `radius`, transparent:
   /// a hole for whatever is composited underneath the canvas.
   pub fn erase_rounded_rect(&mut self, rect: &Rect, radius: i32) {
-    let radius = clamp_radius(rect, radius);
+    self.erase_rect_with_corners(rect, CornerRadii::uniform(radius));
+  }
+
+  /// Like [`Canvas::erase_rounded_rect`], with each corner rounded by its
+  /// own radius.
+  pub fn erase_rect_with_corners(
+    &mut self,
+    rect: &Rect,
+    radii: CornerRadii,
+  ) {
+    let radii = radii.clamped(rect.width(), rect.height());
 
     for y in rect.top.max(0)..rect.bottom.min(self.height) {
       for x in rect.left.max(0)..rect.right.min(self.width) {
-        let coverage = rounded_rect_coverage(x, y, rect, radius);
+        let coverage = rounded_rect_coverage(x, y, rect, radii);
 
         #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
         let keep = ((1.0 - coverage) * 255.0).round() as u32;
@@ -252,25 +305,37 @@ pub(crate) fn matte_from_backgrounds(
     .collect()
 }
 
-/// Limits `radius` to half of `rect`'s shorter side.
-fn clamp_radius(rect: &Rect, radius: i32) -> i32 {
-  let max = rect.width().min(rect.height()) / 2;
-  radius.clamp(0, max.max(0))
-}
-
 /// Fraction of the pixel at (`x`, `y`), which lies within `rect`, that is
-/// inside `rect` with its corners rounded by `radius`.
-fn rounded_rect_coverage(x: i32, y: i32, rect: &Rect, radius: i32) -> f32 {
-  if radius == 0 {
-    return 1.0;
-  }
+/// inside `rect` with its corners rounded by `radii`, which must be
+/// clamped to it.
+fn rounded_rect_coverage(
+  x: i32,
+  y: i32,
+  rect: &Rect,
+  radii: CornerRadii,
+) -> f32 {
+  let is_left = x < rect.left + rect.width() / 2;
+  let is_top = y < rect.top + rect.height() / 2;
 
-  let is_left = x < rect.left + radius;
-  let is_right = x >= rect.right - radius;
-  let is_top = y < rect.top + radius;
-  let is_bottom = y >= rect.bottom - radius;
+  let radius = match (is_left, is_top) {
+    (true, true) => radii.top_left,
+    (false, true) => radii.top_right,
+    (false, false) => radii.bottom_right,
+    (true, false) => radii.bottom_left,
+  };
 
-  if !(is_left || is_right) || !(is_top || is_bottom) {
+  let is_in_corner_x = if is_left {
+    x < rect.left + radius
+  } else {
+    x >= rect.right - radius
+  };
+  let is_in_corner_y = if is_top {
+    y < rect.top + radius
+  } else {
+    y >= rect.bottom - radius
+  };
+
+  if radius == 0 || !(is_in_corner_x && is_in_corner_y) {
     return 1.0;
   }
 
@@ -310,10 +375,30 @@ fn rounded_rect_coverage(x: i32, y: i32, rect: &Rect, radius: i32) -> f32 {
   coverage
 }
 
+/// Distance from (`px`, `py`) to the segment from (`x0`, `y0`) to
+/// (`x1`, `y1`).
+fn distance_to_segment(
+  (px, py): (f32, f32),
+  (x0, y0): (f32, f32),
+  (x1, y1): (f32, f32),
+) -> f32 {
+  let (dx, dy) = (x1 - x0, y1 - y0);
+  let length_sq = dx * dx + dy * dy;
+
+  let t = if length_sq == 0.0 {
+    0.0
+  } else {
+    (((px - x0) * dx + (py - y0) * dy) / length_sq).clamp(0.0, 1.0)
+  };
+
+  let (cx, cy) = (x0 + t * dx, y0 + t * dy);
+  ((px - cx).powi(2) + (py - cy).powi(2)).sqrt()
+}
+
 #[cfg(test)]
 mod tests {
   use super::{mask_from_white_on_black, matte_from_backgrounds, Canvas};
-  use crate::{Color, Rect};
+  use crate::{Color, CornerRadii, Rect};
 
   const WHITE: Color = Color {
     r: 255,
@@ -365,6 +450,44 @@ mod tests {
     let edge_alpha = pixels[2 * 20 + 2] >> 24;
     assert!(edge_alpha > 0 && edge_alpha < 255, "edge is anti-aliased");
     assert_eq!(pixels[10], 0xffff_ffff, "straight edge is fully covered");
+  }
+
+  #[test]
+  fn square_corners_stay_filled() {
+    let mut pixels = vec![0u32; 20 * 20];
+    let radii = CornerRadii {
+      top_left: 8,
+      top_right: 8,
+      ..CornerRadii::default()
+    };
+    canvas(&mut pixels, 20).fill_rect_with_corners(
+      &Rect::from_ltrb(0, 0, 20, 20),
+      radii,
+      WHITE,
+    );
+
+    assert_eq!(pixels[0] >> 24, 0, "rounded corner stays transparent");
+    assert_eq!(pixels[19] >> 24, 0, "rounded corner stays transparent");
+    assert_eq!(pixels[19 * 20], 0xffff_ffff, "square corner is filled");
+    assert_eq!(
+      pixels[19 * 20 + 19],
+      0xffff_ffff,
+      "square corner is filled"
+    );
+  }
+
+  #[test]
+  fn line_covers_its_path_only() {
+    let mut pixels = vec![0u32; 10 * 10];
+    canvas(&mut pixels, 10).stroke_line(
+      (1.0, 1.0),
+      (9.0, 9.0),
+      1.5,
+      WHITE,
+    );
+
+    assert!(pixels[5 * 10 + 5] >> 24 > 200);
+    assert_eq!(pixels[9 * 10] >> 24, 0);
   }
 
   #[test]

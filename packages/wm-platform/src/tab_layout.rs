@@ -58,6 +58,12 @@ impl TabRect {
   }
 }
 
+impl From<TabRect> for crate::Rect {
+  fn from(rect: TabRect) -> Self {
+    Self::from_ltrb(rect.left, rect.top, rect.right, rect.bottom)
+  }
+}
+
 /// Inputs of a tab bar layout.
 #[derive(Clone, Copy, Debug)]
 pub struct TabLayoutParams {

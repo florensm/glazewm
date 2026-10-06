@@ -492,11 +492,7 @@ impl Overview {
     let animate = open_duration > 0;
     self.sync_backdrop(&frame, if animate { 0.0 } else { 1.0 });
 
-    window_icons::retain(|hwnd| {
-      frame.workspaces.iter().any(|workspace| {
-        workspace.windows.iter().any(|window| window.hwnd == hwnd)
-      })
-    });
+    window_icons::forget_closed();
 
     self.frame = Some(frame);
     self.rebuild_cards();
