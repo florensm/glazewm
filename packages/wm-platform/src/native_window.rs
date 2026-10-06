@@ -308,7 +308,8 @@ pub trait NativeWindowWindowsExt {
   /// cloaked.
   ///
   /// Only app windows can be cloaked, not e.g. the windows an app's main
-  /// window owns, which `set_cloaked` would leave on screen.
+  /// window owns, which `set_cloaked` would leave on screen. Unlike a
+  /// cloaked window, a hidden one is not rendered for thumbnails.
   ///
   /// # Platform-specific
   ///
