@@ -5,7 +5,9 @@ use tracing::warn;
 use windows::{
   core::PWSTR,
   Win32::{
-    Foundation::{CloseHandle, BOOL, HWND, LPARAM, POINT, RECT},
+    Foundation::{
+      CloseHandle, BOOL, HWND, LPARAM, POINT, RECT, TYPE_E_ELEMENTNOTFOUND,
+    },
     Graphics::Dwm::{
       DwmGetColorizationColor, DwmGetWindowAttribute,
       DwmSetWindowAttribute, DWMWA_BORDER_COLOR, DWMWA_CLOAKED,
@@ -602,28 +604,63 @@ impl NativeWindow {
   }
 
   pub(crate) fn set_cloaked(&self, cloaked: bool) -> crate::Result<()> {
-    COM_INIT.with(|com_init| -> crate::Result<()> {
+    if self.set_view_cloaked(cloaked)? {
+      Ok(())
+    } else {
+      Err(crate::Error::Platform(
+        "Unable to get application view by window handle.".to_string(),
+      ))
+    }
+  }
+
+  /// Implements [`NativeWindowWindowsExt::set_cloaked_or_hidden`].
+  pub(crate) fn set_cloaked_or_hidden(
+    &self,
+    hidden: bool,
+  ) -> crate::Result<()> {
+    if self.set_view_cloaked(hidden)? {
+      Ok(())
+    } else if hidden {
+      self.hide()
+    } else {
+      self.show()
+    }
+  }
+
+  /// Cloaks or uncloaks the window through its shell application view.
+  ///
+  /// Returns `false` if it has none: the shell keeps views of app windows
+  /// only, not e.g. of the windows an app's main window owns.
+  fn set_view_cloaked(&self, cloaked: bool) -> crate::Result<bool> {
+    COM_INIT.with(|com_init| -> crate::Result<bool> {
       com_init.borrow_mut().with_retry(|com| {
         let view_collection = com.application_view_collection()?;
 
         let mut view: Option<IApplicationView> = None;
-        unsafe {
+        // SAFETY: `view` outlives the call, which only writes to it.
+        let found = unsafe {
           view_collection.get_view_for_hwnd(self.hwnd().0, &raw mut view)
-        }
-        .ok()?;
+        };
 
-        let view = view.ok_or_else(|| {
-          crate::Error::Platform(
-            "Unable to get application view by window handle.".to_string(),
-          )
-        })?;
+        // A window without a view, rather than stale interfaces, so not
+        // worth the retry's refresh.
+        if found == TYPE_E_ELEMENTNOTFOUND {
+          return Ok(false);
+        }
+        found.ok()?;
+
+        let Some(view) = view else {
+          return Ok(false);
+        };
 
         // Ref: https://github.com/Ciantic/AltTabAccessor/issues/1#issuecomment-1426877843
         unsafe { view.set_cloak(1, if cloaked { 2 } else { 0 }) }
           .ok()
           .map_err(|_| {
             crate::Error::Platform("Failed to cloak window.".to_string())
-          })
+          })?;
+
+        Ok(true)
       })
     })
   }
