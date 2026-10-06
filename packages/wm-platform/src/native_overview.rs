@@ -871,7 +871,7 @@ impl Overview {
         continue;
       }
 
-      let size = card_size(&self.metrics, picture.scale);
+      let size = card_size(&self.metrics);
       let metrics = self.metrics;
       card.picture.draw(size, |surface| {
         draw_card(surface, &picture, &metrics, &style, notify);
@@ -974,9 +974,9 @@ impl Overview {
           let (border_width, border) = if is_match {
             (3.0, search)
           } else if is_marked {
-            (3.0, accent)
+            (4.0, accent)
           } else if is_picked || is_cursor || is_focused {
-            (2.0, accent)
+            (3.0, accent)
           } else {
             (1.0, with_alpha(caption, 0.6))
           };
@@ -1001,16 +1001,12 @@ impl Overview {
     });
 
     CardPicture {
-      // Drawn at the size it's heading for, so it's scaled down rather
-      // than up while it animates.
-      scale: card.map_or(1.0, |card| card.scale.target.max(0.05)),
       label: workspace.map_or_else(String::new, |w| w.label.clone()),
       is_focused: workspace.is_some_and(|w| w.is_focused),
       is_new: workspace.is_some_and(|w| w.is_new),
       is_hovered: interaction.hover == Some(index),
       is_drop_target: interaction.is_drop_target(index),
       is_selected,
-      window_count: workspace.map_or(0, |w| w.windows.len()),
       minimized: workspace.map_or_else(Vec::new, |w| {
         w.windows
           .iter()

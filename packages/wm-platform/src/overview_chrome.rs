@@ -18,10 +18,9 @@ use windows::{
       DeleteObject, DrawTextW, GdiFlush, SelectObject, SetBkMode,
       SetTextColor, ANTIALIASED_QUALITY, BITMAPINFO, BITMAPINFOHEADER,
       BI_RGB, CLIP_DEFAULT_PRECIS, DEFAULT_CHARSET, DIB_RGB_COLORS,
-      DRAW_TEXT_FORMAT, DT_CALCRECT, DT_CENTER, DT_END_ELLIPSIS, DT_LEFT,
-      DT_NOPREFIX, DT_RIGHT, DT_SINGLELINE, DT_VCENTER, FW_NORMAL,
-      FW_SEMIBOLD, HBITMAP, HDC, HFONT, HGDIOBJ, OUT_DEFAULT_PRECIS,
-      TRANSPARENT,
+      DRAW_TEXT_FORMAT, DT_CENTER, DT_END_ELLIPSIS, DT_LEFT, DT_NOPREFIX,
+      DT_SINGLELINE, DT_VCENTER, FW_NORMAL, FW_SEMIBOLD, HBITMAP, HDC,
+      HFONT, HGDIOBJ, OUT_DEFAULT_PRECIS, TRANSPARENT,
     },
     UI::WindowsAndMessaging::{DrawIconEx, DI_NORMAL, HICON},
   },
@@ -145,10 +144,6 @@ impl Drop for Surface {
 #[derive(Clone, Debug, PartialEq)]
 #[allow(clippy::struct_excessive_bools)]
 pub(crate) struct CardPicture {
-  /// Scale it is drawn at. Everything else is in the coordinates of a
-  /// card at scale 1.
-  pub scale: f32,
-
   pub label: String,
 
   /// Whether this is the focused workspace.
@@ -160,8 +155,6 @@ pub(crate) struct CardPicture {
   pub is_hovered: bool,
   pub is_drop_target: bool,
   pub is_selected: bool,
-
-  pub window_count: usize,
 
   /// Handles of minimized windows, shown as icons in the header.
   pub minimized: Vec<isize>,
@@ -187,13 +180,15 @@ pub(crate) struct TilePicture {
   pub border: Color,
 }
 
-/// Pixel size of a card drawn at `scale`.
+/// Pixel size of a card's picture.
+///
+/// Always that of a card at scale 1, however big the card is shown: DWM
+/// scales it, so moving the selection never redraws a card. A picture
+/// redrawn at a new size flickers, since the new bitmap and its
+/// thumbnail's source rect can't be swapped in at once.
 #[allow(clippy::cast_possible_truncation)]
-pub(crate) fn card_size(metrics: &CardMetrics, scale: f32) -> (i32, i32) {
-  (
-    (metrics.width * scale).ceil() as i32,
-    (metrics.height * scale).ceil() as i32,
-  )
+pub(crate) fn card_size(metrics: &CardMetrics) -> (i32, i32) {
+  (metrics.width.ceil() as i32, metrics.height.ceil() as i32)
 }
 
 /// `color` with its alpha set to `alpha` (0 to 1).
@@ -208,28 +203,16 @@ fn fade(color: Color, opacity: f32) -> Color {
   with_alpha(color, f32::from(color.a) / 255.0 * opacity)
 }
 
-/// Converts lengths into the pixels of a picture drawn at some scale.
+/// Converts logical lengths into the pixels of a card's picture.
 #[derive(Clone, Copy)]
 struct Units {
-  scale: f32,
   scale_factor: f32,
 }
 
 impl Units {
   /// `length` logical pixels.
   fn px(self, length: f32) -> f32 {
-    length * self.scale_factor * self.scale
-  }
-
-  /// `rect`, given in the coordinates of a card at scale 1.
-  fn rect(self, rect: &RectF) -> Rect {
-    RectF::new(
-      rect.x * self.scale,
-      rect.y * self.scale,
-      rect.w * self.scale,
-      rect.h * self.scale,
-    )
-    .to_rect()
+    length * self.scale_factor
   }
 }
 
@@ -244,7 +227,6 @@ pub(crate) fn draw_card(
   notify: (HWND, u32),
 ) {
   let units = Units {
-    scale: picture.scale,
     scale_factor: metrics.scale_factor,
   };
 
@@ -253,9 +235,9 @@ pub(crate) fn draw_card(
   let radius = round(units.px(14.0));
 
   let (fill, border, border_width) = if picture.is_drop_target {
-    (with_alpha(style.accent, 0.22), style.accent, 3.0)
+    (with_alpha(style.accent, 0.22), style.accent, 4.0)
   } else if picture.is_focused {
-    (with_alpha(style.accent, 0.12), style.accent, 1.0)
+    (with_alpha(style.accent, 0.12), style.accent, 2.0)
   } else if picture.is_hovered {
     (style.surface, with_alpha(style.accent, 0.35), 1.0)
   } else if picture.is_new {
@@ -284,7 +266,7 @@ pub(crate) fn draw_card(
     } else {
       with_alpha(style.subtext, 0.5)
     };
-    draw_plus(surface, &units.rect(&metrics.tile_area()), units, color);
+    draw_plus(surface, &metrics.tile_area().to_rect(), units, color);
   }
 
   // Previews are cut out in stacking order, so a floating window's hole
@@ -297,7 +279,7 @@ pub(crate) fn draw_card(
     surface.canvas().stroke_rounded_rect(
       &card,
       radius,
-      round(units.px(3.0)).max(1),
+      round(units.px(4.0)).max(1),
       style.accent,
     );
   }
@@ -337,9 +319,8 @@ fn draw_plus(
   }
 }
 
-/// Draws a card's name on the left, its window count on the right, and
-/// its minimized windows (nothing to draw them with) as small icons
-/// beside the count.
+/// Draws a card's name on the left, and its minimized windows (nothing to
+/// draw them with) as small icons on the right.
 fn draw_header(
   surface: &mut Surface,
   fonts: &mut Fonts,
@@ -364,37 +345,7 @@ fn draw_header(
     DT_LEFT,
   );
 
-  if picture.is_new {
-    draw_text(
-      surface,
-      fonts.get(units.px(10.0), false),
-      "new",
-      &RectF::new(half, 0.0, half - units.px(12.0), header).to_rect(),
-      with_alpha(style.subtext, 0.6),
-      DT_RIGHT,
-    );
-    return;
-  }
-
-  if picture.window_count == 0 {
-    return;
-  }
-
-  let count = picture.window_count.to_string();
-  let font = fonts.get(units.px(10.0), false);
-  let count_rect = RectF::new(half, 0.0, half - units.px(12.0), header);
-  draw_text(
-    surface,
-    font,
-    &count,
-    &count_rect.to_rect(),
-    with_alpha(style.subtext, 0.6),
-    DT_RIGHT,
-  );
-
-  let mut x = count_rect.right()
-    - to_f32(measure_text(surface.dc, font, &count))
-    - units.px(6.0);
+  let mut x = to_f32(surface.width) - units.px(10.0);
   for hwnd in &picture.minimized {
     x -= units.px(16.0);
     let icon =
@@ -413,7 +364,7 @@ fn draw_tile(
   style: &OverviewStyle,
   notify: (HWND, u32),
 ) {
-  let rect = units.rect(&tile.rect);
+  let rect = tile.rect.to_rect();
   let radius = round(units.px(4.0));
   let opacity = tile.opacity;
 
@@ -634,31 +585,6 @@ impl Drop for Fonts {
         let _ = DeleteObject(*font);
       }
     }
-  }
-}
-
-/// Width of `text` in `font`, measured on `dc`.
-fn measure_text(dc: HDC, font: HFONT, text: &str) -> i32 {
-  let mut text = text.encode_utf16().collect::<Vec<_>>();
-
-  // An empty slice's dangling pointer must never reach `DrawTextW`, which
-  // reads through it on some systems (e.g. Wine).
-  if text.is_empty() {
-    return 0;
-  }
-
-  // SAFETY: `dc` and `font` are valid; the old font is restored.
-  unsafe {
-    let old_font = SelectObject(dc, font);
-    let mut rect = RECT::default();
-    DrawTextW(
-      dc,
-      &mut text,
-      &raw mut rect,
-      DT_LEFT | DT_SINGLELINE | DT_NOPREFIX | DT_CALCRECT,
-    );
-    SelectObject(dc, old_font);
-    rect.right - rect.left
   }
 }
 
