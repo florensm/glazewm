@@ -390,28 +390,19 @@ impl NativeWindow {
 
   /// Implements [`NativeWindowWindowsExt::is_cloaked_by_owner`].
   pub(crate) fn is_cloaked_by_owner(&self) -> bool {
-    // `DWM_CLOAKED_INHERITED`, which the `windows` crate doesn't export.
-    const CLOAKED_INHERITED: u32 = 0x4;
-
-    let mut cloaked = 0u32;
-
-    // SAFETY: `cloaked` outlives the call and matches the attribute's
-    // size; a stale handle just fails the query.
-    #[allow(clippy::cast_possible_truncation)]
-    let queried = unsafe {
-      DwmGetWindowAttribute(
-        self.hwnd(),
-        DWMWA_CLOAKED,
-        std::ptr::from_mut::<u32>(&mut cloaked).cast(),
-        std::mem::size_of::<u32>() as u32,
-      )
-    }
-    .is_ok();
+    // Checked through the owner rather than `DWM_CLOAKED_INHERITED`: a
+    // window with its own shell view is cloaked by the shell along with
+    // its owner, which DWM reports as a shell cloak instead.
+    let Some(owner) = self.owner_window_id() else {
+      return false;
+    };
 
     // SAFETY: No preconditions; a stale handle returns false.
     let is_shown = unsafe { IsWindowVisible(self.hwnd()) }.as_bool();
 
-    queried && is_shown && cloaked == CLOAKED_INHERITED
+    is_shown
+      && self.is_cloaked().unwrap_or(false)
+      && Self::new(owner.0).is_cloaked().unwrap_or(false)
   }
 
   /// Implements [`NativeWindowWindowsExt::press_keys`].
