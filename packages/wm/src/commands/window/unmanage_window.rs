@@ -29,9 +29,14 @@ pub fn detach_window_for_close(
   let ancestors = window.ancestors().take(3).collect::<Vec<_>>();
   let focus_target = state.focus_target_after_removal(&window.clone());
   let other_tabs = other_stack_tabs(&window);
+  let is_stacked = is_stacked(&window);
 
   detach_container(window.clone().into())?;
   state.pending_sync.queue_containers_to_redraw(other_tabs);
+
+  if is_stacked {
+    state.pending_sync.queue_tab_bar_update();
+  }
 
   state.window_target_positions.remove(&window.id());
   // NOTE: `state.animation_manager.remove_animation` is intentionally
@@ -80,9 +85,14 @@ pub fn unmanage_window(
   // Get container to switch focus to after the window has been removed.
   let focus_target = state.focus_target_after_removal(&window.clone());
   let other_tabs = other_stack_tabs(&window);
+  let is_stacked = is_stacked(&window);
 
   detach_container(window.clone().into())?;
   state.pending_sync.queue_containers_to_redraw(other_tabs);
+
+  if is_stacked {
+    state.pending_sync.queue_tab_bar_update();
+  }
 
   // Clean up animation tracking data.
   state.window_target_positions.remove(&window.id());
@@ -141,6 +151,17 @@ pub fn unmanage_window(
   Ok(())
 }
 
+/// Whether `window` is a stack's tab.
+///
+/// Its tab bar is then synced explicitly once it's removed: the last tab
+/// of a floating stack, unless focused, leaves nothing else to sync, and
+/// the bar kept showing it.
+fn is_stacked(window: &WindowContainer) -> bool {
+  window
+    .parent()
+    .is_some_and(|parent| parent.as_stack().is_some())
+}
+
 /// Unmanages `window` if another app has embedded it into one of its own
 /// windows. Returns whether it did.
 ///
@@ -160,4 +181,44 @@ pub fn unmanage_if_embedded(
   tracing::info!("Window embedded into another window: {window}");
   unmanage_window(window, state)?;
   Ok(true)
+}
+
+#[cfg(test)]
+mod tests {
+  use super::unmanage_window;
+  use crate::{
+    commands::container::{attach_container, set_focused_descendant},
+    models::{
+      Monitor, NonTilingWindow, StackContainer, TilingWindow, Workspace,
+    },
+    traits::CommonGetters,
+    wm_state::WmState,
+  };
+
+  #[test]
+  fn unfocused_floating_stacks_last_tab_syncs_its_tab_bar() {
+    let focused = TilingWindow::mock().call();
+    let workspace = Workspace::mock()
+      .tiling_containers(vec![focused.clone().into()])
+      .call();
+    let monitor =
+      Monitor::mock().workspaces(vec![workspace.clone()]).call();
+    // Never dropped, which would restore its mock windows via Win32 calls.
+    let mut state =
+      std::mem::ManuallyDrop::new(WmState::mock(vec![monitor]));
+
+    let tab = NonTilingWindow::mock().call();
+    let stack = StackContainer::mock().name("details".to_string()).call();
+    attach_container(&tab.clone().into(), &stack.clone().into(), None)
+      .unwrap();
+    attach_container(&stack.clone().into(), &workspace.into(), None)
+      .unwrap();
+    set_focused_descendant(&focused.into(), None);
+    state.pending_sync.clear();
+
+    unmanage_window(tab.into(), &mut state).unwrap();
+
+    assert!(stack.is_detached());
+    assert!(state.pending_sync.needs_tab_bar_update());
+  }
 }
