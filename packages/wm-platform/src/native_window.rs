@@ -192,9 +192,8 @@ pub trait NativeWindowWindowsExt {
   /// This method is only available on Windows.
   fn owner_window_id(&self) -> Option<WindowId>;
 
-  /// Whether the window is shown, but cloaked only because its owner
-  /// window is (`DWM_CLOAKED_INHERITED`), e.g. while the WM animates the
-  /// owner.
+  /// Whether the window is shown, but cloaked along with its cloaked owner
+  /// window, e.g. while the WM animates the owner.
   ///
   /// # Platform-specific
   ///

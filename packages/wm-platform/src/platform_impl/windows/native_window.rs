@@ -375,28 +375,19 @@ impl NativeWindow {
 
   /// Implements [`NativeWindowWindowsExt::is_cloaked_by_owner`].
   pub(crate) fn is_cloaked_by_owner(&self) -> bool {
-    // `DWM_CLOAKED_INHERITED`, which the `windows` crate doesn't export.
-    const CLOAKED_INHERITED: u32 = 0x4;
-
-    let mut cloaked = 0u32;
-
-    // SAFETY: `cloaked` outlives the call and matches the attribute's
-    // size; a stale handle just fails the query.
-    #[allow(clippy::cast_possible_truncation)]
-    let queried = unsafe {
-      DwmGetWindowAttribute(
-        self.hwnd(),
-        DWMWA_CLOAKED,
-        std::ptr::from_mut::<u32>(&mut cloaked).cast(),
-        std::mem::size_of::<u32>() as u32,
-      )
-    }
-    .is_ok();
+    // Checked through the owner rather than `DWM_CLOAKED_INHERITED`: a
+    // window with its own shell view is cloaked by the shell along with
+    // its owner, which DWM reports as a shell cloak instead.
+    let Some(owner) = self.owner_window_id() else {
+      return false;
+    };
 
     // SAFETY: No preconditions; a stale handle returns false.
     let is_shown = unsafe { IsWindowVisible(self.hwnd()) }.as_bool();
 
-    queried && is_shown && cloaked == CLOAKED_INHERITED
+    is_shown
+      && self.is_cloaked().unwrap_or(false)
+      && Self::new(owner.0).is_cloaked().unwrap_or(false)
   }
 
   /// Implements [`NativeWindowWindowsExt::press_keys`].
@@ -652,6 +643,22 @@ impl NativeWindow {
         let Some(view) = view else {
           return Ok(false);
         };
+
+        // The shell cloaks and uncloaks an owned window along with its
+        // owner, without updating the owned window's own view. One that
+        // its owner's uncloak brought back on screen still counts as
+        // cloaked there, so cloaking it again would do nothing, leaving
+        // e.g. a stack's hidden tab shown. Uncloaking its view first
+        // brings the view in line with the window being shown.
+        if cloaked
+          && self.has_owner_window()
+          && self.is_visible().unwrap_or(false)
+        {
+          // SAFETY: `view` is a valid view of this window.
+          unsafe { view.set_cloak(1, 0) }.ok().map_err(|_| {
+            crate::Error::Platform("Failed to uncloak window.".to_string())
+          })?;
+        }
 
         // Ref: https://github.com/Ciantic/AltTabAccessor/issues/1#issuecomment-1426877843
         unsafe { view.set_cloak(1, if cloaked { 2 } else { 0 }) }
