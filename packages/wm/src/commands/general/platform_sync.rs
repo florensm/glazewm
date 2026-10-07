@@ -2196,17 +2196,28 @@ fn follow_frame<O: SyncableOverlay>(
   }
 }
 
-/// Puts shown overlays of kind `O` back directly behind their windows
-/// after another process restacked windows.
+/// Puts every shown overlay and tab bar back directly behind its window,
+/// e.g. after another process restacked windows.
 ///
 /// `sync_overlays` only re-asserts z-order for windows the WM restacked
 /// itself, so an app raising or lowering its own window (e.g. a tabbing
-/// app keeping its host above its tabs' apps) would otherwise leave the
-/// overlay in the old slot. Settled overlays cost a few USER32 reads.
+/// app keeping its host above its tabs' apps) would otherwise leave them
+/// in the old slot. Settled ones cost a few USER32 reads.
 #[cfg(target_os = "windows")]
-pub(crate) fn resync_overlay_z_order<O: SyncableOverlay>(
-  state: &mut WmState,
-) {
+pub(crate) fn resync_overlays_and_tab_bars(state: &mut WmState) {
+  // Backdrop first, then border, matching `platform_sync`: each goes
+  // directly behind the window, so the border ends up between the two.
+  resync_overlay_z_order::<NativeBackdropOverlay>(state);
+  resync_overlay_z_order::<NativeBorderOverlay>(state);
+
+  for bar in state.tab_bars.values() {
+    bar.keep_behind_anchor();
+  }
+}
+
+/// Puts shown overlays of kind `O` back directly behind their windows.
+#[cfg(target_os = "windows")]
+fn resync_overlay_z_order<O: SyncableOverlay>(state: &mut WmState) {
   for window in state.windows() {
     // Animated windows' overlays are owned by their animation driver.
     if state.animation_manager.has_active_surrogate(&window.id()) {
@@ -2831,9 +2842,13 @@ fn sync_overlays<O: SyncableOverlay>(
   }
 }
 
-/// Puts the overlays and tab bar of every window still settling after a
-/// z-order change back behind it, once per animation tick. See
-/// `AnimationManager::settle_overlay_z_order`.
+/// Puts every overlay and tab bar back behind its window once per
+/// animation tick while any window is still settling after a z-order
+/// change. See `AnimationManager::settle_overlay_z_order`.
+///
+/// Every one rather than only the settling windows': a window's z-order
+/// change also moves the windows it owns, e.g. an app's dialogs rise with
+/// its main window, leaving their overlays and tab bars under it.
 ///
 /// `sync_z_order` re-matches the topmost band before re-stacking, which is
 /// what repairs a band change that landed after the pass that stacked the
@@ -2848,56 +2863,24 @@ fn sync_overlays<O: SyncableOverlay>(
 /// the next tiled window to be raised covered it.
 #[cfg(target_os = "windows")]
 pub(crate) fn resync_settling_overlays(state: &mut WmState) {
-  for id in state.animation_manager.settling_overlay_windows() {
-    if state.animation_manager.has_active_surrogate(&id) {
-      state.animation_manager.extend_overlay_z_settle(&id);
-      continue;
-    }
-
-    let Some(window) = state
-      .container_by_id(id)
-      .and_then(|container| container.as_window_container().ok())
-    else {
-      continue;
-    };
-    let anchor = overlay_z_anchor(&window);
-
-    if window.native().is_topmost() != is_shown_on_top(&window) {
-      state.animation_manager.extend_overlay_z_settle(&id);
-    }
-
-    // Backdrop first, then border, matching `platform_sync`, so both end
-    // up in the same order: window, border, backdrop.
-    resync_overlay::<NativeBackdropOverlay>(state, id, anchor);
-    resync_overlay::<NativeBorderOverlay>(state, id, anchor);
-
-    // E.g. a stack being dragged is moved to the topmost band.
-    if let Some(bar) = window
-      .parent()
-      .filter(|parent| parent.as_stack().is_some())
-      .and_then(|stack| state.tab_bars.get(&stack.id()))
-    {
-      bar.keep_behind_anchor();
-    }
-  }
-}
-
-#[cfg(target_os = "windows")]
-fn resync_overlay<O: SyncableOverlay>(
-  state: &mut WmState,
-  id: uuid::Uuid,
-  anchor: HWND,
-) {
-  let Some(overlay) = O::overlays(state).get_mut(&id) else {
-    return;
-  };
-  if !overlay.is_visible() {
+  let settling = state.animation_manager.settling_overlay_windows();
+  if settling.is_empty() {
     return;
   }
-  if let Err(err) = overlay.sync_z_order(anchor, false) {
-    debug!(
-      "{} overlay z-order settle failed for {id}: {err}.",
-      O::LABEL
-    );
+
+  for id in settling {
+    let is_unsettled = state.animation_manager.has_active_surrogate(&id)
+      || state
+        .container_by_id(id)
+        .and_then(|container| container.as_window_container().ok())
+        .is_some_and(|window| {
+          window.native().is_topmost() != is_shown_on_top(&window)
+        });
+
+    if is_unsettled {
+      state.animation_manager.extend_overlay_z_settle(&id);
+    }
   }
+
+  resync_overlays_and_tab_bars(state);
 }
