@@ -27,7 +27,7 @@ pub fn toggle_stack(
       remove_from_tiling_stack(window, stack, state)
     }
     (WindowContainer::NonTilingWindow(_), Some(_)) => {
-      float_out_of_stack(window, false, state, config)
+      float_out_of_stack(window, state, config)
     }
     (_, None) if window.state() == WindowState::Minimized => Ok(()),
     (_, None) => wrap_window_in_stack(window, &new_stack(config), state),

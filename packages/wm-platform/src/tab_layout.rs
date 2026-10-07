@@ -15,9 +15,8 @@ pub enum TabAction {
   Move { from: usize, to: usize },
   /// Take the tab's window out of the stack.
   Detach(usize),
-  /// Take the tab's window out of the stack as a floating window, placed
-  /// at the cursor if `at_cursor`.
-  Float { index: usize, at_cursor: bool },
+  /// Take the tab's window out of the stack as a floating window.
+  Float(usize),
   /// Show the next (or previous) tab.
   Cycle { prev: bool },
 }

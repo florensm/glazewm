@@ -15,8 +15,9 @@ These cover everyday use and are bound in the sample config:
 | `cycle-stack-focus [--prev]` | Focus the next (or previous) tab, wrapping around. |
 | `float-out-of-stack` | Take the focused window out of its stack as a floating window. |
 
-With the mouse, the tab bar does the same: click a tab, drag a tab off the
-bar, drop a window onto a bar, and drag tabs to reorder them.
+With the mouse, the tab bar does the same: click a tab, drop a window onto
+a bar, drag tabs to reorder them, and right-click a tab to float its window
+out.
 
 These are available for your own bindings or scripts:
 
@@ -66,10 +67,10 @@ a window's state change the whole stack:
   activating any of its windows from the taskbar, restores the stack.
 - A fullscreen stack moved to another monitor goes as a whole.
 
-To take a single window out, use `float-out-of-stack`, the tab's "Float
-window" menu item, or drag its tab off the bar. A window floated out of a
-tiling stack goes back into it with `toggle-floating` (or next to the
-window left over, if the stack was removed when it had one window left).
+To take a single window out, use `float-out-of-stack` or the tab's "Float
+window" menu item. A window floated out of a tiling stack goes back into it
+with `toggle-floating` (or next to the window left over, if the stack was
+removed when it had one window left).
 
 Drop a window onto a stack's tab bar (by moving it, not resizing it) to add
 it to the stack; a floating window joins a floating stack as is. Dropping a stacked window there brings
@@ -85,8 +86,8 @@ active tab is highlighted, and the highlight slides when it changes.
 - Close a tab's window with its close button (shown on the active and the
   hovered tab by default) or a middle click. This sends it a normal
   `WM_CLOSE`.
-- Drag a tab sideways to reorder it; drag it well above or below the bar
-  to take its window out of the stack, floating where you let go.
+- Drag a tab sideways to reorder it. Tabs can't be dragged out of the
+  bar: the stack moves as one window, so a drag never splits it up.
 - Right-click a tab for a menu with "Close", "Float window" and "Remove
   from stack".
 - Hovering a tab whose title is cut off (or that only shows its icon)

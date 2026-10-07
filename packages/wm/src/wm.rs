@@ -137,13 +137,13 @@ impl WindowManager {
       TabAction::Detach(index) => {
         (InvokeCommand::ToggleStack, tab(index).map(Into::into))
       }
-      TabAction::Float { index, at_cursor } => {
+      TabAction::Float(index) => {
         let Some(window) = tab(index) else {
           return Ok(());
         };
 
         let state = &mut self.state;
-        float_out_of_stack(&window, at_cursor, state, config)?;
+        float_out_of_stack(&window, state, config)?;
         if !state.is_paused {
           platform_sync(state, config)?;
         }
@@ -1078,7 +1078,7 @@ impl WindowManager {
       }
       InvokeCommand::FloatOutOfStack => {
         if let Ok(window) = subject_container.as_window_container() {
-          float_out_of_stack(&window, false, state, config)?;
+          float_out_of_stack(&window, state, config)?;
         }
         Ok(())
       }

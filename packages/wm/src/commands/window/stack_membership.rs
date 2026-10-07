@@ -225,15 +225,14 @@ fn leave_stack(
   }
 }
 
-/// Takes `window` out of its stack as a floating window, placed at the
-/// cursor if `at_cursor`, otherwise slightly offset from the stack.
+/// Takes `window` out of its stack as a floating window, centered if the
+/// stack is tiling, otherwise slightly offset from the stack.
 ///
 /// A window taken out of a tiling stack goes back into it when tiled
 /// again (e.g. with `toggle-floating`), or next to the window left over
 /// if the stack was removed.
 pub fn float_out_of_stack(
   window: &WindowContainer,
-  at_cursor: bool,
   state: &mut WmState,
   config: &UserConfig,
 ) -> anyhow::Result<()> {
@@ -250,23 +249,12 @@ pub fn float_out_of_stack(
 
   let placement = {
     let size = window.floating_placement();
-    let cursor = at_cursor
-      .then(|| state.dispatcher.cursor_position().ok())
-      .flatten();
 
-    match cursor {
-      // Grab the window where the tab was let go, near its top edge.
-      Some(cursor) => size.translate_to_coordinates(
-        cursor.x - size.width() / 2,
-        cursor.y - stack.tab_bar_height_px() / 2,
-      ),
-      None if stack.is_tiling() => {
-        size.translate_to_center(&workspace.to_rect()?)
-      }
-      None => {
-        let offset = stack.tab_bar_height_px().max(24);
-        size.translate_to_coordinates(size.x() + offset, size.y() + offset)
-      }
+    if stack.is_tiling() {
+      size.translate_to_center(&workspace.to_rect()?)
+    } else {
+      let offset = stack.tab_bar_height_px().max(24);
+      size.translate_to_coordinates(size.x() + offset, size.y() + offset)
     }
   };
 

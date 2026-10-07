@@ -1050,6 +1050,9 @@ unsafe fn restack_behind(hwnd: HWND, state: &mut BarState) {
 
 /// Handles a left-button release: a click, the end of a drag, or a close
 /// button press.
+///
+/// A drag only ever reorders tabs, wherever it ends: a stack is moved as
+/// one window, so its tabs can't be dragged out of it.
 fn finish_left_click(state: &mut BarState, (x, y): (i32, i32)) {
   let pressed_close = state.pressed_close.take();
   let hit = state
@@ -1069,21 +1072,6 @@ fn finish_left_click(state: &mut BarState, (x, y): (i32, i32)) {
 
   if !drag.is_moving {
     (state.on_action)(TabAction::Activate(drag.index));
-    return;
-  }
-
-  let (top, height) = state
-    .frame
-    .as_ref()
-    .map_or((0, 0), |f| (f.rect.top - f.outer_rect.top, f.rect.height()));
-  let y = y - top;
-  let is_torn_off = y < -height || y > height * 2;
-
-  if is_torn_off {
-    (state.on_action)(TabAction::Float {
-      index: drag.index,
-      at_cursor: true,
-    });
     return;
   }
 
@@ -1132,10 +1120,7 @@ unsafe fn show_context_menu(hwnd: HWND, state: &BarState, index: usize) {
   match usize::try_from(command.0).unwrap_or(0) {
     MENU_CLOSE => (state.on_action)(TabAction::Close(index)),
     MENU_DETACH => (state.on_action)(TabAction::Detach(index)),
-    MENU_FLOAT => (state.on_action)(TabAction::Float {
-      index,
-      at_cursor: false,
-    }),
+    MENU_FLOAT => (state.on_action)(TabAction::Float(index)),
     _ => {}
   }
 }
