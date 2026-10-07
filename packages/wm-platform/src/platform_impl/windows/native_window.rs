@@ -668,6 +668,22 @@ impl NativeWindow {
           return Ok(false);
         };
 
+        // The shell cloaks and uncloaks an owned window along with its
+        // owner, without updating the owned window's own view. One that
+        // its owner's uncloak brought back on screen still counts as
+        // cloaked there, so cloaking it again would do nothing, leaving
+        // e.g. a stack's hidden tab shown. Uncloaking its view first
+        // brings the view in line with the window being shown.
+        if cloaked
+          && self.has_owner_window()
+          && self.is_visible().unwrap_or(false)
+        {
+          // SAFETY: `view` is a valid view of this window.
+          unsafe { view.set_cloak(1, 0) }.ok().map_err(|_| {
+            crate::Error::Platform("Failed to uncloak window.".to_string())
+          })?;
+        }
+
         // Ref: https://github.com/Ciantic/AltTabAccessor/issues/1#issuecomment-1426877843
         unsafe { view.set_cloak(1, if cloaked { 2 } else { 0 }) }
           .ok()
