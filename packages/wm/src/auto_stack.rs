@@ -3,8 +3,8 @@ use std::{
   time::{Duration, Instant},
 };
 
-use wm_common::{AutoStackRuleConfig, WindowMatchConfig};
-use wm_platform::{Keybinding, NativeWindow, WindowId};
+use wm_common::{AutoStackRuleConfig, InvokeCommand, WindowMatchConfig};
+use wm_platform::{Keybinding, NativeWindow, Rect, WindowId};
 
 use crate::{models::NativeWindowProperties, user_config::UserConfig};
 
@@ -54,9 +54,10 @@ pub enum AutoStackDecision<'a> {
   /// Place the window in the stack named by the rule.
   Join(&'a AutoStackRuleConfig),
 
-  /// The title is still empty but the rest of a rule matches, so the
-  /// window could still turn out to belong in a stack.
-  Wait,
+  /// The title is still empty but the rest of this rule (the first such
+  /// one) matches, so the window could still turn out to belong in its
+  /// stack.
+  Wait(&'a AutoStackRuleConfig),
 
   /// A rule matches, but the window is of a kind that is never stacked.
   /// Carries the reason, for logging.
@@ -73,7 +74,7 @@ pub fn decide<'a>(
   props: &NativeWindowProperties,
   traits: WindowTraits,
 ) -> AutoStackDecision<'a> {
-  let mut could_match_later = false;
+  let mut could_match_later = None;
 
   for rule in rules {
     let matches_any = |configs: &[WindowMatchConfig]| {
@@ -108,23 +109,60 @@ pub fn decide<'a>(
       return AutoStackDecision::Join(rule);
     }
 
-    if props.title.trim().is_empty() {
-      could_match_later |= rule.match_window.iter().any(|config| {
+    let matches_untitled = || {
+      rule.match_window.iter().any(|config| {
         let untitled = WindowMatchConfig {
           window_title: None,
           ..config.clone()
         };
 
         UserConfig::window_matches(&untitled, props)
-      });
+      })
+    };
+
+    if could_match_later.is_none()
+      && props.title.trim().is_empty()
+      && matches_untitled()
+    {
+      could_match_later = Some(rule);
     }
   }
 
-  if could_match_later {
-    AutoStackDecision::Wait
-  } else {
-    AutoStackDecision::Skip
-  }
+  could_match_later
+    .map_or(AutoStackDecision::Skip, AutoStackDecision::Wait)
+}
+
+/// Whether an untitled window at `frame` is big enough to join `rule`'s
+/// stack before it has a title, per `join_untitled`.
+///
+/// Percentages are of `monitor_area`, and pixels are scaled by
+/// `scale_factor`.
+pub fn joins_untitled(
+  rule: &AutoStackRuleConfig,
+  frame: &Rect,
+  monitor_area: &Rect,
+  scale_factor: f32,
+) -> bool {
+  rule.join_untitled.as_ref().is_some_and(|join| {
+    frame.width()
+      >= join
+        .min_width
+        .to_px(monitor_area.width(), Some(scale_factor))
+      && frame.height()
+        >= join
+          .min_height
+          .to_px(monitor_area.height(), Some(scale_factor))
+  })
+}
+
+/// A window that joined a stack before it had a title.
+pub struct ProvisionalJoin {
+  /// Name of the stack it joined.
+  pub stack_name: String,
+
+  /// Commands of its window rules that would have placed it elsewhere,
+  /// skipped as it joined. Run if it leaves the stack again.
+  pub skipped_commands: Vec<InvokeCommand>,
 }
 
 /// A window held back, cloaked and unmanaged, until its title is known.
@@ -176,6 +214,10 @@ pub struct AutoStackState {
   /// out of one. They are never auto-stacked again, so a window removed
   /// from its stack isn't pulled back in by a later title change.
   settled: HashSet<WindowId>,
+
+  /// Windows in a stack whose title, once they get one, decides whether
+  /// they stay. See `join_untitled`.
+  provisional: HashMap<WindowId, ProvisionalJoin>,
 
   /// Key combinations to press in windows that just joined a stack.
   pending_keys: Vec<PendingKeys>,
@@ -266,6 +308,27 @@ impl AutoStackState {
 
   pub fn mark_settled(&mut self, id: WindowId) {
     self.settled.insert(id);
+    self.provisional.remove(&id);
+  }
+
+  /// Records that `id` joined a stack before it had a title.
+  pub fn join_provisionally(
+    &mut self,
+    id: WindowId,
+    join: ProvisionalJoin,
+  ) {
+    self.provisional.insert(id, join);
+  }
+
+  pub fn provisional(&self, id: WindowId) -> Option<&ProvisionalJoin> {
+    self.provisional.get(&id)
+  }
+
+  pub fn take_provisional(
+    &mut self,
+    id: WindowId,
+  ) -> Option<ProvisionalJoin> {
+    self.provisional.remove(&id)
   }
 
   /// Drops everything known about a destroyed window, since its handle
@@ -273,6 +336,7 @@ impl AutoStackState {
   pub fn forget(&mut self, id: WindowId) {
     self.held.remove(&id);
     self.settled.remove(&id);
+    self.provisional.remove(&id);
     self
       .pending_keys
       .retain(|pending| pending.native.id() != id);
@@ -310,6 +374,7 @@ mod tests {
       allow_owned: false,
       send_keys_on_join: Vec::new(),
       duplicates: DuplicateTabs::Keep,
+      join_untitled: None,
     }
   }
 
@@ -353,12 +418,51 @@ mod tests {
 
     assert_eq!(
       decide(&rules, &window("MyApp", ""), WindowTraits::default()),
-      AutoStackDecision::Wait
+      AutoStackDecision::Wait(&rules[0])
     );
     assert_eq!(
       decide(&rules, &window("notepad", ""), WindowTraits::default()),
       AutoStackDecision::Skip
     );
+  }
+
+  #[test]
+  fn untitled_window_joins_if_big_enough() {
+    use wm_common::JoinUntitledConfig;
+    use wm_platform::{LengthValue, Rect};
+
+    use super::joins_untitled;
+
+    let monitor = Rect::from_xy(0, 0, 2000, 1000);
+    let rule = AutoStackRuleConfig {
+      join_untitled: Some(JoinUntitledConfig {
+        min_width: LengthValue::from_px(600),
+        min_height: "50%".parse().unwrap(),
+      }),
+      ..details_rule()
+    };
+
+    let joins = |width, height, scale| {
+      joins_untitled(
+        &rule,
+        &Rect::from_xy(0, 0, width, height),
+        &monitor,
+        scale,
+      )
+    };
+
+    assert!(joins(600, 500, 1.0));
+    assert!(!joins(599, 500, 1.0));
+    assert!(!joins(600, 499, 1.0));
+    // Pixels scale with the monitor; percentages don't.
+    assert!(!joins(800, 500, 1.5));
+    assert!(joins(900, 500, 1.5));
+    assert!(!joins_untitled(
+      &details_rule(),
+      &Rect::from_xy(0, 0, 2000, 1000),
+      &monitor,
+      1.0
+    ));
   }
 
   #[test]

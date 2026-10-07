@@ -60,6 +60,9 @@ const WM_RESTACK_TABS: u32 = WM_APP + 4;
 /// most a backdrop and a border.
 const MAX_OVERLAY_WALK: usize = 8;
 
+/// Windows logged above and below a bar that couldn't be restacked.
+const Z_ORDER_LOG_DEPTH: usize = 5;
+
 const MENU_CLOSE: usize = 1;
 const MENU_DETACH: usize = 2;
 const MENU_FLOAT: usize = 3;
@@ -90,6 +93,9 @@ struct BarState {
   truncated: Vec<bool>,
   /// Text handed to the tooltip; must outlive the notification.
   tooltip_text: Vec<u16>,
+  /// Whether the last restack didn't leave the bar behind its anchor, so
+  /// that a failure is logged once rather than on every retry.
+  is_misplaced: bool,
   on_action: Box<dyn Fn(TabAction) + Send + 'static>,
 }
 
@@ -138,6 +144,7 @@ impl NativeStackTabBar {
       tool_count: 0,
       truncated: Vec::new(),
       tooltip_text: vec![0],
+      is_misplaced: false,
       on_action,
     });
 
@@ -178,7 +185,7 @@ impl NativeStackTabBar {
         // SAFETY: The window owns the state now and lives on this thread,
         // where it is only touched from here and its window procedure.
         unsafe {
-          (*(state_ptr as *mut BarState)).tooltip = create_tooltip(hwnd);
+          (*(state_ptr as *mut BarState)).tooltip = create_tooltip();
         }
 
         Ok(hwnd.0)
@@ -262,13 +269,17 @@ fn ensure_class_registered() {
   );
 }
 
-/// Creates the tooltip control of the bar `owner`. Its window is
-/// destroyed along with the bar.
+/// Creates the tooltip control of a bar, to be destroyed along with it.
+///
+/// Unowned: Windows keeps owned windows above their owner, and with this
+/// always-on-top tooltip owned by the bar, it silently ignored every
+/// z-order change of the bar (even into the always-on-top band). The bar
+/// then stayed below the windows around it.
 ///
 /// # Safety
 ///
 /// Must be called on the bar's thread.
-unsafe fn create_tooltip(owner: HWND) -> HWND {
+unsafe fn create_tooltip() -> HWND {
   static COMMON_CONTROLS: OnceLock<()> = OnceLock::new();
   COMMON_CONTROLS.get_or_init(|| {
     let controls = INITCOMMONCONTROLSEX {
@@ -288,7 +299,7 @@ unsafe fn create_tooltip(owner: HWND) -> HWND {
     0,
     0,
     0,
-    owner,
+    None,
     None,
     None,
     None,
@@ -495,12 +506,8 @@ unsafe fn apply_frame(
   let anchor_changed = previous.as_ref().map(|p| p.anchor)
     != state.frame.as_ref().map(|f| f.anchor);
 
-  if let Some(anchor) =
-    state.frame.as_ref().map(|frame| HWND(frame.anchor))
-  {
-    if restack || anchor_changed || !was_visible {
-      restack_behind(hwnd, anchor);
-    }
+  if restack || anchor_changed || !was_visible {
+    restack_behind(hwnd, state);
   }
 
   if !was_visible {
@@ -508,22 +515,29 @@ unsafe fn apply_frame(
   }
 }
 
-/// Puts the bar directly behind `anchor` and the WM's overlays of it,
+/// Puts the bar directly behind its anchor and the WM's overlays of it,
 /// unless it is already there.
 ///
 /// Going behind the overlays rather than between them and the window
 /// keeps them settled, so they don't restack in turn.
 ///
 /// The walk past them stays in `anchor`'s band: inserting after a normal
-/// window drops a topmost one out of its band. Overlays sinking behind
-/// their own window can briefly top the normal band, right below a topmost
-/// anchor's, which left an always-on-top floating stack's bar under the
-/// next tiled window raised.
+/// window drops a topmost one out of its band, and other windows'
+/// overlays can sit right below a topmost anchor, at the top of the normal
+/// band.
+///
+/// Windows can silently ignore the move, which is logged along with the
+/// windows around the bar.
 ///
 /// # Safety
 ///
-/// `hwnd` must be the bar's window.
-unsafe fn restack_behind(hwnd: HWND, anchor: HWND) {
+/// `hwnd` must be the bar's window, called on its thread.
+unsafe fn restack_behind(hwnd: HWND, state: &mut BarState) {
+  let Some(anchor) = state.frame.as_ref().map(|frame| HWND(frame.anchor))
+  else {
+    return;
+  };
+
   window_class::match_z_band(hwnd, anchor);
   let is_topmost = window_class::is_topmost(anchor);
   let target = window_class::insert_after_point(anchor);
@@ -531,6 +545,7 @@ unsafe fn restack_behind(hwnd: HWND, anchor: HWND) {
   let mut prev = GetWindow(hwnd, GW_HWNDPREV);
   for _ in 0..MAX_OVERLAY_WALK {
     if prev == target {
+      state.is_misplaced = false;
       return;
     }
     if !OverlayKind::is_overlay(prev) {
@@ -551,7 +566,7 @@ unsafe fn restack_behind(hwnd: HWND, anchor: HWND) {
     insert_after = next;
   }
 
-  let _ = SetWindowPos(
+  let result = SetWindowPos(
     hwnd,
     insert_after,
     0,
@@ -560,10 +575,29 @@ unsafe fn restack_behind(hwnd: HWND, anchor: HWND) {
     0,
     SWP_NOACTIVATE | SWP_NOMOVE | SWP_NOSIZE | SWP_NOSENDCHANGING,
   );
+
+  let is_landed = result.is_ok()
+    && GetWindow(hwnd, GW_HWNDPREV) == insert_after
+    && window_class::is_topmost(hwnd) == is_topmost;
+
+  if !is_landed && !state.is_misplaced {
+    tracing::warn!(
+      "Tab bar didn't stay behind {}, after {} (SetWindowPos: \
+       {result:?}):\n{}",
+      window_class::describe(anchor),
+      window_class::describe(insert_after),
+      window_class::describe_z_order_around(hwnd, Z_ORDER_LOG_DEPTH),
+    );
+  }
+
+  state.is_misplaced = !is_landed;
 }
 
 /// Handles a left-button release: a click, the end of a drag, or a close
 /// button press.
+///
+/// A drag only ever reorders tabs, wherever it ends: a stack is moved as
+/// one window, so its tabs can't be dragged out of it.
 fn finish_left_click(state: &mut BarState, (x, y): (i32, i32)) {
   let pressed_close = state.pressed_close.take();
   let hit = state
@@ -583,21 +617,6 @@ fn finish_left_click(state: &mut BarState, (x, y): (i32, i32)) {
 
   if !drag.is_moving {
     (state.on_action)(TabAction::Activate(drag.index));
-    return;
-  }
-
-  let (top, height) = state
-    .frame
-    .as_ref()
-    .map_or((0, 0), |f| (f.rect.top - f.outer_rect.top, f.rect.height()));
-  let y = y - top;
-  let is_torn_off = y < -height || y > height * 2;
-
-  if is_torn_off {
-    (state.on_action)(TabAction::Float {
-      index: drag.index,
-      at_cursor: true,
-    });
     return;
   }
 
@@ -646,10 +665,7 @@ unsafe fn show_context_menu(hwnd: HWND, state: &BarState, index: usize) {
   match usize::try_from(command.0).unwrap_or(0) {
     MENU_CLOSE => (state.on_action)(TabAction::Close(index)),
     MENU_DETACH => (state.on_action)(TabAction::Detach(index)),
-    MENU_FLOAT => (state.on_action)(TabAction::Float {
-      index,
-      at_cursor: false,
-    }),
+    MENU_FLOAT => (state.on_action)(TabAction::Float(index)),
     _ => {}
   }
 }
@@ -742,6 +758,10 @@ unsafe fn on_destroy(hwnd: HWND, state_ptr: *mut BarState) {
       window_icons::invalidate(tab.hwnd);
     }
   }
+
+  if state.tooltip.0 != 0 {
+    let _ = DestroyWindow(state.tooltip);
+  }
 }
 
 /// Closes a tab on a middle click, or shows its menu on a right click.
@@ -830,9 +850,7 @@ unsafe extern "system" fn wnd_proc(
       LRESULT(0)
     }
     WM_RESTACK_TABS => {
-      if let Some(anchor) = state.frame.as_ref().map(|f| HWND(f.anchor)) {
-        restack_behind(hwnd, anchor);
-      }
+      restack_behind(hwnd, state);
       LRESULT(0)
     }
     WM_MOUSEACTIVATE => {

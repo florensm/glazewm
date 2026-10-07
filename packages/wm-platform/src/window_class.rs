@@ -6,8 +6,9 @@ use windows::{
     Foundation::{HWND, LPARAM, LRESULT, RECT, WPARAM},
     Graphics::Dwm::{DwmGetWindowAttribute, DWMWA_EXTENDED_FRAME_BOUNDS},
     UI::WindowsAndMessaging::{
-      DefWindowProcW, GetWindow, GetWindowLongPtrW, GetWindowRect,
-      LoadCursorW, RegisterClassW, SetWindowPos, GWL_EXSTYLE, GW_HWNDNEXT,
+      DefWindowProcW, GetClassNameW, GetWindow, GetWindowLongPtrW,
+      GetWindowRect, IsWindowVisible, LoadCursorW, RegisterClassW,
+      SetWindowPos, GWL_EXSTYLE, GW_HWNDNEXT, GW_HWNDPREV, GW_OWNER,
       HWND_NOTOPMOST, HWND_TOPMOST, IDC_ARROW, SWP_NOACTIVATE, SWP_NOMOVE,
       SWP_NOSENDCHANGING, SWP_NOSIZE, WNDCLASSW, WS_EX_TOPMOST,
     },
@@ -196,4 +197,68 @@ pub(crate) fn match_z_band(overlay: HWND, anchor: HWND) {
   } {
     tracing::warn!("Overlay topmost-band sync failed: {err}.");
   }
+}
+
+/// Describes `hwnd` for z-order diagnostics: handle, class, band,
+/// visibility and owner. Leaves out the title, which can hold private
+/// data.
+pub(crate) fn describe(hwnd: HWND) -> String {
+  if hwnd.0 == 0 {
+    return "none".to_string();
+  }
+
+  let mut class = [0u16; 64];
+  // SAFETY: `class` outlives the call; a stale `hwnd` just returns 0.
+  let len = unsafe { GetClassNameW(hwnd, &mut class) };
+  let class = String::from_utf16_lossy(
+    class
+      .get(..usize::try_from(len).unwrap_or(0))
+      .unwrap_or_default(),
+  );
+
+  // SAFETY: Read-only queries; a stale `hwnd` just returns defaults.
+  let (is_visible, owner) = unsafe {
+    (IsWindowVisible(hwnd).as_bool(), GetWindow(hwnd, GW_OWNER))
+  };
+
+  let band = if is_topmost(hwnd) { " topmost" } else { "" };
+  let visibility = if is_visible { "" } else { " hidden" };
+  let owner = if owner.0 == 0 {
+    String::new()
+  } else {
+    format!(" owner={:#x}", owner.0)
+  };
+
+  format!("{:#x} {class}{band}{visibility}{owner}", hwnd.0)
+}
+
+/// Describes the `depth` windows above and below `hwnd` in z-order, top to
+/// bottom, one per line, for diagnostics.
+pub(crate) fn describe_z_order_around(hwnd: HWND, depth: usize) -> String {
+  let walk = |direction| {
+    std::iter::successors(Some(hwnd), move |current| {
+      // SAFETY: A stale handle just makes `GetWindow` return `HWND(0)`.
+      Some(unsafe { GetWindow(*current, direction) })
+        .filter(|next| next.0 != 0)
+    })
+    .skip(1)
+    .take(depth)
+    .collect::<Vec<_>>()
+  };
+
+  let above = walk(GW_HWNDPREV);
+  let below = walk(GW_HWNDNEXT);
+
+  above
+    .iter()
+    .rev()
+    .map(|window| format!("  {}", describe(*window)))
+    .chain(std::iter::once(format!("> {}", describe(hwnd))))
+    .chain(
+      below
+        .iter()
+        .map(|window| format!("  {}", describe(*window))),
+    )
+    .collect::<Vec<_>>()
+    .join("\n")
 }

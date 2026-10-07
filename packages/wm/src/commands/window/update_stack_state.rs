@@ -447,7 +447,7 @@ mod tests {
     let tab = s.stack.windows()[0].clone();
     let tab_id = tab.id();
 
-    float_out_of_stack(&tab, false, &mut s.state, &s.config).unwrap();
+    float_out_of_stack(&tab, &mut s.state, &s.config).unwrap();
 
     let floated = s
       .workspace
@@ -609,7 +609,7 @@ mod tests {
     let tab_id = tab.id();
     let other = s.stack.windows()[1].clone();
 
-    float_out_of_stack(&tab, false, &mut s.state, &s.config).unwrap();
+    float_out_of_stack(&tab, &mut s.state, &s.config).unwrap();
     assert!(s.stack.is_detached());
 
     let floated = s
@@ -668,7 +668,7 @@ mod tests {
     let stack_size = s.stack.tiling_size();
     let stack_index = s.stack.index();
 
-    float_out_of_stack(&tab, false, &mut s.state, &s.config).unwrap();
+    float_out_of_stack(&tab, &mut s.state, &s.config).unwrap();
     assert!(s.stack.is_detached());
 
     let floated = s

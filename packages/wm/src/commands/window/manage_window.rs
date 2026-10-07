@@ -9,7 +9,10 @@ use wm_platform::NativeWindowWindowsExt;
 use wm_platform::{NativeWindow, RectDelta};
 
 use crate::{
-  auto_stack::{decide, AutoStackDecision, WindowTraits},
+  auto_stack::{
+    decide, joins_untitled, AutoStackDecision, ProvisionalJoin,
+    WindowTraits,
+  },
   commands::{
     container::{
       attach_container, detach_container, set_focused_descendant,
@@ -31,7 +34,9 @@ use crate::{
 /// Manages a newly shown window.
 ///
 /// A window that could still match a `stack.auto_stack` rule once it has
-/// a title is held back, cloaked, until it gets one or the wait runs out.
+/// a title joins the rule's stack right away if the rule's
+/// `join_untitled` lets it, and is otherwise held back, cloaked, until it
+/// gets one or the wait runs out.
 pub fn manage_window(
   native_window: NativeWindow,
   target_parent: Option<Container>,
@@ -54,7 +59,7 @@ pub fn manage_held_window(
 fn manage_window_inner(
   native_window: NativeWindow,
   target_parent: Option<Container>,
-  may_hold: bool,
+  may_wait: bool,
   state: &mut WmState,
   config: &mut UserConfig,
 ) -> anyhow::Result<()> {
@@ -70,27 +75,23 @@ fn manage_window_inner(
     return Ok(());
   };
 
-  let decision = if state.auto_stack.is_settled(native_window.id()) {
-    AutoStackDecision::Skip
-  } else {
-    let traits = WindowTraits::of(&native_window, &native_properties);
-    decide(&config.value.stack.auto_stack, &native_properties, traits)
-  };
+  // Windows already open at startup are given a workspace to go to.
+  let is_new = target_parent.is_none();
 
-  // Holding relies on cloaking, which only exists on Windows.
-  if decision == AutoStackDecision::Wait
-    && cfg!(target_os = "windows")
-    && may_hold
-    && target_parent.is_none()
-  {
+  let auto_stacking = auto_stacking(
+    &native_window,
+    &native_properties,
+    may_wait && is_new,
+    state,
+    config,
+  );
+
+  if matches!(auto_stacking, AutoStacking::Hold) {
     hold_window(&native_window, state, config);
     return Ok(());
   }
 
-  let auto_stack_rule = join_rule(&decision, &native_properties.title);
-
-  // Windows already open at startup are given a workspace to go to.
-  let is_new = target_parent.is_none();
+  let auto_stack_rule = auto_stacking.rule().cloned();
 
   state.auto_stack.release(native_window.id());
 
@@ -152,7 +153,7 @@ fn manage_window_inner(
     }
   };
 
-  if let Some(rule) = &auto_stack_rule {
+  if let AutoStacking::Join(rule) = &auto_stacking {
     on_auto_stacked(&window, rule, is_new, state);
   }
 
@@ -170,20 +171,9 @@ fn manage_window_inner(
     set_focused_descendant(&window.clone().into(), Some(&stack));
   }
 
-  // A stacked window keeps the placement its stack gives it, so window
-  // rules that would move it or change its state are skipped.
-  let is_placement_command = |command: &InvokeCommand| {
-    auto_stack_rule.is_some() && is_placement_command(command)
-  };
-
   // Window might be detached if `ignore` command has been invoked.
-  let updated_window = run_window_rules_except(
-    window.clone(),
-    &WindowRuleEvent::Manage,
-    is_placement_command,
-    state,
-    config,
-  )?;
+  let updated_window =
+    run_manage_rules(window.clone(), &auto_stacking, state, config)?;
 
   if let Some(window) = updated_window {
     queue_managed_window_sync(
@@ -204,6 +194,49 @@ fn manage_window_inner(
   // uncloaks it so that it displays normally without GlazeWM managing it.
 
   Ok(())
+}
+
+/// Runs the manage rules of a new `window`, returning it if it's still
+/// attached afterwards.
+///
+/// A stacked window keeps the placement its stack gives it, so commands
+/// that would move it or change its state are skipped. A window that
+/// joined its stack untitled keeps them, to run if it leaves the stack
+/// again.
+fn run_manage_rules(
+  window: WindowContainer,
+  auto_stacking: &AutoStacking,
+  state: &mut WmState,
+  config: &mut UserConfig,
+) -> anyhow::Result<Option<WindowContainer>> {
+  let provisional_join = match auto_stacking {
+    AutoStacking::JoinUntitled(rule) => {
+      Some(provisional_join(&window, rule, config))
+    }
+    _ => None,
+  };
+
+  let is_stacked = auto_stacking.rule().is_some();
+  let updated_window = run_window_rules_except(
+    window,
+    &WindowRuleEvent::Manage,
+    |command| is_stacked && is_placement_command(command),
+    state,
+    config,
+  )?;
+
+  if let (Some(join), Some(window)) = (provisional_join, &updated_window) {
+    info!(
+      "Stacking untitled window into stack '{}' until it has a title: \
+       {window}",
+      join.stack_name
+    );
+    state
+      .auto_stack
+      .join_provisionally(window.native().id(), join);
+  }
+
+  Ok(updated_window)
 }
 
 /// Emits the managed event and queues the redraw and focus updates for a
@@ -314,20 +347,113 @@ fn auto_stack_placement(
   })
 }
 
-/// The rule whose stack a window joins, logging why a matching window
-/// doesn't.
-fn join_rule(
-  decision: &AutoStackDecision<'_>,
-  title: &str,
-) -> Option<AutoStackRuleConfig> {
-  match decision {
-    AutoStackDecision::Join(rule) => Some((*rule).clone()),
-    AutoStackDecision::Blocked(reason) => {
-      info!("Not auto-stacking window '{title}' because {reason}.");
-      None
+/// How a window being managed takes part in auto-stacking.
+enum AutoStacking {
+  /// Joins the rule's stack.
+  Join(AutoStackRuleConfig),
+
+  /// Joins the rule's stack before it has a title, and leaves it again if
+  /// the title it gets doesn't match.
+  JoinUntitled(AutoStackRuleConfig),
+
+  /// Held back, cloaked, until it has a title.
+  Hold,
+
+  /// Placed normally.
+  None,
+}
+
+impl AutoStacking {
+  /// Rule whose stack the window joins.
+  fn rule(&self) -> Option<&AutoStackRuleConfig> {
+    match self {
+      Self::Join(rule) | Self::JoinUntitled(rule) => Some(rule),
+      Self::Hold | Self::None => None,
     }
-    AutoStackDecision::Wait | AutoStackDecision::Skip => None,
   }
+}
+
+/// How `native_window` takes part in auto-stacking, logging why a
+/// matching window doesn't. `may_wait` lets a window whose title could
+/// still match wait for it.
+fn auto_stacking(
+  native_window: &NativeWindow,
+  properties: &NativeWindowProperties,
+  may_wait: bool,
+  state: &WmState,
+  config: &UserConfig,
+) -> AutoStacking {
+  if state.auto_stack.is_settled(native_window.id()) {
+    return AutoStacking::None;
+  }
+
+  let traits = WindowTraits::of(native_window, properties);
+
+  match decide(&config.value.stack.auto_stack, properties, traits) {
+    AutoStackDecision::Join(rule) => AutoStacking::Join(rule.clone()),
+    AutoStackDecision::Wait(rule) if may_wait => {
+      if joins_untitled_now(rule, native_window, properties, state) {
+        AutoStacking::JoinUntitled(rule.clone())
+      } else if cfg!(target_os = "windows") {
+        // Holding relies on cloaking, which only exists on Windows.
+        AutoStacking::Hold
+      } else {
+        AutoStacking::None
+      }
+    }
+    AutoStackDecision::Blocked(reason) => {
+      info!(
+        "Not auto-stacking window '{}' because {reason}.",
+        properties.title
+      );
+      AutoStacking::None
+    }
+    AutoStackDecision::Wait(_) | AutoStackDecision::Skip => {
+      AutoStacking::None
+    }
+  }
+}
+
+/// Record of `window` joining `rule`'s stack before it has a title, with
+/// the commands of its manage rules that keeping it there skips.
+fn provisional_join(
+  window: &WindowContainer,
+  rule: &AutoStackRuleConfig,
+  config: &UserConfig,
+) -> ProvisionalJoin {
+  let skipped_commands = config
+    .pending_window_rules(window, &WindowRuleEvent::Manage)
+    .into_iter()
+    .flat_map(|rule| rule.commands)
+    .filter(is_placement_command)
+    .collect();
+
+  ProvisionalJoin {
+    stack_name: rule.name.clone(),
+    skipped_commands,
+  }
+}
+
+/// Whether an untitled window waiting on `rule` is big enough on its
+/// monitor to join the rule's stack before it has a title.
+fn joins_untitled_now(
+  rule: &AutoStackRuleConfig,
+  native_window: &NativeWindow,
+  properties: &NativeWindowProperties,
+  state: &WmState,
+) -> bool {
+  let Some(monitor) = state.nearest_monitor(native_window) else {
+    return false;
+  };
+
+  let monitor = monitor.native_properties();
+
+  joins_untitled(
+    rule,
+    &properties.frame,
+    &monitor.working_area,
+    monitor.scale_factor,
+  )
 }
 
 /// Window state a new window is created in regardless of its native
@@ -999,6 +1125,7 @@ mod tests {
       allow_owned: false,
       send_keys_on_join: Vec::new(),
       duplicates: DuplicateTabs::Keep,
+      join_untitled: None,
     }
   }
 
