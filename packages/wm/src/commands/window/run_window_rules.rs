@@ -37,32 +37,27 @@ pub fn run_window_rules_except(
   for rule in pending_window_rules {
     info!("Running window rule with commands: {:?}.", rule.commands);
 
-    for command in &rule.commands {
-      if is_skipped(command) {
-        info!(
-          "Skipping window rule command for stacked window: {command:?}."
-        );
-        continue;
-      }
-
-      WindowManager::run_command(
-        command,
-        subject_window.clone().into(),
-        state,
-        config,
-      )?;
-
-      // Update the subject container in case the container type changes.
-      // For example, when going from a tiling to a floating window.
-      subject_window = if subject_window.is_detached() {
-        match state.window_from_native(&subject_window.native()) {
-          Some(window) => window,
-          None => return Ok(None),
+    let commands = rule
+      .commands
+      .iter()
+      .filter(|command| {
+        let is_skipped = is_skipped(command);
+        if is_skipped {
+          info!(
+            "Skipping window rule command for stacked window: {command:?}."
+          );
         }
-      } else {
-        subject_window
-      }
-    }
+        !is_skipped
+      })
+      .cloned()
+      .collect::<Vec<_>>();
+
+    subject_window =
+      match run_window_commands(subject_window, &commands, state, config)?
+      {
+        Some(window) => window,
+        None => return Ok(None),
+      };
 
     // Add the window rule as done.
     if rule.run_once {
@@ -72,6 +67,39 @@ pub fn run_window_rules_except(
         .chain(std::iter::once(rule));
 
       subject_window.set_done_window_rules(window_rules.collect());
+    }
+  }
+
+  Ok(Some(subject_window))
+}
+
+/// Runs `commands` on `window`, returning the window if it's still
+/// attached afterwards.
+pub fn run_window_commands(
+  window: WindowContainer,
+  commands: &[InvokeCommand],
+  state: &mut WmState,
+  config: &mut UserConfig,
+) -> anyhow::Result<Option<WindowContainer>> {
+  let mut subject_window = window;
+
+  for command in commands {
+    WindowManager::run_command(
+      command,
+      subject_window.clone().into(),
+      state,
+      config,
+    )?;
+
+    // Update the subject container in case the container type changes.
+    // For example, when going from a tiling to a floating window.
+    subject_window = if subject_window.is_detached() {
+      match state.window_from_native(&subject_window.native()) {
+        Some(window) => window,
+        None => return Ok(None),
+      }
+    } else {
+      subject_window
     }
   }
 

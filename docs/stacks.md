@@ -190,6 +190,12 @@ stack:
       # Optional: "close_older" closes tabs with the same title as a
       # window joining the stack (default "keep").
       duplicates: "close_older"
+      # Optional: let a window that matches apart from its still empty
+      # title join right away, if it's at least this big ("px", or "%" of
+      # its monitor). Left out, such windows are held back instead.
+      join_untitled:
+        min_width: "800px"
+        min_height: "500px"
   # How long an untitled window that could still match is held back.
   auto_stack_title_timeout_ms: 1500
 ```
@@ -203,6 +209,11 @@ stack:
   with an empty title whose process and class match a rule is held back,
   hidden, until it gets a title or `auto_stack_title_timeout_ms` passes.
   It is then stacked or placed normally.
+- With `join_untitled`, such a window instead joins the stack right away
+  if it's at least `min_width` by `min_height`, and smaller ones are held
+  back as above. Its `send_keys_on_join` and `duplicates` wait for its
+  title. If the title it gets doesn't match, it leaves the stack and is
+  placed as its window rules would have placed it.
 - A window that only gets a matching title after it was placed joins the
   stack once. Reloading the config also applies the rules to windows that
   are already open.

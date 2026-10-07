@@ -257,6 +257,12 @@ stack:
   #     send_keys_on_join: ["ctrl+t"]
   #     # Close tabs with the same title as a joining window.
   #     duplicates: "close_older"
+  #     # Let a window that matches apart from its still empty title join
+  #     # right away if it's at least this big. It leaves the stack again
+  #     # if the title it gets doesn't match.
+  #     join_untitled:
+  #       min_width: "800px"
+  #       min_height: "500px"
 
 window_effects:
   # Drop the border effect while a window is fullscreen. A fullscreen window

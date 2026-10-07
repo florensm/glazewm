@@ -222,6 +222,29 @@ pub struct AutoStackRuleConfig {
   /// stack.
   #[serde(default)]
   pub duplicates: DuplicateTabs,
+
+  /// Lets a new window that matches apart from its still empty title join
+  /// the stack right away, rather than wait for its title. It leaves the
+  /// stack again if the title it gets doesn't match.
+  #[serde(default)]
+  pub join_untitled: Option<JoinUntitledConfig>,
+}
+
+/// Size an untitled window needs to join its stack before it has a title.
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(default, rename_all(serialize = "camelCase"))]
+pub struct JoinUntitledConfig {
+  pub min_width: LengthValue,
+  pub min_height: LengthValue,
+}
+
+impl Default for JoinUntitledConfig {
+  fn default() -> Self {
+    Self {
+      min_width: LengthValue::from_px(0),
+      min_height: LengthValue::from_px(0),
+    }
+  }
 }
 
 /// What happens to tabs with the same title as a window joining a stack.
