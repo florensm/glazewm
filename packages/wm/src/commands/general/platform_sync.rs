@@ -321,7 +321,9 @@ fn windows_to_bring_to_front(
     .filter(|workspace| seen_workspaces.insert(workspace.id()));
 
   // Bring forward windows that match the focused state. Only do this for
-  // tiling/floating windows.
+  // tiling/floating windows, and not for a stack's hidden tabs:
+  // `set_z_order` shows the window it moves, which would bring back one
+  // that couldn't be cloaked.
   let windows_to_bring_to_front = workspaces_to_reorder
     .flat_map(|workspace| {
       let focused_descendant = workspace
@@ -340,6 +342,7 @@ fn windows_to_bring_to_front(
             );
 
             is_floating_or_tiling
+              && !is_inactive_stack_child(window)
               && window.state().is_same_state(&focused_descendant.state())
           })
           .collect(),
@@ -1936,7 +1939,15 @@ fn reposition_window(
       // Set visibility based on the hide method.
       let _visibility_scope = perf::scope(Stage::RepositionVisibility);
       if config.value.general.hide_method == HideMethod::Cloak {
-        window.native().set_cloaked(!is_visible)?;
+        // Windows that can't be cloaked are shown and hidden outright, the
+        // latter only as a stack's hidden tabs: no thumbnail shows those,
+        // while elsewhere DWM keeps rendering a window cloaked along with
+        // its owner.
+        if is_visible || is_inactive_stack_child(window) {
+          window.native().set_cloaked_or_hidden(!is_visible)?;
+        } else {
+          window.native().set_cloaked(true)?;
+        }
         cloak_state = CloakState::Applied;
       } else if is_visible {
         window.native().show()?;
