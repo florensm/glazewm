@@ -1060,6 +1060,19 @@ impl AnimationManager {
     perf::begin_frame();
     let tick_scope = perf::scope(Stage::Tick);
 
+    // Start the clock of every animation created since the last tick (see
+    // `WindowAnimationState::start_clock`), one frame period before this
+    // frame so the first tick already shows a frame of motion instead of
+    // repeating the start position.
+    state.animation_manager.begin_redraw_pass();
+    let frame_now = state.animation_manager.frame_now();
+    let clock_origin = frame_now
+      .checked_sub(state.animation_manager.frame_period())
+      .unwrap_or(frame_now);
+    for animation in state.animation_manager.animations.values() {
+      animation.start_clock(clock_origin);
+    }
+
     // Queue in-progress windows for redraw.
     let active_window_ids: Vec<_> = state
       .animation_manager
@@ -2298,6 +2311,22 @@ impl AnimationManager {
       (period_us as f64 * f64::from(1.0_f32 - VSYNC_LEAD_FRACTION)) as u64,
     );
     Some(last_wake + lead)
+  }
+
+  /// The pacing monitor's frame period, or zero before a vsync waiter is
+  /// installed.
+  fn frame_period(&self) -> Duration {
+    #[cfg(target_os = "windows")]
+    if let Some(period_us) = self
+      .animation_timer_vsync
+      .lock()
+      .ok()
+      .and_then(|waiter| waiter.as_ref().map(|w| w.frame_period_us()))
+    {
+      return Duration::from_micros(period_us);
+    }
+
+    Duration::ZERO
   }
 
   /// Starts a new redraw pass, so the next [`frame_now`] takes a fresh

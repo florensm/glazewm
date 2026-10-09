@@ -19,15 +19,15 @@ const COMPLETE_THRESHOLD_PX: f32 = 1.0;
 /// State of an individual window animation.
 #[derive(Clone, Debug)]
 pub struct WindowAnimationState {
-  /// Time of the first rendered frame.
+  /// Time of the first rendered frame, set by [`start_clock`].
   ///
-  /// Lazily initialized on the first `eased_progress_at` call so the
-  /// clock starts when the first frame is actually rendered (aligned to
-  /// VSync) rather than when the animation struct is created
-  /// mid-`platform_sync`. Without lazy init, a cold-start gap of 1–2
-  /// DWM frames causes the first rendered frame to already show
-  /// non-zero progress, producing a visible jump at the start of the
-  /// animation.
+  /// Progress reads as 0.0 until then. The relayout that creates an
+  /// animation also evaluates it, but its first tick only lands after
+  /// that relayout's session setup and cloaking -- measured ~70ms on a
+  /// 150ms resize. Anchoring the clock at that first evaluation made the
+  /// first visible frame jump to ~80% eased progress.
+  ///
+  /// [`start_clock`]: WindowAnimationState::start_clock
   start_time: Cell<Option<Instant>>,
   /// Time to wait before advancing progress.
   ///
@@ -66,6 +66,16 @@ impl WindowAnimationState {
     }
   }
 
+  /// Starts the animation clock at `now`, unless it is already running.
+  ///
+  /// Called by every animation tick before anything is rendered, so the
+  /// clock starts on the first frame that is actually shown.
+  pub fn start_clock(&self, now: Instant) {
+    if self.start_time.get().is_none() {
+      self.start_time.set(Some(now));
+    }
+  }
+
   /// Gets the eased progress in [0.0, 1.0] at an explicit `now` instant.
   ///
   /// Allows callers to supply a predictive timestamp (e.g. vsync wake-up
@@ -82,10 +92,9 @@ impl WindowAnimationState {
   /// the "stuck at destination" look. Overshooting curves run to full
   /// wall-clock duration to preserve their bounce.
   pub fn eased_progress_at(&self, now: Instant) -> f32 {
-    let start = self.start_time.get().unwrap_or_else(|| {
-      self.start_time.set(Some(now));
-      now
-    });
+    let Some(start) = self.start_time.get() else {
+      return 0.0;
+    };
 
     let elapsed = now.saturating_duration_since(start);
     if elapsed < self.start_delay {
@@ -237,7 +246,7 @@ mod tests {
     );
 
     let t0 = Instant::now();
-    // First call anchors `start_time` at `t0`.
+    anim.start_clock(t0);
     assert_eq!(anim.eased_progress_at(t0), 0.0);
 
     let progress =
@@ -259,6 +268,7 @@ mod tests {
     );
 
     let t0 = Instant::now();
+    anim.start_clock(t0);
     assert_eq!(anim.eased_progress_at(t0), 0.0);
 
     let progress =
@@ -279,6 +289,7 @@ mod tests {
     );
 
     let t0 = Instant::now();
+    anim.start_clock(t0);
     assert_eq!(anim.eased_progress_at(t0), 0.0);
 
     let before = anim.eased_progress_at(t0 + Duration::from_millis(98));
@@ -301,7 +312,8 @@ mod tests {
     anim.start_delay = Duration::from_millis(30);
 
     let t0 = Instant::now();
-    // Anchors `start_time`; still within the delay window.
+    anim.start_clock(t0);
+    // Still within the delay window.
     assert_eq!(anim.eased_progress_at(t0), 0.0);
     assert_eq!(
       anim.eased_progress_at(t0 + Duration::from_millis(20)),
@@ -317,5 +329,32 @@ mod tests {
     // 30ms delay + 50ms into the 100ms duration → ~50% progress.
     let mid = anim.eased_progress_at(t0 + Duration::from_millis(80));
     assert!((mid - 0.5).abs() < 1e-2, "got {mid}");
+  }
+
+  /// Evaluating an animation before its first tick (as the relayout that
+  /// creates it does) must not start its clock.
+  #[test]
+  fn clock_starts_at_first_tick_not_first_evaluation() {
+    let anim = WindowAnimationState::new_movement(
+      Rect::from_xy(0, 0, 100, 100),
+      Rect::from_xy(1_000, 0, 100, 100),
+      100,
+      linear(),
+    );
+
+    let created = Instant::now();
+    assert_eq!(anim.eased_progress_at(created), 0.0);
+
+    // First tick 70ms later: the first frame still starts at zero.
+    let first_tick = created + Duration::from_millis(70);
+    assert_eq!(anim.eased_progress_at(first_tick), 0.0);
+    anim.start_clock(first_tick);
+    assert_eq!(anim.eased_progress_at(first_tick), 0.0);
+
+    // A later tick does not move the origin.
+    anim.start_clock(first_tick + Duration::from_millis(10));
+    let half =
+      anim.eased_progress_at(first_tick + Duration::from_millis(50));
+    assert!((half - 0.5).abs() < 0.01, "got {half}");
   }
 }
