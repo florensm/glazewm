@@ -312,3 +312,32 @@ only runs in the relayout, so its column is right; `dwm_flush` and
 `cloak` are inflated by a few in-frame calls. The latency, tick and
 timeline numbers were never affected, and every comparison was between
 builds with the same instrumentation, so the conclusions stand.
+
+## Phase 3 tried: overlay re-anchoring batched into one transaction (rejected)
+
+The relayout re-stacks every visible border/backdrop window behind its
+new surrogate with its own blocking `SetWindowPos`. Tried queuing those
+restacks into the pass's `DeferWindowPos` batch instead. Back to back,
+two rounds, input -> first frame:
+
+| config | before | batched |
+|---|---|---|
+| fill resize / relayout / move | 32 / 20 / 12 ms | 32 / 19 / 11-13 ms |
+| stretch resize / relayout / move | 32-34 / 27 / 13 ms | 32-33 / 27-29 / 12-13 ms |
+
+The pre-cloak `DwmFlush` got shorter (outside-frame flush 17-21 -> 4-8
+ms) by exactly what the rest of the path got longer: DWM absorbs a cost
+per window touched, however the calls are grouped (the old notes'
+finding again). Reverted. The pre-cloak flush deferral (Phase 3) would
+most likely move time the same way, so it was not attempted.
+
+## Where things stand (6 windows, borders + backdrop on all)
+
+- Pacing: frame interval p50 5.71 ms, p90 5.74 ms; one ~10 ms interval
+  per burst (the slow first frame misses one vblank).
+- Tick ~2 ms of a 5.7 ms budget.
+- Input -> first frame: fill 20-32 ms, stretch 27-34 ms, move ~12 ms
+  (from 55-77 ms at baseline, with the first frame then at 81% progress).
+- What remains of the start is DWM absorbing per-window changes
+  (surrogate setup, cloaks, overlay restacks, first commit); grouping
+  calls differently does not reduce it, only fewer windows does.
