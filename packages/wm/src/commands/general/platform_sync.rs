@@ -2950,16 +2950,30 @@ pub(crate) fn resync_settling_overlays(state: &mut WmState) {
   }
 
   for id in settling {
-    let is_unsettled = state.animation_manager.has_active_surrogate(&id)
-      || state
-        .container_by_id(id)
-        .and_then(|container| container.as_window_container().ok())
-        .is_some_and(|window| {
-          window.native().is_topmost() != is_shown_on_top(&window)
-        });
+    if state.animation_manager.has_active_surrogate(&id) {
+      if state.animation_manager.extend_overlay_z_settle(&id) {
+        warn!("Overlay z-settle for {id} capped: surrogate still active.");
+      }
+      continue;
+    }
 
-    if is_unsettled {
-      state.animation_manager.extend_overlay_z_settle(&id);
+    let Some(window) = state
+      .container_by_id(id)
+      .and_then(|container| container.as_window_container().ok())
+    else {
+      continue;
+    };
+
+    let is_topmost = window.native().is_topmost();
+    if is_topmost != is_shown_on_top(&window)
+      && state.animation_manager.extend_overlay_z_settle(&id)
+    {
+      warn!(
+        "Overlay z-settle for {id} ({}) capped: topmost={is_topmost}, \
+         expected {}.",
+        window.native_properties().process_name,
+        !is_topmost
+      );
     }
   }
 
