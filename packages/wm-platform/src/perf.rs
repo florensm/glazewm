@@ -88,6 +88,14 @@ const AUTO_REPORT_FRAMES: u32 = 600;
 /// never hides the culprit.
 const APPLY_SAMPLE_LIMIT: usize = 24;
 
+/// Longest gap between an input and the animation it starts for the two
+/// to be paired as one keypress-to-motion latency sample.
+///
+/// An input that starts no animation (a focus change, a query) must not be
+/// paired with an unrelated animation much later; a real relayout starts
+/// its animation within one command's handling time.
+const INPUT_PAIRING_WINDOW: Duration = Duration::from_secs(1);
+
 /// Maximum queued-event timestamps held per [`EventKind`].
 ///
 /// The queues pair one-to-one with each listener's channel, so they only
@@ -407,6 +415,41 @@ struct Profiler {
   gesture_moves: u32,
   /// Animations started this session that also changed the window's size.
   gesture_resizes: u32,
+  /// When the previous frame began, for [`Profiler::interval_samples`].
+  last_frame_start: Option<Instant>,
+  /// Time between consecutive frame starts, i.e. the animation's real
+  /// frame rate. Tick cost alone cannot show pacing losses such as a tick
+  /// skipped by a rate cap.
+  interval_samples: Vec<Duration>,
+  /// Stage time recorded outside any frame, e.g. the relayout that starts
+  /// an animation (its cloak, `DwmFlush` and session setup).
+  outside_total: [Duration; Stage::COUNT],
+  /// Calls recorded outside any frame; see [`Profiler::outside_total`].
+  outside_calls: [u32; Stage::COUNT],
+  /// The latest input still waiting for its first animation frame.
+  pending_input: Option<PendingInput>,
+  /// Keypress/command-to-motion latencies completed this session.
+  latency_samples: Vec<InputLatency>,
+}
+
+/// An input whose first animation frame has not completed yet.
+#[derive(Clone, Copy)]
+struct PendingInput {
+  /// When the input reached the WM: the keyboard hook's enqueue time for
+  /// a keybinding, or the main loop's receipt of an IPC message.
+  received_at: Instant,
+  /// When the first animation it caused started, once one has.
+  animation_started_at: Option<Instant>,
+}
+
+/// Keypress-to-motion latency of one input that started an animation.
+#[derive(Clone, Copy)]
+struct InputLatency {
+  /// Input -> first animation started, i.e. the relayout's own cost.
+  to_start: Duration,
+  /// Input -> end of the first animation frame, when the first surrogate
+  /// move has been handed to DWM.
+  to_first_frame: Duration,
 }
 
 /// One row of the `rd_apply` breakdown: every reposition of a given
@@ -655,7 +698,46 @@ fn dequeue_event(kind: EventKind) {
         }
         None => wait.unpaired += 1,
       }
+
+      // A keypress is timed from the hook, so its queue wait counts
+      // towards its latency.
+      if kind == EventKind::Keybinding {
+        if let Some(queued_at) = queued_at {
+          arm_input(&mut profiler, queued_at);
+        }
+      }
     }
+  });
+}
+
+/// Marks an IPC message's arrival as an input whose keypress-to-motion
+/// latency is measured.
+///
+/// Keybindings are marked automatically when dequeued.
+pub fn mark_input() {
+  if is_enabled() {
+    PROFILER.with(|profiler| {
+      if let Ok(mut profiler) = profiler.try_borrow_mut() {
+        arm_input(&mut profiler, Instant::now());
+      }
+    });
+  }
+}
+
+/// Starts latency tracking for an input received at `received_at`,
+/// replacing any earlier input that never started an animation.
+fn arm_input(profiler: &mut Profiler, received_at: Instant) {
+  // Outside a session, whatever accumulated since the last frame is idle
+  // work unrelated to this input; drop it so the session's outside-frame
+  // section only shows what this input caused.
+  if profiler.frames == 0 {
+    profiler.frame_total = [Duration::ZERO; Stage::COUNT];
+    profiler.frame_calls = [0; Stage::COUNT];
+  }
+
+  profiler.pending_input = Some(PendingInput {
+    received_at,
+    animation_started_at: None,
   });
 }
 
@@ -709,6 +791,14 @@ fn record_animation_start(is_resize: bool) {
       } else {
         profiler.gesture_moves += 1;
       }
+
+      if let Some(input) = profiler.pending_input.as_mut() {
+        if input.animation_started_at.is_none()
+          && input.received_at.elapsed() < INPUT_PAIRING_WINDOW
+        {
+          input.animation_started_at = Some(Instant::now());
+        }
+      }
     }
   });
 }
@@ -725,9 +815,21 @@ pub fn begin_frame() {
 fn start_frame() {
   PROFILER.with(|profiler| {
     if let Ok(mut profiler) = profiler.try_borrow_mut() {
+      // Anything accumulated since the previous frame ran outside one.
+      for index in 0..Stage::COUNT {
+        let total = profiler.frame_total[index];
+        profiler.outside_total[index] += total;
+        let calls = profiler.frame_calls[index];
+        profiler.outside_calls[index] += calls;
+      }
       profiler.frame_total = [Duration::ZERO; Stage::COUNT];
       profiler.frame_calls = [0; Stage::COUNT];
-      profiler.started_at.get_or_insert_with(Instant::now);
+
+      let now = Instant::now();
+      if let Some(last) = profiler.last_frame_start.replace(now) {
+        profiler.interval_samples.push(now - last);
+      }
+      profiler.started_at.get_or_insert(now);
     }
   });
 }
@@ -763,6 +865,16 @@ fn roll_up_frame() -> bool {
       profiler.calls[index] += profiler.frame_calls[index];
       profiler.worst_frame[index] =
         profiler.worst_frame[index].max(frame_total);
+    }
+
+    if let Some(input) = profiler.pending_input {
+      if let Some(started_at) = input.animation_started_at {
+        profiler.latency_samples.push(InputLatency {
+          to_start: started_at - input.received_at,
+          to_first_frame: input.received_at.elapsed(),
+        });
+        profiler.pending_input = None;
+      }
     }
 
     profiler.frames += 1;
@@ -881,7 +993,9 @@ fn take_report(reason: &str) -> Option<String> {
     }
   }
 
+  write_outside_frames(&mut lines, &summary);
   write_tick_distribution(&mut lines, &summary);
+  write_input_latency(&mut lines, &summary);
   write_apply_breakdown(&mut lines, &summary);
   write_event_waits(&mut lines, &summary);
   write_gesture_split(&mut lines, &summary);
@@ -933,6 +1047,97 @@ fn write_tick_distribution(lines: &mut String, summary: &Profiler) {
     over(4),
     samples.len(),
   );
+
+  if !summary.interval_samples.is_empty() {
+    let mut intervals = summary.interval_samples.clone();
+    intervals.sort_unstable();
+    let p50 = percentile(&intervals, 50);
+    let _ = writeln!(
+      lines,
+      "  {:<20}{:>9.2}ms{:>9.2}ms{:>9.2}ms{:>9.2}ms  (~{:.0} fps)",
+      "frame interval",
+      p50.as_secs_f64() * 1000.0,
+      percentile(&intervals, 90).as_secs_f64() * 1000.0,
+      percentile(&intervals, 99).as_secs_f64() * 1000.0,
+      intervals.last().copied().unwrap_or_default().as_secs_f64() * 1000.0,
+      1.0 / p50.as_secs_f64().max(f64::EPSILON),
+    );
+  }
+}
+
+/// Appends the stage time recorded outside any frame to the report.
+///
+/// Mostly the relayout that starts an animation, which runs before its
+/// first tick and so is invisible in the per-frame tree, yet sits directly
+/// on the keypress-to-motion path. A no-op when nothing ran outside a
+/// frame.
+fn write_outside_frames(lines: &mut String, summary: &Profiler) {
+  if summary.outside_calls.iter().all(|calls| *calls == 0) {
+    return;
+  }
+
+  let _ = writeln!(
+    lines,
+    "  -- outside frames (e.g. the relayout starting an animation) --"
+  );
+  let _ =
+    writeln!(lines, "  {:<20}{:>7}{:>11}", "stage", "calls", "total");
+
+  for stage in Stage::ALL {
+    let index = stage.index();
+    if summary.outside_calls[index] == 0 {
+      continue;
+    }
+    let _ = writeln!(
+      lines,
+      "  {:<20}{:>7}{:>9.1}ms",
+      stage.label(),
+      summary.outside_calls[index],
+      summary.outside_total[index].as_secs_f64() * 1000.0,
+    );
+  }
+}
+
+/// Appends the keypress/command-to-motion latency section to the report.
+///
+/// A no-op when no input started an animation during the session.
+fn write_input_latency(lines: &mut String, summary: &Profiler) {
+  if summary.latency_samples.is_empty() {
+    return;
+  }
+
+  let mut to_start = summary
+    .latency_samples
+    .iter()
+    .map(|sample| sample.to_start)
+    .collect::<Vec<_>>();
+  let mut to_first_frame = summary
+    .latency_samples
+    .iter()
+    .map(|sample| sample.to_first_frame)
+    .collect::<Vec<_>>();
+  to_start.sort_unstable();
+  to_first_frame.sort_unstable();
+
+  let _ = writeln!(lines, "  -- input -> motion latency --");
+  let _ = writeln!(
+    lines,
+    "  {:<20}{:>7}{:>11}{:>11}",
+    "", "count", "p50", "max",
+  );
+  for (label, samples) in [
+    ("to anim start", &to_start),
+    ("to first frame", &to_first_frame),
+  ] {
+    let _ = writeln!(
+      lines,
+      "  {:<20}{:>7}{:>9.2}ms{:>9.2}ms",
+      label,
+      samples.len(),
+      percentile(samples, 50).as_secs_f64() * 1000.0,
+      samples.last().copied().unwrap_or_default().as_secs_f64() * 1000.0,
+    );
+  }
 }
 
 /// Returns the `percent`th percentile of an already-sorted, non-empty
@@ -1367,6 +1572,72 @@ mod tests {
         lines.contains("1 frame(s) >2x budget, 1 >4x budget, out of 20"),
         "{lines}"
       );
+    })
+    .join()
+    .expect("profiler test thread panicked");
+  }
+
+  #[test]
+  fn pairs_input_with_the_first_frame_of_its_animation() {
+    std::thread::spawn(|| {
+      // An input that starts no animation is never paired.
+      PROFILER.with(|profiler| {
+        arm_input(&mut profiler.borrow_mut(), Instant::now());
+      });
+      start_frame();
+      assert!(!roll_up_frame());
+
+      PROFILER.with(|profiler| {
+        arm_input(&mut profiler.borrow_mut(), Instant::now());
+      });
+      record_animation_start(true);
+      start_frame();
+      assert!(!roll_up_frame());
+      // Only the first frame after the input counts.
+      start_frame();
+      assert!(!roll_up_frame());
+
+      PROFILER.with(|profiler| {
+        let profiler = profiler.borrow();
+        assert_eq!(profiler.latency_samples.len(), 1);
+        let sample = profiler.latency_samples[0];
+        assert!(sample.to_start <= sample.to_first_frame);
+        assert!(profiler.pending_input.is_none());
+        assert_eq!(profiler.interval_samples.len(), 2);
+      });
+
+      let report = take_report("unit test").expect("frames were recorded");
+      assert!(report.contains("input -> motion latency"), "{report}");
+      assert!(report.contains("frame interval"), "{report}");
+    })
+    .join()
+    .expect("profiler test thread panicked");
+  }
+
+  #[test]
+  fn reports_stage_time_spent_between_frames() {
+    std::thread::spawn(|| {
+      // Idle work before the input is discarded, the relayout after it is
+      // kept.
+      drop(forced_scope(Stage::Cloak));
+      PROFILER.with(|profiler| {
+        arm_input(&mut profiler.borrow_mut(), Instant::now());
+      });
+      drop(forced_scope(Stage::DwmFlush));
+      start_frame();
+      drop(forced_scope(Stage::Tick));
+      assert!(!roll_up_frame());
+
+      PROFILER.with(|profiler| {
+        let profiler = profiler.borrow();
+        assert_eq!(profiler.outside_calls[Stage::DwmFlush.index()], 1);
+        assert_eq!(profiler.outside_calls[Stage::Cloak.index()], 0);
+        // Not double-counted into the frame tree.
+        assert_eq!(profiler.calls[Stage::DwmFlush.index()], 0);
+      });
+
+      let report = take_report("unit test").expect("frames were recorded");
+      assert!(report.contains("outside frames"), "{report}");
     })
     .join()
     .expect("profiler test thread panicked");
