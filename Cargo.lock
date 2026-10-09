@@ -3305,6 +3305,7 @@ version = "0.0.0"
 dependencies = [
  "anyhow",
  "futures-util",
+ "home",
  "serde_json",
  "tauri-winres",
  "tokio",

@@ -23,5 +23,8 @@ uuid = { workspace = true }
 wm-common = { path = "../wm-common" }
 wm-ipc-client = { path = "../wm-ipc-client" }
 
+[dev-dependencies]
+home = { workspace = true }
+
 [lints]
 workspace = true
