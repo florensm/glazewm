@@ -385,6 +385,25 @@ What is left for 2.2/2.3 is the gap to C: ~0.3 ms tick and p90 ~2.7 ->
   backdrop window before the surrogate's fade-out. Alone worth ~0.15-0.2
   ms/frame, under the 25% gate.
 
+## Phase 3 leftovers: fade-out, z-settle, `float` run-on
+
+Of a burst's 63 ticks, 28 move windows (`platform_sync`); the other 35
+are the tail (100 ms `SESSION_FADE_OUT`, then the 200 ms overlay
+z-settle), ~15 ms in all, after motion has ended. Shortening the fade or
+throttling the settle would only idle the timer sooner; frame pacing and
+start latency are unaffected. Not changed. The fade length is a visual
+choice (shadow/late-repaint blend), not a cost.
+
+`float` run-on: not reproduced in 24 bursts (fill and stretch, 63-64
+frames each). The old run-on reports (09:38-09:42) show 272 ticks of
+which only 55 ran `platform_sync`, the rest cleanup-only: a z-settle
+extended to its 2 s `OVERLAY_Z_SETTLE_MAX` cap. Floating windows are
+`shown_on_top` in the bench configs, so the likely trigger is a band
+change (`is_topmost` vs `shown_on_top`) that never landed, keeping the
+settle alive. Cheap (cleanup ticks ~0.1 ms) and bounded by the cap. The
+settle now logs a warning, once, when it reaches the cap, naming the
+window, process and band mismatch, so the next occurrence explains itself.
+
 ## Where things stand (6 windows, borders + backdrop on all)
 
 - Pacing: frame interval p50 5.71 ms, p90 5.74 ms; one ~10 ms interval
@@ -418,7 +437,8 @@ Branch `perf/lean-animations` off local `dcomp` (2 commits ahead of
 | Phase 2.2 backdrop drawn in the surrogate | Not started; ~0.15-0.2 ms/frame left, under the gate alone |
 | Phase 2.3 ring drawn in the surrogate | Not started; blocked on square thumbnail corners in an outset surrogate (unverified) |
 | Phase 3 pre-cloak `DwmFlush` deferral, cloak staggering | Not started; batching overlay restacks showed time only moves |
-| Phase 3 shorter `SESSION_FADE_OUT`, throttled z-settle | Not started |
+| Phase 3 shorter `SESSION_FADE_OUT`, throttled z-settle | Measured, not changed: tail is ~15 ms of cheap ticks after motion ends |
+| `float` run-on | Not reproduced (24 bursts); z-settle cap now logged with cause |
 | Phase 3 overlay restacks batched into one transaction | Tried, rejected (no latency change) |
 | Phase 4 / DComp spike | Not started; its gate needs PresentMon |
 
@@ -426,9 +446,10 @@ Known issues: `float` bench scenario intermittently ticks ~1.5 s instead
 of ~0.35 s (not reproduced under logging); toggling a workspace's tiling
 direction queues no redraw (pre-existing, bench works around it).
 
-Suggested next order: Phase 3 leftovers (fade, z-settle, float run-on),
-then PresentMon + DComp spike (2.2/2.3 only if the laptop still needs the
-last ~0.3 ms/frame, and 2.3 only after checking thumbnail corners); re-run the bench on the
+Suggested next order: PresentMon (needs installing and an elevated
+prompt; not available to the agent) + DComp spike (2.2/2.3 only if the
+laptop still needs the last ~0.3 ms/frame, and 2.3 only after checking
+thumbnail corners); re-run the bench on the
 laptop where per-frame cost was the original problem.
 
 Tooling for the next session: bench configs `~/.glzr/glazewm/bench-A.yaml`

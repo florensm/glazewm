@@ -2755,7 +2755,9 @@ fn sync_overlays<O: SyncableOverlay>(
 pub(crate) fn resync_settling_overlays(state: &mut WmState) {
   for id in state.animation_manager.settling_overlay_windows() {
     if state.animation_manager.has_active_surrogate(&id) {
-      state.animation_manager.extend_overlay_z_settle(&id);
+      if state.animation_manager.extend_overlay_z_settle(&id) {
+        warn!("Overlay z-settle for {id} capped: surrogate still active.");
+      }
       continue;
     }
 
@@ -2767,8 +2769,16 @@ pub(crate) fn resync_settling_overlays(state: &mut WmState) {
     };
     let anchor = overlay_z_anchor(&window);
 
-    if window.native().is_topmost() != is_shown_on_top(&window) {
-      state.animation_manager.extend_overlay_z_settle(&id);
+    let is_topmost = window.native().is_topmost();
+    if is_topmost != is_shown_on_top(&window)
+      && state.animation_manager.extend_overlay_z_settle(&id)
+    {
+      warn!(
+        "Overlay z-settle for {id} ({}) capped: topmost={is_topmost}, \
+         expected {}.",
+        window.native_properties().process_name,
+        !is_topmost
+      );
     }
 
     // Backdrop first, then border, matching `platform_sync`, so both end

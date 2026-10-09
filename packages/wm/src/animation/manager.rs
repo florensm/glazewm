@@ -843,11 +843,18 @@ impl AnimationManager {
   /// For a window whose overlays cannot be judged settled yet: one still
   /// behind a surrogate (the fade-out tail anchors its overlays itself),
   /// or one whose async band change has not landed.
+  ///
+  /// Returns `true` only on the call that first clamps the deadline to the
+  /// cap, so callers can report a settle that never finished once.
   #[cfg(target_os = "windows")]
-  pub fn extend_overlay_z_settle(&mut self, window_id: &Uuid) {
-    if let Some(settle) = self.overlay_z_settle.get_mut(window_id) {
-      settle.until = (Instant::now() + OVERLAY_Z_SETTLE).min(settle.cap);
-    }
+  pub fn extend_overlay_z_settle(&mut self, window_id: &Uuid) -> bool {
+    let Some(settle) = self.overlay_z_settle.get_mut(window_id) else {
+      return false;
+    };
+
+    let was_capped = settle.until >= settle.cap;
+    settle.until = (Instant::now() + OVERLAY_Z_SETTLE).min(settle.cap);
+    !was_capped && settle.until >= settle.cap
   }
 
   /// Windows whose overlays are still settling, dropping expired ones.
