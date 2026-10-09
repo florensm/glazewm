@@ -183,3 +183,36 @@ Back to back, config A (`bench-A.yaml` vs `bench-AS.yaml`), two rounds,
   black borders or visible distortion (apps already have their final
   size, so scale factors stay small). Flicker at start/end not judged;
   needs eyes on the real thing.
+
+## High memory (87-88% committed)
+
+Pressure from one process that commits and touches pages up to a target
+(`VirtualAlloc` + write per 4 KB page, held while benching). GPU at the
+time: 948 MB dedicated, 100 MB shared (RTX 3070, 8 GB). Same build as the
+stretch runs, 10 bursts, two rounds:
+
+| run | scenario | frames | tick | p90 | interval | ->1st frame |
+|---|---|---|---|---|---|---|
+| hi fill | resize | 62 | 1.60 | 3.93 | 5.71 | 72.6 |
+| hi fill | float | 63 | 1.66 | 5.37 | 5.71 | 78.5 |
+| hi fill | relayout | 63 | 1.81 | 5.79 | 5.72 | 56.9 |
+| hi fill | move | 64 | 0.71 | 1.40 | 5.71 | 40.0 |
+| hi stretch | resize | 62 | 1.70 | 4.25 | 5.71 | 33.6 |
+| hi stretch | float | 62 | 1.80 | 5.16 | 5.72 | 37.2 |
+| hi stretch | relayout | 63 | 2.05 | 5.51 | 5.72 | 33.8 |
+| hi stretch | move | 63 | 0.69 | 1.36 | 5.71 | 12.2 |
+| hi fill | resize | 62 | 1.60 | 3.94 | 5.72 | 71.7 |
+| hi fill | float | 63 | 1.59 | 5.73 | 5.72 | 77.8 |
+| hi fill | relayout | 63 | 1.84 | 5.85 | 5.72 | 59.1 |
+| hi fill | move | 64 | 0.71 | 1.40 | 5.71 | 28.8 |
+| hi stretch | resize | 62 | 1.69 | 4.19 | 5.72 | 35.5 |
+| hi stretch | float | 63 | 1.64 | 4.42 | 5.71 | 33.1 |
+| hi stretch | relayout | 63 | 1.97 | 5.14 | 5.72 | 32.7 |
+| hi stretch | move | 64 | 0.71 | 1.37 | 5.71 | 11.4 |
+
+Indistinguishable from the 40% runs on this machine. Either the slowness
+under high RAM was app-side (paged-out apps repainting slowly, which this
+benchmark's light targets don't show) or it needs VRAM pressure, which an
+8 GB dGPU with ~1 GB used doesn't have. Not reproduced; worth re-testing
+when it actually happens, with `GLAZEWM_PERF=1` running, and looking at
+`rd_apply by process` / `pre_commit` vs `tick`/`batch_commit`.
