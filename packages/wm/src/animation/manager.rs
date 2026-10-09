@@ -194,26 +194,6 @@ fn prune_and_insert<K: std::hash::Hash + Eq, V>(
   map.insert(key, (value, Instant::now()));
 }
 
-/// Upper bound on the animation timer's effective tick rate, independent
-/// of the animating monitor's real refresh rate.
-///
-/// The timer thread still waits on each animating monitor's own
-/// `IDXGIOutput::WaitForVBlank` signal (per-monitor, correct at any Hz --
-/// see `spawn_timer_thread`) -- this only gates how many of those wake-ups
-/// actually turn into a tick. Beyond ~120 Hz, extra ticks buy no visible
-/// smoothness for this WM's ~150-300 ms eased animations, but each one
-/// still runs a full `update_internal` pass and, via the main loop's
-/// `biased` `tokio::select!` (`main.rs`), takes priority over
-/// mouse/keybinding/IPC events -- so a 175 Hz monitor was paying ~3x the
-/// input-contention cost of a 60 Hz one for the same visual result. No
-/// effect at or below this rate: the vsync period is already >=
-/// `MIN_TICK_INTERVAL`, so every wake-up still ticks.
-const MAX_TICK_RATE_HZ: u64 = 120;
-
-/// See [`MAX_TICK_RATE_HZ`].
-const MIN_TICK_INTERVAL: Duration =
-  Duration::from_micros(1_000_000 / MAX_TICK_RATE_HZ);
-
 use tokio::sync::mpsc;
 use uuid::Uuid;
 use wm_common::{
@@ -1013,7 +993,6 @@ impl AnimationManager {
           if tx.send(()).is_err() {
             return;
           }
-          let mut last_tick = Instant::now();
 
           // Ticking phase: drive frames until the gate clears.
           while running.load(Ordering::Relaxed) {
@@ -1048,17 +1027,6 @@ impl AnimationManager {
               #[cfg(not(target_os = "windows"))]
               std::thread::sleep(std::time::Duration::from_micros(16_667));
             }
-
-            // Cap the effective tick rate -- see `MAX_TICK_RATE_HZ`.
-            // Silently drop this wake-up's tick rather than
-            // sending it; the next vsync on the same monitor
-            // is only ~1-8 ms away, so nothing
-            // waits any longer than it would have anyway.
-            let now = Instant::now();
-            if now.duration_since(last_tick) < MIN_TICK_INTERVAL {
-              continue;
-            }
-            last_tick = now;
 
             if tx.send(()).is_err() {
               return;
