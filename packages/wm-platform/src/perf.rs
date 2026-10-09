@@ -96,6 +96,15 @@ const APPLY_SAMPLE_LIMIT: usize = 24;
 /// its animation within one command's handling time.
 const INPUT_PAIRING_WINDOW: Duration = Duration::from_secs(1);
 
+/// Maximum stage entries recorded in one input's timeline.
+///
+/// An input's first frame is reached within tens of scopes per animating
+/// window; the cap only bounds an input whose animation never starts.
+const INPUT_TRACE_LIMIT: usize = 256;
+
+/// Timeline entries shorter than this are left out of the report.
+const INPUT_TRACE_MIN: Duration = Duration::from_micros(300);
+
 /// Maximum queued-event timestamps held per [`EventKind`].
 ///
 /// The queues pair one-to-one with each listener's channel, so they only
@@ -430,6 +439,22 @@ struct Profiler {
   pending_input: Option<PendingInput>,
   /// Keypress/command-to-motion latencies completed this session.
   latency_samples: Vec<InputLatency>,
+  /// Stages run since the pending input arrived, in completion order.
+  input_trace: Vec<TraceEntry>,
+  /// Timeline of the session's slowest input, with its latency to the
+  /// first frame.
+  slowest_trace: Option<(Duration, Vec<TraceEntry>)>,
+}
+
+/// One stage run on the way from an input to its first frame.
+#[derive(Clone, Copy)]
+struct TraceEntry {
+  /// The stage measured.
+  stage: Stage,
+  /// When it started, relative to the input.
+  offset: Duration,
+  /// How long it ran.
+  duration: Duration,
 }
 
 /// An input whose first animation frame has not completed yet.
@@ -532,6 +557,16 @@ impl Drop for Scope {
       if let Ok(mut profiler) = profiler.try_borrow_mut() {
         profiler.frame_total[index] += elapsed;
         profiler.frame_calls[index] += 1;
+
+        if let Some(input) = profiler.pending_input {
+          if profiler.input_trace.len() < INPUT_TRACE_LIMIT {
+            profiler.input_trace.push(TraceEntry {
+              stage: self.stage,
+              offset: start.saturating_duration_since(input.received_at),
+              duration: elapsed,
+            });
+          }
+        }
       }
     });
   }
@@ -739,6 +774,7 @@ fn arm_input(profiler: &mut Profiler, received_at: Instant) {
     received_at,
     animation_started_at: None,
   });
+  profiler.input_trace.clear();
 }
 
 /// Records the number of windows animating simultaneously this frame.
@@ -869,11 +905,21 @@ fn roll_up_frame() -> bool {
 
     if let Some(input) = profiler.pending_input {
       if let Some(started_at) = input.animation_started_at {
+        let to_first_frame = input.received_at.elapsed();
         profiler.latency_samples.push(InputLatency {
           to_start: started_at - input.received_at,
-          to_first_frame: input.received_at.elapsed(),
+          to_first_frame,
         });
         profiler.pending_input = None;
+
+        let trace = std::mem::take(&mut profiler.input_trace);
+        if profiler
+          .slowest_trace
+          .as_ref()
+          .map_or(true, |(slowest, _)| to_first_frame > *slowest)
+        {
+          profiler.slowest_trace = Some((to_first_frame, trace));
+        }
       }
     }
 
@@ -996,6 +1042,7 @@ fn take_report(reason: &str) -> Option<String> {
   write_outside_frames(&mut lines, &summary);
   write_tick_distribution(&mut lines, &summary);
   write_input_latency(&mut lines, &summary);
+  write_input_trace(&mut lines, &summary);
   write_apply_breakdown(&mut lines, &summary);
   write_event_waits(&mut lines, &summary);
   write_gesture_split(&mut lines, &summary);
@@ -1136,6 +1183,51 @@ fn write_input_latency(lines: &mut String, summary: &Profiler) {
       samples.len(),
       percentile(samples, 50).as_secs_f64() * 1000.0,
       samples.last().copied().unwrap_or_default().as_secs_f64() * 1000.0,
+    );
+  }
+}
+
+/// Appends the timeline of the session's slowest input to the report.
+///
+/// Shows where keypress-to-motion time goes, in order: the per-stage
+/// totals cannot tell a blocking call on the critical path from the same
+/// call made after the first frame.
+fn write_input_trace(lines: &mut String, summary: &Profiler) {
+  let Some((latency, trace)) = &summary.slowest_trace else {
+    return;
+  };
+
+  let mut entries = trace
+    .iter()
+    .filter(|entry| entry.duration >= INPUT_TRACE_MIN)
+    .collect::<Vec<_>>();
+  entries.sort_by_key(|entry| entry.offset);
+
+  let _ = writeln!(
+    lines,
+    "  -- slowest input timeline ({:.2}ms to first frame; * = called \
+     from several parents) --",
+    latency.as_secs_f64() * 1000.0,
+  );
+  let _ = writeln!(lines, "  {:<20}{:>11}{:>11}", "stage", "at", "took");
+
+  for entry in entries {
+    let name = if entry.stage.is_cross_cutting() {
+      format!("* {}", entry.stage.label())
+    } else {
+      format!(
+        "{:indent$}{}",
+        "",
+        entry.stage.label(),
+        indent = entry.stage.depth() * 2
+      )
+    };
+    let _ = writeln!(
+      lines,
+      "  {:<20}{:>9.2}ms{:>9.2}ms",
+      name,
+      entry.offset.as_secs_f64() * 1000.0,
+      entry.duration.as_secs_f64() * 1000.0,
     );
   }
 }
@@ -1604,6 +1696,7 @@ mod tests {
         assert!(sample.to_start <= sample.to_first_frame);
         assert!(profiler.pending_input.is_none());
         assert_eq!(profiler.interval_samples.len(), 2);
+        assert!(profiler.slowest_trace.is_some());
       });
 
       let report = take_report("unit test").expect("frames were recorded");
