@@ -212,6 +212,7 @@ impl WorkspaceSurrogate {
       // workspace-switch and resize animations are mutually
       // exclusive.
       hwnd,
+      false,
     )?;
 
     // Store the deflated (logical) rect so all per-frame positioning math

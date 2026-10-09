@@ -197,8 +197,8 @@ fn prune_and_insert<K: std::hash::Hash + Eq, V>(
 use tokio::sync::mpsc;
 use uuid::Uuid;
 use wm_common::{
-  EasingFunction, WindowTransitionParams, WindowTransitionStyle,
-  WorkspaceSwitchDirection, WorkspaceSwitchStyle,
+  EasingFunction, ResizeStyle, WindowTransitionParams,
+  WindowTransitionStyle, WorkspaceSwitchDirection, WorkspaceSwitchStyle,
 };
 #[cfg(target_os = "windows")]
 use wm_platform::{
@@ -2569,7 +2569,14 @@ impl AnimationManager {
           session.update_target(&start_rect, &target_rect);
         } else {
           let hwnd = native_window.hwnd();
-          let cached_edge_color = self.cached_edge_color(hwnd.0);
+          // Stretch never shows a gap, so it needs no edge color.
+          let stretch = config.value.animations.window_resize.style
+            == ResizeStyle::Stretch;
+          let cached_edge_color = if stretch {
+            None
+          } else {
+            self.cached_edge_color(hwnd.0)
+          };
           // Reuses a still-fading or recently-warm surrogate for this same
           // window when one exists (see `reclaim_surrogate`'s doc
           // comment), skipping `CreateWindowExW`/
@@ -2599,6 +2606,7 @@ impl AnimationManager {
                   edge_color: cached_edge_color,
                   backdrop_overlay,
                   border_overlay,
+                  stretch,
                 },
                 warm_surrogate,
               )
@@ -2615,6 +2623,7 @@ impl AnimationManager {
                 edge_color: cached_edge_color,
                 backdrop_overlay,
                 border_overlay,
+                stretch,
               },
             ),
           };
@@ -2635,13 +2644,15 @@ impl AnimationManager {
               // is for the next one. Warmed whatever the backdrop config,
               // since `begin_impl` uses the color for any session that can
               // uncover a gap.
-              sample_edge_color_async(
-                hwnd,
-                &start_rect,
-                self.edge_color_cache.clone(),
-                EDGE_COLOR_CACHE_PRUNE_LEN,
-                EDGE_COLOR_CACHE_TTL,
-              );
+              if !stretch {
+                sample_edge_color_async(
+                  hwnd,
+                  &start_rect,
+                  self.edge_color_cache.clone(),
+                  EDGE_COLOR_CACHE_PRUNE_LEN,
+                  EDGE_COLOR_CACHE_TTL,
+                );
+              }
               // `place_at_top: true` above means the session's surrogate
               // (if any) was inserted at `HWND_TOP` -- see
               // `backdrop_overlay_z_order_dirty`'s doc comment.
@@ -2733,8 +2744,11 @@ impl AnimationManager {
             // shared batch by `queue_surrogate_updates` and committed
             // atomically, so adjacent windows' edges land in the same DWM
             // composition frame.
-            let handoff =
-              self.animations.get(&window_id).map_or(false, |a| {
+            // A stretched surrogate shows whatever size the app has
+            // reached, so the real window gets its final size right away
+            // (Hyprland-style) instead of late in the animation.
+            let handoff = session.is_stretch()
+              || self.animations.get(&window_id).map_or(false, |a| {
                 // Scale the lead with the animation duration so the
                 // handoff stays near the end of the visual
                 // travel regardless of easing speed. For
@@ -2922,7 +2936,7 @@ impl AnimationManager {
       if let Some(session) =
         self.resize_sessions.get_mut(&update.window_id)
       {
-        if session.edge_color().is_none() {
+        if session.edge_color().is_none() && !session.is_stretch() {
           let color = session.window_hwnd().and_then(|hwnd| {
             edge_colors
               .get_or_insert_with(|| self.edge_color_cache.lock().ok())
@@ -3257,6 +3271,7 @@ impl AnimationManager {
         edge_color: None,
         backdrop_overlay,
         border_overlay,
+        stretch: false,
       },
     ) {
       Ok(mut session) => {
@@ -3375,6 +3390,7 @@ impl AnimationManager {
         edge_color: self.cached_edge_color(native_window.hwnd().0),
         backdrop_overlay,
         border_overlay,
+        stretch: false,
       },
     ) {
       Ok(mut session) => {
@@ -3472,6 +3488,7 @@ impl AnimationManager {
         edge_color: self.cached_edge_color(native_window.hwnd().0),
         backdrop_overlay,
         border_overlay,
+        stretch: false,
       },
     ) {
       Ok(mut session) => {

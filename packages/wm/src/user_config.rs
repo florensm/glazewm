@@ -498,6 +498,7 @@ mod tests {
   use wm_platform::Rect;
 
   use super::*;
+  use wm_common::ResizeStyle;
   use crate::models::Workspace;
 
   /// The bundled sample config (which uses the `type` key for animation
@@ -514,6 +515,26 @@ mod tests {
     assert_eq!(
       config.animations.workspace_switch.style,
       WorkspaceSwitchStyle::Slide
+    );
+  }
+
+  /// `window_resize.style` defaults to `fill` and accepts `stretch`.
+  #[test]
+  fn resize_style_parses() {
+    let config: ParsedConfig =
+      serde_yaml::from_str("animations: {}").expect("empty should parse");
+    assert_eq!(config.animations.window_resize.style, ResizeStyle::Fill);
+
+    let config: ParsedConfig = serde_yaml::from_str(
+      "animations:
+  window_resize:
+    style: 'stretch'
+",
+    )
+    .expect("stretch should parse");
+    assert_eq!(
+      config.animations.window_resize.style,
+      ResizeStyle::Stretch
     );
   }
 

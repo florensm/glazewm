@@ -1252,6 +1252,8 @@ pub struct WindowResizeConfig {
   /// Minimum pixel distance required to trigger resize animations.
   /// Increase this value on high-DPI displays to reduce sensitivity.
   pub threshold_px: u32,
+  /// How a window's content is shown while its size animates.
+  pub style: ResizeStyle,
 }
 
 impl Default for WindowResizeConfig {
@@ -1261,8 +1263,26 @@ impl Default for WindowResizeConfig {
       duration_ms: 150,
       easing: EasingFunction::CubicBezier(0.42, 0.0, 0.58, 1.0),
       threshold_px: 10,
+      style: ResizeStyle::default(),
     }
   }
+}
+
+/// How a window's content is shown while its size animates.
+#[derive(
+  Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum ResizeStyle {
+  /// Content stays at its real size: a growing window reveals it as the
+  /// app catches up, with the uncovered strip filled in the window's
+  /// sampled edge color; a shrinking one is clipped. The real window is
+  /// resized late in the animation.
+  #[default]
+  Fill,
+  /// Content is scaled to the animated size. The real window is sent its
+  /// final size on the first frame, and no edge color is sampled.
+  Stretch,
 }
 
 /// Easing function for animations.

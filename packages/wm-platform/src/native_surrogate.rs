@@ -114,6 +114,10 @@ fn suppress_native_border(hwnd: HWND) {
 /// Returns the opaque thumbnail handle, or `None` if registration fails
 /// (e.g. same-window, invalid handle). The caller is responsible for
 /// calling [`DwmUnregisterThumbnail`] when done.
+///
+/// With `stretch_to`, the thumbnail samples the whole source window
+/// instead of a fixed source rect and is scaled to that surrogate size;
+/// see [`stretched_destination`].
 fn register_thumbnail(
   dest_hwnd: HWND,
   source_hwnd: HWND,
@@ -121,41 +125,18 @@ fn register_thumbnail(
   logical_height: i32,
   border_inset: RECT,
   initial_opacity: u8,
+  stretch_to: Option<(i32, i32)>,
 ) -> Option<isize> {
   // SAFETY: Both handles are valid top-level windows.
   let thumbnail =
     unsafe { DwmRegisterThumbnail(dest_hwnd, source_hwnd).ok()? };
 
-  // `rcSource` starts at the border inset so invisible-border pixels are
-  // excluded; those pixels render as black in DWM thumbnails.
-  // `rcDestination` fills the whole (logical-sized) surrogate from (0,
-  // 0).
-  let src_rect = RECT {
-    left: border_inset.left,
-    top: border_inset.top,
-    right: border_inset.left + logical_width,
-    bottom: border_inset.top + logical_height,
-  };
-  let dst_rect = RECT {
-    left: 0,
-    top: 0,
-    right: logical_width,
-    bottom: logical_height,
-  };
-
-  let props = DWM_THUMBNAIL_PROPERTIES {
-    dwFlags: DWM_TNP_RECTDESTINATION
-      | DWM_TNP_RECTSOURCE
-      | DWM_TNP_OPACITY
-      | DWM_TNP_VISIBLE
-      | DWM_TNP_SOURCECLIENTAREAONLY,
-    rcDestination: dst_rect,
-    rcSource: src_rect,
-    opacity: initial_opacity,
-    fVisible: true.into(),
-    fSourceClientAreaOnly: false.into(),
-    ..Default::default()
-  };
+  let props = thumbnail_properties(
+    (logical_width, logical_height),
+    border_inset,
+    initial_opacity,
+    stretch_to,
+  );
 
   // SAFETY: `thumbnail` is a valid handle returned by
   // `DwmRegisterThumbnail`.
@@ -170,6 +151,70 @@ fn register_thumbnail(
   }
 
   Some(thumbnail)
+}
+
+/// Full thumbnail setup (rects, opacity, visible) for content of
+/// `logical_size`, or for the whole window scaled to `stretch_to`.
+fn thumbnail_properties(
+  logical_size: (i32, i32),
+  border_inset: RECT,
+  opacity: u8,
+  stretch_to: Option<(i32, i32)>,
+) -> DWM_THUMBNAIL_PROPERTIES {
+  let base = DWM_THUMBNAIL_PROPERTIES {
+    dwFlags: DWM_TNP_RECTDESTINATION
+      | DWM_TNP_OPACITY
+      | DWM_TNP_VISIBLE
+      | DWM_TNP_SOURCECLIENTAREAONLY,
+    opacity,
+    fVisible: true.into(),
+    fSourceClientAreaOnly: false.into(),
+    ..Default::default()
+  };
+
+  if let Some(size) = stretch_to {
+    return DWM_THUMBNAIL_PROPERTIES {
+      rcDestination: stretched_destination(size, border_inset),
+      ..base
+    };
+  }
+
+  // `rcSource` starts at the border inset so invisible-border pixels are
+  // excluded; those pixels render as black in DWM thumbnails.
+  // `rcDestination` fills the (logical-sized) surrogate from (0, 0).
+  DWM_THUMBNAIL_PROPERTIES {
+    dwFlags: base.dwFlags | DWM_TNP_RECTSOURCE,
+    rcSource: RECT {
+      left: border_inset.left,
+      top: border_inset.top,
+      right: border_inset.left + logical_size.0,
+      bottom: border_inset.top + logical_size.1,
+    },
+    rcDestination: RECT {
+      left: 0,
+      top: 0,
+      right: logical_size.0,
+      bottom: logical_size.1,
+    },
+    ..base
+  }
+}
+
+/// Destination rect that scales a whole-window thumbnail to a surrogate of
+/// `size`.
+///
+/// A whole-window thumbnail (no `rcSource`) includes the source's
+/// invisible resize borders, which render black. Inflating the destination
+/// by the insets pushes them outside the surrogate, which clips them.
+/// Exact at 1:1 scale and off by `inset * (scale - 1)` otherwise -- a few
+/// pixels at most, against a rect that is mid-animation.
+fn stretched_destination(size: (i32, i32), border_inset: RECT) -> RECT {
+  RECT {
+    left: -border_inset.left,
+    top: -border_inset.top,
+    right: size.0 + border_inset.right,
+    bottom: size.1 + border_inset.bottom,
+  }
 }
 
 /// Collects surrogate repositions for one animation frame and applies them
@@ -429,6 +474,17 @@ pub struct NativeSurrogate {
   fill: Option<SurrogateFill>,
   /// Color the fill currently shows, or `None` while hidden.
   fill_color: Option<Color>,
+  /// Whether the thumbnail samples the whole source window and is scaled
+  /// to the surrogate's size, instead of drawing a fixed source rect at
+  /// `content_size`.
+  ///
+  /// Whatever size the app has reached is shown, so no source rect can
+  /// oversample a window that is still shrinking (a transparent hole) or
+  /// crop one that has not grown yet. `content_size` is then bookkeeping
+  /// only.
+  stretch: bool,
+  /// Current size of the surrogate window, the stretch destination.
+  window_size: (i32, i32),
 }
 
 impl NativeSurrogate {
@@ -472,11 +528,15 @@ impl NativeSurrogate {
   /// overlays). Pass `source_hwnd` to place immediately below the source
   /// window.
   ///
+  /// `stretch` scales the whole source window to the surrogate instead;
+  /// see the `stretch` field.
+  ///
   /// Returns an error if window creation fails.
   ///
   /// [`set_fill_color`]: NativeSurrogate::set_fill_color
   /// [`set_visible`]: NativeSurrogate::set_visible
   /// [`update_thumbnail_dims`]: NativeSurrogate::update_thumbnail_dims
+  #[allow(clippy::too_many_arguments)]
   pub fn create(
     source_hwnd: HWND,
     source_rect: &Rect,
@@ -486,6 +546,7 @@ impl NativeSurrogate {
     border_inset: RECT,
     corner_style: &CornerStyle,
     insert_after: HWND,
+    stretch: bool,
   ) -> crate::Result<Self> {
     ensure_class_registered();
 
@@ -543,6 +604,7 @@ impl NativeSurrogate {
     //
     // Failure is non-fatal: the surrogate still shows its fill if given a
     // color.
+    let window_size = (logical_src.width(), logical_src.height());
     let thumbnail = register_thumbnail(
       hwnd,
       source_hwnd,
@@ -550,6 +612,7 @@ impl NativeSurrogate {
       logical_thumb.height(),
       border_inset,
       opacity,
+      stretch.then_some(window_size),
     )
     .unwrap_or(0);
 
@@ -565,9 +628,15 @@ impl NativeSurrogate {
       is_visible: initially_visible,
       last_opacity: opacity,
       last_rect: None,
-      covered: (logical_thumb.width(), logical_thumb.height()),
+      covered: if stretch {
+        window_size
+      } else {
+        (logical_thumb.width(), logical_thumb.height())
+      },
       fill: None,
       fill_color: None,
+      stretch,
+      window_size,
     };
 
     // Set the initial Z-order position and optionally show the surrogate.
@@ -612,9 +681,12 @@ impl NativeSurrogate {
   /// back to registering fresh only if the prior registration never
   /// succeeded (`self.thumbnail == 0`).
   ///
-  /// Parameters otherwise mirror [`create`]'s.
+  /// Parameters otherwise mirror [`create`]'s. Switching `stretch` from
+  /// the previous session re-registers the thumbnail, since a source rect
+  /// cannot be unset once applied.
   ///
   /// [`create`]: NativeSurrogate::create
+  #[allow(clippy::too_many_arguments)]
   pub fn revive(
     &mut self,
     source_hwnd: HWND,
@@ -625,6 +697,7 @@ impl NativeSurrogate {
     border_inset: RECT,
     corner_style: &CornerStyle,
     insert_after: HWND,
+    stretch: bool,
   ) -> crate::Result<()> {
     // A fill left on from the previous session must not show before this
     // one decides whether it wants one.
@@ -656,6 +729,16 @@ impl NativeSurrogate {
     }?;
     self.is_visible = initially_visible;
     self.last_rect = None;
+    self.window_size = (logical_src.width(), logical_src.height());
+
+    if self.thumbnail != 0 && self.stretch != stretch {
+      // SAFETY: `self.thumbnail` is a valid handle (checked non-zero).
+      unsafe {
+        let _ = DwmUnregisterThumbnail(self.thumbnail);
+      }
+      self.thumbnail = 0;
+    }
+    self.stretch = stretch;
 
     if self.thumbnail == 0 {
       self.thumbnail = register_thumbnail(
@@ -665,40 +748,19 @@ impl NativeSurrogate {
         logical_thumb.height(),
         border_inset,
         opacity,
+        stretch.then_some(self.window_size),
       )
       .unwrap_or(0);
     } else {
-      // Single combined update (rects + opacity + visible), mirroring
-      // `register_thumbnail`'s initial setup -- bypasses
-      // `set_thumbnail_rects`/`set_window_opacity`'s unchanged-value
-      // skips, since a revived surrogate must always apply fresh
-      // values regardless of what its last session happened to leave
-      // behind.
-      let src_rect = RECT {
-        left: border_inset.left,
-        top: border_inset.top,
-        right: border_inset.left + logical_thumb.width(),
-        bottom: border_inset.top + logical_thumb.height(),
-      };
-      let dst_rect = RECT {
-        left: 0,
-        top: 0,
-        right: logical_thumb.width(),
-        bottom: logical_thumb.height(),
-      };
-      let props = DWM_THUMBNAIL_PROPERTIES {
-        dwFlags: DWM_TNP_RECTDESTINATION
-          | DWM_TNP_RECTSOURCE
-          | DWM_TNP_OPACITY
-          | DWM_TNP_VISIBLE
-          | DWM_TNP_SOURCECLIENTAREAONLY,
-        rcDestination: dst_rect,
-        rcSource: src_rect,
+      // One combined update, bypassing `set_thumbnail_rects`/
+      // `set_window_opacity`'s unchanged-value skips: a revived surrogate
+      // must apply fresh values whatever its last session left behind.
+      let props = thumbnail_properties(
+        (logical_thumb.width(), logical_thumb.height()),
+        border_inset,
         opacity,
-        fVisible: true.into(),
-        fSourceClientAreaOnly: false.into(),
-        ..Default::default()
-      };
+        stretch.then_some(self.window_size),
+      );
       // SAFETY: `self.thumbnail` is a valid handle (checked non-zero
       // above).
       unsafe {
@@ -708,9 +770,44 @@ impl NativeSurrogate {
     }
     self.set_fill_opacity(opacity);
     self.content_size = (logical_thumb.width(), logical_thumb.height());
-    self.set_covered(self.content_size);
+    self.set_covered(if stretch {
+      self.window_size
+    } else {
+      self.content_size
+    });
 
     Ok(())
+  }
+
+  /// Records the surrogate window's new size and, when stretching, scales
+  /// the thumbnail to it.
+  ///
+  /// The thumbnail update is immediate while the window move may be
+  /// batched, the same split `update_thumbnail_dims` already has: both
+  /// land before the next composition.
+  fn set_window_size(&mut self, rect: &Rect) {
+    let size = (rect.width(), rect.height());
+    if size == self.window_size {
+      return;
+    }
+    self.window_size = size;
+
+    if !self.stretch {
+      return;
+    }
+    if self.thumbnail != 0 {
+      let props = DWM_THUMBNAIL_PROPERTIES {
+        dwFlags: DWM_TNP_RECTDESTINATION,
+        rcDestination: stretched_destination(size, self.border_inset),
+        ..Default::default()
+      };
+      // SAFETY: `self.thumbnail` is a valid handle (checked non-zero).
+      unsafe {
+        let _ =
+          DwmUpdateThumbnailProperties(self.thumbnail, &raw const props);
+      }
+    }
+    self.set_covered(size);
   }
 
   /// Returns the raw handle of the surrogate overlay window.
@@ -782,6 +879,7 @@ impl NativeSurrogate {
       )
     }?;
     self.last_rect = Some(rect.clone());
+    self.set_window_size(rect);
     Ok(())
   }
 
@@ -877,7 +975,8 @@ impl NativeSurrogate {
   ///
   /// Falls back to a full [`reregister_thumbnail`] if the update fails
   /// (e.g. the thumbnail handle has become stale). No-op when no
-  /// thumbnail was registered.
+  /// thumbnail was registered. When stretching, only records the dims: the
+  /// whole window is sampled whatever its size.
   ///
   /// [`reregister_thumbnail`]: NativeSurrogate::reregister_thumbnail
   pub fn update_thumbnail_dims(
@@ -888,6 +987,11 @@ impl NativeSurrogate {
     border_inset: RECT,
   ) {
     if self.thumbnail == 0 {
+      return;
+    }
+    if self.stretch {
+      self.content_size = (logical_width, logical_height);
+      self.border_inset = border_inset;
       return;
     }
     let src_rect = RECT {
@@ -965,10 +1069,15 @@ impl NativeSurrogate {
       logical_height,
       border_inset,
       self.last_opacity,
+      self.stretch.then_some(self.window_size),
     )
     .unwrap_or(0);
     self.content_size = (logical_width, logical_height);
-    self.set_covered(self.content_size);
+    self.set_covered(if self.stretch {
+      self.window_size
+    } else {
+      self.content_size
+    });
     self.border_inset = border_inset;
     // Force the next reposition call through even if the rect is
     // unchanged, ensuring the surrogate is repositioned after a
@@ -1063,6 +1172,7 @@ impl NativeSurrogate {
     }
     batch.push(self.hwnd, rect.clone());
     self.last_rect = Some(rect.clone());
+    self.set_window_size(rect);
   }
 }
 
@@ -1094,9 +1204,9 @@ mod tests {
   };
 
   use super::{
-    ensure_class_registered, BeginDeferWindowPos, CreateWindowExW,
-    DeferWindowPos, DestroyWindow, EndDeferWindowPos, Rect,
-    SurrogateBatch, HWND, SWP_NOSENDCHANGING, WS_EX_NOACTIVATE,
+    ensure_class_registered, stretched_destination, BeginDeferWindowPos,
+    CreateWindowExW, DeferWindowPos, DestroyWindow, EndDeferWindowPos,
+    Rect, SurrogateBatch, HWND, SWP_NOSENDCHANGING, WS_EX_NOACTIVATE,
     WS_EX_TOOLWINDOW, WS_EX_TRANSPARENT, WS_POPUP,
   };
 
@@ -1116,6 +1226,23 @@ mod tests {
   const LEAK_TEST_TOLERANCE: i64 = 32;
 
   /// Returns this process's current USER-object count.
+  /// The invisible resize borders of a whole-window thumbnail must land
+  /// outside the surrogate, so only content is drawn inside it.
+  #[test]
+  fn stretched_destination_pushes_borders_outside() {
+    let inset = windows::Win32::Foundation::RECT {
+      left: 7,
+      top: 0,
+      right: 7,
+      bottom: 7,
+    };
+    let dst = stretched_destination((800, 600), inset);
+    assert_eq!(
+      (dst.left, dst.top, dst.right, dst.bottom),
+      (-7, 0, 807, 607)
+    );
+  }
+
   fn user_objects() -> i64 {
     // SAFETY: The pseudo-handle returned by `GetCurrentProcess` is always
     // valid and needs no closing.

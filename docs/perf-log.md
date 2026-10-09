@@ -135,3 +135,51 @@ crawled through the tail. Frames per burst rose 52 -> 62-63 because the
 whole curve is now rendered. The start is still uneven (0.132 -> 0.427
 across one interval): the first ticks are slow (first `batch_commit`
 8.6 ms), which is the next target.
+
+## `window_resize.style: fill | stretch`
+
+`fill` (default) is the existing behaviour: content at real size, gap
+strips filled with the sampled edge color, real window resized late.
+`stretch` registers the thumbnail with no source rect, so DWM always
+draws the whole current window (whatever size the app has reached) scaled
+into the animated rect; the real window gets its final size on the first
+frame (Hyprland-style); no fill, no edge-color sampling. Checked why the
+June stretch mode was removed (`2a51011b`): the commit gives no reason,
+and that version scaled a fixed source rect, so it could crop or
+oversample while the app resized. This one cannot.
+
+Back to back, config A (`bench-A.yaml` vs `bench-AS.yaml`), two rounds,
+10 bursts each:
+
+| run | scenario | frames | tick | p90 | interval | sess_ovl | batch | ovl_region | flush# | flush out | cloak out | begin out | ->start | ->1st frame |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| fill | resize | 62 | 1.65 | 4.02 | 5.72 | 0.59 | 0.60 | 0.51 | 2 | 28.9 | 25.7 | 33.2 | 0.17 | 71.3 |
+| fill | float | 63 | 1.65 | 4.66 | 5.71 | 0.54 | 0.63 | 0.48 | 2 | 34.1 | 29.1 | 33.6 | 0.17 | 74.1 |
+| fill | relayout | 63 | 1.91 | 5.73 | 5.72 | 0.64 | 0.65 | 0.57 | 2 | 25.4 | 20.8 | 33.1 | 0.11 | 56.8 |
+| fill | move | 63 | 0.71 | 1.38 | 5.71 | 0.02 | 0.46 | 0.00 | 1 | 33.7 | 30.2 | 5.4 | 0.20 | 36.9 |
+| stretch | resize | 62 | 1.72 | 4.34 | 5.71 | 0.57 | 0.62 | 0.49 | 2 | 17.2 | 13.5 | 0.8 | 0.17 | 35.6 |
+| stretch | float | 63 | 1.66 | 4.60 | 5.72 | 0.52 | 0.63 | 0.44 | 2 | 16.7 | 12.2 | 0.8 | 0.18 | 34.9 |
+| stretch | relayout | 63 | 1.98 | 5.47 | 5.71 | 0.64 | 0.77 | 0.57 | 2 | 21.0 | 12.3 | 0.5 | 0.10 | 34.3 |
+| stretch | move | 63 | 0.71 | 1.40 | 5.71 | 0.02 | 0.45 | 0.00 | 1 | 11.8 | 8.2 | 0.3 | 0.19 | 12.4 |
+| fill | resize | 62 | 1.63 | 4.04 | 5.71 | 0.59 | 0.62 | 0.51 | 2 | 28.5 | 24.3 | 36.0 | 0.18 | 71.9 |
+| fill | float | 63 | 1.60 | 4.66 | 5.71 | 0.54 | 0.64 | 0.47 | 2 | 29.3 | 27.6 | 35.9 | 0.17 | 77.5 |
+| fill | relayout | 63 | 1.82 | 5.56 | 5.71 | 0.63 | 0.65 | 0.55 | 2 | 26.9 | 24.4 | 32.6 | 0.10 | 60.0 |
+| fill | move | 64 | 0.70 | 1.37 | 5.71 | 0.02 | 0.46 | 0.00 | 1 | 33.5 | 30.1 | 6.3 | 0.19 | 36.3 |
+| stretch | resize | 62 | 1.73 | 4.33 | 5.71 | 0.56 | 0.65 | 0.49 | 2 | 16.1 | 13.2 | 0.9 | 0.19 | 34.3 |
+| stretch | float | 62 | 1.64 | 4.49 | 5.71 | 0.50 | 0.63 | 0.44 | 2 | 16.8 | 12.7 | 0.8 | 0.17 | 35.5 |
+| stretch | relayout | 63 | 2.04 | 5.52 | 5.71 | 0.64 | 0.84 | 0.57 | 2 | 17.5 | 11.6 | 0.5 | 0.11 | 33.2 |
+| stretch | move | 64 | 0.72 | 1.37 | 5.71 | 0.02 | 0.46 | 0.00 | 1 | 12.5 | 8.1 | 0.3 | 0.19 | 11.7 |
+
+- Per-frame cost: identical within noise (tick 1.63-1.65 vs 1.72-1.73
+  on resize; the extra destination update per frame is not visible).
+- Start latency: halved. Input -> first frame resize 71 -> 35 ms,
+  relayout 58 -> 34 ms, move 36 -> 12 ms. `session_begin` 33 -> 0.8 ms:
+  in fill mode most of session setup is the gap fill's composition work
+  (the fill is created/cleared per session, one blocking hop to the
+  composition thread each), and the pre-cloak `DwmFlush` and cloaks get
+  cheaper too (flush 29 -> 17 ms, cloak 25 -> 13 ms), presumably because
+  DWM has less new composition state to absorb.
+- Visual: one screenshot mid-resize at a 3 s duration showed no holes,
+  black borders or visible distortion (apps already have their final
+  size, so scale factors stay small). Flicker at start/end not judged;
+  needs eyes on the real thing.
