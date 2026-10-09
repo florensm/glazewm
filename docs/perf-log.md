@@ -341,3 +341,40 @@ most likely move time the same way, so it was not attempted.
 - What remains of the start is DWM absorbing per-window changes
   (surrogate setup, cloaks, overlay restacks, first commit); grouping
   calls differently does not reduce it, only fewer windows does.
+
+## Status against the plan (handoff, 2026-10-09)
+
+Plan text: the `perf/lean-animations` plan (Phases 0-4, DComp spike).
+Branch `perf/lean-animations` off local `dcomp` (2 commits ahead of
+`origin/feat/dcomp`). Machine notes and method at the top of this file.
+
+| Item | Status |
+|---|---|
+| Phase 0 baseline, bench tool, latency/interval/timeline profiling | Done |
+| Phase 0 DWM-side timing (PresentMon) | Open: needs an elevated prompt; `DwmGetCompositionTimingInfo` is stubbed on this build |
+| Outside the plan: 120 Hz tick cap | Removed (87.5 -> 175 fps) |
+| Outside the plan: animation clock started in the relayout | Fixed (first frame 0.81 -> ~0.01 progress) |
+| Outside the plan: edge sampling at session start | Moved to idle (fill start 95 -> 26 ms) |
+| Phase 1 stretch | Done as `animations.window_resize.style: fill \| stretch` |
+| Phase 1 remove fill + edge sampling | Skipped by owner's decision; fill stays an option |
+| Phase 2.1 pinned borders for move/resize | Tried, rejected (+12 ms start for -0.4 ms/frame) |
+| Phase 2.2 backdrop drawn in the surrogate | Not started; the composition-cost worry was tested and cleared |
+| Phase 2.3 ring drawn in the surrogate | Not started |
+| Phase 3 pre-cloak `DwmFlush` deferral, cloak staggering | Not started; batching overlay restacks showed time only moves |
+| Phase 3 shorter `SESSION_FADE_OUT`, throttled z-settle | Not started |
+| Phase 3 overlay restacks batched into one transaction | Tried, rejected (no latency change) |
+| Phase 4 / DComp spike | Not started; its gate needs PresentMon |
+
+Known issues: `float` bench scenario intermittently ticks ~1.5 s instead
+of ~0.35 s (not reproduced under logging); toggling a workspace's tiling
+direction queues no redraw (pre-existing, bench works around it).
+
+Suggested next order: Phase 2.2/2.3, then Phase 3 leftovers (fade, z-settle,
+float run-on), then PresentMon + DComp spike; re-run the bench on the
+laptop where per-frame cost was the original problem.
+
+Tooling for the next session: bench configs `~/.glzr/glazewm/bench-A.yaml`
+(fill), `bench-AS.yaml` (stretch), `bench-B/C.yaml` (overlay tracking);
+run `GLAZEWM_PERF=1 glazewm.exe start --config <cfg>`, then
+`cargo run -p wm-cli --release --example perf_bench -- --scenario <resize|float|relayout|move> --target chrome --bursts 10 --label <x>`.
+Only one WM instance at a time (a second start pops a fatal-error dialog).
