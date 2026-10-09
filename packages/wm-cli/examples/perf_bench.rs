@@ -27,13 +27,18 @@ use uuid::Uuid;
 use wm_common::{ClientResponseData, ContainerDto, WindowState};
 use wm_ipc_client::IpcClient;
 
-/// Reversible scenarios, each a pair of commands applied alternately.
+/// Reversible scenarios, each a pair of steps applied alternately.
+///
+/// A step is one or more `;`-separated commands. Commands target the
+/// pinned window (its workspace for [`WORKSPACE_SCENARIO`]), except
+/// `wm-*` commands, which take no subject.
 const SCENARIOS: &[(&str, &str, &str)] = &[
   // Every window on the workspace moves and resizes in both dimensions.
+  // Toggling a workspace's direction queues no redraw on its own.
   (
-    "relayout",
-    "toggle-tiling-direction",
-    "toggle-tiling-direction",
+    WORKSPACE_SCENARIO,
+    "toggle-tiling-direction; wm-redraw",
+    "toggle-tiling-direction; wm-redraw",
   ),
   // Target grows while its neighbour shrinks, then the reverse.
   ("resize", "resize --width +25%", "resize --width -25%"),
@@ -43,6 +48,12 @@ const SCENARIOS: &[(&str, &str, &str)] = &[
   // Target swaps places with its neighbour, then swaps back.
   ("move", "move --direction left", "move --direction right"),
 ];
+
+/// The scenario whose commands target the pinned window's workspace.
+///
+/// Toggling a window's own direction only wraps it in a split container,
+/// which changes nothing on screen.
+const WORKSPACE_SCENARIO: &str = "relayout";
 
 /// Report metrics summarised as medians, keyed by `section:stage:column`.
 const METRICS: &[(&str, &str)] = &[
@@ -95,22 +106,25 @@ async fn main() -> anyhow::Result<()> {
 
   let log_path = perf_log_path()?;
   let mut client = IpcClient::connect().await?;
-  let target = find_tiled_window(&mut client, &args.target).await?;
+  let window = find_tiled_window(&mut client, &args.target).await?;
+  let target = if args.scenario == WORKSPACE_SCENARIO {
+    find_workspace_of(&mut client, window).await?
+  } else {
+    window
+  };
 
   let start_len = std::fs::metadata(&log_path).map_or(0, |m| m.len());
   let started = Instant::now();
 
   for burst in 0..args.bursts {
     let step = if burst % 2 == 0 { forward } else { back };
-    send_command(&mut client, &format!("command --id {target} {step}"))
-      .await?;
+    send_step(&mut client, target, step).await?;
     tokio::time::sleep(args.settle).await;
   }
 
   // Leave the layout as it was found.
   if args.bursts % 2 == 1 {
-    send_command(&mut client, &format!("command --id {target} {back}"))
-      .await?;
+    send_step(&mut client, target, back).await?;
     tokio::time::sleep(args.settle).await;
   }
 
@@ -206,6 +220,62 @@ async fn find_tiled_window(
       _ => None,
     })
     .with_context(|| format!("No tiled window of process '{process}'."))
+}
+
+/// Returns the ID of the workspace containing `window`.
+async fn find_workspace_of(
+  client: &mut IpcClient,
+  window: Uuid,
+) -> anyhow::Result<Uuid> {
+  fn contains(children: &[ContainerDto], window: Uuid) -> bool {
+    children.iter().any(|child| match child {
+      ContainerDto::Window(dto) => dto.id == window,
+      ContainerDto::Split(split) => contains(&split.children, window),
+      _ => false,
+    })
+  }
+
+  let message = "query workspaces";
+  client.send(message).await?;
+  let response = client
+    .client_response(message)
+    .await
+    .context("No response to workspace query.")?;
+
+  let Some(ClientResponseData::Workspaces(data)) = response.data else {
+    bail!("Unexpected response to workspace query.");
+  };
+
+  data
+    .workspaces
+    .iter()
+    .find_map(|container| match container {
+      ContainerDto::Workspace(workspace)
+        if contains(&workspace.children, window) =>
+      {
+        Some(workspace.id)
+      }
+      _ => None,
+    })
+    .context("Target window is on no workspace.")
+}
+
+/// Sends each `;`-separated command of a scenario step.
+async fn send_step(
+  client: &mut IpcClient,
+  target: Uuid,
+  step: &str,
+) -> anyhow::Result<()> {
+  for command in step.split(';').map(str::trim) {
+    let message = if command.starts_with("wm-") {
+      format!("command {command}")
+    } else {
+      format!("command --id {target} {command}")
+    };
+    send_command(client, &message).await?;
+  }
+
+  Ok(())
 }
 
 async fn send_command(
