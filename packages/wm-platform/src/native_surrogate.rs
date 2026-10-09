@@ -1,7 +1,7 @@
 use std::sync::OnceLock;
 
 use windows::{
-  core::w,
+  core::{w, PCWSTR},
   Win32::{
     Foundation::{HWND, RECT},
     Graphics::Dwm::{
@@ -14,11 +14,11 @@ use windows::{
     },
     UI::WindowsAndMessaging::{
       BeginDeferWindowPos, CreateWindowExW, DeferWindowPos, DestroyWindow,
-      EndDeferWindowPos, SetWindowPos, SET_WINDOW_POS_FLAGS,
-      SWP_NOACTIVATE, SWP_NOCOPYBITS, SWP_NOMOVE, SWP_NOSENDCHANGING,
-      SWP_NOSIZE, SWP_NOZORDER, SWP_SHOWWINDOW, WS_EX_NOACTIVATE,
-      WS_EX_NOREDIRECTIONBITMAP, WS_EX_TOOLWINDOW, WS_EX_TRANSPARENT,
-      WS_POPUP,
+      EndDeferWindowPos, GetClassNameW, SetWindowPos,
+      SET_WINDOW_POS_FLAGS, SWP_NOACTIVATE, SWP_NOCOPYBITS, SWP_NOMOVE,
+      SWP_NOSENDCHANGING, SWP_NOSIZE, SWP_NOZORDER, SWP_SHOWWINDOW,
+      WS_EX_NOACTIVATE, WS_EX_NOREDIRECTIONBITMAP, WS_EX_TOOLWINDOW,
+      WS_EX_TRANSPARENT, WS_POPUP,
     },
   },
 };
@@ -28,13 +28,26 @@ use crate::{
   window_class, Color, CornerStyle, Rect,
 };
 
+const CLASS_NAME: PCWSTR = w!("GlazeWM_Surrogate");
+
 fn ensure_class_registered() {
   static REGISTERED: OnceLock<()> = OnceLock::new();
   window_class::ensure_class_registered(
     &REGISTERED,
-    w!("GlazeWM_Surrogate"),
+    CLASS_NAME,
     window_class::default_wnd_proc,
   );
+}
+
+/// Whether `hwnd` is a surrogate window, of any animation kind.
+pub(crate) fn is_surrogate(hwnd: HWND) -> bool {
+  let mut buf = [0u16; 32];
+  // SAFETY: `buf` outlives the call; a stale `hwnd` just returns 0.
+  let len = unsafe { GetClassNameW(hwnd, &mut buf) };
+  let name = &buf[..usize::try_from(len).unwrap_or(0)];
+
+  // SAFETY: `CLASS_NAME` is a static, null-terminated literal.
+  unsafe { CLASS_NAME.as_wide() == name }
 }
 
 /// Applies the DWM corner preference matching `corner_style` to `hwnd`.
@@ -605,7 +618,7 @@ impl NativeSurrogate {
           | WS_EX_TOOLWINDOW
           | WS_EX_TRANSPARENT
           | WS_EX_NOREDIRECTIONBITMAP,
-        w!("GlazeWM_Surrogate"),
+        CLASS_NAME,
         w!(""),
         WS_POPUP,
         logical_src.x(),
@@ -1263,10 +1276,10 @@ mod tests {
   };
 
   use super::{
-    ensure_class_registered, stretched_destination, BeginDeferWindowPos,
-    CreateWindowExW, DeferWindowPos, DestroyWindow, EndDeferWindowPos,
-    Rect, SurrogateBatch, HWND, SWP_NOSENDCHANGING, WS_EX_NOACTIVATE,
-    WS_EX_TOOLWINDOW, WS_EX_TRANSPARENT, WS_POPUP,
+    ensure_class_registered, is_surrogate, stretched_destination,
+    BeginDeferWindowPos, CreateWindowExW, DeferWindowPos, DestroyWindow,
+    EndDeferWindowPos, Rect, SurrogateBatch, HWND, SWP_NOSENDCHANGING,
+    WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TRANSPARENT, WS_POPUP,
   };
 
   /// Batch commits performed by the leak regression test.
@@ -1341,6 +1354,23 @@ mod tests {
     };
 
     (hwnd.0 != 0).then_some(hwnd)
+  }
+
+  #[test]
+  fn is_surrogate_matches_only_the_surrogate_class() {
+    assert!(!is_surrogate(HWND(0)));
+
+    let Some(hwnd) = create_probe_window(3) else {
+      return;
+    };
+    let matched = is_surrogate(hwnd);
+
+    // SAFETY: `hwnd` was created above and not yet destroyed.
+    unsafe {
+      let _ = DestroyWindow(hwnd);
+    }
+
+    assert!(matched);
   }
 
   /// `DeferWindowPos` rejects `SWP_NOSENDCHANGING`, so it must never

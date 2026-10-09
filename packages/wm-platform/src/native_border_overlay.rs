@@ -7,6 +7,7 @@ use windows::Win32::{
 };
 
 use crate::{
+  native_surrogate::is_surrogate,
   overlay_window::{Overlay, OverlayKind, OverlayWindow},
   platform_impl::composition::BorderVisual,
   BorderOverlayParams, Color, Rect, StyleBlend, SurrogateBatch,
@@ -133,7 +134,8 @@ pub struct NativeBorderOverlay {
 
   /// `(width, height, inner_radius)` of the picture-frame region last
   /// applied, or `None` when the window currently has none -- before the
-  /// first application, or for as long as it is pinned.
+  /// first application, or for as long as it is pinned or behind a
+  /// surrogate.
   ///
   /// Skips redundant `SetWindowRgn` calls when a reposition doesn't
   /// change the overlay's shape, e.g. a pure translation. Distinct from
@@ -149,6 +151,12 @@ pub struct NativeBorderOverlay {
   ///
   /// [`pin_or_slide`]: NativeBorderOverlay::pin_or_slide
   pinned: Option<Rect>,
+
+  /// Anchor last classified by [`behind_surrogate`], and whether it is a
+  /// surrogate, so the class lookup runs once per anchor change.
+  ///
+  /// [`behind_surrogate`]: NativeBorderOverlay::behind_surrogate
+  classified_anchor: (isize, bool),
 }
 
 impl NativeBorderOverlay {
@@ -164,6 +172,16 @@ impl NativeBorderOverlay {
     // inside it, so `outer` doesn't describe its window at all.
     // `clear_pin` restores the region on the way out.
     if self.pinned.is_some() {
+      return;
+    }
+
+    // Behind a surrogate the outlined window is cloaked and the surrogate,
+    // equally unanswering, already covers the hole for point queries, so
+    // the region changes nothing there. Reshaping it on every frame of a
+    // resize was most of the per-frame overlay cost, so the animation runs
+    // without one; the first placement behind anything else restores it.
+    if self.behind_surrogate() {
+      self.clear_region();
       return;
     }
 
@@ -188,6 +206,18 @@ impl NativeBorderOverlay {
       shape.2,
     );
     self.hole_shape = Some(shape);
+  }
+
+  /// Whether the overlay is currently anchored behind a surrogate, i.e.
+  /// tracks a window mid-animation.
+  fn behind_surrogate(&mut self) -> bool {
+    let anchor = self.window.anchor();
+
+    if self.classified_anchor.0 != anchor.0 {
+      self.classified_anchor = (anchor.0, is_surrogate(anchor));
+    }
+
+    self.classified_anchor.1
   }
 
   /// Drops the window region, leaving the overlay shaped by its bounds
@@ -537,6 +567,7 @@ impl Overlay for NativeBorderOverlay {
       rect: window_rect.clone(),
       hole_shape: None,
       pinned: None,
+      classified_anchor: (0, false),
     };
     overlay.refresh_hole(&outer);
 
