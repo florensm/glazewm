@@ -230,7 +230,74 @@ Temporary timing inside `ResizeSession::begin_impl` / `NativeSurrogate::revive`
 
 The cost is the revive's `SetWindowPos` (to `HWND_TOP`) and thumbnail
 update, growing with each surrogate DWM has to absorb. In stretch mode
-the same calls take ~0.2 ms total per session; the difference is that a
-fill-mode surrogate carries a `DesktopWindowTarget` composition tree (the
-gap fill). So removing the fill (Phase 1) is what buys the latency, not
-removing the edge sampling.
+the same calls take ~0.2 ms total per session.
+
+**Correction (see "Edge sampling deferred to idle" below):** the first
+explanation written here blamed the fill's composition tree. Wrong:
+forcing a hidden, or visible but empty, fill tree onto stretch surrogates
+changed nothing. The cause is the edge-color screen sampling, which the
+fill mode started for every session.
+
+## Phase 2.1 tried: pinned borders for move/resize (rejected)
+
+Border overlays of move/resize sessions pinned to the monitor work area
+for the session (ring moved by composition offset), reusing the
+workspace-switch `pin_or_slide`. Window set from here on: Helium,
+3x File Pilot, Windows Terminal, Settings (6 tiled). Back to back, two
+rounds:
+
+| config | build | tick | p90 | sess_ovl | ovl_region | ->1st frame (resize / relayout / move) |
+|---|---|---|---|---|---|---|
+| A (fill) | tracked | 2.00 | 4.4 | 0.73 | 0.66 | 93 / 80-84 / 32-33 |
+| A (fill) | pinned | 1.60 | 3.0-3.4 | 0.05 | 0.05 | 101-106 / 89 / 33-39 |
+| A (stretch) | tracked | 2.0-2.2 | 4.4-4.8 | 0.68-0.75 | 0.62-0.69 | 31-33 / 26-28 / 12-14 |
+| A (stretch) | pinned | 1.6 | 2.4-3.4 | 0.04 | 0.05 | 44-47 / 42 / 15-16 |
+
+Per frame it does what it should (tick -20%, p90 -30%, overlay stages
+gone), but pinning costs at the start: the relayout's
+`session_overlays` grows 7 -> 20 ms (each border window is hidden,
+resized to the monitor and re-shown), against a first tick that only
+gets 4 ms faster. Net +12 ms before motion, which on this machine
+matters more than 0.4 ms/frame. Misses the gate (>= 25% tick drop, no
+regressions); reverted. Worth revisiting for the laptop, where
+per-frame cost dominated, ideally with the pin made at rest so it is not
+on the keypress path.
+
+Phase 2.2/2.3 (backdrop and ring drawn inside the surrogate) rested on a
+worry that composition content on the surrogate is what made fill slow.
+Tested: a hidden, and a visible but empty, `SurrogateFill` tree forced
+onto stretch surrogates changed nothing (resize 31-35 ms either way). So
+that worry is cleared.
+
+## Edge sampling deferred to idle
+
+The real cause of fill's slow start: every session started
+`sample_edge_color_async`, two GPU->CPU `BitBlt` screen readbacks on a
+background thread, right at animation start. They stall DWM, so every
+DWM call the WM makes next (surrogate setup, flush, cloak) waits. With
+sampling simply switched off (experiment), fill matched stretch.
+
+Kept the sampling (its color is only used by the *next* session anyway)
+but queued per window and run once animations are idle, reading the
+window's current rect and skipping hidden/cloaked/minimized windows.
+Verified the samples still land (24 colors over 4 bursts of 6 windows).
+
+| run | scenario | ->1st frame | flush out | cloak out | begin out | tick |
+|---|---|---|---|---|---|---|
+| fill before | resize | 93-96 | 26-32 | 26-29 | 51-53 | 2.0 |
+| fill before | relayout | 79 | 30-32 | 23-24 | 47-49 | 2.3 |
+| fill before | move | 29-32 | 22-25 | 19-22 | 5.5-5.9 | 0.6 |
+| fill deferred | resize | 24-29 | 17-19 | 13-14 | 1.9 | 2.0-2.1 |
+| fill deferred | relayout | 21 | 18-19 | 13-14 | 1.2-1.3 | 2.3 |
+| fill deferred | move | 12-14 | 11-12 | 7-9 | 0.5 | 0.6 |
+| stretch deferred | resize | 32 | 16-21 | 15 | 1.3 | 2.0-2.1 |
+| stretch deferred | relayout | 27-28 | 17-20 | 12-13 | 0.7-1.3 | 2.5-3.0 |
+| stretch deferred | move | 13 | 12 | 8-9 | 0.3-0.5 | 0.6-0.8 |
+
+Fill start latency -70% (resize 95 -> 26 ms, relayout 79 -> 21 ms). Fill
+and stretch now start equally fast; the remaining difference between
+them is only how the content looks mid-resize.
+
+Unrelated, seen in both builds and both modes: the `float` scenario
+sometimes runs ~270 frames per burst instead of ~63 (an animation or
+settle keeps ticking ~1.5 s). Not investigated yet.

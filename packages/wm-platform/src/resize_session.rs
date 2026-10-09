@@ -9,7 +9,9 @@ use windows::{
   Win32::{
     Foundation::{CloseHandle, HWND, RECT},
     Graphics::{
-      Dwm::{DwmGetWindowAttribute, DWMWA_EXTENDED_FRAME_BOUNDS},
+      Dwm::{
+        DwmGetWindowAttribute, DWMWA_CLOAKED, DWMWA_EXTENDED_FRAME_BOUNDS,
+      },
       Gdi::{
         BitBlt, CreateCompatibleBitmap, CreateCompatibleDC, DeleteDC,
         DeleteObject, GetDC, GetPixel, ReleaseDC, SelectObject, HGDIOBJ,
@@ -21,9 +23,9 @@ use windows::{
       PROCESS_QUERY_LIMITED_INFORMATION,
     },
     UI::WindowsAndMessaging::{
-      GetWindowRect, GetWindowThreadProcessId, IsWindow, SetWindowPos,
-      SWP_ASYNCWINDOWPOS, SWP_FRAMECHANGED, SWP_NOACTIVATE,
-      SWP_NOSENDCHANGING, SWP_NOZORDER,
+      GetWindowRect, GetWindowThreadProcessId, IsIconic, IsWindow,
+      IsWindowVisible, SetWindowPos, SWP_ASYNCWINDOWPOS, SWP_FRAMECHANGED,
+      SWP_NOACTIVATE, SWP_NOSENDCHANGING, SWP_NOZORDER,
     },
   },
 };
@@ -1374,10 +1376,12 @@ pub type EdgeColorCache = Arc<Mutex<HashMap<isize, (Color, Instant)>>>;
 /// inserts it into `cache` once ready, instead of blocking the caller.
 ///
 /// The two-`BitBlt` GPU->CPU readback takes 26-114ms, too long for the
-/// WM's main thread. On a cache miss callers pass `None` for
-/// `SessionOptions::edge_color` (a transparent backdrop for *this*
-/// session) and call this to warm the cache for the window's *next*
-/// session. No-op if sampling fails (e.g. the window is too small).
+/// WM's main thread -- and it stalls DWM while it runs, so it must not
+/// overlap an animation either: sampled at a session's start, it tripled
+/// keypress-to-motion latency. Callers sample once animations are idle,
+/// for the window's *next* session. Reads the window's current rect, and
+/// is a no-op if the window is gone, hidden, cloaked or minimized (its
+/// screen pixels are something else) or sampling fails.
 ///
 /// `prune_len`/`ttl` mirror the caller's own cache-eviction policy (e.g.
 /// `AnimationManager`'s
@@ -1387,22 +1391,25 @@ pub type EdgeColorCache = Arc<Mutex<HashMap<isize, (Color, Instant)>>>;
 #[cfg(target_os = "windows")]
 pub fn sample_edge_color_async(
   hwnd: HWND,
-  source_rect: &Rect,
   cache: EdgeColorCache,
   prune_len: usize,
   ttl: Duration,
 ) {
-  let border_inset = compute_border_inset(hwnd);
-  let logical_src = to_logical(source_rect, &border_inset);
-  let (x, y, w, h) = (
-    logical_src.x(),
-    logical_src.y(),
-    logical_src.width(),
-    logical_src.height(),
-  );
   let hwnd_raw = hwnd.0;
   tokio::task::spawn_blocking(move || {
-    if let Some(color) = sample_edge_color(x, y, w, h) {
+    let hwnd = HWND(hwnd_raw);
+    let Some(source_rect) = sampleable_rect(hwnd) else {
+      return;
+    };
+    let logical_src =
+      to_logical(&source_rect, &compute_border_inset(hwnd));
+
+    if let Some(color) = sample_edge_color(
+      logical_src.x(),
+      logical_src.y(),
+      logical_src.width(),
+      logical_src.height(),
+    ) {
       if let Ok(mut map) = cache.lock() {
         if map.len() >= prune_len {
           map.retain(|_, (_, inserted_at)| inserted_at.elapsed() < ttl);
@@ -1411,6 +1418,43 @@ pub fn sample_edge_color_async(
       }
     }
   });
+}
+
+/// Returns `hwnd`'s window rect if its pixels are on screen to sample.
+fn sampleable_rect(hwnd: HWND) -> Option<Rect> {
+  // SAFETY: Every call only reads state of `hwnd`; a stale handle fails.
+  unsafe {
+    if !IsWindow(hwnd).as_bool()
+      || !IsWindowVisible(hwnd).as_bool()
+      || IsIconic(hwnd).as_bool()
+    {
+      return None;
+    }
+
+    let mut cloaked = 0u32;
+    #[allow(clippy::cast_possible_truncation)]
+    let size = std::mem::size_of::<u32>() as u32;
+    if DwmGetWindowAttribute(
+      hwnd,
+      DWMWA_CLOAKED,
+      std::ptr::from_mut(&mut cloaked).cast(),
+      size,
+    )
+    .is_err()
+      || cloaked != 0
+    {
+      return None;
+    }
+
+    let mut rect = RECT::default();
+    GetWindowRect(hwnd, &raw mut rect).ok()?;
+    Some(Rect::from_ltrb(
+      rect.left,
+      rect.top,
+      rect.right,
+      rect.bottom,
+    ))
+  }
 }
 
 /// Samples the dominant background color near the trailing content edge by
