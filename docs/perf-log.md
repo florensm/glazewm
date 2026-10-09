@@ -216,3 +216,21 @@ benchmark's light targets don't show) or it needs VRAM pressure, which an
 8 GB dGPU with ~1 GB used doesn't have. Not reproduced; worth re-testing
 when it actually happens, with `GLAZEWM_PERF=1` running, and looking at
 `rd_apply by process` / `pre_commit` vs `tick`/`batch_commit`.
+
+## Why fill-mode session setup is slow
+
+Temporary timing inside `ResizeSession::begin_impl` / `NativeSurrogate::revive`
+(fill, config A, resize, 4 sessions per burst):
+
+| per session, in burst order | 1st | 2nd | 3rd | 4th |
+|---|---|---|---|---|
+| surrogate revive | 0.5 ms | 4-7 ms | 16-33 ms | 13-17 ms |
+| of which fill clear / corner / border attrs | ~0.03 ms each | | | |
+| border inset, fill color | ~0.01 ms | | | |
+
+The cost is the revive's `SetWindowPos` (to `HWND_TOP`) and thumbnail
+update, growing with each surrogate DWM has to absorb. In stretch mode
+the same calls take ~0.2 ms total per session; the difference is that a
+fill-mode surrogate carries a `DesktopWindowTarget` composition tree (the
+gap fill). So removing the fill (Phase 1) is what buys the latency, not
+removing the edge sampling.
