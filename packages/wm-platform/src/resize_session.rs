@@ -133,6 +133,9 @@ pub struct SessionOptions {
   /// this session, or `None` when the border effect isn't configured.
   /// Same snapshot rationale as `backdrop_overlay`.
   pub border_overlay: Option<BorderOverlayParams>,
+  /// Scale the content to the animated rect instead of revealing or
+  /// clipping it, with no gap fill. See [`NativeSurrogate::set_stretch`].
+  pub stretch: bool,
 }
 
 /// Tracks a single window's resize/move animation and manages its
@@ -196,6 +199,9 @@ pub struct ResizeSession {
   /// sessions use clip/wipe: thumbnail at source dimensions, real
   /// window stays at source until `maybe_handoff`/`pre_commit`.
   is_growing: bool,
+  /// Whether the surrogate scales content to the animated rect; see
+  /// [`SessionOptions::stretch`].
+  stretch: bool,
   /// When `true`, each frame animates the DWM thumbnail `rcDestination`
   /// toward/away from the surrogate center instead of repositioning the
   /// surrogate window. Used for zoom-in (open) and zoom-out (close)
@@ -396,6 +402,7 @@ impl ResizeSession {
           border_inset,
           &options.corner_style,
           insert_after,
+          options.stretch,
         ) {
           Ok(()) => Some(surrogate),
           Err(err) => {
@@ -417,6 +424,7 @@ impl ResizeSession {
           border_inset,
           &options.corner_style,
           insert_after,
+          options.stretch,
         ) {
           Ok(s) => Some(s),
           Err(err) => {
@@ -438,6 +446,7 @@ impl ResizeSession {
       edge_color,
       is_move_only,
       is_growing,
+      stretch: options.stretch,
       zoom: false,
       zoom_progress: 1.0,
       handoff_done: is_growing,
@@ -582,10 +591,10 @@ impl ResizeSession {
   /// edge snapping to its target a few frames early. Uncovered or not, an
   /// idle fill is zero-sized and costs nothing to composite.
   ///
-  /// Zoom sessions never fill: their thumbnail is scaled about the centre
-  /// rather than anchored top-left, so there is no strip to stand in for.
+  /// Zoom and stretch sessions never fill: their thumbnail always covers
+  /// the whole surrogate, so there is no strip to stand in for.
   fn sync_fill(&mut self) {
-    let color = self.edge_color.filter(|_| !self.zoom);
+    let color = self.edge_color.filter(|_| !self.zoom && !self.stretch);
     if let Some(surrogate) = &mut self.surrogate {
       surrogate.set_fill_color(color.as_ref());
     }
@@ -598,6 +607,12 @@ impl ResizeSession {
   #[must_use]
   pub fn edge_color(&self) -> Option<&Color> {
     self.edge_color.as_ref()
+  }
+
+  /// Whether this session scales content instead of revealing it.
+  #[must_use]
+  pub fn is_stretch(&self) -> bool {
+    self.stretch
   }
 
   /// Returns `true` when this session has already cloaked the source

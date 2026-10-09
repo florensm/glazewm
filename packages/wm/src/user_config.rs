@@ -513,7 +513,7 @@ mod tests {
   use std::path::PathBuf;
 
   use wm_common::{
-    ParsedConfig, WindowTransitionStyle, WorkspaceConfig,
+    ParsedConfig, ResizeStyle, WindowTransitionStyle, WorkspaceConfig,
     WorkspaceSwitchStyle,
   };
   use wm_platform::Rect;
@@ -542,6 +542,26 @@ mod tests {
         matches!(command, InvokeCommand::ToggleOverview { .. })
       })
     }));
+  }
+
+  /// `window_resize.style` defaults to `fill` and accepts `stretch`.
+  #[test]
+  fn resize_style_parses() {
+    let config: ParsedConfig =
+      serde_yaml::from_str("animations: {}").expect("empty should parse");
+    assert_eq!(config.animations.window_resize.style, ResizeStyle::Fill);
+
+    let config: ParsedConfig = serde_yaml::from_str(
+      "animations:
+  window_resize:
+    style: 'stretch'
+",
+    )
+    .expect("stretch should parse");
+    assert_eq!(
+      config.animations.window_resize.style,
+      ResizeStyle::Stretch
+    );
   }
 
   /// Configs written before the `style` -> `type` key rename must keep

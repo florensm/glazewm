@@ -39,6 +39,12 @@ animations:
     # Minimum pixel distance required to trigger resize animations.
     # Default: 10
     threshold_px: 10
+    # How content is shown while a window's size animates. Windows only.
+    #   'fill' (default) - content keeps its real size; uncovered strips
+    #                      are filled with the window's edge color
+    #   'stretch'        - content is scaled to the animated size, and the
+    #                      app gets its final size right away
+    style: "fill"
 
   # Animation settings for when a new window appears. Windows only.
   window_open:
