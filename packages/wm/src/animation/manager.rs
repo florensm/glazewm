@@ -451,6 +451,9 @@ pub struct AnimationManager {
   /// event loop.
   #[cfg(target_os = "windows")]
   edge_color_cache: EdgeColorCache,
+  /// Windows whose edge color is re-sampled once animations go idle.
+  #[cfg(target_os = "windows")]
+  pending_edge_samples: HashSet<isize>,
   /// Surrogates kept alive (hidden) after their resize/move session ends,
   /// keyed by window ID, so a follow-up resize of the same window within
   /// [`WARM_SURROGATE_TTL`] can reuse the existing overlay window and DWM
@@ -554,6 +557,8 @@ impl AnimationManager {
       backdrop_overlay_z_order_dirty: false,
       #[cfg(target_os = "windows")]
       edge_color_cache: Arc::new(Mutex::new(HashMap::new())),
+      #[cfg(target_os = "windows")]
+      pending_edge_samples: HashSet::new(),
       #[cfg(target_os = "windows")]
       warm_surrogates: HashMap::new(),
       #[cfg(target_os = "windows")]
@@ -2250,6 +2255,9 @@ impl AnimationManager {
       // Last frame of this animation burst: emit the accumulated timings.
       perf::report("animations idle");
 
+      #[cfg(target_os = "windows")]
+      state.animation_manager.sample_pending_edge_colors();
+
       state
         .animation_manager
         .animation_timer_running
@@ -2639,27 +2647,16 @@ impl AnimationManager {
 
           match session_result {
             Ok(session) => {
-              // Re-sampled on every session rather than only once per TTL,
+              // Re-sampled after every session rather than once per TTL,
               // so the cached color is never more than one animation
-              // behind the window it stands in for -- the
-              // fill is what a resize shows in the strip the
-              // thumbnail has not reached, and a
-              // five-minute-old sample of an app that has since changed
-              // theme reads as a wrong-coloured flash. Never sampled
-              // synchronously: the two `BitBlt` readbacks cost 26-114ms on
-              // the WM's only thread. This session plays with whatever was
-              // already cached (see `cached_edge_color`); the sample below
-              // is for the next one. Warmed whatever the backdrop config,
-              // since `begin_impl` uses the color for any session that can
-              // uncover a gap.
+              // behind the window it stands in for -- a five-minute-old
+              // sample of an app that has since changed theme reads as a
+              // wrong-coloured flash. This session plays with whatever was
+              // already cached (see `cached_edge_color`); the sample is
+              // for the next one, taken once animations are
+              // idle (see `sample_pending_edge_colors`).
               if !stretch {
-                sample_edge_color_async(
-                  hwnd,
-                  &start_rect,
-                  self.edge_color_cache.clone(),
-                  EDGE_COLOR_CACHE_PRUNE_LEN,
-                  EDGE_COLOR_CACHE_TTL,
-                );
+                self.pending_edge_samples.insert(hwnd.0);
               }
               // `place_at_top: true` above means the session's surrogate
               // (if any) was inserted at `HWND_TOP` -- see
@@ -2837,6 +2834,23 @@ impl AnimationManager {
   /// directly (see `edge_color_cache`'s doc comment), so a lock failure
   /// here is treated the same as a miss rather than propagated.
   #[cfg(target_os = "windows")]
+  /// Re-samples the edge color of every window that animated since the
+  /// last idle point.
+  ///
+  /// Deferred to here because the screen readback stalls DWM: run at a
+  /// session's start, it more than tripled keypress-to-motion latency.
+  #[cfg(target_os = "windows")]
+  fn sample_pending_edge_colors(&mut self) {
+    for hwnd in self.pending_edge_samples.drain() {
+      sample_edge_color_async(
+        HWND(hwnd),
+        self.edge_color_cache.clone(),
+        EDGE_COLOR_CACHE_PRUNE_LEN,
+        EDGE_COLOR_CACHE_TTL,
+      );
+    }
+  }
+
   fn cached_edge_color(&self, hwnd: isize) -> Option<Color> {
     let map = self.edge_color_cache.lock().ok()?;
     map.get(&hwnd).map(|(color, _)| color.clone())
