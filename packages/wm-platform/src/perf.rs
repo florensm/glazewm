@@ -925,6 +925,10 @@ fn roll_up_frame() -> bool {
 
     profiler.frames += 1;
     let tick_total = profiler.frame_total[Stage::Tick.index()];
+    // Rolled up; whatever accumulates from here until the next frame ran
+    // outside one.
+    profiler.frame_total = [Duration::ZERO; Stage::COUNT];
+    profiler.frame_calls = [0; Stage::COUNT];
     profiler.tick_samples.push(tick_total);
     let budget = frame_budget();
     profiler.budget = budget;
@@ -1720,11 +1724,16 @@ mod tests {
       start_frame();
       drop(forced_scope(Stage::Tick));
       assert!(!roll_up_frame());
+      // A second frame must not count the first one as outside work.
+      start_frame();
+      drop(forced_scope(Stage::Tick));
+      assert!(!roll_up_frame());
 
       PROFILER.with(|profiler| {
         let profiler = profiler.borrow();
         assert_eq!(profiler.outside_calls[Stage::DwmFlush.index()], 1);
         assert_eq!(profiler.outside_calls[Stage::Cloak.index()], 0);
+        assert_eq!(profiler.outside_calls[Stage::Tick.index()], 0);
         // Not double-counted into the frame tree.
         assert_eq!(profiler.calls[Stage::DwmFlush.index()], 0);
       });

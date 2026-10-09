@@ -301,3 +301,14 @@ them is only how the content looks mid-resize.
 Unrelated, seen in both builds and both modes: the `float` scenario
 sometimes runs ~270 frames per burst instead of ~63 (an animation or
 settle keeps ticking ~1.5 s). Not investigated yet.
+
+## Profiler fix: outside-frame section double counted
+
+`roll_up_frame` left the per-frame accumulators set, so the next
+`start_frame` added the previous frame's stages to the outside-frame
+section too. Every "flush out" / "cloak out" / "begin out" column above
+therefore includes in-frame calls of the same stage. `session_begin`
+only runs in the relayout, so its column is right; `dwm_flush` and
+`cloak` are inflated by a few in-frame calls. The latency, tick and
+timeline numbers were never affected, and every comparison was between
+builds with the same instrumentation, so the conclusions stand.
