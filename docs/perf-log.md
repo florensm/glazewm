@@ -114,3 +114,24 @@ frame p90 9.3 -> 4.2 ms on resize. Tick cost per frame went down, not up
 (fixed per-burst work spread over more frames). Latency unchanged, as
 expected. Kept. DWM-side confirmation that every frame is presented is
 still pending (PresentMon).
+
+## Animation clock anchored at the first tick, not the relayout
+
+Found while reading the latency timeline: `WindowAnimationState` started
+its clock on first evaluation, which is the relayout that creates it, not
+the first tick. That relayout (session setup, pre-cloak `DwmFlush`, cloaks)
+ran ~70 ms before the first tick, so the first frame that moved anything
+was already deep into the 150 ms curve. Measured with a temporary
+per-frame log of eased progress (config A, resize, 4 windows animating):
+
+| | first moving frame, eased progress | next frames |
+|---|---|---|
+| before | 0.808 | 0.825, 0.856, 0.882 ... |
+| clock started at first tick | 0.000 (start repeated), then 0.004 | 0.132, ... |
+| ... minus one frame period (kept) | 0.011 | 0.132, 0.427, 0.532 ... |
+
+So before this, every move/resize visibly jumped ~80% of the way and then
+crawled through the tail. Frames per burst rose 52 -> 62-63 because the
+whole curve is now rendered. The start is still uneven (0.132 -> 0.427
+across one interval): the first ticks are slow (first `batch_commit`
+8.6 ms), which is the next target.
