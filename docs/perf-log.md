@@ -44,8 +44,8 @@ p90; frame interval p50 (real pacing); `session_overlays`, `batch_commit`,
 tick); input -> first animation started; input -> end of first frame.
 
 DWM-side frame timing: `DwmGetCompositionTimingInfo` is stubbed on this
-build (counters stay ~0 across a second), so it cannot be used. Needs
-PresentMon/ETW; not captured yet.
+build (counters stay ~0 across a second), so it cannot be used. Captured
+through PresentMon instead with `perf_bench --dwm`; see "DWM side".
 
 Relayout latency is timed from the `wm-redraw` message, i.e. after the
 (instant) direction toggle.
@@ -404,6 +404,54 @@ settle alive. Cheap (cleanup ticks ~0.1 ms) and bounded by the cap. The
 settle now logs a warning, once, when it reaches the cap, naming the
 window, process and band mismatch, so the next occurrence explains itself.
 
+## DWM side (PresentMon)
+
+`perf_bench --dwm` tracks `dwm.exe` through the PresentMon service's API
+(PresentMon 2.6 installed; the service needs no elevation, unlike the
+console app's own ETW session). Per burst it takes the longest run of
+displayed DWM frames (split at gaps > 60 ms, which drops idle-desktop
+presents) and reports missed vblanks (frames shown for more than one
+refresh), the display interval p90 and DWM's GPU busy p90. The run
+includes the fade tail, ~45 vblanks in all.
+
+Chrome target, medians of 10 bursts; last three columns DWM-side:
+
+| config | scenario | tick | p90 | ->1st frame | missed vblanks | disp int p90 | DWM GPU p90 |
+|---|---|---|---|---|---|---|---|
+| A | resize | 1.69 | 2.93 | 31 | 23 | 17.2 | 6.7 |
+| A | relayout | 1.84 | 3.18 | 21 | 19 | 11.5 | 2.1 |
+| A | move | 0.94 | 1.41 | 14 | 9 | 11.4 | 3.4 |
+| C | resize | 1.30 | 1.41 | 28 | 15 | 11.5 | 5.8 |
+| C | relayout | 1.43 | 1.76 | 19 | 15 | 11.4 | 1.5 |
+| T (transparency only) | resize | 1.14 | 2.31 | 21 | 14 | 11.5 | 5.0 |
+| T | relayout | 1.07 | 1.60 | 15 | 16 | 11.4 | 2.7 |
+| T | move | 0.35 | 0.57 | 10 | 8 | 11.4 | 4.8 |
+| P (no effects) | resize | 0.85 | 1.49 | 23 | 13 | 11.4 | 3.6 |
+| P | relayout | 0.95 | 1.45 | 14 | 8 | 11.4 | 0.5 |
+| P | move | 0.31 | 0.56 | 8 | 6 | 5.7 | 1.9 |
+
+(C move came out at 19 / 22.9 / 14.7, an outlier against every other
+move run; left out. P ticks ~81 frames per burst instead of ~63, not
+looked into.)
+
+- The WM ticks every vblank, but DWM does not show a new frame every
+  vblank. With all effects (A) a resize burst loses ~23 of ~45 vblanks;
+  even with none (P), 6-13.
+- DWM's GPU work is what runs over: A resize p90 6.7 ms against a 5.7 ms
+  budget. Per-burst captures (Terminal as target, which is harsher) put
+  DWM's GPU busy at 6-8 ms median in the slow bursts, which then run at
+  1/2 or 1/3 rate for the whole animation, against ~1.4 ms in good ones.
+  Over 2 rounds each, bursts at half rate or worse: P 0/10, T 0/10,
+  C 3-5/10, A 8/11. Transparency on every window is the largest DWM
+  cost (everything under each window must be composed); the tracked
+  overlays add to it (C vs A), which is the DWM-side case for 2.2/2.3.
+- Two stalls in every burst regardless of effects, seen by lining up a
+  temporary per-tick WM trace (QPC-stamped) with the DWM presents:
+  2-4 vblanks at the start (the known session setup), and 5-6 vblanks
+  (~25-30 ms) right after the hand-back uncloaks the real windows,
+  while the WM's ticks cost 0.5 ms. DWM takes in the uncloaked windows,
+  and the last motion frame lands late.
+
 ## Where things stand (6 windows, borders + backdrop on all)
 
 - Pacing: frame interval p50 5.71 ms, p90 5.74 ms; one ~10 ms interval
@@ -425,7 +473,7 @@ Branch `perf/lean-animations` off local `dcomp` (2 commits ahead of
 | Item | Status |
 |---|---|
 | Phase 0 baseline, bench tool, latency/interval/timeline profiling | Done |
-| Phase 0 DWM-side timing (PresentMon) | Open: needs an elevated prompt; `DwmGetCompositionTimingInfo` is stubbed on this build |
+| Phase 0 DWM-side timing (PresentMon) | Done: `perf_bench --dwm`, through the PresentMon service (no elevation) |
 | Outside the plan: 120 Hz tick cap | Removed (87.5 -> 175 fps) |
 | Outside the plan: animation clock started in the relayout | Fixed (first frame 0.81 -> ~0.01 progress) |
 | Outside the plan: edge sampling at session start | Moved to idle (fill start 95 -> 26 ms) |

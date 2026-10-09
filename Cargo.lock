@@ -3311,6 +3311,7 @@ dependencies = [
  "tokio",
  "tokio-tungstenite",
  "uuid",
+ "windows",
  "wm-common",
  "wm-ipc-client",
 ]
