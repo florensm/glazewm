@@ -450,7 +450,18 @@ looked into.)
   2-4 vblanks at the start (the known session setup), and 5-6 vblanks
   (~25-30 ms) right after the hand-back uncloaks the real windows,
   while the WM's ticks cost 0.5 ms. DWM takes in the uncloaked windows,
-  and the last motion frame lands late.
+  and the last motion frame lands late. The uncloak fires once the
+  motion completes, and two frames before the end the default curve
+  (`cubic_bezier(0.2, 0, 0, 1)`) is already at 99.8%, under 2 px from
+  the final rect, so the stall holds back a finished picture rather than
+  motion. Not worth changing.
+- Not settled: even P spends DWM GPU p90 3.6 ms on a resize vs 1.9 ms on
+  a move. Which part of composition costs what (thumbnails, rounded
+  corners, geometry clips, the backdrop's layers) needs a GPU profiler
+  on DWM (GPUView/PIX), which needs elevation. Drawing backdrop or ring
+  inside the surrogate (2.2/2.3) keeps the same pixels to blend, so if
+  the cost is overdraw rather than window count, it would win little on
+  the DWM side; unproven either way.
 
 ## Where things stand (6 windows, borders + backdrop on all)
 
@@ -488,21 +499,23 @@ Branch `perf/lean-animations` off local `dcomp` (2 commits ahead of
 | Phase 3 shorter `SESSION_FADE_OUT`, throttled z-settle | Measured, not changed: tail is ~15 ms of cheap ticks after motion ends |
 | `float` run-on | Not reproduced (24 bursts); z-settle cap now logged with cause |
 | Phase 3 overlay restacks batched into one transaction | Tried, rejected (no latency change) |
-| Phase 4 / DComp spike | Not started; its gate needs PresentMon |
+| Phase 4 / DComp spike | Not started. PresentMon now shows DWM's GPU time, not window count or the WM, limits pacing with all effects; documented composition APIs cannot host another window's content (thumbnails are `HWND`-based), so a spike needs an owner decision on undocumented DWM APIs |
+| DWM hand-back stall (~25-30 ms after uncloak) | Measured, not changed: lands on a finished frame (<2 px left) |
 
 Known issues: `float` bench scenario intermittently ticks ~1.5 s instead
 of ~0.35 s (not reproduced under logging); toggling a workspace's tiling
 direction queues no redraw (pre-existing, bench works around it).
 
-Suggested next order: PresentMon (needs installing and an elevated
-prompt; not available to the agent) + DComp spike (2.2/2.3 only if the
-laptop still needs the last ~0.3 ms/frame, and 2.3 only after checking
-thumbnail corners); re-run the bench on the
-laptop where per-frame cost was the original problem.
+Suggested next order: re-run the bench with `--dwm` on the laptop,
+where per-frame cost was the original problem; a GPU profile of DWM
+(GPUView/PIX, elevated) during an A resize to find what its 6-8 ms is
+spent on; then decide on 2.2/2.3 and the DComp spike from that.
 
 Tooling for the next session: bench configs `~/.glzr/glazewm/bench-A.yaml`
 (fill), `bench-AS.yaml` (stretch), `bench-B/C.yaml` (overlay tracking), `bench-CS.yaml` (stretch, no
-tracking), `bench-SLOW.yaml` (3 s resize, for mid-animation checks);
+tracking), `bench-SLOW.yaml` (3 s resize, for mid-animation checks),
+`bench-T.yaml` (transparency only), `bench-P.yaml` (no effects); add
+`--dwm` to the bench for DWM-side columns;
 run `GLAZEWM_PERF=1 glazewm.exe start --config <cfg>`, then
 `cargo run -p wm-cli --release --example perf_bench -- --scenario <resize|float|relayout|move> --target chrome --bursts 10 --label <x>`.
 Only one WM instance at a time (a second start pops a fatal-error dialog).
