@@ -331,11 +331,66 @@ per window touched, however the calls are grouped (the old notes'
 finding again). Reverted. The pre-cloak flush deferral (Phase 3) would
 most likely move time the same way, so it was not attempted.
 
+## Phase 2.2/2.3 ceiling, and the border region dropped during animations
+
+2.2/2.3 would hide the overlay windows for a session and draw backdrop
+and ring inside the surrogate. Config C (`overlay_tracking: none`) hides
+them too, so C minus A is the most 2.2/2.3 can win. Measured first,
+6 windows, back to back:
+
+| run | scenario | tick | p90 | sess_ovl | batch | ovl_region | ->1st frame |
+|---|---|---|---|---|---|---|---|
+| A (fill) | resize / relayout | 1.98 / 2.32 | 4.28 / 4.69 | 0.73 / 0.77 | 0.59 / 0.62 | 0.66 / 0.69 | 32 / 21 |
+| C (fill) | resize / relayout | 1.25 / 1.33 | 1.43 / 1.40 | 0 / 0 | 0.35 / 0.35 | 0.03 / 0.04 | 26 / 19 |
+| AS (stretch) | resize / relayout | 2.02 / 2.51 | 4.36 / 5.37 | 0.70 / 0.90 | 0.57 / 0.76 | 0.61 / 0.80 | 34 / 28 |
+| CS (stretch) | resize / relayout | 1.31 / 1.36 | 1.57 / 1.66 | 0 / 0 | 0.34 / 0.34 | 0.02 / 0.03 | 29 / 23 |
+
+Hiding the overlays costs nothing at the start (latency slightly lower),
+unlike the pin in 2.1. But almost all of `sess_ovl` is `ovl_region`: the
+border's `SetWindowRgn`, reshaped on every resize frame. That region is
+for hit-testing only (keeps the overlay out of `WindowFromPoint`), and
+behind a surrogate it changes nothing, since the surrogate covers the
+hole and is just as unanswering.
+
+Kept: the border drops its region while anchored behind a surrogate
+(detected by window class, cached per anchor) and restores it on the
+first placement behind anything else. Covers all three session-tracking
+paths (relayout, close, fade tail) without caller changes. Checked with a
+3 s resize: all 6 visible borders region-less mid-animation, complex
+region again after.
+
+| run | scenario | tick | p90 | sess_ovl | batch | ovl_region | ->1st frame |
+|---|---|---|---|---|---|---|---|
+| A before | resize / relayout | 1.97 / 2.15 | 4.41 / 4.66 | 0.74 / 0.74 | 0.60 / 0.61 | 0.63 / 0.66 | 32 / 21 |
+| A after | resize / relayout | 1.55 / 1.65 | 2.59 / 2.74 | 0.03 / 0.03 | 0.74 / 0.69 | 0.02 / 0.05 | 28 / 20 |
+| AS before | resize / relayout | 2.20 / 2.51 | 4.78 / 5.16 | 0.77 / 0.84 | 0.58 / 0.68 | 0.70 / 0.74 | 34 / 26 |
+| AS after | resize / relayout | 1.60 / 1.83 | 3.06 / 3.18 | 0.03 / 0.03 | 0.75 / 0.81 | 0.03 / 0.04 | 31 / 27 |
+
+Tick -21 to -27%, p90 -35 to -41%, start unchanged or better; move
+unaffected (a translation never reshaped the region). Part of the saving
+reappears in `batch_commit` (+0.15 ms): DWM absorbs some of the shape
+change at commit instead.
+
+What is left for 2.2/2.3 is the gap to C: ~0.3 ms tick and p90 ~2.7 ->
+~1.5 ms, i.e. two overlay windows per session in the batch. Not started:
+
+- 2.3 (ring) needs the surrogate outset by the border width to have room
+  for the ring. DWM's corner rounding then applies to the outer edge, and
+  the thumbnail inside is (as far as known, not verified) square-cornered,
+  since rounding is why the surrogate gets a corner preference at all.
+  Composition content draws under the thumbnail, so the ring cannot mask
+  those corners.
+- 2.2 (backdrop) has no such problem but needs one `DesktopWindowTarget`
+  per surrogate shared by fill and backdrop, and a hand-over to the real
+  backdrop window before the surrogate's fade-out. Alone worth ~0.15-0.2
+  ms/frame, under the 25% gate.
+
 ## Where things stand (6 windows, borders + backdrop on all)
 
 - Pacing: frame interval p50 5.71 ms, p90 5.74 ms; one ~10 ms interval
   per burst (the slow first frame misses one vblank).
-- Tick ~2 ms of a 5.7 ms budget.
+- Tick ~1.6 ms of a 5.7 ms budget on resize/relayout (was ~2 ms before
+  the border region was dropped during animations), p90 ~2.6-3.2 ms.
 - Input -> first frame: fill 20-32 ms, stretch 27-34 ms, move ~12 ms
   (from 55-77 ms at baseline, with the first frame then at 81% progress).
 - What remains of the start is DWM absorbing per-window changes
@@ -358,8 +413,10 @@ Branch `perf/lean-animations` off local `dcomp` (2 commits ahead of
 | Phase 1 stretch | Done as `animations.window_resize.style: fill \| stretch` |
 | Phase 1 remove fill + edge sampling | Skipped by owner's decision; fill stays an option |
 | Phase 2.1 pinned borders for move/resize | Tried, rejected (+12 ms start for -0.4 ms/frame) |
-| Phase 2.2 backdrop drawn in the surrogate | Not started; the composition-cost worry was tested and cleared |
-| Phase 2.3 ring drawn in the surrogate | Not started |
+| Phase 2.2/2.3 ceiling measured (config C) | Done: tick -37%, no start cost |
+| Outside the plan: border hit-test region dropped while behind a surrogate | Done (tick -21 to -27%, p90 -35 to -41%); most of the 2.2/2.3 ceiling |
+| Phase 2.2 backdrop drawn in the surrogate | Not started; ~0.15-0.2 ms/frame left, under the gate alone |
+| Phase 2.3 ring drawn in the surrogate | Not started; blocked on square thumbnail corners in an outset surrogate (unverified) |
 | Phase 3 pre-cloak `DwmFlush` deferral, cloak staggering | Not started; batching overlay restacks showed time only moves |
 | Phase 3 shorter `SESSION_FADE_OUT`, throttled z-settle | Not started |
 | Phase 3 overlay restacks batched into one transaction | Tried, rejected (no latency change) |
@@ -369,12 +426,14 @@ Known issues: `float` bench scenario intermittently ticks ~1.5 s instead
 of ~0.35 s (not reproduced under logging); toggling a workspace's tiling
 direction queues no redraw (pre-existing, bench works around it).
 
-Suggested next order: Phase 2.2/2.3, then Phase 3 leftovers (fade, z-settle,
-float run-on), then PresentMon + DComp spike; re-run the bench on the
+Suggested next order: Phase 3 leftovers (fade, z-settle, float run-on),
+then PresentMon + DComp spike (2.2/2.3 only if the laptop still needs the
+last ~0.3 ms/frame, and 2.3 only after checking thumbnail corners); re-run the bench on the
 laptop where per-frame cost was the original problem.
 
 Tooling for the next session: bench configs `~/.glzr/glazewm/bench-A.yaml`
-(fill), `bench-AS.yaml` (stretch), `bench-B/C.yaml` (overlay tracking);
+(fill), `bench-AS.yaml` (stretch), `bench-B/C.yaml` (overlay tracking), `bench-CS.yaml` (stretch, no
+tracking), `bench-SLOW.yaml` (3 s resize, for mid-animation checks);
 run `GLAZEWM_PERF=1 glazewm.exe start --config <cfg>`, then
 `cargo run -p wm-cli --release --example perf_bench -- --scenario <resize|float|relayout|move> --target chrome --bursts 10 --label <x>`.
 Only one WM instance at a time (a second start pops a fatal-error dialog).
