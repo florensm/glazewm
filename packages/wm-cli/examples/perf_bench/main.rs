@@ -9,12 +9,18 @@
 //! over one IPC connection rather than a CLI process per step, which would
 //! add seconds of spawn and antivirus-scan time between bursts.
 //!
+//! With `--dwm` (Windows), also reports what DWM actually displayed per
+//! burst, through the `PresentMon` service; see `dwm.rs`.
+//!
 //! # Example usage
 //!
 //! ```text
 //! cargo run -p wm-cli --release --example perf_bench -- \
 //!   --scenario resize --target chrome --bursts 10 --label baseline
 //! ```
+
+#[cfg(target_os = "windows")]
+mod dwm;
 
 use std::{
   collections::HashMap,
@@ -84,7 +90,12 @@ struct Args {
   bursts: usize,
   settle: Duration,
   label: String,
+  /// Whether to capture DWM-side frame timing.
+  dwm: bool,
 }
+
+/// Per-burst DWM summaries, as `(label, values)` for the summary table.
+type DwmColumns = Vec<(&'static str, Vec<f64>)>;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -116,11 +127,30 @@ async fn main() -> anyhow::Result<()> {
   let start_len = std::fs::metadata(&log_path).map_or(0, |m| m.len());
   let started = Instant::now();
 
+  #[cfg(target_os = "windows")]
+  let mut capture = args.dwm.then(dwm::DwmCapture::start).transpose()?;
+  #[cfg(not(target_os = "windows"))]
+  if args.dwm {
+    bail!("--dwm is only supported on Windows.");
+  }
+  #[cfg(target_os = "windows")]
+  let mut triggers = Vec::with_capacity(args.bursts + 1);
+
   for burst in 0..args.bursts {
     let step = if burst % 2 == 0 { forward } else { back };
+    #[cfg(target_os = "windows")]
+    triggers.push(dwm::now_qpc());
     send_step(&mut client, target, step).await?;
     tokio::time::sleep(args.settle).await;
+
+    // Drained every burst so the service's buffer never overflows.
+    #[cfg(target_os = "windows")]
+    if let Some(capture) = capture.as_mut() {
+      capture.drain()?;
+    }
   }
+  #[cfg(target_os = "windows")]
+  triggers.push(dwm::now_qpc());
 
   // Leave the layout as it was found.
   if args.bursts % 2 == 1 {
@@ -144,8 +174,54 @@ async fn main() -> anyhow::Result<()> {
     );
   }
 
-  print_summary(&args, &reports, started.elapsed());
+  #[cfg(target_os = "windows")]
+  let dwm_columns = capture.map_or_else(DwmColumns::new, |capture| {
+    dwm_columns(&capture, &triggers, &reports)
+  });
+  #[cfg(not(target_os = "windows"))]
+  let dwm_columns = DwmColumns::new();
+
+  print_summary(&args, &reports, &dwm_columns, started.elapsed());
   Ok(())
+}
+
+/// Summarises DWM timing per burst, each burst spanning from its trigger
+/// to the next.
+#[cfg(target_os = "windows")]
+fn dwm_columns(
+  capture: &dwm::DwmCapture,
+  triggers: &[u64],
+  reports: &[HashMap<String, f64>],
+) -> DwmColumns {
+  // The WM ticks once per vblank, so its interval is the refresh period.
+  let Some(period_ms) = median(
+    reports
+      .iter()
+      .filter_map(|report| report.get("interval:p50").copied())
+      .collect(),
+  ) else {
+    return DwmColumns::new();
+  };
+
+  let stats: Vec<dwm::BurstStats> = triggers
+    .windows(2)
+    .filter_map(|span| capture.burst_stats(span[0], span[1], period_ms))
+    .collect();
+
+  vec![
+    (
+      "dwm missed vblanks/burst",
+      stats.iter().map(|s| s.missed_vblanks).collect(),
+    ),
+    (
+      "dwm display interval p90 ms",
+      stats.iter().map(|s| s.interval_p90_ms).collect(),
+    ),
+    (
+      "dwm gpu busy p90 ms",
+      stats.iter().map(|s| s.gpu_busy_p90_ms).collect(),
+    ),
+  ]
 }
 
 fn parse_args() -> anyhow::Result<Args> {
@@ -155,10 +231,16 @@ fn parse_args() -> anyhow::Result<Args> {
     bursts: 10,
     settle: Duration::from_millis(1200),
     label: "run".into(),
+    dwm: false,
   };
 
   let mut iter = std::env::args().skip(1);
   while let Some(flag) = iter.next() {
+    if flag == "--dwm" {
+      args.dwm = true;
+      continue;
+    }
+
     let value = iter
       .next()
       .with_context(|| format!("Missing value for '{flag}'."))?;
@@ -420,6 +502,7 @@ fn median(mut values: Vec<f64>) -> Option<f64> {
 fn print_summary(
   args: &Args,
   reports: &[HashMap<String, f64>],
+  dwm_columns: &DwmColumns,
   elapsed: Duration,
 ) {
   println!(
@@ -441,6 +524,12 @@ fn print_summary(
         .collect(),
     )
     .unwrap_or(0.0);
+    println!("  {label:<36}{value:>9.2}");
+    cells.push(format!("{value:.2}"));
+  }
+
+  for (label, values) in dwm_columns {
+    let value = median(values.clone()).unwrap_or(0.0);
     println!("  {label:<36}{value:>9.2}");
     cells.push(format!("{value:.2}"));
   }

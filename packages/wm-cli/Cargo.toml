@@ -26,5 +26,14 @@ wm-ipc-client = { path = "../wm-ipc-client" }
 [dev-dependencies]
 home = { workspace = true }
 
+# `perf_bench --dwm`: PresentMon service API and `dwm.exe` lookup.
+[target.'cfg(windows)'.dev-dependencies]
+windows = { version = "0.52", features = [
+  "Win32_Foundation",
+  "Win32_System_Diagnostics_ToolHelp",
+  "Win32_System_LibraryLoader",
+  "Win32_System_Performance",
+] }
+
 [lints]
 workspace = true
