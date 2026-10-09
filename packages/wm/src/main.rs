@@ -264,6 +264,7 @@ async fn start_wm(
         disconnection_tx
       )) = ipc_server.message_rx.recv() => {
         tracing::info!("Received IPC message: {:?}", message);
+        wm_platform::perf::mark_input();
 
         if let Err(err) = ipc_server.process_message(
           message,
