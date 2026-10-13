@@ -853,6 +853,7 @@ mod tests {
       rect,
       is_minimized: false,
       is_hidden_tab: false,
+      is_scrolled_off: false,
     }
   }
 
@@ -865,6 +866,7 @@ mod tests {
         label: "1".to_string(),
         is_focused: false,
         is_new: false,
+        content_rect: Rect::from_xy(0, 0, 1920, 1000),
         tab_bars: vec![],
         windows: vec![
           window(12, "Editor", Rect::from_xy(960, 0, 960, 1000)),
@@ -876,6 +878,7 @@ mod tests {
         label: "2".to_string(),
         is_focused: true,
         is_new: false,
+        content_rect: Rect::from_xy(0, 0, 1920, 1000),
         tab_bars: vec![],
         windows: vec![window(
           21,
@@ -888,6 +891,7 @@ mod tests {
         label: "3".to_string(),
         is_focused: false,
         is_new: false,
+        content_rect: Rect::from_xy(0, 0, 1920, 1000),
         tab_bars: vec![],
         windows: vec![],
       },
@@ -1042,6 +1046,7 @@ mod tests {
       label: "4".to_string(),
       is_focused: false,
       is_new: true,
+      content_rect: Rect::from_xy(0, 0, 1920, 1000),
       windows: vec![],
       tab_bars: vec![],
     });

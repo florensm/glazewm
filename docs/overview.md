@@ -104,6 +104,19 @@ shown window, with its tab bar drawn by the same code as the real one.
 - The border of a stack's window goes around its tab bar as well, which
   takes the place of its title strip.
 
+### Scrolling workspaces
+
+A workspace with the scrolling layout shows its whole strip on its card,
+every column scaled to fit (with room left above and below when the strip
+is wider than the monitor), not just the part on screen. Columns scrolled
+out of view can be picked, dragged and searched like any other window;
+picking one focuses it, which scrolls it into view.
+
+The zoom on open and close starts and ends on the columns that are on
+screen; the others have nowhere on screen to come from, so they fade in
+with the zoom out and fade out with the zoom in. Picking a column out of
+view zooms into where the strip has scrolled to show it.
+
 ## Config
 
 ```yaml
