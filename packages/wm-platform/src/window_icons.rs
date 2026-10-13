@@ -11,6 +11,7 @@
 use std::{
   collections::HashMap,
   sync::{
+    atomic::{AtomicU64, Ordering},
     mpsc::{self, Sender},
     Mutex, OnceLock, PoisonError,
   },
@@ -29,15 +30,21 @@ use windows::Win32::{
 /// How long an app gets to answer `WM_GETICON`.
 const ICON_TIMEOUT_MS: u32 = 100;
 
+/// ID of the next fetch request, telling a stale fetch from the current
+/// one.
+static NEXT_REQUEST: AtomicU64 = AtomicU64::new(0);
+
+#[derive(Debug, PartialEq)]
 enum CachedIcon {
-  /// A fetch is queued or running.
-  Pending,
+  /// The fetch of the given request is queued or running.
+  Pending(u64),
   /// Owned copy of the window's icon, or `None` if it has none.
   Ready(Option<isize>),
 }
 
 /// A request to fetch `window`'s icon, then post `notify_msg` to `notify`.
 struct Request {
+  id: u64,
   window: isize,
   notify: isize,
   notify_msg: u32,
@@ -61,12 +68,36 @@ fn worker() -> Option<&'static Mutex<Sender<Request>>> {
         .name("window-icons".to_string())
         .spawn(move || {
           for request in receiver {
-            let icon = fetch_icon(HWND(request.window));
-
-            cache()
+            // Skipped when superseded while queued, so a slow app's
+            // backlog of stale requests doesn't delay the current ones.
+            let is_current = cache()
               .lock()
               .unwrap_or_else(PoisonError::into_inner)
-              .insert(request.window, CachedIcon::Ready(icon));
+              .get(&request.window)
+              == Some(&CachedIcon::Pending(request.id));
+            if !is_current {
+              continue;
+            }
+
+            let icon = fetch_icon(HWND(request.window));
+
+            let is_stored = store_fetched(
+              &mut cache().lock().unwrap_or_else(PoisonError::into_inner),
+              request.window,
+              request.id,
+              icon,
+            );
+
+            if !is_stored {
+              if let Some(icon) = icon {
+                // SAFETY: The copy was made by `fetch_icon` and never
+                // handed out.
+                unsafe {
+                  let _ = DestroyIcon(HICON(icon));
+                }
+              }
+              continue;
+            }
 
             // SAFETY: Posting to a destroyed window just fails.
             unsafe {
@@ -106,7 +137,7 @@ pub(crate) fn icon_for(
 
   match cache.get(&window) {
     Some(CachedIcon::Ready(icon)) => return icon.map(HICON),
-    Some(CachedIcon::Pending) => return class_icon(HWND(window)),
+    Some(CachedIcon::Pending(_)) => return class_icon(HWND(window)),
     None => {}
   }
 
@@ -114,7 +145,10 @@ pub(crate) fn icon_for(
     return class_icon(HWND(window));
   };
 
+  let id = NEXT_REQUEST.fetch_add(1, Ordering::Relaxed);
+
   let request = Request {
+    id,
     window,
     notify: notify.0,
     notify_msg,
@@ -126,10 +160,31 @@ pub(crate) fn icon_for(
     .send(request)
     .is_ok()
   {
-    cache.insert(window, CachedIcon::Pending);
+    cache.insert(window, CachedIcon::Pending(id));
   }
 
   class_icon(HWND(window))
+}
+
+/// Caches `icon`, fetched for request `id` of `window`, unless the entry
+/// was invalidated or requested again since. Returns whether it was
+/// cached; if not, the caller still owns `icon`.
+///
+/// Storing a stale fetch instead would overwrite the newer request's icon
+/// once that one lands too, leaking it.
+fn store_fetched(
+  cache: &mut HashMap<isize, CachedIcon>,
+  window: isize,
+  id: u64,
+  icon: Option<isize>,
+) -> bool {
+  match cache.get_mut(&window) {
+    Some(entry) if *entry == CachedIcon::Pending(id) => {
+      *entry = CachedIcon::Ready(icon);
+      true
+    }
+    _ => false,
+  }
 }
 
 /// Drops the cached icon of `window`, so it is fetched again next time
@@ -213,4 +268,46 @@ fn class_icon(window: HWND) -> Option<HICON> {
       .filter(|handle| *handle != 0)
       .map(HICON)
   })
+}
+
+#[cfg(test)]
+mod tests {
+  use std::collections::HashMap;
+
+  use super::{store_fetched, CachedIcon};
+
+  const WINDOW: isize = 0x10;
+
+  #[test]
+  fn stores_the_current_fetch() {
+    let mut cache = HashMap::from([(WINDOW, CachedIcon::Pending(1))]);
+
+    assert!(store_fetched(&mut cache, WINDOW, 1, Some(7)));
+    assert_eq!(cache.get(&WINDOW), Some(&CachedIcon::Ready(Some(7))));
+  }
+
+  #[test]
+  fn rejects_a_fetch_invalidated_meanwhile() {
+    let mut cache = HashMap::new();
+
+    assert!(!store_fetched(&mut cache, WINDOW, 1, Some(7)));
+    assert!(cache.is_empty());
+  }
+
+  #[test]
+  fn rejects_a_fetch_superseded_by_a_newer_request() {
+    let mut cache = HashMap::from([(WINDOW, CachedIcon::Pending(2))]);
+
+    assert!(!store_fetched(&mut cache, WINDOW, 1, Some(7)));
+    assert!(store_fetched(&mut cache, WINDOW, 2, Some(8)));
+    assert_eq!(cache.get(&WINDOW), Some(&CachedIcon::Ready(Some(8))));
+  }
+
+  #[test]
+  fn never_overwrites_a_cached_icon() {
+    let mut cache = HashMap::from([(WINDOW, CachedIcon::Ready(Some(8)))]);
+
+    assert!(!store_fetched(&mut cache, WINDOW, 1, Some(7)));
+    assert_eq!(cache.get(&WINDOW), Some(&CachedIcon::Ready(Some(8))));
+  }
 }
