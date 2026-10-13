@@ -4,34 +4,107 @@
 //! `Layout` decides where new windows join it and how rects are computed
 //! from it.
 
+mod binary;
 mod geometry;
 mod split;
 
 use anyhow::Context;
 pub use geometry::tiling_rect;
-use wm_common::{Layout, WindowState};
+use wm_common::{Layout, TilingDirection, WindowState};
 
 use crate::{
-  models::Container, traits::CommonGetters, user_config::UserConfig,
+  commands::container::attach_container,
+  models::{Container, TilingContainer, Workspace},
+  traits::CommonGetters,
+  user_config::UserConfig,
   wm_state::WmState,
 };
 
-/// Gets where to attach a new window, as (parent, index), following the
-/// focused workspace's layout.
+/// Where a new window joins the tree.
+#[derive(Clone, Debug)]
+pub enum Insertion {
+  /// At `index` among `parent`'s children.
+  At { parent: Container, index: usize },
+  /// Sharing `target`'s slot, split along `direction`.
+  Split {
+    target: TilingContainer,
+    direction: TilingDirection,
+  },
+}
+
+impl Insertion {
+  pub fn workspace(&self) -> Option<Workspace> {
+    match self {
+      Self::At { parent, .. } => parent.workspace(),
+      Self::Split { target, .. } => target.workspace(),
+    }
+  }
+
+  /// The stack the window joins as a tab, if any.
+  pub fn stack(&self) -> Option<crate::models::StackContainer> {
+    match self {
+      Self::At { parent, .. } => parent.as_stack().cloned(),
+      Self::Split { .. } => None,
+    }
+  }
+}
+
+/// Gets where a new window goes, following the focused workspace's
+/// layout.
+///
+/// Only tiling windows follow the layout; others are appended to the
+/// workspace, and a window joining the focused stack goes in it.
 pub fn insertion_target(
   window_state: &WindowState,
   joins_focused_stack: bool,
   state: &WmState,
-  _config: &UserConfig,
-) -> anyhow::Result<(Container, usize)> {
+) -> anyhow::Result<Insertion> {
   let workspace = state
     .focused_container()
     .and_then(|focused| focused.workspace())
     .context("No focused workspace.")?;
 
+  let split = split_insertion(window_state, joins_focused_stack, state)?;
+
+  if *window_state != WindowState::Tiling || split.stack().is_some() {
+    return Ok(split);
+  }
+
   match workspace.layout() {
-    Layout::Split | Layout::Bsp | Layout::Dwindle | Layout::Scrolling => {
-      split::insertion_target(window_state, joins_focused_stack, state)
+    Layout::Split | Layout::Scrolling => Ok(split),
+    Layout::Bsp => Insertion::split(
+      binary::focused_target(&workspace, state),
+      &workspace,
+    ),
+    Layout::Dwindle => {
+      Insertion::split(binary::last_target(&workspace), &workspace)
+    }
+  }
+}
+
+fn split_insertion(
+  window_state: &WindowState,
+  joins_focused_stack: bool,
+  state: &WmState,
+) -> anyhow::Result<Insertion> {
+  let (parent, index) =
+    split::insertion_target(window_state, joins_focused_stack, state)?;
+
+  Ok(Insertion::At { parent, index })
+}
+
+/// Attaches a detached `child` where `insertion` says.
+pub fn attach(
+  child: &Container,
+  insertion: &Insertion,
+  config: &UserConfig,
+) -> anyhow::Result<()> {
+  match insertion {
+    Insertion::At { parent, index } => {
+      attach_container(child, parent, Some(*index))
+    }
+    Insertion::Split { target, direction } => {
+      binary::attach_split(child, target, direction, config)
     }
   }
 }

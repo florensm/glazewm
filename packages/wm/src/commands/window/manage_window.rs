@@ -14,15 +14,13 @@ use crate::{
     WindowTraits,
   },
   commands::{
-    container::{
-      attach_container, detach_container, set_focused_descendant,
-    },
+    container::{detach_container, set_focused_descendant},
     window::{
       find_named_stack, match_stack_tabs, new_named_stack, restored_state,
       run_window_rules_except, update_stack_state, update_window_state,
     },
   },
-  layout,
+  layout::{self, Insertion},
   models::{
     Container, Monitor, NativeWindowProperties, NonTilingWindow,
     StackContainer, TilingWindow, WindowContainer,
@@ -330,18 +328,16 @@ fn auto_stack_placement(
     .as_ref()
     .and_then(|name| state.workspace_by_name(name));
 
-  let (parent, index) = match configured_workspace {
-    Some(workspace) => {
-      let index = workspace.child_count();
-      (workspace.into(), index)
-    }
-    None => {
-      layout::insertion_target(&WindowState::Tiling, false, state, config)?
-    }
+  let insertion = match configured_workspace {
+    Some(workspace) => Insertion::At {
+      index: workspace.child_count(),
+      parent: workspace.into(),
+    },
+    None => layout::insertion_target(&WindowState::Tiling, false, state)?,
   };
 
   let stack = new_named_stack(&rule.name, config);
-  attach_container(&stack.clone().into(), &parent, Some(index))?;
+  layout::attach(&stack.clone().into(), &insertion, config)?;
 
   Ok(Placement {
     parent: stack.clone().into(),
@@ -893,18 +889,20 @@ fn create_window(
 
   // Attach the new window at the given placement (if provided),
   // otherwise, add as a sibling of the focused container.
-  let (target_parent, target_index) = match placement {
-    Some(placement) => (placement.parent, placement.index),
+  let insertion = match placement {
+    Some(placement) => Insertion::At {
+      parent: placement.parent,
+      index: placement.index,
+    },
     None => layout::insertion_target(
       &window_state,
       config.value.stack.new_windows_join_focused_stack,
       state,
-      config,
     )?,
   };
 
   let target_workspace =
-    target_parent.workspace().context("No target workspace.")?;
+    insertion.workspace().context("No target workspace.")?;
 
   let prefers_centered = config
     .value
@@ -970,16 +968,12 @@ fn create_window(
   };
 
   // Joining a non-tiling stack, the window takes the place of the others.
-  let template = target_parent
-    .as_stack()
+  let template = insertion
+    .stack()
     .filter(|stack| !stack.is_tiling())
     .and_then(|stack| stack.windows().into_iter().next());
 
-  attach_container(
-    &window_container.clone().into(),
-    &target_parent,
-    Some(target_index),
-  )?;
+  layout::attach(&window_container.clone().into(), &insertion, config)?;
 
   if let (WindowContainer::NonTilingWindow(window), Some(template)) =
     (&window_container, template)
@@ -1056,7 +1050,7 @@ mod tests {
   use super::auto_stack_placement;
   use crate::{
     commands::container::set_focused_descendant,
-    layout::insertion_target,
+    layout::{insertion_target, Insertion},
     models::{Monitor, StackContainer, TilingWindow, Workspace},
     traits::CommonGetters,
     user_config::UserConfig,
@@ -1171,15 +1165,19 @@ mod tests {
     let state = WmState::mock(vec![monitor]);
     set_focused_descendant(&stacked.into(), None);
 
-    let (parent, index) =
-      insertion_target(&WindowState::Tiling, false, &state, &config())
-        .unwrap();
+    let Insertion::At { parent, index } =
+      insertion_target(&WindowState::Tiling, false, &state).unwrap()
+    else {
+      panic!("Expected an insertion at an index.");
+    };
     assert_eq!(parent.id(), workspace.id());
     assert_eq!(index, stack.index() + 1);
 
-    let (parent, index) =
-      insertion_target(&WindowState::Tiling, true, &state, &config())
-        .unwrap();
+    let Insertion::At { parent, index } =
+      insertion_target(&WindowState::Tiling, true, &state).unwrap()
+    else {
+      panic!("Expected an insertion at an index.");
+    };
     assert_eq!(parent.id(), stack.id());
     assert_eq!(index, 1);
 

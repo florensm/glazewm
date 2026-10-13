@@ -173,7 +173,13 @@ general:
 
   # How workspaces arrange their tiling windows, unless a workspace sets
   # its own `layout` under `workspaces`. Change it at runtime with
-  # `set-layout <layout>`.
+  # `set-layout <layout>`. Options:
+  #   'split'   - new windows tile next to the focused one, splits are
+  #               made by hand (`toggle-tiling-direction`).
+  #   'bsp'     - each new window halves the focused window, along its
+  #               longer side.
+  #   'dwindle' - each new window halves the last window, so windows
+  #               spiral towards the bottom right.
   default_layout: "split"
 
   cursor_jump:
