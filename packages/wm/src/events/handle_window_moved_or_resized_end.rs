@@ -1,7 +1,7 @@
 use anyhow::Context;
 use wm_common::{
-  try_warn, ActiveDragOperation, FullscreenStateConfig, TilingDirection,
-  WindowState,
+  try_warn, ActiveDragOperation, FullscreenStateConfig, Layout,
+  TilingDirection, WindowState,
 };
 use wm_platform::{LengthValue, Point, Rect};
 
@@ -14,6 +14,7 @@ use crate::{
     window::{join_stack, set_window_size, update_window_state},
   },
   events::update_floating_window_position,
+  layout::column_drop::{drop_into_column, drop_target},
   models::{
     Container, DirectionContainer, NonTilingWindow, SplitContainer,
     StackContainer, TilingContainer, WindowContainer,
@@ -202,6 +203,41 @@ fn drop_as_tiling_window(
     .or_else(|| moved_window.workspace())
     .context("Couldn't find workspace for window drop.")?;
 
+  // The container that ends up where the window is dropped.
+  let dropped = |window: &WindowContainer| -> Container {
+    moved_stack
+      .clone()
+      .map_or_else(|| window.clone().into(), Into::into)
+  };
+
+  // Decided on the columns as shown during the drag, before the window is
+  // put back into the tree.
+  let column_drop = match mouse_workspace.layout() {
+    Layout::Scrolling => drop_target(&mouse_workspace, &mouse_pos)?,
+    Layout::Split | Layout::Dwindle => None,
+  };
+
+  if let Some(column_drop) = column_drop {
+    let moved_window = update_window_state(
+      moved_window.clone().into(),
+      WindowState::Tiling,
+      state,
+      config,
+    )?;
+
+    drop_into_column(
+      &dropped(&moved_window),
+      &column_drop,
+      state,
+      config,
+    )?;
+    state
+      .pending_sync
+      .queue_container_to_redraw(mouse_workspace);
+
+    return Ok(moved_window);
+  }
+
   // Get the workspace, split containers, and other windows under the
   // dragged window.
   let containers_at_pos = state
@@ -276,10 +312,7 @@ fn drop_as_tiling_window(
     config,
   )?;
 
-  let moved: Container = match &moved_stack {
-    Some(stack) => stack.clone().into(),
-    None => moved_window.clone().into(),
-  };
+  let moved = dropped(&moved_window);
 
   let should_split = nearest_container.is_tiling_window()
     && match tiling_direction {
