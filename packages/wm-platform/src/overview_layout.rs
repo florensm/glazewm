@@ -199,10 +199,14 @@ pub(crate) struct Targets {
   pub hint_y: f32,
 }
 
+/// Scale of the selected card while looking inside its workspace: the
+/// largest a card is shown at.
+pub(crate) const ZOOMED_SCALE: f32 = 1.5;
+
 /// One row of cards with the `selected` one in the middle at full size.
 ///
 /// `zoomed` is for looking inside the selected workspace: it grows to
-/// 1.5x and its neighbours sit far back.
+/// [`ZOOMED_SCALE`] and its neighbours sit far back.
 pub(crate) fn carousel(
   metrics: &CardMetrics,
   count: usize,
@@ -211,7 +215,7 @@ pub(crate) fn carousel(
 ) -> Targets {
   let selected = selected.min(count.saturating_sub(1));
   let scale_of = |index: usize| match (index == selected, zoomed) {
-    (true, true) => 1.5,
+    (true, true) => ZOOMED_SCALE,
     (true, false) => 1.0,
     (false, true) => 0.32,
     (false, false) => 0.66,
@@ -231,7 +235,8 @@ pub(crate) fn carousel(
 
   // The row grows with the zoom, so a busy workspace gets the room it
   // needs.
-  let row_height = metrics.height * if zoomed { 1.5 } else { 1.02 };
+  let row_height =
+    metrics.height * if zoomed { ZOOMED_SCALE } else { 1.02 };
   let top = (metrics.view.1 - row_height - metrics.px(30.0)) / 2.0;
   let cy = top + row_height / 2.0;
 

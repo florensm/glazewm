@@ -68,10 +68,11 @@ impl CardTabBar {
     self.to_card(&self.frame.rect)
   }
 
-  /// Where the card is cut out for the bar, with the bar's corners.
+  /// Where the card is cut out for the bar, at scale 1, with the bar's
+  /// corners in pixels of a card picture drawn at `resolution` times that.
   #[allow(clippy::cast_possible_truncation, clippy::cast_precision_loss)]
-  pub fn hole(&self) -> (RectF, CornerRadii) {
-    let scale = self.scale();
+  pub fn hole(&self, resolution: f32) -> (RectF, CornerRadii) {
+    let scale = self.scale() * resolution;
     let radii = self.frame.style.strip_radii;
     let scaled = |radius: i32| (radius as f32 * scale).round() as i32;
 

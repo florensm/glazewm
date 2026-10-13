@@ -25,7 +25,7 @@ use windows::{
 };
 
 use crate::{
-  overview_layout::{CardMetrics, RectF},
+  overview_layout::{CardMetrics, RectF, ZOOMED_SCALE},
   paint,
   surface::Surface,
   window_icons, Color, CornerRadii, OverviewStyle, Rect,
@@ -96,15 +96,55 @@ pub(crate) struct TilePicture {
   pub border: Color,
 }
 
-/// Pixel size of a card's picture.
+/// Scale of a card's picture, relative to a card at scale 1: the largest a
+/// card is shown at, so DWM only ever scales it down and its text and
+/// borders stay sharp.
+pub(crate) const PICTURE_SCALE: f32 = ZOOMED_SCALE;
+
+/// Gap between a selected card and its selection ring, in logical pixels.
+const SELECTION_GAP: f32 = 3.0;
+
+/// Width of the selection ring, in logical pixels.
+const SELECTION_WIDTH: f32 = 3.0;
+
+/// Pixel size of a card's picture: the card at [`PICTURE_SCALE`], with
+/// room around it for the selection ring.
 ///
-/// Always that of a card at scale 1, however big the card is shown: DWM
-/// scales it, so moving the selection never redraws a card. A picture
-/// redrawn at a new size flickers, since the new bitmap and its
-/// thumbnail's source rect can't be swapped in at once.
+/// The same however big the card is shown: DWM scales it, so moving the
+/// selection never redraws a card. A picture redrawn at a new size
+/// flickers, since the new bitmap and its thumbnail's source rect can't
+/// be swapped in at once.
 #[allow(clippy::cast_possible_truncation)]
 pub(crate) fn card_size(metrics: &CardMetrics) -> (i32, i32) {
-  (metrics.width.ceil() as i32, metrics.height.ceil() as i32)
+  let outset = ring_outset(metrics);
+  (
+    (metrics.width * PICTURE_SCALE).ceil() as i32 + 2 * outset,
+    (metrics.height * PICTURE_SCALE).ceil() as i32 + 2 * outset,
+  )
+}
+
+/// What a card's picture covers, in the coordinates of a card at scale 1:
+/// the card and its selection ring.
+#[allow(clippy::cast_precision_loss)]
+pub(crate) fn picture_area(metrics: &CardMetrics) -> RectF {
+  let (width, height) = card_size(metrics);
+  let outset = ring_outset(metrics) as f32 / PICTURE_SCALE;
+
+  RectF::new(
+    -outset,
+    -outset,
+    width as f32 / PICTURE_SCALE,
+    height as f32 / PICTURE_SCALE,
+  )
+}
+
+/// How far the selection ring reaches out of its card, in picture pixels.
+fn ring_outset(metrics: &CardMetrics) -> i32 {
+  round(
+    (SELECTION_GAP + SELECTION_WIDTH)
+      * metrics.scale_factor
+      * PICTURE_SCALE,
+  )
 }
 
 /// `color` with its alpha set to `alpha` (0 to 1).
@@ -119,16 +159,39 @@ fn fade(color: Color, opacity: f32) -> Color {
   with_alpha(color, f32::from(color.a) / 255.0 * opacity)
 }
 
-/// Converts logical lengths into the pixels of a card's picture.
+/// Converts logical lengths, and positions on a card at scale 1, into the
+/// pixels of the card's picture.
 #[derive(Clone, Copy)]
 struct Units {
   scale_factor: f32,
+
+  /// Where the card's top-left corner is in the picture.
+  origin: f32,
 }
 
 impl Units {
+  #[allow(clippy::cast_precision_loss)]
+  fn new(metrics: &CardMetrics) -> Self {
+    Self {
+      scale_factor: metrics.scale_factor,
+      origin: ring_outset(metrics) as f32,
+    }
+  }
+
   /// `length` logical pixels.
   fn px(self, length: f32) -> f32 {
-    length * self.scale_factor
+    length * self.scale_factor * PICTURE_SCALE
+  }
+
+  /// `rect`, given in the coordinates of a card at scale 1.
+  fn rect(self, rect: &RectF) -> Rect {
+    RectF::new(
+      self.origin + rect.x * PICTURE_SCALE,
+      self.origin + rect.y * PICTURE_SCALE,
+      rect.w * PICTURE_SCALE,
+      rect.h * PICTURE_SCALE,
+    )
+    .to_rect()
   }
 }
 
@@ -142,12 +205,11 @@ pub(crate) fn draw_card(
   style: &OverviewStyle,
   notify: (HWND, u32),
 ) {
-  let units = Units {
-    scale_factor: metrics.scale_factor,
-  };
+  let units = Units::new(metrics);
 
   surface.pixels().fill(0);
-  let card = Rect::from_xy(0, 0, surface.width, surface.height);
+  let card =
+    units.rect(&RectF::new(0.0, 0.0, metrics.width, metrics.height));
   let radius = round(units.px(14.0));
 
   let (fill, border, border_width) = if picture.is_drop_target {
@@ -174,7 +236,7 @@ pub(crate) fn draw_card(
   }
 
   let mut fonts = Fonts::new(&style.font_family);
-  draw_header(surface, &mut fonts, picture, units, style, notify);
+  draw_header(surface, &mut fonts, picture, &card, units, style, notify);
 
   if picture.is_new {
     let color = if picture.is_drop_target || picture.is_selected {
@@ -182,13 +244,13 @@ pub(crate) fn draw_card(
     } else {
       with_alpha(style.subtext, 0.5)
     };
-    draw_plus(surface, &metrics.tile_area().to_rect(), units, color);
+    draw_plus(surface, &units.rect(&metrics.tile_area()), units, color);
   }
 
   {
     let mut canvas = surface.canvas();
     for (rect, radii) in &picture.tab_bars {
-      canvas.erase_rect_with_corners(&rect.to_rect(), *radii);
+      canvas.erase_rect_with_corners(&units.rect(rect), *radii);
     }
   }
 
@@ -198,11 +260,14 @@ pub(crate) fn draw_card(
     draw_tile(surface, &mut fonts, tile, units, style, notify);
   }
 
+  // Around the card rather than on its edge, so it reads apart from the
+  // focused workspace's border.
   if picture.is_selected {
+    let outset = ring_outset(metrics);
     surface.canvas().stroke_rounded_rect(
-      &card,
-      radius,
-      round(units.px(4.0)).max(1),
+      &card.inset(-outset),
+      radius + outset,
+      round(units.px(SELECTION_WIDTH)).max(1),
       style.accent,
     );
   }
@@ -248,18 +313,20 @@ fn draw_header(
   surface: &mut Surface,
   fonts: &mut Fonts,
   picture: &CardPicture,
+  card: &Rect,
   units: Units,
   style: &OverviewStyle,
   notify: (HWND, u32),
 ) {
+  let (left, top) = (to_f32(card.left), to_f32(card.top));
   let header = units.px(28.0);
-  let half = to_f32(surface.width) / 2.0;
+  let half = to_f32(card.width()) / 2.0;
 
   draw_text(
     surface,
     fonts.get(units.px(12.0), picture.is_focused),
     &picture.label,
-    &RectF::new(units.px(12.0), 0.0, half, header).to_rect(),
+    &RectF::new(left + units.px(12.0), top, half, header).to_rect(),
     if picture.is_focused {
       style.accent
     } else {
@@ -268,11 +335,11 @@ fn draw_header(
     DT_LEFT,
   );
 
-  let mut x = to_f32(surface.width) - units.px(10.0);
+  let mut x = to_f32(card.right) - units.px(10.0);
   for hwnd in &picture.minimized {
     x -= units.px(16.0);
     let icon =
-      RectF::new(x, units.px(7.0), units.px(14.0), units.px(14.0));
+      RectF::new(x, top + units.px(7.0), units.px(14.0), units.px(14.0));
     draw_window_icon(surface, *hwnd, &icon.to_rect(), 0.6, notify);
   }
 }
@@ -288,7 +355,7 @@ fn draw_tile(
   style: &OverviewStyle,
   notify: (HWND, u32),
 ) {
-  let rect = tile.rect.to_rect();
+  let rect = units.rect(&tile.rect);
   let radius = round(units.px(4.0));
   let opacity = tile.opacity;
 
@@ -325,7 +392,7 @@ fn draw_tile(
       surface,
       fonts,
       title,
-      &rect,
+      (&rect, radius),
       (
         units.px(TILE_CAPTION.0),
         units.px(TILE_CAPTION.1),
@@ -337,7 +404,7 @@ fn draw_tile(
   }
 
   surface.canvas().stroke_rounded_rect(
-    &tile.outline.to_rect(),
+    &units.rect(&tile.outline),
     radius,
     round(units.px(tile.border_width)).max(1),
     fade(tile.border, opacity),
@@ -356,13 +423,14 @@ pub(crate) fn draw_ghost(
   surface.pixels().fill(0);
 
   let rect = Rect::from_xy(0, 0, surface.width, surface.height);
+  let radius = round(px(8.0));
   let mut fonts = Fonts::new(&style.font_family);
 
   draw_caption(
     surface,
     &mut fonts,
     title,
-    &rect,
+    (&rect, radius),
     (px(GHOST_CAPTION.0), px(GHOST_CAPTION.1), px(4.0)),
     style,
     1.0,
@@ -370,7 +438,7 @@ pub(crate) fn draw_ghost(
 
   surface.canvas().stroke_rounded_rect(
     &rect,
-    round(px(8.0)),
+    radius,
     round(px(2.0)).max(1),
     style.accent,
   );
@@ -399,13 +467,13 @@ pub(crate) fn draw_hint(
 }
 
 /// Draws a window title on a strip along the bottom of `rect`, if `rect`
-/// has room for one. `metrics` is the strip's height, font size and text
-/// inset.
+/// has room for one, rounded like `rect`'s corners (by `radius`).
+/// `metrics` is the strip's height, font size and text inset.
 fn draw_caption(
   surface: &mut Surface,
   fonts: &mut Fonts,
   title: &str,
-  rect: &Rect,
+  (rect, radius): (&Rect, i32),
   (height, font_size, inset): (f32, f32, f32),
   style: &OverviewStyle,
   opacity: f32,
@@ -423,9 +491,14 @@ fn draw_caption(
     rect.right,
     rect.bottom,
   );
-  surface.canvas().fill_rounded_rect(
+  surface.canvas().fill_rect_with_corners(
     &strip,
-    0,
+    CornerRadii {
+      top_left: 0,
+      top_right: 0,
+      bottom_right: radius,
+      bottom_left: radius,
+    },
     fade(style.caption, opacity),
   );
 
@@ -608,4 +681,135 @@ fn draw_icon(icon: HICON, size: i32) -> Option<Vec<u32>> {
   let on_black = draw_on(0)?;
   let on_white = draw_on(0x00ff_ffff)?;
   Some(paint::matte_from_backgrounds(&on_black, &on_white))
+}
+
+#[cfg(test)]
+mod tests {
+  use windows::Win32::Foundation::HWND;
+
+  use super::{
+    card_size, draw_caption, draw_card, picture_area, ring_outset, round,
+    CardPicture, Fonts, Units, PICTURE_SCALE, SELECTION_WIDTH,
+  };
+  use crate::{
+    overview_layout::CardMetrics, surface::Surface, Color, OverviewStyle,
+    Rect,
+  };
+
+  fn metrics() -> CardMetrics {
+    CardMetrics::new(1920.0, 1040.0, 1.0)
+  }
+
+  fn style() -> OverviewStyle {
+    let color = |a: u8| Color {
+      r: 200,
+      g: 100,
+      b: 50,
+      a,
+    };
+
+    OverviewStyle {
+      backdrop_blur: 0.0,
+      backdrop_tint: color(0),
+      accent: color(255),
+      card: color(230),
+      surface: color(255),
+      caption: color(200),
+      text: color(255),
+      subtext: color(255),
+      search: color(255),
+      font_family: "Segoe UI".to_string(),
+      grid_columns: 5,
+      open_duration_ms: 0,
+      close_duration_ms: 0,
+    }
+  }
+
+  fn card_picture(is_selected: bool) -> CardPicture {
+    CardPicture {
+      label: "1".to_string(),
+      is_focused: false,
+      is_new: false,
+      is_hovered: false,
+      is_drop_target: false,
+      is_selected,
+      minimized: Vec::new(),
+      tiles: Vec::new(),
+      tab_bars: Vec::new(),
+      icons: 0,
+    }
+  }
+
+  fn alpha(surface: &mut Surface, x: i32, y: i32) -> u32 {
+    let width = surface.width;
+    usize::try_from(y * width + x)
+      .ok()
+      .and_then(|index| surface.pixels().get(index).copied())
+      .map_or(0, |pixel| pixel >> 24)
+  }
+
+  fn assert_close(a: f32, b: f32) {
+    assert!((a - b).abs() < 0.01, "{a} != {b}");
+  }
+
+  #[test]
+  #[allow(clippy::cast_precision_loss)]
+  fn picture_covers_the_card_and_its_ring_pixel_for_pixel() {
+    let metrics = metrics();
+    let (width, height) = card_size(&metrics);
+    let area = picture_area(&metrics);
+
+    assert_close(area.w * PICTURE_SCALE, width as f32);
+    assert_close(area.h * PICTURE_SCALE, height as f32);
+    assert_close(-area.x * PICTURE_SCALE, ring_outset(&metrics) as f32);
+    assert_close(-area.y * PICTURE_SCALE, ring_outset(&metrics) as f32);
+    assert!(area.right() >= metrics.width);
+    assert!(area.bottom() >= metrics.height);
+  }
+
+  #[test]
+  fn selection_ring_sits_around_the_card_with_a_gap() {
+    let metrics = metrics();
+    let style = style();
+    let (width, height) = card_size(&metrics);
+    let outset = ring_outset(&metrics);
+    let ring = round(Units::new(&metrics).px(SELECTION_WIDTH));
+    let y = height / 2;
+
+    for is_selected in [false, true] {
+      let mut surface = Surface::new(width, height).expect("surface");
+      draw_card(
+        &mut surface,
+        &card_picture(is_selected),
+        &metrics,
+        &style,
+        (HWND(0), 0),
+      );
+
+      assert_eq!(alpha(&mut surface, ring / 2, y) == 255, is_selected);
+      assert_eq!(alpha(&mut surface, (ring + outset) / 2, y), 0);
+      assert!(alpha(&mut surface, outset + ring, y) > 0);
+    }
+  }
+
+  #[test]
+  fn caption_strip_follows_the_rounded_corners() {
+    let style = style();
+    let mut surface = Surface::new(200, 100).expect("surface");
+
+    draw_caption(
+      &mut surface,
+      &mut Fonts::new(&style.font_family),
+      "title",
+      (&Rect::from_xy(0, 0, 200, 100), 12),
+      (20.0, 9.0, 4.0),
+      &style,
+      1.0,
+    );
+
+    assert_eq!(alpha(&mut surface, 0, 99), 0);
+    assert_eq!(alpha(&mut surface, 199, 99), 0);
+    assert!(alpha(&mut surface, 0, 85) > 0);
+    assert!(alpha(&mut surface, 100, 99) > 0);
+  }
 }

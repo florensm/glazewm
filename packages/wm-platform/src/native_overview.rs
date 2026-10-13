@@ -48,8 +48,8 @@ use windows::{
 
 use crate::{
   overview_chrome::{
-    card_size, draw_card, draw_ghost, draw_hint, with_alpha, CardPicture,
-    TilePicture, GHOST_SIZE, HINT_HEIGHT,
+    card_size, draw_card, draw_ghost, draw_hint, picture_area, with_alpha,
+    CardPicture, TilePicture, GHOST_SIZE, HINT_HEIGHT, PICTURE_SCALE,
   },
   overview_layout::{
     carousel, cover_crop, grid, tile, Camera, CardMetrics, Placement,
@@ -1102,7 +1102,11 @@ impl Overview {
       }),
       tiles,
       tab_bars: card.map_or_else(Vec::new, |card| {
-        card.tab_bars.iter().map(CardTabBar::hole).collect()
+        card
+          .tab_bars
+          .iter()
+          .map(|bar| bar.hole(PICTURE_SCALE))
+          .collect()
       }),
       icons: self.icons,
     }
@@ -1230,6 +1234,7 @@ impl Overview {
     let view =
       RectF::new(0.0, 0.0, self.metrics.view.0, self.metrics.view.1);
     let metrics = self.metrics;
+    let picture_area = picture_area(&metrics);
 
     for card in &mut self.cards {
       let placement = card.placement();
@@ -1263,7 +1268,8 @@ impl Overview {
       }
 
       if is_visible {
-        card.picture.place(&rect, fade);
+        let area = camera.apply(&placement.map(&metrics, &picture_area));
+        card.picture.place(&area, fade);
       } else if let Some(thumbnail) = &mut card.picture.thumbnail {
         thumbnail.hide();
       }
