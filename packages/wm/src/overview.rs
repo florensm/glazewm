@@ -8,14 +8,15 @@
 use anyhow::Context;
 use tokio::sync::mpsc;
 use uuid::Uuid;
-use wm_common::WindowState;
+use wm_common::{Layout, WindowState};
 use wm_platform::{
   Color, NativeOverview, OverviewAction, OverviewFrame,
   OverviewLayoutMode, OverviewStyle, OverviewWindow, OverviewWorkspace,
-  TabFrame,
+  Rect, TabFrame,
 };
 
 use crate::{
+  layout::scrolling,
   models::{
     is_inactive_stack_child, Container, Monitor, WindowContainer,
     Workspace, WorkspaceTarget,
@@ -33,6 +34,9 @@ pub struct Overview {
 
   /// What is shown, while open.
   open: Option<OpenOverview>,
+
+  /// What was shown, from its close until the next sync hides it.
+  closing: Option<OpenOverview>,
 
   /// Where the native overview sends user actions, with their session.
   action_tx: mpsc::UnboundedSender<(u64, OverviewAction)>,
@@ -52,6 +56,7 @@ impl Overview {
     Self {
       native: None,
       open: None,
+      closing: None,
       action_tx,
     }
   }
@@ -76,7 +81,7 @@ impl Overview {
   /// once focus has moved on; hiding the foreground window first would
   /// let the OS pick the next one.
   pub fn close(&mut self) {
-    self.open = None;
+    self.closing = self.open.take();
   }
 
   /// The native overview, created on first use.
@@ -131,6 +136,7 @@ pub fn toggle_overview(
 
   state.overview.native()?.open(frame, layout);
   state.overview.open = Some(open);
+  state.overview.closing = None;
   Ok(())
 }
 
@@ -139,25 +145,39 @@ pub fn toggle_overview(
 ///
 /// Called at the end of a platform sync, after focus has been synced.
 pub fn sync_overview(state: &mut WmState, config: &UserConfig) {
-  // `None` once closed, or once the monitor it was on is gone.
-  let frame = state.overview.open.as_ref().and_then(|open| {
+  let is_open = state.overview.open.is_some();
+  let shown = state
+    .overview
+    .open
+    .as_ref()
+    .or(state.overview.closing.as_ref());
+
+  // `None` once hidden, or once the monitor it was on is gone.
+  let frame = shown.and_then(|shown| {
     let monitor = state
       .monitors()
       .into_iter()
-      .find(|monitor| monitor.id() == open.monitor_id)?;
+      .find(|monitor| monitor.id() == shown.monitor_id)?;
 
-    Some(overview_frame(state, &monitor, open.accent, config))
+    Some(overview_frame(state, &monitor, shown.accent, config))
   });
 
   let overview = &mut state.overview;
+  overview.closing = None;
 
-  match (frame, &mut overview.native) {
-    (Some(frame), Some(native)) => native.update(frame),
-    (_, native) => {
+  let Some(native) = &mut overview.native else {
+    overview.open = None;
+    return;
+  };
+
+  match frame {
+    Some(frame) if is_open => native.update(frame),
+    // Its zoom into the picked workspace lands on what the pick brought
+    // on screen.
+    Some(frame) => native.hide_on(frame),
+    None => {
       overview.open = None;
-      if let Some(native) = native {
-        native.hide();
-      }
+      native.hide();
     }
   }
 }
@@ -170,6 +190,7 @@ fn overview_frame(
   config: &UserConfig,
 ) -> OverviewFrame {
   let properties = monitor.native_properties();
+  let area = &properties.working_area;
   let focused = state.focused_container();
   let focused_workspace = focused
     .as_ref()
@@ -189,6 +210,7 @@ fn overview_frame(
         name: workspace_config.name,
         is_focused: focused_workspace == Some(workspace.id()),
         is_new: false,
+        content_rect: content_rect(workspace, area),
         windows: overview_windows(workspace)
           .iter()
           .map(overview_window)
@@ -198,7 +220,7 @@ fn overview_frame(
     })
     .collect::<Vec<_>>();
 
-  workspaces.extend(new_workspace(state, monitor, config));
+  workspaces.extend(new_workspace(state, monitor, area, config));
 
   let overview = &config.value.overview;
 
@@ -234,6 +256,7 @@ fn overview_frame(
 fn new_workspace(
   state: &WmState,
   monitor: &Monitor,
+  area: &Rect,
   config: &UserConfig,
 ) -> Option<OverviewWorkspace> {
   let origin = monitor.displayed_workspace()?;
@@ -255,6 +278,7 @@ fn new_workspace(
     label,
     is_focused: false,
     is_new: true,
+    content_rect: area.clone(),
     windows: Vec::new(),
     tab_bars: Vec::new(),
   })
@@ -295,7 +319,49 @@ fn overview_window(window: &WindowContainer) -> OverviewWindow {
     rect: window.to_rect().unwrap_or(properties.frame),
     is_minimized: window.state() == WindowState::Minimized,
     is_hidden_tab: is_inactive_stack_child(window),
+    is_scrolled_off: !scrolling::is_on_screen(&window.as_container()),
   }
+}
+
+/// What `workspace`'s card shows of the monitor's working `area`: all of
+/// it, and for a scrolling workspace its whole strip.
+fn content_rect(workspace: &Workspace, area: &Rect) -> Rect {
+  if workspace.layout() != Layout::Scrolling {
+    return area.clone();
+  }
+
+  let Ok(workspace_rect) = workspace.to_rect() else {
+    return area.clone();
+  };
+
+  let columns = workspace
+    .tiling_children()
+    .filter_map(|column| column.to_rect().ok());
+
+  strip_bounds(area, &workspace_rect, columns)
+}
+
+/// `area` widened on either side by how far `columns` reach past
+/// `workspace`, keeping the outer gaps at both ends of the strip.
+fn strip_bounds(
+  area: &Rect,
+  workspace: &Rect,
+  columns: impl IntoIterator<Item = Rect>,
+) -> Rect {
+  let (left, right) =
+    columns.into_iter().fold((0, 0), |(left, right), column| {
+      (
+        left.max(workspace.left - column.left),
+        right.max(column.right - workspace.right),
+      )
+    });
+
+  Rect::from_ltrb(
+    area.left - left,
+    area.top,
+    area.right + right,
+    area.bottom,
+  )
 }
 
 /// Tab bars of the stacks on `workspace`, as their own bars draw them.
@@ -343,8 +409,9 @@ fn overview_windows(workspace: &Workspace) -> Vec<WindowContainer> {
 #[cfg(test)]
 mod tests {
   use wm_common::WindowState;
+  use wm_platform::Rect;
 
-  use super::overview_windows;
+  use super::{overview_windows, strip_bounds};
   use crate::{
     models::{NonTilingWindow, SplitContainer, TilingWindow, Workspace},
     traits::WindowGetters,
@@ -381,5 +448,72 @@ mod tests {
       .collect::<Vec<_>>();
 
     assert_eq!(titles, ["a", "b", "c", "d", "floating", "minimized"]);
+  }
+
+  #[test]
+  fn strip_bounds_widen_the_area_by_the_overflow() {
+    let area = Rect::from_ltrb(0, 0, 1920, 1040);
+    let workspace = Rect::from_ltrb(10, 10, 1910, 1030);
+
+    // Scrolled 500px into a strip of three 950px-wide columns.
+    let columns = [
+      Rect::from_xy(-490, 10, 950, 1020),
+      Rect::from_xy(470, 10, 950, 1020),
+      Rect::from_xy(1430, 10, 950, 1020),
+    ];
+
+    assert_eq!(
+      strip_bounds(&area, &workspace, columns),
+      Rect::from_ltrb(-500, 0, 2390, 1040)
+    );
+  }
+
+  #[test]
+  fn strip_bounds_are_the_area_when_everything_fits() {
+    let area = Rect::from_ltrb(0, 0, 1920, 1040);
+    let workspace = Rect::from_ltrb(10, 10, 1910, 1030);
+
+    assert_eq!(strip_bounds(&area, &workspace, []), area);
+    assert_eq!(
+      strip_bounds(&area, &workspace, [Rect::from_xy(10, 10, 900, 1020)]),
+      area
+    );
+  }
+
+  #[test]
+  fn content_of_a_scrolling_workspace_is_its_whole_strip() {
+    use wm_common::{Layout, ParsedConfig, WindowState};
+
+    use super::content_rect;
+    use crate::{
+      commands::container::set_focused_descendant,
+      layout::{attach, insertion_target},
+      models::Monitor,
+      traits::PositionGetters,
+      user_config::UserConfig,
+      wm_state::WmState,
+    };
+
+    let config = UserConfig::from_parsed(ParsedConfig::default());
+    let workspace = Workspace::mock().layout(Layout::Scrolling).call();
+    let monitor =
+      Monitor::mock().workspaces(vec![workspace.clone()]).call();
+    let state = WmState::mock(vec![monitor]);
+
+    let windows = [tiling("a"), tiling("b"), tiling("c")];
+    for window in &windows {
+      let insertion =
+        insertion_target(&WindowState::Tiling, false, &state).unwrap();
+      attach(&window.clone().into(), &insertion, &config).unwrap();
+      set_focused_descendant(&window.clone().into(), None);
+    }
+
+    let area = workspace.to_rect().unwrap();
+    let content = content_rect(&workspace, &area);
+    let last = windows[2].to_rect().unwrap();
+
+    assert_eq!(content.left, area.left);
+    assert_eq!(content.right, last.right);
+    assert!(content.right > area.right);
   }
 }

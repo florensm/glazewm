@@ -52,7 +52,7 @@ use crate::{
     TilePicture, GHOST_SIZE, HINT_HEIGHT,
   },
   overview_layout::{
-    carousel, cover_crop, grid, tile, Camera, CardMetrics, Placement,
+    carousel, cover_crop, grid, Camera, CardMetrics, CardView, Placement,
     RectF, Spring, Tile, Zoom,
   },
   overview_state::{HintTone, Hit, Interaction, Key, Mode},
@@ -179,6 +179,22 @@ impl NativeOverview {
     );
   }
 
+  /// Closes the overview once its zoom into the picked workspace ends.
+  ///
+  /// `frame` is shown first if it scrolled a workspace's strip (e.g. to
+  /// bring the picked window into view), so the zoom lands on the columns
+  /// now on screen.
+  pub fn hide_on(&mut self, frame: OverviewFrame) {
+    let is_scrolled = self.last_frame.as_ref().is_some_and(|last| {
+      is_strip_scrolled(&last.workspaces, &frame.workspaces)
+    });
+
+    if is_scrolled {
+      self.update(frame);
+    }
+    self.hide();
+  }
+
   /// Closes the overview.
   pub fn hide(&mut self) {
     if self.last_frame.take().is_some() {
@@ -200,6 +216,19 @@ impl NativeOverview {
         PostMessageW(HWND(self.hwnd), msg, WPARAM(wparam), LPARAM(0));
     }
   }
+}
+
+/// Whether a workspace in both `old` and `new` shows other content.
+fn is_strip_scrolled(
+  old: &[OverviewWorkspace],
+  new: &[OverviewWorkspace],
+) -> bool {
+  new.iter().any(|workspace| {
+    old.iter().any(|other| {
+      other.name == workspace.name
+        && other.content_rect != workspace.content_rect
+    })
+  })
 }
 
 impl Drop for NativeOverview {
@@ -335,6 +364,10 @@ struct Card {
   cx: Spring,
   cy: Spring,
   scale: Spring,
+
+  /// How its workspace maps onto it.
+  view: CardView,
+
   previews: Vec<Preview>,
 
   /// Its stacks' tab bars, each under its stack's window.
@@ -651,12 +684,18 @@ impl Overview {
     let mut spare = std::mem::take(&mut self.spare);
 
     for (index, workspace) in frame.workspaces.iter().enumerate() {
+      let view = CardView::new(
+        &self.metrics,
+        &self.area,
+        &RectF::from_rect(&workspace.content_rect),
+      );
+
       let previews = workspace
         .windows
         .iter()
         .filter(|window| !window.is_minimized && !window.is_hidden_tab)
         .filter_map(|window| {
-          let rect = if workspace.is_focused {
+          let rect = if workspace.is_focused && !window.is_scrolled_off {
             // Measured, so the zoom out starts exactly where the window
             // is on screen.
             visible_frame_on_screen(HWND(window.hwnd))
@@ -665,21 +704,24 @@ impl Overview {
             RectF::from_rect(&window.rect)
           };
 
-          let tile = tile(&self.metrics, &self.area, &rect)?;
-          Some(Preview::new(window.hwnd, tile))
+          let mut preview = Preview::new(window.hwnd, view.tile(&rect)?);
+          preview.is_scrolled_off = window.is_scrolled_off;
+          Some(preview)
         })
         .collect::<Vec<_>>();
 
       let old_tab_bars = cards
         .get_mut(index)
         .map_or_else(Vec::new, |card| std::mem::take(&mut card.tab_bars));
-      let tab_bars = self.rebuild_tab_bars(
+      let tab_bars = Self::rebuild_tab_bars(
         &workspace.tab_bars,
+        &view,
         old_tab_bars,
         &mut spare,
       );
 
       if let Some(card) = cards.get_mut(index) {
+        card.view = view;
         card.previews = previews;
         card.tab_bars = tab_bars;
         continue;
@@ -694,6 +736,7 @@ impl Overview {
         cx: Spring::new(0.0, SETTLE_MS, 0.25),
         cy: Spring::new(0.0, SETTLE_MS, 0.25),
         scale: Spring::new(1.0, SETTLE_MS, 0.001),
+        view,
         previews,
         tab_bars,
         picture,
@@ -713,8 +756,8 @@ impl Overview {
   /// belong to the same stack (by its shown window), and pictures from
   /// `spare` for new ones.
   fn rebuild_tab_bars(
-    &self,
     frames: &[crate::TabFrame],
+    view: &CardView,
     mut old: Vec<CardTabBar>,
     spare: &mut Vec<Picture>,
   ) -> Vec<CardTabBar> {
@@ -727,17 +770,12 @@ impl Overview {
           .map(|index| old.swap_remove(index));
 
         if let Some(mut bar) = reused {
-          bar.update(frame.clone(), &self.metrics, &self.area);
+          bar.update(frame.clone(), view);
           return Some(bar);
         }
 
         let picture = spare.pop().or_else(Picture::new)?;
-        Some(CardTabBar::new(
-          frame.clone(),
-          &self.metrics,
-          &self.area,
-          picture,
-        ))
+        Some(CardTabBar::new(frame.clone(), view, picture))
       })
       .collect();
 
@@ -1128,12 +1166,14 @@ impl Overview {
       return Camera::IDENTITY;
     };
 
-    let tiles = card
+    // Where the card shows the monitor, which a scrolling workspace's
+    // card shows only part of.
+    let screen = card
       .placement()
-      .map(&self.metrics, &self.metrics.tile_area());
+      .map(&self.metrics, &card.view.map(&self.area));
     let view =
       RectF::new(0.0, 0.0, self.metrics.view.0, self.metrics.view.1);
-    Camera::zoom(&tiles, &view, self.openness())
+    Camera::zoom(&screen, &view, self.openness())
   }
 
   /// Zooms into card `index` until its windows fill the screen, then
@@ -1230,17 +1270,21 @@ impl Overview {
     let view =
       RectF::new(0.0, 0.0, self.metrics.view.0, self.metrics.view.1);
     let metrics = self.metrics;
+    let zoom_card = self.zoom.map(|(zoom, _)| zoom.card);
 
-    for card in &mut self.cards {
+    for (index, card) in self.cards.iter_mut().enumerate() {
       let placement = card.placement();
       let rect = camera.apply(&placement.rect(&metrics));
       let is_visible = rect.intersect(&view).is_some();
+
+      // Only the zoomed card has windows on screen to zoom from or into.
+      let openness = if zoom_card == Some(index) { fade } else { 1.0 };
 
       for preview in &mut card.previews {
         let dest =
           camera.apply(&placement.map(&metrics, &preview.tile.rect));
         if is_visible {
-          preview.place(&dest, preview.opacity);
+          preview.place(&dest, preview.zoomed_opacity(openness));
         } else if let Some(thumbnail) = &mut preview.thumbnail {
           thumbnail.hide();
         }
@@ -1252,7 +1296,7 @@ impl Overview {
           .previews
           .iter()
           .find(|preview| preview.hwnd == bar.frame.anchor)
-          .map_or(1.0, |preview| preview.opacity);
+          .map_or(1.0, |preview| preview.zoomed_opacity(openness));
         let dest = camera.apply(&placement.map(&metrics, &bar.rect));
 
         if is_visible {
@@ -1634,4 +1678,40 @@ unsafe extern "system" fn wnd_proc(
   with_overview(|overview| overview.handle(msg, wparam, lparam))
     .flatten()
     .unwrap_or_else(|| DefWindowProcW(hwnd, msg, wparam, lparam))
+}
+
+#[cfg(test)]
+mod tests {
+  use super::is_strip_scrolled;
+  use crate::{OverviewWorkspace, Rect};
+
+  fn workspace(name: &str, content_rect: Rect) -> OverviewWorkspace {
+    OverviewWorkspace {
+      name: name.to_string(),
+      label: name.to_string(),
+      is_focused: false,
+      is_new: false,
+      content_rect,
+      windows: vec![],
+      tab_bars: vec![],
+    }
+  }
+
+  #[test]
+  fn only_a_moved_strip_counts_as_scrolled() {
+    let area = Rect::from_xy(0, 0, 1920, 1040);
+    let strip = |x| Rect::from_xy(x, 0, 3840, 1040);
+    let old = [workspace("1", area.clone()), workspace("2", strip(0))];
+
+    let scrolled =
+      [workspace("1", area.clone()), workspace("2", strip(-960))];
+    assert!(is_strip_scrolled(&old, &scrolled));
+
+    let added = [
+      workspace("1", area.clone()),
+      workspace("2", strip(0)),
+      workspace("3", area),
+    ];
+    assert!(!is_strip_scrolled(&old, &added));
+  }
 }

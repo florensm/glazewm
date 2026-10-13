@@ -301,23 +301,84 @@ pub(crate) fn grid(
   }
 }
 
-/// `rect` (screen coordinates) on the card of a workspace covering
-/// `area`, at scale 1: like a window's tile, but never clipped to the
-/// area, so it keeps its shape.
-pub(crate) fn to_card(
-  metrics: &CardMetrics,
-  area: &RectF,
-  rect: &RectF,
-) -> RectF {
-  let tiles = metrics.tile_area();
-  let (scale_x, scale_y) = (tiles.w / area.w, tiles.h / area.h);
+/// How a workspace's screen space maps onto its card at scale 1.
+///
+/// The card shows `content` at the scale it would show the monitor's
+/// `area`, shrunk to fit and centered: for a scrolling workspace whose
+/// strip is wider than the monitor, every column, letterboxed.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct CardView {
+  /// Screen area the card shows, containing `area`.
+  content: RectF,
+  /// Where `content`'s top-left corner lands on the card.
+  origin: (f32, f32),
+  scale_x: f32,
+  scale_y: f32,
+}
 
-  RectF::new(
-    tiles.x + (rect.x - area.x) * scale_x,
-    tiles.y + (rect.y - area.y) * scale_y,
-    rect.w * scale_x,
-    rect.h * scale_y,
-  )
+impl CardView {
+  pub fn new(
+    metrics: &CardMetrics,
+    area: &RectF,
+    content: &RectF,
+  ) -> Self {
+    let tiles = metrics.tile_area();
+    let content = content.union(area);
+
+    // Exactly 1 when `content` is `area`, so such a card maps the same as
+    // one mapping `area` alone.
+    let shrink = if area.w > 0.0 && area.h > 0.0 {
+      (area.w / content.w).min(area.h / content.h)
+    } else {
+      1.0
+    };
+
+    Self {
+      content,
+      origin: (
+        tiles.x + tiles.w * (1.0 - content.w / area.w * shrink) / 2.0,
+        tiles.y + tiles.h * (1.0 - content.h / area.h * shrink) / 2.0,
+      ),
+      scale_x: tiles.w / area.w * shrink,
+      scale_y: tiles.h / area.h * shrink,
+    }
+  }
+
+  /// `rect` (screen coordinates) on the card: like a window's tile, but
+  /// never clipped, so it keeps its shape.
+  pub fn map(&self, rect: &RectF) -> RectF {
+    RectF::new(
+      self.origin.0 + (rect.x - self.content.x) * self.scale_x,
+      self.origin.1 + (rect.y - self.content.y) * self.scale_y,
+      rect.w * self.scale_x,
+      rect.h * self.scale_y,
+    )
+  }
+
+  /// Where a window at `window` (screen coordinates) goes on the card:
+  /// where it sits, scaled down. `None` for a window entirely outside the
+  /// card's content.
+  pub fn tile(&self, window: &RectF) -> Option<Tile> {
+    if window.w <= 0.0
+      || window.h <= 0.0
+      || !self.scale_x.is_finite()
+      || !self.scale_y.is_finite()
+    {
+      return None;
+    }
+
+    let visible = window.intersect(&self.content)?;
+
+    Some(Tile {
+      rect: self.map(&visible),
+      crop: RectF::new(
+        (visible.x - window.x) / window.w,
+        (visible.y - window.y) / window.h,
+        visible.w / window.w,
+        visible.h / window.h,
+      ),
+    })
+  }
 }
 
 /// A window's place within a card at scale 1.
@@ -326,42 +387,8 @@ pub(crate) struct Tile {
   pub rect: RectF,
 
   /// The part of the window the tile shows, as fractions of its size;
-  /// less than all of it when it reaches past its workspace.
+  /// less than all of it when it reaches past its card's content.
   pub crop: RectF,
-}
-
-/// Where a window at `window` (screen coordinates) goes on the card of a
-/// workspace covering `area`: where it actually sits, scaled down. `None`
-/// for a window entirely outside the area.
-pub(crate) fn tile(
-  metrics: &CardMetrics,
-  area: &RectF,
-  window: &RectF,
-) -> Option<Tile> {
-  if window.w <= 0.0 || window.h <= 0.0 || area.w <= 0.0 || area.h <= 0.0 {
-    return None;
-  }
-
-  let visible = window.intersect(area)?;
-  let tiles = metrics.tile_area();
-  let (scale_x, scale_y) = (tiles.w / area.w, tiles.h / area.h);
-
-  let rect = RectF::new(
-    tiles.x + (visible.x - area.x) * scale_x,
-    tiles.y + (visible.y - area.y) * scale_y,
-    visible.w * scale_x,
-    visible.h * scale_y,
-  );
-
-  Some(Tile {
-    rect,
-    crop: RectF::new(
-      (visible.x - window.x) / window.w,
-      (visible.y - window.y) / window.h,
-      visible.w / window.w,
-      visible.h / window.h,
-    ),
-  })
 }
 
 /// The zoom the overview opens with: at progress 0 it shows `from` filling
@@ -569,8 +596,8 @@ impl Spring {
 #[cfg(test)]
 mod tests {
   use super::{
-    carousel, cover_crop, ease_out_cubic, grid, tile, to_card, Camera,
-    CardMetrics, RectF, Spring, Zoom,
+    carousel, cover_crop, ease_out_cubic, grid, Camera, CardMetrics,
+    CardView, RectF, Spring, Tile, Zoom,
   };
 
   fn metrics() -> CardMetrics {
@@ -586,6 +613,15 @@ mod tests {
     assert_close(a.y, b.y);
     assert_close(a.w, b.w);
     assert_close(a.h, b.h);
+  }
+
+  /// A card showing just `area`, as every non-scrolling workspace's does.
+  fn tile(
+    metrics: &CardMetrics,
+    area: &RectF,
+    window: &RectF,
+  ) -> Option<Tile> {
+    CardView::new(metrics, area, area).tile(window)
   }
 
   #[test]
@@ -768,21 +804,91 @@ mod tests {
   }
 
   #[test]
-  fn to_card_maps_like_a_tile_without_clipping() {
+  fn view_maps_like_a_tile_without_clipping() {
     let metrics = metrics();
     let area = RectF::new(0.0, 0.0, 1920.0, 1040.0);
+    let view = CardView::new(&metrics, &area, &area);
     let inside = RectF::new(100.0, 50.0, 800.0, 30.0);
 
-    let mapped = to_card(&metrics, &area, &inside);
-    let tiled = tile(&metrics, &area, &inside).expect("tile").rect;
+    let mapped = view.map(&inside);
+    let tiled = view.tile(&inside).expect("tile").rect;
     assert_close(mapped.x, tiled.x);
     assert_close(mapped.w, tiled.w);
 
     let past_edge = RectF::new(1800.0, 50.0, 400.0, 30.0);
     assert_close(
-      to_card(&metrics, &area, &past_edge).w,
+      view.map(&past_edge).w,
       400.0 * metrics.tile_area().w / 1920.0,
     );
+  }
+
+  #[test]
+  fn view_of_just_the_area_fills_the_tile_area_exactly() {
+    let metrics = metrics();
+    let area = RectF::new(-1920.0, 40.0, 1920.0, 1040.0);
+    let view = CardView::new(&metrics, &area, &area);
+
+    assert_rect_close(&view.map(&area), &metrics.tile_area());
+  }
+
+  #[test]
+  fn view_of_a_wide_strip_fits_every_column() {
+    let metrics = metrics();
+    let tiles = metrics.tile_area();
+    let area = RectF::new(0.0, 0.0, 1920.0, 1040.0);
+    // Scrolled one monitor width to the right of a strip three wide.
+    let strip = RectF::new(-1920.0, 0.0, 3.0 * 1920.0, 1040.0);
+    let view = CardView::new(&metrics, &area, &strip);
+
+    let left = view
+      .tile(&RectF::new(-1920.0, 0.0, 1920.0, 1040.0))
+      .expect("left column");
+    let right = view
+      .tile(&RectF::new(1920.0, 0.0, 1920.0, 1040.0))
+      .expect("right column");
+
+    assert_close(left.rect.x, tiles.x);
+    assert_close(right.rect.right(), tiles.right());
+    assert_rect_close(&left.crop, &RectF::new(0.0, 0.0, 1.0, 1.0));
+
+    // A third of the height, centered.
+    assert_close(left.rect.h, tiles.h / 3.0);
+    assert_close(
+      left.rect.y - tiles.y,
+      tiles.bottom() - left.rect.bottom(),
+    );
+
+    // The monitor is the middle third, keeping its shape.
+    let screen = view.map(&area);
+    assert_close(screen.x, left.rect.right());
+    assert_close(screen.w / screen.h, area.w / area.h);
+  }
+
+  #[test]
+  fn view_never_shows_less_than_the_area() {
+    let metrics = metrics();
+    let area = RectF::new(0.0, 0.0, 1920.0, 1040.0);
+    let view =
+      CardView::new(&metrics, &area, &RectF::new(0.0, 0.0, 10.0, 10.0));
+
+    assert_rect_close(&view.map(&area), &metrics.tile_area());
+  }
+
+  #[test]
+  fn zoom_out_of_a_strip_starts_with_on_screen_windows_in_place() {
+    let metrics = metrics();
+    let area = RectF::new(0.0, 0.0, 1920.0, 1040.0);
+    let strip = RectF::new(-960.0, 0.0, 3840.0, 1040.0);
+    let view = CardView::new(&metrics, &area, &strip);
+    let card = carousel(&metrics, 1, 0, false).cards[0];
+
+    let window = RectF::new(960.0, 0.0, 960.0, 1040.0);
+    let on_card =
+      card.map(&metrics, &view.tile(&window).expect("tile").rect);
+    let screen = card.map(&metrics, &view.map(&area));
+
+    let start = Camera::zoom(&screen, &area, 0.0);
+    assert_rect_close(&start.apply(&on_card), &window);
   }
 
   #[test]

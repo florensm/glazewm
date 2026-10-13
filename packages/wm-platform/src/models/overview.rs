@@ -37,6 +37,10 @@ pub struct OverviewWorkspace {
   /// window on it activates (or creates) the workspace.
   pub is_new: bool,
 
+  /// Area its card shows, in physical pixels: the monitor's working area,
+  /// widened to the whole strip of a scrolling workspace.
+  pub content_rect: Rect,
+
   /// Tiling windows in layout order, then the rest, which are drawn above
   /// them.
   pub windows: Vec<OverviewWindow>,
@@ -54,7 +58,8 @@ pub struct OverviewWindow {
   pub title: String,
   pub process_name: String,
 
-  /// Where it sits on screen, in physical pixels.
+  /// Where the layout puts it, in physical pixels; off screen for a
+  /// column scrolled out of view.
   pub rect: Rect,
 
   pub is_minimized: bool,
@@ -62,6 +67,10 @@ pub struct OverviewWindow {
   /// A tab of a stack other than its shown one: it has no preview of its
   /// own, and shows as a tab in its stack's tab bar.
   pub is_hidden_tab: bool,
+
+  /// In a column scrolled out of view: shown on its card, but faded in
+  /// and out by the zoom rather than moved from where it sits.
+  pub is_scrolled_off: bool,
 }
 
 /// Look of the overview.

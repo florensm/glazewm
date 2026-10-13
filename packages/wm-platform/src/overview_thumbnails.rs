@@ -247,6 +247,10 @@ pub(crate) struct Preview {
 
   pub thumbnail: Option<Thumbnail>,
   pub opacity: f32,
+
+  /// Of a column scrolled out of view: there is no on-screen window for
+  /// the zoom to start or end on, so it fades with the zoom instead.
+  pub is_scrolled_off: bool,
 }
 
 impl Preview {
@@ -258,6 +262,16 @@ impl Preview {
       companion: Companion::find(HWND(hwnd)),
       thumbnail: None,
       opacity: 1.0,
+      is_scrolled_off: false,
+    }
+  }
+
+  /// Its opacity on a card zoomed `openness` open.
+  pub fn zoomed_opacity(&self, openness: f32) -> f32 {
+    if self.is_scrolled_off {
+      self.opacity * openness
+    } else {
+      self.opacity
     }
   }
 
