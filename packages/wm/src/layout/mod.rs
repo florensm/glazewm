@@ -4,7 +4,7 @@
 //! `Layout` decides where new windows join it and how rects are computed
 //! from it.
 
-mod binary;
+mod dwindle;
 mod geometry;
 pub mod scrolling;
 mod split;
@@ -28,10 +28,12 @@ use crate::{
 pub enum Insertion {
   /// At `index` among `parent`'s children.
   At { parent: Container, index: usize },
-  /// Sharing `target`'s slot, split along `direction`.
+  /// Sharing `target`'s slot, split along `direction`, first if
+  /// `is_before`.
   Split {
     target: TilingContainer,
     direction: TilingDirection,
+    is_before: bool,
   },
 }
 
@@ -76,13 +78,11 @@ pub fn insertion_target(
   match workspace.layout() {
     Layout::Split => Ok(split),
     Layout::Scrolling => Ok(scrolling::insertion_target(&workspace)),
-    Layout::Bsp => Insertion::split(
-      binary::focused_target(&workspace, state),
+    Layout::Dwindle => Insertion::split(
+      dwindle::focused_target(&workspace, state),
       &workspace,
+      state.dispatcher.cursor_position().ok(),
     ),
-    Layout::Dwindle => {
-      Insertion::split(binary::last_target(&workspace), &workspace)
-    }
   }
 }
 
@@ -114,8 +114,12 @@ pub fn attach(
     Insertion::At { parent, index } => {
       attach_container(child, parent, Some(*index))
     }
-    Insertion::Split { target, direction } => {
-      binary::attach_split(child, target, direction, config)
+    Insertion::Split {
+      target,
+      direction,
+      is_before,
+    } => {
+      dwindle::attach_split(child, target, direction, *is_before, config)
     }
   }
 }

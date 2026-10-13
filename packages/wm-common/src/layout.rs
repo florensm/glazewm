@@ -12,9 +12,8 @@ pub enum Layout {
   /// Manual i3-style splits: new windows tile next to the focused one.
   #[default]
   Split,
-  /// Each new window splits the focused window along its longer side.
-  Bsp,
-  /// Each new window splits the most recent one, spiralling inwards.
+  /// Each new window halves the focused window along its longer side, as
+  /// in Hyprland.
   Dwindle,
   /// Columns on a strip that scrolls horizontally past the monitor.
   Scrolling,
@@ -29,12 +28,11 @@ impl FromStr for Layout {
   /// ```
   /// # use wm_common::Layout;
   /// # use std::str::FromStr;
-  /// assert_eq!(Layout::from_str("bsp").unwrap(), Layout::Bsp);
+  /// assert_eq!(Layout::from_str("dwindle").unwrap(), Layout::Dwindle);
   /// ```
   fn from_str(unparsed: &str) -> anyhow::Result<Self> {
     match unparsed {
       "split" => Ok(Self::Split),
-      "bsp" => Ok(Self::Bsp),
       "dwindle" => Ok(Self::Dwindle),
       "scrolling" => Ok(Self::Scrolling),
       _ => bail!("Not a valid layout: {}", unparsed),

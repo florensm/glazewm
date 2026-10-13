@@ -94,9 +94,9 @@ mod tests {
       Monitor::mock().workspaces(vec![workspace.clone()]).call();
     let mut state = WmState::mock(vec![monitor]);
 
-    set_layout(&workspace, Layout::Bsp, &mut state).unwrap();
+    set_layout(&workspace, Layout::Dwindle, &mut state).unwrap();
 
-    assert_eq!(workspace.layout(), Layout::Bsp);
+    assert_eq!(workspace.layout(), Layout::Dwindle);
     assert_eq!(workspace.tiling_children().count(), 1);
   }
 }

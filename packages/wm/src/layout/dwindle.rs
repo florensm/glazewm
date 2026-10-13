@@ -1,14 +1,13 @@
-//! BSP and dwindle: every new window halves an existing window's slot,
-//! along that slot's longer side, building a binary tree.
-//!
-//! They differ only in which window gets split: BSP splits the focused
-//! one, dwindle the last one in the tree, which spirals new windows
-//! towards the bottom right.
+//! Dwindle (as in Hyprland): every new window halves the focused window's
+//! slot along its longer side, building a binary tree. The new window
+//! takes the half the cursor is in, or the right/bottom one when the
+//! cursor is elsewhere.
 
 use std::collections::HashMap;
 
 use anyhow::Context;
 use wm_common::TilingDirection;
+use wm_platform::{Point, Rect};
 
 use super::Insertion;
 use crate::{
@@ -42,29 +41,7 @@ pub(super) fn focused_target(
         .find(Container::is_tiling_window)
     })?;
 
-  unit_of(&window)
-}
-
-/// The last tiling window in tree order (as its stack, if stacked).
-pub(super) fn last_target(
-  workspace: &Workspace,
-) -> Option<TilingContainer> {
-  let mut container: Container = workspace.clone().into();
-
-  while let Some(child) = container.tiling_children().last() {
-    let is_leaf = !matches!(child, TilingContainer::Split(_));
-    container = child.into();
-
-    if is_leaf {
-      return unit_of(&container);
-    }
-  }
-
-  None
-}
-
-/// A stacked window is split as its whole stack.
-fn unit_of(window: &Container) -> Option<TilingContainer> {
+  // A stacked window is split as its whole stack.
   match window
     .parent()
     .and_then(|parent| parent.as_stack().cloned())
@@ -74,20 +51,52 @@ fn unit_of(window: &Container) -> Option<TilingContainer> {
   }
 }
 
-/// Direction that halves `target` along its longer side.
-pub(super) fn split_direction(
-  target: &TilingContainer,
-) -> anyhow::Result<TilingDirection> {
-  let rect = target.to_rect()?;
-
-  Ok(if rect.width() >= rect.height() {
+/// Direction that halves `rect` along its longer side.
+fn split_direction(rect: &Rect) -> TilingDirection {
+  if rect.width() >= rect.height() {
     TilingDirection::Horizontal
   } else {
     TilingDirection::Vertical
-  })
+  }
 }
 
-/// Attaches `child` so that it and `target` share `target`'s old slot.
+impl Insertion {
+  /// Insertion that splits `target`, or appends to `workspace` when it
+  /// has no tiling windows yet. `cursor` picks the half the new window
+  /// takes.
+  pub(super) fn split(
+    target: Option<TilingContainer>,
+    workspace: &Workspace,
+    cursor: Option<Point>,
+  ) -> anyhow::Result<Self> {
+    let Some(target) = target else {
+      return Ok(Self::At {
+        parent: workspace.clone().into(),
+        index: workspace.child_count(),
+      });
+    };
+
+    let rect = target.to_rect()?;
+    let direction = split_direction(&rect);
+    let center = rect.center_point();
+
+    let is_before = cursor
+      .filter(|cursor| rect.contains_point(cursor))
+      .is_some_and(|cursor| match direction {
+        TilingDirection::Horizontal => cursor.x < center.x,
+        TilingDirection::Vertical => cursor.y < center.y,
+      });
+
+    Ok(Self::Split {
+      target,
+      direction,
+      is_before,
+    })
+  }
+}
+
+/// Attaches `child` so that it and `target` share `target`'s old slot,
+/// `child` first if `is_before`.
 ///
 /// Splits nested in the same direction as their parent get flattened
 /// elsewhere (`flatten_child_split_containers`), so a split along the
@@ -97,6 +106,7 @@ pub(super) fn attach_split(
   child: &Container,
   target: &TilingContainer,
   direction: &TilingDirection,
+  is_before: bool,
   config: &UserConfig,
 ) -> anyhow::Result<()> {
   let parent = target
@@ -104,7 +114,7 @@ pub(super) fn attach_split(
     .and_then(|parent| parent.as_direction_container().ok())
     .context("Split target has no direction container.")?;
 
-  let index = target.index() + 1;
+  let index = target.index() + usize::from(!is_before);
 
   if parent.tiling_direction() == *direction {
     let target_size = target.tiling_size();
@@ -142,35 +152,18 @@ pub(super) fn attach_split(
     std::slice::from_ref(target),
   )?;
 
-  attach_container(child, &split.into(), Some(1))
-}
-
-impl Insertion {
-  /// Insertion that splits `target`, or appends to `workspace` when it
-  /// has no tiling windows yet.
-  pub(super) fn split(
-    target: Option<TilingContainer>,
-    workspace: &Workspace,
-  ) -> anyhow::Result<Self> {
-    match target {
-      Some(target) => Ok(Self::Split {
-        direction: split_direction(&target)?,
-        target,
-      }),
-      None => Ok(Self::At {
-        parent: workspace.clone().into(),
-        index: workspace.child_count(),
-      }),
-    }
-  }
+  attach_container(child, &split.into(), Some(usize::from(!is_before)))
 }
 
 #[cfg(test)]
 mod tests {
-  use wm_common::{Layout, TilingDirection, WindowState};
+  use wm_common::{Layout, TilingDirection};
+  use wm_platform::Point;
 
+  use super::focused_target;
   use crate::{
-    layout::{attach, insertion_target},
+    commands::container::set_focused_descendant,
+    layout::{attach, Insertion},
     models::{
       Container, Monitor, SplitContainer, TilingWindow, Workspace,
     },
@@ -186,38 +179,38 @@ mod tests {
     UserConfig::from_parsed(wm_common::ParsedConfig::default())
   }
 
-  /// A landscape workspace with `layout` and one window, focused.
-  fn setup(layout: Layout) -> (WmState, Workspace, TilingWindow) {
+  /// A landscape dwindle workspace with one window, focused.
+  fn setup() -> (WmState, Workspace, TilingWindow) {
     let first = TilingWindow::mock().call();
     let workspace = Workspace::mock()
-      .layout(layout)
+      .layout(Layout::Dwindle)
       .tiling_containers(vec![first.clone().into()])
       .call();
     let monitor =
       Monitor::mock().workspaces(vec![workspace.clone()]).call();
     let state = WmState::mock(vec![monitor]);
-    crate::commands::container::set_focused_descendant(
-      &first.clone().into(),
-      None,
-    );
+    set_focused_descendant(&first.clone().into(), None);
 
     (state, workspace, first)
   }
 
-  /// Opens a tiling window the way `manage_window` places one.
-  fn open(state: &WmState) -> TilingWindow {
+  /// Opens a tiling window next to the focused one, with the cursor at
+  /// `cursor`, and focuses it.
+  fn open(
+    state: &WmState,
+    workspace: &Workspace,
+    cursor: Option<Point>,
+  ) -> TilingWindow {
     let window = TilingWindow::mock().call();
-    let insertion =
-      insertion_target(&WindowState::Tiling, false, state).unwrap();
+    let insertion = Insertion::split(
+      focused_target(workspace, state),
+      workspace,
+      cursor,
+    )
+    .unwrap();
     attach(&window.clone().into(), &insertion, &config()).unwrap();
+    set_focused_descendant(&window.clone().into(), None);
     window
-  }
-
-  fn focus(window: &TilingWindow) {
-    crate::commands::container::set_focused_descendant(
-      &window.clone().into(),
-      None,
-    );
   }
 
   fn sizes_sum_to_one(parent: &Container) -> bool {
@@ -229,30 +222,49 @@ mod tests {
   }
 
   #[test]
-  fn bsp_splits_the_focused_window_along_its_longer_side() {
-    let (state, workspace, first) = setup(Layout::Bsp);
+  fn splits_the_focused_window_along_its_longer_side() {
+    let (state, workspace, first) = setup();
 
     // Landscape workspace: side by side.
-    let second = open(&state);
+    let second = open(&state, &workspace, None);
     assert_eq!(workspace.tiling_direction(), TilingDirection::Horizontal);
-    assert_eq!(workspace.tiling_children().count(), 2);
+    assert_eq!(second.index(), first.index() + 1);
 
     // Each half is portrait: the focused one is split top/bottom.
-    focus(&first);
-    let third = open(&state);
+    let third = open(&state, &workspace, None);
     let split = third.parent().unwrap().as_split().cloned().unwrap();
     assert_eq!(split.tiling_direction(), TilingDirection::Vertical);
-    assert_eq!(split.children()[0].id(), first.id());
-    assert_eq!(second.parent().unwrap().id(), workspace.id());
+    assert_eq!(split.children()[0].id(), second.id());
+    assert_eq!(first.parent().unwrap().id(), workspace.id());
 
-    let (first_rect, third_rect) =
-      (first.to_rect().unwrap(), third.to_rect().unwrap());
-    assert_eq!(first_rect.x(), third_rect.x());
-    assert!(third_rect.y() > first_rect.y());
+    let (second_rect, third_rect) =
+      (second.to_rect().unwrap(), third.to_rect().unwrap());
+    assert_eq!(second_rect.x(), third_rect.x());
+    assert!(third_rect.y() > second_rect.y());
   }
 
   #[test]
-  fn bsp_halves_a_slot_without_nesting_a_same_direction_split() {
+  fn new_window_takes_the_half_the_cursor_is_in() {
+    let (state, workspace, first) = setup();
+    let rect = first.to_rect().unwrap();
+
+    let left_half = Point {
+      x: rect.x() + 10,
+      y: rect.y() + 10,
+    };
+    let second = open(&state, &workspace, Some(left_half));
+    assert_eq!(second.index(), 0);
+    assert_eq!(first.index(), 1);
+
+    // With the cursor outside the focused window, it goes after it.
+    let elsewhere = Point { x: -10_000, y: 0 };
+    let third = open(&state, &workspace, Some(elsewhere));
+    let split = third.parent().unwrap().as_split().cloned().unwrap();
+    assert_eq!(split.children()[1].id(), third.id());
+  }
+
+  #[test]
+  fn halves_a_slot_without_nesting_a_same_direction_split() {
     let a = TilingWindow::mock().call();
     let b = TilingWindow::mock().call();
     let column = SplitContainer::mock()
@@ -261,17 +273,17 @@ mod tests {
       .call();
     let c = TilingWindow::mock().call();
     let workspace = Workspace::mock()
-      .layout(Layout::Bsp)
+      .layout(Layout::Dwindle)
       .tiling_containers(vec![column.clone().into(), c.clone().into()])
       .call();
     let monitor =
       Monitor::mock().workspaces(vec![workspace.clone()]).call();
     let state = WmState::mock(vec![monitor]);
 
-    // `c` is the right half (portrait), splitting it top/bottom nests a
-    // vertical split; `a` is a landscape quarter, split side by side.
-    focus(&a);
-    let d = open(&state);
+    // `a` is a landscape quarter, so it splits side by side within its
+    // vertical column.
+    set_focused_descendant(&a.clone().into(), None);
+    let d = open(&state, &workspace, None);
     let inner = d.parent().unwrap().as_split().cloned().unwrap();
     assert_eq!(inner.tiling_direction(), TilingDirection::Horizontal);
     assert_eq!(inner.parent().unwrap().id(), column.id());
@@ -280,41 +292,16 @@ mod tests {
   }
 
   #[test]
-  fn dwindle_spirals_from_the_last_window_whatever_has_focus() {
-    let (state, workspace, first) = setup(Layout::Dwindle);
-
-    let second = open(&state);
-    focus(&first);
-    let third = open(&state);
-    focus(&first);
-    let fourth = open(&state);
-
-    // H[first, V[second, H[third, fourth]]]
-    assert_eq!(first.parent().unwrap().id(), workspace.id());
-    let right = second.parent().unwrap().as_split().cloned().unwrap();
-    assert_eq!(right.tiling_direction(), TilingDirection::Vertical);
-    let corner = third.parent().unwrap().as_split().cloned().unwrap();
-    assert_eq!(corner.tiling_direction(), TilingDirection::Horizontal);
-    assert_eq!(corner.parent().unwrap().id(), right.id());
-    assert_eq!(fourth.parent().unwrap().id(), corner.id());
-
-    let (third_rect, fourth_rect) =
-      (third.to_rect().unwrap(), fourth.to_rect().unwrap());
-    assert!(fourth_rect.x() > third_rect.x());
-    assert_eq!(fourth_rect.y(), third_rect.y());
-  }
-
-  #[test]
   fn same_direction_split_halves_the_target_and_keeps_the_rest() {
-    let (state, workspace, first) = setup(Layout::Bsp);
-    let second = open(&state);
+    let (state, workspace, first) = setup();
+    let second = open(&state, &workspace, None);
     first.set_tiling_size(0.7);
     second.set_tiling_size(0.3);
 
     // `first` is wider than tall, so it splits side by side, which is
     // the workspace's own direction.
-    focus(&first);
-    let third = open(&state);
+    set_focused_descendant(&first.clone().into(), None);
+    let third = open(&state, &workspace, None);
 
     assert_eq!(third.parent().unwrap().id(), workspace.id());
     assert_eq!(third.index(), first.index() + 1);

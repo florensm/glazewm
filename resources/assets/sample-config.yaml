@@ -176,10 +176,9 @@ general:
   # `set-layout <layout>`. Options:
   #   'split'   - new windows tile next to the focused one, splits are
   #               made by hand (`toggle-tiling-direction`).
-  #   'bsp'     - each new window halves the focused window, along its
-  #               longer side.
-  #   'dwindle' - each new window halves the last window, so windows
-  #               spiral towards the bottom right.
+  #   'dwindle' - each new window halves the focused window along its
+  #               longer side, taking the half the cursor is in (as in
+  #               Hyprland).
   #   'scrolling' - windows are columns on a strip that scrolls sideways
   #               to show the focused one. A new window becomes a column
   #               right of the focused one; move a window into a
