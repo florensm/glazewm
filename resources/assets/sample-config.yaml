@@ -180,6 +180,10 @@ general:
   #               longer side.
   #   'dwindle' - each new window halves the last window, so windows
   #               spiral towards the bottom right.
+  #   'scrolling' - windows are columns on a strip that scrolls sideways
+  #               to show the focused one. A new window becomes a column
+  #               right of the focused one; move a window into a
+  #               neighbouring column to stack them vertically.
   default_layout: "split"
 
   cursor_jump:
@@ -486,7 +490,13 @@ overview:
   open_duration_ms: 250
   close_duration_ms: 200
 
+layouts:
+  scrolling:
+    # Width of a new column, as a percentage of the workspace or in pixels.
+    column_width: "50%"
+
 workspaces:
+  # A workspace can use its own layout, e.g. `layout: "scrolling"`.
   - name: "1"
   - name: "2"
   - name: "3"

@@ -6,6 +6,7 @@
 
 mod binary;
 mod geometry;
+pub mod scrolling;
 mod split;
 
 use anyhow::Context;
@@ -14,7 +15,9 @@ use wm_common::{Layout, TilingDirection, WindowState};
 
 use crate::{
   commands::container::attach_container,
-  models::{Container, TilingContainer, Workspace},
+  models::{
+    is_inactive_stack_child, Container, TilingContainer, Workspace,
+  },
   traits::CommonGetters,
   user_config::UserConfig,
   wm_state::WmState,
@@ -71,7 +74,8 @@ pub fn insertion_target(
   }
 
   match workspace.layout() {
-    Layout::Split | Layout::Scrolling => Ok(split),
+    Layout::Split => Ok(split),
+    Layout::Scrolling => Ok(scrolling::insertion_target(&workspace)),
     Layout::Bsp => Insertion::split(
       binary::focused_target(&workspace, state),
       &workspace,
@@ -91,6 +95,13 @@ fn split_insertion(
     split::insertion_target(window_state, joins_focused_stack, state)?;
 
   Ok(Insertion::At { parent, index })
+}
+
+/// Whether the layout keeps `window` hidden although its workspace is
+/// displayed: a stack's background tab, or a column scrolled off screen.
+pub fn is_hidden_in_layout(window: &impl CommonGetters) -> bool {
+  is_inactive_stack_child(window)
+    || !scrolling::is_on_screen(&window.as_container())
 }
 
 /// Attaches a detached `child` where `insertion` says.

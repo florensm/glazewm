@@ -5,8 +5,8 @@
 
 use bon::bon;
 use wm_common::{
-  FloatingStateConfig, GapsConfig, Layout, TabBarPosition,
-  TilingDirection, WindowState, WorkspaceConfig,
+  FloatingStateConfig, GapsConfig, Layout, ScrollingLayoutConfig,
+  TabBarPosition, TilingDirection, WindowState, WorkspaceConfig,
 };
 use wm_platform::{Display, LengthValue, NativeWindow, Rect, RectDelta};
 
@@ -276,8 +276,13 @@ impl Workspace {
       layout: None,
     };
 
-    let workspace =
-      Self::new(config, gaps_config, tiling_direction, layout);
+    let workspace = Self::new(
+      config,
+      gaps_config,
+      tiling_direction,
+      layout,
+      ScrollingLayoutConfig::default(),
+    );
 
     for child in tiling_containers {
       attach_container(&child.into(), &workspace.clone().into(), None)

@@ -205,6 +205,7 @@ fn update_container_gaps(state: &mut WmState, config: &UserConfig) {
 
   for workspace in state.workspaces() {
     workspace.set_gaps_config(config.value.gaps.clone());
+    workspace.set_scrolling_config(config.value.layouts.scrolling.clone());
   }
 }
 

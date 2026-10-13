@@ -64,6 +64,7 @@ pub fn activate_workspace(
     workspace_config
       .layout
       .unwrap_or(config.value.general.default_layout),
+    config.value.layouts.scrolling.clone(),
   );
 
   // Attach the created workspace to the specified monitor.

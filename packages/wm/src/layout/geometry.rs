@@ -2,6 +2,7 @@ use anyhow::Context;
 use wm_common::TilingDirection;
 use wm_platform::Rect;
 
+use super::scrolling;
 use crate::traits::{
   CommonGetters, PositionGetters, TilingDirectionGetters,
   TilingSizeGetters,
@@ -12,6 +13,10 @@ pub fn tiling_rect<T>(container: &T) -> anyhow::Result<Rect>
 where
   T: TilingSizeGetters,
 {
+  if let Some(workspace) = scrolling::column_workspace(container) {
+    return scrolling::column_rect(container, &workspace);
+  }
+
   let parent = container
     .parent()
     .and_then(|parent| parent.as_direction_container().ok())

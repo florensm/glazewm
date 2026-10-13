@@ -7,9 +7,8 @@ use crate::{
   commands::{
     container::set_focused_descendant, workspace::deactivate_workspace,
   },
-  models::{
-    is_inactive_stack_child, Container, WindowContainer, WorkspaceTarget,
-  },
+  layout::is_hidden_in_layout,
+  models::{Container, WindowContainer, WorkspaceTarget},
   pending_sync::IrisSwitchRequest,
   traits::{CommonGetters, PositionGetters, WindowGetters},
   user_config::UserConfig,
@@ -227,9 +226,9 @@ fn iris_origin_point(
 
 /// Whether `window` takes part in the workspace-switch animation.
 ///
-/// Minimized windows and inactive stack tabs have no visible content to
-/// animate, and snapshotting them causes flicker.
+/// Minimized windows and windows the layout hides (inactive stack tabs,
+/// columns scrolled off screen) have no visible content to animate, and
+/// snapshotting them causes flicker.
 fn is_switch_animated(window: &WindowContainer) -> bool {
-  window.state() != WindowState::Minimized
-    && !is_inactive_stack_child(window)
+  window.state() != WindowState::Minimized && !is_hidden_in_layout(window)
 }

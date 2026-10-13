@@ -7,14 +7,13 @@ use std::{
 use anyhow::Context;
 use uuid::Uuid;
 use wm_common::{
-  ContainerDto, GapsConfig, Layout, TilingDirection, WorkspaceConfig,
-  WorkspaceDto,
+  ContainerDto, GapsConfig, Layout, ScrollingLayoutConfig,
+  TilingDirection, WorkspaceConfig, WorkspaceDto,
 };
-use wm_platform::{Rect, RectDelta};
+use wm_platform::{LengthUnit, Rect, RectDelta};
 
 use crate::{
   impl_common_getters, impl_container_debug,
-  impl_tiling_direction_getters,
   models::{
     Container, DirectionContainer, TilingContainer, WindowContainer,
   },
@@ -34,6 +33,10 @@ struct WorkspaceInner {
   gaps_config: GapsConfig,
   tiling_direction: TilingDirection,
   layout: Layout,
+  scrolling_config: ScrollingLayoutConfig,
+  /// How far a scrolling layout's strip is scrolled to the left, in
+  /// pixels.
+  scroll_offset: i32,
 }
 
 impl Workspace {
@@ -42,6 +45,7 @@ impl Workspace {
     gaps_config: GapsConfig,
     tiling_direction: TilingDirection,
     layout: Layout,
+    scrolling_config: ScrollingLayoutConfig,
   ) -> Self {
     let workspace = WorkspaceInner {
       id: Uuid::new_v4(),
@@ -52,6 +56,8 @@ impl Workspace {
       gaps_config,
       tiling_direction,
       layout,
+      scrolling_config,
+      scroll_offset: 0,
     };
 
     Self(Rc::new(RefCell::new(workspace)))
@@ -72,7 +78,38 @@ impl Workspace {
   }
 
   pub fn set_layout(&self, layout: Layout) {
-    self.0.borrow_mut().layout = layout;
+    let mut inner = self.0.borrow_mut();
+    inner.layout = layout;
+    inner.scroll_offset = 0;
+  }
+
+  pub fn set_scrolling_config(
+    &self,
+    scrolling_config: ScrollingLayoutConfig,
+  ) {
+    self.0.borrow_mut().scrolling_config = scrolling_config;
+  }
+
+  pub fn scroll_offset(&self) -> i32 {
+    self.0.borrow().scroll_offset
+  }
+
+  pub fn set_scroll_offset(&self, scroll_offset: i32) {
+    self.0.borrow_mut().scroll_offset = scroll_offset;
+  }
+
+  /// Width of a new column in a scrolling layout, as a fraction of the
+  /// workspace width.
+  pub fn default_column_size(&self) -> f32 {
+    let column_width = &self.0.borrow().scrolling_config.column_width;
+
+    match column_width.unit {
+      LengthUnit::Percentage => column_width.amount,
+      // A detached workspace has no width to measure pixels against.
+      LengthUnit::Pixel => self
+        .to_rect()
+        .map_or(1., |rect| column_width.to_percentage(rect.width())),
+    }
   }
 
   /// Whether the workspace is currently displayed by the parent monitor.
@@ -192,7 +229,21 @@ impl Workspace {
 
 impl_container_debug!(Workspace);
 impl_common_getters!(Workspace);
-impl_tiling_direction_getters!(Workspace);
+impl TilingDirectionGetters for Workspace {
+  /// A scrolling layout always lays its columns out horizontally.
+  fn tiling_direction(&self) -> TilingDirection {
+    let inner = self.0.borrow();
+
+    match inner.layout {
+      Layout::Scrolling => TilingDirection::Horizontal,
+      _ => inner.tiling_direction.clone(),
+    }
+  }
+
+  fn set_tiling_direction(&self, tiling_direction: TilingDirection) {
+    self.0.borrow_mut().tiling_direction = tiling_direction;
+  }
+}
 
 impl PositionGetters for Workspace {
   fn to_rect(&self) -> anyhow::Result<Rect> {

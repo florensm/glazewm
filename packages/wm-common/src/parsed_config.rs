@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use wm_platform::{
   BackdropOverlayParams, BorderOverlayParams, Color, CornerStyle, Key,
-  Keybinding, LengthValue, OpacityValue, RectDelta,
+  Keybinding, LengthUnit, LengthValue, OpacityValue, RectDelta,
 };
 
 use crate::{app_command::InvokeCommand, Layout};
@@ -14,6 +14,7 @@ pub struct ParsedConfig {
   pub gaps: GapsConfig,
   pub general: GeneralConfig,
   pub keybindings: Vec<KeybindingConfig>,
+  pub layouts: LayoutsConfig,
   pub overview: OverviewConfig,
   pub stack: StackConfig,
   pub window_behavior: WindowBehaviorConfig,
@@ -275,6 +276,32 @@ pub struct BindingModeConfig {
   /// Keybindings that will be active when the binding mode is active.
   #[serde(default)]
   pub keybindings: Vec<KeybindingConfig>,
+}
+
+/// Settings of the individual layouts.
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[serde(default, rename_all(serialize = "camelCase"))]
+pub struct LayoutsConfig {
+  pub scrolling: ScrollingLayoutConfig,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(default, rename_all(serialize = "camelCase"))]
+pub struct ScrollingLayoutConfig {
+  /// Width of a new column, as a percentage of the workspace or in
+  /// pixels.
+  pub column_width: LengthValue,
+}
+
+impl Default for ScrollingLayoutConfig {
+  fn default() -> Self {
+    Self {
+      column_width: LengthValue {
+        amount: 0.5,
+        unit: LengthUnit::Percentage,
+      },
+    }
+  }
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]

@@ -1,11 +1,17 @@
 use wm_common::{Layout, WmEvent};
 
-use crate::{models::Workspace, wm_state::WmState};
+use crate::{
+  models::Workspace,
+  traits::{CommonGetters, TilingSizeGetters},
+  wm_state::WmState,
+};
 
 /// Changes the layout of `workspace`.
 ///
 /// The tree is kept as is; the new layout applies to windows added from
-/// now on and to how rects are computed.
+/// now on and to how rects are computed. Only the sizes of the
+/// workspace's own children change when entering or leaving a scrolling
+/// layout, whose columns have widths of their own.
 pub fn set_layout(
   workspace: &Workspace,
   layout: Layout,
@@ -15,7 +21,24 @@ pub fn set_layout(
     return Ok(());
   }
 
+  let was_scrolling = workspace.layout() == Layout::Scrolling;
   workspace.set_layout(layout);
+
+  let children = workspace.tiling_children().collect::<Vec<_>>();
+
+  if layout == Layout::Scrolling {
+    for child in &children {
+      child.set_tiling_size(workspace.default_column_size());
+    }
+  } else if was_scrolling {
+    #[allow(clippy::cast_precision_loss)]
+    let size = 1. / children.len().max(1) as f32;
+
+    for child in &children {
+      child.set_tiling_size(size);
+    }
+  }
+
   state
     .pending_sync
     .queue_container_to_redraw(workspace.clone());
@@ -35,9 +58,31 @@ mod tests {
   use super::set_layout;
   use crate::{
     models::{Monitor, TilingWindow, Workspace},
-    traits::CommonGetters,
+    traits::{CommonGetters, TilingSizeGetters},
     wm_state::WmState,
   };
+
+  #[test]
+  fn scrolling_gives_each_child_a_column_and_back() {
+    let (first, second) =
+      (TilingWindow::mock().call(), TilingWindow::mock().call());
+    let workspace = Workspace::mock()
+      .tiling_containers(vec![first.clone().into(), second.clone().into()])
+      .call();
+    let monitor =
+      Monitor::mock().workspaces(vec![workspace.clone()]).call();
+    let mut state = WmState::mock(vec![monitor]);
+
+    first.set_tiling_size(0.7);
+    second.set_tiling_size(0.3);
+    set_layout(&workspace, Layout::Scrolling, &mut state).unwrap();
+    assert!((first.tiling_size() - 0.5).abs() < 1e-4);
+    assert!((second.tiling_size() - 0.5).abs() < 1e-4);
+
+    set_layout(&workspace, Layout::Split, &mut state).unwrap();
+    assert!((first.tiling_size() - 0.5).abs() < 1e-4);
+    assert_eq!(workspace.scroll_offset(), 0);
+  }
 
   #[test]
   fn changes_the_layout_and_keeps_the_tree() {

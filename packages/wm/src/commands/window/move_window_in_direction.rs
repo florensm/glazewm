@@ -1,5 +1,5 @@
 use anyhow::Context;
-use wm_common::{TilingDirection, WindowState};
+use wm_common::{Layout, TilingDirection, WindowState};
 use wm_platform::{Direction, Rect};
 
 use crate::{
@@ -343,6 +343,11 @@ fn invert_workspace_tiling_direction(
 ) -> anyhow::Result<()> {
   let workspace =
     container_to_move.workspace().context("No workspace.")?;
+
+  // A scrolling layout's columns always run horizontally.
+  if workspace.layout() == Layout::Scrolling {
+    return Ok(());
+  }
 
   // Get top-level tiling children of the workspace.
   let workspace_children = workspace

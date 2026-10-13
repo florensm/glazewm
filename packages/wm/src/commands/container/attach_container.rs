@@ -2,6 +2,7 @@ use anyhow::bail;
 
 use super::resize_tiling_container;
 use crate::{
+  layout::scrolling::column_workspace,
   models::Container,
   traits::{CommonGetters, TilingSizeGetters},
 };
@@ -38,6 +39,12 @@ pub fn attach_container(
 
   // Resize the child and its siblings if it is a tiling container.
   if let Ok(child) = child.as_tiling_container() {
+    // Columns of a scrolling layout have widths of their own.
+    if let Some(workspace) = column_workspace(&child) {
+      child.set_tiling_size(workspace.default_column_size());
+      return Ok(());
+    }
+
     let tiling_siblings = child.tiling_siblings().collect::<Vec<_>>();
 
     if tiling_siblings.is_empty() {

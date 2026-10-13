@@ -28,6 +28,7 @@ use wm_platform::{
 
 use crate::{
   animation::{AnimationPositionResult, WorkspaceSwitchEntry},
+  layout::is_hidden_in_layout,
   models::{is_inactive_stack_child, Container, WindowContainer},
   traits::{CommonGetters, PositionGetters, WindowGetters},
   user_config::UserConfig,
@@ -73,6 +74,14 @@ pub fn platform_sync(
 
   let focused_container =
     state.focused_container().context("No focused container.")?;
+
+  // A focus change or relayout can scroll a scrolling layout, which then
+  // moves the rest of its columns too.
+  if state.pending_sync.needs_focus_update()
+    || !state.pending_sync.containers_to_redraw().is_empty()
+  {
+    crate::layout::scrolling::sync_scroll_offsets(state)?;
+  }
 
   // Windows whose own z-order was changed this tick, and whose overlays
   // therefore have to be put back behind them. Collected rather than
@@ -367,7 +376,7 @@ fn windows_to_bring_to_front(
             );
 
             is_floating_or_tiling
-              && !is_inactive_stack_child(window)
+              && !is_hidden_in_layout(window)
               && window.state().is_same_state(&focused_descendant.state())
           })
           .collect(),
@@ -583,7 +592,7 @@ fn redraw_containers(
       // the reversed iteration below shows them before hiding the others.
       // Hiding first leaves a blank frame, e.g. when switching stack tabs.
       windows.sort_by_key(|window| {
-        let will_show = !is_inactive_stack_child(*window)
+        let will_show = !is_hidden_in_layout(*window)
           && window.workspace().is_some_and(|w| w.is_displayed());
 
         (will_show, focus_order_index.get(&window.id()).copied())
@@ -1009,7 +1018,7 @@ fn redraw_containers(
     // Transition display state depending on whether window will be
     // shown or hidden. Only the active tab of a stack is shown.
     let should_show =
-      workspace.is_displayed() && !is_inactive_stack_child(*window);
+      workspace.is_displayed() && !is_hidden_in_layout(*window);
     let new_display_state =
       match (previous_display_state.clone(), should_show) {
         (DisplayState::Hidden | DisplayState::Hiding, true) => {
@@ -1983,7 +1992,7 @@ fn reposition_window(
         // latter only as a stack's hidden tabs: no thumbnail shows those,
         // while elsewhere DWM keeps rendering a window cloaked along with
         // its owner.
-        if is_visible || is_inactive_stack_child(window) {
+        if is_visible || is_hidden_in_layout(window) {
           window.native().set_cloaked_or_hidden(!is_visible)?;
         } else {
           window.native().set_cloaked(true)?;
@@ -2773,7 +2782,7 @@ fn sync_overlays<O: SyncableOverlay>(
     let should_hide =
       state.animation_manager.has_active_surrogate(&window.id())
         || !window.workspace().is_some_and(|ws| ws.is_displayed())
-        || is_inactive_stack_child(window);
+        || is_hidden_in_layout(window);
 
     if should_hide {
       if let Some(overlay) = O::overlays(state).get_mut(&window.id()) {

@@ -1,5 +1,6 @@
 use super::flatten_split_container;
 use crate::{
+  layout::scrolling::column_workspace,
   models::Container,
   traits::{CommonGetters, TilingDirectionGetters},
 };
@@ -26,8 +27,12 @@ pub fn flatten_child_split_containers(
 
     if tiling_children.len() == 1 {
       // Handle case where the parent is a split container and has a
-      // single split container child.
-      if let Some(split_child) = tiling_children[0].as_split() {
+      // single split container child. A scrolling layout's only column
+      // stays a column.
+      if let Some(split_child) = tiling_children[0]
+        .as_split()
+        .filter(|split_child| column_workspace(*split_child).is_none())
+      {
         flatten_split_container(split_child.clone())?;
         parent.set_tiling_direction(parent.tiling_direction().inverse());
       }
