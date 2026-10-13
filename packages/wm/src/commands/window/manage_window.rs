@@ -22,6 +22,7 @@ use crate::{
       run_window_rules_except, update_stack_state, update_window_state,
     },
   },
+  layout,
   models::{
     Container, Monitor, NativeWindowProperties, NonTilingWindow,
     StackContainer, TilingWindow, WindowContainer,
@@ -334,7 +335,9 @@ fn auto_stack_placement(
       let index = workspace.child_count();
       (workspace.into(), index)
     }
-    None => insertion_target(&WindowState::Tiling, false, state)?,
+    None => {
+      layout::insertion_target(&WindowState::Tiling, false, state, config)?
+    }
   };
 
   let stack = new_named_stack(&rule.name, config);
@@ -892,10 +895,11 @@ fn create_window(
   // otherwise, add as a sibling of the focused container.
   let (target_parent, target_index) = match placement {
     Some(placement) => (placement.parent, placement.index),
-    None => insertion_target(
+    None => layout::insertion_target(
       &window_state,
       config.value.stack.new_windows_join_focused_stack,
       state,
+      config,
     )?,
   };
 
@@ -1043,73 +1047,16 @@ fn window_state_to_create(
   Ok(WindowState::default_from_config(&config.value))
 }
 
-/// Gets where to insert a new window in the container tree.
-///
-/// Rules:
-/// - For non-tiling windows: Always append to the workspace.
-/// - For tiling windows:
-///   1. Try to insert after the focused tiling window (or its parent
-///      stack) if one exists.
-///   2. If a non-tiling window is focused, try to insert after the first
-///      tiling window found.
-///   3. If no tiling windows exist, append to the workspace.
-///
-/// New windows are never inserted into an existing `StackContainer`
-/// automatically, unless configured. Stacking is otherwise an explicit
-/// user action, e.g. via `toggle-stack` or `stack-absorb-neighbor`.
-///
-/// Returns tuple of (parent container, insertion index).
-fn insertion_target(
-  window_state: &WindowState,
-  joins_focused_stack: bool,
-  state: &WmState,
-) -> anyhow::Result<(Container, usize)> {
-  let focused_container =
-    state.focused_container().context("No focused container.")?;
-
-  let focused_workspace =
-    focused_container.workspace().context("No workspace.")?;
-
-  // For tiling windows, try to find a suitable tiling window to insert
-  // next to.
-  if *window_state == WindowState::Tiling {
-    let sibling = match focused_container {
-      Container::TilingWindow(_) => Some(focused_container),
-      _ => focused_workspace
-        .descendant_focus_order()
-        .find(Container::is_tiling_window),
-    };
-
-    if let Some(sibling) = sibling {
-      let parent = sibling.parent().context("No parent.")?;
-
-      // Tile next to the sibling's stack rather than inside it, unless
-      // configured otherwise.
-      if parent.as_stack().is_some() && !joins_focused_stack {
-        let stack_parent = parent.parent().context("No parent.")?;
-        return Ok((stack_parent, parent.index() + 1));
-      }
-
-      return Ok((parent, sibling.index() + 1));
-    }
-  }
-
-  // Default to appending to workspace.
-  Ok((
-    focused_workspace.clone().into(),
-    focused_workspace.child_count(),
-  ))
-}
-
 #[cfg(test)]
 mod tests {
   use wm_common::{
     AutoStackRuleConfig, DuplicateTabs, ParsedConfig, WindowState,
   };
 
-  use super::{auto_stack_placement, insertion_target};
+  use super::auto_stack_placement;
   use crate::{
     commands::container::set_focused_descendant,
+    layout::insertion_target,
     models::{Monitor, StackContainer, TilingWindow, Workspace},
     traits::CommonGetters,
     user_config::UserConfig,
@@ -1225,12 +1172,14 @@ mod tests {
     set_focused_descendant(&stacked.into(), None);
 
     let (parent, index) =
-      insertion_target(&WindowState::Tiling, false, &state).unwrap();
+      insertion_target(&WindowState::Tiling, false, &state, &config())
+        .unwrap();
     assert_eq!(parent.id(), workspace.id());
     assert_eq!(index, stack.index() + 1);
 
     let (parent, index) =
-      insertion_target(&WindowState::Tiling, true, &state).unwrap();
+      insertion_target(&WindowState::Tiling, true, &state, &config())
+        .unwrap();
     assert_eq!(parent.id(), stack.id());
     assert_eq!(index, 1);
 

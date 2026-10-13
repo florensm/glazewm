@@ -14,13 +14,13 @@ use wm_platform::{LengthValue, Rect};
 
 use crate::{
   impl_common_getters, impl_container_debug, impl_tiling_size_getters,
+  layout::tiling_rect,
   models::{
     Container, DirectionContainer, InsertionTarget, TilingContainer,
     WindowContainer,
   },
   traits::{
-    tiling_rect, CommonGetters, PositionGetters, TilingSizeGetters,
-    WindowGetters,
+    CommonGetters, PositionGetters, TilingSizeGetters, WindowGetters,
   },
 };
 

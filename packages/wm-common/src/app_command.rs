@@ -6,7 +6,7 @@ use tracing::Level;
 use uuid::Uuid;
 use wm_platform::{Delta, Direction, LengthValue, OpacityValue};
 
-use crate::TilingDirection;
+use crate::{Layout, TilingDirection};
 
 const VERSION: &str = env!("VERSION_NUMBER");
 
@@ -144,6 +144,7 @@ pub enum SubscribableEvent {
   MonitorUpdated,
   MonitorRemoved,
   TilingDirectionChanged,
+  LayoutChanged,
   UserConfigChanged,
   WindowManaged,
   WindowUnmanaged,
@@ -298,6 +299,11 @@ pub enum InvokeCommand {
   SetTilingDirection {
     #[clap(required = true)]
     tiling_direction: TilingDirection,
+  },
+  /// Change the layout of the focused workspace.
+  SetLayout {
+    #[clap(required = true)]
+    layout: Layout,
   },
   WmCycleFocus {
     #[clap(long, default_value_t = false)]

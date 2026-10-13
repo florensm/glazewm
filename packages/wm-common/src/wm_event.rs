@@ -4,7 +4,7 @@ use uuid::Uuid;
 use crate::{
   dtos::ContainerDto,
   parsed_config::{BindingModeConfig, ParsedConfig},
-  TilingDirection,
+  Layout, TilingDirection,
 };
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -37,6 +37,10 @@ pub enum WmEvent {
   TilingDirectionChanged {
     direction_container: ContainerDto,
     new_tiling_direction: TilingDirection,
+  },
+  LayoutChanged {
+    workspace: ContainerDto,
+    new_layout: Layout,
   },
   UserConfigChanged {
     config_path: String,

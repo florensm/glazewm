@@ -12,7 +12,7 @@ use crate::{
       auto_stack_managed_window, is_auto_stacked, is_placement_command,
       run_window_rules_except,
     },
-    workspace::sort_workspaces,
+    workspace::{set_layout, sort_workspaces},
   },
   traits::{CommonGetters, TilingSizeGetters, WindowGetters},
   user_config::UserConfig,
@@ -165,6 +165,18 @@ fn update_workspace_configs(
       }
       Some(workspace_config) => {
         if *workspace_config != workspace.config() {
+          // Only a changed `layout` entry replaces the current layout, so
+          // a reload keeps one picked with `set-layout`.
+          if workspace_config.layout != workspace.config().layout {
+            set_layout(
+              workspace,
+              workspace_config
+                .layout
+                .unwrap_or(config.value.general.default_layout),
+              state,
+            )?;
+          }
+
           workspace.set_config(workspace_config.clone());
 
           sort_workspaces(&monitor, config)?;

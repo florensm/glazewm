@@ -43,7 +43,7 @@ use crate::{
       WindowPositionTarget,
     },
     workspace::{
-      focus_workspace, move_workspace_in_direction,
+      focus_workspace, move_workspace_in_direction, set_layout,
       update_workspace_config,
     },
   },
@@ -1233,6 +1233,11 @@ impl WindowManager {
           config,
           tiling_direction,
         )
+      }
+      InvokeCommand::SetLayout { layout } => {
+        let workspace =
+          subject_container.workspace().context("No workspace.")?;
+        set_layout(&workspace, *layout, state)
       }
       InvokeCommand::WmCycleFocus {
         omit_floating,

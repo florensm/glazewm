@@ -370,6 +370,7 @@ impl IpcServer {
       WmEvent::TilingDirectionChanged { .. } => {
         SubscribableEvent::TilingDirectionChanged
       }
+      WmEvent::LayoutChanged { .. } => SubscribableEvent::LayoutChanged,
       WmEvent::UserConfigChanged { .. } => {
         SubscribableEvent::UserConfigChanged
       }

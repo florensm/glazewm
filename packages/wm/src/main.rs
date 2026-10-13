@@ -39,6 +39,7 @@ mod auto_stack;
 mod commands;
 mod events;
 mod ipc_server;
+mod layout;
 mod models;
 #[cfg(target_os = "windows")]
 mod overview;

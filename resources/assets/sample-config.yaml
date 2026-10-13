@@ -171,6 +171,11 @@ general:
   # Bound to alt+n (`focus --next-empty-workspace`) below.
   dynamic_workspaces: true
 
+  # How workspaces arrange their tiling windows, unless a workspace sets
+  # its own `layout` under `workspaces`. Change it at runtime with
+  # `set-layout <layout>`.
+  default_layout: "split"
+
   cursor_jump:
     # Whether to automatically move the cursor on the specified trigger.
     enabled: true

@@ -457,6 +457,7 @@ impl UserConfig {
       display_name: None,
       bind_to_monitor: None,
       keep_alive: false,
+      layout: None,
     })
   }
 
@@ -741,6 +742,7 @@ window_effects:
         display_name: None,
         bind_to_monitor: None,
         keep_alive: false,
+        layout: None,
       })
       .collect();
 

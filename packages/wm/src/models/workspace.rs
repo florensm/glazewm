@@ -7,7 +7,8 @@ use std::{
 use anyhow::Context;
 use uuid::Uuid;
 use wm_common::{
-  ContainerDto, GapsConfig, TilingDirection, WorkspaceConfig, WorkspaceDto,
+  ContainerDto, GapsConfig, Layout, TilingDirection, WorkspaceConfig,
+  WorkspaceDto,
 };
 use wm_platform::{Rect, RectDelta};
 
@@ -32,6 +33,7 @@ struct WorkspaceInner {
   config: WorkspaceConfig,
   gaps_config: GapsConfig,
   tiling_direction: TilingDirection,
+  layout: Layout,
 }
 
 impl Workspace {
@@ -39,6 +41,7 @@ impl Workspace {
     config: WorkspaceConfig,
     gaps_config: GapsConfig,
     tiling_direction: TilingDirection,
+    layout: Layout,
   ) -> Self {
     let workspace = WorkspaceInner {
       id: Uuid::new_v4(),
@@ -48,6 +51,7 @@ impl Workspace {
       config,
       gaps_config,
       tiling_direction,
+      layout,
     };
 
     Self(Rc::new(RefCell::new(workspace)))
@@ -61,6 +65,14 @@ impl Workspace {
   /// Update the underlying config for the workspace.
   pub fn set_config(&self, config: WorkspaceConfig) {
     self.0.borrow_mut().config = config;
+  }
+
+  pub fn layout(&self) -> Layout {
+    self.0.borrow().layout
+  }
+
+  pub fn set_layout(&self, layout: Layout) {
+    self.0.borrow_mut().layout = layout;
   }
 
   /// Whether the workspace is currently displayed by the parent monitor.
@@ -173,6 +185,7 @@ impl Workspace {
       x: rect.x(),
       y: rect.y(),
       tiling_direction: self.tiling_direction(),
+      layout: self.layout(),
     }))
   }
 }
@@ -191,9 +204,10 @@ impl std::fmt::Display for Workspace {
   fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
     write!(
       f,
-      "Workspace(name={}, tiling_direction={:?})",
+      "Workspace(name={}, tiling_direction={:?}, layout={:?})",
       self.config().name,
       self.tiling_direction(),
+      self.layout(),
     )
   }
 }

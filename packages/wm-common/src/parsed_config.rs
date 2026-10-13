@@ -4,7 +4,7 @@ use wm_platform::{
   Keybinding, LengthValue, OpacityValue, RectDelta,
 };
 
-use crate::app_command::InvokeCommand;
+use crate::{app_command::InvokeCommand, Layout};
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 #[serde(default, rename_all(serialize = "camelCase"))]
@@ -338,6 +338,9 @@ pub struct GeneralConfig {
   /// and are destroyed once they become empty.
   pub dynamic_workspaces: bool,
 
+  /// Layout of workspaces that don't set their own `layout`.
+  pub default_layout: Layout,
+
   /// Commands to run when the WM has started (e.g. to run a script or
   /// launch another application).
   pub startup_commands: Vec<InvokeCommand>,
@@ -363,6 +366,7 @@ impl Default for GeneralConfig {
       focus_follows_cursor: false,
       toggle_workspace_on_refocus: true,
       dynamic_workspaces: false,
+      default_layout: Layout::Split,
       ignore_focus_steal: false,
       startup_commands: vec![],
       shutdown_commands: vec![],
@@ -1125,6 +1129,10 @@ pub struct WorkspaceConfig {
 
   #[serde(default = "default_bool::<false>")]
   pub keep_alive: bool,
+
+  /// Overrides `general.default_layout` for this workspace.
+  #[serde(default)]
+  pub layout: Option<Layout>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
