@@ -4,6 +4,7 @@
 //! `Layout` decides where new windows join it and how rects are computed
 //! from it.
 
+pub mod column_drop;
 mod dwindle;
 mod geometry;
 pub mod scrolling;
