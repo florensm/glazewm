@@ -955,54 +955,12 @@ impl ResizeSession {
     };
 
     let logical = to_logical(current_rect, &self.border_inset);
-
-    let vis_left = logical.x().max(monitor_rect.x());
-    let vis_top = logical.y().max(monitor_rect.y());
-    let vis_right = (logical.x() + logical.width())
-      .min(monitor_rect.x() + monitor_rect.width());
-    let vis_bottom = (logical.y() + logical.height())
-      .min(monitor_rect.y() + monitor_rect.height());
-
-    if vis_left >= vis_right || vis_top >= vis_bottom {
-      surrogate.set_visible(false);
-      self.current_rect = None;
-      return;
-    }
-
-    let src_left = vis_left - logical.x();
-    let src_top = vis_top - logical.y();
-    let constrained_w = vis_right - vis_left;
-    let constrained_h = vis_bottom - vis_top;
-
-    // `rcSource` samples from the real window's coordinate space, so it
-    // must carry the same `border_inset` offset as
-    // `register_thumbnail`/ `update_thumbnail_dims` (see
-    // `update_zoom_fade`'s comment) -- `src_left`/`src_top` above are
-    // the visible slice's offset within the *logical* rect, not yet
-    // shifted into the window's physical/source space.
-    surrogate.set_thumbnail_rects(
-      RECT {
-        left: self.border_inset.left + src_left,
-        top: self.border_inset.top + src_top,
-        right: self.border_inset.left + src_left + constrained_w,
-        bottom: self.border_inset.top + src_top + constrained_h,
-      },
-      RECT {
-        left: 0,
-        top: 0,
-        right: constrained_w,
-        bottom: constrained_h,
-      },
+    self.current_rect = surrogate.show_clipped(
+      &logical,
+      monitor_rect,
+      self.border_inset,
+      opacity,
     );
-
-    let constrained =
-      Rect::from_xy(vis_left, vis_top, constrained_w, constrained_h);
-    if let Err(err) = surrogate.reposition(&constrained) {
-      tracing::warn!("Surrogate clipped update failed: {err}.");
-    }
-    surrogate.set_window_opacity(opacity);
-    surrogate.set_visible(true);
-    self.current_rect = Some(constrained);
   }
 
   /// Redirects the session to a new target rect while the surrogate is

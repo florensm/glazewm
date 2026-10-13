@@ -54,6 +54,10 @@ pub use native_surrogate::{NativeSurrogate, SurrogateBatch};
 #[cfg(target_os = "windows")]
 pub use overlay_window::Overlay;
 #[cfg(target_os = "windows")]
+mod window_peek;
+#[cfg(target_os = "windows")]
+pub use window_peek::WindowPeek;
+#[cfg(target_os = "windows")]
 mod resize_session;
 #[cfg(target_os = "windows")]
 pub use resize_session::{

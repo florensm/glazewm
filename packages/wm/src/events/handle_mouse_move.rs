@@ -3,13 +3,13 @@ use anyhow::Context;
 use wm_common::try_warn;
 use wm_platform::{MouseButton, MouseEvent};
 
-use crate::{
-  commands::container::set_focused_descendant, traits::CommonGetters,
-  user_config::UserConfig, wm_state::WmState,
-};
 #[cfg(target_os = "macos")]
+use crate::events::handle_window_moved_or_resized_end;
 use crate::{
-  events::handle_window_moved_or_resized_end, traits::WindowGetters,
+  commands::container::set_focused_descendant,
+  traits::{CommonGetters, WindowGetters},
+  user_config::UserConfig,
+  wm_state::WmState,
 };
 
 pub fn handle_mouse_move(
@@ -50,6 +50,35 @@ pub fn handle_mouse_move(
 
         handle_window_moved_or_resized_end(&window, state, config)?;
       }
+    }
+
+    return Ok(());
+  }
+
+  // A click on the peek of a scrolling layout's column focuses the
+  // column, which scrolls it into view. Peeks are click-through, so the
+  // click itself lands on whatever is below.
+  #[cfg(target_os = "windows")]
+  if let MouseEvent::ButtonUp {
+    button: MouseButton::Left,
+    position,
+    ..
+  } = event
+  {
+    let is_dragging = state
+      .windows()
+      .iter()
+      .any(|window| window.active_drag().is_some());
+
+    if let Some(window) = state
+      .animation_manager
+      .scroll_view
+      .window_at(position)
+      .filter(|_| !is_dragging)
+      .and_then(|id| state.container_by_id(id))
+    {
+      set_focused_descendant(&window, None);
+      state.pending_sync.queue_focus_change();
     }
 
     return Ok(());

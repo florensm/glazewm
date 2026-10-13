@@ -76,11 +76,16 @@ pub fn platform_sync(
     state.focused_container().context("No focused container.")?;
 
   // A focus change or relayout can scroll a scrolling layout, which then
-  // moves the rest of its columns too.
+  // moves the rest of its columns too. Moving columns are handed to the
+  // scroll view before anything is repositioned, so their peeks are on
+  // screen before their real windows are cloaked.
   if state.pending_sync.needs_focus_update()
     || !state.pending_sync.containers_to_redraw().is_empty()
   {
     crate::layout::scrolling::sync_scroll_offsets(state)?;
+
+    #[cfg(target_os = "windows")]
+    crate::animation::scroll_view::sync_scroll_view(state, config);
   }
 
   // Windows whose own z-order was changed this tick, and whose overlays
@@ -1086,10 +1091,14 @@ fn redraw_containers(
     // `pending_sync` (cleared after the first `platform_sync`), this stays
     // `true` for the full animation so that focus events during the slide
     // do not prematurely uncloak the real window.
+    //
+    // Columns of a scrolling layout moving across the monitor edge are
+    // likewise drawn by the scroll view until they come to rest.
     #[cfg(target_os = "windows")]
     let is_frozen_by_ws_animation = state
       .animation_manager
-      .is_workspace_switch_incoming(&window.id());
+      .is_workspace_switch_incoming(&window.id())
+      || state.animation_manager.scroll_view.is_moving(&window.id());
     #[cfg(not(target_os = "windows"))]
     let is_frozen_by_ws_animation = false;
 
@@ -1520,6 +1529,7 @@ fn redraw_containers(
           state
             .animation_manager
             .hide_pending_ws_cleanup_surrogate(window.id());
+          state.animation_manager.scroll_view.release(&window.id());
         }
 
         // Apply animated opacity for opacity-style focus animations. The

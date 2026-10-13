@@ -489,6 +489,9 @@ pub struct AnimationManager {
   /// Active workspace-switch slide animation, or `None` when idle.
   #[cfg(target_os = "windows")]
   workspace_switch: Option<WorkspaceSwitchState>,
+  /// Peeks drawing scrolling layouts' columns.
+  #[cfg(target_os = "windows")]
+  pub scroll_view: super::scroll_view::ScrollView,
   /// Workspace-switch state that just completed; kept alive until the
   /// final `platform_sync` call unclocks the incoming real windows.
   #[cfg(target_os = "windows")]
@@ -569,6 +572,7 @@ impl AnimationManager {
       slide_in_monitor_rects: HashMap::new(),
       #[cfg(target_os = "windows")]
       workspace_switch: None,
+      scroll_view: super::scroll_view::ScrollView::default(),
       #[cfg(target_os = "windows")]
       pending_ws_cleanup: None,
       #[cfg(target_os = "windows")]
@@ -623,6 +627,7 @@ impl AnimationManager {
   #[cfg(target_os = "windows")]
   pub fn has_active_surrogate(&self, window_id: &Uuid) -> bool {
     self.resize_sessions.contains_key(window_id)
+      || self.scroll_view.owns_window(window_id)
       || self
         .workspace_switch
         .as_ref()
@@ -774,6 +779,10 @@ impl AnimationManager {
     }
     #[cfg(target_os = "windows")]
     if self.iris_switch.is_some() {
+      return true;
+    }
+    #[cfg(target_os = "windows")]
+    if self.scroll_view.is_active() {
       return true;
     }
     // Completed sessions fading out still need ticks to advance the fade.
@@ -1083,6 +1092,22 @@ impl AnimationManager {
       .unwrap_or(frame_now);
     for animation in state.animation_manager.animations.values() {
       animation.start_clock(clock_origin);
+    }
+
+    // Moved columns that end fully on screen get their real window back
+    // in the redraw below.
+    #[cfg(target_os = "windows")]
+    for window_id in state
+      .animation_manager
+      .scroll_view
+      .tick(frame_now, clock_origin)
+    {
+      if let Some(window) = state
+        .container_by_id(window_id)
+        .and_then(|container| container.as_window_container().ok())
+      {
+        state.pending_sync.queue_container_to_redraw(window);
+      }
     }
 
     // Queue in-progress windows for redraw.

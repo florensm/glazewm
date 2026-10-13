@@ -866,6 +866,64 @@ impl NativeSurrogate {
     self.set_covered(size);
   }
 
+  /// Shows the part of the source window at `logical` that lies inside
+  /// `clip`, with the surrogate shrunk to that part and the thumbnail
+  /// sampling only it. Hides the surrogate when nothing is inside.
+  ///
+  /// Returns the visible rect, if any.
+  pub fn show_clipped(
+    &mut self,
+    logical: &Rect,
+    clip: &Rect,
+    border_inset: RECT,
+    opacity: u8,
+  ) -> Option<Rect> {
+    let vis_left = logical.x().max(clip.x());
+    let vis_top = logical.y().max(clip.y());
+    let vis_right =
+      (logical.x() + logical.width()).min(clip.x() + clip.width());
+    let vis_bottom =
+      (logical.y() + logical.height()).min(clip.y() + clip.height());
+
+    if vis_left >= vis_right || vis_top >= vis_bottom {
+      self.set_visible(false);
+      return None;
+    }
+
+    let src_left = vis_left - logical.x();
+    let src_top = vis_top - logical.y();
+    let width = vis_right - vis_left;
+    let height = vis_bottom - vis_top;
+
+    // `rcSource` samples from the real window's coordinate space, so it
+    // carries the same `border_inset` offset as the thumbnail
+    // registration; `src_left`/`src_top` are offsets within the logical
+    // rect.
+    self.set_thumbnail_rects(
+      RECT {
+        left: border_inset.left + src_left,
+        top: border_inset.top + src_top,
+        right: border_inset.left + src_left + width,
+        bottom: border_inset.top + src_top + height,
+      },
+      RECT {
+        left: 0,
+        top: 0,
+        right: width,
+        bottom: height,
+      },
+    );
+
+    let visible = Rect::from_xy(vis_left, vis_top, width, height);
+    if let Err(err) = self.reposition(&visible) {
+      tracing::warn!("Surrogate clipped update failed: {err}.");
+    }
+    self.set_window_opacity(opacity);
+    self.set_visible(true);
+
+    Some(visible)
+  }
+
   /// Returns the raw handle of the surrogate overlay window.
   pub fn hwnd(&self) -> HWND {
     HWND(self.hwnd)
