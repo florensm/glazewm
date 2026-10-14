@@ -887,9 +887,11 @@ fn redraw_containers(
           // first few frames of the slide without a visible gap.
           wm_platform::dwm_flush();
 
+          let axis = state.pending_sync.workspace_switch_axis().clone();
           state.animation_manager.start_workspace_switch(
             ws_windows,
             direction, // order_direction: +1/-1
+            axis,
             monitor_x,
             monitor_width,
             monitor_y,

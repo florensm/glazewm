@@ -1,6 +1,8 @@
 use anyhow::Context;
 use tracing::info;
-use wm_common::{WindowState, WorkspaceSwitchIrisOrigin};
+use wm_common::{
+  WindowState, WorkspaceSwitchDirection, WorkspaceSwitchIrisOrigin,
+};
 
 use super::activate_workspace;
 use crate::{
@@ -9,7 +11,7 @@ use crate::{
     workspace::deactivate_unused_workspace,
   },
   layout::is_hidden_in_layout,
-  models::{Container, WindowContainer, WorkspaceTarget},
+  models::{Container, WindowContainer, Workspace, WorkspaceTarget},
   pending_sync::IrisSwitchRequest,
   traits::{CommonGetters, PositionGetters, WindowGetters},
   user_config::UserConfig,
@@ -108,13 +110,21 @@ pub fn focus_workspace(
         }
       } else {
         // Derive slide direction before queuing redraws so `platform_sync`
-        // can build per-window surrogates with the correct direction.
+        // can build per-window surrogates with the correct direction. It
+        // is relative to the workspace sliding out on the same monitor.
         let direction = workspace_switch_direction(
           &target_workspace.config().name,
-          &focused_workspace.config().name,
+          &displayed_workspace.config().name,
           config,
         );
-        state.pending_sync.set_workspace_switch_direction(direction);
+        state.pending_sync.set_workspace_switch_direction(
+          direction,
+          workspace_switch_axis(
+            &target_workspace,
+            &displayed_workspace,
+            config,
+          ),
+        );
 
         // Mark windows on the incoming workspace to slide in.
         for window in target_workspace
@@ -160,17 +170,32 @@ pub fn focus_workspace(
   Ok(())
 }
 
-/// Returns `+1` if `target_name` comes after `focused_name` in the
+/// Returns `+1` if `target_name` comes after `displayed_name` in the
 /// workspaces' order on a monitor, `-1` if before, `0` for the same one.
 ///
 /// Used to derive the slide direction for the workspace-switch animation,
 /// so dynamic and special workspaces slide in from where they sit too.
 fn workspace_switch_direction(
   target_name: &str,
-  focused_name: &str,
+  displayed_name: &str,
   config: &UserConfig,
 ) -> i32 {
-  config.compare_workspaces(target_name, focused_name) as i32
+  config.compare_workspaces(target_name, displayed_name) as i32
+}
+
+/// Axis the workspace-switch slide runs along: the configured one, or
+/// vertical to and from the special workspace, which sorts last and so
+/// rises from below the others (as its dock does in the overview).
+fn workspace_switch_axis(
+  target: &Workspace,
+  displayed: &Workspace,
+  config: &UserConfig,
+) -> WorkspaceSwitchDirection {
+  if target.is_special() || displayed.is_special() {
+    WorkspaceSwitchDirection::Vertical
+  } else {
+    config.value.animations.workspace_switch.direction.clone()
+  }
 }
 
 /// Computes the iris-wipe circle origin (screen pixels) for the configured
@@ -214,11 +239,13 @@ fn is_switch_animated(window: &WindowContainer) -> bool {
 
 #[cfg(test)]
 mod tests {
-  use wm_common::ParsedConfig;
+  use wm_common::{ParsedConfig, WorkspaceSwitchDirection};
 
-  use super::workspace_switch_direction;
+  use super::{workspace_switch_axis, workspace_switch_direction};
   use crate::{
-    test_utils::mock_workspace_configs, user_config::UserConfig,
+    models::Workspace,
+    test_utils::{mock_config, mock_workspace_configs},
+    user_config::UserConfig,
   };
 
   #[test]
@@ -239,5 +266,25 @@ mod tests {
     // The special workspace comes last.
     assert_eq!(workspace_switch_direction(&special, "10", &config), 1);
     assert_eq!(workspace_switch_direction("1", &special, &config), -1);
+  }
+
+  #[test]
+  fn the_special_workspace_slides_vertically() {
+    let config = mock_config();
+    let regular = Workspace::mock().call();
+    let special = Workspace::mock().is_special(true).call();
+
+    assert_eq!(
+      workspace_switch_axis(&special, &regular, &config),
+      WorkspaceSwitchDirection::Vertical
+    );
+    assert_eq!(
+      workspace_switch_axis(&regular, &special, &config),
+      WorkspaceSwitchDirection::Vertical
+    );
+    assert_eq!(
+      workspace_switch_axis(&regular, &regular, &config),
+      config.value.animations.workspace_switch.direction
+    );
   }
 }

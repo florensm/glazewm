@@ -50,6 +50,23 @@ Moving a window to an inactive special workspace creates it on the focused
 monitor. If it is already active on another monitor, the window goes there
 and the special workspace stays put until you summon it.
 
+With the `slide` workspace-switch style, the special workspace slides up
+from below the others when summoned and back down when you leave it,
+whatever the configured `direction`.
+
+## Window rules
+
+To open an app on the special workspace, use `move --workspace <name>` in
+a window rule. Unlike `move --special-workspace`, it doesn't toggle, so it
+leaves a window that is already there in place:
+
+```yaml
+window_rules:
+  - commands: ["move --workspace special"]
+    match:
+      - window_process: { equals: "Spotify" }
+```
+
 ## IPC
 
 Workspaces carry an `isSpecial` flag in query responses and events.

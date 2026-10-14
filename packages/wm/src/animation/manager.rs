@@ -3093,6 +3093,7 @@ impl AnimationManager {
     &mut self,
     windows: Vec<(Uuid, WorkspaceSwitchEntry)>,
     order_direction: i32,
+    slide_direction: WorkspaceSwitchDirection,
     monitor_x: i32,
     monitor_width: i32,
     monitor_y: i32,
@@ -3126,7 +3127,7 @@ impl AnimationManager {
          slide_distance=({slide_distance_h}x{slide_distance_v}), \
          windows={}",
         ws_config.style,
-        ws_config.direction,
+        slide_direction,
         order_direction,
         ws_windows.len(),
       );
@@ -3153,7 +3154,7 @@ impl AnimationManager {
         duration: Duration::from_millis(u64::from(duration_ms)),
         easing: ws_config.easing.clone(),
         style: ws_config.style.clone(),
-        slide_direction: ws_config.direction.clone(),
+        slide_direction,
         order_direction,
         monitor_x,
         monitor_width,

@@ -542,6 +542,14 @@ window_rules:
   #   match:
   #     - window_process: { equals: "Discord" }
   #       window_title: { regex: '^\(\d+\)' }
+
+  # Park an app on the special workspace when it opens. Use
+  # `move --workspace <name>` here: `move --special-workspace` toggles, so
+  # it would send the window back out when the special workspace is
+  # focused.
+  # - commands: ["move --workspace special"]
+  #   match:
+  #     - window_process: { equals: "Spotify" }
   - commands: ["ignore"]
     match:
       # Ignores any Zebar windows.

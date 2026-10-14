@@ -1,6 +1,7 @@
 use std::collections::{HashMap, HashSet};
 
 use uuid::Uuid;
+use wm_common::WorkspaceSwitchDirection;
 
 use crate::{
   models::{Container, Workspace},
@@ -71,6 +72,10 @@ pub struct PendingSync {
   /// means the opposite. `0` means no directional preference (fade in
   /// place).
   workspace_switch_direction: i32,
+
+  /// Slide axis for the current workspace switch: the configured one, or
+  /// vertical to and from the special workspace.
+  workspace_switch_axis: WorkspaceSwitchDirection,
 
   /// Window IDs that just underwent a tiling/floating state change this
   /// sync cycle. Used by `platform_sync` to allow `window_move`
@@ -144,6 +149,7 @@ impl PendingSync {
     self.workspace_switch_incoming.clear();
     self.workspace_switch_outgoing.clear();
     self.workspace_switch_direction = 0;
+    self.workspace_switch_axis = WorkspaceSwitchDirection::default();
     self.window_state_changes.clear();
     self.wm_fullscreen_toggles.clear();
     self.window_restores.clear();
@@ -323,18 +329,25 @@ impl PendingSync {
     self.workspace_switch_outgoing.contains(window_id)
   }
 
-  /// Sets the slide direction for the current workspace switch.
+  /// Sets the slide direction and axis for the current workspace switch.
   pub fn set_workspace_switch_direction(
     &mut self,
     direction: i32,
+    axis: WorkspaceSwitchDirection,
   ) -> &mut Self {
     self.workspace_switch_direction = direction;
+    self.workspace_switch_axis = axis;
     self
   }
 
   /// Returns the slide direction for the current workspace switch.
   pub fn workspace_switch_direction(&self) -> i32 {
     self.workspace_switch_direction
+  }
+
+  /// Returns the slide axis for the current workspace switch.
+  pub fn workspace_switch_axis(&self) -> &WorkspaceSwitchDirection {
+    &self.workspace_switch_axis
   }
 
   /// Requests an iris-wipe workspace switch for this sync cycle.

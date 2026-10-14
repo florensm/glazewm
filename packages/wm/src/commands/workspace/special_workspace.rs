@@ -93,13 +93,14 @@ fn summon_special_workspace(
 
 #[cfg(test)]
 mod tests {
-  use wm_common::{Layout, ParsedConfig};
+  use wm_common::{Layout, ParsedConfig, WorkspaceSwitchDirection};
   use wm_platform::Rect;
 
   use super::{focus_special_workspace, move_window_to_special_workspace};
   use crate::{
     commands::{
-      container::set_focused_descendant, workspace::focus_workspace,
+      container::set_focused_descendant, window::move_window_to_workspace,
+      workspace::focus_workspace,
     },
     models::{
       Container, Monitor, TilingWindow, Workspace, WorkspaceTarget,
@@ -246,5 +247,44 @@ mod tests {
       window.workspace().map(|w| w.config().name).as_deref(),
       Some("1")
     );
+  }
+
+  #[test]
+  fn summoning_rises_from_below_and_leaving_sinks_back() {
+    let config = config();
+    let (mut state, _, _) = two_monitors(None);
+    let slide = |state: &WmState| {
+      (
+        state.pending_sync.workspace_switch_direction(),
+        state.pending_sync.workspace_switch_axis().clone(),
+      )
+    };
+
+    focus_special_workspace(&mut state, &config).unwrap();
+    assert_eq!(slide(&state), (1, WorkspaceSwitchDirection::Vertical));
+
+    state.pending_sync.clear();
+    focus_special_workspace(&mut state, &config).unwrap();
+    assert_eq!(slide(&state), (-1, WorkspaceSwitchDirection::Vertical));
+  }
+
+  /// What a window rule running `move --workspace special` does, on every
+  /// event it matches.
+  #[test]
+  fn moving_by_name_to_the_special_workspace_is_idempotent() {
+    let config = config();
+    let window = TilingWindow::mock().call();
+    let (mut state, _, _) = two_monitors(Some(&window));
+
+    for _ in 0..2 {
+      move_window_to_workspace(
+        window.clone().into(),
+        WorkspaceTarget::Name("special".to_string()),
+        &mut state,
+        &config,
+      )
+      .unwrap();
+      assert!(window.workspace().is_some_and(|w| w.is_special()));
+    }
   }
 }
