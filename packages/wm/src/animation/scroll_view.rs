@@ -82,6 +82,15 @@ impl ScrollView {
       .is_some_and(|entry| entry.role != Role::Peek)
   }
 
+  /// Where `window_id`'s peek is headed while its real window is cloaked.
+  fn owned_target(&self, window_id: &Uuid) -> Option<&Rect> {
+    self
+      .entries
+      .get(window_id)
+      .filter(|entry| entry.role != Role::Peek)
+      .map(|entry| &entry.motion.target_rect)
+  }
+
   /// Whether `window_id` is moving, i.e. its real window stays frozen.
   pub fn is_moving(&self, window_id: &Uuid) -> bool {
     self
@@ -275,9 +284,17 @@ pub fn sync_scroll_view(state: &mut WmState, config: &UserConfig) {
   let view = &mut state.animation_manager.scroll_view;
 
   // Windows that left the displayed scrolling layouts lose their peeks;
-  // their real windows are handled like any other window's.
+  // their real windows are handled like any other window's. One the
+  // scroll view held cloaked is redrawn, which shows or hides it for good.
   let is_known = |id: &Uuid| windows.iter().any(|(w, _)| w.id() == *id);
-  view.entries.retain(|id, _| is_known(id));
+  let mut released = Vec::new();
+  view.entries.retain(|id, entry| {
+    let keep = is_known(id);
+    if !keep && entry.role != Role::Peek {
+      released.push(*id);
+    }
+    keep
+  });
   view.last_rects.retain(|id, _| is_known(id));
 
   let scroll_config = &config.value.animations.scroll;
@@ -307,12 +324,8 @@ pub fn sync_scroll_view(state: &mut WmState, config: &UserConfig) {
       let is_on_screen = |rect: &Rect| rect.intersection_area(clip) > 0;
 
       // Mid-move or mid-hand-back with nowhere new to go: leave it be.
-      if from == target
-        && view
-          .entries
-          .get(&window.id())
-          .is_some_and(|entry| entry.role != Role::Peek)
-      {
+      // Retargeting it anyway would restart its move every sync.
+      if view.owned_target(&window.id()) == Some(&target) {
         continue;
       }
 
@@ -329,7 +342,14 @@ pub fn sync_scroll_view(state: &mut WmState, config: &UserConfig) {
         continue;
       };
 
-      if !is_on_screen(&from) && !is_on_screen(&target) {
+      // Nothing to draw. A window held cloaked keeps its peek though, to
+      // be handed back at the end of its move: dropping it would leave
+      // the real window cloaked, and its cloak event would then look
+      // like the app hiding it.
+      if !is_on_screen(&from)
+        && !is_on_screen(&target)
+        && !view.owns_window(&window.id())
+      {
         view.entries.remove(&window.id());
         continue;
       }
@@ -354,6 +374,15 @@ pub fn sync_scroll_view(state: &mut WmState, config: &UserConfig) {
 
   if needs_flush {
     wm_platform::dwm_flush();
+  }
+
+  for id in released {
+    if let Some(window) = state
+      .container_by_id(id)
+      .and_then(|container| container.as_window_container().ok())
+    {
+      state.pending_sync.queue_container_to_redraw(window);
+    }
   }
 
   // The scroll view drives these windows now, not their own animations.
@@ -394,7 +423,8 @@ pub fn report_stuck_windows(state: &mut WmState) {
 
     let role = view.entries.get(&window.id()).map(|entry| entry.role);
     tracing::warn!(
-      "Scrolling layout window stuck cloaked: {window}, rect {:?},        last rect {:?}, scroll view role {role:?}.",
+      "Scrolling layout window stuck cloaked: {window}, rect {:?}, last \
+       rect {:?}, scroll view role {role:?}.",
       target_rect(&window).ok(),
       view.last_rects.get(&window.id()),
     );
