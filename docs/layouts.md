@@ -71,3 +71,20 @@ unrelated reloads.
   hidden and its visible part is shown as a click-through preview
   instead; clicking it focuses the column.
 - The overview shows a scrolling workspace's whole strip in its card.
+
+## Dragging windows
+
+While a tiling window is dragged, a highlight shows where it will land if
+dropped: the half of the window or column it goes beside, or all of an
+empty workspace. Any dragged window over a stack's tab bar highlights the
+stack it would join. The highlight glides from one spot to the next as
+the cursor moves. Only available on Windows.
+
+```yaml
+window_behavior:
+  drop_indicator:
+    enabled: true
+    # Same values as a border's color. Left out, it is the focused
+    # window's border color.
+    # color: "accent"
+```

@@ -1,9 +1,8 @@
 use anyhow::Context;
 use wm_common::{
-  try_warn, ActiveDragOperation, FullscreenStateConfig, Layout,
-  TilingDirection, WindowState,
+  try_warn, ActiveDragOperation, FullscreenStateConfig, WindowState,
 };
-use wm_platform::{LengthValue, Point, Rect};
+use wm_platform::{LengthValue, Point};
 
 use crate::{
   commands::{
@@ -14,14 +13,12 @@ use crate::{
     window::{join_stack, set_window_size, update_window_state},
   },
   events::update_floating_window_position,
-  layout::column_drop::{drop_into_column, drop_target},
-  models::{
-    Container, DirectionContainer, NonTilingWindow, SplitContainer,
-    StackContainer, TilingContainer, WindowContainer,
+  layout::{
+    column_drop::drop_into_column,
+    window_drop::{tab_bar_at, window_drop, WindowDrop},
   },
-  traits::{
-    CommonGetters, PositionGetters, TilingDirectionGetters, WindowGetters,
-  },
+  models::{Container, NonTilingWindow, SplitContainer, WindowContainer},
+  traits::{CommonGetters, TilingDirectionGetters, WindowGetters},
   user_config::UserConfig,
   wm_state::WmState,
 };
@@ -39,6 +36,9 @@ pub fn handle_window_moved_or_resized_end(
   state: &mut WmState,
   config: &UserConfig,
 ) -> anyhow::Result<()> {
+  #[cfg(target_os = "windows")]
+  crate::drop_indicator::hide_drop_indicator(state);
+
   let Some(active_drag) = window.active_drag() else {
     return Ok(());
   };
@@ -178,7 +178,6 @@ pub fn handle_window_moved_or_resized_end(
 
 /// Handles transition from temporary floating window to tiling window on
 /// drag end, with the cursor at `mouse_pos`.
-#[allow(clippy::too_many_lines)]
 fn drop_as_tiling_window(
   moved_window: &NonTilingWindow,
   mouse_pos: &Point,
@@ -195,16 +194,6 @@ fn drop_as_tiling_window(
     .parent()
     .and_then(|parent| parent.as_stack().cloned());
 
-  let moved_id = moved_stack
-    .as_ref()
-    .map_or(moved_window.id(), CommonGetters::id);
-
-  let mouse_workspace = state
-    .monitor_at_point(mouse_pos)
-    .and_then(|monitor| monitor.displayed_workspace())
-    .or_else(|| moved_window.workspace())
-    .context("Couldn't find workspace for window drop.")?;
-
   // The container that ends up where the window is dropped.
   let dropped = |window: &WindowContainer| -> Container {
     moved_stack
@@ -212,162 +201,91 @@ fn drop_as_tiling_window(
       .map_or_else(|| window.clone().into(), Into::into)
   };
 
-  // Decided on the columns as shown during the drag, before the window is
-  // put back into the tree.
-  let column_drop = match mouse_workspace.layout() {
-    Layout::Scrolling => drop_target(&mouse_workspace, mouse_pos)?,
-    Layout::Split | Layout::Dwindle => None,
-  };
+  let drop = window_drop(moved_window, mouse_pos, state)?
+    .context("Couldn't find workspace for window drop.")?;
 
-  if let Some(column_drop) = column_drop {
-    let moved_window = update_window_state(
-      moved_window.clone().into(),
-      WindowState::Tiling,
-      state,
-      config,
-    )?;
+  match drop {
+    WindowDrop::Column { workspace, drop } => {
+      let moved_window = update_window_state(
+        moved_window.clone().into(),
+        WindowState::Tiling,
+        state,
+        config,
+      )?;
 
-    drop_into_column(
-      &dropped(&moved_window),
-      &column_drop,
-      state,
-      config,
-    )?;
-    state
-      .pending_sync
-      .queue_container_to_redraw(mouse_workspace);
+      drop_into_column(&dropped(&moved_window), &drop, state, config)?;
+      state.pending_sync.queue_container_to_redraw(workspace);
 
-    return Ok(moved_window);
-  }
-
-  // Get the workspace, split containers, and other windows under the
-  // dragged window.
-  let containers_at_pos = state
-    .containers_at_point(&mouse_workspace.clone().into(), mouse_pos)
-    .into_iter()
-    .filter(|container| {
-      !container
-        .self_and_ancestors()
-        .any(|ancestor| ancestor.id() == moved_id)
-    });
-
-  // Get the deepest direction container under the dragged window.
-  let target_parent: DirectionContainer = containers_at_pos
-    .filter_map(|container| container.as_direction_container().ok())
-    .fold(mouse_workspace.into(), |acc, container| {
-      if container.ancestors().count() > acc.ancestors().count() {
-        container
+      Ok(moved_window)
+    }
+    WindowDrop::Into(parent) => {
+      let moved: Container = if let Some(stack) = &moved_stack {
+        stack.set_insertion_target(None);
+        stack.clone().into()
       } else {
-        acc
+        moved_window.set_insertion_target(None);
+        moved_window.clone().into()
+      };
+
+      move_container_within_tree(&moved, &parent.into(), 0, state)?;
+
+      update_window_state(
+        moved_window.as_window_container()?,
+        WindowState::Tiling,
+        state,
+        config,
+      )
+    }
+    WindowDrop::Beside {
+      parent,
+      target,
+      position,
+      should_split,
+    } => {
+      let moved_window = update_window_state(
+        moved_window.clone().into(),
+        WindowState::Tiling,
+        state,
+        config,
+      )?;
+
+      let moved = dropped(&moved_window);
+
+      if should_split {
+        let split_container = SplitContainer::new(
+          parent.tiling_direction().inverse(),
+          config.value.gaps.clone(),
+        );
+
+        wrap_in_split_container(
+          &split_container,
+          &parent.clone().into(),
+          &[target],
+        )?;
+
+        move_container_within_tree(
+          &moved,
+          &split_container.into(),
+          usize::from(!position.is_before()),
+          state,
+        )?;
+      } else {
+        let target_index =
+          target.index() + usize::from(!position.is_before());
+
+        move_container_within_tree(
+          &moved,
+          &parent.clone().into(),
+          target_index,
+          state,
+        )?;
       }
-    });
 
-  // If the target parent has no children (i.e. an empty workspace), then
-  // add the window directly.
-  if target_parent.tiling_children().count() == 0 {
-    let moved: Container = if let Some(stack) = &moved_stack {
-      stack.set_insertion_target(None);
-      stack.clone().into()
-    } else {
-      moved_window.set_insertion_target(None);
-      moved_window.clone().into()
-    };
+      state.pending_sync.queue_container_to_redraw(parent);
 
-    move_container_within_tree(
-      &moved,
-      &target_parent.clone().into(),
-      0,
-      state,
-    )?;
-
-    return update_window_state(
-      moved_window.as_window_container()?,
-      WindowState::Tiling,
-      state,
-      config,
-    );
+      Ok(moved_window)
+    }
   }
-
-  let nearest_container = target_parent
-    .children()
-    .into_iter()
-    .filter_map(|container| container.as_tiling_container().ok())
-    .try_fold(None, |acc: Option<TilingContainer>, container| match acc {
-      Some(acc) => {
-        let is_nearer = acc.to_rect()?.distance_to_point(mouse_pos)
-          < container.to_rect()?.distance_to_point(mouse_pos);
-
-        anyhow::Ok(Some(if is_nearer { acc } else { container }))
-      }
-      None => Ok(Some(container)),
-    })?
-    .context("No nearest container.")?;
-
-  let tiling_direction = target_parent.tiling_direction();
-  let drop_position =
-    drop_position(mouse_pos, &nearest_container.to_rect()?);
-
-  let moved_window = update_window_state(
-    moved_window.clone().into(),
-    WindowState::Tiling,
-    state,
-    config,
-  )?;
-
-  let moved = dropped(&moved_window);
-
-  let should_split = nearest_container.is_tiling_window()
-    && match tiling_direction {
-      TilingDirection::Horizontal => {
-        drop_position == DropPosition::Top
-          || drop_position == DropPosition::Bottom
-      }
-      TilingDirection::Vertical => {
-        drop_position == DropPosition::Left
-          || drop_position == DropPosition::Right
-      }
-    };
-
-  if should_split {
-    let split_container = SplitContainer::new(
-      tiling_direction.inverse(),
-      config.value.gaps.clone(),
-    );
-
-    wrap_in_split_container(
-      &split_container,
-      &target_parent.clone().into(),
-      &[nearest_container],
-    )?;
-
-    let target_index = match drop_position {
-      DropPosition::Top | DropPosition::Left => 0,
-      _ => 1,
-    };
-
-    move_container_within_tree(
-      &moved,
-      &split_container.into(),
-      target_index,
-      state,
-    )?;
-  } else {
-    let target_index = match drop_position {
-      DropPosition::Top | DropPosition::Left => nearest_container.index(),
-      _ => nearest_container.index() + 1,
-    };
-
-    move_container_within_tree(
-      &moved,
-      &target_parent.clone().into(),
-      target_index,
-      state,
-    )?;
-  }
-
-  state.pending_sync.queue_container_to_redraw(target_parent);
-
-  Ok(moved_window)
 }
 
 /// Moves a dragged window into the stack whose tab bar it was dropped on.
@@ -426,64 +344,6 @@ fn drop_onto_tab_bar(
   Ok(true)
 }
 
-/// The stack, other than `exclude`, whose tab bar is at `point` on a
-/// displayed workspace.
-fn tab_bar_at(
-  point: &Point,
-  exclude: Option<&StackContainer>,
-  state: &WmState,
-) -> Option<StackContainer> {
-  state
-    .root_container
-    .descendants()
-    .filter_map(|container| container.as_stack().cloned())
-    .filter(|stack| {
-      exclude.is_none_or(|exclude| exclude.id() != stack.id())
-        && stack.shows_tab_bar()
-        && stack.workspace().is_some_and(|ws| ws.is_displayed())
-    })
-    .find(|stack| {
-      stack.to_rect().is_ok_and(|rect| {
-        rect.contains_point(point)
-          && !stack.content_rect(&rect).contains_point(point)
-      })
-    })
-}
-
-/// Represents where the window was dropped over another.
-#[derive(Debug, Clone, PartialEq)]
-enum DropPosition {
-  Top,
-  Bottom,
-  Left,
-  Right,
-}
-
-/// Gets the drop position for a window based on the mouse position.
-///
-/// This approach divides the window rect into an "X", creating four
-/// triangular quadrants, to determine which side the cursor is closest to.
-fn drop_position(mouse_pos: &Point, rect: &Rect) -> DropPosition {
-  let delta_x = mouse_pos.x - rect.center_point().x;
-  let delta_y = mouse_pos.y - rect.center_point().y;
-
-  if delta_x.abs() > delta_y.abs() {
-    // Window is in the left or right triangle.
-    if delta_x > 0 {
-      DropPosition::Right
-    } else {
-      DropPosition::Left
-    }
-  } else {
-    // Window is in the top or bottom triangle.
-    if delta_y > 0 {
-      DropPosition::Bottom
-    } else {
-      DropPosition::Top
-    }
-  }
-}
-
 #[cfg(test)]
 mod tests {
   use std::mem::ManuallyDrop;
@@ -492,6 +352,8 @@ mod tests {
   use wm_platform::{LengthValue, Point, Rect};
 
   use super::drop_as_tiling_window;
+  #[cfg(target_os = "windows")]
+  use crate::layout::window_drop::{window_drop, WindowDrop};
   use crate::{
     commands::{
       container::{attach_container, set_focused_descendant},
@@ -828,5 +690,89 @@ mod tests {
     assert_size(&split_right, 0.5);
     assert_eq!(child_ids(&workspace), vec![column.id()]);
     assert_size(&column, 0.6);
+  }
+  #[cfg(target_os = "windows")]
+  #[test]
+  fn the_drop_indicator_shows_the_half_a_window_drops_beside() {
+    let (left, right, moved) = (window(), window(), window());
+    let workspace = Workspace::mock()
+      .gaps_config(mock_inner_gaps())
+      .tiling_containers(vec![
+        left.clone().into(),
+        right.clone().into(),
+        moved.clone().into(),
+      ])
+      .call();
+    let (mut state, config) =
+      (state(vec![monitor(&workspace, 0)]), config());
+    set_focused_descendant(&moved.clone().into(), None);
+
+    let floating = start_drag(&moved, &mut state, &config);
+
+    // Near the right edge of the right window.
+    let rect = right.to_rect().unwrap();
+    let point = Point {
+      x: rect.right - 10,
+      y: rect.center_point().y,
+    };
+
+    let drop = window_drop(&floating, &point, &state).unwrap().unwrap();
+    assert!(matches!(drop, WindowDrop::Beside { .. }));
+    assert_eq!(
+      drop.indicator_rect().unwrap(),
+      Rect::from_ltrb(
+        rect.center_point().x,
+        rect.top,
+        rect.right,
+        rect.bottom
+      )
+    );
+
+    let dropped =
+      drop_at(&floating, point.x, point.y, &mut state, &config);
+    assert_eq!(
+      child_ids(&workspace),
+      vec![left.id(), right.id(), dropped.id()]
+    );
+  }
+
+  #[cfg(target_os = "windows")]
+  #[test]
+  fn the_drop_indicator_shows_a_new_column_past_the_strip_end() {
+    let (first, moved, last) = (window(), window(), window());
+    let workspace = scrolling(vec![
+      first.clone().into(),
+      moved.clone().into(),
+      last.clone().into(),
+    ]);
+    first.set_tiling_size(0.3);
+    moved.set_tiling_size(0.3);
+    last.set_tiling_size(0.3);
+    let (mut state, config) =
+      (state(vec![monitor(&workspace, 0)]), config());
+    set_focused_descendant(&moved.clone().into(), None);
+
+    let floating = start_drag(&moved, &mut state, &config);
+
+    let point = Point { x: 1300, y: 500 };
+    let drop = window_drop(&floating, &point, &state).unwrap().unwrap();
+    let rect = last.to_rect().unwrap();
+
+    assert!(matches!(drop, WindowDrop::Column { .. }));
+    assert_eq!(
+      drop.indicator_rect().unwrap(),
+      Rect::from_ltrb(
+        rect.center_point().x,
+        rect.top,
+        rect.right,
+        rect.bottom
+      )
+    );
+
+    drop_at(&floating, point.x, point.y, &mut state, &config);
+    assert_eq!(
+      child_ids(&workspace),
+      vec![first.id(), last.id(), moved.id()]
+    );
   }
 }

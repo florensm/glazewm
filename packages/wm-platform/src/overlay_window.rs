@@ -22,6 +22,7 @@ use crate::{window_class, Rect, StyleBlend, SurrogateBatch};
 pub(crate) enum OverlayKind {
   Backdrop,
   Border,
+  DropIndicator,
 }
 
 impl OverlayKind {
@@ -29,10 +30,14 @@ impl OverlayKind {
     match self {
       Self::Backdrop => w!("GlazeWM_BackdropOverlay"),
       Self::Border => w!("GlazeWM_BorderOverlay"),
+      Self::DropIndicator => w!("GlazeWM_DropIndicator"),
     }
   }
 
   /// Whether `hwnd` is a backdrop or border overlay window.
+  ///
+  /// Leaves out the drop indicator, which isn't kept behind a window of
+  /// its own, so that a window's overlays settle above it.
   pub(crate) fn is_overlay(hwnd: HWND) -> bool {
     let mut buf = [0u16; 32];
     // SAFETY: `buf` outlives the call; a stale `hwnd` just returns 0.
@@ -49,10 +54,12 @@ impl OverlayKind {
   fn registered(self) -> &'static OnceLock<()> {
     static BACKDROP: OnceLock<()> = OnceLock::new();
     static BORDER: OnceLock<()> = OnceLock::new();
+    static DROP_INDICATOR: OnceLock<()> = OnceLock::new();
 
     match self {
       Self::Backdrop => &BACKDROP,
       Self::Border => &BORDER,
+      Self::DropIndicator => &DROP_INDICATOR,
     }
   }
 
@@ -61,13 +68,14 @@ impl OverlayKind {
     match self {
       Self::Backdrop => "Backdrop overlay",
       Self::Border => "Border overlay",
+      Self::DropIndicator => "Drop indicator",
     }
   }
 }
 
-/// The Win32 window behind a backdrop or border overlay: a click-through
-/// popup, rendered entirely by a composition visual tree, kept directly
-/// behind an anchor window in z-order.
+/// The Win32 window behind an overlay (backdrop, border or drop
+/// indicator): a click-through popup, rendered entirely by a composition
+/// visual tree, kept directly behind an anchor window in z-order.
 ///
 /// Destroys the window on drop. An overlay must drop its visual tree
 /// first, since that is rooted to this `HWND`.

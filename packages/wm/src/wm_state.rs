@@ -11,8 +11,8 @@ use wm_platform::{
 };
 #[cfg(target_os = "windows")]
 use wm_platform::{
-  NativeBackdropOverlay, NativeBorderOverlay, NativeStackTabBar,
-  NativeWindowWindowsExt, OpacityValue,
+  NativeBackdropOverlay, NativeBorderOverlay, NativeDropIndicator,
+  NativeStackTabBar, NativeWindowWindowsExt, OpacityValue,
 };
 
 #[cfg(target_os = "windows")]
@@ -107,6 +107,11 @@ pub struct WmState {
   #[cfg(target_os = "windows")]
   pub border_overlays: HashMap<Uuid, NativeBorderOverlay>,
 
+  /// Highlight of where a dragged window will land, created on the first
+  /// drag that has somewhere to land.
+  #[cfg(target_os = "windows")]
+  pub drop_indicator: Option<NativeDropIndicator>,
+
   /// Overview of the focused workspace's windows.
   #[cfg(target_os = "windows")]
   pub overview: Overview,
@@ -155,6 +160,8 @@ impl WmState {
       backdrop_overlays: HashMap::new(),
       #[cfg(target_os = "windows")]
       border_overlays: HashMap::new(),
+      #[cfg(target_os = "windows")]
+      drop_indicator: None,
       #[cfg(target_os = "windows")]
       overview: Overview::new(overview_action_tx),
       prev_effects_window: None,

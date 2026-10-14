@@ -9,6 +9,7 @@ mod dwindle;
 mod geometry;
 pub mod scrolling;
 mod split;
+pub mod window_drop;
 
 use anyhow::Context;
 pub use geometry::tiling_rect;

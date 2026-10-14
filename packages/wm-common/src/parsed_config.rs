@@ -624,6 +624,9 @@ pub struct WindowBehaviorConfig {
   /// newly spawned window opens hidden behind it. Matches Hyprland, which
   /// drops fullscreen as soon as another window joins the workspace.
   pub exit_fullscreen_on_new_window: bool,
+
+  /// Highlight of where a dragged window will land.
+  pub drop_indicator: DropIndicatorConfig,
 }
 
 impl Default for WindowBehaviorConfig {
@@ -632,6 +635,32 @@ impl Default for WindowBehaviorConfig {
       initial_state: InitialWindowState::default(),
       state_defaults: WindowStateDefaultsConfig::default(),
       exit_fullscreen_on_new_window: true,
+      drop_indicator: DropIndicatorConfig::default(),
+    }
+  }
+}
+
+/// Highlight shown while dragging a window, over where it will land if
+/// dropped: the half of the window it goes beside, or the stack it joins.
+///
+/// # Platform-specific
+///
+/// Only has an effect on Windows.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(default, rename_all(serialize = "camelCase"))]
+pub struct DropIndicatorConfig {
+  pub enabled: bool,
+
+  /// Given like a border's color (see [`BorderColorSource`]). The focused
+  /// window's border color when `None`.
+  pub color: Option<BorderColorSource>,
+}
+
+impl Default for DropIndicatorConfig {
+  fn default() -> Self {
+    DropIndicatorConfig {
+      enabled: true,
+      color: None,
     }
   }
 }

@@ -35,7 +35,7 @@ use std::{
 };
 
 use windows::{
-  core::ComInterface,
+  core::{h, ComInterface, HSTRING},
   Foundation::Numerics::{Vector2, Vector3},
   System::{
     DispatcherQueue, DispatcherQueueController, DispatcherQueueHandler,
@@ -48,10 +48,11 @@ use windows::{
     Color,
     Composition::{
       CompositionColorBrush, CompositionMappingMode,
-      CompositionRadialGradientBrush, CompositionRoundedRectangleGeometry,
-      CompositionSpriteShape, CompositionSurfaceBrush, Compositor,
-      ContainerVisual, Desktop::DesktopWindowTarget, InsetClip,
-      ShapeVisual, SpriteVisual,
+      CompositionPropertySet, CompositionRadialGradientBrush,
+      CompositionRoundedRectangleGeometry, CompositionSpriteShape,
+      CompositionSurfaceBrush, Compositor, ContainerVisual,
+      Desktop::DesktopWindowTarget, InsetClip, ScalarKeyFrameAnimation,
+      ShapeVisual, SpriteVisual, Vector2KeyFrameAnimation,
     },
   },
 };
@@ -1100,6 +1101,256 @@ fn build_border_visual_tree(
   })?;
 
   Ok(visual)
+}
+
+/// Thickness of a drop indicator's outline.
+const DROP_INDICATOR_STROKE: f32 = 2.0;
+
+/// Share of the outline color's alpha a drop indicator's fill gets.
+const DROP_INDICATOR_FILL_ALPHA: f32 = 0.2;
+
+/// Length of a drop indicator's glide from one target to the next.
+const DROP_INDICATOR_GLIDE: Duration = Duration::from_millis(180);
+
+/// Length of a drop indicator's fade in when it appears.
+const DROP_INDICATOR_FADE_IN: Duration = Duration::from_millis(120);
+
+/// A drop indicator's visual tree: one rounded rectangle, washed with its
+/// color and outlined in it, inside a window covering the whole monitor.
+///
+/// The rectangle glides to each new target on the compositor, so the WM
+/// sets where it goes once per target instead of moving it every frame.
+pub(crate) struct DropIndicatorVisual {
+  /// Binds the visual tree to the indicator's `HWND`. Kept alive but
+  /// never touched again.
+  _target: DesktopWindowTarget,
+
+  root: ShapeVisual,
+  geometry: CompositionRoundedRectangleGeometry,
+  fill_brush: CompositionColorBrush,
+  stroke_brush: CompositionColorBrush,
+
+  /// The glides' destination, read by their expression key frames when
+  /// they start.
+  goal: CompositionPropertySet,
+
+  /// Animations of the geometry's `Offset` and `Size` to `goal`. Built
+  /// once and restarted per target: with no key frame at 0, each starts
+  /// from wherever the previous one had got to.
+  offset_glide: Vector2KeyFrameAnimation,
+  size_glide: Vector2KeyFrameAnimation,
+
+  fade_in: ScalarKeyFrameAnimation,
+}
+
+impl DropIndicatorVisual {
+  /// Builds the visual tree for `hwnd`, which covers `viewport`, with the
+  /// rectangle hidden until it is first placed.
+  pub(crate) fn create(
+    hwnd: HWND,
+    viewport: &Rect,
+    color: crate::Color,
+    corner_radius: f32,
+  ) -> crate::Result<Self> {
+    let hwnd_raw = hwnd.0;
+    let viewport = viewport.clone();
+
+    with_composition_thread(move |compositor, _| {
+      build_drop_indicator_tree(
+        &compositor,
+        HWND(hwnd_raw),
+        &viewport,
+        color,
+        corner_radius,
+      )
+    })
+  }
+
+  /// Resizes the tree to a window now covering `viewport`.
+  pub(crate) fn set_viewport(&self, viewport: &Rect) -> crate::Result<()> {
+    self.root.SetSize(rect_size(viewport))?;
+    Ok(())
+  }
+
+  /// Puts the rectangle at `rect`, relative to the window, at once.
+  pub(crate) fn jump_to(&self, rect: &Rect) -> crate::Result<()> {
+    let (offset, size) = drop_indicator_geometry(rect);
+
+    self.geometry.StopAnimation(h!("Offset"))?;
+    self.geometry.StopAnimation(h!("Size"))?;
+    self.geometry.SetOffset(offset)?;
+    self.geometry.SetSize(size)?;
+    self.goal.InsertVector2(h!("Offset"), offset)?;
+    self.goal.InsertVector2(h!("Size"), size)?;
+    Ok(())
+  }
+
+  /// Glides the rectangle to `rect`, relative to the window, from wherever
+  /// it is, including partway through a previous glide.
+  pub(crate) fn glide_to(&self, rect: &Rect) -> crate::Result<()> {
+    let (offset, size) = drop_indicator_geometry(rect);
+
+    self.goal.InsertVector2(h!("Offset"), offset)?;
+    self.goal.InsertVector2(h!("Size"), size)?;
+    self
+      .geometry
+      .StartAnimation(h!("Offset"), &self.offset_glide)?;
+    self.geometry.StartAnimation(h!("Size"), &self.size_glide)?;
+    Ok(())
+  }
+
+  /// Updates the outline's color, and the fill's faint wash of it.
+  pub(crate) fn set_color(
+    &self,
+    color: crate::Color,
+  ) -> crate::Result<()> {
+    self.stroke_brush.SetColor(to_ui_color(color))?;
+    self
+      .fill_brush
+      .SetColor(to_ui_color(drop_indicator_fill(color)))?;
+    Ok(())
+  }
+
+  /// Updates the rectangle's outer corner radius.
+  pub(crate) fn set_corner_radius(&self, value: f32) -> crate::Result<()> {
+    self
+      .geometry
+      .SetCornerRadius(drop_indicator_corner_radius(value))?;
+    Ok(())
+  }
+
+  /// Fades the tree in from fully transparent.
+  pub(crate) fn fade_in(&self) -> crate::Result<()> {
+    self.root.StartAnimation(h!("Opacity"), &self.fade_in)?;
+    Ok(())
+  }
+
+  /// Makes the tree fully transparent, so whatever it last showed can't
+  /// flash up when its window is next shown.
+  pub(crate) fn clear(&self) -> crate::Result<()> {
+    self.root.StopAnimation(h!("Opacity"))?;
+    self.root.SetOpacity(0.0)?;
+    Ok(())
+  }
+}
+
+/// The fill color of a drop indicator outlined in `color`.
+fn drop_indicator_fill(color: crate::Color) -> crate::Color {
+  #[allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    clippy::cast_lossless
+  )]
+  let a = (color.a as f32 * DROP_INDICATOR_FILL_ALPHA).round() as u8;
+
+  crate::Color { a, ..color }
+}
+
+/// Size of `rect` in DIPs.
+fn rect_size(rect: &Rect) -> Vector2 {
+  Vector2 {
+    X: pixels_to_dips(rect.width()),
+    Y: pixels_to_dips(rect.height()),
+  }
+}
+
+/// Geometry corner radius giving the outline an outer radius of `value`.
+fn drop_indicator_corner_radius(value: f32) -> Vector2 {
+  let radius = (value - DROP_INDICATOR_STROKE / 2.0).max(0.0);
+  Vector2 {
+    X: radius,
+    Y: radius,
+  }
+}
+
+/// Geometry offset and size that outline `rect` exactly: the stroke
+/// straddles its path, so the path is inset by half the stroke.
+fn drop_indicator_geometry(rect: &Rect) -> (Vector2, Vector2) {
+  let inset = DROP_INDICATOR_STROKE / 2.0;
+
+  let offset = Vector2 {
+    X: pixels_to_dips(rect.x()) + inset,
+    Y: pixels_to_dips(rect.y()) + inset,
+  };
+  let size = rect_size(rect);
+  let size = Vector2 {
+    X: (size.X - DROP_INDICATOR_STROKE).max(0.0),
+    Y: (size.Y - DROP_INDICATOR_STROKE).max(0.0),
+  };
+
+  (offset, size)
+}
+
+/// Builds a drop indicator's visual tree, transparent until faded in.
+fn build_drop_indicator_tree(
+  compositor: &Compositor,
+  hwnd: HWND,
+  viewport: &Rect,
+  color: crate::Color,
+  corner_radius: f32,
+) -> windows::core::Result<DropIndicatorVisual> {
+  // SAFETY: `hwnd` is a valid, already-created top-level window.
+  let target = unsafe {
+    compositor
+      .cast::<ICompositorDesktopInterop>()?
+      .CreateDesktopWindowTarget(hwnd, false)?
+  };
+
+  let geometry = compositor.CreateRoundedRectangleGeometry()?;
+  geometry.SetCornerRadius(drop_indicator_corner_radius(corner_radius))?;
+  let fill_brush = compositor
+    .CreateColorBrushWithColor(to_ui_color(drop_indicator_fill(color)))?;
+  let stroke_brush =
+    compositor.CreateColorBrushWithColor(to_ui_color(color))?;
+
+  let shape = compositor.CreateSpriteShapeWithGeometry(&geometry)?;
+  shape.SetFillBrush(&fill_brush)?;
+  shape.SetStrokeBrush(&stroke_brush)?;
+  shape.SetStrokeThickness(DROP_INDICATOR_STROKE)?;
+
+  let root = compositor.CreateShapeVisual()?;
+  root.SetSize(rect_size(viewport))?;
+  root.SetOpacity(0.0)?;
+  root.Shapes()?.Append(&shape)?;
+  target.SetRoot(&root)?;
+
+  let goal = compositor.CreatePropertySet()?;
+  goal.InsertVector2(h!("Offset"), Vector2::default())?;
+  goal.InsertVector2(h!("Size"), Vector2::default())?;
+
+  let easing = compositor.CreateCubicBezierEasingFunction(
+    Vector2 { X: 0.2, Y: 0.9 },
+    Vector2 { X: 0.3, Y: 1.0 },
+  )?;
+
+  let glide = |property: &HSTRING| {
+    let animation = compositor.CreateVector2KeyFrameAnimation()?;
+    animation.InsertExpressionKeyFrameWithEasingFunction(
+      1.0, property, &easing,
+    )?;
+    animation.SetReferenceParameter(h!("goal"), &goal)?;
+    animation.SetDuration(DROP_INDICATOR_GLIDE.into())?;
+    windows::core::Result::Ok(animation)
+  };
+  let offset_glide = glide(h!("goal.Offset"))?;
+  let size_glide = glide(h!("goal.Size"))?;
+
+  let fade_in = compositor.CreateScalarKeyFrameAnimation()?;
+  fade_in.InsertKeyFrame(0.0, 0.0)?;
+  fade_in.InsertKeyFrame(1.0, 1.0)?;
+  fade_in.SetDuration(DROP_INDICATOR_FADE_IN.into())?;
+
+  Ok(DropIndicatorVisual {
+    _target: target,
+    root,
+    geometry,
+    fill_brush,
+    stroke_brush,
+    goal,
+    offset_glide,
+    size_glide,
+    fade_in,
+  })
 }
 
 /// The window overview's background: the monitor's wallpaper as it is,

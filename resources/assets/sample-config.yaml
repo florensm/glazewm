@@ -438,6 +438,17 @@ window_behavior:
   # this the new window opens hidden behind it. Matches Hyprland.
   exit_fullscreen_on_new_window: true
 
+  # While a window is dragged, highlight where it will land: the half of the
+  # window it goes beside, or the stack whose tab bar it's over. Only
+  # available on Windows.
+  drop_indicator:
+    enabled: true
+
+    # Same values as a border's color: a hex color, "accent" for the OS
+    # accent color, or a file and key. Left out, it is the focused window's
+    # border color.
+    # color: "accent"
+
   # New windows are created in this state whenever possible.
   # Allowed values: 'tiling', 'floating'.
   initial_state: "tiling"

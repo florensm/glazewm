@@ -37,6 +37,8 @@ use crate::{
 mod animation;
 mod auto_stack;
 mod commands;
+#[cfg(target_os = "windows")]
+mod drop_indicator;
 mod events;
 mod ipc_server;
 mod layout;

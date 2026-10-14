@@ -90,6 +90,12 @@ pub fn handle_window_moved_or_resized(
 
       update_drag_state(&window, &frame_position, state, config)?;
 
+      // Looked up again, since floating it for the drag replaces it.
+      #[cfg(target_os = "windows")]
+      if let Some(window) = state.window_from_native(native_window) {
+        crate::drop_indicator::sync_drop_indicator(&window, state, config);
+      }
+
       #[cfg(target_os = "windows")]
       follow_drag_with_tab_bar(native_window, state, config);
 

@@ -113,6 +113,11 @@ pub fn unmanage_window(
   {
     state.backdrop_overlays.remove(&window.id());
     state.border_overlays.remove(&window.id());
+
+    // A window closed mid-drag never ends its drag.
+    if window.active_drag().is_some() {
+      crate::drop_indicator::hide_drop_indicator(state);
+    }
   }
 
   // After detaching the container, flatten any redundant split containers.

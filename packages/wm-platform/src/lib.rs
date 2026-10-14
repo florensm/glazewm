@@ -44,6 +44,10 @@ mod native_border_overlay;
 #[cfg(target_os = "windows")]
 pub use native_border_overlay::NativeBorderOverlay;
 #[cfg(target_os = "windows")]
+mod native_drop_indicator;
+#[cfg(target_os = "windows")]
+pub use native_drop_indicator::NativeDropIndicator;
+#[cfg(target_os = "windows")]
 mod companion;
 #[cfg(target_os = "windows")]
 mod native_surrogate;
