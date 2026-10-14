@@ -16,6 +16,17 @@ use crate::animation::engine::{animation_progress_at, apply_easing};
 /// Mirrors `WS_COMPLETE_THRESHOLD_PX` used by the workspace-switch driver.
 const COMPLETE_THRESHOLD_PX: f32 = 1.0;
 
+/// Time over which `matching_slope` measures an animation's speed.
+const SPEED_SAMPLE: Duration = Duration::from_millis(8);
+
+/// Steepest start a retargeted curve gets, so a near-zero remaining
+/// distance can't make it shoot off.
+const MAX_SLOPE: f32 = 8.0;
+
+/// Smallest first control point `x` of a retargeted curve, which its
+/// initial slope is set through.
+const MIN_CONTROL_X: f32 = 0.05;
+
 /// State of an individual window animation.
 #[derive(Clone, Debug)]
 pub struct WindowAnimationState {
@@ -174,6 +185,80 @@ impl WindowAnimationState {
     {
       dx.max(dy).max(dw).max(dh) as f32
     }
+  }
+
+  /// A movement from where this animation is at `now` to `target` that
+  /// starts at the speed this one has there, so retargeting it mid-flight
+  /// carries on instead of jolting.
+  ///
+  /// Only a cubic bezier can start at a given speed: its first control
+  /// point is moved to set the curve's initial slope, and its second,
+  /// which shapes the ending, is kept. Other easings start from rest.
+  pub fn retargeted(
+    &self,
+    target: Rect,
+    duration_ms: u32,
+    easing: EasingFunction,
+    now: Instant,
+  ) -> Self {
+    let (current, _) = self.current_state_at(now);
+
+    let easing = match easing {
+      EasingFunction::CubicBezier(x1, _, x2, y2) => {
+        let slope =
+          self.matching_slope(&current, &target, duration_ms, now);
+        let x1 = x1.max(MIN_CONTROL_X);
+        EasingFunction::CubicBezier(x1, slope * x1, x2, y2)
+      }
+      other => other,
+    };
+
+    Self::new_movement(current, target, duration_ms, easing)
+  }
+
+  /// Initial slope (progress per progress) a movement from `current` to
+  /// `target` over `duration_ms` needs to keep this animation's speed at
+  /// `now`, along the axis that moves most. Zero when this one isn't
+  /// moving that way.
+  #[allow(clippy::cast_precision_loss)]
+  fn matching_slope(
+    &self,
+    current: &Rect,
+    target: &Rect,
+    duration_ms: u32,
+    now: Instant,
+  ) -> f32 {
+    let Some(earlier) = now.checked_sub(SPEED_SAMPLE) else {
+      return 0.0;
+    };
+
+    let deltas = |from: &Rect, to: &Rect| {
+      [
+        to.x() - from.x(),
+        to.y() - from.y(),
+        to.width() - from.width(),
+        to.height() - from.height(),
+      ]
+    };
+    let (old, new) = (
+      deltas(&self.start_rect, &self.target_rect),
+      deltas(current, target),
+    );
+    let Some(axis) = (0..new.len()).max_by_key(|axis| new[*axis].abs())
+    else {
+      return 0.0;
+    };
+    if new[axis] == 0 {
+      return 0.0;
+    }
+
+    let progress_per_ms = (self.eased_progress_at(now)
+      - self.eased_progress_at(earlier))
+      / SPEED_SAMPLE.as_secs_f32()
+      / 1000.0;
+    let speed = progress_per_ms * old[axis] as f32;
+
+    (speed * duration_ms as f32 / new[axis] as f32).clamp(0.0, MAX_SLOPE)
   }
 
   /// Whether the animation has completed.

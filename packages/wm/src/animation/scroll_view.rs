@@ -172,16 +172,31 @@ impl ScrollView {
     is_focused: bool,
   ) -> bool {
     let is_moving = matches!(role, Role::Moving { .. });
-    let motion = WindowAnimationState::new_movement(
-      from.clone(),
-      target,
-      if is_moving {
-        scroll_config.duration_ms
-      } else {
-        0
-      },
-      scroll_config.easing.clone(),
-    );
+    let in_flight = self
+      .entries
+      .get(&window.id())
+      .filter(|entry| matches!(entry.role, Role::Moving { .. }));
+
+    // A column already moving carries on at its speed toward the new
+    // target, so quick presses in a row glide rather than restart.
+    let motion = match in_flight {
+      Some(entry) if is_moving => entry.motion.retargeted(
+        target,
+        scroll_config.duration_ms,
+        scroll_config.easing.clone(),
+        Instant::now(),
+      ),
+      _ => WindowAnimationState::new_movement(
+        from.clone(),
+        target,
+        if is_moving {
+          scroll_config.duration_ms
+        } else {
+          0
+        },
+        scroll_config.easing.clone(),
+      ),
+    };
     // The window's own transparency and corners, as it is focused or not.
     let (opacity, corner_style, _, _) =
       surrogate_effects_for(is_focused, config);
