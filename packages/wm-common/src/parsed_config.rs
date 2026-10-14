@@ -298,7 +298,9 @@ pub struct ScrollingLayoutConfig {
 }
 
 /// How a scrolling layout's strip follows the focused column.
-#[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Eq, Serialize)]
+#[derive(
+  Clone, Copy, Debug, Default, Deserialize, PartialEq, Eq, Serialize,
+)]
 #[serde(rename_all = "snake_case")]
 pub enum FocusFitMethod {
   /// Scroll just far enough to show the focused column whole.

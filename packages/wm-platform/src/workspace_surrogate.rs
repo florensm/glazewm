@@ -91,6 +91,12 @@ pub struct WorkspaceSurrogate {
   /// entirely off-screen.
   unclipped_rect: Option<Rect>,
 
+  /// The monitor this window rests on, moved and scaled along with the
+  /// workspace this frame. Only what the window shows at rest slides with
+  /// it, so e.g. the columns a scrolling layout parks past the monitor
+  /// edge stay hidden. `None` once the window is entirely off-screen.
+  panel: Option<Rect>,
+
   /// Inset carrying `rect` to the window's *frame* rect, derived at
   /// construction from the `frame_rect` the caller passed alongside it.
   ///
@@ -239,6 +245,7 @@ impl WorkspaceSurrogate {
       border_inset,
       current_rect: None,
       unclipped_rect: None,
+      panel: None,
       frame_inset,
     })
   }
@@ -258,12 +265,71 @@ impl WorkspaceSurrogate {
     self.unclipped_rect.as_ref()
   }
 
-  /// Hides the surrogate and clears both cached frame rects, for a frame
+  /// The monitor this window rests on as it is moved and scaled this
+  /// frame, i.e. what overlays sliding along have to be clipped to.
+  #[must_use]
+  pub fn panel(&self) -> Option<&Rect> {
+    self.panel.as_ref()
+  }
+
+  /// Hides the surrogate and clears the cached frame rects, for a frame
   /// where the window has nothing visible left to draw.
   fn clear_frame(&mut self) {
     self.inner.set_visible(false);
     self.current_rect = None;
     self.unclipped_rect = None;
+    self.panel = None;
+  }
+
+  /// Draws the part of the window inside both `panel` and `monitor`, with
+  /// the window at `frame` this frame, `scale` times its size at rest.
+  ///
+  /// Returns whether anything is left to draw.
+  #[allow(clippy::cast_possible_truncation, clippy::cast_precision_loss)]
+  fn show_frame(
+    &mut self,
+    batch: Option<&mut SurrogateBatch>,
+    frame: &Rect,
+    scale: f32,
+    panel: Rect,
+    monitor: &Rect,
+  ) -> bool {
+    let Some(visible) = frame
+      .intersection(&panel)
+      .and_then(|rect| rect.intersection(monitor))
+    else {
+      self.clear_frame();
+      return false;
+    };
+
+    // Back from screen to source-window coordinates, past the invisible
+    // border baked into the thumbnail's registration.
+    let to_source = |screen: i32, origin: i32, size: i32| {
+      (((screen - origin) as f32 / scale).round() as i32).clamp(0, size)
+    };
+    let (width, height) = (self.rect.width(), self.rect.height());
+    let rc_src = RECT {
+      left: self.border_inset.left
+        + to_source(visible.left, frame.left, width),
+      top: self.border_inset.top
+        + to_source(visible.top, frame.top, height),
+      right: self.border_inset.left
+        + to_source(visible.right, frame.left, width),
+      bottom: self.border_inset.top
+        + to_source(visible.bottom, frame.top, height),
+    };
+
+    self.apply_visible_rect(
+      batch,
+      rc_src,
+      visible.left,
+      visible.top,
+      visible.right,
+      visible.bottom,
+    );
+    self.panel = Some(panel);
+
+    true
   }
 
   /// The opacity fraction (0.0 - 1.0) this surrogate is being drawn at for
@@ -441,25 +507,16 @@ impl WorkspaceSurrogate {
     // rather than the monitor's top-left corner.
     let cx = self.rect.left + w / 2;
     let cy = self.rect.top + h / 2;
+    let frame =
+      Rect::from_ltrb(cx - half_w, cy - half_h, cx + half_w, cy + half_h);
+    let panel = self.viewport.scale_about(cx, cy, t);
+    let monitor = self.viewport.clone();
 
-    let rc_src = RECT {
-      left: self.border_inset.left,
-      top: self.border_inset.top,
-      right: self.border_inset.left + w,
-      bottom: self.border_inset.top + h,
-    };
-
-    self.apply_visible_rect(
-      Some(batch),
-      rc_src,
-      cx - half_w,
-      cy - half_h,
-      cx + half_w,
-      cy + half_h,
-    );
-    self
-      .inner
-      .set_window_opacity(self.lerp_opacity(eased_progress, is_incoming));
+    if self.show_frame(Some(batch), &frame, t, panel, &monitor) {
+      self.inner.set_window_opacity(
+        self.lerp_opacity(eased_progress, is_incoming),
+      );
+    }
   }
 
   /// Computes the per-frame window opacity for a surrogate at `progress`
@@ -586,103 +643,43 @@ impl WorkspaceSurrogate {
       (-direction as f32 * slide_distance as f32 * eased_progress) as i32
     };
 
-    // Zoom all four edges from the monitor center.
+    // The whole workspace scales from the monitor center, then slides on
+    // the primary axis.
     let cx = monitor_x + monitor_width / 2;
     let cy = monitor_y + monitor_height / 2;
-    let zoomed_left =
-      cx + ((self.rect.left - cx) as f32 * scale).round() as i32;
-    let zoomed_top =
-      cy + ((self.rect.top - cy) as f32 * scale).round() as i32;
-    let zoomed_right =
-      cx + ((self.rect.right - cx) as f32 * scale).round() as i32;
-    let zoomed_bottom =
-      cy + ((self.rect.bottom - cy) as f32 * scale).round() as i32;
-
-    // Apply slide offset on the primary axis only.
-    let (final_left, final_top, final_right, final_bottom) = if is_vertical
-    {
-      (
-        zoomed_left,
-        zoomed_top + slide_offset,
-        zoomed_right,
-        zoomed_bottom + slide_offset,
-      )
+    let (dx, dy) = if is_vertical {
+      (0, slide_offset)
     } else {
-      (
-        zoomed_left + slide_offset,
-        zoomed_top,
-        zoomed_right + slide_offset,
-        zoomed_bottom,
-      )
+      (slide_offset, 0)
     };
+    let transform = |rect: &Rect| {
+      let zoomed = rect.scale_about(cx, cy, scale);
+      zoomed.translate_to_coordinates(zoomed.x() + dx, zoomed.y() + dy)
+    };
+    let frame = transform(&self.rect);
+    let panel = transform(&self.viewport);
 
-    // Clip to monitor bounds.
-    let monitor_right = monitor_x + monitor_width;
-    let monitor_bottom = monitor_y + monitor_height;
-    let vis_left = final_left.max(monitor_x);
-    let vis_top = final_top.max(monitor_y);
-    let vis_right = final_right.min(monitor_right);
-    let vis_bottom = final_bottom.min(monitor_bottom);
-
-    if vis_left >= vis_right || vis_top >= vis_bottom {
-      self.clear_frame();
-      return;
+    if self.show_frame(Some(batch), &frame, scale, panel, monitor) {
+      self.unclipped_rect = Some(to_logical(&frame, &self.frame_inset));
+      self.inner.set_window_opacity(
+        self.lerp_opacity(eased_progress, is_incoming),
+      );
     }
-
-    self.unclipped_rect = Some(to_logical(
-      &Rect::from_ltrb(final_left, final_top, final_right, final_bottom),
-      &self.frame_inset,
-    ));
-
-    // Map the visible screen area back to source-window coordinates.
-    // screen_x = final_left + src_x * scale  →  src_x = (screen_x -
-    // final_left) / scale
-    let ww = self.rect.right - self.rect.left;
-    let wh = self.rect.bottom - self.rect.top;
-    let src_left = (((vis_left - final_left) as f32 / scale).round()
-      as i32)
-      .clamp(0, ww);
-    let src_top =
-      (((vis_top - final_top) as f32 / scale).round() as i32).clamp(0, wh);
-    let src_right = (((vis_right - final_left) as f32 / scale).round()
-      as i32)
-      .clamp(0, ww);
-    let src_bottom = (((vis_bottom - final_top) as f32 / scale).round()
-      as i32)
-      .clamp(0, wh);
-
-    let rc_src = RECT {
-      left: self.border_inset.left + src_left,
-      top: self.border_inset.top + src_top,
-      right: self.border_inset.left + src_right,
-      bottom: self.border_inset.top + src_bottom,
-    };
-    self.apply_visible_rect(
-      Some(batch),
-      rc_src,
-      vis_left,
-      vis_top,
-      vis_right,
-      vis_bottom,
-    );
-    self
-      .inner
-      .set_window_opacity(self.lerp_opacity(eased_progress, is_incoming));
   }
 
   /// Advances the surrogate along one axis to `eased_progress` (0.0 →
   /// 1.0); `is_vertical` selects the slide axis (`false` = horizontal,
   /// `true` = vertical).
   ///
-  /// The visible strip is clipped to `monitor`'s bounds along the slide
-  /// axis. In [`SurrogateMode::PinnedViewport`] mode this is done via
-  /// `rcSource`/`rcDestination` and the surrogate window itself does not
-  /// move; in [`SurrogateMode::Live`] mode the surrogate is moved/resized
-  /// to the clipped visible rect, batched via `batch`. `slide_distance`
-  /// is the effective travel distance (may be less than the monitor's
-  /// size on that axis to close the seam gap between the two workspace
-  /// panels). The visible strip of source content is routed through
-  /// [`apply_visible_rect`].
+  /// The visible strip is clipped to `monitor`'s bounds and to the
+  /// sliding panel (see `panel`). In [`SurrogateMode::PinnedViewport`]
+  /// mode this is done via `rcSource`/`rcDestination` and the surrogate
+  /// window itself does not move; in [`SurrogateMode::Live`] mode the
+  /// surrogate is moved/resized to the clipped visible rect, batched via
+  /// `batch`. `slide_distance` is the effective travel distance (may be
+  /// less than the monitor's size on that axis to close the seam gap
+  /// between the two workspace panels). The visible strip of source
+  /// content is routed through [`apply_visible_rect`].
   #[allow(clippy::too_many_arguments)]
   pub fn slide_axis(
     &mut self,
@@ -694,12 +691,6 @@ impl WorkspaceSurrogate {
     slide_distance: i32,
     is_vertical: bool,
   ) {
-    let (monitor_origin, monitor_size) = if is_vertical {
-      (monitor.y(), monitor.height())
-    } else {
-      (monitor.x(), monitor.width())
-    };
-
     // Incoming: start at +direction*slide_distance offset, end at 0.
     // Outgoing: start at 0, end at -direction*slide_distance offset.
     let offset = if is_incoming {
@@ -709,97 +700,24 @@ impl WorkspaceSurrogate {
       (-direction as f32 * slide_distance as f32 * eased_progress) as i32
     };
 
-    // Axis-dependent dimensions.
-    let (axis_pos, perp_pos, axis_size, perp_size) = if is_vertical {
-      (
-        self.rect.y(),
-        self.rect.x(),
-        self.rect.height(),
-        self.rect.width(),
-      )
+    let (dx, dy) = if is_vertical {
+      (0, offset)
     } else {
-      (
-        self.rect.x(),
-        self.rect.y(),
-        self.rect.width(),
-        self.rect.height(),
-      )
+      (offset, 0)
     };
-
-    let current = axis_pos + offset;
-    let monitor_end = monitor_origin + monitor_size;
-
-    // Visible strip of this window along the sliding axis.
-    let vis_start = current.max(monitor_origin);
-    let vis_end = (current + axis_size).min(monitor_end);
-
-    if vis_start >= vis_end {
-      self.clear_frame();
-      return;
-    }
-
-    self.unclipped_rect = Some(to_logical(
-      &if is_vertical {
-        Rect::from_xy(perp_pos, current, perp_size, axis_size)
-      } else {
-        Rect::from_xy(current, perp_pos, axis_size, perp_size)
-      },
-      &self.frame_inset,
-    ));
-
-    // Source-window-local start of the visible strip.
-    let src_start = vis_start - current;
-    let constrained = vis_end - vis_start;
-
-    // `rcSource` is the visible slice of the source window. The visible
-    // destination rect is expressed in absolute screen coordinates and
-    // routed through `apply_visible_rect`.
-    let (mut rc_src, vis_left, vis_top, vis_right, vis_bottom) =
-      if is_vertical {
-        (
-          RECT {
-            left: 0,
-            top: src_start,
-            right: perp_size,
-            bottom: src_start + constrained,
-          },
-          perp_pos,
-          vis_start,
-          perp_pos + perp_size,
-          vis_end,
-        )
-      } else {
-        (
-          RECT {
-            left: src_start,
-            top: 0,
-            right: src_start + constrained,
-            bottom: perp_size,
-          },
-          vis_start,
-          perp_pos,
-          vis_end,
-          perp_pos + perp_size,
-        )
-      };
-    // `rc_src` above is 0-based in the source window's logical content
-    // space; offset past the invisible border to land in the window's
-    // true physical pixel space (matches the offset baked into the
-    // initial registration in `NativeSurrogate::create`).
-    rc_src.left += self.border_inset.left;
-    rc_src.right += self.border_inset.left;
-    rc_src.top += self.border_inset.top;
-    rc_src.bottom += self.border_inset.top;
-    self.apply_visible_rect(
-      Some(batch),
-      rc_src,
-      vis_left,
-      vis_top,
-      vis_right,
-      vis_bottom,
+    let frame = self
+      .rect
+      .translate_to_coordinates(self.rect.x() + dx, self.rect.y() + dy);
+    let panel = self.viewport.translate_to_coordinates(
+      self.viewport.x() + dx,
+      self.viewport.y() + dy,
     );
-    self
-      .inner
-      .set_window_opacity(self.lerp_opacity(eased_progress, is_incoming));
+
+    if self.show_frame(Some(batch), &frame, 1.0, panel, monitor) {
+      self.unclipped_rect = Some(to_logical(&frame, &self.frame_inset));
+      self.inner.set_window_opacity(
+        self.lerp_opacity(eased_progress, is_incoming),
+      );
+    }
   }
 }

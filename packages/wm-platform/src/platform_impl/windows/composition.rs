@@ -50,8 +50,8 @@ use windows::{
       CompositionColorBrush, CompositionMappingMode,
       CompositionRadialGradientBrush, CompositionRoundedRectangleGeometry,
       CompositionSpriteShape, CompositionSurfaceBrush, Compositor,
-      ContainerVisual, Desktop::DesktopWindowTarget, ShapeVisual,
-      SpriteVisual,
+      ContainerVisual, Desktop::DesktopWindowTarget, InsetClip,
+      ShapeVisual, SpriteVisual,
     },
   },
 };
@@ -870,6 +870,9 @@ pub(crate) struct BorderVisual {
   shape: CompositionSpriteShape,
   stroke_brush: CompositionColorBrush,
   geometry: CompositionRoundedRectangleGeometry,
+  /// Cuts the ring short of its own edges. Zero except while the ring
+  /// slides with a workspace switch.
+  clip: InsetClip,
 
   /// Last-applied ring inputs, so any one of `set_rect`/`set_width`/
   /// `set_corner_radius` can recompute the derived geometry (which
@@ -1006,6 +1009,18 @@ impl BorderVisual {
     Ok(())
   }
 
+  /// Hides the ring's outer `left`, `top`, `right` and `bottom` pixels.
+  pub(crate) fn set_clip_insets(
+    &self,
+    [left, top, right, bottom]: [i32; 4],
+  ) -> crate::Result<()> {
+    self.clip.SetLeftInset(pixels_to_dips(left))?;
+    self.clip.SetTopInset(pixels_to_dips(top))?;
+    self.clip.SetRightInset(pixels_to_dips(right))?;
+    self.clip.SetBottomInset(pixels_to_dips(bottom))?;
+    Ok(())
+  }
+
   /// Translates the ring within its `HWND`, in pixels relative to the
   /// window's top-left.
   ///
@@ -1054,6 +1069,9 @@ fn build_border_visual_tree(
   root.SetOpacity(params.opacity)?;
   root.Shapes()?.Append(&shape)?;
 
+  let clip = compositor.CreateInsetClip()?;
+  root.SetClip(&clip)?;
+
   target.SetRoot(&root)?;
 
   let visual = BorderVisual {
@@ -1062,6 +1080,7 @@ fn build_border_visual_tree(
     shape,
     stroke_brush,
     geometry,
+    clip,
     ring: Cell::new(Ring {
       size: Vector2 { X: 0.0, Y: 0.0 },
       width: params.width,

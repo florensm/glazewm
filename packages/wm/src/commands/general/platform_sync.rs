@@ -2350,7 +2350,8 @@ fn resync_overlay_z_order<O: SyncableOverlay>(state: &mut WmState) {
 
 /// Creates or updates `window_id`'s border overlay for one frame of a
 /// workspace-switch slide, keeping it pinned to `viewport` and sliding its
-/// ring to `rect` (the window's *unclipped* rect for this frame).
+/// ring to `rect` (the window's *unclipped* rect for this frame), cut at
+/// `panel` (see `WorkspaceSurrogate::panel`).
 ///
 /// Unlike [`upsert_overlay`] this issues no `SetWindowPos` per frame
 /// and takes no [`SurrogateBatch`]: after the initial pin, a frame costs a
@@ -2367,6 +2368,7 @@ pub(crate) fn upsert_pinned_border_overlay(
   blend: StyleBlend<BorderOverlayParams>,
   rect: &Rect,
   viewport: &Rect,
+  panel: &Rect,
   anchor: HWND,
 ) {
   let Some(overlay) =
@@ -2380,7 +2382,7 @@ pub(crate) fn upsert_pinned_border_overlay(
   overlay.apply_blend(blend);
 
   // A pin that failed to apply sits the transition out.
-  if !overlay.pin_or_slide(viewport, rect, anchor) {
+  if !overlay.pin_or_slide(viewport, rect, panel, anchor) {
     overlay.hide();
   }
 }

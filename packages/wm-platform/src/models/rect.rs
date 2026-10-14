@@ -207,6 +207,35 @@ impl Rect {
     }
   }
 
+  /// Gets the overlap of this rect and another rect, if they overlap.
+  #[must_use]
+  pub fn intersection(&self, other: &Rect) -> Option<Self> {
+    let left = self.left.max(other.left);
+    let top = self.top.max(other.top);
+    let right = self.right.min(other.right);
+    let bottom = self.bottom.min(other.bottom);
+
+    (left < right && top < bottom)
+      .then(|| Self::from_ltrb(left, top, right, bottom))
+  }
+
+  /// Scales this rect by `scale` towards (or away from) the point at `x`,
+  /// `y`, which stays in place.
+  #[allow(clippy::cast_possible_truncation, clippy::cast_precision_loss)]
+  #[must_use]
+  pub fn scale_about(&self, x: i32, y: i32, scale: f32) -> Self {
+    let scaled = |edge: i32, origin: i32| {
+      origin + ((edge - origin) as f32 * scale).round() as i32
+    };
+
+    Self::from_ltrb(
+      scaled(self.left, x),
+      scaled(self.top, y),
+      scaled(self.right, x),
+      scaled(self.bottom, y),
+    )
+  }
+
   #[must_use]
   pub fn contains_point(&self, point: &Point) -> bool {
     let is_in_x = point.x >= self.left && point.x <= self.right;
@@ -292,6 +321,34 @@ impl Rect {
 #[cfg(test)]
 mod tests {
   use super::*;
+
+  #[test]
+  fn intersection() {
+    let rect = Rect::from_ltrb(0, 0, 100, 100);
+
+    assert_eq!(
+      rect.intersection(&Rect::from_ltrb(50, -20, 300, 40)),
+      Some(Rect::from_ltrb(50, 0, 100, 40))
+    );
+    assert_eq!(
+      rect.intersection(&Rect::from_ltrb(100, 0, 200, 100)),
+      None
+    );
+  }
+
+  #[test]
+  fn scale_about() {
+    let rect = Rect::from_ltrb(100, 100, 300, 200);
+
+    assert_eq!(
+      rect.scale_about(100, 100, 0.5),
+      Rect::from_ltrb(100, 100, 200, 150)
+    );
+    assert_eq!(
+      rect.scale_about(200, 150, 0.5),
+      Rect::from_ltrb(150, 125, 250, 175)
+    );
+  }
 
   #[test]
   fn intersection_area() {

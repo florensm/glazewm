@@ -1676,8 +1676,8 @@ impl AnimationManager {
               eased_final,
               NativeBorderOverlay::transparent,
             ) {
-              match s.unclipped_rect() {
-                Some(rect) => {
+              match (s.unclipped_rect(), s.panel()) {
+                (Some(rect), Some(panel)) => {
                   // Fade the ring in step with the window it outlines, so
                   // a configured `opacity_incoming`/`opacity_outgoing`
                   // does not leave a full-strength border floating over a
@@ -1693,10 +1693,11 @@ impl AnimationManager {
                     blend,
                     rect,
                     &ws.border_viewport,
+                    panel,
                     s.hwnd(),
                   );
                 }
-                None => {
+                _ => {
                   if let Some(overlay) =
                     state.border_overlays.get_mut(&window_id)
                   {

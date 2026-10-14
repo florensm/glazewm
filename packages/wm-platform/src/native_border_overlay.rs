@@ -152,6 +152,15 @@ pub struct NativeBorderOverlay {
   /// [`pin_or_slide`]: NativeBorderOverlay::pin_or_slide
   pinned: Option<Rect>,
 
+  /// Panel the ring was last clipped to while pinned: its workspace's
+  /// monitor as moved by the slide.
+  panel: Rect,
+
+  /// Pixels of the ring's outer rect clipped away on each side (left,
+  /// top, right, bottom) while pinned, so a ring sliding with its
+  /// workspace is cut at the edge of its panel.
+  clip_insets: [i32; 4],
+
   /// Anchor last classified by [`behind_surrogate`], and whether it is a
   /// surrogate, so the class lookup runs once per anchor change.
   ///
@@ -241,7 +250,7 @@ impl NativeBorderOverlay {
   /// Only a call that reveals a hidden overlay passes `reset_offset`: a
   /// pin leaves the offset at its last slid value, and the reveal is the
   /// first moment the window is back to tracking its own rect.
-  fn apply_ring_rect(&self, outer: &Rect, reset_offset: bool) {
+  fn apply_ring_rect(&mut self, outer: &Rect, reset_offset: bool) {
     let composition = &self.composition;
 
     if let Err(e) = composition.set_rect(outer) {
@@ -254,7 +263,23 @@ impl NativeBorderOverlay {
           "Border overlay composition offset reset failed: {e}."
         );
       }
+      self.set_clip_insets([0; 4]);
     }
+  }
+
+  /// Clips the ring's outer rect by `insets`; re-applies only when they
+  /// change.
+  fn set_clip_insets(&mut self, insets: [i32; 4]) {
+    if self.clip_insets == insets {
+      return;
+    }
+
+    if let Err(e) = self.composition.set_clip_insets(insets) {
+      tracing::warn!("Border overlay composition clip failed: {e}.");
+      return;
+    }
+
+    self.clip_insets = insets;
   }
 
   /// Repositions and resizes the overlay to track `window_rect` (outset by
@@ -367,7 +392,8 @@ impl NativeBorderOverlay {
       // offset from the new outset rather than skip an unmoved window.
       let window_rect =
         std::mem::replace(&mut self.rect, Rect::from_ltrb(0, 0, 0, 0));
-      self.slide(&window_rect);
+      let panel = self.panel.clone();
+      self.slide(&window_rect, &panel);
       return;
     }
 
@@ -415,7 +441,7 @@ impl NativeBorderOverlay {
 
   /// Pins the overlay window to `viewport` (when it isn't already) and
   /// draws its ring for `window_rect` as a composition offset within it,
-  /// for one frame of a workspace-switch slide.
+  /// clipped to `panel`, for one frame of a workspace-switch slide.
   ///
   /// The border is a separate `HWND` and DWM thumbnails are captured with
   /// `DWM_TNP_SOURCECLIENTAREAONLY`, so a surrogate can never carry the
@@ -434,6 +460,7 @@ impl NativeBorderOverlay {
     &mut self,
     viewport: &Rect,
     window_rect: &Rect,
+    panel: &Rect,
     anchor: HWND,
   ) -> bool {
     if self.pinned.is_none() {
@@ -462,7 +489,7 @@ impl NativeBorderOverlay {
       // still applies.
       self.pinned = Some(viewport.clone());
       self.rect = Rect::from_ltrb(0, 0, 0, 0);
-      self.slide(window_rect);
+      self.slide(window_rect, panel);
 
       if let Err(err) = self.window.place(viewport, anchor) {
         tracing::warn!("Border overlay viewport pin failed: {err}");
@@ -477,17 +504,18 @@ impl NativeBorderOverlay {
       return true;
     }
 
-    self.slide(window_rect);
+    self.slide(window_rect, panel);
 
     true
   }
 
-  /// Moves the ring to `window_rect` while pinned, without touching the
-  /// overlay window. No-op when not pinned, or when the rect is unchanged.
+  /// Moves the ring to `window_rect` while pinned and clips it to `panel`,
+  /// without touching the overlay window. No-op when not pinned, or when
+  /// the rect is unchanged.
   ///
   /// The ring's geometry is only rebuilt when the window's *size* changes
   /// (a zooming slide); a pure translation costs a single property write.
-  fn slide(&mut self, window_rect: &Rect) {
+  fn slide(&mut self, window_rect: &Rect, panel: &Rect) {
     let Some(viewport) = self.pinned.clone() else {
       return;
     };
@@ -496,9 +524,17 @@ impl NativeBorderOverlay {
       return;
     }
 
-    let composition = &self.composition;
     let _scope = crate::perf::scope(crate::perf::Stage::OverlayVisual);
     let outer = outer_rect(window_rect, self.params.width);
+    self.panel = panel.clone();
+    self.set_clip_insets([
+      (panel.left - outer.left).max(0),
+      (panel.top - outer.top).max(0),
+      (outer.right - panel.right).max(0),
+      (outer.bottom - panel.bottom).max(0),
+    ]);
+
+    let composition = &self.composition;
 
     if self.rect.width() != window_rect.width()
       || self.rect.height() != window_rect.height()
@@ -567,6 +603,8 @@ impl Overlay for NativeBorderOverlay {
       rect: window_rect.clone(),
       hole_shape: None,
       pinned: None,
+      panel: outer.clone(),
+      clip_insets: [0; 4],
       classified_anchor: (0, false),
     };
     overlay.refresh_hole(&outer);
