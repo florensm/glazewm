@@ -116,9 +116,12 @@ pub trait CommonGetters {
   /// Children in order of last focus.
   fn child_focus_order(&self) -> Box<dyn Iterator<Item = Container> + '_> {
     let child_focus_order = self.borrow_child_focus_order();
+    let mut index = 0;
 
     Box::new(std::iter::from_fn(move || {
-      for child_id in child_focus_order.iter() {
+      while let Some(child_id) = child_focus_order.get(index) {
+        index += 1;
+
         if let Some(child) = self.child_by_id(child_id) {
           return Some(child);
         }
@@ -382,4 +385,36 @@ macro_rules! impl_common_getters {
       }
     }
   };
+}
+
+#[cfg(test)]
+mod tests {
+  use super::CommonGetters;
+  use crate::{
+    commands::container::set_focused_descendant,
+    models::{NonTilingWindow, TilingWindow, Workspace},
+  };
+
+  #[test]
+  fn child_focus_order_walks_every_child_once() {
+    let tiling = TilingWindow::mock().call();
+    let floating = NonTilingWindow::mock().call();
+    let workspace = Workspace::mock()
+      .tiling_containers(vec![tiling.clone().into()])
+      .non_tiling_windows(vec![floating.clone()])
+      .call();
+    set_focused_descendant(&floating.clone().into(), None);
+
+    let order = workspace
+      .child_focus_order()
+      .map(|child| child.id())
+      .collect::<Vec<_>>();
+    assert_eq!(order, vec![floating.id(), tiling.id()]);
+
+    // Searching past the first child used to restart from it forever.
+    let first_tiling = workspace
+      .child_focus_order()
+      .find_map(|child| child.as_tiling_window().cloned());
+    assert_eq!(first_tiling.map(|window| window.id()), Some(tiling.id()));
+  }
 }
