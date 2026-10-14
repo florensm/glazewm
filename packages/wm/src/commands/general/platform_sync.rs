@@ -76,10 +76,13 @@ pub fn platform_sync(
     state.focused_container().context("No focused container.")?;
 
   // A focus change or relayout can scroll a scrolling layout, which then
-  // moves the rest of its columns too. Moving columns are handed to the
-  // scroll view before anything is repositioned, so their peeks are on
-  // screen before their real windows are cloaked.
+  // moves the rest of its columns too. That includes focus the OS moved
+  // itself, e.g. a click on a column partly off screen, which only shows
+  // as a focused-effect update. Moving columns are handed to the scroll
+  // view before anything is repositioned, so their peeks are on screen
+  // before their real windows are cloaked.
   if state.pending_sync.needs_focus_update()
+    || state.pending_sync.needs_focused_effect_update()
     || !state.pending_sync.containers_to_redraw().is_empty()
   {
     crate::layout::scrolling::sync_scroll_offsets(state)?;

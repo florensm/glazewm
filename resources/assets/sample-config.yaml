@@ -502,6 +502,11 @@ layouts:
     # Width of a new column, as a percentage of the workspace or in pixels.
     column_width: "50%"
 
+    # How the strip follows the focused column. Options:
+    #   'fit'    - scroll just far enough to show it whole.
+    #   'center' - keep it in the middle of the workspace.
+    focus_fit_method: "fit"
+
 # A scratch workspace for parking windows, shared by all monitors and kept
 # out of workspace cycling. `focus --special-workspace` summons it to the
 # focused monitor (and goes back from it); `move --special-workspace` sends

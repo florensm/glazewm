@@ -7,7 +7,7 @@
 //! workspace width; unlike in the other layouts, the columns' sizes don't
 //! add up to 1.
 
-use wm_common::Layout;
+use wm_common::{FocusFitMethod, Layout};
 use wm_platform::{LengthUnit, LengthValue, Rect};
 
 use super::Insertion;
@@ -134,27 +134,41 @@ pub fn follow_focus(workspace: &Workspace) -> anyhow::Result<bool> {
     .next()
     .and_then(|child| child.as_tiling_container().ok());
 
-  let mut target = offset;
-  if let Some(column) = focused_column {
-    let rect = column.to_rect()?;
-    let overflow_left = workspace_rect.x() - rect.x();
-    let overflow_right = rect.x() + rect.width()
-      - (workspace_rect.x() + workspace_rect.width());
-
-    // A column wider than the workspace is aligned to its left edge.
-    if overflow_left > 0 {
-      target -= overflow_left;
-    } else if overflow_right > 0 {
-      target += overflow_right.min(-overflow_left);
-    }
-  }
-
-  // Strip width, independent of the current offset.
+  // Strip width, independent of the current offset, and how far it can
+  // scroll while still filling the workspace.
   let (first_rect, last_rect) = (first.to_rect()?, last.to_rect()?);
   let strip_width = last_rect.x() + last_rect.width() - first_rect.x();
   let max_offset = (strip_width - workspace_rect.width()).max(0);
 
-  Ok(update_offset(workspace, target.clamp(0, max_offset)))
+  let Some(column) = focused_column else {
+    return Ok(update_offset(workspace, offset.clamp(0, max_offset)));
+  };
+  let rect = column.to_rect()?;
+
+  let target = match workspace.focus_fit_method() {
+    FocusFitMethod::Fit => {
+      let overflow_left = workspace_rect.x() - rect.x();
+      let overflow_right = rect.x() + rect.width()
+        - (workspace_rect.x() + workspace_rect.width());
+
+      // A column wider than the workspace is aligned to its left edge.
+      let target = if overflow_left > 0 {
+        offset - overflow_left
+      } else if overflow_right > 0 {
+        offset + overflow_right.min(-overflow_left)
+      } else {
+        offset
+      };
+
+      target.clamp(0, max_offset)
+    }
+    // Centered even at the strip's ends, leaving room past them.
+    FocusFitMethod::Center => {
+      offset + rect.center_point().x - workspace_rect.center_point().x
+    }
+  };
+
+  Ok(update_offset(workspace, target))
 }
 
 fn update_offset(workspace: &Workspace, offset: i32) -> bool {
@@ -243,7 +257,10 @@ pub fn sync_scroll_offsets(state: &mut WmState) -> anyhow::Result<()> {
 
 #[cfg(test)]
 mod tests {
-  use wm_common::{Layout, TilingDirection, WindowState};
+  use wm_common::{
+    FocusFitMethod, Layout, ScrollingLayoutConfig, TilingDirection,
+    WindowState,
+  };
   use wm_platform::Rect;
 
   use super::{follow_focus, is_in_view, shows_real_window};
@@ -426,5 +443,25 @@ mod tests {
   fn a_column_reaching_onto_another_monitor_is_hidden() {
     let (_state, second) = edge_setup(true);
     assert!(!shows_real_window(&second.into()));
+  }
+
+  #[test]
+  fn center_keeps_the_focused_column_in_the_middle() {
+    let (_state, workspace, [first, second, _]) = setup();
+    workspace.set_scrolling_config(ScrollingLayoutConfig {
+      focus_fit_method: FocusFitMethod::Center,
+      ..ScrollingLayoutConfig::default()
+    });
+    let center = workspace.to_rect().unwrap().center_point().x;
+
+    set_focused_descendant(&second.clone().into(), None);
+    follow_focus(&workspace).unwrap();
+    assert_eq!(second.to_rect().unwrap().center_point().x, center);
+
+    // Also at the strip's start, leaving room before it.
+    set_focused_descendant(&first.clone().into(), None);
+    follow_focus(&workspace).unwrap();
+    assert_eq!(first.to_rect().unwrap().center_point().x, center);
+    assert!(workspace.scroll_offset() < 0);
   }
 }

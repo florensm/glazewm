@@ -292,6 +292,20 @@ pub struct ScrollingLayoutConfig {
   /// Width of a new column, as a percentage of the workspace or in
   /// pixels.
   pub column_width: LengthValue,
+
+  /// How the strip follows the focused column.
+  pub focus_fit_method: FocusFitMethod,
+}
+
+/// How a scrolling layout's strip follows the focused column.
+#[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FocusFitMethod {
+  /// Scroll just far enough to show the focused column whole.
+  #[default]
+  Fit,
+  /// Keep the focused column in the middle of the workspace.
+  Center,
 }
 
 impl Default for ScrollingLayoutConfig {
@@ -301,6 +315,7 @@ impl Default for ScrollingLayoutConfig {
         amount: 0.5,
         unit: LengthUnit::Percentage,
       },
+      focus_fit_method: FocusFitMethod::default(),
     }
   }
 }

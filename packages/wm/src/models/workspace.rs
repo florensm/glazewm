@@ -7,7 +7,7 @@ use std::{
 use anyhow::Context;
 use uuid::Uuid;
 use wm_common::{
-  ContainerDto, GapsConfig, Layout, ScrollingLayoutConfig,
+  ContainerDto, FocusFitMethod, GapsConfig, Layout, ScrollingLayoutConfig,
   TilingDirection, WorkspaceConfig, WorkspaceDto,
 };
 use wm_platform::{LengthUnit, Rect, RectDelta};
@@ -97,6 +97,11 @@ impl Workspace {
     scrolling_config: ScrollingLayoutConfig,
   ) {
     self.0.borrow_mut().scrolling_config = scrolling_config;
+  }
+
+  /// How a scrolling layout's strip follows the focused column.
+  pub fn focus_fit_method(&self) -> FocusFitMethod {
+    self.0.borrow().scrolling_config.focus_fit_method
   }
 
   pub fn scroll_offset(&self) -> i32 {

@@ -20,6 +20,9 @@ layouts:
   scrolling:
     # Width of a new column, as a percentage of the workspace or in pixels.
     column_width: "50%"
+    # How the strip follows the focused column: "fit" scrolls just far
+    # enough to show it, "center" keeps it in the middle.
+    focus_fit_method: "fit"
 
 animations:
   # How the scrolling strip moves.
@@ -50,7 +53,9 @@ unrelated reloads.
   dropping it between columns or past either end makes a new column.
 - Resizing a column's width (`resize --width`) leaves the other columns
   alone.
-- Focusing a column scrolls the strip just far enough to show it whole.
+- Focusing a column, by keyboard or by clicking a column partly off
+  screen, scrolls the strip just far enough to show it whole, or centers
+  it with `focus_fit_method: "center"`.
 - Columns past a monitor edge with no other monitor behind it keep their
   real window and simply run off screen, so they stay live and slide back
   in smoothly. Where a column would reach onto another monitor, it is
