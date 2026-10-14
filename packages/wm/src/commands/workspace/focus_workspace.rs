@@ -5,7 +5,8 @@ use wm_common::{WindowState, WorkspaceSwitchIrisOrigin};
 use super::activate_workspace;
 use crate::{
   commands::{
-    container::set_focused_descendant, workspace::deactivate_workspace,
+    container::set_focused_descendant,
+    workspace::deactivate_unused_workspace,
   },
   layout::is_hidden_in_layout,
   models::{Container, WindowContainer, WorkspaceTarget},
@@ -147,21 +148,12 @@ pub fn focus_workspace(
       .queue_container_to_redraw(displayed_workspace)
       .queue_container_to_redraw(target_workspace);
 
-    // Get empty workspace to destroy (if one is found). Cannot destroy
-    // empty workspaces if they're the only workspace on the monitor.
-    let workspace_to_destroy =
-      state.workspaces().into_iter().find(|workspace| {
-        !workspace.config().keep_alive
-          && !workspace.has_children()
-          && !workspace.is_displayed()
-      });
+    deactivate_unused_workspace(state.workspaces(), state)?;
 
-    if let Some(workspace) = workspace_to_destroy {
-      deactivate_workspace(workspace, state)?;
+    // Save the focused workspace as recent, unless it's the special one.
+    if !focused_workspace.is_special() {
+      state.recent_workspace_name = Some(focused_workspace.config().name);
     }
-
-    // Save the currently focused workspace as recent.
-    state.recent_workspace_name = Some(focused_workspace.config().name);
     state.pending_sync.queue_cursor_jump();
   }
 

@@ -424,6 +424,11 @@ pub struct InvokeFocusCommand {
   /// to its workspace if needed.
   #[clap(long)]
   pub urgent_window: bool,
+
+  /// Summon the special workspace to the focused monitor and focus it, or
+  /// go back to the previous workspace when it is already focused.
+  #[clap(long)]
+  pub special_workspace: bool,
 }
 
 #[derive(Args, Clone, Debug, PartialEq, Serialize)]
@@ -475,6 +480,11 @@ pub struct InvokeMoveCommand {
   /// one if dynamic workspaces are enabled and none is available.
   #[clap(long)]
   pub next_empty_workspace: bool,
+
+  /// Move the window to the special workspace, or back out of it to the
+  /// previous workspace.
+  #[clap(long)]
+  pub special_workspace: bool,
 }
 
 #[derive(Args, Clone, Debug, PartialEq, Serialize)]

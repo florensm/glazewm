@@ -65,6 +65,7 @@ pub fn activate_workspace(
       .layout
       .unwrap_or(config.value.general.default_layout),
     config.value.layouts.scrolling.clone(),
+    config.is_special_workspace_name(&workspace_config.name),
   );
 
   // Attach the created workspace to the specified monitor.
@@ -89,7 +90,7 @@ pub fn activate_workspace(
 ///
 /// A name that isn't declared in the user config is only valid when
 /// dynamic workspaces are enabled, in which case a config is synthesized
-/// for it.
+/// for it. The special workspace is only activated by name.
 fn workspace_config(
   workspace_name: Option<&str>,
   target_monitor: Option<Monitor>,
@@ -97,20 +98,30 @@ fn workspace_config(
   config: &UserConfig,
 ) -> anyhow::Result<WorkspaceConfig> {
   match workspace_name {
-    Some(workspace_name) => config
-      .inactive_workspace_configs(&state.workspaces())
-      .into_iter()
-      .find(|config| config.name == workspace_name)
-      .cloned()
-      .or_else(|| {
-        config
-          .dynamic_workspace_config(workspace_name, &state.workspaces())
-      })
-      .with_context(|| {
+    Some(workspace_name) => {
+      let is_inactive_special = config
+        .is_special_workspace_name(workspace_name)
+        && state.workspace_by_name(workspace_name).is_none();
+
+      is_inactive_special
+        .then(|| config.special_workspace_config())
+        .or_else(|| {
+          config
+            .inactive_workspace_configs(&state.workspaces())
+            .into_iter()
+            .find(|config| config.name == workspace_name)
+            .cloned()
+        })
+        .or_else(|| {
+          config
+            .dynamic_workspace_config(workspace_name, &state.workspaces())
+        })
+        .with_context(|| {
         format!(
           "Workspace with name '{workspace_name}' doesn't exist or is already active."
         )
-      }),
+        })
+    }
     None => target_monitor
       .and_then(|target_monitor| {
         config.workspace_config_for_monitor(

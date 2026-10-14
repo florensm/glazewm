@@ -461,130 +461,48 @@ impl WmState {
           .as_ref()
           .and_then(|name| self.workspace_by_name(name)),
       ),
-      WorkspaceTarget::NextActive => {
-        let active_workspaces = self.sorted_workspaces(config);
-        let origin_index = active_workspaces
-          .iter()
-          .position(|workspace| workspace.id() == origin_workspace.id())
-          .context("Failed to get index of given workspace.")?;
-
-        let next_active_workspace = active_workspaces
-          .get(origin_index + 1)
-          .or_else(|| active_workspaces.first());
-
-        (
-          next_active_workspace.map(|workspace| workspace.config().name),
-          next_active_workspace.cloned(),
-        )
+      WorkspaceTarget::NextActive | WorkspaceTarget::PreviousActive => {
+        let workspaces = self.sorted_workspaces(config);
+        neighbour_workspace(
+          origin_workspace,
+          workspaces,
+          matches!(target, WorkspaceTarget::NextActive),
+        )?
       }
-      WorkspaceTarget::PreviousActive => {
-        let active_workspaces = self.sorted_workspaces(config);
-        let origin_index = active_workspaces
-          .iter()
-          .position(|workspace| workspace.id() == origin_workspace.id())
-          .context("Failed to get index of given workspace.")?;
-
-        let prev_active_workspace = active_workspaces.get(
-          origin_index
-            .checked_sub(1)
-            .unwrap_or(active_workspaces.len() - 1),
-        );
-
-        (
-          prev_active_workspace.map(|workspace| workspace.config().name),
-          prev_active_workspace.cloned(),
-        )
-      }
-      WorkspaceTarget::NextActiveInMonitor => {
+      WorkspaceTarget::NextActiveInMonitor
+      | WorkspaceTarget::PreviousActiveInMonitor => {
         let monitor = origin_workspace
           .monitor()
           .context("No monitor in workspace")?;
 
-        let mut workspace_in_monitor = monitor.workspaces();
-        config.sort_workspaces(&mut workspace_in_monitor);
+        let mut workspaces = monitor.workspaces();
+        config.sort_workspaces(&mut workspaces);
 
-        let origin_index = workspace_in_monitor
-          .iter()
-          .position(|workspace| workspace.id() == origin_workspace.id())
-          .context("Failed to get index of give workspace")?;
-
-        let next_active_workspace_in_monitor = workspace_in_monitor
-          .get(origin_index + 1)
-          .or_else(|| workspace_in_monitor.first());
-
-        (
-          next_active_workspace_in_monitor
-            .map(|workspace| workspace.config().name),
-          next_active_workspace_in_monitor.cloned(),
-        )
+        neighbour_workspace(
+          origin_workspace,
+          workspaces,
+          matches!(target, WorkspaceTarget::NextActiveInMonitor),
+        )?
       }
-      WorkspaceTarget::PreviousActiveInMonitor => {
-        let monitor = origin_workspace
-          .monitor()
-          .context("No monitor in workspace")?;
-
-        let mut workspace_in_monitor = monitor.workspaces();
-        config.sort_workspaces(&mut workspace_in_monitor);
-
-        let origin_index = workspace_in_monitor
-          .iter()
-          .position(|workspace| workspace.id() == origin_workspace.id())
-          .context("Failed to get index of give workspace")?;
-
-        let prev_active_workspace_in_monitor = workspace_in_monitor.get(
-          origin_index
-            .checked_sub(1)
-            .unwrap_or(workspace_in_monitor.len() - 1),
-        );
-
-        (
-          prev_active_workspace_in_monitor
-            .map(|workspace| workspace.config().name),
-          prev_active_workspace_in_monitor.cloned(),
-        )
-      }
-      WorkspaceTarget::Next => {
+      WorkspaceTarget::Next | WorkspaceTarget::Previous => {
         let workspace_names =
           config.ordered_workspace_names(&self.workspaces());
-        let origin_name = origin_workspace.config().name.clone();
-        let origin_index = workspace_names
-          .iter()
-          .position(|name| *name == origin_name)
-          .context("Failed to get index of given workspace.")?;
+        let origin_name = origin_workspace.config().name;
+        let origin_index = cycle_origin(
+          origin_workspace,
+          workspace_names.iter().position(|name| *name == origin_name),
+        )?;
 
-        let next_workspace_name = workspace_names
-          .get(origin_index + 1)
-          .or_else(|| workspace_names.first())
-          .cloned();
+        let name = cycle_neighbour(
+          &workspace_names,
+          origin_index,
+          matches!(target, WorkspaceTarget::Next),
+        )
+        .cloned();
+        let workspace =
+          name.as_ref().and_then(|name| self.workspace_by_name(name));
 
-        let next_workspace = next_workspace_name
-          .as_ref()
-          .and_then(|name| self.workspace_by_name(name));
-
-        (next_workspace_name, next_workspace)
-      }
-      WorkspaceTarget::Previous => {
-        let workspace_names =
-          config.ordered_workspace_names(&self.workspaces());
-        let origin_name = origin_workspace.config().name.clone();
-        let origin_index = workspace_names
-          .iter()
-          .position(|name| *name == origin_name)
-          .context("Failed to get index of given workspace.")?;
-
-        let previous_workspace_name = workspace_names
-          .get(
-            origin_index
-              .checked_sub(1)
-              .unwrap_or(workspace_names.len() - 1),
-          )
-          .cloned();
-
-        let previous_workspace = previous_workspace_name
-          .as_ref()
-          .and_then(|name| self.workspace_by_name(name));
-
-        (previous_workspace_name, previous_workspace)
+        (name, workspace)
       }
       WorkspaceTarget::NextEmpty => {
         let workspaces = self.workspaces();
@@ -597,7 +515,9 @@ impl WmState {
         let empty_workspaces = self
           .sorted_workspaces(config)
           .into_iter()
-          .filter(|workspace| !workspace.has_children())
+          .filter(|workspace| {
+            !workspace.has_children() && !workspace.is_special()
+          })
           .collect::<Vec<_>>();
 
         // Prefer an empty workspace on the origin's monitor, then a
@@ -651,6 +571,21 @@ impl WmState {
     };
 
     Ok((name, workspace))
+  }
+
+  /// Name of the workspace to go back to from the special workspace on
+  /// `monitor`: the monitor's most recently focused other workspace, else
+  /// the most recently focused workspace anywhere.
+  pub fn workspace_before_special(
+    &self,
+    monitor: &Monitor,
+  ) -> Option<String> {
+    monitor
+      .child_focus_order()
+      .filter_map(|child| child.as_workspace().cloned())
+      .find(|workspace| !workspace.is_special())
+      .map(|workspace| workspace.config().name)
+      .or_else(|| self.recent_workspace_name.clone())
   }
 
   /// Gets windows that should be redrawn.
@@ -807,6 +742,69 @@ impl WmState {
   }
 }
 
+/// Workspace after (or before) `origin_workspace` among `workspaces`,
+/// skipping the special workspace.
+fn neighbour_workspace(
+  origin_workspace: &Workspace,
+  workspaces: Vec<Workspace>,
+  is_next: bool,
+) -> anyhow::Result<(Option<String>, Option<Workspace>)> {
+  let workspaces = workspaces
+    .into_iter()
+    .filter(|workspace| !workspace.is_special())
+    .collect::<Vec<_>>();
+
+  let origin_index = cycle_origin(
+    origin_workspace,
+    workspaces
+      .iter()
+      .position(|workspace| workspace.id() == origin_workspace.id()),
+  )?;
+
+  let workspace =
+    cycle_neighbour(&workspaces, origin_index, is_next).cloned();
+
+  Ok((
+    workspace.as_ref().map(|workspace| workspace.config().name),
+    workspace,
+  ))
+}
+
+/// Index of the origin when cycling from `origin_workspace`, given its
+/// `position` in the cycled list. The special workspace isn't cycled
+/// through, so it has none.
+fn cycle_origin(
+  origin_workspace: &Workspace,
+  position: Option<usize>,
+) -> anyhow::Result<Option<usize>> {
+  if origin_workspace.is_special() {
+    return Ok(None);
+  }
+
+  position
+    .map(Some)
+    .context("Failed to get index of given workspace.")
+}
+
+/// Item after (or before) `origin` in `items`, wrapping around. Without
+/// an `origin`, the first (or last) item.
+fn cycle_neighbour<T>(
+  items: &[T],
+  origin: Option<usize>,
+  is_next: bool,
+) -> Option<&T> {
+  let last = items.len().checked_sub(1)?;
+
+  let index = match (origin, is_next) {
+    (Some(index), true) if index < last => index + 1,
+    (Some(_) | None, true) => 0,
+    (Some(index), false) => index.checked_sub(1).unwrap_or(last),
+    (None, false) => last,
+  };
+
+  items.get(index)
+}
+
 impl Drop for WmState {
   fn drop(&mut self) {
     // Commit all active resize sessions before cleaning up windows so that
@@ -861,5 +859,115 @@ impl Drop for WmState {
         let _ = window.native().set_native_border_hidden(false);
       }
     }
+  }
+}
+
+#[cfg(test)]
+mod tests {
+  use wm_common::ParsedConfig;
+
+  use super::WmState;
+  use crate::{
+    models::{Monitor, TilingWindow, Workspace, WorkspaceTarget},
+    test_utils::mock_workspace_configs,
+    user_config::UserConfig,
+  };
+
+  /// Workspaces "1" (with a window) and the special one on one monitor,
+  /// "2" on another, with "1" to "3" declared in the config.
+  fn setup() -> (WmState, UserConfig, Workspace, Workspace) {
+    let value = ParsedConfig {
+      workspaces: mock_workspace_configs(&["1", "2", "3"]),
+      ..ParsedConfig::default()
+    };
+
+    let first = Workspace::mock()
+      .name("1".to_string())
+      .tiling_containers(vec![TilingWindow::mock().call().into()])
+      .call();
+    let special = Workspace::mock()
+      .name("special".to_string())
+      .is_special(true)
+      .call();
+    let state = WmState::mock(vec![
+      Monitor::mock()
+        .workspaces(vec![first.clone(), special.clone()])
+        .call(),
+      Monitor::mock()
+        .workspaces(vec![Workspace::mock().name("2".to_string()).call()])
+        .call(),
+    ]);
+
+    (state, UserConfig::from_parsed(value), first, special)
+  }
+
+  fn target_name(
+    state: &WmState,
+    config: &UserConfig,
+    origin: &Workspace,
+    target: WorkspaceTarget,
+  ) -> Option<String> {
+    state
+      .workspace_by_target(origin, target, config)
+      .expect("workspace target")
+      .0
+  }
+
+  #[test]
+  fn cycling_skips_the_special_workspace() {
+    let (state, config, first, _) = setup();
+    let second = state.workspace_by_name("2").expect("workspace 2");
+    let name = |origin: &Workspace, target| {
+      target_name(&state, &config, origin, target)
+    };
+
+    assert_eq!(
+      name(&first, WorkspaceTarget::NextActive).as_deref(),
+      Some("2")
+    );
+    assert_eq!(
+      name(&second, WorkspaceTarget::NextActive).as_deref(),
+      Some("1")
+    );
+    assert_eq!(
+      name(&first, WorkspaceTarget::PreviousActive).as_deref(),
+      Some("2")
+    );
+    assert_eq!(
+      name(&first, WorkspaceTarget::NextActiveInMonitor).as_deref(),
+      Some("1")
+    );
+    assert_eq!(
+      name(&first, WorkspaceTarget::Previous).as_deref(),
+      Some("3")
+    );
+
+    // "1" holds a window and the empty special workspace doesn't count.
+    assert_eq!(
+      name(&first, WorkspaceTarget::NextEmpty).as_deref(),
+      Some("3")
+    );
+  }
+
+  #[test]
+  fn cycling_from_the_special_workspace_starts_at_either_end() {
+    let (state, config, _, special) = setup();
+    let name = |target| target_name(&state, &config, &special, target);
+
+    assert_eq!(name(WorkspaceTarget::NextActive).as_deref(), Some("1"));
+    assert_eq!(
+      name(WorkspaceTarget::PreviousActive).as_deref(),
+      Some("2")
+    );
+    assert_eq!(
+      name(WorkspaceTarget::NextActiveInMonitor).as_deref(),
+      Some("1")
+    );
+    assert_eq!(
+      name(WorkspaceTarget::PreviousActiveInMonitor).as_deref(),
+      Some("1")
+    );
+    assert_eq!(name(WorkspaceTarget::Next).as_deref(), Some("1"));
+    assert_eq!(name(WorkspaceTarget::Previous).as_deref(), Some("3"));
   }
 }

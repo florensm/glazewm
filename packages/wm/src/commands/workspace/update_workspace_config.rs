@@ -13,6 +13,12 @@ pub fn update_workspace_config(
   config: &UserConfig,
   new_config: &InvokeUpdateWorkspaceConfig,
 ) -> anyhow::Result<()> {
+  if workspace.is_special() {
+    anyhow::bail!(
+      "The special workspace is configured by `special_workspace` in the config."
+    );
+  }
+
   let current_config = workspace.config();
 
   // Validate the workspace name change.

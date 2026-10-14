@@ -24,3 +24,22 @@ pub fn deactivate_workspace(
 
   Ok(())
 }
+
+/// Deactivates the first of `workspaces` that is empty, hidden and not
+/// kept alive. A monitor's only workspace is always displayed, so it is
+/// never picked.
+pub fn deactivate_unused_workspace(
+  workspaces: Vec<Workspace>,
+  state: &WmState,
+) -> anyhow::Result<()> {
+  let unused = workspaces.into_iter().find(|workspace| {
+    !workspace.config().keep_alive
+      && !workspace.has_children()
+      && !workspace.is_displayed()
+  });
+
+  match unused {
+    Some(workspace) => deactivate_workspace(workspace, state),
+    None => Ok(()),
+  }
+}

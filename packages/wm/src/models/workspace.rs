@@ -37,6 +37,9 @@ struct WorkspaceInner {
   /// How far a scrolling layout's strip is scrolled to the left, in
   /// pixels.
   scroll_offset: i32,
+  /// Whether this is the special workspace, which is kept out of
+  /// workspace cycling.
+  is_special: bool,
 }
 
 impl Workspace {
@@ -46,6 +49,7 @@ impl Workspace {
     tiling_direction: TilingDirection,
     layout: Layout,
     scrolling_config: ScrollingLayoutConfig,
+    is_special: bool,
   ) -> Self {
     let workspace = WorkspaceInner {
       id: Uuid::new_v4(),
@@ -58,6 +62,7 @@ impl Workspace {
       layout,
       scrolling_config,
       scroll_offset: 0,
+      is_special,
     };
 
     Self(Rc::new(RefCell::new(workspace)))
@@ -71,6 +76,10 @@ impl Workspace {
   /// Update the underlying config for the workspace.
   pub fn set_config(&self, config: WorkspaceConfig) {
     self.0.borrow_mut().config = config;
+  }
+
+  pub fn is_special(&self) -> bool {
+    self.0.borrow().is_special
   }
 
   pub fn layout(&self) -> Layout {
@@ -217,6 +226,7 @@ impl Workspace {
       child_focus_order: self.0.borrow().child_focus_order.clone().into(),
       has_focus: self.has_focus(None),
       is_displayed: self.is_displayed(),
+      is_special: self.is_special(),
       width: rect.width(),
       height: rect.height(),
       x: rect.x(),

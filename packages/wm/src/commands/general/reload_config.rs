@@ -136,6 +136,7 @@ fn update_workspace_configs(
     // Dynamic workspaces intentionally have no config entry, so they keep
     // their synthesized config across reloads.
     if config.value.general.dynamic_workspaces
+      && !workspace.is_special()
       && config
         .workspace_config_index(&workspace.config().name)
         .is_none()
@@ -143,19 +144,24 @@ fn update_workspace_configs(
       continue;
     }
 
-    let workspace_config = config
-      .value
-      .workspaces
-      .iter()
-      .find(|config| config.name == workspace.config().name)
-      .or_else(|| {
-        // When the workspace config is not found, the current name of the
-        // workspace has been removed. So, we reassign the first suitable
-        // workspace config to the workspace.
-        config
-          .workspace_config_for_monitor(&monitor, &workspaces)
-          .or_else(|| config.next_inactive_workspace_config(&workspaces))
-      });
+    let workspace_config = if workspace.is_special() {
+      Some(config.special_workspace_config())
+    } else {
+      config
+        .value
+        .workspaces
+        .iter()
+        .find(|config| config.name == workspace.config().name)
+        .or_else(|| {
+          // When the workspace config is not found, the current name of
+          // the workspace has been removed. So, we reassign the first
+          // suitable workspace config to the workspace.
+          config
+            .workspace_config_for_monitor(&monitor, &workspaces)
+            .or_else(|| config.next_inactive_workspace_config(&workspaces))
+        })
+        .cloned()
+    };
 
     match workspace_config {
       None => {
@@ -164,7 +170,7 @@ fn update_workspace_configs(
         );
       }
       Some(workspace_config) => {
-        if *workspace_config != workspace.config() {
+        if workspace_config != workspace.config() {
           // Only a changed `layout` entry replaces the current layout, so
           // a reload keeps one picked with `set-layout`.
           if workspace_config.layout != workspace.config().layout {
@@ -177,7 +183,7 @@ fn update_workspace_configs(
             )?;
           }
 
-          workspace.set_config(workspace_config.clone());
+          workspace.set_config(workspace_config);
 
           sort_workspaces(&monitor, config)?;
 
@@ -219,4 +225,40 @@ fn update_container_gaps(state: &mut WmState, config: &UserConfig) {
 #[cfg(target_os = "windows")]
 fn update_window_effects(state: &mut WmState) {
   state.pending_sync.queue_all_effects_update();
+}
+
+#[cfg(test)]
+mod tests {
+  use wm_common::{Layout, ParsedConfig};
+
+  use super::update_workspace_configs;
+  use crate::{
+    models::{Monitor, Workspace},
+    user_config::UserConfig,
+    wm_state::WmState,
+  };
+
+  #[test]
+  fn reload_gives_the_special_workspace_its_own_config() {
+    let special = Workspace::mock()
+      .name("special".to_string())
+      .is_special(true)
+      .layout(Layout::Scrolling)
+      .call();
+    let mut state = WmState::mock(vec![Monitor::mock()
+      .workspaces(vec![special.clone()])
+      .call()]);
+
+    let mut value = ParsedConfig::default();
+    value.general.dynamic_workspaces = true;
+    value.special_workspace.display_name = Some("Scratch".to_string());
+    value.special_workspace.layout = Layout::Dwindle;
+    let config = UserConfig::from_parsed(value);
+
+    update_workspace_configs(&mut state, &config).unwrap();
+
+    assert_eq!(special.config(), config.special_workspace_config());
+    assert_eq!(special.layout(), Layout::Dwindle);
+    assert!(special.is_special());
+  }
 }
