@@ -283,34 +283,7 @@ pub fn sync_scroll_view(state: &mut WmState, config: &UserConfig) {
   let mut started_moving = Vec::new();
 
   for (workspace, clip) in &workspaces {
-    let moves = tiling_windows(workspace)
-      .into_iter()
-      .filter_map(|window| {
-        let target = target_rect(&window).ok()?;
-        let from = view
-          .entries
-          .get(&window.id())
-          .map(|entry| entry.motion.current_rect())
-          .or_else(|| view.last_rects.get(&window.id()).cloned())
-          .unwrap_or_else(|| target.clone());
-
-        Some((window, from, target))
-      })
-      .collect::<Vec<_>>();
-
-    // A new column opens in place, widening as its neighbours make room,
-    // rather than sliding in over them.
-    let moves = moves
-      .iter()
-      .map(|(window, from, target)| {
-        let from = if new_ids.contains(&window.id()) {
-          opening_rect(target, &moves, &new_ids)
-        } else {
-          from.clone()
-        };
-        (window.clone(), from, target.clone())
-      })
-      .collect::<Vec<_>>();
+    let moves = column_moves(view, workspace, &new_ids);
 
     // The strip moves as one when any column crosses the monitor edge,
     // is already drawn by a peek, or opens; moves that stay on screen are
@@ -467,6 +440,43 @@ pub fn track_overlays(state: &mut WmState, config: &UserConfig) {
 
   backdrop_batch.commit();
   border_batch.commit();
+}
+
+/// Where each tiling window of `workspace` moves from and to: from where
+/// it is shown now, or for a new column from its opening rect.
+fn column_moves(
+  view: &ScrollView,
+  workspace: &Workspace,
+  new_ids: &HashSet<Uuid>,
+) -> Vec<(WindowContainer, Rect, Rect)> {
+  let moves = tiling_windows(workspace)
+    .into_iter()
+    .filter_map(|window| {
+      let target = target_rect(&window).ok()?;
+      let from = view
+        .entries
+        .get(&window.id())
+        .map(|entry| entry.motion.current_rect())
+        .or_else(|| view.last_rects.get(&window.id()).cloned())
+        .unwrap_or_else(|| target.clone());
+
+      Some((window, from, target))
+    })
+    .collect::<Vec<_>>();
+
+  // A new column opens in place, widening as its neighbours make room,
+  // rather than sliding in over them.
+  moves
+    .iter()
+    .map(|(window, from, target)| {
+      let from = if new_ids.contains(&window.id()) {
+        opening_rect(target, &moves, new_ids)
+      } else {
+        from.clone()
+      };
+      (window.clone(), from, target.clone())
+    })
+    .collect()
 }
 
 /// Where a new column opens from: collapsed to no width at its place in
