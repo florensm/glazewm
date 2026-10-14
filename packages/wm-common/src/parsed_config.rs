@@ -293,6 +293,10 @@ pub struct ScrollingLayoutConfig {
   /// pixels.
   pub column_width: LengthValue,
 
+  /// Widths `cycle-column-width` steps through, as percentages of the
+  /// workspace or in pixels.
+  pub preset_column_widths: Vec<LengthValue>,
+
   /// How the strip follows the focused column.
   pub focus_fit_method: FocusFitMethod,
 }
@@ -317,6 +321,13 @@ impl Default for ScrollingLayoutConfig {
         amount: 0.5,
         unit: LengthUnit::Percentage,
       },
+      preset_column_widths: [1. / 3., 0.5, 2. / 3.]
+        .into_iter()
+        .map(|amount| LengthValue {
+          amount,
+          unit: LengthUnit::Percentage,
+        })
+        .collect(),
       focus_fit_method: FocusFitMethod::default(),
     }
   }

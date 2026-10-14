@@ -502,6 +502,10 @@ layouts:
     # Width of a new column, as a percentage of the workspace or in pixels.
     column_width: "50%"
 
+    # Widths `cycle-column-width` steps through, narrowest to widest and
+    # back around.
+    preset_column_widths: ["33.333%", "50%", "66.667%"]
+
     # How the strip follows the focused column. Options:
     #   'fit'    - scroll just far enough to show it whole.
     #   'center' - keep it in the middle of the workspace.
@@ -779,6 +783,15 @@ keybindings:
   # Move the focused window to the special workspace, or back out of it.
   - commands: ["move --special-workspace"]
     bindings: ["alt+shift+oem_minus"]
+
+  # Scrolling layout: step the focused column through
+  # `preset_column_widths`, and jump to the first or last column.
+  - commands: ["cycle-column-width"]
+    bindings: ["alt+c"]
+  - commands: ["focus --first-column"]
+    bindings: ["alt+home"]
+  - commands: ["focus --last-column"]
+    bindings: ["alt+end"]
 
   # Change focus to a workspace defined in `workspaces` config.
   - commands: ["focus --workspace 1"]

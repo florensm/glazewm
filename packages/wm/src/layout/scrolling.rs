@@ -35,6 +35,17 @@ pub fn column_workspace(
     .filter(|workspace| workspace.layout() == Layout::Scrolling)
 }
 
+/// The column holding `container`, and its scrolling workspace, if
+/// `container` is in a scrolling layout.
+pub fn column_of(
+  container: &Container,
+) -> Option<(TilingContainer, Workspace)> {
+  container.self_and_ancestors().find_map(|ancestor| {
+    let workspace = column_workspace(&ancestor)?;
+    Some((ancestor.as_tiling_container().ok()?, workspace))
+  })
+}
+
 /// Rect of a column on its workspace's strip.
 pub(super) fn column_rect<T>(
   column: &T,
@@ -208,10 +219,7 @@ pub fn shows_real_window(container: &Container) -> bool {
 /// Rect of the column holding `container`, its workspace's rect, and the
 /// workspace, when `container` is in a scrolling layout.
 fn column_rects(container: &Container) -> Option<(Rect, Rect, Workspace)> {
-  let column = container
-    .self_and_ancestors()
-    .find(|ancestor| column_workspace(ancestor).is_some())?;
-  let workspace = column.workspace()?;
+  let (column, workspace) = column_of(container)?;
 
   Some((column.to_rect().ok()?, workspace.to_rect().ok()?, workspace))
 }

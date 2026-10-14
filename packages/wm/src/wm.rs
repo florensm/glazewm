@@ -24,8 +24,8 @@ use crate::commands::window::detach_window_for_close;
 use crate::{
   commands::{
     container::{
-      focus_container_by_id, focus_in_direction, set_tiling_direction,
-      toggle_tiling_direction,
+      cycle_column_width, focus_container_by_id, focus_edge_column,
+      focus_in_direction, set_tiling_direction, toggle_tiling_direction,
     },
     general::{
       cycle_focus, disable_binding_mode, enable_binding_mode,
@@ -680,6 +680,10 @@ impl WindowManager {
           focus_special_workspace(state, config)?;
         }
 
+        if args.first_column || args.last_column {
+          focus_edge_column(&subject_container, args.last_column, state);
+        }
+
         if args.next_active_workspace_on_monitor {
           focus_workspace(
             WorkspaceTarget::NextActiveInMonitor,
@@ -1247,6 +1251,9 @@ impl WindowManager {
         let workspace =
           subject_container.workspace().context("No workspace.")?;
         set_layout(&workspace, *layout, state)
+      }
+      InvokeCommand::CycleColumnWidth => {
+        cycle_column_width(&subject_container, state, config)
       }
       InvokeCommand::WmCycleFocus {
         omit_floating,

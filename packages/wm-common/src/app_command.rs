@@ -305,6 +305,9 @@ pub enum InvokeCommand {
     #[clap(required = true)]
     layout: Layout,
   },
+  /// Set the width of the focused column of a scrolling layout to the
+  /// next of `layouts.scrolling.preset_column_widths`, wrapping around.
+  CycleColumnWidth,
   WmCycleFocus {
     #[clap(long, default_value_t = false)]
     omit_floating: bool,
@@ -429,6 +432,16 @@ pub struct InvokeFocusCommand {
   /// go back to the previous workspace when it is already focused.
   #[clap(long)]
   pub special_workspace: bool,
+
+  /// Focus the first column of the focused workspace's scrolling layout,
+  /// scrolling it into view.
+  #[clap(long)]
+  pub first_column: bool,
+
+  /// Focus the last column of the focused workspace's scrolling layout,
+  /// scrolling it into view.
+  #[clap(long)]
+  pub last_column: bool,
 }
 
 #[derive(Args, Clone, Debug, PartialEq, Serialize)]

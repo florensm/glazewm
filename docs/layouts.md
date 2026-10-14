@@ -20,6 +20,8 @@ layouts:
   scrolling:
     # Width of a new column, as a percentage of the workspace or in pixels.
     column_width: "50%"
+    # Widths `cycle-column-width` steps through.
+    preset_column_widths: ["33.333%", "50%", "66.667%"]
     # How the strip follows the focused column: "fit" scrolls just far
     # enough to show it, "center" keeps it in the middle.
     focus_fit_method: "fit"
@@ -52,7 +54,11 @@ unrelated reloads.
   column joins it above or below, depending on the half it is dropped on;
   dropping it between columns or past either end makes a new column.
 - Resizing a column's width (`resize --width`) leaves the other columns
-  alone.
+  alone. `cycle-column-width` steps the focused column through
+  `preset_column_widths`, narrowest to widest and back around; a column
+  between presets goes to the next wider one.
+- `focus --first-column` and `focus --last-column` jump to either end of
+  the strip, to the window there that last had focus.
 - Focusing a column, by keyboard or by clicking a column partly off
   screen, scrolls the strip just far enough to show it whole, or centers
   it with `focus_fit_method: "center"`.
