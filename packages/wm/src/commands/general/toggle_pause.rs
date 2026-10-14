@@ -11,7 +11,6 @@ pub fn toggle_pause(state: &mut WmState) {
   #[cfg(target_os = "windows")]
   if is_paused {
     crate::drop_indicator::hide_drop_indicator(state);
-    crate::overview::hide_drag_shelf(state);
   }
 
   // Redraw full container tree on unpause.

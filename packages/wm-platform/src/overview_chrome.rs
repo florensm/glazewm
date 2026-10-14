@@ -37,6 +37,9 @@ const TILE_CAPTION: (f32, f32) = (16.0, 9.0);
 /// Height and font size of the title strip of the dragged window.
 const GHOST_CAPTION: (f32, f32) = (18.0, 9.0);
 
+/// Size of the dragged window's picture, in logical pixels.
+pub(crate) const GHOST_SIZE: (f32, f32) = (200.0, 124.0);
+
 /// Height of the key hints line, in logical pixels.
 pub(crate) const HINT_HEIGHT: f32 = 20.0;
 

@@ -93,11 +93,6 @@ pub fn handle_window_moved_or_resized(
       // Looked up again, since floating it for the drag replaces it.
       #[cfg(target_os = "windows")]
       if let Some(window) = state.window_from_native(native_window) {
-        if let Err(err) =
-          crate::overview::sync_drag_shelf(&window, state, config)
-        {
-          tracing::warn!("Failed to update the drag shelf: {err:?}");
-        }
         crate::drop_indicator::sync_drop_indicator(&window, state, config);
       }
 

@@ -121,14 +121,6 @@ pub(crate) struct Interaction {
   /// one, or while the special workspace's dock is selected, the one it
   /// was entered from, which moving up goes back to.
   pub row_selected: usize,
-
-  /// Card on the shelf's stage: the selected one, except while carrying,
-  /// when it stays the one the window was lifted from.
-  pub staged: usize,
-
-  /// Title of a window dragged in from outside, which has no card of its
-  /// own to find it on.
-  pub dragged_title: Option<String>,
 }
 
 impl Interaction {
@@ -159,8 +151,6 @@ impl Interaction {
       digit_workspaces: Vec::new(),
       grid: GridCells::default(),
       row_selected: row_card(workspaces, selected, None).unwrap_or(0),
-      staged: selected,
-      dragged_title: None,
     }
   }
 
@@ -182,7 +172,6 @@ impl Interaction {
     self.hover = self.hover.and_then(remap);
     self.row_selected =
       row_card(new, self.selected, remap(self.row_selected)).unwrap_or(0);
-    self.staged = remap(self.staged).unwrap_or(self.selected);
 
     let exists = |hwnd: isize| find(new, hwnd).is_some();
 
@@ -210,33 +199,11 @@ impl Interaction {
     self.drag.map(|drag| drag.hwnd).or(self.carried)
   }
 
-  /// Workspace the floating window would land on, if any.
-  pub fn drop_target(&self) -> Option<usize> {
-    match &self.drag {
-      Some(drag) => drag.target,
-      None => (self.mode == Mode::Carrying).then_some(self.selected),
-    }
-  }
-
   /// Whether workspace `index` is where the floating window would land.
   pub fn is_drop_target(&self, index: usize) -> bool {
-    self.drop_target() == Some(index)
-  }
-
-  /// Switches to `layout`.
-  pub fn set_layout(&mut self, layout: OverviewLayoutMode) {
-    self.layout = layout;
-
-    match layout {
-      // The grid is too small to pick a window in.
-      OverviewLayoutMode::Grid if self.mode == Mode::Windows => {
-        self.mode = Mode::Spaces;
-        self.selected_window = None;
-      }
-      OverviewLayoutMode::Shelf if self.mode != Mode::Carrying => {
-        self.staged = self.selected;
-      }
-      _ => {}
+    match &self.drag {
+      Some(drag) => drag.target == Some(index),
+      None => self.mode == Mode::Carrying && self.selected == index,
     }
   }
 
@@ -273,25 +240,24 @@ impl Interaction {
           return Some(OverviewAction::CloseWindow(hwnd));
         }
       }
-      Key::Tab => self.set_layout(match self.layout {
-        OverviewLayoutMode::Carousel => OverviewLayoutMode::Grid,
-        OverviewLayoutMode::Grid => OverviewLayoutMode::Shelf,
-        OverviewLayoutMode::Shelf => OverviewLayoutMode::Carousel,
-      }),
+      Key::Tab => match self.layout {
+        OverviewLayoutMode::Carousel => {
+          self.layout = OverviewLayoutMode::Grid;
+          // The grid is too small to pick a window in.
+          if self.mode == Mode::Windows {
+            self.mode = Mode::Spaces;
+            self.selected_window = None;
+          }
+        }
+        OverviewLayoutMode::Grid => {
+          self.layout = OverviewLayoutMode::Carousel;
+        }
+      },
       Key::Space => return self.space(workspaces),
       Key::Backspace => match self.mode {
         Mode::Carrying => {
-          let carried = self.carried.take();
+          self.carried = None;
           self.mode = Mode::Windows;
-
-          // Back to picking on the stage, where the window still is.
-          if self.layout == OverviewLayoutMode::Shelf {
-            self.selected = self.staged;
-            self.selected_window = carried;
-            self.row_selected =
-              row_card(workspaces, self.staged, Some(self.row_selected))
-                .unwrap_or(0);
-          }
         }
         Mode::Windows => {
           self.mode = Mode::Spaces;
@@ -384,9 +350,7 @@ impl Interaction {
         // Picking a window is a zoomed-in thing; the grid is too small to
         // aim at one.
         if let Some(hwnd) = first {
-          if self.layout == OverviewLayoutMode::Grid {
-            self.layout = OverviewLayoutMode::Carousel;
-          }
+          self.layout = OverviewLayoutMode::Carousel;
           self.mode = Mode::Windows;
           self.selected_window = Some(hwnd);
         }
@@ -441,7 +405,6 @@ impl Interaction {
     self.selected_window = None;
     self.searching = false;
     self.query.clear();
-    self.staged = self.selected;
   }
 
   /// Sends the picked window `hwnd` to workspace `name`, and moves the
@@ -478,38 +441,21 @@ impl Interaction {
       self.selected_window = None;
     }
 
-    // While carrying, the stage keeps showing where the window came from.
-    if self.mode != Mode::Carrying {
-      self.staged = index;
-    }
-
     self.row_selected =
       row_card(workspaces, index, Some(self.row_selected)).unwrap_or(0);
-  }
-
-  /// The cards moved through with the arrows: on the shelf every card,
-  /// elsewhere all but the special workspace's, docked below the rest.
-  fn row(&self, workspaces: &[OverviewWorkspace]) -> Vec<usize> {
-    if self.layout == OverviewLayoutMode::Shelf {
-      (0..workspaces.len()).collect()
-    } else {
-      row_indices(workspaces)
-    }
   }
 
   /// Moves along the row of workspaces, which the special workspace's
   /// dock below it isn't part of; from the dock, back to the row.
   fn step(&mut self, delta: isize, workspaces: &[OverviewWorkspace]) {
-    if self.layout != OverviewLayoutMode::Shelf
-      && is_special(workspaces, self.selected)
-    {
+    if is_special(workspaces, self.selected) {
       if let Some(index) = row_card(workspaces, self.row_selected, None) {
         self.select(index, workspaces);
       }
       return;
     }
 
-    let row = self.row(workspaces);
+    let row = row_indices(workspaces);
     let Some(position) = row.iter().position(|i| *i == self.selected)
     else {
       return;
@@ -538,14 +484,6 @@ impl Interaction {
       return;
     }
 
-    // Down from the shelf goes into the windows on the stage below it.
-    if self.layout == OverviewLayoutMode::Shelf {
-      if delta > 0 && self.mode == Mode::Spaces {
-        self.space(workspaces);
-      }
-      return;
-    }
-
     // Up from the dock goes back to where it was entered from. Down onto
     // the dock is from the carousel, or from the grid's last row, below
     // which `GridCells` puts it.
@@ -558,12 +496,10 @@ impl Interaction {
         OverviewLayoutMode::Grid => {
           self.grid.vertical_neighbour(self.selected, delta)
         }
-        OverviewLayoutMode::Carousel | OverviewLayoutMode::Shelf => {
-          workspaces
-            .iter()
-            .position(|workspace| workspace.is_special)
-            .filter(|_| delta > 0)
-        }
+        OverviewLayoutMode::Carousel => workspaces
+          .iter()
+          .position(|workspace| workspace.is_special)
+          .filter(|_| delta > 0),
       }
     };
 
@@ -587,7 +523,7 @@ impl Interaction {
       };
       self.selected_window = window.map(|window| window.hwnd);
     } else {
-      let row = self.row(workspaces);
+      let row = row_indices(workspaces);
       let index = if is_last { row.last() } else { row.first() };
       if let Some(index) = index {
         self.select(*index, workspaces);
@@ -765,19 +701,6 @@ impl Interaction {
       Hit {
         window: Some(hwnd), ..
       } => Some(OverviewAction::FocusWindow(hwnd)),
-      // A card on the shelf goes on the stage; the one on the stage is
-      // gone to.
-      Hit {
-        workspace: Some(index),
-        ..
-      } if self.layout == OverviewLayoutMode::Shelf
-        && index != self.staged
-        && self.mode != Mode::Carrying =>
-      {
-        self.mode = Mode::Spaces;
-        self.select(index, workspaces);
-        None
-      }
       Hit {
         workspace: Some(index),
         ..
@@ -839,17 +762,10 @@ impl Interaction {
     }
 
     if let Some(drag) = &self.drag {
-      let title = find(workspaces, drag.hwnd)
-        .map(|(_, window)| window.title.clone())
-        .or_else(|| self.dragged_title.clone())
-        .unwrap_or_default();
-
-      let text = match drag.target.and_then(|index| workspaces.get(index))
-      {
-        Some(to) => format!("move \"{title}\" to {}", to.label),
-        None => format!("drop \"{title}\" on a workspace"),
-      };
-      return (text, HintTone::Accent);
+      return (
+        format!("drop \"{}\" on a workspace", title(Some(drag.hwnd))),
+        HintTone::Accent,
+      );
     }
 
     match (self.mode, self.layout) {
@@ -866,12 +782,7 @@ impl Interaction {
         HintTone::Quiet,
       ),
       (Mode::Spaces, OverviewLayoutMode::Grid) => (
-        "arrows workspaces   \u{b7}   drag windows between them   \u{b7}   s special   \u{b7}   / search   \u{b7}   \u{23ce} go there   \u{b7}   tab shelf   \u{b7}   esc close"
-          .to_string(),
-        HintTone::Quiet,
-      ),
-      (Mode::Spaces, OverviewLayoutMode::Shelf) => (
-        "\u{2190}\u{2192} workspaces   \u{b7}   space or \u{2193} into its windows   \u{b7}   drag windows onto the shelf   \u{b7}   s special   \u{b7}   / search   \u{b7}   \u{23ce} go there   \u{b7}   tab carousel   \u{b7}   esc close"
+        "arrows workspaces   \u{b7}   drag windows between them   \u{b7}   s special   \u{b7}   / search   \u{b7}   \u{23ce} go there   \u{b7}   tab carousel   \u{b7}   esc close"
           .to_string(),
         HintTone::Quiet,
       ),
@@ -1325,99 +1236,8 @@ mod tests {
     assert_eq!(state.mode, Mode::Spaces);
     assert_eq!(state.selected_window, None);
 
-    press(
-      &mut state,
-      &[Key::Tab, Key::Tab, Key::Space, Key::Space, Key::Tab],
-    );
-    assert_eq!(state.layout, OverviewLayoutMode::Grid);
+    press(&mut state, &[Key::Tab, Key::Space, Key::Space, Key::Tab]);
     assert_eq!(state.mode, Mode::Carrying, "carrying works in the grid");
-  }
-
-  #[test]
-  fn tab_cycles_carousel_grid_and_shelf() {
-    let mut state = interaction();
-
-    press(&mut state, &[Key::Tab]);
-    assert_eq!(state.layout, OverviewLayoutMode::Grid);
-    press(&mut state, &[Key::Tab]);
-    assert_eq!(state.layout, OverviewLayoutMode::Shelf);
-    press(&mut state, &[Key::Tab]);
-    assert_eq!(state.layout, OverviewLayoutMode::Carousel);
-  }
-
-  fn shelf() -> Interaction {
-    Interaction::new(&workspaces(), OverviewLayoutMode::Shelf, 6.0)
-  }
-
-  #[test]
-  fn the_shelf_stages_the_selected_workspace() {
-    let mut state = shelf();
-    assert_eq!(state.staged, 1);
-
-    press(&mut state, &[Key::Left]);
-    assert_eq!((state.selected, state.staged), (0, 0));
-
-    press(&mut state, &[Key::Down]);
-    assert_eq!(state.mode, Mode::Windows, "down goes into the stage");
-    assert_eq!(state.layout, OverviewLayoutMode::Shelf);
-    assert_eq!(state.selected_window, Some(11));
-  }
-
-  #[test]
-  fn carrying_on_the_shelf_keeps_the_stage_on_the_source() {
-    let mut state = shelf();
-
-    press(&mut state, &[Key::Space, Key::Space, Key::Right]);
-    assert_eq!(state.mode, Mode::Carrying);
-    assert_eq!(state.selected, 2);
-    assert_eq!(state.staged, 1);
-    assert_eq!(state.drop_target(), Some(2));
-
-    press(&mut state, &[Key::Backspace]);
-    assert_eq!(state.mode, Mode::Windows);
-    assert_eq!(state.selected, 1, "back to picking on the stage");
-    assert_eq!(state.selected_window, Some(21));
-
-    let action = press(&mut state, &[Key::Space, Key::Left, Key::Space]);
-    assert_eq!(
-      action,
-      Some(OverviewAction::MoveWindow {
-        hwnd: 21,
-        workspace: "1".to_string(),
-      })
-    );
-    assert_eq!(state.staged, 0, "the stage shows where it went");
-  }
-
-  #[test]
-  fn the_shelf_reaches_the_special_workspace_with_the_arrows() {
-    let workspaces = with_special();
-    let mut state =
-      Interaction::new(&workspaces, OverviewLayoutMode::Shelf, 6.0);
-
-    state.key(Key::End, &workspaces);
-    assert!(workspaces[state.selected].is_special);
-    assert_eq!(state.staged, state.selected);
-  }
-
-  #[test]
-  fn clicking_a_shelf_card_stages_it_and_the_stage_goes_there() {
-    let workspaces = workspaces();
-    let mut state = shelf();
-    let card = |index| Hit {
-      workspace: Some(index),
-      window: None,
-    };
-
-    state.mouse_down((10.0, 10.0), card(2));
-    assert_eq!(state.mouse_up(&workspaces), None);
-    assert_eq!(state.staged, 2);
-
-    state.mouse_down((10.0, 10.0), card(2));
-    assert_eq!(
-      state.mouse_up(&workspaces),
-      Some(OverviewAction::FocusWorkspace("3".to_string()))
-    );
   }
 
   #[test]

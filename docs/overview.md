@@ -15,11 +15,6 @@ cancelled) until its windows sit where they really are.
 - **Carousel** (default): the cards in a row, the selected one centered and
   larger than the rest. Looking inside a workspace zooms its card in further.
 - **Grid**: every card at once, `grid_columns` per row.
-- **Shelf**: every card small in a shelf along the top, and the selected
-  workspace large on a stage below it, its place in the shelf left open.
-  Moving the selection puts another workspace on the stage. While a window
-  is carried or dragged, the shelf card it would land on grows, and the
-  stage keeps showing the workspace it came from.
 
 After the last workspace there is a **+** card for a new one: the workspace
 `move --next-empty-workspace` would use, i.e. an unused workspace from the
@@ -29,7 +24,7 @@ window on it to move the window there, or pick it to switch to it. There is
 no **+** card when the monitor already shows an empty workspace, or when
 there is nowhere to go.
 
-`Tab` cycles through them while open: carousel, grid, shelf.
+`Tab` switches between them while open.
 
 ## Usage
 
@@ -39,14 +34,13 @@ there is nowhere to go.
 | --- | --- |
 | `toggle-overview` (`alt+w` in the sample config) | Open the overview as a carousel. While open, switch to the carousel, or close it if already showing it. |
 | `toggle-overview --grid` | Same, for the grid. |
-| `toggle-overview --shelf` | Same, for the shelf. |
 
 ### Mouse
 
 | Input | Behaviour |
 | --- | --- |
 | Click a window | Focus it, switching to its workspace, and close. |
-| Click a card elsewhere | Switch to its workspace and close. On the shelf, a click on a shelf card puts it on the stage instead, and a click on the stage switches to it. |
+| Click a card elsewhere | Switch to its workspace and close. |
 | Click the background | Close without changing anything. |
 | Drag a window onto another card | Move it to that workspace. The overview stays open. |
 | Middle-click a window | Close the window. |
@@ -69,18 +63,13 @@ workspace. The line under the cards shows the keys for the current step.
 | `Enter` | Switch to the selected workspace and close. | Focus the selected window and close. | Drop it on the selected workspace. |
 | `x` | | Close the selected window. | |
 | `Backspace` | | Back to browsing. | Put the window down. |
-| `Tab` | Next layout: carousel, grid, shelf. | Same, back to browsing in the grid. | Same. |
+| `Tab` | Switch between carousel and grid. | Same, back to browsing in the grid. | Same. |
 | `Escape` | Close without changing anything. | Same. | Same. |
 
 Digits go to the workspace named after them (`0` is `10`), like a
 `focus --workspace` binding would: one with a card, an inactive one from
 the config, or one on another monitor. When no workspace has a numeric
 name, they go by the cards' positions instead.
-
-On the shelf, the stage is where windows are picked: `↓` goes into the
-staged workspace's windows like `Space`, and while a window is carried,
-`←` `→` pick a shelf card to drop it on as the stage keeps showing where
-it came from. `Backspace` then goes back to picking on the stage.
 
 ### Search
 
@@ -106,8 +95,6 @@ shows "Drop windows here".
   cards' positions skip it. `↓` (or `j`) moves down onto it from the
   carousel or the grid's last row, and `↑` goes back to the card it came
   from; `←` `→`, `Home`, `End` and the wheel stay in the row above it.
-- On the shelf it isn't docked: it is the shelf's last card, reached with
-  `←` `→` and `End` like the others.
 - Picking it, or dropping a window on it, works like
   `focus --special-workspace` and `move --special-workspace`: picking it
   summons it to the overview's monitor.
@@ -151,25 +138,6 @@ The zoom on open and close starts and ends on the columns that are on
 screen; the others have nowhere on screen to come from, so they fade in
 with the zoom out and fade out with the zoom in. Picking a column out of
 view zooms into where the strip has scrolled to show it.
-
-## Drag shelf
-
-Dragging a window to the top edge of a monitor shows that monitor's
-workspaces in a shelf along the top, over the desktop, without the full
-overview. The card under the cursor grows and the line under the shelf
-says where the window would go; drop it on a card to move it to that
-workspace, in the state it had before the drag (a tiling window tiles
-there). Dropping it on the "+" card moves it to a new workspace, and on
-the special workspace's card, there.
-
-Moving the cursor back down past the shelf closes it, and the window drops
-in the layout as usual (see [Dragging windows](./layouts.md#dragging-windows));
-so does dropping it on its own workspace's card.
-
-The shelf never takes focus, so the drag carries on uninterrupted. Turn
-off Windows' own "snap layouts" bar for dragging to the top of the screen
-(Settings › System › Multitasking › Snap windows) so it doesn't show up
-there as well. Set `drag_shelf: false` to turn the shelf off.
 
 ## Config
 
@@ -215,10 +183,6 @@ overview:
   # Length of the zoom into the picked workspace on close; 0 closes it
   # instantly.
   close_duration_ms: 200
-
-  # Show the drag shelf when a window is dragged to the top edge of a
-  # monitor (see below).
-  drag_shelf: true
 ```
 
 Colors take an optional alpha (`#rrggbbaa`). Every key is optional; the
