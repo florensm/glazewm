@@ -18,6 +18,7 @@ pub struct WorkspaceDto {
   pub child_focus_order: Vec<Uuid>,
   pub has_focus: bool,
   pub is_displayed: bool,
+  pub is_special: bool,
   pub width: i32,
   pub height: i32,
   pub x: i32,

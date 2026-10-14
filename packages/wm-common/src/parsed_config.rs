@@ -16,6 +16,7 @@ pub struct ParsedConfig {
   pub keybindings: Vec<KeybindingConfig>,
   pub layouts: LayoutsConfig,
   pub overview: OverviewConfig,
+  pub special_workspace: SpecialWorkspaceConfig,
   pub stack: StackConfig,
   pub window_behavior: WindowBehaviorConfig,
   pub window_effects: WindowEffectsConfig,
@@ -1160,6 +1161,29 @@ pub struct WorkspaceConfig {
   /// Overrides `general.default_layout` for this workspace.
   #[serde(default)]
   pub layout: Option<Layout>,
+}
+
+/// The special workspace: a scratch workspace outside the `workspaces`
+/// list, summoned onto the focused monitor.
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(default, rename_all(serialize = "camelCase"))]
+pub struct SpecialWorkspaceConfig {
+  /// Name to address it by. Must not be numeric or a `workspaces` name.
+  pub name: String,
+
+  pub display_name: Option<String>,
+
+  pub layout: Layout,
+}
+
+impl Default for SpecialWorkspaceConfig {
+  fn default() -> Self {
+    Self {
+      name: "special".to_string(),
+      display_name: None,
+      layout: Layout::Scrolling,
+    }
+  }
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]

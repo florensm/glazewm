@@ -50,6 +50,20 @@ pub fn mock_border_delta() -> RectDelta {
   RectDelta::zero()
 }
 
+/// Plain configs for workspaces with the given names.
+pub fn mock_workspace_configs(names: &[&str]) -> Vec<WorkspaceConfig> {
+  names
+    .iter()
+    .map(|name| WorkspaceConfig {
+      name: (*name).to_string(),
+      display_name: None,
+      bind_to_monitor: None,
+      keep_alive: false,
+      layout: None,
+    })
+    .collect()
+}
+
 #[bon]
 impl Monitor {
   #[builder]
@@ -265,6 +279,7 @@ impl Workspace {
     tiling_direction: TilingDirection,
     #[builder(default = GapsConfig::default())] gaps_config: GapsConfig,
     #[builder(default)] layout: Layout,
+    #[builder(default)] is_special: bool,
     #[builder(default = vec![])] tiling_containers: Vec<TilingContainer>,
     #[builder(default = vec![])] non_tiling_windows: Vec<NonTilingWindow>,
   ) -> Self {
@@ -282,6 +297,7 @@ impl Workspace {
       tiling_direction,
       layout,
       ScrollingLayoutConfig::default(),
+      is_special,
     );
 
     for child in tiling_containers {

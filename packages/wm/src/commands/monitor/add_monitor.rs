@@ -1,15 +1,14 @@
-use anyhow::Context;
 use tracing::info;
 use wm_common::WmEvent;
 use wm_platform::Display;
 
 use crate::{
   commands::{
-    container::{attach_container, move_container_within_tree},
-    workspace::{activate_workspace, sort_workspaces},
+    container::attach_container,
+    workspace::{activate_workspace, move_workspace_to_monitor},
   },
-  models::{Monitor, NativeMonitorProperties, Workspace},
-  traits::{CommonGetters, PositionGetters, WindowGetters},
+  models::{Monitor, NativeMonitorProperties},
+  traits::CommonGetters,
   user_config::UserConfig,
   wm_state::WmState,
 };
@@ -84,71 +83,6 @@ pub fn move_bounded_workspaces_to_new_monitor(
   if monitor.child_count() == 0 {
     activate_workspace(None, Some(monitor.clone()), state, config)?;
   }
-
-  Ok(())
-}
-
-// TODO: Move to its own file once `swap-workspace` PR is merged.
-// Ref: https://github.com/glzr-io/glazewm/pull/980.
-pub fn move_workspace_to_monitor(
-  workspace: &Workspace,
-  target_monitor: &Monitor,
-  state: &mut WmState,
-  config: &UserConfig,
-) -> anyhow::Result<()> {
-  let origin_monitor = workspace.monitor().context("No monitor.")?;
-
-  move_container_within_tree(
-    &workspace.clone().into(),
-    &target_monitor.clone().into(),
-    target_monitor.child_count(),
-    state,
-  )?;
-
-  let windows = workspace
-    .descendants()
-    .filter_map(|descendant| descendant.as_window_container().ok());
-
-  for window in windows {
-    window.set_has_pending_dpi_adjustment(true);
-
-    window.set_floating_placement(
-      window
-        .floating_placement()
-        .translate_to_center(&workspace.to_rect()?),
-    );
-  }
-
-  // Get currently displayed workspace on the target monitor.
-  let displayed_workspace = target_monitor
-    .displayed_workspace()
-    .context("No displayed workspace.")?;
-
-  state
-    .pending_sync
-    .queue_container_to_redraw(workspace.clone())
-    .queue_container_to_redraw(displayed_workspace);
-
-  match origin_monitor.child_count() {
-    0 => {
-      // Prevent origin monitor from having no workspaces.
-      activate_workspace(None, Some(origin_monitor), state, config)?;
-    }
-    _ => {
-      // Redraw the workspace on the origin monitor.
-      state.pending_sync.queue_container_to_redraw(
-        origin_monitor
-          .displayed_workspace()
-          .context("No displayed workspace.")?,
-      );
-    }
-  }
-
-  sort_workspaces(target_monitor, config)?;
-
-  state.emit_event(WmEvent::WorkspaceUpdated {
-    updated_workspace: workspace.to_dto()?,
-  });
 
   Ok(())
 }

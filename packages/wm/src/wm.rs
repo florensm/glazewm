@@ -43,8 +43,9 @@ use crate::{
       WindowPositionTarget,
     },
     workspace::{
-      focus_workspace, move_workspace_in_direction, set_layout,
-      update_workspace_config,
+      focus_special_workspace, focus_workspace,
+      move_window_to_special_workspace, move_workspace_in_direction,
+      set_layout, update_workspace_config,
     },
   },
   events::{
@@ -157,7 +158,7 @@ impl WindowManager {
           if let Some(name) = workspace
             .filter(|name| Some(name) != focused_workspace.as_ref())
           {
-            commands.push(focus_workspace_command(name));
+            commands.push(focus_workspace_command(name, config));
           }
 
           commands.push(InvokeCommand::Focus(InvokeFocusCommand {
@@ -181,17 +182,14 @@ impl WindowManager {
           }
 
           state.pending_sync.suppress_animations();
-          (vec![focus_workspace_command(name)], None)
+          (vec![focus_workspace_command(name, config)], None)
         }
         OverviewAction::MoveWindow { workspace, .. } => {
           let Some(window) = window else {
             return Ok(());
           };
 
-          let command = InvokeCommand::Move(InvokeMoveCommand {
-            workspace: Some(workspace),
-            ..Default::default()
-          });
+          let command = move_to_workspace_command(workspace, config);
           (vec![command], Some(window.id()))
         }
         OverviewAction::CloseWindow(_) => {
@@ -679,6 +677,10 @@ impl WindowManager {
           focus_urgent_window(state, config)?;
         }
 
+        if args.special_workspace {
+          focus_special_workspace(state, config)?;
+        }
+
         if args.next_active_workspace_on_monitor {
           focus_workspace(
             WorkspaceTarget::NextActiveInMonitor,
@@ -791,6 +793,14 @@ impl WindowManager {
               move_window_to_workspace(
                 window.clone(),
                 WorkspaceTarget::NextEmpty,
+                state,
+                config,
+              )?;
+            }
+
+            if args.special_workspace {
+              move_window_to_special_workspace(
+                window.clone(),
                 state,
                 config,
               )?;
@@ -1329,12 +1339,43 @@ fn window_by_handle(
     .find(|window| window.native().id().0 == hwnd)
 }
 
-/// `focus --workspace <name>`.
+/// `focus --workspace <name>`, or `focus --special-workspace` to summon
+/// the special workspace to the focused monitor.
 #[cfg(target_os = "windows")]
-fn focus_workspace_command(name: String) -> InvokeCommand {
-  InvokeCommand::Focus(InvokeFocusCommand {
-    workspace: Some(name),
-    ..Default::default()
+fn focus_workspace_command(
+  name: String,
+  config: &UserConfig,
+) -> InvokeCommand {
+  InvokeCommand::Focus(if config.is_special_workspace_name(&name) {
+    InvokeFocusCommand {
+      special_workspace: true,
+      ..Default::default()
+    }
+  } else {
+    InvokeFocusCommand {
+      workspace: Some(name),
+      ..Default::default()
+    }
+  })
+}
+
+/// `move --workspace <name>`, or `move --special-workspace` for the
+/// special workspace.
+#[cfg(target_os = "windows")]
+fn move_to_workspace_command(
+  name: String,
+  config: &UserConfig,
+) -> InvokeCommand {
+  InvokeCommand::Move(if config.is_special_workspace_name(&name) {
+    InvokeMoveCommand {
+      special_workspace: true,
+      ..Default::default()
+    }
+  } else {
+    InvokeMoveCommand {
+      workspace: Some(name),
+      ..Default::default()
+    }
   })
 }
 

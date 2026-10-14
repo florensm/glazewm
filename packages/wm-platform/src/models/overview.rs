@@ -8,7 +8,8 @@ pub struct OverviewFrame {
 
   pub scale_factor: f32,
 
-  /// The monitor's workspaces, in order.
+  /// The monitor's workspaces, in order, then the special workspace,
+  /// wherever it is.
   pub workspaces: Vec<OverviewWorkspace>,
 
   /// Workspaces named "1" to "10" without a card here that digit keys can
@@ -36,6 +37,10 @@ pub struct OverviewWorkspace {
   /// Not active yet: shown as a "+" card, and picking it or dropping a
   /// window on it activates (or creates) the workspace.
   pub is_new: bool,
+
+  /// The special workspace: shown on every monitor's overview, set apart
+  /// after the others, and reached with the `s` key.
+  pub is_special: bool,
 
   /// Area its card shows, in physical pixels: the monitor's working area,
   /// widened to the whole strip of a scrolling workspace.

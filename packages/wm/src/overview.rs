@@ -8,7 +8,7 @@
 use anyhow::Context;
 use tokio::sync::mpsc;
 use uuid::Uuid;
-use wm_common::{Layout, WindowState};
+use wm_common::{Layout, WindowState, WorkspaceConfig};
 use wm_platform::{
   Color, NativeOverview, OverviewAction, OverviewFrame,
   OverviewLayoutMode, OverviewStyle, OverviewWindow, OverviewWorkspace,
@@ -200,27 +200,19 @@ fn overview_frame(
   let mut workspaces = monitor
     .workspaces()
     .iter()
+    .filter(|workspace| !workspace.is_special())
     .map(|workspace| {
-      let workspace_config = workspace.config();
-
-      OverviewWorkspace {
-        label: workspace_config
-          .display_name
-          .unwrap_or_else(|| workspace_config.name.clone()),
-        name: workspace_config.name,
-        is_focused: focused_workspace == Some(workspace.id()),
-        is_new: false,
-        content_rect: content_rect(workspace, area),
-        windows: overview_windows(workspace)
-          .iter()
-          .map(overview_window)
-          .collect(),
-        tab_bars: workspace_tab_bars(state, workspace, config),
-      }
+      workspace_card(state, workspace, area, focused_workspace, config)
     })
     .collect::<Vec<_>>();
 
   workspaces.extend(new_workspace(state, monitor, area, config));
+  workspaces.push(special_workspace(
+    state,
+    area,
+    focused_workspace,
+    config,
+  ));
 
   let overview = &config.value.overview;
 
@@ -250,6 +242,99 @@ fn overview_frame(
   }
 }
 
+/// `workspace`'s card, for a monitor with working `area`.
+fn workspace_card(
+  state: &WmState,
+  workspace: &Workspace,
+  area: &Rect,
+  focused_workspace: Option<Uuid>,
+  config: &UserConfig,
+) -> OverviewWorkspace {
+  let workspace_config = workspace.config();
+
+  OverviewWorkspace {
+    label: workspace_label(&workspace_config),
+    name: workspace_config.name,
+    is_focused: focused_workspace == Some(workspace.id()),
+    is_new: false,
+    is_special: workspace.is_special(),
+    content_rect: content_rect(workspace, area),
+    windows: overview_windows(workspace)
+      .iter()
+      .map(overview_window)
+      .collect(),
+    tab_bars: workspace_tab_bars(state, workspace, config),
+  }
+}
+
+/// The special workspace's card, shown on every monitor's overview at
+/// `area`: wherever it is, or empty while it is inactive.
+fn special_workspace(
+  state: &WmState,
+  area: &Rect,
+  focused_workspace: Option<Uuid>,
+  config: &UserConfig,
+) -> OverviewWorkspace {
+  let special = state.workspaces().into_iter().find(Workspace::is_special);
+  let own_area = special.as_ref().and_then(|workspace| {
+    Some(workspace.monitor()?.native_properties().working_area)
+  });
+
+  let (Some(workspace), Some(own_area)) = (special, own_area) else {
+    let special_config = config.special_workspace_config();
+
+    return OverviewWorkspace {
+      label: workspace_label(&special_config),
+      name: special_config.name,
+      is_focused: false,
+      is_new: false,
+      is_special: true,
+      content_rect: area.clone(),
+      windows: Vec::new(),
+      tab_bars: Vec::new(),
+    };
+  };
+
+  // Shown as on its own monitor, moved onto this one.
+  let mut card = workspace_card(
+    state,
+    &workspace,
+    &own_area,
+    focused_workspace,
+    config,
+  );
+  translate_card(
+    &mut card,
+    area.x() - own_area.x(),
+    area.y() - own_area.y(),
+  );
+  card
+}
+
+/// Moves everything `card` shows by (`dx`, `dy`).
+fn translate_card(card: &mut OverviewWorkspace, dx: i32, dy: i32) {
+  let translate = |rect: &Rect| {
+    rect.translate_to_coordinates(rect.x() + dx, rect.y() + dy)
+  };
+
+  card.content_rect = translate(&card.content_rect);
+  for window in &mut card.windows {
+    window.rect = translate(&window.rect);
+  }
+  for bar in &mut card.tab_bars {
+    bar.rect = translate(&bar.rect);
+    bar.outer_rect = translate(&bar.outer_rect);
+  }
+}
+
+/// Name shown on a workspace's card.
+fn workspace_label(workspace_config: &WorkspaceConfig) -> String {
+  workspace_config
+    .display_name
+    .clone()
+    .unwrap_or_else(|| workspace_config.name.clone())
+}
+
 /// The "+" card: the workspace `move --next-empty-workspace` would
 /// activate or create from `monitor`. `None` when that is an existing
 /// workspace, which has a card of its own, or when there is none.
@@ -270,14 +355,14 @@ fn new_workspace(
     .workspaces
     .iter()
     .find(|workspace| workspace.name == name)
-    .and_then(|workspace| workspace.display_name.clone())
-    .unwrap_or_else(|| name.clone());
+    .map_or_else(|| name.clone(), workspace_label);
 
   Some(OverviewWorkspace {
     name,
     label,
     is_focused: false,
     is_new: true,
+    is_special: false,
     content_rect: area.clone(),
     windows: Vec::new(),
     tab_bars: Vec::new(),
@@ -448,6 +533,105 @@ mod tests {
       .collect::<Vec<_>>();
 
     assert_eq!(titles, ["a", "b", "c", "d", "floating", "minimized"]);
+  }
+
+  #[test]
+  fn special_workspace_card_is_last_on_every_monitor() {
+    use wm_common::ParsedConfig;
+    use wm_platform::Color;
+
+    use super::overview_frame;
+    use crate::{
+      commands::container::set_focused_descendant,
+      models::Monitor,
+      test_utils::{MOCK_MONITOR_HEIGHT, MOCK_MONITOR_WIDTH},
+      user_config::UserConfig,
+      wm_state::WmState,
+    };
+
+    let config = UserConfig::from_parsed(ParsedConfig::default());
+    let window = tiling("parked");
+    let special = Workspace::mock()
+      .name("special".to_string())
+      .is_special(true)
+      .tiling_containers(vec![window.clone().into()])
+      .call();
+    let first = Workspace::mock().name("1".to_string()).call();
+    let left = Monitor::mock()
+      .workspaces(vec![special.clone(), first.clone()])
+      .call();
+
+    let bounds = Rect::from_xy(
+      MOCK_MONITOR_WIDTH,
+      0,
+      MOCK_MONITOR_WIDTH,
+      MOCK_MONITOR_HEIGHT,
+    );
+    let right = Monitor::mock()
+      .bounds(bounds.clone())
+      .working_area(bounds)
+      .workspaces(vec![Workspace::mock().name("2".to_string()).call()])
+      .call();
+    let state = WmState::mock(vec![left.clone(), right.clone()]);
+    set_focused_descendant(&first.into(), None);
+
+    let frame = |monitor: &Monitor| {
+      overview_frame(&state, monitor, Color::from_abgr(0), &config)
+    };
+
+    for monitor in [&left, &right] {
+      let cards = frame(monitor).workspaces;
+      let names = cards.iter().map(|card| card.name.as_str());
+
+      assert_eq!(
+        names.clone().filter(|name| *name == "special").count(),
+        1
+      );
+      let last = cards.last().expect("cards");
+      assert!(last.is_special && last.name == "special");
+      assert_eq!(last.windows.len(), 1);
+    }
+
+    // On the other monitor, its windows show where they would sit there.
+    let left_rect = frame(&left).workspaces.last().expect("card").windows
+      [0]
+      .rect
+      .clone();
+    let right_rect =
+      frame(&right).workspaces.last().expect("card").windows[0]
+        .rect
+        .clone();
+    assert_eq!(right_rect.x() - left_rect.x(), MOCK_MONITOR_WIDTH);
+    assert_eq!(right_rect.y(), left_rect.y());
+  }
+
+  #[test]
+  fn inactive_special_workspace_shows_an_empty_card() {
+    use wm_common::ParsedConfig;
+    use wm_platform::Color;
+
+    use super::overview_frame;
+    use crate::{
+      commands::container::set_focused_descendant, models::Monitor,
+      user_config::UserConfig, wm_state::WmState,
+    };
+
+    let mut value = ParsedConfig::default();
+    value.special_workspace.display_name = Some("Scratch".to_string());
+    let config = UserConfig::from_parsed(value);
+
+    let first = Workspace::mock().name("1".to_string()).call();
+    let monitor = Monitor::mock().workspaces(vec![first.clone()]).call();
+    let state = WmState::mock(vec![monitor.clone()]);
+    set_focused_descendant(&first.into(), None);
+
+    let frame =
+      overview_frame(&state, &monitor, Color::from_abgr(0), &config);
+    let last = frame.workspaces.last().expect("cards");
+
+    assert!(last.is_special && !last.is_new && last.windows.is_empty());
+    assert_eq!(last.name, "special");
+    assert_eq!(last.label, "Scratch");
   }
 
   #[test]

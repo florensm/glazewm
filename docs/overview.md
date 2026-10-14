@@ -32,7 +32,7 @@ there is nowhere to go.
 
 | Command | Behaviour |
 | --- | --- |
-| `toggle-overview` (`alt+o` in the sample config) | Open the overview as a carousel. While open, switch to the carousel, or close it if already showing it. |
+| `toggle-overview` (`alt+w` in the sample config) | Open the overview as a carousel. While open, switch to the carousel, or close it if already showing it. |
 | `toggle-overview --grid` | Same, for the grid. |
 
 ### Mouse
@@ -58,6 +58,7 @@ workspace. The line under the cards shows the keys for the current step.
 | `↑` `↓` (or `k` `j`) | Select a workspace a row up or down (grid). | Select a window, top to bottom. | Same as browsing. |
 | `Home` / `End` | First / last workspace. | First / last window. | First / last workspace. |
 | `1`–`9`, `0` | Switch to that workspace and close. | Send the selected window there; the next window gets selected. | Drop it there. |
+| `s` | Same as a digit, for the [special workspace](#special-workspace). | Same. | Same. |
 | `Space` | Look inside the selected workspace. | Pick up the selected window. | Drop it on the selected workspace. |
 | `Enter` | Switch to the selected workspace and close. | Focus the selected window and close. | Drop it on the selected workspace. |
 | `x` | | Close the selected window. | |
@@ -78,6 +79,22 @@ selects the best match, after which `n` / `N` step through the matches.
 While typing, `Escape` clears the search and `Backspace` on an empty query
 ends it. While carrying a
 window, a search picks the workspace to drop it on.
+
+### Special workspace
+
+The [special workspace](./special-workspace.md) has a card on every
+monitor's overview, wherever it is: after the other workspaces (and the
+**+** card), set apart with extra room, in a row of its own at the bottom
+of the grid. It is tinted with the accent color and marked with a diamond
+before its name. While it is inactive or empty, its card shows "Drop
+windows here".
+
+- `s` works like a digit key for it: switch to it, send the selected
+  window there, or drop the carried window there. Digits going by the
+  cards' positions skip it.
+- Picking it, or dropping a window on it, works like
+  `focus --special-workspace` and `move --special-workspace`: picking it
+  summons it to the overview's monitor.
 
 ### Focus
 
@@ -107,8 +124,10 @@ shown window, with its tab bar drawn by the same code as the real one.
 ### Scrolling workspaces
 
 A workspace with the scrolling layout shows its whole strip on its card,
-every column scaled to fit (with room left above and below when the strip
-is wider than the monitor), not just the part on screen. Columns scrolled
+not just the part on screen. Its card is as tall as the others and grows
+wider with the strip, up to twice a normal card; a strip wider still is
+scaled to fit, with room left above and below. In the grid, a widened card
+takes two columns, and `↑` `↓` go to the card closest above or below. Columns scrolled
 out of view can be picked, dragged and searched like any other window;
 picking one focuses it, which scrolls it into view.
 
@@ -169,11 +188,8 @@ values above are the defaults.
 ```yaml
 keybindings:
   - commands: ["toggle-overview"]
-    bindings: ["alt+o"]
+    bindings: ["alt+w"]
 ```
-
-The sample config moves `resize --height +2%` from `alt+o` to `alt+shift+o`
-to make room for it.
 
 ## How it works
 

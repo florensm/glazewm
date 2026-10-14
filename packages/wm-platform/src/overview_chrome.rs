@@ -56,6 +56,9 @@ pub(crate) struct CardPicture {
   /// Whether it is the "+" card of a workspace yet to be activated.
   pub is_new: bool,
 
+  /// Whether it is the special workspace's card, tinted with the accent.
+  pub is_special: bool,
+
   pub is_hovered: bool,
   pub is_drop_target: bool,
   pub is_selected: bool,
@@ -156,6 +159,12 @@ pub(crate) fn draw_card(
     (with_alpha(style.accent, 0.12), style.accent, 2.0)
   } else if picture.is_hovered {
     (style.surface, with_alpha(style.accent, 0.35), 1.0)
+  } else if picture.is_special {
+    (
+      with_alpha(style.accent, 0.08),
+      with_alpha(style.accent, 0.5),
+      1.5,
+    )
   } else if picture.is_new {
     (fade(style.card, 0.5), with_alpha(style.accent, 0.2), 1.0)
   } else {
@@ -183,6 +192,22 @@ pub(crate) fn draw_card(
       with_alpha(style.subtext, 0.5)
     };
     draw_plus(surface, &metrics.tile_area().to_rect(), units, color);
+  }
+
+  if picture.is_special && picture.tiles.is_empty() {
+    let color = if picture.is_drop_target || picture.is_selected {
+      style.accent
+    } else {
+      with_alpha(style.subtext, 0.6)
+    };
+    draw_text(
+      surface,
+      fonts.get(units.px(12.0), false),
+      "Drop windows here",
+      &metrics.tile_area().to_rect(),
+      color,
+      DT_CENTER,
+    );
   }
 
   {
@@ -255,11 +280,31 @@ fn draw_header(
   let header = units.px(28.0);
   let half = to_f32(surface.width) / 2.0;
 
+  // The special workspace's name follows a diamond in the accent color.
+  let mut label_left = units.px(12.0);
+  if picture.is_special {
+    let (size, center_y) = (units.px(4.0), header / 2.0);
+    let center_x = label_left + size;
+    let corners = [
+      (center_x, center_y - size),
+      (center_x + size, center_y),
+      (center_x, center_y + size),
+      (center_x - size, center_y),
+    ];
+
+    let mut canvas = surface.canvas();
+    for (index, from) in corners.iter().enumerate() {
+      let to = corners[(index + 1) % corners.len()];
+      canvas.stroke_line(*from, to, units.px(1.5), style.accent);
+    }
+    label_left += size * 2.0 + units.px(6.0);
+  }
+
   draw_text(
     surface,
     fonts.get(units.px(12.0), picture.is_focused),
     &picture.label,
-    &RectF::new(units.px(12.0), 0.0, half, header).to_rect(),
+    &RectF::new(label_left, 0.0, half, header).to_rect(),
     if picture.is_focused {
       style.accent
     } else {
