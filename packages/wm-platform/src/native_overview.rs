@@ -52,8 +52,8 @@ use crate::{
     TilePicture, GHOST_SIZE, HINT_HEIGHT,
   },
   overview_layout::{
-    carousel, cover_crop, grid, Camera, CardMetrics, CardView, Placement,
-    RectF, Spring, Tile, Zoom,
+    carousel, cover_crop, grid, Camera, CardMetrics, CardSlot, CardView,
+    GridCells, Placement, RectF, Spring, Tile, Zoom,
   },
   overview_state::{HintTone, Hit, Interaction, Key, Mode},
   overview_tab_bars::CardTabBar,
@@ -365,6 +365,9 @@ struct Card {
   cy: Spring,
   scale: Spring,
 
+  /// Its size, wider than normal for a wide workspace.
+  metrics: CardMetrics,
+
   /// How its workspace maps onto it.
   view: CardView,
 
@@ -470,7 +473,6 @@ impl Overview {
       interaction: Interaction::new(
         &[],
         OverviewLayoutMode::Carousel,
-        1,
         0.0,
       ),
       metrics: CardMetrics::new(1.0, 1.0, 1.0),
@@ -517,12 +519,8 @@ impl Overview {
     self.area = RectF::from_rect(&frame.rect);
     self.metrics =
       CardMetrics::new(self.area.w, self.area.h, scale_factor);
-    self.interaction = Interaction::new(
-      &frame.workspaces,
-      layout,
-      frame.style.grid_columns,
-      6.0 * scale_factor,
-    );
+    self.interaction =
+      Interaction::new(&frame.workspaces, layout, 6.0 * scale_factor);
     self
       .interaction
       .digit_workspaces
@@ -684,11 +682,9 @@ impl Overview {
     let mut spare = std::mem::take(&mut self.spare);
 
     for (index, workspace) in frame.workspaces.iter().enumerate() {
-      let view = CardView::new(
-        &self.metrics,
-        &self.area,
-        &RectF::from_rect(&workspace.content_rect),
-      );
+      let content = RectF::from_rect(&workspace.content_rect);
+      let metrics = self.metrics.for_content(&self.area, &content);
+      let view = CardView::new(&metrics, &self.area, &content);
 
       let previews = workspace
         .windows
@@ -721,6 +717,7 @@ impl Overview {
       );
 
       if let Some(card) = cards.get_mut(index) {
+        card.metrics = metrics;
         card.view = view;
         card.previews = previews;
         card.tab_bars = tab_bars;
@@ -736,6 +733,7 @@ impl Overview {
         cx: Spring::new(0.0, SETTLE_MS, 0.25),
         cy: Spring::new(0.0, SETTLE_MS, 0.25),
         scale: Spring::new(1.0, SETTLE_MS, 0.001),
+        metrics,
         view,
         previews,
         tab_bars,
@@ -750,6 +748,23 @@ impl Overview {
 
     self.cards = cards;
     self.spare = spare;
+    self.interaction.grid = GridCells::new(
+      &self.metrics,
+      &self.slots(),
+      frame.style.grid_columns,
+    );
+  }
+
+  /// What the layouts need of each card.
+  fn slots(&self) -> Vec<CardSlot> {
+    self
+      .cards
+      .iter()
+      .zip(self.workspaces())
+      .map(|(card, workspace)| {
+        CardSlot::new(&card.metrics, workspace.is_special)
+      })
+      .collect()
   }
 
   /// A card's tab bars for `frames`, reusing the bars in `old` that
@@ -835,19 +850,17 @@ impl Overview {
 
   /// Points every card at where it belongs now.
   fn retarget(&mut self, snap: bool) {
-    let count = self.cards.len();
+    let slots = self.slots();
     let targets = match self.interaction.layout {
       OverviewLayoutMode::Carousel => carousel(
         &self.metrics,
-        count,
+        &slots,
         self.interaction.selected,
         self.interaction.mode == Mode::Windows,
       ),
-      OverviewLayoutMode::Grid => grid(
-        &self.metrics,
-        count,
-        self.style().map_or(5, |style| style.grid_columns),
-      ),
+      OverviewLayoutMode::Grid => {
+        grid(&self.metrics, &slots, &self.interaction.grid)
+      }
     };
 
     for (index, (card, target)) in
@@ -985,9 +998,8 @@ impl Overview {
         continue;
       }
 
-      let size = card_size(&self.metrics);
-      let metrics = self.metrics;
-      card.picture.draw(size, |surface| {
+      let metrics = card.metrics;
+      card.picture.draw(card_size(&metrics), |surface| {
         draw_card(surface, &picture, &metrics, &style, notify);
       });
       card.drawn = Some(picture);
@@ -1128,6 +1140,7 @@ impl Overview {
       label: workspace.map_or_else(String::new, |w| w.label.clone()),
       is_focused: workspace.is_some_and(|w| w.is_focused),
       is_new: workspace.is_some_and(|w| w.is_new),
+      is_special: workspace.is_some_and(|w| w.is_special),
       is_hovered: interaction.hover == Some(index),
       is_drop_target: interaction.is_drop_target(index),
       is_selected,
@@ -1170,7 +1183,7 @@ impl Overview {
     // card shows only part of.
     let screen = card
       .placement()
-      .map(&self.metrics, &card.view.map(&self.area));
+      .map(&card.metrics, &card.view.map(&self.area));
     let view =
       RectF::new(0.0, 0.0, self.metrics.view.0, self.metrics.view.1);
     Camera::zoom(&screen, &view, self.openness())
@@ -1269,11 +1282,12 @@ impl Overview {
     let fade = self.openness();
     let view =
       RectF::new(0.0, 0.0, self.metrics.view.0, self.metrics.view.1);
-    let metrics = self.metrics;
+    let scale_factor = self.metrics.scale_factor;
     let zoom_card = self.zoom.map(|(zoom, _)| zoom.card);
 
     for (index, card) in self.cards.iter_mut().enumerate() {
       let placement = card.placement();
+      let metrics = card.metrics;
       let rect = camera.apply(&placement.rect(&metrics));
       let is_visible = rect.intersect(&view).is_some();
 
@@ -1313,7 +1327,7 @@ impl Overview {
       }
     }
 
-    let hint_height = HINT_HEIGHT * metrics.scale_factor;
+    let hint_height = HINT_HEIGHT * scale_factor;
     if let Some(hint) = &mut self.hint {
       hint.place(
         &RectF::new(0.0, self.hint_y.value, view.w, hint_height),
@@ -1325,12 +1339,10 @@ impl Overview {
       let rect = RectF::new(
         ghost.x.value,
         ghost.y.value,
-        GHOST_SIZE.0 * metrics.scale_factor,
-        GHOST_SIZE.1 * metrics.scale_factor,
+        GHOST_SIZE.0 * scale_factor,
+        GHOST_SIZE.1 * scale_factor,
       );
-      ghost
-        .preview
-        .place(&rect.inset(metrics.scale_factor * 2.0), 0.9);
+      ghost.preview.place(&rect.inset(scale_factor * 2.0), 0.9);
       ghost.picture.place(&rect, 1.0);
     }
   }
@@ -1344,7 +1356,7 @@ impl Overview {
     // its neighbour), so they are hit first.
     for (index, card) in self.cards.iter().enumerate().rev() {
       let Some((local_x, local_y)) =
-        card.placement().unmap(&self.metrics, x, y)
+        card.placement().unmap(&card.metrics, x, y)
       else {
         continue;
       };
@@ -1691,6 +1703,7 @@ mod tests {
       label: name.to_string(),
       is_focused: false,
       is_new: false,
+      is_special: false,
       content_rect,
       windows: vec![],
       tab_bars: vec![],

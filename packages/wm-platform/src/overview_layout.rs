@@ -97,11 +97,17 @@ pub(crate) struct CardMetrics {
   pub padding: f32,
   /// Width over height of the area a card maps, i.e. the monitor's.
   pub aspect: f32,
+  /// How many times wider than a normal card's its tile area is, for a
+  /// card widened to show a wide workspace.
+  pub stretch: f32,
   pub spacing: f32,
   pub scale_factor: f32,
   /// Size of the overview itself.
   pub view: (f32, f32),
 }
+
+/// Most a card is widened to, in normal card widths.
+const MAX_CARD_WIDTHS: f32 = 2.0;
 
 impl CardMetrics {
   /// Cards for an overview of `width` x `height` covering a monitor with
@@ -127,16 +133,47 @@ impl CardMetrics {
       header,
       padding,
       aspect,
+      stretch: 1.0,
       spacing: px(12.0),
       scale_factor,
       view: (width, height),
     }
   }
 
+  /// A card showing `content` of the monitor's `area`: as tall as a
+  /// normal card, and as much wider as `content` is wider than `area`, up
+  /// to `MAX_CARD_WIDTHS` normal cards. Content wider still is
+  /// letterboxed by its `CardView`.
+  pub fn for_content(&self, area: &RectF, content: &RectF) -> Self {
+    let content = content.union(area);
+    let ratio = (content.w / content.h) / (area.w / area.h);
+
+    // Exactly `self` for content that fits, so such cards are unchanged.
+    if !ratio.is_finite() || ratio <= 1.0 {
+      return *self;
+    }
+
+    let tiles = self.width - 2.0 * self.padding;
+    let max_stretch =
+      (MAX_CARD_WIDTHS * self.width - 2.0 * self.padding) / tiles;
+    let stretch = ratio.min(max_stretch);
+
+    Self {
+      width: tiles * stretch + 2.0 * self.padding,
+      stretch,
+      ..*self
+    }
+  }
+
   /// Where windows are drawn within a card at scale 1.
   pub fn tile_area(&self) -> RectF {
     let width = self.width - 2.0 * self.padding;
-    RectF::new(self.padding, self.header, width, width / self.aspect)
+    RectF::new(
+      self.padding,
+      self.header,
+      width,
+      width / (self.aspect * self.stretch),
+    )
   }
 
   fn px(&self, length: f32) -> f32 {
@@ -199,17 +236,39 @@ pub(crate) struct Targets {
   pub hint_y: f32,
 }
 
+/// What the layouts need of a card.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct CardSlot {
+  /// Its width at scale 1.
+  pub width: f32,
+
+  /// The special workspace's card, set apart after the others.
+  pub is_special: bool,
+}
+
+impl CardSlot {
+  pub fn new(metrics: &CardMetrics, is_special: bool) -> Self {
+    Self {
+      width: metrics.width,
+      is_special,
+    }
+  }
+}
+
+/// Extra room before the special workspace's card, in card spacings.
+const SPECIAL_SPACING: f32 = 4.0;
+
 /// One row of cards with the `selected` one in the middle at full size.
 ///
 /// `zoomed` is for looking inside the selected workspace: it grows to
 /// 1.5x and its neighbours sit far back.
 pub(crate) fn carousel(
   metrics: &CardMetrics,
-  count: usize,
+  slots: &[CardSlot],
   selected: usize,
   zoomed: bool,
 ) -> Targets {
-  let selected = selected.min(count.saturating_sub(1));
+  let selected = selected.min(slots.len().saturating_sub(1));
   let scale_of = |index: usize| match (index == selected, zoomed) {
     (true, true) => 1.5,
     (true, false) => 1.0,
@@ -217,14 +276,18 @@ pub(crate) fn carousel(
     (false, false) => 0.66,
   };
 
-  let mut starts = Vec::with_capacity(count);
+  let mut starts = Vec::with_capacity(slots.len());
   let mut x = 0.0;
-  for index in 0..count {
+  for (index, slot) in slots.iter().enumerate() {
+    if index > 0 && slot.is_special {
+      x += metrics.spacing * (SPECIAL_SPACING - 1.0);
+    }
     starts.push(x);
-    x += metrics.width * scale_of(index) + metrics.spacing;
+    x += slot.width * scale_of(index) + metrics.spacing;
   }
 
-  let selected_width = metrics.width * scale_of(selected);
+  let selected_width = slots.get(selected).map_or(0.0, |slot| slot.width)
+    * scale_of(selected);
   let offset = metrics.view.0 / 2.0
     - (starts.get(selected).copied().unwrap_or(0.0)
       + selected_width / 2.0);
@@ -238,11 +301,12 @@ pub(crate) fn carousel(
   Targets {
     cards: starts
       .iter()
+      .zip(slots)
       .enumerate()
-      .map(|(index, start)| {
+      .map(|(index, (start, slot))| {
         let scale = scale_of(index);
         Placement {
-          cx: start + metrics.width * scale / 2.0 + offset,
+          cx: start + slot.width * scale / 2.0 + offset,
           cy,
           scale,
         }
@@ -252,17 +316,155 @@ pub(crate) fn carousel(
   }
 }
 
-/// Every card at once, `columns` per row, as large as fits.
+/// A card's place in the grid, in columns.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct GridCell {
+  pub row: usize,
+  pub column: usize,
+  pub span: usize,
+}
+
+/// Where the grid puts each card: rows of up to `columns` columns, a
+/// widened card taking two of them, and the special workspace's card in a
+/// row of its own at the bottom, as wide as it needs.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct GridCells {
+  pub cells: Vec<GridCell>,
+  pub columns: usize,
+
+  /// Columns taken in each row.
+  row_spans: Vec<usize>,
+}
+
+impl GridCells {
+  pub fn new(
+    metrics: &CardMetrics,
+    slots: &[CardSlot],
+    columns: usize,
+  ) -> Self {
+    let span_of = |slot: &CardSlot| {
+      if slot.width > metrics.width {
+        2
+      } else {
+        1
+      }
+    };
+    let regular = slots.iter().filter(|slot| !slot.is_special);
+    let total_span = regular.clone().map(span_of).sum::<usize>();
+    let max_span = regular.map(span_of).max().unwrap_or(1);
+    let columns = columns.clamp(1, total_span.max(1)).max(max_span);
+
+    let mut cells = vec![GridCell::default(); slots.len()];
+    let mut row_spans: Vec<usize> = Vec::new();
+
+    for (index, slot) in slots.iter().enumerate() {
+      if slot.is_special {
+        continue;
+      }
+
+      let span = span_of(slot);
+      let last_row = row_spans.len().saturating_sub(1);
+      let cell = match row_spans.last_mut() {
+        Some(taken) if *taken + span <= columns => {
+          *taken += span;
+          GridCell {
+            row: last_row,
+            column: *taken - span,
+            span,
+          }
+        }
+        _ => {
+          row_spans.push(span);
+          GridCell {
+            row: row_spans.len() - 1,
+            column: 0,
+            span,
+          }
+        }
+      };
+      cells[index] = cell;
+    }
+
+    for (index, slot) in slots.iter().enumerate() {
+      if slot.is_special {
+        row_spans.push(columns);
+        cells[index] = GridCell {
+          row: row_spans.len() - 1,
+          column: 0,
+          span: columns,
+        };
+      }
+    }
+
+    Self {
+      cells,
+      columns,
+      row_spans,
+    }
+  }
+
+  pub fn rows(&self) -> usize {
+    self.row_spans.len().max(1)
+  }
+
+  /// Columns taken in `row`.
+  pub fn taken(&self, row: usize) -> usize {
+    self.row_spans.get(row).copied().unwrap_or(0)
+  }
+
+  /// Where the middle of `cell` is across the grid, in columns, with a
+  /// short row centered.
+  #[allow(clippy::cast_precision_loss)]
+  fn center(&self, cell: &GridCell) -> f32 {
+    self.columns.saturating_sub(self.taken(cell.row)) as f32 / 2.0
+      + cell.column as f32
+      + cell.span as f32 / 2.0
+  }
+
+  /// The card in the row `delta` rows from card `index`'s that sits
+  /// closest under (or over) it.
+  pub fn vertical_neighbour(
+    &self,
+    index: usize,
+    delta: isize,
+  ) -> Option<usize> {
+    let from = self.cells.get(index)?;
+    let row = from.row.checked_add_signed(delta)?;
+    let center = self.center(from);
+
+    self
+      .cells
+      .iter()
+      .enumerate()
+      .filter(|(_, cell)| cell.row == row)
+      .min_by(|(_, a), (_, b)| {
+        (self.center(a) - center)
+          .abs()
+          .total_cmp(&(self.center(b) - center).abs())
+      })
+      .map(|(index, _)| index)
+  }
+}
+
+/// Every card at once, in `cells`, as large as fits.
 #[allow(clippy::cast_precision_loss)]
 pub(crate) fn grid(
   metrics: &CardMetrics,
-  count: usize,
-  columns: usize,
+  slots: &[CardSlot],
+  cells: &GridCells,
 ) -> Targets {
-  let columns = columns.clamp(1, count.max(1));
-  let rows = count.div_ceil(columns).max(1);
+  let rows = cells.rows();
   let gap = metrics.px(14.0);
-  let (columns_f, rows_f) = (columns as f32, rows as f32);
+  let (columns_f, rows_f) = (cells.columns as f32, rows as f32);
+
+  // The special card's row is set apart by another gap.
+  let has_special = slots.iter().any(|slot| slot.is_special);
+  let special_gap = if has_special { gap } else { 0.0 };
+  let widest_special = slots
+    .iter()
+    .filter(|slot| slot.is_special)
+    .map(|slot| slot.width)
+    .fold(0.0, f32::max);
 
   // Room is left for the hint line and a carried window parked at the
   // bottom.
@@ -271,28 +473,42 @@ pub(crate) fn grid(
   let scale = ((available_width - gap * (columns_f - 1.0))
     / (columns_f * metrics.width))
     .min(
-      (available_height - gap * (rows_f - 1.0))
+      (available_height - gap * (rows_f - 1.0) - special_gap)
         / (rows_f * metrics.height),
     )
+    .min(if has_special {
+      available_width / widest_special
+    } else {
+      f32::INFINITY
+    })
     .clamp(0.1, 1.0);
 
   let (width, height) = (metrics.width * scale, metrics.height * scale);
   let total_width = columns_f * width + (columns_f - 1.0) * gap;
-  let total_height = rows_f * height + (rows_f - 1.0) * gap;
+  let total_height = rows_f * height + (rows_f - 1.0) * gap + special_gap;
   let left = (metrics.view.0 - total_width) / 2.0;
   let top = (metrics.view.1 - total_height - metrics.px(30.0)) / 2.0;
 
   Targets {
-    cards: (0..count)
-      .map(|index| {
-        let (row, column) = (index / columns, index % columns);
-        // A short last row is centered rather than hanging off the left.
-        let in_row = columns.min(count - row * columns) as f32;
-        let row_left = left + (columns_f - in_row) * (width + gap) / 2.0;
+    cards: slots
+      .iter()
+      .zip(&cells.cells)
+      .map(|(slot, cell)| {
+        let extra = if slot.is_special { special_gap } else { 0.0 };
+        // A short row is centered rather than hanging off the left.
+        let taken = cells.taken(cell.row) as f32;
+        let row_left = left + (columns_f - taken) * (width + gap) / 2.0;
+        let span = cell.span as f32;
 
         Placement {
-          cx: row_left + column as f32 * (width + gap) + width / 2.0,
-          cy: top + row as f32 * (height + gap) + height / 2.0,
+          cx: row_left
+            + cell.column as f32 * (width + gap)
+            + span * width / 2.0
+            + (span - 1.0) * gap / 2.0,
+          cy: top
+            + cell.row as f32 * (height + gap)
+            + extra
+            + height / 2.0,
           scale,
         }
       })
@@ -325,10 +541,14 @@ impl CardView {
     let tiles = metrics.tile_area();
     let content = content.union(area);
 
-    // Exactly 1 when `content` is `area`, so such a card maps the same as
-    // one mapping `area` alone.
+    // What the card's tile area spans at the scale it shows `area`: wider
+    // than `area` on a widened card.
+    let shown = (area.w * metrics.stretch, area.h);
+
+    // Exactly 1 when `content` is what is shown, so such a card maps the
+    // same as one mapping `area` alone.
     let shrink = if area.w > 0.0 && area.h > 0.0 {
-      (area.w / content.w).min(area.h / content.h)
+      (shown.0 / content.w).min(shown.1 / content.h)
     } else {
       1.0
     };
@@ -336,11 +556,11 @@ impl CardView {
     Self {
       content,
       origin: (
-        tiles.x + tiles.w * (1.0 - content.w / area.w * shrink) / 2.0,
-        tiles.y + tiles.h * (1.0 - content.h / area.h * shrink) / 2.0,
+        tiles.x + tiles.w * (1.0 - content.w / shown.0 * shrink) / 2.0,
+        tiles.y + tiles.h * (1.0 - content.h / shown.1 * shrink) / 2.0,
       ),
-      scale_x: tiles.w / area.w * shrink,
-      scale_y: tiles.h / area.h * shrink,
+      scale_x: tiles.w / shown.0 * shrink,
+      scale_y: tiles.h / shown.1 * shrink,
     }
   }
 
@@ -597,11 +817,44 @@ impl Spring {
 mod tests {
   use super::{
     carousel, cover_crop, ease_out_cubic, grid, Camera, CardMetrics,
-    CardView, RectF, Spring, Tile, Zoom,
+    CardSlot, CardView, GridCell, GridCells, RectF, Spring, Tile, Zoom,
   };
 
   fn metrics() -> CardMetrics {
     CardMetrics::new(1920.0, 1040.0, 1.0)
+  }
+
+  /// `count` normal cards.
+  fn slots(metrics: &CardMetrics, count: usize) -> Vec<CardSlot> {
+    vec![CardSlot::new(metrics, false); count]
+  }
+
+  /// The card of a scrolling workspace whose strip is `widths` monitors
+  /// wide.
+  fn wide_slot(metrics: &CardMetrics, widths: f32) -> CardSlot {
+    let area = RectF::new(0.0, 0.0, 1920.0, 1040.0);
+    let strip = RectF::new(0.0, 0.0, 1920.0 * widths, 1040.0);
+    CardSlot::new(&metrics.for_content(&area, &strip), false)
+  }
+
+  /// `metrics` of a card `width` wide.
+  fn with_width(metrics: &CardMetrics, width: f32) -> CardMetrics {
+    CardMetrics { width, ..*metrics }
+  }
+
+  /// Card rects of the grid of `slots`.
+  fn grid_of(
+    metrics: &CardMetrics,
+    slots: &[CardSlot],
+    columns: usize,
+  ) -> Vec<RectF> {
+    let cells = GridCells::new(metrics, slots, columns);
+    grid(metrics, slots, &cells)
+      .cards
+      .iter()
+      .zip(slots)
+      .map(|(card, slot)| card.rect(&with_width(metrics, slot.width)))
+      .collect()
   }
 
   fn assert_close(a: f32, b: f32) {
@@ -637,7 +890,7 @@ mod tests {
   #[test]
   fn carousel_centers_the_selected_card() {
     let metrics = metrics();
-    let targets = carousel(&metrics, 5, 2, false);
+    let targets = carousel(&metrics, &slots(&metrics, 5), 2, false);
 
     assert_close(targets.cards[2].cx, 960.0);
     assert_close(targets.cards[2].scale, 1.0);
@@ -652,7 +905,7 @@ mod tests {
   #[test]
   fn zoomed_carousel_grows_the_selected_card() {
     let metrics = metrics();
-    let targets = carousel(&metrics, 3, 0, true);
+    let targets = carousel(&metrics, &slots(&metrics, 3), 0, true);
 
     assert_close(targets.cards[0].scale, 1.5);
     assert_close(targets.cards[1].scale, 0.32);
@@ -666,12 +919,7 @@ mod tests {
   #[test]
   fn grid_centers_a_short_last_row() {
     let metrics = metrics();
-    let targets = grid(&metrics, 7, 5);
-    let rects = targets
-      .cards
-      .iter()
-      .map(|card| card.rect(&metrics))
-      .collect::<Vec<_>>();
+    let rects = grid_of(&metrics, &slots(&metrics, 7), 5);
 
     assert_close(rects[0].y, rects[4].y);
     assert!(rects[5].y > rects[0].bottom());
@@ -688,7 +936,10 @@ mod tests {
 
   #[test]
   fn grid_never_upscales_cards() {
-    let targets = grid(&metrics(), 2, 5);
+    let metrics = metrics();
+    let slots = slots(&metrics, 2);
+    let cells = GridCells::new(&metrics, &slots, 5);
+    let targets = grid(&metrics, &slots, &cells);
     assert!(targets.cards.iter().all(|card| card.scale <= 1.0));
   }
 
@@ -741,7 +992,7 @@ mod tests {
   fn zoom_starts_with_windows_where_they_are() {
     let metrics = metrics();
     let view = RectF::new(0.0, 0.0, 1920.0, 1040.0);
-    let card = carousel(&metrics, 3, 1, false).cards[1];
+    let card = carousel(&metrics, &slots(&metrics, 3), 1, false).cards[1];
     let tiles = card.map(&metrics, &metrics.tile_area());
 
     let window = RectF::new(960.0, 0.0, 960.0, 520.0);
@@ -880,7 +1131,7 @@ mod tests {
     let area = RectF::new(0.0, 0.0, 1920.0, 1040.0);
     let strip = RectF::new(-960.0, 0.0, 3840.0, 1040.0);
     let view = CardView::new(&metrics, &area, &strip);
-    let card = carousel(&metrics, 1, 0, false).cards[0];
+    let card = carousel(&metrics, &slots(&metrics, 1), 0, false).cards[0];
 
     let window = RectF::new(960.0, 0.0, 960.0, 1040.0);
     let on_card =
@@ -924,5 +1175,159 @@ mod tests {
     assert_close(spring.value, 100.0);
     assert!(frames > 5, "spring moved instantly");
     assert!(!spring.step(1.0 / 60.0));
+  }
+
+  #[test]
+  fn cards_widen_with_their_strip_up_to_twice() {
+    let metrics = metrics();
+    let area = RectF::new(0.0, 0.0, 1920.0, 1040.0);
+    let strip =
+      |widths: f32| RectF::new(0.0, 0.0, 1920.0 * widths, 1040.0);
+
+    assert_eq!(metrics.for_content(&area, &area), metrics, "unchanged");
+
+    let wider = metrics.for_content(&area, &strip(1.5));
+    assert_close(wider.height, metrics.height);
+    assert_close(wider.tile_area().h, metrics.tile_area().h);
+    assert_close(wider.tile_area().w, metrics.tile_area().w * 1.5);
+
+    let widest = metrics.for_content(&area, &strip(5.0));
+    assert_close(widest.width, metrics.width * 2.0);
+    assert_close(widest.height, metrics.height);
+  }
+
+  #[test]
+  fn a_widened_card_shows_its_strip_without_letterboxing() {
+    let metrics = metrics();
+    let area = RectF::new(0.0, 0.0, 1920.0, 1040.0);
+    let strip = RectF::new(-960.0, 0.0, 1920.0 * 1.5, 1040.0);
+    let card = metrics.for_content(&area, &strip);
+
+    assert_rect_close(
+      &CardView::new(&card, &area, &strip).map(&strip),
+      &card.tile_area(),
+    );
+  }
+
+  #[test]
+  fn carousel_centers_and_spaces_cards_of_any_width() {
+    let metrics = metrics();
+    let mut slots = slots(&metrics, 3);
+    slots[1] = wide_slot(&metrics, 1.5);
+
+    for selected in 0..3 {
+      let targets = carousel(&metrics, &slots, selected, false);
+      assert_close(targets.cards[selected].cx, 960.0);
+
+      let rects = targets
+        .cards
+        .iter()
+        .zip(&slots)
+        .map(|(card, slot)| card.rect(&with_width(&metrics, slot.width)))
+        .collect::<Vec<_>>();
+      for pair in rects.windows(2) {
+        assert_close(pair[1].x - pair[0].right(), metrics.spacing);
+      }
+    }
+  }
+
+  #[test]
+  fn carousel_sets_the_special_card_apart_at_the_end() {
+    let metrics = metrics();
+    let mut slots = slots(&metrics, 3);
+    slots[2].is_special = true;
+
+    let rects = carousel(&metrics, &slots, 0, false)
+      .cards
+      .iter()
+      .map(|card| card.rect(&metrics))
+      .collect::<Vec<_>>();
+
+    assert_close(rects[1].x - rects[0].right(), metrics.spacing);
+    assert!(rects[2].x - rects[1].right() > metrics.spacing * 2.0);
+  }
+
+  #[test]
+  fn grid_gives_a_widened_card_two_columns() {
+    let metrics = metrics();
+    let mut slots = slots(&metrics, 4);
+    slots[2] = wide_slot(&metrics, 3.0);
+
+    // Two normal cards, then the wide one doesn't fit on the first row.
+    let cells = GridCells::new(&metrics, &slots, 3);
+    let cell = |row, column, span| GridCell { row, column, span };
+    assert_eq!(
+      cells.cells,
+      vec![cell(0, 0, 1), cell(0, 1, 1), cell(1, 0, 2), cell(1, 2, 1)]
+    );
+
+    let rects = grid_of(&metrics, &slots, 3);
+    // The short first row is centered over the full second one.
+    assert!(rects[2].x < rects[0].x);
+    assert_close(rects[2].y, rects[3].y);
+    assert!(rects[2].w > rects[0].w * 1.9);
+    assert!(rects[3].x > rects[2].right());
+    for rect in &rects {
+      assert!(rect.x >= 0.0 && rect.right() <= 1920.0);
+    }
+  }
+
+  #[test]
+  fn grid_puts_the_special_card_in_a_row_of_its_own() {
+    let metrics = metrics();
+    let mut slots = slots(&metrics, 4);
+    slots[3] = CardSlot {
+      is_special: true,
+      ..wide_slot(&metrics, 3.0)
+    };
+
+    let cells = GridCells::new(&metrics, &slots, 5);
+    assert_eq!(cells.columns, 3, "as many columns as normal cards");
+    assert_eq!(
+      cells.cells[3],
+      GridCell {
+        row: 1,
+        column: 0,
+        span: 3
+      }
+    );
+
+    let rects = grid_of(&metrics, &slots, 5);
+    assert!(rects[3].y > rects[0].bottom());
+    assert_close(rects[3].x + rects[3].w / 2.0, 960.0);
+  }
+
+  #[test]
+  fn grid_rows_up_and_down_go_to_the_nearest_card() {
+    let metrics = metrics();
+    let mut slots = slots(&metrics, 5);
+    slots[3] = wide_slot(&metrics, 3.0);
+    slots[4].is_special = true;
+
+    // Row 0: cards 0 1 2; row 1: wide card 3; row 2: special card 4.
+    let cells = GridCells::new(&metrics, &slots, 3);
+    assert_eq!(cells.vertical_neighbour(0, 1), Some(3));
+    assert_eq!(cells.vertical_neighbour(2, 1), Some(3));
+    assert_eq!(
+      cells.vertical_neighbour(3, -1),
+      Some(1),
+      "over its middle"
+    );
+    assert_eq!(cells.vertical_neighbour(3, 1), Some(4));
+    assert_eq!(cells.vertical_neighbour(4, 1), None);
+    assert_eq!(cells.vertical_neighbour(0, -1), None);
+  }
+
+  #[test]
+  fn grid_of_normal_cards_flows_as_before() {
+    let metrics = metrics();
+    let cells = GridCells::new(&metrics, &slots(&metrics, 7), 5);
+
+    for (index, cell) in cells.cells.iter().enumerate() {
+      assert_eq!(
+        (cell.row, cell.column, cell.span),
+        (index / 5, index % 5, 1)
+      );
+    }
   }
 }

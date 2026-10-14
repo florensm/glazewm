@@ -7,7 +7,8 @@
 //! drag to move.
 
 use crate::{
-  OverviewAction, OverviewLayoutMode, OverviewWindow, OverviewWorkspace,
+  overview_layout::GridCells, OverviewAction, OverviewLayoutMode,
+  OverviewWindow, OverviewWorkspace,
 };
 
 /// Where the keyboard is in the overview's flow.
@@ -113,7 +114,8 @@ pub(crate) struct Interaction {
   /// Numbered workspaces without a card that digit keys still reach.
   pub digit_workspaces: Vec<String>,
 
-  grid_columns: usize,
+  /// Where the grid puts each card, for moving a row up or down.
+  pub grid: GridCells,
 }
 
 impl Interaction {
@@ -121,7 +123,6 @@ impl Interaction {
   pub fn new(
     workspaces: &[OverviewWorkspace],
     layout: OverviewLayoutMode,
-    grid_columns: usize,
     drag_threshold: f32,
   ) -> Self {
     Self {
@@ -141,7 +142,7 @@ impl Interaction {
       drag: None,
       drag_threshold,
       digit_workspaces: Vec::new(),
-      grid_columns: grid_columns.max(1),
+      grid: GridCells::default(),
     }
   }
 
@@ -264,26 +265,39 @@ impl Interaction {
       Key::Digit(digit) => {
         let name =
           digit_target(digit, workspaces, &self.digit_workspaces)?;
-
-        return match self.mode {
-          Mode::Spaces => Some(OverviewAction::FocusWorkspace(name)),
-          Mode::Windows => match self.selected_window {
-            Some(hwnd) => self.send(hwnd, name, workspaces),
-            None => Some(OverviewAction::FocusWorkspace(name)),
-          },
-          Mode::Carrying => {
-            let action = self
-              .carried
-              .and_then(|hwnd| move_action(hwnd, name, workspaces));
-            self.put_down();
-            action
-          }
-        };
+        return self.go_to(name, workspaces);
+      }
+      Key::Text('s') => {
+        let special = workspaces.iter().find(|w| w.is_special)?;
+        return self.go_to(special.name.clone(), workspaces);
       }
       Key::Text(_) => {}
     }
 
     None
+  }
+
+  /// Goes straight to workspace `name`: switches to it, sends the picked
+  /// window there, or drops the carried one there.
+  fn go_to(
+    &mut self,
+    name: String,
+    workspaces: &[OverviewWorkspace],
+  ) -> Option<OverviewAction> {
+    match self.mode {
+      Mode::Spaces => Some(OverviewAction::FocusWorkspace(name)),
+      Mode::Windows => match self.selected_window {
+        Some(hwnd) => self.send(hwnd, name, workspaces),
+        None => Some(OverviewAction::FocusWorkspace(name)),
+      },
+      Mode::Carrying => {
+        let action = self
+          .carried
+          .and_then(|hwnd| move_action(hwnd, name, workspaces));
+        self.put_down();
+        action
+      }
+    }
   }
 
   fn search_key(&mut self, key: Key, workspaces: &[OverviewWorkspace]) {
@@ -440,9 +454,11 @@ impl Interaction {
     if self.mode == Mode::Windows {
       self.step_window(Axis::Down, delta, workspaces);
     } else if self.layout == OverviewLayoutMode::Grid {
-      let columns = self.grid_columns.min(workspaces.len()).max(1);
-      let columns = isize::try_from(columns).unwrap_or(1);
-      self.step(delta * columns, workspaces);
+      if let Some(index) =
+        self.grid.vertical_neighbour(self.selected, delta)
+      {
+        self.select(index);
+      }
     }
   }
 
@@ -706,23 +722,23 @@ impl Interaction {
     match (self.mode, self.layout) {
       (Mode::Carrying, _) => (
         format!(
-          "carrying \"{}\"   \u{b7}   \u{2190}\u{2192} or / to pick a workspace   \u{b7}   space to drop   \u{b7}   1\u{2013}9 drop on that one   \u{b7}   \u{232b} back",
+          "carrying \"{}\"   \u{b7}   \u{2190}\u{2192} or / to pick a workspace   \u{b7}   space to drop   \u{b7}   1\u{2013}9 or s drop on that one   \u{b7}   \u{232b} back",
           title(self.carried)
         ),
         HintTone::Accent,
       ),
       (Mode::Windows, _) => (
-        "\u{2190}\u{2192} pick a window   \u{b7}   1\u{2013}9 send it there   \u{b7}   space to lift it   \u{b7}   \u{23ce} jump to it   \u{b7}   x close   \u{b7}   \u{232b} back"
+        "\u{2190}\u{2192} pick a window   \u{b7}   1\u{2013}9 or s send it there   \u{b7}   space to lift it   \u{b7}   \u{23ce} jump to it   \u{b7}   x close   \u{b7}   \u{232b} back"
           .to_string(),
         HintTone::Quiet,
       ),
       (Mode::Spaces, OverviewLayoutMode::Grid) => (
-        "arrows workspaces   \u{b7}   drag windows between them   \u{b7}   / search   \u{b7}   \u{23ce} go there   \u{b7}   tab carousel   \u{b7}   esc close"
+        "arrows workspaces   \u{b7}   drag windows between them   \u{b7}   s special   \u{b7}   / search   \u{b7}   \u{23ce} go there   \u{b7}   tab carousel   \u{b7}   esc close"
           .to_string(),
         HintTone::Quiet,
       ),
       (Mode::Spaces, OverviewLayoutMode::Carousel) => (
-        "\u{2190}\u{2192} workspaces   \u{b7}   space to look inside   \u{b7}   / search   \u{b7}   \u{23ce} go there   \u{b7}   tab all workspaces   \u{b7}   esc close"
+        "\u{2190}\u{2192} workspaces   \u{b7}   space to look inside   \u{b7}   s special   \u{b7}   / search   \u{b7}   \u{23ce} go there   \u{b7}   tab all workspaces   \u{b7}   esc close"
           .to_string(),
         HintTone::Quiet,
       ),
@@ -780,7 +796,8 @@ fn move_action(
 
 /// Name of the workspace digit key `digit` stands for, 0 being the tenth:
 /// the one named after it when workspaces are numbered, whether it has a
-/// card or is one of `others`, else the card at its position.
+/// card or is one of `others`, else the card at its position (not counting
+/// the special workspace's, which `s` goes to).
 fn digit_target(
   digit: u8,
   workspaces: &[OverviewWorkspace],
@@ -794,7 +811,9 @@ fn digit_target(
 
   if !is_numbered {
     return workspaces
-      .get(number - 1)
+      .iter()
+      .filter(|workspace| !workspace.is_special)
+      .nth(number - 1)
       .map(|workspace| workspace.name.clone());
   }
 
@@ -841,6 +860,7 @@ fn match_score(window: &OverviewWindow, query: &str) -> Option<usize> {
 mod tests {
   use super::{HintTone, Hit, Interaction, Key, Mode};
   use crate::{
+    overview_layout::{CardMetrics, CardSlot, GridCells},
     OverviewAction, OverviewLayoutMode, OverviewWindow, OverviewWorkspace,
     Rect,
   };
@@ -866,6 +886,7 @@ mod tests {
         label: "1".to_string(),
         is_focused: false,
         is_new: false,
+        is_special: false,
         content_rect: Rect::from_xy(0, 0, 1920, 1000),
         tab_bars: vec![],
         windows: vec![
@@ -878,6 +899,7 @@ mod tests {
         label: "2".to_string(),
         is_focused: true,
         is_new: false,
+        is_special: false,
         content_rect: Rect::from_xy(0, 0, 1920, 1000),
         tab_bars: vec![],
         windows: vec![window(
@@ -891,6 +913,7 @@ mod tests {
         label: "3".to_string(),
         is_focused: false,
         is_new: false,
+        is_special: false,
         content_rect: Rect::from_xy(0, 0, 1920, 1000),
         tab_bars: vec![],
         windows: vec![],
@@ -899,7 +922,7 @@ mod tests {
   }
 
   fn interaction() -> Interaction {
-    Interaction::new(&workspaces(), OverviewLayoutMode::Carousel, 5, 6.0)
+    Interaction::new(&workspaces(), OverviewLayoutMode::Carousel, 6.0)
   }
 
   fn press(
@@ -957,7 +980,7 @@ mod tests {
     let mut workspaces = workspaces();
     workspaces.remove(1);
     let mut state =
-      Interaction::new(&workspaces, OverviewLayoutMode::Carousel, 5, 6.0);
+      Interaction::new(&workspaces, OverviewLayoutMode::Carousel, 6.0);
 
     assert_eq!(
       state.key(Key::Digit(3), &workspaces),
@@ -975,7 +998,7 @@ mod tests {
       workspace.name = name.to_string();
     }
     let mut state =
-      Interaction::new(&workspaces, OverviewLayoutMode::Carousel, 5, 6.0);
+      Interaction::new(&workspaces, OverviewLayoutMode::Carousel, 6.0);
 
     assert_eq!(
       state.key(Key::Digit(1), &workspaces),
@@ -1046,12 +1069,13 @@ mod tests {
       label: "4".to_string(),
       is_focused: false,
       is_new: true,
+      is_special: false,
       content_rect: Rect::from_xy(0, 0, 1920, 1000),
       windows: vec![],
       tab_bars: vec![],
     });
     let mut state =
-      Interaction::new(&workspaces, OverviewLayoutMode::Carousel, 5, 6.0);
+      Interaction::new(&workspaces, OverviewLayoutMode::Carousel, 6.0);
 
     let mut press = |keys: &[Key]| {
       keys
@@ -1080,7 +1104,7 @@ mod tests {
       ..window(13, "Docs", Rect::from_xy(0, 0, 960, 1000))
     });
     let mut state =
-      Interaction::new(&workspaces, OverviewLayoutMode::Carousel, 5, 6.0);
+      Interaction::new(&workspaces, OverviewLayoutMode::Carousel, 6.0);
     let press = |state: &mut Interaction, keys: &[Key]| {
       keys
         .iter()
@@ -1222,11 +1246,13 @@ mod tests {
 
   #[test]
   fn up_and_down_move_a_row_in_the_grid_only() {
-    let mut state = Interaction::new(
-      &workspaces(),
-      OverviewLayoutMode::Carousel,
+    let workspaces = workspaces();
+    let metrics = CardMetrics::new(1920.0, 1040.0, 1.0);
+    let mut state = interaction();
+    state.grid = GridCells::new(
+      &metrics,
+      &vec![CardSlot::new(&metrics, false); workspaces.len()],
       2,
-      6.0,
     );
 
     press(&mut state, &[Key::Left, Key::Down]);
@@ -1408,5 +1434,96 @@ mod tests {
     assert_eq!(state.selected, 0, "still on workspace 2");
     assert_eq!(state.carried, None);
     assert_eq!(state.mode, Mode::Spaces);
+  }
+
+  /// `workspaces` with the special workspace, empty, after them.
+  fn with_special() -> Vec<OverviewWorkspace> {
+    let mut workspaces = workspaces();
+    workspaces.push(OverviewWorkspace {
+      name: "special".to_string(),
+      label: "special".to_string(),
+      is_focused: false,
+      is_new: false,
+      is_special: true,
+      content_rect: Rect::from_xy(0, 0, 1920, 1000),
+      windows: vec![],
+      tab_bars: vec![],
+    });
+    workspaces
+  }
+
+  #[test]
+  fn s_goes_to_the_special_workspace_like_a_digit() {
+    let workspaces = with_special();
+    let mut state =
+      Interaction::new(&workspaces, OverviewLayoutMode::Carousel, 6.0);
+    let press = |state: &mut Interaction, keys: &[Key]| {
+      keys
+        .iter()
+        .fold(None, |_, key| state.key(*key, &workspaces))
+    };
+
+    assert_eq!(
+      press(&mut state, &[Key::Text('s')]),
+      Some(OverviewAction::FocusWorkspace("special".to_string()))
+    );
+    assert_eq!(
+      press(&mut state, &[Key::Space, Key::Text('s')]),
+      Some(OverviewAction::MoveWindow {
+        hwnd: 21,
+        workspace: "special".to_string(),
+      }),
+      "sends the picked window"
+    );
+
+    let mut state =
+      Interaction::new(&workspaces, OverviewLayoutMode::Carousel, 6.0);
+    assert_eq!(
+      press(&mut state, &[Key::Space, Key::Space, Key::Text('s')]),
+      Some(OverviewAction::MoveWindow {
+        hwnd: 21,
+        workspace: "special".to_string(),
+      }),
+      "drops the carried window"
+    );
+    assert_eq!(state.mode, Mode::Spaces);
+
+    // While searching, it is typed.
+    assert_eq!(press(&mut state, &[Key::Text('/'), Key::Text('s')]), None);
+    assert_eq!(state.query, "s");
+  }
+
+  #[test]
+  fn s_does_nothing_without_a_special_card() {
+    let mut state = interaction();
+    assert_eq!(press(&mut state, &[Key::Text('s')]), None);
+  }
+
+  #[test]
+  fn digits_by_position_skip_the_special_workspace() {
+    let mut workspaces = with_special();
+    for (workspace, name) in
+      workspaces.iter_mut().zip(["web", "code", "chat"])
+    {
+      workspace.name = name.to_string();
+    }
+    workspaces.swap(0, 3);
+    let mut state =
+      Interaction::new(&workspaces, OverviewLayoutMode::Carousel, 6.0);
+
+    assert_eq!(
+      state.key(Key::Digit(1), &workspaces),
+      Some(OverviewAction::FocusWorkspace("code".to_string()))
+    );
+    assert_eq!(state.key(Key::Digit(4), &workspaces), None);
+  }
+
+  #[test]
+  fn hints_mention_the_special_workspace() {
+    let workspaces = with_special();
+    let state =
+      Interaction::new(&workspaces, OverviewLayoutMode::Carousel, 6.0);
+
+    assert!(state.hint(&workspaces).0.contains("s special"));
   }
 }
