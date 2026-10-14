@@ -18,7 +18,9 @@ general:
 
 layouts:
   scrolling:
-    # Width of a new column, as a percentage of the workspace or in pixels.
+    # Width of a new column, as a percentage of the workspace or in pixels,
+    # or "window" to keep the width the window has as it joins the strip
+    # (for a new window, the size its app opened it at).
     column_width: "50%"
     # Widths `cycle-column-width` steps through.
     preset_column_widths: ["33.333%", "50%", "66.667%"]
@@ -42,7 +44,8 @@ workspaces:
 `set-layout <layout>` changes the focused workspace's layout at runtime.
 The window tree is kept: `dwindle` only changes where new windows go, and
 switching to or from `scrolling` resets the widths of the workspace's
-top-level windows. A reload re-applies a workspace's `layout` only when
+top-level windows (to `column_width`, so with `"window"` switching to
+`scrolling` keeps them as wide as they were). A reload re-applies a workspace's `layout` only when
 that entry changed, so a layout picked with `set-layout` survives
 unrelated reloads.
 

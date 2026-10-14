@@ -7,13 +7,15 @@
 //! workspace width; unlike in the other layouts, the columns' sizes don't
 //! add up to 1.
 
-use wm_common::{FocusFitMethod, Layout};
+use wm_common::{ColumnWidth, FocusFitMethod, Layout};
 use wm_platform::{LengthUnit, LengthValue, Rect};
 
 use super::Insertion;
 use crate::{
   models::{Container, Monitor, TilingContainer, Workspace},
-  traits::{CommonGetters, PositionGetters, TilingSizeGetters},
+  traits::{
+    CommonGetters, PositionGetters, TilingSizeGetters, WindowGetters,
+  },
   wm_state::WmState,
 };
 
@@ -105,6 +107,37 @@ where
 
   #[allow(clippy::cast_precision_loss)]
   Ok((width.amount + gap as f32) / total as f32)
+}
+
+/// Size of `column` as it joins `workspace`'s strip: `column_width`, or
+/// with `"window"` the width its windows have now (for a just-opened
+/// window, the size its app gave it).
+pub fn default_column_size(
+  column: &TilingContainer,
+  workspace: &Workspace,
+) -> f32 {
+  let width = match workspace.column_width() {
+    ColumnWidth::Length(width) => width,
+    ColumnWidth::Window => match windows_width(column) {
+      Some(width) => LengthValue::from_px(width),
+      // Only an empty column has no windows, and it isn't kept.
+      None => return 0.5,
+    },
+  };
+
+  // A detached workspace has no width to measure pixels against.
+  column_size(column, workspace, &width)
+    .map_or(1., |size| size.clamp(MIN_COLUMN_SIZE, 1.))
+}
+
+/// Width of the screen area `column`'s windows cover now.
+fn windows_width(column: &TilingContainer) -> Option<i32> {
+  column
+    .self_and_descendants()
+    .filter_map(|container| container.as_window_container().ok())
+    .map(|window| window.native_properties().frame)
+    .reduce(|covered, frame| covered.union(&frame))
+    .map(|covered| covered.width())
 }
 
 /// A new tiling window becomes a column right of the focused one.
@@ -266,8 +299,8 @@ pub fn sync_scroll_offsets(state: &mut WmState) -> anyhow::Result<()> {
 #[cfg(test)]
 mod tests {
   use wm_common::{
-    FocusFitMethod, Layout, ScrollingLayoutConfig, TilingDirection,
-    WindowState,
+    ColumnWidth, FocusFitMethod, Layout, ScrollingLayoutConfig,
+    TilingDirection, WindowState,
   };
   use wm_platform::Rect;
 
@@ -466,5 +499,43 @@ mod tests {
     follow_focus(&workspace).unwrap();
     assert_eq!(first.to_rect().unwrap().center_point().x, center);
     assert!(workspace.scroll_offset() < 0);
+  }
+
+  /// Opens a window `width` wide as a new column of a scrolling workspace
+  /// set to `column_width: "window"`.
+  fn open_at_window_width(width: i32) -> (Workspace, TilingWindow) {
+    let workspace = Workspace::mock().layout(Layout::Scrolling).call();
+    workspace.set_scrolling_config(ScrollingLayoutConfig {
+      column_width: ColumnWidth::Window,
+      ..ScrollingLayoutConfig::default()
+    });
+    let state = WmState::mock(vec![Monitor::mock()
+      .workspaces(vec![workspace.clone()])
+      .call()]);
+
+    let window = TilingWindow::mock()
+      .floating_placement(Rect::from_xy(0, 0, width, 400))
+      .call();
+    let insertion =
+      insertion_target(&WindowState::Tiling, false, &state).unwrap();
+    attach(&window.clone().into(), &insertion, &config()).unwrap();
+
+    (workspace, window)
+  }
+
+  #[test]
+  fn a_window_width_column_keeps_the_size_its_app_gave_it() {
+    let (_workspace, window) = open_at_window_width(600);
+    assert_eq!(window.to_rect().unwrap().width(), 600);
+  }
+
+  #[test]
+  fn a_window_width_column_fits_the_workspace_at_most() {
+    let (workspace, window) = open_at_window_width(MOCK_MONITOR_WIDTH * 3);
+    assert!((window.tiling_size() - 1.).abs() < 1e-4);
+    assert_eq!(
+      window.to_rect().unwrap().width(),
+      workspace.to_rect().unwrap().width()
+    );
   }
 }

@@ -858,6 +858,35 @@ window_effects:
   }
 
   #[test]
+  fn column_width_takes_a_length_or_window() {
+    use wm_common::ColumnWidth;
+    use wm_platform::LengthValue;
+
+    let column_width = |value: &str| {
+      let yaml =
+        format!("layouts: {{ scrolling: {{ column_width: {value} }} }}");
+      serde_yaml::from_str::<ParsedConfig>(&yaml)
+        .map(|config| config.layouts.scrolling.column_width)
+    };
+
+    assert_eq!(column_width("'window'").unwrap(), ColumnWidth::Window);
+    assert_eq!(
+      column_width("'600px'").unwrap(),
+      ColumnWidth::Length(LengthValue::from_px(600))
+    );
+    assert!(matches!(
+      column_width("'40%'").unwrap(),
+      ColumnWidth::Length(length) if (length.amount - 0.4).abs() < 1e-6
+    ));
+    assert!(column_width("'wide'").is_err());
+
+    assert_eq!(
+      serde_json::to_value(ColumnWidth::Window).unwrap(),
+      serde_json::json!("window")
+    );
+  }
+
+  #[test]
   fn special_workspace_config_uses_its_own_section() {
     let config: ParsedConfig = serde_yaml::from_str(
       "special_workspace: { name: 'scratch', display_name: 'S', layout: 'split' }",

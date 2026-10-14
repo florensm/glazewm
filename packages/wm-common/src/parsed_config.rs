@@ -1,4 +1,6 @@
-use serde::{Deserialize, Serialize};
+use std::str::FromStr;
+
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use wm_platform::{
   BackdropOverlayParams, BorderOverlayParams, Color, CornerStyle, Key,
   Keybinding, LengthUnit, LengthValue, OpacityValue, RectDelta,
@@ -289,9 +291,8 @@ pub struct LayoutsConfig {
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(default, rename_all(serialize = "camelCase"))]
 pub struct ScrollingLayoutConfig {
-  /// Width of a new column, as a percentage of the workspace or in
-  /// pixels.
-  pub column_width: LengthValue,
+  /// Width of a new column.
+  pub column_width: ColumnWidth,
 
   /// Widths `cycle-column-width` steps through, as percentages of the
   /// workspace or in pixels.
@@ -299,6 +300,52 @@ pub struct ScrollingLayoutConfig {
 
   /// How the strip follows the focused column.
   pub focus_fit_method: FocusFitMethod,
+}
+
+/// Width of a new column in a scrolling layout.
+#[derive(Clone, Debug, PartialEq)]
+pub enum ColumnWidth {
+  /// The width its windows have as they join the strip, e.g. the size an
+  /// app opened its window at. Written as `"window"`.
+  Window,
+
+  /// A percentage of the workspace, or pixels.
+  Length(LengthValue),
+}
+
+/// Deserializes `"window"`, or a `LengthValue` as a string or a struct.
+impl<'de> Deserialize<'de> for ColumnWidth {
+  fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+  where
+    D: Deserializer<'de>,
+  {
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum ColumnWidthDe {
+      String(String),
+      Length(LengthValue),
+    }
+
+    match ColumnWidthDe::deserialize(deserializer)? {
+      ColumnWidthDe::String(str) if str == "window" => Ok(Self::Window),
+      ColumnWidthDe::String(str) => LengthValue::from_str(&str)
+        .map(Self::Length)
+        .map_err(serde::de::Error::custom),
+      ColumnWidthDe::Length(length) => Ok(Self::Length(length)),
+    }
+  }
+}
+
+impl Serialize for ColumnWidth {
+  fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+  where
+    S: Serializer,
+  {
+    match self {
+      Self::Window => serializer.serialize_str("window"),
+      Self::Length(length) => length.serialize(serializer),
+    }
+  }
 }
 
 /// How a scrolling layout's strip follows the focused column.
@@ -317,10 +364,10 @@ pub enum FocusFitMethod {
 impl Default for ScrollingLayoutConfig {
   fn default() -> Self {
     Self {
-      column_width: LengthValue {
+      column_width: ColumnWidth::Length(LengthValue {
         amount: 0.5,
         unit: LengthUnit::Percentage,
-      },
+      }),
       preset_column_widths: [1. / 3., 0.5, 2. / 3.]
         .into_iter()
         .map(|amount| LengthValue {

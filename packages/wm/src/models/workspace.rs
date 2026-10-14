@@ -7,10 +7,10 @@ use std::{
 use anyhow::Context;
 use uuid::Uuid;
 use wm_common::{
-  ContainerDto, FocusFitMethod, GapsConfig, Layout, ScrollingLayoutConfig,
-  TilingDirection, WorkspaceConfig, WorkspaceDto,
+  ColumnWidth, ContainerDto, FocusFitMethod, GapsConfig, Layout,
+  ScrollingLayoutConfig, TilingDirection, WorkspaceConfig, WorkspaceDto,
 };
-use wm_platform::{LengthUnit, Rect, RectDelta};
+use wm_platform::{Rect, RectDelta};
 
 use crate::{
   impl_common_getters, impl_container_debug,
@@ -112,18 +112,9 @@ impl Workspace {
     self.0.borrow_mut().scroll_offset = scroll_offset;
   }
 
-  /// Width of a new column in a scrolling layout, as a fraction of the
-  /// workspace width.
-  pub fn default_column_size(&self) -> f32 {
-    let column_width = &self.0.borrow().scrolling_config.column_width;
-
-    match column_width.unit {
-      LengthUnit::Percentage => column_width.amount,
-      // A detached workspace has no width to measure pixels against.
-      LengthUnit::Pixel => self
-        .to_rect()
-        .map_or(1., |rect| column_width.to_percentage(rect.width())),
-    }
+  /// Width of a new column in a scrolling layout.
+  pub fn column_width(&self) -> ColumnWidth {
+    self.0.borrow().scrolling_config.column_width.clone()
   }
 
   /// Whether the workspace is currently displayed by the parent monitor.

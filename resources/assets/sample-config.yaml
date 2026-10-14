@@ -500,6 +500,8 @@ overview:
 layouts:
   scrolling:
     # Width of a new column, as a percentage of the workspace or in pixels.
+    # Or "window" to keep the width the window has as it joins the strip:
+    # for a new window, the size its app opened it at.
     column_width: "50%"
 
     # Widths `cycle-column-width` steps through, narrowest to widest and

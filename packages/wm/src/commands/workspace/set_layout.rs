@@ -1,6 +1,7 @@
 use wm_common::{Layout, WmEvent};
 
 use crate::{
+  layout::scrolling::default_column_size,
   models::Workspace,
   traits::{CommonGetters, TilingSizeGetters},
   wm_state::WmState,
@@ -28,7 +29,7 @@ pub fn set_layout(
 
   if layout == Layout::Scrolling {
     for child in &children {
-      child.set_tiling_size(workspace.default_column_size());
+      child.set_tiling_size(default_column_size(child, workspace));
     }
   } else if was_scrolling {
     #[allow(clippy::cast_precision_loss)]
@@ -53,12 +54,13 @@ pub fn set_layout(
 
 #[cfg(test)]
 mod tests {
-  use wm_common::Layout;
+  use wm_common::{ColumnWidth, Layout, ScrollingLayoutConfig};
+  use wm_platform::Rect;
 
   use super::set_layout;
   use crate::{
     models::{Monitor, TilingWindow, Workspace},
-    traits::{CommonGetters, TilingSizeGetters},
+    traits::{CommonGetters, PositionGetters, TilingSizeGetters},
     wm_state::WmState,
   };
 
@@ -98,5 +100,36 @@ mod tests {
 
     assert_eq!(workspace.layout(), Layout::Dwindle);
     assert_eq!(workspace.tiling_children().count(), 1);
+  }
+
+  #[test]
+  fn window_width_columns_keep_the_widths_windows_had() {
+    let window = |width| {
+      TilingWindow::mock()
+        .floating_placement(Rect::from_xy(0, 0, width, 400))
+        .call()
+    };
+    let (narrow, wide) = (window(500), window(900));
+    let workspace = Workspace::mock().call();
+    let mut state = WmState::mock(vec![Monitor::mock()
+      .workspaces(vec![workspace.clone()])
+      .call()]);
+    for column in [&narrow, &wide] {
+      crate::commands::container::attach_container(
+        &column.clone().into(),
+        &workspace.clone().into(),
+        None,
+      )
+      .unwrap();
+    }
+    workspace.set_scrolling_config(ScrollingLayoutConfig {
+      column_width: ColumnWidth::Window,
+      ..ScrollingLayoutConfig::default()
+    });
+
+    set_layout(&workspace, Layout::Scrolling, &mut state).unwrap();
+
+    assert_eq!(narrow.to_rect().unwrap().width(), 500);
+    assert_eq!(wide.to_rect().unwrap().width(), 900);
   }
 }
