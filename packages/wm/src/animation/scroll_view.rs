@@ -20,7 +20,7 @@ use std::{
 };
 
 use uuid::Uuid;
-use wm_common::{AnimationTypeConfig, Layout, WindowState};
+use wm_common::{AnimationTypeConfig, DisplayState, Layout, WindowState};
 use wm_platform::{
   NativeWindowWindowsExt, Overlay, Point, Rect, SurrogateBatch,
   WindowPeek, HWND,
@@ -69,6 +69,8 @@ pub struct ScrollView {
   /// Last target rect of every window in a displayed scrolling layout,
   /// i.e. where it is shown now and moves from on the next relayout.
   last_rects: HashMap<Uuid, Rect>,
+  /// Windows already reported by `report_stuck_windows`.
+  reported_stuck: HashSet<Uuid>,
 }
 
 impl ScrollView {
@@ -363,6 +365,39 @@ pub fn sync_scroll_view(state: &mut WmState, config: &UserConfig) {
 
   if state.animation_manager.scroll_view.is_active() {
     state.animation_manager.ensure_timer_running();
+  }
+}
+
+/// Logs windows of displayed scrolling layouts that should be shown but
+/// whose real window is still cloaked, once each, for diagnosing windows
+/// that disappear. Only meaningful while nothing animates.
+pub fn report_stuck_windows(state: &mut WmState) {
+  let stuck = displayed_scrolling_workspaces(state)
+    .iter()
+    .flat_map(|(workspace, _)| tiling_windows(workspace))
+    .filter(|window| {
+      window.display_state() == DisplayState::Shown
+        && !is_hidden_in_layout(window)
+        && window.native().is_cloaked().unwrap_or(false)
+    })
+    .collect::<Vec<_>>();
+
+  let view = &mut state.animation_manager.scroll_view;
+  let stuck_ids =
+    stuck.iter().map(CommonGetters::id).collect::<HashSet<_>>();
+  view.reported_stuck.retain(|id| stuck_ids.contains(id));
+
+  for window in stuck {
+    if !view.reported_stuck.insert(window.id()) {
+      continue;
+    }
+
+    let role = view.entries.get(&window.id()).map(|entry| entry.role);
+    tracing::warn!(
+      "Scrolling layout window stuck cloaked: {window}, rect {:?},        last rect {:?}, scroll view role {role:?}.",
+      target_rect(&window).ok(),
+      view.last_rects.get(&window.id()),
+    );
   }
 }
 

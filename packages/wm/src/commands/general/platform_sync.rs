@@ -203,6 +203,11 @@ pub fn platform_sync(
   #[cfg(target_os = "windows")]
   crate::overview::sync_overview(state, config);
 
+  #[cfg(target_os = "windows")]
+  if !state.animation_manager.has_active_animations() {
+    crate::animation::scroll_view::report_stuck_windows(state);
+  }
+
   state.pending_sync.clear();
 
   Ok(())
