@@ -292,14 +292,32 @@ pub struct LayoutsConfig {
 #[serde(default, rename_all(serialize = "camelCase"))]
 pub struct ScrollingLayoutConfig {
   /// Width of a new column.
-  pub column_width: ColumnWidth,
+  #[serde(alias = "column_width")]
+  pub default_column_width: ColumnWidth,
 
   /// Widths `cycle-column-width` steps through, as percentages of the
   /// workspace or in pixels.
   pub preset_column_widths: Vec<LengthValue>,
 
-  /// How the strip follows the focused column.
-  pub focus_fit_method: FocusFitMethod,
+  /// Heights `cycle-window-height` steps through, as percentages of the
+  /// workspace or in pixels.
+  pub preset_window_heights: Vec<LengthValue>,
+
+  /// When focusing a column puts it in the middle of the workspace.
+  #[serde(alias = "focus_fit_method")]
+  pub center_focused_column: CenterFocusedColumn,
+
+  /// Whether the only column of a workspace is kept in its middle.
+  pub always_center_single_column: bool,
+
+  /// How a column that windows are added to shows them.
+  pub default_column_display: ColumnDisplay,
+
+  /// With `general.focus_follows_cursor`, how far the view may scroll to
+  /// focus the window under the cursor, as a percentage of the workspace
+  /// width. Windows that would scroll it further aren't focused by
+  /// hovering. Unset for no limit.
+  pub focus_follows_cursor_max_scroll: Option<LengthValue>,
 }
 
 /// Width of a new column in a scrolling layout.
@@ -348,34 +366,60 @@ impl Serialize for ColumnWidth {
   }
 }
 
-/// How a scrolling layout's strip follows the focused column.
+/// When focusing a column of a scrolling layout centers it.
 #[derive(
   Clone, Copy, Debug, Default, Deserialize, PartialEq, Eq, Serialize,
 )]
 #[serde(rename_all = "snake_case")]
-pub enum FocusFitMethod {
-  /// Scroll just far enough to show the focused column whole.
+pub enum CenterFocusedColumn {
+  /// Never: the view scrolls just far enough to show the column whole.
   #[default]
-  Fit,
-  /// Keep the focused column in the middle of the workspace.
-  Center,
+  #[serde(alias = "fit")]
+  Never,
+  /// The focused column is always in the middle.
+  #[serde(alias = "center")]
+  Always,
+  /// Only a column that doesn't fit on screen together with the
+  /// previously focused one is centered.
+  OnOverflow,
+}
+
+/// How a column of a scrolling layout shows its windows.
+#[derive(
+  Clone, Copy, Debug, Default, Deserialize, PartialEq, Eq, Serialize,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum ColumnDisplay {
+  /// Stacked one above the other.
+  #[default]
+  Normal,
+  /// As the tabs of a stack, one shown at a time.
+  Tabbed,
 }
 
 impl Default for ScrollingLayoutConfig {
   fn default() -> Self {
-    Self {
-      column_width: ColumnWidth::Length(LengthValue {
-        amount: 0.5,
-        unit: LengthUnit::Percentage,
-      }),
-      preset_column_widths: [1. / 3., 0.5, 2. / 3.]
+    let thirds = || {
+      [1. / 3., 0.5, 2. / 3.]
         .into_iter()
         .map(|amount| LengthValue {
           amount,
           unit: LengthUnit::Percentage,
         })
-        .collect(),
-      focus_fit_method: FocusFitMethod::default(),
+        .collect()
+    };
+
+    Self {
+      default_column_width: ColumnWidth::Length(LengthValue {
+        amount: 0.5,
+        unit: LengthUnit::Percentage,
+      }),
+      preset_column_widths: thirds(),
+      preset_window_heights: thirds(),
+      center_focused_column: CenterFocusedColumn::default(),
+      always_center_single_column: false,
+      default_column_display: ColumnDisplay::default(),
+      focus_follows_cursor_max_scroll: None,
     }
   }
 }

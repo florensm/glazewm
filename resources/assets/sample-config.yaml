@@ -513,16 +513,21 @@ layouts:
     # Width of a new column, as a percentage of the workspace or in pixels.
     # Or "window" to keep the width the window has as it joins the strip:
     # for a new window, the size its app opened it at.
-    column_width: "50%"
+    default_column_width: "50%"
 
     # Widths `cycle-column-width` steps through, narrowest to widest and
     # back around.
     preset_column_widths: ["33.333%", "50%", "66.667%"]
 
-    # How the strip follows the focused column. Options:
-    #   'fit'    - scroll just far enough to show it whole.
-    #   'center' - keep it in the middle of the workspace.
-    focus_fit_method: "fit"
+    # When focusing a column centers it. Options:
+    #   'never'       - scroll just far enough to show it whole.
+    #   'always'      - keep the focused column in the middle.
+    #   'on_overflow' - center it only when it doesn't fit on screen
+    #                   together with the column focused before it.
+    center_focused_column: "never"
+
+    # Keep the only column of a workspace in its middle.
+    always_center_single_column: false
 
 # A scratch workspace for parking windows, shared by all monitors and kept
 # out of workspace cycling. `focus --special-workspace` summons it to the

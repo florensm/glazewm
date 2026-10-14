@@ -7,13 +7,14 @@ use std::{
 use anyhow::Context;
 use uuid::Uuid;
 use wm_common::{
-  ColumnWidth, ContainerDto, FocusFitMethod, GapsConfig, Layout,
-  ScrollingLayoutConfig, TilingDirection, WorkspaceConfig, WorkspaceDto,
+  ContainerDto, GapsConfig, Layout, ScrollingLayoutConfig,
+  TilingDirection, WorkspaceConfig, WorkspaceDto,
 };
 use wm_platform::{Rect, RectDelta};
 
 use crate::{
   impl_common_getters, impl_container_debug,
+  layout::scrolling::{StripView, ViewRequest},
   models::{
     Container, DirectionContainer, TilingContainer, WindowContainer,
   },
@@ -34,9 +35,8 @@ struct WorkspaceInner {
   tiling_direction: TilingDirection,
   layout: Layout,
   scrolling_config: ScrollingLayoutConfig,
-  /// How far a scrolling layout's strip is scrolled to the left, in
-  /// pixels.
-  scroll_offset: i32,
+  /// Where a scrolling layout's view is.
+  strip_view: StripView,
   /// Whether this is the special workspace, which is kept out of
   /// workspace cycling.
   is_special: bool,
@@ -61,7 +61,7 @@ impl Workspace {
       tiling_direction,
       layout,
       scrolling_config,
-      scroll_offset: 0,
+      strip_view: StripView::default(),
       is_special,
     };
 
@@ -89,7 +89,7 @@ impl Workspace {
   pub fn set_layout(&self, layout: Layout) {
     let mut inner = self.0.borrow_mut();
     inner.layout = layout;
-    inner.scroll_offset = 0;
+    inner.strip_view = StripView::default();
   }
 
   pub fn set_scrolling_config(
@@ -99,22 +99,27 @@ impl Workspace {
     self.0.borrow_mut().scrolling_config = scrolling_config;
   }
 
-  /// How a scrolling layout's strip follows the focused column.
-  pub fn focus_fit_method(&self) -> FocusFitMethod {
-    self.0.borrow().scrolling_config.focus_fit_method
+  pub fn scrolling_config(&self) -> ScrollingLayoutConfig {
+    self.0.borrow().scrolling_config.clone()
   }
 
+  /// How far a scrolling layout's strip is scrolled: its first column
+  /// starts this far left of the workspace's left edge.
   pub fn scroll_offset(&self) -> i32 {
-    self.0.borrow().scroll_offset
+    self.0.borrow().strip_view.offset
   }
 
-  pub fn set_scroll_offset(&self, scroll_offset: i32) {
-    self.0.borrow_mut().scroll_offset = scroll_offset;
+  pub fn strip_view(&self) -> StripView {
+    self.0.borrow().strip_view.clone()
   }
 
-  /// Width of a new column in a scrolling layout.
-  pub fn column_width(&self) -> ColumnWidth {
-    self.0.borrow().scrolling_config.column_width.clone()
+  pub fn set_strip_view(&self, strip_view: StripView) {
+    self.0.borrow_mut().strip_view = strip_view;
+  }
+
+  /// Asks the next sync of a scrolling layout's view for `request`.
+  pub fn request_view(&self, request: ViewRequest) {
+    self.0.borrow_mut().strip_view.request(request);
   }
 
   /// Whether the workspace is currently displayed by the parent monitor.

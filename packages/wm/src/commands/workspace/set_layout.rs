@@ -123,7 +123,7 @@ mod tests {
       .unwrap();
     }
     workspace.set_scrolling_config(ScrollingLayoutConfig {
-      column_width: ColumnWidth::Window,
+      default_column_width: ColumnWidth::Window,
       ..ScrollingLayoutConfig::default()
     });
 

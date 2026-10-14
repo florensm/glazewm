@@ -657,6 +657,13 @@ impl WmState {
       return None;
     }
 
+    // A scrolling layout hands focus along its strip.
+    if let Some(target) =
+      crate::layout::scrolling::focus_target_after_removal(removed_window)
+    {
+      return Some(target);
+    }
+
     // Get descendant focus order excluding the removed container.
     let workspace = removed_window.workspace()?;
     let descendant_focus_order = workspace

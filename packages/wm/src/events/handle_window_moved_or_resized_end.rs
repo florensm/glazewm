@@ -360,7 +360,7 @@ mod tests {
       window::{set_window_size, update_window_state},
     },
     events::handle_window_moved_or_resized::update_drag_state,
-    layout::{is_hidden_in_layout, scrolling::follow_focus},
+    layout::{is_hidden_in_layout, scrolling::sync_view},
     models::{
       Monitor, NonTilingWindow, StackContainer, TilingContainer,
       TilingWindow, WindowContainer, Workspace,
@@ -582,14 +582,14 @@ mod tests {
 
     set_focused_descendant(&windows[0].clone().into(), None);
     set_focused_descendant(&windows[3].clone().into(), None);
-    follow_focus(&workspace).unwrap();
+    sync_view(&workspace).unwrap();
     assert_eq!(workspace.scroll_offset(), 1700);
 
     start_drag(&windows[3], &mut state, &config);
-    follow_focus(&workspace).unwrap();
+    sync_view(&workspace).unwrap();
 
-    // Only as far back as the shorter strip needs.
-    assert_eq!(workspace.scroll_offset(), 850);
+    // The column now in its place, left of the gap, stays where it was.
+    assert_eq!(workspace.scroll_offset(), 1700);
     assert!(!is_hidden_in_layout(&windows[2]));
   }
 

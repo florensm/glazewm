@@ -866,7 +866,7 @@ window_effects:
       let yaml =
         format!("layouts: {{ scrolling: {{ column_width: {value} }} }}");
       serde_yaml::from_str::<ParsedConfig>(&yaml)
-        .map(|config| config.layouts.scrolling.column_width)
+        .map(|config| config.layouts.scrolling.default_column_width)
     };
 
     assert_eq!(column_width("'window'").unwrap(), ColumnWidth::Window);

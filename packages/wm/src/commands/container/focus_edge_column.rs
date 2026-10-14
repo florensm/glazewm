@@ -45,7 +45,7 @@ mod tests {
   use super::focus_edge_column;
   use crate::{
     commands::container::set_focused_descendant,
-    layout::scrolling::follow_focus,
+    layout::scrolling::sync_view,
     models::{Monitor, SplitContainer, TilingWindow, Workspace},
     traits::CommonGetters,
     wm_state::WmState,
@@ -87,12 +87,12 @@ mod tests {
 
     focus_edge_column(&first.clone().into(), true, &mut state);
     assert_eq!(focused_id(&state), Some(last.id()));
-    follow_focus(&workspace).unwrap();
+    sync_view(&workspace).unwrap();
     assert!(workspace.scroll_offset() > 0, "scrolls to the last column");
 
     focus_edge_column(&last.into(), false, &mut state);
     assert_eq!(focused_id(&state), Some(first.id()));
-    follow_focus(&workspace).unwrap();
+    sync_view(&workspace).unwrap();
     assert_eq!(workspace.scroll_offset(), 0);
   }
 

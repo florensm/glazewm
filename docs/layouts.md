@@ -21,12 +21,16 @@ layouts:
     # Width of a new column, as a percentage of the workspace or in pixels,
     # or "window" to keep the width the window has as it joins the strip
     # (for a new window, the size its app opened it at).
-    column_width: "50%"
+    default_column_width: "50%"
     # Widths `cycle-column-width` steps through.
     preset_column_widths: ["33.333%", "50%", "66.667%"]
-    # How the strip follows the focused column: "fit" scrolls just far
-    # enough to show it, "center" keeps it in the middle.
-    focus_fit_method: "fit"
+    # When focusing a column centers it: "never" scrolls just far enough
+    # to show it, "always" keeps it in the middle, and "on_overflow"
+    # centers it only when it doesn't fit on screen together with the
+    # column focused before it.
+    center_focused_column: "never"
+    # Keep the only column of a workspace in its middle.
+    always_center_single_column: false
 
 animations:
   # How the scrolling strip moves.
@@ -44,7 +48,7 @@ workspaces:
 `set-layout <layout>` changes the focused workspace's layout at runtime.
 The window tree is kept: `dwindle` only changes where new windows go, and
 switching to or from `scrolling` resets the widths of the workspace's
-top-level windows (to `column_width`, so with `"window"` switching to
+top-level windows (to `default_column_width`, so with `"window"` switching to
 `scrolling` keeps them as wide as they were). A reload re-applies a workspace's `layout` only when
 that entry changed, so a layout picked with `set-layout` survives
 unrelated reloads.
@@ -64,7 +68,14 @@ unrelated reloads.
   the strip, to the window there that last had focus.
 - Focusing a column, by keyboard or by clicking a column partly off
   screen, scrolls the strip just far enough to show it whole, or centers
-  it with `focus_fit_method: "center"`.
+  it as `center_focused_column` says. Changing the focused column's width
+  scrolls it back into view the same way.
+- Otherwise the view stays put relative to the focused column: columns
+  opening, closing or resizing beside it move the others, not it. When the
+  focused column closes, the one right of it slides into its place and
+  takes focus (past the strip's end, the one left of it). A column opened
+  and closed again before focus moves on gives focus back to the column it
+  was opened from, which returns to where it was.
 - Columns past a monitor edge with no other monitor behind it keep their
   real window and simply run off screen, so they stay live and slide back
   in smoothly. Where a column would reach onto another monitor, it is
