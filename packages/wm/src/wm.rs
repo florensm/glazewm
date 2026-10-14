@@ -1,3 +1,8 @@
+use std::{
+  collections::HashMap,
+  time::{Duration, Instant},
+};
+
 use anyhow::{bail, Context};
 use tokio::sync::mpsc::{self};
 use tracing::warn;
@@ -13,8 +18,8 @@ use wm_common::{InvokeFocusCommand, InvokeMoveCommand};
 #[cfg(target_os = "windows")]
 use wm_platform::NativeWindowWindowsExt;
 use wm_platform::{
-  Dispatcher, LengthValue, OverviewAction, PlatformEvent, RectDelta,
-  WindowEvent,
+  Dispatcher, Keybinding, LengthValue, OverviewAction, PlatformEvent,
+  RectDelta, WindowEvent,
 };
 
 #[cfg(target_os = "windows")]
@@ -346,6 +351,14 @@ impl WindowManager {
           )
           .find(|kb_config| {
             kb_config.bindings.contains(&keybinding_event.0)
+          })
+          .filter(|kb_config| {
+            is_off_cooldown(
+              &mut self.state.keybinding_cooldowns,
+              &keybinding_event.0,
+              kb_config.cooldown_ms,
+              Instant::now(),
+            )
           })
           .map(|kb_config| kb_config.commands.clone());
 
@@ -1436,6 +1449,32 @@ fn window_by_handle(
     .find(|window| window.native().id().0 == hwnd)
 }
 
+/// Whether `keybinding` may trigger at `now`, starting its `cooldown_ms`
+/// when it may.
+///
+/// `cooldowns` holds when each keybinding on cooldown comes off it.
+fn is_off_cooldown(
+  cooldowns: &mut HashMap<Keybinding, Instant>,
+  keybinding: &Keybinding,
+  cooldown_ms: Option<u32>,
+  now: Instant,
+) -> bool {
+  cooldowns.retain(|_, ready_at| *ready_at > now);
+
+  if cooldowns.contains_key(keybinding) {
+    return false;
+  }
+
+  if let Some(cooldown_ms) = cooldown_ms {
+    cooldowns.insert(
+      keybinding.clone(),
+      now + Duration::from_millis(u64::from(cooldown_ms)),
+    );
+  }
+
+  true
+}
+
 /// `focus --workspace <name>`, or `focus --special-workspace` to summon
 /// the special workspace to the focused monitor.
 #[cfg(target_os = "windows")]
@@ -1520,5 +1559,38 @@ fn send_due_keys(state: &mut WmState) {
         close_duplicate_tabs(&pending.then_close);
       }
     }
+  }
+}
+
+#[cfg(test)]
+mod tests {
+  use std::{
+    collections::HashMap,
+    time::{Duration, Instant},
+  };
+
+  use wm_platform::{Key, Keybinding};
+
+  use super::is_off_cooldown;
+
+  #[test]
+  fn keybindings_cool_down_on_their_own() {
+    let mut cooldowns = HashMap::new();
+    let slow = Keybinding::new(vec![Key::Alt, Key::WheelDown]).unwrap();
+    let fast = Keybinding::new(vec![Key::Alt, Key::WheelUp]).unwrap();
+    let start = Instant::now();
+    let at = |ms| start + Duration::from_millis(ms);
+
+    assert!(is_off_cooldown(&mut cooldowns, &slow, Some(500), at(0)));
+    assert!(!is_off_cooldown(&mut cooldowns, &slow, Some(500), at(100)));
+
+    // Another keybinding's shorter cooldown doesn't cut it short.
+    assert!(is_off_cooldown(&mut cooldowns, &fast, Some(100), at(200)));
+    assert!(is_off_cooldown(&mut cooldowns, &fast, Some(100), at(400)));
+    assert!(!is_off_cooldown(&mut cooldowns, &slow, Some(500), at(400)));
+
+    assert!(is_off_cooldown(&mut cooldowns, &slow, Some(500), at(500)));
+    assert!(is_off_cooldown(&mut cooldowns, &slow, None, at(1000)));
+    assert!(is_off_cooldown(&mut cooldowns, &slow, None, at(1000)));
   }
 }

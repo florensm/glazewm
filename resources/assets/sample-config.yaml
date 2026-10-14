@@ -865,6 +865,30 @@ keybindings:
   # - commands: ["focus --next-column"]
   # - commands: ["move --column 1"]
 
+  # Mouse wheel (Windows only). Steps once per notch, or with `cooldown_ms`
+  # at most once in that many milliseconds, e.g. one workspace per flick.
+  - commands: ["focus --next-workspace"]
+    bindings: ["alt+wheel_down"]
+    cooldown_ms: 150
+  - commands: ["focus --prev-workspace"]
+    bindings: ["alt+wheel_up"]
+    cooldown_ms: 150
+  - commands: ["move --next-workspace", "focus --next-workspace"]
+    bindings: ["alt+ctrl+wheel_down"]
+    cooldown_ms: 150
+  - commands: ["move --prev-workspace", "focus --prev-workspace"]
+    bindings: ["alt+ctrl+wheel_up"]
+    cooldown_ms: 150
+  # Along the strip with the horizontal wheel, or with shift held.
+  - commands: ["focus --direction right"]
+    bindings: ["alt+wheel_right", "alt+shift+wheel_down"]
+  - commands: ["focus --direction left"]
+    bindings: ["alt+wheel_left", "alt+shift+wheel_up"]
+  - commands: ["move --direction right"]
+    bindings: ["alt+ctrl+wheel_right", "alt+ctrl+shift+wheel_down"]
+  - commands: ["move --direction left"]
+    bindings: ["alt+ctrl+wheel_left", "alt+ctrl+shift+wheel_up"]
+
   # Change focus to a workspace defined in `workspaces` config.
   - commands: ["focus --workspace 1"]
     bindings: ["alt+1"]

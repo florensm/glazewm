@@ -605,6 +605,13 @@ mod tests {
         matches!(command, InvokeCommand::Focus(args) if args.special_workspace)
       })
     }));
+    assert!(config.keybindings.iter().any(|keybinding| {
+      keybinding.cooldown_ms == Some(150)
+        && keybinding
+          .bindings
+          .iter()
+          .any(|binding| binding.trigger_key().is_wheel())
+    }));
     UserConfig::validate(&config).expect("sample config should be valid");
   }
 

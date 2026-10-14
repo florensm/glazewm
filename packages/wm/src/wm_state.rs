@@ -6,8 +6,8 @@ use tracing::warn;
 use uuid::Uuid;
 use wm_common::{BindingModeConfig, HideCorner, WindowState, WmEvent};
 use wm_platform::{
-  Direction, Dispatcher, Display, NativeWindow, OverviewAction, Point,
-  Rect, TabAction,
+  Direction, Dispatcher, Display, Keybinding, NativeWindow,
+  OverviewAction, Point, Rect, TabAction,
 };
 #[cfg(target_os = "windows")]
 use wm_platform::{
@@ -71,6 +71,9 @@ pub struct WmState {
 
   /// Configs of currently enabled binding modes.
   pub binding_modes: Vec<BindingModeConfig>,
+
+  /// When each keybinding on its `cooldown_ms` comes off it.
+  pub keybinding_cooldowns: HashMap<Keybinding, Instant>,
 
   /// Windows that the WM should ignore. Windows can be added via the
   /// `ignore` command.
@@ -168,6 +171,7 @@ impl WmState {
       recent_workspace_name: None,
       unmanaged_or_minimized_timestamp: None,
       binding_modes: Vec::new(),
+      keybinding_cooldowns: HashMap::new(),
       ignored_windows: Vec::new(),
       auto_stack: AutoStackState::default(),
       #[cfg(target_os = "windows")]

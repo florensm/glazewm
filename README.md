@@ -140,6 +140,12 @@ keybindings:
   # workspace + focus workspace).
   - commands: ["move --workspace 1", "focus --workspace 1"]
     bindings: ["alt+shift+1"]
+
+  # Optionally ignore the keybinding for some milliseconds after it
+  # triggers, e.g. to switch one workspace per flick of the mouse wheel.
+  - commands: ["focus --next-workspace"]
+    bindings: ["alt+wheel_down"]
+    cooldown_ms: 150
 ```
 
 **Full list of keys that can be used for keybindings:**
@@ -210,10 +216,16 @@ keybindings:
 | `oem_period`          | The `.`/`>` key on a US standard keyboard (varies by keyboard)            |
 | `muhenkan`            | The 無変換 (non-convert) key for Japanese keyboard layouts                |
 | `henkan`              | The 変換 (convert) key for Japanese keyboard layouts                      |
+| `wheel_up`            | Turning the mouse wheel up, once per notch (Windows only)                 |
+| `wheel_down`          | Turning the mouse wheel down, once per notch (Windows only)               |
+| `wheel_left`          | Turning a horizontal mouse wheel left, or tilting it (Windows only)       |
+| `wheel_right`         | Turning a horizontal mouse wheel right, or tilting it (Windows only)      |
 
 </details>
 
 If a key is not in the list above, it is likely still supported if you use its character in a keybinding (e.g. `alt+å` for the Norwegian Å character).
+
+The mouse wheel keys can only be the last key of a keybinding (e.g. `alt+wheel_down`). While a keybinding's other keys are held, turns of the wheel towards it don't reach the window under the cursor.
 
 > German and US international keyboards treat the right-side alt key differently. For these keyboard layouts, use `ralt+ctrl` instead of `ralt` to bind the right-side alt key.
 

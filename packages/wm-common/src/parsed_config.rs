@@ -580,6 +580,11 @@ pub struct KeybindingConfig {
 
   /// WM commands to run when the keybinding is triggered.
   pub commands: Vec<InvokeCommand>,
+
+  /// How long after it triggers it can't trigger again, e.g. to step once
+  /// per flick of a mouse wheel.
+  #[serde(default)]
+  pub cooldown_ms: Option<u32>,
 }
 
 /// Look of the window overview opened by `toggle-overview`.
