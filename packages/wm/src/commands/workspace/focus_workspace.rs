@@ -160,29 +160,20 @@ pub fn focus_workspace(
   Ok(())
 }
 
-/// Returns `+1` if `target_name` has a higher config index than
-/// `focused_name`, `-1` if lower, or `0` if undetermined.
+/// Returns `+1` if `target_name` comes after `focused_name` in the
+/// workspaces' order on a monitor, `-1` if before, `0` for the same one.
 ///
-/// Used to derive the slide direction for the workspace-switch animation.
+/// Used to derive the slide direction for the workspace-switch animation,
+/// so dynamic and special workspaces slide in from where they sit too.
 fn workspace_switch_direction(
   target_name: &str,
   focused_name: &str,
   config: &UserConfig,
 ) -> i32 {
-  let names: Vec<&str> = config
-    .value
-    .workspaces
-    .iter()
-    .map(|w| w.name.as_str())
-    .collect();
-
-  let target_idx = names.iter().position(|n| *n == target_name);
-  let focused_idx = names.iter().position(|n| *n == focused_name);
-
-  match (focused_idx, target_idx) {
-    (Some(fi), Some(ti)) if ti > fi => 1,
-    (Some(fi), Some(ti)) if ti < fi => -1,
-    _ => 0,
+  match config.compare_workspaces(target_name, focused_name) {
+    std::cmp::Ordering::Greater => 1,
+    std::cmp::Ordering::Less => -1,
+    std::cmp::Ordering::Equal => 0,
   }
 }
 
@@ -223,4 +214,34 @@ fn iris_origin_point(
 /// snapshotting them causes flicker.
 fn is_switch_animated(window: &WindowContainer) -> bool {
   window.state() != WindowState::Minimized && !is_hidden_in_layout(window)
+}
+
+#[cfg(test)]
+mod tests {
+  use wm_common::ParsedConfig;
+
+  use super::workspace_switch_direction;
+  use crate::{
+    test_utils::mock_workspace_configs, user_config::UserConfig,
+  };
+
+  #[test]
+  fn dynamic_and_special_workspaces_slide_from_where_they_sit() {
+    let mut value = ParsedConfig::default();
+    value.general.dynamic_workspaces = true;
+    value.workspaces = mock_workspace_configs(&["1", "2", "3"]);
+    let config = UserConfig::from_parsed(value);
+    let special = config.value.special_workspace.name.clone();
+
+    assert_eq!(workspace_switch_direction("2", "1", &config), 1);
+    assert_eq!(workspace_switch_direction("1", "3", &config), -1);
+
+    // A dynamic workspace comes after the configured ones.
+    assert_eq!(workspace_switch_direction("10", "3", &config), 1);
+    assert_eq!(workspace_switch_direction("2", "10", &config), -1);
+
+    // The special workspace comes last.
+    assert_eq!(workspace_switch_direction(&special, "10", &config), 1);
+    assert_eq!(workspace_switch_direction("1", &special, &config), -1);
+  }
 }

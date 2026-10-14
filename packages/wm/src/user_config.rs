@@ -446,6 +446,17 @@ impl UserConfig {
     )
   }
 
+  /// How workspaces `a` and `b` are ordered on a monitor: configured
+  /// ones by config index, then dynamic ones by number, then the special
+  /// workspace.
+  pub fn compare_workspaces(
+    &self,
+    a: &str,
+    b: &str,
+  ) -> std::cmp::Ordering {
+    self.workspace_sort_key(a).cmp(&self.workspace_sort_key(b))
+  }
+
   pub fn sort_workspaces(&self, workspaces: &mut [Workspace]) {
     workspaces.sort_by_cached_key(|workspace| {
       self.workspace_sort_key(&workspace.config().name)
