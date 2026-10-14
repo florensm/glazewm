@@ -1442,10 +1442,16 @@ fn redraw_containers(
         // uncloaked — if its message queue is slow, it appears at its old
         // position for one frame.
         #[cfg(target_os = "windows")]
+        // Windows handed back by a scrolling layout's scroll view too: a
+        // just-opened one hasn't been moved into place while cloaked.
         let has_surrogate = state
           .animation_manager
           .resize_sessions
           .contains_key(&window.id())
+          || state
+            .animation_manager
+            .scroll_view
+            .owns_window(&window.id())
           || (is_visible
             && state
               .animation_manager

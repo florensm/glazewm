@@ -14,7 +14,10 @@
 //! window back, ones reaching onto another monitor keep their peek, and
 //! the rest are dropped.
 
-use std::{collections::HashMap, time::Instant};
+use std::{
+  collections::{HashMap, HashSet},
+  time::Instant,
+};
 
 use uuid::Uuid;
 use wm_common::{AnimationTypeConfig, Layout, WindowState};
@@ -214,11 +217,16 @@ impl ScrollView {
       return false;
     }
 
-    let Ok(peek) = WindowPeek::new(&window.native(), from, &corner_style)
-      .inspect_err(|err| {
-        tracing::warn!("Failed to create a peek of {window}: {err}");
-      })
-    else {
+    // Sized like the window itself, which a collapsed `from` (an opening
+    // column) isn't.
+    let Ok(peek) = WindowPeek::new(
+      &window.native(),
+      &motion.target_rect,
+      &corner_style,
+    )
+    .inspect_err(|err| {
+      tracing::warn!("Failed to create a peek of {window}: {err}");
+    }) else {
       return false;
     };
 
@@ -255,6 +263,13 @@ pub fn sync_scroll_view(state: &mut WmState, config: &UserConfig) {
     .collect::<Vec<_>>();
   let focused_id = state.focused_container().map(|focused| focused.id());
 
+  // Windows the WM hasn't placed yet, i.e. just opened.
+  let new_ids = windows
+    .iter()
+    .map(|(window, _)| window.id())
+    .filter(|id| !state.window_target_positions.contains_key(id))
+    .collect::<HashSet<_>>();
+
   let view = &mut state.animation_manager.scroll_view;
 
   // Windows that left the displayed scrolling layouts lose their peeks;
@@ -283,16 +298,31 @@ pub fn sync_scroll_view(state: &mut WmState, config: &UserConfig) {
       })
       .collect::<Vec<_>>();
 
-    // The strip moves as one when any column crosses the monitor edge
-    // or is already drawn by a peek; moves that stay on screen are left
-    // to the regular per-window animations.
+    // A new column opens in place, widening as its neighbours make room,
+    // rather than sliding in over them.
+    let moves = moves
+      .iter()
+      .map(|(window, from, target)| {
+        let from = if new_ids.contains(&window.id()) {
+          opening_rect(target, &moves, &new_ids)
+        } else {
+          from.clone()
+        };
+        (window.clone(), from, target.clone())
+      })
+      .collect::<Vec<_>>();
+
+    // The strip moves as one when any column crosses the monitor edge,
+    // is already drawn by a peek, or opens; moves that stay on screen are
+    // left to the regular per-window animations.
     let crosses_edge = |rect: &Rect| !clip.contains_rect(rect);
     let strip_moves = scroll_config.enabled
       && moves.iter().any(|(window, from, target)| {
         from != target
           && (crosses_edge(from)
             || crosses_edge(target)
-            || view.entries.contains_key(&window.id()))
+            || view.entries.contains_key(&window.id())
+            || new_ids.contains(&window.id()))
       });
 
     for (window, from, target) in moves {
@@ -437,6 +467,34 @@ pub fn track_overlays(state: &mut WmState, config: &UserConfig) {
 
   backdrop_batch.commit();
   border_batch.commit();
+}
+
+/// Where a new column opens from: collapsed to no width at its place in
+/// the strip as it was before, so it widens as its neighbours make room.
+fn opening_rect(
+  target: &Rect,
+  moves: &[(WindowContainer, Rect, Rect)],
+  new_ids: &HashSet<Uuid>,
+) -> Rect {
+  let existing = moves
+    .iter()
+    .filter(|(window, _, _)| !new_ids.contains(&window.id()));
+
+  // How far the strip scrolls: what a column left of the new one moves
+  // by, or one right of it minus the room it makes.
+  let scroll = existing
+    .clone()
+    .find(|(_, _, to)| to.x() < target.x())
+    .map(|(_, from, to)| from.x() - to.x())
+    .or_else(|| {
+      existing
+        .clone()
+        .find(|(_, _, to)| to.x() > target.x())
+        .map(|(_, from, to)| from.x() - to.x() + target.width())
+    })
+    .unwrap_or(0);
+
+  Rect::from_xy(target.x() + scroll, target.y(), 0, target.height())
 }
 
 /// Displayed scrolling workspaces, with the monitor area their peeks are
