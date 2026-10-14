@@ -404,7 +404,7 @@ fn overview_window(window: &WindowContainer) -> OverviewWindow {
     rect: window.to_rect().unwrap_or(properties.frame),
     is_minimized: window.state() == WindowState::Minimized,
     is_hidden_tab: is_inactive_stack_child(window),
-    is_scrolled_off: !scrolling::is_on_screen(&window.as_container()),
+    is_scrolled_off: !scrolling::is_in_view(&window.as_container()),
   }
 }
 

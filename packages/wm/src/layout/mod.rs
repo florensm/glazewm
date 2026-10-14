@@ -99,10 +99,11 @@ fn split_insertion(
 }
 
 /// Whether the layout keeps `window` hidden although its workspace is
-/// displayed: a stack's background tab, or a column scrolled off screen.
+/// displayed: a stack's background tab, or a scrolled column that would
+/// otherwise reach onto another monitor.
 pub fn is_hidden_in_layout(window: &impl CommonGetters) -> bool {
   is_inactive_stack_child(window)
-    || !scrolling::is_on_screen(&window.as_container())
+    || !scrolling::shows_real_window(&window.as_container())
 }
 
 /// Attaches a detached `child` where `insertion` says.

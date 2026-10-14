@@ -163,45 +163,43 @@ fn update_offset(workspace: &Workspace, offset: i32) -> bool {
   is_changed
 }
 
+/// Whether `container`'s column lies within its workspace horizontally.
+///
+/// Containers outside a scrolling workspace are always in view.
+pub fn is_in_view(container: &Container) -> bool {
+  column_rects(container).is_none_or(|(rect, workspace_rect, _)| {
+    rect.x() >= workspace_rect.x()
+      && rect.x() + rect.width()
+        <= workspace_rect.x() + workspace_rect.width()
+  })
+}
+
 /// Whether `container`'s column is shown by its real window.
 ///
-/// That is when it lies within its workspace horizontally, or when the
-/// part past the workspace only reaches over monitor edges with no other
-/// monitor behind them, where it simply runs off screen. A column that
-/// would reach onto another monitor, or is entirely off screen, is
-/// hidden instead.
+/// That is unless the part of it past the workspace would reach onto
+/// another monitor. Past an edge with no monitor behind it, the window
+/// simply runs off screen, even entirely, so it stays live and is drawn
+/// like any other window when it scrolls back into view.
 ///
-/// Containers outside a scrolling workspace are always on screen.
-pub fn is_on_screen(container: &Container) -> bool {
-  let Some(column) = container
+/// Containers outside a scrolling workspace are always shown.
+pub fn shows_real_window(container: &Container) -> bool {
+  is_in_view(container)
+    || column_rects(container).is_none_or(|(rect, _, workspace)| {
+      workspace.monitor().is_none_or(|monitor| {
+        !overflows_onto_other_monitor(&rect, &monitor)
+      })
+    })
+}
+
+/// Rect of the column holding `container`, its workspace's rect, and the
+/// workspace, when `container` is in a scrolling layout.
+fn column_rects(container: &Container) -> Option<(Rect, Rect, Workspace)> {
+  let column = container
     .self_and_ancestors()
-    .find(|ancestor| column_workspace(ancestor).is_some())
-  else {
-    return true;
-  };
+    .find(|ancestor| column_workspace(ancestor).is_some())?;
+  let workspace = column.workspace()?;
 
-  let (Some(workspace), Ok(rect)) = (column.workspace(), column.to_rect())
-  else {
-    return true;
-  };
-
-  let Ok(workspace_rect) = workspace.to_rect() else {
-    return true;
-  };
-
-  if rect.x() >= workspace_rect.x()
-    && rect.x() + rect.width()
-      <= workspace_rect.x() + workspace_rect.width()
-  {
-    return true;
-  }
-
-  workspace.monitor().is_some_and(|monitor| {
-    let bounds = monitor.native_properties().bounds;
-
-    rect.intersection_area(&bounds) > 0
-      && !overflows_onto_other_monitor(&rect, &monitor)
-  })
+  Some((column.to_rect().ok()?, workspace.to_rect().ok()?, workspace))
 }
 
 /// Whether the parts of `rect` left or right of `monitor` cover any other
@@ -248,7 +246,7 @@ mod tests {
   use wm_common::{Layout, TilingDirection, WindowState};
   use wm_platform::Rect;
 
-  use super::{follow_focus, is_on_screen};
+  use super::{follow_focus, is_in_view, shows_real_window};
   use crate::{
     commands::container::{
       detach_container, flatten_child_split_containers,
@@ -310,8 +308,10 @@ mod tests {
     );
     assert!(third_rect.x() >= workspace_rect.x() + workspace_rect.width());
 
-    assert!(is_on_screen(&first.clone().into()));
-    assert!(!is_on_screen(&third.clone().into()));
+    assert!(is_in_view(&first.clone().into()));
+    assert!(!is_in_view(&third.clone().into()));
+    // No monitor lies past the edge, so it stays a live window off screen.
+    assert!(shows_real_window(&third.clone().into()));
   }
 
   #[test]
@@ -344,8 +344,8 @@ mod tests {
       third_rect.x() + third_rect.width(),
       workspace_rect.x() + workspace_rect.width()
     );
-    assert!(!is_on_screen(&first.clone().into()));
-    assert!(is_on_screen(&second.clone().into()));
+    assert!(!is_in_view(&first.clone().into()));
+    assert!(is_in_view(&second.clone().into()));
 
     // Back to the first column, which is scrolled to the left edge.
     set_focused_descendant(&first.clone().into(), None);
@@ -419,12 +419,12 @@ mod tests {
   #[test]
   fn a_column_past_a_free_edge_keeps_its_real_window() {
     let (_state, second) = edge_setup(false);
-    assert!(is_on_screen(&second.into()));
+    assert!(shows_real_window(&second.into()));
   }
 
   #[test]
   fn a_column_reaching_onto_another_monitor_is_hidden() {
     let (_state, second) = edge_setup(true);
-    assert!(!is_on_screen(&second.into()));
+    assert!(!shows_real_window(&second.into()));
   }
 }

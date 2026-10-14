@@ -51,8 +51,9 @@ unrelated reloads.
 - Resizing a column's width (`resize --width`) leaves the other columns
   alone.
 - Focusing a column scrolls the strip just far enough to show it whole.
-- A column partly past the monitor's edge keeps its real window when no
-  other monitor is behind that edge, so it just runs off screen. Where it
-  would reach onto another monitor, its visible part is shown as a
-  click-through preview instead; clicking it focuses the column.
+- Columns past a monitor edge with no other monitor behind it keep their
+  real window and simply run off screen, so they stay live and slide back
+  in smoothly. Where a column would reach onto another monitor, it is
+  hidden and its visible part is shown as a click-through preview
+  instead; clicking it focuses the column.
 - The overview shows a scrolling workspace's whole strip in its card.
