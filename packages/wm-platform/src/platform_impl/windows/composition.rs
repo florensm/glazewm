@@ -1368,6 +1368,7 @@ pub(crate) struct OverviewBackdrop {
   _target: DesktopWindowTarget,
   compositor: Compositor,
   queue: DispatcherQueue,
+  root: ContainerVisual,
   sharp: CompositionSurfaceBrush,
   blurred: CompositionSurfaceBrush,
   blurred_sprite: SpriteVisual,
@@ -1457,6 +1458,7 @@ impl OverviewBackdrop {
         _target: target,
         compositor: compositor.clone(),
         queue: queue.clone(),
+        root,
         sharp,
         blurred,
         blurred_sprite,
@@ -1467,6 +1469,13 @@ impl OverviewBackdrop {
         blur,
       })
     })
+  }
+
+  /// Shows or hides the whole background, e.g. hidden for a shelf shown
+  /// over the desktop.
+  pub(crate) fn set_visible(&self, visible: bool) -> crate::Result<()> {
+    self.root.SetOpacity(if visible { 1.0 } else { 0.0 })?;
+    Ok(())
   }
 
   /// Fades the blurred, tinted copy in, from 0 (plain wallpaper) to 1.

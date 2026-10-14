@@ -508,6 +508,11 @@ overview:
   open_duration_ms: 250
   close_duration_ms: 200
 
+  # Dragging a window to the top edge of a monitor shows its workspaces in a
+  # shelf there; drop the window on one to move it there. Turn off Windows'
+  # own snap bar for the top of the screen so the two don't overlap.
+  drag_shelf: true
+
 layouts:
   scrolling:
     # Width of a new column, as a percentage of the workspace or in pixels.

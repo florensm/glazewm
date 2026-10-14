@@ -52,10 +52,11 @@ use crate::{
     TilePicture, HINT_HEIGHT,
   },
   overview_layout::{
-    carousel, cover_crop, grid, shelf, Camera, CardMetrics, CardSlot,
-    CardView, GridCells, Placement, RectF, Spring, Tile, Zoom, GHOST_SIZE,
+    carousel, cover_crop, drag_shelf_hit, grid, shelf, Camera,
+    CardMetrics, CardSlot, CardView, GridCells, Placement, RectF, Spring,
+    Tile, Zoom, GHOST_SIZE,
   },
-  overview_state::{HintTone, Hit, Interaction, Key, Mode},
+  overview_state::{Drag, HintTone, Hit, Interaction, Key, Mode},
   overview_tab_bars::CardTabBar,
   overview_thumbnails::{
     visible_frame, visible_frame_on_screen, Picture, Preview, Thumbnail,
@@ -84,6 +85,10 @@ const WM_HIDE_OVERVIEW: u32 = WM_APP + 4;
 /// Posted by the icon thread once an icon is cached.
 const WM_ICON_READY: u32 = WM_APP + 5;
 
+/// Posted with a `Box<ShelfDrag>` in `WPARAM` as a window dragged to the
+/// top edge moves over the drag shelf.
+const WM_DRAG_OVERVIEW: u32 = WM_APP + 6;
+
 /// How long card moves and zooms take to settle.
 const SETTLE_MS: f32 = 260.0;
 
@@ -92,6 +97,21 @@ struct Open {
   session: u64,
   frame: OverviewFrame,
   layout: OverviewLayoutMode,
+
+  /// Title of the window being dragged, for the drag shelf; `None` for
+  /// the overview proper.
+  dragged: Option<String>,
+}
+
+/// Where a window dragged over the drag shelf is, and the card it would
+/// land on, as the WM thread decided.
+struct ShelfDrag {
+  hwnd: isize,
+
+  /// In overview coordinates.
+  position: (f32, f32),
+
+  target: Option<usize>,
 }
 
 type ActionCallback = Box<dyn Fn(u64, OverviewAction) + Send + 'static>;
@@ -110,6 +130,12 @@ pub struct NativeOverview {
   /// Incremented on each open, so actions from an earlier session can be
   /// told apart.
   session: u64,
+
+  /// Whether the drag shelf is what is shown.
+  is_drag_shelf: bool,
+
+  /// Card of the drag shelf a dropped window would land on.
+  drag_target: Option<usize>,
 }
 
 impl NativeOverview {
@@ -132,6 +158,8 @@ impl NativeOverview {
       hwnd,
       last_frame: None,
       session: 0,
+      is_drag_shelf: false,
+      drag_target: None,
     })
   }
 
@@ -146,6 +174,8 @@ impl NativeOverview {
   ) {
     self.session += 1;
     self.last_frame = Some(frame.clone());
+    self.is_drag_shelf = false;
+    self.drag_target = None;
 
     // Lets the overview take the foreground once it is shown.
     platform_impl::send_foreground_input();
@@ -154,8 +184,85 @@ impl NativeOverview {
       session: self.session,
       frame,
       layout,
+      dragged: None,
     });
     self.post(WM_OPEN_OVERVIEW, Box::into_raw(open) as usize);
+  }
+
+  /// Opens the drag shelf on `frame`: its cards in a shelf along the top,
+  /// over the desktop, for the window titled `title` being dragged to be
+  /// dropped on.
+  ///
+  /// Never takes the foreground, which would end the drag. The mouse
+  /// stays with the drag too, so the WM feeds the cursor position in with
+  /// [`drag_to`](Self::drag_to).
+  pub fn open_drag_shelf(&mut self, frame: OverviewFrame, title: String) {
+    self.session += 1;
+    self.last_frame = Some(frame.clone());
+    self.is_drag_shelf = true;
+    self.drag_target = None;
+
+    let open = Box::new(Open {
+      session: self.session,
+      frame,
+      layout: OverviewLayoutMode::Shelf,
+      dragged: Some(title),
+    });
+    self.post(WM_OPEN_OVERVIEW, Box::into_raw(open) as usize);
+  }
+
+  /// Moves the window `hwnd` dragged over the drag shelf to `point`, in
+  /// screen coordinates, aiming it at the card under it.
+  ///
+  /// Decided here rather than on the overview's thread, so the drop
+  /// never waits on that thread or on what it last heard.
+  ///
+  /// Returns whether `point` is still over the shelf, rather than below
+  /// it.
+  pub fn drag_to(&mut self, hwnd: isize, point: &crate::Point) -> bool {
+    let Some(frame) =
+      self.last_frame.as_ref().filter(|_| self.is_drag_shelf)
+    else {
+      return false;
+    };
+
+    let area = RectF::from_rect(&frame.rect);
+    let metrics = CardMetrics::new(area.w, area.h, frame.scale_factor);
+    let cards = frame
+      .workspaces
+      .iter()
+      .map(|workspace| {
+        metrics
+          .for_content(&area, &RectF::from_rect(&workspace.content_rect))
+      })
+      .collect::<Vec<_>>();
+
+    #[allow(clippy::cast_precision_loss)]
+    let position = (
+      (point.x - frame.rect.left) as f32,
+      (point.y - frame.rect.top) as f32,
+    );
+    let (target, bottom) =
+      drag_shelf_hit(&metrics, &cards, self.drag_target, position);
+    self.drag_target = target;
+
+    let drag = Box::new(ShelfDrag {
+      hwnd,
+      position,
+      target,
+    });
+    self.post(WM_DRAG_OVERVIEW, Box::into_raw(drag) as usize);
+
+    position.1 <= bottom
+  }
+
+  /// Name of the workspace a window dropped on the drag shelf now would
+  /// go to.
+  #[must_use]
+  pub fn drop_target(&self) -> Option<String> {
+    let frame = self.last_frame.as_ref().filter(|_| self.is_drag_shelf)?;
+    let workspace = frame.workspaces.get(self.drag_target?)?;
+    Some(workspace.name.clone())
   }
 
   /// Shows `frame` in the open overview.
@@ -199,6 +306,9 @@ impl NativeOverview {
 
   /// Closes the overview.
   pub fn hide(&mut self) {
+    self.is_drag_shelf = false;
+    self.drag_target = None;
+
     if self.last_frame.take().is_some() {
       self.post(WM_HIDE_OVERVIEW, 0);
     }
@@ -512,12 +622,20 @@ impl Overview {
     self.frame.as_ref().map(|frame| &frame.style)
   }
 
-  /// Shows `frame` as session `session` and takes the foreground.
+  /// Whether this is the drag shelf: the shelf alone, over the desktop,
+  /// fed a window dragged to the top edge by the WM.
+  fn is_drag_shelf(&self) -> bool {
+    self.interaction.dragged_title.is_some()
+  }
+
+  /// Shows `frame` as session `session` and takes the foreground, or as
+  /// the drag shelf for the window titled `dragged`, without it.
   fn open(
     &mut self,
     session: u64,
     frame: OverviewFrame,
     layout: OverviewLayoutMode,
+    dragged: Option<String>,
   ) {
     self.close();
 
@@ -531,12 +649,23 @@ impl Overview {
       .interaction
       .digit_workspaces
       .clone_from(&frame.digit_workspaces);
+    self.interaction.dragged_title = dragged;
     self.session = session;
     self.is_done = false;
 
+    // The drag shelf zooms out of nothing and leaves the desktop showing.
     let open_duration = frame.style.open_duration_ms;
-    let animate = open_duration > 0;
-    self.sync_backdrop(&frame, if animate { 0.0 } else { 1.0 });
+    let animate = open_duration > 0 && !self.is_drag_shelf();
+    if self.is_drag_shelf() {
+      if let Some(backdrop) = &self.backdrop {
+        let _ = backdrop.set_visible(false);
+      }
+    } else {
+      self.sync_backdrop(&frame, if animate { 0.0 } else { 1.0 });
+      if let Some(backdrop) = &self.backdrop {
+        let _ = backdrop.set_visible(true);
+      }
+    }
 
     window_icons::forget_closed();
 
@@ -550,6 +679,13 @@ impl Overview {
         Instant::now(),
       )
     });
+
+    // Slides down from above the top edge instead.
+    if self.is_drag_shelf() {
+      for card in &mut self.cards {
+        card.cy.value -= card.cy.target + card.metrics.height;
+      }
+    }
 
     self.register_thumbnails();
     self.refresh_pictures(true);
@@ -573,7 +709,8 @@ impl Overview {
 
       self.open_cursor = cursor_in_client(self.hwnd);
 
-      if !SetForegroundWindow(self.hwnd).as_bool() {
+      if !self.is_drag_shelf() && !SetForegroundWindow(self.hwnd).as_bool()
+      {
         tracing::warn!("Overview could not take the foreground.");
       }
     }
@@ -601,7 +738,9 @@ impl Overview {
       .interaction
       .digit_workspaces
       .clone_from(&frame.digit_workspaces);
-    self.sync_backdrop(&frame, self.openness());
+    if !self.is_drag_shelf() {
+      self.sync_backdrop(&frame, self.openness());
+    }
 
     let is_restyled = old.style != frame.style;
     self.frame = Some(frame);
@@ -648,6 +787,7 @@ impl Overview {
     self.zoom = None;
     self.vsync = None;
     self.is_tracking_leave = false;
+    self.interaction.dragged_title = None;
   }
 
   fn sync_backdrop(&mut self, frame: &OverviewFrame, progress: f32) {
@@ -877,7 +1017,7 @@ impl Overview {
       OverviewLayoutMode::Shelf => shelf(
         &self.metrics,
         &slots,
-        self.interaction.staged,
+        (!self.is_drag_shelf()).then_some(self.interaction.staged),
         self.interaction.drop_target(),
         is_receiving,
       ),
@@ -918,7 +1058,11 @@ impl Overview {
 
   /// Creates, moves or drops the floating window's picture.
   fn sync_ghost(&mut self) {
-    let floating = self.interaction.floating();
+    // The window dragged onto the drag shelf is under the cursor itself.
+    let floating = self
+      .interaction
+      .floating()
+      .filter(|_| !self.is_drag_shelf());
     if self.ghost.as_ref().map(|ghost| ghost.hwnd) != floating {
       self.ghost = floating.and_then(|hwnd| self.create_ghost(hwnd));
     }
@@ -1441,6 +1585,17 @@ impl Overview {
     self.after_input(action);
   }
 
+  /// Shows a window dragged over the drag shelf where the WM says it is.
+  fn on_shelf_drag(&mut self, drag: &ShelfDrag) {
+    self.interaction.hover = drag.target;
+    self.interaction.drag = Some(Drag {
+      hwnd: drag.hwnd,
+      position: drag.position,
+      target: drag.target,
+    });
+    self.after_input(None);
+  }
+
   fn on_toggle(&mut self, layout: OverviewLayoutMode) {
     if self.interaction.layout == layout {
       self.after_input(Some(OverviewAction::Cancel));
@@ -1541,7 +1696,7 @@ impl Overview {
       WM_OPEN_OVERVIEW => {
         // SAFETY: Posted by `NativeOverview::open` with an owned payload.
         let open = unsafe { Box::from_raw(wparam.0 as *mut Open) };
-        self.open(open.session, open.frame, open.layout);
+        self.open(open.session, open.frame, open.layout, open.dragged);
       }
       WM_UPDATE_OVERVIEW => {
         // SAFETY: Posted by `NativeOverview::update` with an owned frame.
@@ -1563,6 +1718,13 @@ impl Overview {
       WM_ICON_READY => {
         self.icons += 1;
         self.refresh_pictures(false);
+      }
+      WM_DRAG_OVERVIEW => {
+        // SAFETY: Posted by `NativeOverview::drag_to` with an owned drag.
+        let drag = unsafe { Box::from_raw(wparam.0 as *mut ShelfDrag) };
+        if self.is_drag_shelf() && self.frame.is_some() {
+          self.on_shelf_drag(&drag);
+        }
       }
       WM_ACTIVATE => {
         // The low word of `wparam` is the activation state.

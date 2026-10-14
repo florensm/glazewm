@@ -125,6 +125,10 @@ pub(crate) struct Interaction {
   /// Card on the shelf's stage: the selected one, except while carrying,
   /// when it stays the one the window was lifted from.
   pub staged: usize,
+
+  /// Title of a window dragged in from outside, which has no card of its
+  /// own to find it on.
+  pub dragged_title: Option<String>,
 }
 
 impl Interaction {
@@ -156,6 +160,7 @@ impl Interaction {
       grid: GridCells::default(),
       row_selected: row_card(workspaces, selected, None).unwrap_or(0),
       staged: selected,
+      dragged_title: None,
     }
   }
 
@@ -834,10 +839,17 @@ impl Interaction {
     }
 
     if let Some(drag) = &self.drag {
-      return (
-        format!("drop \"{}\" on a workspace", title(Some(drag.hwnd))),
-        HintTone::Accent,
-      );
+      let title = find(workspaces, drag.hwnd)
+        .map(|(_, window)| window.title.clone())
+        .or_else(|| self.dragged_title.clone())
+        .unwrap_or_default();
+
+      let text = match drag.target.and_then(|index| workspaces.get(index))
+      {
+        Some(to) => format!("move \"{title}\" to {}", to.label),
+        None => format!("drop \"{title}\" on a workspace"),
+      };
+      return (text, HintTone::Accent);
     }
 
     match (self.mode, self.layout) {

@@ -578,6 +578,10 @@ pub struct OverviewConfig {
   /// Length of the zoom into the picked workspace when the overview
   /// closes; `0` closes it instantly.
   pub close_duration_ms: u32,
+
+  /// Whether dragging a window to the top edge of a monitor shows its
+  /// workspaces in a shelf there, to drop the window on one of them.
+  pub drag_shelf: bool,
 }
 
 impl Default for OverviewConfig {
@@ -602,6 +606,7 @@ impl Default for OverviewConfig {
       grid_columns: 5,
       open_duration_ms: 250,
       close_duration_ms: 200,
+      drag_shelf: true,
     }
   }
 }

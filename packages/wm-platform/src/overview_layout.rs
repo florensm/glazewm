@@ -626,6 +626,7 @@ const MAX_STAGE_SCALE: f32 = 1.8;
 
 /// Every card in a shelf along the top, and `staged` large on the stage
 /// below it, its place in the shelf left open so the order stays clear.
+/// With no `staged` card, there is only the shelf.
 ///
 /// `target`, the shelf card a window would be dropped on, grows about its
 /// own center, so the card under the cursor stays under it. With
@@ -633,14 +634,14 @@ const MAX_STAGE_SCALE: f32 = 1.8;
 pub(crate) fn shelf(
   metrics: &CardMetrics,
   slots: &[CardSlot],
-  staged: usize,
+  staged: Option<usize>,
   target: Option<usize>,
   is_receiving: bool,
 ) -> Targets {
   let margin = metrics.px(40.0);
   let top = metrics.px(20.0);
   let gap = metrics.spacing;
-  let target = target.filter(|target| *target != staged);
+  let target = target.filter(|target| Some(*target) != staged);
 
   #[allow(clippy::cast_precision_loss)]
   let gaps = gap * slots.len().saturating_sub(1) as f32;
@@ -694,7 +695,9 @@ pub(crate) fn shelf(
     };
   let stage_top = top + shelf_height + metrics.px(24.0);
   let stage_bottom = metrics.view.1 - metrics.px(56.0);
-  let staged_width = slots.get(staged).map_or(metrics.width, |s| s.width);
+  let staged_width = staged
+    .and_then(|staged| slots.get(staged))
+    .map_or(metrics.width, |slot| slot.width);
   let stage_scale = ((metrics.view.0 - 2.0 * margin) / staged_width)
     .min((stage_bottom - stage_top) / metrics.height)
     .clamp(0.1, MAX_STAGE_SCALE);
@@ -704,7 +707,7 @@ pub(crate) fn shelf(
     .iter()
     .enumerate()
     .map(|(index, slot)| {
-      if index == staged {
+      if Some(index) == staged {
         return Placement {
           cx: metrics.view.0 / 2.0,
           cy: stage_top + stage_height / 2.0,
@@ -727,16 +730,51 @@ pub(crate) fn shelf(
     .collect();
 
   let ghost_height = metrics.px(GHOST_SIZE.1);
+  let hint_y = if staged.is_some() {
+    stage_top + stage_height + metrics.px(16.0)
+  } else {
+    top + shelf_height + metrics.px(12.0)
+  };
 
   Targets {
     cards,
-    hint_y: stage_top + stage_height + metrics.px(16.0),
+    hint_y,
     // Just under the shelf, over the stage it was lifted from.
     park_bottom: top
       + metrics.height * scale * SHELF_TARGET_GROWTH
       + metrics.px(12.0)
       + ghost_height,
   }
+}
+
+/// What is under (`x`, `y`) on the shelf shown while a window is dragged
+/// to the top edge, with `target` grown: the card there, if any, and the
+/// bottom edge of the shelf with its hint line.
+///
+/// `cards` are each card's own metrics, wider for a wide workspace.
+pub(crate) fn drag_shelf_hit(
+  metrics: &CardMetrics,
+  cards: &[CardMetrics],
+  target: Option<usize>,
+  (x, y): (f32, f32),
+) -> (Option<usize>, f32) {
+  let slots = cards
+    .iter()
+    .map(|card| CardSlot::new(card, false))
+    .collect::<Vec<_>>();
+  let targets = shelf(metrics, &slots, None, target, true);
+
+  // Later cards stack above earlier ones, so they are hit first.
+  let hit = targets
+    .cards
+    .iter()
+    .zip(cards)
+    .enumerate()
+    .rev()
+    .find(|(_, (placement, card))| placement.rect(card).contains(x, y))
+    .map(|(index, _)| index);
+
+  (hit, targets.hint_y + metrics.px(20.0))
 }
 
 /// How a workspace's screen space maps onto its card at scale 1.
@@ -1038,9 +1076,9 @@ impl Spring {
 #[cfg(test)]
 mod tests {
   use super::{
-    carousel, cover_crop, ease_out_cubic, grid, shelf, Camera,
-    CardMetrics, CardSlot, CardView, GridCell, GridCells, RectF, Spring,
-    Tile, Zoom, MAX_STAGE_SCALE, SHELF_SCALE, SHELF_TARGET_GROWTH,
+    carousel, cover_crop, drag_shelf_hit, ease_out_cubic, grid, shelf,
+    Camera, CardMetrics, CardSlot, CardView, GridCell, GridCells, RectF,
+    Spring, Tile, Zoom, MAX_STAGE_SCALE, SHELF_SCALE, SHELF_TARGET_GROWTH,
   };
 
   fn metrics() -> CardMetrics {
@@ -1570,7 +1608,8 @@ mod tests {
   #[test]
   fn the_shelf_stages_a_card_below_the_others() {
     let metrics = metrics();
-    let targets = shelf(&metrics, &slots(&metrics, 5), 2, None, false);
+    let targets =
+      shelf(&metrics, &slots(&metrics, 5), Some(2), None, false);
     let rects = targets
       .cards
       .iter()
@@ -1601,8 +1640,8 @@ mod tests {
   fn a_drop_target_on_the_shelf_grows_about_its_center() {
     let metrics = metrics();
     let slots = slots(&metrics, 5);
-    let resting = shelf(&metrics, &slots, 2, None, true);
-    let targeted = shelf(&metrics, &slots, 2, Some(3), true);
+    let resting = shelf(&metrics, &slots, Some(2), None, true);
+    let targeted = shelf(&metrics, &slots, Some(2), Some(3), true);
 
     assert_close(targeted.cards[3].cx, resting.cards[3].cx);
     assert_close(
@@ -1618,8 +1657,8 @@ mod tests {
   fn the_stage_makes_room_for_a_growing_drop_target() {
     let metrics = metrics();
     let slots = slots(&metrics, 4);
-    let browsing = shelf(&metrics, &slots, 0, None, false);
-    let receiving = shelf(&metrics, &slots, 0, None, true);
+    let browsing = shelf(&metrics, &slots, Some(0), None, false);
+    let receiving = shelf(&metrics, &slots, Some(0), None, true);
     let grown_bottom = receiving.cards[1].rect(&metrics).y
       + metrics.height * SHELF_SCALE * SHELF_TARGET_GROWTH;
 
@@ -1633,7 +1672,8 @@ mod tests {
   #[test]
   fn a_crowded_shelf_shrinks_to_fit() {
     let metrics = metrics();
-    let targets = shelf(&metrics, &slots(&metrics, 14), 0, None, false);
+    let targets =
+      shelf(&metrics, &slots(&metrics, 14), Some(0), None, false);
     let rects = targets.cards[1..]
       .iter()
       .map(|card| card.rect(&metrics))
@@ -1642,5 +1682,30 @@ mod tests {
     assert!(targets.cards[1].scale < SHELF_SCALE);
     assert!(rects.first().unwrap().x >= 0.0);
     assert!(rects.last().unwrap().right() <= 1920.0);
+  }
+  #[test]
+  fn the_drag_shelf_is_all_shelf_and_finds_the_card_under_the_cursor() {
+    let metrics = metrics();
+    let cards = vec![metrics; 4];
+    let slots = slots(&metrics, 4);
+    let targets = shelf(&metrics, &slots, None, None, true);
+
+    for card in &targets.cards {
+      assert_close(card.scale, SHELF_SCALE);
+    }
+
+    let third = targets.cards[2].rect(&metrics);
+    let center = (third.x + third.w / 2.0, third.y + third.h / 2.0);
+    let (hit, bottom) = drag_shelf_hit(&metrics, &cards, None, center);
+    assert_eq!(hit, Some(2));
+    assert!(bottom > third.bottom());
+
+    // Grown, it is still under the cursor, and so are its neighbours'
+    // places beside it.
+    let (hit, _) = drag_shelf_hit(&metrics, &cards, Some(2), center);
+    assert_eq!(hit, Some(2));
+
+    let below = (center.0, bottom + 10.0);
+    assert_eq!(drag_shelf_hit(&metrics, &cards, None, below).0, None);
   }
 }

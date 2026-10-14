@@ -37,7 +37,9 @@ pub fn handle_window_moved_or_resized_end(
   config: &UserConfig,
 ) -> anyhow::Result<()> {
   #[cfg(target_os = "windows")]
-  crate::drop_indicator::hide_drop_indicator(state);
+  if end_drag_overlays(window, state, config)? {
+    return Ok(());
+  }
 
   let Some(active_drag) = window.active_drag() else {
     return Ok(());
@@ -174,6 +176,35 @@ pub fn handle_window_moved_or_resized_end(
   }
 
   Ok(())
+}
+
+/// Hides what showed during the drag of `window`, the drop indicator and
+/// the drag shelf, dropping the window on the shelf if it was moved onto
+/// it.
+///
+/// Returns whether it was dropped there.
+#[cfg(target_os = "windows")]
+fn end_drag_overlays(
+  window: &WindowContainer,
+  state: &mut WmState,
+  config: &UserConfig,
+) -> anyhow::Result<bool> {
+  crate::drop_indicator::hide_drop_indicator(state);
+
+  let is_move = window.active_drag().is_some_and(|drag| {
+    matches!(drag.operation, Some(ActiveDragOperation::Move))
+  });
+
+  if let WindowContainer::NonTilingWindow(window) = window {
+    if is_move
+      && crate::overview::drop_on_drag_shelf(window, state, config)?
+    {
+      return Ok(true);
+    }
+  }
+
+  crate::overview::hide_drag_shelf(state);
+  Ok(false)
 }
 
 /// Handles transition from temporary floating window to tiling window on

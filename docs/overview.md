@@ -152,6 +152,25 @@ screen; the others have nowhere on screen to come from, so they fade in
 with the zoom out and fade out with the zoom in. Picking a column out of
 view zooms into where the strip has scrolled to show it.
 
+## Drag shelf
+
+Dragging a window to the top edge of a monitor shows that monitor's
+workspaces in a shelf along the top, over the desktop, without the full
+overview. The card under the cursor grows and the line under the shelf
+says where the window would go; drop it on a card to move it to that
+workspace, in the state it had before the drag (a tiling window tiles
+there). Dropping it on the "+" card moves it to a new workspace, and on
+the special workspace's card, there.
+
+Moving the cursor back down past the shelf closes it, and the window drops
+in the layout as usual (see [Dragging windows](./layouts.md#dragging-windows));
+so does dropping it on its own workspace's card.
+
+The shelf never takes focus, so the drag carries on uninterrupted. Turn
+off Windows' own "snap layouts" bar for dragging to the top of the screen
+(Settings › System › Multitasking › Snap windows) so it doesn't show up
+there as well. Set `drag_shelf: false` to turn the shelf off.
+
 ## Config
 
 ```yaml
@@ -196,6 +215,10 @@ overview:
   # Length of the zoom into the picked workspace on close; 0 closes it
   # instantly.
   close_duration_ms: 200
+
+  # Show the drag shelf when a window is dragged to the top edge of a
+  # monitor (see below).
+  drag_shelf: true
 ```
 
 Colors take an optional alpha (`#rrggbbaa`). Every key is optional; the

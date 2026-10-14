@@ -4,11 +4,17 @@
 //!
 //! The overview is drawn and driven by `NativeOverview` on a thread of its
 //! own; the WM decides what it shows and carries out what is picked.
+//!
+//! Its shelf also shows on its own, over the desktop, while a window is
+//! dragged to the top edge of a monitor: the drag shelf, to drop the
+//! window on another workspace.
 
 use anyhow::Context;
 use tokio::sync::mpsc;
 use uuid::Uuid;
-use wm_common::{Layout, WindowState, WorkspaceConfig};
+use wm_common::{
+  ActiveDragOperation, Layout, WindowState, WorkspaceConfig,
+};
 use wm_platform::{
   Color, NativeOverview, OverviewAction, OverviewFrame,
   OverviewLayoutMode, OverviewStyle, OverviewWindow, OverviewWorkspace,
@@ -16,16 +22,24 @@ use wm_platform::{
 };
 
 use crate::{
+  commands::{
+    window::{move_window_to_workspace, update_window_state},
+    workspace::move_window_to_special_workspace,
+  },
   layout::scrolling,
   models::{
-    is_inactive_stack_child, Container, Monitor, WindowContainer,
-    Workspace, WorkspaceTarget,
+    is_inactive_stack_child, Container, Monitor, NonTilingWindow,
+    WindowContainer, Workspace, WorkspaceTarget,
   },
   tab_bars::{tab_frame, TabBarSettings},
   traits::{CommonGetters, PositionGetters, WindowGetters},
   user_config::UserConfig,
   wm_state::WmState,
 };
+
+/// How close to a monitor's top edge, in logical pixels, a dragged
+/// window's cursor opens the drag shelf.
+const DRAG_SHELF_EDGE: f32 = 8.0;
 
 /// The WM's side of the overview.
 pub struct Overview {
@@ -38,6 +52,9 @@ pub struct Overview {
   /// What was shown, from its close until the next sync hides it.
   closing: Option<OpenOverview>,
 
+  /// The drag shelf, while shown.
+  drag_shelf: Option<DragShelf>,
+
   /// Where the native overview sends user actions, with their session.
   action_tx: mpsc::UnboundedSender<(u64, OverviewAction)>,
 }
@@ -49,6 +66,18 @@ struct OpenOverview {
   accent: Color,
 }
 
+/// The drag shelf, shown over the desktop of one monitor while a window
+/// is dragged to its top edge.
+struct DragShelf {
+  monitor_id: Uuid,
+
+  /// Resolved once per open, since it can be read from a file.
+  accent: Color,
+
+  /// Handle of the dragged window, which its own card leaves out.
+  hwnd: isize,
+}
+
 impl Overview {
   pub fn new(
     action_tx: mpsc::UnboundedSender<(u64, OverviewAction)>,
@@ -57,12 +86,17 @@ impl Overview {
       native: None,
       open: None,
       closing: None,
+      drag_shelf: None,
       action_tx,
     }
   }
 
   pub fn is_open(&self) -> bool {
     self.open.is_some()
+  }
+
+  pub fn is_drag_shelf_open(&self) -> bool {
+    self.drag_shelf.is_some()
   }
 
   /// Session of the open overview, which its actions carry.
@@ -122,17 +156,13 @@ pub fn toggle_overview(
     .and_then(|focused| focused.monitor())
     .context("No focused monitor.")?;
 
+  hide_drag_shelf(state);
+
   let open = OpenOverview {
     monitor_id: monitor.id(),
-    accent: config
-      .value
-      .overview
-      .accent_color
-      .as_ref()
-      .unwrap_or(&config.value.window_effects.focused_window.border.color)
-      .resolve(),
+    accent: accent(config),
   };
-  let frame = overview_frame(state, &monitor, open.accent, config);
+  let frame = overview_frame(state, &monitor, open.accent, None, config);
 
   state.overview.native()?.open(frame, layout);
   state.overview.open = Some(open);
@@ -140,11 +170,184 @@ pub fn toggle_overview(
   Ok(())
 }
 
+/// Color of the overview's selection and highlights.
+fn accent(config: &UserConfig) -> Color {
+  config
+    .value
+    .overview
+    .accent_color
+    .as_ref()
+    .unwrap_or(&config.value.window_effects.focused_window.border.color)
+    .resolve()
+}
+
+/// Opens, follows or closes the drag shelf for `window` being dragged:
+/// opens it when the cursor reaches the top edge of a monitor, and closes
+/// it once the cursor leaves the shelf downward or for another monitor.
+///
+/// Called as a dragged window moves.
+pub fn sync_drag_shelf(
+  window: &WindowContainer,
+  state: &mut WmState,
+  config: &UserConfig,
+) -> anyhow::Result<()> {
+  let is_moving = window.active_drag().is_some_and(|drag| {
+    matches!(drag.operation, Some(ActiveDragOperation::Move))
+  }) && window.as_non_tiling_window().is_some();
+
+  if !config.value.overview.drag_shelf
+    || state.overview.is_open()
+    || !is_moving
+  {
+    hide_drag_shelf(state);
+    return Ok(());
+  }
+
+  let cursor = state.dispatcher.cursor_position()?;
+  let Some(monitor) = state.monitor_at_point(&cursor) else {
+    hide_drag_shelf(state);
+    return Ok(());
+  };
+  let hwnd = window.native().id().0;
+
+  let shown_here =
+    state.overview.drag_shelf.as_ref().is_some_and(|shelf| {
+      shelf.monitor_id == monitor.id() && shelf.hwnd == hwnd
+    });
+
+  if !shown_here {
+    hide_drag_shelf(state);
+
+    let properties = monitor.native_properties();
+    #[allow(clippy::cast_possible_truncation)]
+    let edge = (DRAG_SHELF_EDGE * properties.scale_factor).round() as i32;
+    if cursor.y > properties.working_area.top + edge {
+      return Ok(());
+    }
+
+    let shelf = DragShelf {
+      monitor_id: monitor.id(),
+      accent: accent(config),
+      hwnd,
+    };
+    let frame =
+      overview_frame(state, &monitor, shelf.accent, Some(hwnd), config);
+    let title = window.native_properties().title.trim().to_string();
+
+    state.overview.native()?.open_drag_shelf(frame, title);
+    state.overview.drag_shelf = Some(shelf);
+  }
+
+  let is_over_shelf = state.overview.native()?.drag_to(hwnd, &cursor);
+  if !is_over_shelf {
+    hide_drag_shelf(state);
+  }
+
+  Ok(())
+}
+
+/// Closes the drag shelf.
+pub fn hide_drag_shelf(state: &mut WmState) {
+  if state.overview.drag_shelf.take().is_some() {
+    if let Some(native) = &mut state.overview.native {
+      native.hide();
+    }
+  }
+}
+
+/// Moves `window`, whose drag just ended, to the workspace it was dropped
+/// on in the drag shelf, back in the state it had before the drag, and
+/// closes the shelf.
+///
+/// Returns whether it was dropped there; otherwise the drop is left to
+/// the usual handling.
+pub fn drop_on_drag_shelf(
+  window: &NonTilingWindow,
+  state: &mut WmState,
+  config: &UserConfig,
+) -> anyhow::Result<bool> {
+  let target = state
+    .overview
+    .drag_shelf
+    .as_ref()
+    .and(state.overview.native.as_ref())
+    .and_then(NativeOverview::drop_target);
+  hide_drag_shelf(state);
+
+  let Some(target) = target else {
+    return Ok(false);
+  };
+
+  let workspace = window.workspace().context("No workspace.")?;
+  if workspace.config().name == target {
+    return Ok(false);
+  }
+
+  let Some(drag) = window.active_drag() else {
+    return Ok(false);
+  };
+
+  tracing::info!(
+    "Window dropped on the drag shelf, for workspace '{target}'."
+  );
+
+  if config.is_special_workspace_name(&target) {
+    move_window_to_special_workspace(
+      window.clone().into(),
+      state,
+      config,
+    )?;
+  } else {
+    move_window_to_workspace(
+      window.clone().into(),
+      WorkspaceTarget::Name(target),
+      state,
+      config,
+    )?;
+  }
+
+  // A tiling window floats only for the drag.
+  let window = if drag.is_from_floating {
+    window.clone().into()
+  } else {
+    update_window_state(
+      window.clone().into(),
+      WindowState::Tiling,
+      state,
+      config,
+    )?
+  };
+
+  window.set_active_drag(None);
+  Ok(true)
+}
+
 /// Brings the native overview in line with the WM's state: hides it once
 /// closed, and shows workspaces and windows as they change while open.
 ///
 /// Called at the end of a platform sync, after focus has been synced.
 pub fn sync_overview(state: &mut WmState, config: &UserConfig) {
+  if let Some(shelf) = &state.overview.drag_shelf {
+    let (monitor_id, accent, hwnd) =
+      (shelf.monitor_id, shelf.accent, shelf.hwnd);
+    let monitor = state
+      .monitors()
+      .into_iter()
+      .find(|monitor| monitor.id() == monitor_id);
+
+    match monitor {
+      Some(monitor) => {
+        let frame =
+          overview_frame(state, &monitor, accent, Some(hwnd), config);
+        if let Some(native) = &mut state.overview.native {
+          native.update(frame);
+        }
+      }
+      None => hide_drag_shelf(state),
+    }
+    return;
+  }
+
   let is_open = state.overview.open.is_some();
   let shown = state
     .overview
@@ -159,7 +362,7 @@ pub fn sync_overview(state: &mut WmState, config: &UserConfig) {
       .into_iter()
       .find(|monitor| monitor.id() == shown.monitor_id)?;
 
-    Some(overview_frame(state, &monitor, shown.accent, config))
+    Some(overview_frame(state, &monitor, shown.accent, None, config))
   });
 
   let overview = &mut state.overview;
@@ -182,11 +385,13 @@ pub fn sync_overview(state: &mut WmState, config: &UserConfig) {
   }
 }
 
-/// What the overview shows for `monitor`.
+/// What the overview shows for `monitor`, leaving out the window
+/// `dragged` onto it from outside.
 fn overview_frame(
   state: &WmState,
   monitor: &Monitor,
   accent: Color,
+  dragged: Option<isize>,
   config: &UserConfig,
 ) -> OverviewFrame {
   let properties = monitor.native_properties();
@@ -202,7 +407,14 @@ fn overview_frame(
     .iter()
     .filter(|workspace| !workspace.is_special())
     .map(|workspace| {
-      workspace_card(state, workspace, area, focused_workspace, config)
+      workspace_card(
+        state,
+        workspace,
+        area,
+        focused_workspace,
+        dragged,
+        config,
+      )
     })
     .collect::<Vec<_>>();
 
@@ -211,6 +423,7 @@ fn overview_frame(
     state,
     area,
     focused_workspace,
+    dragged,
     config,
   ));
 
@@ -242,15 +455,18 @@ fn overview_frame(
   }
 }
 
-/// `workspace`'s card, for a monitor with working `area`.
+/// `workspace`'s card, for a monitor with working `area`, without the
+/// window `dragged`.
 fn workspace_card(
   state: &WmState,
   workspace: &Workspace,
   area: &Rect,
   focused_workspace: Option<Uuid>,
+  dragged: Option<isize>,
   config: &UserConfig,
 ) -> OverviewWorkspace {
   let workspace_config = workspace.config();
+  let is_shown = |hwnd: isize| Some(hwnd) != dragged;
 
   OverviewWorkspace {
     label: workspace_label(&workspace_config),
@@ -262,8 +478,12 @@ fn workspace_card(
     windows: overview_windows(workspace)
       .iter()
       .map(overview_window)
+      .filter(|window| is_shown(window.hwnd))
       .collect(),
-    tab_bars: workspace_tab_bars(state, workspace, config),
+    tab_bars: workspace_tab_bars(state, workspace, config)
+      .into_iter()
+      .filter(|bar| is_shown(bar.anchor))
+      .collect(),
   }
 }
 
@@ -273,6 +493,7 @@ fn special_workspace(
   state: &WmState,
   area: &Rect,
   focused_workspace: Option<Uuid>,
+  dragged: Option<isize>,
   config: &UserConfig,
 ) -> OverviewWorkspace {
   let special = state.workspaces().into_iter().find(Workspace::is_special);
@@ -298,6 +519,7 @@ fn special_workspace(
     &workspace,
     &own_area,
     focused_workspace,
+    dragged,
     config,
   );
   translate_card(
@@ -570,7 +792,7 @@ mod tests {
     set_focused_descendant(&first.into(), None);
 
     let frame = |monitor: &Monitor| {
-      overview_frame(&state, monitor, Color::from_abgr(0), &config)
+      overview_frame(&state, monitor, Color::from_abgr(0), None, &config)
     };
 
     for monitor in [&left, &right] {
@@ -620,7 +842,7 @@ mod tests {
     set_focused_descendant(&first.into(), None);
 
     let frame =
-      overview_frame(&state, &monitor, Color::from_abgr(0), &config);
+      overview_frame(&state, &monitor, Color::from_abgr(0), None, &config);
     let last = frame.workspaces.last().expect("cards");
 
     assert!(last.is_special && !last.is_new && last.windows.is_empty());

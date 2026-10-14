@@ -117,6 +117,7 @@ pub fn unmanage_window(
     // A window closed mid-drag never ends its drag.
     if window.active_drag().is_some() {
       crate::drop_indicator::hide_drop_indicator(state);
+      crate::overview::hide_drag_shelf(state);
     }
   }
 

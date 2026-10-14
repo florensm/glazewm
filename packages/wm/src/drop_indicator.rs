@@ -84,7 +84,10 @@ fn drop_preview(
   state: &WmState,
   config: &UserConfig,
 ) -> anyhow::Result<Option<(Rect, Rect)>> {
-  if !config.value.window_behavior.drop_indicator.enabled {
+  // Over the drag shelf, the window goes to a workspace, not a spot.
+  if !config.value.window_behavior.drop_indicator.enabled
+    || state.overview.is_drag_shelf_open()
+  {
     return Ok(None);
   }
 
