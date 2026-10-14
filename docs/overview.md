@@ -92,8 +92,9 @@ shows "Drop windows here".
 
 - `s` works like a digit key for it: switch to it, send the selected
   window there, or drop the carried window there. Digits going by the
-  cards' positions skip it. Moving down from the last row, or right past
-  the last card, selects it.
+  cards' positions skip it. `↓` (or `j`) moves down onto it from the
+  carousel or the grid's last row, and `↑` goes back to the card it came
+  from; `←` `→`, `Home`, `End` and the wheel stay in the row above it.
 - Picking it, or dropping a window on it, works like
   `focus --special-workspace` and `move --special-workspace`: picking it
   summons it to the overview's monitor.

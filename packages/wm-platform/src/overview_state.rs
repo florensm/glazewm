@@ -116,6 +116,10 @@ pub(crate) struct Interaction {
 
   /// Where the grid puts each card, for moving a row up or down.
   pub grid: GridCells,
+
+  /// Card selected before moving down to the special workspace's dock,
+  /// which moving up goes back to.
+  above_dock: Option<usize>,
 }
 
 impl Interaction {
@@ -143,6 +147,7 @@ impl Interaction {
       drag_threshold,
       digit_workspaces: Vec::new(),
       grid: GridCells::default(),
+      above_dock: None,
     }
   }
 
@@ -432,10 +437,37 @@ impl Interaction {
     }
   }
 
+  /// Moves along the row of workspaces, which the special workspace's
+  /// dock below it isn't part of; from the dock, back to the row.
   fn step(&mut self, delta: isize, workspaces: &[OverviewWorkspace]) {
-    let last = workspaces.len().saturating_sub(1);
-    let index = self.selected.saturating_add_signed(delta).min(last);
-    self.select(index);
+    if is_special(workspaces, self.selected) {
+      if let Some(index) = self.leave_dock(workspaces) {
+        self.select(index);
+      }
+      return;
+    }
+
+    let row = row_indices(workspaces);
+    let Some(position) = row.iter().position(|i| *i == self.selected)
+    else {
+      return;
+    };
+    let position = position
+      .saturating_add_signed(delta)
+      .min(row.len().saturating_sub(1));
+    self.select(row[position]);
+  }
+
+  /// The card to go back to from the dock.
+  fn leave_dock(
+    &mut self,
+    workspaces: &[OverviewWorkspace],
+  ) -> Option<usize> {
+    self
+      .above_dock
+      .take()
+      .filter(|index| *index < workspaces.len())
+      .or_else(|| row_indices(workspaces).last().copied())
   }
 
   fn horizontal(
@@ -453,12 +485,37 @@ impl Interaction {
   fn vertical(&mut self, delta: isize, workspaces: &[OverviewWorkspace]) {
     if self.mode == Mode::Windows {
       self.step_window(Axis::Down, delta, workspaces);
-    } else if self.layout == OverviewLayoutMode::Grid {
-      if let Some(index) =
-        self.grid.vertical_neighbour(self.selected, delta)
-      {
-        self.select(index);
+      return;
+    }
+
+    let is_on_dock = is_special(workspaces, self.selected);
+    let dock =
+      workspaces.iter().position(|workspace| workspace.is_special);
+
+    let target = match (is_on_dock, delta < 0) {
+      // Up from the dock: back to where it was entered from.
+      (true, true) => self.leave_dock(workspaces),
+      (true, false) => None,
+      // Down onto the dock, below the carousel or the grid's last row.
+      (false, false) => match self.layout {
+        OverviewLayoutMode::Carousel => dock,
+        OverviewLayoutMode::Grid => {
+          self.grid.vertical_neighbour(self.selected, delta)
+        }
+      },
+      (false, true) => match self.layout {
+        OverviewLayoutMode::Carousel => None,
+        OverviewLayoutMode::Grid => {
+          self.grid.vertical_neighbour(self.selected, delta)
+        }
+      },
+    };
+
+    if let Some(index) = target {
+      if !is_on_dock && is_special(workspaces, index) {
+        self.above_dock = Some(self.selected);
       }
+      self.select(index);
     }
   }
 
@@ -477,8 +534,11 @@ impl Interaction {
       };
       self.selected_window = window.map(|window| window.hwnd);
     } else {
-      let last = workspaces.len().saturating_sub(1);
-      self.select(if is_last { last } else { 0 });
+      let row = row_indices(workspaces);
+      let index = if is_last { row.last() } else { row.first() };
+      if let Some(index) = index {
+        self.select(*index);
+      }
     }
   }
 
@@ -854,6 +914,23 @@ fn match_score(window: &OverviewWindow, query: &str) -> Option<usize> {
     .into_iter()
     .filter_map(|text| text.to_lowercase().find(&query))
     .min()
+}
+
+/// Whether card `index` is the special workspace's, docked below the rest.
+fn is_special(workspaces: &[OverviewWorkspace], index: usize) -> bool {
+  workspaces
+    .get(index)
+    .is_some_and(|workspace| workspace.is_special)
+}
+
+/// The cards in the row (or grid), i.e. all but the special workspace's.
+fn row_indices(workspaces: &[OverviewWorkspace]) -> Vec<usize> {
+  workspaces
+    .iter()
+    .enumerate()
+    .filter(|(_, workspace)| !workspace.is_special)
+    .map(|(index, _)| index)
+    .collect()
 }
 
 #[cfg(test)]
@@ -1525,5 +1602,70 @@ mod tests {
       Interaction::new(&workspaces, OverviewLayoutMode::Carousel, 6.0);
 
     assert!(state.hint(&workspaces).0.contains("s special"));
+  }
+
+  #[test]
+  fn the_dock_is_below_the_row_not_at_its_end() {
+    let workspaces = with_special();
+    let press = |state: &mut Interaction, keys: &[Key]| {
+      keys
+        .iter()
+        .fold(None, |_, key| state.key(*key, &workspaces))
+    };
+
+    for layout in [OverviewLayoutMode::Carousel, OverviewLayoutMode::Grid]
+    {
+      let mut state = Interaction::new(&workspaces, layout, 6.0);
+      if layout == OverviewLayoutMode::Grid {
+        state.grid = GridCells::new(
+          &CardMetrics::new(1920.0, 1080.0, 1.0),
+          &workspaces
+            .iter()
+            .map(|w| {
+              CardSlot::new(
+                &CardMetrics::new(1920.0, 1080.0, 1.0),
+                w.is_special,
+              )
+            })
+            .collect::<Vec<_>>(),
+          5,
+        );
+      }
+
+      press(&mut state, &[Key::Right, Key::Right, Key::Right]);
+      assert_eq!(state.selected, 2, "left/right stay in the row");
+      press(&mut state, &[Key::End]);
+      assert_eq!(state.selected, 2, "the row's end, not the dock");
+
+      press(&mut state, &[Key::Home, Key::Down]);
+      assert_eq!(state.selected, 3, "down goes to the dock");
+      press(&mut state, &[Key::Down]);
+      assert_eq!(state.selected, 3);
+      press(&mut state, &[Key::Up]);
+      assert_eq!(state.selected, 0, "up goes back where it came from");
+
+      press(&mut state, &[Key::Down, Key::Right]);
+      assert_eq!(state.selected, 0, "sideways leaves the dock too");
+    }
+  }
+
+  #[test]
+  fn a_carried_window_drops_on_the_dock_below() {
+    let workspaces = with_special();
+    let mut state =
+      Interaction::new(&workspaces, OverviewLayoutMode::Carousel, 6.0);
+    let press = |state: &mut Interaction, keys: &[Key]| {
+      keys
+        .iter()
+        .fold(None, |_, key| state.key(*key, &workspaces))
+    };
+
+    assert_eq!(
+      press(&mut state, &[Key::Space, Key::Space, Key::Down, Key::Space]),
+      Some(OverviewAction::MoveWindow {
+        hwnd: 21,
+        workspace: "special".to_string(),
+      })
+    );
   }
 }
