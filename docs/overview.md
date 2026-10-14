@@ -83,15 +83,17 @@ window, a search picks the workspace to drop it on.
 ### Special workspace
 
 The [special workspace](./special-workspace.md) has a card on every
-monitor's overview, wherever it is: after the other workspaces (and the
-**+** card), set apart with extra room, in a row of its own at the bottom
-of the grid. It is tinted with the accent color and marked with a diamond
-before its name. While it is inactive or empty, its card shows "Drop
-windows here".
+monitor's overview, wherever it is: docked at the bottom edge, below the
+carousel or the grid, apart from the other workspaces. It is tinted with
+the accent color and marked with a diamond before its name. While a
+window is carried (`Space`) or dragged, the dock grows and lights up so
+it is easy to drop the window on. While it is inactive or empty, its card
+shows "Drop windows here".
 
 - `s` works like a digit key for it: switch to it, send the selected
   window there, or drop the carried window there. Digits going by the
-  cards' positions skip it.
+  cards' positions skip it. Moving down from the last row, or right past
+  the last card, selects it.
 - Picking it, or dropping a window on it, works like
   `focus --special-workspace` and `move --special-workspace`: picking it
   summons it to the overview's monitor.

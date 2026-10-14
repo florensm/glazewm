@@ -59,6 +59,10 @@ pub(crate) struct CardPicture {
   /// Whether it is the special workspace's card, tinted with the accent.
   pub is_special: bool,
 
+  /// Whether a window is carried or dragged, which the special
+  /// workspace's card invites to be dropped on.
+  pub is_receiving: bool,
+
   pub is_hovered: bool,
   pub is_drop_target: bool,
   pub is_selected: bool,
@@ -153,8 +157,16 @@ pub(crate) fn draw_card(
   let card = Rect::from_xy(0, 0, surface.width, surface.height);
   let radius = round(units.px(14.0));
 
+  let is_inviting = picture.is_special && picture.is_receiving;
+
   let (fill, border, border_width) = if picture.is_drop_target {
     (with_alpha(style.accent, 0.22), style.accent, 4.0)
+  } else if is_inviting {
+    (
+      with_alpha(style.accent, 0.15),
+      with_alpha(style.accent, 0.85),
+      2.5,
+    )
   } else if picture.is_focused {
     (with_alpha(style.accent, 0.12), style.accent, 2.0)
   } else if picture.is_hovered {
@@ -195,11 +207,12 @@ pub(crate) fn draw_card(
   }
 
   if picture.is_special && picture.tiles.is_empty() {
-    let color = if picture.is_drop_target || picture.is_selected {
-      style.accent
-    } else {
-      with_alpha(style.subtext, 0.6)
-    };
+    let color =
+      if picture.is_drop_target || picture.is_selected || is_inviting {
+        style.accent
+      } else {
+        with_alpha(style.subtext, 0.6)
+      };
     draw_text(
       surface,
       fonts.get(units.px(12.0), false),

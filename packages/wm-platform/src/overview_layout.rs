@@ -234,6 +234,10 @@ impl Placement {
 pub(crate) struct Targets {
   pub cards: Vec<Placement>,
   pub hint_y: f32,
+
+  /// Top edge of the special workspace's docked card, or the bottom of
+  /// the overview when there is none.
+  pub dock_top: f32,
 }
 
 /// What the layouts need of a card.
@@ -255,51 +259,146 @@ impl CardSlot {
   }
 }
 
-/// Extra room before the special workspace's card, in card spacings.
-const SPECIAL_SPACING: f32 = 4.0;
+/// The special workspace's card at rest, relative to a normal card.
+const DOCK_SCALE: f32 = 0.42;
 
-/// One row of cards with the `selected` one in the middle at full size.
+/// The special workspace's card while a window is carried or dragged, so
+/// it is an easy place to drop it on.
+const DOCK_RECEIVING_SCALE: f32 = 0.78;
+
+/// The special workspace's card, docked at the bottom edge of the
+/// overview, apart from the other workspaces.
+pub(crate) fn dock(
+  metrics: &CardMetrics,
+  slot: CardSlot,
+  is_receiving: bool,
+) -> Placement {
+  let scale = if is_receiving {
+    DOCK_RECEIVING_SCALE
+  } else {
+    DOCK_SCALE
+  };
+  // A wide strip's card stays clear of the overview's sides.
+  let scale = scale.min((metrics.view.0 - metrics.px(160.0)) / slot.width);
+  let height = metrics.height * scale;
+
+  Placement {
+    cx: metrics.view.0 / 2.0,
+    cy: metrics.view.1 - metrics.px(28.0) - height / 2.0,
+    scale,
+  }
+}
+
+/// Room at the bottom of the overview that the dock can grow into.
+fn dock_reserve(metrics: &CardMetrics, slots: &[CardSlot]) -> f32 {
+  if slots.iter().any(|slot| slot.is_special) {
+    metrics.height * DOCK_RECEIVING_SCALE + metrics.px(28.0)
+  } else {
+    0.0
+  }
+}
+
+/// Places the special workspace's cards on the dock and the others with
+/// `place`, which gets only the others' slots and, as `selected`, the
+/// index among them to center on.
+fn with_dock(
+  metrics: &CardMetrics,
+  slots: &[CardSlot],
+  selected: usize,
+  is_receiving: bool,
+  place: impl FnOnce(&[CardSlot], usize) -> (Vec<Placement>, f32),
+) -> Targets {
+  let regular = slots
+    .iter()
+    .enumerate()
+    .filter(|(_, slot)| !slot.is_special)
+    .map(|(index, _)| index)
+    .collect::<Vec<_>>();
+
+  // With the special card selected, the row stays on its last card.
+  let regular_selected = regular
+    .iter()
+    .position(|index| *index >= selected)
+    .unwrap_or(regular.len())
+    .min(regular.len().saturating_sub(1));
+
+  let regular_slots = regular
+    .iter()
+    .map(|index| slots[*index])
+    .collect::<Vec<_>>();
+  let (placed, hint_y) = place(&regular_slots, regular_selected);
+
+  let mut dock_top = metrics.view.1;
+  let mut placed = placed.into_iter();
+  let cards = slots
+    .iter()
+    .map(|slot| {
+      if slot.is_special {
+        let placement = dock(metrics, *slot, is_receiving);
+        dock_top = dock_top.min(placement.rect(metrics).y);
+        placement
+      } else {
+        placed.next().unwrap_or(Placement {
+          cx: 0.0,
+          cy: 0.0,
+          scale: 0.0,
+        })
+      }
+    })
+    .collect();
+
+  Targets {
+    cards,
+    hint_y,
+    dock_top,
+  }
+}
+
+/// One row of cards with the `selected` one in the middle at full size,
+/// and the special workspace's card docked below.
 ///
 /// `zoomed` is for looking inside the selected workspace: it grows to
-/// 1.5x and its neighbours sit far back.
+/// 1.5x and its neighbours sit far back. `is_receiving` grows the dock
+/// while a window is carried or dragged.
 pub(crate) fn carousel(
   metrics: &CardMetrics,
   slots: &[CardSlot],
   selected: usize,
   zoomed: bool,
+  is_receiving: bool,
 ) -> Targets {
-  let selected = selected.min(slots.len().saturating_sub(1));
-  let scale_of = |index: usize| match (index == selected, zoomed) {
-    (true, true) => 1.5,
-    (true, false) => 1.0,
-    (false, true) => 0.32,
-    (false, false) => 0.66,
-  };
+  let reserve = dock_reserve(metrics, slots);
 
-  let mut starts = Vec::with_capacity(slots.len());
-  let mut x = 0.0;
-  for (index, slot) in slots.iter().enumerate() {
-    if index > 0 && slot.is_special {
-      x += metrics.spacing * (SPECIAL_SPACING - 1.0);
+  with_dock(metrics, slots, selected, is_receiving, |slots, selected| {
+    let scale_of = |index: usize| match (index == selected, zoomed) {
+      (true, true) => 1.5,
+      (true, false) => 1.0,
+      (false, true) => 0.32,
+      (false, false) => 0.66,
+    };
+
+    let mut starts = Vec::with_capacity(slots.len());
+    let mut x = 0.0;
+    for (index, slot) in slots.iter().enumerate() {
+      starts.push(x);
+      x += slot.width * scale_of(index) + metrics.spacing;
     }
-    starts.push(x);
-    x += slot.width * scale_of(index) + metrics.spacing;
-  }
 
-  let selected_width = slots.get(selected).map_or(0.0, |slot| slot.width)
-    * scale_of(selected);
-  let offset = metrics.view.0 / 2.0
-    - (starts.get(selected).copied().unwrap_or(0.0)
-      + selected_width / 2.0);
+    let selected_width =
+      slots.get(selected).map_or(0.0, |slot| slot.width)
+        * scale_of(selected);
+    let offset = metrics.view.0 / 2.0
+      - (starts.get(selected).copied().unwrap_or(0.0)
+        + selected_width / 2.0);
 
-  // The row grows with the zoom, so a busy workspace gets the room it
-  // needs.
-  let row_height = metrics.height * if zoomed { 1.5 } else { 1.02 };
-  let top = (metrics.view.1 - row_height - metrics.px(30.0)) / 2.0;
-  let cy = top + row_height / 2.0;
+    // The row grows with the zoom, so a busy workspace gets the room it
+    // needs, and is centered in what the dock leaves.
+    let row_height = metrics.height * if zoomed { 1.5 } else { 1.02 };
+    let top =
+      (metrics.view.1 - reserve - row_height - metrics.px(30.0)) / 2.0;
+    let cy = top + row_height / 2.0;
 
-  Targets {
-    cards: starts
+    let cards = starts
       .iter()
       .zip(slots)
       .enumerate()
@@ -311,9 +410,10 @@ pub(crate) fn carousel(
           scale,
         }
       })
-      .collect(),
-    hint_y: top + row_height + metrics.px(16.0),
-  }
+      .collect();
+
+    (cards, top + row_height + metrics.px(16.0))
+  })
 }
 
 /// A card's place in the grid, in columns.
@@ -324,9 +424,10 @@ pub(crate) struct GridCell {
   pub span: usize,
 }
 
-/// Where the grid puts each card: rows of up to `columns` columns, a
-/// widened card taking two of them, and the special workspace's card in a
-/// row of its own at the bottom, as wide as it needs.
+/// Where the grid puts each card: rows of up to `columns` columns and a
+/// widened card taking two of them. The special workspace's card, which
+/// is docked below the grid, counts as a row of its own after them, so
+/// moving down from the last row reaches it.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct GridCells {
   pub cells: Vec<GridCell>,
@@ -403,10 +504,6 @@ impl GridCells {
     }
   }
 
-  pub fn rows(&self) -> usize {
-    self.row_spans.len().max(1)
-  }
-
   /// Columns taken in `row`.
   pub fn taken(&self, row: usize) -> usize {
     self.row_spans.get(row).copied().unwrap_or(0)
@@ -446,55 +543,57 @@ impl GridCells {
   }
 }
 
-/// Every card at once, in `cells`, as large as fits.
+/// Every card at once, in `cells`, as large as fits above the special
+/// workspace's docked card.
 #[allow(clippy::cast_precision_loss)]
 pub(crate) fn grid(
   metrics: &CardMetrics,
   slots: &[CardSlot],
   cells: &GridCells,
+  is_receiving: bool,
 ) -> Targets {
-  let rows = cells.rows();
+  let regular_cells = slots
+    .iter()
+    .zip(&cells.cells)
+    .filter(|(slot, _)| !slot.is_special)
+    .map(|(_, cell)| *cell)
+    .collect::<Vec<_>>();
+  let rows = regular_cells
+    .iter()
+    .map(|cell| cell.row + 1)
+    .max()
+    .unwrap_or(1);
+
   let gap = metrics.px(14.0);
   let (columns_f, rows_f) = (cells.columns as f32, rows as f32);
 
-  // The special card's row is set apart by another gap.
-  let has_special = slots.iter().any(|slot| slot.is_special);
-  let special_gap = if has_special { gap } else { 0.0 };
-  let widest_special = slots
-    .iter()
-    .filter(|slot| slot.is_special)
-    .map(|slot| slot.width)
-    .fold(0.0, f32::max);
-
-  // Room is left for the hint line and a carried window parked at the
-  // bottom.
+  // Room is left for the hint line, a carried window parked above the
+  // dock, and the dock.
   let available_width = metrics.view.0 - metrics.px(120.0);
-  let available_height = metrics.view.1 - metrics.px(320.0);
+  let available_height =
+    metrics.view.1 - metrics.px(240.0) - dock_reserve(metrics, slots);
   let scale = ((available_width - gap * (columns_f - 1.0))
     / (columns_f * metrics.width))
     .min(
-      (available_height - gap * (rows_f - 1.0) - special_gap)
+      (available_height - gap * (rows_f - 1.0))
         / (rows_f * metrics.height),
     )
-    .min(if has_special {
-      available_width / widest_special
-    } else {
-      f32::INFINITY
-    })
     .clamp(0.1, 1.0);
 
   let (width, height) = (metrics.width * scale, metrics.height * scale);
   let total_width = columns_f * width + (columns_f - 1.0) * gap;
-  let total_height = rows_f * height + (rows_f - 1.0) * gap + special_gap;
+  let total_height = rows_f * height + (rows_f - 1.0) * gap;
   let left = (metrics.view.0 - total_width) / 2.0;
-  let top = (metrics.view.1 - total_height - metrics.px(30.0)) / 2.0;
+  let top = (metrics.view.1
+    - dock_reserve(metrics, slots)
+    - total_height
+    - metrics.px(30.0))
+    / 2.0;
 
-  Targets {
-    cards: slots
+  with_dock(metrics, slots, 0, is_receiving, |_, _| {
+    let cards = regular_cells
       .iter()
-      .zip(&cells.cells)
-      .map(|(slot, cell)| {
-        let extra = if slot.is_special { special_gap } else { 0.0 };
+      .map(|cell| {
         // A short row is centered rather than hanging off the left.
         let taken = cells.taken(cell.row) as f32;
         let row_left = left + (columns_f - taken) * (width + gap) / 2.0;
@@ -505,16 +604,14 @@ pub(crate) fn grid(
             + cell.column as f32 * (width + gap)
             + span * width / 2.0
             + (span - 1.0) * gap / 2.0,
-          cy: top
-            + cell.row as f32 * (height + gap)
-            + extra
-            + height / 2.0,
+          cy: top + cell.row as f32 * (height + gap) + height / 2.0,
           scale,
         }
       })
-      .collect(),
-    hint_y: top + total_height + metrics.px(16.0),
-  }
+      .collect();
+
+    (cards, top + total_height + metrics.px(16.0))
+  })
 }
 
 /// How a workspace's screen space maps onto its card at scale 1.
@@ -849,7 +946,7 @@ mod tests {
     columns: usize,
   ) -> Vec<RectF> {
     let cells = GridCells::new(metrics, slots, columns);
-    grid(metrics, slots, &cells)
+    grid(metrics, slots, &cells, false)
       .cards
       .iter()
       .zip(slots)
@@ -890,7 +987,7 @@ mod tests {
   #[test]
   fn carousel_centers_the_selected_card() {
     let metrics = metrics();
-    let targets = carousel(&metrics, &slots(&metrics, 5), 2, false);
+    let targets = carousel(&metrics, &slots(&metrics, 5), 2, false, false);
 
     assert_close(targets.cards[2].cx, 960.0);
     assert_close(targets.cards[2].scale, 1.0);
@@ -905,7 +1002,7 @@ mod tests {
   #[test]
   fn zoomed_carousel_grows_the_selected_card() {
     let metrics = metrics();
-    let targets = carousel(&metrics, &slots(&metrics, 3), 0, true);
+    let targets = carousel(&metrics, &slots(&metrics, 3), 0, true, false);
 
     assert_close(targets.cards[0].scale, 1.5);
     assert_close(targets.cards[1].scale, 0.32);
@@ -939,7 +1036,7 @@ mod tests {
     let metrics = metrics();
     let slots = slots(&metrics, 2);
     let cells = GridCells::new(&metrics, &slots, 5);
-    let targets = grid(&metrics, &slots, &cells);
+    let targets = grid(&metrics, &slots, &cells, false);
     assert!(targets.cards.iter().all(|card| card.scale <= 1.0));
   }
 
@@ -992,7 +1089,8 @@ mod tests {
   fn zoom_starts_with_windows_where_they_are() {
     let metrics = metrics();
     let view = RectF::new(0.0, 0.0, 1920.0, 1040.0);
-    let card = carousel(&metrics, &slots(&metrics, 3), 1, false).cards[1];
+    let card =
+      carousel(&metrics, &slots(&metrics, 3), 1, false, false).cards[1];
     let tiles = card.map(&metrics, &metrics.tile_area());
 
     let window = RectF::new(960.0, 0.0, 960.0, 520.0);
@@ -1131,7 +1229,8 @@ mod tests {
     let area = RectF::new(0.0, 0.0, 1920.0, 1040.0);
     let strip = RectF::new(-960.0, 0.0, 3840.0, 1040.0);
     let view = CardView::new(&metrics, &area, &strip);
-    let card = carousel(&metrics, &slots(&metrics, 1), 0, false).cards[0];
+    let card =
+      carousel(&metrics, &slots(&metrics, 1), 0, false, false).cards[0];
 
     let window = RectF::new(960.0, 0.0, 960.0, 1040.0);
     let on_card =
@@ -1216,7 +1315,7 @@ mod tests {
     slots[1] = wide_slot(&metrics, 1.5);
 
     for selected in 0..3 {
-      let targets = carousel(&metrics, &slots, selected, false);
+      let targets = carousel(&metrics, &slots, selected, false, false);
       assert_close(targets.cards[selected].cx, 960.0);
 
       let rects = targets
@@ -1232,19 +1331,41 @@ mod tests {
   }
 
   #[test]
-  fn carousel_sets_the_special_card_apart_at_the_end() {
+  fn the_special_card_docks_below_the_carousel_and_grows_to_receive() {
     let metrics = metrics();
     let mut slots = slots(&metrics, 3);
     slots[2].is_special = true;
 
-    let rects = carousel(&metrics, &slots, 0, false)
-      .cards
-      .iter()
-      .map(|card| card.rect(&metrics))
-      .collect::<Vec<_>>();
+    let rects = |is_receiving| {
+      carousel(&metrics, &slots, 0, false, is_receiving)
+        .cards
+        .iter()
+        .map(|card| card.rect(&metrics))
+        .collect::<Vec<_>>()
+    };
+    let (resting, receiving) = (rects(false), rects(true));
 
-    assert_close(rects[1].x - rects[0].right(), metrics.spacing);
-    assert!(rects[2].x - rects[1].right() > metrics.spacing * 2.0);
+    // The others stay a row of their own; the special card sits below
+    // them, centered.
+    assert_close(resting[1].x - resting[0].right(), metrics.spacing);
+    assert!(resting[2].y > resting[0].bottom());
+    assert_close(resting[2].x + resting[2].w / 2.0, 960.0);
+    assert!(resting[2].bottom() <= 1080.0);
+
+    assert!(receiving[2].w > resting[2].w * 1.5);
+    assert!(receiving[2].y > receiving[0].bottom());
+    assert!(receiving[2].bottom() <= 1080.0);
+  }
+
+  #[test]
+  fn selecting_the_special_card_keeps_the_row_in_place() {
+    let metrics = metrics();
+    let mut slots = slots(&metrics, 4);
+    slots[3].is_special = true;
+
+    let on_last = carousel(&metrics, &slots, 2, false, false);
+    let on_special = carousel(&metrics, &slots, 3, false, false);
+    assert_eq!(on_last.cards[..3], on_special.cards[..3]);
   }
 
   #[test]
@@ -1273,7 +1394,7 @@ mod tests {
   }
 
   #[test]
-  fn grid_puts_the_special_card_in_a_row_of_its_own() {
+  fn grid_docks_the_special_card_below_its_rows() {
     let metrics = metrics();
     let mut slots = slots(&metrics, 4);
     slots[3] = CardSlot {
@@ -1283,18 +1404,19 @@ mod tests {
 
     let cells = GridCells::new(&metrics, &slots, 5);
     assert_eq!(cells.columns, 3, "as many columns as normal cards");
-    assert_eq!(
-      cells.cells[3],
-      GridCell {
-        row: 1,
-        column: 0,
-        span: 3
-      }
-    );
+    assert_eq!(cells.cells[3].row, 1, "a row below, for moving down");
 
-    let rects = grid_of(&metrics, &slots, 5);
-    assert!(rects[3].y > rects[0].bottom());
-    assert_close(rects[3].x + rects[3].w / 2.0, 960.0);
+    for is_receiving in [false, true] {
+      let cards = grid(&metrics, &slots, &cells, is_receiving).cards;
+      let rects = cards
+        .iter()
+        .map(|card| card.rect(&metrics))
+        .collect::<Vec<_>>();
+      assert!(rects[3].y > rects[0].bottom());
+      assert_close(rects[3].x + rects[3].w / 2.0, 960.0);
+      assert!(rects[3].x >= 0.0 && rects[3].right() <= 1920.0);
+      assert!(rects[3].bottom() <= 1080.0);
+    }
   }
 
   #[test]

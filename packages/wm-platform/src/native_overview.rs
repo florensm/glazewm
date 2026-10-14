@@ -435,6 +435,10 @@ struct Overview {
   hint: Option<Picture>,
   hint_drawn: Option<(String, HintTone)>,
   hint_y: Spring,
+
+  /// Top edge of the special workspace's docked card, from the last
+  /// layout.
+  dock_top: f32,
   ghost: Option<Ghost>,
 
   /// The zoom out on open or into a card on close, and when it started,
@@ -483,6 +487,7 @@ impl Overview {
       hint: None,
       hint_drawn: None,
       hint_y: Spring::new(0.0, SETTLE_MS, 0.25),
+      dock_top: f32::INFINITY,
       ghost: None,
       zoom: None,
       last_tick: Instant::now(),
@@ -851,17 +856,22 @@ impl Overview {
   /// Points every card at where it belongs now.
   fn retarget(&mut self, snap: bool) {
     let slots = self.slots();
+    // The special workspace's dock grows while a window is carried or
+    // dragged, to be dropped on.
+    let is_receiving = self.interaction.floating().is_some();
     let targets = match self.interaction.layout {
       OverviewLayoutMode::Carousel => carousel(
         &self.metrics,
         &slots,
         self.interaction.selected,
         self.interaction.mode == Mode::Windows,
+        is_receiving,
       ),
       OverviewLayoutMode::Grid => {
-        grid(&self.metrics, &slots, &self.interaction.grid)
+        grid(&self.metrics, &slots, &self.interaction.grid, is_receiving)
       }
     };
+    self.dock_top = targets.dock_top;
 
     for (index, (card, target)) in
       self.cards.iter_mut().zip(&targets.cards).enumerate()
@@ -912,9 +922,10 @@ impl Overview {
         ghost.x.snap(drag.position.0 - width / 2.0);
         ghost.y.snap(drag.position.1 - height / 2.0);
       } else {
-        // Parked at the bottom while carrying.
+        // Parked at the bottom while carrying, above the dock.
         ghost.x.target = (view_width - width) / 2.0;
-        ghost.y.target = view_height - height - px(80.0);
+        ghost.y.target =
+          view_height.min(self.dock_top) - height - px(40.0);
       }
     }
   }
@@ -1141,6 +1152,7 @@ impl Overview {
       is_focused: workspace.is_some_and(|w| w.is_focused),
       is_new: workspace.is_some_and(|w| w.is_new),
       is_special: workspace.is_some_and(|w| w.is_special),
+      is_receiving: interaction.floating().is_some(),
       is_hovered: interaction.hover == Some(index),
       is_drop_target: interaction.is_drop_target(index),
       is_selected,
