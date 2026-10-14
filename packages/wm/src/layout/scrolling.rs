@@ -182,8 +182,7 @@ fn overflows_onto_other_monitor(rect: &Rect, monitor: &Monitor) -> bool {
 
   let others = monitor
     .parent()
-    .map(|root| root.children())
-    .unwrap_or_default()
+    .map_or_else(Default::default, |root| root.children())
     .into_iter()
     .filter_map(|child| child.as_monitor().cloned())
     .filter(|other| other.id() != monitor.id());

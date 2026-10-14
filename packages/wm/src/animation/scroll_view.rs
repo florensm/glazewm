@@ -16,8 +16,10 @@
 use std::{collections::HashMap, time::Instant};
 
 use uuid::Uuid;
-use wm_common::{Layout, WindowState};
-use wm_platform::{NativeWindowWindowsExt, Point, Rect, WindowPeek};
+use wm_common::{AnimationTypeConfig, Layout, WindowState};
+use wm_platform::{
+  CornerStyle, NativeWindowWindowsExt, Point, Rect, WindowPeek,
+};
 
 use super::state::WindowAnimationState;
 use crate::{
@@ -150,6 +152,75 @@ impl ScrollView {
   }
 }
 
+/// Settings shared by the peeks of one sync.
+struct PeekStyle<'a> {
+  opacity: u8,
+  corner_style: CornerStyle,
+  scroll_config: &'a AnimationTypeConfig,
+}
+
+impl ScrollView {
+  /// Draws `window` with a peek in `role`, going from `from` to `target`.
+  ///
+  /// Returns whether a new peek now covers a still-visible real window,
+  /// so it has to be composited before that window is cloaked.
+  fn upsert(
+    &mut self,
+    window: &WindowContainer,
+    from: &Rect,
+    target: Rect,
+    clip: &Rect,
+    role: Role,
+    style: &PeekStyle,
+  ) -> bool {
+    let is_moving = matches!(role, Role::Moving { .. });
+    let motion = WindowAnimationState::new_movement(
+      from.clone(),
+      target,
+      if is_moving {
+        style.scroll_config.duration_ms
+      } else {
+        0
+      },
+      style.scroll_config.easing.clone(),
+    );
+    if !is_moving {
+      motion.start_clock(Instant::now());
+    }
+
+    if let Some(entry) = self.entries.get_mut(&window.id()) {
+      entry.motion = motion;
+      entry.clip = clip.clone();
+      entry.role = role;
+      let rect = entry.motion.current_rect();
+      entry.place(&rect);
+      return false;
+    }
+
+    let Ok(peek) =
+      WindowPeek::new(&window.native(), from, &style.corner_style)
+        .inspect_err(|err| {
+          tracing::warn!("Failed to create a peek of {window}: {err}");
+        })
+    else {
+      return false;
+    };
+
+    let mut entry = Entry {
+      peek,
+      motion,
+      clip: clip.clone(),
+      opacity: style.opacity,
+      role,
+    };
+    let rect = entry.motion.current_rect();
+    entry.place(&rect);
+    self.entries.insert(window.id(), entry);
+
+    is_moving && !window.native().is_cloaked().unwrap_or(true)
+  }
+}
+
 /// Starts moving the columns of displayed scrolling layouts whose rects
 /// changed, and updates the peeks of the ones at rest.
 ///
@@ -177,6 +248,11 @@ pub fn sync_scroll_view(state: &mut WmState, config: &UserConfig) {
 
   let (opacity, corner_style, _, _) = surrogate_effects_for(false, config);
   let scroll_config = &config.value.animations.scroll;
+  let style = PeekStyle {
+    opacity,
+    corner_style,
+    scroll_config,
+  };
   let mut needs_flush = false;
   let mut started_moving = Vec::new();
 
@@ -243,52 +319,8 @@ pub fn sync_scroll_view(state: &mut WmState, config: &UserConfig) {
       }
 
       let is_moving = matches!(role, Role::Moving { .. });
-      let motion = WindowAnimationState::new_movement(
-        from.clone(),
-        target,
-        if is_moving {
-          scroll_config.duration_ms
-        } else {
-          0
-        },
-        scroll_config.easing.clone(),
-      );
-      if !is_moving {
-        motion.start_clock(Instant::now());
-      }
-
-      if let Some(entry) = view.entries.get_mut(&window.id()) {
-        entry.motion = motion;
-        entry.clip = clip.clone();
-        entry.role = role;
-        let rect = entry.motion.current_rect();
-        entry.place(&rect);
-      } else {
-        let Ok(peek) =
-          WindowPeek::new(&window.native(), &from, &corner_style)
-            .inspect_err(|err| {
-              tracing::warn!("Failed to create a peek of {window}: {err}");
-            })
-        else {
-          continue;
-        };
-
-        let mut entry = Entry {
-          peek,
-          motion,
-          clip: clip.clone(),
-          opacity,
-          role,
-        };
-        let rect = entry.motion.current_rect();
-        entry.place(&rect);
-
-        // A peek covering a still-visible real window has to be
-        // composited before that window is cloaked.
-        needs_flush |=
-          is_moving && !window.native().is_cloaked().unwrap_or(true);
-        view.entries.insert(window.id(), entry);
-      }
+      needs_flush |=
+        view.upsert(&window, &from, target, clip, role, &style);
 
       if is_moving {
         started_moving.push(window.id());
