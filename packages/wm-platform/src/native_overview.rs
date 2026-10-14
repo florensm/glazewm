@@ -1716,12 +1716,8 @@ mod tests {
     OverviewWorkspace {
       name: name.to_string(),
       label: name.to_string(),
-      is_focused: false,
-      is_new: false,
-      is_special: false,
       content_rect,
-      windows: vec![],
-      tab_bars: vec![],
+      ..OverviewWorkspace::default()
     }
   }
 

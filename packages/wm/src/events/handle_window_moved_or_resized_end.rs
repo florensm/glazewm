@@ -488,10 +488,7 @@ fn drop_position(mouse_pos: &Point, rect: &Rect) -> DropPosition {
 mod tests {
   use std::mem::ManuallyDrop;
 
-  use wm_common::{
-    ActiveDrag, FloatingStateConfig, GapsConfig, Layout, TilingDirection,
-    WindowState,
-  };
+  use wm_common::{ActiveDrag, FloatingStateConfig, Layout, WindowState};
   use wm_platform::{LengthValue, Point, Rect};
 
   use super::drop_as_tiling_window;
@@ -503,10 +500,14 @@ mod tests {
     events::handle_window_moved_or_resized::update_drag_state,
     layout::{is_hidden_in_layout, scrolling::follow_focus},
     models::{
-      Monitor, NonTilingWindow, SplitContainer, StackContainer,
-      TilingContainer, TilingWindow, WindowContainer, Workspace,
+      Monitor, NonTilingWindow, StackContainer, TilingContainer,
+      TilingWindow, WindowContainer, Workspace,
     },
-    test_utils::{mock_bounds, mock_working_area, MOCK_MONITOR_WIDTH},
+    test_utils::{
+      child_ids, mock_bounds, mock_config,
+      mock_gapped_column as vertical_split, mock_gapped_window as window,
+      mock_inner_gaps, mock_working_area, MOCK_MONITOR_WIDTH,
+    },
     traits::{
       CommonGetters, PositionGetters, TilingSizeGetters, WindowGetters,
     },
@@ -514,37 +515,18 @@ mod tests {
     wm_state::WmState,
   };
 
-  fn gaps() -> GapsConfig {
-    GapsConfig {
-      inner_gap: LengthValue::from_px(20),
-      ..GapsConfig::default()
-    }
-  }
-
+  /// Default config, with the windows' gaps.
   fn config() -> UserConfig {
-    let mut config =
-      UserConfig::from_parsed(wm_common::ParsedConfig::default());
-    config.value.gaps = gaps();
+    let mut config = mock_config();
+    config.value.gaps = mock_inner_gaps();
     config
-  }
-
-  fn window() -> TilingWindow {
-    TilingWindow::mock().gaps_config(gaps()).call()
-  }
-
-  fn vertical_split(rows: Vec<TilingContainer>) -> SplitContainer {
-    SplitContainer::mock()
-      .tiling_direction(TilingDirection::Vertical)
-      .gaps_config(gaps())
-      .tiling_containers(rows)
-      .call()
   }
 
   /// A scrolling workspace of `columns`, each half the 1680px width.
   fn scrolling(columns: Vec<TilingContainer>) -> Workspace {
     Workspace::mock()
       .layout(Layout::Scrolling)
-      .gaps_config(gaps())
+      .gaps_config(mock_inner_gaps())
       .tiling_containers(columns)
       .call()
   }
@@ -601,10 +583,6 @@ mod tests {
         .unwrap();
     dropped.set_active_drag(None);
     dropped
-  }
-
-  fn child_ids(container: &impl CommonGetters) -> Vec<uuid::Uuid> {
-    container.children().iter().map(CommonGetters::id).collect()
   }
 
   fn assert_size(container: &impl TilingSizeGetters, size: f32) {
@@ -808,7 +786,7 @@ mod tests {
     let (split_left, split_right) = (window(), window());
     let split = Workspace::mock()
       .name("2".into())
-      .gaps_config(gaps())
+      .gaps_config(mock_inner_gaps())
       .tiling_containers(vec![
         split_left.clone().into(),
         split_right.clone().into(),

@@ -1,11 +1,17 @@
-use std::str::FromStr;
-
-use anyhow::bail;
+use clap::ValueEnum;
 use serde::{Deserialize, Serialize};
 
 /// How a workspace arranges its tiling windows.
 #[derive(
-  Clone, Copy, Debug, Default, Deserialize, PartialEq, Eq, Serialize,
+  Clone,
+  Copy,
+  Debug,
+  Default,
+  Deserialize,
+  PartialEq,
+  Eq,
+  Serialize,
+  ValueEnum,
 )]
 #[serde(rename_all = "snake_case")]
 pub enum Layout {
@@ -17,25 +23,4 @@ pub enum Layout {
   Dwindle,
   /// Columns on a strip that scrolls horizontally past the monitor.
   Scrolling,
-}
-
-impl FromStr for Layout {
-  type Err = anyhow::Error;
-
-  /// Parses a layout name.
-  ///
-  /// Example:
-  /// ```
-  /// # use wm_common::Layout;
-  /// # use std::str::FromStr;
-  /// assert_eq!(Layout::from_str("dwindle").unwrap(), Layout::Dwindle);
-  /// ```
-  fn from_str(unparsed: &str) -> anyhow::Result<Self> {
-    match unparsed {
-      "split" => Ok(Self::Split),
-      "dwindle" => Ok(Self::Dwindle),
-      "scrolling" => Ok(Self::Scrolling),
-      _ => bail!("Not a valid layout: {}", unparsed),
-    }
-  }
 }

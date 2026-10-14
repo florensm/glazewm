@@ -182,7 +182,7 @@ impl CardMetrics {
 }
 
 /// Where a card sits: its center and scale.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub(crate) struct Placement {
   pub cx: f32,
   pub cy: f32,
@@ -337,11 +337,7 @@ fn with_dock(
         dock_top = dock_top.min(placement.rect(metrics).y);
         placement
       } else {
-        placed.next().unwrap_or(Placement {
-          cx: 0.0,
-          cy: 0.0,
-          scale: 0.0,
-        })
+        placed.next().unwrap_or_default()
       }
     })
     .collect();

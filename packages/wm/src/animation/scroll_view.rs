@@ -20,7 +20,7 @@ use std::{
 };
 
 use uuid::Uuid;
-use wm_common::{AnimationTypeConfig, DisplayState, Layout, WindowState};
+use wm_common::{DisplayState, Layout, WindowState};
 use wm_platform::{
   NativeWindowWindowsExt, Overlay, Point, Rect, SurrogateBatch,
   WindowPeek, HWND,
@@ -76,10 +76,7 @@ pub struct ScrollView {
 impl ScrollView {
   /// Whether `window_id`'s real window is cloaked while a peek draws it.
   pub fn owns_window(&self, window_id: &Uuid) -> bool {
-    self
-      .entries
-      .get(window_id)
-      .is_some_and(|entry| entry.role != Role::Peek)
+    self.owned_target(window_id).is_some()
   }
 
   /// Where `window_id`'s peek is headed while its real window is cloaked.
@@ -166,9 +163,7 @@ impl ScrollView {
         .map(|_| *id)
     })
   }
-}
 
-impl ScrollView {
   /// Draws `window` with a peek in `role`, going from `from` to `target`.
   ///
   /// Returns whether a new peek now covers a still-visible real window,
@@ -181,10 +176,10 @@ impl ScrollView {
     target: Rect,
     clip: &Rect,
     role: Role,
-    scroll_config: &AnimationTypeConfig,
     config: &UserConfig,
     is_focused: bool,
   ) -> bool {
+    let scroll_config = &config.value.animations.scroll;
     let is_moving = matches!(role, Role::Moving { .. });
     let in_flight = self
       .entries
@@ -361,7 +356,6 @@ pub fn sync_scroll_view(state: &mut WmState, config: &UserConfig) {
         target,
         clip,
         role,
-        scroll_config,
         config,
         focused_id == Some(window.id()),
       );

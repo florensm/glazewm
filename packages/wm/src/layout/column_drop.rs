@@ -165,34 +165,19 @@ fn index_beside(
 
 #[cfg(test)]
 mod tests {
-  use wm_common::{GapsConfig, Layout, TilingDirection};
-  use wm_platform::{LengthValue, Point};
+  use wm_common::{Layout, TilingDirection};
+  use wm_platform::Point;
 
   use super::{drop_into_column, drop_target, ColumnDrop};
   use crate::{
-    models::{
-      Monitor, SplitContainer, StackContainer, TilingContainer,
-      TilingWindow, Workspace,
+    models::{Monitor, StackContainer, TilingContainer, Workspace},
+    test_utils::{
+      child_ids, mock_config as config,
+      mock_gapped_column as vertical_split, mock_gapped_window as window,
     },
     traits::{CommonGetters, TilingDirectionGetters, TilingSizeGetters},
-    user_config::UserConfig,
     wm_state::WmState,
   };
-
-  fn config() -> UserConfig {
-    UserConfig::from_parsed(wm_common::ParsedConfig::default())
-  }
-
-  fn gaps() -> GapsConfig {
-    GapsConfig {
-      inner_gap: LengthValue::from_px(20),
-      ..GapsConfig::default()
-    }
-  }
-
-  fn window() -> TilingWindow {
-    TilingWindow::mock().gaps_config(gaps()).call()
-  }
 
   /// A scrolling workspace of half-width `columns`, 20px apart: x 0..830,
   /// 850..1680 and 1700..2530, each 1000px high.
@@ -205,14 +190,6 @@ mod tests {
       Monitor::mock().workspaces(vec![workspace.clone()]).call();
 
     (WmState::mock(vec![monitor]), workspace)
-  }
-
-  fn vertical_split(rows: Vec<TilingContainer>) -> SplitContainer {
-    SplitContainer::mock()
-      .tiling_direction(TilingDirection::Vertical)
-      .gaps_config(gaps())
-      .tiling_containers(rows)
-      .call()
   }
 
   fn target_at(workspace: &Workspace, x: i32, y: i32) -> ColumnDrop {
@@ -233,10 +210,6 @@ mod tests {
       ColumnDrop::NewColumn { anchor, is_before }
         if anchor.id() == id && *is_before == before
     ));
-  }
-
-  fn child_ids(container: &impl CommonGetters) -> Vec<uuid::Uuid> {
-    container.children().iter().map(CommonGetters::id).collect()
   }
 
   #[test]

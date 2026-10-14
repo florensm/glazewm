@@ -1,6 +1,7 @@
 use anyhow::Context;
 use wm_common::WindowState;
 
+use super::Insertion;
 use crate::{models::Container, traits::CommonGetters, wm_state::WmState};
 
 /// Gets where to insert a new window in the container tree.
@@ -17,13 +18,11 @@ use crate::{models::Container, traits::CommonGetters, wm_state::WmState};
 /// New windows are never inserted into an existing `StackContainer`
 /// automatically, unless configured. Stacking is otherwise an explicit
 /// user action, e.g. via `toggle-stack` or `stack-absorb-neighbor`.
-///
-/// Returns tuple of (parent container, insertion index).
 pub(super) fn insertion_target(
   window_state: &WindowState,
   joins_focused_stack: bool,
   state: &WmState,
-) -> anyhow::Result<(Container, usize)> {
+) -> anyhow::Result<Insertion> {
   let focused_container =
     state.focused_container().context("No focused container.")?;
 
@@ -46,17 +45,22 @@ pub(super) fn insertion_target(
       // Tile next to the sibling's stack rather than inside it, unless
       // configured otherwise.
       if parent.as_stack().is_some() && !joins_focused_stack {
-        let stack_parent = parent.parent().context("No parent.")?;
-        return Ok((stack_parent, parent.index() + 1));
+        return Ok(Insertion::At {
+          index: parent.index() + 1,
+          parent: parent.parent().context("No parent.")?,
+        });
       }
 
-      return Ok((parent, sibling.index() + 1));
+      return Ok(Insertion::At {
+        index: sibling.index() + 1,
+        parent,
+      });
     }
   }
 
   // Default to appending to workspace.
-  Ok((
-    focused_workspace.clone().into(),
-    focused_workspace.child_count(),
-  ))
+  Ok(Insertion::At {
+    index: focused_workspace.child_count(),
+    parent: focused_workspace.into(),
+  })
 }

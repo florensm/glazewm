@@ -70,7 +70,8 @@ pub fn insertion_target(
     .and_then(|focused| focused.workspace())
     .context("No focused workspace.")?;
 
-  let split = split_insertion(window_state, joins_focused_stack, state)?;
+  let split =
+    split::insertion_target(window_state, joins_focused_stack, state)?;
 
   if *window_state != WindowState::Tiling || split.stack().is_some() {
     return Ok(split);
@@ -85,17 +86,6 @@ pub fn insertion_target(
       state.dispatcher.cursor_position().ok(),
     ),
   }
-}
-
-fn split_insertion(
-  window_state: &WindowState,
-  joins_focused_stack: bool,
-  state: &WmState,
-) -> anyhow::Result<Insertion> {
-  let (parent, index) =
-    split::insertion_target(window_state, joins_focused_stack, state)?;
-
-  Ok(Insertion::At { parent, index })
 }
 
 /// Whether the layout keeps `window` hidden although its workspace is

@@ -24,7 +24,7 @@ pub struct OverviewFrame {
 }
 
 /// A workspace shown as a card in the overview.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct OverviewWorkspace {
   /// Name to address it by.
   pub name: String,

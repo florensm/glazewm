@@ -547,4 +547,21 @@ mod tests {
 
     assert_eq!(command, InvokeCommand::ForceManage);
   }
+
+  #[test]
+  fn parses_set_layout_command() {
+    let command =
+      InvokeCommand::try_parse_from(["", "set-layout", "scrolling"])
+        .expect("Failed to parse `set-layout` command.");
+
+    assert_eq!(
+      command,
+      InvokeCommand::SetLayout {
+        layout: Layout::Scrolling
+      }
+    );
+    assert!(
+      InvokeCommand::try_parse_from(["", "set-layout", "bsp"]).is_err()
+    );
+  }
 }

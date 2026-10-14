@@ -572,6 +572,7 @@ impl AnimationManager {
       slide_in_monitor_rects: HashMap::new(),
       #[cfg(target_os = "windows")]
       workspace_switch: None,
+      #[cfg(target_os = "windows")]
       scroll_view: super::scroll_view::ScrollView::default(),
       #[cfg(target_os = "windows")]
       pending_ws_cleanup: None,

@@ -167,17 +167,13 @@ mod tests {
     models::{
       Container, Monitor, SplitContainer, TilingWindow, Workspace,
     },
+    test_utils::mock_config as config,
     traits::{
       CommonGetters, PositionGetters, TilingDirectionGetters,
       TilingSizeGetters,
     },
-    user_config::UserConfig,
     wm_state::WmState,
   };
-
-  fn config() -> UserConfig {
-    UserConfig::from_parsed(wm_common::ParsedConfig::default())
-  }
 
   /// A landscape dwindle workspace with one window, focused.
   fn setup() -> (WmState, Workspace, TilingWindow) {

@@ -286,12 +286,9 @@ fn special_workspace(
     return OverviewWorkspace {
       label: workspace_label(&special_config),
       name: special_config.name,
-      is_focused: false,
-      is_new: false,
       is_special: true,
       content_rect: area.clone(),
-      windows: Vec::new(),
-      tab_bars: Vec::new(),
+      ..OverviewWorkspace::default()
     };
   };
 
@@ -360,12 +357,9 @@ fn new_workspace(
   Some(OverviewWorkspace {
     name,
     label,
-    is_focused: false,
     is_new: true,
-    is_special: false,
     content_rect: area.clone(),
-    windows: Vec::new(),
-    tab_bars: Vec::new(),
+    ..OverviewWorkspace::default()
   })
 }
 

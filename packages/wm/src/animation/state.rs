@@ -244,10 +244,9 @@ impl WindowAnimationState {
       deltas(&self.start_rect, &self.target_rect),
       deltas(current, target),
     );
-    let Some(axis) = (0..new.len()).max_by_key(|axis| new[*axis].abs())
-    else {
-      return 0.0;
-    };
+    let axis = (0..new.len())
+      .max_by_key(|axis| new[*axis].abs())
+      .unwrap_or(0);
     if new[axis] == 0 {
       return 0.0;
     }

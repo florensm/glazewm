@@ -4,9 +4,11 @@
 //! mock builders in the model modules.
 
 use bon::bon;
+use uuid::Uuid;
 use wm_common::{
-  FloatingStateConfig, GapsConfig, Layout, ScrollingLayoutConfig,
-  TabBarPosition, TilingDirection, WindowState, WorkspaceConfig,
+  FloatingStateConfig, GapsConfig, Layout, ParsedConfig,
+  ScrollingLayoutConfig, TabBarPosition, TilingDirection, WindowState,
+  WorkspaceConfig,
 };
 use wm_platform::{Display, LengthValue, NativeWindow, Rect, RectDelta};
 
@@ -17,7 +19,8 @@ use crate::{
     NonTilingWindow, SplitContainer, StackContainer, TilingContainer,
     TilingWindow, Workspace,
   },
-  traits::TilingSizeGetters,
+  traits::{CommonGetters, TilingSizeGetters},
+  user_config::UserConfig,
   wm_state::WmState,
 };
 
@@ -62,6 +65,38 @@ pub fn mock_workspace_configs(names: &[&str]) -> Vec<WorkspaceConfig> {
       layout: None,
     })
     .collect()
+}
+
+/// Config with every setting at its default.
+pub fn mock_config() -> UserConfig {
+  UserConfig::from_parsed(ParsedConfig::default())
+}
+
+/// Gaps with a 20px inner gap, so adjacent containers are told apart.
+pub fn mock_inner_gaps() -> GapsConfig {
+  GapsConfig {
+    inner_gap: LengthValue::from_px(20),
+    ..GapsConfig::default()
+  }
+}
+
+/// Tiling window with `mock_inner_gaps`.
+pub fn mock_gapped_window() -> TilingWindow {
+  TilingWindow::mock().gaps_config(mock_inner_gaps()).call()
+}
+
+/// Vertical split of `rows` with `mock_inner_gaps`.
+pub fn mock_gapped_column(rows: Vec<TilingContainer>) -> SplitContainer {
+  SplitContainer::mock()
+    .tiling_direction(TilingDirection::Vertical)
+    .gaps_config(mock_inner_gaps())
+    .tiling_containers(rows)
+    .call()
+}
+
+/// Ids of `container`'s children, in order.
+pub fn child_ids(container: &impl CommonGetters) -> Vec<Uuid> {
+  container.children().iter().map(CommonGetters::id).collect()
 }
 
 #[bon]

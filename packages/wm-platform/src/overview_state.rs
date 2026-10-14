@@ -150,7 +150,7 @@ impl Interaction {
       drag_threshold,
       digit_workspaces: Vec::new(),
       grid: GridCells::default(),
-      row_selected: row_card(workspaces, selected, None),
+      row_selected: row_card(workspaces, selected, None).unwrap_or(0),
     }
   }
 
@@ -171,7 +171,7 @@ impl Interaction {
       .unwrap_or(0);
     self.hover = self.hover.and_then(remap);
     self.row_selected =
-      row_card(new, self.selected, remap(self.row_selected));
+      row_card(new, self.selected, remap(self.row_selected)).unwrap_or(0);
 
     let exists = |hwnd: isize| find(new, hwnd).is_some();
 
@@ -442,14 +442,14 @@ impl Interaction {
     }
 
     self.row_selected =
-      row_card(workspaces, index, Some(self.row_selected));
+      row_card(workspaces, index, Some(self.row_selected)).unwrap_or(0);
   }
 
   /// Moves along the row of workspaces, which the special workspace's
   /// dock below it isn't part of; from the dock, back to the row.
   fn step(&mut self, delta: isize, workspaces: &[OverviewWorkspace]) {
     if is_special(workspaces, self.selected) {
-      if let Some(index) = self.leave_dock(workspaces) {
+      if let Some(index) = row_card(workspaces, self.row_selected, None) {
         self.select(index, workspaces);
       }
       return;
@@ -464,15 +464,6 @@ impl Interaction {
       .saturating_add_signed(delta)
       .min(row.len().saturating_sub(1));
     self.select(row[position], workspaces);
-  }
-
-  /// The card to go back to from the dock.
-  fn leave_dock(&self, workspaces: &[OverviewWorkspace]) -> Option<usize> {
-    Some(self.row_selected)
-      .filter(|index| {
-        *index < workspaces.len() && !is_special(workspaces, *index)
-      })
-      .or_else(|| row_indices(workspaces).first().copied())
   }
 
   fn horizontal(
@@ -493,27 +484,23 @@ impl Interaction {
       return;
     }
 
-    let is_on_dock = is_special(workspaces, self.selected);
-    let dock =
-      workspaces.iter().position(|workspace| workspace.is_special);
-
-    let target = match (is_on_dock, delta < 0) {
-      // Up from the dock: back to where it was entered from.
-      (true, true) => self.leave_dock(workspaces),
-      (true, false) => None,
-      // Down onto the dock, below the carousel or the grid's last row.
-      (false, false) => match self.layout {
-        OverviewLayoutMode::Carousel => dock,
+    // Up from the dock goes back to where it was entered from. Down onto
+    // the dock is from the carousel, or from the grid's last row, below
+    // which `GridCells` puts it.
+    let target = if is_special(workspaces, self.selected) {
+      (delta < 0)
+        .then(|| row_card(workspaces, self.row_selected, None))
+        .flatten()
+    } else {
+      match self.layout {
         OverviewLayoutMode::Grid => {
           self.grid.vertical_neighbour(self.selected, delta)
         }
-      },
-      (false, true) => match self.layout {
-        OverviewLayoutMode::Carousel => None,
-        OverviewLayoutMode::Grid => {
-          self.grid.vertical_neighbour(self.selected, delta)
-        }
-      },
+        OverviewLayoutMode::Carousel => workspaces
+          .iter()
+          .position(|workspace| workspace.is_special)
+          .filter(|_| delta > 0),
+      }
     };
 
     if let Some(index) = target {
@@ -920,12 +907,12 @@ fn match_score(window: &OverviewWindow, query: &str) -> Option<usize> {
 
 /// The row card to center the row on with card `selected` selected: that
 /// card, or for the special workspace's, `previous` (if still a row card)
-/// or else the first.
+/// or else the first. `None` when there are no row cards.
 fn row_card(
   workspaces: &[OverviewWorkspace],
   selected: usize,
   previous: Option<usize>,
-) -> usize {
+) -> Option<usize> {
   let is_row_card = |index: &usize| {
     *index < workspaces.len() && !is_special(workspaces, *index)
   };
@@ -934,7 +921,6 @@ fn row_card(
     .filter(is_row_card)
     .or_else(|| previous.filter(is_row_card))
     .or_else(|| row_indices(workspaces).first().copied())
-    .unwrap_or(0)
 }
 
 /// Whether card `index` is the special workspace's, docked below the rest.
@@ -980,43 +966,33 @@ mod tests {
   fn workspaces() -> Vec<OverviewWorkspace> {
     vec![
       OverviewWorkspace {
-        name: "1".to_string(),
-        label: "1".to_string(),
-        is_focused: false,
-        is_new: false,
-        is_special: false,
-        content_rect: Rect::from_xy(0, 0, 1920, 1000),
-        tab_bars: vec![],
         windows: vec![
           window(12, "Editor", Rect::from_xy(960, 0, 960, 1000)),
           window(11, "Terminal", Rect::from_xy(0, 0, 960, 1000)),
         ],
+        ..card("1")
       },
       OverviewWorkspace {
-        name: "2".to_string(),
-        label: "2".to_string(),
         is_focused: true,
-        is_new: false,
-        is_special: false,
-        content_rect: Rect::from_xy(0, 0, 1920, 1000),
-        tab_bars: vec![],
         windows: vec![window(
           21,
           "Browser",
           Rect::from_xy(0, 0, 1920, 1000),
         )],
+        ..card("2")
       },
-      OverviewWorkspace {
-        name: "3".to_string(),
-        label: "3".to_string(),
-        is_focused: false,
-        is_new: false,
-        is_special: false,
-        content_rect: Rect::from_xy(0, 0, 1920, 1000),
-        tab_bars: vec![],
-        windows: vec![],
-      },
+      card("3"),
     ]
+  }
+
+  /// An empty card for workspace `name`.
+  fn card(name: &str) -> OverviewWorkspace {
+    OverviewWorkspace {
+      name: name.to_string(),
+      label: name.to_string(),
+      content_rect: Rect::from_xy(0, 0, 1920, 1000),
+      ..OverviewWorkspace::default()
+    }
   }
 
   fn interaction() -> Interaction {
@@ -1163,14 +1139,8 @@ mod tests {
   fn a_new_workspace_is_picked_like_any_other() {
     let mut workspaces = workspaces();
     workspaces.push(OverviewWorkspace {
-      name: "4".to_string(),
-      label: "4".to_string(),
-      is_focused: false,
       is_new: true,
-      is_special: false,
-      content_rect: Rect::from_xy(0, 0, 1920, 1000),
-      windows: vec![],
-      tab_bars: vec![],
+      ..card("4")
     });
     let mut state =
       Interaction::new(&workspaces, OverviewLayoutMode::Carousel, 6.0);
@@ -1538,14 +1508,8 @@ mod tests {
   fn with_special() -> Vec<OverviewWorkspace> {
     let mut workspaces = workspaces();
     workspaces.push(OverviewWorkspace {
-      name: "special".to_string(),
-      label: "special".to_string(),
-      is_focused: false,
-      is_new: false,
       is_special: true,
-      content_rect: Rect::from_xy(0, 0, 1920, 1000),
-      windows: vec![],
-      tab_bars: vec![],
+      ..card("special")
     });
     workspaces
   }

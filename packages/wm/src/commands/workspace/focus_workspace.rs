@@ -170,11 +170,7 @@ fn workspace_switch_direction(
   focused_name: &str,
   config: &UserConfig,
 ) -> i32 {
-  match config.compare_workspaces(target_name, focused_name) {
-    std::cmp::Ordering::Greater => 1,
-    std::cmp::Ordering::Less => -1,
-    std::cmp::Ordering::Equal => 0,
-  }
+  config.compare_workspaces(target_name, focused_name) as i32
 }
 
 /// Computes the iris-wipe circle origin (screen pixels) for the configured

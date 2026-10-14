@@ -271,15 +271,10 @@ mod tests {
     },
     layout::{attach, insertion_target},
     models::{Monitor, SplitContainer, TilingWindow, Workspace},
-    test_utils::MOCK_MONITOR_WIDTH,
+    test_utils::{mock_config as config, MOCK_MONITOR_WIDTH},
     traits::{CommonGetters, PositionGetters, TilingSizeGetters},
-    user_config::UserConfig,
     wm_state::WmState,
   };
-
-  fn config() -> UserConfig {
-    UserConfig::from_parsed(wm_common::ParsedConfig::default())
-  }
 
   /// A scrolling workspace with three half-width columns, the first one
   /// focused.

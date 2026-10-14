@@ -878,22 +878,14 @@ impl NativeSurrogate {
     border_inset: RECT,
     opacity: u8,
   ) -> Option<Rect> {
-    let vis_left = logical.x().max(clip.x());
-    let vis_top = logical.y().max(clip.y());
-    let vis_right =
-      (logical.x() + logical.width()).min(clip.x() + clip.width());
-    let vis_bottom =
-      (logical.y() + logical.height()).min(clip.y() + clip.height());
-
-    if vis_left >= vis_right || vis_top >= vis_bottom {
+    let Some(visible) = logical.intersection(clip) else {
       self.set_visible(false);
       return None;
-    }
+    };
 
-    let src_left = vis_left - logical.x();
-    let src_top = vis_top - logical.y();
-    let width = vis_right - vis_left;
-    let height = vis_bottom - vis_top;
+    let src_left = visible.left - logical.left;
+    let src_top = visible.top - logical.top;
+    let (width, height) = (visible.width(), visible.height());
 
     // `rcSource` samples from the real window's coordinate space, so it
     // carries the same `border_inset` offset as the thumbnail
@@ -914,7 +906,6 @@ impl NativeSurrogate {
       },
     );
 
-    let visible = Rect::from_xy(vis_left, vis_top, width, height);
     if let Err(err) = self.reposition(&visible) {
       tracing::warn!("Surrogate clipped update failed: {err}.");
     }
