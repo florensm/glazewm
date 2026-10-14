@@ -32,7 +32,7 @@ there is nowhere to go.
 
 | Command | Behaviour |
 | --- | --- |
-| `toggle-overview` (`alt+o` in the sample config) | Open the overview as a carousel. While open, switch to the carousel, or close it if already showing it. |
+| `toggle-overview` (`alt+w` in the sample config) | Open the overview as a carousel. While open, switch to the carousel, or close it if already showing it. |
 | `toggle-overview --grid` | Same, for the grid. |
 
 ### Mouse
@@ -169,11 +169,8 @@ values above are the defaults.
 ```yaml
 keybindings:
   - commands: ["toggle-overview"]
-    bindings: ["alt+o"]
+    bindings: ["alt+w"]
 ```
-
-The sample config moves `resize --height +2%` from `alt+o` to `alt+shift+o`
-to make room for it.
 
 ## How it works
 

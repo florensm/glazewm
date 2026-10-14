@@ -494,6 +494,20 @@ layouts:
     # Width of a new column, as a percentage of the workspace or in pixels.
     column_width: "50%"
 
+# A scratch workspace for parking windows, shared by all monitors and kept
+# out of workspace cycling. `focus --special-workspace` summons it to the
+# focused monitor (and goes back from it); `move --special-workspace` sends
+# the focused window there (and back out).
+special_workspace:
+  # Name to address it by. Must not be numeric, nor a name in `workspaces`.
+  name: "special"
+
+  # Name shown for it, e.g. in the overview.
+  # display_name: "Scratch"
+
+  # Its layout: "scrolling" (default), "split" or "dwindle".
+  layout: "scrolling"
+
 workspaces:
   # A workspace can use its own layout, e.g. `layout: "scrolling"`.
   - name: "1"
@@ -673,7 +687,7 @@ keybindings:
   # Show the focused monitor's workspaces and their windows, to switch to
   # one or move windows between them.
   - commands: ["toggle-overview"]
-    bindings: ["alt+o"]
+    bindings: ["alt+w"]
 
   # Change the focused window to be floating.
   - commands: ["toggle-floating --centered"]
@@ -736,6 +750,14 @@ keybindings:
   # Focus the window that most recently asked for attention.
   - commands: ["focus --urgent-window"]
     bindings: ["alt+shift+u"]
+
+  # Summon the special workspace to the focused monitor, or go back from it.
+  - commands: ["focus --special-workspace"]
+    bindings: ["alt+oem_minus"]
+
+  # Move the focused window to the special workspace, or back out of it.
+  - commands: ["move --special-workspace"]
+    bindings: ["alt+shift+oem_minus"]
 
   # Change focus to a workspace defined in `workspaces` config.
   - commands: ["focus --workspace 1"]

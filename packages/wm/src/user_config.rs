@@ -588,6 +588,13 @@ mod tests {
         matches!(command, InvokeCommand::ToggleOverview { .. })
       })
     }));
+    assert_eq!(config.special_workspace.name, "special");
+    assert!(config.keybindings.iter().any(|keybinding| {
+      keybinding.commands.iter().any(|command| {
+        matches!(command, InvokeCommand::Focus(args) if args.special_workspace)
+      })
+    }));
+    UserConfig::validate(&config).expect("sample config should be valid");
   }
 
   /// `window_resize.style` defaults to `fill` and accepts `stretch`.
