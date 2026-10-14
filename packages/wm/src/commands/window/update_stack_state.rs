@@ -193,16 +193,12 @@ fn tile_stack(
     Some(target_index),
   )?;
 
-  #[allow(clippy::cast_precision_loss)]
   if let (Some(target), Ok(tiling_stack)) =
     (&insertion_target, stack.as_tiling_container())
   {
-    let size_scale = (target.prev_sibling_count + 1) as f32
-      / (tiling_stack.tiling_siblings().count() + 1) as f32;
-
     resize_tiling_container(
       &tiling_stack,
-      target.prev_tiling_size * size_scale,
+      target.restored_size(&tiling_stack),
     );
   }
 

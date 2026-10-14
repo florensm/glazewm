@@ -8,7 +8,7 @@
 //! add up to 1.
 
 use wm_common::Layout;
-use wm_platform::Rect;
+use wm_platform::{LengthUnit, LengthValue, Rect};
 
 use super::Insertion;
 use crate::{
@@ -21,10 +21,15 @@ use crate::{
 pub const MIN_COLUMN_SIZE: f32 = 0.1;
 
 /// The scrolling workspace that `container` is a column of, if any.
+///
+/// Only tiling containers are columns; a floating or fullscreen window of
+/// the workspace (e.g. one being dragged) is not on the strip.
 pub fn column_workspace(
   container: &impl CommonGetters,
 ) -> Option<Workspace> {
   container
+    .as_tiling_container()
+    .ok()?
     .parent()
     .and_then(|parent| parent.as_workspace().cloned())
     .filter(|workspace| workspace.layout() == Layout::Scrolling)
@@ -69,6 +74,28 @@ where
   ))
 }
 
+/// Size giving `column` a width of `width`; the inverse of `column_rect`.
+///
+/// A percentage is of the workspace width, as for `column_width`.
+pub fn column_size<T>(
+  column: &T,
+  workspace: &Workspace,
+  width: &LengthValue,
+) -> anyhow::Result<f32>
+where
+  T: TilingSizeGetters,
+{
+  if width.unit == LengthUnit::Percentage {
+    return Ok(width.amount);
+  }
+
+  let (gap, _) = column.inner_gaps()?;
+  let total = workspace.to_rect()?.width() + gap;
+
+  #[allow(clippy::cast_precision_loss)]
+  Ok((width.amount + gap as f32) / total as f32)
+}
+
 /// A new tiling window becomes a column right of the focused one.
 pub(super) fn insertion_target(workspace: &Workspace) -> Insertion {
   let index = focused_column(workspace)
@@ -100,8 +127,15 @@ pub fn follow_focus(workspace: &Workspace) -> anyhow::Result<bool> {
   let workspace_rect = workspace.to_rect()?;
   let offset = workspace.scroll_offset();
 
+  // A focused floating window (e.g. a tiling window being dragged) leaves
+  // the strip where it is, rather than scrolling to an older column.
+  let focused_column = workspace
+    .child_focus_order()
+    .next()
+    .and_then(|child| child.as_tiling_container().ok());
+
   let mut target = offset;
-  if let Some(column) = focused_column(workspace) {
+  if let Some(column) = focused_column {
     let rect = column.to_rect()?;
     let overflow_left = workspace_rect.x() - rect.x();
     let overflow_right = rect.x() + rect.width()

@@ -137,7 +137,9 @@ pub fn handle_window_moved_or_resized_end(
 
         // Window is a temporary floating window that should be
         // reverted back to tiling.
-        let window = drop_as_tiling_window(window, state, config)?;
+        let mouse_pos = state.dispatcher.cursor_position()?;
+        let window =
+          drop_as_tiling_window(window, &mouse_pos, state, config)?;
         window.set_active_drag(None);
       }
     }
@@ -175,10 +177,11 @@ pub fn handle_window_moved_or_resized_end(
 }
 
 /// Handles transition from temporary floating window to tiling window on
-/// drag end.
+/// drag end, with the cursor at `mouse_pos`.
 #[allow(clippy::too_many_lines)]
 fn drop_as_tiling_window(
   moved_window: &NonTilingWindow,
+  mouse_pos: &Point,
   state: &mut WmState,
   config: &UserConfig,
 ) -> anyhow::Result<WindowContainer> {
@@ -196,9 +199,8 @@ fn drop_as_tiling_window(
     .as_ref()
     .map_or(moved_window.id(), CommonGetters::id);
 
-  let mouse_pos = state.dispatcher.cursor_position()?;
   let mouse_workspace = state
-    .monitor_at_point(&mouse_pos)
+    .monitor_at_point(mouse_pos)
     .and_then(|monitor| monitor.displayed_workspace())
     .or_else(|| moved_window.workspace())
     .context("Couldn't find workspace for window drop.")?;
@@ -213,7 +215,7 @@ fn drop_as_tiling_window(
   // Decided on the columns as shown during the drag, before the window is
   // put back into the tree.
   let column_drop = match mouse_workspace.layout() {
-    Layout::Scrolling => drop_target(&mouse_workspace, &mouse_pos)?,
+    Layout::Scrolling => drop_target(&mouse_workspace, mouse_pos)?,
     Layout::Split | Layout::Dwindle => None,
   };
 
@@ -241,7 +243,7 @@ fn drop_as_tiling_window(
   // Get the workspace, split containers, and other windows under the
   // dragged window.
   let containers_at_pos = state
-    .containers_at_point(&mouse_workspace.clone().into(), &mouse_pos)
+    .containers_at_point(&mouse_workspace.clone().into(), mouse_pos)
     .into_iter()
     .filter(|container| {
       !container
@@ -292,8 +294,8 @@ fn drop_as_tiling_window(
     .filter_map(|container| container.as_tiling_container().ok())
     .try_fold(None, |acc: Option<TilingContainer>, container| match acc {
       Some(acc) => {
-        let is_nearer = acc.to_rect()?.distance_to_point(&mouse_pos)
-          < container.to_rect()?.distance_to_point(&mouse_pos);
+        let is_nearer = acc.to_rect()?.distance_to_point(mouse_pos)
+          < container.to_rect()?.distance_to_point(mouse_pos);
 
         anyhow::Ok(Some(if is_nearer { acc } else { container }))
       }
@@ -303,7 +305,7 @@ fn drop_as_tiling_window(
 
   let tiling_direction = target_parent.tiling_direction();
   let drop_position =
-    drop_position(&mouse_pos, &nearest_container.to_rect()?);
+    drop_position(mouse_pos, &nearest_container.to_rect()?);
 
   let moved_window = update_window_state(
     moved_window.clone().into(),
@@ -479,5 +481,374 @@ fn drop_position(mouse_pos: &Point, rect: &Rect) -> DropPosition {
     } else {
       DropPosition::Top
     }
+  }
+}
+
+#[cfg(test)]
+mod tests {
+  use std::mem::ManuallyDrop;
+
+  use wm_common::{
+    ActiveDrag, FloatingStateConfig, GapsConfig, Layout, TilingDirection,
+    WindowState,
+  };
+  use wm_platform::{LengthValue, Point, Rect};
+
+  use super::drop_as_tiling_window;
+  use crate::{
+    commands::{
+      container::{attach_container, set_focused_descendant},
+      window::{set_window_size, update_window_state},
+    },
+    events::handle_window_moved_or_resized::update_drag_state,
+    layout::{is_hidden_in_layout, scrolling::follow_focus},
+    models::{
+      Monitor, NonTilingWindow, SplitContainer, StackContainer,
+      TilingContainer, TilingWindow, WindowContainer, Workspace,
+    },
+    test_utils::{mock_bounds, mock_working_area, MOCK_MONITOR_WIDTH},
+    traits::{
+      CommonGetters, PositionGetters, TilingSizeGetters, WindowGetters,
+    },
+    user_config::UserConfig,
+    wm_state::WmState,
+  };
+
+  fn gaps() -> GapsConfig {
+    GapsConfig {
+      inner_gap: LengthValue::from_px(20),
+      ..GapsConfig::default()
+    }
+  }
+
+  fn config() -> UserConfig {
+    let mut config =
+      UserConfig::from_parsed(wm_common::ParsedConfig::default());
+    config.value.gaps = gaps();
+    config
+  }
+
+  fn window() -> TilingWindow {
+    TilingWindow::mock().gaps_config(gaps()).call()
+  }
+
+  fn vertical_split(rows: Vec<TilingContainer>) -> SplitContainer {
+    SplitContainer::mock()
+      .tiling_direction(TilingDirection::Vertical)
+      .gaps_config(gaps())
+      .tiling_containers(rows)
+      .call()
+  }
+
+  /// A scrolling workspace of `columns`, each half the 1680px width.
+  fn scrolling(columns: Vec<TilingContainer>) -> Workspace {
+    Workspace::mock()
+      .layout(Layout::Scrolling)
+      .gaps_config(gaps())
+      .tiling_containers(columns)
+      .call()
+  }
+
+  /// Never dropped, which would restore its mock windows via Win32 calls.
+  fn state(monitors: Vec<Monitor>) -> ManuallyDrop<WmState> {
+    ManuallyDrop::new(WmState::mock(monitors))
+  }
+
+  /// A monitor displaying `workspace`, `x` pixels right of the origin.
+  fn monitor(workspace: &Workspace, x: i32) -> Monitor {
+    let offset =
+      |rect: Rect| rect.translate_to_coordinates(rect.x() + x, rect.y());
+
+    Monitor::mock()
+      .bounds(offset(mock_bounds()))
+      .working_area(offset(mock_working_area()))
+      .workspaces(vec![workspace.clone()])
+      .call()
+  }
+
+  /// Drags `window` far enough to float it, as an interactive move does.
+  fn start_drag(
+    window: &TilingWindow,
+    state: &mut WmState,
+    config: &UserConfig,
+  ) -> NonTilingWindow {
+    let frame = window.to_rect().unwrap();
+    window.set_active_drag(Some(ActiveDrag {
+      operation: None,
+      is_from_floating: false,
+      initial_position: frame.clone(),
+    }));
+
+    let moved = frame.translate_to_coordinates(frame.x() + 50, frame.y());
+    update_drag_state(&window.clone().into(), &moved, state, config)
+      .unwrap();
+
+    state
+      .container_by_id(window.id())
+      .and_then(|container| container.as_non_tiling_window().cloned())
+      .unwrap()
+  }
+
+  fn drop_at(
+    window: &NonTilingWindow,
+    x: i32,
+    y: i32,
+    state: &mut WmState,
+    config: &UserConfig,
+  ) -> WindowContainer {
+    let dropped =
+      drop_as_tiling_window(window, &Point { x, y }, state, config)
+        .unwrap();
+    dropped.set_active_drag(None);
+    dropped
+  }
+
+  fn child_ids(container: &impl CommonGetters) -> Vec<uuid::Uuid> {
+    container.children().iter().map(CommonGetters::id).collect()
+  }
+
+  fn assert_size(container: &impl TilingSizeGetters, size: f32) {
+    let actual = container.tiling_size();
+    assert!((actual - size).abs() < 1e-3, "{actual} != {size}");
+  }
+
+  fn tiling(window: &WindowContainer) -> TilingContainer {
+    window.as_tiling_container().unwrap()
+  }
+
+  #[test]
+  fn ending_a_drag_on_a_column_keeps_its_width() {
+    let (first, second, third) = (window(), window(), window());
+    let workspace =
+      scrolling(vec![first.clone().into(), second.into(), third.into()]);
+    let mut state = state(vec![monitor(&workspace, 0)]);
+
+    // A click on the title bar ends a drag with the window's own frame.
+    for _ in 0..3 {
+      let width = first.to_rect().unwrap().width();
+      set_window_size(
+        first.clone().into(),
+        Some(LengthValue::from_px(width)),
+        None,
+        &mut state,
+      )
+      .unwrap();
+    }
+
+    assert_size(&first, 0.5);
+    assert_eq!(first.to_rect().unwrap().width(), 830);
+
+    set_window_size(
+      first.clone().into(),
+      Some(LengthValue::from_px(1680)),
+      None,
+      &mut state,
+    )
+    .unwrap();
+    assert_size(&first, 1.);
+  }
+
+  #[test]
+  fn a_column_dragged_to_the_strip_end_keeps_its_width() {
+    let (first, moved, last) = (window(), window(), window());
+    let workspace = scrolling(vec![
+      first.clone().into(),
+      moved.clone().into(),
+      last.clone().into(),
+    ]);
+    first.set_tiling_size(0.3);
+    moved.set_tiling_size(0.3);
+    last.set_tiling_size(0.3);
+    let (mut state, config) =
+      (state(vec![monitor(&workspace, 0)]), config());
+    set_focused_descendant(&moved.clone().into(), None);
+
+    let floating = start_drag(&moved, &mut state, &config);
+    assert_size(&first, 0.3);
+    assert_size(&last, 0.3);
+
+    // Past the strip's end, which the remaining columns leave at about
+    // 60% of the workspace width.
+    let dropped = drop_at(&floating, 1300, 500, &mut state, &config);
+
+    assert_eq!(dropped.state(), WindowState::Tiling);
+    assert_eq!(
+      child_ids(&workspace),
+      vec![first.id(), last.id(), moved.id()]
+    );
+    assert_size(&first, 0.3);
+    assert_size(&last, 0.3);
+    assert_size(&tiling(&dropped), 0.3);
+  }
+
+  #[test]
+  fn a_row_dragged_onto_another_column_joins_it() {
+    let (left, top, bottom) = (window(), window(), window());
+    let column =
+      vertical_split(vec![top.clone().into(), bottom.clone().into()]);
+    let workspace =
+      scrolling(vec![left.clone().into(), column.clone().into()]);
+    left.set_tiling_size(0.4);
+    column.set_tiling_size(0.7);
+    let (mut state, config) =
+      (state(vec![monitor(&workspace, 0)]), config());
+    set_focused_descendant(&top.clone().into(), None);
+
+    let floating = start_drag(&top, &mut state, &config);
+
+    // The column left with a single row is that row again.
+    assert!(column.is_detached());
+    assert_eq!(child_ids(&workspace)[..2], [left.id(), bottom.id()]);
+    assert_size(&bottom, 0.7);
+
+    let dropped = drop_at(&floating, 100, 900, &mut state, &config);
+
+    let new_column = left.parent().unwrap();
+    assert_eq!(new_column.parent().unwrap().id(), workspace.id());
+    assert_eq!(child_ids(&new_column), vec![left.id(), dropped.id()]);
+    assert_size(&new_column.as_tiling_container().unwrap(), 0.4);
+    assert_eq!(child_ids(&workspace), vec![new_column.id(), bottom.id()]);
+    assert_size(&bottom, 0.7);
+  }
+
+  #[test]
+  fn dragging_a_stacked_row_leaves_no_single_row_column() {
+    let (left, tab, other_tab, bottom) =
+      (window(), window(), window(), window());
+    let stack = StackContainer::mock()
+      .tiling_containers(vec![tab.clone().into(), other_tab.into()])
+      .call();
+    let column = vertical_split(vec![stack.into(), bottom.clone().into()]);
+    let workspace = scrolling(vec![left.into(), column.clone().into()]);
+    column.set_tiling_size(0.7);
+    let (mut state, config) =
+      (state(vec![monitor(&workspace, 0)]), config());
+    set_focused_descendant(&tab.clone().into(), None);
+
+    start_drag(&tab, &mut state, &config);
+
+    assert!(column.is_detached());
+    assert_eq!(bottom.parent().unwrap().id(), workspace.id());
+    assert_size(&bottom, 0.7);
+  }
+
+  #[test]
+  fn dragging_the_focused_column_keeps_the_strip_in_place() {
+    let windows = [window(), window(), window(), window()];
+    let workspace =
+      scrolling(windows.iter().map(|w| w.clone().into()).collect());
+    let (mut state, config) =
+      (state(vec![monitor(&workspace, 0)]), config());
+
+    set_focused_descendant(&windows[0].clone().into(), None);
+    set_focused_descendant(&windows[3].clone().into(), None);
+    follow_focus(&workspace).unwrap();
+    assert_eq!(workspace.scroll_offset(), 1700);
+
+    start_drag(&windows[3], &mut state, &config);
+    follow_focus(&workspace).unwrap();
+
+    // Only as far back as the shorter strip needs.
+    assert_eq!(workspace.scroll_offset(), 850);
+    assert!(!is_hidden_in_layout(&windows[2]));
+  }
+
+  #[test]
+  fn a_window_partly_past_a_scrolling_workspace_stays_shown() {
+    let workspace = scrolling(vec![window().into()]);
+    let _state = state(vec![monitor(&workspace, 0)]);
+
+    for window_state in [
+      WindowState::Floating(FloatingStateConfig::default()),
+      WindowState::Fullscreen(
+        config().value.window_behavior.state_defaults.fullscreen,
+      ),
+    ] {
+      let window = NonTilingWindow::mock()
+        .state(window_state)
+        .floating_placement(Rect::from_xy(-100, 100, 400, 300))
+        .call();
+      attach_container(
+        &window.clone().into(),
+        &workspace.clone().into(),
+        None,
+      )
+      .unwrap();
+
+      assert!(!is_hidden_in_layout(&window));
+    }
+  }
+
+  #[test]
+  fn a_floated_column_tiles_back_at_its_width() {
+    let (first, moved, last) = (window(), window(), window());
+    let workspace =
+      scrolling(vec![first.into(), moved.clone().into(), last.into()]);
+    moved.set_tiling_size(0.7);
+    let (mut state, config) =
+      (state(vec![monitor(&workspace, 0)]), config());
+    let floating = WindowState::Floating(FloatingStateConfig::default());
+
+    let moved =
+      update_window_state(moved.into(), floating, &mut state, &config)
+        .unwrap();
+    attach_container(&window().into(), &workspace.clone().into(), None)
+      .unwrap();
+
+    let moved =
+      update_window_state(moved, WindowState::Tiling, &mut state, &config)
+        .unwrap();
+
+    assert_eq!(moved.index(), 1);
+    assert_size(&tiling(&moved), 0.7);
+  }
+
+  #[test]
+  fn a_window_moves_between_split_and_scrolling_workspaces() {
+    let (split_left, split_right) = (window(), window());
+    let split = Workspace::mock()
+      .name("2".into())
+      .gaps_config(gaps())
+      .tiling_containers(vec![
+        split_left.clone().into(),
+        split_right.clone().into(),
+      ])
+      .call();
+    let column = window();
+    let workspace = scrolling(vec![column.clone().into()]);
+    column.set_tiling_size(0.6);
+    let (mut state, config) = (
+      state(vec![
+        monitor(&workspace, 0),
+        monitor(&split, MOCK_MONITOR_WIDTH),
+      ]),
+      config(),
+    );
+
+    // Into the scrolling workspace, as a new column past the strip's end.
+    set_focused_descendant(&split_left.clone().into(), None);
+    let floating = start_drag(&split_left, &mut state, &config);
+    let dropped = drop_at(&floating, 1600, 500, &mut state, &config);
+
+    assert_eq!(child_ids(&workspace), vec![column.id(), dropped.id()]);
+    assert_size(&tiling(&dropped), 0.5);
+    assert_size(&column, 0.6);
+    assert_size(&split_right, 1.);
+
+    // And back out, right of the other window.
+    let dropped = dropped.as_container().as_tiling_window().cloned();
+    let floating = start_drag(&dropped.unwrap(), &mut state, &config);
+    let dropped = drop_at(
+      &floating,
+      MOCK_MONITOR_WIDTH + 1600,
+      500,
+      &mut state,
+      &config,
+    );
+
+    assert_eq!(child_ids(&split), vec![split_right.id(), dropped.id()]);
+    assert_size(&split_right, 0.5);
+    assert_eq!(child_ids(&workspace), vec![column.id()]);
+    assert_size(&column, 0.6);
   }
 }

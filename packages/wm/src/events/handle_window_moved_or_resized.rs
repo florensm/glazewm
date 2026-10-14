@@ -506,7 +506,7 @@ pub fn update_floating_window_position(
 /// This function determines whether a window is being moved or resized and
 /// updates its operation state accordingly. If the window is being moved,
 /// it's set to floating mode.
-fn update_drag_state(
+pub(super) fn update_drag_state(
   window: &WindowContainer,
   frame_position: &Rect,
   state: &mut WmState,
@@ -564,7 +564,15 @@ fn update_drag_state(
     );
 
     if move_distance >= 10.0 || is_maximized {
-      let parent = window.parent().context("No parent")?;
+      // A window of a stack floats with its whole stack, which leaves the
+      // stack's parent behind.
+      let parent = window
+        .parent()
+        .and_then(|parent| match parent.as_stack() {
+          Some(stack) => stack.parent(),
+          None => Some(parent),
+        })
+        .context("No parent")?;
 
       let is_fullscreen =
         matches!(window.state(), WindowState::Fullscreen(_))
