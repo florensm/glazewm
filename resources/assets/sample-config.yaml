@@ -529,6 +529,14 @@ layouts:
     # Keep the only column of a workspace in its middle.
     always_center_single_column: false
 
+    # Heights `cycle-window-height` steps through.
+    preset_window_heights: ["33.333%", "50%", "66.667%"]
+
+    # How a column of one window shows windows joining it. Options:
+    #   'normal' - stacked one above the other.
+    #   'tabbed' - as the tabs of a stack.
+    default_column_display: "normal"
+
 # A scratch workspace for parking windows, shared by all monitors and kept
 # out of workspace cycling. `focus --special-workspace` summons it to the
 # focused monitor (and goes back from it); `move --special-workspace` sends
@@ -802,14 +810,54 @@ keybindings:
   - commands: ["move --special-workspace"]
     bindings: ["alt+shift+oem_minus"]
 
-  # Scrolling layout: step the focused column through
-  # `preset_column_widths`, and jump to the first or last column.
+  # Scrolling layout. `focus --direction` goes along the strip, and
+  # `move --direction` moves the whole focused column left and right, or
+  # the window up and down within its column.
+  #
+  # Move the focused window into the column beside it, or out of its
+  # column into a new one when it shares it.
+  - commands: ["consume-or-expel-window --direction left"]
+    bindings: ["alt+oem_open_brackets"]
+  - commands: ["consume-or-expel-window --direction right"]
+    bindings: ["alt+oem_close_brackets"]
+  # Step the focused column through `preset_column_widths`, and the
+  # focused window through `preset_window_heights`.
   - commands: ["cycle-column-width"]
     bindings: ["alt+c"]
+  - commands: ["cycle-window-height"]
+    bindings: ["alt+shift+c"]
+  # Make the focused column as wide as the workspace (and back), or as
+  # wide as the room the columns on screen leave.
+  - commands: ["maximize-column"]
+    bindings: ["alt+z"]
+  - commands: ["expand-column-to-available-width"]
+    bindings: ["alt+shift+z"]
+  # Scroll the focused column, or every column fully on screen, to the
+  # middle.
+  - commands: ["center-column"]
+    bindings: ["alt+x"]
+  - commands: ["center-visible-columns"]
+    bindings: ["alt+shift+x"]
+  # Show the focused column's windows as tabs, or stacked again.
+  - commands: ["toggle-column-tabbed-display"]
+    bindings: ["alt+b"]
+  # Jump to the first or last column, or move the focused column there.
   - commands: ["focus --first-column"]
     bindings: ["alt+home"]
   - commands: ["focus --last-column"]
     bindings: ["alt+end"]
+  - commands: ["move --first-column"]
+    bindings: ["alt+shift+home"]
+  - commands: ["move --last-column"]
+    bindings: ["alt+shift+end"]
+  # More scrolling layout commands, e.g.:
+  # - commands: ["consume-window-into-column"]
+  # - commands: ["expel-window-from-column"]
+  # - commands: ["swap-window --direction left"]
+  # - commands: ["reset-window-height"]
+  # - commands: ["focus --column 1"]
+  # - commands: ["focus --next-column"]
+  # - commands: ["move --column 1"]
 
   # Change focus to a workspace defined in `workspaces` config.
   - commands: ["focus --workspace 1"]

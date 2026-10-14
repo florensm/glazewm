@@ -386,7 +386,15 @@ pub enum CenterFocusedColumn {
 
 /// How a column of a scrolling layout shows its windows.
 #[derive(
-  Clone, Copy, Debug, Default, Deserialize, PartialEq, Eq, Serialize,
+  Clone,
+  Copy,
+  Debug,
+  Default,
+  Deserialize,
+  PartialEq,
+  Eq,
+  Serialize,
+  clap::ValueEnum,
 )]
 #[serde(rename_all = "snake_case")]
 pub enum ColumnDisplay {

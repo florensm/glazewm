@@ -31,6 +31,11 @@ layouts:
     center_focused_column: "never"
     # Keep the only column of a workspace in its middle.
     always_center_single_column: false
+    # Heights `cycle-window-height` steps through.
+    preset_window_heights: ["33.333%", "50%", "66.667%"]
+    # How a column of one window shows the windows joining it: "normal"
+    # stacks them, "tabbed" makes them the tabs of a stack.
+    default_column_display: "normal"
 
 animations:
   # How the scrolling strip moves.
@@ -55,17 +60,48 @@ unrelated reloads.
 
 ## Scrolling
 
-- A column is a window, a stack, or windows stacked vertically. Move a
-  window left/right into a neighbouring column to stack it there, or out
-  of its column to make it a column of its own. Dragging a window onto a
-  column joins it above or below, depending on the half it is dropped on;
-  dropping it between columns or past either end makes a new column.
-- Resizing a column's width (`resize --width`) leaves the other columns
-  alone. `cycle-column-width` steps the focused column through
-  `preset_column_widths`, narrowest to widest and back around; a column
-  between presets goes to the next wider one.
-- `focus --first-column` and `focus --last-column` jump to either end of
-  the strip, to the window there that last had focus.
+A column is a window, windows stacked one above the other, or a stack of
+tabs. New windows open as a column right of the focused one.
+
+- `focus --direction left/right` goes to the column beside the focused
+  one, to the window in it that last had focus; `up/down` goes between
+  the windows of a column, or its tabs. Past either end, focus goes on to
+  the monitor that way.
+- `move --direction left/right` moves the whole focused column along the
+  strip, and past either end onto the monitor that way. `up/down` moves
+  the window within its column, or its tab within its stack.
+- Dragging a window onto a column joins it above or below, depending on
+  the half it is dropped on; dropping it between columns or past either
+  end makes a new column.
+- Resizing a column's width (`resize --width`, `size --width`) leaves the
+  other columns alone.
+
+| Command | Behaviour |
+| --- | --- |
+| `consume-or-expel-window --direction left\|right` | Move the focused window into the column on that side, as its last window; when it shares its column, move it out into a new column on that side instead, as wide as its old one. |
+| `consume-window-into-column` | Move the top window of the column right of the focused one into it, as its last window. |
+| `expel-window-from-column` | Move the bottom window of the focused column into a new column right of it. |
+| `swap-window --direction left\|right` | Swap the focused window with the window that last had focus in the column on that side; each takes the other's place and size. |
+| `cycle-column-width [--back]` | Step the focused column through `preset_column_widths`, wrapping around: from where it was last set, else to the first preset wider than it (with `--back`, the last narrower). |
+| `cycle-window-height [--back]` | The same for the focused window's height within its column, with `preset_window_heights`. |
+| `reset-window-height` | Give the focused window an equal share of its column's height again. |
+| `maximize-column` | Make the focused column as wide as the workspace, or back to its width before. |
+| `expand-column-to-available-width` | Widen the focused column to fill the room the columns fully on screen leave, and show them all. |
+| `center-column` | Scroll the focused column to the middle, once. |
+| `center-visible-columns` | Scroll the columns fully on screen to the middle, together. |
+| `toggle-column-tabbed-display` | Show the focused column's windows as the tabs of a stack, or stacked one above the other again. |
+| `set-column-display normal\|tabbed` | Show them one way or the other. |
+| `focus --first-column`, `--last-column`, `--column <n>` | Go to the first, last or nth column, to the window in it that last had focus. |
+| `focus --next-column`, `--prev-column` | Go to the column right or left of the focused one, wrapping around at the strip's ends. |
+| `focus --window-in-column <n>`, `--column-top`, `--column-bottom` | Go to the nth, top or bottom window of the focused column. |
+| `move --first-column`, `--last-column`, `--column <n>` | Move the focused column to the start, end or nth place of the strip. |
+
+`cycle-column-width` and `cycle-window-height` also go by
+`switch-preset-column-width` and `switch-preset-window-height`.
+
+With `default_column_display: "tabbed"`, a window joining a column of a
+single window by `consume-or-expel-window` or `consume-window-into-column`
+makes the two the tabs of a stack, rather than stacking them.
 - Focusing a column, by keyboard or by clicking a column partly off
   screen, scrolls the strip just far enough to show it whole, or centers
   it as `center_focused_column` says. Changing the focused column's width

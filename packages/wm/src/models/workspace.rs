@@ -122,6 +122,14 @@ impl Workspace {
     self.0.borrow_mut().strip_view.request(request);
   }
 
+  /// Runs `update` on the scrolling layout's view state.
+  pub fn update_strip_view<R>(
+    &self,
+    update: impl FnOnce(&mut StripView) -> R,
+  ) -> R {
+    update(&mut self.0.borrow_mut().strip_view)
+  }
+
   /// Whether the workspace is currently displayed by the parent monitor.
   pub fn is_displayed(&self) -> bool {
     self

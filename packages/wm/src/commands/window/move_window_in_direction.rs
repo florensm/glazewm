@@ -3,10 +3,13 @@ use wm_common::{Layout, TilingDirection, WindowState};
 use wm_platform::{Direction, Rect};
 
 use crate::{
-  commands::container::{
-    flatten_child_split_containers, flatten_split_container,
-    move_container_within_tree, resize_tiling_container,
-    set_focused_descendant, wrap_in_split_container,
+  commands::{
+    column::{move_column_in_direction, move_tab_in_direction},
+    container::{
+      flatten_child_split_containers, flatten_split_container,
+      move_container_within_tree, resize_tiling_container,
+      set_focused_descendant, wrap_in_split_container,
+    },
   },
   models::{
     Container, DirectionContainer, Monitor, NonTilingWindow,
@@ -54,6 +57,15 @@ fn move_tiling_window(
   state: &mut WmState,
   config: &UserConfig,
 ) -> anyhow::Result<()> {
+  // A scrolling layout moves whole columns sideways, and tabs of a
+  // column up and down like its windows.
+  let window: Container = window_to_move.clone().into();
+  if move_column_in_direction(&window, direction, state)?
+    || move_tab_in_direction(&window, direction, state)
+  {
+    return Ok(());
+  }
+
   // Flatten the parent split container if it only contains the window.
   if let Some(split_parent) = window_to_move
     .parent()

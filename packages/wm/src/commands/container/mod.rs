@@ -1,11 +1,9 @@
 mod attach_container;
-mod cycle_column_width;
 mod detach_container;
 mod flatten_child_split_containers;
 mod flatten_split_container;
 mod flatten_stack_container;
 mod focus_container_by_id;
-mod focus_edge_column;
 mod focus_in_direction;
 mod move_container_within_tree;
 mod replace_container;
@@ -16,13 +14,11 @@ mod wrap_in_split_container;
 mod wrap_in_stack_container;
 
 pub use attach_container::*;
-pub use cycle_column_width::*;
 pub use detach_container::*;
 pub use flatten_child_split_containers::*;
 pub use flatten_split_container::*;
 pub use flatten_stack_container::*;
 pub use focus_container_by_id::*;
-pub use focus_edge_column::*;
 pub use focus_in_direction::*;
 pub use move_container_within_tree::*;
 pub use replace_container::*;

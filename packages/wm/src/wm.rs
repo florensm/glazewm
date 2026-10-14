@@ -23,9 +23,17 @@ use crate::commands::window::close_duplicate_tabs;
 use crate::commands::window::detach_window_for_close;
 use crate::{
   commands::{
+    column::{
+      center_column, center_visible_columns, consume_or_expel_window,
+      consume_window_into_column, cycle_column_width, cycle_window_height,
+      expand_column_to_available_width, expel_window_from_column,
+      focus_column, focus_window_in_column, maximize_column, move_column,
+      reset_window_height, set_column_display, swap_window, ColumnTarget,
+      RowTarget,
+    },
     container::{
-      cycle_column_width, focus_container_by_id, focus_edge_column,
-      focus_in_direction, set_tiling_direction, toggle_tiling_direction,
+      focus_container_by_id, focus_in_direction, set_tiling_direction,
+      toggle_tiling_direction,
     },
     general::{
       cycle_focus, disable_binding_mode, enable_binding_mode,
@@ -680,8 +688,32 @@ impl WindowManager {
           focus_special_workspace(state, config)?;
         }
 
-        if args.first_column || args.last_column {
-          focus_edge_column(&subject_container, args.last_column, state);
+        let column_target = if args.first_column {
+          Some(ColumnTarget::First)
+        } else if args.last_column {
+          Some(ColumnTarget::Last)
+        } else if args.next_column {
+          Some(ColumnTarget::Next)
+        } else if args.prev_column {
+          Some(ColumnTarget::Previous)
+        } else {
+          args.column.map(ColumnTarget::Index)
+        };
+
+        if let Some(target) = column_target {
+          focus_column(&subject_container, target, state);
+        }
+
+        let row_target = if args.column_top {
+          Some(RowTarget::Top)
+        } else if args.column_bottom {
+          Some(RowTarget::Bottom)
+        } else {
+          args.window_in_column.map(RowTarget::Index)
+        };
+
+        if let Some(target) = row_target {
+          focus_window_in_column(&subject_container, target, state);
         }
 
         if args.next_active_workspace_on_monitor {
@@ -816,6 +848,18 @@ impl WindowManager {
                 state,
                 config,
               )?;
+            }
+
+            let column_target = if args.first_column {
+              Some(ColumnTarget::First)
+            } else if args.last_column {
+              Some(ColumnTarget::Last)
+            } else {
+              args.column.map(ColumnTarget::Index)
+            };
+
+            if let Some(target) = column_target {
+              move_column(&window.clone().into(), target, state)?;
             }
 
             if args.prev_active_workspace_on_monitor {
@@ -1252,9 +1296,56 @@ impl WindowManager {
           subject_container.workspace().context("No workspace.")?;
         set_layout(&workspace, *layout, state)
       }
-      InvokeCommand::CycleColumnWidth => {
-        cycle_column_width(&subject_container, state, config)
+      InvokeCommand::CycleColumnWidth { back } => {
+        cycle_column_width(&subject_container, !back, state, config)
       }
+      InvokeCommand::CycleWindowHeight { back } => {
+        cycle_window_height(&subject_container, !back, state, config)
+      }
+      InvokeCommand::ResetWindowHeight => {
+        reset_window_height(&subject_container, state);
+        Ok(())
+      }
+      InvokeCommand::MaximizeColumn => {
+        maximize_column(&subject_container, state);
+        Ok(())
+      }
+      InvokeCommand::ExpandColumnToAvailableWidth => {
+        expand_column_to_available_width(&subject_container, state)
+      }
+      InvokeCommand::CenterColumn => {
+        center_column(&subject_container, state);
+        Ok(())
+      }
+      InvokeCommand::CenterVisibleColumns => {
+        center_visible_columns(&subject_container, state)
+      }
+      InvokeCommand::ConsumeOrExpelWindow { direction } => {
+        consume_or_expel_window(
+          &subject_container,
+          direction,
+          state,
+          config,
+        )
+      }
+      InvokeCommand::ConsumeWindowIntoColumn => {
+        consume_window_into_column(&subject_container, state, config)
+      }
+      InvokeCommand::ExpelWindowFromColumn => {
+        expel_window_from_column(&subject_container, state)
+      }
+      InvokeCommand::SwapWindow { direction } => {
+        swap_window(&subject_container, direction, state)
+      }
+      InvokeCommand::ToggleColumnTabbedDisplay => {
+        set_column_display(&subject_container, None, state, config)
+      }
+      InvokeCommand::SetColumnDisplay { display } => set_column_display(
+        &subject_container,
+        Some(*display),
+        state,
+        config,
+      ),
       InvokeCommand::WmCycleFocus {
         omit_floating,
         omit_fullscreen,

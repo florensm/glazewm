@@ -6,7 +6,7 @@ use tracing::Level;
 use uuid::Uuid;
 use wm_platform::{Delta, Direction, LengthValue, OpacityValue};
 
-use crate::{Layout, TilingDirection};
+use crate::{ColumnDisplay, Layout, TilingDirection};
 
 const VERSION: &str = env!("VERSION_NUMBER");
 
@@ -307,7 +307,58 @@ pub enum InvokeCommand {
   },
   /// Set the width of the focused column of a scrolling layout to the
   /// next of `layouts.scrolling.preset_column_widths`, wrapping around.
-  CycleColumnWidth,
+  #[clap(alias = "switch-preset-column-width")]
+  CycleColumnWidth {
+    /// Go to the previous preset instead.
+    #[clap(long, action)]
+    back: bool,
+  },
+  /// Set the height of the focused window in its scrolling layout column
+  /// to the next of `layouts.scrolling.preset_window_heights`, wrapping
+  /// around.
+  #[clap(alias = "switch-preset-window-height")]
+  CycleWindowHeight {
+    /// Go to the previous preset instead.
+    #[clap(long, action)]
+    back: bool,
+  },
+  /// Give the focused window an equal share of its column's height again.
+  ResetWindowHeight,
+  /// Make the focused column as wide as the workspace, or back to its
+  /// width before.
+  MaximizeColumn,
+  /// Widen the focused column to fill the room the columns on screen
+  /// leave.
+  ExpandColumnToAvailableWidth,
+  /// Scroll the focused column to the middle of the workspace.
+  CenterColumn,
+  /// Scroll the columns fully on screen to the middle of the workspace.
+  CenterVisibleColumns,
+  /// Move the focused window into the neighbouring column, or out of its
+  /// column into a new one if it shares it.
+  ConsumeOrExpelWindow {
+    #[clap(long)]
+    direction: Direction,
+  },
+  /// Move the top window of the column right of the focused one into it.
+  ConsumeWindowIntoColumn,
+  /// Move the bottom window of the focused column into a new column right
+  /// of it.
+  ExpelWindowFromColumn,
+  /// Swap the focused window with the focused window of the neighbouring
+  /// column.
+  SwapWindow {
+    #[clap(long)]
+    direction: Direction,
+  },
+  /// Switch the focused column between showing its windows stacked and as
+  /// tabs.
+  ToggleColumnTabbedDisplay,
+  /// Show the focused column's windows stacked or as tabs.
+  SetColumnDisplay {
+    #[clap(required = true)]
+    display: ColumnDisplay,
+  },
   WmCycleFocus {
     #[clap(long, default_value_t = false)]
     omit_floating: bool,
@@ -442,6 +493,34 @@ pub struct InvokeFocusCommand {
   /// scrolling it into view.
   #[clap(long)]
   pub last_column: bool,
+
+  /// Focus the column at this position (from 1) in the focused
+  /// workspace's scrolling layout.
+  #[clap(long)]
+  pub column: Option<usize>,
+
+  /// Focus the column right of the focused one, or the first after the
+  /// last.
+  #[clap(long)]
+  pub next_column: bool,
+
+  /// Focus the column left of the focused one, or the last before the
+  /// first.
+  #[clap(long)]
+  pub prev_column: bool,
+
+  /// Focus the window at this position (from 1, top to bottom) in the
+  /// focused column.
+  #[clap(long)]
+  pub window_in_column: Option<usize>,
+
+  /// Focus the top window of the focused column.
+  #[clap(long)]
+  pub column_top: bool,
+
+  /// Focus the bottom window of the focused column.
+  #[clap(long)]
+  pub column_bottom: bool,
 }
 
 #[derive(Args, Clone, Debug, PartialEq, Serialize)]
@@ -498,6 +577,20 @@ pub struct InvokeMoveCommand {
   /// previous workspace.
   #[clap(long)]
   pub special_workspace: bool,
+
+  /// Move the focused column to the start of its scrolling layout's
+  /// strip.
+  #[clap(long)]
+  pub first_column: bool,
+
+  /// Move the focused column to the end of its scrolling layout's strip.
+  #[clap(long)]
+  pub last_column: bool,
+
+  /// Move the focused column to this position (from 1) on its scrolling
+  /// layout's strip.
+  #[clap(long)]
+  pub column: Option<usize>,
 }
 
 #[derive(Args, Clone, Debug, PartialEq, Serialize)]
@@ -559,6 +652,50 @@ mod tests {
       .expect("Failed to parse `force-manage` command.");
 
     assert_eq!(command, InvokeCommand::ForceManage);
+  }
+
+  #[test]
+  fn parses_column_commands() {
+    let parse = |args: &[&str]| {
+      InvokeCommand::try_parse_from(
+        std::iter::once("").chain(args.iter().copied()),
+      )
+    };
+
+    assert_eq!(
+      parse(&["cycle-column-width", "--back"]).unwrap(),
+      InvokeCommand::CycleColumnWidth { back: true }
+    );
+    assert_eq!(
+      parse(&["switch-preset-column-width"]).unwrap(),
+      InvokeCommand::CycleColumnWidth { back: false }
+    );
+    assert_eq!(
+      parse(&["consume-or-expel-window", "--direction", "left"]).unwrap(),
+      InvokeCommand::ConsumeOrExpelWindow {
+        direction: Direction::Left
+      }
+    );
+    assert_eq!(
+      parse(&["set-column-display", "tabbed"]).unwrap(),
+      InvokeCommand::SetColumnDisplay {
+        display: ColumnDisplay::Tabbed
+      }
+    );
+    assert!(matches!(
+      parse(&["focus", "--column", "3"]).unwrap(),
+      InvokeCommand::Focus(InvokeFocusCommand {
+        column: Some(3),
+        ..
+      })
+    ));
+    assert!(matches!(
+      parse(&["move", "--last-column"]).unwrap(),
+      InvokeCommand::Move(InvokeMoveCommand {
+        last_column: true,
+        ..
+      })
+    ));
   }
 
   #[test]

@@ -12,6 +12,8 @@
 //! another column is activated or the active one changes width. See
 //! `StripView::update`.
 
+use std::ops::RangeInclusive;
+
 use uuid::Uuid;
 use wm_common::{
   CenterFocusedColumn, ColumnWidth, Layout, ScrollingLayoutConfig,
@@ -66,6 +68,19 @@ pub fn column_of(
 #[allow(clippy::cast_precision_loss, clippy::cast_possible_truncation)]
 fn width_for_size(size: f32, workspace_width: i32, gap: i32) -> i32 {
   ((workspace_width + gap) as f32 * size).round() as i32 - gap
+}
+
+/// Width in pixels `column` has at `size` on `workspace`'s strip.
+pub fn width_at<T>(
+  column: &T,
+  workspace: &Workspace,
+  size: f32,
+) -> anyhow::Result<i32>
+where
+  T: TilingSizeGetters,
+{
+  let (gap, _) = column.inner_gaps()?;
+  Ok(width_for_size(size, workspace.to_rect()?.width(), gap))
 }
 
 /// Rect of a column on its workspace's strip.
@@ -235,6 +250,26 @@ impl Strip {
     self.ids.iter().position(|column| *column == id)
   }
 
+  /// Width of column `index` at `size`, `gap` apart from the next.
+  pub fn width_for(&self, size: f32, gap: i32) -> i32 {
+    width_for_size(size, self.view_width, gap)
+  }
+
+  /// The columns fully on screen with the view at `offset`, left to
+  /// right, if any.
+  pub fn fully_visible(
+    &self,
+    offset: i32,
+  ) -> Option<RangeInclusive<usize>> {
+    let mut visible = (0..self.len()).filter(|index| {
+      let left = self.start(*index) - offset;
+      left >= 0 && left + self.widths[*index] <= self.view_width
+    });
+
+    let first = visible.next()?;
+    Some(first..=visible.next_back().unwrap_or(first))
+  }
+
   /// Offset that shows column `index` whole, moving the view at `offset`
   /// as little as possible: not at all if it already shows it.
   ///
@@ -309,7 +344,7 @@ impl Strip {
 
 /// Where a scrolling workspace's view is, kept between syncs so that it
 /// moves with the strip the way niri's view moves with its columns.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct StripView {
   /// How far the strip is scrolled: its first column starts this far left
   /// of the workspace's left edge.
@@ -327,7 +362,28 @@ pub struct StripView {
 
   /// What a command asked of the next sync.
   request: Option<ViewRequest>,
+
+  /// Preset widths columns were last set to, by index, with the size each
+  /// got, to cycle on from.
+  preset_widths: Vec<Preset>,
+
+  /// Preset heights windows were last set to in their columns.
+  preset_heights: Vec<Preset>,
+
+  /// Sizes of maximized columns to go back to.
+  maximized: Vec<(Uuid, f32)>,
 }
+
+/// A preset a container was set to, and the size that gave it.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct Preset {
+  container: Uuid,
+  index: usize,
+  size: f32,
+}
+
+/// Most windows `preset_heights` keeps, dropping the oldest beyond.
+const MAX_PRESET_HEIGHTS: usize = 32;
 
 /// The active column, and where it was shown.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -373,6 +429,44 @@ impl StripView {
     self.request = Some(request);
   }
 
+  /// Preset width `column` was last set to, if it still has that size.
+  pub fn preset_width(&self, column: Uuid, size: f32) -> Option<usize> {
+    find_preset(&self.preset_widths, column, size)
+  }
+
+  pub fn set_preset_width(
+    &mut self,
+    column: Uuid,
+    index: usize,
+    size: f32,
+  ) {
+    set_preset(&mut self.preset_widths, column, index, size, usize::MAX);
+  }
+
+  /// Preset height `row` was last set to, if it still has that size.
+  pub fn preset_height(&self, row: Uuid, size: f32) -> Option<usize> {
+    find_preset(&self.preset_heights, row, size)
+  }
+
+  pub fn set_preset_height(&mut self, row: Uuid, index: usize, size: f32) {
+    let max = MAX_PRESET_HEIGHTS;
+    set_preset(&mut self.preset_heights, row, index, size, max);
+  }
+
+  /// Size `column` had before it was maximized, forgetting it.
+  pub fn take_size_before_maximize(
+    &mut self,
+    column: Uuid,
+  ) -> Option<f32> {
+    let index = self.maximized.iter().position(|(id, _)| *id == column)?;
+    Some(self.maximized.remove(index).1)
+  }
+
+  pub fn set_size_before_maximize(&mut self, column: Uuid, size: f32) {
+    self.maximized.retain(|(id, _)| *id != column);
+    self.maximized.push((column, size));
+  }
+
   /// Moves the view for what changed on `strip` since the last update,
   /// with column `focused` holding the focused window, if any.
   ///
@@ -394,6 +488,11 @@ impl StripView {
       *self = Self::default();
       return;
     }
+
+    self
+      .preset_widths
+      .retain(|preset| strip.ids.contains(&preset.container));
+    self.maximized.retain(|(id, _)| strip.ids.contains(id));
 
     let anchor_index = self.anchor.and_then(|a| strip.index_of(a.column));
 
@@ -484,6 +583,42 @@ impl StripView {
     });
     self.offset = offset;
     self.known.clone_from(&strip.ids);
+  }
+}
+
+/// The preset among `presets` that `container` was set to, if it still
+/// has the size it got.
+fn find_preset(
+  presets: &[Preset],
+  container: Uuid,
+  size: f32,
+) -> Option<usize> {
+  presets
+    .iter()
+    .find(|preset| {
+      preset.container == container && (preset.size - size).abs() < 1e-6
+    })
+    .map(|preset| preset.index)
+}
+
+/// Records that `container` was set to preset `index`, giving it `size`,
+/// keeping at most `max` records.
+fn set_preset(
+  presets: &mut Vec<Preset>,
+  container: Uuid,
+  index: usize,
+  size: f32,
+  max: usize,
+) {
+  presets.retain(|preset| preset.container != container);
+  presets.push(Preset {
+    container,
+    index,
+    size,
+  });
+
+  if presets.len() > max {
+    presets.remove(0);
   }
 }
 
@@ -590,9 +725,20 @@ pub fn focus_target_after_removal(
       .get(index + 1)
       .or_else(|| index.checked_sub(1).and_then(|i| siblings.get(i)))?;
 
-    return Some(focused_window_of(next));
+    return Some(focused_window_in(next));
   }
 
+  column_focus_target(&column, &workspace)
+}
+
+/// The window to focus when the focused `column` leaves `workspace`'s
+/// strip: in the column it was opened from if focus hasn't moved since,
+/// else in the column right of it, or past the strip's end the one left
+/// of it.
+pub fn column_focus_target(
+  column: &TilingContainer,
+  workspace: &Workspace,
+) -> Option<Container> {
   let columns = workspace.tiling_children().collect::<Vec<_>>();
   let index =
     columns.iter().position(|other| other.id() == column.id())?;
@@ -604,11 +750,11 @@ pub fn focus_target_after_removal(
     .or_else(|| (index + 1 < columns.len()).then_some(index + 1))
     .or_else(|| index.checked_sub(1))?;
 
-  Some(focused_window_of(&columns[target]))
+  Some(focused_window_in(&columns[target]))
 }
 
 /// The window in `container` that last had focus, or `container` itself.
-fn focused_window_of(container: &TilingContainer) -> Container {
+pub fn focused_window_in(container: &TilingContainer) -> Container {
   container
     .descendant_focus_order()
     .find(Container::is_tiling_window)
