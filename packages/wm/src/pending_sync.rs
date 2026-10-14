@@ -48,6 +48,11 @@ pub struct PendingSync {
   /// user config).
   needs_cursor_jump: bool,
 
+  /// Whether to move the cursor to the focused window, as asked for by
+  /// `move-cursor`. Done once the layout is settled, so it lands where
+  /// the window ends up (e.g. after a scrolling layout scrolls).
+  needs_cursor_move: bool,
+
   /// Whether stack tab bars need redrawing and restacking for a change
   /// that doesn't move any window (e.g. a tab's urgency, or the end of a
   /// drag that raised the stack's window).
@@ -122,6 +127,7 @@ impl PendingSync {
       || self.needs_focused_effect_update
       || self.needs_all_effects_update
       || self.needs_cursor_jump
+      || self.needs_cursor_move
       || self.needs_tab_bar_update
       || self.iris_switch.is_some()
   }
@@ -133,6 +139,7 @@ impl PendingSync {
     self.needs_focused_effect_update = false;
     self.needs_all_effects_update = false;
     self.needs_cursor_jump = false;
+    self.needs_cursor_move = false;
     self.needs_tab_bar_update = false;
     self.workspace_switch_incoming.clear();
     self.workspace_switch_outgoing.clear();
@@ -209,6 +216,11 @@ impl PendingSync {
     self
   }
 
+  pub fn queue_cursor_move(&mut self) -> &mut Self {
+    self.needs_cursor_move = true;
+    self
+  }
+
   pub fn queue_tab_bar_update(&mut self) -> &mut Self {
     self.needs_tab_bar_update = true;
     self
@@ -228,6 +240,10 @@ impl PendingSync {
 
   pub fn needs_cursor_jump(&self) -> bool {
     self.needs_cursor_jump
+  }
+
+  pub fn needs_cursor_move(&self) -> bool {
+    self.needs_cursor_move
   }
 
   pub fn needs_tab_bar_update(&self) -> bool {

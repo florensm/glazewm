@@ -136,6 +136,10 @@ pub fn platform_sync(
     jump_cursor(focused_container.clone(), state, config)?;
   }
 
+  if state.pending_sync.needs_cursor_move() {
+    super::move_cursor_to_active_window(state)?;
+  }
+
   if state.pending_sync.needs_focused_effect_update()
     || state.pending_sync.needs_all_effects_update()
   {

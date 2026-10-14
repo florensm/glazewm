@@ -29,8 +29,7 @@ use crate::{
     },
     general::{
       cycle_focus, disable_binding_mode, enable_binding_mode,
-      move_cursor_to_active_window, platform_sync, reload_config,
-      shell_exec, toggle_pause,
+      platform_sync, reload_config, shell_exec, toggle_pause,
     },
     monitor::focus_monitor,
     window::{
@@ -710,7 +709,7 @@ impl WindowManager {
       }
       InvokeCommand::MoveCursor(args) => {
         if args.direction.is_some() {
-          move_cursor_to_active_window(state)?;
+          state.pending_sync.queue_cursor_move();
         }
         Ok(())
       }
