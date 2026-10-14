@@ -1,29 +1,31 @@
 //! What a scrolling layout shows of its columns besides the real windows.
 //!
-//! A real window is only shown while its column is fully on screen, so it
-//! never reaches onto a neighbouring monitor. Everything else is drawn by
-//! `WindowPeek`s, click-through thumbnails clipped to the monitor:
+//! At rest, columns show their real windows, also where they run off a
+//! monitor edge with no other monitor behind it. Only a column that would
+//! reach onto another monitor is cloaked, and its visible part is shown
+//! by a `WindowPeek`: a click-through thumbnail clipped to the monitor.
 //!
-//! - At rest, a partly visible column shows its visible part as a peek.
-//! - While the strip moves (a scroll, or columns opening, closing or
-//!   resizing across the monitor edge), every moving column is drawn by a
-//!   peek and its real window is cloaked, like the workspace-switch slide:
-//!   the peeks go up first, one composited frame later the real windows
-//!   are cloaked, and all of them move in lock-step. At the end, columns
-//!   that are fully on screen get their real window back, partly visible
-//!   ones keep their peek, and the rest are dropped.
+//! While the strip moves (a scroll, or columns opening, closing or
+//! resizing across the monitor edge), every moving column is drawn by a
+//! peek and its real window is cloaked, like the workspace-switch slide:
+//! the peeks go up first, one composited frame later the real windows are
+//! cloaked, and all of them move in lock-step, their borders and
+//! backdrops with them. At the end, columns shown at rest get their real
+//! window back, ones reaching onto another monitor keep their peek, and
+//! the rest are dropped.
 
 use std::{collections::HashMap, time::Instant};
 
 use uuid::Uuid;
 use wm_common::{AnimationTypeConfig, Layout, WindowState};
 use wm_platform::{
-  CornerStyle, NativeWindowWindowsExt, Point, Rect, WindowPeek,
+  NativeWindowWindowsExt, Overlay, Point, Rect, SurrogateBatch,
+  WindowPeek, HWND,
 };
 
 use super::state::WindowAnimationState;
 use crate::{
-  commands::general::surrogate_effects_for,
+  commands::general::{surrogate_effects_for, upsert_overlay},
   layout::is_hidden_in_layout,
   models::{is_inactive_stack_child, WindowContainer, Workspace},
   traits::{CommonGetters, PositionGetters, WindowGetters},
@@ -152,18 +154,12 @@ impl ScrollView {
   }
 }
 
-/// Settings shared by the peeks of one sync.
-struct PeekStyle<'a> {
-  opacity: u8,
-  corner_style: CornerStyle,
-  scroll_config: &'a AnimationTypeConfig,
-}
-
 impl ScrollView {
   /// Draws `window` with a peek in `role`, going from `from` to `target`.
   ///
   /// Returns whether a new peek now covers a still-visible real window,
   /// so it has to be composited before that window is cloaked.
+  #[allow(clippy::too_many_arguments)]
   fn upsert(
     &mut self,
     window: &WindowContainer,
@@ -171,19 +167,24 @@ impl ScrollView {
     target: Rect,
     clip: &Rect,
     role: Role,
-    style: &PeekStyle,
+    scroll_config: &AnimationTypeConfig,
+    config: &UserConfig,
+    is_focused: bool,
   ) -> bool {
     let is_moving = matches!(role, Role::Moving { .. });
     let motion = WindowAnimationState::new_movement(
       from.clone(),
       target,
       if is_moving {
-        style.scroll_config.duration_ms
+        scroll_config.duration_ms
       } else {
         0
       },
-      style.scroll_config.easing.clone(),
+      scroll_config.easing.clone(),
     );
+    // The window's own transparency and corners, as it is focused or not.
+    let (opacity, corner_style, _, _) =
+      surrogate_effects_for(is_focused, config);
     if !is_moving {
       motion.start_clock(Instant::now());
     }
@@ -191,17 +192,17 @@ impl ScrollView {
     if let Some(entry) = self.entries.get_mut(&window.id()) {
       entry.motion = motion;
       entry.clip = clip.clone();
+      entry.opacity = opacity;
       entry.role = role;
       let rect = entry.motion.current_rect();
       entry.place(&rect);
       return false;
     }
 
-    let Ok(peek) =
-      WindowPeek::new(&window.native(), from, &style.corner_style)
-        .inspect_err(|err| {
-          tracing::warn!("Failed to create a peek of {window}: {err}");
-        })
+    let Ok(peek) = WindowPeek::new(&window.native(), from, &corner_style)
+      .inspect_err(|err| {
+        tracing::warn!("Failed to create a peek of {window}: {err}");
+      })
     else {
       return false;
     };
@@ -210,7 +211,7 @@ impl ScrollView {
       peek,
       motion,
       clip: clip.clone(),
-      opacity: style.opacity,
+      opacity,
       role,
     };
     let rect = entry.motion.current_rect();
@@ -237,6 +238,7 @@ pub fn sync_scroll_view(state: &mut WmState, config: &UserConfig) {
         .map(move |window| (window, clip.clone()))
     })
     .collect::<Vec<_>>();
+  let focused_id = state.focused_container().map(|focused| focused.id());
 
   let view = &mut state.animation_manager.scroll_view;
 
@@ -246,13 +248,7 @@ pub fn sync_scroll_view(state: &mut WmState, config: &UserConfig) {
   view.entries.retain(|id, _| is_known(id));
   view.last_rects.retain(|id, _| is_known(id));
 
-  let (opacity, corner_style, _, _) = surrogate_effects_for(false, config);
   let scroll_config = &config.value.animations.scroll;
-  let style = PeekStyle {
-    opacity,
-    corner_style,
-    scroll_config,
-  };
   let mut needs_flush = false;
   let mut started_moving = Vec::new();
 
@@ -319,8 +315,16 @@ pub fn sync_scroll_view(state: &mut WmState, config: &UserConfig) {
       }
 
       let is_moving = matches!(role, Role::Moving { .. });
-      needs_flush |=
-        view.upsert(&window, &from, target, clip, role, &style);
+      needs_flush |= view.upsert(
+        &window,
+        &from,
+        target,
+        clip,
+        role,
+        scroll_config,
+        config,
+        focused_id == Some(window.id()),
+      );
 
       if is_moving {
         started_moving.push(window.id());
@@ -337,9 +341,87 @@ pub fn sync_scroll_view(state: &mut WmState, config: &UserConfig) {
     state.animation_manager.remove_animation(id);
   }
 
+  track_overlays(state, config);
+
   if state.animation_manager.scroll_view.is_active() {
     state.animation_manager.ensure_timer_running();
   }
+}
+
+/// Keeps the border and backdrop overlays of the windows the scroll view
+/// moves on their peeks, so they slide along instead of disappearing for
+/// the move. `sync_overlays` leaves these windows to it.
+pub fn track_overlays(state: &mut WmState, config: &UserConfig) {
+  let focused_id = state.focused_container().map(|focused| focused.id());
+
+  let tracked = state
+    .animation_manager
+    .scroll_view
+    .entries
+    .iter()
+    .filter(|(_, entry)| entry.role != Role::Peek)
+    .map(|(id, entry)| {
+      // Only while some of the window is on screen.
+      let frame = entry
+        .peek
+        .visible_rect()
+        .and(entry.peek.frame_rect())
+        .cloned();
+      (*id, frame, entry.peek.hwnd())
+    })
+    .collect::<Vec<(Uuid, Option<Rect>, HWND)>>();
+
+  let mut backdrop_batch = SurrogateBatch::new();
+  let mut border_batch = SurrogateBatch::new();
+
+  for (id, frame, anchor) in tracked {
+    let Some(frame) = frame else {
+      if let Some(overlay) = state.backdrop_overlays.get_mut(&id) {
+        overlay.hide();
+      }
+      if let Some(overlay) = state.border_overlays.get_mut(&id) {
+        overlay.hide();
+      }
+      continue;
+    };
+
+    let (_, _, backdrop, border) =
+      surrogate_effects_for(focused_id == Some(id), config);
+
+    if let Some(params) = backdrop {
+      upsert_overlay(
+        &mut state.backdrop_overlays,
+        id,
+        params,
+        &frame,
+        anchor,
+        &mut backdrop_batch,
+      );
+    }
+
+    if let Some(params) = border {
+      // Framed with its stack's tab bar, like at rest.
+      let frame = state
+        .container_by_id(id)
+        .and_then(|container| container.as_window_container().ok())
+        .map_or_else(
+          || frame.clone(),
+          |window| crate::tab_bars::window_with_tab_bar(&window, &frame),
+        );
+
+      upsert_overlay(
+        &mut state.border_overlays,
+        id,
+        params,
+        &frame,
+        anchor,
+        &mut border_batch,
+      );
+    }
+  }
+
+  backdrop_batch.commit();
+  border_batch.commit();
 }
 
 /// Displayed scrolling workspaces, with the monitor area their peeks are

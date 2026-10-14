@@ -2765,6 +2765,10 @@ fn sync_overlays<O: SyncableOverlay>(
       || state
         .animation_manager
         .has_live_resize_tracker(&window.id())
+      || state
+        .animation_manager
+        .scroll_view
+        .owns_window(&window.id())
     {
       continue;
     }

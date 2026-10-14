@@ -1,4 +1,4 @@
-use windows::Win32::Foundation::RECT;
+use windows::Win32::Foundation::{HWND, RECT};
 
 use crate::{
   native_surrogate::to_logical, resize_session::compute_border_inset,
@@ -14,6 +14,8 @@ use crate::{
 pub struct WindowPeek {
   surrogate: NativeSurrogate,
   border_inset: RECT,
+  /// The window's visible frame where it was last placed, clipped or not.
+  frame_rect: Option<Rect>,
   visible_rect: Option<Rect>,
 }
 
@@ -43,6 +45,7 @@ impl WindowPeek {
     Ok(Self {
       surrogate,
       border_inset,
+      frame_rect: None,
       visible_rect: None,
     })
   }
@@ -58,6 +61,21 @@ impl WindowPeek {
       self.border_inset,
       opacity,
     );
+    self.frame_rect = Some(logical);
+  }
+
+  /// The window's visible frame where it was last placed, including any
+  /// part outside the clip, for overlays that frame it.
+  #[must_use]
+  pub fn frame_rect(&self) -> Option<&Rect> {
+    self.frame_rect.as_ref()
+  }
+
+  /// Handle of the peek's own window, which overlays of the window it
+  /// shows sit behind.
+  #[must_use]
+  pub fn hwnd(&self) -> HWND {
+    self.surrogate.hwnd()
   }
 
   /// The on-screen part of the peek, if it shows anything.

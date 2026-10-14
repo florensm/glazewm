@@ -1109,6 +1109,8 @@ impl AnimationManager {
         state.pending_sync.queue_container_to_redraw(window);
       }
     }
+    #[cfg(target_os = "windows")]
+    super::scroll_view::track_overlays(state, config);
 
     // Queue in-progress windows for redraw.
     let active_window_ids: Vec<_> = state
