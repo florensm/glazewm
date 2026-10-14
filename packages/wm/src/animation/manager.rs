@@ -2476,13 +2476,17 @@ impl AnimationManager {
     &self,
     window_id: &Uuid,
     is_resize: bool,
+    is_column: bool,
     target_rect: &Rect,
     previous_target: Option<&Rect>,
     config: &UserConfig,
   ) -> bool {
     let existing_animation = self.get_animation(window_id);
 
-    let (enabled, threshold_px) = if is_resize {
+    let (enabled, threshold_px) = if is_column {
+      let c = &config.value.animations.scroll;
+      (c.enabled, c.threshold_px)
+    } else if is_resize {
       let c = &config.value.animations.window_resize;
       (c.enabled, c.threshold_px)
     } else {
@@ -2536,6 +2540,9 @@ impl AnimationManager {
   /// a moved window would otherwise arrive early and detach from its
   /// still-resizing neighbors.
   ///
+  /// A column of a scrolling layout (`is_column`) moves and resizes as
+  /// `animations.scroll` says instead.
+  ///
   /// Returns [`AnimationPositionResult::Frozen`] while a surrogate overlay
   /// is active so the caller does not reposition the real window on
   /// intermediate frames.
@@ -2544,6 +2551,7 @@ impl AnimationManager {
     window_id: Uuid,
     is_resize: bool,
     cycle_has_resize: bool,
+    is_column: bool,
     target_rect: Rect,
     previous_target: Option<Rect>,
     // Only used on Windows to capture the window for the surrogate.
@@ -2574,6 +2582,7 @@ impl AnimationManager {
     let should_start = self.should_start_new_animation(
       &window_id,
       is_resize,
+      is_column,
       &target_rect,
       previous_target.as_ref(),
       config,
@@ -2598,7 +2607,10 @@ impl AnimationManager {
           || (cycle_has_resize
             && config.value.animations.window_resize.enabled);
 
-        let (duration_ms, easing) = if use_resize_timing {
+        let (duration_ms, easing) = if is_column {
+          let c = &config.value.animations.scroll;
+          (c.duration_ms, c.easing.clone())
+        } else if use_resize_timing {
           let c = &config.value.animations.window_resize;
           (c.duration_ms, c.easing.clone())
         } else {
@@ -3106,7 +3118,7 @@ impl AnimationManager {
 
     let ws_config = &config.value.animations.workspace_switch;
 
-    let duration_ms = ws_config.duration_ms;
+    let duration_ms = ws_config.easing.duration_ms(ws_config.duration_ms);
 
     // Slide each workspace the full monitor dimension. The outgoing
     // workspace exits the screen completely (no residual sliver at the
@@ -3214,7 +3226,9 @@ impl AnimationManager {
       origin_y,
       max_radius: max_radius.max(1),
       start_time: None,
-      duration: Duration::from_millis(u64::from(duration_ms)),
+      duration: Duration::from_millis(u64::from(
+        easing.duration_ms(duration_ms),
+      )),
       easing,
     });
     self.ensure_timer_running();

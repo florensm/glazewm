@@ -16,5 +16,8 @@ uuid = { workspace = true }
 
 wm-platform = { path = "../wm-platform" }
 
+[dev-dependencies]
+serde_json = { workspace = true }
+
 [lints]
 workspace = true

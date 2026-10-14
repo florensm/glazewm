@@ -28,17 +28,27 @@ pub fn animation_progress_at(
     return 1.0;
   }
 
-  #[allow(clippy::cast_precision_loss)]
-  let progress = elapsed.as_millis() as f32 / duration.as_millis() as f32;
+  // Sub-millisecond, so that frames of a fast display each move.
+  let progress = elapsed.as_secs_f32() / duration.as_secs_f32();
   progress.clamp(0.0, 1.0)
 }
 
 /// Applies an easing function to a linear progress value (0.0 to 1.0).
+///
+/// A spring's progress is the share of its own duration (see
+/// `EasingFunction::duration_ms`) that has passed.
 pub fn apply_easing(progress: f32, easing: &EasingFunction) -> f32 {
   match easing {
     EasingFunction::EaseOutSpring => ease_out_spring(progress),
     EasingFunction::CubicBezier(x1, y1, x2, y2) => {
       cubic_bezier(*x1, *y1, *x2, *y2, progress)
+    }
+    EasingFunction::Spring(spring) => {
+      if progress >= 1.0 {
+        return 1.0;
+      }
+
+      spring.value_at(progress * spring.duration().as_secs_f32())
     }
   }
 }

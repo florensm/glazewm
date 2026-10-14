@@ -38,11 +38,15 @@ layouts:
     default_column_display: "normal"
 
 animations:
-  # How the scrolling strip moves.
+  # How a scrolling layout's columns move and resize, the strip
+  # scrolling included. A spring (`spring(damping_ratio, stiffness,
+  # epsilon)`) lasts as long as it takes to settle, so `duration_ms` only
+  # applies to other easings. A spring carries a column's speed over when
+  # it is sent somewhere else mid-move.
   scroll:
     enabled: true
     duration_ms: 220
-    easing: "cubic_bezier(0.16, 1, 0.3, 1)"
+    easing: "spring(1.0, 800, 0.0001)"
 
 workspaces:
   - name: "1"

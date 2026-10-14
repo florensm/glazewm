@@ -21,6 +21,10 @@ animations:
     # overshoot. Examples:
     #   "cubic_bezier(0.16, 1, 0.3, 1)"  - expo-out (fast start, smooth stop)
     #   "cubic_bezier(0.4, 0, 0.2, 1)"   - Material Design standard
+    # Or a damped spring, 'spring(damping_ratio, stiffness, epsilon)' (or
+    # just 'spring', for spring(1.0, 800, 0.0001)), which lasts as long as
+    # it takes to settle instead of `duration_ms`. A damping ratio of 1
+    # settles fastest without overshooting; lower bounces.
     easing: "cubic_bezier(0.2, 0.0, 0.0, 1.0)"
     # Minimum pixel distance required to trigger movement animations.
     # Helps prevent animations from starting on very small position changes.
@@ -28,13 +32,15 @@ animations:
     # Default: 10
     threshold_px: 10
 
-  # Animation settings for a scrolling layout's columns when the strip
-  # scrolls, or columns move past the monitor edge. Same keys as
-  # `window_move`.
+  # Animation settings for how a scrolling layout's columns move and
+  # resize, the strip scrolling included. Same keys as `window_move`.
   scroll:
     enabled: true
     duration_ms: 220
-    easing: "cubic_bezier(0.16, 1, 0.3, 1)"
+    # A damped spring: `spring(damping_ratio, stiffness, epsilon)`. A
+    # spring lasts as long as it takes to settle, so `duration_ms` is
+    # ignored. Any easing of `window_move` works here too.
+    easing: "spring(1.0, 800, 0.0001)"
 
   # Animation settings for window resize operations.
   # When a single layout change both moves and resizes windows, the moved

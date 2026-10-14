@@ -1133,7 +1133,14 @@ fn redraw_containers(
       })
       .unwrap_or(false);
 
-    let anim_enabled = if is_resize {
+    // Columns of a scrolling layout move and resize as `scroll` says.
+    let is_column =
+      crate::layout::scrolling::column_of(&window.as_container())
+        .is_some();
+
+    let anim_enabled = if is_column {
+      config.value.animations.scroll.enabled
+    } else if is_resize {
       config.value.animations.window_resize.enabled
     } else {
       config.value.animations.window_move.enabled
@@ -1299,6 +1306,7 @@ fn redraw_containers(
           window.id(),
           is_resize,
           cycle_has_resize,
+          is_column,
           target_rect.clone(),
           previous_target,
           &*native_ref,
@@ -1314,6 +1322,7 @@ fn redraw_containers(
         window.id(),
         is_resize,
         cycle_has_resize,
+        is_column,
         target_rect.clone(),
         previous_target,
         u8::MAX,

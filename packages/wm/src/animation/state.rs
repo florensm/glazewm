@@ -3,7 +3,7 @@ use std::{
   time::{Duration, Instant},
 };
 
-use wm_common::EasingFunction;
+use wm_common::{EasingFunction, SpringParams};
 use wm_platform::{OpacityValue, Rect};
 
 use crate::animation::engine::{animation_progress_at, apply_easing};
@@ -59,6 +59,9 @@ pub struct WindowAnimationState {
 
 impl WindowAnimationState {
   /// Creates a new movement animation.
+  ///
+  /// A spring easing lasts as long as it takes to settle, rather than
+  /// `duration_ms`.
   pub fn new_movement(
     start_rect: Rect,
     target_rect: Rect,
@@ -68,7 +71,9 @@ impl WindowAnimationState {
     Self {
       start_time: Cell::new(None),
       start_delay: Duration::ZERO,
-      duration: Duration::from_millis(u64::from(duration_ms)),
+      duration: Duration::from_millis(u64::from(
+        easing.duration_ms(duration_ms),
+      )),
       easing,
       start_rect,
       target_rect,
@@ -191,9 +196,9 @@ impl WindowAnimationState {
   /// starts at the speed this one has there, so retargeting it mid-flight
   /// carries on instead of jolting.
   ///
-  /// Only a cubic bezier can start at a given speed: its first control
-  /// point is moved to set the curve's initial slope, and its second,
-  /// which shapes the ending, is kept. Other easings start from rest.
+  /// A cubic bezier gets there by moving its first control point to set
+  /// the curve's initial slope, keeping its second, which shapes the
+  /// ending. A spring starts at that speed. Other easings start from rest.
   pub fn retargeted(
     &self,
     target: Rect,
@@ -209,6 +214,14 @@ impl WindowAnimationState {
           self.matching_slope(&current, &target, duration_ms, now);
         let x1 = x1.max(MIN_CONTROL_X);
         EasingFunction::CubicBezier(x1, slope * x1, x2, y2)
+      }
+      EasingFunction::Spring(spring) => {
+        // The slope over one second is the speed per second.
+        let velocity = self.matching_slope(&current, &target, 1000, now);
+        EasingFunction::Spring(SpringParams {
+          initial_velocity: velocity,
+          ..spring
+        })
       }
       other => other,
     };
@@ -381,6 +394,68 @@ mod tests {
 
     let after = anim.eased_progress_at(t0 + Duration::from_millis(99));
     assert_eq!(after, 1.0);
+  }
+
+  fn spring() -> EasingFunction {
+    EasingFunction::Spring(wm_common::SpringParams::default())
+  }
+
+  /// A spring lasts as long as it takes to settle, not the configured
+  /// duration, and arrives on its own.
+  #[test]
+  fn spring_runs_its_own_length() {
+    let anim = WindowAnimationState::new_movement(
+      Rect::from_xy(0, 0, 100, 100),
+      Rect::from_xy(500, 0, 100, 100),
+      10,
+      spring(),
+    );
+    assert!(anim.duration > Duration::from_millis(250));
+
+    let t0 = Instant::now();
+    anim.start_clock(t0);
+    let early = anim.eased_progress_at(t0 + Duration::from_millis(30));
+    assert!(early > 0.2 && early < 0.9, "got {early}");
+    assert_eq!(anim.eased_progress_at(t0 + anim.duration), 1.0);
+  }
+
+  /// Retargeting a moving spring keeps it going rather than starting
+  /// from rest.
+  #[test]
+  fn retargeted_spring_keeps_its_speed() {
+    let anim = WindowAnimationState::new_movement(
+      Rect::from_xy(0, 0, 100, 100),
+      Rect::from_xy(1_000, 0, 100, 100),
+      0,
+      spring(),
+    );
+    let t0 = Instant::now();
+    anim.start_clock(t0);
+    let now = t0 + Duration::from_millis(40);
+
+    let (current, _) = anim.current_state_at(now);
+    let target = Rect::from_xy(current.x() + 1_000, 0, 100, 100);
+    let retargeted = anim.retargeted(target, 0, spring(), now);
+
+    let EasingFunction::Spring(params) = retargeted.easing else {
+      panic!("not a spring");
+    };
+    assert!(params.initial_velocity > 0.);
+
+    // Moving already, it covers more ground at first than from rest.
+    let from_rest = WindowAnimationState::new_movement(
+      current.clone(),
+      retargeted.target_rect.clone(),
+      0,
+      spring(),
+    );
+    let (now2, later) = (Instant::now(), Duration::from_millis(10));
+    retargeted.start_clock(now2);
+    from_rest.start_clock(now2);
+    assert!(
+      retargeted.eased_progress_at(now2 + later)
+        > from_rest.eased_progress_at(now2 + later)
+    );
   }
 
   /// `start_delay` holds the animation at progress 0.0 until the delay
