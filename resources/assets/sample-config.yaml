@@ -727,6 +727,11 @@ keybindings:
   - commands: ["toggle-overview"]
     bindings: ["alt+w"]
 
+  # Or open it as a shelf of workspaces along the top, with the selected one
+  # large on a stage below. Tab cycles through carousel, grid and shelf.
+  # - commands: ["toggle-overview --shelf"]
+  #   bindings: ["alt+w"]
+
   # Change the focused window to be floating.
   - commands: ["toggle-floating --centered"]
     bindings: ["alt+shift+space"]

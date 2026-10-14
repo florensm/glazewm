@@ -49,11 +49,11 @@ use windows::{
 use crate::{
   overview_chrome::{
     card_size, draw_card, draw_ghost, draw_hint, with_alpha, CardPicture,
-    TilePicture, GHOST_SIZE, HINT_HEIGHT,
+    TilePicture, HINT_HEIGHT,
   },
   overview_layout::{
-    carousel, cover_crop, grid, Camera, CardMetrics, CardSlot, CardView,
-    GridCells, Placement, RectF, Spring, Tile, Zoom,
+    carousel, cover_crop, grid, shelf, Camera, CardMetrics, CardSlot,
+    CardView, GridCells, Placement, RectF, Spring, Tile, Zoom, GHOST_SIZE,
   },
   overview_state::{HintTone, Hit, Interaction, Key, Mode},
   overview_tab_bars::CardTabBar,
@@ -173,10 +173,12 @@ impl NativeOverview {
   /// Switches the open overview to `layout`, or cancels it if it already
   /// shows that.
   pub fn toggle(&self, layout: OverviewLayoutMode) {
-    self.post(
-      WM_TOGGLE_OVERVIEW,
-      usize::from(layout == OverviewLayoutMode::Grid),
-    );
+    let layout = match layout {
+      OverviewLayoutMode::Carousel => 0,
+      OverviewLayoutMode::Grid => 1,
+      OverviewLayoutMode::Shelf => 2,
+    };
+    self.post(WM_TOGGLE_OVERVIEW, layout);
   }
 
   /// Closes the overview once its zoom into the picked workspace ends.
@@ -436,9 +438,8 @@ struct Overview {
   hint_drawn: Option<(String, HintTone)>,
   hint_y: Spring,
 
-  /// Top edge of the special workspace's docked card, from the last
-  /// layout.
-  dock_top: f32,
+  /// Bottom edge of a carried window's picture, from the last layout.
+  park_bottom: f32,
   ghost: Option<Ghost>,
 
   /// The zoom out on open or into a card on close, and when it started,
@@ -487,7 +488,7 @@ impl Overview {
       hint: None,
       hint_drawn: None,
       hint_y: Spring::new(0.0, SETTLE_MS, 0.25),
-      dock_top: f32::INFINITY,
+      park_bottom: f32::INFINITY,
       ghost: None,
       zoom: None,
       last_tick: Instant::now(),
@@ -873,8 +874,15 @@ impl Overview {
       OverviewLayoutMode::Grid => {
         grid(&self.metrics, &slots, &self.interaction.grid, is_receiving)
       }
+      OverviewLayoutMode::Shelf => shelf(
+        &self.metrics,
+        &slots,
+        self.interaction.staged,
+        self.interaction.drop_target(),
+        is_receiving,
+      ),
     };
-    self.dock_top = targets.dock_top;
+    self.park_bottom = targets.park_bottom;
 
     for (index, (card, target)) in
       self.cards.iter_mut().zip(&targets.cards).enumerate()
@@ -925,10 +933,9 @@ impl Overview {
         ghost.x.snap(drag.position.0 - width / 2.0);
         ghost.y.snap(drag.position.1 - height / 2.0);
       } else {
-        // Parked at the bottom while carrying, above the dock.
+        // Parked out of the cards' way while carrying.
         ghost.x.target = (view_width - width) / 2.0;
-        ghost.y.target =
-          view_height.min(self.dock_top) - height - px(40.0);
+        ghost.y.target = view_height.min(self.park_bottom) - height;
       }
     }
   }
@@ -1438,7 +1445,7 @@ impl Overview {
     if self.interaction.layout == layout {
       self.after_input(Some(OverviewAction::Cancel));
     } else {
-      self.interaction.layout = layout;
+      self.interaction.set_layout(layout);
       self.after_input(None);
     }
   }
@@ -1542,10 +1549,10 @@ impl Overview {
           unsafe { Box::from_raw(wparam.0 as *mut OverviewFrame) };
         self.update(*frame);
       }
-      WM_TOGGLE_OVERVIEW if is_open => self.on_toggle(if wparam.0 == 1 {
-        OverviewLayoutMode::Grid
-      } else {
-        OverviewLayoutMode::Carousel
+      WM_TOGGLE_OVERVIEW if is_open => self.on_toggle(match wparam.0 {
+        1 => OverviewLayoutMode::Grid,
+        2 => OverviewLayoutMode::Shelf,
+        _ => OverviewLayoutMode::Carousel,
       }),
       WM_HIDE_OVERVIEW => {
         // A closing overview hides itself once its zoom ends.

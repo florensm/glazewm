@@ -127,6 +127,10 @@ pub enum OverviewLayoutMode {
 
   /// Every workspace at once.
   Grid,
+
+  /// Workspaces in a shelf along the top, the selected one shown large on
+  /// a stage below it.
+  Shelf,
 }
 
 /// What the user did in the overview.

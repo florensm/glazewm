@@ -255,6 +255,11 @@ pub enum InvokeCommand {
     /// while open, switches to it instead of closing.
     #[clap(long, action)]
     grid: bool,
+
+    /// Open on the shelf of workspaces with the selected one on a stage
+    /// below; while open, switches to it instead of closing.
+    #[clap(long, action, conflicts_with = "grid")]
+    shelf: bool,
   },
   ToggleTiling,
   /// Toggle the focused tiling window into or out of a stack container.
