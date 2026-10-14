@@ -859,12 +859,15 @@ impl Overview {
     // The special workspace's dock grows while a window is carried or
     // dragged, to be dropped on.
     let is_receiving = self.interaction.floating().is_some();
+    // Looking inside the special workspace leaves the row as it is.
+    let is_zoomed = self.interaction.mode == Mode::Windows
+      && self.interaction.selected == self.interaction.row_selected;
     let targets = match self.interaction.layout {
       OverviewLayoutMode::Carousel => carousel(
         &self.metrics,
         &slots,
-        self.interaction.selected,
-        self.interaction.mode == Mode::Windows,
+        self.interaction.row_selected,
+        is_zoomed,
         is_receiving,
       ),
       OverviewLayoutMode::Grid => {

@@ -300,11 +300,11 @@ fn dock_reserve(metrics: &CardMetrics, slots: &[CardSlot]) -> f32 {
 
 /// Places the special workspace's cards on the dock and the others with
 /// `place`, which gets only the others' slots and, as `selected`, the
-/// index among them to center on.
+/// index among them of `centered` to center on.
 fn with_dock(
   metrics: &CardMetrics,
   slots: &[CardSlot],
-  selected: usize,
+  centered: usize,
   is_receiving: bool,
   place: impl FnOnce(&[CardSlot], usize) -> (Vec<Placement>, f32),
 ) -> Targets {
@@ -315,10 +315,9 @@ fn with_dock(
     .map(|(index, _)| index)
     .collect::<Vec<_>>();
 
-  // With the special card selected, the row stays on its last card.
   let regular_selected = regular
     .iter()
-    .position(|index| *index >= selected)
+    .position(|index| *index >= centered)
     .unwrap_or(regular.len())
     .min(regular.len().saturating_sub(1));
 
@@ -354,22 +353,22 @@ fn with_dock(
   }
 }
 
-/// One row of cards with the `selected` one in the middle at full size,
+/// One row of cards with the `centered` one in the middle at full size,
 /// and the special workspace's card docked below.
 ///
-/// `zoomed` is for looking inside the selected workspace: it grows to
+/// `zoomed` is for looking inside the centered workspace: it grows to
 /// 1.5x and its neighbours sit far back. `is_receiving` grows the dock
 /// while a window is carried or dragged.
 pub(crate) fn carousel(
   metrics: &CardMetrics,
   slots: &[CardSlot],
-  selected: usize,
+  centered: usize,
   zoomed: bool,
   is_receiving: bool,
 ) -> Targets {
   let reserve = dock_reserve(metrics, slots);
 
-  with_dock(metrics, slots, selected, is_receiving, |slots, selected| {
+  with_dock(metrics, slots, centered, is_receiving, |slots, selected| {
     let scale_of = |index: usize| match (index == selected, zoomed) {
       (true, true) => 1.5,
       (true, false) => 1.0,
@@ -1355,17 +1354,6 @@ mod tests {
     assert!(receiving[2].w > resting[2].w * 1.5);
     assert!(receiving[2].y > receiving[0].bottom());
     assert!(receiving[2].bottom() <= 1080.0);
-  }
-
-  #[test]
-  fn selecting_the_special_card_keeps_the_row_in_place() {
-    let metrics = metrics();
-    let mut slots = slots(&metrics, 4);
-    slots[3].is_special = true;
-
-    let on_last = carousel(&metrics, &slots, 2, false, false);
-    let on_special = carousel(&metrics, &slots, 3, false, false);
-    assert_eq!(on_last.cards[..3], on_special.cards[..3]);
   }
 
   #[test]

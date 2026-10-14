@@ -117,9 +117,10 @@ pub(crate) struct Interaction {
   /// Where the grid puts each card, for moving a row up or down.
   pub grid: GridCells,
 
-  /// Card selected before moving down to the special workspace's dock,
-  /// which moving up goes back to.
-  above_dock: Option<usize>,
+  /// Card of the row of workspaces the row is centered on: the selected
+  /// one, or while the special workspace's dock is selected, the one it
+  /// was entered from, which moving up goes back to.
+  pub row_selected: usize,
 }
 
 impl Interaction {
@@ -129,11 +130,13 @@ impl Interaction {
     layout: OverviewLayoutMode,
     drag_threshold: f32,
   ) -> Self {
+    let selected = workspaces
+      .iter()
+      .position(|workspace| workspace.is_focused)
+      .unwrap_or(0);
+
     Self {
-      selected: workspaces
-        .iter()
-        .position(|workspace| workspace.is_focused)
-        .unwrap_or(0),
+      selected,
       mode: Mode::Spaces,
       layout,
       selected_window: None,
@@ -147,7 +150,7 @@ impl Interaction {
       drag_threshold,
       digit_workspaces: Vec::new(),
       grid: GridCells::default(),
-      above_dock: None,
+      row_selected: row_card(workspaces, selected, None),
     }
   }
 
@@ -167,6 +170,8 @@ impl Interaction {
       .or_else(|| new.iter().position(|workspace| workspace.is_focused))
       .unwrap_or(0);
     self.hover = self.hover.and_then(remap);
+    self.row_selected =
+      row_card(new, self.selected, remap(self.row_selected));
 
     let exists = |hwnd: isize| find(new, hwnd).is_some();
 
@@ -429,12 +434,15 @@ impl Interaction {
     Some(action)
   }
 
-  fn select(&mut self, index: usize) {
+  fn select(&mut self, index: usize, workspaces: &[OverviewWorkspace]) {
     if index != self.selected {
       self.selected = index;
       // The window cursor belongs to one workspace.
       self.selected_window = None;
     }
+
+    self.row_selected =
+      row_card(workspaces, index, Some(self.row_selected));
   }
 
   /// Moves along the row of workspaces, which the special workspace's
@@ -442,7 +450,7 @@ impl Interaction {
   fn step(&mut self, delta: isize, workspaces: &[OverviewWorkspace]) {
     if is_special(workspaces, self.selected) {
       if let Some(index) = self.leave_dock(workspaces) {
-        self.select(index);
+        self.select(index, workspaces);
       }
       return;
     }
@@ -455,19 +463,16 @@ impl Interaction {
     let position = position
       .saturating_add_signed(delta)
       .min(row.len().saturating_sub(1));
-    self.select(row[position]);
+    self.select(row[position], workspaces);
   }
 
   /// The card to go back to from the dock.
-  fn leave_dock(
-    &mut self,
-    workspaces: &[OverviewWorkspace],
-  ) -> Option<usize> {
-    self
-      .above_dock
-      .take()
-      .filter(|index| *index < workspaces.len())
-      .or_else(|| row_indices(workspaces).last().copied())
+  fn leave_dock(&self, workspaces: &[OverviewWorkspace]) -> Option<usize> {
+    Some(self.row_selected)
+      .filter(|index| {
+        *index < workspaces.len() && !is_special(workspaces, *index)
+      })
+      .or_else(|| row_indices(workspaces).first().copied())
   }
 
   fn horizontal(
@@ -512,10 +517,7 @@ impl Interaction {
     };
 
     if let Some(index) = target {
-      if !is_on_dock && is_special(workspaces, index) {
-        self.above_dock = Some(self.selected);
-      }
-      self.select(index);
+      self.select(index, workspaces);
     }
   }
 
@@ -537,7 +539,7 @@ impl Interaction {
       let row = row_indices(workspaces);
       let index = if is_last { row.last() } else { row.first() };
       if let Some(index) = index {
-        self.select(*index);
+        self.select(*index, workspaces);
       }
     }
   }
@@ -630,7 +632,7 @@ impl Interaction {
     let Some((index, window)) = matches.get(next) else {
       return;
     };
-    self.select(*index);
+    self.select(*index, workspaces);
 
     // While carrying, a search only aims the drop; selecting the match
     // would make the space bar pick it up instead.
@@ -914,6 +916,25 @@ fn match_score(window: &OverviewWindow, query: &str) -> Option<usize> {
     .into_iter()
     .filter_map(|text| text.to_lowercase().find(&query))
     .min()
+}
+
+/// The row card to center the row on with card `selected` selected: that
+/// card, or for the special workspace's, `previous` (if still a row card)
+/// or else the first.
+fn row_card(
+  workspaces: &[OverviewWorkspace],
+  selected: usize,
+  previous: Option<usize>,
+) -> usize {
+  let is_row_card = |index: &usize| {
+    *index < workspaces.len() && !is_special(workspaces, *index)
+  };
+
+  Some(selected)
+    .filter(is_row_card)
+    .or_else(|| previous.filter(is_row_card))
+    .or_else(|| row_indices(workspaces).first().copied())
+    .unwrap_or(0)
 }
 
 /// Whether card `index` is the special workspace's, docked below the rest.
@@ -1639,6 +1660,10 @@ mod tests {
 
       press(&mut state, &[Key::Home, Key::Down]);
       assert_eq!(state.selected, 3, "down goes to the dock");
+      assert_eq!(
+        state.row_selected, 0,
+        "the row stays on the card the dock was entered from"
+      );
       press(&mut state, &[Key::Down]);
       assert_eq!(state.selected, 3);
       press(&mut state, &[Key::Up]);
@@ -1647,6 +1672,22 @@ mod tests {
       press(&mut state, &[Key::Down, Key::Right]);
       assert_eq!(state.selected, 0, "sideways leaves the dock too");
     }
+  }
+
+  #[test]
+  fn opened_on_the_special_workspace_the_row_starts_at_its_first_card() {
+    let mut workspaces = with_special();
+    for workspace in &mut workspaces {
+      workspace.is_focused = workspace.is_special;
+    }
+
+    let mut state =
+      Interaction::new(&workspaces, OverviewLayoutMode::Carousel, 6.0);
+    assert_eq!(state.selected, 3);
+    assert_eq!(state.row_selected, 0);
+
+    state.key(Key::Up, &workspaces);
+    assert_eq!(state.selected, 0);
   }
 
   #[test]
