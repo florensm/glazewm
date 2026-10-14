@@ -176,7 +176,7 @@ pub fn sync_scroll_view(state: &mut WmState, config: &UserConfig) {
   view.last_rects.retain(|id, _| is_known(id));
 
   let (opacity, corner_style, _, _) = surrogate_effects_for(false, config);
-  let move_config = &config.value.animations.window_move;
+  let scroll_config = &config.value.animations.scroll;
   let mut needs_flush = false;
   let mut started_moving = Vec::new();
 
@@ -200,7 +200,7 @@ pub fn sync_scroll_view(state: &mut WmState, config: &UserConfig) {
     // or is already drawn by a peek; moves that stay on screen are left
     // to the regular per-window animations.
     let crosses_edge = |rect: &Rect| !clip.contains_rect(rect);
-    let strip_moves = move_config.enabled
+    let strip_moves = scroll_config.enabled
       && moves.iter().any(|(window, from, target)| {
         from != target
           && (crosses_edge(from)
@@ -247,11 +247,11 @@ pub fn sync_scroll_view(state: &mut WmState, config: &UserConfig) {
         from.clone(),
         target,
         if is_moving {
-          move_config.duration_ms
+          scroll_config.duration_ms
         } else {
           0
         },
-        move_config.easing.clone(),
+        scroll_config.easing.clone(),
       );
       if !is_moving {
         motion.start_clock(Instant::now());

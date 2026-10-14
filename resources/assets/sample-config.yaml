@@ -28,6 +28,14 @@ animations:
     # Default: 10
     threshold_px: 10
 
+  # Animation settings for a scrolling layout's columns when the strip
+  # scrolls, or columns move past the monitor edge. Same keys as
+  # `window_move`.
+  scroll:
+    enabled: true
+    duration_ms: 220
+    easing: "cubic_bezier(0.16, 1, 0.3, 1)"
+
   # Animation settings for window resize operations.
   # When a single layout change both moves and resizes windows, the moved
   # windows share this resize timing so all edges stay in lock-step.

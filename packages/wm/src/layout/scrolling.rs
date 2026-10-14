@@ -12,7 +12,7 @@ use wm_platform::Rect;
 
 use super::Insertion;
 use crate::{
-  models::{Container, TilingContainer, Workspace},
+  models::{Container, Monitor, TilingContainer, Workspace},
   traits::{CommonGetters, PositionGetters, TilingSizeGetters},
   wm_state::WmState,
 };
@@ -129,7 +129,13 @@ fn update_offset(workspace: &Workspace, offset: i32) -> bool {
   is_changed
 }
 
-/// Whether `container`'s column lies within its workspace horizontally.
+/// Whether `container`'s column is shown by its real window.
+///
+/// That is when it lies within its workspace horizontally, or when the
+/// part past the workspace only reaches over monitor edges with no other
+/// monitor behind them, where it simply runs off screen. A column that
+/// would reach onto another monitor, or is entirely off screen, is
+/// hidden instead.
 ///
 /// Containers outside a scrolling workspace are always on screen.
 pub fn is_on_screen(container: &Container) -> bool {
@@ -145,11 +151,50 @@ pub fn is_on_screen(container: &Container) -> bool {
     return true;
   };
 
-  workspace.to_rect().is_ok_and(|workspace_rect| {
-    rect.x() >= workspace_rect.x()
-      && rect.x() + rect.width()
-        <= workspace_rect.x() + workspace_rect.width()
+  let Ok(workspace_rect) = workspace.to_rect() else {
+    return true;
+  };
+
+  if rect.x() >= workspace_rect.x()
+    && rect.x() + rect.width()
+      <= workspace_rect.x() + workspace_rect.width()
+  {
+    return true;
+  }
+
+  workspace.monitor().is_some_and(|monitor| {
+    let bounds = monitor.native_properties().bounds;
+
+    rect.intersection_area(&bounds) > 0
+      && !overflows_onto_other_monitor(&rect, &monitor)
   })
+}
+
+/// Whether the parts of `rect` left or right of `monitor` cover any other
+/// monitor.
+fn overflows_onto_other_monitor(rect: &Rect, monitor: &Monitor) -> bool {
+  let bounds = monitor.native_properties().bounds;
+
+  let overflows = [
+    Rect::from_ltrb(rect.left, rect.top, bounds.left, rect.bottom),
+    Rect::from_ltrb(bounds.right, rect.top, rect.right, rect.bottom),
+  ];
+
+  let others = monitor
+    .parent()
+    .map(|root| root.children())
+    .unwrap_or_default()
+    .into_iter()
+    .filter_map(|child| child.as_monitor().cloned())
+    .filter(|other| other.id() != monitor.id());
+
+  others
+    .map(|other| other.native_properties().bounds)
+    .any(|other| {
+      overflows
+        .iter()
+        .any(|overflow| overflow.intersection_area(&other) > 0)
+    })
 }
 
 /// Queues every scrolling workspace whose scroll offset has to change
@@ -168,6 +213,7 @@ pub fn sync_scroll_offsets(state: &mut WmState) -> anyhow::Result<()> {
 #[cfg(test)]
 mod tests {
   use wm_common::{Layout, TilingDirection, WindowState};
+  use wm_platform::Rect;
 
   use super::{follow_focus, is_on_screen};
   use crate::{
@@ -177,6 +223,7 @@ mod tests {
     },
     layout::{attach, insertion_target},
     models::{Monitor, SplitContainer, TilingWindow, Workspace},
+    test_utils::MOCK_MONITOR_WIDTH,
     traits::{CommonGetters, PositionGetters, TilingSizeGetters},
     user_config::UserConfig,
     wm_state::WmState,
@@ -308,5 +355,43 @@ mod tests {
 
     assert_eq!(top.parent().unwrap().id(), column.id());
     assert_eq!(top.to_rect().unwrap().x(), bottom.to_rect().unwrap().x());
+  }
+
+  /// A scrolling workspace whose second column runs past the right edge
+  /// of its monitor, optionally with another monitor to the right.
+  fn edge_setup(has_right_neighbor: bool) -> (WmState, TilingWindow) {
+    let (first, second) =
+      (TilingWindow::mock().call(), TilingWindow::mock().call());
+    let workspace = Workspace::mock()
+      .layout(Layout::Scrolling)
+      .tiling_containers(vec![first.clone().into(), second.clone().into()])
+      .call();
+    second.set_tiling_size(0.7);
+
+    let mut monitors =
+      vec![Monitor::mock().workspaces(vec![workspace]).call()];
+    if has_right_neighbor {
+      let bounds = Rect::from_xy(MOCK_MONITOR_WIDTH, 0, 1000, 1000);
+      monitors.push(
+        Monitor::mock()
+          .bounds(bounds.clone())
+          .working_area(bounds)
+          .call(),
+      );
+    }
+
+    (WmState::mock(monitors), second)
+  }
+
+  #[test]
+  fn a_column_past_a_free_edge_keeps_its_real_window() {
+    let (_state, second) = edge_setup(false);
+    assert!(is_on_screen(&second.into()));
+  }
+
+  #[test]
+  fn a_column_reaching_onto_another_monitor_is_hidden() {
+    let (_state, second) = edge_setup(true);
+    assert!(!is_on_screen(&second.into()));
   }
 }

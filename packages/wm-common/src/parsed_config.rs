@@ -1168,6 +1168,9 @@ pub struct AnimationsConfig {
   /// Animation settings for pure window translations (position changes
   /// only).
   pub window_move: AnimationTypeConfig,
+  /// Animation settings for a scrolling layout's columns when the strip
+  /// scrolls or columns move across the monitor edge.
+  pub scroll: AnimationTypeConfig,
   /// Animation settings for operations that change window size.
   pub window_resize: WindowResizeConfig,
   /// Animation settings for when a new window appears.
@@ -1231,6 +1234,11 @@ impl Default for AnimationsConfig {
   fn default() -> Self {
     AnimationsConfig {
       window_move: AnimationTypeConfig::default(),
+      scroll: AnimationTypeConfig {
+        duration_ms: 220,
+        easing: EasingFunction::CubicBezier(0.16, 1.0, 0.3, 1.0),
+        ..AnimationTypeConfig::default()
+      },
       window_resize: WindowResizeConfig::default(),
       window_open: WindowOpenConfig::default(),
       workspace_switch: WorkspaceSwitchAnimationConfig::default(),
