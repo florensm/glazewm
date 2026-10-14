@@ -279,7 +279,8 @@ fn sync_focus(
   let native_window = focused_container.as_window_container().ok();
 
   // Defer `SetForegroundWindow` while the focused window is covered by an
-  // active surrogate (workspace-switch or resize). The OS may
+  // active surrogate (workspace-switch, resize, or a scrolling layout's
+  // moving column). The OS may
   // asynchronously remove the DWM cloak when a window becomes the
   // foreground window, causing the slow `IApplicationView::SetCloak`
   // path to fire on the next animation tick and blocking the frame loop.
@@ -296,7 +297,13 @@ fn sync_focus(
       .animation_manager
       .resize_sessions
       .contains_key(&window.id());
-    if is_ws_incoming || has_resize_session {
+    if is_ws_incoming
+      || has_resize_session
+      || state
+        .animation_manager
+        .scroll_view
+        .owns_window(&window.id())
+    {
       return Ok(None);
     }
   }

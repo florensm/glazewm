@@ -1094,14 +1094,19 @@ impl AnimationManager {
       animation.start_clock(clock_origin);
     }
 
-    // Moved columns that end fully on screen get their real window back
-    // in the redraw below.
+    // Moved columns that end shown get their real window back in the
+    // redraw below, and focus deferred while they moved lands then.
     #[cfg(target_os = "windows")]
-    for window_id in state
+    let handed_back = state
       .animation_manager
       .scroll_view
-      .tick(frame_now, clock_origin)
-    {
+      .tick(frame_now, clock_origin);
+    #[cfg(target_os = "windows")]
+    if !handed_back.is_empty() {
+      state.pending_sync.queue_focus_change();
+    }
+    #[cfg(target_os = "windows")]
+    for window_id in handed_back {
       if let Some(window) = state
         .container_by_id(window_id)
         .and_then(|container| container.as_window_container().ok())
