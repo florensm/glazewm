@@ -2597,9 +2597,10 @@ impl AnimationManager {
         // Start from the current animated position on cancel-and-replace
         // so the animation does not jump back to the original
         // start.
+        let now = Instant::now();
         let start_rect = existing_animation
           .as_ref()
-          .map(|a| a.current_rect())
+          .map(|a| a.current_state_at(now).0)
           .unwrap_or_else(|| prev_target.clone());
 
         // Share the resize timing across the whole cycle when any window
@@ -2620,12 +2621,24 @@ impl AnimationManager {
           (c.duration_ms, c.easing.clone())
         };
 
-        let animation = WindowAnimationState::new_movement(
-          start_rect.clone(),
-          target_rect.clone(),
-          duration_ms,
-          easing,
-        );
+        // A column already moving carries on at its speed toward the new
+        // target, as the strip's columns do, rather than restarting.
+        let animation = match &existing_animation {
+          Some(existing) if is_column && !existing.is_complete() => {
+            existing.retargeted(
+              target_rect.clone(),
+              duration_ms,
+              easing,
+              now,
+            )
+          }
+          _ => WindowAnimationState::new_movement(
+            start_rect.clone(),
+            target_rect.clone(),
+            duration_ms,
+            easing,
+          ),
+        };
         self.start_animation(window_id, animation);
 
         // Redirect an in-flight surrogate session to the new target, or

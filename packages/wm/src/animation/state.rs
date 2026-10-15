@@ -249,10 +249,6 @@ impl WindowAnimationState {
     duration_ms: u32,
     now: Instant,
   ) -> f32 {
-    let Some(earlier) = now.checked_sub(SPEED_SAMPLE) else {
-      return 0.0;
-    };
-
     let deltas = |from: &Rect, to: &Rect| {
       [
         to.x() - from.x(),
@@ -272,13 +268,37 @@ impl WindowAnimationState {
       return 0.0;
     }
 
-    let progress_per_ms = (self.eased_progress_at(now)
-      - self.eased_progress_at(earlier))
-      / SPEED_SAMPLE.as_secs_f32()
-      / 1000.0;
-    let speed = progress_per_ms * old[axis] as f32;
+    let speed = self.progress_per_ms(now) * old[axis] as f32;
 
     speed * duration_ms as f32 / new[axis] as f32
+  }
+
+  /// Eased progress per millisecond at `now`, measured over the moments
+  /// before it.
+  ///
+  /// An animation whose clock hasn't started (e.g. one retargeted earlier
+  /// in the same frame) still reads 0 there, so it gets the speed it
+  /// starts out at instead.
+  fn progress_per_ms(&self, now: Instant) -> f32 {
+    if self.start_time.get().is_none() {
+      let duration_ms = self.duration.as_secs_f32() * 1000.0;
+      if !self.start_delay.is_zero() || duration_ms <= 0.0 {
+        return 0.0;
+      }
+
+      let step = 1e-3;
+      let rise =
+        apply_easing(step, &self.easing) - apply_easing(0.0, &self.easing);
+      return rise / step / duration_ms;
+    }
+
+    let Some(earlier) = now.checked_sub(SPEED_SAMPLE) else {
+      return 0.0;
+    };
+
+    (self.eased_progress_at(now) - self.eased_progress_at(earlier))
+      / SPEED_SAMPLE.as_secs_f32()
+      / 1000.0
   }
 
   /// Whether the animation has completed.
@@ -464,6 +484,38 @@ mod tests {
       retargeted.eased_progress_at(now2 + later)
         > from_rest.eased_progress_at(now2 + later)
     );
+  }
+
+  /// Retargeted twice before a frame starts its clock, a spring keeps the
+  /// speed the first retarget handed it.
+  #[test]
+  fn retargeting_twice_in_a_frame_keeps_the_speed() {
+    let anim = WindowAnimationState::new_movement(
+      Rect::from_xy(0, 0, 100, 100),
+      Rect::from_xy(1_000, 0, 100, 100),
+      200,
+      spring(),
+    );
+    let t0 = Instant::now();
+    anim.start_clock(t0);
+    let now = t0 + Duration::from_millis(40);
+
+    let (current, _) = anim.current_state_at(now);
+    let to = |distance| Rect::from_xy(current.x() + distance, 0, 100, 100);
+    let first = anim.retargeted(to(1_000), 200, spring(), now);
+    let second = first.retargeted(to(2_000), 200, spring(), now);
+
+    let (EasingFunction::Spring(first), EasingFunction::Spring(second)) =
+      (first.easing, second.easing)
+    else {
+      panic!("not springs");
+    };
+
+    // The same speed in pixels, over twice the distance.
+    let (expected, actual) =
+      (first.initial_velocity / 2., second.initial_velocity);
+    assert!(expected > 0.);
+    assert!((actual - expected).abs() < expected * 0.05, "{actual}");
   }
 
   /// A spring sent back the way it came carries on a moment before
