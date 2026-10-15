@@ -22,11 +22,17 @@ mod native_window;
 mod overview_layout;
 #[allow(dead_code)]
 mod overview_state;
+#[cfg(target_os = "windows")]
+#[allow(dead_code)]
+mod overview_thumbnails;
 #[allow(dead_code)]
 mod paint;
 pub mod perf;
 mod platform_event;
 mod platform_impl;
+#[cfg(target_os = "windows")]
+#[allow(dead_code)]
+mod surface;
 // Only used through the Windows-only tab bars and overview.
 #[allow(dead_code)]
 mod tab_layout;

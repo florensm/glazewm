@@ -108,8 +108,20 @@ impl Thumbnail {
     Some(thumbnail)
   }
 
-  /// Shows `source` (in the source window's coordinates) at `dest`.
-  pub fn place(&mut self, source: RECT, dest: RECT, opacity: u8) {
+  /// Shows `source` (in the source window's coordinates) at `dest`, cut
+  /// to the part of `dest` inside `clip`.
+  pub fn place(
+    &mut self,
+    source: RECT,
+    dest: RECT,
+    clip: &RECT,
+    opacity: u8,
+  ) {
+    let Some((source, dest)) = clip_rects(source, dest, clip) else {
+      self.hide();
+      return;
+    };
+
     if self.placed == Some((source, dest, opacity)) {
       return;
     }
@@ -206,8 +218,8 @@ impl Picture {
     }
   }
 
-  /// Shows the whole picture at `dest` on the overview.
-  pub fn place(&mut self, dest: &RectF, opacity: f32) {
+  /// Shows the whole picture at `dest` on the overview, cut to `clip`.
+  pub fn place(&mut self, dest: &RectF, clip: &RectF, opacity: f32) {
     let (width, height) = self.size();
     if let Some(thumbnail) = &mut self.thumbnail {
       thumbnail.place(
@@ -217,6 +229,7 @@ impl Picture {
           ..Default::default()
         },
         to_win32(dest),
+        &to_win32(clip),
         to_opacity(opacity),
       );
     }
@@ -301,8 +314,8 @@ impl Preview {
     }
   }
 
-  /// Shows the preview at `dest` on the overview.
-  pub fn place(&mut self, dest: &RectF, opacity: f32) {
+  /// Shows the preview at `dest` on the overview, cut to `clip`.
+  pub fn place(&mut self, dest: &RectF, clip: &RectF, opacity: f32) {
     let source = self.source();
     let (source, dest) = match self.companion {
       Some(companion) => companion.map_rects(source, to_win32(dest)),
@@ -310,7 +323,7 @@ impl Preview {
     };
 
     if let Some(thumbnail) = &mut self.thumbnail {
-      thumbnail.place(source, dest, to_opacity(opacity));
+      thumbnail.place(source, dest, &to_win32(clip), to_opacity(opacity));
     }
   }
 }
@@ -346,6 +359,50 @@ pub(crate) fn visible_frame_on_screen(hwnd: HWND) -> Option<RectF> {
   })
 }
 
+/// `dest` cut to the part inside `clip`, and `source` cut by the same
+/// share, or `None` when nothing of `dest` is inside.
+///
+/// DWM draws a thumbnail wherever its destination is, also past its host
+/// window, so a card running off the overview would show on the monitor
+/// beside it.
+#[allow(clippy::cast_possible_truncation)]
+fn clip_rects(
+  source: RECT,
+  dest: RECT,
+  clip: &RECT,
+) -> Option<(RECT, RECT)> {
+  let visible = RECT {
+    left: dest.left.max(clip.left),
+    top: dest.top.max(clip.top),
+    right: dest.right.min(clip.right),
+    bottom: dest.bottom.min(clip.bottom),
+  };
+
+  if visible.right <= visible.left || visible.bottom <= visible.top {
+    return None;
+  }
+
+  if visible == dest {
+    return Some((source, dest));
+  }
+
+  let scale_x = f64::from(source.right - source.left)
+    / f64::from(dest.right - dest.left);
+  let scale_y = f64::from(source.bottom - source.top)
+    / f64::from(dest.bottom - dest.top);
+  let scaled =
+    |pixels: i32, scale: f64| (f64::from(pixels) * scale).round() as i32;
+
+  let source = RECT {
+    left: source.left + scaled(visible.left - dest.left, scale_x),
+    top: source.top + scaled(visible.top - dest.top, scale_y),
+    right: source.right - scaled(dest.right - visible.right, scale_x),
+    bottom: source.bottom - scaled(dest.bottom - visible.bottom, scale_y),
+  };
+
+  Some((source, visible))
+}
+
 fn to_win32(rect: &RectF) -> RECT {
   let rect = rect.to_rect();
   RECT {
@@ -359,4 +416,56 @@ fn to_win32(rect: &RectF) -> RECT {
 #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
 pub(crate) fn to_opacity(opacity: f32) -> u8 {
   (opacity.clamp(0.0, 1.0) * 255.0).round() as u8
+}
+
+#[cfg(test)]
+mod tests {
+  use windows::Win32::Foundation::RECT;
+
+  use super::clip_rects;
+
+  fn rect(left: i32, top: i32, right: i32, bottom: i32) -> RECT {
+    RECT {
+      left,
+      top,
+      right,
+      bottom,
+    }
+  }
+
+  #[test]
+  fn inside_the_clip_is_left_as_is() {
+    let clip = rect(0, 0, 1920, 1080);
+
+    assert_eq!(
+      clip_rects(rect(0, 0, 800, 600), rect(10, 10, 410, 310), &clip),
+      Some((rect(0, 0, 800, 600), rect(10, 10, 410, 310)))
+    );
+  }
+
+  #[test]
+  fn past_the_clip_is_cut_with_its_source() {
+    // Half-size: the 100 on-screen pixels past the right edge are 200 of
+    // the source.
+    let clip = rect(0, 0, 1920, 1080);
+
+    assert_eq!(
+      clip_rects(rect(0, 0, 800, 600), rect(1720, 0, 2120, 300), &clip),
+      Some((rect(0, 0, 400, 600), rect(1720, 0, 1920, 300)))
+    );
+    assert_eq!(
+      clip_rects(rect(0, 0, 800, 600), rect(-100, 900, 300, 1200), &clip),
+      Some((rect(200, 0, 800, 360), rect(0, 900, 300, 1080)))
+    );
+  }
+
+  #[test]
+  fn wholly_outside_the_clip_shows_nothing() {
+    let clip = rect(0, 0, 1920, 1080);
+
+    assert_eq!(
+      clip_rects(rect(0, 0, 800, 600), rect(1920, 0, 2320, 300), &clip),
+      None
+    );
+  }
 }

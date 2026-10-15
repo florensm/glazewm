@@ -412,7 +412,7 @@ struct PlaceContext {
   camera: Camera,
   /// How far the overview is open.
   fade: f32,
-  /// The overview's own rect.
+  /// The overview's own rect, which everything on it is cut to.
   view: RectF,
   /// Card the overview zooms out of or into.
   zoom_card: Option<usize>,
@@ -446,7 +446,7 @@ fn place_card(card: &mut Card, index: usize, context: &PlaceContext) {
   for preview in &mut card.previews {
     let dest = camera.apply(&placement.map(&metrics, &preview.tile.rect));
     if is_visible {
-      preview.place(&dest, preview.zoomed_opacity(openness) * alpha);
+      preview.place(&dest, view, preview.zoomed_opacity(openness) * alpha);
     } else if let Some(thumbnail) = &mut preview.thumbnail {
       thumbnail.hide();
     }
@@ -462,7 +462,7 @@ fn place_card(card: &mut Card, index: usize, context: &PlaceContext) {
     let dest = camera.apply(&placement.map(&metrics, &bar.rect));
 
     if is_visible {
-      bar.picture.place(&dest, opacity * alpha);
+      bar.picture.place(&dest, view, opacity * alpha);
     } else if let Some(thumbnail) = &mut bar.picture.thumbnail {
       thumbnail.hide();
     }
@@ -470,7 +470,7 @@ fn place_card(card: &mut Card, index: usize, context: &PlaceContext) {
 
   if is_visible {
     let picture = camera.apply(&picture_rect(&metrics, &placement));
-    card.picture.place(&picture, fade * alpha);
+    card.picture.place(&picture, view, fade * alpha);
   } else if let Some(thumbnail) = &mut card.picture.thumbnail {
     thumbnail.hide();
   }
@@ -1527,6 +1527,7 @@ impl Overview {
     if let Some(hint) = &mut self.hint {
       hint.place(
         &RectF::new(0.0, self.hint_y.value, view.w, hint_height),
+        &view,
         fade,
       );
     }
@@ -1538,8 +1539,10 @@ impl Overview {
         GHOST_SIZE.0 * scale_factor,
         GHOST_SIZE.1 * scale_factor,
       );
-      ghost.preview.place(&rect.inset(scale_factor * 2.0), 0.9);
-      ghost.picture.place(&rect, 1.0);
+      ghost
+        .preview
+        .place(&rect.inset(scale_factor * 2.0), &view, 0.9);
+      ghost.picture.place(&rect, &view, 1.0);
     }
   }
 
