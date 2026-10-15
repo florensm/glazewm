@@ -405,6 +405,16 @@ pub enum ColumnDisplay {
   Tabbed,
 }
 
+impl ScrollingLayoutConfig {
+  /// Whether the view keeps the active column of a strip of `columns` in
+  /// its middle, rather than only scrolling to show it.
+  #[must_use]
+  pub fn keeps_centered(&self, columns: usize) -> bool {
+    self.center_focused_column == CenterFocusedColumn::Always
+      || (self.always_center_single_column && columns <= 1)
+  }
+}
+
 impl Default for ScrollingLayoutConfig {
   fn default() -> Self {
     let thirds = || {

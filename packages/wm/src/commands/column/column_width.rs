@@ -1,4 +1,3 @@
-use wm_common::CenterFocusedColumn;
 use wm_platform::LengthValue;
 
 use crate::{
@@ -134,12 +133,7 @@ pub fn expand_column_to_available_width(
   }
 
   let strip = Strip::new(&workspace)?;
-  let config = workspace.scrolling_config();
-  let is_centering = config.center_focused_column
-    == CenterFocusedColumn::Always
-    || (config.always_center_single_column && strip.len() <= 1);
-
-  if is_centering {
+  if workspace.scrolling_config().keeps_centered(strip.len()) {
     maximize_column(container, state);
     return Ok(());
   }

@@ -340,11 +340,7 @@ impl Strip {
     previous: Option<usize>,
     config: &ScrollingLayoutConfig,
   ) -> i32 {
-    let is_centering = config.center_focused_column
-      == CenterFocusedColumn::Always
-      || (config.always_center_single_column && self.len() <= 1);
-
-    if is_centering {
+    if config.keeps_centered(self.len()) {
       return self.center(index, offset);
     }
 

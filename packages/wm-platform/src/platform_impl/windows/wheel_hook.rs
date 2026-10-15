@@ -59,6 +59,7 @@ impl WheelEvent {
     // The set high bit, i.e. a negative state, is whether the key is down
     // now rather than as of the last message this thread read, which a
     // hook thread may never have.
+    // SAFETY: No preconditions.
     let is_down =
       |key_code: u16| unsafe { GetAsyncKeyState(i32::from(key_code)) } < 0;
 
@@ -197,6 +198,7 @@ impl WheelHook {
 
     if code != 0 || (message != WM_MOUSEWHEEL && message != WM_MOUSEHWHEEL)
     {
+      // SAFETY: Passes on the arguments this hook was called with.
       return unsafe { CallNextHookEx(None, code, wparam, lparam) };
     }
 
@@ -222,6 +224,7 @@ impl WheelHook {
     });
 
     if !should_swallow {
+      // SAFETY: Passes on the arguments this hook was called with.
       return unsafe { CallNextHookEx(None, code, wparam, lparam) };
     }
 

@@ -68,8 +68,10 @@ use crate::{
 /// process.
 pub(crate) const FOREGROUND_INPUT_IDENTIFIER: u32 = 6379;
 
-/// How long an app gets to answer `WM_GETMINMAXINFO`.
-const MIN_SIZE_TIMEOUT_MS: u32 = 50;
+/// How long an app gets to answer `WM_GETMINMAXINFO`. Short, as the WM
+/// waits on it: an app answers at once unless busy, and is asked again
+/// should it refuse the width it gets.
+const MIN_SIZE_TIMEOUT_MS: u32 = 20;
 
 /// Platform-specific implementation of [`NativeWindow`].
 #[derive(Clone, Debug)]

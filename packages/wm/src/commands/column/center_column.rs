@@ -1,4 +1,4 @@
-use wm_common::{CenterFocusedColumn, Layout};
+use wm_common::Layout;
 
 use crate::{
   layout::scrolling::{active_column, Strip, ViewRequest},
@@ -41,10 +41,8 @@ pub fn center_visible_columns(
   };
 
   let strip = Strip::new(&workspace)?;
-  let config = workspace.scrolling_config();
-  let is_centering = config.center_focused_column
-    == CenterFocusedColumn::Always
-    || (config.always_center_single_column && strip.len() <= 1);
+  let is_centering =
+    workspace.scrolling_config().keeps_centered(strip.len());
 
   let Some(active) = active_column(&workspace)
     .and_then(|column| strip.index_of(column.id()))
