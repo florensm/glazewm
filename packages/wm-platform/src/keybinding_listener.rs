@@ -250,7 +250,7 @@ impl KeybindingListener {
         #[cfg(target_os = "windows")]
         crate::perf::mark_event_queued(crate::perf::EventKind::Keybinding);
 
-        let _ = event_tx.send(KeybindingEvent(keybinding.clone()));
+        let _ = event_tx.send(KeybindingEvent::now(keybinding.clone()));
 
         true
       },
@@ -339,7 +339,7 @@ impl KeybindingListener {
           crate::perf::mark_event_queued(
             crate::perf::EventKind::Keybinding,
           );
-          let _ = event_tx.send(KeybindingEvent(keybinding.clone()));
+          let _ = event_tx.send(KeybindingEvent::now(keybinding.clone()));
         }
 
         true

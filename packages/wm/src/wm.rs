@@ -350,14 +350,14 @@ impl WindowManager {
             self.state.is_paused,
           )
           .find(|kb_config| {
-            kb_config.bindings.contains(&keybinding_event.0)
+            kb_config.bindings.contains(&keybinding_event.keybinding)
           })
           .filter(|kb_config| {
             is_off_cooldown(
               &mut self.state.keybinding_cooldowns,
-              &keybinding_event.0,
+              &keybinding_event.keybinding,
               kb_config.cooldown_ms,
-              Instant::now(),
+              keybinding_event.time,
             )
           })
           .map(|kb_config| kb_config.commands.clone());
