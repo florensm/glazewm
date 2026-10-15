@@ -31,6 +31,19 @@ pub struct UserConfig {
   window_rules_by_event: HashMap<WindowRuleEvent, Vec<WindowRuleConfig>>,
 }
 
+#[cfg(test)]
+impl UserConfig {
+  /// Creates a `UserConfig` from `value`, without a backing file.
+  pub fn mock(value: ParsedConfig) -> Self {
+    Self {
+      path: PathBuf::new(),
+      window_rules_by_event: Self::window_rules_by_event(&value),
+      value,
+      value_str: String::new(),
+    }
+  }
+}
+
 impl UserConfig {
   /// Creates an instance of `UserConfig`. Reads and validates the user
   /// config from the given path.
@@ -650,19 +663,10 @@ window_effects:
 
   /// Creates a `UserConfig` with the given window rules for testing.
   fn test_config(window_rules: Vec<WindowRuleConfig>) -> UserConfig {
-    let config_value = ParsedConfig {
+    UserConfig::mock(ParsedConfig {
       window_rules,
       ..ParsedConfig::default()
-    };
-
-    UserConfig {
-      path: PathBuf::new(),
-      window_rules_by_event: UserConfig::window_rules_by_event(
-        &config_value,
-      ),
-      value: config_value,
-      value_str: String::new(),
-    }
+    })
   }
 
   /// Creates a window rule with the given command matching the given

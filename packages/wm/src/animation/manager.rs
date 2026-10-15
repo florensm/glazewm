@@ -527,6 +527,13 @@ pub struct AnimationManager {
   /// final `platform_sync` call unclocks the incoming real windows.
   #[cfg(target_os = "windows")]
   pending_ws_cleanup: Option<WorkspaceSwitchState>,
+  /// Windows of a slide cut short by a newer one, to be redrawn on the
+  /// next frame so they are uncloaked at their final rect. See
+  /// [`start_workspace_switch`].
+  ///
+  /// [`start_workspace_switch`]: AnimationManager::start_workspace_switch
+  #[cfg(target_os = "windows")]
+  interrupted_ws_windows: Vec<Uuid>,
   /// Windows with an active close animation, keyed by window ID.
   ///
   /// The stored value is the raw `HWND` (as `isize`) so `WM_CLOSE` can be
@@ -606,6 +613,8 @@ impl AnimationManager {
       workspace_switch: None,
       #[cfg(target_os = "windows")]
       pending_ws_cleanup: None,
+      #[cfg(target_os = "windows")]
+      interrupted_ws_windows: Vec::new(),
       #[cfg(target_os = "windows")]
       pending_close_windows: HashMap::new(),
       pending_minimize_windows: HashSet::new(),
@@ -1170,6 +1179,19 @@ impl AnimationManager {
     // what removes finished surrogates and reveals the real windows. The
     // first error is returned once the frame is done.
     let mut frame_result = Ok(());
+
+    // Finish what a newer slide cut short, the same way a completed slide
+    // is finished: its surrogates already wait in `pending_ws_cleanup`.
+    #[cfg(target_os = "windows")]
+    for id in
+      std::mem::take(&mut state.animation_manager.interrupted_ws_windows)
+    {
+      if let Some(container) = state.container_by_id(id) {
+        if let Ok(window) = container.as_window_container() {
+          state.pending_sync.queue_container_to_redraw(window);
+        }
+      }
+    }
 
     // Start the clock of every animation created since the last tick (see
     // `WindowAnimationState::start_clock`), one frame period before this
@@ -1792,8 +1814,9 @@ impl AnimationManager {
     // windows.
     #[cfg(target_os = "windows")]
     if let Some(ids) = ws_complete_ids {
-      state.animation_manager.pending_ws_cleanup =
-        state.animation_manager.workspace_switch.take();
+      if let Some(ws) = state.animation_manager.workspace_switch.take() {
+        state.animation_manager.stash_for_ws_cleanup(ws);
+      }
 
       for id in ids {
         if let Some(container) = state.container_by_id(id) {
@@ -3112,6 +3135,17 @@ impl AnimationManager {
     self.workspace_switch.is_some() || self.pending_ws_cleanup.is_some()
   }
 
+  /// Hands a finished or interrupted slide's surrogates to
+  /// `pending_ws_cleanup`, merging with any still waiting there so that
+  /// none are destroyed before their real window is uncloaked.
+  #[cfg(target_os = "windows")]
+  fn stash_for_ws_cleanup(&mut self, ws: WorkspaceSwitchState) {
+    match &mut self.pending_ws_cleanup {
+      Some(pending) => pending.windows.extend(ws.windows),
+      None => self.pending_ws_cleanup = Some(ws),
+    }
+  }
+
   /// Returns `true` while `window_id` is an incoming participant in the
   /// active workspace-switch animation.
   ///
@@ -3167,7 +3201,17 @@ impl AnimationManager {
     monitor_work_area: &Rect,
     config: &UserConfig,
   ) {
-    self.workspace_switch = None;
+    // A slide still playing (typically on another monitor) is finished
+    // rather than dropped: its incoming windows are only uncloaked when it
+    // completes, so dropping it left them invisible until something else
+    // redrew them. Windows taking part in the new slide are left to it.
+    if let Some(mut previous) = self.workspace_switch.take() {
+      previous
+        .windows
+        .retain(|id, _| !windows.iter().any(|(new_id, _)| new_id == id));
+      self.interrupted_ws_windows.extend(previous.windows.keys());
+      self.stash_for_ws_cleanup(previous);
+    }
 
     let ws_config = &config.value.animations.workspace_switch;
 
@@ -3710,5 +3754,91 @@ impl AnimationManager {
         }
       }
     }
+  }
+}
+
+#[cfg(all(test, target_os = "windows"))]
+mod tests {
+  use wm_common::ParsedConfig;
+
+  use super::*;
+
+  fn start_slide(
+    manager: &mut AnimationManager,
+    ids: &[Uuid],
+    config: &UserConfig,
+  ) {
+    let windows = ids
+      .iter()
+      .map(|id| {
+        let entry = WorkspaceSwitchEntry {
+          surrogate: None,
+          is_incoming: true,
+          was_focused: false,
+        };
+        (*id, entry)
+      })
+      .collect();
+
+    manager.start_workspace_switch(
+      windows,
+      1,
+      0,
+      1920,
+      0,
+      1080,
+      0,
+      &Rect::from_xy(0, 0, 1920, 1080),
+      config,
+    );
+  }
+
+  #[test]
+  fn new_slide_finishes_interrupted_one() {
+    let (tick_tx, _tick_rx) = mpsc::unbounded_channel();
+    let mut manager = AnimationManager::new(tick_tx);
+    let config = UserConfig::mock(ParsedConfig::default());
+    let [a, b, c] = [Uuid::new_v4(), Uuid::new_v4(), Uuid::new_v4()];
+
+    start_slide(&mut manager, &[a, b], &config);
+    start_slide(&mut manager, &[b, c], &config);
+
+    // `a` only took part in the first slide, so it is finished; `b` moved
+    // on to the new one.
+    assert_eq!(manager.interrupted_ws_windows, vec![a]);
+
+    let cleanup = manager
+      .pending_ws_cleanup
+      .as_ref()
+      .expect("interrupted slide should await cleanup");
+    assert!(cleanup.windows.contains_key(&a));
+    assert!(!cleanup.windows.contains_key(&b));
+
+    let active = manager
+      .workspace_switch
+      .as_ref()
+      .expect("new slide should be active");
+    assert_eq!(active.windows.len(), 2);
+    assert!(active.windows.contains_key(&b));
+    assert!(active.windows.contains_key(&c));
+  }
+
+  #[test]
+  fn interrupted_slides_merge_into_cleanup() {
+    let (tick_tx, _tick_rx) = mpsc::unbounded_channel();
+    let mut manager = AnimationManager::new(tick_tx);
+    let config = UserConfig::mock(ParsedConfig::default());
+    let [a, b, c] = [Uuid::new_v4(), Uuid::new_v4(), Uuid::new_v4()];
+
+    start_slide(&mut manager, &[a], &config);
+    start_slide(&mut manager, &[b], &config);
+    start_slide(&mut manager, &[c], &config);
+
+    let cleanup = manager
+      .pending_ws_cleanup
+      .as_ref()
+      .expect("interrupted slides should await cleanup");
+    assert!(cleanup.windows.contains_key(&a));
+    assert!(cleanup.windows.contains_key(&b));
   }
 }
