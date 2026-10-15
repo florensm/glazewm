@@ -39,7 +39,8 @@ animations:
     duration_ms: 220
     # A damped spring: `spring(damping_ratio, stiffness, epsilon)`. A
     # spring lasts as long as it takes to settle, so `duration_ms` is
-    # ignored. Any easing of `window_move` works here too.
+    # ignored, unless 0 for no animation. Any easing of `window_move`
+    # works here too.
     easing: "spring(1.0, 800, 0.0001)"
 
   # Animation settings for window resize operations.

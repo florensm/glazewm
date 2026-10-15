@@ -46,8 +46,9 @@ animations:
   # How a scrolling layout's columns move and resize, the strip
   # scrolling included. A spring (`spring(damping_ratio, stiffness,
   # epsilon)`) lasts as long as it takes to settle, so `duration_ms` only
-  # applies to other easings. A spring carries a column's speed over when
-  # it is sent somewhere else mid-move.
+  # applies to other easings, though 0 still makes it instant. A spring
+  # carries a column's speed over when it is sent somewhere else
+  # mid-move.
   scroll:
     enabled: true
     duration_ms: 220

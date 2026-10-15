@@ -23,6 +23,10 @@ const SPEED_SAMPLE: Duration = Duration::from_millis(8);
 /// distance can't make it shoot off.
 const MAX_SLOPE: f32 = 8.0;
 
+/// Fastest start a retargeted spring gets, either way, in progress per
+/// second, for the same reason.
+const MAX_SPRING_VELOCITY: f32 = 40.0;
+
 /// Smallest first control point `x` of a retargeted curve, which its
 /// initial slope is set through.
 const MIN_CONTROL_X: f32 = 0.05;
@@ -198,7 +202,8 @@ impl WindowAnimationState {
   ///
   /// A cubic bezier gets there by moving its first control point to set
   /// the curve's initial slope, keeping its second, which shapes the
-  /// ending. A spring starts at that speed. Other easings start from rest.
+  /// ending, so it can't start out heading back. A spring starts at that
+  /// speed, heading back first if it was. Other easings start from rest.
   pub fn retargeted(
     &self,
     target: Rect,
@@ -210,14 +215,17 @@ impl WindowAnimationState {
 
     let easing = match easing {
       EasingFunction::CubicBezier(x1, _, x2, y2) => {
-        let slope =
-          self.matching_slope(&current, &target, duration_ms, now);
+        let slope = self
+          .matching_slope(&current, &target, duration_ms, now)
+          .clamp(0.0, MAX_SLOPE);
         let x1 = x1.max(MIN_CONTROL_X);
         EasingFunction::CubicBezier(x1, slope * x1, x2, y2)
       }
       EasingFunction::Spring(spring) => {
         // The slope over one second is the speed per second.
-        let velocity = self.matching_slope(&current, &target, 1000, now);
+        let velocity = self
+          .matching_slope(&current, &target, 1000, now)
+          .clamp(-MAX_SPRING_VELOCITY, MAX_SPRING_VELOCITY);
         EasingFunction::Spring(SpringParams {
           initial_velocity: velocity,
           ..spring
@@ -231,8 +239,8 @@ impl WindowAnimationState {
 
   /// Initial slope (progress per progress) a movement from `current` to
   /// `target` over `duration_ms` needs to keep this animation's speed at
-  /// `now`, along the axis that moves most. Zero when this one isn't
-  /// moving that way.
+  /// `now`, along the axis that moves most: negative when this one moves
+  /// the other way.
   #[allow(clippy::cast_precision_loss)]
   fn matching_slope(
     &self,
@@ -270,7 +278,7 @@ impl WindowAnimationState {
       / 1000.0;
     let speed = progress_per_ms * old[axis] as f32;
 
-    (speed * duration_ms as f32 / new[axis] as f32).clamp(0.0, MAX_SLOPE)
+    speed * duration_ms as f32 / new[axis] as f32
   }
 
   /// Whether the animation has completed.
@@ -426,7 +434,7 @@ mod tests {
     let anim = WindowAnimationState::new_movement(
       Rect::from_xy(0, 0, 100, 100),
       Rect::from_xy(1_000, 0, 100, 100),
-      0,
+      200,
       spring(),
     );
     let t0 = Instant::now();
@@ -435,7 +443,7 @@ mod tests {
 
     let (current, _) = anim.current_state_at(now);
     let target = Rect::from_xy(current.x() + 1_000, 0, 100, 100);
-    let retargeted = anim.retargeted(target, 0, spring(), now);
+    let retargeted = anim.retargeted(target, 200, spring(), now);
 
     let EasingFunction::Spring(params) = retargeted.easing else {
       panic!("not a spring");
@@ -446,7 +454,7 @@ mod tests {
     let from_rest = WindowAnimationState::new_movement(
       current.clone(),
       retargeted.target_rect.clone(),
-      0,
+      200,
       spring(),
     );
     let (now2, later) = (Instant::now(), Duration::from_millis(10));
@@ -456,6 +464,41 @@ mod tests {
       retargeted.eased_progress_at(now2 + later)
         > from_rest.eased_progress_at(now2 + later)
     );
+  }
+
+  /// A spring sent back the way it came carries on a moment before
+  /// turning, where a curve starts back from rest.
+  #[test]
+  fn retargeted_spring_turns_back_with_its_momentum() {
+    let anim = WindowAnimationState::new_movement(
+      Rect::from_xy(0, 0, 100, 100),
+      Rect::from_xy(1_000, 0, 100, 100),
+      200,
+      spring(),
+    );
+    let t0 = Instant::now();
+    anim.start_clock(t0);
+    let now = t0 + Duration::from_millis(40);
+
+    let (current, _) = anim.current_state_at(now);
+    let back = Rect::from_xy(0, 0, 100, 100);
+
+    let EasingFunction::Spring(params) =
+      anim.retargeted(back.clone(), 200, spring(), now).easing
+    else {
+      panic!("not a spring");
+    };
+    assert!(params.initial_velocity < 0.);
+    assert!(params.initial_velocity >= -MAX_SPRING_VELOCITY);
+
+    let curve = EasingFunction::CubicBezier(0.25, 0.1, 0.25, 1.0);
+    let EasingFunction::CubicBezier(_, y1, ..) =
+      anim.retargeted(back, 200, curve, now).easing
+    else {
+      panic!("not a curve");
+    };
+    assert!(y1.abs() < f32::EPSILON, "from rest");
+    assert!(current.x() > 0);
   }
 
   /// `start_delay` holds the animation at progress 0.0 until the delay

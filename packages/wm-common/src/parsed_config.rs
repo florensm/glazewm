@@ -2029,11 +2029,12 @@ impl EasingFunction {
   }
 
   /// How long an animation with this easing lasts, given the configured
-  /// `duration_ms`: a spring takes as long as it needs to settle.
+  /// `duration_ms`: a spring takes as long as it needs to settle, unless
+  /// that is 0, which makes any animation instant.
   #[must_use]
   pub fn duration_ms(&self, duration_ms: u32) -> u32 {
     match self {
-      EasingFunction::Spring(spring) => {
+      EasingFunction::Spring(spring) if duration_ms > 0 => {
         u32::try_from(spring.duration().as_millis()).unwrap_or(u32::MAX)
       }
       _ => duration_ms,
@@ -2378,6 +2379,7 @@ mod tests {
     let spring = EasingFunction::Spring(SpringParams::default());
     let duration = spring.duration_ms(150);
     assert!((300..500).contains(&duration), "{duration}");
+    assert_eq!(spring.duration_ms(0), 0, "still instant");
 
     let bezier = EasingFunction::CubicBezier(0.4, 0., 0.2, 1.);
     assert_eq!(bezier.duration_ms(150), 150);
