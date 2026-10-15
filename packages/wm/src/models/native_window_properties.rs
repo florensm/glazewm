@@ -16,8 +16,27 @@ pub struct NativeWindowProperties {
   pub shadow_borders: RectDelta,
 
   /// Narrowest its app lets the window be, shadow borders included, or 0
-  /// if unknown.
+  /// if unknown. Only measured for a window being managed (see
+  /// `measure_min_width`).
   pub min_width: i32,
+}
+
+impl NativeWindowProperties {
+  /// Asks the window's app for the narrowest the window can be.
+  ///
+  /// Kept out of `try_from`, which runs for every window shown: the
+  /// question waits on the window's own thread, which a busy app can take
+  /// a while to answer.
+  pub fn measure_min_width(&mut self, native_window: &NativeWindow) {
+    #[cfg(target_os = "windows")]
+    {
+      self.min_width = native_window
+        .min_window_size()
+        .map_or(0, |(width, _)| width);
+    }
+    #[cfg(not(target_os = "windows"))]
+    let _ = native_window;
+  }
 }
 
 impl TryFrom<&NativeWindow> for NativeWindowProperties {
@@ -35,11 +54,6 @@ impl TryFrom<&NativeWindow> for NativeWindowProperties {
       is_resizable: native_window.is_resizable()?,
       #[cfg(target_os = "windows")]
       shadow_borders: native_window.shadow_borders()?,
-      #[cfg(target_os = "windows")]
-      min_width: native_window
-        .min_window_size()
-        .map_or(0, |(width, _)| width),
-      #[cfg(not(target_os = "windows"))]
       min_width: 0,
     })
   }

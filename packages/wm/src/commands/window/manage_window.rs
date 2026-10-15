@@ -64,7 +64,7 @@ fn manage_window_inner(
 ) -> anyhow::Result<()> {
   let is_held = state.auto_stack.is_held(native_window.id());
 
-  let Some(native_properties) =
+  let Some(mut native_properties) =
     check_is_manageable(&native_window, is_held, config).unwrap_or(None)
   else {
     if state.auto_stack.release(native_window.id()).is_some() {
@@ -103,6 +103,8 @@ fn manage_window_inner(
   // successful hand-off undoes the cloak. See `CloakGuard`.
   #[cfg(target_os = "windows")]
   let cloak_guard = CloakGuard::cloak(&native_window);
+
+  native_properties.measure_min_width(&native_window);
 
   let placement = match &auto_stack_rule {
     Some(rule) => Some(auto_stack_placement(rule, state, config)?),
