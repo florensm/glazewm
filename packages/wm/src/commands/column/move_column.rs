@@ -158,7 +158,7 @@ fn move_column_to_monitor(
     place.column.set_tiling_size(size);
   }
 
-  // The workspace left behind remembers the column niri would focus.
+  // The workspace left behind remembers the column to focus next.
   if let Some(focus_target) = focus_target {
     set_focused_descendant(
       &focus_target,

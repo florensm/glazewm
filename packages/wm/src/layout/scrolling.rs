@@ -7,8 +7,8 @@
 //! workspace width; unlike in the other layouts, the columns' sizes don't
 //! add up to 1.
 //!
-//! The view moves like niri's: it stays put relative to the active column
-//! while other columns open, close or resize, and only scrolls when
+//! The view stays put relative to the active column while other
+//! columns open, close or resize, and only scrolls when
 //! another column is activated or the active one changes width. See
 //! `StripView::update`.
 
@@ -376,7 +376,7 @@ impl Strip {
 }
 
 /// Where a scrolling workspace's view is, kept between syncs so that it
-/// moves with the strip the way niri's view moves with its columns.
+/// moves along with its columns as they open, close and resize.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct StripView {
   /// How far the strip is scrolled: its first column starts this far left
@@ -745,8 +745,8 @@ pub fn keep_right_edge(container: &Container) -> anyhow::Result<()> {
 }
 
 /// The window to focus when the focused tiling `window` leaves its
-/// scrolling workspace, picked like niri does, or `None` when there is
-/// nothing to pick on the strip.
+/// scrolling workspace, or `None` when there is nothing to pick on the
+/// strip.
 ///
 /// Within a column, the window after it takes over, or the one before it
 /// if it was the last. When it leaves its column empty, focus goes back
