@@ -6,7 +6,7 @@ use tracing::Level;
 use uuid::Uuid;
 use wm_platform::{Delta, Direction, LengthValue, OpacityValue};
 
-use crate::{ColumnDisplay, Layout, TilingDirection};
+use crate::{ColumnDisplay, Layout, OverviewLayout, TilingDirection};
 
 const VERSION: &str = env!("VERSION_NUMBER");
 
@@ -251,10 +251,15 @@ pub enum InvokeCommand {
   /// Opens the overview of the focused monitor's workspaces, or closes it
   /// if open.
   ToggleOverview {
-    /// Open on the grid of every workspace rather than the carousel;
-    /// while open, switches to it instead of closing.
-    #[clap(long, action)]
+    /// Open on the grid of every workspace; while open, switches to it
+    /// instead of closing. Same as `--layout grid`.
+    #[clap(long, action, conflicts_with = "layout")]
     grid: bool,
+
+    /// Layout to open on, rather than `overview.layout`; while open,
+    /// switches to it instead of closing.
+    #[clap(long, value_enum)]
+    layout: Option<OverviewLayout>,
   },
   ToggleTiling,
   /// Toggle the focused tiling window into or out of a stack container.
@@ -652,6 +657,33 @@ mod tests {
       .expect("Failed to parse `force-manage` command.");
 
     assert_eq!(command, InvokeCommand::ForceManage);
+  }
+
+  #[test]
+  fn parses_overview_layouts() {
+    let parse = |args: &[&str]| {
+      InvokeCommand::try_parse_from(
+        std::iter::once("").chain(args.iter().copied()),
+      )
+    };
+
+    assert_eq!(
+      parse(&["toggle-overview", "--layout", "rows"]).unwrap(),
+      InvokeCommand::ToggleOverview {
+        grid: false,
+        layout: Some(OverviewLayout::Rows),
+      }
+    );
+    assert_eq!(
+      parse(&["toggle-overview"]).unwrap(),
+      InvokeCommand::ToggleOverview {
+        grid: false,
+        layout: None,
+      }
+    );
+    assert!(
+      parse(&["toggle-overview", "--grid", "--layout", "rows"]).is_err()
+    );
   }
 
   #[test]

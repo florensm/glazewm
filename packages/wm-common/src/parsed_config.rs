@@ -628,6 +628,9 @@ pub struct OverviewConfig {
   /// Columns of the grid of every workspace.
   pub grid_columns: usize,
 
+  /// Layout `toggle-overview` opens on, unless it names one.
+  pub layout: OverviewLayout,
+
   /// Length of the zoom out when the overview opens; `0` opens it
   /// instantly.
   pub open_duration_ms: u32,
@@ -635,6 +638,34 @@ pub struct OverviewConfig {
   /// Length of the zoom into the picked workspace when the overview
   /// closes; `0` closes it instantly.
   pub close_duration_ms: u32,
+}
+
+/// How the overview lays out its workspace cards.
+#[derive(
+  Clone,
+  Copy,
+  Debug,
+  Default,
+  Deserialize,
+  PartialEq,
+  Eq,
+  Serialize,
+  clap::ValueEnum,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum OverviewLayout {
+  /// One row, the selected workspace in the middle and larger than the
+  /// rest.
+  #[default]
+  Carousel,
+  /// Every workspace at once.
+  Grid,
+  /// A row per workspace, stacked, a scrolling workspace's strip running
+  /// off to its sides.
+  Rows,
+  /// The selected workspace large, its neighbours peeking in at the
+  /// sides.
+  Spotlight,
 }
 
 impl Default for OverviewConfig {
@@ -657,6 +688,7 @@ impl Default for OverviewConfig {
       search_color: color(0x89b4_faff),
       font_family: "Segoe UI".to_string(),
       grid_columns: 5,
+      layout: OverviewLayout::default(),
       open_duration_ms: 250,
       close_duration_ms: 200,
     }

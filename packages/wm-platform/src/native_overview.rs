@@ -49,11 +49,12 @@ use windows::{
 use crate::{
   overview_chrome::{
     card_size, draw_card, draw_ghost, draw_hint, with_alpha, CardPicture,
-    TilePicture, GHOST_SIZE, HINT_HEIGHT,
+    TilePicture, GHOST_SIZE,
   },
   overview_layout::{
-    carousel, cover_crop, grid, Camera, CardMetrics, CardSlot, CardView,
-    GridCells, Placement, RectF, Spring, Tile, Zoom,
+    carousel, cover_crop, grid, rows, spotlight, Camera, CardMetrics,
+    CardSlot, CardView, GridCells, Placement, RectF, Spring, Tile, Zoom,
+    HINT_HEIGHT,
   },
   overview_state::{HintTone, Hit, Interaction, Key, Mode},
   overview_tab_bars::CardTabBar,
@@ -75,7 +76,8 @@ const WM_OPEN_OVERVIEW: u32 = WM_APP + 1;
 /// overview shows.
 const WM_UPDATE_OVERVIEW: u32 = WM_APP + 2;
 
-/// Posted with the requested layout in `WPARAM` (1 for the grid).
+/// Posted with the requested layout's index in
+/// `OverviewLayoutMode::ALL` in `WPARAM`.
 const WM_TOGGLE_OVERVIEW: u32 = WM_APP + 3;
 
 /// Posted to close the overview.
@@ -173,10 +175,11 @@ impl NativeOverview {
   /// Switches the open overview to `layout`, or cancels it if it already
   /// shows that.
   pub fn toggle(&self, layout: OverviewLayoutMode) {
-    self.post(
-      WM_TOGGLE_OVERVIEW,
-      usize::from(layout == OverviewLayoutMode::Grid),
-    );
+    let index = OverviewLayoutMode::ALL
+      .iter()
+      .position(|other| *other == layout)
+      .unwrap_or(0);
+    self.post(WM_TOGGLE_OVERVIEW, index);
   }
 
   /// Closes the overview once its zoom into the picked workspace ends.
@@ -364,6 +367,7 @@ struct Card {
   cx: Spring,
   cy: Spring,
   scale: Spring,
+  alpha: Spring,
 
   /// Its size, wider than normal for a wide workspace.
   metrics: CardMetrics,
@@ -398,6 +402,7 @@ impl Card {
       cx: self.cx.value,
       cy: self.cy.value,
       scale: self.scale.value,
+      opacity: self.alpha.value,
     }
   }
 }
@@ -423,6 +428,9 @@ struct Overview {
   interaction: Interaction,
   metrics: CardMetrics,
 
+  /// Layout the overview opened as, which its cards are drawn for.
+  drawn_for: OverviewLayoutMode,
+
   /// Working area covered, in screen coordinates.
   area: RectF,
 
@@ -436,9 +444,8 @@ struct Overview {
   hint_drawn: Option<(String, HintTone)>,
   hint_y: Spring,
 
-  /// Top edge of the special workspace's docked card, from the last
-  /// layout.
-  dock_top: f32,
+  /// Where the special workspace's card is docked, from the last layout.
+  dock: Option<RectF>,
   ghost: Option<Ghost>,
 
   /// The zoom out on open or into a card on close, and when it started,
@@ -479,7 +486,13 @@ impl Overview {
         OverviewLayoutMode::Carousel,
         0.0,
       ),
-      metrics: CardMetrics::new(1.0, 1.0, 1.0),
+      metrics: CardMetrics::new(
+        1.0,
+        1.0,
+        1.0,
+        OverviewLayoutMode::Carousel,
+      ),
+      drawn_for: OverviewLayoutMode::Carousel,
       area: RectF::default(),
       backdrop: None,
       cards: Vec::new(),
@@ -487,7 +500,7 @@ impl Overview {
       hint: None,
       hint_drawn: None,
       hint_y: Spring::new(0.0, SETTLE_MS, 0.25),
-      dock_top: f32::INFINITY,
+      dock: None,
       ghost: None,
       zoom: None,
       last_tick: Instant::now(),
@@ -522,8 +535,9 @@ impl Overview {
 
     let scale_factor = frame.scale_factor;
     self.area = RectF::from_rect(&frame.rect);
+    self.drawn_for = layout;
     self.metrics =
-      CardMetrics::new(self.area.w, self.area.h, scale_factor);
+      CardMetrics::new(self.area.w, self.area.h, scale_factor, layout);
     self.interaction =
       Interaction::new(&frame.workspaces, layout, 6.0 * scale_factor);
     self
@@ -591,8 +605,12 @@ impl Overview {
 
     if old.rect != frame.rect || old.scale_factor != frame.scale_factor {
       self.area = RectF::from_rect(&frame.rect);
-      self.metrics =
-        CardMetrics::new(self.area.w, self.area.h, frame.scale_factor);
+      self.metrics = CardMetrics::new(
+        self.area.w,
+        self.area.h,
+        frame.scale_factor,
+        self.drawn_for,
+      );
     }
 
     self.interaction.sync(&old.workspaces, &frame.workspaces);
@@ -738,6 +756,7 @@ impl Overview {
         cx: Spring::new(0.0, SETTLE_MS, 0.25),
         cy: Spring::new(0.0, SETTLE_MS, 0.25),
         scale: Spring::new(1.0, SETTLE_MS, 0.001),
+        alpha: Spring::new(1.0, SETTLE_MS, 0.002),
         metrics,
         view,
         previews,
@@ -753,21 +772,53 @@ impl Overview {
 
     self.cards = cards;
     self.spare = spare;
-    self.interaction.grid = GridCells::new(
+    self.interaction.grid = GridCells::fitting(
       &self.metrics,
       &self.slots(),
       frame.style.grid_columns,
     );
   }
 
-  /// What the layouts need of each card.
+  /// What the layouts need of each card: where its monitor's view is,
+  /// and on the selected card, the window being picked.
   fn slots(&self) -> Vec<CardSlot> {
+    let picked = self
+      .interaction
+      .selected_window
+      .filter(|_| self.interaction.mode == Mode::Windows);
+
     self
       .cards
       .iter()
       .zip(self.workspaces())
-      .map(|(card, workspace)| {
-        CardSlot::new(&card.metrics, workspace.is_special)
+      .enumerate()
+      .map(|(index, (card, workspace))| {
+        let view = card.view.map(&self.area);
+        let keep = picked
+          .filter(|_| index == self.interaction.selected)
+          .and_then(|hwnd| {
+            // A hidden tab shows on its stack's tab bar.
+            let preview = card
+              .previews
+              .iter()
+              .find(|preview| preview.hwnd == hwnd)
+              .map(|preview| preview.tile.rect);
+            let bar = || {
+              card
+                .tab_bars
+                .iter()
+                .find(|bar| bar.tab_index(hwnd).is_some())
+                .map(|bar| bar.rect)
+            };
+            preview.or_else(bar)
+          })
+          .map(|rect| (rect.x, rect.right()));
+
+        CardSlot {
+          view_center: view.x + view.w / 2.0,
+          keep,
+          ..CardSlot::new(&card.metrics, workspace.is_special)
+        }
       })
       .collect()
   }
@@ -859,9 +910,11 @@ impl Overview {
     // The special workspace's dock grows while a window is carried or
     // dragged, to be dropped on.
     let is_receiving = self.interaction.floating().is_some();
-    // Looking inside the special workspace leaves the row as it is.
+    // Looking inside the docked special workspace leaves the row as it
+    // is.
     let is_zoomed = self.interaction.mode == Mode::Windows
       && self.interaction.selected == self.interaction.row_selected;
+    let selected = self.interaction.selected;
     let targets = match self.interaction.layout {
       OverviewLayoutMode::Carousel => carousel(
         &self.metrics,
@@ -873,8 +926,14 @@ impl Overview {
       OverviewLayoutMode::Grid => {
         grid(&self.metrics, &slots, &self.interaction.grid, is_receiving)
       }
+      OverviewLayoutMode::Rows => {
+        rows(&self.metrics, &slots, selected, is_zoomed)
+      }
+      OverviewLayoutMode::Spotlight => {
+        spotlight(&self.metrics, &slots, selected, is_zoomed)
+      }
     };
-    self.dock_top = targets.dock_top;
+    self.dock = targets.dock;
 
     for (index, (card, target)) in
       self.cards.iter_mut().zip(&targets.cards).enumerate()
@@ -889,6 +948,7 @@ impl Overview {
         (&mut card.cx, target.cx),
         (&mut card.cy, target.cy),
         (&mut card.scale, target.scale * bump),
+        (&mut card.alpha, target.opacity),
       ] {
         if snap {
           spring.snap(value);
@@ -925,10 +985,19 @@ impl Overview {
         ghost.x.snap(drag.position.0 - width / 2.0);
         ghost.y.snap(drag.position.1 - height / 2.0);
       } else {
-        // Parked at the bottom while carrying, above the dock.
-        ghost.x.target = (view_width - width) / 2.0;
-        ghost.y.target =
-          view_height.min(self.dock_top) - height - px(40.0);
+        // Parked while carrying: beside the dock it can be dropped on, or
+        // else in the corner above the hints.
+        let (x, y) = match self.dock {
+          Some(dock) => {
+            (dock.x - width - px(32.0), dock.y + (dock.h - height) / 2.0)
+          }
+          None => (
+            view_width - width - px(40.0),
+            self.hint_y.target - height - px(16.0),
+          ),
+        };
+        ghost.x.target = x;
+        ghost.y.target = y.min(view_height - height);
       }
     }
   }
@@ -1150,8 +1219,15 @@ impl Overview {
         .collect()
     });
 
+    // A strip's card shows where its monitor is on it.
+    let viewport = card.and_then(|card| {
+      let view = card.view.map(&self.area);
+      (view.w < card.metrics.tile_area().w - 1.0).then_some(view)
+    });
+
     CardPicture {
       label: workspace.map_or_else(String::new, |w| w.label.clone()),
+      viewport,
       is_focused: workspace.is_some_and(|w| w.is_focused),
       is_new: workspace.is_some_and(|w| w.is_new),
       is_special: workspace.is_some_and(|w| w.is_special),
@@ -1259,6 +1335,7 @@ impl Overview {
       is_moving |= card.cx.step(dt);
       is_moving |= card.cy.step(dt);
       is_moving |= card.scale.step(dt);
+      is_moving |= card.alpha.step(dt);
     }
     is_moving |= self.hint_y.step(dt);
     if let Some(ghost) = &mut self.ghost {
@@ -1307,13 +1384,22 @@ impl Overview {
       let is_visible = rect.intersect(&view).is_some();
 
       // Only the zoomed card has windows on screen to zoom from or into.
-      let openness = if zoom_card == Some(index) { fade } else { 1.0 };
+      // It shows at full strength while it does, so its windows can't
+      // dim in or out of their real ones.
+      let (openness, alpha) = if zoom_card == Some(index) {
+        (
+          fade,
+          placement.opacity + (1.0 - placement.opacity) * (1.0 - fade),
+        )
+      } else {
+        (1.0, placement.opacity)
+      };
 
       for preview in &mut card.previews {
         let dest =
           camera.apply(&placement.map(&metrics, &preview.tile.rect));
         if is_visible {
-          preview.place(&dest, preview.zoomed_opacity(openness));
+          preview.place(&dest, preview.zoomed_opacity(openness) * alpha);
         } else if let Some(thumbnail) = &mut preview.thumbnail {
           thumbnail.hide();
         }
@@ -1329,14 +1415,14 @@ impl Overview {
         let dest = camera.apply(&placement.map(&metrics, &bar.rect));
 
         if is_visible {
-          bar.picture.place(&dest, opacity);
+          bar.picture.place(&dest, opacity * alpha);
         } else if let Some(thumbnail) = &mut bar.picture.thumbnail {
           thumbnail.hide();
         }
       }
 
       if is_visible {
-        card.picture.place(&rect, fade);
+        card.picture.place(&rect, fade * alpha);
       } else if let Some(thumbnail) = &mut card.picture.thumbnail {
         thumbnail.hide();
       }
@@ -1438,7 +1524,8 @@ impl Overview {
     if self.interaction.layout == layout {
       self.after_input(Some(OverviewAction::Cancel));
     } else {
-      self.interaction.layout = layout;
+      let workspaces = self.workspaces().to_vec();
+      self.interaction.set_layout(layout, &workspaces);
       self.after_input(None);
     }
   }
@@ -1542,11 +1629,12 @@ impl Overview {
           unsafe { Box::from_raw(wparam.0 as *mut OverviewFrame) };
         self.update(*frame);
       }
-      WM_TOGGLE_OVERVIEW if is_open => self.on_toggle(if wparam.0 == 1 {
-        OverviewLayoutMode::Grid
-      } else {
-        OverviewLayoutMode::Carousel
-      }),
+      WM_TOGGLE_OVERVIEW if is_open => self.on_toggle(
+        OverviewLayoutMode::ALL
+          .get(wparam.0)
+          .copied()
+          .unwrap_or_default(),
+      ),
       WM_HIDE_OVERVIEW => {
         // A closing overview hides itself once its zoom ends.
         if !self.is_closing() {

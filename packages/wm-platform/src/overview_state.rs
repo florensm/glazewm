@@ -150,7 +150,8 @@ impl Interaction {
       drag_threshold,
       digit_workspaces: Vec::new(),
       grid: GridCells::default(),
-      row_selected: row_card(workspaces, selected, None).unwrap_or(0),
+      row_selected: row_card(workspaces, selected, None, layout)
+        .unwrap_or(0),
     }
   }
 
@@ -171,7 +172,8 @@ impl Interaction {
       .unwrap_or(0);
     self.hover = self.hover.and_then(remap);
     self.row_selected =
-      row_card(new, self.selected, remap(self.row_selected)).unwrap_or(0);
+      row_card(new, self.selected, remap(self.row_selected), self.layout)
+        .unwrap_or(0);
 
     let exists = |hwnd: isize| find(new, hwnd).is_some();
 
@@ -240,19 +242,7 @@ impl Interaction {
           return Some(OverviewAction::CloseWindow(hwnd));
         }
       }
-      Key::Tab => match self.layout {
-        OverviewLayoutMode::Carousel => {
-          self.layout = OverviewLayoutMode::Grid;
-          // The grid is too small to pick a window in.
-          if self.mode == Mode::Windows {
-            self.mode = Mode::Spaces;
-            self.selected_window = None;
-          }
-        }
-        OverviewLayoutMode::Grid => {
-          self.layout = OverviewLayoutMode::Carousel;
-        }
-      },
+      Key::Tab => self.set_layout(self.layout.next(), workspaces),
       Key::Space => return self.space(workspaces),
       Key::Backspace => match self.mode {
         Mode::Carrying => {
@@ -285,6 +275,24 @@ impl Interaction {
     }
 
     None
+  }
+
+  /// Lays the cards out as `layout`.
+  pub fn set_layout(
+    &mut self,
+    layout: OverviewLayoutMode,
+    workspaces: &[OverviewWorkspace],
+  ) {
+    self.layout = layout;
+    self.row_selected =
+      row_card(workspaces, self.selected, Some(self.row_selected), layout)
+        .unwrap_or(0);
+
+    // The grid is too small to pick a window in.
+    if layout == OverviewLayoutMode::Grid && self.mode == Mode::Windows {
+      self.mode = Mode::Spaces;
+      self.selected_window = None;
+    }
   }
 
   /// Goes straight to workspace `name`: switches to it, sends the picked
@@ -350,7 +358,9 @@ impl Interaction {
         // Picking a window is a zoomed-in thing; the grid is too small to
         // aim at one.
         if let Some(hwnd) = first {
-          self.layout = OverviewLayoutMode::Carousel;
+          if self.layout == OverviewLayoutMode::Grid {
+            self.set_layout(OverviewLayoutMode::Carousel, workspaces);
+          }
           self.mode = Mode::Windows;
           self.selected_window = Some(hwnd);
         }
@@ -442,20 +452,23 @@ impl Interaction {
     }
 
     self.row_selected =
-      row_card(workspaces, index, Some(self.row_selected)).unwrap_or(0);
+      row_card(workspaces, index, Some(self.row_selected), self.layout)
+        .unwrap_or(0);
   }
 
   /// Moves along the row of workspaces, which the special workspace's
   /// dock below it isn't part of; from the dock, back to the row.
   fn step(&mut self, delta: isize, workspaces: &[OverviewWorkspace]) {
-    if is_special(workspaces, self.selected) {
-      if let Some(index) = row_card(workspaces, self.row_selected, None) {
+    if is_docked(workspaces, self.selected, self.layout) {
+      let back =
+        row_card(workspaces, self.row_selected, None, self.layout);
+      if let Some(index) = back {
         self.select(index, workspaces);
       }
       return;
     }
 
-    let row = row_indices(workspaces);
+    let row = row_indices(workspaces, self.layout);
     let Some(position) = row.iter().position(|i| *i == self.selected)
     else {
       return;
@@ -484,23 +497,28 @@ impl Interaction {
       return;
     }
 
+    // Rows are stacked; the spotlight has no other way to go.
+    if !self.layout.docks_special() {
+      self.step(delta, workspaces);
+      return;
+    }
+
     // Up from the dock goes back to where it was entered from. Down onto
     // the dock is from the carousel, or from the grid's last row, below
     // which `GridCells` puts it.
     let target = if is_special(workspaces, self.selected) {
       (delta < 0)
-        .then(|| row_card(workspaces, self.row_selected, None))
+        .then(|| {
+          row_card(workspaces, self.row_selected, None, self.layout)
+        })
         .flatten()
+    } else if self.layout == OverviewLayoutMode::Grid {
+      self.grid.vertical_neighbour(self.selected, delta)
     } else {
-      match self.layout {
-        OverviewLayoutMode::Grid => {
-          self.grid.vertical_neighbour(self.selected, delta)
-        }
-        OverviewLayoutMode::Carousel => workspaces
-          .iter()
-          .position(|workspace| workspace.is_special)
-          .filter(|_| delta > 0),
-      }
+      workspaces
+        .iter()
+        .position(|workspace| workspace.is_special)
+        .filter(|_| delta > 0)
     };
 
     if let Some(index) = target {
@@ -523,7 +541,7 @@ impl Interaction {
       };
       self.selected_window = window.map(|window| window.hwnd);
     } else {
-      let row = row_indices(workspaces);
+      let row = row_indices(workspaces, self.layout);
       let index = if is_last { row.last() } else { row.first() };
       if let Some(index) = index {
         self.select(*index, workspaces);
@@ -768,29 +786,41 @@ impl Interaction {
       );
     }
 
-    match (self.mode, self.layout) {
-      (Mode::Carrying, _) => (
+    // Rows are stacked, so arrows up and down go between them.
+    let arrows = match self.layout {
+      OverviewLayoutMode::Rows => "\u{2191}\u{2193}",
+      OverviewLayoutMode::Grid => "arrows",
+      _ => "\u{2190}\u{2192}",
+    };
+
+    match self.mode {
+      Mode::Carrying => (
         format!(
-          "carrying \"{}\"   \u{b7}   \u{2190}\u{2192} or / to pick a workspace   \u{b7}   space to drop   \u{b7}   1\u{2013}9 or s drop on that one   \u{b7}   \u{232b} back",
+          "carrying \"{}\"   \u{b7}   {arrows} or / to pick a workspace   \u{b7}   space to drop   \u{b7}   1\u{2013}9 or s drop on that one   \u{b7}   \u{232b} back",
           title(self.carried)
         ),
         HintTone::Accent,
       ),
-      (Mode::Windows, _) => (
+      Mode::Windows => (
         "\u{2190}\u{2192} pick a window   \u{b7}   1\u{2013}9 or s send it there   \u{b7}   space to lift it   \u{b7}   \u{23ce} jump to it   \u{b7}   x close   \u{b7}   \u{232b} back"
           .to_string(),
         HintTone::Quiet,
       ),
-      (Mode::Spaces, OverviewLayoutMode::Grid) => (
-        "arrows workspaces   \u{b7}   drag windows between them   \u{b7}   s special   \u{b7}   / search   \u{b7}   \u{23ce} go there   \u{b7}   tab carousel   \u{b7}   esc close"
-          .to_string(),
-        HintTone::Quiet,
-      ),
-      (Mode::Spaces, OverviewLayoutMode::Carousel) => (
-        "\u{2190}\u{2192} workspaces   \u{b7}   space to look inside   \u{b7}   s special   \u{b7}   / search   \u{b7}   \u{23ce} go there   \u{b7}   tab all workspaces   \u{b7}   esc close"
-          .to_string(),
-        HintTone::Quiet,
-      ),
+      Mode::Spaces => {
+        let inside = if self.layout == OverviewLayoutMode::Grid {
+          "drag windows between them"
+        } else {
+          "space to look inside"
+        };
+
+        (
+          format!(
+            "{arrows} workspaces   \u{b7}   {inside}   \u{b7}   s special   \u{b7}   / search   \u{b7}   \u{23ce} go there   \u{b7}   tab {}   \u{b7}   esc close",
+            self.layout.next().name()
+          ),
+          HintTone::Quiet,
+        )
+      }
     }
   }
 }
@@ -905,38 +935,51 @@ fn match_score(window: &OverviewWindow, query: &str) -> Option<usize> {
     .min()
 }
 
-/// The row card to center the row on with card `selected` selected: that
-/// card, or for the special workspace's, `previous` (if still a row card)
-/// or else the first. `None` when there are no row cards.
+/// The row card to center the row on with card `selected` selected in
+/// `layout`: that card, or for the special workspace's docked card,
+/// `previous` (if still a row card) or else the first. `None` when there
+/// are no row cards.
 fn row_card(
   workspaces: &[OverviewWorkspace],
   selected: usize,
   previous: Option<usize>,
+  layout: OverviewLayoutMode,
 ) -> Option<usize> {
   let is_row_card = |index: &usize| {
-    *index < workspaces.len() && !is_special(workspaces, *index)
+    *index < workspaces.len() && !is_docked(workspaces, *index, layout)
   };
 
   Some(selected)
     .filter(is_row_card)
     .or_else(|| previous.filter(is_row_card))
-    .or_else(|| row_indices(workspaces).first().copied())
+    .or_else(|| row_indices(workspaces, layout).first().copied())
 }
 
-/// Whether card `index` is the special workspace's, docked below the rest.
+/// Whether card `index` is the special workspace's.
 fn is_special(workspaces: &[OverviewWorkspace], index: usize) -> bool {
   workspaces
     .get(index)
     .is_some_and(|workspace| workspace.is_special)
 }
 
-/// The cards in the row (or grid), i.e. all but the special workspace's.
-fn row_indices(workspaces: &[OverviewWorkspace]) -> Vec<usize> {
-  workspaces
-    .iter()
-    .enumerate()
-    .filter(|(_, workspace)| !workspace.is_special)
-    .map(|(index, _)| index)
+/// Whether card `index` is the special workspace's, docked below the rest
+/// in `layout`.
+fn is_docked(
+  workspaces: &[OverviewWorkspace],
+  index: usize,
+  layout: OverviewLayoutMode,
+) -> bool {
+  layout.docks_special() && is_special(workspaces, index)
+}
+
+/// The cards of the row (or grid, or stack of rows) in `layout`: all but
+/// the special workspace's if it is docked.
+fn row_indices(
+  workspaces: &[OverviewWorkspace],
+  layout: OverviewLayoutMode,
+) -> Vec<usize> {
+  (0..workspaces.len())
+    .filter(|index| !is_docked(workspaces, *index, layout))
     .collect()
 }
 
@@ -1236,8 +1279,43 @@ mod tests {
     assert_eq!(state.mode, Mode::Spaces);
     assert_eq!(state.selected_window, None);
 
-    press(&mut state, &[Key::Tab, Key::Space, Key::Space, Key::Tab]);
+    // Over to the rows to pick one up, then around to the grid again.
+    press(&mut state, &[Key::Tab, Key::Space, Key::Space]);
+    press(&mut state, &[Key::Tab, Key::Tab, Key::Tab]);
+    assert_eq!(state.layout, OverviewLayoutMode::Grid);
     assert_eq!(state.mode, Mode::Carrying, "carrying works in the grid");
+  }
+
+  #[test]
+  fn tab_goes_through_every_layout() {
+    let mut state = interaction();
+    let mut seen = vec![state.layout];
+    for _ in 0..4 {
+      press(&mut state, &[Key::Tab]);
+      seen.push(state.layout);
+    }
+
+    assert_eq!(
+      seen,
+      vec![
+        OverviewLayoutMode::Carousel,
+        OverviewLayoutMode::Grid,
+        OverviewLayoutMode::Rows,
+        OverviewLayoutMode::Spotlight,
+        OverviewLayoutMode::Carousel,
+      ]
+    );
+  }
+
+  #[test]
+  fn looking_inside_keeps_the_rows_and_the_spotlight() {
+    for layout in [OverviewLayoutMode::Rows, OverviewLayoutMode::Spotlight]
+    {
+      let mut state = Interaction::new(&workspaces(), layout, 6.0);
+      press(&mut state, &[Key::Space]);
+      assert_eq!(state.mode, Mode::Windows);
+      assert_eq!(state.layout, layout);
+    }
   }
 
   #[test]
@@ -1315,7 +1393,8 @@ mod tests {
   #[test]
   fn up_and_down_move_a_row_in_the_grid_only() {
     let workspaces = workspaces();
-    let metrics = CardMetrics::new(1920.0, 1040.0, 1.0);
+    let metrics =
+      CardMetrics::new(1920.0, 1040.0, 1.0, OverviewLayoutMode::Grid);
     let mut state = interaction();
     state.grid = GridCells::new(
       &metrics,
@@ -1515,6 +1594,26 @@ mod tests {
   }
 
   #[test]
+  fn the_special_workspace_is_the_last_row_of_the_rows() {
+    let workspaces = with_special();
+    let special = workspaces.len() - 1;
+    let mut state =
+      Interaction::new(&workspaces, OverviewLayoutMode::Rows, 6.0);
+    let mut press = |keys: &[Key]| {
+      for key in keys {
+        state.key(*key, &workspaces);
+      }
+      state.selected
+    };
+
+    assert_eq!(press(&[Key::Down, Key::Down]), special);
+    assert_eq!(press(&[Key::Down]), special, "the last row");
+    assert_eq!(press(&[Key::Up]), special - 1);
+    assert_eq!(press(&[Key::Home, Key::End]), special);
+    assert_eq!(press(&[Key::Left]), special - 1, "like up");
+  }
+
+  #[test]
   fn s_goes_to_the_special_workspace_like_a_digit() {
     let workspaces = with_special();
     let mut state =
@@ -1603,12 +1702,17 @@ mod tests {
       let mut state = Interaction::new(&workspaces, layout, 6.0);
       if layout == OverviewLayoutMode::Grid {
         state.grid = GridCells::new(
-          &CardMetrics::new(1920.0, 1080.0, 1.0),
+          &CardMetrics::new(1920.0, 1080.0, 1.0, OverviewLayoutMode::Grid),
           &workspaces
             .iter()
             .map(|w| {
               CardSlot::new(
-                &CardMetrics::new(1920.0, 1080.0, 1.0),
+                &CardMetrics::new(
+                  1920.0,
+                  1080.0,
+                  1.0,
+                  OverviewLayoutMode::Grid,
+                ),
                 w.is_special,
               )
             })

@@ -505,8 +505,18 @@ overview:
   search_color: "#89b4faff"
   font_family: "Segoe UI"
 
-  # Columns of the grid of every workspace (`toggle-overview --grid`, or tab
-  # while open).
+  # Layout `toggle-overview` opens on; tab goes through them while open.
+  # Options:
+  #   'carousel'  - a row, the selected workspace large in the middle.
+  #   'grid'      - every workspace at once.
+  #   'rows'      - a row per workspace, stacked, each scrolling
+  #                 workspace's strip running off to its sides.
+  #   'spotlight' - the selected workspace as large as fits, its
+  #                 neighbours peeking in at the sides.
+  layout: "carousel"
+
+  # Most columns of the grid; it takes fewer when that shows the
+  # workspaces larger.
   grid_columns: 5
 
   # Length of the zoom out on open, and of the zoom into the picked

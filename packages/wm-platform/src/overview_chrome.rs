@@ -16,9 +16,9 @@ use windows::{
     Graphics::Gdi::{
       CreateFontW, DeleteObject, DrawTextW, SelectObject, SetBkMode,
       SetTextColor, ANTIALIASED_QUALITY, CLIP_DEFAULT_PRECIS,
-      DEFAULT_CHARSET, DRAW_TEXT_FORMAT, DT_CENTER, DT_END_ELLIPSIS,
-      DT_LEFT, DT_NOPREFIX, DT_SINGLELINE, DT_VCENTER, FW_NORMAL,
-      FW_SEMIBOLD, HFONT, OUT_DEFAULT_PRECIS, TRANSPARENT,
+      DEFAULT_CHARSET, DRAW_TEXT_FORMAT, DT_CALCRECT, DT_CENTER,
+      DT_END_ELLIPSIS, DT_LEFT, DT_NOPREFIX, DT_SINGLELINE, DT_VCENTER,
+      FW_NORMAL, FW_SEMIBOLD, HFONT, OUT_DEFAULT_PRECIS, TRANSPARENT,
     },
     UI::WindowsAndMessaging::{DrawIconEx, DI_NORMAL, HICON},
   },
@@ -39,9 +39,6 @@ const GHOST_CAPTION: (f32, f32) = (18.0, 9.0);
 
 /// Size of the dragged window's picture, in logical pixels.
 pub(crate) const GHOST_SIZE: (f32, f32) = (200.0, 124.0);
-
-/// Height of the key hints line, in logical pixels.
-pub(crate) const HINT_HEIGHT: f32 = 20.0;
 
 /// Everything a card's picture depends on, so it is only redrawn when
 /// something in it changes.
@@ -69,6 +66,10 @@ pub(crate) struct CardPicture {
 
   /// Handles of minimized windows, shown as icons in the header.
   pub minimized: Vec<isize>,
+
+  /// Where a scrolling workspace's monitor is on its strip, when the card
+  /// shows more than that.
+  pub viewport: Option<RectF>,
 
   pub tiles: Vec<TilePicture>,
 
@@ -150,7 +151,7 @@ pub(crate) fn draw_card(
   notify: (HWND, u32),
 ) {
   let units = Units {
-    scale_factor: metrics.scale_factor,
+    scale_factor: metrics.scale_factor * metrics.chrome,
   };
 
   surface.pixels().fill(0);
@@ -192,6 +193,10 @@ pub(crate) fn draw_card(
       round(units.px(border_width)),
       border,
     );
+  }
+
+  if let Some(viewport) = &picture.viewport {
+    draw_viewport(surface, viewport, units, style);
   }
 
   let mut fonts = Fonts::new(&style.font_family);
@@ -244,6 +249,27 @@ pub(crate) fn draw_card(
       style.accent,
     );
   }
+}
+
+/// Marks out where a scrolling workspace's monitor is on its strip: a
+/// lighter frame around it, showing between its windows.
+fn draw_viewport(
+  surface: &mut Surface,
+  viewport: &RectF,
+  units: Units,
+  style: &OverviewStyle,
+) {
+  let frame = viewport.inset(-units.px(5.0)).to_rect();
+  let radius = round(units.px(9.0));
+
+  let mut canvas = surface.canvas();
+  canvas.fill_rounded_rect(&frame, radius, with_alpha(style.text, 0.05));
+  canvas.stroke_rounded_rect(
+    &frame,
+    radius,
+    round(units.px(1.5)).max(1),
+    with_alpha(style.subtext, 0.32),
+  );
 }
 
 /// Draws a "+" in the middle of `area`.
@@ -434,7 +460,8 @@ pub(crate) fn draw_ghost(
   );
 }
 
-/// Draws `text`, centered, into `surface`.
+/// Draws `text`, centered, into `surface`, on a pill of the cards' color
+/// so it reads over whatever is behind it.
 pub(crate) fn draw_hint(
   surface: &mut Surface,
   text: &str,
@@ -445,15 +472,50 @@ pub(crate) fn draw_hint(
   surface.pixels().fill(0);
 
   let mut fonts = Fonts::new(&style.font_family);
+  let font = fonts.get(10.5 * scale_factor, false);
   let rect = Rect::from_xy(0, 0, surface.width, surface.height);
-  draw_text(
-    surface,
-    fonts.get(10.0 * scale_factor, false),
-    text,
-    &rect,
-    color,
-    DT_CENTER,
-  );
+
+  let width = (text_width(font, text) + round(28.0 * scale_factor))
+    .min(surface.width);
+  let pill =
+    Rect::from_xy((surface.width - width) / 2, 0, width, surface.height);
+  let radius = surface.height / 2;
+  {
+    let mut canvas = surface.canvas();
+    canvas.fill_rounded_rect(&pill, radius, with_alpha(style.card, 0.9));
+    canvas.stroke_rounded_rect(
+      &pill,
+      radius,
+      round(scale_factor).max(1),
+      with_alpha(style.accent, 0.16),
+    );
+  }
+
+  draw_text(surface, font, text, &rect, color, DT_CENTER);
+}
+
+/// Width `text` takes on one line in `font`.
+fn text_width(font: HFONT, text: &str) -> i32 {
+  let mut text = text.encode_utf16().collect::<Vec<_>>();
+  let Some(scratch) = Surface::new(1, 1) else {
+    return 0;
+  };
+  let mut bounds = RECT::default();
+
+  // SAFETY: `scratch` owns a valid DC; the old font is restored before it
+  // is dropped.
+  unsafe {
+    let old_font = SelectObject(scratch.dc, font);
+    DrawTextW(
+      scratch.dc,
+      &mut text,
+      &raw mut bounds,
+      DT_CALCRECT | DT_SINGLELINE | DT_NOPREFIX,
+    );
+    SelectObject(scratch.dc, old_font);
+  }
+
+  bounds.right - bounds.left
 }
 
 /// Draws a window title on a strip along the bottom of `rect`, if `rect`

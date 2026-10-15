@@ -1190,21 +1190,34 @@ impl WindowManager {
           _ => Ok(()),
         }
       }
-      InvokeCommand::ToggleOverview { grid } => {
+      InvokeCommand::ToggleOverview { grid, layout } => {
+        let layout = layout
+          .or(grid.then_some(wm_common::OverviewLayout::Grid))
+          .unwrap_or(config.value.overview.layout);
+
         #[cfg(target_os = "windows")]
         crate::overview::toggle_overview(
           state,
           config,
-          if *grid {
-            wm_platform::OverviewLayoutMode::Grid
-          } else {
-            wm_platform::OverviewLayoutMode::Carousel
+          match layout {
+            wm_common::OverviewLayout::Carousel => {
+              wm_platform::OverviewLayoutMode::Carousel
+            }
+            wm_common::OverviewLayout::Grid => {
+              wm_platform::OverviewLayoutMode::Grid
+            }
+            wm_common::OverviewLayout::Rows => {
+              wm_platform::OverviewLayoutMode::Rows
+            }
+            wm_common::OverviewLayout::Spotlight => {
+              wm_platform::OverviewLayoutMode::Spotlight
+            }
           },
         )?;
 
         #[cfg(not(target_os = "windows"))]
         {
-          let _ = grid;
+          let _ = layout;
           tracing::warn!("The overview is only available on Windows.");
         }
 

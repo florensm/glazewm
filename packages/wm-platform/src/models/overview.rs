@@ -121,12 +121,52 @@ pub struct OverviewStyle {
 /// How the overview lays out its cards.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum OverviewLayoutMode {
-  /// One row, the selected workspace in the middle at full size.
+  /// One row, the selected workspace in the middle and larger than the
+  /// rest.
   #[default]
   Carousel,
 
   /// Every workspace at once.
   Grid,
+
+  /// A row per workspace, stacked top to bottom at the same size, a
+  /// scrolling workspace's strip running off to its sides.
+  Rows,
+
+  /// The selected workspace large, its neighbours peeking in at the
+  /// sides.
+  Spotlight,
+}
+
+impl OverviewLayoutMode {
+  /// Every layout, in the order `Tab` goes through them.
+  pub const ALL: [Self; 4] =
+    [Self::Carousel, Self::Grid, Self::Rows, Self::Spotlight];
+
+  /// The layout `Tab` goes on to.
+  #[must_use]
+  pub fn next(self) -> Self {
+    let index = Self::ALL.iter().position(|layout| *layout == self);
+    Self::ALL[index.map_or(0, |index| (index + 1) % Self::ALL.len())]
+  }
+
+  /// Whether the special workspace's card is docked at the bottom, apart
+  /// from the others, rather than coming after them.
+  #[must_use]
+  pub fn docks_special(self) -> bool {
+    matches!(self, Self::Carousel | Self::Grid)
+  }
+
+  /// Name of the layout, as in the config.
+  #[must_use]
+  pub fn name(self) -> &'static str {
+    match self {
+      Self::Carousel => "carousel",
+      Self::Grid => "grid",
+      Self::Rows => "rows",
+      Self::Spotlight => "spotlight",
+    }
+  }
 }
 
 /// What the user did in the overview.
