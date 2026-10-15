@@ -173,6 +173,44 @@ impl Canvas<'_> {
     }
   }
 
+  /// Draws the soft shadow of `rect`, rounded by `radius`: `color` under
+  /// it, fading out over `blur` pixels past its edges.
+  #[allow(clippy::cast_precision_loss, clippy::cast_possible_truncation)]
+  pub fn fill_shadow(
+    &mut self,
+    rect: &Rect,
+    radius: i32,
+    blur: f32,
+    color: Color,
+  ) {
+    let blur = blur.max(1.0);
+    let reach = blur.ceil() as i32;
+    let radius =
+      radius.min(rect.width() / 2).min(rect.height() / 2).max(0) as f32;
+    let (half_width, half_height) =
+      (rect.width() as f32 / 2.0, rect.height() as f32 / 2.0);
+    let (center_x, center_y) =
+      (rect.left as f32 + half_width, rect.top as f32 + half_height);
+
+    for y in
+      (rect.top - reach).max(0)..(rect.bottom + reach).min(self.height)
+    {
+      for x in
+        (rect.left - reach).max(0)..(rect.right + reach).min(self.width)
+      {
+        // How far past the rounded rect's edge, negative inside it.
+        let dx = (x as f32 + 0.5 - center_x).abs() - (half_width - radius);
+        let dy =
+          (y as f32 + 0.5 - center_y).abs() - (half_height - radius);
+        let distance =
+          dx.max(0.0).hypot(dy.max(0.0)) + dx.max(dy).min(0.0) - radius;
+
+        let fade = 1.0 - (distance / blur).clamp(0.0, 1.0);
+        self.blend(x, y, color, fade * fade);
+      }
+    }
+  }
+
   /// Makes `rect`, with its corners rounded by `radius`, transparent:
   /// a hole for whatever is composited underneath the canvas.
   pub fn erase_rounded_rect(&mut self, rect: &Rect, radius: i32) {
@@ -414,6 +452,24 @@ mod tests {
       width,
       height,
     }
+  }
+
+  #[test]
+  fn shadows_fade_out_past_the_edge() {
+    let mut pixels = vec![0u32; 40 * 40];
+    canvas(&mut pixels, 40).fill_shadow(
+      &Rect::from_ltrb(10, 10, 30, 30),
+      4,
+      8.0,
+      WHITE,
+    );
+    let alpha = |x: usize, y: usize| pixels[y * 40 + x] >> 24;
+
+    assert_eq!(alpha(20, 20), 255, "full under the rect");
+    assert!(alpha(20, 33) > alpha(20, 36), "fading away from it");
+    assert!(alpha(20, 33) > 0 && alpha(20, 33) < 255);
+    assert_eq!(alpha(20, 39), 0, "gone past the blur");
+    assert!(alpha(31, 31) < alpha(20, 31), "rounder at the corners");
   }
 
   #[test]

@@ -104,15 +104,36 @@ pub(crate) struct TilePicture {
   pub border: Color,
 }
 
-/// Pixel size of a card's picture.
-///
-/// Always that of a card at scale 1, however big the card is shown: DWM
-/// scales it, so moving the selection never redraws a card. A picture
-/// redrawn at a new size flickers, since the new bitmap and its
-/// thumbnail's source rect can't be swapped in at once.
+/// Corner radius of a card, in logical pixels.
+const CARD_RADIUS: f32 = 14.0;
+
+/// How far a card's shadow fades out, and how far below the card it is
+/// cast, in logical pixels.
+const SHADOW: (f32, f32) = (22.0, 5.0);
+
+/// Pixel size of a card at scale 1.
 #[allow(clippy::cast_possible_truncation)]
-pub(crate) fn card_size(metrics: &CardMetrics) -> (i32, i32) {
+fn card_size(metrics: &CardMetrics) -> (i32, i32) {
   (metrics.width.ceil() as i32, metrics.height.ceil() as i32)
+}
+
+/// Room around a card in its picture for its shadow, in the picture's
+/// pixels.
+pub(crate) fn shadow_margin(metrics: &CardMetrics) -> i32 {
+  round((SHADOW.0 + SHADOW.1) * metrics.scale_factor * metrics.chrome)
+}
+
+/// Pixel size of a card's picture: the card at scale 1, with room for its
+/// shadow around it.
+///
+/// Always that size however big the card is shown: DWM scales it, so
+/// moving the selection never redraws a card. A picture redrawn at a new
+/// size flickers, since the new bitmap and its thumbnail's source rect
+/// can't be swapped in at once.
+pub(crate) fn picture_size(metrics: &CardMetrics) -> (i32, i32) {
+  let (width, height) = card_size(metrics);
+  let margin = shadow_margin(metrics);
+  (width + 2 * margin, height + 2 * margin)
 }
 
 /// `color` with its alpha set to `alpha` (0 to 1).
@@ -140,10 +161,51 @@ impl Units {
   }
 }
 
-/// Draws a card into `surface`, which must be `card_size` big.
+/// Draws a card with its shadow into `surface`, which must be
+/// `picture_size` big.
 ///
 /// `notify` is told when a window icon that wasn't cached yet arrives.
 pub(crate) fn draw_card(
+  surface: &mut Surface,
+  picture: &CardPicture,
+  metrics: &CardMetrics,
+  style: &OverviewStyle,
+  notify: (HWND, u32),
+) {
+  let (width, height) = card_size(metrics);
+  let Some(mut face) = Surface::new(width, height) else {
+    return;
+  };
+  draw_face(&mut face, picture, metrics, style, notify);
+
+  let units = Units {
+    scale_factor: metrics.scale_factor * metrics.chrome,
+  };
+  let margin = shadow_margin(metrics);
+  let card = Rect::from_xy(margin, margin, width, height);
+  let radius = round(units.px(CARD_RADIUS));
+  let (blur, drop) = SHADOW;
+
+  surface.pixels().fill(0);
+  let mut canvas = surface.canvas();
+  canvas.fill_shadow(
+    &Rect::from_xy(margin, margin + round(units.px(drop)), width, height),
+    radius,
+    units.px(blur),
+    Color {
+      r: 0,
+      g: 0,
+      b: 0,
+      a: 80,
+    },
+  );
+  // The card's own holes show what is under it, not its shadow.
+  canvas.erase_rounded_rect(&card, radius);
+  canvas.draw_premultiplied(margin, margin, face.pixels(), width, 1.0);
+}
+
+/// Draws a card itself into `surface`, which must be `card_size` big.
+fn draw_face(
   surface: &mut Surface,
   picture: &CardPicture,
   metrics: &CardMetrics,
@@ -156,7 +218,7 @@ pub(crate) fn draw_card(
 
   surface.pixels().fill(0);
   let card = Rect::from_xy(0, 0, surface.width, surface.height);
-  let radius = round(units.px(14.0));
+  let radius = round(units.px(CARD_RADIUS));
 
   let is_inviting = picture.is_special && picture.is_receiving;
 

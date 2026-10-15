@@ -48,8 +48,8 @@ use windows::{
 
 use crate::{
   overview_chrome::{
-    card_size, draw_card, draw_ghost, draw_hint, with_alpha, CardPicture,
-    TilePicture, GHOST_SIZE,
+    draw_card, draw_ghost, draw_hint, picture_size, shadow_margin,
+    with_alpha, CardPicture, TilePicture, GHOST_SIZE,
   },
   overview_layout::{
     carousel, cover_crop, grid, rows, spotlight, Camera, CardMetrics,
@@ -1082,7 +1082,7 @@ impl Overview {
       }
 
       let metrics = card.metrics;
-      card.picture.draw(card_size(&metrics), |surface| {
+      card.picture.draw(picture_size(&metrics), |surface| {
         draw_card(surface, &picture, &metrics, &style, notify);
       });
       card.drawn = Some(picture);
@@ -1422,7 +1422,12 @@ impl Overview {
       }
 
       if is_visible {
-        card.picture.place(&rect, fade * alpha);
+        // With the room around the card for its shadow.
+        #[allow(clippy::cast_precision_loss)]
+        let margin = shadow_margin(&metrics) as f32 * placement.scale;
+        let picture =
+          camera.apply(&placement.rect(&metrics).inset(-margin));
+        card.picture.place(&picture, fade * alpha);
       } else if let Some(thumbnail) = &mut card.picture.thumbnail {
         thumbnail.hide();
       }
