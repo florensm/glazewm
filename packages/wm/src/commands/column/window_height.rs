@@ -59,7 +59,8 @@ pub fn cycle_window_height(
   let rows = column.tiling_children().count() as i32;
   let available = (column_height - gap * (rows - 1)).max(1);
   #[allow(clippy::cast_precision_loss)]
-  let max_size = 1. - MIN_TILING_SIZE * (rows - 1) as f32;
+  let max_size =
+    (1. - MIN_TILING_SIZE * (rows - 1) as f32).max(MIN_TILING_SIZE);
 
   // Presets are of the workspace height, sized like column widths so
   // that ones adding up to 100% fill it, gaps included.
@@ -86,8 +87,11 @@ pub fn cycle_window_height(
   };
 
   let current = row.tiling_size();
-  let index = match workspace.strip_view().preset_height(row.id(), current)
-  {
+  let preset =
+    workspace
+      .strip_view()
+      .preset_height(row.id(), current, sizes.len());
+  let index = match preset {
     Some(index) if forwards => (index + 1) % sizes.len(),
     Some(index) => index.checked_sub(1).unwrap_or(last),
     None => {

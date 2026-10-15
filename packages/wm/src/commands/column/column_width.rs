@@ -49,33 +49,36 @@ pub fn cycle_column_width(
   };
 
   let current = column.tiling_size();
-  let index =
-    match workspace.strip_view().preset_width(column.id(), current) {
-      Some(index) if forwards => (index + 1) % sizes.len(),
-      Some(index) => index.checked_sub(1).unwrap_or(last),
-      None => {
-        // A pixel of leeway, so rounding can't keep a column on its
-        // preset.
-        let width = |size: f32| width_at(&column, &workspace, size);
-        let current = width(current)?;
-        let widths = sizes
-          .iter()
-          .map(|size| width(*size))
-          .collect::<Result<Vec<_>, _>>()?;
+  let preset =
+    workspace
+      .strip_view()
+      .preset_width(column.id(), current, sizes.len());
+  let index = match preset {
+    Some(index) if forwards => (index + 1) % sizes.len(),
+    Some(index) => index.checked_sub(1).unwrap_or(last),
+    None => {
+      // A pixel of leeway, so rounding can't keep a column on its
+      // preset.
+      let width = |size: f32| width_at(&column, &workspace, size);
+      let current = width(current)?;
+      let widths = sizes
+        .iter()
+        .map(|size| width(*size))
+        .collect::<Result<Vec<_>, _>>()?;
 
-        if forwards {
-          widths
-            .iter()
-            .position(|width| current + 1 < *width)
-            .unwrap_or(0)
-        } else {
-          widths
-            .iter()
-            .rposition(|width| *width + 1 < current)
-            .unwrap_or(last)
-        }
+      if forwards {
+        widths
+          .iter()
+          .position(|width| current + 1 < *width)
+          .unwrap_or(0)
+      } else {
+        widths
+          .iter()
+          .rposition(|width| *width + 1 < current)
+          .unwrap_or(last)
       }
-    };
+    }
+  };
 
   resize_tiling_container(&column, sizes[index]);
   workspace.update_strip_view(|view| {
@@ -179,7 +182,7 @@ pub fn expand_column_to_available_width(
 #[cfg(test)]
 mod tests {
   use wm_common::Layout;
-  use wm_platform::LengthValue;
+  use wm_platform::{LengthUnit, LengthValue};
 
   use super::{
     cycle_column_width, expand_column_to_available_width, maximize_column,
@@ -272,6 +275,28 @@ mod tests {
 
     cycle(&window, true, &mut state, &config);
     assert_eq!(window.to_rect().unwrap().width(), 400);
+  }
+
+  #[test]
+  fn presets_reloaded_to_fewer_go_on_by_size() {
+    let (mut state, window) = setup(0.5);
+    let mut config = mock_config();
+    let percent = |amount| LengthValue {
+      amount,
+      unit: LengthUnit::Percentage,
+    };
+    config.value.layouts.scrolling.preset_column_widths =
+      vec![percent(0.25), percent(0.5), percent(0.75), percent(1.)];
+
+    cycle(&window, true, &mut state, &config);
+    cycle(&window, true, &mut state, &config);
+    assert_size(&window, 1.);
+
+    // The last preset it was set to is no more.
+    config.value.layouts.scrolling.preset_column_widths =
+      vec![percent(0.5), percent(1.)];
+    cycle(&window, false, &mut state, &config);
+    assert_size(&window, 0.5);
   }
 
   #[test]

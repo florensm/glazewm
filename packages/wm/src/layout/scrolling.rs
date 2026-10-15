@@ -101,7 +101,7 @@ where
 }
 
 /// Narrowest `column` can be, as its widest window's app allows, but at
-/// most `max`.
+/// most `max` (which outer gaps wider than the monitor make negative).
 fn min_width(column: &impl CommonGetters, max: i32) -> i32 {
   column
     .self_and_descendants()
@@ -117,7 +117,8 @@ fn min_width(column: &impl CommonGetters, max: i32) -> i32 {
     })
     .max()
     .unwrap_or(0)
-    .clamp(0, max)
+    .min(max)
+    .max(0)
 }
 
 /// Rect of a column on its workspace's strip.
@@ -462,9 +463,15 @@ impl StripView {
     self.request = Some(request);
   }
 
-  /// Preset width `column` was last set to, if it still has that size.
-  pub fn preset_width(&self, column: Uuid, size: f32) -> Option<usize> {
-    find_preset(&self.preset_widths, column, size)
+  /// Which of `count` preset widths `column` was last set to, if it
+  /// still has that size. Presets since reloaded to fewer don't count.
+  pub fn preset_width(
+    &self,
+    column: Uuid,
+    size: f32,
+    count: usize,
+  ) -> Option<usize> {
+    find_preset(&self.preset_widths, column, size, count)
   }
 
   pub fn set_preset_width(
@@ -476,9 +483,15 @@ impl StripView {
     set_preset(&mut self.preset_widths, column, index, size, usize::MAX);
   }
 
-  /// Preset height `row` was last set to, if it still has that size.
-  pub fn preset_height(&self, row: Uuid, size: f32) -> Option<usize> {
-    find_preset(&self.preset_heights, row, size)
+  /// Which of `count` preset heights `row` was last set to, if it still
+  /// has that size.
+  pub fn preset_height(
+    &self,
+    row: Uuid,
+    size: f32,
+    count: usize,
+  ) -> Option<usize> {
+    find_preset(&self.preset_heights, row, size, count)
   }
 
   pub fn set_preset_height(&mut self, row: Uuid, index: usize, size: f32) {
@@ -506,9 +519,10 @@ impl StripView {
   /// While the active column stays active, the view keeps it where it is
   /// on screen, so columns opening, closing or resizing beside it move
   /// the others, not it. When the active column itself closes, the one
-  /// taking its place takes over its position too. A newly activated
-  /// column is scrolled into view per `config`, as is the active column
-  /// when its width changes.
+  /// taking its place takes over its position too, as far as that shows
+  /// it whole. A newly activated column is scrolled into view per
+  /// `config`, as is the active column when its width changes. A column
+  /// `config` keeps centered is put back in the middle whatever changed.
   pub fn update(
     &mut self,
     strip: &Strip,
@@ -554,6 +568,9 @@ impl StripView {
 
     let offset = match (request, self.anchor) {
       (Some(ViewRequest::CenterActive), _) => strip.center(active, base),
+      _ if config.keeps_centered(strip.len()) => {
+        strip.center(active, base)
+      }
       (Some(ViewRequest::PlaceActive { x }), _) => {
         strip.fit(active, strip.start(active) - x)
       }
@@ -568,7 +585,7 @@ impl StripView {
           && anchor_index.is_none()
           && active == anchor.index =>
       {
-        base
+        strip.fit(active, base)
       }
       // The active column closed before focus moved on from it, so the
       // column it was opened from is back where it was.
@@ -622,11 +639,12 @@ impl StripView {
 }
 
 /// The preset among `presets` that `container` was set to, if it still
-/// has the size it got.
+/// has the size it got and is one of `count`.
 fn find_preset(
   presets: &[Preset],
   container: Uuid,
   size: f32,
+  count: usize,
 ) -> Option<usize> {
   presets
     .iter()
@@ -634,6 +652,7 @@ fn find_preset(
       preset.container == container && (preset.size - size).abs() < 1e-6
     })
     .map(|preset| preset.index)
+    .filter(|index| *index < count)
 }
 
 /// Records that `container` was set to preset `index`, giving it `size`,
@@ -704,17 +723,21 @@ pub fn is_focusable_by_hover(
   };
 
   let strip = Strip::new(&workspace)?;
-  let (Some(index), Some(active)) = (
-    strip.index_of(column.id()),
-    focused_index(&workspace, &strip),
-  ) else {
+  let Some(index) = strip.index_of(column.id()) else {
     return Ok(true);
   };
 
+  // The column the view follows, also while a window off the strip has
+  // focus. Focus moving within it leaves the view where it is.
+  let active = active_column(&workspace)
+    .and_then(|active| strip.index_of(active.id()));
+  if active == Some(index) {
+    return Ok(true);
+  }
+
   let offset = workspace.scroll_offset();
-  let scroll = (strip.offset_for(index, offset, Some(active), &config)
-    - offset)
-    .abs();
+  let scroll =
+    (strip.offset_for(index, offset, active, &config) - offset).abs();
 
   Ok(scroll <= max_scroll.to_px(strip.view_width, None))
 }
@@ -919,16 +942,18 @@ mod tests {
 
   use super::{
     focus_target_after_removal, is_focusable_by_hover, is_in_view,
-    real_window_rect, shows_real_window, sync_view, Strip, StripView,
-    ViewRequest,
+    min_width, real_window_rect, shows_real_window, sync_view, Strip,
+    StripView, ViewRequest,
   };
   use crate::{
     commands::container::{
-      detach_container, flatten_child_split_containers,
+      attach_container, detach_container, flatten_child_split_containers,
       resize_tiling_container, set_focused_descendant,
     },
     layout::{attach, insertion_target},
-    models::{Monitor, SplitContainer, TilingWindow, Workspace},
+    models::{
+      Monitor, NonTilingWindow, SplitContainer, TilingWindow, Workspace,
+    },
     test_utils::{mock_config as config, MOCK_MONITOR_WIDTH},
     traits::{
       CommonGetters, PositionGetters, TilingSizeGetters, WindowGetters,
@@ -1014,6 +1039,30 @@ mod tests {
   }
 
   #[test]
+  fn hovering_keeps_to_the_max_scroll_while_a_floating_window_has_focus() {
+    let (_state, workspace, [_, second, third]) = setup();
+    workspace.set_scrolling_config(ScrollingLayoutConfig {
+      focus_follows_cursor_max_scroll: Some(LengthValue {
+        amount: 0.,
+        unit: LengthUnit::Percentage,
+      }),
+      ..workspace.scrolling_config()
+    });
+
+    let floating = NonTilingWindow::mock().call();
+    attach_container(
+      &floating.clone().into(),
+      &workspace.clone().into(),
+      None,
+    )
+    .unwrap();
+    set_focused_descendant(&floating.into(), None);
+
+    assert!(is_focusable_by_hover(&second.clone().into()).unwrap());
+    assert!(!is_focusable_by_hover(&third.clone().into()).unwrap());
+  }
+
+  #[test]
   fn a_column_is_never_narrower_than_its_app_allows() {
     let (_state, workspace, [first, second, _]) = setup();
     let delta = first.total_border_delta().unwrap();
@@ -1038,6 +1087,9 @@ mod tests {
       first.to_rect().unwrap().width(),
       workspace.to_rect().unwrap().width()
     );
+
+    // Outer gaps wider than the monitor leave no width at all.
+    assert_eq!(min_width(&first, -100), 0);
   }
 
   #[test]
@@ -1466,6 +1518,63 @@ mod tests {
     let two = with_inserted(&strip, 1, 500);
     view.update(&two, Some(1), &config);
     assert!(screen_x(&two, &view, 1) + 500 <= 1000);
+  }
+
+  #[test]
+  fn a_column_left_alone_is_centered_without_being_focused_anew() {
+    let strip = strip(&[495, 495]);
+    let config = ScrollingLayoutConfig {
+      always_center_single_column: true,
+      ..ScrollingLayoutConfig::default()
+    };
+    let mut view = StripView::default();
+    view.update(&strip, Some(1), &config);
+    assert_eq!(screen_x(&strip, &view, 1), 505);
+
+    // The other column's window closes in the background.
+    let rest = without(&strip, 0);
+    view.update(&rest, Some(0), &config);
+    assert_eq!(screen_x(&rest, &view, 0), (1000 - 495) / 2);
+  }
+
+  #[test]
+  fn a_centered_column_stays_centered_whatever_is_asked() {
+    let strip = strip(&[300, 300, 300]);
+    let config = with_centering(CenterFocusedColumn::Always);
+    let mut view = StripView::default();
+    view.update(&strip, Some(1), &config);
+    assert_eq!(screen_x(&strip, &view, 1), 350);
+
+    view.request(ViewRequest::PlaceActive { x: 100 });
+    view.update(&strip, Some(1), &config);
+    assert_eq!(screen_x(&strip, &view, 1), 350);
+
+    // Its left edge is dragged out by 200px, asking to keep its right
+    // edge where it was.
+    let wide = Strip {
+      ids: strip.ids.clone(),
+      ..self::strip(&[300, 500, 300])
+    };
+    view.request(ViewRequest::PlaceActiveRight { right: 650 });
+    view.update(&wide, Some(1), &config);
+    assert_eq!(screen_x(&wide, &view, 1), 250);
+  }
+
+  #[test]
+  fn a_wider_column_taking_a_closed_ones_place_is_shown_whole() {
+    let strip = strip(&[495, 300, 700]);
+    let mut view = StripView::default();
+    view.update(&strip, Some(1), &fit());
+    assert_eq!(view.offset, 0);
+
+    // It slides into the closed column's place, then left as far as it
+    // has to, whether focus went to it or off the strip.
+    let rest = without(&strip, 1);
+    for focused in [Some(1), None] {
+      let mut view = view.clone();
+      view.update(&rest, focused, &fit());
+      assert_eq!(screen_x(&rest, &view, 1) + 700, 1000);
+    }
   }
 
   #[test]
