@@ -308,7 +308,8 @@ async fn start_wm(
           let _ = mouse_listener.enable(!is_paused);
         }
 
-        // Update keybinding and mouse listeners on config changes.
+        // Update keybinding and mouse listeners on config changes. While
+        // paused, only the bindings that unpause are taken from apps.
         if matches!(
           wm_event,
           WmEvent::UserConfigChanged { .. }
@@ -317,7 +318,10 @@ async fn start_wm(
         ) {
           keybinding_listener.update(
             &config
-              .active_keybinding_configs(&wm.state.binding_modes, false)
+              .active_keybinding_configs(
+                &wm.state.binding_modes,
+                wm.state.is_paused,
+              )
               .flat_map(|kb| kb.bindings)
               .collect::<Vec<_>>(),
           );
