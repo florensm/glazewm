@@ -1992,7 +1992,7 @@ impl SpringParams {
       };
 
       (0..8).fold((1. / epsilon).ln() / beta, |secs, _| {
-        ((x0.abs() + drift * secs.min(reach)) / epsilon).ln() / beta
+        ((x0.abs() + drift * secs.clamp(0., reach)) / epsilon).ln() / beta
       })
     } else {
       let omega2 = (beta * beta - omega * omega).sqrt();
@@ -2002,7 +2002,10 @@ impl SpringParams {
       (amplitude / epsilon).ln() / -slow
     };
 
-    std::time::Duration::from_secs_f64(secs.clamp(0., MAX_SPRING_SECS))
+    // `Duration` panics on NaN, which a spring's odd parameters could
+    // still give.
+    std::time::Duration::try_from_secs_f64(secs.clamp(0., MAX_SPRING_SECS))
+      .unwrap_or(std::time::Duration::from_secs_f64(MAX_SPRING_SECS))
   }
 
   /// Whether it goes past 1 before settling.
@@ -2203,9 +2206,11 @@ fn parse_spring(value: &str) -> Result<SpringParams, String> {
     match name {
       "damping_ratio" => spring.damping_ratio = number,
       "stiffness" if number > 0. => spring.stiffness = number,
-      "epsilon" if number > 0. => spring.epsilon = number,
-      "stiffness" | "epsilon" => {
-        return Err(format!("spring {name} must be above 0"));
+      "stiffness" => return Err("spring stiffness must be above 0".into()),
+      // A fraction of the way, not pixels.
+      "epsilon" if number > 0. && number < 1. => spring.epsilon = number,
+      "epsilon" => {
+        return Err("spring epsilon must be between 0 and 1".into());
       }
       _ => return Err(format!("unknown spring argument '{name}'")),
     }
@@ -2338,6 +2343,23 @@ mod tests {
     assert!(easing("spring(1, 0)").is_err());
     assert!(easing("spring(1, 2, 3, 4)").is_err());
     assert!(easing("spring(bounce=1)").is_err());
+    assert!(easing("spring(1, 800, 1.06)").is_err());
+    assert!(easing("spring(epsilon=0)").is_err());
+  }
+
+  #[test]
+  fn a_spring_with_an_odd_epsilon_still_has_a_duration() {
+    for (damping_ratio, epsilon, initial_velocity) in
+      [(1., 1.06, 0.), (0.8, 1.5, -10.), (0.8, 2., 8.), (0.8, 2., 35.)]
+    {
+      let spring = SpringParams {
+        damping_ratio,
+        epsilon,
+        initial_velocity,
+        ..SpringParams::default()
+      };
+      assert!(spring.duration().as_secs_f64() <= 10.);
+    }
   }
 
   #[test]

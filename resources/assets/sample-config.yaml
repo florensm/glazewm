@@ -24,7 +24,8 @@ animations:
     # Or a damped spring, 'spring(damping_ratio, stiffness, epsilon)' (or
     # just 'spring', for spring(1.0, 800, 0.0001)), which lasts as long as
     # it takes to settle instead of `duration_ms`. A damping ratio of 1
-    # settles fastest without overshooting; lower bounces.
+    # settles fastest without overshooting; lower bounces. Epsilon is how
+    # close to the end, as a fraction of the way (0 to 1), counts as there.
     easing: "cubic_bezier(0.2, 0.0, 0.0, 1.0)"
     # Minimum pixel distance required to trigger movement animations.
     # Helps prevent animations from starting on very small position changes.
