@@ -1,6 +1,7 @@
-//! The overview's pictures: each workspace card, the key hints and the
-//! window being dragged. They are drawn into bitmaps once and composited
-//! by DWM as thumbnails, scaled to wherever their card is on each frame.
+//! The overview's pictures: each workspace card, its highlights, labels
+//! and tags, the key hints and the window being dragged. They are drawn
+//! into bitmaps once and composited by DWM as thumbnails, scaled to
+//! wherever they are on each frame.
 //!
 //! A card is drawn over its windows' previews: where a preview goes the
 //! card is cut out, and titles and borders sit on top of the preview's
@@ -25,7 +26,9 @@ use windows::{
 };
 
 use crate::{
-  overview_layout::{CardMetrics, Placement, RectF},
+  overview_layout::{
+    CardLook, CardMetrics, Placement, RectF, LABEL_HEIGHT,
+  },
   paint,
   surface::Surface,
   window_icons, Color, CornerRadii, OverviewStyle, Rect,
@@ -41,11 +44,13 @@ const GHOST_CAPTION: (f32, f32) = (18.0, 9.0);
 pub(crate) const GHOST_SIZE: (f32, f32) = (200.0, 124.0);
 
 /// Everything a card's picture depends on, so it is only redrawn when
-/// something in it changes.
+/// something in it changes. Selection and hover aren't: they show as
+/// highlights over it, so moving them redraws nothing.
 #[derive(Clone, Debug, PartialEq)]
 #[allow(clippy::struct_excessive_bools)]
 pub(crate) struct CardPicture {
   pub label: String,
+  pub look: CardLook,
 
   /// Whether this is the focused workspace.
   pub is_focused: bool,
@@ -59,10 +64,6 @@ pub(crate) struct CardPicture {
   /// Whether a window is carried or dragged, which the special
   /// workspace's card invites to be dropped on.
   pub is_receiving: bool,
-
-  pub is_hovered: bool,
-  pub is_drop_target: bool,
-  pub is_selected: bool,
 
   /// Handles of minimized windows, shown as icons in the header.
   pub minimized: Vec<isize>,
@@ -142,6 +143,11 @@ const SHADOW: (f32, f32) = (22.0, 5.0);
 /// bigger still, e.g. a long strip on a 4K monitor, is drawn smaller and
 /// scaled up by DWM, so it can't take hundreds of MB or long to redraw.
 const MAX_PICTURE_PIXELS: f32 = 8_388_608.0;
+
+/// Corner radius of a card at scale 1, in pixels.
+pub(crate) fn card_radius(metrics: &CardMetrics) -> f32 {
+  CARD_RADIUS * metrics.scale_factor * metrics.chrome
+}
 
 /// Pixel size of a card at scale 1.
 #[allow(clippy::cast_possible_truncation)]
@@ -295,18 +301,18 @@ fn draw_face(
 
   let is_inviting = picture.is_special && picture.is_receiving;
 
-  let (fill, border, border_width) = if picture.is_drop_target {
-    (with_alpha(style.accent, 0.22), style.accent, 4.0)
-  } else if is_inviting {
+  let (fill, border, border_width) = if is_inviting {
     (
       with_alpha(style.accent, 0.15),
       with_alpha(style.accent, 0.85),
       2.5,
     )
   } else if picture.is_focused {
-    (with_alpha(style.accent, 0.12), style.accent, 2.0)
-  } else if picture.is_hovered {
-    (style.surface, with_alpha(style.accent, 0.35), 1.0)
+    (
+      with_alpha(style.accent, 0.12),
+      with_alpha(style.accent, 0.8),
+      1.5,
+    )
   } else if picture.is_special {
     (
       with_alpha(style.accent, 0.08),
@@ -335,24 +341,21 @@ fn draw_face(
   }
 
   let mut fonts = Fonts::new(&style.font_family);
-  draw_header(surface, &mut fonts, picture, units, style, notify);
+  if picture.look == CardLook::Classic {
+    draw_header(surface, &mut fonts, picture, units, style, notify);
+  }
 
   if picture.is_new {
-    let color = if picture.is_drop_target || picture.is_selected {
-      style.accent
-    } else {
-      with_alpha(style.subtext, 0.5)
-    };
+    let color = with_alpha(style.subtext, 0.5);
     draw_plus(surface, &metrics.tile_area().to_rect(), units, color);
   }
 
   if picture.is_special && picture.tiles.is_empty() {
-    let color =
-      if picture.is_drop_target || picture.is_selected || is_inviting {
-        style.accent
-      } else {
-        with_alpha(style.subtext, 0.6)
-      };
+    let color = if is_inviting {
+      style.accent
+    } else {
+      with_alpha(style.subtext, 0.6)
+    };
     draw_text(
       surface,
       fonts.get(units.px(12.0), false),
@@ -372,16 +375,18 @@ fn draw_face(
 
   // Previews are cut out in stacking order, so a floating window's hole
   // clears what was drawn for the tiled window under it.
+  let tile_radius = match picture.look {
+    CardLook::Classic => 4.0,
+    CardLook::Clean => 6.0,
+  };
   for tile in &picture.tiles {
-    draw_tile(surface, &mut fonts, tile, units, style, notify);
-  }
-
-  if picture.is_selected {
-    surface.canvas().stroke_rounded_rect(
-      &card,
-      radius,
-      round(units.px(4.0)).max(1),
-      style.accent,
+    draw_tile(
+      surface,
+      &mut fonts,
+      tile,
+      (units, tile_radius),
+      style,
+      notify,
     );
   }
 }
@@ -457,21 +462,12 @@ fn draw_header(
   // The special workspace's name follows a diamond in the accent color.
   let mut label_left = units.px(12.0);
   if picture.is_special {
-    let (size, center_y) = (units.px(4.0), header / 2.0);
-    let center_x = label_left + size;
-    let corners = [
-      (center_x, center_y - size),
-      (center_x + size, center_y),
-      (center_x, center_y + size),
-      (center_x - size, center_y),
-    ];
-
-    let mut canvas = surface.canvas();
-    for (index, from) in corners.iter().enumerate() {
-      let to = corners[(index + 1) % corners.len()];
-      canvas.stroke_line(*from, to, units.px(1.5), style.accent);
-    }
-    label_left += size * 2.0 + units.px(6.0);
+    label_left += draw_diamond(
+      surface,
+      (label_left, header / 2.0),
+      units,
+      style.accent,
+    );
   }
 
   draw_text(
@@ -496,6 +492,32 @@ fn draw_header(
   }
 }
 
+/// Draws the special workspace's diamond with its left corner at `left`,
+/// `center_y`. Returns how much room it takes, its gap after it included.
+fn draw_diamond(
+  surface: &mut Surface,
+  (left, center_y): (f32, f32),
+  units: Units,
+  color: Color,
+) -> f32 {
+  let size = units.px(4.0);
+  let center_x = left + size;
+  let corners = [
+    (center_x, center_y - size),
+    (center_x + size, center_y),
+    (center_x, center_y + size),
+    (center_x - size, center_y),
+  ];
+
+  let mut canvas = surface.canvas();
+  for (index, from) in corners.iter().enumerate() {
+    let to = corners[(index + 1) % corners.len()];
+    canvas.stroke_line(*from, to, units.px(1.5), color);
+  }
+
+  size * 2.0 + units.px(6.0)
+}
+
 /// Draws a window on a card: a hole for its preview (or its icon when it
 /// has none), its title along the bottom, and a border around it and its
 /// stack's tab bar.
@@ -503,12 +525,12 @@ fn draw_tile(
   surface: &mut Surface,
   fonts: &mut Fonts,
   tile: &TilePicture,
-  units: Units,
+  (units, radius): (Units, f32),
   style: &OverviewStyle,
   notify: (HWND, u32),
 ) {
   let rect = tile.rect.to_rect();
-  let radius = round(units.px(4.0));
+  let radius = round(units.px(radius));
   let opacity = tile.opacity;
 
   if tile.has_preview {
@@ -555,11 +577,395 @@ fn draw_tile(
     );
   }
 
-  surface.canvas().stroke_rounded_rect(
-    &tile.outline.to_rect(),
+  if tile.border_width > 0.0 {
+    surface.canvas().stroke_rounded_rect(
+      &tile.outline.to_rect(),
+      radius,
+      round(units.px(tile.border_width)).max(1),
+      fade(tile.border, opacity),
+    );
+  }
+}
+
+/// Middle of a stretchable picture, wide enough that DWM's filtering at
+/// its edges only ever mixes in more of it.
+pub(crate) const SLICE_MIDDLE: i32 = 4;
+
+/// A rounded rect drawn once, then stretched to any size by showing its
+/// corners as they are and stretching the rest.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct SliceLook {
+  /// Corner radius, in pixels.
+  pub radius: i32,
+  pub fill: Color,
+  pub border: Color,
+  pub border_width: i32,
+}
+
+impl SliceLook {
+  /// A ring of `width` pixels in `color`, rounded by `radius`.
+  pub fn ring(radius: i32, width: i32, color: Color) -> Self {
+    Self {
+      radius,
+      fill: Color { a: 0, ..color },
+      border: color,
+      border_width: width,
+    }
+  }
+
+  /// Pixels of each corner of its picture: room for the rounding and the
+  /// border.
+  pub fn corner(&self) -> i32 {
+    self.radius.max(self.border_width).max(1) + 1
+  }
+
+  /// Whether it is more than a ring.
+  pub fn is_filled(&self) -> bool {
+    self.fill.a > 0
+  }
+}
+
+/// Draws `look` into `surface`, `2 * corner + SLICE_MIDDLE` pixels square.
+pub(crate) fn draw_slices(surface: &mut Surface, look: &SliceLook) {
+  surface.pixels().fill(0);
+  let rect = Rect::from_xy(0, 0, surface.width, surface.height);
+  let mut canvas = surface.canvas();
+
+  if look.is_filled() {
+    canvas.fill_rounded_rect(&rect, look.radius, look.fill);
+  }
+  if look.border.a > 0 && look.border_width > 0 {
+    canvas.stroke_rounded_rect(
+      &rect,
+      look.radius,
+      look.border_width,
+      look.border,
+    );
+  }
+}
+
+/// Height, padding, icon size, gap after the icon and font size of the
+/// tag under the picked window, in logical pixels.
+const TAG: (f32, f32, f32, f32, f32) = (30.0, 12.0, 16.0, 8.0, 12.5);
+
+/// What the tag under the picked window shows.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct TagPicture {
+  pub hwnd: isize,
+  pub text: String,
+
+  /// Bumped as window icons arrive, so the tag picks up its window's.
+  pub icons: u64,
+}
+
+/// Pixel size of `tag`, at most `max_width` wide.
+pub(crate) fn tag_size(
+  tag: &TagPicture,
+  style: &OverviewStyle,
+  scale_factor: f32,
+  max_width: f32,
+) -> (i32, i32) {
+  let px = |length: f32| length * scale_factor;
+  let (height, padding, icon, gap, font_size) = TAG;
+  let mut fonts = Fonts::new(&style.font_family);
+  let text =
+    to_f32(text_width(fonts.get(px(font_size), false), &tag.text));
+
+  let width = (px(2.0 * padding + icon + gap) + text).min(max_width);
+  (round(width).max(1), round(px(height)).max(1))
+}
+
+/// Draws `tag` into `surface`, `tag_size` big: its window's icon and
+/// title on a pill.
+pub(crate) fn draw_tag(
+  surface: &mut Surface,
+  tag: &TagPicture,
+  style: &OverviewStyle,
+  scale_factor: f32,
+  notify: (HWND, u32),
+) {
+  let px = |length: f32| length * scale_factor;
+  let (_, padding, icon, gap, font_size) = TAG;
+  surface.pixels().fill(0);
+
+  let rect = Rect::from_xy(0, 0, surface.width, surface.height);
+  let radius = surface.height / 2;
+  {
+    let mut canvas = surface.canvas();
+    canvas.fill_rounded_rect(&rect, radius, with_alpha(style.card, 0.94));
+    canvas.stroke_rounded_rect(
+      &rect,
+      radius,
+      round(px(1.0)).max(1),
+      with_alpha(style.text, 0.12),
+    );
+  }
+
+  let icon_rect = RectF::new(
+    px(padding),
+    (to_f32(surface.height) - px(icon)) / 2.0,
+    px(icon),
+    px(icon),
+  );
+  draw_window_icon(surface, tag.hwnd, &icon_rect.to_rect(), 1.0, notify);
+
+  let mut fonts = Fonts::new(&style.font_family);
+  draw_text(
+    surface,
+    fonts.get(px(font_size), false),
+    &tag.text,
+    &Rect::from_ltrb(
+      round(px(padding + icon + gap)),
+      0,
+      surface.width - round(px(padding)),
+      surface.height,
+    ),
+    style.text,
+    DT_LEFT,
+  );
+}
+
+/// Padding and font size of a workspace's name shown beside its card,
+/// in logical pixels.
+const LABEL: (f32, f32) = (9.0, 11.5);
+
+/// A workspace's name shown beside its card.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct LabelPicture {
+  pub text: String,
+  pub is_focused: bool,
+  pub is_special: bool,
+}
+
+/// Pixel size of `label`.
+pub(crate) fn label_size(
+  label: &LabelPicture,
+  style: &OverviewStyle,
+  scale_factor: f32,
+) -> (i32, i32) {
+  let units = Units { scale_factor };
+  let (padding, font_size) = LABEL;
+  let mut fonts = Fonts::new(&style.font_family);
+  let text = text_width(
+    fonts.get(units.px(font_size), label.is_focused),
+    &label.text,
+  );
+  let diamond = if label.is_special {
+    units.px(14.0)
+  } else {
+    0.0
+  };
+
+  (
+    round(units.px(2.0 * padding) + diamond + to_f32(text)).max(1),
+    round(units.px(LABEL_HEIGHT)).max(1),
+  )
+}
+
+/// Draws `label` into `surface`, `label_size` big: the name on a pill,
+/// in the accent color for the focused workspace.
+pub(crate) fn draw_label(
+  surface: &mut Surface,
+  label: &LabelPicture,
+  style: &OverviewStyle,
+  scale_factor: f32,
+) {
+  let units = Units { scale_factor };
+  let (padding, font_size) = LABEL;
+  surface.pixels().fill(0);
+
+  let rect = Rect::from_xy(0, 0, surface.width, surface.height);
+  let radius = surface.height / 2;
+  surface.canvas().fill_rounded_rect(
+    &rect,
     radius,
-    round(units.px(tile.border_width)).max(1),
-    fade(tile.border, opacity),
+    with_alpha(style.card, 0.82),
+  );
+
+  let mut left = units.px(padding);
+  if label.is_special {
+    left += draw_diamond(
+      surface,
+      (left, to_f32(surface.height) / 2.0),
+      units,
+      style.accent,
+    );
+  }
+
+  let mut fonts = Fonts::new(&style.font_family);
+  draw_text(
+    surface,
+    fonts.get(units.px(font_size), label.is_focused),
+    &label.text,
+    &Rect::from_ltrb(round(left), 0, surface.width, surface.height),
+    if label.is_focused {
+      style.accent
+    } else {
+      with_alpha(style.text, 0.9)
+    },
+    DT_LEFT,
+  );
+}
+
+/// Padding, icon size, gap between icons and font size of a pill on the
+/// exposé's bar, and the most icons it shows, in logical pixels.
+const PILL: (f32, f32, f32, f32) = (14.0, 16.0, 4.0, 12.5);
+const PILL_ICONS: usize = 3;
+
+/// A workspace's pill on the exposé's bar.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct PillPicture {
+  pub label: String,
+  pub is_focused: bool,
+  pub is_special: bool,
+  pub is_new: bool,
+
+  /// Its windows, whose icons follow its name.
+  pub windows: Vec<isize>,
+}
+
+impl PillPicture {
+  fn text(&self) -> String {
+    if self.is_new {
+      format!("+  {}", self.label)
+    } else {
+      self.label.clone()
+    }
+  }
+}
+
+/// Width `pill` takes on the bar, in pixels.
+pub(crate) fn pill_width(
+  pill: &PillPicture,
+  style: &OverviewStyle,
+  scale_factor: f32,
+) -> f32 {
+  let units = Units { scale_factor };
+  let mut fonts = Fonts::new(&style.font_family);
+  let (padding, icon, gap, font_size) = PILL;
+
+  let text = to_f32(text_width(
+    fonts.get(units.px(font_size), pill.is_focused),
+    &pill.text(),
+  ));
+  let icons = pill.windows.len().min(PILL_ICONS);
+  #[allow(clippy::cast_precision_loss)]
+  let icons = if icons > 0 {
+    units.px(gap * 2.0) + icons as f32 * units.px(icon + gap)
+  } else {
+    0.0
+  };
+  let diamond = if pill.is_special { units.px(14.0) } else { 0.0 };
+
+  units.px(2.0 * padding) + diamond + text + icons
+}
+
+/// Draws every pill of the exposé's bar into `surface`, each in its rect
+/// of `rects`: its name, then the icons of its first windows if they fit.
+pub(crate) fn draw_pills(
+  surface: &mut Surface,
+  pills: &[PillPicture],
+  rects: &[RectF],
+  style: &OverviewStyle,
+  scale_factor: f32,
+  notify: (HWND, u32),
+) {
+  let units = Units { scale_factor };
+  let (padding, icon, gap, font_size) = PILL;
+  surface.pixels().fill(0);
+
+  let mut fonts = Fonts::new(&style.font_family);
+  for (pill, rect) in pills.iter().zip(rects) {
+    let natural = pill_width(pill, style, scale_factor);
+    let mut left =
+      rect.x + (rect.w - natural.min(rect.w)) / 2.0 + units.px(padding);
+    let center_y = rect.y + rect.h / 2.0;
+
+    if pill.is_special {
+      left += draw_diamond(surface, (left, center_y), units, style.accent);
+    }
+
+    // Icons only when nothing had to be shrunk to fit.
+    let icons = if natural <= rect.w + 0.5 {
+      pill.windows.len().min(PILL_ICONS)
+    } else {
+      0
+    };
+    #[allow(clippy::cast_precision_loss)]
+    let icons_width = if icons > 0 {
+      units.px(gap * 2.0) + icons as f32 * units.px(icon + gap)
+    } else {
+      0.0
+    };
+
+    let text_right = rect.x + rect.w - units.px(padding) - icons_width;
+    let color = if pill.is_new {
+      with_alpha(style.subtext, 0.75)
+    } else if pill.is_focused {
+      style.text
+    } else {
+      with_alpha(style.text, 0.82)
+    };
+    draw_text(
+      surface,
+      fonts.get(units.px(font_size), pill.is_focused),
+      &pill.text(),
+      &RectF::new(left, rect.y, (text_right - left).max(0.0), rect.h)
+        .to_rect(),
+      color,
+      DT_LEFT,
+    );
+
+    let mut x = text_right + units.px(gap * 2.0);
+    for hwnd in pill.windows.iter().take(icons) {
+      let icon_rect = RectF::new(
+        x,
+        center_y - units.px(icon) / 2.0,
+        units.px(icon),
+        units.px(icon),
+      );
+      draw_window_icon(surface, *hwnd, &icon_rect.to_rect(), 0.9, notify);
+      x += units.px(icon + gap);
+    }
+  }
+}
+
+/// Font size of the note shown where a workspace has no windows, in
+/// logical pixels.
+const NOTE_FONT: f32 = 15.0;
+
+/// Pixel size of the note `text`.
+pub(crate) fn note_size(
+  text: &str,
+  style: &OverviewStyle,
+  scale_factor: f32,
+) -> (i32, i32) {
+  let px = |length: f32| length * scale_factor;
+  let mut fonts = Fonts::new(&style.font_family);
+  let width = text_width(fonts.get(px(NOTE_FONT), false), text);
+  (
+    width.max(1) + round(px(8.0)),
+    round(px(NOTE_FONT * 2.0)).max(1),
+  )
+}
+
+/// Draws the note `text` into `surface`, `note_size` big.
+pub(crate) fn draw_note(
+  surface: &mut Surface,
+  text: &str,
+  style: &OverviewStyle,
+  scale_factor: f32,
+) {
+  surface.pixels().fill(0);
+  let mut fonts = Fonts::new(&style.font_family);
+  let rect = Rect::from_xy(0, 0, surface.width, surface.height);
+  draw_text(
+    surface,
+    fonts.get(NOTE_FONT * scale_factor, false),
+    text,
+    &rect,
+    with_alpha(style.subtext, 0.8),
+    DT_CENTER,
   );
 }
 

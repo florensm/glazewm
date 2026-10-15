@@ -283,6 +283,11 @@ impl Preview {
     }
   }
 
+  /// Measures its window's frame again, e.g. after it was resized.
+  pub fn refresh_frame(&mut self) {
+    self.frame = visible_frame(HWND(self.hwnd)).unwrap_or(self.frame);
+  }
+
   /// Its opacity on a card zoomed `openness` open.
   pub fn zoomed_opacity(&self, openness: f32) -> f32 {
     if self.is_scrolled_off {
@@ -403,7 +408,7 @@ fn clip_rects(
   Some((source, visible))
 }
 
-fn to_win32(rect: &RectF) -> RECT {
+pub(crate) fn to_win32(rect: &RectF) -> RECT {
   let rect = rect.to_rect();
   RECT {
     left: rect.left,

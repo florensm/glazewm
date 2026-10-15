@@ -1,49 +1,53 @@
 # Window overview
 
-A full-screen view of the focused monitor's workspaces, one card each,
-showing their windows live and where the layout puts them. Switch to a
-workspace or window, move windows between workspaces, search them by title,
-or close them. Only available on Windows.
+A full-screen view of the focused monitor's workspaces and their windows,
+live. Switch to a workspace or window, move windows between workspaces,
+search them by title, or close them. Only available on Windows.
 
-On open, the windows of the focused workspace shrink from where they are
-into its card, while the wallpaper behind them blurs. On close, it zooms
+On open, the windows of the focused workspace fly from where they are into
+the overview, while the wallpaper behind them blurs. On close, they fly
 back into the workspace you picked (or the one you were on, when
-cancelled) until its windows sit where they really are.
+cancelled) until they sit where they really are.
 
 ## Layouts
 
-- **Carousel** (default): the cards in a row, the selected one centered and
-  larger than the rest, which fade with distance. Looking inside a
-  workspace zooms its card in further.
+- **Exposé** (default): the shown workspace's windows spread out in rows
+  across the screen, under a bar of every workspace by name with the icons
+  of its windows. It opens on the focused window. Picking another workspace
+  on the bar slides its windows in; the title of the picked window shows
+  under it.
+- **Activities**: every workspace in miniature in a row along the top,
+  their names under them, and below them the shown workspace large and as
+  laid out. Picking another miniature slides that workspace in.
+- **Stage**: the shown workspace large and as laid out, its name over it,
+  and every other workspace small in a column on the left. Picking one from
+  the column swaps it in.
+- **Carousel**: the cards in a row, the selected one centered and larger
+  than the rest, which fade with distance. Looking inside a workspace zooms
+  its card in further.
 - **Grid**: every card at once, in up to `grid_columns` columns: fewer when
   that shows the cards larger.
-- **Rows**: a row per workspace, stacked top to bottom like the monitor's
-  workspaces seen from afar, the selected one in the middle and the others
-  dimmed above and below it. Every row is the same size, with the part of a
-  scrolling workspace's strip that is on screen lined up with the others
-  and the rest of the strip running off to its sides; while picking a
-  window, its row slides along to keep it in view. `↑` `↓` go between
-  rows.
-- **Spotlight**: the selected workspace as large as fits, its neighbours
-  smaller and dimmed, peeking in at the sides.
 
 `overview.layout` sets the layout `toggle-overview` opens on, and `Tab`
-goes through them while it is open. Each layout draws the cards at the size
-it shows them, so their text stays sharp.
+goes through them while it is open. Cards are drawn at the size each layout
+shows them, so their text stays sharp.
+
+Selection and hover show as highlights that glide from one workspace or
+window to the next. In the exposé, the activities and the stage, a
+workspace picked with the mouse is shown first, and gone to once picked
+again.
 
 In the carousel and the grid, the special workspace's card is docked below
-the others (see [Special workspace](#special-workspace)); in the rows and
-the spotlight it comes after them.
+the others (see [Special workspace](#special-workspace)); in the other
+layouts it comes after them.
 
-After the last workspace there is a **+** card for a new one: the workspace
+After the last workspace there is a **+** for a new one: the workspace
 `move --next-empty-workspace` would use, i.e. an unused workspace from the
 config or, with `general.dynamic_workspaces` on, a new dynamic one (see
 [Dynamic workspaces](./dynamic-workspaces-and-urgency.md)). Drop or send a
 window on it to move the window there, or pick it to switch to it. There is
-no **+** card when the monitor already shows an empty workspace, or when
-there is nowhere to go.
-
-`Tab` switches between them while open.
+no **+** when the monitor already shows an empty workspace, or when there
+is nowhere to go.
 
 ## Usage
 
@@ -52,30 +56,38 @@ there is nowhere to go.
 | Command | Behaviour |
 | --- | --- |
 | `toggle-overview` (`alt+w` in the sample config) | Open the overview on `overview.layout`. While open, switch back to that layout, or close it if already showing it. |
-| `toggle-overview --layout <layout>` | Open the overview on `carousel`, `grid`, `rows` or `spotlight`. While open, switch to it, or close it if already showing it. |
+| `toggle-overview --layout <layout>` | Open the overview on `expose`, `activities`, `stage`, `carousel` or `grid`. While open, switch to it, or close it if already showing it. |
 | `toggle-overview --grid` | Same as `--layout grid`. |
 
 ### Mouse
 
 | Input | Behaviour |
 | --- | --- |
+| Point at a window | Pick it (exposé, activities, stage): it is highlighted and its title shows. |
 | Click a window | Focus it, switching to its workspace, and close. |
-| Click a card elsewhere | Switch to its workspace and close. |
+| Click another workspace | Show it (exposé, activities, stage), or switch to it and close (carousel, grid). |
+| Click the shown workspace | Switch to it and close. |
 | Click the background | Close without changing anything. |
-| Drag a window onto another card | Move it to that workspace. The overview stays open. |
+| Drag a window onto another workspace | Move it to that workspace. The overview stays open. |
 | Middle-click a window | Close the window. |
-| Wheel | Select the next or previous workspace. |
+| Wheel | Show or select the next or previous workspace. |
 
 ### Keyboard
 
 The keyboard goes one step deeper with each `Space`: browsing workspaces,
 picking a window inside one, then carrying that window to another
-workspace. The line under the cards shows the keys for the current step.
+workspace. The line at the bottom shows the keys for the current step.
+
+The arrows go between workspaces along the layout: `←` `→` in the exposé,
+the activities and the carousel, `↑` `↓` down the stage's column, and all
+four in the grid. The arrow toward the shown workspace's windows (`↓` in
+the exposé and the activities, `→` in the stage) goes in among them, and
+the arrows then go to the nearest window that way; off their edge, back
+out to the workspaces. The exposé opens among the windows already.
 
 | Key | Browsing workspaces | Picking a window | Carrying a window |
 | --- | --- | --- | --- |
-| `←` `→` (or `h` `l`) | Select a workspace. | Select a window, left to right. | Select a workspace. |
-| `↑` `↓` (or `k` `j`) | Select a workspace a row up or down (grid, rows), or the docked special workspace below. | Select a window, top to bottom. | Same as browsing. |
+| Arrows (or `h` `j` `k` `l`) | Select a workspace, or go in among its windows. | Select the nearest window that way, or go back out. | Select a workspace. |
 | `Home` / `End` | First / last workspace. | First / last window. | First / last workspace. |
 | `1`–`9`, `0` | Switch to that workspace and close. | Send the selected window there; the next window gets selected. | Drop it there. |
 | `s` | Same as a digit, for the [special workspace](#special-workspace). | Same. | Same. |
@@ -83,7 +95,7 @@ workspace. The line under the cards shows the keys for the current step.
 | `Enter` | Switch to the selected workspace and close. | Focus the selected window and close. | Drop it on the selected workspace. |
 | `x` | | Close the selected window. | |
 | `Backspace` | | Back to browsing. | Put the window down. |
-| `Tab` | Switch to the next layout: carousel, grid, rows, spotlight. | Same, back to browsing in the grid. | Same. |
+| `Tab` | Switch to the next layout: exposé, activities, stage, carousel, grid. | Same, back to browsing in the grid. | Same. |
 | `Escape` | Close without changing anything. | Same. | Same. |
 
 Digits go to the workspace named after them (`0` is `10`), like a
@@ -102,21 +114,21 @@ window, a search picks the workspace to drop it on.
 
 ### Special workspace
 
-The [special workspace](./special-workspace.md) has a card on every
-monitor's overview, wherever it is: in the carousel and the grid, docked
-at the bottom edge, apart from the other workspaces; in the rows and the
-spotlight, after the other workspaces. It is tinted with the accent color
-and marked with a diamond before its name. While a window is carried
-(`Space`) or dragged, the dock grows and lights up so it is easy to drop
-the window on, and the carried window waits beside it. While it is
-inactive or empty, its card shows "Drop windows here".
+The [special workspace](./special-workspace.md) shows on every monitor's
+overview, wherever it is: in the carousel and the grid, docked at the
+bottom edge, apart from the other workspaces; in the other layouts, after
+the other workspaces. It is tinted with the accent color and marked with a
+diamond before its name. While a window is carried (`Space`) or dragged,
+the dock grows and lights up so it is easy to drop the window on, and the
+carried window waits beside it. While it is inactive or empty, it shows
+"Drop windows here".
 
 - `s` works like a digit key for it: switch to it, send the selected
   window there, or drop the carried window there. Digits going by the
   cards' positions skip it. `↓` (or `j`) moves down onto the dock from the
   carousel or the grid's last row, and `↑` goes back to the card it came
   from; `←` `→`, `Home`, `End` and the wheel stay in the row above it. In
-  the rows and the spotlight, it is reached like any other workspace.
+  the other layouts, it is reached like any other workspace.
 - Picking it, or dropping a window on it, works like
   `focus --special-workspace` and `move --special-workspace`: picking it
   summons it to the overview's monitor.
@@ -148,25 +160,22 @@ shown window, with its tab bar drawn by the same code as the real one.
 
 ### Scrolling workspaces
 
-A workspace with the scrolling layout shows its whole strip on its card,
-not just the part on screen, which a lighter frame marks out. Its card
-grows wider with the strip: in the rows layout up to six monitors wide,
-elsewhere up to three (twice in the grid). A strip wider still is scaled to
-fit, with room left above and below. Where a layout has no room for a card
-that wide, the card is shown smaller instead: at most twice a normal card's
-width in the carousel, two columns in the grid, and the overview's width in
-the spotlight. In the grid, `↑` `↓` go to the card closest above or below.
-Columns scrolled out of view can be picked, dragged and searched like any
-other window; picking one focuses it, which scrolls it into view.
+A workspace with the scrolling layout shows its whole strip, not just the
+part on screen. In the exposé, every column is spread out with the rest, in
+order; on open, the columns off screen slide in from the sides they are on.
+In the activities, the shown workspace's whole strip is scaled to fit. On a
+card, a lighter frame marks out the part on screen, and the card grows
+wider with the strip: up to three monitors wide (twice in the grid and in
+miniature). A strip wider still is scaled to fit, with room left above and
+below. Where a layout has no room for a card that wide, the card is shown
+smaller instead. In the grid, `↑` `↓` go to the card closest above or
+below. Columns scrolled out of view can be picked, dragged and searched
+like any other window; picking one focuses it, which scrolls it into view.
 
-The rows layout suits scrolling workspaces best: every strip is shown at
-the same size, the part on screen lined up in the middle, so the columns
-off screen run off to the sides as they would on the monitor.
-
-The zoom on open and close starts and ends on the columns that are on
-screen; the others have nowhere on screen to come from, so they fade in
-with the zoom out and fade out with the zoom in. Picking a column out of
-view zooms into where the strip has scrolled to show it.
+On a card, the zoom on open and close starts and ends on the columns that
+are on screen; the others have nowhere on screen to come from, so they
+fade in with the zoom out and fade out with the zoom in. Picking a column
+out of view zooms into where the strip has scrolled to show it.
 
 ## Config
 
@@ -203,9 +212,9 @@ overview:
 
   font_family: "Segoe UI"
 
-  # Layout `toggle-overview` opens on: "carousel", "grid", "rows" or
-  # "spotlight".
-  layout: "carousel"
+  # Layout `toggle-overview` opens on: "expose", "activities", "stage",
+  # "carousel" or "grid".
+  layout: "expose"
 
   # Most columns of the grid of every workspace; it takes fewer when that
   # shows the cards larger.
@@ -241,15 +250,21 @@ moves things around and never redraws pixels:
 - The window previews are DWM thumbnails of the real windows (or of their
   companion overlay, e.g. a recolored copy drawn by a theming tool, as during
   animations).
-- The card backgrounds, captions, borders and hints are drawn once into
-  hidden layered windows, and shown as thumbnails of those, so they scale
-  with their card.
+- The card backgrounds, captions, borders, labels and hints are drawn once
+  into hidden layered windows, and shown as thumbnails of those, so they
+  scale with their card.
+- Highlights and panels are one small picture each, its corners shown as
+  drawn and its edges stretched, so they move and resize without being
+  redrawn. Moving the selection or the cursor therefore redraws nothing.
+- Thumbnails are registered on open and on switching layouts, and
+  otherwise only again when windows come or go: a window's title changing
+  redraws its title, nothing else.
 - The backdrop is a composition visual of the wallpaper, sharp at first,
   with a blurred copy and the tint fading in over it.
 
-Animations step once per display refresh, and the loop sleeps while
-nothing moves. The cards move on critically damped springs, so a key press
-mid-animation retargets them smoothly.
+Animations step once per refresh of the overview's own monitor, and the
+loop sleeps while nothing moves. Cards and windows move on critically
+damped springs, so a key press mid-animation retargets them smoothly.
 
 The overview takes the foreground while open, so keys go to it rather than
 to the window behind it. When a pick changes focus, the WM switches
@@ -263,6 +278,5 @@ are already where their previews end up.
 Not in this version:
 
 - Workspaces of all monitors at once.
-- Fading highlights on hover and selection.
-- Picking minimized windows with the mouse (they are listed on their card,
-  and reachable by search).
+- Picking minimized windows with the mouse (their icons show on the
+  exposé's bar and their card, and they are reachable by search).

@@ -118,30 +118,39 @@ pub struct OverviewStyle {
   pub close_duration_ms: u32,
 }
 
-/// How the overview lays out its cards.
+/// How the overview lays out the workspaces.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum OverviewLayoutMode {
+  /// The shown workspace's windows spread out side by side, under a bar
+  /// of every workspace.
+  #[default]
+  Expose,
+
+  /// The shown workspace large and as laid out, under a row of every
+  /// workspace in miniature.
+  Activities,
+
+  /// The shown workspace large and as laid out, the others in a column
+  /// at the side.
+  Stage,
+
   /// One row, the selected workspace in the middle and larger than the
   /// rest.
-  #[default]
   Carousel,
 
   /// Every workspace at once.
   Grid,
-
-  /// A row per workspace, stacked top to bottom at the same size, a
-  /// scrolling workspace's strip running off to its sides.
-  Rows,
-
-  /// The selected workspace large, its neighbours peeking in at the
-  /// sides.
-  Spotlight,
 }
 
 impl OverviewLayoutMode {
   /// Every layout, in the order `Tab` goes through them.
-  pub const ALL: [Self; 4] =
-    [Self::Carousel, Self::Grid, Self::Rows, Self::Spotlight];
+  pub const ALL: [Self; 5] = [
+    Self::Expose,
+    Self::Activities,
+    Self::Stage,
+    Self::Carousel,
+    Self::Grid,
+  ];
 
   /// The layout `Tab` goes on to.
   #[must_use]
@@ -157,14 +166,35 @@ impl OverviewLayoutMode {
     matches!(self, Self::Carousel | Self::Grid)
   }
 
+  /// Whether the selected workspace's windows are laid out on their own
+  /// rather than on its card.
+  #[must_use]
+  pub fn has_scene(self) -> bool {
+    matches!(self, Self::Expose | Self::Activities)
+  }
+
+  /// Whether workspaces show as cards.
+  #[must_use]
+  pub fn has_cards(self) -> bool {
+    self != Self::Expose
+  }
+
+  /// Whether a workspace picked with the mouse is shown first, and only
+  /// gone to once picked again.
+  #[must_use]
+  pub fn shows_before_going(self) -> bool {
+    matches!(self, Self::Expose | Self::Activities | Self::Stage)
+  }
+
   /// Name of the layout, as in the config.
   #[must_use]
   pub fn name(self) -> &'static str {
     match self {
+      Self::Expose => "expose",
+      Self::Activities => "activities",
+      Self::Stage => "stage",
       Self::Carousel => "carousel",
       Self::Grid => "grid",
-      Self::Rows => "rows",
-      Self::Spotlight => "spotlight",
     }
   }
 }

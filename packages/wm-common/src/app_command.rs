@@ -668,10 +668,10 @@ mod tests {
     };
 
     assert_eq!(
-      parse(&["toggle-overview", "--layout", "rows"]).unwrap(),
+      parse(&["toggle-overview", "--layout", "activities"]).unwrap(),
       InvokeCommand::ToggleOverview {
         grid: false,
-        layout: Some(OverviewLayout::Rows),
+        layout: Some(OverviewLayout::Activities),
       }
     );
     assert_eq!(
@@ -682,7 +682,7 @@ mod tests {
       }
     );
     assert!(
-      parse(&["toggle-overview", "--grid", "--layout", "rows"]).is_err()
+      parse(&["toggle-overview", "--grid", "--layout", "stage"]).is_err()
     );
   }
 

@@ -1,12 +1,17 @@
 //! The window overview's runtime: a thread of its own running a
-//! full-screen window, with every card, hint and preview on it composited
-//! by DWM.
+//! full-screen window, with every card, window, highlight and hint on it
+//! composited by DWM.
 //!
-//! Each card's picture is drawn once into a cloaked layered window, and
-//! shown on the overview as a DWM thumbnail of that window; window
-//! previews are thumbnails too. An animation frame therefore draws
-//! nothing: it only moves and scales thumbnails, all through one channel
-//! to DWM, so cards and their previews can't drift apart mid-motion.
+//! Each picture is drawn once into a cloaked layered window, and shown on
+//! the overview as a DWM thumbnail of that window; window previews are
+//! thumbnails too. An animation frame therefore draws nothing: it only
+//! moves and scales thumbnails. Selection and hover are highlights moved
+//! over the cards rather than drawn into them, so going through the
+//! workspaces redraws nothing either.
+
+mod cards;
+mod overlays;
+mod scenes;
 
 use std::{
   cell::RefCell,
@@ -46,21 +51,23 @@ use windows::{
   },
 };
 
+use self::{overlays::Overlays, scenes::scene_window_rect};
 use crate::{
   overview_chrome::{
     draw_card, draw_ghost, draw_hint, picture_rect, picture_size,
-    with_alpha, CardPicture, TilePicture, GHOST_SIZE,
+    with_alpha, CardPicture, GHOST_SIZE,
   },
+  overview_expose::spread_area,
   overview_layout::{
-    carousel, cover_crop, grid, rows, spotlight, Camera, CardMetrics,
-    CardSlot, CardView, GridCells, Placement, RectF, Spring, Tile, Zoom,
+    activities, carousel, cover_crop, grid, stage as stage_layout, Camera,
+    CardMetrics, CardView, Placement, RectF, Spring, Targets, Tile, Zoom,
     HINT_HEIGHT,
   },
+  overview_scene::Scene,
   overview_state::{HintTone, Hit, Interaction, Key, Mode},
   overview_tab_bars::CardTabBar,
   overview_thumbnails::{
-    visible_frame, visible_frame_on_screen, Picture, Preview, Thumbnail,
-    FALLBACK_FRAME,
+    visible_frame, Picture, Preview, Thumbnail, FALLBACK_FRAME,
   },
   platform_impl::{self, composition::OverviewBackdrop},
   tab_layout::TabHit,
@@ -88,6 +95,10 @@ const WM_ICON_READY: u32 = WM_APP + 5;
 
 /// How long card moves and zooms take to settle.
 const SETTLE_MS: f32 = 260.0;
+
+/// Room between the activities' scene panel and what it shows, in
+/// logical pixels.
+const SCENE_PADDING: f32 = 14.0;
 
 /// What the WM thread posts to open the overview.
 struct Open {
@@ -412,7 +423,7 @@ struct PlaceContext {
   camera: Camera,
   /// How far the overview is open.
   fade: f32,
-  /// The overview's own rect, which everything on it is cut to.
+  /// The overview's own rect.
   view: RectF,
   /// Card the overview zooms out of or into.
   zoom_card: Option<usize>,
@@ -486,6 +497,7 @@ struct Ghost {
 }
 
 /// The overview, owned by its thread.
+#[allow(clippy::struct_excessive_bools)]
 struct Overview {
   hwnd: HWND,
   on_action: ActionCallback,
@@ -497,8 +509,11 @@ struct Overview {
   interaction: Interaction,
   metrics: CardMetrics,
 
-  /// Layout the overview opened as, which its cards are drawn for.
+  /// Layout the cards are drawn for.
   drawn_for: OverviewLayoutMode,
+
+  /// Layout whose thumbnails are registered, if any are.
+  registered_for: Option<OverviewLayoutMode>,
 
   /// Working area covered, in screen coordinates.
   area: RectF,
@@ -506,8 +521,18 @@ struct Overview {
   backdrop: Option<OverviewBackdrop>,
   cards: Vec<Card>,
 
+  /// Each workspace's windows shown on their own, in the exposé and the
+  /// activities.
+  scenes: Vec<Scene>,
+
+  /// Where the activities show the selected workspace large.
+  scene_area: RectF,
+
   /// Pictures of cards no longer shown, kept for reuse.
   spare: Vec<Picture>,
+
+  /// `None` if their pictures couldn't be created.
+  overlays: Option<Overlays>,
 
   hint: Option<Picture>,
   hint_drawn: Option<(String, HintTone)>,
@@ -525,6 +550,9 @@ struct Overview {
 
   /// Whether something changed that the next tick has to place.
   is_dirty: bool,
+
+  /// Whether a highlight was still gliding when last placed.
+  is_gliding: bool,
 
   /// Cursor position at open, in client coordinates. Windows sends a
   /// mouse move when a window appears under a still cursor, which must
@@ -545,27 +573,24 @@ struct Overview {
 
 impl Overview {
   fn new(hwnd: HWND, on_action: ActionCallback) -> Self {
+    let layout = OverviewLayoutMode::default();
+
     Self {
       hwnd,
       on_action,
       session: 0,
       frame: None,
-      interaction: Interaction::new(
-        &[],
-        OverviewLayoutMode::Carousel,
-        0.0,
-      ),
-      metrics: CardMetrics::new(
-        1.0,
-        1.0,
-        1.0,
-        OverviewLayoutMode::Carousel,
-      ),
-      drawn_for: OverviewLayoutMode::Carousel,
+      interaction: Interaction::new(&[], layout, 0.0, None),
+      metrics: CardMetrics::new(1.0, 1.0, 1.0, layout),
+      drawn_for: layout,
+      registered_for: None,
       area: RectF::default(),
       backdrop: None,
       cards: Vec::new(),
+      scenes: Vec::new(),
+      scene_area: RectF::default(),
       spare: Vec::new(),
+      overlays: Overlays::new(),
       hint: None,
       hint_drawn: None,
       hint_y: Spring::new(0.0, SETTLE_MS, 0.25),
@@ -574,6 +599,7 @@ impl Overview {
       zoom: None,
       last_tick: Instant::now(),
       is_dirty: false,
+      is_gliding: false,
       open_cursor: (0, 0),
       is_tracking_leave: false,
       is_done: false,
@@ -607,8 +633,12 @@ impl Overview {
     self.drawn_for = layout;
     self.metrics =
       CardMetrics::new(self.area.w, self.area.h, scale_factor, layout);
-    self.interaction =
-      Interaction::new(&frame.workspaces, layout, 6.0 * scale_factor);
+    self.interaction = Interaction::new(
+      &frame.workspaces,
+      layout,
+      6.0 * scale_factor,
+      frame.focused_window,
+    );
     self
       .interaction
       .digit_workspaces
@@ -624,7 +654,11 @@ impl Overview {
 
     self.frame = Some(frame);
     self.rebuild_cards();
-    self.retarget(true);
+    self.rebuild_scenes();
+    self.ensure_labels();
+    if let Some(overlays) = &mut self.overlays {
+      overlays.reset();
+    }
 
     self.zoom = animate.then(|| {
       (
@@ -633,10 +667,11 @@ impl Overview {
       )
     });
 
+    self.retarget(true);
     self.register_thumbnails();
     self.refresh_pictures(true);
     self.last_tick = Instant::now();
-    self.place();
+    self.is_gliding = self.place();
 
     let rect = self.area.to_rect();
     // SAFETY: `self.hwnd` is the overview's window, on this thread.
@@ -666,6 +701,10 @@ impl Overview {
   }
 
   /// Shows a new `frame` in the open overview, keeping the selection.
+  ///
+  /// Thumbnails are only registered anew when windows came, went or
+  /// moved between workspaces; a title changing redraws its pictures and
+  /// nothing else.
   #[allow(clippy::float_cmp)]
   fn update(&mut self, frame: OverviewFrame) {
     let Some(old) = self.frame.take() else {
@@ -691,11 +730,15 @@ impl Overview {
 
     let is_restyled = old.style != frame.style;
     self.frame = Some(frame);
-    self.rebuild_cards();
-    self.register_thumbnails();
+    let is_changed = self.rebuild_cards() | self.rebuild_scenes();
+    self.ensure_labels();
     self.retarget(false);
+
+    if is_changed || self.registered_for != Some(self.interaction.layout) {
+      self.register_thumbnails();
+    }
     self.refresh_pictures(is_restyled);
-    self.is_dirty = true;
+    self.is_gliding = self.place();
 
     // Windows moved by the WM can be raised over the overview.
     // SAFETY: `self.hwnd` is the overview's window, on this thread.
@@ -727,9 +770,14 @@ impl Overview {
     for card in self.cards.drain(..) {
       self.spare.extend(card.into_pictures());
     }
+    self.scenes.clear();
+    if let Some(overlays) = &mut self.overlays {
+      overlays.unregister();
+    }
     if let Some(hint) = &mut self.hint {
       hint.thumbnail = None;
     }
+    self.registered_for = None;
     self.ghost = None;
     self.zoom = None;
     self.vsync = None;
@@ -764,96 +812,14 @@ impl Overview {
     }
   }
 
-  /// Builds a card per workspace, with a preview per visible window.
-  fn rebuild_cards(&mut self) {
-    let Some(frame) = &self.frame else {
-      return;
-    };
-
-    let mut cards = std::mem::take(&mut self.cards);
-    let mut spare = std::mem::take(&mut self.spare);
-
-    for (index, workspace) in frame.workspaces.iter().enumerate() {
-      let content = RectF::from_rect(&workspace.content_rect);
-      let metrics = self.metrics.for_content(&self.area, &content);
-      let view = CardView::new(&metrics, &self.area, &content);
-
-      let previews = workspace
-        .windows
-        .iter()
-        .filter(|window| !window.is_minimized && !window.is_hidden_tab)
-        .filter_map(|window| {
-          let rect = if workspace.is_focused && !window.is_scrolled_off {
-            // Measured, so the zoom out starts exactly where the window
-            // is on screen.
-            visible_frame_on_screen(HWND(window.hwnd))
-              .unwrap_or_else(|| RectF::from_rect(&window.rect))
-          } else {
-            RectF::from_rect(&window.rect)
-          };
-
-          let mut preview = Preview::new(window.hwnd, view.tile(&rect)?);
-          preview.screen_rect = rect;
-          preview.is_scrolled_off = window.is_scrolled_off;
-          Some(preview)
-        })
-        .collect::<Vec<_>>();
-
-      let old_tab_bars = cards
-        .get_mut(index)
-        .map_or_else(Vec::new, |card| std::mem::take(&mut card.tab_bars));
-      let tab_bars = Self::rebuild_tab_bars(
-        &workspace.tab_bars,
-        &view,
-        old_tab_bars,
-        &mut spare,
-      );
-
-      if let Some(card) = cards.get_mut(index) {
-        card.metrics = metrics;
-        card.view = view;
-        card.previews = previews;
-        card.tab_bars = tab_bars;
-        continue;
-      }
-
-      let Some(picture) = spare.pop().or_else(Picture::new) else {
-        tracing::warn!("Failed to create an overview card.");
-        continue;
-      };
-
-      cards.push(Card {
-        cx: Spring::new(0.0, SETTLE_MS, 0.25),
-        cy: Spring::new(0.0, SETTLE_MS, 0.25),
-        scale: Spring::new(1.0, SETTLE_MS, 0.001),
-        alpha: Spring::new(1.0, SETTLE_MS, 0.002),
-        metrics,
-        view,
-        previews,
-        tab_bars,
-        picture,
-        drawn: None,
-      });
-    }
-
-    for card in cards.drain(frame.workspaces.len().min(cards.len())..) {
-      spare.extend(card.into_pictures());
-    }
-
-    self.cards = cards;
-    self.spare = spare;
-    self.interaction.grid = GridCells::fitting(
-      &self.metrics,
-      &self.slots(),
-      frame.style.grid_columns,
-    );
-  }
-
   /// Draws the cards for the layout now shown, at the size it shows them,
-  /// if they were drawn for another. Returns whether it did.
+  /// if they were drawn for another, and starts the windows it shows on
+  /// their own from where their cards showed them. Returns whether it
+  /// did.
   fn draw_for_layout(&mut self) -> bool {
     let layout = self.interaction.layout;
-    if layout == self.drawn_for {
+    let previous = self.drawn_for;
+    if layout == previous {
       return false;
     }
 
@@ -877,145 +843,53 @@ impl Overview {
       card.scale.rescale(width / card.metrics.width.max(1.0));
     }
 
+    if layout.has_scene() && !previous.has_scene() {
+      self.seed_scene_from_card();
+    }
+
     true
   }
 
-  /// Maps each card's windows anew for the current metrics, keeping its
-  /// previews and their thumbnails.
-  fn remap_cards(&mut self) {
-    let Some(frame) = &self.frame else {
-      return;
-    };
-
-    for (card, workspace) in self.cards.iter_mut().zip(&frame.workspaces) {
-      let content = RectF::from_rect(&workspace.content_rect);
-      card.metrics = self.metrics.for_content(&self.area, &content);
-      card.view = CardView::new(&card.metrics, &self.area, &content);
-
-      for preview in &mut card.previews {
-        if let Some(tile) = card.view.tile(&preview.screen_rect) {
-          preview.tile = tile;
-        }
-      }
-      for bar in &mut card.tab_bars {
-        bar.update(bar.frame.clone(), &card.view);
-      }
-    }
-
-    let columns = frame.style.grid_columns;
-    self.interaction.grid =
-      GridCells::fitting(&self.metrics, &self.slots(), columns);
-  }
-
-  /// What the layouts need of each card: where its monitor's view is,
-  /// and on the selected card, the window being picked.
-  fn slots(&self) -> Vec<CardSlot> {
-    let picked = self
-      .interaction
-      .selected_window
-      .filter(|_| self.interaction.mode == Mode::Windows);
-
-    self
-      .cards
-      .iter()
-      .zip(self.workspaces())
-      .enumerate()
-      .map(|(index, (card, workspace))| {
-        let view = card.view.map(&self.area);
-        let keep = picked
-          .filter(|_| index == self.interaction.selected)
-          .and_then(|hwnd| {
-            // A hidden tab shows on its stack's tab bar.
-            let preview = card
-              .previews
-              .iter()
-              .find(|preview| preview.hwnd == hwnd)
-              .map(|preview| preview.tile.rect);
-            let bar = || {
-              card
-                .tab_bars
-                .iter()
-                .find(|bar| bar.tab_index(hwnd).is_some())
-                .map(|bar| bar.rect)
-            };
-            preview.or_else(bar)
-          })
-          .map(|rect| (rect.x, rect.right()));
-
-        CardSlot {
-          view_center: view.x + view.w / 2.0,
-          keep,
-          ..CardSlot::new(&card.metrics, workspace.is_special)
-        }
-      })
-      .collect()
-  }
-
-  /// A card's tab bars for `frames`, reusing the bars in `old` that
-  /// belong to the same stack (by its shown window), and pictures from
-  /// `spare` for new ones.
-  fn rebuild_tab_bars(
-    frames: &[crate::TabFrame],
-    view: &CardView,
-    mut old: Vec<CardTabBar>,
-    spare: &mut Vec<Picture>,
-  ) -> Vec<CardTabBar> {
-    let tab_bars = frames
-      .iter()
-      .filter_map(|frame| {
-        let reused = old
-          .iter()
-          .position(|bar| bar.frame.anchor == frame.anchor)
-          .map(|index| old.swap_remove(index));
-
-        if let Some(mut bar) = reused {
-          bar.update(frame.clone(), view);
-          return Some(bar);
-        }
-
-        let picture = spare.pop().or_else(Picture::new)?;
-        Some(CardTabBar::new(frame.clone(), view, picture))
-      })
-      .collect();
-
-    spare.extend(old.into_iter().map(|bar| {
-      let mut picture = bar.picture;
-      picture.thumbnail = None;
-      picture
-    }));
-    tab_bars
-  }
-
-  /// Registers every thumbnail again, in stacking order: each card's tab
-  /// bars, previews then picture, then the hints, then the floating
-  /// window.
+  /// Registers every thumbnail the layout shows again, bottom to top:
+  /// the activities' scene panel, the windows on the scenes, each card's
+  /// tab bars, previews and picture, the exposé's bar, the labels,
+  /// highlights and tags, the hints, then the floating window.
   fn register_thumbnails(&mut self) {
     let host = self.hwnd;
+    let layout = self.interaction.layout;
+    self.unregister_thumbnails();
 
-    for card in &mut self.cards {
-      card.picture.thumbnail = None;
-      for bar in &mut card.tab_bars {
-        bar.picture.thumbnail = None;
-      }
-      for preview in &mut card.previews {
-        preview.thumbnail = None;
-      }
-    }
-    if let Some(hint) = &mut self.hint {
-      hint.thumbnail = None;
+    if let (OverviewLayoutMode::Activities, Some(overlays)) =
+      (layout, &mut self.overlays)
+    {
+      overlays.scene_panel.register(host);
     }
 
-    for card in &mut self.cards {
-      // Under the windows, which cover the strip reaching under them.
-      for bar in &mut card.tab_bars {
-        bar.picture.thumbnail =
-          Thumbnail::register(host, bar.picture.window);
+    if layout.has_scene() {
+      for window in
+        self.scenes.iter_mut().flat_map(|scene| &mut scene.windows)
+      {
+        window.preview.register(host);
       }
-      for preview in &mut card.previews {
-        preview.register(host);
+    }
+
+    if layout.has_cards() {
+      for card in &mut self.cards {
+        // Under the windows, which cover the strip reaching under them.
+        for bar in &mut card.tab_bars {
+          bar.picture.thumbnail =
+            Thumbnail::register(host, bar.picture.window);
+        }
+        for preview in &mut card.previews {
+          preview.register(host);
+        }
+        card.picture.thumbnail =
+          Thumbnail::register(host, card.picture.window);
       }
-      card.picture.thumbnail =
-        Thumbnail::register(host, card.picture.window);
+    }
+
+    if let Some(overlays) = &mut self.overlays {
+      overlays.register(host, layout);
     }
 
     if self.hint.is_none() {
@@ -1030,9 +904,38 @@ impl Overview {
       ghost.picture.thumbnail =
         Thumbnail::register(host, ghost.picture.window);
     }
+
+    self.registered_for = Some(layout);
   }
 
-  /// Points every card at where it belongs now.
+  fn unregister_thumbnails(&mut self) {
+    for card in &mut self.cards {
+      card.picture.thumbnail = None;
+      for bar in &mut card.tab_bars {
+        bar.picture.thumbnail = None;
+      }
+      for preview in &mut card.previews {
+        preview.thumbnail = None;
+      }
+    }
+    for window in
+      self.scenes.iter_mut().flat_map(|scene| &mut scene.windows)
+    {
+      window.preview.thumbnail = None;
+    }
+    if let Some(overlays) = &mut self.overlays {
+      overlays.unregister();
+    }
+    if let Some(hint) = &mut self.hint {
+      hint.thumbnail = None;
+    }
+    if let Some(ghost) = &mut self.ghost {
+      ghost.preview.thumbnail = None;
+      ghost.picture.thumbnail = None;
+    }
+  }
+
+  /// Points every card and scene window at where it belongs now.
   fn retarget(&mut self, snap: bool) {
     let slots = self.slots();
     // The special workspace's dock grows while a window is carried or
@@ -1043,6 +946,7 @@ impl Overview {
     let is_zoomed = self.interaction.mode == Mode::Windows
       && self.interaction.selected == self.interaction.row_selected;
     let selected = self.interaction.selected;
+
     let targets = match self.interaction.layout {
       OverviewLayoutMode::Carousel => carousel(
         &self.metrics,
@@ -1054,12 +958,19 @@ impl Overview {
       OverviewLayoutMode::Grid => {
         grid(&self.metrics, &slots, &self.interaction.grid, is_receiving)
       }
-      OverviewLayoutMode::Rows => {
-        rows(&self.metrics, &slots, selected, is_zoomed)
+      OverviewLayoutMode::Stage => {
+        stage_layout(&self.metrics, &slots, selected)
       }
-      OverviewLayoutMode::Spotlight => {
-        spotlight(&self.metrics, &slots, selected, is_zoomed)
+      OverviewLayoutMode::Activities => {
+        let (targets, area) = activities(&self.metrics, &slots);
+        self.scene_area = area;
+        targets
       }
+      OverviewLayoutMode::Expose => Targets {
+        cards: vec![Placement::new(0.0, 0.0, 0.0); slots.len()],
+        hint_y: self.metrics.bottom_hint_y(),
+        dock: None,
+      },
     };
     self.dock = targets.dock;
 
@@ -1092,8 +1003,54 @@ impl Overview {
       self.hint_y.target = targets.hint_y;
     }
 
+    if self.interaction.layout.has_scene() {
+      self.retarget_scenes(snap);
+    }
+    self.sync_nav();
     self.sync_ghost();
     self.is_dirty = true;
+  }
+
+  /// Tells the interaction where the selected workspace's windows show
+  /// once settled, first to last, for the arrows to go between them.
+  fn sync_nav(&mut self) {
+    let selected = self.interaction.selected;
+
+    let nav = if self.interaction.layout.has_scene() {
+      self.scenes.get(selected).map(|scene| {
+        scene
+          .reading_order()
+          .into_iter()
+          .map(|index| &scene.windows[index])
+          .filter(|window| window.alpha.target > 0.0)
+          .map(|window| (window.preview.hwnd, window.target()))
+          .collect()
+      })
+    } else {
+      self.cards.get(selected).map(|card| {
+        let placement = Placement::new(
+          card.cx.target,
+          card.cy.target,
+          card.scale.target,
+        );
+        let mut previews = card.previews.iter().collect::<Vec<_>>();
+        previews.sort_by(|a, b| {
+          let (a, b) = (&a.screen_rect, &b.screen_rect);
+          a.x.total_cmp(&b.x).then(a.y.total_cmp(&b.y))
+        });
+        previews
+          .into_iter()
+          .map(|preview| {
+            (
+              preview.hwnd,
+              placement.map(&card.metrics, &preview.tile.rect),
+            )
+          })
+          .collect()
+      })
+    };
+
+    self.interaction.nav = nav.unwrap_or_default();
   }
 
   /// Creates, moves or drops the floating window's picture.
@@ -1184,8 +1141,13 @@ impl Overview {
     let style = frame.style.clone();
     let notify = (self.hwnd, WM_ICON_READY);
     let context = self.place_context();
+    let layout = self.interaction.layout;
 
-    for index in 0..self.cards.len() {
+    for index in 0..self.cards.len().min(self.workspaces().len()) {
+      if !layout.has_cards() {
+        break;
+      }
+
       let picture = self.card_picture(index, &style);
       let Some(card) = self.cards.get_mut(index) else {
         continue;
@@ -1223,6 +1185,23 @@ impl Overview {
         place_card(card, index, &context);
       }
     }
+
+    if layout.has_scene() {
+      for index in 0..self.scenes.len() {
+        let opacities = self.scenes[index]
+          .windows
+          .iter()
+          .map(|window| self.window_opacity(index, window.preview.hwnd))
+          .collect::<Vec<_>>();
+        for (window, opacity) in
+          self.scenes[index].windows.iter_mut().zip(opacities)
+        {
+          window.preview.opacity = opacity;
+        }
+      }
+    }
+
+    self.refresh_overlays(&style, force);
 
     let hint = self.interaction.hint(self.workspaces());
     if force || self.hint_drawn.as_ref() != Some(&hint) {
@@ -1275,117 +1254,6 @@ impl Overview {
     self.is_dirty = true;
   }
 
-  /// Everything card `index` shows.
-  fn card_picture(
-    &self,
-    index: usize,
-    style: &OverviewStyle,
-  ) -> CardPicture {
-    let workspace = self.workspaces().get(index);
-    let card = self.cards.get(index);
-    let interaction = &self.interaction;
-    let is_selected = index == interaction.selected;
-
-    let (accent, search, caption) =
-      (style.accent, style.search, style.caption);
-    let focused_window =
-      self.frame.as_ref().and_then(|frame| frame.focused_window);
-
-    let tiles = card.map_or_else(Vec::new, |card| {
-      card
-        .previews
-        .iter()
-        .map(|preview| {
-          let window = workspace.and_then(|workspace| {
-            workspace.windows.iter().find(|w| w.hwnd == preview.hwnd)
-          });
-          let is_match = window.is_some_and(|w| interaction.is_match(w));
-          let is_picked = interaction.floating() == Some(preview.hwnd);
-          let is_cursor = is_selected
-            && interaction.selected_window == Some(preview.hwnd);
-          let is_marked = is_cursor && interaction.mode == Mode::Windows;
-          let is_focused = focused_window == Some(preview.hwnd);
-
-          // Dragged away it goes translucent, so it visibly left without
-          // vanishing; during a search the misses step back.
-          let opacity = if is_picked {
-            0.35
-          } else if !interaction.query.is_empty() && !is_match {
-            0.3
-          } else {
-            1.0
-          };
-
-          let (border_width, border) = if is_match {
-            (3.0, search)
-          } else if is_marked {
-            (4.0, accent)
-          } else if is_picked || is_cursor || is_focused {
-            (3.0, accent)
-          } else {
-            (1.0, with_alpha(caption, 0.6))
-          };
-
-          // A stack's window is outlined with its tab bar, which shows
-          // its title.
-          let tab_bar = card
-            .tab_bars
-            .iter()
-            .find(|bar| bar.frame.anchor == preview.hwnd);
-
-          TilePicture {
-            hwnd: preview.hwnd,
-            rect: preview.tile.rect,
-            outline: tab_bar.map_or(preview.tile.rect, |bar| {
-              preview.tile.rect.union(&bar.bar_rect())
-            }),
-            title: window.filter(|_| tab_bar.is_none()).map(|w| {
-              if w.title.is_empty() {
-                w.process_name.clone()
-              } else {
-                w.title.clone()
-              }
-            }),
-            has_preview: preview.thumbnail.is_some(),
-            opacity,
-            border_width,
-            border,
-          }
-        })
-        .collect()
-    });
-
-    // A strip's card shows where its monitor is on it.
-    let viewport = card.and_then(|card| {
-      let view = card.view.map(&self.area);
-      (view.w < card.metrics.tile_area().w - 1.0).then_some(view)
-    });
-
-    CardPicture {
-      label: workspace.map_or_else(String::new, |w| w.label.clone()),
-      viewport,
-      is_focused: workspace.is_some_and(|w| w.is_focused),
-      is_new: workspace.is_some_and(|w| w.is_new),
-      is_special: workspace.is_some_and(|w| w.is_special),
-      is_receiving: interaction.floating().is_some(),
-      is_hovered: interaction.hover == Some(index),
-      is_drop_target: interaction.is_drop_target(index),
-      is_selected,
-      minimized: workspace.map_or_else(Vec::new, |w| {
-        w.windows
-          .iter()
-          .filter(|window| window.is_minimized)
-          .map(|window| window.hwnd)
-          .collect()
-      }),
-      tiles,
-      tab_bars: card.map_or_else(Vec::new, |card| {
-        card.tab_bars.iter().map(CardTabBar::hole).collect()
-      }),
-      icons: self.icons,
-    }
-  }
-
   /// How far the overview is open, from 0 (a card's windows fill the
   /// screen) to 1 (every card in place).
   fn openness(&self) -> f32 {
@@ -1399,8 +1267,13 @@ impl Overview {
   }
 
   /// The zoom between the screen and the zoomed card's windows, at the
-  /// current openness. Follows the card if it is still moving.
+  /// current openness. Follows the card if it is still moving. The
+  /// exposé and the activities zoom each window on its own instead.
   fn camera(&self) -> Camera {
+    if self.interaction.layout.has_scene() {
+      return Camera::IDENTITY;
+    }
+
     let card = self.zoom.and_then(|(zoom, _)| self.cards.get(zoom.card));
     let Some(card) = card else {
       return Camera::IDENTITY;
@@ -1426,6 +1299,15 @@ impl Overview {
     let Some(index) = index.filter(|_| duration > 0) else {
       return;
     };
+
+    // The scenes zoom into the picked workspace's own windows, so it
+    // shows them first.
+    if self.interaction.layout.has_scene()
+      && index != self.interaction.selected
+    {
+      self.interaction.selected = index;
+      self.retarget(true);
+    }
 
     let zoom = Zoom::close(index, self.openness(), duration);
     self.zoom = Some((zoom, Instant::now()));
@@ -1482,6 +1364,12 @@ impl Overview {
       is_moving |= card.scale.step(dt);
       is_moving |= card.alpha.step(dt);
     }
+    for scene in &mut self.scenes {
+      is_moving |= scene.step(dt);
+    }
+    if let Some(overlays) = &mut self.overlays {
+      is_moving |= overlays.step(dt);
+    }
     is_moving |= self.hint_y.step(dt);
     if let Some(ghost) = &mut self.ghost {
       is_moving |= ghost.x.step(dt);
@@ -1505,23 +1393,61 @@ impl Overview {
       }
     }
 
-    if is_moving || self.is_dirty {
-      self.place();
+    if is_moving || self.is_dirty || self.is_gliding {
+      self.is_gliding = self.place();
       self.is_dirty = false;
     }
 
-    is_moving
+    is_moving || self.is_gliding
   }
 
-  /// Places every thumbnail where its animation has it now.
-  fn place(&mut self) {
+  /// Places every thumbnail where its animation has it now. Returns
+  /// whether a highlight is still gliding.
+  fn place(&mut self) -> bool {
     let context = self.place_context();
     let (view, scale_factor) = (context.view, self.metrics.scale_factor);
     let fade = context.fade;
+    let layout = self.interaction.layout;
+    let shift = self.top_shift(fade);
 
-    for (index, card) in self.cards.iter_mut().enumerate() {
-      place_card(card, index, &context);
+    match layout {
+      OverviewLayoutMode::Activities => {
+        let miniatures = PlaceContext {
+          camera: Camera::shifted(0.0, shift),
+          fade,
+          view,
+          zoom_card: None,
+        };
+        for (index, card) in self.cards.iter_mut().enumerate() {
+          place_card(card, index, &miniatures);
+        }
+      }
+      OverviewLayoutMode::Expose => {}
+      _ => {
+        for (index, card) in self.cards.iter_mut().enumerate() {
+          place_card(card, index, &context);
+        }
+      }
     }
+
+    if layout.has_scene() {
+      let zoom_card = context.zoom_card;
+      for (index, scene) in self.scenes.iter_mut().enumerate() {
+        for window in &mut scene.windows {
+          let rect =
+            scene_window_rect(window, zoom_card == Some(index), fade);
+          let opacity = window.alpha.value * window.preview.opacity;
+
+          if opacity > 0.002 {
+            window.preview.place(&rect, &view, opacity);
+          } else if let Some(thumbnail) = &mut window.preview.thumbnail {
+            thumbnail.hide();
+          }
+        }
+      }
+    }
+
+    let is_gliding = self.place_overlays(&context, shift);
 
     let hint_height = HINT_HEIGHT * scale_factor;
     if let Some(hint) = &mut self.hint {
@@ -1544,12 +1470,47 @@ impl Overview {
         .place(&rect.inset(scale_factor * 2.0), &view, 0.9);
       ghost.picture.place(&rect, &view, 1.0);
     }
+
+    is_gliding
   }
 
   /// What is under the overview point (`x`, `y`).
   fn hit(&self, x: f32, y: f32) -> Hit {
+    match self.interaction.layout {
+      OverviewLayoutMode::Expose => {
+        let pill = self.overlays.as_ref().and_then(|overlays| {
+          overlays
+            .bar
+            .layout
+            .pills
+            .iter()
+            .position(|pill| pill.contains(x, y))
+        });
+        match pill {
+          Some(index) => Hit {
+            workspace: Some(index),
+            window: None,
+          },
+          None => self.hit_scene(x, y, &spread_area(&self.metrics)),
+        }
+      }
+      OverviewLayoutMode::Activities => {
+        let hit = self.hit_cards(x, y, &Camera::IDENTITY);
+        if hit.workspace.is_some() {
+          hit
+        } else {
+          self.hit_scene(x, y, &self.scene_area)
+        }
+      }
+      _ => self.hit_cards(x, y, &self.camera()),
+    }
+  }
+
+  /// What card is under (`x`, `y`) with `camera` applied, and what window
+  /// on it.
+  fn hit_cards(&self, x: f32, y: f32, camera: &Camera) -> Hit {
     // Mid-zoom, the cards aren't where they will settle.
-    let (x, y) = self.camera().unapply(x, y);
+    let (x, y) = camera.unapply(x, y);
 
     // Later cards stack above earlier ones (e.g. a grown drop target over
     // its neighbour), so they are hit first.
@@ -1584,6 +1545,31 @@ impl Overview {
     Hit::default()
   }
 
+  /// What of the selected workspace's scene is under (`x`, `y`): the
+  /// topmost of its windows there, or else `area` itself.
+  fn hit_scene(&self, x: f32, y: f32, area: &RectF) -> Hit {
+    let selected = self.interaction.selected;
+    let window = self.scenes.get(selected).and_then(|scene| {
+      scene
+        .windows
+        .iter()
+        .rev()
+        .find(|window| {
+          window.alpha.target > 0.0 && window.rect().contains(x, y)
+        })
+        .map(|window| window.preview.hwnd)
+    });
+
+    if window.is_some() || area.contains(x, y) {
+      Hit {
+        workspace: Some(selected),
+        window,
+      }
+    } else {
+      Hit::default()
+    }
+  }
+
   /// Acts on what the user did, after the interaction state took it in.
   fn after_input(&mut self, action: Option<OverviewAction>) {
     if let Some(action) = action {
@@ -1602,8 +1588,26 @@ impl Overview {
       }
     }
 
+    let previous = self.drawn_for;
     let is_redrawn = self.draw_for_layout();
+    self.ensure_labels();
     self.retarget(false);
+
+    // Cards back from the exposé, which shows none, fade in in place.
+    if is_redrawn && !previous.has_cards() {
+      for card in &mut self.cards {
+        let alpha = card.alpha.target;
+        card.cx.snap(card.cx.target);
+        card.cy.snap(card.cy.target);
+        card.scale.snap(card.scale.target);
+        card.alpha.snap(0.0);
+        card.alpha.target = alpha;
+      }
+    }
+
+    if self.registered_for != Some(self.interaction.layout) {
+      self.register_thumbnails();
+    }
     self.refresh_pictures(is_redrawn);
   }
 
@@ -1845,6 +1849,11 @@ fn to_key(key: VIRTUAL_KEY) -> Option<Key> {
 /// Milliseconds since `started`.
 fn elapsed_ms(started: Instant) -> f32 {
   started.elapsed().as_secs_f32() * 1000.0
+}
+
+#[allow(clippy::cast_precision_loss)]
+fn to_f32_size((width, height): (i32, i32)) -> (f32, f32) {
+  (width as f32, height as f32)
 }
 
 /// Cursor position in `hwnd`'s client coordinates.

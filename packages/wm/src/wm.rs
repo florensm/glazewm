@@ -1200,17 +1200,20 @@ impl WindowManager {
           state,
           config,
           match layout {
+            wm_common::OverviewLayout::Expose => {
+              wm_platform::OverviewLayoutMode::Expose
+            }
+            wm_common::OverviewLayout::Activities => {
+              wm_platform::OverviewLayoutMode::Activities
+            }
+            wm_common::OverviewLayout::Stage => {
+              wm_platform::OverviewLayoutMode::Stage
+            }
             wm_common::OverviewLayout::Carousel => {
               wm_platform::OverviewLayoutMode::Carousel
             }
             wm_common::OverviewLayout::Grid => {
               wm_platform::OverviewLayoutMode::Grid
-            }
-            wm_common::OverviewLayout::Rows => {
-              wm_platform::OverviewLayoutMode::Rows
-            }
-            wm_common::OverviewLayout::Spotlight => {
-              wm_platform::OverviewLayoutMode::Spotlight
             }
           },
         )?;

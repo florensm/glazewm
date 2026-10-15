@@ -650,7 +650,7 @@ pub struct OverviewConfig {
   pub close_duration_ms: u32,
 }
 
-/// How the overview lays out its workspace cards.
+/// How the overview lays out the workspaces.
 #[derive(
   Clone,
   Copy,
@@ -664,18 +664,23 @@ pub struct OverviewConfig {
 )]
 #[serde(rename_all = "snake_case")]
 pub enum OverviewLayout {
+  /// The shown workspace's windows spread out side by side, under a bar
+  /// of every workspace. Also stands in for the `rows` and `spotlight`
+  /// layouts it replaced, so configs naming them still load.
+  #[default]
+  #[serde(alias = "rows", alias = "spotlight")]
+  Expose,
+  /// The shown workspace large and as laid out, under a row of every
+  /// workspace in miniature.
+  Activities,
+  /// The shown workspace large and as laid out, the others in a column
+  /// at the side.
+  Stage,
   /// One row, the selected workspace in the middle and larger than the
   /// rest.
-  #[default]
   Carousel,
   /// Every workspace at once.
   Grid,
-  /// A row per workspace, stacked, a scrolling workspace's strip running
-  /// off to its sides.
-  Rows,
-  /// The selected workspace large, its neighbours peeking in at the
-  /// sides.
-  Spotlight,
 }
 
 impl Default for OverviewConfig {
@@ -2298,8 +2303,8 @@ where
 #[cfg(test)]
 mod tests {
   use super::{
-    BackdropEffectConfig, Color, EasingFunction, ScrollingLayoutConfig,
-    SpringParams,
+    BackdropEffectConfig, Color, EasingFunction, OverviewConfig,
+    OverviewLayout, ScrollingLayoutConfig, SpringParams,
   };
 
   fn easing(value: &str) -> Result<EasingFunction, serde_json::Error> {
@@ -2410,6 +2415,24 @@ mod tests {
       config.default_column_width,
       super::ColumnWidth::Length(length) if (length.amount - 0.4).abs() < 1e-6
     ));
+  }
+
+  #[test]
+  fn overview_layouts_read_their_names_and_the_replaced_ones() {
+    let layout = |name: &str| {
+      serde_json::from_value::<OverviewConfig>(
+        serde_json::json!({ "layout": name }),
+      )
+      .map(|config| config.layout)
+      .ok()
+    };
+
+    assert_eq!(layout("activities"), Some(OverviewLayout::Activities));
+    assert_eq!(layout("stage"), Some(OverviewLayout::Stage));
+    assert_eq!(layout("rows"), Some(OverviewLayout::Expose));
+    assert_eq!(layout("spotlight"), Some(OverviewLayout::Expose));
+    assert_eq!(layout("nope"), None);
+    assert_eq!(OverviewConfig::default().layout, OverviewLayout::Expose);
   }
 
   /// `to_overlay_params` must map every field through to the resulting
