@@ -840,6 +840,29 @@ pub fn shows_real_window(container: &Container) -> bool {
     })
 }
 
+/// Where the real window of `container` goes when the layout puts it at
+/// `rect`: there, unless a peek shows its column (see
+/// `shows_real_window`).
+///
+/// The cloaked window is then kept on its own monitor at the same size,
+/// since the OS gives a window the DPI of the monitor holding most of it:
+/// on a monitor of another DPI, the app would rescale it, which the peek
+/// shows, and again once it scrolls back.
+pub fn real_window_rect(container: &Container, rect: &Rect) -> Rect {
+  if shows_real_window(container) {
+    return rect.clone();
+  }
+
+  container.monitor().map_or_else(
+    || rect.clone(),
+    |monitor| {
+      let area = monitor.native_properties().working_area;
+      let x = rect.x().min(area.right - rect.width()).max(area.left);
+      rect.translate_to_coordinates(x, rect.y())
+    },
+  )
+}
+
 /// Rect of the column holding `container`, its workspace's rect, and the
 /// workspace, when `container` is in a scrolling layout.
 fn column_rects(container: &Container) -> Option<(Rect, Rect, Workspace)> {
@@ -896,7 +919,8 @@ mod tests {
 
   use super::{
     focus_target_after_removal, is_focusable_by_hover, is_in_view,
-    shows_real_window, sync_view, Strip, StripView, ViewRequest,
+    real_window_rect, shows_real_window, sync_view, Strip, StripView,
+    ViewRequest,
   };
   use crate::{
     commands::container::{
@@ -1128,6 +1152,30 @@ mod tests {
   fn a_column_reaching_onto_another_monitor_is_hidden() {
     let (_state, second) = edge_setup(true);
     assert!(!shows_real_window(&second.into()));
+  }
+
+  #[test]
+  fn a_hidden_column_keeps_its_window_on_its_own_monitor() {
+    let (_state, second) = edge_setup(true);
+    let rect = second.to_rect().unwrap();
+    let area = second.monitor().unwrap().native_properties().working_area;
+
+    let parked = real_window_rect(&second.into(), &rect);
+
+    assert!(rect.x() + rect.width() > area.right);
+    assert_eq!(parked.x() + parked.width(), area.right);
+    assert_eq!(
+      (parked.y(), parked.width(), parked.height()),
+      (rect.y(), rect.width(), rect.height())
+    );
+  }
+
+  #[test]
+  fn a_shown_column_keeps_its_window_where_it_is() {
+    let (_state, second) = edge_setup(false);
+    let rect = second.to_rect().unwrap();
+
+    assert_eq!(real_window_rect(&second.into(), &rect), rect);
   }
 
   #[test]

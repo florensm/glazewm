@@ -2,7 +2,7 @@ use windows::Win32::{
   Foundation::{BOOL, HWND},
   Graphics::Gdi::{
     CombineRgn, CreateRectRgn, CreateRoundRectRgn, DeleteObject,
-    SetWindowRgn, HGDIOBJ, HRGN, RGN_DIFF,
+    SetWindowRgn, HGDIOBJ, HRGN, RGN_AND, RGN_DIFF,
   },
 };
 
@@ -18,6 +18,17 @@ use crate::{
 fn outer_rect(window_rect: &Rect, width: f32) -> Rect {
   #[allow(clippy::cast_possible_truncation)]
   window_rect.inset(-(width.round() as i32))
+}
+
+/// Pixels of `outer` lying past each edge of `area` (left, top, right,
+/// bottom).
+fn insets_outside(outer: &Rect, area: &Rect) -> [i32; 4] {
+  [
+    (area.left - outer.left).max(0),
+    (area.top - outer.top).max(0),
+    (outer.right - area.right).max(0),
+    (outer.bottom - area.bottom).max(0),
+  ]
 }
 
 /// Restricts `hwnd`'s window region to a "picture frame" -- the full
@@ -40,11 +51,14 @@ fn outer_rect(window_rect: &Rect, width: f32) -> Rect {
 /// honour that flag, and it does honour the region; without one, anything
 /// resolving "the window under the cursor" that way finds a
 /// window-plus-gap-sized overlay belonging to a thread that never answers.
+/// For the same reason, the region is cut by `cut` (left, top, right,
+/// bottom) like the ring is.
 fn apply_hole_region(
   hwnd: HWND,
   outer_size: (i32, i32),
   outset: i32,
   inner_radius: i32,
+  cut: [i32; 4],
 ) {
   let (w, h) = outer_size;
 
@@ -74,6 +88,15 @@ fn apply_hole_region(
     if inner_rgn.0 != 0 {
       CombineRgn(outer_rgn, outer_rgn, inner_rgn, RGN_DIFF);
       let _ = DeleteObject(HGDIOBJ(inner_rgn.0));
+    }
+
+    if cut != [0; 4] {
+      let [left, top, right, bottom] = cut;
+      let kept_rgn = CreateRectRgn(left, top, w - right, h - bottom);
+      if kept_rgn.0 != 0 {
+        CombineRgn(outer_rgn, outer_rgn, kept_rgn, RGN_AND);
+        let _ = DeleteObject(HGDIOBJ(kept_rgn.0));
+      }
     }
 
     // No repaint: the composition visual tree has no GDI redirection
@@ -132,10 +155,10 @@ pub struct NativeBorderOverlay {
   /// `SetWindowPos` calls when the tracked window hasn't actually moved.
   rect: Rect,
 
-  /// `(width, height, inner_radius)` of the picture-frame region last
-  /// applied, or `None` when the window currently has none -- before the
-  /// first application, or for as long as it is pinned or behind a
-  /// surrogate.
+  /// `(width, height, inner_radius, cut)` of the picture-frame region
+  /// last applied, or `None` when the window currently has none -- before
+  /// the first application, or for as long as it is pinned or behind a
+  /// surrogate without `bounds`.
   ///
   /// Skips redundant `SetWindowRgn` calls when a reposition doesn't
   /// change the overlay's shape, e.g. a pure translation. Distinct from
@@ -143,7 +166,11 @@ pub struct NativeBorderOverlay {
   /// `set_rect`/`defer_rect` call including `SetWindowPos`, this one only
   /// skips the (comparatively expensive) region recompute when the
   /// position moved but the shape didn't.
-  hole_shape: Option<(i32, i32, i32)>,
+  hole_shape: Option<(i32, i32, i32, [i32; 4])>,
+
+  /// Area the ring is cut to while it tracks its window, e.g. the monitor
+  /// of a scrolling layout's column that reaches onto another one.
+  bounds: Option<Rect>,
 
   /// Monitor viewport the overlay window is currently pinned to for a
   /// workspace-switch slide, or `None` in the normal window-tracking
@@ -189,7 +216,8 @@ impl NativeBorderOverlay {
     // the region changes nothing there. Reshaping it on every frame of a
     // resize was most of the per-frame overlay cost, so the animation runs
     // without one; the first placement behind anything else restores it.
-    if self.behind_surrogate() {
+    // A cut ring keeps it, since past its bounds no surrogate covers it.
+    if self.behind_surrogate() && self.bounds.is_none() {
       self.clear_region();
       return;
     }
@@ -200,6 +228,7 @@ impl NativeBorderOverlay {
       outer.width(),
       outer.height(),
       inner_hole_radius(&self.params),
+      self.bounds_insets(outer),
     );
 
     if self.hole_shape == Some(shape) {
@@ -213,6 +242,7 @@ impl NativeBorderOverlay {
       (shape.0, shape.1),
       outset,
       shape.2,
+      shape.3,
     );
     self.hole_shape = Some(shape);
   }
@@ -244,8 +274,8 @@ impl NativeBorderOverlay {
     }
   }
 
-  /// Resizes the ring to `outer`, and with `reset_offset` also returns it
-  /// to its window's own origin.
+  /// Resizes the ring to `outer`, cut at its `bounds`, and with
+  /// `reset_offset` also returns it to its window's own origin.
   ///
   /// Only a call that reveals a hidden overlay passes `reset_offset`: a
   /// pin leaves the offset at its last slid value, and the reveal is the
@@ -263,8 +293,60 @@ impl NativeBorderOverlay {
           "Border overlay composition offset reset failed: {e}."
         );
       }
-      self.set_clip_insets([0; 4]);
     }
+
+    self.set_clip_insets(self.bounds_insets(outer));
+  }
+
+  /// Pixels of the ring `outer` past its `bounds` on each side.
+  fn bounds_insets(&self, outer: &Rect) -> [i32; 4] {
+    self
+      .bounds
+      .as_ref()
+      .map_or([0; 4], |bounds| insets_outside(outer, bounds))
+  }
+
+  /// Cuts the ring at the edges of `bounds` while it tracks its window, or
+  /// lifts the cut with `None`. A change forces the next placement
+  /// through, which applies it.
+  fn set_bounds(&mut self, bounds: Option<&Rect>) {
+    if self.bounds.as_ref() == bounds {
+      return;
+    }
+
+    self.bounds = bounds.cloned();
+    self.window.mark_stale();
+  }
+
+  /// Queues tracking `window_rect` into `batch`, keeping the ring cut at
+  /// its `bounds`. See [`Overlay::defer_rect`].
+  fn defer_track(
+    &mut self,
+    batch: &mut SurrogateBatch,
+    window_rect: &Rect,
+    anchor: HWND,
+  ) {
+    // A pinned overlay has to be unpinned by `track` first.
+    if !self.window.is_placed_behind(anchor) || self.pinned.is_some() {
+      self.track(window_rect, anchor);
+      return;
+    }
+
+    if &self.rect == window_rect {
+      return;
+    }
+
+    let outer = outer_rect(window_rect, self.params.width);
+    batch.push(self.window.hwnd().0, outer.clone());
+
+    {
+      let _scope = crate::perf::scope(crate::perf::Stage::OverlayVisual);
+      self.apply_ring_rect(&outer, false);
+    }
+
+    self.refresh_hole(&outer);
+
+    self.rect = window_rect.clone();
   }
 
   /// Clips the ring's outer rect by `insets`; re-applies only when they
@@ -294,6 +376,12 @@ impl NativeBorderOverlay {
   ///
   /// [`sync_z_order`]: NativeBorderOverlay::sync_z_order
   pub fn set_rect(&mut self, window_rect: &Rect, anchor: HWND) {
+    self.set_bounds(None);
+    self.track(window_rect, anchor);
+  }
+
+  /// [`set_rect`](Self::set_rect), keeping the ring cut at its `bounds`.
+  fn track(&mut self, window_rect: &Rect, anchor: HWND) {
     // A pinned overlay's `HWND` covers the whole viewport and its ring is
     // positioned by a composition offset, so any normal reposition has to
     // undo both before its own geometry means anything. Doing it here
@@ -400,7 +488,7 @@ impl NativeBorderOverlay {
     let anchor = self.window.anchor();
     let rect = self.rect.clone();
     self.window.mark_stale();
-    self.set_rect(&rect, anchor);
+    self.track(&rect, anchor);
   }
 
   /// Updates the ring's corner radius; re-applies only when the value
@@ -527,12 +615,7 @@ impl NativeBorderOverlay {
     let _scope = crate::perf::scope(crate::perf::Stage::OverlayVisual);
     let outer = outer_rect(window_rect, self.params.width);
     self.panel = panel.clone();
-    self.set_clip_insets([
-      (panel.left - outer.left).max(0),
-      (panel.top - outer.top).max(0),
-      (outer.right - panel.right).max(0),
-      (outer.bottom - panel.bottom).max(0),
-    ]);
+    self.set_clip_insets(insets_outside(&outer, panel));
 
     let composition = &self.composition;
 
@@ -602,6 +685,7 @@ impl Overlay for NativeBorderOverlay {
       params,
       rect: window_rect.clone(),
       hole_shape: None,
+      bounds: None,
       pinned: None,
       panel: outer.clone(),
       clip_insets: [0; 4],
@@ -626,29 +710,27 @@ impl Overlay for NativeBorderOverlay {
     window_rect: &Rect,
     anchor: HWND,
   ) {
-    // A pinned overlay has to be unpinned by `set_rect` first.
-    if !self.window.is_placed_behind(anchor) || self.pinned.is_some() {
-      self.set_rect(window_rect, anchor);
-      return;
-    }
+    self.set_bounds(None);
+    self.defer_track(batch, window_rect, anchor);
+  }
 
-    if &self.rect == window_rect {
-      return;
-    }
-
+  /// Cuts the ring itself, rather than outlining the part of the window
+  /// inside `clip`, so it ends at the edge like the window does.
+  fn defer_clipped_rect(
+    &mut self,
+    batch: &mut SurrogateBatch,
+    window_rect: &Rect,
+    clip: &Rect,
+    anchor: HWND,
+  ) {
     let outer = outer_rect(window_rect, self.params.width);
-    batch.push(self.window.hwnd().0, outer.clone());
-
-    {
-      let _scope = crate::perf::scope(crate::perf::Stage::OverlayVisual);
-      if let Err(e) = self.composition.set_rect(&outer) {
-        tracing::warn!("Border overlay composition resize failed: {e}.");
-      }
+    if outer.intersection(clip).is_none() {
+      self.hide();
+      return;
     }
 
-    self.refresh_hole(&outer);
-
-    self.rect = window_rect.clone();
+    self.set_bounds(Some(clip));
+    self.defer_track(batch, window_rect, anchor);
   }
 
   fn sync_z_order(

@@ -13,6 +13,9 @@
 //! backdrops with them. At the end, columns shown at rest get their real
 //! window back, ones reaching onto another monitor keep their peek, and
 //! the rest are dropped.
+//!
+//! A peek's border and backdrop are cut at the monitor edge like the peek
+//! itself, so nothing of a column shows on the monitor beside it.
 
 use std::{
   collections::{HashMap, HashSet},
@@ -22,13 +25,16 @@ use std::{
 use uuid::Uuid;
 use wm_common::{DisplayState, Layout, WindowState};
 use wm_platform::{
-  NativeWindowWindowsExt, Overlay, Point, Rect, SurrogateBatch,
-  WindowPeek, HWND,
+  NativeWindowWindowsExt, Overlay, Point, Rect, StyleBlend,
+  SurrogateBatch, WindowPeek, HWND,
 };
 
 use super::state::WindowAnimationState;
 use crate::{
-  commands::general::{surrogate_effects_for, upsert_overlay},
+  commands::general::{
+    surrogate_effects_for, upsert_clipped_overlay,
+    upsert_pinned_border_overlay,
+  },
   layout::is_hidden_in_layout,
   models::{is_inactive_stack_child, WindowContainer, Workspace},
   traits::{CommonGetters, PositionGetters, WindowGetters},
@@ -62,6 +68,17 @@ impl Entry {
   }
 }
 
+/// Columns whose move ended on a tick.
+#[derive(Default)]
+pub struct Landed {
+  /// Shown at rest, whose real windows are to be uncloaked by the next
+  /// `platform_sync`.
+  pub shown: Vec<Uuid>,
+  /// Hidden at rest, whose real windows are to be put where they stay
+  /// cloaked by the next `platform_sync`.
+  pub hidden: Vec<Uuid>,
+}
+
 /// Peeks of the columns of displayed scrolling layouts.
 #[derive(Default)]
 pub struct ScrollView {
@@ -77,6 +94,17 @@ impl ScrollView {
   /// Whether `window_id`'s real window is cloaked while a peek draws it.
   pub fn owns_window(&self, window_id: &Uuid) -> bool {
     self.owned_target(window_id).is_some()
+  }
+
+  /// Whether a peek draws `window_id`, moving or at rest, along with its
+  /// overlays.
+  pub fn draws_window(&self, window_id: &Uuid) -> bool {
+    self.entries.contains_key(window_id)
+  }
+
+  /// The peek drawing `window_id`, which its overlays sit behind.
+  pub fn peek_hwnd(&self, window_id: &Uuid) -> Option<HWND> {
+    self.entries.get(window_id).map(|entry| entry.peek.hwnd())
   }
 
   /// Where `window_id`'s peek is headed while its real window is cloaked.
@@ -101,16 +129,9 @@ impl ScrollView {
     self.entries.values().any(|entry| entry.role != Role::Peek)
   }
 
-  /// Advances moving columns to `now`.
-  ///
-  /// Returns the windows that finished moving and are fully on screen,
-  /// whose real windows are to be uncloaked by the next `platform_sync`.
-  pub fn tick(
-    &mut self,
-    now: Instant,
-    clock_origin: Instant,
-  ) -> Vec<Uuid> {
-    let mut handed_back = Vec::new();
+  /// Advances moving columns to `now`, returning the ones that landed.
+  pub fn tick(&mut self, now: Instant, clock_origin: Instant) -> Landed {
+    let mut landed = Landed::default();
 
     for (id, entry) in &mut self.entries {
       let Role::Moving { ends_shown } = entry.role else {
@@ -123,9 +144,10 @@ impl ScrollView {
 
       if entry.motion.is_complete() {
         entry.role = if ends_shown {
-          handed_back.push(*id);
+          landed.shown.push(*id);
           Role::HandingBack
         } else {
+          landed.hidden.push(*id);
           Role::Peek
         };
       }
@@ -136,7 +158,7 @@ impl ScrollView {
       entry.role != Role::Peek || entry.peek.visible_rect().is_some()
     });
 
-    handed_back
+    landed
   }
 
   /// Drops `window_id`'s peek once its real window has been uncloaked.
@@ -426,8 +448,12 @@ pub fn report_stuck_windows(state: &mut WmState) {
 }
 
 /// Keeps the border and backdrop overlays of the windows the scroll view
-/// moves on their peeks, so they slide along instead of disappearing for
-/// the move. `sync_overlays` leaves these windows to it.
+/// draws on their peeks, cut at the monitor edge like the peeks are.
+/// `sync_overlays` leaves these windows to it.
+///
+/// A moving peek's border is pinned to its monitor and slid within it, as
+/// for a workspace switch, so the ring and where it is cut can't land on
+/// screen a frame apart.
 pub fn track_overlays(state: &mut WmState, config: &UserConfig) {
   let focused_id = state.focused_container().map(|focused| focused.id());
 
@@ -436,7 +462,6 @@ pub fn track_overlays(state: &mut WmState, config: &UserConfig) {
     .scroll_view
     .entries
     .iter()
-    .filter(|(_, entry)| entry.role != Role::Peek)
     .map(|(id, entry)| {
       // Only while some of the window is on screen.
       let frame = entry
@@ -444,56 +469,72 @@ pub fn track_overlays(state: &mut WmState, config: &UserConfig) {
         .visible_rect()
         .and(entry.peek.frame_rect())
         .cloned();
-      (*id, frame, entry.peek.hwnd())
+      let is_moving = entry.role != Role::Peek;
+      (*id, frame, entry.clip.clone(), is_moving, entry.peek.hwnd())
     })
-    .collect::<Vec<(Uuid, Option<Rect>, HWND)>>();
+    .collect::<Vec<(Uuid, Option<Rect>, Rect, bool, HWND)>>();
 
   let mut backdrop_batch = SurrogateBatch::new();
   let mut border_batch = SurrogateBatch::new();
 
-  for (id, frame, anchor) in tracked {
-    let Some(frame) = frame else {
-      if let Some(overlay) = state.backdrop_overlays.get_mut(&id) {
-        overlay.hide();
-      }
-      if let Some(overlay) = state.border_overlays.get_mut(&id) {
-        overlay.hide();
-      }
-      continue;
-    };
-
+  for (id, frame, clip, is_moving, anchor) in tracked {
     let (_, _, backdrop, border) =
       surrogate_effects_for(focused_id == Some(id), config);
 
-    if let Some(params) = backdrop {
-      upsert_overlay(
+    match (backdrop, &frame) {
+      (Some(params), Some(frame)) => upsert_clipped_overlay(
         &mut state.backdrop_overlays,
         id,
         params,
-        &frame,
+        frame,
+        &clip,
         anchor,
         &mut backdrop_batch,
-      );
+      ),
+      _ => {
+        if let Some(overlay) = state.backdrop_overlays.get_mut(&id) {
+          overlay.hide();
+        }
+      }
     }
 
-    if let Some(params) = border {
-      // Framed with its stack's tab bar, like at rest.
-      let frame = state
+    // Framed with its stack's tab bar, like the real window.
+    let border_frame = frame.map(|frame| {
+      state
         .container_by_id(id)
         .and_then(|container| container.as_window_container().ok())
         .map_or_else(
           || frame.clone(),
           |window| crate::tab_bars::window_with_tab_bar(&window, &frame),
-        );
+        )
+    });
 
-      upsert_overlay(
+    match (border, border_frame) {
+      (Some(params), Some(frame)) if is_moving => {
+        upsert_pinned_border_overlay(
+          &mut state.border_overlays,
+          id,
+          StyleBlend::settled(params),
+          &frame,
+          &clip,
+          &clip,
+          anchor,
+        );
+      }
+      (Some(params), Some(frame)) => upsert_clipped_overlay(
         &mut state.border_overlays,
         id,
         params,
         &frame,
+        &clip,
         anchor,
         &mut border_batch,
-      );
+      ),
+      _ => {
+        if let Some(overlay) = state.border_overlays.get_mut(&id) {
+          overlay.hide();
+        }
+      }
     }
   }
 

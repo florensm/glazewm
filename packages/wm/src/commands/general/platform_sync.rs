@@ -1061,6 +1061,13 @@ fn redraw_containers(
       .to_rect()?
       .apply_delta(&window.total_border_delta()?, None);
 
+    // Where the real window goes, which differs for a column a peek
+    // shows.
+    let real_rect = crate::layout::scrolling::real_window_rect(
+      &window.as_container(),
+      &target_rect,
+    );
+
     let is_visible = matches!(
       window.display_state(),
       DisplayState::Showing | DisplayState::Shown
@@ -1332,7 +1339,7 @@ fn redraw_containers(
       // Animations are skipped for this window. Cancel any in-progress
       // animation and its surrogate so subsequent ticks don't re-cloak it.
       state.animation_manager.remove_animation(&window.id());
-      (AnimationPositionResult::Apply(target_rect.clone()), None)
+      (AnimationPositionResult::Apply(real_rect.clone()), None)
     };
 
     drop(anim_scope);
@@ -1440,7 +1447,7 @@ fn redraw_containers(
           pending_cloaks.push(PendingCloak {
             window: (*window).clone(),
             z_order: z_order.clone(),
-            target_rect: target_rect.clone(),
+            target_rect: real_rect.clone(),
           });
         }
       }
@@ -2240,6 +2247,26 @@ pub(crate) fn upsert_overlay<O: SyncableOverlay>(
   );
 }
 
+/// [`upsert_overlay`] for a window cut off at the edges of `clip`, e.g. a
+/// scrolling layout's column reaching onto another monitor.
+#[cfg(target_os = "windows")]
+pub(crate) fn upsert_clipped_overlay<O: SyncableOverlay>(
+  overlays: &mut std::collections::HashMap<uuid::Uuid, O>,
+  window_id: uuid::Uuid,
+  params: O::Params,
+  rect: &Rect,
+  clip: &Rect,
+  anchor: HWND,
+  batch: &mut SurrogateBatch,
+) {
+  if let Some(overlay) =
+    overlay_entry(overlays, window_id, params, rect, anchor)
+  {
+    overlay.apply(params);
+    overlay.defer_clipped_rect(batch, rect, clip, anchor);
+  }
+}
+
 /// [`upsert_overlay`] for a style mid-transition.
 #[cfg(target_os = "windows")]
 pub(crate) fn upsert_blended_overlay<O: SyncableOverlay>(
@@ -2339,6 +2366,13 @@ fn resync_overlay_z_order<O: SyncableOverlay>(state: &mut WmState) {
       continue;
     }
 
+    // A peek's overlays stay behind the peek.
+    let anchor = state
+      .animation_manager
+      .scroll_view
+      .peek_hwnd(&window.id())
+      .unwrap_or_else(|| overlay_z_anchor(&window));
+
     let Some(overlay) = O::overlays(state).get_mut(&window.id()) else {
       continue;
     };
@@ -2347,9 +2381,7 @@ fn resync_overlay_z_order<O: SyncableOverlay>(state: &mut WmState) {
       continue;
     }
 
-    if let Err(err) =
-      overlay.sync_z_order(overlay_z_anchor(&window), false)
-    {
+    if let Err(err) = overlay.sync_z_order(anchor, false) {
       debug!(
         "{} overlay z-order resync failed for {}: {err}.",
         O::LABEL,
@@ -2806,7 +2838,7 @@ fn sync_overlays<O: SyncableOverlay>(
       || state
         .animation_manager
         .scroll_view
-        .owns_window(&window.id())
+        .draws_window(&window.id())
     {
       continue;
     }

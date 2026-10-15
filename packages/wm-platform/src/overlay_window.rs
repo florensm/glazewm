@@ -319,6 +319,17 @@ pub trait Overlay: Sized {
     anchor: HWND,
   );
 
+  /// [`defer_rect`](Self::defer_rect), with the overlay cut off at the
+  /// edges of `clip`, e.g. its window's monitor. Hides the overlay when
+  /// none of it is inside.
+  fn defer_clipped_rect(
+    &mut self,
+    batch: &mut SurrogateBatch,
+    rect: &Rect,
+    clip: &Rect,
+    anchor: HWND,
+  );
+
   /// Puts the overlay back directly behind `anchor` if it has drifted,
   /// without touching its rect. See [`OverlayWindow::sync_z_order`] for
   /// `force`.

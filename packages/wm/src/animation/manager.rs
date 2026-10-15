@@ -1096,18 +1096,20 @@ impl AnimationManager {
     }
 
     // Moved columns that end shown get their real window back in the
-    // redraw below, and focus deferred while they moved lands then.
+    // redraw below, and focus deferred while they moved lands then. Ones
+    // that end hidden have their real window put where it stays cloaked,
+    // and their overlays settled.
     #[cfg(target_os = "windows")]
-    let handed_back = state
+    let landed = state
       .animation_manager
       .scroll_view
       .tick(frame_now, clock_origin);
     #[cfg(target_os = "windows")]
-    if !handed_back.is_empty() {
+    if !landed.shown.is_empty() {
       state.pending_sync.queue_focus_change();
     }
     #[cfg(target_os = "windows")]
-    for window_id in handed_back {
+    for window_id in landed.shown.into_iter().chain(landed.hidden) {
       if let Some(window) = state
         .container_by_id(window_id)
         .and_then(|container| container.as_window_container().ok())

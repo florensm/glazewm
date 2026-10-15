@@ -197,6 +197,21 @@ impl Overlay for NativeBackdropOverlay {
     self.rect = rect.clone();
   }
 
+  /// The backdrop fills its window, so it simply shrinks to the part
+  /// inside `clip`.
+  fn defer_clipped_rect(
+    &mut self,
+    batch: &mut SurrogateBatch,
+    rect: &Rect,
+    clip: &Rect,
+    anchor: HWND,
+  ) {
+    match rect.intersection(clip) {
+      Some(visible) => self.defer_rect(batch, &visible, anchor),
+      None => self.hide(),
+    }
+  }
+
   fn sync_z_order(
     &mut self,
     anchor: HWND,
