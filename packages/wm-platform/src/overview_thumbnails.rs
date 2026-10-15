@@ -251,6 +251,9 @@ pub(crate) struct Preview {
   /// Of a column scrolled out of view: there is no on-screen window for
   /// the zoom to start or end on, so it fades with the zoom instead.
   pub is_scrolled_off: bool,
+
+  /// Where its window is on screen, which its tile shows.
+  pub screen_rect: RectF,
 }
 
 impl Preview {
@@ -263,6 +266,7 @@ impl Preview {
       thumbnail: None,
       opacity: 1.0,
       is_scrolled_off: false,
+      screen_rect: RectF::default(),
     }
   }
 

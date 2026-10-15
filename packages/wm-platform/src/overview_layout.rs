@@ -1156,6 +1156,14 @@ impl Spring {
     self.velocity = 0.0;
   }
 
+  /// Scales where it is, where it heads and how fast, e.g. to the same
+  /// size in other units.
+  pub fn rescale(&mut self, factor: f32) {
+    self.value *= factor;
+    self.target *= factor;
+    self.velocity *= factor;
+  }
+
   #[allow(clippy::float_cmp)]
   pub fn is_settled(&self) -> bool {
     self.value == self.target && self.velocity == 0.0

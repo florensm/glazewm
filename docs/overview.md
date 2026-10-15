@@ -28,8 +28,8 @@ cancelled) until its windows sit where they really are.
   smaller and dimmed, peeking in at the sides.
 
 `overview.layout` sets the layout `toggle-overview` opens on, and `Tab`
-goes through them while it is open. Cards are drawn at the size the layout
-the overview opened on shows them, so text is sharpest in that one.
+goes through them while it is open. Each layout draws the cards at the size
+it shows them, so their text stays sharp.
 
 In the carousel and the grid, the special workspace's card is docked below
 the others (see [Special workspace](#special-workspace)); in the rows and

@@ -407,6 +407,78 @@ impl Card {
   }
 }
 
+/// What placing a card depends on besides the card itself.
+struct PlaceContext {
+  camera: Camera,
+  /// How far the overview is open.
+  fade: f32,
+  /// The overview's own rect.
+  view: RectF,
+  /// Card the overview zooms out of or into.
+  zoom_card: Option<usize>,
+}
+
+/// Places card `index`'s thumbnails where its animation has it now.
+fn place_card(card: &mut Card, index: usize, context: &PlaceContext) {
+  let PlaceContext {
+    camera,
+    fade,
+    view,
+    zoom_card,
+  } = context;
+  let placement = card.placement();
+  let metrics = card.metrics;
+  let rect = camera.apply(&placement.rect(&metrics));
+  let is_visible = rect.intersect(view).is_some();
+
+  // Only the zoomed card has windows on screen to zoom from or into. It
+  // shows at full strength while it does, so its windows can't dim in or
+  // out of their real ones.
+  let (openness, alpha) = if *zoom_card == Some(index) {
+    (
+      *fade,
+      placement.opacity + (1.0 - placement.opacity) * (1.0 - fade),
+    )
+  } else {
+    (1.0, placement.opacity)
+  };
+
+  for preview in &mut card.previews {
+    let dest = camera.apply(&placement.map(&metrics, &preview.tile.rect));
+    if is_visible {
+      preview.place(&dest, preview.zoomed_opacity(openness) * alpha);
+    } else if let Some(thumbnail) = &mut preview.thumbnail {
+      thumbnail.hide();
+    }
+  }
+
+  for bar in &mut card.tab_bars {
+    // Faded with its stack's shown window.
+    let opacity = card
+      .previews
+      .iter()
+      .find(|preview| preview.hwnd == bar.frame.anchor)
+      .map_or(1.0, |preview| preview.zoomed_opacity(openness));
+    let dest = camera.apply(&placement.map(&metrics, &bar.rect));
+
+    if is_visible {
+      bar.picture.place(&dest, opacity * alpha);
+    } else if let Some(thumbnail) = &mut bar.picture.thumbnail {
+      thumbnail.hide();
+    }
+  }
+
+  if is_visible {
+    // With the room around the card for its shadow.
+    #[allow(clippy::cast_precision_loss)]
+    let margin = shadow_margin(&metrics) as f32 * placement.scale;
+    let picture = camera.apply(&placement.rect(&metrics).inset(-margin));
+    card.picture.place(&picture, fade * alpha);
+  } else if let Some(thumbnail) = &mut card.picture.thumbnail {
+    thumbnail.hide();
+  }
+}
+
 /// The window being dragged or carried.
 struct Ghost {
   hwnd: isize,
@@ -724,6 +796,7 @@ impl Overview {
           };
 
           let mut preview = Preview::new(window.hwnd, view.tile(&rect)?);
+          preview.screen_rect = rect;
           preview.is_scrolled_off = window.is_scrolled_off;
           Some(preview)
         })
@@ -777,6 +850,64 @@ impl Overview {
       &self.slots(),
       frame.style.grid_columns,
     );
+  }
+
+  /// Draws the cards for the layout now shown, at the size it shows them,
+  /// if they were drawn for another. Returns whether it did.
+  fn draw_for_layout(&mut self) -> bool {
+    let layout = self.interaction.layout;
+    if layout == self.drawn_for {
+      return false;
+    }
+
+    let widths = self
+      .cards
+      .iter()
+      .map(|card| card.metrics.width)
+      .collect::<Vec<_>>();
+
+    self.drawn_for = layout;
+    self.metrics = CardMetrics::new(
+      self.area.w,
+      self.area.h,
+      self.metrics.scale_factor,
+      layout,
+    );
+    self.remap_cards();
+
+    // Each card stays the size it is on screen, in its new units.
+    for (card, width) in self.cards.iter_mut().zip(widths) {
+      card.scale.rescale(width / card.metrics.width.max(1.0));
+    }
+
+    true
+  }
+
+  /// Maps each card's windows anew for the current metrics, keeping its
+  /// previews and their thumbnails.
+  fn remap_cards(&mut self) {
+    let Some(frame) = &self.frame else {
+      return;
+    };
+
+    for (card, workspace) in self.cards.iter_mut().zip(&frame.workspaces) {
+      let content = RectF::from_rect(&workspace.content_rect);
+      card.metrics = self.metrics.for_content(&self.area, &content);
+      card.view = CardView::new(&card.metrics, &self.area, &content);
+
+      for preview in &mut card.previews {
+        if let Some(tile) = card.view.tile(&preview.screen_rect) {
+          preview.tile = tile;
+        }
+      }
+      for bar in &mut card.tab_bars {
+        bar.update(bar.frame.clone(), &card.view);
+      }
+    }
+
+    let columns = frame.style.grid_columns;
+    self.interaction.grid =
+      GridCells::fitting(&self.metrics, &self.slots(), columns);
   }
 
   /// What the layouts need of each card: where its monitor's view is,
@@ -1055,6 +1186,7 @@ impl Overview {
     };
     let style = frame.style.clone();
     let notify = (self.hwnd, WM_ICON_READY);
+    let context = self.place_context();
 
     for index in 0..self.cards.len() {
       let picture = self.card_picture(index, &style);
@@ -1082,10 +1214,17 @@ impl Overview {
       }
 
       let metrics = card.metrics;
+      let old_size = card.picture.size();
       card.picture.draw(picture_size(&metrics), |surface| {
         draw_card(surface, &picture, &metrics, &style, notify);
       });
       card.drawn = Some(picture);
+
+      // Placed at once when it changed size: until it is, its thumbnail
+      // shows the new drawing through the old size's source rect.
+      if card.picture.size() != old_size {
+        place_card(card, index, &context);
+      }
     }
 
     let hint = self.interaction.hint(self.workspaces());
@@ -1316,6 +1455,15 @@ impl Overview {
     }
   }
 
+  fn place_context(&self) -> PlaceContext {
+    PlaceContext {
+      camera: self.camera(),
+      fade: self.openness(),
+      view: RectF::new(0.0, 0.0, self.metrics.view.0, self.metrics.view.1),
+      zoom_card: self.zoom.map(|(zoom, _)| zoom.card),
+    }
+  }
+
   /// Steps animations and places everything. Returns whether anything is
   /// still moving.
   fn tick(&mut self) -> bool {
@@ -1370,67 +1518,12 @@ impl Overview {
 
   /// Places every thumbnail where its animation has it now.
   fn place(&mut self) {
-    let camera = self.camera();
-    let fade = self.openness();
-    let view =
-      RectF::new(0.0, 0.0, self.metrics.view.0, self.metrics.view.1);
-    let scale_factor = self.metrics.scale_factor;
-    let zoom_card = self.zoom.map(|(zoom, _)| zoom.card);
+    let context = self.place_context();
+    let (view, scale_factor) = (context.view, self.metrics.scale_factor);
+    let fade = context.fade;
 
     for (index, card) in self.cards.iter_mut().enumerate() {
-      let placement = card.placement();
-      let metrics = card.metrics;
-      let rect = camera.apply(&placement.rect(&metrics));
-      let is_visible = rect.intersect(&view).is_some();
-
-      // Only the zoomed card has windows on screen to zoom from or into.
-      // It shows at full strength while it does, so its windows can't
-      // dim in or out of their real ones.
-      let (openness, alpha) = if zoom_card == Some(index) {
-        (
-          fade,
-          placement.opacity + (1.0 - placement.opacity) * (1.0 - fade),
-        )
-      } else {
-        (1.0, placement.opacity)
-      };
-
-      for preview in &mut card.previews {
-        let dest =
-          camera.apply(&placement.map(&metrics, &preview.tile.rect));
-        if is_visible {
-          preview.place(&dest, preview.zoomed_opacity(openness) * alpha);
-        } else if let Some(thumbnail) = &mut preview.thumbnail {
-          thumbnail.hide();
-        }
-      }
-
-      for bar in &mut card.tab_bars {
-        // Faded with its stack's shown window.
-        let opacity = card
-          .previews
-          .iter()
-          .find(|preview| preview.hwnd == bar.frame.anchor)
-          .map_or(1.0, |preview| preview.zoomed_opacity(openness));
-        let dest = camera.apply(&placement.map(&metrics, &bar.rect));
-
-        if is_visible {
-          bar.picture.place(&dest, opacity * alpha);
-        } else if let Some(thumbnail) = &mut bar.picture.thumbnail {
-          thumbnail.hide();
-        }
-      }
-
-      if is_visible {
-        // With the room around the card for its shadow.
-        #[allow(clippy::cast_precision_loss)]
-        let margin = shadow_margin(&metrics) as f32 * placement.scale;
-        let picture =
-          camera.apply(&placement.rect(&metrics).inset(-margin));
-        card.picture.place(&picture, fade * alpha);
-      } else if let Some(thumbnail) = &mut card.picture.thumbnail {
-        thumbnail.hide();
-      }
+      place_card(card, index, &context);
     }
 
     let hint_height = HINT_HEIGHT * scale_factor;
@@ -1509,8 +1602,9 @@ impl Overview {
       }
     }
 
+    let is_redrawn = self.draw_for_layout();
     self.retarget(false);
-    self.refresh_pictures(false);
+    self.refresh_pictures(is_redrawn);
   }
 
   fn send(&self, action: OverviewAction) {
