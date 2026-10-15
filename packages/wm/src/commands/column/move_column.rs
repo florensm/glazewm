@@ -5,7 +5,8 @@ use wm_platform::Direction;
 use super::{focused_window_in, ColumnPlace, ColumnTarget};
 use crate::{
   commands::container::{
-    move_container_within_tree, set_focused_descendant,
+    flatten_child_split_containers, move_container_within_tree,
+    set_focused_descendant,
   },
   layout::scrolling::{active_column, column_focus_target, ViewRequest},
   models::Container,
@@ -156,6 +157,10 @@ fn move_column_to_monitor(
 
   if target.layout() == Layout::Scrolling {
     place.column.set_tiling_size(size);
+  } else {
+    // A column of windows stacked one above the other joins a workspace
+    // tiling that way as those windows.
+    flatten_child_split_containers(&target.clone().into())?;
   }
 
   // The workspace left behind remembers the column to focus next.
@@ -305,6 +310,48 @@ mod tests {
     assert_eq!(
       child_ids(&workspace),
       vec![first.id(), column.id(), last.id()]
+    );
+  }
+
+  #[test]
+  fn a_column_moved_onto_a_split_workspace_tiles_as_its_windows() {
+    let (top, bottom) =
+      (TilingWindow::mock().call(), TilingWindow::mock().call());
+    let column = SplitContainer::mock()
+      .tiling_direction(TilingDirection::Vertical)
+      .tiling_containers(vec![top.clone().into(), bottom.clone().into()])
+      .call();
+    let source = Workspace::mock()
+      .layout(Layout::Scrolling)
+      .tiling_containers(vec![column.into()])
+      .call();
+    let target_window = TilingWindow::mock().call();
+    let target = Workspace::mock()
+      .tiling_direction(TilingDirection::Vertical)
+      .tiling_containers(vec![target_window.clone().into()])
+      .call();
+
+    let bounds = Rect::from_xy(MOCK_MONITOR_WIDTH, 0, 1680, 1050);
+    let mut state = WmState::mock(vec![
+      Monitor::mock().workspaces(vec![source]).call(),
+      Monitor::mock()
+        .bounds(bounds.clone())
+        .working_area(bounds)
+        .workspaces(vec![target.clone()])
+        .call(),
+    ]);
+    set_focused_descendant(&bottom.clone().into(), None);
+
+    move_column_in_direction(
+      &bottom.clone().into(),
+      &Direction::Right,
+      &mut state,
+    )
+    .unwrap();
+
+    assert_eq!(
+      child_ids(&target),
+      vec![top.id(), bottom.id(), target_window.id()]
     );
   }
 
