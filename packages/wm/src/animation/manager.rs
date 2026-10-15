@@ -1302,6 +1302,7 @@ impl AnimationManager {
               "Failed to send WM_CLOSE for window {id}: {err}."
             );
           }
+          state.closing_windows.mark_close_sent(id, Instant::now());
         }
       }
     }

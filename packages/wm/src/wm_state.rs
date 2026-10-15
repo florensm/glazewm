@@ -79,6 +79,11 @@ pub struct WmState {
   /// Windows held back or placed by `stack.auto_stack` rules.
   pub auto_stack: AutoStackState,
 
+  /// Windows detached for a close animation, until their app acts on the
+  /// close.
+  #[cfg(target_os = "windows")]
+  pub closing_windows: crate::closing_windows::ClosingWindows,
+
   /// Windows kept usable while their app shows a blocking popup.
   #[cfg(target_os = "windows")]
   pub stay_interactive: crate::stay_interactive::StayInteractive,
@@ -163,6 +168,8 @@ impl WmState {
       binding_modes: Vec::new(),
       ignored_windows: Vec::new(),
       auto_stack: AutoStackState::default(),
+      #[cfg(target_os = "windows")]
+      closing_windows: crate::closing_windows::ClosingWindows::default(),
       #[cfg(target_os = "windows")]
       stay_interactive: crate::stay_interactive::StayInteractive::default(
       ),
@@ -824,6 +831,13 @@ impl Drop for WmState {
     #[cfg(target_os = "windows")]
     for native_window in self.auto_stack.release_all() {
       let _ = native_window.set_cloaked(false);
+    }
+
+    // Closing windows are cloaked and out of the tree. Those whose app
+    // has not closed them yet would otherwise stay invisible.
+    #[cfg(target_os = "windows")]
+    for handle in self.closing_windows.drain() {
+      let _ = NativeWindow::from_handle(handle).set_cloaked(false);
     }
 
     let managed_windows = self.windows();

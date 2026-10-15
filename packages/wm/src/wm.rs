@@ -321,6 +321,116 @@ impl WindowManager {
     Ok(())
   }
 
+  /// When [`process_closing_windows`](Self::process_closing_windows) is
+  /// next due.
+  pub fn next_closing_check(&self) -> Option<std::time::Instant> {
+    #[cfg(target_os = "windows")]
+    return self.state.closing_windows.next_check();
+    #[cfg(not(target_os = "windows"))]
+    None
+  }
+
+  /// Follows up on windows closed behind a close animation: forgets the
+  /// closed ones, and puts back the ones whose app kept them open.
+  #[cfg(not(target_os = "windows"))]
+  #[allow(clippy::unused_self, clippy::unnecessary_wraps)]
+  pub fn process_closing_windows(
+    &mut self,
+    _config: &mut UserConfig,
+  ) -> anyhow::Result<()> {
+    Ok(())
+  }
+
+  /// Follows up on windows closed behind a close animation: forgets the
+  /// closed ones, and puts back the ones whose app kept them open.
+  #[cfg(target_os = "windows")]
+  pub fn process_closing_windows(
+    &mut self,
+    config: &mut UserConfig,
+  ) -> anyhow::Result<()> {
+    use wm_platform::NativeWindow;
+
+    use crate::{
+      closing_windows::{CloseOutcome, ClosingAction, WindowProbe},
+      commands::window::manage_window,
+    };
+
+    let state = &mut self.state;
+
+    let actions =
+      state
+        .closing_windows
+        .poll(std::time::Instant::now(), |handle| {
+          let native = NativeWindow::from_handle(handle);
+          WindowProbe {
+            is_alive: native.is_valid(),
+            is_shown: native.has_window_style(wm_platform::WS_VISIBLE),
+            is_enabled: native.is_enabled(),
+          }
+        });
+
+    for action in actions {
+      match action {
+        ClosingAction::SendClose { id, handle } => {
+          tracing::warn!(
+            "Close animation of {id} did not finish; closing it now."
+          );
+
+          // Dropped so that a late finish can't close the window again
+          // after it has been put back.
+          state.animation_manager.remove_animation(&id);
+          state.backdrop_overlays.remove(&id);
+          state.border_overlays.remove(&id);
+
+          if let Err(err) = NativeWindow::from_handle(handle).close() {
+            warn!("Failed to close window: {:?}", err);
+          }
+        }
+        ClosingAction::Resolved {
+          id,
+          handle,
+          outcome,
+        } => {
+          state.emit_event(WmEvent::WindowUnmanaged {
+            unmanaged_id: id,
+            unmanaged_handle: handle,
+          });
+
+          let native = NativeWindow::from_handle(handle);
+
+          match outcome {
+            CloseOutcome::Closed => {}
+            // Still hidden by the app, but must not come back cloaked
+            // when the app shows it again (e.g. from its tray icon).
+            CloseOutcome::Hidden => {
+              let _ = native.set_cloaked(false);
+            }
+            CloseOutcome::Refused => {
+              tracing::info!(
+                "Window {id} stayed open after being closed; managing it \
+                 again."
+              );
+
+              let _ = native.set_cloaked(false);
+
+              if state.window_from_native(&native).is_none() {
+                manage_window(native, None, state, config)?;
+              }
+            }
+          }
+        }
+      }
+    }
+
+    if !state.is_paused && state.pending_sync.has_changes() {
+      platform_sync(state, config)?;
+    }
+
+    self.state.animation_manager.ensure_timer_running();
+
+    Ok(())
+  }
+
   pub fn process_event(
     &mut self,
     event: PlatformEvent,

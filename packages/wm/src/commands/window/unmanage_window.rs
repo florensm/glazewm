@@ -21,6 +21,11 @@ use crate::{
 /// The animation state is intentionally preserved here because
 /// `AnimationManager::update_internal` continues driving the surrogate and
 /// sends `WM_CLOSE` once the animation completes.
+///
+/// The window stays tracked in `WmState::closing_windows` until its app
+/// acts on the close, and `WindowUnmanaged` is only emitted then: until
+/// that point the window is merely cloaked, and the watcher must still be
+/// able to restore it if the WM exits.
 #[cfg(target_os = "windows")]
 pub fn detach_window_for_close(
   window: WindowContainer,
@@ -47,11 +52,11 @@ pub fn detach_window_for_close(
     flatten_child_split_containers(ancestor)?;
   }
 
-  state.emit_event(WmEvent::WindowUnmanaged {
-    unmanaged_id: window.id(),
-    #[allow(clippy::cast_possible_wrap, clippy::unnecessary_cast)]
-    unmanaged_handle: window.native().id().0 as isize,
-  });
+  state.closing_windows.track(
+    window.id(),
+    window.native().hwnd().0,
+    std::time::Instant::now(),
+  );
 
   if let Some(focus_target) = focus_target {
     set_focused_descendant(&focus_target, None);

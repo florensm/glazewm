@@ -36,6 +36,8 @@ use crate::{
 
 mod animation;
 mod auto_stack;
+#[cfg(target_os = "windows")]
+mod closing_windows;
 mod commands;
 mod events;
 mod ipc_server;
@@ -220,6 +222,7 @@ async fn start_wm(
     }
 
     let auto_stack_deadline = wm.state.auto_stack.next_deadline();
+    let closing_check = wm.next_closing_check();
 
     let res = tokio::select! {
       // biased: evaluated top-to-bottom when multiple futures are ready
@@ -293,6 +296,9 @@ async fn start_wm(
       },
       () = sleep_until(auto_stack_deadline) => {
         wm.process_auto_stack_timeouts(&mut config)
+      },
+      () = sleep_until(closing_check) => {
+        wm.process_closing_windows(&mut config)
       },
       Some((stack_id, action)) = wm.tab_action_rx.recv() => {
         wm.process_tab_action(stack_id, action, &mut config)
