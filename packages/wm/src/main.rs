@@ -30,8 +30,8 @@ use wm_platform::{
 };
 
 use crate::{
-  ipc_server::IpcServer, sys_tray::SystemTray, user_config::UserConfig,
-  wm::WindowManager,
+  error_notifier::ErrorNotifier, ipc_server::IpcServer,
+  sys_tray::SystemTray, user_config::UserConfig, wm::WindowManager,
 };
 
 mod animation;
@@ -39,6 +39,7 @@ mod auto_stack;
 #[cfg(target_os = "windows")]
 mod closing_windows;
 mod commands;
+mod error_notifier;
 mod events;
 mod ipc_server;
 mod models;
@@ -185,14 +186,15 @@ async fn start_wm(
     dispatcher,
   )?;
 
+  let mut error_notifier = ErrorNotifier::new(dispatcher.clone());
+
   // Run user's startup commands.
   if let Err(err) = wm.process_commands(
     &config.value.general.startup_commands.clone(),
     None,
     &mut config,
   ) {
-    tracing::error!("{:?}", err);
-    dispatcher.show_error_dialog("Non-fatal error", &err.to_string());
+    error_notifier.report(&err);
   }
 
   // Create an interval for periodically cleaning up invalid windows.
@@ -217,8 +219,7 @@ async fn start_wm(
       &mut window_listener,
       &mut display_listener,
     ) {
-      tracing::error!("{:?}", err);
-      dispatcher.show_error_dialog("Non-fatal error", &err.to_string());
+      error_notifier.report(&err);
     }
 
     let auto_stack_deadline = wm.state.auto_stack.next_deadline();
@@ -350,8 +351,7 @@ async fn start_wm(
     };
 
     if let Err(err) = res {
-      tracing::error!("{:?}", err);
-      dispatcher.show_error_dialog("Non-fatal error", &err.to_string());
+      error_notifier.report(&err);
     }
   }
 

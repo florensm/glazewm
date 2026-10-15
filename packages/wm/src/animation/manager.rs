@@ -194,6 +194,21 @@ fn prune_and_insert<K: std::hash::Hash + Eq, V>(
   map.insert(key, (value, Instant::now()));
 }
 
+/// Stores `next` in `result` if it is the first error; later errors are
+/// only logged.
+fn keep_first_error(
+  result: &mut anyhow::Result<()>,
+  next: anyhow::Result<()>,
+) {
+  if let Err(err) = next {
+    if result.is_ok() {
+      *result = Err(err);
+    } else {
+      tracing::error!("{err:?}");
+    }
+  }
+}
+
 use tokio::sync::mpsc;
 use uuid::Uuid;
 use wm_common::{
@@ -1072,6 +1087,11 @@ impl AnimationManager {
     perf::begin_frame();
     let tick_scope = perf::scope(Stage::Tick);
 
+    // A failed sync must not end the frame early: the teardown after it is
+    // what removes finished surrogates and reveals the real windows. The
+    // first error is returned once the frame is done.
+    let mut frame_result = Ok(());
+
     // Start the clock of every animation created since the last tick (see
     // `WindowAnimationState::start_clock`), one frame period before this
     // frame so the first tick already shows a frame of motion instead of
@@ -1769,7 +1789,7 @@ impl AnimationManager {
     }
 
     if state.pending_sync.has_changes() {
-      platform_sync(state, config)?;
+      keep_first_error(&mut frame_result, platform_sync(state, config));
     }
 
     #[cfg(target_os = "windows")]
@@ -2244,7 +2264,7 @@ impl AnimationManager {
            redraw, running follow-up platform_sync."
         );
         drop(cleanup_scope.take());
-        platform_sync(state, config)?;
+        keep_first_error(&mut frame_result, platform_sync(state, config));
       }
     }
 
@@ -2303,7 +2323,7 @@ impl AnimationManager {
       }
     }
 
-    Ok(())
+    frame_result
   }
 
   /// Returns the predicted vsync instant: last wake + frame period ×
