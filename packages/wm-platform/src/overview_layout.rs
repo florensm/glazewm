@@ -44,6 +44,16 @@ impl RectF {
     )
   }
 
+  /// This rect with its coordinates multiplied by `factor`.
+  pub fn scaled(&self, factor: f32) -> Self {
+    Self::new(
+      self.x * factor,
+      self.y * factor,
+      self.w * factor,
+      self.h * factor,
+    )
+  }
+
   /// The overlap of two rects, if any.
   pub fn intersect(&self, other: &Self) -> Option<Self> {
     let left = self.x.max(other.x);
@@ -193,6 +203,19 @@ impl CardMetrics {
     Self {
       width: tiles * stretch + 2.0 * self.padding,
       stretch,
+      ..*self
+    }
+  }
+
+  /// These metrics for a card drawn `factor` times its size.
+  pub fn scaled(&self, factor: f32) -> Self {
+    Self {
+      width: self.width * factor,
+      height: self.height * factor,
+      header: self.header * factor,
+      padding: self.padding * factor,
+      spacing: self.spacing * factor,
+      scale_factor: self.scale_factor * factor,
       ..*self
     }
   }

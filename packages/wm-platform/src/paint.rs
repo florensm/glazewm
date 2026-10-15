@@ -6,6 +6,8 @@
 //! Pixels are `0xAARRGGBB`, premultiplied by alpha, top-down, as used by a
 //! 32-bit DIB section passed to `UpdateLayeredWindow`.
 
+use std::{iter::Chain, ops::Range};
+
 use crate::{Color, CornerRadii, Rect};
 
 /// Samples per axis when estimating a pixel's coverage.
@@ -37,9 +39,17 @@ impl Canvas<'_> {
     color: Color,
   ) {
     let radii = radii.clamped(rect.width(), rect.height());
+    let solid = premultiply(color, color.a);
 
     for y in rect.top.max(0)..rect.bottom.min(self.height) {
-      for x in rect.left.max(0)..rect.right.min(self.width) {
+      let span = solid_span(rect, radii, y);
+      if let Some((from, to)) = span {
+        for pixel in self.row_mut(y, from, to) {
+          *pixel = over(solid, *pixel);
+        }
+      }
+
+      for x in columns_around(rect.left, rect.right, span, self.width) {
         let coverage = rounded_rect_coverage(x, y, rect, radii);
         self.blend(x, y, color, coverage);
       }
@@ -62,7 +72,10 @@ impl Canvas<'_> {
       .clamped(inner.width(), inner.height());
 
     for y in rect.top.max(0)..rect.bottom.min(self.height) {
-      for x in rect.left.max(0)..rect.right.min(self.width) {
+      // Wholly inside its inner edge, the ring covers nothing.
+      let hollow = solid_span(&inner, inner_radii, y);
+
+      for x in columns_around(rect.left, rect.right, hollow, self.width) {
         let is_inside_inner = x >= inner.left
           && x < inner.right
           && y >= inner.top
@@ -164,27 +177,35 @@ impl Canvas<'_> {
     #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
     let opacity = (opacity.clamp(0.0, 1.0) * 255.0).round() as u32;
 
+    // Source columns left of the canvas.
+    let clipped = usize::try_from(left.saturating_neg())
+      .unwrap_or(0)
+      .min(row_len);
+
     for (row, pixels) in (0..).zip(source.chunks_exact(row_len)) {
-      for (column, pixel) in (0..).zip(pixels) {
-        if let Some(target) = self.pixel_mut(left + column, top + row) {
-          *target = over(scale(*pixel, opacity), *target);
-        }
+      let targets = self.row_mut(top + row, left, left + source_width);
+      for (target, pixel) in targets.iter_mut().zip(&pixels[clipped..]) {
+        *target = over(scale(*pixel, opacity), *target);
       }
     }
   }
 
-  /// Draws the soft shadow of `rect`, rounded by `radius`: `color` under
-  /// it, fading out over `blur` pixels past its edges.
+  /// Draws the soft shadow of `rect`, rounded by `radius`, around `hole`,
+  /// rounded the same, which it leaves untouched: `color` under `rect`,
+  /// fading out over `blur` pixels past its edges.
   #[allow(clippy::cast_precision_loss, clippy::cast_possible_truncation)]
-  pub fn fill_shadow(
+  pub fn fill_shadow_around(
     &mut self,
     rect: &Rect,
+    hole: &Rect,
     radius: i32,
     blur: f32,
     color: Color,
   ) {
     let blur = blur.max(1.0);
     let reach = blur.ceil() as i32;
+    let hole_radii =
+      CornerRadii::uniform(radius).clamped(hole.width(), hole.height());
     let radius =
       radius.min(rect.width() / 2).min(rect.height() / 2).max(0) as f32;
     let (half_width, half_height) =
@@ -195,18 +216,34 @@ impl Canvas<'_> {
     for y in
       (rect.top - reach).max(0)..(rect.bottom + reach).min(self.height)
     {
-      for x in
-        (rect.left - reach).max(0)..(rect.right + reach).min(self.width)
-      {
+      let hidden = solid_span(hole, hole_radii, y);
+
+      for x in columns_around(
+        rect.left - reach,
+        rect.right + reach,
+        hidden,
+        self.width,
+      ) {
         // How far past the rounded rect's edge, negative inside it.
         let dx = (x as f32 + 0.5 - center_x).abs() - (half_width - radius);
         let dy =
           (y as f32 + 0.5 - center_y).abs() - (half_height - radius);
         let distance =
           dx.max(0.0).hypot(dy.max(0.0)) + dx.max(dy).min(0.0) - radius;
-
         let fade = 1.0 - (distance / blur).clamp(0.0, 1.0);
-        self.blend(x, y, color, fade * fade);
+
+        // Partly shown where the hole's corners cut through.
+        let is_in_hole = x >= hole.left
+          && x < hole.right
+          && y >= hole.top
+          && y < hole.bottom;
+        let shown = if is_in_hole {
+          1.0 - rounded_rect_coverage(x, y, hole, hole_radii)
+        } else {
+          1.0
+        };
+
+        self.blend(x, y, color, fade * fade * shown);
       }
     }
   }
@@ -227,7 +264,12 @@ impl Canvas<'_> {
     let radii = radii.clamped(rect.width(), rect.height());
 
     for y in rect.top.max(0)..rect.bottom.min(self.height) {
-      for x in rect.left.max(0)..rect.right.min(self.width) {
+      let span = solid_span(rect, radii, y);
+      if let Some((from, to)) = span {
+        self.row_mut(y, from, to).fill(0);
+      }
+
+      for x in columns_around(rect.left, rect.right, span, self.width) {
         let coverage = rounded_rect_coverage(x, y, rect, radii);
 
         #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
@@ -247,6 +289,18 @@ impl Canvas<'_> {
 
     let index = usize::try_from(y * self.width + x).ok()?;
     self.pixels.get_mut(index)
+  }
+
+  /// Row `y`'s pixels from `left` up to `right`, clipped to the canvas.
+  fn row_mut(&mut self, y: i32, left: i32, right: i32) -> &mut [u32] {
+    let (left, right) = (left.max(0), right.min(self.width));
+    if y < 0 || y >= self.height || left >= right {
+      return &mut [];
+    }
+
+    let start = usize::try_from(y * self.width + left).unwrap_or_default();
+    let end = usize::try_from(y * self.width + right).unwrap_or_default();
+    self.pixels.get_mut(start..end).unwrap_or_default()
   }
 
   /// Blends `color` over the pixel at (`x`, `y`) with `coverage` in 0..=1.
@@ -288,6 +342,14 @@ fn scale(pixel: u32, factor: u32) -> u32 {
 
 /// Premultiplied `source` composited over `target`.
 fn over(source: u32, target: u32) -> u32 {
+  // Opaque, empty and clear pixels, which most are.
+  if source >> 24 == 255 || target == 0 {
+    return source;
+  }
+  if source == 0 {
+    return target;
+  }
+
   let inverse = 255 - (source >> 24);
 
   [24, 16, 8, 0].into_iter().fold(0, |result, shift| {
@@ -341,6 +403,62 @@ pub(crate) fn matte_from_backgrounds(
       ])
     })
     .collect()
+}
+
+/// Columns of row `y` wholly inside `rect` with its corners rounded by
+/// `radii`, which must be clamped to it: from the first up to past the
+/// last, if there are any.
+fn solid_span(
+  rect: &Rect,
+  radii: CornerRadii,
+  y: i32,
+) -> Option<(i32, i32)> {
+  if y < rect.top || y >= rect.bottom {
+    return None;
+  }
+
+  // The corners `rounded_rect_coverage` picks for the row.
+  let is_top = y < rect.top + rect.height() / 2;
+  let (left_radius, right_radius) = if is_top {
+    (radii.top_left, radii.top_right)
+  } else {
+    (radii.bottom_left, radii.bottom_right)
+  };
+  let inset = |radius: i32| {
+    let is_corner_row = if is_top {
+      y < rect.top + radius
+    } else {
+      y >= rect.bottom - radius
+    };
+    if is_corner_row {
+      radius
+    } else {
+      0
+    }
+  };
+
+  let (left, right) = (
+    rect.left + inset(left_radius),
+    rect.right - inset(right_radius),
+  );
+  (left < right).then_some((left, right))
+}
+
+/// Columns from `left` up to `right` of a canvas `width` pixels wide, less
+/// those of `skip`.
+fn columns_around(
+  left: i32,
+  right: i32,
+  skip: Option<(i32, i32)>,
+  width: i32,
+) -> Chain<Range<i32>, Range<i32>> {
+  let left = left.max(0);
+  let right = right.min(width).max(left);
+  let (from, to) = skip.map_or((right, right), |(from, to)| {
+    (from.clamp(left, right), to.clamp(left, right))
+  });
+
+  (left..from).chain(to..right)
 }
 
 /// Fraction of the pixel at (`x`, `y`), which lies within `rect`, that is
@@ -435,7 +553,10 @@ fn distance_to_segment(
 
 #[cfg(test)]
 mod tests {
-  use super::{mask_from_white_on_black, matte_from_backgrounds, Canvas};
+  use super::{
+    mask_from_white_on_black, matte_from_backgrounds,
+    rounded_rect_coverage, solid_span, Canvas,
+  };
   use crate::{Color, CornerRadii, Rect};
 
   const WHITE: Color = Color {
@@ -455,9 +576,10 @@ mod tests {
   }
 
   #[test]
-  fn shadows_fade_out_past_the_edge() {
-    let mut pixels = vec![0u32; 40 * 40];
-    canvas(&mut pixels, 40).fill_shadow(
+  fn shadows_fade_out_past_the_edge_around_their_hole() {
+    let mut pixels = vec![0u32; 40 * 48];
+    canvas(&mut pixels, 40).fill_shadow_around(
+      &Rect::from_ltrb(10, 12, 30, 32),
       &Rect::from_ltrb(10, 10, 30, 30),
       4,
       8.0,
@@ -465,11 +587,49 @@ mod tests {
     );
     let alpha = |x: usize, y: usize| pixels[y * 40 + x] >> 24;
 
-    assert_eq!(alpha(20, 20), 255, "full under the rect");
-    assert!(alpha(20, 33) > alpha(20, 36), "fading away from it");
-    assert!(alpha(20, 33) > 0 && alpha(20, 33) < 255);
-    assert_eq!(alpha(20, 39), 0, "gone past the blur");
-    assert!(alpha(31, 31) < alpha(20, 31), "rounder at the corners");
+    assert_eq!(alpha(20, 20), 0, "none under the hole");
+    assert_eq!(alpha(20, 31), 255, "full under the rect past the hole");
+    assert!(alpha(20, 34) > alpha(20, 37), "fading away from it");
+    assert!(alpha(20, 34) > 0 && alpha(20, 34) < 255);
+    assert_eq!(alpha(20, 41), 0, "gone past the blur");
+    assert!(alpha(31, 33) < alpha(20, 33), "rounder at the corners");
+
+    let corner = alpha(11, 28);
+    assert!(corner > 0 && corner < 255, "hole's corners anti-aliased");
+  }
+
+  #[test]
+  fn solid_spans_are_wholly_covered() {
+    let shapes = [
+      (Rect::from_ltrb(0, 0, 20, 20), CornerRadii::uniform(8)),
+      (Rect::from_ltrb(-5, -3, 6, 4), CornerRadii::uniform(9)),
+      (
+        Rect::from_ltrb(3, 5, 10, 30),
+        CornerRadii {
+          top_left: 3,
+          bottom_right: 6,
+          ..CornerRadii::default()
+        },
+      ),
+    ];
+
+    for (rect, radii) in shapes {
+      let radii = radii.clamped(rect.width(), rect.height());
+      let mut solid = 0;
+
+      for y in rect.top..rect.bottom {
+        let Some((from, to)) = solid_span(&rect, radii, y) else {
+          continue;
+        };
+        assert!(rect.left <= from && to <= rect.right);
+
+        for x in from..to {
+          assert!(rounded_rect_coverage(x, y, &rect, radii) >= 1.0);
+          solid += 1;
+        }
+      }
+      assert!(solid > 0);
+    }
   }
 
   #[test]

@@ -25,7 +25,7 @@ use windows::{
 };
 
 use crate::{
-  overview_layout::{CardMetrics, RectF},
+  overview_layout::{CardMetrics, Placement, RectF},
   paint,
   surface::Surface,
   window_icons, Color, CornerRadii, OverviewStyle, Rect,
@@ -81,6 +81,33 @@ pub(crate) struct CardPicture {
   pub icons: u64,
 }
 
+impl CardPicture {
+  /// This picture for a card drawn `factor` times its size.
+  fn scaled(&self, factor: f32) -> Self {
+    let mut picture = self.clone();
+    picture.viewport =
+      self.viewport.map(|viewport| viewport.scaled(factor));
+
+    for tile in &mut picture.tiles {
+      tile.rect = tile.rect.scaled(factor);
+      tile.outline = tile.outline.scaled(factor);
+    }
+
+    let scale = |radius: i32| round(to_f32(radius) * factor);
+    for (rect, radii) in &mut picture.tab_bars {
+      *rect = rect.scaled(factor);
+      *radii = CornerRadii {
+        top_left: scale(radii.top_left),
+        top_right: scale(radii.top_right),
+        bottom_right: scale(radii.bottom_right),
+        bottom_left: scale(radii.bottom_left),
+      };
+    }
+
+    picture
+  }
+}
+
 /// A window on a card.
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct TilePicture {
@@ -111,6 +138,11 @@ const CARD_RADIUS: f32 = 14.0;
 /// cast, in logical pixels.
 const SHADOW: (f32, f32) = (22.0, 5.0);
 
+/// Most pixels a card's picture is drawn with, 32 MiB of them. A card
+/// bigger still, e.g. a long strip on a 4K monitor, is drawn smaller and
+/// scaled up by DWM, so it can't take hundreds of MB or long to redraw.
+const MAX_PICTURE_PIXELS: f32 = 8_388_608.0;
+
 /// Pixel size of a card at scale 1.
 #[allow(clippy::cast_possible_truncation)]
 fn card_size(metrics: &CardMetrics) -> (i32, i32) {
@@ -119,8 +151,27 @@ fn card_size(metrics: &CardMetrics) -> (i32, i32) {
 
 /// Room around a card in its picture for its shadow, in the picture's
 /// pixels.
-pub(crate) fn shadow_margin(metrics: &CardMetrics) -> i32 {
+fn shadow_margin(metrics: &CardMetrics) -> i32 {
   round((SHADOW.0 + SHADOW.1) * metrics.scale_factor * metrics.chrome)
+}
+
+/// Pixel size of a picture of a card drawn at `metrics`, with room for its
+/// shadow around it.
+fn padded_size(metrics: &CardMetrics) -> (i32, i32) {
+  let (width, height) = card_size(metrics);
+  let margin = shadow_margin(metrics);
+  (width + 2 * margin, height + 2 * margin)
+}
+
+/// The metrics a card's picture is drawn at, and how many times its size
+/// that is: 1 unless that would take more than `MAX_PICTURE_PIXELS`.
+fn drawn_metrics(metrics: &CardMetrics) -> (CardMetrics, f32) {
+  let (width, height) = padded_size(metrics);
+  let factor = (MAX_PICTURE_PIXELS / (to_f32(width) * to_f32(height)))
+    .sqrt()
+    .min(1.0);
+
+  (metrics.scaled(factor), factor)
 }
 
 /// Pixel size of a card's picture: the card at scale 1, with room for its
@@ -131,9 +182,29 @@ pub(crate) fn shadow_margin(metrics: &CardMetrics) -> i32 {
 /// size flickers, since the new bitmap and its thumbnail's source rect
 /// can't be swapped in at once.
 pub(crate) fn picture_size(metrics: &CardMetrics) -> (i32, i32) {
-  let (width, height) = card_size(metrics);
-  let margin = shadow_margin(metrics);
-  (width + 2 * margin, height + 2 * margin)
+  padded_size(&drawn_metrics(metrics).0)
+}
+
+/// Where a card's picture goes, shadow and all, for the card to show
+/// where `placement` puts it.
+pub(crate) fn picture_rect(
+  metrics: &CardMetrics,
+  placement: &Placement,
+) -> RectF {
+  let (drawn, factor) = drawn_metrics(metrics);
+  let (width, height) = padded_size(&drawn);
+
+  // Overview pixels per pixel of the picture.
+  let scale = placement.scale / factor;
+  let margin = to_f32(shadow_margin(&drawn)) * scale;
+  let card = placement.rect(metrics);
+
+  RectF::new(
+    card.x - margin,
+    card.y - margin,
+    to_f32(width) * scale,
+    to_f32(height) * scale,
+  )
 }
 
 /// `color` with its alpha set to `alpha` (0 to 1).
@@ -172,24 +243,28 @@ pub(crate) fn draw_card(
   style: &OverviewStyle,
   notify: (HWND, u32),
 ) {
-  let (width, height) = card_size(metrics);
+  let (metrics, factor) = drawn_metrics(metrics);
+  let picture = picture.scaled(factor);
+
+  let (width, height) = card_size(&metrics);
   let Some(mut face) = Surface::new(width, height) else {
     return;
   };
-  draw_face(&mut face, picture, metrics, style, notify);
+  draw_face(&mut face, &picture, &metrics, style, notify);
 
   let units = Units {
     scale_factor: metrics.scale_factor * metrics.chrome,
   };
-  let margin = shadow_margin(metrics);
-  let card = Rect::from_xy(margin, margin, width, height);
+  let margin = shadow_margin(&metrics);
   let radius = round(units.px(CARD_RADIUS));
   let (blur, drop) = SHADOW;
 
   surface.pixels().fill(0);
   let mut canvas = surface.canvas();
-  canvas.fill_shadow(
+  // Not under the card: its holes show what is under it, not its shadow.
+  canvas.fill_shadow_around(
     &Rect::from_xy(margin, margin + round(units.px(drop)), width, height),
+    &Rect::from_xy(margin, margin, width, height),
     radius,
     units.px(blur),
     Color {
@@ -199,8 +274,6 @@ pub(crate) fn draw_card(
       a: 80,
     },
   );
-  // The card's own holes show what is under it, not its shadow.
-  canvas.erase_rounded_rect(&card, radius);
   canvas.draw_premultiplied(margin, margin, face.pixels(), width, 1.0);
 }
 
