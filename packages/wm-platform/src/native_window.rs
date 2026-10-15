@@ -234,6 +234,14 @@ pub trait NativeWindowWindowsExt {
   /// This method is only available on Windows.
   fn is_enabled(&self) -> bool;
 
+  /// Whether the window's app has stopped responding, as judged by the OS
+  /// (no messages processed for about 5 seconds).
+  ///
+  /// # Platform-specific
+  ///
+  /// This method is only available on Windows.
+  fn is_hung(&self) -> bool;
+
   /// Re-enables input to a window its app disabled, without blocking:
   /// `EnableWindow` waits for the app to handle `WM_ENABLE`, so it is
   /// called from a worker thread.
@@ -497,6 +505,10 @@ impl NativeWindowWindowsExt for NativeWindow {
 
   fn is_enabled(&self) -> bool {
     self.inner.is_enabled()
+  }
+
+  fn is_hung(&self) -> bool {
+    self.inner.is_hung()
   }
 
   fn enable_async(&self) {

@@ -1372,7 +1372,8 @@ impl ResizeSession {
 
     // SAFETY: `HWND(self.hwnd)` is valid (verified above). With
     // `SWP_NOZORDER` set, `hWndInsertAfter` (`HWND(0)`) is ignored per
-    // the Win32 documentation.
+    // the Win32 documentation. Asynchronous, since this runs on shutdown,
+    // where a hung app must not keep the WM from exiting.
     unsafe {
       SetWindowPos(
         HWND(self.hwnd),
@@ -1381,7 +1382,10 @@ impl ResizeSession {
         self.target_rect.y(),
         self.target_rect.width(),
         self.target_rect.height(),
-        SWP_NOACTIVATE | SWP_NOSENDCHANGING | SWP_NOZORDER,
+        SWP_NOACTIVATE
+          | SWP_NOSENDCHANGING
+          | SWP_NOZORDER
+          | SWP_ASYNCWINDOWPOS,
       )
     }?;
 

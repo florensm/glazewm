@@ -1452,6 +1452,15 @@ fn redraw_containers(
             // app can dominate `rd_apply` -- the stage totals alone cannot
             // show which one. Scoped tightly so only the reposition itself
             // is counted.
+            // A window whose app is hung, or was recently slow to answer a
+            // synchronous move, is moved asynchronously instead: in step
+            // with its surrogate is not worth stalling the whole WM for.
+            #[cfg(target_os = "windows")]
+            let has_surrogate = has_surrogate
+              && state
+                .animation_manager
+                .allows_sync_reposition(&window.native());
+
             let _apply_scope = perf::apply_scope(
               || window.native_properties().process_name,
               has_surrogate,
@@ -1471,6 +1480,13 @@ fn redraw_containers(
                 #[cfg(target_os = "windows")]
                 {
                   did_move = reposition.moved;
+
+                  if let Some(elapsed) = reposition.sync_elapsed {
+                    state.animation_manager.note_sync_reposition(
+                      window.native().hwnd().0,
+                      elapsed,
+                    );
+                  }
                 }
               }
               Err(err) => {
@@ -1730,6 +1746,9 @@ struct Reposition {
   /// is owed only when this is `true`.
   #[cfg(target_os = "windows")]
   moved: bool,
+  /// How long the move took, if it was synchronous.
+  #[cfg(target_os = "windows")]
+  sync_elapsed: Option<Duration>,
 }
 
 /// Whether [`reposition_window`] already applied the window's cloak state.
@@ -1800,12 +1819,16 @@ fn reposition_window(
       cloak_state: CloakState::Untouched,
       #[cfg(target_os = "windows")]
       moved: true,
+      #[cfg(target_os = "windows")]
+      sync_elapsed: None,
     });
   }
 
   let mut cloak_state = CloakState::Untouched;
   #[cfg(target_os = "windows")]
   let mut moved = true;
+  #[cfg(target_os = "windows")]
+  let mut sync_elapsed = None;
 
   if window.active_drag().is_some() {
     window.native().resize(rect.width(), rect.height())?;
@@ -1966,6 +1989,8 @@ fn reposition_window(
 
       if let Some(start) = sync_reposition_start {
         let elapsed = start.elapsed();
+        sync_elapsed = Some(elapsed);
+
         if elapsed > SLOW_SYNC_REPOSITION_THRESHOLD {
           tracing::warn!(
             "Synchronous reposition for {window} took {elapsed:?} -- \
@@ -2001,6 +2026,8 @@ fn reposition_window(
     cloak_state,
     #[cfg(target_os = "windows")]
     moved,
+    #[cfg(target_os = "windows")]
+    sync_elapsed,
   })
 }
 

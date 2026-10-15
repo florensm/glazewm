@@ -457,6 +457,15 @@ impl NativeWindow {
     process_id
   }
 
+  /// Implements [`NativeWindowWindowsExt::is_hung`].
+  pub(crate) fn is_hung(&self) -> bool {
+    // SAFETY: A stale handle just returns false.
+    unsafe {
+      windows::Win32::UI::WindowsAndMessaging::IsHungAppWindow(self.hwnd())
+    }
+    .as_bool()
+  }
+
   /// Implements [`NativeWindowWindowsExt::is_enabled`].
   pub(crate) fn is_enabled(&self) -> bool {
     // SAFETY: A stale handle just returns false.

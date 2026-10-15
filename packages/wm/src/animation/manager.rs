@@ -195,6 +195,16 @@ fn prune_and_insert<K: std::hash::Hash + Eq, V>(
   map.insert(key, (value, Instant::now()));
 }
 
+/// A synchronous move slower than this demotes its window to asynchronous
+/// moves. Several frames' worth: the whole WM waits on it.
+#[cfg(target_os = "windows")]
+const SLOW_SYNC_DEMOTE_THRESHOLD: Duration = Duration::from_millis(50);
+
+/// How long a window demoted by [`SLOW_SYNC_DEMOTE_THRESHOLD`] is moved
+/// asynchronously.
+#[cfg(target_os = "windows")]
+const SYNC_DEMOTE_DURATION: Duration = Duration::from_secs(30);
+
 /// How long animations may go without a frame before the watchdog runs
 /// one itself and replaces the timer thread.
 const FRAME_STALL_TIMEOUT: Duration = Duration::from_millis(250);
@@ -534,6 +544,13 @@ pub struct AnimationManager {
   /// [`start_workspace_switch`]: AnimationManager::start_workspace_switch
   #[cfg(target_os = "windows")]
   interrupted_ws_windows: Vec<Uuid>,
+  /// Windows moved asynchronously until the stored time, keyed by
+  /// `HWND`, because a synchronous move of them was slow. See
+  /// [`allows_sync_reposition`].
+  ///
+  /// [`allows_sync_reposition`]: AnimationManager::allows_sync_reposition
+  #[cfg(target_os = "windows")]
+  sync_demoted_until: HashMap<isize, Instant>,
   /// Windows with an active close animation, keyed by window ID.
   ///
   /// The stored value is the raw `HWND` (as `isize`) so `WM_CLOSE` can be
@@ -615,6 +632,8 @@ impl AnimationManager {
       pending_ws_cleanup: None,
       #[cfg(target_os = "windows")]
       interrupted_ws_windows: Vec::new(),
+      #[cfg(target_os = "windows")]
+      sync_demoted_until: HashMap::new(),
       #[cfg(target_os = "windows")]
       pending_close_windows: HashMap::new(),
       pending_minimize_windows: HashSet::new(),
@@ -3133,6 +3152,52 @@ impl AnimationManager {
 
   pub fn is_workspace_switch_active(&self) -> bool {
     self.workspace_switch.is_some() || self.pending_ws_cleanup.is_some()
+  }
+
+  /// Whether `native` may be moved synchronously, to stay in step with its
+  /// surrogate.
+  ///
+  /// A synchronous `SetWindowPos` waits on the window's app, so it is
+  /// skipped for an app the OS reports as hung, and for one whose last
+  /// synchronous move was slow (see [`note_sync_reposition`]).
+  ///
+  /// [`note_sync_reposition`]: AnimationManager::note_sync_reposition
+  #[cfg(target_os = "windows")]
+  pub fn allows_sync_reposition(&mut self, native: &NativeWindow) -> bool {
+    let handle = native.hwnd().0;
+
+    if let Some(until) = self.sync_demoted_until.get(&handle) {
+      if Instant::now() < *until {
+        return false;
+      }
+      self.sync_demoted_until.remove(&handle);
+    }
+
+    !native.is_hung()
+  }
+
+  /// Records how long a synchronous move of the window `handle` took, and
+  /// moves it asynchronously for a while if that was slow.
+  #[cfg(target_os = "windows")]
+  pub fn note_sync_reposition(
+    &mut self,
+    handle: isize,
+    elapsed: Duration,
+  ) {
+    if elapsed < SLOW_SYNC_DEMOTE_THRESHOLD {
+      return;
+    }
+
+    tracing::warn!(
+      "Synchronous move of window {handle:#x} took {elapsed:?}; moving it \
+       asynchronously for {SYNC_DEMOTE_DURATION:?}."
+    );
+
+    let now = Instant::now();
+    self.sync_demoted_until.retain(|_, until| *until > now);
+    self
+      .sync_demoted_until
+      .insert(handle, now + SYNC_DEMOTE_DURATION);
   }
 
   /// Hands a finished or interrupted slide's surrogates to
