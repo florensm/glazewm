@@ -79,8 +79,45 @@ pub fn width_at<T>(
 where
   T: TilingSizeGetters,
 {
+  width_on_strip(column, size, workspace.to_rect()?.width())
+}
+
+/// Width in pixels `column` has at `size` on a strip seen through a
+/// workspace `view_width` wide.
+fn width_on_strip<T>(
+  column: &T,
+  size: f32,
+  view_width: i32,
+) -> anyhow::Result<i32>
+where
+  T: TilingSizeGetters,
+{
   let (gap, _) = column.inner_gaps()?;
-  Ok(width_for_size(size, workspace.to_rect()?.width(), gap))
+
+  Ok(
+    width_for_size(size, view_width, gap)
+      .max(min_width(column, view_width)),
+  )
+}
+
+/// Narrowest `column` can be, as its widest window's app allows, but at
+/// most `max`.
+fn min_width(column: &impl CommonGetters, max: i32) -> i32 {
+  column
+    .self_and_descendants()
+    .filter_map(|container| container.as_window_container().ok())
+    .map(|window| {
+      // The app's minimum is of the window with its shadow borders,
+      // which are laid out around the column's width.
+      let borders = window.total_border_delta().map_or(0, |delta| {
+        delta.left.to_px(0, None) + delta.right.to_px(0, None)
+      });
+
+      window.native_properties().min_width - borders
+    })
+    .max()
+    .unwrap_or(0)
+    .clamp(0, max)
 }
 
 /// Rect of a column on its workspace's strip.
@@ -100,17 +137,17 @@ where
     }
 
     let (gap, _) = sibling.inner_gaps()?;
-    x +=
-      width_for_size(sibling.tiling_size(), workspace_rect.width(), gap)
-        + gap;
+    x += width_on_strip(
+      &sibling,
+      sibling.tiling_size(),
+      workspace_rect.width(),
+    )? + gap;
   }
-
-  let (gap, _) = column.inner_gaps()?;
 
   Ok(Rect::from_xy(
     x,
     workspace_rect.y(),
-    width_for_size(column.tiling_size(), workspace_rect.width(), gap),
+    width_on_strip(column, column.tiling_size(), workspace_rect.width())?,
     workspace_rect.height(),
   ))
 }
@@ -217,7 +254,8 @@ impl Strip {
 
     for column in workspace.tiling_children() {
       let (gap, _) = column.inner_gaps()?;
-      let width = width_for_size(column.tiling_size(), view_width, gap);
+      let width =
+        width_on_strip(&column, column.tiling_size(), view_width)?;
       strip.push(column.id(), width, gap);
     }
 
@@ -248,11 +286,6 @@ impl Strip {
 
   pub fn index_of(&self, id: Uuid) -> Option<usize> {
     self.ids.iter().position(|column| *column == id)
-  }
-
-  /// Width of column `index` at `size`, `gap` apart from the next.
-  pub fn width_for(&self, size: f32, gap: i32) -> i32 {
-    width_for_size(size, self.view_width, gap)
   }
 
   /// The columns fully on screen with the view at `offset`, left to
@@ -416,6 +449,10 @@ pub enum ViewRequest {
   /// Show the active column with its left edge `x` from the workspace's
   /// left edge, or as close to that as shows it whole.
   PlaceActive { x: i32 },
+
+  /// Show the active column with its right edge `right` from the
+  /// workspace's left edge, or as close to that as shows it whole.
+  PlaceActiveRight { right: i32 },
 }
 
 impl StripView {
@@ -524,6 +561,8 @@ impl StripView {
       (Some(ViewRequest::PlaceActive { x }), _) => {
         strip.fit(active, strip.start(active) - x)
       }
+      (Some(ViewRequest::PlaceActiveRight { right }), _) => strip
+        .fit(active, strip.start(active) + strip.widths[active] - right),
       (Some(ViewRequest::KeepCamera { from }), _) => {
         strip.offset_for(active, base, Some(from), config)
       }
@@ -653,40 +692,56 @@ pub fn sync_view(workspace: &Workspace) -> anyhow::Result<bool> {
   Ok(is_scrolled)
 }
 
-/// How far, as a fraction of the workspace width, the view would scroll
-/// to bring the column holding `window` into view if it took focus.
-///
-/// Zero for windows outside a scrolling layout and ones in the active
-/// column.
-pub fn scroll_to_activate(
+/// Whether the cursor resting on `window` may focus it: unless focusing
+/// it would scroll its scrolling layout's view further than
+/// `focus_follows_cursor_max_scroll` allows.
+pub fn is_focusable_by_hover(
   window: &WindowContainer,
-) -> anyhow::Result<f32> {
-  let Some((column, workspace)) = column_of(&window.clone().into()) else {
-    return Ok(0.);
+) -> anyhow::Result<bool> {
+  let Some((column, workspace)) = column_of(&window.as_container()) else {
+    return Ok(true);
+  };
+
+  let config = workspace.scrolling_config();
+  let Some(max_scroll) = &config.focus_follows_cursor_max_scroll else {
+    return Ok(true);
   };
 
   let strip = Strip::new(&workspace)?;
-  let view = workspace.strip_view();
   let (Some(index), Some(active)) = (
     strip.index_of(column.id()),
     focused_index(&workspace, &strip),
   ) else {
-    return Ok(0.);
+    return Ok(true);
   };
 
-  if index == active {
-    return Ok(0.);
+  let offset = workspace.scroll_offset();
+  let scroll = (strip.offset_for(index, offset, Some(active), &config)
+    - offset)
+    .abs();
+
+  Ok(scroll <= max_scroll.to_px(strip.view_width, None))
+}
+
+/// Keeps the right edge of `container`'s column where it is on screen
+/// through the next sync, e.g. as its left edge is dragged.
+///
+/// Does nothing unless it is the active column, which the view follows.
+pub fn keep_right_edge(container: &Container) -> anyhow::Result<()> {
+  let Some((column, workspace)) = column_of(container) else {
+    return Ok(());
+  };
+
+  if active_column(&workspace)
+    .is_some_and(|active| active.id() == column.id())
+  {
+    let rect = column.to_rect()?;
+    workspace.request_view(ViewRequest::PlaceActiveRight {
+      right: rect.x() + rect.width() - workspace.to_rect()?.x(),
+    });
   }
 
-  let target = strip.offset_for(
-    index,
-    view.offset,
-    Some(active),
-    &workspace.scrolling_config(),
-  );
-
-  #[allow(clippy::cast_precision_loss)]
-  Ok((target - view.offset).abs() as f32 / strip.view_width.max(1) as f32)
+  Ok(())
 }
 
 /// The window to focus when the focused tiling `window` leaves its
@@ -841,11 +896,11 @@ mod tests {
     CenterFocusedColumn, ColumnWidth, Layout, ScrollingLayoutConfig,
     TilingDirection, WindowState,
   };
-  use wm_platform::Rect;
+  use wm_platform::{LengthUnit, LengthValue, Rect};
 
   use super::{
-    focus_target_after_removal, is_in_view, shows_real_window, sync_view,
-    Strip, StripView, ViewRequest,
+    focus_target_after_removal, is_focusable_by_hover, is_in_view,
+    shows_real_window, sync_view, Strip, StripView, ViewRequest,
   };
   use crate::{
     commands::container::{
@@ -855,7 +910,9 @@ mod tests {
     layout::{attach, insertion_target},
     models::{Monitor, SplitContainer, TilingWindow, Workspace},
     test_utils::{mock_config as config, MOCK_MONITOR_WIDTH},
-    traits::{CommonGetters, PositionGetters, TilingSizeGetters},
+    traits::{
+      CommonGetters, PositionGetters, TilingSizeGetters, WindowGetters,
+    },
     wm_state::WmState,
   };
 
@@ -908,6 +965,59 @@ mod tests {
     assert!(!is_in_view(&third.clone().into()));
     // No monitor lies past the edge, so it stays a live window off screen.
     assert!(shows_real_window(&third.clone().into()));
+  }
+
+  #[test]
+  fn hovering_focuses_only_columns_within_the_max_scroll() {
+    let (_state, workspace, [_, second, third]) = setup();
+    let is_focusable = |window: &TilingWindow| {
+      is_focusable_by_hover(&window.clone().into()).unwrap()
+    };
+    let limit_to = |amount| {
+      workspace.set_scrolling_config(ScrollingLayoutConfig {
+        focus_follows_cursor_max_scroll: Some(LengthValue {
+          amount,
+          unit: LengthUnit::Percentage,
+        }),
+        ..workspace.scrolling_config()
+      });
+    };
+
+    assert!(is_focusable(&third), "no limit by default");
+
+    limit_to(0.);
+    assert!(is_focusable(&second), "already on screen");
+    assert!(!is_focusable(&third), "half a workspace away");
+
+    limit_to(0.5);
+    assert!(is_focusable(&third));
+  }
+
+  #[test]
+  fn a_column_is_never_narrower_than_its_app_allows() {
+    let (_state, workspace, [first, second, _]) = setup();
+    let delta = first.total_border_delta().unwrap();
+    let borders = delta.left.to_px(0, None) + delta.right.to_px(0, None);
+
+    first.update_native_properties(|properties| {
+      properties.min_width = 1000 + borders;
+    });
+    sync_view(&workspace).unwrap();
+
+    let (first_rect, second_rect) =
+      (first.to_rect().unwrap(), second.to_rect().unwrap());
+    assert_eq!(first_rect.width(), 1000);
+    assert!(second_rect.x() >= first_rect.x() + first_rect.width());
+    assert!((first.tiling_size() - 0.5).abs() < 1e-4, "keeps its size");
+
+    // At most as wide as the workspace.
+    first.update_native_properties(|properties| {
+      properties.min_width = 5000;
+    });
+    assert_eq!(
+      first.to_rect().unwrap().width(),
+      workspace.to_rect().unwrap().width()
+    );
   }
 
   #[test]

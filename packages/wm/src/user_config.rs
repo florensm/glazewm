@@ -716,6 +716,7 @@ window_effects:
       is_resizable: true,
       #[cfg(target_os = "windows")]
       shadow_borders: wm_platform::RectDelta::zero(),
+      min_width: 0,
     }
   }
 

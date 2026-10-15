@@ -543,6 +543,12 @@ layouts:
     #   'tabbed' - as the tabs of a stack.
     default_column_display: "normal"
 
+    # With `general.focus_follows_cursor`, how far focusing the window
+    # under the cursor may scroll the strip, as a percentage of the
+    # workspace or in pixels. "0%" focuses only windows fully on screen.
+    # Left out, there is no limit.
+    # focus_follows_cursor_max_scroll: "0%"
+
 # A scratch workspace for parking windows, shared by all monitors and kept
 # out of workspace cycling. `focus --special-workspace` summons it to the
 # focused monitor (and goes back from it); `move --special-workspace` sends

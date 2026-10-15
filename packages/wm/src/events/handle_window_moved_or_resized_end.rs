@@ -1,6 +1,7 @@
 use anyhow::Context;
 use wm_common::{
-  try_warn, ActiveDragOperation, FullscreenStateConfig, WindowState,
+  try_warn, ActiveDrag, ActiveDragOperation, FullscreenStateConfig,
+  WindowState,
 };
 use wm_platform::{LengthValue, Point};
 
@@ -15,9 +16,13 @@ use crate::{
   events::update_floating_window_position,
   layout::{
     column_drop::drop_into_column,
+    scrolling::keep_right_edge,
     window_drop::{tab_bar_at, window_drop, WindowDrop},
   },
-  models::{Container, NonTilingWindow, SplitContainer, WindowContainer},
+  models::{
+    Container, NonTilingWindow, SplitContainer, TilingWindow,
+    WindowContainer,
+  },
   traits::{CommonGetters, TilingDirectionGetters, WindowGetters},
   user_config::UserConfig,
   wm_state::WmState,
@@ -144,34 +149,53 @@ pub fn handle_window_moved_or_resized_end(
       }
     }
     WindowContainer::TilingWindow(window) => {
-      tracing::info!(
-        "Tiling window move/resize ended: {}",
-        window.as_window_container()?
-      );
-
-      let frame = window.native_properties().frame;
-
-      // Update the window's size based on the new frame position. This
-      // means we use the actual window dimensions as the source of truth.
-      set_window_size(
-        window.clone().into(),
-        Some(LengthValue::from_px(frame.width())),
-        Some(LengthValue::from_px(frame.height())),
-        state,
-      )?;
-
-      window.set_active_drag(None);
-
-      // Force a redraw of the window to snap it back to its original
-      // position. This is necessary when:
-      // - The window is the only tiling window in the workspace.
-      // - The window is not past the movement threshold for transitioning
-      //   to floating while being dragged.
-      // - Resizing in a direction that doesn't change the window's tiling
-      //   size.
-      state.pending_sync.queue_container_to_redraw(window.clone());
+      end_tiling_drag(window, &active_drag, state)?;
     }
   }
+
+  Ok(())
+}
+
+/// Takes the size a tiling window was dragged to as its tiling size.
+fn end_tiling_drag(
+  window: &TilingWindow,
+  active_drag: &ActiveDrag,
+  state: &mut WmState,
+) -> anyhow::Result<()> {
+  tracing::info!(
+    "Tiling window move/resize ended: {}",
+    window.as_window_container()?
+  );
+
+  let frame = window.native_properties().frame;
+
+  // A scrolling layout's column dragged by its left edge grows or shrinks
+  // leftwards, as it was dragged.
+  if active_drag.operation == Some(ActiveDragOperation::Resize)
+    && frame.left != active_drag.initial_position.left
+  {
+    keep_right_edge(&window.clone().into())?;
+  }
+
+  // Update the window's size based on the new frame position. This means
+  // we use the actual window dimensions as the source of truth.
+  set_window_size(
+    window.clone().into(),
+    Some(LengthValue::from_px(frame.width())),
+    Some(LengthValue::from_px(frame.height())),
+    state,
+  )?;
+
+  window.set_active_drag(None);
+
+  // Force a redraw of the window to snap it back to its original position.
+  // This is necessary when:
+  // - The window is the only tiling window in the workspace.
+  // - The window is not past the movement threshold for transitioning to
+  //   floating while being dragged.
+  // - Resizing in a direction that doesn't change the window's tiling
+  //   size.
+  state.pending_sync.queue_container_to_redraw(window.clone());
 
   Ok(())
 }
@@ -348,10 +372,13 @@ fn drop_onto_tab_bar(
 mod tests {
   use std::mem::ManuallyDrop;
 
-  use wm_common::{ActiveDrag, FloatingStateConfig, Layout, WindowState};
+  use wm_common::{
+    ActiveDrag, ActiveDragOperation, FloatingStateConfig, Layout,
+    WindowState,
+  };
   use wm_platform::{LengthValue, Point, Rect};
 
-  use super::drop_as_tiling_window;
+  use super::{drop_as_tiling_window, handle_window_moved_or_resized_end};
   #[cfg(target_os = "windows")]
   use crate::layout::window_drop::{window_drop, WindowDrop};
   use crate::{
@@ -591,6 +618,54 @@ mod tests {
     // The column now in its place, left of the gap, stays where it was.
     assert_eq!(workspace.scroll_offset(), 1700);
     assert!(!is_hidden_in_layout(&windows[2]));
+  }
+
+  #[test]
+  fn a_column_resized_by_its_left_edge_keeps_its_right_edge() {
+    let (first, second, third) = (window(), window(), window());
+    let workspace = scrolling(vec![
+      first.clone().into(),
+      second.clone().into(),
+      third.clone().into(),
+    ]);
+    for column in [&first, &second, &third] {
+      column.set_tiling_size(0.3);
+    }
+    let (mut state, config) =
+      (state(vec![monitor(&workspace, 0)]), config());
+
+    set_focused_descendant(&second.clone().into(), None);
+    sync_view(&workspace).unwrap();
+
+    // The window's left edge dragged 200px further left, which leaves
+    // room on screen right of it.
+    let initial = second.to_rect().unwrap();
+    let resized = Rect::from_ltrb(
+      initial.left - 200,
+      initial.top,
+      initial.right,
+      initial.bottom,
+    );
+    second.set_active_drag(Some(ActiveDrag {
+      operation: Some(ActiveDragOperation::Resize),
+      is_from_floating: false,
+      initial_position: initial.clone(),
+    }));
+    second.update_native_properties(|properties| {
+      properties.frame = resized.clone();
+    });
+
+    handle_window_moved_or_resized_end(
+      &second.clone().into(),
+      &mut state,
+      &config,
+    )
+    .unwrap();
+    sync_view(&workspace).unwrap();
+
+    let rect = second.to_rect().unwrap();
+    assert_eq!(rect.right, initial.right);
+    assert!((rect.left - resized.left).abs() <= 1, "{rect:?}");
   }
 
   #[test]

@@ -178,6 +178,17 @@ pub trait NativeWindowWindowsExt {
   /// This method is only available on Windows.
   fn shadow_borders(&self) -> crate::Result<RectDelta>;
 
+  /// Smallest width and height the window's app lets it be resized to,
+  /// shadow borders included, as it answers `WM_GETMINMAXINFO`.
+  ///
+  /// Asks the app, waiting a moment at most; `None` if it doesn't answer
+  /// in time.
+  ///
+  /// # Platform-specific
+  ///
+  /// This method is only available on Windows.
+  fn min_window_size(&self) -> Option<(i32, i32)>;
+
   /// Whether the window has an owner window.
   ///
   /// # Platform-specific
@@ -469,6 +480,10 @@ impl NativeWindowWindowsExt for NativeWindow {
 
   fn shadow_borders(&self) -> crate::Result<RectDelta> {
     self.inner.shadow_borders()
+  }
+
+  fn min_window_size(&self) -> Option<(i32, i32)> {
+    self.inner.min_window_size()
   }
 
   fn has_owner_window(&self) -> bool {

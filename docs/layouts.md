@@ -36,6 +36,11 @@ layouts:
     # How a column of one window shows the windows joining it: "normal"
     # stacks them, "tabbed" makes them the tabs of a stack.
     default_column_display: "normal"
+    # With `general.focus_follows_cursor`, how far focusing the window
+    # under the cursor may scroll the strip, as a percentage of the
+    # workspace or in pixels. "0%" focuses only windows fully on screen.
+    # Left out, there is no limit.
+    # focus_follows_cursor_max_scroll: "0%"
 
 animations:
   # How a scrolling layout's columns move and resize, the strip
@@ -78,7 +83,12 @@ tabs. New windows open as a column right of the focused one.
   the half it is dropped on; dropping it between columns or past either
   end makes a new column.
 - Resizing a column's width (`resize --width`, `size --width`) leaves the
-  other columns alone.
+  other columns alone. Dragging its left edge resizes it leftwards,
+  keeping its right edge in place.
+- A column is never narrower than the apps of its windows allow (Windows
+  only). Its width stays as set, for when they allow it again.
+- `toggle-tiling-direction` and `set-tiling-direction` do nothing: columns
+  always run left to right, and the windows of a column top to bottom.
 
 | Command | Behaviour |
 | --- | --- |
@@ -106,6 +116,9 @@ tabs. New windows open as a column right of the focused one.
 With `default_column_display: "tabbed"`, a window joining a column of a
 single window by `consume-or-expel-window` or `consume-window-into-column`
 makes the two the tabs of a stack, rather than stacking them.
+
+The view follows focus:
+
 - Focusing a column, by keyboard or by clicking a column partly off
   screen, scrolls the strip just far enough to show it whole, or centers
   it as `center_focused_column` says. Changing the focused column's width
@@ -122,6 +135,12 @@ makes the two the tabs of a stack, rather than stacking them.
   hidden and its visible part is shown as a click-through preview
   instead; clicking it focuses the column.
 - The overview shows a scrolling workspace's whole strip in its card.
+- With `focus_follows_cursor`, hovering a column partly off screen
+  focuses and scrolls to it, unless `focus_follows_cursor_max_scroll`
+  limits how far that may scroll.
+- Keybindings can step along the strip with the mouse wheel (see
+  `wheel_up` and friends in the README); the sample config binds
+  alt+shift+wheel and the horizontal wheel to `focus --direction`.
 
 ## Dragging windows
 

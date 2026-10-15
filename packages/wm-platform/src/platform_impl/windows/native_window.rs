@@ -6,7 +6,8 @@ use windows::{
   core::PWSTR,
   Win32::{
     Foundation::{
-      CloseHandle, BOOL, HWND, LPARAM, POINT, RECT, TYPE_E_ELEMENTNOTFOUND,
+      CloseHandle, BOOL, HWND, LPARAM, POINT, RECT,
+      TYPE_E_ELEMENTNOTFOUND, WPARAM,
     },
     Graphics::Dwm::{
       DwmGetColorizationColor, DwmGetWindowAttribute,
@@ -33,18 +34,19 @@ use windows::{
         GetDesktopWindow, GetForegroundWindow, GetLayeredWindowAttributes,
         GetShellWindow, GetWindow, GetWindowLongPtrW, GetWindowRect,
         GetWindowTextW, GetWindowThreadProcessId, IsIconic, IsWindow,
-        IsWindowVisible, IsZoomed, SendNotifyMessageW,
-        SetForegroundWindow, SetLayeredWindowAttributes,
-        SetWindowLongPtrW, SetWindowPlacement, SetWindowPos,
-        ShowWindowAsync, WindowFromPoint, FLASHWINFO, FLASHW_STOP,
-        GA_PARENT, GA_ROOT, GWL_EXSTYLE, GWL_STYLE, GW_HWNDPREV, GW_OWNER,
-        HWND_NOTOPMOST, HWND_TOP, HWND_TOPMOST,
+        IsWindowVisible, IsZoomed, SendMessageTimeoutW,
+        SendNotifyMessageW, SetForegroundWindow,
+        SetLayeredWindowAttributes, SetWindowLongPtrW, SetWindowPlacement,
+        SetWindowPos, ShowWindowAsync, WindowFromPoint, FLASHWINFO,
+        FLASHW_STOP, GA_PARENT, GA_ROOT, GWL_EXSTYLE, GWL_STYLE,
+        GW_HWNDPREV, GW_OWNER, HWND_NOTOPMOST, HWND_TOP, HWND_TOPMOST,
         LAYERED_WINDOW_ATTRIBUTES_FLAGS, LWA_ALPHA, LWA_COLORKEY,
-        SET_WINDOW_POS_FLAGS, SWP_ASYNCWINDOWPOS, SWP_FRAMECHANGED,
-        SWP_NOACTIVATE, SWP_NOCOPYBITS, SWP_NOMOVE, SWP_NOOWNERZORDER,
-        SWP_NOSENDCHANGING, SWP_NOSIZE, SWP_NOZORDER, SWP_SHOWWINDOW,
-        SW_HIDE, SW_MAXIMIZE, SW_MINIMIZE, SW_RESTORE, SW_SHOWNA,
-        WINDOWPLACEMENT, WINDOW_EX_STYLE, WINDOW_STYLE, WM_CLOSE,
+        MINMAXINFO, SET_WINDOW_POS_FLAGS, SMTO_ABORTIFHUNG, SMTO_BLOCK,
+        SWP_ASYNCWINDOWPOS, SWP_FRAMECHANGED, SWP_NOACTIVATE,
+        SWP_NOCOPYBITS, SWP_NOMOVE, SWP_NOOWNERZORDER, SWP_NOSENDCHANGING,
+        SWP_NOSIZE, SWP_NOZORDER, SWP_SHOWWINDOW, SW_HIDE, SW_MAXIMIZE,
+        SW_MINIMIZE, SW_RESTORE, SW_SHOWNA, WINDOWPLACEMENT,
+        WINDOW_EX_STYLE, WINDOW_STYLE, WM_CLOSE, WM_GETMINMAXINFO,
         WPF_ASYNCWINDOWPLACEMENT, WS_DLGFRAME, WS_EX_LAYERED,
         WS_EX_TOPMOST, WS_THICKFRAME,
       },
@@ -65,6 +67,9 @@ use crate::{
 /// Magic number used to identify programmatic mouse inputs from our own
 /// process.
 pub(crate) const FOREGROUND_INPUT_IDENTIFIER: u32 = 6379;
+
+/// How long an app gets to answer `WM_GETMINMAXINFO`.
+const MIN_SIZE_TIMEOUT_MS: u32 = 50;
 
 /// Platform-specific implementation of [`NativeWindow`].
 #[derive(Clone, Debug)]
@@ -359,6 +364,30 @@ impl NativeWindow {
       LengthValue::from_px(border_pos.right - frame_pos.right),
       LengthValue::from_px(border_pos.bottom - frame_pos.bottom),
     ))
+  }
+
+  /// Implements [`NativeWindowWindowsExt::min_window_size`].
+  pub(crate) fn min_window_size(&self) -> Option<(i32, i32)> {
+    let mut info = MINMAXINFO::default();
+    let mut result = 0usize;
+
+    // SAFETY: `info` outlives the call, and the system copies it to and
+    // from the window's process. A hung or slow app makes the call fail
+    // after `MIN_SIZE_TIMEOUT_MS` instead of blocking.
+    let answered = unsafe {
+      SendMessageTimeoutW(
+        self.hwnd(),
+        WM_GETMINMAXINFO,
+        WPARAM(0),
+        LPARAM(std::ptr::from_mut(&mut info) as isize),
+        SMTO_ABORTIFHUNG | SMTO_BLOCK,
+        MIN_SIZE_TIMEOUT_MS,
+        Some(&raw mut result),
+      )
+    };
+
+    (answered.0 != 0)
+      .then_some((info.ptMinTrackSize.x, info.ptMinTrackSize.y))
   }
 
   /// Implements [`NativeWindowWindowsExt::has_owner_window`].
