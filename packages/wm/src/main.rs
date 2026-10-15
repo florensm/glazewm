@@ -224,6 +224,8 @@ async fn start_wm(
 
     let auto_stack_deadline = wm.state.auto_stack.next_deadline();
     let closing_check = wm.next_closing_check();
+    let animation_watchdog =
+      wm.state.animation_manager.watchdog_deadline();
 
     let res = tokio::select! {
       // biased: evaluated top-to-bottom when multiple futures are ready
@@ -247,6 +249,11 @@ async fn start_wm(
         // processing, so each update_animations call covers the freshest state.
         while wm.animation_tick_rx.try_recv().is_ok() {}
         wm.update_animations(&config)
+      },
+      // Reached only when no tick is pending, i.e. the timer stopped
+      // ticking while something is still animating.
+      () = sleep_until(animation_watchdog) => {
+        wm.recover_stalled_animations(&config)
       },
       Some(event) = mouse_listener.next_event() => {
         tracing::debug!("Received mouse event: {:?}", event);

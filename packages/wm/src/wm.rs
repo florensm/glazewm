@@ -535,6 +535,16 @@ impl WindowManager {
     Ok(())
   }
 
+  /// Runs an animation frame in place of a timer thread that stopped
+  /// ticking, and replaces that thread.
+  pub fn recover_stalled_animations(
+    &mut self,
+    config: &UserConfig,
+  ) -> anyhow::Result<()> {
+    self.state.animation_manager.replace_stalled_timer();
+    self.update_animations(config)
+  }
+
   /// Updates all active animations and redraws windows that are animating.
   pub fn update_animations(
     &mut self,

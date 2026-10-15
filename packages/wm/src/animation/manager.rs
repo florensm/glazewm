@@ -1,4 +1,5 @@
 use std::{
+  cell::Cell,
   collections::{HashMap, HashSet},
   sync::{
     atomic::{AtomicBool, Ordering},
@@ -192,6 +193,19 @@ fn prune_and_insert<K: std::hash::Hash + Eq, V>(
     map.retain(|_, (_, inserted_at)| inserted_at.elapsed() < ttl);
   }
   map.insert(key, (value, Instant::now()));
+}
+
+/// How long animations may go without a frame before the watchdog runs
+/// one itself and replaces the timer thread.
+const FRAME_STALL_TIMEOUT: Duration = Duration::from_millis(250);
+
+/// The animation timer thread, with the flag that retires it.
+struct TimerThread {
+  handle: std::thread::JoinHandle<()>,
+
+  /// Makes the thread exit once its current wait returns. Set when the
+  /// watchdog replaces a thread stuck in a vsync wait.
+  retired: Arc<AtomicBool>,
 }
 
 /// Stores `next` in `result` if it is the first error; later errors are
@@ -404,9 +418,14 @@ pub struct AnimationManager {
   /// lifetime, parking between animations rather than being re-spawned
   /// each time. This removes the per-animation cost of thread creation
   /// + priority/MMCSS setup from the input-to-first-frame latency path.
-  timer_thread: Mutex<Option<std::thread::JoinHandle<()>>>,
+  timer_thread: Mutex<Option<TimerThread>>,
   /// Signals the persistent timer thread to exit. Set on drop.
   timer_shutdown: Arc<AtomicBool>,
+  /// When the last frame ran, or ticking last started. Read by the
+  /// watchdog; see [`watchdog_deadline`].
+  ///
+  /// [`watchdog_deadline`]: AnimationManager::watchdog_deadline
+  last_frame_at: Cell<Instant>,
   /// The timestamp every window is evaluated at in the current redraw
   /// pass; see [`frame_now`]. Cleared by [`begin_redraw_pass`].
   ///
@@ -539,13 +558,13 @@ impl Drop for AnimationManager {
   fn drop(&mut self) {
     self.timer_shutdown.store(true, Ordering::Relaxed);
     self.animation_timer_running.store(false, Ordering::Relaxed);
-    if let Some(handle) = self
+    if let Some(timer) = self
       .timer_thread
       .lock()
       .expect("animation mutex poisoned")
       .take()
     {
-      handle.thread().unpark();
+      timer.handle.thread().unpark();
     }
   }
 }
@@ -559,6 +578,7 @@ impl AnimationManager {
       animation_timer_running: Arc::new(AtomicBool::new(false)),
       timer_thread: Mutex::new(None),
       timer_shutdown: Arc::new(AtomicBool::new(false)),
+      last_frame_at: Cell::new(Instant::now()),
       pass_now: None,
       #[cfg(target_os = "windows")]
       overlay_z_settle: HashMap::new(),
@@ -949,18 +969,66 @@ impl AnimationManager {
       return;
     }
 
+    self.last_frame_at.set(Instant::now());
+
     let mut guard =
       self.timer_thread.lock().expect("animation mutex poisoned");
     match guard.as_ref() {
       // Wake the parked thread to begin a new ticking phase.
-      Some(handle) => handle.thread().unpark(),
+      Some(timer) => timer.handle.thread().unpark(),
       // First animation: spawn the persistent thread.
       None => {
-        if let Some(handle) = self.spawn_timer_thread() {
-          *guard = Some(handle);
+        if let Some(timer) = self.spawn_timer_thread() {
+          *guard = Some(timer);
         }
       }
     }
+  }
+
+  /// When the watchdog should step in if no frame has run by then, or
+  /// `None` while nothing is animating.
+  pub fn watchdog_deadline(&self) -> Option<Instant> {
+    self
+      .has_active_animations()
+      .then(|| self.last_frame_at.get() + FRAME_STALL_TIMEOUT)
+  }
+
+  /// Replaces a timer thread that stopped ticking with a new one.
+  ///
+  /// The old thread is most likely blocked in `WaitForVBlank` on an output
+  /// that went stale, which can block indefinitely. It is left to exit
+  /// whenever that wait returns, and the vsync waiter is dropped so the
+  /// new thread paces itself with `DwmFlush` instead.
+  pub fn replace_stalled_timer(&self) {
+    tracing::warn!(
+      "Animation timer stalled for over {FRAME_STALL_TIMEOUT:?}; \
+       replacing it."
+    );
+
+    #[cfg(target_os = "windows")]
+    {
+      *self
+        .animation_timer_vsync
+        .lock()
+        .expect("animation mutex poisoned") = None;
+      *self
+        .animation_vsync_time
+        .lock()
+        .expect("animation mutex poisoned") = None;
+    }
+
+    if let Some(timer) = self
+      .timer_thread
+      .lock()
+      .expect("animation mutex poisoned")
+      .take()
+    {
+      timer.retired.store(true, Ordering::Relaxed);
+      timer.handle.thread().unpark();
+    }
+
+    self.animation_timer_running.store(false, Ordering::Relaxed);
+    self.ensure_timer_running();
   }
 
   /// Spawns the persistent animation timer thread.
@@ -970,10 +1038,12 @@ impl AnimationManager {
   /// [`ensure_timer_running`] call retries the spawn.
   ///
   /// [`ensure_timer_running`]: AnimationManager::ensure_timer_running
-  fn spawn_timer_thread(&self) -> Option<std::thread::JoinHandle<()>> {
+  fn spawn_timer_thread(&self) -> Option<TimerThread> {
     let tx = self.animation_tick_tx.clone();
     let running = self.animation_timer_running.clone();
     let shutdown = self.timer_shutdown.clone();
+    let retired = Arc::new(AtomicBool::new(false));
+    let thread_retired = retired.clone();
     #[cfg(target_os = "windows")]
     let vsync_waiter = self.animation_timer_vsync.clone();
     #[cfg(target_os = "windows")]
@@ -997,18 +1067,23 @@ impl AnimationManager {
         #[cfg(target_os = "windows")]
         let _mmcss = wm_platform::try_set_thread_mmcss();
 
+        let should_exit = || {
+          shutdown.load(Ordering::Relaxed)
+            || thread_retired.load(Ordering::Relaxed)
+        };
+
         loop {
           // Idle: park until a ticking phase begins (or shutdown). A
           // `while` loop re-checks the gate to absorb spurious
           // wake-ups and any buffered unpark token from a
           // just-ended phase.
           while !running.load(Ordering::Relaxed) {
-            if shutdown.load(Ordering::Relaxed) {
+            if should_exit() {
               return;
             }
             std::thread::park();
           }
-          if shutdown.load(Ordering::Relaxed) {
+          if should_exit() {
             return;
           }
 
@@ -1055,7 +1130,9 @@ impl AnimationManager {
               std::thread::sleep(std::time::Duration::from_micros(16_667));
             }
 
-            if tx.send(()).is_err() {
+            // A retired thread's wait can return long after it was
+            // replaced; its tick would only duplicate the new thread's.
+            if should_exit() || tx.send(()).is_err() {
               return;
             }
           }
@@ -1065,7 +1142,7 @@ impl AnimationManager {
       });
 
     match result {
-      Ok(handle) => Some(handle),
+      Ok(handle) => Some(TimerThread { handle, retired }),
       Err(err) => {
         tracing::warn!("Failed to spawn animation tick thread: {err}.");
         // Reset the gate so a later call retries the spawn.
@@ -1083,6 +1160,8 @@ impl AnimationManager {
     if !state.animation_manager.has_active_animations() {
       return Ok(());
     }
+
+    state.animation_manager.last_frame_at.set(Instant::now());
 
     perf::begin_frame();
     let tick_scope = perf::scope(Stage::Tick);
