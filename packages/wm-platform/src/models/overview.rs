@@ -121,13 +121,9 @@ pub struct OverviewStyle {
 /// How the overview lays out the workspaces.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum OverviewLayoutMode {
-  /// The shown workspace's windows spread out side by side, under a bar
-  /// of every workspace.
-  #[default]
-  Expose,
-
   /// The shown workspace large and as laid out, under a row of every
   /// workspace in miniature.
+  #[default]
   Activities,
 
   /// The shown workspace large and as laid out, the others in a column
@@ -144,13 +140,8 @@ pub enum OverviewLayoutMode {
 
 impl OverviewLayoutMode {
   /// Every layout, in the order `Tab` goes through them.
-  pub const ALL: [Self; 5] = [
-    Self::Expose,
-    Self::Activities,
-    Self::Stage,
-    Self::Carousel,
-    Self::Grid,
-  ];
+  pub const ALL: [Self; 4] =
+    [Self::Activities, Self::Stage, Self::Carousel, Self::Grid];
 
   /// The layout `Tab` goes on to.
   #[must_use]
@@ -170,27 +161,20 @@ impl OverviewLayoutMode {
   /// rather than on its card.
   #[must_use]
   pub fn has_scene(self) -> bool {
-    matches!(self, Self::Expose | Self::Activities)
-  }
-
-  /// Whether workspaces show as cards.
-  #[must_use]
-  pub fn has_cards(self) -> bool {
-    self != Self::Expose
+    self == Self::Activities
   }
 
   /// Whether a workspace picked with the mouse is shown first, and only
   /// gone to once picked again.
   #[must_use]
   pub fn shows_before_going(self) -> bool {
-    matches!(self, Self::Expose | Self::Activities | Self::Stage)
+    matches!(self, Self::Activities | Self::Stage)
   }
 
   /// Name of the layout, as in the config.
   #[must_use]
   pub fn name(self) -> &'static str {
     match self {
-      Self::Expose => "expose",
       Self::Activities => "activities",
       Self::Stage => "stage",
       Self::Carousel => "carousel",

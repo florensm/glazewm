@@ -1332,9 +1332,6 @@ impl WindowManager {
           state,
           config,
           match layout {
-            wm_common::OverviewLayout::Expose => {
-              wm_platform::OverviewLayoutMode::Expose
-            }
             wm_common::OverviewLayout::Activities => {
               wm_platform::OverviewLayoutMode::Activities
             }

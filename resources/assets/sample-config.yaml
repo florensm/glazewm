@@ -509,15 +509,13 @@ overview:
 
   # Layout `toggle-overview` opens on; tab goes through them while open.
   # Options:
-  #   'expose'     - the shown workspace's windows spread out, under a bar
-  #                  of every workspace.
   #   'activities' - the shown workspace large, under a row of every
   #                  workspace in miniature.
   #   'stage'      - the shown workspace large, the others in a column at
   #                  the side.
   #   'carousel'   - a row, the selected workspace large in the middle.
   #   'grid'       - every workspace at once.
-  layout: "expose"
+  layout: "activities"
 
   # Most columns of the grid; it takes fewer when that shows the
   # workspaces larger.

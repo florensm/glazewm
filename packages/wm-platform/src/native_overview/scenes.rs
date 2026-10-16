@@ -1,11 +1,10 @@
-//! The scenes of the exposé and the activities: each workspace's windows
-//! laid out on their own rather than on its card.
+//! The scenes of the activities: each workspace's windows laid out on
+//! their own rather than on its card.
 
 use std::cmp::Ordering;
 
 use super::{cards::screen_rect, Overview, SCENE_PADDING};
 use crate::{
-  overview_expose::{spread, spread_area},
   overview_layout::{CardView, RectF},
   overview_scene::{Scene, SceneWindow},
   OverviewLayoutMode,
@@ -102,7 +101,6 @@ impl Overview {
     let selected = self.interaction.selected;
     let slide = self.metrics.view.0 * 0.12;
     let padding = self.metrics.px(SCENE_PADDING);
-    let spread_in = spread_area(&self.metrics);
     let scene_in = self.scene_area.inset(padding);
 
     for (index, (scene, workspace)) in
@@ -115,41 +113,17 @@ impl Overview {
       };
       let alpha = if index == selected { 1.0 } else { 0.0 };
 
-      let rects = if layout == OverviewLayoutMode::Expose {
-        let order = scene.reading_order();
-        let sizes = order
-          .iter()
-          .map(|index| {
-            let rect = scene.windows[*index].preview.screen_rect;
-            (rect.w, rect.h)
-          })
-          .collect::<Vec<_>>();
-
-        let mut rects = vec![None; scene.windows.len()];
-        for (index, rect) in
-          order
-            .into_iter()
-            .zip(spread(&self.metrics, &sizes, &spread_in))
-        {
-          rects[index] = Some(rect);
-        }
-        for window in &mut scene.windows {
-          window.preview.tile.crop = RectF::new(0.0, 0.0, 1.0, 1.0);
-        }
-        rects
-      } else {
-        let content = RectF::from_rect(&workspace.content_rect);
-        let view = CardView::fitted(&content, &scene_in);
-        scene
-          .windows
-          .iter_mut()
-          .map(|window| {
-            let tile = view.tile(&window.preview.screen_rect)?;
-            window.preview.tile.crop = tile.crop;
-            Some(tile.rect)
-          })
-          .collect()
-      };
+      let content = RectF::from_rect(&workspace.content_rect);
+      let view = CardView::fitted(&content, &scene_in);
+      let rects = scene
+        .windows
+        .iter_mut()
+        .map(|window| {
+          let tile = view.tile(&window.preview.screen_rect)?;
+          window.preview.tile.crop = tile.crop;
+          Some(tile.rect)
+        })
+        .collect::<Vec<_>>();
 
       for (window, rect) in scene.windows.iter_mut().zip(rects) {
         if let Some(rect) = rect {

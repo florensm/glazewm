@@ -664,14 +664,12 @@ pub struct OverviewConfig {
 )]
 #[serde(rename_all = "snake_case")]
 pub enum OverviewLayout {
-  /// The shown workspace's windows spread out side by side, under a bar
-  /// of every workspace. Also stands in for the `rows` and `spotlight`
-  /// layouts it replaced, so configs naming them still load.
-  #[default]
-  #[serde(alias = "rows", alias = "spotlight")]
-  Expose,
   /// The shown workspace large and as laid out, under a row of every
-  /// workspace in miniature.
+  /// workspace in miniature. Also stands in for the `expose`, `rows` and
+  /// `spotlight` layouts it replaced, so configs naming them still load.
+  #[default]
+  #[serde(alias = "expose", alias = "rows", alias = "spotlight")]
+  #[value(alias = "expose", alias = "rows", alias = "spotlight")]
   Activities,
   /// The shown workspace large and as laid out, the others in a column
   /// at the side.
@@ -2463,10 +2461,14 @@ mod tests {
 
     assert_eq!(layout("activities"), Some(OverviewLayout::Activities));
     assert_eq!(layout("stage"), Some(OverviewLayout::Stage));
-    assert_eq!(layout("rows"), Some(OverviewLayout::Expose));
-    assert_eq!(layout("spotlight"), Some(OverviewLayout::Expose));
+    assert_eq!(layout("expose"), Some(OverviewLayout::Activities));
+    assert_eq!(layout("rows"), Some(OverviewLayout::Activities));
+    assert_eq!(layout("spotlight"), Some(OverviewLayout::Activities));
     assert_eq!(layout("nope"), None);
-    assert_eq!(OverviewConfig::default().layout, OverviewLayout::Expose);
+    assert_eq!(
+      OverviewConfig::default().layout,
+      OverviewLayout::Activities
+    );
   }
 
   /// `to_overlay_params` must map every field through to the resulting

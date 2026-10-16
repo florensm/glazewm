@@ -19,8 +19,6 @@ mod native_window;
 // Pure parts of the overview, here for their tests; the rest of them is
 // only used through the Windows-only overview.
 #[allow(dead_code)]
-mod overview_expose;
-#[allow(dead_code)]
 mod overview_layout;
 #[allow(dead_code)]
 mod overview_state;

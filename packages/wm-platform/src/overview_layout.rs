@@ -184,8 +184,7 @@ fn drawn_size(layout: OverviewLayoutMode) -> DrawnSize {
     OverviewLayoutMode::Carousel => {
       (0.45, 1.3, 3.0, 380.0, CardLook::Classic)
     }
-    // The exposé shows no cards.
-    OverviewLayoutMode::Activities | OverviewLayoutMode::Expose => {
+    OverviewLayoutMode::Activities => {
       (0.12, 0.8, MINIATURE_WIDTHS, 120.0, CardLook::Clean)
     }
     OverviewLayoutMode::Stage => (0.72, 1.2, 2.5, 380.0, CardLook::Clean),

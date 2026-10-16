@@ -57,10 +57,9 @@ use crate::{
     draw_card, draw_ghost, draw_hint, picture_rect, picture_size,
     with_alpha, CardPicture, GHOST_SIZE,
   },
-  overview_expose::spread_area,
   overview_layout::{
     activities, carousel, cover_crop, grid, stage as stage_layout, Camera,
-    CardMetrics, CardView, Placement, RectF, Spring, Targets, Tile, Zoom,
+    CardMetrics, CardView, Placement, RectF, Spring, Tile, Zoom,
     HINT_HEIGHT,
   },
   overview_scene::Scene,
@@ -521,8 +520,7 @@ struct Overview {
   backdrop: Option<OverviewBackdrop>,
   cards: Vec<Card>,
 
-  /// Each workspace's windows shown on their own, in the exposé and the
-  /// activities.
+  /// Each workspace's windows shown on their own, in the activities.
   scenes: Vec<Scene>,
 
   /// Where the activities show the selected workspace large.
@@ -580,7 +578,7 @@ impl Overview {
       on_action,
       session: 0,
       frame: None,
-      interaction: Interaction::new(&[], layout, 0.0, None),
+      interaction: Interaction::new(&[], layout, 0.0),
       metrics: CardMetrics::new(1.0, 1.0, 1.0, layout),
       drawn_for: layout,
       registered_for: None,
@@ -633,12 +631,8 @@ impl Overview {
     self.drawn_for = layout;
     self.metrics =
       CardMetrics::new(self.area.w, self.area.h, scale_factor, layout);
-    self.interaction = Interaction::new(
-      &frame.workspaces,
-      layout,
-      6.0 * scale_factor,
-      frame.focused_window,
-    );
+    self.interaction =
+      Interaction::new(&frame.workspaces, layout, 6.0 * scale_factor);
     self
       .interaction
       .digit_workspaces
@@ -852,8 +846,8 @@ impl Overview {
 
   /// Registers every thumbnail the layout shows again, bottom to top:
   /// the activities' scene panel, the windows on the scenes, each card's
-  /// tab bars, previews and picture, the exposé's bar, the labels,
-  /// highlights and tags, the hints, then the floating window.
+  /// tab bars, previews and picture, the labels, highlights and tags, the
+  /// hints, then the floating window.
   fn register_thumbnails(&mut self) {
     let host = self.hwnd;
     let layout = self.interaction.layout;
@@ -873,19 +867,17 @@ impl Overview {
       }
     }
 
-    if layout.has_cards() {
-      for card in &mut self.cards {
-        // Under the windows, which cover the strip reaching under them.
-        for bar in &mut card.tab_bars {
-          bar.picture.thumbnail =
-            Thumbnail::register(host, bar.picture.window);
-        }
-        for preview in &mut card.previews {
-          preview.register(host);
-        }
-        card.picture.thumbnail =
-          Thumbnail::register(host, card.picture.window);
+    for card in &mut self.cards {
+      // Under the windows, which cover the strip reaching under them.
+      for bar in &mut card.tab_bars {
+        bar.picture.thumbnail =
+          Thumbnail::register(host, bar.picture.window);
       }
+      for preview in &mut card.previews {
+        preview.register(host);
+      }
+      card.picture.thumbnail =
+        Thumbnail::register(host, card.picture.window);
     }
 
     if let Some(overlays) = &mut self.overlays {
@@ -966,11 +958,6 @@ impl Overview {
         self.scene_area = area;
         targets
       }
-      OverviewLayoutMode::Expose => Targets {
-        cards: vec![Placement::new(0.0, 0.0, 0.0); slots.len()],
-        hint_y: self.metrics.bottom_hint_y(),
-        dock: None,
-      },
     };
     self.dock = targets.dock;
 
@@ -1144,10 +1131,6 @@ impl Overview {
     let layout = self.interaction.layout;
 
     for index in 0..self.cards.len().min(self.workspaces().len()) {
-      if !layout.has_cards() {
-        break;
-      }
-
       let picture = self.card_picture(index, &style);
       let Some(card) = self.cards.get_mut(index) else {
         continue;
@@ -1268,7 +1251,7 @@ impl Overview {
 
   /// The zoom between the screen and the zoomed card's windows, at the
   /// current openness. Follows the card if it is still moving. The
-  /// exposé and the activities zoom each window on its own instead.
+  /// activities zoom each window on its own instead.
   fn camera(&self) -> Camera {
     if self.interaction.layout.has_scene() {
       return Camera::IDENTITY;
@@ -1422,7 +1405,6 @@ impl Overview {
           place_card(card, index, &miniatures);
         }
       }
-      OverviewLayoutMode::Expose => {}
       _ => {
         for (index, card) in self.cards.iter_mut().enumerate() {
           place_card(card, index, &context);
@@ -1477,23 +1459,6 @@ impl Overview {
   /// What is under the overview point (`x`, `y`).
   fn hit(&self, x: f32, y: f32) -> Hit {
     match self.interaction.layout {
-      OverviewLayoutMode::Expose => {
-        let pill = self.overlays.as_ref().and_then(|overlays| {
-          overlays
-            .bar
-            .layout
-            .pills
-            .iter()
-            .position(|pill| pill.contains(x, y))
-        });
-        match pill {
-          Some(index) => Hit {
-            workspace: Some(index),
-            window: None,
-          },
-          None => self.hit_scene(x, y, &spread_area(&self.metrics)),
-        }
-      }
       OverviewLayoutMode::Activities => {
         let hit = self.hit_cards(x, y, &Camera::IDENTITY);
         if hit.workspace.is_some() {
@@ -1588,22 +1553,9 @@ impl Overview {
       }
     }
 
-    let previous = self.drawn_for;
     let is_redrawn = self.draw_for_layout();
     self.ensure_labels();
     self.retarget(false);
-
-    // Cards back from the exposé, which shows none, fade in in place.
-    if is_redrawn && !previous.has_cards() {
-      for card in &mut self.cards {
-        let alpha = card.alpha.target;
-        card.cx.snap(card.cx.target);
-        card.cy.snap(card.cy.target);
-        card.scale.snap(card.scale.target);
-        card.alpha.snap(0.0);
-        card.alpha.target = alpha;
-      }
-    }
 
     if self.registered_for != Some(self.interaction.layout) {
       self.register_thumbnails();

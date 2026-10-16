@@ -1,5 +1,5 @@
-//! Windows of the workspaces shown on their own rather than on a card:
-//! spread out in the exposé, or as laid out in the activities.
+//! Windows of the workspaces shown on their own rather than on a card, as
+//! laid out in the activities.
 //! Each has a preview and springs of its own, so it can fly between where
 //! it is on screen and where the layout puts it.
 
@@ -138,7 +138,7 @@ impl Scene {
   }
 
   /// Indices of its windows left to right, then top to bottom, by where
-  /// they are on screen: the order the exposé spreads them in.
+  /// they are on screen: the order the arrows step through them in.
   pub fn reading_order(&self) -> Vec<usize> {
     let mut order = (0..self.windows.len()).collect::<Vec<_>>();
     order.sort_by(|a, b| {

@@ -149,39 +149,22 @@ pub(crate) struct Interaction {
 }
 
 impl Interaction {
-  /// Starts out on the focused workspace; in the exposé, on its
-  /// `focused_window`.
+  /// Starts out on the focused workspace.
   pub fn new(
     workspaces: &[OverviewWorkspace],
     layout: OverviewLayoutMode,
     drag_threshold: f32,
-    focused_window: Option<isize>,
   ) -> Self {
     let selected = workspaces
       .iter()
       .position(|workspace| workspace.is_focused)
       .unwrap_or(0);
 
-    // The exposé is all about the windows, so it starts out among them.
-    let picked = workspaces
-      .get(selected)
-      .filter(|_| layout == OverviewLayoutMode::Expose)
-      .and_then(|workspace| {
-        let shown = ordered(workspace);
-        focused_window
-          .filter(|hwnd| shown.iter().any(|window| window.hwnd == *hwnd))
-          .or_else(|| shown.first().map(|window| window.hwnd))
-      });
-
     Self {
       selected,
-      mode: if picked.is_some() {
-        Mode::Windows
-      } else {
-        Mode::Spaces
-      },
+      mode: Mode::Spaces,
       layout,
-      selected_window: picked,
+      selected_window: None,
       carried: None,
       searching: false,
       query: String::new(),
@@ -935,7 +918,7 @@ fn arrows(layout: OverviewLayoutMode) -> (Toward, Toward, Option<Toward>) {
     OverviewLayoutMode::Stage => {
       (Toward::Up, Toward::Down, Some(Toward::Right))
     }
-    OverviewLayoutMode::Expose | OverviewLayoutMode::Activities => {
+    OverviewLayoutMode::Activities => {
       (Toward::Left, Toward::Right, Some(Toward::Down))
     }
     OverviewLayoutMode::Carousel | OverviewLayoutMode::Grid => {
@@ -1188,12 +1171,7 @@ mod tests {
   }
 
   fn interaction() -> Interaction {
-    Interaction::new(
-      &workspaces(),
-      OverviewLayoutMode::Carousel,
-      6.0,
-      None,
-    )
+    Interaction::new(&workspaces(), OverviewLayoutMode::Carousel, 6.0)
   }
 
   fn press(
@@ -1250,12 +1228,8 @@ mod tests {
   fn digits_go_by_name_when_workspaces_are_numbered() {
     let mut workspaces = workspaces();
     workspaces.remove(1);
-    let mut state = Interaction::new(
-      &workspaces,
-      OverviewLayoutMode::Carousel,
-      6.0,
-      None,
-    );
+    let mut state =
+      Interaction::new(&workspaces, OverviewLayoutMode::Carousel, 6.0);
 
     assert_eq!(
       state.key(Key::Digit(3), &workspaces),
@@ -1272,12 +1246,8 @@ mod tests {
     {
       workspace.name = name.to_string();
     }
-    let mut state = Interaction::new(
-      &workspaces,
-      OverviewLayoutMode::Carousel,
-      6.0,
-      None,
-    );
+    let mut state =
+      Interaction::new(&workspaces, OverviewLayoutMode::Carousel, 6.0);
 
     assert_eq!(
       state.key(Key::Digit(1), &workspaces),
@@ -1347,12 +1317,8 @@ mod tests {
       is_new: true,
       ..card("4")
     });
-    let mut state = Interaction::new(
-      &workspaces,
-      OverviewLayoutMode::Carousel,
-      6.0,
-      None,
-    );
+    let mut state =
+      Interaction::new(&workspaces, OverviewLayoutMode::Carousel, 6.0);
 
     let mut press = |keys: &[Key]| {
       keys
@@ -1380,12 +1346,8 @@ mod tests {
       is_hidden_tab: true,
       ..window(13, "Docs", Rect::from_xy(0, 0, 960, 1000))
     });
-    let mut state = Interaction::new(
-      &workspaces,
-      OverviewLayoutMode::Carousel,
-      6.0,
-      None,
-    );
+    let mut state =
+      Interaction::new(&workspaces, OverviewLayoutMode::Carousel, 6.0);
     let press = |state: &mut Interaction, keys: &[Key]| {
       keys
         .iter()
@@ -1450,7 +1412,7 @@ mod tests {
     assert_eq!(state.selected_window, None);
 
     // Over to the stage to pick one up, then around to the grid again.
-    press(&mut state, &[Key::Tab, Key::Tab, Key::Tab]);
+    press(&mut state, &[Key::Tab, Key::Tab]);
     assert_eq!(state.layout, OverviewLayoutMode::Stage);
     press(&mut state, &[Key::Space, Key::Space]);
     press(&mut state, &[Key::Tab, Key::Tab]);
@@ -1462,7 +1424,7 @@ mod tests {
   fn tab_goes_through_every_layout() {
     let mut state = interaction();
     let mut seen = vec![state.layout];
-    for _ in 0..5 {
+    for _ in 0..4 {
       press(&mut state, &[Key::Tab]);
       seen.push(state.layout);
     }
@@ -1472,7 +1434,6 @@ mod tests {
       vec![
         OverviewLayoutMode::Carousel,
         OverviewLayoutMode::Grid,
-        OverviewLayoutMode::Expose,
         OverviewLayoutMode::Activities,
         OverviewLayoutMode::Stage,
         OverviewLayoutMode::Carousel,
@@ -1485,7 +1446,7 @@ mod tests {
     for layout in
       [OverviewLayoutMode::Activities, OverviewLayoutMode::Stage]
     {
-      let mut state = Interaction::new(&workspaces(), layout, 6.0, None);
+      let mut state = Interaction::new(&workspaces(), layout, 6.0);
       assert_eq!(state.mode, Mode::Spaces);
       press(&mut state, &[Key::Space]);
       assert_eq!(state.mode, Mode::Windows);
@@ -1494,37 +1455,10 @@ mod tests {
   }
 
   #[test]
-  fn the_expose_starts_on_the_focused_window() {
-    let mut workspaces = workspaces();
-    workspaces[1].windows.push(window(
-      22,
-      "Notes",
-      Rect::from_xy(960, 0, 960, 1000),
-    ));
-
-    let state = Interaction::new(
-      &workspaces,
-      OverviewLayoutMode::Expose,
-      6.0,
-      Some(22),
-    );
-    assert_eq!(state.mode, Mode::Windows);
-    assert_eq!(state.selected_window, Some(22));
-
-    // Without one, on the first window.
-    let state =
-      Interaction::new(&workspaces, OverviewLayoutMode::Expose, 6.0, None);
-    assert_eq!(state.selected_window, Some(21));
-  }
-
-  #[test]
   fn arrows_go_to_the_nearest_window_where_windows_show() {
-    let mut state = Interaction::new(
-      &workspaces(),
-      OverviewLayoutMode::Expose,
-      6.0,
-      None,
-    );
+    let mut state =
+      Interaction::new(&workspaces(), OverviewLayoutMode::Activities, 6.0);
+    state.mode = Mode::Windows;
 
     // Laid out as two rows: 1 2 3 over 4 5.
     state.nav = vec![
@@ -1551,15 +1485,14 @@ mod tests {
   }
 
   #[test]
-  fn the_expose_goes_up_to_its_workspaces_and_back_down() {
-    let mut state = Interaction::new(
-      &workspaces(),
-      OverviewLayoutMode::Expose,
-      6.0,
-      None,
-    );
+  fn the_activities_go_down_into_windows_and_back_up() {
+    let mut state =
+      Interaction::new(&workspaces(), OverviewLayoutMode::Activities, 6.0);
 
-    // Up off the windows to the workspaces, along them, and down again.
+    // Down into the shown workspace's windows, up to the workspaces, along
+    // them, and down again.
+    press(&mut state, &[Key::Down]);
+    assert_eq!(state.mode, Mode::Windows);
     press(&mut state, &[Key::Up]);
     assert_eq!(state.mode, Mode::Spaces);
     press(&mut state, &[Key::Left, Key::Down]);
@@ -1577,7 +1510,7 @@ mod tests {
   fn the_stage_steps_down_its_column_and_goes_right_into_windows() {
     let workspaces = workspaces();
     let mut state =
-      Interaction::new(&workspaces, OverviewLayoutMode::Stage, 6.0, None);
+      Interaction::new(&workspaces, OverviewLayoutMode::Stage, 6.0);
     let mut press = |keys: &[Key]| {
       for key in keys {
         state.key(*key, &workspaces);
@@ -1599,12 +1532,10 @@ mod tests {
   fn clicking_another_workspace_shows_it_before_going() {
     let workspaces = workspaces();
 
-    for layout in [
-      OverviewLayoutMode::Expose,
-      OverviewLayoutMode::Activities,
-      OverviewLayoutMode::Stage,
-    ] {
-      let mut state = Interaction::new(&workspaces, layout, 6.0, None);
+    for layout in
+      [OverviewLayoutMode::Activities, OverviewLayoutMode::Stage]
+    {
+      let mut state = Interaction::new(&workspaces, layout, 6.0);
       let click = |state: &mut Interaction, hit: Hit| {
         state.mouse_down((0.0, 0.0), hit);
         state.mouse_up(&workspaces)
@@ -1642,7 +1573,7 @@ mod tests {
   fn pointing_at_a_shown_window_picks_it() {
     let workspaces = workspaces();
     let mut state =
-      Interaction::new(&workspaces, OverviewLayoutMode::Stage, 6.0, None);
+      Interaction::new(&workspaces, OverviewLayoutMode::Stage, 6.0);
 
     let changed = state.mouse_move(
       (10.0, 10.0),
@@ -1952,7 +1883,7 @@ mod tests {
       (OverviewLayoutMode::Activities, Key::Left, Key::Right),
       (OverviewLayoutMode::Stage, Key::Up, Key::Down),
     ] {
-      let mut state = Interaction::new(&workspaces, layout, 6.0, None);
+      let mut state = Interaction::new(&workspaces, layout, 6.0);
       let mut press = |keys: &[Key]| {
         for key in keys {
           state.key(*key, &workspaces);
@@ -1970,12 +1901,8 @@ mod tests {
   #[test]
   fn s_goes_to_the_special_workspace_like_a_digit() {
     let workspaces = with_special();
-    let mut state = Interaction::new(
-      &workspaces,
-      OverviewLayoutMode::Carousel,
-      6.0,
-      None,
-    );
+    let mut state =
+      Interaction::new(&workspaces, OverviewLayoutMode::Carousel, 6.0);
     let press = |state: &mut Interaction, keys: &[Key]| {
       keys
         .iter()
@@ -1995,12 +1922,8 @@ mod tests {
       "sends the picked window"
     );
 
-    let mut state = Interaction::new(
-      &workspaces,
-      OverviewLayoutMode::Carousel,
-      6.0,
-      None,
-    );
+    let mut state =
+      Interaction::new(&workspaces, OverviewLayoutMode::Carousel, 6.0);
     assert_eq!(
       press(&mut state, &[Key::Space, Key::Space, Key::Text('s')]),
       Some(OverviewAction::MoveWindow {
@@ -2031,12 +1954,8 @@ mod tests {
       workspace.name = name.to_string();
     }
     workspaces.swap(0, 3);
-    let mut state = Interaction::new(
-      &workspaces,
-      OverviewLayoutMode::Carousel,
-      6.0,
-      None,
-    );
+    let mut state =
+      Interaction::new(&workspaces, OverviewLayoutMode::Carousel, 6.0);
 
     assert_eq!(
       state.key(Key::Digit(1), &workspaces),
@@ -2048,12 +1967,8 @@ mod tests {
   #[test]
   fn hints_mention_the_special_workspace() {
     let workspaces = with_special();
-    let state = Interaction::new(
-      &workspaces,
-      OverviewLayoutMode::Carousel,
-      6.0,
-      None,
-    );
+    let state =
+      Interaction::new(&workspaces, OverviewLayoutMode::Carousel, 6.0);
 
     assert!(state.hint(&workspaces).0.contains("s special"));
   }
@@ -2069,7 +1984,7 @@ mod tests {
 
     for layout in [OverviewLayoutMode::Carousel, OverviewLayoutMode::Grid]
     {
-      let mut state = Interaction::new(&workspaces, layout, 6.0, None);
+      let mut state = Interaction::new(&workspaces, layout, 6.0);
       if layout == OverviewLayoutMode::Grid {
         state.grid = GridCells::new(
           &CardMetrics::new(1920.0, 1080.0, 1.0, OverviewLayoutMode::Grid),
@@ -2119,12 +2034,8 @@ mod tests {
       workspace.is_focused = workspace.is_special;
     }
 
-    let mut state = Interaction::new(
-      &workspaces,
-      OverviewLayoutMode::Carousel,
-      6.0,
-      None,
-    );
+    let mut state =
+      Interaction::new(&workspaces, OverviewLayoutMode::Carousel, 6.0);
     assert_eq!(state.selected, 3);
     assert_eq!(state.row_selected, 0);
 
@@ -2135,12 +2046,8 @@ mod tests {
   #[test]
   fn a_carried_window_drops_on_the_dock_below() {
     let workspaces = with_special();
-    let mut state = Interaction::new(
-      &workspaces,
-      OverviewLayoutMode::Carousel,
-      6.0,
-      None,
-    );
+    let mut state =
+      Interaction::new(&workspaces, OverviewLayoutMode::Carousel, 6.0);
     let press = |state: &mut Interaction, keys: &[Key]| {
       keys
         .iter()
