@@ -746,10 +746,13 @@ impl WindowManager {
                 if state.animation_manager.has_close_animation(&window_id)
                 {
                   let _ = window.native().set_cloaked(true);
+                  let close_config = &config.value.animations.window_close;
                   detach_window_for_close(
                     &window,
                     std::time::Duration::from_millis(u64::from(
-                      config.value.animations.window_close.duration_ms,
+                      close_config
+                        .easing
+                        .duration_ms(close_config.duration_ms),
                     )),
                     state,
                   )?;
