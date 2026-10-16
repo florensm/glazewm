@@ -3,15 +3,18 @@ use std::time::{Duration, Instant};
 use uuid::Uuid;
 
 /// How long a window may stay shown after `WM_CLOSE` before the close is
-/// taken as refused, e.g. by an in-window "Save changes?" prompt.
+/// taken as refused, e.g. by a "Save changes?" prompt drawn inside the
+/// window itself.
 ///
 /// Apps that close normally destroy or hide their window well within
-/// this. A modal prompt is caught sooner, since it disables its owner.
-const CLOSE_CONFIRM_TIMEOUT: Duration = Duration::from_millis(1000);
+/// this, and one that is merely slow comes back for a moment and is
+/// unmanaged again once it does close. A prompt in a dialog of its own is
+/// caught right away instead (see [`WindowProbe::has_modal_prompt`]).
+const CLOSE_CONFIRM_TIMEOUT: Duration = Duration::from_secs(2);
 
-/// How long a close animation may run before `WM_CLOSE` is sent without
-/// it, in case the animation was dropped or stalled.
-const ANIMATION_MAX_WAIT: Duration = Duration::from_secs(3);
+/// How long past its expected end a close animation may run before
+/// `WM_CLOSE` is sent without it, in case it was dropped or stalled.
+const ANIMATION_GRACE: Duration = Duration::from_secs(2);
 
 /// Interval at which tracked windows are re-checked.
 const POLL_INTERVAL: Duration = Duration::from_millis(50);
@@ -25,8 +28,9 @@ pub struct WindowProbe {
   /// Whether the window has `WS_VISIBLE`, regardless of its cloak.
   pub is_shown: bool,
 
-  /// Whether the window accepts input. A modal dialog disables its owner.
-  pub is_enabled: bool,
+  /// Whether the window is disabled behind a shown popup of its own, the
+  /// way a modal dialog leaves its owner.
+  pub has_modal_prompt: bool,
 }
 
 /// What became of a window the WM asked to close.
@@ -60,7 +64,10 @@ pub enum ClosingAction {
 struct ClosingWindow {
   id: Uuid,
   handle: isize,
-  tracked_at: Instant,
+
+  /// When `WM_CLOSE` is sent without the animation, if it has not
+  /// finished by then.
+  close_due: Instant,
 
   /// When `WM_CLOSE` was sent. `None` while the close animation plays.
   close_sent_at: Option<Instant>,
@@ -79,8 +86,15 @@ pub struct ClosingWindows {
 }
 
 impl ClosingWindows {
-  /// Starts tracking a window whose close animation just began.
-  pub fn track(&mut self, id: Uuid, handle: isize, now: Instant) {
+  /// Starts tracking a window whose close animation, lasting
+  /// `animation_duration`, just began.
+  pub fn track(
+    &mut self,
+    id: Uuid,
+    handle: isize,
+    animation_duration: Duration,
+    now: Instant,
+  ) {
     if self.entries.iter().any(|entry| entry.id == id) {
       return;
     }
@@ -88,7 +102,7 @@ impl ClosingWindows {
     self.entries.push(ClosingWindow {
       id,
       handle,
-      tracked_at: now,
+      close_due: now + animation_duration + ANIMATION_GRACE,
       close_sent_at: None,
     });
 
@@ -127,9 +141,7 @@ impl ClosingWindows {
         return false;
       }
 
-      if entry.close_sent_at.is_none()
-        && now.duration_since(entry.tracked_at) >= ANIMATION_MAX_WAIT
-      {
+      if entry.close_sent_at.is_none() && now >= entry.close_due {
         entry.close_sent_at = Some(now);
         actions.push(ClosingAction::SendClose {
           id: entry.id,
@@ -166,7 +178,7 @@ impl ClosingWindows {
 
     if !probe.is_shown {
       Some(CloseOutcome::Hidden)
-    } else if !probe.is_enabled
+    } else if probe.has_modal_prompt
       || now.duration_since(sent_at) >= CLOSE_CONFIRM_TIMEOUT
     {
       Some(CloseOutcome::Refused)
@@ -183,13 +195,15 @@ mod tests {
   const SHOWN: WindowProbe = WindowProbe {
     is_alive: true,
     is_shown: true,
-    is_enabled: true,
+    has_modal_prompt: false,
   };
+
+  const ANIMATION: Duration = Duration::from_millis(150);
 
   fn tracked(now: Instant) -> (ClosingWindows, Uuid) {
     let mut windows = ClosingWindows::default();
     let id = Uuid::new_v4();
-    windows.track(id, 42, now);
+    windows.track(id, 42, ANIMATION, now);
     (windows, id)
   }
 
@@ -206,11 +220,10 @@ mod tests {
     let now = Instant::now();
     let (mut windows, _) = tracked(now);
 
-    let actions =
-      windows.poll(now + Duration::from_millis(100), |_| WindowProbe {
-        is_enabled: false,
-        ..SHOWN
-      });
+    let actions = windows.poll(now + ANIMATION, |_| WindowProbe {
+      has_modal_prompt: true,
+      ..SHOWN
+    });
 
     assert!(actions.is_empty());
     assert!(windows.next_check().is_some());
@@ -252,7 +265,7 @@ mod tests {
     windows.mark_close_sent(id, now);
 
     let actions = windows.poll(now, |_| WindowProbe {
-      is_enabled: false,
+      has_modal_prompt: true,
       ..SHOWN
     });
 
@@ -276,20 +289,33 @@ mod tests {
   fn stalled_animation_sends_close_once() {
     let now = Instant::now();
     let (mut windows, id) = tracked(now);
+    let due = now + ANIMATION + ANIMATION_GRACE;
 
-    let first = windows.poll(now + ANIMATION_MAX_WAIT, |_| SHOWN);
-    let second =
-      windows.poll(now + ANIMATION_MAX_WAIT + POLL_INTERVAL, |_| SHOWN);
+    let early = windows.poll(now + ANIMATION, |_| SHOWN);
+    let first = windows.poll(due, |_| SHOWN);
+    let second = windows.poll(due + POLL_INTERVAL, |_| SHOWN);
 
+    assert!(early.is_empty());
     assert_eq!(first, vec![ClosingAction::SendClose { id, handle: 42 }]);
     assert!(second.is_empty());
+  }
+
+  #[test]
+  fn long_animation_is_not_cut_short() {
+    let now = Instant::now();
+    let mut windows = ClosingWindows::default();
+    windows.track(Uuid::new_v4(), 42, Duration::from_secs(5), now);
+
+    let actions = windows.poll(now + Duration::from_secs(6), |_| SHOWN);
+
+    assert!(actions.is_empty());
   }
 
   #[test]
   fn tracking_twice_keeps_one_entry() {
     let now = Instant::now();
     let (mut windows, id) = tracked(now);
-    windows.track(id, 42, now);
+    windows.track(id, 42, ANIMATION, now);
 
     assert_eq!(windows.drain(), vec![42]);
     assert_eq!(windows.next_check(), None);

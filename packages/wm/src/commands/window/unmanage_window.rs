@@ -23,12 +23,11 @@ use crate::{
 /// sends `WM_CLOSE` once the animation completes.
 ///
 /// The window stays tracked in `WmState::closing_windows` until its app
-/// acts on the close, and `WindowUnmanaged` is only emitted then: until
-/// that point the window is merely cloaked, and the watcher must still be
-/// able to restore it if the WM exits.
+/// acts on the close, so that it can be put back if the app keeps it open.
 #[cfg(target_os = "windows")]
 pub fn detach_window_for_close(
   window: &WindowContainer,
+  animation_duration: std::time::Duration,
   state: &mut WmState,
 ) -> anyhow::Result<()> {
   let ancestors = window.ancestors().take(3).collect::<Vec<_>>();
@@ -55,8 +54,15 @@ pub fn detach_window_for_close(
   state.closing_windows.track(
     window.id(),
     window.native().hwnd().0,
+    animation_duration,
     std::time::Instant::now(),
   );
+
+  state.emit_event(WmEvent::WindowUnmanaged {
+    unmanaged_id: window.id(),
+    #[allow(clippy::cast_possible_wrap, clippy::unnecessary_cast)]
+    unmanaged_handle: window.native().id().0 as isize,
+  });
 
   if let Some(focus_target) = focus_target {
     set_focused_descendant(&focus_target, None);

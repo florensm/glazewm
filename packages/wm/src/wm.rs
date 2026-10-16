@@ -374,7 +374,7 @@ impl WindowManager {
           WindowProbe {
             is_alive: native.is_valid(),
             is_shown: native.has_window_style(wm_platform::WS_VISIBLE),
-            is_enabled: native.is_enabled(),
+            has_modal_prompt: native.has_modal_prompt(),
           }
         });
 
@@ -400,31 +400,30 @@ impl WindowManager {
           handle,
           outcome,
         } => {
-          state.emit_event(WmEvent::WindowUnmanaged {
-            unmanaged_id: id,
-            unmanaged_handle: handle,
-          });
-
           let native = NativeWindow::from_handle(handle);
 
-          match outcome {
-            CloseOutcome::Closed => {}
-            // Still hidden by the app, but must not come back cloaked
-            // when the app shows it again (e.g. from its tray icon).
-            CloseOutcome::Hidden => {
-              let _ = native.set_cloaked(false);
-            }
-            CloseOutcome::Refused => {
-              tracing::info!(
-                "Window {id} stayed open after being closed; managing it \
-                 again."
-              );
+          // Managed again in the meantime, so its cloak is the WM's to
+          // decide as for any other window.
+          if outcome == CloseOutcome::Closed
+            || state.window_from_native(&native).is_some()
+          {
+            continue;
+          }
 
-              let _ = native.set_cloaked(false);
+          // Uncloaked even when hidden by the app (e.g. to its tray
+          // icon), so it doesn't come back invisible when shown again.
+          let _ = native.set_cloaked(false);
 
-              if state.window_from_native(&native).is_none() {
-                manage_window(native, None, state, config)?;
-              }
+          if outcome == CloseOutcome::Refused {
+            tracing::info!(
+              "Window {id} stayed open after being closed; managing it \
+               again."
+            );
+
+            // Logged rather than returned, so the remaining windows are
+            // still handled.
+            if let Err(err) = manage_window(native, None, state, config) {
+              warn!("Failed to manage window {id} again: {err:?}");
             }
           }
         }
@@ -729,7 +728,13 @@ impl WindowManager {
                 if state.animation_manager.has_close_animation(&window_id)
                 {
                   let _ = window.native().set_cloaked(true);
-                  detach_window_for_close(&window, state)?;
+                  detach_window_for_close(
+                    &window,
+                    std::time::Duration::from_millis(u64::from(
+                      config.value.animations.window_close.duration_ms,
+                    )),
+                    state,
+                  )?;
                   return Ok(());
                 }
               }

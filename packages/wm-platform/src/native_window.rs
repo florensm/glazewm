@@ -234,6 +234,14 @@ pub trait NativeWindowWindowsExt {
   /// This method is only available on Windows.
   fn is_enabled(&self) -> bool;
 
+  /// Whether the window is disabled behind a shown, enabled popup it owns,
+  /// i.e. a modal dialog such as a "Save changes?" prompt.
+  ///
+  /// # Platform-specific
+  ///
+  /// This method is only available on Windows.
+  fn has_modal_prompt(&self) -> bool;
+
   /// Whether the window's app has stopped responding, as judged by the OS
   /// (no messages processed for about 5 seconds).
   ///
@@ -505,6 +513,10 @@ impl NativeWindowWindowsExt for NativeWindow {
 
   fn is_enabled(&self) -> bool {
     self.inner.is_enabled()
+  }
+
+  fn has_modal_prompt(&self) -> bool {
+    self.inner.has_modal_prompt()
   }
 
   fn is_hung(&self) -> bool {

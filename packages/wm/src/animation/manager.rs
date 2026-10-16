@@ -211,6 +211,10 @@ const SYNC_DEMOTE_DURATION: Duration = Duration::from_secs(30);
 /// one itself and replaces the timer thread.
 const FRAME_STALL_TIMEOUT: Duration = Duration::from_millis(250);
 
+/// Replaced timer threads that may be left blocked at once. See
+/// [`AnimationManager::replace_stalled_timer`].
+const MAX_STALLED_TIMERS: usize = 3;
+
 /// The animation timer thread, with the flag that retires it.
 struct TimerThread {
   handle: std::thread::JoinHandle<()>,
@@ -1052,12 +1056,12 @@ impl AnimationManager {
   /// whenever that wait returns, and the vsync waiter is dropped so the
   /// new thread paces itself with `DwmFlush` instead.
   ///
-  /// Nothing is replaced while an earlier replaced thread is still
-  /// blocked: then the replacement stalled too (e.g. `DwmFlush` with the
-  /// displays off), and further threads would only pile up behind it.
+  /// At most [`MAX_STALLED_TIMERS`] replaced threads are left blocked at
+  /// once: past that, replacements are stalling too (e.g. `DwmFlush` with
+  /// the displays off), and more threads would only pile up behind them.
   /// The watchdog keeps running frames itself until one recovers.
   pub fn replace_stalled_timer(&self) {
-    if self.stalled_timers.load(Ordering::Relaxed) > 0 {
+    if self.stalled_timers.load(Ordering::Relaxed) >= MAX_STALLED_TIMERS {
       tracing::debug!("Animation timer still stalled; not replacing it.");
       return;
     }
@@ -3958,7 +3962,9 @@ mod tests {
   fn no_replacement_while_a_replaced_timer_is_stalled() {
     let (tick_tx, _tick_rx) = mpsc::unbounded_channel();
     let manager = AnimationManager::new(tick_tx);
-    manager.stalled_timers.store(1, Ordering::Relaxed);
+    manager
+      .stalled_timers
+      .store(MAX_STALLED_TIMERS, Ordering::Relaxed);
     manager
       .animation_timer_running
       .store(true, Ordering::Relaxed);
@@ -3967,7 +3973,10 @@ mod tests {
 
     // The running gate is left as it was, so no new thread was started.
     assert!(manager.animation_timer_running.load(Ordering::Relaxed));
-    assert_eq!(manager.stalled_timers.load(Ordering::Relaxed), 1);
+    assert_eq!(
+      manager.stalled_timers.load(Ordering::Relaxed),
+      MAX_STALLED_TIMERS
+    );
   }
 
   #[test]

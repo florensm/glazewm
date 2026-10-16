@@ -1,77 +1,96 @@
 use std::{
-  sync::{
-    atomic::{AtomicBool, Ordering},
-    Arc,
-  },
+  sync::{Arc, Mutex, PoisonError},
   time::{Duration, Instant},
 };
 
 use wm_platform::Dispatcher;
 
-/// How long an error identical to the last one shown stays silent.
+/// How long after its dialog is dismissed the same error stays silent.
 const REPEAT_INTERVAL: Duration = Duration::from_secs(60);
 
 /// Shows non-fatal errors to the user without blocking the WM thread.
 ///
-/// The dialog runs on a thread of its own, at most one at a time, and an
-/// error identical to the last one shown is not shown again within
-/// [`REPEAT_INTERVAL`]. An error that fails on every animation frame would
-/// otherwise bring its dialog back the moment it is dismissed. Every
-/// error is still logged.
+/// The dialog runs on a thread of its own, at most one at a time; errors
+/// raised while it is open are only logged. An error identical to the
+/// last one shown is not shown again within [`REPEAT_INTERVAL`] of that
+/// dialog being dismissed: one failing on every animation frame would
+/// otherwise come straight back. Every error is still logged.
 pub struct ErrorNotifier {
   dispatcher: Dispatcher,
-  is_open: Arc<AtomicBool>,
-  last_shown: Option<(String, Instant)>,
+  dialog: Arc<Mutex<DialogState>>,
+}
+
+#[derive(Default)]
+struct DialogState {
+  is_open: bool,
+
+  /// Message of the last dialog, and when it was dismissed.
+  last_dismissed: Option<(String, Instant)>,
 }
 
 impl ErrorNotifier {
   pub fn new(dispatcher: Dispatcher) -> Self {
     Self {
       dispatcher,
-      is_open: Arc::new(AtomicBool::new(false)),
-      last_shown: None,
+      dialog: Arc::default(),
     }
   }
 
   /// Logs `err` and shows it in a dialog, unless one is already open or
-  /// it was just shown.
-  pub fn report(&mut self, err: &anyhow::Error) {
+  /// it was just dismissed.
+  pub fn report(&self, err: &anyhow::Error) {
     tracing::error!("{err:?}");
 
     let message = err.to_string();
-    let now = Instant::now();
 
-    if !should_show(self.last_shown.as_ref(), &message, now)
-      || self.is_open.swap(true, Ordering::AcqRel)
     {
-      return;
+      let mut dialog = lock(&self.dialog);
+      if dialog.is_open
+        || !should_show(
+          dialog.last_dismissed.as_ref(),
+          &message,
+          Instant::now(),
+        )
+      {
+        return;
+      }
+      dialog.is_open = true;
     }
 
-    self.last_shown = Some((message.clone(), now));
-
     let dispatcher = self.dispatcher.clone();
-    let is_open = self.is_open.clone();
+    let dialog = self.dialog.clone();
 
     let spawned = std::thread::Builder::new()
       .name("glazewm-error-dialog".into())
       .spawn(move || {
         dispatcher.show_error_dialog("Non-fatal error", &message);
-        is_open.store(false, Ordering::Release);
+
+        let mut dialog = lock(&dialog);
+        dialog.is_open = false;
+        dialog.last_dismissed = Some((message, Instant::now()));
       });
 
     if let Err(err) = spawned {
       tracing::warn!("Failed to show error dialog: {err}");
-      self.is_open.store(false, Ordering::Release);
+      lock(&self.dialog).is_open = false;
     }
   }
 }
 
+/// Locks `dialog`. It only holds plain values, so a poisoned lock is still
+/// valid.
+fn lock(
+  dialog: &Mutex<DialogState>,
+) -> std::sync::MutexGuard<'_, DialogState> {
+  dialog.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
 fn should_show(
-  last_shown: Option<&(String, Instant)>,
+  last_dismissed: Option<&(String, Instant)>,
   message: &str,
   now: Instant,
 ) -> bool {
-  last_shown.is_none_or(|(last, at)| {
+  last_dismissed.is_none_or(|(last, at)| {
     last != message || now.duration_since(*at) >= REPEAT_INTERVAL
   })
 }

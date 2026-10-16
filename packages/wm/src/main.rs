@@ -187,7 +187,7 @@ async fn start_wm(
     )?,
   };
 
-  let mut error_notifier = ErrorNotifier::new(dispatcher.clone());
+  let error_notifier = ErrorNotifier::new(dispatcher.clone());
 
   // Run user's startup commands.
   if let Err(err) = wm.process_commands(
