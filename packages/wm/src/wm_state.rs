@@ -130,6 +130,11 @@ pub struct WmState {
   #[cfg_attr(not(target_os = "windows"), allow(dead_code))]
   pub tab_action_tx: mpsc::UnboundedSender<(Uuid, TabAction)>,
 
+  /// Thread the tab bars run on, started with the first one. See
+  /// `tab_bars::tab_bar_dispatcher`.
+  #[cfg(target_os = "windows")]
+  pub tab_bar_thread: Option<wm_platform::UiThread>,
+
   /// Live tab bar windows keyed by their `StackContainer` ID.
   #[cfg(target_os = "windows")]
   pub tab_bars: HashMap<Uuid, NativeStackTabBar>,
@@ -181,6 +186,8 @@ impl WmState {
       event_tx,
       exit_tx,
       tab_action_tx,
+      #[cfg(target_os = "windows")]
+      tab_bar_thread: None,
       #[cfg(target_os = "windows")]
       tab_bars: HashMap::new(),
       #[cfg(target_os = "windows")]

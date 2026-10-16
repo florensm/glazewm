@@ -99,11 +99,11 @@ struct BarState {
   on_action: Box<dyn Fn(TabAction) + Send + 'static>,
 }
 
-/// A stack's tab bar: a layered popup on the event-loop thread, which
-/// handles its input and draws it.
+/// A stack's tab bar: a layered popup on the thread of the dispatcher it
+/// is created with, which handles its input and draws it.
 ///
 /// The WM thread only ever posts to it, since a synchronous call could
-/// deadlock with the event loop waiting on the WM.
+/// deadlock with that thread waiting on the WM.
 pub struct NativeStackTabBar {
   hwnd: isize,
   /// Frame last posted, to skip posting identical ones every animation
@@ -116,8 +116,8 @@ pub struct NativeStackTabBar {
 unsafe impl Send for NativeStackTabBar {}
 
 impl NativeStackTabBar {
-  /// Creates a hidden tab bar. `on_action` is called on the event-loop
-  /// thread for each user action.
+  /// Creates a hidden tab bar on `dispatcher`'s thread. `on_action` is
+  /// called on that thread for each user action.
   pub fn create(
     dispatcher: &Dispatcher,
     on_action: Box<dyn Fn(TabAction) + Send + 'static>,

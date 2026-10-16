@@ -89,9 +89,13 @@ mod surface;
 #[cfg(target_os = "windows")]
 mod tab_bar_paint;
 #[cfg(target_os = "windows")]
+mod ui_thread;
+#[cfg(target_os = "windows")]
 mod window_icons;
 #[cfg(target_os = "windows")]
 pub use native_stack_tab_bar::NativeStackTabBar;
+#[cfg(target_os = "windows")]
+pub use ui_thread::UiThread;
 // Only `TabAction` is used off Windows, where there are no tab bars.
 #[cfg_attr(not(target_os = "windows"), allow(dead_code))]
 mod tab_layout;
