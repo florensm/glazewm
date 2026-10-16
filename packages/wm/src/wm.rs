@@ -21,6 +21,8 @@ use wm_platform::{
 use crate::commands::window::close_duplicate_tabs;
 #[cfg(target_os = "windows")]
 use crate::commands::window::detach_window_for_close;
+#[cfg(target_os = "windows")]
+use crate::traits::PositionGetters;
 use crate::{
   commands::{
     container::{
@@ -58,7 +60,7 @@ use crate::{
   },
   ipc_server::IpcServer,
   models::{Container, WorkspaceTarget},
-  traits::{CommonGetters, PositionGetters, WindowGetters},
+  traits::{CommonGetters, WindowGetters},
   user_config::UserConfig,
   wm_state::WmState,
 };
@@ -116,6 +118,11 @@ impl WindowManager {
 
   /// Carries out an action taken in the overview, unless it comes from an
   /// earlier session than the open one.
+  // LINT: The overview only exists on Windows.
+  #[cfg_attr(
+    not(target_os = "windows"),
+    allow(clippy::unused_self, clippy::unnecessary_wraps)
+  )]
   pub fn process_overview_action(
     &mut self,
     session: u64,
@@ -323,6 +330,8 @@ impl WindowManager {
 
   /// When [`process_closing_windows`](Self::process_closing_windows) is
   /// next due.
+  // LINT: Close animations only exist on Windows.
+  #[cfg_attr(not(target_os = "windows"), allow(clippy::unused_self))]
   pub fn next_closing_check(&self) -> Option<std::time::Instant> {
     #[cfg(target_os = "windows")]
     return self.state.closing_windows.next_check();
@@ -466,25 +475,23 @@ impl WindowManager {
       }
       PlatformEvent::Window(window_event) => match window_event {
         WindowEvent::Focused { window, .. } => {
-          handle_window_focused(&window, state, config).and_then(|()| {
-            #[cfg(target_os = "windows")]
-            crate::stay_interactive::keep_stacked_windows_interactive(
-              &window, state, config,
-            )?;
-            Ok(())
-          })
+          handle_window_focused(&window, state, config)?;
+          #[cfg(target_os = "windows")]
+          crate::stay_interactive::keep_stacked_windows_interactive(
+            &window, state, config,
+          )?;
+          Ok(())
         }
         WindowEvent::Shown { window, .. } => {
           #[cfg(target_os = "windows")]
           let shown = window.clone();
 
-          handle_window_shown(window, state, config).and_then(|()| {
-            #[cfg(target_os = "windows")]
-            crate::stay_interactive::keep_stacked_windows_interactive(
-              &shown, state, config,
-            )?;
-            Ok(())
-          })
+          handle_window_shown(window, state, config)?;
+          #[cfg(target_os = "windows")]
+          crate::stay_interactive::keep_stacked_windows_interactive(
+            &shown, state, config,
+          )?;
+          Ok(())
         }
         WindowEvent::Hidden { window, .. } => {
           handle_window_hidden(&window, state, config)

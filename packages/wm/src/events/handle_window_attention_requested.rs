@@ -2,10 +2,9 @@ use wm_platform::NativeWindow;
 #[cfg(target_os = "windows")]
 use wm_platform::NativeWindowWindowsExt;
 
-use crate::{
-  commands::window::set_window_urgency, traits::WindowGetters,
-  wm_state::WmState,
-};
+#[cfg(target_os = "windows")]
+use crate::traits::WindowGetters;
+use crate::{commands::window::set_window_urgency, wm_state::WmState};
 
 /// Handles a window asking for the user's attention.
 ///

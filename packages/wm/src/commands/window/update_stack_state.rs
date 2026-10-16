@@ -1,5 +1,7 @@
 use anyhow::Context;
-use tracing::{info, warn};
+use tracing::info;
+#[cfg(target_os = "windows")]
+use tracing::warn;
 use wm_common::WindowState;
 #[cfg(target_os = "windows")]
 use wm_platform::NativeWindowWindowsExt;
@@ -71,6 +73,7 @@ pub fn update_stack_state(
     focus_within_workspace(stack);
   }
 
+  #[cfg(target_os = "windows")]
   if matches!(target_state, WindowState::Fullscreen(_)) {
     for window in stack.windows() {
       if let Err(err) = window.native().mark_fullscreen(true) {

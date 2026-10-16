@@ -11,14 +11,13 @@
 #[cfg(target_os = "macos")]
 use std::io::IsTerminal;
 use std::{
-  env,
   path::PathBuf,
   process,
   time::{Duration, Instant},
 };
 
-use anyhow::{Context, Error};
-use tokio::{process::Command, signal};
+use anyhow::Context;
+use tokio::signal;
 use tracing::Level;
 use tracing_subscriber::{
   fmt::{self, writer::MakeWriterExt},
@@ -605,14 +604,14 @@ fn setup_logging(verbosity: &Verbosity) -> anyhow::Result<()> {
 ///
 /// This assumes the watcher binary exists in the same directory as the
 /// WM binary.
-fn start_watcher_process() -> anyhow::Result<tokio::process::Child, Error>
-{
-  let watcher_path = env::current_exe()?
+#[cfg(target_os = "windows")]
+fn start_watcher_process() -> anyhow::Result<tokio::process::Child> {
+  let watcher_path = std::env::current_exe()?
     .parent()
     .context("Failed to resolve path to the watcher process.")?
     .join("glazewm-watcher");
 
-  Command::new(&watcher_path)
+  tokio::process::Command::new(&watcher_path)
     .spawn()
     .context("Failed to start watcher process.")
 }

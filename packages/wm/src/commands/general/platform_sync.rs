@@ -2,7 +2,9 @@
 use std::time::{Duration, Instant};
 
 use anyhow::Context;
-use tracing::{debug, warn};
+use tracing::debug;
+#[cfg(target_os = "windows")]
+use tracing::warn;
 use wm_common::{
   CursorJumpTrigger, DisplayState, HideCorner, HideMethod, WindowState,
   WmEvent,
@@ -26,8 +28,10 @@ use wm_platform::{
   HWND,
 };
 
+#[cfg(target_os = "windows")]
+use crate::animation::WorkspaceSwitchEntry;
 use crate::{
-  animation::{AnimationPositionResult, WorkspaceSwitchEntry},
+  animation::AnimationPositionResult,
   models::{is_inactive_stack_child, Container, WindowContainer},
   traits::{CommonGetters, PositionGetters, WindowGetters},
   user_config::UserConfig,
@@ -1244,6 +1248,8 @@ fn redraw_containers(
     // Determine the rect to use for this frame.
     #[cfg_attr(not(target_os = "windows"), allow(unused_variables))]
     let anim_scope = perf::scope(Stage::AnimStep);
+    // LINT: Animated opacity is only applied on Windows.
+    #[cfg_attr(not(target_os = "windows"), allow(unused_variables))]
     let (position_result, anim_opacity) = if should_use_animations {
       // Incoming workspace-switch windows: the surrogate handles all
       // visuals for the full animation duration — freeze the real
@@ -1275,6 +1281,7 @@ fn redraw_containers(
         cycle_has_resize,
         target_rect.clone(),
         previous_target,
+        &window.native(),
         u8::MAX,
         config,
       )
@@ -1438,6 +1445,7 @@ fn redraw_containers(
         // performs it itself under `HideMethod::Cloak`, and repeating the
         // `DwmSetWindowAttribute` call is the single most expensive thing
         // in this arm -- see `CloakState`.
+        #[cfg(target_os = "windows")]
         let mut cloak_state = CloakState::Untouched;
         #[cfg(target_os = "windows")]
         let mut did_move = false;
@@ -1473,10 +1481,15 @@ fn redraw_containers(
               has_surrogate,
               config,
             ) {
+              // LINT: Its fields are Windows-only.
+              #[cfg_attr(
+                not(target_os = "windows"),
+                allow(unused_variables)
+              )]
               Ok(reposition) => {
-                cloak_state = reposition.cloak_state;
                 #[cfg(target_os = "windows")]
                 {
+                  cloak_state = reposition.cloak_state;
                   did_move = reposition.moved;
 
                   if let Some(elapsed) = reposition.sync_elapsed {
@@ -1540,6 +1553,7 @@ fn redraw_containers(
     // Mark fullscreen windows as fullscreen on every redraw (including
     // during animations) to ensure browser fullscreen APIs work
     // correctly.
+    #[cfg(target_os = "windows")]
     let is_transitioning_fullscreen =
       match (window.prev_state(), window.state()) {
         (Some(_), WindowState::Fullscreen(s)) if !s.maximized => true,
@@ -1547,9 +1561,11 @@ fn redraw_containers(
         _ => false,
       };
 
+    #[cfg(target_os = "windows")]
     let is_currently_fullscreen =
       matches!(window.state(), WindowState::Fullscreen(_));
 
+    #[cfg(target_os = "windows")]
     if is_currently_fullscreen {
       if let Err(err) = window.native().mark_fullscreen(true) {
         warn!("Failed to mark window as fullscreen: {}", err);
@@ -1737,6 +1753,7 @@ const SLOW_SYNC_REPOSITION_THRESHOLD: Duration = Duration::from_millis(8);
 /// What [`reposition_window`] did, for the caller's follow-up work.
 struct Reposition {
   /// Cloak state the window was left in.
+  #[cfg(target_os = "windows")]
   cloak_state: CloakState,
   /// Whether a geometry-changing `SetWindowPos` was actually issued.
   /// Only such a call carries `SWP_FRAMECHANGED`, so the caller's
@@ -1756,6 +1773,7 @@ struct Reposition {
 /// exactly that. The repeat `DwmSetWindowAttribute(DWMWA_CLOAK)` is not
 /// free: it measured ~4.8ms per window, ~27% of the whole `rd_apply` stage
 /// on an eight-window relayout.
+#[cfg(target_os = "windows")]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum CloakState {
   /// Applied by `reposition_window`; the caller must not repeat it.
@@ -1815,6 +1833,7 @@ fn reposition_window(
     ))?;
 
     return Ok(Reposition {
+      #[cfg(target_os = "windows")]
       cloak_state: CloakState::Untouched,
       #[cfg(target_os = "windows")]
       moved: true,
@@ -1823,6 +1842,7 @@ fn reposition_window(
     });
   }
 
+  #[cfg(target_os = "windows")]
   let mut cloak_state = CloakState::Untouched;
   #[cfg(target_os = "windows")]
   let mut moved = true;
@@ -2022,6 +2042,7 @@ fn reposition_window(
   }
 
   Ok(Reposition {
+    #[cfg(target_os = "windows")]
     cloak_state,
     #[cfg(target_os = "windows")]
     moved,

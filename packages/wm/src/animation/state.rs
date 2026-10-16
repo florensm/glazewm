@@ -153,6 +153,8 @@ impl WindowAnimationState {
   /// Returns the full `start_delay + duration` when the animation has not
   /// rendered its first frame yet (`start_time` unset). Used to schedule
   /// the mid-animation handoff of the real window to its final rect.
+  // LINT: Only the Windows surrogate driver hands off mid-animation.
+  #[cfg_attr(not(target_os = "windows"), allow(dead_code))]
   pub fn remaining_at(&self, now: Instant) -> Duration {
     match self.start_time.get() {
       Some(start) => (start + self.start_delay + self.duration)
@@ -197,6 +199,8 @@ impl WindowAnimationState {
   /// Prefer this over separate `current_rect` + `current_opacity` calls
   /// when both values are needed in the same frame — `eased_progress`
   /// (which runs a Newton-Raphson solve) is computed only once.
+  // LINT: Only the Windows surrogate driver reads both at once.
+  #[cfg_attr(not(target_os = "windows"), allow(dead_code))]
   pub fn current_state(&self) -> (Rect, Option<OpacityValue>) {
     self.current_state_at(Instant::now())
   }

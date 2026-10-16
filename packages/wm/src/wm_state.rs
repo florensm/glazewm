@@ -126,6 +126,8 @@ pub struct WmState {
   exit_tx: mpsc::UnboundedSender<()>,
 
   /// Sender for actions taken in tab bars, keyed by stack ID.
+  // LINT: Tab bars are only drawn on Windows.
+  #[cfg_attr(not(target_os = "windows"), allow(dead_code))]
   pub tab_action_tx: mpsc::UnboundedSender<(Uuid, TabAction)>,
 
   /// Live tab bar windows keyed by their `StackContainer` ID.

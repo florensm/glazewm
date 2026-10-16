@@ -1,6 +1,8 @@
+#[cfg(target_os = "windows")]
+use std::collections::HashSet;
 use std::{
   cell::Cell,
-  collections::{HashMap, HashSet},
+  collections::HashMap,
   sync::{
     atomic::{AtomicBool, Ordering},
     Arc, Mutex,
@@ -235,6 +237,7 @@ fn keep_first_error(
 
 use tokio::sync::mpsc;
 use uuid::Uuid;
+#[cfg(target_os = "windows")]
 use wm_common::{
   EasingFunction, ResizeStyle, WindowTransitionParams,
   WindowTransitionStyle, WorkspaceSwitchDirection, WorkspaceSwitchStyle,
@@ -259,12 +262,12 @@ use crate::commands::general::{
   surrogate_effects_for, upsert_blended_overlay, upsert_overlay,
   upsert_pinned_border_overlay, SyncableOverlay,
 };
+#[cfg(target_os = "windows")]
+use crate::traits::WindowGetters;
 use crate::{
   animation::state::WindowAnimationState,
-  commands::general::platform_sync,
-  traits::{CommonGetters, WindowGetters},
-  user_config::UserConfig,
-  wm_state::WmState,
+  commands::general::platform_sync, traits::CommonGetters,
+  user_config::UserConfig, wm_state::WmState,
 };
 
 /// A single entry in the surrogate update queue built each redraw pass.
@@ -407,6 +410,8 @@ pub enum AnimationPositionResult {
   Apply(Rect),
   /// The surrogate overlay is handling all visuals; skip repositioning
   /// the real window this frame.
+  // LINT: Surrogates only exist on Windows.
+  #[cfg_attr(not(target_os = "windows"), allow(dead_code))]
   Frozen,
 }
 
@@ -636,6 +641,7 @@ impl AnimationManager {
       sync_demoted_until: HashMap::new(),
       #[cfg(target_os = "windows")]
       pending_close_windows: HashMap::new(),
+      #[cfg(target_os = "windows")]
       pending_minimize_windows: HashSet::new(),
       #[cfg(target_os = "windows")]
       iris_switch: None,
@@ -1921,6 +1927,8 @@ impl AnimationManager {
     // early: leaving it open there made `Cleanup` enclose a second
     // `PlatformSync`, double-counting that time so the two stages summed
     // to more than the enclosing `Tick`.
+    // LINT: Only taken early by the Windows teardown below.
+    #[cfg_attr(not(target_os = "windows"), allow(unused_mut))]
     let mut cleanup_scope = Some(perf::scope(Stage::Cleanup));
 
     // Fade out pending sessions now that `platform_sync` has moved the
@@ -2472,6 +2480,8 @@ impl AnimationManager {
 
   /// The pacing monitor's frame period, or zero before a vsync waiter is
   /// installed.
+  // LINT: The vsync waiter only exists on Windows.
+  #[cfg_attr(not(target_os = "windows"), allow(clippy::unused_self))]
   fn frame_period(&self) -> Duration {
     #[cfg(target_os = "windows")]
     if let Some(period_us) =
@@ -2969,21 +2979,6 @@ impl AnimationManager {
     })
   }
 
-  /// Returns the last sampled surrogate backdrop color for `hwnd`,
-  /// however old it is.
-  ///
-  /// Age is not consulted: the color only ever stands in for window
-  /// content in a strip the thumbnail has not reached yet, and an app's
-  /// background changes about as often as its theme -- so the previous
-  /// sample beats none, which leaves that strip showing the backdrop raw
-  /// and undimmed. Callers re-sample on every session (see
-  /// [`sample_edge_color_async`]), so this entry is never more than one
-  /// animation behind the window.
-  ///
-  /// `sample_edge_color_async`'s background thread populates this same map
-  /// directly (see `edge_color_cache`'s doc comment), so a lock failure
-  /// here is treated the same as a miss rather than propagated.
-  #[cfg(target_os = "windows")]
   /// Re-samples the edge color of every window that animated since the
   /// last idle point.
   ///
@@ -3001,6 +2996,21 @@ impl AnimationManager {
     }
   }
 
+  /// Returns the last sampled surrogate backdrop color for `hwnd`,
+  /// however old it is.
+  ///
+  /// Age is not consulted: the color only ever stands in for window
+  /// content in a strip the thumbnail has not reached yet, and an app's
+  /// background changes about as often as its theme -- so the previous
+  /// sample beats none, which leaves that strip showing the backdrop raw
+  /// and undimmed. Callers re-sample on every session (see
+  /// [`sample_edge_color_async`]), so this entry is never more than one
+  /// animation behind the window.
+  ///
+  /// `sample_edge_color_async`'s background thread populates this same map
+  /// directly (see `edge_color_cache`'s doc comment), so a lock failure
+  /// here is treated the same as a miss rather than propagated.
+  #[cfg(target_os = "windows")]
   fn cached_edge_color(&self, hwnd: isize) -> Option<Color> {
     let map = self.edge_color_cache.lock().ok()?;
     map.get(&hwnd).map(|(color, _)| *color)
@@ -3130,6 +3140,19 @@ impl AnimationManager {
     }
   }
 
+  /// Whether any surrogate exists right now, of either kind.
+  ///
+  /// Surrogates are created at `HWND_TOP`, which displaces *other*
+  /// windows' overlays out of their z-order slot -- so while any are
+  /// alive, every overlay has to re-check where it sits rather than
+  /// assume it has not been moved. Losing that check is what stopped
+  /// borders and backdrops tracking their windows through a workspace
+  /// switch.
+  #[cfg(target_os = "windows")]
+  pub fn has_any_surrogate(&self) -> bool {
+    !self.resize_sessions.is_empty() || self.is_workspace_switch_active()
+  }
+
   /// Returns `true` while a workspace-switch slide animation is in
   /// progress or its surrogates are still live during post-animation
   /// cleanup.
@@ -3139,18 +3162,6 @@ impl AnimationManager {
   /// until surrogates are fully dropped, preventing a one-frame flash
   /// between animation completion and surrogate teardown.
   #[cfg(target_os = "windows")]
-  /// Whether any surrogate exists right now, of either kind.
-  ///
-  /// Surrogates are created at `HWND_TOP`, which displaces *other*
-  /// windows' overlays out of their z-order slot -- so while any are
-  /// alive, every overlay has to re-check where it sits rather than
-  /// assume it has not been moved. Losing that check is what stopped
-  /// borders and backdrops tracking their windows through a workspace
-  /// switch.
-  pub fn has_any_surrogate(&self) -> bool {
-    !self.resize_sessions.is_empty() || self.is_workspace_switch_active()
-  }
-
   pub fn is_workspace_switch_active(&self) -> bool {
     self.workspace_switch.is_some() || self.pending_ws_cleanup.is_some()
   }

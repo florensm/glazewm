@@ -101,6 +101,7 @@ pub fn focus_workspace(
             monitor_y: bounds.y(),
             monitor_width: bounds.width(),
             monitor_height: bounds.height(),
+            #[cfg(target_os = "windows")]
             monitor_handle: props.handle,
             origin_x,
             origin_y,

@@ -1,3 +1,6 @@
+// LINT: Keys are only sent to joining windows on Windows.
+#![cfg_attr(not(target_os = "windows"), allow(dead_code))]
+
 use std::{
   collections::{HashMap, HashSet},
   time::{Duration, Instant},
