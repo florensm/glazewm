@@ -6,15 +6,18 @@
   all(not(debug_assertions), target_os = "windows"),
   windows_subsystem = "windows"
 )]
-#![warn(clippy::all, clippy::pedantic)]
 #![feature(iterator_try_collect)]
 
 #[cfg(target_os = "macos")]
 use std::io::IsTerminal;
-use std::{env, path::PathBuf, process, time::Duration};
+use std::{
+  path::PathBuf,
+  process,
+  time::{Duration, Instant},
+};
 
-use anyhow::{Context, Error};
-use tokio::{process::Command, signal};
+use anyhow::Context;
+use tokio::signal;
 use tracing::Level;
 use tracing_subscriber::{
   fmt::{self, writer::MakeWriterExt},
@@ -30,15 +33,21 @@ use wm_platform::{
 };
 
 use crate::{
-  ipc_server::IpcServer, sys_tray::SystemTray, user_config::UserConfig,
+  error_notifier::ErrorNotifier,
+  ipc_server::{IpcMessage, IpcServer},
+  sys_tray::SystemTray,
+  user_config::UserConfig,
   wm::WindowManager,
 };
 
 mod animation;
 mod auto_stack;
+#[cfg(target_os = "windows")]
+mod closing_windows;
 mod commands;
 #[cfg(target_os = "windows")]
 mod drop_indicator;
+mod error_notifier;
 mod events;
 mod ipc_server;
 mod layout;
@@ -73,7 +82,7 @@ fn main() -> anyhow::Result<()> {
   } = app_command
   {
     // Before any window exists: our overlay windows live on a thread that
-    // never pumps a message queue, so Windows would otherwise substitute
+    // never handles posted messages, so Windows could otherwise substitute
     // hit-testable "Not Responding" ghosts for them and swallow desktop
     // mouse input. See `disable_window_ghosting`.
     wm_platform::disable_window_ghosting();
@@ -168,23 +177,20 @@ async fn start_wm(
   }
 
   // Start listening for platform events after populating initial state.
-  let mut window_listener = WindowListener::new(dispatcher)?;
-  let mut display_listener = DisplayListener::new(dispatcher)?;
-  let mut mouse_listener = MouseListener::new(
-    if config.value.general.focus_follows_cursor {
-      &[MouseEventKind::Move, MouseEventKind::LeftButtonUp]
-    } else {
-      &[MouseEventKind::LeftButtonUp]
-    },
-    dispatcher,
-  )?;
-  let mut keybinding_listener = KeybindingListener::new(
-    &config
-      .active_keybinding_configs(&[], false)
-      .flat_map(|kb| kb.bindings)
-      .collect::<Vec<_>>(),
-    dispatcher,
-  )?;
+  let mut listeners = Listeners {
+    window: WindowListener::new(dispatcher)?,
+    display: DisplayListener::new(dispatcher)?,
+    mouse: MouseListener::new(mouse_event_kinds(&config), dispatcher)?,
+    keybinding: KeybindingListener::new(
+      &config
+        .active_keybinding_configs(&[], false)
+        .flat_map(|kb| kb.bindings)
+        .collect::<Vec<_>>(),
+      dispatcher,
+    )?,
+  };
+
+  let error_notifier = ErrorNotifier::new(dispatcher.clone());
 
   // Run user's startup commands.
   if let Err(err) = wm.process_commands(
@@ -192,8 +198,7 @@ async fn start_wm(
     None,
     &mut config,
   ) {
-    tracing::error!("{:?}", err);
-    dispatcher.show_error_dialog("Non-fatal error", &err.to_string());
+    error_notifier.report(&err);
   }
 
   // Create an interval for periodically cleaning up invalid windows.
@@ -201,28 +206,40 @@ async fn start_wm(
   cleanup_interval
     .set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
+  // Wakes the loop so that `process_sent_messages` runs while idle. Only
+  // needed on Windows.
+  let mut sent_message_interval = cfg!(target_os = "windows").then(|| {
+    let mut interval = tokio::time::interval(SENT_MESSAGE_INTERVAL);
+    interval
+      .set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    interval
+  });
+
   loop {
-    // Hand queued platform events the thread before the next animation
-    // frame. The `biased` select below puts the animation tick above every
-    // event branch, and a tick is ready again as soon as the previous
-    // frame finishes, so during an animation those branches are never
-    // reached -- window events were measured waiting a median ~210ms
-    // and up to ~577ms on an eight-window relayout. The drain is
-    // capped per frame so an event burst cannot starve the animation
-    // in the other direction.
-    if let Err(err) = drain_platform_events(
+    wm_platform::process_sent_messages();
+
+    // Hand queued work the thread before the next animation frame. The
+    // `biased` select below puts the animation tick above every other
+    // branch, and a tick is ready again as soon as the previous frame
+    // finishes, so during an animation those branches are never reached:
+    // window events were measured waiting a median ~210ms and up to
+    // ~577ms on an eight-window relayout, and IPC commands, tab clicks
+    // and timers waited for the animation to end. The catch-up is bounded
+    // per frame so a burst cannot starve the animation in turn.
+    if let Err(err) = catch_up_before_frame(
       &mut wm,
       &mut config,
-      &mut keybinding_listener,
-      &mut mouse_listener,
-      &mut window_listener,
-      &mut display_listener,
+      &mut listeners,
+      &mut ipc_server,
+      &mut tray,
     ) {
-      tracing::error!("{:?}", err);
-      dispatcher.show_error_dialog("Non-fatal error", &err.to_string());
+      error_notifier.report(&err);
     }
 
     let auto_stack_deadline = wm.state.auto_stack.next_deadline();
+    let closing_check = wm.next_closing_check();
+    let animation_watchdog =
+      wm.state.animation_manager.watchdog_deadline();
 
     let res = tokio::select! {
       // biased: evaluated top-to-bottom when multiple futures are ready
@@ -247,19 +264,24 @@ async fn start_wm(
         while wm.animation_tick_rx.try_recv().is_ok() {}
         wm.update_animations(&config)
       },
-      Some(event) = mouse_listener.next_event() => {
+      // Reached only when no tick is pending, i.e. the timer stopped
+      // ticking while something is still animating.
+      () = sleep_until(animation_watchdog) => {
+        wm.recover_stalled_animations(&config)
+      },
+      Some(event) = listeners.mouse.next_event() => {
         tracing::debug!("Received mouse event: {:?}", event);
         wm.process_event(PlatformEvent::Mouse(event), &mut config)
       },
-      Some(event) = window_listener.next_event() => {
+      Some(event) = listeners.window.next_event() => {
         tracing::debug!("Received window event: {:?}", event);
         wm.process_event(PlatformEvent::Window(event), &mut config)
       },
-      Some(()) = display_listener.next_event() => {
+      Some(()) = listeners.display.next_event() => {
         tracing::debug!("Received display settings changed event.");
         wm.process_event(PlatformEvent::DisplaySettingsChanged, &mut config)
       },
-      Some(event) = keybinding_listener.next_event() => {
+      Some(event) = listeners.keybinding.next_event() => {
         tracing::debug!("Received keyboard event: {:?}", event);
         wm.process_event(PlatformEvent::Keybinding(event), &mut config)
       }
@@ -274,85 +296,36 @@ async fn start_wm(
           wm.state.cleanup_invalid_windows()
         }
       },
-      Some((
-        message,
-        response_tx,
-        disconnection_tx
-      )) = ipc_server.message_rx.recv() => {
-        tracing::info!("Received IPC message: {:?}", message);
-        wm_platform::perf::mark_input();
-
-        if let Err(err) = ipc_server.process_message(
-          message,
-          &response_tx,
-          &disconnection_tx,
-          &mut wm,
-          &mut config,
-        ) {
-          tracing::error!("{:?}", err);
-        }
-
+      Some(message) = ipc_server.message_rx.recv() => {
+        handle_ipc_message(message, &mut ipc_server, &mut wm, &mut config);
         Ok(())
       },
       () = sleep_until(auto_stack_deadline) => {
         wm.process_auto_stack_timeouts(&mut config)
       },
+      () = sleep_until(closing_check) => {
+        wm.process_closing_windows(&mut config)
+      },
+      () = tick_if_some(&mut sent_message_interval) => Ok(()),
       Some((stack_id, action)) = wm.tab_action_rx.recv() => {
         wm.process_tab_action(stack_id, action, &mut config)
       },
       Some(wm_event) = wm.event_rx.recv() => {
-        tracing::debug!("Received WM event: {:?}", wm_event);
-
-        // Disable mouse listener when the WM is paused.
-        if let WmEvent::PauseChanged { is_paused } = wm_event {
-          let _ = mouse_listener.enable(!is_paused);
-        }
-
-        // Update keybinding and mouse listeners on config changes. While
-        // paused, only the bindings that unpause are taken from apps.
-        if matches!(
+        handle_wm_event(
           wm_event,
-          WmEvent::UserConfigChanged { .. }
-            | WmEvent::BindingModesChanged { .. }
-            | WmEvent::PauseChanged { .. }
-        ) {
-          keybinding_listener.update(
-            &config
-              .active_keybinding_configs(
-                &wm.state.binding_modes,
-                wm.state.is_paused,
-              )
-              .flat_map(|kb| kb.bindings)
-              .collect::<Vec<_>>(),
-          );
-
-          mouse_listener.set_enabled_events(
-            if config.value.general.focus_follows_cursor {
-              &[MouseEventKind::Move, MouseEventKind::LeftButtonUp]
-            } else {
-              &[MouseEventKind::LeftButtonUp]
-            },
-          )?;
-        }
-
-        if let Err(err) = ipc_server.process_event(wm_event) {
-          tracing::error!("{:?}", err);
-        }
-
-        Ok(())
+          &wm,
+          &config,
+          &mut listeners,
+          &mut ipc_server,
+        )
       },
       Some(()) = tray.config_reload_rx.recv() => {
-        wm.process_commands(
-          &vec![InvokeCommand::WmReloadConfig],
-          None,
-          &mut config,
-        ).map(|_| ())
+        reload_config_from_tray(&mut wm, &mut config)
       },
     };
 
     if let Err(err) = res {
-      tracing::error!("{:?}", err);
-      dispatcher.show_error_dialog("Non-fatal error", &err.to_string());
+      error_notifier.report(&err);
     }
   }
 
@@ -362,76 +335,227 @@ async fn start_wm(
   Ok(())
 }
 
-/// Maximum platform events serviced ahead of one animation frame by
-/// [`drain_platform_events`].
+/// Longest a message sent to one of the WM thread's windows waits to be
+/// handled while the loop is idle. See
+/// `wm_platform::process_sent_messages`.
+///
+/// Broadcasts reach windows one at a time, so a broadcaster can wait this
+/// long for each overlay -- well under a second for a typical layout.
+const SENT_MESSAGE_INTERVAL: Duration = Duration::from_millis(100);
+
+/// Platform event listeners, bundled for the main loop's helpers.
+struct Listeners {
+  keybinding: KeybindingListener,
+  mouse: MouseListener,
+  window: WindowListener,
+  display: DisplayListener,
+}
+
+/// Mouse events to listen for under `config`.
+fn mouse_event_kinds(config: &UserConfig) -> &'static [MouseEventKind] {
+  if config.value.general.focus_follows_cursor {
+    &[MouseEventKind::Move, MouseEventKind::LeftButtonUp]
+  } else {
+    &[MouseEventKind::LeftButtonUp]
+  }
+}
+
+/// Runs an IPC message. Errors are answered to the client rather than
+/// shown.
+fn handle_ipc_message(
+  (message, response_tx, disconnection_tx): IpcMessage,
+  ipc_server: &mut IpcServer,
+  wm: &mut WindowManager,
+  config: &mut UserConfig,
+) {
+  tracing::info!("Received IPC message: {:?}", message);
+  wm_platform::perf::mark_input();
+
+  if let Err(err) = ipc_server.process_message(
+    message,
+    &response_tx,
+    &disconnection_tx,
+    wm,
+    config,
+  ) {
+    tracing::error!("{:?}", err);
+  }
+}
+
+/// Forwards a WM event to IPC subscribers, and updates the listeners when
+/// it changes what they listen for.
+fn handle_wm_event(
+  wm_event: WmEvent,
+  wm: &WindowManager,
+  config: &UserConfig,
+  listeners: &mut Listeners,
+  ipc_server: &mut IpcServer,
+) -> anyhow::Result<()> {
+  tracing::debug!("Received WM event: {:?}", wm_event);
+
+  // Disable mouse listener when the WM is paused.
+  if let WmEvent::PauseChanged { is_paused } = wm_event {
+    let _ = listeners.mouse.enable(!is_paused);
+  }
+
+  // Update keybinding and mouse listeners on config changes. While
+  // paused, only the bindings that unpause are taken from apps.
+  if matches!(
+    wm_event,
+    WmEvent::UserConfigChanged { .. }
+      | WmEvent::BindingModesChanged { .. }
+      | WmEvent::PauseChanged { .. }
+  ) {
+    listeners.keybinding.update(
+      &config
+        .active_keybinding_configs(
+          &wm.state.binding_modes,
+          wm.state.is_paused,
+        )
+        .flat_map(|kb| kb.bindings)
+        .collect::<Vec<_>>(),
+    );
+
+    listeners
+      .mouse
+      .set_enabled_events(mouse_event_kinds(config))?;
+  }
+
+  if let Err(err) = ipc_server.process_event(wm_event) {
+    tracing::error!("{:?}", err);
+  }
+
+  Ok(())
+}
+
+fn reload_config_from_tray(
+  wm: &mut WindowManager,
+  config: &mut UserConfig,
+) -> anyhow::Result<()> {
+  wm.process_commands(&vec![InvokeCommand::WmReloadConfig], None, config)
+    .map(|_| ())
+}
+
+/// Maximum items serviced ahead of one animation frame by
+/// [`catch_up_before_frame`].
 ///
 /// Bounds the inversion this creates: without a cap, an application
-/// spamming location-change events could keep the drain busy and starve
+/// spamming location-change events could keep the catch-up busy and starve
 /// the animation tick, turning an input-latency fix into dropped frames.
 /// Eight is comfortably above the ~1.5 events per frame observed on an
-/// eight-window relayout, so in practice the queue empties first.
-const MAX_PRIORITY_EVENTS_PER_FRAME: usize = 8;
+/// eight-window relayout, so in practice the queues empty first.
+const MAX_CATCH_UP_ITEMS: usize = 8;
 
-/// Services up to [`MAX_PRIORITY_EVENTS_PER_FRAME`] already-queued
-/// platform events before the next animation frame.
+/// Time after which [`catch_up_before_frame`] leaves the rest to later
+/// frames, since a single command can take far longer than an event.
+const CATCH_UP_BUDGET: Duration = Duration::from_millis(4);
+
+/// Services already-queued work before the next animation frame, up to
+/// [`MAX_CATCH_UP_ITEMS`] items or [`CATCH_UP_BUDGET`].
 ///
-/// Returns as soon as every eligible listener is empty, so a quiet loop
+/// Returns as soon as every eligible queue is empty, so a quiet loop
 /// iteration costs a handful of non-blocking channel polls.
 ///
-/// Keybindings are checked first because they are the only events a person
-/// is actively waiting on; the main loop's own `select!` checks them last.
+/// What a person is waiting on comes first: keybindings, IPC commands,
+/// and tab bar and overview clicks. These run the same commands a
+/// keybinding does, so they are safe at any time.
 ///
 /// # Why the workspace-switch gate
 ///
 /// Mouse, window and display handlers mutate layout state -- display
-/// states, workspace membership, floating placement, unmanagement. Resize
-/// and move animations are safe: `handle_window_moved_or_resized` bails
-/// out early for any window holding a `ResizeSession`, so those events
-/// cost a rect query and nothing more. A workspace-switch slide has no
-/// such guard on every path, and delivering these events mid-slide broke
-/// the animation and left workspaces reporting no windows.
+/// states, workspace membership, floating placement, unmanagement -- and
+/// so do due auto-stack and closing-window timers, which manage windows.
+/// Resize and move animations are safe: `handle_window_moved_or_resized`
+/// bails out early for any window holding a `ResizeSession`, so those
+/// events cost a rect query and nothing more. A workspace-switch slide has
+/// no such guard on every path, and delivering these events mid-slide
+/// broke the animation and left workspaces reporting no windows.
 ///
 /// So the gate is narrow on purpose: during a slide (and its one-tick
-/// cleanup) only keybindings are drained and everything else waits for the
-/// `select!`, exactly as it did before this option existed. A slide is
-/// brief, so the responsiveness win during resizes -- which is where the
-/// queue actually backs up, ~195 events per burst -- is kept intact.
-fn drain_platform_events(
+/// cleanup) these wait for the `select!`. A slide is brief, so the
+/// responsiveness win during resizes -- which is where the queue actually
+/// backs up, ~195 events per burst -- is kept intact.
+fn catch_up_before_frame(
   wm: &mut WindowManager,
   config: &mut UserConfig,
-  keybinding_listener: &mut KeybindingListener,
-  mouse_listener: &mut MouseListener,
-  window_listener: &mut WindowListener,
-  display_listener: &mut DisplayListener,
+  listeners: &mut Listeners,
+  ipc_server: &mut IpcServer,
+  tray: &mut SystemTray,
 ) -> anyhow::Result<()> {
-  // Re-checked every iteration: handling an event below can start or end a
-  // slide, and the next event must be judged against that.
-  for _ in 0..MAX_PRIORITY_EVENTS_PER_FRAME {
+  let started = Instant::now();
+
+  for _ in 0..MAX_CATCH_UP_ITEMS {
+    if started.elapsed() >= CATCH_UP_BUDGET {
+      break;
+    }
+
+    if let Some(event) = listeners.keybinding.try_next_event() {
+      tracing::debug!("Received keyboard event ahead of tick: {event:?}");
+      wm.process_event(PlatformEvent::Keybinding(event), config)?;
+      continue;
+    }
+
+    if let Ok(message) = ipc_server.message_rx.try_recv() {
+      handle_ipc_message(message, ipc_server, wm, config);
+      continue;
+    }
+
+    if let Ok((stack_id, action)) = wm.tab_action_rx.try_recv() {
+      wm.process_tab_action(stack_id, action, config)?;
+      continue;
+    }
+
+    if let Ok((session, action)) = wm.overview_action_rx.try_recv() {
+      wm.process_overview_action(session, action, config)?;
+      continue;
+    }
+
+    if tray.config_reload_rx.try_recv().is_ok() {
+      reload_config_from_tray(wm, config)?;
+      continue;
+    }
+
+    if let Ok(wm_event) = wm.event_rx.try_recv() {
+      handle_wm_event(wm_event, wm, config, listeners, ipc_server)?;
+      continue;
+    }
+
+    // Re-checked every iteration: handling an item above can start or end
+    // a slide, and the next one must be judged against that.
     #[cfg(target_os = "windows")]
-    let layout_events_safe =
-      !wm.state.animation_manager.is_workspace_switch_active();
-    #[cfg(not(target_os = "windows"))]
-    let layout_events_safe = true;
+    if wm.state.animation_manager.is_workspace_switch_active() {
+      break;
+    }
 
-    let event = keybinding_listener
+    let now = Instant::now();
+
+    if wm
+      .state
+      .auto_stack
+      .next_deadline()
+      .is_some_and(|at| at <= now)
+    {
+      wm.process_auto_stack_timeouts(config)?;
+      continue;
+    }
+
+    if wm.next_closing_check().is_some_and(|at| at <= now) {
+      wm.process_closing_windows(config)?;
+      continue;
+    }
+
+    let event = listeners
+      .mouse
       .try_next_event()
-      .map(PlatformEvent::Keybinding)
+      .map(PlatformEvent::Mouse)
       .or_else(|| {
-        if !layout_events_safe {
-          return None;
-        }
-
-        mouse_listener
+        listeners.window.try_next_event().map(PlatformEvent::Window)
+      })
+      .or_else(|| {
+        listeners
+          .display
           .try_next_event()
-          .map(PlatformEvent::Mouse)
-          .or_else(|| {
-            window_listener.try_next_event().map(PlatformEvent::Window)
-          })
-          .or_else(|| {
-            display_listener
-              .try_next_event()
-              .map(|()| PlatformEvent::DisplaySettingsChanged)
-          })
+          .map(|()| PlatformEvent::DisplaySettingsChanged)
       });
 
     let Some(event) = event else {
@@ -507,14 +631,14 @@ fn setup_logging(verbosity: &Verbosity) -> anyhow::Result<()> {
 ///
 /// This assumes the watcher binary exists in the same directory as the
 /// WM binary.
-fn start_watcher_process() -> anyhow::Result<tokio::process::Child, Error>
-{
-  let watcher_path = env::current_exe()?
+#[cfg(target_os = "windows")]
+fn start_watcher_process() -> anyhow::Result<tokio::process::Child> {
+  let watcher_path = std::env::current_exe()?
     .parent()
     .context("Failed to resolve path to the watcher process.")?
     .join("glazewm-watcher");
 
-  Command::new(&watcher_path)
+  tokio::process::Command::new(&watcher_path)
     .spawn()
     .context("Failed to start watcher process.")
 }
@@ -550,6 +674,16 @@ fn update_path_env() {
     tracing::warn!(
       "Failed to query login shell for PATH. Keeping existing PATH."
     );
+  }
+}
+
+/// Waits for `interval`'s next tick, or forever when there is none.
+async fn tick_if_some(interval: &mut Option<tokio::time::Interval>) {
+  match interval {
+    Some(interval) => {
+      interval.tick().await;
+    }
+    None => std::future::pending().await,
   }
 }
 

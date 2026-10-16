@@ -9,7 +9,7 @@ pub struct SubenumVariant {
   pub enums: Vec<syn::Ident>,
 }
 
-/// Parse a single subenum variant from a [syn::Variant].
+/// Parse a single subenum variant from a [`syn::Variant`].
 pub fn parse_variant(
   variant: &syn::Variant,
 ) -> syn::Result<SubenumVariant> {
@@ -49,7 +49,7 @@ pub fn parse_variant(
 
   Ok(SubenumVariant {
     name,
-    enums,
     contained,
+    enums,
   })
 }

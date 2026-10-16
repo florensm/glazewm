@@ -3,8 +3,8 @@ use std::collections::HashMap;
 use regex::Regex;
 use wm_common::{StackConfig, TabBarPosition, TabCloseButton};
 use wm_platform::{
-  BorderOverlayParams, Color, CornerRadii, NativeStackTabBar, Rect,
-  TabBarStyle, TabCloseMode, TabFrame, TabInfo,
+  BorderOverlayParams, Color, CornerRadii, Dispatcher, NativeStackTabBar,
+  Rect, TabBarStyle, TabCloseMode, TabFrame, TabInfo, UiThread,
 };
 
 use crate::{
@@ -350,7 +350,8 @@ pub fn sync_tab_bars(
       let _ = tab_action_tx.send((stack_id, action));
     });
 
-    match NativeStackTabBar::create(&state.dispatcher, on_action) {
+    match NativeStackTabBar::create(&tab_bar_dispatcher(state), on_action)
+    {
       Ok(mut bar) => {
         bar.update(frame, true);
         state.tab_bars.insert(stack_id, bar);
@@ -358,6 +359,28 @@ pub fn sync_tab_bars(
       Err(err) => tracing::warn!("Failed to create tab bar: {err}"),
     }
   }
+}
+
+/// Dispatcher for the thread tab bars are created on, starting it with the
+/// first bar.
+///
+/// Tab bars repaint on every animation frame that moves their stack, and
+/// the main event loop's thread also runs the keyboard hook: painting
+/// there delayed every key press system-wide. Falls back to that thread,
+/// for good, if a thread of their own can't be started, so that all bars
+/// stay on one thread.
+fn tab_bar_dispatcher(state: &WmState) -> Dispatcher {
+  let thread = state.tab_bar_thread.get_or_init(|| {
+    UiThread::spawn("glazewm-tab-bars")
+      .inspect_err(|err| {
+        tracing::warn!("Failed to start tab bar thread: {err}");
+      })
+      .ok()
+  });
+
+  thread
+    .as_ref()
+    .map_or_else(|| state.dispatcher.clone(), |t| t.dispatcher().clone())
 }
 
 #[cfg(test)]

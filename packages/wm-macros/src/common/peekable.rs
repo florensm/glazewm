@@ -67,8 +67,8 @@ pub trait Peekable {
 }
 
 /// Trait for the types in syn that have a corresponding function that
-/// implements [syn::parse::Peek]. E.g. it implements a method for
-/// [syn::Ident] the type that returns [syn::Ident] the function.
+/// implements [`syn::parse::Peek`]. E.g. it implements a method for
+/// [`syn::Ident`] the type that returns [`syn::Ident`] the function.
 pub trait SynPeek {
   fn peekable() -> impl syn::parse::Peek;
   // To be forwarded to [Peekable]
@@ -76,7 +76,7 @@ pub trait SynPeek {
   fn display() -> &'static str;
 }
 
-/// Implement [Peekable] for [SynPeek]
+/// Implement [`Peekable`] for [`SynPeek`]
 impl<T: SynPeek> Peekable for T {
   fn peek<S>(stream: S) -> bool
   where
@@ -98,7 +98,7 @@ pub fn get_peek_display<T: syn::parse::Peek>(_peek: T) -> &'static str {
   T::Token::display()
 }
 
-/// Extends the [PeekableStream] trait with a method to peek at a type
+/// Extends the [`PeekableStream`] trait with a method to peek at a type
 /// rather than a value.
 ///
 /// # Example
@@ -146,8 +146,8 @@ macro_rules! custom_keyword {
 }
 pub(crate) use custom_keyword;
 
-/// Macro for implementing [SynPeek] for a type that implements
-/// [syn::parse::Peek].
+/// Macro for implementing [`SynPeek`] for a type that implements
+/// [`syn::parse::Peek`].
 macro_rules! impl_syn_peek {
   ($($name:tt)+) => {
     impl SynPeek for $($name)+ {

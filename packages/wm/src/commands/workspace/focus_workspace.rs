@@ -25,6 +25,7 @@ use crate::{
 /// in a given direction from the currently focused workspace.
 ///
 /// The workspace will be activated if it isn't already active.
+#[allow(clippy::too_many_lines)]
 pub fn focus_workspace(
   target: WorkspaceTarget,
   state: &mut WmState,
@@ -103,6 +104,7 @@ pub fn focus_workspace(
             monitor_y: bounds.y(),
             monitor_width: bounds.width(),
             monitor_height: bounds.height(),
+            #[cfg(target_os = "windows")]
             monitor_handle: props.handle,
             origin_x,
             origin_y,
@@ -223,8 +225,7 @@ fn iris_origin_point(
       .as_window_container()
       .ok()
       .and_then(|w| w.to_rect().ok())
-      .map(|r| (r.x() + r.width() / 2, r.y() + r.height() / 2))
-      .unwrap_or(center),
+      .map_or(center, |r| (r.x() + r.width() / 2, r.y() + r.height() / 2)),
   }
 }
 

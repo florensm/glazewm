@@ -1,7 +1,7 @@
 //! Type for a String with an associated source code span.
 
 /// A String with an associated source code span.
-/// An owned version of a syn::LitStr.
+/// An owned version of a `syn::LitStr`.
 #[derive(Debug, Clone)]
 pub struct SpannedString {
   pub value: String,
@@ -13,7 +13,7 @@ impl SpannedString {
     SpannedString { value, span }
   }
 
-  pub fn from_lit_str(lit_str: syn::LitStr) -> Self {
+  pub fn from_lit_str(lit_str: &syn::LitStr) -> Self {
     SpannedString {
       value: lit_str.value(),
       span: lit_str.span(),
@@ -35,7 +35,7 @@ impl From<&SpannedString> for syn::LitStr {
 
 impl From<syn::LitStr> for SpannedString {
   fn from(lit_str: syn::LitStr) -> Self {
-    SpannedString::from_lit_str(lit_str)
+    SpannedString::from_lit_str(&lit_str)
   }
 }
 

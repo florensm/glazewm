@@ -39,10 +39,10 @@ static ACCENT_COLOR_CACHE: OnceLock<Mutex<Option<(Instant, Color)>>> =
 pub fn system_accent_color() -> crate::Result<Color> {
   let cache = ACCENT_COLOR_CACHE.get_or_init(|| Mutex::new(None));
 
-  // A poisoned lock means an earlier caller panicked while holding it,
-  // which never happens in this function's small, panic-free critical
-  // section, so `expect` here is effectively infallible.
-  let mut guard = cache.lock().expect("accent color cache mutex poisoned");
+  // The cache only holds plain values, so a poisoned lock is still valid.
+  let mut guard = cache
+    .lock()
+    .unwrap_or_else(std::sync::PoisonError::into_inner);
 
   let now = Instant::now();
   if let Some((cached_at, color)) = *guard {

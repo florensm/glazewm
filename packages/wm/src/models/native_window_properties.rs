@@ -27,6 +27,8 @@ impl NativeWindowProperties {
   /// Kept out of `try_from`, which runs for every window shown: the
   /// question waits on the window's own thread, which a busy app can take
   /// a while to answer.
+  // LINT: Minimum sizes are only asked for on Windows.
+  #[cfg_attr(not(target_os = "windows"), allow(clippy::unused_self))]
   pub fn measure_min_width(&mut self, native_window: &NativeWindow) {
     #[cfg(target_os = "windows")]
     {

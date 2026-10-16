@@ -26,6 +26,8 @@ use wm_platform::{
 use crate::commands::window::close_duplicate_tabs;
 #[cfg(target_os = "windows")]
 use crate::commands::window::detach_window_for_close;
+#[cfg(target_os = "windows")]
+use crate::traits::PositionGetters;
 use crate::{
   commands::{
     column::{
@@ -71,7 +73,7 @@ use crate::{
   },
   ipc_server::IpcServer,
   models::{Container, WorkspaceTarget},
-  traits::{CommonGetters, PositionGetters, WindowGetters},
+  traits::{CommonGetters, WindowGetters},
   user_config::UserConfig,
   wm_state::WmState,
 };
@@ -129,6 +131,11 @@ impl WindowManager {
 
   /// Carries out an action taken in the overview, unless it comes from an
   /// earlier session than the open one.
+  // LINT: The overview only exists on Windows.
+  #[cfg_attr(
+    not(target_os = "windows"),
+    allow(clippy::unused_self, clippy::unnecessary_wraps)
+  )]
   pub fn process_overview_action(
     &mut self,
     session: u64,
@@ -331,6 +338,117 @@ impl WindowManager {
     Ok(())
   }
 
+  /// When [`process_closing_windows`](Self::process_closing_windows) is
+  /// next due.
+  // LINT: Close animations only exist on Windows.
+  #[cfg_attr(not(target_os = "windows"), allow(clippy::unused_self))]
+  pub fn next_closing_check(&self) -> Option<std::time::Instant> {
+    #[cfg(target_os = "windows")]
+    return self.state.closing_windows.next_check();
+    #[cfg(not(target_os = "windows"))]
+    None
+  }
+
+  /// Follows up on windows closed behind a close animation: forgets the
+  /// closed ones, and puts back the ones whose app kept them open.
+  #[cfg(not(target_os = "windows"))]
+  #[allow(clippy::unused_self, clippy::unnecessary_wraps)]
+  pub fn process_closing_windows(
+    &mut self,
+    _config: &mut UserConfig,
+  ) -> anyhow::Result<()> {
+    Ok(())
+  }
+
+  /// Follows up on windows closed behind a close animation: forgets the
+  /// closed ones, and puts back the ones whose app kept them open.
+  #[cfg(target_os = "windows")]
+  pub fn process_closing_windows(
+    &mut self,
+    config: &mut UserConfig,
+  ) -> anyhow::Result<()> {
+    use wm_platform::NativeWindow;
+
+    use crate::{
+      closing_windows::{CloseOutcome, ClosingAction, WindowProbe},
+      commands::window::manage_window,
+    };
+
+    let state = &mut self.state;
+
+    let actions =
+      state
+        .closing_windows
+        .poll(std::time::Instant::now(), |handle| {
+          let native = NativeWindow::from_handle(handle);
+          WindowProbe {
+            is_alive: native.is_valid(),
+            is_shown: native.has_window_style(wm_platform::WS_VISIBLE),
+            has_modal_prompt: native.has_modal_prompt(),
+          }
+        });
+
+    for action in actions {
+      match action {
+        ClosingAction::SendClose { id, handle } => {
+          tracing::warn!(
+            "Close animation of {id} did not finish; closing it now."
+          );
+
+          // Dropped so that a late finish can't close the window again
+          // after it has been put back.
+          state.animation_manager.remove_animation(&id);
+          state.backdrop_overlays.remove(&id);
+          state.border_overlays.remove(&id);
+
+          if let Err(err) = NativeWindow::from_handle(handle).close() {
+            warn!("Failed to close window: {:?}", err);
+          }
+        }
+        ClosingAction::Resolved {
+          id,
+          handle,
+          outcome,
+        } => {
+          let native = NativeWindow::from_handle(handle);
+
+          // Managed again in the meantime, so its cloak is the WM's to
+          // decide as for any other window.
+          if outcome == CloseOutcome::Closed
+            || state.window_from_native(&native).is_some()
+          {
+            continue;
+          }
+
+          // Uncloaked even when hidden by the app (e.g. to its tray
+          // icon), so it doesn't come back invisible when shown again.
+          let _ = native.set_cloaked(false);
+
+          if outcome == CloseOutcome::Refused {
+            tracing::info!(
+              "Window {id} stayed open after being closed; managing it \
+               again."
+            );
+
+            // Logged rather than returned, so the remaining windows are
+            // still handled.
+            if let Err(err) = manage_window(native, None, state, config) {
+              warn!("Failed to manage window {id} again: {err:?}");
+            }
+          }
+        }
+      }
+    }
+
+    if !state.is_paused && state.pending_sync.has_changes() {
+      platform_sync(state, config)?;
+    }
+
+    self.state.animation_manager.ensure_timer_running();
+
+    Ok(())
+  }
+
   pub fn process_event(
     &mut self,
     event: PlatformEvent,
@@ -374,25 +492,23 @@ impl WindowManager {
       }
       PlatformEvent::Window(window_event) => match window_event {
         WindowEvent::Focused { window, .. } => {
-          handle_window_focused(&window, state, config).and_then(|()| {
-            #[cfg(target_os = "windows")]
-            crate::stay_interactive::keep_stacked_windows_interactive(
-              &window, state, config,
-            )?;
-            Ok(())
-          })
+          handle_window_focused(&window, state, config)?;
+          #[cfg(target_os = "windows")]
+          crate::stay_interactive::keep_stacked_windows_interactive(
+            &window, state, config,
+          )?;
+          Ok(())
         }
         WindowEvent::Shown { window, .. } => {
           #[cfg(target_os = "windows")]
           let shown = window.clone();
 
-          handle_window_shown(window, state, config).and_then(|()| {
-            #[cfg(target_os = "windows")]
-            crate::stay_interactive::keep_stacked_windows_interactive(
-              &shown, state, config,
-            )?;
-            Ok(())
-          })
+          handle_window_shown(window, state, config)?;
+          #[cfg(target_os = "windows")]
+          crate::stay_interactive::keep_stacked_windows_interactive(
+            &shown, state, config,
+          )?;
+          Ok(())
         }
         WindowEvent::Hidden { window, .. } => {
           handle_window_hidden(&window, state, config)
@@ -441,6 +557,16 @@ impl WindowManager {
     self.state.animation_manager.ensure_timer_running();
 
     Ok(())
+  }
+
+  /// Runs an animation frame in place of a timer thread that stopped
+  /// ticking, and replaces that thread.
+  pub fn recover_stalled_animations(
+    &mut self,
+    config: &UserConfig,
+  ) -> anyhow::Result<()> {
+    self.state.animation_manager.replace_stalled_timer();
+    self.update_animations(config)
   }
 
   /// Updates all active animations and redraws windows that are animating.
@@ -567,10 +693,7 @@ impl WindowManager {
               use wm_platform::NativeWindowWindowsExt;
 
               let is_focused = window.id()
-                == state
-                  .focused_container()
-                  .map(|c| c.id())
-                  .unwrap_or_default();
+                == state.focused_container().map_or_default(|c| c.id());
 
               let (
                 effect_opacity,
@@ -596,7 +719,7 @@ impl WindowManager {
                   let native_ref = window.native();
                   state.animation_manager.start_close_animation(
                     window_id,
-                    rect,
+                    &rect,
                     effect_opacity,
                     corner_style,
                     backdrop_overlay,
@@ -604,7 +727,7 @@ impl WindowManager {
                     &wm_common::WindowTransitionParams::from_close(
                       &config.value.animations.window_close,
                     ),
-                    &*native_ref,
+                    &native_ref,
                   );
                 }
 
@@ -623,7 +746,13 @@ impl WindowManager {
                 if state.animation_manager.has_close_animation(&window_id)
                 {
                   let _ = window.native().set_cloaked(true);
-                  detach_window_for_close(window, state)?;
+                  detach_window_for_close(
+                    &window,
+                    std::time::Duration::from_millis(u64::from(
+                      config.value.animations.window_close.duration_ms,
+                    )),
+                    state,
+                  )?;
                   return Ok(());
                 }
               }

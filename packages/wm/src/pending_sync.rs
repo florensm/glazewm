@@ -14,12 +14,15 @@ use crate::{
 /// pixels) so `platform_sync` can snapshot the monitor and start the
 /// overlay before the real windows are switched underneath. Stored as
 /// primitives to avoid coupling `PendingSync` to platform types.
+// LINT: Only read by the Windows iris overlay.
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
 #[derive(Debug, Clone, Copy)]
 pub struct IrisSwitchRequest {
   pub monitor_x: i32,
   pub monitor_y: i32,
   pub monitor_width: i32,
   pub monitor_height: i32,
+  #[cfg(target_os = "windows")]
   pub monitor_handle: isize,
   pub origin_x: i32,
   pub origin_y: i32,
@@ -252,6 +255,8 @@ impl PendingSync {
     self.needs_cursor_move
   }
 
+  // LINT: Only read by Windows-only sync steps.
+  #[cfg_attr(not(target_os = "windows"), allow(dead_code))]
   pub fn needs_tab_bar_update(&self) -> bool {
     self.needs_tab_bar_update
   }
@@ -297,6 +302,8 @@ impl PendingSync {
   }
 
   /// Returns `true` if this window came back from minimized this cycle.
+  // LINT: Only read by Windows-only sync steps.
+  #[cfg_attr(not(target_os = "windows"), allow(dead_code))]
   pub fn is_window_restore(&self, id: &Uuid) -> bool {
     self.window_restores.contains(id)
   }
@@ -320,6 +327,8 @@ impl PendingSync {
   }
 
   /// Returns `true` if the window is an incoming workspace-switch window.
+  // LINT: Only read by Windows-only sync steps.
+  #[cfg_attr(not(target_os = "windows"), allow(dead_code))]
   pub fn is_workspace_switch_incoming(&self, window_id: &Uuid) -> bool {
     self.workspace_switch_incoming.contains(window_id)
   }
@@ -341,11 +350,15 @@ impl PendingSync {
   }
 
   /// Returns the slide direction for the current workspace switch.
+  // LINT: Only read by Windows-only sync steps.
+  #[cfg_attr(not(target_os = "windows"), allow(dead_code))]
   pub fn workspace_switch_direction(&self) -> i32 {
     self.workspace_switch_direction
   }
 
   /// Returns the slide axis for the current workspace switch.
+  // LINT: Only read by Windows-only sync steps.
+  #[cfg_attr(not(target_os = "windows"), allow(dead_code))]
   pub fn workspace_switch_axis(&self) -> &WorkspaceSwitchDirection {
     &self.workspace_switch_axis
   }
@@ -360,6 +373,8 @@ impl PendingSync {
   }
 
   /// Consumes and returns the pending iris-wipe request, if any.
+  // LINT: Only read by Windows-only sync steps.
+  #[cfg_attr(not(target_os = "windows"), allow(dead_code))]
   pub fn take_iris_switch(&mut self) -> Option<IrisSwitchRequest> {
     self.iris_switch.take()
   }

@@ -488,6 +488,32 @@ impl NativeWindow {
     process_id
   }
 
+  /// Implements [`NativeWindowWindowsExt::has_modal_prompt`].
+  pub(crate) fn has_modal_prompt(&self) -> bool {
+    use windows::Win32::UI::WindowsAndMessaging::GW_ENABLEDPOPUP;
+
+    if self.is_enabled() {
+      return false;
+    }
+
+    // `GW_ENABLEDPOPUP` yields the window itself when it owns no enabled
+    // popup. SAFETY: A stale handle just returns a null handle.
+    let popup = unsafe { GetWindow(self.hwnd(), GW_ENABLEDPOPUP) };
+
+    popup.0 != 0
+      && popup != self.hwnd()
+      && unsafe { IsWindowVisible(popup) }.as_bool()
+  }
+
+  /// Implements [`NativeWindowWindowsExt::is_hung`].
+  pub(crate) fn is_hung(&self) -> bool {
+    // SAFETY: A stale handle just returns false.
+    unsafe {
+      windows::Win32::UI::WindowsAndMessaging::IsHungAppWindow(self.hwnd())
+    }
+    .as_bool()
+  }
+
   /// Implements [`NativeWindowWindowsExt::is_enabled`].
   pub(crate) fn is_enabled(&self) -> bool {
     // SAFETY: A stale handle just returns false.

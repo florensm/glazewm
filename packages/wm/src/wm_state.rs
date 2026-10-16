@@ -82,6 +82,11 @@ pub struct WmState {
   /// Windows held back or placed by `stack.auto_stack` rules.
   pub auto_stack: AutoStackState,
 
+  /// Windows detached for a close animation, until their app acts on the
+  /// close.
+  #[cfg(target_os = "windows")]
+  pub closing_windows: crate::closing_windows::ClosingWindows,
+
   /// Windows kept usable while their app shows a blocking popup.
   #[cfg(target_os = "windows")]
   pub stay_interactive: crate::stay_interactive::StayInteractive,
@@ -129,11 +134,22 @@ pub struct WmState {
   exit_tx: mpsc::UnboundedSender<()>,
 
   /// Sender for actions taken in tab bars, keyed by stack ID.
+  // LINT: Tab bars are only drawn on Windows.
+  #[cfg_attr(not(target_os = "windows"), allow(dead_code))]
   pub tab_action_tx: mpsc::UnboundedSender<(Uuid, TabAction)>,
 
   /// Live tab bar windows keyed by their `StackContainer` ID.
   #[cfg(target_os = "windows")]
   pub tab_bars: HashMap<Uuid, NativeStackTabBar>,
+
+  /// Thread the tab bars run on, started with the first one; `None`
+  /// inside if it could not be started. See
+  /// `tab_bars::tab_bar_dispatcher`.
+  ///
+  /// Declared after `tab_bars` so the bars are dropped first, queueing
+  /// their closes ahead of the thread's quit.
+  #[cfg(target_os = "windows")]
+  pub tab_bar_thread: std::cell::OnceCell<Option<wm_platform::UiThread>>,
 
   /// Tab bar settings resolved from the config, cleared on reload.
   #[cfg(target_os = "windows")]
@@ -175,6 +191,8 @@ impl WmState {
       ignored_windows: Vec::new(),
       auto_stack: AutoStackState::default(),
       #[cfg(target_os = "windows")]
+      closing_windows: crate::closing_windows::ClosingWindows::default(),
+      #[cfg(target_os = "windows")]
       stay_interactive: crate::stay_interactive::StayInteractive::default(
       ),
       is_paused: false,
@@ -185,6 +203,8 @@ impl WmState {
       tab_action_tx,
       #[cfg(target_os = "windows")]
       tab_bars: HashMap::new(),
+      #[cfg(target_os = "windows")]
+      tab_bar_thread: std::cell::OnceCell::new(),
       #[cfg(target_os = "windows")]
       tab_bar_settings: None,
     }
@@ -840,6 +860,13 @@ impl Drop for WmState {
     #[cfg(target_os = "windows")]
     for native_window in self.auto_stack.release_all() {
       let _ = native_window.set_cloaked(false);
+    }
+
+    // Closing windows are cloaked and out of the tree. Those whose app
+    // has not closed them yet would otherwise stay invisible.
+    #[cfg(target_os = "windows")]
+    for handle in self.closing_windows.drain() {
+      let _ = NativeWindow::from_handle(handle).set_cloaked(false);
     }
 
     let managed_windows = self.windows();

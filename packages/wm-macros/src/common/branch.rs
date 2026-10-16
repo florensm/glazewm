@@ -59,7 +59,7 @@ impl_for_tuple!(T, U | 0, 1);
 /// `Sep` as the separator between items.
 ///
 /// # Example
-/// Parse [syn::Ident] and [syn::LitStr] from the stream, which are
+/// Parse [`syn::Ident`] and [`syn::LitStr`] from the stream, which are
 /// separated by a comma. E.g. `some_name, "some string"`. If the order is
 /// reversed, it will fail to parse.
 /// ```ignore
@@ -101,7 +101,7 @@ where
   }
 }
 
-/// Implement [Peekable] for [Ordered] if the first item in the
+/// Implement [`Peekable`] for [`Ordered`] if the first item in the
 /// tuple is peekable, by forwarding the implementation to the first item.
 impl<T, FirstItem, Sep> crate::common::peekable::Peekable
   for Ordered<T, Sep>

@@ -2,7 +2,9 @@
 use std::time::{Duration, Instant};
 
 use anyhow::Context;
-use tracing::{debug, warn};
+use tracing::debug;
+#[cfg(target_os = "windows")]
+use tracing::warn;
 use wm_common::{
   CursorJumpTrigger, DisplayState, HideCorner, HideMethod, WindowState,
   WmEvent,
@@ -27,12 +29,16 @@ use wm_platform::{
 };
 
 use crate::{
-  animation::{AnimationPositionResult, WorkspaceSwitchEntry},
+  animation::AnimationPositionResult,
   layout::is_hidden_in_layout,
-  models::{is_inactive_stack_child, Container, WindowContainer},
+  models::{Container, WindowContainer},
   traits::{CommonGetters, PositionGetters, WindowGetters},
   user_config::UserConfig,
   wm_state::WmState,
+};
+#[cfg(target_os = "windows")]
+use crate::{
+  animation::WorkspaceSwitchEntry, models::is_inactive_stack_child,
 };
 #[cfg(target_os = "windows")]
 use crate::{
@@ -42,6 +48,7 @@ use crate::{
 /// Returns the smallest iris radius that fully covers the monitor from the
 /// origin — the distance to the farthest monitor corner.
 #[cfg(target_os = "windows")]
+#[allow(clippy::cast_possible_truncation)]
 fn iris_max_radius(req: &IrisSwitchRequest) -> i32 {
   let corners = [
     (req.monitor_x, req.monitor_y),
@@ -565,6 +572,7 @@ fn unmanage_embedded_windows(state: &mut WmState) -> anyhow::Result<()> {
   Ok(())
 }
 
+#[allow(clippy::too_many_lines)]
 fn redraw_containers(
   focused_container: &Container,
   state: &mut WmState,
@@ -704,7 +712,7 @@ fn redraw_containers(
         let mut monitor_handle = 0isize;
         let mut monitor_work_area = Rect::from_xy(0, 0, 0, 0);
 
-        for window in windows_to_update.iter() {
+        for window in &windows_to_update {
           let id = window.id();
           let is_incoming =
             state.pending_sync.is_workspace_switch_incoming(&id);
@@ -806,20 +814,20 @@ fn redraw_containers(
             // border ring around the inflated rect for the whole slide and
             // snap it down at settle. Only the `frame()` fallback
             // legitimately doubles as both.
-            let (current, frame_rect) =
-              match state.window_target_positions.get(&id) {
-                Some(target) => (
-                  target.clone(),
-                  window.to_rect().unwrap_or_else(|_| target.clone()),
-                ),
-                None => {
-                  let frame = window
-                    .native()
-                    .frame()
-                    .unwrap_or_else(|_| Rect::from_xy(0, 0, 0, 0));
-                  (frame.clone(), frame)
-                }
-              };
+            let (current, frame_rect) = if let Some(target) =
+              state.window_target_positions.get(&id)
+            {
+              (
+                target.clone(),
+                window.to_rect().unwrap_or_else(|_| target.clone()),
+              )
+            } else {
+              let frame = window
+                .native()
+                .frame()
+                .unwrap_or_else(|_| Rect::from_xy(0, 0, 0, 0));
+              (frame.clone(), frame)
+            };
             let viewport = Rect::from_xy(
               monitor_x,
               monitor_y,
@@ -1132,13 +1140,10 @@ fn redraw_containers(
 
     // A window is resizing when its dimensions change (vs. a pure
     // translation).
-    let is_resize = previous_target
-      .as_ref()
-      .map(|prev| {
-        prev.width() != target_rect.width()
-          || prev.height() != target_rect.height()
-      })
-      .unwrap_or(false);
+    let is_resize = previous_target.as_ref().is_some_and(|prev| {
+      prev.width() != target_rect.width()
+        || prev.height() != target_rect.height()
+    });
 
     // Columns of a scrolling layout move and resize as `scroll` says.
     let is_column =
@@ -1253,14 +1258,14 @@ fn redraw_containers(
       let native_ref = window.native();
       state.animation_manager.start_open_animation(
         window.id(),
-        target_rect.clone(),
+        &target_rect,
         monitor_rect,
         effect_opacity,
         corner_style,
         backdrop_overlay,
         border_overlay,
         &params,
-        &*native_ref,
+        &native_ref,
       );
     }
 
@@ -1275,7 +1280,7 @@ fn redraw_containers(
       && state
         .animation_manager
         .get_animation(&window.id())
-        .map_or(false, |a| !a.is_complete());
+        .is_some_and(|a| !a.is_complete());
     #[cfg(not(target_os = "windows"))]
     let has_slide_in = false;
 
@@ -1292,13 +1297,14 @@ fn redraw_containers(
         || (is_visible
           && (!is_fullscreen || is_wm_fullscreen_toggle || has_slide_in)
           && !suppress_animations
-          && ((!is_floating && anim_enabled)
-            || (is_state_change && anim_enabled)
+          && ((anim_enabled && (!is_floating || is_state_change))
             || has_slide_in)));
 
     // Determine the rect to use for this frame.
     #[cfg_attr(not(target_os = "windows"), allow(unused_variables))]
     let anim_scope = perf::scope(Stage::AnimStep);
+    // LINT: Animated opacity is only applied on Windows.
+    #[cfg_attr(not(target_os = "windows"), allow(unused_variables))]
     let (position_result, anim_opacity) = if should_use_animations {
       // Incoming workspace-switch windows: the surrogate handles all
       // visuals for the full animation duration — freeze the real
@@ -1316,7 +1322,7 @@ fn redraw_containers(
           is_column,
           target_rect.clone(),
           previous_target,
-          &*native_ref,
+          &native_ref,
           effect_opacity,
           corner_style,
           backdrop_overlay,
@@ -1332,6 +1338,7 @@ fn redraw_containers(
         is_column,
         target_rect.clone(),
         previous_target,
+        &window.native(),
         u8::MAX,
         config,
       )
@@ -1377,7 +1384,7 @@ fn redraw_containers(
           .animation_manager
           .resize_sessions
           .get(&window.id())
-          .map_or(false, |s| s.is_session_cloaked());
+          .is_some_and(wm_platform::ResizeSession::is_session_cloaked);
         #[cfg(target_os = "windows")]
         if !already_cloaked_by_session
           && !window.native().is_cloaked().unwrap_or(false)
@@ -1501,6 +1508,7 @@ fn redraw_containers(
         // performs it itself under `HideMethod::Cloak`, and repeating the
         // `DwmSetWindowAttribute` call is the single most expensive thing
         // in this arm -- see `CloakState`.
+        #[cfg(target_os = "windows")]
         let mut cloak_state = CloakState::Untouched;
         #[cfg(target_os = "windows")]
         let mut did_move = false;
@@ -1513,6 +1521,15 @@ fn redraw_containers(
             // app can dominate `rd_apply` -- the stage totals alone cannot
             // show which one. Scoped tightly so only the reposition itself
             // is counted.
+            // A window whose app is hung, or was recently slow to answer a
+            // synchronous move, is moved asynchronously instead: in step
+            // with its surrogate is not worth stalling the whole WM for.
+            #[cfg(target_os = "windows")]
+            let has_surrogate = has_surrogate
+              && state
+                .animation_manager
+                .allows_sync_reposition(&window.native());
+
             let _apply_scope = perf::apply_scope(
               || window.native_properties().process_name,
               has_surrogate,
@@ -1527,11 +1544,23 @@ fn redraw_containers(
               has_surrogate,
               config,
             ) {
+              // LINT: Its fields are Windows-only.
+              #[cfg_attr(
+                not(target_os = "windows"),
+                allow(unused_variables)
+              )]
               Ok(reposition) => {
-                cloak_state = reposition.cloak_state;
                 #[cfg(target_os = "windows")]
                 {
+                  cloak_state = reposition.cloak_state;
                   did_move = reposition.moved;
+
+                  if let Some(elapsed) = reposition.sync_elapsed {
+                    state.animation_manager.note_sync_reposition(
+                      window.native().hwnd().0,
+                      elapsed,
+                    );
+                  }
                 }
               }
               Err(err) => {
@@ -1588,6 +1617,7 @@ fn redraw_containers(
     // Mark fullscreen windows as fullscreen on every redraw (including
     // during animations) to ensure browser fullscreen APIs work
     // correctly.
+    #[cfg(target_os = "windows")]
     let is_transitioning_fullscreen =
       match (window.prev_state(), window.state()) {
         (Some(_), WindowState::Fullscreen(s)) if !s.maximized => true,
@@ -1595,9 +1625,11 @@ fn redraw_containers(
         _ => false,
       };
 
+    #[cfg(target_os = "windows")]
     let is_currently_fullscreen =
       matches!(window.state(), WindowState::Fullscreen(_));
 
+    #[cfg(target_os = "windows")]
     if is_currently_fullscreen {
       if let Err(err) = window.native().mark_fullscreen(true) {
         warn!("Failed to mark window as fullscreen: {}", err);
@@ -1785,6 +1817,7 @@ const SLOW_SYNC_REPOSITION_THRESHOLD: Duration = Duration::from_millis(8);
 /// What [`reposition_window`] did, for the caller's follow-up work.
 struct Reposition {
   /// Cloak state the window was left in.
+  #[cfg(target_os = "windows")]
   cloak_state: CloakState,
   /// Whether a geometry-changing `SetWindowPos` was actually issued.
   /// Only such a call carries `SWP_FRAMECHANGED`, so the caller's
@@ -1792,6 +1825,9 @@ struct Reposition {
   /// is owed only when this is `true`.
   #[cfg(target_os = "windows")]
   moved: bool,
+  /// How long the move took, if it was synchronous.
+  #[cfg(target_os = "windows")]
+  sync_elapsed: Option<Duration>,
 }
 
 /// Whether [`reposition_window`] already applied the window's cloak state.
@@ -1801,6 +1837,7 @@ struct Reposition {
 /// exactly that. The repeat `DwmSetWindowAttribute(DWMWA_CLOAK)` is not
 /// free: it measured ~4.8ms per window, ~27% of the whole `rd_apply` stage
 /// on an eight-window relayout.
+#[cfg(target_os = "windows")]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum CloakState {
   /// Applied by `reposition_window`; the caller must not repeat it.
@@ -1809,6 +1846,7 @@ enum CloakState {
   Untouched,
 }
 
+#[allow(clippy::too_many_lines)]
 fn reposition_window(
   window: &WindowContainer,
   rect: &Rect,
@@ -1859,15 +1897,21 @@ fn reposition_window(
     ))?;
 
     return Ok(Reposition {
+      #[cfg(target_os = "windows")]
       cloak_state: CloakState::Untouched,
       #[cfg(target_os = "windows")]
       moved: true,
+      #[cfg(target_os = "windows")]
+      sync_elapsed: None,
     });
   }
 
+  #[cfg(target_os = "windows")]
   let mut cloak_state = CloakState::Untouched;
   #[cfg(target_os = "windows")]
   let mut moved = true;
+  #[cfg(target_os = "windows")]
+  let mut sync_elapsed = None;
 
   if window.active_drag().is_some() {
     window.native().resize(rect.width(), rect.height())?;
@@ -2028,6 +2072,8 @@ fn reposition_window(
 
       if let Some(start) = sync_reposition_start {
         let elapsed = start.elapsed();
+        sync_elapsed = Some(elapsed);
+
         if elapsed > SLOW_SYNC_REPOSITION_THRESHOLD {
           tracing::warn!(
             "Synchronous reposition for {window} took {elapsed:?} -- \
@@ -2060,9 +2106,12 @@ fn reposition_window(
   }
 
   Ok(Reposition {
+    #[cfg(target_os = "windows")]
     cloak_state,
     #[cfg(target_os = "windows")]
     moved,
+    #[cfg(target_os = "windows")]
+    sync_elapsed,
   })
 }
 
@@ -2764,6 +2813,7 @@ impl SyncableOverlay for NativeBorderOverlay {
 /// configured window on every tick would issue a `GetWindow` syscall per
 /// window that's a guaranteed no-op in the common case.
 #[cfg(target_os = "windows")]
+#[allow(clippy::too_many_lines)]
 fn sync_overlays<O: SyncableOverlay>(
   state: &mut WmState,
   config: &UserConfig,

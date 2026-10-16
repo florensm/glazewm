@@ -25,13 +25,16 @@ use crate::{
   wm::WindowManager,
 };
 
+/// IPC message, with the channels to answer its client on.
+pub type IpcMessage = (
+  String,
+  mpsc::UnboundedSender<Message>,
+  broadcast::Sender<()>,
+);
+
 pub struct IpcServer {
   abort_handle: task::AbortHandle,
-  pub message_rx: mpsc::UnboundedReceiver<(
-    String,
-    mpsc::UnboundedSender<Message>,
-    broadcast::Sender<()>,
-  )>,
+  pub message_rx: mpsc::UnboundedReceiver<IpcMessage>,
   _event_rx: broadcast::Receiver<(SubscribableEvent, WmEvent)>,
   event_tx: broadcast::Sender<(SubscribableEvent, WmEvent)>,
   _unsubscribe_rx: broadcast::Receiver<Uuid>,
@@ -77,11 +80,7 @@ impl IpcServer {
   async fn handle_connection(
     stream: TcpStream,
     addr: SocketAddr,
-    message_tx: mpsc::UnboundedSender<(
-      String,
-      mpsc::UnboundedSender<Message>,
-      broadcast::Sender<()>,
-    )>,
+    message_tx: mpsc::UnboundedSender<IpcMessage>,
   ) -> anyhow::Result<()> {
     info!("Incoming IPC connection from: {}.", addr);
 

@@ -15,14 +15,11 @@ pub fn enum_from_inner(
 
   let name = &input.ident;
 
-  let enum_data = match input.data {
-    syn::Data::Enum(data) => data,
-    _ => {
-      return name
-        .error("This macro can only be used on enums")
-        .to_compile_error()
-        .into();
-    }
+  let syn::Data::Enum(enum_data) = input.data else {
+    return name
+      .error("This macro can only be used on enums")
+      .to_compile_error()
+      .into();
   };
 
   let variants = enum_data.variants.iter().map(|variant| {

@@ -1,10 +1,10 @@
-//! Utilities for working with [syn::Attribute]
+//! Utilities for working with [`syn::Attribute`]
 
 pub mod prelude {
   pub use super::FindAttributes;
 }
 
-/// Trait for filtering lists of [syn::Attribute] by name and type.
+/// Trait for filtering lists of [`syn::Attribute`] by name and type.
 pub trait FindAttributes {
   /// Find attributes by name. E.g. `#[name]`, `#[name(...)]` or `#[name =
   /// <value>]`

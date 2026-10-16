@@ -912,7 +912,7 @@ impl WindowEffectConfig {
           CornerStyle::Rounded
         }
       }
-      None if self.corner_style.enabled => self.corner_style.style.clone(),
+      None if self.corner_style.enabled => self.corner_style.style,
       None => CornerStyle::Default,
     }
   }
@@ -1517,6 +1517,7 @@ impl WindowTransitionStyle {
   ///
   /// Stationary styles keep the surrogate at the window's final position
   /// for the full animation; the surrogate window itself never moves.
+  #[must_use]
   pub fn is_stationary(&self) -> bool {
     matches!(self, Self::None | Self::Zoom)
   }
@@ -1712,12 +1713,14 @@ pub enum WorkspaceSwitchStyle {
 
 impl WorkspaceSwitchStyle {
   /// Returns `true` when the transition has no positional slide component.
+  #[must_use]
   pub fn is_no_slide(&self) -> bool {
     matches!(self, Self::Fade | Self::Zoom)
   }
 
   /// Returns `true` for the iris-wipe style, which is driven by a single
   /// snapshot overlay rather than per-window surrogates.
+  #[must_use]
   pub fn is_iris(&self) -> bool {
     matches!(self, Self::Iris)
   }
@@ -2036,6 +2039,7 @@ impl EasingFunction {
   /// Non-overshooting functions are cut off at 99% eased progress to avoid
   /// the "stuck at destination" look. Overshooting ones run to full
   /// wall-clock duration to preserve their bounce.
+  #[must_use]
   pub fn can_overshoot(&self) -> bool {
     match self {
       EasingFunction::EaseOutSpring => true,
@@ -2131,6 +2135,9 @@ impl<'de> Deserialize<'de> for EasingFunction {
 }
 
 impl Serialize for EasingFunction {
+  // Exact comparisons on purpose: only control points that are exactly a
+  // named alias's are written back as that alias.
+  #[allow(clippy::float_cmp)]
   fn serialize<S: serde::Serializer>(
     &self,
     s: S,
@@ -2206,7 +2213,9 @@ fn parse_spring(value: &str) -> Result<SpringParams, String> {
     match name {
       "damping_ratio" => spring.damping_ratio = number,
       "stiffness" if number > 0. => spring.stiffness = number,
-      "stiffness" => return Err("spring stiffness must be above 0".into()),
+      "stiffness" => {
+        return Err("spring stiffness must be above 0".into())
+      }
       // A fraction of the way, not pixels.
       "epsilon" if number > 0. && number < 1. => spring.epsilon = number,
       "epsilon" => {
@@ -2349,9 +2358,12 @@ mod tests {
 
   #[test]
   fn a_spring_with_an_odd_epsilon_still_has_a_duration() {
-    for (damping_ratio, epsilon, initial_velocity) in
-      [(1., 1.06, 0.), (0.8, 1.5, -10.), (0.8, 2., 8.), (0.8, 2., 35.)]
-    {
+    for (damping_ratio, epsilon, initial_velocity) in [
+      (1., 1.06, 0.),
+      (0.8, 1.5, -10.),
+      (0.8, 2., 8.),
+      (0.8, 2., 35.),
+    ] {
       let spring = SpringParams {
         damping_ratio,
         epsilon,

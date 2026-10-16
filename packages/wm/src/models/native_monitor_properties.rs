@@ -21,6 +21,8 @@ pub struct NativeMonitorProperties {
 }
 
 impl NativeMonitorProperties {
+  // Refresh rates are small positive values.
+  #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
   pub fn try_from(native_display: &Display) -> anyhow::Result<Self> {
     let display_device = native_display.main_device()?;
 

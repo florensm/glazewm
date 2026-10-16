@@ -21,15 +21,19 @@ use crate::{
 /// The animation state is intentionally preserved here because
 /// `AnimationManager::update_internal` continues driving the surrogate and
 /// sends `WM_CLOSE` once the animation completes.
+///
+/// The window stays tracked in `WmState::closing_windows` until its app
+/// acts on the close, so that it can be put back if the app keeps it open.
 #[cfg(target_os = "windows")]
 pub fn detach_window_for_close(
-  window: WindowContainer,
+  window: &WindowContainer,
+  animation_duration: std::time::Duration,
   state: &mut WmState,
 ) -> anyhow::Result<()> {
   let ancestors = window.ancestors().take(3).collect::<Vec<_>>();
-  let focus_target = state.focus_target_after_removal(&window.clone());
-  let other_tabs = other_stack_tabs(&window);
-  let is_stacked = is_stacked(&window);
+  let focus_target = state.focus_target_after_removal(window);
+  let other_tabs = other_stack_tabs(window);
+  let is_stacked = is_stacked(window);
 
   detach_container(window.clone().into())?;
   state.pending_sync.queue_containers_to_redraw(other_tabs);
@@ -46,6 +50,13 @@ pub fn detach_window_for_close(
   for ancestor in ancestors.iter().rev() {
     flatten_child_split_containers(ancestor)?;
   }
+
+  state.closing_windows.track(
+    window.id(),
+    window.native().hwnd().0,
+    animation_duration,
+    std::time::Instant::now(),
+  );
 
   state.emit_event(WmEvent::WindowUnmanaged {
     unmanaged_id: window.id(),
