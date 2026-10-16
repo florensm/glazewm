@@ -4,7 +4,7 @@ use std::{
   cell::Cell,
   collections::HashMap,
   sync::{
-    atomic::{AtomicBool, Ordering},
+    atomic::{AtomicBool, AtomicUsize, Ordering},
     Arc, Mutex,
   },
   time::{Duration, Instant},
@@ -218,6 +218,20 @@ struct TimerThread {
   /// Makes the thread exit once its current wait returns. Set when the
   /// watchdog replaces a thread stuck in a vsync wait.
   retired: Arc<AtomicBool>,
+}
+
+/// Counts a retired timer thread out of `stalled_timers` once it exits.
+struct StalledTimerGuard {
+  retired: Arc<AtomicBool>,
+  stalled_timers: Arc<AtomicUsize>,
+}
+
+impl Drop for StalledTimerGuard {
+  fn drop(&mut self) {
+    if self.retired.load(Ordering::Relaxed) {
+      self.stalled_timers.fetch_sub(1, Ordering::Relaxed);
+    }
+  }
 }
 
 /// Stores `next` in `result` if it is the first error; later errors are
@@ -441,6 +455,11 @@ pub struct AnimationManager {
   ///
   /// [`watchdog_deadline`]: AnimationManager::watchdog_deadline
   last_frame_at: Cell<Instant>,
+  /// Timer threads replaced by the watchdog that are still blocked in
+  /// their wait. See [`replace_stalled_timer`].
+  ///
+  /// [`replace_stalled_timer`]: AnimationManager::replace_stalled_timer
+  stalled_timers: Arc<AtomicUsize>,
   /// The timestamp every window is evaluated at in the current redraw
   /// pass; see [`frame_now`]. Cleared by [`begin_redraw_pass`].
   ///
@@ -608,6 +627,7 @@ impl AnimationManager {
       timer_thread: Mutex::new(None),
       timer_shutdown: Arc::new(AtomicBool::new(false)),
       last_frame_at: Cell::new(Instant::now()),
+      stalled_timers: Arc::new(AtomicUsize::new(0)),
       pass_now: None,
       #[cfg(target_os = "windows")]
       overlay_z_settle: HashMap::new(),
@@ -1031,7 +1051,17 @@ impl AnimationManager {
   /// that went stale, which can block indefinitely. It is left to exit
   /// whenever that wait returns, and the vsync waiter is dropped so the
   /// new thread paces itself with `DwmFlush` instead.
+  ///
+  /// Nothing is replaced while an earlier replaced thread is still
+  /// blocked: then the replacement stalled too (e.g. `DwmFlush` with the
+  /// displays off), and further threads would only pile up behind it.
+  /// The watchdog keeps running frames itself until one recovers.
   pub fn replace_stalled_timer(&self) {
+    if self.stalled_timers.load(Ordering::Relaxed) > 0 {
+      tracing::debug!("Animation timer still stalled; not replacing it.");
+      return;
+    }
+
     tracing::warn!(
       "Animation timer stalled for over {FRAME_STALL_TIMEOUT:?}; \
        replacing it."
@@ -1055,6 +1085,7 @@ impl AnimationManager {
       .expect("animation mutex poisoned")
       .take()
     {
+      self.stalled_timers.fetch_add(1, Ordering::Relaxed);
       timer.retired.store(true, Ordering::Relaxed);
       timer.handle.thread().unpark();
     }
@@ -1076,6 +1107,10 @@ impl AnimationManager {
     let shutdown = self.timer_shutdown.clone();
     let retired = Arc::new(AtomicBool::new(false));
     let thread_retired = retired.clone();
+    let stalled_guard = StalledTimerGuard {
+      retired: retired.clone(),
+      stalled_timers: self.stalled_timers.clone(),
+    };
     #[cfg(target_os = "windows")]
     let vsync_waiter = self.animation_timer_vsync.clone();
     #[cfg(target_os = "windows")]
@@ -1086,6 +1121,8 @@ impl AnimationManager {
     let result = std::thread::Builder::new()
       .name("glazewm-anim-tick".into())
       .spawn(move || {
+        let _stalled_guard = stalled_guard;
+
         // Elevate scheduling priority once for the thread's whole
         // lifetime. MMCSS "DisplayPostProcessing" gives
         // near-real-time guarantees beyond
@@ -3902,6 +3939,35 @@ mod tests {
     assert_eq!(active.windows.len(), 2);
     assert!(active.windows.contains_key(&b));
     assert!(active.windows.contains_key(&c));
+  }
+
+  #[test]
+  fn stalled_guard_counts_only_retired_threads() {
+    let stalled_timers = Arc::new(AtomicUsize::new(1));
+
+    for (is_retired, expected) in [(false, 1), (true, 0)] {
+      drop(StalledTimerGuard {
+        retired: Arc::new(AtomicBool::new(is_retired)),
+        stalled_timers: stalled_timers.clone(),
+      });
+      assert_eq!(stalled_timers.load(Ordering::Relaxed), expected);
+    }
+  }
+
+  #[test]
+  fn no_replacement_while_a_replaced_timer_is_stalled() {
+    let (tick_tx, _tick_rx) = mpsc::unbounded_channel();
+    let manager = AnimationManager::new(tick_tx);
+    manager.stalled_timers.store(1, Ordering::Relaxed);
+    manager
+      .animation_timer_running
+      .store(true, Ordering::Relaxed);
+
+    manager.replace_stalled_timer();
+
+    // The running gate is left as it was, so no new thread was started.
+    assert!(manager.animation_timer_running.load(Ordering::Relaxed));
+    assert_eq!(manager.stalled_timers.load(Ordering::Relaxed), 1);
   }
 
   #[test]
