@@ -204,6 +204,12 @@ async fn start_wm(
     .set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
   loop {
+    // Runs every iteration, and at least every `SENT_MESSAGE_INTERVAL`
+    // through the `select!` branch below that just wakes the loop.
+    wm_platform::process_sent_messages();
+    let sent_message_check = cfg!(target_os = "windows")
+      .then(|| Instant::now() + SENT_MESSAGE_INTERVAL);
+
     // Hand queued work the thread before the next animation frame. The
     // `biased` select below puts the animation tick above every other
     // branch, and a tick is ready again as soon as the previous frame
@@ -292,6 +298,7 @@ async fn start_wm(
       () = sleep_until(closing_check) => {
         wm.process_closing_windows(&mut config)
       },
+      () = sleep_until(sent_message_check) => Ok(()),
       Some((stack_id, action)) = wm.tab_action_rx.recv() => {
         wm.process_tab_action(stack_id, action, &mut config)
       },
@@ -319,6 +326,11 @@ async fn start_wm(
 
   Ok(())
 }
+
+/// Longest a message sent to one of the WM thread's windows waits to be
+/// handled while the loop is idle. See
+/// `wm_platform::process_sent_messages`.
+const SENT_MESSAGE_INTERVAL: Duration = Duration::from_millis(250);
 
 /// Platform event listeners, bundled for the main loop's helpers.
 struct Listeners {

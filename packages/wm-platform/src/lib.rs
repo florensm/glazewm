@@ -108,16 +108,16 @@ pub use window_listener::*;
 /// Stops Windows from creating "ghost" windows for this process.
 ///
 /// Every overlay and surrogate window is created on the WM's own thread,
-/// which runs a Tokio loop and never pumps a Win32 message queue, so
-/// Windows classifies all of them as hung (see `NativeBackdropOverlay`'s
-/// `create_window`). For a hung top-level window Windows substitutes a
-/// *ghost* window of its own — the "Not Responding" stand-in — and that
-/// ghost is a real, hit-testable window owned by user32, so the
-/// `WS_EX_TRANSPARENT` that makes our own overlays click-through does not
-/// apply to it. A ghost standing in for a full-screen surrogate swallows
-/// mouse input across the desktop, including the taskbar, while the
-/// keyboard hook keeps working because it is global and never reaches a
-/// window at all.
+/// which runs a Tokio loop and only handles sent messages (see
+/// [`process_sent_messages`]), never posted input, so Windows can still
+/// classify them as hung (see `NativeBackdropOverlay`'s `create_window`).
+/// For a hung top-level window Windows substitutes a *ghost* window of its
+/// own — the "Not Responding" stand-in — and that ghost is a real,
+/// hit-testable window owned by user32, so the `WS_EX_TRANSPARENT` that
+/// makes our own overlays click-through does not apply to it. A ghost
+/// standing in for a full-screen surrogate swallows mouse input across the
+/// desktop, including the taskbar, while the keyboard hook keeps working
+/// because it is global and never reaches a window at all.
 ///
 /// Call once, before any window is created. On non-Windows platforms this
 /// is a no-op.
@@ -128,6 +128,39 @@ pub fn disable_window_ghosting() {
     // arguments, returns nothing, and only affects this process.
     windows::Win32::UI::WindowsAndMessaging::DisableProcessWindowsGhosting(
     );
+  }
+}
+
+/// Handles messages other threads have sent to this thread's windows,
+/// leaving posted messages (input, paint) queued.
+///
+/// The WM's own thread runs a Tokio loop rather than a message loop, yet
+/// owns every overlay and surrogate window. Without this, a thread sending
+/// to one of them -- e.g. an app broadcasting `WM_SETTINGCHANGE` with
+/// `SendMessage` -- blocks until the WM happens to pump, and Windows
+/// reports the WM as not responding after 5 seconds. On non-Windows
+/// platforms this is a no-op.
+pub fn process_sent_messages() {
+  #[cfg(target_os = "windows")]
+  {
+    use windows::Win32::UI::WindowsAndMessaging::{
+      PeekMessageW, MSG, PM_NOREMOVE, PM_QS_SENDMESSAGE,
+    };
+
+    let mut msg = MSG::default();
+
+    // SAFETY: `msg` outlives the call. With `PM_QS_SENDMESSAGE` the call
+    // only runs pending sent messages through their window procedures;
+    // `PM_NOREMOVE` leaves anything it finds in the queue.
+    let _ = unsafe {
+      PeekMessageW(
+        &raw mut msg,
+        None,
+        0,
+        0,
+        PM_NOREMOVE | PM_QS_SENDMESSAGE,
+      )
+    };
   }
 }
 
