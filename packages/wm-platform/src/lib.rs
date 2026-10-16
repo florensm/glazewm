@@ -109,8 +109,9 @@ pub use window_listener::*;
 ///
 /// Every overlay and surrogate window is created on the WM's own thread,
 /// which runs a Tokio loop and only handles sent messages (see
-/// [`process_sent_messages`]), never posted input, so Windows can still
-/// classify them as hung (see `NativeBackdropOverlay`'s `create_window`).
+/// [`process_sent_messages`]), never posted input. Windows judges a window
+/// whose input goes unread to be hung (see `NativeBackdropOverlay`'s
+/// `create_window`).
 /// For a hung top-level window Windows substitutes a *ghost* window of its
 /// own — the "Not Responding" stand-in — and that ghost is a real,
 /// hit-testable window owned by user32, so the `WS_EX_TRANSPARENT` that

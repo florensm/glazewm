@@ -246,10 +246,12 @@ impl WindowListener {
       // SAFETY: No preconditions.
       if handle == unsafe { GetDesktopWindow() }
         && !Z_ORDER_CHANGE_QUEUED.swap(true, Ordering::AcqRel)
-      {
-        Self::send_event(WindowEvent::ZOrderChanged {
+        && !Self::send_event(WindowEvent::ZOrderChanged {
           notification: crate::WindowEventNotification(None),
-        });
+        })
+      {
+        // Nothing was queued, so nothing will clear the flag.
+        Z_ORDER_CHANGE_QUEUED.store(false, Ordering::Release);
       }
       return;
     }
@@ -322,16 +324,20 @@ impl WindowListener {
     Self::send_event(event);
   }
 
-  fn send_event(event: WindowEvent) {
+  /// Queues `event` for the WM, returning whether it was queued.
+  fn send_event(event: WindowEvent) -> bool {
     let Some(event_tx) = EVENT_TX.with(|lock| lock.get().cloned()) else {
-      return;
+      return false;
     };
 
     crate::perf::mark_event_queued(crate::perf::EventKind::Window);
 
     if let Err(err) = event_tx.send(event) {
       tracing::warn!("Failed to send window event: {}.", err);
+      return false;
     }
+
+    true
   }
 }
 

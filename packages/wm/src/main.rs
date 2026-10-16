@@ -79,7 +79,7 @@ fn main() -> anyhow::Result<()> {
   } = app_command
   {
     // Before any window exists: our overlay windows live on a thread that
-    // never pumps a message queue, so Windows would otherwise substitute
+    // never handles posted messages, so Windows could otherwise substitute
     // hit-testable "Not Responding" ghosts for them and swallow desktop
     // mouse input. See `disable_window_ghosting`.
     wm_platform::disable_window_ghosting();
@@ -203,12 +203,17 @@ async fn start_wm(
   cleanup_interval
     .set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
+  // Wakes the loop so that `process_sent_messages` runs while idle. Only
+  // needed on Windows.
+  let mut sent_message_interval = cfg!(target_os = "windows").then(|| {
+    let mut interval = tokio::time::interval(SENT_MESSAGE_INTERVAL);
+    interval
+      .set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    interval
+  });
+
   loop {
-    // Runs every iteration, and at least every `SENT_MESSAGE_INTERVAL`
-    // through the `select!` branch below that just wakes the loop.
     wm_platform::process_sent_messages();
-    let sent_message_check = cfg!(target_os = "windows")
-      .then(|| Instant::now() + SENT_MESSAGE_INTERVAL);
 
     // Hand queued work the thread before the next animation frame. The
     // `biased` select below puts the animation tick above every other
@@ -298,7 +303,7 @@ async fn start_wm(
       () = sleep_until(closing_check) => {
         wm.process_closing_windows(&mut config)
       },
-      () = sleep_until(sent_message_check) => Ok(()),
+      () = tick_if_some(&mut sent_message_interval) => Ok(()),
       Some((stack_id, action)) = wm.tab_action_rx.recv() => {
         wm.process_tab_action(stack_id, action, &mut config)
       },
@@ -330,7 +335,10 @@ async fn start_wm(
 /// Longest a message sent to one of the WM thread's windows waits to be
 /// handled while the loop is idle. See
 /// `wm_platform::process_sent_messages`.
-const SENT_MESSAGE_INTERVAL: Duration = Duration::from_millis(250);
+///
+/// Broadcasts reach windows one at a time, so a broadcaster can wait this
+/// long for each overlay -- well under a second for a typical layout.
+const SENT_MESSAGE_INTERVAL: Duration = Duration::from_millis(100);
 
 /// Platform event listeners, bundled for the main loop's helpers.
 struct Listeners {
@@ -659,6 +667,16 @@ fn update_path_env() {
     tracing::warn!(
       "Failed to query login shell for PATH. Keeping existing PATH."
     );
+  }
+}
+
+/// Waits for `interval`'s next tick, or forever when there is none.
+async fn tick_if_some(interval: &mut Option<tokio::time::Interval>) {
+  match interval {
+    Some(interval) => {
+      interval.tick().await;
+    }
+    None => std::future::pending().await,
   }
 }
 

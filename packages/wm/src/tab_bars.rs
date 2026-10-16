@@ -366,20 +366,19 @@ pub fn sync_tab_bars(
 ///
 /// Tab bars repaint on every animation frame that moves their stack, and
 /// the main event loop's thread also runs the keyboard hook: painting
-/// there delayed every key press system-wide. Falls back to that thread if
-/// a thread of their own can't be started.
-fn tab_bar_dispatcher(state: &mut WmState) -> Dispatcher {
-  if state.tab_bar_thread.is_none() {
-    match UiThread::spawn("glazewm-tab-bars") {
-      Ok(thread) => state.tab_bar_thread = Some(thread),
-      Err(err) => {
+/// there delayed every key press system-wide. Falls back to that thread,
+/// for good, if a thread of their own can't be started, so that all bars
+/// stay on one thread.
+fn tab_bar_dispatcher(state: &WmState) -> Dispatcher {
+  let thread = state.tab_bar_thread.get_or_init(|| {
+    UiThread::spawn("glazewm-tab-bars")
+      .inspect_err(|err| {
         tracing::warn!("Failed to start tab bar thread: {err}");
-      }
-    }
-  }
+      })
+      .ok()
+  });
 
-  state
-    .tab_bar_thread
+  thread
     .as_ref()
     .map_or_else(|| state.dispatcher.clone(), |t| t.dispatcher().clone())
 }

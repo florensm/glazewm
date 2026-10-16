@@ -74,6 +74,7 @@ unsafe extern "system" fn iris_wnd_proc(
       }
       LRESULT(0)
     }
+    _ if window_class::is_close_request(msg, wparam) => LRESULT(0),
     // SAFETY: all parameters are passed through unchanged.
     _ => unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) },
   }
