@@ -1,4 +1,7 @@
-use std::sync::OnceLock;
+use std::sync::{
+  atomic::{AtomicBool, Ordering},
+  OnceLock,
+};
 
 use tokio::sync::mpsc;
 use windows::{
@@ -30,6 +33,20 @@ use crate::{Dispatcher, DispatcherExtWindows, WindowEvent, WindowId};
 /// Shell hook notification for a window that is flashing its taskbar
 /// button, which the `windows` crate doesn't define.
 const HSHELL_FLASH: u32 = HSHELL_REDRAW | HSHELL_HIGHBIT;
+
+/// Whether a `ZOrderChanged` event is queued and not yet taken by the WM.
+///
+/// Restacks come in bursts (one per window an animation frame restacks),
+/// and the WM re-checks every overlay's z-order on each event. Its check
+/// reads the current stacking, so one event queued after a burst is
+/// equivalent to the whole burst.
+static Z_ORDER_CHANGE_QUEUED: AtomicBool = AtomicBool::new(false);
+
+/// Lets the next restack queue a `ZOrderChanged` event again. Called when
+/// one is taken off the queue.
+pub(crate) fn z_order_change_dequeued() {
+  Z_ORDER_CHANGE_QUEUED.store(false, Ordering::Release);
+}
 
 thread_local! {
   /// Sender for window events. For use with hook procedure.
@@ -227,7 +244,9 @@ impl WindowListener {
     // reported on their parent and don't matter.
     if event_type == EVENT_OBJECT_REORDER {
       // SAFETY: No preconditions.
-      if handle == unsafe { GetDesktopWindow() } {
+      if handle == unsafe { GetDesktopWindow() }
+        && !Z_ORDER_CHANGE_QUEUED.swap(true, Ordering::AcqRel)
+      {
         Self::send_event(WindowEvent::ZOrderChanged {
           notification: crate::WindowEventNotification(None),
         });
