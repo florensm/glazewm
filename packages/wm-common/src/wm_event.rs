@@ -7,6 +7,9 @@ use crate::{
   TilingDirection,
 };
 
+// Short-lived and serialized for subscribers, so boxing the large
+// variants would only add allocations.
+#[allow(clippy::large_enum_variant)]
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(
   tag = "eventType",

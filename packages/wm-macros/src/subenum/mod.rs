@@ -7,6 +7,7 @@ const SUBENUM_ATTR_NAME: &str = "subenum";
 mod enum_attrs;
 mod variant_attr;
 
+#[allow(clippy::too_many_lines)]
 pub fn sub_enum(
   input: proc_macro::TokenStream,
 ) -> proc_macro::TokenStream {
@@ -21,15 +22,12 @@ pub fn sub_enum(
     Err(err) => return err.to_compile_error().into(),
   };
 
-  let enum_data = match input.data {
-    syn::Data::Enum(data) => data,
-    _ => {
-      return input
-        .ident
-        .error("This macro can only be used on enums")
-        .to_compile_error()
-        .into();
-    }
+  let syn::Data::Enum(enum_data) = input.data else {
+    return input
+      .ident
+      .error("This macro can only be used on enums")
+      .to_compile_error()
+      .into();
   };
 
   let variants = match enum_data
@@ -48,7 +46,7 @@ pub fn sub_enum(
     .iter()
     .filter_map(|sub| match &sub {
       Subenum::Defaults(attrs) => Some(attrs.clone()),
-      _ => None,
+      Subenum::Declaration(_) => None,
     })
     .reduce(|mut acc, el| {
       acc.extend(el);
@@ -74,7 +72,7 @@ pub fn sub_enum(
     }
   }
 
-  let sub_enums = combine_variants(sub_enums, variants, &defaults);
+  let sub_enums = combine_variants(sub_enums, &variants, &defaults);
 
   let sub_enum_to_main_impls = sub_enums
     .iter()
@@ -83,12 +81,6 @@ pub fn sub_enum(
   let main_to_sub_impls = sub_enums
     .iter()
     .map(|sub| try_from_main_to_sub_impl(&input.ident, sub));
-
-  struct SharedVariant {
-    sub_enum_a: syn::Ident,
-    sub_enum_b: syn::Ident,
-    variants: Vec<Variant>,
-  }
 
   // Find all sub enums that have a shared variant, so we can make
   // `TryFrom` impls between them.
@@ -188,6 +180,13 @@ struct SubEnum<'a> {
   pub variants: Vec<Variant>,
 }
 
+/// Variants two sub enums have in common.
+struct SharedVariant {
+  sub_enum_a: syn::Ident,
+  sub_enum_b: syn::Ident,
+  variants: Vec<Variant>,
+}
+
 /// Final representation of a sub enum variant, which includes its name and
 /// the contained type.
 #[derive(Debug, Clone)]
@@ -196,7 +195,7 @@ struct Variant {
   pub contained: syn::Type,
 }
 
-impl<'a> quote::ToTokens for SubEnum<'a> {
+impl quote::ToTokens for SubEnum<'_> {
   fn to_tokens(&self, tokens: &mut proc_macro2::TokenStream) {
     let name = &self.name;
     let defaults = &self.defaults;
@@ -224,16 +223,16 @@ impl quote::ToTokens for Variant {
 }
 
 /// Combine the sub enum declarations with its enum variants
-fn combine_variants(
+fn combine_variants<'a>(
   sub_enums: Vec<SubenumDeclaration>,
-  variants: Vec<variant_attr::SubenumVariant>,
-  defaults: &proc_macro2::TokenStream,
-) -> Vec<SubEnum<'_>> {
+  variants: &[variant_attr::SubenumVariant],
+  defaults: &'a proc_macro2::TokenStream,
+) -> Vec<SubEnum<'a>> {
   sub_enums
     .into_iter()
     .map(|sub_enum| {
       let mut combined_variants = Vec::new();
-      for variant in &variants {
+      for variant in variants {
         if variant.enums.contains(&sub_enum.name) {
           combined_variants.push(Variant {
             name: variant.name.clone(),

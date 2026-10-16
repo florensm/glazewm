@@ -150,6 +150,7 @@ pub struct SessionOptions {
 /// # Platform-specific
 ///
 /// Only available on Windows.
+#[allow(clippy::struct_excessive_bools)]
 pub struct ResizeSession {
   /// Raw handle to the real app window. Stored as `isize` to avoid `Send`
   /// issues with windows-rs handle types. Set to `0` by `pre_commit` when
@@ -312,9 +313,15 @@ impl ResizeSession {
     hwnd: HWND,
     source_rect: &Rect,
     target_rect: &Rect,
-    options: SessionOptions,
+    options: &SessionOptions,
   ) -> crate::Result<Self> {
-    Self::begin_impl(hwnd, source_rect, target_rect, options, None)
+    Ok(Self::begin_impl(
+      hwnd,
+      source_rect,
+      target_rect,
+      options,
+      None,
+    ))
   }
 
   /// Like [`begin`], but reconfigures `warm_surrogate` (see
@@ -329,16 +336,16 @@ impl ResizeSession {
     hwnd: HWND,
     source_rect: &Rect,
     target_rect: &Rect,
-    options: SessionOptions,
+    options: &SessionOptions,
     warm_surrogate: NativeSurrogate,
   ) -> crate::Result<Self> {
-    Self::begin_impl(
+    Ok(Self::begin_impl(
       hwnd,
       source_rect,
       target_rect,
       options,
       Some(warm_surrogate),
-    )
+    ))
   }
 
   /// Shared setup for [`begin`]/[`begin_reusing_surrogate`].
@@ -360,9 +367,9 @@ impl ResizeSession {
     hwnd: HWND,
     source_rect: &Rect,
     target_rect: &Rect,
-    options: SessionOptions,
+    options: &SessionOptions,
     warm_surrogate: Option<NativeSurrogate>,
-  ) -> crate::Result<Self> {
+  ) -> Self {
     let border_inset = compute_border_inset(hwnd);
 
     let is_growing = target_rect.width() >= source_rect.width()
@@ -462,7 +469,7 @@ impl ResizeSession {
       companion_wait_started_at: None,
     };
     session.sync_fill();
-    Ok(session)
+    session
   }
 
   /// Returns the tint/blur-amount/corner-radius/opacity/saturation for the
@@ -555,6 +562,7 @@ impl ResizeSession {
   ///
   /// Required for growing curtain-reveal sessions so DWM captures
   /// correctly-sized content before the surrogate begins expanding.
+  #[must_use]
   pub fn needs_preposition(&self) -> bool {
     self.is_growing
   }
@@ -620,6 +628,7 @@ impl ResizeSession {
   ///
   /// Used by `platform_sync` to skip the per-tick `DwmGetWindowAttribute`
   /// query on steady-state `Frozen` frames where the cloak state is known.
+  #[must_use]
   pub fn is_session_cloaked(&self) -> bool {
     self.session_cloaked
   }
@@ -640,8 +649,12 @@ impl ResizeSession {
   /// source windows). Callers use this to decide whether to freeze the
   /// real window behind the surrogate or fall back to direct
   /// repositioning.
+  #[must_use]
   pub fn has_surrogate(&self) -> bool {
-    self.surrogate.as_ref().map_or(false, |s| s.has_thumbnail())
+    self
+      .surrogate
+      .as_ref()
+      .is_some_and(NativeSurrogate::has_thumbnail)
   }
 
   /// Whether the fade-out tail should keep the surrogate fully opaque a
@@ -700,6 +713,7 @@ impl ResizeSession {
   /// full surrogate). Used for zoom-in (open) and zoom-out (close)
   /// effects. The surrogate window itself stays fixed; only the
   /// thumbnail rect animates.
+  #[allow(clippy::cast_possible_truncation, clippy::cast_precision_loss)]
   pub fn update_zoom_fade(&mut self, progress: f32, opacity: u8) {
     self.zoom_progress = progress;
     self.sync_fill();
@@ -1475,6 +1489,9 @@ fn sampleable_rect(hwnd: HWND) -> Option<Rect> {
   }
 }
 
+/// Pixels sampled along each edge strip by [`sample_edge_color`].
+const EDGE_SAMPLES: i32 = 32;
+
 /// Samples the dominant background color near the trailing content edge by
 /// `BitBlt`-ing two narrow strips from the already-composited screen.
 ///
@@ -1589,19 +1606,18 @@ fn sample_edge_color(
   // are independent allocations that outlive this scope.
   unsafe { ReleaseDC(HWND(0), hdc_screen) };
 
-  const N: i32 = 32;
   let mut counts: HashMap<u32, u32> = HashMap::with_capacity(64);
 
-  for i in 0..N {
-    let sy = (strip_h - 1) * i / (N - 1);
+  for i in 0..EDGE_SAMPLES {
+    let sy = (strip_h - 1) * i / (EDGE_SAMPLES - 1);
     // SAFETY: hdc_right is a valid DC with hbm_right selected.
     let c = unsafe { GetPixel(hdc_right, 0, sy) };
     if c.0 != 0xFFFF_FFFF {
       *counts.entry(c.0 & 0x00FF_FFFF).or_insert(0) += 1;
     }
   }
-  for i in 0..N {
-    let sx = (strip_w - 1) * i / (N - 1);
+  for i in 0..EDGE_SAMPLES {
+    let sx = (strip_w - 1) * i / (EDGE_SAMPLES - 1);
     // SAFETY: hdc_bottom is a valid DC with hbm_bottom selected.
     let c = unsafe { GetPixel(hdc_bottom, sx, 0) };
     if c.0 != 0xFFFF_FFFF {

@@ -29,9 +29,9 @@ impl<E> ThenError<E> for bool {
 }
 
 /// Extension trait for any type that can be tokenized to create a
-/// [syn::Error] at its location.
+/// [`syn::Error`] at its location.
 pub trait ToError {
-  /// Create a [syn::Error] at the span of this object with the given
+  /// Create a [`syn::Error`] at the span of this object with the given
   /// message.
   ///
   /// # Example

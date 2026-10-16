@@ -97,6 +97,97 @@ impl StayInteractive {
   }
 }
 
+/// Re-enables the marked stacked windows that `popup`'s app disabled, if
+/// `popup` is a shown, usable window of that app, and keeps the popup on
+/// top so it can't get lost behind them.
+///
+/// Called when a window is shown or focused: apps disable their windows
+/// before showing a modal popup, so both events come after the disable.
+pub fn keep_stacked_windows_interactive(
+  popup: &wm_platform::NativeWindow,
+  state: &mut crate::wm_state::WmState,
+  config: &mut crate::user_config::UserConfig,
+) -> anyhow::Result<()> {
+  use wm_common::{InvokeCommand, WindowState};
+  use wm_platform::NativeWindowWindowsExt;
+
+  use crate::{
+    traits::{CommonGetters, WindowGetters},
+    wm::WindowManager,
+  };
+
+  // `WS_VISIBLE` rather than `is_visible`: the WM itself keeps a new popup
+  // cloaked until it is placed.
+  if !popup.is_enabled()
+    || !popup.has_window_style(wm_platform::WS_VISIBLE)
+  {
+    return Ok(());
+  }
+
+  let windows = state.windows();
+  let candidates = windows
+    .iter()
+    .filter(|window| {
+      state.stay_interactive.is_marked(window.native().id())
+    })
+    .map(|window| Candidate {
+      id: window.native().id(),
+      process_id: window.native().process_id(),
+      is_stacked: window
+        .parent()
+        .is_some_and(|parent| parent.as_stack().is_some()),
+      is_enabled: window.native().is_enabled(),
+    })
+    .collect::<Vec<_>>();
+
+  if candidates.is_empty() {
+    return Ok(());
+  }
+
+  let targets = state.stay_interactive.windows_to_enable(
+    popup.id(),
+    popup.process_id(),
+    &candidates,
+  );
+
+  if targets.is_empty() {
+    return Ok(());
+  }
+
+  for window in windows
+    .iter()
+    .filter(|w| targets.contains(&w.native().id()))
+  {
+    tracing::info!("Re-enabling stacked window for popup: {window}");
+    window.native().enable_async();
+  }
+
+  // Clicking a re-enabled window would otherwise raise it over a popup
+  // that isn't shown on top.
+  if let Some(popup) = state.window_from_native(popup) {
+    let is_on_top =
+      matches!(popup.state(), WindowState::Floating(c) if c.shown_on_top);
+
+    if !is_on_top {
+      WindowManager::run_command(
+        &InvokeCommand::SetFloating {
+          shown_on_top: Some(true),
+          centered: None,
+          x_pos: None,
+          y_pos: None,
+          width: None,
+          height: None,
+        },
+        popup.into(),
+        state,
+        config,
+      )?;
+    }
+  }
+
+  Ok(())
+}
+
 #[cfg(test)]
 mod tests {
   use wm_platform::WindowId;
@@ -194,95 +285,4 @@ mod tests {
       1
     );
   }
-}
-
-/// Re-enables the marked stacked windows that `popup`'s app disabled, if
-/// `popup` is a shown, usable window of that app, and keeps the popup on
-/// top so it can't get lost behind them.
-///
-/// Called when a window is shown or focused: apps disable their windows
-/// before showing a modal popup, so both events come after the disable.
-pub fn keep_stacked_windows_interactive(
-  popup: &wm_platform::NativeWindow,
-  state: &mut crate::wm_state::WmState,
-  config: &mut crate::user_config::UserConfig,
-) -> anyhow::Result<()> {
-  use wm_common::{InvokeCommand, WindowState};
-  use wm_platform::NativeWindowWindowsExt;
-
-  use crate::{
-    traits::{CommonGetters, WindowGetters},
-    wm::WindowManager,
-  };
-
-  // `WS_VISIBLE` rather than `is_visible`: the WM itself keeps a new popup
-  // cloaked until it is placed.
-  if !popup.is_enabled()
-    || !popup.has_window_style(wm_platform::WS_VISIBLE)
-  {
-    return Ok(());
-  }
-
-  let windows = state.windows();
-  let candidates = windows
-    .iter()
-    .filter(|window| {
-      state.stay_interactive.is_marked(window.native().id())
-    })
-    .map(|window| Candidate {
-      id: window.native().id(),
-      process_id: window.native().process_id(),
-      is_stacked: window
-        .parent()
-        .is_some_and(|parent| parent.as_stack().is_some()),
-      is_enabled: window.native().is_enabled(),
-    })
-    .collect::<Vec<_>>();
-
-  if candidates.is_empty() {
-    return Ok(());
-  }
-
-  let targets = state.stay_interactive.windows_to_enable(
-    popup.id(),
-    popup.process_id(),
-    &candidates,
-  );
-
-  if targets.is_empty() {
-    return Ok(());
-  }
-
-  for window in windows
-    .iter()
-    .filter(|w| targets.contains(&w.native().id()))
-  {
-    tracing::info!("Re-enabling stacked window for popup: {window}");
-    window.native().enable_async();
-  }
-
-  // Clicking a re-enabled window would otherwise raise it over a popup
-  // that isn't shown on top.
-  if let Some(popup) = state.window_from_native(popup) {
-    let is_on_top =
-      matches!(popup.state(), WindowState::Floating(c) if c.shown_on_top);
-
-    if !is_on_top {
-      WindowManager::run_command(
-        &InvokeCommand::SetFloating {
-          shown_on_top: Some(true),
-          centered: None,
-          x_pos: None,
-          y_pos: None,
-          width: None,
-          height: None,
-        },
-        popup.into(),
-        state,
-        config,
-      )?;
-    }
-  }
-
-  Ok(())
 }

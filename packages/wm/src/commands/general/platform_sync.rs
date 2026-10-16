@@ -41,6 +41,7 @@ use crate::{
 /// Returns the smallest iris radius that fully covers the monitor from the
 /// origin — the distance to the farthest monitor corner.
 #[cfg(target_os = "windows")]
+#[allow(clippy::cast_possible_truncation)]
 fn iris_max_radius(req: &IrisSwitchRequest) -> i32 {
   let corners = [
     (req.monitor_x, req.monitor_y),
@@ -532,6 +533,7 @@ fn unmanage_embedded_windows(state: &mut WmState) -> anyhow::Result<()> {
   Ok(())
 }
 
+#[allow(clippy::too_many_lines)]
 fn redraw_containers(
   focused_container: &Container,
   state: &mut WmState,
@@ -671,7 +673,7 @@ fn redraw_containers(
         let mut monitor_handle = 0isize;
         let mut monitor_work_area = Rect::from_xy(0, 0, 0, 0);
 
-        for window in windows_to_update.iter() {
+        for window in &windows_to_update {
           let id = window.id();
           let is_incoming =
             state.pending_sync.is_workspace_switch_incoming(&id);
@@ -773,20 +775,20 @@ fn redraw_containers(
             // border ring around the inflated rect for the whole slide and
             // snap it down at settle. Only the `frame()` fallback
             // legitimately doubles as both.
-            let (current, frame_rect) =
-              match state.window_target_positions.get(&id) {
-                Some(target) => (
-                  target.clone(),
-                  window.to_rect().unwrap_or_else(|_| target.clone()),
-                ),
-                None => {
-                  let frame = window
-                    .native()
-                    .frame()
-                    .unwrap_or_else(|_| Rect::from_xy(0, 0, 0, 0));
-                  (frame.clone(), frame)
-                }
-              };
+            let (current, frame_rect) = if let Some(target) =
+              state.window_target_positions.get(&id)
+            {
+              (
+                target.clone(),
+                window.to_rect().unwrap_or_else(|_| target.clone()),
+              )
+            } else {
+              let frame = window
+                .native()
+                .frame()
+                .unwrap_or_else(|_| Rect::from_xy(0, 0, 0, 0));
+              (frame.clone(), frame)
+            };
             let viewport = Rect::from_xy(
               monitor_x,
               monitor_y,
@@ -1086,13 +1088,10 @@ fn redraw_containers(
 
     // A window is resizing when its dimensions change (vs. a pure
     // translation).
-    let is_resize = previous_target
-      .as_ref()
-      .map(|prev| {
-        prev.width() != target_rect.width()
-          || prev.height() != target_rect.height()
-      })
-      .unwrap_or(false);
+    let is_resize = previous_target.as_ref().is_some_and(|prev| {
+      prev.width() != target_rect.width()
+        || prev.height() != target_rect.height()
+    });
 
     let anim_enabled = if is_resize {
       config.value.animations.window_resize.enabled
@@ -1200,14 +1199,14 @@ fn redraw_containers(
       let native_ref = window.native();
       state.animation_manager.start_open_animation(
         window.id(),
-        target_rect.clone(),
+        &target_rect,
         monitor_rect,
         effect_opacity,
         corner_style,
         backdrop_overlay,
         border_overlay,
         &params,
-        &*native_ref,
+        &native_ref,
       );
     }
 
@@ -1222,7 +1221,7 @@ fn redraw_containers(
       && state
         .animation_manager
         .get_animation(&window.id())
-        .map_or(false, |a| !a.is_complete());
+        .is_some_and(|a| !a.is_complete());
     #[cfg(not(target_os = "windows"))]
     let has_slide_in = false;
 
@@ -1239,8 +1238,7 @@ fn redraw_containers(
         || (is_visible
           && (!is_fullscreen || is_wm_fullscreen_toggle || has_slide_in)
           && !suppress_animations
-          && ((!is_floating && anim_enabled)
-            || (is_state_change && anim_enabled)
+          && ((anim_enabled && (!is_floating || is_state_change))
             || has_slide_in)));
 
     // Determine the rect to use for this frame.
@@ -1262,7 +1260,7 @@ fn redraw_containers(
           cycle_has_resize,
           target_rect.clone(),
           previous_target,
-          &*native_ref,
+          &native_ref,
           effect_opacity,
           corner_style,
           backdrop_overlay,
@@ -1322,7 +1320,7 @@ fn redraw_containers(
           .animation_manager
           .resize_sessions
           .get(&window.id())
-          .map_or(false, |s| s.is_session_cloaked());
+          .is_some_and(wm_platform::ResizeSession::is_session_cloaked);
         #[cfg(target_os = "windows")]
         if !already_cloaked_by_session
           && !window.native().is_cloaked().unwrap_or(false)
@@ -1766,6 +1764,7 @@ enum CloakState {
   Untouched,
 }
 
+#[allow(clippy::too_many_lines)]
 fn reposition_window(
   window: &WindowContainer,
   rect: &Rect,
@@ -2702,6 +2701,7 @@ impl SyncableOverlay for NativeBorderOverlay {
 /// configured window on every tick would issue a `GetWindow` syscall per
 /// window that's a guaranteed no-op in the common case.
 #[cfg(target_os = "windows")]
+#[allow(clippy::too_many_lines)]
 fn sync_overlays<O: SyncableOverlay>(
   state: &mut WmState,
   config: &UserConfig,

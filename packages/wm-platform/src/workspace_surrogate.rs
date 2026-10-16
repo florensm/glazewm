@@ -133,7 +133,7 @@ impl WorkspaceSurrogate {
   /// style. Ignored in [`SurrogateMode::PinnedViewport`] mode, where the
   /// surrogate spans the whole monitor and must not be rounded.
   ///
-  /// `overlay_tint` is GlazeWM's own configured tint
+  /// `overlay_tint` is the WM's own configured tint
   /// (`BackdropEffectConfig::overlay_tint`), or `None` when `backdrop`
   /// isn't configured for this window. When `Some`, this switches the
   /// surrogate to [`SurrogateMode::Live`] -- sized/moved to its own
@@ -154,6 +154,7 @@ impl WorkspaceSurrogate {
   ///
   /// [`show_initial`]: WorkspaceSurrogate::show_initial
   /// [`show_incoming`]: WorkspaceSurrogate::show_incoming
+  #[allow(clippy::too_many_arguments)]
   pub fn new(
     hwnd: HWND,
     rect: &Rect,
@@ -414,6 +415,7 @@ impl WorkspaceSurrogate {
   /// the surrogate window itself is moved/resized to the scaled rect,
   /// batched via `batch`. Opacity is lerped according to
   /// `opacity_endpoint`.
+  #[allow(clippy::cast_possible_truncation, clippy::cast_precision_loss)]
   pub fn update_zoom(
     &mut self,
     batch: &mut SurrogateBatch,
@@ -469,8 +471,9 @@ impl WorkspaceSurrogate {
   /// Incoming: lerps from `opacity_endpoint * opacity` → `opacity`.
   /// When `opacity_endpoint` is `1.0` (default), the result is constant
   /// `opacity` — no fade.
+  #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
   fn lerp_opacity(&self, progress: f32, is_incoming: bool) -> u8 {
-    (self.opacity as f32 * self.opacity_frac(progress, is_incoming))
+    (f32::from(self.opacity) * self.opacity_frac(progress, is_incoming))
       .round() as u8
   }
 
@@ -549,7 +552,11 @@ impl WorkspaceSurrogate {
   /// Computes a per-frame scale from the monitor center (both axes)
   /// combined with a slide offset on the primary axis, then routes the
   /// resulting visible rect through [`apply_visible_rect`].
-  #[allow(clippy::too_many_arguments)]
+  #[allow(
+    clippy::too_many_arguments,
+    clippy::cast_possible_truncation,
+    clippy::cast_precision_loss
+  )]
   pub fn slide_zoom_axis(
     &mut self,
     batch: &mut SurrogateBatch,
@@ -683,7 +690,11 @@ impl WorkspaceSurrogate {
   /// size on that axis to close the seam gap between the two workspace
   /// panels). The visible strip of source content is routed through
   /// [`apply_visible_rect`].
-  #[allow(clippy::too_many_arguments)]
+  #[allow(
+    clippy::too_many_arguments,
+    clippy::cast_possible_truncation,
+    clippy::cast_precision_loss
+  )]
   pub fn slide_axis(
     &mut self,
     batch: &mut SurrogateBatch,

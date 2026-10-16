@@ -2,12 +2,6 @@ use std::time::{Duration, Instant};
 
 use wm_common::EasingFunction;
 
-/// Calculates the current progress of an animation (0.0 to 1.0).
-#[cfg(test)]
-pub fn animation_progress(start_time: Instant, duration: Duration) -> f32 {
-  animation_progress_at(start_time, duration, Instant::now())
-}
-
 /// Calculates the animation progress at an explicit `now` instant (0.0 to
 /// 1.0).
 ///
@@ -59,12 +53,12 @@ fn cubic_bezier(x1: f32, y1: f32, x2: f32, y2: f32, x: f32) -> f32 {
   let ay = 1.0 - cy - by_;
 
   let sample_x = |t: f32| ((ax * t + bx) * t + cx) * t;
-  let sample_dx = |t: f32| (3.0 * ax * t + 2.0 * bx) * t + cx;
+  let slope_x = |t: f32| (3.0 * ax * t + 2.0 * bx) * t + cx;
   let sample_y = |t: f32| ((ay * t + by_) * t + cy) * t;
 
   let mut t = x;
   for _ in 0..8 {
-    let dx = sample_dx(t);
+    let dx = slope_x(t);
     if dx.abs() < 1e-6 {
       break;
     }
@@ -87,7 +81,7 @@ fn ease_out_spring(t: f32) -> f32 {
     return 1.0;
   }
   let c4 = (2.0 * std::f32::consts::PI) / 2.0;
-  2.0f32.powf(-12.0 * t) * ((t * 4.0 - 4.5) * c4).sin() * -1.0 + 1.0
+  -(2.0f32.powf(-12.0 * t) * ((t * 4.0 - 4.5) * c4).sin()) + 1.0
 }
 
 #[cfg(test)]
@@ -98,10 +92,14 @@ mod tests {
 
   #[test]
   fn test_animation_progress() {
-    let start = Instant::now() - Duration::from_millis(50);
+    let start = Instant::now();
     let duration = Duration::from_millis(100);
 
-    let progress = animation_progress(start, duration);
+    let progress = animation_progress_at(
+      start,
+      duration,
+      start + Duration::from_millis(50),
+    );
     assert!((progress - 0.5).abs() < 0.1);
   }
 

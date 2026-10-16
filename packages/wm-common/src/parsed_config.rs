@@ -672,7 +672,7 @@ impl WindowEffectConfig {
           CornerStyle::Rounded
         }
       }
-      None if self.corner_style.enabled => self.corner_style.style.clone(),
+      None if self.corner_style.enabled => self.corner_style.style,
       None => CornerStyle::Default,
     }
   }
@@ -1127,7 +1127,7 @@ pub struct WorkspaceConfig {
   pub keep_alive: bool,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
 #[serde(default, rename_all(serialize = "camelCase"))]
 pub struct AnimationsConfig {
   /// Animation settings for pure window translations (position changes
@@ -1192,20 +1192,6 @@ pub enum OverlayTracking {
   None,
 }
 
-impl Default for AnimationsConfig {
-  fn default() -> Self {
-    AnimationsConfig {
-      window_move: AnimationTypeConfig::default(),
-      window_resize: WindowResizeConfig::default(),
-      window_open: WindowOpenConfig::default(),
-      workspace_switch: WorkspaceSwitchAnimationConfig::default(),
-      window_close: WindowCloseConfig::default(),
-      window_minimize: WindowMinimizeConfig::default(),
-      overlay_tracking: OverlayTracking::default(),
-    }
-  }
-}
-
 /// Spatial style for window open/close transitions.
 ///
 /// Used by both `WindowOpenConfig.style` and `WindowCloseConfig.style` so
@@ -1242,6 +1228,7 @@ impl WindowTransitionStyle {
   ///
   /// Stationary styles keep the surrogate at the window's final position
   /// for the full animation; the surrogate window itself never moves.
+  #[must_use]
   pub fn is_stationary(&self) -> bool {
     matches!(self, Self::None | Self::Zoom)
   }
@@ -1437,12 +1424,14 @@ pub enum WorkspaceSwitchStyle {
 
 impl WorkspaceSwitchStyle {
   /// Returns `true` when the transition has no positional slide component.
+  #[must_use]
   pub fn is_no_slide(&self) -> bool {
     matches!(self, Self::Fade | Self::Zoom)
   }
 
   /// Returns `true` for the iris-wipe style, which is driven by a single
   /// snapshot overlay rather than per-window surrogates.
+  #[must_use]
   pub fn is_iris(&self) -> bool {
     matches!(self, Self::Iris)
   }
@@ -1640,6 +1629,7 @@ impl EasingFunction {
   /// Non-overshooting functions are cut off at 99% eased progress to avoid
   /// the "stuck at destination" look. Overshooting ones run to full
   /// wall-clock duration to preserve their bounce.
+  #[must_use]
   pub fn can_overshoot(&self) -> bool {
     match self {
       EasingFunction::EaseOutSpring => true,
@@ -1716,6 +1706,9 @@ impl<'de> Deserialize<'de> for EasingFunction {
 }
 
 impl Serialize for EasingFunction {
+  // Exact comparisons on purpose: only control points that are exactly a
+  // named alias's are written back as that alias.
+  #[allow(clippy::float_cmp)]
   fn serialize<S: serde::Serializer>(
     &self,
     s: S,

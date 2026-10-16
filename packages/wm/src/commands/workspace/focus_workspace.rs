@@ -220,8 +220,7 @@ fn iris_origin_point(
       .as_window_container()
       .ok()
       .and_then(|w| w.to_rect().ok())
-      .map(|r| (r.x() + r.width() / 2, r.y() + r.height() / 2))
-      .unwrap_or(center),
+      .map_or(center, |r| (r.x() + r.width() / 2, r.y() + r.height() / 2)),
   }
 }
 

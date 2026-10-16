@@ -10,7 +10,7 @@ pub fn collect_sub_enums<'a>(
   attrs: impl Iterator<Item = &'a syn::MetaList>,
 ) -> syn::Result<Vec<Subenum>> {
   attrs
-    .map(|attr| attr.parse_args())
+    .map(syn::MetaList::parse_args)
     .collect::<syn::Result<Vec<_>>>()
 }
 

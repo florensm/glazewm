@@ -326,7 +326,7 @@ pub trait NativeWindowWindowsExt {
   /// Returns whether the window is currently cloaked by DWM.
   ///
   /// Cloaking hides the window visually while keeping `WS_VISIBLE` set.
-  /// GlazeWM uses this for workspace hiding (`HideMethod::Cloak`) and
+  /// The WM uses this for workspace hiding (`HideMethod::Cloak`) and
   /// surrogate animations.
   ///
   /// # Platform-specific

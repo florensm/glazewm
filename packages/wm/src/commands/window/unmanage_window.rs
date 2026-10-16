@@ -28,13 +28,13 @@ use crate::{
 /// able to restore it if the WM exits.
 #[cfg(target_os = "windows")]
 pub fn detach_window_for_close(
-  window: WindowContainer,
+  window: &WindowContainer,
   state: &mut WmState,
 ) -> anyhow::Result<()> {
   let ancestors = window.ancestors().take(3).collect::<Vec<_>>();
-  let focus_target = state.focus_target_after_removal(&window.clone());
-  let other_tabs = other_stack_tabs(&window);
-  let is_stacked = is_stacked(&window);
+  let focus_target = state.focus_target_after_removal(window);
+  let other_tabs = other_stack_tabs(window);
+  let is_stacked = is_stacked(window);
 
   detach_container(window.clone().into())?;
   state.pending_sync.queue_containers_to_redraw(other_tabs);

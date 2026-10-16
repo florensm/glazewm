@@ -669,10 +669,7 @@ impl WindowManager {
               use wm_platform::NativeWindowWindowsExt;
 
               let is_focused = window.id()
-                == state
-                  .focused_container()
-                  .map(|c| c.id())
-                  .unwrap_or_default();
+                == state.focused_container().map_or_default(|c| c.id());
 
               let (
                 effect_opacity,
@@ -698,7 +695,7 @@ impl WindowManager {
                   let native_ref = window.native();
                   state.animation_manager.start_close_animation(
                     window_id,
-                    rect,
+                    &rect,
                     effect_opacity,
                     corner_style,
                     backdrop_overlay,
@@ -706,7 +703,7 @@ impl WindowManager {
                     &wm_common::WindowTransitionParams::from_close(
                       &config.value.animations.window_close,
                     ),
-                    &*native_ref,
+                    &native_ref,
                   );
                 }
 
@@ -725,7 +722,7 @@ impl WindowManager {
                 if state.animation_manager.has_close_animation(&window_id)
                 {
                   let _ = window.native().set_cloaked(true);
-                  detach_window_for_close(window, state)?;
+                  detach_window_for_close(&window, state)?;
                   return Ok(());
                 }
               }

@@ -24,3 +24,5 @@ wm-macros = { path = "packages/wm-macros" }
 clippy.all = { level = "warn", priority = -1 }
 clippy.pedantic = { level = "warn", priority = -1 }
 clippy.missing_errors_doc = "allow"
+# Its fix, `assert_eq!(v, [] as [T; 0])`, reads worse than `is_empty`.
+clippy.assert_is_empty = "allow"

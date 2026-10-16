@@ -108,6 +108,9 @@ impl WindowAnimationState {
     let effective_start = start + self.start_delay;
     let raw = animation_progress_at(effective_start, self.duration, now);
     let eased = apply_easing(raw, &self.easing);
+    // `animation_progress_at` clamps to exactly 1.0 once the duration has
+    // elapsed, so the exact comparisons are deliberate.
+    #[allow(clippy::float_cmp)]
     let done = if self.easing.can_overshoot() {
       raw == 1.0
     } else if raw == 1.0 {
@@ -177,6 +180,7 @@ impl WindowAnimationState {
   }
 
   /// Whether the animation has completed.
+  #[allow(clippy::float_cmp)]
   pub fn is_complete(&self) -> bool {
     self.eased_progress() == 1.0
   }

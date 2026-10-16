@@ -77,7 +77,7 @@ fn apply_corner_preference(hwnd: HWND, corner_style: &CornerStyle) {
       hwnd,
       DWMWA_WINDOW_CORNER_PREFERENCE,
       std::ptr::from_ref(&pref.0).cast(),
-      std::mem::size_of::<i32>() as u32,
+      u32::try_from(std::mem::size_of::<i32>()).unwrap_or(u32::MAX),
     );
   }
 }
@@ -105,7 +105,7 @@ fn suppress_native_border(hwnd: HWND) {
       hwnd,
       DWMWA_BORDER_COLOR,
       std::ptr::from_ref(&color).cast(),
-      std::mem::size_of::<u32>() as u32,
+      u32::try_from(std::mem::size_of::<u32>()).unwrap_or(u32::MAX),
     );
   }
 }
@@ -379,7 +379,9 @@ impl SurrogateBatch {
 
       let mut failed = false;
       for (hwnd, rect) in &self.entries {
-        match DeferWindowPos(
+        // The transaction (including prior entries) is invalidated on
+        // failure; redo everything individually below.
+        let Ok(next) = DeferWindowPos(
           hdwp,
           HWND(*hwnd),
           HWND(0),
@@ -388,15 +390,11 @@ impl SurrogateBatch {
           rect.width(),
           rect.height(),
           Self::deferred_flags(),
-        ) {
-          Ok(next) => hdwp = next,
-          // The transaction (including prior entries) is invalidated on
-          // failure; redo everything individually below.
-          Err(_) => {
-            failed = true;
-            break;
-          }
-        }
+        ) else {
+          failed = true;
+          break;
+        };
+        hdwp = next;
       }
 
       // Always end the transaction, including after a failed
@@ -474,7 +472,7 @@ pub(crate) fn to_logical(rect: &Rect, inset: &RECT) -> Rect {
 ///
 /// [`update_thumbnail_dims`]: NativeSurrogate::update_thumbnail_dims
 ///
-/// GlazeWM cloaks the real window while the overlay is active.
+/// The WM cloaks the real window while the overlay is active.
 ///
 /// Per-frame cost is one [`SetWindowPos`] call (plus one
 /// `DwmUpdateThumbnailProperties` when the thumbnail handle is valid). The
@@ -867,6 +865,7 @@ impl NativeSurrogate {
   }
 
   /// Returns the raw handle of the surrogate overlay window.
+  #[must_use]
   pub fn hwnd(&self) -> HWND {
     HWND(self.hwnd)
   }
@@ -876,6 +875,7 @@ impl NativeSurrogate {
   /// `DwmRegisterThumbnail` fails for elevated or UWP source windows.
   /// Callers use this to decide whether to freeze the real window behind
   /// the surrogate or fall back to direct repositioning.
+  #[must_use]
   pub fn has_thumbnail(&self) -> bool {
     self.thumbnail != 0
   }
@@ -913,13 +913,14 @@ impl NativeSurrogate {
   ///
   /// No-op when the window is already in the requested state.
   pub fn set_visible(&mut self, visible: bool) {
+    use windows::Win32::UI::WindowsAndMessaging::{
+      ShowWindow, SW_HIDE, SW_SHOWNOACTIVATE,
+    };
+
     if self.is_visible == visible {
       return;
     }
     self.is_visible = visible;
-    use windows::Win32::UI::WindowsAndMessaging::{
-      ShowWindow, SW_HIDE, SW_SHOWNOACTIVATE,
-    };
     // SAFETY: `HWND(self.hwnd)` is valid until `drop`.
     unsafe {
       ShowWindow(

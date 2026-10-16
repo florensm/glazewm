@@ -1,4 +1,3 @@
-#![warn(clippy::all, clippy::pedantic)]
 #![allow(clippy::missing_errors_doc)]
 #![feature(iterator_try_collect)]
 
@@ -148,6 +147,7 @@ pub fn dwm_flush() {
 ///
 /// Returns `None` if the position cannot be queried. On non-Windows
 /// platforms this always returns `None`.
+#[must_use]
 pub fn cursor_position() -> Option<(i32, i32)> {
   #[cfg(target_os = "windows")]
   {
@@ -306,7 +306,7 @@ impl DxgiVsyncWaiter {
         // SAFETY: `output` is a valid `IDXGIOutput`; `desc` is
         // stack-allocated and passed as an out-parameter per the
         // windows-rs 0.52 convention.
-        if unsafe { output.GetDesc(&mut desc) }.is_ok()
+        if unsafe { output.GetDesc(&raw mut desc) }.is_ok()
           && desc.Monitor == HMONITOR(monitor_handle)
         {
           let period_us = Self::query_frame_period_us(&desc.DeviceName);
@@ -332,6 +332,7 @@ impl DxgiVsyncWaiter {
   /// Reads the active display mode via `EnumDisplaySettingsW`. Returns the
   /// 60 Hz period (`16_667`) when the rate is unavailable or reported as
   /// the hardware-default sentinel (`0` or `1`).
+  #[allow(clippy::cast_possible_truncation)]
   fn query_frame_period_us(device_name: &[u16; 32]) -> u64 {
     use windows::{
       core::PCWSTR,
@@ -354,7 +355,7 @@ impl DxgiVsyncWaiter {
       EnumDisplaySettingsW(
         PCWSTR(device_name.as_ptr()),
         ENUM_CURRENT_SETTINGS,
-        &mut devmode,
+        &raw mut devmode,
       )
     }
     .as_bool();
@@ -371,6 +372,7 @@ impl DxgiVsyncWaiter {
   /// On success, records the wake timestamp in `last_wake` and ratchets
   /// `period_us` downward if the measured delta is plausible (25-370 Hz).
   /// Returns `true` on success, `false` on error.
+  #[must_use]
   pub fn wait(&self) -> bool {
     // SAFETY: `self.output` is a valid `IDXGIOutput` kept alive by the
     // `Clone`-counted reference.
@@ -486,7 +488,7 @@ pub fn try_set_thread_mmcss() -> Option<MmcssGuard> {
 
   // SAFETY: `task` is a null-terminated wide string; `idx` is a valid
   // stack-allocated output parameter.
-  let handle = unsafe { f(task.as_ptr(), &mut idx) };
+  let handle = unsafe { f(task.as_ptr(), &raw mut idx) };
 
   if handle != 0 {
     Some(MmcssGuard(handle))
@@ -498,7 +500,7 @@ pub fn try_set_thread_mmcss() -> Option<MmcssGuard> {
 /// Sets the calling thread's scheduling priority to highest.
 ///
 /// Called at the start of the animation timer thread to reduce scheduling
-/// jitter between the DWM VSync wake-up and tick delivery to the Tokio
+/// jitter between the DWM vsync wake-up and tick delivery to the Tokio
 /// runtime. On non-Windows platforms this is a no-op.
 pub fn set_thread_priority_highest() {
   #[cfg(target_os = "windows")]
