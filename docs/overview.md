@@ -11,14 +11,10 @@ cancelled) until they sit where they really are.
 
 ## Layouts
 
-- **Exposé** (default): the shown workspace's windows spread out in rows
-  across the screen, under a bar of every workspace by name with the icons
-  of its windows. It opens on the focused window. Picking another workspace
-  on the bar slides its windows in; the title of the picked window shows
-  under it.
-- **Activities**: every workspace in miniature in a row along the top,
-  their names under them, and below them the shown workspace large and as
-  laid out. Picking another miniature slides that workspace in.
+- **Activities** (default): every workspace in miniature in a row along
+  the top, their names under them, and below them the shown workspace
+  large and as laid out. Picking another miniature slides that workspace
+  in; the title of the picked window shows under it.
 - **Stage**: the shown workspace large and as laid out, its name over it,
   and every other workspace small in a column on the left. Picking one from
   the column swaps it in.
@@ -33,9 +29,8 @@ goes through them while it is open. Cards are drawn at the size each layout
 shows them, so their text stays sharp.
 
 Selection and hover show as highlights that glide from one workspace or
-window to the next. In the exposé, the activities and the stage, a
-workspace picked with the mouse is shown first, and gone to once picked
-again.
+window to the next. In the activities and the stage, a workspace picked
+with the mouse is shown first, and gone to once picked again.
 
 In the carousel and the grid, the special workspace's card is docked below
 the others (see [Special workspace](#special-workspace)); in the other
@@ -56,16 +51,16 @@ is nowhere to go.
 | Command | Behaviour |
 | --- | --- |
 | `toggle-overview` (`alt+w` in the sample config) | Open the overview on `overview.layout`. While open, switch back to that layout, or close it if already showing it. |
-| `toggle-overview --layout <layout>` | Open the overview on `expose`, `activities`, `stage`, `carousel` or `grid`. While open, switch to it, or close it if already showing it. |
+| `toggle-overview --layout <layout>` | Open the overview on `activities`, `stage`, `carousel` or `grid` (`expose` reads as `activities`). While open, switch to it, or close it if already showing it. |
 | `toggle-overview --grid` | Same as `--layout grid`. |
 
 ### Mouse
 
 | Input | Behaviour |
 | --- | --- |
-| Point at a window | Pick it (exposé, activities, stage): it is highlighted and its title shows. |
+| Point at a window | Pick it (activities, stage): it is highlighted and its title shows. |
 | Click a window | Focus it, switching to its workspace, and close. |
-| Click another workspace | Show it (exposé, activities, stage), or switch to it and close (carousel, grid). |
+| Click another workspace | Show it (activities, stage), or switch to it and close (carousel, grid). |
 | Click the shown workspace | Switch to it and close. |
 | Click the background | Close without changing anything. |
 | Drag a window onto another workspace | Move it to that workspace. The overview stays open. |
@@ -78,12 +73,12 @@ The keyboard goes one step deeper with each `Space`: browsing workspaces,
 picking a window inside one, then carrying that window to another
 workspace. The line at the bottom shows the keys for the current step.
 
-The arrows go between workspaces along the layout: `←` `→` in the exposé,
-the activities and the carousel, `↑` `↓` down the stage's column, and all
-four in the grid. The arrow toward the shown workspace's windows (`↓` in
-the exposé and the activities, `→` in the stage) goes in among them, and
-the arrows then go to the nearest window that way; off their edge, back
-out to the workspaces. The exposé opens among the windows already.
+The arrows go between workspaces along the layout: `←` `→` in the
+activities and the carousel, `↑` `↓` down the stage's column, and all four
+in the grid. The arrow toward the shown workspace's windows (`↓` in the
+activities, `→` in the stage) goes in among them, and the arrows then go
+to the nearest window that way; off their edge, back out to the
+workspaces.
 
 | Key | Browsing workspaces | Picking a window | Carrying a window |
 | --- | --- | --- | --- |
@@ -95,7 +90,7 @@ out to the workspaces. The exposé opens among the windows already.
 | `Enter` | Switch to the selected workspace and close. | Focus the selected window and close. | Drop it on the selected workspace. |
 | `x` | | Close the selected window. | |
 | `Backspace` | | Back to browsing. | Put the window down. |
-| `Tab` | Switch to the next layout: exposé, activities, stage, carousel, grid. | Same, back to browsing in the grid. | Same. |
+| `Tab` | Switch to the next layout: activities, stage, carousel, grid. | Same, back to browsing in the grid. | Same. |
 | `Escape` | Close without changing anything. | Same. | Same. |
 
 Digits go to the workspace named after them (`0` is `10`), like a
@@ -161,9 +156,8 @@ shown window, with its tab bar drawn by the same code as the real one.
 ### Scrolling workspaces
 
 A workspace with the scrolling layout shows its whole strip, not just the
-part on screen. In the exposé, every column is spread out with the rest, in
-order; on open, the columns off screen slide in from the sides they are on.
-In the activities, the shown workspace's whole strip is scaled to fit. On a
+part on screen. In the activities, the shown workspace's whole strip is
+scaled to fit. On a
 card, a lighter frame marks out the part on screen, and the card grows
 wider with the strip: up to three monitors wide (twice in the grid and in
 miniature). A strip wider still is scaled to fit, with room left above and
@@ -212,9 +206,9 @@ overview:
 
   font_family: "Segoe UI"
 
-  # Layout `toggle-overview` opens on: "expose", "activities", "stage",
-  # "carousel" or "grid".
-  layout: "expose"
+  # Layout `toggle-overview` opens on: "activities", "stage", "carousel"
+  # or "grid".
+  layout: "activities"
 
   # Most columns of the grid of every workspace; it takes fewer when that
   # shows the cards larger.
@@ -278,5 +272,5 @@ are already where their previews end up.
 Not in this version:
 
 - Workspaces of all monitors at once.
-- Picking minimized windows with the mouse (their icons show on the
-  exposé's bar and their card, and they are reachable by search).
+- Picking minimized windows with the mouse (their icons show on their
+  card, and they are reachable by search).
