@@ -480,7 +480,7 @@ window_behavior:
       # Whether to show fullscreen windows as always on top.
       shown_on_top: false
 
-# Overview of the focused monitor's workspaces, opened by `toggle-overview`.
+# Overview of every monitor's workspaces, opened by `toggle-overview`.
 # Click a window or workspace to go there, drag windows between workspaces,
 # or use the keys shown under the cards. Only available on Windows.
 overview:

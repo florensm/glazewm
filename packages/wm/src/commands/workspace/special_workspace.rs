@@ -69,7 +69,7 @@ fn toggle_target(
 
 /// Activates the special workspace on `monitor`, or moves it there from
 /// another monitor.
-fn summon_special_workspace(
+pub fn summon_special_workspace(
   monitor: &Monitor,
   state: &mut WmState,
   config: &UserConfig,

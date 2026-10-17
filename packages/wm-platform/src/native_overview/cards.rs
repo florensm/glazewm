@@ -3,7 +3,7 @@
 
 use windows::Win32::Foundation::HWND;
 
-use super::{Card, Overview, SETTLE_MS};
+use super::{Card, Screen, SETTLE_MS};
 use crate::{
   overview_chrome::{with_alpha, CardPicture, TilePicture},
   overview_layout::{
@@ -16,13 +16,13 @@ use crate::{
 };
 
 /// Where window `hwnd` of `workspace` is on screen: measured for the
-/// focused workspace's windows in view, so a zoom starts and ends exactly
-/// on them.
+/// displayed workspace's windows in view, so a zoom starts and ends
+/// exactly on them.
 pub(super) fn screen_rect(
   workspace: &OverviewWorkspace,
   window: &OverviewWindow,
 ) -> RectF {
-  if workspace.is_focused && !window.is_scrolled_off {
+  if workspace.is_displayed && !window.is_scrolled_off {
     visible_frame_on_screen(HWND(window.hwnd))
       .unwrap_or_else(|| RectF::from_rect(&window.rect))
   } else {
@@ -30,7 +30,7 @@ pub(super) fn screen_rect(
   }
 }
 
-impl Overview {
+impl Screen {
   /// Builds a card per workspace, with a preview per visible window,
   /// keeping the previews of windows still there. Returns whether a
   /// window or tab bar came, went or moved, which calls for registering
@@ -132,7 +132,7 @@ impl Overview {
 
     self.cards = cards;
     self.spare = spare;
-    self.interaction.grid = GridCells::fitting(
+    self.grid = GridCells::fitting(
       &self.metrics,
       &self.slots(),
       frame.style.grid_columns,
@@ -163,17 +163,16 @@ impl Overview {
     }
 
     let columns = frame.style.grid_columns;
-    self.interaction.grid =
-      GridCells::fitting(&self.metrics, &self.slots(), columns);
+    self.grid = GridCells::fitting(&self.metrics, &self.slots(), columns);
   }
 
   /// What the layouts need of each card: where its monitor's view is,
   /// and on the selected card, the window being picked.
   pub(super) fn slots(&self) -> Vec<CardSlot> {
     let picked = self
-      .interaction
+      .focus
       .selected_window
-      .filter(|_| self.interaction.mode == Mode::Windows);
+      .filter(|_| self.focus.mode == Mode::Windows);
 
     self
       .cards
@@ -183,7 +182,7 @@ impl Overview {
       .map(|(index, (card, workspace))| {
         let view = card.view.map(&self.area);
         let keep = picked
-          .filter(|_| index == self.interaction.selected)
+          .filter(|_| index == self.focus.selected)
           .and_then(|hwnd| {
             // A hidden tab shows on its stack's tab bar.
             let preview = card
@@ -250,19 +249,19 @@ impl Overview {
   /// lifted, so it visibly left without vanishing, and while a search
   /// passes it by.
   pub(super) fn window_opacity(&self, index: usize, hwnd: isize) -> f32 {
-    let interaction = &self.interaction;
-    if interaction.floating() == Some(hwnd) {
+    let focus = &self.focus;
+    if focus.floating == Some(hwnd) {
       return 0.35;
     }
 
-    let is_miss = !interaction.query.is_empty()
+    let is_miss = !focus.query.is_empty()
       && !self
         .workspaces()
         .get(index)
         .and_then(|workspace| {
           workspace.windows.iter().find(|window| window.hwnd == hwnd)
         })
-        .is_some_and(|window| interaction.is_match(window));
+        .is_some_and(|window| focus.is_match(window));
 
     if is_miss {
       0.3
@@ -280,7 +279,7 @@ impl Overview {
   ) -> CardPicture {
     let workspace = self.workspaces().get(index);
     let card = self.cards.get(index);
-    let interaction = &self.interaction;
+    let focus = &self.focus;
     let look = self.metrics.look;
 
     let (accent, search, caption) =
@@ -296,8 +295,8 @@ impl Overview {
           let window = workspace.and_then(|workspace| {
             workspace.windows.iter().find(|w| w.hwnd == preview.hwnd)
           });
-          let is_match = window.is_some_and(|w| interaction.is_match(w));
-          let is_picked = interaction.floating() == Some(preview.hwnd);
+          let is_match = window.is_some_and(|w| focus.is_match(w));
+          let is_picked = focus.floating == Some(preview.hwnd);
           let is_focused = focused_window == Some(preview.hwnd);
 
           let (border_width, border) = if is_match {
@@ -351,10 +350,10 @@ impl Overview {
       label: workspace.map_or_else(String::new, |w| w.label.clone()),
       look,
       viewport,
-      is_focused: workspace.is_some_and(|w| w.is_focused),
+      is_displayed: workspace.is_some_and(|w| w.is_displayed),
       is_new: workspace.is_some_and(|w| w.is_new),
       is_special: workspace.is_some_and(|w| w.is_special),
-      is_receiving: interaction.floating().is_some(),
+      is_receiving: focus.floating.is_some(),
       minimized: workspace.map_or_else(Vec::new, |w| {
         w.windows
           .iter()

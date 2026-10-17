@@ -1,6 +1,6 @@
-//! The window overview: a card per workspace of the focused monitor,
-//! showing its windows live where they sit, to switch to a workspace or
-//! window, or move windows between workspaces.
+//! The window overview: a screen per monitor, with a card per workspace
+//! of that monitor showing its windows live where they sit, to switch to
+//! a workspace or window, or move windows between workspaces.
 //!
 //! The overview is drawn and driven by `NativeOverview` on a thread of its
 //! own; the WM decides what it shows and carries out what is picked.
@@ -11,11 +11,12 @@ use uuid::Uuid;
 use wm_common::{Layout, WindowState, WorkspaceConfig};
 use wm_platform::{
   Color, NativeOverview, OverviewAction, OverviewFrame,
-  OverviewLayoutMode, OverviewStyle, OverviewWindow, OverviewWorkspace,
-  Rect, TabFrame,
+  OverviewLayoutMode, OverviewScreen, OverviewStyle, OverviewWindow,
+  OverviewWorkspace, Rect, TabFrame,
 };
 
 use crate::{
+  commands::workspace::{activate_workspace, summon_special_workspace},
   layout::scrolling,
   models::{
     is_inactive_stack_child, Container, Monitor, WindowContainer,
@@ -43,8 +44,6 @@ pub struct Overview {
 }
 
 struct OpenOverview {
-  monitor_id: Uuid,
-
   /// Resolved once per open, since it can be read from a file.
   accent: Color,
 }
@@ -101,7 +100,8 @@ impl Overview {
   }
 }
 
-/// Opens the overview on the focused monitor, laid out as `layout`.
+/// Opens the overview on every monitor, laid out as `layout`, with the
+/// keyboard on the focused one.
 ///
 /// While open, it switches to `layout` instead, or closes when it already
 /// shows that, giving focus back to the focused window.
@@ -117,13 +117,7 @@ pub fn toggle_overview(
     return Ok(());
   }
 
-  let monitor = state
-    .focused_container()
-    .and_then(|focused| focused.monitor())
-    .context("No focused monitor.")?;
-
   let open = OpenOverview {
-    monitor_id: monitor.id(),
     accent: config
       .value
       .overview
@@ -132,7 +126,10 @@ pub fn toggle_overview(
       .unwrap_or(&config.value.window_effects.focused_window.border.color)
       .resolve(),
   };
-  let frame = overview_frame(state, &monitor, open.accent, config);
+  let frame = overview_frame(state, open.accent, config);
+  if frame.screens.is_empty() {
+    anyhow::bail!("No monitors to show the overview on.");
+  }
 
   state.overview.native()?.open(frame, layout);
   state.overview.open = Some(open);
@@ -152,15 +149,10 @@ pub fn sync_overview(state: &mut WmState, config: &UserConfig) {
     .as_ref()
     .or(state.overview.closing.as_ref());
 
-  // `None` once hidden, or once the monitor it was on is gone.
-  let frame = shown.and_then(|shown| {
-    let monitor = state
-      .monitors()
-      .into_iter()
-      .find(|monitor| monitor.id() == shown.monitor_id)?;
-
-    Some(overview_frame(state, &monitor, shown.accent, config))
-  });
+  // `None` once hidden, or once every monitor is gone.
+  let frame = shown
+    .map(|shown| overview_frame(state, shown.accent, config))
+    .filter(|frame| !frame.screens.is_empty());
 
   let overview = &mut state.overview;
   overview.closing = None;
@@ -182,45 +174,37 @@ pub fn sync_overview(state: &mut WmState, config: &UserConfig) {
   }
 }
 
-/// What the overview shows for `monitor`.
+/// What the overview shows: a screen per monitor, left to right.
 fn overview_frame(
   state: &WmState,
-  monitor: &Monitor,
   accent: Color,
   config: &UserConfig,
 ) -> OverviewFrame {
-  let properties = monitor.native_properties();
-  let area = &properties.working_area;
   let focused = state.focused_container();
-  let focused_workspace = focused
+  let focused_monitor = focused
     .as_ref()
-    .and_then(CommonGetters::workspace)
-    .map(|workspace| workspace.id());
+    .and_then(CommonGetters::monitor)
+    .map(|monitor| monitor.id());
 
-  let mut workspaces = monitor
-    .workspaces()
+  let mut monitors = state.monitors();
+  monitors.sort_by_key(|monitor| {
+    let bounds = monitor.native_properties().bounds;
+    (bounds.x(), bounds.y())
+  });
+
+  let screens = monitors
     .iter()
-    .filter(|workspace| !workspace.is_special())
-    .map(|workspace| {
-      workspace_card(state, workspace, area, focused_workspace, config)
+    .map(|monitor| {
+      let is_focused = focused_monitor == Some(monitor.id());
+      overview_screen(state, monitor, is_focused, config)
     })
-    .collect::<Vec<_>>();
-
-  workspaces.extend(new_workspace(state, monitor, area, config));
-  workspaces.push(special_workspace(
-    state,
-    area,
-    focused_workspace,
-    config,
-  ));
+    .collect();
 
   let overview = &config.value.overview;
 
   OverviewFrame {
-    rect: properties.working_area,
-    scale_factor: properties.scale_factor,
-    workspaces,
-    digit_workspaces: digit_workspaces(state, monitor, config),
+    screens,
+    digit_workspaces: digit_workspaces(state, config),
     focused_window: focused
       .and_then(|focused| focused.as_window_container().ok())
       .map(|window| window.native().id().0),
@@ -242,12 +226,48 @@ fn overview_frame(
   }
 }
 
-/// `workspace`'s card, for a monitor with working `area`.
+/// `monitor`'s screen: its workspaces, the "+" card, and the special
+/// workspace's card.
+fn overview_screen(
+  state: &WmState,
+  monitor: &Monitor,
+  is_focused: bool,
+  config: &UserConfig,
+) -> OverviewScreen {
+  let properties = monitor.native_properties();
+  let area = &properties.working_area;
+  let displayed = monitor
+    .displayed_workspace()
+    .map(|workspace| workspace.id());
+
+  let mut workspaces = monitor
+    .workspaces()
+    .iter()
+    .filter(|workspace| !workspace.is_special())
+    .map(|workspace| {
+      workspace_card(state, workspace, area, displayed, config)
+    })
+    .collect::<Vec<_>>();
+
+  workspaces.extend(new_workspace(state, monitor, area, config));
+  workspaces.push(special_workspace(state, area, displayed, config));
+
+  OverviewScreen {
+    id: monitor.id().as_u128(),
+    rect: properties.working_area,
+    scale_factor: properties.scale_factor,
+    is_focused,
+    workspaces,
+  }
+}
+
+/// `workspace`'s card, for a monitor with working `area` that displays
+/// workspace `displayed`.
 fn workspace_card(
   state: &WmState,
   workspace: &Workspace,
   area: &Rect,
-  focused_workspace: Option<Uuid>,
+  displayed: Option<Uuid>,
   config: &UserConfig,
 ) -> OverviewWorkspace {
   let workspace_config = workspace.config();
@@ -255,7 +275,7 @@ fn workspace_card(
   OverviewWorkspace {
     label: workspace_label(&workspace_config),
     name: workspace_config.name,
-    is_focused: focused_workspace == Some(workspace.id()),
+    is_displayed: displayed == Some(workspace.id()),
     is_new: false,
     is_special: workspace.is_special(),
     content_rect: content_rect(workspace, area),
@@ -267,12 +287,12 @@ fn workspace_card(
   }
 }
 
-/// The special workspace's card, shown on every monitor's overview at
+/// The special workspace's card, shown on every monitor's screen at
 /// `area`: wherever it is, or empty while it is inactive.
 fn special_workspace(
   state: &WmState,
   area: &Rect,
-  focused_workspace: Option<Uuid>,
+  displayed: Option<Uuid>,
   config: &UserConfig,
 ) -> OverviewWorkspace {
   let special = state.workspaces().into_iter().find(Workspace::is_special);
@@ -293,13 +313,8 @@ fn special_workspace(
   };
 
   // Shown as on its own monitor, moved onto this one.
-  let mut card = workspace_card(
-    state,
-    &workspace,
-    &own_area,
-    focused_workspace,
-    config,
-  );
+  let mut card =
+    workspace_card(state, &workspace, &own_area, displayed, config);
   translate_card(
     &mut card,
     area.x() - own_area.x(),
@@ -363,27 +378,54 @@ fn new_workspace(
   })
 }
 
-/// Workspaces named "1" to "10" without a card on `monitor` that the
-/// overview's digit keys can still go to: active on another monitor, or
-/// inactive in the config.
-fn digit_workspaces(
-  state: &WmState,
-  monitor: &Monitor,
-  config: &UserConfig,
-) -> Vec<String> {
-  let workspaces = state.workspaces();
-  let inactive = config.inactive_workspace_configs(&workspaces);
+/// Workspaces named "1" to "10" without a card that the overview's digit
+/// keys can still go to: inactive ones in the config.
+fn digit_workspaces(state: &WmState, config: &UserConfig) -> Vec<String> {
+  let inactive = config.inactive_workspace_configs(&state.workspaces());
 
   (1..=10)
     .map(|number: usize| number.to_string())
-    .filter(|name| {
-      let is_elsewhere = workspaces.iter().any(|workspace| {
-        workspace.config().name == *name
-          && workspace.monitor().map(|m| m.id()) != Some(monitor.id())
-      });
-      is_elsewhere || inactive.iter().any(|config| config.name == *name)
-    })
+    .filter(|name| inactive.iter().any(|config| config.name == *name))
     .collect()
+}
+
+/// Readies workspace `name` for a pick made on the screen of monitor
+/// `monitor_id`: activates it on that monitor if it is inactive (unless
+/// it is bound to a monitor), and with `summon`, brings the special
+/// workspace there.
+pub fn prepare_target(
+  state: &mut WmState,
+  config: &UserConfig,
+  name: &str,
+  monitor_id: u128,
+  summon: bool,
+) -> anyhow::Result<()> {
+  let monitor = state
+    .monitors()
+    .into_iter()
+    .find(|monitor| monitor.id().as_u128() == monitor_id)
+    .context("No monitor for the overview's pick.")?;
+
+  if config.is_special_workspace_name(name) {
+    if summon || state.workspace_by_name(name).is_none() {
+      summon_special_workspace(&monitor, state, config)?;
+    }
+    return Ok(());
+  }
+
+  if state.workspace_by_name(name).is_some() {
+    return Ok(());
+  }
+
+  let is_bound = config.value.workspaces.iter().any(|workspace| {
+    workspace.name == name && workspace.bind_to_monitor.is_some()
+  });
+  activate_workspace(
+    Some(name),
+    (!is_bound).then_some(monitor),
+    state,
+    config,
+  )
 }
 
 fn overview_window(window: &WindowContainer) -> OverviewWindow {
@@ -493,7 +535,7 @@ mod tests {
   use super::{overview_windows, strip_bounds};
   use crate::{
     models::{NonTilingWindow, SplitContainer, TilingWindow, Workspace},
-    traits::WindowGetters,
+    traits::{CommonGetters, WindowGetters},
   };
 
   fn tiling(title: &str) -> TilingWindow {
@@ -529,21 +571,112 @@ mod tests {
     assert_eq!(titles, ["a", "b", "c", "d", "floating", "minimized"]);
   }
 
-  #[test]
-  fn special_workspace_card_is_last_on_every_monitor() {
-    use wm_common::ParsedConfig;
-    use wm_platform::Color;
+  /// Config declaring workspaces "1" to "3", with `value` changed by
+  /// `edit`.
+  fn config_with(
+    edit: impl FnOnce(&mut wm_common::ParsedConfig),
+  ) -> crate::user_config::UserConfig {
+    let mut value = wm_common::ParsedConfig {
+      workspaces: crate::test_utils::mock_workspace_configs(&[
+        "1", "2", "3",
+      ]),
+      ..wm_common::ParsedConfig::default()
+    };
+    edit(&mut value);
+    crate::user_config::UserConfig::from_parsed(value)
+  }
 
-    use super::overview_frame;
+  /// A monitor to the right of the default mock monitor, showing
+  /// `workspaces`.
+  fn right_monitor(workspaces: Vec<Workspace>) -> crate::models::Monitor {
+    use crate::test_utils::{MOCK_MONITOR_HEIGHT, MOCK_MONITOR_WIDTH};
+
+    let bounds = Rect::from_xy(
+      MOCK_MONITOR_WIDTH,
+      0,
+      MOCK_MONITOR_WIDTH,
+      MOCK_MONITOR_HEIGHT,
+    );
+    crate::models::Monitor::mock()
+      .bounds(bounds.clone())
+      .working_area(bounds)
+      .workspaces(workspaces)
+      .call()
+  }
+
+  fn frame(
+    state: &crate::wm_state::WmState,
+    config: &crate::user_config::UserConfig,
+  ) -> wm_platform::OverviewFrame {
+    super::overview_frame(state, wm_platform::Color::from_abgr(0), config)
+  }
+
+  #[test]
+  fn each_monitor_has_a_screen_left_to_right() {
     use crate::{
       commands::container::set_focused_descendant,
-      models::Monitor,
-      test_utils::{MOCK_MONITOR_HEIGHT, MOCK_MONITOR_WIDTH},
-      user_config::UserConfig,
+      models::{Container, Monitor},
       wm_state::WmState,
     };
 
-    let config = UserConfig::from_parsed(ParsedConfig::default());
+    let config = config_with(|_| {});
+    let first = Workspace::mock().name("1".to_string()).call();
+    let left = Monitor::mock().workspaces(vec![first]).call();
+    let second = Workspace::mock().name("2".to_string()).call();
+    let right = right_monitor(vec![second.clone()]);
+    // Detected right to left.
+    let state = WmState::mock(vec![right.clone(), left.clone()]);
+    set_focused_descendant(&Container::from(second), None);
+
+    let screens = frame(&state, &config).screens;
+    let ids = screens.iter().map(|screen| screen.id).collect::<Vec<_>>();
+    assert_eq!(ids, [left.id().as_u128(), right.id().as_u128()]);
+    assert_eq!(
+      screens
+        .iter()
+        .map(|screen| screen.is_focused)
+        .collect::<Vec<_>>(),
+      [false, true]
+    );
+
+    let names = |index: usize| {
+      screens[index]
+        .workspaces
+        .iter()
+        .filter(|card| !card.is_special && !card.is_new)
+        .map(|card| (card.name.as_str(), card.is_displayed))
+        .collect::<Vec<_>>()
+    };
+    assert_eq!(names(0), [("1", true)]);
+    assert_eq!(names(1), [("2", true)]);
+  }
+
+  #[test]
+  fn digits_reach_only_inactive_workspaces_without_a_card() {
+    use crate::{
+      commands::container::set_focused_descendant, models::Monitor,
+      wm_state::WmState,
+    };
+
+    let config = config_with(|_| {});
+    let first = Workspace::mock().name("1".to_string()).call();
+    let left = Monitor::mock().workspaces(vec![first.clone()]).call();
+    let right =
+      right_monitor(vec![Workspace::mock().name("2".to_string()).call()]);
+    let state = WmState::mock(vec![left, right]);
+    set_focused_descendant(&first.into(), None);
+
+    assert_eq!(frame(&state, &config).digit_workspaces, ["3"]);
+  }
+
+  #[test]
+  fn special_workspace_card_is_last_on_every_monitor() {
+    use crate::{
+      commands::container::set_focused_descendant, models::Monitor,
+      test_utils::MOCK_MONITOR_WIDTH, wm_state::WmState,
+    };
+
+    let config = config_with(|_| {});
     let window = tiling("parked");
     let special = Workspace::mock()
       .name("special".to_string())
@@ -554,27 +687,14 @@ mod tests {
     let left = Monitor::mock()
       .workspaces(vec![special.clone(), first.clone()])
       .call();
-
-    let bounds = Rect::from_xy(
-      MOCK_MONITOR_WIDTH,
-      0,
-      MOCK_MONITOR_WIDTH,
-      MOCK_MONITOR_HEIGHT,
-    );
-    let right = Monitor::mock()
-      .bounds(bounds.clone())
-      .working_area(bounds)
-      .workspaces(vec![Workspace::mock().name("2".to_string()).call()])
-      .call();
-    let state = WmState::mock(vec![left.clone(), right.clone()]);
+    let right =
+      right_monitor(vec![Workspace::mock().name("2".to_string()).call()]);
+    let state = WmState::mock(vec![left, right]);
     set_focused_descendant(&first.into(), None);
 
-    let frame = |monitor: &Monitor| {
-      overview_frame(&state, monitor, Color::from_abgr(0), &config)
-    };
-
-    for monitor in [&left, &right] {
-      let cards = frame(monitor).workspaces;
+    let screens = frame(&state, &config).screens;
+    for screen in &screens {
+      let cards = &screen.workspaces;
       let names = cards.iter().map(|card| card.name.as_str());
 
       assert_eq!(
@@ -584,48 +704,120 @@ mod tests {
       let last = cards.last().expect("cards");
       assert!(last.is_special && last.name == "special");
       assert_eq!(last.windows.len(), 1);
+      assert!(!last.is_displayed, "hidden behind workspace 1");
     }
 
     // On the other monitor, its windows show where they would sit there.
-    let left_rect = frame(&left).workspaces.last().expect("card").windows
-      [0]
-      .rect
-      .clone();
-    let right_rect =
-      frame(&right).workspaces.last().expect("card").windows[0]
+    let rect = |index: usize| {
+      screens[index].workspaces.last().expect("card").windows[0]
         .rect
-        .clone();
-    assert_eq!(right_rect.x() - left_rect.x(), MOCK_MONITOR_WIDTH);
-    assert_eq!(right_rect.y(), left_rect.y());
+        .clone()
+    };
+    assert_eq!(rect(1).x() - rect(0).x(), MOCK_MONITOR_WIDTH);
+    assert_eq!(rect(1).y(), rect(0).y());
   }
 
   #[test]
   fn inactive_special_workspace_shows_an_empty_card() {
-    use wm_common::ParsedConfig;
-    use wm_platform::Color;
-
-    use super::overview_frame;
     use crate::{
       commands::container::set_focused_descendant, models::Monitor,
-      user_config::UserConfig, wm_state::WmState,
+      wm_state::WmState,
     };
 
-    let mut value = ParsedConfig::default();
-    value.special_workspace.display_name = Some("Scratch".to_string());
-    let config = UserConfig::from_parsed(value);
-
+    let config = config_with(|value| {
+      value.special_workspace.display_name = Some("Scratch".to_string());
+    });
     let first = Workspace::mock().name("1".to_string()).call();
     let monitor = Monitor::mock().workspaces(vec![first.clone()]).call();
-    let state = WmState::mock(vec![monitor.clone()]);
+    let state = WmState::mock(vec![monitor]);
     set_focused_descendant(&first.into(), None);
 
-    let frame =
-      overview_frame(&state, &monitor, Color::from_abgr(0), &config);
-    let last = frame.workspaces.last().expect("cards");
+    let screens = frame(&state, &config).screens;
+    let last = screens[0].workspaces.last().expect("cards");
 
     assert!(last.is_special && !last.is_new && last.windows.is_empty());
     assert_eq!(last.name, "special");
     assert_eq!(last.label, "Scratch");
+  }
+
+  /// Two monitors showing "1" (focused) and "2", without the special
+  /// workspace.
+  fn two_monitors() -> (
+    crate::wm_state::WmState,
+    crate::models::Monitor,
+    crate::models::Monitor,
+  ) {
+    use crate::{
+      commands::container::set_focused_descendant, models::Monitor,
+      wm_state::WmState,
+    };
+
+    let first = Workspace::mock().name("1".to_string()).call();
+    let left = Monitor::mock().workspaces(vec![first.clone()]).call();
+    let right =
+      right_monitor(vec![Workspace::mock().name("2".to_string()).call()]);
+    let state = WmState::mock(vec![left.clone(), right.clone()]);
+    set_focused_descendant(&first.into(), None);
+
+    (state, left, right)
+  }
+
+  /// ID of the monitor workspace `name` is on.
+  fn monitor_of(
+    state: &crate::wm_state::WmState,
+    name: &str,
+  ) -> Option<u128> {
+    state
+      .workspace_by_name(name)?
+      .monitor()
+      .map(|monitor| monitor.id().as_u128())
+  }
+
+  #[test]
+  fn a_pick_activates_an_inactive_workspace_on_its_screen() {
+    use super::prepare_target;
+
+    let config = config_with(|_| {});
+    let (mut state, _, right) = two_monitors();
+    let right_id = right.id().as_u128();
+
+    prepare_target(&mut state, &config, "3", right_id, true).unwrap();
+    assert_eq!(monitor_of(&state, "3"), Some(right_id));
+  }
+
+  #[test]
+  fn a_pick_leaves_a_bound_workspace_on_its_monitor() {
+    use super::prepare_target;
+
+    let config = config_with(|value| {
+      value.workspaces[2].bind_to_monitor = Some(0);
+    });
+    let (mut state, left, right) = two_monitors();
+
+    prepare_target(&mut state, &config, "3", right.id().as_u128(), false)
+      .unwrap();
+    assert_eq!(monitor_of(&state, "3"), Some(left.id().as_u128()));
+  }
+
+  #[test]
+  fn a_pick_summons_the_special_workspace_to_its_screen() {
+    use super::prepare_target;
+
+    let config = config_with(|_| {});
+    let (mut state, left, right) = two_monitors();
+    let (left_id, right_id) = (left.id().as_u128(), right.id().as_u128());
+
+    // Moving a window into it activates it where it was picked.
+    prepare_target(&mut state, &config, "special", right_id, false)
+      .unwrap();
+    assert_eq!(monitor_of(&state, "special"), Some(right_id));
+
+    prepare_target(&mut state, &config, "special", left_id, false)
+      .unwrap();
+    assert_eq!(monitor_of(&state, "special"), Some(right_id), "stays");
+
+    prepare_target(&mut state, &config, "special", left_id, true).unwrap();
+    assert_eq!(monitor_of(&state, "special"), Some(left_id), "summoned");
   }
 
   #[test]

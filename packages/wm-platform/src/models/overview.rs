@@ -3,24 +3,36 @@ use crate::{Color, Rect, TabFrame};
 /// What the window overview shows, sent by the WM as a whole.
 #[derive(Clone, Debug, PartialEq)]
 pub struct OverviewFrame {
-  /// Working area of the monitor the overview covers.
-  pub rect: Rect,
+  /// A screen per monitor, in the order the arrows go through them.
+  pub screens: Vec<OverviewScreen>,
 
-  pub scale_factor: f32,
-
-  /// The monitor's workspaces, in order, then the special workspace,
-  /// wherever it is.
-  pub workspaces: Vec<OverviewWorkspace>,
-
-  /// Workspaces named "1" to "10" without a card here that digit keys can
-  /// still go to: inactive ones from the config, or ones on another
-  /// monitor.
+  /// Workspaces named "1" to "10" without a card that digit keys can
+  /// still go to: inactive ones from the config.
   pub digit_workspaces: Vec<String>,
 
   /// Handle of the focused window, if any.
   pub focused_window: Option<isize>,
 
   pub style: OverviewStyle,
+}
+
+/// The overview of one monitor.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct OverviewScreen {
+  /// The WM's ID of the monitor, which actions picked on it carry.
+  pub id: u128,
+
+  /// Working area of the monitor.
+  pub rect: Rect,
+
+  pub scale_factor: f32,
+
+  /// The focused monitor, where the keyboard starts.
+  pub is_focused: bool,
+
+  /// The monitor's workspaces, in order, then the special workspace,
+  /// wherever it is.
+  pub workspaces: Vec<OverviewWorkspace>,
 }
 
 /// A workspace shown as a card in the overview.
@@ -32,7 +44,9 @@ pub struct OverviewWorkspace {
   /// Name shown on its card.
   pub label: String,
 
-  pub is_focused: bool,
+  /// Displayed on its screen's monitor: the overview zooms out of it on
+  /// open, and back into it when closed without a pick there.
+  pub is_displayed: bool,
 
   /// Not active yet: shown as a "+" card, and picking it or dropping a
   /// window on it activates (or creates) the workspace.
@@ -184,17 +198,24 @@ impl OverviewLayoutMode {
 }
 
 /// What the user did in the overview.
+///
+/// `monitor` is the ID of the screen it was picked on, which an inactive
+/// workspace is activated on and the special workspace summoned to.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum OverviewAction {
   /// Focus the window with this handle, switching to its workspace.
-  FocusWindow(isize),
+  FocusWindow { hwnd: isize, monitor: u128 },
 
   /// Switch to the named workspace.
-  FocusWorkspace(String),
+  FocusWorkspace { name: String, monitor: u128 },
 
   /// Move the window with this handle to the named workspace. The
   /// overview stays open.
-  MoveWindow { hwnd: isize, workspace: String },
+  MoveWindow {
+    hwnd: isize,
+    workspace: String,
+    monitor: u128,
+  },
 
   /// Close the window with this handle. The overview stays open.
   CloseWindow(isize),

@@ -1,13 +1,15 @@
 # Window overview
 
-A full-screen view of the focused monitor's workspaces and their windows,
-live. Switch to a workspace or window, move windows between workspaces,
-search them by title, or close them. Only available on Windows.
+A full-screen view of every monitor's workspaces and their windows, live:
+each monitor shows its own (see [Monitors](#monitors)). Switch to a
+workspace or window, move windows between workspaces and monitors, search
+them by title, or close them. Only available on Windows.
 
-On open, the windows of the focused workspace fly from where they are into
-the overview, while the wallpaper behind them blurs. On close, they fly
-back into the workspace you picked (or the one you were on, when
-cancelled) until they sit where they really are.
+On open, the windows each monitor shows fly from where they are into the
+overview, while the wallpaper behind them blurs. On close, they fly back
+into the workspace you picked, and on the other monitors (or all of them,
+when cancelled) into the workspace they show, until they sit where they
+really are.
 
 ## Layouts
 
@@ -94,17 +96,35 @@ workspaces.
 | `Escape` | Close without changing anything. | Same. | Same. |
 
 Digits go to the workspace named after them (`0` is `10`), like a
-`focus --workspace` binding would: one with a card, an inactive one from
-the config, or one on another monitor. When no workspace has a numeric
-name, they go by the cards' positions instead.
+`focus --workspace` binding would: one with a card on any monitor, or an
+inactive one from the config. When no workspace has a numeric name, they
+go by the cards' positions instead.
+
+### Monitors
+
+Each monitor shows the workspaces on it, and the keyboard is on one
+monitor at a time: the focused one at first. The line of keys shows on
+that monitor.
+
+- Arrowing past the first or last workspace goes on to the next monitor
+  that way, left to right. `Home`, `End` and the wheel stay on the
+  monitor.
+- Pointing at another monitor moves the keyboard there.
+- Drag a window onto a workspace on another monitor, or carry it there
+  with the keyboard (`Space`, arrows, `Space`), to move it there.
+- Digits going by the cards' positions count on the monitor with the
+  keyboard.
+- An inactive workspace picked on a monitor (the **+**, or a digit's) is
+  activated on it, unless `bind_to_monitor` binds it to another.
 
 ### Search
 
-`/` starts a search: type to match window titles and process names; matches
-are outlined in `search_color` and the rest fade. `Enter` ends typing and
-selects the best match, after which `n` / `N` step through the matches.
-While typing, `Escape` clears the search and `Backspace` on an empty query
-ends it. While carrying a
+`/` starts a search: type to match window titles and process names, on
+every monitor; matches are outlined in `search_color` and the rest fade,
+and the query and its hits show on every monitor. `Enter` ends typing and
+selects the best match, after which `n` / `N` step through the matches,
+moving the keyboard to the monitor of each. While typing, `Escape` clears
+the search and `Backspace` on an empty query ends it. While carrying a
 window, a search picks the workspace to drop it on.
 
 ### Special workspace
@@ -124,9 +144,12 @@ carried window waits beside it. While it is inactive or empty, it shows
   carousel or the grid's last row, and `↑` goes back to the card it came
   from; `←` `→`, `Home`, `End` and the wheel stay in the row above it. In
   the other layouts, it is reached like any other workspace.
-- Picking it, or dropping a window on it, works like
-  `focus --special-workspace` and `move --special-workspace`: picking it
-  summons it to the overview's monitor.
+- Picking it, or one of its windows, summons it to the monitor it was
+  picked on, like `focus --special-workspace`. Dropping a window on it
+  moves the window there, wherever it is (activating it on that monitor
+  if it was inactive).
+- A search counts its windows once: on the monitor it is displayed on, if
+  any, else on the first.
 
 ### Focus
 
@@ -233,8 +256,9 @@ keybindings:
 
 ## How it works
 
-The overview runs on a thread of its own, with its own message loop, so
-drawing and animating it never waits on the WM. The WM thread posts it what
+The overview runs on a thread of its own, with its own message loop and a
+full-screen window per monitor, so drawing and animating it never waits
+on the WM. The WM thread posts it what
 to show, and gets the user's picks back through its event loop, which
 carries them out through the regular commands (`focus`, `move`, `close`).
 
@@ -256,12 +280,14 @@ moves things around and never redraws pixels:
 - The backdrop is a composition visual of the wallpaper, sharp at first,
   with a blurred copy and the tint fading in over it.
 
-Animations step once per refresh of the overview's own monitor, and the
-loop sleeps while nothing moves. Cards and windows move on critically
+Animations step once per refresh of the focused monitor, and the loop
+sleeps while nothing moves. Cards and windows move on critically
 damped springs, so a key press mid-animation retargets them smoothly.
 
-The overview takes the foreground while open, so keys go to it rather than
-to the window behind it. When a pick changes focus, the WM switches
+The focused monitor's window takes the foreground while open, so keys go
+to the overview rather than to the window behind it. The other monitors'
+windows never take it when clicked, so the keys go to whichever monitor
+has the keyboard. When a pick changes focus, the WM switches
 workspace and focuses the new window right away, behind the overview's
 zoom into that workspace; the overview only hides once the zoom ends, so
 the OS never picks a window to activate in between, and the real windows
@@ -271,6 +297,5 @@ are already where their previews end up.
 
 Not in this version:
 
-- Workspaces of all monitors at once.
 - Picking minimized windows with the mouse (their icons show on their
   card, and they are reachable by search).

@@ -248,8 +248,8 @@ pub enum InvokeCommand {
     maximized: Option<bool>,
   },
   ToggleMinimized,
-  /// Opens the overview of the focused monitor's workspaces, or closes it
-  /// if open.
+  /// Opens the overview of every monitor's workspaces, or closes it if
+  /// open.
   ToggleOverview {
     /// Open on the grid of every workspace; while open, switches to it
     /// instead of closing. Same as `--layout grid`.

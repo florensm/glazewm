@@ -162,7 +162,7 @@ impl WindowManager {
       let window = window_by_handle(state, &action);
 
       let (commands, subject) = match action {
-        OverviewAction::FocusWindow(_) => {
+        OverviewAction::FocusWindow { monitor, .. } => {
           state.overview.close();
           let Some(window) = window else {
             state.pending_sync.queue_focus_change();
@@ -177,7 +177,10 @@ impl WindowManager {
           if let Some(name) = workspace
             .filter(|name| Some(name) != focused_workspace.as_ref())
           {
-            commands.push(focus_workspace_command(name, config));
+            crate::overview::prepare_target(
+              state, config, &name, monitor, true,
+            )?;
+            commands.push(focus_workspace_command(name));
           }
 
           commands.push(InvokeCommand::Focus(InvokeFocusCommand {
@@ -190,7 +193,7 @@ impl WindowManager {
           state.pending_sync.suppress_animations();
           (commands, None)
         }
-        OverviewAction::FocusWorkspace(name) => {
+        OverviewAction::FocusWorkspace { name, monitor } => {
           state.overview.close();
 
           // Focusing the focused workspace would toggle back to the
@@ -200,16 +203,26 @@ impl WindowManager {
             return platform_sync(state, config);
           }
 
+          crate::overview::prepare_target(
+            state, config, &name, monitor, true,
+          )?;
           state.pending_sync.suppress_animations();
-          (vec![focus_workspace_command(name, config)], None)
+          (vec![focus_workspace_command(name)], None)
         }
-        OverviewAction::MoveWindow { workspace, .. } => {
+        OverviewAction::MoveWindow {
+          workspace, monitor, ..
+        } => {
           let Some(window) = window else {
             return Ok(());
           };
 
-          let command = move_to_workspace_command(workspace, config);
-          (vec![command], Some(window.id()))
+          crate::overview::prepare_target(
+            state, config, &workspace, monitor, false,
+          )?;
+          (
+            vec![move_to_workspace_command(workspace)],
+            Some(window.id()),
+          )
         }
         OverviewAction::CloseWindow(_) => {
           let Some(window) = window else {
@@ -1582,7 +1595,7 @@ fn window_by_handle(
   action: &OverviewAction,
 ) -> Option<crate::models::WindowContainer> {
   let hwnd = match action {
-    OverviewAction::FocusWindow(hwnd)
+    OverviewAction::FocusWindow { hwnd, .. }
     | OverviewAction::CloseWindow(hwnd)
     | OverviewAction::MoveWindow { hwnd, .. } => *hwnd,
     _ => return None,
@@ -1620,43 +1633,23 @@ fn is_off_cooldown(
   true
 }
 
-/// `focus --workspace <name>`, or `focus --special-workspace` to summon
-/// the special workspace to the focused monitor.
+/// `focus --workspace <name>`, for a workspace readied by
+/// `prepare_target`; the special workspace too, which it has summoned.
 #[cfg(target_os = "windows")]
-fn focus_workspace_command(
-  name: String,
-  config: &UserConfig,
-) -> InvokeCommand {
-  InvokeCommand::Focus(if config.is_special_workspace_name(&name) {
-    InvokeFocusCommand {
-      special_workspace: true,
-      ..Default::default()
-    }
-  } else {
-    InvokeFocusCommand {
-      workspace: Some(name),
-      ..Default::default()
-    }
+fn focus_workspace_command(name: String) -> InvokeCommand {
+  InvokeCommand::Focus(InvokeFocusCommand {
+    workspace: Some(name),
+    ..Default::default()
   })
 }
 
-/// `move --workspace <name>`, or `move --special-workspace` for the
-/// special workspace.
+/// `move --workspace <name>`, for a workspace readied by
+/// `prepare_target`.
 #[cfg(target_os = "windows")]
-fn move_to_workspace_command(
-  name: String,
-  config: &UserConfig,
-) -> InvokeCommand {
-  InvokeCommand::Move(if config.is_special_workspace_name(&name) {
-    InvokeMoveCommand {
-      special_workspace: true,
-      ..Default::default()
-    }
-  } else {
-    InvokeMoveCommand {
-      workspace: Some(name),
-      ..Default::default()
-    }
+fn move_to_workspace_command(name: String) -> InvokeCommand {
+  InvokeCommand::Move(InvokeMoveCommand {
+    workspace: Some(name),
+    ..Default::default()
   })
 }
 

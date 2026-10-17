@@ -120,7 +120,7 @@ pub struct WmState {
   #[cfg(target_os = "windows")]
   pub drop_indicator: Option<NativeDropIndicator>,
 
-  /// Overview of the focused workspace's windows.
+  /// Overview of every monitor's workspaces and their windows.
   #[cfg(target_os = "windows")]
   pub overview: Overview,
 

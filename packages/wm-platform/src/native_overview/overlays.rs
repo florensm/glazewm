@@ -6,8 +6,7 @@ use std::time::Instant;
 use windows::Win32::Foundation::HWND;
 
 use super::{
-  scenes::scene_window_rect, to_f32_size, Overview, PlaceContext,
-  WM_ICON_READY,
+  scenes::scene_window_rect, to_f32_size, PlaceContext, Screen,
 };
 use crate::{
   overview_chrome::{
@@ -180,7 +179,7 @@ impl Overlays {
   }
 }
 
-impl Overview {
+impl Screen {
   /// Keeps a label picture per workspace.
   pub(super) fn ensure_labels(&mut self) {
     let count = self.workspaces().len();
@@ -207,10 +206,10 @@ impl Overview {
     style: &OverviewStyle,
     force: bool,
   ) {
-    let layout = self.interaction.layout;
+    let layout = self.focus.layout;
     let metrics = self.metrics;
     let scale_factor = metrics.scale_factor;
-    let notify = (self.hwnd, WM_ICON_READY);
+    let notify = self.notify;
 
     let labels = matches!(
       layout,
@@ -269,7 +268,7 @@ impl Overview {
       .iter()
       .map(|workspace| LabelPicture {
         text: workspace.label.clone(),
-        is_focused: workspace.is_focused,
+        is_displayed: workspace.is_displayed,
         is_special: workspace.is_special,
       })
       .collect()
@@ -278,17 +277,15 @@ impl Overview {
   /// The tag under the picked window, where windows aren't captioned on
   /// cards.
   pub(super) fn tag_picture(&self) -> Option<TagPicture> {
-    let interaction = &self.interaction;
-    if !interaction.layout.shows_before_going()
-      || interaction.mode != Mode::Windows
-    {
+    let focus = &self.focus;
+    if !focus.layout.shows_before_going() || focus.mode != Mode::Windows {
       return None;
     }
 
-    let hwnd = interaction.selected_window?;
+    let hwnd = focus.selected_window?;
     let window = self
       .workspaces()
-      .get(interaction.selected)?
+      .get(focus.selected)?
       .windows
       .iter()
       .find(|window| window.hwnd == hwnd)?;
@@ -306,11 +303,11 @@ impl Overview {
 
   /// What shows where the shown workspace has no windows.
   pub(super) fn note_text(&self) -> Option<String> {
-    if !self.interaction.layout.has_scene() {
+    if !self.focus.layout.has_scene() {
       return None;
     }
 
-    let index = self.interaction.selected;
+    let index = self.focus.selected;
     let workspace = self.workspaces().get(index)?;
     let is_empty = self
       .scenes
@@ -332,7 +329,7 @@ impl Overview {
   /// How far up the activities' miniatures are while the overview opens
   /// or closes: out of sight when it is shut.
   pub(super) fn top_shift(&self, openness: f32) -> f32 {
-    let extent = match self.interaction.layout {
+    let extent = match self.focus.layout {
       OverviewLayoutMode::Activities => self.scene_area.y,
       _ => 0.0,
     };
@@ -351,12 +348,11 @@ impl Overview {
     let gap = self.metrics.px(RING_GAP);
 
     let card = self.cards.get(index)?;
-    let camera =
-      if self.interaction.layout == OverviewLayoutMode::Activities {
-        Camera::shifted(0.0, shift)
-      } else {
-        context.camera
-      };
+    let camera = if self.focus.layout == OverviewLayoutMode::Activities {
+      Camera::shifted(0.0, shift)
+    } else {
+      context.camera
+    };
     let rect = camera.apply(&card.placement().rect(&card.metrics));
     let scale = rect.w / card.metrics.width.max(1.0);
     let radius = card_radius(&card.metrics) * scale + gap;
@@ -370,9 +366,9 @@ impl Overview {
     hwnd: isize,
     context: &PlaceContext,
   ) -> Option<RectF> {
-    let selected = self.interaction.selected;
+    let selected = self.focus.selected;
 
-    if self.interaction.layout.has_scene() {
+    if self.focus.layout.has_scene() {
       let window = self
         .scenes
         .get(selected)?
@@ -405,23 +401,24 @@ impl Overview {
     shift: f32,
   ) -> bool {
     let now = Instant::now();
-    let interaction = &self.interaction;
-    let layout = interaction.layout;
-    let selected = interaction.selected;
+    let focus = &self.focus;
+    let layout = focus.layout;
+    let selected = focus.selected;
     let view = context.view;
     let fade = context.fade;
     let px = |length: f32| length * self.metrics.scale_factor;
 
     // Where a window would drop: on what it is dragged over, or where it
-    // is carried to.
-    let drop = match &interaction.drag {
-      Some(drag) => drag.target,
-      None => (interaction.mode == Mode::Carrying).then_some(selected),
-    };
-    let ringed = match layout {
-      OverviewLayoutMode::Stage => drop,
-      _ if interaction.drag.is_some() => drop,
-      _ => drop.or(Some(selected)),
+    // is carried to. The selection shows on the screen with the keyboard,
+    // and in the stage as the workspace shown large.
+    let drop = focus.drop;
+    let ringed = if layout == OverviewLayoutMode::Stage
+      || focus.is_dragging
+      || !focus.is_active
+    {
+      drop
+    } else {
+      drop.or(Some(selected))
     };
     let ring_target = ringed.and_then(|index| {
       self
@@ -429,12 +426,12 @@ impl Overview {
         .map(|(rect, scale)| (index, rect, scale))
     });
 
-    let hover_target = interaction
+    let hover_target = focus
       .hover
       .filter(|hovered| {
         *hovered != selected
           && Some(*hovered) != ringed
-          && interaction.drag.is_none()
+          && !focus.is_dragging
       })
       .and_then(|index| {
         self
@@ -442,9 +439,9 @@ impl Overview {
           .map(|(rect, scale)| (index, rect, scale))
       });
 
-    let picked = interaction
+    let picked = focus
       .selected_window
-      .filter(|_| interaction.mode == Mode::Windows);
+      .filter(|_| focus.mode == Mode::Windows);
     let picked_rect = picked.and_then(|hwnd| {
       self.window_rect(hwnd, context).map(|rect| (hwnd, rect))
     });
@@ -534,7 +531,7 @@ impl Overview {
     context: &PlaceContext,
     shift: f32,
   ) -> Vec<Option<(RectF, f32)>> {
-    let layout = self.interaction.layout;
+    let layout = self.focus.layout;
     let gap = self.metrics.px(LABEL_GAP);
     let Some(overlays) = &self.overlays else {
       return Vec::new();
@@ -555,7 +552,7 @@ impl Overview {
         let (width, height) = to_f32_size(label.picture.size());
 
         let is_over = layout == OverviewLayoutMode::Stage
-          && index == self.interaction.selected;
+          && index == self.focus.selected;
         let (x, y) = if is_over {
           (rect.x, rect.y - gap - height)
         } else {

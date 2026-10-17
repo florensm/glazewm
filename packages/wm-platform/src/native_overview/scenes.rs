@@ -3,7 +3,7 @@
 
 use std::cmp::Ordering;
 
-use super::{cards::screen_rect, Overview, SCENE_PADDING};
+use super::{cards::screen_rect, Screen, SCENE_PADDING};
 use crate::{
   overview_layout::{CardView, RectF},
   overview_scene::{Scene, SceneWindow},
@@ -24,7 +24,7 @@ pub(super) fn scene_window_rect(
   }
 }
 
-impl Overview {
+impl Screen {
   /// Builds each workspace's scene, keeping the windows still on it.
   /// Returns whether a window came, went or moved, which calls for
   /// registering the thumbnails anew.
@@ -68,7 +68,7 @@ impl Overview {
   /// them now, so they fly on from there.
   pub(super) fn seed_scene_from_card(&mut self) {
     let context = self.place_context();
-    let selected = self.interaction.selected;
+    let selected = self.focus.selected;
     let (Some(card), Some(scene)) =
       (self.cards.get(selected), self.scenes.get_mut(selected))
     else {
@@ -97,8 +97,8 @@ impl Overview {
       return;
     };
 
-    let layout = self.interaction.layout;
-    let selected = self.interaction.selected;
+    let layout = self.focus.layout;
+    let selected = self.focus.selected;
     let slide = self.metrics.view.0 * 0.12;
     let padding = self.metrics.px(SCENE_PADDING);
     let scene_in = self.scene_area.inset(padding);

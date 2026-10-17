@@ -5,10 +5,18 @@
 //! browsing workspaces, picking a window inside one, and carrying a window
 //! to another workspace. The mouse does the same directly: click to go,
 //! drag to move.
+//!
+//! Each monitor has a screen of its own, and the keyboard is on one of
+//! them at a time. Workspaces are indexed across every screen, screen
+//! after screen, so a window can be carried, dragged or searched for
+//! anywhere.
+
+use std::ops::Range;
 
 use crate::{
   overview_layout::{GridCells, RectF},
-  OverviewAction, OverviewLayoutMode, OverviewWindow, OverviewWorkspace,
+  OverviewAction, OverviewLayoutMode, OverviewScreen, OverviewWindow,
+  OverviewWorkspace,
 };
 
 /// Where the keyboard is in the overview's flow.
@@ -87,7 +95,7 @@ pub(crate) enum HintTone {
 pub(crate) struct Drag {
   pub hwnd: isize,
 
-  /// Where the cursor is, in overview coordinates.
+  /// Where the cursor is, in physical screen coordinates.
   pub position: (f32, f32),
 
   /// Workspace it would be dropped on.
@@ -100,10 +108,35 @@ struct Press {
   hit: Hit,
 }
 
+/// One screen's place in the interaction.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct ScreenCursor {
+  /// Its monitor's ID, which actions picked on it carry.
+  pub monitor: u128,
+
+  /// Its workspaces among every screen's.
+  pub cards: Range<usize>,
+
+  /// Workspace it shows: the selected one while it has the keyboard.
+  pub shown: usize,
+
+  /// Card of its row of workspaces the row is centered on: the shown
+  /// one, or while the special workspace's dock is shown, the one it was
+  /// entered from, which moving up goes back to.
+  pub row_selected: usize,
+
+  /// Where its grid puts each of its cards, counted from its first, for
+  /// moving a row up or down.
+  pub grid: GridCells,
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct Interaction {
-  /// Index of the selected workspace.
-  pub selected: usize,
+  /// A cursor per screen, in the order the arrows go through them.
+  pub screens: Vec<ScreenCursor>,
+
+  /// Screen the keyboard is on.
+  pub active: usize,
 
   pub mode: Mode,
   pub layout: OverviewLayoutMode,
@@ -117,7 +150,8 @@ pub(crate) struct Interaction {
   /// Whether typed characters go to the search query.
   pub searching: bool,
 
-  /// Search query; its matches stay highlighted after typing ends.
+  /// Search query, over every screen's windows; its matches stay
+  /// highlighted after typing ends.
   pub query: String,
 
   match_index: Option<usize>,
@@ -134,14 +168,6 @@ pub(crate) struct Interaction {
   /// Numbered workspaces without a card that digit keys still reach.
   pub digit_workspaces: Vec<String>,
 
-  /// Where the grid puts each card, for moving a row up or down.
-  pub grid: GridCells,
-
-  /// Card of the row of workspaces the row is centered on: the selected
-  /// one, or while the special workspace's dock is selected, the one it
-  /// was entered from, which moving up goes back to.
-  pub row_selected: usize,
-
   /// Where the selected workspace's windows show, first to last, for the
   /// arrows to move between them. Empty until laid out, which leaves
   /// them where they are on screen.
@@ -149,19 +175,19 @@ pub(crate) struct Interaction {
 }
 
 impl Interaction {
-  /// Starts out on the focused workspace.
+  /// Starts out on the focused screen, and each screen on its displayed
+  /// workspace.
   pub fn new(
-    workspaces: &[OverviewWorkspace],
+    screens: &[OverviewScreen],
     layout: OverviewLayoutMode,
     drag_threshold: f32,
   ) -> Self {
-    let selected = workspaces
-      .iter()
-      .position(|workspace| workspace.is_focused)
-      .unwrap_or(0);
-
-    Self {
-      selected,
+    let mut interaction = Self {
+      screens: cursors(screens),
+      active: screens
+        .iter()
+        .position(|screen| screen.is_focused)
+        .unwrap_or(0),
       mode: Mode::Spaces,
       layout,
       selected_window: None,
@@ -174,34 +200,93 @@ impl Interaction {
       drag: None,
       drag_threshold,
       digit_workspaces: Vec::new(),
-      grid: GridCells::default(),
-      row_selected: row_card(workspaces, selected, None, layout)
-        .unwrap_or(0),
       nav: Vec::new(),
-    }
+    };
+
+    interaction.center_rows(&all_workspaces(screens));
+    interaction
   }
 
-  /// Keeps the selection on the same workspace and windows when what is
-  /// shown changes from `old` to `new`.
+  /// Index of the selected workspace: the one shown on the screen with the
+  /// keyboard.
+  pub fn selected(&self) -> usize {
+    self
+      .screens
+      .get(self.active)
+      .map_or(0, |screen| screen.shown)
+  }
+
+  /// Keeps the selection on the same workspaces and windows when what is
+  /// shown changes from `old` to `screens`.
   pub fn sync(
     &mut self,
     old: &[OverviewWorkspace],
-    new: &[OverviewWorkspace],
+    screens: &[OverviewScreen],
   ) {
+    let new = all_workspaces(screens);
+    let mut cursors = cursors(screens);
+
+    // The same workspace on the same monitor: the special workspace's
+    // card is on every screen.
     let remap = |index: usize| {
+      let monitor = self
+        .screens
+        .iter()
+        .find(|screen| screen.cards.contains(&index))?
+        .monitor;
       let name = &old.get(index)?.name;
-      new.iter().position(|workspace| &workspace.name == name)
+
+      cursors
+        .iter()
+        .find(|screen| screen.monitor == monitor)?
+        .cards
+        .clone()
+        .find(|index| new.get(*index).is_some_and(|w| w.name == *name))
     };
 
-    self.selected = remap(self.selected)
-      .or_else(|| new.iter().position(|workspace| workspace.is_focused))
-      .unwrap_or(0);
-    self.hover = self.hover.and_then(remap);
-    self.row_selected =
-      row_card(new, self.selected, remap(self.row_selected), self.layout)
-        .unwrap_or(0);
+    let kept = cursors
+      .iter()
+      .map(|cursor| {
+        let old = self
+          .screens
+          .iter()
+          .find(|screen| screen.monitor == cursor.monitor)?;
+        Some((remap(old.shown), remap(old.row_selected), old.grid.clone()))
+      })
+      .collect::<Vec<_>>();
+    let selected = remap(self.selected());
+    let hover = self.hover.and_then(remap);
+    let drag_target =
+      self.drag.and_then(|drag| drag.target).and_then(remap);
 
-    let exists = |hwnd: isize| find(new, hwnd).is_some();
+    for (cursor, kept) in cursors.iter_mut().zip(kept) {
+      let Some((shown, row_selected, grid)) = kept else {
+        continue;
+      };
+      cursor.shown = shown.unwrap_or(cursor.shown);
+      cursor.row_selected = row_selected.unwrap_or(cursor.shown);
+      cursor.grid = grid;
+    }
+
+    let monitor = self.screens.get(self.active).map(|s| s.monitor);
+    self.active = selected
+      .and_then(|index| {
+        cursors
+          .iter()
+          .position(|screen| screen.cards.contains(&index))
+      })
+      .or_else(|| {
+        cursors
+          .iter()
+          .position(|screen| Some(screen.monitor) == monitor)
+      })
+      .or_else(|| screens.iter().position(|screen| screen.is_focused))
+      .unwrap_or(0);
+    self.screens = cursors;
+    self.hover = hover;
+    self.center_rows(&new);
+
+    let exists = |hwnd: isize| find(&new, hwnd).is_some();
 
     if self.selected_window.is_some_and(|hwnd| !exists(hwnd)) {
       self.selected_window = None;
@@ -214,7 +299,7 @@ impl Interaction {
 
     if let Some(drag) = &mut self.drag {
       if exists(drag.hwnd) {
-        drag.target = drag.target.and_then(remap);
+        drag.target = drag_target;
       } else {
         self.drag = None;
         self.press = None;
@@ -227,17 +312,45 @@ impl Interaction {
     self.drag.map(|drag| drag.hwnd).or(self.carried)
   }
 
-  /// Whether workspace `index` is where the floating window would land.
-  pub fn is_drop_target(&self, index: usize) -> bool {
+  /// Workspace the floating window would land on.
+  fn drop_target(&self) -> Option<usize> {
     match &self.drag {
-      Some(drag) => drag.target == Some(index),
-      None => self.mode == Mode::Carrying && self.selected == index,
+      Some(drag) => drag.target,
+      None => (self.mode == Mode::Carrying).then(|| self.selected()),
     }
   }
 
-  /// Whether `window` matches the search query.
-  pub fn is_match(&self, window: &OverviewWindow) -> bool {
-    match_score(window, &self.query).is_some()
+  /// Moves the keyboard to `screen`, onto the workspace it shows. Returns
+  /// whether it moved.
+  pub fn activate(
+    &mut self,
+    screen: usize,
+    workspaces: &[OverviewWorkspace],
+  ) -> bool {
+    let shown = self
+      .screens
+      .get(screen)
+      .filter(|cursor| {
+        screen != self.active && cursor.cards.contains(&cursor.shown)
+      })
+      .map(|cursor| cursor.shown);
+
+    if let Some(shown) = shown {
+      self.select(shown, workspaces);
+    }
+    shown.is_some()
+  }
+
+  /// Shows workspace `index` on its screen, leaving the keyboard where it
+  /// is: e.g. the one the overview zooms into there as it closes.
+  pub fn show(&mut self, index: usize, workspaces: &[OverviewWorkspace]) {
+    match self.screen_of(index) {
+      Some(screen) if screen == self.active => {
+        self.select(index, workspaces);
+      }
+      Some(screen) => self.set_shown(screen, index, workspaces),
+      None => {}
+    }
   }
 
   /// Acts on `key`.
@@ -289,13 +402,25 @@ impl Interaction {
       Key::End => self.edge(true, workspaces),
       Key::Enter => return self.enter(workspaces),
       Key::Digit(digit) => {
-        let name =
-          digit_target(digit, workspaces, &self.digit_workspaces)?;
-        return self.go_to(name, workspaces);
+        let name = digit_target(
+          digit,
+          workspaces,
+          self.active_cards(),
+          &self.digit_workspaces,
+        )?;
+        let monitor = self.monitor_for(&name, workspaces);
+        return self.go_to(name, monitor, workspaces);
       }
       Key::Text('s') => {
-        let special = workspaces.iter().find(|w| w.is_special)?;
-        return self.go_to(special.name.clone(), workspaces);
+        let special = self
+          .active_cards()
+          .find(|index| is_special(workspaces, *index))?;
+        let name = workspaces.get(special)?.name.clone();
+        return self.go_to(
+          name,
+          self.monitor_of(Some(special)),
+          workspaces,
+        );
       }
       Key::Text(_) => {}
     }
@@ -310,9 +435,7 @@ impl Interaction {
     workspaces: &[OverviewWorkspace],
   ) {
     self.layout = layout;
-    self.row_selected =
-      row_card(workspaces, self.selected, Some(self.row_selected), layout)
-        .unwrap_or(0);
+    self.center_rows(workspaces);
 
     // The grid is too small to pick a window in.
     if layout == OverviewLayoutMode::Grid && self.mode == Mode::Windows {
@@ -321,23 +444,27 @@ impl Interaction {
     }
   }
 
-  /// Goes straight to workspace `name`: switches to it, sends the picked
-  /// window there, or drops the carried one there.
+  /// Goes straight to workspace `name`, picked on `monitor`'s screen:
+  /// switches to it, sends the picked window there, or drops the carried
+  /// one there.
   fn go_to(
     &mut self,
     name: String,
+    monitor: u128,
     workspaces: &[OverviewWorkspace],
   ) -> Option<OverviewAction> {
     match self.mode {
-      Mode::Spaces => Some(OverviewAction::FocusWorkspace(name)),
+      Mode::Spaces => {
+        Some(OverviewAction::FocusWorkspace { name, monitor })
+      }
       Mode::Windows => match self.selected_window {
-        Some(hwnd) => self.send(hwnd, name, workspaces),
-        None => Some(OverviewAction::FocusWorkspace(name)),
+        Some(hwnd) => self.send(hwnd, name, monitor, workspaces),
+        None => Some(OverviewAction::FocusWorkspace { name, monitor }),
       },
       Mode::Carrying => {
         let action = self
           .carried
-          .and_then(|hwnd| move_action(hwnd, name, workspaces));
+          .and_then(|hwnd| move_action(hwnd, name, monitor, workspaces));
         self.put_down();
         action
       }
@@ -396,13 +523,19 @@ impl Interaction {
     &mut self,
     workspaces: &[OverviewWorkspace],
   ) -> Option<OverviewAction> {
+    let selected = self.selected();
+    let monitor = self.monitor_of(Some(selected));
+
     match self.mode {
       Mode::Carrying => self.drop_carried(workspaces),
-      Mode::Windows if self.selected_window.is_some() => {
-        self.selected_window.map(OverviewAction::FocusWindow)
-      }
-      _ => workspaces.get(self.selected).map(|workspace| {
-        OverviewAction::FocusWorkspace(workspace.name.clone())
+      Mode::Windows if self.selected_window.is_some() => self
+        .selected_window
+        .map(|hwnd| OverviewAction::FocusWindow { hwnd, monitor }),
+      _ => workspaces.get(selected).map(|workspace| {
+        OverviewAction::FocusWorkspace {
+          name: workspace.name.clone(),
+          monitor,
+        }
       }),
     }
   }
@@ -411,9 +544,11 @@ impl Interaction {
     &mut self,
     workspaces: &[OverviewWorkspace],
   ) -> Option<OverviewAction> {
+    let selected = self.selected();
     let action = self.carried.and_then(|hwnd| {
-      let to = workspaces.get(self.selected)?;
-      move_action(hwnd, to.name.clone(), workspaces)
+      let to = workspaces.get(selected)?;
+      let monitor = self.monitor_of(Some(selected));
+      move_action(hwnd, to.name.clone(), monitor, workspaces)
     });
 
     self.put_down();
@@ -435,12 +570,14 @@ impl Interaction {
     &mut self,
     hwnd: isize,
     name: String,
+    monitor: u128,
     workspaces: &[OverviewWorkspace],
   ) -> Option<OverviewAction> {
-    let action = move_action(hwnd, name, workspaces)?;
+    let action = move_action(hwnd, name, monitor, workspaces)?;
 
-    let windows =
-      workspaces.get(self.selected).map_or_else(Vec::new, ordered);
+    let windows = workspaces
+      .get(self.selected())
+      .map_or_else(Vec::new, ordered);
     let position = windows.iter().position(|window| window.hwnd == hwnd);
     let neighbour = position.and_then(|position| {
       windows
@@ -455,9 +592,13 @@ impl Interaction {
     Some(action)
   }
 
+  /// Selects workspace `index`, moving the keyboard to its screen.
   fn select(&mut self, index: usize, workspaces: &[OverviewWorkspace]) {
-    if index != self.selected {
-      self.selected = index;
+    let Some(screen) = self.screen_of(index) else {
+      return;
+    };
+
+    if index != self.selected() {
       // The window cursor and its windows belong to one workspace.
       self.selected_window = None;
       self.nav.clear();
@@ -466,32 +607,143 @@ impl Interaction {
       }
     }
 
-    self.row_selected =
-      row_card(workspaces, index, Some(self.row_selected), self.layout)
-        .unwrap_or(0);
+    self.active = screen;
+    self.set_shown(screen, index, workspaces);
   }
 
-  /// Moves along the row of workspaces, which the special workspace's
-  /// dock below it isn't part of; from the dock, back to the row.
-  fn step(&mut self, delta: isize, workspaces: &[OverviewWorkspace]) {
-    if is_docked(workspaces, self.selected, self.layout) {
+  /// Shows workspace `index` on `screen`, and centers its row on it.
+  fn set_shown(
+    &mut self,
+    screen: usize,
+    index: usize,
+    workspaces: &[OverviewWorkspace],
+  ) {
+    let layout = self.layout;
+    if let Some(cursor) = self.screens.get_mut(screen) {
+      cursor.shown = index;
+      cursor.row_selected = row_card(
+        workspaces,
+        &cursor.cards,
+        index,
+        Some(cursor.row_selected),
+        layout,
+      )
+      .unwrap_or(cursor.cards.start);
+    }
+  }
+
+  /// Centers each screen's row anew, e.g. for another layout.
+  fn center_rows(&mut self, workspaces: &[OverviewWorkspace]) {
+    for screen in 0..self.screens.len() {
+      let shown = self.screens[screen].shown;
+      self.set_shown(screen, shown, workspaces);
+    }
+  }
+
+  /// Screen workspace `index` is on.
+  fn screen_of(&self, index: usize) -> Option<usize> {
+    self
+      .screens
+      .iter()
+      .position(|screen| screen.cards.contains(&index))
+  }
+
+  /// Workspaces of the screen with the keyboard.
+  fn active_cards(&self) -> Range<usize> {
+    self
+      .screens
+      .get(self.active)
+      .map_or(0..0, |screen| screen.cards.clone())
+  }
+
+  /// Monitor of the screen workspace `index` is on, or else of the one
+  /// with the keyboard.
+  fn monitor_of(&self, index: Option<usize>) -> u128 {
+    let screen = index
+      .and_then(|index| self.screen_of(index))
+      .unwrap_or(self.active);
+    self.screens.get(screen).map_or(0, |screen| screen.monitor)
+  }
+
+  /// Monitor workspace `name` is picked on: the screen with the keyboard
+  /// if it has a card for it (as it does for the special workspace), else
+  /// the one that has.
+  fn monitor_for(
+    &self,
+    name: &str,
+    workspaces: &[OverviewWorkspace],
+  ) -> u128 {
+    let has_name = |index: &usize| {
+      workspaces.get(*index).is_some_and(|w| w.name == name)
+    };
+    let card = self
+      .active_cards()
+      .find(has_name)
+      .or_else(|| (0..workspaces.len()).find(has_name));
+
+    self.monitor_of(card)
+  }
+
+  /// Moves along the row of workspaces of the screen with the keyboard,
+  /// which the special workspace's dock below it isn't part of; from the
+  /// dock, back to the row. With `cross`, past either end of the row on
+  /// to the neighbouring screen's.
+  fn step(
+    &mut self,
+    delta: isize,
+    workspaces: &[OverviewWorkspace],
+    cross: bool,
+  ) {
+    let cards = self.active_cards();
+    let selected = self.selected();
+
+    if is_docked(workspaces, selected, self.layout) {
+      let row_selected = self
+        .screens
+        .get(self.active)
+        .map_or(selected, |screen| screen.row_selected);
       let back =
-        row_card(workspaces, self.row_selected, None, self.layout);
+        row_card(workspaces, &cards, row_selected, None, self.layout);
       if let Some(index) = back {
         self.select(index, workspaces);
       }
       return;
     }
 
-    let row = row_indices(workspaces, self.layout);
-    let Some(position) = row.iter().position(|i| *i == self.selected)
-    else {
+    let row = row_indices(workspaces, &cards, self.layout);
+    let Some(position) = row.iter().position(|i| *i == selected) else {
       return;
     };
-    let position = position
-      .saturating_add_signed(delta)
-      .min(row.len().saturating_sub(1));
-    self.select(row[position], workspaces);
+
+    match position.checked_add_signed(delta).and_then(|i| row.get(i)) {
+      Some(index) => self.select(*index, workspaces),
+      None if cross => self.cross(delta, workspaces),
+      None => {}
+    }
+  }
+
+  /// Goes on to the first workspace of the next screen that has any, or
+  /// for a negative `delta`, the last of the previous one.
+  fn cross(&mut self, delta: isize, workspaces: &[OverviewWorkspace]) {
+    let screens = if delta > 0 {
+      (self.active + 1..self.screens.len()).collect::<Vec<_>>()
+    } else {
+      (0..self.active).rev().collect()
+    };
+
+    let target = screens.into_iter().find_map(|screen| {
+      let row =
+        row_indices(workspaces, &self.screens[screen].cards, self.layout);
+      if delta > 0 {
+        row.first().copied()
+      } else {
+        row.last().copied()
+      }
+    });
+
+    if let Some(index) = target {
+      self.select(index, workspaces);
+    }
   }
 
   /// Moves the window cursor, or else the workspace cursor, `toward`.
@@ -503,9 +755,9 @@ impl Interaction {
 
     let (back, forward, inside) = arrows(self.layout);
     if toward == back {
-      self.step(-1, workspaces);
+      self.step(-1, workspaces, true);
     } else if toward == forward {
-      self.step(1, workspaces);
+      self.step(1, workspaces, true);
     } else if Some(toward) == inside {
       if self.mode == Mode::Spaces {
         self.enter_windows(workspaces);
@@ -518,23 +770,38 @@ impl Interaction {
   }
 
   /// Moves between the carousel's row and the special workspace's dock,
-  /// or between the grid's rows.
+  /// or between the grid's rows, on the screen with the keyboard.
   fn vertical(&mut self, delta: isize, workspaces: &[OverviewWorkspace]) {
+    let selected = self.selected();
+    let cards = self.active_cards();
+    let Some(screen) = self.screens.get(self.active) else {
+      return;
+    };
+
     // Up from the dock goes back to where it was entered from. Down onto
     // the dock is from the carousel, or from the grid's last row, below
     // which `GridCells` puts it.
-    let target = if is_special(workspaces, self.selected) {
+    let target = if is_special(workspaces, selected) {
       (delta < 0)
         .then(|| {
-          row_card(workspaces, self.row_selected, None, self.layout)
+          row_card(
+            workspaces,
+            &cards,
+            screen.row_selected,
+            None,
+            self.layout,
+          )
         })
         .flatten()
     } else if self.layout == OverviewLayoutMode::Grid {
-      self.grid.vertical_neighbour(self.selected, delta)
+      selected
+        .checked_sub(cards.start)
+        .and_then(|card| screen.grid.vertical_neighbour(card, delta))
+        .map(|card| cards.start + card)
     } else {
-      workspaces
-        .iter()
-        .position(|workspace| workspace.is_special)
+      cards
+        .clone()
+        .find(|index| is_special(workspaces, *index))
         .filter(|_| delta > 0 && self.layout.docks_special())
     };
 
@@ -601,7 +868,7 @@ impl Interaction {
     }
 
     workspaces
-      .get(self.selected)
+      .get(self.selected())
       .map_or_else(Vec::new, |workspace| {
         ordered(workspace)
           .into_iter()
@@ -610,7 +877,8 @@ impl Interaction {
       })
   }
 
-  /// Selects the first (or last) workspace, or window while picking one.
+  /// Selects the first (or last) workspace of the screen with the
+  /// keyboard, or window while picking one.
   fn edge(&mut self, is_last: bool, workspaces: &[OverviewWorkspace]) {
     if self.mode == Mode::Windows {
       let nav = self.nav(workspaces);
@@ -619,7 +887,7 @@ impl Interaction {
         self.selected_window = Some(*hwnd);
       }
     } else {
-      let row = row_indices(workspaces, self.layout);
+      let row = row_indices(workspaces, &self.active_cards(), self.layout);
       let index = if is_last { row.last() } else { row.first() };
       if let Some(index) = index {
         self.select(*index, workspaces);
@@ -627,14 +895,21 @@ impl Interaction {
     }
   }
 
-  /// Search matches, best first, then in carousel order.
+  /// Search matches on every screen, best first, then in order. The
+  /// special workspace's windows count once, on the screen showing it if
+  /// any does, else on the first.
   pub fn matches<'a>(
     &self,
     workspaces: &'a [OverviewWorkspace],
   ) -> Vec<(usize, &'a OverviewWindow)> {
+    let special = home_special(workspaces);
+
     let mut matches = workspaces
       .iter()
       .enumerate()
+      .filter(|(index, workspace)| {
+        !workspace.is_special || Some(*index) == special
+      })
       .flat_map(|(index, workspace)| {
         let unshown = workspace
           .windows
@@ -656,7 +931,8 @@ impl Interaction {
       .collect()
   }
 
-  /// Selects the next (or previous) search match.
+  /// Selects the next (or previous) search match, on whichever screen it
+  /// is.
   fn goto_match(
     &mut self,
     delta: isize,
@@ -724,7 +1000,7 @@ impl Interaction {
     // would.
     let pointed = hit.window.filter(|_| {
       self.layout.shows_before_going()
-        && hit.workspace == Some(self.selected)
+        && hit.workspace == Some(self.selected())
         && self.mode != Mode::Carrying
         && !is_left_down
     });
@@ -768,22 +1044,19 @@ impl Interaction {
   ) -> Option<OverviewAction> {
     let press = self.press.take()?;
 
+    // Dropped on a card of the workspace it is on, or on nothing: no
+    // move.
     if let Some(drag) = self.drag.take() {
-      let from = find(workspaces, drag.hwnd).map(|(index, _)| index);
-      let to = drag.target.and_then(|index| workspaces.get(index));
-
-      // Dropped on its own card, or on nothing: no move.
-      return to.filter(|_| drag.target != from).map(|to| {
-        OverviewAction::MoveWindow {
-          hwnd: drag.hwnd,
-          workspace: to.name.clone(),
-        }
+      return drag.target.and_then(|index| {
+        let to = workspaces.get(index)?;
+        let monitor = self.monitor_of(Some(index));
+        move_action(drag.hwnd, to.name.clone(), monitor, workspaces)
       });
     }
 
     // A workspace not shown yet is shown first.
     let other = press.hit.workspace.filter(|index| {
-      self.layout.shows_before_going() && *index != self.selected
+      self.layout.shows_before_going() && *index != self.selected()
     });
     if let Some(index) = other {
       self.select(index, workspaces);
@@ -792,32 +1065,89 @@ impl Interaction {
 
     match press.hit {
       Hit {
-        window: Some(hwnd), ..
-      } => Some(OverviewAction::FocusWindow(hwnd)),
+        window: Some(hwnd),
+        workspace,
+      } => Some(OverviewAction::FocusWindow {
+        hwnd,
+        monitor: self.monitor_of(workspace),
+      }),
       Hit {
         workspace: Some(index),
         ..
       } => {
-        self.selected = index;
+        self.select(index, workspaces);
         workspaces.get(index).map(|workspace| {
-          OverviewAction::FocusWorkspace(workspace.name.clone())
+          OverviewAction::FocusWorkspace {
+            name: workspace.name.clone(),
+            monitor: self.monitor_of(Some(index)),
+          }
         })
       }
       Hit { .. } => Some(OverviewAction::Cancel),
     }
   }
 
-  /// Selects the next (or previous) workspace.
+  /// Selects the next (or previous) workspace of the screen with the
+  /// keyboard.
   pub fn wheel(
     &mut self,
     is_down: bool,
     workspaces: &[OverviewWorkspace],
   ) {
-    self.step(if is_down { 1 } else { -1 }, workspaces);
+    self.step(if is_down { 1 } else { -1 }, workspaces, false);
   }
 
   pub fn mouse_leave(&mut self) {
     self.hover = None;
+  }
+
+  /// What `screen` shows of the interaction, in its own card indices.
+  pub fn focus(
+    &self,
+    screen: usize,
+    workspaces: &[OverviewWorkspace],
+  ) -> ScreenFocus {
+    let Some(cursor) = self.screens.get(screen) else {
+      return ScreenFocus::default();
+    };
+
+    let local = |index: usize| {
+      cursor
+        .cards
+        .contains(&index)
+        .then(|| index - cursor.cards.start)
+    };
+    let is_active = screen == self.active;
+
+    ScreenFocus {
+      layout: self.layout,
+      is_active,
+      mode: if is_active { self.mode } else { Mode::Spaces },
+      selected: local(cursor.shown).unwrap_or(0),
+      row_selected: local(cursor.row_selected).unwrap_or(0),
+      selected_window: self.selected_window.filter(|_| is_active),
+      hover: self.hover.and_then(local),
+      floating: self.floating(),
+      drop: self.drop_target().and_then(local),
+      is_dragging: self.drag.is_some(),
+      query: self.query.clone(),
+      hint: self.screen_hint(screen, workspaces),
+    }
+  }
+
+  /// The hints line of `screen`: the keys for the current step on the
+  /// screen with the keyboard, and the search on every screen.
+  pub fn screen_hint(
+    &self,
+    screen: usize,
+    workspaces: &[OverviewWorkspace],
+  ) -> Option<(String, HintTone)> {
+    if screen == self.active {
+      Some(self.hint(workspaces))
+    } else {
+      (self.searching || !self.query.is_empty())
+        .then(|| self.search_hint(workspaces))
+    }
   }
 
   /// The keys for the current step, shown under the cards.
@@ -825,34 +1155,11 @@ impl Interaction {
     &self,
     workspaces: &[OverviewWorkspace],
   ) -> (String, HintTone) {
-    let title = |hwnd: Option<isize>| {
-      hwnd
-        .and_then(|hwnd| find(workspaces, hwnd))
-        .map_or_else(String::new, |(_, window)| window.title.clone())
-    };
-
     if self.searching || !self.query.is_empty() {
-      let count = self.matches(workspaces).len();
-      let mut text = format!(
-        "/{}{}   {count} {}",
-        self.query,
-        if self.searching { "\u{258f}" } else { "" },
-        if count == 1 { "hit" } else { "hits" },
-      );
-
-      if count > 0 {
-        text.push_str(
-          "   \u{b7}   \u{23ce} best match   \u{b7}   n / N to walk them",
-        );
-      }
-      if self.carried.is_some() {
-        text.push_str("   \u{b7}   space drops \"");
-        text.push_str(&title(self.carried));
-        text.push_str("\" here");
-      }
-
-      return (text, HintTone::Search);
+      return self.search_hint(workspaces);
     }
+
+    let title = |hwnd: Option<isize>| window_title(workspaces, hwnd);
 
     if let Some(drag) = &self.drag {
       return (
@@ -908,8 +1215,146 @@ impl Interaction {
       }
     }
   }
+
+  /// The search query and its hits, on every screen's hints line.
+  fn search_hint(
+    &self,
+    workspaces: &[OverviewWorkspace],
+  ) -> (String, HintTone) {
+    let count = self.matches(workspaces).len();
+    let mut text = format!(
+      "/{}{}   {count} {}",
+      self.query,
+      if self.searching { "\u{258f}" } else { "" },
+      if count == 1 { "hit" } else { "hits" },
+    );
+
+    if count > 0 {
+      text.push_str(
+        "   \u{b7}   \u{23ce} best match   \u{b7}   n / N to walk them",
+      );
+    }
+    if self.carried.is_some() {
+      text.push_str("   \u{b7}   space drops \"");
+      text.push_str(&window_title(workspaces, self.carried));
+      text.push_str("\" here");
+    }
+
+    (text, HintTone::Search)
+  }
 }
 
+/// The interaction as one screen shows it, in that screen's own card
+/// indices.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub(crate) struct ScreenFocus {
+  pub layout: OverviewLayoutMode,
+
+  /// Whether the keyboard is on this screen.
+  pub is_active: bool,
+
+  /// Where the keyboard is in the flow, while it is on this screen; else
+  /// browsing.
+  pub mode: Mode,
+
+  /// Workspace it shows.
+  pub selected: usize,
+
+  /// Card its row is centered on.
+  pub row_selected: usize,
+
+  /// Window picked on it.
+  pub selected_window: Option<isize>,
+
+  /// Workspace under the cursor.
+  pub hover: Option<usize>,
+
+  /// Window lifted by the mouse or the keyboard, from whichever screen.
+  pub floating: Option<isize>,
+
+  /// Workspace the floating window would land on.
+  pub drop: Option<usize>,
+
+  /// Whether a window is dragged, over whichever screen.
+  pub is_dragging: bool,
+
+  /// Search query, whose matches show on every screen.
+  pub query: String,
+
+  /// Its hints line, if it shows one.
+  pub hint: Option<(String, HintTone)>,
+}
+
+impl ScreenFocus {
+  /// Whether `window` matches the search query.
+  pub fn is_match(&self, window: &OverviewWindow) -> bool {
+    match_score(window, &self.query).is_some()
+  }
+}
+
+/// A cursor per screen, each on its displayed workspace.
+fn cursors(screens: &[OverviewScreen]) -> Vec<ScreenCursor> {
+  let mut start = 0;
+
+  screens
+    .iter()
+    .map(|screen| {
+      let cards = start..start + screen.workspaces.len();
+      start = cards.end;
+      let shown = cards.start
+        + screen
+          .workspaces
+          .iter()
+          .position(|workspace| workspace.is_displayed)
+          .unwrap_or(0);
+
+      ScreenCursor {
+        monitor: screen.id,
+        cards,
+        shown,
+        row_selected: shown,
+        grid: GridCells::default(),
+      }
+    })
+    .collect()
+}
+
+/// Every screen's workspaces, screen after screen, as the interaction
+/// indexes them.
+pub(crate) fn all_workspaces(
+  screens: &[OverviewScreen],
+) -> Vec<OverviewWorkspace> {
+  screens
+    .iter()
+    .flat_map(|screen| screen.workspaces.iter().cloned())
+    .collect()
+}
+
+/// The special workspace's card its windows count on: the one displayed
+/// on its screen, if any is, else the first.
+fn home_special(workspaces: &[OverviewWorkspace]) -> Option<usize> {
+  let specials = || {
+    workspaces
+      .iter()
+      .enumerate()
+      .filter(|(_, workspace)| workspace.is_special)
+  };
+
+  specials()
+    .find(|(_, workspace)| workspace.is_displayed)
+    .or_else(|| specials().next())
+    .map(|(index, _)| index)
+}
+
+/// Title of window `hwnd`, or nothing.
+fn window_title(
+  workspaces: &[OverviewWorkspace],
+  hwnd: Option<isize>,
+) -> String {
+  hwnd
+    .and_then(|hwnd| find(workspaces, hwnd))
+    .map_or_else(String::new, |(_, window)| window.title.clone())
+}
 /// The arrows that go to the previous and the next workspace in
 /// `layout`, and the one that goes in among the selected workspace's
 /// windows, if any does.
@@ -988,10 +1433,12 @@ fn ordered(workspace: &OverviewWorkspace) -> Vec<&OverviewWindow> {
   windows
 }
 
-/// Moves window `hwnd` to workspace `name`, unless it is already there.
+/// Moves window `hwnd` to workspace `name`, picked on `monitor`'s screen,
+/// unless it is already there.
 fn move_action(
   hwnd: isize,
   name: String,
+  monitor: u128,
   workspaces: &[OverviewWorkspace],
 ) -> Option<OverviewAction> {
   let (from, _) = find(workspaces, hwnd)?;
@@ -1002,16 +1449,19 @@ fn move_action(
   (!is_there).then_some(OverviewAction::MoveWindow {
     hwnd,
     workspace: name,
+    monitor,
   })
 }
 
 /// Name of the workspace digit key `digit` stands for, 0 being the tenth:
 /// the one named after it when workspaces are numbered, whether it has a
-/// card or is one of `others`, else the card at its position (not counting
-/// the special workspace's, which `s` goes to).
+/// card on any screen or is one of `others`, else the one at its position
+/// among `cards` (not counting the special workspace's, which `s` goes
+/// to).
 fn digit_target(
   digit: u8,
   workspaces: &[OverviewWorkspace],
+  cards: Range<usize>,
   others: &[String],
 ) -> Option<String> {
   let number = if digit == 0 { 10 } else { usize::from(digit) };
@@ -1022,6 +1472,7 @@ fn digit_target(
 
   if !is_numbered {
     return workspaces
+      .get(cards)?
       .iter()
       .filter(|workspace| !workspace.is_special)
       .nth(number - 1)
@@ -1067,24 +1518,27 @@ fn match_score(window: &OverviewWindow, query: &str) -> Option<usize> {
     .min()
 }
 
-/// The row card to center the row on with card `selected` selected in
-/// `layout`: that card, or for the special workspace's docked card,
-/// `previous` (if still a row card) or else the first. `None` when there
-/// are no row cards.
+/// The row card of a screen's `cards` to center its row on with card
+/// `selected` selected in `layout`: that card, or for the special
+/// workspace's docked card, `previous` (if still a row card) or else the
+/// first. `None` when there are no row cards.
 fn row_card(
   workspaces: &[OverviewWorkspace],
+  cards: &Range<usize>,
   selected: usize,
   previous: Option<usize>,
   layout: OverviewLayoutMode,
 ) -> Option<usize> {
   let is_row_card = |index: &usize| {
-    *index < workspaces.len() && !is_docked(workspaces, *index, layout)
+    cards.contains(index)
+      && *index < workspaces.len()
+      && !is_docked(workspaces, *index, layout)
   };
 
   Some(selected)
     .filter(is_row_card)
     .or_else(|| previous.filter(is_row_card))
-    .or_else(|| row_indices(workspaces, layout).first().copied())
+    .or_else(|| row_indices(workspaces, cards, layout).first().copied())
 }
 
 /// Whether card `index` is the special workspace's.
@@ -1104,25 +1558,66 @@ fn is_docked(
   layout.docks_special() && is_special(workspaces, index)
 }
 
-/// The cards of the row (or grid, or stack of rows) in `layout`: all but
-/// the special workspace's if it is docked.
+/// A screen's `cards` of its row (or grid, or stack of rows) in `layout`:
+/// all but the special workspace's if it is docked.
 fn row_indices(
   workspaces: &[OverviewWorkspace],
+  cards: &Range<usize>,
   layout: OverviewLayoutMode,
 ) -> Vec<usize> {
-  (0..workspaces.len())
-    .filter(|index| !is_docked(workspaces, *index, layout))
+  cards
+    .clone()
+    .filter(|index| {
+      *index < workspaces.len() && !is_docked(workspaces, *index, layout)
+    })
     .collect()
 }
 
 #[cfg(test)]
 mod tests {
-  use super::{HintTone, Hit, Interaction, Key, Mode};
+  use super::{all_workspaces, HintTone, Hit, Interaction, Key, Mode};
   use crate::{
     overview_layout::{CardMetrics, CardSlot, GridCells, RectF},
-    OverviewAction, OverviewLayoutMode, OverviewWindow, OverviewWorkspace,
-    Rect,
+    OverviewAction, OverviewLayoutMode, OverviewScreen, OverviewWindow,
+    OverviewWorkspace, Rect,
   };
+
+  /// ID of the monitor of the screen most tests have.
+  const MONITOR: u128 = 1;
+
+  /// A screen of monitor `id` showing `workspaces`.
+  fn screen(
+    id: u128,
+    workspaces: Vec<OverviewWorkspace>,
+  ) -> OverviewScreen {
+    OverviewScreen {
+      id,
+      workspaces,
+      ..OverviewScreen::default()
+    }
+  }
+
+  /// The interaction of a single screen showing `workspaces`.
+  fn single(
+    workspaces: &[OverviewWorkspace],
+    layout: OverviewLayoutMode,
+  ) -> Interaction {
+    Interaction::new(&[screen(MONITOR, workspaces.to_vec())], layout, 6.0)
+  }
+
+  fn focus_workspace(name: &str) -> OverviewAction {
+    OverviewAction::FocusWorkspace {
+      name: name.to_string(),
+      monitor: MONITOR,
+    }
+  }
+
+  fn focus_window(hwnd: isize) -> OverviewAction {
+    OverviewAction::FocusWindow {
+      hwnd,
+      monitor: MONITOR,
+    }
+  }
 
   fn window(hwnd: isize, title: &str, rect: Rect) -> OverviewWindow {
     OverviewWindow {
@@ -1148,7 +1643,7 @@ mod tests {
         ..card("1")
       },
       OverviewWorkspace {
-        is_focused: true,
+        is_displayed: true,
         windows: vec![window(
           21,
           "Browser",
@@ -1171,7 +1666,7 @@ mod tests {
   }
 
   fn interaction() -> Interaction {
-    Interaction::new(&workspaces(), OverviewLayoutMode::Carousel, 6.0)
+    single(&workspaces(), OverviewLayoutMode::Carousel)
   }
 
   fn press(
@@ -1186,7 +1681,7 @@ mod tests {
 
   #[test]
   fn starts_on_the_focused_workspace() {
-    assert_eq!(interaction().selected, 1);
+    assert_eq!(interaction().selected(), 1);
   }
 
   #[test]
@@ -1194,13 +1689,13 @@ mod tests {
     let mut state = interaction();
 
     press(&mut state, &[Key::Left, Key::Left]);
-    assert_eq!(state.selected, 0);
+    assert_eq!(state.selected(), 0);
 
     press(&mut state, &[Key::Text('l'), Key::Right, Key::Right]);
-    assert_eq!(state.selected, 2);
+    assert_eq!(state.selected(), 2);
 
     press(&mut state, &[Key::Home]);
-    assert_eq!(state.selected, 0);
+    assert_eq!(state.selected(), 0);
   }
 
   #[test]
@@ -1209,7 +1704,7 @@ mod tests {
 
     assert_eq!(
       press(&mut state, &[Key::Left, Key::Enter]),
-      Some(OverviewAction::FocusWorkspace("1".to_string()))
+      Some(focus_workspace("1"))
     );
   }
 
@@ -1219,7 +1714,7 @@ mod tests {
 
     assert_eq!(
       press(&mut state, &[Key::Digit(3)]),
-      Some(OverviewAction::FocusWorkspace("3".to_string()))
+      Some(focus_workspace("3"))
     );
     assert_eq!(press(&mut state, &[Key::Digit(9)]), None);
   }
@@ -1228,12 +1723,11 @@ mod tests {
   fn digits_go_by_name_when_workspaces_are_numbered() {
     let mut workspaces = workspaces();
     workspaces.remove(1);
-    let mut state =
-      Interaction::new(&workspaces, OverviewLayoutMode::Carousel, 6.0);
+    let mut state = single(&workspaces, OverviewLayoutMode::Carousel);
 
     assert_eq!(
       state.key(Key::Digit(3), &workspaces),
-      Some(OverviewAction::FocusWorkspace("3".to_string()))
+      Some(focus_workspace("3"))
     );
     assert_eq!(state.key(Key::Digit(2), &workspaces), None, "not shown");
   }
@@ -1246,12 +1740,11 @@ mod tests {
     {
       workspace.name = name.to_string();
     }
-    let mut state =
-      Interaction::new(&workspaces, OverviewLayoutMode::Carousel, 6.0);
+    let mut state = single(&workspaces, OverviewLayoutMode::Carousel);
 
     assert_eq!(
       state.key(Key::Digit(1), &workspaces),
-      Some(OverviewAction::FocusWorkspace("web".to_string()))
+      Some(focus_workspace("web"))
     );
   }
 
@@ -1262,7 +1755,7 @@ mod tests {
 
     assert_eq!(
       press(&mut state, &[Key::Digit(5)]),
-      Some(OverviewAction::FocusWorkspace("5".to_string()))
+      Some(focus_workspace("5"))
     );
     assert_eq!(press(&mut state, &[Key::Digit(6)]), None);
     assert_eq!(
@@ -1270,6 +1763,7 @@ mod tests {
       Some(OverviewAction::MoveWindow {
         hwnd: 21,
         workspace: "5".to_string(),
+        monitor: MONITOR,
       })
     );
   }
@@ -1289,6 +1783,7 @@ mod tests {
       Some(OverviewAction::MoveWindow {
         hwnd: 11,
         workspace: "3".to_string(),
+        monitor: MONITOR,
       })
     );
     assert_eq!(state.mode, Mode::Windows);
@@ -1304,6 +1799,7 @@ mod tests {
       Some(OverviewAction::MoveWindow {
         hwnd: 21,
         workspace: "1".to_string(),
+        monitor: MONITOR,
       })
     );
     assert_eq!(state.mode, Mode::Spaces);
@@ -1317,8 +1813,7 @@ mod tests {
       is_new: true,
       ..card("4")
     });
-    let mut state =
-      Interaction::new(&workspaces, OverviewLayoutMode::Carousel, 6.0);
+    let mut state = single(&workspaces, OverviewLayoutMode::Carousel);
 
     let mut press = |keys: &[Key]| {
       keys
@@ -1331,12 +1826,10 @@ mod tests {
       Some(OverviewAction::MoveWindow {
         hwnd: 21,
         workspace: "4".to_string(),
+        monitor: MONITOR,
       })
     );
-    assert_eq!(
-      press(&[Key::End, Key::Enter]),
-      Some(OverviewAction::FocusWorkspace("4".to_string()))
-    );
+    assert_eq!(press(&[Key::End, Key::Enter]), Some(focus_workspace("4")));
   }
 
   #[test]
@@ -1346,8 +1839,7 @@ mod tests {
       is_hidden_tab: true,
       ..window(13, "Docs", Rect::from_xy(0, 0, 960, 1000))
     });
-    let mut state =
-      Interaction::new(&workspaces, OverviewLayoutMode::Carousel, 6.0);
+    let mut state = single(&workspaces, OverviewLayoutMode::Carousel);
     let press = |state: &mut Interaction, keys: &[Key]| {
       keys
         .iter()
@@ -1368,7 +1860,7 @@ mod tests {
     );
     assert_eq!(
       press(&mut state, &[Key::Enter, Key::Enter]),
-      Some(OverviewAction::FocusWindow(13)),
+      Some(focus_window(13)),
       "search finds it"
     );
   }
@@ -1384,10 +1876,7 @@ mod tests {
     press(&mut state, &[Key::Right, Key::Right]);
     assert_eq!(state.selected_window, Some(12));
 
-    assert_eq!(
-      press(&mut state, &[Key::Enter]),
-      Some(OverviewAction::FocusWindow(12))
-    );
+    assert_eq!(press(&mut state, &[Key::Enter]), Some(focus_window(12)));
   }
 
   #[test]
@@ -1395,7 +1884,7 @@ mod tests {
     let mut state = interaction();
 
     press(&mut state, &[Key::Left, Key::Space, Key::End]);
-    assert_eq!(state.selected, 0);
+    assert_eq!(state.selected(), 0);
     assert_eq!(state.selected_window, Some(12));
 
     press(&mut state, &[Key::Home]);
@@ -1446,7 +1935,7 @@ mod tests {
     for layout in
       [OverviewLayoutMode::Activities, OverviewLayoutMode::Stage]
     {
-      let mut state = Interaction::new(&workspaces(), layout, 6.0);
+      let mut state = single(&workspaces(), layout);
       assert_eq!(state.mode, Mode::Spaces);
       press(&mut state, &[Key::Space]);
       assert_eq!(state.mode, Mode::Windows);
@@ -1456,8 +1945,7 @@ mod tests {
 
   #[test]
   fn arrows_go_to_the_nearest_window_where_windows_show() {
-    let mut state =
-      Interaction::new(&workspaces(), OverviewLayoutMode::Activities, 6.0);
+    let mut state = single(&workspaces(), OverviewLayoutMode::Activities);
     state.mode = Mode::Windows;
 
     // Laid out as two rows: 1 2 3 over 4 5.
@@ -1486,8 +1974,7 @@ mod tests {
 
   #[test]
   fn the_activities_go_down_into_windows_and_back_up() {
-    let mut state =
-      Interaction::new(&workspaces(), OverviewLayoutMode::Activities, 6.0);
+    let mut state = single(&workspaces(), OverviewLayoutMode::Activities);
 
     // Down into the shown workspace's windows, up to the workspaces, along
     // them, and down again.
@@ -1496,26 +1983,25 @@ mod tests {
     press(&mut state, &[Key::Up]);
     assert_eq!(state.mode, Mode::Spaces);
     press(&mut state, &[Key::Left, Key::Down]);
-    assert_eq!(state.selected, 0);
+    assert_eq!(state.selected(), 0);
     assert_eq!(state.mode, Mode::Windows);
     assert_eq!(state.selected_window, Some(11), "its first window");
 
     assert_eq!(
       press(&mut state, &[Key::Right, Key::Enter]),
-      Some(OverviewAction::FocusWindow(12))
+      Some(focus_window(12))
     );
   }
 
   #[test]
   fn the_stage_steps_down_its_column_and_goes_right_into_windows() {
     let workspaces = workspaces();
-    let mut state =
-      Interaction::new(&workspaces, OverviewLayoutMode::Stage, 6.0);
+    let mut state = single(&workspaces, OverviewLayoutMode::Stage);
     let mut press = |keys: &[Key]| {
       for key in keys {
         state.key(*key, &workspaces);
       }
-      (state.selected, state.mode, state.selected_window)
+      (state.selected(), state.mode, state.selected_window)
     };
 
     assert_eq!(press(&[Key::Down]), (2, Mode::Spaces, None));
@@ -1535,7 +2021,7 @@ mod tests {
     for layout in
       [OverviewLayoutMode::Activities, OverviewLayoutMode::Stage]
     {
-      let mut state = Interaction::new(&workspaces, layout, 6.0);
+      let mut state = single(&workspaces, layout);
       let click = |state: &mut Interaction, hit: Hit| {
         state.mouse_down((0.0, 0.0), hit);
         state.mouse_up(&workspaces)
@@ -1546,10 +2032,10 @@ mod tests {
         window: Some(11),
       };
       assert_eq!(click(&mut state, other), None);
-      assert_eq!(state.selected, 0);
+      assert_eq!(state.selected(), 0);
       assert_eq!(
         click(&mut state, other),
-        Some(OverviewAction::FocusWindow(11)),
+        Some(focus_window(11)),
         "{layout:?}"
       );
     }
@@ -1563,17 +2049,13 @@ mod tests {
         window: None,
       },
     );
-    assert_eq!(
-      state.mouse_up(&workspaces),
-      Some(OverviewAction::FocusWorkspace("1".to_string()))
-    );
+    assert_eq!(state.mouse_up(&workspaces), Some(focus_workspace("1")));
   }
 
   #[test]
   fn pointing_at_a_shown_window_picks_it() {
     let workspaces = workspaces();
-    let mut state =
-      Interaction::new(&workspaces, OverviewLayoutMode::Stage, 6.0);
+    let mut state = single(&workspaces, OverviewLayoutMode::Stage);
 
     let changed = state.mouse_move(
       (10.0, 10.0),
@@ -1614,16 +2096,17 @@ mod tests {
     press(&mut state, &[Key::Space, Key::Space]);
     assert_eq!(state.mode, Mode::Carrying);
     assert_eq!(state.floating(), Some(21));
-    assert!(state.is_drop_target(1));
+    assert!(state.drop_target() == Some(1));
 
     press(&mut state, &[Key::Left]);
-    assert!(state.is_drop_target(0));
+    assert!(state.drop_target() == Some(0));
 
     assert_eq!(
       press(&mut state, &[Key::Space]),
       Some(OverviewAction::MoveWindow {
         hwnd: 21,
         workspace: "1".to_string(),
+        monitor: MONITOR,
       })
     );
     assert_eq!(state.mode, Mode::Spaces);
@@ -1677,21 +2160,21 @@ mod tests {
     let metrics =
       CardMetrics::new(1920.0, 1040.0, 1.0, OverviewLayoutMode::Grid);
     let mut state = interaction();
-    state.grid = GridCells::new(
+    state.screens[0].grid = GridCells::new(
       &metrics,
       &vec![CardSlot::new(&metrics, false); workspaces.len()],
       2,
     );
 
     press(&mut state, &[Key::Left, Key::Down]);
-    assert_eq!(state.selected, 0, "no rows in the carousel");
+    assert_eq!(state.selected(), 0, "no rows in the carousel");
 
     press(&mut state, &[Key::Tab, Key::Down]);
     assert_eq!(state.layout, OverviewLayoutMode::Grid);
-    assert_eq!(state.selected, 2);
+    assert_eq!(state.selected(), 2);
 
     press(&mut state, &[Key::Text('k')]);
-    assert_eq!(state.selected, 0);
+    assert_eq!(state.selected(), 0);
   }
 
   #[test]
@@ -1703,11 +2186,11 @@ mod tests {
     press(&mut state, &query);
     assert!(state.searching);
     assert_eq!(state.query, "term");
-    assert_eq!(state.selected, 1, "typing doesn't move the selection");
+    assert_eq!(state.selected(), 1, "typing doesn't move the selection");
 
     press(&mut state, &[Key::Enter]);
     assert!(!state.searching);
-    assert_eq!(state.selected, 0);
+    assert_eq!(state.selected(), 0);
     assert_eq!(state.mode, Mode::Windows);
     assert_eq!(state.selected_window, Some(11));
   }
@@ -1751,20 +2234,14 @@ mod tests {
       window: Some(11),
     };
     state.mouse_down((10.0, 10.0), window);
-    assert_eq!(
-      state.mouse_up(&workspaces),
-      Some(OverviewAction::FocusWindow(11))
-    );
+    assert_eq!(state.mouse_up(&workspaces), Some(focus_window(11)));
 
     let card = Hit {
       workspace: Some(2),
       window: None,
     };
     state.mouse_down((10.0, 10.0), card);
-    assert_eq!(
-      state.mouse_up(&workspaces),
-      Some(OverviewAction::FocusWorkspace("3".to_string()))
-    );
+    assert_eq!(state.mouse_up(&workspaces), Some(focus_workspace("3")));
 
     state.mouse_down((10.0, 10.0), Hit::default());
     assert_eq!(state.mouse_up(&workspaces), Some(OverviewAction::Cancel));
@@ -1789,13 +2266,14 @@ mod tests {
     };
     assert!(state.mouse_move((400.0, 100.0), over, true));
     assert_eq!(state.floating(), Some(21));
-    assert!(state.is_drop_target(2));
+    assert!(state.drop_target() == Some(2));
 
     assert_eq!(
       state.mouse_up(&workspaces),
       Some(OverviewAction::MoveWindow {
         hwnd: 21,
         workspace: "3".to_string(),
+        monitor: MONITOR,
       })
     );
     assert_eq!(state.drag, None);
@@ -1857,9 +2335,9 @@ mod tests {
     // workspace 1 go away along with the window.
     press(&mut state, &[Key::Left, Key::Space, Key::Space, Key::Right]);
     let new = old[1..].to_vec();
-    state.sync(&old, &new);
+    state.sync(&old, &[screen(MONITOR, new)]);
 
-    assert_eq!(state.selected, 0, "still on workspace 2");
+    assert_eq!(state.selected(), 0, "still on workspace 2");
     assert_eq!(state.carried, None);
     assert_eq!(state.mode, Mode::Spaces);
   }
@@ -1883,12 +2361,12 @@ mod tests {
       (OverviewLayoutMode::Activities, Key::Left, Key::Right),
       (OverviewLayoutMode::Stage, Key::Up, Key::Down),
     ] {
-      let mut state = Interaction::new(&workspaces, layout, 6.0);
+      let mut state = single(&workspaces, layout);
       let mut press = |keys: &[Key]| {
         for key in keys {
           state.key(*key, &workspaces);
         }
-        state.selected
+        state.selected()
       };
 
       assert_eq!(press(&[forward, forward]), special);
@@ -1901,8 +2379,7 @@ mod tests {
   #[test]
   fn s_goes_to_the_special_workspace_like_a_digit() {
     let workspaces = with_special();
-    let mut state =
-      Interaction::new(&workspaces, OverviewLayoutMode::Carousel, 6.0);
+    let mut state = single(&workspaces, OverviewLayoutMode::Carousel);
     let press = |state: &mut Interaction, keys: &[Key]| {
       keys
         .iter()
@@ -1911,24 +2388,25 @@ mod tests {
 
     assert_eq!(
       press(&mut state, &[Key::Text('s')]),
-      Some(OverviewAction::FocusWorkspace("special".to_string()))
+      Some(focus_workspace("special"))
     );
     assert_eq!(
       press(&mut state, &[Key::Space, Key::Text('s')]),
       Some(OverviewAction::MoveWindow {
         hwnd: 21,
         workspace: "special".to_string(),
+        monitor: MONITOR,
       }),
       "sends the picked window"
     );
 
-    let mut state =
-      Interaction::new(&workspaces, OverviewLayoutMode::Carousel, 6.0);
+    let mut state = single(&workspaces, OverviewLayoutMode::Carousel);
     assert_eq!(
       press(&mut state, &[Key::Space, Key::Space, Key::Text('s')]),
       Some(OverviewAction::MoveWindow {
         hwnd: 21,
         workspace: "special".to_string(),
+        monitor: MONITOR,
       }),
       "drops the carried window"
     );
@@ -1954,12 +2432,11 @@ mod tests {
       workspace.name = name.to_string();
     }
     workspaces.swap(0, 3);
-    let mut state =
-      Interaction::new(&workspaces, OverviewLayoutMode::Carousel, 6.0);
+    let mut state = single(&workspaces, OverviewLayoutMode::Carousel);
 
     assert_eq!(
       state.key(Key::Digit(1), &workspaces),
-      Some(OverviewAction::FocusWorkspace("code".to_string()))
+      Some(focus_workspace("code"))
     );
     assert_eq!(state.key(Key::Digit(4), &workspaces), None);
   }
@@ -1967,8 +2444,7 @@ mod tests {
   #[test]
   fn hints_mention_the_special_workspace() {
     let workspaces = with_special();
-    let state =
-      Interaction::new(&workspaces, OverviewLayoutMode::Carousel, 6.0);
+    let state = single(&workspaces, OverviewLayoutMode::Carousel);
 
     assert!(state.hint(&workspaces).0.contains("s special"));
   }
@@ -1984,9 +2460,9 @@ mod tests {
 
     for layout in [OverviewLayoutMode::Carousel, OverviewLayoutMode::Grid]
     {
-      let mut state = Interaction::new(&workspaces, layout, 6.0);
+      let mut state = single(&workspaces, layout);
       if layout == OverviewLayoutMode::Grid {
-        state.grid = GridCells::new(
+        state.screens[0].grid = GridCells::new(
           &CardMetrics::new(1920.0, 1080.0, 1.0, OverviewLayoutMode::Grid),
           &workspaces
             .iter()
@@ -2007,23 +2483,23 @@ mod tests {
       }
 
       press(&mut state, &[Key::Right, Key::Right, Key::Right]);
-      assert_eq!(state.selected, 2, "left/right stay in the row");
+      assert_eq!(state.selected(), 2, "left/right stay in the row");
       press(&mut state, &[Key::End]);
-      assert_eq!(state.selected, 2, "the row's end, not the dock");
+      assert_eq!(state.selected(), 2, "the row's end, not the dock");
 
       press(&mut state, &[Key::Home, Key::Down]);
-      assert_eq!(state.selected, 3, "down goes to the dock");
+      assert_eq!(state.selected(), 3, "down goes to the dock");
       assert_eq!(
-        state.row_selected, 0,
+        state.screens[0].row_selected, 0,
         "the row stays on the card the dock was entered from"
       );
       press(&mut state, &[Key::Down]);
-      assert_eq!(state.selected, 3);
+      assert_eq!(state.selected(), 3);
       press(&mut state, &[Key::Up]);
-      assert_eq!(state.selected, 0, "up goes back where it came from");
+      assert_eq!(state.selected(), 0, "up goes back where it came from");
 
       press(&mut state, &[Key::Down, Key::Right]);
-      assert_eq!(state.selected, 0, "sideways leaves the dock too");
+      assert_eq!(state.selected(), 0, "sideways leaves the dock too");
     }
   }
 
@@ -2031,23 +2507,21 @@ mod tests {
   fn opened_on_the_special_workspace_the_row_starts_at_its_first_card() {
     let mut workspaces = with_special();
     for workspace in &mut workspaces {
-      workspace.is_focused = workspace.is_special;
+      workspace.is_displayed = workspace.is_special;
     }
 
-    let mut state =
-      Interaction::new(&workspaces, OverviewLayoutMode::Carousel, 6.0);
-    assert_eq!(state.selected, 3);
-    assert_eq!(state.row_selected, 0);
+    let mut state = single(&workspaces, OverviewLayoutMode::Carousel);
+    assert_eq!(state.selected(), 3);
+    assert_eq!(state.screens[0].row_selected, 0);
 
     state.key(Key::Up, &workspaces);
-    assert_eq!(state.selected, 0);
+    assert_eq!(state.selected(), 0);
   }
 
   #[test]
   fn a_carried_window_drops_on_the_dock_below() {
     let workspaces = with_special();
-    let mut state =
-      Interaction::new(&workspaces, OverviewLayoutMode::Carousel, 6.0);
+    let mut state = single(&workspaces, OverviewLayoutMode::Carousel);
     let press = |state: &mut Interaction, keys: &[Key]| {
       keys
         .iter()
@@ -2059,7 +2533,377 @@ mod tests {
       Some(OverviewAction::MoveWindow {
         hwnd: 21,
         workspace: "special".to_string(),
+        monitor: MONITOR,
       })
     );
+  }
+
+  /// A screen of monitor 1, focused, showing "1" (with "Terminal") and
+  /// "2" (with "Editor"), and one of monitor 2 showing "3" (with
+  /// "Browser") and "4"; each with the special workspace's card, docked in
+  /// the carousel, last.
+  fn two_screens() -> Vec<OverviewScreen> {
+    let special = || OverviewWorkspace {
+      is_special: true,
+      ..card("special")
+    };
+    let full = Rect::from_xy(0, 0, 1920, 1000);
+
+    vec![
+      OverviewScreen {
+        is_focused: true,
+        ..screen(
+          1,
+          vec![
+            OverviewWorkspace {
+              is_displayed: true,
+              windows: vec![window(11, "Terminal", full.clone())],
+              ..card("1")
+            },
+            OverviewWorkspace {
+              windows: vec![window(12, "Editor", full.clone())],
+              ..card("2")
+            },
+            special(),
+          ],
+        )
+      },
+      screen(
+        2,
+        vec![
+          OverviewWorkspace {
+            is_displayed: true,
+            windows: vec![window(31, "Browser", full)],
+            ..card("3")
+          },
+          card("4"),
+          special(),
+        ],
+      ),
+    ]
+  }
+
+  fn press_on(
+    state: &mut Interaction,
+    workspaces: &[OverviewWorkspace],
+    keys: &[Key],
+  ) -> Option<OverviewAction> {
+    keys.iter().fold(None, |_, key| state.key(*key, workspaces))
+  }
+
+  #[test]
+  fn each_screen_starts_on_its_displayed_workspace() {
+    let state =
+      Interaction::new(&two_screens(), OverviewLayoutMode::Carousel, 6.0);
+
+    assert_eq!(state.active, 0, "the focused screen has the keyboard");
+    assert_eq!(state.selected(), 0);
+    assert_eq!(state.screens[1].cards, 3..6);
+    assert_eq!(state.screens[1].shown, 3);
+  }
+
+  #[test]
+  fn arrows_go_on_to_the_next_screen_past_the_end_of_the_row() {
+    let screens = two_screens();
+    let workspaces = all_workspaces(&screens);
+    let mut state =
+      Interaction::new(&screens, OverviewLayoutMode::Carousel, 6.0);
+
+    press_on(&mut state, &workspaces, &[Key::Right, Key::Right]);
+    assert_eq!((state.active, state.selected()), (1, 3), "past the dock");
+    assert_eq!(state.screens[0].shown, 1, "the left one stays put");
+
+    press_on(&mut state, &workspaces, &[Key::Right, Key::Right]);
+    assert_eq!(state.selected(), 4, "nothing further right");
+
+    press_on(&mut state, &workspaces, &[Key::Home, Key::Left]);
+    assert_eq!((state.active, state.selected()), (0, 1));
+
+    press_on(&mut state, &workspaces, &[Key::End]);
+    assert_eq!(state.selected(), 1, "the end of its own row");
+  }
+
+  #[test]
+  fn the_wheel_stays_on_its_screen() {
+    let screens = two_screens();
+    let workspaces = all_workspaces(&screens);
+    let mut state =
+      Interaction::new(&screens, OverviewLayoutMode::Carousel, 6.0);
+
+    state.wheel(true, &workspaces);
+    state.wheel(true, &workspaces);
+    assert_eq!((state.active, state.selected()), (0, 1));
+  }
+
+  #[test]
+  fn a_carried_window_crosses_to_the_other_screen() {
+    let screens = two_screens();
+    let workspaces = all_workspaces(&screens);
+    let mut state =
+      Interaction::new(&screens, OverviewLayoutMode::Carousel, 6.0);
+
+    assert_eq!(
+      press_on(
+        &mut state,
+        &workspaces,
+        &[Key::Space, Key::Space, Key::Right, Key::Right, Key::Space],
+      ),
+      Some(OverviewAction::MoveWindow {
+        hwnd: 11,
+        workspace: "3".to_string(),
+        monitor: 2,
+      })
+    );
+  }
+
+  #[test]
+  fn search_finds_windows_on_every_screen_and_follows_them() {
+    let screens = two_screens();
+    let workspaces = all_workspaces(&screens);
+    let mut state =
+      Interaction::new(&screens, OverviewLayoutMode::Activities, 6.0);
+
+    press_on(&mut state, &workspaces, &[Key::Text('/')]);
+    press_on(
+      &mut state,
+      &workspaces,
+      &"brow".chars().map(Key::Text).collect::<Vec<_>>(),
+    );
+
+    let (text, tone) = state
+      .screen_hint(1, &workspaces)
+      .expect("search on every screen");
+    assert_eq!(tone, HintTone::Search);
+    assert!(text.contains("1 hit"));
+
+    press_on(&mut state, &workspaces, &[Key::Enter]);
+    assert_eq!((state.active, state.selected()), (1, 3));
+    assert_eq!(state.selected_window, Some(31));
+    assert_eq!(
+      press_on(&mut state, &workspaces, &[Key::Enter]),
+      Some(OverviewAction::FocusWindow {
+        hwnd: 31,
+        monitor: 2,
+      })
+    );
+  }
+
+  #[test]
+  fn special_windows_count_once_in_a_search() {
+    let mut screens = two_screens();
+    for screen in &mut screens {
+      let special = screen.workspaces.last_mut().expect("special");
+      special.windows =
+        vec![window(51, "Notes", Rect::from_xy(0, 0, 1920, 1000))];
+    }
+    screens[1].workspaces[0].is_displayed = false;
+    screens[1].workspaces[2].is_displayed = true;
+    let workspaces = all_workspaces(&screens);
+    let mut state =
+      Interaction::new(&screens, OverviewLayoutMode::Carousel, 6.0);
+    state.query = "notes".to_string();
+
+    let matches = state
+      .matches(&workspaces)
+      .into_iter()
+      .map(|(index, window)| (index, window.hwnd))
+      .collect::<Vec<_>>();
+    assert_eq!(matches, [(5, 51)], "on the screen showing it");
+  }
+
+  #[test]
+  fn hints_of_other_screens_only_show_a_search() {
+    let screens = two_screens();
+    let workspaces = all_workspaces(&screens);
+    let state =
+      Interaction::new(&screens, OverviewLayoutMode::Carousel, 6.0);
+
+    assert!(state.screen_hint(0, &workspaces).is_some());
+    assert_eq!(state.screen_hint(1, &workspaces), None);
+  }
+
+  #[test]
+  fn picks_carry_the_monitor_they_were_picked_on() {
+    let screens = two_screens();
+    let workspaces = all_workspaces(&screens);
+    let mut state =
+      Interaction::new(&screens, OverviewLayoutMode::Carousel, 6.0);
+    let focus = |name: &str, monitor| OverviewAction::FocusWorkspace {
+      name: name.to_string(),
+      monitor,
+    };
+
+    assert_eq!(
+      press_on(&mut state, &workspaces, &[Key::Text('s')]),
+      Some(focus("special", 1))
+    );
+    assert_eq!(
+      press_on(&mut state, &workspaces, &[Key::Digit(4)]),
+      Some(focus("4", 2)),
+      "where its card is"
+    );
+
+    state.activate(1, &workspaces);
+    assert_eq!(
+      press_on(&mut state, &workspaces, &[Key::Text('s')]),
+      Some(focus("special", 2))
+    );
+
+    state.digit_workspaces = vec!["7".to_string()];
+    assert_eq!(
+      press_on(&mut state, &workspaces, &[Key::Digit(7)]),
+      Some(focus("7", 2)),
+      "without a card, where the keyboard is"
+    );
+  }
+
+  #[test]
+  fn digits_by_position_count_on_the_screen_with_the_keyboard() {
+    let mut screens = two_screens();
+    for (workspace, name) in screens
+      .iter_mut()
+      .flat_map(|screen| &mut screen.workspaces)
+      .filter(|workspace| !workspace.is_special)
+      .zip(["web", "code", "chat", "mail"])
+    {
+      workspace.name = name.to_string();
+    }
+    let workspaces = all_workspaces(&screens);
+    let mut state =
+      Interaction::new(&screens, OverviewLayoutMode::Carousel, 6.0);
+
+    state.activate(1, &workspaces);
+    assert_eq!(
+      press_on(&mut state, &workspaces, &[Key::Digit(2)]),
+      Some(OverviewAction::FocusWorkspace {
+        name: "mail".to_string(),
+        monitor: 2,
+      })
+    );
+  }
+
+  #[test]
+  fn a_window_dragged_onto_another_screen_moves_there() {
+    let screens = two_screens();
+    let workspaces = all_workspaces(&screens);
+    let mut state =
+      Interaction::new(&screens, OverviewLayoutMode::Carousel, 6.0);
+    let grab = Hit {
+      workspace: Some(0),
+      window: Some(11),
+    };
+
+    state.mouse_down((100.0, 100.0), grab);
+    state.mouse_move(
+      (2400.0, 100.0),
+      Hit {
+        workspace: Some(4),
+        window: None,
+      },
+      true,
+    );
+    assert_eq!(state.drop_target(), Some(4));
+    assert_eq!(
+      state.mouse_up(&workspaces),
+      Some(OverviewAction::MoveWindow {
+        hwnd: 11,
+        workspace: "4".to_string(),
+        monitor: 2,
+      })
+    );
+  }
+
+  #[test]
+  fn a_special_window_dropped_on_another_special_card_moves_nothing() {
+    let mut screens = two_screens();
+    for screen in &mut screens {
+      let special = screen.workspaces.last_mut().expect("special");
+      special.windows =
+        vec![window(51, "Notes", Rect::from_xy(0, 0, 1920, 1000))];
+    }
+    let workspaces = all_workspaces(&screens);
+    let mut state =
+      Interaction::new(&screens, OverviewLayoutMode::Carousel, 6.0);
+
+    state.mouse_down(
+      (100.0, 100.0),
+      Hit {
+        workspace: Some(2),
+        window: Some(51),
+      },
+    );
+    state.mouse_move(
+      (2400.0, 900.0),
+      Hit {
+        workspace: Some(5),
+        window: None,
+      },
+      true,
+    );
+    assert_eq!(state.mouse_up(&workspaces), None);
+  }
+
+  #[test]
+  fn activating_a_screen_leaves_picking_a_window() {
+    let screens = two_screens();
+    let workspaces = all_workspaces(&screens);
+    let mut state =
+      Interaction::new(&screens, OverviewLayoutMode::Activities, 6.0);
+
+    press_on(&mut state, &workspaces, &[Key::Down]);
+    assert_eq!(state.mode, Mode::Windows);
+
+    assert!(state.activate(1, &workspaces));
+    assert_eq!((state.active, state.selected()), (1, 3));
+    assert_eq!(state.mode, Mode::Spaces);
+    assert_eq!(state.selected_window, None);
+    assert!(!state.activate(1, &workspaces), "already there");
+  }
+
+  #[test]
+  fn each_screen_sees_the_interaction_in_its_own_indices() {
+    let screens = two_screens();
+    let workspaces = all_workspaces(&screens);
+    let mut state =
+      Interaction::new(&screens, OverviewLayoutMode::Carousel, 6.0);
+
+    press_on(
+      &mut state,
+      &workspaces,
+      &[Key::Space, Key::Space, Key::Right, Key::Right, Key::Right],
+    );
+    let (left, right) =
+      (state.focus(0, &workspaces), state.focus(1, &workspaces));
+
+    assert!(!left.is_active && right.is_active);
+    assert_eq!((left.selected, left.mode), (1, Mode::Spaces));
+    assert_eq!((right.selected, right.mode), (1, Mode::Carrying));
+    assert_eq!((left.drop, right.drop), (None, Some(1)));
+    assert_eq!(left.floating, Some(11), "lifted on every screen");
+    assert_eq!(left.hint, None);
+  }
+
+  #[test]
+  fn sync_keeps_each_screen_on_its_workspace() {
+    let old_screens = two_screens();
+    let old = all_workspaces(&old_screens);
+    let mut state =
+      Interaction::new(&old_screens, OverviewLayoutMode::Carousel, 6.0);
+    press_on(&mut state, &old, &[Key::Right, Key::Right, Key::Right]);
+    assert_eq!(state.selected(), 4);
+
+    // A workspace shows up on the left, moving the right one's cards.
+    let mut screens = two_screens();
+    screens[0].workspaces.insert(0, card("0"));
+    state.sync(&old, &screens);
+
+    assert_eq!((state.active, state.selected()), (1, 5), "still on 4");
+    assert_eq!(state.screens[0].shown, 2, "still on 2");
+
+    // The right monitor goes away.
+    let old = all_workspaces(&screens);
+    screens.truncate(1);
+    state.sync(&old, &screens);
+    assert_eq!((state.active, state.selected()), (0, 2));
   }
 }

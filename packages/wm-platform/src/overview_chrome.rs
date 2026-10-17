@@ -52,8 +52,8 @@ pub(crate) struct CardPicture {
   pub label: String,
   pub look: CardLook,
 
-  /// Whether this is the focused workspace.
-  pub is_focused: bool,
+  /// Whether its workspace is displayed on its monitor.
+  pub is_displayed: bool,
 
   /// Whether it is the "+" card of a workspace yet to be activated.
   pub is_new: bool,
@@ -307,7 +307,7 @@ fn draw_face(
       with_alpha(style.accent, 0.85),
       2.5,
     )
-  } else if picture.is_focused {
+  } else if picture.is_displayed {
     (
       with_alpha(style.accent, 0.12),
       with_alpha(style.accent, 0.8),
@@ -472,10 +472,10 @@ fn draw_header(
 
   draw_text(
     surface,
-    fonts.get(units.px(12.0), picture.is_focused),
+    fonts.get(units.px(12.0), picture.is_displayed),
     &picture.label,
     &RectF::new(label_left, 0.0, half, header).to_rect(),
-    if picture.is_focused {
+    if picture.is_displayed {
       style.accent
     } else {
       style.subtext
@@ -733,7 +733,7 @@ const LABEL: (f32, f32) = (9.0, 11.5);
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct LabelPicture {
   pub text: String,
-  pub is_focused: bool,
+  pub is_displayed: bool,
   pub is_special: bool,
 }
 
@@ -747,7 +747,7 @@ pub(crate) fn label_size(
   let (padding, font_size) = LABEL;
   let mut fonts = Fonts::new(&style.font_family);
   let text = text_width(
-    fonts.get(units.px(font_size), label.is_focused),
+    fonts.get(units.px(font_size), label.is_displayed),
     &label.text,
   );
   let diamond = if label.is_special {
@@ -795,10 +795,10 @@ pub(crate) fn draw_label(
   let mut fonts = Fonts::new(&style.font_family);
   draw_text(
     surface,
-    fonts.get(units.px(font_size), label.is_focused),
+    fonts.get(units.px(font_size), label.is_displayed),
     &label.text,
     &Rect::from_ltrb(round(left), 0, surface.width, surface.height),
-    if label.is_focused {
+    if label.is_displayed {
       style.accent
     } else {
       with_alpha(style.text, 0.9)
