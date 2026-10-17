@@ -103,11 +103,15 @@ go by the cards' positions instead.
 ### Monitors
 
 Each monitor shows the workspaces on it, and the keyboard is on one
-monitor at a time: the focused one at first. The line of keys shows on
-that monitor.
+monitor at a time: the focused one at first. A ring in `accent_color`
+around its edges, and the line of keys, show which.
 
-- Arrowing past the first or last workspace goes on to the next monitor
-  that way, left to right. `Home`, `End` and the wheel stay on the
+- An arrow with nowhere to go on a monitor goes on to the nearest monitor
+  that way that lines up with it: past either end of its row, an arrow
+  its layout doesn't use (e.g. `↑` in the activities), or off any edge of
+  the windows but the one they were entered by. Along the row, it lands
+  on the nearer end of the next monitor's row; across it, on the
+  workspace that monitor shows. `Home`, `End` and the wheel stay on the
   monitor.
 - Pointing at another monitor moves the keyboard there.
 - Drag a window onto a workspace on another monitor, or carry it there

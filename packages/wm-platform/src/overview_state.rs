@@ -16,7 +16,7 @@ use std::ops::Range;
 use crate::{
   overview_layout::{GridCells, RectF},
   OverviewAction, OverviewLayoutMode, OverviewScreen, OverviewWindow,
-  OverviewWorkspace,
+  OverviewWorkspace, Rect,
 };
 
 /// Where the keyboard is in the overview's flow.
@@ -113,6 +113,10 @@ struct Press {
 pub(crate) struct ScreenCursor {
   /// Its monitor's ID, which actions picked on it carry.
   pub monitor: u128,
+
+  /// Working area of its monitor, which the arrows go between screens
+  /// by.
+  pub rect: Rect,
 
   /// Its workspaces among every screen's.
   pub cards: Range<usize>,
@@ -686,14 +690,8 @@ impl Interaction {
 
   /// Moves along the row of workspaces of the screen with the keyboard,
   /// which the special workspace's dock below it isn't part of; from the
-  /// dock, back to the row. With `cross`, past either end of the row on
-  /// to the neighbouring screen's.
-  fn step(
-    &mut self,
-    delta: isize,
-    workspaces: &[OverviewWorkspace],
-    cross: bool,
-  ) {
+  /// dock, back to the row.
+  fn step(&mut self, delta: isize, workspaces: &[OverviewWorkspace]) {
     let cards = self.active_cards();
     let selected = self.selected();
 
@@ -715,31 +713,63 @@ impl Interaction {
       return;
     };
 
-    match position.checked_add_signed(delta).and_then(|i| row.get(i)) {
-      Some(index) => self.select(*index, workspaces),
-      None if cross => self.cross(delta, workspaces),
-      None => {}
+    if let Some(index) =
+      position.checked_add_signed(delta).and_then(|i| row.get(i))
+    {
+      self.select(*index, workspaces);
     }
   }
 
-  /// Goes on to the first workspace of the next screen that has any, or
-  /// for a negative `delta`, the last of the previous one.
-  fn cross(&mut self, delta: isize, workspaces: &[OverviewWorkspace]) {
-    let screens = if delta > 0 {
-      (self.active + 1..self.screens.len()).collect::<Vec<_>>()
-    } else {
-      (0..self.active).rev().collect()
+  /// The screen next to the one with the keyboard `toward`: of those that
+  /// way and lining up with it, the closest, as `focus --direction` finds
+  /// the next monitor.
+  fn neighbour(&self, toward: Toward) -> Option<usize> {
+    let from = &self.screens.get(self.active)?.rect;
+
+    self
+      .screens
+      .iter()
+      .enumerate()
+      .filter(|(_, screen)| {
+        let rect = &screen.rect;
+        match toward {
+          Toward::Left => rect.x() < from.x() && rect.y_overlap(from) > 0,
+          Toward::Right => rect.x() > from.x() && rect.y_overlap(from) > 0,
+          Toward::Up => rect.y() < from.y() && rect.x_overlap(from) > 0,
+          Toward::Down => rect.y() > from.y() && rect.x_overlap(from) > 0,
+        }
+      })
+      .min_by_key(|(_, screen)| match toward {
+        Toward::Left => -screen.rect.x(),
+        Toward::Right => screen.rect.x(),
+        Toward::Up => -screen.rect.y(),
+        Toward::Down => screen.rect.y(),
+      })
+      .map(|(index, _)| index)
+  }
+
+  /// Goes on to the screen next to this one `toward`: onto the end of its
+  /// row nearest this one when the row runs that way, else onto the
+  /// workspace it shows.
+  fn cross(&mut self, toward: Toward, workspaces: &[OverviewWorkspace]) {
+    let Some(cursor) = self
+      .neighbour(toward)
+      .and_then(|screen| self.screens.get(screen))
+    else {
+      return;
     };
 
-    let target = screens.into_iter().find_map(|screen| {
-      let row =
-        row_indices(workspaces, &self.screens[screen].cards, self.layout);
-      if delta > 0 {
-        row.first().copied()
-      } else {
-        row.last().copied()
-      }
-    });
+    let row = row_indices(workspaces, &cursor.cards, self.layout);
+    let (back, forward, _) = arrows(self.layout);
+    let target = if toward == forward {
+      row.first().copied()
+    } else if toward == back {
+      row.last().copied()
+    } else {
+      Some(cursor.shown)
+        .filter(|shown| cursor.cards.contains(shown))
+        .or_else(|| row.first().copied())
+    };
 
     if let Some(index) = target {
       self.select(index, workspaces);
@@ -747,17 +777,20 @@ impl Interaction {
   }
 
   /// Moves the window cursor, or else the workspace cursor, `toward`.
+  /// With nowhere to go that way on its screen, on to the screen that
+  /// way.
   fn arrow(&mut self, toward: Toward, workspaces: &[OverviewWorkspace]) {
     if self.mode == Mode::Windows {
       self.move_window_cursor(toward, workspaces);
       return;
     }
 
+    let before = (self.selected(), self.mode);
     let (back, forward, inside) = arrows(self.layout);
     if toward == back {
-      self.step(-1, workspaces, true);
+      self.step(-1, workspaces);
     } else if toward == forward {
-      self.step(1, workspaces, true);
+      self.step(1, workspaces);
     } else if Some(toward) == inside {
       if self.mode == Mode::Spaces {
         self.enter_windows(workspaces);
@@ -766,6 +799,10 @@ impl Interaction {
       self.vertical(-1, workspaces);
     } else if toward == Toward::Down {
       self.vertical(1, workspaces);
+    }
+
+    if (self.selected(), self.mode) == before {
+      self.cross(toward, workspaces);
     }
   }
 
@@ -811,7 +848,8 @@ impl Interaction {
   }
 
   /// Moves the window cursor to the nearest window `toward`; off the edge
-  /// the windows were entered from, back to the workspaces.
+  /// the windows were entered from, back to the workspaces, and off any
+  /// other, on to the screen that way.
   fn move_window_cursor(
     &mut self,
     toward: Toward,
@@ -835,6 +873,8 @@ impl Interaction {
       self.selected_window = Some(hwnd);
     } else if Some(toward) == arrows(self.layout).2.map(Toward::opposite) {
       self.mode = Mode::Spaces;
+    } else {
+      self.cross(toward, workspaces);
     }
   }
 
@@ -1094,7 +1134,7 @@ impl Interaction {
     is_down: bool,
     workspaces: &[OverviewWorkspace],
   ) {
-    self.step(if is_down { 1 } else { -1 }, workspaces, false);
+    self.step(if is_down { 1 } else { -1 }, workspaces);
   }
 
   pub fn mouse_leave(&mut self) {
@@ -1130,6 +1170,7 @@ impl Interaction {
       floating: self.floating(),
       drop: self.drop_target().and_then(local),
       is_dragging: self.drag.is_some(),
+      marks_keyboard: is_active && self.screens.len() > 1,
       query: self.query.clone(),
       hint: self.screen_hint(screen, workspaces),
     }
@@ -1278,6 +1319,10 @@ pub(crate) struct ScreenFocus {
   /// Whether a window is dragged, over whichever screen.
   pub is_dragging: bool,
 
+  /// Whether it marks that the keyboard is on it, as one of several
+  /// screens.
+  pub marks_keyboard: bool,
+
   /// Search query, whose matches show on every screen.
   pub query: String,
 
@@ -1310,6 +1355,7 @@ fn cursors(screens: &[OverviewScreen]) -> Vec<ScreenCursor> {
 
       ScreenCursor {
         monitor: screen.id,
+        rect: screen.rect.clone(),
         cards,
         shown,
         row_selected: shown,
@@ -2538,20 +2584,30 @@ mod tests {
     );
   }
 
-  /// A screen of monitor 1, focused, showing "1" (with "Terminal") and
-  /// "2" (with "Editor"), and one of monitor 2 showing "3" (with
-  /// "Browser") and "4"; each with the special workspace's card, docked in
-  /// the carousel, last.
+  /// Working area of the first screen of `two_screens`.
+  const FIRST: (i32, i32, i32, i32) = (0, 0, 1920, 1040);
+
+  /// `two_screens_at`, side by side.
   fn two_screens() -> Vec<OverviewScreen> {
+    two_screens_at(Rect::from_xy(1920, 0, 1920, 1040))
+  }
+
+  /// A screen of monitor 1, focused, showing "1" (with "Terminal") and
+  /// "2" (with "Editor"), and one of monitor 2 at `second` showing "3"
+  /// (with "Browser") and "4"; each with the special workspace's card,
+  /// docked in the carousel, last.
+  fn two_screens_at(second: Rect) -> Vec<OverviewScreen> {
     let special = || OverviewWorkspace {
       is_special: true,
       ..card("special")
     };
     let full = Rect::from_xy(0, 0, 1920, 1000);
+    let (x, y, width, height) = FIRST;
 
     vec![
       OverviewScreen {
         is_focused: true,
+        rect: Rect::from_xy(x, y, width, height),
         ..screen(
           1,
           vec![
@@ -2568,18 +2624,21 @@ mod tests {
           ],
         )
       },
-      screen(
-        2,
-        vec![
-          OverviewWorkspace {
-            is_displayed: true,
-            windows: vec![window(31, "Browser", full)],
-            ..card("3")
-          },
-          card("4"),
-          special(),
-        ],
-      ),
+      OverviewScreen {
+        rect: second,
+        ..screen(
+          2,
+          vec![
+            OverviewWorkspace {
+              is_displayed: true,
+              windows: vec![window(31, "Browser", full)],
+              ..card("3")
+            },
+            card("4"),
+            special(),
+          ],
+        )
+      },
     ]
   }
 
@@ -2621,6 +2680,88 @@ mod tests {
 
     press_on(&mut state, &workspaces, &[Key::End]);
     assert_eq!(state.selected(), 1, "the end of its own row");
+  }
+
+  #[test]
+  fn arrows_only_cross_toward_a_screen_that_way() {
+    let screens = two_screens();
+    let workspaces = all_workspaces(&screens);
+    let mut state =
+      Interaction::new(&screens, OverviewLayoutMode::Carousel, 6.0);
+
+    press_on(&mut state, &workspaces, &[Key::Left, Key::Up]);
+    assert_eq!((state.active, state.selected()), (0, 0));
+
+    press_on(&mut state, &workspaces, &[Key::Down, Key::Down]);
+    assert_eq!((state.active, state.selected()), (0, 2), "on the dock");
+  }
+
+  #[test]
+  fn screens_out_of_line_are_not_crossed_to() {
+    let screens = two_screens_at(Rect::from_xy(1920, 1040, 1920, 1040));
+    let workspaces = all_workspaces(&screens);
+    let mut state =
+      Interaction::new(&screens, OverviewLayoutMode::Carousel, 6.0);
+
+    press_on(&mut state, &workspaces, &[Key::End, Key::Right]);
+    assert_eq!((state.active, state.selected()), (0, 1));
+  }
+
+  #[test]
+  fn stacked_screens_are_crossed_up_and_down() {
+    let screens = two_screens_at(Rect::from_xy(0, 1040, 1920, 1040));
+    let workspaces = all_workspaces(&screens);
+    let mut state =
+      Interaction::new(&screens, OverviewLayoutMode::Activities, 6.0);
+
+    press_on(&mut state, &workspaces, &[Key::End, Key::Right]);
+    assert_eq!((state.active, state.selected()), (0, 2), "nothing right");
+
+    // Down into the windows, then off their bottom edge onto the screen
+    // below, where it shows what that screen shows.
+    press_on(&mut state, &workspaces, &[Key::Home, Key::Down]);
+    assert_eq!(state.mode, Mode::Windows);
+    press_on(&mut state, &workspaces, &[Key::Down]);
+    assert_eq!((state.active, state.selected()), (1, 3));
+    assert_eq!(state.mode, Mode::Spaces);
+
+    press_on(&mut state, &workspaces, &[Key::Up]);
+    assert_eq!((state.active, state.selected()), (0, 0));
+  }
+
+  #[test]
+  fn the_stage_crosses_sideways_onto_the_shown_workspace() {
+    let screens = two_screens();
+    let workspaces = all_workspaces(&screens);
+    let mut state =
+      Interaction::new(&screens, OverviewLayoutMode::Stage, 6.0);
+
+    // Right goes in among the windows, and past them to the next screen.
+    press_on(&mut state, &workspaces, &[Key::Down, Key::Up, Key::Right]);
+    assert_eq!(state.mode, Mode::Windows);
+    press_on(&mut state, &workspaces, &[Key::Right]);
+    assert_eq!((state.active, state.selected()), (1, 3));
+
+    press_on(&mut state, &workspaces, &[Key::Down, Key::Left]);
+    assert_eq!((state.active, state.selected()), (0, 0), "its shown one");
+  }
+
+  #[test]
+  fn only_the_screen_with_the_keyboard_marks_it() {
+    let screens = two_screens();
+    let workspaces = all_workspaces(&screens);
+    let mut state =
+      Interaction::new(&screens, OverviewLayoutMode::Carousel, 6.0);
+
+    assert!(state.focus(0, &workspaces).marks_keyboard);
+    assert!(!state.focus(1, &workspaces).marks_keyboard);
+
+    state.activate(1, &workspaces);
+    assert!(!state.focus(0, &workspaces).marks_keyboard);
+    assert!(state.focus(1, &workspaces).marks_keyboard);
+
+    let alone = single(&workspaces[..3], OverviewLayoutMode::Carousel);
+    assert!(!alone.focus(0, &workspaces).marks_keyboard, "one screen");
   }
 
   #[test]

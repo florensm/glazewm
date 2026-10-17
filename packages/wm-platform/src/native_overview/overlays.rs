@@ -31,6 +31,11 @@ const RING_GAP: f32 = 5.0;
 /// Corner radius a window's highlight is drawn with, in logical pixels.
 const WINDOW_RING_RADIUS: f32 = 10.0;
 
+/// Corner radius of the ring around the screen with the keyboard, and its
+/// gap to the screen's edges, in logical pixels.
+const SCREEN_RING_RADIUS: f32 = 14.0;
+const SCREEN_RING_GAP: f32 = 6.0;
+
 /// A workspace's name beside its card, for cards without a header.
 pub(super) struct Label {
   pub(super) picture: Picture,
@@ -39,6 +44,9 @@ pub(super) struct Label {
 
 /// What the overview shows over and around its cards and windows.
 pub(super) struct Overlays {
+  /// Around the screen with the keyboard, when there are several.
+  pub(super) screen_ring: Highlight<()>,
+
   /// Around the selected workspace, or the one a window would drop on.
   pub(super) workspace_ring: Highlight<usize>,
 
@@ -65,6 +73,7 @@ pub(super) struct Overlays {
 impl Overlays {
   pub(super) fn new() -> Option<Self> {
     Some(Self {
+      screen_ring: Highlight::new(false)?,
       workspace_ring: Highlight::new(false)?,
       hover_ring: Highlight::new(false)?,
       window_ring: Highlight::new(false)?,
@@ -92,6 +101,7 @@ impl Overlays {
       }
     }
 
+    self.screen_ring.slices.register(host);
     self.hover_ring.slices.register(host);
     self.workspace_ring.slices.register(host);
     self.window_ring.slices.register(host);
@@ -109,6 +119,7 @@ impl Overlays {
     for label in &mut self.labels {
       label.picture.thumbnail = None;
     }
+    self.screen_ring.slices.unregister();
     self.hover_ring.slices.unregister();
     self.workspace_ring.slices.unregister();
     self.window_ring.slices.unregister();
@@ -123,6 +134,11 @@ impl Overlays {
     let px = |length: f32| (length * metrics.scale_factor).round() as i32;
     let accent = style.accent;
     let hairline = px(1.0).max(1);
+    self.screen_ring.slices.draw(SliceLook::ring(
+      px(SCREEN_RING_RADIUS),
+      px(3.0).max(1),
+      with_alpha(accent, 0.7),
+    ));
     self.workspace_ring.slices.draw(SliceLook::ring(
       px(RING_RADIUS),
       px(3.0).max(1),
@@ -148,6 +164,7 @@ impl Overlays {
 
   /// Hides every highlight at once, e.g. for a new open.
   pub(super) fn reset(&mut self) {
+    self.screen_ring.glide.reset();
     self.workspace_ring.glide.reset();
     self.hover_ring.glide.reset();
     self.window_ring.glide.reset();
@@ -168,6 +185,7 @@ impl Overlays {
   /// moves.
   pub(super) fn step(&mut self, dt: f32) -> bool {
     [
+      self.screen_ring.glide.step(dt),
       self.workspace_ring.glide.step(dt),
       self.hover_ring.glide.step(dt),
       self.window_ring.glide.step(dt),
@@ -483,6 +501,10 @@ impl Screen {
           )
         });
 
+    let screen_target = focus
+      .marks_keyboard
+      .then(|| ((), view.inset(px(SCREEN_RING_GAP)), 1.0));
+
     let label_rects = self.label_rects(context, shift);
     let panel_rect = self
       .overlays
@@ -494,6 +516,8 @@ impl Screen {
     };
     let mut is_gliding = false;
 
+    is_gliding |= overlays.screen_ring.glide.follow(screen_target, now);
+    overlays.screen_ring.place(&view, fade);
     is_gliding |= overlays.workspace_ring.glide.follow(ring_target, now);
     overlays.workspace_ring.place(&view, fade);
     is_gliding |= overlays.hover_ring.glide.follow(hover_target, now);
