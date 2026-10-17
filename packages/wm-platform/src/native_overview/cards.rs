@@ -33,8 +33,8 @@ pub(super) fn screen_rect(
 impl Screen {
   /// Builds a card per workspace, with a preview per visible window,
   /// keeping the previews of windows still there. Returns whether a
-  /// window or tab bar came, went or moved, which calls for registering
-  /// the thumbnails anew.
+  /// window, its overlays or a tab bar came, went or moved, which calls
+  /// for registering the thumbnails anew.
   pub(super) fn rebuild_cards(&mut self) -> bool {
     let Some(frame) = &self.frame else {
       return false;
@@ -54,6 +54,7 @@ impl Screen {
         .map_or_else(Vec::new, |card| std::mem::take(&mut card.previews));
       let old_order =
         old.iter().map(|preview| preview.hwnd).collect::<Vec<_>>();
+      let mut is_restyled = false;
 
       let previews = workspace
         .windows
@@ -77,11 +78,12 @@ impl Screen {
           preview.tile = tile;
           preview.screen_rect = rect;
           preview.is_scrolled_off = window.is_scrolled_off;
+          is_restyled |= preview.restyle(window);
           Some(preview)
         })
         .collect::<Vec<_>>();
-      is_changed |=
-        previews.iter().map(|preview| preview.hwnd).ne(old_order);
+      is_changed |= is_restyled
+        || previews.iter().map(|preview| preview.hwnd).ne(old_order);
 
       let old_tab_bars = cards
         .get_mut(index)
@@ -299,9 +301,15 @@ impl Screen {
           let is_picked = focus.floating == Some(preview.hwnd);
           let is_focused = focused_window == Some(preview.hwnd);
 
+          // A window with a border of its own shows that one, but for
+          // the overview's marks.
           let (border_width, border) = if is_match {
             (3.0, search)
-          } else if is_picked || is_focused {
+          } else if is_picked {
+            (2.0, accent)
+          } else if preview.has_border() {
+            (0.0, caption)
+          } else if is_focused {
             (2.0, accent)
           } else if look == CardLook::Clean {
             (0.0, caption)
@@ -319,6 +327,7 @@ impl Screen {
           TilePicture {
             hwnd: preview.hwnd,
             rect: preview.tile.rect,
+            hole: preview.bounds(&preview.tile.rect),
             outline: tab_bar.map_or(preview.tile.rect, |bar| {
               preview.tile.rect.union(&bar.bar_rect())
             }),

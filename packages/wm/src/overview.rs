@@ -5,18 +5,24 @@
 //! The overview is drawn and driven by `NativeOverview` on a thread of its
 //! own; the WM decides what it shows and carries out what is picked.
 
+use std::collections::HashMap;
+
 use anyhow::Context;
 use tokio::sync::mpsc;
 use uuid::Uuid;
 use wm_common::{Layout, WindowState, WorkspaceConfig};
 use wm_platform::{
-  Color, NativeOverview, OverviewAction, OverviewFrame,
-  OverviewLayoutMode, OverviewScreen, OverviewStyle, OverviewWindow,
+  BackdropOverlayParams, BorderOverlayParams, Color, NativeOverview,
+  OverviewAction, OverviewFrame, OverviewLayoutMode, OverviewOverlay,
+  OverviewOverlayKind, OverviewScreen, OverviewStyle, OverviewWindow,
   OverviewWorkspace, Rect, TabFrame,
 };
 
 use crate::{
-  commands::workspace::{activate_workspace, summon_special_workspace},
+  commands::{
+    general::{surrogate_effects_for, SyncableOverlay},
+    workspace::{activate_workspace, summon_special_workspace},
+  },
   layout::scrolling,
   models::{
     is_inactive_stack_child, Container, Monitor, WindowContainer,
@@ -39,6 +45,10 @@ pub struct Overview {
   /// What was shown, from its close until the next sync hides it.
   closing: Option<OpenOverview>,
 
+  /// Whether the native overview is on screen: from its open until it
+  /// says it hid, which can be a zoom after its close.
+  is_shown: bool,
+
   /// Where the native overview sends user actions, with their session.
   action_tx: mpsc::UnboundedSender<(u64, OverviewAction)>,
 }
@@ -56,12 +66,30 @@ impl Overview {
       native: None,
       open: None,
       closing: None,
+      is_shown: false,
       action_tx,
     }
   }
 
   pub fn is_open(&self) -> bool {
     self.open.is_some()
+  }
+
+  /// Whether the overview is on screen, which it still is for a moment
+  /// after its close, zooming into the pick.
+  pub fn is_shown(&self) -> bool {
+    self.is_shown
+  }
+
+  /// Takes in that the native overview of `session` hid. Returns whether
+  /// that was the one on screen.
+  pub fn mark_hidden(&mut self, session: u64) -> bool {
+    let is_latest = self
+      .native
+      .as_ref()
+      .is_some_and(|native| native.session() == session);
+
+    is_latest && std::mem::take(&mut self.is_shown)
   }
 
   /// Session of the open overview, which its actions carry.
@@ -134,6 +162,7 @@ pub fn toggle_overview(
   state.overview.native()?.open(frame, layout);
   state.overview.open = Some(open);
   state.overview.closing = None;
+  state.overview.is_shown = true;
   Ok(())
 }
 
@@ -192,11 +221,12 @@ fn overview_frame(
     (bounds.x(), bounds.y())
   });
 
+  let looks = WindowLooks::new(state, config);
   let screens = monitors
     .iter()
     .map(|monitor| {
       let is_focused = focused_monitor == Some(monitor.id());
-      overview_screen(state, monitor, is_focused, config)
+      overview_screen(state, monitor, is_focused, &looks, config)
     })
     .collect();
 
@@ -232,6 +262,7 @@ fn overview_screen(
   state: &WmState,
   monitor: &Monitor,
   is_focused: bool,
+  looks: &WindowLooks,
   config: &UserConfig,
 ) -> OverviewScreen {
   let properties = monitor.native_properties();
@@ -245,12 +276,13 @@ fn overview_screen(
     .iter()
     .filter(|workspace| !workspace.is_special())
     .map(|workspace| {
-      workspace_card(state, workspace, area, displayed, config)
+      workspace_card(state, workspace, area, displayed, looks, config)
     })
     .collect::<Vec<_>>();
 
   workspaces.extend(new_workspace(state, monitor, area, config));
-  workspaces.push(special_workspace(state, area, displayed, config));
+  workspaces
+    .push(special_workspace(state, area, displayed, looks, config));
 
   OverviewScreen {
     id: monitor.id().as_u128(),
@@ -268,6 +300,7 @@ fn workspace_card(
   workspace: &Workspace,
   area: &Rect,
   displayed: Option<Uuid>,
+  looks: &WindowLooks,
   config: &UserConfig,
 ) -> OverviewWorkspace {
   let workspace_config = workspace.config();
@@ -281,7 +314,7 @@ fn workspace_card(
     content_rect: content_rect(workspace, area),
     windows: overview_windows(workspace)
       .iter()
-      .map(overview_window)
+      .map(|window| overview_window(state, window, looks, config))
       .collect(),
     tab_bars: workspace_tab_bars(state, workspace, config),
   }
@@ -293,6 +326,7 @@ fn special_workspace(
   state: &WmState,
   area: &Rect,
   displayed: Option<Uuid>,
+  looks: &WindowLooks,
   config: &UserConfig,
 ) -> OverviewWorkspace {
   let special = state.workspaces().into_iter().find(Workspace::is_special);
@@ -314,7 +348,7 @@ fn special_workspace(
 
   // Shown as on its own monitor, moved onto this one.
   let mut card =
-    workspace_card(state, &workspace, &own_area, displayed, config);
+    workspace_card(state, &workspace, &own_area, displayed, looks, config);
   translate_card(
     &mut card,
     area.x() - own_area.x(),
@@ -428,8 +462,84 @@ pub fn prepare_target(
   )
 }
 
-fn overview_window(window: &WindowContainer) -> OverviewWindow {
+/// How the WM draws windows, resolved once per frame: its effects on the
+/// focused window and on the others.
+struct WindowLooks {
+  focused_id: Option<Uuid>,
+  focused: WindowLook,
+  other: WindowLook,
+}
+
+/// The effects the WM gives a window.
+struct WindowLook {
+  opacity: u8,
+  backdrop: Option<BackdropOverlayParams>,
+  border: Option<BorderOverlayParams>,
+}
+
+impl WindowLooks {
+  fn new(state: &WmState, config: &UserConfig) -> Self {
+    let look = |is_focused| {
+      let (opacity, _, backdrop, border) =
+        surrogate_effects_for(is_focused, config);
+      WindowLook {
+        opacity,
+        backdrop,
+        border,
+      }
+    };
+
+    Self {
+      focused_id: state.focused_container().map(|focused| focused.id()),
+      focused: look(true),
+      other: look(false),
+    }
+  }
+
+  fn of(&self, window: &WindowContainer) -> &WindowLook {
+    if self.focused_id == Some(window.id()) {
+      &self.focused
+    } else {
+      &self.other
+    }
+  }
+}
+
+fn overview_window(
+  state: &WmState,
+  window: &WindowContainer,
+  looks: &WindowLooks,
+  config: &UserConfig,
+) -> OverviewWindow {
   let properties = window.native_properties();
+  let look = looks.of(window);
+  let is_minimized = window.state() == WindowState::Minimized;
+  let is_hidden_tab = is_inactive_stack_child(window);
+
+  // Only a window with a preview shows its overlays.
+  let overlays = if is_minimized || is_hidden_tab {
+    Vec::new()
+  } else {
+    [
+      window_overlay(
+        &state.backdrop_overlays,
+        window,
+        look.backdrop,
+        OverviewOverlayKind::Backdrop,
+        config,
+      ),
+      window_overlay(
+        &state.border_overlays,
+        window,
+        look.border,
+        OverviewOverlayKind::Border,
+        config,
+      ),
+    ]
+    .into_iter()
+    .flatten()
+    .collect()
+  };
 
   OverviewWindow {
     hwnd: window.native().id().0,
@@ -438,10 +548,47 @@ fn overview_window(window: &WindowContainer) -> OverviewWindow {
     // Where the layout puts it, which is also where it sits on a hidden
     // workspace.
     rect: window.to_rect().unwrap_or(properties.frame),
-    is_minimized: window.state() == WindowState::Minimized,
-    is_hidden_tab: is_inactive_stack_child(window),
+    is_minimized,
+    is_hidden_tab,
     is_scrolled_off: !scrolling::is_in_view(&window.as_container()),
+    opacity: look.opacity,
+    overlays,
   }
+}
+
+/// `window`'s overlay among `overlays`, while the WM draws one with
+/// `params` for it, and how far it reaches past the window.
+fn window_overlay<O: SyncableOverlay>(
+  overlays: &HashMap<Uuid, O>,
+  window: &WindowContainer,
+  params: Option<O::Params>,
+  kind: OverviewOverlayKind,
+  config: &UserConfig,
+) -> Option<OverviewOverlay> {
+  let params = params.filter(|_| !O::suppressed_for(window, config))?;
+  let overlay = overlays.get(&window.id())?;
+
+  // Any rect does: an overlay reaches past its window by the same amount
+  // wherever the window is.
+  let frame = window.to_rect().ok()?;
+  let bounds = O::bounds(&O::overlay_rect(window, &frame), &params);
+
+  Some(OverviewOverlay {
+    hwnd: overlay.hwnd().0,
+    kind,
+    outset: outset(&frame, &bounds),
+  })
+}
+
+/// How far `bounds` reaches past `frame` on each side (left, top, right,
+/// bottom).
+fn outset(frame: &Rect, bounds: &Rect) -> [i32; 4] {
+  [
+    frame.left - bounds.left,
+    frame.top - bounds.top,
+    bounds.right - frame.right,
+    bounds.bottom - frame.bottom,
+  ]
 }
 
 /// What `workspace`'s card shows of the monitor's working `area`: all of
@@ -818,6 +965,65 @@ mod tests {
 
     prepare_target(&mut state, &config, "special", left_id, true).unwrap();
     assert_eq!(monitor_of(&state, "special"), Some(left_id), "summoned");
+  }
+
+  #[test]
+  fn previews_take_on_their_windows_transparency() {
+    use wm_platform::OpacityValue;
+
+    use crate::{
+      commands::container::set_focused_descendant, models::Monitor,
+      wm_state::WmState,
+    };
+
+    let config = config_with(|value| {
+      let transparency =
+        &mut value.window_effects.other_windows.transparency;
+      transparency.enabled = true;
+      transparency.opacity = OpacityValue::from_alpha(128);
+    });
+    let (focused, other) = (tiling("focused"), tiling("other"));
+    let first = Workspace::mock()
+      .name("1".to_string())
+      .tiling_containers(vec![focused.clone().into(), other.into()])
+      .call();
+    let state =
+      WmState::mock(vec![Monitor::mock().workspaces(vec![first]).call()]);
+    set_focused_descendant(&focused.into(), None);
+
+    let screens = frame(&state, &config).screens;
+    let windows = &screens[0].workspaces[0].windows;
+    let opacities = windows
+      .iter()
+      .map(|window| (window.title.as_str(), window.opacity))
+      .collect::<Vec<_>>();
+
+    assert_eq!(opacities, [("focused", 255), ("other", 128)]);
+    assert!(
+      windows.iter().all(|window| window.overlays.is_empty()),
+      "the WM draws no overlays for them"
+    );
+  }
+
+  #[test]
+  fn a_border_reaches_past_its_window_by_its_width() {
+    use wm_platform::{
+      BorderOverlayParams, Color, NativeBorderOverlay, Overlay,
+    };
+
+    use super::outset;
+
+    let frame = Rect::from_xy(100, 100, 800, 600);
+    let params = BorderOverlayParams {
+      color: Color::from_abgr(0),
+      width: 3.0,
+      corner_radius: 8.0,
+      opacity: 1.0,
+    };
+
+    let bounds = NativeBorderOverlay::bounds(&frame, &params);
+    assert_eq!(outset(&frame, &bounds), [3, 3, 3, 3]);
+    assert_eq!(outset(&frame, &frame), [0; 4], "as a backdrop does");
   }
 
   #[test]

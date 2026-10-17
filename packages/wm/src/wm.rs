@@ -151,6 +151,16 @@ impl WindowManager {
     #[cfg(target_os = "windows")]
     {
       let state = &mut self.state;
+
+      // What was drawn for its previews can go.
+      if action == OverviewAction::Hidden {
+        return if state.overview.mark_hidden(session) {
+          platform_sync(state, config)
+        } else {
+          Ok(())
+        };
+      }
+
       if state.overview.open_session() != Some(session) {
         return Ok(());
       }
@@ -240,6 +250,7 @@ impl WindowManager {
           state.overview.close();
           return platform_sync(state, config);
         }
+        OverviewAction::Hidden => return Ok(()),
       };
 
       self

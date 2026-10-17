@@ -91,6 +91,7 @@ impl CardPicture {
 
     for tile in &mut picture.tiles {
       tile.rect = tile.rect.scaled(factor);
+      tile.hole = tile.hole.scaled(factor);
       tile.outline = tile.outline.scaled(factor);
     }
 
@@ -116,6 +117,10 @@ pub(crate) struct TilePicture {
 
   /// Where its preview shows.
   pub rect: RectF,
+
+  /// Where the card is cut out for its preview: `rect`, grown to take in
+  /// the window's own border and backdrop around it.
+  pub hole: RectF,
 
   /// What its border goes around: `rect`, plus its stack's tab bar.
   pub outline: RectF,
@@ -530,11 +535,19 @@ fn draw_tile(
   notify: (HWND, u32),
 ) {
   let rect = tile.rect.to_rect();
-  let radius = round(units.px(radius));
+  let radius_px = units.px(radius);
+  let radius = round(radius_px);
   let opacity = tile.opacity;
 
   if tile.has_preview {
-    surface.canvas().erase_rounded_rect(&rect, radius);
+    // Rounded concentrically with the preview's own corners.
+    let grown = (tile.rect.x - tile.hole.x)
+      .max(tile.rect.y - tile.hole.y)
+      .max(tile.hole.right() - tile.rect.right())
+      .max(tile.hole.bottom() - tile.rect.bottom());
+    surface
+      .canvas()
+      .erase_rounded_rect(&tile.hole.to_rect(), round(radius_px + grown));
   } else {
     surface.canvas().fill_rounded_rect(
       &rect,

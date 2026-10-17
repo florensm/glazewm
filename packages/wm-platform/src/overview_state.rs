@@ -1674,6 +1674,8 @@ mod tests {
       is_minimized: false,
       is_hidden_tab: false,
       is_scrolled_off: false,
+      opacity: u8::MAX,
+      overlays: Vec::new(),
     }
   }
 

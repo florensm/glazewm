@@ -77,8 +77,8 @@ impl Scene {
   /// `old` that are still there. `screen_rect` says where a window is on
   /// screen.
   ///
-  /// Returns it, and whether its windows changed, which calls for
-  /// registering their thumbnails anew.
+  /// Returns it, and whether its windows or their overlays changed, which
+  /// calls for registering their thumbnails anew.
   pub fn rebuild(
     mut old: Scene,
     workspace: &OverviewWorkspace,
@@ -89,6 +89,7 @@ impl Scene {
       .iter()
       .map(|window| window.preview.hwnd)
       .collect::<Vec<_>>();
+    let mut is_restyled = false;
 
     let windows = workspace
       .windows
@@ -119,14 +120,16 @@ impl Scene {
 
         scene_window.preview.screen_rect = rect;
         scene_window.preview.is_scrolled_off = window.is_scrolled_off;
+        is_restyled |= scene_window.preview.restyle(window);
         scene_window
       })
       .collect::<Vec<_>>();
 
-    let is_changed = windows
-      .iter()
-      .map(|window| window.preview.hwnd)
-      .ne(old_order);
+    let is_changed = is_restyled
+      || windows
+        .iter()
+        .map(|window| window.preview.hwnd)
+        .ne(old_order);
 
     (
       Self {

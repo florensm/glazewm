@@ -11,6 +11,12 @@ into the workspace you picked, and on the other monitors (or all of them,
 when cancelled) into the workspace they show, until they sit where they
 really are.
 
+Windows look in the overview as they do on screen, with their
+[window effects](#how-it-works): their `transparency`, and the border and
+backdrop the WM draws for them, scaled with them. So opening it shrinks
+each monitor's workspace as you see it into the overview, and closing it
+grows the picked one back.
+
 ## Layouts
 
 - **Activities** (default): every workspace in miniature in a row along
@@ -165,7 +171,8 @@ Workspaces and windows changing while it is open (a window opening,
 closing, or being moved) show up in it right away.
 
 Previews of other workspaces need `general.hide_method: "cloak"` (the
-default): with `"hide"`, their windows have nothing for DWM to show.
+default): with `"hide"`, their windows have nothing for DWM to show, nor
+do their borders and backdrops.
 
 ### Stacks
 
@@ -272,6 +279,13 @@ moves things around and never redraws pixels:
 - The window previews are DWM thumbnails of the real windows (or of their
   companion overlay, e.g. a recolored copy drawn by a theming tool, as during
   animations).
+- Under each preview are thumbnails of the window's own backdrop and border
+  overlays, placed and scaled as the window is, and the preview takes the
+  window's `transparency`, which DWM's thumbnails don't carry. While the
+  overview is on screen, the overlays of windows on other workspaces (and
+  of columns scrolled out of view) are kept in place but cloaked, rather
+  than hidden, so DWM keeps composing them; they are hidden again once it
+  is gone.
 - The card backgrounds, captions, borders, labels and hints are drawn once
   into hidden layered windows, and shown as thumbnails of those, so they
   scale with their card.

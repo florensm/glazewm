@@ -370,13 +370,13 @@ impl Screen {
         bar.picture.thumbnail = None;
       }
       for preview in &mut card.previews {
-        preview.thumbnail = None;
+        preview.unregister();
       }
     }
     for window in
       self.scenes.iter_mut().flat_map(|scene| &mut scene.windows)
     {
-      window.preview.thumbnail = None;
+      window.preview.unregister();
     }
     if let Some(overlays) = &mut self.overlays {
       overlays.unregister();
@@ -750,8 +750,8 @@ impl Screen {
 
           if opacity > 0.002 {
             window.preview.place(&rect, &view, opacity);
-          } else if let Some(thumbnail) = &mut window.preview.thumbnail {
-            thumbnail.hide();
+          } else {
+            window.preview.hide();
           }
         }
       }

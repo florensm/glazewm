@@ -90,6 +90,34 @@ pub struct OverviewWindow {
   /// In a column scrolled out of view: shown on its card, but faded in
   /// and out by the zoom rather than moved from where it sits.
   pub is_scrolled_off: bool,
+
+  /// Opacity its `transparency` effect gives it, from 0 to 255; DWM's
+  /// thumbnails of it don't carry it.
+  pub opacity: u8,
+
+  /// Its backdrop and border, bottom to top, which show under its preview
+  /// as the WM stacks them under the window.
+  pub overlays: Vec<OverviewOverlay>,
+}
+
+/// A window's backdrop or border, as the WM draws it around and behind
+/// the window, shown with the window's preview.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct OverviewOverlay {
+  /// Handle of the overlay's window, whose live thumbnail is shown.
+  pub hwnd: isize,
+
+  pub kind: OverviewOverlayKind,
+
+  /// How far it reaches past the window's visible frame on each side
+  /// (left, top, right, bottom), in physical pixels.
+  pub outset: [i32; 4],
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum OverviewOverlayKind {
+  Backdrop,
+  Border,
 }
 
 /// Look of the overview.
@@ -225,4 +253,8 @@ pub enum OverviewAction {
 
   /// Another window took focus, which closed the overview.
   Deactivated,
+
+  /// The overview's windows hid, once it closed (after its zoom into the
+  /// pick), so what was drawn for its previews can go.
+  Hidden,
 }

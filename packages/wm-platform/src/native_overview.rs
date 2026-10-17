@@ -509,8 +509,8 @@ fn place_card(card: &mut Card, index: usize, context: &PlaceContext) {
     let dest = camera.apply(&placement.map(&metrics, &preview.tile.rect));
     if is_visible {
       preview.place(&dest, view, preview.zoomed_opacity(openness) * alpha);
-    } else if let Some(thumbnail) = &mut preview.thumbnail {
-      thumbnail.hide();
+    } else {
+      preview.hide();
     }
   }
 
@@ -746,6 +746,7 @@ impl Overview {
     if let Err(err) = self.ensure_screens(frame.screens.len()) {
       tracing::warn!("Failed to open the overview: {err}");
       self.send(OverviewAction::Cancel);
+      (self.on_action)(self.session, OverviewAction::Hidden);
       return;
     }
 
@@ -841,7 +842,8 @@ impl Overview {
     self.after_layout();
   }
 
-  /// Hides the overview, keeping its screens for the next open.
+  /// Hides the overview, keeping its screens for the next open, and tells
+  /// the WM it did.
   fn close(&mut self) {
     if self.frame.take().is_none() {
       return;
@@ -858,6 +860,7 @@ impl Overview {
 
     self.ghost = None;
     self.vsync = None;
+    (self.on_action)(self.session, OverviewAction::Hidden);
   }
 
   /// Keeps a screen per monitor: as many as `count`.

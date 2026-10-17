@@ -25,7 +25,7 @@ use crate::{
   companion::Companion,
   overview_layout::{RectF, Tile},
   surface::Surface,
-  window_class,
+  window_class, OverviewOverlay, OverviewOverlayKind, OverviewWindow,
 };
 
 /// Shown for a window whose frame can't be read, e.g. one being
@@ -261,12 +261,26 @@ pub(crate) struct Preview {
   pub thumbnail: Option<Thumbnail>,
   pub opacity: f32,
 
+  /// Opacity of the window itself, from its `transparency` effect, which
+  /// its overlays don't share.
+  pub alpha: f32,
+
+  /// Its window's backdrop and border, bottom to top, under it.
+  overlays: Vec<OverlayPreview>,
+
   /// Of a column scrolled out of view: there is no on-screen window for
   /// the zoom to start or end on, so it fades with the zoom instead.
   pub is_scrolled_off: bool,
 
   /// Where its window is on screen, which its tile shows.
   pub screen_rect: RectF,
+}
+
+/// One of a window's overlays, shown around its preview as it sits around
+/// the window on screen.
+struct OverlayPreview {
+  overlay: OverviewOverlay,
+  thumbnail: Option<Thumbnail>,
 }
 
 impl Preview {
@@ -278,9 +292,44 @@ impl Preview {
       companion: Companion::find(HWND(hwnd)),
       thumbnail: None,
       opacity: 1.0,
+      alpha: 1.0,
+      overlays: Vec::new(),
       is_scrolled_off: false,
       screen_rect: RectF::default(),
     }
+  }
+
+  /// Takes on how `window` looks: its opacity and overlays. Returns
+  /// whether its overlays changed, which calls for registering the
+  /// thumbnails anew.
+  pub fn restyle(&mut self, window: &OverviewWindow) -> bool {
+    self.alpha = f32::from(window.opacity) / f32::from(u8::MAX);
+
+    let is_changed = self
+      .overlays
+      .iter()
+      .map(|overlay| &overlay.overlay)
+      .ne(&window.overlays);
+
+    if is_changed {
+      self.overlays = window
+        .overlays
+        .iter()
+        .map(|overlay| OverlayPreview {
+          overlay: *overlay,
+          thumbnail: None,
+        })
+        .collect();
+    }
+    is_changed
+  }
+
+  /// Whether its window has a border of its own.
+  pub fn has_border(&self) -> bool {
+    self
+      .overlays
+      .iter()
+      .any(|overlay| overlay.overlay.kind == OverviewOverlayKind::Border)
   }
 
   /// Measures its window's frame again, e.g. after it was resized.
@@ -297,9 +346,34 @@ impl Preview {
     }
   }
 
+  /// Registers its overlays, then itself, on `host`, above everything
+  /// registered there so far.
   pub fn register(&mut self, host: HWND) {
+    for overlay in &mut self.overlays {
+      overlay.thumbnail =
+        Thumbnail::register(host, HWND(overlay.overlay.hwnd));
+    }
+
     let source = self.companion.map_or(HWND(self.hwnd), Companion::hwnd);
     self.thumbnail = Thumbnail::register(host, source);
+  }
+
+  pub fn unregister(&mut self) {
+    self.thumbnail = None;
+    for overlay in &mut self.overlays {
+      overlay.thumbnail = None;
+    }
+  }
+
+  pub fn hide(&mut self) {
+    let overlays = self
+      .overlays
+      .iter_mut()
+      .filter_map(|overlay| overlay.thumbnail.as_mut());
+
+    for thumbnail in self.thumbnail.iter_mut().chain(overlays) {
+      thumbnail.hide();
+    }
   }
 
   /// The part of the window its tile shows.
@@ -319,8 +393,29 @@ impl Preview {
     }
   }
 
-  /// Shows the preview at `dest` on the overview, cut to `clip`.
+  /// Shows the preview at `dest` on the overview, with its overlays
+  /// around it, cut to `clip`.
   pub fn place(&mut self, dest: &RectF, clip: &RectF, opacity: f32) {
+    let clip_rect = to_win32(clip);
+
+    for index in 0..self.overlays.len() {
+      let mapped = self.overlay_rect(&self.overlays[index].overlay, dest);
+      let overlay = &mut self.overlays[index];
+      let Some(thumbnail) = &mut overlay.thumbnail else {
+        continue;
+      };
+
+      match mapped {
+        Some((source, mapped)) => thumbnail.place(
+          source,
+          to_win32(&mapped),
+          &clip_rect,
+          to_opacity(opacity),
+        ),
+        None => thumbnail.hide(),
+      }
+    }
+
     let source = self.source();
     let (source, dest) = match self.companion {
       Some(companion) => companion.map_rects(source, to_win32(dest)),
@@ -328,9 +423,80 @@ impl Preview {
     };
 
     if let Some(thumbnail) = &mut self.thumbnail {
-      thumbnail.place(source, dest, &to_win32(clip), to_opacity(opacity));
+      thumbnail.place(
+        source,
+        dest,
+        &clip_rect,
+        to_opacity(opacity * self.alpha),
+      );
     }
   }
+
+  /// `dest` grown to take in its overlays shown around it, e.g. the hole
+  /// its card leaves for it.
+  pub fn bounds(&self, dest: &RectF) -> RectF {
+    self
+      .overlays
+      .iter()
+      .filter_map(|overlay| self.overlay_rect(&overlay.overlay, dest))
+      .fold(*dest, |bounds, (_, rect)| bounds.union(&rect))
+  }
+
+  /// Where `overlay` shows with the window shown at `dest`, and the part
+  /// of the overlay's window to show there.
+  fn overlay_rect(
+    &self,
+    overlay: &OverviewOverlay,
+    dest: &RectF,
+  ) -> Option<(RECT, RectF)> {
+    around(&self.screen_rect, &self.tile.crop, overlay.outset, dest)
+  }
+}
+
+/// Where an overlay reaching `outset` (left, top, right, bottom) past a
+/// window at `screen` shows, the part `crop` of that window showing at
+/// `dest`: scaled and offset as the window is. Also returns the part of
+/// the overlay's window to show there: all of it.
+#[allow(clippy::cast_possible_truncation, clippy::cast_precision_loss)]
+fn around(
+  screen: &RectF,
+  crop: &RectF,
+  outset: [i32; 4],
+  dest: &RectF,
+) -> Option<(RECT, RectF)> {
+  // The part of the window `dest` shows, on screen.
+  let shown = RectF::new(
+    screen.x + crop.x * screen.w,
+    screen.y + crop.y * screen.h,
+    crop.w * screen.w,
+    crop.h * screen.h,
+  );
+  if shown.w <= 0.0 || shown.h <= 0.0 {
+    return None;
+  }
+
+  let [left, top, right, bottom] = outset.map(|px| px as f32);
+  let on_screen = RectF::new(
+    screen.x - left,
+    screen.y - top,
+    screen.w + left + right,
+    screen.h + top + bottom,
+  );
+  let (scale_x, scale_y) = (dest.w / shown.w, dest.h / shown.h);
+
+  let source = RECT {
+    right: on_screen.w.round() as i32,
+    bottom: on_screen.h.round() as i32,
+    ..Default::default()
+  };
+  let rect = RectF::new(
+    dest.x + (on_screen.x - shown.x) * scale_x,
+    dest.y + (on_screen.y - shown.y) * scale_y,
+    on_screen.w * scale_x,
+    on_screen.h * scale_y,
+  );
+
+  Some((source, rect))
 }
 
 /// `hwnd`'s visible frame, without its invisible resize borders, in the
@@ -427,7 +593,8 @@ pub(crate) fn to_opacity(opacity: f32) -> u8 {
 mod tests {
   use windows::Win32::Foundation::RECT;
 
-  use super::clip_rects;
+  use super::{around, clip_rects};
+  use crate::overview_layout::RectF;
 
   fn rect(left: i32, top: i32, right: i32, bottom: i32) -> RECT {
     RECT {
@@ -472,5 +639,38 @@ mod tests {
       clip_rects(rect(0, 0, 800, 600), rect(1920, 0, 2320, 300), &clip),
       None
     );
+  }
+
+  #[test]
+  fn an_overlay_shows_around_its_window_as_scaled() {
+    let screen = RectF::new(100.0, 100.0, 800.0, 600.0);
+    let whole = RectF::new(0.0, 0.0, 1.0, 1.0);
+    let dest = RectF::new(10.0, 20.0, 200.0, 150.0);
+
+    let (source, shown) =
+      around(&screen, &whole, [10, 20, 10, 0], &dest).expect("shown");
+    assert_eq!(source, rect(0, 0, 820, 620));
+    assert_eq!(shown, RectF::new(7.5, 15.0, 205.0, 155.0));
+
+    // A backdrop covers the window exactly.
+    assert_eq!(
+      around(&screen, &whole, [0; 4], &dest).map(|(_, shown)| shown),
+      Some(dest)
+    );
+  }
+
+  #[test]
+  fn an_overlay_follows_the_part_of_its_window_shown() {
+    // Its right half shown, twice as large.
+    let screen = RectF::new(0.0, 0.0, 400.0, 200.0);
+    let crop = RectF::new(0.5, 0.0, 0.5, 1.0);
+    let dest = RectF::new(0.0, 0.0, 400.0, 400.0);
+
+    let (_, shown) =
+      around(&screen, &crop, [5, 5, 5, 5], &dest).expect("shown");
+    assert_eq!(shown, RectF::new(-410.0, -10.0, 820.0, 420.0));
+
+    let nothing = RectF::new(0.0, 0.0, 0.0, 1.0);
+    assert_eq!(around(&screen, &nothing, [0; 4], &dest), None);
   }
 }

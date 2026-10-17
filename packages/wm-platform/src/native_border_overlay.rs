@@ -485,6 +485,14 @@ impl NativeBorderOverlay {
       return;
     }
 
+    // Stays parked, rather than being revealed by `track`.
+    if self.window.is_parked() {
+      let window_rect =
+        std::mem::replace(&mut self.rect, Rect::from_ltrb(0, 0, 0, 0));
+      self.park(&window_rect);
+      return;
+    }
+
     let anchor = self.window.anchor();
     let rect = self.rect.clone();
     self.window.mark_stale();
@@ -750,5 +758,63 @@ impl Overlay for NativeBorderOverlay {
     // re-shown), rather than having its ring moved in a hidden window.
     self.clear_pin();
     self.window.hide();
+  }
+
+  fn create_parked(
+    window_rect: &Rect,
+    params: BorderOverlayParams,
+  ) -> crate::Result<Self> {
+    let outer = outer_rect(window_rect, params.width);
+
+    let window =
+      OverlayWindow::create(OverlayKind::Border, &outer, HWND(0))?;
+    let composition = BorderVisual::create(window.hwnd(), &outer, params)?;
+
+    let mut overlay = Self {
+      composition,
+      window,
+      params,
+      rect: window_rect.clone(),
+      hole_shape: None,
+      bounds: None,
+      pinned: None,
+      panel: outer.clone(),
+      clip_insets: [0; 4],
+      classified_anchor: (0, false),
+    };
+    overlay.park(window_rect);
+
+    Ok(overlay)
+  }
+
+  fn park(&mut self, window_rect: &Rect) {
+    let was_pinned = self.pinned.is_some();
+    self.clear_pin();
+    self.set_bounds(None);
+
+    if self.window.is_parked() && !was_pinned && &self.rect == window_rect
+    {
+      return;
+    }
+
+    let outer = outer_rect(window_rect, self.params.width);
+    self.apply_ring_rect(&outer, true);
+    if let Err(err) = self.window.park(&outer) {
+      tracing::warn!("{err}");
+    }
+    self.refresh_hole(&outer);
+    self.rect = window_rect.clone();
+  }
+
+  fn is_parked(&self) -> bool {
+    self.window.is_parked()
+  }
+
+  fn hwnd(&self) -> HWND {
+    self.window.hwnd()
+  }
+
+  fn bounds(window_rect: &Rect, params: &BorderOverlayParams) -> Rect {
+    outer_rect(window_rect, params.width)
   }
 }
