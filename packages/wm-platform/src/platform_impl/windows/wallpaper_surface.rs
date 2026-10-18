@@ -70,18 +70,19 @@ use windows::{
         CLSID_D2D1HighlightsShadows, CLSID_D2D1Opacity,
         CLSID_D2D1Saturation, CLSID_D2D1Turbulence,
         Common::{
-          D2D1_BLEND_MODE_OVERLAY, D2D1_COLOR_F,
-          D2D1_COMPOSITE_MODE_SOURCE_OVER, D2D_POINT_2F, D2D_RECT_F,
+          D2D1_ALPHA_MODE_PREMULTIPLIED, D2D1_BLEND_MODE_OVERLAY,
+          D2D1_COLOR_F, D2D1_COMPOSITE_MODE_SOURCE_OVER,
+          D2D1_PIXEL_FORMAT, D2D_POINT_2F, D2D_RECT_F,
         },
         ID2D1Bitmap, ID2D1DeviceContext, ID2D1Effect,
         D2D1_2DAFFINETRANSFORM_PROP_INTERPOLATION_MODE,
         D2D1_2DAFFINETRANSFORM_PROP_TRANSFORM_MATRIX,
-        D2D1_ANTIALIAS_MODE_ALIASED, D2D1_BLEND_PROP_MODE,
-        D2D1_BORDER_EDGE_MODE_CLAMP, D2D1_BORDER_EDGE_MODE_WRAP,
-        D2D1_BORDER_PROP_EDGE_MODE_X, D2D1_BORDER_PROP_EDGE_MODE_Y,
-        D2D1_CONTRAST_PROP_CONTRAST, D2D1_CROP_PROP_RECT,
-        D2D1_EXPOSURE_PROP_EXPOSURE_VALUE, D2D1_FLOOD_PROP_COLOR,
-        D2D1_GAUSSIANBLUR_OPTIMIZATION_QUALITY,
+        D2D1_ANTIALIAS_MODE_ALIASED, D2D1_BITMAP_PROPERTIES,
+        D2D1_BLEND_PROP_MODE, D2D1_BORDER_EDGE_MODE_CLAMP,
+        D2D1_BORDER_EDGE_MODE_WRAP, D2D1_BORDER_PROP_EDGE_MODE_X,
+        D2D1_BORDER_PROP_EDGE_MODE_Y, D2D1_CONTRAST_PROP_CONTRAST,
+        D2D1_CROP_PROP_RECT, D2D1_EXPOSURE_PROP_EXPOSURE_VALUE,
+        D2D1_FLOOD_PROP_COLOR, D2D1_GAUSSIANBLUR_OPTIMIZATION_QUALITY,
         D2D1_GAUSSIANBLUR_PROP_OPTIMIZATION,
         D2D1_GAUSSIANBLUR_PROP_STANDARD_DEVIATION,
         D2D1_HIGHLIGHTSANDSHADOWS_PROP_HIGHLIGHTS,
@@ -95,6 +96,7 @@ use windows::{
         D2D1_TURBULENCE_PROP_BASE_FREQUENCY,
         D2D1_TURBULENCE_PROP_NUM_OCTAVES, D2D1_TURBULENCE_PROP_SIZE,
       },
+      Dxgi::Common::DXGI_FORMAT_B8G8R8A8_UNORM,
       Gdi::{
         GetMonitorInfoW, MonitorFromPoint, MONITORINFO,
         MONITOR_DEFAULTTONEAREST,
@@ -699,13 +701,16 @@ fn draw(
     bottom: top + height,
   };
 
+  let background = to_color_f(key.wallpaper.background);
+
   // SAFETY: `context` is the live context `BeginDraw` returned.
   // Composition surfaces are sized in raw pixels, so pinning DPI to 96
   // makes one DIP one pixel and lets the layout math below stay in
-  // pixels throughout.
-  let background = to_color_f(key.wallpaper.background);
-
+  // pixels throughout. Left at the display's DPI, every offset scaled
+  // with it, shifting the image (e.g. a `Fill` crop's upward offset by a
+  // quarter more at 125%) away from where the desktop shows it.
   unsafe {
+    context.SetDpi(96.0, 96.0);
     context
       .PushAxisAlignedClip(&raw const clip, D2D1_ANTIALIAS_MODE_ALIASED);
     context.Clear(Some(&raw const background));
@@ -1240,7 +1245,20 @@ fn load_bitmap(
     let (mut width, mut height) = (0, 0);
     converted.GetSize(&raw mut width, &raw mut height)?;
 
-    let bitmap = context.CreateBitmapFromWicBitmap(&converted, None)?;
+    // At 96 DPI one pixel of it is one DIP, which `place` lays it out in,
+    // whatever DPI the image file claims.
+    let properties = D2D1_BITMAP_PROPERTIES {
+      pixelFormat: D2D1_PIXEL_FORMAT {
+        format: DXGI_FORMAT_B8G8R8A8_UNORM,
+        alphaMode: D2D1_ALPHA_MODE_PREMULTIPLIED,
+      },
+      dpiX: 96.0,
+      dpiY: 96.0,
+    };
+    let bitmap = context.CreateBitmapFromWicBitmap(
+      &converted,
+      Some(&raw const properties),
+    )?;
     Ok((bitmap, (width, height)))
   }
 }
