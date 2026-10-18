@@ -429,6 +429,9 @@ struct Card {
   scale: Spring,
   alpha: Spring,
 
+  /// The desk under its windows, if it shows one.
+  desk: Option<Thumbnail>,
+
   /// Its size, wider than normal for a wide workspace.
   metrics: CardMetrics,
 
@@ -474,6 +477,8 @@ struct PlaceContext {
   fade: f32,
   /// The screen's own rect.
   view: RectF,
+  /// Working area the screen covers, in screen coordinates.
+  area: RectF,
   /// Card the screen zooms out of or into.
   zoom_card: Option<usize>,
 }
@@ -484,6 +489,7 @@ fn place_card(card: &mut Card, index: usize, context: &PlaceContext) {
     camera,
     fade,
     view,
+    area,
     zoom_card,
   } = context;
   let placement = card.placement();
@@ -502,6 +508,17 @@ fn place_card(card: &mut Card, index: usize, context: &PlaceContext) {
   } else {
     (1.0, placement.opacity)
   };
+
+  // Under its windows, through the card's cut out for it.
+  if let Some(thumbnail) = &mut card.desk {
+    let dest =
+      camera.apply(&placement.map(&metrics, &card.view.map(area)));
+    if is_visible {
+      desk::place(thumbnail, area, &dest, view, alpha);
+    } else {
+      thumbnail.hide();
+    }
+  }
 
   for preview in &mut card.previews {
     let dest = camera.apply(&placement.map(&metrics, &preview.tile.rect));
@@ -593,9 +610,12 @@ struct Screen {
 
   backdrop: Option<OverviewBackdrop>,
 
-  /// The wallpaper the activities show their workspace on, `None` until
-  /// first shown or if its window couldn't be created.
+  /// The wallpaper workspaces show their windows on, `None` until first
+  /// shown or if its window couldn't be created.
   desk: Option<Desk>,
+
+  /// The desk under the activities' scene.
+  desk_thumbnail: Option<Thumbnail>,
 
   cards: Vec<Card>,
 

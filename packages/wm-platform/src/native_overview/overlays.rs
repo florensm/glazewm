@@ -6,7 +6,7 @@ use std::time::Instant;
 use windows::Win32::Foundation::HWND;
 
 use super::{
-  scenes::scene_window_rect, to_f32_size, PlaceContext, Screen,
+  desk, scenes::scene_window_rect, to_f32_size, PlaceContext, Screen,
 };
 use crate::{
   overview_chrome::{
@@ -510,8 +510,10 @@ impl Screen {
       .as_ref()
       .filter(|_| layout == OverviewLayoutMode::Activities)
       .map(|overlays| view.lerp(&overlays.desk_rect.value(), fade));
-    if let (Some(desk), Some(desk_rect)) = (&mut self.desk, desk_rect) {
-      desk.place(&desk_rect, &view);
+    if let (Some(thumbnail), Some(desk_rect)) =
+      (&mut self.desk_thumbnail, desk_rect)
+    {
+      desk::place(thumbnail, &self.area, &desk_rect, &view, 1.0);
     }
 
     let Some(overlays) = &mut self.overlays else {

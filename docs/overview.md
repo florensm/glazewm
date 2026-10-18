@@ -11,7 +11,9 @@ into the workspace you picked, and on the other monitors (or all of them,
 when cancelled) into the workspace they show, until they sit where they
 really are.
 
-Windows look in the overview as they do on screen, with their
+Every workspace shows its windows on the monitor's wallpaper, like a
+small copy of the monitor (the special workspace and the "+" card keep a
+plain card). Windows look in the overview as they do on screen, with their
 [window effects](#how-it-works): their `transparency`, and the border and
 backdrop the WM draws for them, scaled with them. So opening it shrinks
 each monitor's workspace as you see it into the overview, and closing it
@@ -302,9 +304,11 @@ moves things around and never redraws pixels:
 - The backdrop is a composition visual of the wallpaper, baked as for the
   window backdrops: sharp at first, with a blurred copy and the tint
   fading in over it.
-- The activities' desk, the wallpaper under the shown workspace, is the
-  same sharp wallpaper on a cloaked window of its own, shown as a
-  thumbnail under the windows' so it scales in step with them.
+- The desk, the wallpaper under each workspace's windows, is the same
+  sharp wallpaper on a cloaked window of its own, shown as a thumbnail
+  under the windows' so it scales in step with them: under the
+  activities' scene, and under each card's windows, through a hole in the
+  card's picture that rounds its corners.
 
 Nothing animates behind the overview: a window moved while it is on screen
 lands at once, and its preview follows it there.

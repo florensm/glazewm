@@ -72,6 +72,9 @@ pub(crate) struct CardPicture {
   /// shows more than that.
   pub viewport: Option<RectF>,
 
+  /// Where its windows' desk shows through, cut out like the previews.
+  pub desk: Option<RectF>,
+
   pub tiles: Vec<TilePicture>,
 
   /// Where its stacks' tab bars show, cut out like the previews, with the
@@ -88,6 +91,7 @@ impl CardPicture {
     let mut picture = self.clone();
     picture.viewport =
       self.viewport.map(|viewport| viewport.scaled(factor));
+    picture.desk = self.desk.map(|desk| desk.scaled(factor));
 
     for tile in &mut picture.tiles {
       tile.rect = tile.rect.scaled(factor);
@@ -345,6 +349,16 @@ fn draw_face(
     draw_viewport(surface, viewport, units, style);
   }
 
+  let tile_radius = match picture.look {
+    CardLook::Classic => 4.0,
+    CardLook::Clean => 6.0,
+  };
+  if let Some(desk) = &picture.desk {
+    surface
+      .canvas()
+      .erase_rounded_rect(&desk.to_rect(), round(units.px(tile_radius)));
+  }
+
   let mut fonts = Fonts::new(&style.font_family);
   if picture.look == CardLook::Classic {
     draw_header(surface, &mut fonts, picture, units, style, notify);
@@ -380,10 +394,6 @@ fn draw_face(
 
   // Previews are cut out in stacking order, so a floating window's hole
   // clears what was drawn for the tiled window under it.
-  let tile_radius = match picture.look {
-    CardLook::Classic => 4.0,
-    CardLook::Clean => 6.0,
-  };
   for tile in &picture.tiles {
     draw_tile(
       surface,

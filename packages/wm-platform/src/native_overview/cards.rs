@@ -3,7 +3,7 @@
 
 use windows::Win32::Foundation::HWND;
 
-use super::{Card, Screen, SETTLE_MS};
+use super::{desk::Desk, Card, Screen, SETTLE_MS};
 use crate::{
   overview_chrome::{with_alpha, CardPicture, TilePicture},
   overview_layout::{
@@ -119,6 +119,7 @@ impl Screen {
         cy: Spring::new(0.0, SETTLE_MS, 0.25),
         scale: Spring::new(1.0, SETTLE_MS, 0.001),
         alpha: Spring::new(1.0, SETTLE_MS, 0.002),
+        desk: None,
         metrics,
         view,
         previews,
@@ -272,6 +273,15 @@ impl Screen {
     }
   }
 
+  /// Whether card `index` shows its windows on the desk: a workspace of
+  /// the monitor, not the "+" card or the special workspace.
+  pub(super) fn shows_desk(&self, index: usize) -> bool {
+    self.desk.as_ref().is_some_and(Desk::is_drawn)
+      && self.workspaces().get(index).is_some_and(|workspace| {
+        !workspace.is_new && !workspace.is_special
+      })
+  }
+
   /// Everything card `index` shows, but for its selection and hover,
   /// which show as highlights over it.
   pub(super) fn card_picture(
@@ -359,6 +369,9 @@ impl Screen {
       label: workspace.map_or_else(String::new, |w| w.label.clone()),
       look,
       viewport,
+      desk: card
+        .filter(|card| card.desk.is_some())
+        .map(|card| card.view.map(&self.area)),
       is_displayed: workspace.is_some_and(|w| w.is_displayed),
       is_new: workspace.is_some_and(|w| w.is_new),
       is_special: workspace.is_some_and(|w| w.is_special),

@@ -1,9 +1,9 @@
-//! The desktop the activities show their workspace on: the wallpaper under
-//! the monitor's working area, zooming with the windows on it, so the
+//! The desktop workspaces show their windows on: the wallpaper under the
+//! monitor's working area, zooming with the windows on it, so each
 //! workspace looks like the monitor shrunk.
 //!
-//! The wallpaper is drawn on a cloaked window of its own and shown as a
-//! thumbnail, like the windows, so DWM moves it in step with them.
+//! The wallpaper is drawn on a cloaked window of its own and shown as
+//! thumbnails, like the windows, so DWM moves it in step with them.
 
 use std::sync::OnceLock;
 
@@ -23,7 +23,7 @@ use windows::{
 
 use crate::{
   overview_layout::RectF,
-  overview_thumbnails::{to_win32, Thumbnail},
+  overview_thumbnails::{to_opacity, to_win32, Thumbnail},
   platform_impl::composition::OverviewBackdrop,
   window_class, OverviewStyle, Rect,
 };
@@ -36,8 +36,6 @@ pub(super) struct Desk {
 
   /// Working area it shows, in screen coordinates.
   rect: Option<Rect>,
-
-  pub(super) thumbnail: Option<Thumbnail>,
 }
 
 impl Desk {
@@ -46,7 +44,6 @@ impl Desk {
       window: create_desk_window()?,
       wallpaper: None,
       rect: None,
-      thumbnail: None,
     })
   }
 
@@ -89,34 +86,20 @@ impl Desk {
     }
   }
 
-  /// Registers its thumbnail on `host`, above what was registered there
-  /// before.
-  pub(super) fn register(&mut self, host: HWND) {
-    self.thumbnail = self
-      .wallpaper
-      .as_ref()
-      .and_then(|_| Thumbnail::register(host, self.window));
+  /// Whether its wallpaper is drawn, for thumbnails to show.
+  pub(super) fn is_drawn(&self) -> bool {
+    self.wallpaper.is_some()
   }
 
-  /// Shows it at `dest`, cut to `clip`.
-  pub(super) fn place(&mut self, dest: &RectF, clip: &RectF) {
-    let (Some(thumbnail), Some(rect)) = (&mut self.thumbnail, &self.rect)
-    else {
-      return;
-    };
-
-    let source = RECT {
-      right: rect.width(),
-      bottom: rect.height(),
-      ..Default::default()
-    };
-    thumbnail.place(source, to_win32(dest), &to_win32(clip), u8::MAX);
+  /// A thumbnail of it on `host`, above what was registered there before.
+  pub(super) fn register(&self, host: HWND) -> Option<Thumbnail> {
+    self.wallpaper.as_ref()?;
+    Thumbnail::register(host, self.window)
   }
 }
 
 impl Drop for Desk {
   fn drop(&mut self) {
-    self.thumbnail = None;
     self.wallpaper = None;
 
     // SAFETY: Created in `new` on this thread and destroyed once.
@@ -124,6 +107,29 @@ impl Drop for Desk {
       let _ = DestroyWindow(self.window);
     }
   }
+}
+
+/// Shows `thumbnail`, of the desk for working area `area`, at `dest`, cut
+/// to `clip`.
+pub(super) fn place(
+  thumbnail: &mut Thumbnail,
+  area: &RectF,
+  dest: &RectF,
+  clip: &RectF,
+  opacity: f32,
+) {
+  #[allow(clippy::cast_possible_truncation)]
+  let source = RECT {
+    right: area.w.round() as i32,
+    bottom: area.h.round() as i32,
+    ..Default::default()
+  };
+  thumbnail.place(
+    source,
+    to_win32(dest),
+    &to_win32(clip),
+    to_opacity(opacity),
+  );
 }
 
 /// Creates the cloaked window the wallpaper is drawn on: DWM keeps

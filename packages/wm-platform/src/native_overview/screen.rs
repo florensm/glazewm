@@ -52,6 +52,7 @@ impl Screen {
       area: RectF::default(),
       backdrop: None,
       desk: None,
+      desk_thumbnail: None,
       cards: Vec::new(),
       scenes: Vec::new(),
       scene_area: RectF::default(),
@@ -332,9 +333,9 @@ impl Screen {
     self.retired.extend(retired);
 
     if let (OverviewLayoutMode::Activities, Some(desk)) =
-      (layout, &mut self.desk)
+      (layout, &self.desk)
     {
-      desk.register(host);
+      self.desk_thumbnail = desk.register(host);
     }
 
     if layout.has_scene() {
@@ -345,7 +346,16 @@ impl Screen {
       }
     }
 
-    for card in &mut self.cards {
+    let shows_desk = (0..self.cards.len())
+      .map(|index| self.shows_desk(index))
+      .collect::<Vec<_>>();
+    for (card, shows_desk) in self.cards.iter_mut().zip(shows_desk) {
+      card.desk = self
+        .desk
+        .as_ref()
+        .filter(|_| shows_desk)
+        .and_then(|desk| desk.register(host));
+
       // Under the windows, which cover the strip reaching under them.
       for bar in &mut card.tab_bars {
         bar.picture.thumbnail =
@@ -383,6 +393,7 @@ impl Screen {
     let mut retired = Vec::new();
 
     for card in &mut self.cards {
+      retired.extend(card.desk.take());
       retired.extend(card.picture.thumbnail.take());
       for bar in &mut card.tab_bars {
         retired.extend(bar.picture.thumbnail.take());
@@ -396,9 +407,7 @@ impl Screen {
     {
       window.preview.retire(&mut retired);
     }
-    if let Some(desk) = &mut self.desk {
-      retired.extend(desk.thumbnail.take());
-    }
+    retired.extend(self.desk_thumbnail.take());
     if let Some(overlays) = &mut self.overlays {
       overlays.retire(&mut retired);
     }
@@ -727,6 +736,7 @@ impl Screen {
       camera: self.camera(),
       fade: self.openness(),
       view: self.view(),
+      area: self.area,
       zoom_card: self.zoom.map(|(zoom, _)| zoom.card),
     }
   }
@@ -793,6 +803,7 @@ impl Screen {
           camera: Camera::shifted(0.0, shift),
           fade,
           view,
+          area: self.area,
           zoom_card: None,
         };
         for (index, card) in self.cards.iter_mut().enumerate() {
