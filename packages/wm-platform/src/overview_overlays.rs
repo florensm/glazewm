@@ -55,8 +55,9 @@ impl NineSlice {
       .collect();
   }
 
-  pub fn unregister(&mut self) {
-    self.parts.clear();
+  /// Hands its thumbnails over to `retired`, still registered.
+  pub fn retire(&mut self, retired: &mut Vec<Thumbnail>) {
+    retired.append(&mut self.parts);
   }
 
   /// Shows it over `rect`, its corners `corner_scale` times the size they

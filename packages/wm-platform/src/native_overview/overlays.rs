@@ -114,17 +114,22 @@ impl Overlays {
     }
   }
 
-  pub(super) fn unregister(&mut self) {
-    self.scene_panel.unregister();
+  /// Hands their thumbnails over to `retired`, still registered.
+  pub(super) fn retire(&mut self, retired: &mut Vec<Thumbnail>) {
+    self.scene_panel.retire(retired);
     for label in &mut self.labels {
-      label.picture.thumbnail = None;
+      retired.extend(label.picture.thumbnail.take());
     }
-    self.screen_ring.slices.unregister();
-    self.hover_ring.slices.unregister();
-    self.workspace_ring.slices.unregister();
-    self.window_ring.slices.unregister();
-    self.tag.picture.thumbnail = None;
-    self.note.picture.thumbnail = None;
+    for slices in [
+      &mut self.screen_ring.slices,
+      &mut self.hover_ring.slices,
+      &mut self.workspace_ring.slices,
+      &mut self.window_ring.slices,
+    ] {
+      slices.retire(retired);
+    }
+    retired.extend(self.tag.picture.thumbnail.take());
+    retired.extend(self.note.picture.thumbnail.take());
   }
 
   /// Draws the highlights and panels in `style`, at `metrics`' scale;

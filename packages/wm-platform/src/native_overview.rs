@@ -68,7 +68,7 @@ use crate::{
     all_workspaces, HintTone, Hit, Interaction, Key, ScreenFocus,
   },
   overview_tab_bars::CardTabBar,
-  overview_thumbnails::{Picture, Preview},
+  overview_thumbnails::{Picture, Preview, Thumbnail},
   platform_impl::{self, composition::OverviewBackdrop},
   window_class::{self, mouse_position},
   window_icons, DxgiVsyncWaiter, OverviewAction, OverviewFrame,
@@ -99,6 +99,10 @@ const SETTLE_MS: f32 = 260.0;
 /// Room between the activities' scene panel and what it shows, in
 /// logical pixels.
 const SCENE_PADDING: f32 = 14.0;
+
+/// How long the zoom into a pick waits for the WM to carry it out before
+/// starting regardless.
+const PICK_TIMEOUT: Duration = Duration::from_millis(150);
 
 /// What the WM thread posts to open the overview.
 struct Open {
@@ -615,6 +619,10 @@ struct Screen {
   /// Where the special workspace's card is docked, from the last layout.
   dock: Option<RectF>,
 
+  /// Thumbnails replaced by a new registration, kept up until the next
+  /// placement puts their replacements where they are.
+  retired: Vec<Thumbnail>,
+
   /// Where the grid puts each card, for moving a row up or down.
   grid: GridCells,
 
@@ -688,6 +696,11 @@ struct Overview {
   /// until the WM closes the overview.
   is_done: bool,
 
+  /// A pick sent to the WM, and when, whose zoom waits for the WM to have
+  /// carried it out: until then, where its windows land isn't known, e.g.
+  /// while a strip scrolls the picked window into view.
+  pending_pick: Option<(OverviewAction, Instant)>,
+
   /// Paces animation frames to the focused monitor.
   vsync: Option<DxgiVsyncWaiter>,
 }
@@ -710,6 +723,7 @@ impl Overview {
       open_cursor: (0, 0),
       last_tick: Instant::now(),
       is_done: false,
+      pending_pick: None,
       vsync: None,
     }
   }
@@ -859,6 +873,7 @@ impl Overview {
     }
 
     self.ghost = None;
+    self.pending_pick = None;
     self.vsync = None;
     (self.on_action)(self.session, OverviewAction::Hidden);
   }
@@ -1039,8 +1054,18 @@ impl Overview {
       .min(1.0 / 30.0);
     self.last_tick = now;
 
+    // The WM hasn't carried out the pick in time: zoom anyway, so the
+    // overview still closes.
+    let overdue = self
+      .pending_pick
+      .take_if(|(_, picked)| picked.elapsed() >= PICK_TIMEOUT);
+    if let Some((action, _)) = overdue {
+      self.start_closing(&action);
+      self.after_input(None);
+    }
+
     let was_closing = self.is_closing();
-    let mut is_moving = false;
+    let mut is_moving = self.pending_pick.is_some();
     for screen in &mut self.screens {
       is_moving |= screen.tick(dt);
     }
@@ -1128,7 +1153,11 @@ impl Overview {
       );
 
       if is_final && !self.is_done {
-        self.start_closing(&action);
+        match action {
+          // Nothing moves for a cancel.
+          OverviewAction::Cancel => self.start_closing(&action),
+          _ => self.pending_pick = Some((action.clone(), Instant::now())),
+        }
       }
       self.send(action);
       self.is_done |= is_final;
@@ -1321,6 +1350,13 @@ impl Overview {
           .unwrap_or_default(),
       ),
       WM_HIDE_OVERVIEW => {
+        // The WM carried out the pick, and the frame before this shows
+        // where its windows landed, so the zoom goes there.
+        if let Some((action, _)) = self.pending_pick.take() {
+          self.start_closing(&action);
+          self.after_input(None);
+        }
+
         // A closing overview hides itself once its zoom ends.
         if !self.is_closing() {
           self.close();
@@ -1334,7 +1370,7 @@ impl Overview {
       }
       WM_ACTIVATE => {
         // The low word of `wparam` is the activation state, and `lparam`
-        // the window being activated. While closing, the window it zooms
+        // the window being activated. After a pick, the window it zooms
         // into has just been focused.
         let is_to_own = self.screen_of(HWND(lparam.0)).is_some();
 
@@ -1342,6 +1378,7 @@ impl Overview {
           && !is_to_own
           && self.frame.is_some()
           && !self.is_closing()
+          && self.pending_pick.is_none()
         {
           let was_done = self.is_done;
           self.close();

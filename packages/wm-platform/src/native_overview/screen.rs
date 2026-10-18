@@ -58,6 +58,7 @@ impl Screen {
       hint_drawn: None,
       hint_y: Spring::new(0.0, SETTLE_MS, 0.25),
       dock: None,
+      retired: Vec::new(),
       grid: GridCells::default(),
       nav: Vec::new(),
       zoom: None,
@@ -230,16 +231,11 @@ impl Screen {
       ShowWindow(self.hwnd, SW_HIDE);
     }
 
+    self.unregister_thumbnails();
     for card in self.cards.drain(..) {
       self.spare.extend(card.into_pictures());
     }
     self.scenes.clear();
-    if let Some(overlays) = &mut self.overlays {
-      overlays.unregister();
-    }
-    if let Some(hint) = &mut self.hint {
-      hint.thumbnail = None;
-    }
     self.registered_for = None;
     self.nav.clear();
     self.zoom = None;
@@ -319,7 +315,11 @@ impl Screen {
   fn register_thumbnails(&mut self) {
     let host = self.hwnd;
     let layout = self.focus.layout;
-    self.unregister_thumbnails();
+
+    // Those shown now stay up until their replacements are placed, so
+    // nothing blinks out in between.
+    let retired = self.retire_thumbnails();
+    self.retired.extend(retired);
 
     if let (OverviewLayoutMode::Activities, Some(overlays)) =
       (layout, &mut self.overlays)
@@ -364,26 +364,36 @@ impl Screen {
   }
 
   pub(super) fn unregister_thumbnails(&mut self) {
+    self.retired.clear();
+    drop(self.retire_thumbnails());
+  }
+
+  /// Takes every thumbnail out of what shows it, still registered.
+  fn retire_thumbnails(&mut self) -> Vec<Thumbnail> {
+    let mut retired = Vec::new();
+
     for card in &mut self.cards {
-      card.picture.thumbnail = None;
+      retired.extend(card.picture.thumbnail.take());
       for bar in &mut card.tab_bars {
-        bar.picture.thumbnail = None;
+        retired.extend(bar.picture.thumbnail.take());
       }
       for preview in &mut card.previews {
-        preview.unregister();
+        preview.retire(&mut retired);
       }
     }
     for window in
       self.scenes.iter_mut().flat_map(|scene| &mut scene.windows)
     {
-      window.preview.unregister();
+      window.preview.retire(&mut retired);
     }
     if let Some(overlays) = &mut self.overlays {
-      overlays.unregister();
+      overlays.retire(&mut retired);
     }
     if let Some(hint) = &mut self.hint {
-      hint.thumbnail = None;
+      retired.extend(hint.thumbnail.take());
     }
+
+    retired
   }
 
   /// Points every card and scene window at where it belongs now.
@@ -772,6 +782,9 @@ impl Screen {
         thumbnail.hide();
       }
     }
+
+    // Their replacements are in place now.
+    self.retired.clear();
 
     is_gliding
   }

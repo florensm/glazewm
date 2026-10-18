@@ -358,10 +358,11 @@ impl Preview {
     self.thumbnail = Thumbnail::register(host, source);
   }
 
-  pub fn unregister(&mut self) {
-    self.thumbnail = None;
+  /// Hands its thumbnails over to `retired`, still registered.
+  pub fn retire(&mut self, retired: &mut Vec<Thumbnail>) {
+    retired.extend(self.thumbnail.take());
     for overlay in &mut self.overlays {
-      overlay.thumbnail = None;
+      retired.extend(overlay.thumbnail.take());
     }
   }
 

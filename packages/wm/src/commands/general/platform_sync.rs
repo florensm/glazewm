@@ -639,6 +639,13 @@ fn redraw_containers(
   // cancelled below so their windows snap to their target rect.
   let suppress_animations = state.pending_sync.animations_suppressed();
 
+  // Nothing animates behind the overview: its previews follow the windows
+  // to where they land, and an animation stands surrogates in for them,
+  // hiding their borders and backdrops meanwhile.
+  #[cfg(target_os = "windows")]
+  let suppress_animations =
+    suppress_animations || state.overview.is_shown();
+
   // Workspace-switch pre-pass: create slide surrogates for all
   // incoming/outgoing windows before any real window is repositioned.
   // Outgoing surrogates are shown immediately (before the real window is
