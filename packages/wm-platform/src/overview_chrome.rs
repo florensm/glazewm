@@ -18,8 +18,9 @@ use windows::{
       CreateFontW, DeleteObject, DrawTextW, SelectObject, SetBkMode,
       SetTextColor, ANTIALIASED_QUALITY, CLIP_DEFAULT_PRECIS,
       DEFAULT_CHARSET, DRAW_TEXT_FORMAT, DT_CALCRECT, DT_CENTER,
-      DT_END_ELLIPSIS, DT_LEFT, DT_NOPREFIX, DT_SINGLELINE, DT_VCENTER,
-      FW_NORMAL, FW_SEMIBOLD, HFONT, OUT_DEFAULT_PRECIS, TRANSPARENT,
+      DT_END_ELLIPSIS, DT_LEFT, DT_NOPREFIX, DT_RIGHT, DT_SINGLELINE,
+      DT_VCENTER, FW_NORMAL, FW_SEMIBOLD, HFONT, OUT_DEFAULT_PRECIS,
+      TRANSPARENT,
     },
     UI::WindowsAndMessaging::{DrawIconEx, DI_NORMAL, HICON},
   },
@@ -29,6 +30,7 @@ use crate::{
   overview_layout::{
     CardLook, CardMetrics, Placement, RectF, LABEL_HEIGHT,
   },
+  overview_state::{Hint, HintTone, SearchHint},
   paint,
   surface::Surface,
   window_icons, Color, CornerRadii, OverviewStyle, Rect,
@@ -905,38 +907,281 @@ pub(crate) fn draw_ghost(
   );
 }
 
-/// Draws `text`, centered, into `surface`, on a pill of the cards' color
-/// so it reads over whatever is behind it.
+/// Height, side padding and corner radius of a key cap on the hints line,
+/// and the gap to what the key does, in logical pixels.
+const KEY_CAP: (f32, f32, f32, f32) = (20.0, 6.0, 5.0, 6.0);
+
+/// Gap between the parts of the hints line, and padding at its ends, in
+/// logical pixels.
+const HINT_GAP: (f32, f32) = (16.0, 12.0);
+
+/// Height, minimum width, padding and corner radius of the search field on
+/// the hints line, in logical pixels.
+const SEARCH_FIELD: (f32, f32, f32, f32) = (22.0, 200.0, 9.0, 6.0);
+
+/// One part of the hints line, with its width.
+enum HintPart<'a> {
+  Lead(&'a str, i32),
+  Search(&'a SearchHint, String, i32),
+  Key {
+    key: &'a str,
+    action: &'a str,
+    cap: i32,
+    width: i32,
+  },
+}
+
+impl HintPart<'_> {
+  fn width(&self) -> i32 {
+    match self {
+      Self::Lead(_, width)
+      | Self::Search(_, _, width)
+      | Self::Key { width, .. } => *width,
+    }
+  }
+}
+
+/// Draws `hint`, centered, into `surface`: what is going on, the search
+/// and each key as a key cap with what it does, on a pill of the cards'
+/// color so it reads over whatever is behind it.
 pub(crate) fn draw_hint(
   surface: &mut Surface,
-  text: &str,
-  color: Color,
+  hint: &Hint,
   scale_factor: f32,
   style: &OverviewStyle,
 ) {
+  let px = |length: f32| round(length * scale_factor);
   surface.pixels().fill(0);
 
   let mut fonts = Fonts::new(&style.font_family);
-  let font = fonts.get(10.5 * scale_factor, false);
-  let rect = Rect::from_xy(0, 0, surface.width, surface.height);
+  let fonts = HintFonts {
+    text: fonts.get(11.5 * scale_factor, false),
+    key: fonts.get(10.5 * scale_factor, true),
+  };
+  let parts = hint_parts(hint, &fonts, scale_factor);
+  let (gap, padding) = HINT_GAP;
 
-  let width = (text_width(font, text) + round(28.0 * scale_factor))
-    .min(surface.width);
-  let pill =
-    Rect::from_xy((surface.width - width) / 2, 0, width, surface.height);
-  let radius = surface.height / 2;
+  let gaps = i32::try_from(parts.len().saturating_sub(1)).unwrap_or(0);
+  let width = (parts.iter().map(HintPart::width).sum::<i32>()
+    + gaps * px(gap)
+    + 2 * px(padding))
+  .min(surface.width);
+  let height = surface.height;
+  let pill = Rect::from_xy((surface.width - width) / 2, 0, width, height);
   {
     let mut canvas = surface.canvas();
-    canvas.fill_rounded_rect(&pill, radius, with_alpha(style.card, 0.9));
+    canvas.fill_rounded_rect(
+      &pill,
+      height / 2,
+      with_alpha(style.card, 0.85),
+    );
     canvas.stroke_rounded_rect(
       &pill,
-      radius,
-      round(scale_factor).max(1),
-      with_alpha(style.accent, 0.16),
+      height / 2,
+      px(1.0).max(1),
+      with_alpha(style.text, 0.1),
     );
   }
 
-  draw_text(surface, font, text, &rect, color, DT_CENTER);
+  let tone = match hint.tone {
+    HintTone::Quiet => with_alpha(style.subtext, 0.85),
+    HintTone::Accent => with_alpha(style.accent, 0.9),
+    HintTone::Search => with_alpha(style.search, 0.9),
+  };
+  let mut x = pill.left + px(padding);
+  for part in &parts {
+    let rect = Rect::from_xy(x, 0, part.width(), height);
+    match part {
+      HintPart::Lead(text, _) => {
+        draw_text(surface, fonts.text, text, &rect, tone, DT_LEFT);
+      }
+      HintPart::Search(search, hits, _) => {
+        let units = (scale_factor, tone);
+        draw_search_field(
+          surface, &rect, search, hits, &fonts, units, style,
+        );
+      }
+      HintPart::Key {
+        key, action, cap, ..
+      } => {
+        let units = (scale_factor, *cap);
+        draw_key_hint(surface, &rect, (key, action), &fonts, units, style);
+      }
+    }
+    x += part.width() + px(gap);
+  }
+}
+
+/// The fonts of the hints line.
+struct HintFonts {
+  text: HFONT,
+  key: HFONT,
+}
+
+/// `hint`'s parts, left to right, measured in `fonts` at `scale_factor`.
+fn hint_parts<'a>(
+  hint: &'a Hint,
+  fonts: &HintFonts,
+  scale_factor: f32,
+) -> Vec<HintPart<'a>> {
+  let px = |length: f32| round(length * scale_factor);
+  let (cap_height, cap_padding, _, cap_gap) = KEY_CAP;
+  let (_, field_width, field_padding, _) = SEARCH_FIELD;
+  let mut parts = Vec::new();
+
+  if let Some(lead) = &hint.lead {
+    parts.push(HintPart::Lead(lead, text_width(fonts.text, lead)));
+  }
+  if let Some(search) = &hint.search {
+    let hits = format!(
+      "{} {}",
+      search.hits,
+      if search.hits == 1 { "hit" } else { "hits" }
+    );
+    let width = (text_width(fonts.text, &search.query)
+      + text_width(fonts.text, &hits)
+      + px(2.0 * field_padding + HINT_GAP.0))
+    .max(px(field_width));
+    parts.push(HintPart::Search(search, hits, width));
+  }
+  for key in &hint.keys {
+    let cap = (text_width(fonts.key, &key.key) + px(2.0 * cap_padding))
+      .max(px(cap_height));
+    let width = cap + px(cap_gap) + text_width(fonts.text, &key.action);
+    parts.push(HintPart::Key {
+      key: &key.key,
+      action: &key.action,
+      cap,
+      width,
+    });
+  }
+  parts
+}
+
+/// Draws the search field into `rect` of the hints line: the query, the
+/// caret while typing, and the `hits` on the right, outlined in `tone`.
+fn draw_search_field(
+  surface: &mut Surface,
+  rect: &Rect,
+  search: &SearchHint,
+  hits: &str,
+  fonts: &HintFonts,
+  (scale_factor, tone): (f32, Color),
+  style: &OverviewStyle,
+) {
+  let px = |length: f32| round(length * scale_factor);
+  let (field_height, _, field_padding, field_radius) = SEARCH_FIELD;
+  let field = Rect::from_xy(
+    rect.left,
+    rect.top + (rect.height() - px(field_height)) / 2,
+    rect.width(),
+    px(field_height),
+  );
+  {
+    let mut canvas = surface.canvas();
+    canvas.fill_rounded_rect(
+      &field,
+      px(field_radius),
+      with_alpha(style.card, 0.9),
+    );
+    canvas.stroke_rounded_rect(
+      &field,
+      px(field_radius),
+      px(1.0).max(1),
+      tone,
+    );
+  }
+
+  let inner = Rect::from_ltrb(
+    field.left + px(field_padding),
+    rect.top,
+    field.right - px(field_padding),
+    rect.bottom,
+  );
+  draw_text(
+    surface,
+    fonts.text,
+    &search.query,
+    &inner,
+    style.text,
+    DT_LEFT,
+  );
+  draw_text(
+    surface,
+    fonts.text,
+    hits,
+    &inner,
+    with_alpha(style.subtext, 0.85),
+    DT_RIGHT,
+  );
+
+  if search.is_typing {
+    let caret_height = px(13.0);
+    let caret = Rect::from_xy(
+      inner.left + text_width(fonts.text, &search.query) + px(1.0),
+      rect.top + (rect.height() - caret_height) / 2,
+      px(1.0).max(1),
+      caret_height,
+    );
+    surface.canvas().fill_rounded_rect(&caret, 0, tone);
+  }
+}
+
+/// Draws `key` as a key cap `cap` pixels wide at the start of `rect` of
+/// the hints line, and what it does, `action`, after it.
+fn draw_key_hint(
+  surface: &mut Surface,
+  rect: &Rect,
+  (key, action): (&str, &str),
+  fonts: &HintFonts,
+  (scale_factor, cap): (f32, i32),
+  style: &OverviewStyle,
+) {
+  let px = |length: f32| round(length * scale_factor);
+  let (cap_height, _, cap_radius, cap_gap) = KEY_CAP;
+  let cap_rect = Rect::from_xy(
+    rect.left,
+    rect.top + (rect.height() - px(cap_height)) / 2,
+    cap,
+    px(cap_height),
+  );
+  {
+    let mut canvas = surface.canvas();
+    canvas.fill_rounded_rect(
+      &cap_rect,
+      px(cap_radius),
+      with_alpha(style.text, 0.1),
+    );
+    canvas.stroke_rounded_rect(
+      &cap_rect,
+      px(cap_radius),
+      px(1.0).max(1),
+      with_alpha(style.text, 0.16),
+    );
+  }
+  draw_text(
+    surface,
+    fonts.key,
+    key,
+    &cap_rect,
+    with_alpha(style.text, 0.9),
+    DT_CENTER,
+  );
+
+  let label = Rect::from_ltrb(
+    rect.left + cap + px(cap_gap),
+    rect.top,
+    rect.right,
+    rect.bottom,
+  );
+  draw_text(
+    surface,
+    fonts.text,
+    action,
+    &label,
+    with_alpha(style.subtext, 0.85),
+    DT_LEFT,
+  );
 }
 
 /// Width `text` takes on one line in `font`.

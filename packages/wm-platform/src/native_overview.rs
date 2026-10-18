@@ -66,7 +66,7 @@ use crate::{
   },
   overview_scene::Scene,
   overview_state::{
-    all_workspaces, HintTone, Hit, Interaction, Key, ScreenFocus,
+    all_workspaces, Hint, Hit, Interaction, Key, ScreenFocus,
   },
   overview_tab_bars::CardTabBar,
   overview_thumbnails::{Picture, Preview, Thumbnail},
@@ -632,7 +632,7 @@ struct Screen {
   overlays: Option<Overlays>,
 
   hint: Option<Picture>,
-  hint_drawn: Option<(String, HintTone)>,
+  hint_drawn: Option<Hint>,
   hint_y: Spring,
 
   /// Where the special workspace's card is docked, from the last layout.

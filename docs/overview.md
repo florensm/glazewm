@@ -86,7 +86,8 @@ is nowhere to go.
 
 The keyboard goes one step deeper with each `Space`: browsing workspaces,
 picking a window inside one, then carrying that window to another
-workspace. The line at the bottom shows the keys for the current step.
+workspace. The line at the bottom shows the main keys for the current
+step as key caps; `?` shows the rest too, and hides them again.
 
 The arrows go between workspaces along the layout: `←` `→` in the
 activities and the carousel, `↑` `↓` down the stage's column, and all four
@@ -107,6 +108,7 @@ workspaces.
 | `Backspace` | | Back to browsing. | Put the window down. |
 | `Tab` | Switch to the next layout: activities, stage, carousel, grid. | Same, back to browsing in the grid. | Same. |
 | `Escape` | Close without changing anything. | Same. | Same. |
+| `?` | Show every key for the step on the line at the bottom, or only the main ones. | Same. | Same. |
 
 Digits go to the workspace named after them (`0` is `10`), like a
 `focus --workspace` binding would: one with a card on any monitor, or an

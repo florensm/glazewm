@@ -17,14 +17,14 @@ use super::{
   ScreenFrame, SETTLE_MS,
 };
 use crate::{
-  overview_chrome::{draw_card, draw_hint, picture_size, with_alpha},
+  overview_chrome::{draw_card, draw_hint, picture_size},
   overview_layout::{
     activities, carousel, chrome_opacity, grid, stage as stage_layout,
     Camera, CardMetrics, GridCells, Placement, RectF, Spring, Zoom,
     HINT_HEIGHT,
   },
   overview_scene::SceneWindow,
-  overview_state::{HintTone, Hit, Mode, ScreenFocus},
+  overview_state::{Hit, Mode, ScreenFocus},
   overview_thumbnails::{Picture, Thumbnail},
   platform_impl::composition::OverviewBackdrop,
   tab_layout::TabHit,
@@ -609,12 +609,7 @@ impl Screen {
 
     let hint = self.focus.hint.clone();
     if force || self.hint_drawn != hint {
-      if let Some((text, tone)) = &hint {
-        let color = match tone {
-          HintTone::Quiet => with_alpha(style.subtext, 0.85),
-          HintTone::Accent => with_alpha(style.accent, 0.9),
-          HintTone::Search => with_alpha(style.search, 0.85),
-        };
+      if let Some(hint) = &hint {
         let scale_factor = self.metrics.scale_factor;
 
         #[allow(clippy::cast_possible_truncation)]
@@ -625,7 +620,7 @@ impl Screen {
 
         if let Some(picture) = &mut self.hint {
           picture.draw(size, |surface| {
-            draw_hint(surface, text, color, scale_factor, &style);
+            draw_hint(surface, hint, scale_factor, &style);
           });
         }
       }

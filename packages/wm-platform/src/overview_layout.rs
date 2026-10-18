@@ -312,7 +312,7 @@ impl CardMetrics {
 }
 
 /// Height of the key hints line, in logical pixels.
-pub(crate) const HINT_HEIGHT: f32 = 26.0;
+pub(crate) const HINT_HEIGHT: f32 = 30.0;
 
 /// Where a card sits: its center, scale and opacity.
 #[derive(Clone, Copy, Debug, PartialEq)]
