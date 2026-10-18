@@ -13,7 +13,9 @@ use crate::{
     card_radius, draw_label, draw_note, draw_tag, label_size, note_size,
     tag_size, with_alpha, LabelPicture, SliceLook, TagPicture,
   },
-  overview_layout::{Camera, CardMetrics, RectF, SpringRect, LABEL_GAP},
+  overview_layout::{
+    chrome_opacity, Camera, CardMetrics, RectF, SpringRect, LABEL_GAP,
+  },
   overview_overlays::{Highlight, Tag},
   overview_state::Mode,
   overview_thumbnails::{Picture, Thumbnail},
@@ -420,6 +422,7 @@ impl Screen {
     let selected = focus.selected;
     let view = context.view;
     let fade = context.fade;
+    let chrome = chrome_opacity(fade);
     let px = |length: f32| length * self.metrics.scale_factor;
 
     // Where a window would drop: on what it is dragged over, or where it
@@ -522,13 +525,13 @@ impl Screen {
     let mut is_gliding = false;
 
     is_gliding |= overlays.screen_ring.glide.follow(screen_target, now);
-    overlays.screen_ring.place(&view, fade);
+    overlays.screen_ring.place(&view, chrome);
     is_gliding |= overlays.workspace_ring.glide.follow(ring_target, now);
-    overlays.workspace_ring.place(&view, fade);
+    overlays.workspace_ring.place(&view, chrome);
     is_gliding |= overlays.hover_ring.glide.follow(hover_target, now);
-    overlays.hover_ring.place(&view, fade);
+    overlays.hover_ring.place(&view, chrome);
     is_gliding |= overlays.window_ring.glide.follow(window_target, now);
-    overlays.window_ring.place(&view, fade);
+    overlays.window_ring.place(&view, chrome);
 
     for (label, rect) in overlays.labels.iter_mut().zip(&label_rects) {
       if let Some((rect, opacity)) = rect {
@@ -539,9 +542,9 @@ impl Screen {
     }
 
     is_gliding |= overlays.tag.glide.follow(tag_target, now);
-    overlays.tag.place(&view, fade);
+    overlays.tag.place(&view, chrome);
     is_gliding |= overlays.note.glide.follow(note_target, now);
-    overlays.note.place(&view, fade);
+    overlays.note.place(&view, chrome);
 
     is_gliding
   }
@@ -584,7 +587,7 @@ impl Screen {
 
         Some((
           RectF::new(x, y, width, height),
-          context.fade * card.alpha.value,
+          chrome_opacity(context.fade) * card.alpha.value,
         ))
       })
       .collect()

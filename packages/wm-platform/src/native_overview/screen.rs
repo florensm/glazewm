@@ -19,8 +19,9 @@ use super::{
 use crate::{
   overview_chrome::{draw_card, draw_hint, picture_size, with_alpha},
   overview_layout::{
-    activities, carousel, grid, stage as stage_layout, Camera,
-    CardMetrics, GridCells, Placement, RectF, Spring, Zoom, HINT_HEIGHT,
+    activities, carousel, chrome_opacity, grid, stage as stage_layout,
+    Camera, CardMetrics, GridCells, Placement, RectF, Spring, Zoom,
+    HINT_HEIGHT,
   },
   overview_scene::SceneWindow,
   overview_state::{HintTone, Hit, Mode, ScreenFocus},
@@ -843,7 +844,7 @@ impl Screen {
         hint.place(
           &RectF::new(0.0, self.hint_y.value, view.w, hint_height),
           &view,
-          fade,
+          chrome_opacity(fade),
         );
       } else if let Some(thumbnail) = &mut hint.thumbnail {
         thumbnail.hide();

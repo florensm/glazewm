@@ -6,7 +6,9 @@ workspace or window, move windows between workspaces and monitors, search
 them by title, or close them. Only available on Windows.
 
 On open, the windows each monitor shows fly from where they are into the
-overview, while the wallpaper behind them blurs. On close, they fly back
+overview, while the wallpaper behind them blurs; the hints, names and
+highlights only fade in as they settle, and fade out as soon as it
+closes. On close, they fly back
 into the workspace you picked, and on the other monitors (or all of them,
 when cancelled) into the workspace they show, until they sit where they
 really are.

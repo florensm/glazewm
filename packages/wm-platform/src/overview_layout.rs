@@ -1280,6 +1280,18 @@ pub(crate) fn ease_out_cubic(progress: f32) -> f32 {
   1.0 - (1.0 - progress.clamp(0.0, 1.0)).powi(3)
 }
 
+/// Openness from which the overview's chrome starts to show.
+const CHROME_FROM: f32 = 0.8;
+
+/// How strongly the overview's chrome (hints, names, highlights) shows at
+/// `openness`: only once the zoom has nearly settled, so an open shows
+/// the windows shrinking first, and gone as soon as a close starts.
+pub(crate) fn chrome_opacity(openness: f32) -> f32 {
+  let progress =
+    ((openness - CHROME_FROM) / (1.0 - CHROME_FROM)).clamp(0.0, 1.0);
+  progress * progress * (3.0 - 2.0 * progress)
+}
+
 /// How long a highlight takes to glide over to what it highlights next.
 const GLIDE_MS: f32 = 170.0;
 
@@ -1510,9 +1522,9 @@ mod tests {
   use std::time::{Duration, Instant};
 
   use super::{
-    activities, carousel, cover_crop, ease_out_cubic, grid, stage, Camera,
-    CardLook, CardMetrics, CardSlot, CardView, Glide, GridCell, GridCells,
-    RectF, Spring, SpringRect, Tile, Zoom,
+    activities, carousel, chrome_opacity, cover_crop, ease_out_cubic,
+    grid, stage, Camera, CardLook, CardMetrics, CardSlot, CardView, Glide,
+    GridCell, GridCells, RectF, Spring, SpringRect, Tile, Zoom,
   };
   use crate::OverviewLayoutMode;
 
@@ -1855,6 +1867,18 @@ mod tests {
       window.union(&tab_bar),
       RectF::new(10.0, 30.0, 100.0, 70.0)
     );
+  }
+
+  #[test]
+  fn chrome_shows_only_as_the_zoom_settles() {
+    assert_close(chrome_opacity(0.0), 0.0);
+    assert_close(chrome_opacity(0.8), 0.0);
+    assert_close(chrome_opacity(1.0), 1.0);
+
+    let steps =
+      (80..=100_u8).map(|step| chrome_opacity(f32::from(step) / 100.0));
+    let rising = steps.clone().zip(steps.skip(1)).all(|(a, b)| b >= a);
+    assert!(rising, "fades in without dipping");
   }
 
   #[test]
