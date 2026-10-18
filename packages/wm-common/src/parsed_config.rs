@@ -627,12 +627,13 @@ pub struct OverviewConfig {
 
   pub text_color: Color,
 
-  /// Secondary text, e.g. the key hints under the cards.
+  /// Secondary text, e.g. the search's hit count.
   pub subtext_color: Color,
 
   /// Border of windows matching a search.
   pub search_color: Color,
 
+  /// Font of the overview's text; Segoe UI when it isn't installed.
   pub font_family: String,
 
   /// Columns of the grid of every workspace.
@@ -699,7 +700,7 @@ impl Default for OverviewConfig {
       text_color: color(0xe8e0_e8ff),
       subtext_color: color(0xcdc3_ceff),
       search_color: color(0x89b4_faff),
-      font_family: "Segoe UI".to_string(),
+      font_family: "Segoe UI Variable Text".to_string(),
       grid_columns: 5,
       layout: OverviewLayout::default(),
       open_duration_ms: 250,

@@ -8,22 +8,9 @@
 //! edges. GDI can't draw onto translucent pixels, so text and icons are
 //! drawn opaquely into scratch bitmaps first and blended in.
 
-use std::collections::HashMap;
-
-use windows::{
-  core::PCWSTR,
-  Win32::{
-    Foundation::{COLORREF, HWND, RECT},
-    Graphics::Gdi::{
-      CreateFontW, DeleteObject, DrawTextW, SelectObject, SetBkMode,
-      SetTextColor, ANTIALIASED_QUALITY, CLIP_DEFAULT_PRECIS,
-      DEFAULT_CHARSET, DRAW_TEXT_FORMAT, DT_CALCRECT, DT_CENTER,
-      DT_END_ELLIPSIS, DT_LEFT, DT_NOPREFIX, DT_RIGHT, DT_SINGLELINE,
-      DT_VCENTER, FW_NORMAL, FW_SEMIBOLD, HFONT, OUT_DEFAULT_PRECIS,
-      TRANSPARENT,
-    },
-    UI::WindowsAndMessaging::{DrawIconEx, DI_NORMAL, HICON},
-  },
+use windows::Win32::{
+  Foundation::HWND,
+  UI::WindowsAndMessaging::{DrawIconEx, DI_NORMAL, HICON},
 };
 
 use crate::{
@@ -33,6 +20,7 @@ use crate::{
   overview_state::{Hint, HintTone, SearchHint},
   paint,
   surface::Surface,
+  text::{draw_text, text_width, Align, Font, Fonts},
   window_icons, Color, CornerRadii, OverviewStyle, Rect,
 };
 
@@ -379,11 +367,11 @@ fn draw_face(
     };
     draw_text(
       surface,
-      fonts.get(units.px(12.0), false),
+      &fonts.get(units.px(12.0), false),
       "Drop windows here",
       &metrics.tile_area().to_rect(),
       color,
-      DT_CENTER,
+      Align::Center,
     );
   }
 
@@ -489,7 +477,7 @@ fn draw_header(
 
   draw_text(
     surface,
-    fonts.get(units.px(12.0), picture.is_displayed),
+    &fonts.get(units.px(12.0), picture.is_displayed),
     &picture.label,
     &RectF::new(label_left, 0.0, half, header).to_rect(),
     if picture.is_displayed {
@@ -497,7 +485,7 @@ fn draw_header(
     } else {
       style.subtext
     },
-    DT_LEFT,
+    Align::Left,
   );
 
   let mut x = to_f32(surface.width) - units.px(10.0);
@@ -684,7 +672,7 @@ pub(crate) fn tag_size(
   let (height, padding, icon, gap, font_size) = TAG;
   let mut fonts = Fonts::new(&style.font_family);
   let text =
-    to_f32(text_width(fonts.get(px(font_size), false), &tag.text));
+    to_f32(text_width(&fonts.get(px(font_size), false), &tag.text));
 
   let width = (px(2.0 * padding + icon + gap) + text).min(max_width);
   (round(width).max(1), round(px(height)).max(1))
@@ -727,7 +715,7 @@ pub(crate) fn draw_tag(
   let mut fonts = Fonts::new(&style.font_family);
   draw_text(
     surface,
-    fonts.get(px(font_size), false),
+    &fonts.get(px(font_size), false),
     &tag.text,
     &Rect::from_ltrb(
       round(px(padding + icon + gap)),
@@ -736,7 +724,7 @@ pub(crate) fn draw_tag(
       surface.height,
     ),
     style.text,
-    DT_LEFT,
+    Align::Left,
   );
 }
 
@@ -762,7 +750,7 @@ pub(crate) fn label_size(
   let (padding, font_size) = LABEL;
   let mut fonts = Fonts::new(&style.font_family);
   let text = text_width(
-    fonts.get(units.px(font_size), label.is_displayed),
+    &fonts.get(units.px(font_size), label.is_displayed),
     &label.text,
   );
   let diamond = if label.is_special {
@@ -810,7 +798,7 @@ pub(crate) fn draw_label(
   let mut fonts = Fonts::new(&style.font_family);
   draw_text(
     surface,
-    fonts.get(units.px(font_size), label.is_displayed),
+    &fonts.get(units.px(font_size), label.is_displayed),
     &label.text,
     &Rect::from_ltrb(round(left), 0, surface.width, surface.height),
     if label.is_displayed {
@@ -818,7 +806,7 @@ pub(crate) fn draw_label(
     } else {
       with_alpha(style.text, 0.9)
     },
-    DT_LEFT,
+    Align::Left,
   );
 }
 
@@ -835,7 +823,7 @@ pub(crate) fn note_size(
 ) -> (i32, i32) {
   let px = |length: f32| length * scale_factor;
   let mut fonts = Fonts::new(&style.font_family);
-  let width = text_width(fonts.get(px(NOTE_FONT), false), text);
+  let width = text_width(&fonts.get(px(NOTE_FONT), false), text);
   (
     width.max(1) + round(px(2.0 * NOTE_PADDING)),
     round(px(NOTE_FONT * 2.2)).max(1),
@@ -867,11 +855,11 @@ pub(crate) fn draw_note(
   let mut fonts = Fonts::new(&style.font_family);
   draw_text(
     surface,
-    fonts.get(NOTE_FONT * scale_factor, false),
+    &fonts.get(NOTE_FONT * scale_factor, false),
     text,
     &rect,
     with_alpha(style.subtext, 0.8),
-    DT_CENTER,
+    Align::Center,
   );
 }
 
@@ -993,7 +981,7 @@ pub(crate) fn draw_hint(
     let rect = Rect::from_xy(x, 0, part.width(), height);
     match part {
       HintPart::Lead(text, _) => {
-        draw_text(surface, fonts.text, text, &rect, tone, DT_LEFT);
+        draw_text(surface, &fonts.text, text, &rect, tone, Align::Left);
       }
       HintPart::Search(search, hits, _) => {
         let units = (scale_factor, tone);
@@ -1014,8 +1002,8 @@ pub(crate) fn draw_hint(
 
 /// The fonts of the hints line.
 struct HintFonts {
-  text: HFONT,
-  key: HFONT,
+  text: Font,
+  key: Font,
 }
 
 /// `hint`'s parts, left to right, measured in `fonts` at `scale_factor`.
@@ -1030,7 +1018,7 @@ fn hint_parts<'a>(
   let mut parts = Vec::new();
 
   if let Some(lead) = &hint.lead {
-    parts.push(HintPart::Lead(lead, text_width(fonts.text, lead)));
+    parts.push(HintPart::Lead(lead, text_width(&fonts.text, lead)));
   }
   if let Some(search) = &hint.search {
     let hits = format!(
@@ -1038,16 +1026,16 @@ fn hint_parts<'a>(
       search.hits,
       if search.hits == 1 { "hit" } else { "hits" }
     );
-    let width = (text_width(fonts.text, &search.query)
-      + text_width(fonts.text, &hits)
+    let width = (text_width(&fonts.text, &search.query)
+      + text_width(&fonts.text, &hits)
       + px(2.0 * field_padding + HINT_GAP.0))
     .max(px(field_width));
     parts.push(HintPart::Search(search, hits, width));
   }
   for key in &hint.keys {
-    let cap = (text_width(fonts.key, &key.key) + px(2.0 * cap_padding))
+    let cap = (text_width(&fonts.key, &key.key) + px(2.0 * cap_padding))
       .max(px(cap_height));
-    let width = cap + px(cap_gap) + text_width(fonts.text, &key.action);
+    let width = cap + px(cap_gap) + text_width(&fonts.text, &key.action);
     parts.push(HintPart::Key {
       key: &key.key,
       action: &key.action,
@@ -1100,25 +1088,25 @@ fn draw_search_field(
   );
   draw_text(
     surface,
-    fonts.text,
+    &fonts.text,
     &search.query,
     &inner,
     style.text,
-    DT_LEFT,
+    Align::Left,
   );
   draw_text(
     surface,
-    fonts.text,
+    &fonts.text,
     hits,
     &inner,
     with_alpha(style.subtext, 0.85),
-    DT_RIGHT,
+    Align::Right,
   );
 
   if search.is_typing {
     let caret_height = px(13.0);
     let caret = Rect::from_xy(
-      inner.left + text_width(fonts.text, &search.query) + px(1.0),
+      inner.left + text_width(&fonts.text, &search.query) + px(1.0),
       rect.top + (rect.height() - caret_height) / 2,
       px(1.0).max(1),
       caret_height,
@@ -1161,11 +1149,11 @@ fn draw_key_hint(
   }
   draw_text(
     surface,
-    fonts.key,
+    &fonts.key,
     key,
     &cap_rect,
     with_alpha(style.text, 0.9),
-    DT_CENTER,
+    Align::Center,
   );
 
   let label = Rect::from_ltrb(
@@ -1176,41 +1164,12 @@ fn draw_key_hint(
   );
   draw_text(
     surface,
-    fonts.text,
+    &fonts.text,
     action,
     &label,
     with_alpha(style.subtext, 0.85),
-    DT_LEFT,
+    Align::Left,
   );
-}
-
-/// Width `text` takes on one line in `font`.
-fn text_width(font: HFONT, text: &str) -> i32 {
-  // `DrawTextW` reads through the pointer of an empty buffer, which is
-  // dangling, rather than measuring nothing.
-  let mut text = text.encode_utf16().collect::<Vec<_>>();
-  if text.is_empty() {
-    return 0;
-  }
-  let Some(scratch) = Surface::new(1, 1) else {
-    return 0;
-  };
-  let mut bounds = RECT::default();
-
-  // SAFETY: `scratch` owns a valid DC; the old font is restored before it
-  // is dropped.
-  unsafe {
-    let old_font = SelectObject(scratch.dc, font);
-    DrawTextW(
-      scratch.dc,
-      &mut text,
-      &raw mut bounds,
-      DT_CALCRECT | DT_SINGLELINE | DT_NOPREFIX,
-    );
-    SelectObject(scratch.dc, old_font);
-  }
-
-  bounds.right - bounds.left
 }
 
 /// Draws a window title on a strip along the bottom of `rect`, if `rect`
@@ -1247,7 +1206,7 @@ fn draw_caption(
   let inset = round(inset);
   draw_text(
     surface,
-    fonts.get(font_size, false),
+    &fonts.get(font_size, false),
     title,
     &Rect::from_ltrb(
       strip.left + inset,
@@ -1256,7 +1215,7 @@ fn draw_caption(
       strip.bottom,
     ),
     fade(style.text, opacity),
-    DT_LEFT,
+    Align::Left,
   );
 }
 
@@ -1268,116 +1227,6 @@ fn round(length: f32) -> i32 {
 #[allow(clippy::cast_precision_loss)]
 fn to_f32(pixels: i32) -> f32 {
   pixels as f32
-}
-
-/// Fonts of one family, created as they are asked for and deleted on drop.
-struct Fonts {
-  family: Vec<u16>,
-  created: HashMap<(i32, bool), HFONT>,
-}
-
-impl Fonts {
-  fn new(family: &str) -> Self {
-    Self {
-      family: family.encode_utf16().chain(std::iter::once(0)).collect(),
-      created: HashMap::new(),
-    }
-  }
-
-  /// The font `size` pixels high, semi-bold if `is_bold`. Grayscale
-  /// anti-aliased, since its coverage is used as a mask.
-  fn get(&mut self, size: f32, is_bold: bool) -> HFONT {
-    let height = round(size).max(1);
-    let family = &self.family;
-
-    *self.created.entry((height, is_bold)).or_insert_with(|| {
-      let weight = if is_bold { FW_SEMIBOLD } else { FW_NORMAL };
-
-      // SAFETY: `family` is a null-terminated wide string that outlives
-      // the call. The font is deleted in `Drop`.
-      unsafe {
-        CreateFontW(
-          // Negative: character height rather than cell height.
-          -height,
-          0,
-          0,
-          0,
-          i32::try_from(weight.0).unwrap_or(400),
-          0,
-          0,
-          0,
-          u32::from(DEFAULT_CHARSET.0),
-          u32::from(OUT_DEFAULT_PRECIS.0),
-          u32::from(CLIP_DEFAULT_PRECIS.0),
-          u32::from(ANTIALIASED_QUALITY.0),
-          0,
-          PCWSTR(family.as_ptr()),
-        )
-      }
-    })
-  }
-}
-
-impl Drop for Fonts {
-  fn drop(&mut self) {
-    for font in self.created.values() {
-      // SAFETY: Created in `get` and deleted once.
-      unsafe {
-        let _ = DeleteObject(*font);
-      }
-    }
-  }
-}
-
-/// Blends `text` in `color` into `rect` of `surface`, vertically
-/// centered, aligned by `align`, and cut off with an ellipsis if it
-/// doesn't fit.
-fn draw_text(
-  surface: &mut Surface,
-  font: HFONT,
-  text: &str,
-  rect: &Rect,
-  color: Color,
-  align: DRAW_TEXT_FORMAT,
-) {
-  let mut text = text.encode_utf16().collect::<Vec<_>>();
-  if text.is_empty() || color.a == 0 {
-    return;
-  }
-
-  let Some(mut scratch) = Surface::new(rect.width(), rect.height()) else {
-    return;
-  };
-
-  // SAFETY: `scratch` owns a valid DC with its bitmap selected; the old
-  // font is restored before it is dropped.
-  unsafe {
-    let old_font = SelectObject(scratch.dc, font);
-    SetBkMode(scratch.dc, TRANSPARENT);
-    SetTextColor(scratch.dc, COLORREF(0x00ff_ffff));
-
-    let mut bounds = RECT {
-      right: rect.width(),
-      bottom: rect.height(),
-      ..Default::default()
-    };
-    DrawTextW(
-      scratch.dc,
-      &mut text,
-      &raw mut bounds,
-      align | DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS | DT_NOPREFIX,
-    );
-    SelectObject(scratch.dc, old_font);
-  }
-
-  let mask = paint::mask_from_white_on_black(scratch.pixels());
-  surface.canvas().blend_mask(
-    rect.left,
-    rect.top,
-    &mask,
-    rect.width(),
-    color,
-  );
 }
 
 /// Blends the icon of window `hwnd` into `rect` of `surface`.

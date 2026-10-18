@@ -241,13 +241,15 @@ overview:
 
   text_color: "#e8e0e8ff"
 
-  # Secondary text, e.g. the key hints under the cards.
+  # Secondary text, e.g. the search's hit count.
   subtext_color: "#cdc3ceff"
 
   # Outline of windows matching a search.
   search_color: "#89b4faff"
 
-  font_family: "Segoe UI"
+  # Font of the overview's text, drawn with DirectWrite. Segoe UI when the
+  # family isn't installed (Segoe UI Variable is Windows 11's).
+  font_family: "Segoe UI Variable Text"
 
   # Layout `toggle-overview` opens on: "activities", "stage", "carousel"
   # or "grid".
@@ -295,9 +297,10 @@ moves things around and never redraws pixels:
   of columns scrolled out of view) are kept in place but cloaked, rather
   than hidden, so DWM keeps composing them; they are hidden again once it
   is gone.
-- The card backgrounds, captions, borders, labels and hints are drawn once
-  into hidden layered windows, and shown as thumbnails of those, so they
-  scale with their card.
+- The card backgrounds, captions, borders, labels and hints are drawn
+  once into hidden layered windows, and shown as thumbnails of those, so
+  they scale with their card. Their text is laid out and rasterized by
+  DirectWrite (grayscale, since the pictures are translucent).
 - Highlights are one small picture each, its corners shown as drawn and
   its edges stretched, so they move and resize without being redrawn.
   Moving the selection or the cursor therefore redraws nothing.

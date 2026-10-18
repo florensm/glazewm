@@ -101,6 +101,8 @@ mod surface;
 #[cfg(target_os = "windows")]
 mod tab_bar_paint;
 #[cfg(target_os = "windows")]
+mod text;
+#[cfg(target_os = "windows")]
 mod ui_thread;
 #[cfg(target_os = "windows")]
 mod window_icons;

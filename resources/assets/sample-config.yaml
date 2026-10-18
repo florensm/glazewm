@@ -500,12 +500,13 @@ overview:
   surface_color: "#2d292eff"
   caption_color: "#161217c7"
 
-  # Text, secondary text (e.g. key hints), and the outline of windows
-  # matching a search.
+  # Text, secondary text (e.g. the search's hit count), and the outline
+  # of windows matching a search.
   text_color: "#e8e0e8ff"
   subtext_color: "#cdc3ceff"
   search_color: "#89b4faff"
-  font_family: "Segoe UI"
+  # Windows 11's own font; Segoe UI when it isn't installed (Windows 10).
+  font_family: "Segoe UI Variable Text"
 
   # Layout `toggle-overview` opens on; tab goes through them while open.
   # Options:
