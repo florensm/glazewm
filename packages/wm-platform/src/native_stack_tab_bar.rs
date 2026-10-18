@@ -40,7 +40,7 @@ use crate::{
   tab_bar_paint::{paint_tab_bar, TabBarView},
   tab_layout::{TabAction, TabHit, TabLayout, TabLayoutParams, TabRect},
   window_class::{self, mouse_position},
-  window_icons, Dispatcher, TabCloseMode, TabFrame,
+  window_icons, Dispatcher, Rect, TabCloseMode, TabFrame,
 };
 
 /// Posted with a `Box<TabFrame>` in `WPARAM` to show the bar with new
@@ -200,6 +200,12 @@ impl NativeStackTabBar {
   /// Shows the bar with `frame`. `restack` puts it back behind its anchor
   /// even if nothing else changed, e.g. after a focus change.
   pub fn update(&mut self, frame: TabFrame, restack: bool) {
+    // Cut off entirely, e.g. with a column scrolled past its monitor.
+    if frame.visible_rect().is_none() {
+      self.hide();
+      return;
+    }
+
     if !restack && self.last_frame.as_ref() == Some(&frame) {
       return;
     }
@@ -357,7 +363,7 @@ impl BarState {
         continue;
       };
 
-      let info = tool_info(bar, *index, slot.pill);
+      let info = tool_info(bar, *index, self.to_client(slot.pill));
       SendMessageW(
         self.tooltip,
         TTM_ADDTOOLW,
@@ -382,6 +388,39 @@ impl BarState {
 
     self.tooltip_text = title.encode_utf16().chain([0]).collect();
     info.lpszText = PWSTR(self.tooltip_text.as_mut_ptr());
+  }
+
+  /// Offset of the bar's window within its frame's `outer_rect`, which
+  /// the tab layout is relative to: non-zero where `clip` cuts it off.
+  fn origin(&self) -> (i32, i32) {
+    self
+      .frame
+      .as_ref()
+      .and_then(|frame| {
+        let visible = frame.visible_rect()?;
+        Some((
+          visible.left - frame.outer_rect.left,
+          visible.top - frame.outer_rect.top,
+        ))
+      })
+      .unwrap_or_default()
+  }
+
+  /// Cursor position `(x, y)` in the bar's window, in the tab layout.
+  fn to_layout(&self, (x, y): (i32, i32)) -> (i32, i32) {
+    let (dx, dy) = self.origin();
+    (x + dx, y + dy)
+  }
+
+  /// `rect` of the tab layout in the bar's window.
+  fn to_client(&self, rect: TabRect) -> TabRect {
+    let (dx, dy) = self.origin();
+    TabRect {
+      left: rect.left - dx,
+      top: rect.top - dy,
+      right: rect.right - dx,
+      bottom: rect.bottom - dy,
+    }
   }
 
   fn relayout(&mut self) {
@@ -426,13 +465,19 @@ impl BarState {
   }
 }
 
-/// Draws the bar into a layered bitmap and shows it at its frame's rect.
+/// Draws the bar into a layered bitmap and shows the part of it inside its
+/// frame's clip.
 ///
 /// # Safety
 ///
 /// `hwnd` must be the bar's window, called on its thread.
 unsafe fn render(hwnd: HWND, state: &mut BarState) {
   let Some(frame) = state.frame.clone() else {
+    return;
+  };
+
+  // Only ever unset for frames `update` hides instead of posting.
+  let Some(visible) = frame.visible_rect() else {
     return;
   };
 
@@ -461,11 +506,17 @@ unsafe fn render(hwnd: HWND, state: &mut BarState) {
   state.truncated =
     paint_tab_bar(&mut surface, &frame, &view, (hwnd, WM_ICON_READY));
 
+  let part = Rect::from_xy(
+    visible.x() - outer.x(),
+    visible.y() - outer.y(),
+    visible.width(),
+    visible.height(),
+  );
   let position = POINT {
-    x: outer.x(),
-    y: outer.y(),
+    x: visible.x(),
+    y: visible.y(),
   };
-  if let Err(err) = surface.show_on(hwnd, position) {
+  if let Err(err) = surface.show_part_on(hwnd, &part, position) {
     tracing::warn!("Failed to draw tab bar: {err}");
   }
 }
@@ -598,7 +649,8 @@ unsafe fn restack_behind(hwnd: HWND, state: &mut BarState) {
 ///
 /// A drag only ever reorders tabs, wherever it ends: a stack is moved as
 /// one window, so its tabs can't be dragged out of it.
-fn finish_left_click(state: &mut BarState, (x, y): (i32, i32)) {
+fn finish_left_click(state: &mut BarState, cursor: (i32, i32)) {
+  let (x, y) = state.to_layout(cursor);
   let pressed_close = state.pressed_close.take();
   let hit = state
     .layout
@@ -678,8 +730,10 @@ unsafe fn show_context_menu(hwnd: HWND, state: &BarState, index: usize) {
 unsafe fn on_mouse_move(
   hwnd: HWND,
   state: &mut BarState,
-  position: (i32, i32),
+  cursor: (i32, i32),
 ) {
+  let position = state.to_layout(cursor);
+
   if !state.is_tracking_leave {
     let mut track = TRACKMOUSEEVENT {
       cbSize: u32::try_from(std::mem::size_of::<TRACKMOUSEEVENT>())
@@ -722,8 +776,9 @@ unsafe fn on_mouse_move(
 unsafe fn on_left_button_down(
   hwnd: HWND,
   state: &mut BarState,
-  position: (i32, i32),
+  cursor: (i32, i32),
 ) {
+  let position = state.to_layout(cursor);
   let hit = state.layout.hit_test(position.0, position.1, |index| {
     state.is_close_visible(index)
   });
@@ -773,8 +828,9 @@ unsafe fn on_tab_button_up(
   hwnd: HWND,
   state: &BarState,
   msg: u32,
-  (x, y): (i32, i32),
+  cursor: (i32, i32),
 ) {
+  let (x, y) = state.to_layout(cursor);
   let (TabHit::Tab(index) | TabHit::Close(index)) =
     state.layout.hit_test(x, y, |_| true)
   else {

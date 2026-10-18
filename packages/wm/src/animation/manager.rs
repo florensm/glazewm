@@ -1305,6 +1305,14 @@ impl AnimationManager {
     }
     #[cfg(target_os = "windows")]
     super::scroll_view::track_overlays(state, config);
+    #[cfg(target_os = "windows")]
+    if state.animation_manager.scroll_view.is_active() {
+      crate::tab_bars::sync_tab_bars(
+        state,
+        config,
+        crate::tab_bars::Restack::None,
+      );
+    }
 
     // Queue in-progress windows for redraw.
     let active_window_ids: Vec<_> = state

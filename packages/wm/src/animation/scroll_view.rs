@@ -9,13 +9,13 @@
 //! resizing across the monitor edge), every moving column is drawn by a
 //! peek and its real window is cloaked, like the workspace-switch slide:
 //! the peeks go up first, one composited frame later the real windows are
-//! cloaked, and all of them move in lock-step, their borders and
-//! backdrops with them. At the end, columns shown at rest get their real
-//! window back, ones reaching onto another monitor keep their peek, and
-//! the rest are dropped.
+//! cloaked, and all of them move in lock-step, their borders, backdrops
+//! and tab bars with them. At the end, columns shown at rest get their
+//! real window back, ones reaching onto another monitor keep their peek,
+//! and the rest are dropped.
 //!
-//! A peek's border and backdrop are cut at the monitor edge like the peek
-//! itself, so nothing of a column shows on the monitor beside it.
+//! A peek's border, backdrop and tab bar are cut at the monitor edge like
+//! the peek itself, so nothing of a column shows on the monitor beside it.
 
 use std::{
   collections::{HashMap, HashSet},
@@ -56,6 +56,8 @@ enum Role {
 struct Entry {
   peek: WindowPeek,
   motion: WindowAnimationState,
+  /// Where the peek was last placed, before clipping.
+  rect: Rect,
   /// Monitor area the peek is clipped to.
   clip: Rect,
   opacity: u8,
@@ -65,7 +67,18 @@ struct Entry {
 impl Entry {
   fn place(&mut self, rect: &Rect) {
     self.peek.place(rect, &self.clip, self.opacity);
+    self.rect = rect.clone();
   }
+}
+
+/// Where a peek shows something drawn along with its window, such as its
+/// stack's tab bar.
+pub struct PeekPlacement {
+  pub rect: Rect,
+  /// Monitor area the peek is clipped to.
+  pub clip: Rect,
+  /// The peek's window, which what is drawn along with it sits behind.
+  pub anchor: HWND,
 }
 
 /// Columns whose move ended on a tick.
@@ -105,6 +118,31 @@ impl ScrollView {
   /// The peek drawing `window_id`, which its overlays sit behind.
   pub fn peek_hwnd(&self, window_id: &Uuid) -> Option<HWND> {
     self.entries.get(window_id).map(|entry| entry.peek.hwnd())
+  }
+
+  /// Where the peek drawing `window_id` shows `rect`, a rect of the layout
+  /// that moves with the window, e.g. its stack's.
+  pub fn placement(
+    &self,
+    window_id: &Uuid,
+    rect: &Rect,
+  ) -> Option<PeekPlacement> {
+    let entry = self.entries.get(window_id)?;
+    let target = &entry.motion.target_rect;
+
+    // Edge by edge, since a column can also resize as it moves.
+    let rect = Rect::from_ltrb(
+      rect.left + entry.rect.left - target.left,
+      rect.top + entry.rect.top - target.top,
+      rect.right + entry.rect.right - target.right,
+      rect.bottom + entry.rect.bottom - target.bottom,
+    );
+
+    Some(PeekPlacement {
+      rect,
+      clip: entry.clip.clone(),
+      anchor: entry.peek.hwnd(),
+    })
   }
 
   /// Where `window_id`'s peek is headed while its real window is cloaked.
@@ -258,14 +296,15 @@ impl ScrollView {
       return false;
     };
 
+    let rect = motion.current_rect();
     let mut entry = Entry {
       peek,
       motion,
+      rect: rect.clone(),
       clip: clip.clone(),
       opacity,
       role,
     };
-    let rect = entry.motion.current_rect();
     entry.place(&rect);
     self.entries.insert(window.id(), entry);
 
