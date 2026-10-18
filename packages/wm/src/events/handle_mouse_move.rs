@@ -65,7 +65,11 @@ pub fn handle_mouse_move(
     ..
   } = event
   {
-    focus_clicked_peek(position, state);
+    // A click on the overview is its own: a peek behind it focused here
+    // would fight its pick, e.g. scrolling or switching back mid-zoom.
+    if !state.overview.is_shown() {
+      focus_clicked_peek(position, state);
+    }
     return Ok(());
   }
 
@@ -90,9 +94,10 @@ pub fn handle_mouse_move(
       return Ok(());
     }
 
-    // The cursor is over the overview while it is open.
+    // The cursor is over the overview while it is on screen, zooming
+    // into its pick included.
     #[cfg(target_os = "windows")]
-    if state.overview.is_open() {
+    if state.overview.is_shown() {
       return Ok(());
     }
 
