@@ -98,8 +98,13 @@ const WM_ICON_READY: u32 = WM_APP + 5;
 const SETTLE_MS: f32 = 260.0;
 
 /// How long the zoom into a pick waits for the WM to carry it out before
-/// starting regardless.
-const PICK_TIMEOUT: Duration = Duration::from_millis(150);
+/// starting regardless, a safety net for a pick it never answers.
+///
+/// Generous on purpose: switching workspaces moves every window of both,
+/// and some apps answer a move slowly. A zoom that sets off sooner heads
+/// for where the windows were, then veers off once the WM's answer says
+/// where they landed.
+const PICK_TIMEOUT: Duration = Duration::from_millis(400);
 
 /// What the WM thread posts to open the overview.
 struct Open {

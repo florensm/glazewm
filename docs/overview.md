@@ -332,7 +332,7 @@ windows never take it when clicked, so the keys go to whichever monitor
 has the keyboard. When a pick changes focus, the WM switches
 workspace and focuses the new window (scrolling its strip into view)
 right away, and the overview's zoom into that workspace waits for it (at
-most 150ms), so it heads to where the windows land. What it zooms from
+most 400ms), so it heads to where the windows land. What it zooms from
 holds still meanwhile, so each window heads straight there, even while
 the layout would still be moving (e.g. a scrolled strip settling, or the
 stage centering the picked workspace). The overview only hides once the
