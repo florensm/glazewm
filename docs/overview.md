@@ -308,7 +308,9 @@ sleeps while nothing moves. Cards and windows move on critically
 damped springs, so a key press mid-animation retargets them smoothly.
 
 The focused monitor's window takes the foreground while open, so keys go
-to the overview rather than to the window behind it. The other monitors'
+to the overview rather than to the window behind it; if Windows refuses it
+the foreground, the overview closes rather than stay up while keys go
+elsewhere. The other monitors'
 windows never take it when clicked, so the keys go to whichever monitor
 has the keyboard. When a pick changes focus, the WM switches
 workspace and focuses the new window (scrolling its strip into view)

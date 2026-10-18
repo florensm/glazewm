@@ -164,9 +164,6 @@ impl NativeOverview {
     self.session += 1;
     self.last_frame = Some(frame.clone());
 
-    // Lets the overview take the foreground once it is shown.
-    platform_impl::send_foreground_input();
-
     let open = Box::new(Open {
       session: self.session,
       frame,
@@ -785,12 +782,22 @@ impl Overview {
       return;
     };
 
+    // Asked for right before it is taken: input reaching another window in
+    // between, such as releasing the keys that opened the overview, takes
+    // the permission away again.
+    platform_impl::send_foreground_input();
+
     // SAFETY: `foreground` is one of the overview's windows, on this
     // thread.
-    unsafe {
-      if !SetForegroundWindow(foreground).as_bool() {
-        tracing::warn!("Overview could not take the foreground.");
-      }
+    if !unsafe { SetForegroundWindow(foreground) }.as_bool() {
+      // Left open, it would look like it has the keyboard while keys go on
+      // to the window behind it.
+      tracing::warn!(
+        "Overview could not take the foreground; closing it."
+      );
+      self.send(OverviewAction::Cancel);
+      self.close();
+      return;
     }
 
     let monitor = DxgiVsyncWaiter::window_monitor(foreground);
