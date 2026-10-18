@@ -139,17 +139,17 @@ impl Screen {
       }
     }
 
-    // The desk is the working area, laid out as the shown workspace's
-    // windows are: a scrolling workspace's strip reaches past it. It holds
-    // still for a zoom like the scene on it.
+    // The shown workspace's working area, laid out as its windows are (a
+    // scrolling workspace's strip reaches past it), holding still for a
+    // zoom like the scene.
     let shown = frame.workspaces.get(selected).filter(|_| held.is_none());
     if let (OverviewLayoutMode::Activities, Some(overlays), Some(shown)) =
       (layout, &mut self.overlays, shown)
     {
       let content = RectF::from_rect(&shown.content_rect);
-      let desk = CardView::fitted(&content, &scene_area)
+      let area = CardView::fitted(&content, &scene_area)
         .map(&RectF::from_rect(&frame.rect));
-      overlays.desk_rect.retarget(&desk, snap);
+      overlays.workspace_rect.retarget(&area, snap);
     }
   }
 }

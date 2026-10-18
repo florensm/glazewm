@@ -6,7 +6,7 @@ use std::time::Instant;
 use windows::Win32::Foundation::HWND;
 
 use super::{
-  desk, scenes::scene_window_rect, to_f32_size, PlaceContext, Screen,
+  scenes::scene_window_rect, to_f32_size, PlaceContext, Screen,
 };
 use crate::{
   overview_chrome::{
@@ -22,8 +22,9 @@ use crate::{
   OverviewLayoutMode, OverviewStyle,
 };
 
-/// How long the activities' desk takes to change shape.
-const DESK_SETTLE_MS: f32 = 300.0;
+/// How long the shown workspace's area in the activities takes to change
+/// shape.
+const WORKSPACE_SETTLE_MS: f32 = 300.0;
 
 /// Corner radius a workspace's highlight is drawn with, and its gap to
 /// what it highlights, in logical pixels.
@@ -64,9 +65,9 @@ pub(super) struct Overlays {
   /// Where the shown workspace has no windows.
   pub(super) note: Tag<String>,
 
-  /// Where the activities' desk shows, under the scene: the working area
-  /// as the scene lays it out.
-  pub(super) desk_rect: SpringRect,
+  /// The shown workspace's working area as the activities' scene lays it
+  /// out, which its note centers on.
+  pub(super) workspace_rect: SpringRect,
 
   /// A name per workspace.
   pub(super) labels: Vec<Label>,
@@ -81,7 +82,10 @@ impl Overlays {
       window_ring: Highlight::new()?,
       tag: Tag::new()?,
       note: Tag::new()?,
-      desk_rect: SpringRect::new(RectF::default(), DESK_SETTLE_MS),
+      workspace_rect: SpringRect::new(
+        RectF::default(),
+        WORKSPACE_SETTLE_MS,
+      ),
       labels: Vec::new(),
     })
   }
@@ -189,7 +193,7 @@ impl Overlays {
       self.window_ring.glide.step(dt),
       self.tag.glide.step(dt),
       self.note.glide.step(dt),
-      self.desk_rect.step(dt),
+      self.workspace_rect.step(dt),
     ]
     .contains(&true)
   }
@@ -490,7 +494,7 @@ impl Screen {
         .zip(self.overlays.as_ref())
         .map(|(_, overlays)| {
           let (width, height) = to_f32_size(overlays.note.picture.size());
-          let (cx, cy) = overlays.desk_rect.value().center();
+          let (cx, cy) = overlays.workspace_rect.value().center();
           #[allow(clippy::cast_possible_wrap)]
           let key = selected as isize;
           (
@@ -505,19 +509,6 @@ impl Screen {
       .then(|| ((), view.inset(px(SCREEN_RING_GAP)), 1.0));
 
     let label_rects = self.label_rects(context, shift);
-
-    // Filling the screen at the start of the zoom, it shows the wallpaper
-    // right where the desktop does.
-    let desk_rect = self
-      .overlays
-      .as_ref()
-      .filter(|_| layout == OverviewLayoutMode::Activities)
-      .map(|overlays| view.lerp(&overlays.desk_rect.value(), fade));
-    if let (Some(thumbnail), Some(desk_rect)) =
-      (&mut self.desk_thumbnail, desk_rect)
-    {
-      desk::place(thumbnail, &self.area, &desk_rect, &view, 1.0);
-    }
 
     let Some(overlays) = &mut self.overlays else {
       return false;

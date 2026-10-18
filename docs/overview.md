@@ -13,9 +13,7 @@ into the workspace you picked, and on the other monitors (or all of them,
 when cancelled) into the workspace they show, until they sit where they
 really are.
 
-Every workspace shows its windows on the monitor's wallpaper, like a
-small copy of the monitor (the special workspace and the "+" card keep a
-plain card). Windows look in the overview as they do on screen, with their
+Windows look in the overview as they do on screen, with their
 [window effects](#how-it-works): their `transparency`, and on the
 workspace each monitor shows, the border and backdrop the WM draws for
 them, scaled with them. So opening it shrinks each monitor's workspace as
@@ -27,10 +25,8 @@ overview's own outline instead.
 
 - **Activities** (default): every workspace in miniature in a row along
   the top, their names under them, and below them the shown workspace
-  large and as laid out, on the monitor's own wallpaper: opening the
-  overview shrinks the monitor as you see it into place. Picking another
-  miniature slides that workspace in; the title of the picked window shows
-  under it.
+  large and as laid out. Picking another miniature slides that workspace
+  in; the title of the picked window shows under it.
 - **Stage**: the shown workspace large and as laid out, its name over it,
   and every other workspace small in a column on the left. Picking one from
   the column swaps it in.
@@ -317,11 +313,6 @@ moves things around and never redraws pixels:
 - The backdrop is a composition visual of the wallpaper, baked as for the
   window backdrops: sharp at first, with a blurred copy and the tint
   fading in over it.
-- The desk, the wallpaper under each workspace's windows, is the same
-  sharp wallpaper on a cloaked window of its own, shown as a thumbnail
-  under the windows' so it scales in step with them: under the
-  activities' scene, and under each card's windows, through a hole in the
-  card's picture that rounds its corners.
 
 Nothing animates behind the overview: a window moved while it is on screen
 lands at once, and its preview follows it there.

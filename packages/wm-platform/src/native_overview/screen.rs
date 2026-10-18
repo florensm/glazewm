@@ -12,9 +12,8 @@ use windows::Win32::UI::WindowsAndMessaging::{
 };
 
 use super::{
-  create_screen_window, desk::Desk, elapsed_ms, overlays::Overlays,
-  place_card, scenes::scene_window_rect, PlaceContext, Screen,
-  ScreenFrame, SETTLE_MS,
+  create_screen_window, elapsed_ms, overlays::Overlays, place_card,
+  scenes::scene_window_rect, PlaceContext, Screen, ScreenFrame, SETTLE_MS,
 };
 use crate::{
   overview_chrome::{
@@ -57,8 +56,6 @@ impl Screen {
       registration: 0,
       area: RectF::default(),
       backdrop: None,
-      desk: None,
-      desk_thumbnail: None,
       cards: Vec::new(),
       scenes: Vec::new(),
       scene_area: RectF::default(),
@@ -284,13 +281,6 @@ impl Screen {
     if let Some(backdrop) = &self.backdrop {
       let _ = backdrop.set_progress(progress);
     }
-
-    if self.desk.is_none() {
-      self.desk = Desk::new();
-    }
-    if let Some(desk) = &mut self.desk {
-      desk.sync(&frame.rect, style);
-    }
   }
 
   /// Draws the cards for the layout now shown, at the size it shows them,
@@ -332,9 +322,9 @@ impl Screen {
   }
 
   /// Registers every thumbnail the layout shows again, bottom to top:
-  /// the activities' desk, the windows on the scenes, each card's
-  /// tab bars, previews and picture, the labels, highlights and tags,
-  /// then the hints.
+  /// the windows on the scenes, each card's tab bars, previews and
+  /// picture, the labels, highlights and tags, then the search line and
+  /// the shortcut sheet.
   fn register_thumbnails(&mut self) {
     let host = self.hwnd;
     let layout = self.focus.layout;
@@ -344,12 +334,6 @@ impl Screen {
     let retired = self.retire_thumbnails();
     self.retired.extend(retired);
 
-    if let (OverviewLayoutMode::Activities, Some(desk)) =
-      (layout, &self.desk)
-    {
-      self.desk_thumbnail = desk.register(host);
-    }
-
     if layout.has_scene() {
       for window in
         self.scenes.iter_mut().flat_map(|scene| &mut scene.windows)
@@ -358,16 +342,7 @@ impl Screen {
       }
     }
 
-    let shows_desk = (0..self.cards.len())
-      .map(|index| self.shows_desk(index))
-      .collect::<Vec<_>>();
-    for (card, shows_desk) in self.cards.iter_mut().zip(shows_desk) {
-      card.desk = self
-        .desk
-        .as_ref()
-        .filter(|_| shows_desk)
-        .and_then(|desk| desk.register(host));
-
+    for card in &mut self.cards {
       // Under the windows, which cover the strip reaching under them.
       for bar in &mut card.tab_bars {
         bar.picture.thumbnail =
@@ -408,7 +383,6 @@ impl Screen {
     let mut retired = Vec::new();
 
     for card in &mut self.cards {
-      retired.extend(card.desk.take());
       retired.extend(card.picture.thumbnail.take());
       for bar in &mut card.tab_bars {
         retired.extend(bar.picture.thumbnail.take());
@@ -422,7 +396,6 @@ impl Screen {
     {
       window.preview.retire(&mut retired);
     }
-    retired.extend(self.desk_thumbnail.take());
     if let Some(overlays) = &mut self.overlays {
       overlays.retire(&mut retired);
     }
@@ -759,8 +732,8 @@ impl Screen {
       .map(|(zoom, _)| zoom.card)
   }
 
-  /// Stops the cards, card `index`'s scene and the desk where they are
-  /// now.
+  /// Stops the cards, card `index`'s scene and the shown workspace's area
+  /// where they are now.
   fn hold(&mut self, index: usize) {
     for card in &mut self.cards {
       for spring in [&mut card.cx, &mut card.cy, &mut card.scale] {
@@ -771,7 +744,7 @@ impl Screen {
       scene.windows.iter_mut().for_each(SceneWindow::hold);
     }
     if let Some(overlays) = &mut self.overlays {
-      overlays.desk_rect.hold();
+      overlays.workspace_rect.hold();
     }
   }
 
@@ -780,7 +753,6 @@ impl Screen {
       camera: self.camera(),
       fade: self.openness(),
       view: self.view(),
-      area: self.area,
       zoom_card: self.zoom.map(|(zoom, _)| zoom.card),
     }
   }
@@ -848,7 +820,6 @@ impl Screen {
           camera: Camera::shifted(0.0, shift),
           fade,
           view,
-          area: self.area,
           zoom_card: None,
         };
         for (index, card) in self.cards.iter_mut().enumerate() {
