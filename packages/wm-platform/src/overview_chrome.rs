@@ -1186,7 +1186,12 @@ fn draw_key_hint(
 
 /// Width `text` takes on one line in `font`.
 fn text_width(font: HFONT, text: &str) -> i32 {
+  // `DrawTextW` reads through the pointer of an empty buffer, which is
+  // dangling, rather than measuring nothing.
   let mut text = text.encode_utf16().collect::<Vec<_>>();
+  if text.is_empty() {
+    return 0;
+  }
   let Some(scratch) = Surface::new(1, 1) else {
     return 0;
   };
@@ -1418,4 +1423,56 @@ fn draw_icon(icon: HICON, size: i32) -> Option<Vec<u32>> {
   let on_black = draw_on(0)?;
   let on_white = draw_on(0x00ff_ffff)?;
   Some(paint::matte_from_backgrounds(&on_black, &on_white))
+}
+
+#[cfg(test)]
+mod tests {
+  use super::{draw_hint, Hint, HintTone, SearchHint};
+  use crate::{
+    overview_state::KeyHint, surface::Surface, Color, OverviewStyle,
+  };
+
+  /// A search right after `/`, with nothing typed: an empty query must
+  /// not reach the text measuring, which crashed on it.
+  #[test]
+  fn draws_a_search_with_nothing_typed_yet() {
+    let color = Color {
+      r: 205,
+      g: 214,
+      b: 244,
+      a: 255,
+    };
+    let style = OverviewStyle {
+      backdrop_blur: 30.0,
+      backdrop_tint: color,
+      accent: color,
+      card: color,
+      surface: color,
+      caption: color,
+      text: color,
+      subtext: color,
+      search: color,
+      font_family: "Segoe UI".to_string(),
+      grid_columns: 4,
+      open_duration_ms: 200,
+      close_duration_ms: 200,
+    };
+    let hint = Hint {
+      tone: HintTone::Search,
+      lead: None,
+      search: Some(SearchHint {
+        query: String::new(),
+        is_typing: true,
+        hits: 0,
+      }),
+      keys: vec![KeyHint {
+        key: "Esc".to_string(),
+        action: "clear".to_string(),
+      }],
+    };
+
+    let mut surface = Surface::new(1920, 30).expect("surface");
+    draw_hint(&mut surface, &hint, 1.0, &style);
+    assert!(surface.pixels().iter().any(|pixel| *pixel != 0));
+  }
 }
