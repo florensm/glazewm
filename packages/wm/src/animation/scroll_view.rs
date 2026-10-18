@@ -9,13 +9,13 @@
 //! resizing across the monitor edge), every moving column is drawn by a
 //! peek and its real window is cloaked, like the workspace-switch slide:
 //! the peeks go up first, one composited frame later the real windows are
-//! cloaked, and all of them move in lock-step, their borders and
-//! backdrops with them. At the end, columns shown at rest get their real
-//! window back, ones reaching onto another monitor keep their peek, and
-//! the rest are dropped.
+//! cloaked, and all of them move in lock-step, their borders, backdrops
+//! and tab bars with them. At the end, columns shown at rest get their
+//! real window back, ones reaching onto another monitor keep their peek,
+//! and the rest are dropped.
 //!
-//! A peek's border and backdrop are cut at the monitor edge like the peek
-//! itself, so nothing of a column shows on the monitor beside it.
+//! A peek's border, backdrop and tab bar are cut at the monitor edge like
+//! the peek itself, so nothing of a column shows on the monitor beside it.
 
 use std::{
   collections::{HashMap, HashSet},
@@ -29,7 +29,10 @@ use wm_platform::{
   SurrogateBatch, WindowPeek, HWND,
 };
 
-use super::state::WindowAnimationState;
+use super::{
+  stand_in::{moved_along, StandIn},
+  state::WindowAnimationState,
+};
 use crate::{
   commands::general::{
     surrogate_effects_for, upsert_clipped_overlay,
@@ -56,6 +59,8 @@ enum Role {
 struct Entry {
   peek: WindowPeek,
   motion: WindowAnimationState,
+  /// Where the peek was last placed, before clipping.
+  rect: Rect,
   /// Monitor area the peek is clipped to.
   clip: Rect,
   opacity: u8,
@@ -65,6 +70,7 @@ struct Entry {
 impl Entry {
   fn place(&mut self, rect: &Rect) {
     self.peek.place(rect, &self.clip, self.opacity);
+    self.rect = rect.clone();
   }
 }
 
@@ -105,6 +111,22 @@ impl ScrollView {
   /// The peek drawing `window_id`, which its overlays sit behind.
   pub fn peek_hwnd(&self, window_id: &Uuid) -> Option<HWND> {
     self.entries.get(window_id).map(|entry| entry.peek.hwnd())
+  }
+
+  /// Where the peek drawing `window_id` has `rect`, a rect of the layout
+  /// that moves with the window, e.g. its stack's.
+  pub fn stand_in(
+    &self,
+    window_id: &Uuid,
+    rect: &Rect,
+  ) -> Option<StandIn> {
+    let entry = self.entries.get(window_id)?;
+
+    Some(StandIn {
+      rect: moved_along(rect, &entry.motion.target_rect, &entry.rect),
+      clip: Some(entry.clip.clone()),
+      anchor: Some(entry.peek.hwnd()),
+    })
   }
 
   /// Where `window_id`'s peek is headed while its real window is cloaked.
@@ -159,6 +181,16 @@ impl ScrollView {
     });
 
     landed
+  }
+
+  /// Takes out the peeks of windows that `is_known` no longer knows, i.e.
+  /// that left the displayed scrolling layouts, and forgets their rects.
+  fn take_departed(
+    &mut self,
+    is_known: impl Fn(&Uuid) -> bool,
+  ) -> Vec<(Uuid, Entry)> {
+    self.last_rects.retain(|id, _| is_known(id));
+    self.entries.extract_if(|id, _| !is_known(id)).collect()
   }
 
   /// Drops `window_id`'s peek once its real window has been uncloaked.
@@ -258,14 +290,15 @@ impl ScrollView {
       return false;
     };
 
+    let rect = motion.current_rect();
     let mut entry = Entry {
       peek,
       motion,
+      rect: rect.clone(),
       clip: clip.clone(),
       opacity,
       role,
     };
-    let rect = entry.motion.current_rect();
     entry.place(&rect);
     self.entries.insert(window.id(), entry);
 
@@ -303,19 +336,15 @@ pub fn sync_scroll_view(state: &mut WmState, config: &UserConfig) {
   // Windows that left the displayed scrolling layouts lose their peeks;
   // their real windows are handled like any other window's. One the
   // scroll view held cloaked is redrawn, which shows or hides it for good.
-  let is_known = |id: &Uuid| windows.iter().any(|(w, _)| w.id() == *id);
-  let mut released = Vec::new();
-  view.entries.retain(|id, entry| {
-    let keep = is_known(id);
-    if !keep && entry.role != Role::Peek {
-      released.push(*id);
-    }
-    keep
-  });
-  view.last_rects.retain(|id, _| is_known(id));
+  //
+  // Their peeks stay up until any that take over are on screen, e.g. that
+  // of a stack's newly active tab, so the column never goes blank.
+  let gone =
+    view.take_departed(|id| windows.iter().any(|(w, _)| w.id() == *id));
 
   let scroll_config = &config.value.animations.scroll;
   let mut needs_flush = false;
+  let mut adds_peek = false;
   let mut started_moving = Vec::new();
 
   for (workspace, clip) in &workspaces {
@@ -372,6 +401,7 @@ pub fn sync_scroll_view(state: &mut WmState, config: &UserConfig) {
       }
 
       let is_moving = matches!(role, Role::Moving { .. });
+      adds_peek |= !view.entries.contains_key(&window.id());
       needs_flush |= view.upsert(
         &window,
         &from,
@@ -388,14 +418,20 @@ pub fn sync_scroll_view(state: &mut WmState, config: &UserConfig) {
     }
   }
 
-  if needs_flush {
+  let replaces_peek = adds_peek
+    && gone
+      .iter()
+      .any(|(_, entry)| entry.peek.visible_rect().is_some());
+
+  if needs_flush || replaces_peek {
     wm_platform::dwm_flush();
   }
 
-  for id in released {
+  for (id, entry) in gone {
     if let Some(window) = state
       .container_by_id(id)
       .and_then(|container| container.as_window_container().ok())
+      .filter(|_| entry.role != Role::Peek)
     {
       state.pending_sync.queue_container_to_redraw(window);
     }
@@ -499,15 +535,8 @@ pub fn track_overlays(state: &mut WmState, config: &UserConfig) {
     }
 
     // Framed with its stack's tab bar, like the real window.
-    let border_frame = frame.map(|frame| {
-      state
-        .container_by_id(id)
-        .and_then(|container| container.as_window_container().ok())
-        .map_or_else(
-          || frame.clone(),
-          |window| crate::tab_bars::window_with_tab_bar(&window, &frame),
-        )
-    });
+    let border_frame = frame
+      .map(|frame| crate::tab_bars::with_tab_bar_of(state, id, &frame));
 
     match (border, border_frame) {
       (Some(params), Some(frame)) if is_moving => {

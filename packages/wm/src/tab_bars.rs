@@ -8,7 +8,9 @@ use wm_platform::{
 };
 
 use crate::{
+  animation::AnimationManager,
   commands::general::border_overlay_params_for,
+  layout::scrolling,
   models::{NativeWindowProperties, StackContainer, WindowContainer},
   traits::{CommonGetters, PositionGetters, WindowGetters},
   user_config::UserConfig,
@@ -201,10 +203,91 @@ pub fn window_with_tab_bar(
   }
 }
 
+/// [`window_with_tab_bar`] for the window `window_id`, e.g. one a peek or
+/// surrogate draws at `frame`.
+pub fn with_tab_bar_of(
+  state: &WmState,
+  window_id: uuid::Uuid,
+  frame: &Rect,
+) -> Rect {
+  state
+    .container_by_id(window_id)
+    .and_then(|container| container.as_window_container().ok())
+    .map_or_else(
+      || frame.clone(),
+      |window| window_with_tab_bar(&window, frame),
+    )
+}
+
+/// [`with_tab_bar_of`] for a window a surrogate draws at `frame` mid
+/// animation: the bar goes along with a move or resize, but not with a
+/// window opening into its stack.
+pub fn animated_with_tab_bar(
+  state: &WmState,
+  window_id: uuid::Uuid,
+  frame: &Rect,
+) -> Rect {
+  if state.animation_manager.is_entering(&window_id) {
+    frame.clone()
+  } else {
+    with_tab_bar_of(state, window_id, frame)
+  }
+}
+
 /// The tab bar of `stack`, or `None` when it has no tab bar, no tabs or
 /// isn't shown. The overview draws the same bar on its cards.
 pub fn tab_frame(
   stack: &StackContainer,
+  settings: &TabBarSettings,
+  config: &UserConfig,
+  focused_id: Option<uuid::Uuid>,
+) -> Option<TabFrame> {
+  tab_frame_at(stack, &stack.to_rect().ok()?, settings, config, focused_id)
+}
+
+/// The tab bar of `stack` as it is on screen: with its active window as
+/// it moves, on whatever draws it meanwhile, and cut off like it.
+fn shown_tab_frame(
+  stack: &StackContainer,
+  animation_manager: &AnimationManager,
+  settings: &TabBarSettings,
+  config: &UserConfig,
+  focused_id: Option<uuid::Uuid>,
+) -> Option<TabFrame> {
+  let active = stack.active_child()?;
+  let stack_rect = stack.to_rect().ok()?;
+
+  let stand_in = match animation_manager
+    .scroll_view
+    .stand_in(&active.id(), &stack_rect)
+  {
+    Some(peek) => Some(peek),
+    // A column kept off the monitor beside it shows only through a
+    // peek, which it has none of while out of view.
+    None if !scrolling::shows_real_window(&active) => return None,
+    None => {
+      animation_manager.animation_stand_in(&active.id(), &stack_rect)
+    }
+  };
+
+  let Some(stand_in) = stand_in else {
+    return tab_frame_at(stack, &stack_rect, settings, config, focused_id);
+  };
+
+  let frame =
+    tab_frame_at(stack, &stand_in.rect, settings, config, focused_id)?;
+
+  Some(TabFrame {
+    clip: stand_in.clip,
+    anchor: stand_in.anchor.map_or(frame.anchor, |anchor| anchor.0),
+    ..frame
+  })
+}
+
+/// The tab bar of `stack` placed at `stack_rect`.
+fn tab_frame_at(
+  stack: &StackContainer,
+  stack_rect: &Rect,
   settings: &TabBarSettings,
   config: &UserConfig,
   focused_id: Option<uuid::Uuid>,
@@ -214,7 +297,6 @@ pub fn tab_frame(
     return None;
   }
 
-  let stack_rect = stack.to_rect().ok()?;
   let position = stack.tab_bar_position();
   let rect = match position {
     TabBarPosition::Top => Rect::from_ltrb(
@@ -267,6 +349,7 @@ pub fn tab_frame(
   Some(TabFrame {
     outer_rect: reach_under_window(&rect, &position, overlap),
     rect,
+    clip: None,
     tabs,
     active_index,
     anchor,
@@ -291,10 +374,14 @@ pub enum Restack {
 /// Creates, updates, hides or destroys the tab bar of every stack.
 ///
 /// Bars of stacks on hidden workspaces are kept, hidden, rather than
-/// recreated on every workspace switch.
+/// recreated on every workspace switch. Bars of stacks in a workspace
+/// switch's slide are hidden until it ends.
 ///
 /// Bars are put back directly behind their stack's active window after a
 /// focus change, and per `restack` otherwise.
+///
+/// Bars go with their stacks' move animations and the scroll view's
+/// moving columns, so this also runs on every frame of those.
 pub fn sync_tab_bars(
   state: &mut WmState,
   config: &UserConfig,
@@ -305,24 +392,33 @@ pub fn sync_tab_bars(
     TabBarSettings::from_config(&config.value.stack)
   });
 
-  let is_ws_switch_active =
-    state.animation_manager.is_workspace_switch_active();
-
   // A focus change can raise other windows over the bar's anchor, so the
   // bar is put back behind it.
   let restack_all = matches!(restack, Restack::All)
     || state.pending_sync.needs_focus_update();
+
+  let animation_manager = &state.animation_manager;
 
   let frames = state
     .root_container
     .descendants()
     .filter_map(|container| container.as_stack().cloned())
     .map(|stack| {
-      let is_shown = !is_ws_switch_active
-        && stack.workspace().is_some_and(|ws| ws.is_displayed());
+      let is_shown = stack.workspace().is_some_and(|ws| ws.is_displayed())
+        && !stack.windows().iter().any(|window| {
+          animation_manager.is_in_workspace_switch(&window.id())
+        });
 
       let frame = is_shown
-        .then(|| tab_frame(&stack, settings, config, focused_id))
+        .then(|| {
+          shown_tab_frame(
+            &stack,
+            animation_manager,
+            settings,
+            config,
+            focused_id,
+          )
+        })
         .flatten();
 
       (stack.id(), frame)
@@ -385,18 +481,83 @@ fn tab_bar_dispatcher(state: &WmState) -> Dispatcher {
 
 #[cfg(test)]
 mod tests {
-  use wm_common::{StackConfig, TabBarPosition, TabTitleOverride};
+  use wm_common::{Layout, StackConfig, TabBarPosition, TabTitleOverride};
   use wm_platform::{
     BorderOverlayParams, Color, CornerRadii, LengthValue, Rect,
   };
 
   use super::{
-    reach_under_window, strip_radii, window_with_tab_bar, TabBarSettings,
+    reach_under_window, shown_tab_frame, strip_radii, window_with_tab_bar,
+    TabBarSettings,
   };
   use crate::{
-    models::{StackContainer, TilingWindow},
-    traits::CommonGetters,
+    models::{Monitor, StackContainer, TilingWindow, Workspace},
+    test_utils::{mock_config, MOCK_MONITOR_WIDTH},
+    traits::{CommonGetters, TilingSizeGetters},
+    wm_state::WmState,
   };
+
+  /// A scrolling workspace whose second column, a stack, runs past the
+  /// right edge of its monitor, optionally with another monitor there.
+  fn stack_past_edge(
+    has_right_neighbor: bool,
+  ) -> (WmState, StackContainer) {
+    let stack = StackContainer::mock()
+      .tab_bar_height(LengthValue::from_px(28))
+      .tiling_containers(vec![
+        TilingWindow::mock().call().into(),
+        TilingWindow::mock().call().into(),
+      ])
+      .call();
+    let workspace = Workspace::mock()
+      .layout(Layout::Scrolling)
+      .tiling_containers(vec![
+        TilingWindow::mock().call().into(),
+        stack.clone().into(),
+      ])
+      .call();
+    stack.set_tiling_size(0.7);
+
+    let mut monitors =
+      vec![Monitor::mock().workspaces(vec![workspace]).call()];
+    if has_right_neighbor {
+      let bounds = Rect::from_xy(MOCK_MONITOR_WIDTH, 0, 1000, 1000);
+      monitors.push(
+        Monitor::mock()
+          .bounds(bounds.clone())
+          .working_area(bounds)
+          .call(),
+      );
+    }
+
+    (WmState::mock(monitors), stack)
+  }
+
+  #[test]
+  fn bar_of_a_column_without_its_peek_shows_only_past_a_free_edge() {
+    let config = mock_config();
+    let settings = TabBarSettings::from_config(&config.value.stack);
+
+    let (state, stack) = stack_past_edge(false);
+    let frame = shown_tab_frame(
+      &stack,
+      &state.animation_manager,
+      &settings,
+      &config,
+      None,
+    );
+    assert!(frame.is_some_and(|frame| frame.clip.is_none()));
+
+    let (state, stack) = stack_past_edge(true);
+    let frame = shown_tab_frame(
+      &stack,
+      &state.animation_manager,
+      &settings,
+      &config,
+      None,
+    );
+    assert!(frame.is_none());
+  }
 
   #[test]
   fn border_goes_around_the_active_tab_and_its_bar() {
