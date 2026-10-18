@@ -474,7 +474,7 @@ impl Screen {
           .clamp(px(8.0), (view.w - width - px(8.0)).max(px(8.0)));
         // Under the window, or else over its bottom edge.
         let below = rect.bottom() + px(8.0);
-        let y = if below + height <= self.hint_y.target - px(4.0) {
+        let y = if below + height <= self.search_y.target - px(4.0) {
           below
         } else if rect.h > height * 2.0 {
           rect.bottom() - height - px(10.0)

@@ -28,14 +28,14 @@ use windows::{
         D2D1_TEXT_ANTIALIAS_MODE_GRAYSCALE,
       },
       DirectWrite::{
-        DWriteCreateFactory, IDWriteFactory, IDWriteTextFormat,
-        DWRITE_FACTORY_TYPE_SHARED, DWRITE_FONT_STRETCH_NORMAL,
-        DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_WEIGHT_NORMAL,
-        DWRITE_FONT_WEIGHT_SEMI_BOLD, DWRITE_PARAGRAPH_ALIGNMENT_CENTER,
-        DWRITE_TEXT_ALIGNMENT, DWRITE_TEXT_ALIGNMENT_CENTER,
-        DWRITE_TEXT_ALIGNMENT_LEADING, DWRITE_TEXT_ALIGNMENT_TRAILING,
-        DWRITE_TEXT_METRICS, DWRITE_TRIMMING,
-        DWRITE_TRIMMING_GRANULARITY_CHARACTER,
+        DWriteCreateFactory, IDWriteFactory, IDWriteFontCollection,
+        IDWriteTextFormat, DWRITE_FACTORY_TYPE_SHARED,
+        DWRITE_FONT_STRETCH_NORMAL, DWRITE_FONT_STYLE_NORMAL,
+        DWRITE_FONT_WEIGHT_NORMAL, DWRITE_FONT_WEIGHT_SEMI_BOLD,
+        DWRITE_PARAGRAPH_ALIGNMENT_CENTER, DWRITE_TEXT_ALIGNMENT,
+        DWRITE_TEXT_ALIGNMENT_CENTER, DWRITE_TEXT_ALIGNMENT_LEADING,
+        DWRITE_TEXT_ALIGNMENT_TRAILING, DWRITE_TEXT_METRICS,
+        DWRITE_TRIMMING, DWRITE_TRIMMING_GRANULARITY_CHARACTER,
         DWRITE_WORD_WRAPPING_NO_WRAP,
       },
       Dxgi::Common::DXGI_FORMAT_B8G8R8A8_UNORM,
@@ -109,39 +109,49 @@ impl Fonts {
 /// Family to fall back on when the one asked for isn't installed.
 const FALLBACK_FAMILY: &str = "Segoe UI";
 
+/// Whether font `family` is installed.
+pub(crate) fn is_installed(family: &str) -> bool {
+  with_dwrite(|dwrite| {
+    system_fonts(dwrite)
+      .is_some_and(|fonts| has_family(&fonts, &HSTRING::from(family)))
+  })
+  .unwrap_or(false)
+}
+
+fn system_fonts(dwrite: &IDWriteFactory) -> Option<IDWriteFontCollection> {
+  let mut collection = None;
+  // SAFETY: `collection` outlives the call.
+  unsafe { dwrite.GetSystemFontCollection(&raw mut collection, false) }
+    .ok()?;
+  collection
+}
+
+fn has_family(fonts: &IDWriteFontCollection, family: &HSTRING) -> bool {
+  let (mut index, mut exists) = (0, false.into());
+  // SAFETY: `family`, `index` and `exists` outlive the call.
+  unsafe { fonts.FindFamilyName(family, &raw mut index, &raw mut exists) }
+    .is_ok()
+    && exists.as_bool()
+}
+
 /// `family` if it is installed, else the fallback, else the first family
 /// installed at all: a family that isn't installed lays out nothing.
 fn installed_family(dwrite: &IDWriteFactory, family: &HSTRING) -> HSTRING {
-  // SAFETY: Plain DirectWrite queries on live interfaces; the strings
-  // outlive them.
-  unsafe {
-    let mut collection = None;
-    if dwrite
-      .GetSystemFontCollection(&raw mut collection, false)
-      .is_err()
-    {
-      return family.clone();
-    }
-    let Some(collection) = collection else {
-      return family.clone();
-    };
+  let Some(fonts) = system_fonts(dwrite) else {
+    return family.clone();
+  };
+  let fallback = HSTRING::from(FALLBACK_FAMILY);
+  if has_family(&fonts, family) {
+    return family.clone();
+  }
+  if has_family(&fonts, &fallback) {
+    return fallback;
+  }
 
-    let has = |name: &HSTRING| {
-      let (mut index, mut exists) = (0, false.into());
-      collection
-        .FindFamilyName(name, &raw mut index, &raw mut exists)
-        .is_ok()
-        && exists.as_bool()
-    };
-    let fallback = HSTRING::from(FALLBACK_FAMILY);
-    if has(family) {
-      return family.clone();
-    }
-    if has(&fallback) {
-      return fallback;
-    }
-
-    let first = collection
+  // SAFETY: Plain DirectWrite queries on live interfaces; `name` outlives
+  // the call that fills it.
+  let first = unsafe {
+    fonts
       .GetFontFamily(0)
       .and_then(|family| family.GetFamilyNames())
       .and_then(|names| {
@@ -149,12 +159,12 @@ fn installed_family(dwrite: &IDWriteFactory, family: &HSTRING) -> HSTRING {
         let mut name = vec![0; length as usize + 1];
         names.GetString(0, &mut name)?;
         Ok(HSTRING::from_wide(&name[..length as usize]))
-      });
-    first
-      .ok()
-      .and_then(Result::ok)
-      .unwrap_or_else(|| family.clone())
-  }
+      })
+  };
+  first
+    .ok()
+    .and_then(Result::ok)
+    .unwrap_or_else(|| family.clone())
 }
 
 /// Creates a text format for single, vertically centered lines, trimmed

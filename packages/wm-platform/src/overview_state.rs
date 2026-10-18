@@ -82,54 +82,15 @@ pub(crate) struct Hit {
   pub window: Option<isize>,
 }
 
-/// How the key hints line is colored.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum HintTone {
-  Quiet,
-  Accent,
-  Search,
-}
-
-/// What the key hints line shows.
-#[derive(Clone, Debug, PartialEq)]
-pub(crate) struct Hint {
-  pub tone: HintTone,
-
-  /// What is going on, before the keys, e.g. the window being carried.
-  pub lead: Option<String>,
-
-  /// The search, while there is one.
-  pub search: Option<SearchHint>,
-
-  /// The keys for the current step, and what each does.
-  pub keys: Vec<KeyHint>,
-}
-
-/// The search on the key hints line.
+/// The search, as every screen shows it while there is one.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct SearchHint {
+pub(crate) struct SearchField {
   pub query: String,
 
   /// Whether typed characters still go to it.
   pub is_typing: bool,
 
   pub hits: usize,
-}
-
-/// A key on the key hints line, and what it does.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct KeyHint {
-  pub key: String,
-  pub action: String,
-}
-
-impl KeyHint {
-  fn new(key: &str, action: &str) -> Self {
-    Self {
-      key: key.to_string(),
-      action: action.to_string(),
-    }
-  }
 }
 
 /// A window being dragged with the mouse.
@@ -202,10 +163,6 @@ pub(crate) struct Interaction {
 
   match_index: Option<usize>,
 
-  /// Whether the hints line lists every key for the step, rather than
-  /// only the main ones.
-  pub shows_all_keys: bool,
-
   /// Workspace under the cursor.
   pub hover: Option<usize>,
 
@@ -245,7 +202,6 @@ impl Interaction {
       searching: false,
       query: String::new(),
       match_index: None,
-      shows_all_keys: false,
       hover: None,
       press: None,
       drag: None,
@@ -424,7 +380,6 @@ impl Interaction {
       }
       Key::Text('n') => self.goto_match(1, workspaces),
       Key::Text('N') => self.goto_match(-1, workspaces),
-      Key::Text('?') => self.shows_all_keys = !self.shows_all_keys,
       Key::Text('x' | 'X') => {
         let hwnd =
           self.selected_window.filter(|_| self.mode == Mode::Windows);
@@ -1223,176 +1178,20 @@ impl Interaction {
       is_dragging: self.drag.is_some(),
       marks_keyboard: is_active && self.screens.len() > 1,
       query: self.query.clone(),
-      hint: self.screen_hint(screen, workspaces),
+      search: self.search_field(workspaces),
     }
   }
 
-  /// The hints line of `screen`: the keys for the current step on the
-  /// screen with the keyboard, and the search on every screen.
-  pub fn screen_hint(
+  /// The search field every screen shows while there is a search.
+  pub fn search_field(
     &self,
-    screen: usize,
     workspaces: &[OverviewWorkspace],
-  ) -> Option<Hint> {
-    if screen == self.active {
-      Some(self.hint(workspaces))
-    } else {
-      (self.searching || !self.query.is_empty())
-        .then(|| self.search_hint(workspaces))
-    }
-  }
-
-  /// The keys for the current step, shown under the cards: its main ones,
-  /// and the rest once `?` asks for them.
-  pub fn hint(&self, workspaces: &[OverviewWorkspace]) -> Hint {
-    if self.searching || !self.query.is_empty() {
-      return self.search_hint(workspaces);
-    }
-
-    let title = |hwnd: Option<isize>| window_title(workspaces, hwnd);
-
-    if let Some(drag) = &self.drag {
-      return Hint {
-        tone: HintTone::Accent,
-        lead: Some(format!(
-          "drop \"{}\" on a workspace",
-          title(Some(drag.hwnd))
-        )),
-        search: None,
-        keys: Vec::new(),
-      };
-    }
-
-    let (back, forward, inside) = arrows(self.layout);
-    let workspace_arrows = match (back, forward) {
-      _ if self.layout == OverviewLayoutMode::Grid => {
-        "\u{2190}\u{2191}\u{2193}\u{2192}"
-      }
-      (Toward::Up, Toward::Down) => "\u{2191}\u{2193}",
-      _ => "\u{2190}\u{2192}",
-    };
-
-    // Each key, and whether it is among the main ones.
-    let (tone, lead, keys) = match self.mode {
-      Mode::Carrying => (
-        HintTone::Accent,
-        Some(format!("carrying \"{}\"", title(self.carried))),
-        vec![
-          (KeyHint::new(workspace_arrows, "pick a workspace"), true),
-          (KeyHint::new("/", "search for one"), false),
-          (KeyHint::new("Space", "drop"), true),
-          (KeyHint::new("1\u{2013}9 S", "drop on that one"), false),
-          (KeyHint::new("\u{232b}", "back"), true),
-        ],
-      ),
-      Mode::Windows => {
-        let back = inside.map_or_else(
-          || KeyHint::new("\u{232b}", "back"),
-          |inside| {
-            KeyHint::new(arrow_glyph(inside.opposite()), "workspaces")
-          },
-        );
-
-        (
-          HintTone::Quiet,
-          None,
-          vec![
-            (
-              KeyHint::new(
-                "\u{2190}\u{2191}\u{2193}\u{2192}",
-                "pick a window",
-              ),
-              true,
-            ),
-            (KeyHint::new("\u{23ce}", "go to it"), true),
-            (KeyHint::new("Space", "lift it"), true),
-            (KeyHint::new("1\u{2013}9 S", "send it there"), false),
-            (KeyHint::new("X", "close it"), false),
-            (back, false),
-          ],
-        )
-      }
-      Mode::Spaces => {
-        let mut keys =
-          vec![(KeyHint::new(workspace_arrows, "workspaces"), true)];
-        match inside {
-          Some(inside) => keys.push((
-            KeyHint::new(arrow_glyph(inside), "its windows"),
-            false,
-          )),
-          // The grid is too small to pick a window in.
-          None if self.layout == OverviewLayoutMode::Grid => {}
-          None => keys.push((KeyHint::new("Space", "look inside"), false)),
-        }
-        keys.extend([
-          (KeyHint::new("S", "special"), false),
-          (KeyHint::new("/", "search"), true),
-          (KeyHint::new("\u{23ce}", "go there"), true),
-          (KeyHint::new("Tab", self.layout.next().name()), false),
-          (KeyHint::new("Esc", "close"), false),
-        ]);
-        (HintTone::Quiet, None, keys)
-      }
-    };
-
-    let has_more = keys.iter().any(|(_, is_main)| !is_main);
-    let mut keys = keys
-      .into_iter()
-      .filter(|(_, is_main)| *is_main || self.shows_all_keys)
-      .map(|(key, _)| key)
-      .collect::<Vec<_>>();
-    if has_more {
-      keys.push(KeyHint::new(
-        "?",
-        if self.shows_all_keys { "less" } else { "more" },
-      ));
-    }
-
-    Hint {
-      tone,
-      lead,
-      search: None,
-      keys,
-    }
-  }
-
-  /// The search query and its hits, on every screen's hints line.
-  fn search_hint(&self, workspaces: &[OverviewWorkspace]) -> Hint {
-    let hits = self.matches(workspaces).len();
-    let mut keys = Vec::new();
-
-    if self.searching {
-      if hits > 0 {
-        keys.push(KeyHint::new("\u{23ce}", "best match"));
-      }
-      keys.push(KeyHint::new("Esc", "clear"));
-    } else {
-      if hits > 0 {
-        keys.push(KeyHint::new("\u{23ce}", "go to it"));
-      }
-      if hits > 1 {
-        keys.push(KeyHint::new("n N", "walk them"));
-      }
-      keys.push(KeyHint::new("/", "search again"));
-    }
-
-    let carried = self
-      .carried
-      .map(|hwnd| window_title(workspaces, Some(hwnd)));
-    if carried.is_some() {
-      keys.push(KeyHint::new("Space", "drop it here"));
-    }
-
-    Hint {
-      tone: HintTone::Search,
-      lead: carried.map(|title| format!("carrying \"{title}\"")),
-      search: Some(SearchHint {
-        query: self.query.clone(),
-        is_typing: self.searching,
-        hits,
-      }),
-      keys,
-    }
+  ) -> Option<SearchField> {
+    (self.searching || !self.query.is_empty()).then(|| SearchField {
+      query: self.query.clone(),
+      is_typing: self.searching,
+      hits: self.matches(workspaces).len(),
+    })
   }
 }
 
@@ -1437,8 +1236,8 @@ pub(crate) struct ScreenFocus {
   /// Search query, whose matches show on every screen.
   pub query: String,
 
-  /// Its hints line, if it shows one.
-  pub hint: Option<Hint>,
+  /// The search field, while there is a search.
+  pub search: Option<SearchField>,
 }
 
 impl ScreenFocus {
@@ -1503,15 +1302,6 @@ fn home_special(workspaces: &[OverviewWorkspace]) -> Option<usize> {
     .map(|(index, _)| index)
 }
 
-/// Title of window `hwnd`, or nothing.
-fn window_title(
-  workspaces: &[OverviewWorkspace],
-  hwnd: Option<isize>,
-) -> String {
-  hwnd
-    .and_then(|hwnd| find(workspaces, hwnd))
-    .map_or_else(String::new, |(_, window)| window.title.clone())
-}
 /// The arrows that go to the previous and the next workspace in
 /// `layout`, and the one that goes in among the selected workspace's
 /// windows, if any does.
@@ -1526,15 +1316,6 @@ fn arrows(layout: OverviewLayoutMode) -> (Toward, Toward, Option<Toward>) {
     OverviewLayoutMode::Carousel | OverviewLayoutMode::Grid => {
       (Toward::Left, Toward::Right, None)
     }
-  }
-}
-
-fn arrow_glyph(toward: Toward) -> &'static str {
-  match toward {
-    Toward::Left => "\u{2190}",
-    Toward::Right => "\u{2192}",
-    Toward::Up => "\u{2191}",
-    Toward::Down => "\u{2193}",
   }
 }
 
@@ -1732,9 +1513,7 @@ fn row_indices(
 
 #[cfg(test)]
 mod tests {
-  use super::{
-    all_workspaces, HintTone, Hit, Interaction, Key, Mode, SearchHint,
-  };
+  use super::{all_workspaces, Hit, Interaction, Key, Mode, SearchField};
   use crate::{
     overview_layout::{CardMetrics, CardSlot, GridCells, RectF},
     OverviewAction, OverviewLayoutMode, OverviewScreen, OverviewWindow,
@@ -2495,58 +2274,6 @@ mod tests {
   }
 
   #[test]
-  fn hints_follow_the_step() {
-    let workspaces = workspaces();
-    let mut state = interaction();
-    assert_eq!(state.hint(&workspaces).tone, HintTone::Quiet);
-
-    press(&mut state, &[Key::Space, Key::Space]);
-    let hint = state.hint(&workspaces);
-    assert_eq!(hint.tone, HintTone::Accent);
-    assert!(hint.lead.is_some_and(|lead| lead.contains("\"Browser\"")));
-
-    press(&mut state, &[Key::Text('/'), Key::Text('e')]);
-    let hint = state.hint(&workspaces);
-    assert_eq!(hint.tone, HintTone::Search);
-    assert_eq!(
-      hint.search,
-      Some(SearchHint {
-        query: "e".to_string(),
-        is_typing: true,
-        hits: 3,
-      })
-    );
-  }
-
-  #[test]
-  fn question_mark_shows_every_key() {
-    let workspaces = workspaces();
-    let mut state = interaction();
-    let actions = |state: &Interaction| {
-      state
-        .hint(&workspaces)
-        .keys
-        .into_iter()
-        .map(|key| key.action)
-        .collect::<Vec<_>>()
-    };
-
-    assert_eq!(
-      actions(&state),
-      ["workspaces", "search", "go there", "more"],
-      "the main keys"
-    );
-
-    press(&mut state, &[Key::Text('?')]);
-    let all = actions(&state);
-    assert!(all.len() > 4 && all.contains(&"close".to_string()));
-    assert_eq!(all.last().map(String::as_str), Some("less"));
-
-    press(&mut state, &[Key::Text('?')]);
-    assert_eq!(actions(&state).len(), 4);
-  }
-
-  #[test]
   fn sync_keeps_the_selection_by_name() {
     let old = workspaces();
     let mut state = interaction();
@@ -2659,19 +2386,6 @@ mod tests {
       Some(focus_workspace("code"))
     );
     assert_eq!(state.key(Key::Digit(4), &workspaces), None);
-  }
-
-  #[test]
-  fn hints_mention_the_special_workspace() {
-    let workspaces = with_special();
-    let mut state = single(&workspaces, OverviewLayoutMode::Carousel);
-    press(&mut state, &[Key::Text('?')]);
-
-    assert!(state
-      .hint(&workspaces)
-      .keys
-      .iter()
-      .any(|key| key.key == "S" && key.action == "special"));
   }
 
   #[test]
@@ -2990,11 +2704,11 @@ mod tests {
       &"brow".chars().map(Key::Text).collect::<Vec<_>>(),
     );
 
-    let hint = state
-      .screen_hint(1, &workspaces)
-      .expect("search on every screen");
-    assert_eq!(hint.tone, HintTone::Search);
-    assert_eq!(hint.search.map(|search| search.hits), Some(1));
+    assert_eq!(
+      state.focus(1, &workspaces).search.map(|search| search.hits),
+      Some(1),
+      "on every screen"
+    );
 
     press_on(&mut state, &workspaces, &[Key::Enter]);
     assert_eq!((state.active, state.selected()), (1, 3));
@@ -3032,14 +2746,29 @@ mod tests {
   }
 
   #[test]
-  fn hints_of_other_screens_only_show_a_search() {
-    let screens = two_screens();
-    let workspaces = all_workspaces(&screens);
-    let state =
-      Interaction::new(&screens, OverviewLayoutMode::Carousel, 6.0);
+  fn the_search_field_shows_only_while_searching() {
+    let workspaces = workspaces();
+    let mut state = interaction();
+    assert_eq!(state.search_field(&workspaces), None);
 
-    assert!(state.screen_hint(0, &workspaces).is_some());
-    assert_eq!(state.screen_hint(1, &workspaces), None);
+    press(&mut state, &[Key::Text('/'), Key::Text('e')]);
+    assert_eq!(
+      state.search_field(&workspaces),
+      Some(SearchField {
+        query: "e".to_string(),
+        is_typing: true,
+        hits: 3,
+      })
+    );
+
+    // Its matches stay picked after typing ends, and so does the field.
+    press(&mut state, &[Key::Enter]);
+    assert!(state
+      .search_field(&workspaces)
+      .is_some_and(|search| !search.is_typing));
+
+    press(&mut state, &[Key::Text('/'), Key::Escape]);
+    assert_eq!(state.search_field(&workspaces), None);
   }
 
   #[test]
@@ -3200,7 +2929,7 @@ mod tests {
     assert_eq!((right.selected, right.mode), (1, Mode::Carrying));
     assert_eq!((left.drop, right.drop), (None, Some(1)));
     assert_eq!(left.floating, Some(11), "lifted on every screen");
-    assert_eq!(left.hint, None);
+    assert_eq!(left.search, None);
   }
 
   #[test]

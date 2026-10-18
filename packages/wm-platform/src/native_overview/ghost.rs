@@ -105,7 +105,7 @@ impl Ghost {
       }
       None => (
         view_width - width - px(40.0),
-        screen.hint_y.target - height - px(16.0),
+        screen.search_y.target - height - px(16.0),
       ),
     };
     self.x.target = screen.area.x + x;

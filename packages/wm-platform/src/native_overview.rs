@@ -66,7 +66,7 @@ use crate::{
   },
   overview_scene::Scene,
   overview_state::{
-    all_workspaces, Hint, Hit, Interaction, Key, ScreenFocus,
+    all_workspaces, Hit, Interaction, Key, ScreenFocus, SearchField,
   },
   overview_tab_bars::CardTabBar,
   overview_thumbnails::{Picture, Preview, Thumbnail},
@@ -631,9 +631,11 @@ struct Screen {
   /// `None` if their pictures couldn't be created.
   overlays: Option<Overlays>,
 
-  hint: Option<Picture>,
-  hint_drawn: Option<Hint>,
-  hint_y: Spring,
+  /// The search field, while there is a search, and what it was drawn
+  /// as.
+  search: Option<Picture>,
+  search_drawn: Option<SearchField>,
+  search_y: Spring,
 
   /// Where the special workspace's card is docked, from the last layout.
   dock: Option<RectF>,

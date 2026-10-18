@@ -6,7 +6,7 @@ workspace or window, move windows between workspaces and monitors, search
 them by title, or close them. Only available on Windows.
 
 On open, the windows each monitor shows fly from where they are into the
-overview, while the wallpaper behind them blurs; the hints, names and
+overview, while the wallpaper behind them blurs; the names and
 highlights only fade in as they settle, and fade out as soon as it
 closes. On close, they fly back
 into the workspace you picked, and on the other monitors (or all of them,
@@ -86,8 +86,8 @@ is nowhere to go.
 
 The keyboard goes one step deeper with each `Space`: browsing workspaces,
 picking a window inside one, then carrying that window to another
-workspace. The line at the bottom shows the main keys for the current
-step as key caps; `?` shows the rest too, and hides them again.
+workspace. Like GNOME's overview, it shows no key hints: the keys are
+listed here.
 
 The arrows go between workspaces along the layout: `←` `→` in the
 activities and the carousel, `↑` `↓` down the stage's column, and all four
@@ -108,7 +108,6 @@ workspaces.
 | `Backspace` | | Back to browsing. | Put the window down. |
 | `Tab` | Switch to the next layout: activities, stage, carousel, grid. | Same, back to browsing in the grid. | Same. |
 | `Escape` | Close without changing anything. | Same. | Same. |
-| `?` | Show every key for the step on the line at the bottom, or only the main ones. | Same. | Same. |
 
 Digits go to the workspace named after them (`0` is `10`), like a
 `focus --workspace` binding would: one with a card on any monitor, or an
@@ -140,7 +139,8 @@ around its edges, and the line of keys, show which.
 
 `/` starts a search: type to match window titles and process names, on
 every monitor; matches are outlined in `search_color` and the rest fade,
-and the query and its hits show on every monitor. `Enter` ends typing and
+and a search field at the bottom of every monitor shows the query and its
+matches, ringed in the accent while typing goes to it. `Enter` ends typing and
 selects the best match, after which `n` / `N` step through the matches,
 moving the keyboard to the monitor of each. While typing, `Escape` clears
 the search and `Backspace` on an empty query ends it. While carrying a
@@ -297,7 +297,7 @@ moves things around and never redraws pixels:
   of columns scrolled out of view) are kept in place but cloaked, rather
   than hidden, so DWM keeps composing them; they are hidden again once it
   is gone.
-- The card backgrounds, captions, borders, labels and hints are drawn
+- The card backgrounds, captions, borders, labels and the search are drawn
   once into hidden layered windows, and shown as thumbnails of those, so
   they scale with their card. Their text is laid out and rasterized by
   DirectWrite (grayscale, since the pictures are translucent).

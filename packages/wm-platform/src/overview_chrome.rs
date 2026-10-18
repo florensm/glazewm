@@ -1,5 +1,5 @@
 //! The overview's pictures: each workspace card, its highlights, labels
-//! and tags, the key hints and the window being dragged. They are drawn
+//! and tags, the search field and the window being dragged. They are drawn
 //! into bitmaps once and composited by DWM as thumbnails, scaled to
 //! wherever they are on each frame.
 //!
@@ -17,10 +17,10 @@ use crate::{
   overview_layout::{
     CardLook, CardMetrics, Placement, RectF, LABEL_HEIGHT,
   },
-  overview_state::{Hint, HintTone, SearchHint},
+  overview_state::SearchField,
   paint,
   surface::Surface,
-  text::{draw_text, text_width, Align, Font, Fonts},
+  text::{draw_text, is_installed, text_width, Align, Fonts},
   window_icons, Color, CornerRadii, OverviewStyle, Rect,
 };
 
@@ -895,281 +895,116 @@ pub(crate) fn draw_ghost(
   );
 }
 
-/// Height, side padding and corner radius of a key cap on the hints line,
-/// and the gap to what the key does, in logical pixels.
-const KEY_CAP: (f32, f32, f32, f32) = (20.0, 6.0, 5.0, 6.0);
+/// Width at least of the search field, its padding and the gap between
+/// its parts, in logical pixels.
+const SEARCH_FIELD: (f32, f32, f32) = (360.0, 14.0, 10.0);
 
-/// Gap between the parts of the hints line, and padding at its ends, in
-/// logical pixels.
-const HINT_GAP: (f32, f32) = (16.0, 12.0);
+/// The search icon of Windows' icon fonts, and those fonts, newest first.
+const SEARCH_GLYPH: &str = "\u{e721}";
+const ICON_FAMILIES: [&str; 2] =
+  ["Segoe Fluent Icons", "Segoe MDL2 Assets"];
 
-/// Height, minimum width, padding and corner radius of the search field on
-/// the hints line, in logical pixels.
-const SEARCH_FIELD: (f32, f32, f32, f32) = (22.0, 200.0, 9.0, 6.0);
-
-/// One part of the hints line, with its width.
-enum HintPart<'a> {
-  Lead(&'a str, i32),
-  Search(&'a SearchHint, String, i32),
-  Key {
-    key: &'a str,
-    action: &'a str,
-    cap: i32,
-    width: i32,
-  },
-}
-
-impl HintPart<'_> {
-  fn width(&self) -> i32 {
-    match self {
-      Self::Lead(_, width)
-      | Self::Search(_, _, width)
-      | Self::Key { width, .. } => *width,
-    }
-  }
-}
-
-/// Draws `hint`, centered, into `surface`: what is going on, the search
-/// and each key as a key cap with what it does, on a pill of the cards'
-/// color so it reads over whatever is behind it.
-pub(crate) fn draw_hint(
+/// Draws `search`, centered, into `surface`: a rounded field with a search
+/// icon, the query (or what to do while there is none) and its matches,
+/// ringed in the accent while typing goes to it.
+pub(crate) fn draw_search(
   surface: &mut Surface,
-  hint: &Hint,
+  search: &SearchField,
   scale_factor: f32,
   style: &OverviewStyle,
 ) {
   let px = |length: f32| round(length * scale_factor);
+  let (min_width, padding, gap) = SEARCH_FIELD;
   surface.pixels().fill(0);
 
-  let mut fonts = Fonts::new(&style.font_family);
-  let fonts = HintFonts {
-    text: fonts.get(11.5 * scale_factor, false),
-    key: fonts.get(10.5 * scale_factor, true),
-  };
-  let parts = hint_parts(hint, &fonts, scale_factor);
-  let (gap, padding) = HINT_GAP;
+  let font =
+    Fonts::new(&style.font_family).get(13.0 * scale_factor, false);
+  let icon = ICON_FAMILIES
+    .into_iter()
+    .find(|family| is_installed(family))
+    .map(|family| Fonts::new(family).get(14.0 * scale_factor, false));
 
-  let gaps = i32::try_from(parts.len().saturating_sub(1)).unwrap_or(0);
-  let width = (parts.iter().map(HintPart::width).sum::<i32>()
-    + gaps * px(gap)
-    + 2 * px(padding))
-  .min(surface.width);
+  let (text, text_color) = if search.query.is_empty() {
+    ("Type to search", with_alpha(style.subtext, 0.6))
+  } else {
+    (search.query.as_str(), style.text)
+  };
+  let hits = match search.hits {
+    0 if search.query.is_empty() => String::new(),
+    0 => "No matches".to_string(),
+    1 => "1 match".to_string(),
+    hits => format!("{hits} matches"),
+  };
+
+  let icon_width = icon
+    .as_ref()
+    .map_or(0, |icon| text_width(icon, SEARCH_GLYPH));
+  let typed_width = text_width(&font, text);
+  let hits_width = text_width(&font, &hits);
+  let content = icon_width + typed_width + hits_width + 3 * px(gap);
+  let width = (content + 2 * px(padding))
+    .max(px(min_width))
+    .min(surface.width);
   let height = surface.height;
-  let pill = Rect::from_xy((surface.width - width) / 2, 0, width, height);
+  let field = Rect::from_xy((surface.width - width) / 2, 0, width, height);
   {
     let mut canvas = surface.canvas();
     canvas.fill_rounded_rect(
-      &pill,
+      &field,
       height / 2,
-      with_alpha(style.card, 0.85),
+      with_alpha(style.card, 0.88),
     );
-    canvas.stroke_rounded_rect(
-      &pill,
-      height / 2,
-      px(1.0).max(1),
-      with_alpha(style.text, 0.1),
-    );
-  }
-
-  let tone = match hint.tone {
-    HintTone::Quiet => with_alpha(style.subtext, 0.85),
-    HintTone::Accent => with_alpha(style.accent, 0.9),
-    HintTone::Search => with_alpha(style.search, 0.9),
-  };
-  let mut x = pill.left + px(padding);
-  for part in &parts {
-    let rect = Rect::from_xy(x, 0, part.width(), height);
-    match part {
-      HintPart::Lead(text, _) => {
-        draw_text(surface, &fonts.text, text, &rect, tone, Align::Left);
-      }
-      HintPart::Search(search, hits, _) => {
-        let units = (scale_factor, tone);
-        draw_search_field(
-          surface, &rect, search, hits, &fonts, units, style,
-        );
-      }
-      HintPart::Key {
-        key, action, cap, ..
-      } => {
-        let units = (scale_factor, *cap);
-        draw_key_hint(surface, &rect, (key, action), &fonts, units, style);
-      }
+    if search.is_typing {
+      canvas.stroke_rounded_rect(
+        &field,
+        height / 2,
+        px(2.0).max(1),
+        with_alpha(style.accent, 0.9),
+      );
     }
-    x += part.width() + px(gap);
-  }
-}
-
-/// The fonts of the hints line.
-struct HintFonts {
-  text: Font,
-  key: Font,
-}
-
-/// `hint`'s parts, left to right, measured in `fonts` at `scale_factor`.
-fn hint_parts<'a>(
-  hint: &'a Hint,
-  fonts: &HintFonts,
-  scale_factor: f32,
-) -> Vec<HintPart<'a>> {
-  let px = |length: f32| round(length * scale_factor);
-  let (cap_height, cap_padding, _, cap_gap) = KEY_CAP;
-  let (_, field_width, field_padding, _) = SEARCH_FIELD;
-  let mut parts = Vec::new();
-
-  if let Some(lead) = &hint.lead {
-    parts.push(HintPart::Lead(lead, text_width(&fonts.text, lead)));
-  }
-  if let Some(search) = &hint.search {
-    let hits = format!(
-      "{} {}",
-      search.hits,
-      if search.hits == 1 { "hit" } else { "hits" }
-    );
-    let width = (text_width(&fonts.text, &search.query)
-      + text_width(&fonts.text, &hits)
-      + px(2.0 * field_padding + HINT_GAP.0))
-    .max(px(field_width));
-    parts.push(HintPart::Search(search, hits, width));
-  }
-  for key in &hint.keys {
-    let cap = (text_width(&fonts.key, &key.key) + px(2.0 * cap_padding))
-      .max(px(cap_height));
-    let width = cap + px(cap_gap) + text_width(&fonts.text, &key.action);
-    parts.push(HintPart::Key {
-      key: &key.key,
-      action: &key.action,
-      cap,
-      width,
-    });
-  }
-  parts
-}
-
-/// Draws the search field into `rect` of the hints line: the query, the
-/// caret while typing, and the `hits` on the right, outlined in `tone`.
-fn draw_search_field(
-  surface: &mut Surface,
-  rect: &Rect,
-  search: &SearchHint,
-  hits: &str,
-  fonts: &HintFonts,
-  (scale_factor, tone): (f32, Color),
-  style: &OverviewStyle,
-) {
-  let px = |length: f32| round(length * scale_factor);
-  let (field_height, _, field_padding, field_radius) = SEARCH_FIELD;
-  let field = Rect::from_xy(
-    rect.left,
-    rect.top + (rect.height() - px(field_height)) / 2,
-    rect.width(),
-    px(field_height),
-  );
-  {
-    let mut canvas = surface.canvas();
-    canvas.fill_rounded_rect(
-      &field,
-      px(field_radius),
-      with_alpha(style.card, 0.9),
-    );
-    canvas.stroke_rounded_rect(
-      &field,
-      px(field_radius),
-      px(1.0).max(1),
-      tone,
-    );
   }
 
-  let inner = Rect::from_ltrb(
-    field.left + px(field_padding),
-    rect.top,
-    field.right - px(field_padding),
-    rect.bottom,
-  );
+  let mut left = field.left + px(padding);
+  if let Some(icon) = &icon {
+    let rect = Rect::from_xy(left, 0, icon_width, height);
+    let color = with_alpha(style.subtext, 0.8);
+    draw_text(surface, icon, SEARCH_GLYPH, &rect, color, Align::Left);
+    left += icon_width + px(gap);
+  }
+
+  let right = field.right - px(padding);
+  let hits_left = right - hits_width;
+  let text_rect = Rect::from_ltrb(left, 0, hits_left - px(gap), height);
+  draw_text(surface, &font, text, &text_rect, text_color, Align::Left);
   draw_text(
     surface,
-    &fonts.text,
-    &search.query,
-    &inner,
-    style.text,
-    Align::Left,
-  );
-  draw_text(
-    surface,
-    &fonts.text,
-    hits,
-    &inner,
+    &font,
+    &hits,
+    &Rect::from_ltrb(hits_left, 0, right, height),
     with_alpha(style.subtext, 0.85),
     Align::Right,
   );
 
+  // Before the placeholder, after the query.
   if search.is_typing {
-    let caret_height = px(13.0);
+    let typed = if search.query.is_empty() {
+      0
+    } else {
+      typed_width
+    };
+    let caret_height = px(16.0);
     let caret = Rect::from_xy(
-      inner.left + text_width(&fonts.text, &search.query) + px(1.0),
-      rect.top + (rect.height() - caret_height) / 2,
-      px(1.0).max(1),
+      (left + typed).min(text_rect.right),
+      (height - caret_height) / 2,
+      px(1.5).max(1),
       caret_height,
     );
-    surface.canvas().fill_rounded_rect(&caret, 0, tone);
-  }
-}
-
-/// Draws `key` as a key cap `cap` pixels wide at the start of `rect` of
-/// the hints line, and what it does, `action`, after it.
-fn draw_key_hint(
-  surface: &mut Surface,
-  rect: &Rect,
-  (key, action): (&str, &str),
-  fonts: &HintFonts,
-  (scale_factor, cap): (f32, i32),
-  style: &OverviewStyle,
-) {
-  let px = |length: f32| round(length * scale_factor);
-  let (cap_height, _, cap_radius, cap_gap) = KEY_CAP;
-  let cap_rect = Rect::from_xy(
-    rect.left,
-    rect.top + (rect.height() - px(cap_height)) / 2,
-    cap,
-    px(cap_height),
-  );
-  {
-    let mut canvas = surface.canvas();
-    canvas.fill_rounded_rect(
-      &cap_rect,
-      px(cap_radius),
-      with_alpha(style.text, 0.1),
-    );
-    canvas.stroke_rounded_rect(
-      &cap_rect,
-      px(cap_radius),
-      px(1.0).max(1),
-      with_alpha(style.text, 0.16),
+    surface.canvas().fill_rounded_rect(
+      &caret,
+      0,
+      with_alpha(style.accent, 0.9),
     );
   }
-  draw_text(
-    surface,
-    &fonts.key,
-    key,
-    &cap_rect,
-    with_alpha(style.text, 0.9),
-    Align::Center,
-  );
-
-  let label = Rect::from_ltrb(
-    rect.left + cap + px(cap_gap),
-    rect.top,
-    rect.right,
-    rect.bottom,
-  );
-  draw_text(
-    surface,
-    &fonts.text,
-    action,
-    &label,
-    with_alpha(style.subtext, 0.85),
-    Align::Left,
-  );
 }
 
 /// Draws a window title on a strip along the bottom of `rect`, if `rect`
@@ -1276,9 +1111,9 @@ fn draw_icon(icon: HICON, size: i32) -> Option<Vec<u32>> {
 
 #[cfg(test)]
 mod tests {
-  use super::{draw_hint, Hint, HintTone, SearchHint};
+  use super::draw_search;
   use crate::{
-    overview_state::KeyHint, surface::Surface, Color, OverviewStyle,
+    overview_state::SearchField, surface::Surface, Color, OverviewStyle,
   };
 
   /// A search right after `/`, with nothing typed: an empty query must
@@ -1306,22 +1141,14 @@ mod tests {
       open_duration_ms: 200,
       close_duration_ms: 200,
     };
-    let hint = Hint {
-      tone: HintTone::Search,
-      lead: None,
-      search: Some(SearchHint {
-        query: String::new(),
-        is_typing: true,
-        hits: 0,
-      }),
-      keys: vec![KeyHint {
-        key: "Esc".to_string(),
-        action: "clear".to_string(),
-      }],
+    let search = SearchField {
+      query: String::new(),
+      is_typing: true,
+      hits: 0,
     };
 
-    let mut surface = Surface::new(1920, 30).expect("surface");
-    draw_hint(&mut surface, &hint, 1.0, &style);
+    let mut surface = Surface::new(1920, 36).expect("surface");
+    draw_search(&mut surface, &search, 1.0, &style);
     assert!(surface.pixels().iter().any(|pixel| *pixel != 0));
   }
 }

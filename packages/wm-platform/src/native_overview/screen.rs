@@ -17,11 +17,11 @@ use super::{
   ScreenFrame, SETTLE_MS,
 };
 use crate::{
-  overview_chrome::{draw_card, draw_hint, picture_size},
+  overview_chrome::{draw_card, draw_search, picture_size},
   overview_layout::{
     activities, carousel, chrome_opacity, grid, stage as stage_layout,
     Camera, CardMetrics, GridCells, Placement, RectF, Spring, Zoom,
-    HINT_HEIGHT,
+    SEARCH_HEIGHT,
   },
   overview_scene::SceneWindow,
   overview_state::{Hit, Mode, ScreenFocus},
@@ -59,9 +59,9 @@ impl Screen {
       scene_area: RectF::default(),
       spare: Vec::new(),
       overlays: Overlays::new(),
-      hint: None,
-      hint_drawn: None,
-      hint_y: Spring::new(0.0, SETTLE_MS, 0.25),
+      search: None,
+      search_drawn: None,
+      search_y: Spring::new(0.0, SETTLE_MS, 0.25),
       dock: None,
       retired: Vec::new(),
       grid: GridCells::default(),
@@ -373,11 +373,11 @@ impl Screen {
       overlays.register(host, layout);
     }
 
-    if self.hint.is_none() {
-      self.hint = Picture::new();
+    if self.search.is_none() {
+      self.search = Picture::new();
     }
-    if let Some(hint) = &mut self.hint {
-      hint.thumbnail = Thumbnail::register(host, hint.window);
+    if let Some(search) = &mut self.search {
+      search.thumbnail = Thumbnail::register(host, search.window);
     }
 
     self.registered_for = Some(layout);
@@ -412,8 +412,8 @@ impl Screen {
     if let Some(overlays) = &mut self.overlays {
       overlays.retire(&mut retired);
     }
-    if let Some(hint) = &mut self.hint {
-      retired.extend(hint.thumbnail.take());
+    if let Some(search) = &mut self.search {
+      retired.extend(search.thumbnail.take());
     }
 
     retired
@@ -459,9 +459,9 @@ impl Screen {
     }
 
     if snap {
-      self.hint_y.snap(targets.hint_y);
+      self.search_y.snap(targets.search_y);
     } else {
-      self.hint_y.target = targets.hint_y;
+      self.search_y.target = targets.search_y;
     }
 
     if self.focus.layout.has_scene() {
@@ -607,24 +607,24 @@ impl Screen {
 
     self.refresh_overlays(&style, force);
 
-    let hint = self.focus.hint.clone();
-    if force || self.hint_drawn != hint {
-      if let Some(hint) = &hint {
+    let search = self.focus.search.clone();
+    if force || self.search_drawn != search {
+      if let Some(search) = &search {
         let scale_factor = self.metrics.scale_factor;
 
         #[allow(clippy::cast_possible_truncation)]
         let size = (
           self.metrics.view.0.ceil() as i32,
-          (HINT_HEIGHT * scale_factor).ceil() as i32,
+          (SEARCH_HEIGHT * scale_factor).ceil() as i32,
         );
 
-        if let Some(picture) = &mut self.hint {
+        if let Some(picture) = &mut self.search {
           picture.draw(size, |surface| {
-            draw_hint(surface, hint, scale_factor, &style);
+            draw_search(surface, search, scale_factor, &style);
           });
         }
       }
-      self.hint_drawn = hint;
+      self.search_drawn = search;
     }
 
     self.is_dirty = true;
@@ -757,7 +757,7 @@ impl Screen {
     if let Some(overlays) = &mut self.overlays {
       is_moving |= overlays.step(dt);
     }
-    is_moving |= self.hint_y.step(dt);
+    is_moving |= self.search_y.step(dt);
 
     if let Some((zoom, started)) = self.zoom {
       is_moving = true;
@@ -832,16 +832,16 @@ impl Screen {
 
     let is_gliding = self.place_overlays(&context, shift);
 
-    let hint_height = HINT_HEIGHT * scale_factor;
-    let has_hint = self.hint_drawn.is_some();
-    if let Some(hint) = &mut self.hint {
-      if has_hint {
-        hint.place(
-          &RectF::new(0.0, self.hint_y.value, view.w, hint_height),
+    let search_height = SEARCH_HEIGHT * scale_factor;
+    let has_search = self.search_drawn.is_some();
+    if let Some(search) = &mut self.search {
+      if has_search {
+        search.place(
+          &RectF::new(0.0, self.search_y.value, view.w, search_height),
           &view,
           chrome_opacity(fade),
         );
-      } else if let Some(thumbnail) = &mut hint.thumbnail {
+      } else if let Some(thumbnail) = &mut search.thumbnail {
         thumbnail.hide();
       }
     }

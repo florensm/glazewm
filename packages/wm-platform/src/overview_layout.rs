@@ -304,15 +304,15 @@ impl CardMetrics {
     length * self.scale_factor
   }
 
-  /// Top edge of the key hints when they sit at the bottom of the
+  /// Top edge of the search field when it sits at the bottom of the
   /// overview.
-  pub fn bottom_hint_y(&self) -> f32 {
-    self.view.1 - self.px(HINT_HEIGHT + 10.0)
+  pub fn bottom_search_y(&self) -> f32 {
+    self.view.1 - self.px(SEARCH_HEIGHT + 10.0)
   }
 }
 
-/// Height of the key hints line, in logical pixels.
-pub(crate) const HINT_HEIGHT: f32 = 30.0;
+/// Height of the search field line, in logical pixels.
+pub(crate) const SEARCH_HEIGHT: f32 = 36.0;
 
 /// Where a card sits: its center, scale and opacity.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -378,11 +378,11 @@ impl Placement {
   }
 }
 
-/// Where every card goes, and the line of key hints under them.
+/// Where every card goes, and the search field's line under them.
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct Targets {
   pub cards: Vec<Placement>,
-  pub hint_y: f32,
+  pub search_y: f32,
 
   /// Where the special workspace's card is docked, if it is.
   pub dock: Option<RectF>,
@@ -467,9 +467,9 @@ fn dock_reserve(
   }
 }
 
-/// Top edge of a block `height` tall (cards with their hints under them)
-/// centered above the dock at rest, but clear of it grown to receive a
-/// window, so it needn't move when one is picked up.
+/// Top edge of a block `height` tall (cards with the search line under
+/// them) centered above the dock at rest, but clear of it grown to receive
+/// a window, so it needn't move when one is picked up.
 fn above_dock(
   metrics: &CardMetrics,
   slots: &[CardSlot],
@@ -510,7 +510,7 @@ fn with_dock(
     .iter()
     .map(|index| slots[*index])
     .collect::<Vec<_>>();
-  let (placed, hint_y) = place(&regular_slots, regular_selected);
+  let (placed, search_y) = place(&regular_slots, regular_selected);
 
   let mut docked = None;
   let mut placed = placed.into_iter();
@@ -535,7 +535,7 @@ fn with_dock(
 
   Targets {
     cards,
-    hint_y,
+    search_y,
     dock: docked,
   }
 }
@@ -608,11 +608,11 @@ pub(crate) fn carousel(
     // needs.
     let zoom = if zoomed { 1.2 } else { 0.9 };
     let row_height = metrics.height * (zoom + 0.02);
-    let hint_gap = metrics.px(16.0);
+    let search_gap = metrics.px(16.0);
     let top = above_dock(
       metrics,
       slots,
-      row_height + hint_gap + metrics.px(HINT_HEIGHT),
+      row_height + search_gap + metrics.px(SEARCH_HEIGHT),
     );
 
     let cards = row(
@@ -630,7 +630,7 @@ pub(crate) fn carousel(
       },
     );
 
-    (cards, top + row_height + hint_gap)
+    (cards, top + row_height + search_gap)
   })
 }
 
@@ -678,19 +678,19 @@ pub(crate) fn activities(
     })
     .collect();
 
-  let hint_y = metrics.bottom_hint_y();
+  let search_y = metrics.bottom_search_y();
   let scene_top = top + metrics.height * scale + label + metrics.px(22.0);
   let scene = RectF::new(
     margin,
     scene_top,
     view_width - 2.0 * margin,
-    (hint_y - metrics.px(16.0) - scene_top).max(0.0),
+    (search_y - metrics.px(16.0) - scene_top).max(0.0),
   );
 
   (
     Targets {
       cards,
-      hint_y,
+      search_y,
       dock: None,
     },
     scene,
@@ -709,13 +709,13 @@ pub(crate) fn stage(
   let margin = metrics.px(32.0);
   let gap = metrics.px(14.0);
   let label = metrics.px(LABEL_GAP + LABEL_HEIGHT);
-  let hint_y = metrics.bottom_hint_y();
+  let search_y = metrics.bottom_search_y();
 
   let side_width = (view_width * 0.15)
     .clamp(metrics.px(160.0), metrics.px(380.0))
     .min(view_width / 3.0);
   let side_top = margin;
-  let side_height = (hint_y - metrics.px(12.0) - side_top).max(0.0);
+  let side_height = (search_y - metrics.px(12.0) - side_top).max(0.0);
 
   // Each as wide as the column, all shrunk alike for a long column to
   // fit.
@@ -741,8 +741,10 @@ pub(crate) fn stage(
   let center = {
     let left = margin + side_width + margin * 1.5;
     let top = margin + label;
-    let (width, height) =
-      (view_width - margin - left, hint_y - metrics.px(16.0) - top);
+    let (width, height) = (
+      view_width - margin - left,
+      search_y - metrics.px(16.0) - top,
+    );
     let slot = slots
       .get(selected)
       .copied()
@@ -771,7 +773,7 @@ pub(crate) fn stage(
 
   Targets {
     cards,
-    hint_y,
+    search_y,
     dock: None,
   }
 }
@@ -932,7 +934,7 @@ struct GridSize {
 }
 
 /// How large the grid in `cells` shows its cards: as large as fits,
-/// leaving room around it for the hint line and for the dock grown to
+/// leaving room around it for the search line and for the dock grown to
 /// receive a window.
 #[allow(clippy::cast_precision_loss)]
 fn grid_size(
@@ -952,7 +954,7 @@ fn grid_size(
   let (columns_f, rows_f) = (cells.columns as f32, rows as f32);
   let available_width = metrics.view.0 - metrics.px(120.0);
   let available_height = metrics.view.1
-    - metrics.px(96.0 + 16.0 + HINT_HEIGHT)
+    - metrics.px(96.0 + 16.0 + SEARCH_HEIGHT)
     - dock_reserve(metrics, slots, true);
 
   let scale = ((available_width - gap * (columns_f - 1.0))
@@ -984,7 +986,7 @@ pub(crate) fn grid(
     .collect::<Vec<_>>();
   let GridSize { scale, rows } = grid_size(metrics, slots, cells);
 
-  let (gap, hint_gap) = (metrics.px(14.0), metrics.px(16.0));
+  let (gap, search_gap) = (metrics.px(14.0), metrics.px(16.0));
   let (columns_f, rows_f) = (cells.columns as f32, rows as f32);
   let (width, height) = (metrics.width * scale, metrics.height * scale);
   let total_width = columns_f * width + (columns_f - 1.0) * gap;
@@ -993,7 +995,7 @@ pub(crate) fn grid(
   let top = above_dock(
     metrics,
     slots,
-    total_height + hint_gap + metrics.px(HINT_HEIGHT),
+    total_height + search_gap + metrics.px(SEARCH_HEIGHT),
   );
 
   with_dock(metrics, slots, 0, is_receiving, |_, _| {
@@ -1014,7 +1016,7 @@ pub(crate) fn grid(
       })
       .collect();
 
-    (cards, top + total_height + hint_gap)
+    (cards, top + total_height + search_gap)
   })
 }
 
@@ -1626,7 +1628,7 @@ mod tests {
     assert_close(targets.cards[1].scale, 0.27);
     assert_close(targets.cards[0].cx, 960.0);
     assert!(
-      targets.hint_y > targets.cards[0].rect(&metrics).bottom(),
+      targets.search_y > targets.cards[0].rect(&metrics).bottom(),
       "hints sit under the cards"
     );
   }
@@ -2085,7 +2087,7 @@ mod tests {
 
     // The scene is below them, clear of the hints.
     assert!(scene.y > rects[0].bottom());
-    assert!(scene.bottom() < targets.hint_y);
+    assert!(scene.bottom() < targets.search_y);
     assert!(scene.w > 1920.0 * 0.8);
   }
 
@@ -2124,7 +2126,7 @@ mod tests {
     let center = rects[2];
     assert!(center.x > rects[0].right());
     assert!(center.w > 1920.0 * 0.6);
-    assert!(center.y > 0.0 && center.bottom() < targets.hint_y);
+    assert!(center.y > 0.0 && center.bottom() < targets.search_y);
     assert!(targets.cards[2].scale <= 1.0);
   }
 
@@ -2137,7 +2139,7 @@ mod tests {
     let last = targets.cards[15].rect(&metrics);
 
     assert!(targets.cards[1].rect(&metrics).y >= 0.0);
-    assert!(last.bottom() < targets.hint_y);
+    assert!(last.bottom() < targets.search_y);
   }
 
   #[test]
