@@ -21,6 +21,7 @@ use crate::{
     activities, carousel, grid, stage as stage_layout, Camera,
     CardMetrics, GridCells, Placement, RectF, Spring, Zoom, HINT_HEIGHT,
   },
+  overview_scene::SceneWindow,
   overview_state::{HintTone, Hit, Mode, ScreenFocus},
   overview_thumbnails::{Picture, Thumbnail},
   platform_impl::composition::OverviewBackdrop,
@@ -430,8 +431,29 @@ impl Screen {
     };
     self.dock = targets.dock;
 
+    // A closing screen's cards hold still for its zoom.
+    if !self.is_closing() {
+      self.retarget_cards(&targets.cards, snap);
+    }
+
+    if snap {
+      self.hint_y.snap(targets.hint_y);
+    } else {
+      self.hint_y.target = targets.hint_y;
+    }
+
+    if self.focus.layout.has_scene() {
+      self.retarget_scenes(snap);
+    }
+    self.sync_nav();
+    self.is_dirty = true;
+  }
+
+  /// Points each card at its target in `targets`; there at once if
+  /// `snap`.
+  fn retarget_cards(&mut self, targets: &[Placement], snap: bool) {
     for (index, (card, target)) in
-      self.cards.iter_mut().zip(&targets.cards).enumerate()
+      self.cards.iter_mut().zip(targets).enumerate()
     {
       let bump = if self.focus.drop == Some(index) {
         1.06
@@ -452,18 +474,6 @@ impl Screen {
         }
       }
     }
-
-    if snap {
-      self.hint_y.snap(targets.hint_y);
-    } else {
-      self.hint_y.target = targets.hint_y;
-    }
-
-    if self.focus.layout.has_scene() {
-      self.retarget_scenes(snap);
-    }
-    self.sync_nav();
-    self.is_dirty = true;
   }
 
   /// Notes where the shown workspace's windows show once settled, first
@@ -646,24 +656,58 @@ impl Screen {
 
   /// Zooms into card `index` until its windows fill the screen, over
   /// `duration_ms`, showing `focus`.
+  ///
+  /// What it zooms from holds still meanwhile, so each window heads
+  /// straight to where it lands rather than veering off with the layout
+  /// (e.g. a scrolled strip settling, or the stage centering the pick).
   pub(super) fn start_closing(
     &mut self,
     index: usize,
     focus: ScreenFocus,
     duration_ms: u32,
   ) {
-    // The scenes zoom into the picked workspace's own windows, so it
-    // shows them first.
+    // The scenes zoom into the picked workspace's own windows, which set
+    // off from where its miniature shows them.
     let is_switching =
       focus.layout.has_scene() && index != self.focus.selected;
     self.focus = focus;
     if is_switching {
-      self.retarget(true);
+      self.seed_scene_from_card();
     }
 
+    self.hold(index);
     let zoom = Zoom::close(index, self.openness(), duration_ms);
     self.zoom = Some((zoom, Instant::now()));
+
+    // The scene shown until now fades out.
+    if is_switching {
+      self.retarget(false);
+    }
     self.is_dirty = true;
+  }
+
+  /// Card it zooms into to close on, which holds still meanwhile.
+  pub(super) fn closing_card(&self) -> Option<usize> {
+    self
+      .zoom
+      .filter(|(zoom, _)| zoom.is_closing)
+      .map(|(zoom, _)| zoom.card)
+  }
+
+  /// Stops the cards, card `index`'s scene and the scene panel where they
+  /// are now.
+  fn hold(&mut self, index: usize) {
+    for card in &mut self.cards {
+      for spring in [&mut card.cx, &mut card.cy, &mut card.scale] {
+        spring.snap(spring.value);
+      }
+    }
+    if let Some(scene) = self.scenes.get_mut(index) {
+      scene.windows.iter_mut().for_each(SceneWindow::hold);
+    }
+    if let Some(overlays) = &mut self.overlays {
+      overlays.scene_panel_rect.hold();
+    }
   }
 
   pub(super) fn place_context(&self) -> PlaceContext {

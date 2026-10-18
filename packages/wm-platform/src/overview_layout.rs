@@ -1421,6 +1421,11 @@ impl SpringRect {
     }
   }
 
+  /// Stops it where it is now.
+  pub fn hold(&mut self) {
+    self.retarget(&self.value(), true);
+  }
+
   /// Advances by `dt` seconds. Returns whether it is still moving.
   pub fn step(&mut self, dt: f32) -> bool {
     [&mut self.x, &mut self.y, &mut self.width, &mut self.height]
@@ -1507,7 +1512,7 @@ mod tests {
   use super::{
     activities, carousel, cover_crop, ease_out_cubic, grid, stage, Camera,
     CardLook, CardMetrics, CardSlot, CardView, Glide, GridCell, GridCells,
-    RectF, Spring, Tile, Zoom,
+    RectF, Spring, SpringRect, Tile, Zoom,
   };
   use crate::OverviewLayoutMode;
 
@@ -1875,6 +1880,25 @@ mod tests {
     assert_close(spring.value, 100.0);
     assert!(frames > 5, "spring moved instantly");
     assert!(!spring.step(1.0 / 60.0));
+  }
+
+  /// A rect held mid-flight stays where it was, for a zoom to set off
+  /// from.
+  #[test]
+  fn held_spring_rect_stops_where_it_is() {
+    let mut rect =
+      SpringRect::new(RectF::new(0.0, 0.0, 100.0, 100.0), 300.0);
+    rect.retarget(&RectF::new(500.0, 0.0, 100.0, 100.0), false);
+    rect.step(1.0 / 60.0);
+    rect.step(1.0 / 60.0);
+
+    let held = rect.value();
+    assert!(held.x > 0.0 && held.x < 500.0, "not mid-flight");
+    rect.hold();
+
+    assert!(!rect.step(1.0 / 60.0));
+    assert_eq!(rect.value(), held);
+    assert_eq!(rect.target(), held);
   }
 
   #[test]

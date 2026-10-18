@@ -58,6 +58,11 @@ impl SceneWindow {
     self.retarget(&target, alpha_target, false);
   }
 
+  /// Stops it where it is now, still fading toward its target.
+  pub fn hold(&mut self) {
+    self.rect.hold();
+  }
+
   /// Advances by `dt` seconds. Returns whether it is still moving.
   pub fn step(&mut self, dt: f32) -> bool {
     self.rect.step(dt) | self.alpha.step(dt)

@@ -5,7 +5,7 @@ use std::cmp::Ordering;
 
 use super::{cards::screen_rect, Screen, SCENE_PADDING};
 use crate::{
-  overview_layout::{CardView, RectF},
+  overview_layout::{Camera, CardView, RectF},
   overview_scene::{Scene, SceneWindow},
   OverviewLayoutMode,
 };
@@ -67,7 +67,7 @@ impl Screen {
   /// Puts the selected workspace's scene windows where its card shows
   /// them now, so they fly on from there.
   pub(super) fn seed_scene_from_card(&mut self) {
-    let context = self.place_context();
+    let camera = Camera::shifted(0.0, self.top_shift(self.openness()));
     let selected = self.focus.selected;
     let (Some(card), Some(scene)) =
       (self.cards.get(selected), self.scenes.get_mut(selected))
@@ -82,9 +82,8 @@ impl Screen {
         .iter()
         .find(|preview| preview.hwnd == window.preview.hwnd);
       if let Some(preview) = preview {
-        let rect = context
-          .camera
-          .apply(&placement.map(&card.metrics, &preview.tile.rect));
+        let rect =
+          camera.apply(&placement.map(&card.metrics, &preview.tile.rect));
         window.jump(&rect, 1.0);
       }
     }
@@ -99,6 +98,8 @@ impl Screen {
 
     let layout = self.focus.layout;
     let selected = self.focus.selected;
+    // What a closing screen zooms from holds still for its zoom.
+    let held = self.closing_card();
     let slide = self.metrics.view.0 * 0.12;
     let padding = self.metrics.px(SCENE_PADDING);
     let scene_in = self.scene_area.inset(padding);
@@ -106,6 +107,10 @@ impl Screen {
     for (index, (scene, workspace)) in
       self.scenes.iter_mut().zip(&frame.workspaces).enumerate()
     {
+      if held == Some(index) {
+        continue;
+      }
+
       let offset = match index.cmp(&selected) {
         Ordering::Less => -slide,
         Ordering::Equal => 0.0,
@@ -135,8 +140,9 @@ impl Screen {
       }
     }
 
-    // The activities' panel takes the shape of what it shows.
-    let shown = frame.workspaces.get(selected);
+    // The activities' panel takes the shape of what it shows, holding
+    // still for a zoom like the scene in it.
+    let shown = frame.workspaces.get(selected).filter(|_| held.is_none());
     if let (OverviewLayoutMode::Activities, Some(overlays), Some(shown)) =
       (layout, &mut self.overlays, shown)
     {
