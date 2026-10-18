@@ -256,6 +256,6 @@ pub enum OverviewAction {
   Deactivated,
 
   /// The overview's windows hid, once it closed (after its zoom into the
-  /// pick), so what was drawn for its previews can go.
+  /// pick), so what the WM held off while it was on screen resumes.
   Hidden,
 }

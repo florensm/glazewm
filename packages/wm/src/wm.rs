@@ -152,7 +152,7 @@ impl WindowManager {
     {
       let state = &mut self.state;
 
-      // What was drawn for its previews can go.
+      // What the WM held off while it was on screen resumes.
       if action == OverviewAction::Hidden {
         return if state.overview.mark_hidden(session) {
           platform_sync(state, config)

@@ -3,14 +3,13 @@ use std::sync::OnceLock;
 use windows::{
   core::{w, PCWSTR},
   Win32::{
-    Foundation::{BOOL, HWND},
-    Graphics::Dwm::{DwmSetWindowAttribute, DWMWA_CLOAK},
+    Foundation::HWND,
     UI::WindowsAndMessaging::{
       CreateWindowExW, DestroyWindow, GetClassNameW, GetWindow,
       SetWindowPos, ShowWindow, GW_HWNDPREV, SWP_NOACTIVATE, SWP_NOMOVE,
-      SWP_NOSENDCHANGING, SWP_NOSIZE, SWP_NOZORDER, SWP_SHOWWINDOW,
-      SW_HIDE, WS_EX_NOACTIVATE, WS_EX_NOREDIRECTIONBITMAP,
-      WS_EX_TOOLWINDOW, WS_EX_TRANSPARENT, WS_POPUP,
+      SWP_NOSENDCHANGING, SWP_NOSIZE, SWP_SHOWWINDOW, SW_HIDE,
+      WS_EX_NOACTIVATE, WS_EX_NOREDIRECTIONBITMAP, WS_EX_TOOLWINDOW,
+      WS_EX_TRANSPARENT, WS_POPUP,
     },
   },
 };
@@ -94,9 +93,6 @@ pub(crate) struct OverlayWindow {
   /// rect change, so re-showing at an unchanged rect still goes through
   /// [`place`](Self::place) and reapplies `SWP_SHOWWINDOW`.
   is_visible: bool,
-
-  /// Whether the window is cloaked: see [`park`](Self::park).
-  is_cloaked: bool,
 }
 
 impl OverlayWindow {
@@ -153,7 +149,6 @@ impl OverlayWindow {
       kind,
       anchor: anchor.0,
       is_visible: false,
-      is_cloaked: false,
     })
   }
 
@@ -167,10 +162,6 @@ impl OverlayWindow {
 
   pub(crate) fn is_visible(&self) -> bool {
     self.is_visible
-  }
-
-  pub(crate) fn is_parked(&self) -> bool {
-    self.is_cloaked
   }
 
   /// Whether a [`place`](Self::place) at `anchor` would change nothing
@@ -214,72 +205,9 @@ impl OverlayWindow {
       ))
     })?;
 
-    // Uncloaked only once in its slot behind `anchor`, so a parked window
-    // never shows where it was parked.
-    self.set_cloaked(false);
     self.anchor = anchor.0;
     self.is_visible = true;
     Ok(())
-  }
-
-  /// Shows the window at `rect`, cloaked: off the screen, but still
-  /// composed by DWM, so a thumbnail of it shows it, as the overview's
-  /// previews do.
-  ///
-  /// Leaves it counted as not visible, so the next [`place`](Self::place)
-  /// goes through and uncloaks it.
-  pub(crate) fn park(&mut self, rect: &Rect) -> crate::Result<()> {
-    self.set_cloaked(true);
-    self.is_visible = false;
-
-    // SAFETY: `self.hwnd()` is valid for the lifetime of `self`.
-    unsafe {
-      SetWindowPos(
-        self.hwnd(),
-        None,
-        rect.x(),
-        rect.y(),
-        rect.width(),
-        rect.height(),
-        SWP_NOACTIVATE
-          | SWP_NOSENDCHANGING
-          | SWP_NOZORDER
-          | SWP_SHOWWINDOW,
-      )
-    }
-    .map_err(|err| {
-      crate::Error::Platform(format!(
-        "{} SetWindowPos failed while parking: {err}.",
-        self.kind.label()
-      ))
-    })
-  }
-
-  fn set_cloaked(&mut self, is_cloaked: bool) {
-    if self.is_cloaked == is_cloaked {
-      return;
-    }
-
-    let cloak = BOOL::from(is_cloaked);
-    // SAFETY: `self.hwnd()` is one of this process's windows, and the
-    // attribute matches its documented `BOOL` size.
-    let result = unsafe {
-      DwmSetWindowAttribute(
-        self.hwnd(),
-        DWMWA_CLOAK,
-        std::ptr::from_ref(&cloak).cast(),
-        u32::try_from(std::mem::size_of::<BOOL>()).unwrap_or(4),
-      )
-    };
-
-    match result {
-      Ok(()) => self.is_cloaked = is_cloaked,
-      Err(err) => tracing::warn!(
-        "{} could not be {}: {err}.",
-        self.kind.label(),
-        if is_cloaked { "cloaked" } else { "uncloaked" }
-      ),
-    }
   }
 
   /// Puts the window back directly behind `anchor` if it has drifted,
@@ -338,9 +266,6 @@ impl OverlayWindow {
     unsafe {
       let _ = ShowWindow(self.hwnd(), SW_HIDE);
     }
-
-    // Hidden first, so lifting the cloak shows nothing.
-    self.set_cloaked(false);
   }
 }
 
@@ -418,19 +343,6 @@ pub trait Overlay: Sized {
 
   /// Hides the overlay without destroying it.
   fn hide(&mut self);
-
-  /// Creates the overlay for a window at `rect`, parked there.
-  fn create_parked(
-    rect: &Rect,
-    params: Self::Params,
-  ) -> crate::Result<Self>;
-
-  /// Tracks a window at `rect` cloaked: off the screen, but drawn for DWM
-  /// thumbnails of it, as the overview shows windows of other workspaces.
-  /// Its next placement behind its window shows it again.
-  fn park(&mut self, rect: &Rect);
-
-  fn is_parked(&self) -> bool;
 
   /// Its window, which a thumbnail of it is of.
   fn hwnd(&self) -> HWND;

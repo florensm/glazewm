@@ -16,10 +16,12 @@ really are.
 Every workspace shows its windows on the monitor's wallpaper, like a
 small copy of the monitor (the special workspace and the "+" card keep a
 plain card). Windows look in the overview as they do on screen, with their
-[window effects](#how-it-works): their `transparency`, and the border and
-backdrop the WM draws for them, scaled with them. So opening it shrinks
-each monitor's workspace as you see it into the overview, and closing it
-grows the picked one back.
+[window effects](#how-it-works): their `transparency`, and on the
+workspace each monitor shows, the border and backdrop the WM draws for
+them, scaled with them. So opening it shrinks each monitor's workspace as
+you see it into the overview, and closing it grows the picked one back.
+Windows of other workspaces, and of columns scrolled out of view, get the
+overview's own outline instead.
 
 ## Layouts
 
@@ -186,8 +188,7 @@ Workspaces and windows changing while it is open (a window opening,
 closing, or being moved) show up in it right away.
 
 Previews of other workspaces need `general.hide_method: "cloak"` (the
-default): with `"hide"`, their windows have nothing for DWM to show, nor
-do their borders and backdrops.
+default): with `"hide"`, their windows have nothing for DWM to show.
 
 ### Stacks
 
@@ -296,13 +297,12 @@ moves things around and never redraws pixels:
 - The window previews are DWM thumbnails of the real windows (or of their
   companion overlay, e.g. a recolored copy drawn by a theming tool, as during
   animations).
-- Under each preview are thumbnails of the window's own backdrop and border
-  overlays, placed and scaled as the window is, and the preview takes the
-  window's `transparency`, which DWM's thumbnails don't carry. While the
-  overview is on screen, the overlays of windows on other workspaces (and
-  of columns scrolled out of view) are kept in place but cloaked, rather
-  than hidden, so DWM keeps composing them; they are hidden again once it
-  is gone.
+- Under the preview of each window on screen are thumbnails of its own
+  backdrop and border overlays, placed and scaled as the window is, and
+  every preview takes its window's `transparency`, which DWM's thumbnails
+  don't carry. The overlays of windows off screen are hidden, which DWM
+  composes for no thumbnail; cloaked instead, they showed in previews as
+  small, stale boxes.
 - The card backgrounds, captions, borders, labels and the search are drawn
   once into hidden layered windows, and shown as thumbnails of those, so
   they scale with their card. Their text is laid out and rasterized by

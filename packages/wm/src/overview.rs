@@ -23,7 +23,7 @@ use crate::{
     general::{surrogate_effects_for, SyncableOverlay},
     workspace::{activate_workspace, summon_special_workspace},
   },
-  layout::scrolling,
+  layout::{is_hidden_in_layout, scrolling},
   models::{
     is_inactive_stack_child, Container, Monitor, WindowContainer,
     Workspace, WorkspaceTarget,
@@ -516,10 +516,7 @@ fn overview_window(
   let is_minimized = window.state() == WindowState::Minimized;
   let is_hidden_tab = is_inactive_stack_child(window);
 
-  // Only a window with a preview shows its overlays.
-  let overlays = if is_minimized || is_hidden_tab {
-    Vec::new()
-  } else {
+  let overlays = if shows_overlays(window) {
     [
       window_overlay(
         &state.backdrop_overlays,
@@ -539,6 +536,8 @@ fn overview_window(
     .into_iter()
     .flatten()
     .collect()
+  } else {
+    Vec::new()
   };
 
   OverviewWindow {
@@ -554,6 +553,19 @@ fn overview_window(
     opacity: look.opacity,
     overlays,
   }
+}
+
+/// Whether `window`'s overlays are on screen, for its preview to show
+/// them: it is in view on a shown workspace.
+///
+/// The WM hides the others, which DWM composes for no thumbnail; cloaked
+/// instead, they showed in previews as small, stale boxes.
+fn shows_overlays(window: &WindowContainer) -> bool {
+  window.state() != WindowState::Minimized
+    && !is_hidden_in_layout(window)
+    && window
+      .workspace()
+      .is_some_and(|workspace| workspace.is_displayed())
 }
 
 /// `window`'s overlay among `overlays`, while the WM draws one with
@@ -1003,6 +1015,32 @@ mod tests {
       windows.iter().all(|window| window.overlays.is_empty()),
       "the WM draws no overlays for them"
     );
+  }
+
+  #[test]
+  fn only_windows_on_screen_show_their_overlays() {
+    use super::shows_overlays;
+    use crate::{
+      commands::container::set_focused_descendant, models::Monitor,
+      wm_state::WmState,
+    };
+
+    let (shown, hidden) = (tiling("shown"), tiling("hidden"));
+    let first = Workspace::mock()
+      .name("1".to_string())
+      .tiling_containers(vec![shown.clone().into()])
+      .call();
+    let second = Workspace::mock()
+      .name("2".to_string())
+      .tiling_containers(vec![hidden.clone().into()])
+      .call();
+    let _state = WmState::mock(vec![Monitor::mock()
+      .workspaces(vec![first, second])
+      .call()]);
+    set_focused_descendant(&shown.clone().into(), None);
+
+    assert!(shows_overlays(&shown.into()));
+    assert!(!shows_overlays(&hidden.into()), "on a hidden workspace");
   }
 
   #[test]

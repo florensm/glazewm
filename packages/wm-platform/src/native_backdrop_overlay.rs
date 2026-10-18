@@ -228,43 +228,6 @@ impl Overlay for NativeBackdropOverlay {
     self.window.hide();
   }
 
-  fn create_parked(
-    rect: &Rect,
-    params: BackdropOverlayParams,
-  ) -> crate::Result<Self> {
-    let window =
-      OverlayWindow::create(OverlayKind::Backdrop, rect, HWND(0))?;
-    let composition = BackdropVisual::create(window.hwnd(), rect, params)?;
-
-    let mut overlay = Self {
-      composition,
-      window,
-      params,
-      rect: rect.clone(),
-    };
-    overlay.park(rect);
-
-    Ok(overlay)
-  }
-
-  fn park(&mut self, rect: &Rect) {
-    if self.window.is_parked() && &self.rect == rect {
-      return;
-    }
-
-    if let Err(e) = self.composition.set_rect(rect) {
-      tracing::warn!("Backdrop overlay composition resize failed: {e}.");
-    }
-    if let Err(err) = self.window.park(rect) {
-      tracing::warn!("{err}");
-    }
-    self.rect = rect.clone();
-  }
-
-  fn is_parked(&self) -> bool {
-    self.window.is_parked()
-  }
-
   fn hwnd(&self) -> HWND {
     self.window.hwnd()
   }

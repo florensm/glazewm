@@ -2888,12 +2888,6 @@ fn sync_overlays<O: SyncableOverlay>(
   let effect_configured =
     focused_params.is_some() || other_params.is_some();
 
-  // The overview previews the windows of other workspaces, and columns
-  // scrolled out of view, which `HideMethod::Cloak` leaves composed; their
-  // overlays are drawn for it too, in place but cloaked.
-  let parks_hidden = state.overview.is_shown()
-    && config.value.general.hide_method == HideMethod::Cloak;
-
   for window in &all_windows {
     let is_focused = window.id() == focused_container.id();
 
@@ -2935,39 +2929,29 @@ fn sync_overlays<O: SyncableOverlay>(
     let Some(params) = params else {
       // Configured, but not for this window's focus state, or suppressed
       // for this particular window: hide rather than destroy.
-      // Guarded because `hide` issues a `ShowWindow` unconditionally.
+      // Guarded on `is_visible` because `hide` issues a `ShowWindow`
+      // unconditionally.
       if let Some(overlay) = O::overlays(state).get_mut(&window.id()) {
-        if overlay.is_visible() || overlay.is_parked() {
+        if overlay.is_visible() {
           overlay.hide();
         }
       }
       continue;
     };
 
-    let has_surrogate =
-      state.animation_manager.has_active_surrogate(&window.id());
-    let should_hide = has_surrogate
-      || !window.workspace().is_some_and(|ws| ws.is_displayed())
-      || is_hidden_in_layout(window);
-    let is_redrawing = redrawing_ids.contains(&window.id());
+    let should_hide =
+      state.animation_manager.has_active_surrogate(&window.id())
+        || !window.workspace().is_some_and(|ws| ws.is_displayed())
+        || is_hidden_in_layout(window);
 
     if should_hide {
-      // As previewed: neither minimized nor a stack's hidden tab.
-      let parks = parks_hidden
-        && !has_surrogate
-        && window.state() != WindowState::Minimized
-        && !is_inactive_stack_child(window);
-
-      if parks {
-        park_overlay::<O>(state, window, params, is_redrawing);
-      } else if let Some(overlay) =
-        O::overlays(state).get_mut(&window.id())
-      {
+      if let Some(overlay) = O::overlays(state).get_mut(&window.id()) {
         overlay.hide();
       }
       continue;
     }
 
+    let is_redrawing = redrawing_ids.contains(&window.id());
     let had_overlay = O::overlays(state).contains_key(&window.id());
     let anchor = overlay_z_anchor(window);
 
@@ -3103,56 +3087,6 @@ fn sync_overlays<O: SyncableOverlay>(
           "{} overlay z-order sync failed for {id}: {err}.",
           O::LABEL
         );
-      }
-    }
-  }
-}
-
-/// Draws `window`'s overlay of kind `O` with `params` cloaked where the
-/// window is, creating it if need be, for the overview to preview it with
-/// the window. Measures the window again only when new, or `is_redrawing`.
-#[cfg(target_os = "windows")]
-fn park_overlay<O: SyncableOverlay>(
-  state: &mut WmState,
-  window: &WindowContainer,
-  params: O::Params,
-  is_redrawing: bool,
-) {
-  if let Some(overlay) = O::overlays(state).get_mut(&window.id()) {
-    overlay.apply(params);
-    if overlay.is_parked() && !is_redrawing {
-      return;
-    }
-  }
-
-  let frame = match window.native().frame() {
-    Ok(frame) => frame,
-    Err(err) => {
-      debug!(
-        "{} overlay frame() query failed for {}: {err}.",
-        O::LABEL,
-        window.id()
-      );
-      return;
-    }
-  };
-  let rect = O::overlay_rect(window, &frame);
-
-  match O::overlays(state).entry(window.id()) {
-    std::collections::hash_map::Entry::Occupied(e) => {
-      e.into_mut().park(&rect);
-    }
-    std::collections::hash_map::Entry::Vacant(e) => {
-      match O::create_parked(&rect, params) {
-        Ok(overlay) => {
-          debug!("{} overlay parked for {}.", O::LABEL, window.id());
-          e.insert(overlay);
-        }
-        Err(err) => debug!(
-          "{} overlay creation failed for {}: {err}.",
-          O::LABEL,
-          window.id()
-        ),
       }
     }
   }
