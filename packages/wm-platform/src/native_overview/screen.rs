@@ -17,14 +17,16 @@ use super::{
   ScreenFrame, SETTLE_MS,
 };
 use crate::{
-  overview_chrome::{draw_card, draw_search, picture_size},
+  overview_chrome::{
+    draw_card, draw_search, draw_sheet, picture_size, sheet_size,
+  },
   overview_layout::{
     activities, carousel, chrome_opacity, grid, stage as stage_layout,
     Camera, CardMetrics, GridCells, Placement, RectF, Spring, Zoom,
     SEARCH_HEIGHT,
   },
   overview_scene::SceneWindow,
-  overview_state::{Hit, Mode, ScreenFocus},
+  overview_state::{Control, Hit, Mode, ScreenFocus},
   overview_thumbnails::{Picture, Thumbnail},
   platform_impl::composition::OverviewBackdrop,
   tab_layout::TabHit,
@@ -33,6 +35,9 @@ use crate::{
 
 /// ID of the next registration of a screen's thumbnails.
 static NEXT_REGISTRATION: AtomicU64 = AtomicU64::new(1);
+
+/// How long the shortcut sheet takes to fade in or out.
+const SHEET_FADE_MS: f32 = 160.0;
 
 impl Screen {
   /// A screen with its window hidden, whose pictures post to `notify`
@@ -61,7 +66,11 @@ impl Screen {
       overlays: Overlays::new(),
       search: None,
       search_drawn: None,
+      search_controls: None,
       search_y: Spring::new(0.0, SETTLE_MS, 0.25),
+      sheet: None,
+      sheet_drawn: None,
+      sheet_alpha: Spring::new(0.0, SHEET_FADE_MS, 0.002),
       dock: None,
       retired: Vec::new(),
       grid: GridCells::default(),
@@ -244,6 +253,8 @@ impl Screen {
     self.registered_for = None;
     self.nav.clear();
     self.zoom = None;
+    self.sheet_drawn = None;
+    self.sheet_alpha.snap(0.0);
     self.is_tracking_leave = false;
   }
 
@@ -373,11 +384,14 @@ impl Screen {
       overlays.register(host, layout);
     }
 
-    if self.search.is_none() {
-      self.search = Picture::new();
-    }
-    if let Some(search) = &mut self.search {
-      search.thumbnail = Thumbnail::register(host, search.window);
+    // Over everything else, the sheet over the search line.
+    for picture in [&mut self.search, &mut self.sheet] {
+      if picture.is_none() {
+        *picture = Picture::new();
+      }
+      if let Some(picture) = picture {
+        picture.thumbnail = Thumbnail::register(host, picture.window);
+      }
     }
 
     self.registered_for = Some(layout);
@@ -412,8 +426,10 @@ impl Screen {
     if let Some(overlays) = &mut self.overlays {
       overlays.retire(&mut retired);
     }
-    if let Some(search) = &mut self.search {
-      retired.extend(search.thumbnail.take());
+    for picture in
+      [&mut self.search, &mut self.sheet].into_iter().flatten()
+    {
+      retired.extend(picture.thumbnail.take());
     }
 
     retired
@@ -607,27 +623,59 @@ impl Screen {
 
     self.refresh_overlays(&style, force);
 
-    let search = self.focus.search.clone();
-    if force || self.search_drawn != search {
-      if let Some(search) = &search {
-        let scale_factor = self.metrics.scale_factor;
+    self.refresh_search(&style, force);
+    self.refresh_sheet(&style, force);
+    self.is_dirty = true;
+  }
 
-        #[allow(clippy::cast_possible_truncation)]
-        let size = (
-          self.metrics.view.0.ceil() as i32,
-          (SEARCH_HEIGHT * scale_factor).ceil() as i32,
-        );
-
-        if let Some(picture) = &mut self.search {
-          picture.draw(size, |surface| {
-            draw_search(surface, search, scale_factor, &style);
-          });
-        }
-      }
-      self.search_drawn = search;
+  /// Redraws the search line if it changed, or when `force`.
+  fn refresh_search(&mut self, style: &OverviewStyle, force: bool) {
+    let drawn =
+      (self.focus.search.clone(), self.focus.shortcuts.is_some());
+    if !force && self.search_drawn.as_ref() == Some(&drawn) {
+      return;
     }
 
-    self.is_dirty = true;
+    let scale_factor = self.metrics.scale_factor;
+    #[allow(clippy::cast_possible_truncation)]
+    let size = (
+      self.metrics.view.0.ceil() as i32,
+      (SEARCH_HEIGHT * scale_factor).ceil() as i32,
+    );
+
+    if let Some(picture) = &mut self.search {
+      let (search, shows_shortcuts) = &drawn;
+      picture.draw(size, |surface| {
+        self.search_controls = Some(draw_search(
+          surface,
+          search,
+          *shows_shortcuts,
+          scale_factor,
+          style,
+        ));
+      });
+    }
+    self.search_drawn = Some(drawn);
+  }
+
+  /// Redraws the shortcut sheet if what it lists changed, or when
+  /// `force`, and fades it in or out as it opens or closes.
+  fn refresh_sheet(&mut self, style: &OverviewStyle, force: bool) {
+    let groups = self.focus.shortcuts.clone();
+    if !force && self.sheet_drawn == groups {
+      return;
+    }
+
+    // Closing keeps what it showed, to fade out.
+    if let (Some(groups), Some(picture)) = (&groups, &mut self.sheet) {
+      let scale_factor = self.metrics.scale_factor;
+      let size = sheet_size(groups, scale_factor, style);
+      picture.draw(size, |surface| {
+        draw_sheet(surface, groups, scale_factor, style);
+      });
+    }
+    self.sheet_alpha.target = if groups.is_some() { 1.0 } else { 0.0 };
+    self.sheet_drawn = groups;
   }
 
   /// How far it is open, from 0 (a card's windows fill the screen) to 1
@@ -758,6 +806,7 @@ impl Screen {
       is_moving |= overlays.step(dt);
     }
     is_moving |= self.search_y.step(dt);
+    is_moving |= self.sheet_alpha.step(dt);
 
     if let Some((zoom, started)) = self.zoom {
       is_moving = true;
@@ -846,14 +895,58 @@ impl Screen {
       }
     }
 
+    let sheet_rect = self.sheet_rect();
+    let sheet_opacity = chrome_opacity(fade) * self.sheet_alpha.value;
+    if let Some(sheet) = &mut self.sheet {
+      match sheet_rect {
+        Some(rect) if sheet_opacity > 0.002 => {
+          sheet.place(&rect, &view, sheet_opacity);
+        }
+        _ => {
+          if let Some(thumbnail) = &mut sheet.thumbnail {
+            thumbnail.hide();
+          }
+        }
+      }
+    }
+
     // Their replacements are in place now.
     self.retired.clear();
 
     is_gliding
   }
 
+  /// Where the shortcut sheet shows, centered on the screen, once drawn.
+  #[allow(clippy::cast_precision_loss)]
+  fn sheet_rect(&self) -> Option<RectF> {
+    let (width, height) = self.sheet.as_ref()?.size();
+    let view = self.view();
+    (width > 0).then(|| {
+      RectF::new(
+        ((view.w - width as f32) / 2.0).round(),
+        ((view.h - height as f32) / 2.0).round(),
+        width as f32,
+        height as f32,
+      )
+    })
+  }
+
   /// What is under the point (`x`, `y`) of the screen.
   pub(super) fn hit(&self, x: f32, y: f32) -> Hit {
+    // The open shortcut sheet covers what is under it.
+    let is_on_sheet = self.sheet_drawn.is_some()
+      && self.sheet_rect().is_some_and(|rect| rect.contains(x, y));
+    if is_on_sheet {
+      return Hit::default();
+    }
+
+    if let Some(control) = self.hit_control(x, y) {
+      return Hit {
+        control: Some(control),
+        ..Hit::default()
+      };
+    }
+
     match self.focus.layout {
       OverviewLayoutMode::Activities => {
         let hit = self.hit_cards(x, y, &Camera::IDENTITY);
@@ -865,6 +958,24 @@ impl Screen {
       }
       _ => self.hit_cards(x, y, &self.camera()),
     }
+  }
+
+  /// The control of the search line under (`x`, `y`), once the opening
+  /// zoom ended and until the closing one starts.
+  fn hit_control(&self, x: f32, y: f32) -> Option<Control> {
+    if self.zoom.is_some() {
+      return None;
+    }
+
+    let controls = self.search_controls.as_ref()?;
+    let y = y - self.search_y.value;
+    [
+      (&controls.shortcuts, Control::Shortcuts),
+      (&controls.field, Control::Search),
+    ]
+    .into_iter()
+    .find(|(rect, _)| RectF::from_rect(rect).contains(x, y))
+    .map(|(_, control)| control)
   }
 
   /// What card is under (`x`, `y`) with `camera` applied, and what window
@@ -900,6 +1011,7 @@ impl Screen {
       return Hit {
         workspace: Some(index),
         window,
+        control: None,
       };
     }
 
@@ -925,6 +1037,7 @@ impl Screen {
       Hit {
         workspace: Some(selected),
         window,
+        control: None,
       }
     } else {
       Hit::default()

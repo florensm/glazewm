@@ -17,10 +17,10 @@ use crate::{
   overview_layout::{
     CardLook, CardMetrics, Placement, RectF, LABEL_HEIGHT,
   },
-  overview_state::SearchField,
+  overview_state::{SearchField, ShortcutGroup},
   paint,
   surface::Surface,
-  text::{draw_text, is_installed, text_width, Align, Fonts},
+  text::{draw_text, is_installed, text_width, Align, Font, Fonts},
   window_icons, Color, CornerRadii, OverviewStyle, Rect,
 };
 
@@ -894,65 +894,81 @@ const SEARCH_GLYPH: &str = "\u{e721}";
 const ICON_FAMILIES: [&str; 2] =
   ["Segoe Fluent Icons", "Segoe MDL2 Assets"];
 
-/// Draws `search`, centered, into `surface`: a rounded field with a search
-/// icon, the query (or what to do while there is none) and its matches,
-/// ringed in the accent while typing goes to it.
+/// Height, side padding and corner radius of a key cap, in logical
+/// pixels.
+const KEY_CAP: (f32, f32, f32) = (22.0, 7.0, 6.0);
+
+/// Where the search line's controls are, in its picture.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct SearchControls {
+  pub field: Rect,
+  pub shortcuts: Rect,
+}
+
+/// Draws the search line, centered, into `surface`: the search field (a
+/// search icon, the query or what to do, and its matches, ringed in the
+/// accent while typing goes to it) and beside it the chip that opens the
+/// keyboard shortcuts, ringed while they are open.
 pub(crate) fn draw_search(
   surface: &mut Surface,
   search: &SearchField,
+  shows_shortcuts: bool,
   scale_factor: f32,
   style: &OverviewStyle,
-) {
+) -> SearchControls {
   let px = |length: f32| round(length * scale_factor);
   let (min_width, padding, gap) = SEARCH_FIELD;
   surface.pixels().fill(0);
 
-  let font =
-    Fonts::new(&style.font_family).get(13.0 * scale_factor, false);
+  let mut fonts = Fonts::new(&style.font_family);
+  let font = fonts.get(13.0 * scale_factor, false);
+  let key_font = fonts.get(11.0 * scale_factor, true);
   let icon = ICON_FAMILIES
     .into_iter()
     .find(|family| is_installed(family))
     .map(|family| Fonts::new(family).get(14.0 * scale_factor, false));
 
-  let (text, text_color) = if search.query.is_empty() {
-    ("Type to search", with_alpha(style.subtext, 0.6))
-  } else {
-    (search.query.as_str(), style.text)
-  };
-  let hits = match search.hits {
-    0 if search.query.is_empty() => String::new(),
-    0 => "No matches".to_string(),
-    1 => "1 match".to_string(),
-    hits => format!("{hits} matches"),
+  let (text, text_color) =
+    match (search.query.is_empty(), search.is_typing) {
+      (true, true) => ("Type to search", with_alpha(style.subtext, 0.6)),
+      (true, false) => ("Search windows", with_alpha(style.subtext, 0.7)),
+      (false, _) => (search.query.as_str(), style.text),
+    };
+
+  // The matches, or else the key that starts a search.
+  let (hits, slash) = match (search.hits, search.query.is_empty()) {
+    (_, true) => (String::new(), !search.is_typing),
+    (0, false) => ("No matches".to_string(), false),
+    (1, false) => ("1 match".to_string(), false),
+    (hits, false) => (format!("{hits} matches"), false),
   };
 
   let icon_width = icon
     .as_ref()
     .map_or(0, |icon| text_width(icon, SEARCH_GLYPH));
   let typed_width = text_width(&font, text);
-  let hits_width = text_width(&font, &hits);
-  let content = icon_width + typed_width + hits_width + 3 * px(gap);
-  let width = (content + 2 * px(padding))
-    .max(px(min_width))
-    .min(surface.width);
+  let end_width = if slash {
+    key_cap_width(&key_font, "/", scale_factor)
+  } else {
+    text_width(&font, &hits)
+  };
+  let chip_width = shortcuts_chip_width(&font, &key_font, scale_factor);
+
   let height = surface.height;
-  let field = Rect::from_xy((surface.width - width) / 2, 0, width, height);
-  {
-    let mut canvas = surface.canvas();
-    canvas.fill_rounded_rect(
-      &field,
-      height / 2,
-      with_alpha(style.card, 0.88),
-    );
-    if search.is_typing {
-      canvas.stroke_rounded_rect(
-        &field,
-        height / 2,
-        px(2.0).max(1),
-        with_alpha(style.accent, 0.9),
-      );
-    }
-  }
+  let field_width =
+    (icon_width + typed_width + end_width + 3 * px(gap) + 2 * px(padding))
+      .max(px(min_width));
+  let total = (field_width + px(gap) + chip_width).min(surface.width);
+  let field = Rect::from_xy(
+    (surface.width - total) / 2,
+    0,
+    total - px(gap) - chip_width,
+    height,
+  );
+  let chip = Rect::from_xy(field.right + px(gap), 0, chip_width, height);
+
+  draw_search_pill(surface, &field, search.is_typing, scale_factor, style);
+  draw_search_pill(surface, &chip, shows_shortcuts, scale_factor, style);
 
   let mut left = field.left + px(padding);
   if let Some(icon) = &icon {
@@ -963,17 +979,22 @@ pub(crate) fn draw_search(
   }
 
   let right = field.right - px(padding);
-  let hits_left = right - hits_width;
-  let text_rect = Rect::from_ltrb(left, 0, hits_left - px(gap), height);
+  let end_left = right - end_width;
+  let text_rect = Rect::from_ltrb(left, 0, end_left - px(gap), height);
   draw_text(surface, &font, text, &text_rect, text_color, Align::Left);
-  draw_text(
-    surface,
-    &font,
-    &hits,
-    &Rect::from_ltrb(hits_left, 0, right, height),
-    with_alpha(style.subtext, 0.85),
-    Align::Right,
-  );
+  if slash {
+    let cap = key_cap_rect(end_left, height, end_width, scale_factor);
+    draw_key_cap(surface, &cap, "/", &key_font, scale_factor, style);
+  } else {
+    draw_text(
+      surface,
+      &font,
+      &hits,
+      &Rect::from_ltrb(end_left, 0, right, height),
+      with_alpha(style.subtext, 0.85),
+      Align::Right,
+    );
+  }
 
   // Before the placeholder, after the query.
   if search.is_typing {
@@ -994,6 +1015,290 @@ pub(crate) fn draw_search(
       0,
       with_alpha(style.accent, 0.9),
     );
+  }
+
+  draw_shortcuts_chip(
+    surface,
+    &chip,
+    [&font, &key_font],
+    scale_factor,
+    style,
+  );
+
+  SearchControls {
+    field,
+    shortcuts: chip,
+  }
+}
+
+/// Label of the chip that opens the shortcut sheet.
+const SHORTCUTS_LABEL: &str = "Shortcuts";
+
+/// Width of the chip that opens the shortcut sheet.
+fn shortcuts_chip_width(
+  font: &Font,
+  key_font: &Font,
+  scale_factor: f32,
+) -> i32 {
+  let (_, padding, gap) = SEARCH_FIELD;
+  key_cap_width(key_font, "?", scale_factor)
+    + text_width(font, SHORTCUTS_LABEL)
+    + round((2.0 * padding + gap) * scale_factor)
+}
+
+/// Draws the `?` key cap and label of the chip that opens the shortcut
+/// sheet into `chip`, in the label's font and the key's.
+fn draw_shortcuts_chip(
+  surface: &mut Surface,
+  chip: &Rect,
+  [font, key_font]: [&Font; 2],
+  scale_factor: f32,
+  style: &OverviewStyle,
+) {
+  let px = |length: f32| round(length * scale_factor);
+  let (_, padding, gap) = SEARCH_FIELD;
+  let height = chip.height();
+
+  let cap_width = key_cap_width(key_font, "?", scale_factor);
+  let cap =
+    key_cap_rect(chip.left + px(padding), height, cap_width, scale_factor);
+  let cap =
+    Rect::from_xy(cap.left, chip.top + cap.top, cap_width, cap.height());
+  draw_key_cap(surface, &cap, "?", key_font, scale_factor, style);
+  draw_text(
+    surface,
+    font,
+    SHORTCUTS_LABEL,
+    &Rect::from_ltrb(
+      cap.right + px(gap),
+      chip.top,
+      chip.right - px(padding),
+      chip.bottom,
+    ),
+    with_alpha(style.subtext, 0.9),
+    Align::Left,
+  );
+}
+
+/// Fills `rect` as a pill of the search line, ringed in the accent if
+/// `is_ringed`.
+fn draw_search_pill(
+  surface: &mut Surface,
+  rect: &Rect,
+  is_ringed: bool,
+  scale_factor: f32,
+  style: &OverviewStyle,
+) {
+  let radius = rect.height() / 2;
+  let mut canvas = surface.canvas();
+  canvas.fill_rounded_rect(rect, radius, with_alpha(style.card, 0.88));
+  if is_ringed {
+    canvas.stroke_rounded_rect(
+      rect,
+      radius,
+      round(2.0 * scale_factor).max(1),
+      with_alpha(style.accent, 0.9),
+    );
+  }
+}
+
+/// Width of a key cap showing `key` in `font`.
+fn key_cap_width(font: &Font, key: &str, scale_factor: f32) -> i32 {
+  let (height, padding, _) = KEY_CAP;
+  (text_width(font, key) + round(2.0 * padding * scale_factor))
+    .max(round(height * scale_factor))
+}
+
+/// A key cap `width` wide from `left`, centered on a line `line` tall.
+fn key_cap_rect(
+  left: i32,
+  line: i32,
+  width: i32,
+  scale_factor: f32,
+) -> Rect {
+  let height = round(KEY_CAP.0 * scale_factor);
+  Rect::from_xy(left, (line - height) / 2, width, height)
+}
+
+/// Draws `key` on a key cap filling `rect`.
+fn draw_key_cap(
+  surface: &mut Surface,
+  rect: &Rect,
+  key: &str,
+  font: &Font,
+  scale_factor: f32,
+  style: &OverviewStyle,
+) {
+  let radius = round(KEY_CAP.2 * scale_factor);
+  {
+    let mut canvas = surface.canvas();
+    canvas.fill_rounded_rect(rect, radius, with_alpha(style.text, 0.1));
+    canvas.stroke_rounded_rect(
+      rect,
+      radius,
+      round(scale_factor).max(1),
+      with_alpha(style.text, 0.16),
+    );
+  }
+  draw_text(
+    surface,
+    font,
+    key,
+    rect,
+    with_alpha(style.text, 0.9),
+    Align::Center,
+  );
+}
+
+/// Padding, title height and gap under it, column gap, group title
+/// height, and row height of the shortcut sheet, in logical pixels.
+const SHEET: (f32, f32, f32, f32, f32, f32) =
+  (28.0, 22.0, 20.0, 36.0, 22.0, 32.0);
+
+/// Gap between a shortcut's key cap and what it does, in logical pixels.
+const SHEET_KEY_GAP: f32 = 10.0;
+
+/// The fonts of the shortcut sheet: its title, group titles and keys, and
+/// what the keys do.
+fn sheet_fonts(style: &OverviewStyle, scale_factor: f32) -> [Font; 3] {
+  let mut fonts = Fonts::new(&style.font_family);
+  [
+    fonts.get(15.0 * scale_factor, true),
+    fonts.get(11.0 * scale_factor, true),
+    fonts.get(12.5 * scale_factor, false),
+  ]
+}
+
+/// Pixel size of the shortcut sheet listing `groups`, and each column's
+/// width.
+fn sheet_layout(
+  groups: &[ShortcutGroup],
+  scale_factor: f32,
+  style: &OverviewStyle,
+) -> ((i32, i32), Vec<i32>) {
+  let px = |length: f32| round(length * scale_factor);
+  let (padding, title, title_gap, column_gap, group_title, row) = SHEET;
+  let [_, key_font, font] = sheet_fonts(style, scale_factor);
+
+  let columns = groups
+    .iter()
+    .map(|group| {
+      group
+        .shortcuts
+        .iter()
+        .map(|shortcut| {
+          key_cap_width(&key_font, &shortcut.key, scale_factor)
+            + px(SHEET_KEY_GAP)
+            + text_width(&font, &shortcut.action)
+        })
+        .chain([text_width(&key_font, &group.title.to_uppercase())])
+        .max()
+        .unwrap_or(0)
+    })
+    .collect::<Vec<_>>();
+
+  let rows = groups
+    .iter()
+    .map(|group| group.shortcuts.len())
+    .max()
+    .unwrap_or(0);
+  let gaps = i32::try_from(columns.len().saturating_sub(1)).unwrap_or(0);
+  let size = (
+    columns.iter().sum::<i32>() + gaps * px(column_gap) + 2 * px(padding),
+    px(2.0 * padding + title + title_gap + group_title)
+      + px(row) * i32::try_from(rows).unwrap_or(0),
+  );
+  (size, columns)
+}
+
+/// Pixel size of the shortcut sheet listing `groups`.
+pub(crate) fn sheet_size(
+  groups: &[ShortcutGroup],
+  scale_factor: f32,
+  style: &OverviewStyle,
+) -> (i32, i32) {
+  sheet_layout(groups, scale_factor, style).0
+}
+
+/// Draws the sheet of keyboard shortcuts listing `groups` into `surface`,
+/// `sheet_size` big: a column per step, each key on a key cap.
+pub(crate) fn draw_sheet(
+  surface: &mut Surface,
+  groups: &[ShortcutGroup],
+  scale_factor: f32,
+  style: &OverviewStyle,
+) {
+  let px = |length: f32| round(length * scale_factor);
+  let (padding, title, title_gap, column_gap, group_title, row) = SHEET;
+  let (_, columns) = sheet_layout(groups, scale_factor, style);
+  let [title_font, key_font, font] = sheet_fonts(style, scale_factor);
+  surface.pixels().fill(0);
+
+  let sheet = Rect::from_xy(0, 0, surface.width, surface.height);
+  surface.canvas().fill_rounded_rect(
+    &sheet,
+    px(18.0),
+    with_alpha(style.card, 0.96),
+  );
+
+  let top = px(padding);
+  draw_text(
+    surface,
+    &title_font,
+    "Keyboard shortcuts",
+    &Rect::from_ltrb(
+      px(padding),
+      top,
+      sheet.right - px(padding),
+      top + px(title),
+    ),
+    style.text,
+    Align::Left,
+  );
+
+  let groups_top = top + px(title + title_gap);
+  let mut left = px(padding);
+  for (group, width) in groups.iter().zip(columns) {
+    draw_text(
+      surface,
+      &key_font,
+      &group.title.to_uppercase(),
+      &Rect::from_xy(left, groups_top, width, px(group_title)),
+      with_alpha(style.subtext, 0.8),
+      Align::Left,
+    );
+
+    let mut y = groups_top + px(group_title);
+    for shortcut in &group.shortcuts {
+      let cap_width =
+        key_cap_width(&key_font, &shortcut.key, scale_factor);
+      let cap = key_cap_rect(left, px(row), cap_width, scale_factor);
+      let cap =
+        Rect::from_xy(cap.left, y + cap.top, cap.width(), cap.height());
+      draw_key_cap(
+        surface,
+        &cap,
+        &shortcut.key,
+        &key_font,
+        scale_factor,
+        style,
+      );
+      draw_text(
+        surface,
+        &font,
+        &shortcut.action,
+        &Rect::from_ltrb(
+          cap.right + px(SHEET_KEY_GAP),
+          y,
+          left + width,
+          y + px(row),
+        ),
+        style.text,
+        Align::Left,
+      );
+      y += px(row);
+    }
+    left += width + px(column_gap);
   }
 }
 
@@ -1138,7 +1443,7 @@ mod tests {
     };
 
     let mut surface = Surface::new(1920, 36).expect("surface");
-    draw_search(&mut surface, &search, 1.0, &style);
+    draw_search(&mut surface, &search, false, 1.0, &style);
     assert!(surface.pixels().iter().any(|pixel| *pixel != 0));
   }
 }

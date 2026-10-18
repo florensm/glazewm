@@ -80,14 +80,17 @@ is nowhere to go.
 | Click the background | Close without changing anything. |
 | Drag a window onto another workspace | Move it to that workspace. The overview stays open. |
 | Middle-click a window | Close the window. |
+| Click the search field | Type into the [search](#search), keeping its query. |
+| Click **? Shortcuts** | Show or hide the keyboard shortcuts. |
 | Wheel | Show or select the next or previous workspace. |
 
 ### Keyboard
 
 The keyboard goes one step deeper with each `Space`: browsing workspaces,
 picking a window inside one, then carrying that window to another
-workspace. Like GNOME's overview, it shows no key hints: the keys are
-listed here.
+workspace. Like GNOME's overview, it shows no key hints: `?`, or the
+**? Shortcuts** chip beside the search field, opens a sheet of them, which
+any key or click closes.
 
 The arrows go between workspaces along the layout: `←` `→` in the
 activities and the carousel, `↑` `↓` down the stage's column, and all four
@@ -107,6 +110,8 @@ workspaces.
 | `x` | | Close the selected window. | |
 | `Backspace` | | Back to browsing. | Put the window down. |
 | `Tab` | Switch to the next layout: activities, stage, carousel, grid. | Same, back to browsing in the grid. | Same. |
+| `/` | Start a [search](#search). | Same. | Same. |
+| `?` | Show the keyboard shortcuts. | Same. | Same. |
 | `Escape` | Close without changing anything. | Same. | Same. |
 
 Digits go to the workspace named after them (`0` is `10`), like a
@@ -118,7 +123,7 @@ go by the cards' positions instead.
 
 Each monitor shows the workspaces on it, and the keyboard is on one
 monitor at a time: the focused one at first. A ring in `accent_color`
-around its edges, and the line of keys, show which.
+around its edges shows which.
 
 - An arrow with nowhere to go on a monitor goes on to the nearest monitor
   that way that lines up with it: past either end of its row, an arrow
@@ -137,10 +142,11 @@ around its edges, and the line of keys, show which.
 
 ### Search
 
-`/` starts a search: type to match window titles and process names, on
+A search field sits at the bottom of every monitor. `/`, or a click on
+it, starts a search: type to match window titles and process names, on
 every monitor; matches are outlined in `search_color` and the rest fade,
-and a search field at the bottom of every monitor shows the query and its
-matches, ringed in the accent while typing goes to it. `Enter` ends typing and
+and the field shows the query and its matches, ringed in the accent while
+typing goes to it. `Enter` ends typing and
 selects the best match, after which `n` / `N` step through the matches,
 moving the keyboard to the monitor of each. While typing, `Escape` clears
 the search and `Backspace` on an empty query ends it. While carrying a

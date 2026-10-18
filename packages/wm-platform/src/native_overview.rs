@@ -59,7 +59,7 @@ use windows::{
 
 use self::{desk::Desk, ghost::Ghost, overlays::Overlays};
 use crate::{
-  overview_chrome::{picture_rect, CardPicture},
+  overview_chrome::{picture_rect, CardPicture, SearchControls},
   overview_layout::{
     Camera, CardMetrics, CardView, GridCells, Placement, RectF, Spring,
     Zoom,
@@ -67,6 +67,7 @@ use crate::{
   overview_scene::Scene,
   overview_state::{
     all_workspaces, Hit, Interaction, Key, ScreenFocus, SearchField,
+    ShortcutGroup,
   },
   overview_tab_bars::CardTabBar,
   overview_thumbnails::{Picture, Preview, Thumbnail},
@@ -636,11 +637,18 @@ struct Screen {
   /// `None` if their pictures couldn't be created.
   overlays: Option<Overlays>,
 
-  /// The search field, while there is a search, and what it was drawn
-  /// as.
+  /// The search line, what it was drawn as (with the shortcuts chip
+  /// ringed or not), and where its controls are in it.
   search: Option<Picture>,
-  search_drawn: Option<SearchField>,
+  search_drawn: Option<(SearchField, bool)>,
+  search_controls: Option<SearchControls>,
   search_y: Spring,
+
+  /// The sheet of keyboard shortcuts, what it lists while open, and how
+  /// far it is faded in.
+  sheet: Option<Picture>,
+  sheet_drawn: Option<Vec<ShortcutGroup>>,
+  sheet_alpha: Spring,
 
   /// Where the special workspace's card is docked, from the last layout.
   dock: Option<RectF>,
@@ -1162,7 +1170,7 @@ impl Overview {
       Some(index),
       Hit {
         workspace: hit.workspace.map(|workspace| start + workspace),
-        window: hit.window,
+        ..hit
       },
     )
   }
@@ -1349,7 +1357,9 @@ impl Overview {
   fn cursor(&self) -> windows::core::PCWSTR {
     if self.interaction.drag.is_some() {
       IDC_SIZEALL
-    } else if self.interaction.hover.is_some() {
+    } else if self.interaction.hover.is_some()
+      || self.interaction.hover_control.is_some()
+    {
       IDC_HAND
     } else {
       IDC_ARROW

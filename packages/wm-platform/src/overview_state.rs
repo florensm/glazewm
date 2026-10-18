@@ -80,10 +80,44 @@ impl Toward {
 pub(crate) struct Hit {
   pub workspace: Option<usize>,
   pub window: Option<isize>,
+  pub control: Option<Control>,
 }
 
-/// The search, as every screen shows it while there is one.
+/// A control along the bottom of a screen.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Control {
+  /// The search field, which starts a search.
+  Search,
+
+  /// The chip beside it, which shows the keyboard shortcuts.
+  Shortcuts,
+}
+
+/// Keyboard shortcuts of one step, as the shortcut sheet lists them.
 #[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct ShortcutGroup {
+  pub title: &'static str,
+  pub shortcuts: Vec<Shortcut>,
+}
+
+/// A key and what it does.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct Shortcut {
+  pub key: String,
+  pub action: String,
+}
+
+impl Shortcut {
+  fn new(key: &str, action: &str) -> Self {
+    Self {
+      key: key.to_string(),
+      action: action.to_string(),
+    }
+  }
+}
+
+/// The search field, as every screen shows it.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct SearchField {
   pub query: String,
 
@@ -163,8 +197,14 @@ pub(crate) struct Interaction {
 
   match_index: Option<usize>,
 
+  /// Whether the sheet of keyboard shortcuts is open.
+  pub shows_shortcuts: bool,
+
   /// Workspace under the cursor.
   pub hover: Option<usize>,
+
+  /// Control under the cursor.
+  pub hover_control: Option<Control>,
 
   press: Option<Press>,
   pub drag: Option<Drag>,
@@ -202,7 +242,9 @@ impl Interaction {
       searching: false,
       query: String::new(),
       match_index: None,
+      shows_shortcuts: false,
       hover: None,
+      hover_control: None,
       press: None,
       drag: None,
       drag_threshold,
@@ -366,6 +408,13 @@ impl Interaction {
     key: Key,
     workspaces: &[OverviewWorkspace],
   ) -> Option<OverviewAction> {
+    // Any key closes the shortcut sheet; `?` and `Escape` do nothing more.
+    if std::mem::take(&mut self.shows_shortcuts)
+      && matches!(key, Key::Text('?') | Key::Escape)
+    {
+      return None;
+    }
+
     if self.searching {
       self.search_key(key, workspaces);
       return None;
@@ -373,11 +422,8 @@ impl Interaction {
 
     match key {
       Key::Escape => return Some(OverviewAction::Cancel),
-      Key::Text('/') => {
-        self.searching = true;
-        self.query.clear();
-        self.match_index = None;
-      }
+      Key::Text('/') => self.start_search(),
+      Key::Text('?') => self.shows_shortcuts = true,
       Key::Text('n') => self.goto_match(1, workspaces),
       Key::Text('N') => self.goto_match(-1, workspaces),
       Key::Text('x' | 'X') => {
@@ -476,6 +522,13 @@ impl Interaction {
         action
       }
     }
+  }
+
+  /// Starts typing a new search.
+  fn start_search(&mut self) {
+    self.searching = true;
+    self.query.clear();
+    self.match_index = None;
   }
 
   fn search_key(&mut self, key: Key, workspaces: &[OverviewWorkspace]) {
@@ -1038,6 +1091,7 @@ impl Interaction {
   ) -> bool {
     let mut changed = self.hover != hit.workspace;
     self.hover = hit.workspace;
+    self.hover_control = hit.control;
 
     // Pointing at a window of the shown workspace picks it, as the arrows
     // would.
@@ -1097,6 +1151,22 @@ impl Interaction {
       });
     }
 
+    // A click anywhere closes the shortcut sheet, and does nothing more.
+    let showed_shortcuts = std::mem::take(&mut self.shows_shortcuts);
+    match press.hit.control {
+      Some(Control::Shortcuts) => {
+        self.shows_shortcuts = !showed_shortcuts;
+        return None;
+      }
+      _ if showed_shortcuts => return None,
+      // Typing goes to the field again, its query kept.
+      Some(Control::Search) => {
+        self.searching = true;
+        return None;
+      }
+      None => {}
+    }
+
     // A workspace not shown yet is shown first; a window clicked on it is
     // gone to right away.
     let other = press.hit.workspace.filter(|index| {
@@ -1113,6 +1183,7 @@ impl Interaction {
       Hit {
         window: Some(hwnd),
         workspace,
+        ..
       } => Some(OverviewAction::FocusWindow {
         hwnd,
         monitor: self.monitor_of(workspace),
@@ -1145,6 +1216,7 @@ impl Interaction {
 
   pub fn mouse_leave(&mut self) {
     self.hover = None;
+    self.hover_control = None;
   }
 
   /// What `screen` shows of the interaction, in its own card indices.
@@ -1179,19 +1251,98 @@ impl Interaction {
       marks_keyboard: is_active && self.screens.len() > 1,
       query: self.query.clone(),
       search: self.search_field(workspaces),
+      shortcuts: (is_active && self.shows_shortcuts)
+        .then(|| self.shortcuts()),
     }
   }
 
-  /// The search field every screen shows while there is a search.
+  /// The search field every screen shows.
   pub fn search_field(
     &self,
     workspaces: &[OverviewWorkspace],
-  ) -> Option<SearchField> {
-    (self.searching || !self.query.is_empty()).then(|| SearchField {
+  ) -> SearchField {
+    SearchField {
       query: self.query.clone(),
       is_typing: self.searching,
-      hits: self.matches(workspaces).len(),
-    })
+      hits: if self.query.is_empty() {
+        0
+      } else {
+        self.matches(workspaces).len()
+      },
+    }
+  }
+
+  /// The keyboard shortcuts of every step, with the arrows `layout` goes
+  /// by.
+  pub fn shortcuts(&self) -> Vec<ShortcutGroup> {
+    let (back, forward, inside) = arrows(self.layout);
+    let workspace_arrows = match (back, forward) {
+      _ if self.layout == OverviewLayoutMode::Grid => {
+        "\u{2190}\u{2191}\u{2193}\u{2192}"
+      }
+      (Toward::Up, Toward::Down) => "\u{2191}\u{2193}",
+      _ => "\u{2190}\u{2192}",
+    };
+    let window_arrows = "\u{2190}\u{2191}\u{2193}\u{2192}";
+    let look_inside = match inside {
+      Some(Toward::Down) => Some("\u{2193}"),
+      Some(Toward::Right) => Some("\u{2192}"),
+      Some(_) => None,
+      // The grid is too small to pick a window in.
+      None if self.layout == OverviewLayoutMode::Grid => None,
+      None => Some("Space"),
+    };
+
+    let mut windows = look_inside
+      .map(|key| Shortcut::new(key, "look inside"))
+      .into_iter()
+      .collect::<Vec<_>>();
+    windows.extend([
+      Shortcut::new(window_arrows, "pick a window"),
+      Shortcut::new("\u{23ce}", "go to it"),
+      Shortcut::new("X", "close it"),
+      Shortcut::new("1\u{2013}9 S", "send it there"),
+      Shortcut::new("\u{232b}", "back"),
+    ]);
+
+    vec![
+      ShortcutGroup {
+        title: "Workspaces",
+        shortcuts: vec![
+          Shortcut::new(workspace_arrows, "select"),
+          Shortcut::new("1\u{2013}9", "go to one"),
+          Shortcut::new("S", "special"),
+          Shortcut::new("\u{23ce}", "go there"),
+          Shortcut::new(
+            "Tab",
+            &format!("{} layout", self.layout.next().name()),
+          ),
+          Shortcut::new("Esc", "close"),
+        ],
+      },
+      ShortcutGroup {
+        title: "Windows",
+        shortcuts: windows,
+      },
+      ShortcutGroup {
+        title: "Carrying",
+        shortcuts: vec![
+          Shortcut::new("Space", "lift / drop"),
+          Shortcut::new(workspace_arrows, "pick a workspace"),
+          Shortcut::new("1\u{2013}9 S", "drop on that one"),
+          Shortcut::new("\u{232b}", "put it down"),
+        ],
+      },
+      ShortcutGroup {
+        title: "Search",
+        shortcuts: vec![
+          Shortcut::new("/", "search windows"),
+          Shortcut::new("\u{23ce}", "best match"),
+          Shortcut::new("n N", "next / previous"),
+          Shortcut::new("Esc", "clear"),
+        ],
+      },
+    ]
   }
 }
 
@@ -1236,8 +1387,11 @@ pub(crate) struct ScreenFocus {
   /// Search query, whose matches show on every screen.
   pub query: String,
 
-  /// The search field, while there is a search.
-  pub search: Option<SearchField>,
+  /// The search field.
+  pub search: SearchField,
+
+  /// The keyboard shortcuts, while their sheet is open on this screen.
+  pub shortcuts: Option<Vec<ShortcutGroup>>,
 }
 
 impl ScreenFocus {
@@ -1513,7 +1667,9 @@ fn row_indices(
 
 #[cfg(test)]
 mod tests {
-  use super::{all_workspaces, Hit, Interaction, Key, Mode, SearchField};
+  use super::{
+    all_workspaces, Control, Hit, Interaction, Key, Mode, SearchField,
+  };
   use crate::{
     overview_layout::{CardMetrics, CardSlot, GridCells, RectF},
     OverviewAction, OverviewLayoutMode, OverviewScreen, OverviewWindow,
@@ -1970,6 +2126,7 @@ mod tests {
       let other = Hit {
         workspace: Some(0),
         window: None,
+        control: None,
       };
       assert_eq!(click(&mut state, other), None);
       assert_eq!(state.selected(), 0);
@@ -1987,6 +2144,7 @@ mod tests {
       Hit {
         workspace: Some(0),
         window: None,
+        control: None,
       },
     );
     assert_eq!(state.mouse_up(&workspaces), Some(focus_workspace("1")));
@@ -2007,6 +2165,7 @@ mod tests {
         Hit {
           workspace: Some(0),
           window: Some(11),
+          control: None,
         },
       );
       assert_eq!(
@@ -2027,6 +2186,7 @@ mod tests {
       Hit {
         workspace: Some(1),
         window: Some(21),
+        control: None,
       },
       false,
     );
@@ -2040,6 +2200,7 @@ mod tests {
       Hit {
         workspace: Some(0),
         window: Some(11),
+        control: None,
       },
       false,
     );
@@ -2197,6 +2358,7 @@ mod tests {
     let window = Hit {
       workspace: Some(0),
       window: Some(11),
+      control: None,
     };
     state.mouse_down((10.0, 10.0), window);
     assert_eq!(state.mouse_up(&workspaces), Some(focus_window(11)));
@@ -2204,6 +2366,7 @@ mod tests {
     let card = Hit {
       workspace: Some(2),
       window: None,
+      control: None,
     };
     state.mouse_down((10.0, 10.0), card);
     assert_eq!(state.mouse_up(&workspaces), Some(focus_workspace("3")));
@@ -2219,6 +2382,7 @@ mod tests {
     let grab = Hit {
       workspace: Some(1),
       window: Some(21),
+      control: None,
     };
 
     state.mouse_down((100.0, 100.0), grab);
@@ -2228,6 +2392,7 @@ mod tests {
     let over = Hit {
       workspace: Some(2),
       window: None,
+      control: None,
     };
     assert!(state.mouse_move((400.0, 100.0), over, true));
     assert_eq!(state.floating(), Some(21));
@@ -2251,6 +2416,7 @@ mod tests {
     let grab = Hit {
       workspace: Some(1),
       window: Some(21),
+      control: None,
     };
 
     state.mouse_down((100.0, 100.0), grab);
@@ -2264,6 +2430,7 @@ mod tests {
     let hit = Hit {
       workspace: Some(0),
       window: Some(12),
+      control: None,
     };
 
     assert_eq!(
@@ -2705,8 +2872,8 @@ mod tests {
     );
 
     assert_eq!(
-      state.focus(1, &workspaces).search.map(|search| search.hits),
-      Some(1),
+      state.focus(1, &workspaces).search.hits,
+      1,
       "on every screen"
     );
 
@@ -2746,29 +2913,93 @@ mod tests {
   }
 
   #[test]
-  fn the_search_field_shows_only_while_searching() {
+  fn the_search_field_shows_what_is_typed() {
     let workspaces = workspaces();
     let mut state = interaction();
-    assert_eq!(state.search_field(&workspaces), None);
+    let typing_e = SearchField {
+      query: "e".to_string(),
+      is_typing: true,
+      hits: 3,
+    };
+    assert_eq!(state.search_field(&workspaces), SearchField::default());
 
     press(&mut state, &[Key::Text('/'), Key::Text('e')]);
+    assert_eq!(state.search_field(&workspaces), typing_e);
+
+    // Its matches stay picked after typing ends.
+    press(&mut state, &[Key::Enter]);
     assert_eq!(
       state.search_field(&workspaces),
-      Some(SearchField {
+      SearchField {
+        is_typing: false,
+        ..typing_e
+      }
+    );
+
+    press(&mut state, &[Key::Text('/'), Key::Escape]);
+    assert_eq!(state.search_field(&workspaces), SearchField::default());
+  }
+
+  #[test]
+  fn question_mark_toggles_the_shortcut_sheet() {
+    let workspaces = workspaces();
+    let mut state = interaction();
+
+    press(&mut state, &[Key::Text('?')]);
+    assert!(state.focus(0, &workspaces).shortcuts.is_some());
+
+    // Escape closes the sheet, not the overview.
+    assert_eq!(press(&mut state, &[Key::Escape]), None);
+    assert_eq!(state.focus(0, &workspaces).shortcuts, None);
+
+    press(&mut state, &[Key::Text('?'), Key::Text('?')]);
+    assert!(!state.shows_shortcuts);
+
+    // Any other key closes it and does what it does.
+    press(&mut state, &[Key::Text('?'), Key::Right]);
+    assert!(!state.shows_shortcuts);
+    assert_eq!(state.selected(), 2);
+  }
+
+  #[test]
+  fn clicking_the_search_line_searches_or_shows_the_shortcuts() {
+    let workspaces = workspaces();
+    let mut state = interaction();
+    let click = |state: &mut Interaction, hit: Hit| {
+      state.mouse_down((0.0, 0.0), hit);
+      state.mouse_up(&workspaces)
+    };
+    let control = |control| Hit {
+      control: Some(control),
+      ..Hit::default()
+    };
+
+    assert_eq!(click(&mut state, control(Control::Shortcuts)), None);
+    assert!(state.shows_shortcuts);
+    assert_eq!(click(&mut state, control(Control::Shortcuts)), None);
+    assert!(!state.shows_shortcuts);
+
+    // A click on the field later types on into its query.
+    assert_eq!(click(&mut state, control(Control::Search)), None);
+    press(&mut state, &[Key::Text('e'), Key::Enter]);
+    assert_eq!(click(&mut state, control(Control::Search)), None);
+    assert_eq!(
+      state.search_field(&workspaces),
+      SearchField {
         query: "e".to_string(),
         is_typing: true,
         hits: 3,
-      })
+      }
     );
 
-    // Its matches stay picked after typing ends, and so does the field.
-    press(&mut state, &[Key::Enter]);
-    assert!(state
-      .search_field(&workspaces)
-      .is_some_and(|search| !search.is_typing));
-
-    press(&mut state, &[Key::Text('/'), Key::Escape]);
-    assert_eq!(state.search_field(&workspaces), None);
+    // While the sheet is open, a click anywhere only closes it.
+    press(&mut state, &[Key::Escape, Key::Text('?')]);
+    assert_eq!(click(&mut state, Hit::default()), None);
+    assert!(!state.shows_shortcuts);
+    assert_eq!(
+      click(&mut state, Hit::default()),
+      Some(OverviewAction::Cancel)
+    );
   }
 
   #[test]
@@ -2840,6 +3071,7 @@ mod tests {
     let grab = Hit {
       workspace: Some(0),
       window: Some(11),
+      control: None,
     };
 
     state.mouse_down((100.0, 100.0), grab);
@@ -2848,6 +3080,7 @@ mod tests {
       Hit {
         workspace: Some(4),
         window: None,
+        control: None,
       },
       true,
     );
@@ -2879,6 +3112,7 @@ mod tests {
       Hit {
         workspace: Some(2),
         window: Some(51),
+        control: None,
       },
     );
     state.mouse_move(
@@ -2886,6 +3120,7 @@ mod tests {
       Hit {
         workspace: Some(5),
         window: None,
+        control: None,
       },
       true,
     );
@@ -2929,7 +3164,7 @@ mod tests {
     assert_eq!((right.selected, right.mode), (1, Mode::Carrying));
     assert_eq!((left.drop, right.drop), (None, Some(1)));
     assert_eq!(left.floating, Some(11), "lifted on every screen");
-    assert_eq!(left.search, None);
+    assert_eq!(left.search, SearchField::default());
   }
 
   #[test]
