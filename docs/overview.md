@@ -21,8 +21,10 @@ grows the picked one back.
 
 - **Activities** (default): every workspace in miniature in a row along
   the top, their names under them, and below them the shown workspace
-  large and as laid out. Picking another miniature slides that workspace
-  in; the title of the picked window shows under it.
+  large and as laid out, on the monitor's own wallpaper: opening the
+  overview shrinks the monitor as you see it into place. Picking another
+  miniature slides that workspace in; the title of the picked window shows
+  under it.
 - **Stage**: the shown workspace large and as laid out, its name over it,
   and every other workspace small in a column on the left. Picking one from
   the column swaps it in.
@@ -290,9 +292,9 @@ moves things around and never redraws pixels:
 - The card backgrounds, captions, borders, labels and hints are drawn once
   into hidden layered windows, and shown as thumbnails of those, so they
   scale with their card.
-- Highlights and panels are one small picture each, its corners shown as
-  drawn and its edges stretched, so they move and resize without being
-  redrawn. Moving the selection or the cursor therefore redraws nothing.
+- Highlights are one small picture each, its corners shown as drawn and
+  its edges stretched, so they move and resize without being redrawn.
+  Moving the selection or the cursor therefore redraws nothing.
 - Thumbnails are registered on open and on switching layouts, and
   otherwise only again when windows come, go or move: a window's title
   changing redraws its title, nothing else. The thumbnails shown stay up
@@ -300,6 +302,9 @@ moves things around and never redraws pixels:
 - The backdrop is a composition visual of the wallpaper, baked as for the
   window backdrops: sharp at first, with a blurred copy and the tint
   fading in over it.
+- The activities' desk, the wallpaper under the shown workspace, is the
+  same sharp wallpaper on a cloaked window of its own, shown as a
+  thumbnail under the windows' so it scales in step with them.
 
 Nothing animates behind the overview: a window moved while it is on screen
 lands at once, and its preview follows it there.

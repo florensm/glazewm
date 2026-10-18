@@ -3,7 +3,7 @@
 
 use std::cmp::Ordering;
 
-use super::{cards::screen_rect, Screen, SCENE_PADDING};
+use super::{cards::screen_rect, Screen};
 use crate::{
   overview_layout::{Camera, CardView, RectF},
   overview_scene::{Scene, SceneWindow},
@@ -101,8 +101,7 @@ impl Screen {
     // What a closing screen zooms from holds still for its zoom.
     let held = self.closing_card();
     let slide = self.metrics.view.0 * 0.12;
-    let padding = self.metrics.px(SCENE_PADDING);
-    let scene_in = self.scene_area.inset(padding);
+    let scene_area = self.scene_area;
 
     for (index, (scene, workspace)) in
       self.scenes.iter_mut().zip(&frame.workspaces).enumerate()
@@ -119,7 +118,7 @@ impl Screen {
       let alpha = if index == selected { 1.0 } else { 0.0 };
 
       let content = RectF::from_rect(&workspace.content_rect);
-      let view = CardView::fitted(&content, &scene_in);
+      let view = CardView::fitted(&content, &scene_area);
       let rects = scene
         .windows
         .iter_mut()
@@ -140,17 +139,17 @@ impl Screen {
       }
     }
 
-    // The activities' panel takes the shape of what it shows, holding
-    // still for a zoom like the scene in it.
+    // The desk is the working area, laid out as the shown workspace's
+    // windows are: a scrolling workspace's strip reaches past it. It holds
+    // still for a zoom like the scene on it.
     let shown = frame.workspaces.get(selected).filter(|_| held.is_none());
     if let (OverviewLayoutMode::Activities, Some(overlays), Some(shown)) =
       (layout, &mut self.overlays, shown)
     {
       let content = RectF::from_rect(&shown.content_rect);
-      let panel = CardView::fitted(&content, &scene_in)
-        .map(&content)
-        .inset(-padding);
-      overlays.scene_panel_rect.retarget(&panel, snap);
+      let desk = CardView::fitted(&content, &scene_area)
+        .map(&RectF::from_rect(&frame.rect));
+      overlays.desk_rect.retarget(&desk, snap);
     }
   }
 }

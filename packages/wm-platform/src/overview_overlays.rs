@@ -1,7 +1,6 @@
 //! What the overview shows over its cards and windows: highlights that
-//! glide to whatever they highlight, and rounded panels. Each is made of
-//! one small picture stretched to any size, so moving or resizing it
-//! redraws nothing.
+//! glide to whatever they highlight. Each is made of one small picture
+//! stretched to any size, so moving or resizing it redraws nothing.
 
 use windows::Win32::Foundation::{HWND, RECT};
 
@@ -11,24 +10,18 @@ use crate::{
   overview_thumbnails::{to_opacity, to_win32, Picture, Thumbnail},
 };
 
-/// A rounded rect of any size, from one picture of it: its corners shown
-/// as drawn and its edges (and middle, if filled) stretched, each part a
-/// thumbnail of its own.
+/// A rounded ring of any size, from one picture of it: its corners shown
+/// as drawn and its edges stretched, each part a thumbnail of its own.
 pub(crate) struct NineSlice {
   picture: Picture,
-
-  /// Whether it has a middle, rather than being a ring.
-  is_filled: bool,
-
   look: Option<SliceLook>,
   parts: Vec<Thumbnail>,
 }
 
 impl NineSlice {
-  pub fn new(is_filled: bool) -> Option<Self> {
+  pub fn new() -> Option<Self> {
     Some(Self {
       picture: Picture::new()?,
-      is_filled,
       look: None,
       parts: Vec::new(),
     })
@@ -49,8 +42,8 @@ impl NineSlice {
 
   /// Registers its parts on `host`, above everything registered so far.
   pub fn register(&mut self, host: HWND) {
-    let count = if self.is_filled { 9 } else { 8 };
-    self.parts = (0..count)
+    // Every part but the empty middle.
+    self.parts = (0..8)
       .filter_map(|_| Thumbnail::register(host, self.picture.window))
       .collect();
   }
@@ -109,7 +102,7 @@ impl NineSlice {
 
     for (row, (top, bottom)) in rows.into_iter().enumerate() {
       for (column, (left, right)) in columns.into_iter().enumerate() {
-        if row == 1 && column == 1 && !self.is_filled {
+        if row == 1 && column == 1 {
           continue;
         }
         let Some(part) = parts.next() else {
@@ -145,16 +138,16 @@ impl NineSlice {
   }
 }
 
-/// A ring or panel that glides to whatever it highlights.
+/// A ring that glides to whatever it highlights.
 pub(crate) struct Highlight<K> {
   pub slices: NineSlice,
   pub glide: Glide<K>,
 }
 
 impl<K: Copy + PartialEq> Highlight<K> {
-  pub fn new(is_filled: bool) -> Option<Self> {
+  pub fn new() -> Option<Self> {
     Some(Self {
-      slices: NineSlice::new(is_filled)?,
+      slices: NineSlice::new()?,
       glide: Glide::new(),
     })
   }

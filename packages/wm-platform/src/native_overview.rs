@@ -14,6 +14,7 @@
 //! `Screen` draws its own part of it.
 
 mod cards;
+mod desk;
 mod ghost;
 mod overlays;
 mod scenes;
@@ -56,7 +57,7 @@ use windows::{
   },
 };
 
-use self::{ghost::Ghost, overlays::Overlays};
+use self::{desk::Desk, ghost::Ghost, overlays::Overlays};
 use crate::{
   overview_chrome::{picture_rect, CardPicture},
   overview_layout::{
@@ -95,10 +96,6 @@ const WM_ICON_READY: u32 = WM_APP + 5;
 
 /// How long card moves and zooms take to settle.
 const SETTLE_MS: f32 = 260.0;
-
-/// Room between the activities' scene panel and what it shows, in
-/// logical pixels.
-const SCENE_PADDING: f32 = 14.0;
 
 /// How long the zoom into a pick waits for the WM to carry it out before
 /// starting regardless.
@@ -595,6 +592,11 @@ struct Screen {
   area: RectF,
 
   backdrop: Option<OverviewBackdrop>,
+
+  /// The wallpaper the activities show their workspace on, `None` until
+  /// first shown or if its window couldn't be created.
+  desk: Option<Desk>,
+
   cards: Vec<Card>,
 
   /// Each workspace's windows shown on their own, in the activities.

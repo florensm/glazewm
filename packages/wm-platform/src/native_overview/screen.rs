@@ -12,8 +12,9 @@ use windows::Win32::UI::WindowsAndMessaging::{
 };
 
 use super::{
-  create_screen_window, elapsed_ms, overlays::Overlays, place_card,
-  scenes::scene_window_rect, PlaceContext, Screen, ScreenFrame, SETTLE_MS,
+  create_screen_window, desk::Desk, elapsed_ms, overlays::Overlays,
+  place_card, scenes::scene_window_rect, PlaceContext, Screen,
+  ScreenFrame, SETTLE_MS,
 };
 use crate::{
   overview_chrome::{draw_card, draw_hint, picture_size, with_alpha},
@@ -50,6 +51,7 @@ impl Screen {
       registration: 0,
       area: RectF::default(),
       backdrop: None,
+      desk: None,
       cards: Vec::new(),
       scenes: Vec::new(),
       scene_area: RectF::default(),
@@ -269,6 +271,13 @@ impl Screen {
     if let Some(backdrop) = &self.backdrop {
       let _ = backdrop.set_progress(progress);
     }
+
+    if self.desk.is_none() {
+      self.desk = Desk::new();
+    }
+    if let Some(desk) = &mut self.desk {
+      desk.sync(&frame.rect, style);
+    }
   }
 
   /// Draws the cards for the layout now shown, at the size it shows them,
@@ -310,7 +319,7 @@ impl Screen {
   }
 
   /// Registers every thumbnail the layout shows again, bottom to top:
-  /// the activities' scene panel, the windows on the scenes, each card's
+  /// the activities' desk, the windows on the scenes, each card's
   /// tab bars, previews and picture, the labels, highlights and tags,
   /// then the hints.
   fn register_thumbnails(&mut self) {
@@ -322,10 +331,10 @@ impl Screen {
     let retired = self.retire_thumbnails();
     self.retired.extend(retired);
 
-    if let (OverviewLayoutMode::Activities, Some(overlays)) =
-      (layout, &mut self.overlays)
+    if let (OverviewLayoutMode::Activities, Some(desk)) =
+      (layout, &mut self.desk)
     {
-      overlays.scene_panel.register(host);
+      desk.register(host);
     }
 
     if layout.has_scene() {
@@ -386,6 +395,9 @@ impl Screen {
       self.scenes.iter_mut().flat_map(|scene| &mut scene.windows)
     {
       window.preview.retire(&mut retired);
+    }
+    if let Some(desk) = &mut self.desk {
+      retired.extend(desk.thumbnail.take());
     }
     if let Some(overlays) = &mut self.overlays {
       overlays.retire(&mut retired);
@@ -694,8 +706,8 @@ impl Screen {
       .map(|(zoom, _)| zoom.card)
   }
 
-  /// Stops the cards, card `index`'s scene and the scene panel where they
-  /// are now.
+  /// Stops the cards, card `index`'s scene and the desk where they are
+  /// now.
   fn hold(&mut self, index: usize) {
     for card in &mut self.cards {
       for spring in [&mut card.cx, &mut card.cy, &mut card.scale] {
@@ -706,7 +718,7 @@ impl Screen {
       scene.windows.iter_mut().for_each(SceneWindow::hold);
     }
     if let Some(overlays) = &mut self.overlays {
-      overlays.scene_panel_rect.hold();
+      overlays.desk_rect.hold();
     }
   }
 

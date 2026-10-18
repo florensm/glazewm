@@ -604,13 +604,12 @@ fn draw_tile(
 /// its edges only ever mixes in more of it.
 pub(crate) const SLICE_MIDDLE: i32 = 4;
 
-/// A rounded rect drawn once, then stretched to any size by showing its
+/// A rounded ring drawn once, then stretched to any size by showing its
 /// corners as they are and stretching the rest.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct SliceLook {
   /// Corner radius, in pixels.
   pub radius: i32,
-  pub fill: Color,
   pub border: Color,
   pub border_width: i32,
 }
@@ -620,7 +619,6 @@ impl SliceLook {
   pub fn ring(radius: i32, width: i32, color: Color) -> Self {
     Self {
       radius,
-      fill: Color { a: 0, ..color },
       border: color,
       border_width: width,
     }
@@ -631,11 +629,6 @@ impl SliceLook {
   pub fn corner(&self) -> i32 {
     self.radius.max(self.border_width).max(1) + 1
   }
-
-  /// Whether it is more than a ring.
-  pub fn is_filled(&self) -> bool {
-    self.fill.a > 0
-  }
 }
 
 /// Draws `look` into `surface`, `2 * corner + SLICE_MIDDLE` pixels square.
@@ -644,9 +637,6 @@ pub(crate) fn draw_slices(surface: &mut Surface, look: &SliceLook) {
   let rect = Rect::from_xy(0, 0, surface.width, surface.height);
   let mut canvas = surface.canvas();
 
-  if look.is_filled() {
-    canvas.fill_rounded_rect(&rect, look.radius, look.fill);
-  }
   if look.border.a > 0 && look.border_width > 0 {
     canvas.stroke_rounded_rect(
       &rect,
@@ -820,9 +810,10 @@ pub(crate) fn draw_label(
   );
 }
 
-/// Font size of the note shown where a workspace has no windows, in
-/// logical pixels.
+/// Font size and padding of the note shown where a workspace has no
+/// windows, in logical pixels.
 const NOTE_FONT: f32 = 15.0;
+const NOTE_PADDING: f32 = 16.0;
 
 /// Pixel size of the note `text`.
 pub(crate) fn note_size(
@@ -834,12 +825,13 @@ pub(crate) fn note_size(
   let mut fonts = Fonts::new(&style.font_family);
   let width = text_width(fonts.get(px(NOTE_FONT), false), text);
   (
-    width.max(1) + round(px(8.0)),
-    round(px(NOTE_FONT * 2.0)).max(1),
+    width.max(1) + round(px(2.0 * NOTE_PADDING)),
+    round(px(NOTE_FONT * 2.2)).max(1),
   )
 }
 
-/// Draws the note `text` into `surface`, `note_size` big.
+/// Draws the note `text` into `surface`, `note_size` big: on a pill, to
+/// read on any wallpaper.
 pub(crate) fn draw_note(
   surface: &mut Surface,
   text: &str,
@@ -847,8 +839,20 @@ pub(crate) fn draw_note(
   scale_factor: f32,
 ) {
   surface.pixels().fill(0);
-  let mut fonts = Fonts::new(&style.font_family);
   let rect = Rect::from_xy(0, 0, surface.width, surface.height);
+  let radius = surface.height / 2;
+  {
+    let mut canvas = surface.canvas();
+    canvas.fill_rounded_rect(&rect, radius, with_alpha(style.card, 0.85));
+    canvas.stroke_rounded_rect(
+      &rect,
+      radius,
+      round(scale_factor).max(1),
+      with_alpha(style.text, 0.12),
+    );
+  }
+
+  let mut fonts = Fonts::new(&style.font_family);
   draw_text(
     surface,
     fonts.get(NOTE_FONT * scale_factor, false),

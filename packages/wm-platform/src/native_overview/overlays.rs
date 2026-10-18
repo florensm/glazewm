@@ -14,14 +14,14 @@ use crate::{
     tag_size, with_alpha, LabelPicture, SliceLook, TagPicture,
   },
   overview_layout::{Camera, CardMetrics, RectF, SpringRect, LABEL_GAP},
-  overview_overlays::{Highlight, NineSlice, Tag},
+  overview_overlays::{Highlight, Tag},
   overview_state::Mode,
   overview_thumbnails::{Picture, Thumbnail},
   OverviewLayoutMode, OverviewStyle,
 };
 
-/// How long the activities' scene panel takes to change shape.
-const SCENE_SETTLE_MS: f32 = 300.0;
+/// How long the activities' desk takes to change shape.
+const DESK_SETTLE_MS: f32 = 300.0;
 
 /// Corner radius a workspace's highlight is drawn with, and its gap to
 /// what it highlights, in logical pixels.
@@ -62,9 +62,9 @@ pub(super) struct Overlays {
   /// Where the shown workspace has no windows.
   pub(super) note: Tag<String>,
 
-  /// Behind the activities' scene, taking the shape of what it shows.
-  pub(super) scene_panel: NineSlice,
-  pub(super) scene_panel_rect: SpringRect,
+  /// Where the activities' desk shows, under the scene: the working area
+  /// as the scene lays it out.
+  pub(super) desk_rect: SpringRect,
 
   /// A name per workspace.
   pub(super) labels: Vec<Label>,
@@ -73,14 +73,13 @@ pub(super) struct Overlays {
 impl Overlays {
   pub(super) fn new() -> Option<Self> {
     Some(Self {
-      screen_ring: Highlight::new(false)?,
-      workspace_ring: Highlight::new(false)?,
-      hover_ring: Highlight::new(false)?,
-      window_ring: Highlight::new(false)?,
+      screen_ring: Highlight::new()?,
+      workspace_ring: Highlight::new()?,
+      hover_ring: Highlight::new()?,
+      window_ring: Highlight::new()?,
       tag: Tag::new()?,
       note: Tag::new()?,
-      scene_panel: NineSlice::new(true)?,
-      scene_panel_rect: SpringRect::new(RectF::default(), SCENE_SETTLE_MS),
+      desk_rect: SpringRect::new(RectF::default(), DESK_SETTLE_MS),
       labels: Vec::new(),
     })
   }
@@ -116,7 +115,6 @@ impl Overlays {
 
   /// Hands their thumbnails over to `retired`, still registered.
   pub(super) fn retire(&mut self, retired: &mut Vec<Thumbnail>) {
-    self.scene_panel.retire(retired);
     for label in &mut self.labels {
       retired.extend(label.picture.thumbnail.take());
     }
@@ -132,13 +130,12 @@ impl Overlays {
     retired.extend(self.note.picture.thumbnail.take());
   }
 
-  /// Draws the highlights and panels in `style`, at `metrics`' scale;
-  /// each only if its look changed.
+  /// Draws the highlights in `style`, at `metrics`' scale; each only if
+  /// its look changed.
   #[allow(clippy::cast_possible_truncation)]
   fn draw_looks(&mut self, style: &OverviewStyle, metrics: &CardMetrics) {
     let px = |length: f32| (length * metrics.scale_factor).round() as i32;
     let accent = style.accent;
-    let hairline = px(1.0).max(1);
     self.screen_ring.slices.draw(SliceLook::ring(
       px(SCREEN_RING_RADIUS),
       px(3.0).max(1),
@@ -159,12 +156,6 @@ impl Overlays {
       px(3.0).max(1),
       accent,
     ));
-    self.scene_panel.draw(SliceLook {
-      radius: px(18.0),
-      fill: with_alpha(style.card, 0.45),
-      border: with_alpha(style.text, 0.07),
-      border_width: hairline,
-    });
   }
 
   /// Hides every highlight at once, e.g. for a new open.
@@ -196,7 +187,7 @@ impl Overlays {
       self.window_ring.glide.step(dt),
       self.tag.glide.step(dt),
       self.note.glide.step(dt),
-      self.scene_panel_rect.step(dt),
+      self.desk_rect.step(dt),
     ]
     .contains(&true)
   }
@@ -496,7 +487,7 @@ impl Screen {
         .zip(self.overlays.as_ref())
         .map(|(_, overlays)| {
           let (width, height) = to_f32_size(overlays.note.picture.size());
-          let (cx, cy) = overlays.scene_panel_rect.value().center();
+          let (cx, cy) = overlays.desk_rect.value().center();
           #[allow(clippy::cast_possible_wrap)]
           let key = selected as isize;
           (
@@ -511,10 +502,17 @@ impl Screen {
       .then(|| ((), view.inset(px(SCREEN_RING_GAP)), 1.0));
 
     let label_rects = self.label_rects(context, shift);
-    let panel_rect = self
+
+    // Filling the screen at the start of the zoom, it shows the wallpaper
+    // right where the desktop does.
+    let desk_rect = self
       .overlays
       .as_ref()
-      .map(|overlays| view.lerp(&overlays.scene_panel_rect.value(), fade));
+      .filter(|_| layout == OverviewLayoutMode::Activities)
+      .map(|overlays| view.lerp(&overlays.desk_rect.value(), fade));
+    if let (Some(desk), Some(desk_rect)) = (&mut self.desk, desk_rect) {
+      desk.place(&desk_rect, &view);
+    }
 
     let Some(overlays) = &mut self.overlays else {
       return false;
@@ -529,12 +527,6 @@ impl Screen {
     overlays.hover_ring.place(&view, fade);
     is_gliding |= overlays.window_ring.glide.follow(window_target, now);
     overlays.window_ring.place(&view, fade);
-
-    if let (OverviewLayoutMode::Activities, Some(panel_rect)) =
-      (layout, panel_rect)
-    {
-      overlays.scene_panel.place(&panel_rect, 1.0, &view, fade);
-    }
 
     for (label, rect) in overlays.labels.iter_mut().zip(&label_rects) {
       if let Some((rect, opacity)) = rect {
