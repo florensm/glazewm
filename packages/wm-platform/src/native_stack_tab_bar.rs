@@ -96,6 +96,9 @@ struct BarState {
   /// Whether the last restack didn't leave the bar behind its anchor, so
   /// that a failure is logged once rather than on every retry.
   is_misplaced: bool,
+  /// The bar as last painted, shown again as is while only its place on
+  /// screen changes, e.g. on every frame of an animation.
+  picture: Option<Surface>,
   on_action: Box<dyn Fn(TabAction) + Send + 'static>,
 }
 
@@ -145,6 +148,7 @@ impl NativeStackTabBar {
       truncated: Vec::new(),
       tooltip_text: vec![0],
       is_misplaced: false,
+      picture: None,
       on_action,
     });
 
@@ -206,7 +210,10 @@ impl NativeStackTabBar {
       return;
     }
 
-    if !restack && self.last_frame.as_ref() == Some(&frame) {
+    if self.last_frame.as_ref() == Some(&frame) {
+      if restack {
+        self.keep_behind_anchor();
+      }
       return;
     }
 
@@ -390,20 +397,8 @@ impl BarState {
     info.lpszText = PWSTR(self.tooltip_text.as_mut_ptr());
   }
 
-  /// Offset of the bar's window within its frame's `outer_rect`, which
-  /// the tab layout is relative to: non-zero where `clip` cuts it off.
   fn origin(&self) -> (i32, i32) {
-    self
-      .frame
-      .as_ref()
-      .and_then(|frame| {
-        let visible = frame.visible_rect()?;
-        Some((
-          visible.left - frame.outer_rect.left,
-          visible.top - frame.outer_rect.top,
-        ))
-      })
-      .unwrap_or_default()
+    self.frame.as_ref().map_or((0, 0), window_origin)
   }
 
   /// Cursor position `(x, y)` in the bar's window, in the tab layout.
@@ -465,19 +460,37 @@ impl BarState {
   }
 }
 
-/// Draws the bar into a layered bitmap and shows the part of it inside its
-/// frame's clip.
+/// Offset of the bar's window within `frame`'s `outer_rect`, which the tab
+/// layout is relative to: non-zero where `clip` cuts it off.
+fn window_origin(frame: &TabFrame) -> (i32, i32) {
+  frame.visible_rect().map_or((0, 0), |visible| {
+    (
+      visible.left - frame.outer_rect.left,
+      visible.top - frame.outer_rect.top,
+    )
+  })
+}
+
+/// Paints the bar into a new picture and shows it.
 ///
 /// # Safety
 ///
 /// `hwnd` must be the bar's window, called on its thread.
 unsafe fn render(hwnd: HWND, state: &mut BarState) {
-  let Some(frame) = state.frame.clone() else {
-    return;
-  };
+  paint(hwnd, state);
+  show(hwnd, state);
+}
 
-  // Only ever unset for frames `update` hides instead of posting.
-  let Some(visible) = frame.visible_rect() else {
+/// Paints the bar into a new picture, the size of its frame's
+/// `outer_rect`.
+///
+/// # Safety
+///
+/// `hwnd` must be the bar's window, called on its thread.
+unsafe fn paint(hwnd: HWND, state: &mut BarState) {
+  state.picture = None;
+
+  let Some(frame) = state.frame.clone() else {
     return;
   };
 
@@ -505,18 +518,32 @@ unsafe fn render(hwnd: HWND, state: &mut BarState) {
 
   state.truncated =
     paint_tab_bar(&mut surface, &frame, &view, (hwnd, WM_ICON_READY));
+  state.picture = Some(surface);
+}
 
-  let part = Rect::from_xy(
-    visible.x() - outer.x(),
-    visible.y() - outer.y(),
-    visible.width(),
-    visible.height(),
-  );
+/// Shows the part of the bar's picture inside its frame's clip, where the
+/// frame puts it.
+///
+/// # Safety
+///
+/// `hwnd` must be the bar's window, called on its thread.
+unsafe fn show(hwnd: HWND, state: &BarState) {
+  let (Some(frame), Some(picture)) = (&state.frame, &state.picture) else {
+    return;
+  };
+
+  // Only ever unset for frames `update` hides instead of posting.
+  let Some(visible) = frame.visible_rect() else {
+    return;
+  };
+
+  let (x, y) = window_origin(frame);
+  let part = Rect::from_xy(x, y, visible.width(), visible.height());
   let position = POINT {
     x: visible.x(),
     y: visible.y(),
   };
-  if let Err(err) = surface.show_part_on(hwnd, &part, position) {
+  if let Err(err) = picture.show_part_on(hwnd, &part, position) {
     tracing::warn!("Failed to draw tab bar: {err}");
   }
 }
@@ -549,10 +576,23 @@ unsafe fn apply_frame(
     }
   }
 
-  state.relayout();
-  state.sync_tooltip_tools(hwnd);
+  let draws_alike = previous
+    .as_ref()
+    .zip(state.frame.as_ref())
+    .is_some_and(|(previous, current)| previous.draws_like(current));
 
-  render(hwnd, state);
+  if draws_alike && state.picture.is_some() {
+    // Tooltip tools are placed in the bar's window, which a new clip
+    // moves the tabs within.
+    if previous.as_ref().map(window_origin) != Some(state.origin()) {
+      state.sync_tooltip_tools(hwnd);
+    }
+    show(hwnd, state);
+  } else {
+    state.relayout();
+    state.sync_tooltip_tools(hwnd);
+    render(hwnd, state);
+  }
 
   let anchor_changed = previous.as_ref().map(|p| p.anchor)
     != state.frame.as_ref().map(|f| f.anchor);
@@ -896,6 +936,7 @@ unsafe extern "system" fn wnd_proc(
     }
     WM_HIDE_TABS => {
       state.frame = None;
+      state.picture = None;
       state.drag = None;
       state.hover = TabHit::Empty;
       ShowWindow(hwnd, SW_HIDE);
