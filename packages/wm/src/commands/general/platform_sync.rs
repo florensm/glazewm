@@ -1424,10 +1424,17 @@ fn redraw_containers(
                 &mut cloak_backdrop_batch,
               );
             }
+            // Framed with its stack's tab bar, which goes along with it.
             if let (Some(params), Some(anchor), Some(rect)) = (
               session.border_overlay_params(),
               session.surrogate_hwnd(),
-              session.current_rect(),
+              session.current_rect().map(|rect| {
+                crate::tab_bars::animated_with_tab_bar(
+                  state,
+                  window.id(),
+                  &rect,
+                )
+              }),
             ) {
               upsert_overlay(
                 &mut state.border_overlays,
@@ -1715,6 +1722,10 @@ fn redraw_containers(
 
       let anchor = session.surrogate_hwnd();
       let rect = session.current_rect();
+      // Framed with its stack's tab bar, which goes along with it.
+      let border_rect = rect.as_ref().map(|rect| {
+        crate::tab_bars::animated_with_tab_bar(state, *id, rect)
+      });
 
       // A session that carries no params for an overlay kind has no
       // tracker for it, and `sync_overlays` will not step in: it
@@ -1760,7 +1771,7 @@ fn redraw_containers(
       }
 
       if let Some(params) = session.border_overlay_params() {
-        match (anchor, rect) {
+        match (anchor, border_rect) {
           (Some(anchor), Some(rect)) => upsert_overlay(
             &mut state.border_overlays,
             *id,

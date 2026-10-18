@@ -29,7 +29,10 @@ use wm_platform::{
   SurrogateBatch, WindowPeek, HWND,
 };
 
-use super::state::WindowAnimationState;
+use super::{
+  stand_in::{moved_along, StandIn},
+  state::WindowAnimationState,
+};
 use crate::{
   commands::general::{
     surrogate_effects_for, upsert_clipped_overlay,
@@ -71,16 +74,6 @@ impl Entry {
   }
 }
 
-/// Where a peek shows something drawn along with its window, such as its
-/// stack's tab bar.
-pub struct PeekPlacement {
-  pub rect: Rect,
-  /// Monitor area the peek is clipped to.
-  pub clip: Rect,
-  /// The peek's window, which what is drawn along with it sits behind.
-  pub anchor: HWND,
-}
-
 /// Columns whose move ended on a tick.
 #[derive(Default)]
 pub struct Landed {
@@ -120,28 +113,19 @@ impl ScrollView {
     self.entries.get(window_id).map(|entry| entry.peek.hwnd())
   }
 
-  /// Where the peek drawing `window_id` shows `rect`, a rect of the layout
+  /// Where the peek drawing `window_id` has `rect`, a rect of the layout
   /// that moves with the window, e.g. its stack's.
-  pub fn placement(
+  pub fn stand_in(
     &self,
     window_id: &Uuid,
     rect: &Rect,
-  ) -> Option<PeekPlacement> {
+  ) -> Option<StandIn> {
     let entry = self.entries.get(window_id)?;
-    let target = &entry.motion.target_rect;
 
-    // Edge by edge, since a column can also resize as it moves.
-    let rect = Rect::from_ltrb(
-      rect.left + entry.rect.left - target.left,
-      rect.top + entry.rect.top - target.top,
-      rect.right + entry.rect.right - target.right,
-      rect.bottom + entry.rect.bottom - target.bottom,
-    );
-
-    Some(PeekPlacement {
-      rect,
-      clip: entry.clip.clone(),
-      anchor: entry.peek.hwnd(),
+    Some(StandIn {
+      rect: moved_along(rect, &entry.motion.target_rect, &entry.rect),
+      clip: Some(entry.clip.clone()),
+      anchor: Some(entry.peek.hwnd()),
     })
   }
 
@@ -538,15 +522,8 @@ pub fn track_overlays(state: &mut WmState, config: &UserConfig) {
     }
 
     // Framed with its stack's tab bar, like the real window.
-    let border_frame = frame.map(|frame| {
-      state
-        .container_by_id(id)
-        .and_then(|container| container.as_window_container().ok())
-        .map_or_else(
-          || frame.clone(),
-          |window| crate::tab_bars::window_with_tab_bar(&window, &frame),
-        )
-    });
+    let border_frame = frame
+      .map(|frame| crate::tab_bars::with_tab_bar_of(state, id, &frame));
 
     match (border, border_frame) {
       (Some(params), Some(frame)) if is_moving => {
