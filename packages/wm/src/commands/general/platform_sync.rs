@@ -70,6 +70,18 @@ fn iris_max_radius(req: &IrisSwitchRequest) -> i32 {
     .ceil() as i32
 }
 
+/// Whether this sync cycle skips animations: when asked to (e.g. display
+/// setting changes, or a pick in the overview, whose zoom is the
+/// transition), and while the overview is on screen. Its previews follow
+/// the windows to where they land, and an animation stands surrogates in
+/// for them, hiding their borders and backdrops meanwhile.
+fn animations_suppressed(state: &WmState) -> bool {
+  let is_suppressed = state.pending_sync.animations_suppressed();
+  #[cfg(target_os = "windows")]
+  let is_suppressed = is_suppressed || state.overview.is_shown();
+  is_suppressed
+}
+
 pub fn platform_sync(
   state: &mut WmState,
   config: &UserConfig,
@@ -95,7 +107,11 @@ pub fn platform_sync(
     crate::layout::scrolling::sync_scroll_offsets(state)?;
 
     #[cfg(target_os = "windows")]
-    crate::animation::scroll_view::sync_scroll_view(state, config);
+    crate::animation::scroll_view::sync_scroll_view(
+      state,
+      config,
+      !animations_suppressed(state),
+    );
   }
 
   // Windows whose own z-order was changed this tick, and whose overlays
@@ -634,17 +650,9 @@ fn redraw_containers(
     windows
   };
 
-  // Whether animations are skipped for this sync cycle (e.g. display
-  // setting changes). In-flight animations of redrawn windows are
-  // cancelled below so their windows snap to their target rect.
-  let suppress_animations = state.pending_sync.animations_suppressed();
-
-  // Nothing animates behind the overview: its previews follow the windows
-  // to where they land, and an animation stands surrogates in for them,
-  // hiding their borders and backdrops meanwhile.
-  #[cfg(target_os = "windows")]
-  let suppress_animations =
-    suppress_animations || state.overview.is_shown();
+  // In-flight animations of redrawn windows are cancelled below so their
+  // windows snap to their target rect.
+  let suppress_animations = animations_suppressed(state);
 
   // Workspace-switch pre-pass: create slide surrogates for all
   // incoming/outgoing windows before any real window is repositioned.

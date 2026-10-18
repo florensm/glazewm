@@ -307,12 +307,17 @@ impl ScrollView {
 }
 
 /// Starts moving the columns of displayed scrolling layouts whose rects
-/// changed, and updates the peeks of the ones at rest.
+/// changed, and updates the peeks of the ones at rest. Columns land at
+/// once unless the sync `animates`.
 ///
 /// Runs before `platform_sync` repositions anything: moving windows are
 /// then frozen (cloaked and pre-positioned at their target) behind peeks
 /// that are already on screen.
-pub fn sync_scroll_view(state: &mut WmState, config: &UserConfig) {
+pub fn sync_scroll_view(
+  state: &mut WmState,
+  config: &UserConfig,
+  animates: bool,
+) {
   let workspaces = displayed_scrolling_workspaces(state);
   let windows = workspaces
     .iter()
@@ -355,6 +360,7 @@ pub fn sync_scroll_view(state: &mut WmState, config: &UserConfig) {
     // left to the regular per-window animations.
     let crosses_edge = |rect: &Rect| !clip.contains_rect(rect);
     let strip_moves = scroll_config.enabled
+      && animates
       && moves.iter().any(|(window, from, target)| {
         from != target
           && (crosses_edge(from)
