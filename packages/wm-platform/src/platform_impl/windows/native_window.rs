@@ -1,4 +1,8 @@
-use std::time::Duration;
+use std::{
+  collections::HashSet,
+  sync::{LazyLock, Mutex},
+  time::Duration,
+};
 
 use tokio::task;
 use tracing::warn;
@@ -655,6 +659,7 @@ impl NativeWindow {
     if self.set_view_cloaked(cloaked)? {
       Ok(())
     } else {
+      self.report_viewless();
       Err(crate::Error::Platform(
         "Unable to get application view by window handle.".to_string(),
       ))
@@ -667,11 +672,37 @@ impl NativeWindow {
     hidden: bool,
   ) -> crate::Result<()> {
     if self.set_view_cloaked(hidden)? {
-      Ok(())
-    } else if hidden {
+      return Ok(());
+    }
+
+    self.report_viewless();
+    if hidden {
       self.hide()
     } else {
       self.show()
+    }
+  }
+
+  /// Logs, once per window, that it has no shell view to cloak it by. Its
+  /// fallbacks, hiding it outright or leaving it shown while something
+  /// else draws it, can show as flicker.
+  fn report_viewless(&self) {
+    static REPORTED: LazyLock<Mutex<HashSet<isize>>> =
+      LazyLock::new(Mutex::default);
+
+    let is_new = REPORTED
+      .lock()
+      .is_ok_and(|mut reported| reported.insert(self.hwnd().0));
+
+    if is_new {
+      warn!(
+        "Window {:#x} ({}, {}) can't be cloaked, as the shell has no view \
+         of it (e.g. another window owns it). It is hidden outright or \
+         left shown instead, which can flicker.",
+        self.hwnd().0,
+        self.process_name().unwrap_or_default(),
+        self.class_name().unwrap_or_default(),
+      );
     }
   }
 

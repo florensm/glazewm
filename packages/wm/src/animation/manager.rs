@@ -281,7 +281,10 @@ use crate::commands::general::{
   upsert_pinned_border_overlay, SyncableOverlay,
 };
 #[cfg(target_os = "windows")]
-use crate::traits::WindowGetters;
+use crate::{
+  animation::stand_in::{moved_along, StandIn},
+  traits::WindowGetters,
+};
 use crate::{
   animation::state::WindowAnimationState,
   commands::general::platform_sync, traits::CommonGetters,
@@ -1995,6 +1998,17 @@ impl AnimationManager {
 
     if state.pending_sync.has_changes() {
       keep_first_error(&mut frame_result, platform_sync(state, config));
+    } else {
+      // `platform_sync` syncs tab bars, which go with the peeks of moving
+      // columns even when nothing else moved.
+      #[cfg(target_os = "windows")]
+      if state.animation_manager.scroll_view.is_active() {
+        crate::tab_bars::sync_tab_bars(
+          state,
+          config,
+          crate::tab_bars::Restack::None,
+        );
+      }
     }
 
     #[cfg(target_os = "windows")]
@@ -2069,6 +2083,9 @@ impl AnimationManager {
         let anchor =
           session.window_hwnd().or_else(|| session.surrogate_hwnd());
         let rect = session.current_rect();
+        let border_rect = rect
+          .as_ref()
+          .map(|rect| crate::tab_bars::with_tab_bar_of(state, *id, rect));
 
         if let Some(params) = session.backdrop_overlay_params() {
           match (anchor, rect.clone()) {
@@ -2089,7 +2106,7 @@ impl AnimationManager {
         }
 
         if let Some(params) = session.border_overlay_params() {
-          match (anchor, rect) {
+          match (anchor, border_rect) {
             (Some(anchor), Some(rect)) => upsert_overlay(
               &mut state.border_overlays,
               *id,
@@ -3259,13 +3276,61 @@ impl AnimationManager {
   /// progress or its surrogates are still live during post-animation
   /// cleanup.
   ///
-  /// Includes `pending_ws_cleanup` so that callers (e.g. tab-bar
-  /// visibility, focus deferral) stay in their animation-active state
-  /// until surrogates are fully dropped, preventing a one-frame flash
-  /// between animation completion and surrogate teardown.
+  /// Includes `pending_ws_cleanup` so that callers (e.g. focus deferral)
+  /// stay in their animation-active state until surrogates are fully
+  /// dropped, preventing a one-frame flash between animation completion
+  /// and surrogate teardown.
   #[cfg(target_os = "windows")]
   pub fn is_workspace_switch_active(&self) -> bool {
     self.workspace_switch.is_some() || self.pending_ws_cleanup.is_some()
+  }
+
+  /// Whether `window_id` takes part in a workspace-switch slide, playing
+  /// or waiting on its surrogates' teardown.
+  #[cfg(target_os = "windows")]
+  pub fn is_in_workspace_switch(&self, window_id: &Uuid) -> bool {
+    [&self.workspace_switch, &self.pending_ws_cleanup]
+      .into_iter()
+      .flatten()
+      .any(|ws| ws.windows.contains_key(window_id))
+  }
+
+  /// Whether `window_id` slides or zooms in as it opens: on its own, e.g.
+  /// as a new tab of a stack that stays put.
+  #[cfg(target_os = "windows")]
+  pub fn is_entering(&self, window_id: &Uuid) -> bool {
+    self.slide_in_monitor_rects.contains_key(window_id)
+      || self
+        .resize_sessions
+        .get(window_id)
+        .is_some_and(|session| session.zoom)
+  }
+
+  /// Where `window_id` is drawn mid move or resize animation, with
+  /// `rect`, a rect of the layout that moves with the window (e.g. its
+  /// stack's), moved along.
+  #[cfg(target_os = "windows")]
+  pub fn animation_stand_in(
+    &self,
+    window_id: &Uuid,
+    rect: &Rect,
+  ) -> Option<StandIn> {
+    if self.is_entering(window_id) {
+      return None;
+    }
+
+    let animation = self.animations.get(window_id)?;
+    let session = self.resize_sessions.get(window_id);
+
+    // Evaluated at the instant this pass drew the window at.
+    let drawn_at = self.pass_now.unwrap_or_else(Instant::now);
+    let (current, _) = animation.current_state_at(drawn_at);
+
+    Some(StandIn {
+      rect: moved_along(rect, &animation.target_rect, &current),
+      clip: None,
+      anchor: session.and_then(ResizeSession::surrogate_hwnd),
+    })
   }
 
   /// Whether `native` may be moved synchronously, to stay in step with its
