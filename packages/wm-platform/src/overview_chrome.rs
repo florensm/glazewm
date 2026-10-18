@@ -693,16 +693,11 @@ pub(crate) fn draw_tag(
 
   let rect = Rect::from_xy(0, 0, surface.width, surface.height);
   let radius = surface.height / 2;
-  {
-    let mut canvas = surface.canvas();
-    canvas.fill_rounded_rect(&rect, radius, with_alpha(style.card, 0.94));
-    canvas.stroke_rounded_rect(
-      &rect,
-      radius,
-      round(px(1.0)).max(1),
-      with_alpha(style.text, 0.12),
-    );
-  }
+  surface.canvas().fill_rounded_rect(
+    &rect,
+    radius,
+    with_alpha(style.card, 0.94),
+  );
 
   let icon_rect = RectF::new(
     px(padding),
@@ -841,16 +836,11 @@ pub(crate) fn draw_note(
   surface.pixels().fill(0);
   let rect = Rect::from_xy(0, 0, surface.width, surface.height);
   let radius = surface.height / 2;
-  {
-    let mut canvas = surface.canvas();
-    canvas.fill_rounded_rect(&rect, radius, with_alpha(style.card, 0.85));
-    canvas.stroke_rounded_rect(
-      &rect,
-      radius,
-      round(scale_factor).max(1),
-      with_alpha(style.text, 0.12),
-    );
-  }
+  surface.canvas().fill_rounded_rect(
+    &rect,
+    radius,
+    with_alpha(style.card, 0.85),
+  );
 
   let mut fonts = Fonts::new(&style.font_family);
   draw_text(
