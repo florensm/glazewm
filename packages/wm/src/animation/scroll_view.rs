@@ -68,8 +68,8 @@ struct Entry {
 }
 
 impl Entry {
-  fn place(&mut self, rect: &Rect) {
-    self.peek.place(rect, &self.clip, self.opacity);
+  fn place(&mut self, rect: &Rect, batch: &mut SurrogateBatch) {
+    self.peek.place(rect, &self.clip, self.opacity, batch);
     self.rect = rect.clone();
   }
 }
@@ -152,7 +152,14 @@ impl ScrollView {
   }
 
   /// Advances moving columns to `now`, returning the ones that landed.
-  pub fn tick(&mut self, now: Instant, clock_origin: Instant) -> Landed {
+  /// Their moves are queued into `batch`, for [`track_overlays`] to commit
+  /// along with their overlays'.
+  pub fn tick(
+    &mut self,
+    now: Instant,
+    clock_origin: Instant,
+    batch: &mut SurrogateBatch,
+  ) -> Landed {
     let mut landed = Landed::default();
 
     for (id, entry) in &mut self.entries {
@@ -162,7 +169,7 @@ impl ScrollView {
 
       entry.motion.start_clock(clock_origin);
       let (rect, _) = entry.motion.current_state_at(now);
-      entry.place(&rect);
+      entry.place(&rect, batch);
 
       if entry.motion.is_complete() {
         entry.role = if ends_shown {
@@ -219,6 +226,7 @@ impl ScrollView {
   }
 
   /// Draws `window` with a peek in `role`, going from `from` to `target`.
+  /// A move of a peek already shown is queued into `batch`.
   ///
   /// Returns whether a new peek now covers a still-visible real window,
   /// so it has to be composited before that window is cloaked.
@@ -232,6 +240,7 @@ impl ScrollView {
     role: Role,
     config: &UserConfig,
     is_focused: bool,
+    batch: &mut SurrogateBatch,
   ) -> bool {
     let scroll_config = &config.value.animations.scroll;
     let is_moving = matches!(role, Role::Moving { .. });
@@ -273,7 +282,7 @@ impl ScrollView {
       entry.opacity = opacity;
       entry.role = role;
       let rect = entry.motion.current_rect();
-      entry.place(&rect);
+      entry.place(&rect, batch);
       return false;
     }
 
@@ -299,7 +308,7 @@ impl ScrollView {
       opacity,
       role,
     };
-    entry.place(&rect);
+    entry.place(&rect, batch);
     self.entries.insert(window.id(), entry);
 
     is_moving && !window.native().is_cloaked().unwrap_or(true)
@@ -351,6 +360,7 @@ pub fn sync_scroll_view(
   let mut needs_flush = false;
   let mut adds_peek = false;
   let mut started_moving = Vec::new();
+  let mut batch = SurrogateBatch::new();
 
   for (workspace, clip) in &workspaces {
     let moves = column_moves(view, workspace, &new_ids);
@@ -416,6 +426,7 @@ pub fn sync_scroll_view(
         role,
         config,
         focused_id == Some(window.id()),
+        &mut batch,
       );
 
       if is_moving {
@@ -448,7 +459,7 @@ pub fn sync_scroll_view(
     state.animation_manager.remove_animation(id);
   }
 
-  track_overlays(state, config);
+  track_overlays(state, config, batch);
 
   if state.animation_manager.scroll_view.is_active() {
     state.animation_manager.ensure_timer_running();
@@ -493,10 +504,17 @@ pub fn report_stuck_windows(state: &mut WmState) {
 /// draws on their peeks, cut at the monitor edge like the peeks are.
 /// `sync_overlays` leaves these windows to it.
 ///
+/// Commits their moves in `batch`, along with the peeks' moves it already
+/// holds, so a peek and its overlays land in the same frame.
+///
 /// A moving peek's border is pinned to its monitor and slid within it, as
 /// for a workspace switch, so the ring and where it is cut can't land on
 /// screen a frame apart.
-pub fn track_overlays(state: &mut WmState, config: &UserConfig) {
+pub fn track_overlays(
+  state: &mut WmState,
+  config: &UserConfig,
+  mut batch: SurrogateBatch,
+) {
   let focused_id = state.focused_container().map(|focused| focused.id());
 
   let tracked = state
@@ -516,9 +534,6 @@ pub fn track_overlays(state: &mut WmState, config: &UserConfig) {
     })
     .collect::<Vec<(Uuid, Option<Rect>, Rect, bool, HWND)>>();
 
-  let mut backdrop_batch = SurrogateBatch::new();
-  let mut border_batch = SurrogateBatch::new();
-
   for (id, frame, clip, is_moving, anchor) in tracked {
     let (_, _, backdrop, border) =
       surrogate_effects_for(focused_id == Some(id), config);
@@ -531,7 +546,7 @@ pub fn track_overlays(state: &mut WmState, config: &UserConfig) {
         frame,
         &clip,
         anchor,
-        &mut backdrop_batch,
+        &mut batch,
       ),
       _ => {
         if let Some(overlay) = state.backdrop_overlays.get_mut(&id) {
@@ -563,7 +578,7 @@ pub fn track_overlays(state: &mut WmState, config: &UserConfig) {
         &frame,
         &clip,
         anchor,
-        &mut border_batch,
+        &mut batch,
       ),
       _ => {
         if let Some(overlay) = state.border_overlays.get_mut(&id) {
@@ -573,8 +588,7 @@ pub fn track_overlays(state: &mut WmState, config: &UserConfig) {
     }
   }
 
-  backdrop_batch.commit();
-  border_batch.commit();
+  batch.commit();
 }
 
 /// Where each tiling window of `workspace` moves from and to: from where

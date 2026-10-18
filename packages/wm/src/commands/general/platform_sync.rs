@@ -22,7 +22,7 @@ use wm_platform::{
 };
 #[cfg(target_os = "windows")]
 use wm_platform::{
-  BackdropOverlayParams, BorderOverlayParams, CornerStyle,
+  BackdropOverlayParams, BorderOverlayParams, CornerStyle, LiveFrame,
   NativeBackdropOverlay, NativeBorderOverlay, NativeIrisOverlay,
   OpacityValue, Overlay, StyleBlend, SurrogateBatch, WorkspaceSurrogate,
   HWND,
@@ -2463,6 +2463,38 @@ fn resync_overlay_z_order<O: SyncableOverlay>(state: &mut WmState) {
         window.id()
       );
     }
+  }
+}
+
+/// Creates or updates `window_id`'s backdrop overlay for one frame of a
+/// workspace-switch slide, following its `Live` surrogate's `live` frame
+/// (see `NativeBackdropOverlay::defer_cut_rect`).
+///
+/// Created at the visible rect, so a backdrop first shown mid-slide (a
+/// focus change turning it on) cannot show past the monitor for a frame.
+#[cfg(target_os = "windows")]
+pub(crate) fn upsert_live_backdrop_overlay(
+  overlays: &mut std::collections::HashMap<
+    uuid::Uuid,
+    NativeBackdropOverlay,
+  >,
+  window_id: uuid::Uuid,
+  blend: StyleBlend<BackdropOverlayParams>,
+  live: &LiveFrame,
+  anchor: HWND,
+  batch: &mut SurrogateBatch,
+) {
+  if let Some(overlay) =
+    overlay_entry(overlays, window_id, blend.from, &live.visible, anchor)
+  {
+    overlay.apply_blend(blend);
+    overlay.defer_cut_rect(
+      batch,
+      &live.frame,
+      &live.shown,
+      &live.visible,
+      anchor,
+    );
   }
 }
 

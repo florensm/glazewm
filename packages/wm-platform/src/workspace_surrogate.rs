@@ -1,7 +1,8 @@
 use windows::Win32::Foundation::{HWND, RECT};
 
 use crate::{
-  native_surrogate::to_logical, resize_session::compute_border_inset,
+  native_surrogate::{placed_rects, to_logical},
+  resize_session::compute_border_inset,
   CornerStyle, NativeSurrogate, Rect, SurrogateBatch,
 };
 
@@ -19,7 +20,27 @@ enum SurrogateMode {
   /// the backdrop overlay can be repositioned onto this surrogate's own
   /// footprint each frame — pinning the surrogate to the full viewport
   /// would leave the overlay nothing meaningful to follow.
+  ///
+  /// The thumbnail is cut only at the panel, which slides with the
+  /// window, and the surrogate's bounds cut it at the monitor.
+  /// Thumbnail updates apply at once while the batched moves land
+  /// later, often a composited frame later; cut at the monitor too, a
+  /// window sliding across the monitor's right or bottom edge changed
+  /// both every frame, and frames pairing the new thumbnail with the
+  /// old bounds flashed a strip at that edge with no window in it.
   Live,
+}
+
+/// Where a [`SurrogateMode::Live`] surrogate draws its window for one
+/// animation frame, in the coordinates of [`WorkspaceSurrogate::rect`].
+#[derive(Clone, Debug)]
+pub struct LiveFrame {
+  /// The window, before any clip.
+  pub frame: Rect,
+  /// The part of `frame` inside the sliding panel.
+  pub shown: Rect,
+  /// The part of `shown` on the monitor: the surrogate's own rect.
+  pub visible: Rect,
 }
 
 /// Surrogate overlay for a single window participating in a
@@ -73,18 +94,18 @@ pub struct WorkspaceSurrogate {
   /// deflation already baked into `rect` and the surrogate's created
   /// size.
   border_inset: RECT,
-  /// Live on-screen rect for the current animation frame, in
+  /// Live footprint for the current animation frame, in
   /// [`SurrogateMode::Live`] mode only -- lets a caller (the backdrop
   /// overlay tracker in `AnimationManager::update_internal`) follow the
   /// surrogate's actual footprint instead of only its final `rect`.
   /// `None` in [`SurrogateMode::PinnedViewport`] mode (no single
   /// "screen rect" applies there), and `None` whenever the visible
   /// strip is currently empty (fully off-screen, or zoomed to nothing).
-  current_rect: Option<Rect>,
+  live_frame: Option<LiveFrame>,
 
   /// Full on-screen rect the source window occupies this animation frame,
   /// *before* the monitor clip -- in both [`SurrogateMode`]s, unlike
-  /// `current_rect`. Lets the border overlay follow the window through a
+  /// `live_frame`. Lets the border overlay follow the window through a
   /// slide: the ring hangs outside the window's own rect, so it has to be
   /// placed from the unclipped position and clipped separately (see
   /// `NativeBorderOverlay::pin_or_slide`). `None` once the window is
@@ -144,13 +165,13 @@ impl WorkspaceSurrogate {
   /// isn't configured for this window. When `Some`, this switches the
   /// surrogate to [`SurrogateMode::Live`] -- sized/moved to its own
   /// footprint rather than pinned to the viewport -- so a live-tracking
-  /// backdrop overlay (see [`current_rect`], driven from
+  /// backdrop overlay (see [`live_frame`], driven from
   /// `AnimationManager`) has a meaningful per-frame rect to follow. The
   /// backdrop is the same overlay used in steady state, kept alive and
   /// repositioned to this surrogate's footprint for the whole slide, so
   /// there is no handoff flash between two backdrops.
   ///
-  /// [`current_rect`]: WorkspaceSurrogate::current_rect
+  /// [`live_frame`]: WorkspaceSurrogate::live_frame
   ///
   /// The surrogate is created hidden. For outgoing windows, call
   /// [`show_initial`] before cloaking the real window to avoid a blank
@@ -244,18 +265,18 @@ impl WorkspaceSurrogate {
       opacity_endpoint: opacity_endpoint.clamp(0.0, 1.0),
       mode,
       border_inset,
-      current_rect: None,
+      live_frame: None,
       unclipped_rect: None,
       panel: None,
       frame_inset,
     })
   }
 
-  /// Live on-screen rect for the current animation frame, when in
+  /// Live footprint for the current animation frame, when in
   /// [`SurrogateMode::Live`] mode and currently visible.
   #[must_use]
-  pub fn current_rect(&self) -> Option<&Rect> {
-    self.current_rect.as_ref()
+  pub fn live_frame(&self) -> Option<&LiveFrame> {
+    self.live_frame.as_ref()
   }
 
   /// Full on-screen rect of the source window for the current animation
@@ -277,7 +298,7 @@ impl WorkspaceSurrogate {
   /// where the window has nothing visible left to draw.
   fn clear_frame(&mut self) {
     self.inner.set_visible(false);
-    self.current_rect = None;
+    self.live_frame = None;
     self.unclipped_rect = None;
     self.panel = None;
   }
@@ -285,8 +306,12 @@ impl WorkspaceSurrogate {
   /// Draws the part of the window inside both `panel` and `monitor`, with
   /// the window at `frame` this frame, `scale` times its size at rest.
   ///
+  /// In [`SurrogateMode::PinnedViewport`] mode only the thumbnail
+  /// changes; in [`SurrogateMode::Live`] mode the surrogate is also moved
+  /// to the visible rect, immediately without `batch` (initial placement,
+  /// before the animation loop starts) and queued into it otherwise.
+  ///
   /// Returns whether anything is left to draw.
-  #[allow(clippy::cast_possible_truncation, clippy::cast_precision_loss)]
   fn show_frame(
     &mut self,
     batch: Option<&mut SurrogateBatch>,
@@ -295,39 +320,49 @@ impl WorkspaceSurrogate {
     panel: Rect,
     monitor: &Rect,
   ) -> bool {
-    let Some(visible) = frame
-      .intersection(&panel)
-      .and_then(|rect| rect.intersection(monitor))
+    let Some((shown, visible)) =
+      frame.intersection(&panel).and_then(|shown| {
+        let visible = shown.intersection(monitor)?;
+        Some((shown, visible))
+      })
     else {
       self.clear_frame();
       return false;
     };
 
-    // Back from screen to source-window coordinates, past the invisible
-    // border baked into the thumbnail's registration.
-    let to_source = |screen: i32, origin: i32, size: i32| {
-      (((screen - origin) as f32 / scale).round() as i32).clamp(0, size)
+    // Pinned, the surrogate never moves, so cutting the thumbnail at the
+    // monitor as well leaves it the one thing that changes. Live, the
+    // surrogate's bounds cut it there instead (see `SurrogateMode::Live`).
+    let (sampled, origin) = match self.mode {
+      SurrogateMode::PinnedViewport => {
+        (&visible, (self.viewport.left, self.viewport.top))
+      }
+      SurrogateMode::Live => (&shown, (visible.left, visible.top)),
     };
-    let (width, height) = (self.rect.width(), self.rect.height());
-    let rc_src = RECT {
-      left: self.border_inset.left
-        + to_source(visible.left, frame.left, width),
-      top: self.border_inset.top
-        + to_source(visible.top, frame.top, height),
-      right: self.border_inset.left
-        + to_source(visible.right, frame.left, width),
-      bottom: self.border_inset.top
-        + to_source(visible.bottom, frame.top, height),
-    };
-
-    self.apply_visible_rect(
-      batch,
-      rc_src,
-      visible.left,
-      visible.top,
-      visible.right,
-      visible.bottom,
+    let (rc_src, rc_dst) = placed_rects(
+      frame,
+      sampled,
+      scale,
+      (self.rect.width(), self.rect.height()),
+      self.border_inset,
+      origin,
     );
+    self.inner.set_thumbnail_rects(rc_src, rc_dst);
+
+    if self.is_live() {
+      match batch {
+        Some(batch) => self.inner.defer_reposition(batch, &visible),
+        None => {
+          let _ = self.inner.reposition(&visible);
+        }
+      }
+      self.live_frame = Some(LiveFrame {
+        frame: frame.clone(),
+        shown,
+        visible,
+      });
+    }
+    self.inner.set_visible(true);
     self.panel = Some(panel);
 
     true
@@ -380,7 +415,8 @@ impl WorkspaceSurrogate {
   }
 
   /// Shows the surrogate at full opacity with the thumbnail at the
-  /// window's natural (unscaled) position within the monitor viewport.
+  /// window's natural (unscaled) position within the monitor viewport,
+  /// cut to it like every later frame.
   ///
   /// Always uses opacity `255` (fully opaque) so the surrogate completely
   /// covers the real window before it is cloaked, avoiding a double-blend
@@ -389,21 +425,15 @@ impl WorkspaceSurrogate {
   ///
   /// [`apply_effect_opacity`]: WorkspaceSurrogate::apply_effect_opacity
   pub fn show_initial(&mut self) {
-    let rc_src = RECT {
-      left: self.border_inset.left,
-      top: self.border_inset.top,
-      right: self.border_inset.left + self.rect.width(),
-      bottom: self.border_inset.top + self.rect.height(),
-    };
-    self.apply_visible_rect(
-      None,
-      rc_src,
-      self.rect.left,
-      self.rect.top,
-      self.rect.right,
-      self.rect.bottom,
-    );
+    self.show_at_rest();
     self.inner.set_window_opacity(u8::MAX);
+  }
+
+  /// Draws the window where it rests, as the first frame of the switch.
+  fn show_at_rest(&mut self) {
+    let rect = self.rect.clone();
+    let viewport = self.viewport.clone();
+    self.show_frame(None, &rect, 1.0, viewport.clone(), &viewport);
   }
 
   /// Updates the DWM thumbnail opacity to the configured `opacity` without
@@ -438,20 +468,7 @@ impl WorkspaceSurrogate {
   /// [`update_fade`]: WorkspaceSurrogate::update_fade
   /// [`update_zoom`]: WorkspaceSurrogate::update_zoom
   pub fn show_incoming(&mut self) {
-    let rc_src = RECT {
-      left: self.border_inset.left,
-      top: self.border_inset.top,
-      right: self.border_inset.left + self.rect.width(),
-      bottom: self.border_inset.top + self.rect.height(),
-    };
-    self.apply_visible_rect(
-      None,
-      rc_src,
-      self.rect.left,
-      self.rect.top,
-      self.rect.right,
-      self.rect.bottom,
-    );
+    self.show_at_rest();
     self.inner.set_window_opacity(self.lerp_opacity(0.0, true));
   }
 
@@ -534,66 +551,6 @@ impl WorkspaceSurrogate {
       .round() as u8
   }
 
-  /// Applies a visible-rect update for one animation frame, dispatching on
-  /// [`SurrogateMode`].
-  ///
-  /// `rc_src` is the source-window-local rect to sample from. `vis_left`,
-  /// `vis_top`, `vis_right`, `vis_bottom` are the visible destination rect
-  /// in absolute screen coordinates.
-  ///
-  /// In [`SurrogateMode::PinnedViewport`] mode this only updates the DWM
-  /// thumbnail's `rcDestination` (expressed relative to `self.viewport`);
-  /// the surrogate window itself never moves. In [`SurrogateMode::Live`]
-  /// mode the thumbnail fills the surrogate's entire (resized) client
-  /// area, and the surrogate window is moved/resized to `[vis_left,
-  /// vis_top, vis_right, vis_bottom]` — immediately via `reposition`
-  /// when `batch` is `None` (initial placement, before the animation
-  /// loop starts), or queued into `batch` for an atomic multi-surrogate
-  /// commit otherwise.
-  fn apply_visible_rect(
-    &mut self,
-    batch: Option<&mut SurrogateBatch>,
-    rc_src: RECT,
-    vis_left: i32,
-    vis_top: i32,
-    vis_right: i32,
-    vis_bottom: i32,
-  ) {
-    match self.mode {
-      SurrogateMode::PinnedViewport => {
-        let rc_dst = RECT {
-          left: vis_left - self.viewport.left,
-          top: vis_top - self.viewport.top,
-          right: vis_right - self.viewport.left,
-          bottom: vis_bottom - self.viewport.top,
-        };
-        self.inner.set_thumbnail_rects(rc_src, rc_dst);
-      }
-      SurrogateMode::Live => {
-        let w = vis_right - vis_left;
-        let h = vis_bottom - vis_top;
-        let rc_dst = RECT {
-          left: 0,
-          top: 0,
-          right: w,
-          bottom: h,
-        };
-        self.inner.set_thumbnail_rects(rc_src, rc_dst);
-
-        let target =
-          Rect::from_ltrb(vis_left, vis_top, vis_right, vis_bottom);
-        match batch {
-          Some(b) => self.inner.defer_reposition(b, &target),
-          None => {
-            let _ = self.inner.reposition(&target);
-          }
-        }
-        self.current_rect = Some(target);
-      }
-    }
-    self.inner.set_visible(true);
-  }
-
   /// Advances the surrogate along one axis with a simultaneous
   /// whole-workspace scale to `eased_progress` (0.0 → 1.0);
   /// `is_vertical` selects the slide axis (`false` = horizontal, `true`
@@ -607,8 +564,8 @@ impl WorkspaceSurrogate {
   /// primary axis.
   ///
   /// Computes a per-frame scale from the monitor center (both axes)
-  /// combined with a slide offset on the primary axis, then routes the
-  /// resulting visible rect through [`apply_visible_rect`].
+  /// combined with a slide offset on the primary axis, then draws the
+  /// resulting frame through `show_frame`.
   #[allow(
     clippy::too_many_arguments,
     clippy::cast_possible_truncation,
@@ -685,8 +642,7 @@ impl WorkspaceSurrogate {
   /// surrogate is moved/resized to the clipped visible rect, batched via
   /// `batch`. `slide_distance` is the effective travel distance (may be
   /// less than the monitor's size on that axis to close the seam gap
-  /// between the two workspace panels). The visible strip of source
-  /// content is routed through [`apply_visible_rect`].
+  /// between the two workspace panels).
   #[allow(
     clippy::too_many_arguments,
     clippy::cast_possible_truncation,

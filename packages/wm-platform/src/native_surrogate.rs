@@ -136,6 +136,41 @@ fn content_rects(
   (src, dst)
 }
 
+/// `(rcSource, rcDestination)` drawing the part `shown` of a window placed
+/// at `frame`, `scale` times its `size` at rest, into a surrogate whose
+/// top-left is at `origin`. Both rects are in screen coordinates.
+///
+/// `rcSource` starts past `border_inset`, like [`content_rects`]. Whatever
+/// of `shown` lies outside the surrogate is cut by its bounds.
+#[allow(clippy::cast_possible_truncation, clippy::cast_precision_loss)]
+pub(crate) fn placed_rects(
+  frame: &Rect,
+  shown: &Rect,
+  scale: f32,
+  size: (i32, i32),
+  border_inset: RECT,
+  origin: (i32, i32),
+) -> (RECT, RECT) {
+  let to_source = |screen: i32, edge: i32, size: i32| {
+    (((screen - edge) as f32 / scale).round() as i32).clamp(0, size)
+  };
+
+  let src = RECT {
+    left: border_inset.left + to_source(shown.left, frame.left, size.0),
+    top: border_inset.top + to_source(shown.top, frame.top, size.1),
+    right: border_inset.left + to_source(shown.right, frame.left, size.0),
+    bottom: border_inset.top + to_source(shown.bottom, frame.top, size.1),
+  };
+  let dst = RECT {
+    left: shown.left - origin.0,
+    top: shown.top - origin.1,
+    right: shown.right - origin.0,
+    bottom: shown.bottom - origin.1,
+  };
+
+  (src, dst)
+}
+
 /// Maps thumbnail rects given in the source window's coordinates onto
 /// what the thumbnail actually samples: the window, or its companion.
 fn sampled_rects(
@@ -865,8 +900,17 @@ impl NativeSurrogate {
   }
 
   /// Shows the part of the source window at `logical` that lies inside
-  /// `clip`, with the surrogate shrunk to that part and the thumbnail
-  /// sampling only it. Hides the surrogate when nothing is inside.
+  /// `clip`, with the surrogate shrunk to that part. Hides the surrogate
+  /// when nothing is inside.
+  ///
+  /// The thumbnail draws the whole window at its place and the
+  /// surrogate's bounds cut it. Cut itself, it would change on every
+  /// frame the window moves across the edge of `clip`, while the move
+  /// can land in a later frame (always, with `batch`), and a frame
+  /// pairing the two badly showed a strip at that edge with no window in
+  /// it.
+  ///
+  /// With `batch`, a move of an already shown surrogate is queued into it.
   ///
   /// Returns the visible rect, if any.
   pub fn show_clipped(
@@ -875,37 +919,32 @@ impl NativeSurrogate {
     clip: &Rect,
     border_inset: RECT,
     opacity: u8,
+    batch: Option<&mut SurrogateBatch>,
   ) -> Option<Rect> {
     let Some(visible) = logical.intersection(clip) else {
       self.set_visible(false);
       return None;
     };
 
-    let src_left = visible.left - logical.left;
-    let src_top = visible.top - logical.top;
-    let (width, height) = (visible.width(), visible.height());
-
-    // `rcSource` samples from the real window's coordinate space, so it
-    // carries the same `border_inset` offset as the thumbnail
-    // registration; `src_left`/`src_top` are offsets within the logical
-    // rect.
-    self.set_thumbnail_rects(
-      RECT {
-        left: border_inset.left + src_left,
-        top: border_inset.top + src_top,
-        right: border_inset.left + src_left + width,
-        bottom: border_inset.top + src_top + height,
-      },
-      RECT {
-        left: 0,
-        top: 0,
-        right: width,
-        bottom: height,
-      },
+    let (src, dst) = placed_rects(
+      logical,
+      logical,
+      1.0,
+      (logical.width(), logical.height()),
+      border_inset,
+      (visible.left, visible.top),
     );
+    self.set_thumbnail_rects(src, dst);
 
-    if let Err(err) = self.reposition(&visible) {
-      tracing::warn!("Surrogate clipped update failed: {err}.");
+    match batch {
+      Some(batch) if self.is_visible => {
+        self.defer_reposition(batch, &visible);
+      }
+      _ => {
+        if let Err(err) = self.reposition(&visible) {
+          tracing::warn!("Surrogate clipped update failed: {err}.");
+        }
+      }
     }
     self.set_window_opacity(opacity);
     self.set_visible(true);
@@ -1326,10 +1365,11 @@ mod tests {
   };
 
   use super::{
-    ensure_class_registered, is_surrogate, stretched_destination,
-    BeginDeferWindowPos, CreateWindowExW, DeferWindowPos, DestroyWindow,
-    EndDeferWindowPos, Rect, SurrogateBatch, HWND, SWP_NOSENDCHANGING,
-    WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TRANSPARENT, WS_POPUP,
+    ensure_class_registered, is_surrogate, placed_rects,
+    stretched_destination, BeginDeferWindowPos, CreateWindowExW,
+    DeferWindowPos, DestroyWindow, EndDeferWindowPos, Rect,
+    SurrogateBatch, HWND, RECT, SWP_NOSENDCHANGING, WS_EX_NOACTIVATE,
+    WS_EX_TOOLWINDOW, WS_EX_TRANSPARENT, WS_POPUP,
   };
 
   /// Batch commits performed by the leak regression test.
@@ -1346,6 +1386,70 @@ mod tests {
   /// concurrently must not fail this. The regressed behaviour leaked
   /// [`LEAK_TEST_COMMITS`] objects, an order of magnitude above this.
   const LEAK_TEST_TOLERANCE: i64 = 32;
+
+  fn ltrb(rect: RECT) -> (i32, i32, i32, i32) {
+    (rect.left, rect.top, rect.right, rect.bottom)
+  }
+
+  /// A window cut at its surrogate's far edge keeps the same thumbnail
+  /// however far past it it slides, so only the surrogate's move changes
+  /// per frame.
+  #[test]
+  fn placed_rects_leave_a_far_edge_cut_to_the_surrogate() {
+    let inset = RECT {
+      left: 7,
+      top: 0,
+      right: 7,
+      bottom: 7,
+    };
+
+    // A 400 px window sliding off a monitor that ends at x = 1000.
+    for left in [700, 750, 900] {
+      let frame = Rect::from_xy(left, 100, 400, 300);
+      let (src, dst) =
+        placed_rects(&frame, &frame, 1.0, (400, 300), inset, (left, 100));
+
+      assert_eq!(ltrb(src), (7, 0, 407, 300));
+      assert_eq!(ltrb(dst), (0, 0, 400, 300));
+    }
+  }
+
+  /// A window cut at its surrogate's origin is drawn offset past it,
+  /// whole.
+  #[test]
+  fn placed_rects_offset_a_window_cut_at_the_surrogate_origin() {
+    let frame = Rect::from_xy(-150, 100, 400, 300);
+    let (src, dst) = placed_rects(
+      &frame,
+      &frame,
+      1.0,
+      (400, 300),
+      RECT::default(),
+      (0, 100),
+    );
+
+    assert_eq!(ltrb(src), (0, 0, 400, 300));
+    assert_eq!(ltrb(dst), (-150, 0, 250, 300));
+  }
+
+  /// Only the shown part of a scaled window is sampled, mapped back to the
+  /// window's size at rest.
+  #[test]
+  fn placed_rects_sample_only_the_shown_part() {
+    let frame = Rect::from_xy(100, 100, 200, 150);
+    let shown = Rect::from_ltrb(200, 100, 300, 250);
+    let (src, dst) = placed_rects(
+      &frame,
+      &shown,
+      0.5,
+      (400, 300),
+      RECT::default(),
+      (0, 0),
+    );
+
+    assert_eq!(ltrb(src), (200, 0, 400, 300));
+    assert_eq!(ltrb(dst), (200, 100, 300, 250));
+  }
 
   /// Returns this process's current USER-object count.
   /// The invisible resize borders of a whole-window thumbnail must land

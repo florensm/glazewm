@@ -953,10 +953,9 @@ impl ResizeSession {
   /// Updates the surrogate, clamping its visible area to `monitor_rect`.
   ///
   /// When `current_rect` extends outside `monitor_rect`, the surrogate is
-  /// constrained to the intersection and the DWM thumbnail `rcSource` and
-  /// `rcDestination` are adjusted to show only the visible slice —
-  /// matching the approach used by `WorkspaceSurrogate`. Hides the
-  /// surrogate when the rect is fully off-screen.
+  /// constrained to the intersection (see
+  /// `NativeSurrogate::show_clipped`). Hides the surrogate when the rect
+  /// is fully off-screen.
   pub fn update_clipped(
     &mut self,
     current_rect: &Rect,
@@ -974,6 +973,7 @@ impl ResizeSession {
       monitor_rect,
       self.border_inset,
       opacity,
+      None,
     );
   }
 

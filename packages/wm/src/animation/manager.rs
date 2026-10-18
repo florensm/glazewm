@@ -277,7 +277,7 @@ use wm_platform::{
 #[cfg(target_os = "windows")]
 use crate::commands::general::{
   apply_focus_effects, overlay_z_anchor, resync_settling_overlays,
-  surrogate_effects_for, upsert_blended_overlay, upsert_overlay,
+  surrogate_effects_for, upsert_live_backdrop_overlay, upsert_overlay,
   upsert_pinned_border_overlay, SyncableOverlay,
 };
 #[cfg(target_os = "windows")]
@@ -1289,10 +1289,13 @@ impl AnimationManager {
     // that end hidden have their real window put where it stays cloaked,
     // and their overlays settled.
     #[cfg(target_os = "windows")]
-    let landed = state
-      .animation_manager
-      .scroll_view
-      .tick(frame_now, clock_origin);
+    let mut scroll_batch = SurrogateBatch::new();
+    #[cfg(target_os = "windows")]
+    let landed = state.animation_manager.scroll_view.tick(
+      frame_now,
+      clock_origin,
+      &mut scroll_batch,
+    );
     #[cfg(target_os = "windows")]
     if !landed.shown.is_empty() {
       state.pending_sync.queue_focus_change();
@@ -1307,7 +1310,7 @@ impl AnimationManager {
       }
     }
     #[cfg(target_os = "windows")]
-    super::scroll_view::track_overlays(state, config);
+    super::scroll_view::track_overlays(state, config, scroll_batch);
 
     // Queue in-progress windows for redraw.
     let active_window_ids: Vec<_> = state
@@ -1820,19 +1823,19 @@ impl AnimationManager {
             // instead of a fixed-intensity look that
             // jumps to the tuned value only once the animation ends.
             if s.is_live() {
-              match s.current_rect() {
-                Some(rect) => {
+              match s.live_frame() {
+                Some(live) => {
                   if let Some(blend) = StyleBlend::between(
                     from_backdrop,
                     to_backdrop,
                     eased_final,
                     NativeBackdropOverlay::transparent,
                   ) {
-                    upsert_blended_overlay(
+                    upsert_live_backdrop_overlay(
                       &mut state.backdrop_overlays,
                       window_id,
                       blend,
-                      rect,
+                      live,
                       s.hwnd(),
                       &mut ws_batch,
                     );

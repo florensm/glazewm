@@ -13,15 +13,17 @@ use crate::{
 /// Positioned directly behind an `anchor` window in z-order (typically the
 /// managed window itself, or its surrogate while one is active -- see
 /// [`set_rect`]/[`sync_z_order`]) and kept pixel-aligned with its DWM
-/// frame rect. When the managed window is semi-transparent (via the
-/// `transparency` window effect), the backdrop shows through the window,
-/// producing a frosted-glass look.
+/// frame rect, or with the part of it that is on screen (see
+/// [`defer_cut_rect`]). When the managed window is semi-transparent (via
+/// the `transparency` window effect), the backdrop shows through the
+/// window, producing a frosted-glass look.
 ///
 /// Renders entirely through a `Windows.UI.Composition` visual tree, so a
 /// system without it (pre-Windows 10 1803) gets no overlay at all rather
 /// than a degraded one.
 ///
 /// [`set_rect`]: NativeBackdropOverlay::set_rect
+/// [`defer_cut_rect`]: NativeBackdropOverlay::defer_cut_rect
 /// [`sync_z_order`]: NativeBackdropOverlay::sync_z_order
 ///
 /// # Platform-specific
@@ -44,8 +46,8 @@ pub struct NativeBackdropOverlay {
   /// itself.
   params: BackdropOverlayParams,
 
-  /// Last rect applied, used to skip redundant `SetWindowPos` calls when
-  /// the overlay hasn't actually moved.
+  /// Last rect applied to the window, used to skip redundant
+  /// `SetWindowPos` calls when the overlay hasn't actually moved.
   rect: Rect,
 }
 
@@ -60,17 +62,79 @@ impl NativeBackdropOverlay {
   ///
   /// [`sync_z_order`]: NativeBackdropOverlay::sync_z_order
   pub fn set_rect(&mut self, rect: &Rect, anchor: HWND) {
-    if self.window.is_placed_behind(anchor) && &self.rect == rect {
+    self.place(rect, rect, rect, anchor);
+  }
+
+  /// Queues showing the backdrop of a window at `rect`, of which only
+  /// `shown` is to be seen, cut off at the edges of `clip`. Hides the
+  /// overlay when none of it is inside.
+  ///
+  /// For one frame of a workspace-switch slide: `shown` is the window's
+  /// part inside its workspace as it slides, and `clip` its monitor.
+  /// `shown` moves with the window, so the backdrop cuts itself there, and
+  /// the overlay window's own bounds cut it at `clip`, where a cut of its
+  /// own would change every frame the window slides across the edge (see
+  /// `BackdropVisual::set_layout`).
+  pub fn defer_cut_rect(
+    &mut self,
+    batch: &mut SurrogateBatch,
+    rect: &Rect,
+    shown: &Rect,
+    clip: &Rect,
+    anchor: HWND,
+  ) {
+    match shown.intersection(clip) {
+      Some(visible) => {
+        self.defer_place(batch, rect, shown, &visible, anchor);
+      }
+      None => self.hide(),
+    }
+  }
+
+  /// Moves the window to `rect` behind `anchor` and shows it, laid out for
+  /// its window at `frame` cut to `shown`.
+  fn place(
+    &mut self,
+    frame: &Rect,
+    shown: &Rect,
+    rect: &Rect,
+    anchor: HWND,
+  ) {
+    if !self.window.is_placed_behind(anchor) || &self.rect != rect {
+      if let Err(err) = self.window.place(rect, anchor) {
+        tracing::warn!("{err}");
+        return;
+      }
+    }
+
+    self.lay_out(frame, shown, rect);
+  }
+
+  /// [`place`](Self::place), queueing the move into `batch` when the
+  /// overlay is already shown behind `anchor`.
+  fn defer_place(
+    &mut self,
+    batch: &mut SurrogateBatch,
+    frame: &Rect,
+    shown: &Rect,
+    rect: &Rect,
+    anchor: HWND,
+  ) {
+    if !self.window.is_placed_behind(anchor) {
+      self.place(frame, shown, rect, anchor);
       return;
     }
 
-    if let Err(err) = self.window.place(rect, anchor) {
-      tracing::warn!("{err}");
-      return;
+    if &self.rect != rect {
+      batch.push(self.window.hwnd().0, rect.clone());
     }
 
-    if let Err(e) = self.composition.set_rect(rect) {
-      tracing::warn!("Backdrop overlay composition resize failed: {e}.");
+    self.lay_out(frame, shown, rect);
+  }
+
+  fn lay_out(&mut self, frame: &Rect, shown: &Rect, rect: &Rect) {
+    if let Err(e) = self.composition.set_layout(frame, shown, rect) {
+      tracing::warn!("Backdrop overlay composition layout failed: {e}.");
     }
 
     self.rect = rect.clone();
@@ -105,7 +169,7 @@ impl NativeBackdropOverlay {
     }
 
     if current.parallax != params.parallax {
-      composition.set_parallax(params.parallax, &self.rect);
+      composition.set_parallax(params.parallax);
     }
 
     self.params = params;
@@ -168,7 +232,7 @@ impl Overlay for NativeBackdropOverlay {
     // config -- the user swapping their wallpaper, or the displays being
     // rearranged. `apply_blend` is the one call every tracked overlay gets
     // on every tick, which is what makes it the place to notice.
-    if let Err(e) = self.composition.sync_backdrop(&self.rect) {
+    if let Err(e) = self.composition.sync_backdrop() {
       tracing::warn!("Wallpaper backdrop refresh failed: {e}.");
     }
   }
@@ -179,26 +243,11 @@ impl Overlay for NativeBackdropOverlay {
     rect: &Rect,
     anchor: HWND,
   ) {
-    if !self.window.is_placed_behind(anchor) {
-      self.set_rect(rect, anchor);
-      return;
-    }
-
-    if &self.rect == rect {
-      return;
-    }
-
-    batch.push(self.window.hwnd().0, rect.clone());
-
-    if let Err(e) = self.composition.set_rect(rect) {
-      tracing::warn!("Backdrop overlay composition resize failed: {e}.");
-    }
-
-    self.rect = rect.clone();
+    self.defer_place(batch, rect, rect, rect, anchor);
   }
 
-  /// The backdrop fills its window, so it simply shrinks to the part
-  /// inside `clip`.
+  /// [`defer_cut_rect`](NativeBackdropOverlay::defer_cut_rect) with all of
+  /// the window to be seen.
   fn defer_clipped_rect(
     &mut self,
     batch: &mut SurrogateBatch,
@@ -206,10 +255,7 @@ impl Overlay for NativeBackdropOverlay {
     clip: &Rect,
     anchor: HWND,
   ) {
-    match rect.intersection(clip) {
-      Some(visible) => self.defer_rect(batch, &visible, anchor),
-      None => self.hide(),
-    }
+    self.defer_cut_rect(batch, rect, rect, clip, anchor);
   }
 
   fn sync_z_order(

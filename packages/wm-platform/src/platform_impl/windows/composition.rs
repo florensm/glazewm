@@ -281,7 +281,10 @@ impl BackdropLayer {
     Ok(())
   }
 
-  /// Keeps the layer showing the part of the desktop `rect` covers.
+  /// Keeps the layer showing the part of the desktop under its window at
+  /// `frame`, from the wallpaper of the monitor the overlay window at
+  /// `window` is on. The two differ while the overlay window is cut
+  /// short, and only `window` is certain to be on the monitor it shows.
   ///
   /// Re-binds to another monitor's baked surface only when the overlay has
   /// actually crossed onto one -- checked arithmetically against the
@@ -291,7 +294,8 @@ impl BackdropLayer {
     &mut self,
     compositor: &Compositor,
     queue: &DispatcherQueue,
-    rect: &Rect,
+    frame: &Rect,
+    window: &Rect,
     parallax: f32,
   ) -> crate::Result<()> {
     let current = wallpaper_surface::generation();
@@ -300,16 +304,16 @@ impl BackdropLayer {
     // has not moved: the monitor it sits on is unchanged, but the image
     // baked for that monitor is no longer the one the desktop is showing.
     if self.generation != current
-      || !self.monitor.contains_point(&rect.center_point())
+      || !self.monitor.contains_point(&window.center_point())
     {
-      self.monitor = wallpaper_surface::monitor_bounds(rect);
+      self.monitor = wallpaper_surface::monitor_bounds(window);
       self.generation = current;
       self.rebind(compositor, queue, self.knobs)?;
     }
 
     wallpaper_surface::set_crop(
       &self.brush,
-      rect,
+      frame,
       &self.monitor,
       parallax,
     );
@@ -342,7 +346,14 @@ pub(crate) struct BackdropVisual {
   /// can rebuild whatever their layers need rebuilt.
   compositor: Compositor,
   queue: DispatcherQueue,
+
+  /// Placed and sized at `frame` within the overlay window, cut to
+  /// `shown` by `cut`, and carrying the overlay's opacity.
   root: ContainerVisual,
+  cut: InsetClip,
+
+  /// Fills `root` and holds the layers under the rounded clip.
+  body: ContainerVisual,
 
   /// Two blur layers, so a change of baked knobs can crossfade between
   /// two finished surfaces: the knobs are baked into the image, so there
@@ -381,6 +392,21 @@ pub(crate) struct BackdropVisual {
   /// selects a different region of an already-baked surface rather than
   /// changing what was baked, so a change costs one property write.
   parallax: f32,
+
+  /// Last layout applied; see [`set_layout`](Self::set_layout).
+  frame: Rect,
+  shown: Rect,
+  window: Rect,
+}
+
+/// Pixels of `frame` outside `shown` on each side, as `InsetClip` insets.
+fn cut_insets(frame: &Rect, shown: &Rect) -> [i32; 4] {
+  [
+    shown.left - frame.left,
+    shown.top - frame.top,
+    frame.right - shown.right,
+    frame.bottom - shown.bottom,
+  ]
 }
 
 impl BackdropVisual {
@@ -402,21 +428,67 @@ impl BackdropVisual {
     })
   }
 
-  /// Resizes the clip and re-aims the wallpaper crop to match `rect`. Does
-  /// not reposition the `HWND` itself -- callers still issue their own
+  /// Lays the tree out for a window at `frame`, cut to its part `shown`,
+  /// in an overlay window at `window` (which `shown` contains). Does not
+  /// reposition the `HWND` itself -- callers still issue their own
   /// `SetWindowPos`.
   ///
-  /// The visuals themselves need no write: they are sized relative to the
-  /// window (see `build_visual_tree`), so DWM resizes them in the same
-  /// frame as the `HWND`. Only the clip geometry, which has no relative
-  /// sizing, is set explicitly.
-  pub(crate) fn set_rect(&mut self, rect: &Rect) -> crate::Result<()> {
-    self.rounded_geometry.SetSize(Vector2 {
-      X: pixels_to_dips(rect.width()),
-      Y: pixels_to_dips(rect.height()),
-    })?;
+  /// The visuals keep the window's own size and shape however little of
+  /// it the overlay window shows. Composition and `SetWindowPos` (often
+  /// batched to the end of an animation frame) reach DWM on independent
+  /// schedules, so sized to the overlay window instead, a window sliding
+  /// past an edge it is cut at had its clip shrink a frame before or after
+  /// the window did, flashing a strip with no backdrop at that edge. This
+  /// way such a slide changes nothing here but the crop, and where the cut
+  /// edge is the window's own origin, the offset.
+  pub(crate) fn set_layout(
+    &mut self,
+    frame: &Rect,
+    shown: &Rect,
+    window: &Rect,
+  ) -> crate::Result<()> {
+    let offset = |frame: &Rect, window: &Rect| {
+      (frame.x() - window.x(), frame.y() - window.y())
+    };
+    let size = |rect: &Rect| (rect.width(), rect.height());
 
-    self.sync_crop(rect)
+    let (x, y) = offset(frame, window);
+    if (x, y) != offset(&self.frame, &self.window) {
+      self.root.SetOffset(Vector3 {
+        X: pixels_to_dips(x),
+        Y: pixels_to_dips(y),
+        Z: 0.0,
+      })?;
+    }
+
+    let (width, height) = size(frame);
+    if (width, height) != size(&self.frame) {
+      let dips = Vector2 {
+        X: pixels_to_dips(width),
+        Y: pixels_to_dips(height),
+      };
+      self.root.SetSize(dips)?;
+      self.rounded_geometry.SetSize(dips)?;
+    }
+
+    let insets = cut_insets(frame, shown);
+    if insets != cut_insets(&self.frame, &self.shown) {
+      let [left, top, right, bottom] = insets;
+      self.cut.SetLeftInset(pixels_to_dips(left))?;
+      self.cut.SetTopInset(pixels_to_dips(top))?;
+      self.cut.SetRightInset(pixels_to_dips(right))?;
+      self.cut.SetBottomInset(pixels_to_dips(bottom))?;
+    }
+
+    let moved = &self.frame != frame || &self.window != window;
+    self.frame = frame.clone();
+    self.shown = shown.clone();
+    self.window = window.clone();
+
+    if moved {
+      self.sync_crop()?;
+    }
+    Ok(())
   }
 
   /// Keeps both layers showing the part of the desktop the overlay now
@@ -424,12 +496,13 @@ impl BackdropVisual {
   ///
   /// The transparent layer is kept current too: it is what a focus change
   /// flips to, and a stale crop would show for the frame it flips.
-  fn sync_crop(&mut self, rect: &Rect) -> crate::Result<()> {
+  fn sync_crop(&mut self) -> crate::Result<()> {
     for layer in &mut self.layers {
       layer.sync_crop(
         &self.compositor,
         &self.queue,
-        rect,
+        &self.frame,
+        &self.window,
         self.parallax,
       )?;
     }
@@ -442,10 +515,7 @@ impl BackdropVisual {
   /// Called on every sync tick, so the no-change path is deliberately one
   /// relaxed atomic load and a comparison per layer -- no shell query, no
   /// filesystem stat, and no composition property write.
-  pub(crate) fn sync_backdrop(
-    &mut self,
-    rect: &Rect,
-  ) -> crate::Result<()> {
+  pub(crate) fn sync_backdrop(&mut self) -> crate::Result<()> {
     // Throttled internally to one shell query every couple of seconds, so
     // calling it from every overlay on every tick is fine.
     wallpaper_surface::poll_for_changes();
@@ -455,7 +525,7 @@ impl BackdropVisual {
       return Ok(());
     }
 
-    self.sync_crop(rect)
+    self.sync_crop()
   }
 
   /// Updates the tint layer's color.
@@ -537,7 +607,7 @@ impl BackdropVisual {
 
   /// Moves layer `index` directly above the other one, beneath the tint.
   fn raise(&mut self, index: usize) -> crate::Result<()> {
-    let children = self.root.Children()?;
+    let children = self.body.Children()?;
     let raised = &self.layers[index].sprite;
 
     children.Remove(raised)?;
@@ -553,15 +623,15 @@ impl BackdropVisual {
     Ok(())
   }
 
-  /// Updates how far the crop follows the window, re-applying it at
-  /// `rect` so the change shows without waiting for the window to move.
-  pub(crate) fn set_parallax(&mut self, value: f32, rect: &Rect) {
+  /// Updates how far the crop follows the window, re-applying it so the
+  /// change shows without waiting for the window to move.
+  pub(crate) fn set_parallax(&mut self, value: f32) {
     self.parallax = value;
 
     for layer in &self.layers {
       wallpaper_surface::set_crop(
         &layer.brush,
-        rect,
+        &self.frame,
         &layer.monitor,
         value,
       );
@@ -645,14 +715,10 @@ fn pixels_to_dips(pixels: i32) -> f32 {
 /// for a target's root, the `HWND`'s) with no explicit size writes.
 const FILL_PARENT: Vector2 = Vector2 { X: 1.0, Y: 1.0 };
 
-/// Builds the full visual tree: a `ContainerVisual` rooting the two
-/// [`BackdropLayer`] sprites, a tint sprite (flat color) and the vignette
-/// stacked above them, all clipped by a shared rounded rectangle geometry.
-///
-/// Every visual is sized relative to the window rather than given an
-/// explicit size, so a resize of the `HWND` resizes them in the same DWM
-/// frame with no property writes at all -- only the clip geometry, which
-/// has no relative sizing, follows through `set_rect`.
+/// Builds the full visual tree: a root sized to `rect`, filled by a body
+/// holding the two [`BackdropLayer`] sprites, a tint sprite (flat color)
+/// and the vignette stacked above them, all clipped by a shared rounded
+/// rectangle geometry. The root's inset clip starts out cutting nothing.
 fn build_visual_tree(
   compositor: &Compositor,
   queue: &DispatcherQueue,
@@ -696,12 +762,11 @@ fn build_visual_tree(
   vignette_sprite.SetBrush(&build_vignette_brush(compositor)?)?;
   vignette_sprite.SetOpacity(params.vignette.clamp(0.0, 1.0))?;
 
-  let root = compositor.CreateContainerVisual()?;
-  root.SetRelativeSizeAdjustment(FILL_PARENT)?;
-  root.SetClip(&clip)?;
-  root.SetOpacity(params.opacity)?;
+  let body = compositor.CreateContainerVisual()?;
+  body.SetRelativeSizeAdjustment(FILL_PARENT)?;
+  body.SetClip(&clip)?;
 
-  let children = root.Children()?;
+  let children = body.Children()?;
   for layer in &layers {
     children.InsertAtTop(&layer.sprite)?;
   }
@@ -710,6 +775,16 @@ fn build_visual_tree(
     children.InsertAtTop(sprite)?;
   }
 
+  let cut = compositor.CreateInsetClip()?;
+  let root = compositor.CreateContainerVisual()?;
+  root.SetSize(Vector2 {
+    X: pixels_to_dips(rect.width()),
+    Y: pixels_to_dips(rect.height()),
+  })?;
+  root.SetClip(&cut)?;
+  root.SetOpacity(params.opacity)?;
+  root.Children()?.InsertAtTop(&body)?;
+
   target.SetRoot(&root)?;
 
   Ok(BackdropVisual {
@@ -717,12 +792,17 @@ fn build_visual_tree(
     compositor: compositor.clone(),
     queue: queue.clone(),
     root,
+    cut,
+    body,
     layers,
     top: 1,
     tint_brush,
     vignette_sprite,
     rounded_geometry,
     parallax: params.parallax,
+    frame: rect.clone(),
+    shown: rect.clone(),
+    window: rect.clone(),
   })
 }
 

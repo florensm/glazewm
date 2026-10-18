@@ -3,7 +3,7 @@ use windows::Win32::Foundation::{HWND, RECT};
 use crate::{
   native_surrogate::to_logical, resize_session::compute_border_inset,
   CornerStyle, NativeSurrogate, NativeWindow, NativeWindowWindowsExt,
-  Rect,
+  Rect, SurrogateBatch,
 };
 
 /// A click-through, live thumbnail of a window, cut to the part of it
@@ -51,8 +51,15 @@ impl WindowPeek {
   }
 
   /// Shows the part of the window, placed at `rect`, that lies inside
-  /// `clip`, or hides the peek when none does.
-  pub fn place(&mut self, rect: &Rect, clip: &Rect, opacity: u8) {
+  /// `clip`, or hides the peek when none does. A move of a peek already
+  /// shown is queued into `batch`, to land with its window's overlays.
+  pub fn place(
+    &mut self,
+    rect: &Rect,
+    clip: &Rect,
+    opacity: u8,
+    batch: &mut SurrogateBatch,
+  ) {
     let logical = to_logical(rect, &self.border_inset);
 
     self.visible_rect = self.surrogate.show_clipped(
@@ -60,6 +67,7 @@ impl WindowPeek {
       clip,
       self.border_inset,
       opacity,
+      Some(batch),
     );
     self.frame_rect = Some(logical);
   }
