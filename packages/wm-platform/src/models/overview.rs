@@ -206,8 +206,9 @@ impl OverviewLayoutMode {
     self == Self::Activities
   }
 
-  /// Whether a workspace picked with the mouse is shown first, and only
-  /// gone to once picked again.
+  /// Whether a workspace clicked with the mouse is shown first, and only
+  /// gone to once clicked again. A window clicked on it is gone to right
+  /// away.
   #[must_use]
   pub fn shows_before_going(self) -> bool {
     matches!(self, Self::Activities | Self::Stage)

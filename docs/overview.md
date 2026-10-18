@@ -37,8 +37,9 @@ goes through them while it is open. Cards are drawn at the size each layout
 shows them, so their text stays sharp.
 
 Selection and hover show as highlights that glide from one workspace or
-window to the next. In the activities and the stage, a workspace picked
-with the mouse is shown first, and gone to once picked again.
+window to the next. In the activities and the stage, a workspace clicked
+with the mouse is shown first, and gone to once clicked again; clicking one
+of its windows goes straight to that window.
 
 In the carousel and the grid, the special workspace's card is docked below
 the others (see [Special workspace](#special-workspace)); in the other

@@ -1094,9 +1094,12 @@ impl Interaction {
       });
     }
 
-    // A workspace not shown yet is shown first.
+    // A workspace not shown yet is shown first; a window clicked on it is
+    // gone to right away.
     let other = press.hit.workspace.filter(|index| {
-      self.layout.shows_before_going() && *index != self.selected()
+      self.layout.shows_before_going()
+        && press.hit.window.is_none()
+        && *index != self.selected()
     });
     if let Some(index) = other {
       self.select(index, workspaces);
@@ -2077,13 +2080,13 @@ mod tests {
 
       let other = Hit {
         workspace: Some(0),
-        window: Some(11),
+        window: None,
       };
       assert_eq!(click(&mut state, other), None);
       assert_eq!(state.selected(), 0);
       assert_eq!(
         click(&mut state, other),
-        Some(focus_window(11)),
+        Some(focus_workspace("1")),
         "{layout:?}"
       );
     }
@@ -2098,6 +2101,31 @@ mod tests {
       },
     );
     assert_eq!(state.mouse_up(&workspaces), Some(focus_workspace("1")));
+  }
+
+  /// A window is a precise target, e.g. a search match outlined on a
+  /// workspace not shown yet.
+  #[test]
+  fn clicking_a_window_of_another_workspace_goes_to_it() {
+    let workspaces = workspaces();
+
+    for layout in
+      [OverviewLayoutMode::Activities, OverviewLayoutMode::Stage]
+    {
+      let mut state = single(&workspaces, layout);
+      state.mouse_down(
+        (0.0, 0.0),
+        Hit {
+          workspace: Some(0),
+          window: Some(11),
+        },
+      );
+      assert_eq!(
+        state.mouse_up(&workspaces),
+        Some(focus_window(11)),
+        "{layout:?}"
+      );
+    }
   }
 
   #[test]
