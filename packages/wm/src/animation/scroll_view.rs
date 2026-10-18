@@ -183,6 +183,16 @@ impl ScrollView {
     landed
   }
 
+  /// Takes out the peeks of windows that `is_known` no longer knows, i.e.
+  /// that left the displayed scrolling layouts, and forgets their rects.
+  fn take_departed(
+    &mut self,
+    is_known: impl Fn(&Uuid) -> bool,
+  ) -> Vec<(Uuid, Entry)> {
+    self.last_rects.retain(|id, _| is_known(id));
+    self.entries.extract_if(|id, _| !is_known(id)).collect()
+  }
+
   /// Drops `window_id`'s peek once its real window has been uncloaked.
   ///
   /// Called right after the uncloak so both land in the same composited
@@ -326,19 +336,15 @@ pub fn sync_scroll_view(state: &mut WmState, config: &UserConfig) {
   // Windows that left the displayed scrolling layouts lose their peeks;
   // their real windows are handled like any other window's. One the
   // scroll view held cloaked is redrawn, which shows or hides it for good.
-  let is_known = |id: &Uuid| windows.iter().any(|(w, _)| w.id() == *id);
-  let mut released = Vec::new();
-  view.entries.retain(|id, entry| {
-    let keep = is_known(id);
-    if !keep && entry.role != Role::Peek {
-      released.push(*id);
-    }
-    keep
-  });
-  view.last_rects.retain(|id, _| is_known(id));
+  //
+  // Their peeks stay up until any that take over are on screen, e.g. that
+  // of a stack's newly active tab, so the column never goes blank.
+  let gone =
+    view.take_departed(|id| windows.iter().any(|(w, _)| w.id() == *id));
 
   let scroll_config = &config.value.animations.scroll;
   let mut needs_flush = false;
+  let mut adds_peek = false;
   let mut started_moving = Vec::new();
 
   for (workspace, clip) in &workspaces {
@@ -395,6 +401,7 @@ pub fn sync_scroll_view(state: &mut WmState, config: &UserConfig) {
       }
 
       let is_moving = matches!(role, Role::Moving { .. });
+      adds_peek |= !view.entries.contains_key(&window.id());
       needs_flush |= view.upsert(
         &window,
         &from,
@@ -411,14 +418,20 @@ pub fn sync_scroll_view(state: &mut WmState, config: &UserConfig) {
     }
   }
 
-  if needs_flush {
+  let replaces_peek = adds_peek
+    && gone
+      .iter()
+      .any(|(_, entry)| entry.peek.visible_rect().is_some());
+
+  if needs_flush || replaces_peek {
     wm_platform::dwm_flush();
   }
 
-  for id in released {
+  for (id, entry) in gone {
     if let Some(window) = state
       .container_by_id(id)
       .and_then(|container| container.as_window_container().ok())
+      .filter(|_| entry.role != Role::Peek)
     {
       state.pending_sync.queue_container_to_redraw(window);
     }
