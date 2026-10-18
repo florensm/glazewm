@@ -293,10 +293,15 @@ moves things around and never redraws pixels:
   drawn and its edges stretched, so they move and resize without being
   redrawn. Moving the selection or the cursor therefore redraws nothing.
 - Thumbnails are registered on open and on switching layouts, and
-  otherwise only again when windows come or go: a window's title changing
-  redraws its title, nothing else.
-- The backdrop is a composition visual of the wallpaper, sharp at first,
-  with a blurred copy and the tint fading in over it.
+  otherwise only again when windows come, go or move: a window's title
+  changing redraws its title, nothing else. The thumbnails shown stay up
+  until their replacements are placed, so nothing blinks out in between.
+- The backdrop is a composition visual of the wallpaper, baked as for the
+  window backdrops: sharp at first, with a blurred copy and the tint
+  fading in over it.
+
+Nothing animates behind the overview: a window moved while it is on screen
+lands at once, and its preview follows it there.
 
 Animations step once per refresh of the focused monitor, and the loop
 sleeps while nothing moves. Cards and windows move on critically
@@ -306,10 +311,11 @@ The focused monitor's window takes the foreground while open, so keys go
 to the overview rather than to the window behind it. The other monitors'
 windows never take it when clicked, so the keys go to whichever monitor
 has the keyboard. When a pick changes focus, the WM switches
-workspace and focuses the new window right away, behind the overview's
-zoom into that workspace; the overview only hides once the zoom ends, so
-the OS never picks a window to activate in between, and the real windows
-are already where their previews end up.
+workspace and focuses the new window (scrolling its strip into view)
+right away, and the overview's zoom into that workspace waits for it (at
+most 150ms), so it heads to where the windows land. The overview only
+hides once the zoom ends, so the OS never picks a window to activate in
+between, and the real windows are already where their previews end up.
 
 ## Follow-ups
 
