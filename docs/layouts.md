@@ -41,6 +41,12 @@ layouts:
     # workspace or in pixels. "0%" focuses only windows fully on screen.
     # Left out, there is no limit.
     # focus_follows_cursor_max_scroll: "0%"
+    # Room kept free at the workspace's sides, as a percentage of the
+    # workspace or in pixels. Columns are fitted between the struts, so
+    # the columns beside them peek out over them.
+    struts:
+      left: "0px"
+      right: "0px"
 
 animations:
   # How a scrolling layout's columns move and resize, the strip
@@ -135,6 +141,12 @@ The view follows focus:
   in smoothly. Where a column would reach onto another monitor, it is
   hidden and its visible part is shown as a click-through preview
   instead; clicking it focuses the column.
+- With `struts`, columns are fitted between them rather than to the
+  workspace's edges, as in [niri](https://github.com/YaLTeR/niri/wiki/Configuration:-Layout):
+  the column beside the one scrolled to an edge always peeks out over the
+  strut, less the gap, so there is always something to click on. Column
+  widths are percentages of the room between the struts, and the strip's
+  first and last columns sit a strut in from the edge too.
 - The overview shows a scrolling workspace's whole strip in its card.
 - With `focus_follows_cursor`, hovering a column partly off screen
   focuses and scrolls to it, unless `focus_follows_cursor_max_scroll`

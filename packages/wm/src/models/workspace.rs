@@ -7,7 +7,7 @@ use std::{
 use anyhow::Context;
 use uuid::Uuid;
 use wm_common::{
-  ContainerDto, GapsConfig, Layout, ScrollingLayoutConfig,
+  ContainerDto, GapsConfig, Layout, ScrollingLayoutConfig, StrutsConfig,
   TilingDirection, WorkspaceConfig, WorkspaceDto,
 };
 use wm_platform::{Rect, RectDelta};
@@ -103,8 +103,15 @@ impl Workspace {
     self.0.borrow().scrolling_config.clone()
   }
 
+  /// The scrolling layout's struts, without cloning the rest of its
+  /// config, for the strip's geometry that every column's rect reads.
+  pub fn scrolling_struts(&self) -> StrutsConfig {
+    self.0.borrow().scrolling_config.struts.clone()
+  }
+
   /// How far a scrolling layout's strip is scrolled: its first column
-  /// starts this far left of the workspace's left edge.
+  /// starts this far left of the left edge of the area between the
+  /// struts (see `scrolling::view_rect`).
   pub fn scroll_offset(&self) -> i32 {
     self.0.borrow().strip_view.offset
   }
@@ -163,6 +170,19 @@ impl Workspace {
     gaps.clone()
   }
 
+  /// Factor pixel gaps are scaled by on the workspace's monitor: its DPI
+  /// scale with `gaps.scale_with_dpi`, else 1.
+  pub fn gaps_scale_factor(&self) -> anyhow::Result<f32> {
+    let monitor =
+      self.monitor().context("Workspace has no parent monitor.")?;
+
+    Ok(if self.0.borrow().gaps_config.scale_with_dpi {
+      monitor.native_properties().scale_factor
+    } else {
+      1.
+    })
+  }
+
   /// Gets the bounds of a workspace with the given outer gap config.
   fn workspace_rect_with_gap_config(
     &self,
@@ -170,13 +190,7 @@ impl Workspace {
   ) -> anyhow::Result<Rect> {
     let monitor =
       self.monitor().context("Workspace has no parent monitor.")?;
-
-    let gaps_config = &self.0.borrow().gaps_config;
-    let scale_factor = if gaps_config.scale_with_dpi {
-      monitor.native_properties().scale_factor
-    } else {
-      1.
-    };
+    let scale_factor = self.gaps_scale_factor()?;
 
     // Get the delta between the monitor's bounds and its working area.
     let monitor_bounds = monitor.native_properties().bounds;

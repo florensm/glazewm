@@ -318,6 +318,29 @@ pub struct ScrollingLayoutConfig {
   /// width. Windows that would scroll it further aren't focused by
   /// hovering. Unset for no limit.
   pub focus_follows_cursor_max_scroll: Option<LengthValue>,
+
+  /// Room kept free at the workspace's sides: columns are fitted between
+  /// the struts, so the columns beside them always peek out there.
+  pub struts: StrutsConfig,
+}
+
+/// Room a scrolling layout keeps free at the sides of its workspace, each
+/// a percentage of the workspace width or pixels. Pixels scale with the
+/// monitor's DPI as the gaps do.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(default, rename_all(serialize = "camelCase"))]
+pub struct StrutsConfig {
+  pub left: LengthValue,
+  pub right: LengthValue,
+}
+
+impl Default for StrutsConfig {
+  fn default() -> Self {
+    Self {
+      left: LengthValue::from_px(0),
+      right: LengthValue::from_px(0),
+    }
+  }
 }
 
 /// Width of a new column in a scrolling layout.
@@ -438,6 +461,7 @@ impl Default for ScrollingLayoutConfig {
       always_center_single_column: false,
       default_column_display: ColumnDisplay::default(),
       focus_follows_cursor_max_scroll: None,
+      struts: StrutsConfig::default(),
     }
   }
 }
@@ -2448,6 +2472,18 @@ mod tests {
       config.default_column_width,
       super::ColumnWidth::Length(length) if (length.amount - 0.4).abs() < 1e-6
     ));
+  }
+
+  #[test]
+  fn scrolling_struts_take_either_side_alone() {
+    let config: ScrollingLayoutConfig = serde_json::from_value(
+      serde_json::json!({ "struts": { "right": "5%" } }),
+    )
+    .unwrap();
+
+    assert_eq!(config.struts.left.to_px(1000, None), 0);
+    assert_eq!(config.struts.right.to_px(1000, None), 50);
+    assert_eq!(ScrollingLayoutConfig::default().struts.right.amount, 0.);
   }
 
   #[test]

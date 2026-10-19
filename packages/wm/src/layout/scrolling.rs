@@ -4,8 +4,8 @@
 //!
 //! A column is a window, a stack, or a split of windows stacked
 //! vertically. Its `tiling_size` is its width as a fraction of the
-//! workspace width; unlike in the other layouts, the columns' sizes don't
-//! add up to 1.
+//! strip's view, the workspace less its struts (see `view_rect`); unlike
+//! in the other layouts, the columns' sizes don't add up to 1.
 //!
 //! The view stays put relative to the active column while other
 //! columns open, close or resize, and only scrolls when
@@ -60,6 +60,23 @@ pub fn column_of(
   })
 }
 
+/// The part of `workspace` its strip is fitted into: the workspace less
+/// its struts. Columns still show past it, so a column scrolled to its
+/// edge leaves the one beside it peeking out over the strut.
+pub fn view_rect(workspace: &Workspace) -> anyhow::Result<Rect> {
+  let rect = workspace.to_rect()?;
+  let struts = workspace.scrolling_struts();
+  let scale_factor = workspace.gaps_scale_factor()?;
+  let strut =
+    |length: &LengthValue| length.to_px(rect.width(), Some(scale_factor));
+
+  let left = rect.left + strut(&struts.left);
+  // Struts wider than the workspace leave no room, not a negative width.
+  let right = (rect.right - strut(&struts.right)).max(left);
+
+  Ok(Rect::from_ltrb(left, rect.top, right, rect.bottom))
+}
+
 /// Width in pixels of a column of `size` on a workspace `workspace_width`
 /// wide, `gap` apart from its neighbours.
 ///
@@ -79,11 +96,11 @@ pub fn width_at<T>(
 where
   T: TilingSizeGetters,
 {
-  width_on_strip(column, size, workspace.to_rect()?.width())
+  width_on_strip(column, size, view_rect(workspace)?.width())
 }
 
-/// Width in pixels `column` has at `size` on a strip seen through a
-/// workspace `view_width` wide.
+/// Width in pixels `column` has at `size` on a strip seen through a view
+/// `view_width` wide.
 fn width_on_strip<T>(
   column: &T,
   size: f32,
@@ -129,8 +146,8 @@ pub(super) fn column_rect<T>(
 where
   T: TilingSizeGetters,
 {
-  let workspace_rect = workspace.to_rect()?;
-  let mut x = workspace_rect.x() - workspace.scroll_offset();
+  let view = view_rect(workspace)?;
+  let mut x = view.x() - workspace.scroll_offset();
 
   for sibling in workspace.tiling_children() {
     if sibling.id() == column.id() {
@@ -138,24 +155,21 @@ where
     }
 
     let (gap, _) = sibling.inner_gaps()?;
-    x += width_on_strip(
-      &sibling,
-      sibling.tiling_size(),
-      workspace_rect.width(),
-    )? + gap;
+    x +=
+      width_on_strip(&sibling, sibling.tiling_size(), view.width())? + gap;
   }
 
   Ok(Rect::from_xy(
     x,
-    workspace_rect.y(),
-    width_on_strip(column, column.tiling_size(), workspace_rect.width())?,
-    workspace_rect.height(),
+    view.y(),
+    width_on_strip(column, column.tiling_size(), view.width())?,
+    view.height(),
   ))
 }
 
 /// Size giving `column` a width of `width`; the inverse of `column_rect`.
 ///
-/// A percentage is of the workspace width, as for `default_column_width`.
+/// A percentage is of the view's width, as for `default_column_width`.
 pub fn column_size<T>(
   column: &T,
   workspace: &Workspace,
@@ -169,7 +183,7 @@ where
   }
 
   let (gap, _) = column.inner_gaps()?;
-  let total = workspace.to_rect()?.width() + gap;
+  let total = view_rect(workspace)?.width() + gap;
 
   #[allow(clippy::cast_precision_loss)]
   Ok((width.amount + gap as f32) / total as f32)
@@ -239,13 +253,13 @@ pub struct Strip {
 
   pub widths: Vec<i32>,
 
-  /// Width of the workspace the strip is seen through.
+  /// Width of the view the strip is fitted into (see `view_rect`).
   pub view_width: i32,
 }
 
 impl Strip {
   pub fn new(workspace: &Workspace) -> anyhow::Result<Self> {
-    let view_width = workspace.to_rect()?.width();
+    let view_width = view_rect(workspace)?.width();
     let mut strip = Self {
       ids: Vec::new(),
       starts: vec![0],
@@ -377,7 +391,7 @@ impl Strip {
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct StripView {
   /// How far the strip is scrolled: its first column starts this far left
-  /// of the workspace's left edge.
+  /// of the view's left edge.
   pub offset: i32,
 
   /// The active column as of the last sync.
@@ -420,7 +434,7 @@ const MAX_PRESET_HEIGHTS: usize = 32;
 struct Anchor {
   column: Uuid,
   index: usize,
-  /// Left edge, relative to the workspace's left edge.
+  /// Left edge, relative to the view's left edge.
   x: i32,
   width: i32,
 }
@@ -429,7 +443,7 @@ struct Anchor {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct Placed {
   column: Uuid,
-  /// Left edge, relative to the workspace's left edge.
+  /// Left edge, relative to the view's left edge.
   x: i32,
 }
 
@@ -443,12 +457,12 @@ pub enum ViewRequest {
   /// Put the active column in the middle, once.
   CenterActive,
 
-  /// Show the active column with its left edge `x` from the workspace's
-  /// left edge, or as close to that as shows it whole.
+  /// Show the active column with its left edge `x` from the view's left
+  /// edge, or as close to that as shows it whole.
   PlaceActive { x: i32 },
 
-  /// Show the active column with its right edge `right` from the
-  /// workspace's left edge, or as close to that as shows it whole.
+  /// Show the active column with its right edge `right` from the view's
+  /// left edge, or as close to that as shows it whole.
   PlaceActiveRight { right: i32 },
 }
 
@@ -739,7 +753,7 @@ pub fn is_focusable_by_hover(
   let scroll =
     (strip.offset_for(index, offset, active, &config) - offset).abs();
 
-  Ok(scroll <= max_scroll.to_px(strip.view_width, None))
+  Ok(scroll <= max_scroll.to_px(workspace.to_rect()?.width(), None))
 }
 
 /// Keeps the right edge of `container`'s column where it is on screen
@@ -756,7 +770,7 @@ pub fn keep_right_edge(container: &Container) -> anyhow::Result<()> {
   {
     let rect = column.to_rect()?;
     workspace.request_view(ViewRequest::PlaceActiveRight {
-      right: rect.x() + rect.width() - workspace.to_rect()?.x(),
+      right: rect.x() + rect.width() - view_rect(&workspace)?.x(),
     });
   }
 
@@ -936,14 +950,14 @@ mod tests {
   use uuid::Uuid;
   use wm_common::{
     CenterFocusedColumn, ColumnWidth, Layout, ScrollingLayoutConfig,
-    TilingDirection, WindowState,
+    StrutsConfig, TilingDirection, WindowState,
   };
   use wm_platform::{LengthUnit, LengthValue, Rect};
 
   use super::{
     focus_target_after_removal, is_focusable_by_hover, is_in_view,
-    min_width, real_window_rect, shows_real_window, sync_view, Strip,
-    StripView, ViewRequest,
+    min_width, real_window_rect, shows_real_window, sync_view, view_rect,
+    Strip, StripView, ViewRequest,
   };
   use crate::{
     commands::container::{
@@ -1129,6 +1143,74 @@ mod tests {
     set_focused_descendant(&first.clone().into(), None);
     assert!(sync_view(&workspace).unwrap());
     assert_eq!(workspace.scroll_offset(), 0);
+  }
+
+  /// Gives `workspace` struts of `left` and `right`.
+  fn set_struts(
+    workspace: &Workspace,
+    left: LengthValue,
+    right: LengthValue,
+  ) {
+    workspace.set_scrolling_config(ScrollingLayoutConfig {
+      struts: StrutsConfig { left, right },
+      ..workspace.scrolling_config()
+    });
+  }
+
+  #[test]
+  fn struts_leave_the_neighbouring_columns_peeking_out() {
+    let (_state, workspace, [first, second, third]) = setup();
+    set_struts(
+      &workspace,
+      LengthValue::from_px(100),
+      LengthValue::from_px(100),
+    );
+    sync_view(&workspace).unwrap();
+    let workspace_rect = workspace.to_rect().unwrap();
+    let (left, right) = (workspace_rect.left, workspace_rect.right);
+
+    // Like niri's, the first column sits a strut in from the edge.
+    assert_eq!(first.to_rect().unwrap().x(), left + 100);
+    let third_rect = third.to_rect().unwrap();
+    assert!(third_rect.x() < right && third_rect.x() >= right - 100);
+
+    set_focused_descendant(&third.clone().into(), None);
+    sync_view(&workspace).unwrap();
+
+    let third_rect = third.to_rect().unwrap();
+    assert_eq!(third_rect.x() + third_rect.width(), right - 100);
+    assert!(is_in_view(&second.clone().into()));
+    let first_rect = first.to_rect().unwrap();
+    let first_right = first_rect.x() + first_rect.width();
+    assert!(first_right > left && first_right <= left + 100);
+  }
+
+  #[test]
+  fn columns_are_sized_against_the_room_between_the_struts() {
+    let (_state, workspace, [first, ..]) = setup();
+    set_struts(
+      &workspace,
+      LengthValue {
+        amount: 0.05,
+        unit: LengthUnit::Percentage,
+      },
+      LengthValue::from_px(0),
+    );
+
+    let workspace_width = workspace.to_rect().unwrap().width();
+    let view = view_rect(&workspace).unwrap();
+    assert_eq!(view.width(), workspace_width - workspace_width / 20);
+
+    resize_tiling_container(&first.clone().into(), 1.);
+    assert_eq!(first.to_rect().unwrap().width(), view.width());
+
+    // Struts wider than the workspace leave no room rather than less.
+    set_struts(
+      &workspace,
+      LengthValue::from_px(5000),
+      LengthValue::from_px(5000),
+    );
+    assert_eq!(view_rect(&workspace).unwrap().width(), 0);
   }
 
   #[test]
