@@ -1060,10 +1060,10 @@ impl NativeWindow {
     self.set_transparency(&OpacityValue::from_alpha(target_alpha))
   }
 
-  /// Implements [`NativeWindowWindowsExt::reassert_transparency`].
-  pub(crate) fn reassert_transparency(&self) -> crate::Result<()> {
+  /// Implements [`NativeWindowWindowsExt::layered_alpha`].
+  pub(crate) fn layered_alpha(&self) -> crate::Result<Option<u8>> {
     if !self.has_window_style_ex(WS_EX_LAYERED) {
-      return Ok(());
+      return Ok(None);
     }
 
     let mut alpha = u8::MAX;
@@ -1081,9 +1081,14 @@ impl NativeWindow {
       )?;
     }
 
-    if !flag.contains(LWA_ALPHA) {
+    Ok(flag.contains(LWA_ALPHA).then_some(alpha))
+  }
+
+  /// Implements [`NativeWindowWindowsExt::reassert_transparency`].
+  pub(crate) fn reassert_transparency(&self) -> crate::Result<()> {
+    let Some(alpha) = self.layered_alpha()? else {
       return Ok(());
-    }
+    };
 
     // SAFETY: `self.hwnd()` is a valid window handle.
     unsafe {

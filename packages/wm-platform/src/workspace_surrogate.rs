@@ -2,9 +2,15 @@ use windows::Win32::Foundation::{HWND, RECT};
 
 use crate::{
   native_surrogate::{placed_rects, to_logical},
+  platform_impl,
   resize_session::compute_border_inset,
-  CornerStyle, NativeSurrogate, Rect, SurrogateBatch,
+  CornerStyle, NativeSurrogate, NativeWindow, OpacityValue, Rect,
+  SurrogateBatch,
 };
+
+/// Thumbnail opacity a surrogate is warmed up at under its still-shown
+/// real window: rendered by DWM, but too faint to see.
+const WARM_UP_OPACITY: u8 = 1;
 
 /// Positioning strategy for a [`WorkspaceSurrogate`].
 enum SurrogateMode {
@@ -132,6 +138,12 @@ pub struct WorkspaceSurrogate {
   /// bulges into the configured gap on every side and collides with its
   /// neighbour's mid-slide.
   frame_inset: RECT,
+
+  /// The real window's own alpha while it is hidden by alpha for a
+  /// handover with the surrogate (see [`take_over`]), with its handle.
+  ///
+  /// [`take_over`]: WorkspaceSurrogate::take_over
+  hidden_alpha: Option<(isize, u8)>,
 }
 
 impl WorkspaceSurrogate {
@@ -269,6 +281,7 @@ impl WorkspaceSurrogate {
       unclipped_rect: None,
       panel: None,
       frame_inset,
+      hidden_alpha: None,
     })
   }
 
@@ -403,30 +416,95 @@ impl WorkspaceSurrogate {
   }
 
   /// Hides the DWM thumbnail without destroying it or hiding the surrogate
-  /// window.
+  /// window, handing a window readied by [`prepare_hand_back`] its alpha
+  /// back first.
   ///
-  /// Called immediately before the post-animation `DwmFlush` so the flush
-  /// frame shows only the uncloaked real windows. Without this, DWM blends
-  /// the thumbnail (at configured opacity) on top of the real window
-  /// (also at configured opacity), producing a double-blend that appears
-  /// fully opaque for one frame.
+  /// Called right after the real window is uncloaked. With both shown,
+  /// DWM blends the thumbnail (at configured opacity) on top of the real
+  /// window (also at configured opacity), a double-blend that appears
+  /// fully opaque.
+  ///
+  /// [`prepare_hand_back`]: WorkspaceSurrogate::prepare_hand_back
   pub fn hide_thumbnail(&mut self) {
+    self.restore_alpha();
     self.inner.set_thumbnail_visible(false);
   }
 
-  /// Shows the surrogate at full opacity with the thumbnail at the
-  /// window's natural (unscaled) position within the monitor viewport,
-  /// cut to it like every later frame.
+  /// Shows the surrogate with the thumbnail at the window's natural
+  /// (unscaled) position within the monitor viewport, cut to it like
+  /// every later frame, but too faint to see, so the real window still
+  /// shows as it is while DWM warms the thumbnail up. [`take_over`] then
+  /// swaps the two.
   ///
-  /// Always uses opacity `255` (fully opaque) so the surrogate completely
-  /// covers the real window before it is cloaked, avoiding a double-blend
-  /// frame. Call [`apply_effect_opacity`] after the real window is cloaked
-  /// to reduce the thumbnail to the configured `opacity`.
-  ///
-  /// [`apply_effect_opacity`]: WorkspaceSurrogate::apply_effect_opacity
+  /// [`take_over`]: WorkspaceSurrogate::take_over
   pub fn show_initial(&mut self) {
     self.show_at_rest();
-    self.inner.set_window_opacity(u8::MAX);
+    self.inner.set_window_opacity(WARM_UP_OPACITY);
+  }
+
+  /// Takes over showing the window from `window`, which is about to be
+  /// cloaked: the thumbnail goes to its effect opacity and a
+  /// semi-transparent `window` to no alpha at all, in that order.
+  ///
+  /// The shell's cloak is a cross-process call of several milliseconds,
+  /// which DWM can show anywhere within it: with `window` still showing,
+  /// that left frames with both up (two layers of a semi-transparent
+  /// window, which read as solid) or neither. Its alpha DWM applies at
+  /// once, so the swap lands in one frame and the cloak lands unseen. An
+  /// opaque `window` covers the thumbnail anyway. `restore_alpha` gives
+  /// `window` its alpha back once the cloak is on screen.
+  pub fn take_over(&mut self, window: &NativeWindow) {
+    self.apply_effect_opacity();
+    self.hide_by_alpha(&window.inner);
+  }
+
+  /// Readies handing the window back to `window`, which is about to be
+  /// uncloaked: a semi-transparent `window` goes to no alpha, so its
+  /// uncloak lands unseen and `hide_thumbnail` swaps the two in one frame
+  /// (see [`take_over`]).
+  ///
+  /// [`take_over`]: WorkspaceSurrogate::take_over
+  pub fn prepare_hand_back(&mut self, window: &NativeWindow) {
+    self.hide_by_alpha(&window.inner);
+  }
+
+  /// Gives the real window back the alpha a handover set aside, unless it
+  /// was set again since, e.g. by a focus change's effects. No-op
+  /// otherwise.
+  pub fn restore_alpha(&mut self) {
+    let Some((handle, alpha)) = self.hidden_alpha.take() else {
+      return;
+    };
+
+    let window = platform_impl::NativeWindow::new(handle);
+    if window.layered_alpha().ok().flatten() == Some(0) {
+      if let Err(err) =
+        window.set_transparency(&OpacityValue::from_alpha(alpha))
+      {
+        tracing::warn!("Failed to restore window alpha: {err}");
+      }
+    }
+  }
+
+  /// Hides `window` by its alpha, setting the alpha aside, when it is
+  /// semi-transparent.
+  fn hide_by_alpha(&mut self, window: &platform_impl::NativeWindow) {
+    // A handover still pending would otherwise set aside the 0.
+    self.restore_alpha();
+
+    let Some(alpha) = window
+      .layered_alpha()
+      .ok()
+      .flatten()
+      .filter(|alpha| *alpha < u8::MAX)
+    else {
+      return;
+    };
+
+    match window.set_transparency(&OpacityValue::from_alpha(0)) {
+      Ok(()) => self.hidden_alpha = Some((window.hwnd().0, alpha)),
+      Err(err) => tracing::warn!("Failed to hide window by alpha: {err}"),
+    }
   }
 
   /// Draws the window where it rests, as the first frame of the switch.
@@ -438,10 +516,6 @@ impl WorkspaceSurrogate {
 
   /// Updates the DWM thumbnail opacity to the configured `opacity` without
   /// changing the surrogate window position or size.
-  ///
-  /// Call this after the real window has been cloaked so the thumbnail's
-  /// effect opacity is applied without causing a double-blend with the
-  /// real window underneath.
   pub fn apply_effect_opacity(&mut self) {
     self.inner.set_window_opacity(self.opacity);
   }
@@ -686,5 +760,12 @@ impl WorkspaceSurrogate {
         self.lerp_opacity(eased_progress, is_incoming),
       );
     }
+  }
+}
+
+impl Drop for WorkspaceSurrogate {
+  /// A window still hidden by alpha would stay invisible once shown.
+  fn drop(&mut self) {
+    self.restore_alpha();
   }
 }

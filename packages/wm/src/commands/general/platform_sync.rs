@@ -904,8 +904,10 @@ fn redraw_containers(
           }
 
           // Single flush: DWM renders one frame with outgoing surrogates
-          // at full opacity, ensuring surrogate content is composited
-          // before the real windows are cloaked below. Incoming windows
+          // warmed up under their real windows, ensuring surrogate content
+          // is composited before the real windows are handed over to them
+          // and cloaked below (see `WorkspaceSurrogate::take_over`).
+          // Incoming windows
           // start off-screen, so DWM warms their thumbnails over the
           // first few frames of the slide without a visible gap.
           wm_platform::dwm_flush();
@@ -1535,6 +1537,25 @@ fn redraw_containers(
         #[cfg(target_os = "windows")]
         let mut did_move = false;
 
+        // A window cloaked or uncloaked under a workspace switch's
+        // surrogate is first hidden by its alpha, so the swap with the
+        // surrogate lands in one frame however late the shell's
+        // (un)cloak does. See `WorkspaceSurrogate::take_over`.
+        #[cfg(target_os = "windows")]
+        if is_outgoing_switch {
+          state
+            .animation_manager
+            .take_over_outgoing(window.id(), &window.native());
+        } else if is_visible
+          && state
+            .animation_manager
+            .is_pending_ws_cleanup_incoming(&window.id())
+        {
+          state
+            .animation_manager
+            .prepare_ws_hand_back(window.id(), &window.native());
+        }
+
         if !already_positioned {
           {
             // Attribute the reposition to the window's own process. When
@@ -1989,10 +2010,12 @@ fn reposition_window(
       // read is kernel-side rather than a message-pump round-trip, so it
       // is far cheaper than the call it guards.
       //
-      // Visible-only, because the z-order call that stands in for the
-      // skipped one carries `SWP_SHOWWINDOW`, which must not land on a
-      // window this pass is hiding.
-      let already_at_rect = is_visible
+      // A window being cloaked stays where it is, so one already there
+      // needs no call at all. That also spares it the `SWP_FRAMECHANGED`
+      // below, which can show a semi-transparent window solid for a frame
+      // right before it disappears, e.g. as a workspace switch begins.
+      let already_at_rect = (is_visible
+        || config.value.general.hide_method == HideMethod::Cloak)
         && !window.has_pending_dpi_adjustment()
         && window
           .native()
@@ -2062,10 +2085,13 @@ fn reposition_window(
         // rides on the geometry call, since `redraw_containers` calls
         // `set_z_order` directly only for windows it is *not* redrawing.
         // That call is async and returns early when the order is already
-        // correct, so it does not reintroduce the block.
+        // correct, so it does not reintroduce the block. Not for a window
+        // being hidden: it carries `SWP_SHOWWINDOW`.
         _ if already_at_rect => {
           moved = false;
-          window.native().set_z_order(z_order)?;
+          if is_visible {
+            window.native().set_z_order(z_order)?;
+          }
         }
         _ => {
           swp_flags |= SWP_FRAMECHANGED;

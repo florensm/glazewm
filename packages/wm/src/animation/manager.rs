@@ -1697,6 +1697,13 @@ impl AnimationManager {
 
         for (&window_id, entry) in &mut ws.windows {
           if let Some(ref mut s) = entry.surrogate {
+            // An outgoing window was hidden by its alpha as it was
+            // cloaked, a tick ago at least, so the cloak is on
+            // screen by now.
+            if !entry.is_incoming {
+              s.restore_alpha();
+            }
+
             // At completion, hide outgoing surrogates immediately. They
             // have already slid fully off-screen, but hiding
             // the thumbnail outright guarantees nothing
@@ -3989,13 +3996,50 @@ impl AnimationManager {
     }
   }
 
+  /// Hands outgoing `window` over to its workspace-switch surrogate, just
+  /// before the window is cloaked (see `WorkspaceSurrogate::take_over`).
+  #[cfg(target_os = "windows")]
+  pub fn take_over_outgoing(
+    &mut self,
+    window_id: Uuid,
+    window: &NativeWindow,
+  ) {
+    let surrogate = self
+      .workspace_switch
+      .as_mut()
+      .and_then(|ws| ws.windows.get_mut(&window_id))
+      .filter(|entry| !entry.is_incoming)
+      .and_then(|entry| entry.surrogate.as_mut());
+
+    if let Some(surrogate) = surrogate {
+      surrogate.take_over(window);
+    }
+  }
+
+  /// Readies handing incoming `window` back from its finished
+  /// workspace-switch surrogate, just before the window is uncloaked (see
+  /// `WorkspaceSurrogate::prepare_hand_back`).
+  #[cfg(target_os = "windows")]
+  pub fn prepare_ws_hand_back(
+    &mut self,
+    window_id: Uuid,
+    window: &NativeWindow,
+  ) {
+    let surrogate = self
+      .pending_ws_cleanup
+      .as_mut()
+      .and_then(|ws| ws.windows.get_mut(&window_id))
+      .filter(|entry| entry.is_incoming)
+      .and_then(|entry| entry.surrogate.as_mut());
+
+    if let Some(surrogate) = surrogate {
+      surrogate.prepare_hand_back(window);
+    }
+  }
+
   /// Applies the configured effect opacity to all outgoing
-  /// workspace-switch surrogates.
-  ///
-  /// Called after the outgoing real windows have been cloaked so the
-  /// thumbnail opacity transitions from the fully-opaque `show_initial`
-  /// state to the configured effect opacity without causing a
-  /// double-blend frame.
+  /// workspace-switch surrogates, for any whose window wasn't handed over
+  /// as it was cloaked (see `take_over_outgoing`).
   #[cfg(target_os = "windows")]
   pub fn apply_outgoing_surrogate_opacities(&mut self) {
     let Some(ref mut ws) = self.workspace_switch else {

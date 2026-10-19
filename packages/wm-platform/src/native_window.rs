@@ -470,6 +470,14 @@ pub trait NativeWindowWindowsExt {
   ///
   /// This method is only available on Windows.
   fn reassert_transparency(&self) -> crate::Result<()>;
+
+  /// The window's layered-window alpha, or `None` when it has none, e.g.
+  /// when the `transparency` effect was never applied to it.
+  ///
+  /// # Platform-specific
+  ///
+  /// This method is only available on Windows.
+  fn layered_alpha(&self) -> crate::Result<Option<u8>>;
 }
 
 #[cfg(target_os = "windows")]
@@ -634,6 +642,10 @@ impl NativeWindowWindowsExt for NativeWindow {
 
   fn reassert_transparency(&self) -> crate::Result<()> {
     self.inner.reassert_transparency()
+  }
+
+  fn layered_alpha(&self) -> crate::Result<Option<u8>> {
+    self.inner.layered_alpha()
   }
 }
 
