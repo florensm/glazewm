@@ -5,11 +5,12 @@ use windows::{
   Win32::{
     Foundation::HWND,
     UI::WindowsAndMessaging::{
-      CreateWindowExW, DestroyWindow, GetClassNameW, GetWindow,
-      SetWindowPos, ShowWindow, GW_HWNDPREV, SWP_NOACTIVATE, SWP_NOMOVE,
-      SWP_NOSENDCHANGING, SWP_NOSIZE, SWP_SHOWWINDOW, SW_HIDE,
-      WS_EX_NOACTIVATE, WS_EX_NOREDIRECTIONBITMAP, WS_EX_TOOLWINDOW,
-      WS_EX_TRANSPARENT, WS_POPUP,
+      BeginDeferWindowPos, CreateWindowExW, DeferWindowPos, DestroyWindow,
+      EndDeferWindowPos, GetClassNameW, GetWindow, SetWindowPos,
+      ShowWindow, GW_HWNDPREV, SWP_HIDEWINDOW, SWP_NOACTIVATE, SWP_NOMOVE,
+      SWP_NOSENDCHANGING, SWP_NOSIZE, SWP_NOZORDER, SWP_SHOWWINDOW,
+      SW_HIDE, WS_EX_NOACTIVATE, WS_EX_NOREDIRECTIONBITMAP,
+      WS_EX_TOOLWINDOW, WS_EX_TRANSPARENT, WS_POPUP,
     },
   },
 };
@@ -267,6 +268,74 @@ impl OverlayWindow {
       let _ = ShowWindow(self.hwnd(), SW_HIDE);
     }
   }
+}
+
+/// Shows `show` at `rect` directly behind `anchor` and hides `hide` in one
+/// `DeferWindowPos` transaction, which DWM takes as one window-state
+/// update: no frame has both overlays or neither.
+///
+/// Falls back to showing, then hiding, one call at a time, which can
+/// leave a frame with both rather than one with neither.
+pub(crate) fn swap(
+  show: &mut OverlayWindow,
+  rect: &Rect,
+  anchor: HWND,
+  hide: &mut OverlayWindow,
+) {
+  let insert_after = window_class::insert_after_point(anchor);
+
+  // SAFETY: Both handles are valid for their overlays' lifetimes. The
+  // transaction is always ended, which is what releases its `HDWP`, also
+  // after a failed `DeferWindowPos` (see `SurrogateBatch::commit`).
+  let swapped = unsafe {
+    BeginDeferWindowPos(2).is_ok_and(|hdwp| {
+      let Ok(shown) = DeferWindowPos(
+        hdwp,
+        show.hwnd(),
+        insert_after,
+        rect.x(),
+        rect.y(),
+        rect.width(),
+        rect.height(),
+        SWP_NOACTIVATE | SWP_SHOWWINDOW,
+      ) else {
+        let _ = EndDeferWindowPos(hdwp);
+        return false;
+      };
+
+      let Ok(hidden) = DeferWindowPos(
+        shown,
+        hide.hwnd(),
+        HWND(0),
+        0,
+        0,
+        0,
+        0,
+        SWP_NOACTIVATE
+          | SWP_NOMOVE
+          | SWP_NOSIZE
+          | SWP_NOZORDER
+          | SWP_HIDEWINDOW,
+      ) else {
+        let _ = EndDeferWindowPos(shown);
+        return false;
+      };
+
+      EndDeferWindowPos(hidden).is_ok()
+    })
+  };
+
+  if swapped {
+    show.anchor = anchor.0;
+    show.is_visible = true;
+    hide.is_visible = false;
+    return;
+  }
+
+  if let Err(err) = show.place(rect, anchor) {
+    tracing::warn!("{err}");
+  }
+  hide.hide();
 }
 
 impl Drop for OverlayWindow {
