@@ -7,7 +7,7 @@ use crate::{ActiveDrag, DisplayState, WindowState};
 /// User-friendly representation of a tiling or non-tiling window.
 ///
 /// Used for IPC and debug logging.
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, derive_more::Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct WindowDto {
   pub id: Uuid,
@@ -24,6 +24,8 @@ pub struct WindowDto {
   pub border_delta: RectDelta,
   pub floating_placement: Rect,
   pub handle: isize,
+  /// Kept out of `Debug`, and so out of logs: it can hold private text.
+  #[debug(skip)]
   pub title: String,
   #[cfg(target_os = "windows")]
   pub class_name: String,

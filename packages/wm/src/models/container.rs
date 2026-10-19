@@ -226,19 +226,10 @@ impl WindowContainer {
   }
 }
 
+/// Leaves out the title, which can hold private text (document names,
+/// messages), since this is what logs print for a window.
 impl std::fmt::Display for WindowContainer {
   fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-    // Truncate title if longer than 20 chars. Need to use `chars()`
-    // instead of byte slices to handle invalid byte indices.
-    let title = {
-      let title = self.native_properties().title;
-      if title.len() > 20 {
-        format!("{}...", title.chars().take(17).collect::<String>())
-      } else {
-        title
-      }
-    };
-
     let class = {
       #[cfg(target_os = "windows")]
       {
@@ -254,11 +245,10 @@ impl std::fmt::Display for WindowContainer {
 
     write!(
       f,
-      "Window(id={:?}, process={}, class={}, title={})",
+      "Window(id={:?}, process={}, class={})",
       self.native().id(),
       process,
       class,
-      title,
     )?;
 
     Ok(())
@@ -296,4 +286,31 @@ macro_rules! impl_container_debug {
       }
     }
   };
+}
+
+#[cfg(test)]
+mod tests {
+  use wm_common::ContainerDto;
+
+  use super::WindowContainer;
+  use crate::{models::NonTilingWindow, traits::WindowGetters};
+
+  #[test]
+  fn logs_leave_out_window_titles() {
+    let window =
+      NonTilingWindow::mock().title("secret".to_string()).call();
+    let Ok(ContainerDto::Window(dto)) = window.to_dto() else {
+      panic!("Expected a window DTO.");
+    };
+
+    assert!(!WindowContainer::from(window.clone())
+      .to_string()
+      .contains("secret"));
+    assert!(
+      !format!("{:?}", window.native_properties()).contains("secret")
+    );
+    assert!(!format!("{dto:?}").contains("secret"));
+    // IPC clients still get it.
+    assert_eq!(dto.title, "secret");
+  }
 }

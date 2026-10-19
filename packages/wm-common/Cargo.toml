@@ -9,6 +9,7 @@ path = "src/lib.rs"
 [dependencies]
 anyhow = { workspace = true }
 clap = { workspace = true }
+derive_more = { version = "2", features = ["debug"] }
 regex = { workspace = true }
 serde = { workspace = true }
 tracing = { workspace = true }

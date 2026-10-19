@@ -2,8 +2,10 @@ use wm_platform::{NativeWindow, Rect};
 #[cfg(target_os = "windows")]
 use wm_platform::{NativeWindowWindowsExt, RectDelta};
 
-#[derive(Debug, Clone)]
+#[derive(Clone, derive_more::Debug)]
 pub struct NativeWindowProperties {
+  /// Kept out of `Debug`, and so out of logs: it can hold private text.
+  #[debug(skip)]
   pub title: String,
   #[cfg(target_os = "windows")]
   pub class_name: String,
