@@ -136,6 +136,11 @@ async fn start_wm(
   // Ensure that only one instance of the WM is running.
   let _single_instance = SingleInstance::new()?;
 
+  // Keep up while the system is busy. This thread computes the frames of
+  // window animations.
+  wm_platform::raise_process_priority();
+  wm_platform::prioritize_frame_thread();
+
   #[cfg(target_os = "macos")]
   {
     if !dispatcher.has_ax_permission(true) {

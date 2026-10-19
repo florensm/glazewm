@@ -271,7 +271,7 @@ use wm_platform::{
 };
 use wm_platform::{
   perf::{self, Stage},
-  NativeWindow, OpacityValue, Rect,
+  NativeWindow, OpacityValue, Rect, MAX_ANIMATION_STEP,
 };
 
 #[cfg(target_os = "windows")]
@@ -482,6 +482,11 @@ pub struct AnimationManager {
   /// [`frame_now`]: AnimationManager::frame_now
   /// [`begin_redraw_pass`]: AnimationManager::begin_redraw_pass
   pass_now: Option<Instant>,
+  /// Latest time the clock was read to evaluate animations at; see
+  /// [`absorb_stall`].
+  ///
+  /// [`absorb_stall`]: AnimationManager::absorb_stall
+  last_clock_read: Option<Instant>,
   /// Windows whose own z-order was changed recently, mapped to when their
   /// overlays stop being re-checked. See [`settle_overlay_z_order`].
   ///
@@ -648,6 +653,7 @@ impl AnimationManager {
       last_frame_at: Cell::new(Instant::now()),
       stalled_timers: Arc::new(AtomicUsize::new(0)),
       pass_now: None,
+      last_clock_read: None,
       #[cfg(target_os = "windows")]
       overlay_z_settle: HashMap::new(),
       #[cfg(target_os = "windows")]
@@ -1158,7 +1164,7 @@ impl AnimationManager {
         // persistent thread keeps the registration across
         // animations rather than re-acquiring it per switch; while
         // parked it consumes no CPU.
-        wm_platform::set_thread_priority_highest();
+        wm_platform::prioritize_frame_thread();
         #[cfg(target_os = "windows")]
         let _mmcss = wm_platform::try_set_thread_mmcss();
 
@@ -2639,8 +2645,67 @@ impl AnimationManager {
     #[cfg(not(target_os = "windows"))]
     let now = Instant::now();
 
+    self.absorb_stall(now);
     self.pass_now = Some(now);
     now
+  }
+
+  /// Wall-clock now, for evaluating running animations at outside a
+  /// redraw pass. See [`absorb_stall`].
+  ///
+  /// [`absorb_stall`]: AnimationManager::absorb_stall
+  #[cfg(target_os = "windows")]
+  pub(crate) fn read_clock(&mut self) -> Instant {
+    let now = Instant::now();
+    self.absorb_stall(now);
+    now
+  }
+
+  /// Pauses every running animation for however much longer than
+  /// `MAX_ANIMATION_STEP` it has been since the clock was last read for
+  /// them, before they are evaluated at `now`.
+  ///
+  /// A frame held up, e.g. by page faults or a busy CPU while RAM runs
+  /// low, then moves windows on by one step instead of skipping them
+  /// across the screen. Clocks timing apps rather than the screen (handoff
+  /// timeouts, overlay settling) keep running.
+  fn absorb_stall(&mut self, now: Instant) {
+    let previous = self.last_clock_read;
+    self.last_clock_read =
+      Some(previous.map_or(now, |prev| prev.max(now)));
+
+    let Some(stall) = previous
+      .and_then(|prev| {
+        now
+          .saturating_duration_since(prev)
+          .checked_sub(MAX_ANIMATION_STEP)
+      })
+      .filter(|stall| !stall.is_zero())
+    else {
+      return;
+    };
+
+    for animation in self.animations.values() {
+      animation.pause_for(stall);
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+      if let Some(ws) = &mut self.workspace_switch {
+        ws.start_time = ws.start_time.map(|start| start + stall);
+      }
+      if let Some(iris) = &mut self.iris_switch {
+        iris.start_time = iris.start_time.map(|start| start + stall);
+      }
+      for (_, fade_start, _) in &mut self.pending_session_cleanup {
+        *fade_start = fade_start.map(|start| start + stall);
+      }
+      self.scroll_view.pause_for(stall);
+    }
+
+    if self.has_active_animations() {
+      tracing::debug!("Animations stalled; paused them for {stall:?}.");
+    }
   }
 
   /// Installs or switches the vsync waiter to the monitor with handle
@@ -2828,7 +2893,7 @@ impl AnimationManager {
         // Start from the current animated position on cancel-and-replace
         // so the animation does not jump back to the original
         // start.
-        let now = Instant::now();
+        let now = self.frame_now();
         let start_rect = existing_animation.as_ref().map_or_else(
           || prev_target.clone(),
           |a| a.current_state_at(now).0,
@@ -4116,6 +4181,62 @@ mod tests {
     assert_eq!(
       manager.stalled_timers.load(Ordering::Relaxed),
       MAX_STALLED_TIMERS
+    );
+  }
+
+  #[test]
+  fn stall_pauses_running_animations() {
+    let (tick_tx, _tick_rx) = mpsc::unbounded_channel();
+    let mut manager = AnimationManager::new(tick_tx);
+    let config = UserConfig::from_parsed(ParsedConfig::default());
+    let [running, unstarted] = [Uuid::new_v4(), Uuid::new_v4()];
+    let movement = || {
+      WindowAnimationState::new_movement(
+        Rect::from_xy(0, 0, 100, 100),
+        Rect::from_xy(1_000, 0, 100, 100),
+        1_000,
+        EasingFunction::CubicBezier(0.25, 0.1, 0.25, 1.0),
+      )
+    };
+
+    let t0 = Instant::now();
+    manager.absorb_stall(t0);
+    manager.start_animation(running, movement());
+    manager.start_animation(unstarted, movement());
+    manager.animations[&running].start_clock(t0);
+    start_slide(&mut manager, &[Uuid::new_v4()], &config);
+    if let Some(ws) = &mut manager.workspace_switch {
+      ws.start_time = Some(t0);
+    }
+
+    // An on-time frame advances by all of its gap.
+    let on_time = t0 + Duration::from_millis(10);
+    manager.absorb_stall(on_time);
+    assert_eq!(
+      manager.animations[&running].remaining_at(on_time),
+      Duration::from_millis(990)
+    );
+
+    // A late one by `MAX_ANIMATION_STEP` only.
+    let late = on_time + Duration::from_millis(200);
+    manager.absorb_stall(late);
+    assert_eq!(
+      manager.animations[&running].remaining_at(late) + MAX_ANIMATION_STEP,
+      Duration::from_millis(990)
+    );
+    assert_eq!(
+      manager
+        .workspace_switch
+        .as_ref()
+        .and_then(|ws| ws.start_time)
+        .map(|start| start + MAX_ANIMATION_STEP),
+      Some(t0 + Duration::from_millis(200))
+    );
+
+    // A clock that hasn't started yet starts on its first frame.
+    assert_eq!(
+      manager.animations[&unstarted].remaining_at(late),
+      Duration::from_secs(1)
     );
   }
 

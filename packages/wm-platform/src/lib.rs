@@ -549,26 +549,94 @@ pub fn try_set_thread_mmcss() -> Option<MmcssGuard> {
   }
 }
 
-/// Sets the calling thread's scheduling priority to highest.
+/// Raises this process to the above-normal priority class, so the WM still
+/// gets the CPU promptly while the system is busy, e.g. compressing and
+/// paging memory as RAM runs low.
 ///
-/// Called at the start of the animation timer thread to reduce scheduling
-/// jitter between the DWM vsync wake-up and tick delivery to the Tokio
-/// runtime. On non-Windows platforms this is a no-op.
-pub fn set_thread_priority_highest() {
+/// Programs it launches still start at normal priority: Windows only
+/// passes the idle and below-normal classes on. On non-Windows platforms
+/// this is a no-op.
+pub fn raise_process_priority() {
   #[cfg(target_os = "windows")]
   {
     use windows::Win32::System::Threading::{
-      GetCurrentThread, SetThreadPriority, THREAD_PRIORITY_HIGHEST,
+      GetCurrentProcess, SetPriorityClass, ABOVE_NORMAL_PRIORITY_CLASS,
     };
-    // SAFETY: `GetCurrentThread` returns a pseudo-handle valid for the
-    // lifetime of the calling thread. `SetThreadPriority` has no
-    // preconditions beyond a valid handle and a recognised priority value.
-    unsafe {
-      let _ =
-        SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_HIGHEST);
+
+    // SAFETY: `GetCurrentProcess` returns a pseudo-handle with full access
+    // to this process, valid for its lifetime.
+    let raised = unsafe {
+      SetPriorityClass(GetCurrentProcess(), ABOVE_NORMAL_PRIORITY_CLASS)
+    };
+
+    if let Err(err) = raised {
+      tracing::warn!("Failed to raise the process priority: {err}");
     }
   }
 }
+
+/// Has the calling thread, which draws animation frames, run as soon as it
+/// is ready: at its process's highest priority, and at full speed.
+///
+/// The WM's windows are never focused, so Windows otherwise ranks it below
+/// the focused app and, on battery, may run it on efficiency cores at a
+/// reduced clock speed. On non-Windows platforms this is a no-op.
+pub fn prioritize_frame_thread() {
+  #[cfg(target_os = "windows")]
+  {
+    use windows::Win32::System::Threading::{
+      GetCurrentThread, SetThreadInformation, SetThreadPriority,
+      ThreadPowerThrottling, THREAD_POWER_THROTTLING_CURRENT_VERSION,
+      THREAD_POWER_THROTTLING_EXECUTION_SPEED,
+      THREAD_POWER_THROTTLING_STATE, THREAD_PRIORITY_HIGHEST,
+    };
+
+    // Named in `ControlMask` and left out of `StateMask`, execution speed
+    // throttling is turned off.
+    let throttling = THREAD_POWER_THROTTLING_STATE {
+      Version: THREAD_POWER_THROTTLING_CURRENT_VERSION,
+      ControlMask: THREAD_POWER_THROTTLING_EXECUTION_SPEED,
+      StateMask: 0,
+    };
+
+    // SAFETY: `GetCurrentThread` returns a pseudo-handle with full access
+    // to the calling thread, valid for its lifetime. `throttling` outlives
+    // the call, which reads exactly its size.
+    let (prioritized, unthrottled) = unsafe {
+      (
+        SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_HIGHEST),
+        SetThreadInformation(
+          GetCurrentThread(),
+          ThreadPowerThrottling,
+          std::ptr::from_ref(&throttling).cast(),
+          #[allow(clippy::cast_possible_truncation)]
+          {
+            std::mem::size_of::<THREAD_POWER_THROTTLING_STATE>() as u32
+          },
+        ),
+      )
+    };
+
+    if let Err(err) = prioritized {
+      tracing::warn!("Failed to raise a frame thread's priority: {err}");
+    }
+
+    // Unsupported before Windows 10 1709, which throttles nothing anyway.
+    if let Err(err) = unthrottled {
+      tracing::debug!(
+        "Failed to exempt a frame thread from throttling: {err}"
+      );
+    }
+  }
+}
+
+/// Most a frame advances animations by.
+///
+/// A longer gap since the previous frame means the thread drawing them was
+/// held up; jumping ahead by all of it would make windows skip across the
+/// screen, so animations are paused for the rest instead.
+pub const MAX_ANIMATION_STEP: std::time::Duration =
+  std::time::Duration::from_nanos(33_333_333);
 
 // TODO: Avoid exposing `windows` crate types in the public API.
 #[cfg(target_os = "windows")]

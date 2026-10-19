@@ -19,7 +19,7 @@
 
 use std::{
   collections::{HashMap, HashSet},
-  time::Instant,
+  time::{Duration, Instant},
 };
 
 use uuid::Uuid;
@@ -151,6 +151,15 @@ impl ScrollView {
     self.entries.values().any(|entry| entry.role != Role::Peek)
   }
 
+  /// Holds moving columns where they are for `duration`.
+  pub fn pause_for(&self, duration: Duration) {
+    for entry in self.entries.values() {
+      if matches!(entry.role, Role::Moving { .. }) {
+        entry.motion.pause_for(duration);
+      }
+    }
+  }
+
   /// Advances moving columns to `now`, returning the ones that landed.
   /// Their moves are queued into `batch`, for [`track_overlays`] to commit
   /// along with their overlays'.
@@ -225,8 +234,8 @@ impl ScrollView {
     })
   }
 
-  /// Draws `window` with a peek in `role`, going from `from` to `target`.
-  /// A move of a peek already shown is queued into `batch`.
+  /// Draws `window` with a peek in `role`, going from `from` to `target`,
+  /// as of `now`. A move of a peek already shown is queued into `batch`.
   ///
   /// Returns whether a new peek now covers a still-visible real window,
   /// so it has to be composited before that window is cloaked.
@@ -240,6 +249,7 @@ impl ScrollView {
     role: Role,
     config: &UserConfig,
     is_focused: bool,
+    now: Instant,
     batch: &mut SurrogateBatch,
   ) -> bool {
     let scroll_config = &config.value.animations.scroll;
@@ -256,7 +266,7 @@ impl ScrollView {
         target,
         scroll_config.duration_ms,
         scroll_config.easing.clone(),
-        Instant::now(),
+        now,
       ),
       _ => WindowAnimationState::new_movement(
         from.clone(),
@@ -273,7 +283,7 @@ impl ScrollView {
     let (opacity, corner_style, _, _) =
       surrogate_effects_for(is_focused, config);
     if !is_moving {
-      motion.start_clock(Instant::now());
+      motion.start_clock(now);
     }
 
     if let Some(entry) = self.entries.get_mut(&window.id()) {
@@ -322,6 +332,7 @@ impl ScrollView {
 /// Runs before `platform_sync` repositions anything: moving windows are
 /// then frozen (cloaked and pre-positioned at their target) behind peeks
 /// that are already on screen.
+#[allow(clippy::too_many_lines)]
 pub fn sync_scroll_view(
   state: &mut WmState,
   config: &UserConfig,
@@ -345,6 +356,7 @@ pub fn sync_scroll_view(
     .filter(|id| !state.window_target_positions.contains_key(id))
     .collect::<HashSet<_>>();
 
+  let now = state.animation_manager.read_clock();
   let view = &mut state.animation_manager.scroll_view;
 
   // Windows that left the displayed scrolling layouts lose their peeks;
@@ -426,6 +438,7 @@ pub fn sync_scroll_view(
         role,
         config,
         focused_id == Some(window.id()),
+        now,
         &mut batch,
       );
 

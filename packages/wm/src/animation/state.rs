@@ -96,6 +96,14 @@ impl WindowAnimationState {
     }
   }
 
+  /// Holds the animation where it is for `duration`, by moving its clock
+  /// on by as much. No-op until its clock starts.
+  pub fn pause_for(&self, duration: Duration) {
+    if let Some(start) = self.start_time.get() {
+      self.start_time.set(Some(start + duration));
+    }
+  }
+
   /// Gets the eased progress in [0.0, 1.0] at an explicit `now` instant.
   ///
   /// Allows callers to supply a predictive timestamp (e.g. vsync wake-up
@@ -620,5 +628,30 @@ mod tests {
     let half =
       anim.eased_progress_at(first_tick + Duration::from_millis(50));
     assert!((half - 0.5).abs() < 0.01, "got {half}");
+  }
+
+  /// A paused animation picks up where it was, and one whose clock hasn't
+  /// started is left to start on its first tick.
+  #[test]
+  fn pause_holds_progress() {
+    let anim = WindowAnimationState::new_movement(
+      Rect::from_xy(0, 0, 100, 100),
+      Rect::from_xy(1_000, 0, 100, 100),
+      100,
+      linear(),
+    );
+
+    let t0 = Instant::now();
+    anim.pause_for(Duration::from_millis(500));
+    anim.start_clock(t0);
+
+    let paused_at = t0 + Duration::from_millis(30);
+    let before = anim.eased_progress_at(paused_at);
+    assert!((before - 0.3).abs() < 0.01, "got {before}");
+
+    anim.pause_for(Duration::from_millis(200));
+    let after =
+      anim.eased_progress_at(paused_at + Duration::from_millis(200));
+    assert!((after - before).abs() < f32::EPSILON, "got {after}");
   }
 }

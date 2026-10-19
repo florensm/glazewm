@@ -279,6 +279,8 @@ fn run(
     let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
   }
 
+  crate::prioritize_frame_thread();
+
   let control = match create_control_window() {
     Ok(control) => control,
     Err(err) => {
@@ -1069,8 +1071,8 @@ impl Overview {
     let now = Instant::now();
     let dt = now
       .duration_since(self.last_tick)
-      .as_secs_f32()
-      .min(1.0 / 30.0);
+      .min(crate::MAX_ANIMATION_STEP)
+      .as_secs_f32();
     self.last_tick = now;
 
     // The WM hasn't carried out the pick in time: zoom anyway, so the
