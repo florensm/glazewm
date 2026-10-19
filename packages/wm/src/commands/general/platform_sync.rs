@@ -912,6 +912,11 @@ fn redraw_containers(
           // first few frames of the slide without a visible gap.
           wm_platform::dwm_flush();
 
+          // Windows still sliding on a switch this one cuts short are
+          // drawn by that one's surrogates, which go as this one
+          // starts.
+          hand_over_cut_short_slide(state, &mut ws_windows);
+
           let axis = state.pending_sync.workspace_switch_axis().clone();
           state.animation_manager.start_workspace_switch(
             ws_windows,
@@ -2490,6 +2495,58 @@ fn resync_overlay_z_order<O: SyncableOverlay>(state: &mut WmState) {
       );
     }
   }
+}
+
+/// Hands the windows of a starting workspace switch that the one it cuts
+/// short still draws over to their new surrogates (see
+/// `AnimationManager::hand_over_cut_short_slide`), along with their
+/// overlays.
+///
+/// An outgoing window's backdrop follows its new surrogate right away,
+/// rather than on the slide's first frame, since a semi-transparent
+/// window shows what is behind it. One sliding in starts off-screen, so
+/// its overlays are hidden until that first frame places them.
+#[cfg(target_os = "windows")]
+fn hand_over_cut_short_slide(
+  state: &mut WmState,
+  ws_windows: &mut [(uuid::Uuid, WorkspaceSwitchEntry)],
+) {
+  let handed_over = state
+    .animation_manager
+    .hand_over_cut_short_slide(ws_windows);
+
+  let mut batch = SurrogateBatch::new();
+  for (id, is_incoming) in handed_over {
+    if is_incoming {
+      if let Some(overlay) = state.backdrop_overlays.get_mut(&id) {
+        overlay.hide();
+      }
+      if let Some(overlay) = state.border_overlays.get_mut(&id) {
+        overlay.hide();
+      }
+      continue;
+    }
+
+    let surrogate = ws_windows
+      .iter()
+      .find(|(window_id, _)| *window_id == id)
+      .and_then(|(_, entry)| entry.surrogate.as_ref());
+
+    if let (Some(surrogate), Some(overlay)) =
+      (surrogate, state.backdrop_overlays.get_mut(&id))
+    {
+      if let Some(live) = surrogate.live_frame() {
+        overlay.defer_cut_rect(
+          &mut batch,
+          &live.frame,
+          &live.shown,
+          &live.visible,
+          surrogate.hwnd(),
+        );
+      }
+    }
+  }
+  batch.commit();
 }
 
 /// Creates or updates `window_id`'s backdrop overlay for one frame of a

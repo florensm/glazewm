@@ -4016,6 +4016,48 @@ impl AnimationManager {
     }
   }
 
+  /// Hands the windows of `windows`, a slide about to cut short the one
+  /// still playing, over from their surrogates in that one, returning
+  /// the ids of those handed over, each with whether it slides in.
+  ///
+  /// Such a window has no real window on screen to take it over from
+  /// (see `WorkspaceSurrogate::take_over`), and its old surrogate goes as
+  /// the new slide starts. So, once the new surrogates have been
+  /// composited at least once, an outgoing one is brought up and the old
+  /// one's thumbnail hidden back to back, and no frame shows neither. One
+  /// sliding in starts off-screen and is only shown on the new slide's
+  /// first frame, so its old surrogate is just hidden.
+  #[cfg(target_os = "windows")]
+  pub fn hand_over_cut_short_slide(
+    &mut self,
+    windows: &mut [(Uuid, WorkspaceSwitchEntry)],
+  ) -> Vec<(Uuid, bool)> {
+    let Some(previous) = self.workspace_switch.as_mut() else {
+      return Vec::new();
+    };
+
+    let mut handed_over = Vec::new();
+    for (id, entry) in windows {
+      let (Some(old), Some(new)) = (
+        previous
+          .windows
+          .get_mut(id)
+          .and_then(|previous| previous.surrogate.as_mut()),
+        entry.surrogate.as_mut(),
+      ) else {
+        continue;
+      };
+
+      if !entry.is_incoming {
+        new.apply_effect_opacity();
+      }
+      old.hide_thumbnail();
+      handed_over.push((*id, entry.is_incoming));
+    }
+
+    handed_over
+  }
+
   /// Readies handing incoming `window` back from its finished
   /// workspace-switch surrogate, just before the window is uncloaked (see
   /// `WorkspaceSurrogate::prepare_hand_back`).
