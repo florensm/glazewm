@@ -72,7 +72,7 @@ use crate::{
     handle_z_order_changed,
   },
   ipc_server::IpcServer,
-  models::{Container, WorkspaceTarget},
+  models::{workspace_target, Container},
   traits::{CommonGetters, WindowGetters},
   user_config::UserConfig,
   wm_state::WmState,
@@ -741,7 +741,8 @@ impl WindowManager {
                 // overlay, so this is invisible to the user.
                 {
                   let native_ref = window.native();
-                  state.animation_manager.start_close_animation(
+                  state.animation_manager.start_away_animation(
+                    crate::animation::AwayTransition::Close,
                     window_id,
                     &rect,
                     effect_opacity,
@@ -801,52 +802,16 @@ impl WindowManager {
           focus_in_direction(&subject_container, direction, state)?;
         }
 
-        if let Some(direction) = &args.workspace_in_direction {
-          focus_workspace(
-            WorkspaceTarget::Direction(direction.clone()),
-            state,
-            config,
-          )?;
+        if let Some(target) = workspace_target!(&args) {
+          focus_workspace(target, state, config)?;
         }
 
         if let Some(container_id) = &args.container_id {
           focus_container_by_id(container_id, state)?;
         }
 
-        if let Some(name) = &args.workspace {
-          focus_workspace(
-            WorkspaceTarget::Name(name.clone()),
-            state,
-            config,
-          )?;
-        }
-
         if let Some(monitor_index) = &args.monitor {
           focus_monitor(*monitor_index, state, config)?;
-        }
-
-        if args.next_active_workspace {
-          focus_workspace(WorkspaceTarget::NextActive, state, config)?;
-        }
-
-        if args.prev_active_workspace {
-          focus_workspace(WorkspaceTarget::PreviousActive, state, config)?;
-        }
-
-        if args.next_workspace {
-          focus_workspace(WorkspaceTarget::Next, state, config)?;
-        }
-
-        if args.prev_workspace {
-          focus_workspace(WorkspaceTarget::Previous, state, config)?;
-        }
-
-        if args.recent_workspace {
-          focus_workspace(WorkspaceTarget::Recent, state, config)?;
-        }
-
-        if args.next_empty_workspace {
-          focus_workspace(WorkspaceTarget::NextEmpty, state, config)?;
         }
 
         if args.urgent_window {
@@ -885,22 +850,6 @@ impl WindowManager {
           focus_window_in_column(&subject_container, target, state);
         }
 
-        if args.next_active_workspace_on_monitor {
-          focus_workspace(
-            WorkspaceTarget::NextActiveInMonitor,
-            state,
-            config,
-          )?;
-        }
-
-        if args.prev_active_workspace_on_monitor {
-          focus_workspace(
-            WorkspaceTarget::PreviousActiveInMonitor,
-            state,
-            config,
-          )?;
-        }
-
         Ok(())
       }
       // No-op at runtime. `force-manage` is a marker that is evaluated
@@ -930,73 +879,10 @@ impl WindowManager {
               )?;
             }
 
-            if let Some(direction) = &args.workspace_in_direction {
+            if let Some(target) = workspace_target!(&args) {
               move_window_to_workspace(
                 window.clone(),
-                WorkspaceTarget::Direction(direction.clone()),
-                state,
-                config,
-              )?;
-            }
-
-            if let Some(name) = &args.workspace {
-              move_window_to_workspace(
-                window.clone(),
-                WorkspaceTarget::Name(name.clone()),
-                state,
-                config,
-              )?;
-            }
-
-            if args.next_active_workspace {
-              move_window_to_workspace(
-                window.clone(),
-                WorkspaceTarget::NextActive,
-                state,
-                config,
-              )?;
-            }
-
-            if args.prev_active_workspace {
-              move_window_to_workspace(
-                window.clone(),
-                WorkspaceTarget::PreviousActive,
-                state,
-                config,
-              )?;
-            }
-
-            if args.next_workspace {
-              move_window_to_workspace(
-                window.clone(),
-                WorkspaceTarget::Next,
-                state,
-                config,
-              )?;
-            }
-
-            if args.prev_workspace {
-              move_window_to_workspace(
-                window.clone(),
-                WorkspaceTarget::Previous,
-                state,
-                config,
-              )?;
-            }
-
-            if args.recent_workspace {
-              move_window_to_workspace(
-                window.clone(),
-                WorkspaceTarget::Recent,
-                state,
-                config,
-              )?;
-            }
-
-            if args.next_empty_workspace {
-              move_window_to_workspace(
-                window.clone(),
-                WorkspaceTarget::NextEmpty,
+                target,
                 state,
                 config,
               )?;
@@ -1005,15 +891,6 @@ impl WindowManager {
             if args.special_workspace {
               move_window_to_special_workspace(
                 window.clone(),
-                state,
-                config,
-              )?;
-            }
-
-            if args.next_active_workspace_on_monitor {
-              move_window_to_workspace(
-                window.clone(),
-                WorkspaceTarget::NextActiveInMonitor,
                 state,
                 config,
               )?;
@@ -1028,16 +905,7 @@ impl WindowManager {
             };
 
             if let Some(target) = column_target {
-              move_column(&window.clone().into(), target, state)?;
-            }
-
-            if args.prev_active_workspace_on_monitor {
-              move_window_to_workspace(
-                window,
-                WorkspaceTarget::PreviousActiveInMonitor,
-                state,
-                config,
-              )?;
+              move_column(&window.into(), target, state)?;
             }
             Ok(())
           }
@@ -1346,10 +1214,8 @@ impl WindowManager {
           _ => Ok(()),
         }
       }
-      InvokeCommand::ToggleOverview { grid, layout } => {
-        let layout = layout
-          .or(grid.then_some(wm_common::OverviewLayout::Grid))
-          .unwrap_or(config.value.overview.layout);
+      InvokeCommand::ToggleOverview { layout } => {
+        let layout = layout.unwrap_or(config.value.overview.layout);
 
         #[cfg(target_os = "windows")]
         crate::overview::toggle_overview(

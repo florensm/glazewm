@@ -31,19 +31,6 @@ pub struct UserConfig {
   window_rules_by_event: HashMap<WindowRuleEvent, Vec<WindowRuleConfig>>,
 }
 
-#[cfg(test)]
-impl UserConfig {
-  /// Creates a `UserConfig` from `value`, without a backing file.
-  pub fn mock(value: ParsedConfig) -> Self {
-    Self {
-      path: PathBuf::new(),
-      window_rules_by_event: Self::window_rules_by_event(&value),
-      value,
-      value_str: String::new(),
-    }
-  }
-}
-
 impl UserConfig {
   /// Creates an instance of `UserConfig`. Reads and validates the user
   /// config from the given path.
@@ -735,7 +722,7 @@ window_effects:
 
   /// Creates a `UserConfig` with the given window rules for testing.
   fn test_config(window_rules: Vec<WindowRuleConfig>) -> UserConfig {
-    UserConfig::mock(ParsedConfig {
+    UserConfig::from_parsed(ParsedConfig {
       window_rules,
       ..ParsedConfig::default()
     })
@@ -875,8 +862,9 @@ window_effects:
     use wm_platform::LengthValue;
 
     let column_width = |value: &str| {
-      let yaml =
-        format!("layouts: {{ scrolling: {{ column_width: {value} }} }}");
+      let yaml = format!(
+        "layouts: {{ scrolling: {{ default_column_width: {value} }} }}"
+      );
       serde_yaml::from_str::<ParsedConfig>(&yaml)
         .map(|config| config.layouts.scrolling.default_column_width)
     };

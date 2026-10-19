@@ -9,7 +9,7 @@ use crate::{
   commands::{
     container::{
       move_container_within_tree, set_focused_descendant,
-      wrap_in_split_container,
+      wrap_in_container,
     },
     window::{join_stack, set_window_size, update_window_state},
   },
@@ -281,7 +281,7 @@ fn drop_as_tiling_window(
           config.value.gaps.clone(),
         );
 
-        wrap_in_split_container(
+        wrap_in_container(
           &split_container,
           &parent.clone().into(),
           &[target],
@@ -456,7 +456,7 @@ mod tests {
 
     state
       .container_by_id(window.id())
-      .and_then(|container| container.as_non_tiling_window().cloned())
+      .and_then(|container| NonTilingWindow::try_from(container).ok())
       .unwrap()
   }
 

@@ -5,8 +5,7 @@ use crate::{
   commands::{
     container::{
       flatten_stack_container, move_container_within_tree,
-      set_focused_descendant, wrap_in_split_container,
-      wrap_in_stack_container,
+      set_focused_descendant, wrap_in_container,
     },
     window::{join_stack, new_stack},
   },
@@ -54,7 +53,7 @@ pub fn set_column_display(
         TilingDirection::Vertical,
         config.value.gaps.clone(),
       );
-      wrap_in_split_container(
+      wrap_in_container(
         &split,
         &place.workspace.clone().into(),
         std::slice::from_ref(&place.column),
@@ -93,11 +92,7 @@ pub fn set_column_display(
       let first_parent = first
         .parent()
         .ok_or_else(|| anyhow::anyhow!("Window has no parent."))?;
-      wrap_in_stack_container(
-        &stack,
-        &first_parent,
-        &[first.clone().into()],
-      )?;
+      wrap_in_container(&stack, &first_parent, &[first.clone().into()])?;
 
       for window in windows.iter().skip(1) {
         join_stack(

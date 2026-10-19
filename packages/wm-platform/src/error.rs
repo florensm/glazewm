@@ -33,12 +33,6 @@ pub enum Error {
   #[error("Channel send error")]
   ChannelSend,
 
-  #[error("Display enumeration failed")]
-  DisplayEnumerationFailed,
-
-  #[error("Display mode not found")]
-  DisplayModeNotFound,
-
   #[error("Primary display not found")]
   PrimaryDisplayNotFound,
 

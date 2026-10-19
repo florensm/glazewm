@@ -244,7 +244,6 @@ impl WorkspaceSurrogate {
       source_rect,
       thumbnail_rect,
       opacity,
-      false,
       border_inset,
       effective_corner_style,
       // Workspace surrogates should sit just below the source window;

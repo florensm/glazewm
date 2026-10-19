@@ -1,7 +1,7 @@
 use anyhow::Context;
 use wm_common::{Layout, TilingDirection, WmEvent};
 
-use super::{flatten_split_container, wrap_in_split_container};
+use super::{flatten_split_container, wrap_in_container};
 use crate::{
   models::{Container, DirectionContainer, SplitContainer, TilingWindow},
   traits::{CommonGetters, TilingDirectionGetters},
@@ -80,7 +80,7 @@ fn toggle_window_direction(
     config.value.gaps.clone(),
   );
 
-  wrap_in_split_container(
+  wrap_in_container(
     &split_container,
     &parent.into(),
     &[tiling_window.into()],

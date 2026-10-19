@@ -23,12 +23,13 @@ anyhow = { workspace = true }
 auto-launch = "0.5"
 ambassador = "0.4"
 clap = { workspace = true }
+derive_more = { version = "2", features = ["from", "try_into"] }
 futures-util = { workspace = true }
 home = { workspace = true }
-image = "0.25"
-serde = { workspace = true }
+image = { version = "0.25", default-features = false, features = ["png"] }
 serde_json = { workspace = true }
 serde_yaml = "0.9"
+subenum = "1"
 tokio = { workspace = true }
 tokio-tungstenite = { workspace = true }
 tracing = { workspace = true }
@@ -38,8 +39,6 @@ tray-icon = "0.21"
 uuid = { workspace = true }
 wm-cli = { path = "../wm-cli" }
 wm-common = { path = "../wm-common" }
-wm-ipc-client = { path = "../wm-ipc-client" }
-wm-macros = { workspace = true }
 wm-platform = { path = "../wm-platform" }
 
 [target.'cfg(target_os = "macos")'.dependencies]

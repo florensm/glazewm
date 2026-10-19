@@ -34,7 +34,6 @@ impl WindowPeek {
       &to_logical(rect, &border_inset),
       rect,
       u8::MAX,
-      false,
       border_inset,
       corner_style,
       // Just below the window it shows, like the other surrogates.

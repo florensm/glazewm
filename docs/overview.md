@@ -64,8 +64,7 @@ is nowhere to go.
 | Command | Behaviour |
 | --- | --- |
 | `toggle-overview` (`alt+w` in the sample config) | Open the overview on `overview.layout`. While open, switch back to that layout, or close it if already showing it. |
-| `toggle-overview --layout <layout>` | Open the overview on `activities`, `stage`, `carousel` or `grid` (`expose` reads as `activities`). While open, switch to it, or close it if already showing it. |
-| `toggle-overview --grid` | Same as `--layout grid`. |
+| `toggle-overview --layout <layout>` | Open the overview on `activities`, `stage`, `carousel` or `grid`. While open, switch to it, or close it if already showing it. |
 
 ### Mouse
 

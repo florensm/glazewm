@@ -5,9 +5,7 @@ use wm_common::TilingDirection;
 use wm_platform::Point;
 
 use crate::{
-  commands::container::{
-    move_container_within_tree, wrap_in_split_container,
-  },
+  commands::container::{move_container_within_tree, wrap_in_container},
   models::{Container, SplitContainer, TilingContainer, Workspace},
   traits::{CommonGetters, PositionGetters, TilingDirectionGetters},
   user_config::UserConfig,
@@ -130,11 +128,7 @@ pub fn drop_into_column(
       config.value.gaps.clone(),
     );
 
-    wrap_in_split_container(
-      &split,
-      &parent,
-      std::slice::from_ref(anchor),
-    )?;
+    wrap_in_container(&split, &parent, std::slice::from_ref(anchor))?;
     parent = split.into();
   }
 

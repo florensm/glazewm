@@ -4,6 +4,7 @@ use std::{
 };
 
 use ambassador::Delegate;
+use subenum::subenum;
 use uuid::Uuid;
 use wm_common::{
   ActiveDrag, ContainerDto, DisplayState, GapsConfig, TilingDirection,
@@ -25,9 +26,10 @@ use crate::{
 ///
 /// Uses:
 ///
-///  * [`wm_macros::SubEnum`] to define subtypes of containers.
-///  * [`wm_macros::EnumFromInner`] to define conversions between the enum
-///    and wrapped types.
+///  * [`subenum`] to define subtypes of containers. They take on the
+///    enum's `#[delegate]` attributes but not its derives.
+///  * [`derive_more`] to define conversions between the enum and wrapped
+///    types.
 ///  * [`ambassador::Delegate`] to delegate common getters to the contained
 ///    types. E.g. implements [`CommonGetters`] for [Container] by
 ///    forwarding the call to the item contained in the enum variant.
@@ -49,46 +51,50 @@ use crate::{
 ///   let tiling: TilingContainer = container.try_into().unwrap(); // Will be a `TilingContainer::Split`
 ///   tiling.tiling_size(); // Can use methods from the `TilingSizeGetters` trait.
 ///
-///   // Try to convert a one sub container type into another. ([TilingContainer] to [DirectionContainer] in this case).
-///   let direction: DirectionContainer = tiling.try_into().unwrap(); // Will be a `DirectionContainer::Split`
-///   direction.tiling_direction(); // Can use methods from the `TilingDirectionGetters` trait.
-///
 ///   // Convert a sub container back into a [Container]
-///   let container: Container = direction.into(); // Will be a `Container::Split`
+///   let container: Container = tiling.into(); // Will be a `Container::Split`
 /// }
 /// ```
 #[derive(
-  Clone, Debug, wm_macros::EnumFromInner, Delegate, wm_macros::SubEnum,
+  Clone, Debug, Delegate, derive_more::From, derive_more::TryInto,
 )]
 #[delegate(CommonGetters)]
 #[delegate(PositionGetters)]
-#[subenum(defaults, {
-  /// Subenum of [Container]
-  #[derive(Clone, Debug, Delegate, wm_macros::EnumFromInner)]
-  #[delegate(CommonGetters)]
-  #[delegate(PositionGetters)]
-})]
-#[subenum(TilingContainer, {
-  /// Subset of containers that implement the following traits:
-  /// * `CommonGetters`
-  /// * `PositionGetters`
-  /// * `TilingSizeGetters`
-  #[delegate(TilingSizeGetters)]
-})]
-#[subenum(WindowContainer, {
-  /// Subset of containers that implement the following traits:
-  /// * `CommonGetters`
-  /// * `PositionGetters`
-  /// * `WindowGetters`
-  #[delegate(WindowGetters)]
-})]
-#[subenum(DirectionContainer, {
-  /// Subset of containers that implement the following traits:
-  /// * `CommonGetters`
-  /// * `PositionGetters`
-  /// * `DirectionGetters`
-  #[delegate(TilingDirectionGetters)]
-})]
+#[subenum(
+  TilingContainer(
+    doc = "Containers that also implement `TilingSizeGetters`.",
+    derive(
+      Clone,
+      Debug,
+      Delegate,
+      derive_more::From,
+      derive_more::TryInto
+    ),
+    delegate(TilingSizeGetters)
+  ),
+  WindowContainer(
+    doc = "Containers that also implement `WindowGetters`.",
+    derive(
+      Clone,
+      Debug,
+      Delegate,
+      derive_more::From,
+      derive_more::TryInto
+    ),
+    delegate(WindowGetters)
+  ),
+  DirectionContainer(
+    doc = "Containers that also implement `TilingDirectionGetters`.",
+    derive(
+      Clone,
+      Debug,
+      Delegate,
+      derive_more::From,
+      derive_more::TryInto
+    ),
+    delegate(TilingDirectionGetters)
+  )
+)]
 pub enum Container {
   Root(RootContainer),
   Monitor(Monitor),
@@ -173,16 +179,6 @@ impl Container {
   pub fn as_monitor(&self) -> Option<&Monitor> {
     match self {
       Self::Monitor(monitor) => Some(monitor),
-      _ => None,
-    }
-  }
-
-  /// Returns the inner `NonTilingWindow` if this is a
-  /// `Container::NonTilingWindow`.
-  #[must_use]
-  pub fn as_non_tiling_window(&self) -> Option<&NonTilingWindow> {
-    match self {
-      Self::NonTilingWindow(window) => Some(window),
       _ => None,
     }
   }

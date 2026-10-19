@@ -109,8 +109,6 @@ pub struct SessionOptions {
   /// many windows at once. Callers that cache the color per window (see
   /// `AnimationManager`) pass it here; `None` samples fresh.
   pub edge_color: Option<Color>,
-  /// Whether the surrogate is visible immediately after creation.
-  pub initially_visible: bool,
   /// Corner style to apply to the surrogate, matching the real window's
   /// configured style so the surrogate is visually consistent during the
   /// animation.
@@ -405,7 +403,6 @@ impl ResizeSession {
           source_rect,
           source_rect,
           effect_opacity,
-          options.initially_visible,
           border_inset,
           &options.corner_style,
           insert_after,
@@ -427,7 +424,6 @@ impl ResizeSession {
           source_rect,
           source_rect,
           effect_opacity,
-          options.initially_visible,
           border_inset,
           &options.corner_style,
           insert_after,
@@ -687,10 +683,8 @@ impl ResizeSession {
     self.surrogate.take()
   }
 
-  /// Makes the surrogate visible.
-  ///
-  /// Used after creating the surrogate with `initially_visible = false` to
-  /// reveal it once the real window has been cloaked.
+  /// Makes the surrogate, created hidden, visible once the real window
+  /// has been cloaked.
   pub fn show(&mut self) {
     if let Some(ref mut surrogate) = self.surrogate {
       surrogate.set_visible(true);
@@ -871,15 +865,7 @@ impl ResizeSession {
       return;
     }
 
-    let actual = to_logical(
-      &Rect::from_ltrb(
-        window.left,
-        window.top,
-        window.right,
-        window.bottom,
-      ),
-      &self.border_inset,
-    );
+    let actual = to_logical(&window.into(), &self.border_inset);
     if (actual.width(), actual.height()) == target_dims {
       // Use the fast single-call path: the thumbnail handle is still valid
       // so there is no need to unregister and re-register — only rcSource
@@ -1111,15 +1097,7 @@ impl ResizeSession {
         }
         .is_ok()
         {
-          to_logical(
-            &Rect::from_ltrb(
-              window.left,
-              window.top,
-              window.right,
-              window.bottom,
-            ),
-            &self.border_inset,
-          )
+          to_logical(&window.into(), &self.border_inset)
         } else {
           logical.clone()
         };
@@ -1197,12 +1175,7 @@ impl ResizeSession {
           std::ptr::from_mut(&mut current).cast(),
         )
         .is_ok()
-      } && Rect::from_ltrb(
-        current.left,
-        current.top,
-        current.right,
-        current.bottom,
-      ) == self.target_rect;
+      } && Rect::from(current) == self.target_rect;
 
       if at_target {
         self.finish_commit();
@@ -1256,12 +1229,7 @@ impl ResizeSession {
         std::ptr::from_mut(&mut current).cast(),
       )
       .is_ok()
-    } && Rect::from_ltrb(
-      current.left,
-      current.top,
-      current.right,
-      current.bottom,
-    ) == self.target_rect;
+    } && Rect::from(current) == self.target_rect;
 
     if at_target {
       self.finish_commit();
@@ -1438,12 +1406,7 @@ fn sampleable_rect(hwnd: HWND) -> Option<Rect> {
 
     let mut rect = RECT::default();
     GetWindowRect(hwnd, &raw mut rect).ok()?;
-    Some(Rect::from_ltrb(
-      rect.left,
-      rect.top,
-      rect.right,
-      rect.bottom,
-    ))
+    Some(rect.into())
   }
 }
 

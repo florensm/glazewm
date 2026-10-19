@@ -8,8 +8,7 @@ use windows::{
   Win32::{
     Foundation::{BOOL, HWND, POINT, RECT},
     Graphics::Dwm::{
-      DwmRegisterThumbnail, DwmSetWindowAttribute, DwmUnregisterThumbnail,
-      DwmUpdateThumbnailProperties, DWMWA_CLOAK, DWM_THUMBNAIL_PROPERTIES,
+      DwmSetWindowAttribute, DWMWA_CLOAK, DWM_THUMBNAIL_PROPERTIES,
       DWM_TNP_OPACITY, DWM_TNP_RECTDESTINATION, DWM_TNP_RECTSOURCE,
       DWM_TNP_SOURCECLIENTAREAONLY, DWM_TNP_VISIBLE,
     },
@@ -23,6 +22,7 @@ use windows::{
 
 use crate::{
   companion::Companion,
+  native_surrogate::DwmThumbnail,
   overview_layout::{RectF, Tile},
   surface::Surface,
   window_class, OverviewOverlay, OverviewOverlayKind, OverviewWindow,
@@ -86,7 +86,7 @@ fn create_picture_window() -> Option<HWND> {
 
 /// A DWM thumbnail of some window on the overview.
 pub(crate) struct Thumbnail {
-  handle: isize,
+  handle: DwmThumbnail,
 
   /// Last `(source, destination, opacity)` applied, to skip unchanged
   /// updates on every frame.
@@ -97,8 +97,7 @@ impl Thumbnail {
   /// Registers a thumbnail of `source` on `dest`, hidden until placed.
   /// Thumbnails stack in the order they are registered.
   pub fn register(dest: HWND, source: HWND) -> Option<Self> {
-    // SAFETY: Both are top-level windows; registration fails otherwise.
-    let handle = unsafe { DwmRegisterThumbnail(dest, source) }.ok()?;
+    let handle = DwmThumbnail::register(dest, source)?;
 
     let mut thumbnail = Self {
       handle,
@@ -139,12 +138,7 @@ impl Thumbnail {
       fVisible: BOOL::from(opacity > 0 && dest.right > dest.left),
       fSourceClientAreaOnly: false.into(),
     };
-
-    // SAFETY: `self.handle` is a registered thumbnail and `props` outlives
-    // the call.
-    unsafe {
-      let _ = DwmUpdateThumbnailProperties(self.handle, &raw const props);
-    }
+    let _ = self.handle.update(&props);
   }
 
   pub fn hide(&mut self) {
@@ -157,20 +151,7 @@ impl Thumbnail {
       fVisible: false.into(),
       ..Default::default()
     };
-
-    // SAFETY: As in `place`.
-    unsafe {
-      let _ = DwmUpdateThumbnailProperties(self.handle, &raw const props);
-    }
-  }
-}
-
-impl Drop for Thumbnail {
-  fn drop(&mut self) {
-    // SAFETY: Registered in `register` and unregistered once.
-    unsafe {
-      let _ = DwmUnregisterThumbnail(self.handle);
-    }
+    let _ = self.handle.update(&props);
   }
 }
 

@@ -11,7 +11,7 @@ use wm_platform::{Point, Rect};
 
 use super::Insertion;
 use crate::{
-  commands::container::{attach_container, wrap_in_split_container},
+  commands::container::{attach_container, wrap_in_container},
   models::{Container, SplitContainer, TilingContainer, Workspace},
   traits::{
     CommonGetters, PositionGetters, TilingDirectionGetters,
@@ -146,11 +146,7 @@ pub(super) fn attach_split(
 
   let split =
     SplitContainer::new(direction.clone(), config.value.gaps.clone());
-  wrap_in_split_container(
-    &split,
-    &parent.into(),
-    std::slice::from_ref(target),
-  )?;
+  wrap_in_container(&split, &parent.into(), std::slice::from_ref(target))?;
 
   attach_container(child, &split.into(), Some(usize::from(!is_before)))
 }

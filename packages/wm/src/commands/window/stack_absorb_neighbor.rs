@@ -3,7 +3,7 @@ use wm_platform::Direction;
 
 use super::{join_stack, new_stack};
 use crate::{
-  commands::container::wrap_in_stack_container,
+  commands::container::wrap_in_container,
   models::{
     StackContainer, TilingContainer, TilingWindow, WindowContainer,
   },
@@ -57,7 +57,7 @@ pub fn stack_absorb_neighbor(
   } else {
     let pivot_parent = pivot.parent().context("No parent.")?;
     let new_stack = new_stack(config);
-    wrap_in_stack_container(
+    wrap_in_container(
       &new_stack,
       &pivot_parent,
       &[window.clone().into()],

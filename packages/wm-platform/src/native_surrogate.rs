@@ -16,9 +16,9 @@ use windows::{
       BeginDeferWindowPos, CreateWindowExW, DeferWindowPos, DestroyWindow,
       EndDeferWindowPos, GetClassNameW, SetWindowPos,
       SET_WINDOW_POS_FLAGS, SWP_NOACTIVATE, SWP_NOCOPYBITS, SWP_NOMOVE,
-      SWP_NOSENDCHANGING, SWP_NOSIZE, SWP_NOZORDER, SWP_SHOWWINDOW,
-      WS_EX_NOACTIVATE, WS_EX_NOREDIRECTIONBITMAP, WS_EX_TOOLWINDOW,
-      WS_EX_TRANSPARENT, WS_POPUP,
+      SWP_NOSENDCHANGING, SWP_NOSIZE, SWP_NOZORDER, WS_EX_NOACTIVATE,
+      WS_EX_NOREDIRECTIONBITMAP, WS_EX_TOOLWINDOW, WS_EX_TRANSPARENT,
+      WS_POPUP,
     },
   },
 };
@@ -181,35 +181,54 @@ fn sampled_rects(
   companion.map_or((src, dst), |companion| companion.map_rects(src, dst))
 }
 
+/// A registered DWM thumbnail, unregistered on drop, which must come
+/// before its destination window is destroyed.
+pub(crate) struct DwmThumbnail(isize);
+
+impl DwmThumbnail {
+  /// Registers a thumbnail of `source` on `dest`.
+  pub(crate) fn register(dest: HWND, source: HWND) -> Option<Self> {
+    // SAFETY: Registration fails for anything but two valid top-level
+    // windows.
+    unsafe { DwmRegisterThumbnail(dest, source) }.ok().map(Self)
+  }
+
+  pub(crate) fn update(
+    &self,
+    props: &DWM_THUMBNAIL_PROPERTIES,
+  ) -> windows::core::Result<()> {
+    // SAFETY: `self.0` stays registered until drop, and `props` outlives
+    // the call.
+    unsafe { DwmUpdateThumbnailProperties(self.0, props) }
+  }
+}
+
+impl Drop for DwmThumbnail {
+  fn drop(&mut self) {
+    // SAFETY: Registered in `register` and unregistered only here.
+    unsafe {
+      let _ = DwmUnregisterThumbnail(self.0);
+    }
+  }
+}
+
 /// Registers a DWM thumbnail of `source_hwnd` -- or of its `companion`,
 /// when it has one -- onto `dest_hwnd`, set up with `props` (see
 /// [`thumbnail_properties`]).
 ///
-/// Returns the opaque thumbnail handle, or `None` if registration fails
-/// (e.g. same-window, invalid handle). The caller is responsible for
-/// calling [`DwmUnregisterThumbnail`] when done.
+/// Returns `None` if registration fails (e.g. same-window, invalid
+/// handle).
 fn register_thumbnail(
   dest_hwnd: HWND,
   source_hwnd: HWND,
   companion: Option<Companion>,
   props: &DWM_THUMBNAIL_PROPERTIES,
-) -> Option<isize> {
-  let sampled_hwnd = companion.map_or(source_hwnd, Companion::hwnd);
-
-  // SAFETY: Both handles are valid top-level windows.
-  let thumbnail =
-    unsafe { DwmRegisterThumbnail(dest_hwnd, sampled_hwnd).ok()? };
-
-  // SAFETY: `thumbnail` is a valid handle returned by
-  // `DwmRegisterThumbnail`.
-  if unsafe { DwmUpdateThumbnailProperties(thumbnail, props) }.is_err() {
-    // SAFETY: Same handle; unregister on failure.
-    unsafe {
-      let _ = DwmUnregisterThumbnail(thumbnail);
-    };
-    return None;
-  }
-
+) -> Option<DwmThumbnail> {
+  let thumbnail = DwmThumbnail::register(
+    dest_hwnd,
+    companion.map_or(source_hwnd, Companion::hwnd),
+  )?;
+  thumbnail.update(props).ok()?;
   Some(thumbnail)
 }
 
@@ -524,8 +543,8 @@ pub(crate) fn to_logical(rect: &Rect, inset: &RECT) -> Rect {
 pub struct NativeSurrogate {
   /// Handle to the overlay window.
   hwnd: isize,
-  /// DWM thumbnail handle, or `0` if registration failed.
-  thumbnail: isize,
+  /// DWM thumbnail, or `None` if registration failed.
+  thumbnail: Option<DwmThumbnail>,
   /// The source window's companion, which the thumbnail samples instead
   /// of the window when present (e.g. a recolored copy of it).
   companion: Option<Companion>,
@@ -587,11 +606,8 @@ impl NativeSurrogate {
   /// surrogates pass the window's screen rect (the surrogate itself
   /// spans the whole viewport).
   ///
-  /// When `initially_visible` is `false`, the surrogate window is created
-  /// hidden; the caller must call [`set_visible`] to reveal it. Pass
-  /// `true` for surrogate types that must appear immediately (e.g.
-  /// resize sessions). Workspace-switch surrogates pass `false` to avoid
-  /// a one-frame flash before the caller explicitly shows the window.
+  /// The surrogate window is created hidden; the caller calls
+  /// [`set_visible`] to reveal it.
   ///
   /// `border_inset` shrinks the surrogate from the physical rect to the
   /// logical (visible-content) rect, preventing the surrogate from
@@ -625,7 +641,6 @@ impl NativeSurrogate {
     source_rect: &Rect,
     thumbnail_rect: &Rect,
     opacity: u8,
-    initially_visible: bool,
     border_inset: RECT,
     corner_style: &CornerStyle,
     insert_after: HWND,
@@ -703,8 +718,7 @@ impl NativeSurrogate {
       stretch.then_some(window_size),
     );
     let thumbnail =
-      register_thumbnail(hwnd, source_hwnd, companion, &props)
-        .unwrap_or(0);
+      register_thumbnail(hwnd, source_hwnd, companion, &props);
 
     // Constructed before the final `SetWindowPos` call (rather than after)
     // so that if it fails, `?`'s early return drops `this` — running
@@ -716,7 +730,7 @@ impl NativeSurrogate {
       companion,
       content_size: (logical_thumb.width(), logical_thumb.height()),
       border_inset,
-      is_visible: initially_visible,
+      is_visible: false,
       last_opacity: opacity,
       last_rect: None,
       covered: covered_extent(&props, stretch, window_size),
@@ -726,18 +740,13 @@ impl NativeSurrogate {
       window_size,
     };
 
-    // Set the initial Z-order position and optionally show the surrogate.
+    // Set the initial Z-order position.
     // `insert_after` is caller-controlled: resize/open surrogates pass
     // `HWND(0)` (HWND_TOP) so they appear above any co-active close
     // surrogate; close and workspace surrogates pass `source_hwnd` to
     // sit just below it.
     //
     // SAFETY: Both handles are valid.
-    let show_flag = if initially_visible {
-      SWP_SHOWWINDOW
-    } else {
-      SET_WINDOW_POS_FLAGS::default()
-    };
     unsafe {
       SetWindowPos(
         hwnd,
@@ -746,7 +755,7 @@ impl NativeSurrogate {
         0,
         0,
         0,
-        SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | show_flag,
+        SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
       )
     }?;
 
@@ -780,7 +789,6 @@ impl NativeSurrogate {
     source_rect: &Rect,
     thumbnail_rect: &Rect,
     opacity: u8,
-    initially_visible: bool,
     border_inset: RECT,
     corner_style: &CornerStyle,
     insert_after: HWND,
@@ -796,11 +804,6 @@ impl NativeSurrogate {
     let logical_src = to_logical(source_rect, &border_inset);
     let logical_thumb = to_logical(thumbnail_rect, &border_inset);
 
-    let show_flag = if initially_visible {
-      SWP_SHOWWINDOW
-    } else {
-      SET_WINDOW_POS_FLAGS::default()
-    };
     // SAFETY: `self.hwnd()` is a valid window handle owned by this
     // surrogate for its whole lifetime.
     unsafe {
@@ -811,10 +814,10 @@ impl NativeSurrogate {
         logical_src.y(),
         logical_src.width(),
         logical_src.height(),
-        SWP_NOACTIVATE | show_flag,
+        SWP_NOACTIVATE,
       )
     }?;
-    self.is_visible = initially_visible;
+    self.is_visible = false;
     self.last_rect = None;
     self.window_size = (logical_src.width(), logical_src.height());
 
@@ -823,7 +826,7 @@ impl NativeSurrogate {
     // `stretch`, since a source rect cannot be unset once applied.
     let companion = Companion::find(source_hwnd);
     if companion != self.companion || stretch != self.stretch {
-      self.unregister_thumbnail();
+      self.thumbnail = None;
       self.companion = companion;
       self.stretch = stretch;
     }
@@ -842,20 +845,16 @@ impl NativeSurrogate {
       stretch.then_some(self.window_size),
     );
 
-    if self.thumbnail == 0 {
-      self.thumbnail =
-        register_thumbnail(self.hwnd(), source_hwnd, companion, &props)
-          .unwrap_or(0);
-    } else {
+    match &self.thumbnail {
       // One combined update, bypassing `set_thumbnail_rects`/
       // `set_window_opacity`'s unchanged-value skips: a revived surrogate
       // must apply fresh values whatever its last session left behind.
-      //
-      // SAFETY: `self.thumbnail` is a valid handle (checked non-zero
-      // above).
-      unsafe {
-        let _ =
-          DwmUpdateThumbnailProperties(self.thumbnail, &raw const props);
+      Some(thumbnail) => {
+        let _ = thumbnail.update(&props);
+      }
+      None => {
+        self.thumbnail =
+          register_thumbnail(self.hwnd(), source_hwnd, companion, &props);
       }
     }
     self.set_fill_opacity(opacity);
@@ -881,7 +880,7 @@ impl NativeSurrogate {
     if !self.stretch {
       return;
     }
-    if self.thumbnail != 0 {
+    if let Some(thumbnail) = &self.thumbnail {
       let props = DWM_THUMBNAIL_PROPERTIES {
         dwFlags: DWM_TNP_RECTDESTINATION,
         rcDestination: stretched_destination(
@@ -890,11 +889,7 @@ impl NativeSurrogate {
         ),
         ..Default::default()
       };
-      // SAFETY: `self.thumbnail` is a valid handle (checked non-zero).
-      unsafe {
-        let _ =
-          DwmUpdateThumbnailProperties(self.thumbnail, &raw const props);
-      }
+      let _ = thumbnail.update(&props);
     }
     self.set_covered(size);
   }
@@ -965,7 +960,7 @@ impl NativeSurrogate {
   /// the surrogate or fall back to direct repositioning.
   #[must_use]
   pub fn has_thumbnail(&self) -> bool {
-    self.thumbnail != 0
+    self.thumbnail.is_some()
   }
 
   /// Whether the thumbnail samples the source window's companion, and
@@ -978,17 +973,6 @@ impl NativeSurrogate {
   #[must_use]
   pub fn is_companion_off_screen(&self) -> bool {
     self.companion.is_some_and(Companion::is_off_screen)
-  }
-
-  fn unregister_thumbnail(&mut self) {
-    if self.thumbnail != 0 {
-      // SAFETY: `self.thumbnail` is a valid handle registered by this
-      // surrogate.
-      unsafe {
-        let _ = DwmUnregisterThumbnail(self.thumbnail);
-      }
-      self.thumbnail = 0;
-    }
   }
 
   /// Returns the logical dimensions the main thumbnail currently samples.
@@ -1056,20 +1040,15 @@ impl NativeSurrogate {
   ///
   /// No-op when no thumbnail was registered.
   pub fn set_thumbnail_visible(&self, visible: bool) {
-    if self.thumbnail == 0 {
+    let Some(thumbnail) = &self.thumbnail else {
       return;
-    }
+    };
     let props = DWM_THUMBNAIL_PROPERTIES {
       dwFlags: DWM_TNP_VISIBLE,
       fVisible: visible.into(),
       ..Default::default()
     };
-    // SAFETY: `self.thumbnail` is a valid handle. `props` is
-    // stack-allocated.
-    unsafe {
-      let _ =
-        DwmUpdateThumbnailProperties(self.thumbnail, &raw const props);
-    }
+    let _ = thumbnail.update(&props);
   }
 
   /// Sets the DWM thumbnail opacity via `DWM_TNP_OPACITY`.
@@ -1082,20 +1061,15 @@ impl NativeSurrogate {
       return;
     }
     self.set_fill_opacity(opacity);
-    if self.thumbnail == 0 {
+    let Some(thumbnail) = &self.thumbnail else {
       return;
-    }
+    };
     let props = DWM_THUMBNAIL_PROPERTIES {
       dwFlags: DWM_TNP_OPACITY,
       opacity,
       ..Default::default()
     };
-    // SAFETY: `self.thumbnail` is a valid handle. `props` is
-    // stack-allocated.
-    unsafe {
-      let _ =
-        DwmUpdateThumbnailProperties(self.thumbnail, &raw const props);
-    }
+    let _ = thumbnail.update(&props);
   }
 
   /// Updates the DWM thumbnail source and destination rects in a single
@@ -1109,7 +1083,7 @@ impl NativeSurrogate {
   ///
   /// [`set_window_opacity`]: NativeSurrogate::set_window_opacity
   pub fn set_thumbnail_rects(&mut self, rc_src: RECT, rc_dst: RECT) {
-    if self.thumbnail == 0 {
+    if self.thumbnail.is_none() {
       return;
     }
     let (rc_src, rc_dst) = sampled_rects(self.companion, rc_src, rc_dst);
@@ -1125,11 +1099,8 @@ impl NativeSurrogate {
       fSourceClientAreaOnly: false.into(),
       ..Default::default()
     };
-    // SAFETY: `self.thumbnail` is a valid handle. `props` is
-    // stack-allocated.
-    unsafe {
-      let _ =
-        DwmUpdateThumbnailProperties(self.thumbnail, &raw const props);
+    if let Some(thumbnail) = &self.thumbnail {
+      let _ = thumbnail.update(&props);
     }
   }
 
@@ -1155,9 +1126,9 @@ impl NativeSurrogate {
     logical_height: i32,
     border_inset: RECT,
   ) {
-    if self.thumbnail == 0 {
+    let Some(thumbnail) = &self.thumbnail else {
       return;
-    }
+    };
     if self.stretch {
       self.content_size = (logical_width, logical_height);
       self.border_inset = border_inset;
@@ -1175,13 +1146,7 @@ impl NativeSurrogate {
       fSourceClientAreaOnly: false.into(),
       ..Default::default()
     };
-    // SAFETY: `self.thumbnail` is a valid handle. `props` is
-    // stack-allocated.
-    if unsafe {
-      DwmUpdateThumbnailProperties(self.thumbnail, &raw const props)
-    }
-    .is_err()
-    {
+    if thumbnail.update(&props).is_err() {
       // Stale handle — fall back to a full re-registration.
       self.reregister_thumbnail(
         source_hwnd,
@@ -1215,7 +1180,7 @@ impl NativeSurrogate {
   ) {
     // Unregistering before re-registering prevents a duplicate thumbnail
     // on the same destination.
-    self.unregister_thumbnail();
+    self.thumbnail = None;
     let (src, dst) =
       content_rects(logical_width, logical_height, border_inset);
     let props = thumbnail_properties(
@@ -1231,8 +1196,7 @@ impl NativeSurrogate {
       source_hwnd,
       self.companion,
       &props,
-    )
-    .unwrap_or(0);
+    );
     self.content_size = (logical_width, logical_height);
     self.set_covered(covered_extent(
       &props,
@@ -1339,17 +1303,13 @@ impl NativeSurrogate {
 
 impl Drop for NativeSurrogate {
   fn drop(&mut self) {
-    // The fill's composition tree must go before the window it is rooted
-    // to.
+    // The fill's composition tree and the thumbnail must go before the
+    // window they are rooted to.
     self.fill.take();
+    self.thumbnail.take();
 
-    // SAFETY: All thumbnail handles and `self.hwnd` are valid handles
-    // created by this type. Thumbnails must be unregistered before the
-    // destination window is destroyed.
+    // SAFETY: `self.hwnd` is the window created by this type.
     unsafe {
-      if self.thumbnail != 0 {
-        let _ = DwmUnregisterThumbnail(self.thumbnail);
-      }
       let _ = DestroyWindow(HWND(self.hwnd));
     }
   }

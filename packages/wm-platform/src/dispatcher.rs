@@ -48,9 +48,7 @@ use windows::{
 
 #[cfg(target_os = "macos")]
 use crate::platform_impl::Application;
-use crate::{
-  platform_impl, Display, DisplayDevice, MouseButton, NativeWindow, Point,
-};
+use crate::{platform_impl, Display, MouseButton, NativeWindow, Point};
 
 /// Type alias for a closure to be executed by the event loop.
 pub type DispatchFn = dyn FnOnce() + Send + 'static;
@@ -500,16 +498,6 @@ impl Dispatcher {
         .map(|(display, _)| display)
         .collect(),
     )
-  }
-
-  /// Gets all display devices.
-  ///
-  /// NOTE: Does not guarantee a specific, consistent order.
-  ///
-  /// Returns all display devices including active, inactive, and
-  /// disconnected ones.
-  pub fn display_devices(&self) -> crate::Result<Vec<DisplayDevice>> {
-    platform_impl::all_display_devices(self)
   }
 
   /// Gets the display containing the specified point.

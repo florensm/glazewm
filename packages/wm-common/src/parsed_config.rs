@@ -292,7 +292,6 @@ pub struct LayoutsConfig {
 #[serde(default, rename_all(serialize = "camelCase"))]
 pub struct ScrollingLayoutConfig {
   /// Width of a new column.
-  #[serde(alias = "column_width")]
   pub default_column_width: ColumnWidth,
 
   /// Widths `cycle-column-width` steps through, as percentages of the
@@ -304,7 +303,6 @@ pub struct ScrollingLayoutConfig {
   pub preset_window_heights: Vec<LengthValue>,
 
   /// When focusing a column puts it in the middle of the workspace.
-  #[serde(alias = "focus_fit_method")]
   pub center_focused_column: CenterFocusedColumn,
 
   /// Whether the only column of a workspace is kept in its middle.
@@ -397,10 +395,8 @@ impl Serialize for ColumnWidth {
 pub enum CenterFocusedColumn {
   /// Never: the view scrolls just far enough to show the column whole.
   #[default]
-  #[serde(alias = "fit")]
   Never,
   /// The focused column is always in the middle.
-  #[serde(alias = "center")]
   Always,
   /// Only a column that doesn't fit on screen together with the
   /// previously focused one is centered.
@@ -690,11 +686,8 @@ pub struct OverviewConfig {
 #[serde(rename_all = "snake_case")]
 pub enum OverviewLayout {
   /// The shown workspace large and as laid out, under a row of every
-  /// workspace in miniature. Also stands in for the `expose`, `rows` and
-  /// `spotlight` layouts it replaced, so configs naming them still load.
+  /// workspace in miniature.
   #[default]
-  #[serde(alias = "expose", alias = "rows", alias = "spotlight")]
-  #[value(alias = "expose", alias = "rows", alias = "spotlight")]
   Activities,
   /// The shown workspace large and as laid out, the others in a column
   /// at the side.
@@ -2458,23 +2451,6 @@ mod tests {
   }
 
   #[test]
-  fn scrolling_config_reads_old_keys() {
-    let config: ScrollingLayoutConfig = serde_json::from_value(
-      serde_json::json!({ "column_width": "40%", "focus_fit_method": "center" }),
-    )
-    .unwrap();
-
-    assert_eq!(
-      config.center_focused_column,
-      super::CenterFocusedColumn::Always
-    );
-    assert!(matches!(
-      config.default_column_width,
-      super::ColumnWidth::Length(length) if (length.amount - 0.4).abs() < 1e-6
-    ));
-  }
-
-  #[test]
   fn scrolling_struts_take_either_side_alone() {
     let config: ScrollingLayoutConfig = serde_json::from_value(
       serde_json::json!({ "struts": { "right": "5%" } }),
@@ -2487,7 +2463,7 @@ mod tests {
   }
 
   #[test]
-  fn overview_layouts_read_their_names_and_the_replaced_ones() {
+  fn overview_layouts_read_their_names() {
     let layout = |name: &str| {
       serde_json::from_value::<OverviewConfig>(
         serde_json::json!({ "layout": name }),
@@ -2498,9 +2474,6 @@ mod tests {
 
     assert_eq!(layout("activities"), Some(OverviewLayout::Activities));
     assert_eq!(layout("stage"), Some(OverviewLayout::Stage));
-    assert_eq!(layout("expose"), Some(OverviewLayout::Activities));
-    assert_eq!(layout("rows"), Some(OverviewLayout::Activities));
-    assert_eq!(layout("spotlight"), Some(OverviewLayout::Activities));
     assert_eq!(layout("nope"), None);
     assert_eq!(
       OverviewConfig::default().layout,

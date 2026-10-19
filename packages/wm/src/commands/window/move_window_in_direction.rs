@@ -8,7 +8,7 @@ use crate::{
     container::{
       flatten_child_split_containers, flatten_split_container,
       move_container_within_tree, resize_tiling_container,
-      set_focused_descendant, wrap_in_split_container,
+      set_focused_descendant, wrap_in_container,
     },
   },
   models::{
@@ -377,7 +377,7 @@ fn invert_workspace_tiling_direction(
       config.value.gaps.clone(),
     );
 
-    wrap_in_split_container(
+    wrap_in_container(
       &split_container,
       &workspace.clone().into(),
       &workspace_children,

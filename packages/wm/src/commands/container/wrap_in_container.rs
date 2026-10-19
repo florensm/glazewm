@@ -3,16 +3,14 @@ use std::collections::VecDeque;
 use anyhow::Context;
 
 use crate::{
-  models::{Container, StackContainer, TilingContainer},
+  models::{Container, TilingContainer},
   traits::{CommonGetters, TilingSizeGetters},
 };
 
-/// Inserts a `StackContainer` into the tree, adopting the given children.
-///
-/// Mirrors `wrap_in_split_container`, but for `StackContainer` (no
-/// direction parameter needed).
-pub fn wrap_in_stack_container(
-  stack: &StackContainer,
+/// Inserts `container` (a split or stack) into the tree where
+/// `target_children` are, adopting them.
+pub fn wrap_in_container(
+  container: &(impl TilingSizeGetters + Clone + Into<Container>),
   target_parent: &Container,
   target_children: &[TilingContainer],
 ) -> anyhow::Result<()> {
@@ -24,7 +22,7 @@ pub fn wrap_in_stack_container(
 
   target_parent
     .borrow_children_mut()
-    .insert(starting_index, stack.clone().into());
+    .insert(starting_index, container.clone().into());
 
   let starting_focus_index = target_children
     .iter()
@@ -34,7 +32,7 @@ pub fn wrap_in_stack_container(
 
   target_parent
     .borrow_child_focus_order_mut()
-    .insert(starting_focus_index, stack.id());
+    .insert(starting_focus_index, container.id());
 
   // Get the total tiling size amongst all children.
   let total_tiling_size = target_children
@@ -54,15 +52,15 @@ pub fn wrap_in_stack_container(
     .copied()
     .collect::<VecDeque<_>>();
 
-  // Set the stack container's parent and tiling size.
-  *stack.borrow_parent_mut() = Some(target_parent.clone());
-  stack.set_tiling_size(total_tiling_size);
+  // Set the container's parent and tiling size.
+  *container.borrow_parent_mut() = Some(target_parent.clone());
+  container.set_tiling_size(total_tiling_size);
 
-  // Move the children from their original parent to the stack container.
+  // Move the children from their original parent to the container.
   for target_child in target_children {
-    *target_child.borrow_parent_mut() = Some(stack.clone().into());
+    *target_child.borrow_parent_mut() = Some(container.clone().into());
 
-    stack
+    container
       .borrow_children_mut()
       .push_back(target_child.clone().into());
 
@@ -74,13 +72,13 @@ pub fn wrap_in_stack_container(
       .borrow_child_focus_order_mut()
       .retain(|id| id != &target_child.id());
 
-    // Scale the tiling size to the new stack container.
+    // Scale the tiling size to the new container.
     target_child
       .set_tiling_size(target_child.tiling_size() / total_tiling_size);
   }
 
-  // Add original focus order to stack container.
-  *stack.borrow_child_focus_order_mut() = sorted_focus_ids;
+  // Add original focus order to the container.
+  *container.borrow_child_focus_order_mut() = sorted_focus_ids;
 
   Ok(())
 }

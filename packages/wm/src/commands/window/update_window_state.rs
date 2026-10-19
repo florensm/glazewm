@@ -152,7 +152,8 @@ fn start_minimize_animation(
     crate::commands::general::surrogate_effects_for(is_focused, config);
 
   let native_ref = window.native();
-  state.animation_manager.start_minimize_animation(
+  state.animation_manager.start_away_animation(
+    crate::animation::AwayTransition::Minimize,
     window.id(),
     &rect,
     effect_opacity,

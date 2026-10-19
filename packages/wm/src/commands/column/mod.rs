@@ -25,7 +25,7 @@ use crate::{
   commands::{
     container::{
       flatten_split_container, move_container_within_tree,
-      wrap_in_split_container, wrap_in_stack_container,
+      wrap_in_container,
     },
     window::{join_stack, new_stack},
   },
@@ -146,11 +146,7 @@ pub(crate) fn join_column(
     TilingContainer::Stack(stack) => stack.clone().into(),
     TilingContainer::TilingWindow(_) if is_tabbed => {
       let stack = new_stack(config);
-      wrap_in_stack_container(
-        &stack,
-        &parent,
-        std::slice::from_ref(column),
-      )?;
+      wrap_in_container(&stack, &parent, std::slice::from_ref(column))?;
       stack.into()
     }
     _ => {
@@ -158,11 +154,7 @@ pub(crate) fn join_column(
         TilingDirection::Vertical,
         config.value.gaps.clone(),
       );
-      wrap_in_split_container(
-        &split,
-        &parent,
-        std::slice::from_ref(column),
-      )?;
+      wrap_in_container(&split, &parent, std::slice::from_ref(column))?;
       split.into()
     }
   };

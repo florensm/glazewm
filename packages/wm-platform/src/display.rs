@@ -128,32 +128,10 @@ impl Display {
     self.inner.is_primary()
   }
 
-  /// Gets the display devices for this display.
-  ///
-  /// A single display can be associated with multiple display devices. For
-  /// example, when mirroring a display or combining multiple displays
-  /// (e.g. using NVIDIA Surround).
-  pub fn devices(&self) -> crate::Result<Vec<DisplayDevice>> {
-    self.inner.devices()
-  }
-
   /// Gets the main device (first non-mirroring device) for this display.
   pub fn main_device(&self) -> crate::Result<DisplayDevice> {
     self.inner.main_device()
   }
-}
-
-/// Connection state of a display device.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum ConnectionState {
-  /// Device is connected and part of the desktop coordinate space.
-  Active,
-
-  /// Device is connected but inactive (i.e. on standby or in sleep mode).
-  Inactive,
-
-  /// Device is disconnected.
-  Disconnected,
 }
 
 /// Mirroring state of a display device.
@@ -164,47 +142,6 @@ pub enum MirroringState {
 
   /// This device is mirroring another (target).
   Target,
-}
-
-/// Display connection type for physical devices.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum OutputTechnology {
-  /// Built-in display (laptop screen).
-  Internal,
-  /// VGA connection.
-  VGA,
-  /// DVI connection.
-  DVI,
-  /// HDMI connection.
-  HDMI,
-  /// DisplayPort connection.
-  DisplayPort,
-  /// Thunderbolt connection.
-  Thunderbolt,
-  /// USB connection.
-  USB,
-  /// Wireless connection.
-  Wireless,
-  /// Unknown connection type.
-  Unknown,
-}
-
-/// macOS-specific extension trait for [`DisplayDevice`].
-#[cfg(target_os = "macos")]
-pub trait DisplayDeviceExtMacOs {
-  /// Gets the Core Graphics display ID.
-  ///
-  /// # Platform-specific
-  ///
-  /// This method is only available on macOS.
-  fn cg_display_id(&self) -> CGDirectDisplayID;
-}
-
-#[cfg(target_os = "macos")]
-impl DisplayDeviceExtMacOs for DisplayDevice {
-  fn cg_display_id(&self) -> CGDirectDisplayID {
-    self.inner.cg_display_id()
-  }
 }
 
 /// Windows-specific extensions for [`DisplayDevice`].
@@ -232,13 +169,6 @@ pub trait DisplayDeviceExtWindows {
   ///
   /// This method is only available on Windows.
   fn hardware_id(&self) -> Option<String>;
-
-  /// Gets the output technology.
-  ///
-  /// # Platform-specific
-  ///
-  /// This method is only available on Windows.
-  fn output_technology(&self) -> crate::Result<Option<OutputTechnology>>;
 }
 
 #[cfg(target_os = "windows")]
@@ -249,10 +179,6 @@ impl DisplayDeviceExtWindows for DisplayDevice {
 
   fn hardware_id(&self) -> Option<String> {
     self.inner.hardware_id()
-  }
-
-  fn output_technology(&self) -> crate::Result<Option<OutputTechnology>> {
-    self.inner.output_technology()
   }
 }
 
@@ -270,28 +196,6 @@ impl DisplayDevice {
   #[must_use]
   pub fn id(&self) -> DisplayDeviceId {
     self.inner.id()
-  }
-
-  /// Gets the rotation of the device in degrees.
-  pub fn rotation(&self) -> crate::Result<f32> {
-    self.inner.rotation()
-  }
-
-  /// Gets the refresh rate of the device in Hz.
-  pub fn refresh_rate(&self) -> crate::Result<f32> {
-    self.inner.refresh_rate()
-  }
-
-  /// Gets whether this is a built-in display.
-  ///
-  /// Returns `true` for embedded displays (like laptop screens).
-  pub fn is_builtin(&self) -> crate::Result<bool> {
-    self.inner.is_builtin()
-  }
-
-  /// Gets the connection state of the device.
-  pub fn connection_state(&self) -> crate::Result<ConnectionState> {
-    self.inner.connection_state()
   }
 
   /// Gets the mirroring state of the device.

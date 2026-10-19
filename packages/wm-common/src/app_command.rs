@@ -251,11 +251,6 @@ pub enum InvokeCommand {
   /// Opens the overview of every monitor's workspaces, or closes it if
   /// open.
   ToggleOverview {
-    /// Open on the grid of every workspace; while open, switches to it
-    /// instead of closing. Same as `--layout grid`.
-    #[clap(long, action, conflicts_with = "layout")]
-    grid: bool,
-
     /// Layout to open on, rather than `overview.layout`; while open,
     /// switches to it instead of closing.
     #[clap(long, value_enum)]
@@ -670,19 +665,12 @@ mod tests {
     assert_eq!(
       parse(&["toggle-overview", "--layout", "activities"]).unwrap(),
       InvokeCommand::ToggleOverview {
-        grid: false,
         layout: Some(OverviewLayout::Activities),
       }
     );
     assert_eq!(
       parse(&["toggle-overview"]).unwrap(),
-      InvokeCommand::ToggleOverview {
-        grid: false,
-        layout: None,
-      }
-    );
-    assert!(
-      parse(&["toggle-overview", "--grid", "--layout", "stage"]).is_err()
+      InvokeCommand::ToggleOverview { layout: None }
     );
   }
 

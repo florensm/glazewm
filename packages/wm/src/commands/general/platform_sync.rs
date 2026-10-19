@@ -1413,14 +1413,13 @@ fn redraw_containers(
         {
           let _scope = perf::scope(Stage::Cloak);
 
-          // The surrogate is created hidden (`initially_visible: false`,
-          // see `SessionOptions`) specifically so this can anchor the
-          // backdrop overlay behind it *before* `ResizeSession::show`
-          // reveals it -- the surrogate's `HWND` is already stable at this
-          // point even though it isn't visible yet, which is all
-          // `overlay_z_anchor` needs. Without this, showing the surrogate
-          // first (as a plain `initially_visible: true` session used to)
-          // leaves it visible with no correctly-positioned overlay behind
+          // The surrogate is created hidden specifically so this can
+          // anchor the backdrop overlay behind it *before*
+          // `ResizeSession::show` reveals it -- the surrogate's `HWND` is
+          // already stable at this point even though it isn't visible
+          // yet, which is all `overlay_z_anchor` needs. Without this,
+          // showing the surrogate first leaves it visible with no
+          // correctly-positioned overlay behind
           // it until this window's backdrop overlay upsert eventually
           // catches up, giving DWM a real window to composite an unblurred
           // frame in.

@@ -301,6 +301,15 @@ struct PendingSurrogateUpdate {
   handoff: bool,
 }
 
+/// Why [`AnimationManager::start_away_animation`] takes a window off the
+/// screen.
+#[cfg(target_os = "windows")]
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum AwayTransition {
+  Close,
+  Minimize,
+}
+
 /// Tracks a single window's participation in the current workspace-switch
 /// slide animation.
 #[cfg(target_os = "windows")]
@@ -2906,7 +2915,6 @@ impl AnimationManager {
                   // correctly in place behind it -- closing the race at
                   // the source instead of chasing it
                   // with a fast follow-up.
-                  initially_visible: false,
                   corner_style,
                   place_at_top: true,
                   edge_color: cached_edge_color,
@@ -2923,7 +2931,6 @@ impl AnimationManager {
               &target_rect,
               &SessionOptions {
                 effect_opacity,
-                initially_visible: false,
                 corner_style,
                 place_at_top: true,
                 edge_color: cached_edge_color,
@@ -3694,7 +3701,6 @@ impl AnimationManager {
       target_rect,
       &SessionOptions {
         effect_opacity,
-        initially_visible: false,
         corner_style,
         place_at_top: true,
         // No cache for open animations: the window is new, so no prior
@@ -3741,24 +3747,26 @@ impl AnimationManager {
     }
   }
 
-  /// Starts a close animation for a window.
+  /// Starts a close or minimize animation for a window still on screen,
+  /// unless one is already running.
   ///
-  /// The surrogate is created and shown immediately as a pixel-identical
-  /// overlay of the (still-visible) window; the caller cloaks the real
-  /// window only after this returns, so the surrogate is already
-  /// covering it and no gap exposes the desktop. The surrogate style is
-  /// determined by `window_close.style`:
-  /// - `None`/`Zoom`: surrogate stays at `current_rect`, fades/zooms out.
-  /// - Slide styles: surrogate slides off the corresponding screen edge
-  ///   while fading. The real window is never repositioned during a close
-  ///   animation.
+  /// The surrogate is created and shown at once as a pixel-identical
+  /// overlay of the window; the caller cloaks or minimizes the real window
+  /// only after this returns, so the surrogate already covers it and no
+  /// gap exposes the desktop. A minimize has to start here, before the
+  /// real one, since a minimized window has no thumbnail left to capture.
+  /// The surrogate stays put and fades or zooms out, or slides off the
+  /// screen edge `params.style` names; the real window never moves.
   ///
-  /// When the animation completes, `update_internal` sends `WM_CLOSE` and
-  /// unmanages the window. No-ops if a close animation is already active.
+  /// On completion, `update_internal` sends a closing window `WM_CLOSE`
+  /// and unmanages it, and just drops a minimized window's surrogate. A
+  /// window minimized from its own title bar is already gone by the time
+  /// the WM hears about it, and keeps the OS animation.
   #[cfg(target_os = "windows")]
   #[allow(clippy::too_many_arguments)]
-  pub fn start_close_animation(
+  pub(crate) fn start_away_animation(
     &mut self,
+    transition: AwayTransition,
     window_id: Uuid,
     current_rect: &Rect,
     effect_opacity: u8,
@@ -3768,7 +3776,15 @@ impl AnimationManager {
     params: &WindowTransitionParams,
     native_window: &NativeWindow,
   ) {
-    if self.pending_close_windows.contains_key(&window_id) {
+    let is_running = match transition {
+      AwayTransition::Close => {
+        self.pending_close_windows.contains_key(&window_id)
+      }
+      AwayTransition::Minimize => {
+        self.pending_minimize_windows.contains(&window_id)
+      }
+    };
+    if is_running {
       return;
     }
 
@@ -3781,14 +3797,13 @@ impl AnimationManager {
       return;
     }
 
-    // Pace the close animation on the window's own monitor.
+    // Pace the animation on the window's own monitor.
     self.ensure_waiter_for(DxgiVsyncWaiter::window_monitor(
       native_window.hwnd(),
     ));
 
     // For slide-out, the surrogate travels from current_rect to an
-    // off-screen target. The real window stays at current_rect
-    // throughout.
+    // off-screen target.
     let target_rect = if is_stationary {
       current_rect.clone()
     } else {
@@ -3815,11 +3830,10 @@ impl AnimationManager {
       &target_rect,
       &SessionOptions {
         effect_opacity,
-        initially_visible: false,
         corner_style,
         place_at_top: false,
-        // Reuse a cached color when the closing window was recently
-        // animated; otherwise sample — the window is still on screen.
+        // Reuse a cached color when the window was recently animated;
+        // otherwise sample — the window is still on screen.
         edge_color: self.cached_edge_color(native_window.hwnd().0),
         backdrop_overlay,
         border_overlay,
@@ -3827,119 +3841,26 @@ impl AnimationManager {
       },
     ) {
       Ok(mut session) => {
-        // Show the surrogate immediately so it covers the window before
-        // the caller cloaks it (a seamless, pixel-identical
-        // handoff).
+        // Cover the window before the caller cloaks or minimizes it.
         session.show();
         session.zoom = is_zoom;
         self.animations.insert(window_id, anim);
         self.resize_sessions.insert(window_id, session);
-        self
-          .pending_close_windows
-          .insert(window_id, native_window.hwnd().0);
+        match transition {
+          AwayTransition::Close => {
+            self
+              .pending_close_windows
+              .insert(window_id, native_window.hwnd().0);
+          }
+          AwayTransition::Minimize => {
+            self.pending_minimize_windows.insert(window_id);
+          }
+        }
       }
       Err(err) => {
         tracing::warn!(
-          "Failed to begin close animation for {window_id}: {err}."
+          "Failed to begin {transition:?} animation for {window_id}: {err}."
         );
-      }
-    }
-  }
-
-  /// Starts a minimize animation for a window, returning whether one
-  /// began.
-  ///
-  /// Must be called while the window is still restored and on screen: the
-  /// surrogate captures it via a DWM thumbnail, and a minimized window has
-  /// no thumbnail left to capture. The caller minimizes the real window
-  /// only after this returns `true`, by which point the surrogate is
-  /// already covering it, so the handoff is invisible.
-  ///
-  /// The real window is therefore minimized for the whole animation and
-  /// nothing needs to be done to it on completion -- `update_internal`
-  /// just drops the surrogate. That also means this only covers a
-  /// WM-initiated minimize; a window minimized from its own title bar is
-  /// already gone by the time the WM hears about it, and keeps the OS
-  /// animation.
-  #[cfg(target_os = "windows")]
-  #[allow(clippy::too_many_arguments)]
-  pub fn start_minimize_animation(
-    &mut self,
-    window_id: Uuid,
-    current_rect: &Rect,
-    effect_opacity: u8,
-    corner_style: CornerStyle,
-    backdrop_overlay: Option<BackdropOverlayParams>,
-    border_overlay: Option<BorderOverlayParams>,
-    params: &WindowTransitionParams,
-    native_window: &NativeWindow,
-  ) -> bool {
-    if self.pending_minimize_windows.contains(&window_id) {
-      return false;
-    }
-
-    let is_zoom = params.style == WindowTransitionStyle::Zoom;
-    let is_stationary = params.style.is_stationary();
-
-    // Nothing would visually change for the duration.
-    if is_stationary && !is_zoom && params.away_opacity >= 1.0 {
-      return false;
-    }
-
-    self.ensure_waiter_for(DxgiVsyncWaiter::window_monitor(
-      native_window.hwnd(),
-    ));
-
-    let target_rect = if is_stationary {
-      current_rect.clone()
-    } else {
-      Self::compute_transition_start_rect(current_rect, &params.style)
-    };
-
-    let mut anim = WindowAnimationState::new_movement(
-      current_rect.clone(),
-      target_rect.clone(),
-      params.duration_ms,
-      params.easing.clone(),
-    );
-
-    if params.away_opacity < 1.0 {
-      let effect_frac = f32::from(effect_opacity) / 255.0;
-      let target_frac = params.away_opacity.clamp(0.0, 1.0) * effect_frac;
-      anim.start_opacity = Some(OpacityValue(effect_frac));
-      anim.target_opacity = Some(OpacityValue(target_frac));
-    }
-
-    match ResizeSession::begin(
-      native_window.hwnd(),
-      current_rect,
-      &target_rect,
-      &SessionOptions {
-        effect_opacity,
-        initially_visible: false,
-        corner_style,
-        place_at_top: false,
-        edge_color: self.cached_edge_color(native_window.hwnd().0),
-        backdrop_overlay,
-        border_overlay,
-        stretch: false,
-      },
-    ) {
-      Ok(mut session) => {
-        // Cover the still-visible window before the caller minimizes it.
-        session.show();
-        session.zoom = is_zoom;
-        self.animations.insert(window_id, anim);
-        self.resize_sessions.insert(window_id, session);
-        self.pending_minimize_windows.insert(window_id);
-        tracing::debug!("Started minimize animation for {window_id}.");
-        true
-      }
-      Err(err) => {
-        tracing::warn!(
-          "Failed to begin minimize animation for {window_id}: {err}."
-        );
-        false
       }
     }
   }
@@ -4138,7 +4059,7 @@ mod tests {
   fn new_slide_finishes_interrupted_one() {
     let (tick_tx, _tick_rx) = mpsc::unbounded_channel();
     let mut manager = AnimationManager::new(tick_tx);
-    let config = UserConfig::mock(ParsedConfig::default());
+    let config = UserConfig::from_parsed(ParsedConfig::default());
     let [a, b, c] = [Uuid::new_v4(), Uuid::new_v4(), Uuid::new_v4()];
 
     start_slide(&mut manager, &[a, b], &config);
@@ -4202,7 +4123,7 @@ mod tests {
   fn interrupted_slides_merge_into_cleanup() {
     let (tick_tx, _tick_rx) = mpsc::unbounded_channel();
     let mut manager = AnimationManager::new(tick_tx);
-    let config = UserConfig::mock(ParsedConfig::default());
+    let config = UserConfig::from_parsed(ParsedConfig::default());
     let [a, b, c] = [Uuid::new_v4(), Uuid::new_v4(), Uuid::new_v4()];
 
     start_slide(&mut manager, &[a], &config);

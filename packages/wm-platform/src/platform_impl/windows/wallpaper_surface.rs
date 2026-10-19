@@ -411,12 +411,7 @@ pub(crate) fn monitor_bounds(rect: &Rect) -> Rect {
     return virtual_screen();
   }
 
-  Rect::from_ltrb(
-    info.rcMonitor.left,
-    info.rcMonitor.top,
-    info.rcMonitor.right,
-    info.rcMonitor.bottom,
-  )
+  info.rcMonitor.into()
 }
 
 /// The bounding rectangle of every display, which is the frame
