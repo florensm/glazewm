@@ -252,6 +252,8 @@ fn overview_frame(
       grid_columns: overview.grid_columns,
       open_duration_ms: overview.open_duration_ms,
       close_duration_ms: overview.close_duration_ms,
+      switch_duration_ms: overview.switch_duration_ms,
+      highlight_duration_ms: overview.highlight_duration_ms,
     },
   }
 }

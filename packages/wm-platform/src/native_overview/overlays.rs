@@ -22,10 +22,6 @@ use crate::{
   OverviewLayoutMode, OverviewStyle,
 };
 
-/// How long the shown workspace's area in the activities takes to change
-/// shape.
-const WORKSPACE_SETTLE_MS: f32 = 300.0;
-
 /// Corner radius a workspace's highlight is drawn with, and its gap to
 /// what it highlights, in logical pixels.
 const RING_RADIUS: f32 = 16.0;
@@ -74,20 +70,31 @@ pub(super) struct Overlays {
 }
 
 impl Overlays {
-  pub(super) fn new() -> Option<Self> {
+  /// Overlays whose highlights and tags glide over `highlight_ms`, and
+  /// whose shown workspace's area changes shape over `switch_ms`.
+  pub(super) fn new(switch_ms: f32, highlight_ms: f32) -> Option<Self> {
     Some(Self {
-      screen_ring: Highlight::new()?,
-      workspace_ring: Highlight::new()?,
-      hover_ring: Highlight::new()?,
-      window_ring: Highlight::new()?,
-      tag: Tag::new()?,
-      note: Tag::new()?,
-      workspace_rect: SpringRect::new(
-        RectF::default(),
-        WORKSPACE_SETTLE_MS,
-      ),
+      screen_ring: Highlight::new(highlight_ms)?,
+      workspace_ring: Highlight::new(highlight_ms)?,
+      hover_ring: Highlight::new(highlight_ms)?,
+      window_ring: Highlight::new(highlight_ms)?,
+      tag: Tag::new(highlight_ms)?,
+      note: Tag::new(highlight_ms)?,
+      workspace_rect: SpringRect::new(RectF::default(), switch_ms),
       labels: Vec::new(),
     })
+  }
+
+  /// Glides the highlights and tags over `highlight_ms`, and changes the
+  /// shown workspace's area over `switch_ms`, from now on.
+  pub(super) fn retune(&mut self, switch_ms: f32, highlight_ms: f32) {
+    self.screen_ring.glide.retune(highlight_ms);
+    self.workspace_ring.glide.retune(highlight_ms);
+    self.hover_ring.glide.retune(highlight_ms);
+    self.window_ring.glide.retune(highlight_ms);
+    self.tag.glide.retune(highlight_ms);
+    self.note.glide.retune(highlight_ms);
+    self.workspace_rect.retune(switch_ms);
   }
 
   /// Registers what `layout` shows of them on `host`, bottom to top.

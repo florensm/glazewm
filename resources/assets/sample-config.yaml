@@ -302,9 +302,13 @@ overview:
   # Most columns of the grid layout.
   grid_columns: 5
 
-  # 0 makes it instant.
+  # 0 makes them instant.
   open_duration_ms: 250
   close_duration_ms: 200
+  # Moving to another workspace or layout while open.
+  switch_duration_ms: 300
+  # Selection and hover highlights gliding and fading.
+  highlight_duration_ms: 170
 
 layouts:
   scrolling:

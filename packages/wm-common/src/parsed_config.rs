@@ -669,6 +669,16 @@ pub struct OverviewConfig {
   /// Length of the zoom into the picked workspace when the overview
   /// closes; `0` closes it instantly.
   pub close_duration_ms: u32,
+
+  /// About how long cards and windows take to move to a new selection or
+  /// layout, e.g. the shown workspace sliding over to the next; `0` moves
+  /// them at once.
+  pub switch_duration_ms: u32,
+
+  /// How long the selection and hover highlights take to glide to what
+  /// they mark next and to fade in or out, as the shortcut sheet does;
+  /// `0` snaps them.
+  pub highlight_duration_ms: u32,
 }
 
 /// How the overview lays out the workspaces.
@@ -722,6 +732,8 @@ impl Default for OverviewConfig {
       layout: OverviewLayout::default(),
       open_duration_ms: 250,
       close_duration_ms: 200,
+      switch_duration_ms: 300,
+      highlight_duration_ms: 170,
     }
   }
 }

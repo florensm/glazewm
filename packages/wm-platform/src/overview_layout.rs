@@ -1294,13 +1294,13 @@ pub(crate) fn chrome_opacity(openness: f32) -> f32 {
   progress * progress * (3.0 - 2.0 * progress)
 }
 
-/// How long a highlight takes to glide over to what it highlights next.
-const GLIDE_MS: f32 = 170.0;
-
 /// Where a highlight shows: right on what it highlights, gliding over
 /// from where it was when that changes, and fading in and out.
 pub(crate) struct Glide<K> {
   target: Option<K>,
+
+  /// How long it takes to glide over, and about how long to fade.
+  duration_ms: f32,
 
   /// Where it set off from, and when, with its corners' scale.
   from: (RectF, f32),
@@ -1311,14 +1311,22 @@ pub(crate) struct Glide<K> {
 }
 
 impl<K: Copy + PartialEq> Glide<K> {
-  pub fn new() -> Self {
+  /// One that glides and fades over `duration_ms`; at once for `0`.
+  pub fn new(duration_ms: f32) -> Self {
     Self {
       target: None,
+      duration_ms,
       from: (RectF::default(), 1.0),
       started: Instant::now(),
       shown: (RectF::default(), 1.0),
-      alpha: Spring::new(0.0, 160.0, 0.002),
+      alpha: Spring::new(0.0, duration_ms, 0.002),
     }
+  }
+
+  /// Glides and fades over `duration_ms` from now on.
+  pub fn retune(&mut self, duration_ms: f32) {
+    self.duration_ms = duration_ms;
+    self.alpha.retune(duration_ms);
   }
 
   /// Follows `target`: the key of what to highlight, where that is now
@@ -1331,7 +1339,7 @@ impl<K: Copy + PartialEq> Glide<K> {
   ) -> bool {
     let Some((key, rect, scale)) = target else {
       self.target = None;
-      self.alpha.target = 0.0;
+      self.fade_to(0.0);
       return !self.alpha.is_settled();
     };
 
@@ -1345,10 +1353,14 @@ impl<K: Copy + PartialEq> Glide<K> {
       self.started = now;
       self.target = Some(key);
     }
-    self.alpha.target = 1.0;
+    self.fade_to(1.0);
 
     let elapsed = now.duration_since(self.started).as_secs_f32() * 1000.0;
-    let progress = (elapsed / GLIDE_MS).min(1.0);
+    let progress = if self.duration_ms > 0.0 {
+      (elapsed / self.duration_ms).min(1.0)
+    } else {
+      1.0
+    };
     let eased = ease_out_cubic(progress);
     self.shown = (
       self.from.0.lerp(&rect, eased),
@@ -1356,6 +1368,16 @@ impl<K: Copy + PartialEq> Glide<K> {
     );
 
     progress < 1.0 || !self.alpha.is_settled()
+  }
+
+  fn fade_to(&mut self, alpha: f32) {
+    if self.duration_ms > 0.0 {
+      self.alpha.target = alpha;
+    } else {
+      // Snapped here: its fade only steps before it follows, which would
+      // land it a frame late.
+      self.alpha.snap(alpha);
+    }
   }
 
   /// Advances its fade by `dt` seconds. Returns whether it still fades.
@@ -1396,6 +1418,15 @@ impl SpringRect {
       y: Spring::new(rect.y, settle_ms, 0.25),
       width: Spring::new(rect.w, settle_ms, 0.25),
       height: Spring::new(rect.h, settle_ms, 0.25),
+    }
+  }
+
+  /// Settles within about `settle_ms` from now on.
+  pub fn retune(&mut self, settle_ms: f32) {
+    for spring in
+      [&mut self.x, &mut self.y, &mut self.width, &mut self.height]
+    {
+      spring.retune(settle_ms);
     }
   }
 
@@ -1457,26 +1488,34 @@ pub(crate) struct Spring {
   pub value: f32,
   pub target: f32,
   velocity: f32,
-  stiffness: f32,
-  damping: f32,
+  /// Its natural frequency, in radians per second; `None` jumps to its
+  /// target on the next step.
+  omega: Option<f32>,
   /// How close to its target, in its own units, it counts as settled.
   epsilon: f32,
 }
 
 impl Spring {
   /// A spring resting at `value` that settles within about
-  /// `settle_ms`.
+  /// `settle_ms`; on its next step for `0`.
   pub fn new(value: f32, settle_ms: f32, epsilon: f32) -> Self {
-    let omega = 4.6 / (settle_ms.max(1.0) / 1000.0);
-
     Self {
       value,
       target: value,
       velocity: 0.0,
-      stiffness: omega * omega,
-      damping: 2.0 * omega,
+      omega: Self::omega(settle_ms),
       epsilon,
     }
+  }
+
+  fn omega(settle_ms: f32) -> Option<f32> {
+    (settle_ms > 0.0).then(|| 4.6 / (settle_ms / 1000.0))
+  }
+
+  /// Settles within about `settle_ms` from now on, carrying on from where
+  /// it is and as fast.
+  pub fn retune(&mut self, settle_ms: f32) {
+    self.omega = Self::omega(settle_ms);
   }
 
   pub fn snap(&mut self, value: f32) {
@@ -1504,10 +1543,18 @@ impl Spring {
       return false;
     }
 
-    let acceleration = (self.target - self.value) * self.stiffness
-      - self.velocity * self.damping;
-    self.velocity += acceleration * dt;
-    self.value += self.velocity * dt;
+    let Some(omega) = self.omega else {
+      self.snap(self.target);
+      return true;
+    };
+
+    // The exact solution rather than an integration step, which a short
+    // settle time or a long frame makes blow up.
+    let offset = self.value - self.target;
+    let pull = self.velocity + omega * offset;
+    let decay = (-omega * dt).exp();
+    self.value = self.target + (offset + pull * dt) * decay;
+    self.velocity = (self.velocity - omega * pull * dt) * decay;
 
     if (self.target - self.value).abs() < self.epsilon
       && self.velocity.abs() < self.epsilon * 4.0
@@ -1908,6 +1955,52 @@ mod tests {
     assert!(!spring.step(1.0 / 60.0));
   }
 
+  #[test]
+  fn instant_spring_jumps_to_its_target() {
+    let mut spring = Spring::new(0.0, 0.0, 0.25);
+    spring.target = 100.0;
+
+    assert!(spring.step(1.0 / 60.0));
+    assert_close(spring.value, 100.0);
+    assert!(!spring.step(1.0 / 60.0));
+  }
+
+  /// Even a short settle time over long frames, which an integration step
+  /// made blow up.
+  #[test]
+  fn spring_settles_at_any_frame_rate() {
+    for dt in [1.0 / 30.0, 1.0 / 60.0, 1.0 / 240.0] {
+      let mut spring = Spring::new(0.0, 40.0, 0.25);
+      spring.target = 100.0;
+
+      let mut frames = 0;
+      while spring.step(dt) {
+        assert!(spring.value <= 100.0 + f32::EPSILON);
+        frames += 1;
+        assert!(frames < 120, "spring never settled");
+      }
+      assert_close(spring.value, 100.0);
+    }
+  }
+
+  /// Retuned mid-flight, it carries on from where it is.
+  #[test]
+  fn retuned_spring_carries_on_from_where_it_is() {
+    let mut spring = Spring::new(0.0, 300.0, 0.25);
+    spring.target = 100.0;
+    spring.step(1.0 / 60.0);
+    let value = spring.value;
+
+    spring.retune(1000.0);
+    assert_close(spring.value, value);
+    spring.step(1.0 / 60.0);
+    assert!(spring.value > value && spring.value < 100.0);
+
+    spring.retune(0.0);
+    spring.step(1.0 / 60.0);
+    assert_close(spring.value, 100.0);
+  }
+
   /// A rect held mid-flight stays where it was, for a zoom to set off
   /// from.
   #[test]
@@ -2243,7 +2336,7 @@ mod tests {
 
   #[test]
   fn a_glide_appears_in_place_then_glides_to_the_next_target() {
-    let mut glide = Glide::new();
+    let mut glide = Glide::new(170.0);
     let t0 = Instant::now();
     let a = RectF::new(0.0, 0.0, 100.0, 100.0);
     let b = RectF::new(400.0, 0.0, 200.0, 100.0);
@@ -2269,7 +2362,7 @@ mod tests {
 
   #[test]
   fn a_glide_fades_out_where_it_is() {
-    let mut glide = Glide::new();
+    let mut glide = Glide::new(170.0);
     let rect = RectF::new(10.0, 10.0, 50.0, 50.0);
     let t0 = Instant::now();
 
@@ -2282,6 +2375,23 @@ mod tests {
     for _ in 0..60 {
       glide.step(1.0 / 60.0);
     }
+    assert!(glide.shown().is_none());
+  }
+
+  #[test]
+  fn an_instant_glide_shows_on_its_target_at_once() {
+    let mut glide = Glide::new(0.0);
+    let t0 = Instant::now();
+    let a = RectF::new(0.0, 0.0, 100.0, 100.0);
+    let b = RectF::new(400.0, 0.0, 200.0, 100.0);
+
+    assert!(!glide.follow(Some((1, a, 1.0)), t0));
+    assert_eq!(glide.shown(), Some((a, 1.0, 1.0)));
+
+    assert!(!glide.follow(Some((2, b, 1.0)), t0));
+    assert_eq!(glide.shown(), Some((b, 1.0, 1.0)));
+
+    assert!(!glide.follow(None, t0));
     assert!(glide.shown().is_none());
   }
 }

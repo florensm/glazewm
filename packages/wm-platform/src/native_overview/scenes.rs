@@ -3,7 +3,7 @@
 
 use std::cmp::Ordering;
 
-use super::{cards::screen_rect, Screen};
+use super::{cards::screen_rect, to_ms, Screen};
 use crate::{
   overview_layout::{Camera, CardView, RectF},
   overview_scene::{Scene, SceneWindow},
@@ -40,6 +40,7 @@ impl Screen {
         .iter()
         .map(|workspace| workspace.name.as_str()),
     );
+    let settle_ms = to_ms(frame.style.switch_duration_ms);
 
     self.scenes = frame
       .workspaces
@@ -53,7 +54,7 @@ impl Screen {
           });
 
         let (scene, is_scene_changed) =
-          Scene::rebuild(previous, workspace, |window| {
+          Scene::rebuild(previous, workspace, settle_ms, |window| {
             screen_rect(workspace, window)
           });
         is_changed |= is_scene_changed;

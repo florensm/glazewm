@@ -13,7 +13,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
 
 use super::{
   create_screen_window, elapsed_ms, overlays::Overlays, place_card,
-  scenes::scene_window_rect, PlaceContext, Screen, ScreenFrame, SETTLE_MS,
+  scenes::scene_window_rect, to_ms, PlaceContext, Screen, ScreenFrame,
 };
 use crate::{
   overview_chrome::{
@@ -35,9 +35,6 @@ use crate::{
 /// ID of the next registration of a screen's thumbnails.
 static NEXT_REGISTRATION: AtomicU64 = AtomicU64::new(1);
 
-/// How long the shortcut sheet takes to fade in or out.
-const SHEET_FADE_MS: f32 = 160.0;
-
 impl Screen {
   /// A screen with its window hidden, whose pictures post to `notify`
   /// once an icon they show arrives.
@@ -46,6 +43,7 @@ impl Screen {
   ) -> crate::Result<Self> {
     let layout = OverviewLayoutMode::default();
 
+    // Its springs and glides are timed by the style on each open.
     Ok(Self {
       hwnd: create_screen_window()?,
       frame: None,
@@ -60,14 +58,14 @@ impl Screen {
       scenes: Vec::new(),
       scene_area: RectF::default(),
       spare: Vec::new(),
-      overlays: Overlays::new(),
+      overlays: Overlays::new(0.0, 0.0),
       search: None,
       search_drawn: None,
       search_controls: None,
-      search_y: Spring::new(0.0, SETTLE_MS, 0.25),
+      search_y: Spring::new(0.0, 0.0, 0.25),
       sheet: None,
       sheet_drawn: None,
-      sheet_alpha: Spring::new(0.0, SHEET_FADE_MS, 0.002),
+      sheet_alpha: Spring::new(0.0, 0.0, 0.002),
       dock: None,
       retired: Vec::new(),
       grid: GridCells::default(),
@@ -126,6 +124,7 @@ impl Screen {
     self.sync_backdrop(&frame, if animate { 0.0 } else { 1.0 });
 
     self.frame = Some(frame);
+    self.sync_durations();
     self.rebuild_cards();
     self.rebuild_scenes();
     self.ensure_labels();
@@ -190,6 +189,7 @@ impl Screen {
 
     let is_restyled = old.style != frame.style;
     self.frame = Some(frame);
+    self.sync_durations();
     let is_changed = self.rebuild_cards() | self.rebuild_scenes();
     self.ensure_labels();
     self.retarget(false);
@@ -280,6 +280,22 @@ impl Screen {
 
     if let Some(backdrop) = &self.backdrop {
       let _ = backdrop.set_progress(progress);
+    }
+  }
+
+  /// Times the search line, the shortcut sheet and the overlays by the
+  /// style's durations; cards and scenes take theirs as they are rebuilt.
+  fn sync_durations(&mut self) {
+    let Some(style) = self.style() else {
+      return;
+    };
+    let switch_ms = to_ms(style.switch_duration_ms);
+    let highlight_ms = to_ms(style.highlight_duration_ms);
+
+    self.search_y.retune(switch_ms);
+    self.sheet_alpha.retune(highlight_ms);
+    if let Some(overlays) = &mut self.overlays {
+      overlays.retune(switch_ms, highlight_ms);
     }
   }
 

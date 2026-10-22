@@ -3,7 +3,7 @@
 
 use windows::Win32::Foundation::HWND;
 
-use super::{Card, Screen, SETTLE_MS};
+use super::{to_ms, Card, Screen};
 use crate::{
   overview_chrome::{with_alpha, CardPicture, TilePicture},
   overview_layout::{
@@ -43,6 +43,7 @@ impl Screen {
     let mut cards = std::mem::take(&mut self.cards);
     let mut spare = std::mem::take(&mut self.spare);
     let mut is_changed = cards.len() != frame.workspaces.len();
+    let settle_ms = to_ms(frame.style.switch_duration_ms);
 
     for (index, workspace) in frame.workspaces.iter().enumerate() {
       let content = RectF::from_rect(&workspace.content_rect);
@@ -102,6 +103,7 @@ impl Screen {
         tab_bars.iter().map(|bar| bar.frame.anchor).ne(old_anchors);
 
       if let Some(card) = cards.get_mut(index) {
+        card.retune(settle_ms);
         card.metrics = metrics;
         card.view = view;
         card.previews = previews;
@@ -115,10 +117,10 @@ impl Screen {
       };
 
       cards.push(Card {
-        cx: Spring::new(0.0, SETTLE_MS, 0.25),
-        cy: Spring::new(0.0, SETTLE_MS, 0.25),
-        scale: Spring::new(1.0, SETTLE_MS, 0.001),
-        alpha: Spring::new(1.0, SETTLE_MS, 0.002),
+        cx: Spring::new(0.0, settle_ms, 0.25),
+        cy: Spring::new(0.0, settle_ms, 0.25),
+        scale: Spring::new(1.0, settle_ms, 0.001),
+        alpha: Spring::new(1.0, settle_ms, 0.002),
         metrics,
         view,
         previews,

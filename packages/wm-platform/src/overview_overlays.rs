@@ -145,10 +145,11 @@ pub(crate) struct Highlight<K> {
 }
 
 impl<K: Copy + PartialEq> Highlight<K> {
-  pub fn new() -> Option<Self> {
+  /// One that glides and fades over `duration_ms`.
+  pub fn new(duration_ms: f32) -> Option<Self> {
     Some(Self {
       slices: NineSlice::new()?,
-      glide: Glide::new(),
+      glide: Glide::new(duration_ms),
     })
   }
 
@@ -172,10 +173,11 @@ pub(crate) struct Tag<D> {
 }
 
 impl<D> Tag<D> {
-  pub fn new() -> Option<Self> {
+  /// One that glides and fades over `duration_ms`.
+  pub fn new(duration_ms: f32) -> Option<Self> {
     Some(Self {
       picture: Picture::new()?,
-      glide: Glide::new(),
+      glide: Glide::new(duration_ms),
       drawn: None,
     })
   }

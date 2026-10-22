@@ -1425,6 +1425,8 @@ mod tests {
       grid_columns: 4,
       open_duration_ms: 200,
       close_duration_ms: 200,
+      switch_duration_ms: 300,
+      highlight_duration_ms: 170,
     };
     let search = SearchField {
       query: String::new(),

@@ -267,6 +267,16 @@ overview:
   # Length of the zoom into the picked workspace on close; 0 closes it
   # instantly.
   close_duration_ms: 200
+
+  # About how long cards and windows take to move to a new selection or
+  # layout, e.g. the shown workspace sliding over to the next; 0 moves
+  # them at once.
+  switch_duration_ms: 300
+
+  # How long the selection and hover highlights take to glide to what
+  # they mark next and to fade in or out, as the shortcut sheet does; 0
+  # snaps them.
+  highlight_duration_ms: 170
 ```
 
 Colors take an optional alpha (`#rrggbbaa`). Every key is optional; the
@@ -319,6 +329,9 @@ lands at once, and its preview follows it there.
 Animations step once per refresh of the focused monitor, and the loop
 sleeps while nothing moves. Cards and windows move on critically
 damped springs, so a key press mid-animation retargets them smoothly.
+Each step follows the spring's exact motion over the frame, so it moves
+alike at any refresh rate, and even a short `switch_duration_ms` can't
+overshoot.
 
 The focused monitor's window takes the foreground while open, so keys go
 to the overview rather than to the window behind it; if Windows refuses it

@@ -94,9 +94,6 @@ const WM_HIDE_OVERVIEW: u32 = WM_APP + 4;
 /// Posted by the icon thread once an icon is cached.
 const WM_ICON_READY: u32 = WM_APP + 5;
 
-/// How long card moves and zooms take to settle.
-const SETTLE_MS: f32 = 260.0;
-
 /// How long the zoom into a pick waits for the WM to carry it out before
 /// starting regardless, a safety net for a pick it never answers.
 ///
@@ -452,6 +449,15 @@ struct Card {
 }
 
 impl Card {
+  /// Settles within about `settle_ms` from now on.
+  fn retune(&mut self, settle_ms: f32) {
+    for spring in
+      [&mut self.cx, &mut self.cy, &mut self.scale, &mut self.alpha]
+    {
+      spring.retune(settle_ms);
+    }
+  }
+
   /// Its pictures, unregistered, for reuse.
   fn into_pictures(self) -> impl Iterator<Item = Picture> {
     std::iter::once(self.picture)
@@ -1500,6 +1506,12 @@ fn to_key(key: VIRTUAL_KEY) -> Option<Key> {
 /// Milliseconds since `started`.
 fn elapsed_ms(started: Instant) -> f32 {
   started.elapsed().as_secs_f32() * 1000.0
+}
+
+/// A duration of the style, as springs and glides take it.
+#[allow(clippy::cast_precision_loss)]
+fn to_ms(duration_ms: u32) -> f32 {
+  duration_ms as f32
 }
 
 #[allow(clippy::cast_precision_loss)]

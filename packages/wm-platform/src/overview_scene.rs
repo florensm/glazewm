@@ -9,9 +9,6 @@ use crate::{
   OverviewWindow, OverviewWorkspace,
 };
 
-/// How long scene windows take to settle.
-const SETTLE_MS: f32 = 300.0;
-
 /// A window on a scene.
 pub(crate) struct SceneWindow {
   pub preview: Preview,
@@ -20,14 +17,21 @@ pub(crate) struct SceneWindow {
 }
 
 impl SceneWindow {
-  /// Starts out invisible where it is on screen.
-  fn new(preview: Preview) -> Self {
-    let rect = SpringRect::new(preview.screen_rect, SETTLE_MS);
+  /// Starts out invisible where it is on screen, settling within about
+  /// `settle_ms` once retargeted.
+  fn new(preview: Preview, settle_ms: f32) -> Self {
+    let rect = SpringRect::new(preview.screen_rect, settle_ms);
     Self {
       preview,
       rect,
-      alpha: Spring::new(0.0, SETTLE_MS, 0.002),
+      alpha: Spring::new(0.0, settle_ms, 0.002),
     }
+  }
+
+  /// Settles within about `settle_ms` from now on.
+  fn retune(&mut self, settle_ms: f32) {
+    self.rect.retune(settle_ms);
+    self.alpha.retune(settle_ms);
   }
 
   /// Where it is now.
@@ -79,14 +83,15 @@ pub(crate) struct Scene {
 
 impl Scene {
   /// The scene of `workspace`'s shown windows, keeping the windows of
-  /// `old` that are still there. `screen_rect` says where a window is on
-  /// screen.
+  /// `old` that are still there, each settling within about `settle_ms`.
+  /// `screen_rect` says where a window is on screen.
   ///
   /// Returns it, and whether its windows or their overlays changed, which
   /// calls for registering their thumbnails anew.
   pub fn rebuild(
     mut old: Scene,
     workspace: &OverviewWorkspace,
+    settle_ms: f32,
     screen_rect: impl Fn(&OverviewWindow) -> RectF,
   ) -> (Self, bool) {
     let old_order = old
@@ -110,6 +115,7 @@ impl Scene {
 
         let mut scene_window = if let Some(mut reused) = reused {
           reused.preview.refresh_frame();
+          reused.retune(settle_ms);
           reused
         } else {
           let mut preview = Preview::new(
@@ -120,7 +126,7 @@ impl Scene {
             },
           );
           preview.screen_rect = rect;
-          SceneWindow::new(preview)
+          SceneWindow::new(preview, settle_ms)
         };
 
         scene_window.preview.screen_rect = rect;

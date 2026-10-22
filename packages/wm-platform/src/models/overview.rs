@@ -158,6 +158,14 @@ pub struct OverviewStyle {
   /// Length of the zoom into the picked workspace when closing; 0 closes
   /// instantly.
   pub close_duration_ms: u32,
+
+  /// About how long cards and windows take to move to a new selection or
+  /// layout; 0 moves them at once.
+  pub switch_duration_ms: u32,
+
+  /// How long highlights take to glide to what they mark next and to
+  /// fade, as the shortcut sheet does; 0 snaps them.
+  pub highlight_duration_ms: u32,
 }
 
 /// How the overview lays out the workspaces.
