@@ -81,7 +81,7 @@ pub struct StackConfig {
   /// Text color of inactive tabs.
   pub tab_inactive_text_color: BorderColorSource,
 
-  /// Font family of tab titles.
+  /// Font family of tab titles; Segoe UI when it isn't installed.
   pub tab_font_family: String,
 
   /// Font size of tab titles.
@@ -144,7 +144,7 @@ impl Default for StackConfig {
       tab_inactive_background: color("#00000000"),
       tab_text_color: color("#ffffff"),
       tab_inactive_text_color: color("#a0a0a0"),
-      tab_font_family: "Segoe UI".to_string(),
+      tab_font_family: "Segoe UI Variable Text".to_string(),
       tab_font_size: LengthValue::from_px(12),
       tab_corner_radius: LengthValue::from_px(8),
       tab_min_width: LengthValue::from_px(48),
