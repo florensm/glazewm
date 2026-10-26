@@ -59,7 +59,7 @@ use windows::{
 };
 
 use super::{
-  com::{IApplicationView, COM_INIT},
+  com::{ComInit, IApplicationView, COM_INIT},
   SENT_KEY_MARKER,
 };
 use crate::{
@@ -712,29 +712,24 @@ impl NativeWindow {
     }
   }
 
+  /// Implements [`NativeWindowWindowsExt::can_be_cloaked`].
+  pub(crate) fn can_be_cloaked(&self) -> bool {
+    COM_INIT
+      .with(|com_init| {
+        com_init.borrow_mut().with_retry(|com| {
+          Ok(application_view(com, self.hwnd())?.is_some())
+        })
+      })
+      .unwrap_or(false)
+  }
+
   /// Cloaks or uncloaks the window through its shell application view.
   ///
-  /// Returns `false` if it has none: the shell keeps views of app windows
-  /// only, not e.g. of the windows an app's main window owns.
+  /// Returns `false` if it has none (see [`application_view`]).
   fn set_view_cloaked(&self, cloaked: bool) -> crate::Result<bool> {
     COM_INIT.with(|com_init| -> crate::Result<bool> {
       com_init.borrow_mut().with_retry(|com| {
-        let view_collection = com.application_view_collection()?;
-
-        let mut view: Option<IApplicationView> = None;
-        // SAFETY: `view` outlives the call, which only writes to it.
-        let found = unsafe {
-          view_collection.get_view_for_hwnd(self.hwnd().0, &raw mut view)
-        };
-
-        // A window without a view, rather than stale interfaces, so not
-        // worth the retry's refresh.
-        if found == TYPE_E_ELEMENTNOTFOUND {
-          return Ok(false);
-        }
-        found.ok()?;
-
-        let Some(view) = view else {
+        let Some(view) = application_view(com, self.hwnd())? else {
           return Ok(false);
         };
 
@@ -1272,6 +1267,30 @@ fn desktop_window() -> NativeWindow {
   };
 
   NativeWindow::new(handle.0)
+}
+
+/// `hwnd`'s shell application view, or `None` if it has none: the shell
+/// keeps views of app windows only, not e.g. of the windows an app's main
+/// window owns.
+fn application_view(
+  com: &ComInit,
+  hwnd: HWND,
+) -> crate::Result<Option<IApplicationView>> {
+  let view_collection = com.application_view_collection()?;
+
+  let mut view: Option<IApplicationView> = None;
+  // SAFETY: `view` outlives the call, which only writes to it.
+  let found =
+    unsafe { view_collection.get_view_for_hwnd(hwnd.0, &raw mut view) };
+
+  // A window without a view, rather than stale interfaces, so not worth
+  // the retry's refresh.
+  if found == TYPE_E_ELEMENTNOTFOUND {
+    return Ok(None);
+  }
+  found.ok()?;
+
+  Ok(view)
 }
 
 /// Reads the OS's current accent/colorization color via

@@ -342,6 +342,16 @@ pub trait NativeWindowWindowsExt {
   /// This method is only available on Windows.
   fn set_cloaked_or_hidden(&self, hidden: bool) -> crate::Result<()>;
 
+  /// Whether the shell has a view of the window to cloak it by. Without
+  /// one, `set_cloaked_or_hidden` hides the window instead.
+  ///
+  /// `false` as well if the shell can't be asked.
+  ///
+  /// # Platform-specific
+  ///
+  /// This method is only available on Windows.
+  fn can_be_cloaked(&self) -> bool;
+
   /// Returns whether the window is currently cloaked by DWM.
   ///
   /// Cloaking hides the window visually while keeping `WS_VISIBLE` set.
@@ -585,6 +595,10 @@ impl NativeWindowWindowsExt for NativeWindow {
 
   fn set_cloaked_or_hidden(&self, hidden: bool) -> crate::Result<()> {
     self.inner.set_cloaked_or_hidden(hidden)
+  }
+
+  fn can_be_cloaked(&self) -> bool {
+    self.inner.can_be_cloaked()
   }
 
   fn is_cloaked(&self) -> crate::Result<bool> {

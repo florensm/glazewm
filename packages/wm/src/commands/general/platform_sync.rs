@@ -2022,11 +2022,17 @@ fn reposition_window(
       // needs no call at all. That also spares it the `SWP_FRAMECHANGED`
       // below, which can show a semi-transparent window solid for a frame
       // right before it disappears, e.g. as a workspace switch begins.
+      //
+      // Not one the shell can't cloak, which is hidden outright instead:
+      // its app may stop drawing while hidden (WPF does), and without the
+      // call a stack's hidden WPF tabs came back partly unpainted. Checked
+      // last, as it asks the shell.
       let current_frame = window.native().frame_with_shadows().ok();
-      let already_at_rect = (is_visible
-        || config.value.general.hide_method == HideMethod::Cloak)
-        && !window.has_pending_dpi_adjustment()
-        && current_frame.as_ref() == Some(rect);
+      let already_at_rect = !window.has_pending_dpi_adjustment()
+        && current_frame.as_ref() == Some(rect)
+        && (is_visible
+          || (config.value.general.hide_method == HideMethod::Cloak
+            && window.native().can_be_cloaked()));
 
       // During animation frames, omit `SWP_ASYNCWINDOWPOS` so that
       // adjacent windows are repositioned synchronously. This keeps
