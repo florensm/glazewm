@@ -6,7 +6,7 @@ use objc2_core_foundation::{CFBoolean, CFRetained, CFString};
 use windows::Win32::{
   Foundation::HWND,
   UI::WindowsAndMessaging::{
-    SET_WINDOW_POS_FLAGS, WINDOW_EX_STYLE, WINDOW_STYLE,
+    SET_WINDOW_POS_FLAGS, SWP_NOCOPYBITS, WINDOW_EX_STYLE, WINDOW_STYLE,
   },
 };
 
@@ -649,6 +649,32 @@ impl NativeWindowWindowsExt for NativeWindow {
   }
 }
 
+/// `SWP_NOCOPYBITS` when moving a window from `current` to `target`
+/// changes its size, or when `current` is unknown.
+///
+/// Without it, the OS copies the old client area into the resized window
+/// and asks the app to paint only the uncovered part. Many apps then keep
+/// showing their content at the old size with the rest black, until a
+/// resize by hand forces a full repaint. A pure move keeps the old pixels,
+/// which are still correct, and spares the app a repaint.
+#[cfg(target_os = "windows")]
+#[must_use]
+pub fn discard_bits_if_resized(
+  current: Option<&Rect>,
+  target: &Rect,
+) -> SET_WINDOW_POS_FLAGS {
+  let keeps_size = current.is_some_and(|current| {
+    current.width() == target.width()
+      && current.height() == target.height()
+  });
+
+  if keeps_size {
+    SET_WINDOW_POS_FLAGS(0)
+  } else {
+    SWP_NOCOPYBITS
+  }
+}
+
 #[derive(Clone, Debug)]
 pub struct NativeWindow {
   pub(crate) inner: platform_impl::NativeWindow,
@@ -786,3 +812,44 @@ impl PartialEq for NativeWindow {
 }
 
 impl Eq for NativeWindow {}
+
+#[cfg(all(test, target_os = "windows"))]
+mod tests {
+  use super::{
+    discard_bits_if_resized, Rect, SET_WINDOW_POS_FLAGS, SWP_NOCOPYBITS,
+  };
+
+  #[test]
+  fn discard_bits_if_resized_keeps_bits_on_a_pure_move() {
+    let current = Rect::from_xy(0, 0, 800, 600);
+    let target = Rect::from_xy(400, 200, 800, 600);
+
+    assert_eq!(
+      discard_bits_if_resized(Some(&current), &target),
+      SET_WINDOW_POS_FLAGS(0)
+    );
+  }
+
+  #[test]
+  fn discard_bits_if_resized_discards_bits_on_a_resize() {
+    let current = Rect::from_xy(0, 0, 800, 600);
+
+    for target in [
+      Rect::from_xy(0, 0, 1600, 600),
+      Rect::from_xy(0, 0, 800, 300),
+      Rect::from_xy(100, 100, 400, 900),
+    ] {
+      assert_eq!(
+        discard_bits_if_resized(Some(&current), &target),
+        SWP_NOCOPYBITS
+      );
+    }
+  }
+
+  #[test]
+  fn discard_bits_if_resized_discards_bits_when_size_is_unknown() {
+    let target = Rect::from_xy(0, 0, 800, 600);
+
+    assert_eq!(discard_bits_if_resized(None, &target), SWP_NOCOPYBITS);
+  }
+}

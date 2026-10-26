@@ -467,8 +467,8 @@ fn commit_pending_cloaks(
   border_batch: SurrogateBatch,
 ) {
   use wm_platform::{
-    SWP_ASYNCWINDOWPOS, SWP_FRAMECHANGED, SWP_NOACTIVATE,
-    SWP_NOSENDCHANGING, SWP_NOZORDER,
+    discard_bits_if_resized, SWP_ASYNCWINDOWPOS, SWP_FRAMECHANGED,
+    SWP_NOACTIVATE, SWP_NOSENDCHANGING, SWP_NOZORDER,
   };
 
   if pending.is_empty() {
@@ -549,10 +549,13 @@ fn commit_pending_cloaks(
     };
 
     if let Some(swp_flags) = swp_flags {
-      let _ =
-        window
-          .native()
-          .set_window_pos(&z_order, &target_rect, swp_flags);
+      let current = window.native().frame_with_shadows().ok();
+      let _ = window.native().set_window_pos(
+        &z_order,
+        &target_rect,
+        swp_flags
+          | discard_bits_if_resized(current.as_ref(), &target_rect),
+      );
     }
 
     // Mark the session cloaked so subsequent Frozen ticks skip the
@@ -1973,8 +1976,9 @@ fn reposition_window(
     #[cfg(target_os = "windows")]
     {
       use wm_platform::{
-        SWP_ASYNCWINDOWPOS, SWP_FRAMECHANGED, SWP_NOACTIVATE,
-        SWP_NOCOPYBITS, SWP_NOSENDCHANGING, WS_MAXIMIZEBOX,
+        discard_bits_if_resized, SWP_ASYNCWINDOWPOS, SWP_FRAMECHANGED,
+        SWP_NOACTIVATE, SWP_NOCOPYBITS, SWP_NOSENDCHANGING,
+        WS_MAXIMIZEBOX,
       };
 
       // Restore window if it's minimized/maximized and shouldn't be. This
@@ -2018,13 +2022,11 @@ fn reposition_window(
       // needs no call at all. That also spares it the `SWP_FRAMECHANGED`
       // below, which can show a semi-transparent window solid for a frame
       // right before it disappears, e.g. as a workspace switch begins.
+      let current_frame = window.native().frame_with_shadows().ok();
       let already_at_rect = (is_visible
         || config.value.general.hide_method == HideMethod::Cloak)
         && !window.has_pending_dpi_adjustment()
-        && window
-          .native()
-          .frame_with_shadows()
-          .is_ok_and(|frame| &frame == rect);
+        && current_frame.as_ref() == Some(rect);
 
       // During animation frames, omit `SWP_ASYNCWINDOWPOS` so that
       // adjacent windows are repositioned synchronously. This keeps
@@ -2034,21 +2036,19 @@ fn reposition_window(
       // appears when async repositioning lags one frame behind the
       // surrogate.
       //
-      // `SWP_NOCOPYBITS` is only added for that same surrogate case:
+      // `SWP_NOCOPYBITS` is always added for that same surrogate case:
       // without it, DWM can briefly show the window's old bitmap
       // stretched/offset over the new rect for one frame while it
-      // catches up to the surrogate. Applying it unconditionally
-      // would force a full repaint on every reposition -- including
-      // live interactive drag-resizing and plain sibling-window
-      // reflows that never had a surrogate or a gap to
-      // close -- which is needless repaint cost on the target app's own
-      // thread and a real source of resize/move lag.
+      // catches up to the surrogate. Otherwise only when the size
+      // changes (see `discard_bits_if_resized`): a pure move keeps its
+      // still-correct pixels and spares the app a repaint.
       let mut swp_flags = SWP_NOACTIVATE
         | SWP_NOSENDCHANGING
         | if has_surrogate {
           SWP_NOCOPYBITS
         } else {
           SWP_ASYNCWINDOWPOS
+            | discard_bits_if_resized(current_frame.as_ref(), rect)
         };
       let sync_reposition_start = has_surrogate.then(Instant::now);
       let swp_scope = perf::scope(Stage::RepositionSwp);

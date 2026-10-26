@@ -63,9 +63,9 @@ use super::{
   SENT_KEY_MARKER,
 };
 use crate::{
-  window_class, Color, CornerStyle, Delta, Dispatcher, Key, KeyCode,
-  LengthValue, OpacityValue, Point, Rect, RectDelta, WindowId,
-  WindowZOrder,
+  discard_bits_if_resized, window_class, Color, CornerStyle, Delta,
+  Dispatcher, Key, KeyCode, LengthValue, OpacityValue, Point, Rect,
+  RectDelta, WindowId, WindowZOrder,
 };
 
 /// Magic number used to identify programmatic mouse inputs from our own
@@ -227,6 +227,8 @@ impl NativeWindow {
 
   /// Implements [`NativeWindow::set_frame`].
   pub(crate) fn set_frame(&self, rect: &Rect) -> crate::Result<()> {
+    let current = self.frame_with_shadows().ok();
+
     unsafe {
       SetWindowPos(
         self.hwnd(),
@@ -239,7 +241,8 @@ impl NativeWindow {
           | SWP_NOZORDER
           | SWP_NOSENDCHANGING
           | SWP_ASYNCWINDOWPOS
-          | SWP_FRAMECHANGED,
+          | SWP_FRAMECHANGED
+          | discard_bits_if_resized(current.as_ref(), rect),
       )
     }?;
 
@@ -260,9 +263,12 @@ impl NativeWindow {
         0,
         width,
         height,
+        // The old pixels are at the old size; see
+        // `discard_bits_if_resized`.
         SWP_NOACTIVATE
           | SWP_NOZORDER
           | SWP_NOMOVE
+          | SWP_NOCOPYBITS
           | SWP_NOSENDCHANGING
           | SWP_ASYNCWINDOWPOS
           | SWP_FRAMECHANGED,

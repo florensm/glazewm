@@ -19,8 +19,9 @@ use windows::{
     },
     UI::WindowsAndMessaging::{
       GetWindowRect, GetWindowThreadProcessId, IsIconic, IsWindow,
-      IsWindowVisible, SetWindowPos, SWP_ASYNCWINDOWPOS, SWP_FRAMECHANGED,
-      SWP_NOACTIVATE, SWP_NOSENDCHANGING, SWP_NOZORDER,
+      IsWindowVisible, SetWindowPos, SET_WINDOW_POS_FLAGS,
+      SWP_ASYNCWINDOWPOS, SWP_FRAMECHANGED, SWP_NOACTIVATE,
+      SWP_NOSENDCHANGING, SWP_NOZORDER,
     },
   },
 };
@@ -92,9 +93,10 @@ fn process_name_for_warning(hwnd: HWND) -> Option<String> {
 }
 
 use crate::{
-  native_surrogate::to_logical, platform_impl::NativeWindow, window_class,
-  BackdropOverlayParams, BorderOverlayParams, Color, CornerStyle,
-  NativeSurrogate, Rect, SurrogateBatch,
+  discard_bits_if_resized, native_surrogate::to_logical,
+  platform_impl::NativeWindow, window_class, BackdropOverlayParams,
+  BorderOverlayParams, Color, CornerStyle, NativeSurrogate, Rect,
+  SurrogateBatch,
 };
 
 /// Options for [`ResizeSession::begin`].
@@ -796,7 +798,8 @@ impl ResizeSession {
           | SWP_NOSENDCHANGING
           | SWP_NOZORDER
           | SWP_ASYNCWINDOWPOS
-          | SWP_FRAMECHANGED,
+          | SWP_FRAMECHANGED
+          | self.discard_bits_for(&self.target_rect),
       );
     }
 
@@ -818,6 +821,13 @@ impl ResizeSession {
         );
       }
     }
+  }
+
+  /// `SWP_NOCOPYBITS` if moving the real window to `target` resizes it.
+  /// See [`discard_bits_if_resized`].
+  fn discard_bits_for(&self, target: &Rect) -> SET_WINDOW_POS_FLAGS {
+    let current = NativeWindow::new(self.hwnd).frame_with_shadows().ok();
+    discard_bits_if_resized(current.as_ref(), target)
   }
 
   /// Converges the thumbnail registration toward the target dims as the
@@ -1051,7 +1061,8 @@ impl ResizeSession {
               | SWP_NOSENDCHANGING
               | SWP_NOZORDER
               | SWP_ASYNCWINDOWPOS
-              | SWP_FRAMECHANGED,
+              | SWP_FRAMECHANGED
+              | self.discard_bits_for(new_target),
           );
         }
         // Cap the registration at the per-axis minimum of its current dims
@@ -1196,7 +1207,8 @@ impl ResizeSession {
           SWP_NOACTIVATE
             | SWP_NOSENDCHANGING
             | SWP_NOZORDER
-            | SWP_ASYNCWINDOWPOS,
+            | SWP_ASYNCWINDOWPOS
+            | self.discard_bits_for(&self.target_rect),
         );
       }
       return false;
@@ -1325,7 +1337,8 @@ impl ResizeSession {
         SWP_NOACTIVATE
           | SWP_NOSENDCHANGING
           | SWP_NOZORDER
-          | SWP_ASYNCWINDOWPOS,
+          | SWP_ASYNCWINDOWPOS
+          | self.discard_bits_for(&self.target_rect),
       )
     }?;
 
