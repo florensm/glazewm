@@ -1,5 +1,6 @@
-//! Text for the WM's own pictures (the overview's, so far), laid out and
-//! rasterized by DirectWrite, the way modern Windows apps draw theirs.
+//! Text for the WM's own pictures (the overview's and the stack tab
+//! bars'), laid out and rasterized by DirectWrite, the way modern Windows
+//! apps draw theirs.
 //!
 //! Text is drawn white on black into a scratch bitmap through a Direct2D
 //! DC render target, with grayscale anti-aliasing so its coverage can be

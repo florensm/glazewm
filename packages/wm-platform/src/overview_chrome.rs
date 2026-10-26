@@ -8,20 +8,17 @@
 //! edges. GDI can't draw onto translucent pixels, so text and icons are
 //! drawn opaquely into scratch bitmaps first and blended in.
 
-use windows::Win32::{
-  Foundation::HWND,
-  UI::WindowsAndMessaging::{DrawIconEx, DI_NORMAL, HICON},
-};
+use windows::Win32::Foundation::HWND;
 
 use crate::{
   overview_layout::{
     CardLook, CardMetrics, Placement, RectF, LABEL_HEIGHT,
   },
   overview_state::{SearchField, ShortcutGroup},
-  paint,
   surface::Surface,
   text::{draw_text, is_installed, text_width, Align, Font, Fonts},
-  window_icons, Color, CornerRadii, OverviewStyle, Rect,
+  window_icons::draw_window_icon,
+  Color, CornerRadii, OverviewStyle, Rect,
 };
 
 /// Height and font size of the title strip under a window on a card.
@@ -1347,51 +1344,6 @@ fn round(length: f32) -> i32 {
 #[allow(clippy::cast_precision_loss)]
 fn to_f32(pixels: i32) -> f32 {
   pixels as f32
-}
-
-/// Blends the icon of window `hwnd` into `rect` of `surface`.
-fn draw_window_icon(
-  surface: &mut Surface,
-  hwnd: isize,
-  rect: &Rect,
-  opacity: f32,
-  (notify, notify_msg): (HWND, u32),
-) {
-  let size = rect.width().min(rect.height());
-  let Some(icon) = window_icons::icon_for(hwnd, notify, notify_msg) else {
-    return;
-  };
-  let Some(pixels) = draw_icon(icon, size) else {
-    return;
-  };
-
-  surface
-    .canvas()
-    .draw_premultiplied(rect.left, rect.top, &pixels, size, opacity);
-}
-
-/// Premultiplied pixels of `icon` drawn at `size` x `size`.
-///
-/// Icons carry their transparency in a mask GDI won't hand over, so the
-/// icon is drawn onto black and onto white and the difference recovered.
-fn draw_icon(icon: HICON, size: i32) -> Option<Vec<u32>> {
-  let draw_on = |background: u32| -> Option<Vec<u32>> {
-    let mut scratch = Surface::new(size, size)?;
-    scratch.pixels().fill(background);
-
-    // SAFETY: `scratch` owns a valid DC and `icon` is a cached copy that
-    // outlives the call.
-    unsafe {
-      DrawIconEx(scratch.dc, 0, 0, icon, size, size, 0, None, DI_NORMAL)
-        .ok()?;
-    }
-
-    Some(scratch.pixels().to_vec())
-  };
-
-  let on_black = draw_on(0)?;
-  let on_white = draw_on(0x00ff_ffff)?;
-  Some(paint::matte_from_backgrounds(&on_black, &on_white))
 }
 
 #[cfg(test)]

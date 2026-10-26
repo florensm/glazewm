@@ -1,4 +1,5 @@
-//! Icons of managed windows, fetched off the UI thread.
+//! Icons of managed windows, fetched off the UI thread and drawn into the
+//! WM's own pictures.
 //!
 //! Apps such as WPF set their icon with `WM_SETICON`, so the class icon is
 //! often empty and the real one has to be asked for with `WM_GETICON`.
@@ -20,11 +21,14 @@ use std::{
 use windows::Win32::{
   Foundation::{HWND, LPARAM, WPARAM},
   UI::WindowsAndMessaging::{
-    CopyIcon, DestroyIcon, GetClassLongPtrW, IsWindow, PostMessageW,
-    SendMessageTimeoutW, GCLP_HICON, GCLP_HICONSM, HICON, ICON_BIG,
-    ICON_SMALL, ICON_SMALL2, SMTO_ABORTIFHUNG, SMTO_BLOCK, WM_GETICON,
+    CopyIcon, DestroyIcon, DrawIconEx, GetClassLongPtrW, IsWindow,
+    PostMessageW, SendMessageTimeoutW, DI_NORMAL, GCLP_HICON,
+    GCLP_HICONSM, HICON, ICON_BIG, ICON_SMALL, ICON_SMALL2,
+    SMTO_ABORTIFHUNG, SMTO_BLOCK, WM_GETICON,
   },
 };
+
+use crate::{paint, surface::Surface, Rect};
 
 /// How long an app gets to answer `WM_GETICON`.
 const ICON_TIMEOUT_MS: u32 = 100;
@@ -130,6 +134,52 @@ pub(crate) fn icon_for(
   }
 
   class_icon(HWND(window))
+}
+
+/// Blends the icon of window `hwnd` into `rect` of `surface`. `notify` is
+/// as for `icon_for`.
+pub(crate) fn draw_window_icon(
+  surface: &mut Surface,
+  hwnd: isize,
+  rect: &Rect,
+  opacity: f32,
+  (notify, notify_msg): (HWND, u32),
+) {
+  let size = rect.width().min(rect.height());
+  let Some(icon) = icon_for(hwnd, notify, notify_msg) else {
+    return;
+  };
+  let Some(pixels) = draw_icon(icon, size) else {
+    return;
+  };
+
+  surface
+    .canvas()
+    .draw_premultiplied(rect.left, rect.top, &pixels, size, opacity);
+}
+
+/// Premultiplied pixels of `icon` drawn at `size` x `size`.
+///
+/// Icons carry their transparency in a mask GDI won't hand over, so the
+/// icon is drawn onto black and onto white and the difference recovered.
+fn draw_icon(icon: HICON, size: i32) -> Option<Vec<u32>> {
+  let draw_on = |background: u32| -> Option<Vec<u32>> {
+    let mut scratch = Surface::new(size, size)?;
+    scratch.pixels().fill(background);
+
+    // SAFETY: `scratch` owns a valid DC and `icon` is a cached copy that
+    // outlives the call.
+    unsafe {
+      DrawIconEx(scratch.dc, 0, 0, icon, size, size, 0, None, DI_NORMAL)
+        .ok()?;
+    }
+
+    Some(scratch.pixels().to_vec())
+  };
+
+  let on_black = draw_on(0)?;
+  let on_white = draw_on(0x00ff_ffff)?;
+  Some(paint::matte_from_backgrounds(&on_black, &on_white))
 }
 
 /// Drops the cached icon of `window`, so it is fetched again next time
