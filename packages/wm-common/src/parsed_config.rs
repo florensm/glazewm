@@ -1459,41 +1459,19 @@ pub struct AnimationsConfig {
   ///
   /// Only has an effect on Windows.
   pub window_close: WindowCloseConfig,
-
-  /// Which windows keep their effect overlays tracking during an
-  /// animation.
-  ///
-  /// # Platform-specific
-  ///
-  /// Only has an effect on Windows.
-  pub overlay_tracking: OverlayTracking,
 }
 
-/// Which animating windows keep their backdrop and border overlays glued
-/// to them for the duration of an animation.
-///
-/// Every animating window is composited as three windows, not one: the
-/// surrogate thumbnail plus a backdrop overlay and a border overlay, each
-/// repositioned every frame. Since the animation is bound by how many
-/// surfaces DWM has to absorb, this is the largest lever available -- a
-/// measured 2.1x between borders on every window and borders on the
-/// focused window only.
-///
-/// Only affects windows *while they animate*; the static overlays are
-/// restored by the normal sync pass as soon as the animation ends, so the
-/// at-rest appearance is unchanged.
-#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum OverlayTracking {
-  /// Track every animating window's overlays. Smoothest at rest, most
-  /// expensive in motion.
-  #[default]
-  All,
-  /// Track only the focused window's overlays; other windows animate
-  /// without theirs.
-  FocusedOnly,
-  /// Track none of them; all overlays are hidden for the animation.
-  None,
+impl AnimationsConfig {
+  /// Whether any animation is enabled.
+  #[must_use]
+  pub fn is_any_enabled(&self) -> bool {
+    self.window_move.enabled
+      || self.scroll.enabled
+      || self.window_resize.enabled
+      || self.window_open.enabled
+      || self.workspace_switch.enabled
+      || self.window_close.enabled
+  }
 }
 
 impl Default for AnimationsConfig {
@@ -1509,7 +1487,6 @@ impl Default for AnimationsConfig {
       window_open: WindowOpenConfig::default(),
       workspace_switch: WorkspaceSwitchAnimationConfig::default(),
       window_close: WindowCloseConfig::default(),
-      overlay_tracking: OverlayTracking::default(),
     }
   }
 }
@@ -1543,17 +1520,6 @@ pub enum WindowTransitionStyle {
   /// Zoom in/out from the window center. Combine with
   /// `opacity_from`/`opacity_to` to also fade while zooming.
   Zoom,
-}
-
-impl WindowTransitionStyle {
-  /// Returns `true` when the style has no positional slide component.
-  ///
-  /// Stationary styles keep the surrogate at the window's final position
-  /// for the full animation; the surrogate window itself never moves.
-  #[must_use]
-  pub fn is_stationary(&self) -> bool {
-    matches!(self, Self::None | Self::Zoom)
-  }
 }
 
 /// Resolved parameters for a one-shot window transition.
@@ -1784,8 +1750,6 @@ pub struct WindowResizeConfig {
   /// Minimum pixel distance required to trigger resize animations.
   /// Increase this value on high-DPI displays to reduce sensitivity.
   pub threshold_px: u32,
-  /// How a window's content is shown while its size animates.
-  pub style: ResizeStyle,
 }
 
 impl Default for WindowResizeConfig {
@@ -1795,26 +1759,8 @@ impl Default for WindowResizeConfig {
       duration_ms: 150,
       easing: EasingFunction::CubicBezier(0.42, 0.0, 0.58, 1.0),
       threshold_px: 10,
-      style: ResizeStyle::default(),
     }
   }
-}
-
-/// How a window's content is shown while its size animates.
-#[derive(
-  Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq,
-)]
-#[serde(rename_all = "snake_case")]
-pub enum ResizeStyle {
-  /// Content stays at its real size: a growing window reveals it as the
-  /// app catches up, with the uncovered strip filled in the window's
-  /// sampled edge color; a shrinking one is clipped. The real window is
-  /// resized late in the animation.
-  #[default]
-  Fill,
-  /// Content is scaled to the animated size. The real window is sent its
-  /// final size on the first frame, and no edge color is sampled.
-  Stretch,
 }
 
 /// Easing function for animations.

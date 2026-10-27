@@ -112,12 +112,12 @@ impl WindowManager {
     );
     state.populate(config)?;
 
-    // The first switch played on a scene would otherwise wait for the
-    // scene's device to be created, D3D included.
+    // The first animation would otherwise wait for the scenes' device to
+    // be created, D3D included.
     #[cfg(target_os = "windows")]
-    if config.value.animations.workspace_switch.enabled {
+    if config.value.animations.is_any_enabled() {
       if let Err(err) = wm_platform::NativeScene::prepare() {
-        tracing::warn!("Workspace switches can't play on scenes: {err}");
+        tracing::warn!("Animations can't play on scenes: {err}");
       }
     }
 
@@ -426,9 +426,6 @@ impl WindowManager {
             "Close animation of {id} did not finish; closing it now."
           );
 
-          // Dropped so that a late finish can't close the window again
-          // after it has been put back.
-          state.animation_manager.remove_animation(&id);
           state.backdrop_overlays.remove(&id);
           state.border_overlays.remove(&id);
 
@@ -640,9 +637,9 @@ impl WindowManager {
     }
 
     // Start animation timer if animations were created by a command (e.g.
-    // startup commands or IPC commands). Without this, surrogate
-    // animations started outside of the platform event loop would
-    // never tick, leaving windows permanently cloaked.
+    // startup commands or IPC commands). Without this, scenes started
+    // outside of the platform event loop would never tick, leaving their
+    // monitors covered.
     self.state.animation_manager.ensure_timer_running();
 
     Ok(new_subject_container_id)

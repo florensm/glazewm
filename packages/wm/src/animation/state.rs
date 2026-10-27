@@ -4,7 +4,7 @@ use std::{
 };
 
 use wm_common::{EasingFunction, SpringParams};
-use wm_platform::{OpacityValue, Rect};
+use wm_platform::Rect;
 
 use crate::animation::engine::{animation_progress_at, apply_easing};
 
@@ -13,7 +13,6 @@ use crate::animation::engine::{animation_progress_at, apply_easing};
 ///
 /// Kept below one pixel so the single-frame snap from the early-completion
 /// position to the exact target is imperceptible for any travel distance.
-/// Mirrors `WS_COMPLETE_THRESHOLD_PX` used by the workspace-switch driver.
 const COMPLETE_THRESHOLD_PX: f32 = 1.0;
 
 /// Time over which `matching_slope` measures an animation's speed.
@@ -31,34 +30,22 @@ const MAX_SPRING_VELOCITY: f32 = 40.0;
 /// initial slope is set through.
 const MIN_CONTROL_X: f32 = 0.05;
 
-/// State of an individual window animation.
+/// The timing and easing of a motion from one rect to another.
 #[derive(Clone, Debug)]
 pub struct WindowAnimationState {
-  /// Time of the first rendered frame, set by [`start_clock`].
-  ///
-  /// Progress reads as 0.0 until then. The relayout that creates an
-  /// animation also evaluates it, but its first tick only lands after
-  /// that relayout's session setup and cloaking -- measured ~70ms on a
-  /// 150ms resize. Anchoring the clock at that first evaluation made the
-  /// first visible frame jump to ~80% eased progress.
+  /// When the motion started, set by [`start_clock`]. Progress reads as
+  /// 0.0 until then.
   ///
   /// [`start_clock`]: WindowAnimationState::start_clock
   start_time: Cell<Option<Instant>>,
-  /// Time to wait before advancing progress.
-  ///
-  /// Used for staggered workspace-switch animations where each window
-  /// starts at a different offset within the shared duration window.
+  /// Time to wait before advancing progress, e.g. for a new window to
+  /// paint before it enters.
   pub start_delay: Duration,
   pub duration: Duration,
   pub easing: EasingFunction,
 
-  // Position animation.
   pub start_rect: Rect,
   pub target_rect: Rect,
-
-  // Opacity animation; `None` when fade is disabled.
-  pub start_opacity: Option<OpacityValue>,
-  pub target_opacity: Option<OpacityValue>,
 }
 
 impl WindowAnimationState {
@@ -81,32 +68,20 @@ impl WindowAnimationState {
       easing,
       start_rect,
       target_rect,
-      start_opacity: None,
-      target_opacity: None,
     }
   }
 
   /// Starts the animation clock at `now`, unless it is already running.
-  ///
-  /// Called by every animation tick before anything is rendered, so the
-  /// clock starts on the first frame that is actually shown.
   pub fn start_clock(&self, now: Instant) {
     if self.start_time.get().is_none() {
       self.start_time.set(Some(now));
     }
   }
 
-  /// Gets the eased progress in [0.0, 1.0] at an explicit `now` instant.
-  ///
-  /// Allows callers to supply a predictive timestamp (e.g. vsync wake-up
-  /// time plus an estimated pipeline offset) so the computed position
-  /// aligns with the DWM composition event rather than the moment this
-  /// code runs.
+  /// Gets the eased progress in [0.0, 1.0] at `now`.
   ///
   /// `start_delay` is applied before the duration window begins: if
   /// `elapsed < start_delay`, returns 0.0 without advancing the animation.
-  /// All windows initialized on the same tick share the same `start_time`,
-  /// so staggering is purely a function of each window's `start_delay`.
   ///
   /// Non-overshooting curves snap to 1.0 at 99% eased progress to avoid
   /// the "stuck at destination" look. Overshooting curves run to full
@@ -144,8 +119,7 @@ impl WindowAnimationState {
       // sub-pixel regardless of travel distance: a fixed `eased >=
       // 0.99` would snap ~1% of the travel, which is imperceptible
       // for a short move but a visible 10-20px jump at the end of an
-      // open/close slide spanning a whole window dimension. Mirrors
-      // `WS_COMPLETE_THRESHOLD_PX` in the workspace-switch driver.
+      // open/close slide spanning a whole window dimension.
       let max_travel = self.max_travel_px();
       if max_travel > 0.0 {
         (1.0 - eased) * max_travel <= COMPLETE_THRESHOLD_PX
@@ -159,27 +133,6 @@ impl WindowAnimationState {
       1.0
     } else {
       eased
-    }
-  }
-
-  /// Gets the eased progress in [0.0, 1.0], snapping to 1.0 when complete.
-  pub fn eased_progress(&self) -> f32 {
-    self.eased_progress_at(Instant::now())
-  }
-
-  /// Remaining wall-clock time until the animation's duration window
-  /// elapses at `now`.
-  ///
-  /// Returns the full `start_delay + duration` when the animation has not
-  /// rendered its first frame yet (`start_time` unset). Used to schedule
-  /// the mid-animation handoff of the real window to its final rect.
-  // LINT: Only the Windows surrogate driver hands off mid-animation.
-  #[cfg_attr(not(target_os = "windows"), allow(dead_code))]
-  pub fn remaining_at(&self, now: Instant) -> Duration {
-    match self.start_time.get() {
-      Some(start) => (start + self.start_delay + self.duration)
-        .saturating_duration_since(now),
-      None => self.start_delay + self.duration,
     }
   }
 
@@ -216,7 +169,7 @@ impl WindowAnimationState {
     easing: EasingFunction,
     now: Instant,
   ) -> Self {
-    let (current, _) = self.current_state_at(now);
+    let current = self.current_rect_at(now);
 
     let easing = match easing {
       EasingFunction::CubicBezier(x1, _, x2, y2) => {
@@ -306,56 +259,17 @@ impl WindowAnimationState {
       / 1000.0
   }
 
-  /// Whether the animation has completed.
-  pub fn is_complete(&self) -> bool {
-    self.is_complete_at(Instant::now())
-  }
-
   /// Whether the animation has completed at `now`.
   #[allow(clippy::float_cmp)]
   pub fn is_complete_at(&self, now: Instant) -> bool {
     self.eased_progress_at(now) == 1.0
   }
 
-  /// Gets the interpolated rect at the current animation progress.
-  // LINT: Only the Windows surrogate driver reads it.
-  #[cfg_attr(not(target_os = "windows"), allow(dead_code))]
-  pub fn current_rect(&self) -> Rect {
+  /// The rect the animation is at, at `now`.
+  pub fn current_rect_at(&self, now: Instant) -> Rect {
     self
       .start_rect
-      .interpolate(&self.target_rect, self.eased_progress())
-  }
-
-  /// Gets the interpolated rect and opacity in a single call.
-  ///
-  /// Prefer this over separate `current_rect` + `current_opacity` calls
-  /// when both values are needed in the same frame — `eased_progress`
-  /// (which runs a Newton-Raphson solve) is computed only once.
-  // LINT: Only the Windows surrogate driver reads both at once.
-  #[cfg_attr(not(target_os = "windows"), allow(dead_code))]
-  pub fn current_state(&self) -> (Rect, Option<OpacityValue>) {
-    self.current_state_at(Instant::now())
-  }
-
-  /// Gets the interpolated rect and opacity at an explicit `now` instant.
-  ///
-  /// Like [`current_state`], but evaluates progress at a caller-supplied
-  /// predictive timestamp (e.g. a vsync wake-up led forward by a fraction
-  /// of a frame) so the computed position aligns with the next DWM
-  /// composition rather than the moment this code runs.
-  ///
-  /// [`current_state`]: WindowAnimationState::current_state
-  pub fn current_state_at(
-    &self,
-    now: Instant,
-  ) -> (Rect, Option<OpacityValue>) {
-    let progress = self.eased_progress_at(now);
-    let rect = self.start_rect.interpolate(&self.target_rect, progress);
-    let opacity = match (&self.start_opacity, &self.target_opacity) {
-      (Some(start), Some(end)) => Some(start.interpolate(end, progress)),
-      _ => None,
-    };
-    (rect, opacity)
+      .interpolate(&self.target_rect, self.eased_progress_at(now))
   }
 }
 
@@ -476,7 +390,7 @@ mod tests {
     anim.start_clock(t0);
     let now = t0 + Duration::from_millis(40);
 
-    let (current, _) = anim.current_state_at(now);
+    let current = anim.current_rect_at(now);
     let target = Rect::from_xy(current.x() + 1_000, 0, 100, 100);
     let retargeted = anim.retargeted(target, 200, spring(), now);
 
@@ -515,7 +429,7 @@ mod tests {
     anim.start_clock(t0);
     let now = t0 + Duration::from_millis(40);
 
-    let (current, _) = anim.current_state_at(now);
+    let current = anim.current_rect_at(now);
     let to = |distance| Rect::from_xy(current.x() + distance, 0, 100, 100);
     let first = anim.retargeted(to(1_000), 200, spring(), now);
     let second = first.retargeted(to(2_000), 200, spring(), now);
@@ -547,7 +461,7 @@ mod tests {
     anim.start_clock(t0);
     let now = t0 + Duration::from_millis(40);
 
-    let (current, _) = anim.current_state_at(now);
+    let current = anim.current_rect_at(now);
     let back = Rect::from_xy(0, 0, 100, 100);
 
     let EasingFunction::Spring(params) =

@@ -72,7 +72,6 @@ fn reconcile_shown_tab(
   if !is_inactive_stack_child(window)
     || !is_hidden
     || !is_on_displayed_workspace
-    || state.animation_manager.has_active_surrogate(&window.id())
     || !window.native().is_visible().unwrap_or(false)
   {
     return Ok(false);

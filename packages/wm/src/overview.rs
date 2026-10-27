@@ -20,7 +20,7 @@ use wm_platform::{
 
 use crate::{
   commands::{
-    general::{surrogate_effects_for, SyncableOverlay},
+    general::{effects_for, SyncableOverlay},
     workspace::{activate_workspace, summon_special_workspace},
   },
   layout::{is_hidden_in_layout, scrolling},
@@ -482,8 +482,7 @@ struct WindowLook {
 impl WindowLooks {
   fn new(state: &WmState, config: &UserConfig) -> Self {
     let look = |is_focused| {
-      let (opacity, _, backdrop, border) =
-        surrogate_effects_for(is_focused, config);
+      let (opacity, _, backdrop, border) = effects_for(is_focused, config);
       WindowLook {
         opacity,
         backdrop,

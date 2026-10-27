@@ -49,23 +49,19 @@ pub use native_drop_indicator::NativeDropIndicator;
 #[cfg(target_os = "windows")]
 mod companion;
 #[cfg(target_os = "windows")]
-mod native_surrogate;
+mod dwm_thumbnail;
 #[cfg(target_os = "windows")]
 mod overlay_window;
 #[cfg(target_os = "windows")]
-pub use native_surrogate::{NativeSurrogate, SurrogateBatch};
-#[cfg(target_os = "windows")]
 pub use overlay_window::Overlay;
+#[cfg(target_os = "windows")]
+mod window_batch;
+#[cfg(target_os = "windows")]
+pub use window_batch::WindowBatch;
 #[cfg(target_os = "windows")]
 mod window_peek;
 #[cfg(target_os = "windows")]
 pub use window_peek::WindowPeek;
-#[cfg(target_os = "windows")]
-mod resize_session;
-#[cfg(target_os = "windows")]
-pub use resize_session::{
-  sample_edge_color_async, EdgeColorCache, ResizeSession, SessionOptions,
-};
 #[cfg(target_os = "windows")]
 mod backdrop_canvas;
 #[cfg(target_os = "windows")]
@@ -122,7 +118,7 @@ pub use thread_bound::*;
 pub use window_listener::*;
 /// Stops Windows from creating "ghost" windows for this process.
 ///
-/// Every overlay and surrogate window is created on the WM's own thread,
+/// Every overlay, peek and scene window is created on the WM's own thread,
 /// which runs a Tokio loop and only handles sent messages (see
 /// [`process_sent_messages`]), never posted input. Windows judges a window
 /// whose input goes unread to be hung (see `NativeBackdropOverlay`'s
@@ -131,9 +127,9 @@ pub use window_listener::*;
 /// own — the "Not Responding" stand-in — and that ghost is a real,
 /// hit-testable window owned by user32, so the `WS_EX_TRANSPARENT` that
 /// makes our own overlays click-through does not apply to it. A ghost
-/// standing in for a full-screen surrogate swallows mouse input across the
-/// desktop, including the taskbar, while the keyboard hook keeps working
-/// because it is global and never reaches a window at all.
+/// standing in for a scene covering a monitor swallows mouse input across
+/// the desktop, including the taskbar, while the keyboard hook keeps
+/// working because it is global and never reaches a window at all.
 ///
 /// Call once, before any window is created. On non-Windows platforms this
 /// is a no-op.
@@ -151,9 +147,9 @@ pub fn disable_window_ghosting() {
 /// leaving posted messages (input, paint) queued.
 ///
 /// The WM's own thread runs a Tokio loop rather than a message loop, yet
-/// owns every overlay and surrogate window. Without this, a thread sending
-/// to one of them -- e.g. an app broadcasting `WM_SETTINGCHANGE` with
-/// `SendMessage` -- blocks until the WM happens to pump, and Windows
+/// owns every overlay, peek and scene window. Without this, a thread
+/// sending to one of them -- e.g. an app broadcasting `WM_SETTINGCHANGE`
+/// with `SendMessage` -- blocks until the WM happens to pump, and Windows
 /// reports the WM as not responding after 5 seconds. On non-Windows
 /// platforms this is a no-op.
 pub fn process_sent_messages() {
@@ -182,8 +178,8 @@ pub fn process_sent_messages() {
 
 /// Waits for the next DWM composition frame to complete.
 ///
-/// Used to synchronize animation ticks to vsync so surrogate updates reach
-/// the compositor on every rendered frame without timer-resolution jitter.
+/// Used to pace animation ticks to the compositor's frames without
+/// timer-resolution jitter.
 /// On non-Windows platforms this is a no-op.
 pub fn dwm_flush() {
   let _scope = perf::scope(perf::Stage::DwmFlush);

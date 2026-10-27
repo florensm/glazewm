@@ -100,8 +100,8 @@ const VIGNETTE_SIZE: u32 = 256;
 const OWN_CLASS_PREFIX: &str = "GlazeWM_";
 
 /// The WM's own windows a scene copies: what it draws around and behind
-/// windows. Its others stand in for windows (surrogates, peeks) or cover
-/// the screen (the overview), and are left out.
+/// windows. Its others stand in for windows (peeks) or cover the screen
+/// (scenes, the overview), and are left out.
 const COPIED_OWN_CLASSES: [&str; 3] = [
   "GlazeWM_BorderOverlay",
   "GlazeWM_BackdropOverlay",

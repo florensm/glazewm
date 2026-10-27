@@ -457,24 +457,9 @@ const CATCH_UP_BUDGET: Duration = Duration::from_millis(4);
 /// iteration costs a handful of non-blocking channel polls.
 ///
 /// What a person is waiting on comes first: keybindings, IPC commands,
-/// and tab bar and overview clicks. These run the same commands a
-/// keybinding does, so they are safe at any time.
-///
-/// # Why the workspace-switch gate
-///
-/// Mouse, window and display handlers mutate layout state -- display
-/// states, workspace membership, floating placement, unmanagement -- and
-/// so do due auto-stack and closing-window timers, which manage windows.
-/// Resize and move animations are safe: `handle_window_moved_or_resized`
-/// bails out early for any window holding a `ResizeSession`, so those
-/// events cost a rect query and nothing more. A workspace-switch slide has
-/// no such guard on every path, and delivering these events mid-slide
-/// broke the animation and left workspaces reporting no windows.
-///
-/// So the gate is narrow on purpose: during a slide (and its one-tick
-/// cleanup) these wait for the `select!`. A slide is brief, so the
-/// responsiveness win during resizes -- which is where the queue actually
-/// backs up, ~195 events per burst -- is kept intact.
+/// and tab bar and overview clicks. Due timers and platform events follow.
+/// All are safe mid-animation: scenes play over windows already at their
+/// targets, and follow whatever changes beneath them next.
 fn catch_up_before_frame(
   wm: &mut WindowManager,
   config: &mut UserConfig,

@@ -2,11 +2,9 @@ use crate::Color;
 
 /// Tint, blur radius, corner radius, opacity, saturation and grading knobs
 /// for a `NativeBackdropOverlay`, bundled so the growing set of overlay
-/// knobs travels as one value through `SessionOptions`/`ResizeSession`/
-/// `upsert_overlay` instead of a same-typed positional-argument list
-/// that's easy to mis-order at the many call sites (static sync,
-/// workspace-switch, and move/resize/open/close tracking) that all thread
-/// the same values.
+/// knobs travels as one value through `upsert_overlay` and its callers
+/// instead of a same-typed positional-argument list that's easy to
+/// mis-order.
 ///
 /// Mirrors `BackdropEffectConfig`, which documents what each knob is for;
 /// only the differences from it are noted here. `corner_radius` is the one

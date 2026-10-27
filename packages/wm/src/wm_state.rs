@@ -845,17 +845,6 @@ fn cycle_neighbour<T>(
 
 impl Drop for WmState {
   fn drop(&mut self) {
-    // Commit all active resize sessions before cleaning up windows so that
-    // surrogate overlays are destroyed and windows are moved to their
-    // target positions. This prevents invisible or mispositioned
-    // windows after a crash or forced exit.
-    #[cfg(target_os = "windows")]
-    for session in self.animation_manager.drain_all_sessions() {
-      if let Err(err) = session.commit() {
-        warn!("Failed to commit resize session on shutdown: {:?}", err);
-      }
-    }
-
     // Windows held back for auto-stacking are cloaked but not managed.
     #[cfg(target_os = "windows")]
     for native_window in self.auto_stack.release_all() {
@@ -883,9 +872,9 @@ impl Drop for WmState {
       // Reset any effects on Windows.
       #[cfg(target_os = "windows")]
       {
-        // Uncloak before showing — a surrogate animation may have cloaked
-        // this window. Without this, the window stays invisible after
-        // exit.
+        // Uncloak before showing — a peek drawing it or a close playing on
+        // a scene may have cloaked this window. Without this, the window
+        // stays invisible after exit.
         let _ = window.native().set_cloaked(false);
 
         if let Err(err) = window.native().show() {

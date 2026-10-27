@@ -13,7 +13,7 @@ use windows::{
   },
 };
 
-use crate::{platform_impl::NativeWindow, window_class};
+use crate::window_class;
 
 /// Window property another app sets on its own overlay window to declare
 /// it the companion of the window it draws over (the value is that
@@ -25,10 +25,10 @@ use crate::{platform_impl::NativeWindow, window_class};
 /// show the companion in the window's place.
 const COMPANION_PROPERTY: PCWSTR = w!("shades.CompanionOf");
 
-/// How long a scan for companions is reused. A workspace switch creates a
-/// surrogate per window in one tick, which then costs one `EnumWindows`
-/// instead of one each; a companion appearing within this window is missed
-/// for the animation, which then shows the window itself.
+/// How long a scan for companions is reused. The overview and the scroll
+/// view look one up per window in one tick, which then costs one
+/// `EnumWindows` instead of one each; a companion appearing within this
+/// window is missed, and the window itself shown.
 const SNAPSHOT_TTL: Duration = Duration::from_millis(50);
 
 /// Every `(window, companion)` pair from a scan, and when it ran.
@@ -77,14 +77,6 @@ impl Companion {
 
   pub(crate) fn hwnd(self) -> HWND {
     HWND(self.hwnd)
-  }
-
-  /// Whether the companion is not on screen yet: hidden or cloaked.
-  pub(crate) fn is_off_screen(self) -> bool {
-    // SAFETY: A stale handle just returns false.
-    let is_visible = unsafe { IsWindowVisible(self.hwnd()) }.as_bool();
-    !is_visible
-      || NativeWindow::new(self.hwnd).is_cloaked().unwrap_or(false)
   }
 
   /// Maps a thumbnail's `(rcSource, rcDestination)`, with the source in

@@ -14,13 +14,8 @@ use crate::{
 };
 
 /// Detaches a closing window from the container tree and reflows its
-/// siblings without removing the active close animation.
-///
-/// Called at the start of a close animation so sibling windows begin their
-/// reflow animations immediately, in parallel with the close surrogate.
-/// The animation state is intentionally preserved here because
-/// `AnimationManager::update_internal` continues driving the surrogate and
-/// sends `WM_CLOSE` once the animation completes.
+/// siblings, in parallel with its close playing on a scene, which sends
+/// `WM_CLOSE` once played.
 ///
 /// The window stays tracked in `WmState::closing_windows` until its app
 /// acts on the close, so that it can be put back if the app keeps it open.
@@ -45,8 +40,6 @@ pub fn unmanage_window(
   window: WindowContainer,
   state: &mut WmState,
 ) -> anyhow::Result<()> {
-  state.animation_manager.remove_animation(&window.id());
-
   // Destroy any static backdrop/border overlay owned by this window
   // directly, rather than leaving it for `sync_overlays`'s retain-based
   // cleanup on the next `platform_sync`. That cleanup only runs when

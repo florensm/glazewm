@@ -159,6 +159,52 @@ impl EventKind {
   }
 }
 
+/// What a motion started on a scene plays.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MotionKind {
+  /// A window moving at its size.
+  Move,
+  /// A window changing size, drawn stretched with its border and tab bar
+  /// in slices, so costlier than a move.
+  Resize,
+  /// A new window entering.
+  Open,
+  /// A closing window leaving.
+  Close,
+  /// A workspace switch.
+  Switch,
+}
+
+impl MotionKind {
+  /// Every motion kind, in report order.
+  const ALL: [MotionKind; 5] = [
+    MotionKind::Move,
+    MotionKind::Resize,
+    MotionKind::Open,
+    MotionKind::Close,
+    MotionKind::Switch,
+  ];
+
+  /// Number of distinct motion kinds, i.e. the width of the accumulator.
+  const COUNT: usize = Self::ALL.len();
+
+  /// Dense index of this kind into the accumulator.
+  const fn index(self) -> usize {
+    self as usize
+  }
+
+  /// Short human-readable name used in the report.
+  const fn label(self) -> &'static str {
+    match self {
+      MotionKind::Move => "move",
+      MotionKind::Resize => "resize",
+      MotionKind::Open => "open",
+      MotionKind::Close => "close",
+      MotionKind::Switch => "switch",
+    }
+  }
+}
+
 /// Enqueue timestamps awaiting their matching dequeue, one queue per
 /// [`EventKind`].
 ///
@@ -183,16 +229,17 @@ static EVENT_QUEUE_OVERFLOW: [AtomicU32; EventKind::COUNT] =
 pub enum Stage {
   /// The whole animation tick (`AnimationManager::update_internal`).
   Tick,
-  /// A tick's work on the scenes playing workspace switches.
+  /// A tick's work on the scenes: retiring what played out and lifting
+  /// them.
   SceneTick,
   /// `platform_sync`, including everything nested below it.
   PlatformSync,
-  /// Covering a monitor with a scene before a switch beneath it, its
-  /// waits for compositions included.
+  /// Covering monitors with scenes before the sync changes anything
+  /// beneath them, their waits for compositions included.
   SceneCover,
-  /// Copying the incoming workspace onto the scene and starting it
-  /// moving.
-  SceneEnter,
+  /// Bringing the scenes in line with the synced state and starting their
+  /// motions.
+  ScenePlay,
   /// `redraw_containers`, including both stages below.
   Redraw,
   /// `redraw_containers`' setup before its per-window loop: expanding the
@@ -200,11 +247,6 @@ pub enum Stage {
   RedrawPrep,
   /// `redraw_containers`' per-window loop itself.
   RedrawLoop,
-  /// `AnimationManager::start_animation_if_needed`: this frame's
-  /// animation math plus queueing the surrogate update.
-  AnimStep,
-  /// `redraw_containers`' `Frozen` arm, past the first-frame cloak.
-  RedrawFrozen,
   /// `redraw_containers`' `Apply` arm, i.e. repositioning a real window.
   RedrawApply,
   /// `reposition_window`'s minimized/maximized state queries and any
@@ -223,25 +265,9 @@ pub enum Stage {
   BorderSync,
   /// `DwmFlush` -- blocks until the next DWM composition frame.
   DwmFlush,
-  /// `ResizeSession::begin`/`begin_reusing_surrogate`.
-  SessionBegin,
-  /// Cloaking the real window and pre-positioning it at its target.
-  Cloak,
-  /// `AnimationManager::queue_surrogate_updates` -- queueing only; the
-  /// commit it feeds is reported under `BatchCommit`.
-  SurrogateFlush,
-  /// `SurrogateBatch::commit` -- the `DeferWindowPos` transaction that
-  /// actually moves every surrogate and overlay window queued this frame.
+  /// `WindowBatch::commit` -- the `DeferWindowPos` transaction that
+  /// actually moves every peek and overlay window queued this frame.
   BatchCommit,
-  /// `platform_sync`'s loop tracking each live resize session's
-  /// backdrop/border overlay onto its surrogate, queued into the same
-  /// batch as the surrogates themselves.
-  SessionOverlays,
-  /// `update_internal`'s post-`platform_sync` session/workspace cleanup
-  /// and surrogate fade-out tail.
-  Cleanup,
-  /// `ResizeSession::pre_commit`.
-  PreCommit,
   /// `NativeWindow::frame` -- a `DwmGetWindowAttribute` round-trip.
   NativeFrame,
   /// The border overlay's `SetWindowRgn` hole, including building the two
@@ -253,17 +279,15 @@ pub enum Stage {
 
 impl Stage {
   /// Every stage, in report order.
-  const ALL: [Stage; 28] = [
+  const ALL: [Stage; 20] = [
     Stage::Tick,
     Stage::SceneTick,
     Stage::PlatformSync,
     Stage::SceneCover,
-    Stage::SceneEnter,
+    Stage::ScenePlay,
     Stage::Redraw,
     Stage::RedrawPrep,
     Stage::RedrawLoop,
-    Stage::AnimStep,
-    Stage::RedrawFrozen,
     Stage::RedrawApply,
     Stage::RepositionQuery,
     Stage::RepositionSwp,
@@ -272,13 +296,7 @@ impl Stage {
     Stage::BackdropSync,
     Stage::BorderSync,
     Stage::DwmFlush,
-    Stage::SessionBegin,
-    Stage::Cloak,
-    Stage::SurrogateFlush,
     Stage::BatchCommit,
-    Stage::SessionOverlays,
-    Stage::Cleanup,
-    Stage::PreCommit,
     Stage::NativeFrame,
     Stage::OverlayRegion,
     Stage::OverlayVisual,
@@ -299,12 +317,10 @@ impl Stage {
       Stage::SceneTick => "scene_tick",
       Stage::PlatformSync => "platform_sync",
       Stage::SceneCover => "scene_cover",
-      Stage::SceneEnter => "scene_enter",
+      Stage::ScenePlay => "scene_play",
       Stage::Redraw => "redraw",
       Stage::RedrawPrep => "redraw_prep",
       Stage::RedrawLoop => "redraw_loop",
-      Stage::AnimStep => "anim_step",
-      Stage::RedrawFrozen => "rd_frozen",
       Stage::RedrawApply => "rd_apply",
       Stage::RepositionQuery => "rp_query",
       Stage::RepositionSwp => "rp_swp",
@@ -313,13 +329,7 @@ impl Stage {
       Stage::BackdropSync => "backdrop_sync",
       Stage::BorderSync => "border_sync",
       Stage::DwmFlush => "dwm_flush",
-      Stage::SessionBegin => "session_begin",
-      Stage::Cloak => "cloak",
-      Stage::SurrogateFlush => "surrogate_flush",
       Stage::BatchCommit => "batch_commit",
-      Stage::SessionOverlays => "session_overlays",
-      Stage::Cleanup => "cleanup",
-      Stage::PreCommit => "pre_commit",
       Stage::NativeFrame => "native_frame",
       Stage::OverlayRegion => "ovl_region",
       Stage::OverlayVisual => "ovl_visual",
@@ -334,13 +344,10 @@ impl Stage {
   /// [`is_cross_cutting`]: Stage::is_cross_cutting
   const fn depth(self) -> usize {
     match self {
-      Stage::SceneTick | Stage::PlatformSync | Stage::Cleanup => 1,
-      Stage::SceneCover | Stage::SceneEnter | Stage::Redraw => 2,
-      Stage::RedrawPrep
-      | Stage::RedrawLoop
-      | Stage::SurrogateFlush
-      | Stage::SessionOverlays => 3,
-      Stage::AnimStep | Stage::RedrawFrozen | Stage::RedrawApply => 4,
+      Stage::SceneTick | Stage::PlatformSync => 1,
+      Stage::SceneCover | Stage::ScenePlay | Stage::Redraw => 2,
+      Stage::RedrawPrep | Stage::RedrawLoop => 3,
+      Stage::RedrawApply => 4,
       Stage::RepositionQuery
       | Stage::RepositionSwp
       | Stage::RepositionVisibility
@@ -354,17 +361,13 @@ impl Stage {
   ///
   /// These are reported separately: their time is already included in the
   /// tree above, but attributing them to any single parent would be wrong.
-  /// `SurrogateBatch::commit`, for instance, runs from the shared
-  /// surrogate/session-overlay batch, both overlay sync passes, the cloak
-  /// commit and the cleanup tail.
+  /// `WindowBatch::commit`, for instance, runs from the scroll view's
+  /// peeks and both overlay sync passes.
   const fn is_cross_cutting(self) -> bool {
     matches!(
       self,
       Stage::BatchCommit
         | Stage::DwmFlush
-        | Stage::SessionBegin
-        | Stage::Cloak
-        | Stage::PreCommit
         | Stage::NativeFrame
         | Stage::OverlayRegion
         | Stage::OverlayVisual
@@ -433,10 +436,8 @@ struct Profiler {
   apply_overflow: ApplySample,
   /// Queue wait accumulated per event kind.
   event_wait: [EventWait; EventKind::COUNT],
-  /// Animations started this session that were pure translations.
-  gesture_moves: u32,
-  /// Animations started this session that also changed the window's size.
-  gesture_resizes: u32,
+  /// Motions started this session, per kind.
+  motions: [u32; MotionKind::COUNT],
   /// When the previous frame began, for [`Profiler::interval_samples`].
   last_frame_start: Option<Instant>,
   /// Time between consecutive frame starts, i.e. the animation's real
@@ -444,7 +445,7 @@ struct Profiler {
   /// skipped by a rate cap.
   interval_samples: Vec<Duration>,
   /// Stage time recorded outside any frame, e.g. the relayout that starts
-  /// an animation (its cloak, `DwmFlush` and session setup).
+  /// an animation (its scene cover and play).
   outside_total: [Duration; Stage::COUNT],
   /// Calls recorded outside any frame; see [`Profiler::outside_total`].
   outside_calls: [u32; Stage::COUNT],
@@ -457,8 +458,6 @@ struct Profiler {
   /// Timeline of the session's slowest input, with its latency to the
   /// first frame.
   slowest_trace: Option<(Duration, Vec<TraceEntry>)>,
-  /// Workspace switches started this session, by the engine playing them.
-  switches: Vec<(&'static str, u32)>,
 }
 
 /// One stage run on the way from an input to its first frame.
@@ -487,8 +486,8 @@ struct PendingInput {
 struct InputLatency {
   /// Input -> first animation started, i.e. the relayout's own cost.
   to_start: Duration,
-  /// Input -> end of the first animation frame, when the first surrogate
-  /// move has been handed to DWM.
+  /// Input -> end of the first animation tick after the motion started,
+  /// about when DWM shows its first frame.
   to_first_frame: Duration,
 }
 
@@ -814,77 +813,33 @@ fn record_window_count(count: usize) {
   });
 }
 
-/// Records that an animation began, split by whether it resizes the
-/// window.
-///
-/// The two cost very differently: a pure translation leaves the border
-/// overlay's GDI region valid, so `refresh_hole` short-circuits and
-/// tracking it is nearly free, while a resize rebuilds that region every
-/// frame. This counter says how often each actually happens in real
-/// layouts, which is what decides whether a size-aware overlay gate is
-/// worth building -- in a tiling grid, moving one window commonly resizes
-/// its neighbours.
-pub fn note_animation_start(is_resize: bool) {
+/// Records that a motion of `kind` started playing, pairing it with the
+/// pending input it answers for the keypress-to-motion latency.
+pub fn note_motion_start(kind: MotionKind) {
   if is_enabled() {
-    record_animation_start(is_resize);
+    record_motion_start(kind);
   }
 }
 
-/// [`note_animation_start`] without the `GLAZEWM_PERF` gate.
+/// [`note_motion_start`] without the `GLAZEWM_PERF` gate.
 ///
 /// The gate resolves once per process, so the recording logic is factored
 /// out here to stay reachable from tests.
-fn record_animation_start(is_resize: bool) {
+fn record_motion_start(kind: MotionKind) {
   PROFILER.with(|profiler| {
     if let Ok(mut profiler) = profiler.try_borrow_mut() {
-      if is_resize {
-        profiler.gesture_resizes += 1;
-      } else {
-        profiler.gesture_moves += 1;
-      }
+      profiler.motions[kind.index()] += 1;
 
-      pair_input(&mut profiler);
+      // Only an input recent enough to have caused the motion.
+      if let Some(input) = profiler.pending_input.as_mut() {
+        if input.animation_started_at.is_none()
+          && input.received_at.elapsed() < INPUT_PAIRING_WINDOW
+        {
+          input.animation_started_at = Some(Instant::now());
+        }
+      }
     }
   });
-}
-
-/// Records that a workspace switch began moving, played by `engine`
-/// (e.g. `"scene"`), so its keypress-to-motion latency is measured like an
-/// animation's.
-pub fn note_switch_start(engine: &'static str) {
-  if is_enabled() {
-    record_switch_start(engine);
-  }
-}
-
-/// [`note_switch_start`] without the `GLAZEWM_PERF` gate.
-fn record_switch_start(engine: &'static str) {
-  PROFILER.with(|profiler| {
-    if let Ok(mut profiler) = profiler.try_borrow_mut() {
-      match profiler
-        .switches
-        .iter_mut()
-        .find(|(name, _)| *name == engine)
-      {
-        Some((_, count)) => *count += 1,
-        None => profiler.switches.push((engine, 1)),
-      }
-
-      pair_input(&mut profiler);
-    }
-  });
-}
-
-/// Pairs the pending input with the motion starting now, if it's recent
-/// enough to have caused it.
-fn pair_input(profiler: &mut Profiler) {
-  if let Some(input) = profiler.pending_input.as_mut() {
-    if input.animation_started_at.is_none()
-      && input.received_at.elapsed() < INPUT_PAIRING_WINDOW
-    {
-      input.animation_started_at = Some(Instant::now());
-    }
-  }
 }
 
 /// Marks the start of a frame, clearing the previous frame's per-stage
@@ -1059,15 +1014,6 @@ fn take_report(reason: &str) -> Option<String> {
     summary.budget.as_secs_f64() * 1000.0,
     summary.peak_windows,
   );
-  if !summary.switches.is_empty() {
-    let switches = summary
-      .switches
-      .iter()
-      .map(|(engine, count)| format!("{count} on {engine}"))
-      .collect::<Vec<_>>()
-      .join(", ");
-    let _ = writeln!(lines, "  workspace switches: {switches}");
-  }
   let _ = writeln!(
     lines,
     "  {:<20}{:>7}{:>11}{:>11}{:>11}",
@@ -1107,7 +1053,7 @@ fn take_report(reason: &str) -> Option<String> {
   write_input_trace(&mut lines, &summary);
   write_apply_breakdown(&mut lines, &summary);
   write_event_waits(&mut lines, &summary);
-  write_gesture_split(&mut lines, &summary);
+  write_motion_split(&mut lines, &summary);
 
   Some(lines.trim_end().to_string())
 }
@@ -1348,31 +1294,31 @@ fn write_apply_breakdown(lines: &mut String, summary: &Profiler) {
   }
 }
 
-/// Appends the move-vs-resize split of the session's animations.
+/// Appends the per-kind split of the session's started motions, leaving
+/// out kinds that never started.
 ///
-/// A no-op when no animation started during the session.
-fn write_gesture_split(lines: &mut String, summary: &Profiler) {
-  let total = summary.gesture_moves + summary.gesture_resizes;
+/// A no-op when no motion started during the session.
+fn write_motion_split(lines: &mut String, summary: &Profiler) {
+  let total = summary.motions.iter().sum::<u32>();
   if total == 0 {
     return;
   }
 
   // Writing into a `String` is infallible, so the results are discarded.
-  let _ = writeln!(lines, "  -- animations started (move vs resize) --");
-  let _ =
-    writeln!(lines, "  {:<20}{:>7}{:>11}", "gesture", "count", "share");
+  let _ = writeln!(lines, "  -- motions started --");
+  let _ = writeln!(lines, "  {:<20}{:>7}{:>11}", "kind", "count", "share");
 
-  for (label, count) in [
-    ("move", summary.gesture_moves),
-    ("resize", summary.gesture_resizes),
-  ] {
-    let _ = writeln!(
-      lines,
-      "  {:<20}{:>7}{:>10.1}%",
-      label,
-      count,
-      f64::from(count) * 100.0 / f64::from(total),
-    );
+  for kind in MotionKind::ALL {
+    let count = summary.motions[kind.index()];
+    if count > 0 {
+      let _ = writeln!(
+        lines,
+        "  {:<20}{:>7}{:>10.1}%",
+        kind.label(),
+        count,
+        f64::from(count) * 100.0 / f64::from(total),
+      );
+    }
   }
 }
 
@@ -1496,6 +1442,7 @@ mod tests {
       true,
     ));
     note_window_count(4);
+    note_motion_start(MotionKind::Move);
     mark_event_queued(EventKind::Window);
     record_event_dequeued(EventKind::Window);
     end_frame();
@@ -1555,37 +1502,6 @@ mod tests {
   }
 
   #[test]
-  fn counts_switches_by_engine_and_pairs_their_input() {
-    std::thread::spawn(|| {
-      PROFILER.with(|profiler| {
-        arm_input(&mut profiler.borrow_mut(), Instant::now());
-      });
-      record_switch_start("scene");
-      record_switch_start("scene");
-      record_switch_start("surrogates");
-
-      start_frame();
-      drop(forced_scope(Stage::Tick));
-      assert!(!roll_up_frame());
-
-      PROFILER.with(|profiler| {
-        let profiler = profiler.borrow();
-        assert_eq!(profiler.switches, [("scene", 2), ("surrogates", 1)]);
-        // The first switch is the one the input caused.
-        assert_eq!(profiler.latency_samples.len(), 1);
-      });
-
-      let report = take_report("unit test").expect("frames were recorded");
-      assert!(
-        report.contains("workspace switches: 2 on scene, 1 on surrogates")
-      );
-      assert!(report.contains("to anim start"));
-    })
-    .join()
-    .expect("profiler test thread panicked");
-  }
-
-  #[test]
   fn attributes_repositions_per_process_and_sync_flag() {
     std::thread::spawn(|| {
       start_frame();
@@ -1629,26 +1545,34 @@ mod tests {
   }
 
   #[test]
-  fn splits_started_animations_into_moves_and_resizes() {
+  fn splits_started_motions_by_kind_and_pairs_their_input() {
     std::thread::spawn(|| {
+      PROFILER.with(|profiler| {
+        arm_input(&mut profiler.borrow_mut(), Instant::now());
+      });
+      record_motion_start(MotionKind::Move);
+      record_motion_start(MotionKind::Resize);
+      record_motion_start(MotionKind::Resize);
+      record_motion_start(MotionKind::Resize);
+
       start_frame();
-      record_animation_start(false);
-      record_animation_start(true);
-      record_animation_start(true);
-      record_animation_start(true);
+      drop(forced_scope(Stage::Tick));
       assert!(!roll_up_frame());
 
       PROFILER.with(|profiler| {
         let profiler = profiler.borrow();
-        assert_eq!(profiler.gesture_moves, 1);
-        assert_eq!(profiler.gesture_resizes, 3);
+        assert_eq!(profiler.motions[MotionKind::Resize.index()], 3);
+        // The first motion is the one the input caused.
+        assert_eq!(profiler.latency_samples.len(), 1);
       });
 
       let report = take_report("unit test").expect("frames were recorded");
-      assert!(report.contains("animations started (move vs resize)"));
-      // Shares are of the started animations, not of the frames.
+      assert!(report.contains("motions started"), "{report}");
+      // Shares are of the started motions, not of the frames.
       assert!(report.contains("move                      1      25.0%"));
       assert!(report.contains("resize                    3      75.0%"));
+      assert!(!report.contains("switch "), "{report}");
+      assert!(report.contains("to anim start"));
     })
     .join()
     .expect("profiler test thread panicked");
@@ -1656,14 +1580,14 @@ mod tests {
 
   /// A session that animated nothing must not print an empty section.
   #[test]
-  fn omits_the_gesture_split_when_no_animation_started() {
+  fn omits_the_motion_split_when_no_motion_started() {
     std::thread::spawn(|| {
       start_frame();
       record_window_count(1);
       assert!(!roll_up_frame());
 
       let report = take_report("unit test").expect("frames were recorded");
-      assert!(!report.contains("animations started"));
+      assert!(!report.contains("motions started"));
     })
     .join()
     .expect("profiler test thread panicked");
@@ -1775,7 +1699,7 @@ mod tests {
       PROFILER.with(|profiler| {
         arm_input(&mut profiler.borrow_mut(), Instant::now());
       });
-      record_animation_start(true);
+      record_motion_start(MotionKind::Resize);
       start_frame();
       assert!(!roll_up_frame());
       // Only the first frame after the input counts.
@@ -1805,7 +1729,7 @@ mod tests {
     std::thread::spawn(|| {
       // Idle work before the input is discarded, the relayout after it is
       // kept.
-      drop(forced_scope(Stage::Cloak));
+      drop(forced_scope(Stage::NativeFrame));
       PROFILER.with(|profiler| {
         arm_input(&mut profiler.borrow_mut(), Instant::now());
       });
@@ -1821,7 +1745,7 @@ mod tests {
       PROFILER.with(|profiler| {
         let profiler = profiler.borrow();
         assert_eq!(profiler.outside_calls[Stage::DwmFlush.index()], 1);
-        assert_eq!(profiler.outside_calls[Stage::Cloak.index()], 0);
+        assert_eq!(profiler.outside_calls[Stage::NativeFrame.index()], 0);
         assert_eq!(profiler.outside_calls[Stage::Tick.index()], 0);
         // Not double-counted into the frame tree.
         assert_eq!(profiler.calls[Stage::DwmFlush.index()], 0);

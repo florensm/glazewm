@@ -4,14 +4,14 @@ use crate::{
   lerp_f32,
   overlay_window::{Overlay, OverlayKind, OverlayWindow},
   platform_impl::composition::BackdropVisual,
-  BackdropOverlayParams, Rect, StyleBlend, SurrogateBatch,
+  BackdropOverlayParams, Rect, StyleBlend, WindowBatch,
 };
 
 /// A persistent backdrop window rendering a crop of the pre-blurred
 /// wallpaper surface behind a paired managed window.
 ///
 /// Positioned directly behind an `anchor` window in z-order (typically the
-/// managed window itself, or its surrogate while one is active -- see
+/// managed window itself, or the peek drawing it -- see
 /// [`set_rect`]/[`sync_z_order`]) and kept pixel-aligned with its DWM
 /// frame rect, or with the part of it that is on screen (see
 /// [`defer_cut_rect`]). When the managed window is semi-transparent (via
@@ -77,7 +77,7 @@ impl NativeBackdropOverlay {
   /// `BackdropVisual::set_layout`).
   pub fn defer_cut_rect(
     &mut self,
-    batch: &mut SurrogateBatch,
+    batch: &mut WindowBatch,
     rect: &Rect,
     shown: &Rect,
     clip: &Rect,
@@ -114,7 +114,7 @@ impl NativeBackdropOverlay {
   /// overlay is already shown behind `anchor`.
   fn defer_place(
     &mut self,
-    batch: &mut SurrogateBatch,
+    batch: &mut WindowBatch,
     frame: &Rect,
     shown: &Rect,
     rect: &Rect,
@@ -239,7 +239,7 @@ impl Overlay for NativeBackdropOverlay {
 
   fn defer_rect(
     &mut self,
-    batch: &mut SurrogateBatch,
+    batch: &mut WindowBatch,
     rect: &Rect,
     anchor: HWND,
   ) {
@@ -250,7 +250,7 @@ impl Overlay for NativeBackdropOverlay {
   /// the window to be seen.
   fn defer_clipped_rect(
     &mut self,
-    batch: &mut SurrogateBatch,
+    batch: &mut WindowBatch,
     rect: &Rect,
     clip: &Rect,
     anchor: HWND,

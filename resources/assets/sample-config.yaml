@@ -1,8 +1,4 @@
 animations:
-  # Which animating windows keep their border and backdrop overlays: 'all',
-  # 'focused_only' or 'none'. Fewer is smoother with many windows.
-  overlay_tracking: "all"
-
   # Windows changing position.
   window_move:
     enabled: true
@@ -22,14 +18,13 @@ animations:
     duration_ms: 220
     easing: "spring(1.0, 800, 0.0001)"
 
+  # Windows changing size, their content stretched along. Same keys as
+  # `window_move`.
   window_resize:
     enabled: true
     duration_ms: 150
     easing: "cubic_bezier(0.2, 0.0, 0.0, 1.0)"
     threshold_px: 10
-    # 'fill' keeps the content's size and fills the rest with its edge color;
-    # 'stretch' scales it. Windows only.
-    style: "fill"
 
   # Windows only.
   window_open:

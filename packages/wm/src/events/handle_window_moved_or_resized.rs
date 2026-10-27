@@ -104,26 +104,6 @@ pub fn handle_window_moved_or_resized(
       return Ok(());
     }
 
-    // A resize/move/open animation session owns this window's position for
-    // the duration of its `ResizeSession` and the fade-out tail that
-    // follows it -- the real window is frozen and cloaked behind a
-    // surrogate, repositioned only once via
-    // `ResizeSession::maybe_handoff`. That handoff's `SetWindowPos` uses
-    // `SWP_NOSENDCHANGING`, which suppresses `WM_WINDOWPOSCHANGING` but
-    // not the location-change notification this handler is driven by.
-    // Without this guard, that "invisible" handoff reposition gets
-    // fully reprocessed below as if it were an independent move --
-    // state transitions, floating-position updates, redraw queueing --
-    // fighting the animation still in flight on the same window. Most
-    // visible as a flicker on a window that's only being repositioned
-    // as a side effect of a sibling's drag/relayout (its own animated
-    // move, not an interactive drag, so it doesn't hit the
-    // `active_drag` branch above).
-    #[cfg(target_os = "windows")]
-    if state.animation_manager.owns_window_position(&window.id()) {
-      return Ok(());
-    }
-
     let old_is_maximized = window.native_properties().is_maximized;
     let is_maximized = try_warn!(window.native().is_maximized());
 
@@ -430,15 +410,6 @@ fn make_room_for_min_width(
     return;
   };
 
-  // Mid-animation, the window is between the sizes it was given.
-  if state
-    .animation_manager
-    .get_animation(&window.id())
-    .is_some()
-  {
-    return;
-  }
-
   let Some(target) = state.window_target_positions.get(&window.id())
   else {
     return;
@@ -507,9 +478,7 @@ fn follow_own_move(
   let is_shown = window.display_state() == DisplayState::Shown
     && window.workspace().is_some_and(|ws| ws.is_displayed());
 
-  if is_shown
-    && !state.animation_manager.has_active_surrogate(&window.id())
-  {
+  if is_shown {
     follow_window_frame(window, frame, state, config);
   }
 }

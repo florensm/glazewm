@@ -6,8 +6,6 @@ pub mod manager;
 pub mod scene;
 #[cfg(target_os = "windows")]
 pub mod scroll_view;
-#[cfg(target_os = "windows")]
-pub mod stand_in;
 pub mod state;
 
-pub use manager::{AnimationManager, AnimationPositionResult};
+pub use manager::AnimationManager;

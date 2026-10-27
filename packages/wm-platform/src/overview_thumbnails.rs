@@ -22,7 +22,7 @@ use windows::{
 
 use crate::{
   companion::Companion,
-  native_surrogate::DwmThumbnail,
+  dwm_thumbnail::DwmThumbnail,
   overview_layout::{RectF, Tile},
   surface::Surface,
   window_class, OverviewOverlay, OverviewOverlayKind, OverviewWindow,

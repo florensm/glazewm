@@ -203,8 +203,8 @@ pub fn window_with_tab_bar(
   }
 }
 
-/// [`window_with_tab_bar`] for the window `window_id`, e.g. one a peek or
-/// surrogate draws at `frame`.
+/// [`window_with_tab_bar`] for the window `window_id`, e.g. one a peek
+/// draws at `frame`.
 pub fn with_tab_bar_of(
   state: &WmState,
   window_id: uuid::Uuid,
@@ -219,21 +219,6 @@ pub fn with_tab_bar_of(
     )
 }
 
-/// [`with_tab_bar_of`] for a window a surrogate draws at `frame` mid
-/// animation: the bar goes along with a move or resize, but not with a
-/// window opening into its stack.
-pub fn animated_with_tab_bar(
-  state: &WmState,
-  window_id: uuid::Uuid,
-  frame: &Rect,
-) -> Rect {
-  if state.animation_manager.is_entering(&window_id) {
-    frame.clone()
-  } else {
-    with_tab_bar_of(state, window_id, frame)
-  }
-}
-
 /// The tab bar of `stack`, or `None` when it has no tab bar, no tabs or
 /// isn't shown. The overview draws the same bar on its cards.
 pub fn tab_frame(
@@ -245,8 +230,8 @@ pub fn tab_frame(
   tab_frame_at(stack, &stack.to_rect().ok()?, settings, config, focused_id)
 }
 
-/// The tab bar of `stack` as it is on screen: with its active window as
-/// it moves, on whatever draws it meanwhile, and cut off like it.
+/// The tab bar of `stack` as it is on screen: on the peek drawing its
+/// column, if one does, and cut off like it.
 fn shown_tab_frame(
   stack: &StackContainer,
   animation_manager: &AnimationManager,
@@ -255,32 +240,23 @@ fn shown_tab_frame(
   focused_id: Option<uuid::Uuid>,
 ) -> Option<TabFrame> {
   let active = stack.active_child()?;
-  let stack_rect = stack.to_rect().ok()?;
+  let peek = animation_manager.scroll_view.peek_of(&active.id());
 
-  let stand_in = match animation_manager
-    .scroll_view
-    .stand_in(&active.id(), &stack_rect)
-  {
-    Some(peek) => Some(peek),
-    // A column kept off the monitor beside it shows only through a
-    // peek, which it has none of while out of view.
-    None if !scrolling::shows_real_window(&active) => return None,
-    None => {
-      animation_manager.animation_stand_in(&active.id(), &stack_rect)
-    }
-  };
+  // A column kept off the monitor beside it shows only through a peek,
+  // which it has none of while out of view.
+  if peek.is_none() && !scrolling::shows_real_window(&active) {
+    return None;
+  }
 
-  let Some(stand_in) = stand_in else {
-    return tab_frame_at(stack, &stack_rect, settings, config, focused_id);
-  };
+  let frame = tab_frame(stack, settings, config, focused_id)?;
 
-  let frame =
-    tab_frame_at(stack, &stand_in.rect, settings, config, focused_id)?;
-
-  Some(TabFrame {
-    clip: stand_in.clip,
-    anchor: stand_in.anchor.map_or(frame.anchor, |anchor| anchor.0),
-    ..frame
+  Some(match peek {
+    Some((clip, anchor)) => TabFrame {
+      clip: Some(clip),
+      anchor: anchor.0,
+      ..frame
+    },
+    None => frame,
   })
 }
 

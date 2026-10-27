@@ -109,11 +109,16 @@ impl ClosingWindows {
     self.next_check.get_or_insert(now + POLL_INTERVAL);
   }
 
-  /// Records that the close animation finished and sent `WM_CLOSE`.
-  pub fn mark_close_sent(&mut self, id: Uuid, now: Instant) {
-    if let Some(entry) = self.entries.iter_mut().find(|e| e.id == id) {
-      entry.close_sent_at.get_or_insert(now);
-    }
+  /// Records that the close animation finished, returning whether it is
+  /// the one to send `WM_CLOSE`: not once that was sent without it, nor
+  /// once the window was resolved, e.g. put back after refusing the close.
+  pub fn mark_close_sent(&mut self, id: Uuid, now: Instant) -> bool {
+    self
+      .entries
+      .iter_mut()
+      .find(|entry| entry.id == id && entry.close_sent_at.is_none())
+      .map(|entry| entry.close_sent_at = Some(now))
+      .is_some()
   }
 
   /// When [`poll`](Self::poll) is next due, if anything is tracked.
@@ -298,6 +303,34 @@ mod tests {
     assert!(early.is_empty());
     assert_eq!(first, vec![ClosingAction::SendClose { id, handle: 42 }]);
     assert!(second.is_empty());
+  }
+
+  #[test]
+  fn animation_sends_close_once() {
+    let now = Instant::now();
+    let (mut windows, id) = tracked(now);
+
+    assert!(windows.mark_close_sent(id, now));
+    assert!(!windows.mark_close_sent(id, now));
+  }
+
+  #[test]
+  fn late_animation_does_not_close_again() {
+    let now = Instant::now();
+    let (mut windows, id) = tracked(now);
+    let due = now + ANIMATION + ANIMATION_GRACE;
+
+    let stalled = windows.poll(due, |_| SHOWN);
+    assert_eq!(stalled, vec![ClosingAction::SendClose { id, handle: 42 }]);
+    assert!(!windows.mark_close_sent(id, due));
+
+    // Nor once put back after refusing the close.
+    let refused = windows.poll(due, |_| WindowProbe {
+      has_modal_prompt: true,
+      ..SHOWN
+    });
+    assert_eq!(refused, resolved(id, CloseOutcome::Refused));
+    assert!(!windows.mark_close_sent(id, due));
   }
 
   #[test]

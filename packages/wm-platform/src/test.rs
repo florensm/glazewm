@@ -7,14 +7,15 @@ extern crate libtest_mimic_collect;
 mod companion;
 mod dispatcher;
 mod display;
+#[cfg(target_os = "windows")]
+#[allow(dead_code)]
+mod dwm_thumbnail;
 mod error;
 mod event_loop;
 mod external_color_source;
 mod keybinding_listener;
 mod models;
 mod mouse_listener;
-#[cfg(target_os = "windows")]
-mod native_surrogate;
 mod native_window;
 // Pure parts of the overview, here for their tests; the rest of them is
 // only used through the Windows-only overview.
@@ -39,8 +40,14 @@ mod tab_layout;
 mod thread_bound;
 #[cfg(target_os = "windows")]
 #[allow(dead_code)]
+mod window_batch;
+#[cfg(target_os = "windows")]
+#[allow(dead_code)]
 mod window_class;
 mod window_listener;
+#[cfg(target_os = "windows")]
+#[allow(dead_code)]
+mod window_peek;
 
 pub use dispatcher::*;
 pub use display::*;

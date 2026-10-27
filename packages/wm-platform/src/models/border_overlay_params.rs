@@ -1,10 +1,8 @@
 /// Color, width, corner radius, and opacity for a
 /// `NativeBorderOverlay`, bundled so the set of overlay knobs travels
-/// as one value through `SessionOptions`/`ResizeSession`/
-/// `upsert_overlay` instead of a same-typed positional-argument list
-/// that's easy to mis-order at the many call sites (static sync,
-/// workspace-switch, and move/resize/open/close tracking) that all
-/// thread the same values. Mirrors `BackdropOverlayParams`.
+/// as one value through `upsert_overlay` and its callers instead of a
+/// same-typed positional-argument list that's easy to mis-order.
+/// Mirrors `BackdropOverlayParams`.
 ///
 /// Lives in `models` (rather than alongside `NativeBorderOverlay`) so
 /// it's visible from both crate roots this crate builds under --

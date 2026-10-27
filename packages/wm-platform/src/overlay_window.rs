@@ -5,17 +5,16 @@ use windows::{
   Win32::{
     Foundation::HWND,
     UI::WindowsAndMessaging::{
-      BeginDeferWindowPos, CreateWindowExW, DeferWindowPos, DestroyWindow,
-      EndDeferWindowPos, GetClassNameW, GetWindow, SetWindowPos,
-      ShowWindow, GW_HWNDPREV, SWP_HIDEWINDOW, SWP_NOACTIVATE, SWP_NOMOVE,
-      SWP_NOSENDCHANGING, SWP_NOSIZE, SWP_NOZORDER, SWP_SHOWWINDOW,
-      SW_HIDE, WS_EX_NOACTIVATE, WS_EX_NOREDIRECTIONBITMAP,
-      WS_EX_TOOLWINDOW, WS_EX_TRANSPARENT, WS_POPUP,
+      CreateWindowExW, DestroyWindow, GetClassNameW, GetWindow,
+      SetWindowPos, ShowWindow, GW_HWNDPREV, SWP_NOACTIVATE, SWP_NOMOVE,
+      SWP_NOSENDCHANGING, SWP_NOSIZE, SWP_SHOWWINDOW, SW_HIDE,
+      WS_EX_NOACTIVATE, WS_EX_NOREDIRECTIONBITMAP, WS_EX_TOOLWINDOW,
+      WS_EX_TRANSPARENT, WS_POPUP,
     },
   },
 };
 
-use crate::{window_class, Rect, StyleBlend, SurrogateBatch};
+use crate::{window_class, Rect, StyleBlend, WindowBatch};
 
 /// Which overlay an [`OverlayWindow`] backs; each gets its own window
 /// class so the overlays can be told apart in z-order dumps.
@@ -270,74 +269,6 @@ impl OverlayWindow {
   }
 }
 
-/// Shows `show` at `rect` directly behind `anchor` and hides `hide` in one
-/// `DeferWindowPos` transaction, which DWM takes as one window-state
-/// update: no frame has both overlays or neither.
-///
-/// Falls back to showing, then hiding, one call at a time, which can
-/// leave a frame with both rather than one with neither.
-pub(crate) fn swap(
-  show: &mut OverlayWindow,
-  rect: &Rect,
-  anchor: HWND,
-  hide: &mut OverlayWindow,
-) {
-  let insert_after = window_class::insert_after_point(anchor);
-
-  // SAFETY: Both handles are valid for their overlays' lifetimes. The
-  // transaction is always ended, which is what releases its `HDWP`, also
-  // after a failed `DeferWindowPos` (see `SurrogateBatch::commit`).
-  let swapped = unsafe {
-    BeginDeferWindowPos(2).is_ok_and(|hdwp| {
-      let Ok(shown) = DeferWindowPos(
-        hdwp,
-        show.hwnd(),
-        insert_after,
-        rect.x(),
-        rect.y(),
-        rect.width(),
-        rect.height(),
-        SWP_NOACTIVATE | SWP_SHOWWINDOW,
-      ) else {
-        let _ = EndDeferWindowPos(hdwp);
-        return false;
-      };
-
-      let Ok(hidden) = DeferWindowPos(
-        shown,
-        hide.hwnd(),
-        HWND(0),
-        0,
-        0,
-        0,
-        0,
-        SWP_NOACTIVATE
-          | SWP_NOMOVE
-          | SWP_NOSIZE
-          | SWP_NOZORDER
-          | SWP_HIDEWINDOW,
-      ) else {
-        let _ = EndDeferWindowPos(shown);
-        return false;
-      };
-
-      EndDeferWindowPos(hidden).is_ok()
-    })
-  };
-
-  if swapped {
-    show.anchor = anchor.0;
-    show.is_visible = true;
-    hide.is_visible = false;
-    return;
-  }
-
-  if let Err(err) = show.place(rect, anchor) {
-    tracing::warn!("{err}");
-  }
-  hide.hide();
-}
-
 impl Drop for OverlayWindow {
   fn drop(&mut self) {
     // SAFETY: `self.hwnd()` is valid and `Drop` runs at most once.
@@ -358,7 +289,7 @@ pub trait Overlay: Sized {
   type Params: Copy;
 
   /// Creates the overlay for a window at `rect`, shown directly behind
-  /// `anchor` -- the managed window, or its surrogate while one is active.
+  /// `anchor` -- the managed window, or the peek drawing it.
   fn create(
     rect: &Rect,
     params: Self::Params,
@@ -376,14 +307,14 @@ pub trait Overlay: Sized {
 
   /// Queues a reposition into `batch` instead of an immediate
   /// `SetWindowPos`, so the overlay moves in the same DWM frame as its
-  /// window and every other overlay/surrogate committed with it.
+  /// window and every other overlay and peek committed with it.
   ///
   /// Falls back to an immediate reposition when the overlay is hidden or
   /// `anchor` changed: the batch's `SWP_NOZORDER` flags carry neither the
   /// show bit nor a z-order move.
   fn defer_rect(
     &mut self,
-    batch: &mut SurrogateBatch,
+    batch: &mut WindowBatch,
     rect: &Rect,
     anchor: HWND,
   );
@@ -393,7 +324,7 @@ pub trait Overlay: Sized {
   /// none of it is inside.
   fn defer_clipped_rect(
     &mut self,
-    batch: &mut SurrogateBatch,
+    batch: &mut WindowBatch,
     rect: &Rect,
     clip: &Rect,
     anchor: HWND,

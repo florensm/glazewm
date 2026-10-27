@@ -28,7 +28,7 @@ use wm_common::{
   WorkspaceSwitchStyle,
 };
 use wm_platform::{
-  perf::{self, Stage},
+  perf::{self, MotionKind, Stage},
   ItemPose, NativeScene, NativeWindow, NativeWindowWindowsExt, Overlay,
   Rect, SceneBackdrop, SceneFit, SceneGroupId, SceneItem, SceneMotion,
   ScenePose, SceneSegment, SceneValue, SceneWindow, HWND,
@@ -571,6 +571,14 @@ impl MonitorScene {
 impl Scenes {
   pub fn is_active(&self) -> bool {
     !self.scenes.is_empty()
+  }
+
+  /// Whether a scene covers the monitor `monitor_id`.
+  pub fn covers(&self, monitor_id: Uuid) -> bool {
+    self
+      .scenes
+      .iter()
+      .any(|scene| scene.monitor_id == monitor_id)
   }
 
   /// Whether a scene still shows copies of `window_id`'s overlays and tab
@@ -1162,7 +1170,7 @@ pub fn play(
   plan: &ScenePlan,
   is_synced: bool,
 ) {
-  let _scope = perf::scope(Stage::SceneEnter);
+  let _scope = perf::scope(Stage::ScenePlay);
   let now = Instant::now();
 
   if !is_synced {
@@ -1281,6 +1289,7 @@ fn reconcile(
 
   let group_id = scene.groups[group_index].id;
   let mut changed = false;
+  let mut started = Vec::new();
   let wanted_keys = wanted
     .iter()
     .map(|(item, _)| item.key)
@@ -1296,6 +1305,11 @@ fn reconcile(
     let is_resizing = planned.is_some_and(|planned| {
       !is_same_size(&planned.from.frame, &item.frame)
     });
+    let planned_kind = if is_resizing {
+      MotionKind::Resize
+    } else {
+      MotionKind::Move
+    };
 
     match existing {
       None => {
@@ -1305,6 +1319,7 @@ fn reconcile(
 
         if let Some(params) = open {
           added.motion = Some(entry_motion(&added.rest, params, now));
+          started.push(MotionKind::Open);
         } else if let Some(planned) = planned {
           added.motion = Some(ItemMotion::new(
             planned.from.clone(),
@@ -1314,6 +1329,7 @@ fn reconcile(
             now,
           ));
           added.is_landing = !added.is_passing;
+          started.push(planned_kind);
         }
 
         if added.motion.is_some() {
@@ -1360,6 +1376,7 @@ fn reconcile(
             ),
           });
           existing.is_landing = !existing.is_passing;
+          started.push(planned_kind);
         } else if has_moved {
           // Moved without a motion, e.g. too little to animate.
           existing.motion = None;
@@ -1393,6 +1410,7 @@ fn reconcile(
       Some(exit_motion(&item.drawn_at(now), &close.params, now));
     scene.native.pose_item(group_id, item.key, &item.pose())?;
     changed = true;
+    started.push(MotionKind::Close);
   }
 
   // Ones whose window isn't drawn here anymore go, unless still moving
@@ -1415,6 +1433,10 @@ fn reconcile(
     scene.settled_since = None;
   }
   scene.native.commit()?;
+
+  for kind in started {
+    perf::note_motion_start(kind);
+  }
   Ok(())
 }
 
@@ -1606,7 +1628,7 @@ fn enter(
     .and_then(|()| scene.native.commit());
 
   match played {
-    Ok(()) => perf::note_switch_start("scene"),
+    Ok(()) => perf::note_motion_start(MotionKind::Switch),
     Err(err) => {
       tracing::warn!("Scene couldn't play the workspace switch: {err}");
       abandon_switch(state, request);
@@ -1783,6 +1805,20 @@ pub fn tick(state: &mut WmState) {
     }
   });
 
+  if perf::is_enabled() {
+    perf::note_window_count(
+      state
+        .animation_manager
+        .scenes
+        .scenes
+        .iter()
+        .flat_map(|scene| &scene.groups)
+        .flat_map(|group| &group.items)
+        .filter(|item| item.is_moving(now))
+        .count(),
+    );
+  }
+
   for (window_id, handle) in closed {
     close_now(state, window_id, handle);
   }
@@ -1815,17 +1851,21 @@ fn closings(scene: &MonitorScene) -> Vec<(Uuid, isize)> {
 }
 
 /// Sends `WM_CLOSE` to a window detached for its close, and lets go of its
-/// overlays.
+/// overlays, unless a close played too late was already sent without it.
 fn close_now(state: &mut WmState, window_id: Uuid, handle: isize) {
+  if !state
+    .closing_windows
+    .mark_close_sent(window_id, Instant::now())
+  {
+    return;
+  }
+
   state.backdrop_overlays.remove(&window_id);
   state.border_overlays.remove(&window_id);
 
   if let Err(err) = NativeWindow::from_handle(handle).close() {
     tracing::warn!("Failed to close window {window_id}: {err}");
   }
-  state
-    .closing_windows
-    .mark_close_sent(window_id, Instant::now());
 }
 
 /// The windows of the scenes' items that were moved beneath them and

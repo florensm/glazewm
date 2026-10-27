@@ -2,15 +2,14 @@ use windows::Win32::{
   Foundation::{BOOL, HWND},
   Graphics::Gdi::{
     CombineRgn, CreateRectRgn, CreateRoundRectRgn, DeleteObject,
-    SetWindowRgn, HGDIOBJ, HRGN, RGN_AND, RGN_DIFF,
+    SetWindowRgn, HGDIOBJ, RGN_AND, RGN_DIFF,
   },
 };
 
 use crate::{
-  native_surrogate::is_surrogate,
-  overlay_window::{self, Overlay, OverlayKind, OverlayWindow},
+  overlay_window::{Overlay, OverlayKind, OverlayWindow},
   platform_impl::composition::BorderVisual,
-  BorderOverlayParams, Color, Rect, StyleBlend, SurrogateBatch,
+  BorderOverlayParams, Color, Rect, StyleBlend, WindowBatch,
 };
 
 /// Computes the overlay's own rect: `window_rect` outset by `width` on
@@ -118,9 +117,8 @@ fn inner_hole_radius(params: &BorderOverlayParams) -> i32 {
 
 /// A persistent overlay window that renders a colored border ring around a
 /// paired managed window -- a self-drawn stand-in for the OS's
-/// `DWMWA_BORDER_COLOR`, which isn't carried along by DWM thumbnails
-/// (surrogates) and so vanishes during window-open/close, resize, and
-/// workspace-switch transitions.
+/// `DWMWA_BORDER_COLOR`, which DWM thumbnails leave out, so it would
+/// vanish from the scenes animations play on.
 ///
 /// Sized to `window_rect` outset by `params.width` (the configured border
 /// width) on every side, and positioned directly behind an `anchor` window
@@ -156,9 +154,7 @@ pub struct NativeBorderOverlay {
   rect: Rect,
 
   /// `(width, height, inner_radius, cut)` of the picture-frame region
-  /// last applied, or `None` when the window currently has none -- before
-  /// the first application, or for as long as it is behind a surrogate
-  /// without `bounds`.
+  /// last applied, or `None` before the first application.
   ///
   /// Skips redundant `SetWindowRgn` calls when a reposition doesn't
   /// change the overlay's shape, e.g. a pure translation. Distinct from
@@ -175,21 +171,6 @@ pub struct NativeBorderOverlay {
   /// Pixels of the ring's outer rect clipped away on each side (left,
   /// top, right, bottom), cutting it at its `bounds`.
   clip_insets: [i32; 4],
-
-  /// The ring a workspace-switch slide draws instead, kept for the next
-  /// slide once one ends. See [`pin_or_slide`].
-  ///
-  /// [`pin_or_slide`]: NativeBorderOverlay::pin_or_slide
-  slide: Option<SlideRing>,
-
-  /// Whether `slide` is shown in place of this ring.
-  is_sliding: bool,
-
-  /// Anchor last classified by [`behind_surrogate`], and whether it is a
-  /// surrogate, so the class lookup runs once per anchor change.
-  ///
-  /// [`behind_surrogate`]: NativeBorderOverlay::behind_surrogate
-  classified_anchor: (isize, bool),
 }
 
 impl NativeBorderOverlay {
@@ -201,17 +182,6 @@ impl NativeBorderOverlay {
   /// Applied so the overlay stays out of `WindowFromPoint`. See
   /// [`apply_hole_region`].
   fn refresh_hole(&mut self, outer: &Rect) {
-    // Behind a surrogate the outlined window is cloaked and the surrogate,
-    // equally unanswering, already covers the hole for point queries, so
-    // the region changes nothing there. Reshaping it on every frame of a
-    // resize was most of the per-frame overlay cost, so the animation runs
-    // without one; the first placement behind anything else restores it.
-    // A cut ring keeps it, since past its bounds no surrogate covers it.
-    if self.behind_surrogate() && self.bounds.is_none() {
-      self.clear_region();
-      return;
-    }
-
     #[allow(clippy::cast_possible_truncation)]
     let outset = self.params.width.round() as i32;
     let shape = (
@@ -237,33 +207,6 @@ impl NativeBorderOverlay {
     self.hole_shape = Some(shape);
   }
 
-  /// Whether the overlay is currently anchored behind a surrogate, i.e.
-  /// tracks a window mid-animation.
-  fn behind_surrogate(&mut self) -> bool {
-    let anchor = self.window.anchor();
-
-    if self.classified_anchor.0 != anchor.0 {
-      self.classified_anchor = (anchor.0, is_surrogate(anchor));
-    }
-
-    self.classified_anchor.1
-  }
-
-  /// Drops the window region, leaving the overlay shaped by its bounds
-  /// alone. No-op when it has none.
-  fn clear_region(&mut self) {
-    if self.hole_shape.take().is_none() {
-      return;
-    }
-
-    // SAFETY: The overlay's `HWND` is valid for the lifetime of `self`. A
-    // null `HRGN` clears the region rather than setting one, so there is
-    // nothing to free.
-    unsafe {
-      SetWindowRgn(self.window.hwnd(), HRGN(0), BOOL(0));
-    }
-  }
-
   /// Resizes the ring to `outer`, cut at its `bounds`.
   fn apply_ring_rect(&mut self, outer: &Rect) {
     if let Err(e) = self.composition.set_rect(outer) {
@@ -271,13 +214,6 @@ impl NativeBorderOverlay {
     }
 
     self.set_clip_insets(self.bounds_insets(outer));
-  }
-
-  /// The overlay's own visual tree and, once a slide has made one, the
-  /// slide ring's, which knob changes keep in step.
-  fn visuals(&self) -> impl Iterator<Item = &BorderVisual> {
-    std::iter::once(&self.composition)
-      .chain(self.slide.as_ref().map(|slide| &slide.composition))
   }
 
   /// Pixels of the ring `outer` past its `bounds` on each side.
@@ -304,12 +240,11 @@ impl NativeBorderOverlay {
   /// its `bounds`. See [`Overlay::defer_rect`].
   fn defer_track(
     &mut self,
-    batch: &mut SurrogateBatch,
+    batch: &mut WindowBatch,
     window_rect: &Rect,
     anchor: HWND,
   ) {
-    // A slide is ended by `track`, outside the batch.
-    if !self.window.is_placed_behind(anchor) || self.is_sliding {
+    if !self.window.is_placed_behind(anchor) {
       self.track(window_rect, anchor);
       return;
     }
@@ -364,11 +299,6 @@ impl NativeBorderOverlay {
 
   /// [`set_rect`](Self::set_rect), keeping the ring cut at its `bounds`.
   fn track(&mut self, window_rect: &Rect, anchor: HWND) {
-    if self.is_sliding {
-      self.end_slide(window_rect, anchor);
-      return;
-    }
-
     if self.window.is_placed_behind(anchor) && &self.rect == window_rect {
       return;
     }
@@ -407,8 +337,8 @@ impl NativeBorderOverlay {
     }
     self.params.color = color;
 
-    for visual in self.visuals() {
-      if let Err(e) = visual.set_color(color) {
+    {
+      if let Err(e) = self.composition.set_color(color) {
         tracing::warn!(
           "Border overlay composition color update failed: {e}."
         );
@@ -424,10 +354,6 @@ impl NativeBorderOverlay {
   /// On the Composition path the width is also the ring's stroke
   /// thickness, so the visual is updated first -- the `set_rect` below
   /// then re-derives the stroke's geometry from both at once.
-  ///
-  /// While sliding, the slide ring's viewport-sized window already has
-  /// room for any width, so only that ring is rebuilt, and this one is
-  /// laid out anew as the slide ends.
   #[allow(clippy::float_cmp)]
   pub fn set_width(&mut self, width: f32) {
     if self.params.width == width {
@@ -435,27 +361,12 @@ impl NativeBorderOverlay {
     }
     self.params.width = width;
 
-    for visual in self.visuals() {
-      if let Err(e) = visual.set_width(width) {
+    {
+      if let Err(e) = self.composition.set_width(width) {
         tracing::warn!(
           "Border overlay composition width update failed: {e}."
         );
       }
-    }
-
-    if let Some(slide) = &mut self.slide {
-      // The ring's size and offset follow the outset, so an unmoved window
-      // is re-slid rather than skipped, now or by the next slide.
-      let window_rect =
-        std::mem::replace(&mut slide.rect, Rect::from_ltrb(0, 0, 0, 0));
-      if self.is_sliding {
-        let panel = slide.panel.clone();
-        slide.slide(&window_rect, &panel, width);
-      }
-    }
-
-    if self.is_sliding {
-      return;
     }
 
     let anchor = self.window.anchor();
@@ -474,8 +385,8 @@ impl NativeBorderOverlay {
     }
     self.params.corner_radius = value;
 
-    for visual in self.visuals() {
-      if let Err(e) = visual.set_corner_radius(value) {
+    {
+      if let Err(e) = self.composition.set_corner_radius(value) {
         tracing::warn!(
           "Border overlay composition corner-radius update failed: {e}."
         );
@@ -495,212 +406,13 @@ impl NativeBorderOverlay {
     }
     self.params.opacity = value;
 
-    for visual in self.visuals() {
-      if let Err(e) = visual.set_opacity(value) {
+    {
+      if let Err(e) = self.composition.set_opacity(value) {
         tracing::warn!(
           "Border overlay composition opacity update failed: {e}."
         );
       }
     }
-  }
-
-  /// Draws the ring for `window_rect` with the slide ring, pinned to
-  /// `viewport` and cut at `panel`, for one frame of a workspace-switch
-  /// slide. Returns `false` when the slide ring couldn't be made.
-  ///
-  /// The border is a separate `HWND` and DWM thumbnails are captured with
-  /// `DWM_TNP_SOURCECLIENTAREAONLY`, so a surrogate can never carry the
-  /// ring with it. Moving the overlay window itself every frame would cost
-  /// a `SetWindowPos` and a geometry rebuild per window per frame, and
-  /// would need the monitor clip applied by hand. The slide ring's window
-  /// instead stays still and only its content slides: one property write
-  /// per frame, with the clip falling out of composition rendering nothing
-  /// outside the target.
-  ///
-  /// It is shown in place of this ring from the frame after the first,
-  /// once its layout has reached DWM. Any ordinary
-  /// [`set_rect`]/[`defer_rect`] swaps this ring back in.
-  ///
-  /// [`set_rect`]: NativeBorderOverlay::set_rect
-  /// [`defer_rect`]: NativeBorderOverlay::defer_rect
-  pub fn pin_or_slide(
-    &mut self,
-    viewport: &Rect,
-    window_rect: &Rect,
-    panel: &Rect,
-    anchor: HWND,
-  ) -> bool {
-    // A slide on another monitor needs a window covering that one.
-    if self
-      .slide
-      .as_ref()
-      .is_some_and(|slide| &slide.viewport != viewport)
-    {
-      self.slide = None;
-      self.is_sliding = false;
-    }
-
-    let slide = match &mut self.slide {
-      Some(slide) => slide,
-      slot @ None => {
-        match SlideRing::create(viewport, self.params, anchor) {
-          Ok(slide) => slot.insert(slide),
-          Err(err) => {
-            tracing::warn!("Border overlay slide ring failed: {err}");
-            return false;
-          }
-        }
-      }
-    };
-
-    let is_laid_out = slide.is_laid_out;
-    slide.slide(window_rect, panel, self.params.width);
-    slide.is_laid_out = true;
-
-    if !self.is_sliding && is_laid_out {
-      overlay_window::swap(
-        &mut slide.window,
-        viewport,
-        anchor,
-        &mut self.window,
-      );
-      self.is_sliding = true;
-    }
-
-    true
-  }
-
-  /// Swaps this ring back in for the slide ring, at `window_rect` behind
-  /// `anchor`.
-  ///
-  /// This ring sat hidden since the slide began at the rect its window had
-  /// then, which is where a window lands again unless the layout changed
-  /// meanwhile, so the swap shows a ring already in place.
-  fn end_slide(&mut self, window_rect: &Rect, anchor: HWND) {
-    let outer = outer_rect(window_rect, self.params.width);
-    self.apply_ring_rect(&outer);
-
-    match &mut self.slide {
-      Some(slide) => {
-        overlay_window::swap(
-          &mut self.window,
-          &outer,
-          anchor,
-          &mut slide.window,
-        );
-        slide.is_laid_out = false;
-      }
-      None => {
-        if let Err(err) = self.window.place(&outer, anchor) {
-          tracing::warn!("{err}");
-        }
-      }
-    }
-    self.is_sliding = false;
-
-    self.refresh_hole(&outer);
-    self.rect = window_rect.clone();
-  }
-}
-
-/// The ring a workspace-switch slide draws in place of its overlay's own:
-/// a window of its own pinned to the monitor, with the ring slid inside
-/// it by a composition offset.
-///
-/// Its own window, so the overlay's never has to leave a pin. That took
-/// shrinking the window and re-zeroing the ring's offset together, which
-/// reach DWM on independent schedules, so the ring was hidden through the
-/// change and blinked out as every switch ended. The two windows swap in
-/// one `DeferWindowPos` transaction instead.
-struct SlideRing {
-  /// Declared before `window`, which it is rooted to.
-  composition: BorderVisual,
-  window: OverlayWindow,
-
-  /// Monitor viewport `window` covers.
-  viewport: Rect,
-
-  /// Window rect the ring was last slid to.
-  rect: Rect,
-
-  /// Panel the ring was last cut at: its workspace's monitor as moved by
-  /// the slide.
-  panel: Rect,
-
-  /// Pixels of the ring's outer rect cut away on each side (left, top,
-  /// right, bottom) at `panel`.
-  clip_insets: [i32; 4],
-
-  /// Whether the ring has been laid out for the slide under way, so its
-  /// window may be shown.
-  is_laid_out: bool,
-}
-
-impl SlideRing {
-  /// Creates the ring's window, hidden, over `viewport`.
-  fn create(
-    viewport: &Rect,
-    params: BorderOverlayParams,
-    anchor: HWND,
-  ) -> crate::Result<Self> {
-    let window =
-      OverlayWindow::create(OverlayKind::Border, viewport, anchor)?;
-    let composition =
-      BorderVisual::create(window.hwnd(), viewport, params)?;
-
-    Ok(Self {
-      composition,
-      window,
-      viewport: viewport.clone(),
-      rect: Rect::from_ltrb(0, 0, 0, 0),
-      panel: viewport.clone(),
-      clip_insets: [0; 4],
-      is_laid_out: false,
-    })
-  }
-
-  /// Moves the ring to `window_rect` with a border `width` wide, cut at
-  /// `panel`.
-  ///
-  /// The ring's geometry is only rebuilt when the window's *size* changes
-  /// (a zooming slide); a pure translation costs a single property write.
-  fn slide(&mut self, window_rect: &Rect, panel: &Rect, width: f32) {
-    if &self.rect == window_rect && &self.panel == panel {
-      return;
-    }
-
-    let _scope = crate::perf::scope(crate::perf::Stage::OverlayVisual);
-    let outer = outer_rect(window_rect, width);
-    let composition = &self.composition;
-
-    let insets = insets_outside(&outer, panel);
-    if insets != self.clip_insets {
-      match composition.set_clip_insets(insets) {
-        Ok(()) => self.clip_insets = insets,
-        Err(e) => {
-          tracing::warn!("Border overlay composition clip failed: {e}.");
-        }
-      }
-    }
-
-    if self.rect.width() != window_rect.width()
-      || self.rect.height() != window_rect.height()
-    {
-      if let Err(e) = composition.set_rect(&outer) {
-        tracing::warn!("Border overlay composition resize failed: {e}.");
-      }
-    }
-
-    if let Err(e) = composition.set_offset(
-      outer.x() - self.viewport.x(),
-      outer.y() - self.viewport.y(),
-    ) {
-      tracing::warn!("Border overlay composition offset failed: {e}.");
-      return;
-    }
-
-    self.panel = panel.clone();
-    self.rect = window_rect.clone();
   }
 }
 
@@ -731,9 +443,6 @@ impl Overlay for NativeBorderOverlay {
       hole_shape: None,
       bounds: None,
       clip_insets: [0; 4],
-      slide: None,
-      is_sliding: false,
-      classified_anchor: (0, false),
     };
     overlay.refresh_hole(&outer);
 
@@ -750,7 +459,7 @@ impl Overlay for NativeBorderOverlay {
 
   fn defer_rect(
     &mut self,
-    batch: &mut SurrogateBatch,
+    batch: &mut WindowBatch,
     window_rect: &Rect,
     anchor: HWND,
   ) {
@@ -762,7 +471,7 @@ impl Overlay for NativeBorderOverlay {
   /// inside `clip`, so it ends at the edge like the window does.
   fn defer_clipped_rect(
     &mut self,
-    batch: &mut SurrogateBatch,
+    batch: &mut WindowBatch,
     window_rect: &Rect,
     clip: &Rect,
     anchor: HWND,
@@ -782,26 +491,14 @@ impl Overlay for NativeBorderOverlay {
     anchor: HWND,
     force: bool,
   ) -> crate::Result<()> {
-    match &mut self.slide {
-      Some(slide) if self.is_sliding => {
-        slide.window.sync_z_order(anchor, force)
-      }
-      _ => self.window.sync_z_order(anchor, force),
-    }
+    self.window.sync_z_order(anchor, force)
   }
 
   fn is_visible(&self) -> bool {
-    self.is_sliding || self.window.is_visible()
+    self.window.is_visible()
   }
 
   fn hide(&mut self) {
-    // The slide is ended too, so a window sliding back into view shows
-    // its ring again through a fresh swap.
-    if let Some(slide) = &mut self.slide {
-      slide.window.hide();
-      slide.is_laid_out = false;
-    }
-    self.is_sliding = false;
     self.window.hide();
   }
 

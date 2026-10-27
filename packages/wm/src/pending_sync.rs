@@ -87,9 +87,9 @@ pub struct PendingSync {
   ///
   /// Gates the one exception to the blanket "never animate fullscreen
   /// windows" rule. That rule exists because exclusive-fullscreen games
-  /// mode-set the display, and cloaking one behind a surrogate kicks it
-  /// out of fullscreen, reverts the resolution and re-triggers the
-  /// relayout in a loop. An app driving itself fullscreen is detected
+  /// mode-set the display, and covering one with a scene kicks it out of
+  /// fullscreen, reverts the resolution and re-triggers the relayout in a
+  /// loop. An app driving itself fullscreen is detected
   /// in `handle_window_moved_or_resized` and routed through
   /// `update_window_state` -- the same path a WM command takes -- so
   /// `window_state_changes` alone cannot tell the two apart. Only the
@@ -110,8 +110,8 @@ pub struct PendingSync {
   /// Whether animations should be skipped for this sync cycle.
   ///
   /// Set on display setting changes: animating a relayout caused by a
-  /// resolution or working-area change is visually meaningless, and the
-  /// cloak/surrogate mechanism would kick exclusive-fullscreen games out
+  /// resolution or working-area change is visually meaningless, and a
+  /// scene covering the monitor would kick exclusive-fullscreen games out
   /// of fullscreen (reverting the resolution and re-triggering the
   /// event in a loop). In-flight animations of redrawn windows are
   /// cancelled and their windows snap to their target rect. Also set for
