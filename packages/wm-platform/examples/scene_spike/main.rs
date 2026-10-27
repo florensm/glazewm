@@ -582,7 +582,8 @@ mod windows_impl {
     }
 
     /// Adds `layer`'s thumbnail above the others, where its window is on
-    /// screen and cut to its visible frame, which it returns.
+    /// screen and cut to the part of its visible frame on the monitor.
+    /// Returns that whole visible frame.
     #[allow(clippy::cast_precision_loss)]
     fn add_layer(
       &mut self,
@@ -599,6 +600,11 @@ mod windows_impl {
         .map_err(|err| fail(&err.to_string()))?;
       let visible =
         window.frame().map_err(|err| fail(&err.to_string()))?;
+      // A window hanging off the monitor mustn't bring its hidden part
+      // into view as it slides.
+      let shown = visible
+        .intersection(monitor)
+        .ok_or_else(|| fail("not on the monitor"))?;
 
       let mut size = SIZE::default();
       // SAFETY: `size` outlives the call.
@@ -656,21 +662,28 @@ mod windows_impl {
         item.SetOffsetY2((outer.top - monitor.top) as f32)?;
 
         // Thumbnails include the transparent resize border; cut to what
-        // DWM draws of the window, rounded like it if asked.
+        // DWM draws of the window, rounded like it if asked, except at
+        // the monitor's edges, which cut it straight.
         let clip = self.device.CreateRectangleClip()?;
-        clip.SetLeft2((visible.left - outer.left) as f32)?;
-        clip.SetTop2((visible.top - outer.top) as f32)?;
-        clip.SetRight2((visible.right - outer.left) as f32)?;
-        clip.SetBottom2((visible.bottom - outer.top) as f32)?;
+        clip.SetLeft2((shown.left - outer.left) as f32)?;
+        clip.SetTop2((shown.top - outer.top) as f32)?;
+        clip.SetRight2((shown.right - outer.left) as f32)?;
+        clip.SetBottom2((shown.bottom - outer.top) as f32)?;
         if corner_radius > 0.0 {
-          clip.SetTopLeftRadiusX2(corner_radius)?;
-          clip.SetTopLeftRadiusY2(corner_radius)?;
-          clip.SetTopRightRadiusX2(corner_radius)?;
-          clip.SetTopRightRadiusY2(corner_radius)?;
-          clip.SetBottomLeftRadiusX2(corner_radius)?;
-          clip.SetBottomLeftRadiusY2(corner_radius)?;
-          clip.SetBottomRightRadiusX2(corner_radius)?;
-          clip.SetBottomRightRadiusY2(corner_radius)?;
+          let left = shown.left == visible.left;
+          let top = shown.top == visible.top;
+          let right = shown.right == visible.right;
+          let bottom = shown.bottom == visible.bottom;
+          let radius =
+            |is_own: bool| if is_own { corner_radius } else { 0.0 };
+          clip.SetTopLeftRadiusX2(radius(left && top))?;
+          clip.SetTopLeftRadiusY2(radius(left && top))?;
+          clip.SetTopRightRadiusX2(radius(right && top))?;
+          clip.SetTopRightRadiusY2(radius(right && top))?;
+          clip.SetBottomLeftRadiusX2(radius(left && bottom))?;
+          clip.SetBottomLeftRadiusY2(radius(left && bottom))?;
+          clip.SetBottomRightRadiusX2(radius(right && bottom))?;
+          clip.SetBottomRightRadiusY2(radius(right && bottom))?;
         }
         item.SetClip(&clip)?;
 
