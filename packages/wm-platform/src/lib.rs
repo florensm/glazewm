@@ -72,7 +72,7 @@ mod backdrop_canvas;
 mod native_scene;
 #[cfg(target_os = "windows")]
 pub use native_scene::{
-  ItemPose, NativeScene, SceneBackdrop, SceneGroupId, SceneItem,
+  ItemPose, NativeScene, SceneBackdrop, SceneFit, SceneGroupId, SceneItem,
   SceneMotion, ScenePose, SceneSegment, SceneValue, SceneWindow,
 };
 #[cfg(target_os = "windows")]

@@ -23,7 +23,7 @@ use wm_common::{
 use wm_platform::{
   perf::{self, Stage},
   NativeScene, NativeWindowWindowsExt, Overlay, Rect, SceneBackdrop,
-  SceneGroupId, SceneItem, SceneMotion, ScenePose, SceneSegment,
+  SceneFit, SceneGroupId, SceneItem, SceneMotion, ScenePose, SceneSegment,
   SceneValue, SceneWindow,
 };
 
@@ -352,7 +352,7 @@ pub fn cover(
     };
   }
 
-  match NativeScene::cover(&props.bounds, &items) {
+  match NativeScene::cover(&props.bounds, &items, &[]) {
     Ok((native, id)) => {
       scenes.scenes.push(MonitorScene {
         monitor_id: monitor.id(),
@@ -721,6 +721,7 @@ fn workspace_items(
       ),
       backdrop,
       required: true,
+      fit: SceneFit::Exact,
     }];
 
     if let Some(border) = state
@@ -735,6 +736,7 @@ fn workspace_items(
         corner_radius: 0.0,
         backdrop: None,
         required: false,
+        fit: SceneFit::Exact,
       });
     }
 
@@ -768,6 +770,7 @@ fn workspace_items(
       corner_radius: 0.0,
       backdrop: None,
       required: false,
+      fit: SceneFit::Exact,
     };
 
     let active = stack.active_child().map(|child| child.id().as_u128());

@@ -8,6 +8,12 @@
 //! No window is ever swapped for its copy in view: every cloak and uncloak
 //! happens under the cover.
 //!
+//! Copies are grouped, e.g. by workspace, and within a group by item: a
+//! window with its border, backdrop and tab bar, which moves and resizes
+//! on its own. A resizing copy is stretched, as Hyprland stretches a
+//! window's surface, but keeps its corners round, its border's width and
+//! its backdrop in place.
+//!
 //! Copies are thumbnail visuals from `DwmpCreateSharedThumbnailVisual`, a
 //! private `dwmapi.dll` export, so a scene is one visual tree that commits
 //! atomically. What lies beneath the moving windows is a copy of every
@@ -40,8 +46,9 @@ use windows::{
       DirectComposition::{
         DCompositionCreateDevice3, IDCompositionAnimation,
         IDCompositionDesktopDevice, IDCompositionEffectGroup,
-        IDCompositionScaleTransform, IDCompositionSurface,
-        IDCompositionTarget, IDCompositionVisual, IDCompositionVisual2,
+        IDCompositionRectangleClip, IDCompositionScaleTransform,
+        IDCompositionSurface, IDCompositionTarget, IDCompositionVisual,
+        IDCompositionVisual2,
         DCOMPOSITION_BITMAP_INTERPOLATION_MODE_LINEAR,
       },
       Dwm::{
@@ -346,6 +353,8 @@ pub struct SceneWindow {
   /// Whether its group can't do without it: a group fails to be made
   /// without a required window, and is made without an optional one.
   pub required: bool,
+
+  pub fit: SceneFit,
 }
 
 impl SceneWindow {
@@ -366,8 +375,32 @@ impl SceneWindow {
       corner_radius: 0.0,
       backdrop: None,
       required: false,
+      fit: SceneFit::Exact,
     }
   }
+}
+
+/// How a copy covers its placement, and follows its item's frame as that
+/// resizes.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum SceneFit {
+  /// At its window's own size, from its placement's corner.
+  Exact,
+
+  /// Its whole window stretched over its placement, and scaled with the
+  /// frame about the frame's top-left corner.
+  Stretch,
+
+  /// Its whole window stretched over its placement and cut in nine at
+  /// these insets, in pixels: each edge keeps to the frame's nearest
+  /// edge, the corners keep their size, the edges stretch along their
+  /// length, and the middle is left out, e.g. for a border ring.
+  Frame {
+    left: f32,
+    top: f32,
+    right: f32,
+    bottom: f32,
+  },
 }
 
 /// A window's backdrop as its overlay draws it, but from the blurred
@@ -418,6 +451,7 @@ impl SceneValue {
   fn mapped(&self, scale: f32, add: f32) -> Self {
     match self {
       Self::Fixed(value) => Self::Fixed(scale * value + add),
+      Self::Moving(_) if scale.abs() < f32::EPSILON => Self::Fixed(add),
       Self::Moving(motion) => Self::Moving(SceneMotion {
         begins_at: motion.begins_at,
         duration: motion.duration,
@@ -469,7 +503,7 @@ pub struct SceneItem {
   pub frame: Rect,
 
   /// The window, then what's drawn with it, e.g. its border. Windows they
-  /// own come along.
+  /// own come along, staying put as the item moves.
   pub windows: Vec<SceneWindow>,
 
   /// Whether its copies are cut where the monitor's edge cuts them at
@@ -479,30 +513,123 @@ pub struct SceneItem {
   pub is_cut_at_rest: bool,
 }
 
-/// Where an item is drawn relative to its frame: offset in pixels, scale
-/// about the frame's top-left corner, and opacity.
+/// Where an item is drawn relative to its frame at rest: offset in
+/// pixels, scale of the frame about its top-left corner, zoom of the whole
+/// item about the frame's center, and opacity.
 #[derive(Clone, Debug)]
 pub struct ItemPose {
   pub offset_x: SceneValue,
   pub offset_y: SceneValue,
   pub scale_x: SceneValue,
   pub scale_y: SceneValue,
+  pub zoom: SceneValue,
   pub opacity: SceneValue,
 }
 
 /// A live copy of a window in a scene.
 struct WindowCopy {
-  thumbnail: isize,
+  /// Its thumbnails: one, or one per piece of a frame.
+  thumbnails: Vec<isize>,
   backdrop: Option<BackdropCopy>,
+  shape: Shape,
 }
 
 impl WindowCopy {
   fn unregister(&self) {
-    // SAFETY: The handle came from DWM and is released once, here.
-    let _ = unsafe { DwmUnregisterThumbnail(self.thumbnail) };
+    for thumbnail in &self.thumbnails {
+      // SAFETY: The handle came from DWM and is released once, here.
+      let _ = unsafe { DwmUnregisterThumbnail(*thumbnail) };
+    }
     if let Some(backdrop) = &self.backdrop {
       backdrop.unregister();
     }
+  }
+}
+
+/// How a copy follows its item's frame as that resizes.
+enum Shape {
+  /// Scaled about the frame's top-left corner, with its clip's far edges
+  /// keeping to the frame's.
+  Whole {
+    /// Scale its content, and its backdrop's vignette.
+    scales: Vec<IDCompositionScaleTransform>,
+    clip: IDCompositionRectangleClip,
+
+    /// The clip's right and bottom edges at rest, where they keep to the
+    /// frame's rather than the monitor's.
+    right: Option<f32>,
+    bottom: Option<f32>,
+  },
+
+  /// The pieces of a [`SceneFit::Frame`].
+  Pieces(Vec<Piece>),
+}
+
+/// A piece of a frame copy, moved and stretched along with the frame.
+struct Piece {
+  visual: IDCompositionVisual2,
+  scale: IDCompositionScaleTransform,
+  x: Span,
+  y: Span,
+}
+
+impl Piece {
+  /// Keeps it to its item's frame, `width` by `height` at rest, as that is
+  /// scaled by `scale_x` and `scale_y`.
+  ///
+  /// # Safety
+  ///
+  /// Its objects must be live and of `device`.
+  unsafe fn pose(
+    &self,
+    device: &SceneDevice,
+    scale_x: &SceneValue,
+    scale_y: &SceneValue,
+    width: f32,
+    height: f32,
+  ) -> crate::Result<()> {
+    Settable::new(device, &self.x.offset(scale_x, width))?.set(
+      |value| self.visual.SetOffsetX2(value),
+      |animation| self.visual.SetOffsetX(animation),
+    )?;
+    Settable::new(device, &self.y.offset(scale_y, height))?.set(
+      |value| self.visual.SetOffsetY2(value),
+      |animation| self.visual.SetOffsetY(animation),
+    )?;
+    Settable::new(device, &self.x.stretch(scale_x, width))?.set(
+      |value| self.scale.SetScaleX2(value),
+      |animation| self.scale.SetScaleX(animation),
+    )?;
+    Settable::new(device, &self.y.stretch(scale_y, height))?.set(
+      |value| self.scale.SetScaleY2(value),
+      |animation| self.scale.SetScaleY(animation),
+    )
+  }
+}
+
+/// Where a piece of a frame copy lies along one axis, and how it follows
+/// the frame growing by `d` pixels along it.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct Span {
+  /// Start at rest, in the scene's coordinates.
+  start: f32,
+  length: f32,
+
+  /// Shares of `d` its start moves by, and its length grows by.
+  moves: f32,
+  grows: f32,
+}
+
+impl Span {
+  /// Its start as the frame, `size` long at rest, is scaled by `scale`.
+  fn offset(&self, scale: &SceneValue, size: f32) -> SceneValue {
+    scale.mapped(self.moves * size, self.start - self.moves * size)
+  }
+
+  /// Its stretch as the frame, `size` long at rest, is scaled by `scale`.
+  fn stretch(&self, scale: &SceneValue, size: f32) -> SceneValue {
+    let grow = self.grows * size / self.length;
+    scale.mapped(grow, 1.0 - grow)
   }
 }
 
@@ -540,25 +667,112 @@ impl BackdropCopy {
 struct Item {
   key: u128,
 
+  /// Its window, which it is stacked by.
+  anchor: HWND,
+
+  /// Its frame at rest, in the scene's coordinates, which its pose is
+  /// relative to.
+  frame: Rect,
+
   /// Moved by the item's offset and faded by `effect`; holds the rest.
   visual: IDCompositionVisual2,
   effect: IDCompositionEffectGroup,
 
-  /// Scales the item about its frame's top-left corner.
-  scale: IDCompositionScaleTransform,
-
-  /// Scales the item about its frame's center, for its group's
-  /// `item_scale`.
+  /// Scale the item about its frame's center: for its group's
+  /// `item_scale`, then for its own zoom.
   zoom: IDCompositionScaleTransform,
-
+  own_zoom: IDCompositionScaleTransform,
   copies: Vec<WindowCopy>,
+
+  /// The windows it owns, just above it.
+  pinned: Option<Pinned>,
 }
 
 impl Item {
   fn unregister(&self) {
-    for copy in &self.copies {
+    let pinned = self.pinned.iter().flat_map(|pinned| &pinned.copies);
+    for copy in self.copies.iter().chain(pinned) {
       copy.unregister();
     }
+  }
+
+  /// Its topmost visual.
+  fn top(&self) -> &IDCompositionVisual2 {
+    self
+      .pinned
+      .as_ref()
+      .map_or(&self.visual, |pinned| &pinned.visual)
+  }
+
+  /// Adds its visuals to `content`, just above `reference`, or above
+  /// everything without one.
+  ///
+  /// # Safety
+  ///
+  /// Every object must be live and of the same device.
+  unsafe fn insert(
+    &self,
+    content: &IDCompositionVisual2,
+    reference: Option<&IDCompositionVisual2>,
+  ) -> windows::core::Result<()> {
+    match reference {
+      Some(reference) => {
+        content.AddVisual(&self.visual, true, reference)?;
+      }
+      None => content.AddVisual(&self.visual, false, None)?,
+    }
+    if let Some(pinned) = &self.pinned {
+      content.AddVisual(&pinned.visual, true, &self.visual)?;
+    }
+    Ok(())
+  }
+
+  /// Takes its visuals out of `content`.
+  ///
+  /// # Safety
+  ///
+  /// Every object must be live and of the same device.
+  unsafe fn detach(&self, content: &IDCompositionVisual2) {
+    let _ = content.RemoveVisual(&self.visual);
+    if let Some(pinned) = &self.pinned {
+      let _ = content.RemoveVisual(&pinned.visual);
+    }
+  }
+}
+
+/// Copies of the windows an item's windows own, which stay put as it
+/// moves but fade with it.
+struct Pinned {
+  visual: IDCompositionVisual2,
+  effect: IDCompositionEffectGroup,
+
+  /// Scales them about the item's frame's center, for its group's
+  /// `item_scale`.
+  zoom: IDCompositionScaleTransform,
+  copies: Vec<WindowCopy>,
+}
+
+/// The windows an item copies.
+struct Members {
+  /// Its windows, then those drawn as their companions, which move with
+  /// them.
+  moving: Vec<SceneWindow>,
+
+  /// Windows they own, which stay put.
+  pinned: Vec<SceneWindow>,
+}
+
+impl Members {
+  fn draws(&self, hwnd: HWND) -> bool {
+    self
+      .moving
+      .iter()
+      .chain(&self.pinned)
+      .any(|member| member.draws(hwnd))
+  }
+
+  fn len(&self) -> usize {
+    self.moving.len() + self.pinned.len()
   }
 }
 
@@ -715,9 +929,9 @@ impl NativeScene {
     SceneDevice::shared().map(|_| ())
   }
 
-  /// Covers `monitor` with copies of every window shown on it, those of
-  /// `items` in a group of their own, and returns once the cover is on
-  /// screen.
+  /// Covers `monitor` with copies of every window shown on it but those
+  /// `left_out`, those of `items` in a group of their own, and returns
+  /// once the cover is on screen.
   ///
   /// Blocks for two compositions: one drawing the copies faintly, one
   /// showing them. Fails if a required window of `items` can't be copied,
@@ -726,11 +940,12 @@ impl NativeScene {
   pub fn cover(
     monitor: &Rect,
     items: &[SceneItem],
+    left_out: &[HWND],
   ) -> crate::Result<(Self, SceneGroupId)> {
     let device = SceneDevice::shared()?;
 
     let built = Self::build(device, monitor).and_then(|mut scene| {
-      let id = scene.cover_with(items)?;
+      let id = scene.cover_with(items, left_out)?;
       Ok((scene, id))
     });
 
@@ -772,6 +987,7 @@ impl NativeScene {
   fn cover_with(
     &mut self,
     items: &[SceneItem],
+    left_out: &[HWND],
   ) -> crate::Result<SceneGroupId> {
     let started = Instant::now();
     let order = top_level_windows();
@@ -784,7 +1000,8 @@ impl NativeScene {
     let mut above = Vec::new();
     for &hwnd in &order {
       if hwnd == self.host.hwnd
-        || members.iter().flatten().any(|member| member.draws(hwnd))
+        || left_out.contains(&hwnd)
+        || members.iter().any(|members| members.draws(hwnd))
         || !self.is_still(hwnd)
       {
         continue;
@@ -800,8 +1017,8 @@ impl NativeScene {
     // Bottom-most first, each added above the ones before it.
     let mut has_floor = false;
     for hwnd in below.iter().rev() {
-      match self.copy(&SceneWindow::as_is(*hwnd), &self.root.clone(), true)
-      {
+      let window = SceneWindow::as_is(*hwnd);
+      match self.copy(&window, None, &self.root.clone(), true) {
         Ok(Some((copy, covers_monitor))) => {
           has_floor |= covers_monitor;
           self.stills.push(copy);
@@ -824,8 +1041,8 @@ impl NativeScene {
     unsafe { self.root.AddVisual(&self.groups_parent, false, None) }?;
 
     for hwnd in above.iter().rev() {
-      match self.copy(&SceneWindow::as_is(*hwnd), &self.root.clone(), true)
-      {
+      let window = SceneWindow::as_is(*hwnd);
+      match self.copy(&window, None, &self.root.clone(), true) {
         Ok(Some((copy, _))) => self.stills.push(copy),
         Ok(None) => {}
         Err(err) => tracing::debug!(
@@ -857,7 +1074,7 @@ impl NativeScene {
 
     tracing::debug!(
       "Scene covered {} windows in {:?} ({:?} building).",
-      self.stills.len() + members.iter().map(Vec::len).sum::<usize>(),
+      self.stills.len() + members.iter().map(Members::len).sum::<usize>(),
       started.elapsed(),
       built - started,
     );
@@ -904,18 +1121,14 @@ impl NativeScene {
     };
 
     let index = group.items.iter().position(|old| old.key == item.key);
+    let reference = index.map(|index| group.items[index].top().clone());
+
     // SAFETY: Plain `DirectComposition` calls on live visuals.
-    let added = unsafe {
-      match index {
-        Some(index) => group.content.AddVisual(
-          &built.visual,
-          true,
-          &group.items[index].visual,
-        ),
-        None => group.content.AddVisual(&built.visual, false, None),
-      }
-    };
-    if let Err(err) = added {
+    if let Err(err) =
+      unsafe { built.insert(&group.content, reference.as_ref()) }
+    {
+      // SAFETY: As above.
+      unsafe { built.detach(&group.content) };
       built.unregister();
       return Err(err.into());
     }
@@ -923,8 +1136,8 @@ impl NativeScene {
     match index {
       Some(index) => {
         let old = std::mem::replace(&mut group.items[index], built);
-        // SAFETY: Plain `DirectComposition` call on live visuals.
-        let _ = unsafe { group.content.RemoveVisual(&old.visual) };
+        // SAFETY: Plain `DirectComposition` calls on live visuals.
+        unsafe { old.detach(&group.content) };
         old.unregister();
       }
       None => group.items.push(built),
@@ -945,9 +1158,41 @@ impl NativeScene {
     };
 
     let item = group.items.remove(index);
-    // SAFETY: Plain `DirectComposition` call on live visuals.
-    let _ = unsafe { group.content.RemoveVisual(&item.visual) };
+    // SAFETY: Plain `DirectComposition` calls on live visuals.
+    unsafe { item.detach(&group.content) };
     item.unregister();
+  }
+
+  /// Stacks group `id`'s items as their windows are stacked now, e.g.
+  /// after one was raised, from the next commit.
+  pub fn restack(&mut self, id: SceneGroupId) -> crate::Result<()> {
+    let Some(group) = self.groups.iter_mut().find(|group| group.id == id)
+    else {
+      return Ok(());
+    };
+
+    let order = top_level_windows();
+    let is_stacked = group.items.windows(2).all(|pair| {
+      z_index(pair[0].anchor, &order) >= z_index(pair[1].anchor, &order)
+    });
+    if is_stacked {
+      return Ok(());
+    }
+
+    // Bottom-most first, as each is added above the ones before it.
+    group
+      .items
+      .sort_by_key(|item| std::cmp::Reverse(z_index(item.anchor, &order)));
+
+    // SAFETY: Plain `DirectComposition` calls on live visuals.
+    unsafe {
+      group.content.RemoveAllVisuals()?;
+      for item in &group.items {
+        item.insert(&group.content, None)?;
+      }
+    }
+
+    Ok(())
   }
 
   /// Puts the scene back above windows raised over it since it was shown,
@@ -991,10 +1236,13 @@ impl NativeScene {
 
       for item in &group.items {
         item_scale.set_scale(&item.zoom)?;
+        if let Some(pinned) = &item.pinned {
+          item_scale.set_scale(&pinned.zoom)?;
+        }
 
-        for backdrop in
-          item.copies.iter().filter_map(|c| c.backdrop.as_ref())
-        {
+        let backdrops =
+          item.copies.iter().filter_map(|copy| copy.backdrop.as_ref());
+        for backdrop in backdrops {
           let back = -backdrop.parallax;
           let (x, y) = backdrop.rest;
           Settable::new(&device, &pose.offset_x.mapped(back, x))?.set(
@@ -1029,6 +1277,13 @@ impl NativeScene {
       return Ok(());
     };
 
+    #[allow(clippy::cast_precision_loss)]
+    let (width, height) =
+      (item.frame.width() as f32, item.frame.height() as f32);
+    let scale_x = Settable::new(&device, &pose.scale_x)?;
+    let scale_y = Settable::new(&device, &pose.scale_y)?;
+    let opacity = Settable::new(&device, &pose.opacity)?;
+
     // SAFETY: Plain `DirectComposition` calls on live objects.
     unsafe {
       Settable::new(&device, &pose.offset_x)?.set(
@@ -1039,31 +1294,81 @@ impl NativeScene {
         |value| item.visual.SetOffsetY2(value),
         |animation| item.visual.SetOffsetY(animation),
       )?;
-      Settable::new(&device, &pose.scale_x)?.set(
-        |value| item.scale.SetScaleX2(value),
-        |animation| item.scale.SetScaleX(animation),
-      )?;
-      Settable::new(&device, &pose.scale_y)?.set(
-        |value| item.scale.SetScaleY2(value),
-        |animation| item.scale.SetScaleY(animation),
-      )?;
-      Settable::new(&device, &pose.opacity)?.set(
+      opacity.set(
         |value| item.effect.SetOpacity2(value),
         |animation| item.effect.SetOpacity(animation),
       )?;
+      if let Some(pinned) = &item.pinned {
+        opacity.set(
+          |value| pinned.effect.SetOpacity2(value),
+          |animation| pinned.effect.SetOpacity(animation),
+        )?;
+      }
+      Settable::new(&device, &pose.zoom)?.set_scale(&item.own_zoom)?;
 
-      for backdrop in
-        item.copies.iter().filter_map(|c| c.backdrop.as_ref())
-      {
-        let back = -backdrop.parallax;
-        Settable::new(&device, &pose.offset_x.mapped(back, 0.0))?.set(
-          |value| backdrop.item_back.SetOffsetX2(value),
-          |animation| backdrop.item_back.SetOffsetX(animation),
-        )?;
-        Settable::new(&device, &pose.offset_y.mapped(back, 0.0))?.set(
-          |value| backdrop.item_back.SetOffsetY2(value),
-          |animation| backdrop.item_back.SetOffsetY(animation),
-        )?;
+      for copy in &item.copies {
+        match &copy.shape {
+          Shape::Whole {
+            scales,
+            clip,
+            right,
+            bottom,
+          } => {
+            for scale in scales {
+              scale_x.set(
+                |value| scale.SetScaleX2(value),
+                |animation| scale.SetScaleX(animation),
+              )?;
+              scale_y.set(
+                |value| scale.SetScaleY2(value),
+                |animation| scale.SetScaleY(animation),
+              )?;
+            }
+            if let Some(right) = right {
+              Settable::new(
+                &device,
+                &pose.scale_x.mapped(width, right - width),
+              )?
+              .set(
+                |value| clip.SetRight2(value),
+                |animation| clip.SetRight(animation),
+              )?;
+            }
+            if let Some(bottom) = bottom {
+              Settable::new(
+                &device,
+                &pose.scale_y.mapped(height, bottom - height),
+              )?
+              .set(
+                |value| clip.SetBottom2(value),
+                |animation| clip.SetBottom(animation),
+              )?;
+            }
+          }
+          Shape::Pieces(pieces) => {
+            for piece in pieces {
+              piece.pose(
+                &device,
+                &pose.scale_x,
+                &pose.scale_y,
+                width,
+                height,
+              )?;
+            }
+          }
+        }
+
+        if let Some(backdrop) = &copy.backdrop {
+          let back = -backdrop.parallax;
+          Settable::new(&device, &pose.offset_x.mapped(back, 0.0))?.set(
+            |value| backdrop.item_back.SetOffsetX2(value),
+            |animation| backdrop.item_back.SetOffsetX(animation),
+          )?;
+          Settable::new(&device, &pose.offset_y.mapped(back, 0.0))?.set(
+            |value| backdrop.item_back.SetOffsetY2(value),
+            |animation| backdrop.item_back.SetOffsetY(animation),
+          )?;
+        }
       }
     }
 
@@ -1112,16 +1417,15 @@ impl NativeScene {
     Ok(committed?)
   }
 
-  /// The windows a scene group of `windows` copies: `windows`, then the
-  /// shown windows of `order` they own or that are their companions.
-  fn resolve(
-    &self,
-    windows: &[SceneWindow],
-    order: &[HWND],
-  ) -> Vec<SceneWindow> {
+  /// The windows an item of `windows` copies: `windows`, then the shown
+  /// windows of `order` drawn as their companions, and those they own.
+  fn resolve(&self, windows: &[SceneWindow], order: &[HWND]) -> Members {
     let explicit =
       windows.iter().map(|w| w.hwnd.0).collect::<HashSet<_>>();
-    let mut members = windows.to_vec();
+    let mut members = Members {
+      moving: windows.to_vec(),
+      pinned: Vec::new(),
+    };
 
     for &hwnd in order {
       if hwnd == self.host.hwnd
@@ -1131,13 +1435,32 @@ impl NativeScene {
       }
 
       // SAFETY: A stale handle just reads as hidden.
-      let is_shown = unsafe { IsWindowVisible(hwnd) }.as_bool();
+      let is_shown = unsafe { IsWindowVisible(hwnd) }.as_bool()
+        && !NativeWindow::new(hwnd.0).is_cloaked().unwrap_or(true);
+      if !is_shown {
+        continue;
+      }
 
-      if is_shown
-        && goes_with(hwnd, &explicit)
-        && !NativeWindow::new(hwnd.0).is_cloaked().unwrap_or(true)
-      {
-        members.push(SceneWindow::as_is(hwnd));
+      // A companion covers its window's frame, wherever that is.
+      let companion_of = companion::companion_of(hwnd)
+        .and_then(|of| windows.iter().find(|window| window.hwnd == of));
+
+      if let Some(of) = companion_of {
+        let fit = match of.fit {
+          SceneFit::Exact => SceneFit::Exact,
+          _ => SceneFit::Stretch,
+        };
+        members.moving.push(SceneWindow {
+          placement: of
+            .placement
+            .as_ref()
+            .map(|(_, frame)| (frame.clone(), frame.clone())),
+          corner_radius: of.corner_radius,
+          fit,
+          ..SceneWindow::as_is(hwnd)
+        });
+      } else if is_owned_by(hwnd, &explicit) {
+        members.pinned.push(SceneWindow::as_is(hwnd));
       }
     }
 
@@ -1149,7 +1472,7 @@ impl NativeScene {
   fn add_resolved_group(
     &mut self,
     items: &[SceneItem],
-    members: &[Vec<SceneWindow>],
+    members: &[Members],
     order: &[HWND],
   ) -> crate::Result<SceneGroupId> {
     let device = self.device.clone();
@@ -1193,29 +1516,27 @@ impl NativeScene {
       )
     });
 
-    for (item, members) in stacked {
-      let added =
-        self.build_item(item, members, order).and_then(|built| {
-          // SAFETY: Plain `DirectComposition` call on live visuals.
-          match unsafe {
-            group.content.AddVisual(&built.visual, false, None)
-          } {
-            Ok(()) => {
-              group.items.push(built);
-              Ok(())
-            }
-            Err(err) => {
-              built.unregister();
-              Err(err.into())
-            }
-          }
-        });
+    let release = |group: &Group| {
+      for item in &group.items {
+        item.unregister();
+      }
+    };
 
-      if let Err(err) = added {
-        for item in &group.items {
-          item.unregister();
+    for (item, members) in stacked {
+      let built = match self.build_item(item, members, order) {
+        Ok(built) => built,
+        Err(err) => {
+          release(&group);
+          return Err(err);
         }
-        return Err(err);
+      };
+
+      // SAFETY: Plain `DirectComposition` calls on live visuals.
+      let inserted = unsafe { built.insert(&group.content, None) };
+      group.items.push(built);
+      if let Err(err) = inserted {
+        release(&group);
+        return Err(err.into());
       }
     }
 
@@ -1223,9 +1544,7 @@ impl NativeScene {
     if let Err(err) =
       unsafe { self.groups_parent.AddVisual(&group.panel, false, None) }
     {
-      for item in &group.items {
-        item.unregister();
-      }
+      release(&group);
       return Err(err.into());
     }
 
@@ -1240,81 +1559,159 @@ impl NativeScene {
   fn build_item(
     &self,
     item: &SceneItem,
-    members: &[SceneWindow],
+    members: &Members,
     order: &[HWND],
   ) -> crate::Result<Item> {
     let dcomp = &self.device.dcomp;
-    let left = (item.frame.left - self.monitor.left) as f32;
-    let top = (item.frame.top - self.monitor.top) as f32;
+    let center = (
+      (item.frame.left - self.monitor.left) as f32
+        + item.frame.width() as f32 / 2.0,
+      (item.frame.top - self.monitor.top) as f32
+        + item.frame.height() as f32 / 2.0,
+    );
 
+    // A visual scaled about the frame's center, with the transform doing
+    // it.
+    let zoomed = || -> crate::Result<_> {
+      // SAFETY: Plain `DirectComposition` calls on live objects.
+      unsafe {
+        let zoom = dcomp.CreateScaleTransform()?;
+        zoom.SetCenterX2(center.0)?;
+        zoom.SetCenterY2(center.1)?;
+        let visual = dcomp.CreateVisual()?;
+        visual.SetTransform(&zoom)?;
+        Ok((visual, zoom))
+      }
+    };
+
+    let (zoomed_visual, zoom) = zoomed()?;
+    let (own_visual, own_zoom) = zoomed()?;
     // SAFETY: Plain `DirectComposition` calls on live objects.
-    let (visual, effect, scale, zoom, zoomed) = unsafe {
+    let (visual, effect) = unsafe {
       let visual = dcomp.CreateVisual()?;
       let effect = dcomp.CreateEffectGroup()?;
       visual.SetEffect(&effect)?;
-
-      let scale = dcomp.CreateScaleTransform()?;
-      scale.SetCenterX2(left)?;
-      scale.SetCenterY2(top)?;
-      let scaled = dcomp.CreateVisual()?;
-      scaled.SetTransform(&scale)?;
-      visual.AddVisual(&scaled, false, None)?;
-
-      let zoom = dcomp.CreateScaleTransform()?;
-      zoom.SetCenterX2(left + item.frame.width() as f32 / 2.0)?;
-      zoom.SetCenterY2(top + item.frame.height() as f32 / 2.0)?;
-      let zoomed = dcomp.CreateVisual()?;
-      zoomed.SetTransform(&zoom)?;
-      scaled.AddVisual(&zoomed, false, None)?;
-
-      (visual, effect, scale, zoom, zoomed)
+      visual.AddVisual(&zoomed_visual, false, None)?;
+      zoomed_visual.AddVisual(&own_visual, false, None)?;
+      (visual, effect)
     };
 
-    let mut stacked = members.to_vec();
+    let mut built = Item {
+      key: item.key,
+      anchor: item.windows.first().map_or(HWND(0), |window| window.hwnd),
+      frame: item.frame.clone(),
+      visual,
+      effect,
+      zoom,
+      own_zoom,
+      copies: Vec::new(),
+      pinned: None,
+    };
+
+    if let Err(err) = self.copy_all(
+      &members.moving,
+      &item.frame,
+      &own_visual,
+      item.is_cut_at_rest,
+      order,
+      &mut built.copies,
+    ) {
+      built.unregister();
+      return Err(err);
+    }
+
+    if !members.pinned.is_empty() {
+      let pinned = zoomed().and_then(|(visual, zoom)| {
+        // SAFETY: Plain `DirectComposition` calls on live objects.
+        let effect = unsafe {
+          let effect = dcomp.CreateEffectGroup()?;
+          visual.SetEffect(&effect)?;
+          effect
+        };
+        Ok(Pinned {
+          visual,
+          effect,
+          zoom,
+          copies: Vec::new(),
+        })
+      });
+
+      let mut pinned = match pinned {
+        Ok(pinned) => pinned,
+        Err(err) => {
+          built.unregister();
+          return Err(err);
+        }
+      };
+
+      let copied = self.copy_all(
+        &members.pinned,
+        &item.frame,
+        &pinned.visual.clone(),
+        true,
+        order,
+        &mut pinned.copies,
+      );
+      built.pinned = Some(pinned);
+      if let Err(err) = copied {
+        built.unregister();
+        return Err(err);
+      }
+    }
+
+    Ok(built)
+  }
+
+  /// Copies `windows` of an item of frame `frame` above `parent`'s
+  /// children, stacked as they are in `order`, into `copies`. Fails if a
+  /// required one can't be copied.
+  fn copy_all(
+    &self,
+    windows: &[SceneWindow],
+    frame: &Rect,
+    parent: &IDCompositionVisual2,
+    is_cut_at_rest: bool,
+    order: &[HWND],
+    copies: &mut Vec<WindowCopy>,
+  ) -> crate::Result<()> {
+    let mut stacked = windows.iter().collect::<Vec<_>>();
     // Bottom-most first, as each is added above the ones before it.
     // Windows gone meanwhile go first, and fail to copy.
-    stacked.sort_by_key(|member| {
-      std::cmp::Reverse(z_index(member.hwnd, order))
+    stacked.sort_by_key(|window| {
+      std::cmp::Reverse(z_index(window.hwnd, order))
     });
 
-    let mut copies = Vec::new();
-    for member in &stacked {
-      match self.copy(member, &zoomed, item.is_cut_at_rest) {
+    for window in stacked {
+      match self.copy(window, Some(frame), parent, is_cut_at_rest) {
         Ok(Some((copy, _))) => copies.push(copy),
         Ok(None) => {}
-        Err(err) if member.required => {
-          for copy in &copies {
-            copy.unregister();
-          }
+        Err(err) if window.required => {
           return Err(crate::Error::Platform(format!(
             "Can't copy {}: {err}",
-            window_class::describe(member.hwnd)
+            window_class::describe(window.hwnd)
           )));
         }
         Err(err) => tracing::debug!(
           "Scene left out {}: {err}",
-          window_class::describe(member.hwnd)
+          window_class::describe(window.hwnd)
         ),
       }
     }
 
-    Ok(Item {
-      key: item.key,
-      visual,
-      effect,
-      scale,
-      zoom,
-      copies,
-    })
+    Ok(())
   }
 
   /// Copies `window` above `parent`'s other children, cut to its visible
-  /// frame, and to the part of it on the monitor if `is_cut_at_rest`.
+  /// frame, and to the part of it on the monitor if `is_cut_at_rest`. It
+  /// follows `item_frame`, its own frame when `None`, as that resizes.
+  ///
   /// Returns the copy, with whether it opaquely covers the whole monitor,
-  /// or `None` if it isn't shown on the monitor.
+  /// or `None` if it isn't shown, or isn't on the monitor though cut to
+  /// it.
   fn copy(
     &self,
     window: &SceneWindow,
+    item_frame: Option<&Rect>,
     parent: &IDCompositionVisual2,
     is_cut_at_rest: bool,
   ) -> crate::Result<Option<(WindowCopy, bool)>> {
@@ -1336,8 +1733,11 @@ impl NativeScene {
       return Ok(None);
     };
 
-    let Some(shown) = frame.intersection(&self.monitor) else {
-      return Ok(None);
+    let shown = frame.intersection(&self.monitor);
+    let cut = match (is_cut_at_rest, shown) {
+      (true, Some(shown)) => shown,
+      (true, None) => return Ok(None),
+      (false, _) => frame.clone(),
     };
 
     // Thumbnails leave out the opacity a window is layered with.
@@ -1351,19 +1751,41 @@ impl NativeScene {
       })
       .unwrap_or(u8::MAX);
 
-    let (content, thumbnail) = self.thumbnail(window.hwnd, alpha)?;
+    let item_frame = item_frame.unwrap_or(&frame);
+
+    if let SceneFit::Frame {
+      left,
+      top,
+      right,
+      bottom,
+    } = window.fit
+    {
+      let copy = self.copy_frame(
+        window.hwnd,
+        alpha,
+        &outer,
+        item_frame,
+        [left, top, right, bottom],
+        parent,
+      )?;
+      return Ok(Some((copy, false)));
+    }
+
+    let stretched_over = (window.fit == SceneFit::Stretch)
+      .then(|| (outer.width(), outer.height()));
+    let (content, thumbnail) =
+      self.thumbnail(window.hwnd, alpha, stretched_over)?;
 
     // Without its backdrop, the copy is still worth showing.
     let backdrop = window.backdrop.and_then(|backdrop| {
       self
-        .backdrop(&backdrop.params, &outer, &frame)
+        .backdrop(&backdrop.params, &outer, &frame, item_frame)
         .inspect_err(|err| {
           tracing::debug!("Scene left out a backdrop: {err}");
         })
         .ok()
     });
 
-    let cut = if is_cut_at_rest { &shown } else { &frame };
     // SAFETY: Plain `DirectComposition` calls on live objects.
     let placed = unsafe {
       self.place(
@@ -1372,59 +1794,99 @@ impl NativeScene {
         backdrop.as_ref(),
         &outer,
         &frame,
-        cut,
+        &cut,
+        item_frame,
         parent,
       )
     };
 
-    let copy = WindowCopy {
-      thumbnail,
-      backdrop,
-    };
-    if let Err(err) = placed {
-      copy.unregister();
-      return Err(err);
+    match placed {
+      Ok(shape) => {
+        let copy = WindowCopy {
+          thumbnails: vec![thumbnail],
+          backdrop: backdrop.map(|(backdrop, _)| backdrop),
+          shape,
+        };
+        let covers_monitor =
+          alpha == u8::MAX && frame.contains_rect(&self.monitor);
+        Ok(Some((copy, covers_monitor)))
+      }
+      Err(err) => {
+        // SAFETY: Registered above and not handed out.
+        let _ = unsafe { DwmUnregisterThumbnail(thumbnail) };
+        if let Some((backdrop, _)) = &backdrop {
+          backdrop.unregister();
+        }
+        Err(err)
+      }
     }
-
-    let covers_monitor =
-      alpha == u8::MAX && frame.contains_rect(&self.monitor);
-    Ok(Some((copy, covers_monitor)))
   }
 
-  /// A thumbnail of all of `source` at `alpha`, with its handle.
+  /// A thumbnail of all of `source` at `alpha`, with its handle: at its
+  /// own size, or stretched over `size`.
   fn thumbnail(
     &self,
     source: HWND,
     alpha: u8,
+    size: Option<(i32, i32)>,
   ) -> crate::Result<(IDCompositionVisual, isize)> {
-    let mut size = SIZE::default();
-    // SAFETY: `size` outlives the call.
-    unsafe {
-      (self.device.exports.query_source_size)(
-        source,
-        false.into(),
-        &raw mut size,
-      )
-    }
-    .ok()?;
+    let properties = match size {
+      // Without a source rect, DWM draws whatever size the window has
+      // reached, e.g. mid resize.
+      Some((width, height)) if width > 0 && height > 0 => {
+        DWM_THUMBNAIL_PROPERTIES {
+          dwFlags: DWM_TNP_RECTDESTINATION
+            | DWM_TNP_OPACITY
+            | DWM_TNP_VISIBLE
+            | DWM_TNP_SOURCECLIENTAREAONLY,
+          rcDestination: RECT {
+            left: 0,
+            top: 0,
+            right: width,
+            bottom: height,
+          },
+          rcSource: RECT::default(),
+          opacity: alpha,
+          fVisible: true.into(),
+          fSourceClientAreaOnly: false.into(),
+        }
+      }
+      Some(_) => {
+        return Err(crate::Error::Platform(
+          "A copy can't be stretched over nothing.".to_string(),
+        ));
+      }
+      None => {
+        let mut size = SIZE::default();
+        // SAFETY: `size` outlives the call.
+        unsafe {
+          (self.device.exports.query_source_size)(
+            source,
+            false.into(),
+            &raw mut size,
+          )
+        }
+        .ok()?;
 
-    let whole = RECT {
-      left: 0,
-      top: 0,
-      right: size.cx,
-      bottom: size.cy,
-    };
-    let properties = DWM_THUMBNAIL_PROPERTIES {
-      dwFlags: DWM_TNP_RECTDESTINATION
-        | DWM_TNP_RECTSOURCE
-        | DWM_TNP_OPACITY
-        | DWM_TNP_VISIBLE
-        | DWM_TNP_SOURCECLIENTAREAONLY,
-      rcDestination: whole,
-      rcSource: whole,
-      opacity: alpha,
-      fVisible: true.into(),
-      fSourceClientAreaOnly: false.into(),
+        let whole = RECT {
+          left: 0,
+          top: 0,
+          right: size.cx,
+          bottom: size.cy,
+        };
+        DWM_THUMBNAIL_PROPERTIES {
+          dwFlags: DWM_TNP_RECTDESTINATION
+            | DWM_TNP_RECTSOURCE
+            | DWM_TNP_OPACITY
+            | DWM_TNP_VISIBLE
+            | DWM_TNP_SOURCECLIENTAREAONLY,
+          rcDestination: whole,
+          rcSource: whole,
+          opacity: alpha,
+          fVisible: true.into(),
+          fSourceClientAreaOnly: false.into(),
+        }
+      }
     };
 
     let mut raw = null_mut();
@@ -1449,16 +1911,18 @@ impl NativeScene {
   }
 
   /// The backdrop `params` draw beneath a window at `outer`, of visible
-  /// frame `frame`, in its copy's coordinates.
+  /// frame `frame`, in its copy's coordinates, with the transform scaling
+  /// its vignette along with `item_frame`.
   #[allow(clippy::cast_precision_loss)]
   fn backdrop(
     &self,
     params: &BackdropOverlayParams,
     outer: &Rect,
     frame: &Rect,
-  ) -> crate::Result<BackdropCopy> {
+    item_frame: &Rect,
+  ) -> crate::Result<(BackdropCopy, IDCompositionScaleTransform)> {
     let canvas = backdrop_canvas::canvas_for(&self.monitor, params)?;
-    let (content, thumbnail) = self.thumbnail(canvas, u8::MAX)?;
+    let (content, thumbnail) = self.thumbnail(canvas, u8::MAX, None)?;
 
     // Where the overlay's crop puts the image (see `set_crop`): pinned to
     // the desktop at a parallax of 1, trailing the window below it.
@@ -1504,26 +1968,37 @@ impl NativeScene {
         strength.SetOpacity2(params.vignette.clamp(0.0, 1.0))?;
         vignette.SetEffect(&strength)?;
 
+        let vignette_scale = dcomp.CreateScaleTransform()?;
+        vignette_scale
+          .SetCenterX2((item_frame.left - outer.left) as f32)?;
+        vignette_scale.SetCenterY2((item_frame.top - outer.top) as f32)?;
+        let scaled = dcomp.CreateVisual()?;
+        scaled.SetTransform(&vignette_scale)?;
+        scaled.AddVisual(&vignette, false, None)?;
+
         let visual = dcomp.CreateVisual()?;
         let opacity = dcomp.CreateEffectGroup()?;
         opacity.SetOpacity2(params.opacity.clamp(0.0, 1.0))?;
         visual.SetEffect(&opacity)?;
         visual.AddVisual(&item_back, false, None)?;
-        visual.AddVisual(&vignette, false, None)?;
+        visual.AddVisual(&scaled, false, None)?;
 
-        Ok((visual, item_back, blur))
+        Ok((visual, item_back, blur, vignette_scale))
       })()
     };
 
     match built {
-      Ok((visual, item_back, blur)) => Ok(BackdropCopy {
-        thumbnail,
-        visual,
-        item_back,
-        blur,
-        rest,
-        parallax,
-      }),
+      Ok((visual, item_back, blur, vignette_scale)) => Ok((
+        BackdropCopy {
+          thumbnail,
+          visual,
+          item_back,
+          blur,
+          rest,
+          parallax,
+        },
+        vignette_scale,
+      )),
       Err(err) => {
         // SAFETY: Registered above and not handed out.
         let _ = unsafe { DwmUnregisterThumbnail(thumbnail) };
@@ -1535,7 +2010,7 @@ impl NativeScene {
   /// Builds the visuals placing `content`, a thumbnail of `window`, over
   /// the monitor, on top of its `backdrop`, cut to `cut` (its visible
   /// `frame`, or part of it), and adds them above `parent`'s other
-  /// children.
+  /// children. Returns how it follows `item_frame` as that resizes.
   ///
   /// # Safety
   ///
@@ -1545,12 +2020,13 @@ impl NativeScene {
     &self,
     window: &SceneWindow,
     content: &IDCompositionVisual,
-    backdrop: Option<&BackdropCopy>,
+    backdrop: Option<&(BackdropCopy, IDCompositionScaleTransform)>,
     outer: &Rect,
     frame: &Rect,
     cut: &Rect,
+    item_frame: &Rect,
     parent: &IDCompositionVisual2,
-  ) -> crate::Result<()> {
+  ) -> crate::Result<Shape> {
     let dcomp = &self.device.dcomp;
 
     // DWM draws a thumbnail from its window rect's corner, past the
@@ -1562,10 +2038,12 @@ impl NativeScene {
     // Cut to what DWM draws of the window, rounded as it is, except where
     // the monitor's edge cuts it straight.
     let clip = dcomp.CreateRectangleClip()?;
+    let right = (cut.right - outer.left) as f32;
+    let bottom = (cut.bottom - outer.top) as f32;
     clip.SetLeft2((cut.left - outer.left) as f32)?;
     clip.SetTop2((cut.top - outer.top) as f32)?;
-    clip.SetRight2((cut.right - outer.left) as f32)?;
-    clip.SetBottom2((cut.bottom - outer.top) as f32)?;
+    clip.SetRight2(right)?;
+    clip.SetBottom2(bottom)?;
 
     let radius = window.corner_radius;
     if radius > 0.0 {
@@ -1585,16 +2063,161 @@ impl NativeScene {
       clip.SetBottomRightRadiusY2(corner(right && bottom))?;
     }
 
+    // The content stretches with the frame, under a clip that keeps its
+    // corners round, over a backdrop that stays put.
+    let stretch = dcomp.CreateScaleTransform()?;
+    stretch.SetCenterX2((item_frame.left - outer.left) as f32)?;
+    stretch.SetCenterY2((item_frame.top - outer.top) as f32)?;
+    let stretched = dcomp.CreateVisual()?;
+    stretched.SetTransform(&stretch)?;
+    stretched.AddVisual(content, false, None)?;
+
     let clipped = dcomp.CreateVisual()?;
     clipped.SetClip(&clip)?;
-    if let Some(backdrop) = backdrop {
+    let mut scales = vec![stretch];
+    if let Some((backdrop, vignette_scale)) = backdrop {
       clipped.AddVisual(&backdrop.visual, false, None)?;
+      scales.push(vignette_scale.clone());
     }
-    clipped.AddVisual(content, false, None)?;
+    clipped.AddVisual(&stretched, false, None)?;
     visual.AddVisual(&clipped, false, None)?;
     parent.AddVisual(&visual, false, None)?;
 
-    Ok(())
+    Ok(Shape::Whole {
+      scales,
+      clip,
+      right: (cut.right == item_frame.right).then_some(right),
+      bottom: (cut.bottom == item_frame.bottom).then_some(bottom),
+    })
+  }
+
+  /// Copies `hwnd` at `alpha` over `outer` as the pieces of a frame cut at
+  /// `insets` (left, top, right, bottom), which keep to `frame`'s edges,
+  /// above `parent`'s other children.
+  fn copy_frame(
+    &self,
+    hwnd: HWND,
+    alpha: u8,
+    outer: &Rect,
+    frame: &Rect,
+    insets: [f32; 4],
+    parent: &IDCompositionVisual2,
+  ) -> crate::Result<WindowCopy> {
+    #[allow(clippy::cast_precision_loss)]
+    let along = |start: i32, end: i32, origin: i32| {
+      ((start - origin) as f32, (end - origin) as f32)
+    };
+    let (left, top) = (self.monitor.left, self.monitor.top);
+    let xs = spans(
+      along(outer.left, outer.right, left),
+      along(frame.left, frame.right, left),
+      (insets[0], insets[2]),
+    );
+    let ys = spans(
+      along(outer.top, outer.bottom, top),
+      along(frame.top, frame.bottom, top),
+      (insets[1], insets[3]),
+    );
+    #[allow(clippy::cast_precision_loss)]
+    let origin = ((outer.left - left) as f32, (outer.top - top) as f32);
+
+    let mut thumbnails = Vec::new();
+    let mut pieces = Vec::new();
+    let release = |thumbnails: &[isize]| {
+      for thumbnail in thumbnails {
+        // SAFETY: Registered here and not handed out.
+        let _ = unsafe { DwmUnregisterThumbnail(*thumbnail) };
+      }
+    };
+
+    // The middle is left out.
+    let cells = (0..3)
+      .flat_map(|row| (0..3).map(move |column| (column, row)))
+      .filter(|cell| *cell != (1, 1));
+
+    for (column, row) in cells {
+      let (Some(x), Some(y)) = (xs[column], ys[row]) else {
+        continue;
+      };
+
+      let (content, thumbnail) = match self.thumbnail(
+        hwnd,
+        alpha,
+        Some((outer.width(), outer.height())),
+      ) {
+        Ok(thumbnail) => thumbnail,
+        Err(err) => {
+          release(&thumbnails);
+          return Err(err);
+        }
+      };
+      thumbnails.push(thumbnail);
+
+      // SAFETY: Plain `DirectComposition` calls on live objects.
+      match unsafe { self.place_piece(&content, origin, x, y, parent) } {
+        Ok(piece) => pieces.push(piece),
+        Err(err) => {
+          release(&thumbnails);
+          return Err(err);
+        }
+      }
+    }
+
+    Ok(WindowCopy {
+      thumbnails,
+      backdrop: None,
+      shape: Shape::Pieces(pieces),
+    })
+  }
+
+  /// Places the part of `content`, a copy drawn from `origin`, that spans
+  /// `x` and `y`, above `parent`'s other children.
+  ///
+  /// # Safety
+  ///
+  /// Every object must be live and of this scene's device.
+  unsafe fn place_piece(
+    &self,
+    content: &IDCompositionVisual,
+    origin: (f32, f32),
+    x: Span,
+    y: Span,
+    parent: &IDCompositionVisual2,
+  ) -> crate::Result<Piece> {
+    let dcomp = &self.device.dcomp;
+
+    let shifted = dcomp.CreateVisual()?;
+    shifted.SetOffsetX2(origin.0 - x.start)?;
+    shifted.SetOffsetY2(origin.1 - y.start)?;
+    shifted.AddVisual(content, false, None)?;
+
+    let clip = dcomp.CreateRectangleClip()?;
+    clip.SetLeft2(0.0)?;
+    clip.SetTop2(0.0)?;
+    clip.SetRight2(x.length)?;
+    clip.SetBottom2(y.length)?;
+    let clipped = dcomp.CreateVisual()?;
+    clipped.SetClip(&clip)?;
+    clipped.AddVisual(&shifted, false, None)?;
+
+    // Stretched from its own start, which the visual above moves.
+    let scale = dcomp.CreateScaleTransform()?;
+    let scaled = dcomp.CreateVisual()?;
+    scaled.SetTransform(&scale)?;
+    scaled.AddVisual(&clipped, false, None)?;
+
+    let visual = dcomp.CreateVisual()?;
+    visual.SetOffsetX2(x.start)?;
+    visual.SetOffsetY2(y.start)?;
+    visual.AddVisual(&scaled, false, None)?;
+    parent.AddVisual(&visual, false, None)?;
+
+    Ok(Piece {
+      visual,
+      scale,
+      x,
+      y,
+    })
   }
 
   /// Whether `hwnd` is shown on the monitor, to be copied as is beneath or
@@ -1634,14 +2257,11 @@ impl NativeScene {
 impl Drop for NativeScene {
   fn drop(&mut self) {
     // Unregistered before the host they draw in is destroyed.
-    for copy in self.stills.iter().chain(
-      self
-        .groups
-        .iter()
-        .flat_map(|group| group.items.iter())
-        .flat_map(|item| item.copies.iter()),
-    ) {
+    for copy in &self.stills {
       copy.unregister();
+    }
+    for item in self.groups.iter().flat_map(|group| &group.items) {
+      item.unregister();
     }
   }
 }
@@ -1782,15 +2402,8 @@ fn top_level_windows() -> Vec<HWND> {
   handles
 }
 
-/// Whether `hwnd` goes with one of `windows`: owned by one, or drawn as
-/// its companion.
-fn goes_with(hwnd: HWND, windows: &HashSet<isize>) -> bool {
-  if companion::companion_of(hwnd)
-    .is_some_and(|of| windows.contains(&of.0))
-  {
-    return true;
-  }
-
+/// Whether `hwnd` is owned by one of `windows`.
+fn is_owned_by(hwnd: HWND, windows: &HashSet<isize>) -> bool {
   let mut current = hwnd;
   for _ in 0..MAX_OWNER_DEPTH {
     // SAFETY: A stale handle just returns `HWND(0)`.
@@ -1804,6 +2417,46 @@ fn goes_with(hwnd: HWND, windows: &HashSet<isize>) -> bool {
   }
 
   false
+}
+
+/// The spans a frame copy is cut into along one axis: its two ends,
+/// `insets` long, and the middle between them, each end keeping to the
+/// frame's nearest edge. `placement` and `frame` are each a start and an
+/// end. Empty ones are `None`.
+fn spans(
+  placement: (f32, f32),
+  frame: (f32, f32),
+  insets: (f32, f32),
+) -> [Option<Span>; 3] {
+  let (start, end) = placement;
+  let length = (end - start).max(0.0);
+  let low = insets.0.clamp(0.0, length);
+  let high = insets.1.clamp(0.0, length - low);
+
+  // 1 for an edge keeping to the frame's end, which moves as it grows.
+  let keeps_to = |edge: f32| {
+    if (edge - frame.1).abs() < (edge - frame.0).abs() {
+      1.0
+    } else {
+      0.0
+    }
+  };
+  let (first, last) = (keeps_to(start), keeps_to(end));
+
+  let span = |start: f32, length: f32, moves: f32, grows: f32| {
+    (length > 0.0).then_some(Span {
+      start,
+      length,
+      moves,
+      grows,
+    })
+  };
+
+  [
+    span(start, low, first, 0.0),
+    span(start + low, length - low - high, first, last - first),
+    span(end - high, high, last, 0.0),
+  ]
 }
 
 /// `hwnd`'s window rect and visible frame, the window rect standing in
@@ -1848,7 +2501,9 @@ fn class_name(hwnd: HWND) -> String {
 mod tests {
   use std::time::{Duration, Instant};
 
-  use super::{vignette_alpha, SceneMotion, SceneSegment, SceneValue};
+  use super::{
+    spans, vignette_alpha, SceneMotion, SceneSegment, SceneValue, Span,
+  };
 
   #[test]
   fn vignette_is_clear_inside_and_darkest_in_the_corners() {
@@ -1885,5 +2540,77 @@ mod tests {
       panic!("a fixed value stays fixed");
     };
     assert!((value - 9.0).abs() < f32::EPSILON);
+
+    let SceneValue::Fixed(value) = motion.mapped(0.0, 3.0) else {
+      panic!("a motion scaled to nothing stays put");
+    };
+    assert!((value - 3.0).abs() < f32::EPSILON);
+  }
+
+  fn fixed(value: &SceneValue) -> f32 {
+    match value {
+      SceneValue::Fixed(value) => *value,
+      SceneValue::Moving(_) => f32::NAN,
+    }
+  }
+
+  #[test]
+  fn ring_ends_keep_to_the_frame_and_its_middle_stretches() {
+    // A 2px ring around a frame from 100 to 500, cut 10px in.
+    let [low, middle, high] =
+      spans((98.0, 502.0), (100.0, 500.0), (10.0, 10.0));
+    let span = |start, length, moves, grows| {
+      Some(Span {
+        start,
+        length,
+        moves,
+        grows,
+      })
+    };
+    assert_eq!(low, span(98.0, 10.0, 0.0, 0.0));
+    assert_eq!(middle, span(108.0, 384.0, 0.0, 1.0));
+    assert_eq!(high, span(492.0, 10.0, 1.0, 0.0));
+
+    // The frame grown by half its width moves its far end by 200px.
+    let grown = SceneValue::Fixed(1.5);
+    let (Some(middle), Some(high)) = (middle, high) else {
+      panic!("a ring has a middle and two ends");
+    };
+    assert!((fixed(&high.offset(&grown, 400.0)) - 692.0).abs() < 1e-3);
+    assert!((fixed(&middle.offset(&grown, 400.0)) - 108.0).abs() < 1e-3);
+    assert!(
+      (fixed(&middle.stretch(&grown, 400.0)) - 584.0 / 384.0).abs() < 1e-4
+    );
+  }
+
+  #[test]
+  fn tab_bars_keep_their_height_beside_the_frame() {
+    // A 28px bar above a frame from 128 to 400.
+    let [top, middle, bottom] =
+      spans((100.0, 128.0), (128.0, 400.0), (28.0, 0.0));
+    assert_eq!(
+      top,
+      Some(Span {
+        start: 100.0,
+        length: 28.0,
+        moves: 0.0,
+        grows: 0.0,
+      })
+    );
+    assert_eq!((middle, bottom), (None, None));
+
+    // One below it moves with the frame's bottom.
+    let [top, middle, bottom] =
+      spans((400.0, 428.0), (128.0, 400.0), (0.0, 28.0));
+    assert_eq!((top, middle), (None, None));
+    assert_eq!(
+      bottom,
+      Some(Span {
+        start: 400.0,
+        length: 28.0,
+        moves: 1.0,
+        grows: 0.0,
+      })
+    );
   }
 }
