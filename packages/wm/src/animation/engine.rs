@@ -129,7 +129,9 @@ mod tests {
   #[test]
   fn spring_starts_from_zero_and_settles_past_overshoot() {
     assert!(ease_out_spring(0.001) < 0.05);
-    assert!((0..=100).any(|i| ease_out_spring(i as f32 / 100.0) > 1.05));
+    assert!(
+      (0..=100_u8).any(|i| ease_out_spring(f32::from(i) / 100.0) > 1.05)
+    );
     assert!((ease_out_spring(0.999) - 1.0).abs() < 0.01);
   }
 
