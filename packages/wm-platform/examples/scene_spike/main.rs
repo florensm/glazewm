@@ -36,9 +36,24 @@ fn main() {
   #[cfg(target_os = "windows")]
   {
     let args = std::env::args().skip(1).collect::<Vec<_>>();
-    if let Err(err) = windows_impl::run(&args) {
-      eprintln!("scene_spike failed: {err}");
-      std::process::exit(1);
+
+    // Cloaking caches shell COM proxies in a thread-local. On the main
+    // thread it would be released inside `ExitProcess`, after COM's RPC
+    // threads are gone, and hang the exit; a joined thread releases it
+    // while the process is still whole.
+    let outcome = std::thread::spawn(move || {
+      windows_impl::run(&args).map_err(|err| err.to_string())
+    })
+    .join();
+
+    match outcome {
+      Ok(Ok(())) => {}
+      Ok(Err(err)) => {
+        eprintln!("scene_spike failed: {err}");
+        std::process::exit(1);
+      }
+      // The panic hook has already printed the message.
+      Err(_) => std::process::exit(1),
     }
   }
 
