@@ -26,9 +26,6 @@
 //! can't hide the real ones: they stay cloaked until the slide back ends,
 //! like today's surrogates, for comparison.
 //!
-//! `--window-opacity` first fades the animated windows, as the WM's
-//! `transparency` effect does.
-//!
 //! Quit the WM first, as it reacts to the cloaks. The `uncloak_all`
 //! example restores windows left cloaked if this is killed midway.
 //!
@@ -101,10 +98,8 @@ mod windows_impl {
         },
         Dxgi::IDXGIDevice,
         Gdi::{
-          GetMonitorInfoW, MonitorFromPoint, MonitorFromWindow,
-          RedrawWindow, HMONITOR, MONITORINFO, MONITOR_DEFAULTTONEAREST,
-          MONITOR_DEFAULTTONULL, RDW_ALLCHILDREN, RDW_ERASE, RDW_FRAME,
-          RDW_INVALIDATE,
+          GetMonitorInfoW, MonitorFromPoint, MonitorFromWindow, HMONITOR,
+          MONITORINFO, MONITOR_DEFAULTTONEAREST, MONITOR_DEFAULTTONULL,
         },
       },
       System::{
@@ -120,15 +115,12 @@ mod windows_impl {
         },
         WindowsAndMessaging::{
           CreateWindowExW, DefWindowProcW, DestroyWindow,
-          DispatchMessageW, EnumWindows, GetCursorPos,
-          GetLayeredWindowAttributes, GetWindowLongPtrW, PeekMessageW,
-          RegisterClassW, SetLayeredWindowAttributes, SetWindowLongPtrW,
-          SetWindowPos, TranslateMessage, GWL_EXSTYLE, HWND_TOPMOST,
-          LAYERED_WINDOW_ATTRIBUTES_FLAGS, LWA_ALPHA, MSG, PM_REMOVE,
-          SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_SHOWWINDOW,
-          WNDCLASSW, WS_EX_LAYERED, WS_EX_NOACTIVATE,
-          WS_EX_NOREDIRECTIONBITMAP, WS_EX_TOOLWINDOW, WS_EX_TOPMOST,
-          WS_EX_TRANSPARENT, WS_POPUP,
+          DispatchMessageW, EnumWindows, GetCursorPos, GetWindowLongPtrW,
+          PeekMessageW, RegisterClassW, SetWindowPos, TranslateMessage,
+          GWL_EXSTYLE, HWND_TOPMOST, MSG, PM_REMOVE, SWP_NOACTIVATE,
+          SWP_NOMOVE, SWP_NOSIZE, SWP_SHOWWINDOW, WNDCLASSW,
+          WS_EX_NOACTIVATE, WS_EX_NOREDIRECTIONBITMAP, WS_EX_TOOLWINDOW,
+          WS_EX_TOPMOST, WS_EX_TRANSPARENT, WS_POPUP,
         },
       },
     },
@@ -147,14 +139,6 @@ mod windows_impl {
 
   /// Hyprland's built-in `default` bezier.
   const HYPRLAND_DEFAULT_BEZIER: [f32; 4] = [0.0, 0.75, 0.15, 1.0];
-
-  /// Pause around `--window-opacity`'s fade, so its own change isn't
-  /// mistaken for part of the animation.
-  const SETTLE_SECS: f64 = 0.5;
-
-  /// `WS_EX_LAYERED`, as `GetWindowLongPtrW` returns styles.
-  #[allow(clippy::cast_possible_wrap)]
-  const LAYERED_STYLE: isize = WS_EX_LAYERED.0 as isize;
 
   /// Undocumented `dwThumbnailFlags` value the published reverse
   /// engineering of `DwmpCreateSharedThumbnailVisual` passes.
@@ -202,9 +186,6 @@ mod windows_impl {
     bezier: Bezier,
     backdrop: bool,
     max_windows: usize,
-    /// Alpha the animated windows are faded to, like the WM's
-    /// `transparency` effect.
-    window_alpha: u8,
   }
 
   impl Options {
@@ -218,7 +199,6 @@ mod windows_impl {
         bezier: Bezier(HYPRLAND_DEFAULT_BEZIER),
         backdrop: true,
         max_windows: 6,
-        window_alpha: u8::MAX,
       };
 
       let mut args = args.iter();
@@ -256,16 +236,6 @@ mod windows_impl {
             options.corner_radius = number(flag, value)?;
           }
           "--max-windows" => options.max_windows = number(flag, value)?,
-          "--window-opacity" => {
-            let opacity = number::<f32>(flag, value)?.clamp(0.0, 1.0);
-            #[allow(
-              clippy::cast_possible_truncation,
-              clippy::cast_sign_loss
-            )]
-            {
-              options.window_alpha = (opacity * 255.0).round() as u8;
-            }
-          }
           "--bezier" => {
             let points = value
               .split(',')
@@ -529,7 +499,12 @@ mod windows_impl {
       let mut added = Vec::new();
       for layer in layers.iter().rev() {
         // Thumbnails leave out the opacity a window is layered with.
-        let alpha = layered_alpha(layer.window.hwnd()).unwrap_or(u8::MAX);
+        let alpha = layer
+          .window
+          .layered_alpha()
+          .ok()
+          .flatten()
+          .unwrap_or(u8::MAX);
         let corner_radius = if is_app_window(&layer.window) {
           options.corner_radius
         } else {
@@ -830,121 +805,6 @@ mod windows_impl {
     }
   }
 
-  /// Fades windows as the WM's `transparency` effect does, and puts each
-  /// back as it was when dropped, unwinding included.
-  struct Translucency {
-    /// Each faded window, with its alpha if it was layered already.
-    windows: Vec<(HWND, Option<u8>)>,
-  }
-
-  impl Translucency {
-    /// Fades `windows` to `alpha`, skipping with a message any whose
-    /// opacity can't be changed or put back.
-    fn apply(windows: &[NativeWindow], alpha: u8) -> Self {
-      let mut translucency = Self {
-        windows: Vec::new(),
-      };
-      if alpha == u8::MAX {
-        return translucency;
-      }
-
-      for window in windows {
-        let hwnd = window.hwnd();
-        // SAFETY: Plain style lookup.
-        let ex_style = unsafe { GetWindowLongPtrW(hwnd, GWL_EXSTYLE) };
-
-        let prior = if ex_style & LAYERED_STYLE == 0 {
-          None
-        } else if let Some(prior) = layered_alpha(hwnd) {
-          Some(prior)
-        } else {
-          println!(
-            "Skipped {}: its layering can't be put back.",
-            describe(window)
-          );
-          continue;
-        };
-
-        // SAFETY: Plain style and attribute changes on a live window.
-        unsafe {
-          if prior.is_none() {
-            SetWindowLongPtrW(hwnd, GWL_EXSTYLE, ex_style | LAYERED_STYLE);
-          }
-          let _ = SetLayeredWindowAttributes(hwnd, None, alpha, LWA_ALPHA);
-        }
-
-        // A more privileged process's window, such as an elevated Task
-        // Manager's, refuses the style change without an error.
-        if layered_alpha(hwnd) == Some(alpha) {
-          translucency.windows.push((hwnd, prior));
-        } else {
-          restore_layering(hwnd, prior);
-          println!(
-            "Skipped {}: its opacity can't be changed.",
-            describe(window)
-          );
-        }
-      }
-
-      translucency
-    }
-
-    fn is_empty(&self) -> bool {
-      self.windows.is_empty()
-    }
-  }
-
-  impl Drop for Translucency {
-    fn drop(&mut self) {
-      for &(hwnd, prior) in &self.windows {
-        restore_layering(hwnd, prior);
-      }
-    }
-  }
-
-  /// Puts `hwnd` back at alpha `prior`, or unlayered if it had none.
-  fn restore_layering(hwnd: HWND, prior: Option<u8>) {
-    if let Some(alpha) = prior {
-      // SAFETY: Plain attribute change on a window that was layered.
-      let _ = unsafe {
-        SetLayeredWindowAttributes(hwnd, None, alpha, LWA_ALPHA)
-      };
-      return;
-    }
-
-    // SAFETY: Plain style change and repaint request. Unlayering discards
-    // the window's bits, so the docs prescribe the repaint.
-    unsafe {
-      let ex_style = GetWindowLongPtrW(hwnd, GWL_EXSTYLE);
-      SetWindowLongPtrW(hwnd, GWL_EXSTYLE, ex_style & !LAYERED_STYLE);
-      let _ = RedrawWindow(
-        hwnd,
-        None,
-        None,
-        RDW_ERASE | RDW_INVALIDATE | RDW_FRAME | RDW_ALLCHILDREN,
-      );
-    }
-  }
-
-  /// `hwnd`'s constant alpha; `None` if it isn't layered, or is also
-  /// color-keyed or drawn by `UpdateLayeredWindow`, which a constant alpha
-  /// can't restore.
-  fn layered_alpha(hwnd: HWND) -> Option<u8> {
-    let mut alpha = u8::MAX;
-    let mut flags = LAYERED_WINDOW_ATTRIBUTES_FLAGS::default();
-    // SAFETY: Out pointers outlive the call.
-    unsafe {
-      GetLayeredWindowAttributes(
-        hwnd,
-        None,
-        Some(&raw mut alpha),
-        Some(&raw mut flags),
-      )
-    }
-    .ok()?;
-    (flags == LWA_ALPHA).then_some(alpha)
-  }
-
   /// `window`'s process and class, to name it in messages.
   fn describe(window: &NativeWindow) -> String {
     format!(
@@ -1226,11 +1086,6 @@ mod windows_impl {
       Direction::Down => bounds.height(),
     });
 
-    let translucency = Translucency::apply(&moving, options.window_alpha);
-    if !translucency.is_empty() {
-      wait_until(&clock, Clock::now(), SETTLE_SECS);
-    }
-
     let host = Host::create(&bounds)?;
     let started = Clock::now();
     let scene =
@@ -1241,9 +1096,6 @@ mod windows_impl {
     }
 
     let report = play(&clock, &host, &scene, &options, distance)?;
-    if !translucency.is_empty() {
-      wait_until(&clock, Clock::now(), SETTLE_SECS);
-    }
 
     println!(
       "Built in {:.1} ms, covered after {:.1} ms.",
