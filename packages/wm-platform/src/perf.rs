@@ -183,8 +183,16 @@ static EVENT_QUEUE_OVERFLOW: [AtomicU32; EventKind::COUNT] =
 pub enum Stage {
   /// The whole animation tick (`AnimationManager::update_internal`).
   Tick,
+  /// A tick's work on the scenes playing workspace switches.
+  SceneTick,
   /// `platform_sync`, including everything nested below it.
   PlatformSync,
+  /// Covering a monitor with a scene before a switch beneath it, its
+  /// waits for compositions included.
+  SceneCover,
+  /// Copying the incoming workspace onto the scene and starting it
+  /// moving.
+  SceneEnter,
   /// `redraw_containers`, including both stages below.
   Redraw,
   /// `redraw_containers`' setup before its per-window loop: expanding the
@@ -245,9 +253,12 @@ pub enum Stage {
 
 impl Stage {
   /// Every stage, in report order.
-  const ALL: [Stage; 25] = [
+  const ALL: [Stage; 28] = [
     Stage::Tick,
+    Stage::SceneTick,
     Stage::PlatformSync,
+    Stage::SceneCover,
+    Stage::SceneEnter,
     Stage::Redraw,
     Stage::RedrawPrep,
     Stage::RedrawLoop,
@@ -285,7 +296,10 @@ impl Stage {
   const fn label(self) -> &'static str {
     match self {
       Stage::Tick => "tick",
+      Stage::SceneTick => "scene_tick",
       Stage::PlatformSync => "platform_sync",
+      Stage::SceneCover => "scene_cover",
+      Stage::SceneEnter => "scene_enter",
       Stage::Redraw => "redraw",
       Stage::RedrawPrep => "redraw_prep",
       Stage::RedrawLoop => "redraw_loop",
@@ -320,8 +334,8 @@ impl Stage {
   /// [`is_cross_cutting`]: Stage::is_cross_cutting
   const fn depth(self) -> usize {
     match self {
-      Stage::PlatformSync | Stage::Cleanup => 1,
-      Stage::Redraw => 2,
+      Stage::SceneTick | Stage::PlatformSync | Stage::Cleanup => 1,
+      Stage::SceneCover | Stage::SceneEnter | Stage::Redraw => 2,
       Stage::RedrawPrep
       | Stage::RedrawLoop
       | Stage::SurrogateFlush
@@ -443,6 +457,8 @@ struct Profiler {
   /// Timeline of the session's slowest input, with its latency to the
   /// first frame.
   slowest_trace: Option<(Duration, Vec<TraceEntry>)>,
+  /// Workspace switches started this session, by the engine playing them.
+  switches: Vec<(&'static str, u32)>,
 }
 
 /// One stage run on the way from an input to its first frame.
@@ -827,15 +843,48 @@ fn record_animation_start(is_resize: bool) {
         profiler.gesture_moves += 1;
       }
 
-      if let Some(input) = profiler.pending_input.as_mut() {
-        if input.animation_started_at.is_none()
-          && input.received_at.elapsed() < INPUT_PAIRING_WINDOW
-        {
-          input.animation_started_at = Some(Instant::now());
-        }
-      }
+      pair_input(&mut profiler);
     }
   });
+}
+
+/// Records that a workspace switch began moving, played by `engine`
+/// (e.g. `"scene"`), so its keypress-to-motion latency is measured like an
+/// animation's.
+pub fn note_switch_start(engine: &'static str) {
+  if is_enabled() {
+    record_switch_start(engine);
+  }
+}
+
+/// [`note_switch_start`] without the `GLAZEWM_PERF` gate.
+fn record_switch_start(engine: &'static str) {
+  PROFILER.with(|profiler| {
+    if let Ok(mut profiler) = profiler.try_borrow_mut() {
+      match profiler
+        .switches
+        .iter_mut()
+        .find(|(name, _)| *name == engine)
+      {
+        Some((_, count)) => *count += 1,
+        None => profiler.switches.push((engine, 1)),
+      }
+
+      pair_input(&mut profiler);
+    }
+  });
+}
+
+/// Pairs the pending input with the motion starting now, if it's recent
+/// enough to have caused it.
+fn pair_input(profiler: &mut Profiler) {
+  if let Some(input) = profiler.pending_input.as_mut() {
+    if input.animation_started_at.is_none()
+      && input.received_at.elapsed() < INPUT_PAIRING_WINDOW
+    {
+      input.animation_started_at = Some(Instant::now());
+    }
+  }
 }
 
 /// Marks the start of a frame, clearing the previous frame's per-stage
@@ -1010,6 +1059,15 @@ fn take_report(reason: &str) -> Option<String> {
     summary.budget.as_secs_f64() * 1000.0,
     summary.peak_windows,
   );
+  if !summary.switches.is_empty() {
+    let switches = summary
+      .switches
+      .iter()
+      .map(|(engine, count)| format!("{count} on {engine}"))
+      .collect::<Vec<_>>()
+      .join(", ");
+    let _ = writeln!(lines, "  workspace switches: {switches}");
+  }
   let _ = writeln!(
     lines,
     "  {:<20}{:>7}{:>11}{:>11}{:>11}",
@@ -1491,6 +1549,37 @@ mod tests {
       // say.
       assert!(take_report("unit test").is_none());
       PROFILER.with(|profiler| assert_eq!(profiler.borrow().frames, 0));
+    })
+    .join()
+    .expect("profiler test thread panicked");
+  }
+
+  #[test]
+  fn counts_switches_by_engine_and_pairs_their_input() {
+    std::thread::spawn(|| {
+      PROFILER.with(|profiler| {
+        arm_input(&mut profiler.borrow_mut(), Instant::now());
+      });
+      record_switch_start("scene");
+      record_switch_start("scene");
+      record_switch_start("surrogates");
+
+      start_frame();
+      drop(forced_scope(Stage::Tick));
+      assert!(!roll_up_frame());
+
+      PROFILER.with(|profiler| {
+        let profiler = profiler.borrow();
+        assert_eq!(profiler.switches, [("scene", 2), ("surrogates", 1)]);
+        // The first switch is the one the input caused.
+        assert_eq!(profiler.latency_samples.len(), 1);
+      });
+
+      let report = take_report("unit test").expect("frames were recorded");
+      assert!(
+        report.contains("workspace switches: 2 on scene, 1 on surrogates")
+      );
+      assert!(report.contains("to anim start"));
     })
     .join()
     .expect("profiler test thread panicked");

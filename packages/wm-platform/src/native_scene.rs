@@ -43,8 +43,8 @@ use windows::{
         IDCompositionVisual, IDCompositionVisual2,
       },
       Dwm::{
-        DwmFlush, DwmUnregisterThumbnail, DWM_THUMBNAIL_PROPERTIES,
-        DWM_TNP_OPACITY, DWM_TNP_RECTDESTINATION, DWM_TNP_RECTSOURCE,
+        DwmUnregisterThumbnail, DWM_THUMBNAIL_PROPERTIES, DWM_TNP_OPACITY,
+        DWM_TNP_RECTDESTINATION, DWM_TNP_RECTSOURCE,
         DWM_TNP_SOURCECLIENTAREAONLY, DWM_TNP_VISIBLE,
       },
       Dxgi::IDXGIDevice,
@@ -616,14 +616,14 @@ impl NativeScene {
     let built = Instant::now();
 
     self.host.show()?;
-    flush();
+    crate::dwm_flush();
 
     // SAFETY: Plain `DirectComposition` calls on live objects.
     unsafe {
       self.fade.SetOpacity2(1.0)?;
       self.device.dcomp.Commit()?;
     }
-    flush();
+    crate::dwm_flush();
 
     tracing::debug!(
       "Scene covered {} windows in {:?} ({:?} building).",
@@ -1181,11 +1181,6 @@ fn qpc_at(instant: Instant) -> i64 {
 }
 
 /// Waits for DWM's next composition.
-fn flush() {
-  // SAFETY: Blocks until the next composition; fails only without DWM.
-  let _ = unsafe { DwmFlush() };
-}
-
 /// Every top-level window, topmost first.
 fn top_level_windows() -> Vec<HWND> {
   unsafe extern "system" fn collect(hwnd: HWND, data: LPARAM) -> BOOL {

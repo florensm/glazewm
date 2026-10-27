@@ -962,6 +962,7 @@ fn redraw_containers(
             &monitor_work_area,
             config,
           );
+          perf::note_switch_start("surrogates");
         }
         // If the incoming workspace is empty, or direction == 0 (workspace
         // not in config), skip the animation.

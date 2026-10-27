@@ -21,6 +21,7 @@ use wm_common::{
   WorkspaceSwitchDirection, WorkspaceSwitchStyle,
 };
 use wm_platform::{
+  perf::{self, Stage},
   NativeScene, NativeWindowWindowsExt, Overlay, Rect, SceneGroupId,
   SceneMotion, ScenePose, SceneSegment, SceneValue, SceneWindow,
 };
@@ -261,6 +262,8 @@ pub fn cover(
   config: &UserConfig,
   request: &SceneSwitchRequest,
 ) -> bool {
+  let _scope = perf::scope(Stage::SceneCover);
+
   let Some(outgoing) = workspace(state, request.outgoing) else {
     return false;
   };
@@ -373,6 +376,8 @@ pub fn enter(
   config: &UserConfig,
   request: &SceneSwitchRequest,
 ) {
+  let _scope = perf::scope(Stage::SceneEnter);
+
   let Some(incoming) = workspace(state, request.incoming) else {
     abandon(state, request);
     return;
@@ -474,9 +479,12 @@ pub fn enter(
     .try_for_each(|(id, pose)| scene.native.pose(*id, pose))
     .and_then(|()| scene.native.commit());
 
-  if let Err(err) = played {
-    tracing::warn!("Scene couldn't play the workspace switch: {err}");
-    abandon(state, request);
+  match played {
+    Ok(()) => perf::note_switch_start("scene"),
+    Err(err) => {
+      tracing::warn!("Scene couldn't play the workspace switch: {err}");
+      abandon(state, request);
+    }
   }
 }
 
@@ -503,6 +511,7 @@ pub fn tick(state: &mut WmState) {
     return;
   }
 
+  let _scope = perf::scope(Stage::SceneTick);
   let now = Instant::now();
   let mut released = false;
 
