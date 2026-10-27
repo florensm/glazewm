@@ -163,7 +163,7 @@ fn frame_origin(window: HWND) -> Option<(i32, i32)> {
 }
 
 /// The window `hwnd` is a companion of, per its property.
-fn companion_of(hwnd: HWND) -> Option<HWND> {
+pub(crate) fn companion_of(hwnd: HWND) -> Option<HWND> {
   // SAFETY: A stale handle or a missing property just returns 0.
   let value = unsafe { GetPropW(hwnd, COMPANION_PROPERTY) };
   (value.0 != 0).then_some(HWND(value.0))

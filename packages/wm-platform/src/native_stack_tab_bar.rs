@@ -201,6 +201,19 @@ impl NativeStackTabBar {
     })
   }
 
+  /// Its window, which a thumbnail of it is of.
+  #[must_use]
+  pub fn hwnd(&self) -> HWND {
+    HWND(self.hwnd)
+  }
+
+  /// Where its window is placed for the frame last posted to it, or
+  /// `None` while it is hidden. Its thread may not have got there yet.
+  #[must_use]
+  pub fn shown_rect(&self) -> Option<Rect> {
+    self.last_frame.as_ref().and_then(TabFrame::visible_rect)
+  }
+
   /// Shows the bar with `frame`. `restack` puts it back behind its anchor
   /// even if nothing else changed, e.g. after a focus change.
   pub fn update(&mut self, frame: TabFrame, restack: bool) {
