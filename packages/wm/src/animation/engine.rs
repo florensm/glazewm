@@ -50,32 +50,35 @@ pub fn apply_easing(progress: f32, easing: &EasingFunction) -> f32 {
 /// Evaluates a CSS cubic bezier at the given `x` progress (0.0 to 1.0).
 ///
 /// Control points `(x1, y1)` and `(x2, y2)` define the curve between the
-/// implicit anchors `(0, 0)` and `(1, 1)`. Uses Newton-Raphson iteration
-/// to find the curve parameter `t` such that `Bx(t) = x`, then returns
-/// `By(t)`.
+/// implicit anchors `(0, 0)` and `(1, 1)`. Finds the curve parameter `t`
+/// with `Bx(t) = x` by bisection, then returns `By(t)`: Newton's method
+/// stalls on curves that start or end vertical (`x1` or `x2` at the
+/// edge), like Hyprland's `default`, which cover most of their travel in
+/// the first frames.
+#[allow(clippy::cast_possible_truncation)]
 fn cubic_bezier(x1: f32, y1: f32, x2: f32, y2: f32, x: f32) -> f32 {
-  let cx = 3.0 * x1;
-  let bx = 3.0 * (x2 - x1) - cx;
-  let ax = 1.0 - cx - bx;
+  // As in CSS, `x1` and `x2` stay within the unit interval, which keeps
+  // `Bx` monotonic.
+  let (x1, x2) =
+    (f64::from(x1.clamp(0.0, 1.0)), f64::from(x2.clamp(0.0, 1.0)));
+  let (y1, y2) = (f64::from(y1), f64::from(y2));
+  let blend = |a: f64, b: f64, t: f64| {
+    let u = 1.0 - t;
+    3.0 * u * u * t * a + 3.0 * u * t * t * b + t * t * t
+  };
 
-  let cy = 3.0 * y1;
-  let by_ = 3.0 * (y2 - y1) - cy;
-  let ay = 1.0 - cy - by_;
-
-  let sample_x = |t: f32| ((ax * t + bx) * t + cx) * t;
-  let slope_x = |t: f32| (3.0 * ax * t + 2.0 * bx) * t + cx;
-  let sample_y = |t: f32| ((ay * t + by_) * t + cy) * t;
-
-  let mut t = x;
-  for _ in 0..8 {
-    let dx = slope_x(t);
-    if dx.abs() < 1e-6 {
-      break;
+  let x = f64::from(x.clamp(0.0, 1.0));
+  let (mut low, mut high) = (0.0, 1.0);
+  for _ in 0..40 {
+    let mid = f64::midpoint(low, high);
+    if blend(x1, x2, mid) < x {
+      low = mid;
+    } else {
+      high = mid;
     }
-    t = (t - (sample_x(t) - x) / dx).clamp(0.0, 1.0);
   }
 
-  sample_y(t)
+  blend(y1, y2, f64::midpoint(low, high)) as f32
 }
 
 /// Exponentially-decaying spring easing function.
@@ -90,8 +93,7 @@ fn ease_out_spring(t: f32) -> f32 {
   if t >= 1.0 {
     return 1.0;
   }
-  let c4 = (2.0 * std::f32::consts::PI) / 2.0;
-  -(2.0f32.powf(-12.0 * t) * ((t * 4.0 - 4.5) * c4).sin()) + 1.0
+  1.0 - 2.0f32.powf(-12.0 * t) * (4.0 * std::f32::consts::PI * t).cos()
 }
 
 #[cfg(test)]
@@ -111,6 +113,24 @@ mod tests {
       start + Duration::from_millis(50),
     );
     assert!((progress - 0.5).abs() < 0.1);
+  }
+
+  #[test]
+  fn bezier_with_vertical_start_follows_its_curve() {
+    // Hyprland's `default`: at `t = 0.3`, `x` is 0.0555 and `y` 0.547.
+    let eased = cubic_bezier(0.0, 0.75, 0.15, 1.0, 0.0555);
+    assert!((eased - 0.547).abs() < 0.005, "{eased}");
+
+    assert!(cubic_bezier(0.0, 0.75, 0.15, 1.0, 0.0).abs() < 1e-6);
+    assert!((cubic_bezier(0.0, 0.75, 0.15, 1.0, 1.0) - 1.0).abs() < 1e-6);
+    assert!((cubic_bezier(0.0, 0.0, 1.0, 1.0, 0.3) - 0.3).abs() < 1e-6);
+  }
+
+  #[test]
+  fn spring_starts_from_zero_and_settles_past_overshoot() {
+    assert!(ease_out_spring(0.001) < 0.05);
+    assert!((0..=100).any(|i| ease_out_spring(i as f32 / 100.0) > 1.05));
+    assert!((ease_out_spring(0.999) - 1.0).abs() < 0.01);
   }
 
   #[test]
