@@ -387,14 +387,15 @@ pub enum SceneFit {
   /// At its window's own size, from its placement's corner.
   Exact,
 
-  /// Its whole window stretched over its placement, and scaled with the
-  /// frame about the frame's top-left corner.
+  /// Its visible frame stretched over its placement's, and scaled with
+  /// the frame about the frame's top-left corner.
   Stretch,
 
-  /// Its whole window stretched over its placement and cut in nine at
-  /// these insets, in pixels: each edge keeps to the frame's nearest
-  /// edge, the corners keep their size, the edges stretch along their
-  /// length, and the middle is left out, e.g. for a border ring.
+  /// Its whole window, one without invisible resize borders, stretched
+  /// over its placement and cut in nine at these insets, in pixels: each
+  /// edge keeps to the frame's nearest edge, the corners keep their size,
+  /// the edges stretch along their length, and the middle is left out,
+  /// e.g. for a border ring.
   Frame {
     left: f32,
     top: f32,
@@ -1763,8 +1764,12 @@ impl NativeScene {
       return Ok(Some((copy, false)));
     }
 
-    let stretched_over = (window.fit == SceneFit::Stretch)
-      .then(|| (outer.width(), outer.height()));
+    let stretched_over = (window.fit == SceneFit::Stretch).then(|| RECT {
+      left: frame.left - outer.left,
+      top: frame.top - outer.top,
+      right: frame.right - outer.left,
+      bottom: frame.bottom - outer.top,
+    });
     let (content, thumbnail) =
       self.thumbnail(window.hwnd, alpha, stretched_over)?;
 
@@ -1813,29 +1818,28 @@ impl NativeScene {
     }
   }
 
-  /// A thumbnail of all of `source` at `alpha`, with its handle: at its
-  /// own size, or stretched over `size`.
+  /// A thumbnail of `source` at `alpha`, with its handle: all of it at its
+  /// own size, or its visible frame stretched over `frame`, relative to
+  /// its window rect's corner.
   fn thumbnail(
     &self,
     source: HWND,
     alpha: u8,
-    size: Option<(i32, i32)>,
+    frame: Option<RECT>,
   ) -> crate::Result<(IDCompositionVisual, isize)> {
-    let properties = match size {
-      // Without a source rect, DWM draws whatever size the window has
-      // reached, e.g. mid resize.
-      Some((width, height)) if width > 0 && height > 0 => {
+    let properties = match frame {
+      // Without a source rect, DWM draws the window's visible frame at
+      // whatever size it has reached, e.g. mid resize, leaving out the
+      // invisible resize borders a source rect counts in.
+      Some(frame)
+        if frame.right > frame.left && frame.bottom > frame.top =>
+      {
         DWM_THUMBNAIL_PROPERTIES {
           dwFlags: DWM_TNP_RECTDESTINATION
             | DWM_TNP_OPACITY
             | DWM_TNP_VISIBLE
             | DWM_TNP_SOURCECLIENTAREAONLY,
-          rcDestination: RECT {
-            left: 0,
-            top: 0,
-            right: width,
-            bottom: height,
-          },
+          rcDestination: frame,
           rcSource: RECT::default(),
           opacity: alpha,
           fVisible: true.into(),
@@ -2074,9 +2078,10 @@ impl NativeScene {
     })
   }
 
-  /// Copies `hwnd` at `alpha` over `outer` as the pieces of a frame cut at
-  /// `insets` (left, top, right, bottom), which keep to `frame`'s edges,
-  /// above `parent`'s other children.
+  /// Copies `hwnd`, a window without invisible resize borders, at `alpha`
+  /// over `outer` as the pieces of a frame cut at `insets` (left, top,
+  /// right, bottom), which keep to `frame`'s edges, above `parent`'s other
+  /// children.
   fn copy_frame(
     &self,
     hwnd: HWND,
@@ -2123,17 +2128,20 @@ impl NativeScene {
         continue;
       };
 
-      let (content, thumbnail) = match self.thumbnail(
-        hwnd,
-        alpha,
-        Some((outer.width(), outer.height())),
-      ) {
-        Ok(thumbnail) => thumbnail,
-        Err(err) => {
-          release(&thumbnails);
-          return Err(err);
-        }
+      let whole = RECT {
+        left: 0,
+        top: 0,
+        right: outer.width(),
+        bottom: outer.height(),
       };
+      let (content, thumbnail) =
+        match self.thumbnail(hwnd, alpha, Some(whole)) {
+          Ok(thumbnail) => thumbnail,
+          Err(err) => {
+            release(&thumbnails);
+            return Err(err);
+          }
+        };
       thumbnails.push(thumbnail);
 
       // SAFETY: Plain `DirectComposition` calls on live objects.

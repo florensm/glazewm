@@ -174,6 +174,40 @@ impl ItemState {
       None => rest_pose(&self.rest, &self.built.frame),
     }
   }
+
+  /// Rests it at `rest`, getting there as `planned` from where it is drawn
+  /// at `now`, or at once without a plan. Returns whether its rest moved.
+  fn rest_at(
+    &mut self,
+    rest: Rect,
+    planned: Option<&PlannedMotion>,
+    now: Instant,
+  ) -> bool {
+    // Read before its rest moves: still, it is drawn there.
+    let drawn = self.drawn_at(now);
+    let has_moved = self.rest != rest;
+    self.rest = rest;
+
+    let Some(planned) = planned else {
+      if has_moved {
+        // Moved without a motion, e.g. too little to animate.
+        self.motion = None;
+        self.is_landing = true;
+      }
+      return has_moved;
+    };
+
+    let to = Drawn::at_rest(self.rest.clone());
+    let (duration_ms, easing) = (planned.duration_ms, &planned.easing);
+    self.motion = Some(match &self.motion {
+      Some(motion) if planned.carries_speed && !motion.is_done(now) => {
+        motion.retargeted(to, duration_ms, easing.clone(), now)
+      }
+      _ => ItemMotion::new(drawn, to, duration_ms, easing.clone(), now),
+    });
+    self.is_landing = !self.is_passing;
+    has_moved
+  }
 }
 
 /// Where and how an item is drawn.
@@ -1345,42 +1379,14 @@ fn reconcile(
 
         let is_rebuilt =
           !looks_alike(&existing.built, &item, !is_resizing);
-        let has_moved = existing.rest != item.frame;
-
         if is_rebuilt {
           scene.native.set_item(group_id, &item)?;
           existing.built = item.clone();
         }
-        existing.rest = item.frame.clone();
         existing.is_passing = passing_keys.contains(&existing.key);
-
-        if let Some(planned) = planned {
-          let to = Drawn::at_rest(existing.rest.clone());
-          existing.motion = Some(match &existing.motion {
-            Some(motion)
-              if planned.carries_speed && !motion.is_done(now) =>
-            {
-              motion.retargeted(
-                to,
-                planned.duration_ms,
-                planned.easing.clone(),
-                now,
-              )
-            }
-            _ => ItemMotion::new(
-              existing.drawn_at(now),
-              to,
-              planned.duration_ms,
-              planned.easing.clone(),
-              now,
-            ),
-          });
-          existing.is_landing = !existing.is_passing;
+        let has_moved = existing.rest_at(item.frame.clone(), planned, now);
+        if planned.is_some() {
           started.push(planned_kind);
-        } else if has_moved {
-          // Moved without a motion, e.g. too little to animate.
-          existing.motion = None;
-          existing.is_landing = true;
         }
 
         if is_rebuilt || has_moved || planned.is_some() {
@@ -2421,11 +2427,11 @@ mod tests {
     WorkspaceSwitchAnimationConfig, WorkspaceSwitchDirection,
     WorkspaceSwitchStyle,
   };
-  use wm_platform::{Rect, SceneValue};
+  use wm_platform::{Rect, SceneItem, SceneValue};
 
   use super::{
-    away, away_from, entry_motion, Drawn, GroupMotion, ItemMotion, Pose,
-    MIN_SCALE, OPEN_PAINT_GRACE,
+    away, away_from, entry_motion, Drawn, GroupMotion, ItemMotion,
+    ItemState, PlannedMotion, Pose, MIN_SCALE, OPEN_PAINT_GRACE,
   };
   use crate::pending_sync::SceneSwitchRequest;
 
@@ -2542,6 +2548,53 @@ mod tests {
     let turned = motion.retargeted(back, 200, LINEAR, later);
     assert!((turned.from.frame.x() - 500).abs() <= 1);
     assert!(!turned.is_done(later));
+  }
+
+  fn resting_at(frame: &Rect) -> ItemState {
+    ItemState::new(
+      SceneItem {
+        key: 1,
+        frame: frame.clone(),
+        windows: Vec::new(),
+      },
+      None,
+    )
+  }
+
+  #[test]
+  fn a_window_at_rest_moves_from_where_it_was() {
+    let now = Instant::now();
+    let from = Rect::from_xy(0, 0, 400, 300);
+    let to = Rect::from_xy(500, 0, 400, 300);
+
+    // Columns too, which only carry on with a motion in flight.
+    for carries_speed in [false, true] {
+      let mut item = resting_at(&from);
+      let planned = PlannedMotion {
+        from: Drawn::at_rest(from.clone()),
+        duration_ms: 200,
+        easing: LINEAR,
+        carries_speed,
+      };
+
+      assert!(item.rest_at(to.clone(), Some(&planned), now));
+      assert_eq!(item.drawn_at(now).frame, from);
+      assert!(item.is_moving(now));
+      let end = now + Duration::from_millis(200);
+      assert_eq!(item.drawn_at(end).frame, to);
+    }
+  }
+
+  #[test]
+  fn a_window_moved_without_a_plan_lands_there_at_once() {
+    let now = Instant::now();
+    let to = Rect::from_xy(2, 0, 400, 300);
+    let mut item = resting_at(&Rect::from_xy(0, 0, 400, 300));
+
+    assert!(item.rest_at(to.clone(), None, now));
+    assert_eq!(item.drawn_at(now).frame, to);
+    assert!(!item.is_moving(now));
+    assert!(item.is_landing);
   }
 
   #[test]
