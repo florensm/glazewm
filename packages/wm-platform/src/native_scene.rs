@@ -55,11 +55,10 @@ use windows::{
     },
     UI::WindowsAndMessaging::{
       CreateWindowExW, DestroyWindow, EnumWindows, GetClassNameW,
-      GetLayeredWindowAttributes, GetWindow, GetWindowLongPtrW,
-      GetWindowRect, IsIconic, IsWindowVisible, SetWindowPos, GWL_EXSTYLE,
-      GW_OWNER, HWND_TOPMOST, LAYERED_WINDOW_ATTRIBUTES_FLAGS, LWA_ALPHA,
-      SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_SHOWWINDOW,
-      WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_NOREDIRECTIONBITMAP,
+      GetWindow, GetWindowRect, IsIconic, IsWindowVisible, SetWindowPos,
+      GW_HWNDPREV, GW_OWNER, HWND_TOPMOST, SET_WINDOW_POS_FLAGS,
+      SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOOWNERZORDER, SWP_NOSIZE,
+      SWP_SHOWWINDOW, WS_EX_NOACTIVATE, WS_EX_NOREDIRECTIONBITMAP,
       WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_EX_TRANSPARENT, WS_POPUP,
     },
   },
@@ -68,6 +67,10 @@ use windows::{
 use crate::{companion, platform_impl::NativeWindow, window_class, Rect};
 
 const CLASS_NAME: PCWSTR = w!("GlazeWM_Scene");
+const CLASS: &str = "GlazeWM_Scene";
+
+/// Most windows looked through above a scene for one raised over it.
+const MAX_WINDOWS_ABOVE: usize = 256;
 
 /// Prefix of the WM's own window classes.
 const OWN_CLASS_PREFIX: &str = "GlazeWM_";
@@ -247,12 +250,30 @@ pub struct SceneWindow {
   /// move. Read from the window when `None`.
   pub placement: Option<(Rect, Rect)>,
 
+  /// Constant alpha its copy is drawn at, e.g. one it takes on with
+  /// focus. When `None`, the one it's layered with, which thumbnails
+  /// leave out.
+  pub alpha: Option<u8>,
+
   /// Radius of its visible frame's corners, in physical pixels.
   pub corner_radius: f32,
 
   /// Whether its group can't do without it: a group fails to be made
   /// without a required window, and is made without an optional one.
   pub required: bool,
+}
+
+impl SceneWindow {
+  /// An optional window, copied as and where it is.
+  fn as_is(hwnd: HWND) -> Self {
+    Self {
+      hwnd,
+      placement: None,
+      alpha: None,
+      corner_radius: 0.0,
+      required: false,
+    }
+  }
 }
 
 /// A group of copies posed together, e.g. a workspace's windows.
@@ -391,6 +412,11 @@ impl Host {
   }
 
   fn show(&self) -> crate::Result<()> {
+    self.to_top(SWP_SHOWWINDOW)
+  }
+
+  /// Moves it to the top of the topmost windows.
+  fn to_top(&self, flags: SET_WINDOW_POS_FLAGS) -> crate::Result<()> {
     // SAFETY: `self.hwnd` is a window of this thread.
     unsafe {
       SetWindowPos(
@@ -400,10 +426,28 @@ impl Host {
         0,
         0,
         0,
-        SWP_NOACTIVATE | SWP_SHOWWINDOW | SWP_NOMOVE | SWP_NOSIZE,
+        SWP_NOACTIVATE | SWP_NOMOVE | SWP_NOSIZE | flags,
       )
     }?;
     Ok(())
+  }
+
+  /// Whether a window other than a scene's sits above it.
+  fn is_overlapped(&self) -> bool {
+    let mut above = self.hwnd;
+
+    for _ in 0..MAX_WINDOWS_ABOVE {
+      // SAFETY: A stale handle just returns `HWND(0)`.
+      above = unsafe { GetWindow(above, GW_HWNDPREV) };
+      if above.0 == 0 {
+        return false;
+      }
+      if class_name(above) != CLASS {
+        return true;
+      }
+    }
+
+    true
   }
 }
 
@@ -528,14 +572,7 @@ impl NativeScene {
     // Bottom-most first, each added above the ones before it.
     let mut has_floor = false;
     for hwnd in below.iter().rev() {
-      let still = SceneWindow {
-        hwnd: *hwnd,
-        placement: None,
-        corner_radius: 0.0,
-        required: false,
-      };
-
-      match self.copy(&still, &self.root.clone()) {
+      match self.copy(&SceneWindow::as_is(*hwnd), &self.root.clone()) {
         Ok(Some((copy, covers_monitor))) => {
           has_floor |= covers_monitor;
           self.stills.push(copy);
@@ -558,14 +595,7 @@ impl NativeScene {
     unsafe { self.root.AddVisual(&self.groups_parent, false, None) }?;
 
     for hwnd in above.iter().rev() {
-      let still = SceneWindow {
-        hwnd: *hwnd,
-        placement: None,
-        corner_radius: 0.0,
-        required: false,
-      };
-
-      match self.copy(&still, &self.root.clone()) {
+      match self.copy(&SceneWindow::as_is(*hwnd), &self.root.clone()) {
         Ok(Some((copy, _))) => self.stills.push(copy),
         Ok(None) => {}
         Err(err) => tracing::debug!(
@@ -617,6 +647,15 @@ impl NativeScene {
     let order = top_level_windows();
     let members = self.resolve(windows, &order);
     self.add_resolved_group(&members, &order)
+  }
+
+  /// Puts the scene back above windows raised over it since it was shown,
+  /// e.g. ones shown on top beneath it, which some apps do a while later.
+  pub fn raise(&self) -> crate::Result<()> {
+    if self.host.is_overlapped() {
+      self.host.to_top(SWP_NOOWNERZORDER)?;
+    }
+    Ok(())
   }
 
   /// Poses group `id`, from the next commit.
@@ -722,12 +761,7 @@ impl NativeScene {
         && goes_with(hwnd, &explicit)
         && !NativeWindow::new(hwnd.0).is_cloaked().unwrap_or(true)
       {
-        members.push(SceneWindow {
-          hwnd,
-          placement: None,
-          corner_radius: 0.0,
-          required: false,
-        });
+        members.push(SceneWindow::as_is(hwnd));
       }
     }
 
@@ -855,7 +889,15 @@ impl NativeScene {
     .ok()?;
 
     // Thumbnails leave out the opacity a window is layered with.
-    let alpha = layered_alpha(window.hwnd).unwrap_or(u8::MAX);
+    let alpha = window
+      .alpha
+      .or_else(|| {
+        NativeWindow::new(window.hwnd.0)
+          .layered_alpha()
+          .ok()
+          .flatten()
+      })
+      .unwrap_or(u8::MAX);
 
     let whole = RECT {
       left: 0,
@@ -1205,32 +1247,6 @@ fn placement_of(hwnd: HWND) -> Option<(Rect, Rect)> {
   // SAFETY: `bounds` outlives the call.
   unsafe { GetWindowRect(hwnd, &raw mut bounds) }.ok()?;
   Some((to_rect(bounds), to_rect(bounds)))
-}
-
-/// `hwnd`'s constant alpha; `None` if it isn't layered, or is drawn by
-/// `UpdateLayeredWindow`, whose per-pixel alpha its thumbnail keeps.
-fn layered_alpha(hwnd: HWND) -> Option<u8> {
-  // SAFETY: Plain style lookup.
-  let ex_style = unsafe { GetWindowLongPtrW(hwnd, GWL_EXSTYLE) };
-  #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-  if ex_style as u32 & WS_EX_LAYERED.0 == 0 {
-    return None;
-  }
-
-  let mut alpha = u8::MAX;
-  let mut flags = LAYERED_WINDOW_ATTRIBUTES_FLAGS::default();
-  // SAFETY: Out pointers outlive the call.
-  unsafe {
-    GetLayeredWindowAttributes(
-      hwnd,
-      None,
-      Some(&raw mut alpha),
-      Some(&raw mut flags),
-    )
-  }
-  .ok()?;
-
-  (flags & LWA_ALPHA == LWA_ALPHA).then_some(alpha)
 }
 
 fn class_name(hwnd: HWND) -> String {

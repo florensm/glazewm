@@ -1313,6 +1313,18 @@ pub struct TransparencyEffectConfig {
   pub opacity: OpacityValue,
 }
 
+impl TransparencyEffectConfig {
+  /// Constant alpha the effect gives a window, opaque while it's off.
+  #[must_use]
+  pub fn alpha(&self) -> u8 {
+    if self.enabled {
+      self.opacity.to_alpha()
+    } else {
+      u8::MAX
+    }
+  }
+}
+
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(rename_all(serialize = "camelCase"))]
 pub struct WindowRuleConfig {

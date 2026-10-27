@@ -202,6 +202,14 @@ impl MonitorScene {
     }) && staying.next().is_none()
   }
 
+  /// Puts it back above windows shown on top beneath it, e.g. floating
+  /// ones of the incoming workspace.
+  fn raise(&self) {
+    if let Err(err) = self.native.raise() {
+      tracing::debug!("Scene couldn't be raised: {err}");
+    }
+  }
+
   /// Whether nothing moves anymore: every workspace that left is gone, and
   /// the one that came in is in place.
   fn is_settled(&self, now: Instant) -> bool {
@@ -268,6 +276,8 @@ pub fn cover(
 
   let scenes = &mut state.animation_manager.scenes;
   if let Some(scene) = scenes.scene_mut(monitor.id()) {
+    scene.raise();
+
     // Back over the windows beneath, on screen before they change, in
     // case it was fading off them.
     if scene.lifting_since.take().is_some() {
@@ -388,6 +398,7 @@ pub fn enter(
     abandon(state, request);
     return;
   };
+  scene.raise();
   let now = Instant::now();
 
   // One still leaving turns back from wherever it is.
@@ -523,6 +534,8 @@ pub fn tick(state: &mut WmState) {
       return false;
     }
 
+    scene.raise();
+
     let mut retired = false;
     scene.groups.retain(|group| {
       let is_gone = group.is_leaving
@@ -634,7 +647,8 @@ fn workspace(state: &WmState, id: Uuid) -> Option<Workspace> {
 /// with its overlays and its stack's tab bar. Returns them with the IDs of
 /// the windows.
 ///
-/// `wearing_focus` is the window drawn with the focused window's effects.
+/// `wearing_focus` is the window drawn with the focused window's effects,
+/// which it may not wear yet.
 fn workspace_windows(
   state: &WmState,
   config: &UserConfig,
@@ -644,6 +658,15 @@ fn workspace_windows(
 ) -> (Vec<SceneWindow>, Vec<Uuid>) {
   let mut copies = Vec::new();
   let mut ids = Vec::new();
+
+  let focused_alpha = config
+    .value
+    .window_effects
+    .focused_window
+    .transparency
+    .alpha();
+  let wears_focus_effects =
+    state.prev_effects_window.as_ref().map(CommonGetters::id);
 
   let windows = workspace
     .descendants()
@@ -655,12 +678,17 @@ fn workspace_windows(
       continue;
     };
 
+    let is_focused = wearing_focus == Some(window.id());
     copies.push(SceneWindow {
       hwnd: window.native().hwnd(),
       placement: Some(placement),
+      // One taking focus gets its focused transparency only once the
+      // focus lands, after its copy is made.
+      alpha: (is_focused && wears_focus_effects != Some(window.id()))
+        .then_some(focused_alpha),
       corner_radius: corner_radius(
         &window,
-        wearing_focus == Some(window.id()),
+        is_focused,
         config,
         monitor.scale_factor,
       ),
@@ -683,6 +711,7 @@ fn workspace_windows(
       SceneWindow {
         hwnd,
         placement: None,
+        alpha: None,
         corner_radius: 0.0,
         required: false,
       }
@@ -701,6 +730,7 @@ fn workspace_windows(
       copies.push(SceneWindow {
         hwnd: bar.hwnd(),
         placement: Some((rect.clone(), rect)),
+        alpha: None,
         corner_radius: 0.0,
         required: false,
       });

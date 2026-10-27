@@ -1221,11 +1221,7 @@ fn redraw_containers(
       } else {
         &config.value.window_effects.other_windows
       };
-      let opacity = if effect_cfg.transparency.enabled {
-        effect_cfg.transparency.opacity.to_alpha()
-      } else {
-        u8::MAX
-      };
+      let opacity = effect_cfg.transparency.alpha();
       let style = effect_cfg.resolved_corner_style();
       // Snapshotted onto the `ResizeSession` (rather than re-read live
       // from config at tracking time) since the close animation's
@@ -2708,11 +2704,7 @@ pub(crate) fn surrogate_effects_for(
     &config.value.window_effects.other_windows
   };
 
-  let effect_opacity = if effect_cfg.transparency.enabled {
-    effect_cfg.transparency.opacity.to_alpha()
-  } else {
-    u8::MAX
-  };
+  let effect_opacity = effect_cfg.transparency.alpha();
 
   let corner_style = effect_cfg.resolved_corner_style();
 
