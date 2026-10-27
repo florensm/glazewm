@@ -354,3 +354,9 @@ Not in this version:
 
 - Picking minimized windows with the mouse (their icons show on their
   card, and they are reachable by search).
+- Borders and backdrops on the windows of other workspaces: only windows
+  on screen show theirs, since the WM hides the overlays of the others.
+  Drawing previews with the composition visuals scenes use, rather than
+  DWM thumbnails, would let the overview draw both from the config for
+  every window, as scenes draw backdrops, with corners rounded like the
+  windows'.
