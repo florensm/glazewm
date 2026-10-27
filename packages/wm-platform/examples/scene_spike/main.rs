@@ -2,13 +2,17 @@
 //! the monitor, as a compositor would, instead of a surrogate window per
 //! window.
 //!
-//! The scene holds a live capture of the desktop minus the animated
-//! windows, and a thumbnail visual of each of them on a panel above it,
-//! both from private `dwmapi.dll` exports. The panel is the only thing
-//! that moves, like a workspace's render offset in Hyprland, and DWM
-//! itself samples its motion from the animation committed to it. While
-//! the scene shows exactly the screen beneath it, the real windows are
-//! cloaked and uncloaked under it, so no frame should show either.
+//! The scene is a stack of thumbnail visuals, from a private `dwmapi.dll`
+//! export, of every window on the monitor in z-order. The animated ones
+//! slide together, like a workspace's render offset in Hyprland, while the
+//! rest, desktop and taskbar included, stay put; DWM itself samples the
+//! motion from the animation committed to it. While the scene shows
+//! exactly the screen beneath it, the real windows are cloaked and
+//! uncloaked under it, so no frame should show either.
+//!
+//! The stack stands in for a live desktop capture, which on Windows 11
+//! build 26200 ignores the windows `DwmpUpdateSharedMultiWindowVisual` is
+//! asked to leave out of it.
 //!
 //! On the monitor under the cursor:
 //!
@@ -18,9 +22,12 @@
 //!    from wherever they are, like a switch reversed mid-flight;
 //! 4. the scene fades out over the real windows.
 //!
-//! With `--no-backdrop` the desktop isn't captured, so the scene can't
-//! hide the real windows: they stay cloaked until the slide back ends,
+//! With `--no-backdrop` the scene holds only the animated windows, so it
+//! can't hide the real ones: they stay cloaked until the slide back ends,
 //! like today's surrogates, for comparison.
+//!
+//! `--window-opacity` first fades the animated windows, as the WM's
+//! `transparency` effect does.
 //!
 //! Quit the WM first, as it reacts to the cloaks. The `uncloak_all`
 //! example restores windows left cloaked if this is killed midway.
@@ -66,14 +73,10 @@ mod curve;
 
 #[cfg(target_os = "windows")]
 mod windows_impl {
-  use std::{
-    cell::Cell,
-    ffi::c_void,
-    ptr::{null, null_mut},
-  };
+  use std::{cell::Cell, ffi::c_void, ptr::null_mut};
 
   use windows::{
-    core::{s, w, ComInterface, Error, Interface, Result, HRESULT, PCSTR},
+    core::{w, ComInterface, Error, Interface, Result, HRESULT, PCSTR},
     Win32::{
       Foundation::{
         BOOL, E_FAIL, HMODULE, HWND, LPARAM, LRESULT, POINT, RECT, SIZE,
@@ -98,12 +101,14 @@ mod windows_impl {
         },
         Dxgi::IDXGIDevice,
         Gdi::{
-          GetMonitorInfoW, MonitorFromPoint, MonitorFromWindow, HMONITOR,
-          MONITORINFO, MONITOR_DEFAULTTONEAREST, MONITOR_DEFAULTTONULL,
+          GetMonitorInfoW, MonitorFromPoint, MonitorFromWindow,
+          RedrawWindow, HMONITOR, MONITORINFO, MONITOR_DEFAULTTONEAREST,
+          MONITOR_DEFAULTTONULL, RDW_ALLCHILDREN, RDW_ERASE, RDW_FRAME,
+          RDW_INVALIDATE,
         },
       },
       System::{
-        LibraryLoader::{GetModuleHandleW, GetProcAddress, LoadLibraryW},
+        LibraryLoader::{GetProcAddress, LoadLibraryW},
         Performance::{
           QueryPerformanceCounter, QueryPerformanceFrequency,
         },
@@ -115,12 +120,15 @@ mod windows_impl {
         },
         WindowsAndMessaging::{
           CreateWindowExW, DefWindowProcW, DestroyWindow,
-          DispatchMessageW, EnumWindows, GetCursorPos, GetWindowLongPtrW,
-          PeekMessageW, RegisterClassW, SetWindowPos, TranslateMessage,
-          GWL_EXSTYLE, HWND_TOPMOST, MSG, PM_REMOVE, SWP_NOACTIVATE,
-          SWP_NOMOVE, SWP_NOSIZE, SWP_SHOWWINDOW, WNDCLASSW,
-          WS_EX_NOACTIVATE, WS_EX_NOREDIRECTIONBITMAP, WS_EX_TOOLWINDOW,
-          WS_EX_TOPMOST, WS_EX_TRANSPARENT, WS_POPUP,
+          DispatchMessageW, EnumWindows, GetCursorPos,
+          GetLayeredWindowAttributes, GetWindowLongPtrW, PeekMessageW,
+          RegisterClassW, SetLayeredWindowAttributes, SetWindowLongPtrW,
+          SetWindowPos, TranslateMessage, GWL_EXSTYLE, HWND_TOPMOST,
+          LAYERED_WINDOW_ATTRIBUTES_FLAGS, LWA_ALPHA, MSG, PM_REMOVE,
+          SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_SHOWWINDOW,
+          WNDCLASSW, WS_EX_LAYERED, WS_EX_NOACTIVATE,
+          WS_EX_NOREDIRECTIONBITMAP, WS_EX_TOOLWINDOW, WS_EX_TOPMOST,
+          WS_EX_TRANSPARENT, WS_POPUP,
         },
       },
     },
@@ -140,17 +148,17 @@ mod windows_impl {
   /// Hyprland's built-in `default` bezier.
   const HYPRLAND_DEFAULT_BEZIER: [f32; 4] = [0.0, 0.75, 0.15, 1.0];
 
-  /// `WINDOWCOMPOSITIONATTRIB` that keeps a window out of DWM's live
-  /// captures, here the desktop capture drawn in that same window.
-  const WCA_EXCLUDED_FROM_LIVEPREVIEW: u32 = 13;
+  /// Pause around `--window-opacity`'s fade, so its own change isn't
+  /// mistaken for part of the animation.
+  const SETTLE_SECS: f64 = 0.5;
+
+  /// `WS_EX_LAYERED`, as `GetWindowLongPtrW` returns styles.
+  #[allow(clippy::cast_possible_wrap)]
+  const LAYERED_STYLE: isize = WS_EX_LAYERED.0 as isize;
 
   /// Undocumented `dwThumbnailFlags` value the published reverse
   /// engineering of `DwmpCreateSharedThumbnailVisual` passes.
   const SHARED_THUMBNAIL_FLAGS: u32 = 2;
-
-  /// `DwmpUpdateSharedMultiWindowVisual` flags its reverse engineering
-  /// requires.
-  const MULTI_WINDOW_FLAGS: u32 = 1;
 
   type CreateSharedThumbnailVisual = unsafe extern "system" fn(
     destination: HWND,
@@ -169,39 +177,6 @@ mod windows_impl {
       client_area_only: BOOL,
       size: *mut SIZE,
     ) -> HRESULT;
-
-  type CreateSharedMultiWindowVisual =
-    unsafe extern "system" fn(
-      destination: HWND,
-      device: *mut c_void,
-      visual: *mut *mut c_void,
-      thumbnail: *mut isize,
-    ) -> HRESULT;
-
-  type UpdateSharedMultiWindowVisual =
-    unsafe extern "system" fn(
-      thumbnail: isize,
-      include: *const HWND,
-      include_count: u32,
-      exclude: *const HWND,
-      exclude_count: u32,
-      source: *const RECT,
-      destination: *const SIZE,
-      flags: u32,
-    ) -> HRESULT;
-
-  #[repr(C)]
-  struct WindowCompositionAttribData {
-    attribute: u32,
-    data: *mut c_void,
-    size: usize,
-  }
-
-  type SetWindowCompositionAttribute = unsafe extern "system" fn(
-    hwnd: HWND,
-    data: *mut WindowCompositionAttribData,
-  )
-    -> BOOL;
 
   fn fail(message: &str) -> Error {
     Error::new(E_FAIL, message.into())
@@ -227,6 +202,9 @@ mod windows_impl {
     bezier: Bezier,
     backdrop: bool,
     max_windows: usize,
+    /// Alpha the animated windows are faded to, like the WM's
+    /// `transparency` effect.
+    window_alpha: u8,
   }
 
   impl Options {
@@ -240,6 +218,7 @@ mod windows_impl {
         bezier: Bezier(HYPRLAND_DEFAULT_BEZIER),
         backdrop: true,
         max_windows: 6,
+        window_alpha: u8::MAX,
       };
 
       let mut args = args.iter();
@@ -277,6 +256,16 @@ mod windows_impl {
             options.corner_radius = number(flag, value)?;
           }
           "--max-windows" => options.max_windows = number(flag, value)?,
+          "--window-opacity" => {
+            let opacity = number::<f32>(flag, value)?.clamp(0.0, 1.0);
+            #[allow(
+              clippy::cast_possible_truncation,
+              clippy::cast_sign_loss
+            )]
+            {
+              options.window_alpha = (opacity * 255.0).round() as u8;
+            }
+          }
           "--bezier" => {
             let points = value
               .split(',')
@@ -353,25 +342,15 @@ mod windows_impl {
   }
 
   /// Private `dwmapi.dll` exports, which have ordinals but no names.
-  ///
-  /// On Windows 10 up to 21H1, 163 and 164 are the `VirtualDesktop`
-  /// predecessors of the `MultiWindow` functions, whose update takes no
-  /// trailing flags. Passing them anyway is harmless under the x64 calling
-  /// convention.
   struct DwmPrivate {
     create_thumbnail_visual: CreateSharedThumbnailVisual,
     query_source_size: QueryWindowThumbnailSourceSize,
-    create_multi_window_visual: CreateSharedMultiWindowVisual,
-    update_multi_window_visual: UpdateSharedMultiWindowVisual,
-    set_composition_attribute: SetWindowCompositionAttribute,
   }
 
   impl DwmPrivate {
     fn load() -> Result<Self> {
       // SAFETY: `dwmapi.dll` is a system library.
       let dwmapi = unsafe { LoadLibraryW(w!("dwmapi.dll")) }?;
-      // SAFETY: `user32.dll` is loaded into every GUI process.
-      let user32 = unsafe { GetModuleHandleW(w!("user32.dll")) }?;
 
       // SAFETY: Each export is transmuted to the signature its reverse
       // engineering documents; function pointers share one size.
@@ -385,21 +364,6 @@ mod windows_impl {
             RawExport,
             QueryWindowThumbnailSourceSize,
           >(export(dwmapi, 162)?),
-          create_multi_window_visual: std::mem::transmute::<
-            RawExport,
-            CreateSharedMultiWindowVisual,
-          >(export(dwmapi, 163)?),
-          update_multi_window_visual: std::mem::transmute::<
-            RawExport,
-            UpdateSharedMultiWindowVisual,
-          >(export(dwmapi, 164)?),
-          set_composition_attribute: std::mem::transmute::<
-            RawExport,
-            SetWindowCompositionAttribute,
-          >(
-            GetProcAddress(user32, s!("SetWindowCompositionAttribute"))
-              .ok_or_else(|| fail("no SetWindowCompositionAttribute"))?,
-          ),
         })
       }
     }
@@ -495,50 +459,62 @@ mod windows_impl {
     }
   }
 
-  /// Monitor-wide composition tree: the desktop capture at the bottom, and
-  /// above it the panel holding every animated window's thumbnail.
+  /// A window in the scene, and whether it slides or stays put.
+  struct Layer {
+    window: NativeWindow,
+    moves: bool,
+  }
+
+  /// Monitor-wide composition tree: a thumbnail of each window in the
+  /// scene, in z-order.
   struct Scene {
     device: IDCompositionDesktopDevice,
     target: IDCompositionTarget,
+    root: IDCompositionVisual2,
     /// Fades the whole scene.
     fade: IDCompositionEffectGroup,
-    /// Moves every window together.
-    panel: IDCompositionVisual2,
+    /// Parents of the moving windows' thumbnails, which one animation
+    /// slides together.
+    movers: Vec<IDCompositionVisual2>,
     /// Visuals created by DWM, kept alive with the tree.
     visuals: Vec<IDCompositionVisual>,
     thumbnails: Vec<isize>,
-    /// Windows the scene draws, which may be cloaked under it. One DWM
-    /// can't make a thumbnail of stays shown, and in the capture.
+    /// Moving windows the scene draws, which may be cloaked under it. One
+    /// DWM can't make a thumbnail of stays shown.
     windows: Vec<NativeWindow>,
+    /// Whether an opaque window covering the monitor made it into the
+    /// scene, so no real window can show through it.
     has_backdrop: bool,
   }
 
   impl Scene {
+    /// Builds the scene from `layers`, topmost first, and prints what it
+    /// holds.
     fn build(
       dwm: &DwmPrivate,
       host: &Host,
       monitor: &Rect,
-      windows: &[NativeWindow],
+      layers: &[Layer],
       options: &Options,
     ) -> Result<Self> {
       let device = create_device()?;
 
       // SAFETY: Plain DirectComposition calls on live objects.
-      let (target, root, fade, panel) = unsafe {
+      let (target, root, fade) = unsafe {
         let target = device.CreateTargetForHwnd(host.0, true)?;
         let root = device.CreateVisual()?;
         let fade = device.CreateEffectGroup()?;
         fade.SetOpacity2(WARM_UP_OPACITY)?;
         root.SetEffect(&fade)?;
-        let panel = device.CreateVisual()?;
-        (target, root, fade, panel)
+        (target, root, fade)
       };
 
       let mut scene = Self {
         device,
         target,
+        root,
         fade,
-        panel,
+        movers: Vec::new(),
         visuals: Vec::new(),
         thumbnails: Vec::new(),
         windows: Vec::new(),
@@ -546,35 +522,58 @@ mod windows_impl {
       };
 
       // Bottom-most first, each added above the ones before it.
-      for window in windows.iter().rev() {
-        match scene.add_window(
+      let mut added = Vec::new();
+      for layer in layers.iter().rev() {
+        // Thumbnails leave out the opacity a window is layered with.
+        let alpha = layered_alpha(layer.window.hwnd()).unwrap_or(u8::MAX);
+        let corner_radius = if is_app_window(&layer.window) {
+          options.corner_radius
+        } else {
+          0.0
+        };
+
+        match scene.add_layer(
           dwm,
           host,
           monitor,
-          window,
-          options.corner_radius,
+          layer,
+          alpha,
+          corner_radius,
         ) {
-          Ok(()) => scene.windows.push(window.clone()),
-          Err(err) => println!("Left a window out ({err})."),
+          Ok(frame) => {
+            if layer.moves {
+              scene.windows.push(layer.window.clone());
+            } else if alpha == u8::MAX && frame.contains_rect(monitor) {
+              scene.has_backdrop = true;
+            }
+            added.push(format!(
+              "  {} {:#x} {} at {}%",
+              if layer.moves { "moves" } else { "stays" },
+              layer.window.hwnd().0,
+              describe(&layer.window),
+              percent(alpha),
+            ));
+          }
+          Err(err) => {
+            println!("Left {} out ({err}).", describe(&layer.window));
+          }
         }
       }
 
-      // SAFETY: Plain DirectComposition call on live visuals.
-      unsafe { root.AddVisual(&scene.panel, false, None) }?;
-
-      if options.backdrop {
-        match scene.add_backdrop(dwm, host, monitor, &root) {
-          Ok(()) => scene.has_backdrop = true,
-          Err(err) => println!(
-            "No desktop capture ({err}); comparing against today's \
-             handoff instead."
-          ),
-        }
+      println!("Scene, topmost first:");
+      for line in added.iter().rev() {
+        println!("{line}");
+      }
+      if options.backdrop && !scene.has_backdrop {
+        println!(
+          "Nothing opaque covers the monitor; comparing against today's \
+           handoff instead."
+        );
       }
 
       // SAFETY: Plain DirectComposition calls on live objects.
       unsafe {
-        scene.target.SetRoot(&root)?;
+        scene.target.SetRoot(&scene.root)?;
         scene.device.Commit()?;
         scene.device.WaitForCommitCompletion()?;
       }
@@ -582,94 +581,19 @@ mod windows_impl {
       Ok(scene)
     }
 
-    /// Adds, below the panel, a live capture of the monitor without the
-    /// scene's windows or the host.
-    fn add_backdrop(
-      &mut self,
-      dwm: &DwmPrivate,
-      host: &Host,
-      monitor: &Rect,
-      root: &IDCompositionVisual2,
-    ) -> Result<()> {
-      let mut excluded = BOOL::from(true);
-      let mut data = WindowCompositionAttribData {
-        attribute: WCA_EXCLUDED_FROM_LIVEPREVIEW,
-        data: (&raw mut excluded).cast(),
-        size: std::mem::size_of::<BOOL>(),
-      };
-      // SAFETY: `data` points at a `BOOL` that outlives the call.
-      if !unsafe { (dwm.set_composition_attribute)(host.0, &raw mut data) }
-        .as_bool()
-      {
-        println!("Couldn't keep the scene out of its own capture.");
-      }
-
-      let mut raw = null_mut();
-      let mut thumbnail = 0;
-      // SAFETY: Out pointers outlive the call; the device is live.
-      unsafe {
-        (dwm.create_multi_window_visual)(
-          host.0,
-          self.device.as_raw(),
-          &raw mut raw,
-          &raw mut thumbnail,
-        )
-      }
-      .ok()?;
-      // SAFETY: On success, `raw` is an owned `IDCompositionVisual`.
-      let visual = unsafe { IDCompositionVisual::from_raw(raw) };
-      self.thumbnails.push(thumbnail);
-
-      let mut exclude = self
-        .windows
-        .iter()
-        .map(NativeWindow::hwnd)
-        .collect::<Vec<_>>();
-      exclude.push(host.0);
-      let source = RECT {
-        left: monitor.left,
-        top: monitor.top,
-        right: monitor.right,
-        bottom: monitor.bottom,
-      };
-      let size = SIZE {
-        cx: monitor.width(),
-        cy: monitor.height(),
-      };
-
-      // SAFETY: Arrays and structs outlive the call.
-      unsafe {
-        (dwm.update_multi_window_visual)(
-          thumbnail,
-          null(),
-          0,
-          exclude.as_ptr(),
-          u32::try_from(exclude.len()).unwrap_or(u32::MAX),
-          &raw const source,
-          &raw const size,
-          MULTI_WINDOW_FLAGS,
-        )
-      }
-      .ok()?;
-
-      // With no reference visual, `insertAbove` puts it below all others.
-      // SAFETY: Plain DirectComposition call on live visuals.
-      unsafe { root.AddVisual(&visual, true, None) }?;
-      self.visuals.push(visual);
-      Ok(())
-    }
-
-    /// Adds `window`'s thumbnail to the panel where it is on screen, cut
-    /// to its visible frame.
+    /// Adds `layer`'s thumbnail above the others, where its window is on
+    /// screen and cut to its visible frame, which it returns.
     #[allow(clippy::cast_precision_loss)]
-    fn add_window(
+    fn add_layer(
       &mut self,
       dwm: &DwmPrivate,
       host: &Host,
       monitor: &Rect,
-      window: &NativeWindow,
+      layer: &Layer,
+      alpha: u8,
       corner_radius: f32,
-    ) -> Result<()> {
+    ) -> Result<Rect> {
+      let window = &layer.window;
       let outer = window
         .frame_with_shadows()
         .map_err(|err| fail(&err.to_string()))?;
@@ -682,15 +606,6 @@ mod windows_impl {
         (dwm.query_source_size)(window.hwnd(), false.into(), &raw mut size)
       }
       .ok()?;
-      if (size.cx, size.cy) != (outer.width(), outer.height()) {
-        println!(
-          "Thumbnail source is {}x{}, window rect {}x{}.",
-          size.cx,
-          size.cy,
-          outer.width(),
-          outer.height(),
-        );
-      }
 
       let whole = RECT {
         left: 0,
@@ -706,7 +621,7 @@ mod windows_impl {
           | DWM_TNP_SOURCECLIENTAREAONLY,
         rcDestination: whole,
         rcSource: whole,
-        opacity: u8::MAX,
+        opacity: alpha,
         fVisible: true.into(),
         fSourceClientAreaOnly: false.into(),
       };
@@ -734,6 +649,9 @@ mod windows_impl {
       unsafe {
         let item = self.device.CreateVisual()?;
         item.AddVisual(&content, false, None)?;
+        // DWM draws the thumbnail from the window rect's corner, though
+        // `query_source_size` gives the visible frame's size: anchored at
+        // the frame, copies sat an invisible border off their windows.
         item.SetOffsetX2((outer.left - monitor.left) as f32)?;
         item.SetOffsetY2((outer.top - monitor.top) as f32)?;
 
@@ -756,11 +674,18 @@ mod windows_impl {
         }
         item.SetClip(&clip)?;
 
-        self.panel.AddVisual(&item, false, None)?;
+        if layer.moves {
+          let mover = self.device.CreateVisual()?;
+          mover.AddVisual(&item, false, None)?;
+          self.root.AddVisual(&mover, false, None)?;
+          self.movers.push(mover);
+        } else {
+          self.root.AddVisual(&item, false, None)?;
+        }
       }
 
       self.visuals.push(content);
-      Ok(())
+      Ok(visible)
     }
 
     fn set_opacity(&self, opacity: f32) -> Result<()> {
@@ -771,8 +696,8 @@ mod windows_impl {
       }
     }
 
-    /// Moves the panel along `tween` on `direction`'s axis, from QPC
-    /// `begin`.
+    /// Moves the moving windows along `tween` on `direction`'s axis, from
+    /// QPC `begin`.
     fn slide(
       &self,
       direction: Direction,
@@ -782,12 +707,14 @@ mod windows_impl {
       let animation = animation(&self.device, tween, begin)?;
       // SAFETY: Plain DirectComposition calls on live objects.
       unsafe {
-        match direction {
-          Direction::Left | Direction::Right => {
-            self.panel.SetOffsetX(&animation)?;
-          }
-          Direction::Up | Direction::Down => {
-            self.panel.SetOffsetY(&animation)?;
+        for mover in &self.movers {
+          match direction {
+            Direction::Left | Direction::Right => {
+              mover.SetOffsetX(&animation)?;
+            }
+            Direction::Up | Direction::Down => {
+              mover.SetOffsetY(&animation)?;
+            }
           }
         }
         self.device.Commit()
@@ -868,6 +795,134 @@ mod windows_impl {
     }
   }
 
+  /// Fades windows as the WM's `transparency` effect does, and puts each
+  /// back as it was when dropped, unwinding included.
+  struct Translucency {
+    /// Each faded window, with its alpha if it was layered already.
+    windows: Vec<(HWND, Option<u8>)>,
+  }
+
+  impl Translucency {
+    /// Fades `windows` to `alpha`, skipping with a message any whose
+    /// opacity can't be changed or put back.
+    fn apply(windows: &[NativeWindow], alpha: u8) -> Self {
+      let mut translucency = Self {
+        windows: Vec::new(),
+      };
+      if alpha == u8::MAX {
+        return translucency;
+      }
+
+      for window in windows {
+        let hwnd = window.hwnd();
+        // SAFETY: Plain style lookup.
+        let ex_style = unsafe { GetWindowLongPtrW(hwnd, GWL_EXSTYLE) };
+
+        let prior = if ex_style & LAYERED_STYLE == 0 {
+          None
+        } else if let Some(prior) = layered_alpha(hwnd) {
+          Some(prior)
+        } else {
+          println!(
+            "Skipped {}: its layering can't be put back.",
+            describe(window)
+          );
+          continue;
+        };
+
+        // SAFETY: Plain style and attribute changes on a live window.
+        unsafe {
+          if prior.is_none() {
+            SetWindowLongPtrW(hwnd, GWL_EXSTYLE, ex_style | LAYERED_STYLE);
+          }
+          let _ = SetLayeredWindowAttributes(hwnd, None, alpha, LWA_ALPHA);
+        }
+
+        // A more privileged process's window, such as an elevated Task
+        // Manager's, refuses the style change without an error.
+        if layered_alpha(hwnd) == Some(alpha) {
+          translucency.windows.push((hwnd, prior));
+        } else {
+          restore_layering(hwnd, prior);
+          println!(
+            "Skipped {}: its opacity can't be changed.",
+            describe(window)
+          );
+        }
+      }
+
+      translucency
+    }
+
+    fn is_empty(&self) -> bool {
+      self.windows.is_empty()
+    }
+  }
+
+  impl Drop for Translucency {
+    fn drop(&mut self) {
+      for &(hwnd, prior) in &self.windows {
+        restore_layering(hwnd, prior);
+      }
+    }
+  }
+
+  /// Puts `hwnd` back at alpha `prior`, or unlayered if it had none.
+  fn restore_layering(hwnd: HWND, prior: Option<u8>) {
+    if let Some(alpha) = prior {
+      // SAFETY: Plain attribute change on a window that was layered.
+      let _ = unsafe {
+        SetLayeredWindowAttributes(hwnd, None, alpha, LWA_ALPHA)
+      };
+      return;
+    }
+
+    // SAFETY: Plain style change and repaint request. Unlayering discards
+    // the window's bits, so the docs prescribe the repaint.
+    unsafe {
+      let ex_style = GetWindowLongPtrW(hwnd, GWL_EXSTYLE);
+      SetWindowLongPtrW(hwnd, GWL_EXSTYLE, ex_style & !LAYERED_STYLE);
+      let _ = RedrawWindow(
+        hwnd,
+        None,
+        None,
+        RDW_ERASE | RDW_INVALIDATE | RDW_FRAME | RDW_ALLCHILDREN,
+      );
+    }
+  }
+
+  /// `hwnd`'s constant alpha; `None` if it isn't layered, or is also
+  /// color-keyed or drawn by `UpdateLayeredWindow`, which a constant alpha
+  /// can't restore.
+  fn layered_alpha(hwnd: HWND) -> Option<u8> {
+    let mut alpha = u8::MAX;
+    let mut flags = LAYERED_WINDOW_ATTRIBUTES_FLAGS::default();
+    // SAFETY: Out pointers outlive the call.
+    unsafe {
+      GetLayeredWindowAttributes(
+        hwnd,
+        None,
+        Some(&raw mut alpha),
+        Some(&raw mut flags),
+      )
+    }
+    .ok()?;
+    (flags == LWA_ALPHA).then_some(alpha)
+  }
+
+  /// `window`'s process and class, to name it in messages.
+  fn describe(window: &NativeWindow) -> String {
+    format!(
+      "{} ({})",
+      window.process_name().unwrap_or_default(),
+      window.class_name().unwrap_or_default().trim(),
+    )
+  }
+
+  fn percent(alpha: u8) -> u32 {
+    (u32::from(alpha) * 100 + 127) / 255
+  }
+
   /// Monitor under the cursor, with its bounds.
   fn cursor_monitor() -> Result<(HMONITOR, Rect)> {
     let mut point = POINT::default();
@@ -899,8 +954,8 @@ mod windows_impl {
     ))
   }
 
-  /// Shown, cloakable app windows on `monitor`, topmost first.
-  fn windows_on(monitor: HMONITOR, max: usize) -> Vec<NativeWindow> {
+  /// Every top-level window, topmost first.
+  fn top_level_windows() -> Vec<NativeWindow> {
     extern "system" fn collect(handle: HWND, data: LPARAM) -> BOOL {
       // SAFETY: `data` is the `Vec` passed to `EnumWindows` below, which
       // outlives the enumeration.
@@ -918,31 +973,66 @@ mod windows_impl {
       )
     };
 
-    handles
-      .into_iter()
-      .map(NativeWindow::from_handle)
-      .filter(|window| {
-        // SAFETY: Plain style and monitor lookups.
-        let (ex_style, window_monitor) = unsafe {
-          (
-            GetWindowLongPtrW(window.hwnd(), GWL_EXSTYLE),
-            MonitorFromWindow(window.hwnd(), MONITOR_DEFAULTTONULL),
-          )
-        };
-        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-        let is_tool = ex_style as u32 & WS_EX_TOOLWINDOW.0 != 0;
+    handles.into_iter().map(NativeWindow::from_handle).collect()
+  }
 
-        window_monitor == monitor
-          && !is_tool
+  /// Whether `window` is a shown, titled, unowned app window, like those
+  /// the WM manages.
+  fn is_app_window(window: &NativeWindow) -> bool {
+    // SAFETY: Plain style lookup.
+    let ex_style =
+      unsafe { GetWindowLongPtrW(window.hwnd(), GWL_EXSTYLE) };
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    let is_tool = ex_style as u32 & WS_EX_TOOLWINDOW.0 != 0;
+
+    !is_tool
+      && window.is_visible().unwrap_or(false)
+      && !window.is_minimized().unwrap_or(true)
+      && !window.is_cloaked().unwrap_or(true)
+      && !window.has_owner_window()
+      && !window.is_desktop_window().unwrap_or(true)
+      && window.title().is_ok_and(|title| !title.trim().is_empty())
+  }
+
+  /// The scene's windows, topmost first: up to `--max-windows` cloakable
+  /// app windows on `monitor` that move and, unless `--no-backdrop`,
+  /// every other shown window over `bounds`, which stays put.
+  fn layers_on(
+    monitor: HMONITOR,
+    bounds: &Rect,
+    options: &Options,
+  ) -> Vec<Layer> {
+    let mut moving = 0;
+    top_level_windows()
+      .into_iter()
+      .filter_map(|window| {
+        // SAFETY: Plain monitor lookup.
+        let window_monitor = unsafe {
+          MonitorFromWindow(window.hwnd(), MONITOR_DEFAULTTONULL)
+        };
+        let moves = moving < options.max_windows
+          && window_monitor == monitor
+          && is_app_window(&window)
+          && window.can_be_cloaked();
+        if moves {
+          moving += 1;
+          return Some(Layer {
+            window,
+            moves: true,
+          });
+        }
+
+        let stays = options.backdrop
           && window.is_visible().unwrap_or(false)
-          && !window.is_minimized().unwrap_or(true)
           && !window.is_cloaked().unwrap_or(true)
-          && !window.has_owner_window()
-          && !window.is_desktop_window().unwrap_or(true)
-          && window.title().is_ok_and(|title| !title.trim().is_empty())
-          && window.can_be_cloaked()
+          && window
+            .frame_with_shadows()
+            .is_ok_and(|frame| frame.intersection(bounds).is_some());
+        stays.then_some(Layer {
+          window,
+          moves: false,
+        })
       })
-      .take(max)
       .collect()
   }
 
@@ -1084,8 +1174,13 @@ mod windows_impl {
     let clock = Clock::new()?;
     let dwm = DwmPrivate::load()?;
     let (monitor, bounds) = cursor_monitor()?;
-    let windows = windows_on(monitor, options.max_windows);
-    if windows.is_empty() {
+    let layers = layers_on(monitor, &bounds, &options);
+    let moving = layers
+      .iter()
+      .filter(|layer| layer.moves)
+      .map(|layer| layer.window.clone())
+      .collect::<Vec<_>>();
+    if moving.is_empty() {
       return Err(fail("no app windows on the monitor under the cursor"));
     }
 
@@ -1096,24 +1191,23 @@ mod windows_impl {
       Direction::Down => bounds.height(),
     });
 
+    let translucency = Translucency::apply(&moving, options.window_alpha);
+    if !translucency.is_empty() {
+      wait_until(&clock, Clock::now(), SETTLE_SECS);
+    }
+
     let host = Host::create(&bounds)?;
     let started = Clock::now();
-    let scene = Scene::build(&dwm, &host, &bounds, &windows, &options)?;
+    let scene = Scene::build(&dwm, &host, &bounds, &layers, &options)?;
     let built = Clock::now();
     if scene.windows.is_empty() {
       return Err(fail("DWM made a thumbnail of none of the windows"));
     }
 
-    println!("Animating {} window(s):", scene.windows.len());
-    for window in &scene.windows {
-      println!(
-        "  {} ({})",
-        window.process_name().unwrap_or_default(),
-        window.class_name().unwrap_or_default(),
-      );
-    }
-
     let report = play(&clock, &host, &scene, &options, distance)?;
+    if !translucency.is_empty() {
+      wait_until(&clock, Clock::now(), SETTLE_SECS);
+    }
 
     println!(
       "Built in {:.1} ms, covered after {:.1} ms.",
