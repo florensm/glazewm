@@ -489,15 +489,18 @@ mod windows_impl {
 
   impl Scene {
     /// Builds the scene from `layers`, topmost first, and prints what it
-    /// holds.
+    /// holds and how long each part of building it took.
     fn build(
+      clock: &Clock,
       dwm: &DwmPrivate,
       host: &Host,
       monitor: &Rect,
       layers: &[Layer],
       options: &Options,
     ) -> Result<Self> {
+      let started = Clock::now();
       let device = create_device()?;
+      let device_ready = Clock::now();
 
       // SAFETY: Plain DirectComposition calls on live objects.
       let (target, root, fade) = unsafe {
@@ -522,6 +525,7 @@ mod windows_impl {
       };
 
       // Bottom-most first, each added above the ones before it.
+      let copies_started = Clock::now();
       let mut added = Vec::new();
       for layer in layers.iter().rev() {
         // Thumbnails leave out the opacity a window is layered with.
@@ -560,6 +564,8 @@ mod windows_impl {
         }
       }
 
+      let copies_done = Clock::now();
+
       println!("Scene, topmost first:");
       for line in added.iter().rev() {
         println!("{line}");
@@ -577,6 +583,22 @@ mod windows_impl {
         scene.device.Commit()?;
         scene.device.WaitForCommitCompletion()?;
       }
+      let committed = Clock::now();
+
+      let ms = |from, to| clock.secs_between(from, to) * 1000.0;
+      #[allow(clippy::cast_precision_loss)]
+      let copies = added.len().max(1) as f64;
+      println!(
+        "Device in {:.1} ms (once per run, kept by a WM), {} copies in \
+         {:.1} ms ({:.2} ms each), tree set up in {:.1} ms, committed in \
+         {:.1} ms.",
+        ms(started, device_ready),
+        added.len(),
+        ms(copies_started, copies_done),
+        ms(copies_started, copies_done) / copies,
+        ms(device_ready, copies_started),
+        ms(copies_done, committed),
+      );
 
       Ok(scene)
     }
@@ -1211,7 +1233,8 @@ mod windows_impl {
 
     let host = Host::create(&bounds)?;
     let started = Clock::now();
-    let scene = Scene::build(&dwm, &host, &bounds, &layers, &options)?;
+    let scene =
+      Scene::build(&clock, &dwm, &host, &bounds, &layers, &options)?;
     let built = Clock::now();
     if scene.windows.is_empty() {
       return Err(fail("DWM made a thumbnail of none of the windows"));
