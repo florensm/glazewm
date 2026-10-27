@@ -114,6 +114,10 @@ pub fn handle_display_settings_changed(
     }
   }
 
+  // Scenes copy windows where they were on monitors that may be gone.
+  #[cfg(target_os = "windows")]
+  state.animation_manager.scenes.clear();
+
   // Redraw full container tree. Animations are suppressed for this cycle:
   // animating a resolution/working-area relayout is visually meaningless,
   // and the cloak/surrogate mechanism would kick exclusive-fullscreen

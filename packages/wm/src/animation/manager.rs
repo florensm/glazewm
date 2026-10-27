@@ -611,6 +611,9 @@ pub struct AnimationManager {
   /// Active iris-wipe workspace transition, or `None` when idle.
   #[cfg(target_os = "windows")]
   iris_switch: Option<IrisSwitchState>,
+  /// Workspace switches playing on scenes over their monitors.
+  #[cfg(target_os = "windows")]
+  pub scenes: super::scene_switch::SceneSwitches,
 }
 
 impl Drop for AnimationManager {
@@ -686,6 +689,8 @@ impl AnimationManager {
       pending_minimize_windows: HashSet::new(),
       #[cfg(target_os = "windows")]
       iris_switch: None,
+      #[cfg(target_os = "windows")]
+      scenes: super::scene_switch::SceneSwitches::default(),
     }
   }
 
@@ -882,7 +887,7 @@ impl AnimationManager {
       return true;
     }
     #[cfg(target_os = "windows")]
-    if self.iris_switch.is_some() {
+    if self.iris_switch.is_some() || self.scenes.is_active() {
       return true;
     }
     #[cfg(target_os = "windows")]
@@ -1266,6 +1271,11 @@ impl AnimationManager {
     // what removes finished surrogates and reveals the real windows. The
     // first error is returned once the frame is done.
     let mut frame_result = Ok(());
+
+    // Workspaces whose slide has played on a scene go, and so do scenes
+    // with nothing left moving.
+    #[cfg(target_os = "windows")]
+    super::scene_switch::tick(state);
 
     // Finish what a newer slide cut short, the same way a completed slide
     // is finished: its surrogates already wait in `pending_ws_cleanup`.

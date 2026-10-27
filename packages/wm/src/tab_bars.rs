@@ -399,6 +399,20 @@ pub fn sync_tab_bars(
 
   let animation_manager = &state.animation_manager;
 
+  // Bars a scene still shows a copy of are left on screen beneath it.
+  let held = state
+    .root_container
+    .descendants()
+    .filter_map(|container| container.as_stack().cloned())
+    .filter(|stack| {
+      stack
+        .windows()
+        .iter()
+        .any(|window| animation_manager.scenes.holds(&window.id()))
+    })
+    .map(|stack| stack.id())
+    .collect::<std::collections::HashSet<_>>();
+
   let frames = state
     .root_container
     .descendants()
@@ -428,6 +442,10 @@ pub fn sync_tab_bars(
   state.tab_bars.retain(|id, _| frames.contains_key(id));
 
   for (stack_id, frame) in frames {
+    if held.contains(&stack_id) {
+      continue;
+    }
+
     let Some(frame) = frame else {
       if let Some(bar) = state.tab_bars.get_mut(&stack_id) {
         bar.hide();

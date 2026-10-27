@@ -1769,6 +1769,19 @@ pub enum WorkspaceSwitchIrisOrigin {
   FocusedWindow,
 }
 
+/// What plays the workspace-switch transition.
+#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum WorkspaceSwitchEngine {
+  /// One overlay per monitor draws live copies of everything on it while
+  /// the switch happens at once beneath it, as with animations off.
+  #[default]
+  Scene,
+  /// A stand-in window per window, with the real windows cloaked until
+  /// the transition ends.
+  Surrogates,
+}
+
 /// Slide axis for the `slide` workspace-switch style.
 #[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -1794,6 +1807,10 @@ pub struct WorkspaceSwitchAnimationConfig {
   pub easing: EasingFunction,
   /// Motion type: `slide` (default), `fade`, `zoom`, or `iris`.
   pub style: WorkspaceSwitchStyle,
+  /// What plays `slide`, `fade` and `zoom`: `scene` (default) or
+  /// `surrogates`. `scene` falls back to `surrogates` on Windows builds
+  /// without the DWM exports it needs.
+  pub engine: WorkspaceSwitchEngine,
   /// Slide axis when `style` is `slide`: `horizontal` (default) or
   /// `vertical`.
   pub direction: WorkspaceSwitchDirection,
@@ -1832,6 +1849,7 @@ impl Default for WorkspaceSwitchAnimationConfig {
       duration_ms: 250,
       easing: EasingFunction::CubicBezier(0.16, 1.0, 0.3, 1.0),
       style: WorkspaceSwitchStyle::default(),
+      engine: WorkspaceSwitchEngine::default(),
       direction: WorkspaceSwitchDirection::default(),
       iris_origin: WorkspaceSwitchIrisOrigin::default(),
       opacity_outgoing: 1.0,

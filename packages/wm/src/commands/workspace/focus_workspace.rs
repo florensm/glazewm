@@ -1,5 +1,7 @@
 use anyhow::Context;
 use tracing::info;
+#[cfg(target_os = "windows")]
+use wm_common::WorkspaceSwitchEngine;
 use wm_common::{
   WindowState, WorkspaceSwitchDirection, WorkspaceSwitchIrisOrigin,
 };
@@ -12,7 +14,7 @@ use crate::{
   },
   layout::is_hidden_in_layout,
   models::{Container, WindowContainer, Workspace, WorkspaceTarget},
-  pending_sync::IrisSwitchRequest,
+  pending_sync::{IrisSwitchRequest, SceneSwitchRequest},
   traits::{CommonGetters, PositionGetters, WindowGetters},
   user_config::UserConfig,
   wm_state::WmState,
@@ -119,37 +121,37 @@ pub fn focus_workspace(
           &displayed_workspace.config().name,
           config,
         );
-        state.pending_sync.set_workspace_switch_direction(
-          direction,
-          workspace_switch_axis(
-            &target_workspace,
-            &displayed_workspace,
-            config,
-          ),
+        let axis = workspace_switch_axis(
+          &target_workspace,
+          &displayed_workspace,
+          config,
         );
 
-        // Mark windows on the incoming workspace to slide in.
-        for window in target_workspace
-          .descendants()
-          .filter_map(|c| c.as_window_container().ok())
-          .filter(is_switch_animated)
-        {
-          state
-            .pending_sync
-            .setup_workspace_switch_incoming(window.id());
-        }
+        if ws_anim.enabled && plays_on_scene(state, config) {
+          // A scene copies both workspaces and plays the switch, which
+          // happens at once beneath it.
+          for window in displayed_workspace
+            .descendants()
+            .filter_map(|c| c.as_window_container().ok())
+          {
+            state.animation_manager.remove_animation(&window.id());
+          }
 
-        // Cancel in-flight animations for outgoing windows and mark them
-        // for the outgoing surrogate slide-out.
-        for window in displayed_workspace
-          .descendants()
-          .filter_map(|c| c.as_window_container().ok())
-          .filter(is_switch_animated)
-        {
-          state.animation_manager.remove_animation(&window.id());
+          state.pending_sync.request_scene_switch(SceneSwitchRequest {
+            outgoing: displayed_workspace.id(),
+            incoming: target_workspace.id(),
+            direction,
+            axis,
+          });
+        } else {
           state
             .pending_sync
-            .setup_workspace_switch_outgoing(window.id());
+            .set_workspace_switch_direction(direction, axis);
+          mark_switch_windows(
+            &target_workspace,
+            &displayed_workspace,
+            state,
+          );
         }
       }
     }
@@ -170,6 +172,56 @@ pub fn focus_workspace(
   }
 
   Ok(())
+}
+
+/// Marks the windows of the workspaces switched between for the
+/// surrogates' slide, cancelling the outgoing ones' animations under way.
+fn mark_switch_windows(
+  target_workspace: &Workspace,
+  displayed_workspace: &Workspace,
+  state: &mut WmState,
+) {
+  // Mark windows on the incoming workspace to slide in.
+  for window in target_workspace
+    .descendants()
+    .filter_map(|c| c.as_window_container().ok())
+    .filter(is_switch_animated)
+  {
+    state
+      .pending_sync
+      .setup_workspace_switch_incoming(window.id());
+  }
+
+  // Cancel in-flight animations for outgoing windows and mark them
+  // for the outgoing surrogate slide-out.
+  for window in displayed_workspace
+    .descendants()
+    .filter_map(|c| c.as_window_container().ok())
+    .filter(is_switch_animated)
+  {
+    state.animation_manager.remove_animation(&window.id());
+    state
+      .pending_sync
+      .setup_workspace_switch_outgoing(window.id());
+  }
+}
+
+/// Whether a scene plays the switch: when it's the configured engine, the
+/// switch isn't already left unanimated (e.g. a pick in the overview,
+/// whose zoom is the transition), and DWM can make scenes.
+#[cfg_attr(not(target_os = "windows"), allow(unused_variables))]
+fn plays_on_scene(state: &WmState, config: &UserConfig) -> bool {
+  #[cfg(target_os = "windows")]
+  {
+    config.value.animations.workspace_switch.engine
+      == WorkspaceSwitchEngine::Scene
+      && !state.pending_sync.animations_suppressed()
+      && !state.overview.is_shown()
+      && wm_platform::NativeScene::is_supported()
+  }
+
+  #[cfg(not(target_os = "windows"))]
+  false
 }
 
 /// Returns `+1` if `target_name` comes after `displayed_name` in the
@@ -234,7 +286,7 @@ fn iris_origin_point(
 /// Minimized windows and windows the layout hides (inactive stack tabs,
 /// columns scrolled off screen) have no visible content to animate, and
 /// snapshotting them causes flicker.
-fn is_switch_animated(window: &WindowContainer) -> bool {
+pub(crate) fn is_switch_animated(window: &WindowContainer) -> bool {
   window.state() != WindowState::Minimized && !is_hidden_in_layout(window)
 }
 

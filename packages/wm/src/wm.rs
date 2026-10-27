@@ -114,6 +114,20 @@ impl WindowManager {
     );
     state.populate(config)?;
 
+    // The first switch played on a scene would otherwise wait for the
+    // scene's device to be created, D3D included.
+    #[cfg(target_os = "windows")]
+    {
+      let ws_anim = &config.value.animations.workspace_switch;
+      if ws_anim.enabled
+        && ws_anim.engine == wm_common::WorkspaceSwitchEngine::Scene
+      {
+        if let Err(err) = wm_platform::NativeScene::prepare() {
+          tracing::warn!("Workspace switches can't play on scenes: {err}");
+        }
+      }
+    }
+
     // Start animation timer if `populate` created any animations. This
     // mirrors the `ensure_timer_running` call at the end of
     // `process_event` for the initial population path.

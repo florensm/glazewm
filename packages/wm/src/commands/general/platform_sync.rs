@@ -91,6 +91,35 @@ pub fn platform_sync(
   #[cfg(target_os = "windows")]
   unmanage_embedded_windows(state)?;
 
+  // A scene playing a workspace switch covers its monitor before anything
+  // changes beneath it, and starts moving once the incoming workspace's
+  // windows are shown.
+  #[cfg(target_os = "windows")]
+  let scene_switch =
+    state.pending_sync.take_scene_switch().filter(|request| {
+      crate::animation::scene_switch::cover(state, config, request)
+    });
+
+  let synced = sync_to_state(state, config);
+
+  #[cfg(target_os = "windows")]
+  if let Some(request) = scene_switch {
+    if synced.is_ok() {
+      crate::animation::scene_switch::enter(state, config, &request);
+    } else {
+      crate::animation::scene_switch::abandon(state, &request);
+    }
+  }
+
+  synced
+}
+
+/// Brings the windows, overlays and tab bars on screen in line with the
+/// state, as queued in `pending_sync`.
+fn sync_to_state(
+  state: &mut WmState,
+  config: &UserConfig,
+) -> anyhow::Result<()> {
   let focused_container =
     state.focused_container().context("No focused container.")?;
 
@@ -3027,7 +3056,9 @@ fn sync_overlays<O: SyncableOverlay>(
     // The animation trackers own these overlays outright -- including
     // fading one out whose effect is off on the window's new focus side,
     // which the hide below would otherwise cut short on the first tick.
+    // A scene still showing a copy of one leaves it on screen beneath it.
     if state.animation_manager.has_live_ws_surrogate(&window.id())
+      || state.animation_manager.scenes.holds(&window.id())
       || state
         .animation_manager
         .has_live_resize_tracker(&window.id())

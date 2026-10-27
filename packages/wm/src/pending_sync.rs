@@ -28,6 +28,22 @@ pub struct IrisSwitchRequest {
   pub origin_y: i32,
 }
 
+/// A pending workspace switch for a scene to play (see
+/// `animation::scene_switch`), requested by `focus_workspace`.
+// LINT: Only played on Windows.
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+#[derive(Debug, Clone)]
+pub struct SceneSwitchRequest {
+  /// The workspace leaving its monitor.
+  pub outgoing: Uuid,
+  /// The workspace taking its place.
+  pub incoming: Uuid,
+  /// `+1` if `incoming` comes after `outgoing` on their monitor, `-1` if
+  /// before.
+  pub direction: i32,
+  pub axis: WorkspaceSwitchDirection,
+}
+
 #[derive(Debug, Default)]
 #[allow(clippy::struct_excessive_bools)]
 pub struct PendingSync {
@@ -116,6 +132,11 @@ pub struct PendingSync {
   /// create the snapshot overlay before the real windows are switched.
   iris_switch: Option<IrisSwitchRequest>,
 
+  /// Pending workspace switch for a scene to play, consumed by
+  /// `platform_sync` to cover the monitor before the real windows are
+  /// switched.
+  scene_switch: Option<SceneSwitchRequest>,
+
   /// Whether animations should be skipped for this sync cycle.
   ///
   /// Set on display setting changes: animating a relayout caused by a
@@ -138,6 +159,7 @@ impl PendingSync {
       || self.needs_cursor_move
       || self.needs_tab_bar_update
       || self.iris_switch.is_some()
+      || self.scene_switch.is_some()
   }
 
   pub fn clear(&mut self) -> &mut Self {
@@ -157,6 +179,7 @@ impl PendingSync {
     self.wm_fullscreen_toggles.clear();
     self.window_restores.clear();
     self.iris_switch = None;
+    self.scene_switch = None;
     self.animations_suppressed = false;
     self
   }
@@ -377,6 +400,25 @@ impl PendingSync {
   #[cfg_attr(not(target_os = "windows"), allow(dead_code))]
   pub fn take_iris_switch(&mut self) -> Option<IrisSwitchRequest> {
     self.iris_switch.take()
+  }
+
+  /// Requests a workspace switch played on a scene for this sync cycle.
+  ///
+  /// Animations of single windows are suppressed for it: beneath the
+  /// scene, the switch happens as with animations off.
+  pub fn request_scene_switch(
+    &mut self,
+    request: SceneSwitchRequest,
+  ) -> &mut Self {
+    self.scene_switch = Some(request);
+    self.suppress_animations()
+  }
+
+  /// Consumes and returns the pending scene-played switch, if any.
+  // LINT: Only read by Windows-only sync steps.
+  #[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+  pub fn take_scene_switch(&mut self) -> Option<SceneSwitchRequest> {
+    self.scene_switch.take()
   }
 
   /// Suppresses animations for this sync cycle (see
