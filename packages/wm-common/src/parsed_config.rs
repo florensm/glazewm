@@ -1459,12 +1459,6 @@ pub struct AnimationsConfig {
   ///
   /// Only has an effect on Windows.
   pub window_close: WindowCloseConfig,
-  /// Animation settings for when a window is minimized or restored.
-  ///
-  /// # Platform-specific
-  ///
-  /// Only has an effect on Windows.
-  pub window_minimize: WindowMinimizeConfig,
 
   /// Which windows keep their effect overlays tracking during an
   /// animation.
@@ -1515,7 +1509,6 @@ impl Default for AnimationsConfig {
       window_open: WindowOpenConfig::default(),
       workspace_switch: WorkspaceSwitchAnimationConfig::default(),
       window_close: WindowCloseConfig::default(),
-      window_minimize: WindowMinimizeConfig::default(),
       overlay_tracking: OverlayTracking::default(),
     }
   }
@@ -1565,11 +1558,9 @@ impl WindowTransitionStyle {
 
 /// Resolved parameters for a one-shot window transition.
 ///
-/// `window_open` and `window_minimize` drive the same entry animation and
-/// `window_close`/`window_minimize` the same exit animation; they differ
-/// only in which config block supplies the values. Resolving to this
-/// struct lets one driver serve all of them instead of branching on the
-/// config type.
+/// `window_open` drives the entry animation and `window_close` the exit
+/// one; resolving either to this struct lets one driver serve both
+/// instead of branching on the config type.
 #[derive(Clone, Debug)]
 pub struct WindowTransitionParams {
   pub duration_ms: u32,
@@ -1593,16 +1584,6 @@ impl WindowTransitionParams {
 
   #[must_use]
   pub fn from_close(config: &WindowCloseConfig) -> Self {
-    Self {
-      duration_ms: config.duration_ms,
-      easing: config.easing.clone(),
-      style: config.style.clone(),
-      away_opacity: config.opacity_to,
-    }
-  }
-
-  #[must_use]
-  pub fn from_minimize(config: &WindowMinimizeConfig) -> Self {
     Self {
       duration_ms: config.duration_ms,
       easing: config.easing.clone(),
@@ -1684,51 +1665,6 @@ impl Default for WindowCloseConfig {
   }
 }
 
-/// Animation settings for when a window is minimized or restored from
-/// minimized.
-///
-/// One block drives both directions, the same way `WindowTransitionStyle`
-/// is shared between open and close: a window that minimizes with
-/// `slide_bottom` (exiting toward the bottom edge) restores by entering
-/// from that same edge. `opacity_to` is the minimize-out target, and is
-/// played in reverse as the restore-in starting opacity.
-///
-/// # Platform-specific
-///
-/// Only has an effect on Windows.
-#[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(default, rename_all(serialize = "camelCase"))]
-pub struct WindowMinimizeConfig {
-  pub enabled: bool,
-  pub duration_ms: u32,
-  pub easing: EasingFunction,
-  /// Transition style for the minimize/restore animation.
-  ///
-  /// - `zoom` (default): shrink toward the window center on minimize,
-  ///   grow back out on restore.
-  /// - `slide_bottom` / `slide_top` / `slide_left` / `slide_right`: slide
-  ///   off that edge on minimize, and back in from it on restore.
-  /// - `none` / `fade`: no movement; combine with `opacity_to` for a pure
-  ///   fade.
-  pub style: WindowTransitionStyle,
-  /// Opacity at the end of the minimize animation (0.0-1.0), and at the
-  /// start of the restore animation. At `0.0` the window fades fully
-  /// out; at `1.0` no fade is applied.
-  pub opacity_to: f32,
-}
-
-impl Default for WindowMinimizeConfig {
-  fn default() -> Self {
-    WindowMinimizeConfig {
-      enabled: true,
-      duration_ms: 150,
-      easing: EasingFunction::CubicBezier(0.32, 0.0, 0.67, 0.0),
-      style: WindowTransitionStyle::Zoom,
-      opacity_to: 0.0,
-    }
-  }
-}
-
 /// Motion style of the workspace-switch transition.
 #[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -1736,62 +1672,13 @@ pub enum WorkspaceSwitchStyle {
   /// Workspaces slide along the axis set by `direction` (default).
   #[default]
   Slide,
-  /// Pure crossfade; no positional slide. Both surrogates stay in place
-  /// and their opacities are driven by `opacity_outgoing` /
-  /// `opacity_incoming`.
+  /// Pure crossfade; no positional slide. Both workspaces stay in place,
+  /// their opacities driven by `opacity_outgoing` / `opacity_incoming`.
   Fade,
-  /// Outgoing workspace shrinks to the monitor center; incoming expands
-  /// from it. Opacities are also animated via `opacity_outgoing` /
-  /// `opacity_incoming`.
+  /// Outgoing workspace's windows shrink to their centers; incoming ones
+  /// grow from theirs. Opacities are also animated via
+  /// `opacity_outgoing` / `opacity_incoming`.
   Zoom,
-  /// Iris wipe: a frozen snapshot of the outgoing workspace stays on top
-  /// while a circular hole grows from `iris_origin`, revealing the live
-  /// incoming workspace beneath. Requires Windows; falls back to an
-  /// instant switch when the monitor cannot be captured.
-  Iris,
-}
-
-impl WorkspaceSwitchStyle {
-  /// Returns `true` when the transition has no positional slide component.
-  #[must_use]
-  pub fn is_no_slide(&self) -> bool {
-    matches!(self, Self::Fade | Self::Zoom)
-  }
-
-  /// Returns `true` for the iris-wipe style, which is driven by a single
-  /// snapshot overlay rather than per-window surrogates.
-  #[must_use]
-  pub fn is_iris(&self) -> bool {
-    matches!(self, Self::Iris)
-  }
-}
-
-/// Origin point from which the iris-wipe circle grows.
-#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum WorkspaceSwitchIrisOrigin {
-  /// Grow from the center of the monitor (default).
-  #[default]
-  Center,
-  /// Grow from the current mouse-cursor position.
-  Cursor,
-  /// Grow from the center of the newly focused window on the incoming
-  /// workspace. Falls back to the monitor center when the incoming
-  /// workspace has no focusable window.
-  FocusedWindow,
-}
-
-/// What plays the workspace-switch transition.
-#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum WorkspaceSwitchEngine {
-  /// One overlay per monitor draws live copies of everything on it while
-  /// the switch happens at once beneath it, as with animations off.
-  #[default]
-  Scene,
-  /// A stand-in window per window, with the real windows cloaked until
-  /// the transition ends.
-  Surrogates,
 }
 
 /// Slide axis for the `slide` workspace-switch style.
@@ -1817,18 +1704,11 @@ pub struct WorkspaceSwitchAnimationConfig {
   pub enabled: bool,
   pub duration_ms: u32,
   pub easing: EasingFunction,
-  /// Motion type: `slide` (default), `fade`, `zoom`, or `iris`.
+  /// Motion type: `slide` (default), `fade` or `zoom`.
   pub style: WorkspaceSwitchStyle,
-  /// What plays `slide`, `fade` and `zoom`: `scene` (default) or
-  /// `surrogates`. `scene` falls back to `surrogates` on Windows builds
-  /// without the DWM exports it needs.
-  pub engine: WorkspaceSwitchEngine,
   /// Slide axis when `style` is `slide`: `horizontal` (default) or
   /// `vertical`.
   pub direction: WorkspaceSwitchDirection,
-  /// Origin of the iris circle when `style` is `iris`: `center`
-  /// (default), `cursor`, or `focused_window`. Ignored by other styles.
-  pub iris_origin: WorkspaceSwitchIrisOrigin,
   /// Opacity at the end of the outgoing workspace's animation (0.0–1.0).
   ///
   /// At `1.0` (default) the outgoing workspace stays fully opaque. At
@@ -1861,9 +1741,7 @@ impl Default for WorkspaceSwitchAnimationConfig {
       duration_ms: 250,
       easing: EasingFunction::CubicBezier(0.16, 1.0, 0.3, 1.0),
       style: WorkspaceSwitchStyle::default(),
-      engine: WorkspaceSwitchEngine::default(),
       direction: WorkspaceSwitchDirection::default(),
-      iris_origin: WorkspaceSwitchIrisOrigin::default(),
       opacity_outgoing: 1.0,
       opacity_incoming: 1.0,
       zoom_factor: 0.1,

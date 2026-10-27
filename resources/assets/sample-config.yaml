@@ -45,16 +45,10 @@ animations:
     enabled: true
     duration_ms: 350
     easing: "ease_out_cubic"
-    # 'slide', 'fade', 'zoom' or 'iris' (Windows only).
+    # 'slide', 'fade' or 'zoom'.
     style: "slide"
-    # What plays 'slide', 'fade' and 'zoom': 'scene' draws live copies of
-    # the screen over it while the switch happens at once beneath, or
-    # 'surrogates', a stand-in per window. Windows only.
-    engine: "scene"
     # For 'slide': 'horizontal' or 'vertical'.
     direction: "horizontal"
-    # For 'iris': 'center', 'cursor' or 'focused_window'.
-    iris_origin: "center"
     # 0.0 to 1.0. Both at 0.0 is a crossfade.
     opacity_outgoing: 1.0
     opacity_incoming: 1.0
@@ -69,16 +63,6 @@ animations:
     # 'none', 'zoom', 'slide_left', 'slide_right', 'slide_top', 'slide_bottom'.
     style: "none"
     # 0.0 to 1.0. Below 1.0 fades out.
-    opacity_to: 0.0
-
-  # Plays in reverse on restore. Only for minimizes the WM does itself
-  # (e.g. `toggle-minimized`). Windows only.
-  window_minimize:
-    enabled: false
-    duration_ms: 150
-    easing: "ease_in_cubic"
-    # 'zoom', 'none', 'slide_bottom', 'slide_top', 'slide_left', 'slide_right'.
-    style: "zoom"
     opacity_to: 0.0
 
 general:

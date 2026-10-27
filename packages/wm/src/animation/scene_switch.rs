@@ -267,6 +267,11 @@ pub fn cover(
 ) -> bool {
   let _scope = perf::scope(Stage::SceneCover);
 
+  // While the overview is shown, its zoom is the transition.
+  if state.overview.is_shown() || !NativeScene::is_supported() {
+    return false;
+  }
+
   let Some(outgoing) = workspace(state, request.outgoing) else {
     return false;
   };
@@ -643,7 +648,7 @@ fn away(
       copy_scale: MIN_COPY_SCALE,
       ..Pose::REST
     },
-    WorkspaceSwitchStyle::Fade | WorkspaceSwitchStyle::Iris => Pose {
+    WorkspaceSwitchStyle::Fade => Pose {
       opacity,
       ..Pose::REST
     },

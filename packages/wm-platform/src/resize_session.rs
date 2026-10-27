@@ -274,8 +274,8 @@ pub struct ResizeSession {
   ///
   /// [`border_overlay_params`]: ResizeSession::border_overlay_params
   border_overlay: Option<BorderOverlayParams>,
-  /// Live logical (border-deflated) on-screen rect for the current frame,
-  /// mirroring `WorkspaceSurrogate::current_rect`. `None` while there's
+  /// Live logical (border-deflated) on-screen rect for the current frame.
+  /// `None` while there's
   /// nothing to show (no surrogate, or fully clipped off-screen). Ignored
   /// for zoom sessions -- see [`current_rect`].
   ///

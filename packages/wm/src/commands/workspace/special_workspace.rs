@@ -253,19 +253,25 @@ mod tests {
   fn summoning_rises_from_below_and_leaving_sinks_back() {
     let config = config();
     let (mut state, _, _) = two_monitors(None);
-    let slide = |state: &WmState| {
-      (
-        state.pending_sync.workspace_switch_direction(),
-        state.pending_sync.workspace_switch_axis().clone(),
-      )
+    let slide = |state: &mut WmState| {
+      state
+        .pending_sync
+        .take_scene_switch()
+        .map(|request| (request.direction, request.axis))
     };
 
     focus_special_workspace(&mut state, &config).unwrap();
-    assert_eq!(slide(&state), (1, WorkspaceSwitchDirection::Vertical));
+    assert_eq!(
+      slide(&mut state),
+      Some((1, WorkspaceSwitchDirection::Vertical))
+    );
 
     state.pending_sync.clear();
     focus_special_workspace(&mut state, &config).unwrap();
-    assert_eq!(slide(&state), (-1, WorkspaceSwitchDirection::Vertical));
+    assert_eq!(
+      slide(&mut state),
+      Some((-1, WorkspaceSwitchDirection::Vertical))
+    );
   }
 
   /// What a window rule running `move --workspace special` does, on every

@@ -53,11 +53,7 @@ pub(crate) fn ensure_class_registered(
 ///
 /// Shared by overlay window classes with no custom message handling --
 /// their visuals are painted entirely by DWM/`Windows.UI.Composition`, so
-/// the window itself never needs to handle `WM_PAINT` or anything else
-/// (unlike [`NativeIrisOverlay`], which paints a GDI snapshot and supplies
-/// its own window procedure instead of this one).
-///
-/// [`NativeIrisOverlay`]: crate::NativeIrisOverlay
+/// the window itself never needs to handle `WM_PAINT` or anything else.
 pub(crate) unsafe extern "system" fn default_wnd_proc(
   hwnd: HWND,
   msg: u32,

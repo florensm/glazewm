@@ -117,14 +117,9 @@ impl WindowManager {
     // The first switch played on a scene would otherwise wait for the
     // scene's device to be created, D3D included.
     #[cfg(target_os = "windows")]
-    {
-      let ws_anim = &config.value.animations.workspace_switch;
-      if ws_anim.enabled
-        && ws_anim.engine == wm_common::WorkspaceSwitchEngine::Scene
-      {
-        if let Err(err) = wm_platform::NativeScene::prepare() {
-          tracing::warn!("Workspace switches can't play on scenes: {err}");
-        }
+    if config.value.animations.workspace_switch.enabled {
+      if let Err(err) = wm_platform::NativeScene::prepare() {
+        tracing::warn!("Workspace switches can't play on scenes: {err}");
       }
     }
 
@@ -755,8 +750,7 @@ impl WindowManager {
                 // overlay, so this is invisible to the user.
                 {
                   let native_ref = window.native();
-                  state.animation_manager.start_away_animation(
-                    crate::animation::AwayTransition::Close,
+                  state.animation_manager.start_close_animation(
                     window_id,
                     &rect,
                     effect_opacity,

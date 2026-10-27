@@ -67,14 +67,6 @@ pub use resize_session::{
   sample_edge_color_async, EdgeColorCache, ResizeSession, SessionOptions,
 };
 #[cfg(target_os = "windows")]
-mod workspace_surrogate;
-#[cfg(target_os = "windows")]
-pub use workspace_surrogate::{LiveFrame, WorkspaceSurrogate};
-#[cfg(target_os = "windows")]
-mod native_iris_overlay;
-#[cfg(target_os = "windows")]
-pub use native_iris_overlay::NativeIrisOverlay;
-#[cfg(target_os = "windows")]
 mod backdrop_canvas;
 #[cfg(target_os = "windows")]
 mod native_scene;

@@ -418,10 +418,7 @@ pub fn sync_tab_bars(
     .descendants()
     .filter_map(|container| container.as_stack().cloned())
     .map(|stack| {
-      let is_shown = stack.workspace().is_some_and(|ws| ws.is_displayed())
-        && !stack.windows().iter().any(|window| {
-          animation_manager.is_in_workspace_switch(&window.id())
-        });
+      let is_shown = stack.workspace().is_some_and(|ws| ws.is_displayed());
 
       let frame = is_shown
         .then(|| {

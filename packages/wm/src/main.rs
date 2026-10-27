@@ -520,13 +520,6 @@ fn catch_up_before_frame(
       continue;
     }
 
-    // Re-checked every iteration: handling an item above can start or end
-    // a slide, and the next one must be judged against that.
-    #[cfg(target_os = "windows")]
-    if wm.state.animation_manager.is_workspace_switch_active() {
-      break;
-    }
-
     let now = Instant::now();
 
     if wm
