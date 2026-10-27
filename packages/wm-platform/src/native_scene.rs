@@ -17,7 +17,7 @@
 //! leave out.
 
 use std::{
-  cell::RefCell,
+  cell::{OnceCell, RefCell},
   collections::HashSet,
   ffi::c_void,
   ptr::null_mut,
@@ -28,26 +28,33 @@ use std::{
 
 use windows::{
   core::{w, ComInterface, Interface, HRESULT, PCSTR, PCWSTR},
+  Foundation::Numerics::Matrix3x2,
   Win32::{
-    Foundation::{BOOL, HMODULE, HWND, LPARAM, RECT, SIZE, TRUE},
+    Foundation::{BOOL, HMODULE, HWND, LPARAM, POINT, RECT, SIZE, TRUE},
     Graphics::{
       Direct3D::D3D_DRIVER_TYPE_HARDWARE,
       Direct3D11::{
-        D3D11CreateDevice, ID3D11Device, D3D11_CREATE_DEVICE_BGRA_SUPPORT,
-        D3D11_SDK_VERSION,
+        D3D11CreateDevice, ID3D11Device, ID3D11Texture2D, D3D11_BOX,
+        D3D11_CREATE_DEVICE_BGRA_SUPPORT, D3D11_SDK_VERSION,
       },
       DirectComposition::{
         DCompositionCreateDevice3, IDCompositionAnimation,
         IDCompositionDesktopDevice, IDCompositionEffectGroup,
-        IDCompositionScaleTransform, IDCompositionTarget,
-        IDCompositionVisual, IDCompositionVisual2,
+        IDCompositionScaleTransform, IDCompositionSurface,
+        IDCompositionTarget, IDCompositionVisual, IDCompositionVisual2,
+        DCOMPOSITION_BITMAP_INTERPOLATION_MODE_LINEAR,
       },
       Dwm::{
         DwmUnregisterThumbnail, DWM_THUMBNAIL_PROPERTIES, DWM_TNP_OPACITY,
         DWM_TNP_RECTDESTINATION, DWM_TNP_RECTSOURCE,
         DWM_TNP_SOURCECLIENTAREAONLY, DWM_TNP_VISIBLE,
       },
-      Dxgi::IDXGIDevice,
+      Dxgi::{
+        Common::{
+          DXGI_ALPHA_MODE_PREMULTIPLIED, DXGI_FORMAT_B8G8R8A8_UNORM,
+        },
+        IDXGIDevice,
+      },
     },
     System::{
       LibraryLoader::{GetProcAddress, LoadLibraryW},
@@ -64,13 +71,23 @@ use windows::{
   },
 };
 
-use crate::{companion, platform_impl::NativeWindow, window_class, Rect};
+use crate::{
+  backdrop_canvas, companion,
+  platform_impl::{
+    composition::{VIGNETTE_CLEAR, VIGNETTE_RADIUS},
+    NativeWindow,
+  },
+  window_class, BackdropOverlayParams, Rect,
+};
 
 const CLASS_NAME: PCWSTR = w!("GlazeWM_Scene");
 const CLASS: &str = "GlazeWM_Scene";
 
 /// Most windows looked through above a scene for one raised over it.
 const MAX_WINDOWS_ABOVE: usize = 256;
+
+/// Side of the square image of the vignette copies stretch over windows.
+const VIGNETTE_SIZE: u32 = 256;
 
 /// Prefix of the WM's own window classes.
 const OWN_CLASS_PREFIX: &str = "GlazeWM_";
@@ -173,8 +190,11 @@ fn export(module: HMODULE, ordinal: u16) -> Option<RawExport> {
 /// device it renders through.
 struct SceneDevice {
   dcomp: IDCompositionDesktopDevice,
-  _d3d: ID3D11Device,
+  d3d: ID3D11Device,
   exports: &'static DwmPrivate,
+
+  /// See [`SceneDevice::vignette`].
+  vignette: OnceCell<IDCompositionSurface>,
 }
 
 thread_local! {
@@ -234,9 +254,71 @@ impl SceneDevice {
 
     Ok(Self {
       dcomp,
-      _d3d: d3d,
+      d3d,
       exports,
+      vignette: OnceCell::new(),
     })
+  }
+
+  /// The vignette as backdrop overlays draw it, at full strength over a
+  /// square, for copies to stretch over their windows. Made on first use.
+  fn vignette(&self) -> crate::Result<IDCompositionSurface> {
+    if let Some(surface) = self.vignette.get() {
+      return Ok(surface.clone());
+    }
+
+    let side = VIGNETTE_SIZE;
+    let pixels = (0..side * side)
+      .flat_map(|index| {
+        let at = |pixel: u32| (f64::from(pixel) + 0.5) / f64::from(side);
+        let alpha = vignette_alpha(at(index % side), at(index / side));
+        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+        let alpha = (alpha * 255.0).round() as u8;
+        // Premultiplied black.
+        [0, 0, 0, alpha]
+      })
+      .collect::<Vec<u8>>();
+
+    // SAFETY: Plain `DirectComposition` and D3D calls on live objects of
+    // this device, `pixels` holding the `side`-square image they read.
+    let surface = unsafe {
+      let surface = self.dcomp.CreateSurface(
+        side,
+        side,
+        DXGI_FORMAT_B8G8R8A8_UNORM,
+        DXGI_ALPHA_MODE_PREMULTIPLIED,
+      )?;
+
+      let mut offset = POINT::default();
+      let texture =
+        surface.BeginDraw::<ID3D11Texture2D>(None, &raw mut offset)?;
+      let (left, top) = (
+        u32::try_from(offset.x).unwrap_or(0),
+        u32::try_from(offset.y).unwrap_or(0),
+      );
+      let area = D3D11_BOX {
+        left,
+        top,
+        front: 0,
+        right: left + side,
+        bottom: top + side,
+        back: 1,
+      };
+
+      self.d3d.GetImmediateContext()?.UpdateSubresource(
+        &texture,
+        0,
+        Some(&raw const area),
+        pixels.as_ptr().cast(),
+        side * 4,
+        0,
+      );
+      surface.EndDraw()?;
+      surface
+    };
+
+    let _ = self.vignette.set(surface.clone());
+    Ok(surface)
   }
 }
 
@@ -258,12 +340,23 @@ pub struct SceneWindow {
   /// Radius of its visible frame's corners, in physical pixels.
   pub corner_radius: f32,
 
+  /// The backdrop drawn beneath it in place of its backdrop overlay.
+  pub backdrop: Option<SceneBackdrop>,
+
   /// Whether its group can't do without it: a group fails to be made
   /// without a required window, and is made without an optional one.
   pub required: bool,
 }
 
 impl SceneWindow {
+  /// Whether its copy draws `hwnd`: itself, or its backdrop overlay.
+  fn draws(&self, hwnd: HWND) -> bool {
+    self.hwnd == hwnd
+      || self
+        .backdrop
+        .is_some_and(|backdrop| backdrop.overlay == hwnd)
+  }
+
   /// An optional window, copied as and where it is.
   fn as_is(hwnd: HWND) -> Self {
     Self {
@@ -271,9 +364,20 @@ impl SceneWindow {
       placement: None,
       alpha: None,
       corner_radius: 0.0,
+      backdrop: None,
       required: false,
     }
   }
+}
+
+/// A window's backdrop as its overlay draws it, but from the blurred
+/// wallpaper of the whole monitor, which stays put as the window moves: a
+/// copy of the overlay would carry its crop of it along.
+#[derive(Clone, Copy, Debug)]
+pub struct SceneBackdrop {
+  /// The overlay drawing it, left out of the scene.
+  pub overlay: HWND,
+  pub params: BackdropOverlayParams,
 }
 
 /// A group of copies posed together, e.g. a workspace's windows.
@@ -309,6 +413,36 @@ pub enum SceneValue {
   Moving(SceneMotion),
 }
 
+impl SceneValue {
+  /// `scale * value + add` at every moment.
+  fn mapped(&self, scale: f32, add: f32) -> Self {
+    match self {
+      Self::Fixed(value) => Self::Fixed(scale * value + add),
+      Self::Moving(motion) => Self::Moving(SceneMotion {
+        begins_at: motion.begins_at,
+        duration: motion.duration,
+        segments: motion
+          .segments
+          .iter()
+          .map(|segment| {
+            let [c0, c1, c2, c3] = segment.coefficients;
+            SceneSegment {
+              begin_secs: segment.begin_secs,
+              coefficients: [
+                scale * c0 + add,
+                scale * c1,
+                scale * c2,
+                scale * c3,
+              ],
+            }
+          })
+          .collect(),
+        end: scale * motion.end + add,
+      }),
+    }
+  }
+}
+
 /// Where and how a group is drawn.
 #[derive(Clone, Debug)]
 pub struct ScenePose {
@@ -329,9 +463,41 @@ struct WindowCopy {
 
   /// Scales the copy about its own center.
   scale: IDCompositionScaleTransform,
+
+  backdrop: Option<BackdropCopy>,
 }
 
 impl WindowCopy {
+  fn unregister(&self) {
+    // SAFETY: The handle came from DWM and is released once, here.
+    let _ = unsafe { DwmUnregisterThumbnail(self.thumbnail) };
+    if let Some(backdrop) = &self.backdrop {
+      backdrop.unregister();
+    }
+  }
+}
+
+/// A window's backdrop in its copy: a vignette over the monitor's blurred
+/// wallpaper, which its group's motion moves the other way, so it stays
+/// put on screen (see [`SceneWindow::backdrop`]).
+struct BackdropCopy {
+  /// Its thumbnail of the monitor's backdrop canvas.
+  thumbnail: isize,
+
+  /// Holds the backdrop beneath the window, under its opacity.
+  visual: IDCompositionVisual2,
+
+  /// Holds the canvas's thumbnail, offset against the group's motion.
+  blur: IDCompositionVisual2,
+
+  /// Offset of `blur` with the group at rest, in the copy's coordinates.
+  rest: (f32, f32),
+
+  /// Share of the group's motion `blur` is moved back by.
+  parallax: f32,
+}
+
+impl BackdropCopy {
   fn unregister(&self) {
     // SAFETY: The handle came from DWM and is released once, here.
     let _ = unsafe { DwmUnregisterThumbnail(self.thumbnail) };
@@ -556,7 +722,7 @@ impl NativeScene {
     let mut above = Vec::new();
     for &hwnd in &order {
       if hwnd == self.host.hwnd
-        || members.iter().any(|member| member.hwnd == hwnd)
+        || members.iter().any(|member| member.draws(hwnd))
         || !self.is_still(hwnd)
       {
         continue;
@@ -690,6 +856,19 @@ impl NativeScene {
 
       for copy in &group.copies {
         copy_scale.set_scale(&copy.scale)?;
+
+        if let Some(backdrop) = &copy.backdrop {
+          let back = -backdrop.parallax;
+          let (x, y) = backdrop.rest;
+          Settable::new(&device, &pose.offset_x.mapped(back, x))?.set(
+            |value| backdrop.blur.SetOffsetX2(value),
+            |animation| backdrop.blur.SetOffsetX(animation),
+          )?;
+          Settable::new(&device, &pose.offset_y.mapped(back, y))?.set(
+            |value| backdrop.blur.SetOffsetY2(value),
+            |animation| backdrop.blur.SetOffsetY(animation),
+          )?;
+        }
       }
     }
 
@@ -750,7 +929,9 @@ impl NativeScene {
     let mut members = windows.to_vec();
 
     for &hwnd in order {
-      if explicit.contains(&hwnd.0) || hwnd == self.host.hwnd {
+      if hwnd == self.host.hwnd
+        || windows.iter().any(|window| window.draws(hwnd))
+      {
         continue;
       }
 
@@ -849,7 +1030,6 @@ impl NativeScene {
   /// its visible frame on the monitor. Returns the copy, with whether it
   /// opaquely covers the whole monitor, or `None` if it isn't shown on
   /// the monitor.
-  #[allow(clippy::cast_precision_loss)]
   fn copy(
     &self,
     window: &SceneWindow,
@@ -877,17 +1057,6 @@ impl NativeScene {
       return Ok(None);
     };
 
-    let mut size = SIZE::default();
-    // SAFETY: `size` outlives the call.
-    unsafe {
-      (self.device.exports.query_source_size)(
-        window.hwnd,
-        false.into(),
-        &raw mut size,
-      )
-    }
-    .ok()?;
-
     // Thumbnails leave out the opacity a window is layered with.
     let alpha = window
       .alpha
@@ -898,6 +1067,69 @@ impl NativeScene {
           .flatten()
       })
       .unwrap_or(u8::MAX);
+
+    let (content, thumbnail) = self.thumbnail(window.hwnd, alpha)?;
+
+    // Without its backdrop, the copy is still worth showing.
+    let backdrop = window.backdrop.and_then(|backdrop| {
+      self
+        .backdrop(&backdrop.params, &outer, &frame)
+        .inspect_err(|err| {
+          tracing::debug!("Scene left out a backdrop: {err}");
+        })
+        .ok()
+    });
+
+    // SAFETY: Plain `DirectComposition` calls on live objects.
+    let placed = unsafe {
+      self.place(
+        window,
+        &content,
+        backdrop.as_ref(),
+        &outer,
+        &frame,
+        &shown,
+        parent,
+      )
+    };
+
+    let copy = WindowCopy {
+      thumbnail,
+      scale: match placed {
+        Ok(scale) => scale,
+        Err(err) => {
+          // SAFETY: Registered above and not handed out.
+          let _ = unsafe { DwmUnregisterThumbnail(thumbnail) };
+          if let Some(backdrop) = &backdrop {
+            backdrop.unregister();
+          }
+          return Err(err);
+        }
+      },
+      backdrop,
+    };
+
+    let covers_monitor =
+      alpha == u8::MAX && frame.contains_rect(&self.monitor);
+    Ok(Some((copy, covers_monitor)))
+  }
+
+  /// A thumbnail of all of `source` at `alpha`, with its handle.
+  fn thumbnail(
+    &self,
+    source: HWND,
+    alpha: u8,
+  ) -> crate::Result<(IDCompositionVisual, isize)> {
+    let mut size = SIZE::default();
+    // SAFETY: `size` outlives the call.
+    unsafe {
+      (self.device.exports.query_source_size)(
+        source,
+        false.into(),
+        &raw mut size,
+      )
+    }
+    .ok()?;
 
     let whole = RECT {
       left: 0,
@@ -925,7 +1157,7 @@ impl NativeScene {
     unsafe {
       (self.device.exports.create_thumbnail_visual)(
         self.host.hwnd,
-        window.hwnd,
+        source,
         SHARED_THUMBNAIL_FLAGS,
         &raw const properties,
         self.device.dcomp.as_raw(),
@@ -936,19 +1168,82 @@ impl NativeScene {
     .ok()?;
 
     // SAFETY: On success, `raw` is an owned `IDCompositionVisual`.
-    let content = unsafe { IDCompositionVisual::from_raw(raw) };
+    Ok((unsafe { IDCompositionVisual::from_raw(raw) }, thumbnail))
+  }
 
-    // SAFETY: Plain `DirectComposition` calls on live objects.
-    let placed = unsafe {
-      self.place(window, &content, &outer, &frame, &shown, parent)
+  /// The backdrop `params` draw beneath a window at `outer`, of visible
+  /// frame `frame`, in its copy's coordinates.
+  #[allow(clippy::cast_precision_loss)]
+  fn backdrop(
+    &self,
+    params: &BackdropOverlayParams,
+    outer: &Rect,
+    frame: &Rect,
+  ) -> crate::Result<BackdropCopy> {
+    let canvas = backdrop_canvas::canvas_for(&self.monitor, params)?;
+    let (content, thumbnail) = self.thumbnail(canvas, u8::MAX)?;
+
+    // Where the overlay's crop puts the image (see `set_crop`): pinned to
+    // the desktop at a parallax of 1, trailing the window below it.
+    let parallax = params.parallax;
+    let at = |monitor: i32, frame: i32, outer: i32| {
+      parallax * monitor as f32 + (1.0 - parallax) * frame as f32
+        - outer as f32
+    };
+    let rest = (
+      at(self.monitor.left, frame.left, outer.left),
+      at(self.monitor.top, frame.top, outer.top),
+    );
+
+    let dcomp = &self.device.dcomp;
+    // SAFETY: Plain `DirectComposition` calls on live objects of this
+    // scene's device.
+    let built = unsafe {
+      (|| -> crate::Result<_> {
+        let blur = dcomp.CreateVisual()?;
+        blur.SetOffsetX2(rest.0)?;
+        blur.SetOffsetY2(rest.1)?;
+        blur.AddVisual(&content, false, None)?;
+
+        let side = VIGNETTE_SIZE as f32;
+        let vignette = dcomp.CreateVisual()?;
+        vignette.SetContent(&self.device.vignette()?)?;
+        vignette.SetBitmapInterpolationMode(
+          DCOMPOSITION_BITMAP_INTERPOLATION_MODE_LINEAR,
+        )?;
+        vignette.SetTransform2(&Matrix3x2 {
+          M11: frame.width() as f32 / side,
+          M12: 0.0,
+          M21: 0.0,
+          M22: frame.height() as f32 / side,
+          M31: 0.0,
+          M32: 0.0,
+        })?;
+        vignette.SetOffsetX2((frame.left - outer.left) as f32)?;
+        vignette.SetOffsetY2((frame.top - outer.top) as f32)?;
+        let strength = dcomp.CreateEffectGroup()?;
+        strength.SetOpacity2(params.vignette.clamp(0.0, 1.0))?;
+        vignette.SetEffect(&strength)?;
+
+        let visual = dcomp.CreateVisual()?;
+        let opacity = dcomp.CreateEffectGroup()?;
+        opacity.SetOpacity2(params.opacity.clamp(0.0, 1.0))?;
+        visual.SetEffect(&opacity)?;
+        visual.AddVisual(&blur, false, None)?;
+        visual.AddVisual(&vignette, false, None)?;
+
+        Ok((visual, blur))
+      })()
     };
 
-    match placed {
-      Ok(scale) => {
-        let covers_monitor =
-          alpha == u8::MAX && frame.contains_rect(&self.monitor);
-        Ok(Some((WindowCopy { thumbnail, scale }, covers_monitor)))
-      }
+    match built {
+      Ok((visual, blur)) => Ok(BackdropCopy {
+        thumbnail,
+        visual,
+        blur,
+        rest,
+        parallax,
+      }),
       Err(err) => {
         // SAFETY: Registered above and not handed out.
         let _ = unsafe { DwmUnregisterThumbnail(thumbnail) };
@@ -958,16 +1253,18 @@ impl NativeScene {
   }
 
   /// Builds the visuals placing `content`, a thumbnail of `window`, over
-  /// the monitor, and adds them above `parent`'s other children.
+  /// the monitor, on top of its `backdrop`, and adds them above `parent`'s
+  /// other children.
   ///
   /// # Safety
   ///
   /// Every object must be live and of this scene's device.
-  #[allow(clippy::cast_precision_loss)]
+  #[allow(clippy::cast_precision_loss, clippy::too_many_arguments)]
   unsafe fn place(
     &self,
     window: &SceneWindow,
     content: &IDCompositionVisual,
+    backdrop: Option<&BackdropCopy>,
     outer: &Rect,
     frame: &Rect,
     shown: &Rect,
@@ -1020,6 +1317,9 @@ impl NativeScene {
 
     let clipped = dcomp.CreateVisual()?;
     clipped.SetClip(&clip)?;
+    if let Some(backdrop) = backdrop {
+      clipped.AddVisual(&backdrop.visual, false, None)?;
+    }
     clipped.AddVisual(content, false, None)?;
     scaled.AddVisual(&clipped, false, None)?;
     visual.AddVisual(&scaled, false, None)?;
@@ -1244,6 +1544,16 @@ fn placement_of(hwnd: HWND) -> Option<(Rect, Rect)> {
   Some((to_rect(bounds), to_rect(bounds)))
 }
 
+/// Strength of the vignette at `(u, v)` across its square, from 0 to 1,
+/// as `build_vignette_brush`'s gradient has it.
+fn vignette_alpha(u: f64, v: f64) -> f64 {
+  let radius = f64::from(VIGNETTE_RADIUS);
+  let clear = f64::from(VIGNETTE_CLEAR);
+  let reach = ((u - 0.5) / radius).hypot((v - 0.5) / radius);
+
+  ((reach - clear) / (1.0 - clear)).clamp(0.0, 1.0)
+}
+
 fn class_name(hwnd: HWND) -> String {
   let mut buf = [0u16; 64];
   // SAFETY: `buf` outlives the call; a stale handle just returns 0.
@@ -1253,4 +1563,48 @@ fn class_name(hwnd: HWND) -> String {
       .get(..usize::try_from(len).unwrap_or(0))
       .unwrap_or_default(),
   )
+}
+
+#[cfg(test)]
+mod tests {
+  use std::time::{Duration, Instant};
+
+  use super::{vignette_alpha, SceneMotion, SceneSegment, SceneValue};
+
+  #[test]
+  fn vignette_is_clear_inside_and_darkest_in_the_corners() {
+    assert!(vignette_alpha(0.5, 0.5).abs() < f64::EPSILON);
+    assert!(vignette_alpha(0.6, 0.5).abs() < f64::EPSILON);
+
+    // At the edges' middles and corners, as the brush's 0.75 radius
+    // ellipse with its first 45% clear puts them.
+    assert!((vignette_alpha(0.0, 0.5) - 0.394).abs() < 0.001);
+    assert!((vignette_alpha(0.0, 0.0) - 0.896).abs() < 0.001);
+    assert!(vignette_alpha(0.0, 0.0) < 1.0);
+  }
+
+  #[test]
+  fn mapped_motion_scales_and_shifts_every_moment() {
+    let motion = SceneValue::Moving(SceneMotion {
+      begins_at: Instant::now(),
+      duration: Duration::from_millis(100),
+      segments: vec![SceneSegment {
+        begin_secs: 0.0,
+        coefficients: [10.0, 2.0, 3.0, 4.0],
+      }],
+      end: 20.0,
+    });
+
+    let SceneValue::Moving(mapped) = motion.mapped(-0.5, 100.0) else {
+      panic!("a motion stays moving");
+    };
+    assert_eq!(mapped.segments[0].coefficients, [95.0, -1.0, -1.5, -2.0]);
+    assert!((mapped.end - 90.0).abs() < f32::EPSILON);
+
+    let SceneValue::Fixed(value) = SceneValue::Fixed(4.0).mapped(2.0, 1.0)
+    else {
+      panic!("a fixed value stays fixed");
+    };
+    assert!((value - 9.0).abs() < f32::EPSILON);
+  }
 }

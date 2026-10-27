@@ -22,13 +22,16 @@ use wm_common::{
 };
 use wm_platform::{
   perf::{self, Stage},
-  NativeScene, NativeWindowWindowsExt, Overlay, Rect, SceneGroupId,
-  SceneMotion, ScenePose, SceneSegment, SceneValue, SceneWindow,
+  NativeScene, NativeWindowWindowsExt, Overlay, Rect, SceneBackdrop,
+  SceneGroupId, SceneMotion, ScenePose, SceneSegment, SceneValue,
+  SceneWindow,
 };
 
 use super::{curve, engine::apply_easing};
 use crate::{
-  commands::workspace::is_switch_animated,
+  commands::{
+    general::backdrop_overlay_params_for, workspace::is_switch_animated,
+  },
   models::{WindowContainer, Workspace},
   pending_sync::SceneSwitchRequest,
   traits::{CommonGetters, PositionGetters, WindowGetters},
@@ -653,8 +656,8 @@ fn workspace(state: &WmState, id: Uuid) -> Option<Workspace> {
 
 /// What a scene copies of `workspace`: each window shown in its layout,
 /// placed where the layout has it (a column's peek shows it there too),
-/// with its overlays and its stack's tab bar. Returns them with the IDs of
-/// the windows.
+/// with its backdrop and border and its stack's tab bar. Returns them with
+/// the IDs of the windows.
 ///
 /// `wearing_focus` is the window drawn with the focused window's effects,
 /// which it may not wear yet.
@@ -688,6 +691,16 @@ fn workspace_windows(
     };
 
     let is_focused = wearing_focus == Some(window.id());
+    let backdrop = state
+      .backdrop_overlays
+      .get(&window.id())
+      .filter(|overlay| overlay.is_visible())
+      .zip(backdrop_overlay_params_for(is_focused, config))
+      .map(|(overlay, params)| SceneBackdrop {
+        overlay: overlay.hwnd(),
+        params,
+      });
+
     copies.push(SceneWindow {
       hwnd: window.native().hwnd(),
       placement: Some(placement),
@@ -701,30 +714,24 @@ fn workspace_windows(
         config,
         monitor.scale_factor,
       ),
+      backdrop,
       required: true,
     });
 
-    let overlays = [
-      state
-        .backdrop_overlays
-        .get(&window.id())
-        .filter(|overlay| overlay.is_visible())
-        .map(Overlay::hwnd),
-      state
-        .border_overlays
-        .get(&window.id())
-        .filter(|overlay| overlay.is_visible())
-        .map(Overlay::hwnd),
-    ];
-    copies.extend(overlays.into_iter().flatten().map(|hwnd| {
-      SceneWindow {
-        hwnd,
+    if let Some(border) = state
+      .border_overlays
+      .get(&window.id())
+      .filter(|overlay| overlay.is_visible())
+    {
+      copies.push(SceneWindow {
+        hwnd: border.hwnd(),
         placement: None,
         alpha: None,
         corner_radius: 0.0,
+        backdrop: None,
         required: false,
-      }
-    }));
+      });
+    }
 
     ids.push(window.id());
   }
@@ -741,6 +748,7 @@ fn workspace_windows(
         placement: Some((rect.clone(), rect)),
         alpha: None,
         corner_radius: 0.0,
+        backdrop: None,
         required: false,
       });
     }

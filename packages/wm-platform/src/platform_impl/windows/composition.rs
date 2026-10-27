@@ -656,6 +656,15 @@ impl BackdropVisual {
   }
 }
 
+/// Radius of the vignette's ellipse, relative to the overlay's size.
+// The test harness compiles this module without the overlays and scenes.
+#[cfg_attr(test, allow(dead_code))]
+pub(crate) const VIGNETTE_RADIUS: f32 = 0.75;
+
+/// Share of the vignette's radius it leaves clear, from its center.
+#[cfg_attr(test, allow(dead_code))]
+pub(crate) const VIGNETTE_CLEAR: f32 = 0.45;
+
 /// Builds the radial gradient that darkens an overlay toward its edges, at
 /// full strength -- the vignette sprite's opacity scales it down.
 ///
@@ -672,7 +681,10 @@ fn build_vignette_brush(
   // Relative to the sprite, so resizing the overlay needs no update here.
   brush.SetMappingMode(CompositionMappingMode::Relative)?;
   brush.SetEllipseCenter(Vector2 { X: 0.5, Y: 0.5 })?;
-  brush.SetEllipseRadius(Vector2 { X: 0.75, Y: 0.75 })?;
+  brush.SetEllipseRadius(Vector2 {
+    X: VIGNETTE_RADIUS,
+    Y: VIGNETTE_RADIUS,
+  })?;
 
   let clear = Color {
     A: 0,
@@ -692,7 +704,8 @@ fn build_vignette_brush(
     &compositor.CreateColorGradientStopWithOffsetAndColor(0.0, clear)?,
   )?;
   stops.Append(
-    &compositor.CreateColorGradientStopWithOffsetAndColor(0.45, clear)?,
+    &compositor
+      .CreateColorGradientStopWithOffsetAndColor(VIGNETTE_CLEAR, clear)?,
   )?;
   stops.Append(
     &compositor.CreateColorGradientStopWithOffsetAndColor(1.0, dark)?,
@@ -1611,6 +1624,84 @@ impl OverviewBackdrop {
     wallpaper_surface::set_crop(&self.sharp, rect, &self.monitor, 1.0);
     wallpaper_surface::set_crop(&self.blurred, rect, &self.monitor, 1.0);
     Ok(())
+  }
+}
+
+/// A monitor's backdrop as overlays show it under windows -- the blur
+/// baked with their knobs, under their tint -- over all of the monitor:
+/// what a scene draws a moving window's backdrop from, so its image stays
+/// put against the desktop as the window moves.
+// The test harness compiles this module without the scenes.
+#[cfg_attr(test, allow(dead_code))]
+pub(crate) struct BackdropCanvasVisual {
+  /// Binds the visual tree to the canvas's `HWND`. Kept alive but never
+  /// touched again -- dropping it would unbind composition from the
+  /// window.
+  _target: DesktopWindowTarget,
+  compositor: Compositor,
+  queue: DispatcherQueue,
+  layer: BackdropLayer,
+  monitor: Rect,
+}
+
+#[cfg_attr(test, allow(dead_code))]
+impl BackdropCanvasVisual {
+  /// Builds the tree for the canvas `hwnd`, which covers `monitor` and was
+  /// created with `WS_EX_NOREDIRECTIONBITMAP`.
+  pub(crate) fn create(
+    hwnd: HWND,
+    monitor: &Rect,
+    knobs: BakeKnobs,
+    tint: crate::Color,
+  ) -> crate::Result<Self> {
+    let hwnd_raw = hwnd.0;
+    let monitor = monitor.clone();
+
+    with_composition_thread(move |compositor, queue| {
+      // SAFETY: `hwnd` is a valid, already-created top-level window.
+      let target = unsafe {
+        compositor
+          .cast::<ICompositorDesktopInterop>()?
+          .CreateDesktopWindowTarget(HWND(hwnd_raw), false)?
+      };
+
+      // Cropped at the monitor itself, it shows all of the image.
+      let layer =
+        BackdropLayer::create(&compositor, &monitor, knobs, 1.0, 1.0)?;
+
+      let tint_sprite = compositor.CreateSpriteVisual()?;
+      tint_sprite.SetBrush(
+        &compositor.CreateColorBrushWithColor(to_ui_color(tint))?,
+      )?;
+      tint_sprite.SetRelativeSizeAdjustment(FILL_PARENT)?;
+
+      let root = compositor.CreateContainerVisual()?;
+      root.SetRelativeSizeAdjustment(FILL_PARENT)?;
+      root.Children()?.InsertAtTop(&layer.sprite)?;
+      root.Children()?.InsertAtTop(&tint_sprite)?;
+      target.SetRoot(&root)?;
+
+      Ok(Self {
+        _target: target,
+        compositor: compositor.clone(),
+        queue: queue.clone(),
+        layer,
+        monitor,
+      })
+    })
+  }
+
+  /// Re-binds to the wallpaper baked anew once the desktop it was baked
+  /// from has changed.
+  pub(crate) fn sync(&mut self) -> crate::Result<()> {
+    wallpaper_surface::poll_for_changes();
+    self.layer.sync_crop(
+      &self.compositor,
+      &self.queue,
+      &self.monitor,
+      &self.monitor,
+      1.0,
+    )
   }
 }
 

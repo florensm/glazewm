@@ -75,11 +75,13 @@ mod native_iris_overlay;
 #[cfg(target_os = "windows")]
 pub use native_iris_overlay::NativeIrisOverlay;
 #[cfg(target_os = "windows")]
+mod backdrop_canvas;
+#[cfg(target_os = "windows")]
 mod native_scene;
 #[cfg(target_os = "windows")]
 pub use native_scene::{
-  NativeScene, SceneGroupId, SceneMotion, ScenePose, SceneSegment,
-  SceneValue, SceneWindow,
+  NativeScene, SceneBackdrop, SceneGroupId, SceneMotion, ScenePose,
+  SceneSegment, SceneValue, SceneWindow,
 };
 #[cfg(target_os = "windows")]
 mod native_overview;
