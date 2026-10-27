@@ -453,17 +453,46 @@ pub struct ScenePose {
   /// Scale of the whole group, about the monitor's center.
   pub scale: SceneValue,
 
-  /// Scale of each copy, about its own center.
-  pub copy_scale: SceneValue,
+  /// Scale of each of its items, about its frame's center.
+  pub item_scale: SceneValue,
+}
+
+/// A window and what is drawn with it, whose copies move as one within
+/// their group.
+#[derive(Clone, Debug)]
+pub struct SceneItem {
+  /// Names the item within its group, e.g. after its window's ID.
+  pub key: u128,
+
+  /// Its window's visible frame at rest, which its own motion moves and
+  /// scales.
+  pub frame: Rect,
+
+  /// The window, then what's drawn with it, e.g. its border. Windows they
+  /// own come along.
+  pub windows: Vec<SceneWindow>,
+
+  /// Whether its copies are cut where the monitor's edge cuts them at
+  /// rest, so its group's motion doesn't bring their hidden part into
+  /// view. Otherwise only the monitor's edge itself cuts them, wherever
+  /// they move.
+  pub is_cut_at_rest: bool,
+}
+
+/// Where an item is drawn relative to its frame: offset in pixels, scale
+/// about the frame's top-left corner, and opacity.
+#[derive(Clone, Debug)]
+pub struct ItemPose {
+  pub offset_x: SceneValue,
+  pub offset_y: SceneValue,
+  pub scale_x: SceneValue,
+  pub scale_y: SceneValue,
+  pub opacity: SceneValue,
 }
 
 /// A live copy of a window in a scene.
 struct WindowCopy {
   thumbnail: isize,
-
-  /// Scales the copy about its own center.
-  scale: IDCompositionScaleTransform,
-
   backdrop: Option<BackdropCopy>,
 }
 
@@ -478,8 +507,8 @@ impl WindowCopy {
 }
 
 /// A window's backdrop in its copy: a vignette over the monitor's blurred
-/// wallpaper, which its group's motion moves the other way, so it stays
-/// put on screen (see [`SceneWindow::backdrop`]).
+/// wallpaper, which the motions of its item and group move the other way,
+/// so it stays put on screen (see [`SceneWindow::backdrop`]).
 struct BackdropCopy {
   /// Its thumbnail of the monitor's backdrop canvas.
   thumbnail: isize,
@@ -487,13 +516,16 @@ struct BackdropCopy {
   /// Holds the backdrop beneath the window, under its opacity.
   visual: IDCompositionVisual2,
 
-  /// Holds the canvas's thumbnail, offset against the group's motion.
+  /// Holds `blur`, offset against its item's motion.
+  item_back: IDCompositionVisual2,
+
+  /// Holds the canvas's thumbnail, offset against its group's motion.
   blur: IDCompositionVisual2,
 
   /// Offset of `blur` with the group at rest, in the copy's coordinates.
   rest: (f32, f32),
 
-  /// Share of the group's motion `blur` is moved back by.
+  /// Share of the motions it is moved back by.
   parallax: f32,
 }
 
@@ -501,6 +533,32 @@ impl BackdropCopy {
   fn unregister(&self) {
     // SAFETY: The handle came from DWM and is released once, here.
     let _ = unsafe { DwmUnregisterThumbnail(self.thumbnail) };
+  }
+}
+
+/// A window's copies in a group, moved, scaled and faded as one.
+struct Item {
+  key: u128,
+
+  /// Moved by the item's offset and faded by `effect`; holds the rest.
+  visual: IDCompositionVisual2,
+  effect: IDCompositionEffectGroup,
+
+  /// Scales the item about its frame's top-left corner.
+  scale: IDCompositionScaleTransform,
+
+  /// Scales the item about its frame's center, for its group's
+  /// `item_scale`.
+  zoom: IDCompositionScaleTransform,
+
+  copies: Vec<WindowCopy>,
+}
+
+impl Item {
+  fn unregister(&self) {
+    for copy in &self.copies {
+      copy.unregister();
+    }
   }
 }
 
@@ -514,9 +572,9 @@ struct Group {
   /// Scales the group about the monitor's center.
   scale: IDCompositionScaleTransform,
 
-  /// Holds the copies, under `scale`.
+  /// Holds the items, under `scale`, bottom-most first.
   content: IDCompositionVisual2,
-  copies: Vec<WindowCopy>,
+  items: Vec<Item>,
 }
 
 /// A click-through, never-activated topmost popup over a monitor, drawing
@@ -658,20 +716,21 @@ impl NativeScene {
   }
 
   /// Covers `monitor` with copies of every window shown on it, those of
-  /// `group` (and the windows they own) in a group of their own, and
-  /// returns once the cover is on screen.
+  /// `items` in a group of their own, and returns once the cover is on
+  /// screen.
   ///
   /// Blocks for two compositions: one drawing the copies faintly, one
-  /// showing them. Fails if a window of `group` can't be copied, or no
-  /// opaque copy covers the monitor to hide the real windows beneath.
+  /// showing them. Fails if a required window of `items` can't be copied,
+  /// or no opaque copy covers the monitor to hide the real windows
+  /// beneath.
   pub fn cover(
     monitor: &Rect,
-    group: &[SceneWindow],
+    items: &[SceneItem],
   ) -> crate::Result<(Self, SceneGroupId)> {
     let device = SceneDevice::shared()?;
 
     let built = Self::build(device, monitor).and_then(|mut scene| {
-      let id = scene.cover_with(group)?;
+      let id = scene.cover_with(items)?;
       Ok((scene, id))
     });
 
@@ -712,17 +771,20 @@ impl NativeScene {
 
   fn cover_with(
     &mut self,
-    group: &[SceneWindow],
+    items: &[SceneItem],
   ) -> crate::Result<SceneGroupId> {
     let started = Instant::now();
     let order = top_level_windows();
-    let members = self.resolve(group, &order);
+    let members = items
+      .iter()
+      .map(|item| self.resolve(&item.windows, &order))
+      .collect::<Vec<_>>();
 
     let mut below = Vec::new();
     let mut above = Vec::new();
     for &hwnd in &order {
       if hwnd == self.host.hwnd
-        || members.iter().any(|member| member.draws(hwnd))
+        || members.iter().flatten().any(|member| member.draws(hwnd))
         || !self.is_still(hwnd)
       {
         continue;
@@ -738,7 +800,8 @@ impl NativeScene {
     // Bottom-most first, each added above the ones before it.
     let mut has_floor = false;
     for hwnd in below.iter().rev() {
-      match self.copy(&SceneWindow::as_is(*hwnd), &self.root.clone()) {
+      match self.copy(&SceneWindow::as_is(*hwnd), &self.root.clone(), true)
+      {
         Ok(Some((copy, covers_monitor))) => {
           has_floor |= covers_monitor;
           self.stills.push(copy);
@@ -761,7 +824,8 @@ impl NativeScene {
     unsafe { self.root.AddVisual(&self.groups_parent, false, None) }?;
 
     for hwnd in above.iter().rev() {
-      match self.copy(&SceneWindow::as_is(*hwnd), &self.root.clone()) {
+      match self.copy(&SceneWindow::as_is(*hwnd), &self.root.clone(), true)
+      {
         Ok(Some((copy, _))) => self.stills.push(copy),
         Ok(None) => {}
         Err(err) => tracing::debug!(
@@ -771,7 +835,7 @@ impl NativeScene {
       }
     }
 
-    let id = self.add_resolved_group(&members, &order)?;
+    let id = self.add_resolved_group(items, &members, &order)?;
 
     // SAFETY: Plain `DirectComposition` calls on live objects.
     unsafe {
@@ -793,7 +857,7 @@ impl NativeScene {
 
     tracing::debug!(
       "Scene covered {} windows in {:?} ({:?} building).",
-      self.stills.len() + members.len(),
+      self.stills.len() + members.iter().map(Vec::len).sum::<usize>(),
       started.elapsed(),
       built - started,
     );
@@ -801,18 +865,89 @@ impl NativeScene {
     Ok(id)
   }
 
-  /// Adds a group of `windows` (and the windows they own) above the other
-  /// groups, posed at rest until [`pose`](Self::pose)d.
+  /// Adds a group of `items` above the other groups, posed at rest until
+  /// [`pose`](Self::pose)d.
   ///
-  /// Fails, adding nothing, if a required one of `windows` can't be
+  /// Fails, adding nothing, if a required window of `items` can't be
   /// copied.
   pub fn add_group(
     &mut self,
-    windows: &[SceneWindow],
+    items: &[SceneItem],
   ) -> crate::Result<SceneGroupId> {
     let order = top_level_windows();
-    let members = self.resolve(windows, &order);
-    self.add_resolved_group(&members, &order)
+    let members = items
+      .iter()
+      .map(|item| self.resolve(&item.windows, &order))
+      .collect::<Vec<_>>();
+    self.add_resolved_group(items, &members, &order)
+  }
+
+  /// Puts `item` in group `id` in place of its item of the same key, or
+  /// above its other items if it has none, at rest until
+  /// [`pose_item`](Self::pose_item)d.
+  ///
+  /// Fails, changing nothing, if a required window of `item` can't be
+  /// copied.
+  pub fn set_item(
+    &mut self,
+    id: SceneGroupId,
+    item: &SceneItem,
+  ) -> crate::Result<()> {
+    let order = top_level_windows();
+    let members = self.resolve(&item.windows, &order);
+    let built = self.build_item(item, &members, &order)?;
+
+    let Some(group) = self.groups.iter_mut().find(|group| group.id == id)
+    else {
+      built.unregister();
+      return Ok(());
+    };
+
+    let index = group.items.iter().position(|old| old.key == item.key);
+    // SAFETY: Plain `DirectComposition` calls on live visuals.
+    let added = unsafe {
+      match index {
+        Some(index) => group.content.AddVisual(
+          &built.visual,
+          true,
+          &group.items[index].visual,
+        ),
+        None => group.content.AddVisual(&built.visual, false, None),
+      }
+    };
+    if let Err(err) = added {
+      built.unregister();
+      return Err(err.into());
+    }
+
+    match index {
+      Some(index) => {
+        let old = std::mem::replace(&mut group.items[index], built);
+        // SAFETY: Plain `DirectComposition` call on live visuals.
+        let _ = unsafe { group.content.RemoveVisual(&old.visual) };
+        old.unregister();
+      }
+      None => group.items.push(built),
+    }
+
+    Ok(())
+  }
+
+  /// Removes group `id`'s item `key`, from the next commit.
+  pub fn remove_item(&mut self, id: SceneGroupId, key: u128) {
+    let Some(group) = self.groups.iter_mut().find(|group| group.id == id)
+    else {
+      return;
+    };
+    let Some(index) = group.items.iter().position(|item| item.key == key)
+    else {
+      return;
+    };
+
+    let item = group.items.remove(index);
+    // SAFETY: Plain `DirectComposition` call on live visuals.
+    let _ = unsafe { group.content.RemoveVisual(&item.visual) };
+    item.unregister();
   }
 
   /// Puts the scene back above windows raised over it since it was shown,
@@ -836,7 +971,7 @@ impl NativeScene {
       return Ok(());
     };
 
-    let copy_scale = Settable::new(&device, &pose.copy_scale)?;
+    let item_scale = Settable::new(&device, &pose.item_scale)?;
 
     // SAFETY: Plain `DirectComposition` calls on live objects.
     unsafe {
@@ -854,10 +989,12 @@ impl NativeScene {
       )?;
       Settable::new(&device, &pose.scale)?.set_scale(&group.scale)?;
 
-      for copy in &group.copies {
-        copy_scale.set_scale(&copy.scale)?;
+      for item in &group.items {
+        item_scale.set_scale(&item.zoom)?;
 
-        if let Some(backdrop) = &copy.backdrop {
+        for backdrop in
+          item.copies.iter().filter_map(|c| c.backdrop.as_ref())
+        {
           let back = -backdrop.parallax;
           let (x, y) = backdrop.rest;
           Settable::new(&device, &pose.offset_x.mapped(back, x))?.set(
@@ -875,6 +1012,64 @@ impl NativeScene {
     Ok(())
   }
 
+  /// Poses group `id`'s item `key`, from the next commit.
+  pub fn pose_item(
+    &mut self,
+    id: SceneGroupId,
+    key: u128,
+    pose: &ItemPose,
+  ) -> crate::Result<()> {
+    let device = self.device.clone();
+    let Some(item) = self
+      .groups
+      .iter()
+      .find(|group| group.id == id)
+      .and_then(|group| group.items.iter().find(|item| item.key == key))
+    else {
+      return Ok(());
+    };
+
+    // SAFETY: Plain `DirectComposition` calls on live objects.
+    unsafe {
+      Settable::new(&device, &pose.offset_x)?.set(
+        |value| item.visual.SetOffsetX2(value),
+        |animation| item.visual.SetOffsetX(animation),
+      )?;
+      Settable::new(&device, &pose.offset_y)?.set(
+        |value| item.visual.SetOffsetY2(value),
+        |animation| item.visual.SetOffsetY(animation),
+      )?;
+      Settable::new(&device, &pose.scale_x)?.set(
+        |value| item.scale.SetScaleX2(value),
+        |animation| item.scale.SetScaleX(animation),
+      )?;
+      Settable::new(&device, &pose.scale_y)?.set(
+        |value| item.scale.SetScaleY2(value),
+        |animation| item.scale.SetScaleY(animation),
+      )?;
+      Settable::new(&device, &pose.opacity)?.set(
+        |value| item.effect.SetOpacity2(value),
+        |animation| item.effect.SetOpacity(animation),
+      )?;
+
+      for backdrop in
+        item.copies.iter().filter_map(|c| c.backdrop.as_ref())
+      {
+        let back = -backdrop.parallax;
+        Settable::new(&device, &pose.offset_x.mapped(back, 0.0))?.set(
+          |value| backdrop.item_back.SetOffsetX2(value),
+          |animation| backdrop.item_back.SetOffsetX(animation),
+        )?;
+        Settable::new(&device, &pose.offset_y.mapped(back, 0.0))?.set(
+          |value| backdrop.item_back.SetOffsetY2(value),
+          |animation| backdrop.item_back.SetOffsetY(animation),
+        )?;
+      }
+    }
+
+    Ok(())
+  }
+
   /// Removes group `id`'s copies, from the next commit.
   pub fn remove_group(&mut self, id: SceneGroupId) {
     let Some(index) = self.groups.iter().position(|group| group.id == id)
@@ -885,8 +1080,8 @@ impl NativeScene {
     let group = self.groups.remove(index);
     // SAFETY: Plain `DirectComposition` call on live visuals.
     let _ = unsafe { self.groups_parent.RemoveVisual(&group.panel) };
-    for copy in &group.copies {
-      copy.unregister();
+    for item in &group.items {
+      item.unregister();
     }
   }
 
@@ -949,11 +1144,12 @@ impl NativeScene {
     members
   }
 
-  /// Adds a group of `members`, stacked as their windows are in `order`.
-  /// The required ones must be copied, unless not shown on the monitor.
+  /// Adds a group of `items`, of `members` (each item's windows resolved),
+  /// stacked as their windows are in `order`.
   fn add_resolved_group(
     &mut self,
-    members: &[SceneWindow],
+    items: &[SceneItem],
+    members: &[Vec<SceneWindow>],
     order: &[HWND],
   ) -> crate::Result<SceneGroupId> {
     let device = self.device.clone();
@@ -961,7 +1157,7 @@ impl NativeScene {
     self.next_group += 1;
 
     // SAFETY: Plain `DirectComposition` calls on live objects.
-    let group = unsafe {
+    let mut group = unsafe {
       let panel = device.dcomp.CreateVisual()?;
       let effect = device.dcomp.CreateEffectGroup()?;
       panel.SetEffect(&effect)?;
@@ -982,25 +1178,108 @@ impl NativeScene {
         effect,
         scale,
         content,
-        copies: Vec::new(),
+        items: Vec::new(),
       }
+    };
+
+    // Bottom-most first, as each is added above the ones before it.
+    let mut stacked = items.iter().zip(members).collect::<Vec<_>>();
+    stacked.sort_by_key(|(item, _)| {
+      std::cmp::Reverse(
+        item
+          .windows
+          .first()
+          .map_or(usize::MAX, |window| z_index(window.hwnd, order)),
+      )
+    });
+
+    for (item, members) in stacked {
+      let added =
+        self.build_item(item, members, order).and_then(|built| {
+          // SAFETY: Plain `DirectComposition` call on live visuals.
+          match unsafe {
+            group.content.AddVisual(&built.visual, false, None)
+          } {
+            Ok(()) => {
+              group.items.push(built);
+              Ok(())
+            }
+            Err(err) => {
+              built.unregister();
+              Err(err.into())
+            }
+          }
+        });
+
+      if let Err(err) = added {
+        for item in &group.items {
+          item.unregister();
+        }
+        return Err(err);
+      }
+    }
+
+    // SAFETY: Plain `DirectComposition` call on live visuals.
+    if let Err(err) =
+      unsafe { self.groups_parent.AddVisual(&group.panel, false, None) }
+    {
+      for item in &group.items {
+        item.unregister();
+      }
+      return Err(err.into());
+    }
+
+    self.groups.push(group);
+    Ok(id)
+  }
+
+  /// Builds `item` from its `members`, stacked as their windows are in
+  /// `order`. Fails if a required one can't be copied, unless not shown on
+  /// the monitor.
+  #[allow(clippy::cast_precision_loss)]
+  fn build_item(
+    &self,
+    item: &SceneItem,
+    members: &[SceneWindow],
+    order: &[HWND],
+  ) -> crate::Result<Item> {
+    let dcomp = &self.device.dcomp;
+    let left = (item.frame.left - self.monitor.left) as f32;
+    let top = (item.frame.top - self.monitor.top) as f32;
+
+    // SAFETY: Plain `DirectComposition` calls on live objects.
+    let (visual, effect, scale, zoom, zoomed) = unsafe {
+      let visual = dcomp.CreateVisual()?;
+      let effect = dcomp.CreateEffectGroup()?;
+      visual.SetEffect(&effect)?;
+
+      let scale = dcomp.CreateScaleTransform()?;
+      scale.SetCenterX2(left)?;
+      scale.SetCenterY2(top)?;
+      let scaled = dcomp.CreateVisual()?;
+      scaled.SetTransform(&scale)?;
+      visual.AddVisual(&scaled, false, None)?;
+
+      let zoom = dcomp.CreateScaleTransform()?;
+      zoom.SetCenterX2(left + item.frame.width() as f32 / 2.0)?;
+      zoom.SetCenterY2(top + item.frame.height() as f32 / 2.0)?;
+      let zoomed = dcomp.CreateVisual()?;
+      zoomed.SetTransform(&zoom)?;
+      scaled.AddVisual(&zoomed, false, None)?;
+
+      (visual, effect, scale, zoom, zoomed)
     };
 
     let mut stacked = members.to_vec();
     // Bottom-most first, as each is added above the ones before it.
     // Windows gone meanwhile go first, and fail to copy.
     stacked.sort_by_key(|member| {
-      std::cmp::Reverse(
-        order
-          .iter()
-          .position(|hwnd| *hwnd == member.hwnd)
-          .unwrap_or(usize::MAX),
-      )
+      std::cmp::Reverse(z_index(member.hwnd, order))
     });
 
     let mut copies = Vec::new();
     for member in &stacked {
-      match self.copy(member, &group.content) {
+      match self.copy(member, &zoomed, item.is_cut_at_rest) {
         Ok(Some((copy, _))) => copies.push(copy),
         Ok(None) => {}
         Err(err) if member.required => {
@@ -1019,21 +1298,25 @@ impl NativeScene {
       }
     }
 
-    // SAFETY: Plain `DirectComposition` call on live visuals.
-    unsafe { self.groups_parent.AddVisual(&group.panel, false, None) }?;
-
-    self.groups.push(Group { copies, ..group });
-    Ok(id)
+    Ok(Item {
+      key: item.key,
+      visual,
+      effect,
+      scale,
+      zoom,
+      copies,
+    })
   }
 
-  /// Copies `window` above `parent`'s other children, cut to the part of
-  /// its visible frame on the monitor. Returns the copy, with whether it
-  /// opaquely covers the whole monitor, or `None` if it isn't shown on
-  /// the monitor.
+  /// Copies `window` above `parent`'s other children, cut to its visible
+  /// frame, and to the part of it on the monitor if `is_cut_at_rest`.
+  /// Returns the copy, with whether it opaquely covers the whole monitor,
+  /// or `None` if it isn't shown on the monitor.
   fn copy(
     &self,
     window: &SceneWindow,
     parent: &IDCompositionVisual2,
+    is_cut_at_rest: bool,
   ) -> crate::Result<Option<(WindowCopy, bool)>> {
     // A window the caller places is copied even while hidden, e.g. a tab
     // bar its thread hasn't shown yet: its copy shows once it is. A
@@ -1080,6 +1363,7 @@ impl NativeScene {
         .ok()
     });
 
+    let cut = if is_cut_at_rest { &shown } else { &frame };
     // SAFETY: Plain `DirectComposition` calls on live objects.
     let placed = unsafe {
       self.place(
@@ -1088,26 +1372,19 @@ impl NativeScene {
         backdrop.as_ref(),
         &outer,
         &frame,
-        &shown,
+        cut,
         parent,
       )
     };
 
     let copy = WindowCopy {
       thumbnail,
-      scale: match placed {
-        Ok(scale) => scale,
-        Err(err) => {
-          // SAFETY: Registered above and not handed out.
-          let _ = unsafe { DwmUnregisterThumbnail(thumbnail) };
-          if let Some(backdrop) = &backdrop {
-            backdrop.unregister();
-          }
-          return Err(err);
-        }
-      },
       backdrop,
     };
+    if let Err(err) = placed {
+      copy.unregister();
+      return Err(err);
+    }
 
     let covers_monitor =
       alpha == u8::MAX && frame.contains_rect(&self.monitor);
@@ -1204,6 +1481,8 @@ impl NativeScene {
         blur.SetOffsetX2(rest.0)?;
         blur.SetOffsetY2(rest.1)?;
         blur.AddVisual(&content, false, None)?;
+        let item_back = dcomp.CreateVisual()?;
+        item_back.AddVisual(&blur, false, None)?;
 
         let side = VIGNETTE_SIZE as f32;
         let vignette = dcomp.CreateVisual()?;
@@ -1229,17 +1508,18 @@ impl NativeScene {
         let opacity = dcomp.CreateEffectGroup()?;
         opacity.SetOpacity2(params.opacity.clamp(0.0, 1.0))?;
         visual.SetEffect(&opacity)?;
-        visual.AddVisual(&blur, false, None)?;
+        visual.AddVisual(&item_back, false, None)?;
         visual.AddVisual(&vignette, false, None)?;
 
-        Ok((visual, blur))
+        Ok((visual, item_back, blur))
       })()
     };
 
     match built {
-      Ok((visual, blur)) => Ok(BackdropCopy {
+      Ok((visual, item_back, blur)) => Ok(BackdropCopy {
         thumbnail,
         visual,
+        item_back,
         blur,
         rest,
         parallax,
@@ -1253,8 +1533,9 @@ impl NativeScene {
   }
 
   /// Builds the visuals placing `content`, a thumbnail of `window`, over
-  /// the monitor, on top of its `backdrop`, and adds them above `parent`'s
-  /// other children.
+  /// the monitor, on top of its `backdrop`, cut to `cut` (its visible
+  /// `frame`, or part of it), and adds them above `parent`'s other
+  /// children.
   ///
   /// # Safety
   ///
@@ -1267,9 +1548,9 @@ impl NativeScene {
     backdrop: Option<&BackdropCopy>,
     outer: &Rect,
     frame: &Rect,
-    shown: &Rect,
+    cut: &Rect,
     parent: &IDCompositionVisual2,
-  ) -> crate::Result<IDCompositionScaleTransform> {
+  ) -> crate::Result<()> {
     let dcomp = &self.device.dcomp;
 
     // DWM draws a thumbnail from its window rect's corner, past the
@@ -1278,31 +1559,20 @@ impl NativeScene {
     visual.SetOffsetX2((outer.left - self.monitor.left) as f32)?;
     visual.SetOffsetY2((outer.top - self.monitor.top) as f32)?;
 
-    let scale = dcomp.CreateScaleTransform()?;
-    scale.SetCenterX2(
-      (i32::midpoint(frame.left, frame.right) - outer.left) as f32,
-    )?;
-    scale.SetCenterY2(
-      (i32::midpoint(frame.top, frame.bottom) - outer.top) as f32,
-    )?;
-    let scaled = dcomp.CreateVisual()?;
-    scaled.SetTransform(&scale)?;
-
     // Cut to what DWM draws of the window, rounded as it is, except where
-    // the monitor's edge cuts it straight: a window hanging off the
-    // monitor mustn't bring its hidden part into view as it moves.
+    // the monitor's edge cuts it straight.
     let clip = dcomp.CreateRectangleClip()?;
-    clip.SetLeft2((shown.left - outer.left) as f32)?;
-    clip.SetTop2((shown.top - outer.top) as f32)?;
-    clip.SetRight2((shown.right - outer.left) as f32)?;
-    clip.SetBottom2((shown.bottom - outer.top) as f32)?;
+    clip.SetLeft2((cut.left - outer.left) as f32)?;
+    clip.SetTop2((cut.top - outer.top) as f32)?;
+    clip.SetRight2((cut.right - outer.left) as f32)?;
+    clip.SetBottom2((cut.bottom - outer.top) as f32)?;
 
     let radius = window.corner_radius;
     if radius > 0.0 {
-      let left = shown.left == frame.left;
-      let top = shown.top == frame.top;
-      let right = shown.right == frame.right;
-      let bottom = shown.bottom == frame.bottom;
+      let left = cut.left == frame.left;
+      let top = cut.top == frame.top;
+      let right = cut.right == frame.right;
+      let bottom = cut.bottom == frame.bottom;
       let corner = |is_own: bool| if is_own { radius } else { 0.0 };
 
       clip.SetTopLeftRadiusX2(corner(left && top))?;
@@ -1321,11 +1591,10 @@ impl NativeScene {
       clipped.AddVisual(&backdrop.visual, false, None)?;
     }
     clipped.AddVisual(content, false, None)?;
-    scaled.AddVisual(&clipped, false, None)?;
-    visual.AddVisual(&scaled, false, None)?;
+    visual.AddVisual(&clipped, false, None)?;
     parent.AddVisual(&visual, false, None)?;
 
-    Ok(scale)
+    Ok(())
   }
 
   /// Whether `hwnd` is shown on the monitor, to be copied as is beneath or
@@ -1365,11 +1634,13 @@ impl NativeScene {
 impl Drop for NativeScene {
   fn drop(&mut self) {
     // Unregistered before the host they draw in is destroyed.
-    for copy in self
-      .stills
-      .iter()
-      .chain(self.groups.iter().flat_map(|group| group.copies.iter()))
-    {
+    for copy in self.stills.iter().chain(
+      self
+        .groups
+        .iter()
+        .flat_map(|group| group.items.iter())
+        .flat_map(|item| item.copies.iter()),
+    ) {
       copy.unregister();
     }
   }
@@ -1480,7 +1751,15 @@ fn qpc_at(instant: Instant) -> i64 {
   }
 }
 
-/// Waits for DWM's next composition.
+/// Where `hwnd` is in `order`, from its top; windows gone meanwhile are at
+/// the bottom.
+fn z_index(hwnd: HWND, order: &[HWND]) -> usize {
+  order
+    .iter()
+    .position(|other| *other == hwnd)
+    .unwrap_or(usize::MAX)
+}
+
 /// Every top-level window, topmost first.
 fn top_level_windows() -> Vec<HWND> {
   unsafe extern "system" fn collect(hwnd: HWND, data: LPARAM) -> BOOL {

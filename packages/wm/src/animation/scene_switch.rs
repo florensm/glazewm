@@ -23,8 +23,8 @@ use wm_common::{
 use wm_platform::{
   perf::{self, Stage},
   NativeScene, NativeWindowWindowsExt, Overlay, Rect, SceneBackdrop,
-  SceneGroupId, SceneMotion, ScenePose, SceneSegment, SceneValue,
-  SceneWindow,
+  SceneGroupId, SceneItem, SceneMotion, ScenePose, SceneSegment,
+  SceneValue, SceneWindow,
 };
 
 use super::{curve, engine::apply_easing};
@@ -43,9 +43,9 @@ use crate::{
 /// nothing moves, which blends in the shadows its copies lack.
 const LIFT: Duration = Duration::from_millis(60);
 
-/// Smallest scale a copy shrinks to, in place of 0, which leaves its
+/// Smallest scale an item shrinks to, in place of 0, which leaves its
 /// transform without an inverse.
-const MIN_COPY_SCALE: f32 = 0.001;
+const MIN_ITEM_SCALE: f32 = 0.001;
 
 /// The scenes playing workspace switches, one per monitor.
 #[derive(Default)]
@@ -81,14 +81,14 @@ struct WorkspaceGroup {
 }
 
 /// Where a group is drawn: offset in pixels, opacity, scale about the
-/// monitor's center, and each copy's scale about its own.
+/// monitor's center, and each item's scale about its own.
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct Pose {
   x: f32,
   y: f32,
   opacity: f32,
   scale: f32,
-  copy_scale: f32,
+  item_scale: f32,
 }
 
 impl Pose {
@@ -97,7 +97,7 @@ impl Pose {
     y: 0.0,
     opacity: 1.0,
     scale: 1.0,
-    copy_scale: 1.0,
+    item_scale: 1.0,
   };
 
   fn lerp(&self, to: &Self, t: f32) -> Self {
@@ -108,7 +108,7 @@ impl Pose {
       y: between(self.y, to.y),
       opacity: between(self.opacity, to.opacity),
       scale: between(self.scale, to.scale),
-      copy_scale: between(self.copy_scale, to.copy_scale),
+      item_scale: between(self.item_scale, to.item_scale),
     }
   }
 }
@@ -163,7 +163,7 @@ impl GroupMotion {
       offset_y: channel(self.from.y, self.to.y),
       opacity: channel(self.from.opacity, self.to.opacity),
       scale: channel(self.from.scale, self.to.scale),
-      copy_scale: channel(self.from.copy_scale, self.to.copy_scale),
+      item_scale: channel(self.from.item_scale, self.to.item_scale),
     }
   }
 }
@@ -282,8 +282,8 @@ pub fn cover(
   let props = monitor.native_properties();
   let wearing_focus =
     state.prev_effects_window.as_ref().map(CommonGetters::id);
-  let (windows, held) =
-    workspace_windows(state, config, &outgoing, wearing_focus, &props);
+  let (items, held) =
+    workspace_items(state, config, &outgoing, wearing_focus, &props);
 
   let scenes = &mut state.animation_manager.scenes;
   if let Some(scene) = scenes.scene_mut(monitor.id()) {
@@ -328,7 +328,7 @@ pub fn cover(
     // E.g. a workspace that came to the monitor while the scene was up.
     let added = scene
       .native
-      .add_group(&windows)
+      .add_group(&items)
       .and_then(|id| scene.native.commit().map(|()| id));
 
     return match added {
@@ -352,7 +352,7 @@ pub fn cover(
     };
   }
 
-  match NativeScene::cover(&props.bounds, &windows) {
+  match NativeScene::cover(&props.bounds, &items) {
     Ok((native, id)) => {
       scenes.scenes.push(MonitorScene {
         monitor_id: monitor.id(),
@@ -397,8 +397,8 @@ pub fn enter(
 
   let props = monitor.native_properties();
   let focused = state.focused_container().map(|c| c.id());
-  let (windows, _) =
-    workspace_windows(state, config, &incoming, focused, &props);
+  let (items, _) =
+    workspace_items(state, config, &incoming, focused, &props);
 
   let ws_config = &config.value.animations.workspace_switch;
   let duration = Duration::from_millis(u64::from(
@@ -431,7 +431,7 @@ pub fn enter(
     None => entry,
   };
 
-  let id = match scene.native.add_group(&windows) {
+  let id = match scene.native.add_group(&items) {
     Ok(id) => id,
     Err(err) => {
       tracing::warn!("Scene couldn't copy the incoming workspace: {err}");
@@ -640,12 +640,12 @@ fn away(
         y,
         opacity,
         scale: 1.0 - config.zoom_factor.clamp(0.0, 1.0),
-        copy_scale: 1.0,
+        item_scale: 1.0,
       }
     }
     WorkspaceSwitchStyle::Zoom => Pose {
       opacity,
-      copy_scale: MIN_COPY_SCALE,
+      item_scale: MIN_ITEM_SCALE,
       ..Pose::REST
     },
     WorkspaceSwitchStyle::Fade => Pose {
@@ -659,21 +659,21 @@ fn workspace(state: &WmState, id: Uuid) -> Option<Workspace> {
   state.container_by_id(id)?.as_workspace().cloned()
 }
 
-/// What a scene copies of `workspace`: each window shown in its layout,
-/// placed where the layout has it (a column's peek shows it there too),
-/// with its backdrop and border and its stack's tab bar. Returns them with
-/// the IDs of the windows.
+/// What a scene copies of `workspace`: an item for each window shown in
+/// its layout, placed where the layout has it (a column's peek shows it
+/// there too), with its backdrop, border and stack's tab bar. Returns them
+/// with the IDs of the windows.
 ///
 /// `wearing_focus` is the window drawn with the focused window's effects,
 /// which it may not wear yet.
-fn workspace_windows(
+fn workspace_items(
   state: &WmState,
   config: &UserConfig,
   workspace: &Workspace,
   wearing_focus: Option<Uuid>,
   monitor: &crate::models::NativeMonitorProperties,
-) -> (Vec<SceneWindow>, Vec<Uuid>) {
-  let mut copies = Vec::new();
+) -> (Vec<SceneItem>, Vec<Uuid>) {
+  let mut items = Vec::new();
   let mut ids = Vec::new();
 
   let focused_alpha = config
@@ -691,7 +691,7 @@ fn workspace_windows(
     .filter(is_switch_animated);
 
   for window in windows {
-    let Some(placement) = placement(&window) else {
+    let Some((outer, frame)) = placement(&window) else {
       continue;
     };
 
@@ -706,9 +706,9 @@ fn workspace_windows(
         params,
       });
 
-    copies.push(SceneWindow {
+    let mut copies = vec![SceneWindow {
       hwnd: window.native().hwnd(),
-      placement: Some(placement),
+      placement: Some((outer, frame.clone())),
       // One taking focus gets its focused transparency only once the
       // focus lands, after its copy is made.
       alpha: (is_focused && wears_focus_effects != Some(window.id()))
@@ -721,7 +721,7 @@ fn workspace_windows(
       ),
       backdrop,
       required: true,
-    });
+    }];
 
     if let Some(border) = state
       .border_overlays
@@ -738,28 +738,51 @@ fn workspace_windows(
       });
     }
 
+    items.push(SceneItem {
+      key: window.id().as_u128(),
+      frame,
+      windows: copies,
+      is_cut_at_rest: true,
+    });
     ids.push(window.id());
   }
 
-  let tab_bars = workspace
+  // A stack's tab bar goes with its active window.
+  let stacks = workspace
     .descendants()
-    .filter_map(|container| container.as_stack().map(CommonGetters::id))
-    .filter_map(|stack_id| state.tab_bars.get(&stack_id));
+    .filter_map(|container| container.as_stack().cloned());
 
-  for bar in tab_bars {
-    if let Some(rect) = bar.shown_rect() {
-      copies.push(SceneWindow {
-        hwnd: bar.hwnd(),
-        placement: Some((rect.clone(), rect)),
-        alpha: None,
-        corner_radius: 0.0,
-        backdrop: None,
-        required: false,
-      });
+  for stack in stacks {
+    let Some((hwnd, rect)) = state
+      .tab_bars
+      .get(&stack.id())
+      .and_then(|bar| Some((bar.hwnd(), bar.shown_rect()?)))
+    else {
+      continue;
+    };
+
+    let bar = SceneWindow {
+      hwnd,
+      placement: Some((rect.clone(), rect.clone())),
+      alpha: None,
+      corner_radius: 0.0,
+      backdrop: None,
+      required: false,
+    };
+
+    let active = stack.active_child().map(|child| child.id().as_u128());
+    match items.iter_mut().find(|item| Some(item.key) == active) {
+      Some(item) => item.windows.push(bar),
+      None => items.push(SceneItem {
+        key: stack.id().as_u128(),
+        frame: rect,
+        windows: vec![bar],
+        is_cut_at_rest: true,
+      }),
     }
   }
 
-  (copies, ids)
+  (items, ids)
 }
 
 /// Where the layout puts `window`: its window rect, the invisible resize
