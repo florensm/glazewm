@@ -330,7 +330,7 @@ impl SceneDevice {
 }
 
 /// A window to copy into a scene.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct SceneWindow {
   pub hwnd: HWND,
 
@@ -406,7 +406,7 @@ pub enum SceneFit {
 /// A window's backdrop as its overlay draws it, but from the blurred
 /// wallpaper of the whole monitor, which stays put as the window moves: a
 /// copy of the overlay would carry its crop of it along.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct SceneBackdrop {
   /// The overlay drawing it, left out of the scene.
   pub overlay: HWND,
@@ -493,7 +493,7 @@ pub struct ScenePose {
 
 /// A window and what is drawn with it, whose copies move as one within
 /// their group.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct SceneItem {
   /// Names the item within its group, e.g. after its window's ID.
   pub key: u128,
@@ -505,12 +505,6 @@ pub struct SceneItem {
   /// The window, then what's drawn with it, e.g. its border. Windows they
   /// own come along, staying put as the item moves.
   pub windows: Vec<SceneWindow>,
-
-  /// Whether its copies are cut where the monitor's edge cuts them at
-  /// rest, so its group's motion doesn't bring their hidden part into
-  /// view. Otherwise only the monitor's edge itself cuts them, wherever
-  /// they move.
-  pub is_cut_at_rest: bool,
 }
 
 /// Where an item is drawn relative to its frame at rest: offset in
@@ -556,7 +550,7 @@ enum Shape {
     clip: IDCompositionRectangleClip,
 
     /// The clip's right and bottom edges at rest, where they keep to the
-    /// frame's rather than the monitor's.
+    /// item's frame.
     right: Option<f32>,
     bottom: Option<f32>,
   },
@@ -786,7 +780,9 @@ struct Group {
   /// Scales the group about the monitor's center.
   scale: IDCompositionScaleTransform,
 
-  /// Holds the items, under `scale`, bottom-most first.
+  /// Holds the items, bottom-most first, under `scale` and cut to the
+  /// monitor as the group rests, so its motion brings nothing beyond the
+  /// monitor's edge into view.
   content: IDCompositionVisual2,
   items: Vec<Item>,
 }
@@ -1018,7 +1014,7 @@ impl NativeScene {
     let mut has_floor = false;
     for hwnd in below.iter().rev() {
       let window = SceneWindow::as_is(*hwnd);
-      match self.copy(&window, None, &self.root.clone(), true) {
+      match self.copy(&window, None, &self.root.clone()) {
         Ok(Some((copy, covers_monitor))) => {
           has_floor |= covers_monitor;
           self.stills.push(copy);
@@ -1042,7 +1038,7 @@ impl NativeScene {
 
     for hwnd in above.iter().rev() {
       let window = SceneWindow::as_is(*hwnd);
-      match self.copy(&window, None, &self.root.clone(), true) {
+      match self.copy(&window, None, &self.root.clone()) {
         Ok(Some((copy, _))) => self.stills.push(copy),
         Ok(None) => {}
         Err(err) => tracing::debug!(
@@ -1485,15 +1481,24 @@ impl NativeScene {
       let effect = device.dcomp.CreateEffectGroup()?;
       panel.SetEffect(&effect)?;
 
-      let scale = device.dcomp.CreateScaleTransform()?;
       #[allow(clippy::cast_precision_loss)]
-      {
-        scale.SetCenterX2(self.monitor.width() as f32 / 2.0)?;
-        scale.SetCenterY2(self.monitor.height() as f32 / 2.0)?;
-      }
+      let (width, height) =
+        (self.monitor.width() as f32, self.monitor.height() as f32);
+      let scale = device.dcomp.CreateScaleTransform()?;
+      scale.SetCenterX2(width / 2.0)?;
+      scale.SetCenterY2(height / 2.0)?;
+      let scaled = device.dcomp.CreateVisual()?;
+      scaled.SetTransform(&scale)?;
+      panel.AddVisual(&scaled, false, None)?;
+
+      let clip = device.dcomp.CreateRectangleClip()?;
+      clip.SetLeft2(0.0)?;
+      clip.SetTop2(0.0)?;
+      clip.SetRight2(width)?;
+      clip.SetBottom2(height)?;
       let content = device.dcomp.CreateVisual()?;
-      content.SetTransform(&scale)?;
-      panel.AddVisual(&content, false, None)?;
+      content.SetClip(&clip)?;
+      scaled.AddVisual(&content, false, None)?;
 
       Group {
         id,
@@ -1553,8 +1558,7 @@ impl NativeScene {
   }
 
   /// Builds `item` from its `members`, stacked as their windows are in
-  /// `order`. Fails if a required one can't be copied, unless not shown on
-  /// the monitor.
+  /// `order`. Fails if a required one can't be copied.
   #[allow(clippy::cast_precision_loss)]
   fn build_item(
     &self,
@@ -1612,7 +1616,6 @@ impl NativeScene {
       &members.moving,
       &item.frame,
       &own_visual,
-      item.is_cut_at_rest,
       order,
       &mut built.copies,
     ) {
@@ -1648,7 +1651,6 @@ impl NativeScene {
         &members.pinned,
         &item.frame,
         &pinned.visual.clone(),
-        true,
         order,
         &mut pinned.copies,
       );
@@ -1670,7 +1672,6 @@ impl NativeScene {
     windows: &[SceneWindow],
     frame: &Rect,
     parent: &IDCompositionVisual2,
-    is_cut_at_rest: bool,
     order: &[HWND],
     copies: &mut Vec<WindowCopy>,
   ) -> crate::Result<()> {
@@ -1682,7 +1683,7 @@ impl NativeScene {
     });
 
     for window in stacked {
-      match self.copy(window, Some(frame), parent, is_cut_at_rest) {
+      match self.copy(window, Some(frame), parent) {
         Ok(Some((copy, _))) => copies.push(copy),
         Ok(None) => {}
         Err(err) if window.required => {
@@ -1702,18 +1703,16 @@ impl NativeScene {
   }
 
   /// Copies `window` above `parent`'s other children, cut to its visible
-  /// frame, and to the part of it on the monitor if `is_cut_at_rest`. It
-  /// follows `item_frame`, its own frame when `None`, as that resizes.
+  /// frame. It follows `item_frame`, its own frame when `None`, as that
+  /// resizes.
   ///
   /// Returns the copy, with whether it opaquely covers the whole monitor,
-  /// or `None` if it isn't shown, or isn't on the monitor though cut to
-  /// it.
+  /// or `None` if it isn't shown.
   fn copy(
     &self,
     window: &SceneWindow,
     item_frame: Option<&Rect>,
     parent: &IDCompositionVisual2,
-    is_cut_at_rest: bool,
   ) -> crate::Result<Option<(WindowCopy, bool)>> {
     // A window the caller places is copied even while hidden, e.g. a tab
     // bar its thread hasn't shown yet: its copy shows once it is. A
@@ -1731,13 +1730,6 @@ impl NativeScene {
       .or_else(|| placement_of(window.hwnd))
     else {
       return Ok(None);
-    };
-
-    let shown = frame.intersection(&self.monitor);
-    let cut = match (is_cut_at_rest, shown) {
-      (true, Some(shown)) => shown,
-      (true, None) => return Ok(None),
-      (false, _) => frame.clone(),
     };
 
     // Thumbnails leave out the opacity a window is layered with.
@@ -1794,7 +1786,6 @@ impl NativeScene {
         backdrop.as_ref(),
         &outer,
         &frame,
-        &cut,
         item_frame,
         parent,
       )
@@ -2008,9 +1999,9 @@ impl NativeScene {
   }
 
   /// Builds the visuals placing `content`, a thumbnail of `window`, over
-  /// the monitor, on top of its `backdrop`, cut to `cut` (its visible
-  /// `frame`, or part of it), and adds them above `parent`'s other
-  /// children. Returns how it follows `item_frame` as that resizes.
+  /// the monitor, on top of its `backdrop`, cut to its visible `frame`,
+  /// and adds them above `parent`'s other children. Returns how it follows
+  /// `item_frame` as that resizes.
   ///
   /// # Safety
   ///
@@ -2023,7 +2014,6 @@ impl NativeScene {
     backdrop: Option<&(BackdropCopy, IDCompositionScaleTransform)>,
     outer: &Rect,
     frame: &Rect,
-    cut: &Rect,
     item_frame: &Rect,
     parent: &IDCompositionVisual2,
   ) -> crate::Result<Shape> {
@@ -2035,32 +2025,25 @@ impl NativeScene {
     visual.SetOffsetX2((outer.left - self.monitor.left) as f32)?;
     visual.SetOffsetY2((outer.top - self.monitor.top) as f32)?;
 
-    // Cut to what DWM draws of the window, rounded as it is, except where
-    // the monitor's edge cuts it straight.
+    // Cut to what DWM draws of the window, rounded as it is.
     let clip = dcomp.CreateRectangleClip()?;
-    let right = (cut.right - outer.left) as f32;
-    let bottom = (cut.bottom - outer.top) as f32;
-    clip.SetLeft2((cut.left - outer.left) as f32)?;
-    clip.SetTop2((cut.top - outer.top) as f32)?;
+    let right = (frame.right - outer.left) as f32;
+    let bottom = (frame.bottom - outer.top) as f32;
+    clip.SetLeft2((frame.left - outer.left) as f32)?;
+    clip.SetTop2((frame.top - outer.top) as f32)?;
     clip.SetRight2(right)?;
     clip.SetBottom2(bottom)?;
 
     let radius = window.corner_radius;
     if radius > 0.0 {
-      let left = cut.left == frame.left;
-      let top = cut.top == frame.top;
-      let right = cut.right == frame.right;
-      let bottom = cut.bottom == frame.bottom;
-      let corner = |is_own: bool| if is_own { radius } else { 0.0 };
-
-      clip.SetTopLeftRadiusX2(corner(left && top))?;
-      clip.SetTopLeftRadiusY2(corner(left && top))?;
-      clip.SetTopRightRadiusX2(corner(right && top))?;
-      clip.SetTopRightRadiusY2(corner(right && top))?;
-      clip.SetBottomLeftRadiusX2(corner(left && bottom))?;
-      clip.SetBottomLeftRadiusY2(corner(left && bottom))?;
-      clip.SetBottomRightRadiusX2(corner(right && bottom))?;
-      clip.SetBottomRightRadiusY2(corner(right && bottom))?;
+      clip.SetTopLeftRadiusX2(radius)?;
+      clip.SetTopLeftRadiusY2(radius)?;
+      clip.SetTopRightRadiusX2(radius)?;
+      clip.SetTopRightRadiusY2(radius)?;
+      clip.SetBottomLeftRadiusX2(radius)?;
+      clip.SetBottomLeftRadiusY2(radius)?;
+      clip.SetBottomRightRadiusX2(radius)?;
+      clip.SetBottomRightRadiusY2(radius)?;
     }
 
     // The content stretches with the frame, under a clip that keeps its
@@ -2086,8 +2069,8 @@ impl NativeScene {
     Ok(Shape::Whole {
       scales,
       clip,
-      right: (cut.right == item_frame.right).then_some(right),
-      bottom: (cut.bottom == item_frame.bottom).then_some(bottom),
+      right: (frame.right == item_frame.right).then_some(right),
+      bottom: (frame.bottom == item_frame.bottom).then_some(bottom),
     })
   }
 

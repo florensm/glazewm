@@ -26,8 +26,6 @@ use wm_platform::{
 use crate::commands::window::close_duplicate_tabs;
 #[cfg(target_os = "windows")]
 use crate::commands::window::detach_window_for_close;
-#[cfg(target_os = "windows")]
-use crate::traits::PositionGetters;
 use crate::{
   commands::{
     column::{
@@ -721,81 +719,28 @@ impl WindowManager {
       InvokeCommand::Close => {
         match subject_container.as_window_container() {
           Ok(window) => {
+            // A scene plays the close from a copy of the window, detached
+            // from the layout so the rest reflows meanwhile, and sends it
+            // `WM_CLOSE` once that's done.
             #[cfg(target_os = "windows")]
-            if config.value.animations.window_close.enabled {
-              use wm_platform::NativeWindowWindowsExt;
-
-              let is_focused = window.id()
-                == state.focused_container().map_or_default(|c| c.id());
-
-              let (
-                effect_opacity,
-                corner_style,
-                backdrop_overlay,
-                border_overlay,
-              ) = crate::commands::general::surrogate_effects_for(
-                is_focused, config,
-              );
-
-              if let Ok(rect) = window.to_rect().and_then(|r| {
-                window
-                  .total_border_delta()
-                  .map(|d| r.apply_delta(&d, None))
-              }) {
-                let window_id = window.id();
-
-                // Create and show the surrogate over the still-visible
-                // window first. The surrogate captures the
-                // live window as a pixel-identical
-                // overlay, so this is invisible to the user.
-                {
-                  let native_ref = window.native();
-                  state.animation_manager.start_close_animation(
-                    window_id,
-                    &rect,
-                    effect_opacity,
-                    corner_style,
-                    backdrop_overlay,
-                    border_overlay,
-                    &wm_common::WindowTransitionParams::from_close(
-                      &config.value.animations.window_close,
-                    ),
-                    &native_ref,
-                  );
-                }
-
-                // If the surrogate was created successfully, cloak the
-                // real window — now that the surrogate is
-                // up and covering it — and detach it from
-                // the layout tree so sibling windows begin
-                // their reflow animations in parallel with the close
-                // surrogate. Cloaking *after* the surrogate is shown
-                // avoids a one-frame gap where the slow
-                // `IApplicationView` cloak has hidden the
-                // window but the surrogate has not yet been
-                // composited, which briefly exposes the desktop.
-                // `AnimationManager::update_internal` sends `WM_CLOSE`
-                // once the close animation finishes.
-                if state.animation_manager.has_close_animation(&window_id)
-                {
-                  let _ = window.native().set_cloaked(true);
-                  let close_config = &config.value.animations.window_close;
-                  detach_window_for_close(
-                    &window,
-                    std::time::Duration::from_millis(u64::from(
-                      close_config
-                        .easing
-                        .duration_ms(close_config.duration_ms),
-                    )),
-                    state,
-                  )?;
-                  return Ok(());
-                }
-              }
+            if let Some(request) = crate::animation::scene::close_request(
+              state, config, &window,
+            ) {
+              let close_config = &config.value.animations.window_close;
+              detach_window_for_close(
+                &window,
+                std::time::Duration::from_millis(u64::from(
+                  close_config
+                    .easing
+                    .duration_ms(close_config.duration_ms),
+                )),
+                state,
+              )?;
+              state.pending_sync.queue_scene_close(request);
+              return Ok(());
             }
 
-            // Fallback: animations disabled, rect unavailable, or
-            // surrogate creation failed — close immediately.
+            // Without an animation, it closes at once.
             if let Err(err) = window.native().close() {
               warn!("Failed to close window: {:?}", err);
             }

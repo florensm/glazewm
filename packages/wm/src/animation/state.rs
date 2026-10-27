@@ -307,9 +307,14 @@ impl WindowAnimationState {
   }
 
   /// Whether the animation has completed.
-  #[allow(clippy::float_cmp)]
   pub fn is_complete(&self) -> bool {
-    self.eased_progress() == 1.0
+    self.is_complete_at(Instant::now())
+  }
+
+  /// Whether the animation has completed at `now`.
+  #[allow(clippy::float_cmp)]
+  pub fn is_complete_at(&self, now: Instant) -> bool {
+    self.eased_progress_at(now) == 1.0
   }
 
   /// Gets the interpolated rect at the current animation progress.

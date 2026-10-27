@@ -60,25 +60,28 @@ pub fn platform_sync(
   #[cfg(target_os = "windows")]
   unmanage_embedded_windows(state)?;
 
-  // A scene playing a workspace switch covers its monitor before anything
-  // changes beneath it, and starts moving once the incoming workspace's
-  // windows are shown.
+  // A focus change or relayout can scroll a scrolling layout, which then
+  // moves the rest of its columns too. That includes focus the OS moved
+  // itself, e.g. a click on a column partly off screen, which only shows
+  // as a focused-effect update.
+  if state.pending_sync.needs_focus_update()
+    || state.pending_sync.needs_focused_effect_update()
+    || !state.pending_sync.containers_to_redraw().is_empty()
+  {
+    crate::layout::scrolling::sync_scroll_offsets(state)?;
+  }
+
+  // What the sync animates plays on scenes covering their monitors before
+  // anything changes beneath them, which then happens at once.
   #[cfg(target_os = "windows")]
-  let scene_switch =
-    state.pending_sync.take_scene_switch().filter(|request| {
-      crate::animation::scene_switch::cover(state, config, request)
-    });
+  let mut plan = crate::animation::scene::plan(state, config);
+  #[cfg(target_os = "windows")]
+  crate::animation::scene::cover(state, config, &mut plan);
 
   let synced = sync_to_state(state, config);
 
   #[cfg(target_os = "windows")]
-  if let Some(request) = scene_switch {
-    if synced.is_ok() {
-      crate::animation::scene_switch::enter(state, config, &request);
-    } else {
-      crate::animation::scene_switch::abandon(state, &request);
-    }
-  }
+  crate::animation::scene::play(state, config, &plan, synced.is_ok());
 
   synced
 }
@@ -92,19 +95,14 @@ fn sync_to_state(
   let focused_container =
     state.focused_container().context("No focused container.")?;
 
-  // A focus change or relayout can scroll a scrolling layout, which then
-  // moves the rest of its columns too. That includes focus the OS moved
-  // itself, e.g. a click on a column partly off screen, which only shows
-  // as a focused-effect update. Moving columns are handed to the scroll
-  // view before anything is repositioned, so their peeks are on screen
-  // before their real windows are cloaked.
+  // Columns of scrolling layouts are handed to the scroll view before
+  // anything is repositioned, so their peeks are on screen before their
+  // real windows are cloaked.
+  #[cfg(target_os = "windows")]
   if state.pending_sync.needs_focus_update()
     || state.pending_sync.needs_focused_effect_update()
     || !state.pending_sync.containers_to_redraw().is_empty()
   {
-    crate::layout::scrolling::sync_scroll_offsets(state)?;
-
-    #[cfg(target_os = "windows")]
     crate::animation::scroll_view::sync_scroll_view(
       state,
       config,
@@ -2667,7 +2665,15 @@ fn sync_overlays<O: SyncableOverlay>(
 
   // Destroy overlays for windows that are gone, or for every window once
   // the effect is switched off entirely -- `wanted_ids` is empty in that
-  // case. A window that merely lost focus keeps its (hidden) overlay.
+  // case. A window that merely lost focus keeps its (hidden) overlay, and
+  // so does one whose close a scene plays.
+  let held = O::overlays(state)
+    .keys()
+    .copied()
+    .collect::<Vec<_>>()
+    .into_iter()
+    .filter(|id| state.animation_manager.scenes.holds(id));
+  wanted_ids.extend(held.collect::<Vec<_>>());
   O::overlays(state).retain(|id, _| wanted_ids.contains(id));
 
   // A second, still-open cause of "the window went blank" -- distinct

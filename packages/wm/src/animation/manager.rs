@@ -421,9 +421,9 @@ pub struct AnimationManager {
   /// sent after the fade finishes without borrowing the window container.
   #[cfg(target_os = "windows")]
   pending_close_windows: HashMap<Uuid, isize>,
-  /// Workspace switches playing on scenes over their monitors.
+  /// Scenes playing animations over their monitors.
   #[cfg(target_os = "windows")]
-  pub scenes: super::scene_switch::SceneSwitches,
+  pub scenes: super::scene::Scenes,
 }
 
 impl Drop for AnimationManager {
@@ -490,7 +490,7 @@ impl AnimationManager {
       #[cfg(target_os = "windows")]
       pending_close_windows: HashMap::new(),
       #[cfg(target_os = "windows")]
-      scenes: super::scene_switch::SceneSwitches::default(),
+      scenes: super::scene::Scenes::default(),
     }
   }
 
@@ -1007,10 +1007,10 @@ impl AnimationManager {
     // first error is returned once the frame is done.
     let mut frame_result = Ok(());
 
-    // Workspaces whose slide has played on a scene go, and so do scenes
-    // with nothing left moving.
+    // What has played on scenes goes, and so do scenes with nothing left
+    // moving.
     #[cfg(target_os = "windows")]
-    super::scene_switch::tick(state);
+    super::scene::tick(state);
 
     // Start the clock of every animation created since the last tick (see
     // `WindowAnimationState::start_clock`), one frame period before this

@@ -24,6 +24,23 @@ pub struct SceneSwitchRequest {
   pub axis: WorkspaceSwitchDirection,
 }
 
+/// A window closing on a scene (see `animation::scene`): its copy plays
+/// the close once the WM has let go of it, and the window is then sent
+/// `WM_CLOSE`.
+#[cfg(target_os = "windows")]
+#[derive(Debug, Clone)]
+pub struct SceneCloseRequest {
+  pub window_id: Uuid,
+
+  /// Its handle, which `WM_CLOSE` is sent to.
+  pub handle: isize,
+  pub monitor_id: Uuid,
+
+  /// Its copy as the close starts.
+  pub item: wm_platform::SceneItem,
+  pub params: wm_common::WindowTransitionParams,
+}
+
 #[derive(Debug, Default)]
 #[allow(clippy::struct_excessive_bools)]
 pub struct PendingSync {
@@ -85,6 +102,11 @@ pub struct PendingSync {
   /// switched.
   scene_switch: Option<SceneSwitchRequest>,
 
+  /// Windows closing on scenes, consumed by `platform_sync` to cover
+  /// their monitors while their copies are still on screen.
+  #[cfg(target_os = "windows")]
+  scene_closes: Vec<SceneCloseRequest>,
+
   /// Whether animations should be skipped for this sync cycle.
   ///
   /// Set on display setting changes: animating a relayout caused by a
@@ -109,6 +131,18 @@ impl PendingSync {
       || self.needs_cursor_move
       || self.needs_tab_bar_update
       || self.scene_switch.is_some()
+      || self.has_scene_closes()
+  }
+
+  #[cfg(target_os = "windows")]
+  fn has_scene_closes(&self) -> bool {
+    !self.scene_closes.is_empty()
+  }
+
+  #[cfg(not(target_os = "windows"))]
+  #[allow(clippy::unused_self)]
+  fn has_scene_closes(&self) -> bool {
+    false
   }
 
   pub fn clear(&mut self) -> &mut Self {
@@ -123,6 +157,8 @@ impl PendingSync {
     self.window_state_changes.clear();
     self.wm_fullscreen_toggles.clear();
     self.scene_switch = None;
+    #[cfg(target_os = "windows")]
+    self.scene_closes.clear();
     self.animations_suppressed = false;
     self
   }
@@ -278,6 +314,22 @@ impl PendingSync {
   #[cfg_attr(not(target_os = "windows"), allow(dead_code))]
   pub fn take_scene_switch(&mut self) -> Option<SceneSwitchRequest> {
     self.scene_switch.take()
+  }
+
+  /// Queues a window's close for a scene to play.
+  #[cfg(target_os = "windows")]
+  pub fn queue_scene_close(
+    &mut self,
+    request: SceneCloseRequest,
+  ) -> &mut Self {
+    self.scene_closes.push(request);
+    self
+  }
+
+  /// Consumes and returns the closes queued for scenes.
+  #[cfg(target_os = "windows")]
+  pub fn take_scene_closes(&mut self) -> Vec<SceneCloseRequest> {
+    std::mem::take(&mut self.scene_closes)
   }
 
   /// Suppresses animations for this sync cycle (see

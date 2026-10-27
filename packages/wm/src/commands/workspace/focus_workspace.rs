@@ -1,6 +1,6 @@
 use anyhow::Context;
 use tracing::info;
-use wm_common::{WindowState, WorkspaceSwitchDirection};
+use wm_common::WorkspaceSwitchDirection;
 
 use super::activate_workspace;
 use crate::{
@@ -8,10 +8,9 @@ use crate::{
     container::set_focused_descendant,
     workspace::deactivate_unused_workspace,
   },
-  layout::is_hidden_in_layout,
-  models::{WindowContainer, Workspace, WorkspaceTarget},
+  models::{Workspace, WorkspaceTarget},
   pending_sync::SceneSwitchRequest,
-  traits::{CommonGetters, WindowGetters},
+  traits::CommonGetters,
   user_config::UserConfig,
   wm_state::WmState,
 };
@@ -84,13 +83,6 @@ pub fn focus_workspace(
     {
       // A scene copies both workspaces and plays the switch, which
       // happens at once beneath it.
-      for window in displayed_workspace
-        .descendants()
-        .filter_map(|c| c.as_window_container().ok())
-      {
-        state.animation_manager.remove_animation(&window.id());
-      }
-
       state.pending_sync.request_scene_switch(SceneSwitchRequest {
         outgoing: displayed_workspace.id(),
         incoming: target_workspace.id(),
@@ -157,10 +149,6 @@ fn workspace_switch_axis(
 ///
 /// Minimized windows and windows the layout hides (inactive stack tabs,
 /// columns scrolled off screen) have no visible content to animate.
-pub(crate) fn is_switch_animated(window: &WindowContainer) -> bool {
-  window.state() != WindowState::Minimized && !is_hidden_in_layout(window)
-}
-
 #[cfg(test)]
 mod tests {
   use wm_common::{ParsedConfig, WorkspaceSwitchDirection};
