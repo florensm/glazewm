@@ -127,7 +127,7 @@ struct WorkspaceGroup {
   motion: Option<GroupMotion>,
   is_leaving: bool,
 
-  /// Its windows, whose overlays and tab bars are kept on screen beneath
+  /// Its windows, whose borders and tab bars are kept on screen beneath
   /// the scene while it leaves, since copies of hidden windows are blank.
   held: Vec<Uuid>,
   items: Vec<ItemState>,
@@ -717,7 +717,7 @@ impl Scenes {
       .any(|scene| scene.monitor_id == monitor_id)
   }
 
-  /// Whether a scene still shows copies of `window_id`'s overlays and tab
+  /// Whether a scene still shows copies of `window_id`'s border and tab
   /// bar, which are then left on screen beneath it: one of a workspace
   /// leaving, or one closing.
   pub fn holds(&self, window_id: &Uuid) -> bool {
