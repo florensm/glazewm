@@ -1,4 +1,4 @@
-//! Cloaked windows each showing a monitor's backdrop over all of it, for
+//! Invisible windows each showing a monitor's backdrop over all of it, for
 //! scenes to draw moving windows' backdrops from (see
 //! `BackdropCanvasVisual`).
 
@@ -7,10 +7,10 @@ use std::{cell::RefCell, sync::OnceLock};
 use windows::{
   core::{w, PCWSTR},
   Win32::{
-    Foundation::{BOOL, HWND},
-    Graphics::Dwm::{DwmSetWindowAttribute, DWMWA_CLOAK},
+    Foundation::{COLORREF, HWND},
     UI::WindowsAndMessaging::{
-      CreateWindowExW, DestroyWindow, ShowWindow, SW_SHOWNOACTIVATE,
+      CreateWindowExW, DestroyWindow, SetLayeredWindowAttributes,
+      ShowWindow, LWA_ALPHA, SW_SHOWNOACTIVATE, WS_EX_LAYERED,
       WS_EX_NOACTIVATE, WS_EX_NOREDIRECTIONBITMAP, WS_EX_TOOLWINDOW,
       WS_EX_TRANSPARENT, WS_POPUP,
     },
@@ -100,8 +100,11 @@ impl BackdropCanvas {
   }
 }
 
-/// A click-through window over a monitor, never on screen: cloaked, but
-/// shown, so DWM keeps composing it for thumbnails.
+/// A click-through window over a monitor, never seen: shown, but layered
+/// fully transparent, an opacity its thumbnails leave out.
+///
+/// Not cloaked: DWM draws a cloaked window's composition tree into none
+/// of its thumbnails, which then show nothing (Windows 11 build 26200).
 struct CanvasWindow(HWND);
 
 impl CanvasWindow {
@@ -116,7 +119,8 @@ impl CanvasWindow {
     // SAFETY: The class is registered above.
     let hwnd = unsafe {
       CreateWindowExW(
-        WS_EX_NOACTIVATE
+        WS_EX_LAYERED
+          | WS_EX_NOACTIVATE
           | WS_EX_TOOLWINDOW
           | WS_EX_TRANSPARENT
           | WS_EX_NOREDIRECTIONBITMAP,
@@ -141,15 +145,9 @@ impl CanvasWindow {
     }
     let window = Self(hwnd);
 
-    let cloak = BOOL::from(true);
-    // SAFETY: `cloak` outlives the call, and `hwnd` is this thread's.
+    // SAFETY: `hwnd` is a window of this thread.
     unsafe {
-      DwmSetWindowAttribute(
-        hwnd,
-        DWMWA_CLOAK,
-        std::ptr::from_ref(&cloak).cast(),
-        u32::try_from(std::mem::size_of::<BOOL>()).unwrap_or(4),
-      )?;
+      SetLayeredWindowAttributes(hwnd, COLORREF(0), 0, LWA_ALPHA)?;
       ShowWindow(hwnd, SW_SHOWNOACTIVATE);
     }
 
