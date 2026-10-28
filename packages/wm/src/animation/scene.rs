@@ -636,17 +636,35 @@ impl Scenes {
 
   /// Where `window_id`'s real window goes when the layout puts it at
   /// `rect`: there, at the size kept for it while its copy shrinks.
-  pub fn real_rect(&self, window_id: &Uuid, rect: Rect) -> Rect {
+  ///
+  /// What the kept size adds is moved back within `bounds`, its monitor's,
+  /// so it doesn't reach onto a neighboring monitor no scene covers. Its
+  /// copy is drawn where the layout puts it, wherever the window is.
+  pub fn real_rect(
+    &self,
+    window_id: &Uuid,
+    rect: Rect,
+    bounds: &Rect,
+  ) -> Rect {
     match self.kept.get(window_id) {
       Some(KeptSize {
         size: (width, height),
         released_at: None,
-      }) => Rect::from_xy(
-        rect.x(),
-        rect.y(),
-        rect.width().max(*width),
-        rect.height().max(*height),
-      ),
+      }) => {
+        let size = (rect.width().max(*width), rect.height().max(*height));
+
+        // Back by what reaches past the far edge, at most what was added.
+        let pull_back = |start: i32, length: i32, own: i32, end: i32| {
+          start - (start + length - end).clamp(0, length - own)
+        };
+
+        Rect::from_xy(
+          pull_back(rect.x(), size.0, rect.width(), bounds.right),
+          pull_back(rect.y(), size.1, rect.height(), bounds.bottom),
+          size.0,
+          size.1,
+        )
+      }
       _ => rect,
     }
   }
@@ -2804,19 +2822,41 @@ mod tests {
     let now = Instant::now();
     let id = uuid::Uuid::new_v4();
     let rect = Rect::from_xy(100, 0, 500, 600);
+    let monitor = Rect::from_xy(0, 0, 1920, 1080);
     let mut scenes = Scenes::default();
 
     scenes.keep_size(id, Some((1000, 600)), now);
     assert_eq!(
-      scenes.real_rect(&id, rect.clone()),
+      scenes.real_rect(&id, rect.clone(), &monitor),
       Rect::from_xy(100, 0, 1000, 600)
     );
 
     // Still guarded until it has taken it.
     scenes.keep_size(id, None, now);
-    assert_eq!(scenes.real_rect(&id, rect.clone()), rect);
+    assert_eq!(scenes.real_rect(&id, rect.clone(), &monitor), rect);
     assert!(scenes.keeps_size(&id));
     assert!(scenes.is_active());
+  }
+
+  #[test]
+  fn a_kept_window_stays_off_the_next_monitor() {
+    let now = Instant::now();
+    let id = uuid::Uuid::new_v4();
+    let monitor = Rect::from_xy(0, 0, 1920, 1080);
+    let mut scenes = Scenes::default();
+    scenes.keep_size(id, Some((1000, 800)), now);
+
+    // Pulled back by what would reach past the right and bottom edges.
+    assert_eq!(
+      scenes.real_rect(&id, Rect::from_xy(1400, 600, 500, 400), &monitor),
+      Rect::from_xy(920, 280, 1000, 800)
+    );
+    // Never by more than the kept size adds, e.g. for a column the
+    // layout itself puts past the edge.
+    assert_eq!(
+      scenes.real_rect(&id, Rect::from_xy(2000, 0, 500, 800), &monitor),
+      Rect::from_xy(1500, 0, 1000, 800)
+    );
   }
 
   #[test]
