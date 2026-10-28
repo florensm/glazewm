@@ -1149,9 +1149,10 @@ impl NativeScene {
     self.host.show()?;
     crate::dwm_flush();
 
-    // SAFETY: Plain `DirectComposition` calls on live objects.
+    // SAFETY: Plain `DirectComposition` calls on live objects of this
+    // scene's device.
     unsafe {
-      self.fade.SetOpacity2(1.0)?;
+      Settable::Fixed(1.0).set_opacity(&self.root, &self.fade)?;
       self.device.dcomp.Commit()?;
     }
     crate::dwm_flush();
@@ -1312,10 +1313,8 @@ impl NativeScene {
         |value| group.panel.SetOffsetY2(value),
         |animation| group.panel.SetOffsetY(animation),
       )?;
-      Settable::new(&device, &pose.opacity)?.set(
-        |value| group.effect.SetOpacity2(value),
-        |animation| group.effect.SetOpacity(animation),
-      )?;
+      Settable::new(&device, &pose.opacity)?
+        .set_opacity(&group.panel, &group.effect)?;
       Settable::new(&device, &pose.scale)?.set_scale(&group.scale)?;
 
       for item in &group.items {
@@ -1378,15 +1377,9 @@ impl NativeScene {
         |value| item.visual.SetOffsetY2(value),
         |animation| item.visual.SetOffsetY(animation),
       )?;
-      opacity.set(
-        |value| item.effect.SetOpacity2(value),
-        |animation| item.effect.SetOpacity(animation),
-      )?;
+      opacity.set_opacity(&item.visual, &item.effect)?;
       if let Some(pinned) = &item.pinned {
-        opacity.set(
-          |value| pinned.effect.SetOpacity2(value),
-          |animation| pinned.effect.SetOpacity(animation),
-        )?;
+        opacity.set_opacity(&pinned.visual, &pinned.effect)?;
       }
       Settable::new(&device, &pose.zoom)?.set_scale(&item.own_zoom)?;
 
@@ -1483,12 +1476,7 @@ impl NativeScene {
     let opacity = Settable::new(&self.device, opacity)?;
 
     // SAFETY: Plain `DirectComposition` calls on live objects.
-    unsafe {
-      opacity.set(
-        |value| self.fade.SetOpacity2(value),
-        |animation| self.fade.SetOpacity(animation),
-      )
-    }
+    unsafe { opacity.set_opacity(&self.root, &self.fade) }
   }
 
   /// Puts every change since the last commit on screen together.
@@ -1562,7 +1550,6 @@ impl NativeScene {
     let mut group = unsafe {
       let panel = device.dcomp.CreateVisual()?;
       let effect = device.dcomp.CreateEffectGroup()?;
-      panel.SetEffect(&effect)?;
 
       #[allow(clippy::cast_precision_loss)]
       let (width, height) =
@@ -1677,7 +1664,6 @@ impl NativeScene {
     let (visual, effect) = unsafe {
       let visual = dcomp.CreateVisual()?;
       let effect = dcomp.CreateEffectGroup()?;
-      visual.SetEffect(&effect)?;
       visual.AddVisual(&zoomed_visual, false, None)?;
       zoomed_visual.AddVisual(&own_visual, false, None)?;
       (visual, effect)
@@ -1708,12 +1694,8 @@ impl NativeScene {
 
     if !members.pinned.is_empty() {
       let pinned = zoomed().and_then(|(visual, zoom)| {
-        // SAFETY: Plain `DirectComposition` calls on live objects.
-        let effect = unsafe {
-          let effect = dcomp.CreateEffectGroup()?;
-          visual.SetEffect(&effect)?;
-          effect
-        };
+        // SAFETY: Plain `DirectComposition` call on a live device.
+        let effect = unsafe { dcomp.CreateEffectGroup() }?;
         Ok(Pinned {
           visual,
           effect,
@@ -2106,7 +2088,7 @@ impl NativeScene {
 
   /// The backdrop `params` draw beneath a window at `outer`, of visible
   /// frame `frame`, in its copy's coordinates, with the transform scaling
-  /// its vignette along with `item_frame`.
+  /// its vignette along with `item_frame` if it has one.
   #[allow(clippy::cast_precision_loss)]
   fn backdrop(
     &self,
@@ -2114,7 +2096,8 @@ impl NativeScene {
     outer: &Rect,
     frame: &Rect,
     item_frame: &Rect,
-  ) -> crate::Result<(BackdropCopy, IDCompositionScaleTransform)> {
+  ) -> crate::Result<(BackdropCopy, Option<IDCompositionScaleTransform>)>
+  {
     let canvas = backdrop_canvas::canvas_for(&self.monitor, params)?;
     let (content, thumbnail) =
       self.thumbnail(canvas, u8::MAX, Mapping::Whole(0, 0))?;
@@ -2143,6 +2126,17 @@ impl NativeScene {
         let item_back = dcomp.CreateVisual()?;
         item_back.AddVisual(&blur, false, None)?;
 
+        let visual = dcomp.CreateVisual()?;
+        Settable::Fixed(params.opacity.clamp(0.0, 1.0))
+          .set_opacity(&visual, &dcomp.CreateEffectGroup()?)?;
+        visual.AddVisual(&item_back, false, None)?;
+
+        // At no strength the vignette draws nothing, and is left out.
+        let strength = params.vignette.clamp(0.0, 1.0);
+        if strength <= 0.0 {
+          return Ok((visual, item_back, blur, None));
+        }
+
         let side = VIGNETTE_SIZE as f32;
         let vignette = dcomp.CreateVisual()?;
         vignette.SetContent(&self.device.vignette()?)?;
@@ -2159,9 +2153,8 @@ impl NativeScene {
         })?;
         vignette.SetOffsetX2((frame.left - outer.left) as f32)?;
         vignette.SetOffsetY2((frame.top - outer.top) as f32)?;
-        let strength = dcomp.CreateEffectGroup()?;
-        strength.SetOpacity2(params.vignette.clamp(0.0, 1.0))?;
-        vignette.SetEffect(&strength)?;
+        Settable::Fixed(strength)
+          .set_opacity(&vignette, &dcomp.CreateEffectGroup()?)?;
 
         let vignette_scale = dcomp.CreateScaleTransform()?;
         vignette_scale
@@ -2170,15 +2163,9 @@ impl NativeScene {
         let scaled = dcomp.CreateVisual()?;
         scaled.SetTransform(&vignette_scale)?;
         scaled.AddVisual(&vignette, false, None)?;
-
-        let visual = dcomp.CreateVisual()?;
-        let opacity = dcomp.CreateEffectGroup()?;
-        opacity.SetOpacity2(params.opacity.clamp(0.0, 1.0))?;
-        visual.SetEffect(&opacity)?;
-        visual.AddVisual(&item_back, false, None)?;
         visual.AddVisual(&scaled, false, None)?;
 
-        Ok((visual, item_back, blur, vignette_scale))
+        Ok((visual, item_back, blur, Some(vignette_scale)))
       })()
     };
 
@@ -2215,7 +2202,7 @@ impl NativeScene {
     &self,
     window: &SceneWindow,
     (content, fills): (&IDCompositionVisual, &[IDCompositionVisual2]),
-    backdrop: Option<&(BackdropCopy, IDCompositionScaleTransform)>,
+    backdrop: Option<&(BackdropCopy, Option<IDCompositionScaleTransform>)>,
     outer: &Rect,
     frame: &Rect,
     item_frame: &Rect,
@@ -2267,7 +2254,7 @@ impl NativeScene {
     parent.AddVisual(&visual, false, None)?;
 
     Ok(Shape::Whole {
-      vignette: backdrop.map(|(_, vignette)| vignette.clone()),
+      vignette: backdrop.and_then(|(_, vignette)| vignette.clone()),
       clip,
       right: (frame.right == item_frame.right).then_some(right),
       bottom: (frame.bottom == item_frame.bottom).then_some(bottom),
@@ -2506,6 +2493,41 @@ impl Settable {
       },
     )
   }
+
+  /// Whether, as an opacity, it is opaque for good.
+  fn is_opaque(&self) -> bool {
+    matches!(self, Self::Fixed(value) if *value >= 1.0)
+  }
+
+  /// Sets it as `visual`'s opacity through `effect`, which is attached
+  /// only while it is below 1.
+  ///
+  /// An effect group's opacity composes the visual's subtree into a layer
+  /// and blends that (`DCOMPOSITION_OPACITY_MODE_LAYER`, the default).
+  /// Whether DWM skips the layer at opacity 1 is undocumented, and an
+  /// opaque scene covers the whole monitor, so it goes without.
+  ///
+  /// # Safety
+  ///
+  /// `visual` and `effect` must be live and of the device it was made
+  /// with.
+  unsafe fn set_opacity(
+    &self,
+    visual: &IDCompositionVisual2,
+    effect: &IDCompositionEffectGroup,
+  ) -> crate::Result<()> {
+    if self.is_opaque() {
+      visual.SetEffect(None)?;
+      return Ok(());
+    }
+
+    self.set(
+      |value| effect.SetOpacity2(value),
+      |animation| effect.SetOpacity(animation),
+    )?;
+    visual.SetEffect(effect)?;
+    Ok(())
+  }
 }
 
 /// `motion` as an animation function, sampled by DWM on its own clock.
@@ -2689,9 +2711,16 @@ mod tests {
 
   use super::{
     edge_fills, spans, vignette_alpha, EdgeFill, SceneMotion,
-    SceneSegment, SceneValue, Span,
+    SceneSegment, SceneValue, Settable, Span,
   };
   use crate::Rect;
+
+  #[test]
+  fn only_full_fixed_opacity_goes_without_an_effect() {
+    assert!(Settable::Fixed(1.0).is_opaque());
+    assert!(!Settable::Fixed(0.99).is_opaque());
+    assert!(!Settable::Fixed(0.0).is_opaque());
+  }
 
   #[test]
   fn vignette_is_clear_inside_and_darkest_in_the_corners() {
