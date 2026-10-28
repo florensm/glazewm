@@ -10,9 +10,10 @@
 //!
 //! Copies are grouped, e.g. by workspace, and within a group by item: a
 //! window with its border, backdrop and tab bar, which moves and resizes
-//! on its own. A resizing copy is stretched, as Hyprland stretches a
-//! window's surface, but keeps its corners round, its border's width and
-//! its backdrop in place.
+//! on its own. A resizing copy keeps its content at its window's size,
+//! however large the app draws it, under a frame that moves to the new
+//! size with its corners round, its border's width and its backdrop in
+//! place.
 //!
 //! Copies are thumbnail visuals from `DwmpCreateSharedThumbnailVisual`, a
 //! private `dwmapi.dll` export, so a scene is one visual tree that commits
@@ -112,6 +113,10 @@ const COPIED_OWN_CLASSES: [&str; 3] = [
 /// drawn by DWM, but too faint to see. The copies are then known to have
 /// content before they cover anything.
 const WARM_UP_OPACITY: f32 = 1.0 / 255.0;
+
+/// Pixels in from a growing window's edge that its gap fill is sampled
+/// from, past any line its app draws along the edge itself.
+const EDGE_SAMPLE_INSET: i32 = 4;
 
 /// Undocumented `dwThumbnailFlags` value the published reverse
 /// engineering of `DwmpCreateSharedThumbnailVisual` passes.
@@ -549,6 +554,79 @@ enum Mapping {
   /// All of it stretched over this size, for a window without invisible
   /// resize borders: their pixels would be stretched in too.
   Stretched(i32, i32),
+
+  /// Its pixels at this rect, in its window rect's coordinates, stretched
+  /// over this size.
+  Strip(RECT, (i32, i32)),
+}
+
+/// A strip of a growing window's edge stretched over where its content
+/// doesn't reach yet.
+#[derive(Debug, PartialEq)]
+struct EdgeFill {
+  /// Its pixels, in its window rect's coordinates.
+  source: RECT,
+
+  /// Where it goes and how large, in its copy's coordinates.
+  offset: (i32, i32),
+  size: (i32, i32),
+}
+
+/// The fills for a window drawn at visible frame `drawn` and placed at
+/// `placed`, both from its window rect's corner: its right and bottom
+/// edges, and the corner between, stretched over the part of `placed`
+/// past `drawn`.
+fn edge_fills(drawn: &Rect, placed: &Rect) -> Vec<EdgeFill> {
+  if drawn.width() <= 0 || drawn.height() <= 0 {
+    return Vec::new();
+  }
+
+  let (width, height) =
+    (placed.right - drawn.right, placed.bottom - drawn.bottom);
+  let column = (drawn.right - EDGE_SAMPLE_INSET).max(drawn.left);
+  let row = (drawn.bottom - EDGE_SAMPLE_INSET).max(drawn.top);
+  let mut fills = Vec::new();
+
+  if width > 0 {
+    fills.push(EdgeFill {
+      source: RECT {
+        left: column,
+        top: drawn.top,
+        right: column + 1,
+        bottom: drawn.bottom,
+      },
+      offset: (drawn.right, drawn.top),
+      size: (width, drawn.height()),
+    });
+  }
+
+  if height > 0 {
+    fills.push(EdgeFill {
+      source: RECT {
+        left: drawn.left,
+        top: row,
+        right: drawn.right,
+        bottom: row + 1,
+      },
+      offset: (drawn.left, drawn.bottom),
+      size: (drawn.width(), height),
+    });
+  }
+
+  if width > 0 && height > 0 {
+    fills.push(EdgeFill {
+      source: RECT {
+        left: column,
+        top: row,
+        right: column + 1,
+        bottom: row + 1,
+      },
+      offset: (drawn.right, drawn.bottom),
+      size: (width, height),
+    });
+  }
+
+  fills
 }
 
 /// How a copy follows its item's frame as that resizes.
@@ -1748,6 +1826,7 @@ impl NativeScene {
       })
       .unwrap_or(u8::MAX);
 
+    let is_item = item_frame.is_some();
     let item_frame = item_frame.unwrap_or(&frame);
 
     if let SceneFit::Frame {
@@ -1773,6 +1852,19 @@ impl NativeScene {
       alpha,
       Mapping::Whole(outer.width(), outer.height()),
     )?;
+    let mut thumbnails = vec![thumbnail];
+
+    // Where a growing window's app hasn't drawn its new size yet.
+    let fills = if is_item {
+      self.edge_fill_visuals(
+        window.hwnd,
+        alpha,
+        (&outer, &frame),
+        &mut thumbnails,
+      )
+    } else {
+      Vec::new()
+    };
 
     // Without its backdrop, the copy is still worth showing.
     let backdrop = window.backdrop.and_then(|backdrop| {
@@ -1788,7 +1880,7 @@ impl NativeScene {
     let placed = unsafe {
       self.place(
         window,
-        &content,
+        (&content, &fills),
         backdrop.as_ref(),
         &outer,
         &frame,
@@ -1800,7 +1892,7 @@ impl NativeScene {
     match placed {
       Ok(shape) => {
         let copy = WindowCopy {
-          thumbnails: vec![thumbnail],
+          thumbnails,
           backdrop: backdrop.map(|(backdrop, _)| backdrop),
           shape,
         };
@@ -1809,8 +1901,10 @@ impl NativeScene {
         Ok(Some((copy, covers_monitor)))
       }
       Err(err) => {
-        // SAFETY: Registered above and not handed out.
-        let _ = unsafe { DwmUnregisterThumbnail(thumbnail) };
+        for thumbnail in thumbnails {
+          // SAFETY: Registered above and not handed out.
+          let _ = unsafe { DwmUnregisterThumbnail(thumbnail) };
+        }
         if let Some((backdrop, _)) = &backdrop {
           backdrop.unregister();
         }
@@ -1902,7 +1996,85 @@ impl NativeScene {
           &properties(DWM_TNP_RECTSOURCE, own, own),
         )
       }
+      Mapping::Strip(strip, (width, height)) => self.create_thumbnail(
+        source,
+        &properties(
+          DWM_TNP_RECTSOURCE,
+          strip,
+          RECT {
+            left: 0,
+            top: 0,
+            right: width,
+            bottom: height,
+          },
+        ),
+      ),
     }
+  }
+
+  /// Visuals stretching `hwnd`'s edges, at `alpha`, over the part of its
+  /// visible `frame` past where its content reaches now, for it placed at
+  /// window rect `outer`. Their thumbnails are added to `thumbnails`.
+  #[allow(clippy::cast_precision_loss)]
+  fn edge_fill_visuals(
+    &self,
+    hwnd: HWND,
+    alpha: u8,
+    (outer, frame): (&Rect, &Rect),
+    thumbnails: &mut Vec<isize>,
+  ) -> Vec<IDCompositionVisual2> {
+    let Some((now_outer, now_frame)) = placement_of(hwnd) else {
+      return Vec::new();
+    };
+    let from_corner = |frame: &Rect, outer: &Rect| {
+      Rect::from_ltrb(
+        frame.left - outer.left,
+        frame.top - outer.top,
+        frame.right - outer.left,
+        frame.bottom - outer.top,
+      )
+    };
+
+    let fills = edge_fills(
+      &from_corner(&now_frame, &now_outer),
+      &from_corner(frame, outer),
+    );
+
+    fills
+      .into_iter()
+      .filter_map(|fill| {
+        let (content, thumbnail) = self
+          .thumbnail(hwnd, alpha, Mapping::Strip(fill.source, fill.size))
+          .inspect_err(|err| {
+            tracing::debug!("Scene left out a gap fill: {err}");
+          })
+          .ok()?;
+
+        // SAFETY: Plain `DirectComposition` calls on live objects.
+        let placed = unsafe {
+          (|| -> windows::core::Result<_> {
+            let visual = self.device.dcomp.CreateVisual()?;
+            visual.SetOffsetX2(fill.offset.0 as f32)?;
+            visual.SetOffsetY2(fill.offset.1 as f32)?;
+            visual.AddVisual(&content, false, None)?;
+            Ok(visual)
+          })()
+        };
+
+        match placed {
+          Ok(visual) => {
+            thumbnails.push(thumbnail);
+            Some(visual)
+          }
+          Err(err) => {
+            // SAFETY: Registered above and not handed out.
+            let _ = unsafe { DwmUnregisterThumbnail(thumbnail) };
+            tracing::debug!("Scene left out a gap fill: {err}");
+            None
+          }
+        }
+      })
+      .collect()
   }
 
   /// A thumbnail of `source` as `properties` say, with its handle.
@@ -2031,9 +2203,9 @@ impl NativeScene {
   }
 
   /// Builds the visuals placing `content`, a thumbnail of `window`, over
-  /// the monitor, on top of its `backdrop`, cut to its visible `frame`,
-  /// and adds them above `parent`'s other children. Returns how it follows
-  /// `item_frame` as that resizes.
+  /// the monitor, on top of its gap `fills` and its `backdrop`, cut to its
+  /// visible `frame`, and adds them above `parent`'s other children.
+  /// Returns how it follows `item_frame` as that resizes.
   ///
   /// # Safety
   ///
@@ -2042,7 +2214,7 @@ impl NativeScene {
   unsafe fn place(
     &self,
     window: &SceneWindow,
-    content: &IDCompositionVisual,
+    (content, fills): (&IDCompositionVisual, &[IDCompositionVisual2]),
     backdrop: Option<&(BackdropCopy, IDCompositionScaleTransform)>,
     outer: &Rect,
     frame: &Rect,
@@ -2058,44 +2230,39 @@ impl NativeScene {
     visual.SetOffsetY2((outer.top - self.monitor.top) as f32)?;
 
     // Cut to what DWM draws of the window, rounded as it is.
+    let clip = dcomp.CreateRectangleClip()?;
     let right = (frame.right - outer.left) as f32;
     let bottom = (frame.bottom - outer.top) as f32;
-    let frame_clip = || -> windows::core::Result<_> {
-      let clip = dcomp.CreateRectangleClip()?;
-      clip.SetLeft2((frame.left - outer.left) as f32)?;
-      clip.SetTop2((frame.top - outer.top) as f32)?;
-      clip.SetRight2(right)?;
-      clip.SetBottom2(bottom)?;
+    clip.SetLeft2((frame.left - outer.left) as f32)?;
+    clip.SetTop2((frame.top - outer.top) as f32)?;
+    clip.SetRight2(right)?;
+    clip.SetBottom2(bottom)?;
 
-      let radius = window.corner_radius;
-      if radius > 0.0 {
-        clip.SetTopLeftRadiusX2(radius)?;
-        clip.SetTopLeftRadiusY2(radius)?;
-        clip.SetTopRightRadiusX2(radius)?;
-        clip.SetTopRightRadiusY2(radius)?;
-        clip.SetBottomLeftRadiusX2(radius)?;
-        clip.SetBottomLeftRadiusY2(radius)?;
-        clip.SetBottomRightRadiusX2(radius)?;
-        clip.SetBottomRightRadiusY2(radius)?;
-      }
-      Ok(clip)
-    };
+    let radius = window.corner_radius;
+    if radius > 0.0 {
+      clip.SetTopLeftRadiusX2(radius)?;
+      clip.SetTopLeftRadiusY2(radius)?;
+      clip.SetTopRightRadiusX2(radius)?;
+      clip.SetTopRightRadiusY2(radius)?;
+      clip.SetBottomLeftRadiusX2(radius)?;
+      clip.SetBottomLeftRadiusY2(radius)?;
+      clip.SetBottomRightRadiusX2(radius)?;
+      clip.SetBottomRightRadiusY2(radius)?;
+    }
 
-    // The content keeps its size, cut where it rests too: a window drawn
-    // smaller as it shrinks shows its invisible resize borders past that,
-    // which thumbnails draw. The clip following the frame holds it, over
-    // a backdrop that stays put and shows where the content doesn't reach.
-    let content_clipped = dcomp.CreateVisual()?;
-    content_clipped.SetClip(&frame_clip()?)?;
-    content_clipped.AddVisual(content, false, None)?;
-
-    let clip = frame_clip()?;
+    // The content keeps its size under a clip that follows the frame with
+    // its corners round, over a backdrop that stays put, and over its
+    // edges stretched where its app hasn't drawn it at its new size
+    // yet.
     let clipped = dcomp.CreateVisual()?;
     clipped.SetClip(&clip)?;
     if let Some((backdrop, _)) = backdrop {
       clipped.AddVisual(&backdrop.visual, false, None)?;
     }
-    clipped.AddVisual(&content_clipped, false, None)?;
+    for fill in fills {
+      clipped.AddVisual(fill, false, None)?;
+    }
+    clipped.AddVisual(content, false, None)?;
     visual.AddVisual(&clipped, false, None)?;
     parent.AddVisual(&visual, false, None)?;
 
@@ -2518,9 +2685,13 @@ fn class_name(hwnd: HWND) -> String {
 mod tests {
   use std::time::{Duration, Instant};
 
+  use windows::Win32::Foundation::RECT;
+
   use super::{
-    spans, vignette_alpha, SceneMotion, SceneSegment, SceneValue, Span,
+    edge_fills, spans, vignette_alpha, EdgeFill, SceneMotion,
+    SceneSegment, SceneValue, Span,
   };
+  use crate::Rect;
 
   #[test]
   fn vignette_is_clear_inside_and_darkest_in_the_corners() {
@@ -2569,6 +2740,39 @@ mod tests {
       SceneValue::Fixed(value) => *value,
       SceneValue::Moving(_) => f32::NAN,
     }
+  }
+
+  #[test]
+  fn a_growing_window_fills_in_with_its_own_edges() {
+    let drawn = Rect::from_ltrb(7, 0, 507, 300);
+
+    assert_eq!(
+      edge_fills(&drawn, &Rect::from_ltrb(7, 0, 807, 300)),
+      [EdgeFill {
+        source: RECT {
+          left: 503,
+          top: 0,
+          right: 504,
+          bottom: 300,
+        },
+        offset: (507, 0),
+        size: (300, 300),
+      }]
+    );
+
+    // Grown both ways, the corner between fills in too.
+    let fills = edge_fills(&drawn, &Rect::from_ltrb(7, 0, 607, 400));
+    assert_eq!(fills.len(), 3);
+    assert_eq!(fills[1].offset, (7, 300));
+    assert_eq!(fills[1].size, (500, 100));
+    assert_eq!(fills[2].offset, (507, 300));
+    assert_eq!(fills[2].size, (100, 100));
+
+    // One drawn at its size, or past it, needs none.
+    assert!(edge_fills(&drawn, &drawn).is_empty());
+    assert!(
+      edge_fills(&drawn, &Rect::from_ltrb(7, 0, 300, 200)).is_empty()
+    );
   }
 
   #[test]

@@ -4,6 +4,7 @@
 mod dispatcher;
 mod display;
 mod display_listener;
+mod dwm_flush;
 mod error;
 mod event_loop;
 mod external_color_source;
@@ -27,6 +28,7 @@ pub mod test_utils;
 pub use dispatcher::*;
 pub use display::*;
 pub use display_listener::*;
+pub use dwm_flush::dwm_flush;
 pub use error::*;
 pub use event_loop::*;
 pub use external_color_source::*;
@@ -173,22 +175,6 @@ pub fn process_sent_messages() {
         PM_NOREMOVE | PM_QS_SENDMESSAGE,
       )
     };
-  }
-}
-
-/// Waits for the next DWM composition frame to complete.
-///
-/// Used to pace animation ticks to the compositor's frames without
-/// timer-resolution jitter.
-/// On non-Windows platforms this is a no-op.
-pub fn dwm_flush() {
-  let _scope = perf::scope(perf::Stage::DwmFlush);
-
-  #[cfg(target_os = "windows")]
-  unsafe {
-    // SAFETY: No preconditions; `DwmFlush` is safe to call from any thread
-    // and blocks until the next DWM composition frame is ready.
-    let _ = windows::Win32::Graphics::Dwm::DwmFlush();
   }
 }
 

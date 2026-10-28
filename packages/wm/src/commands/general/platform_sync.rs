@@ -517,11 +517,16 @@ fn redraw_containers(
       .apply_delta(&window.total_border_delta()?, None);
 
     // Where the real window goes, which differs for a column a peek
-    // shows.
+    // shows, and for a window kept at its size while its copy shrinks.
     let real_rect = crate::layout::scrolling::real_window_rect(
       &window.as_container(),
       &target_rect,
     );
+    #[cfg(target_os = "windows")]
+    let real_rect = state
+      .animation_manager
+      .scenes
+      .real_rect(&window.id(), real_rect);
 
     let is_visible = matches!(
       window.display_state(),

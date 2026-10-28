@@ -72,10 +72,29 @@ const LANDED_SLACK_PX: i32 = 2;
 /// app to paint a first frame.
 const OPEN_PAINT_GRACE: Duration = Duration::from_millis(30);
 
+/// Longest a window let go of the size it was kept at stays guarded while
+/// it takes its own, e.g. one whose app refuses it.
+const RELEASE_TIMEOUT: Duration = Duration::from_secs(1);
+
 /// The scenes covering monitors, one per monitor.
 #[derive(Default)]
 pub struct Scenes {
   scenes: Vec<MonitorScene>,
+
+  /// Sizes windows keep beneath the scenes while their copies shrink, so
+  /// their content fills the frames closing in on them, and windows let
+  /// go of one that haven't taken their own yet.
+  kept: HashMap<Uuid, KeptSize>,
+}
+
+/// The size a window keeps beneath the scenes while its copy shrinks.
+struct KeptSize {
+  /// Its window rect's size, kept along the axes it shrinks on.
+  size: (i32, i32),
+
+  /// When it was let go to take its own size, which it may not have
+  /// reached yet.
+  released_at: Option<Instant>,
 }
 
 struct MonitorScene {
@@ -604,7 +623,58 @@ impl MonitorScene {
 
 impl Scenes {
   pub fn is_active(&self) -> bool {
-    !self.scenes.is_empty()
+    !self.scenes.is_empty() || !self.kept.is_empty()
+  }
+
+  /// Whether `window_id` is held at a size kept for its copy, or still
+  /// taking its own after one: its move and resize events then say nothing
+  /// of what its app did, e.g. it covering the monitor while kept at the
+  /// size it shrinks from.
+  pub fn keeps_size(&self, window_id: &Uuid) -> bool {
+    self.kept.contains_key(window_id)
+  }
+
+  /// Where `window_id`'s real window goes when the layout puts it at
+  /// `rect`: there, at the size kept for it while its copy shrinks.
+  pub fn real_rect(&self, window_id: &Uuid, rect: Rect) -> Rect {
+    match self.kept.get(window_id) {
+      Some(KeptSize {
+        size: (width, height),
+        released_at: None,
+      }) => Rect::from_xy(
+        rect.x(),
+        rect.y(),
+        rect.width().max(*width),
+        rect.height().max(*height),
+      ),
+      _ => rect,
+    }
+  }
+
+  /// Holds `window_id` at `size` beneath the scenes, or without one, lets
+  /// go of any size it was held at.
+  fn keep_size(
+    &mut self,
+    window_id: Uuid,
+    size: Option<(i32, i32)>,
+    now: Instant,
+  ) {
+    match size {
+      Some(size) => {
+        self.kept.insert(
+          window_id,
+          KeptSize {
+            size,
+            released_at: None,
+          },
+        );
+      }
+      None => {
+        if let Some(kept) = self.kept.get_mut(&window_id) {
+          kept.released_at.get_or_insert(now);
+        }
+      }
+    }
   }
 
   /// Whether a scene covers the monitor `monitor_id`.
@@ -954,9 +1024,40 @@ pub fn cover(
   });
   plan.monitors = covered;
 
+  // A window shrinking keeps its size beneath the scene until its copy has
+  // closed in on its new one, so its content fills the frame throughout.
+  for id in plan.motions.keys() {
+    let Some(window) = state
+      .container_by_id(*id)
+      .and_then(|container| container.as_window_container().ok())
+    else {
+      continue;
+    };
+
+    let size = layout_rect(&window)
+      .zip(window.native().frame_with_shadows().ok())
+      .and_then(|(target, current)| kept_size(&current, &target));
+    state.animation_manager.scenes.keep_size(*id, size, now);
+  }
+
   if plan.switch.is_some() || !plan.monitors.is_empty() {
     state.pending_sync.suppress_animations();
   }
+}
+
+/// The size a window at `current` keeps while its copy shrinks to
+/// `target`: the larger of the two along each axis, if it shrinks along
+/// either.
+fn kept_size(current: &Rect, target: &Rect) -> Option<(i32, i32)> {
+  let shrinks =
+    target.width() < current.width() || target.height() < current.height();
+
+  shrinks.then(|| {
+    (
+      current.width().max(target.width()),
+      current.height().max(target.height()),
+    )
+  })
 }
 
 /// Whether `monitor_id` shows a fullscreen window the WM isn't putting
@@ -1825,6 +1926,8 @@ pub fn tick(state: &mut WmState) {
     );
   }
 
+  release_kept_sizes(state, now);
+
   for (window_id, handle) in closed {
     close_now(state, window_id, handle);
   }
@@ -1840,6 +1943,12 @@ pub fn drop_all(state: &mut WmState) {
   let scenes = std::mem::take(&mut state.animation_manager.scenes.scenes);
   let closed = scenes.iter().flat_map(closings).collect::<Vec<_>>();
   drop(scenes);
+
+  // Their windows are redrawn at their own sizes along with everything.
+  let now = Instant::now();
+  for kept in state.animation_manager.scenes.kept.values_mut() {
+    kept.released_at.get_or_insert(now);
+  }
 
   for (window_id, handle) in closed {
     close_now(state, window_id, handle);
@@ -1874,6 +1983,80 @@ fn close_now(state: &mut WmState, window_id: Uuid, handle: isize) {
   }
 }
 
+/// Lets each window held at a kept size take its own once its copy rests,
+/// and stops guarding it once it has, or a while after.
+fn release_kept_sizes(state: &mut WmState, now: Instant) {
+  let scenes = &state.animation_manager.scenes;
+  let mut releasing = Vec::new();
+  let mut done = Vec::new();
+
+  for (id, kept) in &scenes.kept {
+    match kept.released_at {
+      None
+        if !scenes.item(*id).is_some_and(|item| item.is_moving(now)) =>
+      {
+        releasing.push(*id);
+      }
+      Some(at)
+        if now.saturating_duration_since(at) >= RELEASE_TIMEOUT
+          || has_landed(state, *id) =>
+      {
+        done.push(*id);
+      }
+      _ => {}
+    }
+  }
+
+  for id in done {
+    state.animation_manager.scenes.kept.remove(&id);
+  }
+
+  for id in releasing {
+    let window = state
+      .container_by_id(id)
+      .and_then(|container| container.as_window_container().ok());
+
+    match window {
+      // A drag takes it over at whatever size it has.
+      Some(window) if window.active_drag().is_none() => {
+        state.animation_manager.scenes.keep_size(id, None, now);
+        state.pending_sync.queue_container_to_redraw(window);
+      }
+      _ => {
+        state.animation_manager.scenes.kept.remove(&id);
+      }
+    }
+  }
+}
+
+/// Whether `window_id`'s window is where the layout puts it, or gone.
+fn has_landed(state: &WmState, window_id: Uuid) -> bool {
+  let Some(window) = state
+    .container_by_id(window_id)
+    .and_then(|container| container.as_window_container().ok())
+  else {
+    return true;
+  };
+
+  let frame = window.native().frame();
+  match (layout_frame(&window), frame) {
+    (Some(target), Ok(frame)) => is_near(&frame, &target),
+    _ => true,
+  }
+}
+
+/// Whether `a` and `b` are the same frame, but for rounding.
+fn is_near(a: &Rect, b: &Rect) -> bool {
+  [
+    a.left - b.left,
+    a.top - b.top,
+    a.right - b.right,
+    a.bottom - b.bottom,
+  ]
+  .iter()
+  .all(|edge| edge.abs() <= LANDED_SLACK_PX)
+}
+
 /// The windows of the scenes' items that were moved beneath them and
 /// aren't where the layout puts them yet.
 fn landing_windows(state: &WmState) -> HashSet<Uuid> {
@@ -1896,15 +2079,7 @@ fn landing_windows(state: &WmState) -> HashSet<Uuid> {
       }
 
       let frame = window.native().frame().ok()?;
-      let is_off = [
-        frame.left - item.rest.left,
-        frame.top - item.rest.top,
-        frame.right - item.rest.right,
-        frame.bottom - item.rest.bottom,
-      ]
-      .iter()
-      .any(|edge| edge.abs() > LANDED_SLACK_PX);
-      is_off.then_some(id)
+      (!is_near(&frame, &item.rest)).then_some(id)
     })
     .collect()
 }
@@ -2436,8 +2611,9 @@ mod tests {
   use wm_platform::{Rect, SceneItem, SceneValue};
 
   use super::{
-    away, away_from, entry_motion, Drawn, GroupMotion, ItemMotion,
-    ItemState, PlannedMotion, Pose, MIN_SCALE, OPEN_PAINT_GRACE,
+    away, away_from, entry_motion, kept_size, Drawn, GroupMotion,
+    ItemMotion, ItemState, PlannedMotion, Pose, Scenes, MIN_SCALE,
+    OPEN_PAINT_GRACE,
   };
   use crate::pending_sync::SceneSwitchRequest;
 
@@ -2601,6 +2777,46 @@ mod tests {
     assert_eq!(item.drawn_at(now).frame, to);
     assert!(!item.is_moving(now));
     assert!(item.is_landing);
+  }
+
+  #[test]
+  fn a_shrinking_window_keeps_its_size_along_the_axes_it_shrinks_on() {
+    let current = Rect::from_xy(0, 0, 1000, 600);
+
+    assert_eq!(
+      kept_size(&current, &Rect::from_xy(0, 0, 500, 600)),
+      Some((1000, 600))
+    );
+    // Taller at once, still as wide until its copy has closed in.
+    assert_eq!(
+      kept_size(&current, &Rect::from_xy(200, 0, 500, 800)),
+      Some((1000, 800))
+    );
+    assert_eq!(kept_size(&current, &Rect::from_xy(0, 0, 1200, 600)), None);
+    assert_eq!(
+      kept_size(&current, &Rect::from_xy(50, 50, 1000, 600)),
+      None
+    );
+  }
+
+  #[test]
+  fn a_kept_window_takes_its_own_size_once_let_go() {
+    let now = Instant::now();
+    let id = uuid::Uuid::new_v4();
+    let rect = Rect::from_xy(100, 0, 500, 600);
+    let mut scenes = Scenes::default();
+
+    scenes.keep_size(id, Some((1000, 600)), now);
+    assert_eq!(
+      scenes.real_rect(&id, rect.clone()),
+      Rect::from_xy(100, 0, 1000, 600)
+    );
+
+    // Still guarded until it has taken it.
+    scenes.keep_size(id, None, now);
+    assert_eq!(scenes.real_rect(&id, rect.clone()), rect);
+    assert!(scenes.keeps_size(&id));
+    assert!(scenes.is_active());
   }
 
   #[test]

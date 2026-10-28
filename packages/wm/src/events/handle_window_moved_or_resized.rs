@@ -225,6 +225,14 @@ pub fn handle_window_moved_or_resized(
       return Ok(());
     }
 
+    // Kept at a size of a scene's, or still taking its own after one, the
+    // window says nothing of what its app did: kept at the size it shrinks
+    // from, it can cover the monitor as if fullscreen.
+    #[cfg(target_os = "windows")]
+    if state.animation_manager.scenes.keeps_size(&window.id()) {
+      return Ok(());
+    }
+
     let nearest_monitor = state
       .nearest_monitor(&window.native())
       .context("No nearest monitor.")?;

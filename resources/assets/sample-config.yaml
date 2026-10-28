@@ -18,8 +18,10 @@ animations:
     duration_ms: 220
     easing: "spring(1.0, 800, 0.0001)"
 
-  # Windows changing size, their content stretched along. Same keys as
-  # `window_move`.
+  # Windows changing size: the frame moves while the content keeps its
+  # size. A shrinking window keeps its old size until its frame has closed
+  # in, and a growing one fills in with its edges until its app catches up.
+  # Same keys as `window_move`.
   window_resize:
     enabled: true
     duration_ms: 150
