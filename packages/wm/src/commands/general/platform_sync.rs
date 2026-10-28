@@ -1394,6 +1394,10 @@ pub(crate) trait SyncableOverlay: Overlay {
   /// Profiler stage this overlay kind's [`sync_overlays`] pass reports as.
   const PERF_STAGE: Stage;
 
+  /// Whether scenes draw this overlay kind from thumbnails of the overlays
+  /// themselves, which then have to stay on screen beneath them.
+  const IS_COPIED_BY_SCENES: bool;
+
   /// Borrows this overlay kind's tracked-overlay map out of `state`.
   fn overlays(
     state: &mut WmState,
@@ -1428,6 +1432,8 @@ pub(crate) trait SyncableOverlay: Overlay {
 impl SyncableOverlay for NativeBackdropOverlay {
   const LABEL: &'static str = "Backdrop";
   const PERF_STAGE: Stage = Stage::BackdropSync;
+  /// Scenes draw backdrops from the monitor's backdrop canvas.
+  const IS_COPIED_BY_SCENES: bool = false;
 
   fn overlays(
     state: &mut WmState,
@@ -1447,6 +1453,7 @@ impl SyncableOverlay for NativeBackdropOverlay {
 impl SyncableOverlay for NativeBorderOverlay {
   const LABEL: &'static str = "Border";
   const PERF_STAGE: Stage = Stage::BorderSync;
+  const IS_COPIED_BY_SCENES: bool = true;
 
   fn overlays(
     state: &mut WmState,
@@ -1507,10 +1514,11 @@ fn overlay_frame(
 /// unrelated to whatever triggered this sync (e.g. other
 /// monitors/workspaces during a workspace-switch animation elsewhere).
 ///
-/// Windows a scene still shows copies of keep their overlays shown
-/// beneath it, untouched, since the outgoing workspace's
+/// Windows a scene still shows copies of keep the overlays it copies
+/// shown beneath it, untouched, since the outgoing workspace's
 /// `!is_displayed()` flips true the instant the switch command runs; so
-/// do windows whose close a scene plays.
+/// do windows whose close a scene plays. Overlays it doesn't copy are
+/// synced as usual, hidden beneath it rather than composited for nothing.
 ///
 /// Hides the overlays of windows on inactive workspaces; the entry stays
 /// alive so it can be re-shown immediately when the workspace returns.
@@ -1587,7 +1595,8 @@ fn sync_overlays<O: SyncableOverlay>(
 
     // A scene still showing a copy of one leaves it on screen beneath it,
     // and the scroll view keeps a peek's on the peek.
-    if state.animation_manager.scenes.holds(&window.id())
+    if (O::IS_COPIED_BY_SCENES
+      && state.animation_manager.scenes.holds(&window.id()))
       || state
         .animation_manager
         .scroll_view
@@ -1710,13 +1719,15 @@ fn sync_overlays<O: SyncableOverlay>(
   // Destroy overlays for windows that are gone, or for every window once
   // the effect is switched off entirely -- `wanted_ids` is empty in that
   // case. A window that merely lost focus keeps its (hidden) overlay, and
-  // so does one whose close a scene plays.
+  // so does one whose close a scene plays, if the scene copies it.
   let held = O::overlays(state)
     .keys()
     .copied()
     .collect::<Vec<_>>()
     .into_iter()
-    .filter(|id| state.animation_manager.scenes.holds(id));
+    .filter(|id| {
+      O::IS_COPIED_BY_SCENES && state.animation_manager.scenes.holds(id)
+    });
   wanted_ids.extend(held.collect::<Vec<_>>());
   O::overlays(state).retain(|id, _| wanted_ids.contains(id));
 
