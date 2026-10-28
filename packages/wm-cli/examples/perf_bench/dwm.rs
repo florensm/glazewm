@@ -88,10 +88,17 @@ pub struct DwmFrame {
 
 /// DWM timing over one burst.
 pub struct BurstStats {
+  /// Frames DWM displayed during the animation run.
+  pub frames: usize,
   /// Vblanks in the active span that showed no new frame.
   pub missed_vblanks: f64,
+  /// Displayed frames whose interval exceeded 20 ms, i.e. a visible
+  /// hitch.
+  pub late_frames: usize,
   pub interval_p90_ms: f64,
+  pub gpu_busy_p50_ms: f64,
   pub gpu_busy_p90_ms: f64,
+  pub gpu_busy_max_ms: f64,
 }
 
 /// A live `PresentMon` frame query on `dwm.exe`; frames accumulate as they
@@ -301,14 +308,17 @@ impl DwmCapture {
     }
   }
 
-  /// DWM timing for presents started in `[from_qpc, to_qpc)`, given the
-  /// display's refresh period. `None` if DWM displayed nothing.
-  pub fn burst_stats(
+  /// The longest run of frames DWM displayed back-to-back (no idle gap) in
+  /// `[from_qpc, to_qpc)`, on the monitor's main swap chain, sorted by
+  /// time.
+  ///
+  /// This is the switch animation; the span also holds stray idle-desktop
+  /// presents, split off by the gap. `None` if DWM displayed nothing.
+  fn animation_run(
     &self,
     from_qpc: u64,
     to_qpc: u64,
-    period_ms: f64,
-  ) -> Option<BurstStats> {
+  ) -> Option<Vec<&DwmFrame>> {
     let mut frames: Vec<&DwmFrame> = self
       .frames
       .iter()
@@ -323,11 +333,21 @@ impl DwmCapture {
     });
     frames.sort_by_key(|frame| frame.qpc);
 
-    // The animation is the longest run of frames displayed without an idle
-    // gap; the span also holds stray idle-desktop presents.
-    let animation = frames
+    frames
       .split(|frame| frame.display_interval_ms > IDLE_GAP_MS)
-      .max_by_key(|run| run.len())?;
+      .max_by_key(|run| run.len())
+      .map(<[_]>::to_vec)
+  }
+
+  /// DWM timing for presents started in `[from_qpc, to_qpc)`, given the
+  /// display's refresh period. `None` if DWM displayed nothing.
+  pub fn burst_stats(
+    &self,
+    from_qpc: u64,
+    to_qpc: u64,
+    period_ms: f64,
+  ) -> Option<BurstStats> {
+    let animation = self.animation_run(from_qpc, to_qpc)?;
 
     // A run's first frame follows an idle gap, so its interval is excluded
     // by the split itself.
@@ -340,15 +360,47 @@ impl DwmCapture {
       .iter()
       .map(|interval| ((interval / period_ms).round() - 1.0).max(0.0))
       .sum();
+    let late_frames = intervals
+      .iter()
+      .filter(|interval| **interval > 20.0)
+      .count();
+
+    let busy: Vec<f64> =
+      animation.iter().map(|frame| frame.gpu_busy_ms).collect();
 
     Some(BurstStats {
+      frames: animation.len(),
       missed_vblanks,
+      late_frames,
       interval_p90_ms: percentile(intervals, 0.9),
-      gpu_busy_p90_ms: percentile(
-        animation.iter().map(|frame| frame.gpu_busy_ms).collect(),
-        0.9,
-      ),
+      gpu_busy_max_ms: busy.iter().copied().fold(0.0_f64, f64::max),
+      gpu_busy_p50_ms: percentile(busy.clone(), 0.5),
+      gpu_busy_p90_ms: percentile(busy, 0.9),
     })
+  }
+
+  /// Per-frame `(offset_ms, gpu_busy_ms)` through the switch animation in
+  /// `[from_qpc, to_qpc)`. Offset is measured from the first displayed
+  /// frame by cumulative display interval, so a caller can see whether
+  /// the heavy frames are at the start (build/warm-up), the middle
+  /// (motion) or the end (lift). Empty if DWM displayed nothing.
+  pub fn burst_profile(
+    &self,
+    from_qpc: u64,
+    to_qpc: u64,
+  ) -> Vec<(f64, f64)> {
+    let Some(animation) = self.animation_run(from_qpc, to_qpc) else {
+      return Vec::new();
+    };
+    let mut offset_ms = 0.0;
+    let mut out = Vec::with_capacity(animation.len());
+    for (index, frame) in animation.iter().enumerate() {
+      if index > 0 {
+        offset_ms += frame.display_interval_ms;
+      }
+      out.push((offset_ms, frame.gpu_busy_ms));
+    }
+    out
   }
 }
 
