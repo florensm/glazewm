@@ -61,6 +61,14 @@ const SCENARIOS: &[(&str, &str, &str)] = &[
 /// which changes nothing on screen.
 const WORKSPACE_SCENARIO: &str = "relayout";
 
+/// The scenario that alternates focus between two workspaces, to profile
+/// `workspace_switch` animations.
+///
+/// Its two workspaces come from `--between` (default `1,2`). Its commands
+/// are workspace-global, so unlike every other scenario it needs no
+/// `--target` window and sends its commands without a subject.
+const SWITCH_SCENARIO: &str = "switch";
+
 /// Report metrics summarised as medians, keyed by `section:stage:column`.
 const METRICS: &[(&str, &str)] = &[
   ("frames", "frames"),
@@ -90,8 +98,13 @@ struct Args {
   bursts: usize,
   settle: Duration,
   label: String,
+  /// The two workspaces [`SWITCH_SCENARIO`] alternates between.
+  between: [String; 2],
   /// Whether to capture DWM-side frame timing.
   dwm: bool,
+  /// Whether to also dump each burst's per-frame DWM timing (needs
+  /// `dwm`).
+  frames: bool,
 }
 
 /// Per-burst DWM summaries, as `(label, values)` for the summary table.
@@ -100,28 +113,51 @@ type DwmColumns = Vec<(&'static str, Vec<f64>)>;
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
   let args = parse_args()?;
-  let (_, forward, back) = SCENARIOS
-    .iter()
-    .find(|(name, ..)| *name == args.scenario)
-    .with_context(|| {
-      format!(
-        "Unknown scenario '{}'. Options: {}.",
-        args.scenario,
-        SCENARIOS
-          .iter()
-          .map(|(name, ..)| *name)
-          .collect::<Vec<_>>()
-          .join(", ")
-      )
-    })?;
+  let is_switch = args.scenario == SWITCH_SCENARIO;
+
+  // The switch scenario is built from its two workspaces rather than
+  // looked up, and plays `back` then `forward` so it ends on the
+  // workspace it started from. Other scenarios ship their own reversible
+  // step pair.
+  let (forward, back) = if is_switch {
+    let [from, to] = &args.between;
+    (
+      format!("focus --workspace {to}"),
+      format!("focus --workspace {from}"),
+    )
+  } else {
+    let (_, forward, back) = SCENARIOS
+      .iter()
+      .find(|(name, ..)| *name == args.scenario)
+      .with_context(|| {
+        format!(
+          "Unknown scenario '{}'. Options: {}.",
+          args.scenario,
+          SCENARIOS
+            .iter()
+            .map(|(name, ..)| *name)
+            .chain([SWITCH_SCENARIO])
+            .collect::<Vec<_>>()
+            .join(", ")
+        )
+      })?;
+    ((*forward).to_string(), (*back).to_string())
+  };
 
   let log_path = perf_log_path()?;
   let mut client = IpcClient::connect().await?;
-  let window = find_tiled_window(&mut client, &args.target).await?;
-  let target = if args.scenario == WORKSPACE_SCENARIO {
-    find_workspace_of(&mut client, window).await?
+
+  // The switch scenario drives workspace-global commands, so it pins no
+  // target window.
+  let target = if is_switch {
+    None
   } else {
-    window
+    let window = find_tiled_window(&mut client, &args.target).await?;
+    Some(if args.scenario == WORKSPACE_SCENARIO {
+      find_workspace_of(&mut client, window).await?
+    } else {
+      window
+    })
   };
 
   let start_len = std::fs::metadata(&log_path).map_or(0, |m| m.len());
@@ -137,7 +173,7 @@ async fn main() -> anyhow::Result<()> {
   let mut triggers = Vec::with_capacity(args.bursts + 1);
 
   for burst in 0..args.bursts {
-    let step = if burst % 2 == 0 { forward } else { back };
+    let step = if burst % 2 == 0 { &forward } else { &back };
     #[cfg(target_os = "windows")]
     triggers.push(dwm::now_qpc());
     send_step(&mut client, target, step).await?;
@@ -154,7 +190,7 @@ async fn main() -> anyhow::Result<()> {
 
   // Leave the layout as it was found.
   if args.bursts % 2 == 1 {
-    send_step(&mut client, target, back).await?;
+    send_step(&mut client, target, &back).await?;
     tokio::time::sleep(args.settle).await;
   }
 
@@ -175,13 +211,28 @@ async fn main() -> anyhow::Result<()> {
   }
 
   #[cfg(target_os = "windows")]
-  let dwm_columns = capture.map_or_else(DwmColumns::new, |capture| {
-    dwm_columns(&capture, &triggers, &reports)
-  });
+  let dwm_columns = match capture.as_ref() {
+    Some(capture) => dwm_columns(capture, &triggers, &reports),
+    None => DwmColumns::new(),
+  };
   #[cfg(not(target_os = "windows"))]
   let dwm_columns = DwmColumns::new();
 
   print_summary(&args, &reports, &dwm_columns, started.elapsed());
+
+  // Per-frame dump, for locating the heavy frames within a switch.
+  #[cfg(target_os = "windows")]
+  if args.frames {
+    if let Some(capture) = capture.as_ref() {
+      for (burst, span) in triggers.windows(2).enumerate() {
+        for (offset_ms, busy_ms) in capture.burst_profile(span[0], span[1])
+        {
+          println!("FRAME {burst} {offset_ms:.2} {busy_ms:.3}");
+        }
+      }
+    }
+  }
+
   Ok(())
 }
 
@@ -208,18 +259,39 @@ fn dwm_columns(
     .filter_map(|span| capture.burst_stats(span[0], span[1], period_ms))
     .collect();
 
+  // `usize` frame counts are small; the cast is exact at these sizes.
+  #[allow(clippy::cast_precision_loss)]
+  let count =
+    |values: Vec<usize>| values.into_iter().map(|v| v as f64).collect();
+
   vec![
+    (
+      "dwm frames/burst",
+      count(stats.iter().map(|s| s.frames).collect()),
+    ),
     (
       "dwm missed vblanks/burst",
       stats.iter().map(|s| s.missed_vblanks).collect(),
+    ),
+    (
+      "dwm late frames/burst (>20ms)",
+      count(stats.iter().map(|s| s.late_frames).collect()),
     ),
     (
       "dwm display interval p90 ms",
       stats.iter().map(|s| s.interval_p90_ms).collect(),
     ),
     (
+      "dwm gpu busy p50 ms",
+      stats.iter().map(|s| s.gpu_busy_p50_ms).collect(),
+    ),
+    (
       "dwm gpu busy p90 ms",
       stats.iter().map(|s| s.gpu_busy_p90_ms).collect(),
+    ),
+    (
+      "dwm gpu busy max ms",
+      stats.iter().map(|s| s.gpu_busy_max_ms).collect(),
     ),
   ]
 }
@@ -231,13 +303,19 @@ fn parse_args() -> anyhow::Result<Args> {
     bursts: 10,
     settle: Duration::from_millis(1200),
     label: "run".into(),
+    between: ["1".into(), "2".into()],
     dwm: false,
+    frames: false,
   };
 
   let mut iter = std::env::args().skip(1);
   while let Some(flag) = iter.next() {
     if flag == "--dwm" {
       args.dwm = true;
+      continue;
+    }
+    if flag == "--frames" {
+      args.frames = true;
       continue;
     }
 
@@ -250,12 +328,23 @@ fn parse_args() -> anyhow::Result<Args> {
       "--bursts" => args.bursts = value.parse()?,
       "--settle-ms" => args.settle = Duration::from_millis(value.parse()?),
       "--label" => args.label = value,
+      "--between" => {
+        let (from, to) = value.split_once(',').with_context(|| {
+          format!("--between takes two workspaces, e.g. --between 1,2 (got '{value}').")
+        })?;
+        args.between = [from.trim().to_string(), to.trim().to_string()];
+      }
       _ => bail!("Unknown flag '{flag}'."),
     }
   }
 
-  if args.target.is_empty() {
+  // The switch scenario is workspace-global and needs no target window.
+  if args.scenario != SWITCH_SCENARIO && args.target.is_empty() {
     bail!("--target <process name> is required, e.g. --target chrome.");
+  }
+
+  if args.frames && !args.dwm {
+    bail!("--frames needs --dwm (it dumps the captured DWM frames).");
   }
 
   Ok(args)
@@ -343,16 +432,21 @@ async fn find_workspace_of(
 }
 
 /// Sends each `;`-separated command of a scenario step.
+///
+/// A `wm-*` command, or any command when `target` is `None` (the switch
+/// scenario), is sent with no subject; every other command targets
+/// `target`.
 async fn send_step(
   client: &mut IpcClient,
-  target: Uuid,
+  target: Option<Uuid>,
   step: &str,
 ) -> anyhow::Result<()> {
   for command in step.split(';').map(str::trim) {
-    let message = if command.starts_with("wm-") {
-      format!("command {command}")
-    } else {
-      format!("command --id {target} {command}")
+    let message = match target {
+      Some(id) if !command.starts_with("wm-") => {
+        format!("command --id {id} {command}")
+      }
+      _ => format!("command {command}"),
     };
     send_command(client, &message).await?;
   }
