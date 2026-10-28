@@ -375,7 +375,7 @@ impl SceneWindow {
       corner_radius: 0.0,
       backdrop: None,
       required: false,
-      fit: SceneFit::Exact,
+      fit: SceneFit::Whole,
     }
   }
 }
@@ -384,12 +384,10 @@ impl SceneWindow {
 /// resizes.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum SceneFit {
-  /// At its window's own size, from its placement's corner.
-  Exact,
-
-  /// Its visible frame stretched over its placement's, and scaled with
-  /// the frame about the frame's top-left corner.
-  Stretch,
+  /// At its window's own size, whatever size it reaches, from its
+  /// placement's corner, and cut to its frame as that resizes, e.g. for a
+  /// window whose app redraws it at its new size beneath the scene.
+  Whole,
 
   /// Its whole window, one without invisible resize borders, stretched
   /// over its placement and cut in nine at these insets, in pixels: each
@@ -541,13 +539,24 @@ impl WindowCopy {
   }
 }
 
+/// How a thumbnail maps its window.
+#[derive(Clone, Copy)]
+enum Mapping {
+  /// At its own size, up to this one as it grows, e.g. while its app
+  /// resizes it beneath a scene.
+  Whole(i32, i32),
+
+  /// All of it stretched over this size, for a window without invisible
+  /// resize borders: their pixels would be stretched in too.
+  Stretched(i32, i32),
+}
+
 /// How a copy follows its item's frame as that resizes.
 enum Shape {
-  /// Scaled about the frame's top-left corner, with its clip's far edges
-  /// keeping to the frame's.
+  /// At its own size, with its clip's far edges keeping to the frame's.
   Whole {
-    /// Scale its content, and its backdrop's vignette.
-    scales: Vec<IDCompositionScaleTransform>,
+    /// Scales its backdrop's vignette over the frame, if it has one.
+    vignette: Option<IDCompositionScaleTransform>,
     clip: IDCompositionRectangleClip,
 
     /// The clip's right and bottom edges at rest, where they keep to the
@@ -1306,19 +1315,19 @@ impl NativeScene {
       for copy in &item.copies {
         match &copy.shape {
           Shape::Whole {
-            scales,
+            vignette,
             clip,
             right,
             bottom,
           } => {
-            for scale in scales {
+            if let Some(vignette) = vignette {
               scale_x.set(
-                |value| scale.SetScaleX2(value),
-                |animation| scale.SetScaleX(animation),
+                |value| vignette.SetScaleX2(value),
+                |animation| vignette.SetScaleX(animation),
               )?;
               scale_y.set(
-                |value| scale.SetScaleY2(value),
-                |animation| scale.SetScaleY(animation),
+                |value| vignette.SetScaleY2(value),
+                |animation| vignette.SetScaleY(animation),
               )?;
             }
             if let Some(right) = right {
@@ -1443,17 +1452,12 @@ impl NativeScene {
         .and_then(|of| windows.iter().find(|window| window.hwnd == of));
 
       if let Some(of) = companion_of {
-        let fit = match of.fit {
-          SceneFit::Exact => SceneFit::Exact,
-          _ => SceneFit::Stretch,
-        };
         members.moving.push(SceneWindow {
           placement: of
             .placement
             .as_ref()
             .map(|(_, frame)| (frame.clone(), frame.clone())),
           corner_radius: of.corner_radius,
-          fit,
           ..SceneWindow::as_is(hwnd)
         });
       } else if is_owned_by(hwnd, &explicit) {
@@ -1764,14 +1768,11 @@ impl NativeScene {
       return Ok(Some((copy, false)));
     }
 
-    let stretched_over = (window.fit == SceneFit::Stretch).then(|| RECT {
-      left: frame.left - outer.left,
-      top: frame.top - outer.top,
-      right: frame.right - outer.left,
-      bottom: frame.bottom - outer.top,
-    });
-    let (content, thumbnail) =
-      self.thumbnail(window.hwnd, alpha, stretched_over)?;
+    let (content, thumbnail) = self.thumbnail(
+      window.hwnd,
+      alpha,
+      Mapping::Whole(outer.width(), outer.height()),
+    )?;
 
     // Without its backdrop, the copy is still worth showing.
     let backdrop = window.backdrop.and_then(|backdrop| {
@@ -1818,40 +1819,48 @@ impl NativeScene {
     }
   }
 
-  /// A thumbnail of `source` at `alpha`, with its handle: all of it at its
-  /// own size, or its visible frame stretched over `frame`, relative to
-  /// its window rect's corner.
+  /// A thumbnail of `source` at `alpha`, mapped as `mapping` says, with
+  /// its handle.
   fn thumbnail(
     &self,
     source: HWND,
     alpha: u8,
-    frame: Option<RECT>,
+    mapping: Mapping,
   ) -> crate::Result<(IDCompositionVisual, isize)> {
-    let properties = match frame {
-      // Without a source rect, DWM draws the window's visible frame at
-      // whatever size it has reached, e.g. mid resize, leaving out the
-      // invisible resize borders a source rect counts in.
-      Some(frame)
-        if frame.right > frame.left && frame.bottom > frame.top =>
-      {
-        DWM_THUMBNAIL_PROPERTIES {
-          dwFlags: DWM_TNP_RECTDESTINATION
-            | DWM_TNP_OPACITY
-            | DWM_TNP_VISIBLE
-            | DWM_TNP_SOURCECLIENTAREAONLY,
-          rcDestination: frame,
-          rcSource: RECT::default(),
-          opacity: alpha,
-          fVisible: true.into(),
-          fSourceClientAreaOnly: false.into(),
+    let properties =
+      |flags, source: RECT, destination: RECT| DWM_THUMBNAIL_PROPERTIES {
+        dwFlags: flags
+          | DWM_TNP_RECTDESTINATION
+          | DWM_TNP_OPACITY
+          | DWM_TNP_VISIBLE
+          | DWM_TNP_SOURCECLIENTAREAONLY,
+        rcDestination: destination,
+        rcSource: source,
+        opacity: alpha,
+        fVisible: true.into(),
+        fSourceClientAreaOnly: false.into(),
+      };
+
+    match mapping {
+      // Without a source rect, DWM scales whatever size the window has
+      // reached over the destination.
+      Mapping::Stretched(width, height) => {
+        if width <= 0 || height <= 0 {
+          return Err(crate::Error::Platform(
+            "A copy can't be stretched over nothing.".to_string(),
+          ));
         }
+
+        let over = RECT {
+          left: 0,
+          top: 0,
+          right: width,
+          bottom: height,
+        };
+        self
+          .create_thumbnail(source, &properties(0, RECT::default(), over))
       }
-      Some(_) => {
-        return Err(crate::Error::Platform(
-          "A copy can't be stretched over nothing.".to_string(),
-        ));
-      }
-      None => {
+      Mapping::Whole(width, height) => {
         let mut size = SIZE::default();
         // SAFETY: `size` outlives the call.
         unsafe {
@@ -1863,27 +1872,45 @@ impl NativeScene {
         }
         .ok()?;
 
-        let whole = RECT {
+        let rect = |width: i32, height: i32| RECT {
           left: 0,
           top: 0,
-          right: size.cx,
-          bottom: size.cy,
+          right: width,
+          bottom: height,
         };
-        DWM_THUMBNAIL_PROPERTIES {
-          dwFlags: DWM_TNP_RECTDESTINATION
-            | DWM_TNP_RECTSOURCE
-            | DWM_TNP_OPACITY
-            | DWM_TNP_VISIBLE
-            | DWM_TNP_SOURCECLIENTAREAONLY,
-          rcDestination: whole,
-          rcSource: whole,
-          opacity: alpha,
-          fVisible: true.into(),
-          fSourceClientAreaOnly: false.into(),
-        }
-      }
-    };
+        let own = rect(size.cx, size.cy);
 
+        // Sampled past the window's edge, it is shown 1:1 at any size it
+        // reaches up to `width` by `height`, and nothing beyond its edge.
+        let reach = rect(size.cx.max(width), size.cy.max(height));
+        if reach != own {
+          let reaching = self.create_thumbnail(
+            source,
+            &properties(DWM_TNP_RECTSOURCE, reach, reach),
+          );
+          match reaching {
+            Ok(created) => return Ok(created),
+            Err(err) => tracing::debug!(
+              "Scene copies {} at its own size: {err}",
+              window_class::describe(source)
+            ),
+          }
+        }
+
+        self.create_thumbnail(
+          source,
+          &properties(DWM_TNP_RECTSOURCE, own, own),
+        )
+      }
+    }
+  }
+
+  /// A thumbnail of `source` as `properties` say, with its handle.
+  fn create_thumbnail(
+    &self,
+    source: HWND,
+    properties: &DWM_THUMBNAIL_PROPERTIES,
+  ) -> crate::Result<(IDCompositionVisual, isize)> {
     let mut raw = null_mut();
     let mut thumbnail = 0;
     // SAFETY: Out pointers and `properties` outlive the call, and the
@@ -1893,7 +1920,7 @@ impl NativeScene {
         self.host.hwnd,
         source,
         SHARED_THUMBNAIL_FLAGS,
-        &raw const properties,
+        std::ptr::from_ref(properties),
         self.device.dcomp.as_raw(),
         &raw mut raw,
         &raw mut thumbnail,
@@ -1917,7 +1944,8 @@ impl NativeScene {
     item_frame: &Rect,
   ) -> crate::Result<(BackdropCopy, IDCompositionScaleTransform)> {
     let canvas = backdrop_canvas::canvas_for(&self.monitor, params)?;
-    let (content, thumbnail) = self.thumbnail(canvas, u8::MAX, None)?;
+    let (content, thumbnail) =
+      self.thumbnail(canvas, u8::MAX, Mapping::Whole(0, 0))?;
 
     // Where the overlay's crop puts the image (see `set_crop`): pinned to
     // the desktop at a parallax of 1, trailing the window below it.
@@ -2030,48 +2058,49 @@ impl NativeScene {
     visual.SetOffsetY2((outer.top - self.monitor.top) as f32)?;
 
     // Cut to what DWM draws of the window, rounded as it is.
-    let clip = dcomp.CreateRectangleClip()?;
     let right = (frame.right - outer.left) as f32;
     let bottom = (frame.bottom - outer.top) as f32;
-    clip.SetLeft2((frame.left - outer.left) as f32)?;
-    clip.SetTop2((frame.top - outer.top) as f32)?;
-    clip.SetRight2(right)?;
-    clip.SetBottom2(bottom)?;
+    let frame_clip = || -> windows::core::Result<_> {
+      let clip = dcomp.CreateRectangleClip()?;
+      clip.SetLeft2((frame.left - outer.left) as f32)?;
+      clip.SetTop2((frame.top - outer.top) as f32)?;
+      clip.SetRight2(right)?;
+      clip.SetBottom2(bottom)?;
 
-    let radius = window.corner_radius;
-    if radius > 0.0 {
-      clip.SetTopLeftRadiusX2(radius)?;
-      clip.SetTopLeftRadiusY2(radius)?;
-      clip.SetTopRightRadiusX2(radius)?;
-      clip.SetTopRightRadiusY2(radius)?;
-      clip.SetBottomLeftRadiusX2(radius)?;
-      clip.SetBottomLeftRadiusY2(radius)?;
-      clip.SetBottomRightRadiusX2(radius)?;
-      clip.SetBottomRightRadiusY2(radius)?;
-    }
+      let radius = window.corner_radius;
+      if radius > 0.0 {
+        clip.SetTopLeftRadiusX2(radius)?;
+        clip.SetTopLeftRadiusY2(radius)?;
+        clip.SetTopRightRadiusX2(radius)?;
+        clip.SetTopRightRadiusY2(radius)?;
+        clip.SetBottomLeftRadiusX2(radius)?;
+        clip.SetBottomLeftRadiusY2(radius)?;
+        clip.SetBottomRightRadiusX2(radius)?;
+        clip.SetBottomRightRadiusY2(radius)?;
+      }
+      Ok(clip)
+    };
 
-    // The content stretches with the frame, under a clip that keeps its
-    // corners round, over a backdrop that stays put.
-    let stretch = dcomp.CreateScaleTransform()?;
-    stretch.SetCenterX2((item_frame.left - outer.left) as f32)?;
-    stretch.SetCenterY2((item_frame.top - outer.top) as f32)?;
-    let stretched = dcomp.CreateVisual()?;
-    stretched.SetTransform(&stretch)?;
-    stretched.AddVisual(content, false, None)?;
+    // The content keeps its size, cut where it rests too: a window drawn
+    // smaller as it shrinks shows its invisible resize borders past that,
+    // which thumbnails draw. The clip following the frame holds it, over
+    // a backdrop that stays put and shows where the content doesn't reach.
+    let content_clipped = dcomp.CreateVisual()?;
+    content_clipped.SetClip(&frame_clip()?)?;
+    content_clipped.AddVisual(content, false, None)?;
 
+    let clip = frame_clip()?;
     let clipped = dcomp.CreateVisual()?;
     clipped.SetClip(&clip)?;
-    let mut scales = vec![stretch];
-    if let Some((backdrop, vignette_scale)) = backdrop {
+    if let Some((backdrop, _)) = backdrop {
       clipped.AddVisual(&backdrop.visual, false, None)?;
-      scales.push(vignette_scale.clone());
     }
-    clipped.AddVisual(&stretched, false, None)?;
+    clipped.AddVisual(&content_clipped, false, None)?;
     visual.AddVisual(&clipped, false, None)?;
     parent.AddVisual(&visual, false, None)?;
 
     Ok(Shape::Whole {
-      scales,
+      vignette: backdrop.map(|(_, vignette)| vignette.clone()),
       clip,
       right: (frame.right == item_frame.right).then_some(right),
       bottom: (frame.bottom == item_frame.bottom).then_some(bottom),
@@ -2128,20 +2157,17 @@ impl NativeScene {
         continue;
       };
 
-      let whole = RECT {
-        left: 0,
-        top: 0,
-        right: outer.width(),
-        bottom: outer.height(),
+      let (content, thumbnail) = match self.thumbnail(
+        hwnd,
+        alpha,
+        Mapping::Stretched(outer.width(), outer.height()),
+      ) {
+        Ok(thumbnail) => thumbnail,
+        Err(err) => {
+          release(&thumbnails);
+          return Err(err);
+        }
       };
-      let (content, thumbnail) =
-        match self.thumbnail(hwnd, alpha, Some(whole)) {
-          Ok(thumbnail) => thumbnail,
-          Err(err) => {
-            release(&thumbnails);
-            return Err(err);
-          }
-        };
       thumbnails.push(thumbnail);
 
       // SAFETY: Plain `DirectComposition` calls on live objects.

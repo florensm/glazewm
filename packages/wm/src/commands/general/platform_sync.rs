@@ -1464,6 +1464,22 @@ impl SyncableOverlay for NativeBorderOverlay {
   }
 }
 
+/// Where `window`'s overlays go: around its visible frame, as DWM reports
+/// it so they sit flush with its edge, past its invisible resize borders.
+/// Beneath a scene (`is_covered`), around where the layout puts it
+/// instead: the scene copies them there, while the window's asynchronous
+/// move may not have landed yet.
+#[cfg(target_os = "windows")]
+fn overlay_frame(
+  window: &WindowContainer,
+  is_covered: bool,
+) -> anyhow::Result<Rect> {
+  match crate::animation::scene::layout_frame(window) {
+    Some(frame) if is_covered => Ok(frame),
+    _ => Ok(window.native().frame()?),
+  }
+}
+
 /// Creates, repositions, and removes overlay windows of kind `O` so every
 /// managed window with the matching effect enabled has an overlay tracking
 /// its rect and z-order. Shared by backdrop and border overlays -- see
@@ -1603,6 +1619,9 @@ fn sync_overlays<O: SyncableOverlay>(
     let is_redrawing = redrawing_ids.contains(&window.id());
     let had_overlay = O::overlays(state).contains_key(&window.id());
     let anchor = overlay_z_anchor(window);
+    let is_covered = window.monitor().is_some_and(|monitor| {
+      state.animation_manager.scenes.covers(monitor.id())
+    });
 
     match O::overlays(state).entry(window.id()) {
       std::collections::hash_map::Entry::Occupied(e) => {
@@ -1618,10 +1637,7 @@ fn sync_overlays<O: SyncableOverlay>(
         let repositioned = is_redrawing || !overlay.is_visible();
 
         if repositioned {
-          // Use the DWM extended frame bounds so the overlay sits flush
-          // with the window's visible edge, clipping the invisible resize
-          // border.
-          match window.native().frame() {
+          match overlay_frame(window, is_covered) {
             Ok(rect) => overlay.defer_rect(
               &mut batch,
               &O::overlay_rect(window, &rect),
@@ -1659,7 +1675,7 @@ fn sync_overlays<O: SyncableOverlay>(
       std::collections::hash_map::Entry::Vacant(e) => {
         debug_assert!(!had_overlay);
 
-        let Ok(rect) = window.native().frame() else {
+        let Ok(rect) = overlay_frame(window, is_covered) else {
           continue;
         };
 

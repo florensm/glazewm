@@ -2112,7 +2112,7 @@ fn with_tab_bars(
           bottom: if is_below { height } else { 0.0 },
         }
       }
-      _ => SceneFit::Stretch,
+      _ => SceneFit::Whole,
     };
 
     let bar = SceneWindow {
@@ -2176,7 +2176,7 @@ fn window_item(
     corner_radius: corner_radius(window, is_focused, config, scale_factor),
     backdrop,
     required: true,
-    fit: SceneFit::Stretch,
+    fit: SceneFit::Whole,
   }];
 
   let border = state.border_overlays.get(&id).zip(
@@ -2199,7 +2199,7 @@ fn window_item(
         bottom: corner,
       }
     } else {
-      SceneFit::Stretch
+      SceneFit::Whole
     };
 
     windows.push(SceneWindow {
@@ -2326,6 +2326,12 @@ fn layout_rect(window: &WindowContainer) -> Option<Rect> {
       .ok()?
       .apply_delta(&window.total_border_delta().ok()?, None),
   )
+}
+
+/// Where the layout puts `window`'s visible frame, which its copy rests
+/// at while its own asynchronous move lands beneath the scene.
+pub fn layout_frame(window: &WindowContainer) -> Option<Rect> {
+  layout_placement(window).map(|(_, frame)| frame)
 }
 
 /// Where the layout puts `window`: its window rect and visible frame.
