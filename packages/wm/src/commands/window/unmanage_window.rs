@@ -87,6 +87,8 @@ fn detach_window(
   }
 
   state.window_target_positions.remove(&window.id());
+  #[cfg(target_os = "windows")]
+  state.animation_manager.scenes.forget(&window.id());
 
   // After detaching the container, flatten any redundant split containers.
   // For example, in the layout V[1 H[2]] where container 1 is detached to

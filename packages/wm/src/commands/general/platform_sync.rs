@@ -537,6 +537,11 @@ fn redraw_containers(
     state
       .window_target_positions
       .insert(window.id(), target_rect.clone());
+    #[cfg(target_os = "windows")]
+    state
+      .animation_manager
+      .scenes
+      .note_placed(window.id(), monitor.id());
 
     debug!("Updating window position: {window}");
 
