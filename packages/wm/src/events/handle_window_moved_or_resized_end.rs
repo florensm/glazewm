@@ -139,6 +139,11 @@ pub fn handle_window_moved_or_resized_end(
         state
           .window_target_positions
           .insert(window.id(), window.native_properties().frame);
+        #[cfg(target_os = "windows")]
+        state
+          .animation_manager
+          .scenes
+          .note_placed(window.id(), nearest_monitor.id());
 
         // Window is a temporary floating window that should be
         // reverted back to tiling.

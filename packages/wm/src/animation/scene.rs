@@ -79,12 +79,16 @@ const RELEASE_TIMEOUT: Duration = Duration::from_secs(1);
 /// The scenes covering monitors, one per monitor.
 #[derive(Default)]
 pub struct Scenes {
-  scenes: Vec<MonitorScene>,
+  on_monitors: Vec<MonitorScene>,
 
   /// Sizes windows keep beneath the scenes while their copies shrink, so
   /// their content fills the frames closing in on them, and windows let
   /// go of one that haven't taken their own yet.
   kept: HashMap<Uuid, KeptSize>,
+
+  /// The monitor each window was last placed on, which its next motion
+  /// leaves if it is on another monitor by then.
+  placed_on: HashMap<Uuid, Uuid>,
 }
 
 /// The size a window keeps beneath the scenes while its copy shrinks.
@@ -623,7 +627,7 @@ impl MonitorScene {
 
 impl Scenes {
   pub fn is_active(&self) -> bool {
-    !self.scenes.is_empty() || !self.kept.is_empty()
+    !self.on_monitors.is_empty() || !self.kept.is_empty()
   }
 
   /// Whether `window_id` is held at a size kept for its copy, or still
@@ -634,19 +638,47 @@ impl Scenes {
     self.kept.contains_key(window_id)
   }
 
+  /// Records that `window_id` was placed on `monitor_id`.
+  pub fn note_placed(&mut self, window_id: Uuid, monitor_id: Uuid) {
+    self.placed_on.insert(window_id, monitor_id);
+  }
+
+  /// Forgets `window_id`, which is no longer managed.
+  pub fn forget(&mut self, window_id: &Uuid) {
+    self.placed_on.remove(window_id);
+  }
+
   /// Where `window_id`'s real window goes when the layout puts it at
   /// `rect`: there, at the size kept for it while its copy shrinks.
-  pub fn real_rect(&self, window_id: &Uuid, rect: Rect) -> Rect {
+  ///
+  /// What the kept size adds is moved back within `bounds`, its monitor's,
+  /// so it doesn't reach onto a neighboring monitor no scene covers. Its
+  /// copy is drawn where the layout puts it, wherever the window is.
+  pub fn real_rect(
+    &self,
+    window_id: &Uuid,
+    rect: Rect,
+    bounds: &Rect,
+  ) -> Rect {
     match self.kept.get(window_id) {
       Some(KeptSize {
         size: (width, height),
         released_at: None,
-      }) => Rect::from_xy(
-        rect.x(),
-        rect.y(),
-        rect.width().max(*width),
-        rect.height().max(*height),
-      ),
+      }) => {
+        let size = (rect.width().max(*width), rect.height().max(*height));
+
+        // Back by what reaches past the far edge, at most what was added.
+        let pull_back = |start: i32, length: i32, own: i32, end: i32| {
+          start - (start + length - end).clamp(0, length - own)
+        };
+
+        Rect::from_xy(
+          pull_back(rect.x(), size.0, rect.width(), bounds.right),
+          pull_back(rect.y(), size.1, rect.height(), bounds.bottom),
+          size.0,
+          size.1,
+        )
+      }
       _ => rect,
     }
   }
@@ -680,7 +712,7 @@ impl Scenes {
   /// Whether a scene covers the monitor `monitor_id`.
   pub fn covers(&self, monitor_id: Uuid) -> bool {
     self
-      .scenes
+      .on_monitors
       .iter()
       .any(|scene| scene.monitor_id == monitor_id)
   }
@@ -690,7 +722,7 @@ impl Scenes {
   /// leaving, or one closing.
   pub fn holds(&self, window_id: &Uuid) -> bool {
     self
-      .scenes
+      .on_monitors
       .iter()
       .flat_map(|scene| &scene.groups)
       .any(|group| {
@@ -703,7 +735,7 @@ impl Scenes {
 
   fn scene_mut(&mut self, monitor_id: Uuid) -> Option<&mut MonitorScene> {
     self
-      .scenes
+      .on_monitors
       .iter_mut()
       .find(|scene| scene.monitor_id == monitor_id)
   }
@@ -712,7 +744,7 @@ impl Scenes {
   /// has one.
   fn item(&self, window_id: Uuid) -> Option<&ItemState> {
     self
-      .scenes
+      .on_monitors
       .iter()
       .flat_map(|scene| &scene.groups)
       .filter(|group| !group.is_leaving)
@@ -748,6 +780,9 @@ struct PlannedMotion {
   /// Whether it carries on at the speed it's moving at, as a scrolling
   /// layout's columns do, rather than starting over.
   carries_speed: bool,
+
+  /// The monitor it leaves, if it moves between monitors.
+  from_monitor: Option<Uuid>,
 }
 
 /// Works out what the coming sync plays on scenes, before it changes
@@ -834,11 +869,9 @@ pub fn plan(state: &mut WmState, config: &UserConfig) -> ScenePlan {
       continue;
     };
 
-    // Covering where it comes from too, if that's another monitor.
-    if let Some(from) =
-      state.monitor_at_point(&motion.from.frame.center_point())
-    {
-      plan.monitors.push(from.id());
+    // Covering the monitor it leaves too.
+    if let Some(from) = motion.from_monitor {
+      plan.monitors.push(from);
     }
     plan.monitors.push(monitor.id());
     plan.motions.insert(window.id(), motion);
@@ -938,11 +971,24 @@ fn planned_motion(
     )
   };
 
+  // Not told by where it starts: a scrolling layout's columns start past
+  // their monitor's edge, over the monitor beside it.
+  let from_monitor = state
+    .animation_manager
+    .scenes
+    .placed_on
+    .get(&id)
+    .copied()
+    .filter(|placed| {
+      window.monitor().is_some_and(|on| on.id() != *placed)
+    });
+
   Some(PlannedMotion {
     from,
     duration_ms,
     easing,
     carries_speed: is_column,
+    from_monitor,
   })
 }
 
@@ -1152,22 +1198,26 @@ fn cover_monitor(
         .map(|(item, window_id)| ItemState::new(item, window_id))
         .collect();
 
-      state.animation_manager.scenes.scenes.push(MonitorScene {
-        monitor_id,
-        bounds: props.bounds.clone(),
-        native,
-        groups: vec![WorkspaceGroup {
-          workspace_id: workspace.id(),
-          id,
-          motion: Some(GroupMotion::at_rest(now)),
-          is_leaving: false,
-          held: Vec::new(),
-          items,
-        }],
-        settled_since: None,
-        lifting_since: None,
-        is_abandoned: false,
-      });
+      state
+        .animation_manager
+        .scenes
+        .on_monitors
+        .push(MonitorScene {
+          monitor_id,
+          bounds: props.bounds.clone(),
+          native,
+          groups: vec![WorkspaceGroup {
+            workspace_id: workspace.id(),
+            id,
+            motion: Some(GroupMotion::at_rest(now)),
+            is_leaving: false,
+            held: Vec::new(),
+            items,
+          }],
+          settled_since: None,
+          lifting_since: None,
+          is_abandoned: false,
+        });
       true
     }
     Err(err) => {
@@ -1264,7 +1314,7 @@ fn cover_switch(
     .collect::<Vec<_>>();
   match NativeScene::cover(&props.bounds, &scene_items, &[]) {
     Ok((native, id)) => {
-      scenes.scenes.push(MonitorScene {
+      scenes.on_monitors.push(MonitorScene {
         monitor_id: monitor.id(),
         bounds: props.bounds.clone(),
         native,
@@ -1312,7 +1362,7 @@ pub fn play(
     if let Some(request) = &plan.switch {
       abandon_switch(state, request);
     }
-    for scene in &mut state.animation_manager.scenes.scenes {
+    for scene in &mut state.animation_manager.scenes.on_monitors {
       if plan.monitors.contains(&scene.monitor_id) {
         scene.is_abandoned = true;
       }
@@ -1327,7 +1377,7 @@ pub fn play(
   let monitor_ids = state
     .animation_manager
     .scenes
-    .scenes
+    .on_monitors
     .iter()
     .map(|scene| scene.monitor_id)
     .collect::<Vec<_>>();
@@ -1385,7 +1435,8 @@ fn reconcile(
     .motions
     .iter()
     .filter(|(_, motion)| {
-      motion.from.frame.intersection(&props.bounds).is_some()
+      motion.from_monitor.is_some()
+        && motion.from.frame.intersection(&props.bounds).is_some()
     })
     .filter(|(id, _)| window_monitor(state, **id) != Some(monitor_id))
     .filter_map(|(id, _)| state.container_by_id(*id))
@@ -1751,7 +1802,7 @@ fn abandon_switch(state: &mut WmState, request: &SceneSwitchRequest) {
     .find_map(|id| workspace(state, id)?.monitor())
     .map(|monitor| monitor.id());
 
-  for scene in &mut state.animation_manager.scenes.scenes {
+  for scene in &mut state.animation_manager.scenes.on_monitors {
     // With no monitor left to tell, every scene goes.
     if monitor_id.is_none_or(|id| id == scene.monitor_id) {
       scene.is_abandoned = true;
@@ -1790,134 +1841,138 @@ pub fn tick(state: &mut WmState) {
 
   let landing = landing_windows(state);
 
-  state.animation_manager.scenes.scenes.retain_mut(|scene| {
-    let drop_reason = if scene.is_abandoned {
-      Some("what it played failed")
-    } else if scene.groups.iter().any(|group| group.motion.is_none()) {
-      // Waiting for its switch, it missed the end of the sync.
-      Some("its switch didn't play")
-    } else if is_overview_shown
-      || is_dragging
-      || !scene.matches(&displayed)
-    {
-      // What's beneath changed without it, which leaves the windows to
-      // show as they are, as with animations off.
-      Some("its monitor changed beneath it")
-    } else {
-      None
-    };
+  state
+    .animation_manager
+    .scenes
+    .on_monitors
+    .retain_mut(|scene| {
+      let drop_reason = if scene.is_abandoned {
+        Some("what it played failed")
+      } else if scene.groups.iter().any(|group| group.motion.is_none()) {
+        // Waiting for its switch, it missed the end of the sync.
+        Some("its switch didn't play")
+      } else if is_overview_shown
+        || is_dragging
+        || !scene.matches(&displayed)
+      {
+        // What's beneath changed without it, which leaves the windows to
+        // show as they are, as with animations off.
+        Some("its monitor changed beneath it")
+      } else {
+        None
+      };
 
-    if let Some(reason) = drop_reason {
-      tracing::debug!("Scene dropped: {reason}.");
-      closed.extend(closings(scene));
-      released = true;
-      return false;
-    }
-
-    scene.raise();
-
-    let mut changed = false;
-
-    // Workspaces that left go, along with closed windows and ones that
-    // moved off the monitor.
-    let native = &mut scene.native;
-    scene.groups.retain_mut(|group| {
-      let is_gone = group.is_leaving
-        && group
-          .motion
-          .as_ref()
-          .is_some_and(|motion| motion.is_done(now));
-      if is_gone {
-        native.remove_group(group.id);
-        changed = true;
+      if let Some(reason) = drop_reason {
+        tracing::debug!("Scene dropped: {reason}.");
+        closed.extend(closings(scene));
         released = true;
         return false;
       }
 
-      let group_id = group.id;
-      group.items.retain(|item| {
-        let has_played = !item.is_moving(now);
-        if let (Some(handle), true) = (item.closing, has_played) {
-          if let Some(window_id) = item.window_id {
-            closed.push((window_id, handle));
-          }
-        } else if !(item.is_passing && has_played) {
-          return true;
+      scene.raise();
+
+      let mut changed = false;
+
+      // Workspaces that left go, along with closed windows and ones that
+      // moved off the monitor.
+      let native = &mut scene.native;
+      scene.groups.retain_mut(|group| {
+        let is_gone = group.is_leaving
+          && group
+            .motion
+            .as_ref()
+            .is_some_and(|motion| motion.is_done(now));
+        if is_gone {
+          native.remove_group(group.id);
+          changed = true;
+          released = true;
+          return false;
         }
 
-        native.remove_item(group_id, item.key);
-        changed = true;
-        false
+        let group_id = group.id;
+        group.items.retain(|item| {
+          let has_played = !item.is_moving(now);
+          if let (Some(handle), true) = (item.closing, has_played) {
+            if let Some(window_id) = item.window_id {
+              closed.push((window_id, handle));
+            }
+          } else if !(item.is_passing && has_played) {
+            return true;
+          }
+
+          native.remove_item(group_id, item.key);
+          changed = true;
+          false
+        });
+
+        if !group.is_leaving {
+          if let Err(err) = native.restack(group_id) {
+            tracing::debug!("Scene couldn't restack: {err}");
+          }
+        }
+        true
       });
 
-      if !group.is_leaving {
-        if let Err(err) = native.restack(group_id) {
-          tracing::debug!("Scene couldn't restack: {err}");
+      for group in &mut scene.groups {
+        for item in &mut group.items {
+          if item.is_landing
+            && !item.is_moving(now)
+            && item.window_id.is_some_and(|id| !landing.contains(&id))
+          {
+            item.is_landing = false;
+          }
         }
       }
-      true
+
+      if scene.native.commit().is_err() {
+        closed.extend(closings(scene));
+        released = true;
+        return false;
+      }
+
+      // Lifted only from the tick after anything it let go was hidden.
+      if changed || !scene.is_settled(now) {
+        scene.settled_since = None;
+        return true;
+      }
+
+      let settled_since = *scene.settled_since.get_or_insert(now);
+      let is_landing = scene
+        .groups
+        .iter()
+        .flat_map(|group| &group.items)
+        .any(|item| item.is_landing);
+      if is_landing
+        && now.saturating_duration_since(settled_since) < LANDING_HOLD
+      {
+        return true;
+      }
+
+      match scene.lifting_since {
+        None => {
+          let lift = SceneValue::Moving(SceneMotion {
+            begins_at: now,
+            duration: LIFT,
+            segments: vec![SceneSegment {
+              begin_secs: 0.0,
+              coefficients: [1.0, -1.0 / LIFT.as_secs_f32(), 0.0, 0.0],
+            }],
+            end: 0.0,
+          });
+          scene.lifting_since = Some(now);
+          scene.native.set_opacity(&lift).is_ok()
+            && scene.native.commit().is_ok()
+        }
+        Some(since) => now.saturating_duration_since(since) < LIFT,
+      }
     });
-
-    for group in &mut scene.groups {
-      for item in &mut group.items {
-        if item.is_landing
-          && !item.is_moving(now)
-          && item.window_id.is_some_and(|id| !landing.contains(&id))
-        {
-          item.is_landing = false;
-        }
-      }
-    }
-
-    if scene.native.commit().is_err() {
-      closed.extend(closings(scene));
-      released = true;
-      return false;
-    }
-
-    // Lifted only from the tick after anything it let go was hidden.
-    if changed || !scene.is_settled(now) {
-      scene.settled_since = None;
-      return true;
-    }
-
-    let settled_since = *scene.settled_since.get_or_insert(now);
-    let is_landing = scene
-      .groups
-      .iter()
-      .flat_map(|group| &group.items)
-      .any(|item| item.is_landing);
-    if is_landing
-      && now.saturating_duration_since(settled_since) < LANDING_HOLD
-    {
-      return true;
-    }
-
-    match scene.lifting_since {
-      None => {
-        let lift = SceneValue::Moving(SceneMotion {
-          begins_at: now,
-          duration: LIFT,
-          segments: vec![SceneSegment {
-            begin_secs: 0.0,
-            coefficients: [1.0, -1.0 / LIFT.as_secs_f32(), 0.0, 0.0],
-          }],
-          end: 0.0,
-        });
-        scene.lifting_since = Some(now);
-        scene.native.set_opacity(&lift).is_ok()
-          && scene.native.commit().is_ok()
-      }
-      Some(since) => now.saturating_duration_since(since) < LIFT,
-    }
-  });
 
   if perf::is_enabled() {
     perf::note_window_count(
       state
         .animation_manager
         .scenes
-        .scenes
+        .on_monitors
         .iter()
         .flat_map(|scene| &scene.groups)
         .flat_map(|group| &group.items)
@@ -1940,7 +1995,8 @@ pub fn tick(state: &mut WmState) {
 /// Takes every scene off the screen at once, e.g. as the monitors change,
 /// closing the windows whose close they played.
 pub fn drop_all(state: &mut WmState) {
-  let scenes = std::mem::take(&mut state.animation_manager.scenes.scenes);
+  let scenes =
+    std::mem::take(&mut state.animation_manager.scenes.on_monitors);
   let closed = scenes.iter().flat_map(closings).collect::<Vec<_>>();
   drop(scenes);
 
@@ -2063,7 +2119,7 @@ fn landing_windows(state: &WmState) -> HashSet<Uuid> {
   state
     .animation_manager
     .scenes
-    .scenes
+    .on_monitors
     .iter()
     .flat_map(|scene| &scene.groups)
     .flat_map(|group| &group.items)
@@ -2757,6 +2813,7 @@ mod tests {
         duration_ms: 200,
         easing: LINEAR,
         carries_speed,
+        from_monitor: None,
       };
 
       assert!(item.rest_at(to.clone(), Some(&planned), now));
@@ -2804,19 +2861,41 @@ mod tests {
     let now = Instant::now();
     let id = uuid::Uuid::new_v4();
     let rect = Rect::from_xy(100, 0, 500, 600);
+    let monitor = Rect::from_xy(0, 0, 1920, 1080);
     let mut scenes = Scenes::default();
 
     scenes.keep_size(id, Some((1000, 600)), now);
     assert_eq!(
-      scenes.real_rect(&id, rect.clone()),
+      scenes.real_rect(&id, rect.clone(), &monitor),
       Rect::from_xy(100, 0, 1000, 600)
     );
 
     // Still guarded until it has taken it.
     scenes.keep_size(id, None, now);
-    assert_eq!(scenes.real_rect(&id, rect.clone()), rect);
+    assert_eq!(scenes.real_rect(&id, rect.clone(), &monitor), rect);
     assert!(scenes.keeps_size(&id));
     assert!(scenes.is_active());
+  }
+
+  #[test]
+  fn a_kept_window_stays_off_the_next_monitor() {
+    let now = Instant::now();
+    let id = uuid::Uuid::new_v4();
+    let monitor = Rect::from_xy(0, 0, 1920, 1080);
+    let mut scenes = Scenes::default();
+    scenes.keep_size(id, Some((1000, 800)), now);
+
+    // Pulled back by what would reach past the right and bottom edges.
+    assert_eq!(
+      scenes.real_rect(&id, Rect::from_xy(1400, 600, 500, 400), &monitor),
+      Rect::from_xy(920, 280, 1000, 800)
+    );
+    // Never by more than the kept size adds, e.g. for a column the
+    // layout itself puts past the edge.
+    assert_eq!(
+      scenes.real_rect(&id, Rect::from_xy(2000, 0, 500, 800), &monitor),
+      Rect::from_xy(1500, 0, 1000, 800)
+    );
   }
 
   #[test]
