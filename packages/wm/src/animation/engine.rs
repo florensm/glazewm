@@ -67,7 +67,15 @@ fn cubic_bezier(x1: f32, y1: f32, x2: f32, y2: f32, x: f32) -> f32 {
     3.0 * u * u * t * a + 3.0 * u * t * t * b + t * t * t
   };
 
+  // The anchors are exact, which bisection only closes in on.
   let x = f64::from(x.clamp(0.0, 1.0));
+  if x <= 0.0 {
+    return 0.0;
+  }
+  if x >= 1.0 {
+    return 1.0;
+  }
+
   let (mut low, mut high) = (0.0, 1.0);
   for _ in 0..40 {
     let mid = f64::midpoint(low, high);
@@ -121,8 +129,9 @@ mod tests {
     let eased = cubic_bezier(0.0, 0.75, 0.15, 1.0, 0.0555);
     assert!((eased - 0.547).abs() < 0.005, "{eased}");
 
-    assert!(cubic_bezier(0.0, 0.75, 0.15, 1.0, 0.0).abs() < 1e-6);
-    assert!((cubic_bezier(0.0, 0.75, 0.15, 1.0, 1.0) - 1.0).abs() < 1e-6);
+    // Its anchors are exact, which completion checks compare against.
+    assert_eq!(cubic_bezier(0.0, 0.75, 0.15, 1.0, 0.0), 0.0);
+    assert_eq!(cubic_bezier(0.0, 0.75, 0.15, 1.0, 1.0), 1.0);
     assert!((cubic_bezier(0.0, 0.0, 1.0, 1.0, 0.3) - 0.3).abs() < 1e-6);
   }
 
