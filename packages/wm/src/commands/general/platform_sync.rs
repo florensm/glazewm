@@ -523,10 +523,11 @@ fn redraw_containers(
       &target_rect,
     );
     #[cfg(target_os = "windows")]
-    let real_rect = state
-      .animation_manager
-      .scenes
-      .real_rect(&window.id(), real_rect);
+    let real_rect = state.animation_manager.scenes.real_rect(
+      &window.id(),
+      real_rect,
+      &monitor.native_properties().bounds,
+    );
 
     let is_visible = matches!(
       window.display_state(),
