@@ -6,7 +6,9 @@
 #     [-Layouts <surrogate build glazewm.exe>] [-Out <dir>]
 #
 # One WM runs per config; the parts left out change between cells through
-# the `GLAZEWM_SCENE_DIAG` flags file, so no WM is restarted per cell.
+# the `GLAZEWM_SCENE_DIAG` flags file, so no WM is restarted per cell. Only
+# a build of `tryout/scene-lite-diag` reads it; with others, every cell of a
+# config measures the full scene.
 # Clocks are always reset on exit.
 param(
   [Parameter(Mandatory)] [string] $Scene,
