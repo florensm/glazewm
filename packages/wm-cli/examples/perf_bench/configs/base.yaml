@@ -370,6 +370,9 @@ window_rules:
       - window_process: { equals: "WindowsTerminal" }
       - window_process: { equals: "chrome" }
       - window_process: { equals: "yasb" }
+      # Whatever the bench runs alongside, so only Explorer is managed.
+      - window_process: { regex: "(?i)^(anydesk|claude|helium|code)$" }
+      - window_title: { regex: "Helium$" }
   # Mark a window urgent when its title changes (e.g. an unread count).
   # - commands: ["set-urgency"]
   #   on: ["title_change"]
