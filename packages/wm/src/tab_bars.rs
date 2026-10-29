@@ -321,11 +321,7 @@ fn tab_frame_at(
   let anchor = active_window.native().id().0;
   let is_focused = focused_id == Some(active_window.id());
   let border = border_overlay_params_for(is_focused, config);
-  let window_effects = if is_focused {
-    &config.value.window_effects.focused_window
-  } else {
-    &config.value.window_effects.other_windows
-  };
+  let window_effects = config.value.window_effects.for_focus(is_focused);
 
   let tabs = windows
     .iter()

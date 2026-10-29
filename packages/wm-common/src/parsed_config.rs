@@ -878,6 +878,18 @@ pub struct WindowEffectsConfig {
   pub hide_border_on_fullscreen: bool,
 }
 
+impl WindowEffectsConfig {
+  /// The effects for a window that is focused or not.
+  #[must_use]
+  pub fn for_focus(&self, is_focused: bool) -> &WindowEffectConfig {
+    if is_focused {
+      &self.focused_window
+    } else {
+      &self.other_windows
+    }
+  }
+}
+
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 #[serde(default, rename_all(serialize = "camelCase"))]
 pub struct WindowEffectConfig {

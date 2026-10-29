@@ -1212,11 +1212,10 @@ fn redraw_containers(
     // both the movement surrogate path and the fade-in path.
     #[cfg(target_os = "windows")]
     let (effect_opacity, corner_style, backdrop_overlay, border_overlay) = {
-      let effect_cfg = if window.id() == focused_container.id() {
-        &config.value.window_effects.focused_window
-      } else {
-        &config.value.window_effects.other_windows
-      };
+      let effect_cfg = config
+        .value
+        .window_effects
+        .for_focus(window.id() == focused_container.id());
       let opacity = if effect_cfg.transparency.enabled {
         effect_cfg.transparency.opacity.to_alpha()
       } else {
@@ -2219,11 +2218,7 @@ fn apply_window_effects(
 
   // LINT: `effect_config` is only used on Windows.
   #[cfg_attr(not(target_os = "windows"), allow(unused_variables))]
-  let effect_config = if is_focused {
-    &window_effects.focused_window
-  } else {
-    &window_effects.other_windows
-  };
+  let effect_config = window_effects.for_focus(is_focused);
 
   #[cfg(target_os = "windows")]
   if window_effects.focused_window.hide_title_bar.enabled
@@ -2778,11 +2773,7 @@ pub(crate) fn surrogate_effects_for(
   Option<BackdropOverlayParams>,
   Option<BorderOverlayParams>,
 ) {
-  let effect_cfg = if is_focused {
-    &config.value.window_effects.focused_window
-  } else {
-    &config.value.window_effects.other_windows
-  };
+  let effect_cfg = config.value.window_effects.for_focus(is_focused);
 
   let effect_opacity = if effect_cfg.transparency.enabled {
     effect_cfg.transparency.opacity.to_alpha()
@@ -2823,11 +2814,7 @@ pub(crate) fn border_overlay_params_for(
   is_focused: bool,
   config: &UserConfig,
 ) -> Option<BorderOverlayParams> {
-  let effect_cfg = if is_focused {
-    &config.value.window_effects.focused_window
-  } else {
-    &config.value.window_effects.other_windows
-  };
+  let effect_cfg = config.value.window_effects.for_focus(is_focused);
 
   let target_color = effect_cfg.border.abgr_color()?;
 
@@ -2856,11 +2843,7 @@ pub(crate) fn backdrop_overlay_params_for(
   is_focused: bool,
   config: &UserConfig,
 ) -> Option<BackdropOverlayParams> {
-  let effect_cfg = if is_focused {
-    &config.value.window_effects.focused_window
-  } else {
-    &config.value.window_effects.other_windows
-  };
+  let effect_cfg = config.value.window_effects.for_focus(is_focused);
 
   let tint = effect_cfg.backdrop.overlay_tint()?;
 
