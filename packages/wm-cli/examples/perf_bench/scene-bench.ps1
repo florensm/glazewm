@@ -107,6 +107,25 @@ function Invoke-Cell($dir, $label) {
   }
 }
 
+function Get-DwmFrames($file) {
+  $line = Select-String -Path $file -Pattern 'dwm frames/burst\s+([\d.]+)' |
+    Select-Object -First 1
+  if ($line) { [double]$line.Matches[0].Groups[1].Value } else { 0 }
+}
+
+# PresentMon can stream no frames for a while (seen for ~20 min on
+# 2026-10-29), which leaves cells silently empty; warm up until it does.
+function Assert-Capture($dir) {
+  for ($try = 1; $try -le 5; $try++) {
+    Invoke-Cell $dir "warmup_$try"
+    $frames = Get-DwmFrames (Join-Path $dir "warmup_$try.txt")
+    Write-Log "warm-up $try dwm frames/burst=$frames"
+    if ($frames -gt 0) { return }
+    Start-Sleep -Seconds 10
+  }
+  throw 'PresentMon captured no DWM frames; restart PresentMonSharedService.'
+}
+
 function Invoke-Config($exe, $build, $config, $cells) {
   $dir = Join-Path $Out "$build\$config"
   New-Item -ItemType Directory -Force $dir | Out-Null
@@ -115,6 +134,7 @@ function Invoke-Config($exe, $build, $config, $cells) {
   try {
     $managed = Set-Layout $exe
     Write-Log "$build/$config managed=$managed"
+    Assert-Capture $dir
     for ($round = 1; $round -le $Rounds; $round++) {
       foreach ($cell in $cells.GetEnumerator()) {
         $cell.Value | Out-File -Encoding ascii $flagsFile
