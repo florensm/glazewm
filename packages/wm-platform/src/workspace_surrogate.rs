@@ -1,13 +1,8 @@
-use windows::Win32::{
-  Foundation::{HWND, RECT},
-  Graphics::Dwm::{
-    DWM_THUMBNAIL_PROPERTIES, DWM_TNP_OPACITY, DWM_TNP_RECTDESTINATION,
-    DWM_TNP_RECTSOURCE, DWM_TNP_SOURCECLIENTAREAONLY, DWM_TNP_VISIBLE,
-  },
-};
+use windows::Win32::Foundation::{HWND, RECT};
 
 use crate::{
-  native_surrogate::{placed_rects, to_logical, DwmThumbnail},
+  dwm_thumbnail::Thumbnail,
+  native_surrogate::{placed_rects, to_logical},
   platform_impl,
   resize_session::compute_border_inset,
   CornerStyle, NativeSurrogate, NativeWindow, OpacityValue, Rect,
@@ -26,87 +21,11 @@ const WARM_UP_OPACITY: u8 = 1;
 /// rather than through the overlay's own window or visual tree, which
 /// reach DWM on schedules of their own.
 struct RingCopy {
-  thumbnail: DwmThumbnail,
+  thumbnail: Thumbnail,
   /// The overlay window the thumbnail is of.
   source: isize,
   /// Where `source` is: the ring's rect while its window rests.
   rest: Rect,
-  /// `(rcSource, rcDestination)` last applied, or `None` while hidden.
-  rects: Option<(RECT, RECT)>,
-  opacity: u8,
-}
-
-impl RingCopy {
-  /// Registers a hidden copy of `source`, which sits at `rest`, on `dest`.
-  fn register(dest: HWND, source: HWND, rest: &Rect) -> Option<Self> {
-    let thumbnail = DwmThumbnail::register(dest, source)?;
-    let props = DWM_THUMBNAIL_PROPERTIES {
-      dwFlags: DWM_TNP_VISIBLE
-        | DWM_TNP_OPACITY
-        | DWM_TNP_SOURCECLIENTAREAONLY,
-      fVisible: false.into(),
-      opacity: 0,
-      fSourceClientAreaOnly: false.into(),
-      ..Default::default()
-    };
-    thumbnail.update(&props).ok()?;
-
-    Some(Self {
-      thumbnail,
-      source: source.0,
-      rest: rest.clone(),
-      rects: None,
-      opacity: 0,
-    })
-  }
-
-  /// Draws the part `rc_src` of the ring at `rc_dst` in the surrogate.
-  fn show(&mut self, rc_src: RECT, rc_dst: RECT) {
-    if self.rects == Some((rc_src, rc_dst)) {
-      return;
-    }
-
-    let props = DWM_THUMBNAIL_PROPERTIES {
-      dwFlags: DWM_TNP_RECTSOURCE
-        | DWM_TNP_RECTDESTINATION
-        | DWM_TNP_VISIBLE,
-      rcSource: rc_src,
-      rcDestination: rc_dst,
-      fVisible: true.into(),
-      ..Default::default()
-    };
-    if self.thumbnail.update(&props).is_ok() {
-      self.rects = Some((rc_src, rc_dst));
-    }
-  }
-
-  fn hide(&mut self) {
-    if self.rects.take().is_none() {
-      return;
-    }
-
-    let props = DWM_THUMBNAIL_PROPERTIES {
-      dwFlags: DWM_TNP_VISIBLE,
-      fVisible: false.into(),
-      ..Default::default()
-    };
-    let _ = self.thumbnail.update(&props);
-  }
-
-  fn set_opacity(&mut self, opacity: u8) {
-    if self.opacity == opacity {
-      return;
-    }
-
-    let props = DWM_THUMBNAIL_PROPERTIES {
-      dwFlags: DWM_TNP_OPACITY,
-      opacity,
-      ..Default::default()
-    };
-    if self.thumbnail.update(&props).is_ok() {
-      self.opacity = opacity;
-    }
-  }
 }
 
 /// `alpha` scaled by `frac` (0.0–1.0).
@@ -147,14 +66,13 @@ fn ring_rects(
   let ring_frame = map_rect(ring_rest, window_rest, frame, scale);
   let visible = ring_frame.intersection(panel)?.intersection(monitor)?;
 
-  Some(placed_rects(
+  placed_rects(
     &ring_frame,
     &visible,
-    scale,
     (ring_rest.width(), ring_rest.height()),
     RECT::default(),
     origin,
-  ))
+  )
 }
 
 /// Positioning strategy for a [`WorkspaceSurrogate`].
@@ -462,7 +380,12 @@ impl WorkspaceSurrogate {
       return true;
     }
 
-    self.ring = RingCopy::register(self.hwnd(), source, rest);
+    self.ring =
+      Thumbnail::register(self.hwnd(), source).map(|thumbnail| RingCopy {
+        thumbnail,
+        source: source.0,
+        rest: rest.clone(),
+      });
     self.ring.is_some()
   }
 
@@ -473,11 +396,6 @@ impl WorkspaceSurrogate {
     self.ring.is_some()
   }
 
-  /// Stops drawing the ring, e.g. as the border is switched off.
-  pub fn drop_ring(&mut self) {
-    self.ring = None;
-  }
-
   /// Brings the ring copy to full opacity over the still-shown ring it
   /// duplicates, so the real one can be concealed once this has been
   /// composited, without a frame showing neither.
@@ -486,14 +404,14 @@ impl WorkspaceSurrogate {
   /// ring looks like one.
   pub fn cover_ring(&mut self) {
     if let Some(ring) = &mut self.ring {
-      ring.set_opacity(u8::MAX);
+      let _ = ring.thumbnail.set_opacity(u8::MAX);
     }
   }
 
   /// Hides the ring, e.g. as its window leaves the screen for good.
   pub fn hide_ring(&mut self) {
     if let Some(ring) = &mut self.ring {
-      ring.hide();
+      ring.thumbnail.hide();
     }
   }
 
@@ -519,8 +437,10 @@ impl WorkspaceSurrogate {
       monitor,
       (self.viewport.left, self.viewport.top),
     ) {
-      Some((rc_src, rc_dst)) => ring.show(rc_src, rc_dst),
-      None => ring.hide(),
+      Some((rc_src, rc_dst)) => {
+        let _ = ring.thumbnail.show(rc_src, rc_dst);
+      }
+      None => ring.thumbnail.hide(),
     }
   }
 
@@ -528,7 +448,7 @@ impl WorkspaceSurrogate {
   fn set_opacities(&mut self, window: u8, ring: u8) {
     self.inner.set_window_opacity(window);
     if let Some(copy) = &mut self.ring {
-      copy.set_opacity(ring);
+      let _ = copy.thumbnail.set_opacity(ring);
     }
   }
 
@@ -608,14 +528,16 @@ impl WorkspaceSurrogate {
       }
       SurrogateMode::Live => (&shown, (visible.left, visible.top)),
     };
-    let (rc_src, rc_dst) = placed_rects(
+    let Some((rc_src, rc_dst)) = placed_rects(
       frame,
       sampled,
-      scale,
       (self.rect.width(), self.rect.height()),
       self.border_inset,
       origin,
-    );
+    ) else {
+      self.clear_frame();
+      return false;
+    };
     self.inner.set_thumbnail_rects(rc_src, rc_dst);
     self.place_ring(frame, scale, &panel, monitor);
 
@@ -687,7 +609,7 @@ impl WorkspaceSurrogate {
   /// [`prepare_hand_back`]: WorkspaceSurrogate::prepare_hand_back
   pub fn hide_thumbnail(&mut self) {
     self.restore_alpha();
-    self.inner.set_thumbnail_visible(false);
+    self.inner.hide_thumbnail();
   }
 
   /// Shows the surrogate with the thumbnail at the window's natural

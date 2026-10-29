@@ -7,11 +7,7 @@ use windows::{
   core::w,
   Win32::{
     Foundation::{BOOL, HWND, POINT, RECT},
-    Graphics::Dwm::{
-      DwmSetWindowAttribute, DWMWA_CLOAK, DWM_THUMBNAIL_PROPERTIES,
-      DWM_TNP_OPACITY, DWM_TNP_RECTDESTINATION, DWM_TNP_RECTSOURCE,
-      DWM_TNP_SOURCECLIENTAREAONLY, DWM_TNP_VISIBLE,
-    },
+    Graphics::Dwm::{DwmSetWindowAttribute, DWMWA_CLOAK},
     UI::WindowsAndMessaging::{
       CreateWindowExW, DestroyWindow, ShowWindow, SW_SHOWNOACTIVATE,
       WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW,
@@ -22,7 +18,7 @@ use windows::{
 
 use crate::{
   companion::Companion,
-  native_surrogate::DwmThumbnail,
+  dwm_thumbnail::Thumbnail,
   overview_layout::{RectF, Tile},
   surface::Surface,
   window_class, OverviewOverlay, OverviewOverlayKind, OverviewWindow,
@@ -81,77 +77,6 @@ fn create_picture_window() -> Option<HWND> {
     );
     ShowWindow(hwnd, SW_SHOWNOACTIVATE);
     Some(hwnd)
-  }
-}
-
-/// A DWM thumbnail of some window on the overview.
-pub(crate) struct Thumbnail {
-  handle: DwmThumbnail,
-
-  /// Last `(source, destination, opacity)` applied, to skip unchanged
-  /// updates on every frame.
-  placed: Option<(RECT, RECT, u8)>,
-}
-
-impl Thumbnail {
-  /// Registers a thumbnail of `source` on `dest`, hidden until placed.
-  /// Thumbnails stack in the order they are registered.
-  pub fn register(dest: HWND, source: HWND) -> Option<Self> {
-    let handle = DwmThumbnail::register(dest, source)?;
-
-    let mut thumbnail = Self {
-      handle,
-      placed: Some((RECT::default(), RECT::default(), 0)),
-    };
-    thumbnail.hide();
-    Some(thumbnail)
-  }
-
-  /// Shows `source` (in the source window's coordinates) at `dest`, cut
-  /// to the part of `dest` inside `clip`.
-  pub fn place(
-    &mut self,
-    source: RECT,
-    dest: RECT,
-    clip: &RECT,
-    opacity: u8,
-  ) {
-    let Some((source, dest)) = clip_rects(source, dest, clip) else {
-      self.hide();
-      return;
-    };
-
-    if self.placed == Some((source, dest, opacity)) {
-      return;
-    }
-    self.placed = Some((source, dest, opacity));
-
-    let props = DWM_THUMBNAIL_PROPERTIES {
-      dwFlags: DWM_TNP_RECTDESTINATION
-        | DWM_TNP_RECTSOURCE
-        | DWM_TNP_OPACITY
-        | DWM_TNP_VISIBLE
-        | DWM_TNP_SOURCECLIENTAREAONLY,
-      rcDestination: dest,
-      rcSource: source,
-      opacity,
-      fVisible: BOOL::from(opacity > 0 && dest.right > dest.left),
-      fSourceClientAreaOnly: false.into(),
-    };
-    let _ = self.handle.update(&props);
-  }
-
-  pub fn hide(&mut self) {
-    if self.placed.take().is_none() {
-      return;
-    }
-
-    let props = DWM_THUMBNAIL_PROPERTIES {
-      dwFlags: DWM_TNP_VISIBLE,
-      fVisible: false.into(),
-      ..Default::default()
-    };
-    let _ = self.handle.update(&props);
   }
 }
 
@@ -512,50 +437,6 @@ pub(crate) fn visible_frame_on_screen(hwnd: HWND) -> Option<RectF> {
   })
 }
 
-/// `dest` cut to the part inside `clip`, and `source` cut by the same
-/// share, or `None` when nothing of `dest` is inside.
-///
-/// DWM draws a thumbnail wherever its destination is, also past its host
-/// window, so a card running off the overview would show on the monitor
-/// beside it.
-#[allow(clippy::cast_possible_truncation)]
-fn clip_rects(
-  source: RECT,
-  dest: RECT,
-  clip: &RECT,
-) -> Option<(RECT, RECT)> {
-  let visible = RECT {
-    left: dest.left.max(clip.left),
-    top: dest.top.max(clip.top),
-    right: dest.right.min(clip.right),
-    bottom: dest.bottom.min(clip.bottom),
-  };
-
-  if visible.right <= visible.left || visible.bottom <= visible.top {
-    return None;
-  }
-
-  if visible == dest {
-    return Some((source, dest));
-  }
-
-  let scale_x = f64::from(source.right - source.left)
-    / f64::from(dest.right - dest.left);
-  let scale_y = f64::from(source.bottom - source.top)
-    / f64::from(dest.bottom - dest.top);
-  let scaled =
-    |pixels: i32, scale: f64| (f64::from(pixels) * scale).round() as i32;
-
-  let source = RECT {
-    left: source.left + scaled(visible.left - dest.left, scale_x),
-    top: source.top + scaled(visible.top - dest.top, scale_y),
-    right: source.right - scaled(dest.right - visible.right, scale_x),
-    bottom: source.bottom - scaled(dest.bottom - visible.bottom, scale_y),
-  };
-
-  Some((source, visible))
-}
-
 pub(crate) fn to_win32(rect: &RectF) -> RECT {
   let rect = rect.to_rect();
   RECT {
@@ -575,7 +456,7 @@ pub(crate) fn to_opacity(opacity: f32) -> u8 {
 mod tests {
   use windows::Win32::Foundation::RECT;
 
-  use super::{around, clip_rects};
+  use super::around;
   use crate::overview_layout::RectF;
 
   fn rect(left: i32, top: i32, right: i32, bottom: i32) -> RECT {
@@ -586,43 +467,6 @@ mod tests {
       bottom,
     }
   }
-
-  #[test]
-  fn inside_the_clip_is_left_as_is() {
-    let clip = rect(0, 0, 1920, 1080);
-
-    assert_eq!(
-      clip_rects(rect(0, 0, 800, 600), rect(10, 10, 410, 310), &clip),
-      Some((rect(0, 0, 800, 600), rect(10, 10, 410, 310)))
-    );
-  }
-
-  #[test]
-  fn past_the_clip_is_cut_with_its_source() {
-    // Half-size: the 100 on-screen pixels past the right edge are 200 of
-    // the source.
-    let clip = rect(0, 0, 1920, 1080);
-
-    assert_eq!(
-      clip_rects(rect(0, 0, 800, 600), rect(1720, 0, 2120, 300), &clip),
-      Some((rect(0, 0, 400, 600), rect(1720, 0, 1920, 300)))
-    );
-    assert_eq!(
-      clip_rects(rect(0, 0, 800, 600), rect(-100, 900, 300, 1200), &clip),
-      Some((rect(200, 0, 800, 360), rect(0, 900, 300, 1080)))
-    );
-  }
-
-  #[test]
-  fn wholly_outside_the_clip_shows_nothing() {
-    let clip = rect(0, 0, 1920, 1080);
-
-    assert_eq!(
-      clip_rects(rect(0, 0, 800, 600), rect(1920, 0, 2320, 300), &clip),
-      None
-    );
-  }
-
   #[test]
   fn an_overlay_shows_around_its_window_as_scaled() {
     let screen = RectF::new(100.0, 100.0, 800.0, 600.0);

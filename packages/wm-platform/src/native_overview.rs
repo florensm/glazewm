@@ -58,6 +58,7 @@ use windows::{
 
 use self::{ghost::Ghost, overlays::Overlays};
 use crate::{
+  dwm_thumbnail::Thumbnail,
   overview_chrome::{picture_rect, CardPicture, SearchControls},
   overview_layout::{
     Camera, CardMetrics, CardView, GridCells, Placement, RectF, Spring,
@@ -69,7 +70,7 @@ use crate::{
     ShortcutGroup,
   },
   overview_tab_bars::CardTabBar,
-  overview_thumbnails::{Picture, Preview, Thumbnail},
+  overview_thumbnails::{Picture, Preview},
   platform_impl::{self, composition::OverviewBackdrop},
   window_class::{self, mouse_position},
   window_icons, DxgiVsyncWaiter, OverviewAction, OverviewFrame,

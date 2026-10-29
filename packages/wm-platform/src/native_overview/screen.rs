@@ -16,6 +16,7 @@ use super::{
   scenes::scene_window_rect, to_ms, PlaceContext, Screen, ScreenFrame,
 };
 use crate::{
+  dwm_thumbnail::Thumbnail,
   overview_chrome::{
     draw_card, draw_search, draw_sheet, picture_size, sheet_size,
   },
@@ -26,7 +27,7 @@ use crate::{
   },
   overview_scene::SceneWindow,
   overview_state::{Control, Hit, Mode, ScreenFocus},
-  overview_thumbnails::{Picture, Thumbnail},
+  overview_thumbnails::Picture,
   platform_impl::composition::OverviewBackdrop,
   tab_layout::TabHit,
   OverviewLayoutMode, OverviewStyle, OverviewWorkspace,

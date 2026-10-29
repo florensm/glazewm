@@ -9,6 +9,7 @@ use super::{
   scenes::scene_window_rect, to_f32_size, PlaceContext, Screen,
 };
 use crate::{
+  dwm_thumbnail::Thumbnail,
   overview_chrome::{
     card_radius, draw_label, draw_note, draw_tag, label_size, note_size,
     tag_size, with_alpha, LabelPicture, SliceLook, TagPicture,
@@ -18,7 +19,7 @@ use crate::{
   },
   overview_overlays::{Highlight, Tag},
   overview_state::Mode,
-  overview_thumbnails::{Picture, Thumbnail},
+  overview_thumbnails::Picture,
   OverviewLayoutMode, OverviewStyle,
 };
 

@@ -49,6 +49,8 @@ pub use native_drop_indicator::NativeDropIndicator;
 #[cfg(target_os = "windows")]
 mod companion;
 #[cfg(target_os = "windows")]
+mod dwm_thumbnail;
+#[cfg(target_os = "windows")]
 mod native_surrogate;
 #[cfg(target_os = "windows")]
 mod overlay_window;

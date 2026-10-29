@@ -4,9 +4,10 @@
 
 use super::Screen;
 use crate::{
+  dwm_thumbnail::Thumbnail,
   overview_chrome::{draw_ghost, GHOST_SIZE},
   overview_layout::{cover_crop, RectF, Spring, Tile},
-  overview_thumbnails::{Picture, Preview, Thumbnail},
+  overview_thumbnails::{Picture, Preview},
   OverviewStyle,
 };
 
