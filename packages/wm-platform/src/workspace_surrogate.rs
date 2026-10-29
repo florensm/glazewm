@@ -34,22 +34,6 @@ fn scale_alpha(alpha: u8, frac: f32) -> u8 {
   (f32::from(alpha) * frac.clamp(0.0, 1.0)).round() as u8
 }
 
-/// Where `item`, placed relative to `rest`, is once `rest` has moved to
-/// `frame`, scaled `scale` times.
-#[allow(clippy::cast_possible_truncation, clippy::cast_precision_loss)]
-fn map_rect(item: &Rect, rest: &Rect, frame: &Rect, scale: f32) -> Rect {
-  let map = |value: i32, from: i32, to: i32| {
-    to + ((value - from) as f32 * scale).round() as i32
-  };
-
-  Rect::from_ltrb(
-    map(item.left, rest.left, frame.left),
-    map(item.top, rest.top, frame.top),
-    map(item.right, rest.left, frame.left),
-    map(item.bottom, rest.top, frame.top),
-  )
-}
-
 /// `(rcSource, rcDestination)` drawing a ring that rests at `ring_rest`,
 /// around a window resting at `window_rest`, with that window at `frame`,
 /// `scale` times its size at rest, cut at `panel` and `monitor`, into a
@@ -63,7 +47,14 @@ fn ring_rects(
   monitor: &Rect,
   origin: (i32, i32),
 ) -> Option<(RECT, RECT)> {
-  let ring_frame = map_rect(ring_rest, window_rest, frame, scale);
+  // Scaled about the window's top-left like the window, then moved with
+  // it.
+  let scaled =
+    ring_rest.scale_about(window_rest.left, window_rest.top, scale);
+  let ring_frame = scaled.translate_to_coordinates(
+    scaled.x() + frame.left - window_rest.left,
+    scaled.y() + frame.top - window_rest.top,
+  );
   let visible = ring_frame.intersection(panel)?.intersection(monitor)?;
 
   placed_rects(
