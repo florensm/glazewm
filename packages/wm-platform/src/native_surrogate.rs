@@ -4,11 +4,6 @@ use windows::{
   core::{w, PCWSTR},
   Win32::{
     Foundation::{HWND, RECT},
-    Graphics::Dwm::{
-      DwmSetWindowAttribute, DWMWA_BORDER_COLOR, DWMWA_COLOR_NONE,
-      DWMWA_WINDOW_CORNER_PREFERENCE, DWMWCP_DONOTROUND, DWMWCP_ROUND,
-      DWMWCP_ROUNDSMALL,
-    },
     UI::WindowsAndMessaging::{
       BeginDeferWindowPos, DeferWindowPos, DestroyWindow,
       EndDeferWindowPos, GetClassNameW, SetWindowPos,
@@ -22,7 +17,7 @@ use windows::{
 use crate::{
   companion::Companion,
   dwm_thumbnail::{clip_rects, Look, Thumbnail},
-  platform_impl::composition::SurrogateFill,
+  platform_impl::{self, composition::SurrogateFill},
   window_class, Color, CornerStyle, Rect,
 };
 
@@ -48,64 +43,23 @@ pub(crate) fn is_surrogate(hwnd: HWND) -> bool {
   unsafe { CLASS_NAME.as_wide() == name }
 }
 
-/// Applies the DWM corner preference matching `corner_style` to `hwnd`.
+/// Rounds the surrogate's corners like the window it stands in for, and
+/// drops the 1px border Windows 11 draws around it.
 ///
-/// `WS_POPUP | WS_EX_TOOLWINDOW` windows are not rounded by DWM by default
-/// — unlike normal app windows, which are rounded on Windows 11.
-/// Explicitly setting the corner preference on the surrogate keeps it
-/// visually consistent with the real managed window it overlays.
-///
-/// `CornerStyle::Default` maps to `DWMWCP_ROUND` rather than
-/// `DWMWCP_DEFAULT` because DWM's heuristic default for popup/tool windows
-/// is no rounding, while GlazeWM-managed app windows default to rounded on
-/// Windows 11.
-///
-/// This is a no-op on Windows 10, where `DwmSetWindowAttribute` silently
-/// returns an error for unknown attributes.
-fn apply_corner_preference(hwnd: HWND, corner_style: &CornerStyle) {
-  let pref = match corner_style {
-    CornerStyle::Default | CornerStyle::Rounded => DWMWCP_ROUND,
-    CornerStyle::Square => DWMWCP_DONOTROUND,
-    CornerStyle::SmallRounded => DWMWCP_ROUNDSMALL,
+/// DWM doesn't round popups by default, unlike app windows, so
+/// `CornerStyle::Default` rounds here. With its border left on, the border
+/// overlay's ring shows a second line inside it for every transition, as
+/// it would on the real window (see `set_native_border_hidden`). Both are
+/// no-ops before Windows 11.
+fn style_like_window(hwnd: HWND, corner_style: CornerStyle) {
+  let corner_style = match corner_style {
+    CornerStyle::Default => CornerStyle::Rounded,
+    style => style,
   };
-  // SAFETY: `hwnd` is a valid window handle. `pref` is a stack-allocated
-  // i32.
-  unsafe {
-    let _ = DwmSetWindowAttribute(
-      hwnd,
-      DWMWA_WINDOW_CORNER_PREFERENCE,
-      std::ptr::from_ref(&pref.0).cast(),
-      u32::try_from(std::mem::size_of::<i32>()).unwrap_or(u32::MAX),
-    );
-  }
-}
 
-/// Suppresses the surrogate's own Windows 11 border.
-///
-/// A surrogate is a rounded `WS_POPUP`, which is enough for DWM to draw
-/// its 1px border around it. During an animation the real window is
-/// cloaked and the surrogate is what's on screen, so without this the
-/// border overlay's ring has a second line inside it for the length of
-/// every transition -- the same artifact [`set_native_border_hidden`]
-/// removes on the real window, applied to the stand-in that replaces it.
-///
-/// This is a no-op before Windows 11 (build 22000), which draws no such
-/// border.
-///
-/// [`set_native_border_hidden`]:
-///     crate::NativeWindowWindowsExt::set_native_border_hidden
-fn suppress_native_border(hwnd: HWND) {
-  // SAFETY: `hwnd` is a valid window handle. `color` is a stack-allocated
-  // `u32` live for the duration of the call.
-  unsafe {
-    let color = DWMWA_COLOR_NONE;
-    let _ = DwmSetWindowAttribute(
-      hwnd,
-      DWMWA_BORDER_COLOR,
-      std::ptr::from_ref(&color).cast(),
-      u32::try_from(std::mem::size_of::<u32>()).unwrap_or(u32::MAX),
-    );
-  }
+  let window = platform_impl::NativeWindow::new(hwnd.0);
+  let _ = window.set_corner_style(&corner_style);
+  let _ = window.set_native_border_hidden(true);
 }
 
 /// `(rcSource, rcDestination)` sampling `width` × `height` of a window's
@@ -618,8 +572,7 @@ impl NativeSurrogate {
       "surrogate",
     )?;
 
-    apply_corner_preference(hwnd, corner_style);
-    suppress_native_border(hwnd);
+    style_like_window(hwnd, *corner_style);
 
     // Register the DWM thumbnail at `thumbnail_rect` dimensions. For
     // shrinking animations this equals `source_rect` so the thumbnail
@@ -728,8 +681,7 @@ impl NativeSurrogate {
     // A fill left on from the previous session must not show before this
     // one decides whether it wants one.
     self.set_fill_color(None);
-    apply_corner_preference(self.hwnd(), corner_style);
-    suppress_native_border(self.hwnd());
+    style_like_window(self.hwnd(), *corner_style);
     self.border_inset = border_inset;
 
     let logical_src = to_logical(source_rect, &border_inset);
