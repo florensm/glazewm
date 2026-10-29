@@ -276,9 +276,10 @@ use wm_platform::{
 
 #[cfg(target_os = "windows")]
 use crate::commands::general::{
-  apply_focus_effects, border_hidden_for_fullscreen, overlay_z_anchor,
-  resync_settling_overlays, surrogate_effects_for,
-  upsert_live_backdrop_overlay, upsert_overlay,
+  apply_focus_effects, backdrop_overlay_params_for,
+  border_hidden_for_fullscreen, border_overlay_params_for,
+  overlay_z_anchor, resync_settling_overlays, surrogate_effects_for,
+  track_overlay, upsert_live_backdrop_overlay, upsert_overlay,
   upsert_pinned_border_overlay, SyncableOverlay,
 };
 #[cfg(target_os = "windows")]
@@ -1433,45 +1434,23 @@ impl AnimationManager {
         if let Some(session) =
           state.animation_manager.resize_sessions.get(id)
         {
-          let anchor = session.surrogate_hwnd();
-          let rect = session.current_rect();
+          let placement =
+            session.surrogate_hwnd().zip(session.current_rect());
 
-          if let Some(params) = session.backdrop_overlay_params() {
-            match (anchor, rect.clone()) {
-              (Some(anchor), Some(rect)) => upsert_overlay(
-                &mut state.backdrop_overlays,
-                *id,
-                params,
-                &rect,
-                anchor,
-                &mut backdrop_batch,
-              ),
-              _ => {
-                if let Some(overlay) = state.backdrop_overlays.get_mut(id)
-                {
-                  overlay.hide();
-                }
-              }
-            }
-          }
-
-          if let Some(params) = session.border_overlay_params() {
-            match (anchor, rect) {
-              (Some(anchor), Some(rect)) => upsert_overlay(
-                &mut state.border_overlays,
-                *id,
-                params,
-                &rect,
-                anchor,
-                &mut border_batch,
-              ),
-              _ => {
-                if let Some(overlay) = state.border_overlays.get_mut(id) {
-                  overlay.hide();
-                }
-              }
-            }
-          }
+          track_overlay(
+            &mut state.backdrop_overlays,
+            *id,
+            session.backdrop_overlay_params(),
+            placement.clone(),
+            &mut backdrop_batch,
+          );
+          track_overlay(
+            &mut state.border_overlays,
+            *id,
+            session.border_overlay_params(),
+            placement,
+            &mut border_batch,
+          );
         }
       }
 
@@ -2117,41 +2096,20 @@ impl AnimationManager {
           .as_ref()
           .map(|rect| crate::tab_bars::with_tab_bar_of(state, *id, rect));
 
-        if let Some(params) = session.backdrop_overlay_params() {
-          match (anchor, rect.clone()) {
-            (Some(anchor), Some(rect)) => upsert_overlay(
-              &mut state.backdrop_overlays,
-              *id,
-              params,
-              &rect,
-              anchor,
-              &mut fade_tail_batch,
-            ),
-            _ => {
-              if let Some(overlay) = state.backdrop_overlays.get_mut(id) {
-                overlay.hide();
-              }
-            }
-          }
-        }
-
-        if let Some(params) = session.border_overlay_params() {
-          match (anchor, border_rect) {
-            (Some(anchor), Some(rect)) => upsert_overlay(
-              &mut state.border_overlays,
-              *id,
-              params,
-              &rect,
-              anchor,
-              &mut border_fade_tail_batch,
-            ),
-            _ => {
-              if let Some(overlay) = state.border_overlays.get_mut(id) {
-                overlay.hide();
-              }
-            }
-          }
-        }
+        track_overlay(
+          &mut state.backdrop_overlays,
+          *id,
+          session.backdrop_overlay_params(),
+          anchor.zip(rect),
+          &mut fade_tail_batch,
+        );
+        track_overlay(
+          &mut state.border_overlays,
+          *id,
+          session.border_overlay_params(),
+          anchor.zip(border_rect),
+          &mut border_fade_tail_batch,
+        );
       }
       fade_tail_batch.commit();
       border_fade_tail_batch.commit();
@@ -2386,49 +2344,37 @@ impl AnimationManager {
       // Covers both backdrop and border overlays despite the name -- see
       // the comment above where this is built.
       for (id, rect, anchor) in &incoming_backdrop_windows {
-        let effect_cfg = if Some(*id) == focused_id {
-          &config.value.window_effects.focused_window
-        } else {
-          &config.value.window_effects.other_windows
-        };
+        let is_focused = Some(*id) == focused_id;
 
-        let corner_radius = effect_cfg.window_corner_radius_px();
-
-        if let Some(tint) = effect_cfg.backdrop.overlay_tint() {
-          let params =
-            effect_cfg.backdrop.to_overlay_params(tint, corner_radius);
-
-          match state.backdrop_overlays.entry(*id) {
-            std::collections::hash_map::Entry::Occupied(e) => {
-              let overlay = e.into_mut();
-              overlay.apply(params);
-              overlay.defer_rect(&mut pre_show_batch, rect, *anchor);
-            }
-            std::collections::hash_map::Entry::Vacant(e) => {
-              if let Ok(overlay) =
-                NativeBackdropOverlay::create(rect, params, *anchor)
-              {
-                e.insert(overlay);
-              }
-            }
-          }
+        if let Some(params) =
+          backdrop_overlay_params_for(is_focused, config)
+        {
+          upsert_overlay(
+            &mut state.backdrop_overlays,
+            *id,
+            params,
+            rect,
+            *anchor,
+            &mut pre_show_batch,
+          );
           pre_shown = true;
         }
 
-        let border_color = effect_cfg.border.abgr_color().filter(|_| {
-          !state
-            .container_by_id(*id)
-            .and_then(|container| container.as_window_container().ok())
-            .is_some_and(|window| {
-              border_hidden_for_fullscreen(&window, config)
-            })
-        });
+        let border_params = border_overlay_params_for(is_focused, config)
+          .filter(|_| {
+            !state
+              .container_by_id(*id)
+              .and_then(|container| container.as_window_container().ok())
+              .is_some_and(|window| {
+                border_hidden_for_fullscreen(&window, config)
+              })
+          });
 
         // A ring parked for the switch is revealed under its identical
         // copy here, which goes with the surrogate after two
         // flushed frames. One the window doesn't end with goes
         // without being revealed.
-        let Some(color) = border_color else {
+        let Some(params) = border_params else {
           if let Some(overlay) = state
             .border_overlays
             .get_mut(id)
@@ -2439,23 +2385,14 @@ impl AnimationManager {
           continue;
         };
 
-        let params =
-          effect_cfg.border.to_overlay_params(color, corner_radius);
-
-        match state.border_overlays.entry(*id) {
-          std::collections::hash_map::Entry::Occupied(e) => {
-            let overlay = e.into_mut();
-            overlay.apply(params);
-            overlay.defer_rect(&mut border_pre_show_batch, rect, *anchor);
-          }
-          std::collections::hash_map::Entry::Vacant(e) => {
-            if let Ok(overlay) =
-              NativeBorderOverlay::create(rect, params, *anchor)
-            {
-              e.insert(overlay);
-            }
-          }
-        }
+        upsert_overlay(
+          &mut state.border_overlays,
+          *id,
+          params,
+          rect,
+          *anchor,
+          &mut border_pre_show_batch,
+        );
         pre_shown = true;
       }
       pre_show_batch.commit();

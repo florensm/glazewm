@@ -1459,41 +1459,31 @@ fn redraw_containers(
           if let Some(session) =
             state.animation_manager.resize_sessions.get(&window.id())
           {
-            if let (Some(params), Some(anchor), Some(rect)) = (
-              session.backdrop_overlay_params(),
-              session.surrogate_hwnd(),
-              session.current_rect(),
-            ) {
-              upsert_overlay(
-                &mut state.backdrop_overlays,
-                window.id(),
-                params,
-                &rect,
-                anchor,
-                &mut cloak_backdrop_batch,
-              );
-            }
+            let anchor = session.surrogate_hwnd();
+            let rect = session.current_rect();
             // Framed with its stack's tab bar, which goes along with it.
-            if let (Some(params), Some(anchor), Some(rect)) = (
-              session.border_overlay_params(),
-              session.surrogate_hwnd(),
-              session.current_rect().map(|rect| {
-                crate::tab_bars::animated_with_tab_bar(
-                  state,
-                  window.id(),
-                  &rect,
-                )
-              }),
-            ) {
-              upsert_overlay(
-                &mut state.border_overlays,
+            let border_rect = rect.as_ref().map(|rect| {
+              crate::tab_bars::animated_with_tab_bar(
+                state,
                 window.id(),
-                params,
-                &rect,
-                anchor,
-                &mut cloak_border_batch,
-              );
-            }
+                rect,
+              )
+            });
+
+            track_overlay(
+              &mut state.backdrop_overlays,
+              window.id(),
+              session.backdrop_overlay_params(),
+              anchor.zip(rect),
+              &mut cloak_backdrop_batch,
+            );
+            track_overlay(
+              &mut state.border_overlays,
+              window.id(),
+              session.border_overlay_params(),
+              anchor.zip(border_rect),
+              &mut cloak_border_batch,
+            );
           }
           if let Some(session) = state
             .animation_manager
@@ -1820,41 +1810,20 @@ fn redraw_containers(
         }
       }
 
-      if let Some(params) = session.backdrop_overlay_params() {
-        match (anchor, rect.clone()) {
-          (Some(anchor), Some(rect)) => upsert_overlay(
-            &mut state.backdrop_overlays,
-            *id,
-            params,
-            &rect,
-            anchor,
-            &mut batch,
-          ),
-          _ => {
-            if let Some(overlay) = state.backdrop_overlays.get_mut(id) {
-              overlay.hide();
-            }
-          }
-        }
-      }
-
-      if let Some(params) = session.border_overlay_params() {
-        match (anchor, border_rect) {
-          (Some(anchor), Some(rect)) => upsert_overlay(
-            &mut state.border_overlays,
-            *id,
-            params,
-            &rect,
-            anchor,
-            &mut batch,
-          ),
-          _ => {
-            if let Some(overlay) = state.border_overlays.get_mut(id) {
-              overlay.hide();
-            }
-          }
-        }
-      }
+      track_overlay(
+        &mut state.backdrop_overlays,
+        *id,
+        session.backdrop_overlay_params(),
+        anchor.zip(rect),
+        &mut batch,
+      );
+      track_overlay(
+        &mut state.border_overlays,
+        *id,
+        session.border_overlay_params(),
+        anchor.zip(border_rect),
+        &mut batch,
+      );
     }
     drop(overlay_scope);
 
@@ -2381,6 +2350,33 @@ pub(crate) fn upsert_overlay<O: SyncableOverlay>(
     anchor,
     batch,
   );
+}
+
+/// Shows `window_id`'s overlay with `params` at `placement`'s rect behind
+/// its anchor, tracking an animation's surrogate, or hides it while the
+/// surrogate has nowhere to be. Does nothing without `params`.
+#[cfg(target_os = "windows")]
+pub(crate) fn track_overlay<O: SyncableOverlay>(
+  overlays: &mut std::collections::HashMap<uuid::Uuid, O>,
+  window_id: uuid::Uuid,
+  params: Option<O::Params>,
+  placement: Option<(HWND, Rect)>,
+  batch: &mut SurrogateBatch,
+) {
+  let Some(params) = params else {
+    return;
+  };
+
+  match placement {
+    Some((anchor, rect)) => {
+      upsert_overlay(overlays, window_id, params, &rect, anchor, batch);
+    }
+    None => {
+      if let Some(overlay) = overlays.get_mut(&window_id) {
+        overlay.hide();
+      }
+    }
+  }
 }
 
 /// [`upsert_overlay`] for a window cut off at the edges of `clip`, e.g. a
