@@ -6,10 +6,11 @@ use windows::{
     Foundation::HWND,
     UI::WindowsAndMessaging::{
       BeginDeferWindowPos, CreateWindowExW, DeferWindowPos, DestroyWindow,
-      EndDeferWindowPos, GetClassNameW, GetWindow, SetWindowPos,
-      ShowWindow, GW_HWNDPREV, SWP_HIDEWINDOW, SWP_NOACTIVATE, SWP_NOMOVE,
+      EndDeferWindowPos, GetClassNameW, GetWindow,
+      SetLayeredWindowAttributes, SetWindowPos, ShowWindow, GW_HWNDPREV,
+      LWA_ALPHA, SWP_HIDEWINDOW, SWP_NOACTIVATE, SWP_NOMOVE,
       SWP_NOSENDCHANGING, SWP_NOSIZE, SWP_NOZORDER, SWP_SHOWWINDOW,
-      SW_HIDE, WS_EX_NOACTIVATE, WS_EX_NOREDIRECTIONBITMAP,
+      SW_HIDE, WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_NOREDIRECTIONBITMAP,
       WS_EX_TOOLWINDOW, WS_EX_TRANSPARENT, WS_POPUP,
     },
   },
@@ -50,6 +51,13 @@ impl OverlayKind {
       // SAFETY: `class_name` returns a static, null-terminated literal.
       unsafe { class_name.as_wide() == name }
     })
+  }
+
+  /// Whether its window is layered, so it can be hidden by its alpha
+  /// while thumbnails of it still draw it (see
+  /// [`OverlayWindow::set_alpha`]).
+  fn is_layered(self) -> bool {
+    matches!(self, Self::Border)
   }
 
   fn registered(self) -> &'static OnceLock<()> {
@@ -115,10 +123,13 @@ impl OverlayWindow {
     // treats them as hung. A hit-testable overlay shows the busy cursor
     // and swallows clicks. `WS_EX_NOREDIRECTIONBITMAP` skips the GDI
     // surface the composition visual tree replaces.
-    let ex_style = WS_EX_NOACTIVATE
+    let mut ex_style = WS_EX_NOACTIVATE
       | WS_EX_TOOLWINDOW
       | WS_EX_TRANSPARENT
       | WS_EX_NOREDIRECTIONBITMAP;
+    if kind.is_layered() {
+      ex_style |= WS_EX_LAYERED;
+    }
 
     // SAFETY: The class is registered above. No parent `HWND` is needed.
     let hwnd = unsafe {
@@ -145,12 +156,19 @@ impl OverlayWindow {
       )));
     }
 
-    Ok(Self {
+    let window = Self {
       hwnd: hwnd.0,
       kind,
       anchor: anchor.0,
       is_visible: false,
-    })
+    };
+
+    // A layered window shows nothing until its alpha is first set.
+    if kind.is_layered() {
+      window.set_alpha(u8::MAX)?;
+    }
+
+    Ok(window)
   }
 
   pub(crate) fn hwnd(&self) -> HWND {
@@ -258,6 +276,22 @@ impl OverlayWindow {
 
     self.anchor = anchor.0;
     Ok(())
+  }
+
+  /// Sets what DWM shows of a layered window on screen, from transparent
+  /// (`0`) to opaque. Thumbnails of the window leave this alpha out, so at
+  /// `0` they still draw it while the screen shows nothing.
+  pub(crate) fn set_alpha(&self, alpha: u8) -> crate::Result<()> {
+    // SAFETY: `self.hwnd()` is valid for the lifetime of `self`.
+    unsafe {
+      SetLayeredWindowAttributes(self.hwnd(), None, alpha, LWA_ALPHA)
+    }
+    .map_err(|err| {
+      crate::Error::Platform(format!(
+        "{} alpha change failed: {err}.",
+        self.kind.label()
+      ))
+    })
   }
 
   pub(crate) fn hide(&mut self) {
@@ -420,5 +454,50 @@ pub trait Overlay: Sized {
   /// `params`.
   fn bounds(rect: &Rect, _params: &Self::Params) -> Rect {
     rect.clone()
+  }
+}
+
+#[cfg(test)]
+mod tests {
+  use super::{OverlayKind, OverlayWindow, HWND};
+  use crate::{platform_impl, Rect};
+
+  /// A hidden overlay window off-screen, or `None` without an interactive
+  /// window station.
+  fn create(kind: OverlayKind) -> Option<OverlayWindow> {
+    OverlayWindow::create(
+      kind,
+      &Rect::from_xy(-8000, 100, 400, 300),
+      HWND(0),
+    )
+    .ok()
+  }
+
+  fn alpha(window: &OverlayWindow) -> Option<u8> {
+    platform_impl::NativeWindow::new(window.hwnd().0)
+      .layered_alpha()
+      .ok()
+      .flatten()
+  }
+
+  /// A border can be hidden by its alpha (see
+  /// `NativeBorderOverlay::park`), so it starts out layered and opaque.
+  #[test]
+  fn border_window_takes_an_alpha() {
+    let Some(window) = create(OverlayKind::Border) else {
+      return;
+    };
+    assert_eq!(alpha(&window), Some(u8::MAX));
+
+    assert!(window.set_alpha(0).is_ok());
+    assert_eq!(alpha(&window), Some(0));
+  }
+
+  #[test]
+  fn backdrop_window_is_not_layered() {
+    let Some(window) = create(OverlayKind::Backdrop) else {
+      return;
+    };
+    assert_eq!(alpha(&window), None);
   }
 }

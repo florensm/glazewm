@@ -891,15 +891,32 @@ fn redraw_containers(
         if (has_outgoing || has_incoming)
           && (direction != 0 || is_no_slide)
         {
+          park_switch_borders(
+            state,
+            &mut ws_windows,
+            focused_container.id(),
+            config,
+          );
+
           // Show outgoing surrogates before flushing: real windows are
           // still active so their DWM thumbnails are immediately
           // warm. For stationary (non-slide) styles, also show
           // incoming surrogates at their start opacity so DWM
           // warms their thumbnails before the loop.
-          for (_, entry) in &mut ws_windows {
+          for (id, entry) in &mut ws_windows {
             if let Some(s) = &mut entry.surrogate {
               if !entry.is_incoming {
                 s.show_initial();
+
+                // Covered for the flush below, so the take-over only has
+                // to conceal the real ring.
+                if state
+                  .border_overlays
+                  .get(id)
+                  .is_some_and(|o| o.is_parked() && o.is_visible())
+                {
+                  s.cover_ring();
+                }
               } else if ws_config.style != WorkspaceSwitchStyle::Slide {
                 s.show_incoming();
               }
@@ -1553,6 +1570,7 @@ fn redraw_containers(
           state
             .animation_manager
             .take_over_outgoing(window.id(), &window.native());
+          conceal_parked_border(state, window.id());
         } else if is_visible
           && state
             .animation_manager
@@ -1840,7 +1858,9 @@ fn redraw_containers(
   // have been cloaked. This removes the double-blend that would occur if
   // the surrogate's configured opacity were set before cloaking.
   #[cfg(target_os = "windows")]
-  state.animation_manager.apply_outgoing_surrogate_opacities();
+  for id in state.animation_manager.apply_outgoing_surrogate_opacities() {
+    conceal_parked_border(state, id);
+  }
 
   // Force one composited frame reflecting every `reassert_transparency`
   // call made above, deterministically closing the race against DWM's
@@ -2502,6 +2522,94 @@ fn resync_overlay_z_order<O: SyncableOverlay>(state: &mut WmState) {
   }
 }
 
+/// Parks the border ring of each window in a starting workspace switch
+/// where the window rests, for its surrogate to carry a copy of it (see
+/// `NativeBorderOverlay::park`). A window sliding in has its ring
+/// concealed until the switch ends; one sliding out shows its own until
+/// its surrogate takes over (see [`conceal_parked_border`]).
+///
+/// A surrogate in `Live` mode (with a backdrop) can't carry the ring, so
+/// it slides on its own instead (see `NativeBorderOverlay::pin_or_slide`),
+/// as it also does when a copy can't be made.
+#[cfg(target_os = "windows")]
+fn park_switch_borders(
+  state: &mut WmState,
+  ws_windows: &mut [(uuid::Uuid, WorkspaceSwitchEntry)],
+  focused_id: uuid::Uuid,
+  config: &UserConfig,
+) {
+  for (id, entry) in ws_windows {
+    let Some(surrogate) = entry
+      .surrogate
+      .as_mut()
+      .filter(|surrogate| !surrogate.is_live())
+    else {
+      continue;
+    };
+
+    let Some(window) = state
+      .container_by_id(*id)
+      .and_then(|container| container.as_window_container().ok())
+    else {
+      continue;
+    };
+
+    if border_hidden_for_fullscreen(&window, config) {
+      continue;
+    }
+
+    let (_, _, _, from) = surrogate_effects_for(entry.was_focused, config);
+    let (_, _, _, to) = surrogate_effects_for(*id == focused_id, config);
+    let Some(blend) =
+      StyleBlend::between(from, to, 0.0, NativeBorderOverlay::transparent)
+    else {
+      continue;
+    };
+
+    let rest = surrogate.rest_frame();
+    let anchor = overlay_z_anchor(&window);
+    let conceal = entry.is_incoming;
+
+    let overlay = match state.border_overlays.entry(*id) {
+      std::collections::hash_map::Entry::Occupied(e) => {
+        let overlay = e.into_mut();
+        overlay.apply_blend(blend);
+        overlay.park(&rest, anchor, conceal);
+        overlay
+      }
+      std::collections::hash_map::Entry::Vacant(e) => {
+        match NativeBorderOverlay::create_parked(
+          &rest, blend.from, anchor, conceal,
+        ) {
+          Ok(overlay) => e.insert(overlay),
+          Err(err) => {
+            debug!("Border overlay creation failed for {id}: {err}.");
+            continue;
+          }
+        }
+      }
+    };
+
+    if !surrogate.carry_ring(overlay.hwnd(), &overlay.outer_rect()) {
+      // Back to where it was: shown at rest, or hidden for one sliding in.
+      if conceal {
+        overlay.hide();
+      } else {
+        overlay.set_rect(&rest, anchor);
+      }
+    }
+  }
+}
+
+/// Conceals `window_id`'s parked border ring (see
+/// `NativeBorderOverlay::conceal`), once its surrogate shows a copy of it.
+#[cfg(target_os = "windows")]
+fn conceal_parked_border(state: &mut WmState, window_id: uuid::Uuid) {
+  if let Some(overlay) = state.border_overlays.get_mut(&window_id) {
+    overlay.conceal();
+  }
+}
+
 /// Hands the windows of a starting workspace switch that the one it cuts
 /// short still draws over to their new surrogates (see
 /// `AnimationManager::hand_over_cut_short_slide`), along with their
@@ -2526,7 +2634,12 @@ fn hand_over_cut_short_slide(
       if let Some(overlay) = state.backdrop_overlays.get_mut(&id) {
         overlay.hide();
       }
-      if let Some(overlay) = state.border_overlays.get_mut(&id) {
+      // A parked ring stays for the new surrogate's copy of it.
+      if let Some(overlay) = state
+        .border_overlays
+        .get_mut(&id)
+        .filter(|overlay| !overlay.is_parked())
+      {
         overlay.hide();
       }
       continue;

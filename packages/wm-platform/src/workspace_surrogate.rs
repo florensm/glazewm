@@ -1,7 +1,13 @@
-use windows::Win32::Foundation::{HWND, RECT};
+use windows::Win32::{
+  Foundation::{HWND, RECT},
+  Graphics::Dwm::{
+    DWM_THUMBNAIL_PROPERTIES, DWM_TNP_OPACITY, DWM_TNP_RECTDESTINATION,
+    DWM_TNP_RECTSOURCE, DWM_TNP_SOURCECLIENTAREAONLY, DWM_TNP_VISIBLE,
+  },
+};
 
 use crate::{
-  native_surrogate::{placed_rects, to_logical},
+  native_surrogate::{placed_rects, to_logical, DwmThumbnail},
   platform_impl,
   resize_session::compute_border_inset,
   CornerStyle, NativeSurrogate, NativeWindow, OpacityValue, Rect,
@@ -11,6 +17,145 @@ use crate::{
 /// Thumbnail opacity a surrogate is warmed up at under its still-shown
 /// real window: rendered by DWM, but too faint to see.
 const WARM_UP_OPACITY: u8 = 1;
+
+/// A window's border ring, drawn into its [`WorkspaceSurrogate`] as a
+/// thumbnail of the ring's own overlay window, parked where the window
+/// rests (see `NativeBorderOverlay::park`).
+///
+/// The ring then moves in the same DWM thumbnail updates as the window,
+/// rather than through the overlay's own window or visual tree, which
+/// reach DWM on schedules of their own.
+struct RingCopy {
+  thumbnail: DwmThumbnail,
+  /// The overlay window the thumbnail is of.
+  source: isize,
+  /// Where `source` is: the ring's rect while its window rests.
+  rest: Rect,
+  /// `(rcSource, rcDestination)` last applied, or `None` while hidden.
+  rects: Option<(RECT, RECT)>,
+  opacity: u8,
+}
+
+impl RingCopy {
+  /// Registers a hidden copy of `source`, which sits at `rest`, on `dest`.
+  fn register(dest: HWND, source: HWND, rest: &Rect) -> Option<Self> {
+    let thumbnail = DwmThumbnail::register(dest, source)?;
+    let props = DWM_THUMBNAIL_PROPERTIES {
+      dwFlags: DWM_TNP_VISIBLE
+        | DWM_TNP_OPACITY
+        | DWM_TNP_SOURCECLIENTAREAONLY,
+      fVisible: false.into(),
+      opacity: 0,
+      fSourceClientAreaOnly: false.into(),
+      ..Default::default()
+    };
+    thumbnail.update(&props).ok()?;
+
+    Some(Self {
+      thumbnail,
+      source: source.0,
+      rest: rest.clone(),
+      rects: None,
+      opacity: 0,
+    })
+  }
+
+  /// Draws the part `rc_src` of the ring at `rc_dst` in the surrogate.
+  fn show(&mut self, rc_src: RECT, rc_dst: RECT) {
+    if self.rects == Some((rc_src, rc_dst)) {
+      return;
+    }
+
+    let props = DWM_THUMBNAIL_PROPERTIES {
+      dwFlags: DWM_TNP_RECTSOURCE
+        | DWM_TNP_RECTDESTINATION
+        | DWM_TNP_VISIBLE,
+      rcSource: rc_src,
+      rcDestination: rc_dst,
+      fVisible: true.into(),
+      ..Default::default()
+    };
+    if self.thumbnail.update(&props).is_ok() {
+      self.rects = Some((rc_src, rc_dst));
+    }
+  }
+
+  fn hide(&mut self) {
+    if self.rects.take().is_none() {
+      return;
+    }
+
+    let props = DWM_THUMBNAIL_PROPERTIES {
+      dwFlags: DWM_TNP_VISIBLE,
+      fVisible: false.into(),
+      ..Default::default()
+    };
+    let _ = self.thumbnail.update(&props);
+  }
+
+  fn set_opacity(&mut self, opacity: u8) {
+    if self.opacity == opacity {
+      return;
+    }
+
+    let props = DWM_THUMBNAIL_PROPERTIES {
+      dwFlags: DWM_TNP_OPACITY,
+      opacity,
+      ..Default::default()
+    };
+    if self.thumbnail.update(&props).is_ok() {
+      self.opacity = opacity;
+    }
+  }
+}
+
+/// `alpha` scaled by `frac` (0.0–1.0).
+#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+fn scale_alpha(alpha: u8, frac: f32) -> u8 {
+  (f32::from(alpha) * frac.clamp(0.0, 1.0)).round() as u8
+}
+
+/// Where `item`, placed relative to `rest`, is once `rest` has moved to
+/// `frame`, scaled `scale` times.
+#[allow(clippy::cast_possible_truncation, clippy::cast_precision_loss)]
+fn map_rect(item: &Rect, rest: &Rect, frame: &Rect, scale: f32) -> Rect {
+  let map = |value: i32, from: i32, to: i32| {
+    to + ((value - from) as f32 * scale).round() as i32
+  };
+
+  Rect::from_ltrb(
+    map(item.left, rest.left, frame.left),
+    map(item.top, rest.top, frame.top),
+    map(item.right, rest.left, frame.left),
+    map(item.bottom, rest.top, frame.top),
+  )
+}
+
+/// `(rcSource, rcDestination)` drawing a ring that rests at `ring_rest`,
+/// around a window resting at `window_rest`, with that window at `frame`,
+/// `scale` times its size at rest, cut at `panel` and `monitor`, into a
+/// surrogate whose top-left is at `origin`. `None` when nothing is left.
+fn ring_rects(
+  ring_rest: &Rect,
+  window_rest: &Rect,
+  frame: &Rect,
+  scale: f32,
+  panel: &Rect,
+  monitor: &Rect,
+  origin: (i32, i32),
+) -> Option<(RECT, RECT)> {
+  let ring_frame = map_rect(ring_rest, window_rest, frame, scale);
+  let visible = ring_frame.intersection(panel)?.intersection(monitor)?;
+
+  Some(placed_rects(
+    &ring_frame,
+    &visible,
+    scale,
+    (ring_rest.width(), ring_rest.height()),
+    RECT::default(),
+    origin,
+  ))
+}
 
 /// Positioning strategy for a [`WorkspaceSurrogate`].
 enum SurrogateMode {
@@ -144,6 +289,11 @@ pub struct WorkspaceSurrogate {
   ///
   /// [`take_over`]: WorkspaceSurrogate::take_over
   hidden_alpha: Option<(isize, u8)>,
+
+  /// Copy of the window's border ring. See [`carry_ring`].
+  ///
+  /// [`carry_ring`]: WorkspaceSurrogate::carry_ring
+  ring: Option<RingCopy>,
 }
 
 impl WorkspaceSurrogate {
@@ -281,7 +431,113 @@ impl WorkspaceSurrogate {
       panel: None,
       frame_inset,
       hidden_alpha: None,
+      ring: None,
     })
+  }
+
+  /// The window's frame rect where it rests: where the switch starts it
+  /// (outgoing) or ends it (incoming).
+  #[must_use]
+  pub fn rest_frame(&self) -> Rect {
+    to_logical(&self.rect, &self.frame_inset)
+  }
+
+  /// Draws the window's border ring along with it from now on: `source`,
+  /// its overlay window, parked at `rest` (see
+  /// `NativeBorderOverlay::park`). Called again with the same `source`,
+  /// only updates `rest`, e.g. for a width change that resized it.
+  ///
+  /// The ring lies outside the window, which a [`SurrogateMode::Live`]
+  /// surrogate is cut to, so only one pinned to the viewport can carry it.
+  /// Returns whether this one does.
+  pub fn carry_ring(&mut self, source: HWND, rest: &Rect) -> bool {
+    if self.is_live() {
+      return false;
+    }
+
+    if let Some(ring) =
+      self.ring.as_mut().filter(|ring| ring.source == source.0)
+    {
+      ring.rest = rest.clone();
+      return true;
+    }
+
+    self.ring = RingCopy::register(self.hwnd(), source, rest);
+    self.ring.is_some()
+  }
+
+  /// Whether the surrogate draws the window's border ring (see
+  /// [`carry_ring`](Self::carry_ring)).
+  #[must_use]
+  pub fn carries_ring(&self) -> bool {
+    self.ring.is_some()
+  }
+
+  /// Stops drawing the ring, e.g. as the border is switched off.
+  pub fn drop_ring(&mut self) {
+    self.ring = None;
+  }
+
+  /// Brings the ring copy to full opacity over the still-shown ring it
+  /// duplicates, so the real one can be concealed once this has been
+  /// composited, without a frame showing neither.
+  ///
+  /// Unlike the window, it needs no warm-up: drawn twice in one place, a
+  /// ring looks like one.
+  pub fn cover_ring(&mut self) {
+    if let Some(ring) = &mut self.ring {
+      ring.set_opacity(u8::MAX);
+    }
+  }
+
+  /// Hides the ring, e.g. as its window leaves the screen for good.
+  pub fn hide_ring(&mut self) {
+    if let Some(ring) = &mut self.ring {
+      ring.hide();
+    }
+  }
+
+  /// Draws the ring around the window at `frame`, `scale` times its size
+  /// at rest, cut at `panel` and `monitor` like the window is.
+  fn place_ring(
+    &mut self,
+    frame: &Rect,
+    scale: f32,
+    panel: &Rect,
+    monitor: &Rect,
+  ) {
+    let Some(ring) = &mut self.ring else {
+      return;
+    };
+
+    match ring_rects(
+      &ring.rest,
+      &self.rect,
+      frame,
+      scale,
+      panel,
+      monitor,
+      (self.viewport.left, self.viewport.top),
+    ) {
+      Some((rc_src, rc_dst)) => ring.show(rc_src, rc_dst),
+      None => ring.hide(),
+    }
+  }
+
+  /// Draws the window at `window` opacity and its ring at `ring`.
+  fn set_opacities(&mut self, window: u8, ring: u8) {
+    self.inner.set_window_opacity(window);
+    if let Some(copy) = &mut self.ring {
+      copy.set_opacity(ring);
+    }
+  }
+
+  /// Draws the window and its ring at `frac` of their own opacities.
+  fn set_opacity_frac(&mut self, frac: f32) {
+    self.set_opacities(
+      scale_alpha(self.opacity, frac),
+      scale_alpha(u8::MAX, frac),
+    );
   }
 
   /// Live footprint for the current animation frame, when in
@@ -310,6 +566,7 @@ impl WorkspaceSurrogate {
   /// where the window has nothing visible left to draw.
   fn clear_frame(&mut self) {
     self.inner.set_visible(false);
+    self.hide_ring();
     self.live_frame = None;
     self.unclipped_rect = None;
     self.panel = None;
@@ -360,6 +617,7 @@ impl WorkspaceSurrogate {
       origin,
     );
     self.inner.set_thumbnail_rects(rc_src, rc_dst);
+    self.place_ring(frame, scale, &panel, monitor);
 
     if self.is_live() {
       match batch {
@@ -423,6 +681,9 @@ impl WorkspaceSurrogate {
   /// window (also at configured opacity), a double-blend that appears
   /// fully opaque.
   ///
+  /// The ring copy stays: the ring is revealed under it only after this,
+  /// and it goes with the surrogate.
+  ///
   /// [`prepare_hand_back`]: WorkspaceSurrogate::prepare_hand_back
   pub fn hide_thumbnail(&mut self) {
     self.restore_alpha();
@@ -438,7 +699,7 @@ impl WorkspaceSurrogate {
   /// [`take_over`]: WorkspaceSurrogate::take_over
   pub fn show_initial(&mut self) {
     self.show_at_rest();
-    self.inner.set_window_opacity(WARM_UP_OPACITY);
+    self.set_opacities(WARM_UP_OPACITY, WARM_UP_OPACITY);
   }
 
   /// Takes over showing the window from `window`, which is about to be
@@ -513,10 +774,11 @@ impl WorkspaceSurrogate {
     self.show_frame(None, &rect, 1.0, viewport.clone(), &viewport);
   }
 
-  /// Updates the DWM thumbnail opacity to the configured `opacity` without
-  /// changing the surrogate window position or size.
+  /// Updates the DWM thumbnail opacity to the configured `opacity`, and
+  /// the ring copy's to full, without changing the surrogate window
+  /// position or size.
   pub fn apply_effect_opacity(&mut self) {
-    self.inner.set_window_opacity(self.opacity);
+    self.set_opacity_frac(1.0);
   }
 
   /// Retargets the effect opacity, for a window whose transparency
@@ -542,7 +804,7 @@ impl WorkspaceSurrogate {
   /// [`update_zoom`]: WorkspaceSurrogate::update_zoom
   pub fn show_incoming(&mut self) {
     self.show_at_rest();
-    self.inner.set_window_opacity(self.lerp_opacity(0.0, true));
+    self.apply_opacity_at(0.0, true);
   }
 
   /// Advances the surrogate opacity for a fade-only transition.
@@ -556,9 +818,7 @@ impl WorkspaceSurrogate {
   /// [`show_initial`]: WorkspaceSurrogate::show_initial
   /// [`show_incoming`]: WorkspaceSurrogate::show_incoming
   pub fn update_fade(&mut self, eased_progress: f32, is_incoming: bool) {
-    self
-      .inner
-      .set_window_opacity(self.lerp_opacity(eased_progress, is_incoming));
+    self.apply_opacity_at(eased_progress, is_incoming);
   }
 
   /// Animates a zoom-from-center transition to `eased_progress` (0.0 →
@@ -605,23 +865,18 @@ impl WorkspaceSurrogate {
     let monitor = self.viewport.clone();
 
     if self.show_frame(Some(batch), &frame, t, panel, &monitor) {
-      self.inner.set_window_opacity(
-        self.lerp_opacity(eased_progress, is_incoming),
-      );
+      self.apply_opacity_at(eased_progress, is_incoming);
     }
   }
 
-  /// Computes the per-frame window opacity for a surrogate at `progress`
-  /// (0.0 → 1.0).
+  /// Draws the window and its ring at their opacity at `progress` (0.0 →
+  /// 1.0).
   ///
-  /// Outgoing: lerps from `opacity` → `opacity_endpoint * opacity`.
-  /// Incoming: lerps from `opacity_endpoint * opacity` → `opacity`.
-  /// When `opacity_endpoint` is `1.0` (default), the result is constant
-  /// `opacity` — no fade.
-  #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-  fn lerp_opacity(&self, progress: f32, is_incoming: bool) -> u8 {
-    (f32::from(self.opacity) * self.opacity_frac(progress, is_incoming))
-      .round() as u8
+  /// Outgoing: lerps from full → `opacity_endpoint` of it. Incoming: the
+  /// reverse. When `opacity_endpoint` is `1.0` (default), the opacity is
+  /// constant — no fade.
+  fn apply_opacity_at(&mut self, progress: f32, is_incoming: bool) {
+    self.set_opacity_frac(self.opacity_frac(progress, is_incoming));
   }
 
   /// Advances the surrogate along one axis with a simultaneous
@@ -698,9 +953,7 @@ impl WorkspaceSurrogate {
 
     if self.show_frame(Some(batch), &frame, scale, panel, monitor) {
       self.unclipped_rect = Some(to_logical(&frame, &self.frame_inset));
-      self.inner.set_window_opacity(
-        self.lerp_opacity(eased_progress, is_incoming),
-      );
+      self.apply_opacity_at(eased_progress, is_incoming);
     }
   }
 
@@ -755,9 +1008,7 @@ impl WorkspaceSurrogate {
 
     if self.show_frame(Some(batch), &frame, 1.0, panel, monitor) {
       self.unclipped_rect = Some(to_logical(&frame, &self.frame_inset));
-      self.inner.set_window_opacity(
-        self.lerp_opacity(eased_progress, is_incoming),
-      );
+      self.apply_opacity_at(eased_progress, is_incoming);
     }
   }
 }
@@ -765,6 +1016,82 @@ impl WorkspaceSurrogate {
 impl Drop for WorkspaceSurrogate {
   /// A window still hidden by alpha would stay invisible once shown.
   fn drop(&mut self) {
+    // Unregistered before `inner` destroys the window it is drawn on.
+    self.ring = None;
     self.restore_alpha();
+  }
+}
+
+#[cfg(test)]
+mod tests {
+  use super::{ring_rects, Rect, RECT};
+
+  const MONITOR: Rect = Rect {
+    left: 0,
+    top: 0,
+    right: 1920,
+    bottom: 1080,
+  };
+
+  fn ltrb(rect: RECT) -> (i32, i32, i32, i32) {
+    (rect.left, rect.top, rect.right, rect.bottom)
+  }
+
+  /// A window at rest, and its ring 3 px wide.
+  fn window_and_ring() -> (Rect, Rect) {
+    let window = Rect::from_xy(100, 100, 800, 600);
+    (window.clone(), window.inset(-3))
+  }
+
+  /// `(rcSource, rcDestination)` of the ring with its window at `frame`.
+  fn rects_at(
+    frame: &Rect,
+    scale: f32,
+  ) -> Option<((i32, i32, i32, i32), (i32, i32, i32, i32))> {
+    let (window, ring) = window_and_ring();
+    let panel = MONITOR.translate_to_coordinates(
+      frame.left - window.left,
+      frame.top - window.top,
+    );
+
+    ring_rects(&ring, &window, frame, scale, &panel, &MONITOR, (0, 0))
+      .map(|(src, dst)| (ltrb(src), ltrb(dst)))
+  }
+
+  #[test]
+  fn ring_slides_whole_with_its_window() {
+    let frame = Rect::from_xy(400, 100, 800, 600);
+
+    assert_eq!(
+      rects_at(&frame, 1.0),
+      Some(((0, 0, 806, 606), (397, 97, 1203, 703)))
+    );
+  }
+
+  #[test]
+  fn ring_is_cut_at_the_monitor_edge() {
+    let frame = Rect::from_xy(1500, 100, 800, 600);
+
+    assert_eq!(
+      rects_at(&frame, 1.0),
+      Some(((0, 0, 423, 606), (1497, 97, 1920, 703)))
+    );
+  }
+
+  #[test]
+  fn ring_scales_with_its_window() {
+    let frame = Rect::from_xy(200, 200, 400, 300);
+
+    assert_eq!(
+      rects_at(&frame, 0.5),
+      Some(((0, 0, 806, 606), (198, 198, 602, 502)))
+    );
+  }
+
+  #[test]
+  fn ring_off_the_monitor_is_not_drawn() {
+    let frame = Rect::from_xy(2000, 100, 800, 600);
+
+    assert_eq!(rects_at(&frame, 1.0), None);
   }
 }

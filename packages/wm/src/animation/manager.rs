@@ -276,8 +276,9 @@ use wm_platform::{
 
 #[cfg(target_os = "windows")]
 use crate::commands::general::{
-  apply_focus_effects, overlay_z_anchor, resync_settling_overlays,
-  surrogate_effects_for, upsert_live_backdrop_overlay, upsert_overlay,
+  apply_focus_effects, border_hidden_for_fullscreen, overlay_z_anchor,
+  resync_settling_overlays, surrogate_effects_for,
+  upsert_live_backdrop_overlay, upsert_overlay,
   upsert_pinned_border_overlay, SyncableOverlay,
 };
 #[cfg(target_os = "windows")]
@@ -1720,9 +1721,10 @@ impl AnimationManager {
             // before the real windows are uncloaked.
             if ws_done && !entry.is_incoming {
               s.hide_thumbnail();
+              s.hide_ring();
 
-              // The ring is pinned to the viewport at this point rather
-              // than tracking its window, so nothing else would move it
+              // The ring is parked, or pinned to the viewport, rather
+              // than tracking its window, so nothing else would take it
               // off-screen with the thumbnail it was following.
               if let Some(overlay) =
                 state.border_overlays.get_mut(&window_id)
@@ -1752,6 +1754,35 @@ impl AnimationManager {
               )
               .round() as u8,
             );
+
+            let border_blend = StyleBlend::between(
+              from_border,
+              to_border,
+              eased_final,
+              NativeBorderOverlay::transparent,
+            );
+
+            // A carried ring is styled on its parked overlay here, and
+            // moves with the window in the motion update below. Its
+            // opacity follows the window's fade there too.
+            if s.carries_ring() {
+              match (
+                border_blend,
+                state.border_overlays.get_mut(&window_id),
+              ) {
+                (Some(blend), Some(overlay)) => {
+                  overlay.apply_blend(blend);
+                  // A width change resized the overlay.
+                  s.carry_ring(overlay.hwnd(), &overlay.outer_rect());
+                }
+                (_, overlay) => {
+                  s.drop_ring();
+                  if let Some(overlay) = overlay {
+                    overlay.hide();
+                  }
+                }
+              }
+            }
 
             match ws.style {
               WorkspaceSwitchStyle::Slide => {
@@ -1867,25 +1898,15 @@ impl AnimationManager {
               }
             }
 
-            // The border ring is a separate `HWND`, and a DWM thumbnail
-            // is captured with `DWM_TNP_SOURCECLIENTAREAONLY`, so the
-            // surrogate cannot carry it. Rather than hide it for the whole
-            // switch -- which read as the border popping out and back in
-            // -- the overlay is pinned to the monitor viewport and its
-            // ring slid within it by a composition offset. It
-            // follows the unclipped window rect, since the
-            // ring sits *outside* that rect and so is not
+            // A surrogate that can't carry a copy of the ring (`Live`, see
+            // `WorkspaceSurrogate::carry_ring`) has the overlay pinned to
+            // the monitor viewport instead, its ring slid within it by a
+            // composition offset. It follows the unclipped window rect,
+            // since the ring sits *outside* that rect and so is not
             // described by the clipped visible strip.
-            //
-            // Independent of `is_live()`, which is backdrop-specific: the
-            // border tracks every surrogate whether or not one is
-            // configured.
-            if let Some(mut blend) = StyleBlend::between(
-              from_border,
-              to_border,
-              eased_final,
-              NativeBorderOverlay::transparent,
-            ) {
+            if let Some(mut blend) =
+              border_blend.filter(|_| !s.carries_ring())
+            {
               match (s.unclipped_rect(), s.panel()) {
                 (Some(rect), Some(panel)) => {
                   // Fade the ring in step with the window it outlines, so
@@ -2404,30 +2425,48 @@ impl AnimationManager {
           pre_shown = true;
         }
 
-        if let Some(color) = effect_cfg.border.abgr_color() {
-          let params =
-            effect_cfg.border.to_overlay_params(color, corner_radius);
+        let border_color = effect_cfg.border.abgr_color().filter(|_| {
+          !state
+            .container_by_id(*id)
+            .and_then(|container| container.as_window_container().ok())
+            .is_some_and(|window| {
+              border_hidden_for_fullscreen(&window, config)
+            })
+        });
 
-          match state.border_overlays.entry(*id) {
-            std::collections::hash_map::Entry::Occupied(e) => {
-              let overlay = e.into_mut();
-              overlay.apply(params);
-              overlay.defer_rect(
-                &mut border_pre_show_batch,
-                rect,
-                *anchor,
-              );
-            }
-            std::collections::hash_map::Entry::Vacant(e) => {
-              if let Ok(overlay) =
-                NativeBorderOverlay::create(rect, params, *anchor)
-              {
-                e.insert(overlay);
-              }
+        // A ring parked for the switch is revealed under its identical
+        // copy here, which goes with the surrogate after two
+        // flushed frames. One the window doesn't end with goes
+        // without being revealed.
+        let Some(color) = border_color else {
+          if let Some(overlay) = state
+            .border_overlays
+            .get_mut(id)
+            .filter(|overlay| overlay.is_parked())
+          {
+            overlay.hide();
+          }
+          continue;
+        };
+
+        let params =
+          effect_cfg.border.to_overlay_params(color, corner_radius);
+
+        match state.border_overlays.entry(*id) {
+          std::collections::hash_map::Entry::Occupied(e) => {
+            let overlay = e.into_mut();
+            overlay.apply(params);
+            overlay.defer_rect(&mut border_pre_show_batch, rect, *anchor);
+          }
+          std::collections::hash_map::Entry::Vacant(e) => {
+            if let Ok(overlay) =
+              NativeBorderOverlay::create(rect, params, *anchor)
+            {
+              e.insert(overlay);
             }
           }
-          pre_shown = true;
         }
+        pre_shown = true;
       }
       pre_show_batch.commit();
       border_pre_show_batch.commit();
@@ -2460,11 +2499,22 @@ impl AnimationManager {
         let Ok(window) = container.as_window_container() else {
           continue;
         };
+        // Only shown ones: placing one would show it, e.g. the ring of a
+        // window whose border is off now that it is unfocused, for the
+        // frames until the follow-up sync hid it again.
         let anchor = overlay_z_anchor(&window);
-        if let Some(overlay) = state.backdrop_overlays.get_mut(id) {
+        if let Some(overlay) = state
+          .backdrop_overlays
+          .get_mut(id)
+          .filter(|overlay| overlay.is_visible())
+        {
           overlay.defer_rect(&mut final_anchor_batch, rect, anchor);
         }
-        if let Some(overlay) = state.border_overlays.get_mut(id) {
+        if let Some(overlay) = state
+          .border_overlays
+          .get_mut(id)
+          .filter(|overlay| overlay.is_visible())
+        {
           overlay.defer_rect(&mut border_final_anchor_batch, rect, anchor);
         }
       }
@@ -3973,6 +4023,7 @@ impl AnimationManager {
         new.apply_effect_opacity();
       }
       old.hide_thumbnail();
+      old.hide_ring();
       handed_over.push((*id, entry.is_incoming));
     }
 
@@ -4002,19 +4053,24 @@ impl AnimationManager {
 
   /// Applies the configured effect opacity to all outgoing
   /// workspace-switch surrogates, for any whose window wasn't handed over
-  /// as it was cloaked (see `take_over_outgoing`).
+  /// as it was cloaked (see `take_over_outgoing`). Returns the ids of
+  /// their windows.
   #[cfg(target_os = "windows")]
-  pub fn apply_outgoing_surrogate_opacities(&mut self) {
+  pub fn apply_outgoing_surrogate_opacities(&mut self) -> Vec<Uuid> {
     let Some(ref mut ws) = self.workspace_switch else {
-      return;
+      return Vec::new();
     };
-    for entry in ws.windows.values_mut() {
+
+    let mut outgoing = Vec::new();
+    for (id, entry) in &mut ws.windows {
       if !entry.is_incoming {
         if let Some(ref mut s) = entry.surrogate {
           s.apply_effect_opacity();
+          outgoing.push(*id);
         }
       }
     }
+    outgoing
   }
 }
 
