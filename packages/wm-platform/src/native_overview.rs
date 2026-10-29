@@ -50,7 +50,6 @@ use windows::{
         WM_MBUTTONDOWN, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_QUIT,
         WM_SETCURSOR, WM_SYSCOMMAND, WS_EX_NOACTIVATE,
         WS_EX_NOREDIRECTIONBITMAP, WS_EX_TOOLWINDOW, WS_EX_TOPMOST,
-        WS_POPUP,
       },
     },
   },
@@ -395,34 +394,15 @@ fn create_screen_window() -> crate::Result<HWND> {
   // the keyboard, on the one the overview opened with; each still takes
   // the foreground when asked to.
   //
-  // SAFETY: The class is registered above.
-  let hwnd = unsafe {
-    CreateWindowExW(
-      WS_EX_TOPMOST
-        | WS_EX_TOOLWINDOW
-        | WS_EX_NOREDIRECTIONBITMAP
-        | WS_EX_NOACTIVATE,
-      w!("GlazeWM_Overview"),
-      w!(""),
-      WS_POPUP,
-      0,
-      0,
-      0,
-      0,
-      None,
-      None,
-      None,
-      None,
-    )
-  };
-
-  if hwnd.0 == 0 {
-    return Err(crate::Error::Platform(
-      "Failed to create overview window.".to_string(),
-    ));
-  }
-
-  Ok(hwnd)
+  window_class::create_popup(
+    w!("GlazeWM_Overview"),
+    WS_EX_TOPMOST
+      | WS_EX_TOOLWINDOW
+      | WS_EX_NOREDIRECTIONBITMAP
+      | WS_EX_NOACTIVATE,
+    &Rect::from_xy(0, 0, 0, 0),
+    "overview",
+  )
 }
 
 /// A workspace's card.

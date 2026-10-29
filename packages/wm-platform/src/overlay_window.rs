@@ -5,13 +5,13 @@ use windows::{
   Win32::{
     Foundation::HWND,
     UI::WindowsAndMessaging::{
-      BeginDeferWindowPos, CreateWindowExW, DeferWindowPos, DestroyWindow,
+      BeginDeferWindowPos, DeferWindowPos, DestroyWindow,
       EndDeferWindowPos, GetClassNameW, GetWindow,
       SetLayeredWindowAttributes, SetWindowPos, ShowWindow, GW_HWNDPREV,
       LWA_ALPHA, SWP_HIDEWINDOW, SWP_NOACTIVATE, SWP_NOMOVE,
       SWP_NOSENDCHANGING, SWP_NOSIZE, SWP_NOZORDER, SWP_SHOWWINDOW,
       SW_HIDE, WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_NOREDIRECTIONBITMAP,
-      WS_EX_TOOLWINDOW, WS_EX_TRANSPARENT, WS_POPUP,
+      WS_EX_TOOLWINDOW, WS_EX_TRANSPARENT,
     },
   },
 };
@@ -131,30 +131,12 @@ impl OverlayWindow {
       ex_style |= WS_EX_LAYERED;
     }
 
-    // SAFETY: The class is registered above. No parent `HWND` is needed.
-    let hwnd = unsafe {
-      CreateWindowExW(
-        ex_style,
-        kind.class_name(),
-        w!(""),
-        WS_POPUP,
-        rect.x(),
-        rect.y(),
-        rect.width(),
-        rect.height(),
-        None,
-        None,
-        None,
-        None,
-      )
-    };
-
-    if hwnd.0 == 0 {
-      return Err(crate::Error::Platform(format!(
-        "Failed to create {} window.",
-        kind.label().to_lowercase()
-      )));
-    }
+    let hwnd = window_class::create_popup(
+      kind.class_name(),
+      ex_style,
+      rect,
+      &kind.label().to_lowercase(),
+    )?;
 
     let window = Self {
       hwnd: hwnd.0,

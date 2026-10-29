@@ -1,19 +1,58 @@
 use std::sync::OnceLock;
 
 use windows::{
-  core::PCWSTR,
+  core::{w, PCWSTR},
   Win32::{
     Foundation::{HWND, LPARAM, LRESULT, RECT, WPARAM},
     Graphics::Dwm::{DwmGetWindowAttribute, DWMWA_EXTENDED_FRAME_BOUNDS},
     UI::WindowsAndMessaging::{
-      DefWindowProcW, GetClassNameW, GetWindow, GetWindowLongPtrW,
-      GetWindowRect, IsWindowVisible, LoadCursorW, RegisterClassW,
-      SetWindowPos, GWL_EXSTYLE, GW_HWNDNEXT, GW_HWNDPREV, GW_OWNER,
-      HWND_NOTOPMOST, HWND_TOPMOST, IDC_ARROW, SWP_NOACTIVATE, SWP_NOMOVE,
-      SWP_NOSENDCHANGING, SWP_NOSIZE, WNDCLASSW, WS_EX_TOPMOST,
+      CreateWindowExW, DefWindowProcW, GetClassNameW, GetWindow,
+      GetWindowLongPtrW, GetWindowRect, IsWindowVisible, LoadCursorW,
+      RegisterClassW, SetWindowPos, GWL_EXSTYLE, GW_HWNDNEXT, GW_HWNDPREV,
+      GW_OWNER, HWND_NOTOPMOST, HWND_TOPMOST, IDC_ARROW, SWP_NOACTIVATE,
+      SWP_NOMOVE, SWP_NOSENDCHANGING, SWP_NOSIZE, WINDOW_EX_STYLE,
+      WNDCLASSW, WS_EX_TOPMOST, WS_POPUP,
     },
   },
 };
+
+use crate::Rect;
+
+/// Creates a hidden popup of the registered class `class_name` at `rect`,
+/// with no owner, menu or creation data. Errors call it a `label` window.
+pub(crate) fn create_popup(
+  class_name: PCWSTR,
+  ex_style: WINDOW_EX_STYLE,
+  rect: &Rect,
+  label: &str,
+) -> crate::Result<HWND> {
+  // SAFETY: `class_name` is a static, null-terminated literal; creation
+  // with a class that isn't registered fails, which is checked below.
+  let hwnd = unsafe {
+    CreateWindowExW(
+      ex_style,
+      class_name,
+      w!(""),
+      WS_POPUP,
+      rect.x(),
+      rect.y(),
+      rect.width(),
+      rect.height(),
+      None,
+      None,
+      None,
+      None,
+    )
+  };
+
+  if hwnd.0 == 0 {
+    return Err(crate::Error::Platform(format!(
+      "Failed to create {label} window."
+    )));
+  }
+
+  Ok(hwnd)
+}
 
 /// Registers a window class with `wnd_proc` and `class_name`, exactly once
 /// per process for the given `registered` cell.

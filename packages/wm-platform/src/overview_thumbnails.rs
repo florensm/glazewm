@@ -9,9 +9,8 @@ use windows::{
     Foundation::{BOOL, HWND, POINT, RECT},
     Graphics::Dwm::{DwmSetWindowAttribute, DWMWA_CLOAK},
     UI::WindowsAndMessaging::{
-      CreateWindowExW, DestroyWindow, ShowWindow, SW_SHOWNOACTIVATE,
-      WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW,
-      WS_EX_TRANSPARENT, WS_POPUP,
+      DestroyWindow, ShowWindow, SW_SHOWNOACTIVATE, WS_EX_LAYERED,
+      WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TRANSPARENT,
     },
   },
 };
@@ -22,6 +21,7 @@ use crate::{
   overview_layout::{RectF, Tile},
   surface::Surface,
   window_class, OverviewOverlay, OverviewOverlayKind, OverviewWindow,
+  Rect,
 };
 
 /// Shown for a window whose frame can't be read, e.g. one being
@@ -43,31 +43,20 @@ fn create_picture_window() -> Option<HWND> {
     window_class::default_wnd_proc,
   );
 
-  // SAFETY: The class is registered above, and the attribute matches its
+  let hwnd = window_class::create_popup(
+    w!("GlazeWM_OverviewPicture"),
+    WS_EX_LAYERED
+      | WS_EX_TRANSPARENT
+      | WS_EX_TOOLWINDOW
+      | WS_EX_NOACTIVATE,
+    &Rect::from_xy(0, 0, 1, 1),
+    "overview picture",
+  )
+  .ok()?;
+
+  // SAFETY: `hwnd` was just created, and the attribute matches its
   // documented `BOOL` size.
   unsafe {
-    let hwnd = CreateWindowExW(
-      WS_EX_LAYERED
-        | WS_EX_TRANSPARENT
-        | WS_EX_TOOLWINDOW
-        | WS_EX_NOACTIVATE,
-      w!("GlazeWM_OverviewPicture"),
-      w!(""),
-      WS_POPUP,
-      0,
-      0,
-      1,
-      1,
-      None,
-      None,
-      None,
-      None,
-    );
-
-    if hwnd.0 == 0 {
-      return None;
-    }
-
     let cloak = BOOL::from(true);
     let _ = DwmSetWindowAttribute(
       hwnd,

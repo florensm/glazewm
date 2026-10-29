@@ -10,12 +10,11 @@ use windows::{
       DWMWCP_ROUNDSMALL,
     },
     UI::WindowsAndMessaging::{
-      BeginDeferWindowPos, CreateWindowExW, DeferWindowPos, DestroyWindow,
+      BeginDeferWindowPos, DeferWindowPos, DestroyWindow,
       EndDeferWindowPos, GetClassNameW, SetWindowPos,
       SET_WINDOW_POS_FLAGS, SWP_NOACTIVATE, SWP_NOCOPYBITS, SWP_NOMOVE,
       SWP_NOSENDCHANGING, SWP_NOSIZE, SWP_NOZORDER, WS_EX_NOACTIVATE,
       WS_EX_NOREDIRECTIONBITMAP, WS_EX_TOOLWINDOW, WS_EX_TRANSPARENT,
-      WS_POPUP,
     },
   },
 };
@@ -609,33 +608,15 @@ impl NativeSurrogate {
     // `WS_EX_NOREDIRECTIONBITMAP` leaves the window with no GDI surface at
     // all, so everything outside the thumbnail is transparent, and lets
     // the gap fill root a composition tree on it.
-    //
-    // SAFETY: Class name is the static literal registered above.
-    let hwnd = unsafe {
-      CreateWindowExW(
-        WS_EX_NOACTIVATE
-          | WS_EX_TOOLWINDOW
-          | WS_EX_TRANSPARENT
-          | WS_EX_NOREDIRECTIONBITMAP,
-        CLASS_NAME,
-        w!(""),
-        WS_POPUP,
-        logical_src.x(),
-        logical_src.y(),
-        logical_src.width(),
-        logical_src.height(),
-        None,
-        None,
-        None,
-        None,
-      )
-    };
-
-    if hwnd.0 == 0 {
-      return Err(crate::Error::Platform(
-        "Failed to create surrogate window.".to_string(),
-      ));
-    }
+    let hwnd = window_class::create_popup(
+      CLASS_NAME,
+      WS_EX_NOACTIVATE
+        | WS_EX_TOOLWINDOW
+        | WS_EX_TRANSPARENT
+        | WS_EX_NOREDIRECTIONBITMAP,
+      &logical_src,
+      "surrogate",
+    )?;
 
     apply_corner_preference(hwnd, corner_style);
     suppress_native_border(hwnd);
@@ -1234,19 +1215,16 @@ impl Drop for NativeSurrogate {
 
 #[cfg(test)]
 mod tests {
-  use windows::{
-    core::w,
-    Win32::System::Threading::{
-      GetCurrentProcess, GetGuiResources, GR_USEROBJECTS,
-    },
+  use windows::Win32::System::Threading::{
+    GetCurrentProcess, GetGuiResources, GR_USEROBJECTS,
   };
 
   use super::{
     ensure_class_registered, is_surrogate, placed_rects,
-    stretched_destination, BeginDeferWindowPos, CreateWindowExW,
+    stretched_destination, window_class, BeginDeferWindowPos,
     DeferWindowPos, DestroyWindow, EndDeferWindowPos, Rect,
-    SurrogateBatch, HWND, RECT, SWP_NOSENDCHANGING, WS_EX_NOACTIVATE,
-    WS_EX_TOOLWINDOW, WS_EX_TRANSPARENT, WS_POPUP,
+    SurrogateBatch, CLASS_NAME, HWND, RECT, SWP_NOSENDCHANGING,
+    WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TRANSPARENT,
   };
 
   /// Batch commits performed by the leak regression test.
@@ -1356,26 +1334,13 @@ mod tests {
   fn create_probe_window(index: i32) -> Option<HWND> {
     ensure_class_registered();
 
-    // SAFETY: The class is registered above; all other arguments are
-    // valid.
-    let hwnd = unsafe {
-      CreateWindowExW(
-        WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW | WS_EX_TRANSPARENT,
-        w!("GlazeWM_Surrogate"),
-        w!(""),
-        WS_POPUP,
-        -8000,
-        100 + index * 10,
-        400,
-        300,
-        None,
-        None,
-        None,
-        None,
-      )
-    };
-
-    (hwnd.0 != 0).then_some(hwnd)
+    window_class::create_popup(
+      CLASS_NAME,
+      WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW | WS_EX_TRANSPARENT,
+      &Rect::from_xy(-8000, 100 + index * 10, 400, 300),
+      "probe",
+    )
+    .ok()
   }
 
   #[test]
