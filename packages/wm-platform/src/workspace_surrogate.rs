@@ -810,8 +810,8 @@ impl WorkspaceSurrogate {
   /// window (scaling from the monitor center), so the entire workspace
   /// shrinks/grows as one unit. The outgoing workspace scales from `1.0`
   /// to `1.0 - zoom_factor`; the incoming scales from `1.0 -
-  /// zoom_factor` to `1.0`. `slide_distance` controls travel on the
-  /// primary axis.
+  /// zoom_factor` to `1.0`; at a `zoom_factor` of `0.0` it only slides.
+  /// `slide_distance` controls travel on the primary axis.
   ///
   /// Computes a per-frame scale from the monitor center (both axes)
   /// combined with a slide offset on the primary axis, then draws the
@@ -821,7 +821,7 @@ impl WorkspaceSurrogate {
     clippy::cast_possible_truncation,
     clippy::cast_precision_loss
   )]
-  pub fn slide_zoom_axis(
+  pub fn slide_axis(
     &mut self,
     batch: &mut SurrogateBatch,
     eased_progress: f32,
@@ -874,61 +874,6 @@ impl WorkspaceSurrogate {
     let panel = transform(&self.viewport);
 
     if self.show_frame(Some(batch), &frame, scale, panel, monitor) {
-      self.unclipped_rect = Some(to_logical(&frame, &self.frame_inset));
-      self.apply_opacity_at(eased_progress, is_incoming);
-    }
-  }
-
-  /// Advances the surrogate along one axis to `eased_progress` (0.0 →
-  /// 1.0); `is_vertical` selects the slide axis (`false` = horizontal,
-  /// `true` = vertical).
-  ///
-  /// The visible strip is clipped to `monitor`'s bounds and to the
-  /// sliding panel (see `panel`). In [`SurrogateMode::PinnedViewport`]
-  /// mode this is done via `rcSource`/`rcDestination` and the surrogate
-  /// window itself does not move; in [`SurrogateMode::Live`] mode the
-  /// surrogate is moved/resized to the clipped visible rect, batched via
-  /// `batch`. `slide_distance` is the effective travel distance (may be
-  /// less than the monitor's size on that axis to close the seam gap
-  /// between the two workspace panels).
-  #[allow(
-    clippy::too_many_arguments,
-    clippy::cast_possible_truncation,
-    clippy::cast_precision_loss
-  )]
-  pub fn slide_axis(
-    &mut self,
-    batch: &mut SurrogateBatch,
-    eased_progress: f32,
-    is_incoming: bool,
-    direction: i32,
-    monitor: &Rect,
-    slide_distance: i32,
-    is_vertical: bool,
-  ) {
-    // Incoming: start at +direction*slide_distance offset, end at 0.
-    // Outgoing: start at 0, end at -direction*slide_distance offset.
-    let offset = if is_incoming {
-      (direction as f32 * slide_distance as f32 * (1.0 - eased_progress))
-        as i32
-    } else {
-      (-direction as f32 * slide_distance as f32 * eased_progress) as i32
-    };
-
-    let (dx, dy) = if is_vertical {
-      (0, offset)
-    } else {
-      (offset, 0)
-    };
-    let frame = self
-      .rect
-      .translate_to_coordinates(self.rect.x() + dx, self.rect.y() + dy);
-    let panel = self.viewport.translate_to_coordinates(
-      self.viewport.x() + dx,
-      self.viewport.y() + dy,
-    );
-
-    if self.show_frame(Some(batch), &frame, 1.0, panel, monitor) {
       self.unclipped_rect = Some(to_logical(&frame, &self.frame_inset));
       self.apply_opacity_at(eased_progress, is_incoming);
     }

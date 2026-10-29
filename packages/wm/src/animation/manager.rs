@@ -1761,56 +1761,22 @@ impl AnimationManager {
                   ws.monitor_width,
                   ws.monitor_height,
                 );
-                match ws.slide_direction {
-                  WorkspaceSwitchDirection::Horizontal => {
-                    if ws.zoom_factor > 0.0 {
-                      s.slide_zoom_axis(
-                        &mut ws_batch,
-                        eased_final,
-                        entry.is_incoming,
-                        ws.order_direction,
-                        &monitor_rect,
-                        ws.slide_distance_h,
-                        ws.zoom_factor,
-                        false,
-                      );
-                    } else {
-                      s.slide_axis(
-                        &mut ws_batch,
-                        eased_final,
-                        entry.is_incoming,
-                        ws.order_direction,
-                        &monitor_rect,
-                        ws.slide_distance_h,
-                        false,
-                      );
-                    }
-                  }
-                  WorkspaceSwitchDirection::Vertical => {
-                    if ws.zoom_factor > 0.0 {
-                      s.slide_zoom_axis(
-                        &mut ws_batch,
-                        eased_final,
-                        entry.is_incoming,
-                        ws.order_direction,
-                        &monitor_rect,
-                        ws.slide_distance_v,
-                        ws.zoom_factor,
-                        true,
-                      );
-                    } else {
-                      s.slide_axis(
-                        &mut ws_batch,
-                        eased_final,
-                        entry.is_incoming,
-                        ws.order_direction,
-                        &monitor_rect,
-                        ws.slide_distance_v,
-                        true,
-                      );
-                    }
-                  }
-                }
+                let is_vertical =
+                  ws.slide_direction == WorkspaceSwitchDirection::Vertical;
+                s.slide_axis(
+                  &mut ws_batch,
+                  eased_final,
+                  entry.is_incoming,
+                  ws.order_direction,
+                  &monitor_rect,
+                  if is_vertical {
+                    ws.slide_distance_v
+                  } else {
+                    ws.slide_distance_h
+                  },
+                  ws.zoom_factor,
+                  is_vertical,
+                );
               }
               WorkspaceSwitchStyle::Fade => {
                 s.update_fade(eased_final, entry.is_incoming);
