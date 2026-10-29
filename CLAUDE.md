@@ -98,3 +98,40 @@ automation is easily mistaken for malware. Keep verification manual and low-volu
   out of scope. If a check seems to need it, stop and ask first.
 
 </endpoint_safety_guidelines>
+
+<build_targets>
+
+Two kinds of build, by machine:
+
+- **Tryout build** (`tryout/<name>` branch): desktop PC only. May carry benchmarks, profiling
+  runs, and automation.
+- **Test build** (`test/<name>` branch): work laptop, which runs Defender. Always cut fresh
+  from `tryout/<name>`, with everything listed below stripped in one commit. Never develop on a
+  test branch: change the tryout branch, then cut the test branch again.
+
+Always stripped from a test build:
+
+- `packages/wm-cli/examples/perf_bench/`, plus `wm-cli`'s `[dev-dependencies]` and
+  `[target.'cfg(windows)'.dev-dependencies]`, which only it uses. It drives bursty IPC
+  workspace switching and, with `--dwm`, enumerates processes, loads the `PresentMon` DLL at
+  runtime and attaches to `dwm.exe`. Likely why a build got quarantined as `Bearfoos` malware.
+- `packages/wm-platform/examples/uncloak_all.rs`: walks and un-cloaks every top-level window.
+- Any benchmark, stress scenario, or automation script added later. Add it to this list in the
+  same change that adds it.
+
+Removing them from the tree (not just not running them) matters: `cargo test` builds every
+example into an `.exe` under `target/`. Never set `GLAZEWM_PERF` on the laptop; the profiler
+compiled into `wm` stays inert without it.
+
+Cutting a test build:
+
+```bash
+git checkout -B test/<name> origin/tryout/<name>
+git rm -r packages/wm-cli/examples/perf_bench packages/wm-platform/examples/uncloak_all.rs
+# Remove `wm-cli`'s two dev-dependency tables, then let `cargo build` update `Cargo.lock`.
+cargo build --release && cargo test --workspace
+git commit -am "chore: strip benchmarks and automation for test build"
+git push --force-with-lease -u origin test/<name>
+```
+
+</build_targets>
