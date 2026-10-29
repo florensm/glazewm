@@ -1212,22 +1212,10 @@ fn redraw_containers(
     // both the movement surrogate path and the fade-in path.
     #[cfg(target_os = "windows")]
     let (effect_opacity, corner_style, backdrop_overlay, border_overlay) = {
-      let effect_cfg = config
-        .value
-        .window_effects
-        .for_focus(window.id() == focused_container.id());
-      let opacity = if effect_cfg.transparency.enabled {
-        effect_cfg.transparency.opacity.to_alpha()
-      } else {
-        u8::MAX
-      };
-      let style = effect_cfg.resolved_corner_style();
-      // Snapshotted onto the `ResizeSession` (rather than re-read live
-      // from config at tracking time) since the close animation's
-      // direct-drive loop runs after the window is detached from the
-      // container tree, where `effect_cfg` can no longer be
-      // recomputed.
-      let corner_radius = effect_cfg.window_corner_radius_px();
+      let is_focused = window.id() == focused_container.id();
+      let (opacity, style, backdrop, border) =
+        surrogate_effects_for(is_focused, config);
+
       // Decided here rather than in the tracking loop so the session is
       // built knowing it has no live overlay. `ResizeSession::begin` skips
       // the sampled backdrop color whenever `backdrop_overlay` is `Some`,
@@ -1238,28 +1226,18 @@ fn redraw_containers(
       // `None` restores the sampled, app-matched fill instead.
       let is_tracked = match config.value.animations.overlay_tracking {
         OverlayTracking::All => true,
-        OverlayTracking::FocusedOnly => {
-          window.id() == focused_container.id()
-        }
+        OverlayTracking::FocusedOnly => is_focused,
         OverlayTracking::None => false,
       };
 
-      let backdrop_overlay = effect_cfg
-        .backdrop
-        .overlay_tint()
-        .filter(|_| is_tracked)
-        .map(|tint| {
-          effect_cfg.backdrop.to_overlay_params(tint, corner_radius)
-        });
-      let border_overlay = effect_cfg
-        .border
-        .abgr_color()
-        .filter(|_| is_tracked)
-        .filter(|_| !border_hidden_for_fullscreen(window, config))
-        .map(|color| {
-          effect_cfg.border.to_overlay_params(color, corner_radius)
-        });
-      (opacity, style, backdrop_overlay, border_overlay)
+      (
+        opacity,
+        style,
+        backdrop.filter(|_| is_tracked),
+        border.filter(|_| {
+          is_tracked && !border_hidden_for_fullscreen(window, config)
+        }),
+      )
     };
 
     // Pick this window's entry animation, if it gets one: `window_open`
