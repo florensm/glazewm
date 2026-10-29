@@ -725,6 +725,14 @@ struct BackdropCopy {
   /// Holds the backdrop beneath the window, under its opacity.
   visual: IDCompositionVisual2,
 
+  /// Cuts what `visual` holds to the window's frame, as the copy's own
+  /// clip does, but beneath the opacity effect.
+  ///
+  /// The effect composes its subtree into an intermediate, and whether
+  /// DWM sizes that by a clip above it is undocumented: unclipped, it
+  /// holds the whole monitor's canvas.
+  bound: IDCompositionRectangleClip,
+
   /// Holds `blur`, offset against its item's motion.
   item_back: IDCompositionVisual2,
 
@@ -1384,6 +1392,7 @@ impl NativeScene {
       Settable::new(&device, &pose.zoom)?.set_scale(&item.own_zoom)?;
 
       for copy in &item.copies {
+        let bound = copy.backdrop.as_ref().map(|backdrop| &backdrop.bound);
         match &copy.shape {
           Shape::Whole {
             vignette,
@@ -1401,26 +1410,14 @@ impl NativeScene {
                 |animation| vignette.SetScaleY(animation),
               )?;
             }
-            if let Some(right) = right {
-              Settable::new(
-                &device,
-                &pose.scale_x.mapped(width, right - width),
-              )?
-              .set(
-                |value| clip.SetRight2(value),
-                |animation| clip.SetRight(animation),
-              )?;
-            }
-            if let Some(bottom) = bottom {
-              Settable::new(
-                &device,
-                &pose.scale_y.mapped(height, bottom - height),
-              )?
-              .set(
-                |value| clip.SetBottom2(value),
-                |animation| clip.SetBottom(animation),
-              )?;
-            }
+            let clips = [Some(clip), bound].into_iter().flatten();
+            keep_to_frame(
+              &device,
+              &clips.collect::<Vec<_>>(),
+              (*right, *bottom),
+              pose,
+              (width, height),
+            )?;
           }
           Shape::Pieces(pieces) => {
             for piece in pieces {
@@ -2126,15 +2123,20 @@ impl NativeScene {
         let item_back = dcomp.CreateVisual()?;
         item_back.AddVisual(&blur, false, None)?;
 
+        let bound = dcomp.CreateRectangleClip()?;
+        let bounded = dcomp.CreateVisual()?;
+        bounded.SetClip(&bound)?;
+        bounded.AddVisual(&item_back, false, None)?;
+
         let visual = dcomp.CreateVisual()?;
         Settable::Fixed(params.opacity.clamp(0.0, 1.0))
           .set_opacity(&visual, &dcomp.CreateEffectGroup()?)?;
-        visual.AddVisual(&item_back, false, None)?;
+        visual.AddVisual(&bounded, false, None)?;
 
         // At no strength the vignette draws nothing, and is left out.
         let strength = params.vignette.clamp(0.0, 1.0);
         if strength <= 0.0 {
-          return Ok((visual, item_back, blur, None));
+          return Ok((visual, bound, item_back, blur, None));
         }
 
         let side = VIGNETTE_SIZE as f32;
@@ -2163,17 +2165,18 @@ impl NativeScene {
         let scaled = dcomp.CreateVisual()?;
         scaled.SetTransform(&vignette_scale)?;
         scaled.AddVisual(&vignette, false, None)?;
-        visual.AddVisual(&scaled, false, None)?;
+        bounded.AddVisual(&scaled, false, None)?;
 
-        Ok((visual, item_back, blur, Some(vignette_scale)))
+        Ok((visual, bound, item_back, blur, Some(vignette_scale)))
       })()
     };
 
     match built {
-      Ok((visual, item_back, blur, vignette_scale)) => Ok((
+      Ok((visual, bound, item_back, blur, vignette_scale)) => Ok((
         BackdropCopy {
           thumbnail,
           visual,
+          bound,
           item_back,
           blur,
           rest,
@@ -2224,6 +2227,14 @@ impl NativeScene {
     clip.SetTop2((frame.top - outer.top) as f32)?;
     clip.SetRight2(right)?;
     clip.SetBottom2(bottom)?;
+
+    if let Some((backdrop, _)) = backdrop {
+      let bound = &backdrop.bound;
+      bound.SetLeft2((frame.left - outer.left) as f32)?;
+      bound.SetTop2((frame.top - outer.top) as f32)?;
+      bound.SetRight2(right)?;
+      bound.SetBottom2(bottom)?;
+    }
 
     let radius = window.corner_radius;
     if radius > 0.0 {
@@ -2528,6 +2539,41 @@ impl Settable {
     visual.SetEffect(effect)?;
     Ok(())
   }
+}
+
+/// Keeps the far edges of a whole copy's `clips` that rest at `right`
+/// and `bottom` to its item's frame, `width` by `height` at rest, as
+/// `pose` scales it.
+///
+/// # Safety
+///
+/// Every object must be live and of `device`.
+unsafe fn keep_to_frame(
+  device: &SceneDevice,
+  clips: &[&IDCompositionRectangleClip],
+  (right, bottom): (Option<f32>, Option<f32>),
+  pose: &ItemPose,
+  (width, height): (f32, f32),
+) -> crate::Result<()> {
+  if let Some(right) = right {
+    Settable::new(device, &pose.scale_x.mapped(width, right - width))?
+      .set(
+        |value| clips.iter().try_for_each(|clip| clip.SetRight2(value)),
+        |animation| {
+          clips.iter().try_for_each(|clip| clip.SetRight(animation))
+        },
+      )?;
+  }
+  if let Some(bottom) = bottom {
+    Settable::new(device, &pose.scale_y.mapped(height, bottom - height))?
+      .set(
+        |value| clips.iter().try_for_each(|clip| clip.SetBottom2(value)),
+        |animation| {
+          clips.iter().try_for_each(|clip| clip.SetBottom(animation))
+        },
+      )?;
+  }
+  Ok(())
 }
 
 /// `motion` as an animation function, sampled by DWM on its own clock.
