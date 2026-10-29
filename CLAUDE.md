@@ -116,6 +116,8 @@ Always stripped from a test build:
   workspace switching and, with `--dwm`, enumerates processes, loads the `PresentMon` DLL at
   runtime and attaches to `dwm.exe`. Likely why a build got quarantined as `Bearfoos` malware.
 - `packages/wm-platform/examples/uncloak_all.rs`: walks and un-cloaks every top-level window.
+- `resources/scripts/package.ps1`: the installer packaging script, which only the release
+  workflow runs. Not needed to build or run the WM.
 - Any benchmark, stress scenario, or automation script added later. Add it to this list in the
   same change that adds it.
 
@@ -127,7 +129,8 @@ Cutting a test build:
 
 ```bash
 git checkout -B test/<name> origin/tryout/<name>
-git rm -r packages/wm-cli/examples/perf_bench packages/wm-platform/examples/uncloak_all.rs
+git rm -r packages/wm-cli/examples/perf_bench packages/wm-platform/examples/uncloak_all.rs \
+  resources/scripts/package.ps1
 # Remove `wm-cli`'s two dev-dependency tables, then let `cargo build` update `Cargo.lock`.
 cargo build --release && cargo test --workspace
 git commit -am "chore: strip benchmarks and automation for test build"
