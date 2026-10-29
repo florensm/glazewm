@@ -308,6 +308,25 @@ impl DwmCapture {
     }
   }
 
+  /// Frames captured in all, within `[from_qpc, to_qpc)`, and of those,
+  /// displayed ones, to tell a capture that streamed nothing from a quiet
+  /// span.
+  pub fn counts(
+    &self,
+    from_qpc: u64,
+    to_qpc: u64,
+  ) -> (usize, usize, usize) {
+    let in_span = self
+      .frames
+      .iter()
+      .filter(|frame| (from_qpc..to_qpc).contains(&frame.qpc));
+    let displayed = in_span
+      .clone()
+      .filter(|frame| !frame.display_interval_ms.is_nan())
+      .count();
+    (self.frames.len(), in_span.count(), displayed)
+  }
+
   /// The longest run of frames DWM displayed back-to-back (no idle gap) in
   /// `[from_qpc, to_qpc)`, on the monitor's main swap chain, sorted by
   /// time.

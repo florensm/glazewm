@@ -236,6 +236,19 @@ async fn main() -> anyhow::Result<()> {
   Ok(())
 }
 
+/// Prints how many frames the capture got, which tells a capture that
+/// streamed nothing from bursts DWM drew nothing in.
+#[cfg(target_os = "windows")]
+fn print_capture_counts(capture: &dwm::DwmCapture, triggers: &[u64]) {
+  if let (Some(first), Some(last)) = (triggers.first(), triggers.last()) {
+    let (total, in_span, displayed) = capture.counts(*first, *last);
+    eprintln!(
+      "dwm capture: {total} frames, {in_span} in the bursts, {displayed} of \
+       those displayed."
+    );
+  }
+}
+
 /// Summarises DWM timing per burst, each burst spanning from its trigger
 /// to the next.
 #[cfg(target_os = "windows")]
@@ -244,6 +257,8 @@ fn dwm_columns(
   triggers: &[u64],
   reports: &[HashMap<String, f64>],
 ) -> DwmColumns {
+  print_capture_counts(capture, triggers);
+
   // The WM ticks once per vblank, so its interval is the refresh period.
   let Some(period_ms) = median(
     reports
