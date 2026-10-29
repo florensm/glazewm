@@ -210,13 +210,10 @@ pub fn with_tab_bar_of(
   window_id: uuid::Uuid,
   frame: &Rect,
 ) -> Rect {
-  state
-    .container_by_id(window_id)
-    .and_then(|container| container.as_window_container().ok())
-    .map_or_else(
-      || frame.clone(),
-      |window| window_with_tab_bar(&window, frame),
-    )
+  state.window_by_id(window_id).map_or_else(
+    || frame.clone(),
+    |window| window_with_tab_bar(&window, frame),
+  )
 }
 
 /// [`with_tab_bar_of`] for a window a surrogate draws at `frame` mid

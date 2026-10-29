@@ -445,10 +445,8 @@ pub fn sync_scroll_view(
   }
 
   for (id, entry) in gone {
-    if let Some(window) = state
-      .container_by_id(id)
-      .and_then(|container| container.as_window_container().ok())
-      .filter(|_| entry.role != Role::Peek)
+    if let Some(window) =
+      state.window_by_id(id).filter(|_| entry.role != Role::Peek)
     {
       state.pending_sync.queue_container_to_redraw(window);
     }

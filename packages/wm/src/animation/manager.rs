@@ -1275,10 +1275,8 @@ impl AnimationManager {
     for id in
       std::mem::take(&mut state.animation_manager.interrupted_ws_windows)
     {
-      if let Some(container) = state.container_by_id(id) {
-        if let Ok(window) = container.as_window_container() {
-          state.pending_sync.queue_container_to_redraw(window);
-        }
+      if let Some(window) = state.window_by_id(id) {
+        state.pending_sync.queue_container_to_redraw(window);
       }
     }
 
@@ -1313,10 +1311,7 @@ impl AnimationManager {
     }
     #[cfg(target_os = "windows")]
     for window_id in landed.shown.into_iter().chain(landed.hidden) {
-      if let Some(window) = state
-        .container_by_id(window_id)
-        .and_then(|container| container.as_window_container().ok())
-      {
+      if let Some(window) = state.window_by_id(window_id) {
         state.pending_sync.queue_container_to_redraw(window);
       }
     }
@@ -1356,10 +1351,8 @@ impl AnimationManager {
         continue;
       }
 
-      if let Some(container) = state.container_by_id(*window_id) {
-        if let Ok(window) = container.as_window_container() {
-          state.pending_sync.queue_container_to_redraw(window);
-        }
+      if let Some(window) = state.window_by_id(*window_id) {
+        state.pending_sync.queue_container_to_redraw(window);
       }
     }
 
@@ -1565,10 +1558,8 @@ impl AnimationManager {
     // Queue completed animations for a final redraw so `platform_sync`
     // moves the real window to its target position and uncloak it.
     for window_id in &completed_ids {
-      if let Some(container) = state.container_by_id(*window_id) {
-        if let Ok(window) = container.as_window_container() {
-          state.pending_sync.queue_container_to_redraw(window);
-        }
+      if let Some(window) = state.window_by_id(*window_id) {
+        state.pending_sync.queue_container_to_redraw(window);
       }
     }
 
@@ -1896,10 +1887,8 @@ impl AnimationManager {
       }
 
       for id in ids {
-        if let Some(container) = state.container_by_id(id) {
-          if let Ok(window) = container.as_window_container() {
-            state.pending_sync.queue_container_to_redraw(window);
-          }
+        if let Some(window) = state.window_by_id(id) {
+          state.pending_sync.queue_container_to_redraw(window);
         }
       }
 
@@ -2293,8 +2282,7 @@ impl AnimationManager {
             .filter_map(|(id, entry)| {
               let surrogate = entry.surrogate.as_ref()?;
               let rect = state
-                .container_by_id(*id)
-                .and_then(|c| c.as_window_container().ok())
+                .window_by_id(*id)
                 .and_then(|w| w.native().frame().ok())
                 .unwrap_or_else(|| surrogate.rect.clone());
               Some((*id, rect, surrogate.hwnd()))
@@ -2328,12 +2316,9 @@ impl AnimationManager {
 
         let border_params = border_overlay_params_for(is_focused, config)
           .filter(|_| {
-            !state
-              .container_by_id(*id)
-              .and_then(|container| container.as_window_container().ok())
-              .is_some_and(|window| {
-                border_hidden_for_fullscreen(&window, config)
-              })
+            !state.window_by_id(*id).is_some_and(|window| {
+              border_hidden_for_fullscreen(&window, config)
+            })
           });
 
         // A ring parked for the switch is revealed under its identical
@@ -2386,10 +2371,7 @@ impl AnimationManager {
       let mut final_anchor_batch = SurrogateBatch::new();
       let mut border_final_anchor_batch = SurrogateBatch::new();
       for (id, rect, _) in &incoming_backdrop_windows {
-        let Some(container) = state.container_by_id(*id) else {
-          continue;
-        };
-        let Ok(window) = container.as_window_container() else {
+        let Some(window) = state.window_by_id(*id) else {
           continue;
         };
         // Only shown ones: placing one would show it, e.g. the ring of a
@@ -2437,11 +2419,9 @@ impl AnimationManager {
       if !cleanup_window_ids.is_empty() {
         let mut queued = 0;
         for id in cleanup_window_ids {
-          if let Some(container) = state.container_by_id(id) {
-            if let Ok(window) = container.as_window_container() {
-              state.pending_sync.queue_container_to_redraw(window);
-              queued += 1;
-            }
+          if let Some(window) = state.window_by_id(id) {
+            state.pending_sync.queue_container_to_redraw(window);
+            queued += 1;
           }
         }
         tracing::debug!(

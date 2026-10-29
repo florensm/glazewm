@@ -670,6 +670,13 @@ impl WmState {
       .find(|container| container.id() == id)
   }
 
+  /// The window with `id`, while it is still managed.
+  pub fn window_by_id(&self, id: Uuid) -> Option<WindowContainer> {
+    self
+      .container_by_id(id)
+      .and_then(|container| container.as_window_container().ok())
+  }
+
   /// Gets container to focus after the given window is unmanaged,
   /// minimized, or moved to another workspace.
   pub fn focus_target_after_removal(

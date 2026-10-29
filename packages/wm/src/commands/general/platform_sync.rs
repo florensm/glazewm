@@ -2521,10 +2521,7 @@ fn park_switch_borders(
       continue;
     };
 
-    let Some(window) = state
-      .container_by_id(*id)
-      .and_then(|container| container.as_window_container().ok())
-    else {
+    let Some(window) = state.window_by_id(*id) else {
       continue;
     };
 
@@ -3312,10 +3309,7 @@ pub(crate) fn resync_settling_overlays(state: &mut WmState) {
       continue;
     }
 
-    let Some(window) = state
-      .container_by_id(id)
-      .and_then(|container| container.as_window_container().ok())
-    else {
+    let Some(window) = state.window_by_id(id) else {
       continue;
     };
 

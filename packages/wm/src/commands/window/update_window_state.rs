@@ -38,8 +38,7 @@ pub fn update_window_state(
   // the same ID.
   let window = if window.is_detached() {
     state
-      .container_by_id(window.id())
-      .and_then(|container| container.as_window_container().ok())
+      .window_by_id(window.id())
       .context("Window is no longer managed.")?
   } else {
     window
