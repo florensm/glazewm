@@ -932,6 +932,14 @@ fn redraw_containers(
           // first few frames of the slide without a visible gap.
           wm_platform::dwm_flush();
 
+          // The flush showed each parked ring's copy over it, so the ring
+          // itself can go.
+          for (id, _) in &ws_windows {
+            if let Some(overlay) = state.border_overlays.get_mut(id) {
+              overlay.conceal();
+            }
+          }
+
           // Windows still sliding on a switch this one cuts short are
           // drawn by that one's surrogates, which go as this one
           // starts.
@@ -1570,7 +1578,6 @@ fn redraw_containers(
           state
             .animation_manager
             .take_over_outgoing(window.id(), &window.native());
-          conceal_parked_border(state, window.id());
         } else if is_visible
           && state
             .animation_manager
@@ -1858,9 +1865,7 @@ fn redraw_containers(
   // have been cloaked. This removes the double-blend that would occur if
   // the surrogate's configured opacity were set before cloaking.
   #[cfg(target_os = "windows")]
-  for id in state.animation_manager.apply_outgoing_surrogate_opacities() {
-    conceal_parked_border(state, id);
-  }
+  state.animation_manager.apply_outgoing_surrogate_opacities();
 
   // Force one composited frame reflecting every `reassert_transparency`
   // call made above, deterministically closing the race against DWM's
@@ -2526,7 +2531,7 @@ fn resync_overlay_z_order<O: SyncableOverlay>(state: &mut WmState) {
 /// where the window rests, for its surrogate to carry a copy of it (see
 /// `NativeBorderOverlay::park`). A window sliding in has its ring
 /// concealed until the switch ends; one sliding out shows its own until
-/// its surrogate takes over (see [`conceal_parked_border`]).
+/// its copy has been composited over it.
 ///
 /// A surrogate in `Live` mode (with a backdrop) can't carry the ring, so
 /// it slides on its own instead (see `NativeBorderOverlay::pin_or_slide`),
@@ -2598,15 +2603,6 @@ fn park_switch_borders(
         overlay.set_rect(&rest, anchor);
       }
     }
-  }
-}
-
-/// Conceals `window_id`'s parked border ring (see
-/// `NativeBorderOverlay::conceal`), once its surrogate shows a copy of it.
-#[cfg(target_os = "windows")]
-fn conceal_parked_border(state: &mut WmState, window_id: uuid::Uuid) {
-  if let Some(overlay) = state.border_overlays.get_mut(&window_id) {
-    overlay.conceal();
   }
 }
 

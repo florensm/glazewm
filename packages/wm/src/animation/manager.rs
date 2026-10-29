@@ -1765,23 +1765,13 @@ impl AnimationManager {
             // A carried ring is styled on its parked overlay here, and
             // moves with the window in the motion update below. Its
             // opacity follows the window's fade there too.
-            if s.carries_ring() {
-              match (
-                border_blend,
-                state.border_overlays.get_mut(&window_id),
-              ) {
-                (Some(blend), Some(overlay)) => {
-                  overlay.apply_blend(blend);
-                  // A width change resized the overlay.
-                  s.carry_ring(overlay.hwnd(), &overlay.outer_rect());
-                }
-                (_, overlay) => {
-                  s.drop_ring();
-                  if let Some(overlay) = overlay {
-                    overlay.hide();
-                  }
-                }
-              }
+            if let (Some(blend), Some(overlay)) = (
+              border_blend.filter(|_| s.carries_ring()),
+              state.border_overlays.get_mut(&window_id),
+            ) {
+              overlay.apply_blend(blend);
+              // A width change resized the overlay.
+              s.carry_ring(overlay.hwnd(), &overlay.outer_rect());
             }
 
             match ws.style {
@@ -4053,24 +4043,19 @@ impl AnimationManager {
 
   /// Applies the configured effect opacity to all outgoing
   /// workspace-switch surrogates, for any whose window wasn't handed over
-  /// as it was cloaked (see `take_over_outgoing`). Returns the ids of
-  /// their windows.
+  /// as it was cloaked (see `take_over_outgoing`).
   #[cfg(target_os = "windows")]
-  pub fn apply_outgoing_surrogate_opacities(&mut self) -> Vec<Uuid> {
+  pub fn apply_outgoing_surrogate_opacities(&mut self) {
     let Some(ref mut ws) = self.workspace_switch else {
-      return Vec::new();
+      return;
     };
-
-    let mut outgoing = Vec::new();
-    for (id, entry) in &mut ws.windows {
+    for entry in ws.windows.values_mut() {
       if !entry.is_incoming {
         if let Some(ref mut s) = entry.surrogate {
           s.apply_effect_opacity();
-          outgoing.push(*id);
         }
       }
     }
-    outgoing
   }
 }
 
