@@ -115,6 +115,15 @@ struct MonitorScene {
   /// Set when what it plays failed beneath it, for the next tick to drop
   /// it and let go of what it held.
   is_abandoned: bool,
+
+  /// The incoming workspace of the switch it covers, whose windows are
+  /// left cloaked beneath it: its copies draw them, and DWM would
+  /// otherwise composite each twice, which is most of a switch's cost on
+  /// a weak GPU. Cleared once they are shown, before it lifts.
+  hides_workspace: Option<Uuid>,
+
+  /// The windows left cloaked beneath it, to show before it lifts.
+  hidden: HashSet<Uuid>,
 }
 
 /// A workspace's copies, moving as one.
@@ -733,6 +742,42 @@ impl Scenes {
       })
   }
 
+  /// Whether a switch's scene leaves the windows of workspace
+  /// `workspace_id` cloaked beneath it.
+  pub fn hides(&self, workspace_id: Uuid) -> bool {
+    self.on_monitors.iter().any(|scene| {
+      !scene.is_abandoned && scene.hides_workspace == Some(workspace_id)
+    })
+  }
+
+  /// Leaves `window_id`, shown on workspace `workspace_id`, cloaked
+  /// beneath the switch's scene that [`hides`](Self::hides) it, which
+  /// then shows it before it lifts. Returns whether one does.
+  pub fn keep_hidden(
+    &mut self,
+    workspace_id: Uuid,
+    window_id: Uuid,
+  ) -> bool {
+    let scene = self.on_monitors.iter_mut().find(|scene| {
+      !scene.is_abandoned && scene.hides_workspace == Some(workspace_id)
+    });
+
+    let Some(scene) = scene else {
+      return false;
+    };
+    scene.hidden.insert(window_id);
+    true
+  }
+
+  /// Stops leaving `window_id` cloaked beneath a scene, e.g. as it takes
+  /// focus. Returns whether one did, for the caller to show it.
+  pub fn stop_hiding(&mut self, window_id: &Uuid) -> bool {
+    self
+      .on_monitors
+      .iter_mut()
+      .any(|scene| scene.hidden.remove(window_id))
+  }
+
   fn scene_mut(&mut self, monitor_id: Uuid) -> Option<&mut MonitorScene> {
     self
       .on_monitors
@@ -1217,6 +1262,8 @@ fn cover_monitor(
           settled_since: None,
           lifting_since: None,
           is_abandoned: false,
+          hides_workspace: None,
+          hidden: HashSet::new(),
         });
       true
     }
@@ -1253,6 +1300,7 @@ fn cover_switch(
     if !scene.restore() {
       return false;
     }
+    scene.hides_workspace = Some(request.incoming);
 
     // The incoming workspace's overlays and tab bars come back with its
     // windows. One the monitor stopped showing without a switch on the
@@ -1329,6 +1377,8 @@ fn cover_switch(
         settled_since: None,
         lifting_since: None,
         is_abandoned: false,
+        hides_workspace: Some(request.incoming),
+        hidden: HashSet::new(),
       });
       true
     }
@@ -1822,6 +1872,7 @@ pub fn tick(state: &mut WmState) {
   let now = Instant::now();
   let mut released = false;
   let mut closed = Vec::new();
+  let mut to_show = Vec::new();
 
   let displayed = state
     .monitors()
@@ -1865,6 +1916,7 @@ pub fn tick(state: &mut WmState) {
       if let Some(reason) = drop_reason {
         tracing::debug!("Scene dropped: {reason}.");
         closed.extend(closings(scene));
+        to_show.extend(scene.hidden.drain());
         released = true;
         return false;
       }
@@ -1926,6 +1978,7 @@ pub fn tick(state: &mut WmState) {
 
       if scene.native.commit().is_err() {
         closed.extend(closings(scene));
+        to_show.extend(scene.hidden.drain());
         released = true;
         return false;
       }
@@ -1945,6 +1998,13 @@ pub fn tick(state: &mut WmState) {
       if is_landing
         && now.saturating_duration_since(settled_since) < LANDING_HOLD
       {
+        return true;
+      }
+
+      // The windows left cloaked beneath it are shown first, for it to
+      // lift off them from the next tick.
+      if scene.hides_workspace.take().is_some() {
+        to_show.extend(scene.hidden.drain());
         return true;
       }
 
@@ -1981,6 +2041,7 @@ pub fn tick(state: &mut WmState) {
     );
   }
 
+  show_hidden(state, &to_show);
   release_kept_sizes(state, now);
 
   for (window_id, handle) in closed {
@@ -1995,6 +2056,15 @@ pub fn tick(state: &mut WmState) {
 /// Takes every scene off the screen at once, e.g. as the monitors change,
 /// closing the windows whose close they played.
 pub fn drop_all(state: &mut WmState) {
+  let hidden = state
+    .animation_manager
+    .scenes
+    .on_monitors
+    .iter_mut()
+    .flat_map(|scene| scene.hidden.drain())
+    .collect::<Vec<_>>();
+  show_hidden(state, &hidden);
+
   let scenes =
     std::mem::take(&mut state.animation_manager.scenes.on_monitors);
   let closed = scenes.iter().flat_map(closings).collect::<Vec<_>>();
@@ -2008,6 +2078,37 @@ pub fn drop_all(state: &mut WmState) {
 
   for (window_id, handle) in closed {
     close_now(state, window_id, handle);
+  }
+}
+
+/// Shows those of `window_ids` that a scene left cloaked and that are
+/// still meant to be on screen, and waits for DWM to composite them, so
+/// they are there as the scene lifts or goes.
+fn show_hidden(state: &WmState, window_ids: &[Uuid]) {
+  let mut has_shown = false;
+
+  for window in window_ids
+    .iter()
+    .filter_map(|id| state.container_by_id(*id))
+    .filter_map(|container| container.as_window_container().ok())
+  {
+    let is_shown =
+      matches!(
+        window.display_state(),
+        DisplayState::Shown | DisplayState::Showing
+      ) && window.workspace().is_some_and(|ws| ws.is_displayed())
+        && !is_hidden_in_layout(&window);
+
+    if is_shown {
+      if let Err(err) = window.native().set_cloaked(false) {
+        tracing::warn!("Failed to show {window} beneath its scene: {err}");
+      }
+      has_shown = true;
+    }
+  }
+
+  if has_shown {
+    wm_platform::dwm_flush();
   }
 }
 

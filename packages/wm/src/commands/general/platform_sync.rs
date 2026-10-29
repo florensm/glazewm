@@ -258,6 +258,15 @@ fn sync_focus(
   // triggered.
   let focused_window_id = native_window.as_ref().map(CommonGetters::id);
   let result = if let Some(window) = native_window {
+    // One a scene left cloaked is shown first, beneath it, rather than
+    // focused while cloaked.
+    #[cfg(target_os = "windows")]
+    if state.animation_manager.scenes.stop_hiding(&window.id()) {
+      if let Err(err) = window.native().set_cloaked(false) {
+        tracing::warn!("Failed to show {window} to focus it: {err}");
+      }
+    }
+
     tracing::info!("Setting focus to window: {window}");
     window.native().focus()
   } else {
@@ -533,6 +542,22 @@ fn redraw_containers(
       window.display_state(),
       DisplayState::Showing | DisplayState::Shown
     );
+
+    // A switch's scene draws the incoming workspace from copies, so its
+    // windows stay cloaked beneath it, rather than DWM compositing each
+    // twice, until it shows them as it lifts. Not the one taking focus,
+    // nor one the shell can't cloak, which is hidden outright and copied
+    // blank.
+    #[cfg(target_os = "windows")]
+    let is_visible = is_visible
+      && !(config.value.general.hide_method == HideMethod::Cloak
+        && state.animation_manager.scenes.hides(workspace.id())
+        && window.id() != focused_container.id()
+        && window.native().can_be_cloaked()
+        && state
+          .animation_manager
+          .scenes
+          .keep_hidden(workspace.id(), window.id()));
 
     state
       .window_target_positions
