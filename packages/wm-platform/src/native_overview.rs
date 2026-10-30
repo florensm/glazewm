@@ -162,12 +162,12 @@ impl NativeOverview {
   /// Opens the overview on `frame`, laid out as `layout`, and takes
   /// keyboard focus on the focused monitor's screen.
   ///
-  /// With `carried`, the handle of a window being dragged with the mouse,
-  /// the overview carries on its drag: the window follows the cursor
-  /// until its button is let go of, then drops where it is, as if dragged
-  /// in the overview, or else is sent back with
-  /// `OverviewAction::DropBack`. It takes the keyboard only then, as the
-  /// drag holds the mouse until.
+  /// With `carried`, the handle of a window whose drag with the mouse the
+  /// WM cancelled for the overview, the overview carries on that drag:
+  /// the window stays where it shows, where it would land is marked, and
+  /// once the button is let go of it lands there as if dragged in the
+  /// overview. It takes the keyboard only then, as the mouse button is
+  /// held until.
   ///
   /// Must be called on the WM thread, not the event loop thread.
   pub fn open(
@@ -936,7 +936,7 @@ impl Overview {
   }
 
   /// Ends the drag of the window carried in from outside with `action`,
-  /// its drop, or else sends it back, then takes the keyboard.
+  /// its drop if any, then takes the keyboard.
   fn let_go_of_carried(&mut self, action: Option<OverviewAction>) {
     let Some((hwnd, _)) = self.carried.take() else {
       self.after_input(action);
@@ -947,8 +947,7 @@ impl Overview {
     {
       self.screens[screen].celebrate(card);
     }
-    self
-      .after_input(Some(action.unwrap_or(OverviewAction::DropBack(hwnd))));
+    self.after_input(action);
     if !self.take_foreground() {
       tracing::warn!("Overview could not take the keyboard after a drag.");
     }

@@ -19,10 +19,10 @@ use wm_common::{
 };
 use wm_platform::{
   BackdropOverlayParams, BorderOverlayParams, Color, MouseButton,
-  MouseEvent, NativeBorderOverlay, NativeOverview, OverviewAction,
-  OverviewFrame, OverviewLayoutMode, OverviewOverlay, OverviewOverlayKind,
-  OverviewScreen, OverviewStyle, OverviewWindow, OverviewWorkspace, Point,
-  Rect, TabFrame,
+  MouseEvent, NativeBorderOverlay, NativeOverview, NativeWindowWindowsExt,
+  OverviewAction, OverviewFrame, OverviewLayoutMode, OverviewOverlay,
+  OverviewOverlayKind, OverviewScreen, OverviewStyle, OverviewWindow,
+  OverviewWorkspace, Point, Rect, TabFrame,
 };
 
 use crate::{
@@ -60,10 +60,6 @@ pub struct Overview {
   /// per visit.
   hot_corner: CornerVisit,
 
-  /// Window whose drag the overview took over when it opened, which it
-  /// drops: the WM leaves it floating mid-drag until then.
-  dragged: Option<Uuid>,
-
   /// Where the native overview sends user actions, with their session.
   action_tx: mpsc::UnboundedSender<(u64, OverviewAction)>,
 }
@@ -96,7 +92,6 @@ impl Overview {
       closing: None,
       is_shown: false,
       hot_corner: CornerVisit::Away,
-      dragged: None,
       action_tx,
     }
   }
@@ -118,18 +113,6 @@ impl Overview {
       CornerVisit::Resting(due) => Some(due),
       CornerVisit::Away | CornerVisit::Spent => None,
     }
-  }
-
-  /// Whether the overview took over the drag of window `id`, which the WM
-  /// leaves to it.
-  pub fn takes_drag_of(&self, id: Uuid) -> bool {
-    self.dragged == Some(id)
-  }
-
-  /// The window whose drag the overview took over, handed back to finish
-  /// its drag, e.g. on its drop.
-  pub fn take_dragged(&mut self) -> Option<Uuid> {
-    self.dragged.take()
   }
 
   /// Takes in that the native overview of `session` hid. Returns whether
@@ -199,8 +182,8 @@ pub fn toggle_overview(
   open_overview(state, config, layout, None)
 }
 
-/// Opens the overview on `layout`, carrying `dragged` (a window being
-/// dragged with the mouse) for it to drop, if any.
+/// Opens the overview on `layout`, carrying on the drag of `dragged` (a
+/// window whose drag with the mouse was cancelled for it), if any.
 fn open_overview(
   state: &mut WmState,
   config: &UserConfig,
@@ -226,7 +209,6 @@ fn open_overview(
   state.overview.open = Some(open);
   state.overview.closing = None;
   state.overview.is_shown = true;
-  state.overview.dragged = dragged.map(CommonGetters::id);
   Ok(())
 }
 
@@ -297,7 +279,13 @@ pub fn process_hot_corner(
     return Ok(());
   }
 
-  if dragged.is_some() {
+  // Dragged, the window floats above everything, the overview included:
+  // its drag ends where it began, and the overview carries on with it.
+  if let Some(window) = &dragged {
+    if let Err(err) = window.native().cancel_move_size() {
+      tracing::warn!("Failed to cancel the drag of {window}: {err}");
+    }
+    crate::events::cancel_drag(window, state, config)?;
     crate::drop_indicator::hide_drop_indicator(state);
   }
 

@@ -488,6 +488,15 @@ pub trait NativeWindowWindowsExt {
   ///
   /// This method is only available on Windows.
   fn layered_alpha(&self) -> crate::Result<Option<u8>>;
+
+  /// Ends a move or resize of the window by its title bar or edges where
+  /// it is, by sending it `WM_CANCELMODE`: its default handling releases
+  /// the mouse capture the OS's move/size loop runs on.
+  ///
+  /// # Platform-specific
+  ///
+  /// This method is only available on Windows.
+  fn cancel_move_size(&self) -> crate::Result<()>;
 }
 
 #[cfg(target_os = "windows")]
@@ -660,6 +669,10 @@ impl NativeWindowWindowsExt for NativeWindow {
 
   fn layered_alpha(&self) -> crate::Result<Option<u8>> {
     self.inner.layered_alpha()
+  }
+
+  fn cancel_move_size(&self) -> crate::Result<()> {
+    self.inner.cancel_move_size()
   }
 }
 

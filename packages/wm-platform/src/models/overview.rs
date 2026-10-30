@@ -361,12 +361,6 @@ pub enum OverviewAction {
     point: Point,
   },
 
-  /// The window with this handle, dragged into the overview from outside
-  /// it (see `NativeOverview::open`), was let go of without landing
-  /// anywhere: put it back where it was dragged from. The overview stays
-  /// open.
-  DropBack(isize),
-
   /// Close the window with this handle. The overview stays open.
   CloseWindow(isize),
 

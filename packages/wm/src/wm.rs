@@ -72,7 +72,7 @@ use crate::{
     handle_z_order_changed,
   },
   ipc_server::IpcServer,
-  models::{workspace_target, Container, NonTilingWindow},
+  models::{workspace_target, Container},
   traits::{CommonGetters, WindowGetters},
   user_config::UserConfig,
   wm_state::WmState,
@@ -152,16 +152,6 @@ impl WindowManager {
     #[cfg(target_os = "windows")]
     {
       let state = &mut self.state;
-
-      // A window carried into the overview mid-drag goes back where it was
-      // dragged from, unless this drops it somewhere.
-      if !matches!(
-        action,
-        OverviewAction::MoveWindow { .. }
-          | OverviewAction::PlaceWindow { .. }
-      ) {
-        drop_back_carried(state, config)?;
-      }
 
       // What the WM held off while it was on screen resumes.
       if action == OverviewAction::Hidden {
@@ -247,10 +237,6 @@ impl WindowManager {
           crate::overview::prepare_target(
             state, config, &workspace, monitor, false,
           )?;
-          // A window carried in mid-drag is dropped into it once there.
-          if state.overview.takes_drag_of(window.id()) {
-            placement = Some((window.id(), workspace.clone(), None));
-          }
           (
             vec![move_to_workspace_command(workspace)],
             Some(window.id()),
@@ -268,7 +254,7 @@ impl WindowManager {
 
           let commands =
             place_commands(&window, &workspace, monitor, state, config)?;
-          placement = Some((window.id(), workspace, Some(point)));
+          placement = Some((window.id(), workspace, point));
           (commands, Some(window.id()))
         }
         OverviewAction::CloseWindow(_) => {
@@ -287,10 +273,6 @@ impl WindowManager {
           state.overview.close();
           return platform_sync(state, config);
         }
-        // Put back above, as it was let go of.
-        OverviewAction::DropBack(_) => {
-          return platform_sync(state, config)
-        }
         OverviewAction::Hidden => return Ok(()),
       };
 
@@ -300,7 +282,7 @@ impl WindowManager {
         Some((window_id, workspace, point)) => place_window(
           window_id,
           &workspace,
-          point.as_ref(),
+          &point,
           &mut self.state,
           config,
         ),
@@ -1605,64 +1587,25 @@ fn place_commands(
 }
 
 /// Places the window `window_id`, on the named `workspace` by now, where
-/// dragging it to `point` there puts it, if it is tiling. One carried in
-/// mid-drag ends its drag there instead, in the middle of the workspace
-/// without a `point`.
+/// dragging it to `point` there puts it, if it is tiling.
 #[cfg(target_os = "windows")]
 fn place_window(
   window_id: uuid::Uuid,
   workspace: &str,
-  point: Option<&wm_platform::Point>,
+  point: &wm_platform::Point,
   state: &mut WmState,
   config: &UserConfig,
 ) -> anyhow::Result<()> {
-  let Some(workspace) = state.workspace_by_name(workspace) else {
-    return Ok(());
-  };
-  let container = state.container_by_id(window_id);
-
-  if state.overview.takes_drag_of(window_id) {
-    state.overview.take_dragged();
-    let carried = container
-      .and_then(|container| NonTilingWindow::try_from(container).ok());
-    if let Some(window) = carried {
-      let middle = workspace.to_rect()?.center_point();
-      crate::events::end_overview_drag(
-        &window,
-        Some((&workspace, point.unwrap_or(&middle))),
-        state,
-        config,
-      )?;
-    }
-  } else {
-    let tiling = container
-      .and_then(|container| container.as_tiling_window().cloned());
-    if let (Some(window), Some(point)) = (tiling, point) {
-      crate::events::place_tiling_window(
-        &window, &workspace, point, state, config,
-      )?;
-    }
-  }
-
-  platform_sync(state, config)
-}
-
-/// Puts the window carried into the overview mid-drag, if one still is,
-/// back where it was dragged from.
-#[cfg(target_os = "windows")]
-fn drop_back_carried(
-  state: &mut WmState,
-  config: &UserConfig,
-) -> anyhow::Result<()> {
-  let Some(window_id) = state.overview.take_dragged() else {
-    return Ok(());
-  };
-
-  let carried = state
+  let window = state
     .container_by_id(window_id)
-    .and_then(|container| NonTilingWindow::try_from(container).ok());
-  if let Some(window) = carried {
-    crate::events::end_overview_drag(&window, None, state, config)?;
+    .and_then(|container| container.as_tiling_window().cloned());
+  let workspace = state.workspace_by_name(workspace);
+
+  if let (Some(window), Some(workspace)) = (window, workspace) {
+    crate::events::place_tiling_window(
+      &window, &workspace, point, state, config,
+    )?;
+    platform_sync(state, config)?;
   }
   Ok(())
 }

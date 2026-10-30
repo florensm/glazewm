@@ -48,13 +48,6 @@ pub fn handle_window_moved_or_resized_end(
     return Ok(());
   };
 
-  // Carried into the overview, the window is dropped where the overview
-  // says once it is let go of (see `end_overview_drag`).
-  #[cfg(target_os = "windows")]
-  if state.overview.takes_drag_of(window.id()) {
-    return Ok(());
-  }
-
   // The drag raised the window, so its stack's tab bar is put back behind
   // it wherever the stack ends up.
   if window
@@ -248,36 +241,46 @@ pub fn place_tiling_window(
   Ok(())
 }
 
-/// Ends the drag of `window`, carried into the overview mid-drag: drops
-/// it at `point` on `workspace` as letting go there would, or without
-/// one, back where it was dragged from. A window dragged while floating
-/// stays floating.
-pub fn end_overview_drag(
-  window: &NonTilingWindow,
-  drop: Option<(&Workspace, &Point)>,
+/// Ends `window`'s drag where it began, e.g. as the overview takes it
+/// over: a window dragged out of tiling goes back into it there, and a
+/// floating one back to where it was.
+pub fn cancel_drag(
+  window: &WindowContainer,
   state: &mut WmState,
   config: &UserConfig,
 ) -> anyhow::Result<()> {
   let Some(active_drag) = window.active_drag() else {
     return Ok(());
   };
+  let home = active_drag.initial_position;
 
-  if active_drag.is_from_floating {
-    window.set_active_drag(None);
-    state.pending_sync.queue_container_to_redraw(window.clone());
-    return Ok(());
+  match window {
+    WindowContainer::NonTilingWindow(window)
+      if active_drag.is_from_floating =>
+    {
+      let monitor = state
+        .nearest_monitor(&window.native())
+        .context("No monitor to put the window back on.")?;
+      update_floating_window_position(window, home, &monitor, state)?;
+      window.set_active_drag(None);
+      state.pending_sync.queue_container_to_redraw(window.clone());
+    }
+    WindowContainer::NonTilingWindow(window) => {
+      let dropped = drop_as_tiling_window(
+        window,
+        &home.center_point(),
+        state,
+        config,
+      )?;
+      dropped.set_active_drag(None);
+    }
+    // Not floated yet, it never left its place.
+    WindowContainer::TilingWindow(window) => {
+      window.set_active_drag(None);
+      state.pending_sync.queue_container_to_redraw(window.clone());
+    }
   }
 
-  let drop = if let Some((workspace, point)) = drop {
-    window_drop_on(window, workspace.clone(), point, state)?
-  } else {
-    let home = active_drag.initial_position.center_point();
-    window_drop(window, &home, state)?
-      .context("No workspace to drop the window back on.")?
-  };
-
-  let dropped = put_dropped_window(window, drop, state, config)?;
-  dropped.set_active_drag(None);
   Ok(())
 }
 
@@ -452,7 +455,7 @@ mod tests {
   use wm_platform::{LengthValue, Point, Rect};
 
   use super::{
-    drop_as_tiling_window, end_overview_drag,
+    cancel_drag, drop_as_tiling_window,
     handle_window_moved_or_resized_end, place_tiling_window,
   };
   #[cfg(target_os = "windows")]
@@ -843,7 +846,7 @@ mod tests {
     assert_size(&column, 0.6);
   }
   #[test]
-  fn a_drag_ended_by_the_overview_drops_where_it_says_or_goes_back() {
+  fn a_cancelled_drag_puts_the_window_back_where_it_was() {
     let (moved, left, right) = (window(), window(), window());
     let workspace = Workspace::mock()
       .gaps_config(mock_inner_gaps())
@@ -857,41 +860,18 @@ mod tests {
       (state(vec![monitor(&workspace, 0)]), config());
     set_focused_descendant(&moved.clone().into(), None);
 
-    // Dropped near the right edge of the right window.
     let floating = start_drag(&moved, &mut state, &config);
-    let rect = right.to_rect().unwrap();
-    let point = Point {
-      x: rect.right - 10,
-      y: rect.center_point().y,
-    };
-    end_overview_drag(
-      &floating,
-      Some((&workspace, &point)),
-      &mut state,
-      &config,
-    )
-    .unwrap();
+    assert_eq!(child_ids(&workspace), vec![left.id(), right.id()]);
+
+    cancel_drag(&floating.into(), &mut state, &config).unwrap();
 
     assert_eq!(
       child_ids(&workspace),
-      vec![left.id(), right.id(), moved.id()]
+      vec![moved.id(), left.id(), right.id()]
     );
-    let dropped = state.container_by_id(moved.id()).unwrap();
-    assert!(dropped.as_tiling_window().is_some(), "tiling again");
-    assert!(dropped
-      .as_window_container()
-      .unwrap()
-      .active_drag()
-      .is_none());
-
-    // Let go of over nothing, back where it was dragged from.
-    let dropped = dropped.as_tiling_window().cloned().unwrap();
-    let floating = start_drag(&dropped, &mut state, &config);
-    end_overview_drag(&floating, None, &mut state, &config).unwrap();
-
-    assert_eq!(child_ids(&workspace).len(), 3, "tiling again");
     let back = state.container_by_id(moved.id()).unwrap();
-    assert!(back.as_tiling_window().is_some());
+    assert!(back.as_tiling_window().is_some(), "tiling again");
+    assert!(back.as_window_container().unwrap().active_drag().is_none());
   }
 
   #[test]
