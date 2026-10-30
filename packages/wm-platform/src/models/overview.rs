@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-use crate::{Color, Rect, TabFrame};
+use crate::{BorderOverlayParams, Color, Rect, TabFrame};
 
 /// What the window overview shows, sent by the WM as a whole.
 #[derive(Clone, Debug, PartialEq)]
@@ -71,7 +71,7 @@ pub struct OverviewWorkspace {
 }
 
 /// A window shown in the overview.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct OverviewWindow {
   /// Handle of the window, whose live thumbnail is shown.
   pub hwnd: isize,
@@ -100,6 +100,11 @@ pub struct OverviewWindow {
   /// Its backdrop and border, bottom to top, which show under its preview
   /// as the WM stacks them under the window.
   pub overlays: Vec<OverviewOverlay>,
+
+  /// The border the WM gives it, if any, which the overview draws itself
+  /// where `overlays` has none on screen to show, e.g. on a workspace not
+  /// displayed.
+  pub border: Option<BorderOverlayParams>,
 }
 
 /// A window's backdrop or border, as the WM draws it around and behind

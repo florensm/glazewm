@@ -213,7 +213,7 @@ pub(crate) fn with_alpha(color: Color, alpha: f32) -> Color {
 }
 
 /// `color` with its alpha multiplied by `opacity`.
-fn fade(color: Color, opacity: f32) -> Color {
+pub(crate) fn fade(color: Color, opacity: f32) -> Color {
   with_alpha(color, f32::from(color.a) / 255.0 * opacity)
 }
 

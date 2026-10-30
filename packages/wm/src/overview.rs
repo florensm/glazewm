@@ -12,10 +12,10 @@ use tokio::sync::mpsc;
 use uuid::Uuid;
 use wm_common::{Layout, WindowState, WorkspaceConfig};
 use wm_platform::{
-  BackdropOverlayParams, BorderOverlayParams, Color, NativeOverview,
-  OverviewAction, OverviewFrame, OverviewLayoutMode, OverviewOverlay,
-  OverviewOverlayKind, OverviewScreen, OverviewStyle, OverviewWindow,
-  OverviewWorkspace, Rect, TabFrame,
+  BackdropOverlayParams, BorderOverlayParams, Color, NativeBorderOverlay,
+  NativeOverview, OverviewAction, OverviewFrame, OverviewLayoutMode,
+  OverviewOverlay, OverviewOverlayKind, OverviewScreen, OverviewStyle,
+  OverviewWindow, OverviewWorkspace, Rect, TabFrame,
 };
 
 use crate::{
@@ -562,6 +562,10 @@ fn overview_window(
     is_scrolled_off: !scrolling::is_in_view(&window.as_container()),
     opacity: look.opacity,
     overlays,
+    border: look.border.filter(|params| {
+      params.opacity > 0.0
+        && !NativeBorderOverlay::suppressed_for(window, config)
+    }),
   }
 }
 
@@ -1025,6 +1029,42 @@ mod tests {
       windows.iter().all(|window| window.overlays.is_empty()),
       "the WM draws no overlays for them"
     );
+  }
+
+  #[test]
+  fn windows_on_hidden_workspaces_still_carry_their_border() {
+    use crate::{
+      commands::container::set_focused_descendant, models::Monitor,
+      wm_state::WmState,
+    };
+
+    let config = config_with(|value| {
+      value.window_effects.other_windows.border.enabled = true;
+    });
+    let (shown, hidden) = (tiling("shown"), tiling("hidden"));
+    let first = Workspace::mock()
+      .name("1".to_string())
+      .tiling_containers(vec![shown.clone().into()])
+      .call();
+    let second = Workspace::mock()
+      .name("2".to_string())
+      .tiling_containers(vec![hidden.into()])
+      .call();
+    let state = WmState::mock(vec![Monitor::mock()
+      .workspaces(vec![first, second])
+      .call()]);
+    set_focused_descendant(&shown.into(), None);
+
+    let screens = frame(&state, &config).screens;
+    let hidden = screens[0]
+      .workspaces
+      .iter()
+      .flat_map(|workspace| &workspace.windows)
+      .find(|window| window.title == "hidden")
+      .expect("hidden window");
+
+    assert!(hidden.overlays.is_empty(), "its overlay is hidden");
+    assert!(hidden.border.is_some(), "for the overview to draw it");
   }
 
   #[test]

@@ -5,7 +5,7 @@ use windows::Win32::Foundation::HWND;
 
 use super::{to_ms, Card, Screen};
 use crate::{
-  overview_chrome::{with_alpha, CardPicture, TilePicture},
+  overview_chrome::{fade, with_alpha, CardPicture, TilePicture},
   overview_layout::{
     CardLook, CardSlot, CardView, GridCells, RectF, Spring,
   },
@@ -14,6 +14,10 @@ use crate::{
   overview_thumbnails::{visible_frame_on_screen, Picture, Preview},
   OverviewStyle, OverviewWindow, OverviewWorkspace, TabFrame,
 };
+
+/// Width, in logical pixels, a window's own border is drawn at on a card,
+/// where at scale it would be too thin to see.
+const CARD_BORDER_WIDTH: f32 = 1.5;
 
 /// Where window `hwnd` of `workspace` is on screen: measured for the
 /// displayed workspace's windows in view, so a zoom starts and ends
@@ -304,14 +308,20 @@ impl Screen {
           let is_picked = focus.floating == Some(preview.hwnd);
           let is_focused = focused_window == Some(preview.hwnd);
 
-          // A window with a border of its own shows that one, but for
-          // the overview's marks.
+          // A window with a border of its own on screen shows that one,
+          // and one whose border the WM hides (e.g. on a workspace not
+          // displayed) shows it drawn, but for the overview's marks.
+          let drawn_border = window
+            .and_then(|window| window.border)
+            .filter(|_| !preview.has_border());
           let (border_width, border) = if is_match {
             (3.0, search)
           } else if is_picked {
             (2.0, accent)
           } else if preview.has_border() {
             (0.0, caption)
+          } else if let Some(params) = drawn_border {
+            (CARD_BORDER_WIDTH, fade(params.color, params.opacity))
           } else if is_focused {
             (2.0, accent)
           } else if look == CardLook::Clean {

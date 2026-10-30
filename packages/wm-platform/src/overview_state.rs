@@ -1746,6 +1746,7 @@ mod tests {
       is_scrolled_off: false,
       opacity: u8::MAX,
       overlays: Vec::new(),
+      border: None,
     }
   }
 

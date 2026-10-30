@@ -12,9 +12,14 @@ use windows::Win32::UI::WindowsAndMessaging::{
 };
 
 use super::{
-  create_screen_window, effects::Effects, elapsed_ms, overlays::Overlays,
-  place_card, scenes::scene_window_rect, to_ms, PlaceContext, Screen,
-  ScreenFrame,
+  create_screen_window,
+  effects::Effects,
+  elapsed_ms,
+  overlays::Overlays,
+  place_card,
+  scene_borders::{SceneBorder, SceneBorders},
+  scenes::scene_window_rect,
+  to_ms, PlaceContext, Screen, ScreenFrame,
 };
 use crate::{
   dwm_thumbnail::Thumbnail,
@@ -32,8 +37,25 @@ use crate::{
   overview_thumbnails::Picture,
   platform_impl::composition::OverviewBackdrop,
   tab_layout::TabHit,
-  OverviewEffects, OverviewLayoutMode, OverviewStyle, OverviewWorkspace,
+  BorderOverlayParams, OverviewEffects, OverviewLayoutMode, OverviewStyle,
+  OverviewWorkspace,
 };
+
+/// The border to draw around scene `window` of `workspace`: the one the
+/// WM gives it, unless it shows its own.
+fn drawn_border(
+  workspace: &OverviewWorkspace,
+  window: &SceneWindow,
+) -> Option<BorderOverlayParams> {
+  if window.preview.has_border() {
+    return None;
+  }
+  workspace
+    .windows
+    .iter()
+    .find(|candidate| candidate.hwnd == window.preview.hwnd)
+    .and_then(|candidate| candidate.border)
+}
 
 /// ID of the next registration of a screen's thumbnails.
 static NEXT_REGISTRATION: AtomicU64 = AtomicU64::new(1);
@@ -72,6 +94,7 @@ impl Screen {
       scene_area: RectF::default(),
       scene_shown: None,
       is_picked: false,
+      scene_borders: SceneBorders::default(),
       card_targets: Vec::new(),
       pointer: None,
       entrance: None,
@@ -400,6 +423,18 @@ impl Screen {
       {
         window.preview.register(host);
       }
+      let bordered = self
+        .workspaces()
+        .iter()
+        .zip(&self.scenes)
+        .flat_map(|(workspace, scene)| {
+          scene
+            .windows
+            .iter()
+            .filter(|window| drawn_border(workspace, window).is_some())
+        })
+        .count();
+      self.scene_borders.register(host, bordered);
     }
 
     for card in &mut self.cards {
@@ -458,6 +493,7 @@ impl Screen {
     {
       window.preview.retire(&mut retired);
     }
+    self.scene_borders.retire(&mut retired);
     if let Some(effects) = &mut self.effects {
       effects.retire(&mut retired);
     }
@@ -1045,6 +1081,12 @@ impl Screen {
     if layout.has_scene() {
       let area = self.area;
       let zoom_card = context.zoom_card;
+      let workspaces = self
+        .frame
+        .as_ref()
+        .map_or(&[][..], |frame| &frame.workspaces);
+      let mut borders = Vec::new();
+
       for (index, scene) in self.scenes.iter_mut().enumerate() {
         for window in &mut scene.windows {
           let rect = scene_window_rect(
@@ -1059,9 +1101,25 @@ impl Screen {
             window.preview.place(&rect, &view, opacity);
           } else {
             window.preview.hide();
+            continue;
+          }
+
+          let params = workspaces
+            .get(index)
+            .and_then(|workspace| drawn_border(workspace, window));
+          let width = window.preview.screen_rect.w;
+          if let (Some(params), true) = (params, width > 0.0) {
+            borders.push(SceneBorder {
+              rect,
+              params,
+              scale: rect.w / width,
+              opacity,
+            });
           }
         }
       }
+
+      self.scene_borders.place(&borders, &view);
     }
 
     let is_gliding = self.place_overlays(&context, shift)

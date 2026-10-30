@@ -17,6 +17,7 @@ mod cards;
 mod effects;
 mod ghost;
 mod overlays;
+mod scene_borders;
 mod scenes;
 mod screen;
 
@@ -56,7 +57,10 @@ use windows::{
   },
 };
 
-use self::{effects::Effects, ghost::Ghost, overlays::Overlays};
+use self::{
+  effects::Effects, ghost::Ghost, overlays::Overlays,
+  scene_borders::SceneBorders,
+};
 use crate::{
   dwm_thumbnail::Thumbnail,
   overview_chrome::{picture_rect, CardPicture, SearchControls},
@@ -605,6 +609,10 @@ struct Screen {
 
   /// Each workspace's windows shown on their own, in the activities.
   scenes: Vec<Scene>,
+
+  /// Borders drawn around the scenes' windows that show none of their
+  /// own.
+  scene_borders: SceneBorders,
 
   /// Where the activities show the selected workspace large.
   scene_area: RectF,
