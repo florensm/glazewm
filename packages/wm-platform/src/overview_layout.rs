@@ -1339,6 +1339,10 @@ pub(crate) fn chrome_opacity(openness: f32) -> f32 {
   progress * progress * (3.0 - 2.0 * progress)
 }
 
+/// How much larger, relative to its shorter side, a highlight following
+/// in place starts out than what it settles onto.
+const IN_PLACE_GROWTH: f32 = 0.04;
+
 /// Where a highlight shows: right on what it highlights, gliding over
 /// from where it was when that changes, and fading in and out.
 pub(crate) struct Glide<K> {
@@ -1388,6 +1392,26 @@ impl<K: Copy + PartialEq> Glide<K> {
     target: Option<(K, RectF, f32)>,
     now: Instant,
   ) -> bool {
+    self.follow_with(target, now, false)
+  }
+
+  /// Follows `target` as `follow` does, but shows on what it highlights
+  /// next by fading in there, settling onto it from a little larger,
+  /// rather than gliding over from where it was.
+  pub fn follow_in_place(
+    &mut self,
+    target: Option<(K, RectF, f32)>,
+    now: Instant,
+  ) -> bool {
+    self.follow_with(target, now, true)
+  }
+
+  fn follow_with(
+    &mut self,
+    target: Option<(K, RectF, f32)>,
+    now: Instant,
+    in_place: bool,
+  ) -> bool {
     let Some((key, rect, scale)) = target else {
       self.target = None;
       self.fade_to(0.0);
@@ -1395,8 +1419,11 @@ impl<K: Copy + PartialEq> Glide<K> {
     };
 
     if self.target != Some(key) {
-      // From where it shows, or else straight in place.
-      self.from = if self.alpha.value > 0.01 {
+      self.from = if in_place && self.duration_ms > 0.0 {
+        self.alpha.snap(0.0);
+        (rect.inset(-rect.w.min(rect.h) * IN_PLACE_GROWTH), scale)
+      } else if self.alpha.value > 0.01 {
+        // From where it shows, or else straight in place.
         self.shown
       } else {
         (rect, scale)
@@ -2590,6 +2617,36 @@ mod tests {
     assert!(x > 200.0 && x < 400.0);
 
     glide.follow(Some((2, b, 1.0)), t0 + Duration::from_millis(400));
+    assert_eq!(glide.shown().map(|(rect, ..)| rect), Some(b));
+  }
+
+  #[test]
+  fn a_glide_followed_in_place_settles_onto_its_target_without_travel() {
+    let mut glide = Glide::new(170.0);
+    let t0 = Instant::now();
+    let a = RectF::new(0.0, 0.0, 100.0, 100.0);
+    let b = RectF::new(400.0, 0.0, 200.0, 100.0);
+
+    glide.follow(Some((1, a, 1.0)), t0);
+    for _ in 0..60 {
+      glide.step(1.0 / 60.0);
+    }
+
+    // On `b` from the start, a little larger, fading in from nothing.
+    glide.follow_in_place(Some((2, b, 1.0)), t0);
+    assert!(glide.shown().is_none(), "faded in from nothing");
+    glide.step(1.0 / 60.0);
+    glide
+      .follow_in_place(Some((2, b, 1.0)), t0 + Duration::from_millis(16));
+    let (rect, ..) = glide.shown().expect("fading in");
+    assert!(rect.x < b.x && rect.x > b.x - 10.0, "{rect:?}");
+    assert!(rect.w > b.w);
+
+    for _ in 0..60 {
+      glide.step(1.0 / 60.0);
+    }
+    glide
+      .follow_in_place(Some((2, b, 1.0)), t0 + Duration::from_millis(400));
     assert_eq!(glide.shown().map(|(rect, ..)| rect), Some(b));
   }
 

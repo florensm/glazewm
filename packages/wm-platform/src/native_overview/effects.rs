@@ -175,19 +175,25 @@ impl Effects {
     is_moving
   }
 
-  /// Places them where they are now: the glow gliding to `glow` (the
-  /// selection's key, ring and corner scale), faded by `chrome`. Returns
+  /// Places them where they are now: the glow following `glow` (the
+  /// selection's key, ring and corner scale), showing on it in place
+  /// rather than gliding over if `jumps`, faded by `chrome`. Returns
   /// whether the glow still glides or breathes.
   pub(super) fn place(
     &mut self,
     glow: Option<(usize, RectF, f32)>,
+    jumps: bool,
     enabled: OverviewEffects,
     clip: &RectF,
     chrome: f32,
   ) -> bool {
     let now = Instant::now();
     let glow = glow.filter(|_| enabled.glow);
-    let is_gliding = self.glow.glide.follow(glow, now);
+    let is_gliding = if jumps {
+      self.glow.glide.follow_in_place(glow, now)
+    } else {
+      self.glow.glide.follow(glow, now)
+    };
     let breath = if enabled.pulse {
       pulse(now.duration_since(self.pulse_from).as_secs_f32())
     } else {
@@ -297,6 +303,7 @@ impl Screen {
   /// still glides or breathes.
   pub(super) fn place_effects(&mut self, fade: f32, shift: f32) -> bool {
     let enabled = self.enabled_effects();
+    let jumps = self.focus.is_dragging || self.was_dragging;
     let context = self.place_context();
     let reach = self.metrics.px(GLOW_REACH);
     let glow = self.ringed().and_then(|index| {
@@ -307,7 +314,7 @@ impl Screen {
 
     let view = self.view();
     self.effects.as_mut().is_some_and(|effects| {
-      effects.place(glow, enabled, &view, chrome_opacity(fade))
+      effects.place(glow, jumps, enabled, &view, chrome_opacity(fade))
     })
   }
 

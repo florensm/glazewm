@@ -493,6 +493,7 @@ impl Screen {
     let px = |length: f32| length * self.metrics.scale_factor;
 
     let ringed = self.ringed();
+    let jumps = focus.is_dragging || self.was_dragging;
     let ring_target = ringed.and_then(|index| {
       self
         .workspace_rect(index, context, shift)
@@ -577,13 +578,23 @@ impl Screen {
 
     is_gliding |= overlays.screen_ring.glide.follow(screen_target, now);
     overlays.screen_ring.place(&view, chrome);
-    is_gliding |= overlays.workspace_ring.glide.follow(ring_target, now);
+    // While a window is dragged, and as it is let go of, the ring shows
+    // on where it would drop rather than chasing the cursor around.
+    is_gliding |= if jumps {
+      overlays
+        .workspace_ring
+        .glide
+        .follow_in_place(ring_target, now)
+    } else {
+      overlays.workspace_ring.glide.follow(ring_target, now)
+    };
     overlays.workspace_ring.place(&view, chrome);
     is_gliding |= overlays.hover_ring.glide.follow(hover_target, now);
     overlays.hover_ring.place(&view, chrome);
     is_gliding |= overlays.window_ring.glide.follow(window_target, now);
     overlays.window_ring.place(&view, chrome);
-    is_gliding |= overlays.drop_ring.glide.follow(drop_target, now);
+    is_gliding |=
+      overlays.drop_ring.glide.follow_in_place(drop_target, now);
     overlays.drop_ring.place(&view, chrome);
 
     for (label, rect) in overlays.labels.iter_mut().zip(&label_rects) {

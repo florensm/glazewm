@@ -116,6 +116,7 @@ impl Screen {
       is_dirty: false,
       is_gliding: false,
       is_tracking_leave: false,
+      was_dragging: false,
       icons: 0,
       notify,
     })
@@ -1124,6 +1125,7 @@ impl Screen {
 
     let is_gliding = self.place_overlays(&context, shift)
       | self.place_effects(fade, shift);
+    self.was_dragging = self.focus.is_dragging;
 
     let search_height = SEARCH_HEIGHT * scale_factor;
     let has_search = self.search_drawn.is_some();

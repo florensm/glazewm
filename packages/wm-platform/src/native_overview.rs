@@ -684,6 +684,11 @@ struct Screen {
 
   is_tracking_leave: bool,
 
+  /// Whether a window was dragged when last placed, so the highlights
+  /// that followed where it would drop show back on the selection in
+  /// place as it is let go of.
+  was_dragging: bool,
+
   /// Bumped as window icons arrive.
   icons: u64,
 
