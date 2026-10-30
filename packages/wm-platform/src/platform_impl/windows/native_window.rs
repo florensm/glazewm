@@ -50,9 +50,9 @@ use windows::{
         SWP_NOCOPYBITS, SWP_NOMOVE, SWP_NOOWNERZORDER, SWP_NOSENDCHANGING,
         SWP_NOSIZE, SWP_NOZORDER, SWP_SHOWWINDOW, SW_HIDE, SW_MAXIMIZE,
         SW_MINIMIZE, SW_RESTORE, SW_SHOWNA, WINDOWPLACEMENT,
-        WINDOW_EX_STYLE, WINDOW_STYLE, WM_CANCELMODE, WM_CLOSE,
-        WM_GETMINMAXINFO, WPF_ASYNCWINDOWPLACEMENT, WS_DLGFRAME,
-        WS_EX_LAYERED, WS_EX_TOPMOST, WS_THICKFRAME,
+        WINDOW_EX_STYLE, WINDOW_STYLE, WM_CLOSE, WM_GETMINMAXINFO,
+        WPF_ASYNCWINDOWPLACEMENT, WS_DLGFRAME, WS_EX_LAYERED,
+        WS_EX_TOPMOST, WS_THICKFRAME,
       },
     },
   },
@@ -325,15 +325,6 @@ impl NativeWindow {
   /// Implements [`NativeWindow::close`].
   pub(crate) fn close(&self) -> crate::Result<()> {
     unsafe { SendNotifyMessageW(self.hwnd(), WM_CLOSE, None, None) }?;
-    Ok(())
-  }
-
-  /// Implements [`NativeWindowWindowsExt::cancel_move_size`].
-  pub(crate) fn cancel_move_size(&self) -> crate::Result<()> {
-    // Notified rather than sent: the window's thread is busy in its
-    // move/size loop, which dispatches it.
-    // SAFETY: Any handle may be notified; a stale one fails.
-    unsafe { SendNotifyMessageW(self.hwnd(), WM_CANCELMODE, None, None) }?;
     Ok(())
   }
 

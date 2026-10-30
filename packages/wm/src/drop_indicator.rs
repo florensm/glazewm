@@ -20,12 +20,6 @@ pub fn sync_drop_indicator(
   state: &mut WmState,
   config: &UserConfig,
 ) {
-  // A drag carried into the overview shows its drop there.
-  if state.overview.is_shown() {
-    hide_drop_indicator(state);
-    return;
-  }
-
   let preview =
     drop_preview(window, state, config).unwrap_or_else(|err| {
       tracing::warn!("Failed to get drop target: {err:?}");

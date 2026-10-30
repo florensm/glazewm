@@ -36,11 +36,10 @@ use windows::{
     UI::{
       Controls::WM_MOUSELEAVE,
       Input::KeyboardAndMouse::{
-        GetAsyncKeyState, ReleaseCapture, SetCapture, TrackMouseEvent,
-        TME_LEAVE, TRACKMOUSEEVENT, VIRTUAL_KEY, VK_0, VK_9, VK_BACK,
-        VK_DOWN, VK_END, VK_ESCAPE, VK_HOME, VK_LBUTTON, VK_LEFT,
-        VK_NUMPAD0, VK_NUMPAD9, VK_RETURN, VK_RIGHT, VK_SPACE, VK_TAB,
-        VK_UP,
+        ReleaseCapture, SetCapture, TrackMouseEvent, TME_LEAVE,
+        TRACKMOUSEEVENT, VIRTUAL_KEY, VK_0, VK_9, VK_BACK, VK_DOWN,
+        VK_END, VK_ESCAPE, VK_HOME, VK_LEFT, VK_NUMPAD0, VK_NUMPAD9,
+        VK_RETURN, VK_RIGHT, VK_SPACE, VK_TAB, VK_UP,
       },
       WindowsAndMessaging::{
         CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW,
@@ -115,7 +114,6 @@ struct Open {
   session: u64,
   frame: OverviewFrame,
   layout: OverviewLayoutMode,
-  carried: Option<isize>,
 }
 
 type ActionCallback = Box<dyn Fn(u64, OverviewAction) + Send + 'static>;
@@ -162,19 +160,11 @@ impl NativeOverview {
   /// Opens the overview on `frame`, laid out as `layout`, and takes
   /// keyboard focus on the focused monitor's screen.
   ///
-  /// With `carried`, the handle of a window whose drag with the mouse the
-  /// WM cancelled for the overview, the overview carries on that drag:
-  /// a picture of the window follows the cursor, where it would land is
-  /// marked, and once the button is let go of it lands there as if
-  /// dragged in the overview. It takes the keyboard only then, as the
-  /// mouse button is held until.
-  ///
   /// Must be called on the WM thread, not the event loop thread.
   pub fn open(
     &mut self,
     frame: OverviewFrame,
     layout: OverviewLayoutMode,
-    carried: Option<isize>,
   ) {
     self.session += 1;
     self.last_frame = Some(frame.clone());
@@ -183,7 +173,6 @@ impl NativeOverview {
       session: self.session,
       frame,
       layout,
-      carried,
     });
     self.post(WM_OPEN_OVERVIEW, Box::into_raw(open) as usize);
   }
@@ -743,10 +732,6 @@ struct Overview {
 
   ghost: Option<Ghost>,
 
-  /// Window dragged in from outside the overview while its drag goes on,
-  /// and where the cursor was last, in screen coordinates.
-  carried: Option<(isize, (i32, i32))>,
-
   /// Ghosts let go of, flying into their cards, each with the screen it
   /// shows on.
   landing: Vec<(Ghost, usize)>,
@@ -786,7 +771,6 @@ impl Overview {
       ),
       screens: Vec::new(),
       ghost: None,
-      carried: None,
       landing: Vec::new(),
       open_cursor: (0, 0),
       last_tick: Instant::now(),
@@ -802,7 +786,6 @@ impl Overview {
     session: u64,
     frame: OverviewFrame,
     layout: OverviewLayoutMode,
-    carried: Option<isize>,
   ) {
     tracing::debug!(
       target: crate::OVERVIEW_LOG_TARGET,
@@ -829,11 +812,6 @@ impl Overview {
       .interaction
       .digit_workspaces
       .clone_from(&frame.digit_workspaces);
-    if let Some(hwnd) = carried {
-      let (x, y) = cursor_position();
-      #[allow(clippy::cast_precision_loss)]
-      self.interaction.carry_drag(hwnd, (x as f32, y as f32));
-    }
 
     if let Err(err) = self.ensure_screens(frame.screens.len()) {
       tracing::warn!("Failed to open the overview: {err}");
@@ -862,35 +840,6 @@ impl Overview {
     else {
       return;
     };
-    let monitor = DxgiVsyncWaiter::window_monitor(foreground);
-    self.vsync = DxgiVsyncWaiter::for_monitor(monitor).ok();
-
-    // The drag holds the mouse, and the keyboard is taken once it ends.
-    if let Some(hwnd) = carried {
-      self.carried = Some((hwnd, self.open_cursor));
-      return;
-    }
-
-    if !self.take_foreground() {
-      // Left open, it would look like it has the keyboard while keys go on
-      // to the window behind it.
-      tracing::warn!(
-        "Overview could not take the foreground; closing it."
-      );
-      self.send(OverviewAction::Cancel);
-      self.close();
-    }
-  }
-
-  /// Takes the keyboard onto the focused monitor's screen. Returns whether
-  /// Windows let it.
-  fn take_foreground(&self) -> bool {
-    let focused = self.frame.as_ref().and_then(|frame| {
-      frame.screens.iter().position(|screen| screen.is_focused)
-    });
-    let Some(foreground) = self.screens.get(focused.unwrap_or(0)) else {
-      return false;
-    };
 
     // Asked for right before it is taken: input reaching another window in
     // between, such as releasing the keys that opened the overview, takes
@@ -899,58 +848,19 @@ impl Overview {
 
     // SAFETY: `foreground` is one of the overview's windows, on this
     // thread.
-    unsafe { SetForegroundWindow(foreground.hwnd) }.as_bool()
-  }
-
-  /// Follows the drag of the window carried in from outside: the OS (or a
-  /// tool such as `AltSnap`) holds the mouse while its button is down, so
-  /// no mouse messages arrive and where the cursor is and whether the
-  /// button still is are read instead. Returns whether it still follows
-  /// one.
-  #[allow(clippy::cast_precision_loss)]
-  fn follow_carried_drag(&mut self) -> bool {
-    let Some((hwnd, last)) = self.carried else {
-      return false;
-    };
-
-    // SAFETY: No preconditions; the high bit is set while it is down.
-    let state = unsafe { GetAsyncKeyState(i32::from(VK_LBUTTON.0)) };
-    if state.cast_unsigned() & 0x8000 == 0 {
-      let action = self.interaction.mouse_up(&self.workspaces);
-      self.let_go_of_carried(action);
-      return false;
-    }
-
-    let position = cursor_position();
-    if position != last {
-      self.carried = Some((hwnd, position));
-      let point = (position.0 as f32, position.1 as f32);
-      let (screen, hit) = self.hit(point);
-      if let Some(screen) = screen {
-        self.interaction.activate(screen, &self.workspaces);
-      }
-      self.interaction.mouse_move(point, hit, true);
-      self.after_input(None);
-    }
-    true
-  }
-
-  /// Ends the drag of the window carried in from outside with `action`,
-  /// its drop if any, then takes the keyboard.
-  fn let_go_of_carried(&mut self, action: Option<OverviewAction>) {
-    let Some((hwnd, _)) = self.carried.take() else {
-      self.after_input(action);
+    if !unsafe { SetForegroundWindow(foreground) }.as_bool() {
+      // Left open, it would look like it has the keyboard while keys go on
+      // to the window behind it.
+      tracing::warn!(
+        "Overview could not take the foreground; closing it."
+      );
+      self.send(OverviewAction::Cancel);
+      self.close();
       return;
-    };
+    }
 
-    if let Some((screen, card)) = self.landing_card(hwnd, action.as_ref())
-    {
-      self.screens[screen].celebrate(card);
-    }
-    self.after_input(action);
-    if !self.take_foreground() {
-      tracing::warn!("Overview could not take the keyboard after a drag.");
-    }
+    let monitor = DxgiVsyncWaiter::window_monitor(foreground);
+    self.vsync = DxgiVsyncWaiter::for_monitor(monitor).ok();
   }
 
   /// Shows a new `frame` in the open overview, keeping the selection.
@@ -1042,7 +952,6 @@ impl Overview {
     }
 
     self.ghost = None;
-    self.carried = None;
     self.landing.clear();
     self.pending_pick = None;
     self.vsync = None;
@@ -1121,7 +1030,32 @@ impl Overview {
   /// Flies `ghost`, let go of, into the card its window lands on: where
   /// `action` moves or places it, or else back where it came from.
   fn land(&mut self, mut ghost: Ghost, action: Option<&OverviewAction>) {
-    let moved_to = self.landing_card(ghost.hwnd, action);
+    let moved_to = match action {
+      Some(
+        OverviewAction::MoveWindow {
+          hwnd,
+          workspace,
+          monitor,
+        }
+        | OverviewAction::PlaceWindow {
+          hwnd,
+          workspace,
+          monitor,
+          ..
+        },
+      ) if *hwnd == ghost.hwnd => self
+        .screens
+        .iter()
+        .position(|screen| screen.id() == Some(*monitor))
+        .and_then(|index| {
+          self.screens[index]
+            .workspaces()
+            .iter()
+            .position(|candidate| candidate.name == *workspace)
+            .map(|card| (index, card))
+        }),
+      _ => None,
+    };
     let came_from = || {
       self.screens.iter().enumerate().find_map(|(index, screen)| {
         screen
@@ -1150,41 +1084,6 @@ impl Overview {
     self.landing.push((ghost, index));
     if moved_to.is_some() {
       self.screens[index].celebrate(card);
-    }
-  }
-
-  /// Screen and card window `target` lands on for `action`, if it moves
-  /// or places it.
-  fn landing_card(
-    &self,
-    target: isize,
-    action: Option<&OverviewAction>,
-  ) -> Option<(usize, usize)> {
-    match action {
-      Some(
-        OverviewAction::MoveWindow {
-          hwnd,
-          workspace,
-          monitor,
-        }
-        | OverviewAction::PlaceWindow {
-          hwnd,
-          workspace,
-          monitor,
-          ..
-        },
-      ) if *hwnd == target => self
-        .screens
-        .iter()
-        .position(|screen| screen.id() == Some(*monitor))
-        .and_then(|index| {
-          self.screens[index]
-            .workspaces()
-            .iter()
-            .position(|candidate| candidate.name == *workspace)
-            .map(|card| (index, card))
-        }),
-      _ => None,
     }
   }
 
@@ -1320,8 +1219,7 @@ impl Overview {
     }
 
     let was_closing = self.is_closing();
-    let mut is_moving =
-      self.pending_pick.is_some() | self.follow_carried_drag();
+    let mut is_moving = self.pending_pick.is_some();
     for screen in &mut self.screens {
       is_moving |= screen.tick(dt);
     }
@@ -1605,7 +1503,7 @@ impl Overview {
     }
 
     let action = self.interaction.mouse_up(&self.workspaces);
-    self.let_go_of_carried(action);
+    self.after_input(action);
   }
 
   fn on_middle_down(&mut self, hwnd: HWND, position: (i32, i32)) {
@@ -1713,7 +1611,7 @@ impl Overview {
       WM_OPEN_OVERVIEW => {
         // SAFETY: Posted by `NativeOverview::open` with an owned payload.
         let open = unsafe { Box::from_raw(wparam.0 as *mut Open) };
-        self.open(open.session, open.frame, open.layout, open.carried);
+        self.open(open.session, open.frame, open.layout);
       }
       WM_UPDATE_OVERVIEW => {
         // SAFETY: Posted by `NativeOverview::update` with an owned frame.

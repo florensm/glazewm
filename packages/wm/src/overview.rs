@@ -5,24 +5,20 @@
 //! The overview is drawn and driven by `NativeOverview` on a thread of its
 //! own; the WM decides what it shows and carries out what is picked.
 
-use std::{
-  collections::HashMap,
-  time::{Duration, Instant},
-};
+use std::collections::HashMap;
 
 use anyhow::Context;
 use tokio::sync::mpsc;
 use uuid::Uuid;
 use wm_common::{
-  ActiveDragOperation, HotCorner, Layout, OverviewLayout, WindowState,
-  WorkspaceConfig,
+  HotCorner, Layout, OverviewLayout, WindowState, WorkspaceConfig,
 };
 use wm_platform::{
   BackdropOverlayParams, BorderOverlayParams, Color, MouseButton,
-  MouseEvent, NativeBorderOverlay, NativeOverview, NativeWindowWindowsExt,
-  OverviewAction, OverviewFrame, OverviewLayoutMode, OverviewOverlay,
-  OverviewOverlayKind, OverviewScreen, OverviewStyle, OverviewWindow,
-  OverviewWorkspace, Point, Rect, TabFrame,
+  MouseEvent, NativeBorderOverlay, NativeOverview, OverviewAction,
+  OverviewFrame, OverviewLayoutMode, OverviewOverlay, OverviewOverlayKind,
+  OverviewScreen, OverviewStyle, OverviewWindow, OverviewWorkspace, Point,
+  Rect, TabFrame,
 };
 
 use crate::{
@@ -56,30 +52,12 @@ pub struct Overview {
   /// says it hid, which can be a zoom after its close.
   is_shown: bool,
 
-  /// The cursor's visit to the hot corner, which opens the overview once
-  /// per visit.
-  hot_corner: CornerVisit,
-
-  /// Window whose drag the overview carries on, hidden until the mouse
-  /// button is let go of: a tool such as `AltSnap` may keep moving it,
-  /// past the overview, e.g. over a bar the overview leaves uncovered.
-  veiled: Option<Uuid>,
+  /// Whether the cursor is in the hot corner, which opens the overview
+  /// once per visit.
+  is_in_hot_corner: bool,
 
   /// Where the native overview sends user actions, with their session.
   action_tx: mpsc::UnboundedSender<(u64, OverviewAction)>,
-}
-
-/// Where the cursor is with respect to the hot corner.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum CornerVisit {
-  /// Out of it.
-  Away,
-
-  /// In it, and opening the overview at the instant given if it stays.
-  Resting(Instant),
-
-  /// In it, the overview opened or not to be opened on this visit.
-  Spent,
 }
 
 struct OpenOverview {
@@ -96,8 +74,7 @@ impl Overview {
       open: None,
       closing: None,
       is_shown: false,
-      hot_corner: CornerVisit::Away,
-      veiled: None,
+      is_in_hot_corner: false,
       action_tx,
     }
   }
@@ -110,20 +87,6 @@ impl Overview {
   /// after its close, zooming into the pick.
   pub fn is_shown(&self) -> bool {
     self.is_shown
-  }
-
-  /// Whether window `id` is hidden while the overview carries its drag.
-  pub fn is_veiled(&self, id: Uuid) -> bool {
-    self.veiled == Some(id)
-  }
-
-  /// When the cursor resting in the hot corner opens the overview, while
-  /// it does.
-  pub fn hot_corner_deadline(&self) -> Option<Instant> {
-    match self.hot_corner {
-      CornerVisit::Resting(due) => Some(due),
-      CornerVisit::Away | CornerVisit::Spent => None,
-    }
   }
 
   /// Takes in that the native overview of `session` hid. Returns whether
@@ -190,17 +153,6 @@ pub fn toggle_overview(
     return Ok(());
   }
 
-  open_overview(state, config, layout, None)
-}
-
-/// Opens the overview on `layout`, carrying on the drag of `dragged` (a
-/// window whose drag with the mouse was cancelled for it), if any.
-fn open_overview(
-  state: &mut WmState,
-  config: &UserConfig,
-  layout: OverviewLayoutMode,
-  dragged: Option<&WindowContainer>,
-) -> anyhow::Result<()> {
   let open = OpenOverview {
     accent: config
       .value
@@ -215,51 +167,35 @@ fn open_overview(
     anyhow::bail!("No monitors to show the overview on.");
   }
 
-  let carried = dragged.map(|window| window.native().id().0);
-  state.overview.native()?.open(frame, layout, carried);
+  state.overview.native()?.open(frame, layout);
   state.overview.open = Some(open);
   state.overview.closing = None;
   state.overview.is_shown = true;
   Ok(())
 }
 
-/// Shows the window whose drag the overview carried on again, if it is
-/// still hidden, as its drag has ended: let go of, or the overview done
-/// with it. One dropped on a workspace not displayed stays hidden there.
-pub fn unveil(state: &mut WmState) {
-  let window = state
-    .overview
-    .veiled
-    .take()
-    .and_then(|id| state.container_by_id(id));
-  if let Some(window) = window {
-    state.pending_sync.queue_container_to_redraw(window);
-  }
-}
-
 /// Pixels from a monitor's corner, either way, that count as in it.
 const HOT_CORNER_SIZE: i32 = 2;
 
-/// Notes the cursor moving into or out of the hot corner of a monitor,
-/// opening the overview once it rests there for `hot_corner_delay_ms`,
-/// and the left button being let go of, which ends a drag the overview
-/// carries on.
-pub fn on_mouse_event(
+/// Opens the overview as the cursor moves into the hot corner of a
+/// monitor, once per visit and not while a button is held (e.g. dragging
+/// a window into the corner).
+pub fn check_hot_corner(
   event: &MouseEvent,
   state: &mut WmState,
   config: &UserConfig,
 ) -> anyhow::Result<()> {
-  let position = match event {
-    MouseEvent::Move { position, .. } => position,
-    MouseEvent::ButtonUp {
-      button: MouseButton::Left,
-      ..
-    } => {
-      unveil(state);
-      return Ok(());
-    }
-    _ => return Ok(()),
+  let MouseEvent::Move {
+    position,
+    pressed_buttons,
+    ..
+  } = event
+  else {
+    return Ok(());
   };
+  let is_button_held = [MouseButton::Left, MouseButton::Right]
+    .iter()
+    .any(|button| pressed_buttons.contains(button));
 
   let corner = config.value.overview.hot_corner;
   let is_in = corner != HotCorner::None
@@ -268,69 +204,14 @@ pub fn on_mouse_event(
       is_in_corner(&monitor.native_properties().bounds, corner, position)
     });
 
-  let visit = &mut state.overview.hot_corner;
-  match (*visit, is_in) {
-    (_, false) => *visit = CornerVisit::Away,
-    (CornerVisit::Away, true) => {
-      let delay = u64::from(config.value.overview.hot_corner_delay_ms);
-      *visit = CornerVisit::Resting(
-        Instant::now() + Duration::from_millis(delay),
-      );
-    }
-    _ => {}
-  }
-
-  process_hot_corner(state, config)
-}
-
-/// Opens the overview once the cursor has rested in the hot corner long
-/// enough: carrying the window being dragged there, if any, but not while
-/// a button is held for anything else.
-pub fn process_hot_corner(
-  state: &mut WmState,
-  config: &UserConfig,
-) -> anyhow::Result<()> {
-  let CornerVisit::Resting(due) = state.overview.hot_corner else {
+  let was_in =
+    std::mem::replace(&mut state.overview.is_in_hot_corner, is_in);
+  if !is_in || was_in || is_button_held || state.overview.is_shown() {
     return Ok(());
-  };
-  if Instant::now() < due {
-    return Ok(());
-  }
-  state.overview.hot_corner = CornerVisit::Spent;
-
-  if state.overview.is_shown() {
-    return Ok(());
-  }
-
-  let dragged = state.windows().into_iter().find(|window| {
-    window.active_drag().is_some_and(|drag| {
-      drag.operation == Some(ActiveDragOperation::Move)
-    })
-  });
-  let is_button_held = [MouseButton::Left, MouseButton::Right]
-    .iter()
-    .any(|button| state.dispatcher.is_mouse_down(button));
-  if is_button_held && dragged.is_none() {
-    return Ok(());
-  }
-
-  // Dragged, the window floats above everything, the overview included:
-  // its drag ends where it began, and the overview carries on with it.
-  if let Some(window) = &dragged {
-    if let Err(err) = window.native().cancel_move_size() {
-      tracing::warn!("Failed to cancel the drag of {window}: {err}");
-    }
-    crate::events::cancel_drag(window, state, config)?;
-    crate::drop_indicator::hide_drop_indicator(state);
-
-    state.overview.veiled = Some(window.id());
-    if let Some(container) = state.container_by_id(window.id()) {
-      state.pending_sync.queue_container_to_redraw(container);
-    }
   }
 
   let layout = to_layout_mode(config.value.overview.layout);
-  open_overview(state, config, layout, dragged.as_ref())
+  toggle_overview(state, config, layout)
 }
 
 /// Whether `position` is in `corner` of `bounds`.

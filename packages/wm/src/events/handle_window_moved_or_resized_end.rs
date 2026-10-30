@@ -241,49 +241,6 @@ pub fn place_tiling_window(
   Ok(())
 }
 
-/// Ends `window`'s drag where it began, e.g. as the overview takes it
-/// over: a window dragged out of tiling goes back into it there, and a
-/// floating one back to where it was.
-pub fn cancel_drag(
-  window: &WindowContainer,
-  state: &mut WmState,
-  config: &UserConfig,
-) -> anyhow::Result<()> {
-  let Some(active_drag) = window.active_drag() else {
-    return Ok(());
-  };
-  let home = active_drag.initial_position;
-
-  match window {
-    WindowContainer::NonTilingWindow(window)
-      if active_drag.is_from_floating =>
-    {
-      let monitor = state
-        .nearest_monitor(&window.native())
-        .context("No monitor to put the window back on.")?;
-      update_floating_window_position(window, home, &monitor, state)?;
-      window.set_active_drag(None);
-      state.pending_sync.queue_container_to_redraw(window.clone());
-    }
-    WindowContainer::NonTilingWindow(window) => {
-      let dropped = drop_as_tiling_window(
-        window,
-        &home.center_point(),
-        state,
-        config,
-      )?;
-      dropped.set_active_drag(None);
-    }
-    // Not floated yet, it never left its place.
-    WindowContainer::TilingWindow(window) => {
-      window.set_active_drag(None);
-      state.pending_sync.queue_container_to_redraw(window.clone());
-    }
-  }
-
-  Ok(())
-}
-
 /// Puts `moved_window`, floating while dragged, back into tiling where
 /// `drop` says.
 fn put_dropped_window(
@@ -455,8 +412,8 @@ mod tests {
   use wm_platform::{LengthValue, Point, Rect};
 
   use super::{
-    cancel_drag, drop_as_tiling_window,
-    handle_window_moved_or_resized_end, place_tiling_window,
+    drop_as_tiling_window, handle_window_moved_or_resized_end,
+    place_tiling_window,
   };
   #[cfg(target_os = "windows")]
   use crate::layout::window_drop::{window_drop, WindowDrop};
@@ -845,35 +802,6 @@ mod tests {
     assert_eq!(child_ids(&workspace), vec![column.id()]);
     assert_size(&column, 0.6);
   }
-  #[test]
-  fn a_cancelled_drag_puts_the_window_back_where_it_was() {
-    let (moved, left, right) = (window(), window(), window());
-    let workspace = Workspace::mock()
-      .gaps_config(mock_inner_gaps())
-      .tiling_containers(vec![
-        moved.clone().into(),
-        left.clone().into(),
-        right.clone().into(),
-      ])
-      .call();
-    let (mut state, config) =
-      (state(vec![monitor(&workspace, 0)]), config());
-    set_focused_descendant(&moved.clone().into(), None);
-
-    let floating = start_drag(&moved, &mut state, &config);
-    assert_eq!(child_ids(&workspace), vec![left.id(), right.id()]);
-
-    cancel_drag(&floating.into(), &mut state, &config).unwrap();
-
-    assert_eq!(
-      child_ids(&workspace),
-      vec![moved.id(), left.id(), right.id()]
-    );
-    let back = state.container_by_id(moved.id()).unwrap();
-    assert!(back.as_tiling_window().is_some(), "tiling again");
-    assert!(back.as_window_container().unwrap().active_drag().is_none());
-  }
-
   #[test]
   fn placing_a_window_puts_it_where_dropping_it_there_would() {
     let (moved, left, right) = (window(), window(), window());

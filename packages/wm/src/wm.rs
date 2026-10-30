@@ -153,10 +153,6 @@ impl WindowManager {
     {
       let state = &mut self.state;
 
-      // Any action follows the end of a drag the overview carried on, in
-      // case the mouse hook missed the button being let go of.
-      crate::overview::unveil(state);
-
       // What the WM held off while it was on screen resumes.
       if action == OverviewAction::Hidden {
         return if state.overview.mark_hidden(session) {
@@ -293,26 +289,6 @@ impl WindowManager {
         None => Ok(()),
       }
     }
-  }
-
-  /// Opens the overview once the cursor has rested in the hot corner.
-  pub fn process_hot_corner(
-    &mut self,
-    config: &UserConfig,
-  ) -> anyhow::Result<()> {
-    #[cfg(target_os = "windows")]
-    {
-      let state = &mut self.state;
-      crate::overview::process_hot_corner(state, config)?;
-      if state.pending_sync.has_changes() {
-        platform_sync(state, config)?;
-      }
-    }
-
-    #[cfg(not(target_os = "windows"))]
-    let _ = config;
-
-    Ok(())
   }
 
   /// Carries out an action taken in the tab bar of stack `stack_id`.
@@ -569,7 +545,7 @@ impl WindowManager {
       }
       PlatformEvent::Mouse(event) => {
         #[cfg(target_os = "windows")]
-        crate::overview::on_mouse_event(&event, state, config)?;
+        crate::overview::check_hot_corner(&event, state, config)?;
         handle_mouse_move(&event, state, config)
       }
       PlatformEvent::Window(window_event) => match window_event {
