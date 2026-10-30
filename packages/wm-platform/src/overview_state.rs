@@ -55,6 +55,113 @@ pub(crate) enum Key {
   Text(char),
 }
 
+impl Key {
+  /// How the shortcut sheet shows it.
+  fn label(self) -> String {
+    match self {
+      Self::Left => "\u{2190}".into(),
+      Self::Up => "\u{2191}".into(),
+      Self::Down => "\u{2193}".into(),
+      Self::Right => "\u{2192}".into(),
+      Self::Home => "Home".into(),
+      Self::End => "End".into(),
+      Self::Enter => "\u{23ce}".into(),
+      Self::Space => "Space".into(),
+      Self::Backspace => "\u{232b}".into(),
+      Self::Tab => "Tab".into(),
+      Self::Escape => "Esc".into(),
+      Self::Digit(digit) => digit.to_string(),
+      Self::Text(text) => text.to_string(),
+    }
+  }
+}
+
+/// What a key does outside the search field.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Command {
+  Cancel,
+  Search,
+  ShowShortcuts,
+  NextMatch,
+  PreviousMatch,
+  CloseWindow,
+  NextLayout,
+  Space,
+  Back,
+  Move(Toward),
+  First,
+  Last,
+  Enter,
+  Special,
+
+  /// Go to, or send to, the workspace of a digit.
+  Workspace(u8),
+}
+
+/// The keys of every command but [`Command::Workspace`], which digits
+/// give. The shortcut sheet shows the first key of each.
+const BINDINGS: &[(Command, &[Key])] = &[
+  (Command::Cancel, &[Key::Escape]),
+  (Command::Search, &[Key::Text('/')]),
+  (Command::ShowShortcuts, &[Key::Text('?')]),
+  (Command::NextMatch, &[Key::Text('n')]),
+  (Command::PreviousMatch, &[Key::Text('N')]),
+  (Command::CloseWindow, &[Key::Text('x'), Key::Text('X')]),
+  (Command::NextLayout, &[Key::Tab]),
+  (Command::Space, &[Key::Space]),
+  (Command::Back, &[Key::Backspace]),
+  (Command::Move(Toward::Left), &[Key::Left, Key::Text('h')]),
+  (Command::Move(Toward::Right), &[Key::Right, Key::Text('l')]),
+  (Command::Move(Toward::Up), &[Key::Up, Key::Text('k')]),
+  (Command::Move(Toward::Down), &[Key::Down, Key::Text('j')]),
+  (Command::First, &[Key::Home]),
+  (Command::Last, &[Key::End]),
+  (Command::Enter, &[Key::Enter]),
+  (Command::Special, &[Key::Text('s')]),
+];
+
+impl Command {
+  fn of(key: Key) -> Option<Self> {
+    if let Key::Digit(digit) = key {
+      return Some(Self::Workspace(digit));
+    }
+
+    BINDINGS
+      .iter()
+      .find(|(_, keys)| keys.contains(&key))
+      .map(|(command, _)| *command)
+  }
+
+  /// The key the shortcut sheet shows for it. Letters show as key caps,
+  /// in capitals, unless the other case does something else.
+  fn label(self) -> String {
+    if let Self::Workspace(_) = self {
+      return "1\u{2013}9".into();
+    }
+
+    let key = BINDINGS
+      .iter()
+      .find(|(command, _)| *command == self)
+      .and_then(|(_, keys)| keys.first().copied());
+
+    match key {
+      Some(Key::Text(text))
+        if Self::of(Key::Text(text.to_ascii_uppercase()))
+          .is_none_or(|other| other == self) =>
+      {
+        text.to_ascii_uppercase().to_string()
+      }
+      Some(key) => key.label(),
+      None => String::new(),
+    }
+  }
+}
+
+/// The labels of `commands`, one after another.
+fn joined_labels(commands: impl IntoIterator<Item = Command>) -> String {
+  commands.into_iter().map(Command::label).collect()
+}
+
 /// A way to move the cursor.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Toward {
@@ -65,6 +172,9 @@ pub(crate) enum Toward {
 }
 
 impl Toward {
+  /// Every way, in the order the shortcut sheet shows their arrows.
+  const ALL: [Self; 4] = [Self::Left, Self::Up, Self::Down, Self::Right];
+
   fn opposite(self) -> Self {
     match self {
       Self::Left => Self::Right,
@@ -410,7 +520,10 @@ impl Interaction {
   ) -> Option<OverviewAction> {
     // Any key closes the shortcut sheet; `?` and `Escape` do nothing more.
     if std::mem::take(&mut self.shows_shortcuts)
-      && matches!(key, Key::Text('?') | Key::Escape)
+      && matches!(
+        Command::of(key),
+        Some(Command::ShowShortcuts | Command::Cancel)
+      )
     {
       return None;
     }
@@ -420,13 +533,13 @@ impl Interaction {
       return None;
     }
 
-    match key {
-      Key::Escape => return Some(OverviewAction::Cancel),
-      Key::Text('/') => self.start_search(),
-      Key::Text('?') => self.shows_shortcuts = true,
-      Key::Text('n') => self.goto_match(1, workspaces),
-      Key::Text('N') => self.goto_match(-1, workspaces),
-      Key::Text('x' | 'X') => {
+    match Command::of(key)? {
+      Command::Cancel => return Some(OverviewAction::Cancel),
+      Command::Search => self.start_search(),
+      Command::ShowShortcuts => self.shows_shortcuts = true,
+      Command::NextMatch => self.goto_match(1, workspaces),
+      Command::PreviousMatch => self.goto_match(-1, workspaces),
+      Command::CloseWindow => {
         let hwnd =
           self.selected_window.filter(|_| self.mode == Mode::Windows);
         if let Some(hwnd) = hwnd {
@@ -434,9 +547,11 @@ impl Interaction {
           return Some(OverviewAction::CloseWindow(hwnd));
         }
       }
-      Key::Tab => self.set_layout(self.layout.next(), workspaces),
-      Key::Space => return self.space(workspaces),
-      Key::Backspace => match self.mode {
+      Command::NextLayout => {
+        self.set_layout(self.layout.next(), workspaces);
+      }
+      Command::Space => return self.space(workspaces),
+      Command::Back => match self.mode {
         Mode::Carrying => {
           self.carried = None;
           self.mode = Mode::Windows;
@@ -447,14 +562,11 @@ impl Interaction {
         }
         Mode::Spaces => {}
       },
-      Key::Left | Key::Text('h') => self.arrow(Toward::Left, workspaces),
-      Key::Right | Key::Text('l') => self.arrow(Toward::Right, workspaces),
-      Key::Up | Key::Text('k') => self.arrow(Toward::Up, workspaces),
-      Key::Down | Key::Text('j') => self.arrow(Toward::Down, workspaces),
-      Key::Home => self.edge(false, workspaces),
-      Key::End => self.edge(true, workspaces),
-      Key::Enter => return self.enter(workspaces),
-      Key::Digit(digit) => {
+      Command::Move(toward) => self.arrow(toward, workspaces),
+      Command::First => self.edge(false, workspaces),
+      Command::Last => self.edge(true, workspaces),
+      Command::Enter => return self.enter(workspaces),
+      Command::Workspace(digit) => {
         let name = digit_target(
           digit,
           workspaces,
@@ -464,7 +576,7 @@ impl Interaction {
         let monitor = self.monitor_for(&name, workspaces);
         return self.go_to(name, monitor, workspaces);
       }
-      Key::Text('s') => {
+      Command::Special => {
         let special = self
           .active_cards()
           .find(|index| is_special(workspaces, *index))?;
@@ -475,7 +587,6 @@ impl Interaction {
           workspaces,
         );
       }
-      Key::Text(_) => {}
     }
 
     None
@@ -1276,48 +1387,54 @@ impl Interaction {
   /// by.
   pub fn shortcuts(&self) -> Vec<ShortcutGroup> {
     let (back, forward, inside) = arrows(self.layout);
-    let workspace_arrows = match (back, forward) {
-      _ if self.layout == OverviewLayoutMode::Grid => {
-        "\u{2190}\u{2191}\u{2193}\u{2192}"
-      }
-      (Toward::Up, Toward::Down) => "\u{2191}\u{2193}",
-      _ => "\u{2190}\u{2192}",
+    let workspace_arrows = if self.layout == OverviewLayoutMode::Grid {
+      joined_labels(Toward::ALL.map(Command::Move))
+    } else {
+      joined_labels([back, forward].map(Command::Move))
     };
-    let window_arrows = "\u{2190}\u{2191}\u{2193}\u{2192}";
+    let window_arrows = joined_labels(Toward::ALL.map(Command::Move));
     let look_inside = match inside {
-      Some(Toward::Down) => Some("\u{2193}"),
-      Some(Toward::Right) => Some("\u{2192}"),
-      Some(_) => None,
+      Some(toward) => Some(Command::Move(toward).label()),
       // The grid is too small to pick a window in.
       None if self.layout == OverviewLayoutMode::Grid => None,
-      None => Some("Space"),
+      None => Some(Command::Space.label()),
     };
+    let to_workspace = format!(
+      "{} {}",
+      Command::Workspace(1).label(),
+      Command::Special.label()
+    );
+    let next_and_previous = format!(
+      "{} {}",
+      Command::NextMatch.label(),
+      Command::PreviousMatch.label()
+    );
 
     let mut windows = look_inside
-      .map(|key| Shortcut::new(key, "look inside"))
+      .map(|key| Shortcut::new(&key, "look inside"))
       .into_iter()
       .collect::<Vec<_>>();
     windows.extend([
-      Shortcut::new(window_arrows, "pick a window"),
-      Shortcut::new("\u{23ce}", "go to it"),
-      Shortcut::new("X", "close it"),
-      Shortcut::new("1\u{2013}9 S", "send it there"),
-      Shortcut::new("\u{232b}", "back"),
+      Shortcut::new(&window_arrows, "pick a window"),
+      Shortcut::new(&Command::Enter.label(), "go to it"),
+      Shortcut::new(&Command::CloseWindow.label(), "close it"),
+      Shortcut::new(&to_workspace, "send it there"),
+      Shortcut::new(&Command::Back.label(), "back"),
     ]);
 
     vec![
       ShortcutGroup {
         title: "Workspaces",
         shortcuts: vec![
-          Shortcut::new(workspace_arrows, "select"),
-          Shortcut::new("1\u{2013}9", "go to one"),
-          Shortcut::new("S", "special"),
-          Shortcut::new("\u{23ce}", "go there"),
+          Shortcut::new(&workspace_arrows, "select"),
+          Shortcut::new(&Command::Workspace(1).label(), "go to one"),
+          Shortcut::new(&Command::Special.label(), "special"),
+          Shortcut::new(&Command::Enter.label(), "go there"),
           Shortcut::new(
-            "Tab",
+            &Command::NextLayout.label(),
             &format!("{} layout", self.layout.next().name()),
           ),
-          Shortcut::new("Esc", "close"),
+          Shortcut::new(&Command::Cancel.label(), "close"),
         ],
       },
       ShortcutGroup {
@@ -1327,19 +1444,20 @@ impl Interaction {
       ShortcutGroup {
         title: "Carrying",
         shortcuts: vec![
-          Shortcut::new("Space", "lift / drop"),
-          Shortcut::new(workspace_arrows, "pick a workspace"),
-          Shortcut::new("1\u{2013}9 S", "drop on that one"),
-          Shortcut::new("\u{232b}", "put it down"),
+          Shortcut::new(&Command::Space.label(), "lift / drop"),
+          Shortcut::new(&workspace_arrows, "pick a workspace"),
+          Shortcut::new(&to_workspace, "drop on that one"),
+          Shortcut::new(&Command::Back.label(), "put it down"),
         ],
       },
       ShortcutGroup {
         title: "Search",
         shortcuts: vec![
-          Shortcut::new("/", "search windows"),
-          Shortcut::new("\u{23ce}", "best match"),
-          Shortcut::new("n N", "next / previous"),
-          Shortcut::new("Esc", "clear"),
+          Shortcut::new(&Command::Search.label(), "search windows"),
+          // Typed into the search field, which takes these itself.
+          Shortcut::new(&Key::Enter.label(), "best match"),
+          Shortcut::new(&next_and_previous, "next / previous"),
+          Shortcut::new(&Key::Escape.label(), "clear"),
         ],
       },
     ]
@@ -1669,6 +1787,7 @@ fn row_indices(
 mod tests {
   use super::{
     all_workspaces, Control, Hit, Interaction, Key, Mode, SearchField,
+    BINDINGS,
   };
   use crate::{
     overview_layout::{CardMetrics, CardSlot, GridCells, RectF},
@@ -1778,6 +1897,59 @@ mod tests {
   #[test]
   fn starts_on_the_focused_workspace() {
     assert_eq!(interaction().selected(), 1);
+  }
+
+  #[test]
+  fn no_key_is_bound_twice() {
+    for (index, (_, keys)) in BINDINGS.iter().enumerate() {
+      for key in *keys {
+        assert!(
+          BINDINGS[index + 1..]
+            .iter()
+            .all(|(_, later)| !later.contains(key)),
+          "{key:?} is bound twice"
+        );
+      }
+    }
+  }
+
+  #[test]
+  fn the_shortcut_sheet_shows_the_bound_keys() {
+    let keys = interaction()
+      .shortcuts()
+      .into_iter()
+      .map(|group| {
+        group
+          .shortcuts
+          .into_iter()
+          .map(|shortcut| shortcut.key)
+          .collect::<Vec<_>>()
+      })
+      .collect::<Vec<_>>();
+
+    assert_eq!(
+      keys,
+      [
+        vec![
+          "\u{2190}\u{2192}",
+          "1\u{2013}9",
+          "S",
+          "\u{23ce}",
+          "Tab",
+          "Esc"
+        ],
+        vec![
+          "Space",
+          "\u{2190}\u{2191}\u{2193}\u{2192}",
+          "\u{23ce}",
+          "X",
+          "1\u{2013}9 S",
+          "\u{232b}",
+        ],
+        vec!["Space", "\u{2190}\u{2192}", "1\u{2013}9 S", "\u{232b}"],
+        vec!["/", "\u{23ce}", "n N", "Esc"],
+      ]
+    );
   }
 
   #[test]
