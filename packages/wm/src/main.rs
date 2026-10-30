@@ -571,7 +571,12 @@ fn catch_up_before_frame(
 
 /// Initialize logging with the specified verbosity level.
 ///
-/// Error and warning logs are saved to `~/.glzr/glazewm/errors.log`.
+/// Error and warning logs are saved to `~/.glzr/glazewm/errors.log`, and
+/// with `--verbose` every log to `~/.glzr/glazewm/debug.log`.
+///
+/// The latter is the only way to read verbose logs of a release build:
+/// `glazewm start` launches the WM detached, and the release WM has no
+/// console, so its stdout can't be redirected.
 /// `WARN` is included (not just `ERROR`) so perf-diagnostic warnings (e.g.
 /// slow synchronous window repositions) are captured even when the WM is
 /// running detached from a terminal, without needing `-v` for the full
@@ -602,6 +607,13 @@ fn setup_logging(verbosity: &Verbosity) -> anyhow::Result<()> {
       )
   });
 
+  let debug_layer = (verbosity.level() == Level::DEBUG).then(|| {
+    fmt::Layer::new().with_ansi(false).with_writer(
+      tracing_appender::rolling::never(&error_log_dir, "debug.log")
+        .with_max_level(Level::DEBUG),
+    )
+  });
+
   let subscriber = tracing_subscriber::registry()
     .with(
       // Output to stdout with specified verbosity level.
@@ -613,7 +625,8 @@ fn setup_logging(verbosity: &Verbosity) -> anyhow::Result<()> {
       fmt::Layer::new()
         .with_writer(error_writer.with_max_level(Level::WARN)),
     )
-    .with(perf_layer);
+    .with(perf_layer)
+    .with(debug_layer);
 
   tracing::subscriber::set_global_default(subscriber)?;
 
