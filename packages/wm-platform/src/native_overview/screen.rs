@@ -1210,7 +1210,9 @@ impl Screen {
       OverviewLayoutMode::Activities => {
         let hit = self.hit_cards(x, y, &Camera::IDENTITY);
         if hit.workspace.is_some() {
-          hit
+          // Too small to aim at: a window dropped on a miniature only
+          // moves there, keeping its layout.
+          Hit { point: None, ..hit }
         } else {
           self.hit_scene(x, y, &self.scene_area)
         }

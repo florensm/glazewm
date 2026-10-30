@@ -81,7 +81,7 @@ is nowhere to go.
 | Click a window | Focus it, switching to its workspace, and close. |
 | Click a workspace | Switch to it and close, zooming into it. |
 | Click the background | Close without changing anything. |
-| Drag a window onto a workspace | Move it there, laid out where dropping it there on screen would put it: beside the window under the cursor, on the side nearest the cursor, which a highlight shows; or into the column there in a scrolling layout. Works within a workspace too, to rearrange it. A window that isn't tiling, or dropped on the special workspace, only moves. The overview stays open. |
+| Drag a window onto a workspace | Move it there, laid out where dropping it there on screen would put it: beside the window under the cursor, on the side nearest the cursor, which a highlight shows; or into the column there in a scrolling layout. Works within a workspace too, to rearrange it. A window that isn't tiling, or dropped on the special workspace or on a miniature in the activities, only moves. The overview stays open. |
 | Middle-click a window | Close the window. |
 | Click the search field | Type into the [search](#search), keeping its query. |
 | Click **? Shortcuts** | Show or hide the keyboard shortcuts. |
