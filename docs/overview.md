@@ -41,7 +41,9 @@ goes through them while it is open. Cards are drawn at the size each layout
 shows them, so their text stays sharp.
 
 Selection and hover show as highlights that glide from one workspace or
-window to the next. In the activities and the stage, a workspace clicked
+window to the next. A card lifts under the cursor and sinks while held
+down, and an arrow or wheel step with nowhere to go bumps the selection
+that way. In the activities and the stage, a workspace clicked
 with the mouse is shown first, and gone to once clicked again; clicking one
 of its windows goes straight to that window.
 
@@ -277,6 +279,11 @@ overview:
   # they mark next and to fade in or out, as the shortcut sheet does; 0
   # snaps them.
   highlight_duration_ms: 170
+
+  # How far cards, windows and highlights overshoot where they head before
+  # settling back, from 0 (not at all) to 0.8 (wobbly). The opening zoom
+  # overshoots by it too.
+  bounce: 0.25
 ```
 
 Colors take an optional alpha (`#rrggbbaa`). Every key is optional; the
@@ -327,11 +334,13 @@ Nothing animates behind the overview: a window moved while it is on screen
 lands at once, and its preview follows it there.
 
 Animations step once per refresh of the focused monitor, and the loop
-sleeps while nothing moves. Cards and windows move on critically
-damped springs, so a key press mid-animation retargets them smoothly.
-Each step follows the spring's exact motion over the frame, so it moves
-alike at any refresh rate, and even a short `switch_duration_ms` can't
-overshoot.
+sleeps while nothing moves. Cards and windows move on springs, damped
+by `bounce` (critically at `0`), so a key press mid-animation retargets
+them smoothly. Each step follows the spring's exact motion over the
+frame, so it moves alike at any refresh rate, and even a short
+`switch_duration_ms` can't blow up; a bouncier spring dies away as fast,
+only swinging past its target on the way. None of it draws anything: it
+moves and scales the same thumbnails as before.
 
 The focused monitor's window takes the foreground while open, so keys go
 to the overview rather than to the window behind it; if Windows refuses it
