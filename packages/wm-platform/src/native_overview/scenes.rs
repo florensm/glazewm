@@ -70,42 +70,76 @@ impl Screen {
     is_changed
   }
 
-  /// Puts the selected workspace's scene windows where its card shows
-  /// them now, so they fly on from there.
-  pub(super) fn seed_scene_from_card(&mut self) {
+  /// Where card `index` shows each of its windows now, in the activities.
+  fn miniature_rects(&self, index: usize) -> Vec<(isize, RectF)> {
     let camera = Camera::shifted(0.0, self.top_shift(self.openness()));
-    let selected = self.focus.selected;
-    let (Some(card), Some(scene)) =
-      (self.cards.get(selected), self.scenes.get_mut(selected))
-    else {
-      return;
+    let Some(card) = self.cards.get(index) else {
+      return Vec::new();
     };
 
     let placement = card.placement();
+    card
+      .previews
+      .iter()
+      .map(|preview| {
+        let rect = placement.map(&card.metrics, &preview.tile.rect);
+        (preview.hwnd, camera.apply(&rect))
+      })
+      .collect()
+  }
+
+  /// Puts the selected workspace's scene windows where its card shows
+  /// them now, so they fly on from there. With `keep_shown`, those still
+  /// showing (e.g. on their way back into the card) carry on from where
+  /// they are instead.
+  pub(super) fn seed_scene_from_card(&mut self, keep_shown: bool) {
+    let selected = self.focus.selected;
+    self.scene_shown = Some(selected);
+    let rects = self.miniature_rects(selected);
+    let Some(scene) = self.scenes.get_mut(selected) else {
+      return;
+    };
+
     for window in &mut scene.windows {
-      let preview = card
-        .previews
+      if keep_shown && window.alpha.value > 0.05 {
+        continue;
+      }
+      let rect = rects
         .iter()
-        .find(|preview| preview.hwnd == window.preview.hwnd);
-      if let Some(preview) = preview {
-        let rect =
-          camera.apply(&placement.map(&card.metrics, &preview.tile.rect));
+        .find(|(hwnd, _)| *hwnd == window.preview.hwnd)
+        .map(|(_, rect)| *rect);
+      if let Some(rect) = rect {
         window.jump(&rect, 1.0);
       }
     }
   }
 
   /// Points each scene's windows where the layout shows them: the
-  /// selected workspace's in place, the others faded out to its sides.
+  /// selected workspace's in place, flown out of its card when it was
+  /// just selected, and the others shrunk back into their cards and faded
+  /// out.
   pub(super) fn retarget_scenes(&mut self, snap: bool) {
-    let Some(frame) = &self.frame else {
+    if self.frame.is_none() {
       return;
-    };
+    }
 
-    let layout = self.focus.layout;
     let selected = self.focus.selected;
     // What a closing screen zooms from holds still for its zoom.
     let held = self.closing_card();
+
+    if snap || held.is_some() {
+      self.scene_shown = Some(selected);
+    } else if self.scene_shown != Some(selected) {
+      self.seed_scene_from_card(true);
+    }
+
+    let miniatures = (0..self.cards.len())
+      .map(|index| self.miniature_rects(index))
+      .collect::<Vec<_>>();
+    let Some(frame) = &self.frame else {
+      return;
+    };
+    let layout = self.focus.layout;
     let slide = self.metrics.view.0 * 0.12;
     let scene_area = self.scene_area;
 
@@ -136,7 +170,16 @@ impl Screen {
         .collect::<Vec<_>>();
 
       for (window, rect) in scene.windows.iter_mut().zip(rects) {
-        if let Some(rect) = rect {
+        let miniature = miniatures.get(index).and_then(|rects| {
+          rects
+            .iter()
+            .find(|(hwnd, _)| *hwnd == window.preview.hwnd)
+            .map(|(_, rect)| *rect)
+        });
+
+        if let (Some(miniature), false) = (miniature, index == selected) {
+          window.retarget(&miniature, alpha, snap);
+        } else if let Some(rect) = rect {
           window.retarget(&rect.translate(offset, 0.0), alpha, snap);
         } else {
           let target = window.target();

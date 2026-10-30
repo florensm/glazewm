@@ -43,9 +43,13 @@ shows them, so their text stays sharp.
 Selection and hover show as highlights that glide from one workspace or
 window to the next. A card lifts under the cursor and sinks while held
 down, and an arrow or wheel step with nowhere to go bumps the selection
-that way. In the activities and the stage, a workspace clicked
-with the mouse is shown first, and gone to once clicked again; clicking one
-of its windows goes straight to that window.
+that way. A dragged window pops up under the cursor and trails it, and
+once let go of flies into the card it lands on, or back home if it moved
+nowhere. In the activities, a newly shown workspace's windows fly out of
+its miniature while the last one's shrink back into theirs. In the
+activities and the stage, a workspace clicked with the mouse is shown
+first, and gone to once clicked again; clicking one of its windows goes
+straight to that window.
 
 In the carousel and the grid, the special workspace's card is docked below
 the others (see [Special workspace](#special-workspace)); in the other

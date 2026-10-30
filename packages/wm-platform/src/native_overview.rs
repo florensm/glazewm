@@ -597,6 +597,10 @@ struct Screen {
   /// Where the activities show the selected workspace large.
   scene_area: RectF,
 
+  /// Workspace whose scene its windows were last pointed at, to fly a
+  /// newly selected one's out of its card.
+  scene_shown: Option<usize>,
+
   /// Pictures of cards no longer shown, kept for reuse.
   spare: Vec<Picture>,
 
@@ -685,6 +689,10 @@ struct Overview {
 
   ghost: Option<Ghost>,
 
+  /// Ghosts let go of, flying into their cards, each with the screen it
+  /// shows on.
+  landing: Vec<(Ghost, usize)>,
+
   /// Cursor position at open, in screen coordinates. Windows sends a
   /// mouse move when a window appears under a still cursor, which must
   /// not count as hovering.
@@ -720,6 +728,7 @@ impl Overview {
       ),
       screens: Vec::new(),
       ghost: None,
+      landing: Vec::new(),
       open_cursor: (0, 0),
       last_tick: Instant::now(),
       is_done: false,
@@ -883,6 +892,7 @@ impl Overview {
     }
 
     self.ghost = None;
+    self.landing.clear();
     self.pending_pick = None;
     self.vsync = None;
     (self.on_action)(self.session, OverviewAction::Hidden);
@@ -928,9 +938,10 @@ impl Overview {
     let host = self.ghost_host();
 
     if self.ghost.as_ref().map(|ghost| ghost.hwnd) != floating {
-      self.ghost = floating
-        .zip(host)
-        .and_then(|(hwnd, host)| Ghost::new(hwnd, &self.screens[host]));
+      self.ghost = floating.zip(host).and_then(|(hwnd, host)| {
+        let grabbed = self.interaction.drag.map(|drag| drag.position);
+        Ghost::new(hwnd, grabbed, &self.screens[host])
+      });
     }
 
     let (Some(ghost), Some(host)) = (&mut self.ghost, host) else {
@@ -940,7 +951,7 @@ impl Overview {
     ghost.host_on(screen);
 
     match self.interaction.drag {
-      Some(drag) => ghost.follow(drag.position, screen),
+      Some(drag) => ghost.follow(drag.position),
       None => ghost.park(screen),
     }
 
@@ -954,6 +965,55 @@ impl Overview {
     if let (Some(title), Some(style)) = (title, screen.style()) {
       ghost.draw(&title, screen.metrics.scale_factor, style);
     }
+  }
+
+  /// Flies `ghost`, let go of, into the card its window lands on: where
+  /// `action` moves it, or else back where it came from.
+  fn land(&mut self, mut ghost: Ghost, action: Option<&OverviewAction>) {
+    let moved_to = match action {
+      Some(OverviewAction::MoveWindow {
+        hwnd,
+        workspace,
+        monitor,
+      }) if *hwnd == ghost.hwnd => self
+        .screens
+        .iter()
+        .position(|screen| screen.id() == Some(*monitor))
+        .and_then(|index| {
+          self.screens[index]
+            .workspaces()
+            .iter()
+            .position(|candidate| candidate.name == *workspace)
+            .map(|card| (index, card))
+        }),
+      _ => None,
+    };
+    let came_from = || {
+      self.screens.iter().enumerate().find_map(|(index, screen)| {
+        screen
+          .workspaces()
+          .iter()
+          .position(|workspace| {
+            workspace
+              .windows
+              .iter()
+              .any(|window| window.hwnd == ghost.hwnd)
+          })
+          .map(|card| (index, card))
+      })
+    };
+
+    let Some((index, card)) = moved_to.or_else(came_from) else {
+      return;
+    };
+    let screen = &self.screens[index];
+    let Some(rect) = screen.landing_rect(card) else {
+      return;
+    };
+
+    ghost.host_on(screen);
+    ghost.land(&rect.translate(screen.area.x, screen.area.y), screen);
+    self.landing.push((ghost, index));
   }
 
   /// Screen the floating window shows on: the one it is dragged over, or
@@ -1096,6 +1156,20 @@ impl Overview {
       ghost.place(&self.screens[host]);
     }
 
+    for (ghost, host) in &mut self.landing {
+      if let Some(screen) = self.screens.get(*host) {
+        // Kept above the screen's thumbnails as the move registers them
+        // anew.
+        ghost.host_on(screen);
+        is_moving |= ghost.step(dt);
+        ghost.place(screen);
+      }
+    }
+    let screens = self.screens.len();
+    self
+      .landing
+      .retain(|(ghost, host)| !ghost.has_landed() && *host < screens);
+
     is_moving
   }
 
@@ -1154,6 +1228,12 @@ impl Overview {
 
   /// Acts on what the user did, after the interaction state took it in.
   fn after_input(&mut self, action: Option<OverviewAction>) {
+    let floating = self.interaction.floating();
+    let let_go = self.ghost.take_if(|ghost| Some(ghost.hwnd) != floating);
+    if let Some(ghost) = let_go {
+      self.land(ghost, action.as_ref());
+    }
+
     if let Some(action) = action {
       let is_final = matches!(
         action,

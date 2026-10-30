@@ -68,6 +68,7 @@ impl Screen {
       cards: Vec::new(),
       scenes: Vec::new(),
       scene_area: RectF::default(),
+      scene_shown: None,
       spare: Vec::new(),
       overlays: Overlays::new(0.0, 0.0),
       search: None,
@@ -259,6 +260,7 @@ impl Screen {
       self.spare.extend(card.into_pictures());
     }
     self.scenes.clear();
+    self.scene_shown = None;
     self.registered_for = None;
     self.nav.clear();
     self.zoom = None;
@@ -344,7 +346,7 @@ impl Screen {
     }
 
     if layout.has_scene() && !previous.has_scene() {
-      self.seed_scene_from_card();
+      self.seed_scene_from_card(false);
     }
 
     true
@@ -791,7 +793,7 @@ impl Screen {
       focus.layout.has_scene() && index != self.focus.selected;
     self.focus = focus;
     if is_switching {
-      self.seed_scene_from_card();
+      self.seed_scene_from_card(false);
     }
 
     self.hold(index);
@@ -983,6 +985,19 @@ impl Screen {
         height as f32,
       )
     })
+  }
+
+  /// Where a window let go of over card `index` lands: the scene, for
+  /// the activities' shown workspace, or else the card.
+  pub(super) fn landing_rect(&self, index: usize) -> Option<RectF> {
+    if self.focus.layout.has_scene() && index == self.focus.selected {
+      return Some(self.scene_area);
+    }
+
+    let context = self.place_context();
+    self
+      .workspace_rect(index, &context, self.top_shift(context.fade))
+      .map(|(rect, _)| rect)
   }
 
   /// What is under the point (`x`, `y`) of the screen.
