@@ -258,6 +258,7 @@ fn overview_frame(
       switch_duration_ms: overview.switch_duration_ms,
       highlight_duration_ms: overview.highlight_duration_ms,
       bounce: overview.bounce,
+      effects: overview.effects,
     },
   }
 }

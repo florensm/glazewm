@@ -14,6 +14,7 @@
 //! `Screen` draws its own part of it.
 
 mod cards;
+mod effects;
 mod ghost;
 mod overlays;
 mod scenes;
@@ -55,7 +56,7 @@ use windows::{
   },
 };
 
-use self::{ghost::Ghost, overlays::Overlays};
+use self::{effects::Effects, ghost::Ghost, overlays::Overlays};
 use crate::{
   dwm_thumbnail::Thumbnail,
   overview_chrome::{picture_rect, CardPicture, SearchControls},
@@ -607,6 +608,10 @@ struct Screen {
   /// `None` if their pictures couldn't be created.
   overlays: Option<Overlays>,
 
+  /// The selection's glow, ripples and sparks; `None` if their pictures
+  /// couldn't be created.
+  effects: Option<Effects>,
+
   /// The search line, what it was drawn as (with the shortcuts chip
   /// ringed or not), and where its controls are in it.
   search: Option<Picture>,
@@ -1014,6 +1019,9 @@ impl Overview {
     ghost.host_on(screen);
     ghost.land(&rect.translate(screen.area.x, screen.area.y), screen);
     self.landing.push((ghost, index));
+    if moved_to.is_some() {
+      self.screens[index].celebrate(card);
+    }
   }
 
   /// Screen the floating window shows on: the one it is dragged over, or
@@ -1377,9 +1385,19 @@ impl Overview {
     let Some(point) = self.to_screen(hwnd, position) else {
       return;
     };
-    let (_, hit) = self.hit(point);
+    let (screen, hit) = self.hit(point);
     self.interaction.mouse_down(point, hit);
     self.after_input(None);
+
+    let card = screen.zip(hit.workspace).filter(|_| hit.control.is_none());
+    if let Some((screen, workspace)) = card {
+      let start = self
+        .interaction
+        .screens
+        .get(screen)
+        .map_or(0, |cursor| cursor.cards.start);
+      self.screens[screen].ripple(workspace - start);
+    }
 
     // SAFETY: `hwnd` is one of the overview's windows, on this thread.
     unsafe {

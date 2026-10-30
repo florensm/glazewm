@@ -85,6 +85,8 @@ mod native_stack_tab_bar;
 #[cfg(target_os = "windows")]
 mod overview_chrome;
 #[cfg(target_os = "windows")]
+mod overview_effects;
+#[cfg(target_os = "windows")]
 mod overview_layout;
 #[cfg(target_os = "windows")]
 mod overview_overlays;

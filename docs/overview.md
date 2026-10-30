@@ -45,7 +45,8 @@ window to the next. A card lifts under the cursor and sinks while held
 down, and an arrow or wheel step with nowhere to go bumps the selection
 that way. A dragged window pops up under the cursor and trails it, and
 once let go of flies into the card it lands on, or back home if it moved
-nowhere. In the activities, a newly shown workspace's windows fly out of
+nowhere; landing sends a ripple and a burst of sparks out of the card. A
+soft glow follows the selection (see `overview.effects`). In the activities, a newly shown workspace's windows fly out of
 its miniature while the last one's shrink back into theirs. A click on a
 workspace goes there at once, zooming into it as `Enter` does: in the
 activities, its windows fly out of its miniature to where they are on
@@ -287,6 +288,22 @@ overview:
   # settling back, from 0 (not at all) to 0.8 (wobbly). The opening zoom
   # overshoots by it too.
   bounce: 0.25
+
+  effects:
+    # Soft glow of the accent color around the selected workspace.
+    glow: true
+
+    # Whether the glow slowly breathes. Keeps the overview animating on
+    # every frame while it is open, so it costs a little more.
+    pulse: false
+
+    # A ring spreading out of a card as it is clicked, or as a window
+    # lands on it.
+    ripples: true
+
+    # Sparks bursting out of where a dropped window lands; 0 for none, at
+    # most 48.
+    sparks: 14
 ```
 
 Colors take an optional alpha (`#rrggbbaa`). Every key is optional; the

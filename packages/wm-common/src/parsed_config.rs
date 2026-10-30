@@ -3,7 +3,8 @@ use std::str::FromStr;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use wm_platform::{
   BackdropOverlayParams, BorderOverlayParams, Color, CornerStyle, Key,
-  Keybinding, LengthUnit, LengthValue, OpacityValue, RectDelta,
+  Keybinding, LengthUnit, LengthValue, OpacityValue, OverviewEffects,
+  RectDelta,
 };
 
 use crate::{app_command::InvokeCommand, Layout};
@@ -684,6 +685,9 @@ pub struct OverviewConfig {
   /// before settling back, from `0` (not at all) to `0.8` (wobbly). The
   /// opening zoom overshoots by it too.
   pub bounce: f32,
+
+  /// Glow, ripples and sparks, each of which can be turned off.
+  pub effects: OverviewEffects,
 }
 
 /// How the overview lays out the workspaces.
@@ -740,6 +744,7 @@ impl Default for OverviewConfig {
       switch_duration_ms: 300,
       highlight_duration_ms: 170,
       bounce: 0.25,
+      effects: OverviewEffects::default(),
     }
   }
 }

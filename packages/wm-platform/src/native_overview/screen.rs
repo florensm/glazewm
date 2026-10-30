@@ -12,8 +12,9 @@ use windows::Win32::UI::WindowsAndMessaging::{
 };
 
 use super::{
-  create_screen_window, elapsed_ms, overlays::Overlays, place_card,
-  scenes::scene_window_rect, to_ms, PlaceContext, Screen, ScreenFrame,
+  create_screen_window, effects::Effects, elapsed_ms, overlays::Overlays,
+  place_card, scenes::scene_window_rect, to_ms, PlaceContext, Screen,
+  ScreenFrame,
 };
 use crate::{
   dwm_thumbnail::Thumbnail,
@@ -71,6 +72,7 @@ impl Screen {
       scene_shown: None,
       spare: Vec::new(),
       overlays: Overlays::new(0.0, 0.0),
+      effects: Effects::new(0.0),
       search: None,
       search_drawn: None,
       search_controls: None,
@@ -143,6 +145,9 @@ impl Screen {
     self.ensure_labels();
     if let Some(overlays) = &mut self.overlays {
       overlays.reset();
+    }
+    if let Some(effects) = &mut self.effects {
+      effects.reset();
     }
 
     self.zoom = animate.then(|| {
@@ -312,6 +317,9 @@ impl Screen {
     if let Some(overlays) = &mut self.overlays {
       overlays.retune(switch_ms, highlight_ms, bounce);
     }
+    if let Some(effects) = &mut self.effects {
+      effects.retune(highlight_ms, bounce);
+    }
   }
 
   /// Draws the cards for the layout now shown, at the size it shows them,
@@ -386,6 +394,8 @@ impl Screen {
         Thumbnail::register(host, card.picture.window);
     }
 
+    // Over the cards, under the highlights.
+    self.register_effects();
     if let Some(overlays) = &mut self.overlays {
       overlays.register(host, layout);
     }
@@ -426,6 +436,9 @@ impl Screen {
       self.scenes.iter_mut().flat_map(|scene| &mut scene.windows)
     {
       window.preview.retire(&mut retired);
+    }
+    if let Some(effects) = &mut self.effects {
+      effects.retire(&mut retired);
     }
     if let Some(overlays) = &mut self.overlays {
       overlays.retire(&mut retired);
@@ -670,6 +683,9 @@ impl Screen {
     }
 
     self.refresh_overlays(&style, force);
+    if let Some(effects) = &mut self.effects {
+      effects.draw_looks(&style, &self.metrics);
+    }
 
     self.refresh_search(&style, force);
     self.refresh_sheet(&style, force);
@@ -880,6 +896,9 @@ impl Screen {
     if let Some(overlays) = &mut self.overlays {
       is_moving |= overlays.step(dt);
     }
+    if let Some(effects) = &mut self.effects {
+      is_moving |= effects.step(dt);
+    }
     is_moving |= self.search_y.step(dt);
     is_moving |= self.sheet_alpha.step(dt);
 
@@ -954,7 +973,8 @@ impl Screen {
       }
     }
 
-    let is_gliding = self.place_overlays(&context, shift);
+    let is_gliding = self.place_overlays(&context, shift)
+      | self.place_effects(fade, shift);
 
     let search_height = SEARCH_HEIGHT * scale_factor;
     let has_search = self.search_drawn.is_some();

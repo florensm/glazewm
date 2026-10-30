@@ -313,6 +313,16 @@ overview:
   # How far things overshoot before settling: 0 (none) to 0.8 (wobbly).
   bounce: 0.25
 
+  effects:
+    # Soft accent glow around the selected workspace.
+    glow: true
+    # Slowly breathing glow. Keeps the overview animating every frame.
+    pulse: false
+    # Ring spreading out of a card as it is clicked, or a window lands.
+    ripples: true
+    # Sparks bursting where a dropped window lands: 0 (none) to 48.
+    sparks: 14
+
 layouts:
   scrolling:
     # Percentage, pixels, or "window" to keep the window's own width.

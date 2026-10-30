@@ -599,6 +599,10 @@ pub(crate) struct SliceLook {
   pub radius: i32,
   pub border: Color,
   pub border_width: i32,
+
+  /// How far, in pixels, a soft glow of `border` reaches out of the
+  /// rounded rect, which is left empty; `0` draws the ring instead.
+  pub glow: i32,
 }
 
 impl SliceLook {
@@ -608,13 +612,25 @@ impl SliceLook {
       radius,
       border: color,
       border_width: width,
+      glow: 0,
     }
   }
 
-  /// Pixels of each corner of its picture: room for the rounding and the
-  /// border.
+  /// A glow of `color` fading out over `reach` pixels around a rect
+  /// rounded by `radius`.
+  pub fn glow(radius: i32, reach: i32, color: Color) -> Self {
+    Self {
+      radius,
+      border: color,
+      border_width: 0,
+      glow: reach.max(1),
+    }
+  }
+
+  /// Pixels of each corner of its picture: room for the rounding, the
+  /// border and the glow.
   pub fn corner(&self) -> i32 {
-    self.radius.max(self.border_width).max(1) + 1
+    self.radius.max(self.border_width).max(1) + 1 + self.glow
   }
 }
 
@@ -624,7 +640,22 @@ pub(crate) fn draw_slices(surface: &mut Surface, look: &SliceLook) {
   let rect = Rect::from_xy(0, 0, surface.width, surface.height);
   let mut canvas = surface.canvas();
 
-  if look.border.a > 0 && look.border_width > 0 {
+  if look.glow > 0 {
+    let inner = Rect::from_xy(
+      look.glow,
+      look.glow,
+      rect.width() - 2 * look.glow,
+      rect.height() - 2 * look.glow,
+    );
+    #[allow(clippy::cast_precision_loss)]
+    canvas.fill_shadow_around(
+      &inner,
+      &inner,
+      look.radius,
+      look.glow as f32,
+      look.border,
+    );
+  } else if look.border.a > 0 && look.border_width > 0 {
     canvas.stroke_rounded_rect(
       &rect,
       look.radius,
@@ -1380,6 +1411,7 @@ mod tests {
       switch_duration_ms: 300,
       highlight_duration_ms: 170,
       bounce: 0.25,
+      effects: crate::OverviewEffects::default(),
     };
     let search = SearchField {
       query: String::new(),

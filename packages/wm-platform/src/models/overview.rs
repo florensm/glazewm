@@ -1,3 +1,5 @@
+use serde::{Deserialize, Serialize};
+
 use crate::{Color, Rect, TabFrame};
 
 /// What the window overview shows, sent by the WM as a whole.
@@ -170,6 +172,44 @@ pub struct OverviewStyle {
   /// How far what moves overshoots where it heads before settling, from
   /// 0 (not at all) to 0.8.
   pub bounce: f32,
+
+  pub effects: OverviewEffects,
+}
+
+/// Extra flourishes of the overview, each of which can be turned off.
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(default, rename_all(serialize = "camelCase"))]
+pub struct OverviewEffects {
+  /// Soft glow of the accent color around the selected workspace.
+  pub glow: bool,
+
+  /// Whether the glow slowly breathes. Keeps the overview animating on
+  /// every frame while it is open.
+  pub pulse: bool,
+
+  /// A ring spreading out of a card as it is clicked, or as a window
+  /// lands on it.
+  pub ripples: bool,
+
+  /// Sparks bursting out of where a dropped window lands; `0` for none,
+  /// at most `MAX_SPARKS`.
+  pub sparks: u32,
+}
+
+impl OverviewEffects {
+  /// Most sparks a landing bursts into.
+  pub const MAX_SPARKS: u32 = 48;
+}
+
+impl Default for OverviewEffects {
+  fn default() -> Self {
+    Self {
+      glow: true,
+      pulse: false,
+      ripples: true,
+      sparks: 14,
+    }
+  }
 }
 
 /// How the overview lays out the workspaces.

@@ -25,7 +25,7 @@ use crate::{
 
 /// Corner radius a workspace's highlight is drawn with, and its gap to
 /// what it highlights, in logical pixels.
-const RING_RADIUS: f32 = 16.0;
+pub(super) const RING_RADIUS: f32 = 16.0;
 const RING_GAP: f32 = 5.0;
 
 /// Corner radius a window's highlight is drawn with, in logical pixels.
@@ -427,6 +427,22 @@ impl Screen {
     )
   }
 
+  /// Workspace the selection's ring is around: where a window would drop
+  /// (on what it is dragged over, or where it is carried to), or else the
+  /// selection, on the screen with the keyboard and but for the stage,
+  /// whose selection is the workspace shown large.
+  pub(super) fn ringed(&self) -> Option<usize> {
+    let focus = &self.focus;
+    if focus.layout == OverviewLayoutMode::Stage
+      || focus.is_dragging
+      || !focus.is_active
+    {
+      focus.drop
+    } else {
+      focus.drop.or(Some(focus.selected))
+    }
+  }
+
   /// Glides the highlights to what they highlight now and places them,
   /// with the labels and tags. Returns whether any is still gliding.
   #[allow(clippy::too_many_lines)]
@@ -444,18 +460,7 @@ impl Screen {
     let chrome = chrome_opacity(fade);
     let px = |length: f32| length * self.metrics.scale_factor;
 
-    // Where a window would drop: on what it is dragged over, or where it
-    // is carried to. The selection shows on the screen with the keyboard,
-    // and in the stage as the workspace shown large.
-    let drop = focus.drop;
-    let ringed = if layout == OverviewLayoutMode::Stage
-      || focus.is_dragging
-      || !focus.is_active
-    {
-      drop
-    } else {
-      drop.or(Some(selected))
-    };
+    let ringed = self.ringed();
     let ring_target = ringed.and_then(|index| {
       self
         .workspace_rect(index, context, shift)
