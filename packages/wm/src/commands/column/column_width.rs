@@ -1,5 +1,6 @@
 use wm_platform::LengthValue;
 
+use super::presets::{nearest_preset, step_preset};
 use crate::{
   commands::container::resize_tiling_container,
   layout::scrolling::{
@@ -44,40 +45,25 @@ pub fn cycle_column_width(
     })
     .collect::<anyhow::Result<Vec<_>>>()?;
 
-  let Some(last) = sizes.len().checked_sub(1) else {
+  if sizes.is_empty() {
     return Ok(());
-  };
+  }
 
   let current = column.tiling_size();
   let preset =
     workspace
       .strip_view()
       .preset_width(column.id(), current, sizes.len());
-  let index = match preset {
-    Some(index) if forwards => (index + 1) % sizes.len(),
-    Some(index) => index.checked_sub(1).unwrap_or(last),
-    None => {
-      // A pixel of leeway, so rounding can't keep a column on its
-      // preset.
-      let width = |size: f32| width_at(&column, &workspace, size);
-      let current = width(current)?;
-      let widths = sizes
-        .iter()
-        .map(|size| width(*size))
-        .collect::<Result<Vec<_>, _>>()?;
+  let index = if let Some(index) = preset {
+    step_preset(index, sizes.len(), forwards)
+  } else {
+    let width = |size: f32| width_at(&column, &workspace, size);
+    let widths = sizes
+      .iter()
+      .map(|size| width(*size))
+      .collect::<Result<Vec<_>, _>>()?;
 
-      if forwards {
-        widths
-          .iter()
-          .position(|width| current + 1 < *width)
-          .unwrap_or(0)
-      } else {
-        widths
-          .iter()
-          .rposition(|width| *width + 1 < current)
-          .unwrap_or(last)
-      }
-    }
+    nearest_preset(&widths, width(current)?, 1, forwards)
   };
 
   resize_tiling_container(&column, sizes[index]);
