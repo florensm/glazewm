@@ -306,10 +306,21 @@ struct PendingSurrogateUpdate {
 /// Why [`AnimationManager::start_away_animation`] takes a window off the
 /// screen.
 #[cfg(target_os = "windows")]
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum AwayTransition {
   Close,
   Minimize,
+}
+
+/// A window [`AnimationManager::start_away_animation`] is taking off the
+/// screen.
+#[cfg(target_os = "windows")]
+#[derive(Clone, Copy, Debug)]
+struct AwayWindow {
+  transition: AwayTransition,
+  /// Raw `HWND`, so a closed window gets `WM_CLOSE` once its animation
+  /// ends without a container to look it up through.
+  hwnd: isize,
 }
 
 /// Tracks a single window's participation in the current workspace-switch
@@ -596,20 +607,11 @@ pub struct AnimationManager {
   /// [`allows_sync_reposition`]: AnimationManager::allows_sync_reposition
   #[cfg(target_os = "windows")]
   sync_demoted_until: HashMap<isize, Instant>,
-  /// Windows with an active close animation, keyed by window ID.
-  ///
-  /// The stored value is the raw `HWND` (as `isize`) so `WM_CLOSE` can be
-  /// sent after the fade finishes without borrowing the window container.
+  /// Windows playing a close or minimize animation. Detached from the
+  /// layout (closing) or already minimized, so `platform_sync` never
+  /// positions them: `update_internal` drives and tears them down itself.
   #[cfg(target_os = "windows")]
-  pending_close_windows: HashMap<Uuid, isize>,
-  /// Windows with an active minimize animation.
-  ///
-  /// Unlike a close, the real window is already minimized by the OS
-  /// before the animation starts (see `start_minimize_animation`), so
-  /// nothing has to be done to it when the animation finishes -- only
-  /// the surrogate is torn down. No `HWND` is stored for that reason.
-  #[cfg(target_os = "windows")]
-  pending_minimize_windows: HashSet<Uuid>,
+  away_windows: HashMap<Uuid, AwayWindow>,
   /// Active iris-wipe workspace transition, or `None` when idle.
   #[cfg(target_os = "windows")]
   iris_switch: Option<IrisSwitchState>,
@@ -683,9 +685,7 @@ impl AnimationManager {
       #[cfg(target_os = "windows")]
       sync_demoted_until: HashMap::new(),
       #[cfg(target_os = "windows")]
-      pending_close_windows: HashMap::new(),
-      #[cfg(target_os = "windows")]
-      pending_minimize_windows: HashSet::new(),
+      away_windows: HashMap::new(),
       #[cfg(target_os = "windows")]
       iris_switch: None,
     }
@@ -712,7 +712,7 @@ impl AnimationManager {
   /// window.
   #[cfg(target_os = "windows")]
   pub fn has_close_animation(&self, window_id: &Uuid) -> bool {
-    self.pending_close_windows.contains_key(window_id)
+    self.has_away_animation(window_id, AwayTransition::Close)
   }
 
   /// Returns `true` while a minimize animation is playing for `window_id`.
@@ -723,7 +723,35 @@ impl AnimationManager {
   /// fight the minimize surrogate over the same `ResizeSession` slot.
   #[cfg(target_os = "windows")]
   pub fn has_minimize_animation(&self, window_id: &Uuid) -> bool {
-    self.pending_minimize_windows.contains(window_id)
+    self.has_away_animation(window_id, AwayTransition::Minimize)
+  }
+
+  /// How far `window_id`'s zoom has grown, from 0 to 1: a window going
+  /// away shrinks, so it runs its animation's progress backwards.
+  #[cfg(target_os = "windows")]
+  fn zoom_progress(&self, window_id: &Uuid) -> f32 {
+    let progress = self
+      .animations
+      .get(window_id)
+      .map_or(1.0, WindowAnimationState::eased_progress);
+
+    if self.away_windows.contains_key(window_id) {
+      1.0 - progress
+    } else {
+      progress
+    }
+  }
+
+  #[cfg(target_os = "windows")]
+  fn has_away_animation(
+    &self,
+    window_id: &Uuid,
+    transition: AwayTransition,
+  ) -> bool {
+    self
+      .away_windows
+      .get(window_id)
+      .is_some_and(|away| away.transition == transition)
   }
 
   /// Returns `true` if a DWM surrogate is currently covering `window_id`.
@@ -744,8 +772,7 @@ impl AnimationManager {
         .pending_ws_cleanup
         .as_ref()
         .is_some_and(|ws| ws.windows.contains_key(window_id))
-      || self.pending_close_windows.contains_key(window_id)
-      || self.pending_minimize_windows.contains(window_id)
+      || self.away_windows.contains_key(window_id)
   }
 
   /// Returns `true` if `window_id` has a workspace-switch surrogate
@@ -817,9 +844,7 @@ impl AnimationManager {
     #[cfg(target_os = "windows")]
     self.slide_in_monitor_rects.remove(window_id);
     #[cfg(target_os = "windows")]
-    self.pending_close_windows.remove(window_id);
-    #[cfg(target_os = "windows")]
-    self.pending_minimize_windows.remove(window_id);
+    self.away_windows.remove(window_id);
   }
 
   /// Removes animations that have both finished their eased progress *and*
@@ -1010,8 +1035,7 @@ impl AnimationManager {
       .expect("animation mutex poisoned") = None;
     // On WM shutdown close-animation windows are left open — only clear
     // the tracking state without sending WM_CLOSE.
-    self.pending_close_windows.clear();
-    self.pending_minimize_windows.clear();
+    self.away_windows.clear();
     // Drop the iris overlay (if any); the real windows are already at
     // their final positions, so tearing it down simply reveals them.
     self.iris_switch = None;
@@ -1364,11 +1388,10 @@ impl AnimationManager {
     // `start_animation_if_needed` for surrogate sessions.
     #[cfg(target_os = "windows")]
     {
-      let close_in_progress: Vec<Uuid> = state
+      let away_in_progress: Vec<Uuid> = state
         .animation_manager
-        .pending_close_windows
+        .away_windows
         .keys()
-        .chain(state.animation_manager.pending_minimize_windows.iter())
         .filter(|id| {
           state
             .animation_manager
@@ -1386,37 +1409,26 @@ impl AnimationManager {
       let mut backdrop_batch = SurrogateBatch::new();
       let mut border_batch = SurrogateBatch::new();
 
-      for id in &close_in_progress {
-        let is_zoom = state
+      for id in &away_in_progress {
+        let Some((current_rect, opacity)) = state
           .animation_manager
-          .resize_sessions
+          .animations
           .get(id)
-          .is_some_and(|s| s.zoom);
-
-        // Extract values before taking a mutable borrow on
-        // resize_sessions.
-        let anim_data =
-          state.animation_manager.animations.get(id).map(|a| {
-            let (rect, opacity) = a.current_state();
-            let progress = a.eased_progress();
-            (rect, opacity, progress)
-          });
-
-        let Some((current_rect, opacity, progress)) = anim_data else {
+          .map(WindowAnimationState::current_state)
+        else {
           continue;
         };
         let opacity_u8 = opacity.map_or(u8::MAX, |o| o.to_alpha());
+        let zoom_progress = state.animation_manager.zoom_progress(id);
 
-        if is_zoom {
-          if let Some(session) =
-            state.animation_manager.resize_sessions.get_mut(id)
-          {
-            session.update_zoom_fade(1.0 - progress, opacity_u8);
-          }
-        } else if let Some(session) =
+        if let Some(session) =
           state.animation_manager.resize_sessions.get_mut(id)
         {
-          session.update(&current_rect, opacity_u8);
+          if session.zoom {
+            session.update_zoom_fade(zoom_progress, opacity_u8);
+          } else {
+            session.update(&current_rect, opacity_u8);
+          }
         }
 
         // Close animations are detached from the layout tree, so they
@@ -1451,100 +1463,55 @@ impl AnimationManager {
       border_batch.commit();
     }
 
-    // Finalize completed close animations before
+    // Finalize completed close and minimize animations before
     // `remove_completed_animations` so that their sessions are dropped
-    // directly (not moved to `pending_session_cleanup`) and
-    // `platform_sync` never attempts to reposition or uncloak these
-    // windows.
+    // directly (not moved to `pending_session_cleanup`), where
+    // `platform_sync` would reposition and uncloak a window that is
+    // closing or deliberately minimized.
     //
-    // The window was already detached from the layout tree when the close
-    // animation started, so `WM_CLOSE` is sent via the stored HWND rather
-    // than through the container tree.
+    // A closing window was detached from the layout tree when its
+    // animation started, so `WM_CLOSE` is sent via the stored `HWND`
+    // rather than through the container tree. A minimized one was
+    // minimized by the OS before its animation started, so only its
+    // surrogate and overlays are torn down.
     #[cfg(target_os = "windows")]
     {
-      let close_done: Vec<Uuid> = state
+      let away_done: Vec<(Uuid, AwayWindow)> = state
         .animation_manager
-        .pending_close_windows
-        .keys()
-        .filter(|id| {
-          state
-            .animation_manager
-            .get_animation(id)
-            .is_some_and(super::state::WindowAnimationState::is_complete)
-        })
-        .copied()
-        .collect();
-
-      for id in close_done {
-        let hwnd = state
-          .animation_manager
-          .pending_close_windows
-          .get(&id)
-          .copied();
-
-        // Drop surrogate and animation directly — bypasses
-        // `pending_session_cleanup` so `platform_sync` does not attempt to
-        // reposition or uncloak the window.
-        state.animation_manager.animations.remove(&id);
-        state.animation_manager.resize_sessions.remove(&id);
-        state.animation_manager.pending_close_windows.remove(&id);
-
-        // The close-drive loop above populates these via
-        // `upsert_overlay` since closing windows
-        // are detached from the layout tree and never reach
-        // `sync_overlays`'s normal retain-based cleanup. Remove them here
-        // too, or the overlay window they own is never destroyed and
-        // lingers on screen as a ghost.
-        state.backdrop_overlays.remove(&id);
-        state.border_overlays.remove(&id);
-
-        // Reconstruct a `NativeWindow` from the stored HWND and send
-        // `WM_CLOSE` to destroy the OS window. The layout was already
-        // updated when the animation started, so no `unmanage_window` call
-        // is needed here.
-        if let Some(handle) = hwnd {
-          let native = NativeWindow::from_handle(handle);
-          if let Err(err) = native.close() {
-            tracing::warn!(
-              "Failed to send WM_CLOSE for window {id}: {err}."
-            );
-          }
-          state.closing_windows.mark_close_sent(id, Instant::now());
-        }
-      }
-    }
-
-    // Finalize completed minimize animations, for the same reason as the
-    // close block above: drop the session directly so it never reaches
-    // `pending_session_cleanup`, where `platform_sync` would reposition
-    // and uncloak a window that is deliberately minimized.
-    //
-    // The real window was minimized by the OS before the animation
-    // started, so there is nothing to do to it here -- only the
-    // surrogate and the overlays the drive loop created for it are
-    // torn down.
-    #[cfg(target_os = "windows")]
-    {
-      let minimize_done: Vec<Uuid> = state
-        .animation_manager
-        .pending_minimize_windows
+        .away_windows
         .iter()
-        .filter(|id| {
+        .filter(|(id, _)| {
           state
             .animation_manager
             .get_animation(id)
             .is_some_and(super::state::WindowAnimationState::is_complete)
         })
-        .copied()
+        .map(|(id, away)| (*id, *away))
         .collect();
 
-      for id in minimize_done {
-        state.animation_manager.animations.remove(&id);
-        state.animation_manager.resize_sessions.remove(&id);
-        state.animation_manager.pending_minimize_windows.remove(&id);
+      for (id, away) in away_done {
+        state.animation_manager.remove_animation(&id);
+
+        // Closing and minimizing windows never reach `sync_overlays`'s
+        // retain-based cleanup, so the overlays the drive loop above
+        // created for them would otherwise linger on screen as ghosts.
         state.backdrop_overlays.remove(&id);
         state.border_overlays.remove(&id);
-        tracing::debug!("Minimize animation complete for {id}.");
+
+        match away.transition {
+          AwayTransition::Close => {
+            let native = NativeWindow::from_handle(away.hwnd);
+            if let Err(err) = native.close() {
+              tracing::warn!(
+                "Failed to send WM_CLOSE for window {id}: {err}."
+              );
+            }
+            state.closing_windows.mark_close_sent(id, Instant::now());
+          }
+          AwayTransition::Minimize => {
+            tracing::debug!("Minimize animation complete for {id}.");
+          }
+        }
       }
     }
 
@@ -2940,21 +2907,12 @@ impl AnimationManager {
             .as_ref()
             .map_or(effect_opacity, wm_platform::OpacityValue::to_alpha);
           if zoom {
-            // Extract progress with a separate borrow before mutably using
-            // session.
-            let progress = self.animations.get(&window_id).map_or(
-              1.0,
-              super::state::WindowAnimationState::eased_progress,
-            );
-            let is_close =
-              self.pending_close_windows.contains_key(&window_id);
-            let forward_progress =
-              if is_close { 1.0 - progress } else { progress };
+            let zoom_progress = self.zoom_progress(&window_id);
             let session = self
               .resize_sessions
               .get_mut(&window_id)
               .expect("resize session must exist after status check");
-            session.update_zoom_fade(forward_progress, opacity_u8);
+            session.update_zoom_fade(zoom_progress, opacity_u8);
           } else if let Some(monitor_rect) = monitor_rect {
             session.update_clipped(
               &current_rect,
@@ -3699,15 +3657,7 @@ impl AnimationManager {
     params: &WindowTransitionParams,
     native_window: &NativeWindow,
   ) {
-    let is_running = match transition {
-      AwayTransition::Close => {
-        self.pending_close_windows.contains_key(&window_id)
-      }
-      AwayTransition::Minimize => {
-        self.pending_minimize_windows.contains(&window_id)
-      }
-    };
-    if is_running {
+    if self.has_away_animation(&window_id, transition) {
       return;
     }
 
@@ -3769,16 +3719,13 @@ impl AnimationManager {
         session.zoom = is_zoom;
         self.animations.insert(window_id, anim);
         self.resize_sessions.insert(window_id, session);
-        match transition {
-          AwayTransition::Close => {
-            self
-              .pending_close_windows
-              .insert(window_id, native_window.hwnd().0);
-          }
-          AwayTransition::Minimize => {
-            self.pending_minimize_windows.insert(window_id);
-          }
-        }
+        self.away_windows.insert(
+          window_id,
+          AwayWindow {
+            transition,
+            hwnd: native_window.hwnd().0,
+          },
+        );
       }
       Err(err) => {
         tracing::warn!(
