@@ -428,16 +428,19 @@ impl Interaction {
     }
 
     if self.searching {
-      self.search_key(key, workspaces);
-      return None;
+      return self.search_key(key, workspaces);
     }
 
     match key {
       Key::Escape => return Some(OverviewAction::Cancel),
       Key::Text('/') => self.start_search(),
       Key::Text('?') => self.shows_shortcuts = true,
-      Key::Text('n') => self.goto_match(1, workspaces),
-      Key::Text('N') => self.goto_match(-1, workspaces),
+      Key::Text('n') => {
+        self.goto_match(1, workspaces);
+      }
+      Key::Text('N') => {
+        self.goto_match(-1, workspaces);
+      }
       Key::Text('x' | 'X') => {
         let hwnd =
           self.selected_window.filter(|_| self.mode == Mode::Windows);
@@ -543,7 +546,14 @@ impl Interaction {
     self.match_index = None;
   }
 
-  fn search_key(&mut self, key: Key, workspaces: &[OverviewWorkspace]) {
+  /// Types `key` into the search: `Enter` goes to the best match, and
+  /// the arrows stop typing on the next or previous match, which `n` and
+  /// `N` then go on through.
+  fn search_key(
+    &mut self,
+    key: Key,
+    workspaces: &[OverviewWorkspace],
+  ) -> Option<OverviewAction> {
     match key {
       Key::Escape => {
         self.searching = false;
@@ -557,13 +567,20 @@ impl Interaction {
       Key::Enter => {
         self.searching = false;
         self.match_index = None;
-        self.goto_match(1, workspaces);
+        if self.goto_match(1, workspaces) {
+          return self.enter(workspaces);
+        }
+      }
+      Key::Down | Key::Up => {
+        self.searching = false;
+        self.goto_match(if key == Key::Down { 1 } else { -1 }, workspaces);
       }
       Key::Space => self.query.push(' '),
       Key::Text(text) => self.query.push(text),
       // Digits arrive as text too.
       _ => {}
     }
+    None
   }
 
   /// Looks inside the selected workspace, lifts the selected window, or
@@ -1050,14 +1067,16 @@ impl Interaction {
 
   /// Selects the next (or previous) search match, on whichever screen it
   /// is.
+  /// Selects the match `delta` on from the current one, or the first (or
+  /// last) without one. Returns whether there was a match.
   fn goto_match(
     &mut self,
     delta: isize,
     workspaces: &[OverviewWorkspace],
-  ) {
+  ) -> bool {
     let matches = self.matches(workspaces);
     if matches.is_empty() {
-      return;
+      return false;
     }
 
     let len = isize::try_from(matches.len()).unwrap_or(isize::MAX);
@@ -1078,7 +1097,7 @@ impl Interaction {
     self.match_index = Some(next);
 
     let Some((index, window)) = matches.get(next) else {
-      return;
+      return false;
     };
     self.select(*index, workspaces);
 
@@ -1088,6 +1107,7 @@ impl Interaction {
       self.mode = Mode::Windows;
       self.selected_window = Some(window.hwnd);
     }
+    true
   }
 
   pub fn mouse_down(&mut self, position: (f32, f32), hit: Hit) {
@@ -1415,7 +1435,8 @@ impl Interaction {
         title: "Search",
         shortcuts: vec![
           Shortcut::new("/", "search windows"),
-          Shortcut::new("\u{23ce}", "best match"),
+          Shortcut::new("\u{23ce}", "go to best match"),
+          Shortcut::new("\u{2191}\u{2193}", "pick a match"),
           Shortcut::new("n N", "next / previous"),
           Shortcut::new("Esc", "clear"),
         ],
@@ -2407,11 +2428,29 @@ mod tests {
     assert_eq!(state.query, "term");
     assert_eq!(state.selected(), 1, "typing doesn't move the selection");
 
-    press(&mut state, &[Key::Enter]);
+    press(&mut state, &[Key::Down]);
     assert!(!state.searching);
     assert_eq!(state.selected(), 0);
     assert_eq!(state.mode, Mode::Windows);
     assert_eq!(state.selected_window, Some(11));
+  }
+
+  #[test]
+  fn enter_in_a_search_goes_to_the_best_match() {
+    let mut state = interaction();
+    let query = "term".chars().map(Key::Text).collect::<Vec<_>>();
+
+    press(&mut state, &[Key::Text('/')]);
+    press(&mut state, &query);
+    assert_eq!(press(&mut state, &[Key::Enter]), Some(focus_window(11)));
+
+    // Without a match, it only stops typing.
+    let mut state = interaction();
+    let query = "zzz".chars().map(Key::Text).collect::<Vec<_>>();
+    press(&mut state, &[Key::Text('/')]);
+    press(&mut state, &query);
+    assert_eq!(press(&mut state, &[Key::Enter]), None);
+    assert!(!state.searching);
   }
 
   #[test]
@@ -2421,7 +2460,7 @@ mod tests {
 
     press(&mut state, &[Key::Text('/')]);
     press(&mut state, &query);
-    press(&mut state, &[Key::Enter]);
+    press(&mut state, &[Key::Down]);
     let first = state.selected_window;
 
     press(&mut state, &[Key::Text('n')]);
@@ -3101,7 +3140,7 @@ mod tests {
       "on every screen"
     );
 
-    press_on(&mut state, &workspaces, &[Key::Enter]);
+    press_on(&mut state, &workspaces, &[Key::Down]);
     assert_eq!((state.active, state.selected()), (1, 3));
     assert_eq!(state.selected_window, Some(31));
     assert_eq!(
@@ -3151,7 +3190,7 @@ mod tests {
     assert_eq!(state.search_field(&workspaces), typing_e);
 
     // Its matches stay picked after typing ends.
-    press(&mut state, &[Key::Enter]);
+    press(&mut state, &[Key::Down]);
     assert_eq!(
       state.search_field(&workspaces),
       SearchField {

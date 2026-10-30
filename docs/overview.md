@@ -149,11 +149,13 @@ A search field sits at the bottom of every monitor. `/`, or a click on
 it, starts a search: type to match window titles and process names, on
 every monitor; matches are outlined in `search_color` and the rest fade,
 and the field shows the query and its matches, ringed in the accent while
-typing goes to it. `Enter` ends typing and
-selects the best match, after which `n` / `N` step through the matches,
-moving the keyboard to the monitor of each. While typing, `Escape` clears
-the search and `Backspace` on an empty query ends it. While carrying a
-window, a search picks the workspace to drop it on.
+typing goes to it. `Enter` goes straight to
+the best match. `↓` / `↑` instead end typing on the next or previous
+match, after which `n` / `N` step through the matches, moving the
+keyboard to the monitor of each. While typing, `Escape` clears the
+search and `Backspace` on an empty query ends it. While carrying a
+window, a search picks the workspace to drop it on, and `Enter` drops it
+there.
 
 ### Special workspace
 
