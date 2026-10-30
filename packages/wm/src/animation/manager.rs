@@ -743,7 +743,7 @@ impl AnimationManager {
   }
 
   #[cfg(target_os = "windows")]
-  fn has_away_animation(
+  pub(crate) fn has_away_animation(
     &self,
     window_id: &Uuid,
     transition: AwayTransition,

@@ -1,3 +1,4 @@
+mod close_window;
 mod cycle_stack_focus;
 mod focus_stack_index;
 mod focus_urgent_window;
@@ -19,6 +20,7 @@ mod unmanage_window;
 mod update_stack_state;
 mod update_window_state;
 
+pub use close_window::*;
 pub use cycle_stack_focus::*;
 pub use focus_stack_index::*;
 pub use focus_urgent_window::*;
