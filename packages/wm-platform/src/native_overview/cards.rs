@@ -259,7 +259,7 @@ impl Screen {
   /// passes it by.
   pub(super) fn window_opacity(&self, index: usize, hwnd: isize) -> f32 {
     let focus = &self.focus;
-    if focus.floating == Some(hwnd) {
+    if focus.floating == Some(hwnd) && !focus.floating_stays {
       return 0.35;
     }
 

@@ -144,6 +144,10 @@ pub(crate) struct Drag {
 
   /// Where in `target`, as `Hit::point` has it.
   pub point: Option<(i32, i32)>,
+
+  /// Whether the window stays where it shows meanwhile, only where it
+  /// would land marked: for one carried in from outside the overview.
+  pub stays: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -1115,7 +1119,8 @@ impl Interaction {
   }
 
   /// Drags window `hwnd`, dragged in from outside the overview, from the
-  /// cursor at `position`, as if it had been grabbed there.
+  /// cursor at `position`, as if it had been grabbed there, but staying
+  /// where it shows meanwhile.
   pub fn carry_drag(&mut self, hwnd: isize, position: (f32, f32)) {
     let hit = Hit {
       window: Some(hwnd),
@@ -1127,6 +1132,7 @@ impl Interaction {
       position,
       target: None,
       point: None,
+      stays: true,
     });
   }
 
@@ -1188,6 +1194,7 @@ impl Interaction {
       position,
       target: hit.workspace,
       point: hit.point,
+      stays: self.drag.is_some_and(|drag| drag.stays),
     });
     true
   }
@@ -1359,6 +1366,7 @@ impl Interaction {
       hover: self.hover.and_then(local),
       pressed: self.pressed().and_then(local),
       floating: self.floating(),
+      floating_stays: self.drag.is_some_and(|drag| drag.stays),
       drop: self.drop_target().and_then(local),
       drop_beside: self.drop_beside(workspaces),
       is_dragging: self.drag.is_some(),
@@ -1463,6 +1471,7 @@ impl Interaction {
 
 /// The interaction as one screen shows it, in that screen's own card
 /// indices.
+#[allow(clippy::struct_excessive_bools)]
 #[derive(Clone, Debug, Default, PartialEq)]
 pub(crate) struct ScreenFocus {
   pub layout: OverviewLayoutMode,
@@ -1491,6 +1500,10 @@ pub(crate) struct ScreenFocus {
 
   /// Window lifted by the mouse or the keyboard, from whichever screen.
   pub floating: Option<isize>,
+
+  /// Whether the floating window stays where it shows, rather than being
+  /// lifted out of it.
+  pub floating_stays: bool,
 
   /// Workspace the floating window would land on.
   pub drop: Option<usize>,
@@ -2693,6 +2706,7 @@ mod tests {
 
     state.carry_drag(21, (5.0, 5.0));
     assert_eq!(state.floating(), Some(21), "carried from the start");
+    assert!(state.focus(0, &workspaces).floating_stays);
 
     let over = Hit {
       workspace: Some(0),

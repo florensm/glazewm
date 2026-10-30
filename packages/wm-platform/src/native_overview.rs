@@ -943,6 +943,10 @@ impl Overview {
       return;
     };
 
+    if let Some((screen, card)) = self.landing_card(hwnd, action.as_ref())
+    {
+      self.screens[screen].celebrate(card);
+    }
     self
       .after_input(Some(action.unwrap_or(OverviewAction::DropBack(hwnd))));
     if !self.take_foreground() {
@@ -1082,7 +1086,11 @@ impl Overview {
 
   /// Creates, moves or drops the floating window's picture.
   fn sync_ghost(&mut self) {
-    let floating = self.interaction.floating();
+    // One carried in from outside stays where it shows.
+    let floating = self
+      .interaction
+      .floating()
+      .filter(|_| !self.interaction.drag.is_some_and(|drag| drag.stays));
     let host = self.ghost_host();
 
     if self.ghost.as_ref().map(|ghost| ghost.hwnd) != floating {
@@ -1118,32 +1126,7 @@ impl Overview {
   /// Flies `ghost`, let go of, into the card its window lands on: where
   /// `action` moves or places it, or else back where it came from.
   fn land(&mut self, mut ghost: Ghost, action: Option<&OverviewAction>) {
-    let moved_to = match action {
-      Some(
-        OverviewAction::MoveWindow {
-          hwnd,
-          workspace,
-          monitor,
-        }
-        | OverviewAction::PlaceWindow {
-          hwnd,
-          workspace,
-          monitor,
-          ..
-        },
-      ) if *hwnd == ghost.hwnd => self
-        .screens
-        .iter()
-        .position(|screen| screen.id() == Some(*monitor))
-        .and_then(|index| {
-          self.screens[index]
-            .workspaces()
-            .iter()
-            .position(|candidate| candidate.name == *workspace)
-            .map(|card| (index, card))
-        }),
-      _ => None,
-    };
+    let moved_to = self.landing_card(ghost.hwnd, action);
     let came_from = || {
       self.screens.iter().enumerate().find_map(|(index, screen)| {
         screen
@@ -1172,6 +1155,41 @@ impl Overview {
     self.landing.push((ghost, index));
     if moved_to.is_some() {
       self.screens[index].celebrate(card);
+    }
+  }
+
+  /// Screen and card window `target` lands on for `action`, if it moves
+  /// or places it.
+  fn landing_card(
+    &self,
+    target: isize,
+    action: Option<&OverviewAction>,
+  ) -> Option<(usize, usize)> {
+    match action {
+      Some(
+        OverviewAction::MoveWindow {
+          hwnd,
+          workspace,
+          monitor,
+        }
+        | OverviewAction::PlaceWindow {
+          hwnd,
+          workspace,
+          monitor,
+          ..
+        },
+      ) if *hwnd == target => self
+        .screens
+        .iter()
+        .position(|screen| screen.id() == Some(*monitor))
+        .and_then(|index| {
+          self.screens[index]
+            .workspaces()
+            .iter()
+            .position(|candidate| candidate.name == *workspace)
+            .map(|card| (index, card))
+        }),
+      _ => None,
     }
   }
 
