@@ -109,7 +109,7 @@ impl Screen {
         .find(|(hwnd, _)| *hwnd == window.preview.hwnd)
         .map(|(_, rect)| *rect);
       if let Some(rect) = rect {
-        window.jump(&rect, 1.0);
+        window.show_from(&rect);
       }
     }
   }
