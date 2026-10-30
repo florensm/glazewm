@@ -1156,13 +1156,14 @@ impl Camera {
     offset_y: 0.0,
   };
 
-  /// The zoom at eased `progress` from 0 to 1.
+  /// The zoom at eased `progress` from 0 to 1, or a little past 1 while
+  /// it overshoots.
   pub fn zoom(from: &RectF, to: &RectF, progress: f32) -> Self {
     if from.w <= 0.0 || from.h <= 0.0 {
       return Self::IDENTITY;
     }
 
-    let progress = progress.clamp(0.0, 1.0);
+    let progress = progress.max(0.0);
     let lerp = |a: f32, b: f32| a + (b - a) * progress;
     let (start_x, start_y) = (to.w / from.w, to.h / from.h);
 
@@ -1231,17 +1232,21 @@ pub(crate) struct Zoom {
   pub is_closing: bool,
   from: f32,
   duration_ms: f32,
+
+  /// How far an open overshoots before settling, as a `Spring`'s bounce.
+  bounce: f32,
 }
 
 impl Zoom {
-  /// Zooms out of `card` over `duration_ms`.
+  /// Zooms out of `card` over `duration_ms`, overshooting by `bounce`.
   #[allow(clippy::cast_precision_loss)]
-  pub fn open(card: usize, duration_ms: u32) -> Self {
+  pub fn open(card: usize, duration_ms: u32, bounce: f32) -> Self {
     Self {
       card,
       is_closing: false,
       from: 0.0,
       duration_ms: duration_ms as f32,
+      bounce,
     }
   }
 
@@ -1255,6 +1260,7 @@ impl Zoom {
       is_closing: true,
       from,
       duration_ms: duration_ms as f32 * from,
+      bounce: 0.0,
     }
   }
 
@@ -1263,6 +1269,16 @@ impl Zoom {
     let to = if self.is_closing { 0.0 } else { 1.0 };
     self.from
       + (to - self.from) * ease_out_cubic(self.progress(elapsed_ms))
+  }
+
+  /// How far things have moved `elapsed_ms` in: the openness, but past 1
+  /// for a moment as an open overshoots. For geometry only; fades go by
+  /// the openness.
+  pub fn reach(&self, elapsed_ms: f32) -> f32 {
+    if self.is_closing {
+      return self.openness(elapsed_ms);
+    }
+    ease_out_back(self.progress(elapsed_ms), self.bounce)
   }
 
   pub fn is_finished(&self, elapsed_ms: f32) -> bool {
@@ -1280,6 +1296,16 @@ impl Zoom {
 /// Fast start, gentle stop.
 pub(crate) fn ease_out_cubic(progress: f32) -> f32 {
   1.0 - (1.0 - progress.clamp(0.0, 1.0)).powi(3)
+}
+
+/// Like `ease_out_cubic`, but running past 1 before settling back, as a
+/// `Spring` with the same `bounce` does; `ease_out_cubic` for `0`.
+pub(crate) fn ease_out_back(progress: f32, bounce: f32) -> f32 {
+  // Peaks at `4 c^3 / (27 (c + 1)^2)` past 1: about 4% at a bounce of
+  // 0.25.
+  let c = 4.0 * bounce.clamp(0.0, MAX_BOUNCE);
+  let t = progress.clamp(0.0, 1.0) - 1.0;
+  1.0 + t * t * ((c + 1.0) * t + c)
 }
 
 /// Openness from which the overview's chrome starts to show.
@@ -1302,6 +1328,9 @@ pub(crate) struct Glide<K> {
   /// How long it takes to glide over, and about how long to fade.
   duration_ms: f32,
 
+  /// How far it overshoots what it glides to, as a `Spring`'s bounce.
+  bounce: f32,
+
   /// Where it set off from, and when, with its corners' scale.
   from: (RectF, f32),
   started: Instant,
@@ -1316,6 +1345,7 @@ impl<K: Copy + PartialEq> Glide<K> {
     Self {
       target: None,
       duration_ms,
+      bounce: 0.0,
       from: (RectF::default(), 1.0),
       started: Instant::now(),
       shown: (RectF::default(), 1.0),
@@ -1323,9 +1353,11 @@ impl<K: Copy + PartialEq> Glide<K> {
     }
   }
 
-  /// Glides and fades over `duration_ms` from now on.
-  pub fn retune(&mut self, duration_ms: f32) {
+  /// Glides and fades over `duration_ms`, overshooting by `bounce`, from
+  /// now on.
+  pub fn retune(&mut self, duration_ms: f32, bounce: f32) {
     self.duration_ms = duration_ms;
+    self.bounce = bounce;
     self.alpha.retune(duration_ms);
   }
 
@@ -1361,7 +1393,7 @@ impl<K: Copy + PartialEq> Glide<K> {
     } else {
       1.0
     };
-    let eased = ease_out_cubic(progress);
+    let eased = ease_out_back(progress, self.bounce);
     self.shown = (
       self.from.0.lerp(&rect, eased),
       self.from.1 + (scale - self.from.1) * eased,
@@ -1421,12 +1453,14 @@ impl SpringRect {
     }
   }
 
-  /// Settles within about `settle_ms` from now on.
-  pub fn retune(&mut self, settle_ms: f32) {
+  /// Settles within about `settle_ms`, overshooting by `bounce`, from
+  /// now on.
+  pub fn retune(&mut self, settle_ms: f32, bounce: f32) {
     for spring in
       [&mut self.x, &mut self.y, &mut self.width, &mut self.height]
     {
       spring.retune(settle_ms);
+      spring.set_bounce(bounce);
     }
   }
 
@@ -1471,6 +1505,13 @@ impl SpringRect {
     self.retarget(&self.value(), true);
   }
 
+  /// Knocks it about `dx` and `dy` off where it heads, from where it
+  /// springs back.
+  pub fn kick(&mut self, dx: f32, dy: f32) {
+    self.x.kick(dx);
+    self.y.kick(dy);
+  }
+
   /// Advances by `dt` seconds. Returns whether it is still moving.
   pub fn step(&mut self, dt: f32) -> bool {
     [&mut self.x, &mut self.y, &mut self.width, &mut self.height]
@@ -1479,43 +1520,94 @@ impl SpringRect {
   }
 }
 
+/// Most bounce a `Spring` takes: past it, things wobble more than they
+/// settle.
+pub(crate) const MAX_BOUNCE: f32 = 0.8;
+
 /// A number that eases toward its target instead of jumping to it.
 ///
-/// Critically damped, so it settles without overshooting, and retargeting
-/// it mid-flight keeps its velocity rather than restarting the curve.
+/// Critically damped unless given a bounce, which lets it overshoot its
+/// target and swing back before settling. Retargeting it mid-flight keeps
+/// its velocity rather than restarting the curve.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct Spring {
   pub value: f32,
   pub target: f32,
   velocity: f32,
-  /// Its natural frequency, in radians per second; `None` jumps to its
-  /// target on the next step.
-  omega: Option<f32>,
+  /// Rate, per second, at which its distance to its target dies away
+  /// (its natural frequency times its damping ratio), the same for any
+  /// bounce; `None` jumps to its target on the next step.
+  decay: Option<f32>,
+  /// Its damping ratio, from 1 (critically damped) down to
+  /// `1 - MAX_BOUNCE`.
+  damping: f32,
   /// How close to its target, in its own units, it counts as settled.
   epsilon: f32,
 }
 
 impl Spring {
-  /// A spring resting at `value` that settles within about
-  /// `settle_ms`; on its next step for `0`.
+  /// A critically damped spring resting at `value` that settles within
+  /// about `settle_ms`; on its next step for `0`.
   pub fn new(value: f32, settle_ms: f32, epsilon: f32) -> Self {
     Self {
       value,
       target: value,
       velocity: 0.0,
-      omega: Self::omega(settle_ms),
+      decay: Self::decay(settle_ms),
+      damping: 1.0,
       epsilon,
     }
   }
 
-  fn omega(settle_ms: f32) -> Option<f32> {
+  /// The same spring, overshooting by `bounce`.
+  #[must_use]
+  pub fn with_bounce(mut self, bounce: f32) -> Self {
+    self.set_bounce(bounce);
+    self
+  }
+
+  fn decay(settle_ms: f32) -> Option<f32> {
     (settle_ms > 0.0).then(|| 4.6 / (settle_ms / 1000.0))
   }
 
   /// Settles within about `settle_ms` from now on, carrying on from where
   /// it is and as fast.
   pub fn retune(&mut self, settle_ms: f32) {
-    self.omega = Self::omega(settle_ms);
+    self.decay = Self::decay(settle_ms);
+  }
+
+  /// Overshoots by `bounce` from now on: from `0`, settling without
+  /// overshooting, up to `MAX_BOUNCE`. Settles about as fast either way.
+  pub fn set_bounce(&mut self, bounce: f32) {
+    self.damping = 1.0 - bounce.clamp(0.0, MAX_BOUNCE);
+  }
+
+  /// Knocks it about `distance` off its target at the farthest, from
+  /// where it springs back.
+  pub fn kick(&mut self, distance: f32) {
+    let Some(decay) = self.decay else {
+      return;
+    };
+
+    // Set off from rest at its target with velocity `v`, it is farthest
+    // after `t = atan(w / decay) / w`, at `v e^(-decay t) sin(w t) / w`,
+    // which tends to `v / (e decay)` as `w` goes to 0.
+    let peak_per_velocity = match self.ringing(decay) {
+      Some(ringing) => {
+        let time = (ringing / decay).atan() / ringing;
+        (-decay * time).exp() * (ringing * time).sin() / ringing
+      }
+      None => 1.0 / (std::f32::consts::E * decay),
+    };
+    self.velocity += distance / peak_per_velocity;
+  }
+
+  /// Frequency, in radians per second, at which it swings about its
+  /// target; `None` while critically damped.
+  fn ringing(&self, decay: f32) -> Option<f32> {
+    (self.damping < 1.0).then(|| {
+      decay * (1.0 - self.damping * self.damping).sqrt() / self.damping
+    })
   }
 
   pub fn snap(&mut self, value: f32) {
@@ -1543,7 +1635,7 @@ impl Spring {
       return false;
     }
 
-    let Some(omega) = self.omega else {
+    let Some(decay) = self.decay else {
       self.snap(self.target);
       return true;
     };
@@ -1551,10 +1643,20 @@ impl Spring {
     // The exact solution rather than an integration step, which a short
     // settle time or a long frame makes blow up.
     let offset = self.value - self.target;
-    let pull = self.velocity + omega * offset;
-    let decay = (-omega * dt).exp();
-    self.value = self.target + (offset + pull * dt) * decay;
-    self.velocity = (self.velocity - omega * pull * dt) * decay;
+    let envelope = (-decay * dt).exp();
+
+    if let Some(ringing) = self.ringing(decay) {
+      let swing = (self.velocity + decay * offset) / ringing;
+      let (sin, cos) = (ringing * dt).sin_cos();
+      self.value = self.target + (offset * cos + swing * sin) * envelope;
+      self.velocity = ((swing * ringing - decay * offset) * cos
+        - (offset * ringing + decay * swing) * sin)
+        * envelope;
+    } else {
+      let pull = self.velocity + decay * offset;
+      self.value = self.target + (offset + pull * dt) * envelope;
+      self.velocity = (self.velocity - decay * pull * dt) * envelope;
+    }
 
     if (self.target - self.value).abs() < self.epsilon
       && self.velocity.abs() < self.epsilon * 4.0
@@ -1571,9 +1673,10 @@ mod tests {
   use std::time::{Duration, Instant};
 
   use super::{
-    activities, carousel, chrome_opacity, cover_crop, ease_out_cubic,
-    grid, stage, Camera, CardLook, CardMetrics, CardSlot, CardView, Glide,
-    GridCell, GridCells, RectF, Spring, SpringRect, Tile, Zoom,
+    activities, carousel, chrome_opacity, cover_crop, ease_out_back,
+    ease_out_cubic, grid, stage, Camera, CardLook, CardMetrics, CardSlot,
+    CardView, Glide, GridCell, GridCells, RectF, Spring, SpringRect, Tile,
+    Zoom,
   };
   use crate::OverviewLayoutMode;
 
@@ -1795,7 +1898,7 @@ mod tests {
 
   #[test]
   fn zoom_opens_out_of_a_card_and_closes_back_in() {
-    let open = Zoom::open(2, 250);
+    let open = Zoom::open(2, 250, 0.0);
     assert_close(open.openness(0.0), 0.0);
     assert!(open.openness(100.0) > 0.5, "fast start");
     assert_close(open.openness(250.0), 1.0);
@@ -1805,6 +1908,22 @@ mod tests {
     assert!(close.is_closing);
     assert_close(close.openness(0.0), 1.0);
     assert_close(close.openness(200.0), 0.0);
+  }
+
+  #[test]
+  fn only_an_open_overshoots_and_only_in_reach() {
+    let open = Zoom::open(0, 250, 0.25);
+    let overshoot = (0..=250_u16)
+      .map(|ms| open.reach(f32::from(ms)))
+      .fold(0.0_f32, f32::max);
+    assert!(overshoot > 1.02 && overshoot < 1.06, "{overshoot}");
+    assert_close(open.reach(250.0), 1.0);
+    assert!((0..=250_u16).all(|ms| open.openness(f32::from(ms)) <= 1.0));
+
+    let close = Zoom::close(0, 1.0, 200);
+    for ms in (0..=200_u16).map(f32::from) {
+      assert_close(close.reach(ms), close.openness(ms));
+    }
   }
 
   #[test]
@@ -1953,6 +2072,82 @@ mod tests {
     assert_close(spring.value, 100.0);
     assert!(frames > 5, "spring moved instantly");
     assert!(!spring.step(1.0 / 60.0));
+  }
+
+  #[test]
+  fn easing_back_overshoots_by_its_bounce() {
+    for progress in [0.0, 0.3, 0.7, 1.0] {
+      assert_close(ease_out_back(progress, 0.0), ease_out_cubic(progress));
+    }
+    assert_close(ease_out_back(0.0, 0.25), 0.0);
+    assert_close(ease_out_back(1.0, 0.25), 1.0);
+    assert_close(ease_out_back(2.0, 0.25), 1.0);
+
+    let peak = |bounce: f32| {
+      (0..=100_u8)
+        .map(|step| ease_out_back(f32::from(step) / 100.0, bounce))
+        .fold(0.0_f32, f32::max)
+    };
+    assert!(peak(0.25) > 1.02);
+    assert!(peak(0.5) > peak(0.25));
+  }
+
+  #[test]
+  fn bouncy_spring_overshoots_then_settles_about_as_fast() {
+    let mut spring = Spring::new(0.0, 260.0, 0.25).with_bounce(0.3);
+    spring.target = 100.0;
+
+    let mut frames = 0;
+    let mut farthest = 0.0_f32;
+    while spring.step(1.0 / 60.0) {
+      farthest = farthest.max(spring.value);
+      frames += 1;
+      assert!(frames < 120, "spring never settled");
+    }
+
+    assert!(farthest > 103.0 && farthest < 115.0, "{farthest}");
+    assert_close(spring.value, 100.0);
+    assert!(!spring.step(1.0 / 60.0));
+  }
+
+  /// Bouncy or not, a short settle time over long frames.
+  #[test]
+  fn bouncy_spring_settles_at_any_frame_rate() {
+    for dt in [1.0 / 30.0, 1.0 / 60.0, 1.0 / 240.0] {
+      let mut spring = Spring::new(0.0, 40.0, 0.25).with_bounce(0.8);
+      spring.target = 100.0;
+
+      let mut frames = 0;
+      while spring.step(dt) {
+        assert!(spring.value.abs() < 300.0, "blew up");
+        frames += 1;
+        assert!(frames < 240, "spring never settled");
+      }
+      assert_close(spring.value, 100.0);
+    }
+  }
+
+  #[test]
+  fn kicked_spring_swings_out_about_as_far_and_back() {
+    for bounce in [0.0, 0.25, 0.6] {
+      let mut spring = Spring::new(50.0, 300.0, 0.25).with_bounce(bounce);
+      spring.kick(20.0);
+
+      let mut farthest = 0.0_f32;
+      let mut frames = 0;
+      while spring.step(1.0 / 240.0) {
+        farthest = farthest.max(spring.value - 50.0);
+        frames += 1;
+        assert!(frames < 480, "spring never settled");
+      }
+
+      assert!((farthest - 20.0).abs() < 0.5, "{bounce}: {farthest}");
+      assert_close(spring.value, 50.0);
+    }
+
+    let mut instant = Spring::new(50.0, 0.0, 0.25);
+    instant.kick(20.0);
+    assert!(!instant.step(1.0 / 60.0), "an instant spring isn't kicked");
   }
 
   #[test]

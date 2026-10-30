@@ -430,13 +430,13 @@ struct Card {
 }
 
 impl Card {
-  /// Settles within about `settle_ms` from now on.
-  fn retune(&mut self, settle_ms: f32) {
-    for spring in
-      [&mut self.cx, &mut self.cy, &mut self.scale, &mut self.alpha]
-    {
+  /// Settles within about `settle_ms` from now on, moving with `bounce`.
+  fn retune(&mut self, settle_ms: f32, bounce: f32) {
+    for spring in [&mut self.cx, &mut self.cy, &mut self.scale] {
       spring.retune(settle_ms);
+      spring.set_bounce(bounce);
     }
+    self.alpha.retune(settle_ms);
   }
 
   /// Its pictures, unregistered, for reuse.
@@ -464,6 +464,9 @@ struct PlaceContext {
   camera: Camera,
   /// How far the overview is open.
   fade: f32,
+  /// How far its zoom has moved things: `fade`, or past it for a moment
+  /// as an open overshoots.
+  reach: f32,
   /// The screen's own rect.
   view: RectF,
   /// Card the screen zooms out of or into.
@@ -477,6 +480,7 @@ fn place_card(card: &mut Card, index: usize, context: &PlaceContext) {
     fade,
     view,
     zoom_card,
+    ..
   } = context;
   let placement = card.placement();
   let metrics = card.metrics;
@@ -1173,6 +1177,11 @@ impl Overview {
     for screen in &mut self.screens {
       screen.after_input();
     }
+    if let Some(toward) = self.interaction.take_nudge() {
+      if let Some(screen) = self.screens.get_mut(self.interaction.active) {
+        screen.nudge(toward);
+      }
+    }
     self.after_layout();
   }
 
@@ -1279,6 +1288,7 @@ impl Overview {
     };
     let (_, hit) = self.hit(point);
     self.interaction.mouse_down(point, hit);
+    self.after_input(None);
 
     // SAFETY: `hwnd` is one of the overview's windows, on this thread.
     unsafe {

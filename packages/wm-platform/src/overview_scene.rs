@@ -18,9 +18,10 @@ pub(crate) struct SceneWindow {
 
 impl SceneWindow {
   /// Starts out invisible where it is on screen, settling within about
-  /// `settle_ms` once retargeted.
-  fn new(preview: Preview, settle_ms: f32) -> Self {
-    let rect = SpringRect::new(preview.screen_rect, settle_ms);
+  /// `settle_ms` with `bounce` once retargeted.
+  fn new(preview: Preview, settle_ms: f32, bounce: f32) -> Self {
+    let mut rect = SpringRect::new(preview.screen_rect, settle_ms);
+    rect.retune(settle_ms, bounce);
     Self {
       preview,
       rect,
@@ -28,9 +29,10 @@ impl SceneWindow {
     }
   }
 
-  /// Settles within about `settle_ms` from now on.
-  fn retune(&mut self, settle_ms: f32) {
-    self.rect.retune(settle_ms);
+  /// Settles within about `settle_ms`, moving with `bounce`, from now
+  /// on.
+  fn retune(&mut self, settle_ms: f32, bounce: f32) {
+    self.rect.retune(settle_ms, bounce);
     self.alpha.retune(settle_ms);
   }
 
@@ -67,6 +69,12 @@ impl SceneWindow {
     self.rect.hold();
   }
 
+  /// Knocks it about `dx` and `dy` off where it heads, from where it
+  /// springs back.
+  pub fn kick(&mut self, dx: f32, dy: f32) {
+    self.rect.kick(dx, dy);
+  }
+
   /// Advances by `dt` seconds. Returns whether it is still moving.
   pub fn step(&mut self, dt: f32) -> bool {
     self.rect.step(dt) | self.alpha.step(dt)
@@ -83,8 +91,8 @@ pub(crate) struct Scene {
 
 impl Scene {
   /// The scene of `workspace`'s shown windows, keeping the windows of
-  /// `old` that are still there, each settling within about `settle_ms`.
-  /// `screen_rect` says where a window is on screen.
+  /// `old` that are still there, each settling within about `settle_ms`
+  /// with `bounce`. `screen_rect` says where a window is on screen.
   ///
   /// Returns it, and whether its windows or their overlays changed, which
   /// calls for registering their thumbnails anew.
@@ -92,6 +100,7 @@ impl Scene {
     mut old: Scene,
     workspace: &OverviewWorkspace,
     settle_ms: f32,
+    bounce: f32,
     screen_rect: impl Fn(&OverviewWindow) -> RectF,
   ) -> (Self, bool) {
     let old_order = old
@@ -115,7 +124,7 @@ impl Scene {
 
         let mut scene_window = if let Some(mut reused) = reused {
           reused.preview.refresh_frame();
-          reused.retune(settle_ms);
+          reused.retune(settle_ms, bounce);
           reused
         } else {
           let mut preview = Preview::new(
@@ -126,7 +135,7 @@ impl Scene {
             },
           );
           preview.screen_rect = rect;
-          SceneWindow::new(preview, settle_ms)
+          SceneWindow::new(preview, settle_ms, bounce)
         };
 
         scene_window.preview.screen_rect = rect;

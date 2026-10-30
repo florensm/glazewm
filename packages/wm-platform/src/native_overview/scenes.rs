@@ -11,14 +11,15 @@ use crate::{
 };
 
 /// Where a scene window shows now: on its way between where it is on
-/// screen and where the scene puts it while its workspace zooms.
+/// screen and where the scene puts it while its workspace zooms, `reach`
+/// of the way.
 pub(super) fn scene_window_rect(
   window: &SceneWindow,
   is_zooming: bool,
-  openness: f32,
+  reach: f32,
 ) -> RectF {
   if is_zooming {
-    window.preview.screen_rect.lerp(&window.rect(), openness)
+    window.preview.screen_rect.lerp(&window.rect(), reach)
   } else {
     window.rect()
   }
@@ -41,6 +42,7 @@ impl Screen {
         .map(|workspace| workspace.name.as_str()),
     );
     let settle_ms = to_ms(frame.style.switch_duration_ms);
+    let bounce = frame.style.bounce;
 
     self.scenes = frame
       .workspaces
@@ -53,10 +55,13 @@ impl Screen {
             std::mem::take(&mut old[position])
           });
 
-        let (scene, is_scene_changed) =
-          Scene::rebuild(previous, workspace, settle_ms, |window| {
-            screen_rect(workspace, window)
-          });
+        let (scene, is_scene_changed) = Scene::rebuild(
+          previous,
+          workspace,
+          settle_ms,
+          bounce,
+          |window| screen_rect(workspace, window),
+        );
         is_changed |= is_scene_changed;
         scene
       })

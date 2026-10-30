@@ -209,6 +209,10 @@ pub(crate) struct Interaction {
   press: Option<Press>,
   pub drag: Option<Drag>,
 
+  /// Way the last arrow or wheel step found nowhere to go, until the
+  /// screen with the keyboard takes it to bump that way.
+  nudge: Option<Toward>,
+
   /// Cursor travel before a press becomes a drag.
   drag_threshold: f32,
 
@@ -247,6 +251,7 @@ impl Interaction {
       hover_control: None,
       press: None,
       drag: None,
+      nudge: None,
       drag_threshold,
       digit_workspaces: Vec::new(),
       nav: Vec::new(),
@@ -860,6 +865,15 @@ impl Interaction {
     if (self.selected(), self.mode) == before {
       self.cross(toward, workspaces);
     }
+    if (self.selected(), self.mode) == before {
+      self.nudge = Some(toward);
+    }
+  }
+
+  /// Way the last arrow or wheel step found nowhere to go, if it did,
+  /// for the screen with the keyboard to bump that way once.
+  pub fn take_nudge(&mut self) -> Option<Toward> {
+    self.nudge.take()
   }
 
   /// Moves between the carousel's row and the special workspace's dock,
@@ -1211,7 +1225,22 @@ impl Interaction {
     is_down: bool,
     workspaces: &[OverviewWorkspace],
   ) {
+    let before = self.selected();
     self.step(if is_down { 1 } else { -1 }, workspaces);
+
+    if self.selected() == before {
+      let (back, forward, _) = arrows(self.layout);
+      self.nudge = Some(if is_down { forward } else { back });
+    }
+  }
+
+  /// Workspace held down by the left button, until it is let go of or
+  /// dragged from.
+  fn pressed(&self) -> Option<usize> {
+    self
+      .press
+      .filter(|press| press.hit.control.is_none() && self.drag.is_none())
+      .and_then(|press| press.hit.workspace)
   }
 
   pub fn mouse_leave(&mut self) {
@@ -1245,6 +1274,7 @@ impl Interaction {
       row_selected: local(cursor.row_selected).unwrap_or(0),
       selected_window: self.selected_window.filter(|_| is_active),
       hover: self.hover.and_then(local),
+      pressed: self.pressed().and_then(local),
       floating: self.floating(),
       drop: self.drop_target().and_then(local),
       is_dragging: self.drag.is_some(),
@@ -1370,6 +1400,9 @@ pub(crate) struct ScreenFocus {
 
   /// Workspace under the cursor.
   pub hover: Option<usize>,
+
+  /// Workspace held down by the left button.
+  pub pressed: Option<usize>,
 
   /// Window lifted by the mouse or the keyboard, from whichever screen.
   pub floating: Option<isize>,
@@ -1669,6 +1702,7 @@ fn row_indices(
 mod tests {
   use super::{
     all_workspaces, Control, Hit, Interaction, Key, Mode, SearchField,
+    Toward,
   };
   use crate::{
     overview_layout::{CardMetrics, CardSlot, GridCells, RectF},
@@ -2373,6 +2407,56 @@ mod tests {
 
     state.mouse_down((10.0, 10.0), Hit::default());
     assert_eq!(state.mouse_up(&workspaces), Some(OverviewAction::Cancel));
+  }
+
+  #[test]
+  fn arrows_and_the_wheel_nudge_where_they_cant_go() {
+    let workspaces = workspaces();
+    let mut state = interaction();
+
+    press(&mut state, &[Key::Right]);
+    assert_eq!(state.take_nudge(), None);
+    press(&mut state, &[Key::Right]);
+    assert_eq!(state.selected(), 2);
+    assert_eq!(state.take_nudge(), Some(Toward::Right));
+    assert_eq!(state.take_nudge(), None, "bumps once");
+
+    state.wheel(false, &workspaces);
+    state.wheel(false, &workspaces);
+    assert_eq!(state.take_nudge(), None);
+    state.wheel(false, &workspaces);
+    assert_eq!(state.selected(), 0);
+    assert_eq!(state.take_nudge(), Some(Toward::Left));
+  }
+
+  #[test]
+  fn a_held_card_shows_pressed_until_let_go_or_dragged_from() {
+    let workspaces = workspaces();
+    let mut state = interaction();
+    let grab = Hit {
+      workspace: Some(1),
+      window: Some(21),
+      control: None,
+    };
+    let pressed =
+      |state: &Interaction| state.focus(0, &workspaces).pressed;
+
+    state.mouse_down((100.0, 100.0), grab);
+    assert_eq!(pressed(&state), Some(1));
+    state.mouse_up(&workspaces);
+    assert_eq!(pressed(&state), None);
+
+    state.mouse_down((100.0, 100.0), grab);
+    state.mouse_move((400.0, 100.0), grab, true);
+    assert_eq!(pressed(&state), None, "dragged from");
+
+    let search = Hit {
+      control: Some(Control::Search),
+      ..Hit::default()
+    };
+    state.mouse_up(&workspaces);
+    state.mouse_down((10.0, 10.0), search);
+    assert_eq!(pressed(&state), None, "not a card");
   }
 
   #[test]

@@ -44,6 +44,7 @@ impl Screen {
     let mut spare = std::mem::take(&mut self.spare);
     let mut is_changed = cards.len() != frame.workspaces.len();
     let settle_ms = to_ms(frame.style.switch_duration_ms);
+    let bounce = frame.style.bounce;
 
     for (index, workspace) in frame.workspaces.iter().enumerate() {
       let content = RectF::from_rect(&workspace.content_rect);
@@ -103,7 +104,7 @@ impl Screen {
         tab_bars.iter().map(|bar| bar.frame.anchor).ne(old_anchors);
 
       if let Some(card) = cards.get_mut(index) {
-        card.retune(settle_ms);
+        card.retune(settle_ms, bounce);
         card.metrics = metrics;
         card.view = view;
         card.previews = previews;
@@ -117,9 +118,9 @@ impl Screen {
       };
 
       cards.push(Card {
-        cx: Spring::new(0.0, settle_ms, 0.25),
-        cy: Spring::new(0.0, settle_ms, 0.25),
-        scale: Spring::new(1.0, settle_ms, 0.001),
+        cx: Spring::new(0.0, settle_ms, 0.25).with_bounce(bounce),
+        cy: Spring::new(0.0, settle_ms, 0.25).with_bounce(bounce),
+        scale: Spring::new(1.0, settle_ms, 0.001).with_bounce(bounce),
         alpha: Spring::new(1.0, settle_ms, 0.002),
         metrics,
         view,

@@ -679,6 +679,11 @@ pub struct OverviewConfig {
   /// they mark next and to fade in or out, as the shortcut sheet does;
   /// `0` snaps them.
   pub highlight_duration_ms: u32,
+
+  /// How far cards, windows and highlights overshoot where they head
+  /// before settling back, from `0` (not at all) to `0.8` (wobbly). The
+  /// opening zoom overshoots by it too.
+  pub bounce: f32,
 }
 
 /// How the overview lays out the workspaces.
@@ -734,6 +739,7 @@ impl Default for OverviewConfig {
       close_duration_ms: 200,
       switch_duration_ms: 300,
       highlight_duration_ms: 170,
+      bounce: 0.25,
     }
   }
 }

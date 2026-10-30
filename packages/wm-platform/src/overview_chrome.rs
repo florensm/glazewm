@@ -1379,6 +1379,7 @@ mod tests {
       close_duration_ms: 200,
       switch_duration_ms: 300,
       highlight_duration_ms: 170,
+      bounce: 0.25,
     };
     let search = SearchField {
       query: String::new(),

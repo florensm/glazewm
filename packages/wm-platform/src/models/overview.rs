@@ -166,6 +166,10 @@ pub struct OverviewStyle {
   /// How long highlights take to glide to what they mark next and to
   /// fade, as the shortcut sheet does; 0 snaps them.
   pub highlight_duration_ms: u32,
+
+  /// How far what moves overshoots where it heads before settling, from
+  /// 0 (not at all) to 0.8.
+  pub bounce: f32,
 }
 
 /// How the overview lays out the workspaces.

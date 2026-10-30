@@ -44,8 +44,10 @@ impl Ghost {
     );
     let (width, height) = size(screen);
     let (view_width, view_height) = screen.metrics.view;
-    let mut x = Spring::new(0.0, 280.0, 0.25);
-    let mut y = Spring::new(0.0, 340.0, 0.25);
+    // Bouncing as it drops into place beside the dock.
+    let bounce = screen.style().map_or(0.0, |style| style.bounce);
+    let mut x = Spring::new(0.0, 280.0, 0.25).with_bounce(bounce);
+    let mut y = Spring::new(0.0, 340.0, 0.25).with_bounce(bounce);
     x.snap(screen.area.x + (view_width - width) / 2.0);
     y.snap(screen.area.y + (view_height - height) / 2.0);
 

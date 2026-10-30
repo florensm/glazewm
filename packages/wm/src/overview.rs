@@ -254,6 +254,7 @@ fn overview_frame(
       close_duration_ms: overview.close_duration_ms,
       switch_duration_ms: overview.switch_duration_ms,
       highlight_duration_ms: overview.highlight_duration_ms,
+      bounce: overview.bounce,
     },
   }
 }

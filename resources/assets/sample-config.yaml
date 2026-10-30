@@ -310,6 +310,8 @@ overview:
   switch_duration_ms: 300
   # Selection and hover highlights gliding and fading.
   highlight_duration_ms: 170
+  # How far things overshoot before settling: 0 (none) to 0.8 (wobbly).
+  bounce: 0.25
 
 layouts:
   scrolling:

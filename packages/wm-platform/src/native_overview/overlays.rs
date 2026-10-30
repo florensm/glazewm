@@ -87,15 +87,21 @@ impl Overlays {
   }
 
   /// Glides the highlights and tags over `highlight_ms`, and changes the
-  /// shown workspace's area over `switch_ms`, from now on.
-  pub(super) fn retune(&mut self, switch_ms: f32, highlight_ms: f32) {
-    self.screen_ring.glide.retune(highlight_ms);
-    self.workspace_ring.glide.retune(highlight_ms);
-    self.hover_ring.glide.retune(highlight_ms);
-    self.window_ring.glide.retune(highlight_ms);
-    self.tag.glide.retune(highlight_ms);
-    self.note.glide.retune(highlight_ms);
-    self.workspace_rect.retune(switch_ms);
+  /// shown workspace's area over `switch_ms`, overshooting by `bounce`,
+  /// from now on.
+  pub(super) fn retune(
+    &mut self,
+    switch_ms: f32,
+    highlight_ms: f32,
+    bounce: f32,
+  ) {
+    self.screen_ring.glide.retune(highlight_ms, bounce);
+    self.workspace_ring.glide.retune(highlight_ms, bounce);
+    self.hover_ring.glide.retune(highlight_ms, bounce);
+    self.window_ring.glide.retune(highlight_ms, bounce);
+    self.tag.glide.retune(highlight_ms, bounce);
+    self.note.glide.retune(highlight_ms, bounce);
+    self.workspace_rect.retune(switch_ms, bounce);
   }
 
   /// Registers what `layout` shows of them on `host`, bottom to top.
@@ -406,7 +412,7 @@ impl Screen {
       return Some(scene_window_rect(
         window,
         context.zoom_card == Some(selected),
-        context.fade,
+        context.reach,
       ));
     }
 

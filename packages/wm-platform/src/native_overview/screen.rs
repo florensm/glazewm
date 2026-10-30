@@ -26,7 +26,7 @@ use crate::{
     SEARCH_HEIGHT,
   },
   overview_scene::SceneWindow,
-  overview_state::{Control, Hit, Mode, ScreenFocus},
+  overview_state::{Control, Hit, Mode, ScreenFocus, Toward},
   overview_thumbnails::Picture,
   platform_impl::composition::OverviewBackdrop,
   tab_layout::TabHit,
@@ -35,6 +35,16 @@ use crate::{
 
 /// ID of the next registration of a screen's thumbnails.
 static NEXT_REGISTRATION: AtomicU64 = AtomicU64::new(1);
+
+/// How much a card grows under the cursor, shrinks while held down, and
+/// grows as where a window would drop.
+const HOVER_LIFT: f32 = 1.03;
+const PRESS_SINK: f32 = 0.96;
+const DROP_LIFT: f32 = 1.06;
+
+/// How far what the keyboard is on bumps toward where it can't go, in
+/// logical pixels.
+const NUDGE_DISTANCE: f32 = 18.0;
 
 impl Screen {
   /// A screen with its window hidden, whose pictures post to `notify`
@@ -121,7 +131,8 @@ impl Screen {
     );
     self.focus = focus;
 
-    let open_duration = frame.style.open_duration_ms;
+    let (open_duration, bounce) =
+      (frame.style.open_duration_ms, frame.style.bounce);
     self.sync_backdrop(&frame, if animate { 0.0 } else { 1.0 });
 
     self.frame = Some(frame);
@@ -135,7 +146,7 @@ impl Screen {
 
     self.zoom = animate.then(|| {
       (
-        Zoom::open(self.focus.selected, open_duration),
+        Zoom::open(self.focus.selected, open_duration, bounce),
         Instant::now(),
       )
     });
@@ -292,11 +303,12 @@ impl Screen {
     };
     let switch_ms = to_ms(style.switch_duration_ms);
     let highlight_ms = to_ms(style.highlight_duration_ms);
+    let bounce = style.bounce;
 
     self.search_y.retune(switch_ms);
     self.sheet_alpha.retune(highlight_ms);
     if let Some(overlays) = &mut self.overlays {
-      overlays.retune(switch_ms, highlight_ms);
+      overlays.retune(switch_ms, highlight_ms, bounce);
     }
   }
 
@@ -480,19 +492,33 @@ impl Screen {
   /// Points each card at its target in `targets`; there at once if
   /// `snap`.
   fn retarget_cards(&mut self, targets: &[Placement], snap: bool) {
+    let focus = &self.focus;
+    let lift = |index: usize| {
+      // The activities show the selected workspace in the scene, which
+      // its miniature doesn't answer to the mouse for.
+      let is_still = focus.is_dragging
+        || (focus.layout.has_scene() && index == focus.selected);
+
+      if focus.drop == Some(index) {
+        DROP_LIFT
+      } else if is_still {
+        1.0
+      } else if focus.pressed == Some(index) {
+        PRESS_SINK
+      } else if focus.hover == Some(index) && index != focus.selected {
+        HOVER_LIFT
+      } else {
+        1.0
+      }
+    };
+
     for (index, (card, target)) in
       self.cards.iter_mut().zip(targets).enumerate()
     {
-      let bump = if self.focus.drop == Some(index) {
-        1.06
-      } else {
-        1.0
-      };
-
       for (spring, value) in [
         (&mut card.cx, target.cx),
         (&mut card.cy, target.cy),
-        (&mut card.scale, target.scale * bump),
+        (&mut card.scale, target.scale * lift(index)),
         (&mut card.alpha, target.opacity),
       ] {
         if snap {
@@ -502,6 +528,36 @@ impl Screen {
         }
       }
     }
+  }
+
+  /// Bumps what the keyboard is on `toward` and lets it spring back, for
+  /// an arrow or the wheel finding nowhere to go that way.
+  pub(super) fn nudge(&mut self, toward: Toward) {
+    if self.frame.is_none() || self.zoom.is_some() {
+      return;
+    }
+
+    let distance = self.metrics.px(NUDGE_DISTANCE);
+    let (dx, dy) = match toward {
+      Toward::Left => (-distance, 0.0),
+      Toward::Right => (distance, 0.0),
+      Toward::Up => (0.0, -distance),
+      Toward::Down => (0.0, distance),
+    };
+
+    let selected = self.focus.selected;
+    if let Some(card) = self.cards.get_mut(selected) {
+      card.cx.kick(dx);
+      card.cy.kick(dy);
+    }
+    if self.focus.layout.has_scene() {
+      if let Some(scene) = self.scenes.get_mut(selected) {
+        for window in &mut scene.windows {
+          window.kick(dx, dy);
+        }
+      }
+    }
+    self.is_dirty = true;
   }
 
   /// Notes where the shown workspace's windows show once settled, first
@@ -676,6 +732,14 @@ impl Screen {
       .map_or(1.0, |(zoom, started)| zoom.openness(elapsed_ms(started)))
   }
 
+  /// How far its zoom has moved things: the openness, or past it for a
+  /// moment as an open overshoots.
+  pub(super) fn reach(&self) -> f32 {
+    self
+      .zoom
+      .map_or(1.0, |(zoom, started)| zoom.reach(elapsed_ms(started)))
+  }
+
   /// Whether it is zooming into the workspace it closes on.
   pub(super) fn is_closing(&self) -> bool {
     self.zoom.is_some_and(|(zoom, _)| zoom.is_closing)
@@ -706,7 +770,7 @@ impl Screen {
     let screen = card
       .placement()
       .map(&card.metrics, &card.view.map(&self.area));
-    Camera::zoom(&screen, &self.view(), self.openness())
+    Camera::zoom(&screen, &self.view(), self.reach())
   }
 
   /// Zooms into card `index` until its windows fill the screen, over
@@ -769,6 +833,7 @@ impl Screen {
     PlaceContext {
       camera: self.camera(),
       fade: self.openness(),
+      reach: self.reach(),
       view: self.view(),
       zoom_card: self.zoom.map(|(zoom, _)| zoom.card),
     }
@@ -827,7 +892,7 @@ impl Screen {
   fn place(&mut self) -> bool {
     let context = self.place_context();
     let (view, scale_factor) = (context.view, self.metrics.scale_factor);
-    let fade = context.fade;
+    let (fade, reach) = (context.fade, context.reach);
     let layout = self.focus.layout;
     let shift = self.top_shift(fade);
 
@@ -836,6 +901,7 @@ impl Screen {
         let miniatures = PlaceContext {
           camera: Camera::shifted(0.0, shift),
           fade,
+          reach,
           view,
           zoom_card: None,
         };
@@ -855,7 +921,7 @@ impl Screen {
       for (index, scene) in self.scenes.iter_mut().enumerate() {
         for window in &mut scene.windows {
           let rect =
-            scene_window_rect(window, zoom_card == Some(index), fade);
+            scene_window_rect(window, zoom_card == Some(index), reach);
           let opacity = window.alpha.value * window.preview.opacity;
 
           if opacity > 0.002 {
