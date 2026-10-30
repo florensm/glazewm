@@ -1044,11 +1044,16 @@ impl Screen {
     }
 
     if layout.has_scene() {
+      let area = self.area;
       let zoom_card = context.zoom_card;
       for (index, scene) in self.scenes.iter_mut().enumerate() {
         for window in &mut scene.windows {
-          let rect =
-            scene_window_rect(window, zoom_card == Some(index), reach);
+          let rect = scene_window_rect(
+            window,
+            zoom_card == Some(index),
+            reach,
+            &area,
+          );
           let opacity = window.alpha.value * window.preview.opacity;
 
           if opacity > 0.002 {

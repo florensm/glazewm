@@ -17,10 +17,17 @@ pub(crate) struct SceneWindow {
 }
 
 impl SceneWindow {
-  /// Starts out invisible where it is on screen, settling within about
+  /// Starts out invisible where it is on screen, on a scene whose
+  /// coordinates start at screen point `origin`, settling within about
   /// `settle_ms` with `bounce` once retargeted.
-  fn new(preview: Preview, settle_ms: f32, bounce: f32) -> Self {
-    let mut rect = SpringRect::new(preview.screen_rect, settle_ms);
+  fn new(
+    preview: Preview,
+    origin: (f32, f32),
+    settle_ms: f32,
+    bounce: f32,
+  ) -> Self {
+    let start = preview.screen_rect.translate(-origin.0, -origin.1);
+    let mut rect = SpringRect::new(start, settle_ms);
     rect.retune(settle_ms, bounce);
     Self {
       preview,
@@ -97,7 +104,8 @@ pub(crate) struct Scene {
 impl Scene {
   /// The scene of `workspace`'s shown windows, keeping the windows of
   /// `old` that are still there, each settling within about `settle_ms`
-  /// with `bounce`. `screen_rect` says where a window is on screen.
+  /// with `bounce`, in coordinates starting at screen point `origin`.
+  /// `screen_rect` says where a window is on screen.
   ///
   /// Returns it, and whether its windows or their overlays changed, which
   /// calls for registering their thumbnails anew.
@@ -106,6 +114,7 @@ impl Scene {
     workspace: &OverviewWorkspace,
     settle_ms: f32,
     bounce: f32,
+    origin: (f32, f32),
     screen_rect: impl Fn(&OverviewWindow) -> RectF,
   ) -> (Self, bool) {
     let old_order = old
@@ -140,7 +149,7 @@ impl Scene {
             },
           );
           preview.screen_rect = rect;
-          SceneWindow::new(preview, settle_ms, bounce)
+          SceneWindow::new(preview, origin, settle_ms, bounce)
         };
 
         scene_window.preview.screen_rect = rect;
@@ -206,7 +215,7 @@ mod tests {
         crop: RectF::new(0.0, 0.0, 1.0, 1.0),
       },
     );
-    let mut window = SceneWindow::new(preview, 300.0, 0.0);
+    let mut window = SceneWindow::new(preview, (0.0, 0.0), 300.0, 0.0);
     let scene = RectF::new(200.0, 200.0, 800.0, 600.0);
     // Faded out to the side, as a workspace not shown is.
     window.retarget(&scene, 0.0, true);

@@ -10,16 +10,23 @@ use crate::{
   OverviewLayoutMode,
 };
 
-/// Where a scene window shows now: on its way between where it is on
-/// screen and where the scene puts it while its workspace zooms, `reach`
-/// of the way.
+/// Where a scene window shows now, on a screen covering `area` (in screen
+/// coordinates): on its way between where it is on screen and where the
+/// scene puts it while its workspace zooms, `reach` of the way.
 pub(super) fn scene_window_rect(
   window: &SceneWindow,
   is_zooming: bool,
   reach: f32,
+  area: &RectF,
 ) -> RectF {
   if is_zooming {
-    window.preview.screen_rect.lerp(&window.rect(), reach)
+    // In the screen's own coordinates, which start where its working area
+    // does: below a bar at the top, or on another monitor.
+    window
+      .preview
+      .screen_rect
+      .translate(-area.x, -area.y)
+      .lerp(&window.rect(), reach)
   } else {
     window.rect()
   }
@@ -43,6 +50,7 @@ impl Screen {
     );
     let settle_ms = to_ms(frame.style.switch_duration_ms);
     let bounce = frame.style.bounce;
+    let origin = (self.area.x, self.area.y);
 
     self.scenes = frame
       .workspaces
@@ -60,6 +68,7 @@ impl Screen {
           workspace,
           settle_ms,
           bounce,
+          origin,
           |window| screen_rect(workspace, window),
         );
         is_changed |= is_scene_changed;

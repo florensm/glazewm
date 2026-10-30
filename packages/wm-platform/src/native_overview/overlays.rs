@@ -414,6 +414,7 @@ impl Screen {
         window,
         context.zoom_card == Some(selected),
         context.reach,
+        &self.area,
       ));
     }
 
