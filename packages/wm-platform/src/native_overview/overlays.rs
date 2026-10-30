@@ -596,9 +596,14 @@ impl Screen {
           (rect.x + rect.w / 2.0 - width / 2.0, rect.bottom() + gap)
         };
 
+        // In with its card as it pops in.
+        let appear =
+          context.entrance.map_or(1.0, |(entrance, elapsed)| {
+            entrance.appear(index, elapsed).0
+          });
         Some((
           RectF::new(x, y, width, height),
-          chrome_opacity(context.fade) * card.alpha.value,
+          chrome_opacity(context.fade) * card.alpha.value * appear,
         ))
       })
       .collect()

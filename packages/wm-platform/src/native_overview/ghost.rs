@@ -1,15 +1,21 @@
 //! The window being dragged or carried: a small picture of it that
 //! follows the cursor, or waits beside the special workspace's dock, on
 //! whichever screen it is over. Once let go of, it flies into the card it
-//! lands on and fades.
+//! lands on and fades. It stretches with its speed, and can leave fading
+//! copies of its outline behind.
+
+use std::collections::VecDeque;
+
+use windows::Win32::Foundation::RECT;
 
 use super::Screen;
 use crate::{
   dwm_thumbnail::Thumbnail,
   overview_chrome::{draw_ghost, GHOST_SIZE},
+  overview_effects::stretch,
   overview_layout::{cover_crop, RectF, Spring, Tile},
-  overview_thumbnails::{Picture, Preview},
-  OverviewStyle,
+  overview_thumbnails::{to_opacity, to_win32, Picture, Preview},
+  OverviewEffects, OverviewStyle,
 };
 
 /// How long it takes to catch up with the cursor: short enough to keep
@@ -28,6 +34,11 @@ const LAND_FADE_MS: f32 = 300.0;
 /// to its full size.
 const LIFT_FROM: f32 = 0.6;
 
+/// Frames between one copy of its trail and the next, and how strongly
+/// the nearest shows.
+const TRAIL_SPACING: usize = 2;
+const TRAIL_OPACITY: f32 = 0.45;
+
 /// The window being dragged or carried.
 pub(super) struct Ghost {
   pub(super) hwnd: isize,
@@ -43,6 +54,15 @@ pub(super) struct Ghost {
 
   /// Whether it was let go of and is flying into its card.
   is_landing: bool,
+
+  /// How much it stretches with its speed, from 0 to 1.
+  squash: f32,
+
+  /// Copies of its outline trailing it, bottom to top, and where it was
+  /// over the last frames, in screen coordinates, latest first.
+  trail: Vec<Thumbnail>,
+  trail_length: usize,
+  history: VecDeque<RectF>,
 
   preview: Preview,
   picture: Picture,
@@ -78,6 +98,10 @@ impl Ghost {
     ));
     // Popping up and bouncing as it is lifted and dropped into place.
     let bounce = screen.style().map_or(0.0, |style| style.bounce);
+    let effects = screen
+      .style()
+      .map_or(OverviewEffects::NONE, |style| style.effects);
+    let trail_length = effects.trail.min(OverviewEffects::MAX_TRAIL);
     let mut scale = Spring::new(LIFT_FROM, PARK_MS.0, 0.001)
       .with_bounce(bounce.max(0.3));
     scale.target = 1.0;
@@ -89,6 +113,10 @@ impl Ghost {
       scale,
       alpha: Spring::new(1.0, LAND_FADE_MS, 0.002),
       is_landing: false,
+      squash: effects.squash,
+      trail: Vec::new(),
+      trail_length: usize::try_from(trail_length).unwrap_or_default(),
+      history: VecDeque::new(),
       preview,
       picture: Picture::new()?,
       host: None,
@@ -116,6 +144,12 @@ impl Ghost {
     self.preview.tile.crop =
       cover_crop(source, (width - inset, height - inset));
 
+    // Under the ghost itself.
+    self.trail = (0..self.trail_length)
+      .filter_map(|_| {
+        Thumbnail::register(screen.hwnd, self.picture.window)
+      })
+      .collect();
     self.preview.register(screen.hwnd);
     self.picture.thumbnail =
       Thumbnail::register(screen.hwnd, self.picture.window);
@@ -219,7 +253,9 @@ impl Ghost {
     let scale_factor = screen.metrics.scale_factor;
     let (width, height) = size(screen);
     let scale = self.scale.value.max(0.0);
-    let (width, height) = (width * scale, height * scale);
+    let (across, down) =
+      stretch((self.x.velocity(), self.y.velocity()), self.squash);
+    let (width, height) = (width * scale * across, height * scale * down);
     let rect = RectF::new(
       self.x.value - screen.area.x - width / 2.0,
       self.y.value - screen.area.y - height / 2.0,
@@ -229,12 +265,62 @@ impl Ghost {
     let view = screen.view();
     let alpha = self.alpha.value.clamp(0.0, 1.0);
 
+    self
+      .place_trail(&rect.translate(screen.area.x, screen.area.y), screen);
+
     self.preview.place(
       &rect.inset(scale_factor * 2.0 * scale),
       &view,
       0.9 * alpha,
     );
     self.picture.place(&rect, &view, alpha);
+  }
+}
+
+impl Ghost {
+  /// Places the copies of its outline where it was over the last frames,
+  /// fainter the further back, now that it is at `rect` (in screen
+  /// coordinates).
+  #[allow(clippy::cast_precision_loss)]
+  fn place_trail(&mut self, rect: &RectF, screen: &Screen) {
+    if self.trail.is_empty() {
+      return;
+    }
+
+    self.history.push_front(*rect);
+    self.history.truncate(self.trail.len() * TRAIL_SPACING + 1);
+
+    let (width, height) = self.picture.size();
+    let source = RECT {
+      right: width,
+      bottom: height,
+      ..Default::default()
+    };
+    let clip = to_win32(&screen.view());
+    let count = self.trail.len();
+    let alpha = self.alpha.value.clamp(0.0, 1.0);
+
+    // Bottom to top: the furthest back first.
+    for (index, thumbnail) in self.trail.iter_mut().enumerate() {
+      let back = count - index;
+      let shown = self.history.get(back * TRAIL_SPACING).filter(|past| {
+        // Still, it would only thicken the outline it sits under.
+        (past.x - rect.x).abs() + (past.y - rect.y).abs() > 1.0
+      });
+
+      match shown {
+        Some(past) => {
+          let fade = 1.0 - back as f32 / (count + 1) as f32;
+          thumbnail.place(
+            source,
+            to_win32(&past.translate(-screen.area.x, -screen.area.y)),
+            &clip,
+            to_opacity(TRAIL_OPACITY * fade * alpha),
+          );
+        }
+        None => thumbnail.hide(),
+      }
+    }
   }
 }
 

@@ -32,6 +32,9 @@ const RIPPLES: usize = 3;
 const SPARK_SPEED: f32 = 620.0;
 const SPARK_SIZE: f32 = 9.0;
 
+/// How far a card swells as a window lands on it, relative to its size.
+const JELLY: f32 = 0.07;
+
 /// Size a spark is drawn at, in logical pixels: larger than it shows, so
 /// it stays round when scaled.
 const SPARK_DRAWN: f32 = 16.0;
@@ -251,15 +254,9 @@ impl Effects {
 impl Screen {
   /// Effects the style turns on, while shown.
   fn enabled_effects(&self) -> OverviewEffects {
-    self.style().map_or(
-      OverviewEffects {
-        glow: false,
-        pulse: false,
-        ripples: false,
-        sparks: 0,
-      },
-      |style| style.effects,
-    )
+    self
+      .style()
+      .map_or(OverviewEffects::NONE, |style| style.effects)
   }
 
   /// Sends a ripple out of card `index`, as it is clicked.
@@ -277,9 +274,15 @@ impl Screen {
   }
 
   /// Celebrates a window landing on card `index`: a ripple out of it,
-  /// and sparks out of its middle.
+  /// sparks out of its middle, and a wobble.
   pub(super) fn celebrate(&mut self, index: usize) {
     self.ripple(index);
+
+    if self.enabled_effects().jelly {
+      if let Some(card) = self.cards.get_mut(index) {
+        card.scale.kick(card.scale.target * JELLY);
+      }
+    }
 
     let scale_factor = self.metrics.scale_factor;
     if let (Some(rect), Some(effects)) =

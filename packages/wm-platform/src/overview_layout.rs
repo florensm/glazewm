@@ -1624,6 +1624,11 @@ impl Spring {
     self.velocity *= factor;
   }
 
+  /// How fast it moves, in its units per second.
+  pub fn velocity(&self) -> f32 {
+    self.velocity
+  }
+
   #[allow(clippy::float_cmp)]
   pub fn is_settled(&self) -> bool {
     self.value == self.target && self.velocity == 0.0

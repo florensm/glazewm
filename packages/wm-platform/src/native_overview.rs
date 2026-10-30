@@ -60,6 +60,7 @@ use self::{effects::Effects, ghost::Ghost, overlays::Overlays};
 use crate::{
   dwm_thumbnail::Thumbnail,
   overview_chrome::{picture_rect, CardPicture, SearchControls},
+  overview_effects::Entrance,
   overview_layout::{
     Camera, CardMetrics, CardView, GridCells, Placement, RectF, Spring,
     Zoom,
@@ -472,6 +473,8 @@ struct PlaceContext {
   view: RectF,
   /// Card the screen zooms out of or into.
   zoom_card: Option<usize>,
+  /// Cards popping in on open, and how long ago it opened, while they do.
+  entrance: Option<(Entrance, f32)>,
 }
 
 /// Places card `index`'s thumbnails where its animation has it now.
@@ -481,9 +484,16 @@ fn place_card(card: &mut Card, index: usize, context: &PlaceContext) {
     fade,
     view,
     zoom_card,
+    entrance,
     ..
   } = context;
-  let placement = card.placement();
+  let (appear, pop) = entrance
+    .map_or((1.0, 1.0), |(entrance, elapsed)| {
+      entrance.appear(index, elapsed)
+    });
+  let mut placement = card.placement();
+  placement.scale *= pop;
+  placement.opacity *= appear;
   let metrics = card.metrics;
   let rect = camera.apply(&placement.rect(&metrics));
   let is_visible = rect.intersect(view).is_some();
@@ -597,6 +607,15 @@ struct Screen {
 
   /// Where the activities show the selected workspace large.
   scene_area: RectF,
+
+  /// Where the layout puts each card, before it lifts, leans or dims.
+  card_targets: Vec<Placement>,
+
+  /// Cursor position over it, in its client coordinates.
+  pointer: Option<(f32, f32)>,
+
+  /// Cards popping in on open, and when it opened, while they do.
+  entrance: Option<(Entrance, Instant)>,
 
   /// Workspace whose scene its windows were last pointed at, to fly a
   /// newly selected one's out of its card.
@@ -1326,6 +1345,7 @@ impl Overview {
     }
 
     let (screen, hit) = self.hit(point);
+    self.point_at(point);
     // The keyboard goes where the mouse is.
     let is_activated = screen.is_some_and(|screen| {
       self.interaction.activate(screen, &self.workspaces)
@@ -1338,6 +1358,18 @@ impl Overview {
       self.after_input(None);
     } else if was_dragging {
       self.sync_ghost();
+    }
+  }
+
+  /// Tells each screen where the cursor is over it, at screen point
+  /// `point`, for its hovered card to lean toward.
+  fn point_at(&mut self, point: (f32, f32)) {
+    let located = self.locate(point);
+    for (index, screen) in self.screens.iter_mut().enumerate() {
+      let pointer = located
+        .filter(|(over, _)| *over == index)
+        .map(|(_, local)| local);
+      screen.point_at(pointer);
     }
   }
 
@@ -1365,6 +1397,7 @@ impl Overview {
       return;
     };
     self.screens[index].is_tracking_leave = false;
+    self.screens[index].point_at(None);
 
     // The cursor may already be over another screen.
     let cards =

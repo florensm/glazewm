@@ -177,7 +177,8 @@ pub struct OverviewStyle {
 }
 
 /// Extra flourishes of the overview, each of which can be turned off.
-#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq, Serialize)]
+#[allow(clippy::struct_excessive_bools)]
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(default, rename_all(serialize = "camelCase"))]
 pub struct OverviewEffects {
   /// Soft glow of the accent color around the selected workspace.
@@ -194,11 +195,51 @@ pub struct OverviewEffects {
   /// Sparks bursting out of where a dropped window lands; `0` for none,
   /// at most `MAX_SPARKS`.
   pub sparks: u32,
+
+  /// Whether a card wobbles as a window lands on it.
+  pub jelly: bool,
+
+  /// Delay between one card and the next as they pop in on open, in
+  /// milliseconds; `0` brings them in together.
+  pub stagger_ms: u32,
+
+  /// How far a hovered card leans toward the cursor, in logical pixels;
+  /// `0` keeps it still.
+  pub lean: f32,
+
+  /// How much the cards dim while another is hovered, from `0` (not at
+  /// all) to `1`.
+  pub dim: f32,
+
+  /// How much a dragged window stretches with its speed, and squashes as
+  /// it stops, from `0` (not at all) to `1`.
+  pub squash: f32,
+
+  /// Fading copies of a dragged window's outline trailing it; `0` for
+  /// none, at most `MAX_TRAIL`.
+  pub trail: u32,
 }
 
 impl OverviewEffects {
   /// Most sparks a landing bursts into.
   pub const MAX_SPARKS: u32 = 48;
+
+  /// Most copies trailing a dragged window.
+  pub const MAX_TRAIL: u32 = 8;
+
+  /// Every effect off.
+  pub const NONE: Self = Self {
+    glow: false,
+    pulse: false,
+    ripples: false,
+    sparks: 0,
+    jelly: false,
+    stagger_ms: 0,
+    lean: 0.0,
+    dim: 0.0,
+    squash: 0.0,
+    trail: 0,
+  };
 }
 
 impl Default for OverviewEffects {
@@ -208,6 +249,12 @@ impl Default for OverviewEffects {
       pulse: false,
       ripples: true,
       sparks: 14,
+      jelly: true,
+      stagger_ms: 24,
+      lean: 8.0,
+      dim: 0.0,
+      squash: 0.5,
+      trail: 0,
     }
   }
 }

@@ -322,6 +322,18 @@ overview:
     ripples: true
     # Sparks bursting where a dropped window lands: 0 (none) to 48.
     sparks: 14
+    # Whether a card wobbles as a window lands on it.
+    jelly: true
+    # Delay between cards popping in on open, in ms: 0 brings them in together.
+    stagger_ms: 24
+    # How far a hovered card leans toward the cursor, in pixels.
+    lean: 8
+    # How much the other cards dim while one is hovered: 0 to 1.
+    dim: 0
+    # How much a dragged window stretches with its speed: 0 to 1.
+    squash: 0.5
+    # Fading outlines trailing a dragged window: 0 (none) to 8.
+    trail: 0
 
 layouts:
   scrolling:

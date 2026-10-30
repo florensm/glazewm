@@ -304,6 +304,26 @@ overview:
     # Sparks bursting out of where a dropped window lands; 0 for none, at
     # most 48.
     sparks: 14
+
+    # Whether a card wobbles as a window lands on it.
+    jelly: true
+
+    # Delay between one card and the next as they pop in on open, in
+    # milliseconds; 0 brings them in together.
+    stagger_ms: 24
+
+    # How far a hovered card leans toward the cursor, in logical pixels.
+    lean: 8
+
+    # How much the cards dim while another is hovered, from 0 to 1.
+    dim: 0
+
+    # How much a dragged window stretches with its speed, and squashes as
+    # it stops, from 0 to 1.
+    squash: 0.5
+
+    # Fading outlines trailing a dragged window; 0 for none, at most 8.
+    trail: 0
 ```
 
 Colors take an optional alpha (`#rrggbbaa`). Every key is optional; the

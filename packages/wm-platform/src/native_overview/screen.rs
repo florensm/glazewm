@@ -21,6 +21,7 @@ use crate::{
   overview_chrome::{
     draw_card, draw_search, draw_sheet, picture_size, sheet_size,
   },
+  overview_effects::{lean_toward, Entrance},
   overview_layout::{
     activities, carousel, chrome_opacity, grid, stage as stage_layout,
     Camera, CardMetrics, GridCells, Placement, RectF, Spring, Zoom,
@@ -31,7 +32,7 @@ use crate::{
   overview_thumbnails::Picture,
   platform_impl::composition::OverviewBackdrop,
   tab_layout::TabHit,
-  OverviewLayoutMode, OverviewStyle, OverviewWorkspace,
+  OverviewEffects, OverviewLayoutMode, OverviewStyle, OverviewWorkspace,
 };
 
 /// ID of the next registration of a screen's thumbnails.
@@ -70,6 +71,9 @@ impl Screen {
       scenes: Vec::new(),
       scene_area: RectF::default(),
       scene_shown: None,
+      card_targets: Vec::new(),
+      pointer: None,
+      entrance: None,
       spare: Vec::new(),
       overlays: Overlays::new(0.0, 0.0),
       effects: Effects::new(0.0),
@@ -134,8 +138,11 @@ impl Screen {
     );
     self.focus = focus;
 
-    let (open_duration, bounce) =
-      (frame.style.open_duration_ms, frame.style.bounce);
+    let (open_duration, bounce, stagger_ms) = (
+      frame.style.open_duration_ms,
+      frame.style.bounce,
+      frame.style.effects.stagger_ms,
+    );
     self.sync_backdrop(&frame, if animate { 0.0 } else { 1.0 });
 
     self.frame = Some(frame);
@@ -155,6 +162,15 @@ impl Screen {
         Zoom::open(self.focus.selected, open_duration, bounce),
         Instant::now(),
       )
+    });
+    self.entrance = (animate && stagger_ms > 0).then(|| {
+      let entrance = Entrance::new(
+        self.focus.selected,
+        to_ms(stagger_ms),
+        to_ms(open_duration),
+        bounce,
+      );
+      (entrance, Instant::now())
     });
 
     self.retarget(true);
@@ -266,6 +282,9 @@ impl Screen {
     }
     self.scenes.clear();
     self.scene_shown = None;
+    self.card_targets.clear();
+    self.pointer = None;
+    self.entrance = None;
     self.registered_for = None;
     self.nav.clear();
     self.zoom = None;
@@ -486,10 +505,7 @@ impl Screen {
     };
     self.dock = targets.dock;
 
-    // A closing screen's cards hold still for its zoom.
-    if !self.is_closing() {
-      self.retarget_cards(&targets.cards, snap);
-    }
+    self.retarget_cards(&targets.cards, snap);
 
     if snap {
       self.search_y.snap(targets.search_y);
@@ -507,7 +523,28 @@ impl Screen {
   /// Points each card at its target in `targets`; there at once if
   /// `snap`.
   fn retarget_cards(&mut self, targets: &[Placement], snap: bool) {
+    self.card_targets = targets.to_vec();
+    self.aim_cards(snap);
+  }
+
+  /// Points each card at where the layout puts it, lifted under the
+  /// cursor, sunk while held down or grown as a drop target, leaning
+  /// toward the cursor and dimmed while another is hovered, as the style
+  /// has it; there at once if `snap`.
+  fn aim_cards(&mut self, snap: bool) {
+    // A closing screen's cards hold still for its zoom.
+    if self.is_closing() {
+      return;
+    }
+
+    let effects = self
+      .style()
+      .map_or(OverviewEffects::NONE, |style| style.effects);
+    let lean = self.metrics.px(effects.lean.max(0.0));
+    let dim = 1.0 - effects.dim.clamp(0.0, 1.0);
     let focus = &self.focus;
+    let pointer = self.pointer;
+
     let lift = |index: usize| {
       // The activities show the selected workspace in the scene, which
       // its miniature doesn't answer to the mouse for.
@@ -526,15 +563,35 @@ impl Screen {
         1.0
       }
     };
+    let dims = |index: usize| {
+      focus.hover.is_some_and(|hovered| {
+        hovered != index && index != focus.selected && !focus.is_dragging
+      })
+    };
 
     for (index, (card, target)) in
-      self.cards.iter_mut().zip(targets).enumerate()
+      self.cards.iter_mut().zip(&self.card_targets).enumerate()
     {
+      let lift = lift(index);
+      let scale = target.scale * lift;
+      let (dx, dy) = pointer
+        .filter(|_| lift == HOVER_LIFT && lean > 0.0)
+        .map_or((0.0, 0.0), |pointer| {
+          let size =
+            (card.metrics.width * scale, card.metrics.height * scale);
+          lean_toward((target.cx, target.cy), size, pointer, lean)
+        });
+      let opacity = if dims(index) {
+        target.opacity * dim
+      } else {
+        target.opacity
+      };
+
       for (spring, value) in [
-        (&mut card.cx, target.cx),
-        (&mut card.cy, target.cy),
-        (&mut card.scale, target.scale * lift(index)),
-        (&mut card.alpha, target.opacity),
+        (&mut card.cx, target.cx + dx),
+        (&mut card.cy, target.cy + dy),
+        (&mut card.scale, scale),
+        (&mut card.alpha, opacity),
       ] {
         if snap {
           spring.snap(value);
@@ -542,6 +599,21 @@ impl Screen {
           spring.target = value;
         }
       }
+    }
+    self.is_dirty = true;
+  }
+
+  /// Notes where the cursor is over it, if it is, and leans the hovered
+  /// card toward it.
+  pub(super) fn point_at(&mut self, pointer: Option<(f32, f32)>) {
+    if self.pointer == pointer {
+      return;
+    }
+    self.pointer = pointer;
+
+    let leans = self.style().is_some_and(|style| style.effects.lean > 0.0);
+    if leans && self.focus.hover.is_some() && self.frame.is_some() {
+      self.aim_cards(false);
     }
   }
 
@@ -813,6 +885,7 @@ impl Screen {
     }
 
     self.hold(index);
+    self.entrance = None;
     let zoom = Zoom::close(index, self.openness(), duration_ms);
     self.zoom = Some((zoom, Instant::now()));
 
@@ -871,6 +944,9 @@ impl Screen {
       camera: self.camera(),
       fade: self.openness(),
       reach: self.reach(),
+      entrance: self
+        .entrance
+        .map(|(entrance, started)| (entrance, elapsed_ms(started))),
       view: self.view(),
       zoom_card: self.zoom.map(|(zoom, _)| zoom.card),
     }
@@ -900,6 +976,15 @@ impl Screen {
       is_moving |= effects.step(dt);
     }
     is_moving |= self.search_y.step(dt);
+
+    if let Some((entrance, started)) = self.entrance {
+      if elapsed_ms(started) < entrance.length_ms(self.cards.len()) {
+        is_moving = true;
+      } else {
+        self.entrance = None;
+        self.is_dirty = true;
+      }
+    }
     is_moving |= self.sheet_alpha.step(dt);
 
     if let Some((zoom, started)) = self.zoom {
@@ -944,6 +1029,7 @@ impl Screen {
           reach,
           view,
           zoom_card: None,
+          entrance: context.entrance,
         };
         for (index, card) in self.cards.iter_mut().enumerate() {
           place_card(card, index, &miniatures);
