@@ -17,8 +17,8 @@ use wm_common::{
   HotCorner, Layout, OverviewLayout, WindowState, WorkspaceConfig,
 };
 use wm_platform::{
-  BackdropOverlayParams, BorderOverlayParams, Color, MouseButton,
-  MouseEvent, NativeBorderOverlay, NativeOverview, OverviewAction,
+  Color, MouseButton, MouseEvent, NativeBackdropOverlay,
+  NativeBorderOverlay, NativeOverview, OverlayParams, OverviewAction,
   OverviewFrame, OverviewLayoutMode, OverviewOverlay, OverviewOverlayKind,
   OverviewScreen, OverviewStyle, OverviewWindow, OverviewWorkspace, Point,
   Rect, TabFrame,
@@ -37,6 +37,7 @@ use crate::{
   tab_bars::{tab_frame, TabBarSettings},
   traits::{CommonGetters, PositionGetters, WindowGetters},
   user_config::UserConfig,
+  window_overlays::WindowOverlays,
   wm_state::WmState,
 };
 
@@ -615,20 +616,15 @@ struct WindowLooks {
 /// The effects the WM gives a window.
 struct WindowLook {
   opacity: u8,
-  backdrop: Option<BackdropOverlayParams>,
-  border: Option<BorderOverlayParams>,
+  overlays: OverlayParams,
 }
 
 impl WindowLooks {
   fn new(state: &WmState, config: &UserConfig) -> Self {
     let look = |is_focused| {
-      let (opacity, _, backdrop, border) =
+      let (opacity, _, overlays) =
         surrogate_effects_for(is_focused, config);
-      WindowLook {
-        opacity,
-        backdrop,
-        border,
-      }
+      WindowLook { opacity, overlays }
     };
 
     Self {
@@ -660,17 +656,17 @@ fn overview_window(
 
   let overlays = if shows_overlays(window) {
     [
-      window_overlay(
-        &state.backdrop_overlays,
+      window_overlay::<NativeBackdropOverlay>(
+        &state.window_overlays,
         window,
-        look.backdrop,
+        look.overlays.backdrop,
         OverviewOverlayKind::Backdrop,
         config,
       ),
-      window_overlay(
-        &state.border_overlays,
+      window_overlay::<NativeBorderOverlay>(
+        &state.window_overlays,
         window,
-        look.border,
+        look.overlays.border,
         OverviewOverlayKind::Border,
         config,
       ),
@@ -694,7 +690,7 @@ fn overview_window(
     is_scrolled_off: !scrolling::is_in_view(&window.as_container()),
     opacity: look.opacity,
     overlays,
-    border: look.border.filter(|params| {
+    border: look.overlays.border.filter(|params| {
       params.opacity > 0.0
         && !NativeBorderOverlay::suppressed_for(window, config)
     }),
@@ -717,14 +713,14 @@ fn shows_overlays(window: &WindowContainer) -> bool {
 /// `window`'s overlay among `overlays`, while the WM draws one with
 /// `params` for it, and how far it reaches past the window.
 fn window_overlay<O: SyncableOverlay>(
-  overlays: &HashMap<Uuid, O>,
+  overlays: &HashMap<Uuid, WindowOverlays>,
   window: &WindowContainer,
   params: Option<O::Params>,
   kind: OverviewOverlayKind,
   config: &UserConfig,
 ) -> Option<OverviewOverlay> {
   let params = params.filter(|_| !O::suppressed_for(window, config))?;
-  let overlay = overlays.get(&window.id())?;
+  let overlay = overlays.get(&window.id()).and_then(O::get)?;
 
   // Any rect does: an overlay reaches past its window by the same amount
   // wherever the window is.

@@ -6,12 +6,14 @@ use windows::{
     Foundation::{HWND, LPARAM, LRESULT, RECT, WPARAM},
     Graphics::Dwm::{DwmGetWindowAttribute, DWMWA_EXTENDED_FRAME_BOUNDS},
     UI::WindowsAndMessaging::{
-      CreateWindowExW, DefWindowProcW, GetClassNameW, GetWindow,
+      BeginDeferWindowPos, CreateWindowExW, DefWindowProcW,
+      DeferWindowPos, EndDeferWindowPos, GetClassNameW, GetWindow,
       GetWindowLongPtrW, GetWindowRect, IsWindowVisible, LoadCursorW,
       RegisterClassW, SetWindowPos, GWL_EXSTYLE, GW_HWNDNEXT, GW_HWNDPREV,
-      GW_OWNER, HWND_NOTOPMOST, HWND_TOPMOST, IDC_ARROW, SWP_NOACTIVATE,
-      SWP_NOMOVE, SWP_NOSENDCHANGING, SWP_NOSIZE, WINDOW_EX_STYLE,
-      WNDCLASSW, WS_EX_TOPMOST, WS_POPUP,
+      GW_OWNER, HDWP, HWND_NOTOPMOST, HWND_TOPMOST, IDC_ARROW,
+      SET_WINDOW_POS_FLAGS, SWP_NOACTIVATE, SWP_NOMOVE,
+      SWP_NOSENDCHANGING, SWP_NOSIZE, WINDOW_EX_STYLE, WNDCLASSW,
+      WS_EX_TOPMOST, WS_POPUP,
     },
   },
 };
@@ -165,6 +167,92 @@ pub(crate) fn is_topmost(hwnd: HWND) -> bool {
   let ex_style = ex_style as u32;
 
   ex_style & WS_EX_TOPMOST.0 != 0
+}
+
+/// One `DeferWindowPos` transaction, which DWM applies as a single
+/// window-state update.
+///
+/// Always ended, also after a failed entry or when dropped unended: its
+/// `HDWP` is a USER object only `EndDeferWindowPos` releases, and
+/// abandoning it, as `DeferWindowPos`'s documentation suggests, leaks it
+/// for the life of the process. Ending a transaction after a failed entry
+/// applies the entries accepted before it.
+pub(crate) struct DeferredPositions {
+  hdwp: Option<HDWP>,
+}
+
+impl DeferredPositions {
+  /// Starts a transaction sized for `count` windows, or `None` when
+  /// Windows can't allocate one.
+  pub(crate) fn begin(count: usize) -> Option<Self> {
+    let count = i32::try_from(count).unwrap_or(i32::MAX);
+
+    // SAFETY: Takes no handles; the returned `HDWP` is owned by `Self`
+    // and ended exactly once.
+    let hdwp = unsafe { BeginDeferWindowPos(count) }.ok()?;
+
+    Some(Self { hdwp: Some(hdwp) })
+  }
+
+  /// Adds a `SetWindowPos`-like move of `hwnd` to the transaction.
+  ///
+  /// Returns `false` once an entry fails, after which the transaction
+  /// takes no more entries.
+  pub(crate) fn defer(
+    &mut self,
+    hwnd: HWND,
+    insert_after: HWND,
+    rect: &Rect,
+    flags: SET_WINDOW_POS_FLAGS,
+  ) -> bool {
+    let Some(hdwp) = self.hdwp else {
+      return false;
+    };
+
+    // SAFETY: `hdwp` is a live transaction; a stale `hwnd` only fails
+    // the entry, which leaves `hdwp` valid to end.
+    let next = unsafe {
+      DeferWindowPos(
+        hdwp,
+        hwnd,
+        insert_after,
+        rect.x(),
+        rect.y(),
+        rect.width(),
+        rect.height(),
+        flags,
+      )
+    };
+
+    if let Ok(next) = next {
+      self.hdwp = Some(next);
+      true
+    } else {
+      self.end_now();
+      false
+    }
+  }
+
+  /// Applies the transaction. Returns `false` if any entry failed or
+  /// Windows rejected the transaction.
+  pub(crate) fn end(mut self) -> bool {
+    self.end_now()
+  }
+
+  fn end_now(&mut self) -> bool {
+    // SAFETY: `hdwp` came from `BeginDeferWindowPos` or `DeferWindowPos`
+    // and is taken, so it is ended only once.
+    self
+      .hdwp
+      .take()
+      .is_some_and(|hdwp| unsafe { EndDeferWindowPos(hdwp) }.is_ok())
+  }
+}
+
+impl Drop for DeferredPositions {
+  fn drop(&mut self) {
+    self.end_now();
+  }
 }
 
 /// Guard against a pathological z-order in [`insert_after_point`]; far

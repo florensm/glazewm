@@ -2,12 +2,8 @@ use anyhow::Context;
 use tracing::{info, warn};
 use wm_common::WindowState;
 #[cfg(target_os = "windows")]
-use wm_common::WindowTransitionParams;
-#[cfg(target_os = "windows")]
 use wm_platform::NativeWindowWindowsExt;
 
-#[cfg(target_os = "windows")]
-use crate::traits::PositionGetters;
 use crate::{
   commands::{
     container::{
@@ -62,7 +58,12 @@ pub fn update_window_state(
   if target_state == WindowState::Minimized
     && !window.native_properties().is_minimized
   {
-    start_minimize_animation(&window, state, config);
+    super::animate_away(
+      &window,
+      crate::animation::AwayTransition::Minimize,
+      state,
+      config,
+    );
   }
 
   // Coming back from minimized: let `platform_sync` play the
@@ -118,52 +119,6 @@ fn set_stack_state(
     .into_iter()
     .find(|tab| tab.id() == window.id())
     .context("Window is no longer in its stack.")
-}
-
-/// Starts the minimize transition for a window that is still on screen.
-///
-/// Silent no-op when the animation is disabled, the window's rect can't be
-/// resolved, or the surrogate fails to capture -- the caller's platform
-/// `minimize()` then simply plays the OS animation instead.
-#[cfg(target_os = "windows")]
-fn start_minimize_animation(
-  window: &WindowContainer,
-  state: &mut WmState,
-  config: &UserConfig,
-) {
-  if !config.value.animations.window_minimize.enabled {
-    return;
-  }
-
-  let Ok(rect) = window.to_rect().and_then(|rect| {
-    window
-      .total_border_delta()
-      .map(|delta| rect.apply_delta(&delta, None))
-  }) else {
-    return;
-  };
-
-  let is_focused = state
-    .focused_container()
-    .is_some_and(|focused| focused.id() == window.id());
-
-  let (effect_opacity, corner_style, backdrop_overlay, border_overlay) =
-    crate::commands::general::surrogate_effects_for(is_focused, config);
-
-  let native_ref = window.native();
-  state.animation_manager.start_away_animation(
-    crate::animation::AwayTransition::Minimize,
-    window.id(),
-    &rect,
-    effect_opacity,
-    corner_style,
-    backdrop_overlay,
-    border_overlay,
-    &WindowTransitionParams::from_minimize(
-      &config.value.animations.window_minimize,
-    ),
-    &native_ref,
-  );
 }
 
 /// Updates the state of a window to be `WindowState::Tiling`.

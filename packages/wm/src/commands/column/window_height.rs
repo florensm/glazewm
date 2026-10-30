@@ -2,7 +2,10 @@ use anyhow::Context;
 use wm_common::TilingDirection;
 use wm_platform::LengthUnit;
 
-use super::{row_of, ColumnPlace};
+use super::{
+  presets::{nearest_preset, step_preset},
+  row_of, ColumnPlace,
+};
 use crate::{
   commands::container::resize_tiling_container,
   models::{Container, TilingContainer},
@@ -82,34 +85,22 @@ pub fn cycle_window_height(
     })
     .collect::<Vec<_>>();
 
-  let Some(last) = sizes.len().checked_sub(1) else {
+  if sizes.is_empty() {
     return Ok(());
-  };
+  }
 
   let current = row.tiling_size();
   let preset =
     workspace
       .strip_view()
       .preset_height(row.id(), current, sizes.len());
-  let index = match preset {
-    Some(index) if forwards => (index + 1) % sizes.len(),
-    Some(index) => index.checked_sub(1).unwrap_or(last),
-    None => {
-      #[allow(clippy::cast_precision_loss)]
-      let leeway = 1. / available as f32;
-
-      if forwards {
-        sizes
-          .iter()
-          .position(|size| current + leeway < *size)
-          .unwrap_or(0)
-      } else {
-        sizes
-          .iter()
-          .rposition(|size| *size + leeway < current)
-          .unwrap_or(last)
-      }
-    }
+  let index = if let Some(index) = preset {
+    step_preset(index, sizes.len(), forwards)
+  } else {
+    // A pixel's worth of the column.
+    #[allow(clippy::cast_precision_loss)]
+    let leeway = 1. / available as f32;
+    nearest_preset(&sizes, current, leeway, forwards)
   };
 
   resize_tiling_container(&row, sizes[index]);

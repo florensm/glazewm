@@ -5,6 +5,7 @@ use std::{
 
 use anyhow::{bail, Context};
 use tokio::sync::mpsc::{self};
+#[cfg(target_os = "windows")]
 use tracing::warn;
 use uuid::Uuid;
 #[cfg(target_os = "windows")]
@@ -24,10 +25,6 @@ use wm_platform::{
 
 #[cfg(target_os = "windows")]
 use crate::commands::window::close_duplicate_tabs;
-#[cfg(target_os = "windows")]
-use crate::commands::window::detach_window_for_close;
-#[cfg(target_os = "windows")]
-use crate::traits::PositionGetters;
 use crate::{
   commands::{
     column::{
@@ -48,13 +45,13 @@ use crate::{
     },
     monitor::focus_monitor,
     window::{
-      cycle_stack_focus, float_out_of_stack, focus_stack_index,
-      focus_urgent_window, ignore_window, manage_held_window,
-      move_stack_tab, move_to_stack, move_window_in_direction,
-      move_window_to_workspace, resize_window, set_window_position,
-      set_window_size, set_window_urgency, stack_absorb_neighbor,
-      stack_all, toggle_stack, unstack_all, update_window_state,
-      WindowPositionTarget,
+      close_window, cycle_stack_focus, float_out_of_stack,
+      focus_stack_index, focus_urgent_window, ignore_window,
+      manage_held_window, move_stack_tab, move_to_stack,
+      move_window_in_direction, move_window_to_workspace, resize_window,
+      set_window_position, set_window_size, set_window_urgency,
+      stack_absorb_neighbor, stack_all, toggle_stack, unstack_all,
+      update_window_state, WindowPositionTarget,
     },
     workspace::{
       focus_special_workspace, focus_workspace,
@@ -474,8 +471,7 @@ impl WindowManager {
           // Dropped so that a late finish can't close the window again
           // after it has been put back.
           state.animation_manager.remove_animation(&id);
-          state.backdrop_overlays.remove(&id);
-          state.border_overlays.remove(&id);
+          state.window_overlays.remove(&id);
 
           if let Err(err) = NativeWindow::from_handle(handle).close() {
             warn!("Failed to close window: {:?}", err);
@@ -745,111 +741,29 @@ impl WindowManager {
 
     match &command {
       InvokeCommand::AdjustBorders(args) => {
-        match subject_container.as_window_container() {
-          Ok(window) => {
-            let args = args.clone();
-            let border_delta = RectDelta::new(
-              args.left.unwrap_or(LengthValue::from_px(0)),
-              args.top.unwrap_or(LengthValue::from_px(0)),
-              args.right.unwrap_or(LengthValue::from_px(0)),
-              args.bottom.unwrap_or(LengthValue::from_px(0)),
-            );
+        let Ok(window) = subject_container.as_window_container() else {
+          return Ok(());
+        };
 
-            window.set_border_delta(border_delta);
-            state.pending_sync.queue_container_to_redraw(window);
+        let args = args.clone();
+        let border_delta = RectDelta::new(
+          args.left.unwrap_or(LengthValue::from_px(0)),
+          args.top.unwrap_or(LengthValue::from_px(0)),
+          args.right.unwrap_or(LengthValue::from_px(0)),
+          args.bottom.unwrap_or(LengthValue::from_px(0)),
+        );
 
-            Ok(())
-          }
-          _ => Ok(()),
-        }
+        window.set_border_delta(border_delta);
+        state.pending_sync.queue_container_to_redraw(window);
+
+        Ok(())
       }
       InvokeCommand::Close => {
-        match subject_container.as_window_container() {
-          Ok(window) => {
-            #[cfg(target_os = "windows")]
-            if config.value.animations.window_close.enabled {
-              use wm_platform::NativeWindowWindowsExt;
+        let Ok(window) = subject_container.as_window_container() else {
+          return Ok(());
+        };
 
-              let is_focused = window.id()
-                == state.focused_container().map_or_default(|c| c.id());
-
-              let (
-                effect_opacity,
-                corner_style,
-                backdrop_overlay,
-                border_overlay,
-              ) = crate::commands::general::surrogate_effects_for(
-                is_focused, config,
-              );
-
-              if let Ok(rect) = window.to_rect().and_then(|r| {
-                window
-                  .total_border_delta()
-                  .map(|d| r.apply_delta(&d, None))
-              }) {
-                let window_id = window.id();
-
-                // Create and show the surrogate over the still-visible
-                // window first. The surrogate captures the
-                // live window as a pixel-identical
-                // overlay, so this is invisible to the user.
-                {
-                  let native_ref = window.native();
-                  state.animation_manager.start_away_animation(
-                    crate::animation::AwayTransition::Close,
-                    window_id,
-                    &rect,
-                    effect_opacity,
-                    corner_style,
-                    backdrop_overlay,
-                    border_overlay,
-                    &wm_common::WindowTransitionParams::from_close(
-                      &config.value.animations.window_close,
-                    ),
-                    &native_ref,
-                  );
-                }
-
-                // If the surrogate was created successfully, cloak the
-                // real window — now that the surrogate is
-                // up and covering it — and detach it from
-                // the layout tree so sibling windows begin
-                // their reflow animations in parallel with the close
-                // surrogate. Cloaking *after* the surrogate is shown
-                // avoids a one-frame gap where the slow
-                // `IApplicationView` cloak has hidden the
-                // window but the surrogate has not yet been
-                // composited, which briefly exposes the desktop.
-                // `AnimationManager::update_internal` sends `WM_CLOSE`
-                // once the close animation finishes.
-                if state.animation_manager.has_close_animation(&window_id)
-                {
-                  let _ = window.native().set_cloaked(true);
-                  let close_config = &config.value.animations.window_close;
-                  detach_window_for_close(
-                    &window,
-                    std::time::Duration::from_millis(u64::from(
-                      close_config
-                        .easing
-                        .duration_ms(close_config.duration_ms),
-                    )),
-                    state,
-                  )?;
-                  return Ok(());
-                }
-              }
-            }
-
-            // Fallback: animations disabled, rect unavailable, or
-            // surrogate creation failed — close immediately.
-            if let Err(err) = window.native().close() {
-              warn!("Failed to close window: {:?}", err);
-            }
-
-            Ok(())
-          }
-          _ => Ok(()),
-        }
+        close_window(&window, state, config)
       }
       InvokeCommand::Focus(args) => {
         if let Some(direction) = &args.direction {
@@ -910,10 +824,11 @@ impl WindowManager {
       // before a window is managed (see `check_is_manageable`).
       InvokeCommand::ForceManage => Ok(()),
       InvokeCommand::Ignore => {
-        match subject_container.as_window_container() {
-          Ok(window) => ignore_window(window, state),
-          _ => Ok(()),
-        }
+        let Ok(window) = subject_container.as_window_container() else {
+          return Ok(());
+        };
+
+        ignore_window(window, state)
       }
       InvokeCommand::MoveCursor(args) => {
         if args.direction.is_some() {
@@ -922,50 +837,40 @@ impl WindowManager {
         Ok(())
       }
       InvokeCommand::Move(args) => {
-        match subject_container.as_window_container() {
-          Ok(window) => {
-            if let Some(direction) = &args.direction {
-              move_window_in_direction(
-                window.clone(),
-                direction,
-                state,
-                config,
-              )?;
-            }
+        let Ok(window) = subject_container.as_window_container() else {
+          return Ok(());
+        };
 
-            if let Some(target) = workspace_target!(&args) {
-              move_window_to_workspace(
-                window.clone(),
-                target,
-                state,
-                config,
-              )?;
-            }
-
-            if args.special_workspace {
-              move_window_to_special_workspace(
-                window.clone(),
-                state,
-                config,
-              )?;
-            }
-
-            let column_target = if args.first_column {
-              Some(ColumnTarget::First)
-            } else if args.last_column {
-              Some(ColumnTarget::Last)
-            } else {
-              args.column.map(ColumnTarget::Index)
-            };
-
-            if let Some(target) = column_target {
-              move_column(&window.into(), target, state)?;
-            }
-            Ok(())
-          }
-
-          _ => Ok(()),
+        if let Some(direction) = &args.direction {
+          move_window_in_direction(
+            window.clone(),
+            direction,
+            state,
+            config,
+          )?;
         }
+
+        if let Some(target) = workspace_target!(&args) {
+          move_window_to_workspace(window.clone(), target, state, config)?;
+        }
+
+        if args.special_workspace {
+          move_window_to_special_workspace(window.clone(), state, config)?;
+        }
+
+        let column_target = if args.first_column {
+          Some(ColumnTarget::First)
+        } else if args.last_column {
+          Some(ColumnTarget::Last)
+        } else {
+          args.column.map(ColumnTarget::Index)
+        };
+
+        if let Some(target) = column_target {
+          move_column(&window.into(), target, state)?;
+        }
+
+        Ok(())
       }
       InvokeCommand::MoveWorkspace { direction } => {
         let workspace =
@@ -974,23 +879,22 @@ impl WindowManager {
         move_workspace_in_direction(&workspace, direction, state, config)
       }
       InvokeCommand::Position(args) => {
-        match subject_container.as_window_container() {
-          Ok(window) => {
-            if args.centered {
-              set_window_position(
-                window,
-                &WindowPositionTarget::Centered,
-                state,
-              )
-            } else {
-              set_window_position(
-                window,
-                &WindowPositionTarget::Coordinates(args.x_pos, args.y_pos),
-                state,
-              )
-            }
-          }
-          _ => Ok(()),
+        let Ok(window) = subject_container.as_window_container() else {
+          return Ok(());
+        };
+
+        if args.centered {
+          set_window_position(
+            window,
+            &WindowPositionTarget::Centered,
+            state,
+          )
+        } else {
+          set_window_position(
+            window,
+            &WindowPositionTarget::Coordinates(args.x_pos, args.y_pos),
+            state,
+          )
         }
       }
       InvokeCommand::UpdateWorkspaceConfig {
@@ -1007,15 +911,16 @@ impl WindowManager {
         update_workspace_config(&workspace, state, config, new_config)
       }
       InvokeCommand::Resize(args) => {
-        match subject_container.as_window_container() {
-          Ok(window) => resize_window(
-            &window,
-            args.width.clone(),
-            args.height.clone(),
-            state,
-          ),
-          _ => Ok(()),
-        }
+        let Ok(window) = subject_container.as_window_container() else {
+          return Ok(());
+        };
+
+        resize_window(
+          &window,
+          args.width.clone(),
+          args.height.clone(),
+          state,
+        )
       }
       InvokeCommand::SetFloating {
         centered,
@@ -1024,249 +929,240 @@ impl WindowManager {
         y_pos,
         width,
         height,
-      } => match subject_container.as_window_container() {
-        Ok(window) => {
-          let floating_defaults =
-            &config.value.window_behavior.state_defaults.floating;
-          let centered = centered.unwrap_or(floating_defaults.centered);
+      } => {
+        let Ok(window) = subject_container.as_window_container() else {
+          return Ok(());
+        };
 
-          let window = update_window_state(
-            window.clone(),
-            WindowState::Floating(FloatingStateConfig {
-              centered,
-              shown_on_top: shown_on_top
-                .unwrap_or(floating_defaults.shown_on_top),
-            }),
-            state,
-            config,
-          )?;
+        let floating_defaults =
+          &config.value.window_behavior.state_defaults.floating;
+        let centered = centered.unwrap_or(floating_defaults.centered);
 
-          // Allow size and position to be set if window has not previously
-          // been manually placed.
-          if !window.has_custom_floating_placement() {
-            if width.is_some() || height.is_some() {
-              set_window_size(
-                window.clone(),
-                width.clone(),
-                height.clone(),
-                state,
-              )?;
-            }
+        let window = update_window_state(
+          window.clone(),
+          WindowState::Floating(FloatingStateConfig {
+            centered,
+            shown_on_top: shown_on_top
+              .unwrap_or(floating_defaults.shown_on_top),
+          }),
+          state,
+          config,
+        )?;
 
-            if centered {
-              set_window_position(
-                window,
-                &WindowPositionTarget::Centered,
-                state,
-              )?;
-            } else if x_pos.is_some() || y_pos.is_some() {
-              set_window_position(
-                window,
-                &WindowPositionTarget::Coordinates(*x_pos, *y_pos),
-                state,
-              )?;
-            }
+        // Allow size and position to be set if window has not previously
+        // been manually placed.
+        if !window.has_custom_floating_placement() {
+          if width.is_some() || height.is_some() {
+            set_window_size(
+              window.clone(),
+              width.clone(),
+              height.clone(),
+              state,
+            )?;
           }
 
-          Ok(())
+          if centered {
+            set_window_position(
+              window,
+              &WindowPositionTarget::Centered,
+              state,
+            )?;
+          } else if x_pos.is_some() || y_pos.is_some() {
+            set_window_position(
+              window,
+              &WindowPositionTarget::Coordinates(*x_pos, *y_pos),
+              state,
+            )?;
+          }
         }
-        _ => Ok(()),
-      },
+
+        Ok(())
+      }
       InvokeCommand::SetFullscreen {
         maximized,
         shown_on_top,
-      } => match subject_container.as_window_container() {
-        Ok(window) => {
-          let fullscreen_defaults =
-            &config.value.window_behavior.state_defaults.fullscreen;
+      } => {
+        let Ok(window) = subject_container.as_window_container() else {
+          return Ok(());
+        };
 
-          let window = update_window_state(
-            window.clone(),
-            WindowState::Fullscreen(FullscreenStateConfig {
-              maximized: maximized
-                .unwrap_or(fullscreen_defaults.maximized),
-              shown_on_top: shown_on_top
-                .unwrap_or(fullscreen_defaults.shown_on_top),
-            }),
-            state,
-            config,
-          )?;
+        let fullscreen_defaults =
+          &config.value.window_behavior.state_defaults.fullscreen;
 
-          // WM-initiated, so this transition is allowed to animate (see
-          // `PendingSync::wm_fullscreen_toggles`).
-          state.pending_sync.mark_wm_fullscreen_toggle(window.id());
+        let window = update_window_state(
+          window.clone(),
+          WindowState::Fullscreen(FullscreenStateConfig {
+            maximized: maximized.unwrap_or(fullscreen_defaults.maximized),
+            shown_on_top: shown_on_top
+              .unwrap_or(fullscreen_defaults.shown_on_top),
+          }),
+          state,
+          config,
+        )?;
 
-          Ok(())
-        }
-        _ => Ok(()),
-      },
+        // WM-initiated, so this transition is allowed to animate (see
+        // `PendingSync::wm_fullscreen_toggles`).
+        state.pending_sync.mark_wm_fullscreen_toggle(window.id());
+
+        Ok(())
+      }
       InvokeCommand::SetMinimized => {
-        match subject_container.as_window_container() {
-          Ok(window) => {
-            update_window_state(
-              window.clone(),
-              WindowState::Minimized,
-              state,
-              config,
-            )?;
+        let Ok(window) = subject_container.as_window_container() else {
+          return Ok(());
+        };
 
-            Ok(())
-          }
-          _ => Ok(()),
-        }
+        update_window_state(
+          window.clone(),
+          WindowState::Minimized,
+          state,
+          config,
+        )?;
+
+        Ok(())
       }
       InvokeCommand::SetTiling => {
-        match subject_container.as_window_container() {
-          Ok(window) => {
-            update_window_state(
-              window,
-              WindowState::Tiling,
-              state,
-              config,
-            )?;
+        let Ok(window) = subject_container.as_window_container() else {
+          return Ok(());
+        };
 
-            Ok(())
-          }
-          _ => Ok(()),
-        }
+        update_window_state(window, WindowState::Tiling, state, config)?;
+
+        Ok(())
       }
       InvokeCommand::SetUrgency { urgent } => {
-        match subject_container.as_window_container() {
-          Ok(window) => {
-            set_window_urgency(&window, urgent.unwrap_or(true), state)?;
+        let Ok(window) = subject_container.as_window_container() else {
+          return Ok(());
+        };
 
-            Ok(())
-          }
-          _ => Ok(()),
-        }
+        set_window_urgency(&window, urgent.unwrap_or(true), state)?;
+
+        Ok(())
       }
       InvokeCommand::SetTitleBarVisibility {
         // LINT: `visibility` is only used on Windows.
         #[cfg_attr(not(target_os = "windows"), allow(unused_variables))]
         visibility,
-      } => match subject_container.as_window_container() {
+      } => {
         #[cfg(target_os = "windows")]
-        Ok(window) => {
+        if let Ok(window) = subject_container.as_window_container() {
           _ = window.native().set_title_bar_visibility(
             *visibility == TitleBarVisibility::Shown,
           );
-          Ok(())
         }
-        _ => Ok(()),
-      },
+
+        Ok(())
+      }
       // LINT: `args` is only used on Windows.
       #[cfg_attr(not(target_os = "windows"), allow(unused_variables))]
       InvokeCommand::SetTransparency(args) => {
-        match subject_container.as_window_container() {
-          #[cfg(target_os = "windows")]
-          Ok(window) => {
-            if let Some(opacity) = &args.opacity {
-              _ = window.native().set_transparency(opacity);
-            }
-
-            if let Some(opacity_delta) = &args.opacity_delta {
-              _ = window.native().adjust_transparency(opacity_delta);
-            }
-
-            Ok(())
+        #[cfg(target_os = "windows")]
+        if let Ok(window) = subject_container.as_window_container() {
+          if let Some(opacity) = &args.opacity {
+            _ = window.native().set_transparency(opacity);
           }
-          _ => Ok(()),
+
+          if let Some(opacity_delta) = &args.opacity_delta {
+            _ = window.native().adjust_transparency(opacity_delta);
+          }
         }
+
+        Ok(())
       }
       InvokeCommand::ShellExec {
         hide_window,
         command,
       } => shell_exec(&command.join(" "), *hide_window, state),
       InvokeCommand::Size(args) => {
-        match subject_container.as_window_container() {
-          Ok(window) => set_window_size(
-            window,
-            args.width.clone(),
-            args.height.clone(),
-            state,
-          ),
-          _ => Ok(()),
-        }
+        let Ok(window) = subject_container.as_window_container() else {
+          return Ok(());
+        };
+
+        set_window_size(
+          window,
+          args.width.clone(),
+          args.height.clone(),
+          state,
+        )
       }
       InvokeCommand::ToggleFloating {
         centered,
         shown_on_top,
-      } => match subject_container.as_window_container() {
-        Ok(window) => {
-          let floating_defaults =
-            &config.value.window_behavior.state_defaults.floating;
+      } => {
+        let Ok(window) = subject_container.as_window_container() else {
+          return Ok(());
+        };
 
-          let centered = centered.unwrap_or(floating_defaults.centered);
-          let target_state = WindowState::Floating(FloatingStateConfig {
-            centered,
-            shown_on_top: shown_on_top
-              .unwrap_or(floating_defaults.shown_on_top),
-          });
+        let floating_defaults =
+          &config.value.window_behavior.state_defaults.floating;
 
-          let window = update_window_state(
-            window.clone(),
-            window.toggled_state(target_state, config),
+        let centered = centered.unwrap_or(floating_defaults.centered);
+        let target_state = WindowState::Floating(FloatingStateConfig {
+          centered,
+          shown_on_top: shown_on_top
+            .unwrap_or(floating_defaults.shown_on_top),
+        });
+
+        let window = update_window_state(
+          window.clone(),
+          window.toggled_state(target_state, config),
+          state,
+          config,
+        )?;
+
+        if !window.has_custom_floating_placement() && centered {
+          set_window_position(
+            window,
+            &WindowPositionTarget::Centered,
             state,
-            config,
           )?;
-
-          if !window.has_custom_floating_placement() && centered {
-            set_window_position(
-              window,
-              &WindowPositionTarget::Centered,
-              state,
-            )?;
-          }
-
-          Ok(())
         }
-        _ => Ok(()),
-      },
+
+        Ok(())
+      }
       InvokeCommand::ToggleFullscreen {
         maximized,
         shown_on_top,
-      } => match subject_container.as_window_container() {
-        Ok(window) => {
-          let fullscreen_defaults =
-            &config.value.window_behavior.state_defaults.fullscreen;
+      } => {
+        let Ok(window) = subject_container.as_window_container() else {
+          return Ok(());
+        };
 
-          let target_state =
-            WindowState::Fullscreen(FullscreenStateConfig {
-              maximized: maximized
-                .unwrap_or(fullscreen_defaults.maximized),
-              shown_on_top: shown_on_top
-                .unwrap_or(fullscreen_defaults.shown_on_top),
-            });
+        let fullscreen_defaults =
+          &config.value.window_behavior.state_defaults.fullscreen;
 
-          let window = update_window_state(
-            window.clone(),
-            window.toggled_state(target_state, config),
-            state,
-            config,
-          )?;
+        let target_state =
+          WindowState::Fullscreen(FullscreenStateConfig {
+            maximized: maximized.unwrap_or(fullscreen_defaults.maximized),
+            shown_on_top: shown_on_top
+              .unwrap_or(fullscreen_defaults.shown_on_top),
+          });
 
-          // WM-initiated, so this transition is allowed to animate (see
-          // `PendingSync::wm_fullscreen_toggles`).
-          state.pending_sync.mark_wm_fullscreen_toggle(window.id());
+        let window = update_window_state(
+          window.clone(),
+          window.toggled_state(target_state, config),
+          state,
+          config,
+        )?;
 
-          Ok(())
-        }
-        _ => Ok(()),
-      },
+        // WM-initiated, so this transition is allowed to animate (see
+        // `PendingSync::wm_fullscreen_toggles`).
+        state.pending_sync.mark_wm_fullscreen_toggle(window.id());
+
+        Ok(())
+      }
       InvokeCommand::ToggleMinimized => {
-        match subject_container.as_window_container() {
-          Ok(window) => {
-            update_window_state(
-              window.clone(),
-              window.toggled_state(WindowState::Minimized, config),
-              state,
-              config,
-            )?;
+        let Ok(window) = subject_container.as_window_container() else {
+          return Ok(());
+        };
 
-            Ok(())
-          }
-          _ => Ok(()),
-        }
+        update_window_state(
+          window.clone(),
+          window.toggled_state(WindowState::Minimized, config),
+          state,
+          config,
+        )?;
+
+        Ok(())
       }
       InvokeCommand::ToggleOverview { layout } => {
         let layout = layout.unwrap_or(config.value.overview.layout);
@@ -1287,19 +1183,18 @@ impl WindowManager {
         Ok(())
       }
       InvokeCommand::ToggleTiling => {
-        match subject_container.as_window_container() {
-          Ok(window) => {
-            update_window_state(
-              window.clone(),
-              window.toggled_state(WindowState::Tiling, config),
-              state,
-              config,
-            )?;
+        let Ok(window) = subject_container.as_window_container() else {
+          return Ok(());
+        };
 
-            Ok(())
-          }
-          _ => Ok(()),
-        }
+        update_window_state(
+          window.clone(),
+          window.toggled_state(WindowState::Tiling, config),
+          state,
+          config,
+        )?;
+
+        Ok(())
       }
       InvokeCommand::ToggleStack => {
         if let Ok(window) = subject_container.as_window_container() {
