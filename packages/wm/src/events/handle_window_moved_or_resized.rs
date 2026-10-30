@@ -628,57 +628,73 @@ pub(super) fn update_drag_state(
     );
 
     if move_distance >= 10.0 || is_maximized {
-      // A window of a stack floats with its whole stack, which leaves the
-      // stack's parent behind.
-      let parent = window
-        .parent()
-        .and_then(|parent| match parent.as_stack() {
-          Some(stack) => stack.parent(),
-          None => Some(parent),
-        })
-        .context("No parent")?;
+      float_for_drag(window, is_maximized, state, config)?;
+    }
+  }
 
-      let is_fullscreen =
-        matches!(window.state(), WindowState::Fullscreen(_))
-          && !is_maximized;
+  Ok(())
+}
 
-      let window = update_window_state(
-        window.clone(),
-        WindowState::Floating(FloatingStateConfig {
-          centered: false,
-          ..config.value.window_behavior.state_defaults.floating
-        }),
-        state,
-        config,
-      )?;
+/// Floats tiling `window` for it to be dragged around, as a move does
+/// once past its threshold: it leaves its slot, which its siblings close
+/// up, and is dropped back into tiling where it is let go of.
+///
+/// `is_maximized` is whether it was maximized, which the OS restores as
+/// the drag starts.
+pub(crate) fn float_for_drag(
+  window: &WindowContainer,
+  is_maximized: bool,
+  state: &mut WmState,
+  config: &UserConfig,
+) -> anyhow::Result<()> {
+  // A window of a stack floats with its whole stack, which leaves the
+  // stack's parent behind.
+  let parent = window
+    .parent()
+    .and_then(|parent| match parent.as_stack() {
+      Some(stack) => stack.parent(),
+      None => Some(parent),
+    })
+    .context("No parent")?;
 
-      // `update_window_state` automatically adds the window for redraw,
-      // which we don't want in this case. However, for fullscreen windows,
-      // we do actually want it to be resized initially so that it's
-      // easier to move around while dragging.
-      if !is_fullscreen {
-        state
-          .pending_sync
-          .dequeue_container_from_redraw(window.clone());
-      }
+  let is_fullscreen =
+    matches!(window.state(), WindowState::Fullscreen(_)) && !is_maximized;
 
-      // Flatten the parent split container if it only contains the window.
-      // TODO: Consider doing this to `move_container_within_tree`, so that
-      // the behavior is consistent.
-      if let Some(split_parent) = parent.as_split() {
-        if split_parent.child_count() == 1 {
-          flatten_split_container(split_parent.clone())?;
+  let window = update_window_state(
+    window.clone(),
+    WindowState::Floating(FloatingStateConfig {
+      centered: false,
+      ..config.value.window_behavior.state_defaults.floating
+    }),
+    state,
+    config,
+  )?;
 
-          // Hacky fix to redraw siblings after flattening. The parent is
-          // queued for redraw from the state change, which gets detached
-          // on flatten.
-          // TODO: Change `queue_containers_to_redraw` to iterate over its
-          // descendant windows and store those instead.
-          state
-            .pending_sync
-            .queue_containers_to_redraw(window.tiling_siblings());
-        }
-      }
+  // `update_window_state` automatically adds the window for redraw,
+  // which we don't want in this case. However, for fullscreen windows,
+  // we do actually want it to be resized initially so that it's
+  // easier to move around while dragging.
+  if !is_fullscreen {
+    state
+      .pending_sync
+      .dequeue_container_from_redraw(window.clone());
+  }
+
+  // Flatten the parent split container if it only contains the window.
+  // TODO: Consider doing this to `move_container_within_tree`, so that
+  // the behavior is consistent.
+  if let Some(split_parent) = parent.as_split() {
+    if split_parent.child_count() == 1 {
+      flatten_split_container(split_parent.clone())?;
+
+      // Hacky fix to redraw siblings after flattening. The parent is
+      // queued for redraw from the state change, which gets detached
+      // on flatten.
+      // TODO: Change `queue_containers_to_redraw` to iterate over its
+      // descendant windows and store those instead.
+      state
+        .pending_sync
+        .queue_containers_to_redraw(window.tiling_siblings());
     }
   }
 

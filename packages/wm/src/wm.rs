@@ -136,6 +136,7 @@ impl WindowManager {
     not(target_os = "windows"),
     allow(clippy::unused_self, clippy::unnecessary_wraps)
   )]
+  #[allow(clippy::too_many_lines)]
   pub fn process_overview_action(
     &mut self,
     session: u64,
@@ -174,6 +175,9 @@ impl WindowManager {
         .and_then(|focused| focused.workspace())
         .map(|workspace| workspace.config().name);
       let window = window_by_handle(state, &action);
+
+      // A window placed in a workspace's layout, once it is on it.
+      let mut placement = None;
 
       let (commands, subject) = match action {
         OverviewAction::FocusWindow { monitor, .. } => {
@@ -238,6 +242,21 @@ impl WindowManager {
             Some(window.id()),
           )
         }
+        OverviewAction::PlaceWindow {
+          workspace,
+          monitor,
+          point,
+          ..
+        } => {
+          let Some(window) = window else {
+            return Ok(());
+          };
+
+          let commands =
+            place_commands(&window, &workspace, monitor, state, config)?;
+          placement = Some((window.id(), workspace, point));
+          (commands, Some(window.id()))
+        }
         OverviewAction::CloseWindow(_) => {
           let Some(window) = window else {
             return Ok(());
@@ -257,9 +276,18 @@ impl WindowManager {
         OverviewAction::Hidden => return Ok(()),
       };
 
-      self
-        .process_commands(&commands, subject, config)
-        .map(|_| ())
+      self.process_commands(&commands, subject, config)?;
+
+      match placement {
+        Some((window_id, workspace, point)) => place_window(
+          window_id,
+          &workspace,
+          &point,
+          &mut self.state,
+          config,
+        ),
+        None => Ok(()),
+      }
     }
   }
 
@@ -1467,7 +1495,8 @@ fn window_by_handle(
   let hwnd = match action {
     OverviewAction::FocusWindow { hwnd, .. }
     | OverviewAction::CloseWindow(hwnd)
-    | OverviewAction::MoveWindow { hwnd, .. } => *hwnd,
+    | OverviewAction::MoveWindow { hwnd, .. }
+    | OverviewAction::PlaceWindow { hwnd, .. } => *hwnd,
     _ => return None,
   };
 
@@ -1511,6 +1540,54 @@ fn focus_workspace_command(name: String) -> InvokeCommand {
     workspace: Some(name),
     ..Default::default()
   })
+}
+
+/// Commands bringing `window`, being placed on the named `workspace` from
+/// the overview, onto it first: none if it is there already.
+#[cfg(target_os = "windows")]
+fn place_commands(
+  window: &crate::models::WindowContainer,
+  workspace: &str,
+  monitor: u128,
+  state: &mut WmState,
+  config: &UserConfig,
+) -> anyhow::Result<Vec<InvokeCommand>> {
+  crate::overview::prepare_target(
+    state, config, workspace, monitor, false,
+  )?;
+
+  let is_elsewhere = window
+    .workspace()
+    .is_none_or(|current| current.config().name != workspace);
+  Ok(if is_elsewhere {
+    vec![move_to_workspace_command(workspace.to_string())]
+  } else {
+    Vec::new()
+  })
+}
+
+/// Places the window `window_id`, on the named `workspace` by now, where
+/// dragging it to `point` there puts it, if it is tiling.
+#[cfg(target_os = "windows")]
+fn place_window(
+  window_id: uuid::Uuid,
+  workspace: &str,
+  point: &wm_platform::Point,
+  state: &mut WmState,
+  config: &UserConfig,
+) -> anyhow::Result<()> {
+  let window = state
+    .container_by_id(window_id)
+    .and_then(|container| container.as_tiling_window().cloned());
+  let workspace = state.workspace_by_name(workspace);
+
+  if let (Some(window), Some(workspace)) = (window, workspace) {
+    crate::events::place_tiling_window(
+      &window, &workspace, point, state, config,
+    )?;
+    platform_sync(state, config)?;
+  }
+  Ok(())
 }
 
 /// `move --workspace <name>`, for a workspace readied by

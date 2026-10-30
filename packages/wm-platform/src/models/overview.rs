@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-use crate::{BorderOverlayParams, Color, Rect, TabFrame};
+use crate::{BorderOverlayParams, Color, Point, Rect, TabFrame};
 
 /// What the window overview shows, sent by the WM as a whole.
 #[derive(Clone, Debug, PartialEq)]
@@ -347,6 +347,18 @@ pub enum OverviewAction {
     hwnd: isize,
     workspace: String,
     monitor: u128,
+  },
+
+  /// Move the window with this handle to where dragging it to `point` on
+  /// the named workspace and letting go would put it, in the screen
+  /// coordinates its windows sit at, displayed or not: e.g. beside the
+  /// window there. A window that isn't tiling only moves there. The
+  /// overview stays open.
+  PlaceWindow {
+    hwnd: isize,
+    workspace: String,
+    monitor: u128,
+    point: Point,
   },
 
   /// Close the window with this handle. The overview stays open.

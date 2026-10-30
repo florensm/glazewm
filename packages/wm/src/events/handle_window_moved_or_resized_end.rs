@@ -13,15 +13,15 @@ use crate::{
     },
     window::{join_stack, set_window_size, update_window_state},
   },
-  events::update_floating_window_position,
+  events::{float_for_drag, update_floating_window_position},
   layout::{
     column_drop::drop_into_column,
     scrolling::keep_right_edge,
-    window_drop::{tab_bar_at, window_drop, WindowDrop},
+    window_drop::{tab_bar_at, window_drop, window_drop_on, WindowDrop},
   },
   models::{
     Container, NonTilingWindow, SplitContainer, TilingWindow,
-    WindowContainer,
+    WindowContainer, Workspace,
   },
   traits::{CommonGetters, TilingDirectionGetters, WindowGetters},
   user_config::UserConfig,
@@ -213,6 +213,42 @@ fn drop_as_tiling_window(
     moved_window.as_window_container()?
   );
 
+  let drop = window_drop(moved_window, mouse_pos, state)?
+    .context("Couldn't find workspace for window drop.")?;
+  put_dropped_window(moved_window, drop, state, config)
+}
+
+/// Moves tiling `window` to where dragging it with the mouse to `point`
+/// on `workspace` and letting go puts it, displayed or not: beside the
+/// window there, into the column there, or into the workspace if empty.
+/// A window of a stack brings its whole stack along.
+pub fn place_tiling_window(
+  window: &TilingWindow,
+  workspace: &Workspace,
+  point: &Point,
+  state: &mut WmState,
+  config: &UserConfig,
+) -> anyhow::Result<()> {
+  float_for_drag(&window.clone().into(), false, state, config)?;
+
+  let floating = state
+    .container_by_id(window.id())
+    .and_then(|container| NonTilingWindow::try_from(container).ok())
+    .context("Window didn't float to be placed.")?;
+
+  let drop = window_drop_on(&floating, workspace.clone(), point, state)?;
+  put_dropped_window(&floating, drop, state, config)?;
+  Ok(())
+}
+
+/// Puts `moved_window`, floating while dragged, back into tiling where
+/// `drop` says.
+fn put_dropped_window(
+  moved_window: &NonTilingWindow,
+  drop: WindowDrop,
+  state: &mut WmState,
+  config: &UserConfig,
+) -> anyhow::Result<WindowContainer> {
   // A window of a stack carries its whole stack.
   let moved_stack = moved_window
     .parent()
@@ -224,9 +260,6 @@ fn drop_as_tiling_window(
       .clone()
       .map_or_else(|| window.clone().into(), Into::into)
   };
-
-  let drop = window_drop(moved_window, mouse_pos, state)?
-    .context("Couldn't find workspace for window drop.")?;
 
   match drop {
     WindowDrop::Column { workspace, drop } => {
@@ -378,7 +411,10 @@ mod tests {
   };
   use wm_platform::{LengthValue, Point, Rect};
 
-  use super::{drop_as_tiling_window, handle_window_moved_or_resized_end};
+  use super::{
+    drop_as_tiling_window, handle_window_moved_or_resized_end,
+    place_tiling_window,
+  };
   #[cfg(target_os = "windows")]
   use crate::layout::window_drop::{window_drop, WindowDrop};
   use crate::{
@@ -766,6 +802,38 @@ mod tests {
     assert_eq!(child_ids(&workspace), vec![column.id()]);
     assert_size(&column, 0.6);
   }
+  #[test]
+  fn placing_a_window_puts_it_where_dropping_it_there_would() {
+    let (moved, left, right) = (window(), window(), window());
+    let workspace = Workspace::mock()
+      .gaps_config(mock_inner_gaps())
+      .tiling_containers(vec![
+        moved.clone().into(),
+        left.clone().into(),
+        right.clone().into(),
+      ])
+      .call();
+    let (mut state, config) =
+      (state(vec![monitor(&workspace, 0)]), config());
+    set_focused_descendant(&moved.clone().into(), None);
+
+    // Near the right edge of the right window.
+    let rect = right.to_rect().unwrap();
+    let point = Point {
+      x: rect.right - 10,
+      y: rect.center_point().y,
+    };
+    place_tiling_window(&moved, &workspace, &point, &mut state, &config)
+      .unwrap();
+
+    assert_eq!(
+      child_ids(&workspace),
+      vec![left.id(), right.id(), moved.id()]
+    );
+    let placed = state.container_by_id(moved.id()).unwrap();
+    assert!(placed.as_tiling_window().is_some(), "tiling again");
+  }
+
   #[cfg(target_os = "windows")]
   #[test]
   fn the_drop_indicator_shows_the_half_a_window_drops_beside() {
