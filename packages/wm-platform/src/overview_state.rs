@@ -1114,6 +1114,22 @@ impl Interaction {
     self.press = Some(Press { position, hit });
   }
 
+  /// Drags window `hwnd`, dragged in from outside the overview, from the
+  /// cursor at `position`, as if it had been grabbed there.
+  pub fn carry_drag(&mut self, hwnd: isize, position: (f32, f32)) {
+    let hit = Hit {
+      window: Some(hwnd),
+      ..Hit::default()
+    };
+    self.press = Some(Press { position, hit });
+    self.drag = Some(Drag {
+      hwnd,
+      position,
+      target: None,
+      point: None,
+    });
+  }
+
   /// Closes the window under the cursor, unless one is being dragged.
   pub fn middle_click(&self, hit: Hit) -> Option<OverviewAction> {
     if self.drag.is_some() {
@@ -2668,6 +2684,38 @@ mod tests {
       })
     );
     assert_eq!(drop_at(&mut state, (1500, 500)), None, "onto itself");
+  }
+
+  #[test]
+  fn a_window_carried_in_mid_drag_drops_like_one_dragged_inside() {
+    let workspaces = workspaces();
+    let mut state = interaction();
+
+    state.carry_drag(21, (5.0, 5.0));
+    assert_eq!(state.floating(), Some(21), "carried from the start");
+
+    let over = Hit {
+      workspace: Some(0),
+      window: Some(11),
+      point: Some((100, 500)),
+      ..Hit::default()
+    };
+    state.mouse_move((400.0, 100.0), over, true);
+    assert_eq!(
+      state.mouse_up(&workspaces),
+      Some(OverviewAction::PlaceWindow {
+        hwnd: 21,
+        workspace: "1".to_string(),
+        monitor: MONITOR,
+        point: Point { x: 100, y: 500 },
+      })
+    );
+
+    // Let go of over nothing, it lands nowhere.
+    state.carry_drag(21, (5.0, 5.0));
+    state.mouse_move((900.0, 900.0), Hit::default(), true);
+    assert_eq!(state.mouse_up(&workspaces), None);
+    assert_eq!(state.floating(), None);
   }
 
   #[test]

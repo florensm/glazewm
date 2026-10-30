@@ -240,6 +240,10 @@ async fn start_wm(
     let closing_check = wm.next_closing_check();
     let animation_watchdog =
       wm.state.animation_manager.watchdog_deadline();
+    #[cfg(target_os = "windows")]
+    let hot_corner = wm.state.overview.hot_corner_deadline();
+    #[cfg(not(target_os = "windows"))]
+    let hot_corner = None;
 
     let res = tokio::select! {
       // biased: evaluated top-to-bottom when multiple futures are ready
@@ -306,6 +310,7 @@ async fn start_wm(
       () = sleep_until(closing_check) => {
         wm.process_closing_windows(&mut config)
       },
+      () = sleep_until(hot_corner) => wm.process_hot_corner(&config),
       () = tick_if_some(&mut sent_message_interval) => Ok(()),
       Some((stack_id, action)) = wm.tab_action_rx.recv() => {
         wm.process_tab_action(stack_id, action, &mut config)

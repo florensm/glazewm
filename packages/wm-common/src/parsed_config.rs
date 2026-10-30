@@ -663,9 +663,14 @@ pub struct OverviewConfig {
   /// Layout `toggle-overview` opens on, unless it names one.
   pub layout: OverviewLayout,
 
-  /// Corner of a monitor that opens the overview as the cursor reaches
-  /// it, as `toggle-overview` does.
+  /// Corner of a monitor that opens the overview as the cursor rests in
+  /// it, as `toggle-overview` does. A window dragged there is carried
+  /// into the overview, to drop onto a workspace.
   pub hot_corner: HotCorner,
+
+  /// How long the cursor rests in the hot corner before it opens the
+  /// overview; `0` opens it at once.
+  pub hot_corner_delay_ms: u32,
 
   /// Length of the zoom out when the overview opens; `0` opens it
   /// instantly.
@@ -759,6 +764,7 @@ impl Default for OverviewConfig {
       grid_columns: 5,
       layout: OverviewLayout::default(),
       hot_corner: HotCorner::default(),
+      hot_corner_delay_ms: 300,
       open_duration_ms: 250,
       close_duration_ms: 200,
       switch_duration_ms: 300,

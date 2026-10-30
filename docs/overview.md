@@ -265,10 +265,17 @@ overview:
   # or "grid".
   layout: "activities"
 
-  # Corner of a monitor that opens the overview as the cursor reaches it:
+  # Corner of a monitor that opens the overview as the cursor rests in it:
   # 'none', 'top_left', 'top_right', 'bottom_left' or 'bottom_right'. It
-  # opens once per visit, and not while a mouse button is held.
+  # opens once per visit. A window being dragged there (by its title bar,
+  # or with a tool such as AltSnap) is carried into the overview, following
+  # the cursor until let go of over a workspace or beside a window, as if
+  # dragged in the overview; let go of over nothing, it goes back.
   hot_corner: "none"
+
+  # How long the cursor rests in the hot corner before the overview
+  # opens, in milliseconds; 0 opens it at once.
+  hot_corner_delay_ms: 300
 
   # Most columns of the grid of every workspace; it takes fewer when that
   # shows the cards larger.
