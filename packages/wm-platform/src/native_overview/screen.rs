@@ -889,6 +889,29 @@ impl Screen {
     let zoom = Zoom::close(index, self.openness(), duration_ms);
     self.zoom = Some((zoom, Instant::now()));
 
+    for window in self
+      .scenes
+      .get(index)
+      .into_iter()
+      .flat_map(|scene| &scene.windows)
+    {
+      tracing::debug!(
+        target: crate::OVERVIEW_LOG_TARGET,
+        "  Scene window {:#x}: at {:?}, heading to {:?}, alpha {:.2} \
+         (to {:.2}), opacity {:.2}, on screen at {:?}, frame {:?}, \
+         registered: {}.",
+        window.preview.hwnd,
+        window.rect(),
+        window.target(),
+        window.alpha.value,
+        window.alpha.target,
+        window.preview.opacity,
+        window.preview.screen_rect,
+        window.preview.frame,
+        window.preview.thumbnail.is_some(),
+      );
+    }
+
     let shown_windows = self.scenes.get(index).map(|scene| {
       scene
         .windows
