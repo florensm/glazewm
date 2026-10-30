@@ -291,6 +291,26 @@ impl WindowManager {
     }
   }
 
+  /// Opens the overview once the cursor has rested in the hot corner.
+  pub fn process_hot_corner(
+    &mut self,
+    config: &UserConfig,
+  ) -> anyhow::Result<()> {
+    #[cfg(target_os = "windows")]
+    {
+      let state = &mut self.state;
+      crate::overview::process_hot_corner(state, config)?;
+      if state.pending_sync.has_changes() {
+        platform_sync(state, config)?;
+      }
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    let _ = config;
+
+    Ok(())
+  }
+
   /// Carries out an action taken in the tab bar of stack `stack_id`.
   pub fn process_tab_action(
     &mut self,

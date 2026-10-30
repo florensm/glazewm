@@ -5,7 +5,10 @@
 //! The overview is drawn and driven by `NativeOverview` on a thread of its
 //! own; the WM decides what it shows and carries out what is picked.
 
-use std::collections::HashMap;
+use std::{
+  collections::HashMap,
+  time::{Duration, Instant},
+};
 
 use anyhow::Context;
 use tokio::sync::mpsc;
@@ -52,12 +55,25 @@ pub struct Overview {
   /// says it hid, which can be a zoom after its close.
   is_shown: bool,
 
-  /// Whether the cursor is in the hot corner, which opens the overview
-  /// once per visit.
-  is_in_hot_corner: bool,
+  /// The cursor's visit to the hot corner, which opens the overview once
+  /// per visit.
+  hot_corner: CornerVisit,
 
   /// Where the native overview sends user actions, with their session.
   action_tx: mpsc::UnboundedSender<(u64, OverviewAction)>,
+}
+
+/// Where the cursor is with respect to the hot corner.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum CornerVisit {
+  /// Out of it.
+  Away,
+
+  /// In it, and opening the overview at the instant given if it stays.
+  Resting(Instant),
+
+  /// In it, the overview opened or not to be opened on this visit.
+  Spent,
 }
 
 struct OpenOverview {
@@ -74,7 +90,7 @@ impl Overview {
       open: None,
       closing: None,
       is_shown: false,
-      is_in_hot_corner: false,
+      hot_corner: CornerVisit::Away,
       action_tx,
     }
   }
@@ -87,6 +103,15 @@ impl Overview {
   /// after its close, zooming into the pick.
   pub fn is_shown(&self) -> bool {
     self.is_shown
+  }
+
+  /// When the cursor resting in the hot corner opens the overview, while
+  /// it does.
+  pub fn hot_corner_deadline(&self) -> Option<Instant> {
+    match self.hot_corner {
+      CornerVisit::Resting(due) => Some(due),
+      CornerVisit::Away | CornerVisit::Spent => None,
+    }
   }
 
   /// Takes in that the native overview of `session` hid. Returns whether
@@ -177,25 +202,16 @@ pub fn toggle_overview(
 /// Pixels from a monitor's corner, either way, that count as in it.
 const HOT_CORNER_SIZE: i32 = 2;
 
-/// Opens the overview as the cursor moves into the hot corner of a
-/// monitor, once per visit and not while a button is held (e.g. dragging
-/// a window into the corner).
+/// Notes the cursor moving into or out of the hot corner of a monitor,
+/// opening the overview once it rests there for `hot_corner_delay_ms`.
 pub fn check_hot_corner(
   event: &MouseEvent,
   state: &mut WmState,
   config: &UserConfig,
 ) -> anyhow::Result<()> {
-  let MouseEvent::Move {
-    position,
-    pressed_buttons,
-    ..
-  } = event
-  else {
+  let MouseEvent::Move { position, .. } = event else {
     return Ok(());
   };
-  let is_button_held = [MouseButton::Left, MouseButton::Right]
-    .iter()
-    .any(|button| pressed_buttons.contains(button));
 
   let corner = config.value.overview.hot_corner;
   let is_in = corner != HotCorner::None
@@ -204,9 +220,39 @@ pub fn check_hot_corner(
       is_in_corner(&monitor.native_properties().bounds, corner, position)
     });
 
-  let was_in =
-    std::mem::replace(&mut state.overview.is_in_hot_corner, is_in);
-  if !is_in || was_in || is_button_held || state.overview.is_shown() {
+  let visit = &mut state.overview.hot_corner;
+  match (*visit, is_in) {
+    (_, false) => *visit = CornerVisit::Away,
+    (CornerVisit::Away, true) => {
+      let delay = u64::from(config.value.overview.hot_corner_delay_ms);
+      *visit = CornerVisit::Resting(
+        Instant::now() + Duration::from_millis(delay),
+      );
+    }
+    _ => {}
+  }
+
+  process_hot_corner(state, config)
+}
+
+/// Opens the overview once the cursor has rested in the hot corner long
+/// enough, unless a mouse button is held, e.g. dragging a window there.
+pub fn process_hot_corner(
+  state: &mut WmState,
+  config: &UserConfig,
+) -> anyhow::Result<()> {
+  let CornerVisit::Resting(due) = state.overview.hot_corner else {
+    return Ok(());
+  };
+  if Instant::now() < due {
+    return Ok(());
+  }
+  state.overview.hot_corner = CornerVisit::Spent;
+
+  let is_button_held = [MouseButton::Left, MouseButton::Right]
+    .iter()
+    .any(|button| state.dispatcher.is_mouse_down(button));
+  if is_button_held || state.overview.is_shown() {
     return Ok(());
   }
 

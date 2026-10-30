@@ -664,8 +664,7 @@ pub struct OverviewConfig {
   pub layout: OverviewLayout,
 
   /// Corner of a monitor that opens the overview as the cursor rests in
-  /// it, as `toggle-overview` does. A window dragged there is carried
-  /// into the overview, to drop onto a workspace.
+  /// it, as `toggle-overview` does.
   pub hot_corner: HotCorner,
 
   /// How long the cursor rests in the hot corner before it opens the

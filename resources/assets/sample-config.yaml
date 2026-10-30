@@ -301,8 +301,7 @@ overview:
   layout: "activities"
 
   # Corner that opens the overview as the cursor rests in it: 'none',
-  # 'top_left', 'top_right', 'bottom_left' or 'bottom_right'. A window
-  # dragged there is carried into the overview, to drop on a workspace.
+  # 'top_left', 'top_right', 'bottom_left' or 'bottom_right'.
   hot_corner: "none"
   # How long the cursor rests in the corner first, in ms; 0 is at once.
   hot_corner_delay_ms: 300
