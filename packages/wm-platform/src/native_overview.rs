@@ -768,6 +768,10 @@ impl Overview {
     frame: OverviewFrame,
     layout: OverviewLayoutMode,
   ) {
+    tracing::debug!(
+      target: crate::OVERVIEW_LOG_TARGET,
+      "Overview opening, session {session}."
+    );
     self.close();
     self.session = session;
     self.is_done = false;
@@ -902,9 +906,22 @@ impl Overview {
   /// Hides the overview, keeping its screens for the next open, and tells
   /// the WM it did.
   fn close(&mut self) {
-    if self.frame.take().is_none() {
+    if self.frame.is_none() {
       return;
     }
+    let openness = self
+      .screens
+      .iter()
+      .filter(|screen| screen.is_closing())
+      .map(Screen::openness)
+      .fold(None, |lowest: Option<f32>, openness| {
+        Some(lowest.map_or(openness, |lowest| lowest.min(openness)))
+      });
+    tracing::debug!(
+      target: crate::OVERVIEW_LOG_TARGET,
+      "Overview closed; zoom into the pick at openness {openness:?}."
+    );
+    self.frame = None;
 
     for screen in &mut self.screens {
       screen.close();
