@@ -1049,12 +1049,17 @@ impl Overview {
       .as_ref()
       .map_or(0, |frame| frame.style.close_duration_ms);
     if duration == 0 {
+      tracing::debug!("Overview closing without a zoom for {action:?}.");
       return;
     }
 
     let cards = (0..self.screens.len())
       .map(|index| self.closing_card(index, action))
       .collect::<Vec<_>>();
+    tracing::debug!(
+      "Overview zooming into cards {cards:?} over {duration}ms for \
+       {action:?}."
+    );
 
     // The scenes zoom into the picked workspace's own windows, so they
     // show it first.
@@ -1130,6 +1135,7 @@ impl Overview {
       .pending_pick
       .take_if(|(_, picked)| picked.elapsed() >= PICK_TIMEOUT);
     if let Some((action, _)) = overdue {
+      tracing::debug!("Overview pick timed out waiting for the WM.");
       self.start_closing(&action);
       self.after_input(None);
     }
@@ -1146,6 +1152,7 @@ impl Overview {
         .iter()
         .all(|screen| !screen.is_closing() || screen.is_zoomed_in())
     {
+      tracing::debug!("Overview zoom ended; hiding.");
       self.close();
       return false;
     }
@@ -1243,10 +1250,14 @@ impl Overview {
       );
 
       if is_final && !self.is_done {
-        match action {
-          // Nothing moves for a cancel.
-          OverviewAction::Cancel => self.start_closing(&action),
-          _ => self.pending_pick = Some((action.clone(), Instant::now())),
+        // Nothing moves for a cancel.
+        if action == OverviewAction::Cancel {
+          self.start_closing(&action);
+        } else {
+          tracing::debug!(
+            "Overview picked {action:?}; waiting for the WM."
+          );
+          self.pending_pick = Some((action.clone(), Instant::now()));
         }
       }
       self.send(action);
@@ -1406,6 +1417,26 @@ impl Overview {
     self.after_input(None);
   }
 
+  /// Closes as the WM asks: zooming into the pick it carried out, whose
+  /// windows the frame before shows where they landed, or else at once.
+  fn on_hide(&mut self) {
+    let pending = self.pending_pick.take();
+    tracing::debug!(
+      "Overview hide requested, {:?} after the pick.",
+      pending.as_ref().map(|(_, picked)| picked.elapsed())
+    );
+    if let Some((action, _)) = pending {
+      self.start_closing(&action);
+      self.after_input(None);
+    }
+
+    // A closing overview hides itself once its zoom ends.
+    if !self.is_closing() {
+      tracing::debug!("Overview hiding at once, without a zoom.");
+      self.close();
+    }
+  }
+
   fn cursor(&self) -> windows::core::PCWSTR {
     if self.interaction.drag.is_some() {
       IDC_SIZEALL
@@ -1447,19 +1478,7 @@ impl Overview {
           .copied()
           .unwrap_or_default(),
       ),
-      WM_HIDE_OVERVIEW => {
-        // The WM carried out the pick, and the frame before this shows
-        // where its windows landed, so the zoom goes there.
-        if let Some((action, _)) = self.pending_pick.take() {
-          self.start_closing(&action);
-          self.after_input(None);
-        }
-
-        // A closing overview hides itself once its zoom ends.
-        if !self.is_closing() {
-          self.close();
-        }
-      }
+      WM_HIDE_OVERVIEW => self.on_hide(),
       WM_ICON_READY => {
         for screen in &mut self.screens {
           screen.icons += 1;
@@ -1478,6 +1497,7 @@ impl Overview {
           && !self.is_closing()
           && self.pending_pick.is_none()
         {
+          tracing::debug!("Overview lost the foreground; closing.");
           let was_done = self.is_done;
           self.close();
           if !was_done {

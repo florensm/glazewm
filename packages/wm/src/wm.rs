@@ -164,6 +164,7 @@ impl WindowManager {
       if state.overview.open_session() != Some(session) {
         return Ok(());
       }
+      tracing::debug!("Carrying out overview action {action:?}.");
 
       let focused_workspace = state
         .focused_container()

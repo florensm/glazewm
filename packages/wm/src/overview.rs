@@ -195,7 +195,10 @@ pub fn sync_overview(state: &mut WmState, config: &UserConfig) {
     Some(frame) if is_open => native.update(frame),
     // Its zoom into the picked workspace lands on what the pick brought
     // on screen.
-    Some(frame) => native.hide_on(frame),
+    Some(frame) => {
+      tracing::debug!("Hiding the overview on the pick's frame.");
+      native.hide_on(frame);
+    }
     None => {
       overview.open = None;
       native.hide();

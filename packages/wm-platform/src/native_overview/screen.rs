@@ -800,6 +800,25 @@ impl Screen {
     let zoom = Zoom::close(index, self.openness(), duration_ms);
     self.zoom = Some((zoom, Instant::now()));
 
+    let shown_windows = self.scenes.get(index).map(|scene| {
+      scene
+        .windows
+        .iter()
+        .filter(|window| window.alpha.value > 0.01)
+        .count()
+    });
+    tracing::debug!(
+      "Overview screen zooming into card {index} ({:?}, switching: \
+       {is_switching}) from openness {:.2}; card on screen at {:?}, \
+       scene windows shown: {shown_windows:?}.",
+      self.focus.layout,
+      self.openness(),
+      self
+        .cards
+        .get(index)
+        .map(|card| card.placement().rect(&card.metrics)),
+    );
+
     // The scene shown until now fades out.
     if is_switching {
       self.retarget(false);
