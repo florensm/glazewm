@@ -262,12 +262,11 @@ use wm_common::{
 };
 #[cfg(target_os = "windows")]
 use wm_platform::{
-  lerp_f32, sample_edge_color_async, BackdropOverlayParams,
-  BorderOverlayParams, Color, CornerStyle, DxgiVsyncWaiter,
+  lerp_f32, sample_edge_color_async, Color, CornerStyle, DxgiVsyncWaiter,
   EdgeColorCache, NativeBackdropOverlay, NativeBorderOverlay,
   NativeIrisOverlay, NativeSurrogate, NativeWindowWindowsExt, Overlay,
-  ResizeSession, SessionOptions, StyleBlend, SurrogateBatch,
-  WorkspaceSurrogate, HWND,
+  OverlayParams, ResizeSession, SessionOptions, StyleBlend,
+  SurrogateBatch, WorkspaceSurrogate, HWND,
 };
 use wm_platform::{
   perf::{self, Stage},
@@ -276,16 +275,16 @@ use wm_platform::{
 
 #[cfg(target_os = "windows")]
 use crate::commands::general::{
-  apply_focus_effects, backdrop_overlay_params_for,
-  border_hidden_for_fullscreen, border_overlay_params_for,
+  apply_focus_effects, border_hidden_for_fullscreen, overlay_params_for,
   overlay_z_anchor, resync_settling_overlays, surrogate_effects_for,
-  track_overlay, upsert_live_backdrop_overlay, upsert_overlay,
+  track_overlays, upsert_live_backdrop_overlay,
   upsert_pinned_border_overlay, SyncableOverlay,
 };
 #[cfg(target_os = "windows")]
 use crate::{
   animation::stand_in::{moved_along, StandIn},
   traits::WindowGetters,
+  window_overlays::OverlayPlacement,
 };
 use crate::{
   animation::state::WindowAnimationState,
@@ -1402,12 +1401,11 @@ impl AnimationManager {
         .copied()
         .collect();
 
-      // Batches every closing window's backdrop-overlay reposition this
-      // tick into one `DeferWindowPos` transaction instead of each issuing
-      // its own synchronous `SetWindowPos` -- same reasoning as
-      // `platform_sync`'s per-tick backdrop-overlay sync passes.
-      let mut backdrop_batch = SurrogateBatch::new();
-      let mut border_batch = SurrogateBatch::new();
+      // Batches every closing window's overlay repositions this tick into
+      // one `DeferWindowPos` transaction instead of each issuing its own
+      // synchronous `SetWindowPos` -- same reasoning as `platform_sync`'s
+      // per-tick overlay sync passes.
+      let mut overlay_batch = SurrogateBatch::new();
 
       for id in &away_in_progress {
         let Some((current_rect, opacity)) = state
@@ -1439,28 +1437,22 @@ impl AnimationManager {
         if let Some(session) =
           state.animation_manager.resize_sessions.get(id)
         {
-          let placement =
-            session.surrogate_hwnd().zip(session.current_rect());
+          let placement = session
+            .surrogate_hwnd()
+            .zip(session.current_rect())
+            .map(|(anchor, rect)| OverlayPlacement::new(anchor, rect));
 
-          track_overlay(
-            &mut state.backdrop_overlays,
+          track_overlays(
+            &mut state.window_overlays,
             *id,
-            session.backdrop_overlay_params(),
-            placement.clone(),
-            &mut backdrop_batch,
-          );
-          track_overlay(
-            &mut state.border_overlays,
-            *id,
-            session.border_overlay_params(),
-            placement,
-            &mut border_batch,
+            session.overlay_params(),
+            placement.as_ref(),
+            &mut overlay_batch,
           );
         }
       }
 
-      backdrop_batch.commit();
-      border_batch.commit();
+      overlay_batch.commit();
     }
 
     // Finalize completed close and minimize animations before
@@ -1495,8 +1487,7 @@ impl AnimationManager {
         // Closing and minimizing windows never reach `sync_overlays`'s
         // retain-based cleanup, so the overlays the drive loop above
         // created for them would otherwise linger on screen as ghosts.
-        state.backdrop_overlays.remove(&id);
-        state.border_overlays.remove(&id);
+        state.window_overlays.remove(&id);
 
         match away.transition {
           AwayTransition::Close => {
@@ -1663,8 +1654,10 @@ impl AnimationManager {
               // The ring is parked, or pinned to the viewport, rather
               // than tracking its window, so nothing else would take it
               // off-screen with the thumbnail it was following.
-              if let Some(overlay) =
-                state.border_overlays.get_mut(&window_id)
+              if let Some(overlay) = state
+                .window_overlays
+                .get_mut(&window_id)
+                .and_then(|overlays| overlays.border.as_mut())
               {
                 overlay.hide();
               }
@@ -1673,9 +1666,9 @@ impl AnimationManager {
             }
 
             let is_focused = Some(window_id) == focused_id_for_overlay;
-            let (from_alpha, _, from_backdrop, from_border) =
+            let (from_alpha, _, from_overlays) =
               surrogate_effects_for(entry.was_focused, config);
-            let (to_alpha, _, to_backdrop, to_border) =
+            let (to_alpha, _, to_overlays) =
               surrogate_effects_for(is_focused, config);
 
             // Set before the motion update below, which applies it.
@@ -1693,8 +1686,8 @@ impl AnimationManager {
             );
 
             let border_blend = StyleBlend::between(
-              from_border,
-              to_border,
+              from_overlays.border,
+              to_overlays.border,
               eased_final,
               NativeBorderOverlay::transparent,
             );
@@ -1704,7 +1697,10 @@ impl AnimationManager {
             // opacity follows the window's fade there too.
             if let (Some(blend), Some(overlay)) = (
               border_blend.filter(|_| s.carries_ring()),
-              state.border_overlays.get_mut(&window_id),
+              state
+                .window_overlays
+                .get_mut(&window_id)
+                .and_then(|overlays| overlays.border.as_mut()),
             ) {
               overlay.apply_blend(blend);
               // A width change resized the overlay.
@@ -1766,13 +1762,13 @@ impl AnimationManager {
               match s.live_frame() {
                 Some(live) => {
                   if let Some(blend) = StyleBlend::between(
-                    from_backdrop,
-                    to_backdrop,
+                    from_overlays.backdrop,
+                    to_overlays.backdrop,
                     eased_final,
                     NativeBackdropOverlay::transparent,
                   ) {
                     upsert_live_backdrop_overlay(
-                      &mut state.backdrop_overlays,
+                      &mut state.window_overlays,
                       window_id,
                       blend,
                       live,
@@ -1782,8 +1778,10 @@ impl AnimationManager {
                   }
                 }
                 None => {
-                  if let Some(overlay) =
-                    state.backdrop_overlays.get_mut(&window_id)
+                  if let Some(overlay) = state
+                    .window_overlays
+                    .get_mut(&window_id)
+                    .and_then(|overlays| overlays.backdrop.as_mut())
                   {
                     overlay.hide();
                   }
@@ -1812,7 +1810,7 @@ impl AnimationManager {
                   blend.to.opacity *= frac;
 
                   upsert_pinned_border_overlay(
-                    &mut state.border_overlays,
+                    &mut state.window_overlays,
                     window_id,
                     blend,
                     rect,
@@ -1822,8 +1820,10 @@ impl AnimationManager {
                   );
                 }
                 _ => {
-                  if let Some(overlay) =
-                    state.border_overlays.get_mut(&window_id)
+                  if let Some(overlay) = state
+                    .window_overlays
+                    .get_mut(&window_id)
+                    .and_then(|overlays| overlays.border.as_mut())
                   {
                     overlay.hide();
                   }
@@ -1984,15 +1984,13 @@ impl AnimationManager {
         }
       }
 
-      // Keep the backdrop overlay tracking each fading session's own
-      // surrogate through the whole `pending_session_cleanup` tail,
-      // exactly as it did through the active animation -- since the
-      // overlay is never hidden to begin with, there's no
-      // `pending_ws_cleanup`-style pre-show/flush gap to plug here.
-      // Batched into one `DeferWindowPos` transaction, same reasoning as
-      // the other backdrop-overlay sync loops.
+      // Keep the overlays tracking each fading session's own surrogate
+      // through the whole `pending_session_cleanup` tail, exactly as they
+      // did through the active animation -- since they are never hidden
+      // to begin with, there's no `pending_ws_cleanup`-style
+      // pre-show/flush gap to plug here. Batched into one `DeferWindowPos`
+      // transaction, same reasoning as the other overlay sync loops.
       let mut fade_tail_batch = SurrogateBatch::new();
-      let mut border_fade_tail_batch = SurrogateBatch::new();
       for (id, _, session) in
         &state.animation_manager.pending_session_cleanup
       {
@@ -2013,28 +2011,26 @@ impl AnimationManager {
         // what the overlay sits behind.
         let anchor =
           session.window_hwnd().or_else(|| session.surrogate_hwnd());
-        let rect = session.current_rect();
-        let border_rect = rect
-          .as_ref()
-          .map(|rect| crate::tab_bars::with_tab_bar_of(state, *id, rect));
+        let placement =
+          anchor.zip(session.current_rect()).map(|(anchor, rect)| {
+            OverlayPlacement {
+              anchor,
+              border_rect: crate::tab_bars::with_tab_bar_of(
+                state, *id, &rect,
+              ),
+              rect,
+            }
+          });
 
-        track_overlay(
-          &mut state.backdrop_overlays,
+        track_overlays(
+          &mut state.window_overlays,
           *id,
-          session.backdrop_overlay_params(),
-          anchor.zip(rect),
+          session.overlay_params(),
+          placement.as_ref(),
           &mut fade_tail_batch,
-        );
-        track_overlay(
-          &mut state.border_overlays,
-          *id,
-          session.border_overlay_params(),
-          anchor.zip(border_rect),
-          &mut border_fade_tail_batch,
         );
       }
       fade_tail_batch.commit();
-      border_fade_tail_batch.commit();
 
       // A session entering cleanup needs one composition between
       // `platform_sync`'s uncloak and the first fade step, otherwise the
@@ -2099,7 +2095,6 @@ impl AnimationManager {
 
       if !finishing_sessions.is_empty() {
         let mut finishing_batch = SurrogateBatch::new();
-        let mut border_finishing_batch = SurrogateBatch::new();
         for (id, rect) in &finishing_sessions {
           let Some(container) = state.container_by_id(*id) else {
             tracing::debug!("finishing_sessions: no container for {id}.");
@@ -2112,24 +2107,18 @@ impl AnimationManager {
             continue;
           };
           let anchor = overlay_z_anchor(&window);
-          if let Some(overlay) = state.backdrop_overlays.get_mut(id) {
+          if let Some(overlays) = state.window_overlays.get_mut(id) {
             tracing::debug!(
               "finishing_sessions: re-anchoring {id} to {:?} at {:?}.",
               anchor,
               rect,
             );
-            overlay.defer_rect(&mut finishing_batch, rect, anchor);
+            overlays.defer_rect(&mut finishing_batch, rect, anchor);
           } else {
-            tracing::debug!(
-              "finishing_sessions: no backdrop overlay for {id}."
-            );
-          }
-          if let Some(overlay) = state.border_overlays.get_mut(id) {
-            overlay.defer_rect(&mut border_finishing_batch, rect, anchor);
+            tracing::debug!("finishing_sessions: no overlays for {id}.");
           }
         }
         finishing_batch.commit();
-        border_finishing_batch.commit();
         wm_platform::dwm_flush();
       }
 
@@ -2260,61 +2249,45 @@ impl AnimationManager {
       let focused_id = state.focused_container().map(|c| c.id());
       let mut pre_shown = false;
       let mut pre_show_batch = SurrogateBatch::new();
-      let mut border_pre_show_batch = SurrogateBatch::new();
 
       // Covers both backdrop and border overlays despite the name -- see
       // the comment above where this is built.
       for (id, rect, anchor) in &incoming_backdrop_windows {
         let is_focused = Some(*id) == focused_id;
+        let mut params = overlay_params_for(is_focused, config);
 
-        if let Some(params) =
-          backdrop_overlay_params_for(is_focused, config)
-        {
-          upsert_overlay(
-            &mut state.backdrop_overlays,
-            *id,
-            params,
-            rect,
-            *anchor,
-            &mut pre_show_batch,
-          );
-          pre_shown = true;
+        if state.window_by_id(*id).is_some_and(|window| {
+          border_hidden_for_fullscreen(&window, config)
+        }) {
+          params.border = None;
         }
 
-        let border_params = border_overlay_params_for(is_focused, config)
-          .filter(|_| {
-            !state.window_by_id(*id).is_some_and(|window| {
-              border_hidden_for_fullscreen(&window, config)
-            })
-          });
+        pre_shown |= params.backdrop.is_some() || params.border.is_some();
 
         // A ring parked for the switch is revealed under its identical
         // copy here, which goes with the surrogate after two
-        // flushed frames. One the window doesn't end with goes
-        // without being revealed.
-        let Some(params) = border_params else {
+        // flushed frames.
+        track_overlays(
+          &mut state.window_overlays,
+          *id,
+          params,
+          Some(&OverlayPlacement::new(*anchor, rect.clone())),
+          &mut pre_show_batch,
+        );
+
+        // One the window doesn't end with goes without being revealed.
+        if params.border.is_none() {
           if let Some(overlay) = state
-            .border_overlays
+            .window_overlays
             .get_mut(id)
+            .and_then(|overlays| overlays.border.as_mut())
             .filter(|overlay| overlay.is_parked())
           {
             overlay.hide();
           }
-          continue;
-        };
-
-        upsert_overlay(
-          &mut state.border_overlays,
-          *id,
-          params,
-          rect,
-          *anchor,
-          &mut border_pre_show_batch,
-        );
-        pre_shown = true;
+        }
       }
       pre_show_batch.commit();
-      border_pre_show_batch.commit();
 
       if pre_shown {
         wm_platform::dwm_flush();
@@ -2336,32 +2309,33 @@ impl AnimationManager {
       // correction as a side effect; unfocused siblings get no such
       // incidental save).
       let mut final_anchor_batch = SurrogateBatch::new();
-      let mut border_final_anchor_batch = SurrogateBatch::new();
       for (id, rect, _) in &incoming_backdrop_windows {
         let Some(window) = state.window_by_id(*id) else {
+          continue;
+        };
+        let Some(overlays) = state.window_overlays.get_mut(id) else {
           continue;
         };
         // Only shown ones: placing one would show it, e.g. the ring of a
         // window whose border is off now that it is unfocused, for the
         // frames until the follow-up sync hid it again.
         let anchor = overlay_z_anchor(&window);
-        if let Some(overlay) = state
-          .backdrop_overlays
-          .get_mut(id)
+        if let Some(overlay) = overlays
+          .backdrop
+          .as_mut()
           .filter(|overlay| overlay.is_visible())
         {
           overlay.defer_rect(&mut final_anchor_batch, rect, anchor);
         }
-        if let Some(overlay) = state
-          .border_overlays
-          .get_mut(id)
+        if let Some(overlay) = overlays
+          .border
+          .as_mut()
           .filter(|overlay| overlay.is_visible())
         {
-          overlay.defer_rect(&mut border_final_anchor_batch, rect, anchor);
+          overlay.defer_rect(&mut final_anchor_batch, rect, anchor);
         }
       }
       final_anchor_batch.commit();
-      border_final_anchor_batch.commit();
       if !incoming_backdrop_windows.is_empty() {
         wm_platform::dwm_flush();
       }
@@ -2688,16 +2662,8 @@ impl AnimationManager {
     // so it matches the real window's rounded corners during the
     // animation.
     #[cfg(target_os = "windows")] corner_style: CornerStyle,
-    // Tint/blur-amount/corner-radius/opacity/saturation for the
-    // backdrop-overlay tracker, or `None` when no backdrop is configured.
-    #[cfg(target_os = "windows")] backdrop_overlay: Option<
-      BackdropOverlayParams,
-    >,
-    // Color/width/corner-radius/opacity for the border-overlay tracker,
-    // or `None` when the border effect is not configured.
-    #[cfg(target_os = "windows")] border_overlay: Option<
-      BorderOverlayParams,
-    >,
+    // Params for the overlay trackers following the surrogate.
+    #[cfg(target_os = "windows")] overlays: OverlayParams,
     config: &UserConfig,
   ) -> (AnimationPositionResult, Option<OpacityValue>) {
     let existing_animation = self.get_animation(&window_id).cloned();
@@ -2808,8 +2774,7 @@ impl AnimationManager {
                   corner_style,
                   place_at_top: true,
                   edge_color: cached_edge_color,
-                  backdrop_overlay,
-                  border_overlay,
+                  overlays,
                   stretch,
                 },
                 warm_surrogate,
@@ -2824,8 +2789,7 @@ impl AnimationManager {
                 corner_style,
                 place_at_top: true,
                 edge_color: cached_edge_color,
-                backdrop_overlay,
-                border_overlay,
+                overlays,
                 stretch,
               },
             ),
@@ -3504,8 +3468,7 @@ impl AnimationManager {
     monitor_rect: Rect,
     effect_opacity: u8,
     corner_style: CornerStyle,
-    backdrop_overlay: Option<BackdropOverlayParams>,
-    border_overlay: Option<BorderOverlayParams>,
+    overlays: OverlayParams,
     params: &WindowTransitionParams,
     native_window: &NativeWindow,
   ) {
@@ -3587,8 +3550,7 @@ impl AnimationManager {
         // No cache for open animations: the window is new, so no prior
         // sample exists.
         edge_color: None,
-        backdrop_overlay,
-        border_overlay,
+        overlays,
         stretch: false,
       },
     ) {
@@ -3652,8 +3614,7 @@ impl AnimationManager {
     current_rect: &Rect,
     effect_opacity: u8,
     corner_style: CornerStyle,
-    backdrop_overlay: Option<BackdropOverlayParams>,
-    border_overlay: Option<BorderOverlayParams>,
+    overlays: OverlayParams,
     params: &WindowTransitionParams,
     native_window: &NativeWindow,
   ) {
@@ -3708,8 +3669,7 @@ impl AnimationManager {
         // Reuse a cached color when the window was recently animated;
         // otherwise sample — the window is still on screen.
         edge_color: self.cached_edge_color(native_window.hwnd().0),
-        backdrop_overlay,
-        border_overlay,
+        overlays,
         stretch: false,
       },
     ) {

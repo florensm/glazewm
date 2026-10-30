@@ -419,8 +419,7 @@ impl WindowManager {
           // Dropped so that a late finish can't close the window again
           // after it has been put back.
           state.animation_manager.remove_animation(&id);
-          state.backdrop_overlays.remove(&id);
-          state.border_overlays.remove(&id);
+          state.window_overlays.remove(&id);
 
           if let Err(err) = NativeWindow::from_handle(handle).close() {
             warn!("Failed to close window: {:?}", err);

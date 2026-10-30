@@ -11,12 +11,10 @@ use wm_platform::{
 };
 #[cfg(target_os = "windows")]
 use wm_platform::{
-  NativeBackdropOverlay, NativeBorderOverlay, NativeDropIndicator,
-  NativeStackTabBar, NativeWindowWindowsExt, OpacityValue,
+  NativeDropIndicator, NativeStackTabBar, NativeWindowWindowsExt,
+  OpacityValue,
 };
 
-#[cfg(target_os = "windows")]
-use crate::overview::Overview;
 use crate::{
   animation::AnimationManager,
   auto_stack::AutoStackState,
@@ -34,6 +32,8 @@ use crate::{
   traits::{CommonGetters, PositionGetters, WindowGetters},
   user_config::UserConfig,
 };
+#[cfg(target_os = "windows")]
+use crate::{overview::Overview, window_overlays::WindowOverlays};
 
 pub struct WmState {
   /// Root node of the container tree. Monitors are the children of the
@@ -97,23 +97,15 @@ pub struct WmState {
   /// Whether the OS focused window is the same as the WM focused window.
   pub is_focus_synced: bool,
 
-  /// Backdrop overlay windows keyed by managed-window UUID.
+  /// Backdrop and border overlay windows keyed by managed-window UUID.
   ///
   /// Each overlay is a `WS_POPUP` window rooting a
   /// `Windows.UI.Composition` visual tree, positioned directly behind its
-  /// managed window in z-order and flush with that window's DWM frame
-  /// rect. It renders a crop of the pre-blurred desktop wallpaper, so a
-  /// window left semi-transparent by the `transparency` effect reads as
-  /// frosted glass over it.
+  /// managed window in z-order. Removing a window's entry destroys both.
+  /// An entry can be left with neither after a failed creation, until
+  /// `sync_overlays` drops it.
   #[cfg(target_os = "windows")]
-  pub backdrop_overlays: HashMap<Uuid, NativeBackdropOverlay>,
-
-  /// Border overlay windows keyed by managed-window UUID -- a persistent,
-  /// self-drawn stand-in for the OS's `DWMWA_BORDER_COLOR`, which isn't
-  /// carried along by DWM thumbnails and so vanishes during transitions.
-  /// See `NativeBorderOverlay`'s doc comment.
-  #[cfg(target_os = "windows")]
-  pub border_overlays: HashMap<Uuid, NativeBorderOverlay>,
+  pub window_overlays: HashMap<Uuid, WindowOverlays>,
 
   /// Highlight of where a dragged window will land, created on the first
   /// drag that has somewhere to land.
@@ -176,9 +168,7 @@ impl WmState {
       animation_manager: AnimationManager::new(animation_tick_tx),
       window_target_positions: HashMap::new(),
       #[cfg(target_os = "windows")]
-      backdrop_overlays: HashMap::new(),
-      #[cfg(target_os = "windows")]
-      border_overlays: HashMap::new(),
+      window_overlays: HashMap::new(),
       #[cfg(target_os = "windows")]
       drop_indicator: None,
       #[cfg(target_os = "windows")]

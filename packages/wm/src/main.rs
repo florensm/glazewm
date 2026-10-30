@@ -62,6 +62,8 @@ mod sys_tray;
 mod tab_bars;
 mod traits;
 mod user_config;
+#[cfg(target_os = "windows")]
+mod window_overlays;
 mod wm;
 mod wm_state;
 

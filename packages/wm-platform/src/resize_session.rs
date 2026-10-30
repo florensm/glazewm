@@ -94,9 +94,8 @@ fn process_name_for_warning(hwnd: HWND) -> Option<String> {
 
 use crate::{
   discard_bits_if_resized, native_surrogate::to_logical,
-  platform_impl::NativeWindow, window_class, BackdropOverlayParams,
-  BorderOverlayParams, Color, CornerStyle, NativeSurrogate, Rect,
-  SurrogateBatch,
+  platform_impl::NativeWindow, window_class, Color, CornerStyle,
+  NativeSurrogate, OverlayParams, Rect, SurrogateBatch,
 };
 
 /// Options for [`ResizeSession::begin`].
@@ -120,19 +119,12 @@ pub struct SessionOptions {
   /// surrogates. Pass `false` for close surrogates, which should remain
   /// below resize and open surrogates that fill the vacated space.
   pub place_at_top: bool,
-  /// Tint/blur-amount/corner-radius/opacity/saturation for the backdrop
-  /// overlay tracking this session, or `None` when no backdrop is
-  /// configured. Snapshotted rather than applied directly to the
-  /// surrogate -- the actual blur comes from the external
-  /// `NativeBackdropOverlay` tracker in
-  /// `AnimationManager`/`platform_sync`, which needs these values even
-  /// after the window is detached from the layout tree (close
-  /// animations).
-  pub backdrop_overlay: Option<BackdropOverlayParams>,
-  /// Color/width/corner-radius/opacity for the border overlay tracking
-  /// this session, or `None` when the border effect isn't configured.
-  /// Same snapshot rationale as `backdrop_overlay`.
-  pub border_overlay: Option<BorderOverlayParams>,
+  /// Params of the backdrop and border overlays tracking this session.
+  /// Snapshotted rather than applied directly to the surrogate -- the
+  /// overlays are external windows tracked by `AnimationManager`/
+  /// `platform_sync`, which need these values even after the window is
+  /// detached from the layout tree (close animations).
+  pub overlays: OverlayParams,
   /// Scale the content to the animated rect instead of revealing or
   /// clipping it, with no gap fill. See [`NativeSurrogate::set_stretch`].
   pub stretch: bool,
@@ -212,18 +204,17 @@ pub struct ResizeSession {
   /// 1.0 = full surrogate). Defaults to `1.0` (fully shown) so non-`zoom`
   /// sessions -- which never call `update_zoom_fade` -- read as unscaled.
   ///
-  /// The backdrop overlay tracks this session's surrogate at a fixed
-  /// full-size `current_rect` throughout a zoom animation (see its doc
-  /// comment) since only the thumbnail's `rcDestination`, not the
-  /// surrogate window itself, actually animates in size -- so without
-  /// this, the overlay would appear at full opacity from the very first
-  /// frame while the window it's supposedly attached to is still a speck
-  /// at the center. Scaling the overlay's own opacity by this value in
-  /// [`backdrop_overlay_params`] instead fades it in/out in lockstep with
-  /// the thumbnail's zoom.
+  /// The overlays track this session's surrogate at a fixed full-size
+  /// `current_rect` throughout a zoom animation (see its doc comment)
+  /// since only the thumbnail's `rcDestination`, not the surrogate window
+  /// itself, actually animates in size -- so without this, they would
+  /// appear at full opacity from the very first frame while the window
+  /// they're supposedly attached to is still a speck at the center.
+  /// Scaling their own opacity by this value in [`overlay_params`]
+  /// instead fades them in/out in lockstep with the thumbnail's zoom.
   ///
   /// [`update_zoom_fade`]: ResizeSession::update_zoom_fade
-  /// [`backdrop_overlay_params`]: ResizeSession::backdrop_overlay_params
+  /// [`overlay_params`]: ResizeSession::overlay_params
   zoom_progress: f32,
   /// `true` once the real window has been repositioned at the current
   /// `target_rect` (at session start for growing curtain-reveals, or
@@ -262,18 +253,11 @@ pub struct ResizeSession {
   /// Consumed by `defer_update` before `sync_registration` so the short-
   /// circuit check still works on the same tick.
   pending_thumbnail_dims: Option<(i32, i32)>,
-  /// Tint/blur-amount/corner-radius/opacity/saturation for the backdrop
-  /// overlay tracking this session, snapshotted from
-  /// `SessionOptions::backdrop_overlay`. See [`backdrop_overlay_params`].
+  /// Params of the overlays tracking this session, snapshotted from
+  /// `SessionOptions::overlays`. See [`overlay_params`].
   ///
-  /// [`backdrop_overlay_params`]: ResizeSession::backdrop_overlay_params
-  backdrop_overlay: Option<BackdropOverlayParams>,
-  /// Color/width/corner-radius/opacity for the border overlay tracking
-  /// this session, snapshotted from `SessionOptions::border_overlay`.
-  /// See [`border_overlay_params`].
-  ///
-  /// [`border_overlay_params`]: ResizeSession::border_overlay_params
-  border_overlay: Option<BorderOverlayParams>,
+  /// [`overlay_params`]: ResizeSession::overlay_params
+  overlays: OverlayParams,
   /// Live logical (border-deflated) on-screen rect for the current frame,
   /// mirroring `WorkspaceSurrogate::current_rect`. `None` while there's
   /// nothing to show (no surrogate, or fully clipped off-screen). Ignored
@@ -459,8 +443,7 @@ impl ResizeSession {
       commit_poll_parity: false,
       session_cloaked: false,
       pending_thumbnail_dims: None,
-      backdrop_overlay: options.backdrop_overlay,
-      border_overlay: options.border_overlay,
+      overlays: options.overlays,
       current_rect: None,
       commit_confirmed: false,
       commit_started_at: None,
@@ -470,36 +453,20 @@ impl ResizeSession {
     session
   }
 
-  /// Returns the tint/blur-amount/corner-radius/opacity/saturation for the
-  /// backdrop-overlay tracker in `AnimationManager`, or `None` when no
-  /// backdrop is configured for this window.
+  /// Returns the params for the overlay trackers in `AnimationManager`
+  /// and `platform_sync`.
   ///
-  /// For `zoom` sessions, `opacity` is scaled by `zoom_progress` so the
-  /// overlay fades in/out alongside the thumbnail's own zoom instead of
-  /// sitting at full opacity for the whole animation -- see
-  /// `zoom_progress`'s doc comment.
+  /// For `zoom` sessions, both overlays' opacity is scaled by
+  /// `zoom_progress` so they fade in/out alongside the thumbnail's own
+  /// zoom instead of sitting at full opacity for the whole animation --
+  /// see `zoom_progress`'s doc comment.
   #[must_use]
-  pub fn backdrop_overlay_params(&self) -> Option<BackdropOverlayParams> {
-    let mut params = self.backdrop_overlay?;
+  pub fn overlay_params(&self) -> OverlayParams {
     if self.zoom {
-      params.opacity *= self.zoom_progress;
+      self.overlays.with_opacity_scaled(self.zoom_progress)
+    } else {
+      self.overlays
     }
-    Some(params)
-  }
-
-  /// Returns the color/width/corner-radius/opacity for the border-overlay
-  /// tracker in `AnimationManager`, or `None` when the border effect isn't
-  /// configured for this window. Mirrors [`backdrop_overlay_params`]
-  /// exactly, including the `zoom_progress` opacity scaling.
-  ///
-  /// [`backdrop_overlay_params`]: ResizeSession::backdrop_overlay_params
-  #[must_use]
-  pub fn border_overlay_params(&self) -> Option<BorderOverlayParams> {
-    let mut params = self.border_overlay?;
-    if self.zoom {
-      params.opacity *= self.zoom_progress;
-    }
-    Some(params)
   }
 
   /// `HWND` of this session's surrogate, or `None` when surrogate creation

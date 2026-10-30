@@ -91,7 +91,7 @@ pub(crate) fn animate_away(
     .focused_container()
     .is_some_and(|focused| focused.id() == window.id());
 
-  let (effect_opacity, corner_style, backdrop_overlay, border_overlay) =
+  let (effect_opacity, corner_style, overlays) =
     crate::commands::general::surrogate_effects_for(is_focused, config);
 
   state.animation_manager.start_away_animation(
@@ -100,8 +100,7 @@ pub(crate) fn animate_away(
     &rect,
     effect_opacity,
     corner_style,
-    backdrop_overlay,
-    border_overlay,
+    overlays,
     &params,
     &window.native(),
   );
