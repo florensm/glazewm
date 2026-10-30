@@ -300,6 +300,10 @@ overview:
   # 'activities', 'stage', 'carousel' or 'grid'. Tab cycles them while open.
   layout: "activities"
 
+  # Corner that opens the overview as the cursor reaches it: 'none',
+  # 'top_left', 'top_right', 'bottom_left' or 'bottom_right'.
+  hot_corner: "none"
+
   # Most columns of the grid layout.
   grid_columns: 5
 

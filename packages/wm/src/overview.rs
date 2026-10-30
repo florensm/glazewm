@@ -10,12 +10,15 @@ use std::collections::HashMap;
 use anyhow::Context;
 use tokio::sync::mpsc;
 use uuid::Uuid;
-use wm_common::{Layout, WindowState, WorkspaceConfig};
+use wm_common::{
+  HotCorner, Layout, OverviewLayout, WindowState, WorkspaceConfig,
+};
 use wm_platform::{
-  BackdropOverlayParams, BorderOverlayParams, Color, NativeBorderOverlay,
-  NativeOverview, OverviewAction, OverviewFrame, OverviewLayoutMode,
-  OverviewOverlay, OverviewOverlayKind, OverviewScreen, OverviewStyle,
-  OverviewWindow, OverviewWorkspace, Rect, TabFrame,
+  BackdropOverlayParams, BorderOverlayParams, Color, MouseButton,
+  MouseEvent, NativeBorderOverlay, NativeOverview, OverviewAction,
+  OverviewFrame, OverviewLayoutMode, OverviewOverlay, OverviewOverlayKind,
+  OverviewScreen, OverviewStyle, OverviewWindow, OverviewWorkspace, Point,
+  Rect, TabFrame,
 };
 
 use crate::{
@@ -49,6 +52,10 @@ pub struct Overview {
   /// says it hid, which can be a zoom after its close.
   is_shown: bool,
 
+  /// Whether the cursor is in the hot corner, which opens the overview
+  /// once per visit.
+  is_in_hot_corner: bool,
+
   /// Where the native overview sends user actions, with their session.
   action_tx: mpsc::UnboundedSender<(u64, OverviewAction)>,
 }
@@ -67,6 +74,7 @@ impl Overview {
       open: None,
       closing: None,
       is_shown: false,
+      is_in_hot_corner: false,
       action_tx,
     }
   }
@@ -164,6 +172,84 @@ pub fn toggle_overview(
   state.overview.closing = None;
   state.overview.is_shown = true;
   Ok(())
+}
+
+/// Pixels from a monitor's corner, either way, that count as in it.
+const HOT_CORNER_SIZE: i32 = 2;
+
+/// Opens the overview as the cursor moves into the hot corner of a
+/// monitor, once per visit and not while a button is held (e.g. dragging
+/// a window into the corner).
+pub fn check_hot_corner(
+  event: &MouseEvent,
+  state: &mut WmState,
+  config: &UserConfig,
+) -> anyhow::Result<()> {
+  let MouseEvent::Move {
+    position,
+    pressed_buttons,
+    ..
+  } = event
+  else {
+    return Ok(());
+  };
+  let is_button_held = [MouseButton::Left, MouseButton::Right]
+    .iter()
+    .any(|button| pressed_buttons.contains(button));
+
+  let corner = config.value.overview.hot_corner;
+  let is_in = corner != HotCorner::None
+    && !state.is_paused
+    && state.monitors().iter().any(|monitor| {
+      is_in_corner(&monitor.native_properties().bounds, corner, position)
+    });
+
+  let was_in =
+    std::mem::replace(&mut state.overview.is_in_hot_corner, is_in);
+  if !is_in || was_in || is_button_held || state.overview.is_shown() {
+    return Ok(());
+  }
+
+  let layout = to_layout_mode(config.value.overview.layout);
+  toggle_overview(state, config, layout)
+}
+
+/// Whether `position` is in `corner` of `bounds`.
+fn is_in_corner(
+  bounds: &Rect,
+  corner: HotCorner,
+  position: &Point,
+) -> bool {
+  let near = |edge: i32, at: i32| (at - edge).abs() < HOT_CORNER_SIZE;
+  let (left, top) = (bounds.left, bounds.top);
+  let (right, bottom) = (bounds.right - 1, bounds.bottom - 1);
+
+  bounds.contains_point(position)
+    && match corner {
+      HotCorner::None => false,
+      HotCorner::TopLeft => {
+        near(left, position.x) && near(top, position.y)
+      }
+      HotCorner::TopRight => {
+        near(right, position.x) && near(top, position.y)
+      }
+      HotCorner::BottomLeft => {
+        near(left, position.x) && near(bottom, position.y)
+      }
+      HotCorner::BottomRight => {
+        near(right, position.x) && near(bottom, position.y)
+      }
+    }
+}
+
+/// The native overview's layout for the config's `layout`.
+pub fn to_layout_mode(layout: OverviewLayout) -> OverviewLayoutMode {
+  match layout {
+    OverviewLayout::Activities => OverviewLayoutMode::Activities,
+    OverviewLayout::Stage => OverviewLayoutMode::Stage,
+    OverviewLayout::Carousel => OverviewLayoutMode::Carousel,
+    OverviewLayout::Grid => OverviewLayoutMode::Grid,
+  }
 }
 
 /// Brings the native overview in line with the WM's state: hides it once
@@ -1029,6 +1115,33 @@ mod tests {
       windows.iter().all(|window| window.overlays.is_empty()),
       "the WM draws no overlays for them"
     );
+  }
+
+  #[test]
+  fn hot_corners_are_the_monitors_own_corners() {
+    use wm_common::HotCorner;
+    use wm_platform::Point;
+
+    use super::is_in_corner;
+
+    let bounds = Rect::from_xy(1920, 0, 1920, 1080);
+    let at = |x, y| Point { x, y };
+
+    assert!(is_in_corner(&bounds, HotCorner::TopLeft, &at(1920, 0)));
+    assert!(is_in_corner(&bounds, HotCorner::TopLeft, &at(1921, 1)));
+    assert!(!is_in_corner(&bounds, HotCorner::TopLeft, &at(1925, 0)));
+    assert!(!is_in_corner(&bounds, HotCorner::TopLeft, &at(1919, 0)));
+    assert!(is_in_corner(
+      &bounds,
+      HotCorner::BottomRight,
+      &at(3839, 1079)
+    ));
+    assert!(!is_in_corner(
+      &bounds,
+      HotCorner::BottomRight,
+      &at(3840, 1079)
+    ));
+    assert!(!is_in_corner(&bounds, HotCorner::None, &at(1920, 0)));
   }
 
   #[test]

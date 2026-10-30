@@ -516,6 +516,8 @@ impl WindowManager {
         return Ok(());
       }
       PlatformEvent::Mouse(event) => {
+        #[cfg(target_os = "windows")]
+        crate::overview::check_hot_corner(&event, state, config)?;
         handle_mouse_move(&event, state, config)
       }
       PlatformEvent::Window(window_event) => match window_event {
@@ -1225,20 +1227,7 @@ impl WindowManager {
         crate::overview::toggle_overview(
           state,
           config,
-          match layout {
-            wm_common::OverviewLayout::Activities => {
-              wm_platform::OverviewLayoutMode::Activities
-            }
-            wm_common::OverviewLayout::Stage => {
-              wm_platform::OverviewLayoutMode::Stage
-            }
-            wm_common::OverviewLayout::Carousel => {
-              wm_platform::OverviewLayoutMode::Carousel
-            }
-            wm_common::OverviewLayout::Grid => {
-              wm_platform::OverviewLayoutMode::Grid
-            }
-          },
+          crate::overview::to_layout_mode(layout),
         )?;
 
         #[cfg(not(target_os = "windows"))]

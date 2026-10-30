@@ -263,6 +263,11 @@ overview:
   # or "grid".
   layout: "activities"
 
+  # Corner of a monitor that opens the overview as the cursor reaches it:
+  # 'none', 'top_left', 'top_right', 'bottom_left' or 'bottom_right'. It
+  # opens once per visit, and not while a mouse button is held.
+  hot_corner: "none"
+
   # Most columns of the grid of every workspace; it takes fewer when that
   # shows the cards larger.
   grid_columns: 5

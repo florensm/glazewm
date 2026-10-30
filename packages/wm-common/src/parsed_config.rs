@@ -663,6 +663,10 @@ pub struct OverviewConfig {
   /// Layout `toggle-overview` opens on, unless it names one.
   pub layout: OverviewLayout,
 
+  /// Corner of a monitor that opens the overview as the cursor reaches
+  /// it, as `toggle-overview` does.
+  pub hot_corner: HotCorner,
+
   /// Length of the zoom out when the overview opens; `0` opens it
   /// instantly.
   pub open_duration_ms: u32,
@@ -718,6 +722,21 @@ pub enum OverviewLayout {
   Grid,
 }
 
+/// Corner of a monitor that opens the overview.
+#[derive(
+  Clone, Copy, Debug, Default, Deserialize, PartialEq, Eq, Serialize,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum HotCorner {
+  /// No corner opens it.
+  #[default]
+  None,
+  TopLeft,
+  TopRight,
+  BottomLeft,
+  BottomRight,
+}
+
 impl Default for OverviewConfig {
   fn default() -> Self {
     // `0xRRGGBBAA`, as in the config.
@@ -739,6 +758,7 @@ impl Default for OverviewConfig {
       font_family: "Segoe UI Variable Text".to_string(),
       grid_columns: 5,
       layout: OverviewLayout::default(),
+      hot_corner: HotCorner::default(),
       open_duration_ms: 250,
       close_duration_ms: 200,
       switch_duration_ms: 300,
