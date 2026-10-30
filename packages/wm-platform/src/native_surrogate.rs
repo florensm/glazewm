@@ -5,10 +5,9 @@ use windows::{
   Win32::{
     Foundation::{HWND, RECT},
     UI::WindowsAndMessaging::{
-      BeginDeferWindowPos, DeferWindowPos, DestroyWindow,
-      EndDeferWindowPos, GetClassNameW, SetWindowPos,
-      SET_WINDOW_POS_FLAGS, SWP_NOACTIVATE, SWP_NOCOPYBITS, SWP_NOMOVE,
-      SWP_NOSENDCHANGING, SWP_NOSIZE, SWP_NOZORDER, WS_EX_NOACTIVATE,
+      DestroyWindow, GetClassNameW, SetWindowPos, SET_WINDOW_POS_FLAGS,
+      SWP_NOACTIVATE, SWP_NOCOPYBITS, SWP_NOMOVE, SWP_NOSENDCHANGING,
+      SWP_NOSIZE, SWP_NOZORDER, WS_EX_NOACTIVATE,
       WS_EX_NOREDIRECTIONBITMAP, WS_EX_TOOLWINDOW, WS_EX_TRANSPARENT,
     },
   },
@@ -18,7 +17,8 @@ use crate::{
   companion::Companion,
   dwm_thumbnail::{clip_rects, Look, Thumbnail},
   platform_impl::{self, composition::SurrogateFill},
-  window_class, Color, CornerStyle, Rect,
+  window_class::{self, DeferredPositions},
+  Color, CornerStyle, Rect,
 };
 
 const CLASS_NAME: PCWSTR = w!("GlazeWM_Surrogate");
@@ -322,51 +322,19 @@ impl SurrogateBatch {
 
     let _scope = crate::perf::scope(crate::perf::Stage::BatchCommit);
 
-    // SAFETY: All handles refer to surrogate windows owned by this
-    // process; a stale handle only causes the transaction to fail,
-    // which is handled by the fallback below.
-    #[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
-    let deferred = unsafe {
-      let Ok(mut hdwp) = BeginDeferWindowPos(self.entries.len() as i32)
-      else {
-        return Self::commit_individually(
-          &self.entries,
-          Self::individual_flags(),
-        );
-      };
-
-      let mut failed = false;
-      for (hwnd, rect) in &self.entries {
-        // The transaction (including prior entries) is invalidated on
-        // failure; redo everything individually below.
-        let Ok(next) = DeferWindowPos(
-          hdwp,
-          HWND(*hwnd),
-          HWND(0),
-          rect.x(),
-          rect.y(),
-          rect.width(),
-          rect.height(),
-          Self::deferred_flags(),
-        ) else {
-          failed = true;
-          break;
-        };
-        hdwp = next;
-      }
-
-      // Always end the transaction, including after a failed
-      // `DeferWindowPos`. `BeginDeferWindowPos` allocates an `HDWP`, which
-      // is a USER object released only by `EndDeferWindowPos`; abandoning
-      // the handle — as `DeferWindowPos`'s documentation suggests — leaks
-      // exactly one USER object per abandoned transaction, permanently and
-      // with no recovery short of process exit. Ending a partially built
-      // transaction is safe and applies whichever entries were accepted
-      // before the failure; `commit_individually` re-applies all of them
-      // anyway, so the final positions are identical either way.
-      let ended = EndDeferWindowPos(hdwp).is_ok();
-      !failed && ended
-    };
+    // A failed transaction still applies the entries before the failure;
+    // the fallback re-applies all of them, so positions end up the same.
+    let deferred = DeferredPositions::begin(self.entries.len())
+      .is_some_and(|mut transaction| {
+        self.entries.iter().all(|(hwnd, rect)| {
+          transaction.defer(
+            HWND(*hwnd),
+            HWND(0),
+            rect,
+            Self::deferred_flags(),
+          )
+        }) && transaction.end()
+      });
 
     if !deferred {
       Self::commit_individually(&self.entries, Self::individual_flags());
@@ -1173,9 +1141,8 @@ mod tests {
 
   use super::{
     ensure_class_registered, is_surrogate, placed_rects,
-    stretched_destination, window_class, BeginDeferWindowPos,
-    DeferWindowPos, DestroyWindow, EndDeferWindowPos, Rect,
-    SurrogateBatch, CLASS_NAME, HWND, RECT, SWP_NOSENDCHANGING,
+    stretched_destination, window_class, DeferredPositions, DestroyWindow,
+    Rect, SurrogateBatch, CLASS_NAME, HWND, RECT, SWP_NOSENDCHANGING,
     WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TRANSPARENT,
   };
 
@@ -1340,28 +1307,14 @@ mod tests {
       return;
     };
 
-    // SAFETY: `hwnd` is a live window owned by this process; the `HDWP` is
-    // ended on every path below.
-    let accepted = unsafe {
-      match BeginDeferWindowPos(1) {
-        Err(_) => None,
-        Ok(hdwp) => {
-          let result = DeferWindowPos(
-            hdwp,
-            hwnd,
-            HWND(0),
-            -8000,
-            120,
-            400,
-            300,
-            SurrogateBatch::deferred_flags(),
-          );
-          let ok = result.is_ok();
-          let _ = EndDeferWindowPos(result.unwrap_or(hdwp));
-          Some(ok)
-        }
-      }
-    };
+    let accepted = DeferredPositions::begin(1).map(|mut transaction| {
+      transaction.defer(
+        hwnd,
+        HWND(0),
+        &Rect::from_xy(-8000, 120, 400, 300),
+        SurrogateBatch::deferred_flags(),
+      )
+    });
 
     // SAFETY: `hwnd` was created above and not yet destroyed.
     unsafe {

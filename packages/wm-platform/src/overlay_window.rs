@@ -5,18 +5,20 @@ use windows::{
   Win32::{
     Foundation::HWND,
     UI::WindowsAndMessaging::{
-      BeginDeferWindowPos, DeferWindowPos, DestroyWindow,
-      EndDeferWindowPos, GetClassNameW, GetWindow,
-      SetLayeredWindowAttributes, SetWindowPos, ShowWindow, GW_HWNDPREV,
-      LWA_ALPHA, SWP_HIDEWINDOW, SWP_NOACTIVATE, SWP_NOMOVE,
-      SWP_NOSENDCHANGING, SWP_NOSIZE, SWP_NOZORDER, SWP_SHOWWINDOW,
-      SW_HIDE, WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_NOREDIRECTIONBITMAP,
-      WS_EX_TOOLWINDOW, WS_EX_TRANSPARENT,
+      DestroyWindow, GetClassNameW, GetWindow, SetLayeredWindowAttributes,
+      SetWindowPos, ShowWindow, GW_HWNDPREV, LWA_ALPHA, SWP_HIDEWINDOW,
+      SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSENDCHANGING, SWP_NOSIZE,
+      SWP_NOZORDER, SWP_SHOWWINDOW, SW_HIDE, WS_EX_LAYERED,
+      WS_EX_NOACTIVATE, WS_EX_NOREDIRECTIONBITMAP, WS_EX_TOOLWINDOW,
+      WS_EX_TRANSPARENT,
     },
   },
 };
 
-use crate::{window_class, Rect, StyleBlend, SurrogateBatch};
+use crate::{
+  window_class::{self, DeferredPositions},
+  Rect, StyleBlend, SurrogateBatch,
+};
 
 /// Which overlay an [`OverlayWindow`] backs; each gets its own window
 /// class so the overlays can be told apart in z-order dumps.
@@ -300,46 +302,24 @@ pub(crate) fn swap(
 ) {
   let insert_after = window_class::insert_after_point(anchor);
 
-  // SAFETY: Both handles are valid for their overlays' lifetimes. The
-  // transaction is always ended, which is what releases its `HDWP`, also
-  // after a failed `DeferWindowPos` (see `SurrogateBatch::commit`).
-  let swapped = unsafe {
-    BeginDeferWindowPos(2).is_ok_and(|hdwp| {
-      let Ok(shown) = DeferWindowPos(
-        hdwp,
+  let swapped =
+    DeferredPositions::begin(2).is_some_and(|mut transaction| {
+      transaction.defer(
         show.hwnd(),
         insert_after,
-        rect.x(),
-        rect.y(),
-        rect.width(),
-        rect.height(),
+        rect,
         SWP_NOACTIVATE | SWP_SHOWWINDOW,
-      ) else {
-        let _ = EndDeferWindowPos(hdwp);
-        return false;
-      };
-
-      let Ok(hidden) = DeferWindowPos(
-        shown,
+      ) && transaction.defer(
         hide.hwnd(),
         HWND(0),
-        0,
-        0,
-        0,
-        0,
+        &Rect::default(),
         SWP_NOACTIVATE
           | SWP_NOMOVE
           | SWP_NOSIZE
           | SWP_NOZORDER
           | SWP_HIDEWINDOW,
-      ) else {
-        let _ = EndDeferWindowPos(shown);
-        return false;
-      };
-
-      EndDeferWindowPos(hidden).is_ok()
-    })
-  };
+      ) && transaction.end()
+    });
 
   if swapped {
     show.anchor = anchor.0;
