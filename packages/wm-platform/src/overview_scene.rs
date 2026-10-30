@@ -76,6 +76,12 @@ impl SceneWindow {
     self.alpha.snap(1.0);
   }
 
+  /// Puts it where it heads, as strongly as it heads to show, at once.
+  pub fn settle(&mut self) {
+    self.rect.retarget(&self.target(), true);
+    self.alpha.snap(self.alpha.target);
+  }
+
   /// Stops it where it is now, still fading toward its target.
   pub fn hold(&mut self) {
     self.rect.hold();

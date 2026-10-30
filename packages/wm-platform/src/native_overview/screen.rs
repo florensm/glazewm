@@ -71,6 +71,7 @@ impl Screen {
       scenes: Vec::new(),
       scene_area: RectF::default(),
       scene_shown: None,
+      is_picked: false,
       card_targets: Vec::new(),
       pointer: None,
       entrance: None,
@@ -282,6 +283,7 @@ impl Screen {
     }
     self.scenes.clear();
     self.scene_shown = None;
+    self.is_picked = false;
     self.card_targets.clear();
     self.pointer = None;
     self.entrance = None;
@@ -875,13 +877,15 @@ impl Screen {
     focus: ScreenFocus,
     duration_ms: u32,
   ) {
-    // The scenes zoom into the picked workspace's own windows, which set
-    // off from where its miniature shows them.
+    // The scenes zoom into the picked workspace's own windows. One not
+    // shown yet shows in its scene at once, as if shown before it was
+    // picked, for the zoom to set off from there; the one shown until now
+    // fades out.
     let is_switching =
       focus.layout.has_scene() && index != self.focus.selected;
     self.focus = focus;
     if is_switching {
-      self.seed_scene_from_card(false);
+      self.retarget(false);
     }
 
     self.hold(index);
@@ -908,11 +912,6 @@ impl Screen {
         .get(index)
         .map(|card| card.placement().rect(&card.metrics)),
     );
-
-    // The scene shown until now fades out.
-    if is_switching {
-      self.retarget(false);
-    }
     self.is_dirty = true;
   }
 

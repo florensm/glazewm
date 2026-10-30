@@ -136,9 +136,14 @@ impl Screen {
     // What a closing screen zooms from holds still for its zoom.
     let held = self.closing_card();
 
-    if snap || held.is_some() {
+    let is_switched = self.scene_shown != Some(selected);
+    // Picked without being shown first, e.g. clicked, it shows where it
+    // settles at once, so its zoom sets off from there as it would have
+    // had it been shown.
+    let settles = is_switched && self.is_picked && !snap && held.is_none();
+    if snap || held.is_some() || settles {
       self.scene_shown = Some(selected);
-    } else if self.scene_shown != Some(selected) {
+    } else if is_switched {
       self.seed_scene_from_card(true);
     }
 
@@ -194,6 +199,12 @@ impl Screen {
           let target = window.target();
           window.retarget(&target, 0.0, snap);
         }
+      }
+    }
+
+    if settles {
+      if let Some(scene) = self.scenes.get_mut(selected) {
+        scene.windows.iter_mut().for_each(SceneWindow::settle);
       }
     }
 

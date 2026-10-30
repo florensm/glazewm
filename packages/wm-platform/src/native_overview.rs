@@ -573,6 +573,7 @@ impl ScreenFrame {
 
 /// One monitor's overview: a full-screen window of its own, showing the
 /// monitor's workspaces.
+#[allow(clippy::struct_excessive_bools)]
 struct Screen {
   hwnd: HWND,
 
@@ -620,6 +621,11 @@ struct Screen {
   /// Workspace whose scene its windows were last pointed at, to fly a
   /// newly selected one's out of its card.
   scene_shown: Option<usize>,
+
+  /// Whether a pick was sent, after which a workspace shown anew shows in
+  /// its scene at once rather than flying out of its card, for the zoom
+  /// into it to set off from there.
+  is_picked: bool,
 
   /// Pictures of cards no longer shown, kept for reuse.
   spare: Vec<Picture>,
@@ -1313,6 +1319,9 @@ impl Overview {
             "Overview picked {action:?}; waiting for the WM."
           );
           self.pending_pick = Some((action.clone(), Instant::now()));
+          for screen in &mut self.screens {
+            screen.is_picked = true;
+          }
         }
       }
       self.send(action);
