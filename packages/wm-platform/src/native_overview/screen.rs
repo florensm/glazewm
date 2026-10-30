@@ -29,8 +29,8 @@ use crate::{
   overview_effects::{lean_toward, Entrance},
   overview_layout::{
     activities, carousel, chrome_opacity, grid, stage as stage_layout,
-    Camera, CardMetrics, GridCells, Placement, RectF, Spring, Zoom,
-    SEARCH_HEIGHT,
+    Camera, CardMetrics, CardView, GridCells, Placement, RectF, Spring,
+    Zoom, SEARCH_HEIGHT,
   },
   overview_scene::SceneWindow,
   overview_state::{Control, Hit, Mode, ScreenFocus, Toward},
@@ -1269,6 +1269,7 @@ impl Screen {
         workspace: Some(index),
         window,
         control: None,
+        point: card.view.unmap(local_x, local_y),
       };
     }
 
@@ -1291,10 +1292,17 @@ impl Screen {
     });
 
     if window.is_some() || area.contains(x, y) {
+      // Where the scene shows the workspace's working area, as laid out.
+      let point = self.workspaces().get(selected).and_then(|workspace| {
+        let content = RectF::from_rect(&workspace.content_rect);
+        CardView::fitted(&content, &self.scene_area).unmap(x, y)
+      });
+
       Hit {
         workspace: Some(selected),
         window,
         control: None,
+        point,
       }
     } else {
       Hit::default()

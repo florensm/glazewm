@@ -1098,6 +1098,25 @@ impl CardView {
     )
   }
 
+  /// The screen point that point (`x`, `y`) of the card shows: where on
+  /// screen its windows sit. `None` for a card showing nothing.
+  #[allow(clippy::cast_possible_truncation)]
+  pub fn unmap(&self, x: f32, y: f32) -> Option<(i32, i32)> {
+    let is_shown = self.scale_x > 0.0
+      && self.scale_y > 0.0
+      && self.scale_x.is_finite()
+      && self.scale_y.is_finite();
+
+    is_shown.then(|| {
+      (
+        (self.content.x + (x - self.origin.0) / self.scale_x).round()
+          as i32,
+        (self.content.y + (y - self.origin.1) / self.scale_y).round()
+          as i32,
+      )
+    })
+  }
+
   /// Where a window at `window` (screen coordinates) goes on the card:
   /// where it sits, scaled down. `None` for a window entirely outside the
   /// card's content.
@@ -1941,6 +1960,20 @@ mod tests {
     let instant = Zoom::close(0, 1.0, 0);
     assert!(instant.is_finished(0.0));
     assert_close(instant.openness(0.0), 0.0);
+  }
+
+  #[test]
+  fn view_unmaps_a_card_point_back_onto_the_screen() {
+    let metrics = metrics();
+    let area = RectF::new(1920.0, 40.0, 1920.0, 1040.0);
+    let view = CardView::new(&metrics, &area, &area);
+    let window = RectF::new(2420.0, 340.0, 600.0, 400.0);
+
+    let (x, y) = view.map(&window).center();
+    assert_eq!(view.unmap(x, y), Some((2720, 540)));
+
+    let nothing = CardView::fitted(&area, &RectF::default());
+    assert_eq!(nothing.unmap(0.0, 0.0), None);
   }
 
   #[test]

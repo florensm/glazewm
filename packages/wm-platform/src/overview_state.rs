@@ -16,7 +16,7 @@ use std::ops::Range;
 use crate::{
   overview_layout::{GridCells, RectF},
   OverviewAction, OverviewLayoutMode, OverviewScreen, OverviewWindow,
-  OverviewWorkspace, Rect,
+  OverviewWorkspace, Point, Rect,
 };
 
 /// Where the keyboard is in the overview's flow.
@@ -81,6 +81,10 @@ pub(crate) struct Hit {
   pub workspace: Option<usize>,
   pub window: Option<isize>,
   pub control: Option<Control>,
+
+  /// Where in `workspace` it is, in the screen coordinates its windows
+  /// sit at, displayed or not.
+  pub point: Option<(i32, i32)>,
 }
 
 /// A control along the bottom of a screen.
@@ -137,6 +141,9 @@ pub(crate) struct Drag {
 
   /// Workspace it would be dropped on.
   pub target: Option<usize>,
+
+  /// Where in `target`, as `Hit::point` has it.
+  pub point: Option<(i32, i32)>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -1144,6 +1151,7 @@ impl Interaction {
       hwnd,
       position,
       target: hit.workspace,
+      point: hit.point,
     });
     true
   }
@@ -1155,13 +1163,22 @@ impl Interaction {
   ) -> Option<OverviewAction> {
     let press = self.press.take()?;
 
-    // Dropped on a card of the workspace it is on, or on nothing: no
-    // move.
+    // Dropped where it is, or on nothing: no move.
     if let Some(drag) = self.drag.take() {
       return drag.target.and_then(|index| {
         let to = workspaces.get(index)?;
         let monitor = self.monitor_of(Some(index));
-        move_action(drag.hwnd, to.name.clone(), monitor, workspaces)
+        match place_point(&drag, index, workspaces) {
+          Some((x, y)) => Some(OverviewAction::PlaceWindow {
+            hwnd: drag.hwnd,
+            workspace: to.name.clone(),
+            monitor,
+            point: Point { x, y },
+          }),
+          None => {
+            move_action(drag.hwnd, to.name.clone(), monitor, workspaces)
+          }
+        }
       });
     }
 
@@ -1231,6 +1248,48 @@ impl Interaction {
       .and_then(|press| press.hit.workspace)
   }
 
+  /// Window the dragged window would land beside, and on which side, as
+  /// a mouse drag decides: the window under the cursor, on the side of it
+  /// nearest the cursor.
+  fn drop_beside(
+    &self,
+    workspaces: &[OverviewWorkspace],
+  ) -> Option<(isize, Toward)> {
+    let drag = self.drag?;
+    let (x, y) = place_point(&drag, drag.target?, workspaces)?;
+    let point = Point { x, y };
+
+    // Later windows sit above earlier ones, e.g. floating over tiling.
+    let window = workspaces
+      .get(drag.target?)?
+      .windows
+      .iter()
+      .rev()
+      .filter(|window| {
+        window.hwnd != drag.hwnd
+          && !window.is_minimized
+          && !window.is_hidden_tab
+      })
+      .find(|window| window.rect.contains_point(&point))?;
+
+    let rect = &window.rect;
+    let center = rect.center_point();
+    let (dx, dy) = (x - center.x, y - center.y);
+    let side = if dx.abs() > dy.abs() {
+      if dx > 0 {
+        Toward::Right
+      } else {
+        Toward::Left
+      }
+    } else if dy > 0 {
+      Toward::Down
+    } else {
+      Toward::Up
+    };
+
+    Some((window.hwnd, side))
+  }
+
   pub fn mouse_leave(&mut self) {
     self.hover = None;
     self.hover_control = None;
@@ -1265,6 +1324,7 @@ impl Interaction {
       pressed: self.pressed().and_then(local),
       floating: self.floating(),
       drop: self.drop_target().and_then(local),
+      drop_beside: self.drop_beside(workspaces),
       is_dragging: self.drag.is_some(),
       marks_keyboard: is_active && self.screens.len() > 1,
       query: self.query.clone(),
@@ -1397,6 +1457,9 @@ pub(crate) struct ScreenFocus {
 
   /// Workspace the floating window would land on.
   pub drop: Option<usize>,
+
+  /// Window a dragged window would land beside, and on which side of it.
+  pub drop_beside: Option<(isize, Toward)>,
 
   /// Whether a window is dragged, over whichever screen.
   pub is_dragging: bool,
@@ -1548,6 +1611,26 @@ fn ordered(workspace: &OverviewWorkspace) -> Vec<&OverviewWindow> {
 
 /// Moves window `hwnd` to workspace `name`, picked on `monitor`'s screen,
 /// unless it is already there.
+/// Where in workspace `index` a window dragged as `drag` is placed, as
+/// a mouse drag of it to there would: `None` if it only moves there, onto
+/// the special workspace (whose card shows it wherever it is summoned),
+/// or is dropped onto itself.
+fn place_point(
+  drag: &Drag,
+  index: usize,
+  workspaces: &[OverviewWorkspace],
+) -> Option<(i32, i32)> {
+  let (x, y) = drag.point?;
+  let workspace = workspaces
+    .get(index)
+    .filter(|_| !is_special(workspaces, index))?;
+  let is_on_itself = workspace.windows.iter().any(|window| {
+    window.hwnd == drag.hwnd && window.rect.contains_point(&Point { x, y })
+  });
+
+  (!is_on_itself).then_some((x, y))
+}
+
 fn move_action(
   hwnd: isize,
   name: String,
@@ -1695,7 +1778,7 @@ mod tests {
   use crate::{
     overview_layout::{CardMetrics, CardSlot, GridCells, RectF},
     OverviewAction, OverviewLayoutMode, OverviewScreen, OverviewWindow,
-    OverviewWorkspace, Rect,
+    OverviewWorkspace, Point, Rect,
   };
 
   /// ID of the monitor of the screen most tests have.
@@ -2145,6 +2228,7 @@ mod tests {
           workspace: Some(0),
           window: None,
           control: None,
+          point: None,
         },
       );
       assert_eq!(
@@ -2172,6 +2256,7 @@ mod tests {
           workspace: Some(0),
           window: Some(11),
           control: None,
+          point: None,
         },
       );
       assert_eq!(
@@ -2193,6 +2278,7 @@ mod tests {
         workspace: Some(1),
         window: Some(21),
         control: None,
+        point: None,
       },
       false,
     );
@@ -2207,6 +2293,7 @@ mod tests {
         workspace: Some(0),
         window: Some(11),
         control: None,
+        point: None,
       },
       false,
     );
@@ -2365,6 +2452,7 @@ mod tests {
       workspace: Some(0),
       window: Some(11),
       control: None,
+      point: None,
     };
     state.mouse_down((10.0, 10.0), window);
     assert_eq!(state.mouse_up(&workspaces), Some(focus_window(11)));
@@ -2373,6 +2461,7 @@ mod tests {
       workspace: Some(2),
       window: None,
       control: None,
+      point: None,
     };
     state.mouse_down((10.0, 10.0), card);
     assert_eq!(state.mouse_up(&workspaces), Some(focus_workspace("3")));
@@ -2409,6 +2498,7 @@ mod tests {
       workspace: Some(1),
       window: Some(21),
       control: None,
+      point: None,
     };
     let pressed =
       |state: &Interaction| state.focus(0, &workspaces).pressed;
@@ -2439,6 +2529,7 @@ mod tests {
       workspace: Some(1),
       window: Some(21),
       control: None,
+      point: None,
     };
 
     state.mouse_down((100.0, 100.0), grab);
@@ -2449,6 +2540,7 @@ mod tests {
       workspace: Some(2),
       window: None,
       control: None,
+      point: None,
     };
     assert!(state.mouse_move((400.0, 100.0), over, true));
     assert_eq!(state.floating(), Some(21));
@@ -2466,6 +2558,80 @@ mod tests {
   }
 
   #[test]
+  fn dropping_a_drag_over_a_window_places_it_beside_that_window() {
+    let workspaces = workspaces();
+    let mut state = interaction();
+    let grab = Hit {
+      workspace: Some(1),
+      window: Some(21),
+      ..Hit::default()
+    };
+    let over = |point| Hit {
+      workspace: Some(0),
+      window: Some(12),
+      point: Some(point),
+      ..Hit::default()
+    };
+
+    state.mouse_down((100.0, 100.0), grab);
+    state.mouse_move((400.0, 100.0), over((1800, 500)), true);
+    assert_eq!(
+      state.focus(0, &workspaces).drop_beside,
+      Some((12, Toward::Right))
+    );
+    state.mouse_move((400.0, 100.0), over((1500, 50)), true);
+    assert_eq!(
+      state.focus(0, &workspaces).drop_beside,
+      Some((12, Toward::Up))
+    );
+
+    assert_eq!(
+      state.mouse_up(&workspaces),
+      Some(OverviewAction::PlaceWindow {
+        hwnd: 21,
+        workspace: "1".to_string(),
+        monitor: MONITOR,
+        point: Point { x: 1500, y: 50 },
+      })
+    );
+  }
+
+  #[test]
+  fn a_window_dragged_within_its_workspace_is_placed_but_not_onto_itself()
+  {
+    let workspaces = workspaces();
+    let mut state = interaction();
+    let grab = Hit {
+      workspace: Some(0),
+      window: Some(12),
+      ..Hit::default()
+    };
+    let drop_at = |state: &mut Interaction, point| {
+      state.mouse_down((100.0, 100.0), grab);
+      state.mouse_move(
+        (400.0, 100.0),
+        Hit {
+          point: Some(point),
+          ..grab
+        },
+        true,
+      );
+      state.mouse_up(&workspaces)
+    };
+
+    assert_eq!(
+      drop_at(&mut state, (100, 500)),
+      Some(OverviewAction::PlaceWindow {
+        hwnd: 12,
+        workspace: "1".to_string(),
+        monitor: MONITOR,
+        point: Point { x: 100, y: 500 },
+      })
+    );
+    assert_eq!(drop_at(&mut state, (1500, 500)), None, "onto itself");
+  }
+
+  #[test]
   fn dropping_a_drag_on_its_own_card_moves_nothing() {
     let workspaces = workspaces();
     let mut state = interaction();
@@ -2473,6 +2639,7 @@ mod tests {
       workspace: Some(1),
       window: Some(21),
       control: None,
+      point: None,
     };
 
     state.mouse_down((100.0, 100.0), grab);
@@ -2487,6 +2654,7 @@ mod tests {
       workspace: Some(0),
       window: Some(12),
       control: None,
+      point: None,
     };
 
     assert_eq!(
@@ -3128,6 +3296,7 @@ mod tests {
       workspace: Some(0),
       window: Some(11),
       control: None,
+      point: None,
     };
 
     state.mouse_down((100.0, 100.0), grab);
@@ -3137,6 +3306,7 @@ mod tests {
         workspace: Some(4),
         window: None,
         control: None,
+        point: None,
       },
       true,
     );
@@ -3169,6 +3339,7 @@ mod tests {
         workspace: Some(2),
         window: Some(51),
         control: None,
+        point: None,
       },
     );
     state.mouse_move(
@@ -3177,6 +3348,7 @@ mod tests {
         workspace: Some(5),
         window: None,
         control: None,
+        point: None,
       },
       true,
     );

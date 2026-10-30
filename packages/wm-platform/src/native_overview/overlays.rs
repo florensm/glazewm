@@ -18,7 +18,7 @@ use crate::{
     chrome_opacity, Camera, CardMetrics, RectF, SpringRect, LABEL_GAP,
   },
   overview_overlays::{Highlight, Tag},
-  overview_state::Mode,
+  overview_state::{Mode, Toward},
   overview_thumbnails::Picture,
   OverviewLayoutMode, OverviewStyle,
 };
@@ -56,6 +56,9 @@ pub(super) struct Overlays {
   /// Around the picked window.
   pub(super) window_ring: Highlight<isize>,
 
+  /// Around the half of a window a dragged window would land in.
+  pub(super) drop_ring: Highlight<(isize, Toward)>,
+
   /// The picked window's title, under it.
   pub(super) tag: Tag<TagPicture>,
 
@@ -79,6 +82,7 @@ impl Overlays {
       workspace_ring: Highlight::new(highlight_ms)?,
       hover_ring: Highlight::new(highlight_ms)?,
       window_ring: Highlight::new(highlight_ms)?,
+      drop_ring: Highlight::new(highlight_ms)?,
       tag: Tag::new(highlight_ms)?,
       note: Tag::new(highlight_ms)?,
       workspace_rect: SpringRect::new(RectF::default(), switch_ms),
@@ -99,6 +103,7 @@ impl Overlays {
     self.workspace_ring.glide.retune(highlight_ms, bounce);
     self.hover_ring.glide.retune(highlight_ms, bounce);
     self.window_ring.glide.retune(highlight_ms, bounce);
+    self.drop_ring.glide.retune(highlight_ms, bounce);
     self.tag.glide.retune(highlight_ms, bounce);
     self.note.glide.retune(highlight_ms, bounce);
     self.workspace_rect.retune(switch_ms, bounce);
@@ -124,6 +129,7 @@ impl Overlays {
     self.hover_ring.slices.register(host);
     self.workspace_ring.slices.register(host);
     self.window_ring.slices.register(host);
+    self.drop_ring.slices.register(host);
     self.tag.picture.thumbnail =
       Thumbnail::register(host, self.tag.picture.window);
 
@@ -143,6 +149,7 @@ impl Overlays {
       &mut self.hover_ring.slices,
       &mut self.workspace_ring.slices,
       &mut self.window_ring.slices,
+      &mut self.drop_ring.slices,
     ] {
       slices.retire(retired);
     }
@@ -176,6 +183,11 @@ impl Overlays {
       px(3.0).max(1),
       accent,
     ));
+    self.drop_ring.slices.draw(SliceLook::ring(
+      px(WINDOW_RING_RADIUS),
+      px(3.0).max(1),
+      accent,
+    ));
   }
 
   /// Hides every highlight at once, e.g. for a new open.
@@ -184,6 +196,7 @@ impl Overlays {
     self.workspace_ring.glide.reset();
     self.hover_ring.glide.reset();
     self.window_ring.glide.reset();
+    self.drop_ring.glide.reset();
     self.tag.glide.reset();
     self.note.glide.reset();
   }
@@ -205,6 +218,7 @@ impl Overlays {
       self.workspace_ring.glide.step(dt),
       self.hover_ring.glide.step(dt),
       self.window_ring.glide.step(dt),
+      self.drop_ring.glide.step(dt),
       self.tag.glide.step(dt),
       self.note.glide.step(dt),
       self.workspace_rect.step(dt),
@@ -401,29 +415,46 @@ impl Screen {
     hwnd: isize,
     context: &PlaceContext,
   ) -> Option<RectF> {
-    let selected = self.focus.selected;
+    self.window_rect_in(self.focus.selected, hwnd, context, 0.0)
+  }
 
-    if self.focus.layout.has_scene() {
+  /// Where window `hwnd` of workspace `index` shows now: in the scene for
+  /// the activities' shown workspace, or else on its card, shifted by
+  /// `shift` in the activities.
+  pub(super) fn window_rect_in(
+    &self,
+    index: usize,
+    hwnd: isize,
+    context: &PlaceContext,
+    shift: f32,
+  ) -> Option<RectF> {
+    let layout = self.focus.layout;
+
+    if layout.has_scene() && index == self.focus.selected {
       let window = self
         .scenes
-        .get(selected)?
+        .get(index)?
         .windows
         .iter()
         .find(|window| window.preview.hwnd == hwnd)?;
       return Some(scene_window_rect(
         window,
-        context.zoom_card == Some(selected),
+        context.zoom_card == Some(index),
         context.reach,
         &self.area,
       ));
     }
 
-    let card = self.cards.get(selected)?;
+    let camera = if layout == OverviewLayoutMode::Activities {
+      Camera::shifted(0.0, shift)
+    } else {
+      context.camera
+    };
+    let card = self.cards.get(index)?;
     let preview =
       card.previews.iter().find(|preview| preview.hwnd == hwnd)?;
     Some(
-      context
-        .camera
+      camera
         .apply(&card.placement().map(&card.metrics, &preview.tile.rect)),
     )
   }
@@ -490,6 +521,14 @@ impl Screen {
     let window_target = picked_rect
       .map(|(hwnd, rect)| (hwnd, rect.inset(-px(RING_GAP)), 1.0));
 
+    // The half of the window a dragged window would land beside.
+    let drop_target = focus.drop.zip(focus.drop_beside).and_then(
+      |(index, (hwnd, side))| {
+        let rect = self.window_rect_in(index, hwnd, context, shift)?;
+        Some(((hwnd, side), half(&rect, side).inset(px(2.0)), 1.0))
+      },
+    );
+
     let tag_target = picked_rect
       .filter(|_| layout.shows_selected_large())
       .zip(self.overlays.as_ref())
@@ -544,6 +583,8 @@ impl Screen {
     overlays.hover_ring.place(&view, chrome);
     is_gliding |= overlays.window_ring.glide.follow(window_target, now);
     overlays.window_ring.place(&view, chrome);
+    is_gliding |= overlays.drop_ring.glide.follow(drop_target, now);
+    overlays.drop_ring.place(&view, chrome);
 
     for (label, rect) in overlays.labels.iter_mut().zip(&label_rects) {
       if let Some((rect, opacity)) = rect {
@@ -608,5 +649,16 @@ impl Screen {
         ))
       })
       .collect()
+  }
+}
+
+/// The half of `rect` on `side`.
+fn half(rect: &RectF, side: Toward) -> RectF {
+  let (w, h) = (rect.w / 2.0, rect.h / 2.0);
+  match side {
+    Toward::Left => RectF::new(rect.x, rect.y, w, rect.h),
+    Toward::Right => RectF::new(rect.x + w, rect.y, w, rect.h),
+    Toward::Up => RectF::new(rect.x, rect.y, rect.w, h),
+    Toward::Down => RectF::new(rect.x, rect.y + h, rect.w, h),
   }
 }
