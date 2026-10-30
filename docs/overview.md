@@ -268,8 +268,9 @@ overview:
   # Corner of a monitor that opens the overview as the cursor rests in it:
   # 'none', 'top_left', 'top_right', 'bottom_left' or 'bottom_right'. It
   # opens once per visit. A window being dragged there (by its title bar,
-  # or with a tool such as AltSnap) is carried into the overview, following
-  # the cursor until let go of over a workspace or beside a window, as if
+  # or with a tool such as AltSnap) carries its drag into the overview: it
+  # stays where it shows, and where it would land is marked until it is
+  # let go of over a workspace or beside a window, where it lands as if
   # dragged in the overview; let go of over nothing, it goes back.
   hot_corner: "none"
 
