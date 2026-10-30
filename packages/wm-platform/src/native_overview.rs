@@ -1023,14 +1023,22 @@ impl Overview {
   }
 
   /// Flies `ghost`, let go of, into the card its window lands on: where
-  /// `action` moves it, or else back where it came from.
+  /// `action` moves or places it, or else back where it came from.
   fn land(&mut self, mut ghost: Ghost, action: Option<&OverviewAction>) {
     let moved_to = match action {
-      Some(OverviewAction::MoveWindow {
-        hwnd,
-        workspace,
-        monitor,
-      }) if *hwnd == ghost.hwnd => self
+      Some(
+        OverviewAction::MoveWindow {
+          hwnd,
+          workspace,
+          monitor,
+        }
+        | OverviewAction::PlaceWindow {
+          hwnd,
+          workspace,
+          monitor,
+          ..
+        },
+      ) if *hwnd == ghost.hwnd => self
         .screens
         .iter()
         .position(|screen| screen.id() == Some(*monitor))
