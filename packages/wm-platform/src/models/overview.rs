@@ -218,11 +218,10 @@ impl OverviewLayoutMode {
     self == Self::Activities
   }
 
-  /// Whether a workspace clicked with the mouse is shown first, and only
-  /// gone to once clicked again. A window clicked on it is gone to right
-  /// away.
+  /// Whether the selected workspace shows large, its windows big enough
+  /// to point at and to tag with their titles.
   #[must_use]
-  pub fn shows_before_going(self) -> bool {
+  pub fn shows_selected_large(self) -> bool {
     matches!(self, Self::Activities | Self::Stage)
   }
 

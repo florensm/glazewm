@@ -46,10 +46,10 @@ down, and an arrow or wheel step with nowhere to go bumps the selection
 that way. A dragged window pops up under the cursor and trails it, and
 once let go of flies into the card it lands on, or back home if it moved
 nowhere. In the activities, a newly shown workspace's windows fly out of
-its miniature while the last one's shrink back into theirs. In the
-activities and the stage, a workspace clicked with the mouse is shown
-first, and gone to once clicked again; clicking one of its windows goes
-straight to that window.
+its miniature while the last one's shrink back into theirs. A click on a
+workspace goes there at once, zooming into it as `Enter` does: in the
+activities, its windows fly out of its miniature to where they are on
+screen.
 
 In the carousel and the grid, the special workspace's card is docked below
 the others (see [Special workspace](#special-workspace)); in the other
@@ -78,8 +78,7 @@ is nowhere to go.
 | --- | --- |
 | Point at a window | Pick it (activities, stage): it is highlighted and its title shows. |
 | Click a window | Focus it, switching to its workspace, and close. |
-| Click another workspace | Show it (activities, stage), or switch to it and close (carousel, grid). |
-| Click the shown workspace | Switch to it and close. |
+| Click a workspace | Switch to it and close, zooming into it. |
 | Click the background | Close without changing anything. |
 | Drag a window onto another workspace | Move it to that workspace. The overview stays open. |
 | Middle-click a window | Close the window. |

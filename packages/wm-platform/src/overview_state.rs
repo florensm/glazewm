@@ -1110,7 +1110,7 @@ impl Interaction {
     // Pointing at a window of the shown workspace picks it, as the arrows
     // would.
     let pointed = hit.window.filter(|_| {
-      self.layout.shows_before_going()
+      self.layout.shows_selected_large()
         && hit.workspace == Some(self.selected())
         && self.mode != Mode::Carrying
         && !is_left_down
@@ -1179,18 +1179,6 @@ impl Interaction {
         return None;
       }
       None => {}
-    }
-
-    // A workspace not shown yet is shown first; a window clicked on it is
-    // gone to right away.
-    let other = press.hit.workspace.filter(|index| {
-      self.layout.shows_before_going()
-        && press.hit.window.is_none()
-        && *index != self.selected()
-    });
-    if let Some(index) = other {
-      self.select(index, workspaces);
-      return None;
     }
 
     match press.hit {
@@ -2145,43 +2133,26 @@ mod tests {
   }
 
   #[test]
-  fn clicking_another_workspace_shows_it_before_going() {
+  fn clicking_another_workspace_goes_to_it_in_every_layout() {
     let workspaces = workspaces();
 
-    for layout in
-      [OverviewLayoutMode::Activities, OverviewLayoutMode::Stage]
-    {
+    for layout in OverviewLayoutMode::ALL {
       let mut state = single(&workspaces, layout);
-      let click = |state: &mut Interaction, hit: Hit| {
-        state.mouse_down((0.0, 0.0), hit);
-        state.mouse_up(&workspaces)
-      };
-
-      let other = Hit {
-        workspace: Some(0),
-        window: None,
-        control: None,
-      };
-      assert_eq!(click(&mut state, other), None);
-      assert_eq!(state.selected(), 0);
+      state.mouse_down(
+        (0.0, 0.0),
+        Hit {
+          workspace: Some(0),
+          window: None,
+          control: None,
+        },
+      );
       assert_eq!(
-        click(&mut state, other),
+        state.mouse_up(&workspaces),
         Some(focus_workspace("1")),
         "{layout:?}"
       );
+      assert_eq!(state.selected(), 0, "{layout:?}");
     }
-
-    // The carousel goes right away.
-    let mut state = interaction();
-    state.mouse_down(
-      (0.0, 0.0),
-      Hit {
-        workspace: Some(0),
-        window: None,
-        control: None,
-      },
-    );
-    assert_eq!(state.mouse_up(&workspaces), Some(focus_workspace("1")));
   }
 
   /// A window is a precise target, e.g. a search match outlined on a

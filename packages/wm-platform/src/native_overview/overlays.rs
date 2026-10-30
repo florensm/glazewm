@@ -312,7 +312,8 @@ impl Screen {
   /// cards.
   pub(super) fn tag_picture(&self) -> Option<TagPicture> {
     let focus = &self.focus;
-    if !focus.layout.shows_before_going() || focus.mode != Mode::Windows {
+    if !focus.layout.shows_selected_large() || focus.mode != Mode::Windows
+    {
       return None;
     }
 
@@ -484,7 +485,7 @@ impl Screen {
       .map(|(hwnd, rect)| (hwnd, rect.inset(-px(RING_GAP)), 1.0));
 
     let tag_target = picked_rect
-      .filter(|_| layout.shows_before_going())
+      .filter(|_| layout.shows_selected_large())
       .zip(self.overlays.as_ref())
       .map(|((hwnd, rect), overlays)| {
         let (width, height) = to_f32_size(overlays.tag.picture.size());
