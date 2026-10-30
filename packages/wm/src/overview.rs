@@ -60,6 +60,11 @@ pub struct Overview {
   /// per visit.
   hot_corner: CornerVisit,
 
+  /// Window whose drag the overview carries on, hidden until the mouse
+  /// button is let go of: a tool such as `AltSnap` may keep moving it,
+  /// past the overview, e.g. over a bar the overview leaves uncovered.
+  veiled: Option<Uuid>,
+
   /// Where the native overview sends user actions, with their session.
   action_tx: mpsc::UnboundedSender<(u64, OverviewAction)>,
 }
@@ -92,6 +97,7 @@ impl Overview {
       closing: None,
       is_shown: false,
       hot_corner: CornerVisit::Away,
+      veiled: None,
       action_tx,
     }
   }
@@ -104,6 +110,11 @@ impl Overview {
   /// after its close, zooming into the pick.
   pub fn is_shown(&self) -> bool {
     self.is_shown
+  }
+
+  /// Whether window `id` is hidden while the overview carries its drag.
+  pub fn is_veiled(&self, id: Uuid) -> bool {
+    self.veiled == Some(id)
   }
 
   /// When the cursor resting in the hot corner opens the overview, while
@@ -212,18 +223,42 @@ fn open_overview(
   Ok(())
 }
 
+/// Shows the window whose drag the overview carried on again, if it is
+/// still hidden, as its drag has ended: let go of, or the overview done
+/// with it. One dropped on a workspace not displayed stays hidden there.
+pub fn unveil(state: &mut WmState) {
+  let window = state
+    .overview
+    .veiled
+    .take()
+    .and_then(|id| state.container_by_id(id));
+  if let Some(window) = window {
+    state.pending_sync.queue_container_to_redraw(window);
+  }
+}
+
 /// Pixels from a monitor's corner, either way, that count as in it.
 const HOT_CORNER_SIZE: i32 = 2;
 
 /// Notes the cursor moving into or out of the hot corner of a monitor,
-/// opening the overview once it rests there for `hot_corner_delay_ms`.
-pub fn check_hot_corner(
+/// opening the overview once it rests there for `hot_corner_delay_ms`,
+/// and the left button being let go of, which ends a drag the overview
+/// carries on.
+pub fn on_mouse_event(
   event: &MouseEvent,
   state: &mut WmState,
   config: &UserConfig,
 ) -> anyhow::Result<()> {
-  let MouseEvent::Move { position, .. } = event else {
-    return Ok(());
+  let position = match event {
+    MouseEvent::Move { position, .. } => position,
+    MouseEvent::ButtonUp {
+      button: MouseButton::Left,
+      ..
+    } => {
+      unveil(state);
+      return Ok(());
+    }
+    _ => return Ok(()),
   };
 
   let corner = config.value.overview.hot_corner;
@@ -287,6 +322,11 @@ pub fn process_hot_corner(
     }
     crate::events::cancel_drag(window, state, config)?;
     crate::drop_indicator::hide_drop_indicator(state);
+
+    state.overview.veiled = Some(window.id());
+    if let Some(container) = state.container_by_id(window.id()) {
+      state.pending_sync.queue_container_to_redraw(container);
+    }
   }
 
   let layout = to_layout_mode(config.value.overview.layout);

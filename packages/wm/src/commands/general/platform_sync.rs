@@ -1103,6 +1103,10 @@ fn redraw_containers(
     // shown or hidden. Only the active tab of a stack is shown.
     let should_show =
       workspace.is_displayed() && !is_hidden_in_layout(*window);
+    // Hidden while the overview carries on its drag.
+    #[cfg(target_os = "windows")]
+    let should_show =
+      should_show && !state.overview.is_veiled(window.id());
     let new_display_state =
       match (previous_display_state.clone(), should_show) {
         (DisplayState::Hidden | DisplayState::Hiding, true) => {

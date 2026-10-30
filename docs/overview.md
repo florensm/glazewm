@@ -270,6 +270,7 @@ overview:
   # opens once per visit. A window being dragged there (by its title bar,
   # or with a tool such as AltSnap) carries its drag into the overview:
   # the drag on screen is cancelled and the window goes back into place,
+  # hidden until let go of (a tool such as AltSnap may keep moving it),
   # and it is dragged on in the overview, a picture of it under the cursor,
   # until the button is let go of over a workspace or beside a window,
   # where it lands; let go of over nothing, it stays where it was.

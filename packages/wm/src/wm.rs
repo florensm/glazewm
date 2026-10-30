@@ -153,6 +153,10 @@ impl WindowManager {
     {
       let state = &mut self.state;
 
+      // Any action follows the end of a drag the overview carried on, in
+      // case the mouse hook missed the button being let go of.
+      crate::overview::unveil(state);
+
       // What the WM held off while it was on screen resumes.
       if action == OverviewAction::Hidden {
         return if state.overview.mark_hidden(session) {
@@ -565,7 +569,7 @@ impl WindowManager {
       }
       PlatformEvent::Mouse(event) => {
         #[cfg(target_os = "windows")]
-        crate::overview::check_hot_corner(&event, state, config)?;
+        crate::overview::on_mouse_event(&event, state, config)?;
         handle_mouse_move(&event, state, config)
       }
       PlatformEvent::Window(window_event) => match window_event {
