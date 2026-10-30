@@ -897,6 +897,7 @@ impl Screen {
         .count()
     });
     tracing::debug!(
+      target: crate::OVERVIEW_LOG_TARGET,
       "Overview screen zooming into card {index} ({:?}, switching: \
        {is_switching}) from openness {:.2}; card on screen at {:?}, \
        scene windows shown: {shown_windows:?}.",

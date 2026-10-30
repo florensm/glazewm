@@ -1076,7 +1076,10 @@ impl Overview {
       .as_ref()
       .map_or(0, |frame| frame.style.close_duration_ms);
     if duration == 0 {
-      tracing::debug!("Overview closing without a zoom for {action:?}.");
+      tracing::debug!(
+        target: crate::OVERVIEW_LOG_TARGET,
+        "Overview closing without a zoom for {action:?}."
+      );
       return;
     }
 
@@ -1084,6 +1087,7 @@ impl Overview {
       .map(|index| self.closing_card(index, action))
       .collect::<Vec<_>>();
     tracing::debug!(
+      target: crate::OVERVIEW_LOG_TARGET,
       "Overview zooming into cards {cards:?} over {duration}ms for \
        {action:?}."
     );
@@ -1162,7 +1166,10 @@ impl Overview {
       .pending_pick
       .take_if(|(_, picked)| picked.elapsed() >= PICK_TIMEOUT);
     if let Some((action, _)) = overdue {
-      tracing::debug!("Overview pick timed out waiting for the WM.");
+      tracing::debug!(
+        target: crate::OVERVIEW_LOG_TARGET,
+        "Overview pick timed out waiting for the WM."
+      );
       self.start_closing(&action);
       self.after_input(None);
     }
@@ -1179,7 +1186,10 @@ impl Overview {
         .iter()
         .all(|screen| !screen.is_closing() || screen.is_zoomed_in())
     {
-      tracing::debug!("Overview zoom ended; hiding.");
+      tracing::debug!(
+        target: crate::OVERVIEW_LOG_TARGET,
+        "Overview zoom ended; hiding."
+      );
       self.close();
       return false;
     }
@@ -1282,6 +1292,7 @@ impl Overview {
           self.start_closing(&action);
         } else {
           tracing::debug!(
+            target: crate::OVERVIEW_LOG_TARGET,
             "Overview picked {action:?}; waiting for the WM."
           );
           self.pending_pick = Some((action.clone(), Instant::now()));
@@ -1473,6 +1484,7 @@ impl Overview {
   fn on_hide(&mut self) {
     let pending = self.pending_pick.take();
     tracing::debug!(
+      target: crate::OVERVIEW_LOG_TARGET,
       "Overview hide requested, {:?} after the pick.",
       pending.as_ref().map(|(_, picked)| picked.elapsed())
     );
@@ -1483,8 +1495,45 @@ impl Overview {
 
     // A closing overview hides itself once its zoom ends.
     if !self.is_closing() {
-      tracing::debug!("Overview hiding at once, without a zoom.");
+      tracing::debug!(
+        target: crate::OVERVIEW_LOG_TARGET,
+        "Overview hiding at once, without a zoom."
+      );
       self.close();
+    }
+  }
+
+  /// Closes on losing the foreground to another window, unless it is
+  /// closing on a pick, or waiting for the WM to carry one out.
+  fn on_activate(&mut self, wparam: WPARAM, lparam: LPARAM) {
+    // The low word of `wparam` is the activation state, and `lparam`
+    // the window being activated. After a pick, the window it zooms
+    // into has just been focused.
+    let is_to_own = self.screen_of(HWND(lparam.0)).is_some();
+    tracing::debug!(
+      target: crate::OVERVIEW_LOG_TARGET,
+      "Overview activation {:#x} (to own: {is_to_own}, closing: {}, \
+       pick pending: {}).",
+      wparam.0 & 0xffff,
+      self.is_closing(),
+      self.pending_pick.is_some()
+    );
+
+    if (wparam.0 & 0xffff) == WA_INACTIVE as usize
+      && !is_to_own
+      && self.frame.is_some()
+      && !self.is_closing()
+      && self.pending_pick.is_none()
+    {
+      tracing::debug!(
+        target: crate::OVERVIEW_LOG_TARGET,
+        "Overview lost the foreground; closing."
+      );
+      let was_done = self.is_done;
+      self.close();
+      if !was_done {
+        self.send(OverviewAction::Deactivated);
+      }
     }
   }
 
@@ -1537,25 +1586,7 @@ impl Overview {
         }
       }
       WM_ACTIVATE => {
-        // The low word of `wparam` is the activation state, and `lparam`
-        // the window being activated. After a pick, the window it zooms
-        // into has just been focused.
-        let is_to_own = self.screen_of(HWND(lparam.0)).is_some();
-
-        if (wparam.0 & 0xffff) == WA_INACTIVE as usize
-          && !is_to_own
-          && self.frame.is_some()
-          && !self.is_closing()
-          && self.pending_pick.is_none()
-        {
-          tracing::debug!("Overview lost the foreground; closing.");
-          let was_done = self.is_done;
-          self.close();
-          if !was_done {
-            self.send(OverviewAction::Deactivated);
-          }
-        }
-
+        self.on_activate(wparam, lparam);
         // Gives the window keyboard focus on activation.
         return None;
       }

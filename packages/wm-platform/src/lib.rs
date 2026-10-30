@@ -12,6 +12,10 @@ mod models;
 mod mouse_listener;
 mod native_window;
 pub mod perf;
+
+/// `tracing` target of the overview's trace of picks through to its
+/// closing zoom, which the WM writes to a file of its own.
+pub const OVERVIEW_LOG_TARGET: &str = "glazewm::overview";
 mod platform_event;
 mod platform_impl;
 mod single_instance;
