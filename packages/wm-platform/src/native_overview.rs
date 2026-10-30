@@ -164,10 +164,10 @@ impl NativeOverview {
   ///
   /// With `carried`, the handle of a window whose drag with the mouse the
   /// WM cancelled for the overview, the overview carries on that drag:
-  /// the window stays where it shows, where it would land is marked, and
-  /// once the button is let go of it lands there as if dragged in the
-  /// overview. It takes the keyboard only then, as the mouse button is
-  /// held until.
+  /// a picture of the window follows the cursor, where it would land is
+  /// marked, and once the button is let go of it lands there as if
+  /// dragged in the overview. It takes the keyboard only then, as the
+  /// mouse button is held until.
   ///
   /// Must be called on the WM thread, not the event loop thread.
   pub fn open(
@@ -1085,11 +1085,7 @@ impl Overview {
 
   /// Creates, moves or drops the floating window's picture.
   fn sync_ghost(&mut self) {
-    // One carried in from outside stays where it shows.
-    let floating = self
-      .interaction
-      .floating()
-      .filter(|_| !self.interaction.drag.is_some_and(|drag| drag.stays));
+    let floating = self.interaction.floating();
     let host = self.ghost_host();
 
     if self.ghost.as_ref().map(|ghost| ghost.hwnd) != floating {
