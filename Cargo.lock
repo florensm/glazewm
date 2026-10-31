@@ -2816,12 +2816,9 @@ name = "wm-cli"
 version = "0.0.0"
 dependencies = [
  "anyhow",
- "home",
  "serde_json",
  "tauri-winres",
  "tokio",
- "uuid",
- "windows",
  "wm-common",
  "wm-ipc-client",
 ]
