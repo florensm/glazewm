@@ -316,6 +316,11 @@ overview:
     # lands on it.
     ripples: false
 
+    # Whether a window closed from the overview puffs away once it is
+    # gone: a ring drawing in on where it was, and sparks (as many as
+    # `sparks`) out of it.
+    puff: true
+
     # Sparks bursting out of where a dropped window lands; 0 for none, at
     # most 48.
     sparks: 14

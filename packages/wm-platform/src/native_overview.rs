@@ -711,6 +711,19 @@ impl Drop for Screen {
 
 /// The overview, owned by its thread: a screen per monitor, and what the
 /// user does across them.
+/// A window asked to close from the overview, where it showed then, on
+/// which monitor's screen.
+struct Closing {
+  hwnd: isize,
+  monitor: u128,
+  rect: RectF,
+  asked: Instant,
+}
+
+/// How long a window asked to close may take before it no longer puffs
+/// away once gone.
+const CLOSE_PATIENCE: Duration = Duration::from_secs(10);
+
 struct Overview {
   /// The message-only window the WM posts to.
   control: HWND,
@@ -735,6 +748,9 @@ struct Overview {
   /// Ghosts let go of, flying into their cards, each with the screen it
   /// shows on.
   landing: Vec<(Ghost, usize)>,
+
+  /// Windows asked to close, until they are gone and puff away.
+  closing: Vec<Closing>,
 
   /// Cursor position at open, in screen coordinates. Windows sends a
   /// mouse move when a window appears under a still cursor, which must
@@ -772,6 +788,7 @@ impl Overview {
       screens: Vec::new(),
       ghost: None,
       landing: Vec::new(),
+      closing: Vec::new(),
       open_cursor: (0, 0),
       last_tick: Instant::now(),
       is_done: false,
@@ -920,6 +937,54 @@ impl Overview {
     }
     self.frame = Some(frame);
     self.after_layout();
+    self.puff_closed();
+  }
+
+  /// Remembers where window `hwnd`, asked to close, shows now, to puff it
+  /// away there once it is gone.
+  fn note_closing(&mut self, hwnd: isize) {
+    let shown = self.screens.iter().find_map(|screen| {
+      Some((screen.id()?, screen.shown_window_rect(hwnd)?))
+    });
+    if let Some((monitor, rect)) = shown {
+      self.closing.retain(|closing| closing.hwnd != hwnd);
+      self.closing.push(Closing {
+        hwnd,
+        monitor,
+        rect,
+        asked: Instant::now(),
+      });
+    }
+  }
+
+  /// Puffs away the windows asked to close that are gone, and forgets
+  /// those still there after `CLOSE_PATIENCE`, e.g. still asking whether
+  /// to save.
+  fn puff_closed(&mut self) {
+    let workspaces = &self.workspaces;
+    let is_gone = |hwnd: isize| {
+      !workspaces
+        .iter()
+        .any(|workspace| workspace.windows.iter().any(|w| w.hwnd == hwnd))
+    };
+
+    let (gone, waiting) = std::mem::take(&mut self.closing)
+      .into_iter()
+      .partition::<Vec<_>, _>(|closing| is_gone(closing.hwnd));
+    self.closing = waiting
+      .into_iter()
+      .filter(|closing| closing.asked.elapsed() < CLOSE_PATIENCE)
+      .collect();
+
+    for closing in gone {
+      let screen = self
+        .screens
+        .iter_mut()
+        .find(|screen| screen.id() == Some(closing.monitor));
+      if let Some(screen) = screen {
+        screen.puff(closing.rect);
+      }
+    }
   }
 
   /// Hides the overview, keeping its screens for the next open, and tells
@@ -953,6 +1018,7 @@ impl Overview {
 
     self.ghost = None;
     self.landing.clear();
+    self.closing.clear();
     self.pending_pick = None;
     self.vsync = None;
     (self.on_action)(self.session, OverviewAction::Hidden);
@@ -1316,6 +1382,10 @@ impl Overview {
 
   /// Acts on what the user did, after the interaction state took it in.
   fn after_input(&mut self, action: Option<OverviewAction>) {
+    if let Some(OverviewAction::CloseWindow(hwnd)) = action {
+      self.note_closing(hwnd);
+    }
+
     let floating = self.interaction.floating();
     let let_go = self.ghost.take_if(|ghost| Some(ghost.hwnd) != floating);
     if let Some(ghost) = let_go {
