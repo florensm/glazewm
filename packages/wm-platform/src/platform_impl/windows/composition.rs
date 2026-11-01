@@ -47,18 +47,22 @@ use windows::{
   UI::{
     Color,
     Composition::{
-      CompositionColorBrush, CompositionMappingMode,
-      CompositionPropertySet, CompositionRadialGradientBrush,
-      CompositionRoundedRectangleGeometry, CompositionSpriteShape,
-      CompositionSurfaceBrush, Compositor, ContainerVisual,
-      Desktop::DesktopWindowTarget, InsetClip, ScalarKeyFrameAnimation,
-      ShapeVisual, SpriteVisual, Vector2KeyFrameAnimation,
+      AnimationIterationBehavior, CompositionColorBrush,
+      CompositionMappingMode, CompositionPropertySet,
+      CompositionRadialGradientBrush, CompositionRoundedRectangleGeometry,
+      CompositionSpriteShape, CompositionSurfaceBrush, Compositor,
+      ContainerVisual, Desktop::DesktopWindowTarget, InsetClip,
+      ScalarKeyFrameAnimation, ShapeVisual, SpriteVisual,
+      Vector2KeyFrameAnimation,
     },
   },
 };
 
 use super::wallpaper_surface::{self, BakeKnobs};
-use crate::{BackdropOverlayParams, BorderOverlayParams, Rect};
+use crate::{
+  overview_effects::{pulse, PULSE_PERIOD_S},
+  BackdropOverlayParams, BorderOverlayParams, Rect,
+};
 
 /// The dedicated, self-pumping composition thread and its `Compositor`.
 struct CompositionThread {
@@ -959,7 +963,27 @@ pub(crate) struct BorderVisual {
   /// `set_corner_radius` can recompute the derived geometry (which
   /// depends on all three) from the other two's current values.
   ring: Cell<Ring>,
+
+  /// `Opacity`, set by the WM, and `Breath` and `Flash`, animated while
+  /// the ring breathes or blinks, whose product an expression keeps the
+  /// root's opacity at. So the compositor plays them on its own, frame
+  /// after frame, and the WM's opacity changes don't stop them.
+  knobs: CompositionPropertySet,
+  breath: ScalarKeyFrameAnimation,
+  breathes: Cell<bool>,
+  flash: ScalarKeyFrameAnimation,
+  flashes: Cell<bool>,
 }
+
+/// Key frames of a breath, sampled from the overview's `pulse` so both
+/// breathe alike.
+const BREATH_STEPS: u16 = 16;
+
+/// How many times a flashing ring blinks, how long each blink takes, and
+/// how faint it gets.
+const FLASHES: i32 = 3;
+const FLASH_BLINK: Duration = Duration::from_millis(320);
+const FLASH_LOW: f32 = 0.15;
 
 /// The inputs a stroked ring's geometry is derived from: the overlay's own
 /// (already-outset) size in pixels, the border width the stroke is drawn
@@ -1086,7 +1110,37 @@ impl BorderVisual {
 
   /// Updates the overlay's own opacity.
   pub(crate) fn set_opacity(&self, value: f32) -> crate::Result<()> {
-    self.root.SetOpacity(value)?;
+    self.knobs.InsertScalar(h!("Opacity"), value)?;
+    Ok(())
+  }
+
+  /// Starts or stops the ring breathing.
+  pub(crate) fn set_pulse(&self, pulse: bool) -> crate::Result<()> {
+    if self.breathes.replace(pulse) == pulse {
+      return Ok(());
+    }
+
+    if pulse {
+      self.knobs.StartAnimation(h!("Breath"), &self.breath)?;
+    } else {
+      self.knobs.StopAnimation(h!("Breath"))?;
+      self.knobs.InsertScalar(h!("Breath"), 1.0)?;
+    }
+    Ok(())
+  }
+
+  /// Blinks the ring a few times when `flash` turns on; stops it when off.
+  pub(crate) fn set_flash(&self, flash: bool) -> crate::Result<()> {
+    if self.flashes.replace(flash) == flash {
+      return Ok(());
+    }
+
+    if flash {
+      self.knobs.StartAnimation(h!("Flash"), &self.flash)?;
+    } else {
+      self.knobs.StopAnimation(h!("Flash"))?;
+      self.knobs.InsertScalar(h!("Flash"), 1.0)?;
+    }
     Ok(())
   }
 
@@ -1147,8 +1201,36 @@ fn build_border_visual_tree(
   shape.SetStrokeBrush(&stroke_brush)?;
 
   let root = compositor.CreateShapeVisual()?;
-  root.SetOpacity(params.opacity)?;
   root.Shapes()?.Append(&shape)?;
+
+  let knobs = compositor.CreatePropertySet()?;
+  knobs.InsertScalar(h!("Opacity"), params.opacity)?;
+  knobs.InsertScalar(h!("Breath"), 1.0)?;
+  knobs.InsertScalar(h!("Flash"), 1.0)?;
+  let opacity = compositor.CreateExpressionAnimationWithExpression(h!(
+    "knobs.Opacity * knobs.Breath * knobs.Flash"
+  ))?;
+  opacity.SetReferenceParameter(h!("knobs"), &knobs)?;
+  root.StartAnimation(h!("Opacity"), &opacity)?;
+
+  let breath = compositor.CreateScalarKeyFrameAnimation()?;
+  for step in 0..=BREATH_STEPS {
+    let progress = f32::from(step) / f32::from(BREATH_STEPS);
+    breath.InsertKeyFrame(progress, pulse(progress * PULSE_PERIOD_S))?;
+  }
+  breath.SetDuration(Duration::from_secs_f32(PULSE_PERIOD_S).into())?;
+  breath.SetIterationBehavior(AnimationIterationBehavior::Forever)?;
+  if params.pulse {
+    knobs.StartAnimation(h!("Breath"), &breath)?;
+  }
+
+  // Ends lit, where the expression leaves it once the blinks are done.
+  let flash = compositor.CreateScalarKeyFrameAnimation()?;
+  flash.InsertKeyFrame(0.0, 1.0)?;
+  flash.InsertKeyFrame(0.5, FLASH_LOW)?;
+  flash.InsertKeyFrame(1.0, 1.0)?;
+  flash.SetDuration(FLASH_BLINK.into())?;
+  flash.SetIterationCount(FLASHES)?;
 
   let clip = compositor.CreateInsetClip()?;
   root.SetClip(&clip)?;
@@ -1167,6 +1249,12 @@ fn build_border_visual_tree(
       width: params.width,
       corner_radius: params.corner_radius,
     }),
+    knobs,
+    breath,
+    breathes: Cell::new(params.pulse),
+    flash,
+    // A ring created already flashing doesn't blink: nothing changed.
+    flashes: Cell::new(params.flash),
   };
 
   // Sizes the root and derives the stroke geometry through the one place

@@ -64,6 +64,8 @@ mod tests {
       width: 2.0,
       corner_radius: 8.0,
       opacity,
+      pulse: false,
+      flash: false,
     }
   }
 

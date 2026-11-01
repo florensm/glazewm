@@ -14,9 +14,9 @@ const RIPPLE_MS: f32 = 480.0;
 /// How long a spark flies before it has faded out.
 const SPARK_MS: f32 = 750.0;
 
-/// How long one breath of the glow takes, in seconds, and how far it
-/// dims at its faintest.
-const PULSE_PERIOD_S: f32 = 1.8;
+/// How long one breath of the glow, or of a breathing border, takes, in
+/// seconds, and how far it dims at its faintest.
+pub(crate) const PULSE_PERIOD_S: f32 = 1.8;
 const PULSE_DEPTH: f32 = 0.35;
 
 /// A ring spreading out of a rect and fading.
@@ -142,7 +142,8 @@ impl Burst {
   }
 }
 
-/// How strongly the breathing glow shows `elapsed_s` after it started:
+/// How strongly the breathing glow (or border) shows `elapsed_s` after it
+/// started:
 /// fully at first, dimming and brightening again once per period.
 pub(crate) fn pulse(elapsed_s: f32) -> f32 {
   let phase = (elapsed_s / PULSE_PERIOD_S * TAU).cos();

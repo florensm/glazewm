@@ -1050,7 +1050,7 @@ impl Screen {
   }
 
   /// Places every thumbnail where its animation has it now. Returns
-  /// whether a highlight is still gliding.
+  /// whether a highlight is still gliding, or a border breathing.
   fn place(&mut self) -> bool {
     let context = self.place_context();
     let (view, scale_factor) = (context.view, self.metrics.scale_factor);
@@ -1079,6 +1079,7 @@ impl Screen {
       }
     }
 
+    let mut breathes = false;
     if layout.has_scene() {
       let area = self.area;
       let zoom_card = context.zoom_card;
@@ -1120,11 +1121,12 @@ impl Screen {
         }
       }
 
-      self.scene_borders.place(&borders, &view);
+      breathes = self.scene_borders.place(&borders, &view);
     }
 
     let is_gliding = self.place_overlays(&context, shift)
-      | self.place_effects(fade, shift);
+      | self.place_effects(fade, shift)
+      | breathes;
     self.was_dragging = self.focus.is_dragging;
 
     let search_height = SEARCH_HEIGHT * scale_factor;

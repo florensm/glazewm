@@ -1309,6 +1309,14 @@ pub struct BorderEffectConfig {
   /// `corner_style`'s fixed presets (`square`/`small_rounded`/`rounded`)
   /// allow.
   pub radius: Option<LengthValue>,
+
+  /// Whether the border slowly breathes, dimming and brightening again,
+  /// e.g. to draw the eye to `urgent_window`.
+  pub pulse: bool,
+
+  /// Whether the border blinks a few times as a shown window takes these
+  /// effects, e.g. as it asks for attention.
+  pub flash: bool,
 }
 
 impl Default for BorderEffectConfig {
@@ -1318,6 +1326,8 @@ impl Default for BorderEffectConfig {
       color: BorderColorSource::default(),
       width: LengthValue::from_px(2),
       radius: None,
+      pulse: false,
+      flash: false,
     }
   }
 }
@@ -1366,6 +1376,8 @@ impl BorderEffectConfig {
       width,
       corner_radius,
       opacity: 1.0,
+      pulse: self.pulse,
+      flash: self.flash,
     }
   }
 }

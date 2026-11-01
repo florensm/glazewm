@@ -1264,6 +1264,8 @@ mod tests {
       width: 3.0,
       corner_radius: 8.0,
       opacity: 1.0,
+      pulse: false,
+      flash: false,
     };
 
     let bounds = NativeBorderOverlay::bounds(&frame, &params);
