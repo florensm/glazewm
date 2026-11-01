@@ -252,6 +252,17 @@ window_effects:
       grain: 0.05
       parallax: 1.0
 
+  # Windows that asked for attention, until focused. Same keys as above,
+  # replacing `other_windows` for them; unset, they look like the others.
+  # urgent_window:
+  #   border:
+  #     enabled: true
+  #     color: "#f5a524"
+  #     width: "2px"
+  #   corner_style:
+  #     enabled: true
+  #     style: "square"
+
 window_behavior:
   # Leave fullscreen when a new window opens on the same workspace.
   exit_fullscreen_on_new_window: true
@@ -325,7 +336,9 @@ overview:
     # Slowly breathing glow. Keeps the overview animating every frame.
     pulse: false
     # Ring spreading out of a card as it is clicked, or a window lands.
-    ripples: true
+    ripples: false
+    # A window closed from the overview puffs away into sparks.
+    puff: true
     # Sparks bursting where a dropped window lands: 0 (none) to 48.
     sparks: 14
     # Whether a card wobbles as a window lands on it.

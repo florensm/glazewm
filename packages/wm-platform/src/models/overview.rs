@@ -197,6 +197,10 @@ pub struct OverviewEffects {
   /// lands on it.
   pub ripples: bool,
 
+  /// Whether a window closed from the overview puffs away: a ring drawing
+  /// in on where it was and sparks (as many as `sparks`) out of it.
+  pub puff: bool,
+
   /// Sparks bursting out of where a dropped window lands; `0` for none,
   /// at most `MAX_SPARKS`.
   pub sparks: u32,
@@ -237,6 +241,7 @@ impl OverviewEffects {
     glow: false,
     pulse: false,
     ripples: false,
+    puff: false,
     sparks: 0,
     jelly: false,
     stagger_ms: 0,
@@ -252,7 +257,8 @@ impl Default for OverviewEffects {
     Self {
       glow: true,
       pulse: false,
-      ripples: true,
+      ripples: false,
+      puff: true,
       sparks: 14,
       jelly: true,
       stagger_ms: 24,

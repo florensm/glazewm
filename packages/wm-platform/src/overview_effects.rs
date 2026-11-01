@@ -24,7 +24,7 @@ const PULSE_DEPTH: f32 = 0.35;
 pub(crate) struct Ripple {
   from: RectF,
 
-  /// How far past `from` it spreads, on every side.
+  /// How far past `from` it spreads, on every side; negative draws it in.
   reach: f32,
 
   age_ms: f32,

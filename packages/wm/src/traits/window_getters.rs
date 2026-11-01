@@ -198,6 +198,15 @@ pub trait WindowGetters: CommonGetters {
     self.urgency_alert_at().is_some()
   }
 
+  /// Which `window_effects` set the window takes, as it is focused or
+  /// not.
+  ///
+  /// Spelled out in full: `ambassador` copies the signature into every
+  /// delegating type's module.
+  fn effect_set(&self, is_focused: bool) -> wm_common::EffectSet {
+    wm_common::EffectSet::of(is_focused, self.is_urgent())
+  }
+
   /// Gets the cached native window properties.
   fn native_properties(&self) -> NativeWindowProperties;
 

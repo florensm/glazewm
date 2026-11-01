@@ -14,7 +14,8 @@ use anyhow::Context;
 use tokio::sync::mpsc;
 use uuid::Uuid;
 use wm_common::{
-  HotCorner, Layout, OverviewLayout, WindowState, WorkspaceConfig,
+  EffectSet, HotCorner, Layout, OverviewLayout, WindowState,
+  WorkspaceConfig,
 };
 use wm_platform::{
   Color, MouseButton, MouseEvent, NativeBackdropOverlay,
@@ -606,10 +607,11 @@ pub fn prepare_target(
 }
 
 /// How the WM draws windows, resolved once per frame: its effects on the
-/// focused window and on the others.
+/// focused window, on urgent ones and on the others.
 struct WindowLooks {
   focused_id: Option<Uuid>,
   focused: WindowLook,
+  urgent: WindowLook,
   other: WindowLook,
 }
 
@@ -621,24 +623,24 @@ struct WindowLook {
 
 impl WindowLooks {
   fn new(state: &WmState, config: &UserConfig) -> Self {
-    let look = |is_focused| {
-      let (opacity, _, overlays) =
-        surrogate_effects_for(is_focused, config);
+    let look = |set| {
+      let (opacity, _, overlays) = surrogate_effects_for(set, config);
       WindowLook { opacity, overlays }
     };
 
     Self {
       focused_id: state.focused_container().map(|focused| focused.id()),
-      focused: look(true),
-      other: look(false),
+      focused: look(EffectSet::Focused),
+      urgent: look(EffectSet::Urgent),
+      other: look(EffectSet::Other),
     }
   }
 
   fn of(&self, window: &WindowContainer) -> &WindowLook {
-    if self.focused_id == Some(window.id()) {
-      &self.focused
-    } else {
-      &self.other
+    match window.effect_set(self.focused_id == Some(window.id())) {
+      EffectSet::Focused => &self.focused,
+      EffectSet::Urgent => &self.urgent,
+      EffectSet::Other => &self.other,
     }
   }
 }

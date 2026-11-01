@@ -571,9 +571,10 @@ mod tests {
   use std::path::PathBuf;
 
   use wm_common::{
-    ParsedConfig, ResizeStyle, WindowTransitionStyle, WorkspaceSwitchStyle,
+    EffectSet, ParsedConfig, ResizeStyle, WindowTransitionStyle,
+    WorkspaceSwitchStyle,
   };
-  use wm_platform::Rect;
+  use wm_platform::{LengthValue, Rect};
 
   use super::*;
   use crate::{models::Workspace, test_utils::mock_workspace_configs};
@@ -702,6 +703,38 @@ window_effects:
       serde_yaml::from_str(yaml).expect("legacy config should parse");
 
     assert!(config.window_effects.focused_window.backdrop.enabled);
+  }
+
+  #[test]
+  fn urgent_windows_take_their_own_effects_or_else_the_others() {
+    let yaml = r"
+window_effects:
+  other_windows:
+    border:
+      enabled: true
+      width: '2px'
+";
+    let config: ParsedConfig =
+      serde_yaml::from_str(yaml).expect("config should parse");
+    let effects = &config.window_effects;
+    assert_eq!(
+      effects.for_set(EffectSet::Urgent).border.width,
+      effects.other_windows.border.width,
+      "unset"
+    );
+
+    let yaml =
+      format!("{yaml}  urgent_window:\n    border:\n      width: '6px'\n");
+    let config: ParsedConfig =
+      serde_yaml::from_str(&yaml).expect("config should parse");
+    let effects = &config.window_effects;
+    assert_eq!(
+      effects.for_set(EffectSet::Urgent).border.width,
+      LengthValue::from_px(6)
+    );
+    assert!(!effects.for_set(EffectSet::Urgent).border.enabled);
+    assert!(effects.any(|set| set.border.enabled));
+    assert_eq!(EffectSet::of(true, true), EffectSet::Focused);
   }
 
   /// Creates `NativeWindowProperties` with the given process name and
