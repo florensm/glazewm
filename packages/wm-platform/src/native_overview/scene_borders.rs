@@ -3,14 +3,11 @@
 //! border overlays the WM hides. Each is one small ring stretched to any
 //! size, so moving or zooming a window redraws nothing.
 
-use std::time::Instant;
-
 use windows::Win32::Foundation::HWND;
 
 use crate::{
   dwm_thumbnail::Thumbnail,
   overview_chrome::{fade, SliceLook},
-  overview_effects::pulse,
   overview_layout::RectF,
   overview_overlays::NineSlice,
   BorderOverlayParams,
@@ -37,9 +34,6 @@ pub(super) struct SceneBorder {
 #[derive(Default)]
 pub(super) struct SceneBorders {
   rings: Vec<NineSlice>,
-
-  /// When the breathing borders shown started breathing, while any is.
-  breath_from: Option<Instant>,
 }
 
 impl SceneBorders {
@@ -68,22 +62,8 @@ impl SceneBorders {
   }
 
   /// Shows `borders`, cut to `clip`, and hides the rings left over.
-  /// Returns whether any breathes, and so has to be placed again next
-  /// frame.
   #[allow(clippy::cast_possible_truncation)]
-  pub fn place(&mut self, borders: &[SceneBorder], clip: &RectF) -> bool {
-    let breathes = borders
-      .iter()
-      .take(self.rings.len())
-      .any(|border| border.params.pulse);
-    let breath_from = if breathes {
-      *self.breath_from.get_or_insert_with(Instant::now)
-    } else {
-      self.breath_from = None;
-      Instant::now()
-    };
-    let breath = pulse(breath_from.elapsed().as_secs_f32());
-
+  pub fn place(&mut self, borders: &[SceneBorder], clip: &RectF) {
     let mut rings = self.rings.iter_mut();
 
     for border in borders {
@@ -101,18 +81,16 @@ impl SceneBorders {
         fade(params.color, params.opacity),
       ));
       let outset = params.width.round() * border.scale;
-      let opacity = if params.pulse {
-        border.opacity * breath
-      } else {
-        border.opacity
-      };
-      ring.place(&border.rect.inset(-outset), border.scale, clip, opacity);
+      ring.place(
+        &border.rect.inset(-outset),
+        border.scale,
+        clip,
+        border.opacity,
+      );
     }
 
     for ring in rings {
       ring.hide();
     }
-
-    breathes
   }
 }
