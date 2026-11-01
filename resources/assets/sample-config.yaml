@@ -21,6 +21,7 @@ animations:
     enabled: true
     duration_ms: 220
     easing: "spring(1.0, 800, 0.0001)"
+    threshold_px: 10
 
   window_resize:
     enabled: true
@@ -125,6 +126,12 @@ gaps:
     right: "20px"
     bottom: "20px"
     left: "20px"
+  # Overrides `outer_gap` while a workspace has a single window.
+  # single_window_outer_gap:
+  #   top: "60px"
+  #   right: "200px"
+  #   bottom: "60px"
+  #   left: "200px"
 
 stack:
   # 0px hides the tab bar. Windows only.
@@ -137,6 +144,8 @@ stack:
   tab_active_background: "#3a3a3a"
   tab_hover_background: "#2c2c2c"
   tab_urgent_background: "#8a5a00"
+  # Transparent shows the strip behind inactive tabs.
+  tab_inactive_background: "#00000000"
   tab_text_color: "#ffffff"
   tab_inactive_text_color: "#a0a0a0"
 
@@ -144,12 +153,22 @@ stack:
   tab_font_family: "Segoe UI Variable Text"
   tab_font_size: "12px"
   tab_corner_radius: "8px"
+  # Below about 60px, tabs only show their icon.
+  tab_min_width: "48px"
+  # 0px lets tabs share the whole bar.
+  tab_max_width: "0px"
+  show_tab_icons: true
+  # Prefix titles with their position ("1. Title").
+  show_tab_numbers: false
 
   # 'hover', 'always' or 'never'.
   tab_close_button: "hover"
 
-  # Regex replacements for the titles shown on tabs.
+  # Regex replacements for the titles shown on tabs, in order.
   tab_title_overrides: []
+  # tab_title_overrides:
+  #   - regex: ' - Mozilla Firefox$'
+  #     replace: ""
 
   # New windows opened from a stacked window join its stack.
   new_windows_join_focused_stack: false
@@ -166,8 +185,14 @@ stack:
   #   - name: "browsers"
   #     match:
   #       - window_process: { equals: "firefox" }
+  #         # Also `window_class` and `window_title`.
   #     exclude:
   #       - window_title: { includes: "Picture-in-Picture" }
+  #     # Where to create the stack if it doesn't exist yet. Defaults to
+  #     # where the window would open.
+  #     workspace: "2"
+  #     # Let owned windows (usually dialogs) join too.
+  #     allow_owned: false
   #     # Keys sent to each window as it joins.
   #     send_keys_on_join: ["ctrl+t"]
   #     # Close older tabs with the joining window's title.
@@ -176,6 +201,10 @@ stack:
   #     join_untitled:
   #       min_width: "800px"
   #       min_height: "500px"
+
+  # How long a window that might still match an `auto_stack` rule is held
+  # back while it has no title, in ms.
+  auto_stack_title_timeout_ms: 1500
 
 window_effects:
   hide_border_on_fullscreen: false
@@ -228,11 +257,13 @@ window_effects:
       enabled: true
       color: "#a1a1a1"
       width: "2px"
+      # radius: "12px"
     hide_title_bar:
       enabled: false
     corner_style:
       enabled: true
       style: "square"
+    # corner_radius: "8px"
     transparency:
       enabled: false
       opacity: "90%"
@@ -259,9 +290,17 @@ window_effects:
   #     enabled: true
   #     color: "#f5a524"
   #     width: "2px"
+  #     # radius: "12px"
+  #   hide_title_bar:
+  #     enabled: false
   #   corner_style:
   #     enabled: true
   #     style: "square"
+  #   # corner_radius: "8px"
+  #   transparency:
+  #     enabled: false
+  #     opacity: "90%"
+  #   # backdrop: same keys as `focused_window`'s.
 
 window_behavior:
   # Leave fullscreen when a new window opens on the same workspace.
@@ -392,7 +431,11 @@ special_workspace:
   layout: "scrolling"
 
 workspaces:
-  # Each can set its own `layout`, e.g. `layout: "scrolling"`.
+  # Each can also set:
+  #   display_name: "Web"     # Shown instead of the name, e.g. in bars.
+  #   bind_to_monitor: 0      # Monitor index, left to right.
+  #   keep_alive: true        # Kept even while empty and not shown.
+  #   layout: "scrolling"     # Overrides `general.default_layout`.
   - name: "1"
   - name: "2"
   - name: "3"
@@ -416,6 +459,9 @@ window_rules:
   # - commands: ["move --workspace special"]
   #   match:
   #     - window_process: { equals: "Spotify" }
+  # Each rule can also set `on` (when it runs: 'manage', 'focus' and/or
+  # 'title_change'; default ['manage', 'title_change']) and `run_once`
+  # (default true: once per window).
   - commands: ["ignore"]
     match:
       - window_process: { equals: "zebar" }
@@ -452,6 +498,8 @@ window_rules:
   #   match:
   #     - window_process: { equals: "MyApp" }
 
+# Modes swap in their own keybindings, e.g. with `wm-enable-binding-mode`.
+# Each can set a `display_name`, shown by bars.
 binding_modes:
   - name: "stack"
     keybindings:
