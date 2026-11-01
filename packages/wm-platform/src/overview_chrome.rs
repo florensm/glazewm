@@ -24,6 +24,10 @@ use crate::{
 /// Height and font size of the title strip under a window on a card.
 const TILE_CAPTION: (f32, f32) = (16.0, 9.0);
 
+/// Largest and smallest app icon shown over a window's preview on a card,
+/// in logical pixels, and most of the window's shorter side it takes.
+const TILE_ICON: (f32, f32, f32) = (28.0, 10.0, 0.3);
+
 /// Height and font size of the title strip of the dragged window.
 const GHOST_CAPTION: (f32, f32) = (18.0, 9.0);
 
@@ -510,9 +514,9 @@ fn draw_diamond(
   size * 2.0 + units.px(6.0)
 }
 
-/// Draws a window on a card: a hole for its preview (or its icon when it
-/// has none), its title along the bottom, and a border around it and its
-/// stack's tab bar.
+/// Draws a window on a card: a hole for its preview with its app's icon
+/// in the middle (or just the icon when it has none), its title along the
+/// bottom, and a border around it and its stack's tab bar.
 fn draw_tile(
   surface: &mut Surface,
   fonts: &mut Fonts,
@@ -535,6 +539,29 @@ fn draw_tile(
     surface
       .canvas()
       .erase_rounded_rect(&tile.hole.to_rect(), round(radius_px + grown));
+
+    // Over the preview, which the card is above: on a disc, so it reads
+    // on any content.
+    let (largest, smallest, share) = TILE_ICON;
+    let size = units.px(largest).min(tile.rect.w.min(tile.rect.h) * share);
+    if size >= units.px(smallest) {
+      let (cx, cy) = tile.rect.center();
+      let disc = size * 1.5;
+      surface.canvas().fill_rounded_rect(
+        &RectF::new(cx - disc / 2.0, cy - disc / 2.0, disc, disc)
+          .to_rect(),
+        round(disc / 2.0),
+        fade(style.card, 0.8 * opacity),
+      );
+      let icon = RectF::new(cx - size / 2.0, cy - size / 2.0, size, size);
+      draw_window_icon(
+        surface,
+        tile.hwnd,
+        &icon.to_rect(),
+        opacity,
+        notify,
+      );
+    }
   } else {
     surface.canvas().fill_rounded_rect(
       &rect,
@@ -745,32 +772,12 @@ pub(crate) fn draw_tag(
 /// in logical pixels.
 const LABEL: (f32, f32) = (9.0, 11.5);
 
-/// Size of the app icons after a workspace's name, the gap between them,
-/// and the gap between them and the name, in logical pixels.
-const LABEL_ICONS: (f32, f32, f32) = (14.0, 3.0, 7.0);
-
-/// Most app icons shown after a workspace's name; the rest are counted.
-pub(crate) const MAX_LABEL_APPS: usize = 4;
-
 /// A workspace's name shown beside its card.
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct LabelPicture {
   pub text: String,
   pub is_displayed: bool,
   pub is_special: bool,
-
-  /// A window of each app on the workspace, whose icon shows after the
-  /// name, and how many more apps there are.
-  pub apps: Vec<isize>,
-  pub more_apps: usize,
-
-  /// Bumped as window icons arrive, so the label picks up its apps'.
-  pub icons: u64,
-}
-
-/// Text counting the apps a label has no room to show.
-fn more_apps_text(label: &LabelPicture) -> Option<String> {
-  (label.more_apps > 0).then(|| format!("+{}", label.more_apps))
 }
 
 /// Pixel size of `label`.
@@ -792,36 +799,19 @@ pub(crate) fn label_size(
     0.0
   };
 
-  let (icon, icon_gap, lead) = LABEL_ICONS;
-  let apps = if label.apps.is_empty() {
-    0.0
-  } else {
-    // At most `MAX_LABEL_APPS`.
-    #[allow(clippy::cast_precision_loss)]
-    let count = label.apps.len() as f32;
-    let more = more_apps_text(label).map_or(0.0, |more| {
-      units.px(icon_gap)
-        + to_f32(text_width(&fonts.get(units.px(font_size), false), &more))
-    });
-    units.px(lead + count * icon + (count - 1.0) * icon_gap) + more
-  };
-
   (
-    round(units.px(2.0 * padding) + diamond + to_f32(text) + apps).max(1),
+    round(units.px(2.0 * padding) + diamond + to_f32(text)).max(1),
     round(units.px(LABEL_HEIGHT)).max(1),
   )
 }
 
 /// Draws `label` into `surface`, `label_size` big: the name on a pill,
-/// in the accent color for the focused workspace, then its apps' icons.
-///
-/// `notify` is told when a window icon that wasn't cached yet arrives.
+/// in the accent color for the focused workspace.
 pub(crate) fn draw_label(
   surface: &mut Surface,
   label: &LabelPicture,
   style: &OverviewStyle,
   scale_factor: f32,
-  notify: (HWND, u32),
 ) {
   let units = Units { scale_factor };
   let (padding, font_size) = LABEL;
@@ -846,10 +836,9 @@ pub(crate) fn draw_label(
   }
 
   let mut fonts = Fonts::new(&style.font_family);
-  let font = fonts.get(units.px(font_size), label.is_displayed);
   draw_text(
     surface,
-    &font,
+    &fonts.get(units.px(font_size), label.is_displayed),
     &label.text,
     &Rect::from_ltrb(round(left), 0, surface.width, surface.height),
     if label.is_displayed {
@@ -859,31 +848,6 @@ pub(crate) fn draw_label(
     },
     Align::Left,
   );
-
-  if label.apps.is_empty() {
-    return;
-  }
-
-  let (icon, icon_gap, lead) = LABEL_ICONS;
-  let size = units.px(icon);
-  let top = (to_f32(surface.height) - size) / 2.0;
-  left += to_f32(text_width(&font, &label.text)) + units.px(lead);
-  for hwnd in &label.apps {
-    let rect = RectF::new(left, top, size, size);
-    draw_window_icon(surface, *hwnd, &rect.to_rect(), 1.0, notify);
-    left += size + units.px(icon_gap);
-  }
-
-  if let Some(more) = more_apps_text(label) {
-    draw_text(
-      surface,
-      &fonts.get(units.px(font_size), false),
-      &more,
-      &Rect::from_ltrb(round(left), 0, surface.width, surface.height),
-      with_alpha(style.text, 0.7),
-      Align::Left,
-    );
-  }
 }
 
 /// Font size and padding of the note shown where a workspace has no
