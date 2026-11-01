@@ -6,8 +6,7 @@ use tracing::debug;
 #[cfg(target_os = "windows")]
 use tracing::warn;
 use wm_common::{
-  CursorJumpTrigger, DisplayState, EffectSet, HideCorner, HideMethod,
-  WindowState, WmEvent,
+  CursorJumpTrigger, DisplayState, EffectSet, WindowState, WmEvent,
 };
 #[cfg(target_os = "windows")]
 use wm_common::{
@@ -971,9 +970,6 @@ fn redraw_containers(
     }
   }
 
-  // Get monitors by their optimal hide corner.
-  let monitors_by_hide_corner = state.monitors_by_hide_corner();
-
   // Whether any window in this redraw cycle changes size. Pure
   // translations in the same cycle then share the `window_resize` timing
   // so all edges stay in lock-step during the relayout (see
@@ -1033,13 +1029,6 @@ fn redraw_containers(
 
     let workspace =
       window.workspace().context("Window has no workspace.")?;
-
-    let monitor = window.monitor().context("No monitor.")?;
-    let hide_corner = monitors_by_hide_corner
-      .iter()
-      .find(|(m, _)| m.id() == monitor.id())
-      .map(|(_, hide_corner)| hide_corner)
-      .context("Monitor not found in hide corner map.")?;
 
     let z_order = match window.state() {
       _ if is_shown_on_top(window) => WindowZOrder::TopMost,
@@ -1285,7 +1274,8 @@ fn redraw_containers(
 
     #[cfg(target_os = "windows")]
     if let Some(params) = entry_transition {
-      let monitor_rect = monitor.to_rect()?;
+      let monitor_rect =
+        window.monitor().context("No monitor.")?.to_rect()?;
       let native_ref = window.native();
       state.animation_manager.start_open_animation(
         window.id(),
@@ -1519,9 +1509,9 @@ fn redraw_containers(
         let already_positioned = false;
 
         // Whether the uncloak below is still owed. `reposition_window`
-        // performs it itself under `HideMethod::Cloak`, and repeating the
-        // `DwmSetWindowAttribute` call is the single most expensive thing
-        // in this arm -- see `CloakState`.
+        // performs it itself, and repeating the `DwmSetWindowAttribute`
+        // call is the single most expensive thing in this arm -- see
+        // `CloakState`.
         #[cfg(target_os = "windows")]
         let mut cloak_state = CloakState::Untouched;
         #[cfg(target_os = "windows")]
@@ -1571,11 +1561,9 @@ fn redraw_containers(
             match reposition_window(
               window,
               apply_rect,
-              *hide_corner,
               &z_order,
               is_visible,
               has_surrogate,
-              config,
             ) {
               // LINT: Its fields are Windows-only.
               #[cfg_attr(
@@ -1609,10 +1597,9 @@ fn redraw_containers(
         }
 
         // Uncloak after repositioning so the window is revealed at the
-        // correct position. This undoes `set_cloaked(true)` from
-        // the `Frozen` branch for non-`HideMethod::Cloak`
-        // configurations (that method already calls `set_cloaked`
-        // internally inside `reposition_window`).
+        // correct position, undoing the `Frozen` branch's
+        // `set_cloaked(true)`. Usually `reposition_window` already did it
+        // (see `CloakState`).
         #[cfg(target_os = "windows")]
         if is_visible {
           let _uncloak_scope = perf::scope(Stage::ApplyUncloak);
@@ -1678,8 +1665,7 @@ fn redraw_containers(
     // taskbar, we only need to set visibility if `show_all_in_taskbar` is
     // `false`.
     #[cfg(target_os = "windows")]
-    if config.value.general.hide_method == HideMethod::Cloak
-      && !config.value.general.show_all_in_taskbar
+    if !config.value.general.show_all_in_taskbar
       && matches!(
         window.display_state(),
         DisplayState::Showing | DisplayState::Hiding
@@ -1825,10 +1811,10 @@ struct Reposition {
 /// Whether [`reposition_window`] already applied the window's cloak state.
 ///
 /// `redraw_containers`' `Apply` arm uncloaks visible windows itself, but
-/// `HideMethod::Cloak` means [`reposition_window`] has already done
-/// exactly that. The repeat `DwmSetWindowAttribute(DWMWA_CLOAK)` is not
-/// free: it measured ~4.8ms per window, ~27% of the whole `rd_apply` stage
-/// on an eight-window relayout.
+/// [`reposition_window`] has usually already done exactly that. The repeat
+/// `DwmSetWindowAttribute(DWMWA_CLOAK)` is not free: it measured ~4.8ms
+/// per window, ~27% of the whole `rd_apply` stage on an eight-window
+/// relayout.
 #[cfg(target_os = "windows")]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum CloakState {
@@ -1842,7 +1828,6 @@ enum CloakState {
 fn reposition_window(
   window: &WindowContainer,
   rect: &Rect,
-  hide_corner: HideCorner,
   // LINT: `z_order` is only used on Windows.
   #[cfg_attr(not(target_os = "windows"), allow(unused_variables))]
   z_order: &WindowZOrder,
@@ -1853,51 +1838,7 @@ fn reposition_window(
   // neighbours.
   #[cfg_attr(not(target_os = "windows"), allow(unused_variables))]
   has_surrogate: bool,
-  config: &UserConfig,
 ) -> anyhow::Result<Reposition> {
-  // For `HideMethod::PlaceInCorner`, we need to reposition hidden windows
-  // to the corner of the monitor.
-  if config.value.general.hide_method == HideMethod::PlaceInCorner
-    && !is_visible
-  {
-    const VISIBLE_SLIVER: i32 = 1;
-
-    let monitor_rect = window
-      .monitor()
-      .context("No monitor.")?
-      .native_properties()
-      .working_area;
-
-    let frame = window.native_properties().frame;
-
-    let position_y = monitor_rect.bottom - VISIBLE_SLIVER;
-    let position_x = match hide_corner {
-      HideCorner::BottomLeft => {
-        monitor_rect.left + VISIBLE_SLIVER - frame.width()
-      }
-      HideCorner::BottomRight => monitor_rect.right - VISIBLE_SLIVER,
-    };
-
-    // Even though the window size is unchanged, `NativeWindow::set_frame`
-    // is used instead of `NativeWindow::reposition` because the latter
-    // resulted in occasional incorrect positionings on macOS.
-    window.native().set_frame(&Rect::from_xy(
-      position_x,
-      position_y,
-      frame.width(),
-      frame.height(),
-    ))?;
-
-    return Ok(Reposition {
-      #[cfg(target_os = "windows")]
-      cloak_state: CloakState::Untouched,
-      #[cfg(target_os = "windows")]
-      moved: true,
-      #[cfg(target_os = "windows")]
-      sync_elapsed: None,
-    });
-  }
-
   #[cfg(target_os = "windows")]
   let mut cloak_state = CloakState::Untouched;
   #[cfg(target_os = "windows")]
@@ -1968,9 +1909,7 @@ fn reposition_window(
       let current_frame = window.native().frame_with_shadows().ok();
       let already_at_rect = !window.has_pending_dpi_adjustment()
         && current_frame.as_ref() == Some(rect)
-        && (is_visible
-          || (config.value.general.hide_method == HideMethod::Cloak
-            && window.native().can_be_cloaked()));
+        && (is_visible || window.native().can_be_cloaked());
 
       // During animation frames, omit `SWP_ASYNCWINDOWPOS` so that
       // adjacent windows are repositioned synchronously. This keeps
@@ -2084,24 +2023,17 @@ fn reposition_window(
         }
       }
 
-      // Set visibility based on the hide method.
+      // Windows that can't be cloaked are shown and hidden outright, the
+      // latter only as a stack's hidden tabs: no thumbnail shows those,
+      // while elsewhere DWM keeps rendering a window cloaked along with
+      // its owner.
       let _visibility_scope = perf::scope(Stage::RepositionVisibility);
-      if config.value.general.hide_method == HideMethod::Cloak {
-        // Windows that can't be cloaked are shown and hidden outright, the
-        // latter only as a stack's hidden tabs: no thumbnail shows those,
-        // while elsewhere DWM keeps rendering a window cloaked along with
-        // its owner.
-        if is_visible || is_hidden_in_layout(window) {
-          window.native().set_cloaked_or_hidden(!is_visible)?;
-        } else {
-          window.native().set_cloaked(true)?;
-        }
-        cloak_state = CloakState::Applied;
-      } else if is_visible {
-        window.native().show()?;
+      if is_visible || is_hidden_in_layout(window) {
+        window.native().set_cloaked_or_hidden(!is_visible)?;
       } else {
-        window.native().hide()?;
+        window.native().set_cloaked(true)?;
       }
+      cloak_state = CloakState::Applied;
     }
   }
 

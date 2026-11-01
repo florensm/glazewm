@@ -192,9 +192,6 @@ closes the overview. Focus-follows-cursor is paused while it is open.
 Workspaces and windows changing while it is open (a window opening,
 closing, or being moved) show up in it right away.
 
-Previews of other workspaces need `general.hide_method: "cloak"` (the
-default): with `"hide"`, their windows have nothing for DWM to show.
-
 ### Stacks
 
 A [stack](./stacks.md) shows on its card the way it does on screen: its

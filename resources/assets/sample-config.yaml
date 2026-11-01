@@ -111,10 +111,6 @@ general:
     # 'monitor_focus' or 'window_focus'.
     trigger: "monitor_focus"
 
-  # How windows of hidden workspaces are hidden: 'cloak' (recommended),
-  # 'hide' (legacy) or 'place_in_corner' (always used on macOS).
-  hide_method: "cloak"
-
   # Show windows of every workspace in the taskbar, not only shown ones.
   show_all_in_taskbar: false
 

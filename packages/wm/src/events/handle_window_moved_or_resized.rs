@@ -1,7 +1,7 @@
 use anyhow::Context;
 use wm_common::{
   try_warn, ActiveDrag, ActiveDragOperation, DisplayState,
-  FloatingStateConfig, FullscreenStateConfig, HideMethod, WindowState,
+  FloatingStateConfig, FullscreenStateConfig, WindowState,
 };
 #[cfg(target_os = "windows")]
 use wm_platform::NativeWindowWindowsExt;
@@ -248,33 +248,6 @@ pub fn handle_window_moved_or_resized(
     let nearest_monitor = state
       .nearest_monitor(&window.native())
       .context("No nearest monitor.")?;
-
-    // For `HideMethod::PlaceInCorner`, hiding/showing is implemented by
-    // repositioning the window. Since the OS won't emit real
-    // shown/hidden events in this mode, update `DisplayState` based on
-    // whether the window has been moved to the monitor's bottom corner.
-    if config.value.general.hide_method == HideMethod::PlaceInCorner {
-      let is_in_corner = is_in_corner(
-        &frame_position,
-        &nearest_monitor.native_properties().working_area,
-      );
-
-      // TODO: Consider redrawing if hidden and should be shown, or if
-      // shown and should be hidden.
-      // TODO: It can be valid for a floating window to be in the corner,
-      // in which case, it currently doesn't get updated to
-      // `DisplayState::Shown`.
-      let display_state = match (window.display_state(), is_in_corner) {
-        (DisplayState::Hiding, true) => DisplayState::Hidden,
-        (DisplayState::Showing, false) => DisplayState::Shown,
-        _ => window.display_state(),
-      };
-
-      if display_state != window.display_state() {
-        window.set_display_state(display_state);
-        return Ok(());
-      }
-    }
 
     let should_fullscreen = {
       let workspace = nearest_monitor
@@ -699,57 +672,4 @@ pub(crate) fn float_for_drag(
   }
 
   Ok(())
-}
-
-/// Gets whether the window is in the corner of the monitor.
-fn is_in_corner(window_frame: &Rect, monitor_rect: &Rect) -> bool {
-  // Visible portion of the window used when positioning windows in the
-  // monitor's corner. See `platform_sync` for how hidden windows are
-  // positioned.
-  const VISIBLE_SLIVER_PX: i32 = 1;
-
-  // Allow 1px of leeway.
-  let is_left_corner =
-    (window_frame.right - VISIBLE_SLIVER_PX - monitor_rect.left).abs()
-      <= 1;
-
-  // Allow 1px of leeway.
-  let is_right_corner =
-    (window_frame.x() + VISIBLE_SLIVER_PX - monitor_rect.right).abs() <= 1;
-
-  // On macOS, the window's title bar is prevented from being positioned
-  // outside of monitor's working area, so we need to allow ~55px of
-  // vertical leeway. Title bar height varies, but can be up to 52px.
-  // TODO: See if possible to make this dynamic based on the window's title
-  // bar height.
-  let is_bottom_of_monitor =
-    (window_frame.y() - monitor_rect.bottom).abs() <= 55;
-
-  (is_left_corner || is_right_corner) && is_bottom_of_monitor
-}
-
-#[cfg(test)]
-mod tests {
-  use wm_platform::Rect;
-
-  use super::is_in_corner;
-
-  #[test]
-  fn matches_corner_positions() {
-    let monitor = Rect::from_xy(0, 0, 1920, 1080);
-
-    let frame_in_right_corner = Rect::from_xy(1919, 1050, 600, 600);
-    assert!(is_in_corner(&frame_in_right_corner, &monitor));
-
-    let frame_in_left_corner = Rect::from_xy(-599, 1050, 600, 600);
-    assert!(is_in_corner(&frame_in_left_corner, &monitor));
-  }
-
-  #[test]
-  fn does_not_match_non_corner_positions() {
-    let monitor = Rect::from_xy(0, 0, 1920, 1080);
-    let frame = Rect::from_xy(100, 100, 800, 600);
-
-    assert!(!is_in_corner(&frame, &monitor));
-  }
 }

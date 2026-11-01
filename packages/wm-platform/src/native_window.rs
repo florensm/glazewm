@@ -355,8 +355,7 @@ pub trait NativeWindowWindowsExt {
   /// Returns whether the window is currently cloaked by DWM.
   ///
   /// Cloaking hides the window visually while keeping `WS_VISIBLE` set.
-  /// The WM uses this for workspace hiding (`HideMethod::Cloak`) and
-  /// surrogate animations.
+  /// The WM uses this for workspace hiding and surrogate animations.
   ///
   /// # Platform-specific
   ///

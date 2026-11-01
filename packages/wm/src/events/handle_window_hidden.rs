@@ -1,5 +1,5 @@
 use tracing::info;
-use wm_common::{DisplayState, HideMethod};
+use wm_common::DisplayState;
 use wm_platform::NativeWindow;
 #[cfg(target_os = "windows")]
 use wm_platform::NativeWindowWindowsExt;
@@ -10,13 +10,12 @@ use crate::commands::window::unmanage_if_embedded;
 use crate::traits::CommonGetters;
 use crate::{
   commands::window::unmanage_window, traits::WindowGetters,
-  user_config::UserConfig, wm_state::WmState,
+  wm_state::WmState,
 };
 
 pub fn handle_window_hidden(
   native_window: &NativeWindow,
   state: &mut WmState,
-  config: &UserConfig,
 ) -> anyhow::Result<()> {
   let found_window = state.window_from_native(native_window);
 
@@ -31,9 +30,7 @@ pub fn handle_window_hidden(
     }
 
     // Update the display state.
-    if config.value.general.hide_method != HideMethod::PlaceInCorner
-      && window.display_state() == DisplayState::Hiding
-    {
+    if window.display_state() == DisplayState::Hiding {
       window.set_display_state(DisplayState::Hidden);
       return Ok(());
     }
@@ -41,9 +38,9 @@ pub fn handle_window_hidden(
     // On Windows, skip unmanagement if GlazeWM itself is the one holding
     // this window cloaked for an in-progress animation (resize/move/open/
     // close surrogate, or a workspace-switch slide). Workspace-switch
-    // cloaking via `HideMethod::Cloak` is already handled above via the
-    // `Hiding` display-state guard, so this only matters for
-    // surrogate-cloaked windows whose display state is still `Shown`.
+    // cloaking is already handled above via the `Hiding` display-state
+    // guard, so this only matters for surrogate-cloaked windows whose
+    // display state is still `Shown`.
     //
     // Checking `has_active_surrogate` instead of the raw `is_cloaked()`
     // state matters because cloaking is not exclusively a GlazeWM signal:
@@ -71,8 +68,7 @@ pub fn handle_window_hidden(
     // Unmanage the window if it's not in a display state transition. Also,
     // since window events are not 100% guaranteed to be in correct order,
     // we need to ignore events where the window is not actually hidden.
-    if (config.value.general.hide_method == HideMethod::PlaceInCorner
-      || window.display_state() == DisplayState::Shown)
+    if window.display_state() == DisplayState::Shown
       && !window.native().is_visible().unwrap_or(false)
     {
       unmanage_window(window, state)?;

@@ -1,7 +1,6 @@
 use anyhow::Context;
 use tracing::{info, warn};
 #[cfg(target_os = "windows")]
-use wm_common::HideMethod;
 use wm_common::{WindowRuleEvent, WmEvent};
 #[cfg(target_os = "windows")]
 use wm_platform::NativeWindowWindowsExt;
@@ -70,16 +69,6 @@ pub fn reload_config(
 
   #[cfg(target_os = "windows")]
   update_window_effects(state);
-
-  // Ensure all windows are shown when hide method is changed.
-  #[cfg(target_os = "windows")]
-  if old_config.general.hide_method != config.value.general.hide_method
-    && config.value.general.hide_method == HideMethod::Cloak
-  {
-    for window in state.windows() {
-      let _ = window.native().show();
-    }
-  }
 
   // Ensure all windows are shown in taskbar when `show_all_in_taskbar` is
   // changed.

@@ -585,7 +585,7 @@ impl WindowManager {
           Ok(())
         }
         WindowEvent::Hidden { window, .. } => {
-          handle_window_hidden(&window, state, config)
+          handle_window_hidden(&window, state)
         }
         WindowEvent::MovedOrResized {
           window,
