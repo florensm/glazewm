@@ -60,7 +60,8 @@ Focusing the next empty workspace while already on an empty one is a no-op.
 
 A window is *urgent* from the moment it asks for attention until it's
 focused. The WM never acts on the flag itself — it reports, and the user
-(or a status bar) decides.
+(or a status bar) decides. The one exception is how it looks, which is
+opt-in (see [Look](#look)).
 
 ### Two detectors
 
@@ -111,8 +112,27 @@ This is unconditional rather than an option, because with the default
 `show_all_in_taskbar: false` the flashing button belongs to a window that
 has been pulled from the taskbar precisely so it isn't seen there. The
 flash is a cue for a button the user opted out of. The trade-off is that
-without something rendering `isUrgent`, an urgent window has no visible
-cue at all.
+without something rendering `isUrgent`, or an `urgent_window` look, an
+urgent window has no visible cue at all.
+
+### Look
+
+`window_effects.urgent_window` gives urgent windows their own effects,
+with the same keys as `focused_window` and `other_windows`. It replaces
+`other_windows` for them as a whole, so repeat any effect they should keep
+(e.g. `corner_style`). Unset, urgent windows look like any other.
+
+```yaml
+window_effects:
+  urgent_window:
+    border:
+      enabled: true
+      color: "#f5a524"
+```
+
+Like the others, it applies wherever the WM draws the window: its border,
+during animations, on its stack's tab bar and in the overview. Focusing the
+window ends it, as it ends the urgency.
 
 ### Commands
 

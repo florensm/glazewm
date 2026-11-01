@@ -271,7 +271,7 @@ impl ScrollView {
     };
     // The window's own transparency and corners, as it is focused or not.
     let (opacity, corner_style, _) =
-      surrogate_effects_for(is_focused, config);
+      surrogate_effects_for(window.effect_set(is_focused), config);
     if !is_moving {
       motion.start_clock(Instant::now());
     }
@@ -533,8 +533,10 @@ pub fn track_overlays(
     .collect::<Vec<(Uuid, Option<Rect>, Rect, bool, HWND)>>();
 
   for (id, frame, clip, is_moving, anchor) in tracked {
-    let (_, _, overlays) =
-      surrogate_effects_for(focused_id == Some(id), config);
+    let (_, _, overlays) = surrogate_effects_for(
+      state.effect_set(id, focused_id == Some(id)),
+      config,
+    );
 
     match (overlays.backdrop, &frame) {
       (Some(params), Some(frame)) => {

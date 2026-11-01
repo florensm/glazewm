@@ -310,7 +310,7 @@ overview:
 
     # A ring spreading out of a card as it is clicked, or as a window
     # lands on it.
-    ripples: true
+    ripples: false
 
     # Sparks bursting out of where a dropped window lands; 0 for none, at
     # most 48.

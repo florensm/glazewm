@@ -901,6 +901,10 @@ pub struct WindowEffectsConfig {
   /// Visual effects to apply to non-focused windows.
   pub other_windows: WindowEffectConfig,
 
+  /// Visual effects to apply to windows that requested attention, until
+  /// they are focused. Unset, they take `other_windows`' effects.
+  pub urgent_window: Option<WindowEffectConfig>,
+
   /// Whether to drop the border effect while a window is fullscreen.
   ///
   /// A fullscreen window has nothing beside it to be delimited from, so
@@ -914,15 +918,47 @@ pub struct WindowEffectsConfig {
   pub hide_border_on_fullscreen: bool,
 }
 
-impl WindowEffectsConfig {
-  /// The effects for a window that is focused or not.
+/// Which of the `window_effects` sets a window takes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum EffectSet {
+  Focused,
+  Urgent,
+  Other,
+}
+
+impl EffectSet {
+  /// The set of a window that is focused or not, and urgent or not. A
+  /// focused window is never urgent.
   #[must_use]
-  pub fn for_focus(&self, is_focused: bool) -> &WindowEffectConfig {
-    if is_focused {
-      &self.focused_window
-    } else {
-      &self.other_windows
+  pub fn of(is_focused: bool, is_urgent: bool) -> Self {
+    match (is_focused, is_urgent) {
+      (true, _) => Self::Focused,
+      (false, true) => Self::Urgent,
+      (false, false) => Self::Other,
     }
+  }
+}
+
+impl WindowEffectsConfig {
+  /// The effects for a window taking `set`.
+  #[must_use]
+  pub fn for_set(&self, set: EffectSet) -> &WindowEffectConfig {
+    match set {
+      EffectSet::Focused => &self.focused_window,
+      EffectSet::Urgent => {
+        self.urgent_window.as_ref().unwrap_or(&self.other_windows)
+      }
+      EffectSet::Other => &self.other_windows,
+    }
+  }
+
+  /// Whether any set has `effect` on.
+  #[must_use]
+  pub fn any(&self, effect: impl Fn(&WindowEffectConfig) -> bool) -> bool {
+    [&self.focused_window, &self.other_windows]
+      .into_iter()
+      .chain(&self.urgent_window)
+      .any(effect)
   }
 }
 

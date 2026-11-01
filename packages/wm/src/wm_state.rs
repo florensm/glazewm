@@ -4,7 +4,9 @@ use anyhow::Context;
 use tokio::sync::mpsc::{self};
 use tracing::warn;
 use uuid::Uuid;
-use wm_common::{BindingModeConfig, HideCorner, WindowState, WmEvent};
+use wm_common::{
+  BindingModeConfig, EffectSet, HideCorner, WindowState, WmEvent,
+};
 use wm_platform::{
   Direction, Dispatcher, Display, Keybinding, NativeWindow,
   OverviewAction, Point, Rect, TabAction,
@@ -665,6 +667,16 @@ impl WmState {
     self
       .container_by_id(id)
       .and_then(|container| container.as_window_container().ok())
+  }
+
+  /// Which `window_effects` set the window with `id` takes, as it is
+  /// focused or not; a window no longer managed is never urgent.
+  pub fn effect_set(&self, id: Uuid, is_focused: bool) -> EffectSet {
+    self
+      .window_by_id(id)
+      .map_or(EffectSet::of(is_focused, false), |window| {
+        window.effect_set(is_focused)
+      })
   }
 
   /// Gets container to focus after the given window is unmanaged,

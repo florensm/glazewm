@@ -257,7 +257,7 @@ use tokio::sync::mpsc;
 use uuid::Uuid;
 #[cfg(target_os = "windows")]
 use wm_common::{
-  EasingFunction, ResizeStyle, WindowTransitionParams,
+  EasingFunction, EffectSet, ResizeStyle, WindowTransitionParams,
   WindowTransitionStyle, WorkspaceSwitchDirection, WorkspaceSwitchStyle,
 };
 #[cfg(target_os = "windows")]
@@ -1554,10 +1554,19 @@ impl AnimationManager {
       let ws_vsync_now = state.animation_manager.predictive_vsync_now();
 
       // Likewise precomputed before the mutable borrow below -- needed by
-      // the live backdrop-overlay tracker to pick `focused_window` vs
-      // `other_windows` config per surrogate.
+      // the live backdrop-overlay tracker to pick each surrogate's effect
+      // set.
       let focused_id_for_overlay =
         state.focused_container().map(|c| c.id());
+      let urgent_ids: std::collections::HashSet<Uuid> = state
+        .windows()
+        .iter()
+        .filter(|window| window.is_urgent())
+        .map(CommonGetters::id)
+        .collect();
+      let effect_set = |id: Uuid, is_focused: bool| {
+        EffectSet::of(is_focused, urgent_ids.contains(&id))
+      };
 
       if let Some(ws) = &mut state.animation_manager.workspace_switch {
         // Anchor the animation clock to the first vsync-aligned tick so
@@ -1666,10 +1675,14 @@ impl AnimationManager {
             }
 
             let is_focused = Some(window_id) == focused_id_for_overlay;
-            let (from_alpha, _, from_overlays) =
-              surrogate_effects_for(entry.was_focused, config);
-            let (to_alpha, _, to_overlays) =
-              surrogate_effects_for(is_focused, config);
+            let (from_alpha, _, from_overlays) = surrogate_effects_for(
+              effect_set(window_id, entry.was_focused),
+              config,
+            );
+            let (to_alpha, _, to_overlays) = surrogate_effects_for(
+              effect_set(window_id, is_focused),
+              config,
+            );
 
             // Set before the motion update below, which applies it.
             #[allow(
@@ -2254,7 +2267,8 @@ impl AnimationManager {
       // the comment above where this is built.
       for (id, rect, anchor) in &incoming_backdrop_windows {
         let is_focused = Some(*id) == focused_id;
-        let mut params = overlay_params_for(is_focused, config);
+        let mut params =
+          overlay_params_for(state.effect_set(*id, is_focused), config);
 
         if state.window_by_id(*id).is_some_and(|window| {
           border_hidden_for_fullscreen(&window, config)

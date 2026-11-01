@@ -252,7 +252,7 @@ impl Default for OverviewEffects {
     Self {
       glow: true,
       pulse: false,
-      ripples: true,
+      ripples: false,
       sparks: 14,
       jelly: true,
       stagger_ms: 24,

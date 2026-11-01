@@ -6,8 +6,8 @@ use tracing::debug;
 #[cfg(target_os = "windows")]
 use tracing::warn;
 use wm_common::{
-  CursorJumpTrigger, DisplayState, HideCorner, HideMethod, WindowState,
-  WmEvent,
+  CursorJumpTrigger, DisplayState, EffectSet, HideCorner, HideMethod,
+  WindowState, WmEvent,
 };
 #[cfg(target_os = "windows")]
 use wm_common::{
@@ -252,7 +252,7 @@ pub(crate) fn apply_focus_effects(
   let prev_effects_window = state.prev_effects_window.clone();
 
   if let Ok(window) = focused_container.as_window_container() {
-    apply_window_effects(&window, true, config);
+    apply_window_effects(&window, EffectSet::Focused, config);
     state.prev_effects_window = Some(window.clone());
   } else {
     state.prev_effects_window = None;
@@ -271,7 +271,7 @@ pub(crate) fn apply_focus_effects(
   .filter(|window| window.id() != focused_container.id());
 
   for window in unfocused_windows {
-    apply_window_effects(&window, false, config);
+    apply_window_effects(&window, window.effect_set(false), config);
   }
 
   // Re-apply animation-driven opacity for the focused window if an
@@ -766,9 +766,11 @@ fn redraw_containers(
             .as_ref()
             .is_some_and(|w| w.id() == id);
           let (opacity, _, from) =
-            surrogate_effects_for(was_focused, config);
-          let (_, corner_style, to) =
-            surrogate_effects_for(id == focused_container.id(), config);
+            surrogate_effects_for(window.effect_set(was_focused), config);
+          let (_, corner_style, to) = surrogate_effects_for(
+            window.effect_set(id == focused_container.id()),
+            config,
+          );
 
           // A backdrop on either side switches the surrogate to `Live`
           // mode, so the steady-state backdrop overlay is repositioned
@@ -1216,7 +1218,7 @@ fn redraw_containers(
     let (effect_opacity, corner_style, overlays) = {
       let is_focused = window.id() == focused_container.id();
       let (opacity, style, overlays) =
-        surrogate_effects_for(is_focused, config);
+        surrogate_effects_for(window.effect_set(is_focused), config);
 
       // Decided here rather than in the tracking loop so the session is
       // built knowing it has no live overlay. `ResizeSession::begin` skips
@@ -2154,41 +2156,35 @@ fn apply_window_effects(
   // LINT: `window` is only used on Windows.
   #[cfg_attr(not(target_os = "windows"), allow(unused_variables))]
   window: &WindowContainer,
-  is_focused: bool,
+  set: EffectSet,
   config: &UserConfig,
 ) {
   let window_effects = &config.value.window_effects;
 
   // LINT: `effect_config` is only used on Windows.
   #[cfg_attr(not(target_os = "windows"), allow(unused_variables))]
-  let effect_config = window_effects.for_focus(is_focused);
+  let effect_config = window_effects.for_set(set);
 
   #[cfg(target_os = "windows")]
-  if window_effects.focused_window.hide_title_bar.enabled
-    || window_effects.other_windows.hide_title_bar.enabled
-  {
+  if window_effects.any(|effects| effects.hide_title_bar.enabled) {
     apply_hide_title_bar_effect(window, effect_config);
   }
 
   // `corner_radius` counts as opting in on its own, so setting only the
   // new knob still reaches `apply_corner_effect`.
   #[cfg(target_os = "windows")]
-  if window_effects.focused_window.corner_style.enabled
-    || window_effects.other_windows.corner_style.enabled
-    || window_effects.focused_window.corner_radius.is_some()
-    || window_effects.other_windows.corner_radius.is_some()
-  {
+  if window_effects.any(|effects| {
+    effects.corner_style.enabled || effects.corner_radius.is_some()
+  }) {
     apply_corner_effect(window, effect_config);
   }
 
   #[cfg(target_os = "windows")]
-  if window_effects.focused_window.transparency.enabled
-    || window_effects.other_windows.transparency.enabled
-  {
+  if window_effects.any(|effects| effects.transparency.enabled) {
     apply_transparency_effect(window, effect_config);
   }
 
-  // Keyed off both focus classes rather than `effect_config` alone. Keying
+  // Keyed off every effect set rather than `effect_config` alone. Keying
   // it per-class would restore the OS border every time a window lost
   // focus with `border` enabled for only one of the two, so the 1px line
   // would blink in and out on every focus change.
@@ -2208,8 +2204,8 @@ fn apply_native_border_effect(
   window: &WindowContainer,
   window_effects: &wm_common::WindowEffectsConfig,
 ) {
-  let drawing_own_border = window_effects.focused_window.border.enabled
-    || window_effects.other_windows.border.enabled;
+  let drawing_own_border =
+    window_effects.any(|effects| effects.border.enabled);
 
   // Errors are expected on Windows 10, which has no such border.
   _ = window.native().set_native_border_hidden(drawing_own_border);
@@ -2451,7 +2447,7 @@ fn follow_frame<O: SyncableOverlay>(
   config: &UserConfig,
   batch: &mut SurrogateBatch,
 ) {
-  let params = O::params_for(is_focused, config)
+  let params = O::params_for(window.effect_set(is_focused), config)
     .filter(|_| !O::suppressed_for(window, config));
 
   if let Some(params) = params {
@@ -2554,8 +2550,10 @@ fn park_switch_borders(
       continue;
     }
 
-    let (_, _, from) = surrogate_effects_for(entry.was_focused, config);
-    let (_, _, to) = surrogate_effects_for(*id == focused_id, config);
+    let (_, _, from) =
+      surrogate_effects_for(window.effect_set(entry.was_focused), config);
+    let (_, _, to) =
+      surrogate_effects_for(window.effect_set(*id == focused_id), config);
     let Some(blend) = StyleBlend::between(
       from.border,
       to.border,
@@ -2768,10 +2766,10 @@ fn overlay_entry<'a, O: SyncableOverlay>(
 /// recomputed.
 #[cfg(target_os = "windows")]
 pub(crate) fn surrogate_effects_for(
-  is_focused: bool,
+  set: EffectSet,
   config: &UserConfig,
 ) -> (u8, CornerStyle, OverlayParams) {
-  let effect_cfg = config.value.window_effects.for_focus(is_focused);
+  let effect_cfg = config.value.window_effects.for_set(set);
 
   let effect_opacity = if effect_cfg.transparency.enabled {
     effect_cfg.transparency.opacity.to_alpha()
@@ -2784,20 +2782,20 @@ pub(crate) fn surrogate_effects_for(
   (
     effect_opacity,
     corner_style,
-    overlay_params_for(is_focused, config),
+    overlay_params_for(set, config),
   )
 }
 
 /// Resolves a window's backdrop and border overlay params from its
-/// focused/other-window effects config.
+/// effect set.
 #[cfg(target_os = "windows")]
 pub(crate) fn overlay_params_for(
-  is_focused: bool,
+  set: EffectSet,
   config: &UserConfig,
 ) -> OverlayParams {
   OverlayParams {
-    backdrop: backdrop_overlay_params_for(is_focused, config),
-    border: border_overlay_params_for(is_focused, config),
+    backdrop: backdrop_overlay_params_for(set, config),
+    border: border_overlay_params_for(set, config),
   }
 }
 
@@ -2816,15 +2814,15 @@ pub(crate) fn border_hidden_for_fullscreen(
     && matches!(window.state(), WindowState::Fullscreen(_))
 }
 
-/// Resolves `window_id`'s border overlay params from its
-/// focused/other-window border config, or `None` when the border effect
-/// isn't enabled for it. Mirrors [`backdrop_overlay_params_for`].
+/// Resolves the border overlay params of a window taking `set`, or `None`
+/// when the border effect isn't enabled for it. Mirrors
+/// [`backdrop_overlay_params_for`].
 #[cfg(target_os = "windows")]
 pub(crate) fn border_overlay_params_for(
-  is_focused: bool,
+  set: EffectSet,
   config: &UserConfig,
 ) -> Option<BorderOverlayParams> {
-  let effect_cfg = config.value.window_effects.for_focus(is_focused);
+  let effect_cfg = config.value.window_effects.for_set(set);
 
   let target_color = effect_cfg.border.abgr_color()?;
 
@@ -2840,9 +2838,8 @@ pub(crate) fn border_overlay_params_for(
   )
 }
 
-/// Resolves `window`'s backdrop overlay params from its
-/// focused/other-window backdrop config, or `None` when backdrop isn't
-/// configured or enabled for it.
+/// Resolves the backdrop overlay params of a window taking `set`, or
+/// `None` when backdrop isn't configured or enabled for it.
 ///
 /// Shared by [`sync_overlays`] (the per-tick static path) and the
 /// interactive-drag tracker in `handle_window_moved_or_resized`, which
@@ -2850,10 +2847,10 @@ pub(crate) fn border_overlay_params_for(
 /// window outside of `GlazeWM`'s own redraw pipeline.
 #[cfg(target_os = "windows")]
 fn backdrop_overlay_params_for(
-  is_focused: bool,
+  set: EffectSet,
   config: &UserConfig,
 ) -> Option<BackdropOverlayParams> {
-  let effect_cfg = config.value.window_effects.for_focus(is_focused);
+  let effect_cfg = config.value.window_effects.for_set(set);
 
   let tint = effect_cfg.backdrop.overlay_tint()?;
 
@@ -2910,17 +2907,16 @@ pub(crate) trait SyncableOverlay: Overlay {
   /// This overlay kind's overlay among a window's overlays, if it has one.
   fn get(overlays: &WindowOverlays) -> Option<&Self>;
 
-  /// Resolves the focused/other-window params, or `None` when this effect
-  /// isn't enabled for that focus class. Depends only on its arguments,
-  /// so [`sync_overlays`] resolves it once per focus class, not per
-  /// window.
+  /// Resolves the params of a window taking `set`, or `None` when this
+  /// effect isn't enabled for it. Depends only on its arguments, so
+  /// [`sync_overlays`] resolves it once per set, not per window.
   fn params_for(
-    is_focused: bool,
+    set: EffectSet,
     config: &UserConfig,
   ) -> Option<Self::Params>;
 
   /// Whether this effect is suppressed for one specific window despite
-  /// being configured for its focus class. A suppressed overlay is hidden
+  /// being configured for its effect set. A suppressed overlay is hidden
   /// rather than destroyed.
   fn suppressed_for(
     _window: &WindowContainer,
@@ -2953,10 +2949,10 @@ impl SyncableOverlay for NativeBackdropOverlay {
   }
 
   fn params_for(
-    is_focused: bool,
+    set: EffectSet,
     config: &UserConfig,
   ) -> Option<Self::Params> {
-    backdrop_overlay_params_for(is_focused, config)
+    backdrop_overlay_params_for(set, config)
   }
 
   fn transparent(params: Self::Params) -> Self::Params {
@@ -2981,10 +2977,10 @@ impl SyncableOverlay for NativeBorderOverlay {
   }
 
   fn params_for(
-    is_focused: bool,
+    set: EffectSet,
     config: &UserConfig,
   ) -> Option<Self::Params> {
-    border_overlay_params_for(is_focused, config)
+    border_overlay_params_for(set, config)
   }
 
   fn suppressed_for(
@@ -3097,19 +3093,21 @@ fn sync_overlays<O: SyncableOverlay>(
     .map(CommonGetters::id)
     .collect();
 
-  // `params_for` depends only on `is_focused`, not on any particular
-  // window -- resolved once per focus class here instead of once per
-  // window in the loop below, so a config with a `{ file, key }` color
-  // source pays its `fs::metadata` stat once per tick rather than once
-  // per tracked window.
-  let focused_params = O::params_for(true, config);
-  let other_params = O::params_for(false, config);
+  // `params_for` depends only on the effect set, not on any particular
+  // window -- resolved once per set here instead of once per window in
+  // the loop below, so a config with a `{ file, key }` color source pays
+  // its `fs::metadata` stat once per tick rather than once per tracked
+  // window.
+  let focused_params = O::params_for(EffectSet::Focused, config);
+  let urgent_params = O::params_for(EffectSet::Urgent, config);
+  let other_params = O::params_for(EffectSet::Other, config);
 
-  // Whether the effect is configured for *either* focus state. When it is
-  // configured for neither it is off outright, and every overlay is
-  // destroyed below rather than kept hidden forever.
-  let effect_configured =
-    focused_params.is_some() || other_params.is_some();
+  // Whether the effect is configured for *any* set. When it is configured
+  // for none it is off outright, and every overlay is destroyed below
+  // rather than kept hidden forever.
+  let effect_configured = focused_params.is_some()
+    || urgent_params.is_some()
+    || other_params.is_some();
 
   for window in &all_windows {
     let is_focused = window.id() == focused_container.id();
@@ -3142,15 +3140,15 @@ fn sync_overlays<O: SyncableOverlay>(
       continue;
     }
 
-    let params = (if is_focused {
-      focused_params
-    } else {
-      other_params
-    })
+    let params = match window.effect_set(is_focused) {
+      EffectSet::Focused => focused_params,
+      EffectSet::Urgent => urgent_params,
+      EffectSet::Other => other_params,
+    }
     .filter(|_| !O::suppressed_for(window, config));
 
     let Some(params) = params else {
-      // Configured, but not for this window's focus state, or suppressed
+      // Configured, but not for this window's effect set, or suppressed
       // for this particular window: hide rather than destroy.
       // Guarded on `is_visible` because `hide` issues a `ShowWindow`
       // unconditionally.

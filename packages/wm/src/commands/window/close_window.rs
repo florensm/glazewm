@@ -92,7 +92,10 @@ pub(crate) fn animate_away(
     .is_some_and(|focused| focused.id() == window.id());
 
   let (effect_opacity, corner_style, overlays) =
-    crate::commands::general::surrogate_effects_for(is_focused, config);
+    crate::commands::general::surrogate_effects_for(
+      window.effect_set(is_focused),
+      config,
+    );
 
   state.animation_manager.start_away_animation(
     transition,
