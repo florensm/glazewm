@@ -19,7 +19,10 @@ mod mouse_listener;
 mod native_surrogate;
 mod native_window;
 // Pure parts of the overview, here for their tests; the rest of them is
-// only used through the Windows-only overview.
+// only used through the Windows-only overview. Its breath also paces the
+// border overlays'.
+#[allow(dead_code)]
+mod overview_effects;
 #[allow(dead_code)]
 mod overview_layout;
 #[allow(dead_code)]

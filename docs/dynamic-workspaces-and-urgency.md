@@ -128,11 +128,19 @@ window_effects:
     border:
       enabled: true
       color: "#f5a524"
+      flash: true   # Blinks a few times as the window asks.
+      pulse: true   # Then breathes until it's focused.
 ```
 
 Like the others, it applies wherever the WM draws the window: its border,
 during animations, on its stack's tab bar and in the overview. Focusing the
 window ends it, as it ends the urgency.
+
+`pulse` and `flash` are border keys of every effect set, not just this one.
+Both are played by the compositor, so they cost the WM nothing per frame;
+in the overview, a breathing border breathes too. A flash only plays on
+screen: a window asking from a workspace that isn't shown blinks unseen,
+and only its breathing shows once you get there.
 
 ### Commands
 

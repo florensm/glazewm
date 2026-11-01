@@ -660,6 +660,34 @@ impl NativeBorderOverlay {
     }
   }
 
+  /// Starts or stops the ring breathing; re-applies only when it changes.
+  pub fn set_pulse(&mut self, pulse: bool) {
+    if self.params.pulse == pulse {
+      return;
+    }
+    self.params.pulse = pulse;
+
+    for visual in self.visuals() {
+      if let Err(e) = visual.set_pulse(pulse) {
+        tracing::warn!("Border overlay composition pulse failed: {e}.");
+      }
+    }
+  }
+
+  /// Blinks the ring a few times as `flash` turns on.
+  pub fn set_flash(&mut self, flash: bool) {
+    if self.params.flash == flash {
+      return;
+    }
+    self.params.flash = flash;
+
+    for visual in self.visuals() {
+      if let Err(e) = visual.set_flash(flash) {
+        tracing::warn!("Border overlay composition flash failed: {e}.");
+      }
+    }
+  }
+
   /// Draws the ring for `window_rect` with the slide ring, pinned to
   /// `viewport` and cut at `panel`, for one frame of a workspace-switch
   /// slide. Returns `false` when the slide ring couldn't be made.
@@ -883,6 +911,8 @@ impl Overlay for NativeBorderOverlay {
     self.set_width(params.width);
     self.set_corner_radius(params.corner_radius);
     self.set_opacity(params.opacity);
+    self.set_pulse(params.pulse);
+    self.set_flash(params.flash);
   }
 
   fn defer_rect(
