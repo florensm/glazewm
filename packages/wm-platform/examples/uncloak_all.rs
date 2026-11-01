@@ -20,7 +20,6 @@
 //! # Platform-specific
 //!
 //! - Windows: does the work described above.
-//! - macOS: no cloaking exists, so this is a no-op.
 
 fn main() {
   #[cfg(target_os = "windows")]

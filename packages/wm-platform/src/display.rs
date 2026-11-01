@@ -1,14 +1,6 @@
-#[cfg(target_os = "macos")]
-use objc2::rc::Retained;
-#[cfg(target_os = "macos")]
-use objc2_app_kit::NSScreen;
-#[cfg(target_os = "macos")]
-use objc2_core_graphics::CGDirectDisplayID;
 #[cfg(target_os = "windows")]
 use windows::Win32::Graphics::Gdi::HMONITOR;
 
-#[cfg(target_os = "macos")]
-use crate::ThreadBound;
 use crate::{platform_impl, Rect};
 
 /// Unique identifier for a display.
@@ -18,12 +10,8 @@ use crate::{platform_impl, Rect};
 /// # Platform-specific
 ///
 /// - **Windows**: `isize` (`HMONITOR`)
-/// - **macOS**: `u32` (`CGDirectDisplayID`)
 #[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct DisplayId(
-  #[cfg(target_os = "windows")] pub isize,
-  #[cfg(target_os = "macos")] pub u32,
-);
+pub struct DisplayId(#[cfg(target_os = "windows")] pub isize);
 
 /// Unique identifier for a display device.
 ///
@@ -32,34 +20,8 @@ pub struct DisplayId(
 /// # Platform-specific
 ///
 /// - **Windows**: Hardware ID string with fallback to adapter name.
-/// - **macOS**: UUID string from `CGDisplayCreateUUIDFromDisplayID`.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct DisplayDeviceId(pub String);
-
-/// macOS-specific extension trait for [`Display`].
-#[cfg(target_os = "macos")]
-pub trait DisplayExtMacOs {
-  /// Gets the Core Graphics display ID.
-  fn cg_display_id(&self) -> CGDirectDisplayID;
-
-  /// Gets the `NSScreen` instance for this display.
-  ///
-  /// # Platform-specific
-  ///
-  /// This method is only available on macOS.
-  fn ns_screen(&self) -> &ThreadBound<Retained<NSScreen>>;
-}
-
-#[cfg(target_os = "macos")]
-impl DisplayExtMacOs for Display {
-  fn cg_display_id(&self) -> CGDirectDisplayID {
-    self.inner.cg_display_id()
-  }
-
-  fn ns_screen(&self) -> &ThreadBound<Retained<NSScreen>> {
-    self.inner.ns_screen()
-  }
-}
 
 /// Windows-specific extensions for [`Display`].
 #[cfg(target_os = "windows")]
@@ -85,7 +47,6 @@ impl DisplayExtWindows for Display {
 ///
 /// - **Windows**: This corresponds to a Win32 "display monitor", each with
 ///   a monitor handle (`HMONITOR`).
-/// - **macOS**: This corresponds to an `NSScreen`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Display {
   pub(crate) inner: platform_impl::Display,

@@ -818,8 +818,7 @@ impl Drop for WmState {
     let managed_windows = self.windows();
 
     for window in &managed_windows {
-      // Redraw windows to their intended positions. On macOS, this will
-      // unhide windows that are on other workspaces.
+      // Redraw windows to their intended positions.
       if let Ok(rect) = window.to_rect() {
         if let Err(err) = window.native().set_frame(&rect) {
           warn!("Failed to redraw window on cleanup: {:?}", err);

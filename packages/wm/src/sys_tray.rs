@@ -233,12 +233,6 @@ impl SystemTray {
           {
             config_path.parent().context("Invalid config path.")?
           }
-          #[cfg(target_os = "macos")]
-          {
-            // On macOS, pass the file path directly since Finder
-            // navigates one level too high with the parent directory.
-            config_path
-          }
         })?;
 
         Ok(())
@@ -283,9 +277,6 @@ fn auto_launch_instance() -> anyhow::Result<AutoLaunch> {
 
   #[cfg(target_os = "windows")]
   let instance = AutoLaunch::new("GlazeWM", &exe_path, &args);
-
-  #[cfg(target_os = "macos")]
-  let instance = AutoLaunch::new("GlazeWM", &exe_path, false, &args);
 
   Ok(instance)
 }

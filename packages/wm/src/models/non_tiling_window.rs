@@ -162,12 +162,6 @@ impl PositionGetters for NonTilingWindow {
         {
           monitor.to_rect()
         }
-        #[cfg(target_os = "macos")]
-        {
-          // On macOS, the public APIs only allow window placement within
-          // the display's working area.
-          Ok(monitor.native_properties().working_area)
-        }
       }
       _ => Ok(self.floating_placement()),
     }

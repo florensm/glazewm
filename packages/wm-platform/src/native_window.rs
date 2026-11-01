@@ -1,7 +1,3 @@
-#[cfg(target_os = "macos")]
-use objc2_application_services::AXUIElement;
-#[cfg(target_os = "macos")]
-use objc2_core_foundation::{CFBoolean, CFRetained, CFString};
 #[cfg(target_os = "windows")]
 use windows::Win32::{
   Foundation::HWND,
@@ -11,8 +7,6 @@ use windows::Win32::{
 };
 
 use crate::{platform_impl, Rect};
-#[cfg(target_os = "macos")]
-use crate::{platform_impl::AXUIElementExt, ThreadBound};
 #[cfg(target_os = "windows")]
 use crate::{CornerStyle, Delta, OpacityValue, RectDelta};
 
@@ -23,28 +17,10 @@ use crate::{CornerStyle, Delta, OpacityValue, RectDelta};
 /// # Platform-specific
 ///
 /// - **Windows**: `isize` (`HWND`)
-/// - **macOS**: `u32` (`CGWindowID`)
 #[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct WindowId(
-  #[cfg(target_os = "windows")] pub isize,
-  #[cfg(target_os = "macos")] pub u32,
-);
+pub struct WindowId(#[cfg(target_os = "windows")] pub isize);
 
-impl WindowId {
-  #[cfg(target_os = "macos")]
-  pub(crate) fn from_window_element(el: &CFRetained<AXUIElement>) -> Self {
-    let mut window_id = 0;
-
-    unsafe {
-      platform_impl::ffi::_AXUIElementGetWindow(
-        CFRetained::as_ptr(el),
-        &raw mut window_id,
-      )
-    };
-
-    Self(window_id)
-  }
-}
+impl WindowId {}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum WindowZOrder {
@@ -52,91 +28,6 @@ pub enum WindowZOrder {
   AfterWindow(WindowId),
   Top,
   TopMost,
-}
-
-/// macOS-specific extension trait for [`NativeWindow`].
-#[cfg(target_os = "macos")]
-pub trait NativeWindowExtMacOs {
-  /// Gets the `AXUIElement` instance for this window.
-  ///
-  /// # Platform-specific
-  ///
-  /// This method is only available on macOS.
-  fn ax_ui_element(&self) -> &ThreadBound<CFRetained<AXUIElement>>;
-
-  /// Gets the bundle ID of the application that owns the window.
-  ///
-  /// # Platform-specific
-  ///
-  /// This method is only available on macOS.
-  fn bundle_id(&self) -> Option<String>;
-
-  /// Gets the role of the window (e.g. `AXWindow`).
-  ///
-  /// # Platform-specific
-  ///
-  /// This method is only available on macOS.
-  fn role(&self) -> crate::Result<String>;
-
-  /// Gets the sub-role of the window (e.g. `AXStandardWindow`).
-  ///
-  /// # Platform-specific
-  ///
-  /// This method is only available on macOS.
-  fn subrole(&self) -> crate::Result<String>;
-
-  /// Whether the window is modal.
-  ///
-  /// # Platform-specific
-  ///
-  /// This method is only available on macOS.
-  fn is_modal(&self) -> crate::Result<bool>;
-
-  /// Whether the window is the main window for its application.
-  ///
-  /// # Platform-specific
-  ///
-  /// This method is only available on macOS.
-  fn is_main(&self) -> crate::Result<bool>;
-}
-
-#[cfg(target_os = "macos")]
-impl NativeWindowExtMacOs for NativeWindow {
-  fn ax_ui_element(&self) -> &ThreadBound<CFRetained<AXUIElement>> {
-    &self.inner.element
-  }
-
-  fn bundle_id(&self) -> Option<String> {
-    self.inner.application.bundle_id()
-  }
-
-  fn role(&self) -> crate::Result<String> {
-    self.inner.element.with(|el| {
-      el.get_attribute::<CFString>("AXRole")
-        .map(|cf_string| cf_string.to_string())
-    })?
-  }
-
-  fn subrole(&self) -> crate::Result<String> {
-    self.inner.element.with(|el| {
-      el.get_attribute::<CFString>("AXSubrole")
-        .map(|cf_string| cf_string.to_string())
-    })?
-  }
-
-  fn is_modal(&self) -> crate::Result<bool> {
-    self.inner.element.with(|el| {
-      el.get_attribute::<CFBoolean>("AXModal")
-        .map(|cf_bool| cf_bool.value())
-    })?
-  }
-
-  fn is_main(&self) -> crate::Result<bool> {
-    self.inner.element.with(|el| {
-      el.get_attribute::<CFBoolean>("AXMain")
-        .map(|cf_bool| cf_bool.value())
-    })?
-  }
 }
 
 /// Windows-specific extensions for [`NativeWindow`].
@@ -720,10 +611,6 @@ impl NativeWindow {
   /// # Platform-specific
   ///
   /// - **Windows**: Includes the window's shadow borders.
-  /// - **macOS**: If the window was previously resized to a value outside
-  ///   of the window's allowed min/max width & height (e.g. via calling
-  ///   `set_frame`), this can return those invalid values and might not
-  ///   reflect the actual window size.
   pub fn frame(&self) -> crate::Result<Rect> {
     let _scope = crate::perf::scope(crate::perf::Stage::NativeFrame);
     self.inner.frame()
@@ -811,8 +698,6 @@ impl NativeWindow {
   /// # Platform-specific
   ///
   /// - **Windows**: This sends a `WM_CLOSE` message to the window.
-  /// - **macOS**: This simulates pressing the close button on the window's
-  ///   title bar.
   pub fn close(&self) -> crate::Result<()> {
     self.inner.close()
   }

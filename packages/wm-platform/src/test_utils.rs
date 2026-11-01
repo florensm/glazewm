@@ -4,8 +4,6 @@
 use std::sync::{atomic::AtomicBool, Arc};
 
 use crate::platform_impl;
-#[cfg(target_os = "macos")]
-pub use crate::WindowId;
 pub use crate::{Dispatcher, Display, NativeWindow};
 
 impl Dispatcher {
@@ -28,16 +26,6 @@ impl NativeWindow {
     {
       platform_impl::NativeWindow::new(0).into()
     }
-    #[cfg(target_os = "macos")]
-    {
-      #[allow(invalid_value)]
-      platform_impl::NativeWindow::new(
-        WindowId(0),
-        unsafe { std::mem::zeroed() },
-        unsafe { std::mem::zeroed() },
-      )
-      .into()
-    }
   }
 }
 
@@ -50,9 +38,6 @@ impl Display {
     Self {
       #[cfg(target_os = "windows")]
       inner: platform_impl::Display::new(0),
-      #[cfg(target_os = "macos")]
-      #[allow(invalid_value)]
-      inner: unsafe { std::mem::zeroed() },
     }
   }
 }

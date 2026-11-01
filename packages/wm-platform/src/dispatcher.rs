@@ -7,20 +7,6 @@ use std::{
   thread::ThreadId,
 };
 
-#[cfg(target_os = "macos")]
-use objc2::MainThreadMarker;
-#[cfg(target_os = "macos")]
-use objc2_app_kit::{NSAlert, NSAlertStyle, NSEvent};
-#[cfg(target_os = "macos")]
-use objc2_application_services::{
-  kAXTrustedCheckOptionPrompt, AXIsProcessTrustedWithOptions,
-};
-#[cfg(target_os = "macos")]
-use objc2_core_foundation::{CFBoolean, CFDictionary, CGPoint};
-#[cfg(target_os = "macos")]
-use objc2_core_graphics::{CGError, CGEvent, CGWarpMouseCursorPosition};
-#[cfg(target_os = "macos")]
-use objc2_foundation::NSString;
 #[cfg(target_os = "windows")]
 use windows::{
   core::PCWSTR,
@@ -46,8 +32,6 @@ use windows::{
   },
 };
 
-#[cfg(target_os = "macos")]
-use crate::platform_impl::Application;
 use crate::{platform_impl, Display, MouseButton, NativeWindow, Point};
 
 /// Type alias for a closure to be executed by the event loop.
@@ -62,43 +46,6 @@ pub type DispatchFn = dyn FnOnce() + Send + 'static;
 /// [`WNDPROC`]: https://learn.microsoft.com/en-us/windows/win32/api/winuser/nc-winuser-wndproc
 pub type WndProcCallback =
   dyn Fn(isize, u32, usize, isize) -> Option<isize> + Send + 'static;
-
-/// macOS-specific extension trait for [`Dispatcher`].
-#[cfg(target_os = "macos")]
-pub trait DispatcherExtMacOs {
-  /// Gets all running applications.
-  ///
-  /// # Platform-specific
-  ///
-  /// This method is only available on macOS.
-  fn all_applications(&self) -> crate::Result<Vec<Application>>;
-
-  /// Checks whether accessibility permissions are granted.
-  ///
-  /// If `prompt` is `true`, a dialog will be shown to the user to request
-  /// accessibility permissions.
-  ///
-  /// # Platform-specific
-  ///
-  /// This method is only available on macOS.
-  fn has_ax_permission(&self, prompt: bool) -> bool;
-}
-
-#[cfg(target_os = "macos")]
-impl DispatcherExtMacOs for Dispatcher {
-  fn all_applications(&self) -> crate::Result<Vec<Application>> {
-    platform_impl::all_applications(self)
-  }
-
-  fn has_ax_permission(&self, prompt: bool) -> bool {
-    let options = CFDictionary::from_slices(
-      &[unsafe { kAXTrustedCheckOptionPrompt }],
-      &[CFBoolean::new(prompt)],
-    );
-
-    unsafe { AXIsProcessTrustedWithOptions(Some(options.as_ref())) }
-  }
-}
 
 /// Windows-specific extensions for `Dispatcher`.
 #[cfg(target_os = "windows")]
@@ -307,11 +254,7 @@ impl DispatcherExtWindows for Dispatcher {
   }
 }
 
-/// A thread-safe dispatcher for cross-platform window management
-/// operations.
-///
-/// On macOS, operations are automatically dispatched to the main thread
-/// whenever necessary.
+/// A thread-safe dispatcher for window management operations.
 ///
 /// # Thread safety
 ///
@@ -392,11 +335,7 @@ impl Dispatcher {
     }
 
     if let Some(source) = &self.source {
-      // Platform-specific behavior:
-      // * On Windows, this uses `PostMessageW` to send callbacks via
-      //   window messages.
-      // * On macOS, this uses `CFRunLoopSourceSignal` to wake the run loop
-      //   and process callbacks.
+      // Sends the callback via `PostMessageW` as a window message.
       source.send_dispatch_async(dispatch_fn)?;
     }
 
@@ -545,17 +484,6 @@ impl Dispatcher {
 
   /// Gets the current cursor position.
   pub fn cursor_position(&self) -> crate::Result<Point> {
-    #[cfg(target_os = "macos")]
-    {
-      let event = CGEvent::new(None);
-      let point = CGEvent::location(event.as_deref());
-
-      #[allow(clippy::cast_possible_truncation)]
-      Ok(Point {
-        x: point.x as i32,
-        y: point.y as i32,
-      })
-    }
     #[cfg(target_os = "windows")]
     {
       let mut point = POINT { x: 0, y: 0 };
@@ -571,17 +499,6 @@ impl Dispatcher {
   /// Gets whether the given mouse button is currently pressed.
   #[must_use]
   pub fn is_mouse_down(&self, button: &MouseButton) -> bool {
-    #[cfg(target_os = "macos")]
-    {
-      let bit_index = match button {
-        MouseButton::Left => 0usize,
-        MouseButton::Right => 1usize,
-      };
-
-      // Check if bit at corresponding index is set in the bitmask.
-      let pressed_mask = NSEvent::pressedMouseButtons();
-      (pressed_mask & (1usize << bit_index)) != 0
-    }
     #[cfg(target_os = "windows")]
     {
       // Virtual-key codes for mouse buttons.
@@ -606,19 +523,6 @@ impl Dispatcher {
 
   /// Sets the cursor position to the specified coordinates.
   pub fn set_cursor_position(&self, point: &Point) -> crate::Result<()> {
-    #[cfg(target_os = "macos")]
-    {
-      let point = CGPoint {
-        x: f64::from(point.x),
-        y: f64::from(point.y),
-      };
-
-      if CGWarpMouseCursorPosition(point) != CGError::Success {
-        return Err(crate::Error::Platform(
-          "Failed to set cursor position.".to_string(),
-        ));
-      }
-    }
     #[cfg(target_os = "windows")]
     {
       unsafe { SetCursorPos(point.x, point.y) }?;
@@ -632,25 +536,13 @@ impl Dispatcher {
     platform_impl::reset_focus(self)
   }
 
-  /// Opens the operating system's file explorer at the given path.
-  ///
-  /// # Platform-specific
-  ///
-  /// - **Windows**: Uses `explorer` to open the file explorer.
-  /// - **macOS**: Uses `open` to open the file explorer.
+  /// Opens File Explorer at the given path.
   pub fn open_file_explorer(&self, path: &Path) -> crate::Result<()> {
     #[cfg(target_os = "windows")]
     {
       let normalized_path = std::fs::canonicalize(path)?;
       std::process::Command::new("explorer")
         .arg(normalized_path)
-        .spawn()?;
-    }
-    #[cfg(target_os = "macos")]
-    {
-      std::process::Command::new("open")
-        .arg(path)
-        .arg("-R")
         .spawn()?;
     }
 
@@ -677,20 +569,6 @@ impl Dispatcher {
           MB_ICONERROR | MB_OK | MB_SYSTEMMODAL,
         );
       }
-    }
-    #[cfg(target_os = "macos")]
-    {
-      // TODO: This should block indefinitely. Currently, it gets timed out
-      // after 5 seconds.
-      let _ = self.dispatch_sync(|| {
-        let mtm = MainThreadMarker::new().unwrap();
-
-        let alert = NSAlert::new(mtm);
-        alert.setMessageText(&NSString::from_str(title));
-        alert.setInformativeText(&NSString::from_str(message));
-        alert.setAlertStyle(NSAlertStyle::Critical);
-        alert.runModal();
-      });
     }
   }
 }

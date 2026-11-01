@@ -58,12 +58,7 @@ pub use thread_bound::*;
 pub use window_listener::*;
 
 pub fn main() {
-  // Due to macOS requiring the main thread for some UI APIs, these
-  // tests must execute on the main thread. Until this is natively
-  // supported via cargo's test harness, we use `libtest_mimic_collect`.
-  //
-  // To run these tests, run `cargo test <...args> -- --test-threads=1`.
-  //
-  // Ref: https://github.com/rust-lang/rust/issues/104053
+  // Tests are collected by `libtest_mimic_collect` and run on the main
+  // thread. To run them, run `cargo test <...args> -- --test-threads=1`.
   libtest_mimic_collect::TestCollection::run();
 }

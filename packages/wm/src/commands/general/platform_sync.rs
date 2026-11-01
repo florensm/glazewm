@@ -1051,9 +1051,6 @@ fn redraw_containers(
     };
 
     // Set the z-order of the window.
-    //
-    // NOTE: macOS doesn't have a robust public API for setting the z-order
-    // of a window. See `NativeWindow::raise` for more details.
     #[cfg(target_os = "windows")]
     if should_bring_to_front && !windows_to_redraw.contains(window) {
       tracing::info!("Updating window z-order: {window}");
@@ -1829,9 +1826,6 @@ fn reposition_window(
   if window.active_drag().is_some() {
     window.native().resize(rect.width(), rect.height())?;
   } else {
-    #[cfg(target_os = "macos")]
-    window.native().set_frame(rect)?;
-
     #[cfg(target_os = "windows")]
     {
       use wm_platform::{

@@ -2,8 +2,6 @@ use std::path::Path;
 
 #[cfg(target_os = "windows")]
 use anyhow::Context;
-#[cfg(target_os = "macos")]
-use shell_util::{CommandOptions, Shell};
 #[cfg(target_os = "windows")]
 use wm_platform::DispatcherExtWindows;
 
@@ -28,14 +26,6 @@ pub fn shell_exec(
   // held by our process (e.g. the IPC server port) until the subprocess
   // exits.
   let result = {
-    #[cfg(target_os = "macos")]
-    {
-      Shell::spawn(
-        &program,
-        args.split_whitespace(),
-        &CommandOptions::default(),
-      )
-    }
     #[cfg(target_os = "windows")]
     {
       let home_dir =
@@ -100,11 +90,6 @@ fn parse_command(
     #[cfg(target_os = "windows")]
     {
       state.dispatcher.expand_env_strings(command)?
-    }
-    #[cfg(target_os = "macos")]
-    {
-      // TODO: Expand env variables on macOS.
-      command.to_string()
     }
   };
 

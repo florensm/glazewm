@@ -146,8 +146,6 @@ impl NativeMonitorProperties {
       working_area,
       dpi,
       scale_factor,
-      #[cfg(target_os = "macos")]
-      device_uuid: String::new(),
       #[cfg(target_os = "windows")]
       handle: 0,
       #[cfg(target_os = "windows")]

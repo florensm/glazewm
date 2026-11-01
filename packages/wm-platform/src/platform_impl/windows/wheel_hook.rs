@@ -64,7 +64,7 @@ impl WheelEvent {
       |key_code: u16| unsafe { GetAsyncKeyState(i32::from(key_code)) } < 0;
 
     match key {
-      Key::Cmd | Key::Win => is_down(VK_LWIN.0) || is_down(VK_RWIN.0),
+      Key::Win => is_down(VK_LWIN.0) || is_down(VK_RWIN.0),
       Key::Alt => is_down(VK_LMENU.0) || is_down(VK_RMENU.0),
       Key::Ctrl => is_down(VK_LCONTROL.0) || is_down(VK_RCONTROL.0),
       Key::Shift => is_down(VK_LSHIFT.0) || is_down(VK_RSHIFT.0),

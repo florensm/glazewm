@@ -206,14 +206,3 @@ The whole contract is: subscribe, keep a set, clear on focus.
 
 Dynamic workspaces need no widget changes as long as the workspace list is
 rendered from `query workspaces` rather than a hardcoded range.
-
----
-
-## Platform support
-
-| | Windows | macOS |
-| --- | --- | --- |
-| Dynamic workspaces | yes | yes |
-| Urgency via flashing | yes | never fires — no equivalent notification |
-| Urgency via focus steal | yes | yes |
-| Stopping the taskbar flash | yes | no-op |

@@ -11,7 +11,6 @@ use crate::{platform_impl, Dispatcher};
 ///
 /// # Platform-specific
 ///
-/// - **macOS**: Can be created on any thread. Runs `CFRunLoopRun()`.
 /// - **Windows**: Can be created on any thread. Runs a Win32 message loop.
 pub struct EventLoop {
   inner: platform_impl::EventLoop,
@@ -36,8 +35,6 @@ impl EventLoop {
   ///
   /// # Platform-specific
   ///
-  /// - **macOS**: Must be called from the main thread. Runs
-  ///   `CFRunLoopRun()`.
   /// - **Windows**: Can be called from any thread. Runs Win32 message
   ///   loop.
   pub fn run(self) -> crate::Result<()> {

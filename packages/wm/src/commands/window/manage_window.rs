@@ -811,21 +811,6 @@ fn check_is_manageable(
     return Ok(Some(native_properties));
   }
 
-  #[cfg(target_os = "macos")]
-  {
-    use wm_platform::NativeWindowExtMacOs;
-
-    let is_standard_window = native_window.role()? == "AXWindow"
-      && native_window.subrole()? == "AXStandardWindow";
-
-    if !is_standard_window {
-      tracing::debug!(
-        "Skipping non-standard window: {native_properties:?}"
-      );
-      return Ok(None);
-    }
-  }
-
   #[cfg(target_os = "windows")]
   {
     use wm_platform::{

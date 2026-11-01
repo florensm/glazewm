@@ -34,7 +34,6 @@ static ACCENT_COLOR_CACHE: OnceLock<Mutex<Option<(Instant, Color)>>> =
 /// # Platform-specific
 ///
 /// - **Windows:** reads `DwmGetColorizationColor`.
-/// - **macOS:** unsupported; always returns an error.
 #[cfg(target_os = "windows")]
 pub fn system_accent_color() -> crate::Result<Color> {
   let cache = ACCENT_COLOR_CACHE.get_or_init(|| Mutex::new(None));
@@ -54,19 +53,4 @@ pub fn system_accent_color() -> crate::Result<Color> {
   let color = crate::platform_impl::system_accent_color()?;
   *guard = Some((now, color));
   Ok(color)
-}
-
-/// Returns the OS's current accent/colorization color -- the color Windows
-/// uses to tint title bars/taskbar/window borders when the user has that
-/// personalization option enabled.
-///
-/// # Platform-specific
-///
-/// - **Windows:** reads `DwmGetColorizationColor`.
-/// - **macOS:** unsupported; always returns an error.
-#[cfg(target_os = "macos")]
-pub fn system_accent_color() -> crate::Result<Color> {
-  Err(crate::Error::Platform(
-    "system_accent_color is not supported on macOS.".to_string(),
-  ))
 }

@@ -1,12 +1,8 @@
 use anyhow::Context;
-#[cfg(target_os = "macos")]
-use wm_common::try_warn;
 #[cfg(target_os = "windows")]
 use wm_platform::Point;
 use wm_platform::{MouseButton, MouseEvent};
 
-#[cfg(target_os = "macos")]
-use crate::events::handle_window_moved_or_resized_end;
 use crate::{
   commands::container::set_focused_descendant,
   layout::scrolling::is_focusable_by_hover,
@@ -27,37 +23,6 @@ pub fn handle_mouse_move(
     return Ok(());
   }
 
-  // On macOS, detect when a window drag operation has ended by listening
-  // to the release of left click.
-  //
-  // This cannot be used for Windows, since it leads to race conditions
-  // where the mouse event comes in before the `MovedOrResized` event with
-  // `is_interactive_end`. For example, if the user drags to maximize a
-  // window, the WS_MAXIMIZED state is sometimes set after the mouse event.
-  #[cfg(target_os = "macos")]
-  if let MouseEvent::ButtonUp { button, .. } = event {
-    if *button == MouseButton::Left {
-      let active_drag_windows = state
-        .windows()
-        .into_iter()
-        .filter(|window| window.active_drag().is_some());
-
-      // Only one window should ever be actively dragged at a time, but
-      // just in case, iterate over all active drag windows.
-      for window in active_drag_windows {
-        let new_rect = try_warn!(window.native().frame());
-
-        window.update_native_properties(|properties| {
-          properties.frame = new_rect;
-        });
-
-        handle_window_moved_or_resized_end(&window, state, config)?;
-      }
-    }
-
-    return Ok(());
-  }
-
   #[cfg(target_os = "windows")]
   if let MouseEvent::ButtonUp {
     button: MouseButton::Left,
@@ -75,11 +40,7 @@ pub fn handle_mouse_move(
 
   if let MouseEvent::Move {
     pressed_buttons,
-    // LINT: `window_below_cursor` is only used on macOS.
-    #[cfg_attr(not(target_os = "macos"), allow(unused_variables))]
-    window_below_cursor,
     position,
-    ..
   } = event
   {
     // Ignore event if left/right-click is down. Otherwise, this causes
@@ -102,17 +63,6 @@ pub fn handle_mouse_move(
     }
 
     let window_under_cursor = {
-      #[cfg(target_os = "macos")]
-      {
-        window_below_cursor.and_then(|window_id| {
-          use crate::traits::WindowGetters;
-
-          state
-            .windows()
-            .into_iter()
-            .find(|w| w.native().id() == window_id)
-        })
-      }
       #[cfg(target_os = "windows")]
       {
         state

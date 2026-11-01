@@ -2,15 +2,7 @@ use std::{fmt, str::FromStr};
 
 use serde::{Deserialize, Serialize};
 
-/// Platform-specific keyboard key code.
-///
-/// Represents the raw key code from the underlying platform's keyboard
-/// API.
-///
-/// # Platform-specific
-///
-/// - **Windows**: `u16` (Virtual key code from Windows API). See <https://learn.microsoft.com/en-us/windows/win32/inputdev/virtual-key-codes>
-/// - **macOS**: `i64` (Virtual key code from `CGEvent`). See <https://developer.apple.com/documentation/coregraphics/cgeventfield/keyboardeventkeycode>
+/// Windows virtual-key code. See <https://learn.microsoft.com/en-us/windows/win32/inputdev/virtual-key-codes>.
 #[derive(
   Debug,
   Copy,
@@ -23,10 +15,7 @@ use serde::{Deserialize, Serialize};
   Serialize,
   Deserialize,
 )]
-pub struct KeyCode(
-  #[cfg(target_os = "windows")] pub(crate) u16,
-  #[cfg(target_os = "macos")] pub(crate) i64,
-);
+pub struct KeyCode(#[cfg(target_os = "windows")] pub(crate) u16);
 
 impl fmt::Display for KeyCode {
   fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -114,13 +103,10 @@ pub enum Key {
   F24,
 
   // Modifier keys
-  Cmd,
   Ctrl,
   Alt,
   Shift,
   Win,
-  LCmd,
-  RCmd,
   LCtrl,
   RCtrl,
   LAlt,
@@ -212,20 +198,11 @@ pub enum Key {
 impl Key {
   /// Attempts to parse a key from a literal string (e.g. `a`, `;`, `à`).
   ///
-  /// # Platform-specific
-  ///
-  /// - **macOS**: Not implemented. Returns `KeyParseError::UnknownKey` for
-  ///   all keys.
-  ///
   /// # Errors
   ///
   /// Returns `KeyParseError::UnknownKey` if the key is not found on the
   /// current keyboard layout.
   pub fn try_from_literal(key_str: &str) -> Result<Self, KeyParseError> {
-    #[cfg(target_os = "macos")]
-    {
-      Err(KeyParseError::UnknownKey(key_str.to_string()))
-    }
     #[cfg(target_os = "windows")]
     {
       use windows::Win32::UI::Input::KeyboardAndMouse::{
@@ -326,22 +303,19 @@ impl_key_parsing! {
   F19 => ["f19"], F20 => ["f20"], F21 => ["f21"], F22 => ["f22"],
   F23 => ["f23"], F24 => ["f24"],
 
-  // Modifier keys
-  Cmd => ["cmd"],
+  // Modifier keys. `cmd` is kept as an alias of `win` for older configs.
   Ctrl => ["ctrl", "control"],
   Alt => ["alt", "menu"],
   Shift => ["shift"],
-  Win => ["win"],
-  LCmd => ["lcmd"],
-  RCmd => ["rcmd"],
+  Win => ["win", "cmd"],
   LCtrl => ["lctrl"],
   RCtrl => ["rctrl"],
   LAlt => ["lalt", "lmenu"],
   RAlt => ["ralt", "rmenu"],
   LShift => ["lshift"],
   RShift => ["rshift"],
-  LWin => ["lwin"],
-  RWin => ["rwin"],
+  LWin => ["lwin", "lcmd"],
+  RWin => ["rwin", "rcmd"],
 
   // Special keys
   Space => ["space"],
@@ -440,7 +414,7 @@ mod tests {
   #[test]
   fn test_key_parsing() {
     assert_eq!("a".parse::<Key>().unwrap(), Key::A);
-    assert_eq!("cmd".parse::<Key>().unwrap(), Key::Cmd);
+    assert_eq!("cmd".parse::<Key>().unwrap(), Key::Win);
     assert_eq!("f1".parse::<Key>().unwrap(), Key::F1);
     assert_eq!("space".parse::<Key>().unwrap(), Key::Space);
     assert_eq!("enter".parse::<Key>().unwrap(), Key::Enter);
@@ -458,7 +432,7 @@ mod tests {
   #[test]
   fn test_key_display() {
     assert_eq!(Key::A.to_string(), "a");
-    assert_eq!(Key::Cmd.to_string(), "cmd");
+    assert_eq!(Key::Win.to_string(), "win");
     assert_eq!(Key::F1.to_string(), "f1");
     assert_eq!(Key::Space.to_string(), "space");
   }

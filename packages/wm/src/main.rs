@@ -8,8 +8,6 @@
 )]
 #![feature(iterator_try_collect)]
 
-#[cfg(target_os = "macos")]
-use std::io::IsTerminal;
 use std::{
   path::PathBuf,
   process,
@@ -24,8 +22,6 @@ use tracing_subscriber::{
   layer::{Layer, SubscriberExt},
 };
 use wm_common::{AppCommand, InvokeCommand, Verbosity, WmEvent};
-#[cfg(target_os = "macos")]
-use wm_platform::DispatcherExtMacOs;
 use wm_platform::{
   Dispatcher, DisplayListener, EventLoop, KeybindingListener,
   MouseEventKind, MouseListener, PlatformEvent, SingleInstance,
@@ -115,8 +111,7 @@ fn main() -> anyhow::Result<()> {
       })
     });
 
-    // Run event loop (blocks until shutdown). This must be on the main
-    // thread for macOS compatibility.
+    // Run event loop (blocks until shutdown).
     event_loop.run()?;
 
     // Wait for clean exit of the WM.
@@ -138,16 +133,6 @@ async fn start_wm(
   // Ensure that only one instance of the WM is running.
   let _single_instance = SingleInstance::new()?;
 
-  #[cfg(target_os = "macos")]
-  {
-    if !dispatcher.has_ax_permission(true) {
-      anyhow::bail!(
-        "Accessibility permissions are not granted. In System Preferences, \
-         go to Privacy & Security > Accessibility and enable GlazeWM."
-      );
-    }
-  }
-
   // Parse and validate user config.
   let mut config = UserConfig::new(config_path)?;
 
@@ -158,8 +143,7 @@ async fn start_wm(
 
   let mut ipc_server = IpcServer::start().await?;
 
-  // On Windows, start watcher process for restoring hidden windows on
-  // crash. macOS' hidden windows are always accessible.
+  // Start watcher process for restoring hidden windows on crash.
   #[cfg(target_os = "windows")]
   if let Err(err) = start_watcher_process() {
     tracing::warn!(
@@ -168,14 +152,6 @@ async fn start_wm(
         .then_some(".\n Run `cargo build -p wm-watcher` to build it.")
         .unwrap_or_default()
     );
-  }
-
-  // On macOS, update the current process' PATH variable so that
-  // `shell-exec` can resolve programs defined in the shell's PATH. Skip if
-  // running via a terminal.
-  #[cfg(target_os = "macos")]
-  if !std::io::stdin().is_terminal() {
-    update_path_env();
   }
 
   // Start listening for platform events after populating initial state.
@@ -679,40 +655,6 @@ fn start_watcher_process() -> anyhow::Result<tokio::process::Child> {
   tokio::process::Command::new(&watcher_path)
     .spawn()
     .context("Failed to start watcher process.")
-}
-
-/// Updates the current process' PATH by querying the login shell.
-///
-/// Apps launched outside a terminal (Spotlight, Finder, login items)
-/// inherit a PATH that only contains `/usr/bin:/bin:/usr/sbin:/sbin`. This
-/// causes `shell-exec` to fail for binaries that aren't in the system
-/// PATH.
-#[cfg(target_os = "macos")]
-fn update_path_env() {
-  let shell =
-    std::env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".to_string());
-
-  // Use `-l` and `-i` (login + interactive) so that both profile and rc
-  // files are sourced.
-  let path_var = match std::process::Command::new(&shell)
-    .args(["-lic", "printf '%s' \"$PATH\""])
-    .output()
-  {
-    Ok(output) if output.status.success() => {
-      String::from_utf8(output.stdout)
-        .ok()
-        .filter(|path| !path.is_empty())
-    }
-    _ => None,
-  };
-
-  if let Some(path) = path_var {
-    std::env::set_var("PATH", path);
-  } else {
-    tracing::warn!(
-      "Failed to query login shell for PATH. Keeping existing PATH."
-    );
-  }
 }
 
 /// Waits for `interval`'s next tick, or forever when there is none.
