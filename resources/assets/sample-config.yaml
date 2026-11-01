@@ -1,8 +1,4 @@
 animations:
-  # Which animating windows keep their border and backdrop overlays: 'all',
-  # 'focused_only' or 'none'. Fewer is smoother with many windows.
-  overlay_tracking: "all"
-
   # Windows changing position.
   window_move:
     enabled: true

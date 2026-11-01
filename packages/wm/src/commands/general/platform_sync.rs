@@ -10,8 +10,7 @@ use wm_common::{
 };
 #[cfg(target_os = "windows")]
 use wm_common::{
-  OverlayTracking, WindowEffectConfig, WindowTransitionParams,
-  WorkspaceSwitchStyle,
+  WindowEffectConfig, WindowTransitionParams, WorkspaceSwitchStyle,
 };
 #[cfg(target_os = "windows")]
 use wm_platform::NativeWindowWindowsExt;
@@ -1209,25 +1208,11 @@ fn redraw_containers(
       let (opacity, style, overlays) =
         surrogate_effects_for(window.effect_set(is_focused), config);
 
-      // Decided here rather than in the tracking loop so the session is
-      // built knowing it has no live overlay. `ResizeSession::begin` skips
-      // the sampled backdrop color whenever `overlays.backdrop` is `Some`,
-      // on the grounds that the tracked backdrop will show through the gap
-      // between the animated rect and the thumbnail -- so an overlay that
-      // is declared but never tracked leaves that gap fully transparent,
-      // which reads as a hole straight through to the desktop. Passing
-      // `None` restores the sampled, app-matched fill instead.
-      let is_tracked = match config.value.animations.overlay_tracking {
-        OverlayTracking::All => true,
-        OverlayTracking::FocusedOnly => is_focused,
-        OverlayTracking::None => false,
-      };
-
       let overlays = OverlayParams {
-        backdrop: overlays.backdrop.filter(|_| is_tracked),
-        border: overlays.border.filter(|_| {
-          is_tracked && !border_hidden_for_fullscreen(window, config)
-        }),
+        backdrop: overlays.backdrop,
+        border: overlays
+          .border
+          .filter(|_| !border_hidden_for_fullscreen(window, config)),
       };
 
       (opacity, style, overlays)
@@ -1716,12 +1701,7 @@ fn redraw_containers(
     let overlay_scope = perf::scope(Stage::SessionOverlays);
 
     // Each animating window costs three composited surfaces, not one: its
-    // surrogate plus these two overlays, all repositioned every frame --
-    // see `OverlayTracking`. Untracked windows are filtered out
-    // earlier, where the session's overlay params are decided, so a
-    // session simply has no params here and this loop skips it;
-    // `sync_overlays` hides the static overlay for the duration,
-    // exactly as it does for any window whose effect isn't configured.
+    // surrogate plus these two overlays, all repositioned every frame.
     for (id, session) in &state.animation_manager.resize_sessions {
       if state.animation_manager.has_close_animation(id) {
         continue;
