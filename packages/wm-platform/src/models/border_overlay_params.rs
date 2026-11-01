@@ -24,10 +24,6 @@ pub struct BorderOverlayParams {
   /// Opacity of the overlay's whole composited visual, from `0.0` to
   /// `1.0`.
   pub opacity: f32,
-  /// Whether the ring slowly breathes, dimming and brightening again.
-  pub pulse: bool,
-  /// Whether the ring blinks a few times as it takes these params.
-  pub flash: bool,
 }
 
 impl BorderOverlayParams {
@@ -43,8 +39,6 @@ impl BorderOverlayParams {
         t,
       ),
       opacity: crate::lerp_f32(self.opacity, to.opacity, t),
-      pulse: if t < 0.5 { self.pulse } else { to.pulse },
-      flash: if t < 0.5 { self.flash } else { to.flash },
     }
   }
 }

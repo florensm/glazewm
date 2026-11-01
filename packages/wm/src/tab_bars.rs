@@ -605,8 +605,6 @@ mod tests {
       width: 2.0,
       corner_radius: 10.0,
       opacity: 1.0,
-      pulse: false,
-      flash: false,
     };
 
     assert_eq!(

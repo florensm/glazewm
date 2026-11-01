@@ -193,11 +193,6 @@ window_effects:
       width: "2px"
       # Defaults to the window's corner radius plus the width.
       # radius: "12px"
-      # Slowly breathes. Played by the compositor, so it costs the WM
-      # nothing per frame.
-      pulse: false
-      # Blinks a few times as a shown window takes these effects.
-      flash: false
 
     hide_title_bar:
       enabled: false      # Can break rendering in some apps.
@@ -264,8 +259,6 @@ window_effects:
   #     enabled: true
   #     color: "#f5a524"
   #     width: "2px"
-  #     flash: true     # Blinks a few times as the window asks.
-  #     pulse: true     # Then breathes until focused.
   #   corner_style:
   #     enabled: true
   #     style: "square"
