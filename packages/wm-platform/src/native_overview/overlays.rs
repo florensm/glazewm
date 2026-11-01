@@ -591,7 +591,18 @@ impl Screen {
     overlays.workspace_ring.place(&view, chrome);
     is_gliding |= overlays.hover_ring.glide.follow(hover_target, now);
     overlays.hover_ring.place(&view, chrome);
-    is_gliding |= overlays.window_ring.glide.follow(window_target, now);
+    // Only the arrows glide the picked window's ring and title along: a
+    // pick by pointing, or after the picked window left, settles in place
+    // rather than flicking over from wherever the last one was.
+    let window_glides = focus.window_ring_glides;
+    is_gliding |= if window_glides {
+      overlays.window_ring.glide.follow(window_target, now)
+    } else {
+      overlays
+        .window_ring
+        .glide
+        .follow_in_place(window_target, now)
+    };
     overlays.window_ring.place(&view, chrome);
     is_gliding |=
       overlays.drop_ring.glide.follow_in_place(drop_target, now);
@@ -605,7 +616,11 @@ impl Screen {
       }
     }
 
-    is_gliding |= overlays.tag.glide.follow(tag_target, now);
+    is_gliding |= if window_glides {
+      overlays.tag.glide.follow(tag_target, now)
+    } else {
+      overlays.tag.glide.follow_in_place(tag_target, now)
+    };
     overlays.tag.place(&view, chrome);
     is_gliding |= overlays.note.glide.follow(note_target, now);
     overlays.note.place(&view, chrome);

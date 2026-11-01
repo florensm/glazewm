@@ -302,6 +302,10 @@ pub(crate) struct Interaction {
   /// Window picked inside the selected workspace.
   pub selected_window: Option<isize>,
 
+  /// Whether the picked window was stepped to with the keyboard, whose
+  /// ring glides along; any other pick settles in place.
+  steps_window: bool,
+
   /// Window held while picking a workspace for it.
   pub carried: Option<isize>,
 
@@ -359,6 +363,7 @@ impl Interaction {
       mode: Mode::Spaces,
       layout,
       selected_window: None,
+      steps_window: false,
       carried: None,
       searching: false,
       query: String::new(),
@@ -530,6 +535,8 @@ impl Interaction {
     key: Key,
     workspaces: &[OverviewWorkspace],
   ) -> Option<OverviewAction> {
+    self.steps_window = false;
+
     // Any key closes the shortcut sheet; `?` and `Escape` do nothing more.
     if std::mem::take(&mut self.shows_shortcuts)
       && matches!(
@@ -1076,6 +1083,7 @@ impl Interaction {
 
     if let Some(hwnd) = next {
       self.selected_window = Some(hwnd);
+      self.steps_window = true;
     } else if Some(toward) == arrows(self.layout).2.map(Toward::opposite) {
       self.mode = Mode::Spaces;
     } else {
@@ -1130,6 +1138,7 @@ impl Interaction {
       let window = if is_last { nav.last() } else { nav.first() };
       if let Some((hwnd, _)) = window {
         self.selected_window = Some(*hwnd);
+        self.steps_window = true;
       }
     } else {
       let row = row_indices(workspaces, &self.active_cards(), self.layout);
@@ -1257,6 +1266,7 @@ impl Interaction {
       if self.mode != Mode::Windows || self.selected_window != Some(hwnd) {
         self.mode = Mode::Windows;
         self.selected_window = Some(hwnd);
+        self.steps_window = false;
         changed = true;
       }
     }
@@ -1457,6 +1467,7 @@ impl Interaction {
       drop: self.drop_target().and_then(local),
       drop_beside: self.drop_beside(workspaces),
       is_dragging: self.drag.is_some(),
+      window_ring_glides: self.steps_window,
       marks_keyboard: is_active && self.screens.len() > 1,
       query: self.query.clone(),
       search: self.search_field(workspaces),
@@ -1569,6 +1580,7 @@ impl Interaction {
 /// The interaction as one screen shows it, in that screen's own card
 /// indices.
 #[derive(Clone, Debug, Default, PartialEq)]
+#[allow(clippy::struct_excessive_bools)]
 pub(crate) struct ScreenFocus {
   pub layout: OverviewLayoutMode,
 
@@ -1605,6 +1617,10 @@ pub(crate) struct ScreenFocus {
 
   /// Whether a window is dragged, over whichever screen.
   pub is_dragging: bool,
+
+  /// Whether the picked window's ring glides to it, as the arrows step
+  /// there, rather than settling in place.
+  pub window_ring_glides: bool,
 
   /// Whether it marks that the keyboard is on it, as one of several
   /// screens.
@@ -2460,6 +2476,32 @@ mod tests {
         "{layout:?}"
       );
     }
+  }
+
+  #[test]
+  fn only_a_window_stepped_to_with_the_arrows_glides_its_ring() {
+    let workspaces = workspaces();
+    let mut state = single(&workspaces, OverviewLayoutMode::Stage);
+    let glides =
+      |state: &Interaction| state.focus(0, &workspaces).window_ring_glides;
+
+    state.key(Key::Right, &workspaces);
+    state.key(Key::Right, &workspaces);
+    assert_eq!(state.selected_window, Some(12));
+    assert!(glides(&state));
+
+    let pointed = Hit {
+      workspace: Some(0),
+      window: Some(11),
+      ..Hit::default()
+    };
+    state.mouse_move((10.0, 10.0), pointed, false);
+    assert_eq!(state.selected_window, Some(11));
+    assert!(!glides(&state), "pointed at");
+
+    state.key(Key::Right, &workspaces);
+    state.key(Key::Text('x'), &workspaces);
+    assert!(!glides(&state), "closed");
   }
 
   #[test]
