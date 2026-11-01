@@ -37,6 +37,7 @@ mod animation;
 mod auto_stack;
 mod closing_windows;
 mod commands;
+mod config_files;
 mod drop_indicator;
 mod error_notifier;
 mod events;

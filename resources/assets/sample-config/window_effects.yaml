@@ -1,0 +1,95 @@
+window_effects:
+  hide_border_on_fullscreen: false
+
+  focused_window:
+    border:
+      enabled: true
+      # A hex color ('#rrggbb' or '#rrggbbaa'), 'accent' for the OS accent
+      # color, or a CSS variable from a palette file (re-read on change):
+      color: "#8dbcff"
+      # color: "accent"
+      # color:
+      #   file: "C:/Users/me/.config/yasb/yasb_colors.css"
+      #   key: "--yasb-accent"
+      width: "2px"
+      # Defaults to the window's corner radius plus the width.
+      # radius: "12px"
+
+    hide_title_bar:
+      enabled: false      # Can break rendering in some apps.
+
+    # Overrides corner_style, for the window and its border and backdrop.
+    # corner_radius: "8px"
+
+    corner_style:         # Windows 11 only.
+      enabled: true
+      style: "square"     # 'square', 'rounded' or 'small_rounded'.
+
+    transparency:
+      enabled: false
+      opacity: "95%"      # '0%' is invisible, and so unfocusable.
+
+    # Blurred wallpaper behind the window. Windows 10 1803+.
+    backdrop:
+      enabled: false
+      tint: "#00000030"   # '#rrggbb' or '#rrggbbaa', over the blur.
+      blur_amount: 30.0
+      opacity: 1.0        # 0 to 1. Of the overlay; prefer vignette.
+      saturation: 1.2     # 0 (grayscale) to 2. 1 is unchanged.
+      exposure: 0.0       # In stops. Negative darkens.
+      contrast: 0.0       # -1 to 1.
+      highlights: -0.3    # -1 to 1. Negative tames bright areas.
+      shadows: 0.1        # -1 to 1. Positive lifts dark areas.
+      vignette: 0.2       # 0 to 1. Darkens toward the window's edges.
+      grain: 0.05         # 0 to 1. Frosted-glass noise.
+      parallax: 1.0       # 1 pins it to the desktop; lower drifts.
+
+  other_windows:
+    border:
+      enabled: true
+      color: "#a1a1a1"
+      width: "2px"
+      # radius: "12px"
+    hide_title_bar:
+      enabled: false
+    corner_style:
+      enabled: true
+      style: "square"
+    # corner_radius: "8px"
+    transparency:
+      enabled: false
+      opacity: "90%"
+    # Same keys as above. Differing only in `tint`, `opacity`, `vignette`
+    # and `parallax` keeps one blurred image per monitor.
+    backdrop:
+      enabled: false
+      tint: "#00000060"
+      blur_amount: 30.0
+      opacity: 1.0
+      saturation: 1.2
+      exposure: 0.0
+      contrast: 0.0
+      highlights: -0.3
+      shadows: 0.1
+      vignette: 0.4
+      grain: 0.05
+      parallax: 1.0
+
+  # Windows that asked for attention, until focused. Same keys as above,
+  # replacing `other_windows` for them; unset, they look like the others.
+  # urgent_window:
+  #   border:
+  #     enabled: true
+  #     color: "#f5a524"
+  #     width: "2px"
+  #     # radius: "12px"
+  #   hide_title_bar:
+  #     enabled: false
+  #   corner_style:
+  #     enabled: true
+  #     style: "square"
+  #   # corner_radius: "8px"
+  #   transparency:
+  #     enabled: false
+  #     opacity: "90%"
+  #   # backdrop: same keys as `focused_window`'s.

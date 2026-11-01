@@ -75,7 +75,7 @@ Below is a cheat sheet of all available commands and their default keybindings.
 
 ## Config documentation
 
-The [default config](https://github.com/glzr-io/glazewm/blob/main/resources/assets/sample-config.yaml) file is generated at `%userprofile%\.glzr\glazewm\config.yaml`.
+The [default config](./resources/assets/sample-config) is generated at `%userprofile%\.glzr\glazewm\`: a main `config.yaml`, plus a file per topic that it includes (see [Config: Multiple files](#config-multiple-files)).
 
 To use a different config file location, you can launch the GlazeWM executable with the CLI argument `--config="..."`, like so:
 
@@ -90,6 +90,34 @@ setx GLAZEWM_CONFIG_PATH "C:\<PATH_TO_CONFIG>\config.yaml"
 ```
 
 With the benefit of using a custom path being that you can choose a different name for the config file, such as `glazewm.yaml`.
+
+### Config: Multiple files
+
+The main config file can list other files under `include`. They are read along with it, so the config can be split however you like. Paths are relative to the main config file.
+
+```yaml
+include:
+  - "keybinds.yaml"
+  - "window_rules.yaml"
+  - "my-extras.yaml"
+```
+
+Each included file holds config sections the same way the main file does. A section can be split across files, down to single settings:
+
+```yaml
+# workspaces.yaml
+general:
+  dynamic_workspaces: true
+
+workspaces:
+  - name: "1"
+```
+
+Rules:
+
+- A setting can only be set in one file. Setting it in two (e.g. `general.dynamic_workspaces`, or the whole `keybindings` list) fails to load, naming both files.
+- Only the main config file can include others.
+- A config without `include` is read on its own, exactly as before.
 
 ### Config: General
 

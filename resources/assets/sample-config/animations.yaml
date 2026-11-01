@@ -1,0 +1,74 @@
+# Window and workspace animations. The overview's own are in overview.yaml.
+animations:
+  # Windows changing position.
+  window_move:
+    enabled: true
+    duration_ms: 150
+    # Named: 'linear', 'ease_in', 'ease_out', 'ease_in_out', 'ease_in_cubic',
+    # 'ease_out_cubic', 'ease_in_out_cubic', 'ease_out_spring'.
+    # Custom: 'cubic_bezier(x1, y1, x2, y2)'.
+    # Spring: 'spring(damping_ratio, stiffness, epsilon)', or just 'spring'.
+    # Lasts until settled, ignoring `duration_ms`. Damping below 1 bounces.
+    easing: "cubic_bezier(0.2, 0.0, 0.0, 1.0)"
+    # Smallest move, in pixels, that animates.
+    threshold_px: 10
+
+  # Scrolling layout columns moving and resizing. Same keys as `window_move`.
+  scroll:
+    enabled: true
+    duration_ms: 220
+    easing: "spring(1.0, 800, 0.0001)"
+    threshold_px: 10
+
+  window_resize:
+    enabled: true
+    duration_ms: 150
+    easing: "cubic_bezier(0.2, 0.0, 0.0, 1.0)"
+    threshold_px: 10
+    # 'fill' keeps the content's size and fills the rest with its edge color;
+    # 'stretch' scales it.
+    style: "fill"
+
+  window_open:
+    enabled: true
+    duration_ms: 150
+    easing: "cubic_bezier(0.16, 1.0, 0.3, 1.0)"
+    # 'slide_right', 'slide_left', 'slide_top', 'slide_bottom', 'zoom', 'none'.
+    style: "slide_right"
+    # 0.0 to 1.0. Below 1.0 fades in.
+    opacity_from: 1.0
+
+  workspace_switch:
+    enabled: true
+    duration_ms: 350
+    easing: "ease_out_cubic"
+    # 'slide', 'fade', 'zoom' or 'iris'.
+    style: "slide"
+    # For 'slide': 'horizontal' or 'vertical'.
+    direction: "horizontal"
+    # For 'iris': 'center', 'cursor' or 'focused_window'.
+    iris_origin: "center"
+    # 0.0 to 1.0. Both at 0.0 is a crossfade.
+    opacity_outgoing: 1.0
+    opacity_incoming: 1.0
+    # For 'slide': how far workspaces shrink while sliding, 0.0 to 1.0.
+    zoom_factor: 0.0
+
+  window_close:
+    enabled: true
+    duration_ms: 150
+    easing: "ease_in_cubic"
+    # 'none', 'zoom', 'slide_left', 'slide_right', 'slide_top', 'slide_bottom'.
+    style: "none"
+    # 0.0 to 1.0. Below 1.0 fades out.
+    opacity_to: 0.0
+
+  # Plays in reverse on restore. Only for minimizes the WM does itself
+  # (e.g. `toggle-minimized`).
+  window_minimize:
+    enabled: false
+    duration_ms: 150
+    easing: "ease_in_cubic"
+    # 'zoom', 'none', 'slide_bottom', 'slide_top', 'slide_left', 'slide_right'.
+    style: "zoom"
+    opacity_to: 0.0

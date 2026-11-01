@@ -1,0 +1,79 @@
+# Main config file. Settings can live here or in the files listed under
+# `include`, which are read along with it. Each included file holds config
+# sections like this one does, and a section can be split across files, as
+# long as no setting is set twice. Paths are relative to this file.
+include:
+  - "animations.yaml"
+  - "keybinds.yaml"
+  - "overview.yaml"
+  - "stack.yaml"
+  - "window_effects.yaml"
+  - "window_rules.yaml"
+  - "workspaces.yaml"
+
+general:
+  # E.g. `["shell-exec zebar"]`.
+  startup_commands: []
+
+  # E.g. `["shell-exec taskkill /IM zebar.exe /F"]`.
+  shutdown_commands: []
+
+  config_reload_commands: []
+
+  focus_follows_cursor: false
+
+  # Focusing the current workspace again goes back to the previous one.
+  toggle_workspace_on_refocus: false
+
+  # Keep focus when a window on a hidden workspace grabs it (e.g. Discord),
+  # and mark that window urgent instead.
+  ignore_focus_steal: false
+
+  # `dynamic_workspaces` and `default_layout` are in workspaces.yaml.
+
+  cursor_jump:
+    enabled: true
+    # 'monitor_focus' or 'window_focus'.
+    trigger: "monitor_focus"
+
+  # Show windows of every workspace in the taskbar, not only shown ones.
+  show_all_in_taskbar: false
+
+gaps:
+  scale_with_dpi: true
+  inner_gap: "20px"
+  outer_gap:
+    top: "20px"
+    right: "20px"
+    bottom: "20px"
+    left: "20px"
+  # Overrides `outer_gap` while a workspace has a single window.
+  # single_window_outer_gap:
+  #   top: "60px"
+  #   right: "200px"
+  #   bottom: "60px"
+  #   left: "200px"
+
+window_behavior:
+  # Leave fullscreen when a new window opens on the same workspace.
+  exit_fullscreen_on_new_window: true
+
+  # Highlight where a dragged window will land.
+  drop_indicator:
+    enabled: true
+    # Defaults to the focused window's border color.
+    # color: "accent"
+
+  # 'tiling' or 'floating'.
+  initial_state: "tiling"
+
+  # Also the defaults of state commands (e.g. `set-floating`) without flags.
+  state_defaults:
+    floating:
+      centered: true
+      shown_on_top: true
+
+    fullscreen:
+      # Maximize instead, if the window has a maximize button.
+      maximized: false
+      shown_on_top: false

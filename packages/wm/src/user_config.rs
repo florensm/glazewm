@@ -7,13 +7,55 @@ use wm_common::{
 };
 
 use crate::{
+  config_files,
   models::{Monitor, NativeWindowProperties, WindowContainer, Workspace},
   traits::{CommonGetters, WindowGetters},
 };
 
-/// Resource string for the sample config file.
-const SAMPLE_CONFIG: &str =
-  include_str!("../../../resources/assets/sample-config.yaml");
+/// Sample config files by file name, the main one first. The main one's
+/// `include` lists the rest.
+const SAMPLE_FILES: [(&str, &str); 8] = [
+  (
+    "config.yaml",
+    include_str!("../../../resources/assets/sample-config/config.yaml"),
+  ),
+  (
+    "animations.yaml",
+    include_str!(
+      "../../../resources/assets/sample-config/animations.yaml"
+    ),
+  ),
+  (
+    "keybinds.yaml",
+    include_str!("../../../resources/assets/sample-config/keybinds.yaml"),
+  ),
+  (
+    "overview.yaml",
+    include_str!("../../../resources/assets/sample-config/overview.yaml"),
+  ),
+  (
+    "stack.yaml",
+    include_str!("../../../resources/assets/sample-config/stack.yaml"),
+  ),
+  (
+    "window_effects.yaml",
+    include_str!(
+      "../../../resources/assets/sample-config/window_effects.yaml"
+    ),
+  ),
+  (
+    "window_rules.yaml",
+    include_str!(
+      "../../../resources/assets/sample-config/window_rules.yaml"
+    ),
+  ),
+  (
+    "workspaces.yaml",
+    include_str!(
+      "../../../resources/assets/sample-config/workspaces.yaml"
+    ),
+  ),
+];
 
 #[derive(Debug)]
 pub struct UserConfig {
@@ -23,7 +65,8 @@ pub struct UserConfig {
   /// Parsed user config value.
   pub value: ParsedConfig,
 
-  /// Unparsed user config string.
+  /// Unparsed user config string. With `include`, the merged config as
+  /// YAML.
   pub value_str: String,
 
   /// Hashmap of window rule event types (e.g. `WindowRuleEvent::Manage`)
@@ -57,9 +100,10 @@ impl UserConfig {
     })
   }
 
-  /// Reads and validates the user config from the given path.
+  /// Reads and validates the user config from the given path, along with
+  /// the files it includes.
   ///
-  /// Creates a new config file from sample if it doesn't exist.
+  /// Creates the sample config files if the main one doesn't exist.
   fn read(
     config_path: &PathBuf,
   ) -> anyhow::Result<(ParsedConfig, String)> {
@@ -67,15 +111,10 @@ impl UserConfig {
       Self::create_sample(config_path)?;
     }
 
-    let config_str = fs::read_to_string(config_path)
-      .context("Unable to read config file.")?;
+    let loaded = config_files::load(config_path)?;
+    Self::validate(&loaded.value)?;
 
-    // TODO: Improve error formatting of serde_yaml errors. Something
-    // similar to https://github.com/AlexanderThaller/format_serde_error
-    let config_value = serde_yaml::from_str(&config_str)?;
-    Self::validate(&config_value)?;
-
-    Ok((config_value, config_str))
+    Ok((loaded.value, loaded.value_str))
   }
 
   /// Checks what the config's types can't express.
@@ -101,18 +140,34 @@ impl UserConfig {
     Ok(())
   }
 
-  /// Initializes a new config file from the sample config resource.
+  /// Writes the sample config to `config_path`, and the files it includes
+  /// next to it. Included files that already exist are left as they are.
   fn create_sample(config_path: &PathBuf) -> Result<()> {
     let parent_dir =
       config_path.parent().context("Invalid config path.")?;
 
     fs::create_dir_all(parent_dir).with_context(|| {
-      format!("Unable to create directory {}.", config_path.display())
+      format!("Unable to create directory {}.", parent_dir.display())
     })?;
 
-    fs::write(config_path, SAMPLE_CONFIG).with_context(|| {
-      format!("Unable to write to {}.", config_path.display())
-    })?;
+    let [(_, main_contents), included @ ..] = &SAMPLE_FILES;
+
+    let files = std::iter::once((config_path.clone(), *main_contents))
+      .chain(
+        included
+          .iter()
+          .map(|(name, contents)| (parent_dir.join(name), *contents)),
+      );
+
+    for (path, contents) in files {
+      if path != *config_path && path.exists() {
+        continue;
+      }
+
+      fs::write(&path, contents).with_context(|| {
+        format!("Unable to write to {}.", path.display())
+      })?;
+    }
 
     Ok(())
   }
@@ -571,12 +626,45 @@ mod tests {
   use super::*;
   use crate::{models::Workspace, test_utils::mock_workspace_configs};
 
-  /// The bundled sample config (which uses the `type` key for animation
-  /// transition types) must always parse.
+  /// The sample config, merged from its files.
+  fn sample_config() -> ParsedConfig {
+    let files = SAMPLE_FILES
+      .iter()
+      .map(|(name, contents)| config_files::ConfigFile {
+        path: PathBuf::from(name),
+        contents: (*contents).to_string(),
+      })
+      .collect::<Vec<_>>();
+
+    config_files::combine(&files)
+      .expect("sample config should parse")
+      .value
+  }
+
+  /// The main sample file includes exactly the other sample files.
+  #[test]
+  fn sample_config_includes_every_file() {
+    let main_path = PathBuf::from("config").join(SAMPLE_FILES[0].0);
+    let main_file = config_files::ConfigFile {
+      path: main_path.clone(),
+      contents: SAMPLE_FILES[0].1.to_string(),
+    };
+    let document = config_files::parse_document(&main_file).unwrap();
+
+    let included = config_files::include_paths(&document, &main_path)
+      .expect("sample includes should be valid");
+    let expected = SAMPLE_FILES[1..]
+      .iter()
+      .map(|(name, _)| PathBuf::from("config").join(name))
+      .collect::<Vec<_>>();
+
+    assert_eq!(included, expected);
+  }
+
+  /// The bundled sample config files must always parse together.
   #[test]
   fn sample_config_parses() {
-    let config: ParsedConfig = serde_yaml::from_str(SAMPLE_CONFIG)
-      .expect("sample config should parse");
+    let config = sample_config();
 
     assert_eq!(
       config.animations.window_open.style,

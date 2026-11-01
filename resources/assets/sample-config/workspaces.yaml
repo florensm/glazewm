@@ -1,0 +1,64 @@
+# The rest of `general` is in config.yaml.
+general:
+  # Create workspaces beyond `workspaces` on demand, removed once empty.
+  dynamic_workspaces: true
+
+  # Layout of workspaces without their own `layout`. Change it at runtime
+  # with `set-layout <layout>`.
+  #   'split'     - new windows tile beside the focused one.
+  #   'dwindle'   - each new window halves the focused one.
+  #   'scrolling' - columns on a strip that scrolls sideways.
+  default_layout: "split"
+
+layouts:
+  scrolling:
+    # Percentage, pixels, or "window" to keep the window's own width.
+    default_column_width: "50%"
+
+    # Widths `cycle-column-width` steps through.
+    preset_column_widths: ["33.333%", "50%", "66.667%"]
+
+    # 'never', 'always', or 'on_overflow' to center only when it doesn't fit
+    # beside the previously focused column.
+    center_focused_column: "never"
+
+    always_center_single_column: false
+
+    # Heights `cycle-window-height` steps through.
+    preset_window_heights: ["33.333%", "50%", "66.667%"]
+
+    # How a column shows its windows: 'normal' (stacked) or 'tabbed'.
+    default_column_display: "normal"
+
+    # How far `focus_follows_cursor` may scroll the strip. "0%" only focuses
+    # windows fully on screen. Unset is no limit.
+    # focus_follows_cursor_max_scroll: "0%"
+
+    # Room kept free at the sides, so neighbouring columns peek out.
+    struts:
+      left: "0px"
+      right: "0px"
+
+# Scratch workspace shared by all monitors and kept out of cycling.
+special_workspace:
+  # Must not be numeric, nor a name in `workspaces`.
+  name: "special"
+  # display_name: "Scratch"
+  # 'scrolling', 'split' or 'dwindle'.
+  layout: "scrolling"
+
+workspaces:
+  # Each can also set:
+  #   display_name: "Web"     # Shown instead of the name, e.g. in bars.
+  #   bind_to_monitor: 0      # Monitor index, left to right.
+  #   keep_alive: true        # Kept even while empty and not shown.
+  #   layout: "scrolling"     # Overrides `general.default_layout`.
+  - name: "1"
+  - name: "2"
+  - name: "3"
+  - name: "4"
+  - name: "5"
+  - name: "6"
+  - name: "7"
+  - name: "8"
+  - name: "9"

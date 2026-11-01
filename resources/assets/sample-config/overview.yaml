@@ -1,0 +1,66 @@
+# Opened by `toggle-overview`.
+overview:
+  backdrop_blur: 40
+  # Its alpha sets how dark the backdrop gets.
+  backdrop_tint: "#00000066"
+
+  # Defaults to the focused window's border color.
+  # accent_color: "accent"
+
+  # Workspace cards, hovered cards and window title strips.
+  card_color: "#221e24e6"
+  surface_color: "#2d292eff"
+  caption_color: "#161217c7"
+
+  text_color: "#e8e0e8ff"
+  subtext_color: "#cdc3ceff"
+  # Outline of windows matching a search.
+  search_color: "#89b4faff"
+  # Falls back to Segoe UI on Windows 10.
+  font_family: "Segoe UI Variable Text"
+
+  # 'activities', 'stage', 'carousel' or 'grid'. Tab cycles them while open.
+  layout: "activities"
+
+  # Corner that opens the overview as the cursor rests in it: 'none',
+  # 'top_left', 'top_right', 'bottom_left' or 'bottom_right'.
+  hot_corner: "none"
+  # How long the cursor rests in the corner first, in ms; 0 is at once.
+  hot_corner_delay_ms: 300
+
+  # Most columns of the grid layout.
+  grid_columns: 5
+
+  # 0 makes them instant.
+  open_duration_ms: 250
+  close_duration_ms: 200
+  # Moving to another workspace or layout while open.
+  switch_duration_ms: 300
+  # Selection and hover highlights gliding and fading.
+  highlight_duration_ms: 170
+  # How far things overshoot before settling: 0 (none) to 0.8 (wobbly).
+  bounce: 0.25
+
+  effects:
+    # Soft accent glow around the selected workspace.
+    glow: true
+    # Slowly breathing glow. Keeps the overview animating every frame.
+    pulse: false
+    # Ring spreading out of a card as it is clicked, or a window lands.
+    ripples: false
+    # A window closed from the overview puffs away into sparks.
+    puff: true
+    # Sparks bursting where a dropped window lands: 0 (none) to 48.
+    sparks: 14
+    # Whether a card wobbles as a window lands on it.
+    jelly: true
+    # Delay between cards popping in on open, in ms: 0 brings them in together.
+    stagger_ms: 24
+    # How far a hovered card leans toward the cursor, in pixels.
+    lean: 8
+    # How much the other cards dim while one is hovered: 0 to 1.
+    dim: 0
+    # How much a dragged window stretches with its speed: 0 to 1.
+    squash: 0.5
+    # Fading outlines trailing a dragged window: 0 (none) to 8.
+    trail: 0
