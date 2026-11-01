@@ -93,7 +93,11 @@ pub(crate) fn animate_away(
 
   let (effect_opacity, corner_style, overlays) =
     crate::commands::general::surrogate_effects_for(
-      window.effect_set(is_focused),
+      crate::commands::general::EffectTarget::new(
+        &state.system_backdrops,
+        window,
+        is_focused,
+      ),
       config,
     );
 

@@ -278,7 +278,7 @@ use crate::commands::general::{
   apply_focus_effects, border_hidden_for_fullscreen, overlay_params_for,
   overlay_z_anchor, resync_settling_overlays, surrogate_effects_for,
   track_overlays, upsert_live_backdrop_overlay,
-  upsert_pinned_border_overlay, SyncableOverlay,
+  upsert_pinned_border_overlay, EffectTarget, SyncableOverlay,
 };
 #[cfg(target_os = "windows")]
 use crate::{
@@ -1564,8 +1564,9 @@ impl AnimationManager {
         .filter(|window| window.is_urgent())
         .map(CommonGetters::id)
         .collect();
-      let effect_set = |id: Uuid, is_focused: bool| {
-        EffectSet::of(is_focused, urgent_ids.contains(&id))
+      let effect_target = |id: Uuid, is_focused: bool| EffectTarget {
+        set: EffectSet::of(is_focused, urgent_ids.contains(&id)),
+        has_system_backdrop: state.system_backdrops.contains(&id),
       };
 
       if let Some(ws) = &mut state.animation_manager.workspace_switch {
@@ -1676,11 +1677,11 @@ impl AnimationManager {
 
             let is_focused = Some(window_id) == focused_id_for_overlay;
             let (from_alpha, _, from_overlays) = surrogate_effects_for(
-              effect_set(window_id, entry.was_focused),
+              effect_target(window_id, entry.was_focused),
               config,
             );
             let (to_alpha, _, to_overlays) = surrogate_effects_for(
-              effect_set(window_id, is_focused),
+              effect_target(window_id, is_focused),
               config,
             );
 
@@ -2268,7 +2269,7 @@ impl AnimationManager {
       for (id, rect, anchor) in &incoming_backdrop_windows {
         let is_focused = Some(*id) == focused_id;
         let mut params =
-          overlay_params_for(state.effect_set(*id, is_focused), config);
+          overlay_params_for(state.effect_target(*id, is_focused), config);
 
         if state.window_by_id(*id).is_some_and(|window| {
           border_hidden_for_fullscreen(&window, config)

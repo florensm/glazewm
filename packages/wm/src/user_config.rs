@@ -1,10 +1,14 @@
 use std::{collections::HashMap, env, fs, path::PathBuf};
 
 use anyhow::{bail, Context, Result};
+#[cfg(target_os = "windows")]
+use wm_common::SystemBackdropConfig;
 use wm_common::{
   InvokeCommand, KeybindingConfig, MatchType, ParsedConfig,
   WindowMatchConfig, WindowRuleConfig, WindowRuleEvent, WorkspaceConfig,
 };
+#[cfg(target_os = "windows")]
+use wm_platform::SystemBackdrop;
 
 use crate::{
   models::{Monitor, NativeWindowProperties, WindowContainer, Workspace},
@@ -346,6 +350,39 @@ impl UserConfig {
       .is_none_or(|match_type| match_type.is_match(&properties.title));
 
     is_process_match && is_class_match && is_title_match
+  }
+
+  /// The material and frame extension `window_effects.system_backdrop`
+  /// assigns a window, checking `apps` before the built-in list. `None`
+  /// when the effect is off or the window matches neither, or matches
+  /// with the `none` material.
+  #[cfg(target_os = "windows")]
+  pub fn system_backdrop_for(
+    &self,
+    properties: &NativeWindowProperties,
+  ) -> Option<(SystemBackdrop, bool)> {
+    let config = &self.value.window_effects.system_backdrop;
+
+    if !config.enabled {
+      return None;
+    }
+
+    let defaults = config
+      .use_default_apps
+      .then(SystemBackdropConfig::default_apps)
+      .unwrap_or_default();
+
+    let app = config.apps.iter().chain(&defaults).find(|app| {
+      app
+        .match_window
+        .iter()
+        .any(|match_config| Self::window_matches(match_config, properties))
+    })?;
+
+    app
+      .material
+      .to_system_backdrop()
+      .map(|material| (material, app.extend_frame))
   }
 
   pub fn inactive_workspace_configs(
@@ -735,6 +772,83 @@ window_effects:
     assert!(!effects.for_set(EffectSet::Urgent).border.enabled);
     assert!(effects.any(|set| set.border.enabled));
     assert_eq!(EffectSet::of(true, true), EffectSet::Focused);
+  }
+
+  #[cfg(target_os = "windows")]
+  fn system_backdrop_config(yaml: &str) -> UserConfig {
+    UserConfig::from_parsed(
+      serde_yaml::from_str(yaml).expect("config should parse"),
+    )
+  }
+
+  #[cfg(target_os = "windows")]
+  #[test]
+  fn system_backdrop_is_off_by_default() {
+    let config = UserConfig::from_parsed(ParsedConfig::default());
+
+    assert_eq!(
+      config.system_backdrop_for(&test_properties("Taskmgr", "")),
+      None
+    );
+  }
+
+  #[cfg(target_os = "windows")]
+  #[test]
+  fn system_backdrop_falls_back_to_default_apps() {
+    let config = system_backdrop_config(
+      r"
+window_effects:
+  system_backdrop:
+    enabled: true
+    apps:
+      - match: [{ window_process: { equals: 'Code' } }]
+        material: 'acrylic'
+        extend_frame: true
+",
+    );
+
+    assert_eq!(
+      config.system_backdrop_for(&test_properties("Code", "")),
+      Some((SystemBackdrop::Acrylic, true))
+    );
+    assert_eq!(
+      config.system_backdrop_for(&test_properties("Taskmgr", "")),
+      Some((SystemBackdrop::Mica, false))
+    );
+    assert_eq!(
+      config.system_backdrop_for(&test_properties("notepad++", "")),
+      None
+    );
+  }
+
+  #[cfg(target_os = "windows")]
+  #[test]
+  fn system_backdrop_apps_can_opt_out_of_defaults() {
+    let opted_out = system_backdrop_config(
+      r"
+window_effects:
+  system_backdrop:
+    enabled: true
+    apps:
+      - match: [{ window_process: { equals: 'Taskmgr' } }]
+        material: 'none'
+",
+    );
+    let without_defaults = system_backdrop_config(
+      r"
+window_effects:
+  system_backdrop:
+    enabled: true
+    use_default_apps: false
+",
+    );
+
+    for config in [opted_out, without_defaults] {
+      assert_eq!(
+        config.system_backdrop_for(&test_properties("Taskmgr", "")),
+        None
+      );
+    }
   }
 
   /// Creates `NativeWindowProperties` with the given process name and

@@ -255,6 +255,11 @@ fn queue_managed_window_sync(
   // out, so it doesn't open hidden behind a monitor-sized window.
   exit_fullscreen_for_new_window(window, state, config)?;
 
+  // Before any effects are applied, which skip the ones a material
+  // replaces.
+  #[cfg(target_os = "windows")]
+  state.system_backdrops.sync(window, config);
+
   state.emit_event(WmEvent::WindowManaged {
     managed_window: window.to_dto()?,
   });

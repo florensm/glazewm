@@ -69,7 +69,7 @@ pub fn reload_config(
   update_container_gaps(state, config);
 
   #[cfg(target_os = "windows")]
-  update_window_effects(state);
+  update_window_effects(state, config);
 
   // Ensure all windows are shown when hide method is changed.
   #[cfg(target_os = "windows")]
@@ -222,8 +222,14 @@ fn update_container_gaps(state: &mut WmState, config: &UserConfig) {
 /// `platform_sync` tick) and simply stop being created/get torn down the
 /// moment their config resolves to disabled, same as any other
 /// config-driven change.
+///
+/// System backdrops are synced here rather than with the other effects:
+/// they are resolved against the window's properties, so only change
+/// when the config does.
 #[cfg(target_os = "windows")]
-fn update_window_effects(state: &mut WmState) {
+fn update_window_effects(state: &mut WmState, config: &UserConfig) {
+  let windows = state.windows();
+  state.system_backdrops.sync_all(&windows, config);
   state.pending_sync.queue_all_effects_update();
 }
 

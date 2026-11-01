@@ -35,7 +35,10 @@ use crate::{
   user_config::UserConfig,
 };
 #[cfg(target_os = "windows")]
-use crate::{overview::Overview, window_overlays::WindowOverlays};
+use crate::{
+  commands::general::EffectTarget, overview::Overview,
+  system_backdrops::SystemBackdrops, window_overlays::WindowOverlays,
+};
 
 pub struct WmState {
   /// Root node of the container tree. Monitors are the children of the
@@ -109,6 +112,10 @@ pub struct WmState {
   #[cfg(target_os = "windows")]
   pub window_overlays: HashMap<Uuid, WindowOverlays>,
 
+  /// DWM materials given to windows by the `system_backdrop` effect.
+  #[cfg(target_os = "windows")]
+  pub system_backdrops: SystemBackdrops,
+
   /// Highlight of where a dragged window will land, created on the first
   /// drag that has somewhere to land.
   #[cfg(target_os = "windows")]
@@ -171,6 +178,8 @@ impl WmState {
       window_target_positions: HashMap::new(),
       #[cfg(target_os = "windows")]
       window_overlays: HashMap::new(),
+      #[cfg(target_os = "windows")]
+      system_backdrops: SystemBackdrops::default(),
       #[cfg(target_os = "windows")]
       drop_indicator: None,
       #[cfg(target_os = "windows")]
@@ -679,6 +688,16 @@ impl WmState {
       })
   }
 
+  /// [`WmState::effect_set`], plus whether the window has a system
+  /// backdrop.
+  #[cfg(target_os = "windows")]
+  pub fn effect_target(&self, id: Uuid, is_focused: bool) -> EffectTarget {
+    EffectTarget {
+      set: self.effect_set(id, is_focused),
+      has_system_backdrop: self.system_backdrops.contains(&id),
+    }
+  }
+
   /// Gets container to focus after the given window is unmanaged,
   /// minimized, or moved to another workspace.
   pub fn focus_target_after_removal(
@@ -877,6 +896,10 @@ impl Drop for WmState {
     for handle in self.closing_windows.drain() {
       let _ = NativeWindow::from_handle(handle).set_cloaked(false);
     }
+
+    // Hands back apps' own materials.
+    #[cfg(target_os = "windows")]
+    self.system_backdrops.release_all();
 
     let managed_windows = self.windows();
 

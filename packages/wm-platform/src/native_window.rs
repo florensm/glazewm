@@ -14,7 +14,7 @@ use crate::{platform_impl, Rect};
 #[cfg(target_os = "macos")]
 use crate::{platform_impl::AXUIElementExt, ThreadBound};
 #[cfg(target_os = "windows")]
-use crate::{CornerStyle, Delta, OpacityValue, RectDelta};
+use crate::{CornerStyle, Delta, OpacityValue, RectDelta, SystemBackdrop};
 
 /// Unique identifier of a window.
 ///
@@ -443,6 +443,37 @@ pub trait NativeWindowWindowsExt {
     corner_style: &CornerStyle,
   ) -> crate::Result<()>;
 
+  /// Gets the material DWM paints behind the window's transparent pixels.
+  ///
+  /// # Platform-specific
+  ///
+  /// This method is only available on Windows. Returns `Err` before
+  /// Windows 11 22H2 (build 22621).
+  fn system_backdrop(&self) -> crate::Result<SystemBackdrop>;
+
+  /// Sets the material DWM paints behind the window's transparent pixels.
+  ///
+  /// # Platform-specific
+  ///
+  /// This method is only available on Windows. Returns `Err` before
+  /// Windows 11 22H2 (build 22621).
+  fn set_system_backdrop(
+    &self,
+    backdrop: SystemBackdrop,
+  ) -> crate::Result<()>;
+
+  /// Extends the window's frame over its whole client area, so a system
+  /// backdrop shows wherever the app paints transparent pixels, or
+  /// returns it to the default frame.
+  ///
+  /// The previous margins can't be read back, so only undo an extension
+  /// this process made.
+  ///
+  /// # Platform-specific
+  ///
+  /// This method is only available on Windows.
+  fn set_frame_extended(&self, extended: bool) -> crate::Result<()>;
+
   /// Sets the transparency of the window.
   ///
   /// # Platform-specific
@@ -638,6 +669,21 @@ impl NativeWindowWindowsExt for NativeWindow {
     corner_style: &CornerStyle,
   ) -> crate::Result<()> {
     self.inner.set_corner_style(corner_style)
+  }
+
+  fn system_backdrop(&self) -> crate::Result<SystemBackdrop> {
+    self.inner.system_backdrop()
+  }
+
+  fn set_system_backdrop(
+    &self,
+    backdrop: SystemBackdrop,
+  ) -> crate::Result<()> {
+    self.inner.set_system_backdrop(backdrop)
+  }
+
+  fn set_frame_extended(&self, extended: bool) -> crate::Result<()> {
+    self.inner.set_frame_extended(extended)
   }
 
   fn set_transparency(

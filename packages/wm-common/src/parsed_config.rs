@@ -4,7 +4,7 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use wm_platform::{
   BackdropOverlayParams, BorderOverlayParams, Color, CornerStyle, Key,
   Keybinding, LengthUnit, LengthValue, OpacityValue, OverviewEffects,
-  RectDelta,
+  RectDelta, SystemBackdrop,
 };
 
 use crate::{app_command::InvokeCommand, Layout};
@@ -916,10 +916,119 @@ pub struct WindowEffectsConfig {
   ///
   /// Only has an effect on Windows.
   pub hide_border_on_fullscreen: bool,
+
+  /// DWM materials for apps that paint a transparent background, which
+  /// keep their text opaque where `transparency` fades it.
+  pub system_backdrop: SystemBackdropConfig,
+}
+
+/// Per-app DWM materials (Mica, Acrylic, Mica Alt).
+///
+/// A window given one skips the `transparency` and `backdrop` effects:
+/// DWM paints the material behind its transparent pixels instead, so
+/// layering either on top would fade its text or double the blur.
+///
+/// # Platform-specific
+///
+/// Only has an effect on Windows 11 22H2 (build 22621) and later. Earlier
+/// builds reject the material, and the window keeps the other effects.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(default, rename_all(serialize = "camelCase"))]
+pub struct SystemBackdropConfig {
+  /// Whether to enable the effect.
+  pub enabled: bool,
+
+  /// Whether to fall back to the built-in list (see
+  /// [`SystemBackdropConfig::default_apps`]) for windows `apps` doesn't
+  /// match.
+  pub use_default_apps: bool,
+
+  /// Apps to give a material, checked in order before the built-in list.
+  pub apps: Vec<SystemBackdropAppConfig>,
+}
+
+impl Default for SystemBackdropConfig {
+  fn default() -> Self {
+    Self {
+      enabled: false,
+      use_default_apps: true,
+      apps: Vec::new(),
+    }
+  }
+}
+
+impl SystemBackdropConfig {
+  /// Inbox Windows 11 apps that leave their whole body transparent for a
+  /// material, so it shows behind their content and not just the title
+  /// bar.
+  ///
+  /// Apps like File Explorer and Notepad are left out: they paint their
+  /// content area opaque, so a material would only reach the title bar
+  /// while costing them the `transparency` effect.
+  #[must_use]
+  pub fn default_apps() -> Vec<SystemBackdropAppConfig> {
+    // Settings, Calculator and other UWP apps share this frame process.
+    ["ApplicationFrameHost", "Taskmgr"]
+      .into_iter()
+      .map(|process| SystemBackdropAppConfig {
+        match_window: vec![WindowMatchConfig {
+          window_process: Some(MatchType::Equals {
+            equals: process.to_string(),
+          }),
+          ..WindowMatchConfig::default()
+        }],
+        material: SystemBackdropMaterial::Mica,
+        extend_frame: false,
+      })
+      .collect()
+  }
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(rename_all(serialize = "camelCase"))]
+pub struct SystemBackdropAppConfig {
+  /// Windows this entry applies to. Matched on manage, so a title match
+  /// sees the window's first title.
+  #[serde(rename = "match")]
+  pub match_window: Vec<WindowMatchConfig>,
+
+  pub material: SystemBackdropMaterial,
+
+  /// Whether to extend the window's frame over its client area, for apps
+  /// that clear their background to transparent but never extend it
+  /// themselves. Apps built for Mica already do.
+  #[serde(default)]
+  pub extend_frame: bool,
+}
+
+/// Material for an app in [`SystemBackdropConfig::apps`].
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SystemBackdropMaterial {
+  /// No material: the app keeps the `transparency` and `backdrop`
+  /// effects. Opts an app out of the built-in list.
+  None,
+  Mica,
+  Acrylic,
+  /// Mica Alt.
+  Tabbed,
+}
+
+impl SystemBackdropMaterial {
+  /// The material to hand DWM, or `None` to leave the window alone.
+  #[must_use]
+  pub fn to_system_backdrop(self) -> Option<SystemBackdrop> {
+    match self {
+      Self::None => None,
+      Self::Mica => Some(SystemBackdrop::Mica),
+      Self::Acrylic => Some(SystemBackdrop::Acrylic),
+      Self::Tabbed => Some(SystemBackdrop::Tabbed),
+    }
+  }
 }
 
 /// Which of the `window_effects` sets a window takes.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum EffectSet {
   Focused,
   Urgent,
@@ -1143,6 +1252,12 @@ pub struct BackdropEffectConfig {
   /// Not baked -- it selects a different part of an already-rendered
   /// image, so any value costs the same (nothing).
   pub parallax: f32,
+
+  /// Whether to derive `tint` from the window's `transparency` so it
+  /// reads like a window with a Mica `system_backdrop`.
+  ///
+  /// See [`BackdropEffectConfig::mica_matched_tint`].
+  pub match_system_backdrop: bool,
 }
 
 impl Default for BackdropEffectConfig {
@@ -1160,11 +1275,65 @@ impl Default for BackdropEffectConfig {
       vignette: 0.0,
       grain: 0.0,
       parallax: 1.0,
+      match_system_backdrop: false,
     }
   }
 }
 
+/// `WinUI`'s default Mica tint, and the share of it over the blurred
+/// wallpaper, for the dark and light themes.
+const MICA_DARK: (Color, f32) = (
+  Color {
+    r: 0x20,
+    g: 0x20,
+    b: 0x20,
+    a: 255,
+  },
+  0.8,
+);
+const MICA_LIGHT: (Color, f32) = (
+  Color {
+    r: 0xf3,
+    g: 0xf3,
+    b: 0xf3,
+    a: 255,
+  },
+  0.5,
+);
+
 impl BackdropEffectConfig {
+  /// Tint that lets as much wallpaper through a window left at
+  /// `window_opacity` (`0.0` to `1.0`) as Mica lets through.
+  ///
+  /// Seen through the window, the backdrop's wallpaper counts for
+  /// `(1 - window_opacity) * (1 - tint_alpha)`; Mica's counts for
+  /// `1 - mica_tint_opacity`. Solving for `tint_alpha` and using Mica's
+  /// own tint color makes the two match, assuming the app's background is
+  /// close to that color, as dark and light apps roughly are. A window too
+  /// opaque to let that much through gets no tint.
+  #[must_use]
+  pub fn mica_matched_tint(
+    window_opacity: f32,
+    light_theme: bool,
+  ) -> Color {
+    let (color, mica_tint_opacity) =
+      if light_theme { MICA_LIGHT } else { MICA_DARK };
+
+    let see_through = 1.0 - window_opacity.clamp(0.0, 1.0);
+    let alpha = if see_through > 0.0 {
+      (1.0 - (1.0 - mica_tint_opacity) / see_through).clamp(0.0, 1.0)
+    } else {
+      0.0
+    };
+
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    Color {
+      // At least 1, to avoid the solid-fill bug `overlay_tint` notes.
+      a: ((alpha * 255.0).round() as u8).max(1),
+      ..color
+    }
+  }
+
   /// Returns the tint for the backdrop overlay.
   ///
   /// Doubles as the "does this window get a `NativeBackdropOverlay`?"
@@ -2631,6 +2800,42 @@ mod tests {
       ..BackdropEffectConfig::default()
     };
     assert!(disabled.overlay_tint().is_none());
+  }
+
+  /// The wallpaper seen through the window and its backdrop equals
+  /// Mica's share of it, whatever the window's opacity.
+  #[test]
+  fn mica_matched_tint_lets_through_as_much_wallpaper_as_mica() {
+    for (window_opacity, light_theme, mica_share) in
+      [(0.5, false, 0.2), (0.6, false, 0.2), (0.2, true, 0.5)]
+    {
+      let tint = BackdropEffectConfig::mica_matched_tint(
+        window_opacity,
+        light_theme,
+      );
+      let wallpaper_share =
+        (1.0 - window_opacity) * (1.0 - f32::from(tint.a) / 255.0);
+
+      assert!(
+        (wallpaper_share - mica_share).abs() < 0.01,
+        "{window_opacity}: {wallpaper_share}"
+      );
+    }
+  }
+
+  /// A window opaque enough to let through no more than Mica gets the
+  /// minimum tint, in Mica's own color.
+  #[test]
+  fn mica_matched_tint_bottoms_out_for_opaque_windows() {
+    for window_opacity in [0.8, 0.95, 1.0] {
+      let tint =
+        BackdropEffectConfig::mica_matched_tint(window_opacity, false);
+      assert_eq!(
+        (tint.r, tint.g, tint.b, tint.a),
+        (0x20, 0x20, 0x20, 1),
+        "{window_opacity}"
+      );
+    }
   }
 
   /// With no explicit tint, the fallback is near-transparent black.

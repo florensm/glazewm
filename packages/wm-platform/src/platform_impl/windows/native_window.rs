@@ -7,24 +7,31 @@ use std::{
 use tokio::task;
 use tracing::warn;
 use windows::{
-  core::PWSTR,
+  core::{w, PWSTR},
   Win32::{
     Foundation::{
       CloseHandle, BOOL, HWND, LPARAM, POINT, RECT,
       TYPE_E_ELEMENTNOTFOUND, WPARAM,
     },
     Graphics::Dwm::{
-      DwmGetColorizationColor, DwmGetWindowAttribute,
-      DwmSetWindowAttribute, DWMWA_BORDER_COLOR, DWMWA_CLOAKED,
+      DwmExtendFrameIntoClientArea, DwmGetColorizationColor,
+      DwmGetWindowAttribute, DwmSetWindowAttribute, DWMSBT_AUTO,
+      DWMSBT_MAINWINDOW, DWMSBT_NONE, DWMSBT_TABBEDWINDOW,
+      DWMSBT_TRANSIENTWINDOW, DWMWA_BORDER_COLOR, DWMWA_CLOAKED,
       DWMWA_COLOR_DEFAULT, DWMWA_COLOR_NONE, DWMWA_EXTENDED_FRAME_BOUNDS,
-      DWMWA_WINDOW_CORNER_PREFERENCE, DWMWCP_DEFAULT, DWMWCP_DONOTROUND,
-      DWMWCP_ROUND, DWMWCP_ROUNDSMALL,
+      DWMWA_SYSTEMBACKDROP_TYPE, DWMWA_WINDOW_CORNER_PREFERENCE,
+      DWMWCP_DEFAULT, DWMWCP_DONOTROUND, DWMWCP_ROUND, DWMWCP_ROUNDSMALL,
+      DWM_SYSTEMBACKDROP_TYPE,
     },
-    System::Threading::{
-      OpenProcess, QueryFullProcessImageNameW, PROCESS_NAME_WIN32,
-      PROCESS_QUERY_LIMITED_INFORMATION,
+    System::{
+      Registry::{RegGetValueW, HKEY_CURRENT_USER, RRF_RT_REG_DWORD},
+      Threading::{
+        OpenProcess, QueryFullProcessImageNameW, PROCESS_NAME_WIN32,
+        PROCESS_QUERY_LIMITED_INFORMATION,
+      },
     },
     UI::{
+      Controls::MARGINS,
       Input::KeyboardAndMouse::{
         SendInput, INPUT, INPUT_0, INPUT_KEYBOARD, INPUT_MOUSE,
         KEYBDINPUT, KEYBD_EVENT_FLAGS, KEYEVENTF_EXTENDEDKEY,
@@ -65,7 +72,7 @@ use super::{
 use crate::{
   discard_bits_if_resized, window_class, Color, CornerStyle, Delta,
   Dispatcher, Key, KeyCode, LengthValue, OpacityValue, Point, Rect,
-  RectDelta, WindowId, WindowZOrder,
+  RectDelta, SystemBackdrop, WindowId, WindowZOrder,
 };
 
 /// Magic number used to identify programmatic mouse inputs from our own
@@ -1008,6 +1015,84 @@ impl NativeWindow {
     Ok(())
   }
 
+  /// Implements [`NativeWindowWindowsExt::system_backdrop`].
+  pub(crate) fn system_backdrop(&self) -> crate::Result<SystemBackdrop> {
+    let mut value = DWM_SYSTEMBACKDROP_TYPE::default();
+
+    // SAFETY: `value` is a stack-allocated `i32` newtype live for the
+    // duration of the call -- the size `DWMWA_SYSTEMBACKDROP_TYPE`
+    // expects.
+    unsafe {
+      #[allow(clippy::cast_possible_truncation)]
+      DwmGetWindowAttribute(
+        self.hwnd(),
+        DWMWA_SYSTEMBACKDROP_TYPE,
+        std::ptr::from_mut(&mut value).cast(),
+        std::mem::size_of::<DWM_SYSTEMBACKDROP_TYPE>() as u32,
+      )?;
+    }
+
+    Ok(match value {
+      DWMSBT_NONE => SystemBackdrop::None,
+      DWMSBT_MAINWINDOW => SystemBackdrop::Mica,
+      DWMSBT_TRANSIENTWINDOW => SystemBackdrop::Acrylic,
+      DWMSBT_TABBEDWINDOW => SystemBackdrop::Tabbed,
+      _ => SystemBackdrop::Auto,
+    })
+  }
+
+  /// Implements [`NativeWindowWindowsExt::set_system_backdrop`].
+  pub(crate) fn set_system_backdrop(
+    &self,
+    backdrop: SystemBackdrop,
+  ) -> crate::Result<()> {
+    let value = match backdrop {
+      SystemBackdrop::Auto => DWMSBT_AUTO,
+      SystemBackdrop::None => DWMSBT_NONE,
+      SystemBackdrop::Mica => DWMSBT_MAINWINDOW,
+      SystemBackdrop::Acrylic => DWMSBT_TRANSIENTWINDOW,
+      SystemBackdrop::Tabbed => DWMSBT_TABBEDWINDOW,
+    };
+
+    // SAFETY: `value` is a stack-allocated `i32` newtype live for the
+    // duration of the call -- the size `DWMWA_SYSTEMBACKDROP_TYPE`
+    // expects.
+    unsafe {
+      #[allow(clippy::cast_possible_truncation)]
+      DwmSetWindowAttribute(
+        self.hwnd(),
+        DWMWA_SYSTEMBACKDROP_TYPE,
+        std::ptr::from_ref(&value).cast(),
+        std::mem::size_of::<DWM_SYSTEMBACKDROP_TYPE>() as u32,
+      )?;
+    }
+
+    Ok(())
+  }
+
+  /// Implements [`NativeWindowWindowsExt::set_frame_extended`].
+  pub(crate) fn set_frame_extended(
+    &self,
+    extended: bool,
+  ) -> crate::Result<()> {
+    // Negative margins are DWM's "sheet of glass": the whole window.
+    let margin = if extended { -1 } else { 0 };
+    let margins = MARGINS {
+      cxLeftWidth: margin,
+      cxRightWidth: margin,
+      cyTopHeight: margin,
+      cyBottomHeight: margin,
+    };
+
+    // SAFETY: `margins` is a stack-allocated `MARGINS` live for the
+    // duration of the call.
+    unsafe {
+      DwmExtendFrameIntoClientArea(self.hwnd(), &raw const margins)
+    }?;
+
+    Ok(())
+  }
+
   /// Implements [`NativeWindowWindowsExt::set_transparency`].
   pub(crate) fn set_transparency(
     &self,
@@ -1319,4 +1404,29 @@ pub(crate) fn system_accent_color() -> crate::Result<Color> {
     b: (argb & 0xFF) as u8,
     a: 255,
   })
+}
+
+/// Reads `AppsUseLightTheme` from the current user's personalization
+/// settings. Uncached; see the public `apps_use_light_theme` wrapper.
+pub(crate) fn apps_use_light_theme() -> crate::Result<bool> {
+  let mut value: u32 = 0;
+  #[allow(clippy::cast_possible_truncation)]
+  let mut size = std::mem::size_of::<u32>() as u32;
+
+  // SAFETY: Both strings are static, NUL-terminated wide strings, and
+  // `value` and `size` are stack-allocated out-params live for the
+  // duration of the call, `size` holding `value`'s size in bytes.
+  unsafe {
+    RegGetValueW(
+      HKEY_CURRENT_USER,
+      w!(r"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize"),
+      w!("AppsUseLightTheme"),
+      RRF_RT_REG_DWORD,
+      None,
+      Some(std::ptr::from_mut(&mut value).cast()),
+      Some(&raw mut size),
+    )?;
+  }
+
+  Ok(value != 0)
 }

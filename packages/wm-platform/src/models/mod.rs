@@ -14,6 +14,7 @@ mod point;
 mod rect;
 mod rect_delta;
 mod style_blend;
+mod system_backdrop;
 mod tab_bar;
 
 pub use backdrop_overlay_params::*;
@@ -32,4 +33,5 @@ pub use point::*;
 pub use rect::*;
 pub use rect_delta::*;
 pub use style_blend::*;
+pub use system_backdrop::*;
 pub use tab_bar::*;

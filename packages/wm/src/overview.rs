@@ -27,7 +27,7 @@ use wm_platform::{
 
 use crate::{
   commands::{
-    general::{surrogate_effects_for, SyncableOverlay},
+    general::{surrogate_effects_for, EffectTarget, SyncableOverlay},
     workspace::{activate_workspace, summon_special_workspace},
   },
   layout::{is_hidden_in_layout, scrolling},
@@ -607,12 +607,13 @@ pub fn prepare_target(
 }
 
 /// How the WM draws windows, resolved once per frame: its effects on the
-/// focused window, on urgent ones and on the others.
+/// focused window, on urgent ones and on the others, each with and without
+/// a system backdrop.
 struct WindowLooks {
   focused_id: Option<Uuid>,
-  focused: WindowLook,
-  urgent: WindowLook,
-  other: WindowLook,
+
+  /// Indexed by [`WindowLooks::index`].
+  looks: [WindowLook; 6],
 }
 
 /// The effects the WM gives a window.
@@ -622,26 +623,41 @@ struct WindowLook {
 }
 
 impl WindowLooks {
+  const SETS: [EffectSet; 3] =
+    [EffectSet::Focused, EffectSet::Urgent, EffectSet::Other];
+
   fn new(state: &WmState, config: &UserConfig) -> Self {
-    let look = |set| {
-      let (opacity, _, overlays) = surrogate_effects_for(set, config);
+    let looks = std::array::from_fn(|index| {
+      let target = EffectTarget {
+        set: Self::SETS[index / 2],
+        has_system_backdrop: index % 2 == 1,
+      };
+      let (opacity, _, overlays) = surrogate_effects_for(target, config);
       WindowLook { opacity, overlays }
-    };
+    });
 
     Self {
       focused_id: state.focused_container().map(|focused| focused.id()),
-      focused: look(EffectSet::Focused),
-      urgent: look(EffectSet::Urgent),
-      other: look(EffectSet::Other),
+      looks,
     }
   }
 
-  fn of(&self, window: &WindowContainer) -> &WindowLook {
-    match window.effect_set(self.focused_id == Some(window.id())) {
-      EffectSet::Focused => &self.focused,
-      EffectSet::Urgent => &self.urgent,
-      EffectSet::Other => &self.other,
-    }
+  fn index(target: EffectTarget) -> usize {
+    let set = match target.set {
+      EffectSet::Focused => 0,
+      EffectSet::Urgent => 1,
+      EffectSet::Other => 2,
+    };
+
+    set * 2 + usize::from(target.has_system_backdrop)
+  }
+
+  fn of(&self, state: &WmState, window: &WindowContainer) -> &WindowLook {
+    let is_focused = self.focused_id == Some(window.id());
+    let target =
+      EffectTarget::new(&state.system_backdrops, window, is_focused);
+
+    &self.looks[Self::index(target)]
   }
 }
 
@@ -652,7 +668,7 @@ fn overview_window(
   config: &UserConfig,
 ) -> OverviewWindow {
   let properties = window.native_properties();
-  let look = looks.of(window);
+  let look = looks.of(state, window);
   let is_minimized = window.state() == WindowState::Minimized;
   let is_hidden_tab = is_inactive_stack_child(window);
 

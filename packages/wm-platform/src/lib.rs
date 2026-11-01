@@ -20,6 +20,7 @@ mod platform_event;
 mod platform_impl;
 mod single_instance;
 mod system_accent_color;
+mod system_theme;
 mod thread_bound;
 #[cfg(target_os = "windows")]
 mod window_class;
@@ -124,6 +125,7 @@ mod tab_layout;
 pub use platform_event::*;
 pub use single_instance::*;
 pub use system_accent_color::*;
+pub use system_theme::*;
 pub use tab_layout::TabAction;
 pub use thread_bound::*;
 pub use window_listener::*;
@@ -586,6 +588,6 @@ pub use windows::Win32::UI::WindowsAndMessaging::{
   HWND_TOPMOST, SET_WINDOW_POS_FLAGS, SWP_ASYNCWINDOWPOS,
   SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOCOPYBITS, SWP_NOSENDCHANGING,
   SWP_NOZORDER, WINDOW_EX_STYLE, WINDOW_STYLE, WS_CAPTION, WS_CHILD,
-  WS_EX_DLGMODALFRAME, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_MAXIMIZEBOX,
-  WS_VISIBLE,
+  WS_EX_DLGMODALFRAME, WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW,
+  WS_MAXIMIZEBOX, WS_VISIBLE,
 };

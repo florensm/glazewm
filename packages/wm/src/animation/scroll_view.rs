@@ -36,10 +36,11 @@ use super::{
 use crate::{
   commands::general::{
     surrogate_effects_for, upsert_clipped_overlay,
-    upsert_pinned_border_overlay,
+    upsert_pinned_border_overlay, EffectTarget,
   },
   layout::is_hidden_in_layout,
   models::{is_inactive_stack_child, WindowContainer, Workspace},
+  system_backdrops::SystemBackdrops,
   traits::{CommonGetters, PositionGetters, WindowGetters},
   user_config::UserConfig,
   wm_state::WmState,
@@ -239,6 +240,7 @@ impl ScrollView {
     clip: &Rect,
     role: Role,
     config: &UserConfig,
+    system_backdrops: &SystemBackdrops,
     is_focused: bool,
     batch: &mut SurrogateBatch,
   ) -> bool {
@@ -270,8 +272,10 @@ impl ScrollView {
       ),
     };
     // The window's own transparency and corners, as it is focused or not.
-    let (opacity, corner_style, _) =
-      surrogate_effects_for(window.effect_set(is_focused), config);
+    let (opacity, corner_style, _) = surrogate_effects_for(
+      EffectTarget::new(system_backdrops, window, is_focused),
+      config,
+    );
     if !is_moving {
       motion.start_clock(Instant::now());
     }
@@ -425,6 +429,7 @@ pub fn sync_scroll_view(
         clip,
         role,
         config,
+        &state.system_backdrops,
         focused_id == Some(window.id()),
         &mut batch,
       );
@@ -534,7 +539,7 @@ pub fn track_overlays(
 
   for (id, frame, clip, is_moving, anchor) in tracked {
     let (_, _, overlays) = surrogate_effects_for(
-      state.effect_set(id, focused_id == Some(id)),
+      state.effect_target(id, focused_id == Some(id)),
       config,
     );
 

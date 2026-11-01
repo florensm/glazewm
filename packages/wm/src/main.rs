@@ -59,6 +59,8 @@ mod pending_sync;
 mod stay_interactive;
 mod sys_tray;
 #[cfg(target_os = "windows")]
+mod system_backdrops;
+#[cfg(target_os = "windows")]
 mod tab_bars;
 mod traits;
 mod user_config;

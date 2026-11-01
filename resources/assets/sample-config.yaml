@@ -209,6 +209,30 @@ stack:
 window_effects:
   hide_border_on_fullscreen: false
 
+  # DWM Mica/Acrylic for apps that leave their background transparent:
+  # their text stays opaque, where `transparency` fades it. Those apps skip
+  # `transparency` and `backdrop`. Windows 11 22H2+; others are unaffected.
+  system_backdrop:
+    enabled: false
+    # Built-in list: Settings and other UWP apps, and Task Manager.
+    use_default_apps: true
+    # Checked before the built-in list. Matched when a window opens.
+    apps: []
+    # apps:
+    #   # 'mica', 'acrylic', 'tabbed' (Mica Alt), or 'none' to keep an app
+    #   # on `transparency` instead.
+    #   # Needs the profile's own `opacity` below 100.
+    #   - match: [{ window_process: { equals: "WindowsTerminal" } }]
+    #     material: "mica"
+    #   # Only shows behind the title and command bar; the file list is
+    #   # opaque.
+    #   - match: [{ window_class: { equals: "CabinetWClass" } }]
+    #     material: "tabbed"
+    #   # For apps that clear to transparent but don't extend their frame.
+    #   - match: [{ window_process: { equals: "myapp" } }]
+    #     material: "mica"
+    #     extend_frame: true
+
   focused_window:
     border:
       enabled: true
@@ -251,6 +275,9 @@ window_effects:
       vignette: 0.2       # 0 to 1. Darkens toward the window's edges.
       grain: 0.05         # 0 to 1. Frosted-glass noise.
       parallax: 1.0       # 1 pins it to the desktop; lower drifts.
+      # Overrides `tint` so this window, faded by `transparency`, lets as
+      # much wallpaper through as a `system_backdrop` Mica window does.
+      match_system_backdrop: false
 
   other_windows:
     border:

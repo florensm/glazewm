@@ -61,6 +61,7 @@ pub fn unmanage_window(
   #[cfg(target_os = "windows")]
   {
     state.window_overlays.remove(&window.id());
+    state.system_backdrops.release(&window.id());
 
     // A window closed mid-drag never ends its drag.
     if window.active_drag().is_some() {
