@@ -36,10 +36,6 @@ overview's own outline instead.
 - **Grid**: every card at once, in up to `grid_columns` columns: fewer when
   that shows the cards larger.
 
-In the activities and the stage, each workspace's name is followed by the
-icons of the apps on it, one per app, up to four and then a count of the
-rest.
-
 `overview.layout` sets the layout `toggle-overview` opens on, and `Tab`
 goes through them while it is open. Cards are drawn at the size each layout
 shows them, so their text stays sharp.

@@ -13,7 +13,6 @@ use crate::{
   overview_chrome::{
     card_radius, draw_label, draw_note, draw_tag, label_size, note_size,
     tag_size, with_alpha, LabelPicture, SliceLook, TagPicture,
-    MAX_LABEL_APPS,
   },
   overview_layout::{
     chrome_opacity, Camera, CardMetrics, RectF, SpringRect, LABEL_GAP,
@@ -21,7 +20,7 @@ use crate::{
   overview_overlays::{Highlight, Tag},
   overview_state::{Mode, Toward},
   overview_thumbnails::Picture,
-  OverviewLayoutMode, OverviewStyle, OverviewWorkspace,
+  OverviewLayoutMode, OverviewStyle,
 };
 
 /// Corner radius a workspace's highlight is drawn with, and its gap to
@@ -283,7 +282,7 @@ impl Screen {
       if label.drawn.as_ref() != Some(&picture) {
         let size = label_size(&picture, style, scale_factor);
         label.picture.draw(size, |surface| {
-          draw_label(surface, &picture, style, scale_factor, notify);
+          draw_label(surface, &picture, style, scale_factor);
         });
         label.drawn = Some(picture);
       }
@@ -310,21 +309,15 @@ impl Screen {
     }
   }
 
-  /// Each workspace's name beside its card, with its apps.
+  /// Each workspace's name beside its card.
   pub(super) fn label_pictures(&self) -> Vec<LabelPicture> {
     self
       .workspaces()
       .iter()
-      .map(|workspace| {
-        let apps = app_windows(workspace);
-        LabelPicture {
-          text: workspace.label.clone(),
-          is_displayed: workspace.is_displayed,
-          is_special: workspace.is_special,
-          more_apps: apps.len().saturating_sub(MAX_LABEL_APPS),
-          apps: apps.into_iter().take(MAX_LABEL_APPS).collect(),
-          icons: self.icons,
-        }
+      .map(|workspace| LabelPicture {
+        text: workspace.label.clone(),
+        is_displayed: workspace.is_displayed,
+        is_special: workspace.is_special,
       })
       .collect()
   }
@@ -685,17 +678,6 @@ impl Screen {
   }
 }
 
-/// A window of each app on `workspace`, in the order they first appear.
-fn app_windows(workspace: &OverviewWorkspace) -> Vec<isize> {
-  let mut seen = std::collections::HashSet::new();
-  workspace
-    .windows
-    .iter()
-    .filter(|window| seen.insert(window.process_name.to_lowercase()))
-    .map(|window| window.hwnd)
-    .collect()
-}
-
 /// The half of `rect` on `side`.
 fn half(rect: &RectF, side: Toward) -> RectF {
   let (w, h) = (rect.w / 2.0, rect.h / 2.0);
@@ -704,41 +686,5 @@ fn half(rect: &RectF, side: Toward) -> RectF {
     Toward::Right => RectF::new(rect.x + w, rect.y, w, rect.h),
     Toward::Up => RectF::new(rect.x, rect.y, rect.w, h),
     Toward::Down => RectF::new(rect.x, rect.y + h, rect.w, h),
-  }
-}
-
-#[cfg(test)]
-mod tests {
-  use super::app_windows;
-  use crate::{OverviewWindow, OverviewWorkspace, Rect};
-
-  fn window(hwnd: isize, process_name: &str) -> OverviewWindow {
-    OverviewWindow {
-      hwnd,
-      title: String::new(),
-      process_name: process_name.to_string(),
-      rect: Rect::from_xy(0, 0, 10, 10),
-      is_minimized: false,
-      is_hidden_tab: false,
-      is_scrolled_off: false,
-      opacity: u8::MAX,
-      overlays: Vec::new(),
-      border: None,
-    }
-  }
-
-  #[test]
-  fn apps_are_counted_once_each() {
-    let workspace = OverviewWorkspace {
-      windows: vec![
-        window(1, "msedge"),
-        window(2, "Code"),
-        window(3, "MSEdge"),
-        window(4, "WindowsTerminal"),
-      ],
-      ..OverviewWorkspace::default()
-    };
-
-    assert_eq!(app_windows(&workspace), vec![1, 2, 4]);
   }
 }
