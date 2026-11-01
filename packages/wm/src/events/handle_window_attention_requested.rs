@@ -1,10 +1,9 @@
-use wm_platform::NativeWindow;
-#[cfg(target_os = "windows")]
-use wm_platform::NativeWindowWindowsExt;
+use wm_platform::{NativeWindow, NativeWindowWindowsExt};
 
-#[cfg(target_os = "windows")]
-use crate::traits::WindowGetters;
-use crate::{commands::window::set_window_urgency, wm_state::WmState};
+use crate::{
+  commands::window::set_window_urgency, traits::WindowGetters,
+  wm_state::WmState,
+};
 
 /// Handles a window asking for the user's attention.
 ///
@@ -24,7 +23,6 @@ pub fn handle_window_attention_requested(
   // The urgency flag replaces the flashing taskbar button, which is both
   // redundant once the window is flagged and holds an auto-hidden taskbar
   // open until the window is focused.
-  #[cfg(target_os = "windows")]
   window.native().stop_flashing();
 
   Ok(())

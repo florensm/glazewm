@@ -1,7 +1,6 @@
 use anyhow::Context;
 use tracing::{info, warn};
 use wm_common::WindowState;
-#[cfg(target_os = "windows")]
 use wm_platform::NativeWindowWindowsExt;
 
 use crate::{
@@ -54,7 +53,6 @@ pub fn update_window_state(
   // Capture the minimize surrogate while the window is still restored and
   // on screen. `set_non_tiling` below calls the platform `minimize()`,
   // after which the window has no DWM thumbnail left to clone.
-  #[cfg(target_os = "windows")]
   if target_state == WindowState::Minimized
     && !window.native_properties().is_minimized
   {
@@ -246,7 +244,6 @@ fn set_non_tiling(
 
       // Mark as fullscreen immediately to ensure browser APIs work during
       // animation.
-      #[cfg(target_os = "windows")]
       if matches!(target_state, WindowState::Fullscreen(_)) {
         if let Err(err) = window.native().mark_fullscreen(true) {
           warn!(
@@ -296,7 +293,6 @@ fn set_non_tiling(
 
       // Mark as fullscreen immediately to ensure browser APIs work during
       // animation.
-      #[cfg(target_os = "windows")]
       if matches!(target_state, WindowState::Fullscreen(_)) {
         if let Err(err) = non_tiling_window.native().mark_fullscreen(true)
         {

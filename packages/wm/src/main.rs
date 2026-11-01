@@ -2,10 +2,7 @@
 // whether a console window is spawned on launch, if not already ran
 // through a console. The following prevents this additional console window
 // in release mode.
-#![cfg_attr(
-  all(not(debug_assertions), target_os = "windows"),
-  windows_subsystem = "windows"
-)]
+#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 #![feature(iterator_try_collect)]
 
 use std::{
@@ -38,27 +35,21 @@ use crate::{
 
 mod animation;
 mod auto_stack;
-#[cfg(target_os = "windows")]
 mod closing_windows;
 mod commands;
-#[cfg(target_os = "windows")]
 mod drop_indicator;
 mod error_notifier;
 mod events;
 mod ipc_server;
 mod layout;
 mod models;
-#[cfg(target_os = "windows")]
 mod overview;
 mod pending_sync;
-#[cfg(target_os = "windows")]
 mod stay_interactive;
 mod sys_tray;
-#[cfg(target_os = "windows")]
 mod tab_bars;
 mod traits;
 mod user_config;
-#[cfg(target_os = "windows")]
 mod window_overlays;
 mod wm;
 mod wm_state;
@@ -144,7 +135,6 @@ async fn start_wm(
   let mut ipc_server = IpcServer::start().await?;
 
   // Start watcher process for restoring hidden windows on crash.
-  #[cfg(target_os = "windows")]
   if let Err(err) = start_watcher_process() {
     tracing::warn!(
       "Failed to start watcher process: {err}{}",
@@ -184,14 +174,11 @@ async fn start_wm(
   cleanup_interval
     .set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
-  // Wakes the loop so that `process_sent_messages` runs while idle. Only
-  // needed on Windows.
-  let mut sent_message_interval = cfg!(target_os = "windows").then(|| {
-    let mut interval = tokio::time::interval(SENT_MESSAGE_INTERVAL);
-    interval
-      .set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-    interval
-  });
+  // Wakes the loop so that `process_sent_messages` runs while idle.
+  let mut sent_message_interval =
+    tokio::time::interval(SENT_MESSAGE_INTERVAL);
+  sent_message_interval
+    .set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
 
   loop {
     wm_platform::process_sent_messages();
@@ -218,10 +205,7 @@ async fn start_wm(
     let closing_check = wm.next_closing_check();
     let animation_watchdog =
       wm.state.animation_manager.watchdog_deadline();
-    #[cfg(target_os = "windows")]
     let hot_corner = wm.state.overview.hot_corner_deadline();
-    #[cfg(not(target_os = "windows"))]
-    let hot_corner = None;
 
     let res = tokio::select! {
       // biased: evaluated top-to-bottom when multiple futures are ready
@@ -289,7 +273,7 @@ async fn start_wm(
         wm.process_closing_windows(&mut config)
       },
       () = sleep_until(hot_corner) => wm.process_hot_corner(&config),
-      () = tick_if_some(&mut sent_message_interval) => Ok(()),
+      _ = sent_message_interval.tick() => Ok(()),
       Some((stack_id, action)) = wm.tab_action_rx.recv() => {
         wm.process_tab_action(stack_id, action, &mut config)
       },
@@ -508,7 +492,6 @@ fn catch_up_before_frame(
 
     // Re-checked every iteration: handling an item above can start or end
     // a slide, and the next one must be judged against that.
-    #[cfg(target_os = "windows")]
     if wm.state.animation_manager.is_workspace_switch_active() {
       break;
     }
@@ -639,13 +622,12 @@ fn setup_logging(verbosity: &Verbosity) -> anyhow::Result<()> {
   Ok(())
 }
 
-/// Launches watcher binary (Windows-only). This is a separate process that
+/// Launches watcher binary. This is a separate process that
 /// is responsible for restoring hidden windows in case the main WM process
 /// crashes.
 ///
 /// This assumes the watcher binary exists in the same directory as the
 /// WM binary.
-#[cfg(target_os = "windows")]
 fn start_watcher_process() -> anyhow::Result<tokio::process::Child> {
   let watcher_path = std::env::current_exe()?
     .parent()
@@ -655,16 +637,6 @@ fn start_watcher_process() -> anyhow::Result<tokio::process::Child> {
   tokio::process::Command::new(&watcher_path)
     .spawn()
     .context("Failed to start watcher process.")
-}
-
-/// Waits for `interval`'s next tick, or forever when there is none.
-async fn tick_if_some(interval: &mut Option<tokio::time::Interval>) {
-  match interval {
-    Some(interval) => {
-      interval.tick().await;
-    }
-    None => std::future::pending().await,
-  }
 }
 
 /// Sleeps until `deadline`, or forever when there is none.

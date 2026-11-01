@@ -136,10 +136,6 @@ fn inner_hole_radius(params: &BorderOverlayParams) -> i32 {
 ///
 /// [`NativeBackdropOverlay`]: crate::NativeBackdropOverlay
 /// [`BorderVisual`]: crate::platform_impl::composition::BorderVisual
-///
-/// # Platform-specific
-///
-/// Only available on Windows.
 pub struct NativeBorderOverlay {
   /// The overlay's visual tree. Declared before `window`: fields drop in
   /// declaration order, and the tree must go before the `HWND` it is

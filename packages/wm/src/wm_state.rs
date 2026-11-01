@@ -6,13 +6,9 @@ use tracing::warn;
 use uuid::Uuid;
 use wm_common::{BindingModeConfig, EffectSet, WindowState, WmEvent};
 use wm_platform::{
-  Direction, Dispatcher, Display, Keybinding, NativeWindow,
+  Direction, Dispatcher, Display, Keybinding, NativeDropIndicator,
+  NativeStackTabBar, NativeWindow, NativeWindowWindowsExt, OpacityValue,
   OverviewAction, Point, Rect, TabAction,
-};
-#[cfg(target_os = "windows")]
-use wm_platform::{
-  NativeDropIndicator, NativeStackTabBar, NativeWindowWindowsExt,
-  OpacityValue,
 };
 
 use crate::{
@@ -28,12 +24,12 @@ use crate::{
     Container, Monitor, NativeMonitorProperties, RootContainer,
     WindowContainer, Workspace, WorkspaceTarget,
   },
+  overview::Overview,
   pending_sync::PendingSync,
   traits::{CommonGetters, PositionGetters, WindowGetters},
   user_config::UserConfig,
+  window_overlays::WindowOverlays,
 };
-#[cfg(target_os = "windows")]
-use crate::{overview::Overview, window_overlays::WindowOverlays};
 
 pub struct WmState {
   /// Root node of the container tree. Monitors are the children of the
@@ -84,11 +80,9 @@ pub struct WmState {
 
   /// Windows detached for a close animation, until their app acts on the
   /// close.
-  #[cfg(target_os = "windows")]
   pub closing_windows: crate::closing_windows::ClosingWindows,
 
   /// Windows kept usable while their app shows a blocking popup.
-  #[cfg(target_os = "windows")]
   pub stay_interactive: crate::stay_interactive::StayInteractive,
 
   /// Whether the WM is paused.
@@ -104,16 +98,13 @@ pub struct WmState {
   /// managed window in z-order. Removing a window's entry destroys both.
   /// An entry can be left with neither after a failed creation, until
   /// `sync_overlays` drops it.
-  #[cfg(target_os = "windows")]
   pub window_overlays: HashMap<Uuid, WindowOverlays>,
 
   /// Highlight of where a dragged window will land, created on the first
   /// drag that has somewhere to land.
-  #[cfg(target_os = "windows")]
   pub drop_indicator: Option<NativeDropIndicator>,
 
   /// Overview of every monitor's workspaces and their windows.
-  #[cfg(target_os = "windows")]
   pub overview: Overview,
 
   /// Whether the initial state has been populated.
@@ -126,12 +117,9 @@ pub struct WmState {
   exit_tx: mpsc::UnboundedSender<()>,
 
   /// Sender for actions taken in tab bars, keyed by stack ID.
-  // LINT: Tab bars are only drawn on Windows.
-  #[cfg_attr(not(target_os = "windows"), allow(dead_code))]
   pub tab_action_tx: mpsc::UnboundedSender<(Uuid, TabAction)>,
 
   /// Live tab bar windows keyed by their `StackContainer` ID.
-  #[cfg(target_os = "windows")]
   pub tab_bars: HashMap<Uuid, NativeStackTabBar>,
 
   /// Thread the tab bars run on, started with the first one; `None`
@@ -140,11 +128,9 @@ pub struct WmState {
   ///
   /// Declared after `tab_bars` so the bars are dropped first, queueing
   /// their closes ahead of the thread's quit.
-  #[cfg(target_os = "windows")]
   pub tab_bar_thread: std::cell::OnceCell<Option<wm_platform::UiThread>>,
 
   /// Tab bar settings resolved from the config, cleared on reload.
-  #[cfg(target_os = "windows")]
   pub tab_bar_settings: Option<crate::tab_bars::TabBarSettings>,
 }
 
@@ -157,21 +143,14 @@ impl WmState {
     overview_action_tx: mpsc::UnboundedSender<(u64, OverviewAction)>,
     tab_action_tx: mpsc::UnboundedSender<(Uuid, TabAction)>,
   ) -> Self {
-    // Without an overview, its actions channel is closed right away.
-    #[cfg(not(target_os = "windows"))]
-    drop(overview_action_tx);
-
     Self {
       root_container: RootContainer::new(),
       dispatcher,
       pending_sync: PendingSync::default(),
       animation_manager: AnimationManager::new(animation_tick_tx),
       window_target_positions: HashMap::new(),
-      #[cfg(target_os = "windows")]
       window_overlays: HashMap::new(),
-      #[cfg(target_os = "windows")]
       drop_indicator: None,
-      #[cfg(target_os = "windows")]
       overview: Overview::new(overview_action_tx),
       prev_effects_window: None,
       recent_workspace_name: None,
@@ -180,9 +159,7 @@ impl WmState {
       keybinding_cooldowns: HashMap::new(),
       ignored_windows: Vec::new(),
       auto_stack: AutoStackState::default(),
-      #[cfg(target_os = "windows")]
       closing_windows: crate::closing_windows::ClosingWindows::default(),
-      #[cfg(target_os = "windows")]
       stay_interactive: crate::stay_interactive::StayInteractive::default(
       ),
       is_paused: false,
@@ -191,11 +168,8 @@ impl WmState {
       event_tx,
       exit_tx,
       tab_action_tx,
-      #[cfg(target_os = "windows")]
       tab_bars: HashMap::new(),
-      #[cfg(target_os = "windows")]
       tab_bar_thread: std::cell::OnceCell::new(),
-      #[cfg(target_os = "windows")]
       tab_bar_settings: None,
     }
   }
@@ -795,7 +769,6 @@ impl Drop for WmState {
     // surrogate overlays are destroyed and windows are moved to their
     // target positions. This prevents invisible or mispositioned
     // windows after a crash or forced exit.
-    #[cfg(target_os = "windows")]
     for session in self.animation_manager.drain_all_sessions() {
       if let Err(err) = session.commit() {
         warn!("Failed to commit resize session on shutdown: {:?}", err);
@@ -803,14 +776,12 @@ impl Drop for WmState {
     }
 
     // Windows held back for auto-stacking are cloaked but not managed.
-    #[cfg(target_os = "windows")]
     for native_window in self.auto_stack.release_all() {
       let _ = native_window.set_cloaked(false);
     }
 
     // Closing windows are cloaked and out of the tree. Those whose app
     // has not closed them yet would otherwise stay invisible.
-    #[cfg(target_os = "windows")]
     for handle in self.closing_windows.drain() {
       let _ = NativeWindow::from_handle(handle).set_cloaked(false);
     }
@@ -825,29 +796,26 @@ impl Drop for WmState {
         }
       }
 
-      // Reset any effects on Windows.
-      #[cfg(target_os = "windows")]
-      {
-        // Uncloak before showing — a surrogate animation may have cloaked
-        // this window. Without this, the window stays invisible after
-        // exit.
-        let _ = window.native().set_cloaked(false);
+      // Reset any effects.
+      // Uncloak before showing — a surrogate animation may have cloaked
+      // this window. Without this, the window stays invisible after
+      // exit.
+      let _ = window.native().set_cloaked(false);
 
-        if let Err(err) = window.native().show() {
-          warn!("Failed to show window: {:?}", err);
-        }
-
-        let _ = window.native().set_taskbar_visibility(true);
-        let _ = window
-          .native()
-          .set_transparency(&OpacityValue::from_alpha(u8::MAX));
-
-        // Give back the OS border that `apply_native_border_effect`
-        // suppressed. `DWMWA_BORDER_COLOR` outlives this process, so a
-        // window left with it set keeps no border for the rest of its
-        // life -- same class of leak as the cloak reset above.
-        let _ = window.native().set_native_border_hidden(false);
+      if let Err(err) = window.native().show() {
+        warn!("Failed to show window: {:?}", err);
       }
+
+      let _ = window.native().set_taskbar_visibility(true);
+      let _ = window
+        .native()
+        .set_transparency(&OpacityValue::from_alpha(u8::MAX));
+
+      // Give back the OS border that `apply_native_border_effect`
+      // suppressed. `DWMWA_BORDER_COLOR` outlives this process, so a
+      // window left with it set keeps no border for the rest of its
+      // life -- same class of leak as the cloak reset above.
+      let _ = window.native().set_native_border_hidden(false);
     }
   }
 }

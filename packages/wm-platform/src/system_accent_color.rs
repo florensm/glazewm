@@ -1,4 +1,3 @@
-#[cfg(target_os = "windows")]
 use std::{
   sync::{Mutex, OnceLock},
   time::{Duration, Instant},
@@ -16,10 +15,8 @@ use crate::Color;
 /// move, workspace-switch, not just border transitions) into a live DWM
 /// syscall storm. The accent color only ever changes when the user picks a
 /// new one in Settings, so a coarse cache is imperceptible in practice.
-#[cfg(target_os = "windows")]
 const CACHE_TTL: Duration = Duration::from_millis(250);
 
-#[cfg(target_os = "windows")]
 static ACCENT_COLOR_CACHE: OnceLock<Mutex<Option<(Instant, Color)>>> =
   OnceLock::new();
 
@@ -31,10 +28,7 @@ static ACCENT_COLOR_CACHE: OnceLock<Mutex<Option<(Instant, Color)>>> =
 /// sync hot path; see that constant's doc comment. Read failures are never
 /// cached, so a transient error doesn't get stuck for the TTL window.
 ///
-/// # Platform-specific
-///
-/// - **Windows:** reads `DwmGetColorizationColor`.
-#[cfg(target_os = "windows")]
+/// Reads `DwmGetColorizationColor`.
 pub fn system_accent_color() -> crate::Result<Color> {
   let cache = ACCENT_COLOR_CACHE.get_or_init(|| Mutex::new(None));
 

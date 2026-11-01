@@ -9,7 +9,7 @@
 //! over one IPC connection rather than a CLI process per step, which would
 //! add seconds of spawn and antivirus-scan time between bursts.
 //!
-//! With `--dwm` (Windows), also reports what DWM actually displayed per
+//! With `--dwm`, also reports what DWM actually displayed per
 //! burst, through the `PresentMon` service; see `dwm.rs`.
 //!
 //! # Example usage
@@ -19,7 +19,6 @@
 //!   --scenario resize --target chrome --bursts 10 --label baseline
 //! ```
 
-#[cfg(target_os = "windows")]
 mod dwm;
 
 use std::{
@@ -127,29 +126,20 @@ async fn main() -> anyhow::Result<()> {
   let start_len = std::fs::metadata(&log_path).map_or(0, |m| m.len());
   let started = Instant::now();
 
-  #[cfg(target_os = "windows")]
   let mut capture = args.dwm.then(dwm::DwmCapture::start).transpose()?;
-  #[cfg(not(target_os = "windows"))]
-  if args.dwm {
-    bail!("--dwm is only supported on Windows.");
-  }
-  #[cfg(target_os = "windows")]
   let mut triggers = Vec::with_capacity(args.bursts + 1);
 
   for burst in 0..args.bursts {
     let step = if burst % 2 == 0 { forward } else { back };
-    #[cfg(target_os = "windows")]
     triggers.push(dwm::now_qpc());
     send_step(&mut client, target, step).await?;
     tokio::time::sleep(args.settle).await;
 
     // Drained every burst so the service's buffer never overflows.
-    #[cfg(target_os = "windows")]
     if let Some(capture) = capture.as_mut() {
       capture.drain()?;
     }
   }
-  #[cfg(target_os = "windows")]
   triggers.push(dwm::now_qpc());
 
   // Leave the layout as it was found.
@@ -174,12 +164,9 @@ async fn main() -> anyhow::Result<()> {
     );
   }
 
-  #[cfg(target_os = "windows")]
   let dwm_columns = capture.map_or_else(DwmColumns::new, |capture| {
     dwm_columns(&capture, &triggers, &reports)
   });
-  #[cfg(not(target_os = "windows"))]
-  let dwm_columns = DwmColumns::new();
 
   print_summary(&args, &reports, &dwm_columns, started.elapsed());
   Ok(())
@@ -187,7 +174,6 @@ async fn main() -> anyhow::Result<()> {
 
 /// Summarises DWM timing per burst, each burst spanning from its trigger
 /// to the next.
-#[cfg(target_os = "windows")]
 fn dwm_columns(
   capture: &dwm::DwmCapture,
   triggers: &[u64],

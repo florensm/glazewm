@@ -13,7 +13,6 @@ pub fn handle_window_destroyed(
   state: &mut WmState,
 ) -> anyhow::Result<()> {
   state.auto_stack.forget(native_window_id);
-  #[cfg(target_os = "windows")]
   state.stay_interactive.forget(native_window_id);
 
   let found_window = state

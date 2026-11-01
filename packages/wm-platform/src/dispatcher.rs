@@ -7,7 +7,6 @@ use std::{
   thread::ThreadId,
 };
 
-#[cfg(target_os = "windows")]
 use windows::{
   core::PCWSTR,
   Win32::{
@@ -48,13 +47,8 @@ pub type WndProcCallback =
   dyn Fn(isize, u32, usize, isize) -> Option<isize> + Send + 'static;
 
 /// Windows-specific extensions for `Dispatcher`.
-#[cfg(target_os = "windows")]
 pub trait DispatcherExtWindows {
   /// Returns the handle of the event loop's message window.
-  ///
-  /// # Platform-specific
-  ///
-  /// This method is only available on Windows.
   fn message_window_handle(&self) -> isize;
 
   /// Registers a callback to pre-process messages in the event loop's
@@ -62,34 +56,18 @@ pub trait DispatcherExtWindows {
   ///
   /// Returns a unique ID that can be passed to
   /// `deregister_wndproc_callback` to remove the callback.
-  ///
-  /// # Platform-specific
-  ///
-  /// This method is only available on Windows.
   fn register_wndproc_callback(
     &self,
     callback: Box<crate::WndProcCallback>,
   ) -> crate::Result<usize>;
 
   /// Removes a previously registered window procedure callback by its ID.
-  ///
-  /// # Platform-specific
-  ///
-  /// This method is only available on Windows.
   fn deregister_wndproc_callback(&self, id: usize) -> crate::Result<()>;
 
   /// Gets whether system-wide window transition animations are enabled.
-  ///
-  /// # Platform-specific
-  ///
-  /// This method is only available on Windows.
   fn window_animations_enabled(&self) -> crate::Result<bool>;
 
   /// Enables or disables system-wide window transition animations.
-  ///
-  /// # Platform-specific
-  ///
-  /// This method is only available on Windows.
   fn set_window_animations_enabled(
     &self,
     enable: bool,
@@ -98,24 +76,11 @@ pub trait DispatcherExtWindows {
   /// Expands `%VAR%` environment variable references in `input`.
   ///
   /// Returns the expanded string.
-  ///
-  /// # Platform-specific
-  ///
-  /// This method is only available on Windows.
-  ///
-  /// TODO: Remove this. Handle environment variable expansion in a
-  /// unified, cross-platform way.
   fn expand_env_strings(&self, input: &str) -> crate::Result<String>;
 
   /// Runs the specified program using `ShellExecuteExW`.
   ///
   /// If `hide_window` is `true`, the spawned process window is hidden.
-  ///
-  /// # Platform-specific
-  ///
-  /// This method is only available on Windows.
-  ///
-  /// TODO: Remove this. Use `shell_util::Shell::spawn` instead.
   fn shell_execute_ex(
     &self,
     program: &str,
@@ -125,7 +90,6 @@ pub trait DispatcherExtWindows {
   ) -> crate::Result<()>;
 }
 
-#[cfg(target_os = "windows")]
 impl DispatcherExtWindows for Dispatcher {
   fn message_window_handle(&self) -> isize {
     self.source.as_ref().unwrap().message_window_handle
@@ -484,33 +448,27 @@ impl Dispatcher {
 
   /// Gets the current cursor position.
   pub fn cursor_position(&self) -> crate::Result<Point> {
-    #[cfg(target_os = "windows")]
-    {
-      let mut point = POINT { x: 0, y: 0 };
-      unsafe { GetCursorPos(&raw mut point) }?;
+    let mut point = POINT { x: 0, y: 0 };
+    unsafe { GetCursorPos(&raw mut point) }?;
 
-      Ok(Point {
-        x: point.x,
-        y: point.y,
-      })
-    }
+    Ok(Point {
+      x: point.x,
+      y: point.y,
+    })
   }
 
   /// Gets whether the given mouse button is currently pressed.
   #[must_use]
   pub fn is_mouse_down(&self, button: &MouseButton) -> bool {
-    #[cfg(target_os = "windows")]
-    {
-      // Virtual-key codes for mouse buttons.
-      let vk_code = match button {
-        MouseButton::Left => VK_LBUTTON.0,
-        MouseButton::Right => VK_RBUTTON.0,
-      };
+    // Virtual-key codes for mouse buttons.
+    let vk_code = match button {
+      MouseButton::Left => VK_LBUTTON.0,
+      MouseButton::Right => VK_RBUTTON.0,
+    };
 
-      // High-order bit set indicates the key is currently down.
-      let state = unsafe { GetAsyncKeyState(vk_code.into()) };
-      (state.cast_unsigned() & 0x8000u16) != 0
-    }
+    // High-order bit set indicates the key is currently down.
+    let state = unsafe { GetAsyncKeyState(vk_code.into()) };
+    (state.cast_unsigned() & 0x8000u16) != 0
   }
 
   /// Gets the top-level window at the specified point.
@@ -523,7 +481,6 @@ impl Dispatcher {
 
   /// Sets the cursor position to the specified coordinates.
   pub fn set_cursor_position(&self, point: &Point) -> crate::Result<()> {
-    #[cfg(target_os = "windows")]
     {
       unsafe { SetCursorPos(point.x, point.y) }?;
     }
@@ -538,7 +495,6 @@ impl Dispatcher {
 
   /// Opens File Explorer at the given path.
   pub fn open_file_explorer(&self, path: &Path) -> crate::Result<()> {
-    #[cfg(target_os = "windows")]
     {
       let normalized_path = std::fs::canonicalize(path)?;
       std::process::Command::new("explorer")
@@ -554,21 +510,18 @@ impl Dispatcher {
   /// Blocks the current thread until the user dismisses the dialog.
   #[allow(clippy::missing_panics_doc)]
   pub fn show_error_dialog(&self, title: &str, message: &str) {
-    #[cfg(target_os = "windows")]
-    {
-      let title_wide =
-        title.encode_utf16().chain(Some(0)).collect::<Vec<_>>();
-      let message_wide =
-        message.encode_utf16().chain(Some(0)).collect::<Vec<_>>();
+    let title_wide =
+      title.encode_utf16().chain(Some(0)).collect::<Vec<_>>();
+    let message_wide =
+      message.encode_utf16().chain(Some(0)).collect::<Vec<_>>();
 
-      unsafe {
-        MessageBoxW(
-          None,
-          PCWSTR(message_wide.as_ptr()),
-          PCWSTR(title_wide.as_ptr()),
-          MB_ICONERROR | MB_OK | MB_SYSTEMMODAL,
-        );
-      }
+    unsafe {
+      MessageBoxW(
+        None,
+        PCWSTR(message_wide.as_ptr()),
+        PCWSTR(title_wide.as_ptr()),
+        MB_ICONERROR | MB_OK | MB_SYSTEMMODAL,
+      );
     }
   }
 }

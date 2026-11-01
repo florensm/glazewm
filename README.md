@@ -216,10 +216,10 @@ keybindings:
 | `oem_period`          | The `.`/`>` key on a US standard keyboard (varies by keyboard)            |
 | `muhenkan`            | The 無変換 (non-convert) key for Japanese keyboard layouts                |
 | `henkan`              | The 変換 (convert) key for Japanese keyboard layouts                      |
-| `wheel_up`            | Turning the mouse wheel up, once per notch (Windows only)                 |
-| `wheel_down`          | Turning the mouse wheel down, once per notch (Windows only)               |
-| `wheel_left`          | Turning a horizontal mouse wheel left, or tilting it (Windows only)       |
-| `wheel_right`         | Turning a horizontal mouse wheel right, or tilting it (Windows only)      |
+| `wheel_up`            | Turning the mouse wheel up, once per notch                                |
+| `wheel_down`          | Turning the mouse wheel down, once per notch                              |
+| `wheel_left`          | Turning a horizontal mouse wheel left, or tilting it                      |
+| `wheel_right`         | Turning a horizontal mouse wheel right, or tilting it                     |
 
 </details>
 

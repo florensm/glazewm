@@ -99,10 +99,9 @@ handed back to the WM's focus target.
 
 ### The taskbar flash is stopped
 
-Once a window is flagged, its taskbar button is stopped from flashing
-(Windows only). The flashing is redundant for anyone surfacing urgency
-elsewhere, and it holds an auto-hidden taskbar open until the window is
-focused.
+Once a window is flagged, its taskbar button is stopped from flashing. The
+flashing is redundant for anyone surfacing urgency elsewhere, and it holds
+an auto-hidden taskbar open until the window is focused.
 
 It can't be prevented, only ended — the notification *is* "flashing
 started" — so an auto-hidden taskbar may still appear for a frame before

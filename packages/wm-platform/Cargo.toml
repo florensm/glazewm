@@ -17,14 +17,6 @@ thiserror = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
 serde = { workspace = true }
-
-[features]
-test_utils = []
-
-[dev-dependencies]
-libtest-mimic-collect = "0.3.2"
-
-[target.'cfg(target_os = "windows")'.dependencies]
 windows = { version = "0.52", features = [
   "implement",
   "Foundation",
@@ -80,6 +72,12 @@ windows = { version = "0.52", features = [
   "Win32_UI_WindowsAndMessaging",
 ] }
 windows-interface = { version = "0.52" }
+
+[features]
+test_utils = []
+
+[dev-dependencies]
+libtest-mimic-collect = "0.3.2"
 
 [lints]
 workspace = true

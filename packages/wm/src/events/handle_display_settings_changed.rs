@@ -137,36 +137,30 @@ fn find_matching_monitor<'a>(
   monitors.iter().enumerate().find_map(|(index, monitor)| {
     let existing = monitor.native_properties();
 
-    let is_match = {
-      // On Windows, match the monitor by:
-      // 1. Its handle
-      // 2. Its device path
-      // 3. Its hardware ID (if unique)
-      //
-      // Monitor handles and device paths are unique, but can change over
-      // time. The hardware ID is not guaranteed to be unique, so we
-      // match against that last.
-      #[cfg(target_os = "windows")]
-      {
-        existing.handle == properties.handle
-          || existing.device_path.as_deref().is_some_and(|device_path| {
-            properties.device_path.as_deref() == Some(device_path)
+    // Match the monitor by:
+    // 1. Its handle
+    // 2. Its device path
+    // 3. Its hardware ID (if unique)
+    //
+    // Monitor handles and device paths are unique, but can change over
+    // time. The hardware ID is not guaranteed to be unique, so we match
+    // against that last.
+    let is_match = existing.handle == properties.handle
+      || existing.device_path.as_deref().is_some_and(|device_path| {
+        properties.device_path.as_deref() == Some(device_path)
+      })
+      || existing.hardware_id.as_deref().is_some_and(|hardware_id| {
+        let is_unique = monitors
+          .iter()
+          .filter(|other_monitor| {
+            other_monitor.native_properties().hardware_id.as_deref()
+              == Some(hardware_id)
           })
-          || existing.hardware_id.as_deref().is_some_and(|hardware_id| {
-            let is_unique = monitors
-              .iter()
-              .filter(|other_monitor| {
-                other_monitor.native_properties().hardware_id.as_deref()
-                  == Some(hardware_id)
-              })
-              .count()
-              == 1;
+          .count()
+          == 1;
 
-            is_unique
-              && properties.hardware_id.as_deref() == Some(hardware_id)
-          })
-      }
-    };
+        is_unique && properties.hardware_id.as_deref() == Some(hardware_id)
+      });
 
     is_match.then_some((monitor, index))
   })

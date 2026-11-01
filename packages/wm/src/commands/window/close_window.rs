@@ -1,17 +1,13 @@
 use tracing::warn;
-#[cfg(target_os = "windows")]
 use wm_common::WindowTransitionParams;
-#[cfg(target_os = "windows")]
 use wm_platform::NativeWindowWindowsExt;
 
-#[cfg(target_os = "windows")]
 use crate::{
   animation::AwayTransition,
   commands::window::detach_window_for_close,
-  traits::{CommonGetters, PositionGetters},
-};
-use crate::{
-  models::WindowContainer, traits::WindowGetters, user_config::UserConfig,
+  models::WindowContainer,
+  traits::{CommonGetters, PositionGetters, WindowGetters},
+  user_config::UserConfig,
   wm_state::WmState,
 };
 
@@ -20,16 +16,11 @@ use crate::{
 /// The animated window is cloaked and taken out of the layout right away,
 /// so its siblings reflow while it plays; `AnimationManager` sends
 /// `WM_CLOSE` once it ends.
-#[cfg_attr(
-  not(target_os = "windows"),
-  allow(unused_variables, clippy::unnecessary_wraps)
-)]
 pub fn close_window(
   window: &WindowContainer,
   state: &mut WmState,
   config: &UserConfig,
 ) -> anyhow::Result<()> {
-  #[cfg(target_os = "windows")]
   if animate_away(window, AwayTransition::Close, state, config) {
     // Cloaked only now that the surrogate covers it: the slow
     // `IApplicationView` cloak could otherwise hide the window a frame
@@ -56,7 +47,6 @@ pub fn close_window(
 /// Returns `false` when the animation is disabled, the window's rect can't
 /// be resolved or the surrogate fails to capture, leaving the window to
 /// go without it.
-#[cfg(target_os = "windows")]
 pub(crate) fn animate_away(
   window: &WindowContainer,
   transition: AwayTransition,

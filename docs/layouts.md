@@ -161,7 +161,7 @@ While a tiling window is dragged, a highlight shows where it will land if
 dropped: the half of the window or column it goes beside, or all of an
 empty workspace. Any dragged window over a stack's tab bar highlights the
 stack it would join. The highlight glides from one spot to the next as
-the cursor moves. Only available on Windows.
+the cursor moves.
 
 ```yaml
 window_behavior:

@@ -596,10 +596,6 @@ pub struct KeybindingConfig {
 }
 
 /// Look of the window overview opened by `toggle-overview`.
-///
-/// # Platform-specific
-///
-/// Only has an effect on Windows.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(default, rename_all(serialize = "camelCase"))]
 pub struct OverviewConfig {
@@ -787,10 +783,6 @@ impl Default for WindowBehaviorConfig {
 
 /// Highlight shown while dragging a window, over where it will land if
 /// dropped: the half of the window it goes beside, or the stack it joins.
-///
-/// # Platform-specific
-///
-/// Only has an effect on Windows.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(default, rename_all(serialize = "camelCase"))]
 pub struct DropIndicatorConfig {
@@ -888,10 +880,6 @@ pub struct WindowEffectsConfig {
   /// the ring reads as an inset frame around the screen -- and on a
   /// monitor-sized window it is drawn over content rather than beside
   /// it.
-  ///
-  /// # Platform-specific
-  ///
-  /// Only has an effect on Windows.
   pub hide_border_on_fullscreen: bool,
 }
 
@@ -973,10 +961,6 @@ pub struct WindowEffectConfig {
   ///
   /// When unset, falls back to the `corner_style` block. `border.radius`
   /// still overrides the ring on top of either.
-  ///
-  /// # Platform-specific
-  ///
-  /// Only has an effect on Windows.
   pub corner_radius: Option<LengthValue>,
 }
 
@@ -1495,24 +1479,12 @@ pub struct AnimationsConfig {
   /// Animation settings for operations that change window size.
   pub window_resize: WindowResizeConfig,
   /// Animation settings for when a new window appears.
-  ///
-  /// # Platform-specific
-  ///
-  /// Only has an effect on Windows.
   pub window_open: WindowOpenConfig,
   /// Animation settings for workspace-switch slide transitions.
   pub workspace_switch: WorkspaceSwitchAnimationConfig,
   /// Animation settings for when a window is closed.
-  ///
-  /// # Platform-specific
-  ///
-  /// Only has an effect on Windows.
   pub window_close: WindowCloseConfig,
   /// Animation settings for when a window is minimized or restored.
-  ///
-  /// # Platform-specific
-  ///
-  /// Only has an effect on Windows.
   pub window_minimize: WindowMinimizeConfig,
 }
 
@@ -1625,7 +1597,7 @@ impl WindowTransitionParams {
   }
 }
 
-/// Animation settings for when a new window appears (Windows only).
+/// Animation settings for when a new window appears.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(default, rename_all(serialize = "camelCase"))]
 pub struct WindowOpenConfig {
@@ -1662,10 +1634,6 @@ impl Default for WindowOpenConfig {
 }
 
 /// Animation settings for when a window is closed.
-///
-/// # Platform-specific
-///
-/// Only has an effect on Windows.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(default, rename_all(serialize = "camelCase"))]
 pub struct WindowCloseConfig {
@@ -1705,10 +1673,6 @@ impl Default for WindowCloseConfig {
 /// `slide_bottom` (exiting toward the bottom edge) restores by entering
 /// from that same edge. `opacity_to` is the minimize-out target, and is
 /// played in reverse as the restore-in starting opacity.
-///
-/// # Platform-specific
-///
-/// Only has an effect on Windows.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(default, rename_all(serialize = "camelCase"))]
 pub struct WindowMinimizeConfig {

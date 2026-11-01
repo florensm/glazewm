@@ -3,20 +3,16 @@ use wm_common::{
   try_warn, ActiveDrag, ActiveDragOperation, DisplayState,
   FloatingStateConfig, FullscreenStateConfig, WindowState,
 };
-#[cfg(target_os = "windows")]
-use wm_platform::NativeWindowWindowsExt;
-use wm_platform::{NativeWindow, Rect};
+use wm_platform::{NativeWindow, NativeWindowWindowsExt, Rect};
 
-#[cfg(target_os = "windows")]
-use crate::commands::general::follow_window_frame;
-#[cfg(target_os = "windows")]
-use crate::layout::scrolling::column_of;
 use crate::{
   commands::{
     container::{flatten_split_container, move_container_within_tree},
+    general::follow_window_frame,
     window::update_window_state,
   },
   events::handle_window_moved_or_resized_end,
+  layout::scrolling::column_of,
   models::{
     is_inactive_stack_child, Container, Monitor, NonTilingWindow,
     WindowContainer,
@@ -29,11 +25,7 @@ use crate::{
 #[allow(clippy::too_many_lines)]
 pub fn handle_window_moved_or_resized(
   native_window: &NativeWindow,
-  // LINT: `is_interactive_start` is only used on Windows.
-  #[cfg_attr(not(target_os = "windows"), allow(unused_variables))]
   is_interactive_start: bool,
-  // LINT: `is_interactive_end` is only used on Windows.
-  #[cfg_attr(not(target_os = "windows"), allow(unused_variables))]
   is_interactive_end: bool,
   state: &mut WmState,
   config: &UserConfig,
@@ -60,31 +52,20 @@ pub fn handle_window_moved_or_resized(
       // An interactive drag moves the window through the OS, and the
       // window is dequeued from redraw for the gesture, so `platform_sync`
       // never tracks it.
-      #[cfg(target_os = "windows")]
       follow_window_frame(&window, &frame_position, state, config);
 
-      let is_drag_end = {
-        // The drag operation has ended when `is_interactive_end` is
-        // `true`. This corresponds to a `EVENT_SYSTEM_MOVESIZEEND` event.
-        #[cfg(target_os = "windows")]
-        {
-          is_interactive_end
-        }
-      };
-
-      if is_drag_end {
+      // The drag operation has ended on `EVENT_SYSTEM_MOVESIZEEND`.
+      if is_interactive_end {
         return handle_window_moved_or_resized_end(&window, state, config);
       }
 
       update_drag_state(&window, &frame_position, state, config)?;
 
       // Looked up again, since floating it for the drag replaces it.
-      #[cfg(target_os = "windows")]
       if let Some(window) = state.window_from_native(native_window) {
         crate::drop_indicator::sync_drop_indicator(&window, state, config);
       }
 
-      #[cfg(target_os = "windows")]
       follow_drag_with_tab_bar(native_window, state, config);
 
       return Ok(());
@@ -105,7 +86,6 @@ pub fn handle_window_moved_or_resized(
     // as a side effect of a sibling's drag/relayout (its own animated
     // move, not an interactive drag, so it doesn't hit the
     // `active_drag` branch above).
-    #[cfg(target_os = "windows")]
     if state.animation_manager.owns_window_position(&window.id()) {
       return Ok(());
     }
@@ -130,14 +110,11 @@ pub fn handle_window_moved_or_resized(
     // If the window is not maximized, update its cached shadow borders.
     // Maximized windows temporarily have 0 shadow borders, in which case
     // we should use its previous value for redraws.
-    #[cfg(target_os = "windows")]
-    {
-      let shadow_borders = try_warn!(window.native().shadow_borders());
-      if !is_maximized {
-        window.update_native_properties(|properties| {
-          properties.shadow_borders = shadow_borders;
-        });
-      }
+    let shadow_borders = try_warn!(window.native().shadow_borders());
+    if !is_maximized {
+      window.update_native_properties(|properties| {
+        properties.shadow_borders = shadow_borders;
+      });
     }
 
     let is_minimized = try_warn!(window.native().is_minimized());
@@ -149,16 +126,11 @@ pub fn handle_window_moved_or_resized(
     }
 
     // Detect whether the window is starting to be interactively moved or
-    // resized by the user (e.g. via the window's drag handles).
-    let is_drag_start = !state.is_paused && {
-      #[cfg(target_os = "windows")]
-      {
-        // Drag events can be valid for all window states apart from
-        // minimized.
-        is_interactive_start
-          && !matches!(window.state(), WindowState::Minimized)
-      }
-    };
+    // resized by the user (e.g. via the window's drag handles). Drag
+    // events can be valid for all window states apart from minimized.
+    let is_drag_start = !state.is_paused
+      && is_interactive_start
+      && !matches!(window.state(), WindowState::Minimized);
 
     if is_drag_start {
       tracing::info!("Window started dragging: {window}");
@@ -169,11 +141,9 @@ pub fn handle_window_moved_or_resized(
           window.state(),
           WindowState::Floating(_)
         ),
-        #[cfg(target_os = "windows")]
         initial_position: old_frame_position.clone(),
       }));
 
-      #[cfg(target_os = "windows")]
       update_drag_state(&window, &frame_position, state, config)?;
 
       return Ok(());
@@ -299,7 +269,6 @@ pub fn handle_window_moved_or_resized(
         )?;
       }
       WindowState::Floating(_) => {
-        #[cfg(target_os = "windows")]
         follow_own_move(&window, &frame_position, state, config);
 
         if let WindowContainer::NonTilingWindow(window) = window {
@@ -312,11 +281,8 @@ pub fn handle_window_moved_or_resized(
         }
       }
       _ => {
-        #[cfg(target_os = "windows")]
-        {
-          follow_own_move(&window, &frame_position, state, config);
-          make_room_for_min_width(&window, &frame_position, state);
-        }
+        follow_own_move(&window, &frame_position, state, config);
+        make_room_for_min_width(&window, &frame_position, state);
       }
     }
   }
@@ -327,7 +293,6 @@ pub fn handle_window_moved_or_resized(
 /// Widens a scrolling layout's column for a window its app keeps wider
 /// than the column, once the app reports a larger minimum width than it
 /// did (e.g. after moving to a monitor of a higher DPI).
-#[cfg(target_os = "windows")]
 fn make_room_for_min_width(
   window: &WindowContainer,
   frame: &Rect,
@@ -380,7 +345,6 @@ fn make_room_for_min_width(
 /// Moves the tab bar along with a stacked window being dragged, since the
 /// drag doesn't go through `platform_sync`. The bar is kept directly
 /// behind the window, which the drag raises above other windows.
-#[cfg(target_os = "windows")]
 fn follow_drag_with_tab_bar(
   native_window: &NativeWindow,
   state: &mut WmState,
@@ -404,7 +368,6 @@ fn follow_drag_with_tab_bar(
 /// Keeps a shown window's overlays on it after a move nothing queued a
 /// redraw for: the app moved its own window, or the WM's asynchronous
 /// move landed after `platform_sync` had placed the overlays.
-#[cfg(target_os = "windows")]
 fn follow_own_move(
   window: &WindowContainer,
   frame: &Rect,
@@ -523,9 +486,8 @@ pub(super) fn update_drag_state(
       .center_point()
       .distance_between(&active_drag.initial_position.center_point());
 
-    // Dragging operations on a maximized window can only occur on Windows.
-    // The OS immediately restores it while it's being dragged, so we need
-    // to update state accordingly without a redraw.
+    // The OS immediately restores a maximized window while it's being
+    // dragged, so we need to update state accordingly without a redraw.
     let is_maximized = matches!(
       window.state(),
       WindowState::Fullscreen(FullscreenStateConfig {

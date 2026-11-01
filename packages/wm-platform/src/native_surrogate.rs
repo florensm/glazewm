@@ -235,10 +235,6 @@ fn stretched_destination(size: (i32, i32), border_inset: RECT) -> RECT {
 /// falls back to individual `SetWindowPos` calls so no reposition is lost.
 ///
 /// [`commit`]: SurrogateBatch::commit
-///
-/// # Platform-specific
-///
-/// Only available on Windows.
 #[derive(Default)]
 pub struct SurrogateBatch {
   /// Queued repositions as `(surrogate hwnd, logical target rect)` pairs.
@@ -408,10 +404,8 @@ pub(crate) fn to_logical(rect: &Rect, inset: &RECT) -> Rect {
 /// surrogate is dropped, which unregisters the thumbnail and destroys the
 /// overlay window.
 ///
-/// # Platform-specific
-///
-/// Only available on Windows. The gap fill needs `Windows.UI.Composition`
-/// (Windows 10 1803+); without it the surrogate still shows its thumbnail.
+/// The gap fill needs `Windows.UI.Composition` (Windows 10 1803+);
+/// without it the surrogate still shows its thumbnail.
 pub struct NativeSurrogate {
   /// Handle to the overlay window.
   hwnd: isize,

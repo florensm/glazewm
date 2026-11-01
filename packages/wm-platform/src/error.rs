@@ -4,7 +4,6 @@ pub enum Error {
   Io(#[from] std::io::Error),
 
   #[error(transparent)]
-  #[cfg(target_os = "windows")]
   Windows(#[from] windows::core::Error),
 
   #[error(transparent)]

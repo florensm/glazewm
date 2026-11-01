@@ -9,9 +9,7 @@ use crate::{platform_impl, Dispatcher};
 /// created, as the `Drop` implementation relies on thread-specific
 /// cleanup.
 ///
-/// # Platform-specific
-///
-/// - **Windows**: Can be created on any thread. Runs a Win32 message loop.
+/// Can be created on any thread. Runs a Win32 message loop.
 pub struct EventLoop {
   inner: platform_impl::EventLoop,
   /// Marker to ensure not `Send`.
@@ -33,10 +31,7 @@ impl EventLoop {
 
   /// Runs the event loop, blocking the current thread until shutdown.
   ///
-  /// # Platform-specific
-  ///
-  /// - **Windows**: Can be called from any thread. Runs Win32 message
-  ///   loop.
+  /// Can be called from any thread. Runs Win32 message loop.
   pub fn run(self) -> crate::Result<()> {
     self.inner.run()
   }

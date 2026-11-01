@@ -138,10 +138,6 @@ pub struct SessionOptions {
 /// exit.
 ///
 /// [`commit`]: ResizeSession::commit
-///
-/// # Platform-specific
-///
-/// Only available on Windows.
 #[allow(clippy::struct_excessive_bools)]
 pub struct ResizeSession {
   /// Raw handle to the real app window. Stored as `isize` to avoid `Send`
@@ -1337,7 +1333,6 @@ pub type EdgeColorCache = Arc<Mutex<HashMap<isize, (Color, Instant)>>>;
 /// `EDGE_COLOR_CACHE_PRUNE_LEN`/`EDGE_COLOR_CACHE_TTL`) -- pruning happens
 /// here, on the background thread, rather than on the caller's next
 /// synchronous insert.
-#[cfg(target_os = "windows")]
 pub fn sample_edge_color_async(
   hwnd: HWND,
   cache: EdgeColorCache,

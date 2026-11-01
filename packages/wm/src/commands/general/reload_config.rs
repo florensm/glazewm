@@ -1,8 +1,6 @@
 use anyhow::Context;
 use tracing::{info, warn};
-#[cfg(target_os = "windows")]
 use wm_common::{WindowRuleEvent, WmEvent};
-#[cfg(target_os = "windows")]
 use wm_platform::NativeWindowWindowsExt;
 
 use crate::{
@@ -26,20 +24,16 @@ pub fn reload_config(
   info!("Config reloaded.");
 
   // Keep reference to old config for comparison.
-  #[cfg(target_os = "windows")]
   let old_config = config.value.clone();
 
   // Re-evaluate user config file and set its values in state.
   config.reload()?;
 
-  #[cfg(target_os = "windows")]
-  {
-    state.tab_bar_settings = None;
+  state.tab_bar_settings = None;
 
-    // Marks are re-applied by the window rules below, so that removing
-    // the rule takes effect.
-    state.stay_interactive.unmark_all();
-  }
+  // Marks are re-applied by the window rules below, so that removing
+  // the rule takes effect.
+  state.stay_interactive.unmark_all();
 
   // Re-run auto-stack and window rules on all active windows. Windows in
   // a stack from an auto-stack rule keep their placement, as on manage.
@@ -67,12 +61,10 @@ pub fn reload_config(
 
   update_container_gaps(state, config);
 
-  #[cfg(target_os = "windows")]
   update_window_effects(state);
 
   // Ensure all windows are shown in taskbar when `show_all_in_taskbar` is
   // changed.
-  #[cfg(target_os = "windows")]
   if old_config.general.show_all_in_taskbar
     != config.value.general.show_all_in_taskbar
     && config.value.general.show_all_in_taskbar
@@ -211,7 +203,6 @@ fn update_container_gaps(state: &mut WmState, config: &UserConfig) {
 /// `platform_sync` tick) and simply stop being created/get torn down the
 /// moment their config resolves to disabled, same as any other
 /// config-driven change.
-#[cfg(target_os = "windows")]
 fn update_window_effects(state: &mut WmState) {
   state.pending_sync.queue_all_effects_update();
 }

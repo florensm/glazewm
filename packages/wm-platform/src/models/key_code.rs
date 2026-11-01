@@ -1,4 +1,3 @@
-#[cfg(target_os = "windows")]
 use windows::Win32::UI::Input::KeyboardAndMouse::{
   VIRTUAL_KEY, VK_0, VK_1, VK_2, VK_3, VK_4, VK_5, VK_6, VK_7, VK_8, VK_9,
   VK_A, VK_ADD, VK_B, VK_BACK, VK_C, VK_CAPITAL, VK_CONVERT, VK_D,

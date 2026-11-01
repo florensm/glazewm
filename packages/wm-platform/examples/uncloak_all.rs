@@ -16,20 +16,11 @@
 //! ```text
 //! cargo run -p wm-platform --release --example uncloak_all
 //! ```
-//!
-//! # Platform-specific
-//!
-//! - Windows: does the work described above.
 
 fn main() {
-  #[cfg(target_os = "windows")]
   windows_impl::run();
-
-  #[cfg(not(target_os = "windows"))]
-  println!("Nothing to do: window cloaking is Windows-only.");
 }
 
-#[cfg(target_os = "windows")]
 mod windows_impl {
   use windows::Win32::{
     Foundation::{BOOL, HWND, LPARAM},

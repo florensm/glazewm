@@ -3,7 +3,7 @@
 A full-screen view of every monitor's workspaces and their windows, live:
 each monitor shows its own (see [Monitors](#monitors)). Switch to a
 workspace or window, move windows between workspaces and monitors, search
-them by title, or close them. Only available on Windows.
+them by title, or close them.
 
 On open, the windows each monitor shows fly from where they are into the
 overview, while the wallpaper behind them blurs; the names and

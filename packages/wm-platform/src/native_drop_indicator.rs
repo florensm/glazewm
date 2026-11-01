@@ -15,10 +15,6 @@ use crate::{
 /// it would otherwise answer `WindowFromPoint` for the whole monitor (see
 /// `NativeBorderOverlay`); it is only shown while the mouse button is held
 /// for a drag, when the WM's own point queries are off.
-///
-/// # Platform-specific
-///
-/// Only available on Windows.
 pub struct NativeDropIndicator {
   /// The indicator's visual tree. Declared before `window`: fields drop
   /// in declaration order, and the tree must go before the `HWND` it is

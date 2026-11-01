@@ -1,40 +1,26 @@
-#[cfg(target_os = "windows")]
 use windows::Win32::Graphics::Gdi::HMONITOR;
 
 use crate::{platform_impl, Rect};
 
 /// Unique identifier for a display.
 ///
-/// Can be obtained with `display.id()`.
-///
-/// # Platform-specific
-///
-/// - **Windows**: `isize` (`HMONITOR`)
+/// Can be obtained with `display.id()`. Wraps the display's `HMONITOR`.
 #[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct DisplayId(#[cfg(target_os = "windows")] pub isize);
+pub struct DisplayId(pub isize);
 
 /// Unique identifier for a display device.
 ///
-/// Can be obtained with `display_device.id()`.
-///
-/// # Platform-specific
-///
-/// - **Windows**: Hardware ID string with fallback to adapter name.
+/// Can be obtained with `display_device.id()`. Holds the device's
+/// hardware ID, falling back to its adapter name.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct DisplayDeviceId(pub String);
 
 /// Windows-specific extensions for [`Display`].
-#[cfg(target_os = "windows")]
 pub trait DisplayExtWindows {
   /// Gets the monitor handle.
-  ///
-  /// # Platform-specific
-  ///
-  /// This method is only available on Windows.
   fn hmonitor(&self) -> HMONITOR;
 }
 
-#[cfg(target_os = "windows")]
 impl DisplayExtWindows for Display {
   fn hmonitor(&self) -> HMONITOR {
     self.inner.hmonitor()
@@ -43,10 +29,8 @@ impl DisplayExtWindows for Display {
 
 /// Represents a logical display space where windows can be placed.
 ///
-/// # Platform-specific
-///
-/// - **Windows**: This corresponds to a Win32 "display monitor", each with
-///   a monitor handle (`HMONITOR`).
+/// This corresponds to a Win32 "display monitor", each with a monitor
+/// handle (`HMONITOR`).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Display {
   pub(crate) inner: platform_impl::Display,
@@ -106,15 +90,10 @@ pub enum MirroringState {
 }
 
 /// Windows-specific extensions for [`DisplayDevice`].
-#[cfg(target_os = "windows")]
 pub trait DisplayDeviceExtWindows {
   /// Gets the device path.
   ///
   /// This can be an empty string for virtual display devices.
-  ///
-  /// # Platform-specific
-  ///
-  /// This method is only available on Windows.
   fn device_path(&self) -> Option<String>;
 
   /// Gets the hardware ID from the device path.
@@ -125,14 +104,9 @@ pub trait DisplayDeviceExtWindows {
   /// device.device_path(); // "\\?\DISPLAY#DEL40A3#5&1234abcd&0&UID256#{e6f07b5f-ee97-4a90-b076-33f57bf4eaa7}"
   /// device.hardware_id(); // Some("DEL40A3")
   /// ```
-  ///
-  /// # Platform-specific
-  ///
-  /// This method is only available on Windows.
   fn hardware_id(&self) -> Option<String>;
 }
 
-#[cfg(target_os = "windows")]
 impl DisplayDeviceExtWindows for DisplayDevice {
   fn device_path(&self) -> Option<String> {
     self.inner.device_path.clone()

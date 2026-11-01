@@ -32,10 +32,8 @@ pub enum WindowEvent {
   /// move or resize was initiated via manual interaction with the
   /// window's drag handles.
   ///
-  /// # Platform-specific
-  ///
-  /// - **Windows**: Corresponds to `EVENT_OBJECT_LOCATIONCHANGE`,
-  ///   `EVENT_SYSTEM_MOVESIZESTART`, and `EVENT_SYSTEM_MOVESIZEEND`.
+  /// Corresponds to `EVENT_OBJECT_LOCATIONCHANGE`,
+  /// `EVENT_SYSTEM_MOVESIZESTART`, and `EVENT_SYSTEM_MOVESIZEEND`.
   MovedOrResized {
     window: NativeWindow,
     is_interactive_start: bool,
@@ -70,10 +68,8 @@ pub enum WindowEvent {
   /// Window requested the user's attention (e.g. a background window
   /// that was denied focus by the OS).
   ///
-  /// # Platform-specific
-  ///
-  /// - **Windows**: Corresponds to the `HSHELL_FLASH` shell hook
-  ///   notification, which fires when a window's taskbar button flashes.
+  /// Corresponds to the `HSHELL_FLASH` shell hook notification, which
+  /// fires when a window's taskbar button flashes.
   AttentionRequested {
     window: NativeWindow,
     notification: WindowEventNotification,
@@ -82,9 +78,7 @@ pub enum WindowEvent {
   /// Window got a new parent, e.g. another app embedded it into one of
   /// its own windows, or released it back to the desktop.
   ///
-  /// # Platform-specific
-  ///
-  /// - **Windows**: Corresponds to `EVENT_OBJECT_PARENTCHANGE`.
+  /// Corresponds to `EVENT_OBJECT_PARENTCHANGE`.
   Reparented {
     window: NativeWindow,
     notification: WindowEventNotification,
@@ -92,10 +86,8 @@ pub enum WindowEvent {
 
   /// Another process changed the stacking order of top-level windows.
   ///
-  /// # Platform-specific
-  ///
-  /// - **Windows**: Corresponds to `EVENT_OBJECT_REORDER` on the desktop
-  ///   window. Restacks by the WM itself are not reported.
+  /// Corresponds to `EVENT_OBJECT_REORDER` on the desktop window.
+  /// Restacks by the WM itself are not reported.
   ZOrderChanged {
     notification: WindowEventNotification,
   },

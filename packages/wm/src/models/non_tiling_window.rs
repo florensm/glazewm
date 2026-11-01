@@ -139,7 +139,6 @@ impl NonTilingWindow {
       #[allow(clippy::cast_possible_wrap, clippy::unnecessary_cast)]
       handle: self.native().id().0 as isize,
       title: self.native_properties().title,
-      #[cfg(target_os = "windows")]
       class_name: self.native_properties().class_name,
       process_name: self.native_properties().process_name,
       active_drag: self.active_drag(),
@@ -158,10 +157,7 @@ impl PositionGetters for NonTilingWindow {
       WindowState::Fullscreen(_) => {
         let monitor = self.monitor().context("No monitor.")?;
 
-        #[cfg(target_os = "windows")]
-        {
-          monitor.to_rect()
-        }
+        monitor.to_rect()
       }
       _ => Ok(self.floating_placement()),
     }

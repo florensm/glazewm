@@ -1,32 +1,57 @@
 #![allow(clippy::missing_errors_doc)]
 #![feature(iterator_try_collect)]
 
+#[cfg(not(target_os = "windows"))]
+compile_error!("GlazeWM only supports Windows.");
+
+mod companion;
 mod dispatcher;
 mod display;
 mod display_listener;
+mod dwm_thumbnail;
 mod error;
 mod event_loop;
 mod external_color_source;
 mod keybinding_listener;
 mod models;
 mod mouse_listener;
+mod native_backdrop_overlay;
+mod native_border_overlay;
+mod native_drop_indicator;
+mod native_iris_overlay;
+mod native_overview;
+mod native_stack_tab_bar;
+mod native_surrogate;
 mod native_window;
+mod overlay_window;
+mod overview_chrome;
+mod overview_effects;
+mod overview_layout;
+mod overview_overlays;
+mod overview_scene;
+mod overview_state;
+mod overview_tab_bars;
+mod overview_thumbnails;
+mod paint;
 pub mod perf;
-
-/// `tracing` target of the overview's trace of picks through to its
-/// closing zoom, which the WM writes to a file of its own.
-pub const OVERVIEW_LOG_TARGET: &str = "glazewm::overview";
 mod platform_event;
 mod platform_impl;
+mod resize_session;
 mod single_instance;
+mod surface;
 mod system_accent_color;
-mod thread_bound;
-#[cfg(target_os = "windows")]
-mod window_class;
-mod window_listener;
-
+mod tab_bar_paint;
+mod tab_layout;
 #[cfg(feature = "test_utils")]
 pub mod test_utils;
+mod text;
+mod thread_bound;
+mod ui_thread;
+mod window_class;
+mod window_icons;
+mod window_listener;
+mod window_peek;
+mod workspace_surrogate;
 
 pub use dispatcher::*;
 pub use display::*;
@@ -37,96 +62,32 @@ pub use external_color_source::*;
 pub use keybinding_listener::*;
 pub use models::*;
 pub use mouse_listener::*;
-pub use native_window::*;
-#[cfg(target_os = "windows")]
-mod native_backdrop_overlay;
-#[cfg(target_os = "windows")]
 pub use native_backdrop_overlay::NativeBackdropOverlay;
-#[cfg(target_os = "windows")]
-mod native_border_overlay;
-#[cfg(target_os = "windows")]
 pub use native_border_overlay::NativeBorderOverlay;
-#[cfg(target_os = "windows")]
-mod native_drop_indicator;
-#[cfg(target_os = "windows")]
 pub use native_drop_indicator::NativeDropIndicator;
-#[cfg(target_os = "windows")]
-mod companion;
-#[cfg(target_os = "windows")]
-mod dwm_thumbnail;
-#[cfg(target_os = "windows")]
-mod native_surrogate;
-#[cfg(target_os = "windows")]
-mod overlay_window;
-#[cfg(target_os = "windows")]
+pub use native_iris_overlay::NativeIrisOverlay;
+pub use native_overview::NativeOverview;
+pub use native_stack_tab_bar::NativeStackTabBar;
 pub use native_surrogate::{NativeSurrogate, SurrogateBatch};
-#[cfg(target_os = "windows")]
+pub use native_window::*;
 pub use overlay_window::Overlay;
-#[cfg(target_os = "windows")]
-mod window_peek;
-#[cfg(target_os = "windows")]
-pub use window_peek::WindowPeek;
-#[cfg(target_os = "windows")]
-mod resize_session;
-#[cfg(target_os = "windows")]
+pub use platform_event::*;
 pub use resize_session::{
   sample_edge_color_async, EdgeColorCache, ResizeSession, SessionOptions,
 };
-#[cfg(target_os = "windows")]
-mod workspace_surrogate;
-#[cfg(target_os = "windows")]
-pub use workspace_surrogate::{LiveFrame, WorkspaceSurrogate};
-#[cfg(target_os = "windows")]
-mod native_iris_overlay;
-#[cfg(target_os = "windows")]
-pub use native_iris_overlay::NativeIrisOverlay;
-#[cfg(target_os = "windows")]
-mod native_overview;
-#[cfg(target_os = "windows")]
-pub use native_overview::NativeOverview;
-#[cfg(target_os = "windows")]
-mod native_stack_tab_bar;
-#[cfg(target_os = "windows")]
-mod overview_chrome;
-#[cfg(target_os = "windows")]
-mod overview_effects;
-#[cfg(target_os = "windows")]
-mod overview_layout;
-#[cfg(target_os = "windows")]
-mod overview_overlays;
-#[cfg(target_os = "windows")]
-mod overview_scene;
-#[cfg(target_os = "windows")]
-mod overview_state;
-#[cfg(target_os = "windows")]
-mod overview_tab_bars;
-#[cfg(target_os = "windows")]
-mod overview_thumbnails;
-#[cfg(target_os = "windows")]
-mod paint;
-#[cfg(target_os = "windows")]
-mod surface;
-#[cfg(target_os = "windows")]
-mod tab_bar_paint;
-#[cfg(target_os = "windows")]
-mod text;
-#[cfg(target_os = "windows")]
-mod ui_thread;
-#[cfg(target_os = "windows")]
-mod window_icons;
-#[cfg(target_os = "windows")]
-pub use native_stack_tab_bar::NativeStackTabBar;
-#[cfg(target_os = "windows")]
-pub use ui_thread::UiThread;
-// Only `TabAction` is used off Windows, where there are no tab bars.
-#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
-mod tab_layout;
-pub use platform_event::*;
 pub use single_instance::*;
 pub use system_accent_color::*;
 pub use tab_layout::TabAction;
 pub use thread_bound::*;
+pub use ui_thread::UiThread;
 pub use window_listener::*;
+pub use window_peek::WindowPeek;
+pub use workspace_surrogate::{LiveFrame, WorkspaceSurrogate};
+
+/// `tracing` target of the overview's trace of picks through to its
+/// closing zoom, which the WM writes to a file of its own.
+pub const OVERVIEW_LOG_TARGET: &str = "glazewm::overview";
+
 /// Stops Windows from creating "ghost" windows for this process.
 ///
 /// Every overlay and surrogate window is created on the WM's own thread,
@@ -142,10 +103,8 @@ pub use window_listener::*;
 /// desktop, including the taskbar, while the keyboard hook keeps working
 /// because it is global and never reaches a window at all.
 ///
-/// Call once, before any window is created. On non-Windows platforms this
-/// is a no-op.
+/// Call once, before any window is created.
 pub fn disable_window_ghosting() {
-  #[cfg(target_os = "windows")]
   unsafe {
     // SAFETY: No preconditions and no failure mode; the call takes no
     // arguments, returns nothing, and only affects this process.
@@ -161,41 +120,29 @@ pub fn disable_window_ghosting() {
 /// owns every overlay and surrogate window. Without this, a thread sending
 /// to one of them -- e.g. an app broadcasting `WM_SETTINGCHANGE` with
 /// `SendMessage` -- blocks until the WM happens to pump, and Windows
-/// reports the WM as not responding after 5 seconds. On non-Windows
-/// platforms this is a no-op.
+/// reports the WM as not responding after 5 seconds.
 pub fn process_sent_messages() {
-  #[cfg(target_os = "windows")]
-  {
-    use windows::Win32::UI::WindowsAndMessaging::{
-      PeekMessageW, MSG, PM_NOREMOVE, PM_QS_SENDMESSAGE,
-    };
+  use windows::Win32::UI::WindowsAndMessaging::{
+    PeekMessageW, MSG, PM_NOREMOVE, PM_QS_SENDMESSAGE,
+  };
 
-    let mut msg = MSG::default();
+  let mut msg = MSG::default();
 
-    // SAFETY: `msg` outlives the call. With `PM_QS_SENDMESSAGE` the call
-    // only runs pending sent messages through their window procedures;
-    // `PM_NOREMOVE` leaves anything it finds in the queue.
-    let _ = unsafe {
-      PeekMessageW(
-        &raw mut msg,
-        None,
-        0,
-        0,
-        PM_NOREMOVE | PM_QS_SENDMESSAGE,
-      )
-    };
-  }
+  // SAFETY: `msg` outlives the call. With `PM_QS_SENDMESSAGE` the call
+  // only runs pending sent messages through their window procedures;
+  // `PM_NOREMOVE` leaves anything it finds in the queue.
+  let _ = unsafe {
+    PeekMessageW(&raw mut msg, None, 0, 0, PM_NOREMOVE | PM_QS_SENDMESSAGE)
+  };
 }
 
 /// Waits for the next DWM composition frame to complete.
 ///
 /// Used to synchronize animation ticks to vsync so surrogate updates reach
 /// the compositor on every rendered frame without timer-resolution jitter.
-/// On non-Windows platforms this is a no-op.
 pub fn dwm_flush() {
   let _scope = perf::scope(perf::Stage::DwmFlush);
 
-  #[cfg(target_os = "windows")]
   unsafe {
     // SAFETY: No preconditions; `DwmFlush` is safe to call from any thread
     // and blocks until the next DWM composition frame is ready.
@@ -205,25 +152,17 @@ pub fn dwm_flush() {
 
 /// Returns the current cursor position in virtual-screen pixels.
 ///
-/// Returns `None` if the position cannot be queried. On non-Windows
-/// platforms this always returns `None`.
+/// Returns `None` if the position cannot be queried.
 #[must_use]
 pub fn cursor_position() -> Option<(i32, i32)> {
-  #[cfg(target_os = "windows")]
-  {
-    use windows::Win32::{
-      Foundation::POINT, UI::WindowsAndMessaging::GetCursorPos,
-    };
-    let mut point = POINT { x: 0, y: 0 };
-    // SAFETY: `point` is a valid stack out-parameter.
-    if unsafe { GetCursorPos(&raw mut point) }.is_ok() {
-      Some((point.x, point.y))
-    } else {
-      None
-    }
-  }
-  #[cfg(not(target_os = "windows"))]
-  {
+  use windows::Win32::{
+    Foundation::POINT, UI::WindowsAndMessaging::GetCursorPos,
+  };
+  let mut point = POINT { x: 0, y: 0 };
+  // SAFETY: `point` is a valid stack out-parameter.
+  if unsafe { GetCursorPos(&raw mut point) }.is_ok() {
+    Some((point.x, point.y))
+  } else {
     None
   }
 }
@@ -234,7 +173,6 @@ pub fn cursor_position() -> Option<(i32, i32)> {
 /// composition cycle, this waits for the vertical-blank signal of a
 /// specific monitor. Clones share the same atomics so all copies observe
 /// period refinements and wake timestamps written by the timer thread.
-#[cfg(target_os = "windows")]
 #[derive(Clone)]
 pub struct DxgiVsyncWaiter {
   output: windows::Win32::Graphics::Dxgi::IDXGIOutput,
@@ -269,7 +207,6 @@ pub struct DxgiVsyncWaiter {
 /// `IDXGIOutput` does -- `IsCurrent` is the documented, cheap way to check
 /// whether a cached factory is still valid after a display topology
 /// change, so it's safe to reuse across gestures and even across monitors.
-#[cfg(target_os = "windows")]
 static DXGI_FACTORY: std::sync::OnceLock<
   std::sync::Mutex<Option<windows::Win32::Graphics::Dxgi::IDXGIFactory>>,
 > = std::sync::OnceLock::new();
@@ -278,7 +215,6 @@ static DXGI_FACTORY: std::sync::OnceLock<
 /// `IDXGIFactory::IsCurrent` confirms it's still valid, recreating it
 /// otherwise. See [`DXGI_FACTORY`]'s doc comment for why this is cached
 /// but [`DxgiVsyncWaiter`]'s per-monitor `IDXGIOutput` is not.
-#[cfg(target_os = "windows")]
 fn cached_dxgi_factory(
 ) -> windows::core::Result<windows::Win32::Graphics::Dxgi::IDXGIFactory> {
   use windows::{
@@ -311,7 +247,6 @@ fn cached_dxgi_factory(
   Ok(factory)
 }
 
-#[cfg(target_os = "windows")]
 impl DxgiVsyncWaiter {
   /// Returns the `HMONITOR` handle this waiter was created for.
   #[must_use]
@@ -467,10 +402,8 @@ impl DxgiVsyncWaiter {
 /// `AvRevertMmThread`, restoring the thread to normal scheduling. This
 /// ensures cleanup even if the animation thread exits through an
 /// early-return path.
-#[cfg(target_os = "windows")]
 pub struct MmcssGuard(isize);
 
-#[cfg(target_os = "windows")]
 impl Drop for MmcssGuard {
   fn drop(&mut self) {
     use windows::Win32::System::LibraryLoader::{
@@ -514,7 +447,6 @@ impl Drop for MmcssGuard {
 ///
 /// Returns a [`MmcssGuard`] that automatically reverts the registration on
 /// drop, or `None` if `avrt.dll` is unavailable or registration fails.
-#[cfg(target_os = "windows")]
 pub fn try_set_thread_mmcss() -> Option<MmcssGuard> {
   use windows::Win32::System::LibraryLoader::{
     GetProcAddress, LoadLibraryW,
@@ -561,31 +493,27 @@ pub fn try_set_thread_mmcss() -> Option<MmcssGuard> {
 ///
 /// Called at the start of the animation timer thread to reduce scheduling
 /// jitter between the DWM vsync wake-up and tick delivery to the Tokio
-/// runtime. On non-Windows platforms this is a no-op.
+/// runtime.
 pub fn set_thread_priority_highest() {
-  #[cfg(target_os = "windows")]
-  {
-    use windows::Win32::System::Threading::{
-      GetCurrentThread, SetThreadPriority, THREAD_PRIORITY_HIGHEST,
-    };
-    // SAFETY: `GetCurrentThread` returns a pseudo-handle valid for the
-    // lifetime of the calling thread. `SetThreadPriority` has no
-    // preconditions beyond a valid handle and a recognised priority value.
-    unsafe {
-      let _ =
-        SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_HIGHEST);
-    }
+  use windows::Win32::System::Threading::{
+    GetCurrentThread, SetThreadPriority, THREAD_PRIORITY_HIGHEST,
+  };
+  // SAFETY: `GetCurrentThread` returns a pseudo-handle valid for the
+  // lifetime of the calling thread. `SetThreadPriority` has no
+  // preconditions beyond a valid handle and a recognised priority value.
+  unsafe {
+    let _ = SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_HIGHEST);
   }
 }
 
 // TODO: Avoid exposing `windows` crate types in the public API.
-#[cfg(target_os = "windows")]
-pub use windows::Win32::Foundation::HWND;
-#[cfg(target_os = "windows")]
-pub use windows::Win32::UI::WindowsAndMessaging::{
-  HWND_TOPMOST, SET_WINDOW_POS_FLAGS, SWP_ASYNCWINDOWPOS,
-  SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOCOPYBITS, SWP_NOSENDCHANGING,
-  SWP_NOZORDER, WINDOW_EX_STYLE, WINDOW_STYLE, WS_CAPTION, WS_CHILD,
-  WS_EX_DLGMODALFRAME, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_MAXIMIZEBOX,
-  WS_VISIBLE,
+pub use windows::Win32::{
+  Foundation::HWND,
+  UI::WindowsAndMessaging::{
+    HWND_TOPMOST, SET_WINDOW_POS_FLAGS, SWP_ASYNCWINDOWPOS,
+    SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOCOPYBITS, SWP_NOSENDCHANGING,
+    SWP_NOZORDER, WINDOW_EX_STYLE, WINDOW_STYLE, WS_CAPTION, WS_CHILD,
+    WS_EX_DLGMODALFRAME, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW,
+    WS_MAXIMIZEBOX, WS_VISIBLE,
+  },
 };

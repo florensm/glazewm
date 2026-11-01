@@ -17,7 +17,6 @@ pub fn handle_window_shown(
   if let Some(window) = found_window {
     info!("Window shown: {window}");
 
-    #[cfg(target_os = "windows")]
     if reconcile_shown_tab(&window, state, config)? {
       return Ok(());
     }
@@ -29,7 +28,6 @@ pub fn handle_window_shown(
       state.pending_sync.queue_container_to_redraw(window);
     }
   } else if !state.ignored_windows.contains(&native_window) {
-    #[cfg(target_os = "windows")]
     show_owner_tab(&native_window, state, config)?;
 
     // If the window is not managed and not explicitly ignored, manage it.
@@ -46,7 +44,6 @@ pub fn handle_window_shown(
 /// The tab becomes the active one if it is the foreground window, and is
 /// hidden again otherwise, so that the shown window always matches the
 /// active tab of the tab bar. Returns whether it was such a tab.
-#[cfg(target_os = "windows")]
 fn reconcile_shown_tab(
   window: &crate::models::WindowContainer,
   state: &mut WmState,
@@ -109,7 +106,6 @@ fn reconcile_shown_tab(
 /// Windows hides a window along with its hidden (cloaked) owner, so a
 /// popup opened by a background tab would otherwise never appear, nor be
 /// managed. Its tab is shown with it instead, as the popup is about it.
-#[cfg(target_os = "windows")]
 fn show_owner_tab(
   native_window: &NativeWindow,
   state: &mut WmState,

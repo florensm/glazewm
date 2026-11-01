@@ -22,10 +22,7 @@ impl NativeWindow {
   /// Calling any methods on the mock is undefined behavior and may panic.
   #[must_use]
   pub fn mock() -> Self {
-    #[cfg(target_os = "windows")]
-    {
-      platform_impl::NativeWindow::new(0).into()
-    }
+    platform_impl::NativeWindow::new(0).into()
   }
 }
 
@@ -36,7 +33,6 @@ impl Display {
   #[must_use]
   pub fn mock() -> Self {
     Self {
-      #[cfg(target_os = "windows")]
       inner: platform_impl::Display::new(0),
     }
   }

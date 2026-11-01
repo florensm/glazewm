@@ -327,18 +327,10 @@ impl UserConfig {
         }
       });
 
-    let is_class_match = {
-      #[cfg(target_os = "windows")]
-      {
-        match_config.window_class.as_ref().is_none_or(|match_type| {
-          match_type.is_match(&properties.class_name)
-        })
-      }
-      #[cfg(not(target_os = "windows"))]
-      {
-        match_config.window_class.is_none()
-      }
-    };
+    let is_class_match =
+      match_config.window_class.as_ref().is_none_or(|match_type| {
+        match_type.is_match(&properties.class_name)
+      });
 
     let is_title_match = match_config
       .window_title
@@ -745,14 +737,12 @@ window_effects:
   ) -> NativeWindowProperties {
     NativeWindowProperties {
       title: title.to_string(),
-      #[cfg(target_os = "windows")]
       class_name: "TestClass".to_string(),
       process_name: process_name.to_string(),
       frame: Rect::from_ltrb(0, 0, 100, 100),
       is_minimized: false,
       is_maximized: false,
       is_resizable: true,
-      #[cfg(target_os = "windows")]
       shadow_borders: wm_platform::RectDelta::zero(),
       min_width: 0,
     }

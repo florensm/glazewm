@@ -1,6 +1,3 @@
-// LINT: Keys are only sent to joining windows on Windows.
-#![cfg_attr(not(target_os = "windows"), allow(dead_code))]
-
 use std::{
   collections::{HashMap, HashSet},
   time::{Duration, Instant},
@@ -24,7 +21,6 @@ impl WindowTraits {
   /// Reads the traits of `native`.
   ///
   /// Dialogs are `#32770` windows and windows with a modal dialog frame.
-  #[cfg(target_os = "windows")]
   pub fn of(
     native: &NativeWindow,
     props: &NativeWindowProperties,
@@ -39,15 +35,6 @@ impl WindowTraits {
         || native.has_window_style_ex(WS_EX_DLGMODALFRAME),
       is_tool_window: native.has_window_style_ex(WS_EX_TOOLWINDOW),
     }
-  }
-
-  /// Reads the traits of `native`.
-  #[cfg(not(target_os = "windows"))]
-  pub fn of(
-    _native: &NativeWindow,
-    _props: &NativeWindowProperties,
-  ) -> Self {
-    Self::default()
   }
 }
 

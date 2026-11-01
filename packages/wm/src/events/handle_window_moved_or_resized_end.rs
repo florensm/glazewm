@@ -41,7 +41,6 @@ pub fn handle_window_moved_or_resized_end(
   state: &mut WmState,
   config: &UserConfig,
 ) -> anyhow::Result<()> {
-  #[cfg(target_os = "windows")]
   crate::drop_indicator::hide_drop_indicator(state);
 
   let Some(active_drag) = window.active_drag() else {
@@ -415,15 +414,17 @@ mod tests {
     drop_as_tiling_window, handle_window_moved_or_resized_end,
     place_tiling_window,
   };
-  #[cfg(target_os = "windows")]
-  use crate::layout::window_drop::{window_drop, WindowDrop};
   use crate::{
     commands::{
       container::{attach_container, set_focused_descendant},
       window::{set_window_size, update_window_state},
     },
     events::handle_window_moved_or_resized::update_drag_state,
-    layout::{is_hidden_in_layout, scrolling::sync_view},
+    layout::{
+      is_hidden_in_layout,
+      scrolling::sync_view,
+      window_drop::{window_drop, WindowDrop},
+    },
     models::{
       Monitor, NonTilingWindow, StackContainer, TilingContainer,
       TilingWindow, WindowContainer, Workspace,
@@ -834,7 +835,6 @@ mod tests {
     assert!(placed.as_tiling_window().is_some(), "tiling again");
   }
 
-  #[cfg(target_os = "windows")]
   #[test]
   fn the_drop_indicator_shows_the_half_a_window_drops_beside() {
     let (left, right, moved) = (window(), window(), window());
@@ -879,7 +879,6 @@ mod tests {
     );
   }
 
-  #[cfg(target_os = "windows")]
   #[test]
   fn the_drop_indicator_shows_a_new_column_past_the_strip_end() {
     let (first, moved, last) = (window(), window(), window());

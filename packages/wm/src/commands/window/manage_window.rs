@@ -4,9 +4,7 @@ use wm_common::{
   AutoStackRuleConfig, DuplicateTabs, InvokeCommand, WindowRuleEvent,
   WindowState, WmEvent,
 };
-#[cfg(target_os = "windows")]
-use wm_platform::NativeWindowWindowsExt;
-use wm_platform::{NativeWindow, RectDelta};
+use wm_platform::{NativeWindow, NativeWindowWindowsExt, RectDelta};
 
 use crate::{
   auto_stack::{
@@ -101,7 +99,6 @@ fn manage_window_inner(
   //
   // Held by a guard so that every early return between here and a
   // successful hand-off undoes the cloak. See `CloakGuard`.
-  #[cfg(target_os = "windows")]
   let cloak_guard = CloakGuard::cloak(&native_window);
 
   native_properties.measure_min_width(&native_window);
@@ -188,7 +185,6 @@ fn manage_window_inner(
     // The window is managed and queued for redraw, so `platform_sync`
     // (non-tiling) or the slide-in animation (tiling) now owns the
     // uncloak. Every earlier return leaves the guard to undo it.
-    #[cfg(target_os = "windows")]
     cloak_guard.release();
   }
   // Otherwise the window was detached by an `ignore` rule, and the guard
@@ -395,11 +391,8 @@ fn auto_stacking(
     AutoStackDecision::Wait(rule) if may_wait => {
       if joins_untitled_now(rule, native_window, properties, state) {
         AutoStacking::JoinUntitled(rule.clone())
-      } else if cfg!(target_os = "windows") {
-        // Holding relies on cloaking, which only exists on Windows.
-        AutoStacking::Hold
       } else {
-        AutoStacking::None
+        AutoStacking::Hold
       }
     }
     AutoStackDecision::Blocked(reason) => {
@@ -493,13 +486,7 @@ fn is_popup_of_stacked_app(
   state: &WmState,
   config: &UserConfig,
 ) -> bool {
-  #[cfg(target_os = "windows")]
   let has_owner = native_window.has_owner_window();
-  #[cfg(not(target_os = "windows"))]
-  let has_owner = {
-    let _ = native_window;
-    false
-  };
 
   config.value.stack.float_owned_popups
     && has_owner
@@ -524,7 +511,6 @@ fn hold_window(
       native_window.id()
     );
 
-    #[cfg(target_os = "windows")]
     let _ = native_window.set_cloaked(true);
   }
 
@@ -537,11 +523,7 @@ fn hold_window(
 
 /// Undoes the cloak of a window that was held back and won't be managed.
 pub fn uncloak_held_window(native_window: &NativeWindow) {
-  #[cfg(target_os = "windows")]
   let _ = native_window.set_cloaked(false);
-
-  #[cfg(not(target_os = "windows"))]
-  let _ = native_window;
 }
 
 /// Records that `window` joined its stack by `rule`. A window that just
@@ -568,7 +550,6 @@ pub fn on_auto_stacked(
 
   // The duplicates are closed after the keys are pressed, since closing
   // them can move the foreground to another window first.
-  #[cfg(target_os = "windows")]
   if !rule.send_keys_on_join.is_empty() {
     state.auto_stack.queue_keys(
       &window.native(),
@@ -723,14 +704,12 @@ fn exit_fullscreen_for_new_window(
 ///
 /// Using a guard rather than an uncloak on each early return means paths
 /// added later are covered by construction.
-#[cfg(target_os = "windows")]
 struct CloakGuard {
   /// The cloaked window, taken once the cloak becomes someone else's
   /// responsibility.
   window: Option<NativeWindow>,
 }
 
-#[cfg(target_os = "windows")]
 impl CloakGuard {
   /// Cloaks `window` and returns a guard that uncloaks it on drop.
   fn cloak(window: &NativeWindow) -> Self {
@@ -748,7 +727,6 @@ impl CloakGuard {
   }
 }
 
-#[cfg(target_os = "windows")]
 impl Drop for CloakGuard {
   fn drop(&mut self) {
     if let Some(window) = self.window.take() {
@@ -777,16 +755,10 @@ fn check_is_manageable(
 ) -> anyhow::Result<Option<NativeWindowProperties>> {
   // A held window is cloaked by the WM itself, which `is_visible` would
   // report as hidden.
-  #[cfg(target_os = "windows")]
   let is_visible = if is_held {
     use wm_platform::WS_VISIBLE;
     native_window.has_window_style(WS_VISIBLE)
   } else {
-    native_window.is_visible()?
-  };
-  #[cfg(not(target_os = "windows"))]
-  let is_visible = {
-    let _ = is_held;
     native_window.is_visible()?
   };
 
@@ -799,7 +771,6 @@ fn check_is_manageable(
 
   // Checked before the `force-manage` bypass: a window another app has
   // embedded (e.g. a tabbing app) is laid out by that app, never the WM.
-  #[cfg(target_os = "windows")]
   if !native_window.is_top_level() {
     tracing::debug!("Skipping embedded window: {native_properties:?}");
     return Ok(None);
@@ -811,7 +782,6 @@ fn check_is_manageable(
     return Ok(Some(native_properties));
   }
 
-  #[cfg(target_os = "windows")]
   {
     use wm_platform::{
       NativeWindowWindowsExt, WS_CAPTION, WS_CHILD, WS_EX_NOACTIVATE,

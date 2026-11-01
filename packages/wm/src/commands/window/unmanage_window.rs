@@ -1,6 +1,5 @@
 use anyhow::Context;
 use wm_common::{WindowState, WmEvent};
-#[cfg(target_os = "windows")]
 use wm_platform::NativeWindowWindowsExt;
 
 use crate::{
@@ -24,7 +23,6 @@ use crate::{
 ///
 /// The window stays tracked in `WmState::closing_windows` until its app
 /// acts on the close, so that it can be put back if the app keeps it open.
-#[cfg(target_os = "windows")]
 pub fn detach_window_for_close(
   window: &WindowContainer,
   animation_duration: std::time::Duration,
@@ -58,14 +56,11 @@ pub fn unmanage_window(
   // until some unrelated later sync happens to run (mirrors the equivalent
   // cleanup for completed close animations in
   // `AnimationManager::update_internal`).
-  #[cfg(target_os = "windows")]
-  {
-    state.window_overlays.remove(&window.id());
+  state.window_overlays.remove(&window.id());
 
-    // A window closed mid-drag never ends its drag.
-    if window.active_drag().is_some() {
-      crate::drop_indicator::hide_drop_indicator(state);
-    }
+  // A window closed mid-drag never ends its drag.
+  if window.active_drag().is_some() {
+    crate::drop_indicator::hide_drop_indicator(state);
   }
 
   detach_window(&window, state)
@@ -148,7 +143,6 @@ fn is_stacked(window: &WindowContainer) -> bool {
 /// milliseconds. By the time the hide event is handled the window is
 /// visible again, so without this check it stays managed: tiled, bordered
 /// and positioned as if it were still top-level.
-#[cfg(target_os = "windows")]
 pub fn unmanage_if_embedded(
   window: WindowContainer,
   state: &mut WmState,

@@ -5,26 +5,18 @@ use std::{
 
 use anyhow::{bail, Context};
 use tokio::sync::mpsc::{self};
-#[cfg(target_os = "windows")]
 use tracing::warn;
 use uuid::Uuid;
-#[cfg(target_os = "windows")]
-use wm_common::TitleBarVisibility;
 use wm_common::{
-  FloatingStateConfig, FullscreenStateConfig, InvokeCommand, WindowState,
+  FloatingStateConfig, FullscreenStateConfig, InvokeCommand,
+  InvokeFocusCommand, InvokeMoveCommand, TitleBarVisibility, WindowState,
   WmEvent,
 };
-#[cfg(target_os = "windows")]
-use wm_common::{InvokeFocusCommand, InvokeMoveCommand};
-#[cfg(target_os = "windows")]
-use wm_platform::NativeWindowWindowsExt;
 use wm_platform::{
-  Dispatcher, Keybinding, LengthValue, OverviewAction, PlatformEvent,
-  RectDelta, WindowEvent,
+  Dispatcher, Keybinding, LengthValue, NativeWindowWindowsExt,
+  OverviewAction, PlatformEvent, RectDelta, WindowEvent,
 };
 
-#[cfg(target_os = "windows")]
-use crate::commands::window::close_duplicate_tabs;
 use crate::{
   commands::{
     column::{
@@ -45,9 +37,9 @@ use crate::{
     },
     monitor::focus_monitor,
     window::{
-      close_window, cycle_stack_focus, float_out_of_stack,
-      focus_stack_index, focus_urgent_window, ignore_window,
-      manage_held_window, move_stack_tab, move_to_stack,
+      close_duplicate_tabs, close_window, cycle_stack_focus,
+      float_out_of_stack, focus_stack_index, focus_urgent_window,
+      ignore_window, manage_held_window, move_stack_tab, move_to_stack,
       move_window_in_direction, move_window_to_workspace, resize_window,
       set_window_position, set_window_size, set_window_urgency,
       stack_absorb_neighbor, stack_all, toggle_stack, unstack_all,
@@ -128,11 +120,6 @@ impl WindowManager {
 
   /// Carries out an action taken in the overview, unless it comes from an
   /// earlier session than the open one.
-  // LINT: The overview only exists on Windows.
-  #[cfg_attr(
-    not(target_os = "windows"),
-    allow(clippy::unused_self, clippy::unnecessary_wraps)
-  )]
   #[allow(clippy::too_many_lines)]
   pub fn process_overview_action(
     &mut self,
@@ -140,151 +127,142 @@ impl WindowManager {
     action: OverviewAction,
     config: &mut UserConfig,
   ) -> anyhow::Result<()> {
-    #[cfg(not(target_os = "windows"))]
-    {
-      let _ = (session, action, config);
-      Ok(())
+    let state = &mut self.state;
+
+    // What the WM held off while it was on screen resumes.
+    if action == OverviewAction::Hidden {
+      return if state.overview.mark_hidden(session) {
+        platform_sync(state, config)
+      } else {
+        Ok(())
+      };
     }
 
-    #[cfg(target_os = "windows")]
-    {
-      let state = &mut self.state;
+    if state.overview.open_session() != Some(session) {
+      return Ok(());
+    }
+    tracing::debug!(
+      target: wm_platform::OVERVIEW_LOG_TARGET,
+      "Carrying out overview action {action:?}."
+    );
 
-      // What the WM held off while it was on screen resumes.
-      if action == OverviewAction::Hidden {
-        return if state.overview.mark_hidden(session) {
-          platform_sync(state, config)
-        } else {
-          Ok(())
+    let focused_workspace = state
+      .focused_container()
+      .and_then(|focused| focused.workspace())
+      .map(|workspace| workspace.config().name);
+    let window = window_by_handle(state, &action);
+
+    // A window placed in a workspace's layout, once it is on it.
+    let mut placement = None;
+
+    let (commands, subject) = match action {
+      OverviewAction::FocusWindow { monitor, .. } => {
+        state.overview.close();
+        let Some(window) = window else {
+          state.pending_sync.queue_focus_change();
+          return platform_sync(state, config);
         };
-      }
 
-      if state.overview.open_session() != Some(session) {
-        return Ok(());
-      }
-      tracing::debug!(
-        target: wm_platform::OVERVIEW_LOG_TARGET,
-        "Carrying out overview action {action:?}."
-      );
+        let workspace = window.workspace().map(|w| w.config().name);
+        let mut commands = Vec::new();
 
-      let focused_workspace = state
-        .focused_container()
-        .and_then(|focused| focused.workspace())
-        .map(|workspace| workspace.config().name);
-      let window = window_by_handle(state, &action);
-
-      // A window placed in a workspace's layout, once it is on it.
-      let mut placement = None;
-
-      let (commands, subject) = match action {
-        OverviewAction::FocusWindow { monitor, .. } => {
-          state.overview.close();
-          let Some(window) = window else {
-            state.pending_sync.queue_focus_change();
-            return platform_sync(state, config);
-          };
-
-          let workspace = window.workspace().map(|w| w.config().name);
-          let mut commands = Vec::new();
-
-          // A window-level focus doesn't switch the displayed workspace
-          // on its own.
-          if let Some(name) = workspace
-            .filter(|name| Some(name) != focused_workspace.as_ref())
-          {
-            crate::overview::prepare_target(
-              state, config, &name, monitor, true,
-            )?;
-            commands.push(focus_workspace_command(name));
-          }
-
-          commands.push(InvokeCommand::Focus(InvokeFocusCommand {
-            container_id: Some(window.id()),
-            ..Default::default()
-          }));
-
-          // The overview was the transition; the switch behind it is
-          // instant.
-          state.pending_sync.suppress_animations();
-          (commands, None)
-        }
-        OverviewAction::FocusWorkspace { name, monitor } => {
-          state.overview.close();
-
-          // Focusing the focused workspace would toggle back to the
-          // previous one when `toggle_workspace_on_refocus` is set.
-          if Some(&name) == focused_workspace.as_ref() {
-            state.pending_sync.queue_focus_change();
-            return platform_sync(state, config);
-          }
-
+        // A window-level focus doesn't switch the displayed workspace
+        // on its own.
+        if let Some(name) =
+          workspace.filter(|name| Some(name) != focused_workspace.as_ref())
+        {
           crate::overview::prepare_target(
             state, config, &name, monitor, true,
           )?;
-          state.pending_sync.suppress_animations();
-          (vec![focus_workspace_command(name)], None)
+          commands.push(focus_workspace_command(name));
         }
-        OverviewAction::MoveWindow {
-          workspace, monitor, ..
-        } => {
-          let Some(window) = window else {
-            return Ok(());
-          };
 
-          crate::overview::prepare_target(
-            state, config, &workspace, monitor, false,
-          )?;
-          (
-            vec![move_to_workspace_command(workspace)],
-            Some(window.id()),
-          )
-        }
-        OverviewAction::PlaceWindow {
-          workspace,
-          monitor,
-          point,
-          ..
-        } => {
-          let Some(window) = window else {
-            return Ok(());
-          };
+        commands.push(InvokeCommand::Focus(InvokeFocusCommand {
+          container_id: Some(window.id()),
+          ..Default::default()
+        }));
 
-          let commands =
-            place_commands(&window, &workspace, monitor, state, config)?;
-          placement = Some((window.id(), workspace, point));
-          (commands, Some(window.id()))
-        }
-        OverviewAction::CloseWindow(_) => {
-          let Some(window) = window else {
-            return Ok(());
-          };
-          (vec![InvokeCommand::Close], Some(window.id()))
-        }
-        OverviewAction::Cancel => {
-          state.overview.close();
+        // The overview was the transition; the switch behind it is
+        // instant.
+        state.pending_sync.suppress_animations();
+        (commands, None)
+      }
+      OverviewAction::FocusWorkspace { name, monitor } => {
+        state.overview.close();
+
+        // Focusing the focused workspace would toggle back to the
+        // previous one when `toggle_workspace_on_refocus` is set.
+        if Some(&name) == focused_workspace.as_ref() {
           state.pending_sync.queue_focus_change();
           return platform_sync(state, config);
         }
-        // Focus went elsewhere and the overview closed itself.
-        OverviewAction::Deactivated => {
-          state.overview.close();
-          return platform_sync(state, config);
-        }
-        OverviewAction::Hidden => return Ok(()),
-      };
 
-      self.process_commands(&commands, subject, config)?;
-
-      match placement {
-        Some((window_id, workspace, point)) => place_window(
-          window_id,
-          &workspace,
-          &point,
-          &mut self.state,
-          config,
-        ),
-        None => Ok(()),
+        crate::overview::prepare_target(
+          state, config, &name, monitor, true,
+        )?;
+        state.pending_sync.suppress_animations();
+        (vec![focus_workspace_command(name)], None)
       }
+      OverviewAction::MoveWindow {
+        workspace, monitor, ..
+      } => {
+        let Some(window) = window else {
+          return Ok(());
+        };
+
+        crate::overview::prepare_target(
+          state, config, &workspace, monitor, false,
+        )?;
+        (
+          vec![move_to_workspace_command(workspace)],
+          Some(window.id()),
+        )
+      }
+      OverviewAction::PlaceWindow {
+        workspace,
+        monitor,
+        point,
+        ..
+      } => {
+        let Some(window) = window else {
+          return Ok(());
+        };
+
+        let commands =
+          place_commands(&window, &workspace, monitor, state, config)?;
+        placement = Some((window.id(), workspace, point));
+        (commands, Some(window.id()))
+      }
+      OverviewAction::CloseWindow(_) => {
+        let Some(window) = window else {
+          return Ok(());
+        };
+        (vec![InvokeCommand::Close], Some(window.id()))
+      }
+      OverviewAction::Cancel => {
+        state.overview.close();
+        state.pending_sync.queue_focus_change();
+        return platform_sync(state, config);
+      }
+      // Focus went elsewhere and the overview closed itself.
+      OverviewAction::Deactivated => {
+        state.overview.close();
+        return platform_sync(state, config);
+      }
+      OverviewAction::Hidden => return Ok(()),
+    };
+
+    self.process_commands(&commands, subject, config)?;
+
+    match placement {
+      Some((window_id, workspace, point)) => place_window(
+        window_id,
+        &workspace,
+        &point,
+        &mut self.state,
+        config,
+      ),
+      None => Ok(()),
     }
   }
 
@@ -293,7 +271,6 @@ impl WindowManager {
     &mut self,
     config: &UserConfig,
   ) -> anyhow::Result<()> {
-    #[cfg(target_os = "windows")]
     {
       let state = &mut self.state;
       crate::overview::process_hot_corner(state, config)?;
@@ -301,9 +278,6 @@ impl WindowManager {
         platform_sync(state, config)?;
       }
     }
-
-    #[cfg(not(target_os = "windows"))]
-    let _ = config;
 
     Ok(())
   }
@@ -399,7 +373,6 @@ impl WindowManager {
       manage_held_window(native_window, state, config)?;
     }
 
-    #[cfg(target_os = "windows")]
     send_due_keys(state);
 
     if !state.is_paused && state.pending_sync.has_changes() {
@@ -413,29 +386,12 @@ impl WindowManager {
 
   /// When [`process_closing_windows`](Self::process_closing_windows) is
   /// next due.
-  // LINT: Close animations only exist on Windows.
-  #[cfg_attr(not(target_os = "windows"), allow(clippy::unused_self))]
   pub fn next_closing_check(&self) -> Option<std::time::Instant> {
-    #[cfg(target_os = "windows")]
-    return self.state.closing_windows.next_check();
-    #[cfg(not(target_os = "windows"))]
-    None
+    self.state.closing_windows.next_check()
   }
 
   /// Follows up on windows closed behind a close animation: forgets the
   /// closed ones, and puts back the ones whose app kept them open.
-  #[cfg(not(target_os = "windows"))]
-  #[allow(clippy::unused_self, clippy::unnecessary_wraps)]
-  pub fn process_closing_windows(
-    &mut self,
-    _config: &mut UserConfig,
-  ) -> anyhow::Result<()> {
-    Ok(())
-  }
-
-  /// Follows up on windows closed behind a close animation: forgets the
-  /// closed ones, and puts back the ones whose app kept them open.
-  #[cfg(target_os = "windows")]
   pub fn process_closing_windows(
     &mut self,
     config: &mut UserConfig,
@@ -560,25 +516,21 @@ impl WindowManager {
         return Ok(());
       }
       PlatformEvent::Mouse(event) => {
-        #[cfg(target_os = "windows")]
         crate::overview::check_hot_corner(&event, state, config)?;
         handle_mouse_move(&event, state, config)
       }
       PlatformEvent::Window(window_event) => match window_event {
         WindowEvent::Focused { window, .. } => {
           handle_window_focused(&window, state, config)?;
-          #[cfg(target_os = "windows")]
           crate::stay_interactive::keep_stacked_windows_interactive(
             &window, state, config,
           )?;
           Ok(())
         }
         WindowEvent::Shown { window, .. } => {
-          #[cfg(target_os = "windows")]
           let shown = window.clone();
 
           handle_window_shown(window, state, config)?;
-          #[cfg(target_os = "windows")]
           crate::stay_interactive::keep_stacked_windows_interactive(
             &shown, state, config,
           )?;
@@ -1038,12 +990,7 @@ impl WindowManager {
 
         Ok(())
       }
-      InvokeCommand::SetTitleBarVisibility {
-        // LINT: `visibility` is only used on Windows.
-        #[cfg_attr(not(target_os = "windows"), allow(unused_variables))]
-        visibility,
-      } => {
-        #[cfg(target_os = "windows")]
+      InvokeCommand::SetTitleBarVisibility { visibility } => {
         if let Ok(window) = subject_container.as_window_container() {
           _ = window.native().set_title_bar_visibility(
             *visibility == TitleBarVisibility::Shown,
@@ -1052,10 +999,7 @@ impl WindowManager {
 
         Ok(())
       }
-      // LINT: `args` is only used on Windows.
-      #[cfg_attr(not(target_os = "windows"), allow(unused_variables))]
       InvokeCommand::SetTransparency(args) => {
-        #[cfg(target_os = "windows")]
         if let Ok(window) = subject_container.as_window_container() {
           if let Some(opacity) = &args.opacity {
             _ = window.native().set_transparency(opacity);
@@ -1167,18 +1111,11 @@ impl WindowManager {
       InvokeCommand::ToggleOverview { layout } => {
         let layout = layout.unwrap_or(config.value.overview.layout);
 
-        #[cfg(target_os = "windows")]
         crate::overview::toggle_overview(
           state,
           config,
           crate::overview::to_layout_mode(layout),
         )?;
-
-        #[cfg(not(target_os = "windows"))]
-        {
-          let _ = layout;
-          tracing::warn!("The overview is only available on Windows.");
-        }
 
         Ok(())
       }
@@ -1258,7 +1195,6 @@ impl WindowManager {
         Ok(())
       }
       InvokeCommand::StayInteractive => {
-        #[cfg(target_os = "windows")]
         if let Ok(window) = subject_container.as_window_container() {
           state.stay_interactive.mark(window.native().id());
         }
@@ -1402,7 +1338,6 @@ impl WindowManager {
 }
 
 /// The managed window an overview action refers to, if any.
-#[cfg(target_os = "windows")]
 fn window_by_handle(
   state: &WmState,
   action: &OverviewAction,
@@ -1449,7 +1384,6 @@ fn is_off_cooldown(
 
 /// `focus --workspace <name>`, for a workspace readied by
 /// `prepare_target`; the special workspace too, which it has summoned.
-#[cfg(target_os = "windows")]
 fn focus_workspace_command(name: String) -> InvokeCommand {
   InvokeCommand::Focus(InvokeFocusCommand {
     workspace: Some(name),
@@ -1459,7 +1393,6 @@ fn focus_workspace_command(name: String) -> InvokeCommand {
 
 /// Commands bringing `window`, being placed on the named `workspace` from
 /// the overview, onto it first: none if it is there already.
-#[cfg(target_os = "windows")]
 fn place_commands(
   window: &crate::models::WindowContainer,
   workspace: &str,
@@ -1483,7 +1416,6 @@ fn place_commands(
 
 /// Places the window `window_id`, on the named `workspace` by now, where
 /// dragging it to `point` there puts it, if it is tiling.
-#[cfg(target_os = "windows")]
 fn place_window(
   window_id: uuid::Uuid,
   workspace: &str,
@@ -1507,7 +1439,6 @@ fn place_window(
 
 /// `move --workspace <name>`, for a workspace readied by
 /// `prepare_target`.
-#[cfg(target_os = "windows")]
 fn move_to_workspace_command(name: String) -> InvokeCommand {
   InvokeCommand::Move(InvokeMoveCommand {
     workspace: Some(name),
@@ -1518,7 +1449,6 @@ fn move_to_workspace_command(name: String) -> InvokeCommand {
 /// Presses the next due `send_keys_on_join` key combination in windows
 /// that are in the foreground, retrying the others until they time out.
 /// Once a window is done, the duplicate tabs it replaces are closed.
-#[cfg(target_os = "windows")]
 fn send_due_keys(state: &mut WmState) {
   let now = std::time::Instant::now();
 

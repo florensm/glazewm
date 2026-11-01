@@ -43,7 +43,6 @@ impl MouseListener {
   pub async fn next_event(&mut self) -> Option<MouseEvent> {
     let event = self.event_rx.recv().await;
 
-    #[cfg(target_os = "windows")]
     if event.is_some() {
       crate::perf::record_event_dequeued(crate::perf::EventKind::Mouse);
     }
@@ -60,7 +59,6 @@ impl MouseListener {
   pub fn try_next_event(&mut self) -> Option<MouseEvent> {
     let event = self.event_rx.try_recv().ok();
 
-    #[cfg(target_os = "windows")]
     if event.is_some() {
       crate::perf::record_event_dequeued(crate::perf::EventKind::Mouse);
     }

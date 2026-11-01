@@ -25,10 +25,6 @@ use crate::{
 /// [`set_rect`]: NativeBackdropOverlay::set_rect
 /// [`defer_cut_rect`]: NativeBackdropOverlay::defer_cut_rect
 /// [`sync_z_order`]: NativeBackdropOverlay::sync_z_order
-///
-/// # Platform-specific
-///
-/// Only available on Windows.
 pub struct NativeBackdropOverlay {
   /// The overlay's visual tree. Declared before `window`: fields drop in
   /// declaration order, and the tree must go before the `HWND` it is

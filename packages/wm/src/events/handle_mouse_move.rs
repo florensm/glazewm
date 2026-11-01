@@ -1,7 +1,5 @@
 use anyhow::Context;
-#[cfg(target_os = "windows")]
-use wm_platform::Point;
-use wm_platform::{MouseButton, MouseEvent};
+use wm_platform::{MouseButton, MouseEvent, Point};
 
 use crate::{
   commands::container::set_focused_descendant,
@@ -23,7 +21,6 @@ pub fn handle_mouse_move(
     return Ok(());
   }
 
-  #[cfg(target_os = "windows")]
   if let MouseEvent::ButtonUp {
     button: MouseButton::Left,
     position,
@@ -57,20 +54,14 @@ pub fn handle_mouse_move(
 
     // The cursor is over the overview while it is on screen, zooming
     // into its pick included.
-    #[cfg(target_os = "windows")]
     if state.overview.is_shown() {
       return Ok(());
     }
 
-    let window_under_cursor = {
-      #[cfg(target_os = "windows")]
-      {
-        state
-          .dispatcher
-          .window_from_point(position)?
-          .and_then(|native| state.window_from_native(&native))
-      }
-    };
+    let window_under_cursor = state
+      .dispatcher
+      .window_from_point(position)?
+      .and_then(|native| state.window_from_native(&native));
 
     // Set focus to whichever window is currently under the cursor.
     if let Some(window) = window_under_cursor {
@@ -109,7 +100,6 @@ pub fn handle_mouse_move(
 /// Focuses the scrolling layout's column whose peek was clicked at
 /// `position`, which scrolls it into view. Peeks are click-through, so
 /// the click itself lands on whatever is below.
-#[cfg(target_os = "windows")]
 fn focus_clicked_peek(position: &Point, state: &mut WmState) {
   let is_dragging = state
     .windows()

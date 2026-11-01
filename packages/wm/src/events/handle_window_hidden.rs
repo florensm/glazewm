@@ -1,15 +1,10 @@
 use tracing::info;
 use wm_common::DisplayState;
-use wm_platform::NativeWindow;
-#[cfg(target_os = "windows")]
-use wm_platform::NativeWindowWindowsExt;
+use wm_platform::{NativeWindow, NativeWindowWindowsExt};
 
-#[cfg(target_os = "windows")]
-use crate::commands::window::unmanage_if_embedded;
-#[cfg(target_os = "windows")]
-use crate::traits::CommonGetters;
 use crate::{
-  commands::window::unmanage_window, traits::WindowGetters,
+  commands::window::{unmanage_if_embedded, unmanage_window},
+  traits::{CommonGetters, WindowGetters},
   wm_state::WmState,
 };
 
@@ -24,7 +19,6 @@ pub fn handle_window_hidden(
 
     // Hidden while being embedded into another window. Checked before the
     // display-state guards below, which would keep it managed.
-    #[cfg(target_os = "windows")]
     if unmanage_if_embedded(window.clone(), state)? {
       return Ok(());
     }
@@ -35,7 +29,7 @@ pub fn handle_window_hidden(
       return Ok(());
     }
 
-    // On Windows, skip unmanagement if GlazeWM itself is the one holding
+    // Skip unmanagement if GlazeWM itself is the one holding
     // this window cloaked for an in-progress animation (resize/move/open/
     // close surrogate, or a workspace-switch slide). Workspace-switch
     // cloaking is already handled above via the `Hiding` display-state
@@ -52,7 +46,6 @@ pub fn handle_window_hidden(
     // cloaked at that instant -- `platform_sync` unconditionally
     // uncloaks surrogate-tracked windows once their animation ends,
     // which would then re-reveal a window the user tried to hide.
-    #[cfg(target_os = "windows")]
     if state.animation_manager.has_active_surrogate(&window.id()) {
       return Ok(());
     }
@@ -60,7 +53,6 @@ pub fn handle_window_hidden(
     // DWM cloaks owned windows along with their owner, e.g. while the WM
     // animates the owner. The window itself is still shown, and unmanaging
     // it would re-manage it as a new window once the owner is uncloaked.
-    #[cfg(target_os = "windows")]
     if window.native().is_cloaked_by_owner() {
       return Ok(());
     }
