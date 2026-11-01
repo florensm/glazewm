@@ -24,6 +24,10 @@ use crate::{
 /// Height and font size of the title strip under a window on a card.
 const TILE_CAPTION: (f32, f32) = (16.0, 9.0);
 
+/// Largest and smallest app icon shown over a window's preview on a card,
+/// in logical pixels, and most of the window's shorter side it takes.
+const TILE_ICON: (f32, f32, f32) = (28.0, 10.0, 0.3);
+
 /// Height and font size of the title strip of the dragged window.
 const GHOST_CAPTION: (f32, f32) = (18.0, 9.0);
 
@@ -510,9 +514,9 @@ fn draw_diamond(
   size * 2.0 + units.px(6.0)
 }
 
-/// Draws a window on a card: a hole for its preview (or its icon when it
-/// has none), its title along the bottom, and a border around it and its
-/// stack's tab bar.
+/// Draws a window on a card: a hole for its preview with its app's icon
+/// in the middle (or just the icon when it has none), its title along the
+/// bottom, and a border around it and its stack's tab bar.
 fn draw_tile(
   surface: &mut Surface,
   fonts: &mut Fonts,
@@ -535,6 +539,29 @@ fn draw_tile(
     surface
       .canvas()
       .erase_rounded_rect(&tile.hole.to_rect(), round(radius_px + grown));
+
+    // Over the preview, which the card is above: on a disc, so it reads
+    // on any content.
+    let (largest, smallest, share) = TILE_ICON;
+    let size = units.px(largest).min(tile.rect.w.min(tile.rect.h) * share);
+    if size >= units.px(smallest) {
+      let (cx, cy) = tile.rect.center();
+      let disc = size * 1.5;
+      surface.canvas().fill_rounded_rect(
+        &RectF::new(cx - disc / 2.0, cy - disc / 2.0, disc, disc)
+          .to_rect(),
+        round(disc / 2.0),
+        fade(style.card, 0.8 * opacity),
+      );
+      let icon = RectF::new(cx - size / 2.0, cy - size / 2.0, size, size);
+      draw_window_icon(
+        surface,
+        tile.hwnd,
+        &icon.to_rect(),
+        opacity,
+        notify,
+      );
+    }
   } else {
     surface.canvas().fill_rounded_rect(
       &rect,
