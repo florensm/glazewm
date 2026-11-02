@@ -14,6 +14,11 @@
 //! real window back, ones reaching onto another monitor keep their peek,
 //! and the rest are dropped.
 //!
+//! As for a workspace switch, a peek spans its monitor and never moves:
+//! only its thumbnail does, along with copies of the window's border ring
+//! and shadow, in the same DWM updates. A window with a backdrop, which
+//! can't be copied, has its peek move with it instead (see `WindowPeek`).
+//!
 //! A peek's border, backdrop and tab bar are cut at the monitor edge like
 //! the peek itself, so nothing of a column shows on the monitor beside it.
 
@@ -25,8 +30,8 @@ use std::{
 use uuid::Uuid;
 use wm_common::{DisplayState, Layout, WindowState};
 use wm_platform::{
-  NativeBackdropOverlay, NativeBorderOverlay, Overlay, Point, Rect,
-  StyleBlend, SurrogateBatch, WindowPeek, HWND,
+  BorderOverlayParams, NativeBackdropOverlay, NativeBorderOverlay,
+  Overlay, Point, Rect, StyleBlend, SurrogateBatch, WindowPeek, HWND,
 };
 
 use super::{
@@ -35,7 +40,7 @@ use super::{
 };
 use crate::{
   commands::general::{
-    surrogate_effects_for, upsert_clipped_overlay,
+    overlay_entry, surrogate_effects_for, upsert_clipped_overlay,
     upsert_pinned_border_overlay,
   },
   layout::is_hidden_in_layout,
@@ -63,6 +68,26 @@ enum Role {
   Releasing { settled: bool },
 }
 
+/// How far a pinned peek has taken over its window's border ring, which
+/// it hands over as a workspace switch does: covered where it is by the
+/// copy, concealed a composited frame later and parked where its window
+/// is headed, then revealed there under the copy once the window lands.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum RingHandover {
+  /// The peek draws no copy of the ring.
+  #[default]
+  None,
+  /// The copy covers the ring, still shown where it was.
+  Covering,
+  /// The copy has been composited over the ring, which can go.
+  Covered,
+  /// The ring is concealed where its window is headed, shown only by the
+  /// copy.
+  Parked,
+  /// The ring is shown again where its window landed, under the copy.
+  Revealed,
+}
+
 struct Entry {
   peek: WindowPeek,
   motion: WindowAnimationState,
@@ -72,6 +97,7 @@ struct Entry {
   clip: Rect,
   opacity: u8,
   role: Role,
+  ring: RingHandover,
 }
 
 impl Entry {
@@ -194,8 +220,17 @@ impl ScrollView {
     let mut landed = Landed::default();
 
     for (id, entry) in &mut self.entries {
+      // A later composition than the one the copy was put over the ring
+      // in.
+      if entry.ring == RingHandover::Covering {
+        entry.ring = RingHandover::Covered;
+      }
+
       match entry.role {
         Role::Moving { ends_shown } => {
+          // Its real window was cloaked a tick ago at least, taking its
+          // own shadow along.
+          entry.peek.cast_shadow(true);
           entry.motion.start_clock(clock_origin);
           let (rect, _) = entry.motion.current_state_at(now);
           entry.place(&rect, batch);
@@ -257,6 +292,7 @@ impl ScrollView {
       .filter(|entry| entry.role == Role::HandingBack)
     {
       entry.role = Role::Releasing { settled: false };
+      entry.peek.cast_shadow(false);
     }
   }
 
@@ -326,27 +362,52 @@ impl ScrollView {
     }
 
     if let Some(entry) = self.entries.get_mut(&window.id()) {
+      // Whether its real window is cloaked, so shows no shadow of its own:
+      // all but one being released, which a new move cloaks again first.
+      let is_cloaked = !matches!(entry.role, Role::Releasing { .. });
+
       entry.motion = motion;
       entry.clip = clip.clone();
       entry.opacity = opacity;
       entry.role = role;
+      entry.peek.set_rest(&entry.motion.target_rect);
+      entry
+        .peek
+        .carry_shadow(&window.native(), is_focused, corner_style);
+      entry.peek.cast_shadow(is_cloaked);
       let rect = entry.motion.current_rect();
       entry.place(&rect, batch);
       return covers_shown_window;
     }
 
+    // A backdrop can't be copied along, so a window with one in either
+    // focus state has a peek that moves with it.
+    let is_live = [true, false].into_iter().any(|is_focused| {
+      surrogate_effects_for(window.effect_set(is_focused), config)
+        .2
+        .backdrop
+        .is_some()
+    });
+
     // Sized like the window itself, which a collapsed `from` (an opening
     // column) isn't.
-    let Ok(peek) = WindowPeek::new(
+    let Ok(mut peek) = WindowPeek::new(
       &window.native(),
       &motion.target_rect,
+      clip,
       &corner_style,
+      is_live,
     )
     .inspect_err(|err| {
       tracing::warn!("Failed to create a peek of {window}: {err}");
     }) else {
       return false;
     };
+
+    // A moving column's real window still shows, with its own shadow,
+    // until a tick after this; one at rest is already cloaked.
+    peek.carry_shadow(&window.native(), is_focused, corner_style);
+    peek.cast_shadow(!is_moving);
 
     let rect = motion.current_rect();
     let mut entry = Entry {
@@ -356,6 +417,7 @@ impl ScrollView {
       clip: clip.clone(),
       opacity,
       role,
+      ring: RingHandover::None,
     };
     entry.place(&rect, batch);
     self.entries.insert(window.id(), entry);
@@ -557,9 +619,11 @@ pub fn report_stuck_windows(state: &mut WmState) {
 /// Commits their moves in `batch`, along with the peeks' moves it already
 /// holds, so a peek and its overlays land in the same frame.
 ///
-/// A moving peek's border is pinned to its monitor and slid within it, as
-/// for a workspace switch, so the ring and where it is cut can't land on
-/// screen a frame apart.
+/// A peek that never moves carries a copy of the ring (see
+/// [`RingHandover`]). One that moves with its window has its border
+/// pinned to the monitor instead and slid within it, as for a workspace
+/// switch, so the ring and where it is cut can't land on screen a frame
+/// apart.
 pub fn track_overlays(
   state: &mut WmState,
   config: &UserConfig,
@@ -589,11 +653,12 @@ pub fn track_overlays(
         ),
         _ => entry.peek.hwnd(),
       };
-      (*id, frame, entry.clip.clone(), is_moving, anchor)
+      let is_live = entry.peek.is_live();
+      (*id, frame, entry.clip.clone(), is_moving, is_live, anchor)
     })
-    .collect::<Vec<(Uuid, Option<Rect>, Rect, bool, HWND)>>();
+    .collect::<Vec<(Uuid, Option<Rect>, Rect, bool, bool, HWND)>>();
 
-  for (id, frame, clip, is_moving, anchor) in tracked {
+  for (id, frame, clip, is_moving, is_live, anchor) in tracked {
     let (_, _, overlays) = surrogate_effects_for(
       state.effect_set(id, focused_id == Some(id)),
       config,
@@ -620,6 +685,10 @@ pub fn track_overlays(
           overlay.hide();
         }
       }
+    }
+
+    if !is_live && carry_ring(state, id, overlays.border) {
+      continue;
     }
 
     // Framed with its stack's tab bar, like the real window.
@@ -662,6 +731,111 @@ pub fn track_overlays(
   }
 
   batch.commit();
+}
+
+/// Hands `id`'s border ring, drawn with `params` or not at all, over to
+/// the copy its pinned peek carries, a step at a time (see
+/// [`RingHandover`]). Returns whether it did: not when the copy failed.
+fn carry_ring(
+  state: &mut WmState,
+  id: Uuid,
+  params: Option<BorderOverlayParams>,
+) -> bool {
+  let Some(params) = params else {
+    // Hidden, which also ends its parking.
+    if let Some(overlay) = state
+      .window_overlays
+      .get_mut(&id)
+      .and_then(|overlays| overlays.border.as_mut())
+    {
+      overlay.hide();
+    }
+    return true;
+  };
+
+  let Some(window) = state.window_by_id(id) else {
+    return false;
+  };
+  let Some(entry) = state.animation_manager.scroll_view.entries.get(&id)
+  else {
+    return false;
+  };
+
+  // The ring frames the window with its stack's tab bar, where the peek
+  // draws it now and where its real window is headed.
+  let Some(frame) = entry.peek.frame_rect().cloned() else {
+    return false;
+  };
+  let frame = crate::tab_bars::with_tab_bar_of(state, id, &frame);
+  let target = entry.motion.target_rect.clone();
+  let target_frame = crate::tab_bars::with_tab_bar_of(
+    state,
+    id,
+    &entry.peek.frame_of(&target),
+  );
+  let rect = entry.rect.clone();
+  let anchor = window.native().hwnd();
+
+  let Some(overlay) = overlay_entry::<NativeBorderOverlay>(
+    &mut state.window_overlays,
+    id,
+    params,
+    &frame,
+    anchor,
+  ) else {
+    return false;
+  };
+  overlay.apply_blend(StyleBlend::settled(params));
+
+  let Some(entry) =
+    state.animation_manager.scroll_view.entries.get_mut(&id)
+  else {
+    return false;
+  };
+  let is_landing =
+    matches!(entry.role, Role::HandingBack | Role::Releasing { .. });
+
+  entry.ring = match entry.ring {
+    // Shown where the window landed, under the copy, before the peek
+    // that draws it goes.
+    RingHandover::Covering
+    | RingHandover::Covered
+    | RingHandover::Parked
+      if is_landing =>
+    {
+      overlay.set_rect(&target_frame, anchor);
+      RingHandover::Revealed
+    }
+    RingHandover::Revealed if is_landing => RingHandover::Revealed,
+    // A ring on screen, where the window is now, is covered first; one
+    // that isn't goes straight to where the window is headed.
+    RingHandover::None | RingHandover::Revealed => {
+      if overlay.is_visible() {
+        overlay.park(&frame, anchor, false);
+        let ring_rect = overlay.outer_rect();
+        if !entry.peek.carry_ring(overlay.hwnd(), &ring_rect, &rect) {
+          return false;
+        }
+        RingHandover::Covering
+      } else {
+        overlay.park(&target_frame, anchor, true);
+        let ring_rect = overlay.outer_rect();
+        if !entry.peek.carry_ring(overlay.hwnd(), &ring_rect, &target) {
+          return false;
+        }
+        RingHandover::Parked
+      }
+    }
+    RingHandover::Covering => RingHandover::Covering,
+    RingHandover::Covered | RingHandover::Parked => {
+      overlay.park(&target_frame, anchor, true);
+      let ring_rect = overlay.outer_rect();
+      entry.peek.carry_ring(overlay.hwnd(), &ring_rect, &target);
+      RingHandover::Parked
+    }
+  };
+
+  true
 }
 
 /// Where each tiling window of `workspace` moves from and to: from where

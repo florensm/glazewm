@@ -319,7 +319,9 @@ impl WorkspaceSurrogate {
       return false;
     }
 
-    self.copies.carry_ring(self.hwnd(), source, rest)
+    self
+      .copies
+      .carry_ring(self.hwnd(), source, rest, &self.rect)
   }
 
   /// Whether the surrogate draws the window's border ring (see
@@ -363,6 +365,7 @@ impl WorkspaceSurrogate {
     self.copies.carry_shadow(
       dest,
       window,
+      &self.rect,
       &frame,
       is_active,
       *corner_style,
@@ -465,7 +468,7 @@ impl WorkspaceSurrogate {
     self.inner.set_thumbnail_rects(rc_src, rc_dst);
     let origin = (self.viewport.left, self.viewport.top);
     if let Some(clip) = panel.intersection(monitor) {
-      self.copies.place(&self.rect, frame, &clip, origin);
+      self.copies.place(frame, &clip, origin);
     }
 
     if self.is_live() {

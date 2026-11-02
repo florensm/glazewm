@@ -22,22 +22,18 @@ struct OverlayCopy {
   thumbnail: Thumbnail,
   /// The window the thumbnail is of.
   source: isize,
-  /// Where `source` is: its rect while the window rests.
+  /// Where `source` is.
   rest: Rect,
+  /// Where the window it is drawn around was when `source` was put at
+  /// `rest`, which it keeps to that window as it moves.
+  window_rest: Rect,
 }
 
 impl OverlayCopy {
-  /// Draws the copy around a window resting at `window_rest`, now at
-  /// `frame`, cut at `clip`, into a surrogate whose top-left is at
-  /// `origin`.
-  fn place(
-    &mut self,
-    window_rest: &Rect,
-    frame: &Rect,
-    clip: &Rect,
-    origin: (i32, i32),
-  ) {
-    match copy_rects(&self.rest, window_rest, frame, clip, origin) {
+  /// Draws the copy around its window, now at `frame`, cut at `clip`, into
+  /// a surrogate whose top-left is at `origin`.
+  fn place(&mut self, frame: &Rect, clip: &Rect, origin: (i32, i32)) {
+    match copy_rects(&self.rest, &self.window_rest, frame, clip, origin) {
       Some((rc_src, rc_dst)) => {
         let _ = self.thumbnail.show(rc_src, rc_dst);
       }
@@ -48,10 +44,10 @@ impl OverlayCopy {
 
 /// A window's shadow, with the copy of it.
 struct ShadowCopy {
-  /// Declared before `_source`, so it is unregistered before that window
+  /// Declared before `source`, so it is unregistered before that window
   /// goes.
   copy: OverlayCopy,
-  _source: WindowShadow,
+  source: WindowShadow,
 }
 
 /// The copies of a window's ring and shadow that a surrogate draws.
@@ -65,20 +61,22 @@ pub(crate) struct OverlayCopies {
 }
 
 impl OverlayCopies {
-  /// Draws the ring of `source`, an overlay window resting at `rest`, on
-  /// `dest` from now on. Called again with the same `source`, only
-  /// updates `rest`, e.g. for a width change that resized it. Returns
-  /// whether it does.
+  /// Draws the ring of `source`, an overlay window at `rest` around a
+  /// window at `window_rest`, on `dest` from now on. Called again with the
+  /// same `source`, only updates where the two are, e.g. for a width
+  /// change that resized the ring. Returns whether it does.
   pub(crate) fn carry_ring(
     &mut self,
     dest: HWND,
     source: HWND,
     rest: &Rect,
+    window_rest: &Rect,
   ) -> bool {
     if let Some(ring) =
       self.ring.as_mut().filter(|ring| ring.source == source.0)
     {
       ring.rest = rest.clone();
+      ring.window_rest = window_rest.clone();
       return true;
     }
 
@@ -87,6 +85,7 @@ impl OverlayCopies {
         thumbnail,
         source: source.0,
         rest: rest.clone(),
+        window_rest: window_rest.clone(),
       });
     self.ring.is_some()
   }
@@ -95,9 +94,10 @@ impl OverlayCopies {
     self.ring.is_some()
   }
 
-  /// Draws `window`'s shadow on `dest` from now on, around its frame
-  /// resting at `frame`, as for the window drawn active or not. Returns
-  /// whether it does: not for a window DWM draws no shadow around.
+  /// Draws `window`'s shadow on `dest` from now on, around its `frame`
+  /// while the window is at `window_rest`, as for the window drawn active
+  /// or not. Returns whether it does: not for a window DWM draws no
+  /// shadow around.
   ///
   /// After [`carry_ring`](Self::carry_ring), so the shadow falls over the
   /// ring as on screen: thumbnails stack in the order they're registered.
@@ -105,6 +105,7 @@ impl OverlayCopies {
     &mut self,
     dest: HWND,
     window: &NativeWindow,
+    window_rest: &Rect,
     frame: &Rect,
     is_active: bool,
     corner_style: CornerStyle,
@@ -130,24 +131,38 @@ impl OverlayCopies {
             thumbnail,
             source: source.hwnd().0,
             rest: source.rect().clone(),
+            window_rest: window_rest.clone(),
           },
-          _source: source,
+          source,
         }
       });
     self.shadow.is_some()
   }
 
-  /// Draws both around a window resting at `window_rest`, now at `frame`,
-  /// cut at `clip`, into a surrogate whose top-left is at `origin`.
+  /// Moves the shadow around the window's `frame` while the window is at
+  /// `window_rest`, e.g. once the window has been moved or resized.
+  pub(crate) fn move_shadow(&mut self, window_rest: &Rect, frame: &Rect) {
+    let Some(shadow) = &mut self.shadow else {
+      return;
+    };
+
+    if let Err(err) = shadow.source.set_frame(frame) {
+      tracing::warn!("Failed to move a window's shadow: {err}");
+    }
+    shadow.copy.rest = shadow.source.rect().clone();
+    shadow.copy.window_rest = window_rest.clone();
+  }
+
+  /// Draws both around their window, now at `frame`, cut at `clip`, into
+  /// a surrogate whose top-left is at `origin`.
   pub(crate) fn place(
     &mut self,
-    window_rest: &Rect,
     frame: &Rect,
     clip: &Rect,
     origin: (i32, i32),
   ) {
     for copy in self.copies() {
-      copy.place(window_rest, frame, clip, origin);
+      copy.place(frame, clip, origin);
     }
   }
 
@@ -168,6 +183,13 @@ impl OverlayCopies {
   pub(crate) fn hide_ring(&mut self) {
     if let Some(ring) = &mut self.ring {
       ring.thumbnail.hide();
+    }
+  }
+
+  /// Draws the shadow at `opacity`, independently of the ring.
+  pub(crate) fn set_shadow_opacity(&mut self, opacity: u8) {
+    if let Some(shadow) = &mut self.shadow {
+      let _ = shadow.copy.thumbnail.set_opacity(opacity);
     }
   }
 

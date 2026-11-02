@@ -2500,7 +2500,7 @@ pub(crate) fn upsert_pinned_border_overlay(
 
 /// Returns `window_id`'s tracked overlay, creating it at `rect` with
 /// `params` when absent. `None` when creation failed, which is logged.
-fn overlay_entry<'a, O: SyncableOverlay>(
+pub(crate) fn overlay_entry<'a, O: SyncableOverlay>(
   overlays: &'a mut std::collections::HashMap<uuid::Uuid, WindowOverlays>,
   window_id: uuid::Uuid,
   params: O::Params,

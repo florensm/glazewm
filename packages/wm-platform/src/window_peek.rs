@@ -1,58 +1,203 @@
 use windows::Win32::Foundation::{HWND, RECT};
 
 use crate::{
-  companion::HandoffWait, native_surrogate::to_logical,
-  resize_session::compute_border_inset, CornerStyle, NativeSurrogate,
-  NativeWindow, Rect, SurrogateBatch,
+  companion::HandoffWait,
+  native_surrogate::{placed_rects, to_logical},
+  overlay_copies::OverlayCopies,
+  resize_session::compute_border_inset,
+  CornerStyle, NativeSurrogate, NativeWindow, Rect, SurrogateBatch,
 };
+
+/// How a [`WindowPeek`] draws its window.
+enum PeekMode {
+  /// Spans `viewport`, the area it is clipped to, and never moves: each
+  /// frame only places the thumbnail in it, along with copies of the
+  /// window's ring and shadow, all in the same DWM updates (see
+  /// `OverlayCopies`). As a `WorkspaceSurrogate` pinned to its viewport.
+  Pinned { viewport: Rect },
+  /// Shrunk to the window's visible part and moved with it every frame,
+  /// for a backdrop overlay, which can't be copied, to follow.
+  Live,
+}
 
 /// A click-through, live thumbnail of a window, cut to the part of it
 /// that lies inside a clip rect.
 ///
-/// Shows the partly visible columns of a scrolling layout: the real
-/// window stays cloaked, so nothing of it reaches past its monitor.
+/// Shows the columns of a scrolling layout that are moving or partly
+/// visible: the real window stays cloaked, so nothing of it reaches past
+/// its monitor.
 pub struct WindowPeek {
+  /// Declared before `surrogate`, so they are unregistered before the
+  /// window they are drawn on goes.
+  copies: OverlayCopies,
   surrogate: NativeSurrogate,
+  mode: PeekMode,
   /// The window the peek shows.
   source: HWND,
   /// See [`WindowPeek::awaits_companion`].
   companion_wait: HandoffWait,
   border_inset: RECT,
+  /// Where the real window is while the peek shows it, which the window's
+  /// shadow rests around.
+  rest: Rect,
+  /// Whether the shadow copy is drawn: only while the real window is
+  /// cloaked, so it shows no shadow of its own.
+  casts_shadow: bool,
+  /// How the shadow copy was last drawn, as active or not with the
+  /// window's corners; `None` until it first was.
+  shadow_look: Option<(bool, CornerStyle)>,
   /// The window's visible frame where it was last placed, clipped or not.
   frame_rect: Option<Rect>,
   visible_rect: Option<Rect>,
 }
 
 impl WindowPeek {
-  /// Creates a hidden peek of `window`, which is `rect` large.
+  /// Creates a hidden peek of `window`, which is at `rect`, clipped to
+  /// `clip`. Unless it is `live`, it never moves (see [`PeekMode`]).
   pub fn new(
     window: &NativeWindow,
     rect: &Rect,
+    clip: &Rect,
     corner_style: &CornerStyle,
+    live: bool,
   ) -> crate::Result<Self> {
     let hwnd = window.hwnd();
     let border_inset = compute_border_inset(hwnd);
 
-    let surrogate = NativeSurrogate::create(
-      hwnd,
-      &to_logical(rect, &border_inset),
-      rect,
-      u8::MAX,
-      border_inset,
-      corner_style,
-      // Just below the window it shows, like the other surrogates.
-      hwnd,
-      false,
-    )?;
+    // Just below the window it shows, like the other surrogates.
+    let (surrogate, mode) = if live {
+      let surrogate = NativeSurrogate::create(
+        hwnd,
+        &to_logical(rect, &border_inset),
+        rect,
+        u8::MAX,
+        border_inset,
+        corner_style,
+        hwnd,
+        false,
+      )?;
+      (surrogate, PeekMode::Live)
+    } else {
+      // Spanning the clip, it must not be rounded: the thumbnail shows the
+      // window's own corners.
+      let surrogate = NativeSurrogate::create(
+        hwnd,
+        clip,
+        rect,
+        u8::MAX,
+        RECT::default(),
+        &CornerStyle::Square,
+        hwnd,
+        false,
+      )?;
+      let viewport = clip.clone();
+      (surrogate, PeekMode::Pinned { viewport })
+    };
 
     Ok(Self {
+      copies: OverlayCopies::default(),
       surrogate,
+      mode,
       source: hwnd,
       companion_wait: HandoffWait::default(),
       border_inset,
+      rest: rect.clone(),
+      casts_shadow: false,
+      shadow_look: None,
       frame_rect: None,
       visible_rect: None,
     })
+  }
+
+  /// The window's visible frame when it is placed at `rect`.
+  #[must_use]
+  pub fn frame_of(&self, rect: &Rect) -> Rect {
+    to_logical(rect, &self.border_inset)
+  }
+
+  /// Whether the peek moves with its window (see [`PeekMode::Live`]).
+  #[must_use]
+  pub fn is_live(&self) -> bool {
+    matches!(self.mode, PeekMode::Live)
+  }
+
+  /// Notes that the real window was moved to `rect`, which the window's
+  /// shadow then rests around.
+  pub fn set_rest(&mut self, rect: &Rect) {
+    if &self.rest == rect {
+      return;
+    }
+
+    self.rest = rect.clone();
+    let frame = to_logical(rect, &self.border_inset);
+    self.copies.move_shadow(rect, &frame);
+  }
+
+  /// Draws the window's border ring along with it from now on: `source`,
+  /// its overlay window, at `ring_rect` around the window at
+  /// `window_rect`, both where they are now. Called again with the same
+  /// `source`, only updates where the two are. Returns whether the peek
+  /// does: only one that never moves can carry a ring, as for a
+  /// `WorkspaceSurrogate`.
+  pub fn carry_ring(
+    &mut self,
+    source: HWND,
+    ring_rect: &Rect,
+    window_rect: &Rect,
+  ) -> bool {
+    if self.is_live() {
+      return false;
+    }
+
+    let dest = self.surrogate.hwnd();
+    self.copies.carry_ring(dest, source, ring_rect, window_rect)
+  }
+
+  /// Whether the peek draws the window's border ring.
+  #[must_use]
+  pub fn carries_ring(&self) -> bool {
+    self.copies.carries_ring()
+  }
+
+  /// Draws `window`'s shadow along with it from now on, as for the window
+  /// drawn active or not with `corner_style`'s corners, redrawing it when
+  /// either changed. Returns whether the peek does: only one that never
+  /// moves can, and only for a window DWM draws a shadow around.
+  pub fn carry_shadow(
+    &mut self,
+    window: &NativeWindow,
+    is_active: bool,
+    corner_style: CornerStyle,
+  ) -> bool {
+    if self.is_live() {
+      return false;
+    }
+
+    if self.shadow_look != Some((is_active, corner_style)) {
+      self.shadow_look = Some((is_active, corner_style));
+
+      let dest = self.surrogate.hwnd();
+      let frame = to_logical(&self.rest, &self.border_inset);
+      self.copies.carry_shadow(
+        dest,
+        window,
+        &self.rest,
+        &frame,
+        is_active,
+        corner_style,
+      );
+    }
+
+    true
+  }
+
+  /// Draws the shadow copy or not from the next placement on: only while
+  /// the real window is cloaked, as it otherwise shows its own.
+  pub fn cast_shadow(&mut self, casts_shadow: bool) {
+    self.casts_shadow = casts_shadow;
+    if !casts_shadow {
+      self.copies.set_shadow_opacity(0);
+    }
   }
 
   /// Shows the part of the window, placed at `rect`, that lies inside
@@ -67,14 +212,72 @@ impl WindowPeek {
   ) {
     let logical = to_logical(rect, &self.border_inset);
 
-    self.visible_rect = self.surrogate.show_clipped(
-      &logical,
-      clip,
-      self.border_inset,
-      opacity,
-      Some(batch),
-    );
+    self.visible_rect = match &mut self.mode {
+      PeekMode::Live => self.surrogate.show_clipped(
+        &logical,
+        clip,
+        self.border_inset,
+        opacity,
+        Some(batch),
+      ),
+      PeekMode::Pinned { viewport } => {
+        if viewport != clip {
+          match self.surrogate.reposition(clip) {
+            Ok(()) => *viewport = clip.clone(),
+            Err(err) => tracing::warn!("Failed to move a peek: {err}"),
+          }
+        }
+
+        let origin = (viewport.left, viewport.top);
+        self.show_pinned(rect, &logical, clip, opacity, origin)
+      }
+    };
     self.frame_rect = Some(logical);
+  }
+
+  /// Draws the window at `rect`, its frame at `frame`, cut at `clip`, into
+  /// a peek pinned with its top-left at `origin`. Returns the visible part
+  /// of the frame, if any.
+  ///
+  /// Shows the window at its own scale, as `show_clipped` does: a column
+  /// resized as it moves reveals more or less of it rather than stretching
+  /// it. Its ring and shadow copies do stretch, to frame it.
+  fn show_pinned(
+    &mut self,
+    rect: &Rect,
+    frame: &Rect,
+    clip: &Rect,
+    opacity: u8,
+    origin: (i32, i32),
+  ) -> Option<Rect> {
+    let rects = rect.intersection(clip).and_then(|visible| {
+      placed_rects(
+        rect,
+        &visible,
+        (rect.width(), rect.height()),
+        RECT::default(),
+        origin,
+      )
+    });
+    let visible = frame.intersection(clip);
+
+    let (Some((rc_src, rc_dst)), Some(visible)) = (rects, visible) else {
+      self.surrogate.set_visible(false);
+      return None;
+    };
+
+    self.surrogate.set_thumbnail_rects(rc_src, rc_dst);
+    self.surrogate.set_window_opacity(opacity);
+    self.copies.place(rect, clip, origin);
+    self.copies.cover_ring();
+    self.copies.set_shadow_opacity(if self.casts_shadow {
+      u8::MAX
+    } else {
+      0
+    });
+    self.surrogate.set_visible(true);
+
+    Some(visible)
   }
 
   /// The window's visible frame where it was last placed, including any

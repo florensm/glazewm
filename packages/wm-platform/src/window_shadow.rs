@@ -209,6 +209,18 @@ impl ShadowStyle {
   }
 }
 
+/// The rect of the shadow of a window with its frame at `frame`.
+fn outset(frame: &Rect, style: ShadowStyle) -> Rect {
+  let [left, top, right, bottom] = style.margins();
+
+  Rect::from_ltrb(
+    frame.left - left,
+    frame.top - top,
+    frame.right + right,
+    frame.bottom + bottom,
+  )
+}
+
 /// Whether DWM renders `hwnd`'s non-client area, which its shadow is part
 /// of.
 fn is_frame_rendered(hwnd: HWND) -> bool {
@@ -234,6 +246,7 @@ pub(crate) struct WindowShadow {
   /// Declared before `window`, which its visual tree is rooted to.
   _composition: ShadowVisual,
   window: OverlayWindow,
+  style: ShadowStyle,
   /// Where `window` is: the window's frame, outset by the margins.
   rect: Rect,
 }
@@ -248,23 +261,40 @@ impl WindowShadow {
     frame: &Rect,
     style: ShadowStyle,
   ) -> crate::Result<Self> {
-    let [left, top, right, bottom] = style.margins();
-    let rect = Rect::from_ltrb(
-      frame.left - left,
-      frame.top - top,
-      frame.right + right,
-      frame.bottom + bottom,
-    );
+    let rect = outset(frame, style);
 
     let window =
       OverlayWindow::create(OverlayKind::Shadow, &rect, HWND_BOTTOM)?;
     window.set_alpha(0)?;
     let composition = ShadowVisual::create(window.hwnd(), style)?;
 
-    // SAFETY: `window` was just created and is valid.
+    let mut shadow = Self {
+      _composition: composition,
+      window,
+      style,
+      rect: Rect::from_xy(0, 0, 0, 0),
+    };
+    shadow.place(rect)?;
+
+    Ok(shadow)
+  }
+
+  /// Moves the shadow around a window with its frame at `frame`.
+  pub(crate) fn set_frame(&mut self, frame: &Rect) -> crate::Result<()> {
+    let rect = outset(frame, self.style);
+    if rect == self.rect {
+      return Ok(());
+    }
+
+    self.place(rect)
+  }
+
+  /// Shows the window at `rect`, which its visual tree stretches to fill.
+  fn place(&mut self, rect: Rect) -> crate::Result<()> {
+    // SAFETY: `self.window` is valid for the lifetime of `self`.
     unsafe {
       SetWindowPos(
-        window.hwnd(),
+        self.window.hwnd(),
         HWND_BOTTOM,
         rect.x(),
         rect.y(),
@@ -279,11 +309,8 @@ impl WindowShadow {
       ))
     })?;
 
-    Ok(Self {
-      _composition: composition,
-      window,
-      rect,
-    })
+    self.rect = rect;
+    Ok(())
   }
 
   pub(crate) fn hwnd(&self) -> HWND {
