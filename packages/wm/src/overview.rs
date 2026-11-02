@@ -272,7 +272,10 @@ fn is_in_corner(
   let (left, top) = (bounds.left, bounds.top);
   let (right, bottom) = (bounds.right - 1, bounds.bottom - 1);
 
-  bounds.contains_point(position)
+  // Not `Rect::contains_point`, which counts `bounds.right` and `bottom`
+  // as in: those are the first pixels of a neighbouring monitor.
+  (left..=right).contains(&position.x)
+    && (top..=bottom).contains(&position.y)
     && match corner {
       HotCorner::None => false,
       HotCorner::TopLeft => {
