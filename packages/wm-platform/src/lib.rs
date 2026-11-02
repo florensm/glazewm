@@ -14,6 +14,7 @@ mod dwm_thumbnail;
 mod error;
 mod event_loop;
 mod external_color_source;
+pub mod isolation;
 mod keybinding_listener;
 mod models;
 mod mouse_listener;

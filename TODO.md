@@ -73,6 +73,24 @@ old moving ("live") surrogate.
 5. During a column resize the ring copy stretches with the window, so its
    vertical edges thin out until the column lands.
 
+## Live-check switch: `GLAZEWM_ISOLATE`
+
+Inert unless set. A comma-separated list, read once at WM start (a warning
+in the log says it is on):
+
+- `noshadow`, `nobackdrop`, `noring`: draw that copy of a moving window
+  (pinned surrogates and peeks) at no opacity. Everything else, including
+  the real overlays' handover, runs as usual, so an artifact that goes away
+  with one of them is drawn by that copy.
+- `live`: copy no backdrop, so windows with one move in surrogates and
+  peeks that move with them, as before `b33c0ef8`.
+
+Set it for one run, e.g. from PowerShell in the repo:
+
+```powershell
+$env:GLAZEWM_ISOLATE = "noshadow,noring"; .\target\release\glazewm.exe
+```
+
 ## Older items, not started
 
 - Elevated windows (Task Manager, apps run as admin) can't be moved, cloaked

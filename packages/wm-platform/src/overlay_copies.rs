@@ -16,6 +16,7 @@ use windows::Win32::Foundation::{HWND, RECT};
 use crate::{
   backdrop_source::{BackdropSource, VignetteSource},
   dwm_thumbnail::Thumbnail,
+  isolation,
   native_surrogate::placed_rects,
   window_shadow::{ShadowStyle, WindowShadow},
   BackdropOverlayParams, CornerStyle, NativeWindow, Rect,
@@ -120,9 +121,15 @@ impl Shadows {
 
   fn set_opacity(&mut self, opacity: u8) {
     self.opacity = opacity;
+    let shown = self.shown_opacity();
     if let Some(shadow) = self.current_mut() {
-      let _ = shadow.copy.thumbnail.set_opacity(opacity);
+      let _ = shadow.copy.thumbnail.set_opacity(shown);
     }
+  }
+
+  /// The opacity the shown one is drawn at.
+  fn shown_opacity(&self) -> u8 {
+    left_out(self.opacity, isolation::current().no_shadow)
   }
 
   /// Shows the one in `look`, if carried, instead of the one shown. The
@@ -133,9 +140,10 @@ impl Shadows {
       return;
     }
 
+    let shown = self.shown_opacity();
     if let Some(shadow) = next.and_then(|index| self.copies.get_mut(index))
     {
-      let _ = shadow.copy.thumbnail.set_opacity(self.opacity);
+      let _ = shadow.copy.thumbnail.set_opacity(shown);
       if let Some(placement) = &self.placement {
         shadow.copy.place(placement);
       }
@@ -253,7 +261,10 @@ impl BackdropCopy {
   /// thumbnails: the style shown first, so a change of style never leaves
   /// a frame with neither.
   fn apply_opacity(&mut self) {
-    let opacity = if self.is_shown { self.opacity } else { 0 };
+    let opacity = left_out(
+      if self.is_shown { self.opacity } else { 0 },
+      isolation::current().no_backdrop,
+    );
     let current = self.current;
     let shown = current.map_or(0, |_| opacity);
 
@@ -276,6 +287,16 @@ impl BackdropCopy {
         .thumbnail
         .set_opacity(scale_alpha(shown, strength));
     }
+  }
+}
+
+/// `opacity`, or none for a copy `GLAZEWM_ISOLATE` leaves out (see
+/// `isolation`).
+fn left_out(opacity: u8, is_left_out: bool) -> u8 {
+  if is_left_out {
+    0
+  } else {
+    opacity
   }
 }
 
@@ -622,7 +643,9 @@ impl OverlayCopies {
   /// Draws the ring and backdrop at `opacity` and the shadow at `shadow`.
   pub(crate) fn set_opacity(&mut self, opacity: u8, shadow: u8) {
     if let Some(ring) = &mut self.ring {
-      let _ = ring.thumbnail.set_opacity(opacity);
+      let _ = ring
+        .thumbnail
+        .set_opacity(left_out(opacity, isolation::current().no_ring));
     }
     self.set_shadow_opacity(shadow);
     self.set_backdrop_opacity(opacity);
@@ -631,7 +654,9 @@ impl OverlayCopies {
   /// Brings the ring copy to full opacity.
   pub(crate) fn cover_ring(&mut self) {
     if let Some(ring) = &mut self.ring {
-      let _ = ring.thumbnail.set_opacity(u8::MAX);
+      let _ = ring
+        .thumbnail
+        .set_opacity(left_out(u8::MAX, isolation::current().no_ring));
     }
   }
 
