@@ -13,7 +13,7 @@ use wm_common::{
 use wm_platform::{Display, LengthValue, NativeWindow, Rect, RectDelta};
 
 use crate::{
-  commands::container::attach_container,
+  commands::container::{attach_container, set_focused_descendant},
   models::{
     Monitor, NativeMonitorProperties, NativeWindowProperties,
     NonTilingWindow, SplitContainer, StackContainer, TilingContainer,
@@ -92,6 +92,34 @@ pub fn mock_gapped_column(rows: Vec<TilingContainer>) -> SplitContainer {
     .gaps_config(mock_inner_gaps())
     .tiling_containers(rows)
     .call()
+}
+
+/// Scrolling workspace of a window, a two-row column and a window, with
+/// the column's bottom row focused. Returns the windows left to right, top
+/// to bottom.
+pub fn scrolling_column_setup() -> (WmState, Workspace, [TilingWindow; 4])
+{
+  let windows = [
+    TilingWindow::mock().call(),
+    TilingWindow::mock().call(),
+    TilingWindow::mock().call(),
+    TilingWindow::mock().call(),
+  ];
+  let [first, top, bottom, last] = windows.clone();
+  let column = SplitContainer::mock()
+    .tiling_direction(TilingDirection::Vertical)
+    .tiling_containers(vec![top.into(), bottom.clone().into()])
+    .call();
+  let workspace = Workspace::mock()
+    .layout(Layout::Scrolling)
+    .tiling_containers(vec![first.into(), column.into(), last.into()])
+    .call();
+  let state = WmState::mock(vec![Monitor::mock()
+    .workspaces(vec![workspace.clone()])
+    .call()]);
+  set_focused_descendant(&bottom.into(), None);
+
+  (state, workspace, windows)
 }
 
 /// Ids of `container`'s children, in order.
