@@ -25,7 +25,7 @@ pub fn shell_exec(
   // (`HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths`), like
   // `chrome` without it being in $PATH.
   let home_dir =
-    home::home_dir().context("Unable to get home directory.")?;
+    std::env::home_dir().context("Unable to get home directory.")?;
   let result = state.dispatcher.shell_execute_ex(
     &program,
     &args,

@@ -21,7 +21,6 @@ wm-common = { path = "../wm-common" }
 wm-ipc-client = { path = "../wm-ipc-client" }
 
 [dev-dependencies]
-home = { workspace = true }
 uuid = { workspace = true }
 
 # `perf_bench --dwm`: PresentMon service API and `dwm.exe` lookup.

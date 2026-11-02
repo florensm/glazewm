@@ -14,6 +14,10 @@ use tray_icon::{
 };
 use wm_platform::{Dispatcher, ThreadBound};
 
+/// Resource ID of the executable's icon, the one `tauri-winres` gives the
+/// icon set with `set_icon` in `build.rs`.
+const APP_ICON_RESOURCE_ID: u16 = 32512;
+
 #[derive(Debug, Clone, Eq, PartialEq)]
 enum TrayMenuId {
   ReloadConfig,
@@ -166,9 +170,9 @@ impl SystemTray {
       &exit_item,
     ])?;
 
-    let icon = Self::load_icon(include_bytes!(
-      "../../../resources/assets/icon.png"
-    ))?;
+    // The executable's own icon, embedded by `build.rs`.
+    let icon = Icon::from_resource(APP_ICON_RESOURCE_ID, None)
+      .context("Failed to load the tray icon from the executable.")?;
 
     let tray_icon = TrayIconBuilder::new()
       .with_menu(Box::new(tray_menu))
@@ -177,24 +181,6 @@ impl SystemTray {
       .build()?;
 
     Ok(tray_icon)
-  }
-
-  fn load_icon(bytes: &[u8]) -> anyhow::Result<Icon> {
-    let (icon_rgba, icon_width, icon_height) = {
-      let image = image::load_from_memory(bytes)
-        .context("Failed to to create tray icon image from resource.")?
-        .into_rgba8();
-
-      let (width, height) = image.dimensions();
-      let rgba = image.into_raw();
-      (rgba, width, height)
-    };
-
-    Ok(tray_icon::Icon::from_rgba(
-      icon_rgba,
-      icon_width,
-      icon_height,
-    )?)
   }
 
   fn handle_menu_event(

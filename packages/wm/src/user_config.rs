@@ -80,7 +80,7 @@ impl UserConfig {
   ///
   /// Creates a new config file from sample if it doesn't exist.
   pub fn new(config_path: Option<PathBuf>) -> anyhow::Result<Self> {
-    let default_config_path = home::home_dir()
+    let default_config_path = std::env::home_dir()
       .context("Unable to get home directory.")?
       .join(".glzr/glazewm/config.yaml");
 

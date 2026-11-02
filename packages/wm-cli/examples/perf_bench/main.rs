@@ -249,7 +249,7 @@ fn parse_args() -> anyhow::Result<Args> {
 
 fn perf_log_path() -> anyhow::Result<PathBuf> {
   Ok(
-    home::home_dir()
+    std::env::home_dir()
       .context("Unable to get home directory.")?
       .join(".glzr/glazewm/perf.log"),
   )

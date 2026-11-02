@@ -6,8 +6,10 @@
 #![feature(iterator_try_collect)]
 
 use std::{
-  path::PathBuf,
+  fs::{self, File, OpenOptions},
+  path::{Path, PathBuf},
   process,
+  sync::Mutex,
   time::{Duration, Instant},
 };
 
@@ -553,12 +555,11 @@ fn catch_up_before_frame(
 /// running detached from a terminal, without needing `-v` for the full
 /// `DEBUG` firehose.
 fn setup_logging(verbosity: &Verbosity) -> anyhow::Result<()> {
-  let error_log_dir = home::home_dir()
+  let error_log_dir = std::env::home_dir()
     .context("Unable to get home directory.")?
     .join(".glzr/glazewm/");
 
-  let error_writer =
-    tracing_appender::rolling::never(&error_log_dir, "errors.log");
+  let error_writer = open_log_file(&error_log_dir, "errors.log")?;
 
   // The frame profiler reports at `INFO`, which otherwise only reaches
   // stdout -- and the release build is a `windows` subsystem binary, so a
@@ -566,37 +567,34 @@ fn setup_logging(verbosity: &Verbosity) -> anyhow::Result<()> {
   // only when) profiling is enabled, filtered to the profiler's target so
   // the file stays a clean run of frame reports rather than an `INFO`
   // firehose, and errors.log stays reserved for actual problems.
-  let perf_layer = wm_platform::perf::is_enabled().then(|| {
-    fmt::Layer::new()
-      .with_writer(tracing_appender::rolling::never(
-        &error_log_dir,
-        "perf.log",
-      ))
-      .with_filter(
+  let perf_layer = wm_platform::perf::is_enabled()
+    .then(|| open_log_file(&error_log_dir, "perf.log"))
+    .transpose()?
+    .map(|writer| {
+      fmt::Layer::new().with_writer(writer).with_filter(
         tracing_subscriber::filter::Targets::new()
           .with_target(wm_platform::perf::LOG_TARGET, Level::INFO),
       )
-  });
+    });
 
   // A few lines per pick, so always on: kept apart from the rest, as the
   // WM may be started without `--verbose`.
   let overview_layer = fmt::Layer::new()
     .with_ansi(false)
-    .with_writer(tracing_appender::rolling::never(
-      &error_log_dir,
-      "overview.log",
-    ))
+    .with_writer(open_log_file(&error_log_dir, "overview.log")?)
     .with_filter(
       tracing_subscriber::filter::Targets::new()
         .with_target(wm_platform::OVERVIEW_LOG_TARGET, Level::DEBUG),
     );
 
-  let debug_layer = (verbosity.level() == Level::DEBUG).then(|| {
-    fmt::Layer::new().with_ansi(false).with_writer(
-      tracing_appender::rolling::never(&error_log_dir, "debug.log")
-        .with_max_level(Level::DEBUG),
-    )
-  });
+  let debug_layer = (verbosity.level() == Level::DEBUG)
+    .then(|| open_log_file(&error_log_dir, "debug.log"))
+    .transpose()?
+    .map(|writer| {
+      fmt::Layer::new()
+        .with_ansi(false)
+        .with_writer(writer.with_max_level(Level::DEBUG))
+    });
 
   let subscriber = tracing_subscriber::registry()
     .with(
@@ -621,6 +619,24 @@ fn setup_logging(verbosity: &Verbosity) -> anyhow::Result<()> {
   );
 
   Ok(())
+}
+
+/// Opens `name` in `dir` for appending, creating either if missing.
+fn open_log_file(dir: &Path, name: &str) -> anyhow::Result<Mutex<File>> {
+  fs::create_dir_all(dir).with_context(|| {
+    format!("Unable to create log directory {}.", dir.display())
+  })?;
+
+  let path = dir.join(name);
+  let file = OpenOptions::new()
+    .create(true)
+    .append(true)
+    .open(&path)
+    .with_context(|| {
+      format!("Unable to open log file {}.", path.display())
+    })?;
+
+  Ok(Mutex::new(file))
 }
 
 /// Launches watcher binary. This is a separate process that
