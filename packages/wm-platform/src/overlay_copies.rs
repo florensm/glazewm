@@ -365,11 +365,12 @@ impl OverlayCopies {
     }
   }
 
-  /// Draws them all at `opacity`.
-  pub(crate) fn set_opacity(&mut self, opacity: u8) {
-    for copy in self.copies() {
-      let _ = copy.thumbnail.set_opacity(opacity);
+  /// Draws the ring and backdrop at `opacity` and the shadow at `shadow`.
+  pub(crate) fn set_opacity(&mut self, opacity: u8, shadow: u8) {
+    if let Some(ring) = &mut self.ring {
+      let _ = ring.thumbnail.set_opacity(opacity);
     }
+    self.set_shadow_opacity(shadow);
     self.set_backdrop_opacity(opacity);
   }
 

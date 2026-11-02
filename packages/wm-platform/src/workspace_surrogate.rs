@@ -453,11 +453,14 @@ impl WorkspaceSurrogate {
     )
   }
 
-  /// Draws the window at `window` opacity and its ring and shadow at
-  /// `around`.
+  /// Draws the window and its shadow at `window` opacity and its ring and
+  /// backdrop at `around`.
+  ///
+  /// DWM draws a layered window's shadow at the window's alpha, which the
+  /// thumbnail leaves out and its opacity stands in for.
   fn set_opacities(&mut self, window: u8, around: u8) {
     self.inner.set_window_opacity(window);
-    self.copies.set_opacity(around);
+    self.copies.set_opacity(around, window);
   }
 
   /// Draws the window, ring and shadow at `frac` of their own opacities.

@@ -324,8 +324,9 @@ impl WindowPeek {
     self.copies.place(rect, clip, origin);
     self.copies.cover_ring();
     self.copies.set_backdrop_opacity(u8::MAX);
+    // At the window's opacity, as DWM draws a layered window's shadow.
     self.copies.set_shadow_opacity(if self.casts_shadow {
-      u8::MAX
+      opacity
     } else {
       0
     });
