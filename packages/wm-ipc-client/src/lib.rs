@@ -68,6 +68,22 @@ impl IpcClient {
     None
   }
 
+  /// Closes the connection, completing the WebSocket closing handshake
+  /// so that the server sees a clean disconnect rather than a reset.
+  pub async fn close(mut self) -> anyhow::Result<()> {
+    self
+      .stream
+      .close(None)
+      .await
+      .context("Failed to close connection.")?;
+
+    // The handshake completes once the server's close frame is read, after
+    // anything it sent before it.
+    while let Some(Ok(_)) = self.stream.next().await {}
+
+    Ok(())
+  }
+
   pub async fn event_subscription(
     &mut self,
     subscription_id: &Uuid,

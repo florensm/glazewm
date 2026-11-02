@@ -123,9 +123,9 @@ impl IpcServer {
 
     info!("IPC disconnection from: {}.", addr);
 
-    if let Err(err) = disconnection_tx.send(()) {
-      warn!("Failed to broadcast disconnection: {}", err);
-    }
+    // Fails only when no event subscription of this connection is
+    // listening, which leaves nothing to notify.
+    let _ = disconnection_tx.send(());
 
     res
   }
