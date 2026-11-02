@@ -1405,11 +1405,9 @@ fn redraw_containers(
             .animation_manager
             .was_pre_committed_at(&window.id(), apply_rect);
 
-        // Whether the uncloak below is still owed. `reposition_window`
-        // performs it itself, and repeating the `DwmSetWindowAttribute`
-        // call is the single most expensive thing in this arm -- see
-        // `CloakState`.
-        let mut cloak_state = CloakState::Untouched;
+        // Whether `reposition_window` already uncloaked the window, which
+        // the uncloak below then skips (see `Reposition::cloak_applied`).
+        let mut cloak_applied = false;
         let mut did_move = false;
 
         // A window cloaked or uncloaked under a workspace switch's
@@ -1459,7 +1457,7 @@ fn redraw_containers(
               has_surrogate,
             ) {
               Ok(reposition) => {
-                cloak_state = reposition.cloak_state;
+                cloak_applied = reposition.cloak_applied;
                 did_move = reposition.moved;
 
                 if let Some(elapsed) = reposition.sync_elapsed {
@@ -1482,15 +1480,11 @@ fn redraw_containers(
 
         // Uncloak after repositioning so the window is revealed at the
         // correct position, undoing the `Frozen` branch's
-        // `set_cloaked(true)`. Usually `reposition_window` already did it
-        // (see `CloakState`).
+        // `set_cloaked(true)`, unless `reposition_window` already did.
         if is_visible {
           let _uncloak_scope = perf::scope(Stage::ApplyUncloak);
 
-          // Skipped when `reposition_window` just applied the same cloak
-          // state: an identical `set_cloaked(false)` measured ~4.8ms of
-          // pure duplicate work per window.
-          if cloak_state == CloakState::Untouched {
+          if !cloak_applied {
             let _ = window.native().set_cloaked(false);
           }
 
@@ -1662,8 +1656,11 @@ const SLOW_SYNC_REPOSITION_THRESHOLD: Duration = Duration::from_millis(8);
 
 /// What [`reposition_window`] did, for the caller's follow-up work.
 struct Reposition {
-  /// Cloak state the window was left in.
-  cloak_state: CloakState,
+  /// Whether the window's cloak state was applied, which the caller then
+  /// must not repeat: an identical uncloak through the shell measured
+  /// ~4.8ms per window, ~27% of the whole `rd_apply` stage on an
+  /// eight-window relayout.
+  cloak_applied: bool,
   /// Whether a geometry-changing `SetWindowPos` was actually issued.
   /// Only such a call carries `SWP_FRAMECHANGED`, so the caller's
   /// `DwmFlush` -- which exists only to close that flag's alpha race --
@@ -1671,21 +1668,6 @@ struct Reposition {
   moved: bool,
   /// How long the move took, if it was synchronous.
   sync_elapsed: Option<Duration>,
-}
-
-/// Whether [`reposition_window`] already applied the window's cloak state.
-///
-/// `redraw_containers`' `Apply` arm uncloaks visible windows itself, but
-/// [`reposition_window`] has usually already done exactly that. The repeat
-/// `DwmSetWindowAttribute(DWMWA_CLOAK)` is not free: it measured ~4.8ms
-/// per window, ~27% of the whole `rd_apply` stage on an eight-window
-/// relayout.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum CloakState {
-  /// Applied by `reposition_window`; the caller must not repeat it.
-  Applied,
-  /// Untouched, so a visible window still needs uncloaking by the caller.
-  Untouched,
 }
 
 #[allow(clippy::too_many_lines)]
@@ -1700,7 +1682,7 @@ fn reposition_window(
   // neighbours.
   has_surrogate: bool,
 ) -> anyhow::Result<Reposition> {
-  let mut cloak_state = CloakState::Untouched;
+  let mut cloak_applied = false;
   let mut moved = true;
   let mut sync_elapsed = None;
 
@@ -1884,11 +1866,11 @@ fn reposition_window(
     } else {
       window.native().set_cloaked(true)?;
     }
-    cloak_state = CloakState::Applied;
+    cloak_applied = true;
   }
 
   Ok(Reposition {
-    cloak_state,
+    cloak_applied,
     moved,
     sync_elapsed,
   })
