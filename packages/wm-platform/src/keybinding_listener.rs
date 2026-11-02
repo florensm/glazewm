@@ -114,7 +114,6 @@ impl KeybindingListener {
       dispatcher,
     )?;
 
-    #[allow(unused_mut)]
     let mut listener = Self {
       event_rx,
       keybinding_map,

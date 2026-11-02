@@ -1,7 +1,6 @@
-//! Recovery tool: un-cloaks every top-level window that GlazeWM left
-//! hidden.
+//! Recovery tool: un-cloaks every top-level window the WM left hidden.
 //!
-//! GlazeWM hides windows on inactive workspaces with
+//! The WM hides windows on inactive workspaces with
 //! `DwmSetWindowAttribute(DWMWA_CLOAK)`, which survives the process.
 //! Normally `wm-watcher` reverses that when the WM dies unexpectedly, but
 //! it can only restore windows the WM had reported as managed -- so a WM
@@ -17,73 +16,67 @@
 //! cargo run -p wm-platform --release --example uncloak_all
 //! ```
 
-fn main() {
-  windows_impl::run();
+use windows::Win32::{
+  Foundation::{BOOL, HWND, LPARAM},
+  UI::WindowsAndMessaging::EnumWindows,
+};
+use wm_platform::NativeWindow;
+
+/// Collects every top-level window handle.
+fn all_handles() -> Vec<isize> {
+  extern "system" fn collect(handle: HWND, data: LPARAM) -> BOOL {
+    let handles = data.0 as *mut Vec<isize>;
+    // SAFETY: `data` is the `Vec<isize>` passed in by the `EnumWindows`
+    // call below, which outlives the enumeration.
+    unsafe { (*handles).push(handle.0) };
+    true.into()
+  }
+
+  let mut handles: Vec<isize> = Vec::new();
+
+  // SAFETY: `collect` matches the expected callback signature and
+  // `handles` outlives the call.
+  let _ = unsafe {
+    EnumWindows(
+      Some(collect),
+      LPARAM(std::ptr::from_mut(&mut handles) as _),
+    )
+  };
+
+  handles
 }
 
-mod windows_impl {
-  use windows::Win32::{
-    Foundation::{BOOL, HWND, LPARAM},
-    UI::WindowsAndMessaging::EnumWindows,
-  };
-  use wm_platform::NativeWindow;
+/// Un-cloaks every cloaked window that carries a title.
+///
+/// The title check is the filter that keeps this from revealing the
+/// invisible helper windows many applications keep cloaked on purpose;
+/// those are overwhelmingly untitled.
+fn main() {
+  let mut restored = 0;
 
-  /// Collects every top-level window handle.
-  fn all_handles() -> Vec<isize> {
-    let mut handles: Vec<isize> = Vec::new();
+  for handle in all_handles() {
+    let window = NativeWindow::from_handle(handle);
 
-    extern "system" fn collect(handle: HWND, data: LPARAM) -> BOOL {
-      let handles = data.0 as *mut Vec<isize>;
-      // SAFETY: `data` is the `Vec<isize>` passed in by the `EnumWindows`
-      // call below, which outlives the enumeration.
-      unsafe { (*handles).push(handle.0) };
-      true.into()
+    if !window.is_cloaked().unwrap_or(false) {
+      continue;
     }
 
-    // SAFETY: `collect` matches the expected callback signature and
-    // `handles` outlives the call.
-    let _ = unsafe {
-      EnumWindows(
-        Some(collect),
-        LPARAM(std::ptr::from_mut(&mut handles) as _),
-      )
+    let Ok(title) = window.title() else {
+      continue;
     };
 
-    handles
-  }
-
-  /// Un-cloaks every cloaked window that carries a title.
-  ///
-  /// The title check is the filter that keeps this from revealing the
-  /// invisible helper windows many applications keep cloaked on purpose;
-  /// those are overwhelmingly untitled.
-  pub fn run() {
-    let mut restored = 0;
-
-    for handle in all_handles() {
-      let window = NativeWindow::from_handle(handle);
-
-      if !window.is_cloaked().unwrap_or(false) {
-        continue;
-      }
-
-      let Ok(title) = window.title() else {
-        continue;
-      };
-
-      if title.trim().is_empty() {
-        continue;
-      }
-
-      match window.set_cloaked(false) {
-        Ok(()) => {
-          restored += 1;
-          println!("restored: {title}");
-        }
-        Err(err) => println!("failed on {title}: {err}"),
-      }
+    if title.trim().is_empty() {
+      continue;
     }
 
-    println!("\n{restored} window(s) un-cloaked.");
+    match window.set_cloaked(false) {
+      Ok(()) => {
+        restored += 1;
+        println!("restored: {title}");
+      }
+      Err(err) => println!("failed on {title}: {err}"),
+    }
   }
+
+  println!("\n{restored} window(s) un-cloaked.");
 }

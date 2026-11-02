@@ -1439,8 +1439,6 @@ fn build_drop_indicator_tree(
 /// The plain copy is what lets the overview cover the real windows from
 /// its first frame without anything visibly changing: their previews sit
 /// exactly over them, and around them is what the desktop shows anyway.
-// The test harness compiles this module without the overview.
-#[cfg_attr(test, allow(dead_code))]
 pub(crate) struct OverviewBackdrop {
   /// Binds the visual tree to the overview's `HWND`. Kept alive but never
   /// touched again -- dropping it would unbind composition from the
@@ -1465,7 +1463,6 @@ pub(crate) struct OverviewBackdrop {
 
 /// Bake knobs of the overview's wallpaper copies: blurred by `blur`, and
 /// otherwise as the desktop shows it.
-#[cfg_attr(test, allow(dead_code))]
 fn overview_wallpaper_knobs(blur: f32) -> BakeKnobs {
   BakeKnobs {
     blur_amount: blur,
@@ -1478,7 +1475,6 @@ fn overview_wallpaper_knobs(blur: f32) -> BakeKnobs {
   }
 }
 
-#[cfg_attr(test, allow(dead_code))]
 impl OverviewBackdrop {
   /// Builds the background for the overview `hwnd`, which covers `rect`
   /// and was created with `WS_EX_NOREDIRECTIONBITMAP`. Starts out showing

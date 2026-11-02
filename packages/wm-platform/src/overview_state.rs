@@ -2552,10 +2552,10 @@ mod tests {
     press(&mut state, &[Key::Space, Key::Space]);
     assert_eq!(state.mode, Mode::Carrying);
     assert_eq!(state.floating(), Some(21));
-    assert!(state.drop_target() == Some(1));
+    assert_eq!(state.drop_target(), Some(1));
 
     press(&mut state, &[Key::Left]);
-    assert!(state.drop_target() == Some(0));
+    assert_eq!(state.drop_target(), Some(0));
 
     assert_eq!(
       press(&mut state, &[Key::Space]),
@@ -2799,7 +2799,7 @@ mod tests {
     };
     assert!(state.mouse_move((400.0, 100.0), over, true));
     assert_eq!(state.floating(), Some(21));
-    assert!(state.drop_target() == Some(2));
+    assert_eq!(state.drop_target(), Some(2));
 
     assert_eq!(
       state.mouse_up(&workspaces),
