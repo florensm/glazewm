@@ -1,12 +1,11 @@
 use windows::{
   core::PCWSTR,
   Win32::{
-    Foundation::{BOOL, LPARAM, POINT, RECT},
+    Foundation::{BOOL, LPARAM, RECT},
     Graphics::Gdi::{
       EnumDisplayDevicesW, EnumDisplayMonitors, GetMonitorInfoW,
-      MonitorFromPoint, MonitorFromWindow, DISPLAY_DEVICEW,
-      DISPLAY_DEVICE_ACTIVE, HDC, HMONITOR, MONITORINFO, MONITORINFOEXW,
-      MONITOR_DEFAULTTONEAREST, MONITOR_DEFAULTTOPRIMARY,
+      MonitorFromWindow, DISPLAY_DEVICEW, DISPLAY_DEVICE_ACTIVE, HDC,
+      HMONITOR, MONITORINFO, MONITORINFOEXW, MONITOR_DEFAULTTONEAREST,
     },
     UI::{
       HiDpi::{GetDpiForMonitor, MDT_EFFECTIVE_DPI},
@@ -16,8 +15,8 @@ use windows::{
 };
 
 use crate::{
-  display::{DisplayDeviceId, DisplayId, MirroringState},
-  Dispatcher, NativeWindow, Point, Rect,
+  display::{DisplayDeviceId, DisplayId},
+  Dispatcher, NativeWindow, Rect,
 };
 
 /// Platform-specific implementation of [`Display`].
@@ -138,12 +137,7 @@ impl Display {
     self
       .devices()?
       .into_iter()
-      .find(|device| {
-        matches!(
-          device.mirroring_state(),
-          Ok(None | Some(MirroringState::Source))
-        )
-      })
+      .next()
       .ok_or(crate::Error::DisplayDeviceNotFound)
   }
 
@@ -230,16 +224,6 @@ impl DisplayDevice {
     )
   }
 
-  /// Implements [`DisplayDevice::mirroring_state`].
-  #[allow(clippy::unnecessary_wraps, clippy::unused_self)]
-  pub(crate) fn mirroring_state(
-    &self,
-  ) -> crate::Result<Option<MirroringState>> {
-    // TODO: Implement mirroring detection using
-    // `DisplayConfigGetDeviceInfo`.
-    Ok(None)
-  }
-
   /// Implements [`crate::DisplayDevice::hardware_id`].
   pub(crate) fn hardware_id(&self) -> Option<String> {
     self
@@ -297,46 +281,14 @@ pub(crate) fn all_displays(
   )
 }
 
-/// Implements [`Dispatcher::display_from_point`].
-#[allow(clippy::unnecessary_wraps)]
-pub(crate) fn display_from_point(
-  point: &Point,
-  _: &Dispatcher,
-) -> crate::Result<crate::Display> {
-  let handle = unsafe {
-    MonitorFromPoint(
-      POINT {
-        x: point.x,
-        y: point.y,
-      },
-      MONITOR_DEFAULTTOPRIMARY,
-    )
-  };
-
-  Ok(Display::new(handle.0).into())
-}
-
-/// Implements [`Dispatcher::primary_display`].
-#[allow(clippy::unnecessary_wraps)]
-pub(crate) fn primary_display(
-  _: &Dispatcher,
-) -> crate::Result<crate::Display> {
-  let handle = unsafe {
-    MonitorFromPoint(POINT { x: 0, y: 0 }, MONITOR_DEFAULTTOPRIMARY)
-  };
-
-  Ok(Display::new(handle.0).into())
-}
-
 /// Implements [`Dispatcher::nearest_display`].
-#[allow(clippy::unnecessary_wraps)]
 pub(crate) fn nearest_display(
   native_window: &NativeWindow,
   _: &Dispatcher,
-) -> crate::Result<crate::Display> {
+) -> crate::Display {
   let handle = unsafe {
     MonitorFromWindow(native_window.inner.hwnd(), MONITOR_DEFAULTTONEAREST)
   };
 
-  Ok(Display::new(handle.0).into())
+  Display::new(handle.0).into()
 }

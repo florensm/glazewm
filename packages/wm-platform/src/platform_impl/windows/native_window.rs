@@ -99,13 +99,12 @@ impl NativeWindow {
   }
 
   /// Implements [`NativeWindow::title`].
-  #[allow(clippy::unnecessary_wraps)]
-  pub(crate) fn title(&self) -> crate::Result<String> {
+  pub(crate) fn title(&self) -> String {
     let mut text: [u16; 512] = [0; 512];
     let length = unsafe { GetWindowTextW(self.hwnd(), &mut text) };
 
     #[allow(clippy::cast_sign_loss)]
-    Ok(String::from_utf16_lossy(&text[..length as usize]))
+    String::from_utf16_lossy(&text[..length as usize])
   }
 
   /// Implements [`NativeWindow::process_name`].
@@ -194,37 +193,32 @@ impl NativeWindow {
   }
 
   /// Implements [`NativeWindow::is_visible`].
-  #[allow(clippy::unnecessary_wraps)]
-  pub(crate) fn is_visible(&self) -> crate::Result<bool> {
+  pub(crate) fn is_visible(&self) -> bool {
     let is_visible = unsafe { IsWindowVisible(self.hwnd()) }.as_bool();
 
     // A failed cloak query (e.g. no DWM, as under Wine) is taken as not
     // cloaked rather than hiding every window.
-    Ok(is_visible && !self.is_cloaked().unwrap_or(false))
+    is_visible && !self.is_cloaked().unwrap_or(false)
   }
 
   /// Implements [`NativeWindow::is_minimized`].
-  #[allow(clippy::unnecessary_wraps)]
-  pub(crate) fn is_minimized(&self) -> crate::Result<bool> {
-    Ok(unsafe { IsIconic(self.hwnd()) }.as_bool())
+  pub(crate) fn is_minimized(&self) -> bool {
+    unsafe { IsIconic(self.hwnd()) }.as_bool()
   }
 
   /// Implements [`NativeWindow::is_maximized`].
-  #[allow(clippy::unnecessary_wraps)]
-  pub(crate) fn is_maximized(&self) -> crate::Result<bool> {
-    Ok(unsafe { IsZoomed(self.hwnd()) }.as_bool())
+  pub(crate) fn is_maximized(&self) -> bool {
+    unsafe { IsZoomed(self.hwnd()) }.as_bool()
   }
 
   /// Implements [`NativeWindow::is_resizable`].
-  #[allow(clippy::unnecessary_wraps)]
-  pub(crate) fn is_resizable(&self) -> crate::Result<bool> {
-    Ok(self.has_window_style(WS_THICKFRAME))
+  pub(crate) fn is_resizable(&self) -> bool {
+    self.has_window_style(WS_THICKFRAME)
   }
 
   /// Implements [`NativeWindow::is_desktop_window`].
-  #[allow(clippy::unnecessary_wraps)]
-  pub(crate) fn is_desktop_window(&self) -> crate::Result<bool> {
-    Ok(*self == desktop_window())
+  pub(crate) fn is_desktop_window(&self) -> bool {
+    *self == desktop_window()
   }
 
   /// Implements [`NativeWindow::set_frame`].
@@ -741,10 +735,7 @@ impl NativeWindow {
         // cloaked there, so cloaking it again would do nothing, leaving
         // e.g. a stack's hidden tab shown. Uncloaking its view first
         // brings the view in line with the window being shown.
-        if cloaked
-          && self.has_owner_window()
-          && self.is_visible().unwrap_or(false)
-        {
+        if cloaked && self.has_owner_window() && self.is_visible() {
           // SAFETY: `view` is a valid view of this window.
           unsafe { view.set_cloak(1, 0) }.ok().map_err(|_| {
             crate::Error::Platform("Failed to uncloak window.".to_string())
@@ -1163,19 +1154,16 @@ pub(crate) fn visible_windows(
     handles
       .into_iter()
       .map(NativeWindow::new)
-      .filter(|window| window.is_visible().unwrap_or(false))
+      .filter(NativeWindow::is_visible)
       .map(Into::into)
       .collect(),
   )
 }
 
 /// Implements [`Dispatcher::focused_window`].
-#[allow(clippy::unnecessary_wraps)]
-pub(crate) fn focused_window(
-  _: &Dispatcher,
-) -> crate::Result<crate::NativeWindow> {
+pub(crate) fn focused_window(_: &Dispatcher) -> crate::NativeWindow {
   let handle = unsafe { GetForegroundWindow() };
-  Ok(NativeWindow::new(handle.0).into())
+  NativeWindow::new(handle.0).into()
 }
 
 /// Whether `vk` is sent with `KEYEVENTF_EXTENDEDKEY`, without which e.g.
@@ -1228,11 +1216,10 @@ pub(crate) fn is_foreground_interacting() -> bool {
 }
 
 /// Implements [`Dispatcher::window_from_point`].
-#[allow(clippy::unnecessary_wraps)]
 pub(crate) fn window_from_point(
   point: &Point,
   _: &Dispatcher,
-) -> crate::Result<Option<crate::NativeWindow>> {
+) -> Option<crate::NativeWindow> {
   let point = POINT {
     x: point.x,
     y: point.y,
@@ -1240,15 +1227,15 @@ pub(crate) fn window_from_point(
 
   let handle = unsafe { WindowFromPoint(point) };
   if handle.0 == 0 {
-    return Ok(None);
+    return None;
   }
 
   let root = unsafe { GetAncestor(handle, GA_ROOT) };
   if root.0 == 0 {
-    return Ok(None);
+    return None;
   }
 
-  Ok(Some(NativeWindow::new(root.0).into()))
+  Some(NativeWindow::new(root.0).into())
 }
 
 /// Implements [`Dispatcher::reset_focus`].

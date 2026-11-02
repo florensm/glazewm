@@ -91,7 +91,7 @@ pub fn handle_window_moved_or_resized(
     }
 
     let old_is_maximized = window.native_properties().is_maximized;
-    let is_maximized = try_warn!(window.native().is_maximized());
+    let is_maximized = window.native().is_maximized();
 
     // Ignore duplicate move/resize events. Window position changes can
     // trigger multiple events. For example, restoring from maximized can
@@ -117,7 +117,7 @@ pub fn handle_window_moved_or_resized(
       });
     }
 
-    let is_minimized = try_warn!(window.native().is_minimized());
+    let is_minimized = window.native().is_minimized();
 
     // Ignore events for minimized windows. Let them be handled by the
     // `PlatformEvent::WindowMinimized` event handler instead.

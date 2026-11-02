@@ -63,11 +63,8 @@ impl NativeWindow {
   /// Gets the window's title.
   ///
   /// Note that empty strings are valid window titles.
-  ///
-  /// # Errors
-  ///
-  /// Returns [`Error::WindowNotFound`] if the window is invalid.
-  pub fn title(&self) -> crate::Result<String> {
+  #[must_use]
+  pub fn title(&self) -> String {
     self.inner.title()
   }
 
@@ -102,27 +99,32 @@ impl NativeWindow {
   }
 
   /// Whether the window is actually visible.
-  pub fn is_visible(&self) -> crate::Result<bool> {
+  #[must_use]
+  pub fn is_visible(&self) -> bool {
     self.inner.is_visible()
   }
 
   /// Whether the window is minimized.
-  pub fn is_minimized(&self) -> crate::Result<bool> {
+  #[must_use]
+  pub fn is_minimized(&self) -> bool {
     self.inner.is_minimized()
   }
 
   /// Whether the window is maximized.
-  pub fn is_maximized(&self) -> crate::Result<bool> {
+  #[must_use]
+  pub fn is_maximized(&self) -> bool {
     self.inner.is_maximized()
   }
 
   /// Whether the window can be resized.
-  pub fn is_resizable(&self) -> crate::Result<bool> {
+  #[must_use]
+  pub fn is_resizable(&self) -> bool {
     self.inner.is_resizable()
   }
 
   /// Whether the window is the OS's desktop window.
-  pub fn is_desktop_window(&self) -> crate::Result<bool> {
+  #[must_use]
+  pub fn is_desktop_window(&self) -> bool {
     self.inner.is_desktop_window()
   }
 

@@ -588,7 +588,7 @@ pub fn close_duplicate_tabs(duplicates: &[NativeWindow]) {
   for duplicate in duplicates {
     info!(
       "Closing tab duplicated by a new window: '{}'",
-      duplicate.title().unwrap_or_default()
+      duplicate.title()
     );
 
     if let Err(err) = duplicate.close() {
@@ -610,10 +610,7 @@ fn is_duplicate(
 
 /// Whether `window` is the OS foreground window.
 fn is_foreground(window: &WindowContainer, state: &WmState) -> bool {
-  state
-    .dispatcher
-    .focused_window()
-    .is_ok_and(|foreground| foreground.id() == window.native().id())
+  state.dispatcher.focused_window().id() == window.native().id()
 }
 
 /// Whether `command` moves a window or changes its window state.
@@ -759,7 +756,7 @@ fn check_is_manageable(
     use wm_platform::WS_VISIBLE;
     native_window.has_window_style(WS_VISIBLE)
   } else {
-    native_window.is_visible()?
+    native_window.is_visible()
   };
 
   if !is_visible {

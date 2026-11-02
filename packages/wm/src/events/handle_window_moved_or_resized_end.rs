@@ -1,7 +1,6 @@
 use anyhow::Context;
 use wm_common::{
-  try_warn, ActiveDrag, ActiveDragOperation, FullscreenStateConfig,
-  WindowState,
+  ActiveDrag, ActiveDragOperation, FullscreenStateConfig, WindowState,
 };
 use wm_platform::{LengthValue, Point};
 
@@ -65,7 +64,7 @@ pub fn handle_window_moved_or_resized_end(
         return Ok(());
       }
 
-      let is_maximized = try_warn!(window.native().is_maximized());
+      let is_maximized = window.native().is_maximized();
 
       window.update_native_properties(|properties| {
         properties.is_maximized = is_maximized;

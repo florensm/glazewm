@@ -68,7 +68,7 @@ fn reconcile_shown_tab(
     || !is_hidden
     || !is_on_displayed_workspace
     || state.animation_manager.has_active_surrogate(&window.id())
-    || !window.native().is_visible().unwrap_or(false)
+    || !window.native().is_visible()
   {
     return Ok(false);
   }
@@ -78,10 +78,8 @@ fn reconcile_shown_tab(
     return Ok(false);
   };
 
-  let is_foreground = state
-    .dispatcher
-    .focused_window()
-    .is_ok_and(|foreground| foreground.id() == window.native().id());
+  let is_foreground =
+    state.dispatcher.focused_window().id() == window.native().id();
 
   if is_foreground {
     info!("Showing the tab of a window brought to the front: {window}");

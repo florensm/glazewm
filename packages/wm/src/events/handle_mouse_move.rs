@@ -62,7 +62,7 @@ pub fn handle_mouse_move(
 
     let window_under_cursor = state
       .dispatcher
-      .window_from_point(position)?
+      .window_from_point(position)
       .and_then(|native| state.window_from_native(&native));
 
     // Set focus to whichever window is currently under the cursor.

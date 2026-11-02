@@ -61,7 +61,7 @@ impl Display {
     self.inner.is_primary()
   }
 
-  /// Gets the main device (first non-mirroring device) for this display.
+  /// Gets the main device (the first active one) for this display.
   pub fn main_device(&self) -> crate::Result<DisplayDevice> {
     self.inner.main_device()
   }
@@ -71,16 +71,6 @@ impl Display {
   pub fn hmonitor(&self) -> HMONITOR {
     self.inner.hmonitor()
   }
-}
-
-/// Mirroring state of a display device.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum MirroringState {
-  /// This device is the source being mirrored.
-  Source,
-
-  /// This device is mirroring another (target).
-  Target,
 }
 
 /// Represents a display device (physical or virtual).
@@ -97,11 +87,6 @@ impl DisplayDevice {
   #[must_use]
   pub fn id(&self) -> DisplayDeviceId {
     self.inner.id()
-  }
-
-  /// Gets the mirroring state of the device.
-  pub fn mirroring_state(&self) -> crate::Result<Option<MirroringState>> {
-    self.inner.mirroring_state()
   }
 
   /// Gets the device path.
@@ -147,6 +132,6 @@ mod tests {
 
     event_loop.run().unwrap();
     let display = thread.join().unwrap();
-    assert!(display.is_ok());
+    assert!(display.bounds().is_ok());
   }
 }

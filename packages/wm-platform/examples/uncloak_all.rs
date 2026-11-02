@@ -61,10 +61,7 @@ fn main() {
       continue;
     }
 
-    let Ok(title) = window.title() else {
-      continue;
-    };
-
+    let title = window.title();
     if title.trim().is_empty() {
       continue;
     }

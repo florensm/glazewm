@@ -231,29 +231,12 @@ impl Dispatcher {
     )
   }
 
-  /// Gets the display containing the specified point.
-  ///
-  /// If no display contains the point, returns the primary display.
-  pub fn display_from_point(
-    &self,
-    point: &Point,
-  ) -> crate::Result<Display> {
-    platform_impl::display_from_point(point, self)
-  }
-
-  /// Gets the primary display.
-  pub fn primary_display(&self) -> crate::Result<Display> {
-    platform_impl::primary_display(self)
-  }
-
   /// Gets the nearest display to a window.
   ///
   /// Returns the display that contains the largest area of the window's
   /// frame. Defaults to the primary display if no overlap is found.
-  pub fn nearest_display(
-    &self,
-    native_window: &NativeWindow,
-  ) -> crate::Result<Display> {
+  #[must_use]
+  pub fn nearest_display(&self, native_window: &NativeWindow) -> Display {
     platform_impl::nearest_display(native_window, self)
   }
 
@@ -270,7 +253,8 @@ impl Dispatcher {
   /// Gets the currently focused (foreground) window.
   ///
   /// This may be the desktop window if no window has focus.
-  pub fn focused_window(&self) -> crate::Result<NativeWindow> {
+  #[must_use]
+  pub fn focused_window(&self) -> NativeWindow {
     platform_impl::focused_window(self)
   }
 
@@ -311,10 +295,11 @@ impl Dispatcher {
   }
 
   /// Gets the top-level window at the specified point.
+  #[must_use]
   pub fn window_from_point(
     &self,
     point: &Point,
-  ) -> crate::Result<Option<crate::NativeWindow>> {
+  ) -> Option<crate::NativeWindow> {
     platform_impl::window_from_point(point, self)
   }
 

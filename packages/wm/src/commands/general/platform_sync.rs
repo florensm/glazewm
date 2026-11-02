@@ -1722,15 +1722,14 @@ fn reposition_window(
       // Need to restore window if transitioning from maximized
       // fullscreen to non-maximized fullscreen.
       WindowState::Fullscreen(fullscreen) => {
-        !fullscreen.maximized && window.native().is_maximized()?
+        !fullscreen.maximized && window.native().is_maximized()
       }
       // No need to restore window if it'll be minimized. Transitioning
       // from maximized to minimized works without having to
       // restore.
       WindowState::Minimized => false,
       _ => {
-        window.native().is_minimized()?
-          || window.native().is_maximized()?
+        window.native().is_minimized() || window.native().is_maximized()
       }
     };
 
@@ -1793,7 +1792,7 @@ fn reposition_window(
         // A minimized stack only minimizes its active window; the hidden
         // tabs stay as they are, as minimizing moves focus.
         if !is_inactive_stack_child(window)
-          && !window.native().is_minimized()?
+          && !window.native().is_minimized()
         {
           window.native().minimize()?;
         }
@@ -1805,7 +1804,7 @@ fn reposition_window(
         // As with minimizing, a stack's hidden tabs are left alone,
         // since maximizing activates the window.
         if !is_inactive_stack_child(window)
-          && !window.native().is_maximized()?
+          && !window.native().is_maximized()
         {
           window.native().maximize()?;
         }
