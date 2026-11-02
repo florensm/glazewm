@@ -4,25 +4,17 @@ use std::{
   time::{Duration, Instant},
 };
 
-use windows::{
-  core::PWSTR,
-  Win32::{
-    Foundation::{CloseHandle, HWND, RECT},
-    Graphics::Gdi::{
-      BitBlt, CreateCompatibleBitmap, CreateCompatibleDC, DeleteDC,
-      DeleteObject, GetDC, GetPixel, ReleaseDC, SelectObject, HGDIOBJ,
-      SRCCOPY,
-    },
-    System::Threading::{
-      OpenProcess, QueryFullProcessImageNameW, PROCESS_NAME_WIN32,
-      PROCESS_QUERY_LIMITED_INFORMATION,
-    },
-    UI::WindowsAndMessaging::{
-      GetWindowRect, GetWindowThreadProcessId, IsIconic, IsWindow,
-      IsWindowVisible, SetWindowPos, SET_WINDOW_POS_FLAGS,
-      SWP_ASYNCWINDOWPOS, SWP_FRAMECHANGED, SWP_NOACTIVATE,
-      SWP_NOSENDCHANGING, SWP_NOZORDER,
-    },
+use windows::Win32::{
+  Foundation::{HWND, RECT},
+  Graphics::Gdi::{
+    BitBlt, CreateCompatibleBitmap, CreateCompatibleDC, DeleteDC,
+    DeleteObject, GetDC, GetPixel, ReleaseDC, SelectObject, HGDIOBJ,
+    SRCCOPY,
+  },
+  UI::WindowsAndMessaging::{
+    IsIconic, IsWindow, IsWindowVisible, SetWindowPos,
+    SET_WINDOW_POS_FLAGS, SWP_ASYNCWINDOWPOS, SWP_FRAMECHANGED,
+    SWP_NOACTIVATE, SWP_NOSENDCHANGING, SWP_NOZORDER,
   },
 };
 
@@ -44,48 +36,6 @@ const EDGE_SAMPLE_INSET: i32 = 4;
 /// where an app never confirms (hung). Generous relative to every real
 /// duration observed, so it essentially never fires for a merely slow app.
 const COMMIT_CONFIRM_MAX_WAIT: Duration = Duration::from_millis(500);
-
-/// Best-effort process name (e.g. `"outlook"`) owning `hwnd`, for labeling
-/// [`COMMIT_CONFIRM_MAX_WAIT`]'s warning -- `None` on any failure, in
-/// which case the caller falls back to logging the raw `hwnd`. Only ever
-/// called once the wait has already timed out, so the extra `OpenProcess`/
-/// `QueryFullProcessImageNameW` cost never lands on the common (fast)
-/// path.
-fn process_name_for_warning(hwnd: HWND) -> Option<String> {
-  let mut process_id = 0u32;
-  // SAFETY: `hwnd` is a valid window handle for the lifetime of this call.
-  unsafe {
-    GetWindowThreadProcessId(hwnd, Some(&raw mut process_id));
-  }
-
-  // SAFETY: `process_id` was just populated above.
-  let process_handle = unsafe {
-    OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, process_id)
-  }
-  .ok()?;
-
-  let mut buffer = [0u16; 256];
-  let mut length = u32::try_from(buffer.len()).ok()?;
-
-  // SAFETY: `process_handle` is valid; `buffer`/`length` are
-  // stack-allocated and live for the duration of the call.
-  let query_res = unsafe {
-    QueryFullProcessImageNameW(
-      process_handle,
-      PROCESS_NAME_WIN32,
-      PWSTR(buffer.as_mut_ptr()),
-      &raw mut length,
-    )
-  };
-  // SAFETY: `process_handle` is a valid, open handle.
-  let _ = unsafe { CloseHandle(process_handle) };
-  query_res.ok()?;
-
-  let exe_path = String::from_utf16_lossy(&buffer[..length as usize]);
-  exe_path.rsplit('\\').next().map(|file_name| {
-    file_name.split('.').next().unwrap_or(file_name).to_string()
-  })
-}
 
 use crate::{
   companion::HandoffWait, discard_bits_if_resized,
@@ -730,25 +680,9 @@ impl ResizeSession {
     }
     self.handoff_done = true;
 
-    // SAFETY: The window is cloaked while a surrogate session is active,
-    // so this reposition is invisible. `SWP_NOZORDER` makes
-    // `hWndInsertAfter` irrelevant.
-    unsafe {
-      let _ = SetWindowPos(
-        HWND(self.hwnd),
-        HWND(0),
-        self.target_rect.x(),
-        self.target_rect.y(),
-        self.target_rect.width(),
-        self.target_rect.height(),
-        SWP_NOACTIVATE
-          | SWP_NOSENDCHANGING
-          | SWP_NOZORDER
-          | SWP_ASYNCWINDOWPOS
-          | SWP_FRAMECHANGED
-          | self.discard_bits_for(&self.target_rect),
-      );
-    }
+    // The window is cloaked while a surrogate session is active, so this
+    // reposition is invisible.
+    let _ = self.move_to(&self.target_rect, SWP_FRAMECHANGED);
 
     let logical = to_logical(&self.target_rect, &self.border_inset);
     if let Some(surrogate) = &mut self.surrogate {
@@ -770,11 +704,36 @@ impl ResizeSession {
     }
   }
 
-  /// `SWP_NOCOPYBITS` if moving the real window to `target` resizes it.
-  /// See [`discard_bits_if_resized`].
-  fn discard_bits_for(&self, target: &Rect) -> SET_WINDOW_POS_FLAGS {
-    let current = NativeWindow::new(self.hwnd).frame_with_shadows().ok();
-    discard_bits_if_resized(current.as_ref(), target)
+  /// Moves the real window to `target` asynchronously, without touching
+  /// its z-order, adding `SWP_NOCOPYBITS` if that resizes it (see
+  /// [`discard_bits_if_resized`]).
+  fn move_to(
+    &self,
+    target: &Rect,
+    extra_flags: SET_WINDOW_POS_FLAGS,
+  ) -> crate::Result<()> {
+    let flags = SWP_NOACTIVATE
+      | SWP_NOSENDCHANGING
+      | SWP_NOZORDER
+      | SWP_ASYNCWINDOWPOS
+      | discard_bits_if_resized(window_rect(self.hwnd).as_ref(), target)
+      | extra_flags;
+
+    // SAFETY: A stale handle only fails the call. With `SWP_NOZORDER`,
+    // `hWndInsertAfter` is ignored.
+    unsafe {
+      SetWindowPos(
+        HWND(self.hwnd),
+        HWND(0),
+        target.x(),
+        target.y(),
+        target.width(),
+        target.height(),
+        flags,
+      )
+    }?;
+
+    Ok(())
   }
 
   /// Converges the thumbnail registration toward the target dims as the
@@ -808,21 +767,11 @@ impl ResizeSession {
       return;
     }
 
-    let mut window = RECT::default();
-    // SAFETY: `HWND(self.hwnd)` was verified live at session start; a
-    // stale handle only fails the call.
-    if unsafe {
-      GetWindowRect(
-        HWND(self.hwnd),
-        std::ptr::from_mut(&mut window).cast(),
-      )
-    }
-    .is_err()
-    {
+    let Some(window) = window_rect(self.hwnd) else {
       return;
-    }
+    };
 
-    let actual = to_logical(&window.into(), &self.border_inset);
+    let actual = to_logical(&window, &self.border_inset);
     if (actual.width(), actual.height()) == target_dims {
       // Use the fast single-call path: the thumbnail handle is still valid
       // so there is no need to unregister and re-register — only rcSource
@@ -995,23 +944,8 @@ impl ResizeSession {
         // heavy source windows (e.g. browsers with video) and reduces
         // contention on the target process's message queue.
         //
-        // SAFETY: Window is cloaked during an active animation.
-        unsafe {
-          let _ = SetWindowPos(
-            HWND(self.hwnd),
-            HWND(0),
-            new_target.x(),
-            new_target.y(),
-            new_target.width(),
-            new_target.height(),
-            SWP_NOACTIVATE
-              | SWP_NOSENDCHANGING
-              | SWP_NOZORDER
-              | SWP_ASYNCWINDOWPOS
-              | SWP_FRAMECHANGED
-              | self.discard_bits_for(new_target),
-          );
-        }
+        // The window is cloaked during an active animation.
+        let _ = self.move_to(new_target, SWP_FRAMECHANGED);
         // Cap the registration at the per-axis minimum of its current dims
         // and the new target — the reposition above is asynchronous, so
         // the window cannot supply more content than it already
@@ -1045,20 +979,10 @@ impl ResizeSession {
       if let Some(surrogate) = &mut self.surrogate {
         let logical = to_logical(current_rect, &self.border_inset);
 
-        let mut window = RECT::default();
-        // SAFETY: A stale handle only fails the call.
-        let actual = if unsafe {
-          GetWindowRect(
-            HWND(self.hwnd),
-            std::ptr::from_mut(&mut window).cast(),
-          )
-        }
-        .is_ok()
-        {
-          to_logical(&window.into(), &self.border_inset)
-        } else {
-          logical.clone()
-        };
+        let actual = window_rect(self.hwnd).map_or_else(
+          || logical.clone(),
+          |window| to_logical(&window, &self.border_inset),
+        );
 
         let safe_w = logical.width().min(actual.width());
         let safe_h = logical.height().min(actual.height());
@@ -1125,45 +1049,20 @@ impl ResizeSession {
       // normally get it there well before the animation completes, so this
       // is the common case.
       //
-      // SAFETY: `HWND(self.hwnd)` is valid (verified above).
-      let mut current = RECT::default();
-      let at_target = unsafe {
-        GetWindowRect(
-          HWND(self.hwnd),
-          std::ptr::from_mut(&mut current).cast(),
-        )
-        .is_ok()
-      } && Rect::from(current) == self.target_rect;
-
-      if at_target {
+      if window_rect(self.hwnd).as_ref() == Some(&self.target_rect) {
         self.finish_commit();
         return true;
       }
 
       self.commit_started_at = Some(Instant::now());
-      // SAFETY: `HWND(self.hwnd)` is valid (verified above).
-      // `SWP_NOZORDER` makes `hWndInsertAfter` irrelevant.
-      unsafe {
-        let _ = SetWindowPos(
-          HWND(self.hwnd),
-          HWND(0),
-          self.target_rect.x(),
-          self.target_rect.y(),
-          self.target_rect.width(),
-          self.target_rect.height(),
-          SWP_NOACTIVATE
-            | SWP_NOSENDCHANGING
-            | SWP_NOZORDER
-            | SWP_ASYNCWINDOWPOS
-            | self.discard_bits_for(&self.target_rect),
-        );
-      }
+      let _ = self.move_to(&self.target_rect, SET_WINDOW_POS_FLAGS(0));
       return false;
     };
 
     if started.elapsed() > COMMIT_CONFIRM_MAX_WAIT {
-      let process = process_name_for_warning(HWND(self.hwnd))
-        .unwrap_or_else(|| format!("hwnd {:#x}", self.hwnd));
+      let process = NativeWindow::new(self.hwnd)
+        .process_name()
+        .unwrap_or_else(|_| format!("hwnd {:#x}", self.hwnd));
       tracing::warn!(
         "ResizeSession commit for {process} did not land within \
          {COMMIT_CONFIRM_MAX_WAIT:?} -- uncloaking anyway (see \
@@ -1180,17 +1079,7 @@ impl ResizeSession {
       return false;
     }
 
-    // SAFETY: `HWND(self.hwnd)` is valid (verified above).
-    let mut current = RECT::default();
-    let at_target = unsafe {
-      GetWindowRect(
-        HWND(self.hwnd),
-        std::ptr::from_mut(&mut current).cast(),
-      )
-      .is_ok()
-    } && Rect::from(current) == self.target_rect;
-
-    if at_target {
+    if window_rect(self.hwnd).as_ref() == Some(&self.target_rect) {
       self.finish_commit();
       true
     } else {
@@ -1269,27 +1158,9 @@ impl ResizeSession {
       return Ok(());
     }
 
-    // SAFETY: `HWND(self.hwnd)` is valid (verified above). With
-    // `SWP_NOZORDER` set, `hWndInsertAfter` (`HWND(0)`) is ignored per
-    // the Win32 documentation. Asynchronous, since this runs on shutdown,
-    // where a hung app must not keep the WM from exiting.
-    unsafe {
-      SetWindowPos(
-        HWND(self.hwnd),
-        HWND(0),
-        self.target_rect.x(),
-        self.target_rect.y(),
-        self.target_rect.width(),
-        self.target_rect.height(),
-        SWP_NOACTIVATE
-          | SWP_NOSENDCHANGING
-          | SWP_NOZORDER
-          | SWP_ASYNCWINDOWPOS
-          | self.discard_bits_for(&self.target_rect),
-      )
-    }?;
-
-    Ok(())
+    // Asynchronous, since this runs on shutdown, where a hung app must not
+    // keep the WM from exiting.
+    self.move_to(&self.target_rect, SET_WINDOW_POS_FLAGS(0))
   }
 }
 
@@ -1362,11 +1233,14 @@ fn sampleable_rect(hwnd: HWND) -> Option<Rect> {
     if NativeWindow::new(hwnd.0).is_cloaked().unwrap_or(true) {
       return None;
     }
-
-    let mut rect = RECT::default();
-    GetWindowRect(hwnd, &raw mut rect).ok()?;
-    Some(rect.into())
   }
+
+  window_rect(hwnd.0)
+}
+
+/// A window's `GetWindowRect`, or `None` if its handle went stale.
+fn window_rect(hwnd: isize) -> Option<Rect> {
+  NativeWindow::new(hwnd).frame_with_shadows().ok()
 }
 
 /// Pixels sampled along each edge strip by [`sample_edge_color`].
