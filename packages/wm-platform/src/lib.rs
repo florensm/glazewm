@@ -24,6 +24,7 @@ mod native_overview;
 mod native_stack_tab_bar;
 mod native_surrogate;
 mod native_window;
+mod overlay_copies;
 mod overlay_window;
 mod overview_chrome;
 mod overview_effects;
