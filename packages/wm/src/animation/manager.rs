@@ -3551,7 +3551,9 @@ impl AnimationManager {
   ///
   /// So are the windows of a finished slide still being torn down. One
   /// handed back is on screen again and taken over from as usual, so of
-  /// its old surrogate only the ring copy needs covering for.
+  /// its old surrogate only the ring and backdrop copies need covering
+  /// for: the teardown may not have shown the real ones again yet, and
+  /// the old surrogate goes before the take-over.
   pub fn hand_over_cut_short_slide(
     &mut self,
     windows: &mut [(Uuid, WorkspaceSwitchEntry)],
@@ -3577,7 +3579,10 @@ impl AnimationManager {
 
       match (entry.is_incoming, handed_back) {
         (true, _) => {}
-        (false, true) => new.cover_ring(),
+        (false, true) => {
+          new.cover_ring();
+          new.cover_backdrop();
+        }
         (false, false) => new.apply_effect_opacity(),
       }
       old.hide_thumbnail();

@@ -412,6 +412,13 @@ impl WorkspaceSurrogate {
     self.copies.carries_backdrop()
   }
 
+  /// Brings the backdrop copy to full opacity over the backdrop it
+  /// duplicates, shown or not, as [`cover_ring`](Self::cover_ring) does
+  /// the ring: drawn twice in one place, a backdrop looks like one.
+  pub fn cover_backdrop(&mut self) {
+    self.copies.set_backdrop_opacity(u8::MAX);
+  }
+
   /// Hides the backdrop, e.g. as its window leaves the screen for good.
   pub fn hide_backdrop(&mut self) {
     self.copies.show_backdrop(false);
