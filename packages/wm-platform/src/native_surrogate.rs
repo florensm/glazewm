@@ -806,18 +806,6 @@ impl NativeSurrogate {
     self.thumbnail.is_some()
   }
 
-  /// Whether the thumbnail samples the source window's companion, and
-  /// that companion is not on screen yet.
-  ///
-  /// Once the real window is uncloaked, its companion's owner only
-  /// learns of it from a window event and shows the companion some time
-  /// later. Until then the window shows as it really is, so the surrogate
-  /// should keep covering it.
-  #[must_use]
-  pub fn is_companion_off_screen(&self) -> bool {
-    self.companion.is_some_and(Companion::is_off_screen)
-  }
-
   /// The source window's companion the thumbnail samples, if any.
   pub(crate) fn companion(&self) -> Option<Companion> {
     self.companion
