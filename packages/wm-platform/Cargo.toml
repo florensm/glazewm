@@ -3,15 +3,6 @@ name = "wm-platform"
 version = "0.0.0"
 edition = "2021"
 
-[lib]
-path = "src/lib.rs"
-test = false
-
-[[test]]
-name = "test"
-harness = false
-path = "src/test.rs"
-
 [dependencies]
 thiserror = { workspace = true }
 tokio = { workspace = true }
@@ -75,9 +66,6 @@ windows-interface = { version = "0.52" }
 
 [features]
 test_utils = []
-
-[dev-dependencies]
-libtest-mimic-collect = "0.3.2"
 
 [lints]
 workspace = true
