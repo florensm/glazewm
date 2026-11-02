@@ -13,6 +13,52 @@ use crate::{Color, CornerRadii, Rect};
 /// Samples per axis when estimating a pixel's coverage.
 const SUBSAMPLES: i32 = 4;
 
+/// What shadows are drawn in, at the layers' own alpha.
+const SHADOW_COLOR: Color = Color {
+  r: 0,
+  g: 0,
+  b: 0,
+  a: 255,
+};
+
+/// One layer of a shadow cast by a rect: a copy of the rect moved down by
+/// `offset`, blurred by a Gaussian of `sigma` and drawn at `alpha`.
+/// Lengths are in pixels.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct ShadowLayer {
+  pub alpha: f32,
+  pub sigma: f32,
+  pub offset: f32,
+}
+
+impl ShadowLayer {
+  /// How much of the pixel at `at` the span `from..to` covers, blurred.
+  #[allow(clippy::cast_precision_loss)]
+  fn span_coverage(&self, at: i32, from: f32, to: f32) -> f32 {
+    let center = at as f32 + 0.5;
+    normal_cdf((center - from) / self.sigma)
+      - normal_cdf((center - to) / self.sigma)
+  }
+}
+
+/// The standard normal distribution's cumulative distribution function.
+fn normal_cdf(x: f32) -> f32 {
+  f32::midpoint(1.0, erf(x / std::f32::consts::SQRT_2))
+}
+
+/// The error function, to within 1.5e-7 (Abramowitz and Stegun 7.1.26).
+fn erf(x: f32) -> f32 {
+  let t = 1.0 / (1.0 + 0.327_591_1 * x.abs());
+  let poly = t
+    * (0.254_829_6
+      + t
+        * (-0.284_496_7
+          + t * (1.421_413_7 + t * (-1.453_152 + t * 1.061_405_4))));
+  let value = 1.0 - poly * (-x * x).exp();
+
+  value.copysign(x)
+}
+
 /// A buffer of `width` x `height` premultiplied pixels.
 pub(crate) struct Canvas<'a> {
   pub pixels: &'a mut [u32],
@@ -244,6 +290,71 @@ impl Canvas<'_> {
         };
 
         self.blend(x, y, color, fade * fade * shown);
+      }
+    }
+  }
+
+  /// Draws the shadow `rect` casts as `layers`, leaving `rect` itself,
+  /// rounded by `radius`, untouched.
+  pub fn fill_layered_shadow_around(
+    &mut self,
+    rect: &Rect,
+    radius: i32,
+    layers: &[ShadowLayer],
+  ) {
+    let radii =
+      CornerRadii::uniform(radius).clamped(rect.width(), rect.height());
+
+    // A rect blurred by a Gaussian is separable: each pixel's coverage is
+    // that of its column times that of its row.
+    let coverage =
+      |layer: &ShadowLayer, count: i32, from: f32, to: f32| {
+        (0..count)
+          .map(|at| layer.span_coverage(at, from, to))
+          .collect::<Vec<_>>()
+      };
+    #[allow(clippy::cast_precision_loss)]
+    let spans = layers
+      .iter()
+      .map(|layer| {
+        let columns =
+          coverage(layer, self.width, rect.left as f32, rect.right as f32);
+        let rows = coverage(
+          layer,
+          self.height,
+          rect.top as f32 + layer.offset,
+          rect.bottom as f32 + layer.offset,
+        );
+        (layer.alpha, columns, rows)
+      })
+      .collect::<Vec<_>>();
+
+    for y in 0..self.height {
+      for x in 0..self.width {
+        let is_in_rect = x >= rect.left
+          && x < rect.right
+          && y >= rect.top
+          && y < rect.bottom;
+        let shown = if is_in_rect {
+          1.0 - rounded_rect_coverage(x, y, rect, radii)
+        } else {
+          1.0
+        };
+        if shown <= 0.0 {
+          continue;
+        }
+
+        // Each layer is drawn over the ones before it.
+        let (x_index, y_index) = (
+          usize::try_from(x).unwrap_or_default(),
+          usize::try_from(y).unwrap_or_default(),
+        );
+        let clear =
+          spans.iter().fold(1.0, |clear, (alpha, columns, rows)| {
+            clear * (1.0 - alpha * columns[x_index] * rows[y_index])
+          });
+
+        self.blend(x, y, SHADOW_COLOR, (1.0 - clear) * shown);
       }
     }
   }

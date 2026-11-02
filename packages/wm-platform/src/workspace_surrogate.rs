@@ -5,6 +5,7 @@ use crate::{
   native_surrogate::{placed_rects, to_logical},
   platform_impl,
   resize_session::compute_border_inset,
+  window_shadow::{ShadowStyle, WindowShadow},
   CornerStyle, NativeSurrogate, NativeWindow, OpacityValue, Rect,
   SurrogateBatch,
 };
@@ -13,19 +14,59 @@ use crate::{
 /// real window: rendered by DWM, but too faint to see.
 const WARM_UP_OPACITY: u8 = 1;
 
-/// A window's border ring, drawn into its [`WorkspaceSurrogate`] as a
-/// thumbnail of the ring's own overlay window, parked where the window
-/// rests (see `NativeBorderOverlay::park`).
+/// Something drawn around a window, its border ring or its shadow, drawn
+/// into its [`WorkspaceSurrogate`] as a thumbnail of a window of its own,
+/// resting where the window does (e.g. a ring parked by
+/// `NativeBorderOverlay::park`).
 ///
-/// The ring then moves in the same DWM thumbnail updates as the window,
-/// rather than through the overlay's own window or visual tree, which
-/// reach DWM on schedules of their own.
-struct RingCopy {
+/// It then moves in the same DWM thumbnail updates as the window, rather
+/// than through its own window or visual tree, which reach DWM on
+/// schedules of their own.
+struct OverlayCopy {
   thumbnail: Thumbnail,
-  /// The overlay window the thumbnail is of.
+  /// The window the thumbnail is of.
   source: isize,
-  /// Where `source` is: the ring's rect while its window rests.
+  /// Where `source` is: its rect while the window rests.
   rest: Rect,
+}
+
+impl OverlayCopy {
+  /// Draws the copy around a window resting at `window_rest`, now at
+  /// `frame`, `scale` times its size at rest, cut at `panel` and
+  /// `monitor`, into a surrogate whose top-left is at `origin`.
+  fn place(
+    &mut self,
+    window_rest: &Rect,
+    frame: &Rect,
+    scale: f32,
+    panel: &Rect,
+    monitor: &Rect,
+    origin: (i32, i32),
+  ) {
+    match copy_rects(
+      &self.rest,
+      window_rest,
+      frame,
+      scale,
+      panel,
+      monitor,
+      origin,
+    ) {
+      Some((rc_src, rc_dst)) => {
+        let _ = self.thumbnail.show(rc_src, rc_dst);
+      }
+      None => self.thumbnail.hide(),
+    }
+  }
+}
+
+/// A window's shadow (see `WindowShadow`), drawn into its
+/// [`WorkspaceSurrogate`].
+struct ShadowCopy {
+  /// Declared before `_source`, so it is unregistered before that window
+  /// goes.
+  copy: OverlayCopy,
+  _source: WindowShadow,
 }
 
 /// `alpha` scaled by `frac` (0.0–1.0).
@@ -34,12 +75,12 @@ fn scale_alpha(alpha: u8, frac: f32) -> u8 {
   (f32::from(alpha) * frac.clamp(0.0, 1.0)).round() as u8
 }
 
-/// `(rcSource, rcDestination)` drawing a ring that rests at `ring_rest`,
+/// `(rcSource, rcDestination)` drawing a copy that rests at `copy_rest`,
 /// around a window resting at `window_rest`, with that window at `frame`,
 /// `scale` times its size at rest, cut at `panel` and `monitor`, into a
 /// surrogate whose top-left is at `origin`. `None` when nothing is left.
-fn ring_rects(
-  ring_rest: &Rect,
+fn copy_rects(
+  copy_rest: &Rect,
   window_rest: &Rect,
   frame: &Rect,
   scale: f32,
@@ -50,17 +91,17 @@ fn ring_rects(
   // Scaled about the window's top-left like the window, then moved with
   // it.
   let scaled =
-    ring_rest.scale_about(window_rest.left, window_rest.top, scale);
-  let ring_frame = scaled.translate_to_coordinates(
+    copy_rest.scale_about(window_rest.left, window_rest.top, scale);
+  let copy_frame = scaled.translate_to_coordinates(
     scaled.x() + frame.left - window_rest.left,
     scaled.y() + frame.top - window_rest.top,
   );
-  let visible = ring_frame.intersection(panel)?.intersection(monitor)?;
+  let visible = copy_frame.intersection(panel)?.intersection(monitor)?;
 
   placed_rects(
-    &ring_frame,
+    &copy_frame,
     &visible,
-    (ring_rest.width(), ring_rest.height()),
+    (copy_rest.width(), copy_rest.height()),
     RECT::default(),
     origin,
   )
@@ -202,7 +243,12 @@ pub struct WorkspaceSurrogate {
   /// Copy of the window's border ring. See [`carry_ring`].
   ///
   /// [`carry_ring`]: WorkspaceSurrogate::carry_ring
-  ring: Option<RingCopy>,
+  ring: Option<OverlayCopy>,
+
+  /// Copy of the window's shadow. See [`carry_shadow`].
+  ///
+  /// [`carry_shadow`]: WorkspaceSurrogate::carry_shadow
+  shadow: Option<ShadowCopy>,
 }
 
 impl WorkspaceSurrogate {
@@ -341,6 +387,7 @@ impl WorkspaceSurrogate {
       frame_inset,
       hidden_alpha: None,
       ring: None,
+      shadow: None,
     })
   }
 
@@ -372,10 +419,12 @@ impl WorkspaceSurrogate {
     }
 
     self.ring =
-      Thumbnail::register(self.hwnd(), source).map(|thumbnail| RingCopy {
-        thumbnail,
-        source: source.0,
-        rest: rest.clone(),
+      Thumbnail::register(self.hwnd(), source).map(|thumbnail| {
+        OverlayCopy {
+          thumbnail,
+          source: source.0,
+          rest: rest.clone(),
+        }
       });
     self.ring.is_some()
   }
@@ -406,44 +455,95 @@ impl WorkspaceSurrogate {
     }
   }
 
-  /// Draws the ring around the window at `frame`, `scale` times its size
-  /// at rest, cut at `panel` and `monitor` like the window is.
-  fn place_ring(
+  /// Draws `window`'s shadow along with it from now on, as for the window
+  /// drawn active or not. Returns whether it does: only a surrogate
+  /// pinned to the viewport can, as for the ring (see
+  /// [`carry_ring`](Self::carry_ring)), and only for a window DWM draws a
+  /// shadow around.
+  pub fn carry_shadow(
+    &mut self,
+    window: &NativeWindow,
+    is_active: bool,
+    corner_style: &CornerStyle,
+  ) -> bool {
+    if self.is_live() {
+      return false;
+    }
+
+    let Some(style) =
+      ShadowStyle::of(window.hwnd(), is_active, *corner_style)
+    else {
+      return false;
+    };
+
+    let source = match WindowShadow::create(&self.rest_frame(), style) {
+      Ok(source) => source,
+      Err(err) => {
+        tracing::warn!("Failed to draw a window's shadow: {err}");
+        return false;
+      }
+    };
+
+    self.shadow =
+      Thumbnail::register(self.hwnd(), source.hwnd()).map(|thumbnail| {
+        ShadowCopy {
+          copy: OverlayCopy {
+            thumbnail,
+            source: source.hwnd().0,
+            rest: source.rect().clone(),
+          },
+          _source: source,
+        }
+      });
+    self.shadow.is_some()
+  }
+
+  /// Hides the shadow, e.g. as its window shows its own again.
+  fn hide_shadow(&mut self) {
+    if let Some(shadow) = &mut self.shadow {
+      shadow.copy.thumbnail.hide();
+    }
+  }
+
+  /// The ring and shadow copies the surrogate carries.
+  fn copies(&mut self) -> impl Iterator<Item = &mut OverlayCopy> {
+    [
+      self.ring.as_mut(),
+      self.shadow.as_mut().map(|shadow| &mut shadow.copy),
+    ]
+    .into_iter()
+    .flatten()
+  }
+
+  /// Draws the ring and shadow around the window at `frame`, `scale`
+  /// times its size at rest, cut at `panel` and `monitor` like the window
+  /// is.
+  fn place_copies(
     &mut self,
     frame: &Rect,
     scale: f32,
     panel: &Rect,
     monitor: &Rect,
   ) {
-    let Some(ring) = &mut self.ring else {
-      return;
-    };
+    let window_rest = self.rect.clone();
+    let origin = (self.viewport.left, self.viewport.top);
 
-    match ring_rects(
-      &ring.rest,
-      &self.rect,
-      frame,
-      scale,
-      panel,
-      monitor,
-      (self.viewport.left, self.viewport.top),
-    ) {
-      Some((rc_src, rc_dst)) => {
-        let _ = ring.thumbnail.show(rc_src, rc_dst);
-      }
-      None => ring.thumbnail.hide(),
+    for copy in self.copies() {
+      copy.place(&window_rest, frame, scale, panel, monitor, origin);
     }
   }
 
-  /// Draws the window at `window` opacity and its ring at `ring`.
-  fn set_opacities(&mut self, window: u8, ring: u8) {
+  /// Draws the window at `window` opacity and its ring and shadow at
+  /// `around`.
+  fn set_opacities(&mut self, window: u8, around: u8) {
     self.inner.set_window_opacity(window);
-    if let Some(copy) = &mut self.ring {
-      let _ = copy.thumbnail.set_opacity(ring);
+
+    for copy in self.copies() {
+      let _ = copy.thumbnail.set_opacity(around);
     }
   }
 
-  /// Draws the window and its ring at `frac` of their own opacities.
+  /// Draws the window, ring and shadow at `frac` of their own opacities.
   fn set_opacity_frac(&mut self, frac: f32) {
     self.set_opacities(
       scale_alpha(self.opacity, frac),
@@ -478,6 +578,7 @@ impl WorkspaceSurrogate {
   fn clear_frame(&mut self) {
     self.inner.set_visible(false);
     self.hide_ring();
+    self.hide_shadow();
     self.live_frame = None;
     self.unclipped_rect = None;
     self.panel = None;
@@ -530,7 +631,7 @@ impl WorkspaceSurrogate {
       return false;
     };
     self.inner.set_thumbnail_rects(rc_src, rc_dst);
-    self.place_ring(frame, scale, &panel, monitor);
+    self.place_copies(frame, scale, &panel, monitor);
 
     if self.is_live() {
       match batch {
@@ -595,12 +696,14 @@ impl WorkspaceSurrogate {
   /// fully opaque.
   ///
   /// The ring copy stays: the ring is revealed under it only after this,
-  /// and it goes with the surrogate.
+  /// and it goes with the surrogate. The shadow copy goes with the
+  /// thumbnail, as the window shows its own.
   ///
   /// [`prepare_hand_back`]: WorkspaceSurrogate::prepare_hand_back
   pub fn hide_thumbnail(&mut self) {
     self.restore_alpha();
     self.inner.hide_thumbnail();
+    self.hide_shadow();
   }
 
   /// Shows the surrogate with the thumbnail at the window's natural
@@ -874,15 +977,16 @@ impl WorkspaceSurrogate {
 impl Drop for WorkspaceSurrogate {
   /// A window still hidden by alpha would stay invisible once shown.
   fn drop(&mut self) {
-    // Unregistered before `inner` destroys the window it is drawn on.
+    // Unregistered before `inner` destroys the window they are drawn on.
     self.ring = None;
+    self.shadow = None;
     self.restore_alpha();
   }
 }
 
 #[cfg(test)]
 mod tests {
-  use super::{ring_rects, Rect, RECT};
+  use super::{copy_rects, Rect, RECT};
 
   const MONITOR: Rect = Rect {
     left: 0,
@@ -912,7 +1016,7 @@ mod tests {
       frame.top - window.top,
     );
 
-    ring_rects(&ring, &window, frame, scale, &panel, &MONITOR, (0, 0))
+    copy_rects(&ring, &window, frame, scale, &panel, &MONITOR, (0, 0))
       .map(|(src, dst)| (ltrb(src), ltrb(dst)))
   }
 

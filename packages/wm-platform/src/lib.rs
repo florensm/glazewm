@@ -52,6 +52,7 @@ mod window_class;
 mod window_icons;
 mod window_listener;
 mod window_peek;
+mod window_shadow;
 mod workspace_surrogate;
 
 pub use click_guard::ClickGuard;

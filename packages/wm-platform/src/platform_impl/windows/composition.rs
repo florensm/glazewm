@@ -57,8 +57,14 @@ use windows::{
   },
 };
 
-use super::wallpaper_surface::{self, BakeKnobs};
-use crate::{BackdropOverlayParams, BorderOverlayParams, Rect};
+use super::{
+  shadow_surface,
+  wallpaper_surface::{self, BakeKnobs},
+};
+use crate::{
+  window_shadow::ShadowStyle, BackdropOverlayParams, BorderOverlayParams,
+  Rect,
+};
 
 /// The dedicated, self-pumping composition thread and its `Compositor`.
 struct CompositionThread {
@@ -1187,6 +1193,61 @@ fn build_border_visual_tree(
 const DROP_INDICATOR_STROKE: f32 = 2.0;
 
 /// Share of the outline color's alpha a drop indicator's fill gets.
+/// A window's drop shadow (see `WindowShadow`): a nine-grid of its style's
+/// picture, stretched over the whole of its `HWND`, so the window can be
+/// resized without a composition write.
+pub(crate) struct ShadowVisual {
+  /// Binds the visual tree to the `HWND`. Kept alive but never touched
+  /// again -- dropping it would unbind composition from the window.
+  _target: DesktopWindowTarget,
+  _root: SpriteVisual,
+}
+
+impl ShadowVisual {
+  /// Builds the shadow of `style` on `hwnd`, which must have been created
+  /// with `WS_EX_NOREDIRECTIONBITMAP`.
+  pub(crate) fn create(
+    hwnd: HWND,
+    style: ShadowStyle,
+  ) -> crate::Result<Self> {
+    let hwnd_raw = hwnd.0;
+
+    with_composition_thread(move |compositor, _| {
+      let (surface, [left, top, right, bottom]) =
+        shadow_surface::surface_for(&compositor, style)?;
+
+      // SAFETY: `hwnd` is a valid, already-created top-level window.
+      let target = unsafe {
+        compositor
+          .cast::<ICompositorDesktopInterop>()?
+          .CreateDesktopWindowTarget(HWND(hwnd_raw), false)?
+      };
+
+      let brush = compositor.CreateNineGridBrush()?;
+      brush
+        .SetSource(&compositor.CreateSurfaceBrushWithSurface(&surface)?)?;
+      brush.SetInsetsWithValues(
+        pixels_to_dips(left),
+        pixels_to_dips(top),
+        pixels_to_dips(right),
+        pixels_to_dips(bottom),
+      )?;
+      // The window casts nothing on itself.
+      brush.SetIsCenterHollow(true)?;
+
+      let root = compositor.CreateSpriteVisual()?;
+      root.SetRelativeSizeAdjustment(FILL_PARENT)?;
+      root.SetBrush(&brush)?;
+      target.SetRoot(&root)?;
+
+      Ok(Self {
+        _target: target,
+        _root: root,
+      })
+    })
+  }
+}
+
 const DROP_INDICATOR_FILL_ALPHA: f32 = 0.2;
 
 /// Length of a drop indicator's glide from one target to the next.

@@ -17,6 +17,7 @@ use std::cell::RefCell;
 
 use windows::{
   core::ComInterface,
+  Foundation::TypedEventHandler,
   Win32::{
     Foundation::E_FAIL,
     Graphics::{
@@ -149,9 +150,11 @@ thread_local! {
 /// Runs `f` against the composition thread's graphics device, creating it
 /// on first use.
 ///
-/// `f` is told whether the device was built by this very call, which is
-/// the only moment a `RenderingDeviceReplaced` subscription can be
-/// attached exactly once per device.
+/// A device is subscribed to its own `RenderingDeviceReplaced` as it is
+/// created: the surfaces drawn through it survive a device swap (brushes
+/// keep pointing at them) but their contents don't, so without a redraw
+/// every backdrop and shadow would go blank after a driver update or a TDR
+/// until something forced a new one.
 ///
 /// Fails rather than panics when the device is already borrowed further up
 /// the stack: a `RenderingDeviceReplaced` callback can land on this thread
@@ -159,7 +162,7 @@ thread_local! {
 /// taking the process down.
 pub(crate) fn with_graphics_device<T>(
   compositor: &Compositor,
-  f: impl FnOnce(&GraphicsDevice, bool) -> windows::core::Result<T>,
+  f: impl FnOnce(&GraphicsDevice) -> windows::core::Result<T>,
 ) -> windows::core::Result<T> {
   GRAPHICS_DEVICE.with(|cell| {
     let mut slot = cell.try_borrow_mut().map_err(|_| {
@@ -169,13 +172,21 @@ pub(crate) fn with_graphics_device<T>(
       )
     })?;
 
-    let is_new = slot.is_none();
-    if is_new {
-      *slot = Some(GraphicsDevice::create(compositor)?);
+    if slot.is_none() {
+      let device = GraphicsDevice::create(compositor)?;
+      let redraw_compositor = compositor.clone();
+      device.composition.RenderingDeviceReplaced(
+        &TypedEventHandler::new(move |_, _| {
+          super::wallpaper_surface::redraw_cached(&redraw_compositor);
+          super::shadow_surface::redraw_cached(&redraw_compositor);
+          Ok(())
+        }),
+      )?;
+      *slot = Some(device);
     }
 
     let device = slot.as_ref().expect("populated above");
-    f(device, is_new)
+    f(device)
   })
 }
 
