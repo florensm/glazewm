@@ -148,6 +148,10 @@ general:
     # - 'monitor_focus': Jump when focus changes between monitors.
     # - 'window_focus': Jump when focus changes between windows.
     trigger: "monitor_focus"
+
+    # Whether switching workspaces jumps too. Turn off to keep the cursor
+    # on a status bar's workspace button after clicking it.
+    on_workspace_switch: true
 ```
 
 ### Config: Keybindings

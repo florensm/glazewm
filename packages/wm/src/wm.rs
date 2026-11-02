@@ -782,12 +782,6 @@ impl WindowManager {
 
         ignore_window(window, state)
       }
-      InvokeCommand::MoveCursor(args) => {
-        if args.direction.is_some() {
-          state.pending_sync.queue_cursor_move();
-        }
-        Ok(())
-      }
       InvokeCommand::Move(args) => {
         let Ok(window) = subject_container.as_window_container() else {
           return Ok(());

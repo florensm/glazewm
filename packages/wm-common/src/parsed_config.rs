@@ -558,7 +558,7 @@ impl Default for GeneralConfig {
   }
 }
 
-#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(default, rename_all(serialize = "camelCase"))]
 pub struct CursorJumpConfig {
   /// Whether to automatically move the cursor on the specified trigger.
@@ -566,6 +566,20 @@ pub struct CursorJumpConfig {
 
   /// Trigger for cursor jump.
   pub trigger: CursorJumpTrigger,
+
+  /// Whether switching workspaces jumps too. Off keeps the cursor where
+  /// it is, e.g. on a status bar's workspace button just clicked.
+  pub on_workspace_switch: bool,
+}
+
+impl Default for CursorJumpConfig {
+  fn default() -> Self {
+    Self {
+      enabled: false,
+      trigger: CursorJumpTrigger::default(),
+      on_workspace_switch: true,
+    }
+  }
 }
 
 #[derive(Clone, Debug, Default, Deserialize, PartialEq, Serialize)]

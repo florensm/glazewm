@@ -20,8 +20,6 @@ general:
 
   config_reload_commands: []
 
-  focus_follows_cursor: false
-
   # Focusing the current workspace again goes back to the previous one.
   toggle_workspace_on_refocus: false
 
@@ -31,10 +29,18 @@ general:
 
   # `dynamic_workspaces` and `default_layout` are in workspaces.yaml.
 
+  # Mouse. Focus the window under the cursor as it moves.
+  focus_follows_cursor: false
+
+  # Move the cursor to what gets focused by keybindings.
   cursor_jump:
     enabled: true
-    # 'monitor_focus' or 'window_focus'.
+    # 'monitor_focus' (only onto another monitor) or 'window_focus' (to
+    # every newly focused window).
     trigger: "monitor_focus"
+    # Off keeps the cursor in place when switching workspaces, e.g. by
+    # clicking a status bar's workspace button.
+    on_workspace_switch: false
 
   # Show windows of every workspace in the taskbar, not only shown ones.
   show_all_in_taskbar: false
