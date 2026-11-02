@@ -14,6 +14,7 @@ mod dwm_thumbnail;
 mod error;
 mod event_loop;
 mod external_color_source;
+mod hidden_alpha;
 pub mod isolation;
 mod keybinding_listener;
 mod models;
