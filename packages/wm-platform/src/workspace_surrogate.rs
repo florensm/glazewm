@@ -21,8 +21,8 @@ fn scale_alpha(alpha: u8, frac: f32) -> u8 {
 
 /// `(rcSource, rcDestination)` drawing the visible frame of a window that
 /// rests at `rect` with its frame at `rest_frame`, now at `frame`, cut at
-/// `clip`, into a surrogate whose top-left is at `origin`. `None` when none
-/// of the frame is inside `clip`.
+/// `clip`, into a surrogate whose top-left is at `origin`. `None` when
+/// none of the frame is inside `clip`.
 ///
 /// The frame is sampled from `border_inset` on: the invisible resize
 /// borders around it show nothing on screen, but a thumbnail can draw them
@@ -132,8 +132,8 @@ pub struct WorkspaceSurrogate {
   /// Invisible border insets of the source window, in physical pixels.
   /// Every per-frame `rcSource` sample starts past them, so only the
   /// window's visible frame is drawn (see [`frame_rects`]). In
-  /// [`SurrogateMode::Live`] mode they are also deflated out of `rect` and
-  /// the surrogate's created size.
+  /// [`SurrogateMode::Live`] mode they are also deflated out of `rect`
+  /// and the surrogate's created size.
   border_inset: RECT,
   /// Live footprint for the current animation frame, in
   /// [`SurrogateMode::Live`] mode only -- lets a caller (the backdrop
@@ -202,8 +202,8 @@ impl WorkspaceSurrogate {
   /// `DWMWA_EXTENDED_FRAME_BOUNDS` reports), which callers pass explicitly
   /// because they disagree on whether `rect` includes the invisible resize
   /// border. It places the overlays that sit outside the window, i.e. the
-  /// border ring, and in [`SurrogateMode::PinnedViewport`] mode what of the
-  /// window is drawn -- pass the same value as `rect` when the two
+  /// border ring, and in [`SurrogateMode::PinnedViewport`] mode what of
+  /// the window is drawn -- pass the same value as `rect` when the two
   /// coincide.
   ///
   /// `opacity_endpoint` controls how far the opacity animates away from
@@ -538,9 +538,8 @@ impl WorkspaceSurrogate {
         (self.viewport.left, self.viewport.top),
       )
       .map(|rects| (rects, None)),
-      SurrogateMode::Live => frame
-        .intersection(&panel)
-        .and_then(|shown| {
+      SurrogateMode::Live => {
+        frame.intersection(&panel).and_then(|shown| {
           let visible = shown.intersection(monitor)?;
           let rects = placed_rects(
             frame,
@@ -550,7 +549,8 @@ impl WorkspaceSurrogate {
             (visible.left, visible.top),
           )?;
           Some((rects, Some((shown, visible))))
-        }),
+        })
+      }
     };
     let Some(((rc_src, rc_dst), live)) = placed else {
       self.clear_frame();
