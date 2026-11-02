@@ -2289,7 +2289,9 @@ fn deserialize_bindings<'de, D>(
 where
   D: serde::de::Deserializer<'de>,
 {
-  let s: Vec<&str> = serde::de::Deserialize::deserialize(deserializer)?;
+  // Owned, as a config merged from several files is deserialized from a
+  // `serde_yaml::Value`, which has no input to borrow from.
+  let s: Vec<String> = serde::de::Deserialize::deserialize(deserializer)?;
   s.iter()
     .map(|keybinding_str| {
       let keys: Vec<Key> = keybinding_str

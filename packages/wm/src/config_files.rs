@@ -72,16 +72,28 @@ pub fn combine(files: &[ConfigFile]) -> anyhow::Result<LoadedConfig> {
     merge_into(&mut merged, document, &name, "", &mut origins)?;
   }
 
+  // A lone file is parsed from its text, so that errors point at a line.
+  if let [file] = files {
+    let value = serde_yaml::from_str(&file.contents).map_err(|err| {
+      anyhow::anyhow!(
+        "Invalid config in {}: {err}",
+        display_name(&file.path, &main_dir)
+      )
+    })?;
+
+    return Ok(LoadedConfig {
+      value,
+      value_str: file.contents.clone(),
+    });
+  }
+
   let value = serde_yaml::from_value(Value::Mapping(merged.clone()))
     .map_err(|err| locate_error(files, &main_dir, &err))?;
 
-  let value_str = if files.len() == 1 {
-    files[0].contents.clone()
-  } else {
-    serde_yaml::to_string(&merged)?
-  };
-
-  Ok(LoadedConfig { value, value_str })
+  Ok(LoadedConfig {
+    value,
+    value_str: serde_yaml::to_string(&merged)?,
+  })
 }
 
 /// Paths listed under the main config's `include`, resolved against its
@@ -261,6 +273,22 @@ mod tests {
 
     assert_eq!(loaded.value_str, contents);
     assert!(loaded.value.general.focus_follows_cursor);
+  }
+
+  /// Merged files are deserialized from a `Value`, which nothing may
+  /// borrow strings from.
+  #[test]
+  fn parses_keybindings_from_an_included_file() {
+    let loaded = combine(&[
+      file("config.yaml", "include: [a.yaml]\n"),
+      file(
+        "a.yaml",
+        "keybindings:\n  - commands: [close]\n    bindings: [h, alt+q]\n",
+      ),
+    ])
+    .unwrap();
+
+    assert_eq!(loaded.value.keybindings[0].bindings.len(), 2);
   }
 
   #[test]
