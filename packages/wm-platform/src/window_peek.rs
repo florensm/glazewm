@@ -73,6 +73,9 @@ pub struct WindowPeek {
   /// no shadow of its own, cloaked or hidden by its alpha.
   casts_shadow: bool,
   drawn: Drawn,
+  /// Whether the backdrop copy is to be drawn while the window is (see
+  /// [`show_backdrop`](Self::show_backdrop)).
+  shows_backdrop: bool,
   /// The window's opacity, as last placed.
   opacity: u8,
   /// The real window's own alpha while it is hidden by it for a handover
@@ -137,6 +140,7 @@ impl WindowPeek {
       rest: rect.clone(),
       casts_shadow: false,
       drawn: Drawn::Shown,
+      shows_backdrop: false,
       opacity: u8::MAX,
       hidden_alpha: HiddenAlpha::default(),
       frame_rect: None,
@@ -234,15 +238,26 @@ impl WindowPeek {
     self.copies.carries_backdrop()
   }
 
-  /// Draws the backdrop copy from now on: once the real backdrop no
-  /// longer shows, or has been composited under it.
+  /// Draws the backdrop copy from now on, while the peek draws the window
+  /// at all: once the real backdrop no longer shows, or has been
+  /// composited under it.
   pub fn show_backdrop(&mut self) {
-    self.copies.show_backdrop(true);
+    self.shows_backdrop = true;
+    self.apply_backdrop();
   }
 
   /// Stops drawing the backdrop copy.
   pub fn hide_backdrop(&mut self) {
-    self.copies.show_backdrop(false);
+    self.shows_backdrop = false;
+    self.apply_backdrop();
+  }
+
+  /// Draws the backdrop copy or not, as asked and as the window is drawn:
+  /// over a real window handed back, an opaque copy would hide it.
+  fn apply_backdrop(&mut self) {
+    self.copies.show_backdrop(
+      self.shows_backdrop && self.drawn != Drawn::HandedBack,
+    );
   }
 
   /// Draws the window's border ring along with it from now on: `source`,
@@ -325,19 +340,31 @@ impl WindowPeek {
   }
 
   /// Hands the window back to its real window, uncloaked under the peek:
-  /// gives it its alpha back, then stops drawing the window and its
-  /// shadow, which the real window shows itself again. The ring and
-  /// backdrop copies stay, over the real ones revealed under them.
+  /// gives it its alpha back, then stops drawing the window, its backdrop
+  /// and its shadow, which the real window and the real backdrop, shown
+  /// as it landed, show again. The ring copy stays, over the real ring
+  /// revealed under it, until the peek goes.
   pub fn hand_back(&mut self) {
     self.hidden_alpha.restore();
     self.draw(Drawn::HandedBack);
     self.cast_shadow(false);
   }
 
-  /// Draws the window's own thumbnail as `drawn` says from now on.
+  /// Draws the window's own thumbnail, and its backdrop copy with it, as
+  /// `drawn` says from now on.
+  ///
+  /// The backdrop copy goes first and comes last: a frame between the
+  /// two then shows the window twice, over the real one under the peek,
+  /// rather than not at all, hidden by the opaque copy.
   fn draw(&mut self, drawn: Drawn) {
     self.drawn = drawn;
-    self.surrogate.set_window_opacity(self.window_opacity());
+    if drawn == Drawn::HandedBack {
+      self.apply_backdrop();
+      self.surrogate.set_window_opacity(self.window_opacity());
+    } else {
+      self.surrogate.set_window_opacity(self.window_opacity());
+      self.apply_backdrop();
+    }
   }
 
   /// The opacity the window's own thumbnail is drawn at.
