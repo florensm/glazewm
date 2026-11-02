@@ -370,7 +370,6 @@ impl ScrollView {
       entry.clip = clip.clone();
       entry.opacity = opacity;
       entry.role = role;
-      entry.peek.set_rest(&entry.motion.target_rect);
       entry
         .peek
         .carry_shadow(&window.native(), is_focused, corner_style);
@@ -733,14 +732,38 @@ pub fn track_overlays(
   batch.commit();
 }
 
-/// Hands `id`'s border ring, drawn with `params` or not at all, over to
-/// the copy its pinned peek carries, a step at a time (see
-/// [`RingHandover`]). Returns whether it did: not when the copy failed.
+/// Keeps `id`'s pinned peek drawing its window's ring, with `params` or
+/// not at all, and shadow around where the real window is, and hands the
+/// ring over to its copy a step at a time (see [`RingHandover`]). Returns
+/// whether it did: not when the copy failed.
+///
+/// Both follow the real window's own rect and frame, as steady state
+/// places its ring (see `sync_overlays`), rather than where the layout
+/// puts it: an app that keeps its window a little off that rect would
+/// otherwise have its ring shift as it scrolls, and back once it lands.
 fn carry_ring(
   state: &mut WmState,
   id: Uuid,
   params: Option<BorderOverlayParams>,
 ) -> bool {
+  let Some(window) = state.window_by_id(id) else {
+    return false;
+  };
+
+  // Shown where it was, or cloaked where its peek is headed.
+  let native = window.native();
+  let (Ok(bounds), Ok(frame)) =
+    (native.frame_with_shadows(), native.frame())
+  else {
+    return false;
+  };
+
+  if let Some(entry) =
+    state.animation_manager.scroll_view.entries.get_mut(&id)
+  {
+    entry.peek.follow_window(&bounds, &frame);
+  }
+
   let Some(params) = params else {
     // Hidden, which also ends its parking.
     if let Some(overlay) = state
@@ -753,34 +776,15 @@ fn carry_ring(
     return true;
   };
 
-  let Some(window) = state.window_by_id(id) else {
-    return false;
-  };
-  let Some(entry) = state.animation_manager.scroll_view.entries.get(&id)
-  else {
-    return false;
-  };
-
-  // The ring frames the window with its stack's tab bar, where the peek
-  // draws it now and where its real window is headed.
-  let Some(frame) = entry.peek.frame_rect().cloned() else {
-    return false;
-  };
-  let frame = crate::tab_bars::with_tab_bar_of(state, id, &frame);
-  let target = entry.motion.target_rect.clone();
-  let target_frame = crate::tab_bars::with_tab_bar_of(
-    state,
-    id,
-    &entry.peek.frame_of(&target),
-  );
-  let rect = entry.rect.clone();
-  let anchor = window.native().hwnd();
+  // Framed with its stack's tab bar, like the real window.
+  let ring_frame = crate::tab_bars::window_with_tab_bar(&window, &frame);
+  let anchor = native.hwnd();
 
   let Some(overlay) = overlay_entry::<NativeBorderOverlay>(
     &mut state.window_overlays,
     id,
     params,
-    &frame,
+    &ring_frame,
     anchor,
   ) else {
     return false;
@@ -803,34 +807,32 @@ fn carry_ring(
     | RingHandover::Parked
       if is_landing =>
     {
-      overlay.set_rect(&target_frame, anchor);
+      overlay.set_rect(&ring_frame, anchor);
       RingHandover::Revealed
     }
     RingHandover::Revealed if is_landing => RingHandover::Revealed,
-    // A ring on screen, where the window is now, is covered first; one
-    // that isn't goes straight to where the window is headed.
+    // A ring on screen is covered where it is first; one that isn't is
+    // concealed at once.
     RingHandover::None | RingHandover::Revealed => {
-      if overlay.is_visible() {
-        overlay.park(&frame, anchor, false);
-        let ring_rect = overlay.outer_rect();
-        if !entry.peek.carry_ring(overlay.hwnd(), &ring_rect, &rect) {
-          return false;
-        }
+      let is_shown = overlay.is_visible();
+      overlay.park(&ring_frame, anchor, !is_shown);
+
+      let ring_rect = overlay.outer_rect();
+      if !entry.peek.carry_ring(overlay.hwnd(), &ring_rect, &bounds) {
+        return false;
+      }
+
+      if is_shown {
         RingHandover::Covering
       } else {
-        overlay.park(&target_frame, anchor, true);
-        let ring_rect = overlay.outer_rect();
-        if !entry.peek.carry_ring(overlay.hwnd(), &ring_rect, &target) {
-          return false;
-        }
         RingHandover::Parked
       }
     }
     RingHandover::Covering => RingHandover::Covering,
     RingHandover::Covered | RingHandover::Parked => {
-      overlay.park(&target_frame, anchor, true);
+      overlay.park(&ring_frame, anchor, true);
       let ring_rect = overlay.outer_rect();
-      entry.peek.carry_ring(overlay.hwnd(), &ring_rect, &target);
+      entry.peek.carry_ring(overlay.hwnd(), &ring_rect, &bounds);
       RingHandover::Parked
     }
   };

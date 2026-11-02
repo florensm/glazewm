@@ -37,8 +37,7 @@ pub struct WindowPeek {
   /// See [`WindowPeek::awaits_companion`].
   companion_wait: HandoffWait,
   border_inset: RECT,
-  /// Where the real window is while the peek shows it, which the window's
-  /// shadow rests around.
+  /// Where the real window is, which its shadow rests around.
   rest: Rect,
   /// Whether the shadow copy is drawn: only while the real window is
   /// cloaked, so it shows no shadow of its own.
@@ -109,28 +108,21 @@ impl WindowPeek {
     })
   }
 
-  /// The window's visible frame when it is placed at `rect`.
-  #[must_use]
-  pub fn frame_of(&self, rect: &Rect) -> Rect {
-    to_logical(rect, &self.border_inset)
-  }
-
   /// Whether the peek moves with its window (see [`PeekMode::Live`]).
   #[must_use]
   pub fn is_live(&self) -> bool {
     matches!(self.mode, PeekMode::Live)
   }
 
-  /// Notes that the real window was moved to `rect`, which the window's
-  /// shadow then rests around.
-  pub fn set_rest(&mut self, rect: &Rect) {
+  /// Notes where the real window is, at `rect` with its frame at `frame`,
+  /// which its shadow then rests around.
+  pub fn follow_window(&mut self, rect: &Rect, frame: &Rect) {
     if &self.rest == rect {
       return;
     }
 
     self.rest = rect.clone();
-    let frame = to_logical(rect, &self.border_inset);
-    self.copies.move_shadow(rect, &frame);
+    self.copies.move_shadow(rect, frame);
   }
 
   /// Draws the window's border ring along with it from now on: `source`,
