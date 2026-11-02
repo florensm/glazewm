@@ -447,7 +447,7 @@ const CATCH_UP_BUDGET: Duration = Duration::from_millis(4);
 /// no such guard on every path, and delivering these events mid-slide
 /// broke the animation and left workspaces reporting no windows.
 ///
-/// So the gate is narrow on purpose: during a slide (and its one-tick
+/// So the gate is narrow on purpose: during a slide (and its few-tick
 /// cleanup) these wait for the `select!`. A slide is brief, so the
 /// responsiveness win during resizes -- which is where the queue actually
 /// backs up, ~195 events per burst -- is kept intact.

@@ -776,6 +776,7 @@ fn redraw_containers(
                 surrogate,
                 is_incoming: true,
                 was_focused,
+                handed_back: false,
               },
             ));
           } else {
@@ -827,6 +828,7 @@ fn redraw_containers(
                 surrogate,
                 is_incoming: false,
                 was_focused,
+                handed_back: false,
               },
             ));
           }
@@ -2747,7 +2749,7 @@ impl SyncableOverlay for NativeBorderOverlay {
 /// Windows with a `Live`-mode (backdrop-tracked) workspace-switch
 /// surrogate are owned entirely by the per-tick tracker in
 /// `AnimationManager::update_internal` for the whole slide plus the
-/// `pending_ws_cleanup` grace tick -- it updates `tint`/`blur_amount`/
+/// `pending_ws_cleanup` grace ticks -- it updates `tint`/`blur_amount`/
 /// `corner_radius`/`rect` every tick using the surrogate's own live
 /// position, which this function cannot do since it isn't invoked on most
 /// mid-slide ticks (only when `platform_sync` itself runs). Leave these
