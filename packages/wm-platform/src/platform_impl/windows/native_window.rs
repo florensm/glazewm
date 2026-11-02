@@ -35,14 +35,16 @@ use windows::{
       },
       WindowsAndMessaging::{
         EnumWindows, FlashWindowEx, GetAncestor, GetClassNameW,
-        GetDesktopWindow, GetForegroundWindow, GetLayeredWindowAttributes,
-        GetShellWindow, GetWindow, GetWindowLongPtrW, GetWindowRect,
-        GetWindowTextW, GetWindowThreadProcessId, IsIconic, IsWindow,
-        IsWindowVisible, IsZoomed, SendMessageTimeoutW,
-        SendNotifyMessageW, SetForegroundWindow,
-        SetLayeredWindowAttributes, SetWindowLongPtrW, SetWindowPlacement,
-        SetWindowPos, ShowWindowAsync, WindowFromPoint, FLASHWINFO,
-        FLASHW_STOP, GA_PARENT, GA_ROOT, GWL_EXSTYLE, GWL_STYLE,
+        GetDesktopWindow, GetForegroundWindow, GetGUIThreadInfo,
+        GetLayeredWindowAttributes, GetShellWindow, GetWindow,
+        GetWindowLongPtrW, GetWindowRect, GetWindowTextW,
+        GetWindowThreadProcessId, IsIconic, IsWindow, IsWindowVisible,
+        IsZoomed, SendMessageTimeoutW, SendNotifyMessageW,
+        SetForegroundWindow, SetLayeredWindowAttributes,
+        SetWindowLongPtrW, SetWindowPlacement, SetWindowPos,
+        ShowWindowAsync, WindowFromPoint, FLASHWINFO, FLASHW_STOP,
+        GA_PARENT, GA_ROOT, GUITHREADINFO, GUI_INMENUMODE, GUI_INMOVESIZE,
+        GUI_POPUPMENUMODE, GUI_SYSTEMMENUMODE, GWL_EXSTYLE, GWL_STYLE,
         GW_HWNDPREV, GW_OWNER, HWND_NOTOPMOST, HWND_TOP, HWND_TOPMOST,
         LAYERED_WINDOW_ATTRIBUTES_FLAGS, LWA_ALPHA, LWA_COLORKEY,
         MINMAXINFO, SET_WINDOW_POS_FLAGS, SMTO_ABORTIFHUNG, SMTO_BLOCK,
@@ -1199,6 +1201,30 @@ fn is_extended_key(vk: VIRTUAL_KEY) -> bool {
     VK_APPS,
   ]
   .contains(&vk)
+}
+
+/// Implements [`Dispatcher::is_foreground_interacting`].
+pub(crate) fn is_foreground_interacting() -> bool {
+  let mut info = GUITHREADINFO {
+    #[allow(clippy::cast_possible_truncation)]
+    cbSize: std::mem::size_of::<GUITHREADINFO>() as u32,
+    ..Default::default()
+  };
+
+  // SAFETY: `info` is a `GUITHREADINFO` with `cbSize` set, as required;
+  // thread `0` is the foreground thread.
+  if unsafe { GetGUIThreadInfo(0, &raw mut info) }.is_err() {
+    return false;
+  }
+
+  let busy_flags = GUI_INMENUMODE
+    | GUI_POPUPMENUMODE
+    | GUI_SYSTEMMENUMODE
+    | GUI_INMOVESIZE;
+
+  (info.flags & busy_flags).0 != 0
+    || info.hwndCapture.0 != 0
+    || info.hwndMenuOwner.0 != 0
 }
 
 /// Implements [`Dispatcher::window_from_point`].

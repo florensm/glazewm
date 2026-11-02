@@ -299,6 +299,17 @@ impl Dispatcher {
     (state.cast_unsigned() & 0x8000u16) != 0
   }
 
+  /// Whether the foreground app is mid-interaction: a menu is open, a
+  /// window is being moved or resized, or a window holds mouse capture
+  /// (e.g. an open dropdown, or a drag).
+  ///
+  /// None of these take the foreground from the app, and moving focus
+  /// away closes or buries them.
+  #[must_use]
+  pub fn is_foreground_interacting(&self) -> bool {
+    platform_impl::is_foreground_interacting()
+  }
+
   /// Gets the top-level window at the specified point.
   pub fn window_from_point(
     &self,

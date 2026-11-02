@@ -43,7 +43,9 @@ pub fn handle_mouse_move(
     // Ignore event if left/right-click is down. Otherwise, this causes
     // focus to jitter when a window is being resized by its drag
     // handles. Also ignore if the OS focused window isn't the same as
-    // the WM's focused window.
+    // the WM's focused window, and below, while the focused app has a
+    // menu or dropdown open: focusing another window would close it, or
+    // bury a popup behind that window.
     if pressed_buttons.contains(&MouseButton::Left)
       || pressed_buttons.contains(&MouseButton::Right)
       || !state.is_focus_synced
@@ -70,6 +72,7 @@ pub fn handle_mouse_move(
 
       if focused_container.id() != window.id()
         && is_focusable_by_hover(&window)?
+        && !state.dispatcher.is_foreground_interacting()
       {
         set_focused_descendant(&window.as_container(), None);
         state.pending_sync.queue_focus_change();
@@ -87,7 +90,9 @@ pub fn handle_mouse_move(
         .context("Focused container has no monitor.")?;
 
       // Avoid setting focus to the same monitor.
-      if cursor_monitor.id() != focused_monitor.id() {
+      if cursor_monitor.id() != focused_monitor.id()
+        && !state.dispatcher.is_foreground_interacting()
+      {
         set_focused_descendant(&cursor_monitor.as_container(), None);
         state.pending_sync.queue_focus_change();
       }
