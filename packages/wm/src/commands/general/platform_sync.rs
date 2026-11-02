@@ -725,12 +725,35 @@ fn redraw_containers(
             config,
           );
 
-          // A backdrop on either side switches the surrogate to `Live`
-          // mode, so the steady-state backdrop overlay is repositioned
-          // onto its footprint each tick and the frosted-glass effect
-          // stays visible (and can fade) while the workspace slides.
-          let overlay_tint =
-            from.backdrop.or(to.backdrop).map(|p| p.tint.to_abgr());
+          // A backdrop rides in a surrogate pinned to the viewport as
+          // copies of it (see `WorkspaceSurrogate::carry_backdrop`), in
+          // the style the window shows at its end of the switch. Only one
+          // that can't be copied switches the surrogate to `Live` mode,
+          // so the steady-state backdrop overlay is repositioned onto its
+          // footprint each tick instead.
+          let is_live = [from.backdrop, to.backdrop]
+            .iter()
+            .flatten()
+            .any(|params| !params.is_copyable());
+          let overlay_tint = from
+            .backdrop
+            .or(to.backdrop)
+            .filter(|_| is_live)
+            .map(|p| p.tint.to_abgr());
+          let copied_backdrop = if is_incoming {
+            to.backdrop
+          } else {
+            from.backdrop
+          }
+          .filter(|_| !is_live);
+          // Before anything else is copied into it: the backdrop goes
+          // under the window, the rest over it.
+          let carry_backdrop = |mut surrogate: WorkspaceSurrogate| {
+            if let Some(params) = copied_backdrop {
+              surrogate.carry_backdrop(params);
+            }
+            surrogate
+          };
 
           if is_incoming {
             let surrogate = window
@@ -765,7 +788,8 @@ fn redraw_containers(
                   e
                 })
                 .ok()
-              });
+              })
+              .map(carry_backdrop);
             // Always register incoming windows even without a surrogate so
             // `is_frozen_by_ws_animation` is true for all of them — this
             // prevents the real window from being uncloaked before the
@@ -821,7 +845,8 @@ fn redraw_containers(
               tracing::warn!("Failed to create outgoing surrogate: {e}.");
               e
             })
-            .ok();
+            .ok()
+            .map(carry_backdrop);
             ws_windows.push((
               id,
               WorkspaceSwitchEntry {

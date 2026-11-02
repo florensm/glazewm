@@ -5,8 +5,8 @@ use crate::{
   overlay_copies::OverlayCopies,
   platform_impl,
   resize_session::compute_border_inset,
-  CornerStyle, NativeSurrogate, NativeWindow, OpacityValue, Rect,
-  SurrogateBatch,
+  BackdropOverlayParams, CornerStyle, NativeSurrogate, NativeWindow,
+  OpacityValue, Rect, SurrogateBatch,
 };
 
 /// Thumbnail opacity a surrogate is warmed up at under its still-shown
@@ -152,6 +152,9 @@ pub struct WorkspaceSurrogate {
   /// [`take_over`]: WorkspaceSurrogate::take_over
   hidden_alpha: Option<(isize, u8)>,
 
+  /// The window the surrogate shows.
+  source: isize,
+
   /// Copies of the window's border ring and shadow. See [`carry_ring`]
   /// and [`carry_shadow`].
   ///
@@ -295,6 +298,7 @@ impl WorkspaceSurrogate {
       panel: None,
       frame_inset,
       hidden_alpha: None,
+      source: hwnd.0,
       copies: OverlayCopies::default(),
     })
   }
@@ -339,6 +343,54 @@ impl WorkspaceSurrogate {
   /// ring looks like one.
   pub fn cover_ring(&mut self) {
     self.copies.cover_ring();
+  }
+
+  /// Draws the window's backdrop, as `params` show it, under its copy from
+  /// now on (see `OverlayCopies::carry_backdrop`). Returns whether it
+  /// does: only a surrogate pinned to the viewport can, as for the ring,
+  /// and only a backdrop that can be copied (see
+  /// `BackdropOverlayParams::is_copyable`).
+  ///
+  /// Before [`carry_ring`](Self::carry_ring) and
+  /// [`carry_shadow`](Self::carry_shadow), which go over the window that
+  /// this puts back on top of the backdrop.
+  pub fn carry_backdrop(&mut self, params: BackdropOverlayParams) -> bool {
+    if self.is_live() || !params.is_copyable() {
+      return false;
+    }
+    if self.copies.backdrop_params() == Some(params) {
+      return true;
+    }
+
+    let is_new = !self.copies.carries_backdrop();
+    let (dest, frame) = (self.hwnd(), self.rest_frame());
+    if !self.copies.carry_backdrop(
+      dest,
+      params,
+      &self.viewport,
+      &self.rect,
+      &frame,
+    ) {
+      return false;
+    }
+
+    if is_new {
+      self.copies.show_backdrop(true);
+    }
+    self.inner.raise_thumbnail(HWND(self.source));
+    true
+  }
+
+  /// Whether the surrogate draws the window's backdrop (see
+  /// [`carry_backdrop`](Self::carry_backdrop)).
+  #[must_use]
+  pub fn carries_backdrop(&self) -> bool {
+    self.copies.carries_backdrop()
+  }
+
+  /// Hides the backdrop, e.g. as its window leaves the screen for good.
+  pub fn hide_backdrop(&mut self) {
+    self.copies.show_backdrop(false);
   }
 
   /// Hides the ring, e.g. as its window leaves the screen for good.

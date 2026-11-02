@@ -1248,6 +1248,44 @@ impl ShadowVisual {
   }
 }
 
+/// A backdrop's vignette alone, for a copy of a window's backdrop (see
+/// `VignetteSource`): the overlay's own brush, stretched over the whole of
+/// its `HWND`, so the copy matches the overlay.
+pub(crate) struct VignetteVisual {
+  /// Binds the visual tree to the `HWND`. Kept alive but never touched
+  /// again -- dropping it would unbind composition from the window.
+  _target: DesktopWindowTarget,
+  _root: SpriteVisual,
+}
+
+impl VignetteVisual {
+  /// Builds the vignette at `strength`, from `0.0` to `1.0`, on `hwnd`,
+  /// which must have been created with `WS_EX_NOREDIRECTIONBITMAP`.
+  pub(crate) fn create(hwnd: HWND, strength: f32) -> crate::Result<Self> {
+    let hwnd_raw = hwnd.0;
+
+    with_composition_thread(move |compositor, _| {
+      // SAFETY: `hwnd` is a valid, already-created top-level window.
+      let target = unsafe {
+        compositor
+          .cast::<ICompositorDesktopInterop>()?
+          .CreateDesktopWindowTarget(HWND(hwnd_raw), false)?
+      };
+
+      let root = compositor.CreateSpriteVisual()?;
+      root.SetRelativeSizeAdjustment(FILL_PARENT)?;
+      root.SetBrush(&build_vignette_brush(&compositor)?)?;
+      root.SetOpacity(strength.clamp(0.0, 1.0))?;
+      target.SetRoot(&root)?;
+
+      Ok(Self {
+        _target: target,
+        _root: root,
+      })
+    })
+  }
+}
+
 const DROP_INDICATOR_FILL_ALPHA: f32 = 0.2;
 
 /// Length of a drop indicator's glide from one target to the next.

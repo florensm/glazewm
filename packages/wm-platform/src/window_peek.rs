@@ -4,8 +4,10 @@ use crate::{
   companion::HandoffWait,
   native_surrogate::{placed_rects, to_logical},
   overlay_copies::OverlayCopies,
+  platform_impl::wallpaper_surface,
   resize_session::compute_border_inset,
-  CornerStyle, NativeSurrogate, NativeWindow, Rect, SurrogateBatch,
+  BackdropOverlayParams, CornerStyle, NativeSurrogate, NativeWindow, Rect,
+  SurrogateBatch,
 };
 
 /// How a [`WindowPeek`] draws its window.
@@ -115,7 +117,7 @@ impl WindowPeek {
   }
 
   /// Notes where the real window is, at `rect` with its frame at `frame`,
-  /// which its shadow then rests around.
+  /// which its shadow and backdrop then rest around.
   pub fn follow_window(&mut self, rect: &Rect, frame: &Rect) {
     if &self.rest == rect {
       return;
@@ -123,6 +125,62 @@ impl WindowPeek {
 
     self.rest = rect.clone();
     self.copies.move_shadow(rect, frame);
+    self.copies.move_backdrop(rect, frame);
+  }
+
+  /// Draws the window's backdrop, as `params` show it, under its copy from
+  /// now on, while [`show_backdrop`](Self::show_backdrop) says so (see
+  /// `OverlayCopies::carry_backdrop`). Returns whether the peek does: only
+  /// one that never moves can, and only a backdrop that can be copied (see
+  /// `BackdropOverlayParams::is_copyable`).
+  ///
+  /// Before [`carry_ring`](Self::carry_ring) and
+  /// [`carry_shadow`](Self::carry_shadow), which go over the window that
+  /// this puts back on top of the backdrop.
+  pub fn carry_backdrop(&mut self, params: BackdropOverlayParams) -> bool {
+    let PeekMode::Pinned { viewport } = &self.mode else {
+      return false;
+    };
+    if !params.is_copyable() {
+      return false;
+    }
+    if self.copies.backdrop_params() == Some(params) {
+      return true;
+    }
+
+    // Cut from a backdrop of the whole monitor, which the clip, its work
+    // area, is part of.
+    let monitor = wallpaper_surface::monitor_bounds(viewport);
+    let frame = to_logical(&self.rest, &self.border_inset);
+    let dest = self.surrogate.hwnd();
+
+    if !self
+      .copies
+      .carry_backdrop(dest, params, &monitor, &self.rest, &frame)
+    {
+      return false;
+    }
+
+    self.surrogate.raise_thumbnail(self.source);
+    true
+  }
+
+  /// Whether the peek draws the window's backdrop (see
+  /// [`carry_backdrop`](Self::carry_backdrop)).
+  #[must_use]
+  pub fn carries_backdrop(&self) -> bool {
+    self.copies.carries_backdrop()
+  }
+
+  /// Draws the backdrop copy from now on: once the real backdrop no
+  /// longer shows, or has been composited under it.
+  pub fn show_backdrop(&mut self) {
+    self.copies.show_backdrop(true);
+  }
+
+  /// Stops drawing the backdrop copy.
+  pub fn hide_backdrop(&mut self) {
+    self.copies.show_backdrop(false);
   }
 
   /// Draws the window's border ring along with it from now on: `source`,
@@ -262,6 +320,7 @@ impl WindowPeek {
     self.surrogate.set_window_opacity(opacity);
     self.copies.place(rect, clip, origin);
     self.copies.cover_ring();
+    self.copies.set_backdrop_opacity(u8::MAX);
     self.copies.set_shadow_opacity(if self.casts_shadow {
       u8::MAX
     } else {

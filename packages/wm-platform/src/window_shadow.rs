@@ -5,13 +5,7 @@
 use windows::Win32::{
   Foundation::{BOOL, HWND},
   Graphics::Dwm::{DwmGetWindowAttribute, DWMWA_NCRENDERING_ENABLED},
-  UI::{
-    HiDpi::GetDpiForWindow,
-    WindowsAndMessaging::{
-      SetWindowPos, HWND_BOTTOM, SWP_NOACTIVATE, SWP_NOSENDCHANGING,
-      SWP_SHOWWINDOW,
-    },
-  },
+  UI::{HiDpi::GetDpiForWindow, WindowsAndMessaging::HWND_BOTTOM},
 };
 
 use crate::{
@@ -291,24 +285,7 @@ impl WindowShadow {
 
   /// Shows the window at `rect`, which its visual tree stretches to fill.
   fn place(&mut self, rect: Rect) -> crate::Result<()> {
-    // SAFETY: `self.window` is valid for the lifetime of `self`.
-    unsafe {
-      SetWindowPos(
-        self.window.hwnd(),
-        HWND_BOTTOM,
-        rect.x(),
-        rect.y(),
-        rect.width(),
-        rect.height(),
-        SWP_NOACTIVATE | SWP_NOSENDCHANGING | SWP_SHOWWINDOW,
-      )
-    }
-    .map_err(|err| {
-      crate::Error::Platform(format!(
-        "Shadow window placement failed: {err}."
-      ))
-    })?;
-
+    self.window.place_at_bottom(&rect)?;
     self.rect = rect;
     Ok(())
   }

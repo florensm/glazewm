@@ -1576,6 +1576,18 @@ impl AnimationManager {
             // screen by now.
             if !entry.is_incoming {
               s.restore_alpha();
+
+              // Likewise its copy of the backdrop covered the real one,
+              // which can go, staying at rest while the window leaves.
+              if let Some(overlay) = s
+                .carries_backdrop()
+                .then(|| state.window_overlays.get_mut(&window_id))
+                .flatten()
+                .and_then(|overlays| overlays.backdrop.as_mut())
+                .filter(|overlay| overlay.is_visible())
+              {
+                overlay.hide();
+              }
             }
 
             // At completion, hide outgoing surrogates immediately. They
@@ -1586,6 +1598,7 @@ impl AnimationManager {
             if ws_done && !entry.is_incoming {
               s.hide_thumbnail();
               s.hide_ring();
+              s.hide_backdrop();
 
               // The ring is parked, or pinned to the viewport, rather
               // than tracking its window, so nothing else would take it
@@ -3569,6 +3582,7 @@ impl AnimationManager {
       }
       old.hide_thumbnail();
       old.hide_ring();
+      old.hide_backdrop();
       handed_over.push((*id, entry.is_incoming));
     }
 

@@ -9,9 +9,9 @@ use windows::{
     Foundation::{E_ACCESSDENIED, HWND},
     UI::WindowsAndMessaging::{
       DestroyWindow, GetClassNameW, GetWindow, SetLayeredWindowAttributes,
-      SetWindowPos, ShowWindow, GW_HWNDPREV, LWA_ALPHA, SWP_HIDEWINDOW,
-      SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSENDCHANGING, SWP_NOSIZE,
-      SWP_NOZORDER, SWP_SHOWWINDOW, SW_HIDE, WS_EX_LAYERED,
+      SetWindowPos, ShowWindow, GW_HWNDPREV, HWND_BOTTOM, LWA_ALPHA,
+      SWP_HIDEWINDOW, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSENDCHANGING,
+      SWP_NOSIZE, SWP_NOZORDER, SWP_SHOWWINDOW, SW_HIDE, WS_EX_LAYERED,
       WS_EX_NOACTIVATE, WS_EX_NOREDIRECTIONBITMAP, WS_EX_TOOLWINDOW,
       WS_EX_TRANSPARENT,
     },
@@ -31,6 +31,7 @@ pub(crate) enum OverlayKind {
   Border,
   DropIndicator,
   Shadow,
+  BackdropSource,
 }
 
 impl OverlayKind {
@@ -40,6 +41,7 @@ impl OverlayKind {
       Self::Border => w!("GlazeWM_BorderOverlay"),
       Self::DropIndicator => w!("GlazeWM_DropIndicator"),
       Self::Shadow => w!("GlazeWM_WindowShadow"),
+      Self::BackdropSource => w!("GlazeWM_BackdropSource"),
     }
   }
 
@@ -64,7 +66,7 @@ impl OverlayKind {
   /// while thumbnails of it still draw it (see
   /// [`OverlayWindow::set_alpha`]).
   fn is_layered(self) -> bool {
-    matches!(self, Self::Border | Self::Shadow)
+    matches!(self, Self::Border | Self::Shadow | Self::BackdropSource)
   }
 
   fn registered(self) -> &'static OnceLock<()> {
@@ -72,12 +74,14 @@ impl OverlayKind {
     static BORDER: OnceLock<()> = OnceLock::new();
     static DROP_INDICATOR: OnceLock<()> = OnceLock::new();
     static SHADOW: OnceLock<()> = OnceLock::new();
+    static BACKDROP_SOURCE: OnceLock<()> = OnceLock::new();
 
     match self {
       Self::Backdrop => &BACKDROP,
       Self::Border => &BORDER,
       Self::DropIndicator => &DROP_INDICATOR,
       Self::Shadow => &SHADOW,
+      Self::BackdropSource => &BACKDROP_SOURCE,
     }
   }
 
@@ -88,6 +92,7 @@ impl OverlayKind {
       Self::Border => "Border overlay",
       Self::DropIndicator => "Drop indicator",
       Self::Shadow => "Window shadow",
+      Self::BackdropSource => "Backdrop source",
     }
   }
 }
@@ -215,6 +220,38 @@ impl OverlayWindow {
     self.anchor = anchor.0;
     self.is_visible = true;
     true
+  }
+
+  /// Shows the window at `rect` at the bottom of the z-order, for a window
+  /// only thumbnails of it show (see [`set_alpha`](Self::set_alpha)):
+  /// there nothing settles behind or in front of it, and where it is
+  /// doesn't change what they show.
+  pub(crate) fn place_at_bottom(
+    &mut self,
+    rect: &Rect,
+  ) -> crate::Result<()> {
+    // SAFETY: `self.hwnd()` is valid for the lifetime of `self`.
+    unsafe {
+      SetWindowPos(
+        self.hwnd(),
+        HWND_BOTTOM,
+        rect.x(),
+        rect.y(),
+        rect.width(),
+        rect.height(),
+        SWP_NOACTIVATE | SWP_NOSENDCHANGING | SWP_SHOWWINDOW,
+      )
+    }
+    .map_err(|err| {
+      crate::Error::Platform(format!(
+        "{} placement failed: {err}.",
+        self.kind.label()
+      ))
+    })?;
+
+    self.anchor = HWND_BOTTOM.0;
+    self.is_visible = true;
+    Ok(())
   }
 
   /// Logs a failed [`place`](Self::place).

@@ -4,6 +4,7 @@
 #[cfg(not(target_os = "windows"))]
 compile_error!("GlazeWM only supports Windows.");
 
+mod backdrop_source;
 mod click_guard;
 mod companion;
 mod dispatcher;

@@ -15,9 +15,10 @@
 //! and the rest are dropped.
 //!
 //! As for a workspace switch, a peek spans its monitor and never moves:
-//! only its thumbnail does, along with copies of the window's border ring
-//! and shadow, in the same DWM updates. A window with a backdrop, which
-//! can't be copied, has its peek move with it instead (see `WindowPeek`).
+//! only its thumbnail does, along with copies of the window's border ring,
+//! shadow and backdrop, in the same DWM updates. A window whose backdrop
+//! can't be copied (rounded, or drifting with parallax) has its peek move
+//! with it instead (see `WindowPeek`).
 //!
 //! A peek's border, backdrop and tab bar are cut at the monitor edge like
 //! the peek itself, so nothing of a column shows on the monitor beside it.
@@ -30,8 +31,9 @@ use std::{
 use uuid::Uuid;
 use wm_common::{DisplayState, Layout, WindowState};
 use wm_platform::{
-  BorderOverlayParams, NativeBackdropOverlay, NativeBorderOverlay,
-  Overlay, Point, Rect, StyleBlend, SurrogateBatch, WindowPeek, HWND,
+  BackdropOverlayParams, BorderOverlayParams, NativeBackdropOverlay,
+  NativeBorderOverlay, Overlay, Point, Rect, StyleBlend, SurrogateBatch,
+  WindowPeek, HWND,
 };
 
 use super::{
@@ -68,23 +70,23 @@ enum Role {
   Releasing { settled: bool },
 }
 
-/// How far a pinned peek has taken over its window's border ring, which
-/// it hands over as a workspace switch does: covered where it is by the
-/// copy, concealed a composited frame later and parked where its window
-/// is headed, then revealed there under the copy once the window lands.
+/// How far a pinned peek has taken over its window's border ring or
+/// backdrop, which it hands over as a workspace switch does: covered
+/// where it is by the copy, hidden a composited frame later (the ring
+/// parked where its window is headed), then shown again where the window
+/// lands, under the copy.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-enum RingHandover {
-  /// The peek draws no copy of the ring.
+enum Handover {
+  /// The peek draws no copy of it.
   #[default]
   None,
-  /// The copy covers the ring, still shown where it was.
+  /// The copy is drawn, the real one still shown where it was.
   Covering,
-  /// The copy has been composited over the ring, which can go.
+  /// The copy has been composited, so the real one can go.
   Covered,
-  /// The ring is concealed where its window is headed, shown only by the
-  /// copy.
+  /// Hidden, shown only by the copy.
   Parked,
-  /// The ring is shown again where its window landed, under the copy.
+  /// Shown again where its window landed, under the copy.
   Revealed,
 }
 
@@ -97,7 +99,10 @@ struct Entry {
   clip: Rect,
   opacity: u8,
   role: Role,
-  ring: RingHandover,
+  ring: Handover,
+  backdrop: Handover,
+  /// The backdrop style the peek's copy draws, if any.
+  backdrop_params: Option<BackdropOverlayParams>,
 }
 
 impl Entry {
@@ -222,8 +227,10 @@ impl ScrollView {
     for (id, entry) in &mut self.entries {
       // A later composition than the one the copy was put over the ring
       // in.
-      if entry.ring == RingHandover::Covering {
-        entry.ring = RingHandover::Covered;
+      for handover in [&mut entry.ring, &mut entry.backdrop] {
+        if *handover == Handover::Covering {
+          *handover = Handover::Covered;
+        }
       }
 
       match entry.role {
@@ -354,8 +361,9 @@ impl ScrollView {
         scroll_config.easing.clone(),
       ),
     };
-    // The window's own transparency and corners, as it is focused or not.
-    let (opacity, corner_style, _) =
+    // The window's own transparency, corners and backdrop, as it is
+    // focused or not.
+    let (opacity, corner_style, overlays) =
       surrogate_effects_for(window.effect_set(is_focused), config);
     if !is_moving {
       motion.start_clock(Instant::now());
@@ -370,6 +378,15 @@ impl ScrollView {
       entry.clip = clip.clone();
       entry.opacity = opacity;
       entry.role = role;
+      if entry.backdrop_params != overlays.backdrop {
+        entry.backdrop_params = overlays.backdrop;
+        match overlays.backdrop {
+          Some(params) => {
+            entry.peek.carry_backdrop(params);
+          }
+          None => entry.peek.hide_backdrop(),
+        }
+      }
       entry
         .peek
         .carry_shadow(&window.native(), is_focused, corner_style);
@@ -379,13 +396,13 @@ impl ScrollView {
       return covers_shown_window;
     }
 
-    // A backdrop can't be copied along, so a window with one in either
-    // focus state has a peek that moves with it.
+    // A window with a backdrop that can't be copied along in either focus
+    // state has a peek that moves with it.
     let is_live = [true, false].into_iter().any(|is_focused| {
       surrogate_effects_for(window.effect_set(is_focused), config)
         .2
         .backdrop
-        .is_some()
+        .is_some_and(|params| !params.is_copyable())
     });
 
     // Sized like the window itself, which a collapsed `from` (an opening
@@ -403,6 +420,11 @@ impl ScrollView {
       return false;
     };
 
+    // Under the ring and shadow, which go on top of it.
+    if let Some(params) = overlays.backdrop {
+      peek.carry_backdrop(params);
+    }
+
     // A moving column's real window still shows, with its own shadow,
     // until a tick after this; one at rest is already cloaked.
     peek.carry_shadow(&window.native(), is_focused, corner_style);
@@ -416,7 +438,9 @@ impl ScrollView {
       clip: clip.clone(),
       opacity,
       role,
-      ring: RingHandover::None,
+      ring: Handover::None,
+      backdrop: Handover::None,
+      backdrop_params: overlays.backdrop,
     };
     entry.place(&rect, batch);
     self.entries.insert(window.id(), entry);
@@ -618,8 +642,8 @@ pub fn report_stuck_windows(state: &mut WmState) {
 /// Commits their moves in `batch`, along with the peeks' moves it already
 /// holds, so a peek and its overlays land in the same frame.
 ///
-/// A peek that never moves carries a copy of the ring (see
-/// [`RingHandover`]). One that moves with its window has its border
+/// A peek that never moves carries copies of the ring and backdrop (see
+/// [`Handover`]). One that moves with its window has its border
 /// pinned to the monitor instead and slid within it, as for a workspace
 /// switch, so the ring and where it is cut can't land on screen a frame
 /// apart.
@@ -663,7 +687,11 @@ pub fn track_overlays(
       config,
     );
 
+    let carries_backdrop =
+      !is_live && carry_backdrop(state, id, overlays.backdrop);
+
     match (overlays.backdrop, &frame) {
+      _ if carries_backdrop => {}
       (Some(params), Some(frame)) => {
         upsert_clipped_overlay::<NativeBackdropOverlay>(
           &mut state.window_overlays,
@@ -734,7 +762,7 @@ pub fn track_overlays(
 
 /// Keeps `id`'s pinned peek drawing its window's ring, with `params` or
 /// not at all, and shadow around where the real window is, and hands the
-/// ring over to its copy a step at a time (see [`RingHandover`]). Returns
+/// ring over to its copy a step at a time (see [`Handover`]). Returns
 /// whether it did: not when the copy failed.
 ///
 /// Both follow the real window's own rect and frame, as steady state
@@ -802,18 +830,16 @@ fn carry_ring(
   entry.ring = match entry.ring {
     // Shown where the window landed, under the copy, before the peek
     // that draws it goes.
-    RingHandover::Covering
-    | RingHandover::Covered
-    | RingHandover::Parked
+    Handover::Covering | Handover::Covered | Handover::Parked
       if is_landing =>
     {
       overlay.set_rect(&ring_frame, anchor);
-      RingHandover::Revealed
+      Handover::Revealed
     }
-    RingHandover::Revealed if is_landing => RingHandover::Revealed,
+    Handover::Revealed if is_landing => Handover::Revealed,
     // A ring on screen is covered where it is first; one that isn't is
     // concealed at once.
-    RingHandover::None | RingHandover::Revealed => {
+    Handover::None | Handover::Revealed => {
       let is_shown = overlay.is_visible();
       overlay.park(&ring_frame, anchor, !is_shown);
 
@@ -823,17 +849,125 @@ fn carry_ring(
       }
 
       if is_shown {
-        RingHandover::Covering
+        Handover::Covering
       } else {
-        RingHandover::Parked
+        Handover::Parked
       }
     }
-    RingHandover::Covering => RingHandover::Covering,
-    RingHandover::Covered | RingHandover::Parked => {
+    Handover::Covering => Handover::Covering,
+    Handover::Covered | Handover::Parked => {
       overlay.park(&ring_frame, anchor, true);
       let ring_rect = overlay.outer_rect();
       entry.peek.carry_ring(overlay.hwnd(), &ring_rect, &bounds);
-      RingHandover::Parked
+      Handover::Parked
+    }
+  };
+
+  true
+}
+
+/// Hands `id`'s backdrop, drawn with `params` or not at all, over to the
+/// copy its pinned peek carries, as its ring is (see [`Handover`]): the
+/// copy is shown under the overlay, which goes a composited frame later,
+/// and the overlay comes back where the window lands, under the copy.
+/// Returns whether it did: not for a peek carrying no backdrop.
+fn carry_backdrop(
+  state: &mut WmState,
+  id: Uuid,
+  params: Option<BackdropOverlayParams>,
+) -> bool {
+  let carries = state
+    .animation_manager
+    .scroll_view
+    .entries
+    .get(&id)
+    .is_some_and(|entry| entry.peek.carries_backdrop());
+  let Some(window) = state.window_by_id(id).filter(|_| carries) else {
+    return false;
+  };
+
+  let Some(params) = params else {
+    if let Some(overlay) = state
+      .window_overlays
+      .get_mut(&id)
+      .and_then(|overlays| overlays.backdrop.as_mut())
+    {
+      overlay.hide();
+    }
+    if let Some(entry) =
+      state.animation_manager.scroll_view.entries.get_mut(&id)
+    {
+      entry.peek.hide_backdrop();
+      entry.backdrop = Handover::None;
+    }
+    return true;
+  };
+
+  // Where steady state puts it (see `sync_overlays`): over the real
+  // window's own frame, where it shows before a scroll and waits cloaked
+  // during one.
+  let native = window.native();
+  let Ok(frame) = native.frame() else {
+    return false;
+  };
+  let anchor = native.hwnd();
+
+  let Some(entry) =
+    state.animation_manager.scroll_view.entries.get_mut(&id)
+  else {
+    return false;
+  };
+  let is_landing =
+    matches!(entry.role, Role::HandingBack | Role::Releasing { .. });
+  entry.peek.show_backdrop();
+
+  let handover = entry.backdrop;
+  entry.backdrop = if is_landing
+    && matches!(
+      handover,
+      Handover::Covering | Handover::Covered | Handover::Parked
+    ) {
+    let Some(overlay) = overlay_entry::<NativeBackdropOverlay>(
+      &mut state.window_overlays,
+      id,
+      params,
+      &frame,
+      anchor,
+    ) else {
+      return false;
+    };
+    overlay.apply_blend(StyleBlend::settled(params));
+    overlay.set_rect(&frame, anchor);
+    Handover::Revealed
+  } else {
+    // Only an overlay that exists is handed over: one created now would
+    // show at once, over the copy.
+    let mut overlay = state
+      .window_overlays
+      .get_mut(&id)
+      .and_then(|overlays| overlays.backdrop.as_mut());
+    if let Some(overlay) = &mut overlay {
+      overlay.apply_blend(StyleBlend::settled(params));
+    }
+    let is_shown =
+      overlay.as_ref().is_some_and(|overlay| overlay.is_visible());
+
+    match handover {
+      Handover::Revealed if is_landing => Handover::Revealed,
+      Handover::None | Handover::Revealed => {
+        if is_shown {
+          Handover::Covering
+        } else {
+          Handover::Parked
+        }
+      }
+      Handover::Covering => Handover::Covering,
+      Handover::Covered | Handover::Parked => {
+        if let Some(overlay) = overlay.filter(|_| is_shown) {
+          overlay.hide();
+        }
+        Handover::Parked
+      }
     }
   };
 

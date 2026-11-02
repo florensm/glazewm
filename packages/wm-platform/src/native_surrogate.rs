@@ -1021,6 +1021,26 @@ impl NativeSurrogate {
     self.last_rect = None;
   }
 
+  /// Registers the thumbnail of `source_hwnd` anew as it is, so it stacks
+  /// above thumbnails registered on the surrogate since (see
+  /// `Thumbnail::register`).
+  pub(crate) fn raise_thumbnail(&mut self, source_hwnd: HWND) {
+    let Some(look) =
+      self.thumbnail.as_ref().map(|thumbnail| *thumbnail.look())
+    else {
+      return;
+    };
+
+    // Unregistered first, as two would draw the window twice.
+    self.thumbnail = None;
+    self.thumbnail = register_thumbnail(
+      HWND(self.hwnd),
+      source_hwnd,
+      self.companion,
+      look,
+    );
+  }
+
   /// Moves and resizes the surrogate overlay to `rect` and sets the
   /// whole-window opacity to `opacity` (0 = fully transparent, 255 =
   /// opaque).
