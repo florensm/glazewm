@@ -85,10 +85,7 @@ pub fn auto_stack_managed_window(
     match decide(&config.value.stack.auto_stack, &properties, traits) {
       AutoStackDecision::Join(rule) => rule,
       AutoStackDecision::Blocked(reason) => {
-        info!(
-          "Not auto-stacking window '{}' because {reason}.",
-          properties.title
-        );
+        info!("Not auto-stacking window because {reason}: {window}");
         return leave_provisional_stack(&window, state, config);
       }
       AutoStackDecision::Skip => {
