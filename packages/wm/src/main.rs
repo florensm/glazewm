@@ -280,6 +280,9 @@ async fn start_wm(
       Some((stack_id, action)) = wm.tab_action_rx.recv() => {
         wm.process_tab_action(stack_id, action, &mut config)
       },
+      Some(window) = wm.guarded_click_rx.recv() => {
+        wm.process_guarded_click(&window, &config)
+      },
       Some(wm_event) = wm.event_rx.recv() => {
         handle_wm_event(
           wm_event,
@@ -475,6 +478,11 @@ fn catch_up_before_frame(
 
     if let Ok((stack_id, action)) = wm.tab_action_rx.try_recv() {
       wm.process_tab_action(stack_id, action, config)?;
+      continue;
+    }
+
+    if let Ok(window) = wm.guarded_click_rx.try_recv() {
+      wm.process_guarded_click(&window, config)?;
       continue;
     }
 

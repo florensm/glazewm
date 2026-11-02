@@ -191,6 +191,10 @@ pub fn platform_sync(
     crate::animation::scroll_view::report_stuck_windows(state);
   }
 
+  if let Err(err) = crate::layout::scrolling::sync_click_guard(state) {
+    tracing::warn!("Failed to sync the click guard: {err}");
+  }
+
   state.pending_sync.clear();
 
   Ok(())

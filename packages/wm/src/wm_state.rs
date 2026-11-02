@@ -6,9 +6,9 @@ use tracing::warn;
 use uuid::Uuid;
 use wm_common::{BindingModeConfig, EffectSet, WindowState, WmEvent};
 use wm_platform::{
-  Direction, Dispatcher, Display, Keybinding, NativeDropIndicator,
-  NativeStackTabBar, NativeWindow, OpacityValue, OverviewAction, Point,
-  Rect, TabAction,
+  ClickGuard, Direction, Dispatcher, Display, Keybinding,
+  NativeDropIndicator, NativeStackTabBar, NativeWindow, OpacityValue,
+  OverviewAction, Point, Rect, TabAction,
 };
 
 use crate::{
@@ -132,6 +132,10 @@ pub struct WmState {
 
   /// Tab bar settings resolved from the config, cleared on reload.
   pub tab_bar_settings: Option<crate::tab_bars::TabBarSettings>,
+
+  /// Keeps clicks from the windows a click should only focus (see
+  /// `layout::scrolling::sync_click_guard`).
+  pub click_guard: ClickGuard,
 }
 
 impl WmState {
@@ -142,6 +146,7 @@ impl WmState {
     animation_tick_tx: mpsc::UnboundedSender<()>,
     overview_action_tx: mpsc::UnboundedSender<(u64, OverviewAction)>,
     tab_action_tx: mpsc::UnboundedSender<(Uuid, TabAction)>,
+    guarded_click_tx: mpsc::UnboundedSender<NativeWindow>,
   ) -> Self {
     Self {
       root_container: RootContainer::new(),
@@ -171,6 +176,7 @@ impl WmState {
       tab_bars: HashMap::new(),
       tab_bar_thread: std::cell::OnceCell::new(),
       tab_bar_settings: None,
+      click_guard: ClickGuard::new(guarded_click_tx),
     }
   }
 

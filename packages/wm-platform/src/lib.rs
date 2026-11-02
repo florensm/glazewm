@@ -4,6 +4,7 @@
 #[cfg(not(target_os = "windows"))]
 compile_error!("GlazeWM only supports Windows.");
 
+mod click_guard;
 mod companion;
 mod dispatcher;
 mod display;
@@ -53,6 +54,7 @@ mod window_listener;
 mod window_peek;
 mod workspace_surrogate;
 
+pub use click_guard::ClickGuard;
 pub use dispatcher::*;
 pub use display::*;
 pub use display_listener::*;

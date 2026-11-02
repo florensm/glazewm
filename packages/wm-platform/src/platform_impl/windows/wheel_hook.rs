@@ -1,11 +1,7 @@
-use std::{
-  cell::Cell,
-  sync::mpsc,
-  thread::{self, JoinHandle},
-};
+use std::cell::Cell;
 
 use windows::Win32::{
-  Foundation::{HINSTANCE, LPARAM, LRESULT, WPARAM},
+  Foundation::{LPARAM, LRESULT, WPARAM},
   System::Threading::GetCurrentThreadId,
   UI::{
     Input::KeyboardAndMouse::{
@@ -15,15 +11,13 @@ use windows::Win32::{
       VK_RSHIFT, VK_RWIN,
     },
     WindowsAndMessaging::{
-      CallNextHookEx, GetMessageW, PeekMessageW, PostThreadMessageW,
-      SetWindowsHookExW, UnhookWindowsHookEx, MSG, MSLLHOOKSTRUCT,
-      PM_NOREMOVE, WH_MOUSE_LL, WM_APP, WM_MOUSEHWHEEL, WM_MOUSEWHEEL,
-      WM_QUIT,
+      CallNextHookEx, PostThreadMessageW, MSLLHOOKSTRUCT, WM_APP,
+      WM_MOUSEHWHEEL, WM_MOUSEWHEEL,
     },
   },
 };
 
-use super::SENT_KEY_MARKER;
+use super::{MouseHookThread, SENT_KEY_MARKER};
 use crate::{Key, KeyCode};
 
 /// Callback stored in [`HOOK`] for wheel events.
@@ -76,13 +70,9 @@ impl WheelEvent {
 }
 
 /// A system-wide low-level mouse hook that only reports wheel turns.
-///
-/// Runs on a thread of its own: every mouse event in the system waits on
-/// a low-level hook, so a busy thread would make the cursor stutter.
 #[derive(Debug)]
 pub struct WheelHook {
-  thread_id: u32,
-  thread: Option<JoinHandle<()>>,
+  thread: MouseHookThread,
 }
 
 impl WheelHook {
@@ -94,94 +84,23 @@ impl WheelHook {
   where
     F: FnMut(WheelEvent) -> bool + Send + 'static,
   {
-    let (started_tx, started_rx) = mpsc::channel();
+    let thread = MouseHookThread::spawn(
+      "wheel-hook",
+      move || HOOK.with(|state| state.set(Some(Box::new(callback)))),
+      Some(Self::hook_proc),
+      |msg| {
+        if msg.message == WM_MASK_MODIFIERS {
+          mask_modifier_release();
+        }
+      },
+    )?;
 
-    let thread = thread::Builder::new()
-      .name("wheel-hook".to_string())
-      .spawn(move || Self::run(Box::new(callback), &started_tx))?;
-
-    match started_rx.recv() {
-      Ok(Ok(thread_id)) => Ok(Self {
-        thread_id,
-        thread: Some(thread),
-      }),
-      Ok(Err(err)) => {
-        let _ = thread.join();
-        Err(err)
-      }
-      Err(_) => Err(crate::Error::Thread(
-        "Wheel hook thread exited before hooking the mouse.".to_string(),
-      )),
-    }
+    Ok(Self { thread })
   }
 
   /// Terminates the hook by unregistering it and ending its thread.
   pub fn terminate(&mut self) -> crate::Result<()> {
-    let Some(thread) = self.thread.take() else {
-      return Ok(());
-    };
-
-    // SAFETY: No preconditions; the thread's message queue exists from
-    // before `new` returned.
-    unsafe {
-      PostThreadMessageW(self.thread_id, WM_QUIT, WPARAM(0), LPARAM(0))
-    }?;
-
-    thread.join().map_err(|_| {
-      crate::Error::Thread("Wheel hook thread panicked.".to_string())
-    })
-  }
-
-  /// Hooks the mouse and pumps the thread's messages until `WM_QUIT`,
-  /// without which a low-level hook is never called.
-  ///
-  /// Sends the thread's id through `started_tx` once hooked.
-  fn run(
-    callback: HookCallback,
-    started_tx: &mpsc::Sender<crate::Result<u32>>,
-  ) {
-    HOOK.with(|state| state.set(Some(callback)));
-
-    let mut msg = MSG::default();
-
-    // Creates the thread's message queue, so that `WM_QUIT` can be posted
-    // to it from the moment `new` returns.
-    // SAFETY: `msg` outlives the call.
-    let _ = unsafe { PeekMessageW(&raw mut msg, None, 0, 0, PM_NOREMOVE) };
-
-    // SAFETY: `hook_proc` stays valid for the life of the process.
-    let hooked = unsafe {
-      SetWindowsHookExW(
-        WH_MOUSE_LL,
-        Some(Self::hook_proc),
-        HINSTANCE::default(),
-        0,
-      )
-    };
-
-    let handle = match hooked {
-      Ok(handle) => handle,
-      Err(err) => {
-        let _ = started_tx.send(Err(err.into()));
-        return;
-      }
-    };
-
-    // SAFETY: No preconditions.
-    let _ = started_tx.send(Ok(unsafe { GetCurrentThreadId() }));
-
-    // `GetMessageW` returns 0 for `WM_QUIT` and -1 on failure.
-    // SAFETY: `msg` outlives the call.
-    while unsafe { GetMessageW(&raw mut msg, None, 0, 0) }.0 > 0 {
-      if msg.message == WM_MASK_MODIFIERS {
-        mask_modifier_release();
-      }
-    }
-
-    // SAFETY: `handle` is the hook installed above.
-    if let Err(err) = unsafe { UnhookWindowsHookEx(handle) } {
-      tracing::warn!("Failed to unhook the mouse wheel: {err}");
-    }
+    self.thread.terminate()
   }
 
   /// Hook procedure for mouse events, for use with `SetWindowsHookExW`.
@@ -247,12 +166,6 @@ impl WheelHook {
     }
 
     LRESULT(1)
-  }
-}
-
-impl Drop for WheelHook {
-  fn drop(&mut self) {
-    let _ = self.terminate();
   }
 }
 

@@ -1,3 +1,4 @@
+mod click_hook;
 pub(crate) mod com;
 pub(crate) mod composition;
 mod display;
@@ -5,6 +6,7 @@ mod display_listener;
 mod event_loop;
 pub(crate) mod graphics_device;
 mod keyboard_hook;
+mod mouse_hook;
 mod mouse_listener;
 mod native_window;
 mod single_instance;
@@ -14,10 +16,12 @@ mod wheel_hook;
 mod window_enabler;
 mod window_listener;
 
+pub(crate) use click_hook::*;
 pub(crate) use display::*;
 pub(crate) use display_listener::*;
 pub(crate) use event_loop::*;
 pub(crate) use keyboard_hook::*;
+pub(crate) use mouse_hook::*;
 pub(crate) use mouse_listener::*;
 pub(crate) use native_window::*;
 pub(crate) use single_instance::*;

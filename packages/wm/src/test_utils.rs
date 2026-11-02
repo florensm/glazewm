@@ -350,6 +350,7 @@ impl WmState {
     let (animation_tick_tx, _) = tokio::sync::mpsc::unbounded_channel();
     let (overview_action_tx, _) = tokio::sync::mpsc::unbounded_channel();
     let (tab_action_tx, _) = tokio::sync::mpsc::unbounded_channel();
+    let (guarded_click_tx, _) = tokio::sync::mpsc::unbounded_channel();
 
     let state = Self::new(
       wm_platform::Dispatcher::mock(),
@@ -358,6 +359,7 @@ impl WmState {
       animation_tick_tx,
       overview_action_tx,
       tab_action_tx,
+      guarded_click_tx,
     );
 
     for monitor in monitors {

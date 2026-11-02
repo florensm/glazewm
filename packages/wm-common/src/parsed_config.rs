@@ -318,6 +318,11 @@ pub struct ScrollingLayoutConfig {
   /// hovering. Unset for no limit.
   pub focus_follows_cursor_max_scroll: Option<LengthValue>,
 
+  /// Whether a click on a column that focusing scrolls to (e.g. one
+  /// partly off screen) only focuses it, rather than also reaching its
+  /// window.
+  pub click_to_scroll: bool,
+
   /// Room kept free at the workspace's sides: columns are fitted between
   /// the struts, so the columns beside them always peek out there.
   pub struts: StrutsConfig,
@@ -458,6 +463,7 @@ impl Default for ScrollingLayoutConfig {
       always_center_single_column: false,
       default_column_display: ColumnDisplay::default(),
       focus_follows_cursor_max_scroll: None,
+      click_to_scroll: true,
       struts: StrutsConfig::default(),
     }
   }

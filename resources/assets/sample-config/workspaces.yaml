@@ -34,6 +34,10 @@ layouts:
     # windows fully on screen. Unset is no limit.
     # focus_follows_cursor_max_scroll: "0%"
 
+    # A click on a column partly off screen only focuses it and scrolls it
+    # into view, rather than also reaching its window.
+    click_to_scroll: true
+
     # Room kept free at the sides, so neighbouring columns peek out.
     struts:
       left: "0px"

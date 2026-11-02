@@ -7,9 +7,11 @@ pub fn toggle_pause(state: &mut WmState) {
   let is_paused = !state.is_paused;
   state.is_paused = is_paused;
 
-  // Drags aren't followed while paused, so one in progress never ends.
+  // Drags aren't followed while paused, so one in progress never ends,
+  // and clicks reach every window.
   if is_paused {
     crate::drop_indicator::hide_drop_indicator(state);
+    state.click_guard.guard([]);
   }
 
   // Redraw full container tree on unpause.

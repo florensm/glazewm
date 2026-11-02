@@ -13,8 +13,8 @@ use wm_common::{
   WmEvent,
 };
 use wm_platform::{
-  Dispatcher, Keybinding, LengthValue, OverviewAction, PlatformEvent,
-  RectDelta, WindowEvent,
+  Dispatcher, Keybinding, LengthValue, NativeWindow, OverviewAction,
+  PlatformEvent, RectDelta, WindowEvent,
 };
 
 use crate::{
@@ -28,8 +28,8 @@ use crate::{
       RowTarget,
     },
     container::{
-      focus_container_by_id, focus_in_direction, set_tiling_direction,
-      toggle_tiling_direction,
+      focus_container_by_id, focus_in_direction, set_focused_descendant,
+      set_tiling_direction, toggle_tiling_direction,
     },
     general::{
       cycle_focus, disable_binding_mode, enable_binding_mode,
@@ -79,6 +79,8 @@ pub struct WindowManager {
   /// platforms without tab bars.
   pub tab_action_rx:
     mpsc::UnboundedReceiver<(uuid::Uuid, wm_platform::TabAction)>,
+  /// Windows whose click the `ClickGuard` kept from them.
+  pub guarded_click_rx: mpsc::UnboundedReceiver<NativeWindow>,
 }
 
 impl WindowManager {
@@ -92,6 +94,7 @@ impl WindowManager {
     let (overview_action_tx, overview_action_rx) =
       mpsc::unbounded_channel();
     let (tab_action_tx, tab_action_rx) = mpsc::unbounded_channel();
+    let (guarded_click_tx, guarded_click_rx) = mpsc::unbounded_channel();
 
     let mut state = WmState::new(
       dispatcher,
@@ -100,6 +103,7 @@ impl WindowManager {
       animation_tick_tx,
       overview_action_tx,
       tab_action_tx,
+      guarded_click_tx,
     );
     state.populate(config)?;
 
@@ -115,7 +119,31 @@ impl WindowManager {
       overview_action_rx,
       state,
       tab_action_rx,
+      guarded_click_rx,
     })
+  }
+
+  /// Focuses a window whose click the `ClickGuard` kept from it, which
+  /// scrolls it into view.
+  pub fn process_guarded_click(
+    &mut self,
+    window: &NativeWindow,
+    config: &UserConfig,
+  ) -> anyhow::Result<()> {
+    let state = &mut self.state;
+
+    if state.is_paused || state.overview.is_shown() {
+      return Ok(());
+    }
+
+    let Some(window) = state.window_from_native(window) else {
+      return Ok(());
+    };
+
+    set_focused_descendant(&window.as_container(), None);
+    state.pending_sync.queue_focus_change();
+
+    platform_sync(state, config)
   }
 
   /// Carries out an action taken in the overview, unless it comes from an
