@@ -33,21 +33,40 @@ pub struct LoadedConfig {
 pub fn load(main_path: &Path) -> anyhow::Result<LoadedConfig> {
   let main_file = read_file(main_path)?;
   let main_document = parse_document(&main_file)?;
+  let include_paths = include_paths(&main_document, main_path)?;
 
   let mut files = vec![main_file];
-  for path in include_paths(&main_document, main_path)? {
-    files.push(read_file(&path)?);
+  let mut documents = vec![main_document];
+  for path in include_paths {
+    let file = read_file(&path)?;
+    documents.push(parse_document(&file)?);
+    files.push(file);
   }
 
-  combine(&files)
+  merge(&files, documents)
 }
 
-/// Merges config files into one config. The first file is the main one,
-/// the only one that may set `include`.
+/// [`merge`] for files not parsed yet.
+#[cfg(test)]
+pub fn combine(files: &[ConfigFile]) -> anyhow::Result<LoadedConfig> {
+  let documents = files
+    .iter()
+    .map(parse_document)
+    .collect::<anyhow::Result<Vec<_>>>()?;
+
+  merge(files, documents)
+}
+
+/// Merges config files, parsed into `documents`, one each, into one
+/// config. The first file is the main one, the only one that may set
+/// `include`.
 ///
 /// Sections are merged key by key, so one can be split across files. A
 /// setting set in more than one file is an error naming both.
-pub fn combine(files: &[ConfigFile]) -> anyhow::Result<LoadedConfig> {
+fn merge(
+  files: &[ConfigFile],
+  documents: Vec<Mapping>,
+) -> anyhow::Result<LoadedConfig> {
   let main_dir = files
     .first()
     .context("No config file to read.")?
@@ -58,8 +77,9 @@ pub fn combine(files: &[ConfigFile]) -> anyhow::Result<LoadedConfig> {
   let mut merged = Mapping::new();
   let mut origins = HashMap::new();
 
-  for (index, file) in files.iter().enumerate() {
-    let mut document = parse_document(file)?;
+  for (index, (file, mut document)) in
+    files.iter().zip(documents).enumerate()
+  {
     let name = display_name(&file.path, &main_dir);
 
     if document.remove(INCLUDE_KEY).is_some() && index != 0 {
