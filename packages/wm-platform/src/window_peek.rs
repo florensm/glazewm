@@ -292,6 +292,9 @@ impl WindowPeek {
   /// Shows the window at its own scale, as `show_clipped` does: a column
   /// resized as it moves reveals more or less of it rather than stretching
   /// it. Its ring and shadow copies do stretch, to frame it.
+  ///
+  /// Only the frame is drawn, sampled past the invisible resize borders as
+  /// `show_clipped` does (see `WorkspaceSurrogate`'s `frame_rects`).
   fn show_pinned(
     &mut self,
     rect: &Rect,
@@ -300,18 +303,18 @@ impl WindowPeek {
     opacity: u8,
     origin: (i32, i32),
   ) -> Option<Rect> {
-    let rects = rect.intersection(clip).and_then(|visible| {
-      placed_rects(
-        rect,
+    let placed = frame.intersection(clip).and_then(|visible| {
+      let rects = placed_rects(
+        frame,
         &visible,
-        (rect.width(), rect.height()),
-        RECT::default(),
+        (frame.width(), frame.height()),
+        self.border_inset,
         origin,
-      )
+      )?;
+      Some((visible, rects))
     });
-    let visible = frame.intersection(clip);
 
-    let (Some((rc_src, rc_dst)), Some(visible)) = (rects, visible) else {
+    let Some((visible, (rc_src, rc_dst))) = placed else {
       self.surrogate.set_visible(false);
       return None;
     };

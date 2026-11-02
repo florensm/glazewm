@@ -445,7 +445,11 @@ pub(crate) fn copy_rects(
 /// `rect`, which goes with a window resting at `window_rest`, moved and
 /// stretched along with that window to `frame`.
 #[allow(clippy::cast_precision_loss, clippy::cast_possible_truncation)]
-fn map_rect(rect: &Rect, window_rest: &Rect, frame: &Rect) -> Rect {
+pub(crate) fn map_rect(
+  rect: &Rect,
+  window_rest: &Rect,
+  frame: &Rect,
+) -> Rect {
   let scale = |to: i32, from: i32| {
     if from > 0 {
       to as f32 / from as f32

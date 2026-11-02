@@ -2,7 +2,7 @@ use windows::Win32::Foundation::{HWND, RECT};
 
 use crate::{
   native_surrogate::{placed_rects, to_logical},
-  overlay_copies::OverlayCopies,
+  overlay_copies::{map_rect, OverlayCopies},
   platform_impl,
   resize_session::compute_border_inset,
   BackdropOverlayParams, CornerStyle, NativeSurrogate, NativeWindow,
@@ -17,6 +17,34 @@ const WARM_UP_OPACITY: u8 = 1;
 #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
 fn scale_alpha(alpha: u8, frac: f32) -> u8 {
   (f32::from(alpha) * frac.clamp(0.0, 1.0)).round() as u8
+}
+
+/// `(rcSource, rcDestination)` drawing the visible frame of a window that
+/// rests at `rect` with its frame at `rest_frame`, now at `frame`, cut at
+/// `clip`, into a surrogate whose top-left is at `origin`. `None` when none
+/// of the frame is inside `clip`.
+///
+/// The frame is sampled from `border_inset` on: the invisible resize
+/// borders around it show nothing on screen, but a thumbnail can draw them
+/// dark, e.g. of a layered (semi-transparent) window.
+fn frame_rects(
+  rect: &Rect,
+  rest_frame: &Rect,
+  frame: &Rect,
+  clip: &Rect,
+  border_inset: RECT,
+  origin: (i32, i32),
+) -> Option<(RECT, RECT)> {
+  let drawn = map_rect(rest_frame, rect, frame);
+  let visible = drawn.intersection(clip)?;
+
+  placed_rects(
+    &drawn,
+    &visible,
+    (rest_frame.width(), rest_frame.height()),
+    border_inset,
+    origin,
+  )
 }
 
 /// Positioning strategy for a [`WorkspaceSurrogate`].
@@ -102,10 +130,10 @@ pub struct WorkspaceSurrogate {
   /// window has a backdrop configured.
   mode: SurrogateMode,
   /// Invisible border insets of the source window, in physical pixels.
-  /// Zero in [`SurrogateMode::PinnedViewport`] mode. Used to offset every
-  /// per-frame `rcSource` sample past the invisible border, matching the
-  /// deflation already baked into `rect` and the surrogate's created
-  /// size.
+  /// Every per-frame `rcSource` sample starts past them, so only the
+  /// window's visible frame is drawn (see [`frame_rects`]). In
+  /// [`SurrogateMode::Live`] mode they are also deflated out of `rect` and
+  /// the surrogate's created size.
   border_inset: RECT,
   /// Live footprint for the current animation frame, in
   /// [`SurrogateMode::Live`] mode only -- lets a caller (the backdrop
@@ -140,10 +168,10 @@ pub struct WorkspaceSurrogate {
   /// while the outgoing branch passes a frame rect that already
   /// excludes it.
   ///
-  /// Only `unclipped_rect` uses it. The border overlay is placed from the
-  /// frame rect in steady state, so a ring built from a physical rect
-  /// bulges into the configured gap on every side and collides with its
-  /// neighbour's mid-slide.
+  /// The border overlay is placed from the frame rect in steady state, so
+  /// a ring built from a physical rect bulges into the configured gap on
+  /// every side and collides with its neighbour's mid-slide. Pinned, the
+  /// window is drawn as its frame alone, too (see [`frame_rects`]).
   frame_inset: RECT,
 
   /// The real window's own alpha while it is hidden by alpha for a
@@ -173,9 +201,10 @@ impl WorkspaceSurrogate {
   /// `frame_rect` is the same window's frame rect (what
   /// `DWMWA_EXTENDED_FRAME_BOUNDS` reports), which callers pass explicitly
   /// because they disagree on whether `rect` includes the invisible resize
-  /// border. It is used only to place overlays that sit outside the
-  /// window, i.e. the border ring -- pass the same value as `rect` when
-  /// the two coincide.
+  /// border. It places the overlays that sit outside the window, i.e. the
+  /// border ring, and in [`SurrogateMode::PinnedViewport`] mode what of the
+  /// window is drawn -- pass the same value as `rect` when the two
+  /// coincide.
   ///
   /// `opacity_endpoint` controls how far the opacity animates away from
   /// the effect opacity. For outgoing windows pass
@@ -250,8 +279,9 @@ impl WorkspaceSurrogate {
     // `source_rect` to the full monitor viewport, which has no
     // invisible border of its own; deflating it here would incorrectly
     // shrink the pinned surrogate.
-    let border_inset = if carries_live_backdrop {
-      compute_border_inset(hwnd)
+    let border_inset = compute_border_inset(hwnd);
+    let deflation = if carries_live_backdrop {
+      border_inset
     } else {
       RECT::default()
     };
@@ -261,7 +291,7 @@ impl WorkspaceSurrogate {
       source_rect,
       thumbnail_rect,
       opacity,
-      border_inset,
+      deflation,
       effective_corner_style,
       // Workspace surrogates should sit just below the source window;
       // they don't compete with resize surrogates since
@@ -273,9 +303,8 @@ impl WorkspaceSurrogate {
 
     // Store the deflated (logical) rect so all per-frame positioning math
     // below operates in the same coordinate space the surrogate window was
-    // actually created/sized in. A no-op when `border_inset` is zero
-    // (`PinnedViewport` mode).
-    let stored_rect = to_logical(rect, &border_inset);
+    // actually created/sized in. A no-op in `PinnedViewport` mode.
+    let stored_rect = to_logical(rect, &deflation);
 
     // Derived before `stored_rect` is moved into the struct below.
     let frame_inset = RECT {
@@ -488,12 +517,7 @@ impl WorkspaceSurrogate {
     panel: Rect,
     monitor: &Rect,
   ) -> bool {
-    let Some((shown, visible)) =
-      frame.intersection(&panel).and_then(|shown| {
-        let visible = shown.intersection(monitor)?;
-        Some((shown, visible))
-      })
-    else {
+    let Some(clip) = panel.intersection(monitor) else {
       self.clear_frame();
       return false;
     };
@@ -501,29 +525,40 @@ impl WorkspaceSurrogate {
     // Pinned, the surrogate never moves, so cutting the thumbnail at the
     // monitor as well leaves it the one thing that changes. Live, the
     // surrogate's bounds cut it there instead (see `SurrogateMode::Live`).
-    let (sampled, origin) = match self.mode {
-      SurrogateMode::PinnedViewport => {
-        (&visible, (self.viewport.left, self.viewport.top))
-      }
-      SurrogateMode::Live => (&shown, (visible.left, visible.top)),
+    let placed = match self.mode {
+      SurrogateMode::PinnedViewport => frame_rects(
+        &self.rect,
+        &self.rest_frame(),
+        frame,
+        &clip,
+        self.border_inset,
+        (self.viewport.left, self.viewport.top),
+      )
+      .map(|rects| (rects, None)),
+      SurrogateMode::Live => frame
+        .intersection(&panel)
+        .and_then(|shown| {
+          let visible = shown.intersection(monitor)?;
+          let rects = placed_rects(
+            frame,
+            &shown,
+            (self.rect.width(), self.rect.height()),
+            self.border_inset,
+            (visible.left, visible.top),
+          )?;
+          Some((rects, Some((shown, visible))))
+        }),
     };
-    let Some((rc_src, rc_dst)) = placed_rects(
-      frame,
-      sampled,
-      (self.rect.width(), self.rect.height()),
-      self.border_inset,
-      origin,
-    ) else {
+    let Some(((rc_src, rc_dst), live)) = placed else {
       self.clear_frame();
       return false;
     };
+
     self.inner.set_thumbnail_rects(rc_src, rc_dst);
     let origin = (self.viewport.left, self.viewport.top);
-    if let Some(clip) = panel.intersection(monitor) {
-      self.copies.place(frame, &clip, origin);
-    }
+    self.copies.place(frame, &clip, origin);
 
-    if self.is_live() {
+    if let Some((shown, visible)) = live {
       match batch {
         Some(batch) => self.inner.defer_reposition(batch, &visible),
         None => {
@@ -870,5 +905,80 @@ impl Drop for WorkspaceSurrogate {
     // Unregistered before `inner` destroys the window they are drawn on.
     self.copies.clear();
     self.restore_alpha();
+  }
+}
+
+#[cfg(test)]
+mod tests {
+  use super::{frame_rects, Rect, RECT};
+
+  const MONITOR: Rect = Rect {
+    left: 0,
+    top: 0,
+    right: 1920,
+    bottom: 1080,
+  };
+
+  const BORDER: RECT = RECT {
+    left: 7,
+    top: 0,
+    right: 7,
+    bottom: 7,
+  };
+
+  /// `(left, top, right, bottom)` of a `RECT`.
+  type Edges = (i32, i32, i32, i32);
+
+  fn ltrb(rect: RECT) -> Edges {
+    (rect.left, rect.top, rect.right, rect.bottom)
+  }
+
+  /// `(rcSource, rcDestination)` of a window whose frame rests at (100,
+  /// 100, 800x600) inside its 7 px resize borders, with its rect at
+  /// `rect`.
+  fn drawn_at(rect: &Rect) -> Option<(Edges, Edges)> {
+    let window = Rect::from_xy(93, 100, 814, 607);
+    let frame = Rect::from_xy(100, 100, 800, 600);
+
+    frame_rects(&window, &frame, rect, &MONITOR, BORDER, (0, 0))
+      .map(|(src, dst)| (ltrb(src), ltrb(dst)))
+  }
+
+  #[test]
+  fn only_the_frame_is_drawn_where_it_rests() {
+    assert_eq!(
+      drawn_at(&Rect::from_xy(93, 100, 814, 607)),
+      Some(((7, 0, 807, 600), (100, 100, 900, 700)))
+    );
+  }
+
+  #[test]
+  fn frame_slides_with_its_window() {
+    assert_eq!(
+      drawn_at(&Rect::from_xy(493, 100, 814, 607)),
+      Some(((7, 0, 807, 600), (500, 100, 1300, 700)))
+    );
+  }
+
+  #[test]
+  fn frame_is_cut_at_the_clip() {
+    assert_eq!(
+      drawn_at(&Rect::from_xy(1493, 100, 814, 607)),
+      Some(((7, 0, 427, 600), (1500, 100, 1920, 700)))
+    );
+  }
+
+  /// Only the borders on screen: nothing of the window shows.
+  #[test]
+  fn borders_alone_draw_nothing() {
+    assert_eq!(drawn_at(&Rect::from_xy(1915, 100, 814, 607)), None);
+  }
+
+  #[test]
+  fn frame_scales_with_its_window() {
+    assert_eq!(
+      drawn_at(&Rect::from_xy(93, 100, 407, 304)),
+      Some(((7, 0, 807, 600), (97, 100, 497, 400)))
+    );
   }
 }
