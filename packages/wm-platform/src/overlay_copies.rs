@@ -21,6 +21,15 @@ use crate::{
   BackdropOverlayParams, CornerStyle, NativeWindow, Rect,
 };
 
+/// Where a surrogate draws its window: at `frame`, cut at `clip`, into a
+/// surrogate whose top-left is at `origin`.
+#[derive(Clone)]
+struct Placement {
+  frame: Rect,
+  clip: Rect,
+  origin: (i32, i32),
+}
+
 /// A thumbnail of a window drawn around another one.
 struct OverlayCopy {
   thumbnail: Thumbnail,
@@ -34,10 +43,15 @@ struct OverlayCopy {
 }
 
 impl OverlayCopy {
-  /// Draws the copy around its window, now at `frame`, cut at `clip`, into
-  /// a surrogate whose top-left is at `origin`.
-  fn place(&mut self, frame: &Rect, clip: &Rect, origin: (i32, i32)) {
-    match copy_rects(&self.rest, &self.window_rest, frame, clip, origin) {
+  /// Draws the copy around its window as `placement` places it.
+  fn place(&mut self, placement: &Placement) {
+    let Placement {
+      frame,
+      clip,
+      origin,
+    } = placement;
+
+    match copy_rects(&self.rest, &self.window_rest, frame, clip, *origin) {
       Some((rc_src, rc_dst)) => {
         let _ = self.thumbnail.show(rc_src, rc_dst);
       }
@@ -46,30 +60,146 @@ impl OverlayCopy {
   }
 }
 
-/// A window's shadow, with the copy of it.
+/// How a window's shadow looks: drawn active or not, with its corners.
+pub(crate) type ShadowLook = (bool, CornerStyle);
+
+/// A window's shadow in one look, with the copy of it.
 struct ShadowCopy {
   /// Declared before `source`, so it is unregistered before that window
   /// goes.
   copy: OverlayCopy,
   source: WindowShadow,
+  look: ShadowLook,
 }
 
-/// A window's backdrop: the part of the monitor's behind the window, and
-/// a copy of the window's vignette over it.
-struct BackdropCopy {
+/// A window's shadow in each look it may be drawn with, of which one is
+/// shown at a time.
+///
+/// All are registered up front, so a change of look, e.g. as focus moves
+/// mid-scroll, swaps which one shows rather than registering a new one,
+/// whose window would have yet to be composited.
+#[derive(Default)]
+struct Shadows {
+  /// The looks asked for, which `copies` holds those of that DWM draws a
+  /// shadow in.
+  looks: Vec<ShadowLook>,
+  copies: Vec<ShadowCopy>,
+  /// Index into `copies` of the one shown.
+  current: Option<usize>,
+  opacity: u8,
+  /// Where the shown one was last placed, unless hidden since.
+  placement: Option<Placement>,
+}
+
+impl Shadows {
+  fn current_look(&self) -> Option<ShadowLook> {
+    self
+      .current
+      .and_then(|index| self.copies.get(index))
+      .map(|copy| copy.look)
+  }
+
+  fn current_mut(&mut self) -> Option<&mut ShadowCopy> {
+    self.current.and_then(|index| self.copies.get_mut(index))
+  }
+
+  fn place(&mut self, placement: &Placement) {
+    self.placement = Some(placement.clone());
+    if let Some(shadow) = self.current_mut() {
+      shadow.copy.place(placement);
+    }
+  }
+
+  /// Hides the shown one until the next [`place`](Self::place).
+  fn hide(&mut self) {
+    self.placement = None;
+    if let Some(shadow) = self.current_mut() {
+      shadow.copy.thumbnail.hide();
+    }
+  }
+
+  fn set_opacity(&mut self, opacity: u8) {
+    self.opacity = opacity;
+    if let Some(shadow) = self.current_mut() {
+      let _ = shadow.copy.thumbnail.set_opacity(opacity);
+    }
+  }
+
+  /// Shows the one in `look`, if carried, instead of the one shown. The
+  /// new one goes up first, so no frame shows neither.
+  fn show_look(&mut self, look: ShadowLook) {
+    let next = self.copies.iter().position(|copy| copy.look == look);
+    if next == self.current {
+      return;
+    }
+
+    if let Some(shadow) = next.and_then(|index| self.copies.get_mut(index))
+    {
+      let _ = shadow.copy.thumbnail.set_opacity(self.opacity);
+      if let Some(placement) = &self.placement {
+        shadow.copy.place(placement);
+      }
+    }
+    if let Some(shadow) = self.current_mut() {
+      shadow.copy.thumbnail.hide();
+    }
+    self.current = next;
+  }
+}
+
+/// The part behind a window of a backdrop spanning its monitor, in one
+/// style.
+struct CropCopy {
   /// Declared before `source`, so it is unregistered before that window
   /// goes.
-  crop: Thumbnail,
-  vignette: Option<VignetteCopy>,
+  thumbnail: Thumbnail,
   source: Rc<BackdropSource>,
   params: BackdropOverlayParams,
+}
+
+impl CropCopy {
+  /// Draws the crop for a window with its frame at `window_frame`, cut and
+  /// placed as `placement` says.
+  fn place(&mut self, window_frame: &Rect, placement: &Placement) {
+    let monitor = self.source.monitor();
+
+    match window_frame.intersection(&placement.clip) {
+      Some(shown) => {
+        let _ = self.thumbnail.show(
+          shifted(&shown, (monitor.left, monitor.top)),
+          shifted(&shown, placement.origin),
+        );
+      }
+      None => self.thumbnail.hide(),
+    }
+  }
+}
+
+/// A window's backdrop in each style it may be drawn in, of which one is
+/// shown at a time: per style, the part of the monitor's behind the
+/// window, and over them all one copy of the window's vignette.
+///
+/// All are registered up front, as a window's shadows are (see
+/// [`Shadows`]). The vignette is drawn at full strength and its copy's
+/// opacity scaled to the strength of the style shown, which is what the
+/// vignette's own opacity does.
+struct BackdropCopy {
+  /// The styles asked for, which `crops` holds those of that could be
+  /// drawn.
+  styles: Vec<BackdropOverlayParams>,
+  crops: Vec<CropCopy>,
+  vignette: Option<VignetteCopy>,
   /// The window's rect and frame when carried, which its frame is mapped
   /// from as the window moves.
   window_rest: Rect,
   frame_rest: Rect,
+  /// Index into `crops` of the style drawn, if any.
+  current: Option<usize>,
   /// Whether it is drawn, and at what opacity when it is.
   is_shown: bool,
   opacity: u8,
+  /// Where it was last placed.
+  placement: Option<Placement>,
 }
 
 /// A window's vignette, with the copy of it.
@@ -81,36 +211,84 @@ struct VignetteCopy {
 }
 
 impl BackdropCopy {
-  /// Draws the backdrop of its window, now at `frame`, cut at `clip`, into
-  /// a surrogate whose top-left is at `origin`.
-  fn place(&mut self, frame: &Rect, clip: &Rect, origin: (i32, i32)) {
+  /// Draws the backdrop of its window as `placement` places it.
+  fn place(&mut self, placement: &Placement) {
+    self.placement = Some(placement.clone());
+    self.place_current();
+  }
+
+  /// Draws the style shown where the backdrop was last placed.
+  fn place_current(&mut self) {
+    let Some(placement) = &self.placement else {
+      return;
+    };
     let window_frame =
-      map_rect(&self.frame_rest, &self.window_rest, frame);
-    let monitor = self.source.monitor();
+      map_rect(&self.frame_rest, &self.window_rest, &placement.frame);
 
-    match window_frame.intersection(clip) {
-      Some(shown) => {
-        let _ = self.crop.show(
-          shifted(&shown, (monitor.left, monitor.top)),
-          shifted(&shown, origin),
-        );
-      }
-      None => self.crop.hide(),
+    if let Some(crop) =
+      self.current.and_then(|index| self.crops.get_mut(index))
+    {
+      crop.place(&window_frame, placement);
     }
-
     if let Some(vignette) = &mut self.vignette {
-      vignette.copy.place(frame, clip, origin);
+      vignette.copy.place(placement);
     }
   }
 
-  /// Applies whether it is shown, and its opacity, to its thumbnails.
+  /// Draws the style `params` give, if carried, or none.
+  fn show_style(&mut self, params: Option<BackdropOverlayParams>) {
+    let next = params.and_then(|params| {
+      self.crops.iter().position(|crop| crop.params == params)
+    });
+    if next == self.current {
+      return;
+    }
+
+    self.current = next;
+    self.place_current();
+    self.apply_opacity();
+  }
+
+  /// Applies whether it is shown, its opacity and its style to its
+  /// thumbnails: the style shown first, so a change of style never leaves
+  /// a frame with neither.
   fn apply_opacity(&mut self) {
     let opacity = if self.is_shown { self.opacity } else { 0 };
-    let _ = self.crop.set_opacity(opacity);
+    let current = self.current;
+    let shown = current.map_or(0, |_| opacity);
+
+    if let Some(crop) = current.and_then(|index| self.crops.get_mut(index))
+    {
+      let _ = crop.thumbnail.set_opacity(shown);
+    }
+    for (index, crop) in self.crops.iter_mut().enumerate() {
+      if Some(index) != current {
+        let _ = crop.thumbnail.set_opacity(0);
+      }
+    }
+
+    let strength = current
+      .and_then(|index| self.crops.get(index))
+      .map_or(0.0, |crop| vignette_strength(&crop.params));
     if let Some(vignette) = &mut self.vignette {
-      let _ = vignette.copy.thumbnail.set_opacity(opacity);
+      let _ = vignette
+        .copy
+        .thumbnail
+        .set_opacity(scale_alpha(shown, strength));
     }
   }
+}
+
+/// Strength of the vignette `params` give, as the overlay composites it,
+/// under its own opacity.
+fn vignette_strength(params: &BackdropOverlayParams) -> f32 {
+  (params.vignette * params.opacity).clamp(0.0, 1.0)
+}
+
+/// `alpha` scaled by `frac` (0.0–1.0).
+#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+pub(crate) fn scale_alpha(alpha: u8, frac: f32) -> u8 {
+  (f32::from(alpha) * frac.clamp(0.0, 1.0)).round() as u8
 }
 
 /// The copies of a window's ring, shadow and backdrop that a surrogate
@@ -121,7 +299,7 @@ impl BackdropCopy {
 #[derive(Default)]
 pub(crate) struct OverlayCopies {
   ring: Option<OverlayCopy>,
-  shadow: Option<ShadowCopy>,
+  shadows: Shadows,
   backdrop: Option<BackdropCopy>,
 }
 
@@ -160,9 +338,10 @@ impl OverlayCopies {
   }
 
   /// Draws `window`'s shadow on `dest` from now on, around its `frame`
-  /// while the window is at `window_rest`, as for the window drawn active
-  /// or not. Returns whether it does: not for a window DWM draws no
-  /// shadow around.
+  /// while the window is at `window_rest`, in whichever of `looks`
+  /// [`show_shadow_look`](Self::show_shadow_look) picks. Returns whether
+  /// it does: not for a window DWM draws no shadow around. The same
+  /// `looks` again keep what is drawn.
   ///
   /// After [`carry_ring`](Self::carry_ring), so the shadow falls over the
   /// ring as on screen: thumbnails stack in the order they're registered.
@@ -172,42 +351,72 @@ impl OverlayCopies {
     window: &NativeWindow,
     window_rest: &Rect,
     frame: &Rect,
-    is_active: bool,
-    corner_style: CornerStyle,
+    looks: &[ShadowLook],
   ) -> bool {
-    let Some(style) =
-      ShadowStyle::of(window.hwnd(), is_active, corner_style)
-    else {
-      return false;
-    };
+    if same_set(&self.shadows.looks, looks) {
+      return !self.shadows.copies.is_empty();
+    }
 
-    let source = match WindowShadow::create(frame, style) {
-      Ok(source) => source,
-      Err(err) => {
-        tracing::warn!("Failed to draw a window's shadow: {err}");
-        return false;
+    // Unregistered before the new ones are, which go on top.
+    let current = self.shadows.current_look();
+    let Shadows {
+      opacity, placement, ..
+    } = std::mem::take(&mut self.shadows);
+    self.shadows.looks = looks.to_vec();
+    self.shadows.opacity = opacity;
+    self.shadows.placement = placement;
+
+    for &look in looks {
+      if self.shadows.copies.iter().any(|copy| copy.look == look) {
+        continue;
       }
-    };
+      let (is_active, corner_style) = look;
+      let Some(style) =
+        ShadowStyle::of(window.hwnd(), is_active, corner_style)
+      else {
+        continue;
+      };
 
-    self.shadow =
-      Thumbnail::register(dest, source.hwnd()).map(|thumbnail| {
-        ShadowCopy {
-          copy: OverlayCopy {
-            thumbnail,
-            source: source.hwnd().0,
-            rest: source.rect().clone(),
-            window_rest: window_rest.clone(),
-          },
-          source,
+      let source = match WindowShadow::create(frame, style) {
+        Ok(source) => source,
+        Err(err) => {
+          tracing::warn!("Failed to draw a window's shadow: {err}");
+          continue;
         }
+      };
+      let Some(thumbnail) = Thumbnail::register(dest, source.hwnd())
+      else {
+        continue;
+      };
+
+      self.shadows.copies.push(ShadowCopy {
+        copy: OverlayCopy {
+          thumbnail,
+          source: source.hwnd().0,
+          rest: source.rect().clone(),
+          window_rest: window_rest.clone(),
+        },
+        source,
+        look,
       });
-    self.shadow.is_some()
+    }
+
+    if let Some(look) = current {
+      self.shadows.show_look(look);
+    }
+    !self.shadows.copies.is_empty()
   }
 
-  /// Draws the backdrop `params` give a window at `window_rest`, with its
-  /// frame at `frame`, on `monitor`, on `dest` from now on, shown once
-  /// [`show_backdrop`](Self::show_backdrop) says so. Returns whether it
-  /// does; the same `params` again keep what is drawn.
+  /// Draws the shadow in `look` from now on, if carried, or none.
+  pub(crate) fn show_shadow_look(&mut self, look: ShadowLook) {
+    self.shadows.show_look(look);
+  }
+
+  /// Draws the backdrops `styles` give a window at `window_rest`, with its
+  /// frame at `frame`, on `monitor`, on `dest` from now on, in whichever
+  /// of them [`show_backdrop_style`](Self::show_backdrop_style) picks,
+  /// once [`show_backdrop`](Self::show_backdrop) says so. Returns whether
+  /// it does; the same `styles` again keep what is drawn.
   ///
   /// Before anything else is registered on `dest`, as it goes under the
   /// window: the caller then registers the window's own thumbnail anew,
@@ -215,41 +424,63 @@ impl OverlayCopies {
   pub(crate) fn carry_backdrop(
     &mut self,
     dest: HWND,
-    params: BackdropOverlayParams,
+    styles: &[BackdropOverlayParams],
     monitor: &Rect,
     window_rest: &Rect,
     frame: &Rect,
   ) -> bool {
-    if self
-      .backdrop
-      .as_ref()
-      .is_some_and(|backdrop| backdrop.params == params)
-    {
+    if self.carries_backdrop_styles(styles) {
       return true;
     }
 
-    let (is_shown, opacity) =
-      self.backdrop.as_ref().map_or((false, 0), |backdrop| {
-        (backdrop.is_shown, backdrop.opacity)
+    // Unregistered before the new ones are, so they don't stack under
+    // them.
+    let (is_shown, opacity, current, placement) = self
+      .backdrop
+      .take()
+      .map_or((false, 0, None, None), |backdrop| {
+        let current = backdrop
+          .current
+          .and_then(|index| backdrop.crops.get(index))
+          .map(|crop| crop.params);
+        (
+          backdrop.is_shown,
+          backdrop.opacity,
+          current,
+          backdrop.placement,
+        )
       });
-    // Unregistered before the new one is, so it doesn't stack under it.
-    self.backdrop = None;
 
-    let source = match BackdropSource::acquire(monitor, params) {
-      Ok(source) => source,
-      Err(err) => {
-        tracing::warn!("Failed to draw a window's backdrop: {err}");
-        return false;
+    let mut crops = Vec::<CropCopy>::new();
+    for &params in styles {
+      if crops.iter().any(|crop| crop.params == params) {
+        continue;
       }
-    };
-    let Some(crop) = Thumbnail::register(dest, source.hwnd()) else {
-      return false;
-    };
 
-    // Strength as the overlay composites it, under its own opacity.
-    let strength = params.vignette * params.opacity;
-    let vignette = (strength > 0.0)
-      .then(|| VignetteSource::create(frame, strength))
+      let source = match BackdropSource::acquire(monitor, params) {
+        Ok(source) => source,
+        Err(err) => {
+          tracing::warn!("Failed to draw a window's backdrop: {err}");
+          continue;
+        }
+      };
+      if let Some(thumbnail) = Thumbnail::register(dest, source.hwnd()) {
+        crops.push(CropCopy {
+          thumbnail,
+          source,
+          params,
+        });
+      }
+    }
+    if crops.is_empty() {
+      return false;
+    }
+
+    let has_vignette = crops
+      .iter()
+      .any(|crop| vignette_strength(&crop.params) > 0.0);
+    let vignette = has_vignette
+      .then(|| VignetteSource::create(frame, 1.0))
       .and_then(|source| {
         source
           .inspect_err(|err| {
@@ -272,16 +503,17 @@ impl OverlayCopies {
       });
 
     let mut backdrop = BackdropCopy {
-      crop,
+      styles: styles.to_vec(),
+      crops,
       vignette,
-      source,
-      params,
       window_rest: window_rest.clone(),
       frame_rest: frame.clone(),
+      current: None,
       is_shown,
       opacity,
+      placement,
     };
-    backdrop.apply_opacity();
+    backdrop.show_style(current);
     self.backdrop = Some(backdrop);
     true
   }
@@ -290,9 +522,26 @@ impl OverlayCopies {
     self.backdrop.is_some()
   }
 
-  /// The style the backdrop is drawn in, if it is.
-  pub(crate) fn backdrop_params(&self) -> Option<BackdropOverlayParams> {
-    self.backdrop.as_ref().map(|backdrop| backdrop.params)
+  /// Whether the backdrop is drawn in exactly `styles`.
+  pub(crate) fn carries_backdrop_styles(
+    &self,
+    styles: &[BackdropOverlayParams],
+  ) -> bool {
+    self
+      .backdrop
+      .as_ref()
+      .is_some_and(|backdrop| same_set(&backdrop.styles, styles))
+  }
+
+  /// Draws the backdrop in the style `params` give from now on, if
+  /// carried, or in none.
+  pub(crate) fn show_backdrop_style(
+    &mut self,
+    params: Option<BackdropOverlayParams>,
+  ) {
+    if let Some(backdrop) = &mut self.backdrop {
+      backdrop.show_style(params);
+    }
   }
 
   /// Draws the backdrop or not from now on.
@@ -315,15 +564,13 @@ impl OverlayCopies {
   /// Moves the shadow around the window's `frame` while the window is at
   /// `window_rest`, e.g. once the window has been moved or resized.
   pub(crate) fn move_shadow(&mut self, window_rest: &Rect, frame: &Rect) {
-    let Some(shadow) = &mut self.shadow else {
-      return;
-    };
-
-    if let Err(err) = shadow.source.set_frame(frame) {
-      tracing::warn!("Failed to move a window's shadow: {err}");
+    for shadow in &mut self.shadows.copies {
+      if let Err(err) = shadow.source.set_frame(frame) {
+        tracing::warn!("Failed to move a window's shadow: {err}");
+      }
+      shadow.copy.rest = shadow.source.rect().clone();
+      shadow.copy.window_rest = window_rest.clone();
     }
-    shadow.copy.rest = shadow.source.rect().clone();
-    shadow.copy.window_rest = window_rest.clone();
   }
 
   /// Moves the backdrop's vignette over the window's `frame` while the
@@ -357,11 +604,18 @@ impl OverlayCopies {
     clip: &Rect,
     origin: (i32, i32),
   ) {
-    for copy in self.copies() {
-      copy.place(frame, clip, origin);
+    let placement = Placement {
+      frame: frame.clone(),
+      clip: clip.clone(),
+      origin,
+    };
+
+    if let Some(ring) = &mut self.ring {
+      ring.place(&placement);
     }
+    self.shadows.place(&placement);
     if let Some(backdrop) = &mut self.backdrop {
-      backdrop.place(frame, clip, origin);
+      backdrop.place(&placement);
     }
   }
 
@@ -389,32 +643,26 @@ impl OverlayCopies {
 
   /// Draws the shadow at `opacity`, independently of the ring.
   pub(crate) fn set_shadow_opacity(&mut self, opacity: u8) {
-    if let Some(shadow) = &mut self.shadow {
-      let _ = shadow.copy.thumbnail.set_opacity(opacity);
-    }
+    self.shadows.set_opacity(opacity);
   }
 
+  /// Hides the shadow until the next [`place`](Self::place).
   pub(crate) fn hide_shadow(&mut self) {
-    if let Some(shadow) = &mut self.shadow {
-      shadow.copy.thumbnail.hide();
-    }
+    self.shadows.hide();
   }
 
   /// Unregisters them all, before the window they are drawn on goes.
   pub(crate) fn clear(&mut self) {
     self.ring = None;
-    self.shadow = None;
+    self.shadows = Shadows::default();
     self.backdrop = None;
   }
+}
 
-  fn copies(&mut self) -> impl Iterator<Item = &mut OverlayCopy> {
-    [
-      self.ring.as_mut(),
-      self.shadow.as_mut().map(|shadow| &mut shadow.copy),
-    ]
-    .into_iter()
-    .flatten()
-  }
+/// Whether `a` and `b` hold the same items, ignoring order and repeats.
+fn same_set<T: PartialEq>(a: &[T], b: &[T]) -> bool {
+  a.iter().all(|item| b.contains(item))
+    && b.iter().all(|item| a.contains(item))
 }
 
 /// `(rcSource, rcDestination)` drawing a copy that rests at `copy_rest`,
@@ -484,7 +732,11 @@ fn shifted(rect: &Rect, origin: (i32, i32)) -> RECT {
 
 #[cfg(test)]
 mod tests {
-  use super::{copy_rects, map_rect, shifted, Rect, RECT};
+  use super::{
+    copy_rects, map_rect, same_set, scale_alpha, shifted,
+    vignette_strength, BackdropOverlayParams, Rect, RECT,
+  };
+  use crate::Color;
 
   const MONITOR: Rect = Rect {
     left: 0,
@@ -574,5 +826,47 @@ mod tests {
   #[test]
   fn copy_off_the_clip_is_not_drawn() {
     assert_eq!(ring_at(&Rect::from_xy(2000, 100, 800, 600)), None);
+  }
+
+  #[test]
+  fn same_set_ignores_order_and_repeats() {
+    assert!(same_set(&[1, 2], &[2, 1, 2]));
+    assert!(!same_set(&[1, 2], &[1]));
+    assert!(!same_set(&[1], &[1, 3]));
+    assert!(same_set::<i32>(&[], &[]));
+  }
+
+  /// A full-strength vignette's copy drawn at the strength of a style
+  /// darkens as that style's own vignette does.
+  #[test]
+  fn vignette_copy_opacity_carries_the_style_strength() {
+    let params = BackdropOverlayParams {
+      tint: Color {
+        r: 0,
+        g: 0,
+        b: 0,
+        a: 0x30,
+      },
+      blur_amount: 30.0,
+      corner_radius: 0.0,
+      opacity: 1.0,
+      saturation: 1.0,
+      exposure: 0.0,
+      contrast: 0.0,
+      highlights: 0.0,
+      shadows: 0.0,
+      vignette: 0.2,
+      grain: 0.0,
+      parallax: 1.0,
+    };
+    assert_eq!(scale_alpha(u8::MAX, vignette_strength(&params)), 51);
+
+    let faded = BackdropOverlayParams {
+      opacity: 0.5,
+      vignette: 0.4,
+      ..params
+    };
+    assert_eq!(scale_alpha(u8::MAX, vignette_strength(&faded)), 51);
+    assert_eq!(scale_alpha(128, vignette_strength(&faded)), 26);
   }
 }

@@ -2,7 +2,7 @@ use windows::Win32::Foundation::{HWND, RECT};
 
 use crate::{
   native_surrogate::{placed_rects, to_logical},
-  overlay_copies::{map_rect, OverlayCopies},
+  overlay_copies::{map_rect, scale_alpha, OverlayCopies},
   platform_impl,
   resize_session::compute_border_inset,
   BackdropOverlayParams, CornerStyle, NativeSurrogate, NativeWindow,
@@ -12,12 +12,6 @@ use crate::{
 /// Thumbnail opacity a surrogate is warmed up at under its still-shown
 /// real window: rendered by DWM, but too faint to see.
 const WARM_UP_OPACITY: u8 = 1;
-
-/// `alpha` scaled by `frac` (0.0–1.0).
-#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-fn scale_alpha(alpha: u8, frac: f32) -> u8 {
-  (f32::from(alpha) * frac.clamp(0.0, 1.0)).round() as u8
-}
 
 /// `(rcSource, rcDestination)` drawing the visible frame of a window that
 /// rests at `rect` with its frame at `rest_frame`, now at `frame`, cut at
@@ -387,7 +381,7 @@ impl WorkspaceSurrogate {
     if self.is_live() || !params.is_copyable() {
       return false;
     }
-    if self.copies.backdrop_params() == Some(params) {
+    if self.copies.carries_backdrop_styles(&[params]) {
       return true;
     }
 
@@ -395,7 +389,7 @@ impl WorkspaceSurrogate {
     let (dest, frame) = (self.hwnd(), self.rest_frame());
     if !self.copies.carry_backdrop(
       dest,
-      params,
+      &[params],
       &self.viewport,
       &self.rect,
       &frame,
@@ -403,6 +397,7 @@ impl WorkspaceSurrogate {
       return false;
     }
 
+    self.copies.show_backdrop_style(Some(params));
     if is_new {
       self.copies.show_backdrop(true);
     }
@@ -443,14 +438,13 @@ impl WorkspaceSurrogate {
     }
 
     let (dest, frame) = (self.hwnd(), self.rest_frame());
-    self.copies.carry_shadow(
-      dest,
-      window,
-      &self.rect,
-      &frame,
-      is_active,
-      *corner_style,
-    )
+    let look = (is_active, *corner_style);
+    let carries =
+      self
+        .copies
+        .carry_shadow(dest, window, &self.rect, &frame, &[look]);
+    self.copies.show_shadow_look(look);
+    carries
   }
 
   /// Draws the window and its shadow at `window` opacity and its ring and

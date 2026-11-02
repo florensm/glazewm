@@ -22,6 +22,16 @@ enum PeekMode {
   Live,
 }
 
+/// How a window is drawn in one focus state, which a [`WindowPeek`] draws
+/// copies of its shadow and backdrop for.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct PeekStyle {
+  /// Whether the window is drawn active, with the deeper shadow.
+  pub is_active: bool,
+  pub corner_style: CornerStyle,
+  pub backdrop: Option<BackdropOverlayParams>,
+}
+
 /// A click-through, live thumbnail of a window, cut to the part of it
 /// that lies inside a clip rect.
 ///
@@ -44,9 +54,6 @@ pub struct WindowPeek {
   /// Whether the shadow copy is drawn: only while the real window is
   /// cloaked, so it shows no shadow of its own.
   casts_shadow: bool,
-  /// How the shadow copy was last drawn, as active or not with the
-  /// window's corners; `None` until it first was.
-  shadow_look: Option<(bool, CornerStyle)>,
   /// The window's visible frame where it was last placed, clipped or not.
   frame_rect: Option<Rect>,
   visible_rect: Option<Rect>,
@@ -104,7 +111,6 @@ impl WindowPeek {
       border_inset,
       rest: rect.clone(),
       casts_shadow: false,
-      shadow_look: None,
       frame_rect: None,
       visible_rect: None,
     })
@@ -128,45 +134,73 @@ impl WindowPeek {
     self.copies.move_backdrop(rect, frame);
   }
 
-  /// Draws the window's backdrop, as `params` show it, under its copy from
-  /// now on, while [`show_backdrop`](Self::show_backdrop) says so (see
-  /// `OverlayCopies::carry_backdrop`). Returns whether the peek does: only
-  /// one that never moves can, and only a backdrop that can be copied (see
-  /// `BackdropOverlayParams::is_copyable`).
+  /// Draws copies of `window`'s shadow, and its backdrop under it, along
+  /// with it from now on, for each of `styles` it may be drawn in (e.g.
+  /// focused and not), of which [`show_style`](Self::show_style) picks
+  /// one. The same `styles` again keep what is drawn.
   ///
-  /// Before [`carry_ring`](Self::carry_ring) and
-  /// [`carry_shadow`](Self::carry_shadow), which go over the window that
-  /// this puts back on top of the backdrop.
-  pub fn carry_backdrop(&mut self, params: BackdropOverlayParams) -> bool {
+  /// All are drawn up front, so a focus change mid-move only swaps which
+  /// copies show: registering new ones then, and the window's own
+  /// thumbnail anew over a new backdrop, left frames with no copy at all.
+  ///
+  /// Only a peek that never moves carries them, the backdrop only in
+  /// styles that can be copied (see `BackdropOverlayParams::is_copyable`),
+  /// and shown while [`show_backdrop`](Self::show_backdrop) says so.
+  ///
+  /// Before [`carry_ring`](Self::carry_ring), which goes over the window
+  /// that this may put back on top of the backdrop.
+  pub fn carry_styles(
+    &mut self,
+    window: &NativeWindow,
+    styles: &[PeekStyle],
+  ) {
     let PeekMode::Pinned { viewport } = &self.mode else {
-      return false;
+      return;
     };
-    if !params.is_copyable() {
-      return false;
-    }
-    if self.copies.backdrop_params() == Some(params) {
-      return true;
-    }
 
-    // Cut from a backdrop of the whole monitor, which the clip, its work
-    // area, is part of.
-    let monitor = wallpaper_surface::monitor_bounds(viewport);
-    let frame = to_logical(&self.rest, &self.border_inset);
     let dest = self.surrogate.hwnd();
+    let frame = to_logical(&self.rest, &self.border_inset);
+    let backdrops = styles
+      .iter()
+      .filter_map(|style| style.backdrop)
+      .filter(BackdropOverlayParams::is_copyable)
+      .collect::<Vec<_>>();
 
-    if !self
-      .copies
-      .carry_backdrop(dest, params, &monitor, &self.rest, &frame)
+    if !backdrops.is_empty()
+      && !self.copies.carries_backdrop_styles(&backdrops)
     {
-      return false;
+      // Cut from a backdrop of the whole monitor, which the clip, its work
+      // area, is part of.
+      let monitor = wallpaper_surface::monitor_bounds(viewport);
+
+      if self
+        .copies
+        .carry_backdrop(dest, &backdrops, &monitor, &self.rest, &frame)
+      {
+        self.surrogate.raise_thumbnail(self.source);
+      }
     }
 
-    self.surrogate.raise_thumbnail(self.source);
-    true
+    let looks = styles
+      .iter()
+      .map(|style| (style.is_active, style.corner_style))
+      .collect::<Vec<_>>();
+    self
+      .copies
+      .carry_shadow(dest, window, &self.rest, &frame, &looks);
   }
 
-  /// Whether the peek draws the window's backdrop (see
-  /// [`carry_backdrop`](Self::carry_backdrop)).
+  /// Draws the shadow and backdrop copies as `style` has them, if carried
+  /// (see [`carry_styles`](Self::carry_styles)).
+  pub fn show_style(&mut self, style: &PeekStyle) {
+    self.copies.show_backdrop_style(style.backdrop);
+    self
+      .copies
+      .show_shadow_look((style.is_active, style.corner_style));
+  }
+
+  /// Whether the peek draws the window's backdrop in any style (see
+  /// [`carry_styles`](Self::carry_styles)).
   #[must_use]
   pub fn carries_backdrop(&self) -> bool {
     self.copies.carries_backdrop()
@@ -207,38 +241,6 @@ impl WindowPeek {
   #[must_use]
   pub fn carries_ring(&self) -> bool {
     self.copies.carries_ring()
-  }
-
-  /// Draws `window`'s shadow along with it from now on, as for the window
-  /// drawn active or not with `corner_style`'s corners, redrawing it when
-  /// either changed. Returns whether the peek does: only one that never
-  /// moves can, and only for a window DWM draws a shadow around.
-  pub fn carry_shadow(
-    &mut self,
-    window: &NativeWindow,
-    is_active: bool,
-    corner_style: CornerStyle,
-  ) -> bool {
-    if self.is_live() {
-      return false;
-    }
-
-    if self.shadow_look != Some((is_active, corner_style)) {
-      self.shadow_look = Some((is_active, corner_style));
-
-      let dest = self.surrogate.hwnd();
-      let frame = to_logical(&self.rest, &self.border_inset);
-      self.copies.carry_shadow(
-        dest,
-        window,
-        &self.rest,
-        &frame,
-        is_active,
-        corner_style,
-      );
-    }
-
-    true
   }
 
   /// Draws the shadow copy or not from the next placement on: only while

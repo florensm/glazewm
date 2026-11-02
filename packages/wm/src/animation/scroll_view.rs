@@ -32,8 +32,8 @@ use uuid::Uuid;
 use wm_common::{DisplayState, Layout, WindowState};
 use wm_platform::{
   BackdropOverlayParams, BorderOverlayParams, NativeBackdropOverlay,
-  NativeBorderOverlay, Overlay, Point, Rect, StyleBlend, SurrogateBatch,
-  WindowPeek, HWND,
+  NativeBorderOverlay, Overlay, PeekStyle, Point, Rect, StyleBlend,
+  SurrogateBatch, WindowPeek, HWND,
 };
 
 use super::{
@@ -101,8 +101,6 @@ struct Entry {
   role: Role,
   ring: Handover,
   backdrop: Handover,
-  /// The backdrop style the peek's copy draws, if any.
-  backdrop_params: Option<BackdropOverlayParams>,
 }
 
 impl Entry {
@@ -363,8 +361,15 @@ impl ScrollView {
     };
     // The window's own transparency, corners and backdrop, as it is
     // focused or not.
-    let (opacity, corner_style, overlays) =
+    let (opacity, corner_style, _) =
       surrogate_effects_for(window.effect_set(is_focused), config);
+    let styles = peek_styles(window, config);
+    let [focused_style, unfocused_style] = styles;
+    let style = if is_focused {
+      focused_style
+    } else {
+      unfocused_style
+    };
     if !is_moving {
       motion.start_clock(Instant::now());
     }
@@ -378,18 +383,10 @@ impl ScrollView {
       entry.clip = clip.clone();
       entry.opacity = opacity;
       entry.role = role;
-      if entry.backdrop_params != overlays.backdrop {
-        entry.backdrop_params = overlays.backdrop;
-        match overlays.backdrop {
-          Some(params) => {
-            entry.peek.carry_backdrop(params);
-          }
-          None => entry.peek.hide_backdrop(),
-        }
-      }
-      entry
-        .peek
-        .carry_shadow(&window.native(), is_focused, corner_style);
+      // Copies of both styles are drawn up front, so a focus change only
+      // swaps which show: one registered mid-move left frames without it.
+      entry.peek.carry_styles(&window.native(), &styles);
+      entry.peek.show_style(&style);
       entry.peek.cast_shadow(is_cloaked);
       let rect = entry.motion.current_rect();
       entry.place(&rect, batch);
@@ -398,11 +395,8 @@ impl ScrollView {
 
     // A window with a backdrop that can't be copied along in either focus
     // state has a peek that moves with it.
-    let is_live = [true, false].into_iter().any(|is_focused| {
-      surrogate_effects_for(window.effect_set(is_focused), config)
-        .2
-        .backdrop
-        .is_some_and(|params| !params.is_copyable())
+    let is_live = styles.iter().any(|style| {
+      style.backdrop.is_some_and(|params| !params.is_copyable())
     });
 
     // Sized like the window itself, which a collapsed `from` (an opening
@@ -420,14 +414,12 @@ impl ScrollView {
       return false;
     };
 
-    // Under the ring and shadow, which go on top of it.
-    if let Some(params) = overlays.backdrop {
-      peek.carry_backdrop(params);
-    }
+    // Before the ring, which goes on top.
+    peek.carry_styles(&window.native(), &styles);
+    peek.show_style(&style);
 
     // A moving column's real window still shows, with its own shadow,
     // until a tick after this; one at rest is already cloaked.
-    peek.carry_shadow(&window.native(), is_focused, corner_style);
     peek.cast_shadow(!is_moving);
 
     let rect = motion.current_rect();
@@ -440,7 +432,6 @@ impl ScrollView {
       role,
       ring: Handover::None,
       backdrop: Handover::None,
-      backdrop_params: overlays.backdrop,
     };
     entry.place(&rect, batch);
     self.entries.insert(window.id(), entry);
@@ -972,6 +963,24 @@ fn carry_backdrop(
   };
 
   true
+}
+
+/// How `window` is drawn focused and not, which its peek carries copies
+/// for.
+fn peek_styles(
+  window: &WindowContainer,
+  config: &UserConfig,
+) -> [PeekStyle; 2] {
+  [true, false].map(|is_focused| {
+    let (_, corner_style, overlays) =
+      surrogate_effects_for(window.effect_set(is_focused), config);
+
+    PeekStyle {
+      is_active: is_focused,
+      corner_style,
+      backdrop: overlays.backdrop,
+    }
+  })
 }
 
 /// Where each tiling window of `workspace` moves from and to: from where
