@@ -104,9 +104,19 @@ impl WindowListener {
 
   /// Implements [`WindowListener::terminate`].
   pub(crate) fn terminate(&mut self) {
-    for handle in self.hook_handles.drain(..) {
-      let _ = unsafe { UnhookWinEvent(handle) };
-    }
+    // `UnhookWinEvent` fails from any thread but the one that set the
+    // hooks. Called from the WM's thread, it left them firing until the
+    // event loop stopped, every event a warning once the channel closed.
+    // Once the event loop has stopped, nothing runs them any more, and its
+    // thread's exit removes them.
+    let handles = std::mem::take(&mut self.hook_handles);
+    let _ = self.dispatcher.dispatch_sync(move || {
+      for handle in handles {
+        // SAFETY: Each handle was returned by `SetWinEventHook` on this
+        // thread and is unhooked once.
+        let _ = unsafe { UnhookWinEvent(handle) };
+      }
+    });
 
     // The shell hook itself is released when the event loop's message
     // window is destroyed; `DeregisterShellHookWindow` is undocumented
