@@ -322,13 +322,16 @@ pub(crate) struct OverlayCopies {
   ring: Option<OverlayCopy>,
   shadows: Shadows,
   backdrop: Option<BackdropCopy>,
+  /// Where they were last placed.
+  placement: Option<Placement>,
 }
 
 impl OverlayCopies {
   /// Draws the ring of `source`, an overlay window at `rest` around a
-  /// window at `window_rest`, on `dest` from now on. Called again with the
-  /// same `source`, only updates where the two are, e.g. for a width
-  /// change that resized the ring. Returns whether it does.
+  /// window at `window_rest`, on `dest` from now on, where the others were
+  /// last placed if they were. Called again with the same `source`, only
+  /// updates where the two are, e.g. for a width change that resized the
+  /// ring. Returns whether it does.
   pub(crate) fn carry_ring(
     &mut self,
     dest: HWND,
@@ -351,6 +354,11 @@ impl OverlayCopies {
         rest: rest.clone(),
         window_rest: window_rest.clone(),
       });
+    if let (Some(ring), Some(placement)) =
+      (&mut self.ring, &self.placement)
+    {
+      ring.place(placement);
+    }
     self.ring.is_some()
   }
 
@@ -638,6 +646,7 @@ impl OverlayCopies {
     if let Some(backdrop) = &mut self.backdrop {
       backdrop.place(&placement);
     }
+    self.placement = Some(placement);
   }
 
   /// Draws the ring and backdrop at `opacity` and the shadow at `shadow`.
@@ -681,6 +690,7 @@ impl OverlayCopies {
     self.ring = None;
     self.shadows = Shadows::default();
     self.backdrop = None;
+    self.placement = None;
   }
 }
 

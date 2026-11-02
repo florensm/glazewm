@@ -227,15 +227,11 @@ impl ScrollView {
   ) -> Landed {
     let mut landed = Landed::default();
 
-    for (id, entry) in &mut self.entries {
-      // A later composition than the one the copy was put over the ring
-      // in.
-      for handover in [&mut entry.ring, &mut entry.backdrop] {
-        if *handover == Handover::Covering {
-          *handover = Handover::Covered;
-        }
-      }
+    // A later composition than the one copies were put over rings and
+    // backdrops in.
+    self.note_composited();
 
+    for (id, entry) in &mut self.entries {
       match entry.role {
         Role::Moving { ends_shown } => {
           // Its real window was cloaked a tick ago at least, taking its
@@ -285,6 +281,18 @@ impl ScrollView {
     });
 
     landed
+  }
+
+  /// Notes that the copies put over real rings and backdrops have been
+  /// composited since, so those can go (see [`Handover::Covered`]).
+  fn note_composited(&mut self) {
+    for entry in self.entries.values_mut() {
+      for handover in [&mut entry.ring, &mut entry.backdrop] {
+        if *handover == Handover::Covering {
+          *handover = Handover::Covered;
+        }
+      }
+    }
   }
 
   /// Takes out the peeks of windows that `is_known` no longer knows, i.e.
@@ -613,9 +621,7 @@ pub fn sync_scroll_view(
       .iter()
       .any(|(_, entry)| entry.peek.visible_rect().is_some());
 
-  if needs_flush || replaces_peek {
-    wm_platform::dwm_flush();
-  }
+  flush_overlays(state, config, batch, needs_flush || replaces_peek);
 
   for (id, entry) in gone {
     if let Some(window) =
@@ -630,10 +636,31 @@ pub fn sync_scroll_view(
     state.animation_manager.remove_animation(id);
   }
 
-  track_overlays(state, config, batch);
-
   if state.animation_manager.scroll_view.is_active() {
     state.animation_manager.ensure_timer_running();
+  }
+}
+
+/// Tracks the overlays of the windows the scroll view draws (see
+/// [`track_overlays`]) and, if `flushes`, has DWM composite them along
+/// with the peeks.
+///
+/// Tracked before the flush, so it composites the copies drawn over the
+/// rings and backdrops handed over too. Those then go at once, before
+/// anything moves: hidden on the first tick of the move instead, a frame
+/// could show them still at rest beside their moved copies.
+fn flush_overlays(
+  state: &mut WmState,
+  config: &UserConfig,
+  batch: SurrogateBatch,
+  flushes: bool,
+) {
+  track_overlays(state, config, batch);
+
+  if flushes {
+    wm_platform::dwm_flush();
+    state.animation_manager.scroll_view.note_composited();
+    track_overlays(state, config, SurrogateBatch::new());
   }
 }
 

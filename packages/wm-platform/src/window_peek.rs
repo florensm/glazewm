@@ -260,12 +260,12 @@ impl WindowPeek {
     );
   }
 
-  /// Draws the window's border ring along with it from now on: `source`,
-  /// its overlay window, at `ring_rect` around the window at
-  /// `window_rect`, both where they are now. Called again with the same
-  /// `source`, only updates where the two are. Returns whether the peek
-  /// does: only one that never moves can carry a ring, as for a
-  /// `WorkspaceSurrogate`.
+  /// Draws the window's border ring along with it from now on, at once,
+  /// over the ring itself: `source`, its overlay window, at `ring_rect`
+  /// around the window at `window_rect`, both where they are now. Called
+  /// again with the same `source`, only updates where the two are.
+  /// Returns whether the peek does: only one that never moves can carry
+  /// a ring, as for a `WorkspaceSurrogate`.
   pub fn carry_ring(
     &mut self,
     source: HWND,
@@ -277,7 +277,11 @@ impl WindowPeek {
     }
 
     let dest = self.surrogate.hwnd();
-    self.copies.carry_ring(dest, source, ring_rect, window_rect)
+    let carries =
+      self.copies.carry_ring(dest, source, ring_rect, window_rect);
+    // Drawn twice in one place, a ring looks like one.
+    self.copies.cover_ring();
+    carries
   }
 
   /// Whether the peek draws the window's border ring.
