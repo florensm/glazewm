@@ -25,9 +25,7 @@ impl WindowTraits {
     native: &NativeWindow,
     props: &NativeWindowProperties,
   ) -> Self {
-    use wm_platform::{
-      NativeWindowWindowsExt, WS_EX_DLGMODALFRAME, WS_EX_TOOLWINDOW,
-    };
+    use wm_platform::{WS_EX_DLGMODALFRAME, WS_EX_TOOLWINDOW};
 
     Self {
       has_owner: native.has_owner_window(),

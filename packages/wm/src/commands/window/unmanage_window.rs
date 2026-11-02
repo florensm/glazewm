@@ -1,6 +1,5 @@
 use anyhow::Context;
 use wm_common::{WindowState, WmEvent};
-use wm_platform::NativeWindowWindowsExt;
 
 use crate::{
   commands::container::{

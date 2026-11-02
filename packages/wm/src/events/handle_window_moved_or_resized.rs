@@ -3,7 +3,7 @@ use wm_common::{
   try_warn, ActiveDrag, ActiveDragOperation, DisplayState,
   FloatingStateConfig, FullscreenStateConfig, WindowState,
 };
-use wm_platform::{NativeWindow, NativeWindowWindowsExt, Rect};
+use wm_platform::{NativeWindow, Rect};
 
 use crate::{
   commands::{

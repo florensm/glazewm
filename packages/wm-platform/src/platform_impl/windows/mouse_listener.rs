@@ -26,7 +26,7 @@ use super::FOREGROUND_INPUT_IDENTIFIER;
 use crate::{
   mouse_listener::MouseEventKind,
   platform_event::{MouseButton, MouseEvent, PressedButtons},
-  Dispatcher, DispatcherExtWindows, Point,
+  Dispatcher, Point,
 };
 
 /// Data shared with the window procedure callback.

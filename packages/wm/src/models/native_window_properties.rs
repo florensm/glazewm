@@ -1,4 +1,4 @@
-use wm_platform::{NativeWindow, NativeWindowWindowsExt, Rect, RectDelta};
+use wm_platform::{NativeWindow, Rect, RectDelta};
 
 #[derive(Clone, derive_more::Debug)]
 pub struct NativeWindowProperties {

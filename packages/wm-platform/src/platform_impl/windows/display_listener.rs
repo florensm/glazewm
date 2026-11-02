@@ -11,7 +11,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
   WM_DISPLAYCHANGE, WM_POWERBROADCAST, WM_SETTINGCHANGE,
 };
 
-use crate::{Dispatcher, DispatcherExtWindows};
+use crate::Dispatcher;
 
 /// Platform-specific implementation of [`DisplayListener`].
 pub(crate) struct DisplayListener {

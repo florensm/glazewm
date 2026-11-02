@@ -4,7 +4,7 @@ use wm_common::{
   AutoStackRuleConfig, DuplicateTabs, InvokeCommand, WindowRuleEvent,
   WindowState, WmEvent,
 };
-use wm_platform::{NativeWindow, NativeWindowWindowsExt, RectDelta};
+use wm_platform::{NativeWindow, RectDelta};
 
 use crate::{
   auto_stack::{
@@ -784,8 +784,7 @@ fn check_is_manageable(
 
   {
     use wm_platform::{
-      NativeWindowWindowsExt, WS_CAPTION, WS_CHILD, WS_EX_NOACTIVATE,
-      WS_EX_TOOLWINDOW,
+      WS_CAPTION, WS_CHILD, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW,
     };
 
     // Ensure window is top-level (i.e. not a child window). Ignore

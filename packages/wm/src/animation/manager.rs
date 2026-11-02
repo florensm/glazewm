@@ -245,10 +245,9 @@ use wm_platform::{
   perf::{self, Stage},
   sample_edge_color_async, Color, CornerStyle, DxgiVsyncWaiter,
   EdgeColorCache, NativeBackdropOverlay, NativeBorderOverlay,
-  NativeIrisOverlay, NativeSurrogate, NativeWindow,
-  NativeWindowWindowsExt, OpacityValue, Overlay, OverlayParams, Rect,
-  ResizeSession, SessionOptions, StyleBlend, SurrogateBatch,
-  WorkspaceSurrogate, HWND,
+  NativeIrisOverlay, NativeSurrogate, NativeWindow, OpacityValue, Overlay,
+  OverlayParams, Rect, ResizeSession, SessionOptions, StyleBlend,
+  SurrogateBatch, WorkspaceSurrogate, HWND,
 };
 
 use crate::{

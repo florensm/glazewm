@@ -25,8 +25,8 @@ use std::{
 use uuid::Uuid;
 use wm_common::{DisplayState, Layout, WindowState};
 use wm_platform::{
-  NativeBackdropOverlay, NativeBorderOverlay, NativeWindowWindowsExt,
-  Overlay, Point, Rect, StyleBlend, SurrogateBatch, WindowPeek, HWND,
+  NativeBackdropOverlay, NativeBorderOverlay, Overlay, Point, Rect,
+  StyleBlend, SurrogateBatch, WindowPeek, HWND,
 };
 
 use super::{

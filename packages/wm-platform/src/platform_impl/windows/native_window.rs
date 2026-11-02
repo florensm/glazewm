@@ -328,12 +328,12 @@ impl NativeWindow {
     Ok(())
   }
 
-  /// Implements [`NativeWindowWindowsExt::hwnd`].
+  /// Implements [`crate::NativeWindow::hwnd`].
   pub(crate) fn hwnd(&self) -> HWND {
     HWND(self.handle)
   }
 
-  /// Implements [`NativeWindowWindowsExt::class_name`].
+  /// Implements [`crate::NativeWindow::class_name`].
   pub(crate) fn class_name(&self) -> crate::Result<String> {
     let mut buffer = [0u16; 256];
     let result = unsafe { GetClassNameW(self.hwnd(), &mut buffer) };
@@ -347,7 +347,7 @@ impl NativeWindow {
     Ok(class_name)
   }
 
-  /// Implements [`NativeWindowWindowsExt::frame_with_shadows`].
+  /// Implements [`crate::NativeWindow::frame_with_shadows`].
   pub(crate) fn frame_with_shadows(&self) -> crate::Result<Rect> {
     let mut rect = RECT::default();
 
@@ -363,7 +363,7 @@ impl NativeWindow {
     ))
   }
 
-  /// Implements [`NativeWindowWindowsExt::shadow_borders`].
+  /// Implements [`crate::NativeWindow::shadow_borders`].
   // TODO: Return tuple of (left, top, right, bottom) instead of
   // `RectDelta`.
   pub(crate) fn shadow_borders(&self) -> crate::Result<RectDelta> {
@@ -378,7 +378,7 @@ impl NativeWindow {
     ))
   }
 
-  /// Implements [`NativeWindowWindowsExt::min_window_size`].
+  /// Implements [`crate::NativeWindow::min_window_size`].
   pub(crate) fn min_window_size(&self) -> Option<(i32, i32)> {
     let mut info = MINMAXINFO::default();
     let mut result = 0usize;
@@ -402,19 +402,19 @@ impl NativeWindow {
       .then_some((info.ptMinTrackSize.x, info.ptMinTrackSize.y))
   }
 
-  /// Implements [`NativeWindowWindowsExt::has_owner_window`].
+  /// Implements [`crate::NativeWindow::has_owner_window`].
   pub(crate) fn has_owner_window(&self) -> bool {
     unsafe { GetWindow(self.hwnd(), GW_OWNER) }.0 != 0
   }
 
-  /// Implements [`NativeWindowWindowsExt::owner_window_id`].
+  /// Implements [`crate::NativeWindow::owner_window_id`].
   pub(crate) fn owner_window_id(&self) -> Option<WindowId> {
     // SAFETY: A stale handle just returns no owner.
     let owner = unsafe { GetWindow(self.hwnd(), GW_OWNER) };
     (owner.0 != 0).then_some(WindowId(owner.0))
   }
 
-  /// Implements [`NativeWindowWindowsExt::is_cloaked_by_owner`].
+  /// Implements [`crate::NativeWindow::is_cloaked_by_owner`].
   pub(crate) fn is_cloaked_by_owner(&self) -> bool {
     // Checked through the owner rather than `DWM_CLOAKED_INHERITED`: a
     // window with its own shell view is cloaked by the shell along with
@@ -431,7 +431,7 @@ impl NativeWindow {
       && Self::new(owner.0).is_cloaked().unwrap_or(false)
   }
 
-  /// Implements [`NativeWindowWindowsExt::press_keys`].
+  /// Implements [`crate::NativeWindow::press_keys`].
   pub(crate) fn press_keys(&self, keys: &[Key]) -> crate::Result<bool> {
     let codes = keys
       .iter()
@@ -488,7 +488,7 @@ impl NativeWindow {
     Ok(true)
   }
 
-  /// Implements [`NativeWindowWindowsExt::process_id`].
+  /// Implements [`crate::NativeWindow::process_id`].
   pub(crate) fn process_id(&self) -> u32 {
     let mut process_id = 0u32;
     // SAFETY: `process_id` outlives the call; a stale handle leaves it 0.
@@ -498,7 +498,7 @@ impl NativeWindow {
     process_id
   }
 
-  /// Implements [`NativeWindowWindowsExt::has_modal_prompt`].
+  /// Implements [`crate::NativeWindow::has_modal_prompt`].
   pub(crate) fn has_modal_prompt(&self) -> bool {
     use windows::Win32::UI::WindowsAndMessaging::GW_ENABLEDPOPUP;
 
@@ -515,7 +515,7 @@ impl NativeWindow {
       && unsafe { IsWindowVisible(popup) }.as_bool()
   }
 
-  /// Implements [`NativeWindowWindowsExt::is_hung`].
+  /// Implements [`crate::NativeWindow::is_hung`].
   pub(crate) fn is_hung(&self) -> bool {
     // SAFETY: A stale handle just returns false.
     unsafe {
@@ -524,7 +524,7 @@ impl NativeWindow {
     .as_bool()
   }
 
-  /// Implements [`NativeWindowWindowsExt::is_enabled`].
+  /// Implements [`crate::NativeWindow::is_enabled`].
   pub(crate) fn is_enabled(&self) -> bool {
     // SAFETY: A stale handle just returns false.
     unsafe {
@@ -535,19 +535,19 @@ impl NativeWindow {
     .as_bool()
   }
 
-  /// Implements [`NativeWindowWindowsExt::enable_async`].
+  /// Implements [`crate::NativeWindow::enable_async`].
   pub(crate) fn enable_async(&self) {
     super::window_enabler::enable_async(self.handle);
   }
 
-  /// Implements [`NativeWindowWindowsExt::is_top_level`].
+  /// Implements [`crate::NativeWindow::is_top_level`].
   pub(crate) fn is_top_level(&self) -> bool {
     // `GA_PARENT`, unlike `GetParent`, never returns the owner window.
     // SAFETY: A stale handle just makes `GetAncestor` return `HWND(0)`.
     unsafe { GetAncestor(self.hwnd(), GA_PARENT) == GetDesktopWindow() }
   }
 
-  /// Implements [`NativeWindowWindowsExt::has_window_style`].
+  /// Implements [`crate::NativeWindow::has_window_style`].
   pub(crate) fn has_window_style(&self, style: WINDOW_STYLE) -> bool {
     let current_style =
       unsafe { GetWindowLongPtrW(self.hwnd(), GWL_STYLE) };
@@ -557,7 +557,7 @@ impl NativeWindow {
     (current_style & style) != 0
   }
 
-  /// Implements [`NativeWindowWindowsExt::has_window_style_ex`].
+  /// Implements [`crate::NativeWindow::has_window_style_ex`].
   pub(crate) fn has_window_style_ex(
     &self,
     style: WINDOW_EX_STYLE,
@@ -570,7 +570,7 @@ impl NativeWindow {
     (current_style & style) != 0
   }
 
-  /// Implements [`NativeWindowWindowsExt::set_window_pos`].
+  /// Implements [`crate::NativeWindow::set_window_pos`].
   pub(crate) fn set_window_pos(
     &self,
     z_order: &WindowZOrder,
@@ -601,19 +601,19 @@ impl NativeWindow {
     Ok(())
   }
 
-  /// Implements [`NativeWindowWindowsExt::show`].
+  /// Implements [`crate::NativeWindow::show`].
   pub(crate) fn show(&self) -> crate::Result<()> {
     unsafe { ShowWindowAsync(self.hwnd(), SW_SHOWNA) }.ok()?;
     Ok(())
   }
 
-  /// Implements [`NativeWindowWindowsExt::hide`].
+  /// Implements [`crate::NativeWindow::hide`].
   pub(crate) fn hide(&self) -> crate::Result<()> {
     unsafe { ShowWindowAsync(self.hwnd(), SW_HIDE) }.ok()?;
     Ok(())
   }
 
-  /// Implements [`NativeWindowWindowsExt::restore`].
+  /// Implements [`crate::NativeWindow::restore`].
   pub(crate) fn restore(
     &self,
     outer_frame: Option<&Rect>,
@@ -644,8 +644,7 @@ impl NativeWindow {
     }
   }
 
-  /// Implements [`NativeWindowWindowsExt::set_cloaked`].
-  /// Implements [`NativeWindowWindowsExt::stop_flashing`].
+  /// Implements [`crate::NativeWindow::stop_flashing`].
   pub(crate) fn stop_flashing(&self) {
     #[allow(clippy::cast_possible_truncation)]
     let flash_info = FLASHWINFO {
@@ -661,6 +660,7 @@ impl NativeWindow {
     unsafe { FlashWindowEx(&raw const flash_info) };
   }
 
+  /// Implements [`crate::NativeWindow::set_cloaked`].
   pub(crate) fn set_cloaked(&self, cloaked: bool) -> crate::Result<()> {
     if self.set_view_cloaked(cloaked)? {
       Ok(())
@@ -672,7 +672,7 @@ impl NativeWindow {
     }
   }
 
-  /// Implements [`NativeWindowWindowsExt::set_cloaked_or_hidden`].
+  /// Implements [`crate::NativeWindow::set_cloaked_or_hidden`].
   pub(crate) fn set_cloaked_or_hidden(
     &self,
     hidden: bool,
@@ -712,7 +712,7 @@ impl NativeWindow {
     }
   }
 
-  /// Implements [`NativeWindowWindowsExt::can_be_cloaked`].
+  /// Implements [`crate::NativeWindow::can_be_cloaked`].
   pub(crate) fn can_be_cloaked(&self) -> bool {
     COM_INIT
       .with(|com_init| {
@@ -761,7 +761,7 @@ impl NativeWindow {
     })
   }
 
-  /// Implements [`NativeWindowWindowsExt::mark_fullscreen`].
+  /// Implements [`crate::NativeWindow::mark_fullscreen`].
   pub(crate) fn mark_fullscreen(
     &self,
     fullscreen: bool,
@@ -779,7 +779,7 @@ impl NativeWindow {
     })
   }
 
-  /// Implements [`NativeWindowWindowsExt::set_taskbar_visibility`].
+  /// Implements [`crate::NativeWindow::set_taskbar_visibility`].
   pub(crate) fn set_taskbar_visibility(
     &self,
     visible: bool,
@@ -799,7 +799,7 @@ impl NativeWindow {
     })
   }
 
-  /// Implements [`NativeWindowWindowsExt::add_window_style_ex`].
+  /// Implements [`crate::NativeWindow::add_window_style_ex`].
   pub(crate) fn add_window_style_ex(&self, style: WINDOW_EX_STYLE) {
     let current_style =
       unsafe { GetWindowLongPtrW(self.hwnd(), GWL_EXSTYLE) };
@@ -843,7 +843,7 @@ impl NativeWindow {
     }
   }
 
-  /// Implements [`NativeWindowWindowsExt::set_z_order`].
+  /// Implements [`crate::NativeWindow::set_z_order`].
   pub(crate) fn set_z_order(
     &self,
     z_order: &WindowZOrder,
@@ -902,7 +902,7 @@ impl NativeWindow {
     Ok(())
   }
 
-  /// Implements [`NativeWindowWindowsExt::set_title_bar_visibility`].
+  /// Implements [`crate::NativeWindow::set_title_bar_visibility`].
   pub(crate) fn set_title_bar_visibility(
     &self,
     visible: bool,
@@ -942,7 +942,7 @@ impl NativeWindow {
     Ok(())
   }
 
-  /// Implements [`NativeWindowWindowsExt::set_native_border_hidden`].
+  /// Implements [`crate::NativeWindow::set_native_border_hidden`].
   ///
   /// Windows 11 draws a 1px border on the window's outer edge, inside the
   /// area a self-drawn border overlay rings. With both present the two are
@@ -983,7 +983,7 @@ impl NativeWindow {
     Ok(())
   }
 
-  /// Implements [`NativeWindowWindowsExt::set_corner_style`].
+  /// Implements [`crate::NativeWindow::set_corner_style`].
   pub(crate) fn set_corner_style(
     &self,
     corner_style: &CornerStyle,
@@ -1008,7 +1008,7 @@ impl NativeWindow {
     Ok(())
   }
 
-  /// Implements [`NativeWindowWindowsExt::set_transparency`].
+  /// Implements [`crate::NativeWindow::set_transparency`].
   pub(crate) fn set_transparency(
     &self,
     opacity_value: &OpacityValue,
@@ -1028,7 +1028,7 @@ impl NativeWindow {
     Ok(())
   }
 
-  /// Implements [`NativeWindowWindowsExt::adjust_transparency`].
+  /// Implements [`crate::NativeWindow::adjust_transparency`].
   pub(crate) fn adjust_transparency(
     &self,
     opacity_delta: &Delta<OpacityValue>,
@@ -1061,7 +1061,7 @@ impl NativeWindow {
     self.set_transparency(&OpacityValue::from_alpha(target_alpha))
   }
 
-  /// Implements [`NativeWindowWindowsExt::layered_alpha`].
+  /// Implements [`crate::NativeWindow::layered_alpha`].
   pub(crate) fn layered_alpha(&self) -> crate::Result<Option<u8>> {
     if !self.has_window_style_ex(WS_EX_LAYERED) {
       return Ok(None);
@@ -1085,7 +1085,7 @@ impl NativeWindow {
     Ok(flag.contains(LWA_ALPHA).then_some(alpha))
   }
 
-  /// Implements [`NativeWindowWindowsExt::reassert_transparency`].
+  /// Implements [`crate::NativeWindow::reassert_transparency`].
   pub(crate) fn reassert_transparency(&self) -> crate::Result<()> {
     let Some(alpha) = self.layered_alpha()? else {
       return Ok(());

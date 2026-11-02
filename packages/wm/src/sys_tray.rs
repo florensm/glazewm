@@ -12,7 +12,7 @@ use tray_icon::{
   menu::{CheckMenuItem, Menu, MenuEvent, MenuItem, PredefinedMenuItem},
   Icon, TrayIcon, TrayIconBuilder,
 };
-use wm_platform::{Dispatcher, DispatcherExtWindows, ThreadBound};
+use wm_platform::{Dispatcher, ThreadBound};
 
 #[derive(Debug, Clone, Eq, PartialEq)]
 enum TrayMenuId {

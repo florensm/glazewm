@@ -13,8 +13,8 @@ use wm_common::{
   WmEvent,
 };
 use wm_platform::{
-  Dispatcher, Keybinding, LengthValue, NativeWindowWindowsExt,
-  OverviewAction, PlatformEvent, RectDelta, WindowEvent,
+  Dispatcher, Keybinding, LengthValue, OverviewAction, PlatformEvent,
+  RectDelta, WindowEvent,
 };
 
 use crate::{

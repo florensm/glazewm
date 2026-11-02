@@ -1,7 +1,6 @@
 use anyhow::Context;
 use tracing::{info, warn};
 use wm_common::WindowState;
-use wm_platform::NativeWindowWindowsExt;
 
 use crate::{
   commands::container::{

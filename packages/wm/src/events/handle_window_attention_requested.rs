@@ -1,4 +1,4 @@
-use wm_platform::{NativeWindow, NativeWindowWindowsExt};
+use wm_platform::NativeWindow;
 
 use crate::{
   commands::window::set_window_urgency, traits::WindowGetters,

@@ -28,7 +28,7 @@ use windows::{
 };
 
 use super::NativeWindow;
-use crate::{Dispatcher, DispatcherExtWindows, WindowEvent, WindowId};
+use crate::{Dispatcher, WindowEvent, WindowId};
 
 /// Shell hook notification for a window that is flashing its taskbar
 /// button, which the `windows` crate doesn't define.

@@ -1,7 +1,6 @@
 use std::path::Path;
 
 use anyhow::Context;
-use wm_platform::DispatcherExtWindows;
 
 use crate::wm_state::WmState;
 

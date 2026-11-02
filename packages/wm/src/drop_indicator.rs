@@ -3,7 +3,7 @@
 
 use anyhow::Context;
 use wm_common::ActiveDragOperation;
-use wm_platform::{NativeDropIndicator, NativeWindowWindowsExt, Rect};
+use wm_platform::{NativeDropIndicator, Rect};
 
 use crate::{
   layout::window_drop::{tab_bar_at, window_drop},

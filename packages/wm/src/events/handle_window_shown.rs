@@ -111,8 +111,6 @@ fn show_owner_tab(
   state: &mut WmState,
   config: &UserConfig,
 ) -> anyhow::Result<()> {
-  use wm_platform::NativeWindowWindowsExt;
-
   use crate::{
     commands::{general::platform_sync, window::activate_stack_child},
     models::is_inactive_stack_child,

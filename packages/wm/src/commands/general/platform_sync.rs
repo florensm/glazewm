@@ -10,8 +10,8 @@ use wm_platform::{
   perf::{self, Stage},
   BackdropOverlayParams, BorderOverlayParams, CornerStyle, LiveFrame,
   NativeBackdropOverlay, NativeBorderOverlay, NativeIrisOverlay,
-  NativeWindowWindowsExt, OpacityValue, Overlay, OverlayParams, Rect,
-  StyleBlend, SurrogateBatch, WindowZOrder, WorkspaceSurrogate, HWND,
+  OpacityValue, Overlay, OverlayParams, Rect, StyleBlend, SurrogateBatch,
+  WindowZOrder, WorkspaceSurrogate, HWND,
 };
 
 use crate::{

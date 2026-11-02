@@ -1,6 +1,4 @@
-use wm_platform::{
-  Display, DisplayDeviceExtWindows, DisplayExtWindows, Rect,
-};
+use wm_platform::{Display, Rect};
 
 #[derive(Debug, Clone)]
 pub struct NativeMonitorProperties {

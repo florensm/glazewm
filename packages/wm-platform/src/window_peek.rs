@@ -2,8 +2,7 @@ use windows::Win32::Foundation::{HWND, RECT};
 
 use crate::{
   native_surrogate::to_logical, resize_session::compute_border_inset,
-  CornerStyle, NativeSurrogate, NativeWindow, NativeWindowWindowsExt,
-  Rect, SurrogateBatch,
+  CornerStyle, NativeSurrogate, NativeWindow, Rect, SurrogateBatch,
 };
 
 /// A click-through, live thumbnail of a window, cut to the part of it

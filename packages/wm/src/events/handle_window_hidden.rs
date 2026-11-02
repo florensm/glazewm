@@ -1,6 +1,6 @@
 use tracing::info;
 use wm_common::DisplayState;
-use wm_platform::{NativeWindow, NativeWindowWindowsExt};
+use wm_platform::NativeWindow;
 
 use crate::{
   commands::window::{unmanage_if_embedded, unmanage_window},

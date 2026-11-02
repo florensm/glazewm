@@ -1,7 +1,6 @@
 use anyhow::Context;
 use tracing::{info, warn};
 use wm_common::{WindowRuleEvent, WmEvent};
-use wm_platform::NativeWindowWindowsExt;
 
 use crate::{
   commands::{

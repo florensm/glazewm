@@ -15,18 +15,6 @@ pub struct DisplayId(pub isize);
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct DisplayDeviceId(pub String);
 
-/// Windows-specific extensions for [`Display`].
-pub trait DisplayExtWindows {
-  /// Gets the monitor handle.
-  fn hmonitor(&self) -> HMONITOR;
-}
-
-impl DisplayExtWindows for Display {
-  fn hmonitor(&self) -> HMONITOR {
-    self.inner.hmonitor()
-  }
-}
-
 /// Represents a logical display space where windows can be placed.
 ///
 /// This corresponds to a Win32 "display monitor", each with a monitor
@@ -77,6 +65,12 @@ impl Display {
   pub fn main_device(&self) -> crate::Result<DisplayDevice> {
     self.inner.main_device()
   }
+
+  /// Gets the monitor handle.
+  #[must_use]
+  pub fn hmonitor(&self) -> HMONITOR {
+    self.inner.hmonitor()
+  }
 }
 
 /// Mirroring state of a display device.
@@ -87,34 +81,6 @@ pub enum MirroringState {
 
   /// This device is mirroring another (target).
   Target,
-}
-
-/// Windows-specific extensions for [`DisplayDevice`].
-pub trait DisplayDeviceExtWindows {
-  /// Gets the device path.
-  ///
-  /// This can be an empty string for virtual display devices.
-  fn device_path(&self) -> Option<String>;
-
-  /// Gets the hardware ID from the device path.
-  ///
-  /// # Example usage
-  ///
-  /// ```ignore
-  /// device.device_path(); // "\\?\DISPLAY#DEL40A3#5&1234abcd&0&UID256#{e6f07b5f-ee97-4a90-b076-33f57bf4eaa7}"
-  /// device.hardware_id(); // Some("DEL40A3")
-  /// ```
-  fn hardware_id(&self) -> Option<String>;
-}
-
-impl DisplayDeviceExtWindows for DisplayDevice {
-  fn device_path(&self) -> Option<String> {
-    self.inner.device_path.clone()
-  }
-
-  fn hardware_id(&self) -> Option<String> {
-    self.inner.hardware_id()
-  }
 }
 
 /// Represents a display device (physical or virtual).
@@ -136,6 +102,27 @@ impl DisplayDevice {
   /// Gets the mirroring state of the device.
   pub fn mirroring_state(&self) -> crate::Result<Option<MirroringState>> {
     self.inner.mirroring_state()
+  }
+
+  /// Gets the device path.
+  ///
+  /// This can be an empty string for virtual display devices.
+  #[must_use]
+  pub fn device_path(&self) -> Option<String> {
+    self.inner.device_path.clone()
+  }
+
+  /// Gets the hardware ID from the device path.
+  ///
+  /// # Example usage
+  ///
+  /// ```ignore
+  /// device.device_path(); // "\\?\DISPLAY#DEL40A3#5&1234abcd&0&UID256#{e6f07b5f-ee97-4a90-b076-33f57bf4eaa7}"
+  /// device.hardware_id(); // Some("DEL40A3")
+  /// ```
+  #[must_use]
+  pub fn hardware_id(&self) -> Option<String> {
+    self.inner.hardware_id()
   }
 }
 

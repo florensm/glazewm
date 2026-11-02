@@ -1,6 +1,5 @@
 use tracing::warn;
 use wm_common::WindowTransitionParams;
-use wm_platform::NativeWindowWindowsExt;
 
 use crate::{
   animation::AwayTransition,

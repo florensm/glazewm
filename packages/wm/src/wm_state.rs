@@ -7,8 +7,8 @@ use uuid::Uuid;
 use wm_common::{BindingModeConfig, EffectSet, WindowState, WmEvent};
 use wm_platform::{
   Direction, Dispatcher, Display, Keybinding, NativeDropIndicator,
-  NativeStackTabBar, NativeWindow, NativeWindowWindowsExt, OpacityValue,
-  OverviewAction, Point, Rect, TabAction,
+  NativeStackTabBar, NativeWindow, OpacityValue, OverviewAction, Point,
+  Rect, TabAction,
 };
 
 use crate::{

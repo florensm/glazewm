@@ -147,7 +147,7 @@ impl Display {
       .ok_or(crate::Error::DisplayDeviceNotFound)
   }
 
-  /// Implements [`DisplayExtWindows::hmonitor`].
+  /// Implements [`crate::Display::hmonitor`].
   pub(crate) fn hmonitor(&self) -> HMONITOR {
     HMONITOR(self.monitor_handle)
   }
@@ -240,7 +240,7 @@ impl DisplayDevice {
     Ok(None)
   }
 
-  /// Implements [`DisplayDeviceExtWindows::hardware_id`].
+  /// Implements [`crate::DisplayDevice::hardware_id`].
   pub(crate) fn hardware_id(&self) -> Option<String> {
     self
       .device_path

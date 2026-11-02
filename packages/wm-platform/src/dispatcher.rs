@@ -46,178 +46,6 @@ pub type DispatchFn = dyn FnOnce() + Send + 'static;
 pub type WndProcCallback =
   dyn Fn(isize, u32, usize, isize) -> Option<isize> + Send + 'static;
 
-/// Windows-specific extensions for `Dispatcher`.
-pub trait DispatcherExtWindows {
-  /// Returns the handle of the event loop's message window.
-  fn message_window_handle(&self) -> isize;
-
-  /// Registers a callback to pre-process messages in the event loop's
-  /// window procedure.
-  ///
-  /// Returns a unique ID that can be passed to
-  /// `deregister_wndproc_callback` to remove the callback.
-  fn register_wndproc_callback(
-    &self,
-    callback: Box<crate::WndProcCallback>,
-  ) -> crate::Result<usize>;
-
-  /// Removes a previously registered window procedure callback by its ID.
-  fn deregister_wndproc_callback(&self, id: usize) -> crate::Result<()>;
-
-  /// Gets whether system-wide window transition animations are enabled.
-  fn window_animations_enabled(&self) -> crate::Result<bool>;
-
-  /// Enables or disables system-wide window transition animations.
-  fn set_window_animations_enabled(
-    &self,
-    enable: bool,
-  ) -> crate::Result<()>;
-
-  /// Expands `%VAR%` environment variable references in `input`.
-  ///
-  /// Returns the expanded string.
-  fn expand_env_strings(&self, input: &str) -> crate::Result<String>;
-
-  /// Runs the specified program using `ShellExecuteExW`.
-  ///
-  /// If `hide_window` is `true`, the spawned process window is hidden.
-  fn shell_execute_ex(
-    &self,
-    program: &str,
-    args: &str,
-    directory: &Path,
-    hide_window: bool,
-  ) -> crate::Result<()>;
-}
-
-impl DispatcherExtWindows for Dispatcher {
-  fn message_window_handle(&self) -> isize {
-    self.source.as_ref().unwrap().message_window_handle
-  }
-
-  fn register_wndproc_callback(
-    &self,
-    callback: Box<crate::WndProcCallback>,
-  ) -> crate::Result<usize> {
-    self
-      .source
-      .as_ref()
-      .unwrap()
-      .register_wndproc_callback(callback)
-  }
-
-  fn deregister_wndproc_callback(&self, id: usize) -> crate::Result<()> {
-    self
-      .source
-      .as_ref()
-      .unwrap()
-      .deregister_wndproc_callback(id)
-  }
-
-  fn window_animations_enabled(&self) -> crate::Result<bool> {
-    let mut animation_info = ANIMATIONINFO {
-      #[allow(clippy::cast_possible_truncation)]
-      cbSize: std::mem::size_of::<ANIMATIONINFO>() as u32,
-      iMinAnimate: 0,
-    };
-
-    unsafe {
-      SystemParametersInfoW(
-        SPI_GETANIMATION,
-        animation_info.cbSize,
-        Some(std::ptr::from_mut(&mut animation_info).cast()),
-        SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS(0),
-      )
-    }?;
-
-    Ok(animation_info.iMinAnimate != 0)
-  }
-
-  fn set_window_animations_enabled(
-    &self,
-    enable: bool,
-  ) -> crate::Result<()> {
-    let mut animation_info = ANIMATIONINFO {
-      #[allow(clippy::cast_possible_truncation)]
-      cbSize: std::mem::size_of::<ANIMATIONINFO>() as u32,
-      iMinAnimate: i32::from(enable),
-    };
-
-    unsafe {
-      SystemParametersInfoW(
-        SPI_SETANIMATION,
-        animation_info.cbSize,
-        Some(std::ptr::from_mut(&mut animation_info).cast()),
-        SPIF_UPDATEINIFILE | SPIF_SENDCHANGE,
-      )
-    }?;
-
-    Ok(())
-  }
-
-  fn expand_env_strings(&self, input: &str) -> crate::Result<String> {
-    let wide_input =
-      input.encode_utf16().chain(Some(0)).collect::<Vec<_>>();
-
-    let size = unsafe {
-      ExpandEnvironmentStringsW(PCWSTR(wide_input.as_ptr()), None)
-    };
-
-    if size == 0 {
-      return Err(crate::Error::Platform(format!(
-        "Failed to expand environment strings in '{input}'.",
-      )));
-    }
-
-    let mut buffer = vec![0u16; size as usize];
-    let size = unsafe {
-      ExpandEnvironmentStringsW(
-        PCWSTR(wide_input.as_ptr()),
-        Some(&mut buffer),
-      )
-    };
-
-    // The size includes the null terminator, so subtract one.
-    Ok(String::from_utf16_lossy(&buffer[..(size - 1) as usize]))
-  }
-
-  fn shell_execute_ex(
-    &self,
-    program: &str,
-    args: &str,
-    directory: &Path,
-    hide_window: bool,
-  ) -> crate::Result<()> {
-    let program_wide =
-      program.encode_utf16().chain(Some(0)).collect::<Vec<_>>();
-    let args_wide = args.encode_utf16().chain(Some(0)).collect::<Vec<_>>();
-    let directory_wide = directory
-      .to_string_lossy()
-      .encode_utf16()
-      .chain(Some(0))
-      .collect::<Vec<_>>();
-
-    let mut exec_info = SHELLEXECUTEINFOW {
-      #[allow(clippy::cast_possible_truncation)]
-      cbSize: std::mem::size_of::<SHELLEXECUTEINFOW>() as u32,
-      lpFile: PCWSTR(program_wide.as_ptr()),
-      lpParameters: PCWSTR(args_wide.as_ptr()),
-      lpDirectory: PCWSTR(directory_wide.as_ptr()),
-      nShow: if hide_window { SW_HIDE } else { SW_NORMAL }.0 as _,
-      // No error dialog for a program that can't be found: it would be
-      // modal on the WM's thread and block it until dismissed, and the
-      // error is returned (and logged) anyway.
-      fMask: SEE_MASK_NOCLOSEPROCESS
-        | SEE_MASK_NOASYNC
-        | SEE_MASK_FLAG_NO_UI,
-      ..Default::default()
-    };
-
-    unsafe { ShellExecuteExW(&raw mut exec_info) }
-      .map_err(crate::Error::from)
-  }
-}
-
 /// A thread-safe dispatcher for window management operations.
 ///
 /// # Thread safety
@@ -523,6 +351,150 @@ impl Dispatcher {
         MB_ICONERROR | MB_OK | MB_SYSTEMMODAL,
       );
     }
+  }
+
+  /// Returns the handle of the event loop's message window.
+  pub(crate) fn message_window_handle(&self) -> isize {
+    self.source.as_ref().unwrap().message_window_handle
+  }
+
+  /// Registers a callback to pre-process messages in the event loop's
+  /// window procedure.
+  ///
+  /// Returns a unique ID that can be passed to
+  /// `deregister_wndproc_callback` to remove the callback.
+  pub(crate) fn register_wndproc_callback(
+    &self,
+    callback: Box<crate::WndProcCallback>,
+  ) -> crate::Result<usize> {
+    self
+      .source
+      .as_ref()
+      .unwrap()
+      .register_wndproc_callback(callback)
+  }
+
+  /// Removes a previously registered window procedure callback by its ID.
+  pub(crate) fn deregister_wndproc_callback(
+    &self,
+    id: usize,
+  ) -> crate::Result<()> {
+    self
+      .source
+      .as_ref()
+      .unwrap()
+      .deregister_wndproc_callback(id)
+  }
+
+  /// Gets whether system-wide window transition animations are enabled.
+  pub fn window_animations_enabled(&self) -> crate::Result<bool> {
+    let mut animation_info = ANIMATIONINFO {
+      #[allow(clippy::cast_possible_truncation)]
+      cbSize: std::mem::size_of::<ANIMATIONINFO>() as u32,
+      iMinAnimate: 0,
+    };
+
+    unsafe {
+      SystemParametersInfoW(
+        SPI_GETANIMATION,
+        animation_info.cbSize,
+        Some(std::ptr::from_mut(&mut animation_info).cast()),
+        SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS(0),
+      )
+    }?;
+
+    Ok(animation_info.iMinAnimate != 0)
+  }
+
+  /// Enables or disables system-wide window transition animations.
+  pub fn set_window_animations_enabled(
+    &self,
+    enable: bool,
+  ) -> crate::Result<()> {
+    let mut animation_info = ANIMATIONINFO {
+      #[allow(clippy::cast_possible_truncation)]
+      cbSize: std::mem::size_of::<ANIMATIONINFO>() as u32,
+      iMinAnimate: i32::from(enable),
+    };
+
+    unsafe {
+      SystemParametersInfoW(
+        SPI_SETANIMATION,
+        animation_info.cbSize,
+        Some(std::ptr::from_mut(&mut animation_info).cast()),
+        SPIF_UPDATEINIFILE | SPIF_SENDCHANGE,
+      )
+    }?;
+
+    Ok(())
+  }
+
+  /// Expands `%VAR%` environment variable references in `input`.
+  ///
+  /// Returns the expanded string.
+  pub fn expand_env_strings(&self, input: &str) -> crate::Result<String> {
+    let wide_input =
+      input.encode_utf16().chain(Some(0)).collect::<Vec<_>>();
+
+    let size = unsafe {
+      ExpandEnvironmentStringsW(PCWSTR(wide_input.as_ptr()), None)
+    };
+
+    if size == 0 {
+      return Err(crate::Error::Platform(format!(
+        "Failed to expand environment strings in '{input}'.",
+      )));
+    }
+
+    let mut buffer = vec![0u16; size as usize];
+    let size = unsafe {
+      ExpandEnvironmentStringsW(
+        PCWSTR(wide_input.as_ptr()),
+        Some(&mut buffer),
+      )
+    };
+
+    // The size includes the null terminator, so subtract one.
+    Ok(String::from_utf16_lossy(&buffer[..(size - 1) as usize]))
+  }
+
+  /// Runs the specified program using `ShellExecuteExW`.
+  ///
+  /// If `hide_window` is `true`, the spawned process window is hidden.
+  pub fn shell_execute_ex(
+    &self,
+    program: &str,
+    args: &str,
+    directory: &Path,
+    hide_window: bool,
+  ) -> crate::Result<()> {
+    let program_wide =
+      program.encode_utf16().chain(Some(0)).collect::<Vec<_>>();
+    let args_wide = args.encode_utf16().chain(Some(0)).collect::<Vec<_>>();
+    let directory_wide = directory
+      .to_string_lossy()
+      .encode_utf16()
+      .chain(Some(0))
+      .collect::<Vec<_>>();
+
+    let mut exec_info = SHELLEXECUTEINFOW {
+      #[allow(clippy::cast_possible_truncation)]
+      cbSize: std::mem::size_of::<SHELLEXECUTEINFOW>() as u32,
+      lpFile: PCWSTR(program_wide.as_ptr()),
+      lpParameters: PCWSTR(args_wide.as_ptr()),
+      lpDirectory: PCWSTR(directory_wide.as_ptr()),
+      nShow: if hide_window { SW_HIDE } else { SW_NORMAL }.0 as _,
+      // No error dialog for a program that can't be found: it would be
+      // modal on the WM's thread and block it until dismissed, and the
+      // error is returned (and logged) anyway.
+      fMask: SEE_MASK_NOCLOSEPROCESS
+        | SEE_MASK_NOASYNC
+        | SEE_MASK_FLAG_NO_UI,
+      ..Default::default()
+    };
+
+    unsafe { ShellExecuteExW(&raw mut exec_info) }
+      .map_err(crate::Error::from)
   }
 }
 

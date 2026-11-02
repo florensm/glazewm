@@ -26,7 +26,7 @@ mod windows_impl {
     Foundation::{BOOL, HWND, LPARAM},
     UI::WindowsAndMessaging::EnumWindows,
   };
-  use wm_platform::{NativeWindow, NativeWindowWindowsExt};
+  use wm_platform::NativeWindow;
 
   /// Collects every top-level window handle.
   fn all_handles() -> Vec<isize> {
