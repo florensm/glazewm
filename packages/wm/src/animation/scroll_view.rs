@@ -8,11 +8,14 @@
 //! While the strip moves (a scroll, or columns opening, closing or
 //! resizing across the monitor edge), every moving column is drawn by a
 //! peek and its real window is cloaked, like the workspace-switch slide:
-//! the peeks go up first, one composited frame later the real windows are
-//! cloaked, and all of them move in lock-step, their borders, backdrops
-//! and tab bars with them. At the end, columns shown at rest get their
-//! real window back, ones reaching onto another monitor keep their peek,
-//! and the rest are dropped.
+//! the peeks go up first, too faint to see, one composited frame later
+//! they take over from the real windows as those are cloaked, and all of
+//! them move in lock-step, their borders, backdrops and tab bars with
+//! them. At the end, columns shown at rest get their real window back,
+//! ones reaching onto another monitor keep their peek, and the rest are
+//! dropped. Both swaps hide a semi-transparent real window by its alpha
+//! first (see `WindowPeek::take_over`), so no frame shows a window twice
+//! or not at all.
 //!
 //! As for a workspace switch, a peek spans its monitor and never moves:
 //! only its thumbnail does, along with copies of the window's border ring,
@@ -32,8 +35,8 @@ use uuid::Uuid;
 use wm_common::{DisplayState, Layout, WindowState};
 use wm_platform::{
   BackdropOverlayParams, BorderOverlayParams, NativeBackdropOverlay,
-  NativeBorderOverlay, Overlay, PeekStyle, Point, Rect, StyleBlend,
-  SurrogateBatch, WindowPeek, HWND,
+  NativeBorderOverlay, NativeWindow, Overlay, PeekStyle, Point, Rect,
+  StyleBlend, SurrogateBatch, WindowPeek, HWND,
 };
 
 use super::{
@@ -62,11 +65,13 @@ enum Role {
   /// Moved into place, raised above its still-cloaked real window; waits
   /// for that window to be uncloaked.
   HandingBack,
-  /// Covers its just-uncloaked real window until that is surely on
-  /// screen, along with any companion of it (e.g. shades' recolored copy,
-  /// shown by its app only once it notices the uncloak). `settled` is
-  /// set on the first tick that no longer waits for the companion; the
-  /// peek goes on the tick after, a later composition.
+  /// Covers its just-uncloaked real window until it can hand the window
+  /// back (see `WindowPeek::hand_back`): at once, or once any companion
+  /// of it is on screen too (e.g. shades' recolored copy, shown by its
+  /// app only once it notices the uncloak). `settled` is set on the
+  /// first tick after that; the peek, still drawing the ring and
+  /// backdrop over the real ones, goes on the tick after, a later
+  /// composition.
   Releasing { settled: bool },
 }
 
@@ -234,7 +239,10 @@ impl ScrollView {
       match entry.role {
         Role::Moving { ends_shown } => {
           // Its real window was cloaked a tick ago at least, taking its
-          // own shadow along.
+          // own shadow along, so needs its alpha no more. One not taken
+          // over from, e.g. as it wasn't redrawn, is drawn all the same.
+          entry.peek.restore_alpha();
+          entry.peek.show_window();
           entry.peek.cast_shadow(true);
           entry.motion.start_clock(clock_origin);
           let (rect, _) = entry.motion.current_state_at(now);
@@ -258,6 +266,7 @@ impl ScrollView {
             if *settled {
               landed.released.push(*id);
             } else {
+              entry.peek.hand_back();
               *settled = true;
             }
           }
@@ -288,8 +297,36 @@ impl ScrollView {
     self.entries.extract_if(|id, _| !is_known(id)).collect()
   }
 
-  /// Lets `window_id`'s peek go once its real window, just uncloaked, is
-  /// on screen (see [`Role::Releasing`]).
+  /// Has `window_id`'s moving peek take over from its real window, which
+  /// is about to be cloaked (see `WindowPeek::take_over`).
+  pub fn take_over(&mut self, window_id: &Uuid, window: &NativeWindow) {
+    if let Some(entry) = self
+      .entries
+      .get_mut(window_id)
+      .filter(|entry| matches!(entry.role, Role::Moving { .. }))
+    {
+      entry.peek.take_over(window);
+    }
+  }
+
+  /// Readies `window_id`'s landed peek to hand its real window back, as
+  /// that is about to be uncloaked (see `WindowPeek::prepare_hand_back`).
+  pub fn prepare_hand_back(
+    &mut self,
+    window_id: &Uuid,
+    window: &NativeWindow,
+  ) {
+    if let Some(entry) = self
+      .entries
+      .get_mut(window_id)
+      .filter(|entry| entry.role == Role::HandingBack)
+    {
+      entry.peek.prepare_hand_back(window);
+    }
+  }
+
+  /// Hands `window_id`'s real window, just uncloaked, back from its peek,
+  /// which goes once that is surely on screen (see [`Role::Releasing`]).
   pub fn release(&mut self, window_id: &Uuid) {
     if let Some(entry) = self
       .entries
@@ -297,7 +334,9 @@ impl ScrollView {
       .filter(|entry| entry.role == Role::HandingBack)
     {
       entry.role = Role::Releasing { settled: false };
-      entry.peek.cast_shadow(false);
+      if !entry.peek.awaits_companion() {
+        entry.peek.hand_back();
+      }
     }
   }
 
@@ -418,8 +457,14 @@ impl ScrollView {
     peek.carry_styles(&window.native(), &styles);
     peek.show_style(&style);
 
-    // A moving column's real window still shows, with its own shadow,
-    // until a tick after this; one at rest is already cloaked.
+    // A moving column's real window may still show, with its own shadow,
+    // until the peek takes over from it as it is cloaked; one at rest is
+    // already cloaked.
+    let covers_shown_window =
+      is_moving && !window.native().is_cloaked().unwrap_or(true);
+    if covers_shown_window {
+      peek.warm_up();
+    }
     peek.cast_shadow(!is_moving);
 
     let rect = motion.current_rect();
@@ -436,7 +481,7 @@ impl ScrollView {
     entry.place(&rect, batch);
     self.entries.insert(window.id(), entry);
 
-    is_moving && !window.native().is_cloaked().unwrap_or(true)
+    covers_shown_window
   }
 }
 

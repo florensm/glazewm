@@ -449,6 +449,11 @@ fn commit_pending_cloaks(
     target_rect,
   } in pending
   {
+    // A scrolling layout's peek takes over as its window is cloaked.
+    state
+      .animation_manager
+      .scroll_view
+      .take_over(&window.id(), &window.native());
     let _ = window.native().set_cloaked(true);
 
     // Pre-position the cloaked window at its target rect so it appears
@@ -1446,9 +1451,9 @@ fn redraw_containers(
         let mut did_move = false;
 
         // A window cloaked or uncloaked under a workspace switch's
-        // surrogate is first hidden by its alpha, so the swap with the
-        // surrogate lands in one frame however late the shell's
-        // (un)cloak does. See `WorkspaceSurrogate::take_over`.
+        // surrogate or a scrolling layout's peek is first hidden by its
+        // alpha, so the swap with it lands in one frame however late the
+        // shell's (un)cloak does. See `HiddenAlpha`.
         if is_outgoing_switch {
           state
             .animation_manager
@@ -1461,6 +1466,11 @@ fn redraw_containers(
           state
             .animation_manager
             .prepare_ws_hand_back(window.id(), &window.native());
+        } else if is_visible {
+          state
+            .animation_manager
+            .scroll_view
+            .prepare_hand_back(&window.id(), &window.native());
         }
 
         if !already_positioned {

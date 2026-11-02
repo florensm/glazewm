@@ -2,6 +2,7 @@ use windows::Win32::Foundation::{HWND, RECT};
 
 use crate::{
   companion::HandoffWait,
+  hidden_alpha::HiddenAlpha,
   native_surrogate::{placed_rects, to_logical},
   overlay_copies::OverlayCopies,
   platform_impl::wallpaper_surface,
@@ -9,6 +10,10 @@ use crate::{
   BackdropOverlayParams, CornerStyle, NativeSurrogate, NativeWindow, Rect,
   SurrogateBatch,
 };
+
+/// Thumbnail opacity a peek is warmed up at under its still-shown real
+/// window: rendered by DWM, but too faint to see.
+const WARM_UP_OPACITY: u8 = 1;
 
 /// How a [`WindowPeek`] draws its window.
 enum PeekMode {
@@ -20,6 +25,19 @@ enum PeekMode {
   /// Shrunk to the window's visible part and moved with it every frame,
   /// for a backdrop overlay, which can't be copied, to follow.
   Live,
+}
+
+/// How a [`WindowPeek`] draws its window's own thumbnail.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Drawn {
+  /// Too faint to see, under its real window that still shows, while DWM
+  /// warms the thumbnail up (see [`WindowPeek::take_over`]).
+  WarmingUp,
+  /// At the window's opacity.
+  Shown,
+  /// Not at all, its real window shown again (see
+  /// [`WindowPeek::hand_back`]).
+  HandedBack,
 }
 
 /// How a window is drawn in one focus state, which a [`WindowPeek`] draws
@@ -51,9 +69,16 @@ pub struct WindowPeek {
   border_inset: RECT,
   /// Where the real window is, which its shadow rests around.
   rest: Rect,
-  /// Whether the shadow copy is drawn: only while the real window is
-  /// cloaked, so it shows no shadow of its own.
+  /// Whether the shadow copy is drawn: only while the real window shows
+  /// no shadow of its own, cloaked or hidden by its alpha.
   casts_shadow: bool,
+  drawn: Drawn,
+  /// The window's opacity, as last placed.
+  opacity: u8,
+  /// The real window's own alpha while it is hidden by it for a handover
+  /// with the peek (see [`take_over`](Self::take_over) and
+  /// [`prepare_hand_back`](Self::prepare_hand_back)).
+  hidden_alpha: HiddenAlpha,
   /// The window's visible frame where it was last placed, clipped or not.
   frame_rect: Option<Rect>,
   visible_rect: Option<Rect>,
@@ -111,6 +136,9 @@ impl WindowPeek {
       border_inset,
       rest: rect.clone(),
       casts_shadow: false,
+      drawn: Drawn::Shown,
+      opacity: u8::MAX,
+      hidden_alpha: HiddenAlpha::default(),
       frame_rect: None,
       visible_rect: None,
     })
@@ -243,12 +271,81 @@ impl WindowPeek {
     self.copies.carries_ring()
   }
 
-  /// Draws the shadow copy or not from the next placement on: only while
-  /// the real window is cloaked, as it otherwise shows its own.
+  /// Draws the shadow copy or not: only while the real window shows none
+  /// of its own, cloaked or hidden by its alpha.
   pub fn cast_shadow(&mut self, casts_shadow: bool) {
     self.casts_shadow = casts_shadow;
-    if !casts_shadow {
-      self.copies.set_shadow_opacity(0);
+    // At the window's opacity, as DWM draws a layered window's shadow.
+    self.copies.set_shadow_opacity(if casts_shadow {
+      self.opacity
+    } else {
+      0
+    });
+  }
+
+  /// Draws the window too faint to see until
+  /// [`take_over`](Self::take_over), under its real window that still
+  /// shows, while DWM warms the thumbnail up.
+  pub fn warm_up(&mut self) {
+    self.draw(Drawn::WarmingUp);
+  }
+
+  /// Takes over showing the window from `window`, which is about to be
+  /// cloaked: the thumbnail and shadow copy go to the window's opacity
+  /// and a semi-transparent `window` to no alpha at all, in that order, so
+  /// the swap lands in one frame and the cloak unseen (see
+  /// `HiddenAlpha`). [`restore_alpha`](Self::restore_alpha) gives `window`
+  /// its alpha back once the cloak is on screen.
+  pub fn take_over(&mut self, window: &NativeWindow) {
+    self.draw(Drawn::Shown);
+    self.cast_shadow(true);
+    self.hidden_alpha.hide(&window.inner);
+  }
+
+  /// Draws the window from now on, if it isn't, e.g. once its real
+  /// window is cloaked without a [`take_over`](Self::take_over).
+  pub fn show_window(&mut self) {
+    if self.drawn != Drawn::Shown {
+      self.draw(Drawn::Shown);
+    }
+  }
+
+  /// Gives the real window back the alpha a handover set aside, unless it
+  /// was set again since. No-op otherwise.
+  pub fn restore_alpha(&mut self) {
+    self.hidden_alpha.restore();
+  }
+
+  /// Readies handing the window back to `window`, which is about to be
+  /// uncloaked under the peek: a semi-transparent `window` goes to no
+  /// alpha, so its uncloak lands unseen and
+  /// [`hand_back`](Self::hand_back) swaps the two in one frame.
+  pub fn prepare_hand_back(&mut self, window: &NativeWindow) {
+    self.hidden_alpha.hide(&window.inner);
+  }
+
+  /// Hands the window back to its real window, uncloaked under the peek:
+  /// gives it its alpha back, then stops drawing the window and its
+  /// shadow, which the real window shows itself again. The ring and
+  /// backdrop copies stay, over the real ones revealed under them.
+  pub fn hand_back(&mut self) {
+    self.hidden_alpha.restore();
+    self.draw(Drawn::HandedBack);
+    self.cast_shadow(false);
+  }
+
+  /// Draws the window's own thumbnail as `drawn` says from now on.
+  fn draw(&mut self, drawn: Drawn) {
+    self.drawn = drawn;
+    self.surrogate.set_window_opacity(self.window_opacity());
+  }
+
+  /// The opacity the window's own thumbnail is drawn at.
+  fn window_opacity(&self) -> u8 {
+    match self.drawn {
+      Drawn::WarmingUp => WARM_UP_OPACITY,
+      Drawn::Shown => self.opacity,
+      Drawn::HandedBack => 0,
     }
   }
 
@@ -263,13 +360,15 @@ impl WindowPeek {
     batch: &mut SurrogateBatch,
   ) {
     let logical = to_logical(rect, &self.border_inset);
+    self.opacity = opacity;
+    let window_opacity = self.window_opacity();
 
     self.visible_rect = match &mut self.mode {
       PeekMode::Live => self.surrogate.show_clipped(
         &logical,
         clip,
         self.border_inset,
-        opacity,
+        window_opacity,
         Some(batch),
       ),
       PeekMode::Pinned { viewport } => {
@@ -281,7 +380,7 @@ impl WindowPeek {
         }
 
         let origin = (viewport.left, viewport.top);
-        self.show_pinned(rect, &logical, clip, opacity, origin)
+        self.show_pinned(rect, &logical, clip, origin)
       }
     };
     self.frame_rect = Some(logical);
@@ -302,7 +401,6 @@ impl WindowPeek {
     rect: &Rect,
     frame: &Rect,
     clip: &Rect,
-    opacity: u8,
     origin: (i32, i32),
   ) -> Option<Rect> {
     let placed = frame.intersection(clip).and_then(|visible| {
@@ -322,16 +420,11 @@ impl WindowPeek {
     };
 
     self.surrogate.set_thumbnail_rects(rc_src, rc_dst);
-    self.surrogate.set_window_opacity(opacity);
+    self.surrogate.set_window_opacity(self.window_opacity());
     self.copies.place(rect, clip, origin);
     self.copies.cover_ring();
     self.copies.set_backdrop_opacity(u8::MAX);
-    // At the window's opacity, as DWM draws a layered window's shadow.
-    self.copies.set_shadow_opacity(if self.casts_shadow {
-      opacity
-    } else {
-      0
-    });
+    self.cast_shadow(self.casts_shadow);
     self.surrogate.set_visible(true);
 
     Some(visible)
@@ -352,7 +445,8 @@ impl WindowPeek {
   }
 
   /// Puts the peek directly above its window, which is about to be
-  /// uncloaked, so the peek keeps covering it until dropped.
+  /// uncloaked, so the peek keeps covering it until it hands the window
+  /// back (see [`hand_back`](Self::hand_back)).
   pub fn cover_window(&self) {
     if let Err(err) = self.surrogate.raise_above(self.source) {
       tracing::warn!("Failed to raise a peek above its window: {err}");
