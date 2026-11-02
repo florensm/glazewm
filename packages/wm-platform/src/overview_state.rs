@@ -2092,7 +2092,7 @@ mod tests {
           "\u{232b}",
         ],
         vec!["Space", "\u{2190}\u{2192}", "1\u{2013}9 S", "\u{232b}"],
-        vec!["/", "\u{23ce}", "n N", "Esc"],
+        vec!["/", "\u{23ce}", "\u{2191}\u{2193}", "n N", "Esc"],
       ]
     );
   }
@@ -2480,7 +2480,10 @@ mod tests {
 
   #[test]
   fn only_a_window_stepped_to_with_the_arrows_glides_its_ring() {
-    let workspaces = workspaces();
+    // Staging the workspace with two windows to step between.
+    let mut workspaces = workspaces();
+    workspaces[0].is_displayed = true;
+    workspaces[1].is_displayed = false;
     let mut state = single(&workspaces, OverviewLayoutMode::Stage);
     let glides =
       |state: &Interaction| state.focus(0, &workspaces).window_ring_glides;
