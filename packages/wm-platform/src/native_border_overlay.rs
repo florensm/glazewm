@@ -465,9 +465,7 @@ impl NativeBorderOverlay {
     }
     let composition = BorderVisual::create(window.hwnd(), &outer, params)?;
 
-    if let Err(err) = window.place(&outer, anchor) {
-      tracing::warn!("{err}");
-    }
+    window.place(&outer, anchor);
 
     let mut overlay = Self {
       composition,
@@ -537,8 +535,7 @@ impl NativeBorderOverlay {
       self.apply_ring_rect(&outer);
     }
 
-    if let Err(err) = self.window.place(&outer, anchor) {
-      tracing::warn!("{err}");
+    if !self.window.place(&outer, anchor) {
       return;
     }
 
@@ -748,9 +745,7 @@ impl NativeBorderOverlay {
         slide.is_laid_out = false;
       }
       None => {
-        if let Err(err) = self.window.place(&outer, anchor) {
-          tracing::warn!("{err}");
-        }
+        self.window.place(&outer, anchor);
       }
     }
     self.is_sliding = false;

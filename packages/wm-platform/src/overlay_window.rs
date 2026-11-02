@@ -1,9 +1,12 @@
-use std::sync::OnceLock;
+use std::{
+  collections::HashSet,
+  sync::{LazyLock, Mutex, OnceLock},
+};
 
 use windows::{
   core::{w, PCWSTR},
   Win32::{
-    Foundation::HWND,
+    Foundation::{E_ACCESSDENIED, HWND},
     UI::WindowsAndMessaging::{
       DestroyWindow, GetClassNameW, GetWindow, SetLayeredWindowAttributes,
       SetWindowPos, ShowWindow, GW_HWNDPREV, LWA_ALPHA, SWP_HIDEWINDOW,
@@ -180,17 +183,14 @@ impl OverlayWindow {
     self.is_visible = false;
   }
 
-  /// Moves the window to `rect` behind `anchor` and shows it.
+  /// Moves the window to `rect` behind `anchor` and shows it, returning
+  /// whether it did. Logs a failure itself.
   ///
   /// Leaves the tracked state untouched on failure, so the next call
   /// retries.
-  pub(crate) fn place(
-    &mut self,
-    rect: &Rect,
-    anchor: HWND,
-  ) -> crate::Result<()> {
+  pub(crate) fn place(&mut self, rect: &Rect, anchor: HWND) -> bool {
     // SAFETY: `self.hwnd()` is valid for the lifetime of `self`.
-    unsafe {
+    let placed = unsafe {
       SetWindowPos(
         self.hwnd(),
         window_class::insert_after_point(anchor),
@@ -200,17 +200,50 @@ impl OverlayWindow {
         rect.height(),
         SWP_NOACTIVATE | SWP_NOSENDCHANGING | SWP_SHOWWINDOW,
       )
+    };
+
+    if let Err(err) = placed {
+      self.report_place_failure(anchor, &err);
+      return false;
     }
-    .map_err(|err| {
-      crate::Error::Platform(format!(
-        "{} SetWindowPos failed: {err}.",
-        self.kind.label()
-      ))
-    })?;
 
     self.anchor = anchor.0;
     self.is_visible = true;
-    Ok(())
+    true
+  }
+
+  /// Logs a failed [`place`](Self::place).
+  ///
+  /// Being denied access repeats on every retry, so it is logged once per
+  /// anchor: Windows refuses to order a window behind one of an app with
+  /// a higher integrity level (e.g. run as administrator), and every
+  /// window while the secure desktop (UAC prompt, lock screen) is up.
+  fn report_place_failure(
+    &self,
+    anchor: HWND,
+    err: &windows::core::Error,
+  ) {
+    static DENIED_ANCHORS: LazyLock<Mutex<HashSet<isize>>> =
+      LazyLock::new(Mutex::default);
+
+    if err.code() != E_ACCESSDENIED {
+      tracing::warn!("{} SetWindowPos failed: {err}.", self.kind.label());
+      return;
+    }
+
+    let is_new = DENIED_ANCHORS
+      .lock()
+      .is_ok_and(|mut anchors| anchors.insert(anchor.0));
+
+    if is_new {
+      tracing::warn!(
+        "{} can't be placed behind window {:#x}: access denied, as for a \
+         window of an app run as administrator when GlazeWM isn't. \
+         Further denials for that window aren't logged.",
+        self.kind.label(),
+        anchor.0
+      );
+    }
   }
 
   /// Puts the window back directly behind `anchor` if it has drifted,
@@ -328,9 +361,7 @@ pub(crate) fn swap(
     return;
   }
 
-  if let Err(err) = show.place(rect, anchor) {
-    tracing::warn!("{err}");
-  }
+  show.place(rect, anchor);
   hide.hide();
 }
 
