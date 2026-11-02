@@ -1212,7 +1212,8 @@ impl AnimationManager {
     // Moved columns that end shown get their real window back in the
     // redraw below, and focus deferred while they moved lands then. Ones
     // that end hidden have their real window put where it stays cloaked,
-    // and their overlays settled.
+    // and their overlays settled. Released ones get their overlays back
+    // on the real window.
     let mut scroll_batch = SurrogateBatch::new();
     let landed = state.animation_manager.scroll_view.tick(
       frame_now,
@@ -1222,7 +1223,12 @@ impl AnimationManager {
     if !landed.shown.is_empty() {
       state.pending_sync.queue_focus_change();
     }
-    for window_id in landed.shown.into_iter().chain(landed.hidden) {
+    for window_id in landed
+      .shown
+      .into_iter()
+      .chain(landed.hidden)
+      .chain(landed.released)
+    {
       if let Some(window) = state.window_by_id(window_id) {
         state.pending_sync.queue_container_to_redraw(window);
       }

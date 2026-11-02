@@ -1,8 +1,9 @@
 use windows::Win32::Foundation::{HWND, RECT};
 
 use crate::{
-  native_surrogate::to_logical, resize_session::compute_border_inset,
-  CornerStyle, NativeSurrogate, NativeWindow, Rect, SurrogateBatch,
+  companion::HandoffWait, native_surrogate::to_logical,
+  resize_session::compute_border_inset, CornerStyle, NativeSurrogate,
+  NativeWindow, Rect, SurrogateBatch,
 };
 
 /// A click-through, live thumbnail of a window, cut to the part of it
@@ -12,6 +13,10 @@ use crate::{
 /// window stays cloaked, so nothing of it reaches past its monitor.
 pub struct WindowPeek {
   surrogate: NativeSurrogate,
+  /// The window the peek shows.
+  source: HWND,
+  /// See [`WindowPeek::awaits_companion`].
+  companion_wait: HandoffWait,
   border_inset: RECT,
   /// The window's visible frame where it was last placed, clipped or not.
   frame_rect: Option<Rect>,
@@ -42,6 +47,8 @@ impl WindowPeek {
 
     Ok(Self {
       surrogate,
+      source: hwnd,
+      companion_wait: HandoffWait::default(),
       border_inset,
       frame_rect: None,
       visible_rect: None,
@@ -82,6 +89,20 @@ impl WindowPeek {
   #[must_use]
   pub fn hwnd(&self) -> HWND {
     self.surrogate.hwnd()
+  }
+
+  /// Puts the peek directly above its window, which is about to be
+  /// uncloaked, so the peek keeps covering it until dropped.
+  pub fn cover_window(&self) {
+    if let Err(err) = self.surrogate.raise_above(self.source) {
+      tracing::warn!("Failed to raise a peek above its window: {err}");
+    }
+  }
+
+  /// Whether the peek should keep covering its uncloaked window: it shows
+  /// the window's companion, which is not back on screen yet.
+  pub fn awaits_companion(&mut self) -> bool {
+    self.companion_wait.awaits(self.surrogate.companion())
   }
 
   /// The on-screen part of the peek, if it shows anything.

@@ -36,6 +36,37 @@ type Snapshot = (Instant, Vec<(isize, isize)>);
 
 static SNAPSHOT: Mutex<Option<Snapshot>> = Mutex::new(None);
 
+/// Upper bound on how long a stand-in keeps covering a window after it is
+/// uncloaked, for a companion owner that never puts the companion back on
+/// screen.
+const HANDOFF_MAX_WAIT: Duration = Duration::from_millis(200);
+
+/// Waits out a companion's return to the screen when a stand-in showing
+/// it hands the window back.
+///
+/// Once the real window is uncloaked, the companion's owner only learns of
+/// it from a window event and shows the companion some time later. Until
+/// then the window shows as it really is (e.g. without shades' colors), so
+/// the stand-in should keep covering it.
+#[derive(Debug, Default)]
+pub(crate) struct HandoffWait {
+  /// When the companion was first found still off screen.
+  started_at: Option<Instant>,
+}
+
+impl HandoffWait {
+  /// Whether to keep covering the window: `companion` is shown by the
+  /// stand-in and not back on screen yet, and the wait hasn't timed out.
+  pub(crate) fn awaits(&mut self, companion: Option<Companion>) -> bool {
+    if !companion.is_some_and(Companion::is_off_screen) {
+      return false;
+    }
+
+    let started = *self.started_at.get_or_insert_with(Instant::now);
+    started.elapsed() < HANDOFF_MAX_WAIT
+  }
+}
+
 /// A companion window (see [`COMPANION_PROPERTY`]) of a managed window.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct Companion {

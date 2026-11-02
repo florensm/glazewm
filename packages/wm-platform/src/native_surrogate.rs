@@ -818,6 +818,17 @@ impl NativeSurrogate {
     self.companion.is_some_and(Companion::is_off_screen)
   }
 
+  /// The source window's companion the thumbnail samples, if any.
+  pub(crate) fn companion(&self) -> Option<Companion> {
+    self.companion
+  }
+
+  /// Restacks the surrogate directly above `window`, so it covers the
+  /// window once uncloaked instead of sitting behind it.
+  pub fn raise_above(&self, window: HWND) -> crate::Result<()> {
+    window_class::place_above(self.hwnd(), window)
+  }
+
   /// Returns the logical dimensions the main thumbnail currently samples.
   #[must_use]
   pub fn content_size(&self) -> (i32, i32) {

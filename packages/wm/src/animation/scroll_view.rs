@@ -52,8 +52,15 @@ enum Role {
   Peek,
   /// Draws a moving column while its real window is cloaked.
   Moving { ends_shown: bool },
-  /// Moved into place; waits for the real window to be uncloaked.
+  /// Moved into place, raised above its still-cloaked real window; waits
+  /// for that window to be uncloaked.
   HandingBack,
+  /// Covers its just-uncloaked real window until that is surely on
+  /// screen, along with any companion of it (e.g. shades' recolored copy,
+  /// shown by its app only once it notices the uncloak). `settled` is
+  /// set on the first tick that no longer waits for the companion; the
+  /// peek goes on the tick after, a later composition.
+  Releasing { settled: bool },
 }
 
 struct Entry {
@@ -83,6 +90,9 @@ pub struct Landed {
   /// Hidden at rest, whose real windows are to be put where they stay
   /// cloaked by the next `platform_sync`.
   pub hidden: Vec<Uuid>,
+  /// Shown at rest, whose peeks were dropped now that their real window
+  /// is on screen; their overlays go back to the real window.
+  pub released: Vec<Uuid>,
 }
 
 /// Peeks of the columns of displayed scrolling layouts.
@@ -108,9 +118,11 @@ impl ScrollView {
     self.entries.contains_key(window_id)
   }
 
-  /// The peek drawing `window_id`, which its overlays sit behind.
+  /// The peek drawing `window_id`, which its overlays sit behind. `None`
+  /// while it only covers its real window on the way out, as they then
+  /// sit behind the real window.
   pub fn peek_hwnd(&self, window_id: &Uuid) -> Option<HWND> {
-    self.entries.get(window_id).map(|entry| entry.peek.hwnd())
+    self.stands_in(window_id).map(|entry| entry.peek.hwnd())
   }
 
   /// Where the peek drawing `window_id` has `rect`, a rect of the layout
@@ -120,7 +132,7 @@ impl ScrollView {
     window_id: &Uuid,
     rect: &Rect,
   ) -> Option<StandIn> {
-    let entry = self.entries.get(window_id)?;
+    let entry = self.stands_in(window_id)?;
 
     Some(StandIn {
       rect: moved_along(rect, &entry.motion.target_rect, &entry.rect),
@@ -134,8 +146,27 @@ impl ScrollView {
     self
       .entries
       .get(window_id)
-      .filter(|entry| entry.role != Role::Peek)
+      .filter(|entry| {
+        matches!(entry.role, Role::Moving { .. } | Role::HandingBack)
+      })
       .map(|entry| &entry.motion.target_rect)
+  }
+
+  /// The entry of a peek standing in for `window_id`'s real window, i.e.
+  /// not one on its way out.
+  fn stands_in(&self, window_id: &Uuid) -> Option<&Entry> {
+    self
+      .entries
+      .get(window_id)
+      .filter(|entry| !matches!(entry.role, Role::Releasing { .. }))
+  }
+
+  /// Whether `window_id`'s peek still covers its uncloaked real window.
+  fn is_releasing(&self, window_id: &Uuid) -> bool {
+    self
+      .entries
+      .get(window_id)
+      .is_some_and(|entry| matches!(entry.role, Role::Releasing { .. }))
   }
 
   /// Whether `window_id` is moving, i.e. its real window stays frozen.
@@ -163,23 +194,40 @@ impl ScrollView {
     let mut landed = Landed::default();
 
     for (id, entry) in &mut self.entries {
-      let Role::Moving { ends_shown } = entry.role else {
-        continue;
-      };
+      match entry.role {
+        Role::Moving { ends_shown } => {
+          entry.motion.start_clock(clock_origin);
+          let (rect, _) = entry.motion.current_state_at(now);
+          entry.place(&rect, batch);
 
-      entry.motion.start_clock(clock_origin);
-      let (rect, _) = entry.motion.current_state_at(now);
-      entry.place(&rect, batch);
-
-      if entry.motion.is_complete() {
-        entry.role = if ends_shown {
-          landed.shown.push(*id);
-          Role::HandingBack
-        } else {
-          landed.hidden.push(*id);
-          Role::Peek
-        };
+          if entry.motion.is_complete() {
+            entry.role = if ends_shown {
+              // Raised while its real window is still cloaked, so the
+              // uncloak never shows the window over the peek.
+              entry.peek.cover_window();
+              landed.shown.push(*id);
+              Role::HandingBack
+            } else {
+              landed.hidden.push(*id);
+              Role::Peek
+            };
+          }
+        }
+        Role::Releasing { ref mut settled } => {
+          if !entry.peek.awaits_companion() {
+            if *settled {
+              landed.released.push(*id);
+            } else {
+              *settled = true;
+            }
+          }
+        }
+        Role::Peek | Role::HandingBack => {}
       }
+    }
+
+    for id in &landed.released {
+      self.entries.remove(id);
     }
 
     // Columns that moved out of view have nothing left to show.
@@ -200,17 +248,15 @@ impl ScrollView {
     self.entries.extract_if(|id, _| !is_known(id)).collect()
   }
 
-  /// Drops `window_id`'s peek once its real window has been uncloaked.
-  ///
-  /// Called right after the uncloak so both land in the same composited
-  /// frame.
+  /// Lets `window_id`'s peek go once its real window, just uncloaked, is
+  /// on screen (see [`Role::Releasing`]).
   pub fn release(&mut self, window_id: &Uuid) {
-    if self
+    if let Some(entry) = self
       .entries
-      .get(window_id)
-      .is_some_and(|entry| entry.role == Role::HandingBack)
+      .get_mut(window_id)
+      .filter(|entry| entry.role == Role::HandingBack)
     {
-      self.entries.remove(window_id);
+      entry.role = Role::Releasing { settled: false };
     }
   }
 
@@ -248,6 +294,9 @@ impl ScrollView {
       .entries
       .get(&window.id())
       .filter(|entry| matches!(entry.role, Role::Moving { .. }));
+    // Its real window is back on screen, so a new move has to cloak it
+    // again behind the peek.
+    let covers_shown_window = is_moving && self.is_releasing(&window.id());
 
     // A column already moving carries on at its speed toward the new
     // target, so quick presses in a row glide rather than restart.
@@ -283,7 +332,7 @@ impl ScrollView {
       entry.role = role;
       let rect = entry.motion.current_rect();
       entry.place(&rect, batch);
-      return false;
+      return covers_shown_window;
     }
 
     // Sized like the window itself, which a collapsed `from` (an opening
@@ -394,8 +443,11 @@ pub fn sync_scroll_view(
       let role = if strip_moves && from != target {
         Role::Moving { ends_shown }
       } else if ends_shown {
-        // At rest on screen: the real window shows it.
-        view.entries.remove(&window.id());
+        // At rest on screen: the real window shows it, once a peek still
+        // covering it after a move lets go.
+        if !view.is_releasing(&window.id()) {
+          view.entries.remove(&window.id());
+        }
         continue;
       } else if is_on_screen(&target) {
         Role::Peek
@@ -528,7 +580,16 @@ pub fn track_overlays(
         .and(entry.peek.frame_rect())
         .cloned();
       let is_moving = entry.role != Role::Peek;
-      (*id, frame, entry.clip.clone(), is_moving, entry.peek.hwnd())
+      // A releasing peek covers its real window, back on screen and with
+      // the overlays behind it, which stay there once the peek goes.
+      let anchor = match entry.role {
+        Role::Releasing { .. } => state.window_by_id(*id).map_or_else(
+          || entry.peek.hwnd(),
+          |window| window.native().hwnd(),
+        ),
+        _ => entry.peek.hwnd(),
+      };
+      (*id, frame, entry.clip.clone(), is_moving, anchor)
     })
     .collect::<Vec<(Uuid, Option<Rect>, Rect, bool, HWND)>>();
 
