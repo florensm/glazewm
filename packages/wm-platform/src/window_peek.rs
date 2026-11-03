@@ -19,7 +19,7 @@ const WARM_UP_OPACITY: u8 = 1;
 enum PeekMode {
   /// Spans `viewport`, the area it is clipped to, and never moves: each
   /// frame only places the thumbnail in it, along with copies of the
-  /// window's ring and shadow, all in the same DWM updates (see
+  /// window's ring and backdrop, all in the same DWM updates (see
   /// `OverlayCopies`). As a `WorkspaceSurrogate` pinned to its viewport.
   Pinned { viewport: Rect },
   /// Shrunk to the window's visible part and moved with it every frame,
@@ -40,16 +40,6 @@ enum Drawn {
   HandedBack,
 }
 
-/// How a window is drawn in one focus state, which a [`WindowPeek`] draws
-/// copies of its shadow and backdrop for.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct PeekStyle {
-  /// Whether the window is drawn active, with the deeper shadow.
-  pub is_active: bool,
-  pub corner_style: CornerStyle,
-  pub backdrop: Option<BackdropOverlayParams>,
-}
-
 /// A click-through, live thumbnail of a window, cut to the part of it
 /// that lies inside a clip rect.
 ///
@@ -67,11 +57,8 @@ pub struct WindowPeek {
   /// See [`WindowPeek::awaits_companion`].
   companion_wait: HandoffWait,
   border_inset: RECT,
-  /// Where the real window is, which its shadow rests around.
+  /// Where the real window is, which its backdrop copy rests around.
   rest: Rect,
-  /// Whether the shadow copy is drawn: only while the real window shows
-  /// no shadow of its own, cloaked or hidden by its alpha.
-  casts_shadow: bool,
   drawn: Drawn,
   /// Whether the backdrop copy is to be drawn while the window is (see
   /// [`show_backdrop`](Self::show_backdrop)).
@@ -138,7 +125,6 @@ impl WindowPeek {
       companion_wait: HandoffWait::default(),
       border_inset,
       rest: rect.clone(),
-      casts_shadow: false,
       drawn: Drawn::Shown,
       shows_backdrop: false,
       opacity: u8::MAX,
@@ -155,36 +141,34 @@ impl WindowPeek {
   }
 
   /// Notes where the real window is, at `rect` with its frame at `frame`,
-  /// which its shadow and backdrop then rest around.
+  /// which its backdrop copy then rests around.
   pub fn follow_window(&mut self, rect: &Rect, frame: &Rect) {
     if &self.rest == rect {
       return;
     }
 
     self.rest = rect.clone();
-    self.copies.move_shadow(rect, frame);
     self.copies.move_backdrop(rect, frame);
   }
 
-  /// Draws copies of `window`'s shadow, and its backdrop under it, along
-  /// with it from now on, for each of `styles` it may be drawn in (e.g.
-  /// focused and not), of which [`show_style`](Self::show_style) picks
-  /// one. The same `styles` again keep what is drawn.
+  /// Draws a copy of its window's backdrop under it from now on, in each
+  /// of `styles` the window may be drawn in (e.g. focused and not), of
+  /// which [`show_style`](Self::show_style) picks one. The same `styles`
+  /// again keep what is drawn.
   ///
   /// All are drawn up front, so a focus change mid-move only swaps which
-  /// copies show: registering new ones then, and the window's own
-  /// thumbnail anew over a new backdrop, left frames with no copy at all.
+  /// copy shows: registering a new one then, and the window's own
+  /// thumbnail anew over it, left frames with no copy at all.
   ///
-  /// Only a peek that never moves carries them, the backdrop only in
-  /// styles that can be copied (see `BackdropOverlayParams::is_copyable`),
-  /// and shown while [`show_backdrop`](Self::show_backdrop) says so.
+  /// Only a peek that never moves carries them, in styles that can be
+  /// copied (see `BackdropOverlayParams::is_copyable`), and shown while
+  /// [`show_backdrop`](Self::show_backdrop) says so.
   ///
   /// Before [`carry_ring`](Self::carry_ring), which goes over the window
   /// that this may put back on top of the backdrop.
   pub fn carry_styles(
     &mut self,
-    window: &NativeWindow,
-    styles: &[PeekStyle],
+    styles: &[Option<BackdropOverlayParams>],
   ) {
     let PeekMode::Pinned { viewport } = &self.mode else {
       return;
@@ -194,7 +178,8 @@ impl WindowPeek {
     let frame = to_logical(&self.rest, &self.border_inset);
     let backdrops = styles
       .iter()
-      .filter_map(|style| style.backdrop)
+      .flatten()
+      .copied()
       .filter(BackdropOverlayParams::is_copyable)
       .collect::<Vec<_>>();
 
@@ -212,23 +197,12 @@ impl WindowPeek {
         self.surrogate.raise_thumbnail(self.source);
       }
     }
-
-    let looks = styles
-      .iter()
-      .map(|style| (style.is_active, style.corner_style))
-      .collect::<Vec<_>>();
-    self
-      .copies
-      .carry_shadow(dest, window, &self.rest, &frame, &looks);
   }
 
-  /// Draws the shadow and backdrop copies as `style` has them, if carried
-  /// (see [`carry_styles`](Self::carry_styles)).
-  pub fn show_style(&mut self, style: &PeekStyle) {
-    self.copies.show_backdrop_style(style.backdrop);
-    self
-      .copies
-      .show_shadow_look((style.is_active, style.corner_style));
+  /// Draws the backdrop copy in `style`, if carried (see
+  /// [`carry_styles`](Self::carry_styles)).
+  pub fn show_style(&mut self, style: Option<BackdropOverlayParams>) {
+    self.copies.show_backdrop_style(style);
   }
 
   /// Whether the peek draws the window's backdrop in any style (see
@@ -290,18 +264,6 @@ impl WindowPeek {
     self.copies.carries_ring()
   }
 
-  /// Draws the shadow copy or not: only while the real window shows none
-  /// of its own, cloaked or hidden by its alpha.
-  pub fn cast_shadow(&mut self, casts_shadow: bool) {
-    self.casts_shadow = casts_shadow;
-    // At the window's opacity, as DWM draws a layered window's shadow.
-    self.copies.set_shadow_opacity(if casts_shadow {
-      self.opacity
-    } else {
-      0
-    });
-  }
-
   /// Draws the window too faint to see until
   /// [`take_over`](Self::take_over), under its real window that still
   /// shows, while DWM warms the thumbnail up.
@@ -310,14 +272,13 @@ impl WindowPeek {
   }
 
   /// Takes over showing the window from `window`, which is about to be
-  /// cloaked: the thumbnail and shadow copy go to the window's opacity
-  /// and a semi-transparent `window` to no alpha at all, in that order, so
+  /// cloaked: the thumbnail goes to the window's opacity and a
+  /// semi-transparent `window` to no alpha at all, in that order, so
   /// the swap lands in one frame and the cloak unseen (see
   /// `HiddenAlpha`). [`restore_alpha`](Self::restore_alpha) gives `window`
   /// its alpha back once the cloak is on screen.
   pub fn take_over(&mut self, window: &NativeWindow) {
     self.draw(Drawn::Shown);
-    self.cast_shadow(true);
     self.hidden_alpha.hide(&window.inner);
   }
 
@@ -344,14 +305,13 @@ impl WindowPeek {
   }
 
   /// Hands the window back to its real window, uncloaked under the peek:
-  /// gives it its alpha back, then stops drawing the window, its backdrop
-  /// and its shadow, which the real window and the real backdrop, shown
-  /// as it landed, show again. The ring copy stays, over the real ring
-  /// revealed under it, until the peek goes.
+  /// gives it its alpha back, then stops drawing the window and its
+  /// backdrop, which the real window and the real backdrop, shown as it
+  /// landed, show again. The ring copy stays, over the real ring revealed
+  /// under it, until the peek goes.
   pub fn hand_back(&mut self) {
     self.hidden_alpha.restore();
     self.draw(Drawn::HandedBack);
-    self.cast_shadow(false);
   }
 
   /// Draws the window's own thumbnail, and its backdrop copy with it, as
@@ -423,7 +383,7 @@ impl WindowPeek {
   ///
   /// Shows the window at its own scale, as `show_clipped` does: a column
   /// resized as it moves reveals more or less of it rather than stretching
-  /// it. Its ring and shadow copies do stretch, to frame it.
+  /// it. Its ring copy does stretch, to frame it.
   ///
   /// Only the frame is drawn, sampled past the invisible resize borders as
   /// `show_clipped` does (see `WorkspaceSurrogate`'s `frame_rects`).
@@ -455,7 +415,6 @@ impl WindowPeek {
     self.copies.place(rect, clip, origin);
     self.copies.cover_ring();
     self.copies.set_backdrop_opacity(u8::MAX);
-    self.cast_shadow(self.casts_shadow);
     self.surrogate.set_visible(true);
 
     Some(visible)

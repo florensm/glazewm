@@ -1,10 +1,10 @@
-//! Copies of what is drawn with a window, its border ring, shadow and
-//! backdrop, carried by a surrogate that stands in for the window while it
-//! moves (a `WorkspaceSurrogate` or a `WindowPeek`).
+//! Copies of what is drawn with a window, its border ring and backdrop,
+//! carried by a surrogate that stands in for the window while it moves (a
+//! `WorkspaceSurrogate` or a `WindowPeek`).
 //!
 //! Each is a thumbnail of a window of its own, resting where the window
-//! does (a ring parked by `NativeBorderOverlay::park`, or a
-//! `WindowShadow`), so it moves in the same DWM thumbnail updates as the
+//! does (a ring parked by `NativeBorderOverlay::park`), so it moves in the
+//! same DWM thumbnail updates as the
 //! window's copy rather than through its own window or visual tree, which
 //! reach DWM on schedules of their own. The backdrop is cut from one that
 //! spans the monitor instead (see `BackdropSource`).
@@ -18,8 +18,7 @@ use crate::{
   dwm_thumbnail::Thumbnail,
   isolation,
   native_surrogate::placed_rects,
-  window_shadow::{ShadowStyle, WindowShadow},
-  BackdropOverlayParams, CornerStyle, NativeWindow, Rect,
+  BackdropOverlayParams, Rect,
 };
 
 /// Where a surrogate draws its window: at `frame`, cut at `clip`, into a
@@ -61,100 +60,6 @@ impl OverlayCopy {
   }
 }
 
-/// How a window's shadow looks: drawn active or not, with its corners.
-pub(crate) type ShadowLook = (bool, CornerStyle);
-
-/// A window's shadow in one look, with the copy of it.
-struct ShadowCopy {
-  /// Declared before `source`, so it is unregistered before that window
-  /// goes.
-  copy: OverlayCopy,
-  source: WindowShadow,
-  look: ShadowLook,
-}
-
-/// A window's shadow in each look it may be drawn with, of which one is
-/// shown at a time.
-///
-/// All are registered up front, so a change of look, e.g. as focus moves
-/// mid-scroll, swaps which one shows rather than registering a new one,
-/// whose window would have yet to be composited.
-#[derive(Default)]
-struct Shadows {
-  /// The looks asked for, which `copies` holds those of that DWM draws a
-  /// shadow in.
-  looks: Vec<ShadowLook>,
-  copies: Vec<ShadowCopy>,
-  /// Index into `copies` of the one shown.
-  current: Option<usize>,
-  opacity: u8,
-  /// Where the shown one was last placed, unless hidden since.
-  placement: Option<Placement>,
-}
-
-impl Shadows {
-  fn current_look(&self) -> Option<ShadowLook> {
-    self
-      .current
-      .and_then(|index| self.copies.get(index))
-      .map(|copy| copy.look)
-  }
-
-  fn current_mut(&mut self) -> Option<&mut ShadowCopy> {
-    self.current.and_then(|index| self.copies.get_mut(index))
-  }
-
-  fn place(&mut self, placement: &Placement) {
-    self.placement = Some(placement.clone());
-    if let Some(shadow) = self.current_mut() {
-      shadow.copy.place(placement);
-    }
-  }
-
-  /// Hides the shown one until the next [`place`](Self::place).
-  fn hide(&mut self) {
-    self.placement = None;
-    if let Some(shadow) = self.current_mut() {
-      shadow.copy.thumbnail.hide();
-    }
-  }
-
-  fn set_opacity(&mut self, opacity: u8) {
-    self.opacity = opacity;
-    let shown = self.shown_opacity();
-    if let Some(shadow) = self.current_mut() {
-      let _ = shadow.copy.thumbnail.set_opacity(shown);
-    }
-  }
-
-  /// The opacity the shown one is drawn at.
-  fn shown_opacity(&self) -> u8 {
-    left_out(self.opacity, isolation::current().no_shadow)
-  }
-
-  /// Shows the one in `look`, if carried, instead of the one shown. The
-  /// new one goes up first, so no frame shows neither.
-  fn show_look(&mut self, look: ShadowLook) {
-    let next = self.copies.iter().position(|copy| copy.look == look);
-    if next == self.current {
-      return;
-    }
-
-    let shown = self.shown_opacity();
-    if let Some(shadow) = next.and_then(|index| self.copies.get_mut(index))
-    {
-      let _ = shadow.copy.thumbnail.set_opacity(shown);
-      if let Some(placement) = &self.placement {
-        shadow.copy.place(placement);
-      }
-    }
-    if let Some(shadow) = self.current_mut() {
-      shadow.copy.thumbnail.hide();
-    }
-    self.current = next;
-  }
-}
-
 /// The part behind a window of a backdrop spanning its monitor, in one
 /// style.
 struct CropCopy {
@@ -187,10 +92,11 @@ impl CropCopy {
 /// shown at a time: per style, the part of the monitor's behind the
 /// window, and over them all one copy of the window's vignette.
 ///
-/// All are registered up front, as a window's shadows are (see
-/// [`Shadows`]). The vignette is drawn at full strength and its copy's
-/// opacity scaled to the strength of the style shown, which is what the
-/// vignette's own opacity does.
+/// All are registered up front, so a change of style, e.g. as focus moves
+/// mid-scroll, swaps which one shows rather than registering a new one,
+/// whose window would have yet to be composited. The vignette is drawn at
+/// full strength and its copy's opacity scaled to the strength of the
+/// style shown, which is what the vignette's own opacity does.
 struct BackdropCopy {
   /// The styles asked for, which `crops` holds those of that could be
   /// drawn.
@@ -312,15 +218,13 @@ pub(crate) fn scale_alpha(alpha: u8, frac: f32) -> u8 {
   (f32::from(alpha) * frac.clamp(0.0, 1.0)).round() as u8
 }
 
-/// The copies of a window's ring, shadow and backdrop that a surrogate
-/// draws.
+/// The copies of a window's ring and backdrop that a surrogate draws.
 ///
 /// Must be dropped, or [`clear`](Self::clear)ed, before the surrogate's
 /// own window is destroyed.
 #[derive(Default)]
 pub(crate) struct OverlayCopies {
   ring: Option<OverlayCopy>,
-  shadows: Shadows,
   backdrop: Option<BackdropCopy>,
   /// Where they were last placed.
   placement: Option<Placement>,
@@ -364,81 +268,6 @@ impl OverlayCopies {
 
   pub(crate) fn carries_ring(&self) -> bool {
     self.ring.is_some()
-  }
-
-  /// Draws `window`'s shadow on `dest` from now on, around its `frame`
-  /// while the window is at `window_rest`, in whichever of `looks`
-  /// [`show_shadow_look`](Self::show_shadow_look) picks. Returns whether
-  /// it does: not for a window DWM draws no shadow around. The same
-  /// `looks` again keep what is drawn.
-  ///
-  /// After [`carry_ring`](Self::carry_ring), so the shadow falls over the
-  /// ring as on screen: thumbnails stack in the order they're registered.
-  pub(crate) fn carry_shadow(
-    &mut self,
-    dest: HWND,
-    window: &NativeWindow,
-    window_rest: &Rect,
-    frame: &Rect,
-    looks: &[ShadowLook],
-  ) -> bool {
-    if same_set(&self.shadows.looks, looks) {
-      return !self.shadows.copies.is_empty();
-    }
-
-    // Unregistered before the new ones are, which go on top.
-    let current = self.shadows.current_look();
-    let Shadows {
-      opacity, placement, ..
-    } = std::mem::take(&mut self.shadows);
-    self.shadows.looks = looks.to_vec();
-    self.shadows.opacity = opacity;
-    self.shadows.placement = placement;
-
-    for &look in looks {
-      if self.shadows.copies.iter().any(|copy| copy.look == look) {
-        continue;
-      }
-      let (is_active, corner_style) = look;
-      let Some(style) =
-        ShadowStyle::of(window.hwnd(), is_active, corner_style)
-      else {
-        continue;
-      };
-
-      let source = match WindowShadow::create(frame, style) {
-        Ok(source) => source,
-        Err(err) => {
-          tracing::warn!("Failed to draw a window's shadow: {err}");
-          continue;
-        }
-      };
-      let Some(thumbnail) = Thumbnail::register(dest, source.hwnd())
-      else {
-        continue;
-      };
-
-      self.shadows.copies.push(ShadowCopy {
-        copy: OverlayCopy {
-          thumbnail,
-          source: source.hwnd().0,
-          rest: source.rect().clone(),
-          window_rest: window_rest.clone(),
-        },
-        source,
-        look,
-      });
-    }
-
-    if let Some(look) = current {
-      self.shadows.show_look(look);
-    }
-    !self.shadows.copies.is_empty()
-  }
-
-  /// Draws the shadow in `look` from now on, if carried, or none.
-  pub(crate) fn show_shadow_look(&mut self, look: ShadowLook) {
-    self.shadows.show_look(look);
   }
 
   /// Draws the backdrops `styles` give a window at `window_rest`, with its
@@ -582,23 +411,11 @@ impl OverlayCopies {
   }
 
   /// Draws the backdrop, while shown, at `opacity`, independently of the
-  /// ring and shadow.
+  /// ring.
   pub(crate) fn set_backdrop_opacity(&mut self, opacity: u8) {
     if let Some(backdrop) = &mut self.backdrop {
       backdrop.opacity = opacity;
       backdrop.apply_opacity();
-    }
-  }
-
-  /// Moves the shadow around the window's `frame` while the window is at
-  /// `window_rest`, e.g. once the window has been moved or resized.
-  pub(crate) fn move_shadow(&mut self, window_rest: &Rect, frame: &Rect) {
-    for shadow in &mut self.shadows.copies {
-      if let Err(err) = shadow.source.set_frame(frame) {
-        tracing::warn!("Failed to move a window's shadow: {err}");
-      }
-      shadow.copy.rest = shadow.source.rect().clone();
-      shadow.copy.window_rest = window_rest.clone();
     }
   }
 
@@ -642,21 +459,19 @@ impl OverlayCopies {
     if let Some(ring) = &mut self.ring {
       ring.place(&placement);
     }
-    self.shadows.place(&placement);
     if let Some(backdrop) = &mut self.backdrop {
       backdrop.place(&placement);
     }
     self.placement = Some(placement);
   }
 
-  /// Draws the ring and backdrop at `opacity` and the shadow at `shadow`.
-  pub(crate) fn set_opacity(&mut self, opacity: u8, shadow: u8) {
+  /// Draws the ring and backdrop at `opacity`.
+  pub(crate) fn set_opacity(&mut self, opacity: u8) {
     if let Some(ring) = &mut self.ring {
       let _ = ring
         .thumbnail
         .set_opacity(left_out(opacity, isolation::current().no_ring));
     }
-    self.set_shadow_opacity(shadow);
     self.set_backdrop_opacity(opacity);
   }
 
@@ -675,20 +490,9 @@ impl OverlayCopies {
     }
   }
 
-  /// Draws the shadow at `opacity`, independently of the ring.
-  pub(crate) fn set_shadow_opacity(&mut self, opacity: u8) {
-    self.shadows.set_opacity(opacity);
-  }
-
-  /// Hides the shadow until the next [`place`](Self::place).
-  pub(crate) fn hide_shadow(&mut self) {
-    self.shadows.hide();
-  }
-
   /// Unregisters them all, before the window they are drawn on goes.
   pub(crate) fn clear(&mut self) {
     self.ring = None;
-    self.shadows = Shadows::default();
     self.backdrop = None;
     self.placement = None;
   }

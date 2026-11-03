@@ -3,10 +3,10 @@
 //!
 //! A comma-separated list of:
 //!
-//! - `noshadow`, `nobackdrop`, `noring`: draw that copy of pinned
-//!   surrogates and peeks (see `OverlayCopies`) at no opacity. Everything
-//!   else, the handover of the real overlays included, runs as usual, so
-//!   the window moves without it.
+//! - `nobackdrop`, `noring`: draw that copy of pinned surrogates and peeks
+//!   (see `OverlayCopies`) at no opacity. Everything else, the handover of
+//!   the real overlays included, runs as usual, so the window moves
+//!   without it.
 //! - `live`: copy no backdrop, so windows with one move in surrogates and
 //!   peeks that move with them, as before backdrops were copied.
 //!
@@ -19,7 +19,6 @@ use std::sync::OnceLock;
 #[allow(clippy::struct_excessive_bools)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Isolation {
-  pub no_shadow: bool,
   pub no_backdrop: bool,
   pub no_ring: bool,
   pub live: bool,
@@ -35,7 +34,6 @@ impl Isolation {
       .filter(|word| !word.is_empty())
     {
       match word.to_ascii_lowercase().as_str() {
-        "noshadow" => isolation.no_shadow = true,
         "nobackdrop" => isolation.no_backdrop = true,
         "noring" => isolation.no_ring = true,
         "live" => isolation.live = true,
@@ -69,10 +67,9 @@ mod tests {
   #[test]
   fn flags_are_read_from_a_list() {
     assert_eq!(
-      Isolation::parse("noshadow, Live,,bogus noring"),
+      Isolation::parse("nobackdrop, Live,,bogus noring"),
       Isolation {
-        no_shadow: true,
-        no_backdrop: false,
+        no_backdrop: true,
         no_ring: true,
         live: true,
       }

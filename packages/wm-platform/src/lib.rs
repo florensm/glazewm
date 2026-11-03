@@ -56,7 +56,6 @@ mod window_class;
 mod window_icons;
 mod window_listener;
 mod window_peek;
-mod window_shadow;
 mod workspace_surrogate;
 
 pub use click_guard::ClickGuard;
@@ -88,7 +87,7 @@ pub use tab_layout::TabAction;
 pub use thread_bound::*;
 pub use ui_thread::UiThread;
 pub use window_listener::*;
-pub use window_peek::{PeekStyle, WindowPeek};
+pub use window_peek::WindowPeek;
 pub use workspace_surrogate::{LiveFrame, WorkspaceSurrogate};
 
 /// `tracing` target of the overview's trace of picks through to its

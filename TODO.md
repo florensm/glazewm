@@ -17,19 +17,21 @@ On top of `feat/todo-cleanup` (the macOS/`hide_method` cleanup):
   access-denied once per window).
 - `537d6437` Workspace-switch teardown spread over ticks instead of three
   `DwmFlush` calls in one tick (~16 ms stall, ~28 ms frame per switch).
-- `835a9b0e` Window shadows carried through a workspace switch. Windows 11's
-  shadow was measured and fitted as two Gaussian layers
-  (`window_shadow.rs`), painted into a nine-grid composition surface.
+- `835a9b0e` Window shadows carried through a workspace switch (and later
+  scrolling peeks), as copies of a fitted Windows 11 shadow. Removed again
+  on 2026-11-03: the user saw stripes from them in switches and scrolls,
+  gone with `GLAZEWM_ISOLATE=noshadow`. Moving windows show no shadow
+  again; the real one returns as they land.
 - `9e0234cf`, `dc3c9c0e`, `73a8faa7` Scrolling layout peeks drawn the way the
   workspace switch draws: pinned to the monitor, with copies of the border
-  ring and shadow (`overlay_copies.rs`, `window_peek.rs`, `scroll_view.rs`).
+  ring (`overlay_copies.rs`, `window_peek.rs`, `scroll_view.rs`).
 - `b33c0ef8` Backdrop copies: windows with a backdrop get pinned copies too
   (`backdrop_source.rs`): a crop of a monitor-wide backdrop per style plus a
   stretched vignette copy, both under the window's thumbnail.
 
 How the pieces fit: every moving window is a DWM thumbnail in a surrogate
 window that spans the monitor and never moves (`WorkspaceSurrogate` for
-switches, `WindowPeek` for scrolling). Its ring, shadow and backdrop are more
+switches, `WindowPeek` for scrolling). Its ring and backdrop are more
 thumbnails in the same window (`OverlayCopies`), so they all move in the same
 DWM updates. The real overlays are handed over around them: covered by the
 copy, hidden a composited frame later, shown again under the copy at the end
@@ -119,13 +121,12 @@ file), `git pull` on `tryout/todo-cleanup`, `cargo build --release`, run.
 Check `errors.log` for the new unknown-keys warning, then:
 
 1. **Fast keyboard scroll** (hold or hammer the focus keys across several
-   columns): no flicker, no column blinking out, shadows steady as focus
-   moves.
+   columns): no flicker, no column blinking out.
 2. **Slow single scroll steps** with the active window moving: no
    brightness flash at the start or end (window drawn twice), no lines or
    backdrop slivers at a column's trailing edge on the first frame.
 3. **Workspace switch with backdrop on**: no vertical bars beside windows
-   mid-slide; shadows as dark as the real ones at rest.
+   mid-slide.
 4. **A column scrolling in at the right edge**: drawn cut at the monitor
    edge, no strip of border or backdrop beside it.
 5. **Two quick workspace switches** (second one before the first settles):
@@ -133,7 +134,7 @@ Check `errors.log` for the new unknown-keys warning, then:
 6. Exit the WM: `errors.log` shouldn't get thousands of "Failed to send
    window event" lines.
 7. If bars or flicker remain, isolate them with `GLAZEWM_ISOLATE` (below),
-   one restart per flag: `noshadow`, `noring`, `nobackdrop`, then `live`.
+   one restart per flag: `noring`, `nobackdrop`, then `live`.
    With a long `duration_ms` (e.g. 3000) for `scroll` and
    `workspace_switch`, one screenshot catches a mid-animation frame.
 
@@ -145,7 +146,7 @@ session could only cross-check it, see "Before the laptop gets it").
 Inert unless set. A comma-separated list, read once at WM start (a warning
 in the log says it is on):
 
-- `noshadow`, `nobackdrop`, `noring`: draw that copy of a moving window
+- `nobackdrop`, `noring`: draw that copy of a moving window
   (pinned surrogates and peeks) at no opacity. Everything else, including
   the real overlays' handover, runs as usual, so an artifact that goes away
   with one of them is drawn by that copy.
@@ -155,7 +156,7 @@ in the log says it is on):
 Set it for one run, e.g. from PowerShell in the repo:
 
 ```powershell
-$env:GLAZEWM_ISOLATE = "noshadow,noring"; .\target\release\glazewm.exe
+$env:GLAZEWM_ISOLATE = "noring,nobackdrop"; .\target\release\glazewm.exe
 ```
 
 ## Still open
@@ -169,13 +170,10 @@ scroll is dropped.
    styles' crops as peeks do and crossfade their opacities.
 2. During a column resize the ring copy stretches with the window, so its
    vertical edges thin out until the column lands.
-3. A peek's ring copy is registered after its shadow, so the shadow doesn't
-   fall over the ring as on screen (the workspace switch has it right).
-   Barely visible (~15% shadow over a 2 px ring).
-4. A peek reused for several moves keeps its companion-wait start time
+3. A peek reused for several moves keeps its companion-wait start time
    (`HandoffWait`), so a later hand-back with a slow companion (shades) may
    stop waiting at once.
-5. With scroll animations off, a partly visible column becoming fully
+4. With scroll animations off, a partly visible column becoming fully
    visible drops its peek before its real window is uncloaked: possibly a
    blank frame.
 

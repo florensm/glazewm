@@ -924,15 +924,6 @@ fn redraw_containers(
             focused_container.id(),
             config,
           );
-          // After the rings, so their windows' shadows fall over them as
-          // on screen.
-          carry_switch_shadows(
-            state,
-            &mut ws_windows,
-            focused_container.id(),
-            config,
-          );
-
           // Show outgoing surrogates before flushing: real windows are
           // still active so their DWM thumbnails are immediately
           // warm. For stationary (non-slide) styles, also show
@@ -2441,34 +2432,6 @@ fn park_switch_borders(
         overlay.set_rect(&rest, anchor);
       }
     }
-  }
-}
-
-/// Has each surrogate of a starting workspace switch draw its window's
-/// shadow as DWM does: the deeper, active one for the focused window
-/// leaving and for the one arriving to be focused.
-fn carry_switch_shadows(
-  state: &WmState,
-  ws_windows: &mut [(uuid::Uuid, WorkspaceSwitchEntry)],
-  focused_id: uuid::Uuid,
-  config: &UserConfig,
-) {
-  for (id, entry) in ws_windows {
-    let (Some(surrogate), Some(window)) =
-      (entry.surrogate.as_mut(), state.window_by_id(*id))
-    else {
-      continue;
-    };
-
-    let is_active = if entry.is_incoming {
-      *id == focused_id
-    } else {
-      entry.was_focused
-    };
-    let (_, corner_style, _) =
-      surrogate_effects_for(window.effect_set(is_active), config);
-
-    surrogate.carry_shadow(&window.native(), is_active, &corner_style);
   }
 }
 

@@ -177,11 +177,11 @@ pub struct WorkspaceSurrogate {
   /// The window the surrogate shows.
   source: isize,
 
-  /// Copies of the window's border ring and shadow. See [`carry_ring`]
-  /// and [`carry_shadow`].
+  /// Copies of the window's border ring and backdrop. See [`carry_ring`]
+  /// and [`carry_backdrop`].
   ///
   /// [`carry_ring`]: WorkspaceSurrogate::carry_ring
-  /// [`carry_shadow`]: WorkspaceSurrogate::carry_shadow
+  /// [`carry_backdrop`]: WorkspaceSurrogate::carry_backdrop
   copies: OverlayCopies,
 }
 
@@ -374,9 +374,8 @@ impl WorkspaceSurrogate {
   /// and only a backdrop that can be copied (see
   /// `BackdropOverlayParams::is_copyable`).
   ///
-  /// Before [`carry_ring`](Self::carry_ring) and
-  /// [`carry_shadow`](Self::carry_shadow), which go over the window that
-  /// this puts back on top of the backdrop.
+  /// Before [`carry_ring`](Self::carry_ring), which goes over the window
+  /// that this puts back on top of the backdrop.
   pub fn carry_backdrop(&mut self, params: BackdropOverlayParams) -> bool {
     if self.is_live() || !params.is_copyable() {
       return false;
@@ -429,42 +428,15 @@ impl WorkspaceSurrogate {
     self.copies.hide_ring();
   }
 
-  /// Draws `window`'s shadow along with it from now on, as for the window
-  /// drawn active or not. Returns whether it does: only a surrogate
-  /// pinned to the viewport can, as for the ring (see
-  /// [`carry_ring`](Self::carry_ring)), and only for a window DWM draws a
-  /// shadow around.
-  pub fn carry_shadow(
-    &mut self,
-    window: &NativeWindow,
-    is_active: bool,
-    corner_style: &CornerStyle,
-  ) -> bool {
-    if self.is_live() {
-      return false;
-    }
-
-    let (dest, frame) = (self.hwnd(), self.rest_frame());
-    let look = (is_active, *corner_style);
-    let carries =
-      self
-        .copies
-        .carry_shadow(dest, window, &self.rect, &frame, &[look]);
-    self.copies.show_shadow_look(look);
-    carries
-  }
-
-  /// Draws the window and its shadow at `window` opacity and its ring and
-  /// backdrop at `around`.
-  ///
-  /// DWM draws a layered window's shadow at the window's alpha, which the
-  /// thumbnail leaves out and its opacity stands in for.
+  /// Draws the window at `window` opacity and its ring and backdrop at
+  /// `around`.
   fn set_opacities(&mut self, window: u8, around: u8) {
     self.inner.set_window_opacity(window);
-    self.copies.set_opacity(around, window);
+    self.copies.set_opacity(around);
   }
 
-  /// Draws the window, ring and shadow at `frac` of their own opacities.
+  /// Draws the window, ring and backdrop at `frac` of their own
+  /// opacities.
   fn set_opacity_frac(&mut self, frac: f32) {
     self.set_opacities(
       scale_alpha(self.opacity, frac),
@@ -499,7 +471,6 @@ impl WorkspaceSurrogate {
   fn clear_frame(&mut self) {
     self.inner.set_visible(false);
     self.copies.hide_ring();
-    self.copies.hide_shadow();
     self.live_frame = None;
     self.unclipped_rect = None;
     self.panel = None;
@@ -625,14 +596,12 @@ impl WorkspaceSurrogate {
   /// fully opaque.
   ///
   /// The ring copy stays: the ring is revealed under it only after this,
-  /// and it goes with the surrogate. The shadow copy goes with the
-  /// thumbnail, as the window shows its own.
+  /// and it goes with the surrogate.
   ///
   /// [`prepare_hand_back`]: WorkspaceSurrogate::prepare_hand_back
   pub fn hide_thumbnail(&mut self) {
     self.restore_alpha();
     self.inner.hide_thumbnail();
-    self.copies.hide_shadow();
   }
 
   /// Shows the surrogate with the thumbnail at the window's natural

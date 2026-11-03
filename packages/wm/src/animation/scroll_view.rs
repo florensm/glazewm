@@ -35,8 +35,8 @@ use uuid::Uuid;
 use wm_common::{DisplayState, Layout, WindowState};
 use wm_platform::{
   BackdropOverlayParams, BorderOverlayParams, NativeBackdropOverlay,
-  NativeBorderOverlay, NativeWindow, Overlay, PeekStyle, Point, Rect,
-  StyleBlend, SurrogateBatch, WindowPeek, HWND,
+  NativeBorderOverlay, NativeWindow, Overlay, Point, Rect, StyleBlend,
+  SurrogateBatch, WindowPeek, HWND,
 };
 
 use super::{
@@ -243,12 +243,11 @@ impl ScrollView {
     for (id, entry) in &mut self.entries {
       match entry.role {
         Role::Moving { ends_shown } => {
-          // Its real window was cloaked a tick ago at least, taking its
-          // own shadow along, so needs its alpha no more. One not taken
-          // over from, e.g. as it wasn't redrawn, is drawn all the same.
+          // Its real window was cloaked a tick ago at least, so needs its
+          // alpha no more. One not taken over from, e.g. as it wasn't
+          // redrawn, is drawn all the same.
           entry.peek.restore_alpha();
           entry.peek.show_window();
-          entry.peek.cast_shadow(true);
           entry.motion.start_clock(clock_origin);
           let (rect, _) = entry.motion.current_state_at(now);
           entry.place(&rect, batch);
@@ -431,19 +430,14 @@ impl ScrollView {
     }
 
     if let Some(entry) = self.entries.get_mut(&window.id()) {
-      // Whether its real window is cloaked, so shows no shadow of its own:
-      // all but one being released, which a new move cloaks again first.
-      let is_cloaked = !matches!(entry.role, Role::Releasing { .. });
-
       entry.motion = motion;
       entry.clip = clip.clone();
       entry.opacity = opacity;
       entry.role = role;
       // Copies of both styles are drawn up front, so a focus change only
       // swaps which show: one registered mid-move left frames without it.
-      entry.peek.carry_styles(&window.native(), &styles);
-      entry.peek.show_style(&style);
-      entry.peek.cast_shadow(is_cloaked);
+      entry.peek.carry_styles(&styles);
+      entry.peek.show_style(style);
       let rect = entry.motion.current_rect();
       entry.place(&rect, batch);
       return covers_shown_window;
@@ -451,9 +445,9 @@ impl ScrollView {
 
     // A window with a backdrop that can't be copied along in either focus
     // state has a peek that moves with it.
-    let is_live = styles.iter().any(|style| {
-      style.backdrop.is_some_and(|params| !params.is_copyable())
-    });
+    let is_live = styles
+      .iter()
+      .any(|style| style.is_some_and(|params| !params.is_copyable()));
 
     // Sized like the window itself, which a collapsed `from` (an opening
     // column) isn't.
@@ -471,18 +465,16 @@ impl ScrollView {
     };
 
     // Before the ring, which goes on top.
-    peek.carry_styles(&window.native(), &styles);
-    peek.show_style(&style);
+    peek.carry_styles(&styles);
+    peek.show_style(style);
 
-    // A moving column's real window may still show, with its own shadow,
-    // until the peek takes over from it as it is cloaked; one at rest is
-    // already cloaked.
+    // A moving column's real window may still show until the peek takes
+    // over from it as it is cloaked; one at rest is already cloaked.
     let covers_shown_window =
       is_moving && !window.native().is_cloaked().unwrap_or(true);
     if covers_shown_window {
       peek.warm_up();
     }
-    peek.cast_shadow(!is_moving);
 
     let rect = motion.current_rect();
     let mut entry = Entry {
@@ -1046,21 +1038,16 @@ fn carry_backdrop(
   true
 }
 
-/// How `window` is drawn focused and not, which its peek carries copies
-/// for.
+/// The backdrops of `window` focused and not, which its peek carries
+/// copies of.
 fn peek_styles(
   window: &WindowContainer,
   config: &UserConfig,
-) -> [PeekStyle; 2] {
+) -> [Option<BackdropOverlayParams>; 2] {
   [true, false].map(|is_focused| {
-    let (_, corner_style, overlays) =
-      surrogate_effects_for(window.effect_set(is_focused), config);
-
-    PeekStyle {
-      is_active: is_focused,
-      corner_style,
-      backdrop: overlays.backdrop,
-    }
+    surrogate_effects_for(window.effect_set(is_focused), config)
+      .2
+      .backdrop
   })
 }
 

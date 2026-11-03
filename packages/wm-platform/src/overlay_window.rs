@@ -30,7 +30,6 @@ pub(crate) enum OverlayKind {
   Backdrop,
   Border,
   DropIndicator,
-  Shadow,
   BackdropSource,
 }
 
@@ -40,7 +39,6 @@ impl OverlayKind {
       Self::Backdrop => w!("GlazeWM_BackdropOverlay"),
       Self::Border => w!("GlazeWM_BorderOverlay"),
       Self::DropIndicator => w!("GlazeWM_DropIndicator"),
-      Self::Shadow => w!("GlazeWM_WindowShadow"),
       Self::BackdropSource => w!("GlazeWM_BackdropSource"),
     }
   }
@@ -66,21 +64,19 @@ impl OverlayKind {
   /// while thumbnails of it still draw it (see
   /// [`OverlayWindow::set_alpha`]).
   fn is_layered(self) -> bool {
-    matches!(self, Self::Border | Self::Shadow | Self::BackdropSource)
+    matches!(self, Self::Border | Self::BackdropSource)
   }
 
   fn registered(self) -> &'static OnceLock<()> {
     static BACKDROP: OnceLock<()> = OnceLock::new();
     static BORDER: OnceLock<()> = OnceLock::new();
     static DROP_INDICATOR: OnceLock<()> = OnceLock::new();
-    static SHADOW: OnceLock<()> = OnceLock::new();
     static BACKDROP_SOURCE: OnceLock<()> = OnceLock::new();
 
     match self {
       Self::Backdrop => &BACKDROP,
       Self::Border => &BORDER,
       Self::DropIndicator => &DROP_INDICATOR,
-      Self::Shadow => &SHADOW,
       Self::BackdropSource => &BACKDROP_SOURCE,
     }
   }
@@ -91,7 +87,6 @@ impl OverlayKind {
       Self::Backdrop => "Backdrop overlay",
       Self::Border => "Border overlay",
       Self::DropIndicator => "Drop indicator",
-      Self::Shadow => "Window shadow",
       Self::BackdropSource => "Backdrop source",
     }
   }

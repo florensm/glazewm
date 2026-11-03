@@ -153,7 +153,7 @@ thread_local! {
 /// A device is subscribed to its own `RenderingDeviceReplaced` as it is
 /// created: the surfaces drawn through it survive a device swap (brushes
 /// keep pointing at them) but their contents don't, so without a redraw
-/// every backdrop and shadow would go blank after a driver update or a TDR
+/// every backdrop would go blank after a driver update or a TDR
 /// until something forced a new one.
 ///
 /// Fails rather than panics when the device is already borrowed further up
@@ -178,7 +178,6 @@ pub(crate) fn with_graphics_device<T>(
       device.composition.RenderingDeviceReplaced(
         &TypedEventHandler::new(move |_, _| {
           super::wallpaper_surface::redraw_cached(&redraw_compositor);
-          super::shadow_surface::redraw_cached(&redraw_compositor);
           Ok(())
         }),
       )?;
