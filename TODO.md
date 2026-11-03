@@ -108,13 +108,11 @@ Check `errors.log` for the new unknown-keys warning, then:
    mid-slide; shadows as dark as the real ones at rest.
 4. **A column scrolling in at the right edge**: drawn cut at the monitor
    edge, no strip of border or backdrop beside it.
-5. **Vesktop at the end of a scroll** (still open, see below): watch for the
-   grow/shrink, and compare `glazewm query windows` with its real size.
-6. **Two quick workspace switches** (second one before the first settles):
+5. **Two quick workspace switches** (second one before the first settles):
    the windows coming back keep their backdrop throughout.
-7. Exit the WM: `errors.log` shouldn't get thousands of "Failed to send
+6. Exit the WM: `errors.log` shouldn't get thousands of "Failed to send
    window event" lines.
-8. If bars or flicker remain, isolate them with `GLAZEWM_ISOLATE` (below),
+7. If bars or flicker remain, isolate them with `GLAZEWM_ISOLATE` (below),
    one restart per flag: `noshadow`, `noring`, `nobackdrop`, then `live`.
    With a long `duration_ms` (e.g. 3000) for `scroll` and
    `workspace_switch`, one screenshot catches a mid-animation frame.
@@ -142,23 +140,22 @@ $env:GLAZEWM_ISOLATE = "noshadow,noring"; .\target\release\glazewm.exe
 
 ## Still open
 
-1. **Vesktop (Electron) grows/shrinks at the end of a scroll.** Likely
-   Chromium not painting while cloaked, so DWM stretches its last frame if
-   the window was resized (e.g. a minimum width larger than the column).
-   Check the WM's rect (`glazewm query windows`) against `GetWindowRect`.
-2. Workspace switch no longer blends a backdrop between focus styles
+No app-specific fixes: the Vesktop (Electron) grow/shrink at the end of a
+scroll is dropped.
+
+1. Workspace switch no longer blends a backdrop between focus styles
    mid-slide: the copy uses the style the window ends with (incoming) or
    starts with (outgoing). Now cheap to fix: a surrogate could carry both
    styles' crops as peeks do and crossfade their opacities.
-3. During a column resize the ring copy stretches with the window, so its
+2. During a column resize the ring copy stretches with the window, so its
    vertical edges thin out until the column lands.
-4. A peek's ring copy is registered after its shadow, so the shadow doesn't
+3. A peek's ring copy is registered after its shadow, so the shadow doesn't
    fall over the ring as on screen (the workspace switch has it right).
    Barely visible (~15% shadow over a 2 px ring).
-5. A peek reused for several moves keeps its companion-wait start time
+4. A peek reused for several moves keeps its companion-wait start time
    (`HandoffWait`), so a later hand-back with a slow companion (shades) may
    stop waiting at once.
-6. With scroll animations off, a partly visible column becoming fully
+5. With scroll animations off, a partly visible column becoming fully
    visible drops its peek before its real window is uncloaked: possibly a
    blank frame.
 
