@@ -143,6 +143,12 @@ Set it for one run, e.g. from PowerShell in the repo:
 $env:GLAZEWM_ISOLATE = "noring,nobackdrop"; .\target\release\glazewm.exe
 ```
 
+## Next: one way to animate windows
+
+`STAND_INS_PLAN.md`: what the three stand-in systems (move/resize,
+workspace switch, scroll) do now, what merging them improves, and the
+steps to get there, each checked live before the next.
+
 ## Still open
 
 No app-specific fixes: the Vesktop (Electron) grow/shrink at the end of a
