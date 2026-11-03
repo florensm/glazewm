@@ -98,6 +98,15 @@ corners, scrolling layout):
      place. Seen fixed live: no blink in 57 s of the user's own scrolling.
      (Supersedes `68673be`.) The workspace switch hands back the same way
      and may still blink.
+5. **Windows themed by shades flashed uncolored as moves landed** (found
+   live 2026-11-03 with shades on FPilot).
+   - A landing peek's window going after the focused window rose above
+     its companion: hand-back windows now keep their z-order place. A
+     companion only counts as back once it is above its window too, not
+     just shown. And workspace switches now wait for companions like
+     peeks do (up to 200 ms) before handing windows back. Seen fixed live
+     in scrolls and switches. Not done: move/resize sessions still skip
+     the wait for transparent windows (`effect_opacity < 255`).
 
 Stretch items from the old list:
 

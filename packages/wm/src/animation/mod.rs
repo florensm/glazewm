@@ -5,4 +5,4 @@ pub mod stand_in;
 pub mod state;
 
 pub use manager::{AnimationManager, AnimationPositionResult};
-pub(crate) use manager::{AwayTransition, WorkspaceSwitchEntry};
+pub(crate) use manager::{AwayTransition, HandBack, WorkspaceSwitchEntry};

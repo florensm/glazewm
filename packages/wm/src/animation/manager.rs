@@ -307,9 +307,24 @@ pub(crate) struct WorkspaceSwitchEntry {
   /// one for its post-switch focus state over the switch, rather than
   /// snapping on the first frame.
   pub was_focused: bool,
-  /// Whether its real window is shown again in its place, once the slide
+  /// How far its real window is shown again in its place, once the slide
   /// is over (see `AnimationManager::hide_pending_ws_cleanup_surrogate`).
-  pub handed_back: bool,
+  pub hand_back: HandBack,
+}
+
+/// How far a window of a finished workspace switch is handed back from its
+/// surrogate.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) enum HandBack {
+  /// Its real window is still cloaked.
+  #[default]
+  Pending,
+  /// Uncloaked under its surrogate, which covers it until the window's
+  /// companion is back over it (see
+  /// `WorkspaceSurrogate::awaits_companion`).
+  AwaitingCompanion,
+  /// Shown again in its place.
+  Done,
 }
 
 /// A step of tearing down a finished workspace switch's surrogates.
@@ -3045,7 +3060,7 @@ impl AnimationManager {
       .pending_ws_cleanup
       .as_ref()
       .and_then(|ws| ws.windows.get(window_id))
-      .is_some_and(|e| e.is_incoming && !e.handed_back)
+      .is_some_and(|e| e.is_incoming && e.hand_back == HandBack::Pending)
   }
 
   /// Installs a workspace-switch animation for the provided windows.
@@ -3511,9 +3526,16 @@ impl AnimationManager {
       return;
     };
     if let Some(entry) = ws.windows.get_mut(&window_id) {
-      entry.handed_back = true;
+      entry.hand_back = HandBack::Done;
       if let Some(ref mut s) = entry.surrogate {
-        s.hide_thumbnail();
+        // Its window, still hidden by its alpha, would show uncolored
+        // until its companion is back over it, so the hide waits
+        // for that (see `finish_ws_hand_backs`).
+        if s.awaits_companion() {
+          entry.hand_back = HandBack::AwaitingCompanion;
+        } else {
+          s.hide_thumbnail();
+        }
       }
     }
   }
@@ -3571,7 +3593,7 @@ impl AnimationManager {
       .flatten()
       .find_map(|previous| previous.windows.get_mut(id))
       .and_then(|previous| {
-        let handed_back = previous.handed_back;
+        let handed_back = previous.hand_back != HandBack::Pending;
         previous.surrogate.as_mut().map(|old| (old, handed_back))
       }) else {
         continue;
@@ -3637,9 +3659,11 @@ fn advance_ws_cleanup(
   state: &mut WmState,
   config: &UserConfig,
 ) -> Vec<Uuid> {
-  if state.animation_manager.pending_ws_cleanup.is_none() {
+  let Some(ws) = state.animation_manager.pending_ws_cleanup.as_mut()
+  else {
     return Vec::new();
-  }
+  };
+  let is_awaiting_companions = finish_ws_hand_backs(ws);
 
   loop {
     let step = state.animation_manager.ws_cleanup_step;
@@ -3647,6 +3671,9 @@ fn advance_ws_cleanup(
       WsCleanupStep::AwaitUncloak => true,
       WsCleanupStep::ShowOverlays => show_final_overlays(state, config),
       WsCleanupStep::Reanchor => reanchor_final_overlays(state),
+      // The surrogates go with their thumbnails, which those waiting for
+      // a companion still show.
+      WsCleanupStep::Drop if is_awaiting_companions => return Vec::new(),
       WsCleanupStep::Drop => {
         return state
           .animation_manager
@@ -3663,6 +3690,34 @@ fn advance_ws_cleanup(
       return Vec::new();
     }
   }
+}
+
+/// Hands back the incoming windows of a finished switch whose surrogates
+/// waited for their companions, once each is back over its window or the
+/// wait timed out (see `WorkspaceSurrogate::awaits_companion`). Returns
+/// whether any still waits.
+fn finish_ws_hand_backs(ws: &mut WorkspaceSwitchState) -> bool {
+  let mut is_awaiting = false;
+
+  for entry in ws
+    .windows
+    .values_mut()
+    .filter(|entry| entry.hand_back == HandBack::AwaitingCompanion)
+  {
+    let Some(surrogate) = entry.surrogate.as_mut() else {
+      entry.hand_back = HandBack::Done;
+      continue;
+    };
+
+    if surrogate.awaits_companion() {
+      is_awaiting = true;
+    } else {
+      surrogate.hide_thumbnail();
+      entry.hand_back = HandBack::Done;
+    }
+  }
+
+  is_awaiting
 }
 
 /// The finished switch's incoming windows, each with where it ends and its
@@ -3827,7 +3882,7 @@ mod tests {
           surrogate: None,
           is_incoming: true,
           was_focused: false,
-          handed_back: false,
+          hand_back: HandBack::Pending,
         };
         (*id, entry)
       })

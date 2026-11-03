@@ -390,12 +390,6 @@ impl NativeWindow {
     self.inner.set_z_order(z_order)
   }
 
-  /// Whether the window is anywhere below `other` in the z-order.
-  #[must_use]
-  pub fn is_below(&self, other: WindowId) -> bool {
-    self.inner.is_below(other)
-  }
-
   /// Sets the visibility of the window's title bar.
   pub fn set_title_bar_visibility(
     &self,

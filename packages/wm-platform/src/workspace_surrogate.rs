@@ -1,6 +1,7 @@
 use windows::Win32::Foundation::{HWND, RECT};
 
 use crate::{
+  companion::HandoffWait,
   hidden_alpha::HiddenAlpha,
   native_surrogate::{placed_rects, to_logical},
   overlay_copies::{map_rect, scale_alpha, OverlayCopies},
@@ -174,6 +175,9 @@ pub struct WorkspaceSurrogate {
   /// [`take_over`]: WorkspaceSurrogate::take_over
   hidden_alpha: HiddenAlpha,
 
+  /// See [`awaits_companion`](WorkspaceSurrogate::awaits_companion).
+  companion_wait: HandoffWait,
+
   /// The window the surrogate shows.
   source: isize,
 
@@ -321,6 +325,7 @@ impl WorkspaceSurrogate {
       panel: None,
       frame_inset,
       hidden_alpha: HiddenAlpha::default(),
+      companion_wait: HandoffWait::default(),
       source: hwnd.0,
       copies: OverlayCopies::default(),
     })
@@ -602,6 +607,13 @@ impl WorkspaceSurrogate {
   pub fn hide_thumbnail(&mut self) {
     self.restore_alpha();
     self.inner.hide_thumbnail();
+  }
+
+  /// Whether the surrogate should keep covering its uncloaked window
+  /// before [`hide_thumbnail`](Self::hide_thumbnail): it shows the
+  /// window's companion, which is not back over the window yet.
+  pub fn awaits_companion(&mut self) -> bool {
+    self.companion_wait.awaits(self.inner.companion())
   }
 
   /// Shows the surrogate with the thumbnail at the window's natural

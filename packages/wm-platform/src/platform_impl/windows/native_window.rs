@@ -79,10 +79,6 @@ pub(crate) const FOREGROUND_INPUT_IDENTIFIER: u32 = 6379;
 /// should it refuse the width it gets.
 const MIN_SIZE_TIMEOUT_MS: u32 = 20;
 
-/// Most windows [`NativeWindow::is_below`] walks up past, bounding a walk
-/// of a z-order that changes under it.
-const MAX_Z_ORDER_WALK: usize = 4096;
-
 /// Platform-specific implementation of [`NativeWindow`].
 #[derive(Clone, Debug)]
 pub(crate) struct NativeWindow {
@@ -843,24 +839,6 @@ impl NativeWindow {
     } else {
       false
     }
-  }
-
-  /// Implements [`crate::NativeWindow::is_below`].
-  pub(crate) fn is_below(&self, other: WindowId) -> bool {
-    let mut above = self.hwnd();
-
-    for _ in 0..MAX_Z_ORDER_WALK {
-      // SAFETY: A stale handle just makes `GetWindow` return `HWND(0)`.
-      above = unsafe { GetWindow(above, GW_HWNDPREV) };
-      if above.0 == 0 {
-        return false;
-      }
-      if above.0 == other.0 {
-        return true;
-      }
-    }
-
-    false
   }
 
   /// Implements [`crate::NativeWindow::set_z_order`].

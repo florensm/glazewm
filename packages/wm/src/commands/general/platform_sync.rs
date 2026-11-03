@@ -15,7 +15,7 @@ use wm_platform::{
 };
 
 use crate::{
-  animation::{AnimationPositionResult, WorkspaceSwitchEntry},
+  animation::{AnimationPositionResult, HandBack, WorkspaceSwitchEntry},
   commands::window::unmanage_if_embedded,
   layout::is_hidden_in_layout,
   models::{is_inactive_stack_child, Container, WindowContainer},
@@ -846,7 +846,7 @@ fn redraw_containers(
                 surrogate,
                 is_incoming: true,
                 was_focused,
-                handed_back: false,
+                hand_back: HandBack::Pending,
               },
             ));
           } else {
@@ -899,7 +899,7 @@ fn redraw_containers(
                 surrogate,
                 is_incoming: false,
                 was_focused,
-                handed_back: false,
+                hand_back: HandBack::Pending,
               },
             ));
           }
@@ -1075,18 +1075,20 @@ fn redraw_containers(
     };
 
     // A window a scrolling layout's peek hands back is uncloaked right
-    // above its backdrop and border. Going after a focused window still
-    // lower in the stack (raised only once focus lands) takes it below
-    // them, and a frame of it under its opaque backdrop makes DWM stop
-    // drawing it until something above it changes: tens of ms. It keeps
-    // its place instead, which `Normal` does for a non-topmost window.
+    // under any companion (e.g. shades' recolored copy) and above its
+    // backdrop and border, all stacked around where it is. It keeps its
+    // place, which `Normal` does for a non-topmost window; columns don't
+    // overlap, so their order is moot. Going after the focused window
+    // instead moved it past them: below its opaque backdrop, where one
+    // frame makes DWM stop drawing it until something above it changes,
+    // or above its companion, showing it uncolored until the companion's
+    // app restacked.
     let z_order = match z_order {
-      WindowZOrder::AfterWindow(above)
+      WindowZOrder::AfterWindow(_)
         if state
           .animation_manager
           .scroll_view
-          .is_handing_back(&window.id())
-          && !window.native().is_below(above) =>
+          .is_handing_back(&window.id()) =>
       {
         WindowZOrder::Normal
       }
