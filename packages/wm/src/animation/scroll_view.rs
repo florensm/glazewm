@@ -28,7 +28,7 @@
 
 use std::{
   collections::{HashMap, HashSet},
-  time::Instant,
+  time::{Duration, Instant},
 };
 
 use uuid::Uuid;
@@ -36,7 +36,7 @@ use wm_common::{DisplayState, Layout, WindowState};
 use wm_platform::{
   BackdropOverlayParams, BorderOverlayParams, NativeBackdropOverlay,
   NativeBorderOverlay, NativeWindow, Overlay, PeekStyle, Point, Rect,
-  StyleBlend, SurrogateBatch, WindowPeek, HWND,
+  StyleBlend, SurrogateBatch, WindowPeek, WindowZOrder, HWND,
 };
 
 use super::{
@@ -66,14 +66,24 @@ enum Role {
   /// for that window to be uncloaked.
   HandingBack,
   /// Covers its just-uncloaked real window until it can hand the window
-  /// back (see `WindowPeek::hand_back`): at once, or once any companion
-  /// of it is on screen too (e.g. shades' recolored copy, shown by its
-  /// app only once it notices the uncloak). `settled` is set on the
-  /// first tick after that; the peek, still drawing the ring and
-  /// backdrop over the real ones, goes on the tick after, a later
-  /// composition.
-  Releasing { settled: bool },
+  /// back (see [`hand_back_landed`]), `awaiting` until then the z-order
+  /// its landing gave it, and when: once that can no longer take the
+  /// window lower, and any companion of it is on screen too (e.g. shades'
+  /// recolored copy, shown by its app only once it notices the uncloak).
+  /// Until then it still stands in for the window, its overlays behind
+  /// it. `settled` is set on the first tick after the hand back; the
+  /// peek, still drawing the ring over the real one, goes on the tick
+  /// after, a later composition.
+  Releasing {
+    awaiting: Option<(WindowZOrder, Instant)>,
+    settled: bool,
+  },
 }
+
+/// Upper bound on how long a landed peek keeps covering its real window
+/// for the restack the window was given to land, for an app too busy to
+/// take it.
+const RESTACK_MAX_WAIT: Duration = Duration::from_millis(100);
 
 /// How far a pinned peek has taken over its window's border ring or
 /// backdrop, which it hands over as a workspace switch does: covered
@@ -153,8 +163,8 @@ impl ScrollView {
   }
 
   /// The peek drawing `window_id`, which its overlays sit behind. `None`
-  /// while it only covers its real window on the way out, as they then
-  /// sit behind the real window.
+  /// once it has handed its real window back and only covers it on the
+  /// way out, as they then sit behind the real window.
   pub fn peek_hwnd(&self, window_id: &Uuid) -> Option<HWND> {
     self.stands_in(window_id).map(|entry| entry.peek.hwnd())
   }
@@ -187,12 +197,11 @@ impl ScrollView {
   }
 
   /// The entry of a peek standing in for `window_id`'s real window, i.e.
-  /// not one on its way out.
+  /// not one that handed it back and is on its way out.
   fn stands_in(&self, window_id: &Uuid) -> Option<&Entry> {
-    self
-      .entries
-      .get(window_id)
-      .filter(|entry| !matches!(entry.role, Role::Releasing { .. }))
+    self.entries.get(window_id).filter(|entry| {
+      !matches!(entry.role, Role::Releasing { awaiting: None, .. })
+    })
   }
 
   /// Whether `window_id`'s peek still covers its uncloaked real window.
@@ -257,17 +266,17 @@ impl ScrollView {
             };
           }
         }
-        Role::Releasing { ref mut settled } => {
-          if !entry.peek.awaits_companion() {
-            if *settled {
-              landed.released.push(*id);
-            } else {
-              entry.peek.hand_back();
-              *settled = true;
-            }
+        Role::Releasing {
+          awaiting: None,
+          ref mut settled,
+        } => {
+          if *settled {
+            landed.released.push(*id);
+          } else {
+            *settled = true;
           }
         }
-        Role::Peek | Role::HandingBack => {}
+        Role::Releasing { .. } | Role::Peek | Role::HandingBack => {}
       }
     }
 
@@ -333,18 +342,20 @@ impl ScrollView {
     }
   }
 
-  /// Hands `window_id`'s real window, just uncloaked, back from its peek,
-  /// which goes once that is surely on screen (see [`Role::Releasing`]).
-  pub fn release(&mut self, window_id: &Uuid) {
+  /// Has `window_id`'s peek hand its real window back, just uncloaked and
+  /// given `z_order`, once that is safe (see [`hand_back_landed`]). The
+  /// peek goes once the window is surely on screen (see
+  /// [`Role::Releasing`]).
+  pub fn release(&mut self, window_id: &Uuid, z_order: WindowZOrder) {
     if let Some(entry) = self
       .entries
       .get_mut(window_id)
       .filter(|entry| entry.role == Role::HandingBack)
     {
-      entry.role = Role::Releasing { settled: false };
-      if !entry.peek.awaits_companion() {
-        entry.peek.hand_back();
-      }
+      entry.role = Role::Releasing {
+        awaiting: Some((z_order, Instant::now())),
+        settled: false,
+      };
     }
   }
 
@@ -698,6 +709,79 @@ pub fn report_stuck_windows(state: &mut WmState) {
   }
 }
 
+/// Hands the real windows of releasing peeks back from them, each once the
+/// restack its landing gave it can no longer take it lower (or that is
+/// overdue) and any companion of it is back on screen.
+///
+/// The restack is asynchronous. Going after the focused window while that
+/// is still low in the stack, a window sinks below its own border and
+/// backdrop: handed back before that lands, it would show as its bare
+/// backdrop until the overlays were restacked. One already below the
+/// window it goes after only rises, as do the other z-orders. Right
+/// before the swap, the overlays are put behind the window and the peek
+/// over it, wherever the window now is.
+pub fn hand_back_landed(state: &mut WmState) {
+  let awaiting = state
+    .animation_manager
+    .scroll_view
+    .entries
+    .iter()
+    .filter_map(|(id, entry)| match entry.role {
+      Role::Releasing {
+        awaiting: Some(awaiting),
+        ..
+      } => Some((*id, awaiting)),
+      _ => None,
+    })
+    .collect::<Vec<_>>();
+
+  for (id, (z_order, since)) in awaiting {
+    let Some(window) = state.window_by_id(id) else {
+      continue;
+    };
+    let native = window.native();
+    let can_sink = match z_order {
+      WindowZOrder::AfterWindow(above) => !native.is_below(above),
+      _ => false,
+    };
+    if can_sink && since.elapsed() < RESTACK_MAX_WAIT {
+      continue;
+    }
+
+    let Some(entry) =
+      state.animation_manager.scroll_view.entries.get_mut(&id)
+    else {
+      continue;
+    };
+    if entry.peek.awaits_companion() {
+      continue;
+    }
+
+    if let Some(overlays) = state.window_overlays.get_mut(&id) {
+      if let Some(backdrop) = overlays
+        .backdrop
+        .as_mut()
+        .filter(|overlay| overlay.is_visible())
+      {
+        let _ = backdrop.sync_z_order(native.hwnd(), false);
+      }
+      if let Some(border) = overlays
+        .border
+        .as_mut()
+        .filter(|overlay| overlay.is_visible())
+      {
+        let _ = border.sync_z_order(native.hwnd(), false);
+      }
+    }
+    entry.peek.cover_window();
+    entry.peek.hand_back();
+    entry.role = Role::Releasing {
+      awaiting: None,
+      settled: false,
+    };
+  }
+}
+
 /// Keeps the border and backdrop overlays of the windows the scroll view
 /// draws on their peeks, cut at the monitor edge like the peeks are.
 /// `sync_overlays` leaves these windows to it.
@@ -730,13 +814,15 @@ pub fn track_overlays(
         .and(entry.peek.frame_rect())
         .cloned();
       let is_moving = entry.role != Role::Peek;
-      // A releasing peek covers its real window, back on screen and with
-      // the overlays behind it, which stay there once the peek goes.
+      // A peek that handed its real window back only covers it, with the
+      // overlays behind the window, which stay there once the peek goes.
       let anchor = match entry.role {
-        Role::Releasing { .. } => state.window_by_id(*id).map_or_else(
-          || entry.peek.hwnd(),
-          |window| window.native().hwnd(),
-        ),
+        Role::Releasing { awaiting: None, .. } => {
+          state.window_by_id(*id).map_or_else(
+            || entry.peek.hwnd(),
+            |window| window.native().hwnd(),
+          )
+        }
         _ => entry.peek.hwnd(),
       };
       let is_live = entry.peek.is_live();

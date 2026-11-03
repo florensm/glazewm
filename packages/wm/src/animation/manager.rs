@@ -1271,6 +1271,7 @@ impl AnimationManager {
         state.pending_sync.queue_container_to_redraw(window);
       }
     }
+    super::scroll_view::hand_back_landed(state);
     super::scroll_view::track_overlays(state, config, scroll_batch);
 
     // Queue in-progress windows for redraw.

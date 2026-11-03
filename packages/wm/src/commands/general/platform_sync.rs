@@ -1400,7 +1400,7 @@ fn redraw_containers(
           // `pending_cloaks`.
           pending_cloaks.push(PendingCloak {
             window: (*window).clone(),
-            z_order: z_order.clone(),
+            z_order,
             target_rect: real_rect.clone(),
           });
         }
@@ -1543,7 +1543,10 @@ fn redraw_containers(
           state
             .animation_manager
             .hide_pending_ws_cleanup_surrogate(window.id());
-          state.animation_manager.scroll_view.release(&window.id());
+          state
+            .animation_manager
+            .scroll_view
+            .release(&window.id(), z_order);
         }
 
         // Apply animated opacity for opacity-style focus animations. The
@@ -1674,6 +1677,10 @@ fn redraw_containers(
   // have been cloaked. This removes the double-blend that would occur if
   // the surrogate's configured opacity were set before cloaking.
   state.animation_manager.apply_outgoing_surrogate_opacities();
+
+  // Windows uncloaked above under their peeks are handed back from them,
+  // each that can be by now (see `hand_back_landed`).
+  crate::animation::scroll_view::hand_back_landed(state);
 
   // Force one composited frame reflecting every `reassert_transparency`
   // call made above, deterministically closing the race against DWM's

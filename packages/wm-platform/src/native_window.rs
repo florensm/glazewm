@@ -15,7 +15,7 @@ use crate::{
 #[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct WindowId(pub isize);
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum WindowZOrder {
   Normal,
   AfterWindow(WindowId),
@@ -388,6 +388,12 @@ impl NativeWindow {
   /// Sets the window's z-order.
   pub fn set_z_order(&self, z_order: &WindowZOrder) -> crate::Result<()> {
     self.inner.set_z_order(z_order)
+  }
+
+  /// Whether the window is anywhere below `other` in the z-order.
+  #[must_use]
+  pub fn is_below(&self, other: WindowId) -> bool {
+    self.inner.is_below(other)
   }
 
   /// Sets the visibility of the window's title bar.
