@@ -84,6 +84,16 @@ corners, scrolling layout):
 3. `e6241cb` A switch started while the last one was still tearing down
    could show a handed-back window without its backdrop until it was taken
    over.
+4. **Unfocused columns vanished at the end of a scroll** (only backdrop
+   and ring left, 5-80 ms; found live 2026-11-03 from a recording).
+   - `68673be` The landing gives each unfocused window an async z-order
+     after the focused one. With that still low in the stack, the window
+     sank below its own backdrop, and the peek handed it back at once.
+     Peeks now stand in until the restack can no longer take the window
+     lower (100 ms cap), then put the overlays behind it and themselves
+     over it before the swap. Seen fixed live: no blink in 4 recorded
+     scrolls. The workspace switch hands back the same way
+     (`hide_pending_ws_cleanup_surrogate`) and may have the same blink.
 
 Stretch items from the old list:
 
