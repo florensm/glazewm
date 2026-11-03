@@ -59,15 +59,32 @@ const HANDOFF_MAX_WAIT: Duration = Duration::from_millis(200);
 pub(crate) struct HandoffWait {
   /// When the companion was first found not covering its window.
   started_at: Option<Instant>,
+  /// Whether the companion covered its window on the last call.
+  covered_last: bool,
 }
 
 impl HandoffWait {
   /// Whether to keep covering the window: `companion` is shown by the
-  /// stand-in and not over the window on screen yet, and the wait hasn't
-  /// timed out.
+  /// stand-in and hasn't been over the window since the last call, and
+  /// the wait hasn't timed out.
+  ///
+  /// Called once a tick, a composition apart: a companion found covering
+  /// is handed the window on the next call, once what its owner did to put
+  /// it back has been composited. Handed it at once, the stand-in could go
+  /// a composition before the companion showed, and the window showed
+  /// uncolored for a frame.
   pub(crate) fn awaits(&mut self, companion: Option<Companion>) -> bool {
-    if companion.is_none_or(Companion::covers_window) {
-      return false;
+    companion.is_some_and(|companion| {
+      self.awaits_cover(companion.covers_window())
+    })
+  }
+
+  /// [`awaits`](Self::awaits), for a companion that `covers` its window
+  /// this call or not.
+  fn awaits_cover(&mut self, covers: bool) -> bool {
+    let covered_before = std::mem::replace(&mut self.covered_last, covers);
+    if covers {
+      return !covered_before;
     }
 
     let started = *self.started_at.get_or_insert_with(Instant::now);
@@ -268,7 +285,31 @@ fn scan() -> Vec<(isize, isize)> {
 mod tests {
   use windows::Win32::Foundation::RECT;
 
-  use super::map_rects;
+  use super::{map_rects, HandoffWait};
+
+  #[test]
+  fn hands_back_a_call_after_the_companion_covers() {
+    let mut wait = HandoffWait::default();
+    assert!(wait.awaits_cover(false));
+    assert!(wait.awaits_cover(true));
+    assert!(!wait.awaits_cover(true));
+  }
+
+  #[test]
+  fn waits_a_call_for_a_companion_covering_from_the_start() {
+    let mut wait = HandoffWait::default();
+    assert!(wait.awaits_cover(true));
+    assert!(!wait.awaits_cover(true));
+  }
+
+  #[test]
+  fn waits_again_for_a_companion_that_stops_covering() {
+    let mut wait = HandoffWait::default();
+    assert!(wait.awaits_cover(true));
+    assert!(wait.awaits_cover(false));
+    assert!(wait.awaits_cover(true));
+    assert!(!wait.awaits_cover(true));
+  }
 
   fn rect(left: i32, top: i32, right: i32, bottom: i32) -> RECT {
     RECT {

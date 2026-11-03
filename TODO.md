@@ -103,9 +103,11 @@ corners, scrolling layout):
    - A landing peek's window going after the focused window rose above
      its companion: hand-back windows now keep their z-order place. A
      companion only counts as back once it is above its window too, not
-     just shown. And workspace switches now wait for companions like
-     peeks do (up to 200 ms) before handing windows back. Seen fixed live
-     in scrolls and switches. Not done: move/resize sessions still skip
+     just shown, and for a composition after that (else a frame could
+     show neither, the window uncolored: white for a light app). And
+     workspace switches now wait for companions like peeks do (up to
+     200 ms) before handing windows back. Seen fixed live in scrolls and
+     switches (no flash in 20 recorded landings). Not done: move/resize sessions still skip
      the wait for transparent windows (`effect_opacity < 255`).
 
 Stretch items from the old list:
