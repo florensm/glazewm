@@ -135,6 +135,27 @@ step. The cloud session can't run the WM, so say plainly in commits and
 `TODO.md` what wasn't seen live. Don't re-cut `test/todo-cleanup` without
 a native build.
 
+### Before each step: confirm it is needed
+
+No code changes until this is done and written down:
+
+1. Read the code the step touches, and `git log` since this plan was
+   last updated. Check this plan's description of it still matches (types,
+   functions, what each system does). If it drifted, fix the plan first.
+2. Confirm the problem the step removes still exists in the code, with
+   file and line: the duplicated logic, the special case, the extra
+   flush. Name each one.
+3. Check nothing smaller fixes it: a shared helper or a local fix that
+   gets the same result with less risk beats a merge.
+4. Weigh it: what gets simpler or better for the user, against what could
+   break live. Say which recordings from step 0 would show a regression.
+5. Write the findings under the step in this plan: confirmed needed (with
+   the evidence), what will change, how it will be checked.
+
+If the step isn't needed, isn't worth it, or a smaller change does the
+job: change no code. Write why in this plan and `TODO.md`, and stop with a
+recommendation (skip it, shrink it, or do the smaller change instead).
+
 ### Step 0: baseline
 
 Before changing anything, record on the desktop, with a long
