@@ -43,8 +43,8 @@ animations that work differently by nature.
 | Animations | Type | Drawing | Overlays | Take-over | Hand-back |
 |---|---|---|---|---|---|
 | Move, resize, open, close, minimize | `ResizeSession` (`wm-platform/src/resize_session.rs`) | Moving stand-in at `HWND_TOP`, `SetWindowPos` every frame (batched) | Real overlays moved alongside in the same `DeferWindowPos` batch | Stand-in shown, flush, cloak (`commit_pending_cloaks`) | Uncloak, then a 100 ms fade-out of the stand-in (`SESSION_FADE_OUT`); for a transparent window the stand-in drops to 0 at once instead |
-| Workspace switch | `WorkspaceSurrogate` (`workspace_surrogate.rs`), driven in `animation/manager.rs` | Pinned (`PinnedViewport`), or moving (`Live`) when the backdrop can't be copied | Copies (ring, backdrop); the real ring parked (`park_switch_borders`), the real backdrop hidden on the first tick | Warm up at opacity 1, flush, `take_over` (alpha swap via `HiddenAlpha`), cloak | `WsCleanupStep`: uncloak (alpha prepared), swap, wait for the companion, show overlays under copies, re-anchor, drop |
-| Scroll | `WindowPeek` (`window_peek.rs`), driven in `animation/scroll_view.rs` | Pinned, or moving (`Live`) as above | Copies, with a per-window `Handover` state machine (`Covering`, `Covered`, `Parked`, `Revealed`) | `warm_up`, flush (`flush_overlays`), `take_over` at the cloak | `prepare_hand_back`, uncloak, `hand_back` once the companion is back (`Role::Releasing`) |
+| Workspace switch | `WorkspaceSurrogate` (`workspace_surrogate.rs`), driven in `animation/manager.rs` | Pinned (`PinnedViewport`), or moving (`Live`) when the backdrop can't be copied | Copies (ring, backdrop); the real ring parked (`park_switch_borders`), the real backdrop hidden on the first tick | Warm up at opacity 1, flush, `take_over` (alpha swap via `HiddenAlpha`), cloak | `WsCleanupStep`: uncloak (alpha prepared), wait for the companion, swap (`hide_thumbnail`, from below the window), show overlays under copies, re-anchor, drop |
+| Scroll | `WindowPeek` (`window_peek.rs`), driven in `animation/scroll_view.rs` | Pinned, or moving (`Live`) as above | Copies, with a per-window `Handover` state machine (`Covering`, `Covered`, `Parked`, `Revealed`) | `warm_up`, flush (`flush_overlays`), `take_over` at the cloak | Raised above the window at landing (`cover_window`), `prepare_hand_back`, uncloak, `hand_back` once the companion is back (`Role::Releasing`) |
 | Iris switch | `NativeIrisOverlay` | A snapshot of the monitor with a growing hole | none | none | none |
 | Overview | `native_overview*` | Its own composition scene | its own | none | none |
 
@@ -93,8 +93,9 @@ Each problem below exists because the systems are separate:
 
 ## Target design
 
-One stand-in type in `wm-platform`, say `StandIn` (name to taste),
-replacing `WorkspaceSurrogate`, `WindowPeek` and the surrogate half of
+One stand-in type in `wm-platform` (not `StandIn`: `wm`'s
+`animation/stand_in.rs` has one, imported next to `WindowPeek` in
+`scroll_view.rs`), replacing `WorkspaceSurrogate`, `WindowPeek` and the surrogate half of
 `ResizeSession`:
 
 - Pinned to an area (monitor, work area or viewport); `Live` only as the
@@ -179,6 +180,80 @@ stays the same.
 
 Done when: both animations look identical to step 0's recordings, and
 `workspace_surrogate.rs` and `window_peek.rs` are gone.
+
+#### Step 1 findings (2026-11-03): shrink it, no code changed
+
+Checked against `3039190` (no code commits since this plan). Step 0's
+recordings don't exist yet, so no step has an A/B reference.
+
+Confirmed:
+
+- Same code in both types: `WARM_UP_OPACITY`
+  (`workspace_surrogate.rs:14`, `window_peek.rs:15`); the pinned/`Live`
+  enum (`:45`, `:18`) and the `NativeSurrogate::create` call for each
+  (`:247-296`, `:84-115`); `take_over`, `prepare_hand_back`,
+  `restore_alpha` (`:632-652`, `:276-301`); `awaits_companion` (`:610`,
+  `:444`); `carry_ring` (`:344`, `:239`); `carries_ring`,
+  `carries_backdrop`, `hwnd`, `is_live`. About 80 lines of code, thin
+  wrappers over the already shared `NativeSurrogate`, `OverlayCopies` and
+  `HiddenAlpha`. The pinned frame sampling (`frame_rects` `:24`,
+  `show_pinned` `:386`) differs only in the size passed to
+  `placed_rects`.
+- `Live` is chosen twice by the same rule: `platform_sync.rs:790-794`,
+  `scroll_view.rs:464-467`.
+- Fixes made in both types: `8a1fc9c` (frame sampling), `7e57367` and
+  `e1f259b` (shadow copies), `2e795fb` (companion wait). Not ported:
+  `5d43d2b`'s two-style backdrop carry (`TODO.md` "Still open" 4). The
+  other repeated fixes (`d5316f10`, `d6ba457`, `0c93737`, `599f0aa`,
+  `e6241cb`) were in the callers' hand-over and hand-back: step 2.
+
+Differences beyond the three listed above, which a merge that keeps
+behaviour identical must carry as options:
+
+1. Hand-back: the switch hides the thumbnail but keeps the backdrop copy
+   (`hide_thumbnail`, `workspace_surrogate.rs:602`), from below its
+   window (`:294`), as the real backdrop only shows a step later
+   (`WsCleanupStep::ShowOverlays`). The peek is raised above its window
+   (`window_peek.rs:436`), so draws it at 0 and drops the backdrop copy
+   (`hand_back`, `:308`, `73f415e`).
+2. Copies' opacity: faded with the window in the switch
+   (`set_opacity_frac`, `:440`), held at full in the peek (`:412-413`).
+3. Backdrop styles: one in the switch (`carry_backdrop`, `:379`), both
+   focus styles in the peek (`carry_styles`, `:165`).
+4. Pinned area: the monitor, fixed, in the switch; follows the clip in
+   the peek (`:362-367`).
+5. `Live` cut: at the sliding panel in the switch (`:513-525`), only by
+   the window's bounds in the peek (`NativeSurrogate::show_clipped`).
+
+So callers can't "change names only": their calls differ (`show_initial`
+/ `warm_up`, `hide_thumbnail` / `hand_back`, `carry_backdrop` /
+`carry_styles`).
+
+Weighed: nothing the user would see changes. 2 to 4 can become
+parameters and 5 an option, like the scale; 1 is hand-over behaviour
+step 2 makes one, so a merge now adds a hand-back flag that step 2
+removes. Over 1a below, the merge also rewrites both drawing paths (the
+part tuned live, from `8a1fc9c` on) for one type fewer, unchecked live.
+Regressions would show in: a switch both ways (fade and
+zoom too if used), two quick switches, a switch cut short, a scroll from
+rest, quick repeated scrolls, the semi-transparent window with a
+backdrop, the shades window, and a `Live` one (`GLAZEWM_ISOLATE=live`;
+square corners never pick it otherwise).
+
+Recommended instead, for the user to decide:
+
+- 1a: one core type in `wm-platform` both use for what they do alike:
+  creating the pinned or `Live` window, warm-up, the alpha take-over and
+  hand-back, the companion wait, ring and backdrop copies (the peek's
+  `carry_styles`, which the switch calls with its one style), and frame
+  sampling with the size as a parameter. `WorkspaceSurrogate` and
+  `WindowPeek` keep their drawing and the differences above. Moved code,
+  no new options.
+- 1b: one function choosing `Live` from a window's backdrop styles, for
+  both callers.
+- Then step 2 makes the hand-over and hand-back one, on the core. What is
+  left of the two types is then motion; folding them (this step's "both
+  files gone") is small and can be judged there.
 
 ### Step 2: one overlay hand-over and one hand-back
 

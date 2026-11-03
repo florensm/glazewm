@@ -149,6 +149,16 @@ $env:GLAZEWM_ISOLATE = "noring,nobackdrop"; .\target\release\glazewm.exe
 workspace switch, scroll) do now, what merging them improves, and the
 steps to get there, each checked live before the next.
 
+Step 0 (baseline recordings) isn't done yet; every later step needs it.
+
+Step 1 checked 2026-11-03, no code changed: the duplication between
+`WorkspaceSurrogate` and `WindowPeek` is real but thin (about 80 lines
+of wrappers, and the `Live` choice made twice), and they differ in five
+ways the plan didn't list, one of them the hand-back that step 2 makes
+one. Recommended: shrink step 1 to a shared core plus one `Live` choice,
+do step 2 on that core, and fold the two types after it if still wanted.
+Waiting for the user's decision; details under step 1 in the plan.
+
 ## Still open
 
 No app-specific fixes: the Vesktop (Electron) grow/shrink at the end of a
