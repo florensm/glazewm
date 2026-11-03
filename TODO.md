@@ -190,8 +190,7 @@ cargo test --workspace
 ```
 
 Off Windows, check against the Windows target instead. With
-`gcc-mingw-w64-x86-64` installed this also links the tests, and with Wine
-installed the unit tests run (tests that need a real desktop may fail):
+`gcc-mingw-w64-x86-64` installed this also links the tests:
 
 ```bash
 rustup target add x86_64-pc-windows-gnu
@@ -203,4 +202,14 @@ cargo clippy --workspace --all-targets --target x86_64-pc-windows-gnu -- -D warn
 
 ```bash
 cargo test --workspace --no-run --target x86_64-pc-windows-gnu
+```
+
+With `wine64` installed, the linked test executables (paths printed by the
+command above) run too, one test at a time: run in parallel, the `wm` ones
+stall under Wine. Overnight: `wm` 249/249, `wm-common` 17/17,
+`wm-platform` 255 passed and 8 failed, all needing a real desktop (a
+message-only window, or `Windows.UI.Composition`).
+
+```bash
+WINEDEBUG=-all wine64 <test executable> --test-threads=1
 ```
