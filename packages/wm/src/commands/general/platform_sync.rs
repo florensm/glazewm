@@ -2841,8 +2841,8 @@ impl SyncableOverlay for NativeBorderOverlay {
 /// is running, the real window is cloaked at its target rect; reading
 /// `frame()` would return the target position while the surrogate is still
 /// mid-animation, causing the overlay to jump ahead. Also hides for
-/// windows on inactive workspaces; the entry stays alive so it can be
-/// re-shown immediately when the workspace returns.
+/// minimized windows and windows on inactive workspaces; the entry stays
+/// alive so it can be re-shown immediately when the window returns.
 ///
 /// `full_z_order_resync` is `true` for one tick after any `place_at_top`
 /// surrogate goes up, which can silently displace *any* window's overlay
@@ -2958,9 +2958,15 @@ fn sync_overlays<O: SyncableOverlay>(
       continue;
     };
 
+    // Minimized windows show nothing, so their overlays are hidden rather
+    // than left to follow them off screen: an overlay is only re-placed
+    // when its window is redrawn, which one its app minimizes itself
+    // (e.g. AnyDesk's helper window) needn't be, so it stays at its last
+    // rect, seen through the gaps between windows.
     let should_hide =
       state.animation_manager.has_active_surrogate(&window.id())
         || !window.workspace().is_some_and(|ws| ws.is_displayed())
+        || window.state() == WindowState::Minimized
         || is_hidden_in_layout(window);
 
     if should_hide {
