@@ -531,6 +531,47 @@ fn commit_pending_cloaks(
   }
 }
 
+/// Moves a scrolling layout column's cloaked real window to `target_rect`
+/// when its move is retargeted mid-way, as `commit_pending_cloaks` did
+/// when it cloaked it, so it lands where it already is (see
+/// `reposition_window`'s `already_at_rect`). Moved there only as it is
+/// uncloaked, its pixels would be discarded, leaving it blank for as long
+/// as its app takes to repaint.
+fn follow_retargeted_column(window: &WindowContainer, target_rect: &Rect) {
+  use wm_platform::{
+    discard_bits_if_resized, SWP_ASYNCWINDOWPOS, SWP_FRAMECHANGED,
+    SWP_NOACTIVATE, SWP_NOSENDCHANGING, SWP_NOZORDER,
+  };
+
+  let current = window.native().frame_with_shadows().ok();
+  if current.as_ref() == Some(target_rect) {
+    return;
+  }
+
+  // Asynchronous, as nothing shows the window until it lands, and with a
+  // frame change only when resized: a pure move needs no repaint.
+  let mut flags = SWP_NOZORDER
+    | SWP_NOACTIVATE
+    | SWP_NOSENDCHANGING
+    | SWP_ASYNCWINDOWPOS
+    | discard_bits_if_resized(current.as_ref(), target_rect);
+  let is_resized = current.as_ref().is_none_or(|current| {
+    current.width() != target_rect.width()
+      || current.height() != target_rect.height()
+  });
+  if is_resized {
+    flags |= SWP_FRAMECHANGED;
+  }
+
+  if let Err(err) = window.native().set_window_pos(
+    &WindowZOrder::Normal,
+    target_rect,
+    flags,
+  ) {
+    debug!("Failed to move retargeted column {window}: {err}.");
+  }
+}
+
 /// Returns the IDs of windows whose z-order this pass changed *without*
 /// repositioning them -- see `z_order_touched`'s declaration below. A
 /// window this pass also redraws is not included: its overlay is already
@@ -1042,6 +1083,25 @@ fn redraw_containers(
       _ => WindowZOrder::Normal,
     };
 
+    // A window a scrolling layout's peek hands back is uncloaked right
+    // above its backdrop and border. Going after a focused window still
+    // lower in the stack (raised only once focus lands) takes it below
+    // them, and a frame of it under its opaque backdrop makes DWM stop
+    // drawing it until something above it changes: tens of ms. It keeps
+    // its place instead, which `Normal` does for a non-topmost window.
+    let z_order = match z_order {
+      WindowZOrder::AfterWindow(above)
+        if state
+          .animation_manager
+          .scroll_view
+          .is_handing_back(&window.id())
+          && !window.native().is_below(above) =>
+      {
+        WindowZOrder::Normal
+      }
+      z_order => z_order,
+    };
+
     // Set the z-order of the window.
     if should_bring_to_front && !windows_to_redraw.contains(window) {
       tracing::info!("Updating window z-order: {window}");
@@ -1403,6 +1463,12 @@ fn redraw_containers(
             z_order,
             target_rect: real_rect.clone(),
           });
+        } else if state
+          .animation_manager
+          .scroll_view
+          .owns_window(&window.id())
+        {
+          follow_retargeted_column(window, &real_rect);
         }
       }
       AnimationPositionResult::Apply(ref apply_rect) => {
@@ -1543,10 +1609,7 @@ fn redraw_containers(
           state
             .animation_manager
             .hide_pending_ws_cleanup_surrogate(window.id());
-          state
-            .animation_manager
-            .scroll_view
-            .release(&window.id(), z_order);
+          state.animation_manager.scroll_view.release(&window.id());
         }
 
         // Apply animated opacity for opacity-style focus animations. The
@@ -1677,10 +1740,6 @@ fn redraw_containers(
   // have been cloaked. This removes the double-blend that would occur if
   // the surrogate's configured opacity were set before cloaking.
   state.animation_manager.apply_outgoing_surrogate_opacities();
-
-  // Windows uncloaked above under their peeks are handed back from them,
-  // each that can be by now (see `hand_back_landed`).
-  crate::animation::scroll_view::hand_back_landed(state);
 
   // Force one composited frame reflecting every `reassert_transparency`
   // call made above, deterministically closing the race against DWM's
