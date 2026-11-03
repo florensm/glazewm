@@ -1,11 +1,10 @@
 # TODO: `tryout/todo-cleanup`
 
-State as of the night of 2026-11-02, for picking this up in another
-session. Live testing needs a Windows desktop session (GlazeWM is
-Windows-only); a cloud session can build, lint and unit-test (see "Checks"
-at the end). Nothing below marked fixed has been seen working on a real
-desktop yet: everything from the overnight session was reasoned from the
-code and checked by lints and unit tests only.
+State as of 2026-11-03, for picking this up in another session. Live
+testing needs a Windows desktop session (GlazeWM is Windows-only); a cloud
+session can build, lint and unit-test (see "Checks" at the end). Items
+marked fixed were seen fixed live on the user's desktop, from screen
+recordings of their repros and their own use, unless noted otherwise.
 
 ## Done on this branch
 
@@ -17,17 +16,16 @@ On top of `feat/todo-cleanup` (the macOS/`hide_method` cleanup):
   access-denied once per window).
 - `537d6437` Workspace-switch teardown spread over ticks instead of three
   `DwmFlush` calls in one tick (~16 ms stall, ~28 ms frame per switch).
-- `835a9b0e` Window shadows carried through a workspace switch (and later
-  scrolling peeks), as copies of a fitted Windows 11 shadow. Removed again
-  on 2026-11-03: the user saw stripes from them in switches and scrolls,
-  gone with `GLAZEWM_ISOLATE=noshadow`. Moving windows show no shadow
-  again; the real one returns as they land.
 - `9e0234cf`, `dc3c9c0e`, `73a8faa7` Scrolling layout peeks drawn the way the
   workspace switch draws: pinned to the monitor, with copies of the border
   ring (`overlay_copies.rs`, `window_peek.rs`, `scroll_view.rs`).
 - `b33c0ef8` Backdrop copies: windows with a backdrop get pinned copies too
   (`backdrop_source.rs`): a crop of a monitor-wide backdrop per style plus a
   stretched vignette copy, both under the window's thumbnail.
+- `835a9b0e` Shadow copies of moving windows, removed again in `e1f259b0`:
+  they drew stripes beside windows in switches and scrolls. Moving windows
+  show no shadow; the real one returns as they land. Don't bring them back
+  without a live A/B.
 
 How the pieces fit: every moving window is a DWM thumbnail in a surrogate
 window that spans the monitor and never moves (`WorkspaceSurrogate` for
@@ -38,56 +36,38 @@ copy, hidden a composited frame later, shown again under the copy at the end
 (`Handover` in `scroll_view.rs`, `WsCleanupStep` in `animation/manager.rs`).
 The real window itself is swapped with its stand-in by its alpha
 (`HiddenAlpha`): a semi-transparent window goes to alpha 0 before it is
-cloaked or uncloaked, so the swap lands in one frame. Windows whose
-backdrop can't be copied (rounded, or parallax != 1) keep the old moving
-("live") surrogate.
+cloaked or uncloaked, so the swap lands in one frame. A window drawn by a
+companion (shades) is handed back only once the companion is over it again
+(`HandoffWait`, kept by `NativeSurrogate`). Windows whose backdrop can't be
+copied (rounded, or parallax != 1) keep the old moving ("live") surrogate.
 
-## Fixed overnight (unverified live)
+## Fixed
 
-From the open issues of the last live test (user's config: border 2px,
-transparency 80%, backdrop on for focused and other windows, square
-corners, scrolling layout):
+User's config: border 2px, transparency 80%, backdrop on for focused and
+other windows, square corners, scrolling layout.
 
 1. **Vertical bars left and right of windows** (scrolling and switches).
-   - `1b59888` The cause, found live on 2026-11-03 from a screen recording
-     of a repro: AnyDesk's minimized helper window (`ad_win#3`) kept its
-     border and backdrop overlays at its last on-screen rect (~700x517,
-     mid-screen), behind the tiled windows. The gaps between windows
-     showed slices of it as they swept over it. Overlays of minimized
-     windows are now hidden. Not the shadow: same with
-     `GLAZEWM_ISOLATE=noshadow`. With the fixes below in, every other gap
-     in the recording stayed clean wallpaper throughout.
-   - `8a1fc9c` Suspected cause: pinned copies drew the window's whole
-     rect, its invisible resize borders (~7 px left/right/bottom) included,
-     where the live surrogates they replaced started past them. A
-     thumbnail of a layered (80% transparent) window can draw that border
-     dark. Pinned copies now draw only the visible frame, at the same place.
-   - `7e57367` The shadow copy is now drawn at the window's opacity, as DWM
-     draws a layered window's shadow (was full strength, ~25% too dark).
-   - `0c93737` At the start of a scroll, the real ring and backdrop were
-     only concealed on the first motion tick, after their copies had moved:
-     a frame could show them at rest beside the moved copies (thin vertical
-     lines, slivers of backdrop at a column's trailing edge). They are now
+   - `1b59888` AnyDesk's minimized helper window kept its border and
+     backdrop overlays at its last on-screen rect, behind the tiled
+     windows; the gaps between windows showed slices of it. Overlays of
+     minimized windows are now hidden.
+   - The shadow copies (see above).
+   - Earlier suspects, kept: `8a1fc9c` pinned copies draw only the visible
+     frame, not the invisible resize borders a thumbnail of a layered
+     window can draw dark; `0c93737` the real ring and backdrop are
      concealed right after the flush that shows their copies, before
      anything moves.
 2. **Fast keyboard scrolling flickered.**
-   - `5d43d2b` A focus change re-registered both columns' backdrop copies,
-     the window's own thumbnail and a new shadow window mid-move. Peeks now
-     carry both focus styles' copies from the start (a crop per style, both
-     shadows, one full-strength vignette whose copy opacity carries the
-     style's strength) and a focus change only swaps which show. Costs one
-     more shadow window per peek, made with the peek.
-   - `d6ba457`, `73f415e` A semi-transparent window was drawn twice (real
-     window plus peek, which reads as nearly solid) for a few frames at the
-     start of every move, and its shadow went missing for a frame. Peeks now
-     hand over by alpha like the workspace switch: warmed up too faint to
-     see, then thumbnail up and window alpha to 0 in one frame as it is
-     cloaked; at the end the reverse right after the uncloak.
+   - `5d43d2b` Peeks carry both focus styles' copies from the start, so a
+     focus change only swaps which show instead of re-registering them.
+   - `d6ba457`, `73f415e` Peeks hand over by alpha like the workspace
+     switch, so a semi-transparent window is no longer drawn twice (real
+     window plus peek) at the start and end of a move.
 3. `e6241cb` A switch started while the last one was still tearing down
    could show a handed-back window without its backdrop until it was taken
-   over.
+   over. Not checked live.
 4. **Columns vanished at the end of a scroll** (only backdrop and ring
-   left, 40-80 ms; found live 2026-11-03 from recordings).
+   left, 40-80 ms).
    - `599f0aa` Two causes. A move retargeted mid-way (quick key presses)
      left cloaked windows at its first target, so landing moved them as
      they were uncloaked, discarding their pixels until their apps
@@ -95,20 +75,20 @@ corners, scrolling layout):
      the landing's z-order after a still-low focused window took windows
      below their own backdrop, where one frame makes DWM stop drawing them
      until something above changes; a window being handed back keeps its
-     place. Seen fixed live: no blink in 57 s of the user's own scrolling.
-     (Supersedes `68673be`.) The workspace switch hands back the same way
-     and may still blink.
-5. **Windows themed by shades flashed uncolored as moves landed** (found
-   live 2026-11-03 with shades on FPilot).
-   - A landing peek's window going after the focused window rose above
-     its companion: hand-back windows now keep their z-order place. A
-     companion only counts as back once it is above its window too, not
-     just shown, and for a composition after that (else a frame could
-     show neither, the window uncolored: white for a light app). And
-     workspace switches now wait for companions like peeks do (up to
-     200 ms) before handing windows back. Seen fixed live in scrolls and
-     switches (no flash in 20 recorded landings). Not done: move/resize sessions still skip
-     the wait for transparent windows (`effect_opacity < 255`).
+     place. No blink in 57 s of the user's own scrolling. The workspace
+     switch hands back the same way; no blink seen there since, but not
+     checked from a recording.
+5. **Windows themed by shades flashed uncolored as moves landed.**
+   - `d5316f10` Hand-back windows keep their z-order place, so they don't
+     rise above their companion. A companion only counts as back once it
+     is above its window, not just shown. Workspace switches wait for
+     companions like peeks do (up to 200 ms) before handing windows back.
+   - `4a4fe227` A random white flash: the stand-in went in the same
+     composition the companion came back in. Windows are now handed back a
+     composition after the companion is first seen covering them. No flash
+     in 20 recorded landings.
+   - `2e795fb6` The wait moved into `NativeSurrogate` (was three copies).
+     Not checked live.
 
 Stretch items from the old list:
 
@@ -125,32 +105,25 @@ Audited with no further change needed: the rest of the per-keypress scroll
 path (only peeks for columns entering view are created mid-scroll), the
 workspace switch start (`platform_sync.rs`) and teardown (`WsCleanupStep`).
 
-## Test tomorrow
+## Not checked live yet
 
 Desktop: exit GlazeWM first (it runs from `target\release` and locks the
 file), `git pull` on `tryout/todo-cleanup`, `cargo build --release`, run.
-Check `errors.log` for the new unknown-keys warning, then:
 
-1. **Fast keyboard scroll** (hold or hammer the focus keys across several
-   columns): no flicker, no column blinking out.
-2. **Slow single scroll steps** with the active window moving: no
-   brightness flash at the start or end (window drawn twice), no lines or
-   backdrop slivers at a column's trailing edge on the first frame.
-3. **Workspace switch with backdrop on**: no vertical bars beside windows
-   mid-slide.
-4. **A column scrolling in at the right edge**: drawn cut at the monitor
+1. **Shades** after `2e795fb6`: no white flash at scroll landings and
+   workspace switches.
+2. **A column scrolling in at the right edge**: drawn cut at the monitor
    edge, no strip of border or backdrop beside it.
-5. **Two quick workspace switches** (second one before the first settles):
+3. **Two quick workspace switches** (second one before the first settles):
    the windows coming back keep their backdrop throughout.
-6. Exit the WM: `errors.log` shouldn't get thousands of "Failed to send
-   window event" lines.
-7. If bars or flicker remain, isolate them with `GLAZEWM_ISOLATE` (below),
-   one restart per flag: `noring`, `nobackdrop`, then `live`.
-   With a long `duration_ms` (e.g. 3000) for `scroll` and
-   `workspace_switch`, one screenshot catches a mid-animation frame.
+4. **End of a workspace switch**, from a recording: no window blinking out.
+5. `errors.log`: the unknown-keys warning at start, and no thousands of
+   "Failed to send window event" lines after exiting the WM.
 
-Laptop: pull `test/todo-cleanup`, then build and test natively (the cloud
-session could only cross-check it, see "Before the laptop gets it").
+If bars or flicker show, isolate them with `GLAZEWM_ISOLATE` (below), one
+restart per flag: `noring`, `nobackdrop`, then `live`. With a long
+`duration_ms` (e.g. 3000) for `scroll` and `workspace_switch`, one
+screenshot catches a mid-animation frame.
 
 ## Live-check switch: `GLAZEWM_ISOLATE`
 
@@ -175,16 +148,21 @@ $env:GLAZEWM_ISOLATE = "noring,nobackdrop"; .\target\release\glazewm.exe
 No app-specific fixes: the Vesktop (Electron) grow/shrink at the end of a
 scroll is dropped.
 
-1. Workspace switch no longer blends a backdrop between focus styles
+1. Move/resize sessions skip the companion wait for transparent windows
+   (`effect_opacity < 255`), so shades can still flash there.
+2. A long scroll can show a one-frame hole as a column enters mid-move
+   (with or without shades).
+3. A peek reused for several moves keeps its companion-wait start time
+   (only `NativeSurrogate::revive` resets `HandoffWait`, and peeks aren't
+   revived), so a later hand-back with a slow companion may stop waiting at
+   once.
+4. Workspace switch no longer blends a backdrop between focus styles
    mid-slide: the copy uses the style the window ends with (incoming) or
    starts with (outgoing). Now cheap to fix: a surrogate could carry both
    styles' crops as peeks do and crossfade their opacities.
-2. During a column resize the ring copy stretches with the window, so its
+5. During a column resize the ring copy stretches with the window, so its
    vertical edges thin out until the column lands.
-3. A peek reused for several moves keeps its companion-wait start time
-   (`HandoffWait`), so a later hand-back with a slow companion (shades) may
-   stop waiting at once.
-4. With scroll animations off, a partly visible column becoming fully
+6. With scroll animations off, a partly visible column becoming fully
    visible drops its peek before its real window is uncloaked: possibly a
    blank frame.
 
@@ -200,13 +178,18 @@ scroll is dropped.
   `windows` (it also writes the exe path unquoted).
 - Share the version-info block of the three `build.rs` files.
 
-## Before the laptop gets it
+## Laptop
 
-`test/todo-cleanup` was re-cut overnight from `origin/tryout/todo-cleanup`
-following `CLAUDE.md`'s build-targets recipe. The cloud session had no
-Windows toolchain, so `cargo build --release && cargo test --workspace`
-couldn't run there; it ran the cross-target checks below instead. Confirm
-the native build and tests on Windows before relying on it.
+The laptop runs `test/todo-cleanup`, re-cut from `tryout/todo-cleanup` after
+each change following `CLAUDE.md`'s build-targets recipe, and built and
+tested natively before it is pushed. On the laptop:
+
+```powershell
+git fetch origin; git checkout -B test/todo-cleanup origin/test/todo-cleanup
+cargo build --release; cargo build --release -p wm-watcher
+```
+
+`cargo build --release` skips `wm-watcher` (not a default member).
 
 ## Checks
 
@@ -232,9 +215,8 @@ cargo test --workspace --no-run --target x86_64-pc-windows-gnu
 
 With `wine64` installed, the linked test executables (paths printed by the
 command above) run too, one test at a time: run in parallel, the `wm` ones
-stall under Wine. Overnight: `wm` 249/249, `wm-common` 17/17,
-`wm-platform` 255 passed and 8 failed, all needing a real desktop (a
-message-only window, or `Windows.UI.Composition`).
+stall under Wine. Tests needing a real desktop (a message-only window, or
+`Windows.UI.Composition`) fail there.
 
 ```bash
 WINEDEBUG=-all wine64 <test executable> --test-threads=1
