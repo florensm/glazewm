@@ -47,7 +47,15 @@ transparency 80%, backdrop on for focused and other windows, square
 corners, scrolling layout):
 
 1. **Vertical bars left and right of windows** (scrolling and switches).
-   - `8a1fc9c` Most likely cause: pinned copies drew the window's whole
+   - `1b59888` The cause, found live on 2026-11-03 from a screen recording
+     of a repro: AnyDesk's minimized helper window (`ad_win#3`) kept its
+     border and backdrop overlays at its last on-screen rect (~700x517,
+     mid-screen), behind the tiled windows. The gaps between windows
+     showed slices of it as they swept over it. Overlays of minimized
+     windows are now hidden. Not the shadow: same with
+     `GLAZEWM_ISOLATE=noshadow`. With the fixes below in, every other gap
+     in the recording stayed clean wallpaper throughout.
+   - `8a1fc9c` Suspected cause: pinned copies drew the window's whole
      rect, its invisible resize borders (~7 px left/right/bottom) included,
      where the live surrogates they replaced started past them. A
      thumbnail of a layered (80% transparent) window can draw that border
