@@ -106,6 +106,10 @@ struct Entry {
   role: Role,
   ring: Handover,
   backdrop: Handover,
+  /// Whether the peek has been composited since it went up over its
+  /// still-shown real window, so that window can be cloaked without
+  /// waiting for another composition (see [`ScrollView::is_composited`]).
+  composited: bool,
 }
 
 impl Entry {
@@ -220,6 +224,15 @@ impl ScrollView {
       .is_some_and(|entry| matches!(entry.role, Role::Moving { .. }))
   }
 
+  /// Whether `window_id` is moving and its peek has been composited since
+  /// it went up over the still-shown real window, so that can be cloaked
+  /// at once. True once `sync_scroll_view`'s flush, or a tick, has passed.
+  pub fn is_composited(&self, window_id: &Uuid) -> bool {
+    self.entries.get(window_id).is_some_and(|entry| {
+      matches!(entry.role, Role::Moving { .. }) && entry.composited
+    })
+  }
+
   /// Whether anything still needs animation ticks.
   pub fn is_active(&self) -> bool {
     self.entries.values().any(|entry| entry.role != Role::Peek)
@@ -295,6 +308,7 @@ impl ScrollView {
   /// composited since, so those can go (see [`Handover::Covered`]).
   fn note_composited(&mut self) {
     for entry in self.entries.values_mut() {
+      entry.composited = true;
       for handover in [&mut entry.ring, &mut entry.backdrop] {
         if *handover == Handover::Covering {
           *handover = Handover::Covered;
@@ -438,6 +452,9 @@ impl ScrollView {
       // swaps which show: one registered mid-move left frames without it.
       entry.peek.carry_styles(&styles);
       entry.peek.show_style(style);
+      if covers_shown_window {
+        entry.composited = false;
+      }
       let rect = entry.motion.current_rect();
       entry.place(&rect, batch);
       return covers_shown_window;
@@ -486,6 +503,7 @@ impl ScrollView {
       role,
       ring: Handover::None,
       backdrop: Handover::None,
+      composited: false,
     };
     entry.place(&rect, batch);
     self.entries.insert(window.id(), entry);
