@@ -1,7 +1,6 @@
 use windows::Win32::Foundation::{HWND, RECT};
 
 use crate::{
-  companion::HandoffWait,
   hidden_alpha::HiddenAlpha,
   native_surrogate::{placed_rects, to_logical},
   overlay_copies::OverlayCopies,
@@ -54,8 +53,6 @@ pub struct WindowPeek {
   mode: PeekMode,
   /// The window the peek shows.
   source: HWND,
-  /// See [`WindowPeek::awaits_companion`].
-  companion_wait: HandoffWait,
   border_inset: RECT,
   /// Where the real window is, which its backdrop copy rests around.
   rest: Rect,
@@ -122,7 +119,6 @@ impl WindowPeek {
       surrogate,
       mode,
       source: hwnd,
-      companion_wait: HandoffWait::default(),
       border_inset,
       rest: rect.clone(),
       drawn: Drawn::Shown,
@@ -446,7 +442,7 @@ impl WindowPeek {
   /// Whether the peek should keep covering its uncloaked window: it shows
   /// the window's companion, which is not back on screen yet.
   pub fn awaits_companion(&mut self) -> bool {
-    self.companion_wait.awaits(self.surrogate.companion())
+    self.surrogate.awaits_companion()
   }
 
   /// The on-screen part of the peek, if it shows anything.

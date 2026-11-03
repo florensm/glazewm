@@ -540,7 +540,7 @@ fn commit_pending_cloaks(
 fn follow_retargeted_column(window: &WindowContainer, target_rect: &Rect) {
   use wm_platform::{
     discard_bits_if_resized, SWP_ASYNCWINDOWPOS, SWP_FRAMECHANGED,
-    SWP_NOACTIVATE, SWP_NOSENDCHANGING, SWP_NOZORDER,
+    SWP_NOACTIVATE, SWP_NOCOPYBITS, SWP_NOSENDCHANGING, SWP_NOZORDER,
   };
 
   let current = window.native().frame_with_shadows().ok();
@@ -550,16 +550,13 @@ fn follow_retargeted_column(window: &WindowContainer, target_rect: &Rect) {
 
   // Asynchronous, as nothing shows the window until it lands, and with a
   // frame change only when resized: a pure move needs no repaint.
+  let discard = discard_bits_if_resized(current.as_ref(), target_rect);
   let mut flags = SWP_NOZORDER
     | SWP_NOACTIVATE
     | SWP_NOSENDCHANGING
     | SWP_ASYNCWINDOWPOS
-    | discard_bits_if_resized(current.as_ref(), target_rect);
-  let is_resized = current.as_ref().is_none_or(|current| {
-    current.width() != target_rect.width()
-      || current.height() != target_rect.height()
-  });
-  if is_resized {
+    | discard;
+  if discard == SWP_NOCOPYBITS {
     flags |= SWP_FRAMECHANGED;
   }
 

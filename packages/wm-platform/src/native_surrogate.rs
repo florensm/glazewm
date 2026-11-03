@@ -14,7 +14,7 @@ use windows::{
 };
 
 use crate::{
-  companion::Companion,
+  companion::{Companion, HandoffWait},
   dwm_thumbnail::{clip_rects, Look, Thumbnail},
   platform_impl::{self, composition::SurrogateFill},
   window_class::{self, DeferredPositions},
@@ -414,6 +414,8 @@ pub struct NativeSurrogate {
   /// The source window's companion, which the thumbnail samples instead
   /// of the window when present (e.g. a recolored copy of it).
   companion: Option<Companion>,
+  /// See [`NativeSurrogate::awaits_companion`].
+  companion_wait: HandoffWait,
   /// Logical (visible-content) dimensions the main thumbnail samples.
   /// Updated by [`reregister_thumbnail`] when the registration size
   /// changes.
@@ -574,6 +576,7 @@ impl NativeSurrogate {
       hwnd: hwnd.0,
       thumbnail,
       companion,
+      companion_wait: HandoffWait::default(),
       content_size: (logical_thumb.width(), logical_thumb.height()),
       border_inset,
       is_visible: false,
@@ -675,6 +678,7 @@ impl NativeSurrogate {
       self.companion = companion;
       self.stretch = stretch;
     }
+    self.companion_wait = HandoffWait::default();
 
     let (src, dst) = content_rects(
       logical_thumb.width(),
@@ -806,9 +810,11 @@ impl NativeSurrogate {
     self.thumbnail.is_some()
   }
 
-  /// The source window's companion the thumbnail samples, if any.
-  pub(crate) fn companion(&self) -> Option<Companion> {
-    self.companion
+  /// Whether to keep covering the uncloaked source window: the thumbnail
+  /// samples its companion, which is not back over it yet (see
+  /// [`HandoffWait::awaits`]).
+  pub(crate) fn awaits_companion(&mut self) -> bool {
+    self.companion_wait.awaits(self.companion)
   }
 
   /// Restacks the surrogate directly above `window`, so it covers the
