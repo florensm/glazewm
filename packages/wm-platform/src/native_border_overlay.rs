@@ -10,14 +10,15 @@ use crate::{
   native_surrogate::is_surrogate,
   overlay_window::{self, Overlay, OverlayKind, OverlayWindow},
   platform_impl::composition::BorderVisual,
-  BorderOverlayParams, Color, Rect, StyleBlend, SurrogateBatch,
+  BorderGlow, BorderOverlayParams, Color, Rect, StyleBlend,
+  SurrogateBatch,
 };
 
-/// Computes the overlay's own rect: `window_rect` outset by `width` on
-/// every side.
-fn outer_rect(window_rect: &Rect, width: f32) -> Rect {
+/// Computes the overlay's own rect: `window_rect` outset by `outset` (see
+/// `BorderOverlayParams::outset`) on every side.
+fn outer_rect(window_rect: &Rect, outset: f32) -> Rect {
   #[allow(clippy::cast_possible_truncation)]
-  window_rect.inset(-(width.round() as i32))
+  window_rect.inset(-(outset.round() as i32))
 }
 
 /// Pixels of `outer` lying past each edge of `area` (left, top, right,
@@ -122,8 +123,8 @@ fn inner_hole_radius(params: &BorderOverlayParams) -> i32 {
 /// (surrogates) and so vanishes during window-open/close, resize, and
 /// workspace-switch transitions.
 ///
-/// Sized to `window_rect` outset by `params.width` (the configured border
-/// width) on every side, and positioned directly behind an `anchor` window
+/// Sized to `window_rect` outset by the configured border width and glow
+/// reach on every side, and positioned directly behind an `anchor` window
 /// in z-order -- same pairing mechanism [`NativeBackdropOverlay`] uses.
 ///
 /// Renders through a `Windows.UI.Composition` pipeline, which strokes a
@@ -147,14 +148,19 @@ pub struct NativeBorderOverlay {
   /// Current color/width/corner-radius/opacity.
   params: BorderOverlayParams,
 
+  /// Color and band opacities the glow was last drawn in (see
+  /// `BorderGlow::band_opacities`), which may be mid-blend unlike
+  /// `params.glow`.
+  glow: (Color, Vec<f32>),
+
   /// Last *window* rect (not outset) applied, used to skip redundant
   /// `SetWindowPos` calls when the tracked window hasn't actually moved.
   rect: Rect,
 
-  /// `(width, height, inner_radius, cut)` of the picture-frame region
-  /// last applied, or `None` when the window currently has none -- before
-  /// the first application, or for as long as it is behind a surrogate
-  /// without `bounds`.
+  /// `(width, height, outset, inner_radius, cut)` of the picture-frame
+  /// region last applied, or `None` when the window currently has none --
+  /// before the first application, or for as long as it is behind a
+  /// surrogate without `bounds`.
   ///
   /// Skips redundant `SetWindowRgn` calls when a reposition doesn't
   /// change the overlay's shape, e.g. a pure translation. Distinct from
@@ -162,7 +168,7 @@ pub struct NativeBorderOverlay {
   /// `set_rect`/`defer_rect` call including `SetWindowPos`, this one only
   /// skips the (comparatively expensive) region recompute when the
   /// position moved but the shape didn't.
-  hole_shape: Option<(i32, i32, i32, [i32; 4])>,
+  hole_shape: Option<(i32, i32, i32, i32, [i32; 4])>,
 
   /// Area the ring is cut to while it tracks its window, e.g. the monitor
   /// of a scrolling layout's column that reaches onto another one.
@@ -226,10 +232,10 @@ impl NativeBorderOverlay {
     }
 
     #[allow(clippy::cast_possible_truncation)]
-    let outset = self.params.width.round() as i32;
     let shape = (
       outer.width(),
       outer.height(),
+      self.params.outset().round() as i32,
       inner_hole_radius(&self.params),
       self.bounds_insets(outer),
     );
@@ -243,9 +249,9 @@ impl NativeBorderOverlay {
     apply_hole_region(
       self.window.hwnd(),
       (shape.0, shape.1),
-      outset,
       shape.2,
       shape.3,
+      shape.4,
     );
     self.hole_shape = Some(shape);
   }
@@ -334,7 +340,7 @@ impl NativeBorderOverlay {
       return;
     }
 
-    let outer = outer_rect(window_rect, self.params.width);
+    let outer = outer_rect(window_rect, self.params.outset());
     batch.push(self.window.hwnd().0, outer.clone());
 
     {
@@ -424,10 +430,10 @@ impl NativeBorderOverlay {
   }
 
   /// The rect its window covers: the tracked window's, outset by the
-  /// border width.
+  /// border width and glow reach.
   #[must_use]
   pub fn outer_rect(&self) -> Rect {
-    outer_rect(&self.rect, self.params.width)
+    outer_rect(&self.rect, self.params.outset())
   }
 
   /// Creates a ring parked at `window_rect` (see [`park`]), concealed
@@ -456,7 +462,7 @@ impl NativeBorderOverlay {
     anchor: HWND,
     parking: Parking,
   ) -> crate::Result<Self> {
-    let outer = outer_rect(window_rect, params.width);
+    let outer = outer_rect(window_rect, params.outset());
 
     let mut window =
       OverlayWindow::create(OverlayKind::Border, &outer, anchor)?;
@@ -471,6 +477,10 @@ impl NativeBorderOverlay {
       composition,
       window,
       params,
+      glow: (
+        params.color,
+        BorderGlow::band_opacities(&params.glow, &params.glow, 1.0),
+      ),
       rect: window_rect.clone(),
       hole_shape: None,
       bounds: None,
@@ -522,7 +532,7 @@ impl NativeBorderOverlay {
       return;
     }
 
-    let outer = outer_rect(window_rect, self.params.width);
+    let outer = outer_rect(window_rect, self.params.outset());
 
     // A hidden overlay gets its ring in place *before* the reveal, so the
     // `SetWindowPos` below -- which carries `SWP_SHOWWINDOW` and the new
@@ -548,19 +558,23 @@ impl NativeBorderOverlay {
     self.rect = window_rect.clone();
   }
 
-  /// Updates the ring's color and highlight; re-applies only when either
-  /// changes.
+  /// Updates the ring's color, highlight and rim; re-applies only when
+  /// any of them changes.
   #[allow(clippy::float_cmp)]
-  pub fn set_colors(&mut self, color: Color, highlight: f32) {
-    if self.params.color == color && self.params.highlight == highlight {
+  fn set_colors(&mut self, color: Color, highlight: f32, rim: f32) {
+    if self.params.color == color
+      && self.params.highlight == highlight
+      && self.params.rim == rim
+    {
       return;
     }
     self.params.color = color;
     self.params.highlight = highlight;
+    self.params.rim = rim;
 
-    let lit = self.params.lit_color();
+    let (lit, rim) = (self.params.lit_color(), self.params.rim_color());
     for visual in self.visuals() {
-      if let Err(e) = visual.set_colors(color, lit) {
+      if let Err(e) = visual.set_colors(color, lit, rim) {
         tracing::warn!(
           "Border overlay composition color update failed: {e}."
         );
@@ -568,33 +582,38 @@ impl NativeBorderOverlay {
     }
   }
 
-  /// Updates the border width. Since width determines the overlay's own
-  /// outset size (not just a composition property), this repositions/
+  /// Updates the border width and the glow, whose reach widens the
+  /// overlay too. Since both determine the overlay's own outset size (not
+  /// just a composition property), a change of either repositions/
   /// resizes the window immediately at the last-applied `rect`/`anchor`
   /// rather than deferring to the next `set_rect` call.
   ///
-  /// On the Composition path the width is also the ring's stroke
-  /// thickness, so the visual is updated first -- the `set_rect` below
-  /// then re-derives the stroke's geometry from both at once.
+  /// On the Composition path they also lay out the ring's stroke and the
+  /// glow's bands, so the visual is updated first -- the `set_rect` below
+  /// then re-derives the geometry from all of them at once.
   ///
   /// While sliding, the slide ring's viewport-sized window already has
-  /// room for any width, so only that ring is rebuilt, and this one is
+  /// room for any outset, so only that ring is rebuilt, and this one is
   /// laid out anew as the slide ends.
   #[allow(clippy::float_cmp)]
-  pub fn set_width(&mut self, width: f32) {
-    if self.params.width == width {
+  fn set_widths(&mut self, width: f32, glow: BorderGlow) {
+    let is_resized =
+      self.params.width != width || self.params.glow.reach != glow.reach;
+    self.params.glow = glow;
+    if !is_resized {
       return;
     }
     self.params.width = width;
 
     for visual in self.visuals() {
-      if let Err(e) = visual.set_width(width) {
+      if let Err(e) = visual.set_widths(width, glow.reach) {
         tracing::warn!(
           "Border overlay composition width update failed: {e}."
         );
       }
     }
 
+    let outset = self.params.outset();
     if let Some(slide) = &mut self.slide {
       // The ring's size and offset follow the outset, so an unmoved window
       // is re-slid rather than skipped, now or by the next slide.
@@ -602,7 +621,7 @@ impl NativeBorderOverlay {
         std::mem::replace(&mut slide.rect, Rect::from_ltrb(0, 0, 0, 0));
       if self.is_sliding {
         let panel = slide.panel.clone();
-        slide.slide(&window_rect, &panel, width);
+        slide.slide(&window_rect, &panel, outset);
       }
     }
 
@@ -635,8 +654,27 @@ impl NativeBorderOverlay {
       }
     }
 
-    let outer = outer_rect(&self.rect, self.params.width);
+    let outer = outer_rect(&self.rect, self.params.outset());
     self.refresh_hole(&outer);
+  }
+
+  /// Draws the glow's bands at `opacities` (see
+  /// `BorderGlow::band_opacities`) in the ring's color; re-applies only
+  /// when either changes.
+  fn set_glow(&mut self, opacities: Vec<f32>) {
+    let color = self.params.color;
+    if self.glow.0 == color && self.glow.1 == opacities {
+      return;
+    }
+
+    for visual in self.visuals() {
+      if let Err(e) = visual.set_glow(color, &opacities) {
+        tracing::warn!(
+          "Border overlay composition glow update failed: {e}."
+        );
+      }
+    }
+    self.glow = (color, opacities);
   }
 
   /// Updates the overlay's opacity; re-applies only when the value
@@ -702,7 +740,17 @@ impl NativeBorderOverlay {
       Some(slide) => slide,
       slot @ None => {
         match SlideRing::create(viewport, self.params, anchor) {
-          Ok(slide) => slot.insert(slide),
+          Ok(slide) => {
+            // Mid-blend, the glow is drawn from both ends of it, which
+            // `params` alone doesn't say.
+            let (color, opacities) = &self.glow;
+            if let Err(e) = slide.composition.set_glow(*color, opacities) {
+              tracing::warn!(
+                "Border overlay composition glow update failed: {e}."
+              );
+            }
+            slot.insert(slide)
+          }
           Err(err) => {
             tracing::warn!("Border overlay slide ring failed: {err}");
             return false;
@@ -712,7 +760,7 @@ impl NativeBorderOverlay {
     };
 
     let is_laid_out = slide.is_laid_out;
-    slide.slide(window_rect, panel, self.params.width);
+    slide.slide(window_rect, panel, self.params.outset());
     slide.is_laid_out = true;
 
     if !self.is_sliding && is_laid_out {
@@ -735,7 +783,7 @@ impl NativeBorderOverlay {
   /// then, which is where a window lands again unless the layout changed
   /// meanwhile, so the swap shows a ring already in place.
   fn end_slide(&mut self, window_rect: &Rect, anchor: HWND) {
-    let outer = outer_rect(window_rect, self.params.width);
+    let outer = outer_rect(window_rect, self.params.outset());
     self.apply_ring_rect(&outer);
 
     match &mut self.slide {
@@ -815,18 +863,18 @@ impl SlideRing {
     })
   }
 
-  /// Moves the ring to `window_rect` with a border `width` wide, cut at
-  /// `panel`.
+  /// Moves the ring to `window_rect` with its overlay `outset` past it
+  /// (see `BorderOverlayParams::outset`), cut at `panel`.
   ///
   /// The ring's geometry is only rebuilt when the window's *size* changes
   /// (a zooming slide); a pure translation costs a single property write.
-  fn slide(&mut self, window_rect: &Rect, panel: &Rect, width: f32) {
+  fn slide(&mut self, window_rect: &Rect, panel: &Rect, outset: f32) {
     if &self.rect == window_rect && &self.panel == panel {
       return;
     }
 
     let _scope = crate::perf::scope(crate::perf::Stage::OverlayVisual);
-    let outer = outer_rect(window_rect, width);
+    let outer = outer_rect(window_rect, outset);
     let composition = &self.composition;
 
     let insets = insets_outside(&outer, panel);
@@ -874,10 +922,15 @@ impl Overlay for NativeBorderOverlay {
 
   fn apply_blend(&mut self, blend: StyleBlend<BorderOverlayParams>) {
     let params = blend.from.lerp(&blend.to, blend.t);
-    self.set_colors(params.color, params.highlight);
-    self.set_width(params.width);
+    self.set_colors(params.color, params.highlight, params.rim);
+    self.set_widths(params.width, params.glow);
     self.set_corner_radius(params.corner_radius);
     self.set_opacity(params.opacity);
+    self.set_glow(BorderGlow::band_opacities(
+      &blend.from.glow,
+      &blend.to.glow,
+      blend.t,
+    ));
   }
 
   fn defer_rect(
@@ -899,7 +952,7 @@ impl Overlay for NativeBorderOverlay {
     clip: &Rect,
     anchor: HWND,
   ) {
-    let outer = outer_rect(window_rect, self.params.width);
+    let outer = outer_rect(window_rect, self.params.outset());
     if outer.intersection(clip).is_none() {
       self.hide();
       return;
@@ -945,6 +998,6 @@ impl Overlay for NativeBorderOverlay {
   }
 
   fn bounds(window_rect: &Rect, params: &BorderOverlayParams) -> Rect {
-    outer_rect(window_rect, params.width)
+    outer_rect(window_rect, params.outset())
   }
 }

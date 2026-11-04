@@ -127,6 +127,13 @@ file), `git pull` on `tryout/todo-cleanup`, `cargo build --release`, run.
 7. **Lit top edge** (`border.highlight: 0.6`, `cfa9a5c0`): lighter along
    the ring's own top edge at rest, while scrolling and in a workspace
    switch.
+8. **Border glow and rim** (`border.glow`, `border.rim: 0.6`): the glow
+   fades out smoothly with no visible steps or lines at the corners, stays
+   inside the gap (never over a neighbor or its border), and rides along
+   with scrolls and workspace switches without popping as they land; a
+   focus change fades it in and out. The rim is a bright hairline on the
+   ring's inner edge. Also a quick look at frame times with both on
+   while resizing a column.
 
 If bars or flicker show, isolate them with `GLAZEWM_ISOLATE` (below), one
 restart per flag: `noring`, `nobackdrop`, then `live`. With a long

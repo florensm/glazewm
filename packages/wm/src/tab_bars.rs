@@ -477,7 +477,7 @@ fn tab_bar_dispatcher(state: &WmState) -> Dispatcher {
 mod tests {
   use wm_common::{Layout, StackConfig, TabBarPosition, TabTitleOverride};
   use wm_platform::{
-    BorderOverlayParams, Color, CornerRadii, LengthValue, Rect,
+    BorderGlow, BorderOverlayParams, Color, CornerRadii, LengthValue, Rect,
   };
 
   use super::{
@@ -606,6 +606,8 @@ mod tests {
       corner_radius: 10.0,
       opacity: 1.0,
       highlight: 0.0,
+      rim: 0.0,
+      glow: BorderGlow::default(),
     };
 
     assert_eq!(

@@ -2,9 +2,9 @@ use std::str::FromStr;
 
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use wm_platform::{
-  BackdropOverlayParams, BorderOverlayParams, Color, CornerStyle, Key,
-  Keybinding, LengthUnit, LengthValue, OpacityValue, OverviewEffects,
-  RectDelta,
+  BackdropOverlayParams, BorderGlow, BorderOverlayParams, Color,
+  CornerStyle, Key, Keybinding, LengthUnit, LengthValue, OpacityValue,
+  OverviewEffects, RectDelta,
 };
 
 use crate::{app_command::InvokeCommand, Layout};
@@ -1294,6 +1294,13 @@ pub struct BorderEffectConfig {
   /// How far the border lightens toward white at its top edge, fading out
   /// down its sides, from `0.0` (off) to `1.0`.
   pub highlight: f32,
+
+  /// Brightness of a hairline along the border's inner edge, like the
+  /// edge of a pane of glass, from `0.0` (off) to `1.0`.
+  pub rim: f32,
+
+  /// A soft glow of the border's color around it.
+  pub glow: BorderGlowConfig,
 }
 
 impl Default for BorderEffectConfig {
@@ -1304,6 +1311,66 @@ impl Default for BorderEffectConfig {
       width: LengthValue::from_px(2),
       radius: None,
       highlight: 0.0,
+      rim: 0.0,
+      glow: BorderGlowConfig::default(),
+    }
+  }
+}
+
+/// A soft glow of a window border's color around it.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(default, rename_all(serialize = "camelCase"))]
+pub struct BorderGlowConfig {
+  /// Whether to enable the glow.
+  pub enabled: bool,
+
+  /// How far the glow reaches past the border, at most (see
+  /// [`to_border_glow`](Self::to_border_glow)).
+  pub reach: LengthValue,
+
+  /// Opacity of the glow against the border, from `0.0` to `1.0`, fading
+  /// out from there.
+  pub opacity: f32,
+}
+
+impl Default for BorderGlowConfig {
+  fn default() -> Self {
+    BorderGlowConfig {
+      enabled: false,
+      reach: LengthValue::from_px(10),
+      opacity: 0.5,
+    }
+  }
+}
+
+impl BorderGlowConfig {
+  /// The glow around a border `border_width` wide, reaching no further
+  /// than keeps the inner gap's far side, a neighbor and its border, clear
+  /// of it: a glow over a window takes that window's edge from apps that
+  /// look up the window under the cursor.
+  ///
+  /// The gap is taken unscaled, which DPI scaling only widens, and as
+  /// none when given in percent, which depends on the monitor.
+  #[must_use]
+  pub fn to_border_glow(
+    &self,
+    border_width: f32,
+    gaps: &GapsConfig,
+  ) -> BorderGlow {
+    if !self.enabled {
+      return BorderGlow::default();
+    }
+
+    #[allow(clippy::cast_precision_loss)]
+    let (reach, gap) = (
+      self.reach.to_px(0, None) as f32,
+      gaps.inner_gap.to_px(0, None) as f32,
+    );
+    let room = gap - 2.0 * border_width.max(0.0);
+
+    BorderGlow {
+      reach: reach.min(room).max(0.0).floor(),
+      opacity: self.opacity.clamp(0.0, 1.0),
     }
   }
 }
@@ -1323,9 +1390,9 @@ impl BorderEffectConfig {
   }
 
   /// Builds a [`BorderOverlayParams`] from this config, given the
-  /// already-resolved `color` (see [`abgr_color`]) and the tracked
-  /// window's *own* corner radius (derived from the sibling
-  /// `corner_style` effect, not stored on this type).
+  /// already-resolved `color` (see [`abgr_color`]), the tracked window's
+  /// *own* corner radius (derived from the sibling `corner_style` effect,
+  /// not stored on this type), and the `gaps` the glow is kept within.
   ///
   /// The overlay's own outer corner radius is `self.radius` when set,
   /// otherwise `window_corner_radius + width` so the ring lines up
@@ -1337,6 +1404,7 @@ impl BorderEffectConfig {
     &self,
     color: Color,
     window_corner_radius: f32,
+    gaps: &GapsConfig,
   ) -> BorderOverlayParams {
     #[allow(clippy::cast_precision_loss)]
     let width = self.width.to_px(0, None) as f32;
@@ -1353,6 +1421,8 @@ impl BorderEffectConfig {
       corner_radius,
       opacity: 1.0,
       highlight: self.highlight.clamp(0.0, 1.0),
+      rim: self.rim.clamp(0.0, 1.0),
+      glow: self.glow.to_border_glow(width, gaps),
     }
   }
 }
@@ -2359,9 +2429,12 @@ where
 
 #[cfg(test)]
 mod tests {
+  use std::str::FromStr;
+
   use super::{
-    BackdropEffectConfig, Color, EasingFunction, OverviewConfig,
-    OverviewLayout, ScrollingLayoutConfig, SpringParams,
+    BackdropEffectConfig, BorderEffectConfig, BorderGlow,
+    BorderGlowConfig, Color, EasingFunction, GapsConfig, LengthValue,
+    OverviewConfig, OverviewLayout, ScrollingLayoutConfig, SpringParams,
   };
 
   fn easing(value: &str) -> Result<EasingFunction, serde_json::Error> {
@@ -2544,6 +2617,54 @@ mod tests {
     assert_eq!(params.vignette, 0.4);
     assert_eq!(params.grain, 0.1);
     assert_eq!(params.parallax, 0.8);
+  }
+
+  fn gaps(inner_gap: &str) -> GapsConfig {
+    GapsConfig {
+      inner_gap: LengthValue::from_str(inner_gap).expect("valid length"),
+      ..GapsConfig::default()
+    }
+  }
+
+  fn glow(reach: i32) -> BorderGlowConfig {
+    BorderGlowConfig {
+      enabled: true,
+      reach: LengthValue::from_px(reach),
+      opacity: 0.5,
+    }
+  }
+
+  #[test]
+  fn border_glow_stays_within_the_inner_gap() {
+    // 20px gap, less both windows' 2px borders.
+    assert_eq!(glow(30).to_border_glow(2.0, &gaps("20px")).reach, 16.0);
+    assert_eq!(glow(8).to_border_glow(2.0, &gaps("20px")).reach, 8.0);
+    assert_eq!(glow(8).to_border_glow(2.0, &gaps("3px")).reach, 0.0);
+    assert_eq!(glow(8).to_border_glow(2.0, &gaps("5%")).reach, 0.0);
+
+    let off = BorderGlowConfig {
+      enabled: false,
+      ..glow(8)
+    };
+    assert_eq!(
+      off.to_border_glow(2.0, &gaps("20px")),
+      BorderGlow::default()
+    );
+  }
+
+  #[test]
+  fn border_params_carry_rim_and_glow() {
+    let config = BorderEffectConfig {
+      rim: 1.5,
+      glow: glow(6),
+      ..BorderEffectConfig::default()
+    };
+
+    let params =
+      config.to_overlay_params(Color::from_abgr(0), 0.0, &gaps("20px"));
+    assert_eq!(params.rim, 1.0);
+    assert_eq!(params.glow.reach, 6.0);
+    assert_eq!(params.glow.opacity, 0.5);
   }
 
   /// `overlay_tint` doubles as the "does this window get a

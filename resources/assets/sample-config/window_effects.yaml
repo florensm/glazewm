@@ -15,6 +15,13 @@ window_effects:
       # Defaults to the window's corner radius plus the width.
       # radius: "12px"
       highlight: 0.0      # 0 to 1. Lightens the top edge, like lit glass.
+      rim: 0.0            # 0 to 1. A bright hairline along the inner edge.
+      glow:
+        enabled: false
+        # At most the inner gap less both windows' borders, so it never
+        # covers a neighboring window. None with a gap given in '%'.
+        reach: "10px"
+        opacity: 0.5      # 0 to 1. At the border, fading out from there.
 
     hide_title_bar:
       enabled: false      # Can break rendering in some apps.
