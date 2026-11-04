@@ -183,6 +183,29 @@ Set it for one run, e.g. from PowerShell in the repo:
 $env:GLAZEWM_ISOLATE = "noring,nobackdrop"; .\target\release\glazewm.exe
 ```
 
+## Next: one shared core for the switch and the scroll
+
+`STAND_INS_PLAN.md`, revised 2026-11-04: what the stand-in systems
+(move/resize, workspace switch, scroll) do now, and the steps to share
+what the switch and the scroll do alike, each checked live before the
+next.
+
+1. Step 0, on the desktop: baseline recordings from a build of
+   `ab822ab` or a later docs-only commit (list in the plan). Not done
+   yet; every later step needs it.
+2. Step 1: one core type under `WorkspaceSurrogate` and `WindowPeek`,
+   and one function choosing `Live`. Moved code, no behaviour change.
+   The full merge first planned is dropped: they share about 80 lines of
+   wrappers, and differ in five ways the plan hadn't listed, one of them
+   the hand-back step 2 makes one (findings under step 1).
+3. Step 2: one overlay hand-over and hand-back on that core. Then decide
+   whether folding the two types is worth it.
+4. Step 3, decided after step 2: move/resize onto the core only if local
+   fixes for "Still open" 1 and 5 won't do.
+
+"Still open" 3 and 4 are side fixes, any time (4 is nearly free after
+step 1).
+
 ## Still open
 
 No app-specific fixes: the Vesktop (Electron) grow/shrink at the end of a
@@ -205,6 +228,17 @@ scroll is dropped.
 6. With scroll animations off, a partly visible column becoming fully
    visible drops its peek before its real window is uncloaked: possibly a
    blank frame.
+7. **Shades windows blink white in workspace switches** (laptop,
+   2026-11-04; not in scrolls). Cause unknown. First suspect, ruled out as
+   the whole cause: the switch's companion wait only covers
+   semi-transparent windows (its surrogate sits below its window,
+   `workspace_surrogate.rs:294`, while the scroll raises its peek above,
+   `scroll_view.rs:272`), but the blink stays with transparency at 99%,
+   where the wait does cover. Left to tell apart, by when and on which
+   window it shows: shades' copy not found as the switch starts (the
+   surrogate then draws the uncolored window), the 200 ms wait
+   (`HANDOFF_MAX_WAIT`) timing out on a slower machine, or the focus
+   change after the switch raising the focused window above its copy.
 
 ## Older items, not started
 

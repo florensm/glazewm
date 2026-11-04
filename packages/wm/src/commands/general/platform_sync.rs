@@ -577,6 +577,18 @@ fn commit_pending_cloaks(
 
   let _scope = perf::scope(Stage::Cloak);
 
+  // Scrolling layout columns are covered already: `sync_scroll_view`
+  // flushes after putting up their peeks, earlier in the same pass, so a
+  // pass cloaking only those skips a second wait of up to a frame before
+  // the scroll's first.
+  let flushes = !overlay_batch.is_empty()
+    || pending.iter().any(|cloak| {
+      !state
+        .animation_manager
+        .scroll_view
+        .is_composited(&cloak.window.id())
+    });
+
   overlay_batch.commit();
 
   // Flush before cloaking so DWM renders one frame with every queued
@@ -584,7 +596,9 @@ fn commit_pending_cloaks(
   // thumbnail populated while the real windows are still visible. Without
   // this, thumbnail content may not be ready for the first composition
   // after the cloak, producing a blank frame at animation start.
-  wm_platform::dwm_flush();
+  if flushes {
+    wm_platform::dwm_flush();
+  }
 
   for PendingCloak {
     window,
