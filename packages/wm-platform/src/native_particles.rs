@@ -3,9 +3,11 @@
 //! loop, where a timer takes the window down once its particles are gone.
 //! The compositor plays everything in between.
 //!
-//! The overview's bursts show from its own thread, each owned by the
-//! overview's window: an owned window always stays above its owner, which
-//! the overview raises again as the WM moves windows under it.
+//! Each is topmost, so the windows the WM raises as their moves land
+//! don't cover it. The overview's bursts show from its own thread, each
+//! owned by the overview's window: an owned window always stays above its
+//! owner, which the overview raises again as the WM moves windows under
+//! it.
 
 use std::{
   cell::RefCell, collections::HashMap, sync::OnceLock, time::Duration,
@@ -17,11 +19,10 @@ use windows::{
     Foundation::{HWND, LPARAM, LRESULT, WPARAM},
     UI::WindowsAndMessaging::{
       DefWindowProcW, DestroyWindow, KillTimer,
-      SetLayeredWindowAttributes, SetTimer, SetWindowPos, HWND_TOP,
-      HWND_TOPMOST, LWA_ALPHA, SWP_NOACTIVATE, SWP_SHOWWINDOW,
-      WINDOW_EX_STYLE, WM_DESTROY, WM_TIMER, WS_EX_LAYERED,
-      WS_EX_NOACTIVATE, WS_EX_NOREDIRECTIONBITMAP, WS_EX_TOOLWINDOW,
-      WS_EX_TOPMOST, WS_EX_TRANSPARENT,
+      SetLayeredWindowAttributes, SetTimer, SetWindowPos, HWND_TOPMOST,
+      LWA_ALPHA, SWP_NOACTIVATE, SWP_SHOWWINDOW, WM_DESTROY, WM_TIMER,
+      WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_NOREDIRECTIONBITMAP,
+      WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_EX_TRANSPARENT,
     },
   },
 };
@@ -74,8 +75,8 @@ impl ParticleBurst {
   }
 }
 
-/// Shows `burst`, scattered by `seed`, on this thread; above `owner` if
-/// given, else above every window that isn't topmost.
+/// Shows `burst`, scattered by `seed`, on this thread, above every window
+/// that isn't topmost, and above `owner` if given.
 fn show(
   burst: &ParticleBurst,
   seed: u64,
@@ -90,11 +91,6 @@ fn show(
 
   register_class();
 
-  let (topmost, insert_after) = match owner {
-    Some(_) => (WS_EX_TOPMOST, HWND_TOPMOST),
-    None => (WINDOW_EX_STYLE::default(), HWND_TOP),
-  };
-
   // Layered and transparent, so it is passed over by clicks and by
   // `WindowFromPoint`.
   let hwnd = window_class::create_owned_popup(
@@ -104,7 +100,7 @@ fn show(
       | WS_EX_TRANSPARENT
       | WS_EX_LAYERED
       | WS_EX_NOREDIRECTIONBITMAP
-      | topmost,
+      | WS_EX_TOPMOST,
     &plan.bounds,
     owner,
     "particles",
@@ -134,7 +130,7 @@ fn show(
   let shown = unsafe {
     SetWindowPos(
       hwnd,
-      insert_after,
+      HWND_TOPMOST,
       plan.bounds.x(),
       plan.bounds.y(),
       plan.bounds.width(),

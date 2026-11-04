@@ -228,7 +228,9 @@ pub fn show_particles(state: &mut WmState, config: &UserConfig) {
       let Some(workspace) = monitor.displayed_workspace() else {
         continue;
       };
-      if last.showed_other(monitor.id(), workspace.id()) {
+      if last.showed_other(monitor.id(), workspace.id())
+        && !shows_fullscreen(&workspace.as_container())
+      {
         let windows = on_screen_windows(&workspace.as_container());
         if let Some(burst) = thrower.switch_burst(&monitor, &windows) {
           thrown.extend(windows.iter().map(CommonGetters::id));
@@ -417,6 +419,21 @@ fn center(rect: &Rect) -> (f32, f32) {
   )
 }
 
+/// Whether `window` is fullscreen rather than maximized: a game may be
+/// running exclusive fullscreen there, which a topmost window over it can
+/// knock out of fullscreen.
+fn is_fullscreen(window: &WindowContainer) -> bool {
+  matches!(window.state(), WindowState::Fullscreen(config) if !config.maximized)
+}
+
+/// Whether a window in `container` is fullscreen (see `is_fullscreen`).
+fn shows_fullscreen(container: &Container) -> bool {
+  container
+    .descendants()
+    .filter_map(|descendant| descendant.as_window_container().ok())
+    .any(|window| is_fullscreen(&window))
+}
+
 /// The windows in `container` on screen.
 fn on_screen_windows(container: &Container) -> Vec<WindowContainer> {
   container
@@ -426,12 +443,14 @@ fn on_screen_windows(container: &Container) -> Vec<WindowContainer> {
     .collect()
 }
 
-/// `window`'s visible frame, while it is on screen or coming on.
+/// `window`'s visible frame, while it is on screen or coming on, and not
+/// fullscreen (see `is_fullscreen`).
 fn on_screen_rect(window: &WindowContainer) -> Option<Rect> {
   let is_shown = matches!(
     window.display_state(),
     DisplayState::Shown | DisplayState::Showing
   ) && window.state() != WindowState::Minimized
+    && !is_fullscreen(window)
     && !is_hidden_in_layout(window)
     && window
       .workspace()
