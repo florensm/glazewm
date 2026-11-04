@@ -143,21 +143,28 @@ Set it for one run, e.g. from PowerShell in the repo:
 $env:GLAZEWM_ISOLATE = "noring,nobackdrop"; .\target\release\glazewm.exe
 ```
 
-## Next: one way to animate windows
+## Next: one shared core for the switch and the scroll
 
-`STAND_INS_PLAN.md`: what the three stand-in systems (move/resize,
-workspace switch, scroll) do now, what merging them improves, and the
-steps to get there, each checked live before the next.
+`STAND_INS_PLAN.md`, revised 2026-11-04: what the stand-in systems
+(move/resize, workspace switch, scroll) do now, and the steps to share
+what the switch and the scroll do alike, each checked live before the
+next.
 
-Step 0 (baseline recordings) isn't done yet; every later step needs it.
+1. Step 0, on the desktop: baseline recordings from a build of
+   `ab822ab` or a later docs-only commit (list in the plan). Not done
+   yet; every later step needs it.
+2. Step 1: one core type under `WorkspaceSurrogate` and `WindowPeek`,
+   and one function choosing `Live`. Moved code, no behaviour change.
+   The full merge first planned is dropped: they share about 80 lines of
+   wrappers, and differ in five ways the plan hadn't listed, one of them
+   the hand-back step 2 makes one (findings under step 1).
+3. Step 2: one overlay hand-over and hand-back on that core. Then decide
+   whether folding the two types is worth it.
+4. Step 3, decided after step 2: move/resize onto the core only if local
+   fixes for "Still open" 1 and 5 won't do.
 
-Step 1 checked 2026-11-03, no code changed: the duplication between
-`WorkspaceSurrogate` and `WindowPeek` is real but thin (about 80 lines
-of wrappers, and the `Live` choice made twice), and they differ in five
-ways the plan didn't list, one of them the hand-back that step 2 makes
-one. Recommended: shrink step 1 to a shared core plus one `Live` choice,
-do step 2 on that core, and fold the two types after it if still wanted.
-Waiting for the user's decision; details under step 1 in the plan.
+"Still open" 3 and 4 are side fixes, any time (4 is nearly free after
+step 1).
 
 ## Still open
 

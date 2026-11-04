@@ -1,18 +1,23 @@
 # Plan: one way to animate windows
 
 For a later session on `tryout/todo-cleanup`. Read `CLAUDE.md` and
-`TODO.md` first. This plan is several weeks of careful work, split into
-steps that each end in a working, live-checked WM. Do one step per
-session unless it is clearly done early.
+`TODO.md` first. Steps each end in a working, live-checked WM. Do one
+step per session unless it is clearly done early.
+
+Revised 2026-11-04, after step 1's check: share what the stand-ins do
+alike (one core, one hand-over), not force what they draw differently
+into one type. Move/resize join only if local fixes for their bugs don't
+hold (step 3).
 
 ## Goal
 
-Every animation that moves a real window (move, resize, open, close,
-minimize, workspace switch, scroll) draws it the same way: one stand-in
-type, one hand-over lifecycle, one overlay hand-over, one flush barrier.
-Each animation only says where the window is on each frame and what it is
-cut to. Bugs then get fixed once, and move/resize get the newer, cleaner
-drawing the switch and scroll already have.
+What the switch and the scroll do alike is one piece of code: one core
+stand-in (window, warm-up, alpha take-over and hand-back, companion wait,
+ring and backdrop copies, `Live` choice), one overlay hand-over, one
+hand-back. Bugs there then get fixed once, for both, and can't be fixed
+in one and missed in the other. What they draw differently (the switch's
+zoom, fade and sliding panel, the scroll's own-scale columns) stays with
+each animation.
 
 ## Words used here
 
@@ -91,41 +96,40 @@ Each problem below exists because the systems are separate:
 5. **Two fallbacks per system**: pinned and `Live` in both the switch and
    the scroll, chosen separately.
 
+The revised steps cover 1, 3 and 5 for the switch and the scroll; 2 is
+step 3's question. 4 is no longer a step: `c12b2737` removed the doubled
+pair; revisit if another shows in `perf.log`.
+
 ## Target design
 
-One stand-in type in `wm-platform` (not `StandIn`: `wm`'s
+One core stand-in type in `wm-platform` (not named `StandIn`: `wm`'s
 `animation/stand_in.rs` has one, imported next to `WindowPeek` in
-`scroll_view.rs`), replacing `WorkspaceSurrogate`, `WindowPeek` and the surrogate half of
-`ResizeSession`:
+`scroll_view.rs`), which `WorkspaceSurrogate` and `WindowPeek` are built
+on:
 
 - Pinned to an area (monitor, work area or viewport); `Live` only as the
   fallback for backdrops that can't be copied, chosen in one place.
 - Draws the window's visible frame (past its invisible resize borders)
   plus ring and backdrop copies (`OverlayCopies`), carrying both focus
   styles up front (`carry_styles` / `show_style`).
-- One lifecycle with the same steps for every animation:
-  `warm_up` → `take_over` (at the cloak) → `place(rect, clip)` each frame
-  → `prepare_hand_back` → `hand_back` (once the companion is back) →
-  drop or keep warm. Open skips the take-over (no shown window), close and
-  minimize skip the hand-back.
-- Optional size-change support, from `ResizeSession`: registration that
-  grows only once the real window has, gap fill or stretch, the mid-motion
-  real resize, and the bounded wait for it at the end.
-- Tracks whether it has been composited since it went up, so one shared
-  barrier in the WM flushes once per pass, only if some stand-in needs it.
+- One lifecycle: `warm_up` → `take_over` (at the cloak) → placed each
+  frame → `prepare_hand_back` → `hand_back` (once the companion is back)
+  → drop.
 
 One overlay hand-over in `wm` (from `scroll_view.rs`'s `Handover`): covered
 by the copy, real one hidden a composited frame later, shown again under
 the copy where the window lands. The switch's ring parking and the
 overlay steps of `WsCleanupStep` become this.
 
-Each animation keeps only its motion: the switch's shared clock and
-sliding panel, the scroll strip and its retargeting, move/resize springs,
-and open/close/minimize zoom and slides.
+`WorkspaceSurrogate` and `WindowPeek` keep only their drawing: the
+switch's zoom, fade and sliding panel, the peek's own-scale columns and
+the clip it follows. Whether to fold them into one type is decided after
+step 2, when that is all that's left in them.
 
 Out of scope: iris switch and overview (different in kind), shadow copies
 (removed on purpose; `TODO.md` says not to bring them back without a live
-A/B), app-specific fixes.
+A/B), app-specific fixes. Move/resize, open, close and minimize
+(`ResizeSession`) only if step 3 finds local fixes won't do.
 
 ## Steps
 
@@ -159,29 +163,41 @@ recommendation (skip it, shrink it, or do the smaller change instead).
 
 ### Step 0: baseline
 
-Before changing anything, record on the desktop, with a long
-`duration_ms` (e.g. 3000) so one screenshot catches a mid-animation frame:
-a scroll from rest, quick repeated scrolls, a workspace switch both ways,
-a move, a resize that grows and one that shrinks, open, close, minimize.
+Not done yet. Before changing anything, record on the desktop from a
+build of `ab822ab` or later docs-only commits, with a long `duration_ms`
+(e.g. 3000) so one screenshot catches a mid-animation frame:
+
+- Scroll: from rest, quick repeated presses, a column resized while
+  scrolling.
+- Workspace switch: both ways, two in quick succession, one cut short
+  by the next.
+- Move, a resize that grows and one that shrinks, open, close, minimize.
+
 Include a semi-transparent window with a backdrop, and one themed by
-shades. Also run once with `GLAZEWM_PERF=1` and keep `perf.log`. These
-are the A/B references for every later step.
+shades. Also run once with `GLAZEWM_ISOLATE=live` (the `Live` fallback,
+which square corners never pick otherwise), and once with
+`GLAZEWM_PERF=1`, keeping `perf.log`. These are the A/B references for
+every later step.
 
-### Step 1: one stand-in for the switch and the scroll
+### Step 1: one core for the switch and the scroll
 
-Merge `WorkspaceSurrogate` and `WindowPeek` into the new type. They
-already share almost everything; the differences to keep as options are:
-the switch's whole-workspace zoom and fade (`update_zoom`, `update_fade`,
-`opacity_frac`), its panel and unclipped rect for the moving fallback's
-border, and the peek's own-scale drawing for columns resized as they
-move. Callers (`platform_sync.rs` switch start, `manager.rs` switch
-driver and teardown, `scroll_view.rs`) change names only; behaviour
-stays the same.
+- 1a: one core type in `wm-platform` both use for what they do alike:
+  creating the pinned or `Live` window, warm-up, the alpha take-over and
+  hand-back, the companion wait, ring and backdrop copies (the peek's
+  `carry_styles`, which the switch calls with its one style), and frame
+  sampling with the size as a parameter. `WorkspaceSurrogate` and
+  `WindowPeek` keep their drawing and the differences listed below.
+  Moved code, no new options; behaviour stays the same.
+- 1b: one function choosing `Live` from a window's backdrop styles, for
+  both callers (`platform_sync.rs` switch start, `scroll_view.rs`).
 
 Done when: both animations look identical to step 0's recordings, and
-`workspace_surrogate.rs` and `window_peek.rs` are gone.
+the duplicates below exist once.
 
 #### Step 1 findings (2026-11-03): shrink it, no code changed
+
+Decided 2026-11-04: shrunk to 1a and 1b above. The full merge first
+planned here is dropped for now.
 
 Checked against `3039190` (no code commits since this plan). Step 0's
 recordings don't exist yet, so no step has an A/B reference.
@@ -207,8 +223,10 @@ Confirmed:
   other repeated fixes (`d5316f10`, `d6ba457`, `0c93737`, `599f0aa`,
   `e6241cb`) were in the callers' hand-over and hand-back: step 2.
 
-Differences beyond the three listed above, which a merge that keeps
-behaviour identical must carry as options:
+Differences beyond the three the merge would have kept as options (the
+switch's zoom and fade, its panel and unclipped rect, the peek's
+own-scale drawing), which a merge that keeps behaviour identical must
+carry too:
 
 1. Hand-back: the switch hides the thumbnail but keeps the backdrop copy
    (`hide_thumbnail`, `workspace_surrogate.rs:602`), from below its
@@ -232,7 +250,7 @@ So callers can't "change names only": their calls differ (`show_initial`
 Weighed: nothing the user would see changes. 2 to 4 can become
 parameters and 5 an option, like the scale; 1 is hand-over behaviour
 step 2 makes one, so a merge now adds a hand-back flag that step 2
-removes. Over 1a below, the merge also rewrites both drawing paths (the
+removes. Over 1a, the merge also rewrites both drawing paths (the
 part tuned live, from `8a1fc9c` on) for one type fewer, unchecked live.
 Regressions would show in: a switch both ways (fade and
 zoom too if used), two quick switches, a switch cut short, a scroll from
@@ -240,74 +258,54 @@ rest, quick repeated scrolls, the semi-transparent window with a
 backdrop, the shades window, and a `Live` one (`GLAZEWM_ISOLATE=live`;
 square corners never pick it otherwise).
 
-Recommended instead, for the user to decide:
-
-- 1a: one core type in `wm-platform` both use for what they do alike:
-  creating the pinned or `Live` window, warm-up, the alpha take-over and
-  hand-back, the companion wait, ring and backdrop copies (the peek's
-  `carry_styles`, which the switch calls with its one style), and frame
-  sampling with the size as a parameter. `WorkspaceSurrogate` and
-  `WindowPeek` keep their drawing and the differences above. Moved code,
-  no new options.
-- 1b: one function choosing `Live` from a window's backdrop styles, for
-  both callers.
-- Then step 2 makes the hand-over and hand-back one, on the core. What is
-  left of the two types is then motion; folding them (this step's "both
-  files gone") is small and can be judged there.
-
 ### Step 2: one overlay hand-over and one hand-back
 
 Move scroll's `Handover` and its role transitions into a module both
-the switch and the scroll use. The switch's `park_switch_borders`, its
-first-tick backdrop hide and the overlay steps of `WsCleanupStep`
-(`ShowOverlays`, `Reanchor`) become that hand-over; its hand-back uses
-the same `prepare_hand_back` / companion wait / `hand_back` sequence as
-the scroll.
+the switch and the scroll use, on step 1's core. The switch's
+`park_switch_borders`, its first-tick backdrop hide and the overlay steps
+of `WsCleanupStep` (`ShowOverlays`, `Reanchor`) become that hand-over;
+its hand-back uses the same `prepare_hand_back` / companion wait /
+`hand_back` sequence as the scroll. Behaviour changes a little here: it
+removes difference 1 above (the switch's stand-in below its window at
+hand-back, the peek's above), so which way wins is part of the check.
 
 Done when: switch and scroll pass step 0's checks, including two quick
 switches in a row and a switch cut short, and shades shows no flash.
+Then decide, from what is left in `WorkspaceSurrogate` and `WindowPeek`
+(motion and drawing only), whether folding them into one type is worth
+it.
 
-### Step 3: size changes on the stand-in
+### Step 3: move and resize, only if local fixes won't do
 
-Port `ResizeSession`'s size handling onto the stand-in as an option:
-grow-only registration, gap fill and edge colour, stretch, the mid-motion
-real resize, the bounded `pre_commit` wait, and retargeting with a
-direction change. Unit-test the rect logic (registration dims, fill
-extents), as `native_surrogate.rs` and `overlay_copies.rs` test theirs;
-`resize_session.rs` has no tests to port. Nothing uses it yet.
+Decide after step 2. Their open bugs: shades can flash on transparent
+windows (`TODO.md` "Still open" 1: the companion wait is skipped when
+`effect_opacity < 255`), and the ring copy thins during a column resize
+("Still open" 5). First check, as in "Before each step", whether a local
+fix does it, e.g. giving `ResizeSession` the `HiddenAlpha` swap the core
+has, so its transparent-window special cases in `manager.rs` can go.
 
-Done when: it is covered by unit tests, and the scroll's column resize
-can optionally use it (fixes the ring copy thinning, `TODO.md` "Still
-open" 5) without changing anything else.
+Only if not: move move/resize onto the core. What that needs, from the
+first version of this plan: `ResizeSession`'s size handling as an option
+(grow-only registration, gap fill and edge colour, stretch, the
+mid-motion real resize, the bounded `pre_commit` wait, retargeting with a
+direction change), unit-tested as `native_surrogate.rs` and
+`overlay_copies.rs` test theirs; move and resize switched one at a time,
+the old path kept behind a temporary switch until each is checked live;
+warm reuse (8 s, one per window) kept; then open, close and minimize;
+then the old paths deleted. Check: moves and resizes (grow, shrink,
+mixed, retargeted) and all open/close/minimize styles match step 0,
+transparent and shades windows included, and `perf.log` shows no slower
+frames.
 
-### Step 4: move and resize on the stand-in
+### Side fixes, any time
 
-Switch window move and resize to the stand-in, one at a time, keeping the
-`ResizeSession` path until each is checked live (a temporary internal
-switch is fine; remove it in step 6). They get the alpha swap, the
-copies and the companion wait, so the transparent-window special cases
-in `manager.rs` (the zeroed stand-in, the skipped companion wait) go.
-Keep warm reuse (8 s, one per window), now for every stand-in.
+Independent of the steps, each small:
 
-Done when: moves and resizes (grow, shrink, mixed, retargeted) match
-step 0 or look better, transparent and shades windows included, and
-`perf.log` shows no slower frames.
-
-### Step 5: open, close and minimize on the stand-in
-
-Same for open (no take-over), close and minimize (no hand-back), with
-their zoom and slide styles.
-
-Done when: all three styles of each look as in step 0.
-
-### Step 6: remove the old paths
-
-Delete `ResizeSession`'s surrogate handling and the temporary switches,
-collapse the flushes into the one shared barrier, and update `TODO.md`,
-this plan and the "How the pieces fit" section in `TODO.md`.
-
-Done when: one stand-in type, one hand-over, one flush site per pass;
-every check from step 0 passes live.
+- `TODO.md` "Still open" 4: the switch's backdrop blends between focus
+  styles again. Nearly free after step 1: the switch carries both styles
+  as the peek does and crossfades them.
+- `TODO.md` "Still open" 3: a peek reused for several moves keeps its
+  companion-wait start time, e.g. reset it when a new move starts.
 
 ## Risks
 
