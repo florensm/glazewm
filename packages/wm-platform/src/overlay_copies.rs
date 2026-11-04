@@ -164,13 +164,9 @@ impl BackdropCopy {
     let index = |params: &BackdropOverlayParams| {
       self.crops.iter().position(|crop| &crop.params == params)
     };
-    let (from, current, t) = match blend {
-      Some(blend) if blend.t < 1.0 => {
-        (index(&blend.from), index(&blend.to), blend.t.max(0.0))
-      }
-      Some(blend) => (index(&blend.to), index(&blend.to), 1.0),
-      None => (None, None, 1.0),
-    };
+    let (from, current, t) = blend.map_or((None, None, 1.0), |blend| {
+      crop_fade(index(&blend.from), index(&blend.to), blend.t)
+    });
     if (from, current, t) == (self.from, self.current, self.t) {
       return;
     }
@@ -228,6 +224,24 @@ impl BackdropCopy {
         .thumbnail
         .set_opacity(scale_alpha(opacity, strength));
     }
+  }
+}
+
+/// The crops a fade from crop `from` to crop `to`, `t` of the way, draws,
+/// as `(from, current, t)` for [`crop_weights`].
+///
+/// Settled on `to` once done, or when both are one crop: styles with the
+/// same backdrop share a crop, which fading against itself would draw at
+/// `t`, leaving the window without its backdrop at the fade's start.
+fn crop_fade(
+  from: Option<usize>,
+  to: Option<usize>,
+  t: f32,
+) -> (Option<usize>, Option<usize>, f32) {
+  if t < 1.0 && from != to {
+    (from, to, t.max(0.0))
+  } else {
+    (to, to, 1.0)
   }
 }
 
@@ -647,8 +661,8 @@ fn shifted(rect: &Rect, origin: (i32, i32)) -> RECT {
 #[cfg(test)]
 mod tests {
   use super::{
-    copy_rects, crop_weights, map_rect, same_set, scale_alpha, shifted,
-    vignette_strength, BackdropOverlayParams, Rect, RECT,
+    copy_rects, crop_fade, crop_weights, map_rect, same_set, scale_alpha,
+    shifted, vignette_strength, BackdropOverlayParams, Rect, RECT,
   };
   use crate::Color;
 
@@ -796,6 +810,22 @@ mod tests {
     assert_eq!(crop_weights(2, Some(0), Some(1), 0.25), vec![1.0, 0.25]);
     // Fading down to the lower one fades the upper one out over it.
     assert_eq!(crop_weights(2, Some(1), Some(0), 0.25), vec![1.0, 0.75]);
+  }
+
+  #[test]
+  fn fade_within_one_crop_draws_it_whole() {
+    assert_eq!(crop_fade(Some(0), Some(0), 0.0), (Some(0), Some(0), 1.0));
+    assert_eq!(crop_fade(None, None, 0.5), (None, None, 1.0));
+  }
+
+  #[test]
+  fn fade_between_crops_runs_until_done() {
+    assert_eq!(
+      crop_fade(Some(0), Some(1), 0.25),
+      (Some(0), Some(1), 0.25)
+    );
+    assert_eq!(crop_fade(Some(0), None, -0.1), (Some(0), None, 0.0));
+    assert_eq!(crop_fade(Some(0), Some(1), 1.2), (Some(1), Some(1), 1.0));
   }
 
   #[test]
