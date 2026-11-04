@@ -319,12 +319,19 @@ pub(crate) fn focus_blend<O: SyncableOverlay>(
   config: &UserConfig,
 ) -> Option<StyleBlend<O::Params>> {
   match state.animation_manager.focus_mix(&window_id, set, config) {
-    Some(mix) => StyleBlend::between(
-      O::params_for(mix.from, config),
-      O::params_for(mix.to, config),
-      mix.t,
-      O::transparent,
-    ),
+    Some(mix) => {
+      let from = O::params_for(mix.from, config);
+      if from.is_none() && O::shows_at_once(mix.from, mix.to, config) {
+        return O::params_for(mix.to, config).map(StyleBlend::settled);
+      }
+
+      StyleBlend::between(
+        from,
+        O::params_for(mix.to, config),
+        mix.t,
+        O::transparent,
+      )
+    }
     None => O::params_for(set, config).map(StyleBlend::settled),
   }
 }
@@ -2732,6 +2739,17 @@ pub(crate) fn overlay_entry<'a, O: SyncableOverlay>(
 }
 
 /// Resolves the effects a surrogate needs to stand in for a window:
+/// Alpha of a window taking `set`, from its transparency.
+fn window_alpha(set: EffectSet, config: &UserConfig) -> u8 {
+  let transparency =
+    &config.value.window_effects.for_set(set).transparency;
+  if transparency.enabled {
+    transparency.opacity.to_alpha()
+  } else {
+    u8::MAX
+  }
+}
+
 /// `(effect_opacity, corner_style, overlay_params)`.
 ///
 /// Snapshotted onto the `ResizeSession` rather than re-read live, because
@@ -2743,19 +2761,13 @@ pub(crate) fn surrogate_effects_for(
   set: EffectSet,
   config: &UserConfig,
 ) -> (u8, CornerStyle, OverlayParams) {
-  let effect_cfg = config.value.window_effects.for_set(set);
-
-  let effect_opacity = if effect_cfg.transparency.enabled {
-    effect_cfg.transparency.opacity.to_alpha()
-  } else {
-    u8::MAX
-  };
-
-  let corner_style = effect_cfg.resolved_corner_style();
-
   (
-    effect_opacity,
-    corner_style,
+    window_alpha(set, config),
+    config
+      .value
+      .window_effects
+      .for_set(set)
+      .resolved_corner_style(),
     overlay_params_for(set, config),
   )
 }
@@ -2897,6 +2909,16 @@ pub(crate) trait SyncableOverlay: Overlay {
   /// the effect is off on one side of it.
   fn transparent(params: Self::Params) -> Self::Params;
 
+  /// Whether this effect, off in `from`'s style, shows in full at once
+  /// rather than fading in as a window takes `to`'s.
+  fn shows_at_once(
+    _from: EffectSet,
+    _to: EffectSet,
+    _config: &UserConfig,
+  ) -> bool {
+    false
+  }
+
   /// The rect this overlay tracks for `window` shown at `frame`.
   fn overlay_rect(_window: &WindowContainer, frame: &Rect) -> Rect {
     frame.clone()
@@ -2927,6 +2949,17 @@ impl SyncableOverlay for NativeBackdropOverlay {
       opacity: 0.0,
       ..params
     }
+  }
+
+  /// A window's transparency switches at once (see `start_focus_fades`),
+  /// so one turning more see-through would show what is behind it
+  /// unblurred while its backdrop faded in.
+  fn shows_at_once(
+    from: EffectSet,
+    to: EffectSet,
+    config: &UserConfig,
+  ) -> bool {
+    window_alpha(to, config) < window_alpha(from, config)
   }
 }
 
@@ -3361,4 +3394,29 @@ pub(crate) fn resync_settling_overlays(state: &mut WmState) {
   }
 
   resync_overlays_and_tab_bars(state);
+}
+
+#[cfg(test)]
+mod tests {
+  use wm_common::{EffectSet, ParsedConfig};
+  use wm_platform::{NativeBackdropOverlay, OpacityValue};
+
+  use super::SyncableOverlay;
+  use crate::user_config::UserConfig;
+
+  #[test]
+  fn backdrops_show_at_once_behind_windows_turning_see_through() {
+    let mut parsed = ParsedConfig::default();
+    let focused = &mut parsed.window_effects.focused_window.transparency;
+    focused.enabled = true;
+    focused.opacity = OpacityValue::from_alpha(204);
+    parsed.window_effects.other_windows.transparency.enabled = false;
+    let config = UserConfig::from_parsed(parsed);
+
+    let shows_at_once =
+      |from, to| NativeBackdropOverlay::shows_at_once(from, to, &config);
+    assert!(shows_at_once(EffectSet::Other, EffectSet::Focused));
+    assert!(!shows_at_once(EffectSet::Focused, EffectSet::Other));
+    assert!(!shows_at_once(EffectSet::Other, EffectSet::Other));
+  }
 }
