@@ -252,13 +252,15 @@ use wm_platform::{
 
 use crate::{
   animation::{
+    focus_fade::{FocusFades, FocusMix},
     stand_in::{moved_along, StandIn},
     state::WindowAnimationState,
   },
   commands::general::{
-    apply_focus_effects, border_hidden_for_fullscreen, overlay_params_for,
-    overlay_z_anchor, platform_sync, resync_settling_overlays,
-    surrogate_effects_for, track_overlays, upsert_live_backdrop_overlay,
+    advance_focus_fades, apply_focus_effects,
+    border_hidden_for_fullscreen, overlay_params_for, overlay_z_anchor,
+    platform_sync, resync_settling_overlays, surrogate_effects_for,
+    track_overlays, upsert_live_backdrop_overlay,
     upsert_pinned_border_overlay, SyncableOverlay,
   },
   traits::{CommonGetters, WindowGetters},
@@ -615,6 +617,10 @@ pub struct AnimationManager {
   away_windows: HashMap<Uuid, AwayWindow>,
   /// Active iris-wipe workspace transition, or `None` when idle.
   iris_switch: Option<IrisSwitchState>,
+  /// Windows whose effects fade between focus states. Drawn by
+  /// `advance_focus_fades` while at rest, and by the scroll view while it
+  /// draws them.
+  focus_fades: FocusFades,
 }
 
 impl Drop for AnimationManager {
@@ -671,6 +677,7 @@ impl AnimationManager {
       sync_demoted_until: HashMap::new(),
       away_windows: HashMap::new(),
       iris_switch: None,
+      focus_fades: FocusFades::default(),
     }
   }
 
@@ -908,7 +915,63 @@ impl AnimationManager {
     if !self.overlay_z_settle.is_empty() {
       return true;
     }
-    false
+    !self.focus_fades.is_empty()
+  }
+
+  /// Fades `window_id`'s effects from `from`'s style to `to`'s (see
+  /// [`FocusFades::start`]).
+  pub fn start_focus_fade(
+    &mut self,
+    window_id: Uuid,
+    from: EffectSet,
+    to: EffectSet,
+    config: &UserConfig,
+  ) {
+    self.focus_fades.start(
+      window_id,
+      from,
+      to,
+      Instant::now(),
+      &config.value.animations.focus_change,
+    );
+
+    if !self.focus_fades.is_empty() {
+      self.ensure_timer_running();
+    }
+  }
+
+  /// Where `window_id` is in a fade toward `set`'s style, if it is fading
+  /// toward it.
+  pub fn focus_mix(
+    &self,
+    window_id: &Uuid,
+    set: EffectSet,
+    config: &UserConfig,
+  ) -> Option<FocusMix> {
+    self
+      .focus_fades
+      .mix(
+        window_id,
+        Instant::now(),
+        &config.value.animations.focus_change,
+      )
+      .filter(|mix| mix.to == set)
+  }
+
+  /// Ends `window_id`'s focus fade, leaving it to whatever draws it now.
+  pub fn cancel_focus_fade(&mut self, window_id: &Uuid) {
+    self.focus_fades.cancel(window_id);
+  }
+
+  /// Windows with a focus fade, dropping the fades done, whose windows
+  /// are still among those returned so they can be settled.
+  pub fn focus_fade_windows(&mut self, config: &UserConfig) -> Vec<Uuid> {
+    let ids = self.focus_fades.window_ids().collect();
+    self.focus_fades.take_finished(
+      Instant::now(),
+      &config.value.animations.focus_change,
+    );
+    ids
   }
 
   /// Keeps re-asserting the overlays of `window_ids` behind their windows
@@ -1907,6 +1970,7 @@ impl AnimationManager {
       }
     }
 
+    advance_focus_fades(state, config);
     resync_settling_overlays(state);
 
     // Held in an `Option` so the nested `platform_sync` below can close it

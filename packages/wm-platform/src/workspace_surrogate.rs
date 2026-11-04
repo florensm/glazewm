@@ -6,7 +6,7 @@ use crate::{
   overlay_copies::{map_rect, scale_alpha, OverlayCopies},
   resize_session::compute_border_inset,
   BackdropOverlayParams, CornerStyle, NativeSurrogate, NativeWindow, Rect,
-  SurrogateBatch,
+  StyleBlend, SurrogateBatch,
 };
 
 /// Thumbnail opacity a surrogate is warmed up at under its still-shown
@@ -396,7 +396,9 @@ impl WorkspaceSurrogate {
       return false;
     }
 
-    self.copies.show_backdrop_style(Some(params));
+    self
+      .copies
+      .show_backdrop_blend(Some(&StyleBlend::settled(params)));
     if is_new {
       self.copies.show_backdrop(true);
     }

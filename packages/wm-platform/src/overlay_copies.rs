@@ -16,9 +16,9 @@ use windows::Win32::Foundation::{HWND, RECT};
 use crate::{
   backdrop_source::{BackdropSource, VignetteSource},
   dwm_thumbnail::Thumbnail,
-  isolation,
+  isolation, lerp_f32,
   native_surrogate::placed_rects,
-  BackdropOverlayParams, Rect,
+  BackdropOverlayParams, Rect, StyleBlend,
 };
 
 /// Where a surrogate draws its window: at `frame`, cut at `clip`, into a
@@ -89,11 +89,12 @@ impl CropCopy {
 }
 
 /// A window's backdrop in each style it may be drawn in, of which one is
-/// shown at a time: per style, the part of the monitor's behind the
-/// window, and over them all one copy of the window's vignette.
+/// shown at a time, or two crossfading: per style, the part of the
+/// monitor's behind the window, and over them all one copy of the window's
+/// vignette.
 ///
 /// All are registered up front, so a change of style, e.g. as focus moves
-/// mid-scroll, swaps which one shows rather than registering a new one,
+/// mid-scroll, crossfades between them rather than registering a new one,
 /// whose window would have yet to be composited. The vignette is drawn at
 /// full strength and its copy's opacity scaled to the strength of the
 /// style shown, which is what the vignette's own opacity does.
@@ -101,14 +102,18 @@ struct BackdropCopy {
   /// The styles asked for, which `crops` holds those of that could be
   /// drawn.
   styles: Vec<BackdropOverlayParams>,
+  /// In the order registered, so each draws over the ones before it.
   crops: Vec<CropCopy>,
   vignette: Option<VignetteCopy>,
   /// The window's rect and frame when carried, which its frame is mapped
   /// from as the window moves.
   window_rest: Rect,
   frame_rest: Rect,
-  /// Index into `crops` of the style drawn, if any.
+  /// Indices into `crops` of the style drawn and of one it fades from,
+  /// `t` of the way, if any. Settled, `from` is `current` and `t` is 1.
   current: Option<usize>,
+  from: Option<usize>,
+  t: f32,
   /// Whether it is drawn, and at what opacity when it is.
   is_shown: bool,
   opacity: u8,
@@ -139,61 +144,119 @@ impl BackdropCopy {
     let window_frame =
       map_rect(&self.frame_rest, &self.window_rest, &placement.frame);
 
-    if let Some(crop) =
-      self.current.and_then(|index| self.crops.get_mut(index))
-    {
-      crop.place(&window_frame, placement);
+    for index in [self.from, self.current].into_iter().flatten() {
+      if let Some(crop) = self.crops.get_mut(index) {
+        crop.place(&window_frame, placement);
+      }
     }
     if let Some(vignette) = &mut self.vignette {
       vignette.copy.place(placement);
     }
   }
 
-  /// Draws the style `params` give, if carried, or none.
-  fn show_style(&mut self, params: Option<BackdropOverlayParams>) {
-    let next = params.and_then(|params| {
-      self.crops.iter().position(|crop| crop.params == params)
-    });
-    if next == self.current {
+  /// Draws the style `blend` fades to, `t` of the way over the one it
+  /// fades from, of those carried, or none.
+  #[allow(clippy::float_cmp)]
+  fn show_style_blend(
+    &mut self,
+    blend: Option<&StyleBlend<BackdropOverlayParams>>,
+  ) {
+    let index = |params: &BackdropOverlayParams| {
+      self.crops.iter().position(|crop| &crop.params == params)
+    };
+    let (from, current, t) = match blend {
+      Some(blend) if blend.t < 1.0 => {
+        (index(&blend.from), index(&blend.to), blend.t.max(0.0))
+      }
+      Some(blend) => (index(&blend.to), index(&blend.to), 1.0),
+      None => (None, None, 1.0),
+    };
+    if (from, current, t) == (self.from, self.current, self.t) {
       return;
     }
 
-    self.current = next;
-    self.place_current();
+    let placed = [self.from, self.current];
+    let adds_crop = [from, current]
+      .into_iter()
+      .any(|index| index.is_some() && !placed.contains(&index));
+    self.from = from;
+    self.current = current;
+    self.t = t;
+    if adds_crop {
+      self.place_current();
+    }
     self.apply_opacity();
   }
 
-  /// Applies whether it is shown, its opacity and its style to its
-  /// thumbnails: the style shown first, so a change of style never leaves
-  /// a frame with neither.
+  /// How opaque each crop is drawn, as a share of the backdrop's opacity.
+  ///
+  /// Mid-fade, the lower of the two is drawn whole and the upper one by
+  /// how far the fade is toward it: two opaque crops faded against each
+  /// other would let what is behind them show through.
+  fn crop_weights(&self) -> Vec<f32> {
+    crop_weights(self.crops.len(), self.from, self.current, self.t)
+  }
+
+  /// Applies whether it is shown, its opacity and its styles to its
+  /// thumbnails: those shown more first, so a change of style never
+  /// leaves a frame with neither.
   fn apply_opacity(&mut self) {
     let opacity = left_out(
       if self.is_shown { self.opacity } else { 0 },
       isolation::current().no_backdrop,
     );
-    let current = self.current;
-    let shown = current.map_or(0, |_| opacity);
+    let weights = self.crop_weights();
 
-    if let Some(crop) = current.and_then(|index| self.crops.get_mut(index))
-    {
-      let _ = crop.thumbnail.set_opacity(shown);
-    }
-    for (index, crop) in self.crops.iter_mut().enumerate() {
-      if Some(index) != current {
-        let _ = crop.thumbnail.set_opacity(0);
-      }
+    let mut order = (0..self.crops.len()).collect::<Vec<_>>();
+    order.sort_by(|a, b| weights[*b].total_cmp(&weights[*a]));
+    for index in order {
+      let _ = self.crops[index]
+        .thumbnail
+        .set_opacity(scale_alpha(opacity, weights[index]));
     }
 
-    let strength = current
-      .and_then(|index| self.crops.get(index))
-      .map_or(0.0, |crop| vignette_strength(&crop.params));
+    let strength_of = |index: Option<usize>| {
+      index
+        .and_then(|index| self.crops.get(index))
+        .map_or(0.0, |crop| vignette_strength(&crop.params))
+    };
+    let strength =
+      lerp_f32(strength_of(self.from), strength_of(self.current), self.t);
     if let Some(vignette) = &mut self.vignette {
       let _ = vignette
         .copy
         .thumbnail
-        .set_opacity(scale_alpha(shown, strength));
+        .set_opacity(scale_alpha(opacity, strength));
     }
   }
+}
+
+/// [`BackdropCopy::crop_weights`] of `count` crops, drawn in `current`'s
+/// style, `t` of the way from `from`'s.
+fn crop_weights(
+  count: usize,
+  from: Option<usize>,
+  current: Option<usize>,
+  t: f32,
+) -> Vec<f32> {
+  let mut weights = vec![0.0; count];
+  let mut set = |index: usize, weight: f32| {
+    if let Some(slot) = weights.get_mut(index) {
+      *slot = weight;
+    }
+  };
+
+  match (from, current) {
+    (Some(from), Some(to)) if from != to => {
+      let upper = from.max(to);
+      set(from.min(to), 1.0);
+      set(upper, if upper == to { t } else { 1.0 - t });
+    }
+    (_, Some(to)) => set(to, t),
+    (Some(from), None) => set(from, 1.0 - t),
+    (None, None) => {}
+  }
+  weights
 }
 
 /// `opacity`, or none for a copy `GLAZEWM_ISOLATE` leaves out (see
@@ -272,7 +335,7 @@ impl OverlayCopies {
 
   /// Draws the backdrops `styles` give a window at `window_rest`, with its
   /// frame at `frame`, on `monitor`, on `dest` from now on, in whichever
-  /// of them [`show_backdrop_style`](Self::show_backdrop_style) picks,
+  /// of them [`show_backdrop_blend`](Self::show_backdrop_blend) picks,
   /// once [`show_backdrop`](Self::show_backdrop) says so. Returns whether
   /// it does; the same `styles` again keep what is drawn.
   ///
@@ -293,18 +356,28 @@ impl OverlayCopies {
 
     // Unregistered before the new ones are, so they don't stack under
     // them.
-    let (is_shown, opacity, current, placement) = self
+    let (is_shown, opacity, blend, placement) = self
       .backdrop
       .take()
       .map_or((false, 0, None, None), |backdrop| {
-        let current = backdrop
-          .current
-          .and_then(|index| backdrop.crops.get(index))
-          .map(|crop| crop.params);
+        let params = |index: Option<usize>| {
+          index
+            .and_then(|index| backdrop.crops.get(index))
+            .map(|crop| crop.params)
+        };
+        let blend = StyleBlend::between(
+          params(backdrop.from),
+          params(backdrop.current),
+          backdrop.t,
+          |params| BackdropOverlayParams {
+            opacity: 0.0,
+            ..params
+          },
+        );
         (
           backdrop.is_shown,
           backdrop.opacity,
-          current,
+          blend,
           backdrop.placement,
         )
       });
@@ -367,11 +440,13 @@ impl OverlayCopies {
       window_rest: window_rest.clone(),
       frame_rest: frame.clone(),
       current: None,
+      from: None,
+      t: 1.0,
       is_shown,
       opacity,
       placement,
     };
-    backdrop.show_style(current);
+    backdrop.show_style_blend(blend.as_ref());
     self.backdrop = Some(backdrop);
     true
   }
@@ -391,14 +466,14 @@ impl OverlayCopies {
       .is_some_and(|backdrop| same_set(&backdrop.styles, styles))
   }
 
-  /// Draws the backdrop in the style `params` give from now on, if
-  /// carried, or in none.
-  pub(crate) fn show_backdrop_style(
+  /// Draws the backdrop in the style `blend` fades to, over the one it
+  /// fades from, from now on, of those carried, or in none.
+  pub(crate) fn show_backdrop_blend(
     &mut self,
-    params: Option<BackdropOverlayParams>,
+    blend: Option<&StyleBlend<BackdropOverlayParams>>,
   ) {
     if let Some(backdrop) = &mut self.backdrop {
-      backdrop.show_style(params);
+      backdrop.show_style_blend(blend);
     }
   }
 
@@ -572,7 +647,7 @@ fn shifted(rect: &Rect, origin: (i32, i32)) -> RECT {
 #[cfg(test)]
 mod tests {
   use super::{
-    copy_rects, map_rect, same_set, scale_alpha, shifted,
+    copy_rects, crop_weights, map_rect, same_set, scale_alpha, shifted,
     vignette_strength, BackdropOverlayParams, Rect, RECT,
   };
   use crate::Color;
@@ -707,5 +782,25 @@ mod tests {
     };
     assert_eq!(scale_alpha(u8::MAX, vignette_strength(&faded)), 51);
     assert_eq!(scale_alpha(128, vignette_strength(&faded)), 26);
+  }
+
+  #[test]
+  fn settled_style_draws_alone() {
+    assert_eq!(crop_weights(2, Some(1), Some(1), 1.0), vec![0.0, 1.0]);
+    assert_eq!(crop_weights(2, None, None, 1.0), vec![0.0, 0.0]);
+  }
+
+  #[test]
+  fn crossfade_keeps_the_lower_crop_whole() {
+    // Fading up to the upper crop draws it over the whole lower one.
+    assert_eq!(crop_weights(2, Some(0), Some(1), 0.25), vec![1.0, 0.25]);
+    // Fading down to the lower one fades the upper one out over it.
+    assert_eq!(crop_weights(2, Some(1), Some(0), 0.25), vec![1.0, 0.75]);
+  }
+
+  #[test]
+  fn crossfade_with_one_side_not_carried_fades_alone() {
+    assert_eq!(crop_weights(2, None, Some(1), 0.25), vec![0.0, 0.25]);
+    assert_eq!(crop_weights(2, Some(0), None, 0.25), vec![0.75, 0.0]);
   }
 }

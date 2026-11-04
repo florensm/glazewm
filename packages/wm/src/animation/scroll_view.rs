@@ -45,8 +45,8 @@ use super::{
 };
 use crate::{
   commands::general::{
-    overlay_entry, surrogate_effects_for, upsert_clipped_overlay,
-    upsert_pinned_border_overlay,
+    focus_blend, overlay_entry, surrogate_effects_for,
+    upsert_clipped_overlay, upsert_pinned_border_overlay,
   },
   layout::is_hidden_in_layout,
   models::{is_inactive_stack_child, WindowContainer, Workspace},
@@ -419,12 +419,6 @@ impl ScrollView {
     let (opacity, corner_style, _) =
       surrogate_effects_for(window.effect_set(is_focused), config);
     let styles = peek_styles(window, config);
-    let [focused_style, unfocused_style] = styles;
-    let style = if is_focused {
-      focused_style
-    } else {
-      unfocused_style
-    };
     if !is_moving {
       motion.start_clock(Instant::now());
     }
@@ -435,9 +429,9 @@ impl ScrollView {
       entry.opacity = opacity;
       entry.role = role;
       // Copies of both styles are drawn up front, so a focus change only
-      // swaps which show: one registered mid-move left frames without it.
+      // crossfades them (see `track_overlays`): one registered mid-move
+      // left frames without it.
       entry.peek.carry_styles(&styles);
-      entry.peek.show_style(style);
       let rect = entry.motion.current_rect();
       entry.place(&rect, batch);
       return covers_shown_window;
@@ -464,9 +458,9 @@ impl ScrollView {
       return false;
     };
 
-    // Before the ring, which goes on top.
+    // Before the ring, which goes on top. Shown in its style by
+    // `track_overlays`, before anything is composited.
     peek.carry_styles(&styles);
-    peek.show_style(style);
 
     // A moving column's real window may still show until the peek takes
     // over from it as it is cloaked; one at rest is already cloaked.
@@ -746,21 +740,22 @@ pub fn track_overlays(
     .collect::<Vec<(Uuid, Option<Rect>, Rect, bool, bool, HWND)>>();
 
   for (id, frame, clip, is_moving, is_live, anchor) in tracked {
-    let (_, _, overlays) = surrogate_effects_for(
-      state.effect_set(id, focused_id == Some(id)),
-      config,
-    );
+    // Blended across a focus fade, as steady state draws it.
+    let set = state.effect_set(id, focused_id == Some(id));
+    let backdrop =
+      focus_blend::<NativeBackdropOverlay>(state, id, set, config);
+    let border =
+      focus_blend::<NativeBorderOverlay>(state, id, set, config);
 
-    let carries_backdrop =
-      !is_live && carry_backdrop(state, id, overlays.backdrop);
+    let carries_backdrop = !is_live && carry_backdrop(state, id, backdrop);
 
-    match (overlays.backdrop, &frame) {
+    match (backdrop, &frame) {
       _ if carries_backdrop => {}
-      (Some(params), Some(frame)) => {
+      (Some(blend), Some(frame)) => {
         upsert_clipped_overlay::<NativeBackdropOverlay>(
           &mut state.window_overlays,
           id,
-          params,
+          blend,
           frame,
           &clip,
           anchor,
@@ -778,7 +773,7 @@ pub fn track_overlays(
       }
     }
 
-    if !is_live && carry_ring(state, id, overlays.border) {
+    if !is_live && carry_ring(state, id, border) {
       continue;
     }
 
@@ -786,23 +781,23 @@ pub fn track_overlays(
     let border_frame = frame
       .map(|frame| crate::tab_bars::with_tab_bar_of(state, id, &frame));
 
-    match (overlays.border, border_frame) {
-      (Some(params), Some(frame)) if is_moving => {
+    match (border, border_frame) {
+      (Some(blend), Some(frame)) if is_moving => {
         upsert_pinned_border_overlay(
           &mut state.window_overlays,
           id,
-          StyleBlend::settled(params),
+          blend,
           &frame,
           &clip,
           &clip,
           anchor,
         );
       }
-      (Some(params), Some(frame)) => {
+      (Some(blend), Some(frame)) => {
         upsert_clipped_overlay::<NativeBorderOverlay>(
           &mut state.window_overlays,
           id,
-          params,
+          blend,
           &frame,
           &clip,
           anchor,
@@ -836,7 +831,7 @@ pub fn track_overlays(
 fn carry_ring(
   state: &mut WmState,
   id: Uuid,
-  params: Option<BorderOverlayParams>,
+  blend: Option<StyleBlend<BorderOverlayParams>>,
 ) -> bool {
   let Some(window) = state.window_by_id(id) else {
     return false;
@@ -856,7 +851,7 @@ fn carry_ring(
     entry.peek.follow_window(&bounds, &frame);
   }
 
-  let Some(params) = params else {
+  let Some(blend) = blend else {
     // Hidden, which also ends its parking.
     if let Some(overlay) = state
       .window_overlays
@@ -875,13 +870,13 @@ fn carry_ring(
   let Some(overlay) = overlay_entry::<NativeBorderOverlay>(
     &mut state.window_overlays,
     id,
-    params,
+    blend.from,
     &ring_frame,
     anchor,
   ) else {
     return false;
   };
-  overlay.apply_blend(StyleBlend::settled(params));
+  overlay.apply_blend(blend);
 
   let Some(entry) =
     state.animation_manager.scroll_view.entries.get_mut(&id)
@@ -938,7 +933,7 @@ fn carry_ring(
 fn carry_backdrop(
   state: &mut WmState,
   id: Uuid,
-  params: Option<BackdropOverlayParams>,
+  blend: Option<StyleBlend<BackdropOverlayParams>>,
 ) -> bool {
   let carries = state
     .animation_manager
@@ -950,7 +945,7 @@ fn carry_backdrop(
     return false;
   };
 
-  let Some(params) = params else {
+  let Some(blend) = blend else {
     if let Some(overlay) = state
       .window_overlays
       .get_mut(&id)
@@ -984,6 +979,7 @@ fn carry_backdrop(
   let is_landing =
     matches!(entry.role, Role::HandingBack | Role::Releasing { .. });
   entry.peek.show_backdrop();
+  entry.peek.show_style_blend(&blend);
 
   let handover = entry.backdrop;
   entry.backdrop = if is_landing
@@ -994,13 +990,13 @@ fn carry_backdrop(
     let Some(overlay) = overlay_entry::<NativeBackdropOverlay>(
       &mut state.window_overlays,
       id,
-      params,
+      blend.from,
       &frame,
       anchor,
     ) else {
       return false;
     };
-    overlay.apply_blend(StyleBlend::settled(params));
+    overlay.apply_blend(blend);
     overlay.set_rect(&frame, anchor);
     Handover::Revealed
   } else {
@@ -1011,7 +1007,7 @@ fn carry_backdrop(
       .get_mut(&id)
       .and_then(|overlays| overlays.backdrop.as_mut());
     if let Some(overlay) = &mut overlay {
-      overlay.apply_blend(StyleBlend::settled(params));
+      overlay.apply_blend(blend);
     }
     let is_shown =
       overlay.as_ref().is_some_and(|overlay| overlay.is_visible());

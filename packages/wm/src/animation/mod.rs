@@ -1,4 +1,5 @@
 pub mod engine;
+pub mod focus_fade;
 pub mod manager;
 pub mod scroll_view;
 pub mod stand_in;

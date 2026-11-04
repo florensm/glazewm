@@ -7,7 +7,7 @@ use crate::{
   platform_impl::wallpaper_surface,
   resize_session::compute_border_inset,
   BackdropOverlayParams, CornerStyle, NativeSurrogate, NativeWindow, Rect,
-  SurrogateBatch,
+  StyleBlend, SurrogateBatch,
 };
 
 /// Thumbnail opacity a peek is warmed up at under its still-shown real
@@ -149,12 +149,12 @@ impl WindowPeek {
 
   /// Draws a copy of its window's backdrop under it from now on, in each
   /// of `styles` the window may be drawn in (e.g. focused and not), of
-  /// which [`show_style`](Self::show_style) picks one. The same `styles`
-  /// again keep what is drawn.
+  /// which [`show_style_blend`](Self::show_style_blend) picks one, or two
+  /// to crossfade. The same `styles` again keep what is drawn.
   ///
-  /// All are drawn up front, so a focus change mid-move only swaps which
-  /// copy shows: registering a new one then, and the window's own
-  /// thumbnail anew over it, left frames with no copy at all.
+  /// All are drawn up front, so a focus change mid-move only crossfades
+  /// them: registering a new one then, and the window's own thumbnail
+  /// anew over it, left frames with no copy at all.
   ///
   /// Only a peek that never moves carries them, in styles that can be
   /// copied (see `BackdropOverlayParams::is_copyable`), and shown while
@@ -195,10 +195,14 @@ impl WindowPeek {
     }
   }
 
-  /// Draws the backdrop copy in `style`, if carried (see
+  /// Draws the backdrop copy in the style `blend` fades to, over the one
+  /// it fades from, of those carried (see
   /// [`carry_styles`](Self::carry_styles)).
-  pub fn show_style(&mut self, style: Option<BackdropOverlayParams>) {
-    self.copies.show_backdrop_style(style);
+  pub fn show_style_blend(
+    &mut self,
+    blend: &StyleBlend<BackdropOverlayParams>,
+  ) {
+    self.copies.show_backdrop_blend(Some(blend));
   }
 
   /// Whether the peek draws the window's backdrop in any style (see

@@ -72,3 +72,10 @@ animations:
     # 'zoom', 'none', 'slide_bottom', 'slide_top', 'slide_left', 'slide_right'.
     style: "zoom"
     opacity_to: 0.0
+
+  # Borders and backdrops blending between their focused and unfocused
+  # styles as focus moves. Transparency still switches at once.
+  focus_change:
+    enabled: true
+    duration_ms: 150
+    easing: "ease_out"

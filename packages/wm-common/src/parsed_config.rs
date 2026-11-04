@@ -1512,6 +1512,9 @@ pub struct AnimationsConfig {
   pub window_close: WindowCloseConfig,
   /// Animation settings for when a window is minimized or restored.
   pub window_minimize: WindowMinimizeConfig,
+  /// Animation settings for a window's effects changing as it gains or
+  /// loses focus.
+  pub focus_change: FocusChangeAnimationConfig,
 }
 
 impl Default for AnimationsConfig {
@@ -1528,6 +1531,27 @@ impl Default for AnimationsConfig {
       workspace_switch: WorkspaceSwitchAnimationConfig::default(),
       window_close: WindowCloseConfig::default(),
       window_minimize: WindowMinimizeConfig::default(),
+      focus_change: FocusChangeAnimationConfig::default(),
+    }
+  }
+}
+
+/// Animation settings for a window's border, backdrop and transparency
+/// blending from one focus state's to the other's.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(default, rename_all(serialize = "camelCase"))]
+pub struct FocusChangeAnimationConfig {
+  pub enabled: bool,
+  pub duration_ms: u32,
+  pub easing: EasingFunction,
+}
+
+impl Default for FocusChangeAnimationConfig {
+  fn default() -> Self {
+    FocusChangeAnimationConfig {
+      enabled: true,
+      duration_ms: 150,
+      easing: EasingFunction::CubicBezier(0.0, 0.0, 0.58, 1.0),
     }
   }
 }
