@@ -81,13 +81,16 @@ animations:
     easing: "ease_out"
 
   # Particle bursts, played by the compositor so they cost the WM nothing
-  # per frame: sparks from the edges a resize moves, as it lands, and a
-  # puff of dust where a window closes.
+  # per frame. Each event takes "none", a style, or a list of styles that
+  # burst together, e.g. ["confetti", "glints"]. Styles: "sparks", "dust",
+  # "embers", "confetti", "glints" and "bubbles".
   particles:
-    enabled: false
-    on_resize: true
-    on_close: true
+    # Off the edges a resize moves, as it lands.
+    on_resize: "none"
+    # Off a window's edges where it closes.
+    on_close: "none"
+    # How every burst looks, the overview's too (see `overview.effects`).
     # color: "#ffd27f"  # Defaults to each window's border color.
     size: "5px"
-    density: 1.0      # Multiple of the default amount.
+    density: 1.0      # Multiple of each style's own amount, up to 4.
     duration_ms: 650

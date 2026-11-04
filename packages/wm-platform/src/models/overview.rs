@@ -1,6 +1,9 @@
 use serde::{Deserialize, Serialize};
 
-use crate::{BorderOverlayParams, Color, Point, Rect, TabFrame};
+use crate::{
+  BorderOverlayParams, Color, ParticleEffects, ParticleLook,
+  ParticleStyle, Point, Rect, TabFrame,
+};
 
 /// What the window overview shows, sent by the WM as a whole.
 #[derive(Clone, Debug, PartialEq)]
@@ -179,6 +182,9 @@ pub struct OverviewStyle {
   pub bounce: f32,
 
   pub effects: OverviewEffects,
+
+  /// How its particle bursts look, as the WM's do.
+  pub particles: ParticleLook,
 }
 
 /// Extra flourishes of the overview, each of which can be turned off.
@@ -194,16 +200,16 @@ pub struct OverviewEffects {
   pub pulse: bool,
 
   /// A ring spreading out of a card as it is clicked, or as a window
-  /// lands on it.
+  /// lands on it, and drawing in on a window closed from the overview.
   pub ripples: bool,
 
-  /// Whether a window closed from the overview puffs away: a ring drawing
-  /// in on where it was and sparks (as many as `sparks`) out of it.
-  pub puff: bool,
+  /// Particles bursting out of where a dropped window lands, over the
+  /// overview.
+  pub drop_particles: ParticleEffects,
 
-  /// Sparks bursting out of where a dropped window lands; `0` for none,
-  /// at most `MAX_SPARKS`.
-  pub sparks: u32,
+  /// Particles thrown off the edges of a window closed from the
+  /// overview, once it is gone.
+  pub close_particles: ParticleEffects,
 
   /// Whether a card wobbles as a window lands on it.
   pub jelly: bool,
@@ -230,9 +236,6 @@ pub struct OverviewEffects {
 }
 
 impl OverviewEffects {
-  /// Most sparks a landing bursts into.
-  pub const MAX_SPARKS: u32 = 48;
-
   /// Most copies trailing a dragged window.
   pub const MAX_TRAIL: u32 = 8;
 
@@ -241,8 +244,8 @@ impl OverviewEffects {
     glow: false,
     pulse: false,
     ripples: false,
-    puff: false,
-    sparks: 0,
+    drop_particles: ParticleEffects::NONE,
+    close_particles: ParticleEffects::NONE,
     jelly: false,
     stagger_ms: 0,
     lean: 0.0,
@@ -258,8 +261,8 @@ impl Default for OverviewEffects {
       glow: true,
       pulse: false,
       ripples: false,
-      puff: true,
-      sparks: 14,
+      drop_particles: ParticleStyle::Sparks.into(),
+      close_particles: ParticleStyle::Dust.into(),
       jelly: true,
       stagger_ms: 24,
       lean: 8.0,

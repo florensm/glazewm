@@ -2,6 +2,10 @@
 //! just large enough for its particles, on a thread running a message
 //! loop, where a timer takes the window down once its particles are gone.
 //! The compositor plays everything in between.
+//!
+//! The overview's bursts show from its own thread, each owned by the
+//! overview's window: an owned window always stays above its owner, which
+//! the overview raises again as the WM moves windows under it.
 
 use std::{
   cell::RefCell, collections::HashMap, sync::OnceLock, time::Duration,
@@ -14,9 +18,10 @@ use windows::{
     UI::WindowsAndMessaging::{
       DefWindowProcW, DestroyWindow, KillTimer,
       SetLayeredWindowAttributes, SetTimer, SetWindowPos, HWND_TOP,
-      LWA_ALPHA, SWP_NOACTIVATE, SWP_SHOWWINDOW, WM_TIMER, WS_EX_LAYERED,
+      HWND_TOPMOST, LWA_ALPHA, SWP_NOACTIVATE, SWP_SHOWWINDOW,
+      WINDOW_EX_STYLE, WM_DESTROY, WM_TIMER, WS_EX_LAYERED,
       WS_EX_NOACTIVATE, WS_EX_NOREDIRECTIONBITMAP, WS_EX_TOOLWINDOW,
-      WS_EX_TRANSPARENT,
+      WS_EX_TOPMOST, WS_EX_TRANSPARENT,
     },
   },
 };
@@ -51,7 +56,7 @@ impl ParticleBurst {
     let seed = fresh_seed();
 
     let result = dispatcher.dispatch_async(move || {
-      if let Err(err) = show(&self, seed) {
+      if let Err(err) = show(&self, seed, None) {
         tracing::warn!("Failed to show particles: {err}");
       }
     });
@@ -59,10 +64,23 @@ impl ParticleBurst {
       tracing::warn!("Failed to dispatch particles: {err}");
     }
   }
+
+  /// Shows the burst above `owner`, a topmost window of this thread,
+  /// which must run a message loop for the burst's timer.
+  pub(crate) fn show_above(&self, owner: HWND) {
+    if let Err(err) = show(self, fresh_seed(), Some(owner)) {
+      tracing::warn!("Failed to show particles: {err}");
+    }
+  }
 }
 
-/// Shows `burst`, scattered by `seed`, on this thread.
-fn show(burst: &ParticleBurst, seed: u64) -> crate::Result<()> {
+/// Shows `burst`, scattered by `seed`, on this thread; above `owner` if
+/// given, else above every window that isn't topmost.
+fn show(
+  burst: &ParticleBurst,
+  seed: u64,
+  owner: Option<HWND>,
+) -> crate::Result<()> {
   if BURSTS.with(|bursts| bursts.borrow().len()) >= MAX_BURSTS {
     return Ok(());
   }
@@ -72,23 +90,30 @@ fn show(burst: &ParticleBurst, seed: u64) -> crate::Result<()> {
 
   register_class();
 
+  let (topmost, insert_after) = match owner {
+    Some(_) => (WS_EX_TOPMOST, HWND_TOPMOST),
+    None => (WINDOW_EX_STYLE::default(), HWND_TOP),
+  };
+
   // Layered and transparent, so it is passed over by clicks and by
   // `WindowFromPoint`.
-  let hwnd = window_class::create_popup(
+  let hwnd = window_class::create_owned_popup(
     w!("GlazeWM_Particles"),
     WS_EX_NOACTIVATE
       | WS_EX_TOOLWINDOW
       | WS_EX_TRANSPARENT
       | WS_EX_LAYERED
-      | WS_EX_NOREDIRECTIONBITMAP,
+      | WS_EX_NOREDIRECTIONBITMAP
+      | topmost,
     &plan.bounds,
+    owner,
     "particles",
   )?;
 
   let visual = (|| {
     // SAFETY: `hwnd` was just created on this thread.
     unsafe { SetLayeredWindowAttributes(hwnd, None, u8::MAX, LWA_ALPHA) }?;
-    ParticleVisual::create(hwnd, &plan, burst.style, burst.color)
+    ParticleVisual::create(hwnd, &plan)
   })();
   let visual = match visual {
     Ok(visual) => visual,
@@ -109,7 +134,7 @@ fn show(burst: &ParticleBurst, seed: u64) -> crate::Result<()> {
   let shown = unsafe {
     SetWindowPos(
       hwnd,
-      HWND_TOP,
+      insert_after,
       plan.bounds.x(),
       plan.bounds.y(),
       plan.bounds.width(),
@@ -144,12 +169,9 @@ fn register_class() {
   );
 }
 
-/// Takes a burst's window down, its visual tree first, as that is rooted
-/// to the window.
+/// Takes a burst's window down, and with it its visual tree (see
+/// `particles_wnd_proc`).
 fn tear_down(hwnd: HWND) {
-  let visual = BURSTS.with(|bursts| bursts.borrow_mut().remove(&hwnd.0));
-  drop(visual);
-
   // SAFETY: `hwnd` is a window of this thread; a stale one only makes the
   // calls fail.
   unsafe {
@@ -169,6 +191,12 @@ unsafe extern "system" fn particles_wnd_proc(
   if msg == WM_TIMER && wparam.0 == TEARDOWN_TIMER {
     tear_down(hwnd);
     return LRESULT(0);
+  }
+  // Its visual tree goes while the window it is rooted to still exists,
+  // also when the window is destroyed with the one that owns it.
+  if msg == WM_DESTROY {
+    let visual = BURSTS.with(|bursts| bursts.borrow_mut().remove(&hwnd.0));
+    drop(visual);
   }
   if window_class::is_close_request(msg, wparam) {
     return LRESULT(0);

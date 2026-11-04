@@ -5,9 +5,13 @@
 //! time, so the compositor can play a whole burst on its own (see
 //! `native_particles`) with nothing drawing a frame of it.
 
-use std::{f32::consts::TAU, time::Duration};
+use std::{
+  f32::consts::{PI, TAU},
+  str::FromStr,
+  time::Duration,
+};
 
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 use crate::{Color, Rect};
 
@@ -20,47 +24,130 @@ pub enum ParticleStyle {
   Dust,
   /// Warm specks floating up and flickering out.
   Embers,
-  /// Flecks in several colors, tumbling and fluttering down.
+  /// Flecks in several colors, spinning and tumbling down.
   Confetti,
-  /// Tiny twinkles popping in place, one after another.
+  /// Tiny four-point twinkles popping in place, one after another.
   Glints,
   /// Rings rising and wobbling, swelling as they pop.
   Bubbles,
 }
 
-/// Which particles an event throws off, if any, as configured.
-#[derive(
-  Clone, Copy, Debug, Default, Deserialize, PartialEq, Eq, Serialize,
-)]
-#[serde(rename_all = "snake_case")]
-pub enum ParticleEffect {
-  #[default]
-  None,
-  Sparks,
-  Dust,
-  Embers,
-  Confetti,
-  Glints,
-  Bubbles,
-}
+impl ParticleStyle {
+  pub const ALL: [Self; 6] = [
+    Self::Sparks,
+    Self::Dust,
+    Self::Embers,
+    Self::Confetti,
+    Self::Glints,
+    Self::Bubbles,
+  ];
 
-impl ParticleEffect {
-  /// The style it throws particles off in, or `None` for none.
+  /// Its name in the config.
   #[must_use]
-  pub fn style(self) -> Option<ParticleStyle> {
+  pub fn name(self) -> &'static str {
     match self {
-      Self::None => None,
-      Self::Sparks => Some(ParticleStyle::Sparks),
-      Self::Dust => Some(ParticleStyle::Dust),
-      Self::Embers => Some(ParticleStyle::Embers),
-      Self::Confetti => Some(ParticleStyle::Confetti),
-      Self::Glints => Some(ParticleStyle::Glints),
-      Self::Bubbles => Some(ParticleStyle::Bubbles),
+      Self::Sparks => "sparks",
+      Self::Dust => "dust",
+      Self::Embers => "embers",
+      Self::Confetti => "confetti",
+      Self::Glints => "glints",
+      Self::Bubbles => "bubbles",
     }
   }
 }
 
-/// How particle bursts look, wherever they are thrown off.
+impl FromStr for ParticleStyle {
+  type Err = crate::ParseError;
+
+  fn from_str(unparsed: &str) -> Result<Self, crate::ParseError> {
+    Self::ALL
+      .into_iter()
+      .find(|style| style.name() == unparsed)
+      .ok_or_else(|| {
+        crate::ParseError::ParticleStyle(unparsed.to_string())
+      })
+  }
+}
+
+/// The particle styles an event throws off together, e.g. confetti and
+/// glints as a window lands; none, one or several.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ParticleEffects(u8);
+
+impl ParticleEffects {
+  pub const NONE: Self = Self(0);
+
+  #[must_use]
+  pub fn is_empty(self) -> bool {
+    self.0 == 0
+  }
+
+  #[must_use]
+  pub fn contains(self, style: ParticleStyle) -> bool {
+    self.0 & Self::from(style).0 != 0
+  }
+
+  pub fn iter(self) -> impl Iterator<Item = ParticleStyle> {
+    ParticleStyle::ALL
+      .into_iter()
+      .filter(move |style| self.contains(*style))
+  }
+}
+
+impl From<ParticleStyle> for ParticleEffects {
+  fn from(style: ParticleStyle) -> Self {
+    Self(1 << style as u8)
+  }
+}
+
+impl FromIterator<ParticleStyle> for ParticleEffects {
+  fn from_iter<I: IntoIterator<Item = ParticleStyle>>(styles: I) -> Self {
+    Self(
+      styles
+        .into_iter()
+        .fold(0, |bits, style| bits | Self::from(style).0),
+    )
+  }
+}
+
+/// Deserializes `"none"`, a style's name, or a list of names.
+impl<'de> Deserialize<'de> for ParticleEffects {
+  fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+  where
+    D: Deserializer<'de>,
+  {
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum ParticleEffectsDe {
+      One(String),
+      Many(Vec<String>),
+    }
+
+    let names = match ParticleEffectsDe::deserialize(deserializer)? {
+      ParticleEffectsDe::One(name) if name == "none" => Vec::new(),
+      ParticleEffectsDe::One(name) => vec![name],
+      ParticleEffectsDe::Many(names) => names,
+    };
+
+    names
+      .iter()
+      .map(|name| name.parse::<ParticleStyle>())
+      .collect::<Result<Self, _>>()
+      .map_err(serde::de::Error::custom)
+  }
+}
+
+impl Serialize for ParticleEffects {
+  fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+  where
+    S: Serializer,
+  {
+    serializer.collect_seq(self.iter().map(ParticleStyle::name))
+  }
+}
+
+/// How particle bursts look, wherever they are thrown off: shared by the
+/// WM's windows and the overview.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ParticleLook {
   /// Their color, or `None` for the color of whatever throws them off.
@@ -71,6 +158,32 @@ pub struct ParticleLook {
   pub density: f32,
   /// How long a particle lasts, give or take.
   pub duration: Duration,
+}
+
+impl ParticleLook {
+  /// A burst of `effects` from `source` in this look, cut to `clip` (the
+  /// monitor it is on, scaled by `scale_factor`), in `fallback` unless
+  /// the look has a color. `None` without effects.
+  #[must_use]
+  pub fn burst(
+    &self,
+    effects: ParticleEffects,
+    source: ParticleSource,
+    clip: Rect,
+    scale_factor: f32,
+    fallback: Color,
+  ) -> Option<ParticleBurst> {
+    (!effects.is_empty()).then(|| ParticleBurst {
+      source,
+      clip,
+      effects,
+      color: self.color.unwrap_or(fallback),
+      size: self.size * scale_factor,
+      density: self.density,
+      duration: self.duration,
+      delay: Duration::ZERO,
+    })
+  }
 }
 
 impl Default for ParticleLook {
@@ -128,53 +241,112 @@ pub enum ParticleSource {
   Point(f32, f32),
 }
 
-/// A burst of particles on screen.
+/// A burst of particles on screen, in one or more styles at once.
 #[derive(Clone, Debug)]
 pub struct ParticleBurst {
   pub source: ParticleSource,
   /// Area the particles are cut to, e.g. the source's monitor.
   pub clip: Rect,
-  pub style: ParticleStyle,
+  pub effects: ParticleEffects,
   pub color: Color,
   /// Particle diameter, in pixels.
   pub size: f32,
-  /// How many particles, as a multiple of the style's own amount.
+  /// How many particles, as a multiple of each style's own amount, up to
+  /// `MAX_DENSITY`.
   pub density: f32,
   /// How long a particle lasts, give or take.
   pub duration: Duration,
   /// How long the burst waits before it starts.
   pub delay: Duration,
-  /// Whether it shows over topmost windows too, e.g. over the overview.
-  pub is_topmost: bool,
 }
+
+/// Most a burst's density counts for.
+const MAX_DENSITY: f32 = 4.0;
+
+/// Most particles in one burst, however many styles and edges it has, so
+/// a dense burst can't swamp the compositor.
+const MAX_PARTICLES: usize = 480;
 
 /// Points on a particle's path, evenly spaced over its life, which the
 /// compositor joins with straight lines.
 pub(crate) const PATH_KEYS: usize = 12;
 
+/// Steps a tumbling particle's scale is keyed at, enough for a few turns
+/// to read as smooth.
+const TUMBLE_KEYS: usize = 32;
+
+/// Narrowest a tumbling particle gets, edge on, as a share of its width.
+const EDGE_ON: f32 = 0.12;
+
 /// One particle of a planned burst.
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct Particle {
+  pub style: ParticleStyle,
   /// Where its center is at each of [`PATH_KEYS`] even steps of its life,
   /// relative to the burst's bounds.
   pub path: [(f32, f32); PATH_KEYS],
   /// Width and height it starts at, in pixels.
   pub size: (f32, f32),
   pub color: Color,
-  /// Its opacity and its scale over its life, as `(progress, value)` keys.
+  /// Its opacity over its life, as `(progress, value)` keys.
   pub opacity: Vec<(f32, f32)>,
-  pub scale: Vec<(f32, f32)>,
-  /// How far it turns over its life, in degrees.
+  /// Its scale over its life, as `(progress, value)` keys, before it
+  /// tumbles (see [`Particle::scale_keys`]).
+  scale: Vec<(f32, f32)>,
+  /// How far it is turned as it starts, and turns over its life, in
+  /// degrees.
+  pub angle: f32,
   pub spin: f32,
+  /// Half turns it tumbles through over its life, flat side over edge, as
+  /// confetti flutters; `0.0` for none.
+  tumble: f32,
   pub delay: Duration,
   pub duration: Duration,
+}
+
+impl Particle {
+  /// Its scale across and down over its life, as `(progress, (x, y))`
+  /// keys, squeezed across as it tumbles edge on.
+  #[allow(clippy::cast_precision_loss)]
+  pub fn scale_keys(&self) -> Vec<(f32, (f32, f32))> {
+    if self.tumble <= 0.0 {
+      return self
+        .scale
+        .iter()
+        .map(|&(progress, scale)| (progress, (scale, scale)))
+        .collect();
+    }
+
+    (0..TUMBLE_KEYS)
+      .map(|key| {
+        let progress = key as f32 / (TUMBLE_KEYS - 1) as f32;
+        let scale = value_at(&self.scale, progress);
+        let face = (PI * self.tumble * progress).cos().abs().max(EDGE_ON);
+        (progress, (scale * face, scale))
+      })
+      .collect()
+  }
+}
+
+/// The value `keys` (as `(progress, value)`, in order) give at
+/// `progress`, straight between them.
+fn value_at(keys: &[(f32, f32)], progress: f32) -> f32 {
+  let after = keys.iter().position(|(at, _)| *at >= progress);
+  match after {
+    Some(0) => keys[0].1,
+    Some(index) => {
+      let ((from, low), (to, high)) = (keys[index - 1], keys[index]);
+      let t = (progress - from) / (to - from).max(f32::EPSILON);
+      low + (high - low) * t
+    }
+    None => keys.last().map_or(1.0, |(_, value)| *value),
+  }
 }
 
 /// A burst worked out: the part of the screen it covers and its
 /// particles.
 #[derive(Clone, Debug)]
 pub(crate) struct BurstPlan {
-  pub style: ParticleStyle,
   /// Covers every particle all its life, cut to the burst's clip.
   pub bounds: Rect,
   pub particles: Vec<Particle>,
@@ -209,8 +381,12 @@ struct Motion {
   size: (f32, f32),
   aspect: (f32, f32),
   life: (f32, f32),
-  /// Most it turns over its life either way, in degrees.
+  /// Most it starts turned either way, and turns over its life either
+  /// way, in degrees.
+  tilt: f32,
   spin: f32,
+  /// Half turns it tumbles through over its life.
+  tumble: (f32, f32),
   /// Longest it starts after the burst does, as a share of the burst's
   /// duration.
   stagger: f32,
@@ -239,7 +415,9 @@ impl ParticleStyle {
         size: (0.5, 1.0),
         aspect: (1.0, 1.0),
         life: (0.6, 1.0),
+        tilt: 0.0,
         spin: 0.0,
+        tumble: (0.0, 0.0),
         stagger: 0.08,
         opacity: &[(0.0, 1.0), (0.6, 0.75), (1.0, 0.0)],
         scale: &[(0.0, 1.0), (1.0, 0.3)],
@@ -259,7 +437,9 @@ impl ParticleStyle {
         size: (1.3, 2.4),
         aspect: (1.0, 1.0),
         life: (0.9, 1.35),
+        tilt: 0.0,
         spin: 0.0,
+        tumble: (0.0, 0.0),
         stagger: 0.14,
         opacity: &[(0.0, 0.55), (1.0, 0.0)],
         scale: &[(0.0, 1.0), (1.0, 1.8)],
@@ -279,7 +459,9 @@ impl ParticleStyle {
         size: (0.5, 1.0),
         aspect: (1.0, 1.0),
         life: (1.2, 1.8),
+        tilt: 0.0,
         spin: 0.0,
+        tumble: (0.0, 0.0),
         stagger: 0.25,
         opacity: &[
           (0.0, 0.9),
@@ -307,7 +489,9 @@ impl ParticleStyle {
         size: (0.9, 1.5),
         aspect: (0.35, 0.6),
         life: (0.9, 1.3),
+        tilt: 180.0,
         spin: 540.0,
+        tumble: (2.0, 6.0),
         stagger: 0.06,
         opacity: &[(0.0, 1.0), (0.7, 1.0), (1.0, 0.0)],
         scale: &[(0.0, 1.0), (1.0, 0.9)],
@@ -327,7 +511,9 @@ impl ParticleStyle {
         size: (0.8, 1.6),
         aspect: (1.0, 1.0),
         life: (0.3, 0.55),
-        spin: 0.0,
+        tilt: 45.0,
+        spin: 90.0,
+        tumble: (0.0, 0.0),
         stagger: 0.7,
         opacity: &[(0.0, 0.0), (0.3, 1.0), (1.0, 0.0)],
         scale: &[(0.0, 0.2), (0.3, 1.2), (1.0, 0.0)],
@@ -347,7 +533,9 @@ impl ParticleStyle {
         size: (1.6, 3.2),
         aspect: (1.0, 1.0),
         life: (1.0, 1.5),
+        tilt: 0.0,
         spin: 0.0,
+        tumble: (0.0, 0.0),
         stagger: 0.2,
         opacity: &[(0.0, 0.0), (0.15, 0.8), (0.85, 0.7), (1.0, 0.0)],
         scale: &[(0.0, 0.5), (0.85, 1.0), (1.0, 1.35)],
@@ -367,13 +555,15 @@ impl ParticleStyle {
       [0x4C, 0xC9, 0xF0],
       [0xC7, 0x7D, 0xFF],
     ];
+    const EMBER: Color = Color {
+      r: 0xFF,
+      g: 0x78,
+      b: 0x28,
+      a: u8::MAX,
+    };
 
-    if self != Self::Confetti {
-      return vec![color];
-    }
-
-    if saturation(color) < 0.15 {
-      return FESTIVE
+    match self {
+      Self::Confetti if saturation(color) < 0.15 => FESTIVE
         .iter()
         .map(|&[r, g, b]| Color {
           r,
@@ -381,13 +571,15 @@ impl ParticleStyle {
           b,
           a: u8::MAX,
         })
-        .collect();
+        .collect(),
+      Self::Confetti => [0.0, 72.0, 144.0, 216.0, 288.0]
+        .iter()
+        .map(|degrees| rotate_hue(color, *degrees))
+        .collect(),
+      // Some specks glow warmer than others, whatever their color.
+      Self::Embers => vec![color, color.lerp(&EMBER, 0.45)],
+      _ => vec![color],
     }
-
-    [0.0, 72.0, 144.0, 216.0, 288.0]
-      .iter()
-      .map(|degrees| rotate_hue(color, *degrees))
-      .collect()
   }
 }
 
@@ -407,7 +599,8 @@ fn saturation(color: Color) -> f32 {
 /// its saturation, brightness and alpha.
 #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
 fn rotate_hue(color: Color, degrees: f32) -> Color {
-  let [r, g, b] = [color.r, color.g, color.b].map(|c| f32::from(c) / 255.0);
+  let [r, g, b] =
+    [color.r, color.g, color.b].map(|c| f32::from(c) / 255.0);
   let max = r.max(g).max(b);
   let chroma = max - r.min(g).min(b);
 
@@ -491,18 +684,20 @@ struct Launch {
   heading: (f32, f32),
 }
 
-/// Where `burst`'s particles set off from and head, before spreading.
+/// Where particles of `motion` set off from `source` and head, before
+/// spreading, as many as `density` has.
 #[allow(
   clippy::cast_possible_truncation,
   clippy::cast_precision_loss,
   clippy::cast_sign_loss
 )]
 fn launches(
-  burst: &ParticleBurst,
+  source: &ParticleSource,
+  density: f32,
   motion: &Motion,
   rng: &mut Rng,
 ) -> Vec<Launch> {
-  match &burst.source {
+  match source {
     ParticleSource::Edges(rect, which) => {
       let (left, top, right, bottom) = (
         rect.left as f32,
@@ -524,10 +719,9 @@ fn launches(
         }
 
         let length = (to.0 - from.0).hypot(to.1 - from.1);
-        let wanted = (length / motion.spacing * burst.density).round();
+        let wanted = (length / motion.spacing * density).round();
         let fewest = motion.per_edge.0 as f32;
-        let most =
-          (motion.per_edge.1 as f32 * burst.density).ceil().max(fewest);
+        let most = (motion.per_edge.1 as f32 * density).ceil().max(fewest);
 
         for _ in 0..wanted.clamp(fewest, most) as usize {
           let along = rng.unit();
@@ -545,12 +739,13 @@ fn launches(
     }
     ParticleSource::Point(x, y) => {
       let count =
-        (motion.per_point as f32 * burst.density).round().max(1.0) as usize;
+        (motion.per_point as f32 * density).round().max(1.0) as usize;
 
       (0..count)
         .map(|index| {
           // Evenly around, each nudged off its place, so none bunch up.
-          let angle = (index as f32 + rng.unit() * 0.8) / count as f32 * TAU;
+          let angle =
+            (index as f32 + rng.unit() * 0.8) / count as f32 * TAU;
           let heading = (angle.cos(), angle.sin());
           let out = rng.range((0.0, motion.point_radius));
           Launch {
@@ -584,43 +779,133 @@ fn position_at(
   )
 }
 
+/// `keep` of `items`, spread evenly through them.
+fn thin<T>(items: Vec<T>, keep: usize) -> Vec<T> {
+  let len = items.len();
+  if keep >= len {
+    return items;
+  }
+
+  items
+    .into_iter()
+    .enumerate()
+    .filter(|(index, _)| (index + 1) * keep / len > index * keep / len)
+    .map(|(_, item)| item)
+    .collect()
+}
+
+/// A particle of `style` moving as `motion` has it, set off by `launch`
+/// in one of `palette`'s colors.
+#[allow(clippy::cast_precision_loss)]
+fn particle(
+  burst: &ParticleBurst,
+  style: ParticleStyle,
+  motion: &Motion,
+  palette: &[Color],
+  launch: &Launch,
+  rng: &mut Rng,
+) -> Particle {
+  let angle = rng.range((-motion.spread, motion.spread));
+  let pace = rng.range(motion.speed);
+  let (sin, cos) = angle.sin_cos();
+  let (hx, hy) = launch.heading;
+  let velocity =
+    ((hx * cos - hy * sin) * pace, (hx * sin + hy * cos) * pace);
+
+  let life = burst.duration.mul_f32(rng.range(motion.life));
+  let phase = rng.range((0.0, TAU));
+  let path = std::array::from_fn(|key| {
+    let t = life.as_secs_f32() * key as f32 / (PATH_KEYS - 1) as f32;
+    position_at(launch.start, velocity, motion, phase, t)
+  });
+
+  let width = burst.size * rng.range(motion.size);
+  let last = motion.opacity.len().saturating_sub(1);
+  let opacity = motion
+    .opacity
+    .iter()
+    .enumerate()
+    .map(|(index, (progress, value))| {
+      let nudge = if index == 0 || index == last {
+        0.0
+      } else {
+        rng.range((-motion.flicker, motion.flicker))
+      };
+      (*progress, (value + nudge).clamp(0.0, 1.0))
+    })
+    .collect();
+
+  Particle {
+    style,
+    path,
+    size: (width, width * rng.range(motion.aspect)),
+    color: palette[rng.index(palette.len())],
+    opacity,
+    scale: motion.scale.to_vec(),
+    angle: motion.tilt * rng.unit() * rng.sign(),
+    spin: motion.spin * rng.unit() * rng.sign(),
+    tumble: rng.range(motion.tumble),
+    delay: burst.delay
+      + burst.duration.mul_f32(motion.stagger * rng.unit()),
+    duration: life,
+  }
+}
+
 /// Works out `burst`, scattered by `seed`, or `None` when it has nothing
-/// to show: no density or size, or nothing of it inside its clip.
+/// to show: no styles, density or size, or nothing of it inside its
+/// clip.
 #[allow(clippy::cast_possible_truncation, clippy::cast_precision_loss)]
 pub(crate) fn plan(burst: &ParticleBurst, seed: u64) -> Option<BurstPlan> {
-  if burst.density <= 0.0 || burst.size <= 0.0 {
+  let density = burst.density.min(MAX_DENSITY);
+  if density <= 0.0 || burst.size <= 0.0 {
     return None;
   }
 
-  let motion = burst.style.motion();
-  let palette = burst.style.palette(burst.color);
   let mut rng = Rng(seed);
-  let mut particles = Vec::new();
-  let mut extent = (f32::MAX, f32::MAX, f32::MIN, f32::MIN);
-  let grows = motion
-    .scale
+  let styles = burst
+    .effects
     .iter()
-    .fold(1.0_f32, |most, (_, scale)| most.max(*scale));
+    .map(|style| {
+      let motion = style.motion();
+      let launches = launches(&burst.source, density, &motion, &mut rng);
+      (style, motion, launches)
+    })
+    .collect::<Vec<_>>();
 
-  for launch in launches(burst, &motion, &mut rng) {
-    let angle = rng.range((-motion.spread, motion.spread));
-    let pace = rng.range(motion.speed);
-    let (sin, cos) = angle.sin_cos();
-    let (hx, hy) = launch.heading;
-    let velocity =
-      ((hx * cos - hy * sin) * pace, (hx * sin + hy * cos) * pace);
+  // Every style keeps its share of the burst when there are too many.
+  let total = styles
+    .iter()
+    .map(|(_, _, launches)| launches.len())
+    .sum::<usize>();
+  let mut particles = Vec::new();
+  for (style, motion, launches) in styles {
+    let keep = if total > MAX_PARTICLES {
+      launches.len() * MAX_PARTICLES / total
+    } else {
+      launches.len()
+    };
+    let palette = style.palette(burst.color);
 
-    let life = burst.duration.mul_f32(rng.range(motion.life));
-    let phase = rng.range((0.0, TAU));
-    let path: [(f32, f32); PATH_KEYS] = std::array::from_fn(|key| {
-      let t = life.as_secs_f32() * key as f32 / (PATH_KEYS - 1) as f32;
-      position_at(launch.start, velocity, &motion, phase, t)
-    });
+    for launch in thin(launches, keep) {
+      particles.push(particle(
+        burst, style, &motion, &palette, &launch, &mut rng,
+      ));
+    }
+  }
 
-    let width = burst.size * rng.range(motion.size);
-    let size = (width, width * rng.range(motion.aspect));
-    let reach = size.0.max(size.1) * grows / 2.0 + 1.0;
-    for (x, y) in path {
+  if particles.is_empty() {
+    return None;
+  }
+
+  let mut extent = (f32::MAX, f32::MAX, f32::MIN, f32::MIN);
+  for particle in &particles {
+    let grows = particle
+      .scale
+      .iter()
+      .fold(1.0_f32, |most, (_, scale)| most.max(*scale));
+    // Turned, a particle reaches as far as its diagonal.
+    let reach = particle.size.0.hypot(particle.size.1) * grows / 2.0 + 1.0;
+    for (x, y) in particle.path {
       extent = (
         extent.0.min(x - reach),
         extent.1.min(y - reach),
@@ -628,37 +913,6 @@ pub(crate) fn plan(burst: &ParticleBurst, seed: u64) -> Option<BurstPlan> {
         extent.3.max(y + reach),
       );
     }
-
-    let last = motion.opacity.len().saturating_sub(1);
-    let opacity = motion
-      .opacity
-      .iter()
-      .enumerate()
-      .map(|(index, (progress, value))| {
-        let nudge = if index == 0 || index == last {
-          0.0
-        } else {
-          rng.range((-motion.flicker, motion.flicker))
-        };
-        (*progress, (value + nudge).clamp(0.0, 1.0))
-      })
-      .collect();
-
-    particles.push(Particle {
-      path,
-      size,
-      color: palette[rng.index(palette.len())],
-      opacity,
-      scale: motion.scale.to_vec(),
-      spin: motion.spin * rng.unit() * rng.sign(),
-      delay: burst.delay
-        + burst.duration.mul_f32(motion.stagger * rng.unit()),
-      duration: life,
-    });
-  }
-
-  if particles.is_empty() {
-    return None;
   }
 
   let bounds = Rect::from_ltrb(
@@ -683,7 +937,6 @@ pub(crate) fn plan(burst: &ParticleBurst, seed: u64) -> Option<BurstPlan> {
     .unwrap_or_default();
 
   Some(BurstPlan {
-    style: burst.style,
     bounds,
     particles,
     lifetime,
@@ -710,15 +963,6 @@ pub(crate) fn fresh_seed() -> u64 {
 mod tests {
   use super::*;
 
-  const STYLES: [ParticleStyle; 6] = [
-    ParticleStyle::Sparks,
-    ParticleStyle::Dust,
-    ParticleStyle::Embers,
-    ParticleStyle::Confetti,
-    ParticleStyle::Glints,
-    ParticleStyle::Bubbles,
-  ];
-
   const AMBER: Color = Color {
     r: 255,
     g: 200,
@@ -733,13 +977,12 @@ mod tests {
         edges,
       ),
       clip: Rect::from_ltrb(0, 0, 1920, 1080),
-      style,
+      effects: style.into(),
       color: AMBER,
       size: 5.0,
       density: 1.0,
       duration: Duration::from_millis(650),
       delay: Duration::from_millis(150),
-      is_topmost: false,
     }
   }
 
@@ -777,12 +1020,25 @@ mod tests {
   }
 
   #[test]
-  fn effects_map_to_styles() {
-    assert_eq!(ParticleEffect::None.style(), None);
-    assert_eq!(
-      ParticleEffect::Confetti.style(),
-      Some(ParticleStyle::Confetti)
-    );
+  fn looks_make_bursts_only_for_effects() {
+    let look = ParticleLook::default();
+    let source = ParticleSource::Point(10.0, 10.0);
+    let clip = Rect::from_ltrb(0, 0, 100, 100);
+
+    assert!(look
+      .burst(
+        ParticleEffects::NONE,
+        source.clone(),
+        clip.clone(),
+        1.5,
+        AMBER
+      )
+      .is_none());
+    let burst = look
+      .burst(ParticleStyle::Bubbles.into(), source, clip, 1.5, AMBER)
+      .expect("a burst");
+    assert_eq!(burst.color, AMBER);
+    assert!((burst.size - 7.5).abs() < f32::EPSILON);
   }
 
   #[test]
@@ -805,6 +1061,43 @@ mod tests {
       assert!((1200.0..=1202.5).contains(&x), "x {x}");
       assert!((300.0..=900.0).contains(&y), "y {y}");
     }
+  }
+
+  #[test]
+  fn several_styles_burst_together() {
+    let mut both = burst(ParticleStyle::Sparks, right_edge());
+    both.effects = [ParticleStyle::Sparks, ParticleStyle::Glints]
+      .into_iter()
+      .collect();
+    let plan = plan(&both, 7).expect("a burst");
+
+    let count = |style| {
+      plan
+        .particles
+        .iter()
+        .filter(|particle| particle.style == style)
+        .count()
+    };
+    // 600px of edge at one spark per 36px, and one glint per 70px.
+    assert_eq!(count(ParticleStyle::Sparks), 17);
+    assert_eq!(count(ParticleStyle::Glints), 9);
+  }
+
+  #[test]
+  fn dense_bursts_are_thinned_evenly_across_styles() {
+    let mut dense = burst(ParticleStyle::Sparks, ParticleEdges::ALL);
+    dense.effects = ParticleStyle::ALL.into_iter().collect();
+    dense.density = 100.0;
+    let plan = plan(&dense, 3).expect("a burst");
+
+    assert!(plan.particles.len() <= MAX_PARTICLES);
+    for style in ParticleStyle::ALL {
+      assert!(plan
+        .particles
+        .iter()
+        .any(|particle| particle.style == style));
+    }
+    assert_eq!(thin((0..10).collect(), 3), [3, 6, 9]);
   }
 
   #[test]
@@ -832,8 +1125,9 @@ mod tests {
 
   #[test]
   fn confetti_tumbles_down_in_many_colors() {
-    let plan = plan(&burst(ParticleStyle::Confetti, ParticleEdges::ALL), 5)
-      .expect("a burst");
+    let plan =
+      plan(&burst(ParticleStyle::Confetti, ParticleEdges::ALL), 5)
+        .expect("a burst");
 
     assert!(risers(&plan) * 2 < plan.particles.len(), "most fall");
     assert!(plan
@@ -844,6 +1138,14 @@ mod tests {
       .particles
       .iter()
       .all(|particle| particle.size.1 < particle.size.0));
+
+    assert!(plan.particles.iter().all(|particle| particle.tumble >= 2.0));
+    let edge_on = plan.particles[0]
+      .scale_keys()
+      .iter()
+      .map(|(_, (across, down))| across / down)
+      .fold(f32::MAX, f32::min);
+    assert!(edge_on < 0.2, "edge on at {edge_on}");
 
     let mut colors = plan
       .particles
@@ -871,12 +1173,25 @@ mod tests {
   }
 
   #[test]
+  fn untumbled_scale_follows_its_keys() {
+    let plan =
+      plan(&burst(ParticleStyle::Dust, right_edge()), 2).expect("a burst");
+    let keys = plan.particles[0].scale_keys();
+
+    assert_eq!(keys, [(0.0, (1.0, 1.0)), (1.0, (1.8, 1.8))]);
+    assert!((value_at(&[(0.0, 1.0), (1.0, 1.8)], 0.5) - 1.4).abs() < 1e-6);
+  }
+
+  #[test]
   fn glints_twinkle_in_place_one_after_another() {
     let plan = plan(&burst(ParticleStyle::Glints, ParticleEdges::ALL), 9)
       .expect("a burst");
 
     for particle in &plan.particles {
-      assert!(particle.path.iter().all(|point| *point == particle.path[0]));
+      assert!(particle
+        .path
+        .iter()
+        .all(|point| *point == particle.path[0]));
     }
     let (first, last) = plan.particles.iter().fold(
       (Duration::MAX, Duration::ZERO),
@@ -884,7 +1199,7 @@ mod tests {
         (first.min(particle.delay), last.max(particle.delay))
       },
     );
-    assert!(last - first > Duration::from_millis(150));
+    assert!(last.saturating_sub(first) > Duration::from_millis(150));
   }
 
   #[test]
@@ -901,7 +1216,7 @@ mod tests {
 
   #[test]
   fn every_style_fades_out_to_nothing() {
-    for style in STYLES {
+    for style in ParticleStyle::ALL {
       let plan =
         plan(&burst(style, ParticleEdges::ALL), 1).expect("a burst");
       for particle in &plan.particles {
@@ -933,9 +1248,11 @@ mod tests {
 
   #[test]
   fn every_particle_stays_inside_the_bounds() {
-    for style in STYLES {
-      let plan =
-        plan(&burst(style, ParticleEdges::ALL), 5).expect("a burst");
+    for style in ParticleStyle::ALL {
+      // Uncut, as confetti falls past the bottom of the screen.
+      let mut burst = burst(style, ParticleEdges::ALL);
+      burst.clip = Rect::from_ltrb(-10_000, -10_000, 10_000, 10_000);
+      let plan = plan(&burst, 5).expect("a burst");
 
       #[allow(clippy::cast_precision_loss)]
       let (width, height) =
@@ -965,7 +1282,7 @@ mod tests {
 
   #[test]
   fn lifetime_covers_the_last_particle() {
-    for style in STYLES {
+    for style in ParticleStyle::ALL {
       let plan =
         plan(&burst(style, ParticleEdges::ALL), 9).expect("a burst");
       for particle in &plan.particles {

@@ -4,7 +4,7 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use wm_platform::{
   BackdropOverlayParams, BorderGlow, BorderOverlayParams, Color,
   CornerStyle, Key, Keybinding, LengthUnit, LengthValue, OpacityValue,
-  OverviewEffects, RectDelta,
+  OverviewEffects, ParticleEffects, ParticleLook, RectDelta,
 };
 
 use crate::{app_command::InvokeCommand, Layout};
@@ -687,7 +687,7 @@ pub struct OverviewConfig {
   /// opening zoom overshoots by it too.
   pub bounce: f32,
 
-  /// Glow, ripples and sparks, each of which can be turned off.
+  /// Glow, ripples and particles, each of which can be turned off.
   pub effects: OverviewEffects,
 }
 
@@ -1585,7 +1585,8 @@ pub struct AnimationsConfig {
   /// Animation settings for a window's effects changing as it gains or
   /// loses focus.
   pub focus_change: FocusChangeAnimationConfig,
-  /// Particle bursts as windows are resized or closed.
+  /// Particle bursts as windows are resized or closed, and how every
+  /// burst looks, the overview's too.
   pub particles: ParticlesConfig,
 }
 
@@ -1610,32 +1611,50 @@ impl Default for AnimationsConfig {
 }
 
 /// Particle bursts as windows are resized or closed, played by the
-/// compositor.
+/// compositor. Its look applies to the overview's bursts too (see
+/// `OverviewEffects`).
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(default, rename_all(serialize = "camelCase"))]
 pub struct ParticlesConfig {
-  pub enabled: bool,
-  /// Sparks from the edges a resize moves, as it lands.
-  pub on_resize: bool,
-  /// A puff of dust where a window closes.
-  pub on_close: bool,
-  /// Color of the particles. By default each window's border color, or
-  /// white without a border.
+  /// Particles thrown off the edges a resize moves, as it lands.
+  pub on_resize: ParticleEffects,
+  /// Particles thrown off a window's edges where it closes.
+  pub on_close: ParticleEffects,
+  /// Color of the particles. By default each window's border color (white
+  /// without a border), and the overview's accent color in the overview.
   pub color: Option<Color>,
   /// Diameter of a particle.
   pub size: LengthValue,
-  /// How many particles, as a multiple of the default amount.
+  /// How many particles, as a multiple of each style's own amount, up to
+  /// `4`.
   pub density: f32,
   /// How long a particle lasts, give or take.
   pub duration_ms: u32,
 }
 
+impl ParticlesConfig {
+  /// How every burst looks, wherever it is thrown off.
+  #[must_use]
+  pub fn look(&self) -> ParticleLook {
+    #[allow(clippy::cast_precision_loss)]
+    let size = self.size.to_px(0, None) as f32;
+
+    ParticleLook {
+      color: self.color,
+      size,
+      density: self.density,
+      duration: std::time::Duration::from_millis(u64::from(
+        self.duration_ms,
+      )),
+    }
+  }
+}
+
 impl Default for ParticlesConfig {
   fn default() -> Self {
     ParticlesConfig {
-      enabled: false,
-      on_resize: true,
-      on_close: true,
+      on_resize: ParticleEffects::NONE,
+      on_close: ParticleEffects::NONE,
       color: None,
       size: LengthValue::from_px(5),
       density: 1.0,
@@ -2469,10 +2488,13 @@ where
 mod tests {
   use std::str::FromStr;
 
+  use wm_platform::ParticleStyle;
+
   use super::{
     BackdropEffectConfig, BorderEffectConfig, BorderGlow,
     BorderGlowConfig, Color, EasingFunction, GapsConfig, LengthValue,
-    OverviewConfig, OverviewLayout, ScrollingLayoutConfig, SpringParams,
+    OverviewConfig, OverviewEffects, OverviewLayout, ParticlesConfig,
+    ScrollingLayoutConfig, SpringParams,
   };
 
   fn easing(value: &str) -> Result<EasingFunction, serde_json::Error> {
@@ -2617,6 +2639,33 @@ mod tests {
       OverviewConfig::default().layout,
       OverviewLayout::Activities
     );
+  }
+
+  #[test]
+  fn particle_effects_read_none_one_or_several_names() {
+    let effects = |value: serde_json::Value| {
+      serde_json::from_value::<ParticlesConfig>(
+        serde_json::json!({ "on_close": value }),
+      )
+      .map(|config| config.on_close.iter().collect::<Vec<_>>())
+      .ok()
+    };
+
+    assert_eq!(effects("none".into()), Some(vec![]));
+    assert_eq!(effects("dust".into()), Some(vec![ParticleStyle::Dust]));
+    assert_eq!(
+      effects(serde_json::json!(["glints", "confetti"])),
+      Some(vec![ParticleStyle::Confetti, ParticleStyle::Glints])
+    );
+    assert_eq!(effects(serde_json::json!([])), Some(vec![]));
+    assert_eq!(effects("fireworks".into()), None);
+    assert_eq!(effects(serde_json::json!(["sparks", "none"])), None);
+
+    let written = serde_json::to_value(OverviewEffects::default())
+      .expect("effects should serialize");
+    let read = serde_json::from_value::<OverviewEffects>(written)
+      .expect("serialized effects should read back");
+    assert_eq!(read, OverviewEffects::default());
   }
 
   /// `to_overlay_params` must map every field through to the resulting

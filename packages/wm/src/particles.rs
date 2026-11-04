@@ -9,8 +9,7 @@ use wm_common::{
   DisplayState, EffectSet, InvokeCommand, Layout, WindowState,
 };
 use wm_platform::{
-  Color, Dispatcher, ParticleBurst, ParticleEdges, ParticleStyle, Rect,
-  UiThread,
+  Color, Dispatcher, ParticleEdges, ParticleSource, Rect, UiThread,
 };
 
 use crate::{
@@ -62,7 +61,7 @@ pub fn resizes(command: &InvokeCommand) -> bool {
 }
 
 /// Notes that `container`, if a window on screen, is being resized, for
-/// sparks from the edges that move once it lands there. `animates` says
+/// particles off the edges that move once it lands there. `animates` says
 /// whether it glides there or is already in place.
 pub fn note_resize(
   state: &mut WmState,
@@ -86,8 +85,8 @@ pub fn note_resize(
   }
 }
 
-/// Notes that `window` is closing, for a puff of dust where it was on
-/// screen.
+/// Notes that `window` is closing, for particles off its edges where it
+/// was on screen.
 pub fn note_close(state: &mut WmState, window: &WindowContainer) {
   let (Some(rect), Some(monitor)) =
     (on_screen_rect(window), window.monitor())
@@ -114,13 +113,15 @@ pub fn show_particles(state: &mut WmState, config: &UserConfig) {
   let closed = std::mem::take(&mut state.particles.closed);
   let settings = &config.value.animations.particles;
 
-  if !settings.enabled || state.overview.is_shown() {
+  // The overview throws off its own, over itself.
+  if state.overview.is_shown() {
     return;
   }
 
+  let look = settings.look();
   let mut bursts = Vec::new();
 
-  if settings.on_resize {
+  if !settings.on_resize.is_empty() {
     let is_suppressed = state.pending_sync.animations_suppressed();
     let focused_id = state.focused_container().map(|focused| focused.id());
 
@@ -139,40 +140,34 @@ pub fn show_particles(state: &mut WmState, config: &UserConfig) {
       }
 
       let properties = monitor.native_properties();
-      let delay = if resized.animates && !is_suppressed {
-        resize_duration(&window, config)
-      } else {
-        Duration::ZERO
-      };
       let set = window.effect_set(focused_id == Some(window.id()));
-
-      bursts.push(burst(
-        ParticleStyle::Sparks,
-        rect,
-        edges,
+      let burst = look.burst(
+        settings.on_resize,
+        ParticleSource::Edges(rect, edges),
         properties.bounds,
         properties.scale_factor,
-        set,
-        delay,
-        config,
-      ));
+        window_color(set, config),
+      );
+
+      if let Some(mut burst) = burst {
+        // Timed to land with the resize.
+        if resized.animates && !is_suppressed {
+          burst.delay = resize_duration(&window, config);
+        }
+        bursts.push(burst);
+      }
     }
   }
 
-  if settings.on_close {
-    bursts.extend(closed.into_iter().map(|closed| {
-      burst(
-        ParticleStyle::Dust,
-        closed.rect,
-        ParticleEdges::ALL,
-        closed.monitor,
-        closed.scale_factor,
-        closed.set,
-        Duration::ZERO,
-        config,
-      )
-    }));
-  }
+  bursts.extend(closed.into_iter().filter_map(|closed| {
+    look.burst(
+      settings.on_close,
+      ParticleSource::Edges(closed.rect, ParticleEdges::ALL),
+      closed.monitor,
+      closed.scale_factor,
+      window_color(closed.set, config),
+    )
+  }));
 
   if bursts.is_empty() {
     return;
@@ -186,44 +181,18 @@ pub fn show_particles(state: &mut WmState, config: &UserConfig) {
   }
 }
 
-/// A burst in `style` from `edges` of `rect`, on a monitor at `monitor`,
-/// for a window with `set`'s effects.
-#[allow(clippy::too_many_arguments)]
-fn burst(
-  style: ParticleStyle,
-  rect: Rect,
-  edges: ParticleEdges,
-  monitor: Rect,
-  scale_factor: f32,
-  set: EffectSet,
-  delay: Duration,
-  config: &UserConfig,
-) -> ParticleBurst {
-  let settings = &config.value.animations.particles;
-  let white = Color {
-    r: u8::MAX,
-    g: u8::MAX,
-    b: u8::MAX,
-    a: u8::MAX,
-  };
-
-  #[allow(clippy::cast_precision_loss)]
-  let size = settings.size.to_px(0, Some(scale_factor)) as f32;
-
-  ParticleBurst {
-    rect,
-    edges,
-    clip: monitor,
-    style,
-    color: settings
-      .color
-      .or_else(|| border_overlay_params_for(set, config).map(|p| p.color))
-      .unwrap_or(white),
-    size,
-    density: settings.density,
-    duration: Duration::from_millis(u64::from(settings.duration_ms)),
-    delay,
-  }
+/// Color of a window with `set`'s effects: its border's, or white
+/// without one.
+fn window_color(set: EffectSet, config: &UserConfig) -> Color {
+  border_overlay_params_for(set, config).map_or(
+    Color {
+      r: u8::MAX,
+      g: u8::MAX,
+      b: u8::MAX,
+      a: u8::MAX,
+    },
+    |params| params.color,
+  )
 }
 
 /// How long `window`'s resize takes to land: a scrolling layout's columns

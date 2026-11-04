@@ -79,7 +79,10 @@ pub use native_stack_tab_bar::NativeStackTabBar;
 pub use native_surrogate::{NativeSurrogate, SurrogateBatch};
 pub use native_window::*;
 pub use overlay_window::Overlay;
-pub use particles::{ParticleBurst, ParticleEdges, ParticleStyle};
+pub use particles::{
+  ParticleBurst, ParticleEdges, ParticleEffects, ParticleLook,
+  ParticleSource, ParticleStyle,
+};
 pub use platform_event::*;
 pub use resize_session::{
   sample_edge_color_async, EdgeColorCache, ResizeSession, SessionOptions,

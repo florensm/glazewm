@@ -47,8 +47,9 @@ window to the next. A card lifts under the cursor and sinks while held
 down, and an arrow or wheel step with nowhere to go bumps the selection
 that way. A dragged window pops up under the cursor and trails it, and
 once let go of flies into the card it lands on, or back home if it moved
-nowhere; landing sends a ripple and a burst of sparks out of the card. A
-soft glow follows the selection (see `overview.effects`). In the activities, a newly shown workspace's windows fly out of
+nowhere; landing sends a ripple and a burst of particles out of the
+card, over the overview.
+A soft glow follows the selection (see `overview.effects`). In the activities, a newly shown workspace's windows fly out of
 its miniature while the last one's shrink back into theirs. A click on a
 workspace goes there at once, zooming into it as `Enter` does: in the
 activities, its windows fly out of its miniature to where they are on
@@ -308,17 +309,19 @@ overview:
     pulse: false
 
     # A ring spreading out of a card as it is clicked, or as a window
-    # lands on it.
+    # lands on it, and drawing in on where a window closed from the
+    # overview was, once it is gone.
     ripples: false
 
-    # Whether a window closed from the overview puffs away once it is
-    # gone: a ring drawing in on where it was, and sparks (as many as
-    # `sparks`) out of it.
-    puff: true
-
-    # Sparks bursting out of where a dropped window lands; 0 for none, at
-    # most 48.
-    sparks: 14
+    # Particles bursting out of where a dropped window lands, and off the
+    # edges of a window closed from the overview once it is gone, both
+    # shown over the overview. Each takes "none", a style, or a list of
+    # styles that burst together, e.g. ["confetti", "glints"]: "sparks",
+    # "dust", "embers", "confetti", "glints" or "bubbles". Their color,
+    # size, density and duration are `animations.particles`'s, with the
+    # accent color unless that sets one.
+    drop_particles: "sparks"
+    close_particles: "dust"
 
     # Whether a card wobbles as a window lands on it.
     jelly: true

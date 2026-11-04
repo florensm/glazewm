@@ -47,7 +47,9 @@ use windows::{
   UI::{
     Color,
     Composition::{
-      CompositionColorBrush, CompositionColorGradientStop,
+      CompositionBrush, CompositionColorBrush,
+      CompositionColorGradientStop,
+      CompositionColorGradientStopCollection,
       CompositionLinearGradientBrush, CompositionMappingMode,
       CompositionPropertySet, CompositionRadialGradientBrush,
       CompositionRoundedRectangleGeometry, CompositionSpriteShape,
@@ -1733,9 +1735,9 @@ fn build_drop_indicator_tree(
   })
 }
 
-/// A particle burst's visual tree: a soft dot per particle, each played
-/// along its planned path by the compositor as it fades, with nothing
-/// left for the caller to drive.
+/// A particle burst's visual tree: a sprite per particle, drawn in its
+/// style and played along its planned path by the compositor as it fades,
+/// turns and tumbles, with nothing left for the caller to drive.
 pub(crate) struct ParticleVisual {
   /// Binds the visual tree to the burst's `HWND`. Kept alive but never
   /// touched again.
@@ -1744,79 +1746,205 @@ pub(crate) struct ParticleVisual {
 }
 
 impl ParticleVisual {
-  /// Builds `plan`'s particles in `style` and `color` for `hwnd`, which
-  /// covers the plan's bounds, and sets them off.
+  /// Builds `plan`'s particles for `hwnd`, which covers the plan's
+  /// bounds, and sets them off.
   pub(crate) fn create(
     hwnd: HWND,
     plan: &BurstPlan,
-    style: ParticleStyle,
-    color: crate::Color,
   ) -> crate::Result<Self> {
     let hwnd_raw = hwnd.0;
     let plan = plan.clone();
 
     with_composition_thread(move |compositor, _| {
-      build_particle_tree(&compositor, HWND(hwnd_raw), &plan, style, color)
+      build_particle_tree(&compositor, HWND(hwnd_raw), &plan)
     })
   }
 }
 
-/// A particle's look: a dot of `color` fading out to its rim, with the
-/// white-hot core of a spark or the even haze of dust.
-fn particle_brush(
+/// A piece of a particle's look: `brush` filling `size` (a multiple of
+/// the particle's own), centered at `center` (a share of the particle's
+/// size), turned `angle` degrees.
+struct ParticlePart {
+  brush: CompositionBrush,
+  size: (f32, f32),
+  center: (f32, f32),
+  angle: f32,
+}
+
+impl ParticlePart {
+  /// A part filling the whole particle.
+  fn whole(brush: CompositionBrush) -> Self {
+    Self {
+      brush,
+      size: (1.0, 1.0),
+      center: (0.5, 0.5),
+      angle: 0.0,
+    }
+  }
+}
+
+/// A brush fading through `stops` from its middle out to its rim,
+/// stretched over whatever it fills.
+fn radial_brush(
+  compositor: &Compositor,
+  stops: &[(f32, crate::Color)],
+) -> windows::core::Result<CompositionBrush> {
+  let brush = compositor.CreateRadialGradientBrush()?;
+  brush.SetMappingMode(CompositionMappingMode::Relative)?;
+  brush.SetEllipseCenter(Vector2 { X: 0.5, Y: 0.5 })?;
+  brush.SetEllipseRadius(Vector2 { X: 0.5, Y: 0.5 })?;
+  append_stops(compositor, &brush.ColorStops()?, stops)?;
+  brush.cast()
+}
+
+/// A brush running through `stops` from its top left to its bottom right.
+fn diagonal_brush(
+  compositor: &Compositor,
+  stops: &[(f32, crate::Color)],
+) -> windows::core::Result<CompositionBrush> {
+  let brush = compositor.CreateLinearGradientBrush()?;
+  brush.SetMappingMode(CompositionMappingMode::Relative)?;
+  brush.SetStartPoint(Vector2 { X: 0.0, Y: 0.0 })?;
+  brush.SetEndPoint(Vector2 { X: 1.0, Y: 1.0 })?;
+  append_stops(compositor, &brush.ColorStops()?, stops)?;
+  brush.cast()
+}
+
+fn append_stops(
+  compositor: &Compositor,
+  collection: &CompositionColorGradientStopCollection,
+  stops: &[(f32, crate::Color)],
+) -> windows::core::Result<()> {
+  for (offset, color) in stops {
+    collection.Append(
+      &compositor.CreateColorGradientStopWithOffsetAndColor(
+        *offset,
+        to_ui_color(*color),
+      )?,
+    )?;
+  }
+  Ok(())
+}
+
+/// The parts a particle of `style` in `color` is drawn with; the first
+/// fills the particle itself, the rest sit on it.
+fn particle_parts(
   compositor: &Compositor,
   style: ParticleStyle,
   color: crate::Color,
-) -> windows::core::Result<CompositionRadialGradientBrush> {
-  let color = crate::Color {
-    a: u8::MAX,
-    ..color
-  };
-  let with_alpha = |a: u8| to_ui_color(crate::Color { a, ..color });
-  let white = crate::Color {
+) -> windows::core::Result<Vec<ParticlePart>> {
+  const WHITE: crate::Color = crate::Color {
     r: u8::MAX,
     g: u8::MAX,
     b: u8::MAX,
     a: u8::MAX,
   };
-
-  let stops = match style {
-    ParticleStyle::Sparks => [
-      (0.0, to_ui_color(color.lerp(&white, 0.7))),
-      (0.35, with_alpha(220)),
-      (1.0, with_alpha(0)),
-    ],
-    ParticleStyle::Dust => [
-      (0.0, with_alpha(170)),
-      (0.5, with_alpha(90)),
-      (1.0, with_alpha(0)),
-    ],
+  const BLACK: crate::Color = crate::Color {
+    r: 0,
+    g: 0,
+    b: 0,
+    a: u8::MAX,
   };
 
-  let brush = compositor.CreateRadialGradientBrush()?;
-  brush.SetMappingMode(CompositionMappingMode::Relative)?;
-  brush.SetEllipseCenter(Vector2 { X: 0.5, Y: 0.5 })?;
-  brush.SetEllipseRadius(Vector2 { X: 0.5, Y: 0.5 })?;
-  let color_stops = brush.ColorStops()?;
-  for (offset, color) in stops {
-    color_stops.Append(
-      &compositor
-        .CreateColorGradientStopWithOffsetAndColor(offset, color)?,
-    )?;
-  }
+  let color = crate::Color {
+    a: u8::MAX,
+    ..color
+  };
+  let tint = |a: u8| crate::Color { a, ..color };
+  let white = |a: u8| crate::Color { a, ..WHITE };
+  // `color` heated toward white, as `heat` goes from 0 to 1.
+  let hot = |heat: f32, a: u8| crate::Color {
+    a,
+    ..color.lerp(&WHITE, heat)
+  };
+  let radial = |stops: &[(f32, crate::Color)]| {
+    radial_brush(compositor, stops).map(ParticlePart::whole)
+  };
 
-  Ok(brush)
+  Ok(match style {
+    ParticleStyle::Sparks => vec![radial(&[
+      (0.0, hot(0.7, u8::MAX)),
+      (0.35, tint(220)),
+      (1.0, tint(0)),
+    ])?],
+    ParticleStyle::Dust => {
+      vec![radial(&[
+        (0.0, tint(170)),
+        (0.5, tint(90)),
+        (1.0, tint(0)),
+      ])?]
+    }
+    ParticleStyle::Embers => vec![radial(&[
+      (0.0, hot(0.45, u8::MAX)),
+      (0.3, tint(235)),
+      (0.6, tint(90)),
+      (1.0, tint(0)),
+    ])?],
+    // A flat fleck with a sheen across it, which catches the eye as it
+    // turns and tumbles.
+    ParticleStyle::Confetti => {
+      vec![ParticlePart::whole(diagonal_brush(
+        compositor,
+        &[
+          (0.0, hot(0.35, u8::MAX)),
+          (0.45, color),
+          (1.0, color.lerp(&BLACK, 0.2)),
+        ],
+      )?)]
+    }
+    // A white-hot core crossed by two long, thin rays.
+    ParticleStyle::Glints => {
+      let ray = radial_brush(
+        compositor,
+        &[(0.0, hot(0.85, u8::MAX)), (0.35, tint(160)), (1.0, tint(0))],
+      )?;
+      let ray = |angle: f32| ParticlePart {
+        brush: ray.clone(),
+        size: (2.6, 0.16),
+        center: (0.5, 0.5),
+        angle,
+      };
+
+      vec![
+        radial(&[
+          (0.0, white(u8::MAX)),
+          (0.3, hot(0.6, 220)),
+          (1.0, tint(0)),
+        ])?,
+        ray(0.0),
+        ray(90.0),
+      ]
+    }
+    // A thin ring around a faint film, with a highlight up and to the
+    // left.
+    ParticleStyle::Bubbles => vec![
+      radial(&[
+        (0.0, tint(18)),
+        (0.7, tint(40)),
+        (0.84, hot(0.3, 210)),
+        (0.93, tint(110)),
+        (1.0, tint(0)),
+      ])?,
+      ParticlePart {
+        brush: radial_brush(
+          compositor,
+          &[(0.0, white(230)), (1.0, white(0))],
+        )?,
+        size: (0.28, 0.28),
+        center: (0.32, 0.3),
+        angle: 0.0,
+      },
+    ],
+  })
 }
 
 /// Builds a particle burst's visual tree and starts every particle's
 /// animations, each after its own delay, before which it is transparent.
-#[allow(clippy::cast_precision_loss)]
+#[allow(clippy::cast_precision_loss, clippy::too_many_lines)]
 fn build_particle_tree(
   compositor: &Compositor,
   hwnd: HWND,
   plan: &BurstPlan,
-  style: ParticleStyle,
-  color: crate::Color,
 ) -> windows::core::Result<ParticleVisual> {
   // SAFETY: `hwnd` is a valid, already-created top-level window.
   let target = unsafe {
@@ -1829,34 +1957,68 @@ fn build_particle_tree(
   root.SetSize(rect_size(&plan.bounds))?;
   target.SetRoot(&root)?;
 
-  let brush = particle_brush(compositor, style, color)?;
-  // The path's points are already spaced over time, so it runs straight
-  // between them; the fade speeds up toward the end.
+  // Every key is already where it should be at its time, so each runs
+  // straight to the next.
   let linear = compositor.CreateLinearEasingFunction()?;
-  let fade_out = compositor.CreateCubicBezierEasingFunction(
-    Vector2 { X: 0.4, Y: 0.0 },
-    Vector2 { X: 1.0, Y: 1.0 },
-  )?;
   let children = root.Children()?;
+  let point = |(x, y): (f32, f32)| Vector3 { X: x, Y: y, Z: 0.0 };
+  let scale = |(x, y): (f32, f32)| Vector3 { X: x, Y: y, Z: 1.0 };
+
+  // Each look's parts, made once and shared by its particles.
+  let mut looks =
+    Vec::<(ParticleStyle, crate::Color, Vec<ParticlePart>)>::new();
 
   for particle in &plan.particles {
-    let point = |(x, y): (f32, f32)| Vector3 { X: x, Y: y, Z: 0.0 };
-    let half = particle.size / 2.0;
+    let made = looks.iter().position(|(style, color, _)| {
+      *style == particle.style && *color == particle.color
+    });
+    let index = if let Some(index) = made {
+      index
+    } else {
+      let parts =
+        particle_parts(compositor, particle.style, particle.color)?;
+      looks.push((particle.style, particle.color, parts));
+      looks.len() - 1
+    };
+    let Some((body, parts)) = looks[index].2.split_first() else {
+      continue;
+    };
+
+    let (width, height) = particle.size;
+    let scale_keys = particle.scale_keys();
 
     let sprite = compositor.CreateSpriteVisual()?;
-    sprite.SetBrush(&brush)?;
+    sprite.SetBrush(&body.brush)?;
     sprite.SetSize(Vector2 {
-      X: particle.size,
-      Y: particle.size,
+      X: width,
+      Y: height,
     })?;
     sprite.SetAnchorPoint(Vector2 { X: 0.5, Y: 0.5 })?;
-    sprite.SetCenterPoint(Vector3 {
-      X: half,
-      Y: half,
-      Z: 0.0,
-    })?;
+    sprite.SetCenterPoint(point((width / 2.0, height / 2.0)))?;
     sprite.SetOffset(point(particle.path[0]))?;
+    sprite.SetRotationAngleInDegrees(particle.angle)?;
+    if let Some((_, first)) = scale_keys.first() {
+      sprite.SetScale(scale(*first))?;
+    }
     sprite.SetOpacity(0.0)?;
+
+    for part in parts {
+      let size = Vector2 {
+        X: width * part.size.0,
+        Y: height * part.size.1,
+      };
+      let child = compositor.CreateSpriteVisual()?;
+      child.SetBrush(&part.brush)?;
+      child.SetSize(size)?;
+      child.SetAnchorPoint(Vector2 { X: 0.5, Y: 0.5 })?;
+      child.SetCenterPoint(point((size.X / 2.0, size.Y / 2.0)))?;
+      child.SetOffset(point((
+        width * part.center.0,
+        height * part.center.1,
+      )))?;
+      child.SetRotationAngleInDegrees(part.angle)?;
+      sprite.Children()?.InsertAtTop(&child)?;
+    }
     children.InsertAtTop(&sprite)?;
 
     let path = compositor.CreateVector3KeyFrameAnimation()?;
@@ -1869,42 +2031,42 @@ fn build_particle_tree(
     }
 
     let fade = compositor.CreateScalarKeyFrameAnimation()?;
-    fade.InsertKeyFrameWithEasingFunction(
-      0.0,
-      particle.opacity,
-      &linear,
-    )?;
-    fade.InsertKeyFrameWithEasingFunction(1.0, 0.0, &fade_out)?;
+    for (progress, opacity) in &particle.opacity {
+      fade
+        .InsertKeyFrameWithEasingFunction(*progress, *opacity, &linear)?;
+    }
 
-    let scale = compositor.CreateVector3KeyFrameAnimation()?;
-    let end = particle.end_scale;
-    scale.InsertKeyFrameWithEasingFunction(
-      0.0,
-      Vector3 {
-        X: 1.0,
-        Y: 1.0,
-        Z: 1.0,
-      },
-      &linear,
-    )?;
-    scale.InsertKeyFrameWithEasingFunction(
-      1.0,
-      Vector3 {
-        X: end,
-        Y: end,
-        Z: 1.0,
-      },
-      &linear,
-    )?;
+    let grow = compositor.CreateVector3KeyFrameAnimation()?;
+    for (progress, value) in &scale_keys {
+      grow.InsertKeyFrameWithEasingFunction(
+        *progress,
+        scale(*value),
+        &linear,
+      )?;
+    }
 
-    for (property, animation) in [
-      (h!("Offset"), path.cast::<KeyFrameAnimation>()?),
-      (h!("Opacity"), fade.cast::<KeyFrameAnimation>()?),
-      (h!("Scale"), scale.cast::<KeyFrameAnimation>()?),
-    ] {
+    let start = |property: &HSTRING, animation: KeyFrameAnimation| {
       animation.SetDuration(particle.duration.into())?;
       animation.SetDelayTime(particle.delay.into())?;
-      sprite.StartAnimation(property, &animation)?;
+      sprite.StartAnimation(property, &animation)
+    };
+    start(h!("Offset"), path.cast()?)?;
+    start(h!("Opacity"), fade.cast()?)?;
+    start(h!("Scale"), grow.cast()?)?;
+
+    if particle.spin.abs() > f32::EPSILON {
+      let turn = compositor.CreateScalarKeyFrameAnimation()?;
+      turn.InsertKeyFrameWithEasingFunction(
+        0.0,
+        particle.angle,
+        &linear,
+      )?;
+      turn.InsertKeyFrameWithEasingFunction(
+        1.0,
+        particle.angle + particle.spin,
+        &linear,
+      )?;
+      start(h!("RotationAngleInDegrees"), turn.cast()?)?;
     }
   }
 

@@ -1,20 +1,22 @@
 //! The overview's flourishes on a screen: the selection's glow, ripples
-//! out of cards and sparks out of where a window lands. Each is a picture
-//! drawn once and only moved, stretched and faded after.
+//! out of cards, and particles out of where a window lands or closes.
+//! The glow and ripples are pictures drawn once and only moved,
+//! stretched and faded after; particles are bursts the compositor plays
+//! in windows of their own over the screen.
 
 use std::time::Instant;
 
-use windows::Win32::Foundation::{HWND, RECT};
+use windows::Win32::Foundation::HWND;
 
 use super::{overlays::RING_RADIUS, Screen};
 use crate::{
   dwm_thumbnail::Thumbnail,
   overview_chrome::{with_alpha, SliceLook},
-  overview_effects::{pulse, seed, Burst, Ripple},
+  overview_effects::{pulse, Ripple},
   overview_layout::{chrome_opacity, CardMetrics, RectF},
   overview_overlays::{Highlight, NineSlice},
-  overview_thumbnails::{to_opacity, to_win32, Picture},
-  Color, OverviewEffects, OverviewStyle, Rect,
+  OverviewEffects, OverviewStyle, ParticleEdges, ParticleEffects,
+  ParticleSource,
 };
 
 /// How far the glow reaches past the selection's ring, in logical pixels.
@@ -27,20 +29,11 @@ const RIPPLE_REACH: f32 = 36.0;
 /// Most ripples showing at once.
 const RIPPLES: usize = 3;
 
-/// How fast sparks fly out, in logical pixels per second, and about how
-/// big they are, in logical pixels.
-const SPARK_SPEED: f32 = 620.0;
-const SPARK_SIZE: f32 = 9.0;
-
 /// How far a card swells as a window lands on it, relative to its size.
 const JELLY: f32 = 0.07;
 
 /// How far a closed window's ring draws in, of the way to its middle.
 const PUFF_DEPTH: f32 = 0.7;
-
-/// Size a spark is drawn at, in logical pixels: larger than it shows, so
-/// it stays round when scaled.
-const SPARK_DRAWN: f32 = 16.0;
 
 /// The overview's flourishes on a screen.
 pub(super) struct Effects {
@@ -54,13 +47,6 @@ pub(super) struct Effects {
 
   /// Slot the next ripple takes, going round them.
   next_ripple: usize,
-
-  /// A spark, shown once per spark of a burst, and its color and size.
-  spark: Picture,
-  spark_drawn: Option<(Color, i32)>,
-  sparks: Vec<Thumbnail>,
-
-  burst: Option<Burst>,
 }
 
 impl Effects {
@@ -73,10 +59,6 @@ impl Effects {
         .map(|_| NineSlice::new().map(|slices| (slices, None)))
         .collect::<Option<_>>()?,
       next_ripple: 0,
-      spark: Picture::new()?,
-      spark_drawn: None,
-      sparks: Vec::new(),
-      burst: None,
     })
   }
 
@@ -85,16 +67,12 @@ impl Effects {
     self.glow.glide.retune(highlight_ms, bounce);
   }
 
-  /// Registers them on `host`, bottom to top, with room for `sparks`
-  /// sparks.
-  pub(super) fn register(&mut self, host: HWND, sparks: u32) {
+  /// Registers them on `host`, bottom to top.
+  pub(super) fn register(&mut self, host: HWND) {
     self.glow.slices.register(host);
     for (slices, _) in &mut self.ripples {
       slices.register(host);
     }
-    self.sparks = (0..sparks)
-      .filter_map(|_| Thumbnail::register(host, self.spark.window))
-      .collect();
   }
 
   /// Hands their thumbnails over to `retired`, still registered.
@@ -103,7 +81,6 @@ impl Effects {
     for (slices, _) in &mut self.ripples {
       slices.retire(retired);
     }
-    retired.append(&mut self.sparks);
   }
 
   /// Draws them in `style`, at `metrics`' scale; each only if its look
@@ -129,19 +106,6 @@ impl Effects {
         accent,
       ));
     }
-
-    let size = px(SPARK_DRAWN).max(2);
-    if self.spark_drawn != Some((accent, size)) {
-      self.spark.draw((size, size), |surface| {
-        surface.pixels().fill(0);
-        surface.canvas().fill_rounded_rect(
-          &Rect::from_xy(0, 0, size, size),
-          size / 2,
-          accent,
-        );
-      });
-      self.spark_drawn = Some((accent, size));
-    }
   }
 
   /// Gone at once, e.g. on a new open.
@@ -150,7 +114,6 @@ impl Effects {
     for (_, ripple) in &mut self.ripples {
       *ripple = None;
     }
-    self.burst = None;
     self.pulse_from = Instant::now();
   }
 
@@ -165,13 +128,6 @@ impl Effects {
         if !ripple.step(dt) {
           *slot = None;
         }
-      }
-    }
-
-    if let Some(burst) = &mut self.burst {
-      is_moving = true;
-      if !burst.step(dt) {
-        self.burst = None;
       }
     }
 
@@ -213,26 +169,6 @@ impl Effects {
       }
     }
 
-    let (width, height) = self.spark.size();
-    let source = RECT {
-      right: width,
-      bottom: height,
-      ..Default::default()
-    };
-    let clip_rect = to_win32(clip);
-    let mut sparks = self.burst.iter().flat_map(Burst::sparks);
-    for thumbnail in &mut self.sparks {
-      match sparks.next() {
-        Some((rect, alpha)) if alpha > 0.002 => thumbnail.place(
-          source,
-          to_win32(&rect),
-          &clip_rect,
-          to_opacity(alpha * chrome),
-        ),
-        _ => thumbnail.hide(),
-      }
-    }
-
     is_gliding || (enabled.pulse && self.glow.glide.shown().is_some())
   }
 
@@ -246,9 +182,8 @@ impl Effects {
     self.next_ripple = index + 1;
   }
 
-  /// Puffs a closed window away from `rect`: a ring drawing in on it, and
-  /// sparks out of its middle.
-  fn puff(&mut self, rect: RectF, scale_factor: f32) {
+  /// Sends a ring drawing in on `rect`, where a window closed.
+  fn draw_in(&mut self, rect: RectF, scale_factor: f32) {
     // Stops short of where the ring's corners would meet.
     let corners = RING_RADIUS * scale_factor;
     let reach = (rect.w.min(rect.h) / 2.0 - corners).max(0.0) * PUFF_DEPTH;
@@ -258,21 +193,6 @@ impl Effects {
       *slot = Some(Ripple::new(rect, -reach));
     }
     self.next_ripple = index + 1;
-
-    self.burst(rect.center(), scale_factor);
-  }
-
-  /// Bursts as many sparks as were registered out of (`x`, `y`).
-  fn burst(&mut self, center: (f32, f32), scale_factor: f32) {
-    self.burst = (!self.sparks.is_empty()).then(|| {
-      Burst::new(
-        center,
-        self.sparks.len(),
-        SPARK_SPEED * scale_factor,
-        SPARK_SIZE * scale_factor,
-        seed(),
-      )
-    });
   }
 }
 
@@ -299,35 +219,65 @@ impl Screen {
   }
 
   /// Celebrates a window landing on card `index`: a ripple out of it,
-  /// sparks out of its middle, and a wobble.
+  /// particles out of its middle, and a wobble.
   pub(super) fn celebrate(&mut self, index: usize) {
     self.ripple(index);
 
-    if self.enabled_effects().jelly {
+    let enabled = self.enabled_effects();
+    if enabled.jelly {
       if let Some(card) = self.cards.get_mut(index) {
         card.scale.kick(card.scale.target * JELLY);
       }
     }
 
-    let scale_factor = self.metrics.scale_factor;
-    if let (Some(rect), Some(effects)) =
-      (self.landing_rect(index), &mut self.effects)
-    {
-      effects.burst(rect.center(), scale_factor);
-      self.is_dirty = true;
+    if let Some(rect) = self.landing_rect(index) {
+      let (x, y) = rect.translate(self.area.x, self.area.y).center();
+      self.throw_particles(
+        enabled.drop_particles,
+        ParticleSource::Point(x, y),
+      );
     }
   }
 
-  /// Puffs a window closed from the overview away from `rect`, where it
-  /// showed.
+  /// Sees a window closed from the overview off from `rect`, where it
+  /// showed: a ring drawing in on it, and particles off its edges.
   pub(super) fn puff(&mut self, rect: RectF) {
-    if !self.enabled_effects().puff {
-      return;
+    let enabled = self.enabled_effects();
+
+    if enabled.ripples {
+      let scale_factor = self.metrics.scale_factor;
+      if let Some(effects) = &mut self.effects {
+        effects.draw_in(rect, scale_factor);
+        self.is_dirty = true;
+      }
     }
-    let scale_factor = self.metrics.scale_factor;
-    if let Some(effects) = &mut self.effects {
-      effects.puff(rect, scale_factor);
-      self.is_dirty = true;
+
+    let on_screen = rect.translate(self.area.x, self.area.y).to_rect();
+    self.throw_particles(
+      enabled.close_particles,
+      ParticleSource::Edges(on_screen, ParticleEdges::ALL),
+    );
+  }
+
+  /// Throws off `effects` from `source`, on screen, above this screen.
+  fn throw_particles(
+    &self,
+    effects: ParticleEffects,
+    source: ParticleSource,
+  ) {
+    let Some(style) = self.style() else {
+      return;
+    };
+
+    let burst = style.particles.burst(
+      effects,
+      source,
+      self.area.to_rect(),
+      self.metrics.scale_factor,
+      style.accent,
+    );
+    if let Some(burst) = burst {
+      burst.show_above(self.hwnd);
     }
   }
 
@@ -360,16 +310,11 @@ impl Screen {
     })
   }
 
-  /// Registers the effects' thumbnails on its window, with room for as
-  /// many sparks as the style bursts into.
+  /// Registers the effects' thumbnails on its window.
   pub(super) fn register_effects(&mut self) {
-    let sparks = self
-      .enabled_effects()
-      .sparks
-      .min(OverviewEffects::MAX_SPARKS);
     let host = self.hwnd;
     if let Some(effects) = &mut self.effects {
-      effects.register(host, sparks);
+      effects.register(host);
     }
   }
 }

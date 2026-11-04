@@ -134,13 +134,21 @@ file), `git pull` on `tryout/todo-cleanup`, `cargo build --release`, run.
    focus change fades it in and out. The rim is a bright hairline on the
    ring's inner edge. Also a quick look at frame times with both on
    while resizing a column.
-9. **Particles** (`animations.particles.enabled: true`): sparks from the
-   edges a keyboard or mouse resize moves, starting as the resize lands;
-   a puff of dust where a window closes (`close` command, the app's own
-   close button, or the app hiding itself). Check they never take a click,
+9. **Particles** (`animations.particles.on_resize: "sparks"`,
+   `on_close: "dust"`): particles off the edges a keyboard or mouse resize
+   moves, starting as the resize lands; off a window's edges where it
+   closes (`close` command, the app's own close button, or the app hiding
+   itself). Go through every style, and a list of two or three at once:
+   confetti flecks spin and flutter edge on, bubbles are rings with a
+   highlight, glints are four-ray twinkles. Check they never take a click,
    never show over the overview, vanish cleanly, and that holding a resize
    key doesn't pile them up (at most 8 bursts at once). `GLAZEWM_PERF`
    frame times should not move, as the compositor plays them.
+10. **Overview particles** (`overview.effects.drop_particles`,
+    `close_particles`): drop a window on another card, and close one from
+    the overview; the burst shows over the overview, also once the WM
+    moves windows and the overview raises itself again, and clicks still
+    reach the cards under it.
 
 If bars or flicker show, isolate them with `GLAZEWM_ISOLATE` (below), one
 restart per flag: `noring`, `nobackdrop`, then `live`. With a long
