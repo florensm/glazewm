@@ -34,9 +34,18 @@ pub struct FocusMix {
 #[derive(Debug, Default)]
 pub struct FocusFades {
   fades: HashMap<Uuid, FocusFade>,
+  /// The window whose overlays are drawn in the focused style: the WM's
+  /// focused window as of the last sync, ahead of the OS confirming it.
+  styled_focus: Option<Uuid>,
 }
 
 impl FocusFades {
+  /// Notes `focused` as the window drawn in the focused style from now on,
+  /// returning the one drawn in it until now.
+  pub fn restyle_focus(&mut self, focused: Option<Uuid>) -> Option<Uuid> {
+    std::mem::replace(&mut self.styled_focus, focused)
+  }
+
   /// Fades `window_id` from `from`'s style to `to`'s, starting `now`.
   ///
   /// One turned back to where its running fade came from carries on from
@@ -212,6 +221,17 @@ mod tests {
 
     let mix = fades.mix(&id, at(start, 40), &config).expect("fading");
     assert!((mix.t - 0.4).abs() < 0.02);
+  }
+
+  #[test]
+  fn restyle_focus_hands_back_the_previous_window() {
+    let mut fades = FocusFades::default();
+    let (a, b) = (Uuid::new_v4(), Uuid::new_v4());
+
+    assert_eq!(fades.restyle_focus(Some(a)), None);
+    assert_eq!(fades.restyle_focus(Some(a)), Some(a));
+    assert_eq!(fades.restyle_focus(Some(b)), Some(a));
+    assert_eq!(fades.restyle_focus(None), Some(b));
   }
 
   #[test]

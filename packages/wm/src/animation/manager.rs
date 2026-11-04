@@ -940,6 +940,11 @@ impl AnimationManager {
     }
   }
 
+  /// See [`FocusFades::restyle_focus`].
+  pub fn restyle_focus(&mut self, focused: Option<Uuid>) -> Option<Uuid> {
+    self.focus_fades.restyle_focus(focused)
+  }
+
   /// Where `window_id` is in a fade toward `set`'s style, if it is fading
   /// toward it.
   pub fn focus_mix(

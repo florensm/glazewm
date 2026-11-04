@@ -72,11 +72,7 @@ pub fn platform_sync(
 
   // Before the scroll view below draws columns moving with the focus
   // change, so their peeks show the fade from their first frame.
-  if state.pending_sync.needs_focused_effect_update()
-    && !state.pending_sync.needs_all_effects_update()
-  {
-    start_focus_fades(state, &focused_container, config);
-  }
+  start_focus_fades(state, &focused_container, config);
 
   // A focus change or relayout can scroll a scrolling layout, which then
   // moves the rest of its columns too. That includes focus the OS moved
@@ -268,6 +264,11 @@ pub(crate) fn apply_focus_effects(
 /// losing it from their old focus state's style to their new one's (see
 /// `FocusFades`), rather than switching them at once.
 ///
+/// Keyed to the WM's focus, which overlays and peeks are drawn from,
+/// rather than `prev_effects_window`: that follows the OS confirming
+/// focus, which a scrolling layout defers until its scroll lands, long
+/// after the overlays took the new style.
+///
 /// Their transparency still switches at once: a stand-in that takes a
 /// semi-transparent window over hides it by its alpha and gives back the
 /// alpha it found, so one faded while it moved would keep an alpha from
@@ -277,20 +278,18 @@ fn start_focus_fades(
   focused_container: &Container,
   config: &UserConfig,
 ) {
-  if !config.value.animations.focus_change.enabled
+  let focused = focused_container.as_window_container().ok();
+  let focused_id = focused.as_ref().map(CommonGetters::id);
+  let previous_id = state.animation_manager.restyle_focus(focused_id);
+
+  if previous_id == focused_id
+    || !config.value.animations.focus_change.enabled
     || animations_suppressed(state)
   {
     return;
   }
 
-  let focused = focused_container.as_window_container().ok();
-  let previous = state.prev_effects_window.clone();
-  if previous.as_ref().map(CommonGetters::id)
-    == focused.as_ref().map(CommonGetters::id)
-  {
-    return;
-  }
-
+  let previous = previous_id.and_then(|id| state.window_by_id(id));
   let fades = focused
     .map(|window| (window.effect_set(false), EffectSet::Focused, window))
     .into_iter()
