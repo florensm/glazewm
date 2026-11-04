@@ -47,7 +47,8 @@ use windows::{
   UI::{
     Color,
     Composition::{
-      CompositionColorBrush, CompositionMappingMode,
+      CompositionColorBrush, CompositionColorGradientStop,
+      CompositionLinearGradientBrush, CompositionMappingMode,
       CompositionPropertySet, CompositionRadialGradientBrush,
       CompositionRoundedRectangleGeometry, CompositionSpriteShape,
       CompositionSurfaceBrush, Compositor, ContainerVisual,
@@ -949,7 +950,11 @@ pub(crate) struct BorderVisual {
   /// the previous design needed a separate `ContainerVisual` for.
   root: ShapeVisual,
   shape: CompositionSpriteShape,
-  stroke_brush: CompositionColorBrush,
+  /// Runs from the ring's top edge, in its lit color, down to
+  /// [`RIM_FALLOFF`] of its height, in its color, which it keeps below.
+  stroke_brush: CompositionLinearGradientBrush,
+  /// The lit and the plain color's stops, in that order.
+  stroke_stops: [CompositionColorGradientStop; 2],
   geometry: CompositionRoundedRectangleGeometry,
   /// Cuts the ring short of its own edges. Zero except while the ring
   /// slides with a workspace switch.
@@ -960,6 +965,10 @@ pub(crate) struct BorderVisual {
   /// depends on all three) from the other two's current values.
   ring: Cell<Ring>,
 }
+
+/// How far down a ring, as a fraction of its height, its highlight fades
+/// out (see `BorderOverlayParams::highlight`).
+const RIM_FALLOFF: f32 = 0.35;
 
 /// The inputs a stroked ring's geometry is derived from: the overlay's own
 /// (already-outset) size in pixels, the border width the stroke is drawn
@@ -1027,6 +1036,10 @@ impl BorderVisual {
     let (offset, size, corner_radius) = ring_geometry(ring);
 
     self.root.SetSize(ring.size)?;
+    self.stroke_brush.SetEndPoint(Vector2 {
+      X: 0.0,
+      Y: ring.size.Y * RIM_FALLOFF,
+    })?;
     self.shape.SetStrokeThickness(ring.width.max(0.0))?;
     self.geometry.SetOffset(offset)?;
     self.geometry.SetSize(size)?;
@@ -1053,12 +1066,15 @@ impl BorderVisual {
     })?)
   }
 
-  /// Updates the ring's color.
-  pub(crate) fn set_color(
+  /// Updates the ring's color, `lit` at its top edge.
+  pub(crate) fn set_colors(
     &self,
     color: crate::Color,
+    lit: crate::Color,
   ) -> crate::Result<()> {
-    self.stroke_brush.SetColor(to_ui_color(color))?;
+    let [lit_stop, stop] = &self.stroke_stops;
+    lit_stop.SetColor(to_ui_color(lit))?;
+    stop.SetColor(to_ui_color(color))?;
     Ok(())
   }
 
@@ -1141,8 +1157,25 @@ fn build_border_visual_tree(
 
   let geometry = compositor.CreateRoundedRectangleGeometry()?;
 
-  let stroke_brush =
-    compositor.CreateColorBrushWithColor(to_ui_color(params.color))?;
+  // In the shape's own pixels, as the end point is set from the ring's
+  // height (see `BorderVisual::apply_ring`).
+  let stroke_brush = compositor.CreateLinearGradientBrush()?;
+  stroke_brush.SetMappingMode(CompositionMappingMode::Absolute)?;
+  let stroke_stops = [
+    compositor.CreateColorGradientStopWithOffsetAndColor(
+      0.0,
+      to_ui_color(params.lit_color()),
+    )?,
+    compositor.CreateColorGradientStopWithOffsetAndColor(
+      1.0,
+      to_ui_color(params.color),
+    )?,
+  ];
+  let stops = stroke_brush.ColorStops()?;
+  for stop in &stroke_stops {
+    stops.Append(stop)?;
+  }
+
   let shape = compositor.CreateSpriteShapeWithGeometry(&geometry)?;
   shape.SetStrokeBrush(&stroke_brush)?;
 
@@ -1160,6 +1193,7 @@ fn build_border_visual_tree(
     root,
     shape,
     stroke_brush,
+    stroke_stops,
     geometry,
     clip,
     ring: Cell::new(Ring {

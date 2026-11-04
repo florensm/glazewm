@@ -14,6 +14,7 @@ window_effects:
       width: "2px"
       # Defaults to the window's corner radius plus the width.
       # radius: "12px"
+      highlight: 0.0      # 0 to 1. Lightens the top edge, like lit glass.
 
     hide_title_bar:
       enabled: false      # Can break rendering in some apps.

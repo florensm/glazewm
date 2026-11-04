@@ -1290,6 +1290,10 @@ pub struct BorderEffectConfig {
   /// `corner_style`'s fixed presets (`square`/`small_rounded`/`rounded`)
   /// allow.
   pub radius: Option<LengthValue>,
+
+  /// How far the border lightens toward white at its top edge, fading out
+  /// down its sides, from `0.0` (off) to `1.0`.
+  pub highlight: f32,
 }
 
 impl Default for BorderEffectConfig {
@@ -1299,6 +1303,7 @@ impl Default for BorderEffectConfig {
       color: BorderColorSource::default(),
       width: LengthValue::from_px(2),
       radius: None,
+      highlight: 0.0,
     }
   }
 }
@@ -1347,6 +1352,7 @@ impl BorderEffectConfig {
       width,
       corner_radius,
       opacity: 1.0,
+      highlight: self.highlight.clamp(0.0, 1.0),
     }
   }
 }

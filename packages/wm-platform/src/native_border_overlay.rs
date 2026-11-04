@@ -548,15 +548,19 @@ impl NativeBorderOverlay {
     self.rect = window_rect.clone();
   }
 
-  /// Updates the ring's color; re-applies only when the value changes.
-  pub fn set_color(&mut self, color: Color) {
-    if self.params.color == color {
+  /// Updates the ring's color and highlight; re-applies only when either
+  /// changes.
+  #[allow(clippy::float_cmp)]
+  pub fn set_colors(&mut self, color: Color, highlight: f32) {
+    if self.params.color == color && self.params.highlight == highlight {
       return;
     }
     self.params.color = color;
+    self.params.highlight = highlight;
 
+    let lit = self.params.lit_color();
     for visual in self.visuals() {
-      if let Err(e) = visual.set_color(color) {
+      if let Err(e) = visual.set_colors(color, lit) {
         tracing::warn!(
           "Border overlay composition color update failed: {e}."
         );
@@ -870,7 +874,7 @@ impl Overlay for NativeBorderOverlay {
 
   fn apply_blend(&mut self, blend: StyleBlend<BorderOverlayParams>) {
     let params = blend.from.lerp(&blend.to, blend.t);
-    self.set_color(params.color);
+    self.set_colors(params.color, params.highlight);
     self.set_width(params.width);
     self.set_corner_radius(params.corner_radius);
     self.set_opacity(params.opacity);
