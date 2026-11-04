@@ -188,17 +188,17 @@ scroll is dropped.
 6. With scroll animations off, a partly visible column becoming fully
    visible drops its peek before its real window is uncloaked: possibly a
    blank frame.
-7. **Shades windows blink white at the end of a workspace switch when
-   opaque** (seen on the laptop 2026-11-04; windows not transparent). From
-   the code, not confirmed: the switch's companion wait only works for
-   semi-transparent windows. Its surrogate sits just below its window
-   (`workspace_surrogate.rs:294`) and `HiddenAlpha` leaves opaque windows
-   as they are, so the uncloaked window covers the surrogate while shades
-   catches up. The scroll raises its peek above the window first
-   (`cover_window`, `scroll_view.rs:272`), and keeps a hand-back window's
-   z-order place (`platform_sync.rs:1088`); the switch does neither. The
-   desktop's 80% transparency hides it there. This is the hand-back
-   difference step 2 of `STAND_INS_PLAN.md` removes.
+7. **Shades windows blink white in workspace switches** (laptop,
+   2026-11-04; not in scrolls). Cause unknown. First suspect, ruled out as
+   the whole cause: the switch's companion wait only covers
+   semi-transparent windows (its surrogate sits below its window,
+   `workspace_surrogate.rs:294`, while the scroll raises its peek above,
+   `scroll_view.rs:272`), but the blink stays with transparency at 99%,
+   where the wait does cover. Left to tell apart, by when and on which
+   window it shows: shades' copy not found as the switch starts (the
+   surrogate then draws the uncolored window), the 200 ms wait
+   (`HANDOFF_MAX_WAIT`) timing out on a slower machine, or the focus
+   change after the switch raising the focused window above its copy.
 
 ## Older items, not started
 
