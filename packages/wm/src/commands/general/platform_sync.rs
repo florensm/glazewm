@@ -199,6 +199,9 @@ pub fn platform_sync(
     tracing::warn!("Failed to sync the click guard: {err}");
   }
 
+  // Once the layout has settled, so resized windows' new rects are known.
+  crate::particles::show_particles(state, config);
+
   state.pending_sync.clear();
 
   Ok(())

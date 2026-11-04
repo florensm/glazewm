@@ -25,6 +25,7 @@ pub fn handle_window_destroyed(
     let workspace = window.workspace().context("No workspace.")?;
 
     info!("Window closed: {window}");
+    crate::particles::note_close(state, &window);
     unmanage_window(window, state)?;
 
     // Destroy parent workspace if window was killed while its workspace

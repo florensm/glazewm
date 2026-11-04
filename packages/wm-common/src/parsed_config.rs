@@ -1585,6 +1585,8 @@ pub struct AnimationsConfig {
   /// Animation settings for a window's effects changing as it gains or
   /// loses focus.
   pub focus_change: FocusChangeAnimationConfig,
+  /// Particle bursts as windows are resized or closed.
+  pub particles: ParticlesConfig,
 }
 
 impl Default for AnimationsConfig {
@@ -1602,6 +1604,42 @@ impl Default for AnimationsConfig {
       window_close: WindowCloseConfig::default(),
       window_minimize: WindowMinimizeConfig::default(),
       focus_change: FocusChangeAnimationConfig::default(),
+      particles: ParticlesConfig::default(),
+    }
+  }
+}
+
+/// Particle bursts as windows are resized or closed, played by the
+/// compositor.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(default, rename_all(serialize = "camelCase"))]
+pub struct ParticlesConfig {
+  pub enabled: bool,
+  /// Sparks from the edges a resize moves, as it lands.
+  pub on_resize: bool,
+  /// A puff of dust where a window closes.
+  pub on_close: bool,
+  /// Color of the particles. By default each window's border color, or
+  /// white without a border.
+  pub color: Option<Color>,
+  /// Diameter of a particle.
+  pub size: LengthValue,
+  /// How many particles, as a multiple of the default amount.
+  pub density: f32,
+  /// How long a particle lasts, give or take.
+  pub duration_ms: u32,
+}
+
+impl Default for ParticlesConfig {
+  fn default() -> Self {
+    ParticlesConfig {
+      enabled: false,
+      on_resize: true,
+      on_close: true,
+      color: None,
+      size: LengthValue::from_px(5),
+      density: 1.0,
+      duration_ms: 650,
     }
   }
 }

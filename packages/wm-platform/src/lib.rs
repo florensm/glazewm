@@ -24,6 +24,7 @@ mod native_border_overlay;
 mod native_drop_indicator;
 mod native_iris_overlay;
 mod native_overview;
+mod native_particles;
 mod native_stack_tab_bar;
 mod native_surrogate;
 mod native_window;
@@ -38,6 +39,7 @@ mod overview_state;
 mod overview_tab_bars;
 mod overview_thumbnails;
 mod paint;
+mod particles;
 pub mod perf;
 mod platform_event;
 mod platform_impl;
@@ -77,6 +79,7 @@ pub use native_stack_tab_bar::NativeStackTabBar;
 pub use native_surrogate::{NativeSurrogate, SurrogateBatch};
 pub use native_window::*;
 pub use overlay_window::Overlay;
+pub use particles::{ParticleBurst, ParticleEdges, ParticleStyle};
 pub use platform_event::*;
 pub use resize_session::{
   sample_edge_color_async, EdgeColorCache, ResizeSession, SessionOptions,

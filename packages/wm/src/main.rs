@@ -47,6 +47,7 @@ mod ipc_server;
 mod layout;
 mod models;
 mod overview;
+mod particles;
 mod pending_sync;
 mod stay_interactive;
 mod sys_tray;

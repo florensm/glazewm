@@ -63,6 +63,7 @@ pub fn handle_window_hidden(
     if window.display_state() == DisplayState::Shown
       && !window.native().is_visible()
     {
+      crate::particles::note_close(state, &window);
       unmanage_window(window, state)?;
     }
   }

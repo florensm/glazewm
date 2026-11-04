@@ -52,14 +52,16 @@ use windows::{
       CompositionPropertySet, CompositionRadialGradientBrush,
       CompositionRoundedRectangleGeometry, CompositionSpriteShape,
       CompositionSurfaceBrush, Compositor, ContainerVisual,
-      Desktop::DesktopWindowTarget, InsetClip, ScalarKeyFrameAnimation,
-      ShapeVisual, SpriteVisual, Vector2KeyFrameAnimation,
+      Desktop::DesktopWindowTarget, InsetClip, KeyFrameAnimation,
+      ScalarKeyFrameAnimation, ShapeVisual, SpriteVisual,
+      Vector2KeyFrameAnimation,
     },
   },
 };
 
 use super::wallpaper_surface::{self, BakeKnobs};
 use crate::{
+  particles::{BurstPlan, ParticleStyle, PATH_KEYS},
   BackdropOverlayParams, BorderGlow, BorderOverlayParams, Rect,
 };
 
@@ -1728,6 +1730,187 @@ fn build_drop_indicator_tree(
     offset_glide,
     size_glide,
     fade_in,
+  })
+}
+
+/// A particle burst's visual tree: a soft dot per particle, each played
+/// along its planned path by the compositor as it fades, with nothing
+/// left for the caller to drive.
+pub(crate) struct ParticleVisual {
+  /// Binds the visual tree to the burst's `HWND`. Kept alive but never
+  /// touched again.
+  _target: DesktopWindowTarget,
+  _root: ContainerVisual,
+}
+
+impl ParticleVisual {
+  /// Builds `plan`'s particles in `style` and `color` for `hwnd`, which
+  /// covers the plan's bounds, and sets them off.
+  pub(crate) fn create(
+    hwnd: HWND,
+    plan: &BurstPlan,
+    style: ParticleStyle,
+    color: crate::Color,
+  ) -> crate::Result<Self> {
+    let hwnd_raw = hwnd.0;
+    let plan = plan.clone();
+
+    with_composition_thread(move |compositor, _| {
+      build_particle_tree(&compositor, HWND(hwnd_raw), &plan, style, color)
+    })
+  }
+}
+
+/// A particle's look: a dot of `color` fading out to its rim, with the
+/// white-hot core of a spark or the even haze of dust.
+fn particle_brush(
+  compositor: &Compositor,
+  style: ParticleStyle,
+  color: crate::Color,
+) -> windows::core::Result<CompositionRadialGradientBrush> {
+  let color = crate::Color {
+    a: u8::MAX,
+    ..color
+  };
+  let with_alpha = |a: u8| to_ui_color(crate::Color { a, ..color });
+  let white = crate::Color {
+    r: u8::MAX,
+    g: u8::MAX,
+    b: u8::MAX,
+    a: u8::MAX,
+  };
+
+  let stops = match style {
+    ParticleStyle::Sparks => [
+      (0.0, to_ui_color(color.lerp(&white, 0.7))),
+      (0.35, with_alpha(220)),
+      (1.0, with_alpha(0)),
+    ],
+    ParticleStyle::Dust => [
+      (0.0, with_alpha(170)),
+      (0.5, with_alpha(90)),
+      (1.0, with_alpha(0)),
+    ],
+  };
+
+  let brush = compositor.CreateRadialGradientBrush()?;
+  brush.SetMappingMode(CompositionMappingMode::Relative)?;
+  brush.SetEllipseCenter(Vector2 { X: 0.5, Y: 0.5 })?;
+  brush.SetEllipseRadius(Vector2 { X: 0.5, Y: 0.5 })?;
+  let color_stops = brush.ColorStops()?;
+  for (offset, color) in stops {
+    color_stops.Append(
+      &compositor
+        .CreateColorGradientStopWithOffsetAndColor(offset, color)?,
+    )?;
+  }
+
+  Ok(brush)
+}
+
+/// Builds a particle burst's visual tree and starts every particle's
+/// animations, each after its own delay, before which it is transparent.
+#[allow(clippy::cast_precision_loss)]
+fn build_particle_tree(
+  compositor: &Compositor,
+  hwnd: HWND,
+  plan: &BurstPlan,
+  style: ParticleStyle,
+  color: crate::Color,
+) -> windows::core::Result<ParticleVisual> {
+  // SAFETY: `hwnd` is a valid, already-created top-level window.
+  let target = unsafe {
+    compositor
+      .cast::<ICompositorDesktopInterop>()?
+      .CreateDesktopWindowTarget(hwnd, false)?
+  };
+
+  let root = compositor.CreateContainerVisual()?;
+  root.SetSize(rect_size(&plan.bounds))?;
+  target.SetRoot(&root)?;
+
+  let brush = particle_brush(compositor, style, color)?;
+  // The path's points are already spaced over time, so it runs straight
+  // between them; the fade speeds up toward the end.
+  let linear = compositor.CreateLinearEasingFunction()?;
+  let fade_out = compositor.CreateCubicBezierEasingFunction(
+    Vector2 { X: 0.4, Y: 0.0 },
+    Vector2 { X: 1.0, Y: 1.0 },
+  )?;
+  let children = root.Children()?;
+
+  for particle in &plan.particles {
+    let point = |(x, y): (f32, f32)| Vector3 { X: x, Y: y, Z: 0.0 };
+    let half = particle.size / 2.0;
+
+    let sprite = compositor.CreateSpriteVisual()?;
+    sprite.SetBrush(&brush)?;
+    sprite.SetSize(Vector2 {
+      X: particle.size,
+      Y: particle.size,
+    })?;
+    sprite.SetAnchorPoint(Vector2 { X: 0.5, Y: 0.5 })?;
+    sprite.SetCenterPoint(Vector3 {
+      X: half,
+      Y: half,
+      Z: 0.0,
+    })?;
+    sprite.SetOffset(point(particle.path[0]))?;
+    sprite.SetOpacity(0.0)?;
+    children.InsertAtTop(&sprite)?;
+
+    let path = compositor.CreateVector3KeyFrameAnimation()?;
+    for (key, position) in particle.path.iter().enumerate() {
+      path.InsertKeyFrameWithEasingFunction(
+        key as f32 / (PATH_KEYS - 1) as f32,
+        point(*position),
+        &linear,
+      )?;
+    }
+
+    let fade = compositor.CreateScalarKeyFrameAnimation()?;
+    fade.InsertKeyFrameWithEasingFunction(
+      0.0,
+      particle.opacity,
+      &linear,
+    )?;
+    fade.InsertKeyFrameWithEasingFunction(1.0, 0.0, &fade_out)?;
+
+    let scale = compositor.CreateVector3KeyFrameAnimation()?;
+    let end = particle.end_scale;
+    scale.InsertKeyFrameWithEasingFunction(
+      0.0,
+      Vector3 {
+        X: 1.0,
+        Y: 1.0,
+        Z: 1.0,
+      },
+      &linear,
+    )?;
+    scale.InsertKeyFrameWithEasingFunction(
+      1.0,
+      Vector3 {
+        X: end,
+        Y: end,
+        Z: 1.0,
+      },
+      &linear,
+    )?;
+
+    for (property, animation) in [
+      (h!("Offset"), path.cast::<KeyFrameAnimation>()?),
+      (h!("Opacity"), fade.cast::<KeyFrameAnimation>()?),
+      (h!("Scale"), scale.cast::<KeyFrameAnimation>()?),
+    ] {
+      animation.SetDuration(particle.duration.into())?;
+      animation.SetDelayTime(particle.delay.into())?;
+      sprite.StartAnimation(property, &animation)?;
+    }
+  }
+
+  Ok(ParticleVisual {
+    _target: target,
+    _root: root,
   })
 }
 

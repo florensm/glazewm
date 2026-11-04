@@ -79,3 +79,15 @@ animations:
     enabled: true
     duration_ms: 150
     easing: "ease_out"
+
+  # Particle bursts, played by the compositor so they cost the WM nothing
+  # per frame: sparks from the edges a resize moves, as it lands, and a
+  # puff of dust where a window closes.
+  particles:
+    enabled: false
+    on_resize: true
+    on_close: true
+    # color: "#ffd27f"  # Defaults to each window's border color.
+    size: "5px"
+    density: 1.0      # Multiple of the default amount.
+    duration_ms: 650
