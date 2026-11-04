@@ -1304,6 +1304,11 @@ impl Zoom {
     self.progress(elapsed_ms) >= 1.0
   }
 
+  /// How long it takes from start to finish.
+  pub fn duration(&self) -> std::time::Duration {
+    std::time::Duration::from_secs_f32(self.duration_ms.max(0.0) / 1000.0)
+  }
+
   fn progress(&self, elapsed_ms: f32) -> f32 {
     if self.duration_ms <= 0.0 {
       return 1.0;

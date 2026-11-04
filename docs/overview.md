@@ -323,6 +323,12 @@ overview:
     drop_particles: "sparks"
     close_particles: "dust"
 
+    # Particles off the shown workspace as the overview settles open, and
+    # off the windows of each workspace it zooms into as it closes, timed
+    # to land with the zoom.
+    open_particles: "none"
+    exit_particles: "none"
+
     # Whether a card wobbles as a window lands on it.
     jelly: true
 

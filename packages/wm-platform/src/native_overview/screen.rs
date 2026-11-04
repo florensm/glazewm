@@ -219,6 +219,11 @@ impl Screen {
       }
     }
 
+    // Open at once, so settled already.
+    if self.zoom.is_none() {
+      self.celebrate_open();
+    }
+
     self.is_dirty = true;
   }
 
@@ -929,6 +934,7 @@ impl Screen {
     self.entrance = None;
     let zoom = Zoom::close(index, self.openness(), duration_ms);
     self.zoom = Some((zoom, Instant::now()));
+    self.celebrate_exit(index, zoom.duration());
 
     let shown_windows = self.scenes.get(index).map(|scene| {
       scene
@@ -1038,6 +1044,7 @@ impl Screen {
           return false;
         }
         self.zoom = None;
+        self.celebrate_open();
       }
     }
 

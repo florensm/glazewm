@@ -138,7 +138,14 @@ file), `git pull` on `tryout/todo-cleanup`, `cargo build --release`, run.
    `on_close: "dust"`): particles off the edges a keyboard or mouse resize
    moves, starting as the resize lands; off a window's edges where it
    closes (`close` command, the app's own close button, or the app hiding
-   itself). Go through every style, and a list of two or three at once:
+   itself). `on_move`: off the edges facing the way a window went (`move`,
+   swaps, mouse drags, floating `position`), as it lands. `on_open`: off a
+   new window once its open animation ends, not for windows already open
+   as the WM starts. `on_focus`: off the window taking focus, not again for
+   one that already bursts (opened, or on a workspace just switched to).
+   `on_workspace_switch`: off every window of the workspace switched to, or
+   out of the monitor's middle for an empty one, as the slide or iris
+   lands. Go through every style, and a list of two or three at once:
    confetti flecks spin and flutter edge on, bubbles are rings with a
    highlight, glints are four-ray twinkles. Check they never take a click,
    never show over the overview, vanish cleanly, and that holding a resize
@@ -148,7 +155,10 @@ file), `git pull` on `tryout/todo-cleanup`, `cargo build --release`, run.
     `close_particles`): drop a window on another card, and close one from
     the overview; the burst shows over the overview, also once the WM
     moves windows and the overview raises itself again, and clicks still
-    reach the cards under it.
+    reach the cards under it. `open_particles`: off the shown workspace once
+    the opening zoom settles. `exit_particles`: off the windows of the
+    workspace zoomed into, landing with the zoom and staying over the
+    desktop as the overview hides; with `close_duration_ms: 0` at once.
 
 If bars or flicker show, isolate them with `GLAZEWM_ISOLATE` (below), one
 restart per flag: `noring`, `nobackdrop`, then `live`. With a long

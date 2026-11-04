@@ -4,7 +4,7 @@
 //! stretched and faded after; particles are bursts the compositor plays
 //! in windows of their own over the screen.
 
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use windows::Win32::Foundation::HWND;
 
@@ -235,8 +235,50 @@ impl Screen {
       self.throw_particles(
         enabled.drop_particles,
         ParticleSource::Point(x, y),
+        Duration::ZERO,
       );
     }
+  }
+
+  /// Throws particles off the selected workspace, as the screen has
+  /// settled open.
+  pub(super) fn celebrate_open(&self) {
+    if let Some(rect) = self.landing_rect(self.focus.selected) {
+      let on_screen = rect.translate(self.area.x, self.area.y).to_rect();
+      self.throw_particles(
+        self.enabled_effects().open_particles,
+        ParticleSource::Edges(on_screen, ParticleEdges::ALL),
+        Duration::ZERO,
+      );
+    }
+  }
+
+  /// Throws particles off the windows of workspace `index`, which it
+  /// zooms into as it closes, timed to land with the zoom `after` it.
+  pub(super) fn celebrate_exit(&self, index: usize, after: Duration) {
+    let Some(workspace) = self.workspaces().get(index) else {
+      return;
+    };
+
+    let rects = workspace
+      .windows
+      .iter()
+      .filter(|window| {
+        !window.is_minimized
+          && !window.is_hidden_tab
+          && !window.is_scrolled_off
+      })
+      .map(|window| window.rect.clone())
+      .collect::<Vec<_>>();
+    if rects.is_empty() {
+      return;
+    }
+
+    self.throw_particles(
+      self.enabled_effects().exit_particles,
+      ParticleSource::Rects(rects),
+      after,
+    );
   }
 
   /// Sees a window closed from the overview off from `rect`, where it
@@ -256,14 +298,17 @@ impl Screen {
     self.throw_particles(
       enabled.close_particles,
       ParticleSource::Edges(on_screen, ParticleEdges::ALL),
+      Duration::ZERO,
     );
   }
 
-  /// Throws off `effects` from `source`, on screen, above this screen.
+  /// Throws off `effects` from `source`, on screen, above this screen,
+  /// setting off `after` that long.
   fn throw_particles(
     &self,
     effects: ParticleEffects,
     source: ParticleSource,
+    after: Duration,
   ) {
     let Some(style) = self.style() else {
       return;
@@ -276,7 +321,8 @@ impl Screen {
       self.metrics.scale_factor,
       style.accent,
     );
-    if let Some(burst) = burst {
+    if let Some(mut burst) = burst {
+      burst.delay = after;
       burst.show_above(self.hwnd);
     }
   }

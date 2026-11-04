@@ -49,11 +49,14 @@ overview:
     # Ring spreading out of a card as it is clicked or a window lands, and
     # drawing in on a window closed from the overview.
     ripples: false
-    # Particles over the overview where a dropped window lands, and off the
-    # edges of a window closed from it. Styles as for
-    # `animations.particles`, which sets how they look.
+    # Particles over the overview: where a dropped window lands, off the
+    # edges of a window closed from it, off the shown workspace as it opens,
+    # and off the windows of the workspace it zooms into as it closes.
+    # Styles as for `animations.particles`, which sets how they look.
     drop_particles: "sparks"
     close_particles: "dust"
+    open_particles: "none"
+    exit_particles: "none"
     # Whether a card wobbles as a window lands on it.
     jelly: true
     # Delay between cards popping in on open, in ms: 0 brings them in together.

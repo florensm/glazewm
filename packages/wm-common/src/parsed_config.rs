@@ -1618,8 +1618,18 @@ impl Default for AnimationsConfig {
 pub struct ParticlesConfig {
   /// Particles thrown off the edges a resize moves, as it lands.
   pub on_resize: ParticleEffects,
+  /// Particles thrown off the edges of a moved window facing the way it
+  /// went, as it lands.
+  pub on_move: ParticleEffects,
+  /// Particles thrown off a new window's edges, once it is in place.
+  pub on_open: ParticleEffects,
   /// Particles thrown off a window's edges where it closes.
   pub on_close: ParticleEffects,
+  /// Particles thrown off the edges of the window that takes focus.
+  pub on_focus: ParticleEffects,
+  /// Particles thrown off the windows of the workspace switched to, or
+  /// out of the middle of its monitor without any, as the switch lands.
+  pub on_workspace_switch: ParticleEffects,
   /// Color of the particles. By default each window's border color (white
   /// without a border), and the overview's accent color in the overview.
   pub color: Option<Color>,
@@ -1654,7 +1664,11 @@ impl Default for ParticlesConfig {
   fn default() -> Self {
     ParticlesConfig {
       on_resize: ParticleEffects::NONE,
+      on_move: ParticleEffects::NONE,
+      on_open: ParticleEffects::NONE,
       on_close: ParticleEffects::NONE,
+      on_focus: ParticleEffects::NONE,
+      on_workspace_switch: ParticleEffects::NONE,
       color: None,
       size: LengthValue::from_px(5),
       density: 1.0,

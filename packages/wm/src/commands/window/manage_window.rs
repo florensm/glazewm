@@ -182,6 +182,11 @@ fn manage_window_inner(
       config,
     )?;
 
+    // Not one already open as the WM starts.
+    if is_new {
+      crate::particles::note_open(state, &window);
+    }
+
     // The window is managed and queued for redraw, so `platform_sync`
     // (non-tiling) or the slide-in animation (tiling) now owns the
     // uncloak. Every earlier return leaves the guard to undo it.

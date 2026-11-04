@@ -211,6 +211,14 @@ pub struct OverviewEffects {
   /// overview, once it is gone.
   pub close_particles: ParticleEffects,
 
+  /// Particles thrown off the shown workspace as the overview settles
+  /// open.
+  pub open_particles: ParticleEffects,
+
+  /// Particles thrown off the windows of each workspace the overview
+  /// zooms into as it closes, as the zoom lands.
+  pub exit_particles: ParticleEffects,
+
   /// Whether a card wobbles as a window lands on it.
   pub jelly: bool,
 
@@ -246,6 +254,8 @@ impl OverviewEffects {
     ripples: false,
     drop_particles: ParticleEffects::NONE,
     close_particles: ParticleEffects::NONE,
+    open_particles: ParticleEffects::NONE,
+    exit_particles: ParticleEffects::NONE,
     jelly: false,
     stagger_ms: 0,
     lean: 0.0,
@@ -263,6 +273,8 @@ impl Default for OverviewEffects {
       ripples: false,
       drop_particles: ParticleStyle::Sparks.into(),
       close_particles: ParticleStyle::Dust.into(),
+      open_particles: ParticleEffects::NONE,
+      exit_particles: ParticleEffects::NONE,
       jelly: true,
       stagger_ms: 24,
       lean: 8.0,

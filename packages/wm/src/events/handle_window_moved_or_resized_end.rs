@@ -123,12 +123,14 @@ pub fn handle_window_moved_or_resized_end(
       }
 
       if active_drag.is_from_floating {
-        if active_drag.operation == Some(ActiveDragOperation::Resize) {
-          crate::particles::note_resize(
-            state,
-            &window.clone().into(),
-            false,
-          );
+        match active_drag.operation {
+          Some(ActiveDragOperation::Resize) => {
+            crate::particles::note_resize(state, &window.clone().into());
+          }
+          Some(ActiveDragOperation::Move) => {
+            crate::particles::note_move(state, &window.clone().into());
+          }
+          None => {}
         }
         update_floating_window_position(
           window,
@@ -144,6 +146,8 @@ pub fn handle_window_moved_or_resized_end(
         state
           .window_target_positions
           .insert(window.id(), window.native_properties().frame);
+
+        crate::particles::note_move(state, &window.clone().into());
 
         // Window is a temporary floating window that should be
         // reverted back to tiling.
@@ -175,7 +179,7 @@ fn end_tiling_drag(
   let frame = window.native_properties().frame;
 
   if active_drag.operation == Some(ActiveDragOperation::Resize) {
-    crate::particles::note_resize(state, &window.clone().into(), false);
+    crate::particles::note_resize(state, &window.clone().into());
   }
 
   // A scrolling layout's column dragged by its left edge grows or shrinks

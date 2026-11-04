@@ -698,6 +698,34 @@ impl AnimationManager {
     self.animations.get(window_id)
   }
 
+  /// How long until `window_id` comes to rest at `now`: once its own
+  /// animation, its column's scroll and a workspace switch it slides in
+  /// with have all ended. Zero when none of them moves it.
+  pub fn time_to_rest(&self, window_id: &Uuid, now: Instant) -> Duration {
+    let own = self
+      .animations
+      .get(window_id)
+      .filter(|animation| !animation.is_complete())
+      .map(|animation| animation.remaining_at(now));
+
+    let switch = self
+      .workspace_switch
+      .as_ref()
+      .filter(|_| self.is_workspace_switch_incoming(window_id))
+      .map(|switch| match switch.start_time {
+        Some(start) => {
+          (start + switch.duration).saturating_duration_since(now)
+        }
+        None => switch.duration,
+      });
+
+    [own, switch, self.scroll_view.time_to_land(window_id, now)]
+      .into_iter()
+      .flatten()
+      .max()
+      .unwrap_or_default()
+  }
+
   /// Returns `true` if a close animation is in flight for the given
   /// window.
   pub fn has_close_animation(&self, window_id: &Uuid) -> bool {

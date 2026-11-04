@@ -28,7 +28,7 @@
 
 use std::{
   collections::{HashMap, HashSet},
-  time::Instant,
+  time::{Duration, Instant},
 };
 
 use uuid::Uuid;
@@ -210,6 +210,19 @@ impl ScrollView {
       .entries
       .get(window_id)
       .is_some_and(|entry| entry.role == Role::HandingBack)
+  }
+
+  /// How long until `window_id`'s column lands at `now`, while it moves.
+  pub fn time_to_land(
+    &self,
+    window_id: &Uuid,
+    now: Instant,
+  ) -> Option<Duration> {
+    self
+      .entries
+      .get(window_id)
+      .filter(|entry| matches!(entry.role, Role::Moving { .. }))
+      .map(|entry| entry.motion.remaining_at(now))
   }
 
   /// Whether `window_id` is moving, i.e. its real window stays frozen.

@@ -87,8 +87,17 @@ animations:
   particles:
     # Off the edges a resize moves, as it lands.
     on_resize: "none"
+    # Off the edges of a moved window facing the way it went, as it lands.
+    on_move: "none"
+    # Off a new window's edges, once it is in place.
+    on_open: "none"
     # Off a window's edges where it closes.
     on_close: "none"
+    # Off the edges of the window that takes focus.
+    on_focus: "none"
+    # Off the windows of the workspace switched to (or out of the middle of
+    # an empty one), as the switch lands.
+    on_workspace_switch: "none"
     # How every burst looks, the overview's too (see `overview.effects`).
     # color: "#ffd27f"  # Defaults to each window's border color.
     size: "5px"

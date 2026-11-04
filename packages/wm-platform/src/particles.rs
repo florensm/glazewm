@@ -226,6 +226,26 @@ impl ParticleEdges {
     }
   }
 
+  /// The edges of `to` facing the way it moved from `from`: the side it
+  /// headed for, or both sides of a corner when it went about as far
+  /// across as down.
+  #[must_use]
+  pub fn leading(from: &Rect, to: &Rect) -> Self {
+    // Twice the move of its middle, to stay in whole pixels.
+    let dx = (to.left + to.right) - (from.left + from.right);
+    let dy = (to.top + to.bottom) - (from.top + from.bottom);
+    let most = dx.abs().max(dy.abs());
+    let is_across = dx.abs() * 2 >= most;
+    let is_down = dy.abs() * 2 >= most;
+
+    Self {
+      left: is_across && dx < 0,
+      top: is_down && dy < 0,
+      right: is_across && dx > 0,
+      bottom: is_down && dy > 0,
+    }
+  }
+
   #[must_use]
   pub fn any(&self) -> bool {
     self.left || self.top || self.right || self.bottom
@@ -237,6 +257,8 @@ impl ParticleEdges {
 pub enum ParticleSource {
   /// The given edges of a rect, setting off outward.
   Edges(Rect, ParticleEdges),
+  /// Every edge of several rects, e.g. a workspace's windows.
+  Rects(Vec<Rect>),
   /// Around a point, setting off every way.
   Point(f32, f32),
 }
@@ -699,44 +721,14 @@ fn launches(
 ) -> Vec<Launch> {
   match source {
     ParticleSource::Edges(rect, which) => {
-      let (left, top, right, bottom) = (
-        rect.left as f32,
-        rect.top as f32,
-        rect.right as f32,
-        rect.bottom as f32,
-      );
-      let edges = [
-        (which.left, (left, top), (left, bottom), (-1.0, 0.0)),
-        (which.top, (left, top), (right, top), (0.0, -1.0)),
-        (which.right, (right, top), (right, bottom), (1.0, 0.0)),
-        (which.bottom, (left, bottom), (right, bottom), (0.0, 1.0)),
-      ];
-
-      let mut launches = Vec::new();
-      for (is_emitting, from, to, normal) in edges {
-        if !is_emitting {
-          continue;
-        }
-
-        let length = (to.0 - from.0).hypot(to.1 - from.1);
-        let wanted = (length / motion.spacing * density).round();
-        let fewest = motion.per_edge.0 as f32;
-        let most = (motion.per_edge.1 as f32 * density).ceil().max(fewest);
-
-        for _ in 0..wanted.clamp(fewest, most) as usize {
-          let along = rng.unit();
-          let out = rng.range(motion.start);
-          launches.push(Launch {
-            start: (
-              from.0 + (to.0 - from.0) * along + normal.0 * out,
-              from.1 + (to.1 - from.1) * along + normal.1 * out,
-            ),
-            heading: normal,
-          });
-        }
-      }
-      launches
+      edge_launches(rect, *which, density, motion, rng)
     }
+    ParticleSource::Rects(rects) => rects
+      .iter()
+      .flat_map(|rect| {
+        edge_launches(rect, ParticleEdges::ALL, density, motion, rng)
+      })
+      .collect(),
     ParticleSource::Point(x, y) => {
       let count =
         (motion.per_point as f32 * density).round().max(1.0) as usize;
@@ -756,6 +748,59 @@ fn launches(
         .collect()
     }
   }
+}
+
+/// Where particles of `motion` set off from `which` edges of `rect`,
+/// heading outward, as many as `density` has.
+#[allow(
+  clippy::cast_possible_truncation,
+  clippy::cast_precision_loss,
+  clippy::cast_sign_loss
+)]
+fn edge_launches(
+  rect: &Rect,
+  which: ParticleEdges,
+  density: f32,
+  motion: &Motion,
+  rng: &mut Rng,
+) -> Vec<Launch> {
+  let (left, top, right, bottom) = (
+    rect.left as f32,
+    rect.top as f32,
+    rect.right as f32,
+    rect.bottom as f32,
+  );
+  let edges = [
+    (which.left, (left, top), (left, bottom), (-1.0, 0.0)),
+    (which.top, (left, top), (right, top), (0.0, -1.0)),
+    (which.right, (right, top), (right, bottom), (1.0, 0.0)),
+    (which.bottom, (left, bottom), (right, bottom), (0.0, 1.0)),
+  ];
+
+  let mut launches = Vec::new();
+  for (is_emitting, from, to, normal) in edges {
+    if !is_emitting {
+      continue;
+    }
+
+    let length = (to.0 - from.0).hypot(to.1 - from.1);
+    let wanted = (length / motion.spacing * density).round();
+    let fewest = motion.per_edge.0 as f32;
+    let most = (motion.per_edge.1 as f32 * density).ceil().max(fewest);
+
+    for _ in 0..wanted.clamp(fewest, most) as usize {
+      let along = rng.unit();
+      let out = rng.range(motion.start);
+      launches.push(Launch {
+        start: (
+          from.0 + (to.0 - from.0) * along + normal.0 * out,
+          from.1 + (to.1 - from.1) * along + normal.1 * out,
+        ),
+        heading: normal,
+      });
+    }
+  }
+  launches
 }
 
 /// Where a particle set off at `velocity` from `start` is `t` seconds on,
@@ -1048,6 +1093,50 @@ mod tests {
 
     assert_eq!(ParticleEdges::moved(&from, &to), right_edge());
     assert!(!ParticleEdges::moved(&from, &from).any());
+  }
+
+  #[test]
+  fn leading_edges_face_the_way_it_moved() {
+    let from = Rect::from_ltrb(0, 0, 100, 100);
+    let edges = |left, top| {
+      ParticleEdges::leading(
+        &from,
+        &Rect::from_ltrb(left, top, left + 100, top + 100),
+      )
+    };
+
+    assert_eq!(edges(300, 0), right_edge());
+    assert_eq!(
+      edges(0, -40),
+      ParticleEdges {
+        top: true,
+        ..ParticleEdges::default()
+      }
+    );
+    assert_eq!(
+      edges(-200, 150),
+      ParticleEdges {
+        left: true,
+        bottom: true,
+        ..ParticleEdges::default()
+      }
+    );
+    // Mostly across, so only the side it headed for.
+    assert_eq!(edges(300, 20), right_edge());
+    assert!(!edges(0, 0).any());
+  }
+
+  #[test]
+  fn rects_burst_off_every_edge_of_each() {
+    let mut both = burst(ParticleStyle::Sparks, ParticleEdges::ALL);
+    both.source = ParticleSource::Rects(vec![
+      Rect::from_ltrb(100, 100, 460, 460),
+      Rect::from_ltrb(600, 100, 960, 460),
+    ]);
+    let plan = plan(&both, 4).expect("a burst");
+
+    // 360px edges at one spark per 36px, four edges of each.
+    assert_eq!(plan.particles.len(), 80);
   }
 
   #[test]
