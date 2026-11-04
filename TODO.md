@@ -119,6 +119,14 @@ file), `git pull` on `tryout/todo-cleanup`, `cargo build --release`, run.
 4. **End of a workspace switch**, from a recording: no window blinking out.
 5. `errors.log`: the unknown-keys warning at start, and no thousands of
    "Failed to send window event" lines after exiting the WM.
+6. **Focus fade** (`animations.focus_change`, `a789f49d` plus fixes
+   `a3c596a5`, `fa9f0d5c`), easiest seen with `duration_ms: 2000`:
+   keyboard focus at rest and with a scroll fades once, with no jump back
+   after the scroll lands; a column moving mid-fade keeps its backdrop;
+   quick focus back and forth never jumps. `enabled: false` for an A/B.
+7. **Lit top edge** (`border.highlight: 0.6`, `cfa9a5c0`): lighter along
+   the ring's own top edge at rest, while scrolling and in a workspace
+   switch.
 
 If bars or flicker show, isolate them with `GLAZEWM_ISOLATE` (below), one
 restart per flag: `noring`, `nobackdrop`, then `live`. With a long
