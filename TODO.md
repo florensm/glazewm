@@ -160,6 +160,23 @@ file), `git pull` on `tryout/todo-cleanup`, `cargo build --release`, run.
     workspace zoomed into, landing with the zoom and staying over the
     desktop as the overview hides; with `close_duration_ms: 0` at once.
 
+11. **Overview layouts** (stage, carousel and grid removed; `stack` added,
+    niri-style): `Tab` switches between activities and stack. In the
+    stack, workspaces sit top to bottom at one zoom with the selected one
+    in the middle; `↑` `↓` and the wheel move between them, `→` goes in
+    among the windows. A scrolling strip reaches past both sides at full
+    length (up to four monitors), stepping to a window pans just enough to
+    show it, and the wheel turned sideways (or `Shift` + wheel) pans it
+    without the strip jumping back to the picked window. Pointing at a
+    window must not pan it. Check the open and close zoom on a wide strip,
+    and memory with a few wide strips open (each card's picture is as wide
+    as its strip).
+12. **Snappier overview**: rings (selection, hover, picked window, drop
+    half, glow) fade in on what they mark instead of travelling over; the
+    zoom no longer overshoots and defaults to 200 ms open, 150 ms close.
+    A config still saying `layout: "stage"`, `"carousel"` or `"grid"` now
+    fails to load, naming the valid values.
+
 If bars or flicker show, isolate them with `GLAZEWM_ISOLATE` (below), one
 restart per flag: `noring`, `nobackdrop`, then `live`. With a long
 `duration_ms` (e.g. 3000) for `scroll` and `workspace_switch`, one

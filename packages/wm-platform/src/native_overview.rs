@@ -32,7 +32,10 @@ use windows::{
   core::w,
   Win32::{
     Foundation::{HWND, LPARAM, LRESULT, POINT, WPARAM},
-    System::Com::{CoInitializeEx, COINIT_APARTMENTTHREADED},
+    System::{
+      Com::{CoInitializeEx, COINIT_APARTMENTTHREADED},
+      SystemServices::MK_SHIFT,
+    },
     UI::{
       Controls::WM_MOUSELEAVE,
       Input::KeyboardAndMouse::{
@@ -46,11 +49,11 @@ use windows::{
         GetCursorPos, LoadCursorW, PeekMessageW, PostMessageW,
         PostQuitMessage, SetCursor, SetForegroundWindow, TranslateMessage,
         WaitMessage, HTCLIENT, HWND_MESSAGE, IDC_ARROW, IDC_HAND,
-        IDC_SIZEALL, MSG, PM_REMOVE, SC_KEYMENU, WA_INACTIVE,
+        IDC_SIZEALL, MSG, PM_REMOVE, SC_KEYMENU, WA_INACTIVE, WHEEL_DELTA,
         WINDOW_EX_STYLE, WINDOW_STYLE, WM_ACTIVATE, WM_APP, WM_CHAR,
         WM_CLOSE, WM_DESTROY, WM_KEYDOWN, WM_LBUTTONDOWN, WM_LBUTTONUP,
-        WM_MBUTTONDOWN, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_QUIT,
-        WM_SETCURSOR, WM_SYSCOMMAND, WS_EX_NOACTIVATE,
+        WM_MBUTTONDOWN, WM_MOUSEHWHEEL, WM_MOUSEMOVE, WM_MOUSEWHEEL,
+        WM_QUIT, WM_SETCURSOR, WM_SYSCOMMAND, WS_EX_NOACTIVATE,
         WS_EX_NOREDIRECTIONBITMAP, WS_EX_TOOLWINDOW, WS_EX_TOPMOST,
       },
     },
@@ -66,8 +69,7 @@ use crate::{
   overview_chrome::{picture_rect, CardPicture, SearchControls},
   overview_effects::Entrance,
   overview_layout::{
-    Camera, CardMetrics, CardView, GridCells, Placement, RectF, Spring,
-    Zoom,
+    Camera, CardMetrics, CardView, Placement, RectF, Spring, Zoom,
   },
   overview_scene::Scene,
   overview_state::{
@@ -108,6 +110,9 @@ const WM_ICON_READY: u32 = WM_APP + 5;
 /// for where the windows were, then veers off once the WM's answer says
 /// where they landed.
 const PICK_TIMEOUT: Duration = Duration::from_millis(400);
+
+/// How many monitor widths a notch of the wheel pans the stack's strip.
+const PAN_PER_NOTCH: f32 = 0.5;
 
 /// What the WM thread posts to open the overview.
 struct Open {
@@ -470,9 +475,6 @@ struct PlaceContext {
   camera: Camera,
   /// How far the overview is open.
   fade: f32,
-  /// How far its zoom has moved things: `fade`, or past it for a moment
-  /// as an open overshoots.
-  reach: f32,
   /// The screen's own rect.
   view: RectF,
   /// Card the screen zooms out of or into.
@@ -658,15 +660,14 @@ struct Screen {
   sheet_drawn: Option<Vec<ShortcutGroup>>,
   sheet_alpha: Spring,
 
-  /// Where the special workspace's card is docked, from the last layout.
-  dock: Option<RectF>,
-
   /// Thumbnails replaced by a new registration, kept up until the next
   /// placement puts their replacements where they are.
   retired: Vec<Thumbnail>,
 
-  /// Where the grid puts each card, for moving a row up or down.
-  grid: GridCells,
+  /// The stack's pan along the strip of the card it was last laid out
+  /// on, in card units at scale 1, as left after keeping what is picked
+  /// in view.
+  pan: Option<(usize, f32)>,
 
   /// Where the shown workspace's windows show once settled, first to
   /// last, for the arrows to go between them.
@@ -683,11 +684,6 @@ struct Screen {
   is_gliding: bool,
 
   is_tracking_leave: bool,
-
-  /// Whether a window was dragged when last placed, so the highlights
-  /// that followed where it would drop show back on the selection in
-  /// place as it is let go of.
-  was_dragging: bool,
 
   /// Bumped as window icons arrive.
   icons: u64,
@@ -1038,12 +1034,6 @@ impl Overview {
   /// Tells the interaction what the screens laid out, and moves the
   /// floating window along.
   fn after_layout(&mut self) {
-    for (cursor, screen) in
-      self.interaction.screens.iter_mut().zip(&self.screens)
-    {
-      cursor.grid.clone_from(&screen.grid);
-    }
-
     if let Some(screen) = self.screens.get(self.interaction.active) {
       self.interaction.nav.clone_from(&screen.nav);
     }
@@ -1214,7 +1204,7 @@ impl Overview {
       let start =
         self.interaction.screens.get(index).map(|s| s.cards.start);
       if let (Some(card), Some(start)) = (card, start) {
-        self.interaction.show(start + card, &self.workspaces);
+        self.interaction.show(start + card);
       }
     }
 
@@ -1452,7 +1442,7 @@ impl Overview {
     if self.interaction.layout == layout {
       self.after_input(Some(OverviewAction::Cancel));
     } else {
-      self.interaction.set_layout(layout, &self.workspaces);
+      self.interaction.layout = layout;
       self.after_input(None);
     }
   }
@@ -1481,9 +1471,8 @@ impl Overview {
     let (screen, hit) = self.hit(point);
     self.point_at(point);
     // The keyboard goes where the mouse is.
-    let is_activated = screen.is_some_and(|screen| {
-      self.interaction.activate(screen, &self.workspaces)
-    });
+    let is_activated =
+      screen.is_some_and(|screen| self.interaction.activate(screen));
     let was_dragging = self.interaction.drag.is_some();
 
     if self.interaction.mouse_move(point, hit, is_left_down)
@@ -1595,11 +1584,26 @@ impl Overview {
   #[allow(clippy::cast_precision_loss)]
   fn on_wheel(&mut self, (x, y): (i32, i32), is_down: bool) {
     if let Some((screen, _)) = self.locate((x as f32, y as f32)) {
-      self.interaction.activate(screen, &self.workspaces);
+      self.interaction.activate(screen);
     }
 
     self.interaction.wheel(is_down, &self.workspaces);
     self.after_input(None);
+  }
+
+  /// Pans the strip shown on the screen at screen point `point` by
+  /// `delta` wheel units, a notch (`WHEEL_DELTA`) of them half a monitor.
+  #[allow(clippy::cast_precision_loss)]
+  fn on_pan(&mut self, (x, y): (i32, i32), delta: f32) {
+    if let Some((screen, _)) = self.locate((x as f32, y as f32)) {
+      self.interaction.activate(screen);
+    }
+
+    self.interaction.pan();
+    self.after_input(None);
+    if let Some(screen) = self.screens.get_mut(self.interaction.active) {
+      screen.pan_by(delta / WHEEL_DELTA as f32 * PAN_PER_NOTCH);
+    }
   }
 
   /// Closes as the WM asks: zooming into the pick it carried out, whose
@@ -1751,12 +1755,22 @@ impl Overview {
       WM_MBUTTONDOWN if is_open => {
         self.on_middle_down(hwnd, mouse_position(lparam));
       }
-      WM_MOUSEWHEEL if is_open => {
-        // The high word of `wparam` is the signed wheel delta, and
-        // `lparam` the cursor in screen coordinates.
+      WM_MOUSEWHEEL | WM_MOUSEHWHEEL if is_open => {
+        // The high word of `wparam` is the signed wheel delta, its low
+        // word the keys held, and `lparam` the cursor in screen
+        // coordinates.
         #[allow(clippy::cast_possible_truncation)]
         let delta = ((wparam.0 >> 16) as u16).cast_signed();
-        self.on_wheel(mouse_position(lparam), delta < 0);
+        let is_shifted = wparam.0 & MK_SHIFT.0 as usize != 0;
+        let position = mouse_position(lparam);
+
+        // Sideways pans the stack's strip: right for a tilt right, and
+        // for the wheel turned down while holding shift.
+        match (msg == WM_MOUSEHWHEEL, is_shifted) {
+          (true, _) => self.on_pan(position, f32::from(delta)),
+          (false, true) => self.on_pan(position, -f32::from(delta)),
+          (false, false) => self.on_wheel(position, delta < 0),
+        }
       }
       WM_SETCURSOR if u32::try_from(lparam.0 & 0xffff) == Ok(HTCLIENT) => {
         // SAFETY: The cursors are system cursors.
@@ -1804,7 +1818,7 @@ fn elapsed_ms(started: Instant) -> f32 {
   started.elapsed().as_secs_f32() * 1000.0
 }
 
-/// A duration of the style, as springs and glides take it.
+/// A duration of the style, as springs and marks take it.
 #[allow(clippy::cast_precision_loss)]
 fn to_ms(duration_ms: u32) -> f32 {
   duration_ms as f32

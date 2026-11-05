@@ -650,9 +650,6 @@ pub struct OverviewConfig {
   /// Font of the overview's text; Segoe UI when it isn't installed.
   pub font_family: String,
 
-  /// Columns of the grid of every workspace.
-  pub grid_columns: usize,
-
   /// Layout `toggle-overview` opens on, unless it names one.
   pub layout: OverviewLayout,
 
@@ -709,14 +706,9 @@ pub enum OverviewLayout {
   /// workspace in miniature.
   #[default]
   Activities,
-  /// The shown workspace large and as laid out, the others in a column
-  /// at the side.
-  Stage,
-  /// One row, the selected workspace in the middle and larger than the
-  /// rest.
-  Carousel,
-  /// Every workspace at once.
-  Grid,
+  /// Every workspace at the same zoom, stacked top to bottom, each
+  /// strip at its full length.
+  Stack,
 }
 
 /// Corner of a monitor that opens the overview.
@@ -753,12 +745,11 @@ impl Default for OverviewConfig {
       subtext_color: color(0xcdc3_ceff),
       search_color: color(0x89b4_faff),
       font_family: "Segoe UI Variable Text".to_string(),
-      grid_columns: 5,
       layout: OverviewLayout::default(),
       hot_corner: HotCorner::default(),
       hot_corner_delay_ms: 300,
-      open_duration_ms: 250,
-      close_duration_ms: 200,
+      open_duration_ms: 200,
+      close_duration_ms: 150,
       switch_duration_ms: 300,
       highlight_duration_ms: 170,
       bounce: 0.25,
@@ -2647,7 +2638,8 @@ mod tests {
     };
 
     assert_eq!(layout("activities"), Some(OverviewLayout::Activities));
-    assert_eq!(layout("stage"), Some(OverviewLayout::Stage));
+    assert_eq!(layout("stack"), Some(OverviewLayout::Stack));
+    assert_eq!(layout("grid"), None);
     assert_eq!(layout("nope"), None);
     assert_eq!(
       OverviewConfig::default().layout,

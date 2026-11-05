@@ -189,7 +189,7 @@ fn workspace_switch_direction(
 
 /// Axis the workspace-switch slide runs along: the configured one, or
 /// vertical to and from the special workspace, which sorts last and so
-/// rises from below the others (as its dock does in the overview).
+/// rises from below the others.
 fn workspace_switch_axis(
   target: &Workspace,
   displayed: &Workspace,

@@ -1,5 +1,5 @@
 //! What the overview shows over its cards and windows: highlights that
-//! glide to whatever they highlight. Each is made of one small picture
+//! show on whatever they mark. Each is made of one small picture
 //! stretched to any size, so moving or resizing it redraws nothing.
 
 use windows::Win32::Foundation::{HWND, RECT};
@@ -7,7 +7,7 @@ use windows::Win32::Foundation::{HWND, RECT};
 use crate::{
   dwm_thumbnail::Thumbnail,
   overview_chrome::{draw_slices, SliceLook, SLICE_MIDDLE},
-  overview_layout::{Glide, RectF},
+  overview_layout::{Mark, RectF},
   overview_thumbnails::{to_opacity, to_win32, Picture},
 };
 
@@ -139,24 +139,24 @@ impl NineSlice {
   }
 }
 
-/// A ring that glides to whatever it highlights.
+/// A ring around whatever it marks.
 pub(crate) struct Highlight<K> {
   pub slices: NineSlice,
-  pub glide: Glide<K>,
+  pub mark: Mark<K>,
 }
 
 impl<K: Copy + PartialEq> Highlight<K> {
-  /// One that glides and fades over `duration_ms`.
+  /// One that settles and fades over `duration_ms`.
   pub fn new(duration_ms: f32) -> Option<Self> {
     Some(Self {
       slices: NineSlice::new()?,
-      glide: Glide::new(duration_ms),
+      mark: Mark::new(duration_ms),
     })
   }
 
-  /// Shows it where its glide has it, faded by `opacity`, cut to `clip`.
+  /// Shows it where its mark has it, faded by `opacity`, cut to `clip`.
   pub fn place(&mut self, clip: &RectF, opacity: f32) {
-    match self.glide.shown() {
+    match self.mark.shown() {
       Some((rect, scale, alpha)) => {
         self.slices.place(&rect, scale, clip, alpha * opacity);
       }
@@ -165,27 +165,27 @@ impl<K: Copy + PartialEq> Highlight<K> {
   }
 }
 
-/// A picture that glides to whatever it is shown by, e.g. the title tag
+/// A picture shown by whatever it marks, e.g. the title tag
 /// under the picked window, redrawn only when `D` changes.
 pub(crate) struct Tag<D> {
   pub picture: Picture,
-  pub glide: Glide<isize>,
+  pub mark: Mark<isize>,
   pub drawn: Option<D>,
 }
 
 impl<D> Tag<D> {
-  /// One that glides and fades over `duration_ms`.
+  /// One that settles and fades over `duration_ms`.
   pub fn new(duration_ms: f32) -> Option<Self> {
     Some(Self {
       picture: Picture::new()?,
-      glide: Glide::new(duration_ms),
+      mark: Mark::new(duration_ms),
       drawn: None,
     })
   }
 
-  /// Shows it where its glide has it, cut to `clip`.
+  /// Shows it where its mark has it, cut to `clip`.
   pub fn place(&mut self, clip: &RectF, opacity: f32) {
-    match self.glide.shown() {
+    match self.mark.shown() {
       Some((rect, _, alpha)) => {
         self.picture.place(&rect, clip, alpha * opacity);
       }

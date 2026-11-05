@@ -28,12 +28,11 @@ use crate::{
   },
   overview_effects::{lean_toward, Entrance},
   overview_layout::{
-    activities, carousel, chrome_opacity, grid, stage as stage_layout,
-    Camera, CardMetrics, CardView, GridCells, Placement, RectF, Spring,
-    Zoom, SEARCH_HEIGHT,
+    activities, chrome_opacity, stack, Camera, CardMetrics, CardView,
+    Placement, RectF, Spring, Zoom, SEARCH_HEIGHT,
   },
   overview_scene::SceneWindow,
-  overview_state::{Control, Hit, Mode, ScreenFocus, Toward},
+  overview_state::{Control, Hit, ScreenFocus, Toward},
   overview_thumbnails::Picture,
   platform_impl::composition::OverviewBackdrop,
   tab_layout::TabHit,
@@ -78,7 +77,7 @@ impl Screen {
   ) -> crate::Result<Self> {
     let layout = OverviewLayoutMode::default();
 
-    // Its springs and glides are timed by the style on each open.
+    // Its springs and marks are timed by the style on each open.
     Ok(Self {
       hwnd: create_screen_window()?,
       frame: None,
@@ -108,15 +107,13 @@ impl Screen {
       sheet: None,
       sheet_drawn: None,
       sheet_alpha: Spring::new(0.0, 0.0, 0.002),
-      dock: None,
       retired: Vec::new(),
-      grid: GridCells::default(),
+      pan: None,
       nav: Vec::new(),
       zoom: None,
       is_dirty: false,
       is_gliding: false,
       is_tracking_leave: false,
-      was_dragging: false,
       icons: 0,
       notify,
     })
@@ -184,7 +181,7 @@ impl Screen {
 
     self.zoom = animate.then(|| {
       (
-        Zoom::open(self.focus.selected, open_duration, bounce),
+        Zoom::open(self.focus.selected, open_duration),
         Instant::now(),
       )
     });
@@ -318,6 +315,7 @@ impl Screen {
     self.entrance = None;
     self.registered_for = None;
     self.nav.clear();
+    self.pan = None;
     self.zoom = None;
     self.sheet_drawn = None;
     self.sheet_alpha.snap(0.0);
@@ -368,7 +366,7 @@ impl Screen {
       overlays.retune(switch_ms, highlight_ms, bounce);
     }
     if let Some(effects) = &mut self.effects {
-      effects.retune(highlight_ms, bounce);
+      effects.retune(highlight_ms);
     }
   }
 
@@ -518,28 +516,19 @@ impl Screen {
   /// Points every card and scene window at where it belongs now.
   fn retarget(&mut self, snap: bool) {
     let slots = self.slots();
-    // The special workspace's dock grows while a window is carried or
-    // dragged, to be dropped on.
-    let is_receiving = self.focus.floating.is_some();
-    // Looking inside the docked special workspace leaves the row as it
-    // is.
-    let is_zoomed = self.focus.mode == Mode::Windows
-      && self.focus.selected == self.focus.row_selected;
     let selected = self.focus.selected;
 
     let targets = match self.focus.layout {
-      OverviewLayoutMode::Carousel => carousel(
-        &self.metrics,
-        &slots,
-        self.focus.row_selected,
-        is_zoomed,
-        is_receiving,
-      ),
-      OverviewLayoutMode::Grid => {
-        grid(&self.metrics, &slots, &self.grid, is_receiving)
-      }
-      OverviewLayoutMode::Stage => {
-        stage_layout(&self.metrics, &slots, selected)
+      OverviewLayoutMode::Stack => {
+        // A pan is the selected workspace's own: a newly selected one
+        // starts out on what its monitor shows.
+        let pan = self
+          .pan
+          .filter(|(index, _)| *index == selected)
+          .map_or(0.0, |(_, pan)| pan);
+        let (targets, pan) = stack(&self.metrics, &slots, selected, pan);
+        self.pan = Some((selected, pan));
+        targets
       }
       OverviewLayoutMode::Activities => {
         let (targets, area) = activities(&self.metrics, &slots);
@@ -547,7 +536,6 @@ impl Screen {
         targets
       }
     };
-    self.dock = targets.dock;
 
     self.retarget_cards(&targets.cards, snap);
 
@@ -689,6 +677,24 @@ impl Screen {
       }
     }
     self.is_dirty = true;
+  }
+
+  /// Pans the stack's selected strip `distance` monitor widths along,
+  /// e.g. for the wheel turned sideways.
+  pub(super) fn pan_by(&mut self, distance: f32) {
+    let is_still = self.zoom.is_some() || self.frame.is_none();
+    if self.focus.layout != OverviewLayoutMode::Stack || is_still {
+      return;
+    }
+
+    let selected = self.focus.selected;
+    let pan = self
+      .pan
+      .filter(|(index, _)| *index == selected)
+      .map_or(0.0, |(_, pan)| pan);
+    let monitor = self.metrics.tile_area().w;
+    self.pan = Some((selected, pan + distance * monitor));
+    self.retarget(false);
   }
 
   /// Notes where the shown workspace's windows show once settled, first
@@ -866,14 +872,6 @@ impl Screen {
       .map_or(1.0, |(zoom, started)| zoom.openness(elapsed_ms(started)))
   }
 
-  /// How far its zoom has moved things: the openness, or past it for a
-  /// moment as an open overshoots.
-  pub(super) fn reach(&self) -> f32 {
-    self
-      .zoom
-      .map_or(1.0, |(zoom, started)| zoom.reach(elapsed_ms(started)))
-  }
-
   /// Whether it is zooming into the workspace it closes on.
   pub(super) fn is_closing(&self) -> bool {
     self.zoom.is_some_and(|(zoom, _)| zoom.is_closing)
@@ -904,7 +902,7 @@ impl Screen {
     let screen = card
       .placement()
       .map(&card.metrics, &card.view.map(&self.area));
-    Camera::zoom(&screen, &self.view(), self.reach())
+    Camera::zoom(&screen, &self.view(), self.openness())
   }
 
   /// Zooms into card `index` until its windows fill the screen, over
@@ -912,7 +910,7 @@ impl Screen {
   ///
   /// What it zooms from holds still meanwhile, so each window heads
   /// straight to where it lands rather than veering off with the layout
-  /// (e.g. a scrolled strip settling, or the stage centering the pick).
+  /// (e.g. a scrolled strip settling, or the stack panning to the pick).
   pub(super) fn start_closing(
     &mut self,
     index: usize,
@@ -986,7 +984,6 @@ impl Screen {
     PlaceContext {
       camera: self.camera(),
       fade: self.openness(),
-      reach: self.reach(),
       entrance: self
         .entrance
         .map(|(entrance, started)| (entrance, elapsed_ms(started))),
@@ -1061,7 +1058,7 @@ impl Screen {
   fn place(&mut self) -> bool {
     let context = self.place_context();
     let (view, scale_factor) = (context.view, self.metrics.scale_factor);
-    let (fade, reach) = (context.fade, context.reach);
+    let fade = context.fade;
     let layout = self.focus.layout;
     let shift = self.top_shift(fade);
 
@@ -1070,7 +1067,6 @@ impl Screen {
         let miniatures = PlaceContext {
           camera: Camera::shifted(0.0, shift),
           fade,
-          reach,
           view,
           zoom_card: None,
           entrance: context.entrance,
@@ -1079,7 +1075,7 @@ impl Screen {
           place_card(card, index, &miniatures);
         }
       }
-      _ => {
+      OverviewLayoutMode::Stack => {
         for (index, card) in self.cards.iter_mut().enumerate() {
           place_card(card, index, &context);
         }
@@ -1100,7 +1096,7 @@ impl Screen {
           let rect = scene_window_rect(
             window,
             zoom_card == Some(index),
-            reach,
+            fade,
             &area,
           );
           let opacity = window.alpha.value * window.preview.opacity;
@@ -1132,7 +1128,6 @@ impl Screen {
 
     let is_gliding = self.place_overlays(&context, shift)
       | self.place_effects(fade, shift);
-    self.was_dragging = self.focus.is_dragging;
 
     let search_height = SEARCH_HEIGHT * scale_factor;
     let has_search = self.search_drawn.is_some();
@@ -1224,7 +1219,7 @@ impl Screen {
           self.hit_scene(x, y, &self.scene_area)
         }
       }
-      _ => self.hit_cards(x, y, &self.camera()),
+      OverviewLayoutMode::Stack => self.hit_cards(x, y, &self.camera()),
     }
   }
 

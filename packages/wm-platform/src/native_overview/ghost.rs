@@ -1,6 +1,6 @@
 //! The window being dragged or carried: a small picture of it that
-//! follows the cursor, or waits beside the special workspace's dock, on
-//! whichever screen it is over. Once let go of, it flies into the card it
+//! follows the cursor, or waits in a corner while carried, on whichever
+//! screen it is over. Once let go of, it flies into the card it
 //! lands on and fades. It stretches with its speed, and can leave fading
 //! copies of its outline behind.
 
@@ -22,7 +22,7 @@ use crate::{
 /// up, long enough to trail it a little.
 const FOLLOW_MS: f32 = 110.0;
 
-/// How long it takes to settle beside the dock while carried.
+/// How long it takes to settle in its corner while carried.
 const PARK_MS: (f32, f32) = (280.0, 340.0);
 
 /// How long it takes to fly into the card it lands on, and to fade
@@ -164,22 +164,16 @@ impl Ghost {
     self.y.target = position.1;
   }
 
-  /// Parks it while carried: beside the dock it can be dropped on, or
-  /// else in the corner above the hints.
+  /// Parks it while carried, in the corner above the hints.
   pub(super) fn park(&mut self, screen: &Screen) {
     let px = |length: f32| length * screen.metrics.scale_factor;
     let (width, height) = size(screen);
     let (view_width, view_height) = screen.metrics.view;
 
-    let (x, y) = match screen.dock {
-      Some(dock) => {
-        (dock.x - width - px(32.0), dock.y + (dock.h - height) / 2.0)
-      }
-      None => (
-        view_width - width - px(40.0),
-        screen.search_y.target - height - px(16.0),
-      ),
-    };
+    let (x, y) = (
+      view_width - width - px(40.0),
+      screen.search_y.target - height - px(16.0),
+    );
     self.x.retune(PARK_MS.0);
     self.y.retune(PARK_MS.1);
     self.x.target = screen.area.x + x + width / 2.0;

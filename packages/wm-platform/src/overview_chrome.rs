@@ -1432,7 +1432,6 @@ mod tests {
       subtext: color,
       search: color,
       font_family: "Segoe UI".to_string(),
-      grid_columns: 4,
       open_duration_ms: 200,
       close_duration_ms: 200,
       switch_duration_ms: 300,

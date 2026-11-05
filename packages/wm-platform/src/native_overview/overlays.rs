@@ -74,7 +74,7 @@ pub(super) struct Overlays {
 }
 
 impl Overlays {
-  /// Overlays whose highlights and tags glide over `highlight_ms`, and
+  /// Overlays whose highlights and tags settle over `highlight_ms`, and
   /// whose shown workspace's area changes shape over `switch_ms`.
   pub(super) fn new(switch_ms: f32, highlight_ms: f32) -> Option<Self> {
     Some(Self {
@@ -90,7 +90,7 @@ impl Overlays {
     })
   }
 
-  /// Glides the highlights and tags over `highlight_ms`, and changes the
+  /// Settles the highlights and tags over `highlight_ms`, and changes the
   /// shown workspace's area over `switch_ms`, overshooting by `bounce`,
   /// from now on.
   pub(super) fn retune(
@@ -99,13 +99,13 @@ impl Overlays {
     highlight_ms: f32,
     bounce: f32,
   ) {
-    self.screen_ring.glide.retune(highlight_ms, bounce);
-    self.workspace_ring.glide.retune(highlight_ms, bounce);
-    self.hover_ring.glide.retune(highlight_ms, bounce);
-    self.window_ring.glide.retune(highlight_ms, bounce);
-    self.drop_ring.glide.retune(highlight_ms, bounce);
-    self.tag.glide.retune(highlight_ms, bounce);
-    self.note.glide.retune(highlight_ms, bounce);
+    self.screen_ring.mark.retune(highlight_ms);
+    self.workspace_ring.mark.retune(highlight_ms);
+    self.hover_ring.mark.retune(highlight_ms);
+    self.window_ring.mark.retune(highlight_ms);
+    self.drop_ring.mark.retune(highlight_ms);
+    self.tag.mark.retune(highlight_ms);
+    self.note.mark.retune(highlight_ms);
     self.workspace_rect.retune(switch_ms, bounce);
   }
 
@@ -115,10 +115,7 @@ impl Overlays {
     host: HWND,
     layout: OverviewLayoutMode,
   ) {
-    if matches!(
-      layout,
-      OverviewLayoutMode::Activities | OverviewLayoutMode::Stage
-    ) {
+    if layout == OverviewLayoutMode::Activities {
       for label in &mut self.labels {
         label.picture.thumbnail =
           Thumbnail::register(host, label.picture.window);
@@ -192,13 +189,13 @@ impl Overlays {
 
   /// Hides every highlight at once, e.g. for a new open.
   pub(super) fn reset(&mut self) {
-    self.screen_ring.glide.reset();
-    self.workspace_ring.glide.reset();
-    self.hover_ring.glide.reset();
-    self.window_ring.glide.reset();
-    self.drop_ring.glide.reset();
-    self.tag.glide.reset();
-    self.note.glide.reset();
+    self.screen_ring.mark.reset();
+    self.workspace_ring.mark.reset();
+    self.hover_ring.mark.reset();
+    self.window_ring.mark.reset();
+    self.drop_ring.mark.reset();
+    self.tag.mark.reset();
+    self.note.mark.reset();
   }
 
   /// Forgets what the pictures show, so they are all drawn anew.
@@ -214,13 +211,13 @@ impl Overlays {
   /// moves.
   pub(super) fn step(&mut self, dt: f32) -> bool {
     [
-      self.screen_ring.glide.step(dt),
-      self.workspace_ring.glide.step(dt),
-      self.hover_ring.glide.step(dt),
-      self.window_ring.glide.step(dt),
-      self.drop_ring.glide.step(dt),
-      self.tag.glide.step(dt),
-      self.note.glide.step(dt),
+      self.screen_ring.mark.step(dt),
+      self.workspace_ring.mark.step(dt),
+      self.hover_ring.mark.step(dt),
+      self.window_ring.mark.step(dt),
+      self.drop_ring.mark.step(dt),
+      self.tag.mark.step(dt),
+      self.note.mark.step(dt),
       self.workspace_rect.step(dt),
     ]
     .contains(&true)
@@ -259,12 +256,11 @@ impl Screen {
     let scale_factor = metrics.scale_factor;
     let notify = self.notify;
 
-    let labels = matches!(
-      layout,
-      OverviewLayoutMode::Activities | OverviewLayoutMode::Stage
-    )
-    .then(|| self.label_pictures())
-    .unwrap_or_default();
+    let labels = if layout == OverviewLayoutMode::Activities {
+      self.label_pictures()
+    } else {
+      Vec::new()
+    };
     let tag = self.tag_picture();
     let note = self.note_text();
     let max_tag = (560.0 * scale_factor).min(metrics.view.0 * 0.6);
@@ -326,8 +322,7 @@ impl Screen {
   /// cards.
   pub(super) fn tag_picture(&self) -> Option<TagPicture> {
     let focus = &self.focus;
-    if !focus.layout.shows_selected_large() || focus.mode != Mode::Windows
-    {
+    if !focus.layout.has_scene() || focus.mode != Mode::Windows {
       return None;
     }
 
@@ -380,7 +375,7 @@ impl Screen {
   pub(super) fn top_shift(&self, openness: f32) -> f32 {
     let extent = match self.focus.layout {
       OverviewLayoutMode::Activities => self.scene_area.y,
-      _ => 0.0,
+      OverviewLayoutMode::Stack => 0.0,
     };
 
     -(1.0 - openness) * (extent + self.metrics.px(12.0))
@@ -440,7 +435,7 @@ impl Screen {
       return Some(scene_window_rect(
         window,
         context.zoom_card == Some(index),
-        context.reach,
+        context.fade,
         &self.area,
       ));
     }
@@ -461,22 +456,18 @@ impl Screen {
 
   /// Workspace the selection's ring is around: where a window would drop
   /// (on what it is dragged over, or where it is carried to), or else the
-  /// selection, on the screen with the keyboard and but for the stage,
-  /// whose selection is the workspace shown large.
+  /// selection, on the screen with the keyboard.
   pub(super) fn ringed(&self) -> Option<usize> {
     let focus = &self.focus;
-    if focus.layout == OverviewLayoutMode::Stage
-      || focus.is_dragging
-      || !focus.is_active
-    {
+    if focus.is_dragging || !focus.is_active {
       focus.drop
     } else {
       focus.drop.or(Some(focus.selected))
     }
   }
 
-  /// Glides the highlights to what they highlight now and places them,
-  /// with the labels and tags. Returns whether any is still gliding.
+  /// Moves the highlights onto what they mark now and places them,
+  /// with the labels and tags. Returns whether any is still settling.
   #[allow(clippy::too_many_lines)]
   pub(super) fn place_overlays(
     &mut self,
@@ -493,7 +484,6 @@ impl Screen {
     let px = |length: f32| length * self.metrics.scale_factor;
 
     let ringed = self.ringed();
-    let jumps = focus.is_dragging || self.was_dragging;
     let ring_target = ringed.and_then(|index| {
       self
         .workspace_rect(index, context, shift)
@@ -531,7 +521,7 @@ impl Screen {
     );
 
     let tag_target = picked_rect
-      .filter(|_| layout.shows_selected_large())
+      .filter(|_| layout.has_scene())
       .zip(self.overlays.as_ref())
       .map(|((hwnd, rect), overlays)| {
         let (width, height) = to_f32_size(overlays.tag.picture.size());
@@ -576,36 +566,17 @@ impl Screen {
     };
     let mut is_gliding = false;
 
-    is_gliding |= overlays.screen_ring.glide.follow(screen_target, now);
+    // Each shows on what it marks next rather than travelling over to
+    // it, which with several rings on the move looks restless.
+    is_gliding |= overlays.screen_ring.mark.follow(screen_target, now);
     overlays.screen_ring.place(&view, chrome);
-    // While a window is dragged, and as it is let go of, the ring shows
-    // on where it would drop rather than chasing the cursor around.
-    is_gliding |= if jumps {
-      overlays
-        .workspace_ring
-        .glide
-        .follow_in_place(ring_target, now)
-    } else {
-      overlays.workspace_ring.glide.follow(ring_target, now)
-    };
+    is_gliding |= overlays.workspace_ring.mark.follow(ring_target, now);
     overlays.workspace_ring.place(&view, chrome);
-    is_gliding |= overlays.hover_ring.glide.follow(hover_target, now);
+    is_gliding |= overlays.hover_ring.mark.follow(hover_target, now);
     overlays.hover_ring.place(&view, chrome);
-    // Only the arrows glide the picked window's ring and title along: a
-    // pick by pointing, or after the picked window left, settles in place
-    // rather than flicking over from wherever the last one was.
-    let window_glides = focus.window_ring_glides;
-    is_gliding |= if window_glides {
-      overlays.window_ring.glide.follow(window_target, now)
-    } else {
-      overlays
-        .window_ring
-        .glide
-        .follow_in_place(window_target, now)
-    };
+    is_gliding |= overlays.window_ring.mark.follow(window_target, now);
     overlays.window_ring.place(&view, chrome);
-    is_gliding |=
-      overlays.drop_ring.glide.follow_in_place(drop_target, now);
+    is_gliding |= overlays.drop_ring.mark.follow(drop_target, now);
     overlays.drop_ring.place(&view, chrome);
 
     for (label, rect) in overlays.labels.iter_mut().zip(&label_rects) {
@@ -616,21 +587,16 @@ impl Screen {
       }
     }
 
-    is_gliding |= if window_glides {
-      overlays.tag.glide.follow(tag_target, now)
-    } else {
-      overlays.tag.glide.follow_in_place(tag_target, now)
-    };
+    is_gliding |= overlays.tag.mark.follow(tag_target, now);
     overlays.tag.place(&view, chrome);
-    is_gliding |= overlays.note.glide.follow(note_target, now);
+    is_gliding |= overlays.note.mark.follow(note_target, now);
     overlays.note.place(&view, chrome);
 
     is_gliding
   }
 
   /// Where each workspace's name shows now, and how strongly: under its
-  /// miniature, or in the stage's column, under its card or over the
-  /// shown one.
+  /// miniature, in the activities.
   pub(super) fn label_rects(
     &self,
     context: &PlaceContext,
@@ -648,21 +614,14 @@ impl Screen {
       .zip(&overlays.labels)
       .enumerate()
       .map(|(index, (card, label))| {
-        let camera = match layout {
-          OverviewLayoutMode::Activities => Camera::shifted(0.0, shift),
-          OverviewLayoutMode::Stage => context.camera,
-          _ => return None,
-        };
+        if layout != OverviewLayoutMode::Activities {
+          return None;
+        }
+        let camera = Camera::shifted(0.0, shift);
         let rect = camera.apply(&card.placement().rect(&card.metrics));
         let (width, height) = to_f32_size(label.picture.size());
-
-        let is_over = layout == OverviewLayoutMode::Stage
-          && index == self.focus.selected;
-        let (x, y) = if is_over {
-          (rect.x, rect.y - gap - height)
-        } else {
-          (rect.x + rect.w / 2.0 - width / 2.0, rect.bottom() + gap)
-        };
+        let (x, y) =
+          (rect.x + rect.w / 2.0 - width / 2.0, rect.bottom() + gap);
 
         // In with its card as it pops in.
         let appear =

@@ -50,7 +50,7 @@ pub(super) struct Effects {
 }
 
 impl Effects {
-  /// Effects whose glow glides over `highlight_ms`.
+  /// Effects whose glow settles over `highlight_ms`.
   pub(super) fn new(highlight_ms: f32) -> Option<Self> {
     Some(Self {
       glow: Highlight::new(highlight_ms)?,
@@ -62,9 +62,9 @@ impl Effects {
     })
   }
 
-  /// Glides the glow over `highlight_ms`, overshooting by `bounce`.
-  pub(super) fn retune(&mut self, highlight_ms: f32, bounce: f32) {
-    self.glow.glide.retune(highlight_ms, bounce);
+  /// Settles the glow over `highlight_ms`.
+  pub(super) fn retune(&mut self, highlight_ms: f32) {
+    self.glow.mark.retune(highlight_ms);
   }
 
   /// Registers them on `host`, bottom to top.
@@ -110,7 +110,7 @@ impl Effects {
 
   /// Gone at once, e.g. on a new open.
   pub(super) fn reset(&mut self) {
-    self.glow.glide.reset();
+    self.glow.mark.reset();
     for (_, ripple) in &mut self.ripples {
       *ripple = None;
     }
@@ -120,7 +120,7 @@ impl Effects {
   /// Advances them by `dt` seconds. Returns whether any still moves,
   /// including one that just ended and has to be hidden.
   pub(super) fn step(&mut self, dt: f32) -> bool {
-    let mut is_moving = self.glow.glide.step(dt);
+    let mut is_moving = self.glow.mark.step(dt);
 
     for (_, slot) in &mut self.ripples {
       if let Some(ripple) = slot {
@@ -134,25 +134,19 @@ impl Effects {
     is_moving
   }
 
-  /// Places them where they are now: the glow following `glow` (the
-  /// selection's key, ring and corner scale), showing on it in place
-  /// rather than gliding over if `jumps`, faded by `chrome`. Returns
-  /// whether the glow still glides or breathes.
+  /// Places them where they are now: the glow on `glow` (the selection's
+  /// key, ring and corner scale), faded by `chrome`. Returns whether the
+  /// glow still settles or breathes.
   pub(super) fn place(
     &mut self,
     glow: Option<(usize, RectF, f32)>,
-    jumps: bool,
     enabled: OverviewEffects,
     clip: &RectF,
     chrome: f32,
   ) -> bool {
     let now = Instant::now();
     let glow = glow.filter(|_| enabled.glow);
-    let is_gliding = if jumps {
-      self.glow.glide.follow_in_place(glow, now)
-    } else {
-      self.glow.glide.follow(glow, now)
-    };
+    let is_gliding = self.glow.mark.follow(glow, now);
     let breath = if enabled.pulse {
       pulse(now.duration_since(self.pulse_from).as_secs_f32())
     } else {
@@ -169,7 +163,7 @@ impl Effects {
       }
     }
 
-    is_gliding || (enabled.pulse && self.glow.glide.shown().is_some())
+    is_gliding || (enabled.pulse && self.glow.mark.shown().is_some())
   }
 
   /// Sends a ripple out of `rect`, spreading `scale_factor` times its
@@ -338,10 +332,9 @@ impl Screen {
   }
 
   /// Places the effects where they are now. Returns whether the glow
-  /// still glides or breathes.
+  /// still settles or breathes.
   pub(super) fn place_effects(&mut self, fade: f32, shift: f32) -> bool {
     let enabled = self.enabled_effects();
-    let jumps = self.focus.is_dragging || self.was_dragging;
     let context = self.place_context();
     let reach = self.metrics.px(GLOW_REACH);
     let glow = self.ringed().and_then(|index| {
@@ -352,7 +345,7 @@ impl Screen {
 
     let view = self.view();
     self.effects.as_mut().is_some_and(|effects| {
-      effects.place(glow, jumps, enabled, &view, chrome_opacity(fade))
+      effects.place(glow, enabled, &view, chrome_opacity(fade))
     })
   }
 

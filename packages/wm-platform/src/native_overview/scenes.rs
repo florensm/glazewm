@@ -12,11 +12,11 @@ use crate::{
 
 /// Where a scene window shows now, on a screen covering `area` (in screen
 /// coordinates): on its way between where it is on screen and where the
-/// scene puts it while its workspace zooms, `reach` of the way.
+/// scene puts it while its workspace zooms, `openness` of the way.
 pub(super) fn scene_window_rect(
   window: &SceneWindow,
   is_zooming: bool,
-  reach: f32,
+  openness: f32,
   area: &RectF,
 ) -> RectF {
   if is_zooming {
@@ -26,7 +26,7 @@ pub(super) fn scene_window_rect(
       .preview
       .screen_rect
       .translate(-area.x, -area.y)
-      .lerp(&window.rect(), reach)
+      .lerp(&window.rect(), openness)
   } else {
     window.rect()
   }

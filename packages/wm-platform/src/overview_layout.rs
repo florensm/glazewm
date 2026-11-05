@@ -1,7 +1,6 @@
 //! Geometry of the window overview's cards: a card per workspace, laid
-//! out as a carousel, a grid, a row of miniatures over the shown
-//! workspace, or a column beside it, each showing its windows where they
-//! really sit, scaled down.
+//! out as a row of miniatures over the shown workspace, or as a stack of
+//! strips, each showing its windows where they really sit, scaled down.
 //!
 //! Values are physical pixels relative to the overview's top-left corner,
 //! kept fractional so animated positions don't snap to whole pixels until
@@ -169,8 +168,18 @@ struct DrawnSize {
   look: CardLook,
 }
 
-/// Part of the overview's width the grid's cards are drawn at.
-const GRID_CARD_WIDTH: f32 = 0.26;
+/// Part of the overview's width a card drawn at most 900 logical pixels
+/// wide takes; wider layouts' cards may be drawn that much wider.
+const REFERENCE_CARD_WIDTH: f32 = 0.26;
+
+/// Part of the overview's width the stack shows a monitor's width of a
+/// workspace at.
+const STACK_CARD_WIDTH: f32 = 0.45;
+
+/// Most monitor widths of a strip the stack shows at full length; a
+/// strip wider still is shrunk to fit that, as its `CardView` does. Kept
+/// low as a card's picture is drawn as wide as its strip.
+const STACK_MAX_WIDTHS: f32 = 4.0;
 
 /// How a card is drawn for an overview opened as `layout`.
 ///
@@ -178,16 +187,16 @@ const GRID_CARD_WIDTH: f32 = 0.26;
 /// DWM only scales the drawing: shown much larger, its text would blur.
 fn drawn_size(layout: OverviewLayoutMode) -> DrawnSize {
   let (part, chrome, max_widths, min_width, look) = match layout {
-    OverviewLayoutMode::Grid => {
-      (GRID_CARD_WIDTH, 1.0, 2.0, 380.0, CardLook::Classic)
-    }
-    OverviewLayoutMode::Carousel => {
-      (0.45, 1.3, 3.0, 380.0, CardLook::Classic)
-    }
     OverviewLayoutMode::Activities => {
       (0.12, 0.8, MINIATURE_WIDTHS, 120.0, CardLook::Clean)
     }
-    OverviewLayoutMode::Stage => (0.72, 1.2, 2.5, 380.0, CardLook::Clean),
+    OverviewLayoutMode::Stack => (
+      STACK_CARD_WIDTH,
+      1.1,
+      STACK_MAX_WIDTHS,
+      380.0,
+      CardLook::Classic,
+    ),
   };
 
   DrawnSize {
@@ -224,7 +233,7 @@ impl CardMetrics {
       min_width,
       look,
     } = drawn_size(layout);
-    let max_width = px(900.0) * part / GRID_CARD_WIDTH;
+    let max_width = px(900.0) * part / REFERENCE_CARD_WIDTH;
     let card_width =
       (width * part).min(max_width).max(px(min_width)).min(width);
     let padding = px(9.0) * chrome;
@@ -335,10 +344,6 @@ impl Placement {
     }
   }
 
-  fn faded(self, opacity: f32) -> Self {
-    Self { opacity, ..self }
-  }
-
   /// The card's rect in the overview.
   pub fn rect(&self, metrics: &CardMetrics) -> RectF {
     let (width, height) =
@@ -383,9 +388,6 @@ impl Placement {
 pub(crate) struct Targets {
   pub cards: Vec<Placement>,
   pub search_y: f32,
-
-  /// Where the special workspace's card is docked, if it is.
-  pub dock: Option<RectF>,
 }
 
 /// What the layouts need of a card.
@@ -393,9 +395,6 @@ pub(crate) struct Targets {
 pub(crate) struct CardSlot {
   /// Its width at scale 1.
   pub width: f32,
-
-  /// The special workspace's card, set apart after the others.
-  pub is_special: bool,
 
   /// How far across the card, at scale 1, the middle of what its monitor
   /// shows now is: off its middle for a scrolling workspace whose strip
@@ -408,230 +407,13 @@ pub(crate) struct CardSlot {
 }
 
 impl CardSlot {
-  pub fn new(metrics: &CardMetrics, is_special: bool) -> Self {
+  pub fn new(metrics: &CardMetrics) -> Self {
     Self {
       width: metrics.width,
-      is_special,
       view_center: metrics.width / 2.0,
       keep: None,
     }
   }
-}
-
-/// Width of the special workspace's docked card, as a part of the
-/// overview's width: at rest, and while a window is carried or dragged,
-/// so it is an easy place to drop it on.
-const DOCK_WIDTH: f32 = 0.11;
-const DOCK_RECEIVING_WIDTH: f32 = 0.2;
-
-/// Scale of the special workspace's docked card.
-fn dock_scale(metrics: &CardMetrics, is_receiving: bool) -> f32 {
-  let part = if is_receiving {
-    DOCK_RECEIVING_WIDTH
-  } else {
-    DOCK_WIDTH
-  };
-  part * metrics.view.0 / metrics.width
-}
-
-/// The special workspace's card, docked at the bottom edge of the
-/// overview, apart from the other workspaces.
-pub(crate) fn dock(
-  metrics: &CardMetrics,
-  slot: CardSlot,
-  is_receiving: bool,
-) -> Placement {
-  // A wide strip's card stays clear of the overview's sides.
-  let scale = dock_scale(metrics, is_receiving)
-    .min((metrics.view.0 - metrics.px(160.0)) / slot.width);
-  let height = metrics.height * scale;
-
-  Placement::new(
-    metrics.view.0 / 2.0,
-    metrics.view.1 - metrics.px(28.0) - height / 2.0,
-    scale,
-  )
-}
-
-/// Room the dock takes at the bottom of the overview, with a gap above
-/// it, at rest or grown to receive a window.
-fn dock_reserve(
-  metrics: &CardMetrics,
-  slots: &[CardSlot],
-  is_receiving: bool,
-) -> f32 {
-  if slots.iter().any(|slot| slot.is_special) {
-    metrics.height * dock_scale(metrics, is_receiving) + metrics.px(44.0)
-  } else {
-    0.0
-  }
-}
-
-/// Top edge of a block `height` tall (cards with the search line under
-/// them) centered above the dock at rest, but clear of it grown to receive
-/// a window, so it needn't move when one is picked up.
-fn above_dock(
-  metrics: &CardMetrics,
-  slots: &[CardSlot],
-  height: f32,
-) -> f32 {
-  let resting = dock_reserve(metrics, slots, false);
-  let receiving = dock_reserve(metrics, slots, true);
-
-  ((metrics.view.1 - resting - height) / 2.0)
-    .min(metrics.view.1 - receiving - height)
-    .max(0.0)
-}
-
-/// Places the special workspace's cards on the dock and the others with
-/// `place`, which gets only the others' slots and, as `selected`, the
-/// index among them of `centered` to center on.
-fn with_dock(
-  metrics: &CardMetrics,
-  slots: &[CardSlot],
-  centered: usize,
-  is_receiving: bool,
-  place: impl FnOnce(&[CardSlot], usize) -> (Vec<Placement>, f32),
-) -> Targets {
-  let regular = slots
-    .iter()
-    .enumerate()
-    .filter(|(_, slot)| !slot.is_special)
-    .map(|(index, _)| index)
-    .collect::<Vec<_>>();
-
-  let regular_selected = regular
-    .iter()
-    .position(|index| *index >= centered)
-    .unwrap_or(regular.len())
-    .min(regular.len().saturating_sub(1));
-
-  let regular_slots = regular
-    .iter()
-    .map(|index| slots[*index])
-    .collect::<Vec<_>>();
-  let (placed, search_y) = place(&regular_slots, regular_selected);
-
-  let mut docked = None;
-  let mut placed = placed.into_iter();
-  let cards = slots
-    .iter()
-    .map(|slot| {
-      if slot.is_special {
-        let placement = dock(metrics, *slot, is_receiving);
-        let card = CardMetrics {
-          width: slot.width,
-          ..*metrics
-        };
-        docked = Some(placement.rect(&card));
-        placement
-      } else {
-        placed
-          .next()
-          .unwrap_or_else(|| Placement::new(0.0, 0.0, 0.0))
-      }
-    })
-    .collect();
-
-  Targets {
-    cards,
-    search_y,
-    dock: docked,
-  }
-}
-
-/// A row of cards with the `selected` one in the middle of the overview,
-/// `cy` from its top. `look` gives each card's scale and opacity from
-/// how many cards away from the selected one it is; no card gets wider
-/// than `max_width`, nor the overview less a margin.
-fn row(
-  metrics: &CardMetrics,
-  slots: &[CardSlot],
-  selected: usize,
-  cy: f32,
-  max_width: f32,
-  look: impl Fn(usize) -> (f32, f32),
-) -> Vec<Placement> {
-  let max_width = max_width.min(metrics.view.0 - 2.0 * metrics.px(48.0));
-  let looks = slots
-    .iter()
-    .enumerate()
-    .map(|(index, slot)| {
-      let (scale, opacity) = look(index.abs_diff(selected));
-      (scale.min(max_width / slot.width), opacity)
-    })
-    .collect::<Vec<_>>();
-
-  let mut starts = Vec::with_capacity(slots.len());
-  let mut x = 0.0;
-  for (slot, (scale, _)) in slots.iter().zip(&looks) {
-    starts.push(x);
-    x += slot.width * scale + metrics.spacing;
-  }
-
-  let selected_width = slots
-    .get(selected)
-    .zip(looks.get(selected))
-    .map_or(0.0, |(slot, (scale, _))| slot.width * scale);
-  let offset = metrics.view.0 / 2.0
-    - (starts.get(selected).copied().unwrap_or(0.0)
-      + selected_width / 2.0);
-
-  starts
-    .iter()
-    .zip(slots)
-    .zip(&looks)
-    .map(|((start, slot), (scale, opacity))| {
-      Placement::new(start + slot.width * scale / 2.0 + offset, cy, *scale)
-        .faded(*opacity)
-    })
-    .collect()
-}
-
-/// One row of cards with the `centered` one in the middle and larger,
-/// the others fading with distance from it, and the special workspace's
-/// card docked below. A wide workspace's card is at most twice as wide
-/// as a normal one.
-///
-/// `zoomed` is for looking inside the centered workspace: it grows a
-/// third and its neighbours sit far back. `is_receiving` grows the dock
-/// while a window is carried or dragged.
-pub(crate) fn carousel(
-  metrics: &CardMetrics,
-  slots: &[CardSlot],
-  centered: usize,
-  zoomed: bool,
-  is_receiving: bool,
-) -> Targets {
-  with_dock(metrics, slots, centered, is_receiving, |slots, selected| {
-    // The row grows with the zoom, so a busy workspace gets the room it
-    // needs.
-    let zoom = if zoomed { 1.2 } else { 0.9 };
-    let row_height = metrics.height * (zoom + 0.02);
-    let search_gap = metrics.px(16.0);
-    let top = above_dock(
-      metrics,
-      slots,
-      row_height + search_gap + metrics.px(SEARCH_HEIGHT),
-    );
-
-    let cards = row(
-      metrics,
-      slots,
-      selected,
-      top + row_height / 2.0,
-      metrics.width * 2.0 * zoom,
-      |distance| match (distance, zoomed) {
-        (0, _) => (zoom, 1.0),
-        (_, true) => (0.27, 0.5),
-        (1, false) => (0.56, 0.9),
-        (2, false) => (0.56, 0.75),
-        (_, false) => (0.56, 0.6),
-      },
-    );
-
-    (cards, top + row_height + search_gap)
-  })
 }
 
 /// Height of the name shown under (or over) a card that has no header,
@@ -687,337 +469,69 @@ pub(crate) fn activities(
     (search_y - metrics.px(16.0) - scene_top).max(0.0),
   );
 
-  (
-    Targets {
-      cards,
-      search_y,
-      dock: None,
-    },
-    scene,
-  )
+  (Targets { cards, search_y }, scene)
 }
 
-/// The selected card as large as fits on the right, its name over it,
-/// and every other card small in a column on the left, in order, their
-/// names under them.
-pub(crate) fn stage(
+/// Space kept free beside a panned strip's picked window, and between the
+/// stack's cards, in logical pixels.
+const STACK_MARGIN: f32 = 48.0;
+const STACK_GAP: f32 = 28.0;
+
+/// Every card at scale 1 in a column, the `selected` one in the middle of
+/// the room above the search line. Each card lines up the middle of what
+/// its monitor shows with the middle of the overview, so a strip reaches
+/// past either side as far as its columns do.
+///
+/// The selected card is panned `pan` further along its strip, in card
+/// units at scale 1, but only as far as keeps the overview's middle on
+/// it, and then as little as keeps its `keep` span in view. Returns the
+/// targets and the pan it ends up with.
+#[allow(clippy::cast_precision_loss)]
+pub(crate) fn stack(
   metrics: &CardMetrics,
   slots: &[CardSlot],
   selected: usize,
-) -> Targets {
+  pan: f32,
+) -> (Targets, f32) {
   let view_width = metrics.view.0;
-  let margin = metrics.px(32.0);
-  let gap = metrics.px(14.0);
-  let label = metrics.px(LABEL_GAP + LABEL_HEIGHT);
+  let margin = metrics.px(STACK_MARGIN);
   let search_y = metrics.bottom_search_y();
-
-  let side_width = (view_width * 0.15)
-    .clamp(metrics.px(160.0), metrics.px(380.0))
-    .min(view_width / 3.0);
-  let side_top = margin;
-  let side_height = (search_y - metrics.px(12.0) - side_top).max(0.0);
-
-  // Each as wide as the column, all shrunk alike for a long column to
-  // fit.
-  let others = slots
-    .iter()
-    .enumerate()
-    .filter(|(index, _)| *index != selected)
-    .map(|(_, slot)| slot)
-    .collect::<Vec<_>>();
-  let natural = others
-    .iter()
-    .map(|slot| metrics.height * side_width / slot.width)
-    .sum::<f32>();
-  #[allow(clippy::cast_precision_loss)]
-  let extra = others.len() as f32 * label
-    + others.len().saturating_sub(1) as f32 * gap;
-  let shrink = ((side_height - extra) / natural.max(1.0)).clamp(0.05, 1.0);
-
-  let total = natural * shrink + extra;
-  let mut y = side_top + (side_height - total).max(0.0) / 2.0;
-  let side_cx = margin + side_width / 2.0;
-
-  let center = {
-    let left = margin + side_width + margin * 1.5;
-    let top = margin + label;
-    let (width, height) = (
-      view_width - margin - left,
-      search_y - metrics.px(16.0) - top,
-    );
-    let slot = slots
-      .get(selected)
-      .copied()
-      .unwrap_or_else(|| CardSlot::new(metrics, false));
-    let scale = (width / slot.width)
-      .min(height / metrics.height)
-      .clamp(0.01, 1.0);
-    Placement::new(left + width / 2.0, top + height / 2.0, scale)
-  };
+  let middle = (view_width / 2.0, (search_y - metrics.px(16.0)) / 2.0);
+  let step = metrics.height + metrics.px(STACK_GAP);
+  let mut panned = 0.0;
 
   let cards = slots
     .iter()
     .enumerate()
     .map(|(index, slot)| {
+      let resting = middle.0 - slot.view_center;
+      let mut left = resting;
+
       if index == selected {
-        return center;
+        left -=
+          pan.clamp(-slot.view_center, slot.width - slot.view_center);
+
+        if let Some((from, to)) = slot.keep {
+          let (low, high) = (margin, view_width - margin);
+          if to - from > high - low || left + from < low {
+            left = low - from;
+          } else if left + to > high {
+            left = high - to;
+          }
+        }
+        panned = resting - left;
       }
 
-      let scale = side_width / slot.width * shrink;
-      let height = metrics.height * scale;
-      let placement = Placement::new(side_cx, y + height / 2.0, scale);
-      y += height + label + gap;
-      placement
+      let offset = index as f32 - selected as f32;
+      Placement::new(
+        left + slot.width / 2.0,
+        middle.1 + offset * step,
+        1.0,
+      )
     })
     .collect();
 
-  Targets {
-    cards,
-    search_y,
-    dock: None,
-  }
-}
-
-/// A card's place in the grid, in columns.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub(crate) struct GridCell {
-  pub row: usize,
-  pub column: usize,
-  pub span: usize,
-}
-
-/// Where the grid puts each card: rows of up to `columns` columns and a
-/// widened card taking two of them. The special workspace's card, which
-/// is docked below the grid, counts as a row of its own after them, so
-/// moving down from the last row reaches it.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub(crate) struct GridCells {
-  pub cells: Vec<GridCell>,
-  pub columns: usize,
-
-  /// Columns taken in each row.
-  row_spans: Vec<usize>,
-}
-
-impl GridCells {
-  /// The cells of up to `max_columns` columns that show the cards
-  /// largest; of those, the one with the fewest rows, then columns, so
-  /// its rows are as even as they can be.
-  pub fn fitting(
-    metrics: &CardMetrics,
-    slots: &[CardSlot],
-    max_columns: usize,
-  ) -> Self {
-    (1..=max_columns.max(1))
-      .map(|columns| {
-        let cells = Self::new(metrics, slots, columns);
-        (grid_size(metrics, slots, &cells), cells)
-      })
-      .max_by(|(a, a_cells), (b, b_cells)| {
-        a.scale
-          .total_cmp(&b.scale)
-          .then(b.rows.cmp(&a.rows))
-          .then(b_cells.columns.cmp(&a_cells.columns))
-      })
-      .map_or_else(Self::default, |(_, cells)| cells)
-  }
-
-  pub fn new(
-    metrics: &CardMetrics,
-    slots: &[CardSlot],
-    columns: usize,
-  ) -> Self {
-    let span_of = |slot: &CardSlot| {
-      if slot.width > metrics.width {
-        2
-      } else {
-        1
-      }
-    };
-    let regular = slots.iter().filter(|slot| !slot.is_special);
-    let total_span = regular.clone().map(span_of).sum::<usize>();
-    let max_span = regular.map(span_of).max().unwrap_or(1);
-    let columns = columns.clamp(1, total_span.max(1)).max(max_span);
-
-    let mut cells = vec![GridCell::default(); slots.len()];
-    let mut row_spans: Vec<usize> = Vec::new();
-
-    for (index, slot) in slots.iter().enumerate() {
-      if slot.is_special {
-        continue;
-      }
-
-      let span = span_of(slot);
-      let last_row = row_spans.len().saturating_sub(1);
-      let cell = match row_spans.last_mut() {
-        Some(taken) if *taken + span <= columns => {
-          *taken += span;
-          GridCell {
-            row: last_row,
-            column: *taken - span,
-            span,
-          }
-        }
-        _ => {
-          row_spans.push(span);
-          GridCell {
-            row: row_spans.len() - 1,
-            column: 0,
-            span,
-          }
-        }
-      };
-      cells[index] = cell;
-    }
-
-    for (index, slot) in slots.iter().enumerate() {
-      if slot.is_special {
-        row_spans.push(columns);
-        cells[index] = GridCell {
-          row: row_spans.len() - 1,
-          column: 0,
-          span: columns,
-        };
-      }
-    }
-
-    Self {
-      cells,
-      columns,
-      row_spans,
-    }
-  }
-
-  /// Columns taken in `row`.
-  pub fn taken(&self, row: usize) -> usize {
-    self.row_spans.get(row).copied().unwrap_or(0)
-  }
-
-  /// Where the middle of `cell` is across the grid, in columns, with a
-  /// short row centered.
-  #[allow(clippy::cast_precision_loss)]
-  fn center(&self, cell: &GridCell) -> f32 {
-    self.columns.saturating_sub(self.taken(cell.row)) as f32 / 2.0
-      + cell.column as f32
-      + cell.span as f32 / 2.0
-  }
-
-  /// The card in the row `delta` rows from card `index`'s that sits
-  /// closest under (or over) it.
-  pub fn vertical_neighbour(
-    &self,
-    index: usize,
-    delta: isize,
-  ) -> Option<usize> {
-    let from = self.cells.get(index)?;
-    let row = from.row.checked_add_signed(delta)?;
-    let center = self.center(from);
-
-    self
-      .cells
-      .iter()
-      .enumerate()
-      .filter(|(_, cell)| cell.row == row)
-      .min_by(|(_, a), (_, b)| {
-        (self.center(a) - center)
-          .abs()
-          .total_cmp(&(self.center(b) - center).abs())
-      })
-      .map(|(index, _)| index)
-  }
-}
-
-/// The scale the grid shows its cards at, and its number of rows.
-struct GridSize {
-  scale: f32,
-  rows: usize,
-}
-
-/// How large the grid in `cells` shows its cards: as large as fits,
-/// leaving room around it for the search line and for the dock grown to
-/// receive a window.
-#[allow(clippy::cast_precision_loss)]
-fn grid_size(
-  metrics: &CardMetrics,
-  slots: &[CardSlot],
-  cells: &GridCells,
-) -> GridSize {
-  let rows = slots
-    .iter()
-    .zip(&cells.cells)
-    .filter(|(slot, _)| !slot.is_special)
-    .map(|(_, cell)| cell.row + 1)
-    .max()
-    .unwrap_or(1);
-
-  let gap = metrics.px(14.0);
-  let (columns_f, rows_f) = (cells.columns as f32, rows as f32);
-  let available_width = metrics.view.0 - metrics.px(120.0);
-  let available_height = metrics.view.1
-    - metrics.px(96.0 + 16.0 + SEARCH_HEIGHT)
-    - dock_reserve(metrics, slots, true);
-
-  let scale = ((available_width - gap * (columns_f - 1.0))
-    / (columns_f * metrics.width))
-    .min(
-      (available_height - gap * (rows_f - 1.0))
-        / (rows_f * metrics.height),
-    )
-    .clamp(0.1, 1.0);
-
-  GridSize { scale, rows }
-}
-
-/// Every card at once, in `cells`, as large as fits above the special
-/// workspace's docked card. A card wider than its cells is shrunk to fit
-/// them.
-#[allow(clippy::cast_precision_loss)]
-pub(crate) fn grid(
-  metrics: &CardMetrics,
-  slots: &[CardSlot],
-  cells: &GridCells,
-  is_receiving: bool,
-) -> Targets {
-  let regular = slots
-    .iter()
-    .zip(&cells.cells)
-    .filter(|(slot, _)| !slot.is_special)
-    .map(|(slot, cell)| (*slot, *cell))
-    .collect::<Vec<_>>();
-  let GridSize { scale, rows } = grid_size(metrics, slots, cells);
-
-  let (gap, search_gap) = (metrics.px(14.0), metrics.px(16.0));
-  let (columns_f, rows_f) = (cells.columns as f32, rows as f32);
-  let (width, height) = (metrics.width * scale, metrics.height * scale);
-  let total_width = columns_f * width + (columns_f - 1.0) * gap;
-  let total_height = rows_f * height + (rows_f - 1.0) * gap;
-  let left = (metrics.view.0 - total_width) / 2.0;
-  let top = above_dock(
-    metrics,
-    slots,
-    total_height + search_gap + metrics.px(SEARCH_HEIGHT),
-  );
-
-  with_dock(metrics, slots, 0, is_receiving, |_, _| {
-    let cards = regular
-      .iter()
-      .map(|(slot, cell)| {
-        // A short row is centered rather than hanging off the left.
-        let taken = cells.taken(cell.row) as f32;
-        let row_left = left + (columns_f - taken) * (width + gap) / 2.0;
-        let span = cell.span as f32;
-        let span_width = span * width + (span - 1.0) * gap;
-
-        Placement::new(
-          row_left + cell.column as f32 * (width + gap) + span_width / 2.0,
-          top + cell.row as f32 * (height + gap) + height / 2.0,
-          scale.min(span_width / slot.width),
-        )
-      })
-      .collect();
-
-    (cards, top + total_height + search_gap)
-  })
+  (Targets { cards, search_y }, panned)
 }
 
 /// How a workspace's screen space maps onto its card at scale 1.
@@ -1251,21 +765,17 @@ pub(crate) struct Zoom {
   pub is_closing: bool,
   from: f32,
   duration_ms: f32,
-
-  /// How far an open overshoots before settling, as a `Spring`'s bounce.
-  bounce: f32,
 }
 
 impl Zoom {
-  /// Zooms out of `card` over `duration_ms`, overshooting by `bounce`.
+  /// Zooms out of `card` over `duration_ms`.
   #[allow(clippy::cast_precision_loss)]
-  pub fn open(card: usize, duration_ms: u32, bounce: f32) -> Self {
+  pub fn open(card: usize, duration_ms: u32) -> Self {
     Self {
       card,
       is_closing: false,
       from: 0.0,
       duration_ms: duration_ms as f32,
-      bounce,
     }
   }
 
@@ -1279,25 +789,15 @@ impl Zoom {
       is_closing: true,
       from,
       duration_ms: duration_ms as f32 * from,
-      bounce: 0.0,
     }
   }
 
-  /// Openness `elapsed_ms` in, eased.
+  /// Openness `elapsed_ms` in, eased: most of the way there early, then
+  /// settling without overshooting, which on a zoom reads as a wobble.
   pub fn openness(&self, elapsed_ms: f32) -> f32 {
     let to = if self.is_closing { 0.0 } else { 1.0 };
     self.from
-      + (to - self.from) * ease_out_cubic(self.progress(elapsed_ms))
-  }
-
-  /// How far things have moved `elapsed_ms` in: the openness, but past 1
-  /// for a moment as an open overshoots. For geometry only; fades go by
-  /// the openness.
-  pub fn reach(&self, elapsed_ms: f32) -> f32 {
-    if self.is_closing {
-      return self.openness(elapsed_ms);
-    }
-    ease_out_back(self.progress(elapsed_ms), self.bounce)
+      + (to - self.from) * ease_out_quart(self.progress(elapsed_ms))
   }
 
   pub fn is_finished(&self, elapsed_ms: f32) -> bool {
@@ -1322,6 +822,11 @@ pub(crate) fn ease_out_cubic(progress: f32) -> f32 {
   1.0 - (1.0 - progress.clamp(0.0, 1.0)).powi(3)
 }
 
+/// Faster start than `ease_out_cubic`, and a longer gentle stop.
+pub(crate) fn ease_out_quart(progress: f32) -> f32 {
+  1.0 - (1.0 - progress.clamp(0.0, 1.0)).powi(4)
+}
+
 /// Like `ease_out_cubic`, but running past 1 before settling back, as a
 /// `Spring` with the same `bounce` does; `ease_out_cubic` for `0`.
 pub(crate) fn ease_out_back(progress: f32, bounce: f32) -> f32 {
@@ -1344,22 +849,20 @@ pub(crate) fn chrome_opacity(openness: f32) -> f32 {
   progress * progress * (3.0 - 2.0 * progress)
 }
 
-/// How much larger, relative to its shorter side, a highlight following
-/// in place starts out than what it settles onto.
-const IN_PLACE_GROWTH: f32 = 0.04;
+/// How much larger, relative to its shorter side, a mark starts out than
+/// what it settles onto.
+const SETTLE_GROWTH: f32 = 0.04;
 
-/// Where a highlight shows: right on what it highlights, gliding over
-/// from where it was when that changes, and fading in and out.
-pub(crate) struct Glide<K> {
+/// Where a highlight shows: on what it marks, fading in there (settling
+/// onto it from a little larger) whenever that changes rather than
+/// travelling over from where it was, and fading out where it is.
+pub(crate) struct Mark<K> {
   target: Option<K>,
 
-  /// How long it takes to glide over, and about how long to fade.
+  /// How long it takes to settle and about how long to fade.
   duration_ms: f32,
 
-  /// How far it overshoots what it glides to, as a `Spring`'s bounce.
-  bounce: f32,
-
-  /// Where it set off from, and when, with its corners' scale.
+  /// Where it settles from, with its corners' scale, and since when.
   from: (RectF, f32),
   started: Instant,
 
@@ -1367,13 +870,12 @@ pub(crate) struct Glide<K> {
   alpha: Spring,
 }
 
-impl<K: Copy + PartialEq> Glide<K> {
-  /// One that glides and fades over `duration_ms`; at once for `0`.
+impl<K: Copy + PartialEq> Mark<K> {
+  /// One that settles and fades over `duration_ms`; at once for `0`.
   pub fn new(duration_ms: f32) -> Self {
     Self {
       target: None,
       duration_ms,
-      bounce: 0.0,
       from: (RectF::default(), 1.0),
       started: Instant::now(),
       shown: (RectF::default(), 1.0),
@@ -1381,41 +883,19 @@ impl<K: Copy + PartialEq> Glide<K> {
     }
   }
 
-  /// Glides and fades over `duration_ms`, overshooting by `bounce`, from
-  /// now on.
-  pub fn retune(&mut self, duration_ms: f32, bounce: f32) {
+  /// Settles and fades over `duration_ms` from now on.
+  pub fn retune(&mut self, duration_ms: f32) {
     self.duration_ms = duration_ms;
-    self.bounce = bounce;
     self.alpha.retune(duration_ms);
   }
 
-  /// Follows `target`: the key of what to highlight, where that is now
-  /// and its corners' scale. `None` fades it out where it is. Returns
-  /// whether it is still moving.
+  /// Follows `target`: the key of what to mark, where that is now and its
+  /// corners' scale. `None` fades it out where it is. Returns whether it
+  /// is still moving.
   pub fn follow(
     &mut self,
     target: Option<(K, RectF, f32)>,
     now: Instant,
-  ) -> bool {
-    self.follow_with(target, now, false)
-  }
-
-  /// Follows `target` as `follow` does, but shows on what it highlights
-  /// next by fading in there, settling onto it from a little larger,
-  /// rather than gliding over from where it was.
-  pub fn follow_in_place(
-    &mut self,
-    target: Option<(K, RectF, f32)>,
-    now: Instant,
-  ) -> bool {
-    self.follow_with(target, now, true)
-  }
-
-  fn follow_with(
-    &mut self,
-    target: Option<(K, RectF, f32)>,
-    now: Instant,
-    in_place: bool,
   ) -> bool {
     let Some((key, rect, scale)) = target else {
       self.target = None;
@@ -1424,12 +904,9 @@ impl<K: Copy + PartialEq> Glide<K> {
     };
 
     if self.target != Some(key) {
-      self.from = if in_place && self.duration_ms > 0.0 {
+      self.from = if self.duration_ms > 0.0 {
         self.alpha.snap(0.0);
-        (rect.inset(-rect.w.min(rect.h) * IN_PLACE_GROWTH), scale)
-      } else if self.alpha.value > 0.01 {
-        // From where it shows, or else straight in place.
-        self.shown
+        (rect.inset(-rect.w.min(rect.h) * SETTLE_GROWTH), scale)
       } else {
         (rect, scale)
       };
@@ -1444,7 +921,8 @@ impl<K: Copy + PartialEq> Glide<K> {
     } else {
       1.0
     };
-    let eased = ease_out_back(progress, self.bounce);
+    // Onto where its target is now, which may itself be moving.
+    let eased = ease_out_cubic(progress);
     self.shown = (
       self.from.0.lerp(&rect, eased),
       self.from.1 + (scale - self.from.1) * eased,
@@ -1729,16 +1207,15 @@ mod tests {
   use std::time::{Duration, Instant};
 
   use super::{
-    activities, carousel, chrome_opacity, cover_crop, ease_out_back,
-    ease_out_cubic, grid, stage, Camera, CardLook, CardMetrics, CardSlot,
-    CardView, Glide, GridCell, GridCells, RectF, Spring, SpringRect, Tile,
-    Zoom,
+    activities, chrome_opacity, cover_crop, ease_out_back, ease_out_cubic,
+    stack, Camera, CardLook, CardMetrics, CardSlot, CardView, Mark,
+    Placement, RectF, Spring, SpringRect, Tile, Zoom, STACK_MAX_WIDTHS,
   };
   use crate::OverviewLayoutMode;
 
-  /// Cards drawn for the grid.
+  /// Cards drawn for the stack.
   fn metrics() -> CardMetrics {
-    metrics_for(OverviewLayoutMode::Grid)
+    metrics_for(OverviewLayoutMode::Stack)
   }
 
   fn metrics_for(layout: OverviewLayoutMode) -> CardMetrics {
@@ -1747,7 +1224,7 @@ mod tests {
 
   /// `count` normal cards.
   fn slots(metrics: &CardMetrics, count: usize) -> Vec<CardSlot> {
-    vec![CardSlot::new(metrics, false); count]
+    vec![CardSlot::new(metrics); count]
   }
 
   /// The card of a scrolling workspace whose strip is `widths` monitors
@@ -1755,27 +1232,12 @@ mod tests {
   fn wide_slot(metrics: &CardMetrics, widths: f32) -> CardSlot {
     let area = RectF::new(0.0, 0.0, 1920.0, 1040.0);
     let strip = RectF::new(0.0, 0.0, 1920.0 * widths, 1040.0);
-    CardSlot::new(&metrics.for_content(&area, &strip), false)
+    CardSlot::new(&metrics.for_content(&area, &strip))
   }
 
   /// `metrics` of a card `width` wide.
   fn with_width(metrics: &CardMetrics, width: f32) -> CardMetrics {
     CardMetrics { width, ..*metrics }
-  }
-
-  /// Card rects of the grid of `slots`.
-  fn grid_of(
-    metrics: &CardMetrics,
-    slots: &[CardSlot],
-    columns: usize,
-  ) -> Vec<RectF> {
-    let cells = GridCells::new(metrics, slots, columns);
-    grid(metrics, slots, &cells, false)
-      .cards
-      .iter()
-      .zip(slots)
-      .map(|(card, slot)| card.rect(&with_width(metrics, slot.width)))
-      .collect()
   }
 
   fn assert_close(a: f32, b: f32) {
@@ -1803,67 +1265,9 @@ mod tests {
     let metrics = metrics();
     let tiles = metrics.tile_area();
 
-    assert_close(metrics.width, 1920.0 * 0.26);
+    assert_close(metrics.width, 1920.0 * 0.45);
     assert_close(tiles.w / tiles.h, 1920.0 / 1040.0);
     assert_close(metrics.height, tiles.bottom() + metrics.padding);
-  }
-
-  #[test]
-  fn carousel_centers_the_selected_card() {
-    let metrics = metrics_for(OverviewLayoutMode::Carousel);
-    let targets = carousel(&metrics, &slots(&metrics, 5), 2, false, false);
-
-    assert_close(targets.cards[2].cx, 960.0);
-    assert_close(targets.cards[2].scale, 0.9);
-    assert_close(targets.cards[1].scale, 0.56);
-    assert!(targets.cards[0].opacity < targets.cards[1].opacity);
-    assert_close(targets.cards[2].opacity, 1.0);
-
-    for pair in targets.cards.windows(2) {
-      let (left, right) = (pair[0].rect(&metrics), pair[1].rect(&metrics));
-      assert_close(right.x - left.right(), metrics.spacing);
-    }
-  }
-
-  #[test]
-  fn zoomed_carousel_grows_the_selected_card() {
-    let metrics = metrics_for(OverviewLayoutMode::Carousel);
-    let targets = carousel(&metrics, &slots(&metrics, 3), 0, true, false);
-
-    assert_close(targets.cards[0].scale, 1.2);
-    assert_close(targets.cards[1].scale, 0.27);
-    assert_close(targets.cards[0].cx, 960.0);
-    assert!(
-      targets.search_y > targets.cards[0].rect(&metrics).bottom(),
-      "hints sit under the cards"
-    );
-  }
-
-  #[test]
-  fn grid_centers_a_short_last_row() {
-    let metrics = metrics();
-    let rects = grid_of(&metrics, &slots(&metrics, 7), 5);
-
-    assert_close(rects[0].y, rects[4].y);
-    assert!(rects[5].y > rects[0].bottom());
-    assert_close(
-      rects[5].x - rects[0].x,
-      rects[4].right() - rects[6].right(),
-    );
-
-    for rect in &rects {
-      assert!(rect.x >= 0.0 && rect.right() <= 1920.0);
-      assert!(rect.y >= 0.0 && rect.bottom() <= 1040.0);
-    }
-  }
-
-  #[test]
-  fn grid_never_upscales_cards() {
-    let metrics = metrics();
-    let slots = slots(&metrics, 2);
-    let cells = GridCells::new(&metrics, &slots, 5);
-    let targets = grid(&metrics, &slots, &cells, false);
-    assert!(targets.cards.iter().all(|card| card.scale <= 1.0));
   }
 
   #[test]
@@ -1915,8 +1319,7 @@ mod tests {
   fn zoom_starts_with_windows_where_they_are() {
     let metrics = metrics();
     let view = RectF::new(0.0, 0.0, 1920.0, 1040.0);
-    let card =
-      carousel(&metrics, &slots(&metrics, 3), 1, false, false).cards[1];
+    let card = Placement::new(960.0, 400.0, 1.0);
     let tiles = card.map(&metrics, &metrics.tile_area());
 
     let window = RectF::new(960.0, 0.0, 960.0, 520.0);
@@ -1954,9 +1357,10 @@ mod tests {
 
   #[test]
   fn zoom_opens_out_of_a_card_and_closes_back_in() {
-    let open = Zoom::open(2, 250, 0.0);
+    let open = Zoom::open(2, 250);
     assert_close(open.openness(0.0), 0.0);
-    assert!(open.openness(100.0) > 0.5, "fast start");
+    assert!(open.openness(100.0) > 0.85, "fast start");
+    assert!((0..=250_u16).all(|ms| open.openness(f32::from(ms)) <= 1.0));
     assert_close(open.openness(250.0), 1.0);
     assert!(open.is_finished(250.0) && !open.is_finished(249.0));
 
@@ -1964,22 +1368,6 @@ mod tests {
     assert!(close.is_closing);
     assert_close(close.openness(0.0), 1.0);
     assert_close(close.openness(200.0), 0.0);
-  }
-
-  #[test]
-  fn only_an_open_overshoots_and_only_in_reach() {
-    let open = Zoom::open(0, 250, 0.25);
-    let overshoot = (0..=250_u16)
-      .map(|ms| open.reach(f32::from(ms)))
-      .fold(0.0_f32, f32::max);
-    assert!(overshoot > 1.02 && overshoot < 1.06, "{overshoot}");
-    assert_close(open.reach(250.0), 1.0);
-    assert!((0..=250_u16).all(|ms| open.openness(f32::from(ms)) <= 1.0));
-
-    let close = Zoom::close(0, 1.0, 200);
-    for ms in (0..=200_u16).map(f32::from) {
-      assert_close(close.reach(ms), close.openness(ms));
-    }
   }
 
   #[test]
@@ -2085,8 +1473,7 @@ mod tests {
     let area = RectF::new(0.0, 0.0, 1920.0, 1040.0);
     let strip = RectF::new(-960.0, 0.0, 3840.0, 1040.0);
     let view = CardView::new(&metrics, &area, &strip);
-    let card =
-      carousel(&metrics, &slots(&metrics, 1), 0, false, false).cards[0];
+    let card = Placement::new(960.0, 400.0, 1.0);
 
     let window = RectF::new(960.0, 0.0, 960.0, 1040.0);
     let on_card =
@@ -2287,7 +1674,7 @@ mod tests {
 
   #[test]
   fn cards_widen_with_their_strip_up_to_twice() {
-    let metrics = metrics();
+    let metrics = metrics_for(OverviewLayoutMode::Activities);
     let area = RectF::new(0.0, 0.0, 1920.0, 1040.0);
     let strip =
       |widths: f32| RectF::new(0.0, 0.0, 1920.0 * widths, 1040.0);
@@ -2318,113 +1705,12 @@ mod tests {
   }
 
   #[test]
-  fn carousel_centers_and_spaces_cards_of_any_width() {
-    let metrics = metrics_for(OverviewLayoutMode::Carousel);
-    let mut slots = slots(&metrics, 3);
-    slots[1] = wide_slot(&metrics, 1.5);
-
-    for selected in 0..3 {
-      let targets = carousel(&metrics, &slots, selected, false, false);
-      assert_close(targets.cards[selected].cx, 960.0);
-
-      let rects = targets
-        .cards
-        .iter()
-        .zip(&slots)
-        .map(|(card, slot)| card.rect(&with_width(&metrics, slot.width)))
-        .collect::<Vec<_>>();
-      for pair in rects.windows(2) {
-        assert_close(pair[1].x - pair[0].right(), metrics.spacing);
-      }
-    }
-  }
-
-  #[test]
-  fn the_special_card_docks_below_the_carousel_and_grows_to_receive() {
-    let metrics = metrics_for(OverviewLayoutMode::Carousel);
-    let mut slots = slots(&metrics, 3);
-    slots[2].is_special = true;
-
-    let rects = |is_receiving| {
-      carousel(&metrics, &slots, 0, false, is_receiving)
-        .cards
-        .iter()
-        .map(|card| card.rect(&metrics))
-        .collect::<Vec<_>>()
-    };
-    let (resting, receiving) = (rects(false), rects(true));
-
-    // The others stay a row of their own; the special card sits below
-    // them, centered.
-    assert_close(resting[1].x - resting[0].right(), metrics.spacing);
-    assert!(resting[2].y > resting[0].bottom());
-    assert_close(resting[2].x + resting[2].w / 2.0, 960.0);
-    assert!(resting[2].bottom() <= 1080.0);
-
-    assert!(receiving[2].w > resting[2].w * 1.5);
-    assert!(receiving[2].y > receiving[0].bottom());
-    assert!(receiving[2].bottom() <= 1080.0);
-  }
-
-  #[test]
-  fn grid_gives_a_widened_card_two_columns() {
-    let metrics = metrics();
-    let mut slots = slots(&metrics, 4);
-    slots[2] = wide_slot(&metrics, 3.0);
-
-    // Two normal cards, then the wide one doesn't fit on the first row.
-    let cells = GridCells::new(&metrics, &slots, 3);
-    let cell = |row, column, span| GridCell { row, column, span };
-    assert_eq!(
-      cells.cells,
-      vec![cell(0, 0, 1), cell(0, 1, 1), cell(1, 0, 2), cell(1, 2, 1)]
-    );
-
-    let rects = grid_of(&metrics, &slots, 3);
-    // The short first row is centered over the full second one.
-    assert!(rects[2].x < rects[0].x);
-    assert_close(rects[2].y, rects[3].y);
-    assert!(rects[2].w > rects[0].w * 1.9);
-    assert!(rects[3].x > rects[2].right());
-    for rect in &rects {
-      assert!(rect.x >= 0.0 && rect.right() <= 1920.0);
-    }
-  }
-
-  #[test]
-  fn the_grid_takes_the_columns_that_show_its_cards_largest() {
-    let metrics = metrics();
-    let columns = |count| {
-      GridCells::fitting(&metrics, &slots(&metrics, count), 5).columns
-    };
-
-    assert_eq!(columns(4), 2, "two even rows of two");
-    assert_eq!(columns(12), 4, "three rows of four beat narrower fives");
-    assert_eq!(columns(1), 1);
-  }
-
-  #[test]
-  fn grid_shrinks_a_card_wider_than_its_two_columns() {
-    let metrics = metrics_for(OverviewLayoutMode::Carousel);
-    let mut slots = slots(&metrics, 3);
-    slots[1] = wide_slot(&metrics, 3.0);
-
-    let rects = grid_of(&metrics, &slots, 4);
-    assert!(rects[1].w <= rects[0].w * 2.0 + 14.0 + 0.01);
-    assert!(rects[1].h < rects[0].h, "shorter rather than letterboxed");
-    assert_close(
-      rects[1].y + rects[1].h / 2.0,
-      rects[0].y + rects[0].h / 2.0,
-    );
-  }
-
-  #[test]
   fn activities_line_up_miniatures_over_the_scene() {
     let metrics = metrics_for(OverviewLayoutMode::Activities);
     let slots = [
-      CardSlot::new(&metrics, false),
+      CardSlot::new(&metrics),
       wide_slot(&metrics, 3.0),
-      CardSlot::new(&metrics, true),
+      CardSlot::new(&metrics),
     ];
 
     let (targets, scene) = activities(&metrics, &slots);
@@ -2462,69 +1748,23 @@ mod tests {
   }
 
   #[test]
-  fn stage_shows_the_selected_card_large_beside_the_others() {
-    let metrics = metrics_for(OverviewLayoutMode::Stage);
-    let slots = slots(&metrics, 4);
-
-    let targets = stage(&metrics, &slots, 2);
-    let rects = targets
-      .cards
-      .iter()
-      .map(|card| card.rect(&metrics))
-      .collect::<Vec<_>>();
-
-    // The others in order down a column on the left, one width.
-    for pair in [(0, 1), (1, 3)] {
-      let (a, b) = (rects[pair.0], rects[pair.1]);
-      assert_close(a.x + a.w / 2.0, b.x + b.w / 2.0);
-      assert!(b.y > a.bottom());
-    }
-
-    // The selected one right of them, large, clear of the hints.
-    let center = rects[2];
-    assert!(center.x > rects[0].right());
-    assert!(center.w > 1920.0 * 0.6);
-    assert!(center.y > 0.0 && center.bottom() < targets.search_y);
-    assert!(targets.cards[2].scale <= 1.0);
-  }
-
-  #[test]
-  fn a_long_stage_column_shrinks_to_fit() {
-    let metrics = metrics_for(OverviewLayoutMode::Stage);
-    let slots = slots(&metrics, 16);
-
-    let targets = stage(&metrics, &slots, 0);
-    let last = targets.cards[15].rect(&metrics);
-
-    assert!(targets.cards[1].rect(&metrics).y >= 0.0);
-    assert!(last.bottom() < targets.search_y);
-  }
-
-  #[test]
   fn cards_are_drawn_larger_for_layouts_that_show_them_larger() {
     let width = |layout| metrics_for(layout).width;
 
     assert!(
       width(OverviewLayoutMode::Activities)
-        < width(OverviewLayoutMode::Grid)
-    );
-    assert!(
-      width(OverviewLayoutMode::Grid)
-        < width(OverviewLayoutMode::Carousel)
-    );
-    assert!(
-      width(OverviewLayoutMode::Carousel)
-        < width(OverviewLayoutMode::Stage)
+        < width(OverviewLayoutMode::Stack)
     );
 
     // Clean cards have no header, but keep the monitor's shape.
-    let stage = metrics_for(OverviewLayoutMode::Stage);
-    assert_eq!(stage.look, CardLook::Clean);
-    assert_close(stage.header, stage.padding);
+    let miniature = metrics_for(OverviewLayoutMode::Activities);
+    assert_eq!(miniature.look, CardLook::Clean);
+    assert_close(miniature.header, miniature.padding);
     assert_close(
-      stage.tile_area().w / stage.tile_area().h,
+      miniature.tile_area().w / miniature.tile_area().h,
       1920.0 / 1040.0,
     );
+    assert_eq!(metrics().look, CardLook::Classic);
   }
 
   #[test]
@@ -2540,153 +1780,172 @@ mod tests {
   }
 
   #[test]
-  fn grid_docks_the_special_card_below_its_rows() {
-    let metrics = metrics();
-    let mut slots = slots(&metrics, 4);
-    slots[3] = CardSlot {
-      is_special: true,
-      ..wide_slot(&metrics, 3.0)
-    };
-
-    let cells = GridCells::new(&metrics, &slots, 5);
-    assert_eq!(cells.columns, 3, "as many columns as normal cards");
-    assert_eq!(cells.cells[3].row, 1, "a row below, for moving down");
-
-    for is_receiving in [false, true] {
-      let cards = grid(&metrics, &slots, &cells, is_receiving).cards;
-      let rects = cards
-        .iter()
-        .map(|card| card.rect(&metrics))
-        .collect::<Vec<_>>();
-      assert!(rects[3].y > rects[0].bottom());
-      assert_close(rects[3].x + rects[3].w / 2.0, 960.0);
-      assert!(rects[3].x >= 0.0 && rects[3].right() <= 1920.0);
-      assert!(rects[3].bottom() <= 1080.0);
-    }
-  }
-
-  #[test]
-  fn grid_rows_up_and_down_go_to_the_nearest_card() {
-    let metrics = metrics();
-    let mut slots = slots(&metrics, 5);
-    slots[3] = wide_slot(&metrics, 3.0);
-    slots[4].is_special = true;
-
-    // Row 0: cards 0 1 2; row 1: wide card 3; row 2: special card 4.
-    let cells = GridCells::new(&metrics, &slots, 3);
-    assert_eq!(cells.vertical_neighbour(0, 1), Some(3));
-    assert_eq!(cells.vertical_neighbour(2, 1), Some(3));
-    assert_eq!(
-      cells.vertical_neighbour(3, -1),
-      Some(1),
-      "over its middle"
-    );
-    assert_eq!(cells.vertical_neighbour(3, 1), Some(4));
-    assert_eq!(cells.vertical_neighbour(4, 1), None);
-    assert_eq!(cells.vertical_neighbour(0, -1), None);
-  }
-
-  #[test]
-  fn grid_of_normal_cards_flows_as_before() {
-    let metrics = metrics();
-    let cells = GridCells::new(&metrics, &slots(&metrics, 7), 5);
-
-    for (index, cell) in cells.cells.iter().enumerate() {
-      assert_eq!(
-        (cell.row, cell.column, cell.span),
-        (index / 5, index % 5, 1)
-      );
-    }
-  }
-
-  #[test]
-  fn a_glide_appears_in_place_then_glides_to_the_next_target() {
-    let mut glide = Glide::new(170.0);
+  fn a_mark_settles_onto_its_next_target_without_travel() {
+    let mut mark = Mark::new(170.0);
     let t0 = Instant::now();
     let a = RectF::new(0.0, 0.0, 100.0, 100.0);
     let b = RectF::new(400.0, 0.0, 200.0, 100.0);
 
-    glide.follow(Some((1, a, 1.0)), t0);
+    mark.follow(Some((1, a, 1.0)), t0);
     for _ in 0..60 {
-      glide.step(1.0 / 60.0);
-    }
-    assert_eq!(glide.shown().map(|(rect, ..)| rect), Some(a));
-
-    // Halfway in time, more than halfway there, and there in the end.
-    glide.follow(Some((2, b, 1.0)), t0);
-    let mid = glide
-      .follow(Some((2, b, 1.0)), t0 + Duration::from_millis(85))
-      .then(|| glide.shown())
-      .flatten();
-    let x = mid.map_or(0.0, |(rect, ..)| rect.x);
-    assert!(x > 200.0 && x < 400.0);
-
-    glide.follow(Some((2, b, 1.0)), t0 + Duration::from_millis(400));
-    assert_eq!(glide.shown().map(|(rect, ..)| rect), Some(b));
-  }
-
-  #[test]
-  fn a_glide_followed_in_place_settles_onto_its_target_without_travel() {
-    let mut glide = Glide::new(170.0);
-    let t0 = Instant::now();
-    let a = RectF::new(0.0, 0.0, 100.0, 100.0);
-    let b = RectF::new(400.0, 0.0, 200.0, 100.0);
-
-    glide.follow(Some((1, a, 1.0)), t0);
-    for _ in 0..60 {
-      glide.step(1.0 / 60.0);
+      mark.step(1.0 / 60.0);
     }
 
     // On `b` from the start, a little larger, fading in from nothing.
-    glide.follow_in_place(Some((2, b, 1.0)), t0);
-    assert!(glide.shown().is_none(), "faded in from nothing");
-    glide.step(1.0 / 60.0);
-    glide
-      .follow_in_place(Some((2, b, 1.0)), t0 + Duration::from_millis(16));
-    let (rect, ..) = glide.shown().expect("fading in");
+    mark.follow(Some((2, b, 1.0)), t0);
+    assert!(mark.shown().is_none(), "faded in from nothing");
+    mark.step(1.0 / 60.0);
+    mark.follow(Some((2, b, 1.0)), t0 + Duration::from_millis(16));
+    let (rect, ..) = mark.shown().expect("fading in");
     assert!(rect.x < b.x && rect.x > b.x - 10.0, "{rect:?}");
     assert!(rect.w > b.w);
 
     for _ in 0..60 {
-      glide.step(1.0 / 60.0);
+      mark.step(1.0 / 60.0);
     }
-    glide
-      .follow_in_place(Some((2, b, 1.0)), t0 + Duration::from_millis(400));
-    assert_eq!(glide.shown().map(|(rect, ..)| rect), Some(b));
+    mark.follow(Some((2, b, 1.0)), t0 + Duration::from_millis(400));
+    assert_eq!(mark.shown().map(|(rect, ..)| rect), Some(b));
   }
 
   #[test]
-  fn a_glide_fades_out_where_it_is() {
-    let mut glide = Glide::new(170.0);
+  fn a_mark_fades_out_where_it_is() {
+    let mut mark = Mark::new(170.0);
     let rect = RectF::new(10.0, 10.0, 50.0, 50.0);
     let t0 = Instant::now();
 
-    glide.follow(Some((1, rect, 1.0)), t0);
+    mark.follow(Some((1, rect, 1.0)), t0);
     for _ in 0..60 {
-      glide.step(1.0 / 60.0);
+      mark.step(1.0 / 60.0);
     }
 
-    glide.follow(None::<(i32, RectF, f32)>, t0);
+    mark.follow(None::<(i32, RectF, f32)>, t0);
     for _ in 0..60 {
-      glide.step(1.0 / 60.0);
+      mark.step(1.0 / 60.0);
     }
-    assert!(glide.shown().is_none());
+    assert!(mark.shown().is_none());
   }
 
   #[test]
-  fn an_instant_glide_shows_on_its_target_at_once() {
-    let mut glide = Glide::new(0.0);
+  fn an_instant_mark_shows_on_its_target_at_once() {
+    let mut mark = Mark::new(0.0);
     let t0 = Instant::now();
     let a = RectF::new(0.0, 0.0, 100.0, 100.0);
     let b = RectF::new(400.0, 0.0, 200.0, 100.0);
 
-    assert!(!glide.follow(Some((1, a, 1.0)), t0));
-    assert_eq!(glide.shown(), Some((a, 1.0, 1.0)));
+    assert!(!mark.follow(Some((1, a, 1.0)), t0));
+    assert_eq!(mark.shown(), Some((a, 1.0, 1.0)));
 
-    assert!(!glide.follow(Some((2, b, 1.0)), t0));
-    assert_eq!(glide.shown(), Some((b, 1.0, 1.0)));
+    assert!(!mark.follow(Some((2, b, 1.0)), t0));
+    assert_eq!(mark.shown(), Some((b, 1.0, 1.0)));
 
-    assert!(!glide.follow(None, t0));
-    assert!(glide.shown().is_none());
+    assert!(!mark.follow(None, t0));
+    assert!(mark.shown().is_none());
+  }
+
+  /// A slot for the stack's card of a strip spanning `from` to `to`
+  /// monitor widths of the monitor's own, keeping `keep` (in card units).
+  fn strip_slot(
+    metrics: &CardMetrics,
+    from: f32,
+    to: f32,
+    keep: Option<(f32, f32)>,
+  ) -> (CardSlot, CardMetrics) {
+    let area = RectF::new(0.0, 0.0, 1920.0, 1040.0);
+    let strip =
+      RectF::new(1920.0 * from, 0.0, 1920.0 * (to - from), 1040.0);
+    let card = metrics.for_content(&area, &strip);
+    let view = CardView::new(&card, &area, &strip).map(&area);
+    let slot = CardSlot {
+      view_center: view.x + view.w / 2.0,
+      keep,
+      ..CardSlot::new(&card)
+    };
+    (slot, card)
+  }
+
+  #[test]
+  fn the_stack_centers_the_selected_card_and_stacks_the_rest() {
+    let metrics = metrics();
+    let (targets, pan) = stack(&metrics, &slots(&metrics, 4), 1, 0.0);
+    let rects = targets
+      .cards
+      .iter()
+      .map(|card| card.rect(&metrics))
+      .collect::<Vec<_>>();
+
+    assert_close(pan, 0.0);
+    assert_close(targets.cards[1].cx, 960.0);
+    assert_close(targets.cards[1].cy, (targets.search_y - 16.0) / 2.0);
+    for pair in rects.windows(2) {
+      assert!(pair[1].y > pair[0].bottom(), "top to bottom, apart");
+      assert_close(pair[0].x, pair[1].x);
+    }
+    for card in &targets.cards {
+      assert_close(card.scale, 1.0);
+    }
+  }
+
+  #[test]
+  fn the_stack_shows_a_strip_at_full_length_around_its_view() {
+    let metrics = metrics();
+    // Two monitors' worth left of the view, one right of it.
+    let (slot, card) = strip_slot(&metrics, -2.0, 2.0, None);
+    let (targets, _) = stack(&metrics, &[slot], 0, 0.0);
+    let rect = targets.cards[0].rect(&card);
+
+    assert_close(card.tile_area().w, metrics.tile_area().w * 4.0);
+    assert!(rect.x < 0.0 && rect.right() > 1920.0, "past both sides");
+    assert_close(rect.x + slot.view_center, 960.0);
+  }
+
+  #[test]
+  fn the_stack_letterboxes_only_strips_past_its_widest() {
+    let metrics = metrics();
+    let (_, widest) =
+      strip_slot(&metrics, 0.0, STACK_MAX_WIDTHS + 2.0, None);
+    let (_, long) =
+      strip_slot(&metrics, 0.0, STACK_MAX_WIDTHS - 1.0, None);
+
+    assert_close(widest.width, metrics.width * STACK_MAX_WIDTHS);
+    assert_close(
+      long.tile_area().w,
+      metrics.tile_area().w * (STACK_MAX_WIDTHS - 1.0),
+    );
+  }
+
+  #[test]
+  fn panning_stops_with_the_middle_on_the_strip() {
+    let metrics = metrics();
+    let (slot, card) = strip_slot(&metrics, -1.0, 3.0, None);
+
+    let (targets, pan) = stack(&metrics, &[slot], 0, 400.0);
+    assert_close(pan, 400.0);
+    let rect = targets.cards[0].rect(&card);
+    assert_close(rect.x + slot.view_center + 400.0, 960.0);
+
+    let (targets, pan) = stack(&metrics, &[slot], 0, 1.0e6);
+    assert_close(pan, slot.width - slot.view_center);
+    assert_close(targets.cards[0].rect(&card).right(), 960.0);
+
+    let (_, pan) = stack(&metrics, &[slot], 0, -1.0e6);
+    assert_close(pan, -slot.view_center);
+  }
+
+  #[test]
+  fn the_stack_pans_just_enough_to_show_what_it_keeps() {
+    let metrics = metrics();
+    let (resting, card) = strip_slot(&metrics, 0.0, 4.0, None);
+    let far = resting.width - 300.0;
+    let (slot, _) =
+      strip_slot(&metrics, 0.0, 4.0, Some((far, far + 200.0)));
+
+    let (targets, pan) = stack(&metrics, &[slot], 0, 0.0);
+    let rect = targets.cards[0].rect(&card);
+    assert!(pan > 0.0);
+    assert_close(rect.x + far + 200.0, 1920.0 - 48.0);
+
+    // Already in view, it stays where it was panned to.
+    let (_, kept) = stack(&metrics, &[slot], 0, pan + 50.0);
+    assert_close(kept, pan + 50.0);
   }
 }

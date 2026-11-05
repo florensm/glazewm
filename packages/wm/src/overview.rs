@@ -297,9 +297,7 @@ fn is_in_corner(
 pub fn to_layout_mode(layout: OverviewLayout) -> OverviewLayoutMode {
   match layout {
     OverviewLayout::Activities => OverviewLayoutMode::Activities,
-    OverviewLayout::Stage => OverviewLayoutMode::Stage,
-    OverviewLayout::Carousel => OverviewLayoutMode::Carousel,
-    OverviewLayout::Grid => OverviewLayoutMode::Grid,
+    OverviewLayout::Stack => OverviewLayoutMode::Stack,
   }
 }
 
@@ -392,7 +390,6 @@ fn overview_frame(
       subtext: overview.subtext_color,
       search: overview.search_color,
       font_family: overview.font_family.clone(),
-      grid_columns: overview.grid_columns,
       open_duration_ms: overview.open_duration_ms,
       close_duration_ms: overview.close_duration_ms,
       switch_duration_ms: overview.switch_duration_ms,

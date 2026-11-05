@@ -159,9 +159,6 @@ pub struct OverviewStyle {
 
   pub font_family: String,
 
-  /// Columns of the grid of every workspace.
-  pub grid_columns: usize,
-
   /// Length of the zoom out when opening; 0 opens instantly.
   pub open_duration_ms: u32,
 
@@ -173,7 +170,7 @@ pub struct OverviewStyle {
   /// layout; 0 moves them at once.
   pub switch_duration_ms: u32,
 
-  /// How long highlights take to glide to what they mark next and to
+  /// How long highlights take to settle onto what they mark next and to
   /// fade, as the shortcut sheet does; 0 snaps them.
   pub highlight_duration_ms: u32,
 
@@ -293,35 +290,20 @@ pub enum OverviewLayoutMode {
   #[default]
   Activities,
 
-  /// The shown workspace large and as laid out, the others in a column
-  /// at the side.
-  Stage,
-
-  /// One row, the selected workspace in the middle and larger than the
-  /// rest.
-  Carousel,
-
-  /// Every workspace at once.
-  Grid,
+  /// Every workspace at the same zoom, stacked top to bottom, each strip
+  /// at its full length and panned to keep what is picked in view.
+  Stack,
 }
 
 impl OverviewLayoutMode {
   /// Every layout, in the order `Tab` goes through them.
-  pub const ALL: [Self; 4] =
-    [Self::Activities, Self::Stage, Self::Carousel, Self::Grid];
+  pub const ALL: [Self; 2] = [Self::Activities, Self::Stack];
 
   /// The layout `Tab` goes on to.
   #[must_use]
   pub fn next(self) -> Self {
     let index = Self::ALL.iter().position(|layout| *layout == self);
     Self::ALL[index.map_or(0, |index| (index + 1) % Self::ALL.len())]
-  }
-
-  /// Whether the special workspace's card is docked at the bottom, apart
-  /// from the others, rather than coming after them.
-  #[must_use]
-  pub fn docks_special(self) -> bool {
-    matches!(self, Self::Carousel | Self::Grid)
   }
 
   /// Whether the selected workspace's windows are laid out on their own
@@ -331,21 +313,12 @@ impl OverviewLayoutMode {
     self == Self::Activities
   }
 
-  /// Whether the selected workspace shows large, its windows big enough
-  /// to point at and to tag with their titles.
-  #[must_use]
-  pub fn shows_selected_large(self) -> bool {
-    matches!(self, Self::Activities | Self::Stage)
-  }
-
   /// Name of the layout, as in the config.
   #[must_use]
   pub fn name(self) -> &'static str {
     match self {
       Self::Activities => "activities",
-      Self::Stage => "stage",
-      Self::Carousel => "carousel",
-      Self::Grid => "grid",
+      Self::Stack => "stack",
     }
   }
 }
