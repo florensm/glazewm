@@ -2499,8 +2499,6 @@ dependencies = [
  "serde_json",
  "tauri-winres",
  "tokio",
- "uuid",
- "windows",
  "wm-common",
  "wm-ipc-client",
 ]
