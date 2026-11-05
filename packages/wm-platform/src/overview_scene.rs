@@ -20,7 +20,7 @@ impl SceneWindow {
   /// Starts out invisible where it is on screen, on a scene whose
   /// coordinates start at screen point `origin`, settling within about
   /// `settle_ms` with `bounce` once retargeted.
-  fn new(
+  pub(crate) fn new(
     preview: Preview,
     origin: (f32, f32),
     settle_ms: f32,
@@ -76,15 +76,15 @@ impl SceneWindow {
     self.alpha.snap(1.0);
   }
 
-  /// Puts it where it heads, as strongly as it heads to show, at once.
-  pub fn settle(&mut self) {
-    self.rect.retarget(&self.target(), true);
-    self.alpha.snap(self.alpha.target);
-  }
-
-  /// Stops it where it is now, still fading toward its target.
-  pub fn hold(&mut self) {
-    self.rect.hold();
+  /// Starts it out unseen at `rect`, heading on to where it headed and
+  /// fading in on the way, e.g. sliding in from the side.
+  pub fn appear_from(&mut self, rect: &RectF) {
+    let target = self.target();
+    self.rect.retarget(rect, true);
+    self.rect.retarget(&target, false);
+    let alpha = self.alpha.target;
+    self.alpha.snap(0.0);
+    self.alpha.target = alpha;
   }
 
   /// Knocks it about `dx` and `dy` off where it heads, from where it
@@ -212,8 +212,7 @@ mod tests {
     overview_thumbnails::Preview,
   };
 
-  #[test]
-  fn a_window_shown_from_its_card_stays_shown_and_flies_on() {
+  fn window() -> SceneWindow {
     let preview = Preview::new(
       0,
       Tile {
@@ -221,7 +220,12 @@ mod tests {
         crop: RectF::new(0.0, 0.0, 1.0, 1.0),
       },
     );
-    let mut window = SceneWindow::new(preview, (0.0, 0.0), 300.0, 0.0);
+    SceneWindow::new(preview, (0.0, 0.0), 300.0, 0.0)
+  }
+
+  #[test]
+  fn a_window_shown_from_its_card_stays_shown_and_flies_on() {
+    let mut window = window();
     let scene = RectF::new(200.0, 200.0, 800.0, 600.0);
     // Faded out to the side, as a workspace not shown is.
     window.retarget(&scene, 0.0, true);
@@ -230,13 +234,25 @@ mod tests {
     window.show_from(&card);
     assert_eq!(window.rect(), card);
     assert_eq!(window.target(), scene);
+    assert!((window.alpha.value - 1.0).abs() < f32::EPSILON);
+  }
 
-    // Held for a zoom, nothing retargets it again.
-    window.hold();
+  #[test]
+  fn a_window_appearing_from_the_side_fades_in_on_its_way() {
+    let mut window = window();
+    let scene = RectF::new(200.0, 200.0, 800.0, 600.0);
+    window.retarget(&scene, 1.0, false);
+
+    let side = scene.translate(1000.0, 0.0);
+    window.appear_from(&side);
+    assert_eq!(window.rect(), side);
+    assert_eq!(window.target(), scene);
+    assert!(window.alpha.value.abs() < f32::EPSILON);
+
     for _ in 0..60 {
       window.step(1.0 / 60.0);
     }
+    assert_eq!(window.rect(), scene);
     assert!((window.alpha.value - 1.0).abs() < f32::EPSILON);
-    assert_eq!(window.rect(), card);
   }
 }

@@ -5,13 +5,15 @@ each monitor shows its own (see [Monitors](#monitors)). Switch to a
 workspace or window, move windows between workspaces and monitors, search
 them by title, or close them.
 
-On open, the windows each monitor shows fly from where they are into the
-overview, while the wallpaper behind them blurs; the names and
-highlights only fade in as they settle, and fade out as soon as it
-closes. On close, they fly back
-into the workspace you picked, and on the other monitors (or all of them,
-when cancelled) into the workspace they show, until they sit where they
-really are.
+On open, each monitor's overview zooms out of the workspace it shows, as
+one piece, as hyprexpo and niri do: the windows start exactly where they
+are on screen and shrink into the layout, while the wallpaper behind them
+blurs; the names and highlights only fade in as it settles, and fade out
+as soon as it closes. On close, it zooms back into the workspace you
+picked, by keyboard or mouse alike, and on the other monitors (or all of
+them, when cancelled) into the workspace they show, until the windows sit
+where they really are. `zoom_style` picks a fade instead, or neither (see
+[Zoom](#zoom)).
 
 Windows look in the overview as they do on screen, with their
 [window effects](#how-it-works): their `transparency`, and on the
@@ -47,11 +49,14 @@ that way. A dragged window pops up under the cursor and trails it, and
 once let go of flies into the card it lands on, or back home if it moved
 nowhere; landing sends a ripple and a burst of particles out of the
 card, over the overview.
-A soft glow follows the selection (see `overview.effects`). In the activities, a newly shown workspace's windows fly out of
-its miniature while the last one's shrink back into theirs. A click on a
-workspace goes there at once, zooming into it as `Enter` does: in the
-activities, its windows fly out of its miniature to where they are on
-screen.
+A soft glow follows the selection (see `overview.effects`). In the
+activities, a newly shown workspace slides in from the side its miniature
+is on while the last one slides out the other way, as a workspace switch
+does (`switch_style` picks a fade, or the windows flying out of their
+miniature instead). A click on a workspace goes there at once, zooming
+into it as `Enter` does: in the activities, a workspace not shown yet
+starts coming in, and its windows land where they really are as the zoom
+ends.
 
 The special workspace's card comes after the others (see
 [Special workspace](#special-workspace)).
@@ -208,10 +213,31 @@ room left above and below. Columns scrolled out of view can be picked,
 dragged and searched like any other window; picking one focuses it, which
 scrolls it into view.
 
-On a card, the zoom on open and close starts and ends on the columns that
-are on screen; the others have nowhere on screen to come from, so they
-fade in with the zoom out and fade out with the zoom in. Picking a column
-out of view zooms into where the strip has scrolled to show it.
+The zoom on open and close starts and ends on the columns that are on
+screen, the others reaching off its sides as they do on the desktop.
+Picking a column out of view zooms into where the strip has scrolled to
+show it.
+
+### Zoom
+
+| `zoom_style` | Open | Close |
+| --- | --- | --- |
+| `zoom` (default) | Everything zooms out of the workspace on screen as one. | Everything zooms into the picked workspace until it fills the screen. |
+| `fade` | It fades in over the desktop, settling from 5% larger. | It fades out, growing, onto the desktop with the pick carried out. |
+| `none` | At once. | At once. |
+
+`zoom_easing` paces both, as any animation's `easing` does: a named curve
+(`ease_out`, `ease_in_out_cubic`, ...), `cubic_bezier(x1, y1, x2, y2)`,
+or `spring(damping_ratio, stiffness, epsilon)`, which takes as long as it
+needs to settle whatever `open_duration_ms` and `close_duration_ms` say.
+A curve or spring overshooting makes the zoom swing past and back; the
+fades stay within their range.
+
+| `switch_style` | A workspace newly shown in the activities |
+| --- | --- |
+| `slide` (default) | Slides in from the side its miniature is on, the last one sliding out the other way. |
+| `fade` | Fades in in place as the last one fades out. |
+| `miniature` | Its windows fly out of its miniature, the last one's back into theirs. |
 
 ## Config
 
@@ -262,12 +288,24 @@ overview:
   # opens, in milliseconds; 0 opens it at once.
   hot_corner_delay_ms: 300
 
-  # Length of the zoom out on open; 0 opens it instantly.
+  # How it opens and closes (see "Zoom" above): "zoom", "fade" or "none".
+  zoom_style: "zoom"
+
+  # Pace of the open and close: any animation easing, e.g. "ease_out",
+  # "cubic_bezier(0.25, 1, 0.5, 1)" or "spring(1.0, 800, 0.0001)", which
+  # ignores the durations below.
+  zoom_easing: "cubic_bezier(0.25, 1, 0.5, 1)"
+
+  # Length of the open; 0 opens it instantly.
   open_duration_ms: 200
 
-  # Length of the zoom into the picked workspace on close; 0 closes it
+  # Length of the close, into the picked workspace; 0 closes it
   # instantly.
   close_duration_ms: 150
+
+  # How the activities change the workspace they show large: "slide",
+  # "fade" or "miniature".
+  switch_style: "slide"
 
   # About how long cards and windows take to move to a new selection or
   # layout, e.g. the shown workspace sliding over to the next; 0 moves
@@ -280,7 +318,8 @@ overview:
   highlight_duration_ms: 170
 
   # How far cards and windows overshoot where they head before settling
-  # back, from 0 (not at all) to 0.8 (wobbly). The zooms never overshoot.
+  # back, from 0 (not at all) to 0.8 (wobbly). The zooms go by
+  # `zoom_easing` instead.
   bounce: 0.25
 
   effects:
@@ -397,10 +436,17 @@ windows never take it when clicked, so the keys go to whichever monitor
 has the keyboard. When a pick changes focus, the WM switches
 workspace and focuses the new window (scrolling its strip into view)
 right away, and the overview's zoom into that workspace waits for it (at
-most 400ms), so it heads to where the windows land. What it zooms from
-holds still meanwhile, so each window heads straight there, even while
-the layout would still be moving (e.g. a scrolled strip settling, or the
-stack panning to the picked window). The overview only hides once the
+most 400ms), so it heads to where the windows land. The cards hold still
+meanwhile, so it heads straight there even while the layout would still
+be moving (e.g. the stack panning to the picked window). In the
+activities, a scene still coming in is blended onto where it settles as
+the zoom closes, so its windows arrive exactly on the real ones however
+far along it was.
+
+Everything a screen shows is placed through one camera: at rest it shows
+the layout as is, and mid-zoom it maps where the zoomed workspace shows its
+monitor onto the whole screen, so windows, cards, names and highlights
+move as one, and the pointer is mapped back through it. The overview only hides once the
 zoom ends, so the OS never picks a window to activate in between, and the
 real windows are already where their previews end up.
 

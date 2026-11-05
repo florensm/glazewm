@@ -8,7 +8,7 @@
 
 use std::time::Instant;
 
-use crate::OverviewLayoutMode;
+use crate::{OverviewCurve, OverviewLayoutMode};
 
 /// A rectangle with fractional coordinates.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
@@ -708,12 +708,16 @@ impl Camera {
     }
   }
 
-  /// Everything moved by (`dx`, `dy`).
-  pub fn shifted(dx: f32, dy: f32) -> Self {
+  /// Everything grown `by` (e.g. `0.05` for 5% larger) about the middle
+  /// of `view`.
+  pub fn grown(view: &RectF, by: f32) -> Self {
+    let scale = 1.0 + by;
+    let (cx, cy) = view.center();
     Self {
-      offset_x: dx,
-      offset_y: dy,
-      ..Self::IDENTITY
+      scale_x: scale,
+      scale_y: scale,
+      offset_x: cx * (1.0 - scale),
+      offset_y: cy * (1.0 - scale),
     }
   }
 
@@ -792,12 +796,11 @@ impl Zoom {
     }
   }
 
-  /// Openness `elapsed_ms` in, eased: most of the way there early, then
-  /// settling without overshooting, which on a zoom reads as a wobble.
-  pub fn openness(&self, elapsed_ms: f32) -> f32 {
+  /// Openness `elapsed_ms` in, paced by `curve`. A curve overshooting
+  /// takes it past where it heads for a moment.
+  pub fn openness(&self, elapsed_ms: f32, curve: &OverviewCurve) -> f32 {
     let to = if self.is_closing { 0.0 } else { 1.0 };
-    self.from
-      + (to - self.from) * ease_out_quart(self.progress(elapsed_ms))
+    self.from + (to - self.from) * curve.at(self.progress(elapsed_ms))
   }
 
   pub fn is_finished(&self, elapsed_ms: f32) -> bool {
@@ -820,11 +823,6 @@ impl Zoom {
 /// Fast start, gentle stop.
 pub(crate) fn ease_out_cubic(progress: f32) -> f32 {
   1.0 - (1.0 - progress.clamp(0.0, 1.0)).powi(3)
-}
-
-/// Faster start than `ease_out_cubic`, and a longer gentle stop.
-pub(crate) fn ease_out_quart(progress: f32) -> f32 {
-  1.0 - (1.0 - progress.clamp(0.0, 1.0)).powi(4)
 }
 
 /// Like `ease_out_cubic`, but running past 1 before settling back, as a
@@ -1211,7 +1209,7 @@ mod tests {
     stack, Camera, CardLook, CardMetrics, CardSlot, CardView, Mark,
     Placement, RectF, Spring, SpringRect, Tile, Zoom, STACK_MAX_WIDTHS,
   };
-  use crate::OverviewLayoutMode;
+  use crate::{OverviewCurve, OverviewLayoutMode};
 
   /// Cards drawn for the stack.
   fn metrics() -> CardMetrics {
@@ -1343,6 +1341,20 @@ mod tests {
   }
 
   #[test]
+  fn a_grown_camera_scales_about_the_middle() {
+    let view = RectF::new(0.0, 0.0, 1920.0, 1040.0);
+    let camera = Camera::grown(&view, 0.1);
+
+    assert_rect_close(
+      &camera.apply(&view),
+      &RectF::new(-96.0, -52.0, 2112.0, 1144.0),
+    );
+    let (x, y) = camera.unapply(960.0, 520.0);
+    assert_close(x, 960.0);
+    assert_close(y, 520.0);
+  }
+
+  #[test]
   fn cover_crop_fills_without_stretching() {
     let wide = cover_crop((2000.0, 500.0), (200.0, 100.0));
     assert_eq!(wide, RectF::new(0.25, 0.0, 0.5, 1.0), "centered across");
@@ -1357,29 +1369,37 @@ mod tests {
 
   #[test]
   fn zoom_opens_out_of_a_card_and_closes_back_in() {
+    let curve = OverviewCurve::default();
     let open = Zoom::open(2, 250);
-    assert_close(open.openness(0.0), 0.0);
-    assert!(open.openness(100.0) > 0.85, "fast start");
-    assert!((0..=250_u16).all(|ms| open.openness(f32::from(ms)) <= 1.0));
-    assert_close(open.openness(250.0), 1.0);
+    assert_close(open.openness(0.0, &curve), 0.0);
+    assert!(open.openness(100.0, &curve) > 0.85, "fast start");
+    assert!(
+      (0..=250_u16).all(|ms| open.openness(f32::from(ms), &curve) <= 1.0)
+    );
+    assert_close(open.openness(250.0, &curve), 1.0);
     assert!(open.is_finished(250.0) && !open.is_finished(249.0));
 
     let close = Zoom::close(2, 1.0, 200);
     assert!(close.is_closing);
-    assert_close(close.openness(0.0), 1.0);
-    assert_close(close.openness(200.0), 0.0);
+    assert_close(close.openness(0.0, &curve), 1.0);
+    assert_close(close.openness(200.0, &curve), 0.0);
+
+    // Paced by the curve given, e.g. a straight line.
+    let line = OverviewCurve::new(vec![0.0, 1.0]);
+    assert_close(open.openness(125.0, &line), 0.5);
   }
 
   #[test]
   fn zoom_closes_a_half_open_overview_in_half_the_time() {
+    let curve = OverviewCurve::default();
     let close = Zoom::close(0, 0.5, 200);
-    assert_close(close.openness(0.0), 0.5);
+    assert_close(close.openness(0.0, &curve), 0.5);
     assert!(close.is_finished(100.0));
-    assert_close(close.openness(100.0), 0.0);
+    assert_close(close.openness(100.0, &curve), 0.0);
 
     let instant = Zoom::close(0, 1.0, 0);
     assert!(instant.is_finished(0.0));
-    assert_close(instant.openness(0.0), 0.0);
+    assert_close(instant.openness(0.0, &curve), 0.0);
   }
 
   #[test]

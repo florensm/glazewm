@@ -4,7 +4,8 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use wm_platform::{
   BackdropOverlayParams, BorderGlow, BorderOverlayParams, Color,
   CornerStyle, Key, Keybinding, LengthUnit, LengthValue, OpacityValue,
-  OverviewEffects, ParticleEffects, ParticleLook, RectDelta,
+  OverviewEffects, OverviewSwitchStyle, OverviewZoomStyle,
+  ParticleEffects, ParticleLook, RectDelta,
 };
 
 use crate::{app_command::InvokeCommand, Layout};
@@ -661,27 +662,35 @@ pub struct OverviewConfig {
   /// overview; `0` opens it at once.
   pub hot_corner_delay_ms: u32,
 
-  /// Length of the zoom out when the overview opens; `0` opens it
-  /// instantly.
+  /// How the overview opens and closes.
+  pub zoom_style: OverviewZoomStyle,
+
+  /// Pace of the open and close, written as an animation's `easing`. A
+  /// spring takes as long as it needs to settle, whatever the durations.
+  pub zoom_easing: EasingFunction,
+
+  /// Length of the open; `0` opens it instantly.
   pub open_duration_ms: u32,
 
-  /// Length of the zoom into the picked workspace when the overview
-  /// closes; `0` closes it instantly.
+  /// Length of the close, into the picked workspace; `0` closes it
+  /// instantly.
   pub close_duration_ms: u32,
+
+  /// How the activities change the workspace they show large.
+  pub switch_style: OverviewSwitchStyle,
 
   /// About how long cards and windows take to move to a new selection or
   /// layout, e.g. the shown workspace sliding over to the next; `0` moves
   /// them at once.
   pub switch_duration_ms: u32,
 
-  /// How long the selection and hover highlights take to glide to what
-  /// they mark next and to fade in or out, as the shortcut sheet does;
-  /// `0` snaps them.
+  /// How long the selection and hover highlights take to settle onto
+  /// what they mark next and to fade in or out, as the shortcut sheet
+  /// does; `0` snaps them.
   pub highlight_duration_ms: u32,
 
-  /// How far cards, windows and highlights overshoot where they head
-  /// before settling back, from `0` (not at all) to `0.8` (wobbly). The
-  /// opening zoom overshoots by it too.
+  /// How far cards and windows overshoot where they head before settling
+  /// back, from `0` (not at all) to `0.8` (wobbly).
   pub bounce: f32,
 
   /// Glow, ripples and particles, each of which can be turned off.
@@ -748,8 +757,11 @@ impl Default for OverviewConfig {
       layout: OverviewLayout::default(),
       hot_corner: HotCorner::default(),
       hot_corner_delay_ms: 300,
+      zoom_style: OverviewZoomStyle::default(),
+      zoom_easing: EasingFunction::CubicBezier(0.25, 1.0, 0.5, 1.0),
       open_duration_ms: 200,
       close_duration_ms: 150,
+      switch_style: OverviewSwitchStyle::default(),
       switch_duration_ms: 300,
       highlight_duration_ms: 170,
       bounce: 0.25,
@@ -2498,8 +2510,9 @@ mod tests {
   use super::{
     BackdropEffectConfig, BorderEffectConfig, BorderGlow,
     BorderGlowConfig, Color, EasingFunction, GapsConfig, LengthValue,
-    OverviewConfig, OverviewEffects, OverviewLayout, ParticlesConfig,
-    ScrollingLayoutConfig, SpringParams,
+    OverviewConfig, OverviewEffects, OverviewLayout, OverviewSwitchStyle,
+    OverviewZoomStyle, ParticlesConfig, ScrollingLayoutConfig,
+    SpringParams,
   };
 
   fn easing(value: &str) -> Result<EasingFunction, serde_json::Error> {
@@ -2645,6 +2658,31 @@ mod tests {
       OverviewConfig::default().layout,
       OverviewLayout::Activities
     );
+  }
+
+  #[test]
+  fn overview_zoom_and_switch_styles_read_their_names() {
+    let config =
+      serde_json::from_value::<OverviewConfig>(serde_json::json!({
+        "zoom_style": "fade",
+        "zoom_easing": "spring(1.0, 600, 0.001)",
+        "switch_style": "miniature",
+      }))
+      .expect("parses");
+
+    assert_eq!(config.zoom_style, OverviewZoomStyle::Fade);
+    assert_eq!(config.switch_style, OverviewSwitchStyle::Miniature);
+    assert!(matches!(config.zoom_easing, EasingFunction::Spring(_)));
+
+    // As the sample config and the docs write the default.
+    assert_eq!(
+      easing("cubic_bezier(0.25, 1, 0.5, 1)").ok(),
+      Some(OverviewConfig::default().zoom_easing)
+    );
+
+    let defaults = OverviewConfig::default();
+    assert_eq!(defaults.zoom_style, OverviewZoomStyle::Zoom);
+    assert_eq!(defaults.switch_style, OverviewSwitchStyle::Slide);
   }
 
   #[test]

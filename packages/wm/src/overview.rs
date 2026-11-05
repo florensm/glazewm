@@ -14,18 +14,19 @@ use anyhow::Context;
 use tokio::sync::mpsc;
 use uuid::Uuid;
 use wm_common::{
-  EffectSet, HotCorner, Layout, OverviewLayout, WindowState,
-  WorkspaceConfig,
+  EasingFunction, EffectSet, HotCorner, Layout, OverviewLayout,
+  WindowState, WorkspaceConfig,
 };
 use wm_platform::{
   Color, MouseButton, MouseEvent, NativeBackdropOverlay,
   NativeBorderOverlay, NativeOverview, OverlayParams, OverviewAction,
-  OverviewFrame, OverviewLayoutMode, OverviewOverlay, OverviewOverlayKind,
-  OverviewScreen, OverviewStyle, OverviewWindow, OverviewWorkspace, Point,
-  Rect, TabFrame,
+  OverviewCurve, OverviewFrame, OverviewLayoutMode, OverviewOverlay,
+  OverviewOverlayKind, OverviewScreen, OverviewStyle, OverviewWindow,
+  OverviewWorkspace, Point, Rect, TabFrame,
 };
 
 use crate::{
+  animation::engine::apply_easing,
   commands::{
     general::{surrogate_effects_for, SyncableOverlay},
     workspace::{activate_workspace, summon_special_workspace},
@@ -390,8 +391,15 @@ fn overview_frame(
       subtext: overview.subtext_color,
       search: overview.search_color,
       font_family: overview.font_family.clone(),
-      open_duration_ms: overview.open_duration_ms,
-      close_duration_ms: overview.close_duration_ms,
+      zoom_style: overview.zoom_style,
+      zoom_curve: zoom_curve(&overview.zoom_easing),
+      open_duration_ms: overview
+        .zoom_easing
+        .duration_ms(overview.open_duration_ms),
+      close_duration_ms: overview
+        .zoom_easing
+        .duration_ms(overview.close_duration_ms),
+      switch_style: overview.switch_style,
       switch_duration_ms: overview.switch_duration_ms,
       highlight_duration_ms: overview.highlight_duration_ms,
       bounce: overview.bounce,
@@ -399,6 +407,20 @@ fn overview_frame(
       particles: config.value.animations.particles.look(),
     },
   }
+}
+
+/// Steps `zoom_curve` samples `easing` at.
+const ZOOM_CURVE_STEPS: u16 = 64;
+
+/// `easing` sampled for the overview's thread, which plays it.
+fn zoom_curve(easing: &EasingFunction) -> OverviewCurve {
+  OverviewCurve::new(
+    (0..=ZOOM_CURVE_STEPS)
+      .map(|step| {
+        apply_easing(f32::from(step) / f32::from(ZOOM_CURVE_STEPS), easing)
+      })
+      .collect(),
+  )
 }
 
 /// `monitor`'s screen: its workspaces, the "+" card, and the special

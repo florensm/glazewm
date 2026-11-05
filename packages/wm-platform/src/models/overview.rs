@@ -159,12 +159,20 @@ pub struct OverviewStyle {
 
   pub font_family: String,
 
-  /// Length of the zoom out when opening; 0 opens instantly.
+  /// How it opens and closes.
+  pub zoom_style: OverviewZoomStyle,
+
+  /// Pace of the open and close, from 0 to 1 over their durations.
+  pub zoom_curve: OverviewCurve,
+
+  /// Length of the open; 0 opens instantly.
   pub open_duration_ms: u32,
 
-  /// Length of the zoom into the picked workspace when closing; 0 closes
-  /// instantly.
+  /// Length of the close, into the picked workspace; 0 closes instantly.
   pub close_duration_ms: u32,
+
+  /// How the activities change the workspace they show large.
+  pub switch_style: OverviewSwitchStyle,
 
   /// About how long cards and windows take to move to a new selection or
   /// layout; 0 moves them at once.
@@ -182,6 +190,88 @@ pub struct OverviewStyle {
 
   /// How its particle bursts look, as the WM's do.
   pub particles: ParticleLook,
+}
+
+/// How the overview opens and closes.
+#[derive(
+  Clone, Copy, Debug, Default, Deserialize, PartialEq, Eq, Serialize,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum OverviewZoomStyle {
+  /// Everything zooms out of the workspace on screen as one, and back
+  /// into the one picked, as hyprexpo and niri do.
+  #[default]
+  Zoom,
+
+  /// It fades in over the desktop settling from a little larger, and
+  /// fades back out growing.
+  Fade,
+
+  /// At once.
+  None,
+}
+
+/// How the activities change the workspace they show large.
+#[derive(
+  Clone, Copy, Debug, Default, Deserialize, PartialEq, Eq, Serialize,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum OverviewSwitchStyle {
+  /// The new one slides in from the side its miniature is on, as a
+  /// workspace switch does, and the last one out the other way.
+  #[default]
+  Slide,
+
+  /// One fades into the other in place.
+  Fade,
+
+  /// The new one's windows fly out of its miniature, and the last one's
+  /// back into theirs.
+  Miniature,
+}
+
+/// An easing curve sampled at even steps from progress 0 to 1, so the
+/// overview's thread needn't know how the config describes it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct OverviewCurve {
+  samples: Vec<f32>,
+}
+
+impl OverviewCurve {
+  /// The curve through `samples`, taken at even steps from 0 to 1; a
+  /// straight line for fewer than two.
+  #[must_use]
+  pub fn new(samples: Vec<f32>) -> Self {
+    Self { samples }
+  }
+
+  /// Its value at `progress`, between the samples either side of it.
+  #[must_use]
+  #[allow(clippy::cast_precision_loss)]
+  pub fn at(&self, progress: f32) -> f32 {
+    let progress = progress.clamp(0.0, 1.0);
+    let steps = self.samples.len().saturating_sub(1);
+    if steps == 0 {
+      return progress;
+    }
+
+    let position = progress * steps as f32;
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    let index = (position.floor() as usize).min(steps - 1);
+    let (from, to) = (self.samples[index], self.samples[index + 1]);
+    from + (to - from) * (position - index as f32)
+  }
+}
+
+impl Default for OverviewCurve {
+  /// Fast at first, gently settling: a quartic ease-out.
+  fn default() -> Self {
+    Self::new(
+      (0..=32_u8)
+        .map(|step| 1.0 - (1.0 - f32::from(step) / 32.0).powi(4))
+        .collect(),
+    )
+  }
 }
 
 /// Extra flourishes of the overview, each of which can be turned off.

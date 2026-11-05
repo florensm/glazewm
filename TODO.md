@@ -177,6 +177,17 @@ file), `git pull` on `tryout/todo-cleanup`, `cargo build --release`, run.
     A config still saying `layout: "stage"`, `"carousel"` or `"grid"` now
     fails to load, naming the valid values.
 
+13. **Overview zoom, one camera** (`zoom_style`, `zoom_easing`,
+    `switch_style`): open and close, in both layouts, by `Enter` and by a
+    click (on a miniature, a scene window, a stack card off the middle):
+    windows start and end exactly on the real ones, nothing pops in or
+    jumps, the miniature row comes in from above with the zoom. A click on
+    a miniature of a workspace not shown slides it in while zooming, and
+    still lands exact. `zoom_style: "fade"`: crossfades with the desktop,
+    no flash of wallpaper at the end. `zoom_easing: "spring(0.6, 400,
+    0.001)"` swings past and back without breaking the fades. Each
+    `switch_style` with the arrows and the wheel.
+
 If bars or flicker show, isolate them with `GLAZEWM_ISOLATE` (below), one
 restart per flag: `noring`, `nobackdrop`, then `live`. With a long
 `duration_ms` (e.g. 3000) for `scroll` and `workspace_switch`, one

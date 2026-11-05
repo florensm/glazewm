@@ -4,31 +4,38 @@
 use std::cmp::Ordering;
 
 use super::{cards::screen_rect, to_ms, Screen};
+
+/// Gap, in logical pixels, a sliding scene keeps from the one it slides
+/// past.
+const SLIDE_GAP: f32 = 48.0;
 use crate::{
-  overview_layout::{Camera, CardView, RectF},
+  overview_layout::{CardView, RectF},
   overview_scene::{Scene, SceneWindow},
-  OverviewLayoutMode,
+  OverviewLayoutMode, OverviewSwitchStyle,
 };
 
-/// Where a scene window shows now, on a screen covering `area` (in screen
-/// coordinates): on its way between where it is on screen and where the
-/// scene puts it while its workspace zooms, `openness` of the way.
-pub(super) fn scene_window_rect(
+/// Where a scene window shows now, before the camera, and how strongly.
+///
+/// `landing` is the openness while its workspace is zoomed into on close:
+/// it then heads on from where it is, and as strongly as it shows, to
+/// where and as strongly as it settles, getting there as the zoom ends
+/// however far its own springs had to go, e.g. for a workspace picked
+/// before it had slid in.
+pub(super) fn scene_window_shown(
   window: &SceneWindow,
-  is_zooming: bool,
-  openness: f32,
-  area: &RectF,
-) -> RectF {
-  if is_zooming {
-    // In the screen's own coordinates, which start where its working area
-    // does: below a bar at the top, or on another monitor.
-    window
-      .preview
-      .screen_rect
-      .translate(-area.x, -area.y)
-      .lerp(&window.rect(), openness)
-  } else {
-    window.rect()
+  landing: Option<f32>,
+) -> (RectF, f32) {
+  let (rect, alpha) = (window.rect(), window.alpha.value);
+
+  match landing {
+    Some(openness) => {
+      let closed = 1.0 - openness.clamp(0.0, 1.0);
+      (
+        rect.lerp(&window.target(), closed),
+        alpha + (window.alpha.target - alpha) * closed,
+      )
+    }
+    None => (rect, alpha),
   }
 }
 
@@ -79,9 +86,9 @@ impl Screen {
     is_changed
   }
 
-  /// Where card `index` shows each of its windows now, in the activities.
+  /// Where card `index` shows each of its windows now, in the activities,
+  /// before the camera.
   fn miniature_rects(&self, index: usize) -> Vec<(isize, RectF)> {
-    let camera = Camera::shifted(0.0, self.top_shift(self.openness()));
     let Some(card) = self.cards.get(index) else {
       return Vec::new();
     };
@@ -91,8 +98,10 @@ impl Screen {
       .previews
       .iter()
       .map(|preview| {
-        let rect = placement.map(&card.metrics, &preview.tile.rect);
-        (preview.hwnd, camera.apply(&rect))
+        (
+          preview.hwnd,
+          placement.map(&card.metrics, &preview.tile.rect),
+        )
       })
       .collect()
   }
@@ -123,28 +132,68 @@ impl Screen {
     }
   }
 
-  /// Points each scene's windows where the layout shows them: the
-  /// selected workspace's in place, flown out of its card when it was
-  /// just selected, and the others shrunk back into their cards and faded
-  /// out.
-  pub(super) fn retarget_scenes(&mut self, snap: bool) {
-    if self.frame.is_none() {
+  /// Brings the selected workspace's scene windows on as `style` has a
+  /// newly shown workspace come in, from `previous`, the one shown until
+  /// now: sliding in from its side, or fading in in place. Those still
+  /// showing (e.g. on their way out) carry on from where they are.
+  fn seed_scene(
+    &mut self,
+    style: OverviewSwitchStyle,
+    previous: Option<usize>,
+    slide: f32,
+  ) {
+    let selected = self.focus.selected;
+    if style == OverviewSwitchStyle::Miniature {
+      self.seed_scene_from_card(true);
       return;
     }
 
-    let selected = self.focus.selected;
-    // What a closing screen zooms from holds still for its zoom.
-    let held = self.closing_card();
+    self.scene_shown = Some(selected);
+    let offset = match (style, previous) {
+      (OverviewSwitchStyle::Slide, Some(previous)) => {
+        match selected.cmp(&previous) {
+          Ordering::Less => -slide,
+          Ordering::Equal => 0.0,
+          Ordering::Greater => slide,
+        }
+      }
+      _ => 0.0,
+    };
 
-    let is_switched = self.scene_shown != Some(selected);
-    // Picked without being shown first, e.g. clicked, it shows where it
-    // settles at once, so its zoom sets off from there as it would have
-    // had it been shown.
-    let settles = is_switched && self.is_picked && !snap && held.is_none();
-    if snap || held.is_some() || settles {
+    let Some(scene) = self.scenes.get_mut(selected) else {
+      return;
+    };
+    for window in &mut scene.windows {
+      if window.alpha.value <= 0.05 {
+        let from = window.target().translate(offset, 0.0);
+        window.appear_from(&from);
+      }
+    }
+  }
+
+  /// Points each scene's windows where the layout shows them: the
+  /// selected workspace's in place, brought on as the style's switch has
+  /// it when it was just selected, and the others sent off that way and
+  /// faded out.
+  pub(super) fn retarget_scenes(&mut self, snap: bool) {
+    let Some(style) = self.style().map(|style| style.switch_style) else {
+      return;
+    };
+
+    let selected = self.focus.selected;
+    let previous = self.scene_shown;
+    // A full slide clears the scene; a fade stays in place.
+    let slide = match style {
+      OverviewSwitchStyle::Slide => {
+        self.scene_area.w + self.metrics.px(SLIDE_GAP)
+      }
+      OverviewSwitchStyle::Fade => 0.0,
+      OverviewSwitchStyle::Miniature => self.metrics.view.0 * 0.12,
+    };
+
+    let is_switched = previous != Some(selected);
+    if snap {
       self.scene_shown = Some(selected);
-    } else if is_switched {
-      self.seed_scene_from_card(true);
     }
 
     let miniatures = (0..self.cards.len())
@@ -153,17 +202,11 @@ impl Screen {
     let Some(frame) = &self.frame else {
       return;
     };
-    let layout = self.focus.layout;
-    let slide = self.metrics.view.0 * 0.12;
     let scene_area = self.scene_area;
 
     for (index, (scene, workspace)) in
       self.scenes.iter_mut().zip(&frame.workspaces).enumerate()
     {
-      if held == Some(index) {
-        continue;
-      }
-
       let offset = match index.cmp(&selected) {
         Ordering::Less => -slide,
         Ordering::Equal => 0.0,
@@ -190,35 +233,86 @@ impl Screen {
             .find(|(hwnd, _)| *hwnd == window.preview.hwnd)
             .map(|(_, rect)| *rect)
         });
+        let into_miniature =
+          style == OverviewSwitchStyle::Miniature && index != selected;
 
-        if let (Some(miniature), false) = (miniature, index == selected) {
-          window.retarget(&miniature, alpha, snap);
-        } else if let Some(rect) = rect {
-          window.retarget(&rect.translate(offset, 0.0), alpha, snap);
-        } else {
-          let target = window.target();
-          window.retarget(&target, 0.0, snap);
+        match (rect, miniature) {
+          (_, Some(miniature)) if into_miniature => {
+            window.retarget(&miniature, alpha, snap);
+          }
+          (Some(rect), _) => {
+            window.retarget(&rect.translate(offset, 0.0), alpha, snap);
+          }
+          (None, _) => {
+            let target = window.target();
+            window.retarget(&target, 0.0, snap);
+          }
         }
       }
     }
 
-    if settles {
-      if let Some(scene) = self.scenes.get_mut(selected) {
-        scene.windows.iter_mut().for_each(SceneWindow::settle);
-      }
+    // Once its windows head where they settle, so that is where they come
+    // in toward.
+    if is_switched && !snap {
+      self.seed_scene(style, previous, slide);
     }
 
     // The shown workspace's working area, laid out as its windows are (a
     // scrolling workspace's strip reaches past it), holding still for a
-    // zoom like the scene.
-    let shown = frame.workspaces.get(selected).filter(|_| held.is_none());
+    // zoom.
+    let Some(frame) = &self.frame else {
+      return;
+    };
+    let shown = frame
+      .workspaces
+      .get(selected)
+      .filter(|_| self.closing_card().is_none());
     if let (OverviewLayoutMode::Activities, Some(overlays), Some(shown)) =
-      (layout, &mut self.overlays, shown)
+      (self.focus.layout, &mut self.overlays, shown)
     {
       let content = RectF::from_rect(&shown.content_rect);
       let area = CardView::fitted(&content, &scene_area)
         .map(&RectF::from_rect(&frame.rect));
       overlays.workspace_rect.retarget(&area, snap);
     }
+  }
+}
+
+#[cfg(test)]
+mod tests {
+  use super::scene_window_shown;
+  use crate::{
+    overview_layout::{RectF, Tile},
+    overview_scene::SceneWindow,
+    overview_thumbnails::Preview,
+  };
+
+  #[test]
+  fn a_landing_window_reaches_where_it_settles_as_the_zoom_ends() {
+    let preview = Preview::new(
+      0,
+      Tile {
+        rect: RectF::default(),
+        crop: RectF::new(0.0, 0.0, 1.0, 1.0),
+      },
+    );
+    let mut window = SceneWindow::new(preview, (0.0, 0.0), 300.0, 0.0);
+    let scene = RectF::new(200.0, 200.0, 800.0, 600.0);
+    window.retarget(&scene, 1.0, false);
+    window.appear_from(&scene.translate(1000.0, 0.0));
+
+    // Where it is as the zoom sets off, faint.
+    let (start, alpha) = scene_window_shown(&window, Some(1.0));
+    assert_eq!(start, window.rect());
+    assert!(alpha < 0.01);
+
+    // Where it settles, at full strength, as the zoom ends, though its
+    // springs haven't moved.
+    let (end, alpha) = scene_window_shown(&window, Some(0.0));
+    assert_eq!(end, scene);
+    assert!((alpha - 1.0).abs() < f32::EPSILON);
+
+    // Not landing, it shows where it is.
+    assert_eq!(scene_window_shown(&window, None).0, window.rect());
   }
 }

@@ -18,7 +18,7 @@ use super::{
   overlays::Overlays,
   place_card,
   scene_borders::{SceneBorder, SceneBorders},
-  scenes::scene_window_rect,
+  scenes::scene_window_shown,
   to_ms, PlaceContext, Screen, ScreenFrame,
 };
 use crate::{
@@ -37,7 +37,7 @@ use crate::{
   platform_impl::composition::OverviewBackdrop,
   tab_layout::TabHit,
   BorderOverlayParams, OverviewEffects, OverviewLayoutMode, OverviewStyle,
-  OverviewWorkspace,
+  OverviewWorkspace, OverviewZoomStyle,
 };
 
 /// The border to draw around scene `window` of `workspace`: the one the
@@ -68,6 +68,10 @@ const DROP_LIFT: f32 = 1.06;
 /// How far what the keyboard is on bumps toward where it can't go, in
 /// logical pixels.
 const NUDGE_DISTANCE: f32 = 18.0;
+
+/// How much larger everything is when the fade style starts opening or
+/// ends closing.
+const FADE_GROWTH: f32 = 0.05;
 
 impl Screen {
   /// A screen with its window hidden, whose pictures post to `notify`
@@ -195,6 +199,7 @@ impl Screen {
       (entrance, Instant::now())
     });
 
+    self.show_backdrop();
     self.retarget(true);
     self.register_thumbnails();
     self.refresh_pictures(true);
@@ -320,6 +325,14 @@ impl Screen {
     self.sheet_drawn = None;
     self.sheet_alpha.snap(0.0);
     self.is_tracking_leave = false;
+  }
+
+  /// Blurs and shows the backdrop as far as it is open now.
+  fn show_backdrop(&self) {
+    if let Some(backdrop) = &self.backdrop {
+      let _ = backdrop.set_progress(self.openness());
+      let _ = backdrop.set_opacity(self.presence());
+    }
   }
 
   fn sync_backdrop(&mut self, frame: &ScreenFrame, progress: f32) {
@@ -864,12 +877,16 @@ impl Screen {
     self.sheet_drawn = groups;
   }
 
-  /// How far it is open, from 0 (a card's windows fill the screen) to 1
-  /// (every card in place).
+  /// How far it is open, from 0 (what a card shows fills the screen as
+  /// the desktop shows it) to 1 (every card in place). Runs a little past
+  /// either end for a moment on a curve that overshoots.
   pub(super) fn openness(&self) -> f32 {
-    self
-      .zoom
-      .map_or(1.0, |(zoom, started)| zoom.openness(elapsed_ms(started)))
+    let Some((zoom, started)) = self.zoom else {
+      return 1.0;
+    };
+    self.style().map_or(1.0, |style| {
+      zoom.openness(elapsed_ms(started), &style.zoom_curve)
+    })
   }
 
   /// Whether it is zooming into the workspace it closes on.
@@ -884,43 +901,75 @@ impl Screen {
     })
   }
 
-  /// The zoom between the screen and the zoomed card's windows, at the
-  /// current openness. Follows the card if it is still moving. The
-  /// activities zoom each window on their own instead.
+  /// What everything on it is seen through at the current openness: for
+  /// the zoom, from where the zoomed workspace shows its monitor to the
+  /// whole screen, so all of it scales as one; for the fade, a little
+  /// larger the less open.
   pub(super) fn camera(&self) -> Camera {
-    if self.focus.layout.has_scene() {
-      return Camera::IDENTITY;
-    }
-
-    let card = self.zoom.and_then(|(zoom, _)| self.cards.get(zoom.card));
-    let Some(card) = card else {
+    let (Some((zoom, _)), Some(style)) = (self.zoom, self.style()) else {
       return Camera::IDENTITY;
     };
 
-    // Where the card shows the monitor, which a scrolling workspace's
-    // card shows only part of.
-    let screen = card
-      .placement()
-      .map(&card.metrics, &card.view.map(&self.area));
-    Camera::zoom(&screen, &self.view(), self.openness())
+    match style.zoom_style {
+      OverviewZoomStyle::Zoom => {
+        self.zoom_rect(zoom.card).map_or(Camera::IDENTITY, |rect| {
+          Camera::zoom(&rect, &self.view(), self.openness())
+        })
+      }
+      OverviewZoomStyle::Fade => {
+        Camera::grown(&self.view(), FADE_GROWTH * (1.0 - self.openness()))
+      }
+      OverviewZoomStyle::None => Camera::IDENTITY,
+    }
   }
 
-  /// Zooms into card `index` until its windows fill the screen, over
+  /// Where workspace `index` shows what its monitor does, on its card or
+  /// in the activities' scene: a scrolling workspace's strip reaches
+  /// past it. Follows its card if that is still moving.
+  fn zoom_rect(&self, index: usize) -> Option<RectF> {
+    match self.focus.layout {
+      OverviewLayoutMode::Activities => {
+        let workspace = self.workspaces().get(index)?;
+        let content = RectF::from_rect(&workspace.content_rect);
+        Some(CardView::fitted(&content, &self.scene_area).map(&self.area))
+      }
+      OverviewLayoutMode::Stack => {
+        let card = self.cards.get(index)?;
+        Some(
+          card
+            .placement()
+            .map(&card.metrics, &card.view.map(&self.area)),
+        )
+      }
+    }
+  }
+
+  /// How strongly it shows over the desktop as a whole.
+  fn presence(&self) -> f32 {
+    let fades = self
+      .style()
+      .is_some_and(|style| style.zoom_style == OverviewZoomStyle::Fade);
+    if fades && self.zoom.is_some() {
+      self.openness().clamp(0.0, 1.0)
+    } else {
+      1.0
+    }
+  }
+
+  /// Zooms into card `index` until what it shows fills the screen, over
   /// `duration_ms`, showing `focus`.
   ///
-  /// What it zooms from holds still meanwhile, so each window heads
-  /// straight to where it lands rather than veering off with the layout
-  /// (e.g. a scrolled strip settling, or the stack panning to the pick).
+  /// The cards hold still meanwhile, so the zoom heads straight for the
+  /// picked one rather than veering off with the layout (e.g. the stack
+  /// panning to the pick). The activities' scene of a workspace not shown
+  /// yet changes over as it would have, its windows landing where they
+  /// settle as the zoom ends (see `scene_window_rect`).
   pub(super) fn start_closing(
     &mut self,
     index: usize,
     focus: ScreenFocus,
     duration_ms: u32,
   ) {
-    // The scenes zoom into the picked workspace's own windows. One not
-    // shown yet shows in its scene at once, as if shown before it was
-    // picked, for the zoom to set off from there; the one shown until now
-    // fades out.
     let is_switching =
       focus.layout.has_scene() && index != self.focus.selected;
     self.focus = focus;
@@ -928,7 +977,7 @@ impl Screen {
       self.retarget(false);
     }
 
-    self.hold(index);
+    self.hold();
     self.entrance = None;
     let zoom = Zoom::close(index, self.openness(), duration_ms);
     self.zoom = Some((zoom, Instant::now()));
@@ -964,16 +1013,12 @@ impl Screen {
       .map(|(zoom, _)| zoom.card)
   }
 
-  /// Stops the cards, card `index`'s scene and the shown workspace's area
-  /// where they are now.
-  fn hold(&mut self, index: usize) {
+  /// Stops the cards and the shown workspace's area where they are now.
+  fn hold(&mut self) {
     for card in &mut self.cards {
       for spring in [&mut card.cx, &mut card.cy, &mut card.scale] {
         spring.snap(spring.value);
       }
-    }
-    if let Some(scene) = self.scenes.get_mut(index) {
-      scene.windows.iter_mut().for_each(SceneWindow::hold);
     }
     if let Some(overlays) = &mut self.overlays {
       overlays.workspace_rect.hold();
@@ -983,7 +1028,8 @@ impl Screen {
   pub(super) fn place_context(&self) -> PlaceContext {
     PlaceContext {
       camera: self.camera(),
-      fade: self.openness(),
+      fade: self.openness().clamp(0.0, 1.0),
+      presence: self.presence(),
       entrance: self
         .entrance
         .map(|(entrance, started)| (entrance, elapsed_ms(started))),
@@ -1031,10 +1077,6 @@ impl Screen {
       is_moving = true;
       let elapsed = elapsed_ms(started);
 
-      if let Some(backdrop) = &self.backdrop {
-        let _ = backdrop.set_progress(zoom.openness(elapsed));
-      }
-
       if zoom.is_finished(elapsed) {
         // Zoomed in, it stays as it is until the overview hides.
         if zoom.is_closing {
@@ -1043,6 +1085,7 @@ impl Screen {
         self.zoom = None;
         self.celebrate_open();
       }
+      self.show_backdrop();
     }
 
     if is_moving || self.is_dirty || self.is_gliding {
@@ -1054,37 +1097,25 @@ impl Screen {
   }
 
   /// Places every thumbnail where its animation has it now. Returns
-  /// whether a highlight is still gliding.
+  /// whether a highlight is still settling.
   fn place(&mut self) -> bool {
     let context = self.place_context();
     let (view, scale_factor) = (context.view, self.metrics.scale_factor);
     let fade = context.fade;
     let layout = self.focus.layout;
-    let shift = self.top_shift(fade);
 
-    match layout {
-      OverviewLayoutMode::Activities => {
-        let miniatures = PlaceContext {
-          camera: Camera::shifted(0.0, shift),
-          fade,
-          view,
-          zoom_card: None,
-          entrance: context.entrance,
-        };
-        for (index, card) in self.cards.iter_mut().enumerate() {
-          place_card(card, index, &miniatures);
-        }
-      }
-      OverviewLayoutMode::Stack => {
-        for (index, card) in self.cards.iter_mut().enumerate() {
-          place_card(card, index, &context);
-        }
-      }
+    // The activities' miniatures are too small to zoom out of: what the
+    // zoom sets off from is the scene.
+    let cards = PlaceContext {
+      zoom_card: context.zoom_card.filter(|_| !layout.has_scene()),
+      ..context
+    };
+    for (index, card) in self.cards.iter_mut().enumerate() {
+      place_card(card, index, &cards);
     }
 
     if layout.has_scene() {
-      let area = self.area;
-      let zoom_card = context.zoom_card;
+      let landing = self.closing_card();
       let workspaces = self
         .frame
         .as_ref()
@@ -1093,13 +1124,12 @@ impl Screen {
 
       for (index, scene) in self.scenes.iter_mut().enumerate() {
         for window in &mut scene.windows {
-          let rect = scene_window_rect(
+          let (rect, alpha) = scene_window_shown(
             window,
-            zoom_card == Some(index),
-            fade,
-            &area,
+            (landing == Some(index)).then_some(fade),
           );
-          let opacity = window.alpha.value * window.preview.opacity;
+          let rect = context.camera.apply(&rect);
+          let opacity = alpha * window.preview.opacity * context.presence;
 
           if opacity > 0.002 {
             window.preview.place(&rect, &view, opacity);
@@ -1126,8 +1156,8 @@ impl Screen {
       self.scene_borders.place(&borders, &view);
     }
 
-    let is_gliding = self.place_overlays(&context, shift)
-      | self.place_effects(fade, shift);
+    let is_gliding =
+      self.place_overlays(&context) | self.place_effects(&context);
 
     let search_height = SEARCH_HEIGHT * scale_factor;
     let has_search = self.search_drawn.is_some();
@@ -1182,14 +1212,12 @@ impl Screen {
   /// Where a window let go of over card `index` lands: the scene, for
   /// the activities' shown workspace, or else the card.
   pub(super) fn landing_rect(&self, index: usize) -> Option<RectF> {
+    let context = self.place_context();
     if self.focus.layout.has_scene() && index == self.focus.selected {
-      return Some(self.scene_area);
+      return Some(context.camera.apply(&self.scene_area));
     }
 
-    let context = self.place_context();
-    self
-      .workspace_rect(index, &context, self.top_shift(context.fade))
-      .map(|(rect, _)| rect)
+    self.workspace_rect(index, &context).map(|(rect, _)| rect)
   }
 
   /// What is under the point (`x`, `y`) of the screen.
@@ -1208,9 +1236,12 @@ impl Screen {
       };
     }
 
+    // Mid-zoom, nothing is where it will settle.
+    let (x, y) = self.camera().unapply(x, y);
+
     match self.focus.layout {
       OverviewLayoutMode::Activities => {
-        let hit = self.hit_cards(x, y, &Camera::IDENTITY);
+        let hit = self.hit_cards(x, y);
         if hit.workspace.is_some() {
           // Too small to aim at: a window dropped on a miniature only
           // moves there, keeping its layout.
@@ -1219,7 +1250,7 @@ impl Screen {
           self.hit_scene(x, y, &self.scene_area)
         }
       }
-      OverviewLayoutMode::Stack => self.hit_cards(x, y, &self.camera()),
+      OverviewLayoutMode::Stack => self.hit_cards(x, y),
     }
   }
 
@@ -1241,12 +1272,9 @@ impl Screen {
     .map(|(_, control)| control)
   }
 
-  /// What card is under (`x`, `y`) with `camera` applied, and what window
+  /// What card is under (`x`, `y`), before the camera, and what window
   /// on it.
-  fn hit_cards(&self, x: f32, y: f32, camera: &Camera) -> Hit {
-    // Mid-zoom, the cards aren't where they will settle.
-    let (x, y) = camera.unapply(x, y);
-
+  fn hit_cards(&self, x: f32, y: f32) -> Hit {
     // Later cards stack above earlier ones (e.g. a grown drop target over
     // its neighbour), so they are hit first.
     for (index, card) in self.cards.iter().enumerate().rev() {

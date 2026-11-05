@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 
 use windows::Win32::Foundation::HWND;
 
-use super::{overlays::RING_RADIUS, Screen};
+use super::{overlays::RING_RADIUS, PlaceContext, Screen};
 use crate::{
   dwm_thumbnail::Thumbnail,
   overview_chrome::{with_alpha, SliceLook},
@@ -327,25 +327,23 @@ impl Screen {
       workspace.windows.iter().any(|window| window.hwnd == hwnd)
     })?;
     let context = self.place_context();
-    let shift = self.top_shift(context.fade);
-    self.window_rect_in(index, hwnd, &context, shift)
+    self.window_rect_in(index, hwnd, &context)
   }
 
   /// Places the effects where they are now. Returns whether the glow
   /// still settles or breathes.
-  pub(super) fn place_effects(&mut self, fade: f32, shift: f32) -> bool {
+  pub(super) fn place_effects(&mut self, context: &PlaceContext) -> bool {
     let enabled = self.enabled_effects();
-    let context = self.place_context();
     let reach = self.metrics.px(GLOW_REACH);
     let glow = self.ringed().and_then(|index| {
       self
-        .workspace_rect(index, &context, shift)
+        .workspace_rect(index, context)
         .map(|(rect, scale)| (index, rect.inset(-reach * scale), scale))
     });
 
-    let view = self.view();
+    let view = context.view;
     self.effects.as_mut().is_some_and(|effects| {
-      effects.place(glow, enabled, &view, chrome_opacity(fade))
+      effects.place(glow, enabled, &view, chrome_opacity(context.fade))
     })
   }
 

@@ -82,7 +82,7 @@ use crate::{
   window_class::{self, mouse_position},
   window_icons, DxgiVsyncWaiter, OverviewAction, OverviewFrame,
   OverviewLayoutMode, OverviewScreen, OverviewStyle, OverviewWorkspace,
-  Rect,
+  OverviewZoomStyle, Rect,
 };
 
 /// Posted with a `Box<Open>` in `WPARAM`.
@@ -475,6 +475,9 @@ struct PlaceContext {
   camera: Camera,
   /// How far the overview is open.
   fade: f32,
+  /// How strongly the overview shows over the desktop as a whole: the
+  /// openness while it fades in or out, else fully.
+  presence: f32,
   /// The screen's own rect.
   view: RectF,
   /// Card the screen zooms out of or into.
@@ -488,10 +491,10 @@ fn place_card(card: &mut Card, index: usize, context: &PlaceContext) {
   let PlaceContext {
     camera,
     fade,
+    presence,
     view,
     zoom_card,
     entrance,
-    ..
   } = context;
   let (appear, pop) = entrance
     .map_or((1.0, 1.0), |(entrance, elapsed)| {
@@ -515,6 +518,7 @@ fn place_card(card: &mut Card, index: usize, context: &PlaceContext) {
   } else {
     (1.0, placement.opacity)
   };
+  let alpha = alpha * presence;
 
   for preview in &mut card.previews {
     let dest = camera.apply(&placement.map(&metrics, &preview.tile.rect));
@@ -835,7 +839,8 @@ impl Overview {
 
     window_icons::forget_closed();
 
-    let animate = frame.style.open_duration_ms > 0;
+    let animate = frame.style.open_duration_ms > 0
+      && frame.style.zoom_style != OverviewZoomStyle::None;
     for (index, screen) in self.screens.iter_mut().enumerate() {
       let focus = self.interaction.focus(index, &self.workspaces);
       screen.open(
@@ -1174,6 +1179,7 @@ impl Overview {
     let duration = self
       .frame
       .as_ref()
+      .filter(|frame| frame.style.zoom_style != OverviewZoomStyle::None)
       .map_or(0, |frame| frame.style.close_duration_ms);
     let cards = (0..self.screens.len())
       .map(|index| self.closing_card(index, action))

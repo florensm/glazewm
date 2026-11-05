@@ -6,7 +6,7 @@ use std::time::Instant;
 use windows::Win32::Foundation::HWND;
 
 use super::{
-  scenes::scene_window_rect, to_f32_size, PlaceContext, Screen,
+  scenes::scene_window_shown, to_f32_size, PlaceContext, Screen,
 };
 use crate::{
   dwm_thumbnail::Thumbnail,
@@ -15,7 +15,7 @@ use crate::{
     tag_size, with_alpha, LabelPicture, SliceLook, TagPicture,
   },
   overview_layout::{
-    chrome_opacity, Camera, CardMetrics, RectF, SpringRect, LABEL_GAP,
+    chrome_opacity, CardMetrics, RectF, SpringRect, LABEL_GAP,
   },
   overview_overlays::{Highlight, Tag},
   overview_state::{Mode, Toward},
@@ -370,34 +370,17 @@ impl Screen {
     })
   }
 
-  /// How far up the activities' miniatures are while the overview opens
-  /// or closes: out of sight when it is shut.
-  pub(super) fn top_shift(&self, openness: f32) -> f32 {
-    let extent = match self.focus.layout {
-      OverviewLayoutMode::Activities => self.scene_area.y,
-      OverviewLayoutMode::Stack => 0.0,
-    };
-
-    -(1.0 - openness) * (extent + self.metrics.px(12.0))
-  }
-
   /// Where workspace `index` shows now in the layout: its card or its
   /// miniature, with how much its corners are scaled from a highlight's.
   pub(super) fn workspace_rect(
     &self,
     index: usize,
     context: &PlaceContext,
-    shift: f32,
   ) -> Option<(RectF, f32)> {
     let gap = self.metrics.px(RING_GAP);
 
     let card = self.cards.get(index)?;
-    let camera = if self.focus.layout == OverviewLayoutMode::Activities {
-      Camera::shifted(0.0, shift)
-    } else {
-      context.camera
-    };
-    let rect = camera.apply(&card.placement().rect(&card.metrics));
+    let rect = context.camera.apply(&card.placement().rect(&card.metrics));
     let scale = rect.w / card.metrics.width.max(1.0);
     let radius = card_radius(&card.metrics) * scale + gap;
 
@@ -410,46 +393,36 @@ impl Screen {
     hwnd: isize,
     context: &PlaceContext,
   ) -> Option<RectF> {
-    self.window_rect_in(self.focus.selected, hwnd, context, 0.0)
+    self.window_rect_in(self.focus.selected, hwnd, context)
   }
 
   /// Where window `hwnd` of workspace `index` shows now: in the scene for
-  /// the activities' shown workspace, or else on its card, shifted by
-  /// `shift` in the activities.
+  /// the activities' shown workspace, or else on its card.
   pub(super) fn window_rect_in(
     &self,
     index: usize,
     hwnd: isize,
     context: &PlaceContext,
-    shift: f32,
   ) -> Option<RectF> {
-    let layout = self.focus.layout;
-
-    if layout.has_scene() && index == self.focus.selected {
+    if self.focus.layout.has_scene() && index == self.focus.selected {
       let window = self
         .scenes
         .get(index)?
         .windows
         .iter()
         .find(|window| window.preview.hwnd == hwnd)?;
-      return Some(scene_window_rect(
-        window,
-        context.zoom_card == Some(index),
-        context.fade,
-        &self.area,
-      ));
+      let landing =
+        (self.closing_card() == Some(index)).then_some(context.fade);
+      let (rect, _) = scene_window_shown(window, landing);
+      return Some(context.camera.apply(&rect));
     }
 
-    let camera = if layout == OverviewLayoutMode::Activities {
-      Camera::shifted(0.0, shift)
-    } else {
-      context.camera
-    };
     let card = self.cards.get(index)?;
     let preview =
       card.previews.iter().find(|preview| preview.hwnd == hwnd)?;
     Some(
-      camera
+      context
+        .camera
         .apply(&card.placement().map(&card.metrics, &preview.tile.rect)),
     )
   }
@@ -469,11 +442,7 @@ impl Screen {
   /// Moves the highlights onto what they mark now and places them,
   /// with the labels and tags. Returns whether any is still settling.
   #[allow(clippy::too_many_lines)]
-  pub(super) fn place_overlays(
-    &mut self,
-    context: &PlaceContext,
-    shift: f32,
-  ) -> bool {
+  pub(super) fn place_overlays(&mut self, context: &PlaceContext) -> bool {
     let now = Instant::now();
     let focus = &self.focus;
     let layout = focus.layout;
@@ -486,7 +455,7 @@ impl Screen {
     let ringed = self.ringed();
     let ring_target = ringed.and_then(|index| {
       self
-        .workspace_rect(index, context, shift)
+        .workspace_rect(index, context)
         .map(|(rect, scale)| (index, rect, scale))
     });
 
@@ -499,7 +468,7 @@ impl Screen {
       })
       .and_then(|index| {
         self
-          .workspace_rect(index, context, shift)
+          .workspace_rect(index, context)
           .map(|(rect, scale)| (index, rect, scale))
       });
 
@@ -515,7 +484,7 @@ impl Screen {
     // The half of the window a dragged window would land beside.
     let drop_target = focus.drop.zip(focus.drop_beside).and_then(
       |(index, (hwnd, side))| {
-        let rect = self.window_rect_in(index, hwnd, context, shift)?;
+        let rect = self.window_rect_in(index, hwnd, context)?;
         Some(((hwnd, side), half(&rect, side).inset(px(2.0)), 1.0))
       },
     );
@@ -559,7 +528,7 @@ impl Screen {
       .marks_keyboard
       .then(|| ((), view.inset(px(SCREEN_RING_GAP)), 1.0));
 
-    let label_rects = self.label_rects(context, shift);
+    let label_rects = self.label_rects(context);
 
     let Some(overlays) = &mut self.overlays else {
       return false;
@@ -600,7 +569,6 @@ impl Screen {
   pub(super) fn label_rects(
     &self,
     context: &PlaceContext,
-    shift: f32,
   ) -> Vec<Option<(RectF, f32)>> {
     let layout = self.focus.layout;
     let gap = self.metrics.px(LABEL_GAP);
@@ -617,8 +585,8 @@ impl Screen {
         if layout != OverviewLayoutMode::Activities {
           return None;
         }
-        let camera = Camera::shifted(0.0, shift);
-        let rect = camera.apply(&card.placement().rect(&card.metrics));
+        let rect =
+          context.camera.apply(&card.placement().rect(&card.metrics));
         let (width, height) = to_f32_size(label.picture.size());
         let (x, y) =
           (rect.x + rect.w / 2.0 - width / 2.0, rect.bottom() + gap);

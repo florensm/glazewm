@@ -2089,6 +2089,8 @@ pub(crate) struct OverviewBackdrop {
   _target: DesktopWindowTarget,
   compositor: Compositor,
   queue: DispatcherQueue,
+  /// Holds every layer, to fade the backdrop as a whole.
+  root: ContainerVisual,
   sharp: CompositionSurfaceBrush,
   blurred: CompositionSurfaceBrush,
   blurred_sprite: SpriteVisual,
@@ -2176,6 +2178,7 @@ impl OverviewBackdrop {
         _target: target,
         compositor: compositor.clone(),
         queue: queue.clone(),
+        root,
         sharp,
         blurred,
         blurred_sprite,
@@ -2193,6 +2196,13 @@ impl OverviewBackdrop {
     let progress = progress.clamp(0.0, 1.0);
     self.blurred_sprite.SetOpacity(progress)?;
     self.tint_sprite.SetOpacity(progress)?;
+    Ok(())
+  }
+
+  /// Shows it as a whole `opacity` strong, from 0 (the desktop behind
+  /// shows through) to 1.
+  pub(crate) fn set_opacity(&self, opacity: f32) -> crate::Result<()> {
+    self.root.SetOpacity(opacity.clamp(0.0, 1.0))?;
     Ok(())
   }
 
