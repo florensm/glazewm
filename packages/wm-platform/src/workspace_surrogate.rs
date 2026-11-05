@@ -43,7 +43,7 @@ fn frame_rects(
 
 /// Positioning strategy for a [`WorkspaceSurrogate`].
 enum SurrogateMode {
-  /// The surrogate spans the whole monitor viewport, created once and
+  /// The surrogate spans the working area (`viewport`), created once and
   /// never repositioned; all motion is expressed via
   /// `rcSource`/`rcDestination` clipping, avoiding any per-frame
   /// `SetWindowPos` call. Used for windows with no backdrop configured
@@ -84,7 +84,7 @@ pub struct LiveFrame {
 /// Both outgoing and incoming windows move together so the whole workspace
 /// slides as a single panel. For windows with no live backdrop
 /// ([`SurrogateMode::PinnedViewport`]), the surrogate is created at the
-/// full monitor rect (`viewport`) and never repositioned; all per-frame
+/// monitor's working area (`viewport`) and never repositioned; all per-frame
 /// animation is expressed via `rcSource`/`rcDestination` in
 /// `DwmUpdateThumbnailProperties`, avoiding any per-frame `SetWindowPos`
 /// calls. Windows with a live backdrop ([`SurrogateMode::Live`]) are
@@ -96,7 +96,7 @@ pub struct WorkspaceSurrogate {
   /// Final screen rect of the window (target position for incoming,
   /// current screen rect for outgoing).
   pub rect: Rect,
-  /// Monitor rect used as the surrogate window's fixed position and size
+  /// Working area used as the surrogate window's fixed position and size
   /// in [`SurrogateMode::PinnedViewport`] mode.
   ///
   /// In that mode the surrogate is created at `viewport` and stays there
@@ -188,9 +188,11 @@ pub struct WorkspaceSurrogate {
 impl WorkspaceSurrogate {
   /// Creates a hidden surrogate for a workspace-switch animation.
   ///
-  /// `viewport` is the monitor rect; `rect` is the source window's screen
-  /// rect, used as the thumbnail registration dimensions and the reference
-  /// for per-frame coordinate math.
+  /// `viewport` is the monitor's working area, not its bounds: a window
+  /// covering a whole monitor counts as a fullscreen app to Explorer.
+  /// `rect` is the source window's screen rect, used as the thumbnail
+  /// registration dimensions and the reference for per-frame coordinate
+  /// math.
   ///
   /// `frame_rect` is the same window's frame rect (what
   /// `DWMWA_EXTENDED_FRAME_BOUNDS` reports), which callers pass explicitly
@@ -210,7 +212,7 @@ impl WorkspaceSurrogate {
   /// surrogate when it carries a live backdrop
   /// ([`SurrogateMode::Live`]), matching the real window's configured
   /// style. Ignored in [`SurrogateMode::PinnedViewport`] mode, where the
-  /// surrogate spans the whole monitor and must not be rounded.
+  /// surrogate spans the whole viewport and must not be rounded.
   ///
   /// `overlay_tint` is the WM's own configured tint
   /// (`BackdropEffectConfig::overlay_tint`), or `None` when `backdrop`
@@ -270,7 +272,7 @@ impl WorkspaceSurrogate {
     // rect every frame, so — like resize sessions — it must be
     // deflated by the window's invisible resize border to avoid
     // overshooting into the configured gap. PinnedViewport mode sizes
-    // `source_rect` to the full monitor viewport, which has no
+    // `source_rect` to the whole viewport, which has no
     // invisible border of its own; deflating it here would incorrectly
     // shrink the pinned surrogate.
     let border_inset = compute_border_inset(hwnd);

@@ -880,6 +880,12 @@ fn redraw_containers(
         let mut monitor_y = 0i32;
         let mut monitor_height = 0i32;
         let mut monitor_handle = 0isize;
+        // Slide surrogates are pinned to the working area, not the monitor
+        // bounds: Explorer treats a window covering a whole monitor as a
+        // fullscreen app and tells app bars to make way for it, so bars
+        // set to hide on fullscreen dropped behind every switch. Tiled
+        // windows live inside the working area anyway (see
+        // `border_viewport`).
         let mut monitor_work_area = Rect::from_xy(0, 0, 0, 0);
 
         for window in &windows_to_update {
@@ -965,17 +971,11 @@ fn redraw_containers(
               })
               .ok()
               .and_then(|(rect, frame_rect)| {
-                let viewport = Rect::from_xy(
-                  monitor_x,
-                  monitor_y,
-                  monitor_width,
-                  monitor_height,
-                );
                 WorkspaceSurrogate::new(
                   hwnd,
                   &rect,
                   &frame_rect,
-                  &viewport,
+                  &monitor_work_area,
                   opacity,
                   ws_config.opacity_incoming,
                   &corner_style,
@@ -1025,17 +1025,11 @@ fn redraw_containers(
                 .unwrap_or_else(|_| Rect::from_xy(0, 0, 0, 0));
               (frame.clone(), frame)
             };
-            let viewport = Rect::from_xy(
-              monitor_x,
-              monitor_y,
-              monitor_width,
-              monitor_height,
-            );
             let surrogate = WorkspaceSurrogate::new(
               hwnd,
               &current,
               &frame_rect,
-              &viewport,
+              &monitor_work_area,
               opacity,
               ws_config.opacity_outgoing,
               &corner_style,
