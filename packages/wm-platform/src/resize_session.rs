@@ -37,6 +37,13 @@ const EDGE_SAMPLE_INSET: i32 = 4;
 /// duration observed, so it essentially never fires for a merely slow app.
 const COMMIT_CONFIRM_MAX_WAIT: Duration = Duration::from_millis(500);
 
+/// Thumbnail opacity of a session whose surrogate shows a companion,
+/// whatever the window's own alpha: the companion covers the window
+/// opaquely at rest, so drawn at the window's alpha it would look lighter
+/// for the whole animation, and the hand-back would show the real window
+/// (as it really is) through the fading surrogate.
+const COMPANION_OPACITY: u8 = u8::MAX;
+
 use crate::{
   discard_bits_if_resized, native_surrogate::to_logical,
   platform_impl::NativeWindow, window_class, Color, CornerStyle,
@@ -99,12 +106,10 @@ pub struct ResizeSession {
   /// to the logical (visible-content) rects that the surrogate is sized
   /// to.
   border_inset: RECT,
-  /// DWM thumbnail opacity (0–255) from the window-effects config.
-  ///
-  /// Used as the surrogate opacity when the animation has no per-frame
-  /// fade component, so the thumbnail matches the real window's
-  /// `SetLayeredWindowAttributes` opacity throughout the move/resize.
-  pub effect_opacity: u8,
+  /// DWM thumbnail opacity (0–255): from the window-effects config, or
+  /// [`COMPANION_OPACITY`] while the surrogate shows a companion. See
+  /// [`effect_opacity`](ResizeSession::effect_opacity).
+  effect_opacity: u8,
   /// Color the surrogate's gap fill paints, from [`SessionOptions`] or
   /// picked up later via [`set_edge_color`] once a background sample
   /// lands.
@@ -298,8 +303,6 @@ impl ResizeSession {
     let is_move_only = target_rect.width() == source_rect.width()
       && target_rect.height() == source_rect.height();
 
-    let effect_opacity = options.effect_opacity;
-
     // The fill stands in for the settled window in whatever strip the
     // thumbnail has not reached, so it is the window's own color as
     // sampled off the screen -- already composited over its backdrop.
@@ -319,13 +322,13 @@ impl ResizeSession {
     // giving up outright -- rare (would mean the warm surrogate's own
     // window handle went bad), but a brand new surrogate window is a
     // reasonable recovery, not just "no surrogate for this resize."
-    let surrogate = warm_surrogate
+    let mut surrogate = warm_surrogate
       .and_then(|mut surrogate| {
         match surrogate.revive(
           hwnd,
           source_rect,
           source_rect,
-          effect_opacity,
+          options.effect_opacity,
           border_inset,
           &options.corner_style,
           insert_after,
@@ -346,7 +349,7 @@ impl ResizeSession {
           hwnd,
           source_rect,
           source_rect,
-          effect_opacity,
+          options.effect_opacity,
           border_inset,
           &options.corner_style,
           insert_after,
@@ -362,6 +365,16 @@ impl ResizeSession {
           }
         }
       });
+
+    // Decided from what the surrogate samples, not a second
+    // `Companion::find` that could disagree with it.
+    let effect_opacity = match &mut surrogate {
+      Some(surrogate) if surrogate.shows_companion() => {
+        surrogate.set_window_opacity(COMPANION_OPACITY);
+        COMPANION_OPACITY
+      }
+      _ => options.effect_opacity,
+    };
 
     let mut session = Self {
       hwnd: hwnd.0,
@@ -387,6 +400,14 @@ impl ResizeSession {
     };
     session.sync_fill();
     session
+  }
+
+  /// Thumbnail opacity the surrogate is drawn at when the animation has no
+  /// fade of its own, matching the real window's alpha, or the
+  /// companion's (see [`COMPANION_OPACITY`]).
+  #[must_use]
+  pub fn effect_opacity(&self) -> u8 {
+    self.effect_opacity
   }
 
   /// Returns the params for the overlay trackers in `AnimationManager`

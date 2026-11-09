@@ -1997,7 +1997,7 @@ impl AnimationManager {
       for (_, fade_start, session) in
         &mut state.animation_manager.pending_session_cleanup
       {
-        if fade_start.is_none() && session.effect_opacity < u8::MAX {
+        if fade_start.is_none() && session.effect_opacity() < u8::MAX {
           session.fade_overlay(0);
         }
       }
@@ -2095,7 +2095,7 @@ impl AnimationManager {
           // would fire this block's flush a tick before it is
           // needed.
           let is_finishing = fade_start.is_some_and(|start| {
-            session.effect_opacity < u8::MAX
+            session.effect_opacity() < u8::MAX
               || fade_now.saturating_duration_since(start).as_secs_f32()
                 / SESSION_FADE_OUT.as_secs_f32()
                 >= 1.0
@@ -2162,7 +2162,7 @@ impl AnimationManager {
           let Some(start) = *fade_start else {
             // The surrogate shows the window's companion, whose owner
             // puts it back on screen only once it notices the uncloak.
-            if session.effect_opacity == u8::MAX
+            if session.effect_opacity() == u8::MAX
               && session.awaits_companion()
             {
               return true;
@@ -2175,11 +2175,11 @@ impl AnimationManager {
           // Transparent windows were zeroed on the tick before this one,
           // so the composite the user is looking at is already
           // correct. Drop.
-          if session.effect_opacity < u8::MAX {
+          if session.effect_opacity() < u8::MAX {
             tracing::debug!(
               "pending_session_cleanup: dropping {id} (transparent, \
                effect_opacity={}).",
-              session.effect_opacity,
+              session.effect_opacity(),
             );
             if let Some(surrogate) = session.take_surrogate() {
               reclaimed_surrogates.push((*id, surrogate));
@@ -2206,7 +2206,7 @@ impl AnimationManager {
             clippy::cast_sign_loss
           )]
           let opacity =
-            (f32::from(session.effect_opacity) * (1.0 - progress)) as u8;
+            (f32::from(session.effect_opacity()) * (1.0 - progress)) as u8;
           session.fade_overlay(opacity);
           true
         },
@@ -2712,7 +2712,7 @@ impl AnimationManager {
       let session_status = self
         .resize_sessions
         .get(&window_id)
-        .map(|s| (s.has_surrogate(), s.effect_opacity, s.zoom));
+        .map(|s| (s.has_surrogate(), s.effect_opacity(), s.zoom));
 
       match session_status {
         Some((true, effect_opacity, zoom)) => {
@@ -3331,14 +3331,6 @@ impl AnimationManager {
     // still set opacity_from explicitly to combine fade with zoom.
     let effective_opacity_from = params.away_opacity;
 
-    if effective_opacity_from < 1.0 {
-      let effect_frac = f32::from(effect_opacity) / 255.0;
-      let start_frac =
-        effective_opacity_from.clamp(0.0, 1.0) * effect_frac;
-      anim.start_opacity = Some(OpacityValue(start_frac));
-      anim.target_opacity = Some(OpacityValue(effect_frac));
-    }
-
     // Cloak zoom windows immediately so the real window never appears at
     // full size before the surrogate takes over. Non-zoom styles are
     // cloaked later in the Frozen branch of platform_sync (on the
@@ -3364,6 +3356,18 @@ impl AnimationManager {
     ) {
       Ok(mut session) => {
         session.zoom = is_zoom;
+
+        // The session's own, which is opaque for a surrogate showing a
+        // companion.
+        let effect_opacity = session.effect_opacity();
+        if effective_opacity_from < 1.0 {
+          let effect_frac = f32::from(effect_opacity) / 255.0;
+          let start_frac =
+            effective_opacity_from.clamp(0.0, 1.0) * effect_frac;
+          anim.start_opacity = Some(OpacityValue(start_frac));
+          anim.target_opacity = Some(OpacityValue(effect_frac));
+        }
+
         #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
         let initial_opacity_u8 = (effective_opacity_from.clamp(0.0, 1.0)
           * f32::from(effect_opacity))
@@ -3458,13 +3462,6 @@ impl AnimationManager {
       params.easing.clone(),
     );
 
-    if params.away_opacity < 1.0 {
-      let effect_frac = f32::from(effect_opacity) / 255.0;
-      let target_frac = params.away_opacity.clamp(0.0, 1.0) * effect_frac;
-      anim.start_opacity = Some(OpacityValue(effect_frac));
-      anim.target_opacity = Some(OpacityValue(target_frac));
-    }
-
     match ResizeSession::begin(
       native_window.hwnd(),
       current_rect,
@@ -3481,6 +3478,16 @@ impl AnimationManager {
       },
     ) {
       Ok(mut session) => {
+        // The session's own, which is opaque for a surrogate showing a
+        // companion.
+        if params.away_opacity < 1.0 {
+          let effect_frac = f32::from(session.effect_opacity()) / 255.0;
+          let target_frac =
+            params.away_opacity.clamp(0.0, 1.0) * effect_frac;
+          anim.start_opacity = Some(OpacityValue(effect_frac));
+          anim.target_opacity = Some(OpacityValue(target_frac));
+        }
+
         // Cover the window before the caller cloaks or minimizes it.
         session.show();
         session.zoom = is_zoom;
