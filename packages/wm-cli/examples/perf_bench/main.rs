@@ -18,6 +18,11 @@
 //! cargo run -p wm-cli --release --example perf_bench -- \
 //!   --scenario resize --target chrome --bursts 10 --label baseline
 //! ```
+//!
+//! The `switch` scenario also needs `--other-workspace <name>`, a second
+//! workspace on the target's monitor. Every scenario reports how long each
+//! command took to be answered, which with animations off is the whole
+//! switch, as no profiler report is written without animation frames.
 
 mod dwm;
 
@@ -36,7 +41,9 @@ use wm_ipc_client::IpcClient;
 ///
 /// A step is one or more `;`-separated commands. Commands target the
 /// pinned window (its workspace for [`WORKSPACE_SCENARIO`]), except
-/// `wm-*` commands, which take no subject.
+/// `wm-*` commands and [`SWITCH_SCENARIO`]'s, which take no subject. In
+/// the latter, `{home}` stands for the pinned window's workspace and
+/// `{other}` for `--other-workspace`.
 const SCENARIOS: &[(&str, &str, &str)] = &[
   // Every window on the workspace moves and resizes in both dimensions.
   // Toggling a workspace's direction queues no redraw on its own.
@@ -52,7 +59,17 @@ const SCENARIOS: &[(&str, &str, &str)] = &[
   ("float", "toggle-floating --centered", "toggle-tiling"),
   // Target swaps places with its neighbour, then swaps back.
   ("move", "move --direction left", "move --direction right"),
+  // The workspace switches away from the target's, then back.
+  (
+    SWITCH_SCENARIO,
+    "focus --workspace {other}",
+    "focus --workspace {home}",
+  ),
 ];
+
+/// The scenario switching between the pinned window's workspace and
+/// `--other-workspace` on the same monitor.
+const SWITCH_SCENARIO: &str = "switch";
 
 /// The scenario whose commands target the pinned window's workspace.
 ///
@@ -91,6 +108,8 @@ struct Args {
   label: String,
   /// Whether to capture DWM-side frame timing.
   dwm: bool,
+  /// Workspace the switch scenario alternates with the target's.
+  other_workspace: Option<String>,
 }
 
 /// Per-burst DWM summaries, as `(label, values)` for the summary table.
@@ -117,10 +136,27 @@ async fn main() -> anyhow::Result<()> {
   let log_path = perf_log_path()?;
   let mut client = IpcClient::connect().await?;
   let window = find_tiled_window(&mut client, &args.target).await?;
-  let target = if args.scenario == WORKSPACE_SCENARIO {
-    find_workspace_of(&mut client, window).await?
-  } else {
-    window
+  let (subject, forward, back) = match args.scenario.as_str() {
+    SWITCH_SCENARIO => {
+      let other = args.other_workspace.as_deref().context(
+        "--other-workspace <name> is required for the switch scenario.",
+      )?;
+      let (_, home) = find_workspace_of(&mut client, window).await?;
+      if home == other {
+        bail!(
+          "--other-workspace must differ from the target's ('{home}')."
+        );
+      }
+      let fill = |step: &str| {
+        step.replace("{home}", &home).replace("{other}", other)
+      };
+      (None, fill(forward), fill(back))
+    }
+    WORKSPACE_SCENARIO => {
+      let (workspace, _) = find_workspace_of(&mut client, window).await?;
+      (Some(workspace), (*forward).to_string(), (*back).to_string())
+    }
+    _ => (Some(window), (*forward).to_string(), (*back).to_string()),
   };
 
   let start_len = std::fs::metadata(&log_path).map_or(0, |m| m.len());
@@ -128,11 +164,19 @@ async fn main() -> anyhow::Result<()> {
 
   let mut capture = args.dwm.then(dwm::DwmCapture::start).transpose()?;
   let mut triggers = Vec::with_capacity(args.bursts + 1);
+  let mut command_ms = Vec::with_capacity(args.bursts);
 
   for burst in 0..args.bursts {
-    let step = if burst % 2 == 0 { forward } else { back };
+    let step = if burst % 2 == 0 { &forward } else { &back };
     triggers.push(dwm::now_qpc());
-    send_step(&mut client, target, step).await?;
+
+    // The WM answers once the command and its sync have run, so this
+    // spans everything done before the first animation frame: the whole
+    // switch with animations off.
+    let sent = Instant::now();
+    send_step(&mut client, subject, step).await?;
+    command_ms.push(sent.elapsed().as_secs_f64() * 1000.0);
+
     tokio::time::sleep(args.settle).await;
 
     // Drained every burst so the service's buffer never overflows.
@@ -144,7 +188,7 @@ async fn main() -> anyhow::Result<()> {
 
   // Leave the layout as it was found.
   if args.bursts % 2 == 1 {
-    send_step(&mut client, target, back).await?;
+    send_step(&mut client, subject, &back).await?;
     tokio::time::sleep(args.settle).await;
   }
 
@@ -157,9 +201,11 @@ async fn main() -> anyhow::Result<()> {
   );
   let reports = parse_reports(&strip_ansi(&new_text));
 
+  // Expected with animations off, where no frame runs.
   if reports.is_empty() {
-    bail!(
-      "No profiler reports in {}. Is the WM running with GLAZEWM_PERF=1?",
+    println!(
+      "No profiler reports in {}: no animation frame ran, or the WM isn't \
+       running with GLAZEWM_PERF=1. Only command timings follow.",
       log_path.display()
     );
   }
@@ -168,7 +214,13 @@ async fn main() -> anyhow::Result<()> {
     dwm_columns(&capture, &triggers, &reports)
   });
 
-  print_summary(&args, &reports, &dwm_columns, started.elapsed());
+  print_summary(
+    &args,
+    &command_ms,
+    &reports,
+    &dwm_columns,
+    started.elapsed(),
+  );
   Ok(())
 }
 
@@ -218,6 +270,7 @@ fn parse_args() -> anyhow::Result<Args> {
     settle: Duration::from_millis(1200),
     label: "run".into(),
     dwm: false,
+    other_workspace: None,
   };
 
   let mut iter = std::env::args().skip(1);
@@ -236,6 +289,7 @@ fn parse_args() -> anyhow::Result<Args> {
       "--bursts" => args.bursts = value.parse()?,
       "--settle-ms" => args.settle = Duration::from_millis(value.parse()?),
       "--label" => args.label = value,
+      "--other-workspace" => args.other_workspace = Some(value),
       _ => bail!("Unknown flag '{flag}'."),
     }
   }
@@ -290,11 +344,11 @@ async fn find_tiled_window(
     .with_context(|| format!("No tiled window of process '{process}'."))
 }
 
-/// Returns the ID of the workspace containing `window`.
+/// Returns the ID and name of the workspace containing `window`.
 async fn find_workspace_of(
   client: &mut IpcClient,
   window: Uuid,
-) -> anyhow::Result<Uuid> {
+) -> anyhow::Result<(Uuid, String)> {
   fn contains(children: &[ContainerDto], window: Uuid) -> bool {
     children.iter().any(|child| match child {
       ContainerDto::Window(dto) => dto.id == window,
@@ -321,24 +375,26 @@ async fn find_workspace_of(
       ContainerDto::Workspace(workspace)
         if contains(&workspace.children, window) =>
       {
-        Some(workspace.id)
+        Some((workspace.id, workspace.name.clone()))
       }
       _ => None,
     })
     .context("Target window is on no workspace.")
 }
 
-/// Sends each `;`-separated command of a scenario step.
+/// Sends each `;`-separated command of a scenario step, on `subject`
+/// unless it is `None` or the command is a `wm-*` one.
 async fn send_step(
   client: &mut IpcClient,
-  target: Uuid,
+  subject: Option<Uuid>,
   step: &str,
 ) -> anyhow::Result<()> {
   for command in step.split(';').map(str::trim) {
-    let message = if command.starts_with("wm-") {
-      format!("command {command}")
-    } else {
-      format!("command --id {target} {command}")
+    let message = match subject {
+      Some(subject) if !command.starts_with("wm-") => {
+        format!("command --id {subject} {command}")
+      }
+      _ => format!("command {command}"),
     };
     send_command(client, &message).await?;
   }
@@ -477,16 +533,28 @@ fn parse_reports(text: &str) -> Vec<HashMap<String, f64>> {
     .collect()
 }
 
-fn median(mut values: Vec<f64>) -> Option<f64> {
+fn median(values: Vec<f64>) -> Option<f64> {
+  percentile(values, 0.5)
+}
+
+/// The value at fraction `q` (0.0 to 1.0) of `values`, sorted.
+#[allow(
+  clippy::cast_possible_truncation,
+  clippy::cast_precision_loss,
+  clippy::cast_sign_loss
+)]
+fn percentile(mut values: Vec<f64>, q: f64) -> Option<f64> {
   if values.is_empty() {
     return None;
   }
   values.sort_by(f64::total_cmp);
-  Some(values[values.len() / 2])
+  let index = ((values.len() - 1) as f64 * q).round() as usize;
+  values.get(index).copied()
 }
 
 fn print_summary(
   args: &Args,
+  command_ms: &[f64],
   reports: &[HashMap<String, f64>],
   dwm_columns: &DwmColumns,
   elapsed: Duration,
@@ -502,16 +570,23 @@ fn print_summary(
   );
 
   let mut cells = vec![args.label.clone(), args.scenario.clone()];
+  for (label, q) in [("command p50 ms", 0.5), ("command p90 ms", 0.9)] {
+    let value = percentile(command_ms.to_vec(), q).unwrap_or(0.0);
+    println!("  {label:<36}{value:>9.2}");
+    cells.push(format!("{value:.2}"));
+  }
+
   for (key, label) in METRICS {
     let value = median(
       reports
         .iter()
         .map(|report| report.get(*key).copied().unwrap_or(0.0))
         .collect(),
-    )
-    .unwrap_or(0.0);
-    println!("  {label:<36}{value:>9.2}");
-    cells.push(format!("{value:.2}"));
+    );
+    let cell =
+      value.map_or_else(|| "-".to_string(), |v| format!("{v:.2}"));
+    println!("  {label:<36}{cell:>9}");
+    cells.push(cell);
   }
 
   for (label, values) in dwm_columns {
