@@ -125,6 +125,10 @@ async fn start_wm(
 ) -> anyhow::Result<()> {
   setup_logging(&verbosity)?;
 
+  if let Err(err) = wm_platform::request_full_speed() {
+    tracing::warn!("Failed to opt out of power throttling: {err}");
+  }
+
   // Left on by mistake, it would make every animation look broken.
   let isolation = wm_platform::isolation::current();
   if isolation != wm_platform::isolation::Isolation::default() {
