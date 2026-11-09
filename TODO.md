@@ -188,6 +188,14 @@ file), `git pull` on `tryout/todo-cleanup`, `cargo build --release`, run.
     0.001)"` swings past and back without breaking the fades. Each
     `switch_style` with the arrows and the wheel.
 
+14. **Shades with moves and resizes** (`909b925`, `72d6bc2`, `1fbda69`,
+    `2ddb24f`), with transparency on (e.g. 80%) and a shades-themed
+    window: go from 1 to 2 tiled windows and back (open a second window,
+    close it), open a second window of the themed app, and resize the
+    themed window with the keyboard. No white frame at any landing, and
+    no lighter, see-through look while it moves. Then once with
+    transparency off.
+
 If bars or flicker show, isolate them with `GLAZEWM_ISOLATE` (below), one
 restart per flag: `noring`, `nobackdrop`, then `live`. With a long
 `duration_ms` (e.g. 3000) for `scroll` and `workspace_switch`, one
@@ -239,8 +247,11 @@ step 1).
 No app-specific fixes: the Vesktop (Electron) grow/shrink at the end of a
 scroll is dropped.
 
-1. Move/resize sessions skip the companion wait for transparent windows
-   (`effect_opacity < 255`), so shades can still flash there.
+1. Done, not checked live (see "Not checked live yet" 14): move/resize
+   sessions skipped the companion wait for transparent windows. A session
+   showing a companion is now opaque (`909b925`), covers its window until
+   the companion is back (`72d6bc2`), waits up to 1 s (`1fbda69`), and
+   picks up a companion made mid-animation (`2ddb24f`).
 2. A long scroll can show a one-frame hole as a column enters mid-move
    (with or without shades).
 3. A peek reused for several moves keeps its companion-wait start time
@@ -265,8 +276,9 @@ scroll is dropped.
    where the wait does cover. Left to tell apart, by when and on which
    window it shows: shades' copy not found as the switch starts (the
    surrogate then draws the uncolored window), the 200 ms wait
-   (`HANDOFF_MAX_WAIT`) timing out on a slower machine, or the focus
-   change after the switch raising the focused window above its copy.
+   (`HANDOFF_MAX_WAIT`, 1 s since `1fbda69`) timing out on a slower
+   machine, or the focus change after the switch raising the focused
+   window above its copy.
    Since `9dfecc5` an opaque window's surrogate covers it through the
    hand-back (`WorkspaceSurrogate::cover_window`), re-raised if focus
    puts the window back on top, so the first suspect is fixed for opaque
