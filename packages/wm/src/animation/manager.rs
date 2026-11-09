@@ -1589,6 +1589,10 @@ impl AnimationManager {
     // This runs before `platform_sync` so that when the animation
     // completes, the incoming windows are queued for redraw and
     // uncloaked in the same tick.
+    if state.animation_manager.workspace_switch.is_some() {
+      state.switch_log.note_frame();
+    }
+
     let ws_complete_ids: Option<Vec<Uuid>> = {
       use crate::animation::engine::{
         animation_progress_at, apply_easing,
@@ -1917,6 +1921,7 @@ impl AnimationManager {
     // the final `platform_sync` call that unclocks the incoming real
     // windows.
     if let Some(ids) = ws_complete_ids {
+      state.switch_log.note_swapped();
       if let Some(ws) = state.animation_manager.workspace_switch.take() {
         state.animation_manager.stash_for_ws_cleanup(ws);
       }
@@ -2219,7 +2224,11 @@ impl AnimationManager {
       // this block when no other animation is active, so there may be no
       // later tick.
       let mut cleanup_window_ids = dropped_session_ids;
-      cleanup_window_ids.extend(advance_ws_cleanup(state, config));
+      let handed_back = advance_ws_cleanup(state, config);
+      if !handed_back.is_empty() {
+        state.switch_log.note_handed_back();
+      }
+      cleanup_window_ids.extend(handed_back);
 
       if !cleanup_window_ids.is_empty() {
         let mut queued = 0;
@@ -2983,6 +2992,12 @@ impl AnimationManager {
   /// and surrogate teardown.
   pub fn is_workspace_switch_active(&self) -> bool {
     self.workspace_switch.is_some() || self.pending_ws_cleanup.is_some()
+  }
+
+  /// Whether a workspace-switch animation is playing, not counting one
+  /// already being torn down.
+  pub fn is_workspace_switch_playing(&self) -> bool {
+    self.workspace_switch.is_some()
   }
 
   /// Whether `window_id` takes part in a workspace-switch slide, playing

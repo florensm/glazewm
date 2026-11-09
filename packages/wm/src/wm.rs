@@ -537,7 +537,13 @@ impl WindowManager {
           .map(|kb_config| kb_config.commands.clone());
 
         if let Some(commands) = commands {
-          self.process_commands(&commands, None, config)?;
+          self
+            .state
+            .switch_log
+            .note_press(Some(keybinding_event.time));
+          let result = self.process_commands(&commands, None, config);
+          self.state.switch_log.note_press(None);
+          result?;
         }
 
         // Return early since we don't want to redraw twice.

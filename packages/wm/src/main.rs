@@ -50,6 +50,7 @@ mod overview;
 mod particles;
 mod pending_sync;
 mod stay_interactive;
+mod switch_log;
 mod sys_tray;
 mod tab_bars;
 mod traits;
@@ -604,6 +605,15 @@ fn setup_logging(verbosity: &Verbosity) -> anyhow::Result<()> {
         .with_target(wm_platform::OVERVIEW_LOG_TARGET, Level::DEBUG),
     );
 
+  // One line per workspace switch, so always on, in its own file.
+  let switch_layer = fmt::Layer::new()
+    .with_ansi(false)
+    .with_writer(open_log_file(&error_log_dir, "switch.log")?)
+    .with_filter(
+      tracing_subscriber::filter::Targets::new()
+        .with_target(switch_log::SWITCH_LOG_TARGET, Level::INFO),
+    );
+
   let debug_layer = (verbosity.level() == Level::DEBUG)
     .then(|| open_log_file(&error_log_dir, "debug.log"))
     .transpose()?
@@ -626,6 +636,7 @@ fn setup_logging(verbosity: &Verbosity) -> anyhow::Result<()> {
     )
     .with(perf_layer)
     .with(overview_layer)
+    .with(switch_layer)
     .with(debug_layer);
 
   tracing::subscriber::set_global_default(subscriber)?;

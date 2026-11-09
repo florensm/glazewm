@@ -94,11 +94,13 @@ pub fn focus_workspace(
       );
 
       // Mark windows on the incoming workspace to slide in.
+      let mut incoming = 0;
       for window in target_workspace
         .descendants()
         .filter_map(|c| c.as_window_container().ok())
         .filter(is_switch_animated)
       {
+        incoming += 1;
         state
           .pending_sync
           .setup_workspace_switch_incoming(window.id());
@@ -106,16 +108,26 @@ pub fn focus_workspace(
 
       // Cancel in-flight animations for outgoing windows and mark them
       // for the outgoing surrogate slide-out.
+      let mut outgoing = 0;
       for window in displayed_workspace
         .descendants()
         .filter_map(|c| c.as_window_container().ok())
         .filter(is_switch_animated)
       {
+        outgoing += 1;
         state.animation_manager.remove_animation(&window.id());
         state
           .pending_sync
           .setup_workspace_switch_outgoing(window.id());
       }
+
+      let switch = &config.value.animations.workspace_switch;
+      let style = if switch.enabled {
+        format!("{:?}", switch.style).to_lowercase()
+      } else {
+        "off".to_string()
+      };
+      state.switch_log.begin(style, incoming, outgoing);
     }
 
     // Display the workspace to switch focus to.

@@ -123,6 +123,15 @@ pub fn disable_window_ghosting() {
   }
 }
 
+/// How many shell operations (cloaking a window, a taskbar button) the
+/// calling thread has made so far, and their total time. Each is a
+/// blocking call into Explorer, so the difference across some work is how
+/// long it waited on Explorer.
+#[must_use]
+pub fn shell_calls() -> (u32, std::time::Duration) {
+  platform_impl::com::shell_calls()
+}
+
 /// Handles messages other threads have sent to this thread's windows,
 /// leaving posted messages (input, paint) queued.
 ///

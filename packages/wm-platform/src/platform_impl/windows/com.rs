@@ -1,4 +1,7 @@
-use std::cell::RefCell;
+use std::{
+  cell::{Cell, RefCell},
+  time::{Duration, Instant},
+};
 
 use windows::{
   core::{ComInterface, IUnknown, IUnknown_Vtbl, GUID, HRESULT},
@@ -23,6 +26,18 @@ thread_local! {
   ///
   /// Wrapped in `RefCell` to allow mutation via `COM_INIT.borrow_mut()`.
   pub(crate) static COM_INIT: RefCell<ComInit> = RefCell::new(ComInit::new());
+
+  /// How many shell operations this thread made, and their total time
+  /// (see [`shell_calls`]).
+  static SHELL_CALLS: Cell<(u32, Duration)> =
+    const { Cell::new((0, Duration::ZERO)) };
+}
+
+/// How many shell operations (cloaking a window, a taskbar button) the
+/// calling thread has made, and their total time. Each is a blocking call
+/// into Explorer.
+pub(crate) fn shell_calls() -> (u32, Duration) {
+  SHELL_CALLS.with(Cell::get)
 }
 
 pub(crate) struct ComInit {
@@ -117,12 +132,20 @@ impl ComInit {
   where
     F: Fn(&Self) -> crate::Result<T>,
   {
-    if let Ok(result) = op(self) {
+    let started = Instant::now();
+    let result = if let Ok(result) = op(self) {
       Ok(result)
     } else {
       self.refresh();
       op(self)
-    }
+    };
+
+    SHELL_CALLS.with(|calls| {
+      let (count, total) = calls.get();
+      calls.set((count.saturating_add(1), total + started.elapsed()));
+    });
+
+    result
   }
 }
 
