@@ -70,8 +70,9 @@ disproves, and add your own.
    as their strip. Which are composited while invisible, which are larger than
    what shows.
 4. **Adapter choice.** `platform_impl/windows/graphics_device.rs` creates its
-   device with no adapter. Compare that adapter with the one driving each output.
-   Log the choice once at startup.
+   device with no adapter. Compare that adapter with the one driving each output
+   (`DxgiVsyncWaiter::for_monitor` already walks adapters and outputs). Log the
+   choice once at startup.
 5. **Memory.** What the WM holds at idle and why: warm surrogates (kept 8 s),
    wallpaper and blurred backdrop surfaces per monitor and style
    (`wallpaper_surface.rs`), parallax images, overview pictures, unbounded caches.
@@ -88,9 +89,9 @@ disproves, and add your own.
    use the same curve family. Nothing snaps at the start or end.
 
 If measurement shows some effects are more than an integrated GPU can afford, a
-config option that drops them on battery or battery saver
-(`RegisterPowerSettingNotification`) is in scope: off by default, documented in the
-sample config.
+config option that turns them down is in scope: off by default, documented in the
+sample config. Switching it on battery by itself needs a power API the WM doesn't
+call yet, so that part is a proposal (see "Hard limits").
 
 ## How to measure
 
@@ -110,9 +111,19 @@ sample config.
 
 ## Hard limits
 
-A laptop build was already quarantined by Defender as malware (`Bearfoos`, see
-`CLAUDE.md`), and the laptop belongs to my employer. Follow `CLAUDE.md`'s
-endpoint-safety and build-targets sections exactly. On top of that:
+Laptop builds have been quarantined by Defender as malware (`Bearfoos`) twice, and
+the laptop belongs to my employer. The verdict is a machine-learning guess about the
+whole binary, the WM already sits near its threshold, and one added Windows call was
+enough to tip it last time (`SetProcessInformation`, see `CLAUDE.md`). Follow
+`CLAUDE.md`'s endpoint-safety and build-targets sections exactly. On top of that:
+
+- Prefer fixes that use only Windows APIs the WM already calls. A fix that needs a
+  new one (a function, interface or `windows` crate feature not used before) gets
+  its own commit, names the API in the commit message, and is listed under "New
+  Windows APIs" in the review, so a quarantine can be traced to one commit.
+- Don't change the WM's scheduling or power class by any route: not the reverted
+  `SetProcessInformation`, nor thread power throttling, priority classes or MMCSS.
+  If you think one would help, put it in the review as a proposal.
 
 - The shipped crates (`wm`, `wm-platform`, `wm-common`, `wm-ipc-client`, `wm-cli`,
   `wm-watcher`) must not gain any of: enumerating or opening other processes,
@@ -171,8 +182,9 @@ don't cut the test branch, and say why.
 2. `TODO.md` brought up to date: what's done, and each new change under "Not
    checked live yet" with exact steps for the desktop and for the laptop, written
    like the existing entries.
-3. A final message: the commits, the top items left, and what I should check
-   first on the desktop, then on the laptop.
+3. A final message: the commits, any new Windows APIs and which commits add them,
+   the top items left, and what I should check first on the desktop, then on the
+   laptop.
 
 Before you start, say in a line what you're about to do. Brief updates while you
 work help me follow along.
