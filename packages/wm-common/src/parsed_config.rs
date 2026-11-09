@@ -1915,41 +1915,23 @@ pub enum WorkspaceSwitchStyle {
   /// from it. Opacities are also animated via `opacity_outgoing` /
   /// `opacity_incoming`.
   Zoom,
-  /// Iris wipe: a frozen snapshot of the outgoing workspace stays on top
-  /// while a circular hole grows from `iris_origin`, revealing the live
-  /// incoming workspace beneath. Requires Windows; falls back to an
-  /// instant switch when the monitor cannot be captured.
-  Iris,
+  /// Swaps the workspaces in a single frame, without motion. Surrogates
+  /// draw the windows while the real ones are hidden and shown, so the
+  /// switch never shows half done. Ignores `duration_ms`, `easing` and
+  /// the opacities.
+  ///
+  /// `iris`, a since-removed style that covered the switch with a
+  /// snapshot of the monitor, parses as this.
+  #[serde(alias = "iris")]
+  Cut,
 }
 
 impl WorkspaceSwitchStyle {
   /// Returns `true` when the transition has no positional slide component.
   #[must_use]
   pub fn is_no_slide(&self) -> bool {
-    matches!(self, Self::Fade | Self::Zoom)
+    matches!(self, Self::Fade | Self::Zoom | Self::Cut)
   }
-
-  /// Returns `true` for the iris-wipe style, which is driven by a single
-  /// snapshot overlay rather than per-window surrogates.
-  #[must_use]
-  pub fn is_iris(&self) -> bool {
-    matches!(self, Self::Iris)
-  }
-}
-
-/// Origin point from which the iris-wipe circle grows.
-#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum WorkspaceSwitchIrisOrigin {
-  /// Grow from the center of the monitor (default).
-  #[default]
-  Center,
-  /// Grow from the current mouse-cursor position.
-  Cursor,
-  /// Grow from the center of the newly focused window on the incoming
-  /// workspace. Falls back to the monitor center when the incoming
-  /// workspace has no focusable window.
-  FocusedWindow,
 }
 
 /// Slide axis for the `slide` workspace-switch style.
@@ -1975,14 +1957,11 @@ pub struct WorkspaceSwitchAnimationConfig {
   pub enabled: bool,
   pub duration_ms: u32,
   pub easing: EasingFunction,
-  /// Motion type: `slide` (default), `fade`, `zoom`, or `iris`.
+  /// Motion type: `slide` (default), `fade`, `zoom`, or `cut`.
   pub style: WorkspaceSwitchStyle,
   /// Slide axis when `style` is `slide`: `horizontal` (default) or
   /// `vertical`.
   pub direction: WorkspaceSwitchDirection,
-  /// Origin of the iris circle when `style` is `iris`: `center`
-  /// (default), `cursor`, or `focused_window`. Ignored by other styles.
-  pub iris_origin: WorkspaceSwitchIrisOrigin,
   /// Opacity at the end of the outgoing workspace's animation (0.0–1.0).
   ///
   /// At `1.0` (default) the outgoing workspace stays fully opaque. At
@@ -2016,10 +1995,21 @@ impl Default for WorkspaceSwitchAnimationConfig {
       easing: EasingFunction::CubicBezier(0.16, 1.0, 0.3, 1.0),
       style: WorkspaceSwitchStyle::default(),
       direction: WorkspaceSwitchDirection::default(),
-      iris_origin: WorkspaceSwitchIrisOrigin::default(),
       opacity_outgoing: 1.0,
       opacity_incoming: 1.0,
       zoom_factor: 0.1,
+    }
+  }
+}
+
+impl WorkspaceSwitchAnimationConfig {
+  /// How long the switch plays: not at all for a cut, which lands on its
+  /// first frame.
+  #[must_use]
+  pub fn effective_duration_ms(&self) -> u32 {
+    match self.style {
+      WorkspaceSwitchStyle::Cut => 0,
+      _ => self.easing.duration_ms(self.duration_ms),
     }
   }
 }
@@ -2512,8 +2502,28 @@ mod tests {
     BorderGlowConfig, Color, EasingFunction, GapsConfig, LengthValue,
     OverviewConfig, OverviewEffects, OverviewLayout, OverviewSwitchStyle,
     OverviewZoomStyle, ParticlesConfig, ScrollingLayoutConfig,
-    SpringParams,
+    SpringParams, WorkspaceSwitchAnimationConfig, WorkspaceSwitchStyle,
   };
+
+  /// A cut lands at once whatever its duration, and `iris`, the removed
+  /// style it replaced, parses as one, so configs naming it keep loading.
+  #[test]
+  fn cut_ignores_duration_and_replaces_iris() {
+    for style in ["cut", "iris"] {
+      let config: WorkspaceSwitchAnimationConfig =
+        serde_json::from_value(serde_json::json!({
+          "style": style,
+          "duration_ms": 300,
+        }))
+        .expect("style should parse");
+
+      assert_eq!(config.style, WorkspaceSwitchStyle::Cut);
+      assert_eq!(config.effective_duration_ms(), 0);
+    }
+
+    let slide = WorkspaceSwitchAnimationConfig::default();
+    assert_eq!(slide.effective_duration_ms(), slide.duration_ms);
+  }
 
   fn easing(value: &str) -> Result<EasingFunction, serde_json::Error> {
     serde_json::from_value(serde_json::Value::String(value.to_string()))

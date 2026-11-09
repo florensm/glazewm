@@ -22,7 +22,6 @@ mod mouse_listener;
 mod native_backdrop_overlay;
 mod native_border_overlay;
 mod native_drop_indicator;
-mod native_iris_overlay;
 mod native_overview;
 mod native_particles;
 mod native_stack_tab_bar;
@@ -73,7 +72,6 @@ pub use mouse_listener::*;
 pub use native_backdrop_overlay::NativeBackdropOverlay;
 pub use native_border_overlay::NativeBorderOverlay;
 pub use native_drop_indicator::NativeDropIndicator;
-pub use native_iris_overlay::NativeIrisOverlay;
 pub use native_overview::NativeOverview;
 pub use native_stack_tab_bar::NativeStackTabBar;
 pub use native_surrogate::{NativeSurrogate, SurrogateBatch};
@@ -159,23 +157,6 @@ pub fn dwm_flush() {
     // SAFETY: No preconditions; `DwmFlush` is safe to call from any thread
     // and blocks until the next DWM composition frame is ready.
     let _ = windows::Win32::Graphics::Dwm::DwmFlush();
-  }
-}
-
-/// Returns the current cursor position in virtual-screen pixels.
-///
-/// Returns `None` if the position cannot be queried.
-#[must_use]
-pub fn cursor_position() -> Option<(i32, i32)> {
-  use windows::Win32::{
-    Foundation::POINT, UI::WindowsAndMessaging::GetCursorPos,
-  };
-  let mut point = POINT { x: 0, y: 0 };
-  // SAFETY: `point` is a valid stack out-parameter.
-  if unsafe { GetCursorPos(&raw mut point) }.is_ok() {
-    Some((point.x, point.y))
-  } else {
-    None
   }
 }
 

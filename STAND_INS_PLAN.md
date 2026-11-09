@@ -50,7 +50,6 @@ animations that work differently by nature.
 | Move, resize, open, close, minimize | `ResizeSession` (`wm-platform/src/resize_session.rs`) | Moving stand-in at `HWND_TOP`, `SetWindowPos` every frame (batched) | Real overlays moved alongside in the same `DeferWindowPos` batch | Stand-in shown, flush, cloak (`commit_pending_cloaks`) | Uncloak, then a 100 ms fade-out of the stand-in (`SESSION_FADE_OUT`); for a transparent window the stand-in drops to 0 at once instead |
 | Workspace switch | `WorkspaceSurrogate` (`workspace_surrogate.rs`), driven in `animation/manager.rs` | Pinned (`PinnedViewport`), or moving (`Live`) when the backdrop can't be copied | Copies (ring, backdrop); the real ring parked (`park_switch_borders`), the real backdrop hidden on the first tick | Warm up at opacity 1, flush, `take_over` (alpha swap via `HiddenAlpha`), cloak | `WsCleanupStep`: uncloak (alpha prepared), wait for the companion, swap (`hide_thumbnail`, from below the window), show overlays under copies, re-anchor, drop |
 | Scroll | `WindowPeek` (`window_peek.rs`), driven in `animation/scroll_view.rs` | Pinned, or moving (`Live`) as above | Copies, with a per-window `Handover` state machine (`Covering`, `Covered`, `Parked`, `Revealed`) | `warm_up`, flush (`flush_overlays`), `take_over` at the cloak | Raised above the window at landing (`cover_window`), `prepare_hand_back`, uncloak, `hand_back` once the companion is back (`Role::Releasing`) |
-| Iris switch | `NativeIrisOverlay` | A snapshot of the monitor with a growing hole | none | none | none |
 | Overview | `native_overview*` | Its own composition scene | its own | none | none |
 
 Shared already: `NativeSurrogate` (window, thumbnail, gap fill,
@@ -126,7 +125,7 @@ switch's zoom, fade and sliding panel, the peek's own-scale columns and
 the clip it follows. Whether to fold them into one type is decided after
 step 2, when that is all that's left in them.
 
-Out of scope: iris switch and overview (different in kind), shadow copies
+Out of scope: the overview (different in kind), shadow copies
 (removed on purpose; `TODO.md` says not to bring them back without a live
 A/B), app-specific fixes. Move/resize, open, close and minimize
 (`ResizeSession`) only if step 3 finds local fixes won't do.

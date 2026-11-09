@@ -144,7 +144,7 @@ file), `git pull` on `tryout/todo-cleanup`, `cargo build --release`, run.
    as the WM starts. `on_focus`: off the window taking focus, not again for
    one that already bursts (opened, or on a workspace just switched to).
    `on_workspace_switch`: off every window of the workspace switched to, or
-   out of the monitor's middle for an empty one, as the slide or iris
+   out of the monitor's middle for an empty one, as the slide or cut
    lands. Go through every style, and a list of two or three at once:
    confetti flecks spin and flutter edge on, bubbles are rings with a
    highlight, glints are four-ray twinkles. Check they never take a click,

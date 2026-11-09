@@ -9,9 +9,9 @@ use wm_common::{
 use wm_platform::{
   perf::{self, Stage},
   BackdropOverlayParams, BorderOverlayParams, CornerStyle, LiveFrame,
-  NativeBackdropOverlay, NativeBorderOverlay, NativeIrisOverlay,
-  OpacityValue, Overlay, OverlayParams, Rect, StyleBlend, SurrogateBatch,
-  WindowZOrder, WorkspaceSurrogate, HWND,
+  NativeBackdropOverlay, NativeBorderOverlay, OpacityValue, Overlay,
+  OverlayParams, Rect, StyleBlend, SurrogateBatch, WindowZOrder,
+  WorkspaceSurrogate, HWND,
 };
 
 use crate::{
@@ -19,36 +19,11 @@ use crate::{
   commands::window::unmanage_if_embedded,
   layout::is_hidden_in_layout,
   models::{is_inactive_stack_child, Container, WindowContainer},
-  pending_sync::IrisSwitchRequest,
   traits::{CommonGetters, PositionGetters, WindowGetters},
   user_config::UserConfig,
   window_overlays::{OverlayPlacement, WindowOverlays},
   wm_state::WmState,
 };
-
-/// Returns the smallest iris radius that fully covers the monitor from the
-/// origin — the distance to the farthest monitor corner.
-#[allow(clippy::cast_possible_truncation)]
-fn iris_max_radius(req: &IrisSwitchRequest) -> i32 {
-  let corners = [
-    (req.monitor_x, req.monitor_y),
-    (req.monitor_x + req.monitor_width, req.monitor_y),
-    (req.monitor_x, req.monitor_y + req.monitor_height),
-    (
-      req.monitor_x + req.monitor_width,
-      req.monitor_y + req.monitor_height,
-    ),
-  ];
-  corners
-    .iter()
-    .map(|&(x, y)| {
-      let dx = f64::from(x - req.origin_x);
-      let dy = f64::from(y - req.origin_y);
-      dx.hypot(dy)
-    })
-    .fold(0.0_f64, f64::max)
-    .ceil() as i32
-}
 
 /// Whether this sync cycle skips animations: when asked to (e.g. display
 /// setting changes, or a pick in the overview, whose zoom is the
@@ -109,14 +84,16 @@ pub fn platform_sync(
     .map(CommonGetters::id)
     .collect();
 
-  let mut z_order_touched: std::collections::HashSet<uuid::Uuid> =
-    if !state.pending_sync.containers_to_redraw().is_empty()
-      || !state.pending_sync.workspaces_to_reorder().is_empty()
-    {
-      redraw_containers(&focused_container, state, config)?
-    } else {
-      std::collections::HashSet::new()
-    };
+  let Redraw {
+    mut z_order_touched,
+    taskbar_updates,
+  } = if !state.pending_sync.containers_to_redraw().is_empty()
+    || !state.pending_sync.workspaces_to_reorder().is_empty()
+  {
+    redraw_containers(&focused_container, state, config)?
+  } else {
+    Redraw::default()
+  };
 
   // Focus is synced after `redraw_containers` so that the workspace-switch
   // animation is already set up when `sync_focus` runs. This lets the
@@ -124,12 +101,19 @@ pub fn platform_sync(
   // `SetForegroundWindow` during the slide (the animation manager
   // re-queues focus after it completes), preventing the OS from
   // asynchronously uncloaking the incoming focused window mid-animation.
-  if state.pending_sync.needs_focus_update() {
-    // `SetForegroundWindow` raises the window independently of any
-    // `set_z_order` call above, so its overlay needs the same repair.
-    if let Some(focused_id) = sync_focus(&focused_container, state)? {
-      z_order_touched.insert(focused_id);
-    }
+  let focused_id = if state.pending_sync.needs_focus_update() {
+    sync_focus(&focused_container, state)
+  } else {
+    Ok(None)
+  };
+
+  // Before `focused_id` is unwrapped, so a failed focus doesn't drop them.
+  apply_taskbar_updates(taskbar_updates);
+
+  // `SetForegroundWindow` raises the window independently of any
+  // `set_z_order` call above, so its overlay needs the same repair.
+  if let Some(focused_id) = focused_id? {
+    z_order_touched.insert(focused_id);
   }
 
   if state.pending_sync.needs_cursor_jump()
@@ -726,11 +710,6 @@ fn follow_retargeted_column(window: &WindowContainer, target_rect: &Rect) {
   }
 }
 
-/// Returns the IDs of windows whose z-order this pass changed *without*
-/// repositioning them -- see `z_order_touched`'s declaration below. A
-/// window this pass also redraws is not included: its overlay is already
-/// resynced on the strength of having moved.
-#[allow(clippy::too_many_lines)]
 /// Unmanages windows queued for redraw that another app has since
 /// embedded into one of its own windows.
 ///
@@ -746,12 +725,26 @@ fn unmanage_embedded_windows(state: &mut WmState) -> anyhow::Result<()> {
   Ok(())
 }
 
+/// What [`redraw_containers`] leaves to the rest of the sync.
+#[derive(Default)]
+struct Redraw {
+  /// Windows whose z-order the pass changed *without* repositioning them
+  /// (see `z_order_touched` in `platform_sync`). One the pass also
+  /// redraws is not included: its overlay is already resynced on the
+  /// strength of having moved.
+  z_order_touched: std::collections::HashSet<uuid::Uuid>,
+  /// Taskbar buttons to add (`true`) or remove, one blocking call into
+  /// Explorer each. Left for after focus is set (see
+  /// `apply_taskbar_updates`).
+  taskbar_updates: Vec<(WindowContainer, bool)>,
+}
+
 #[allow(clippy::too_many_lines)]
 fn redraw_containers(
   focused_container: &Container,
   state: &mut WmState,
   config: &UserConfig,
-) -> anyhow::Result<std::collections::HashSet<uuid::Uuid>> {
+) -> anyhow::Result<Redraw> {
   let _scope = perf::scope(Stage::Redraw);
   let prep_scope = perf::scope(Stage::RedrawPrep);
 
@@ -817,49 +810,6 @@ fn redraw_containers(
   {
     let ws_config = &config.value.animations.workspace_switch;
     if ws_config.enabled && !suppress_animations {
-      // Iris-wipe pre-pass: snapshot the monitor (still showing the
-      // outgoing workspace) and show the overlay before the real
-      // windows are switched in the redraw loop below. The hole is
-      // then driven by the animation manager.
-      if let Some(req) = state.pending_sync.take_iris_switch() {
-        let monitor = Rect::from_xy(
-          req.monitor_x,
-          req.monitor_y,
-          req.monitor_width,
-          req.monitor_height,
-        );
-        // Drop any in-flight overlay first so the new snapshot captures
-        // the real current workspace, not the previous overlay
-        // mid-wipe. This makes rapid switches play as clean
-        // successive wipes rather than nested ones.
-        state.animation_manager.clear_iris_switch();
-        match NativeIrisOverlay::create(&monitor) {
-          Ok(overlay) => {
-            state.animation_manager.start_iris_switch(
-              overlay,
-              req.origin_x,
-              req.origin_y,
-              iris_max_radius(&req),
-              req.monitor_handle,
-              ws_config.duration_ms,
-              ws_config.easing.clone(),
-            );
-            // Composite the overlay (covering the outgoing workspace)
-            // before the redraw loop below switches the real
-            // windows underneath, so the switch never shows
-            // through for a frame. Without this the cover and
-            // the switch race within one frame, causing an occasional
-            // flicker.
-            wm_platform::dwm_flush();
-          }
-          Err(err) => {
-            tracing::warn!(
-              "Iris overlay failed; instant workspace switch: {err}."
-            );
-          }
-        }
-      }
-
       let direction = state.pending_sync.workspace_switch_direction();
       // Only start a new workspace-switch animation when there are
       // actually incoming/outgoing windows in this sync (i.e., this
@@ -1076,7 +1026,9 @@ fn redraw_containers(
           // still active so their DWM thumbnails are immediately
           // warm. For stationary (non-slide) styles, also show
           // incoming surrogates at their start opacity so DWM
-          // warms their thumbnails before the loop.
+          // warms their thumbnails before the loop. A cut's start too
+          // faint to see: shown at full on its one tick, they have no
+          // frames to warm up over.
           for (id, entry) in &mut ws_windows {
             if let Some(s) = &mut entry.surrogate {
               if !entry.is_incoming {
@@ -1092,6 +1044,8 @@ fn redraw_containers(
                 {
                   s.cover_ring();
                 }
+              } else if ws_config.style == WorkspaceSwitchStyle::Cut {
+                s.show_initial();
               } else if ws_config.style != WorkspaceSwitchStyle::Slide {
                 s.show_incoming();
               }
@@ -1175,6 +1129,7 @@ fn redraw_containers(
   // flush after the loop satisfies every queued window at once.
   let mut pending_cloaks: Vec<PendingCloak> = Vec::new();
   let mut cloak_overlay_batch = SurrogateBatch::new();
+  let mut taskbar_updates = Vec::new();
 
   let cycle_has_resize = windows_to_update.iter().any(|window| {
     let target_rect = window.to_rect().and_then(|rect| {
@@ -1795,10 +1750,7 @@ fn redraw_containers(
         DisplayState::Showing | DisplayState::Hiding
       )
     {
-      if let Err(err) = window.native().set_taskbar_visibility(is_visible)
-      {
-        tracing::warn!("Failed to set taskbar visibility: {}", err);
-      }
+      taskbar_updates.push(((*window).clone(), is_visible));
     }
   }
 
@@ -1896,7 +1848,24 @@ fn redraw_containers(
     wm_platform::dwm_flush();
   }
 
-  Ok(z_order_touched)
+  Ok(Redraw {
+    z_order_touched,
+    taskbar_updates,
+  })
+}
+
+/// Adds or removes the taskbar buttons a redraw pass queued.
+///
+/// Each is a blocking call into Explorer that changes nothing on screen
+/// where the windows are. Made from the redraw loop, they stood between
+/// one window's cloak or uncloak and the next, stretching a workspace
+/// switch over more frames, and delayed focus.
+fn apply_taskbar_updates(updates: Vec<(WindowContainer, bool)>) {
+  for (window, visible) in updates {
+    if let Err(err) = window.native().set_taskbar_visibility(visible) {
+      tracing::warn!("Failed to set taskbar visibility: {}", err);
+    }
+  }
 }
 
 /// Above this duration, `reposition_window`'s synchronous
@@ -1987,14 +1956,19 @@ fn reposition_window(
     // below, which can show a semi-transparent window solid for a frame
     // right before it disappears, e.g. as a workspace switch begins.
     //
-    // Not one the shell can't cloak, which is hidden outright instead:
-    // its app may stop drawing while hidden (WPF does), and without the
-    // call a stack's hidden WPF tabs came back partly unpainted. Checked
-    // last, as it asks the shell.
+    // Not one the layout hides that the shell can't cloak, which is hidden
+    // outright instead: its app may stop drawing while hidden (WPF does),
+    // and without the call a stack's hidden WPF tabs came back partly
+    // unpainted. Elsewhere such a window can't be hidden at all (see the
+    // visibility step below). Checked last, as it asks the shell: a call
+    // into Explorer that every window hidden by a workspace switch
+    // otherwise paid on top of its cloak.
     let current_frame = window.native().frame_with_shadows().ok();
     let already_at_rect = !window.has_pending_dpi_adjustment()
       && current_frame.as_ref() == Some(rect)
-      && (is_visible || window.native().can_be_cloaked());
+      && (is_visible
+        || !is_hidden_in_layout(window)
+        || window.native().can_be_cloaked());
 
     // During animation frames, omit `SWP_ASYNCWINDOWPOS` so that
     // adjacent windows are repositioned synchronously. This keeps

@@ -617,9 +617,9 @@ impl WorkspaceSurrogate {
 
   /// Shows the surrogate with the thumbnail at the window's natural
   /// (unscaled) position within the monitor viewport, cut to it like
-  /// every later frame, but too faint to see, so the real window still
-  /// shows as it is while DWM warms the thumbnail up. [`take_over`] then
-  /// swaps the two.
+  /// every later frame, but too faint to see, so what is under it still
+  /// shows as it is while DWM warms the thumbnail up. For an outgoing
+  /// window, [`take_over`] then swaps the two.
   ///
   /// [`take_over`]: WorkspaceSurrogate::take_over
   pub fn show_initial(&mut self) {

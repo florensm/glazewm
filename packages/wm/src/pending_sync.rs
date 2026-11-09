@@ -8,23 +8,6 @@ use crate::{
   traits::CommonGetters,
 };
 
-/// A pending iris-wipe workspace switch requested by `focus_workspace`.
-///
-/// Carries the monitor geometry and the circle origin (all in screen
-/// pixels) so `platform_sync` can snapshot the monitor and start the
-/// overlay before the real windows are switched underneath. Stored as
-/// primitives to avoid coupling `PendingSync` to platform types.
-#[derive(Debug, Clone, Copy)]
-pub struct IrisSwitchRequest {
-  pub monitor_x: i32,
-  pub monitor_y: i32,
-  pub monitor_width: i32,
-  pub monitor_height: i32,
-  pub monitor_handle: isize,
-  pub origin_x: i32,
-  pub origin_y: i32,
-}
-
 #[derive(Debug, Default)]
 #[allow(clippy::struct_excessive_bools)]
 pub struct PendingSync {
@@ -104,10 +87,6 @@ pub struct PendingSync {
   /// minimized.
   window_restores: HashSet<Uuid>,
 
-  /// Pending iris-wipe workspace switch, consumed by `platform_sync` to
-  /// create the snapshot overlay before the real windows are switched.
-  iris_switch: Option<IrisSwitchRequest>,
-
   /// Whether animations should be skipped for this sync cycle.
   ///
   /// Set on display setting changes: animating a relayout caused by a
@@ -128,7 +107,6 @@ impl PendingSync {
       || self.needs_all_effects_update
       || self.needs_cursor_jump
       || self.needs_tab_bar_update
-      || self.iris_switch.is_some()
   }
 
   pub fn clear(&mut self) -> &mut Self {
@@ -146,7 +124,6 @@ impl PendingSync {
     self.window_state_changes.clear();
     self.wm_fullscreen_toggles.clear();
     self.window_restores.clear();
-    self.iris_switch = None;
     self.animations_suppressed = false;
     self
   }
@@ -332,20 +309,6 @@ impl PendingSync {
   /// Returns the slide axis for the current workspace switch.
   pub fn workspace_switch_axis(&self) -> &WorkspaceSwitchDirection {
     &self.workspace_switch_axis
-  }
-
-  /// Requests an iris-wipe workspace switch for this sync cycle.
-  pub fn request_iris_switch(
-    &mut self,
-    request: IrisSwitchRequest,
-  ) -> &mut Self {
-    self.iris_switch = Some(request);
-    self
-  }
-
-  /// Consumes and returns the pending iris-wipe request, if any.
-  pub fn take_iris_switch(&mut self) -> Option<IrisSwitchRequest> {
-    self.iris_switch.take()
   }
 
   /// Suppresses animations for this sync cycle (see
