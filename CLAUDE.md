@@ -92,6 +92,12 @@ automation is easily mistaken for malware. Keep verification manual and low-volu
   WM itself needs.
 - Anything else that could read as screen-scraping, keylogging, injection, or persistence is
   out of scope. If a check seems to need it, stop and ask first.
+- Defender's `Bearfoos` verdict is a machine-learning guess about the whole binary, and the WM
+  already sits near its threshold (keyboard hook, synthesized input, cloaking other apps'
+  windows, auto-start). One new Windows call can tip it: `SetProcessInformation` with
+  `ProcessPowerThrottling` (`3c09bb3`, reverted in `86e3ab1`) got the test build quarantined,
+  and the same build without it ran clean. Don't add it back, and call out any new Windows
+  API in a change bound for the test build, so a quarantine can be traced to it.
 
 </endpoint_safety_guidelines>
 
