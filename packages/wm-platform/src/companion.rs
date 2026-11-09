@@ -8,8 +8,8 @@ use windows::{
   Win32::{
     Foundation::{BOOL, HWND, LPARAM, RECT, TRUE},
     UI::WindowsAndMessaging::{
-      EnumWindows, GetPropW, GetWindow, GetWindowRect, IsWindowVisible,
-      GW_HWNDNEXT,
+      EnumWindows, GetPropW, GetWindow, GetWindowRect, IsWindow,
+      IsWindowVisible, GW_HWNDNEXT,
     },
   },
 };
@@ -45,7 +45,23 @@ const MAX_Z_ORDER_WALK: usize = 4096;
 /// Upper bound on how long a stand-in keeps covering a window after it is
 /// uncloaked, for a companion owner that never puts the companion back on
 /// screen.
-const HANDOFF_MAX_WAIT: Duration = Duration::from_millis(200);
+///
+/// Generous: a loaded machine can take well over 200 ms to put it back,
+/// and the stand-in waiting shows the (cloaked) companion live, so the
+/// wait itself is never seen. One that can't end well stops at once (see
+/// [`CompanionState`]).
+const HANDOFF_MAX_WAIT: Duration = Duration::from_secs(1);
+
+/// What a [`HandoffWait`] finds on a call.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum CompanionState {
+  /// The companion or its window was destroyed.
+  Gone,
+  /// The window is hidden or cloaked, e.g. moved off screen again.
+  WindowHidden,
+  /// The window is shown, and the companion `covers` it or not.
+  WindowShown { covers: bool },
+}
 
 /// Waits out a companion's return over its window when a stand-in showing
 /// it hands the window back.
@@ -61,12 +77,14 @@ pub(crate) struct HandoffWait {
   started_at: Option<Instant>,
   /// Whether the companion covered its window on the last call.
   covered_last: bool,
+  /// Whether the window was hidden on the last call.
+  hidden_last: bool,
 }
 
 impl HandoffWait {
   /// Whether to keep covering the window: `companion` is shown by the
   /// stand-in and hasn't been over the window since the last call, and
-  /// the wait hasn't timed out.
+  /// the wait hasn't timed out or become pointless.
   ///
   /// Called once a tick, a composition apart: a companion found covering
   /// is handed the window on the next call, once what its owner did to put
@@ -75,20 +93,33 @@ impl HandoffWait {
   /// uncolored for a frame.
   pub(crate) fn awaits(&mut self, companion: Option<Companion>) -> bool {
     companion.is_some_and(|companion| {
-      self.awaits_cover(companion.covers_window())
+      self.awaits_state(companion.state(), Instant::now())
     })
   }
 
-  /// [`awaits`](Self::awaits), for a companion that `covers` its window
-  /// this call or not.
-  fn awaits_cover(&mut self, covers: bool) -> bool {
+  /// [`awaits`](Self::awaits), for a companion found in `state` at `now`.
+  ///
+  /// A hidden window only ends the wait when found hidden on two calls in
+  /// a row: the first call can come right after its uncloak.
+  fn awaits_state(&mut self, state: CompanionState, now: Instant) -> bool {
+    let is_hidden = state == CompanionState::WindowHidden;
+    let hidden_before =
+      std::mem::replace(&mut self.hidden_last, is_hidden);
+
+    let covers = match state {
+      CompanionState::Gone => return false,
+      CompanionState::WindowHidden if hidden_before => return false,
+      CompanionState::WindowHidden => false,
+      CompanionState::WindowShown { covers } => covers,
+    };
+
     let covered_before = std::mem::replace(&mut self.covered_last, covers);
     if covers {
       return !covered_before;
     }
 
-    let started = *self.started_at.get_or_insert_with(Instant::now);
-    started.elapsed() < HANDOFF_MAX_WAIT
+    let started = *self.started_at.get_or_insert(now);
+    now.duration_since(started) < HANDOFF_MAX_WAIT
   }
 }
 
@@ -137,6 +168,32 @@ impl Companion {
 
   pub(crate) fn hwnd(self) -> HWND {
     HWND(self.hwnd)
+  }
+
+  /// Where the companion and its window are, for a [`HandoffWait`].
+  fn state(self) -> CompanionState {
+    let source = HWND(self.source);
+
+    // SAFETY: `IsWindow` and `IsWindowVisible` take any handle; a stale
+    // one just returns false.
+    let (exists, is_shown) = unsafe {
+      (
+        IsWindow(self.hwnd()).as_bool() && IsWindow(source).as_bool(),
+        IsWindowVisible(source).as_bool(),
+      )
+    };
+
+    if !exists {
+      CompanionState::Gone
+    } else if !is_shown
+      || NativeWindow::new(self.source).is_cloaked().unwrap_or(false)
+    {
+      CompanionState::WindowHidden
+    } else {
+      CompanionState::WindowShown {
+        covers: self.covers_window(),
+      }
+    }
   }
 
   /// Whether the companion is on screen over its window: shown, not
@@ -283,32 +340,96 @@ fn scan() -> Vec<(isize, isize)> {
 
 #[cfg(test)]
 mod tests {
+  use std::time::{Duration, Instant};
+
   use windows::Win32::Foundation::RECT;
 
-  use super::{map_rects, HandoffWait};
+  use super::{map_rects, CompanionState, HandoffWait, HANDOFF_MAX_WAIT};
+
+  const COVERING: CompanionState =
+    CompanionState::WindowShown { covers: true };
+  const NOT_COVERING: CompanionState =
+    CompanionState::WindowShown { covers: false };
+
+  /// Feeds `states` to a fresh wait a tick apart, returning what each
+  /// call answered.
+  fn answers(states: &[CompanionState]) -> Vec<bool> {
+    let mut wait = HandoffWait::default();
+    let start = Instant::now();
+    (0u32..)
+      .zip(states)
+      .map(|(tick, state)| {
+        let now = start + Duration::from_millis(16) * tick;
+        wait.awaits_state(*state, now)
+      })
+      .collect()
+  }
 
   #[test]
   fn hands_back_a_call_after_the_companion_covers() {
-    let mut wait = HandoffWait::default();
-    assert!(wait.awaits_cover(false));
-    assert!(wait.awaits_cover(true));
-    assert!(!wait.awaits_cover(true));
+    assert_eq!(
+      answers(&[NOT_COVERING, COVERING, COVERING]),
+      [true, true, false]
+    );
   }
 
   #[test]
   fn waits_a_call_for_a_companion_covering_from_the_start() {
-    let mut wait = HandoffWait::default();
-    assert!(wait.awaits_cover(true));
-    assert!(!wait.awaits_cover(true));
+    assert_eq!(answers(&[COVERING, COVERING]), [true, false]);
   }
 
   #[test]
   fn waits_again_for_a_companion_that_stops_covering() {
+    assert_eq!(
+      answers(&[COVERING, NOT_COVERING, COVERING, COVERING]),
+      [true, true, true, false]
+    );
+  }
+
+  #[test]
+  fn stops_at_once_for_a_companion_gone() {
+    assert_eq!(answers(&[CompanionState::Gone]), [false]);
+    assert_eq!(
+      answers(&[NOT_COVERING, CompanionState::Gone]),
+      [true, false]
+    );
+  }
+
+  #[test]
+  fn stops_for_a_window_hidden_again() {
+    assert_eq!(
+      answers(&[
+        NOT_COVERING,
+        CompanionState::WindowHidden,
+        CompanionState::WindowHidden,
+      ]),
+      [true, true, false]
+    );
+  }
+
+  #[test]
+  fn waits_through_a_window_read_hidden_once() {
+    assert_eq!(
+      answers(&[
+        CompanionState::WindowHidden,
+        NOT_COVERING,
+        COVERING,
+        COVERING,
+      ]),
+      [true, true, true, false]
+    );
+  }
+
+  #[test]
+  fn stops_waiting_after_the_max_wait() {
     let mut wait = HandoffWait::default();
-    assert!(wait.awaits_cover(true));
-    assert!(wait.awaits_cover(false));
-    assert!(wait.awaits_cover(true));
-    assert!(!wait.awaits_cover(true));
+    let start = Instant::now();
+    assert!(wait.awaits_state(NOT_COVERING, start));
+    assert!(wait.awaits_state(
+      NOT_COVERING,
+      start + HANDOFF_MAX_WAIT.saturating_sub(Duration::from_millis(1))
+    ));
+    assert!(!wait.awaits_state(NOT_COVERING, start + HANDOFF_MAX_WAIT));
   }
 
   fn rect(left: i32, top: i32, right: i32, bottom: i32) -> RECT {
