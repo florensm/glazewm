@@ -24,7 +24,9 @@
 //! command took to be answered, which with animations off is the whole
 //! switch, as no profiler report is written without animation frames.
 
+mod bench_config;
 mod dwm;
+mod layout;
 
 use std::{
   collections::HashMap,
@@ -117,7 +119,11 @@ type DwmColumns = Vec<(&'static str, Vec<f64>)>;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-  let args = parse_args()?;
+  if run_helper().await? {
+    return Ok(());
+  }
+
+  let mut args = parse_args()?;
   let (_, forward, back) = SCENARIOS
     .iter()
     .find(|(name, ..)| *name == args.scenario)
@@ -135,28 +141,26 @@ async fn main() -> anyhow::Result<()> {
 
   let log_path = perf_log_path()?;
   let mut client = IpcClient::connect().await?;
-  let window = find_tiled_window(&mut client, &args.target).await?;
   let (subject, forward, back) = match args.scenario.as_str() {
     SWITCH_SCENARIO => {
-      let other = args.other_workspace.as_deref().context(
-        "--other-workspace <name> is required for the switch scenario.",
-      )?;
-      let (_, home) = find_workspace_of(&mut client, window).await?;
-      if home == other {
-        bail!(
-          "--other-workspace must differ from the target's ('{home}')."
-        );
-      }
+      let (home, other) =
+        switch_workspaces(&mut client, args.other_workspace.as_deref())
+          .await?;
       let fill = |step: &str| {
-        step.replace("{home}", &home).replace("{other}", other)
+        step.replace("{home}", &home).replace("{other}", &other)
       };
+      args.target = format!("{home}<->{other}");
       (None, fill(forward), fill(back))
     }
     WORKSPACE_SCENARIO => {
-      let (workspace, _) = find_workspace_of(&mut client, window).await?;
+      let window = find_tiled_window(&mut client, &args.target).await?;
+      let workspace = find_workspace_of(&mut client, window).await?;
       (Some(workspace), (*forward).to_string(), (*back).to_string())
     }
-    _ => (Some(window), (*forward).to_string(), (*back).to_string()),
+    _ => {
+      let window = find_tiled_window(&mut client, &args.target).await?;
+      (Some(window), (*forward).to_string(), (*back).to_string())
+    }
   };
 
   let start_len = std::fs::metadata(&log_path).map_or(0, |m| m.len());
@@ -294,7 +298,7 @@ fn parse_args() -> anyhow::Result<Args> {
     }
   }
 
-  if args.target.is_empty() {
+  if args.target.is_empty() && args.scenario != SWITCH_SCENARIO {
     bail!("--target <process name> is required, e.g. --target chrome.");
   }
 
@@ -344,42 +348,130 @@ async fn find_tiled_window(
     .with_context(|| format!("No tiled window of process '{process}'."))
 }
 
-/// Returns the ID and name of the workspace containing `window`.
+/// Returns the ID of the workspace containing `window`.
 async fn find_workspace_of(
   client: &mut IpcClient,
   window: Uuid,
-) -> anyhow::Result<(Uuid, String)> {
-  fn contains(children: &[ContainerDto], window: Uuid) -> bool {
-    children.iter().any(|child| match child {
-      ContainerDto::Window(dto) => dto.id == window,
-      ContainerDto::Split(split) => contains(&split.children, window),
-      _ => false,
+) -> anyhow::Result<Uuid> {
+  layout::query_workspaces(client)
+    .await?
+    .iter()
+    .find(|workspace| {
+      layout::windows_in(&workspace.children)
+        .iter()
+        .any(|dto| dto.id == window)
     })
+    .map(|workspace| workspace.id)
+    .context("Target window is on no workspace.")
+}
+
+/// Names of the workspace the switch scenario starts on, the focused one,
+/// and the one it switches to on the same monitor.
+///
+/// That is `other` if given, else one there that has windows. Failing
+/// that, every second tiled window of the focused workspace is moved to
+/// the next workspace to make one.
+async fn switch_workspaces(
+  client: &mut IpcClient,
+  other: Option<&str>,
+) -> anyhow::Result<(String, String)> {
+  let workspaces = layout::query_workspaces(client).await?;
+  let home = workspaces
+    .iter()
+    .find(|workspace| workspace.has_focus)
+    .context("No workspace has focus.")?;
+
+  if let Some(other) = other {
+    if other == home.name {
+      bail!("--other-workspace must differ from the focused one.");
+    }
+    return Ok((home.name.clone(), other.to_string()));
   }
 
-  let message = "query workspaces";
-  client.send(message).await?;
-  let response = client
-    .client_response(message)
-    .await
-    .context("No response to workspace query.")?;
+  if let Some(other) = workspaces.iter().find(|workspace| {
+    workspace.parent_id == home.parent_id
+      && !workspace.is_displayed
+      && !layout::windows_in(&workspace.children).is_empty()
+  }) {
+    return Ok((home.name.clone(), other.name.clone()));
+  }
 
-  let Some(ClientResponseData::Workspaces(data)) = response.data else {
-    bail!("Unexpected response to workspace query.");
+  let moved: Vec<Uuid> = layout::tiled_windows(home)
+    .iter()
+    .skip(1)
+    .step_by(2)
+    .map(|window| window.id)
+    .collect();
+  let Some(first_moved) = moved.first().copied() else {
+    bail!(
+      "Nothing to switch to: open two tiled windows on the focused \
+       workspace, or pass --other-workspace."
+    );
   };
 
-  data
-    .workspaces
-    .iter()
-    .find_map(|container| match container {
-      ContainerDto::Workspace(workspace)
-        if contains(&workspace.children, window) =>
-      {
-        Some((workspace.id, workspace.name.clone()))
-      }
-      _ => None,
+  for id in &moved {
+    let message = format!("command --id {id} move --next-workspace");
+    layout::send_command(client, &message).await?;
+  }
+
+  let other = layout::query_workspaces(client)
+    .await?
+    .into_iter()
+    .find(|workspace| {
+      layout::windows_in(&workspace.children)
+        .iter()
+        .any(|window| window.id == first_moved)
     })
-    .context("Target window is on no workspace.")
+    .context("The moved windows are on no workspace.")?;
+
+  println!(
+    "Moved {} window(s) to workspace '{}' to switch to.",
+    moved.len(),
+    other.name
+  );
+  Ok((home.name.clone(), other.name))
+}
+
+/// Runs a helper `switch_modes.ps1` calls around the benchmark, if the
+/// arguments name one, returning whether one ran:
+///
+/// - `save-layout <file>` / `restore-layout <file>`: see [`layout`].
+/// - `write-switch-config <style> [config]`: prints the main file of a
+///   copy of the config that switches workspaces in `style`.
+/// - `clean-switch-config [config]`: removes those copies.
+async fn run_helper() -> anyhow::Result<bool> {
+  let args = std::env::args().skip(1).collect::<Vec<_>>();
+  let arg = |index: usize| {
+    args
+      .get(index)
+      .map(String::as_str)
+      .with_context(|| format!("'{}' is missing an argument.", args[0]))
+  };
+
+  match args.first().map(String::as_str) {
+    Some("save-layout") => {
+      let mut client = IpcClient::connect().await?;
+      layout::save(&mut client, std::path::Path::new(arg(1)?)).await?;
+    }
+    Some("restore-layout") => {
+      let mut client = IpcClient::connect().await?;
+      layout::restore(&mut client, std::path::Path::new(arg(1)?)).await?;
+    }
+    Some("write-switch-config") => {
+      let user_main =
+        bench_config::user_main_config(args.get(2).map(String::as_str))?;
+      let path = bench_config::write(&user_main, arg(1)?)?;
+      println!("{}", path.display());
+    }
+    Some("clean-switch-config") => {
+      let user_main =
+        bench_config::user_main_config(args.get(1).map(String::as_str))?;
+      bench_config::clean(&user_main)?;
+    }
+    _ => return Ok(false),
+  }
+
+  Ok(true)
 }
 
 /// Sends each `;`-separated command of a scenario step, on `subject`
@@ -396,27 +488,7 @@ async fn send_step(
       }
       _ => format!("command {command}"),
     };
-    send_command(client, &message).await?;
-  }
-
-  Ok(())
-}
-
-async fn send_command(
-  client: &mut IpcClient,
-  message: &str,
-) -> anyhow::Result<()> {
-  client.send(message).await?;
-  let response = client
-    .client_response(message)
-    .await
-    .context("No response to command.")?;
-
-  if !response.success {
-    bail!(
-      "Command '{message}' failed: {}",
-      response.error.unwrap_or_default()
-    );
+    layout::send_command(client, &message).await?;
   }
 
   Ok(())

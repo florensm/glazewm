@@ -2497,6 +2497,7 @@ version = "0.0.0"
 dependencies = [
  "anyhow",
  "serde_json",
+ "serde_yaml",
  "tauri-winres",
  "tokio",
  "uuid",

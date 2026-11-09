@@ -117,6 +117,8 @@ Always stripped from a test build:
   `[target.'cfg(windows)'.dev-dependencies]`, which only it uses. It drives bursty IPC
   workspace switching and, with `--dwm`, enumerates processes, loads the `PresentMon` DLL at
   runtime and attaches to `dwm.exe`. Likely why a build got quarantined as `Bearfoos` malware.
+  Its `switch_modes.ps1` restarts the WM with the profiler on and moves windows between
+  workspaces to compare the switch styles.
 - `packages/wm-platform/examples/uncloak_all.rs`: walks and un-cloaks every top-level window.
 - `resources/scripts/package.ps1`: the installer packaging script, which only the release
   workflow runs. Not needed to build or run the WM.

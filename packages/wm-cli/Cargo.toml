@@ -22,6 +22,8 @@ wm-ipc-client = { path = "../wm-ipc-client" }
 
 [dev-dependencies]
 uuid = { workspace = true }
+# `perf_bench`'s config copies for `switch_modes.ps1`.
+serde_yaml = "0.9"
 
 # `perf_bench --dwm`: PresentMon service API and `dwm.exe` lookup.
 [target.'cfg(windows)'.dev-dependencies]
