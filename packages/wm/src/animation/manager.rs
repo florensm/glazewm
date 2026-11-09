@@ -3131,18 +3131,45 @@ impl AnimationManager {
       .is_some_and(|e| e.is_incoming && e.hand_back == HandBack::Pending)
   }
 
-  /// Whether incoming `window_id` of a finished switch is about to be
-  /// handed back from a surrogate drawing its companion, which only comes
-  /// back over it some time after its uncloak (see
-  /// `prepare_ws_hand_back`).
+  /// Whether `window_id` is about to be handed back from a surrogate
+  /// drawing its companion, which only comes back over it some time after
+  /// its uncloak: as an incoming window of a finished switch (see
+  /// `prepare_ws_hand_back`), or at the end of a move or resize.
   pub fn hands_back_to_companion(&self, window_id: &Uuid) -> bool {
-    self.is_pending_ws_cleanup_incoming(window_id)
+    let from_switch = self.is_pending_ws_cleanup_incoming(window_id)
       && self
         .pending_ws_cleanup
         .as_ref()
         .and_then(|ws| ws.windows.get(window_id))
         .and_then(|entry| entry.surrogate.as_ref())
-        .is_some_and(WorkspaceSurrogate::shows_companion)
+        .is_some_and(WorkspaceSurrogate::shows_companion);
+
+    from_switch
+      || self
+        .handing_back_session(window_id)
+        .is_some_and(ResizeSession::shows_companion)
+  }
+
+  /// Puts the surrogate of `window_id`'s finished move or resize back
+  /// over the window while it waits for the window's companion (see
+  /// `ResizeSession::cover_window`).
+  pub fn cover_companion_hand_back(&self, window_id: &Uuid) {
+    if let Some(session) = self.handing_back_session(window_id) {
+      session.cover_window();
+    }
+  }
+
+  /// The finished session of `window_id` whose surrogate has not begun
+  /// fading out yet.
+  fn handing_back_session(
+    &self,
+    window_id: &Uuid,
+  ) -> Option<&ResizeSession> {
+    self
+      .pending_session_cleanup
+      .iter()
+      .find(|(id, fade_start, _)| id == window_id && fade_start.is_none())
+      .map(|(_, _, session)| session)
   }
 
   /// Installs a workspace-switch animation for the provided windows.

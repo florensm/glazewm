@@ -107,6 +107,15 @@ pub fn platform_sync(
     Ok(None)
   };
 
+  // `SetForegroundWindow` may have raised a window past the surrogate of
+  // its finished move, which covers it until its companion is back. Put
+  // back now, before the rest of the pass gives DWM time to show it.
+  if let Ok(Some(focused_id)) = &focused_id {
+    state
+      .animation_manager
+      .cover_companion_hand_back(focused_id);
+  }
+
   // Before `focused_id` is unwrapped, so a failed focus doesn't drop them.
   apply_taskbar_updates(taskbar_updates);
 
@@ -1192,9 +1201,11 @@ fn redraw_containers(
     // or above its companion, showing it uncolored until the companion's
     // app restacked.
     //
-    // Likewise a window a workspace switch's surrogate hands back to its
-    // companion: going after the focused window could take it past the
-    // surrogate covering it, and past the companion.
+    // Likewise a window a workspace switch's or a finished move's
+    // surrogate hands back to its companion: going after the focused
+    // window could take it past the surrogate covering it, and past the
+    // companion. A finished move's window is only restacked when it
+    // isn't already where it lands, by the move that also uncloaks it.
     let z_order = match z_order {
       WindowZOrder::AfterWindow(_)
         if state

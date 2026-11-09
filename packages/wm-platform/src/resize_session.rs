@@ -45,7 +45,7 @@ const COMMIT_CONFIRM_MAX_WAIT: Duration = Duration::from_millis(500);
 const COMPANION_OPACITY: u8 = u8::MAX;
 
 use crate::{
-  discard_bits_if_resized, native_surrogate::to_logical,
+  companion, discard_bits_if_resized, native_surrogate::to_logical,
   platform_impl::NativeWindow, window_class, Color, CornerStyle,
   NativeSurrogate, OverlayParams, Rect, SurrogateBatch,
 };
@@ -580,14 +580,54 @@ impl ResizeSession {
   }
 
   /// Whether the fade-out tail should keep the surrogate fully opaque a
-  /// little longer: it shows the window's companion (see
-  /// [`NativeSurrogate::is_companion_off_screen`]), which is not back on
-  /// screen yet, so fading now would reveal the window's own pixels.
+  /// little longer: it shows the window's companion, which is not back
+  /// over the window yet, so fading now would reveal the window's own
+  /// pixels.
+  ///
+  /// Puts the surrogate back over the window first, should something
+  /// (e.g. focusing it) have raised the window past it.
   pub fn awaits_companion(&mut self) -> bool {
+    self.cover_window();
     self
       .surrogate
       .as_mut()
       .is_some_and(NativeSurrogate::awaits_companion)
+  }
+
+  /// Whether the surrogate shows the window's companion rather than the
+  /// window itself.
+  #[must_use]
+  pub fn shows_companion(&self) -> bool {
+    self
+      .surrogate
+      .as_ref()
+      .is_some_and(NativeSurrogate::shows_companion)
+  }
+
+  /// Puts a surrogate showing the window's companion directly above the
+  /// window, unless it already is above it, so the window never shows
+  /// over it as it really is before the companion is back. No-op for
+  /// other surrogates.
+  pub fn cover_window(&self) {
+    let Some(surrogate) = self
+      .surrogate
+      .as_ref()
+      .filter(|surrogate| surrogate.shows_companion())
+    else {
+      return;
+    };
+    let Some(window) = self.window_hwnd() else {
+      return;
+    };
+
+    if companion::is_above(surrogate.hwnd(), window) {
+      return;
+    }
+    if let Err(err) = surrogate.raise_above(window) {
+      tracing::warn!(
+        "Failed to raise a surrogate above its window: {err}"
+      );
+    }
   }
 
   /// Takes this session's surrogate, if any, for reuse via
@@ -1148,6 +1188,10 @@ impl ResizeSession {
         tracing::warn!("Surrogate pre-commit update failed: {err}.");
       }
     }
+
+    // The window is uncloaked next. Raised past the surrogate meanwhile,
+    // e.g. by the OS activating it, it would show uncolored.
+    self.cover_window();
   }
 
   /// Moves the real window to its final target rect and destroys the
