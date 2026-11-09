@@ -267,6 +267,10 @@ scroll is dropped.
    surrogate then draws the uncolored window), the 200 ms wait
    (`HANDOFF_MAX_WAIT`) timing out on a slower machine, or the focus
    change after the switch raising the focused window above its copy.
+   Since `9dfecc5` an opaque window's surrogate covers it through the
+   hand-back (`WorkspaceSurrogate::cover_window`), re-raised if focus
+   puts the window back on top, so the first suspect is fixed for opaque
+   windows and the last can only cost a frame; untested on the laptop.
 
 ## Older items, not started
 
