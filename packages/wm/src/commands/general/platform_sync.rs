@@ -1186,12 +1186,19 @@ fn redraw_containers(
     // frame makes DWM stop drawing it until something above it changes,
     // or above its companion, showing it uncolored until the companion's
     // app restacked.
+    //
+    // Likewise a window a workspace switch's surrogate hands back to its
+    // companion: going after the focused window could take it past the
+    // surrogate covering it, and past the companion.
     let z_order = match z_order {
       WindowZOrder::AfterWindow(_)
         if state
           .animation_manager
           .scroll_view
-          .is_handing_back(&window.id()) =>
+          .is_handing_back(&window.id())
+          || state
+            .animation_manager
+            .hands_back_to_companion(&window.id()) =>
       {
         WindowZOrder::Normal
       }

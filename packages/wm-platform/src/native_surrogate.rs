@@ -817,6 +817,13 @@ impl NativeSurrogate {
     self.companion_wait.awaits(self.companion)
   }
 
+  /// Whether the thumbnail samples the source window's companion rather
+  /// than the window itself.
+  #[must_use]
+  pub(crate) fn shows_companion(&self) -> bool {
+    self.companion.is_some()
+  }
+
   /// Restacks the surrogate directly above `window`, so it covers the
   /// window once uncloaked instead of sitting behind it.
   pub fn raise_above(&self, window: HWND) -> crate::Result<()> {

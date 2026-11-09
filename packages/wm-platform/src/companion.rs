@@ -218,7 +218,7 @@ fn map_rects(
 }
 
 /// Whether `upper` is anywhere above `lower` in the z-order.
-fn is_above(upper: HWND, lower: HWND) -> bool {
+pub(crate) fn is_above(upper: HWND, lower: HWND) -> bool {
   let mut below = upper;
 
   for _ in 0..MAX_Z_ORDER_WALK {

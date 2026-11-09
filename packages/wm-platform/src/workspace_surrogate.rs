@@ -177,6 +177,12 @@ pub struct WorkspaceSurrogate {
   /// The window the surrogate shows.
   source: isize,
 
+  /// Whether the surrogate was put above its window (see
+  /// [`cover_window`]).
+  ///
+  /// [`cover_window`]: WorkspaceSurrogate::cover_window
+  covers_window: bool,
+
   /// Copies of the window's border ring and backdrop. See [`carry_ring`]
   /// and [`carry_backdrop`].
   ///
@@ -324,6 +330,7 @@ impl WorkspaceSurrogate {
       frame_inset,
       hidden_alpha: HiddenAlpha::default(),
       source: hwnd.0,
+      covers_window: false,
       copies: OverlayCopies::default(),
     })
   }
@@ -600,12 +607,17 @@ impl WorkspaceSurrogate {
   /// fully opaque.
   ///
   /// The ring copy stays: the ring is revealed under it only after this,
-  /// and it goes with the surrogate.
+  /// and it goes with the surrogate. So does the backdrop copy, unless the
+  /// surrogate covers its window, which the copy would then hide.
   ///
   /// [`prepare_hand_back`]: WorkspaceSurrogate::prepare_hand_back
   pub fn hide_thumbnail(&mut self) {
     self.restore_alpha();
     self.inner.hide_thumbnail();
+
+    if self.covers_window {
+      self.hide_backdrop();
+    }
   }
 
   /// Whether the surrogate should keep covering its uncloaked window
@@ -613,6 +625,44 @@ impl WorkspaceSurrogate {
   /// window's companion, which is not back over the window yet.
   pub fn awaits_companion(&mut self) -> bool {
     self.inner.awaits_companion()
+  }
+
+  /// Whether the surrogate draws its window's companion (e.g. shades'
+  /// recolored copy) rather than the window itself.
+  #[must_use]
+  pub fn shows_companion(&self) -> bool {
+    self.inner.shows_companion()
+  }
+
+  /// Puts the surrogate above its window, unless it already is, so it
+  /// covers the window until handing it back.
+  ///
+  /// It otherwise sits just below the window, where an opaque window
+  /// shows over it as it really is (e.g. without its companion's colors)
+  /// once uncloaked or raised. A semi-transparent one is hidden by its
+  /// alpha instead (see [`prepare_hand_back`]).
+  ///
+  /// [`prepare_hand_back`]: WorkspaceSurrogate::prepare_hand_back
+  pub fn cover_window(&mut self) {
+    self.covers_window = true;
+
+    let window = HWND(self.source);
+    if crate::companion::is_above(self.hwnd(), window) {
+      return;
+    }
+
+    if let Err(err) = self.inner.raise_above(window) {
+      tracing::warn!(
+        "Failed to raise a surrogate above its window: {err}"
+      );
+    }
+  }
+
+  /// Whether [`cover_window`](Self::cover_window) put the surrogate above
+  /// its window.
+  #[must_use]
+  pub fn covers_window(&self) -> bool {
+    self.covers_window
   }
 
   /// Shows the surrogate with the thumbnail at the window's natural
@@ -641,11 +691,17 @@ impl WorkspaceSurrogate {
   /// Readies handing the window back to `window`, which is about to be
   /// uncloaked: a semi-transparent `window` goes to no alpha, so its
   /// uncloak lands unseen and `hide_thumbnail` swaps the two in one frame
-  /// (see [`take_over`]).
+  /// (see [`take_over`]). An opaque one that a companion draws over is
+  /// covered instead (see [`cover_window`]).
   ///
   /// [`take_over`]: WorkspaceSurrogate::take_over
+  /// [`cover_window`]: WorkspaceSurrogate::cover_window
   pub fn prepare_hand_back(&mut self, window: &NativeWindow) {
     self.hidden_alpha.hide(&window.inner);
+
+    if self.shows_companion() && !self.hidden_alpha.is_hiding() {
+      self.cover_window();
+    }
   }
 
   /// Gives the real window back the alpha a handover set aside, unless it

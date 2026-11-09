@@ -3066,6 +3066,20 @@ impl AnimationManager {
       .is_some_and(|e| e.is_incoming && e.hand_back == HandBack::Pending)
   }
 
+  /// Whether incoming `window_id` of a finished switch is about to be
+  /// handed back from a surrogate drawing its companion, which only comes
+  /// back over it some time after its uncloak (see
+  /// `prepare_ws_hand_back`).
+  pub fn hands_back_to_companion(&self, window_id: &Uuid) -> bool {
+    self.is_pending_ws_cleanup_incoming(window_id)
+      && self
+        .pending_ws_cleanup
+        .as_ref()
+        .and_then(|ws| ws.windows.get(window_id))
+        .and_then(|entry| entry.surrogate.as_ref())
+        .is_some_and(WorkspaceSurrogate::shows_companion)
+  }
+
   /// Installs a workspace-switch animation for the provided windows.
   ///
   /// Accepts pre-created [`WorkspaceSurrogate`] instances together with
@@ -3650,6 +3664,11 @@ fn finish_ws_hand_backs(ws: &mut WorkspaceSwitchState) -> bool {
       continue;
     };
 
+    // Raised since, e.g. by being focused, the window would show over it.
+    if surrogate.covers_window() {
+      surrogate.cover_window();
+    }
+
     if surrogate.awaits_companion() {
       is_awaiting = true;
     } else {
@@ -3661,8 +3680,9 @@ fn finish_ws_hand_backs(ws: &mut WorkspaceSwitchState) -> bool {
   is_awaiting
 }
 
-/// The finished switch's incoming windows, each with where it ends and its
-/// surrogate.
+/// The finished switch's incoming windows, each with where it ends and
+/// what its overlays go behind: its surrogate, or the window itself for
+/// one its surrogate covers.
 ///
 /// Where it ends is read from the real window's own `frame()`
 /// (shadow-*excluded* visual bounds -- the same value steady-state overlay
@@ -3685,11 +3705,19 @@ fn final_overlay_rects(state: &WmState) -> Vec<(Uuid, Rect, HWND)> {
         .filter(|(_, entry)| entry.is_incoming)
         .filter_map(|(id, entry)| {
           let surrogate = entry.surrogate.as_ref()?;
-          let rect = state
-            .window_by_id(*id)
+          let window = state.window_by_id(*id);
+          let rect = window
+            .as_ref()
             .and_then(|w| w.native().frame().ok())
             .unwrap_or_else(|| surrogate.rect.clone());
-          Some((*id, rect, surrogate.hwnd()))
+          // Behind one above its window would put them over the window.
+          let anchor = match &window {
+            Some(window) if surrogate.covers_window() => {
+              overlay_z_anchor(window)
+            }
+            _ => surrogate.hwnd(),
+          };
+          Some((*id, rect, anchor))
         })
         .collect()
     })
