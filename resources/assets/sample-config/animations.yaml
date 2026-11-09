@@ -42,8 +42,11 @@ animations:
     enabled: true
     duration_ms: 350
     easing: "ease_out_cubic"
-    # 'slide', 'fade', 'zoom' or 'cut'. 'cut' swaps the workspaces in a
-    # single frame, ignoring the duration, easing and opacities.
+    # 'slide', 'fade', 'zoom', 'drift', 'soft_zoom' or 'cut'. 'drift'
+    # slides a short way while fading, 'soft_zoom' scales a little while
+    # fading; both ignore the opacities and suit ~150 ms. 'cut' swaps the
+    # workspaces in a single frame, ignoring the duration, easing and
+    # opacities.
     style: "slide"
     # For 'slide': 'horizontal' or 'vertical'.
     direction: "horizontal"

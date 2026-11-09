@@ -822,7 +822,9 @@ fn redraw_containers(
       });
 
       if has_ws_windows {
-        let is_no_slide = ws_config.style.is_no_slide();
+        let starts_on_screen = ws_config.style.starts_on_screen();
+        let (opacity_outgoing, opacity_incoming) =
+          ws_config.effective_opacities();
         let mut ws_windows: Vec<(uuid::Uuid, WorkspaceSwitchEntry)> =
           Vec::new();
         let mut monitor_x = 0i32;
@@ -927,7 +929,7 @@ fn redraw_containers(
                   &frame_rect,
                   &monitor_work_area,
                   opacity,
-                  ws_config.opacity_incoming,
+                  opacity_incoming,
                   &corner_style,
                   overlay_tint,
                 )
@@ -981,7 +983,7 @@ fn redraw_containers(
               &frame_rect,
               &monitor_work_area,
               opacity,
-              ws_config.opacity_outgoing,
+              opacity_outgoing,
               &corner_style,
               overlay_tint,
             )
@@ -1011,10 +1013,10 @@ fn redraw_containers(
         // For slide styles, skip when direction == 0: workspace names were
         // not found in the config so the slide offset would be 0,
         // placing surrogates at their target and causing an
-        // instant flash. Non-slide styles (fade/zoom) have no
-        // slide offset so direction == 0 is fine.
+        // instant flash. Styles starting on screen have no full
+        // slide offset, so direction == 0 is fine (a drift just fades).
         if (has_outgoing || has_incoming)
-          && (direction != 0 || is_no_slide)
+          && (direction != 0 || starts_on_screen)
         {
           park_switch_borders(
             state,

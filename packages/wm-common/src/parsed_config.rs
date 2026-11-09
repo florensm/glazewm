@@ -1924,13 +1924,22 @@ pub enum WorkspaceSwitchStyle {
   /// snapshot of the monitor, parses as this.
   #[serde(alias = "iris")]
   Cut,
+  /// The incoming workspace slides a short way in along `direction` while
+  /// fading in, and the outgoing one a short way out while fading out.
+  /// Ignores the opacities.
+  Drift,
+  /// The incoming workspace grows to full size from slightly smaller
+  /// while fading in, and the outgoing one grows slightly past full
+  /// size while fading out. Ignores the opacities.
+  SoftZoom,
 }
 
 impl WorkspaceSwitchStyle {
-  /// Returns `true` when the transition has no positional slide component.
+  /// Whether incoming windows start on screen, rather than a whole monitor
+  /// away as a full slide's do.
   #[must_use]
-  pub fn is_no_slide(&self) -> bool {
-    matches!(self, Self::Fade | Self::Zoom | Self::Cut)
+  pub fn starts_on_screen(&self) -> bool {
+    !matches!(self, Self::Slide)
   }
 }
 
@@ -1957,7 +1966,8 @@ pub struct WorkspaceSwitchAnimationConfig {
   pub enabled: bool,
   pub duration_ms: u32,
   pub easing: EasingFunction,
-  /// Motion type: `slide` (default), `fade`, `zoom`, or `cut`.
+  /// Motion type: `slide` (default), `fade`, `zoom`, `drift`,
+  /// `soft_zoom`, or `cut`.
   pub style: WorkspaceSwitchStyle,
   /// Slide axis when `style` is `slide`: `horizontal` (default) or
   /// `vertical`.
@@ -1980,8 +1990,8 @@ pub struct WorkspaceSwitchAnimationConfig {
   /// The outgoing workspace shrinks from `1.0` to `1.0 - zoom_factor` as
   /// it exits; the incoming grows from `1.0 - zoom_factor` to `1.0` as
   /// it enters. Scaling is from the monitor center so all windows move
-  /// inward together, preserving the workspace-as-a-panel illusion. Has
-  /// no effect on `fade` or `zoom` styles. Valid range: `0.0` (no zoom)
+  /// inward together, preserving the workspace-as-a-panel illusion. Only
+  /// used by the `slide` style. Valid range: `0.0` (no zoom)
   /// to `1.0` (collapses to a point). Recommended range: `0.05`–`0.15`
   /// for a subtle depth effect.
   pub zoom_factor: f32,
@@ -2010,6 +2020,18 @@ impl WorkspaceSwitchAnimationConfig {
     match self.style {
       WorkspaceSwitchStyle::Cut => 0,
       _ => self.easing.duration_ms(self.duration_ms),
+    }
+  }
+
+  /// Opacities the outgoing workspace ends at and the incoming one starts
+  /// at: none for the styles that always fade both, else as configured.
+  #[must_use]
+  pub fn effective_opacities(&self) -> (f32, f32) {
+    match self.style {
+      WorkspaceSwitchStyle::Drift | WorkspaceSwitchStyle::SoftZoom => {
+        (0.0, 0.0)
+      }
+      _ => (self.opacity_outgoing, self.opacity_incoming),
     }
   }
 }
@@ -2523,6 +2545,36 @@ mod tests {
 
     let slide = WorkspaceSwitchAnimationConfig::default();
     assert_eq!(slide.effective_duration_ms(), slide.duration_ms);
+  }
+
+  /// `drift` and `soft_zoom` always fade both workspaces fully, whatever
+  /// the configured opacities; other styles keep them.
+  #[test]
+  fn drift_and_soft_zoom_always_fade() {
+    for (style, expected) in [
+      ("drift", WorkspaceSwitchStyle::Drift),
+      ("soft_zoom", WorkspaceSwitchStyle::SoftZoom),
+    ] {
+      let config: WorkspaceSwitchAnimationConfig =
+        serde_json::from_value(serde_json::json!({
+          "style": style,
+          "opacity_outgoing": 1.0,
+          "opacity_incoming": 1.0,
+        }))
+        .expect("style should parse");
+
+      assert_eq!(config.style, expected);
+      assert_eq!(config.effective_opacities(), (0.0, 0.0));
+      assert!(config.style.starts_on_screen());
+    }
+
+    let fade = WorkspaceSwitchAnimationConfig {
+      style: WorkspaceSwitchStyle::Fade,
+      opacity_outgoing: 0.5,
+      ..WorkspaceSwitchAnimationConfig::default()
+    };
+    assert_eq!(fade.effective_opacities(), (0.5, 1.0));
+    assert!(!WorkspaceSwitchStyle::Slide.starts_on_screen());
   }
 
   fn easing(value: &str) -> Result<EasingFunction, serde_json::Error> {

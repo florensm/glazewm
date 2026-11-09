@@ -40,6 +40,16 @@ const VSYNC_LEAD_FRACTION: f32 = 0.5;
 /// monitor.
 const WS_COMPLETE_THRESHOLD_PX: f32 = 1.5;
 
+/// How far a drift moves each workspace, as a fraction of the monitor's
+/// extent along the slide axis.
+const DRIFT_DISTANCE: f32 = 0.05;
+
+/// How much smaller the incoming workspace starts in a soft zoom.
+const SOFT_ZOOM_INCOMING: f32 = 0.05;
+
+/// How much larger the outgoing workspace ends in a soft zoom.
+const SOFT_ZOOM_OUTGOING: f32 = 0.03;
+
 /// Grace period held at the start of a window-open animation before the
 /// surrogate begins revealing the window.
 ///
@@ -353,6 +363,19 @@ impl WsCleanupStep {
 /// every window translates by the same pixel offset on every frame,
 /// preserving the illusion that both workspaces move as a single connected
 /// panel.
+/// How a workspace-switch style moves its surrogates (see
+/// `WorkspaceSurrogate::slide_axis`).
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct SwitchMotion {
+  /// Travel along the slide axis, in pixels.
+  distance: i32,
+  /// `zoom_factor` of the incoming workspace: how much smaller it starts.
+  zoom_incoming: f32,
+  /// `zoom_factor` of the outgoing workspace: how much smaller it ends,
+  /// or larger when negative.
+  zoom_outgoing: f32,
+}
+
 struct WorkspaceSwitchState {
   /// All participating windows keyed by window ID.
   windows: HashMap<Uuid, WorkspaceSwitchEntry>,
@@ -422,6 +445,38 @@ struct WorkspaceSwitchState {
   /// `1.0` to `1.0 - zoom_factor`; the incoming from `1.0 -
   /// zoom_factor` to `1.0`.
   zoom_factor: f32,
+}
+
+impl WorkspaceSwitchState {
+  /// How this switch's style moves its surrogates.
+  #[allow(clippy::cast_possible_truncation, clippy::cast_precision_loss)]
+  fn motion(&self) -> SwitchMotion {
+    let travel = match self.slide_direction {
+      WorkspaceSwitchDirection::Horizontal => self.slide_distance_h,
+      WorkspaceSwitchDirection::Vertical => self.slide_distance_v,
+    };
+
+    let (distance, zoom_incoming, zoom_outgoing) = match self.style {
+      WorkspaceSwitchStyle::Slide => {
+        (travel, self.zoom_factor, self.zoom_factor)
+      }
+      WorkspaceSwitchStyle::Drift => {
+        ((travel as f32 * DRIFT_DISTANCE).round() as i32, 0.0, 0.0)
+      }
+      WorkspaceSwitchStyle::SoftZoom => {
+        (0, SOFT_ZOOM_INCOMING, -SOFT_ZOOM_OUTGOING)
+      }
+      WorkspaceSwitchStyle::Fade
+      | WorkspaceSwitchStyle::Zoom
+      | WorkspaceSwitchStyle::Cut => (0, 0.0, 0.0),
+    };
+
+    SwitchMotion {
+      distance,
+      zoom_incoming,
+      zoom_outgoing,
+    }
+  }
 }
 
 /// Result of [`AnimationManager::start_animation_if_needed`], describing
@@ -1596,15 +1651,7 @@ impl AnimationManager {
         } else if raw_progress >= 1.0 {
           true
         } else {
-          let slide_px = match ws.style {
-            WorkspaceSwitchStyle::Slide => match ws.slide_direction {
-              WorkspaceSwitchDirection::Horizontal => ws.slide_distance_h,
-              WorkspaceSwitchDirection::Vertical => ws.slide_distance_v,
-            },
-            WorkspaceSwitchStyle::Fade
-            | WorkspaceSwitchStyle::Zoom
-            | WorkspaceSwitchStyle::Cut => 0,
-          };
+          let slide_px = ws.motion().distance;
           if slide_px > 0 {
             #[allow(clippy::cast_precision_loss)]
             let remaining_px = (1.0 - eased) * slide_px as f32;
@@ -1634,6 +1681,7 @@ impl AnimationManager {
         // Incoming first, which a cut relies on: a composition landing
         // between the two halves of its one tick then shows the new
         // workspace drawn over the old one, never holes where neither is.
+        let motion = ws.motion();
         let mut entries: Vec<_> = ws.windows.iter_mut().collect();
         entries.sort_by_key(|(_, entry)| !entry.is_incoming);
 
@@ -1729,7 +1777,9 @@ impl AnimationManager {
             }
 
             match ws.style {
-              WorkspaceSwitchStyle::Slide => {
+              WorkspaceSwitchStyle::Slide
+              | WorkspaceSwitchStyle::Drift
+              | WorkspaceSwitchStyle::SoftZoom => {
                 let monitor_rect = Rect::from_xy(
                   ws.monitor_x,
                   ws.monitor_y,
@@ -1744,12 +1794,12 @@ impl AnimationManager {
                   entry.is_incoming,
                   ws.order_direction,
                   &monitor_rect,
-                  if is_vertical {
-                    ws.slide_distance_v
+                  motion.distance,
+                  if entry.is_incoming {
+                    motion.zoom_incoming
                   } else {
-                    ws.slide_distance_h
+                    motion.zoom_outgoing
                   },
-                  ws.zoom_factor,
                   is_vertical,
                 );
               }
@@ -3869,6 +3919,45 @@ mod tests {
       &Rect::from_xy(0, 0, 1920, 1080),
       config,
     );
+  }
+
+  /// A drift moves a short way along the slide axis without scaling, and
+  /// a soft zoom scales without moving, the outgoing side growing.
+  #[test]
+  fn drift_and_soft_zoom_motion() {
+    let (tick_tx, _tick_rx) = mpsc::unbounded_channel();
+    let mut manager = AnimationManager::new(tick_tx);
+    let id = Uuid::new_v4();
+
+    for (style, expected) in [
+      (
+        WorkspaceSwitchStyle::Drift,
+        SwitchMotion {
+          distance: 96,
+          zoom_incoming: 0.0,
+          zoom_outgoing: 0.0,
+        },
+      ),
+      (
+        WorkspaceSwitchStyle::SoftZoom,
+        SwitchMotion {
+          distance: 0,
+          zoom_incoming: SOFT_ZOOM_INCOMING,
+          zoom_outgoing: -SOFT_ZOOM_OUTGOING,
+        },
+      ),
+    ] {
+      let mut parsed = ParsedConfig::default();
+      parsed.animations.workspace_switch.style = style;
+      start_slide(&mut manager, &[id], &UserConfig::from_parsed(parsed));
+
+      let motion = manager
+        .workspace_switch
+        .as_ref()
+        .expect("switch should start")
+        .motion();
+      assert_eq!(motion, expected);
+    }
   }
 
   #[test]
