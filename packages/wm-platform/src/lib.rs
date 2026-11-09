@@ -123,44 +123,6 @@ pub fn disable_window_ghosting() {
   }
 }
 
-/// Tags the process as needing full speed (high quality of service),
-/// instead of leaving Windows to infer it from the process's windows.
-///
-/// None of the WM's windows ever has focus, so Windows rates the process
-/// like a background app: on battery, that runs it on the most efficient
-/// cores at the lowest clock, slowing every keybinding and workspace
-/// switch. Ref: <https://learn.microsoft.com/en-us/windows/win32/procthread/quality-of-service>
-pub fn request_full_speed() -> crate::Result<()> {
-  use windows::Win32::System::Threading::{
-    GetCurrentProcess, ProcessPowerThrottling, SetProcessInformation,
-    PROCESS_POWER_THROTTLING_CURRENT_VERSION,
-    PROCESS_POWER_THROTTLING_EXECUTION_SPEED,
-    PROCESS_POWER_THROTTLING_STATE,
-  };
-
-  // Execution-speed throttling under our control, and off.
-  let state = PROCESS_POWER_THROTTLING_STATE {
-    Version: PROCESS_POWER_THROTTLING_CURRENT_VERSION,
-    ControlMask: PROCESS_POWER_THROTTLING_EXECUTION_SPEED,
-    StateMask: 0,
-  };
-
-  // SAFETY: `state` is a fully initialized
-  // `PROCESS_POWER_THROTTLING_STATE` that outlives the call, passed with
-  // its own size.
-  #[allow(clippy::cast_possible_truncation)]
-  unsafe {
-    SetProcessInformation(
-      GetCurrentProcess(),
-      ProcessPowerThrottling,
-      std::ptr::from_ref(&state).cast(),
-      std::mem::size_of::<PROCESS_POWER_THROTTLING_STATE>() as u32,
-    )
-  }?;
-
-  Ok(())
-}
-
 /// Handles messages other threads have sent to this thread's windows,
 /// leaving posted messages (input, paint) queued.
 ///
