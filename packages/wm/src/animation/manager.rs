@@ -1458,6 +1458,8 @@ impl AnimationManager {
       let mut overlay_batch = SurrogateBatch::new();
 
       for id in &away_in_progress {
+        state.animation_manager.refresh_session_companion(id);
+
         let Some((current_rect, opacity)) = state
           .animation_manager
           .animations
@@ -2697,6 +2699,8 @@ impl AnimationManager {
     // by one pipeline delay -- the same one for every window this pass.
     let now = self.frame_now();
 
+    self.refresh_session_companion(&window_id);
+
     // Re-fetch the animation after potentially starting a new one.
     if let Some(animation) = self.get_animation(&window_id) {
       let (current_rect, opacity) = animation.current_state_at(now);
@@ -3148,6 +3152,23 @@ impl AnimationManager {
       || self
         .handing_back_session(window_id)
         .is_some_and(ResizeSession::shows_companion)
+  }
+
+  /// Lets `window_id`'s session pick up a companion shown since it began
+  /// (see `ResizeSession::refresh_companion`), keeping its fade the same
+  /// fraction of the opacity the session is drawn at from then on.
+  fn refresh_session_companion(&mut self, window_id: &Uuid) {
+    let Some(session) = self.resize_sessions.get_mut(window_id) else {
+      return;
+    };
+    let Some(previous) = session.refresh_companion() else {
+      return;
+    };
+    let opacity = session.effect_opacity();
+
+    if let Some(animation) = self.animations.get_mut(window_id) {
+      animation.rescale_opacity(previous, opacity);
+    }
   }
 
   /// Puts the surrogate of `window_id`'s finished move or resize back

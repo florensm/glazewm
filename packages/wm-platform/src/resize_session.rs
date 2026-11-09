@@ -44,6 +44,12 @@ const COMMIT_CONFIRM_MAX_WAIT: Duration = Duration::from_millis(500);
 /// (as it really is) through the fading surrogate.
 const COMPANION_OPACITY: u8 = u8::MAX;
 
+/// How often a session whose surrogate shows no companion looks for one
+/// shown since (see [`ResizeSession::refresh_companion`]). Time-based, as
+/// ticks run at up to the fastest monitor's refresh rate, and each look
+/// past `Companion::find`'s cache is an `EnumWindows` scan.
+const COMPANION_RECHECK_INTERVAL: Duration = Duration::from_millis(100);
+
 use crate::{
   companion, discard_bits_if_resized, native_surrogate::to_logical,
   platform_impl::NativeWindow, window_class, Color, CornerStyle,
@@ -225,6 +231,9 @@ pub struct ResizeSession {
   /// the first `pre_commit` call for the current target. See
   /// [`COMMIT_CONFIRM_MAX_WAIT`].
   commit_started_at: Option<Instant>,
+  /// When the surrogate last looked for a companion. See
+  /// [`COMPANION_RECHECK_INTERVAL`].
+  companion_checked_at: Instant,
 }
 
 impl ResizeSession {
@@ -397,6 +406,7 @@ impl ResizeSession {
       current_rect: None,
       commit_confirmed: false,
       commit_started_at: None,
+      companion_checked_at: Instant::now(),
     };
     session.sync_fill();
     session
@@ -592,6 +602,36 @@ impl ResizeSession {
       .surrogate
       .as_mut()
       .is_some_and(NativeSurrogate::awaits_companion)
+  }
+
+  /// Switches the surrogate to the window's companion if one was shown
+  /// since it last looked, e.g. for a window just opened, as its owner
+  /// takes some time to make one. Looks at most every
+  /// [`COMPANION_RECHECK_INTERVAL`], and never again once it has one.
+  ///
+  /// Returns the effect opacity the session had, if it just switched, so
+  /// callers can rescale opacities derived from it: the session is opaque
+  /// from then on (see [`COMPANION_OPACITY`]).
+  pub fn refresh_companion(&mut self) -> Option<u8> {
+    if self.companion_checked_at.elapsed() < COMPANION_RECHECK_INTERVAL {
+      return None;
+    }
+    self.adopt_companion()
+  }
+
+  /// [`refresh_companion`](Self::refresh_companion), unthrottled.
+  fn adopt_companion(&mut self) -> Option<u8> {
+    self.companion_checked_at = Instant::now();
+    let window = self.window_hwnd()?;
+    let surrogate = self.surrogate.as_mut()?;
+
+    if !surrogate.adopt_companion(window, COMPANION_OPACITY) {
+      return None;
+    }
+    Some(std::mem::replace(
+      &mut self.effect_opacity,
+      COMPANION_OPACITY,
+    ))
   }
 
   /// Whether the surrogate shows the window's companion rather than the
@@ -1101,6 +1141,9 @@ impl ResizeSession {
     }
 
     let Some(started) = self.commit_started_at else {
+      // A last look before the hand-back, which then waits for it.
+      self.adopt_companion();
+
       // First call since this target was set. Skip the move entirely when
       // the real window is already there -- `maybe_handoff` (shrinking
       // sessions) and the initial async preposition (growing sessions)

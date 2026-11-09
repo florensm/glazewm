@@ -824,6 +824,70 @@ impl NativeSurrogate {
     self.companion.is_some()
   }
 
+  /// Switches the thumbnail from `source_hwnd` to its companion, drawn at
+  /// `opacity`, if it has none yet and one is shown now. Returns whether
+  /// it did.
+  ///
+  /// The companion's thumbnail is registered before the window's goes, so
+  /// it stacks above it and no composition shows neither. It keeps what
+  /// the window's showed, mapped onto the companion.
+  pub(crate) fn adopt_companion(
+    &mut self,
+    source_hwnd: HWND,
+    opacity: u8,
+  ) -> bool {
+    if self.companion.is_some() {
+      return false;
+    }
+    let Some(shown) =
+      self.thumbnail.as_ref().map(|thumbnail| *thumbnail.look())
+    else {
+      return false;
+    };
+    let Some(companion) = Companion::find(source_hwnd) else {
+      return false;
+    };
+
+    let (src, dst) = shown.source.map_or_else(
+      || {
+        content_rects(
+          self.content_size.0,
+          self.content_size.1,
+          self.border_inset,
+        )
+      },
+      |src| (src, shown.dest),
+    );
+    let look = Look {
+      visible: shown.visible,
+      ..thumbnail_look(
+        Some(companion),
+        src,
+        dst,
+        self.border_inset,
+        opacity,
+        self.stretch.then_some(self.window_size),
+      )
+    };
+    let Some(thumbnail) =
+      register_thumbnail(self.hwnd(), source_hwnd, Some(companion), look)
+    else {
+      return false;
+    };
+
+    self.thumbnail = Some(thumbnail);
+    self.companion = Some(companion);
+    self.companion_wait = HandoffWait::default();
+    self.set_fill_opacity(opacity);
+    self.set_covered(covered_extent(
+      &look,
+      self.stretch,
+      self.window_size,
+    ));
+
+    true
+  }
+
   /// Restacks the surrogate directly above `window`, so it covers the
   /// window once uncloaked instead of sitting behind it.
   pub fn raise_above(&self, window: HWND) -> crate::Result<()> {
