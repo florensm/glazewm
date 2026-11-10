@@ -3,7 +3,7 @@ use windows::Win32::Foundation::{HWND, RECT};
 use crate::{
   hidden_alpha::HiddenAlpha,
   native_surrogate::{placed_rects, to_logical},
-  overlay_copies::OverlayCopies,
+  overlay_copies::{map_rect, scale_alpha, OverlayCopies},
   platform_impl::wallpaper_surface,
   resize_session::compute_border_inset,
   BackdropOverlayParams, CornerStyle, NativeSurrogate, NativeWindow, Rect,
@@ -63,6 +63,9 @@ pub struct WindowPeek {
   shows_backdrop: bool,
   /// The window's own alpha, as last placed.
   opacity: u8,
+  /// Fraction of their opacity the window and its copies are drawn at, as
+  /// last placed (see [`place_scaled`](Self::place_scaled)).
+  frac: f32,
   /// The real window's own alpha while it is hidden by it for a handover
   /// with the peek (see [`take_over`](Self::take_over) and
   /// [`prepare_hand_back`](Self::prepare_hand_back)).
@@ -125,6 +128,7 @@ impl WindowPeek {
       drawn: Drawn::Shown,
       shows_backdrop: false,
       opacity: u8::MAX,
+      frac: 1.0,
       hidden_alpha: HiddenAlpha::default(),
       frame_rect: None,
       visible_rect: None,
@@ -365,7 +369,10 @@ impl WindowPeek {
   fn window_opacity(&self) -> u8 {
     match self.drawn {
       Drawn::WarmingUp => WARM_UP_OPACITY,
-      Drawn::Shown => self.surrogate.stand_in_opacity(self.opacity),
+      Drawn::Shown => scale_alpha(
+        self.surrogate.stand_in_opacity(self.opacity),
+        self.frac,
+      ),
       Drawn::HandedBack => 0,
     }
   }
@@ -382,6 +389,7 @@ impl WindowPeek {
   ) {
     let logical = to_logical(rect, &self.border_inset);
     self.opacity = opacity;
+    self.frac = 1.0;
     let window_opacity = self.window_opacity();
 
     self.visible_rect = match &mut self.mode {
@@ -393,18 +401,57 @@ impl WindowPeek {
         Some(batch),
       ),
       PeekMode::Pinned { viewport } => {
-        if viewport != clip {
-          match self.surrogate.reposition(clip) {
-            Ok(()) => *viewport = clip.clone(),
-            Err(err) => tracing::warn!("Failed to move a peek: {err}"),
-          }
-        }
-
+        repin(&mut self.surrogate, viewport, clip);
         let origin = (viewport.left, viewport.top);
         self.show_pinned(rect, &logical, clip, origin)
       }
     };
     self.frame_rect = Some(logical);
+  }
+
+  /// Shows the window, at rest at `rest`, drawn at `frame` (of any size)
+  /// cut at `clip`, at `frac` of its `opacity`, its ring and backdrop
+  /// copies placed at `frame` and faded with it. The thumbnail samples the
+  /// window at its size at rest.
+  ///
+  /// Pinned peeks only: a live one is placed at `frame` unscaled and
+  /// unfaded (see [`place`](Self::place)).
+  pub fn place_scaled(
+    &mut self,
+    rest: &Rect,
+    frame: &Rect,
+    clip: &Rect,
+    opacity: u8,
+    frac: f32,
+    batch: &mut SurrogateBatch,
+  ) {
+    let PeekMode::Pinned { viewport } = &mut self.mode else {
+      tracing::debug!("A live peek can't draw its window scaled.");
+      self.place(frame, clip, opacity, batch);
+      return;
+    };
+
+    repin(&mut self.surrogate, viewport, clip);
+    let origin = (viewport.left, viewport.top);
+    self.opacity = opacity;
+    self.frac = frac.clamp(0.0, 1.0);
+
+    let ScaledRects { drawn, shown } =
+      scaled_rects(rest, frame, clip, self.border_inset, origin);
+    self.frame_rect = Some(drawn);
+
+    let Some((visible, (rc_src, rc_dst))) = shown else {
+      self.surrogate.set_visible(false);
+      self.visible_rect = None;
+      return;
+    };
+
+    self.surrogate.set_thumbnail_rects(rc_src, rc_dst);
+    self.surrogate.set_window_opacity(self.window_opacity());
+    self.copies.place(frame, clip, origin);
+    self.copies.set_opacity(scale_alpha(u8::MAX, self.frac));
+    self.surrogate.set_visible(true);
+    self.visible_rect = Some(visible);
   }
 
   /// Draws the window at `rect`, its frame at `frame`, cut at `clip`, into
@@ -492,5 +539,118 @@ impl WindowPeek {
   #[must_use]
   pub fn visible_rect(&self) -> Option<&Rect> {
     self.visible_rect.as_ref()
+  }
+}
+
+/// Moves a pinned peek's `surrogate`, spanning `viewport`, to span `clip`
+/// instead, if it doesn't.
+fn repin(
+  surrogate: &mut NativeSurrogate,
+  viewport: &mut Rect,
+  clip: &Rect,
+) {
+  if viewport != clip {
+    match surrogate.reposition(clip) {
+      Ok(()) => *viewport = clip.clone(),
+      Err(err) => tracing::warn!("Failed to move a peek: {err}"),
+    }
+  }
+}
+
+/// Where a pinned peek draws a window scaled (see [`scaled_rects`]).
+#[derive(Debug, PartialEq, Eq)]
+struct ScaledRects {
+  /// The window's frame as drawn, including any part outside the clip.
+  drawn: Rect,
+  /// The part of `drawn` inside the clip and the thumbnail's
+  /// `(rcSource, rcDestination)` drawing it, unless none of it is.
+  shown: Option<(Rect, (RECT, RECT))>,
+}
+
+/// Where a window resting at `rest`, drawn at `frame` cut at `clip`, is
+/// drawn into a peek pinned with its top-left at `origin`.
+///
+/// The window's frame at rest is sampled, scaled to `frame`, past the
+/// invisible resize borders `border_inset` (see `placed_rects`).
+fn scaled_rects(
+  rest: &Rect,
+  frame: &Rect,
+  clip: &Rect,
+  border_inset: RECT,
+  origin: (i32, i32),
+) -> ScaledRects {
+  let rest_frame = to_logical(rest, &border_inset);
+  let drawn = map_rect(&rest_frame, rest, frame);
+  let shown = drawn.intersection(clip).and_then(|visible| {
+    let rects = placed_rects(
+      &drawn,
+      &visible,
+      (rest_frame.width(), rest_frame.height()),
+      border_inset,
+      origin,
+    )?;
+    Some((visible, rects))
+  });
+
+  ScaledRects { drawn, shown }
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+
+  const INSET: RECT = RECT {
+    left: 7,
+    top: 0,
+    right: 7,
+    bottom: 7,
+  };
+
+  /// Drawn at rest, a window gets the rects `show_pinned` gives it.
+  #[test]
+  fn scaled_at_rest_matches_unscaled() {
+    let rest = Rect::from_ltrb(93, 100, 907, 707);
+    let clip = Rect::from_ltrb(0, 0, 1920, 1040);
+    let frame = to_logical(&rest, &INSET);
+    let shown = frame.intersection(&clip).and_then(|visible| {
+      let rects = placed_rects(
+        &frame,
+        &visible,
+        (frame.width(), frame.height()),
+        INSET,
+        (0, 0),
+      )?;
+      Some((visible, rects))
+    });
+
+    assert_eq!(
+      scaled_rects(&rest, &rest, &clip, INSET, (0, 0)),
+      ScaledRects {
+        drawn: frame,
+        shown,
+      }
+    );
+  }
+
+  /// Drawn at half its size about its centre, a window is sampled whole
+  /// into half the destination.
+  #[test]
+  fn scaled_to_half_draws_half_the_size() {
+    let rest = Rect::from_ltrb(93, 100, 907, 707);
+    let half = Rect::from_ltrb(296, 250, 703, 554);
+    let clip = Rect::from_ltrb(0, 0, 1920, 1040);
+
+    let ScaledRects { drawn, shown } =
+      scaled_rects(&rest, &half, &clip, INSET, (0, 0));
+    let Some((visible, (src, dst))) = shown else {
+      panic!("not shown");
+    };
+
+    assert_eq!(drawn, visible);
+    assert_eq!(
+      (src.left, src.top, src.right, src.bottom),
+      (7, 0, 807, 600)
+    );
+    assert_eq!((dst.right - dst.left, dst.bottom - dst.top), (400, 300));
   }
 }
