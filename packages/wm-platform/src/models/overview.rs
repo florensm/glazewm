@@ -396,6 +396,14 @@ impl OverviewLayoutMode {
     Self::ALL[index.map_or(0, |index| (index + 1) % Self::ALL.len())]
   }
 
+  /// The layout `Shift` + `Tab` goes back to.
+  #[must_use]
+  pub fn previous(self) -> Self {
+    let count = Self::ALL.len();
+    let index = Self::ALL.iter().position(|layout| *layout == self);
+    Self::ALL[index.map_or(0, |index| (index + count - 1) % count)]
+  }
+
   /// Whether the selected workspace's windows are laid out on their own
   /// rather than on its card.
   #[must_use]

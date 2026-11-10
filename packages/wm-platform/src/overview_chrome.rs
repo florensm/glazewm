@@ -951,9 +951,9 @@ pub(crate) struct SearchControls {
 }
 
 /// Draws the search line, centered, into `surface`: the search field (a
-/// search icon, the query or what to do, and its matches, ringed in the
-/// accent while typing goes to it) and beside it the chip that opens the
-/// keyboard shortcuts, ringed while they are open.
+/// search icon, the query or what to do, and which of its matches is
+/// picked, ringed in the accent during a search) and beside it the chip
+/// that opens the keyboard shortcuts, ringed while they are open.
 pub(crate) fn draw_search(
   surface: &mut Surface,
   search: &SearchField,
@@ -973,30 +973,19 @@ pub(crate) fn draw_search(
     .find(|family| is_installed(family))
     .map(|family| Fonts::new(family).get(14.0 * scale_factor, false));
 
-  let (text, text_color) =
-    match (search.query.is_empty(), search.is_typing) {
-      (true, true) => ("Type to search", with_alpha(style.subtext, 0.6)),
-      (true, false) => ("Search windows", with_alpha(style.subtext, 0.7)),
-      (false, _) => (search.query.as_str(), style.text),
-    };
-
-  // The matches, or else the key that starts a search.
-  let (hits, slash) = match (search.hits, search.query.is_empty()) {
-    (_, true) => (String::new(), !search.is_typing),
-    (0, false) => ("No matches".to_string(), false),
-    (1, false) => ("1 match".to_string(), false),
-    (hits, false) => (format!("{hits} matches"), false),
+  let is_searching = !search.query.is_empty();
+  let (text, text_color) = if is_searching {
+    (search.query.as_str(), style.text)
+  } else {
+    ("Type to search", with_alpha(style.subtext, 0.7))
   };
+  let hits = search_hits(search);
 
   let icon_width = icon
     .as_ref()
     .map_or(0, |icon| text_width(icon, SEARCH_GLYPH));
   let typed_width = text_width(&font, text);
-  let end_width = if slash {
-    key_cap_width(&key_font, "/", scale_factor)
-  } else {
-    text_width(&font, &hits)
-  };
+  let end_width = text_width(&font, &hits);
   let chip_width = shortcuts_chip_width(&font, &key_font, scale_factor);
 
   let height = surface.height;
@@ -1012,7 +1001,7 @@ pub(crate) fn draw_search(
   );
   let chip = Rect::from_xy(field.right + px(gap), 0, chip_width, height);
 
-  draw_search_pill(surface, &field, search.is_typing, scale_factor, style);
+  draw_search_pill(surface, &field, is_searching, scale_factor, style);
   draw_search_pill(surface, &chip, shows_shortcuts, scale_factor, style);
 
   let mut left = field.left + px(padding);
@@ -1027,30 +1016,20 @@ pub(crate) fn draw_search(
   let end_left = right - end_width;
   let text_rect = Rect::from_ltrb(left, 0, end_left - px(gap), height);
   draw_text(surface, &font, text, &text_rect, text_color, Align::Left);
-  if slash {
-    let cap = key_cap_rect(end_left, height, end_width, scale_factor);
-    draw_key_cap(surface, &cap, "/", &key_font, scale_factor, style);
-  } else {
-    draw_text(
-      surface,
-      &font,
-      &hits,
-      &Rect::from_ltrb(end_left, 0, right, height),
-      with_alpha(style.subtext, 0.85),
-      Align::Right,
-    );
-  }
+  draw_text(
+    surface,
+    &font,
+    &hits,
+    &Rect::from_ltrb(end_left, 0, right, height),
+    with_alpha(style.subtext, 0.85),
+    Align::Right,
+  );
 
-  // Before the placeholder, after the query.
-  if search.is_typing {
-    let typed = if search.query.is_empty() {
-      0
-    } else {
-      typed_width
-    };
+  // After the query.
+  if is_searching {
     let caret_height = px(16.0);
     let caret = Rect::from_xy(
-      (left + typed).min(text_rect.right),
+      (left + typed_width).min(text_rect.right),
       (height - caret_height) / 2,
       px(1.5).max(1),
       caret_height,
@@ -1076,8 +1055,22 @@ pub(crate) fn draw_search(
   }
 }
 
-/// Label of the chip that opens the shortcut sheet.
+/// What the search field says of a search's matches: which one is picked
+/// of how many, or how many there are while none is.
+fn search_hits(search: &SearchField) -> String {
+  match (search.query.is_empty(), search.hits, search.current) {
+    (true, ..) => String::new(),
+    (false, 0, _) => "No matches".to_string(),
+    (false, hits, Some(current)) => format!("{} of {hits}", current + 1),
+    (false, 1, None) => "1 match".to_string(),
+    (false, hits, None) => format!("{hits} matches"),
+  }
+}
+
+/// Label of the chip that opens the shortcut sheet, and the key that
+/// does.
 const SHORTCUTS_LABEL: &str = "Shortcuts";
+const SHORTCUTS_KEY: &str = "F1";
 
 /// Width of the chip that opens the shortcut sheet.
 fn shortcuts_chip_width(
@@ -1086,12 +1079,12 @@ fn shortcuts_chip_width(
   scale_factor: f32,
 ) -> i32 {
   let (_, padding, gap) = SEARCH_FIELD;
-  key_cap_width(key_font, "?", scale_factor)
+  key_cap_width(key_font, SHORTCUTS_KEY, scale_factor)
     + text_width(font, SHORTCUTS_LABEL)
     + round((2.0 * padding + gap) * scale_factor)
 }
 
-/// Draws the `?` key cap and label of the chip that opens the shortcut
+/// Draws the key cap and label of the chip that opens the shortcut
 /// sheet into `chip`, in the label's font and the key's.
 fn draw_shortcuts_chip(
   surface: &mut Surface,
@@ -1104,12 +1097,19 @@ fn draw_shortcuts_chip(
   let (_, padding, gap) = SEARCH_FIELD;
   let height = chip.height();
 
-  let cap_width = key_cap_width(key_font, "?", scale_factor);
+  let cap_width = key_cap_width(key_font, SHORTCUTS_KEY, scale_factor);
   let cap =
     key_cap_rect(chip.left + px(padding), height, cap_width, scale_factor);
   let cap =
     Rect::from_xy(cap.left, chip.top + cap.top, cap_width, cap.height());
-  draw_key_cap(surface, &cap, "?", key_font, scale_factor, style);
+  draw_key_cap(
+    surface,
+    &cap,
+    SHORTCUTS_KEY,
+    key_font,
+    scale_factor,
+    style,
+  );
   draw_text(
     surface,
     font,
@@ -1444,9 +1444,9 @@ mod tests {
       particles: crate::ParticleLook::default(),
     };
     let search = SearchField {
-      query: String::new(),
-      is_typing: true,
-      hits: 0,
+      query: "term".to_string(),
+      hits: 3,
+      current: Some(1),
     };
 
     let mut surface = Surface::new(1920, 36).expect("surface");

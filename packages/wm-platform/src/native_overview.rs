@@ -39,10 +39,11 @@ use windows::{
     UI::{
       Controls::WM_MOUSELEAVE,
       Input::KeyboardAndMouse::{
-        ReleaseCapture, SetCapture, TrackMouseEvent, TME_LEAVE,
-        TRACKMOUSEEVENT, VIRTUAL_KEY, VK_0, VK_9, VK_BACK, VK_DOWN,
-        VK_END, VK_ESCAPE, VK_HOME, VK_LEFT, VK_NUMPAD0, VK_NUMPAD9,
-        VK_RETURN, VK_RIGHT, VK_SPACE, VK_TAB, VK_UP,
+        GetKeyState, ReleaseCapture, SetCapture, TrackMouseEvent,
+        TME_LEAVE, TRACKMOUSEEVENT, VIRTUAL_KEY, VK_0, VK_9, VK_A,
+        VK_BACK, VK_DELETE, VK_DOWN, VK_END, VK_ESCAPE, VK_F1, VK_HOME,
+        VK_LEFT, VK_OEM_MINUS, VK_RETURN, VK_RIGHT, VK_SHIFT, VK_SPACE,
+        VK_TAB, VK_UP, VK_Z,
       },
       WindowsAndMessaging::{
         CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW,
@@ -53,8 +54,9 @@ use windows::{
         WINDOW_EX_STYLE, WINDOW_STYLE, WM_ACTIVATE, WM_APP, WM_CHAR,
         WM_CLOSE, WM_DESTROY, WM_KEYDOWN, WM_LBUTTONDOWN, WM_LBUTTONUP,
         WM_MBUTTONDOWN, WM_MOUSEHWHEEL, WM_MOUSEMOVE, WM_MOUSEWHEEL,
-        WM_QUIT, WM_SETCURSOR, WM_SYSCOMMAND, WS_EX_NOACTIVATE,
-        WS_EX_NOREDIRECTIONBITMAP, WS_EX_TOOLWINDOW, WS_EX_TOPMOST,
+        WM_QUIT, WM_SETCURSOR, WM_SYSCOMMAND, WM_SYSKEYDOWN,
+        WS_EX_NOACTIVATE, WS_EX_NOREDIRECTIONBITMAP, WS_EX_TOOLWINDOW,
+        WS_EX_TOPMOST,
       },
     },
   },
@@ -1750,9 +1752,19 @@ impl Overview {
       WM_SYSCOMMAND if (wparam.0 & 0xfff0) == SC_KEYMENU as usize => {}
       WM_KEYDOWN if is_open => {
         #[allow(clippy::cast_possible_truncation)]
-        if let Some(key) = to_key(VIRTUAL_KEY(wparam.0 as u16)) {
+        if let Some(key) =
+          to_key(VIRTUAL_KEY(wparam.0 as u16), is_shifted())
+        {
           self.on_key(key);
         }
+      }
+      // A key pressed with `Alt` held, which types nothing. Those that
+      // aren't the overview's keep their default handling, e.g.
+      // `Alt` + `F4`.
+      WM_SYSKEYDOWN if is_open => {
+        #[allow(clippy::cast_possible_truncation)]
+        let key = to_alt_key(VIRTUAL_KEY(wparam.0 as u16), is_shifted())?;
+        self.on_key(key);
       }
       WM_CHAR if is_open => {
         let text = u32::try_from(wparam.0).ok().and_then(char::from_u32);
@@ -1815,11 +1827,15 @@ impl Overview {
   }
 }
 
-/// The overview's key for a key press, if it acts on it.
-fn to_key(key: VIRTUAL_KEY) -> Option<Key> {
-  let digit =
-    |base: VIRTUAL_KEY| u8::try_from(key.0 - base.0).ok().map(Key::Digit);
+/// Whether a `Shift` key is held, as of the message being handled.
+fn is_shifted() -> bool {
+  // SAFETY: No preconditions.
+  unsafe { GetKeyState(i32::from(VK_SHIFT.0)) < 0 }
+}
 
+/// The overview's key for a key press that types nothing, if it acts on
+/// it. Typed characters arrive as `WM_CHAR` instead.
+fn to_key(key: VIRTUAL_KEY, is_shifted: bool) -> Option<Key> {
   match key {
     VK_LEFT => Some(Key::Left),
     VK_RIGHT => Some(Key::Right),
@@ -1830,13 +1846,35 @@ fn to_key(key: VIRTUAL_KEY) -> Option<Key> {
     VK_RETURN => Some(Key::Enter),
     VK_SPACE => Some(Key::Space),
     VK_BACK => Some(Key::Backspace),
+    VK_DELETE => Some(Key::Delete),
+    VK_TAB if is_shifted => Some(Key::BackTab),
     VK_TAB => Some(Key::Tab),
     VK_ESCAPE => Some(Key::Escape),
-    _ if (VK_0.0..=VK_9.0).contains(&key.0) => digit(VK_0),
-    _ if (VK_NUMPAD0.0..=VK_NUMPAD9.0).contains(&key.0) => {
-      digit(VK_NUMPAD0)
-    }
+    VK_F1 => Some(Key::F1),
     _ => None,
+  }
+}
+
+/// The overview's key for a key pressed with `Alt` held, if it acts on
+/// it: a letter, digit or `-` as a chord, and any other key as without
+/// `Alt`, e.g. the arrows.
+fn to_alt_key(key: VIRTUAL_KEY, is_shifted: bool) -> Option<Key> {
+  let is_letter = (VK_A.0..=VK_Z.0).contains(&key.0);
+  let is_digit = (VK_0.0..=VK_9.0).contains(&key.0);
+
+  // The virtual-key codes of letters and digits are their ASCII codes.
+  let chord = match key {
+    VK_OEM_MINUS => Some('-'),
+    _ if is_letter || is_digit => u8::try_from(key.0)
+      .ok()
+      .map(|code| char::from(code).to_ascii_lowercase()),
+    _ => None,
+  };
+
+  match chord {
+    Some(chord) if is_shifted => Some(Key::AltShift(chord)),
+    Some(chord) => Some(Key::Alt(chord)),
+    None => to_key(key, is_shifted),
   }
 }
 
@@ -1919,8 +1957,37 @@ unsafe extern "system" fn screen_proc(
 
 #[cfg(test)]
 mod tests {
-  use super::is_strip_scrolled;
-  use crate::{OverviewScreen, OverviewWorkspace, Rect};
+  use windows::Win32::UI::Input::KeyboardAndMouse::{
+    VK_1, VK_DELETE, VK_F4, VK_H, VK_LEFT, VK_MENU, VK_OEM_MINUS, VK_TAB,
+  };
+
+  use super::{is_strip_scrolled, to_alt_key, to_key};
+  use crate::{
+    overview_state::Key, OverviewScreen, OverviewWorkspace, Rect,
+  };
+
+  #[test]
+  fn keys_that_type_are_left_to_their_characters() {
+    assert_eq!(to_key(VK_H, false), None);
+    assert_eq!(to_key(VK_1, false), None);
+    assert_eq!(to_key(VK_OEM_MINUS, false), None);
+
+    assert_eq!(to_key(VK_DELETE, false), Some(Key::Delete));
+    assert_eq!(to_key(VK_TAB, false), Some(Key::Tab));
+    assert_eq!(to_key(VK_TAB, true), Some(Key::BackTab));
+  }
+
+  #[test]
+  fn alt_makes_chords_of_letters_digits_and_minus() {
+    assert_eq!(to_alt_key(VK_H, false), Some(Key::Alt('h')));
+    assert_eq!(to_alt_key(VK_1, true), Some(Key::AltShift('1')));
+    assert_eq!(to_alt_key(VK_OEM_MINUS, false), Some(Key::Alt('-')));
+
+    // Other keys do as without it, and the rest are the system's.
+    assert_eq!(to_alt_key(VK_LEFT, false), Some(Key::Left));
+    assert_eq!(to_alt_key(VK_F4, false), None);
+    assert_eq!(to_alt_key(VK_MENU, false), None);
+  }
 
   fn workspace(name: &str, content_rect: Rect) -> OverviewWorkspace {
     OverviewWorkspace {
