@@ -147,7 +147,7 @@ kind stays on the old path until you have seen the new one.
 ## Tasks
 
 - [ ] 0. Baseline recordings (desktop, by hand)
-- [ ] 1. Split the per-window stand-in out of the scroll view (move only)
+- [x] 1. Split the per-window stand-in out of the scroll view (move only)
 - [ ] 2. Entry track: the maths, the drawing, the switch
 - [ ] 3. Open on peeks: tiling layouts (the gate), then scrolling columns
 - [ ] 4. Close and minimize on peeks, both layouts

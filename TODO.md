@@ -434,6 +434,13 @@ to see it; check each once more at 150 ms.
     order: `window_close: { style: "zoom", easing: "ease_out_cubic" }`.
     A window closed by its own X or Alt+F4 never animates: it is gone
     before the WM hears of it.
+40. **Scroll after the peek split** (`56bf2a8`, a move with no behaviour
+    change): `scroll: { duration_ms: 3000 }` on the scrolling layout,
+    against task 0's baseline. Scroll from rest, press the scroll binding
+    quickly several times, open a new column, close one. Each looks as in
+    the baseline: peeks glide, borders and backdrops move with them,
+    windows hand back at the end. Not: a blank column, a window shown
+    twice, a border left behind.
 
 If bars or flicker show, isolate them with `GLAZEWM_ISOLATE` (below), one
 restart per flag: `noring`, `nobackdrop`, then `live`. With a long
