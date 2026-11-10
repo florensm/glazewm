@@ -682,7 +682,6 @@ impl ResizeSession {
   /// full surrogate). Used for zoom-in (open) and zoom-out (close)
   /// effects. The surrogate window itself stays fixed; only the
   /// thumbnail rect animates.
-  #[allow(clippy::cast_possible_truncation, clippy::cast_precision_loss)]
   pub fn update_zoom_fade(&mut self, progress: f32, opacity: u8) {
     self.zoom_progress = progress;
     self.sync_fill();
@@ -693,13 +692,8 @@ impl ResizeSession {
     let logical = to_logical(&self.target_rect, &self.border_inset);
     let w = logical.width();
     let h = logical.height();
-    let half_w = (w as f32 / 2.0 * progress).round() as i32;
-    let half_h = (h as f32 / 2.0 * progress).round() as i32;
-    if half_w <= 0 || half_h <= 0 {
-      surrogate.set_visible(false);
-    } else {
-      let cx = w / 2;
-      let cy = h / 2;
+
+    if let Some(destination) = zoom_destination(w, h, progress) {
       // `rcSource` samples from the real window's coordinate space, so it
       // must carry the same `border_inset` offset as `register_thumbnail`/
       // `update_thumbnail_dims` -- otherwise every zoom-fade frame samples
@@ -714,14 +708,11 @@ impl ResizeSession {
           right: self.border_inset.left + w,
           bottom: self.border_inset.top + h,
         },
-        RECT {
-          left: cx - half_w,
-          top: cy - half_h,
-          right: cx + half_w,
-          bottom: cy + half_h,
-        },
+        destination,
       );
       surrogate.set_visible(true);
+    } else {
+      surrogate.set_visible(false);
     }
     surrogate.set_window_opacity(opacity);
   }
@@ -1186,6 +1177,14 @@ impl ResizeSession {
         );
       }
     }
+    // A zoom's last frame is drawn before its animation completes, so
+    // short of full size: by a few percent of the window with an ease-out
+    // curve. Left there, the window is uncloaked under a smaller copy of
+    // itself.
+    if self.zoom {
+      self.update_zoom_fade(1.0, self.effect_opacity);
+    }
+
     let logical = to_logical(&self.target_rect, &self.border_inset);
     self.current_rect = Some(logical.clone());
     if let Some(surrogate) = &mut self.surrogate {
@@ -1246,6 +1245,28 @@ impl ResizeSession {
     // keep the WM from exiting.
     self.move_to(&self.target_rect, SET_WINDOW_POS_FLAGS(0))
   }
+}
+
+/// Where a zoom at `progress` (0 to 1) draws a `width` x `height` window
+/// within its stand-in: centered, and the whole stand-in at 1. `None`
+/// while it has no size.
+///
+/// Inset from each edge rather than grown from the center, which is half
+/// a pixel off it for an odd size and so ended a pixel too large.
+#[allow(clippy::cast_possible_truncation, clippy::cast_precision_loss)]
+fn zoom_destination(width: i32, height: i32, progress: f32) -> Option<RECT> {
+  let inset = |extent: i32| {
+    (extent as f32 * (1.0 - progress.clamp(0.0, 1.0)) / 2.0).round() as i32
+  };
+  let (left, top) = (inset(width), inset(height));
+  let (right, bottom) = (width - left, height - top);
+
+  (right > left && bottom > top).then_some(RECT {
+    left,
+    top,
+    right,
+    bottom,
+  })
 }
 
 /// Shared cache of recently sampled surrogate backdrop colors, keyed by
@@ -1503,5 +1524,38 @@ pub(crate) fn compute_border_inset(hwnd: HWND) -> RECT {
     top: (frame.top - window.top).max(0),
     right: (window.right - frame.right).max(0),
     bottom: (window.bottom - frame.bottom).max(0),
+  }
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+
+  fn ltrb(rect: RECT) -> (i32, i32, i32, i32) {
+    (rect.left, rect.top, rect.right, rect.bottom)
+  }
+
+  #[test]
+  fn a_full_zoom_covers_exactly_the_stand_in() {
+    for (width, height) in [(800, 600), (801, 601), (1, 1)] {
+      assert_eq!(
+        zoom_destination(width, height, 1.0).map(ltrb),
+        Some((0, 0, width, height)),
+      );
+    }
+  }
+
+  #[test]
+  fn a_zoom_stays_centered() {
+    assert_eq!(
+      zoom_destination(801, 601, 0.5).map(ltrb),
+      Some((200, 150, 601, 451)),
+    );
+  }
+
+  #[test]
+  fn a_zoom_of_no_size_is_not_drawn() {
+    assert_eq!(zoom_destination(800, 600, 0.0), None);
+    assert_eq!(zoom_destination(0, 600, 1.0), None);
   }
 }
