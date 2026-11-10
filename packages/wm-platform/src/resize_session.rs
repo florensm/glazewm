@@ -1226,6 +1226,7 @@ impl ResizeSession {
       if let Err(err) = surrogate.update(&logical, self.effect_opacity) {
         tracing::warn!("Surrogate pre-commit update failed: {err}.");
       }
+      surrogate.begin_hand_back();
     }
 
     // The window is uncloaked next. Raised past the surrogate meanwhile,

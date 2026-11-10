@@ -435,10 +435,17 @@ impl WindowPeek {
     self.surrogate.hwnd()
   }
 
-  /// Puts the peek directly above its window, which is about to be
-  /// uncloaked, so the peek keeps covering it until it hands the window
-  /// back (see [`hand_back`](Self::hand_back)).
-  pub fn cover_window(&self) {
+  /// Begins handing the window back as it lands: puts the peek directly
+  /// above its window, which is about to be uncloaked, so the peek keeps
+  /// covering it until it hands the window back (see
+  /// [`hand_back`](Self::hand_back)), and starts a fresh companion wait.
+  ///
+  /// A peek is reused for move after move, so a wait kept from an earlier
+  /// landing would have timed out and let a later one show the window
+  /// before its companion.
+  pub fn begin_hand_back(&mut self) {
+    self.surrogate.begin_hand_back();
+
     if let Err(err) = self.surrogate.raise_above(self.source) {
       tracing::warn!("Failed to raise a peek above its window: {err}");
     }

@@ -701,11 +701,13 @@ impl WorkspaceSurrogate {
   /// uncloaked: a semi-transparent `window` goes to no alpha, so its
   /// uncloak lands unseen and `hide_thumbnail` swaps the two in one frame
   /// (see [`take_over`]). An opaque one that a companion draws over is
-  /// covered instead (see [`cover_window`]).
+  /// covered instead (see [`cover_window`]). The wait for a companion
+  /// starts afresh (see [`awaits_companion`](Self::awaits_companion)).
   ///
   /// [`take_over`]: WorkspaceSurrogate::take_over
   /// [`cover_window`]: WorkspaceSurrogate::cover_window
   pub fn prepare_hand_back(&mut self, window: &NativeWindow) {
+    self.inner.begin_hand_back();
     self.hidden_alpha.hide(&window.inner);
 
     if self.shows_companion() && !self.hidden_alpha.is_hiding() {

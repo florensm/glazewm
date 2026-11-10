@@ -817,6 +817,12 @@ impl NativeSurrogate {
     self.companion_wait.awaits(self.companion)
   }
 
+  /// Starts a fresh companion wait (see [`HandoffWait::restart`]), as the
+  /// stand-in begins handing its window back.
+  pub(crate) fn begin_hand_back(&mut self) {
+    self.companion_wait.restart();
+  }
+
   /// Whether the thumbnail samples the source window's companion rather
   /// than the window itself.
   #[must_use]

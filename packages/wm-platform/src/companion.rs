@@ -89,6 +89,13 @@ pub(crate) struct HandoffWait {
 }
 
 impl HandoffWait {
+  /// Starts waiting anew, for a stand-in beginning to hand its window
+  /// back: a wait left from an earlier hand-back would have long timed
+  /// out, and handed the window back at once.
+  pub(crate) fn restart(&mut self) {
+    *self = Self::default();
+  }
+
   /// Whether to keep covering the window: `companion` is shown by the
   /// stand-in and hasn't been over the window since the last call, and
   /// the wait hasn't timed out or become pointless.
@@ -425,6 +432,35 @@ mod tests {
       ]),
       [true, true, true, false]
     );
+  }
+
+  #[test]
+  fn restarted_wait_waits_again_after_timing_out() {
+    let mut wait = HandoffWait::default();
+    let start = Instant::now();
+    assert!(wait.awaits_state(NOT_COVERING, start));
+    assert!(!wait.awaits_state(NOT_COVERING, start + HANDOFF_MAX_WAIT));
+
+    let later = start + HANDOFF_MAX_WAIT * 3;
+    assert!(!wait.awaits_state(NOT_COVERING, later));
+    wait.restart();
+    assert!(wait.awaits_state(NOT_COVERING, later));
+    assert!(wait.awaits_state(
+      NOT_COVERING,
+      later + HANDOFF_MAX_WAIT.saturating_sub(Duration::from_millis(1))
+    ));
+  }
+
+  #[test]
+  fn restarted_wait_waits_a_call_for_a_companion_covering() {
+    let mut wait = HandoffWait::default();
+    let start = Instant::now();
+    assert!(wait.awaits_state(COVERING, start));
+    assert!(!wait.awaits_state(COVERING, start));
+
+    wait.restart();
+    assert!(wait.awaits_state(COVERING, start));
+    assert!(!wait.awaits_state(COVERING, start));
   }
 
   #[test]

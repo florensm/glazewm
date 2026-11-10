@@ -282,7 +282,7 @@ impl ScrollView {
             entry.role = if ends_shown {
               // Raised while its real window is still cloaked, so the
               // uncloak never shows the window over the peek.
-              entry.peek.cover_window();
+              entry.peek.begin_hand_back();
               landed.shown.push(*id);
               Role::HandingBack
             } else {
