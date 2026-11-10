@@ -1,6 +1,6 @@
 use wm_platform::{
   NativeBackdropOverlay, NativeBorderOverlay, Overlay, OverlayParams,
-  Rect, SurrogateBatch, HWND,
+  Rect, HWND,
 };
 
 /// A managed window's overlays, kept in one entry so they are created,
@@ -26,22 +26,6 @@ impl WindowOverlays {
   /// Whether the window has neither overlay.
   pub fn is_empty(&self) -> bool {
     self.backdrop.is_none() && self.border.is_none()
-  }
-
-  /// Moves both overlays to `rect` behind `anchor`.
-  pub fn defer_rect(
-    &mut self,
-    batch: &mut SurrogateBatch,
-    rect: &Rect,
-    anchor: HWND,
-  ) {
-    if let Some(overlay) = &mut self.backdrop {
-      overlay.defer_rect(batch, rect, anchor);
-    }
-
-    if let Some(overlay) = &mut self.border {
-      overlay.defer_rect(batch, rect, anchor);
-    }
   }
 
   /// Hides each shown overlay that `params` has no params for.

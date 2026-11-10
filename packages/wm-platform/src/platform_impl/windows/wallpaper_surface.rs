@@ -105,8 +105,8 @@ use windows::{
     },
     System::WinRT::Composition::ICompositionDrawingSurfaceInterop,
     UI::WindowsAndMessaging::{
-      GetSystemMetrics, SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN,
-      SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN,
+      GetSystemMetrics, SM_CMONITORS, SM_CXVIRTUALSCREEN,
+      SM_CYVIRTUALSCREEN, SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN,
     },
   },
   UI::Composition::{
@@ -177,20 +177,27 @@ struct CachedSurface {
   last_used: u64,
 }
 
-/// Most baked surfaces kept alive at once.
+/// Baked surfaces kept per display: the focused, unfocused and urgent
+/// window styles, and the overview's plain and blurred wallpaper.
 ///
-/// A display needs two in normal use, since `focused_window` and
-/// `other_windows` can carry different knobs, so this covers a couple of
-/// them. The cap is not about steady state: it exists because changing a
-/// knob produces a *new* key rather than replacing an old one, so every
-/// config reload that touches the backdrop would otherwise leave its
+/// The cap is not about steady state: it exists because changing a knob
+/// produces a *new* key rather than replacing an old one, so every config
+/// reload that touches the backdrop would otherwise leave its
 /// predecessor's surface -- ~20 MB on a 3440x1440 display -- cached for
 /// the life of the process.
 ///
-/// Evicting is always safe: a surface a brush still points at stays alive
-/// through that reference, and dropping it from the cache only means a
-/// later request for the same key re-bakes instead of reusing it.
-const MAX_CACHED_SURFACES: usize = 4;
+/// It has to cover every key in use, though. Evicting one of those frees
+/// nothing, as the brushes showing it keep it alive, and the next request
+/// for it (a new window, a focus change, a display change) bakes a second
+/// copy: the wallpaper decoded and blurred again, and both copies held
+/// until the last brush on the first goes. A flat cap of four did that
+/// with two displays once the overview had been opened (eight keys).
+const CACHED_SURFACES_PER_DISPLAY: usize = 5;
+
+/// Most baked surfaces kept in the cache with `display_count` displays.
+fn max_cached_surfaces(display_count: usize) -> usize {
+  CACHED_SURFACES_PER_DISPLAY * display_count.max(1)
+}
 
 /// Monotonic counter stamped onto entries as they are used.
 static CACHE_CLOCK: AtomicU64 = AtomicU64::new(0);
@@ -536,9 +543,14 @@ fn surface_for(
       last_used: now,
     });
 
+    // SAFETY: No preconditions.
+    let display_count = unsafe { GetSystemMetrics(SM_CMONITORS) };
+    let cap =
+      max_cached_surfaces(usize::try_from(display_count).unwrap_or(1));
+
     // Anything above the cap is a knob set nothing is asking for any more
     // -- most often the values in force before the last config reload.
-    while cache.len() > MAX_CACHED_SURFACES {
+    while cache.len() > cap {
       let Some(oldest) = cache
         .iter()
         .enumerate()
@@ -1342,11 +1354,23 @@ fn to_vector4(color: crate::Color) -> Vector4 {
 
 #[cfg(test)]
 mod tests {
-  use super::{place, Placement};
+  use super::{max_cached_surfaces, place, Placement};
   use crate::{
     platform_impl::wallpaper::{MonitorWallpaper, WallpaperFit},
     Color, Rect,
   };
+
+  /// Two window styles and the overview's two images per display are in
+  /// use at once; evicting any of them bakes it again.
+  #[test]
+  fn cache_holds_every_surface_in_use() {
+    let in_use = |displays: usize| displays * (2 + 2);
+
+    for displays in 1..=4 {
+      assert!(max_cached_surfaces(displays) >= in_use(displays));
+    }
+    assert!(max_cached_surfaces(0) >= in_use(1));
+  }
 
   /// A single 1920x1080 monitor at the virtual origin, plus a second one
   /// to its right so `Span` and `Tile` have somewhere to continue onto.

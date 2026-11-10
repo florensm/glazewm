@@ -80,9 +80,9 @@ use crate::{
   overview_thumbnails::{Picture, Preview},
   platform_impl::{self, composition::OverviewBackdrop},
   window_class::{self, mouse_position},
-  window_icons, DxgiVsyncWaiter, OverviewAction, OverviewFrame,
-  OverviewLayoutMode, OverviewScreen, OverviewStyle, OverviewWorkspace,
-  OverviewZoomStyle, Rect,
+  window_icons, DxgiVsyncWaiter, FrameClock, OverviewAction,
+  OverviewFrame, OverviewLayoutMode, OverviewScreen, OverviewStyle,
+  OverviewWorkspace, OverviewZoomStyle, Rect,
 };
 
 /// Posted with a `Box<Open>` in `WPARAM`.
@@ -320,7 +320,12 @@ fn run(
     .flatten();
 
     match vsync {
-      Some(waiter) => wait_for_frame(waiter.as_ref()),
+      Some(waiter) => {
+        wait_for_frame(waiter.as_ref());
+        with_overview(|overview| {
+          overview.clock.note_vblank(Instant::now());
+        });
+      }
       // SAFETY: No preconditions.
       None => unsafe {
         let _ = WaitMessage();
@@ -770,6 +775,10 @@ struct Overview {
 
   /// Paces animation frames to the focused monitor.
   vsync: Option<DxgiVsyncWaiter>,
+  /// When the frames waited for happen, which animations step by: the
+  /// time between wake-ups for them varies, so stepped by that the zoom
+  /// advances unevenly.
+  clock: FrameClock,
 }
 
 impl Overview {
@@ -794,6 +803,7 @@ impl Overview {
       is_done: false,
       pending_pick: None,
       vsync: None,
+      clock: FrameClock::new(FrameClock::DEFAULT_PERIOD),
     }
   }
 
@@ -879,6 +889,14 @@ impl Overview {
 
     let monitor = DxgiVsyncWaiter::window_monitor(foreground);
     self.vsync = DxgiVsyncWaiter::for_monitor(monitor).ok();
+    self.clock.reset(
+      self
+        .vsync
+        .as_ref()
+        .map_or(FrameClock::DEFAULT_PERIOD, |waiter| {
+          Duration::from_micros(waiter.frame_period_us())
+        }),
+    );
   }
 
   /// Shows a new `frame` in the open overview, keeping the selection.
@@ -1265,12 +1283,15 @@ impl Overview {
       return false;
     }
 
+    // The wall clock for a step nothing was waited for, e.g. the first
+    // after input.
     let now = Instant::now();
+    let now = self.clock.vblank_at(now).unwrap_or(now);
     let dt = now
-      .duration_since(self.last_tick)
+      .saturating_duration_since(self.last_tick)
       .as_secs_f32()
       .min(1.0 / 30.0);
-    self.last_tick = now;
+    self.last_tick = self.last_tick.max(now);
 
     // The WM hasn't carried out the pick in time: zoom anyway, so the
     // overview still closes.

@@ -297,7 +297,7 @@ impl Screen {
     self.refresh_pictures(is_redrawn);
   }
 
-  /// Hides it, keeping its pictures for the next open.
+  /// Hides it, keeping its pictures' windows for the next open.
   pub(super) fn close(&mut self) {
     if self.frame.take().is_none() {
       return;
@@ -311,6 +311,13 @@ impl Screen {
     self.unregister_thumbnails();
     for card in self.cards.drain(..) {
       self.spare.extend(card.into_pictures());
+    }
+
+    // Every card is drawn afresh on the next open, so their pixels (up
+    // to a card as wide as its strip, twice over with DWM's copy) would
+    // only sit in memory until then, to be paged back in when it does.
+    for picture in &mut self.spare {
+      picture.release();
     }
     self.scenes.clear();
     self.scene_shown = None;
