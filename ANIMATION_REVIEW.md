@@ -316,6 +316,46 @@ checks, not before.
 21. **Shadows** arrive at the uncloak, not with the stand-in. Known; no
     copies without a live A/B (`TODO.md`).
 
+## Why the overview looks smoother than real windows
+
+Added after a second look, 2026-11-10. Read from the code, not measured.
+The overview differs from a move, resize, open or close in four ways,
+largest first. Each is a lever for real windows.
+
+- **A. What moves.** The overview, like the switch and the scroll, has one
+  window per monitor that never moves and only moves thumbnails inside it
+  (`native_overview.rs:1`). A move, resize, open, close or minimize moves a
+  top-level stand-in window every frame with `SetWindowPos`, with its
+  border and backdrop as two more windows in the same batch, while its
+  thumbnail size and opacity go to DWM by another route
+  (`resize_session.rs` `defer_update`: "applied immediately"). Three
+  surfaces per window over two routes have to land in one composition.
+  Lever: pinned stand-ins for these too, `STAND_INS_PLAN.md` step 3. The
+  largest change, and the one I expect most from.
+- **B. Nothing is handed over.** The overview never cloaks, uncloaks or
+  waits for an app. A real window pays a `DwmFlush` before its first frame
+  (0 to 1 frame), has its app reflow mid-animation, and ends with a swap
+  (findings 3, 13, 19). Levers: `window_resize: { style: "stretch" }`
+  scales the content instead of revealing it and resizes the app on the
+  first frame, which is how Hyprland does it: a config change you can try
+  today. Then finding 13 and `SMOOTHNESS_REVIEW.md` 9.
+- **C. Curves.** The overview runs on springs that keep their speed when
+  retargeted (`overview_layout.rs` `Spring`). Windows run a fixed-length
+  bezier that restarts from rest at every retarget, except scrolling
+  columns. Levers: `easing: "spring"` is accepted by `window_move`,
+  `window_resize` and `window_open` already; and `retargeted` could cover
+  every move, not only columns (`SMOOTHNESS_REVIEW.md` 12, a few lines,
+  a feel A/B while holding a resize key).
+- **D. Whose thread.** The overview has a thread of its own: a frame is
+  spring steps and thumbnail updates. A real-window frame runs on the WM
+  thread, after up to 4 ms of queued events (`main.rs:437`,
+  `CATCH_UP_BUDGET`), and includes a whole `platform_sync`: overlays of
+  every window, tab bars, focus. The 4 ms is fixed: a quarter of a 60 Hz
+  frame, but 70% of a 175 Hz one, so on the fast monitor a busy queue can
+  cost frames. Lever: a budget that is a fraction of the pacing monitor's
+  period. Measure first: `tick ms/frame` in `perf.log` (`GLAZEWM_PERF=1`)
+  during a resize on that monitor.
+
 ## Ruled out
 
 - Neighbours on another clock: started in the same pass, clocks set on
