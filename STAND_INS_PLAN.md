@@ -157,7 +157,7 @@ owner's decision, and for seen-working code.
 - [x] 1. Split the per-window stand-in out of the scroll view (move only)
 - [x] 2. Entry track: the maths, the drawing, the switch
 - [ ] 3. Open on peeks: tiling layouts (the gate), then scrolling columns
-  (3a built, not checked live; 3b not started)
+  (3a and 3b built, not checked live)
 - [ ] 4. Close and minimize on peeks, both layouts
 - [ ] 5. Restore on peeks
 - [ ] 6. Moves on peeks
@@ -534,6 +534,13 @@ the switch`.
 Live check, scrolling workspace, switch on: a new column with each
 `window_open` style at 2000 ms and 150 ms; one opened while the strip is
 still scrolling; one opened off the right edge. Same five points as 3a.
+
+As built: `sync_scroll_view` hands `upsert` a `Transit::opening` for a
+window in `new_ids` (no target position yet, the test an open uses in
+`platform_sync`); `upsert` keeps it only on a peek it creates moving and
+pinned. A retargeted column keeps an unfinished transit and drops it
+when put at rest (`kept_transit`), and `upsert` draws through
+`Entry::draw`, which is `place` while there is no transit.
 
 ### Task 4: close and minimize on peeks
 

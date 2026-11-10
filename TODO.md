@@ -473,6 +473,18 @@ to see it; check each once more at 150 ms.
     any point is worse than with the switch off and the cause is not a
     plain bug, stop and report with a screenshot; do not tune hand-over
     timings.
+43. **Open on peeks, scrolling columns** (`STAND_INS_PLAN.md` 3b). On the
+    scrolling workspace, with `GLAZEWM_ISOLATE=peeks`, open a new column
+    with each `window_open` style (`zoom`, each `slide_*`, `none` with
+    `opacity_from` below 1) at `duration_ms: 2000` and at 150, `scroll`
+    left as it is. Also: one opened while the strip is still scrolling,
+    one opened off the right edge. The column widens on `scroll`'s
+    timing and enters by `window_open`'s; with the switch unset it only
+    widens, as before. Same five points as 42, plus: it is handed back
+    only once both have finished, with nothing left cloaked or on
+    screen; closing it or switching workspace mid-way leaves no peek.
+    Question for the owner: does a `slide_*` style read well on a column
+    that is also widening? If not, columns take `zoom` and the fade only.
 
 If bars or flicker show, isolate them with `GLAZEWM_ISOLATE` (below), one
 restart per flag: `noring`, `nobackdrop`, then `live`. With a long
