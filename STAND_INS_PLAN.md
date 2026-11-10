@@ -356,6 +356,24 @@ Commit: `feat(isolation): a switch for animations drawn by peeks`.
 
 ### Task 3: open on peeks
 
+As built in task 2 (`30e2937`, `ca2df53`), where it differs from the
+text of task 2 above:
+
+- Build a transit with `Transit::new(direction, params, from)`, never by
+  hand: its clock's rects carry the amount (`AMOUNT_SCALE`).
+- `Transit::is_complete` reads the wall clock, as
+  `WindowAnimationState::is_complete` does.
+- `WindowPeek` remembers its fade (`frac`); `place` resets it to 1.
+  `WindowPeek::carry_ring` still covers the ring at full opacity, so a
+  ring carried mid-fade would show at full strength until the next
+  `place_scaled`: look at `carry_ring` (`peek_view.rs`) for entries with
+  a transit, in 3a for an open and in task 4 for a close.
+- `transit` is `#[allow(dead_code)]` in `animation/mod.rs` until used:
+  remove the allow in 3a.
+- The start-up warning in `main.rs` says `GLAZEWM_ISOLATE` "leaves
+  parts of moving windows out"; reword it in 3a so `peeks` alone reads
+  right.
+
 This is the task that shows whether the plan is right. Two steps, two
 commits: 3a tiling layouts (the gate), 3b scrolling columns. Do not
 start 3b before 3a's live check has passed.
@@ -615,11 +633,14 @@ with recordings from tasks 3 to 7:
 
 - (a) Leave resize on `ResizeSession`. Smallest risk; two systems remain,
   but only one kind of animation uses the old one.
-- (b) **Ruled out by the owner (2026-11-10): `stretch` "does weird
-  zooming".** Kept for the record. `window_resize.style: "stretch"` on peeks: the content scales to
+- (b) `window_resize.style: "stretch"` on peeks: the content scales to
   the animated rect and the app resizes on the first frame. `place_scaled`
-  already draws this. Simple, and how Hyprland looks; text is blurred
-  mid-resize.
+  already draws this. How Hyprland looks; text is blurred mid-resize.
+  The owner (2026-11-10): the idea "could be nice", but today's
+  `stretch` on the old path "looks awful and acts weird" (weird
+  zooming). So (b) is open, and is judged only on a peek-drawn build
+  beside the old one; ask the owner what exactly looked wrong first and
+  list it in the live check as what must not show.
 - (c) Port the `fill` style (grow-only registration, gap fill, edge
   colour, mid-motion hand-off). The hard part the second version
   described; only if (b) is not acceptable.
