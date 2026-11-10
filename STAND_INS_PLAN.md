@@ -1,318 +1,493 @@
 # Plan: one way to animate windows
 
-For a later session on `tryout/todo-cleanup`. Read `CLAUDE.md` and
-`TODO.md` first. Steps each end in a working, live-checked WM. Do one
-step per session unless it is clearly done early.
+Revised 2026-11-10 (third version; the second is `git show
+ec8e0fe:STAND_INS_PLAN.md`). Written so a session that has not seen the
+earlier ones can carry it out one task at a time. Read `CLAUDE.md`,
+`TODO.md` and `ANIMATION_REVIEW.md` first.
 
-Revised 2026-11-04, after step 1's check: share what the stand-ins do
-alike (one core, one hand-over), not force what they draw differently
-into one type. Move/resize join only if local fixes for their bugs don't
-hold (step 3).
+Nothing in this plan has been seen running. It is a reading of the code
+as of `88e5183`. Task 3 is where it proves itself on screen; if its live
+check fails, stop there.
 
-## Goal
+## What changed from the second version, and why
 
-What the switch and the scroll do alike is one piece of code: one core
-stand-in (window, warm-up, alpha take-over and hand-back, companion wait,
-ring and backdrop copies, `Live` choice), one overlay hand-over, one
-hand-back. Bugs there then get fixed once, for both, and can't be fixed
-in one and missed in the other. What they draw differently (the switch's
-zoom, fade and sliding panel, the scroll's own-scale columns) stays with
-each animation.
+The second version's diagnosis holds: three stand-in systems, fixes landing
+three times, move/resize on the oldest drawing. Its order does not serve
+the goal (smoother open and close first):
+
+- Its steps 1 and 2 merge what the switch and the scroll share. That is
+  upkeep: nothing on screen changes.
+- The change you would see, moving the `ResizeSession` animations onto
+  pinned stand-ins, was its step 3, "only if local fixes won't do", and
+  was described as porting everything `ResizeSession` does. Most of that
+  is size handling (gap fill, grow-only registration, mid-motion resize),
+  the hardest part.
+
+What makes a shorter road possible:
+
+1. Open, close, minimize and restore **never change the window's size**.
+   They are a move, a scale or a fade of a window at its resting size:
+   exactly what a pinned thumbnail does well. None of `ResizeSession`'s
+   size handling is needed for them.
+2. The scroll view already has a per-window stand-in with every hand-over
+   solved and tuned live: warm-up, alpha take-over, ring and backdrop
+   copies, companion wait, hand-back (`Entry`, `Role`, `Handover` in
+   `animation/scroll_view.rs`). It already opens a new column this way.
+   The switch's hand-over is per switch (`WsCleanupStep`), so the scroll's
+   is the one to build on.
+3. `platform_sync` already treats a window a peek draws as frozen, keeps
+   its cloaked real window at its target (`follow_retargeted_column`), and
+   hands it back (`prepare_hand_back`, `release`). A window that enters
+   through a peek gets all of that with no new code there.
+
+So: make the scroll's per-window stand-in usable for any tiled window,
+give it an entry track (how far the window has zoomed, slid or faded in),
+and move animations onto it one kind at a time, most seen first. Each
+kind stays on the old path until you have seen the new one.
 
 ## Words used here
 
-- **Real window**: the app's own window. Cloaked (hidden by the shell)
-  while a stand-in draws it.
+- **Real window**: the app's own window. Cloaked while a stand-in draws it.
 - **Stand-in**: a click-through window of ours showing a DWM thumbnail of
   the real window (`NativeSurrogate` underneath).
-- **Overlays**: the WM's border ring (`NativeBorderOverlay`) and backdrop
-  (`NativeBackdropOverlay`) windows that sit behind a real window.
-- **Copies**: thumbnails of those overlays drawn inside a stand-in
-  (`OverlayCopies`), so they move in the same DWM update as the window.
-- **Pinned** stand-in: spans its monitor (or work area) and never moves;
-  only its thumbnails move. **Moving** ("live") stand-in: a window resized
-  and moved with `SetWindowPos` every frame.
-- **Take-over / hand-back**: swapping between the real window and its
-  stand-in at the start / end, without a frame showing both or neither.
-- **Companion**: a window another app draws over the real one (shades'
-  recolored copy); the stand-in shows it, and waits for it at hand-back
-  (`HandoffWait`).
-- **Flush**: `wm_platform::dwm_flush()`, which waits for DWM's next frame.
-  Used as a barrier: put the stand-in up, flush, then cloak.
+- **Peek**: `WindowPeek`, the scroll's stand-in. **Pinned**: spans its
+  monitor's working area and never moves; only its thumbnails do.
+  **Live**: moved with its window every frame; the fallback when a
+  backdrop can't be copied (rounded corners, or parallax != 1).
+- **Overlays**: the WM's border ring and backdrop windows behind a real
+  window. **Copies**: thumbnails of them drawn inside a pinned stand-in
+  (`OverlayCopies`), so they move in the same DWM updates as the window.
+- **Take-over / hand-back**: swapping real window and stand-in at the
+  start / end without a frame showing both or neither.
+- **Rect track**: where a window's tile is going (retargetable).
+  **Entry track**: how far it has entered or left, 0 (away) to 1 (in).
+- **Old path**: `ResizeSession` (`wm-platform/src/resize_session.rs`).
 
-## What we have now
+## Rules for whoever carries this out
 
-Three separate stand-in systems, grown one after another, plus two
-animations that work differently by nature.
+1. One task per session unless one is clearly done early. Tasks are in
+   order; do not skip ahead.
+2. Before a task: `git log --oneline -15`, read every file the task names,
+   and find each named function with `grep -n`. Line numbers here drift;
+   names are what to trust. If a name is gone or does something else than
+   described, stop and report instead of guessing.
+3. A task marked **move only** changes no behaviour: no renamed logic, no
+   "while I am here" fixes. Its diff must read as cut and paste plus
+   `use` lines and visibility (`pub(super)`).
+4. New behaviour goes behind the switch from task 2 until its live check
+   has passed. Never flip a default in the task that adds the code.
+5. Do not change, "simplify" or reorder any of these. Each was tuned
+   against recordings (commit messages from `599f0aa` on explain them):
+   - the order inside `WindowPeek::draw` (backdrop copy first out, last
+     in), `take_over`, `prepare_hand_back`, `hand_back`;
+   - `Role` transitions and `Handover` steps in `carry_ring` and
+     `carry_backdrop`;
+   - the z-order rule for a window being handed back
+     (`platform_sync.rs`, "keeps its place");
+   - `FrozenStep`, `commit_pending_cloaks`' single flush;
+   - `HandoffWait` and the companion (shades) waits.
+6. One commit per task step, prefixed like the history (`refactor(...)`,
+   `feat(...)`, `fix(animations): ...`). Say in each message that it was
+   not seen running.
+7. Checks before every push (`TODO.md` "Checks" has the set-up; the test
+   executables run with `wine`, one thread):
+   - `cargo clippy --workspace --all-targets --target
+     x86_64-pc-windows-gnu -- -D warnings` clean;
+   - `wm` and `wm-common` tests all pass; `wm-platform` fails only the 8
+     desktop tests `TODO.md` lists;
+   - `cargo fmt --all`, then `git checkout` any file you did not edit
+     (`workspace_surrogate.rs` has older formatting drift: leave it).
+8. After each task: add its live check to `TODO.md` "Not checked live
+   yet", written like the entries there (app, config, what to do, what
+   should and should not show), and tick the task off below.
+9. `CLAUDE.md` limits hold: no new dependency, no scheduling change, a new
+   Windows API only in its own commit that names it, no benchmark outside
+   `examples/` and the strip list.
+10. Stop and report, changing nothing further, when: a check fails and
+    the cause is not in your diff; a task needs a decision this plan does
+    not make; or a "move only" task cannot be done without changing logic.
 
-| Animations | Type | Drawing | Overlays | Take-over | Hand-back |
-|---|---|---|---|---|---|
-| Move, resize, open, close, minimize | `ResizeSession` (`wm-platform/src/resize_session.rs`) | Moving stand-in at `HWND_TOP`, `SetWindowPos` every frame (batched) | Real overlays moved alongside in the same `DeferWindowPos` batch | Stand-in shown, flush, cloak (`commit_pending_cloaks`) | Uncloak, then a 100 ms fade-out of the stand-in (`SESSION_FADE_OUT`); for a transparent window the stand-in drops to 0 at once instead |
-| Workspace switch | `WorkspaceSurrogate` (`workspace_surrogate.rs`), driven in `animation/manager.rs` | Pinned (`PinnedViewport`), or moving (`Live`) when the backdrop can't be copied | Copies (ring, backdrop); the real ring parked (`park_switch_borders`), the real backdrop hidden on the first tick | Warm up at opacity 1, flush, `take_over` (alpha swap via `HiddenAlpha`), cloak | `WsCleanupStep`: uncloak (alpha prepared), wait for the companion, swap (`hide_thumbnail`, from below the window), show overlays under copies, re-anchor, drop |
-| Scroll | `WindowPeek` (`window_peek.rs`), driven in `animation/scroll_view.rs` | Pinned, or moving (`Live`) as above | Copies, with a per-window `Handover` state machine (`Covering`, `Covered`, `Parked`, `Revealed`) | `warm_up`, flush (`flush_overlays`), `take_over` at the cloak | Raised above the window at landing (`cover_window`), `prepare_hand_back`, uncloak, `hand_back` once the companion is back (`Role::Releasing`) |
-| Overview | `native_overview*` | Its own composition scene | its own | none | none |
+## Tasks
 
-Shared already: `NativeSurrogate` (window, thumbnail, gap fill,
-companion, `HandoffWait`), `Thumbnail` (`dwm_thumbnail.rs`),
-`OverlayCopies` (switch and scroll), `HiddenAlpha` (switch and scroll),
-`SurrogateBatch`, and the rect maths (`placed_rects`, `clip_rects`,
-`map_rect`).
+- [ ] 0. Baseline recordings (desktop, by hand)
+- [ ] 1. Split the per-window stand-in out of the scroll view (move only)
+- [ ] 2. Entry track: the maths, the drawing, the switch
+- [ ] 3. Open on peeks, in tiling layouts
+- [ ] 4. Restore on peeks
+- [ ] 5. Close and minimize on peeks
+- [ ] 6. Moves on peeks
+- [ ] 7. Resize: decide
+- [ ] 8. Remove what is no longer reached
 
-Only move/resize can do (all in `ResizeSession`):
+### Task 0: baseline (desktop, by hand)
 
-- Size changes: a growing window hasn't drawn its new size yet, so the
-  thumbnail registration only grows once the real resize lands
-  (`update_thumbnail_dims`, `sync_registration`), the rest is painted by
-  the gap fill (`SurrogateFill`, edge colour sampled from the screen), or
-  the whole window is stretched (`stretch`). `maybe_handoff` resizes the
-  real window before the end so its reflow happens mid-motion.
-  `pre_commit` waits (bounded) for the real window to reach its target.
-- Retargeting with a direction change (`update_target`).
-- Warm reuse: stand-ins kept 8 s after a session (`warm_surrogates`,
-  `NativeSurrogate::revive`).
-- Open/close/minimize: zoom (`update_zoom_fade`) and slides; close and
-  minimize have no hand-back (`away_windows`).
+Not done yet. From a build of `88e5183`, with a long `duration_ms` (e.g.
+3000) so one screenshot catches a mid-animation frame, record:
 
-## What we want to improve
+- On a tiling-layout workspace: open, close (`window_close` on),
+  minimize, restore, a move, a resize that grows and one that shrinks.
+- On the scrolling workspace: a new column, a scroll from rest, quick
+  repeated presses, a column resized.
+- A workspace switch both ways.
 
-Each problem below exists because the systems are separate:
+Include a see-through window with a backdrop and one themed by shades.
+Once with `GLAZEWM_PERF=1`, keeping `perf.log`. These are the A/B
+references for every task below. Tasks 1 and 2 can be done before the
+recordings exist; task 3's live check cannot.
 
-1. **Fixes land three times.** The shades flash was fixed in all three
-   (`d5316f10`, `4a4fe227`, `2e795fb6`); the shadow copies that drew
-   stripes lived in two (`e1f259b0`); the double flush at scroll start came
-   from two systems meeting (`c12b2737`).
-2. **Move/resize use the oldest drawing.** Their overlays are separate
-   windows moved alongside, which can land a frame apart from the stand-in.
-   They have no alpha swap, so a transparent window is handled by zeroing
-   the stand-in after the uncloak, and their companion wait is skipped for
-   transparent windows (`TODO.md`, still open).
-3. **Three hand-back strategies** (fade, zero-then-uncloak, alpha swap
-   with steps) and **two overlay hand-overs** (scroll's `Handover`,
-   switch's park plus `WsCleanupStep`) to keep correct.
-4. **Flush barriers in several places** (`sync_scroll_view`,
-   `commit_pending_cloaks`, switch start, session end), which is how
-   two ended up back to back.
-5. **Two fallbacks per system**: pinned and `Live` in both the switch and
-   the scroll, chosen separately.
+### Task 1: split the per-window stand-in out of the scroll view
 
-The revised steps cover 1, 3 and 5 for the switch and the scroll; 2 is
-step 3's question. 4 is no longer a step: `c12b2737` removed the doubled
-pair; revisit if another shows in `perf.log`.
+**Move only.**
 
-## Target design
+Goal: `animation/scroll_view.rs` (about 1200 lines) holds two things: a
+generic per-window stand-in driver, and the scrolling layout's decision of
+which columns move where. Separate them so later tasks can add entries
+that are not columns.
 
-One core stand-in type in `wm-platform` (not named `StandIn`: `wm`'s
-`animation/stand_in.rs` has one, imported next to `WindowPeek` in
-`scroll_view.rs`), which `WorkspaceSurrogate` and `WindowPeek` are built
-on:
+Do:
 
-- Pinned to an area (monitor, work area or viewport); `Live` only as the
-  fallback for backdrops that can't be copied, chosen in one place.
-- Draws the window's visible frame (past its invisible resize borders)
-  plus ring and backdrop copies (`OverlayCopies`), carrying both focus
-  styles up front (`carry_styles` / `show_style`).
-- One lifecycle: `warm_up` → `take_over` (at the cloak) → placed each
-  frame → `prepare_hand_back` → `hand_back` (once the companion is back)
-  → drop.
+1. Create `packages/wm/src/animation/peek_view.rs`. Move into it, as they
+   are: `Role`, `Handover`, `Entry` (with `Entry::place`), `Landed`, the
+   struct now called `ScrollView` renamed to `PeekView`, every method in
+   its `impl` (`owns_window` through `upsert`), `track_overlays`,
+   `carry_ring`, `carry_backdrop`, `peek_styles`.
+2. Leave in `scroll_view.rs`: the module doc, `sync_scroll_view`,
+   `drive_moving`, `flush_overlays`, `report_stuck_windows`,
+   `column_moves`, `opening_rect`, `displayed_scrolling_workspaces`,
+   `tiling_windows`, `target_rect`.
+3. `last_rects` and `reported_stuck` belong to the scrolling layout, but
+   `take_departed` prunes `last_rects` too. Keep both on `PeekView` for
+   this task (moving state is a logic change); give them and `entries`
+   `pub(super)` visibility.
+4. In `AnimationManager` rename the field `scroll_view` to `peeks`, and
+   update every user (`manager.rs`, `platform_sync.rs`, `tab_bars.rs`,
+   `events/handle_mouse_move.rs`). `grep -rn "scroll_view" packages/wm/src`
+   afterwards should list only the module itself, `mod.rs`, and calls to
+   the functions that stayed in it.
+5. Move the tests with the code they test.
 
-One overlay hand-over in `wm` (from `scroll_view.rs`'s `Handover`): covered
-by the copy, real one hidden a composited frame later, shown again under
-the copy where the window lands. The switch's ring parking and the
-overlay steps of `WsCleanupStep` become this.
+Do not: change any function body beyond paths and names; merge or split
+functions; touch `wm-platform`.
 
-`WorkspaceSurrogate` and `WindowPeek` keep only their drawing: the
-switch's zoom, fade and sliding panel, the peek's own-scale columns and
-the clip it follows. Whether to fold them into one type is decided after
-step 2, when that is all that's left in them.
+Done when: checks pass, test count for `wm` is unchanged (273), and `git
+diff --stat` shows the two files' line counts adding up to about the old
+one.
 
-Out of scope: the overview (different in kind), shadow copies
-(removed on purpose; `TODO.md` says not to bring them back without a live
-A/B), app-specific fixes. Move/resize, open, close and minimize
-(`ResizeSession`) only if step 3 finds local fixes won't do.
+Commit: `refactor(animations): split the per-window stand-in out of the
+scroll view`.
 
-## Steps
+Live check (add to `TODO.md`): scrolling works as before: a scroll from
+rest, quick repeated presses, a new column, a column leaving. Nothing
+should differ from the baseline.
 
-Each step: small commits (one concern each), `cargo clippy` and tests for
-the Windows target (see `TODO.md` "Checks"), push to
-`tryout/todo-cleanup`, then a live check on the desktop before the next
-step. The cloud session can't run the WM, so say plainly in commits and
-`TODO.md` what wasn't seen live. Don't re-cut `test/todo-cleanup` without
-a native build.
+### Task 2: entry track
 
-### Before each step: confirm it is needed
+Three steps, three commits. No animation uses any of it yet.
 
-No code changes until this is done and written down:
+**2a. The maths** (`packages/wm/src/animation/transit.rs`, new).
 
-1. Read the code the step touches, and `git log` since this plan was
-   last updated. Check this plan's description of it still matches (types,
-   functions, what each system does). If it drifted, fix the plan first.
-2. Confirm the problem the step removes still exists in the code, with
-   file and line: the duplicated logic, the special case, the extra
-   flush. Name each one.
-3. Check nothing smaller fixes it: a shared helper or a local fix that
-   gets the same result with less risk beats a merge.
-4. Weigh it: what gets simpler or better for the user, against what could
-   break live. Say which recordings from step 0 would show a regression.
-5. Write the findings under the step in this plan: confirmed needed (with
-   the evidence), what will change, how it will be checked.
+```rs
+/// Which way a window's entry track runs.
+pub enum Direction { In, Out }
 
-If the step isn't needed, isn't worth it, or a smaller change does the
-job: change no code. Write why in this plan and `TODO.md`, and stop with a
-recommendation (skip it, shrink it, or do the smaller change instead).
+/// A window entering or leaving: zoomed, slid or faded by how far its
+/// entry track has run.
+pub struct Transit {
+  pub direction: Direction,
+  pub style: WindowTransitionStyle,
+  /// Opacity at the away end, as a fraction of the window's own.
+  pub away_opacity: f32,
+  /// Runs 0 to 1 over the transition's duration and easing; only its
+  /// progress is read, never its rects.
+  pub clock: WindowAnimationState,
+}
 
-### Step 0: baseline
+impl Transit {
+  /// How far in the window is at `now`: 0 away, 1 at rest.
+  pub fn amount_at(&self, now: Instant) -> f32;   // In: p, Out: 1 - p
+  pub fn is_complete(&self) -> bool;
+}
 
-Not done yet. Before changing anything, record on the desktop from a
-build of `ab822ab` or later docs-only commits, with a long `duration_ms`
-(e.g. 3000) so one screenshot catches a mid-animation frame:
+/// Where a window resting at `rest` is drawn when `amount` in, and at
+/// what fraction of its opacity. `None` while it has no size.
+pub fn transit_frame(
+  rest: &Rect,
+  style: &WindowTransitionStyle,
+  away_opacity: f32,
+  amount: f32,
+) -> Option<(Rect, f32)>;
+```
 
-- Scroll: from rest, quick repeated presses, a column resized while
-  scrolling.
-- Workspace switch: both ways, two in quick succession, one cut short
-  by the next.
-- Move, a resize that grows and one that shrinks, open, close, minimize.
+`transit_frame`, with `w`, `h` the size of `rest` and `a` = `amount`
+clamped to 0..=1:
 
-Include a semi-transparent window with a backdrop, and one themed by
-shades. Also run once with `GLAZEWM_ISOLATE=live` (the `Live` fallback,
-which square corners never pick otherwise), and once with
-`GLAZEWM_PERF=1`, keeping `perf.log`. These are the A/B references for
-every later step.
+| Style | Frame |
+|---|---|
+| `None` | `rest` |
+| `Zoom` | `rest` inset by `round(w * (1 - a) / 2)` left and right, `round(h * (1 - a) / 2)` top and bottom; `None` if that leaves no width or height |
+| `SlideRight` | `rest` moved by `+round(w * (1 - a))` in x |
+| `SlideLeft` | `-round(w * (1 - a))` in x |
+| `SlideTop` | `-round(h * (1 - a))` in y |
+| `SlideBottom` | `+round(h * (1 - a))` in y |
 
-### Step 1: one core for the switch and the scroll
+Opacity fraction: `away_opacity + (1 - away_opacity) * a`, clamped.
 
-- 1a: one core type in `wm-platform` both use for what they do alike:
-  creating the pinned or `Live` window, warm-up, the alpha take-over and
-  hand-back, the companion wait, ring and backdrop copies (the peek's
-  `carry_styles`, which the switch calls with its one style), and frame
-  sampling with the size as a parameter. `WorkspaceSurrogate` and
-  `WindowPeek` keep their drawing and the differences listed below.
-  Moved code, no new options; behaviour stays the same.
-- 1b: one function choosing `Live` from a window's backdrop styles, for
-  both callers (`platform_sync.rs` switch start, `scroll_view.rs`).
+These match today's `compute_transition_start_rect` (`manager.rs`) and
+`zoom_destination` (`resize_session.rs`); do not change those here.
 
-Done when: both animations look identical to step 0's recordings, and
-the duplicates below exist once.
+Tests to write first, with `rest = Rect::from_ltrb(100, 50, 900, 650)`:
 
-#### Step 1 findings (2026-11-03): shrink it, no code changed
+- `Zoom`, `a = 1.0` gives `rest`; `a = 0.5` gives `(300, 200, 700, 500)`;
+  `a = 0.0` gives `None`; a rest of `801 x 601` at `a = 1.0` gives itself.
+- `SlideRight`, `a = 0.25` gives `(700, 50, 1500, 650)`; `SlideTop`,
+  `a = 0.5` gives `(100, -250, 900, 350)`; every slide at `a = 1.0` gives
+  `rest`.
+- `None` gives `rest` at any `a`.
+- Opacity: `away 0.0, a 0.5` gives `0.5`; `away 1.0` gives `1.0` at any
+  `a`; `away 0.4, a 0.0` gives `0.4`.
+- `Transit::amount_at`: with a linear easing (`CubicBezier(1/3, 1/3, 2/3,
+  2/3)`), 200 ms, clock started at `t0`: `In` at `t0 + 50 ms` is `0.25`,
+  `Out` is `0.75` (tolerance `1e-3`).
 
-Decided 2026-11-04: shrunk to 1a and 1b above. The full merge first
-planned here is dropped for now.
+Commit: `feat(animations): the entry track's frame maths`.
 
-Checked against `3039190` (no code commits since this plan). Step 0's
-recordings don't exist yet, so no step has an A/B reference.
+**2b. The drawing** (`packages/wm-platform/src/window_peek.rs`).
 
-Confirmed:
+A pinned peek draws its window at its own size today (`show_pinned`
+passes the frame's size to `placed_rects`). Add scaled drawing and a
+fade for the copies:
 
-- Same code in both types: `WARM_UP_OPACITY`
-  (`workspace_surrogate.rs:14`, `window_peek.rs:15`); the pinned/`Live`
-  enum (`:45`, `:18`) and the `NativeSurrogate::create` call for each
-  (`:247-296`, `:84-115`); `take_over`, `prepare_hand_back`,
-  `restore_alpha` (`:632-652`, `:276-301`); `awaits_companion` (`:610`,
-  `:444`); `carry_ring` (`:344`, `:239`); `carries_ring`,
-  `carries_backdrop`, `hwnd`, `is_live`. About 80 lines of code, thin
-  wrappers over the already shared `NativeSurrogate`, `OverlayCopies` and
-  `HiddenAlpha`. The pinned frame sampling (`frame_rects` `:24`,
-  `show_pinned` `:386`) differs only in the size passed to
-  `placed_rects`.
-- `Live` is chosen twice by the same rule: `platform_sync.rs:790-794`,
-  `scroll_view.rs:464-467`.
-- Fixes made in both types: `8a1fc9c` (frame sampling), `7e57367` and
-  `e1f259b` (shadow copies), `2e795fb` (companion wait). Not ported:
-  `5d43d2b`'s two-style backdrop carry (`TODO.md` "Still open" 4). The
-  other repeated fixes (`d5316f10`, `d6ba457`, `0c93737`, `599f0aa`,
-  `e6241cb`) were in the callers' hand-over and hand-back: step 2.
+1. Read `placed_rects` and its three tests in `native_surrogate.rs`, and
+   `WorkspaceSurrogate::show_frame` and `set_opacity_frac`
+   (`workspace_surrogate.rs`), which already draw a window scaled and
+   faded in a pinned stand-in. Port their approach; do not call into
+   `WorkspaceSurrogate`.
+2. Add `WindowPeek::place_scaled(&mut self, rest: &Rect, frame: &Rect,
+   clip: &Rect, opacity: u8, frac: f32, batch: &mut SurrogateBatch)`:
+   `rest` is the window's rect at rest (what the thumbnail samples),
+   `frame` where it is drawn this frame (any size), `frac` the entry
+   track's opacity fraction. Pinned mode only: it samples `rest`'s size
+   into `frame` cut at `clip`, draws the window at
+   `scale_alpha(window_opacity, frac)` and the copies at
+   `scale_alpha(u8::MAX, frac)` (`OverlayCopies::set_opacity`), and places
+   the copies at `frame`. In `Live` mode it logs at debug and calls
+   `place(frame, ...)`: callers never pick a transit for a live peek (task
+   3 rule).
+3. `place` must keep behaving exactly as now. Do not route it through
+   `place_scaled`.
+4. Unit-test what is pure: if you add a helper computing the rects, test
+   that `frame == rest` gives the same rects `show_pinned` computes today,
+   and that a half-size centred `frame` gives a destination half the size.
 
-Differences beyond the three the merge would have kept as options (the
-switch's zoom and fade, its panel and unclipped rect, the peek's
-own-scale drawing), which a merge that keeps behaviour identical must
-carry too:
+Commit: `feat(peek): draw a window scaled and faded`.
 
-1. Hand-back: the switch hides the thumbnail but keeps the backdrop copy
-   (`hide_thumbnail`, `workspace_surrogate.rs:602`), from below its
-   window (`:294`), as the real backdrop only shows a step later
-   (`WsCleanupStep::ShowOverlays`). The peek is raised above its window
-   (`window_peek.rs:436`), so draws it at 0 and drops the backdrop copy
-   (`hand_back`, `:308`, `73f415e`).
-2. Copies' opacity: faded with the window in the switch
-   (`set_opacity_frac`, `:440`), held at full in the peek (`:412-413`).
-3. Backdrop styles: one in the switch (`carry_backdrop`, `:379`), both
-   focus styles in the peek (`carry_styles`, `:165`).
-4. Pinned area: the monitor, fixed, in the switch; follows the clip in
-   the peek (`:362-367`).
-5. `Live` cut: at the sliding panel in the switch (`:513-525`), only by
-   the window's bounds in the peek (`NativeSurrogate::show_clipped`).
+**2c. The switch** (`packages/wm-platform/src/isolation.rs`).
 
-So callers can't "change names only": their calls differ (`show_initial`
-/ `warm_up`, `hide_thumbnail` / `hand_back`, `carry_backdrop` /
-`carry_styles`).
+Add a word `peeks` to `GLAZEWM_ISOLATE` setting `Isolation::peeks`,
+documented in the module doc and `TODO.md` ("Live-check switch") as:
+"draw open, close, minimize, restore and moves with pinned peeks instead
+of `ResizeSession`, for the kinds already moved over". Extend the two
+tests there. Unset, nothing changes.
 
-Weighed: nothing the user would see changes. 2 to 4 can become
-parameters and 5 an option, like the scale; 1 is hand-over behaviour
-step 2 makes one, so a merge now adds a hand-back flag that step 2
-removes. Over 1a, the merge also rewrites both drawing paths (the
-part tuned live, from `8a1fc9c` on) for one type fewer, unchecked live.
-Regressions would show in: a switch both ways (fade and
-zoom too if used), two quick switches, a switch cut short, a scroll from
-rest, quick repeated scrolls, the semi-transparent window with a
-backdrop, the shades window, and a `Live` one (`GLAZEWM_ISOLATE=live`;
-square corners never pick it otherwise).
+Commit: `feat(isolation): a switch for animations drawn by peeks`.
 
-### Step 2: one overlay hand-over and one hand-back
+### Task 3: open on peeks, in tiling layouts
 
-Move scroll's `Handover` and its role transitions into a module both
-the switch and the scroll use, on step 1's core. The switch's
-`park_switch_borders`, its first-tick backdrop hide and the overlay steps
-of `WsCleanupStep` (`ShowOverlays`, `Reanchor`) become that hand-over;
-its hand-back uses the same `prepare_hand_back` / companion wait /
-`hand_back` sequence as the scroll. Behaviour changes a little here: it
-removes difference 1 above (the switch's stand-in below its window at
-hand-back, the peek's above), so which way wins is part of the check.
+This is the task that shows whether the plan is right.
 
-Done when: switch and scroll pass step 0's checks, including two quick
-switches in a row and a switch cut short, and shades shows no flash.
-Then decide, from what is left in `WorkspaceSurrogate` and `WindowPeek`
-(motion and drawing only), whether folding them into one type is worth
-it.
+Today: `platform_sync.rs` picks `entry_transition` and calls
+`start_open_animation` (`manager.rs`), which begins a `ResizeSession`.
 
-### Step 3: move and resize, only if local fixes won't do
+Do, all behind `isolation::current().peeks`:
 
-Decide after step 2. Their open bugs: shades can flash on transparent
-windows (`TODO.md` "Still open" 1: the companion wait is skipped when
-`effect_opacity < 255`), and the ring copy thins during a column resize
-("Still open" 5). First check, as in "Before each step", whether a local
-fix does it, e.g. giving `ResizeSession` the `HiddenAlpha` swap the core
-has, so its transparent-window special cases in `manager.rs` can go.
+1. `Entry` (`peek_view.rs`) gets `transit: Option<Transit>`. In
+   `PeekView::tick`, for `Role::Moving`: start the transit's clock with
+   the motion's (`start_clock(clock_origin)`); if `transit` is `Some`,
+   compute `transit_frame(&rect, ...)` from the motion's current rect and
+   call `place_scaled`, hiding the peek for `None`; else `place` as now. A
+   moving entry is complete when its motion **and** its transit are.
+2. Add `PeekView::enter(window, target, clip, params:
+   &WindowTransitionParams, config, is_focused, now, batch)`: as `upsert`
+   with `from == target`, `Role::Moving { ends_shown: true }`, the motion
+   lasting the transition's duration, and `transit: Some(Transit { In,
+   .. })`. Returns `false`, creating nothing, when the peek would be
+   `Live` (same test `upsert` uses: a backdrop style that is not
+   `is_copyable`).
+3. In `platform_sync.rs`, where `entry_transition` is `Some` for an open
+   (not a restore: task 4), and the switch is on, and the window is not a
+   scrolling column: call `enter`. If it returns `true`, do not call
+   `start_open_animation`. The window is then `peeks.is_moving`, so the
+   existing code freezes it, moves its cloaked real window to its tile
+   (`follow_retargeted_column`), and hands it back when the entry lands.
+   Read that path once end to end before writing anything, and confirm
+   each of those three statements in the code.
 
-Only if not: move move/resize onto the core. What that needs, from the
-first version of this plan: `ResizeSession`'s size handling as an option
-(grow-only registration, gap fill and edge colour, stretch, the
-mid-motion real resize, the bounded `pre_commit` wait, retargeting with a
-direction change), unit-tested as `native_surrogate.rs` and
-`overlay_copies.rs` test theirs; move and resize switched one at a time,
-the old path kept behind a temporary switch until each is checked live;
-warm reuse (8 s, one per window) kept; then open, close and minimize;
-then the old paths deleted. Check: moves and resizes (grow, shrink,
-mixed, retargeted) and all open/close/minimize styles match step 0,
-transparent and shades windows included, and `perf.log` shows no slower
-frames.
+   One trap: `is_frozen_by_ws_animation` is computed a few lines
+   *above* `entry_transition`, so it is still `false` after `enter`.
+   Left so, the window takes the non-animated path and is uncloaked at
+   once. Recompute it after a successful `enter`.
+4. Install the monitor's vsync waiter and start the timer as
+   `drive_moving` does (`scroll_view.rs`).
+5. A retarget while entering (another window opens): `upsert` already
+   retargets the motion of an entry that is moving. Make sure it keeps
+   `transit` untouched. This is `ANIMATION_REVIEW.md` finding 9; add a
+   unit test that a retargeted entry's `amount_at` is unchanged.
+6. `take_departed` (scroll sync) removes entries of windows that are not
+   scrolling columns. Entries with a `transit` must survive it: give
+   `Entry` an `is_column: bool`, set by `sync_scroll_view`'s `upsert`
+   calls, and only take departed column entries.
 
-### Side fixes, any time
+Do not: touch `start_open_animation` or `ResizeSession`; apply this to
+scrolling columns (a new column keeps widening in place; whether it
+should also zoom or fade is the owner's call, `ANIMATION_REVIEW.md` 17);
+handle `Live` peeks.
 
-Independent of the steps, each small:
+Unit tests: completion needs both tracks; the retarget test above;
+`take_departed` leaves a non-column entry.
 
-- `TODO.md` "Still open" 4: the switch's backdrop blends between focus
-  styles again. Nearly free after step 1: the switch carries both styles
-  as the peek does and crossfades them.
-- `TODO.md` "Still open" 3: a peek reused for several moves keeps its
-  companion-wait start time, e.g. reset it when a new move starts.
+Commit: `feat(animations): open windows through pinned peeks behind the
+switch`.
+
+Live check (the gate for everything after it), on a tiling-layout
+workspace, `GLAZEWM_ISOLATE=peeks`, each `window_open` style at
+`duration_ms: 2000` and at 150, against the baseline and against the
+same build with the switch off:
+
+- the window enters with its border and backdrop moving with it, never a
+  frame apart;
+- a see-through window and a shades-themed one show no flash, white frame
+  or lighter look as they land;
+- nothing shows twice or not at all at the start or the end;
+- opening a second window mid-way does not restart or misplace the first;
+- neighbours making room stay in step.
+
+If any of these is worse than with the switch off and the cause is not a
+plain bug in the new code, stop: report which, with a screenshot. Do not
+tune hand-over timings to make it pass.
+
+### Task 4: restore on peeks
+
+As task 3, for the restore branch of `entry_transition`, with these
+differences:
+
+- The window may be on screen (the OS restored it) or still natively
+  minimized (`toggle-minimized`; `ANIMATION_REVIEW.md` finding 10). For
+  the second: cloak it, then restore it natively at its target
+  (`NativeWindow::restore(Some(rect))`), then `enter`. For the first:
+  `upsert` already warms the peek up under a window still shown and takes
+  over at the cloak; confirm `commit_pending_cloaks` is reached for it
+  (`covers_shown_window`).
+- A minimize still playing is ended first (`9a23bf4` does this for the
+  old path; keep that order).
+
+Live check: `toggle-minimized` twice two seconds apart, and a taskbar
+restore, each `window_minimize` style; then both within the animation.
+
+### Task 5: close and minimize on peeks
+
+Different in kind: nothing is handed back, and a closing window is out
+of the tree, so `track_overlays`' `state.window_by_id(id)` finds nothing.
+
+Do, behind the switch:
+
+1. Add `Role::Leaving`: drawn like `Moving`, never handed back. When its
+   transit completes, `tick` reports it in a new `Landed::left` list and
+   drops the entry.
+2. `Entry` needs what `track_overlays`, `carry_ring` and
+   `carry_backdrop` read from the container: keep the `NativeWindow` and
+   the effect set on the entry for a leaving window, and branch on that
+   where they call `window_by_id`. Change those three functions as little
+   as possible; no change for other roles.
+3. `animate_away` (`close_window.rs`): with the switch on and a pinned
+   peek possible, add a leaving entry instead of calling
+   `start_away_animation`. The take-over is the scroll's: `warm_up`,
+   one composited frame, `take_over`, then cloak. That removes
+   `ANIMATION_REVIEW.md` finding 11. Use the pass's shared flush
+   (`commit_pending_cloaks`) if the close's sync reaches it for this
+   window; if it does not, cloak on the tick after the peek was shown.
+   Decide which by reading, and say which in the commit.
+4. `update_internal` (`manager.rs`): for each id in `Landed::left`, do
+   what the "away_done" block does now: remove the overlays, send
+   `WM_CLOSE` and `mark_close_sent` for a close; nothing more for a
+   minimize.
+5. `has_close_animation`, `has_minimize_animation`, `has_active_surrogate`
+   and `stands_in_for` must answer for leaving entries too: each has
+   callers that depend on it (`handle_window_hidden`, `platform_sync`).
+6. `9dfab1f` (window gone mid-close) and `5f39127` (no thumbnail): keep
+   both behaviours on the new path.
+
+Unit tests: a leaving entry is reported once and dropped; the four
+queries above answer `true` while it plays.
+
+Live check: `TODO.md` 32, 34 and 35 again with the switch on, plus a
+refused close ("Save changes?" in Notepad): the window comes back.
+
+### Task 6: moves on peeks
+
+A move that stays on screen uses `ResizeSession` today; the scroll's
+strip already moves on peeks. In `sync_scroll_view`, `strip_moves` is
+what decides. For tiling layouts there is no such sync.
+
+Do, behind the switch: a pure move (same size before and after, window
+shown before and after) of a tiled window becomes a `Role::Moving` entry
+(`upsert` with `from` = previous target). Resizes stay on the old path.
+In the scrolling layout, widen `strip_moves` to any column move with the
+switch on.
+
+Watch for: a relayout that moves one window and resizes its neighbour.
+`cycle_has_resize` makes both share `window_resize`'s timing today; keep
+that, by giving the peek's motion the same duration and easing.
+
+Live check: swap two equal windows; `TODO.md` 15 and 16.
+
+### Task 7: resize, a decision
+
+Do not start without the owner's answer. The options, to put to them
+with recordings from tasks 3 to 6:
+
+- (a) Leave resize on `ResizeSession`. Smallest risk; two systems remain,
+  but only one kind of animation uses the old one.
+- (b) `window_resize.style: "stretch"` on peeks: the content scales to
+  the animated rect and the app resizes on the first frame. `place_scaled`
+  already draws this. Simple, and how Hyprland looks; text is blurred
+  mid-resize.
+- (c) Port the `fill` style (grow-only registration, gap fill, edge
+  colour, mid-motion hand-off). The hard part the second version
+  described; only if (b) is not acceptable.
+
+### Task 8: remove what is no longer reached
+
+Only for kinds whose live check passed and whose default was flipped (a
+one-line change per kind, its own commit, after the owner says so).
+Then delete the old branch for that kind: `start_open_animation`,
+`start_away_animation`, `slide_in_monitor_rects`, `ResizeSession::zoom`
+and `update_zoom_fade`, `away_windows`, as each loses its last caller.
+`grep` for callers before deleting; one commit per kind.
+
+## Later, unchanged from the second version
+
+Sharing a core between the switch (`WorkspaceSurrogate`) and the scroll
+(`WindowPeek`), and one overlay hand-over for both. Still worth doing for
+upkeep, after task 6, when the peek's side of it has settled. Its
+findings stand (`git show ec8e0fe:STAND_INS_PLAN.md`, "Step 1 findings"):
+about 80 shared lines of wrappers, `Live` chosen twice by the same rule,
+and five differences a merge must carry (hand-back from below or above
+the window; copies faded or held at full; one backdrop style or both;
+fixed or clip-following pinned area; where a `Live` stand-in is cut).
+Task 2b narrows the second of those.
+
+Side fixes, any time: `TODO.md` "Still open" 4 (the switch's backdrop
+blends between focus styles).
 
 ## Risks
 
-- Most current behaviour was tuned against live recordings (companion
-  timing, z-order on hand-back, retargeted columns). Keep each of those
-  fixes' reasoning (commit messages from `599f0aa1` onward) and port it,
-  don't re-derive it.
-- `manager.rs` is ~4k lines; move code out of it in step 2 rather than
-  growing it.
-- Endpoint safety (`CLAUDE.md`): live checks stay manual and low-volume,
-  no scripted input bursts.
+- The hand-over code being reused was tuned against recordings for
+  columns that slide. A window that scales or fades is new to it: the
+  copies' opacity and a frame that is not the window's size are the two
+  places to look first if something flashes.
+- `Live` peeks (rounded corners, parallax != 1) stay on the old path
+  throughout. Square corners never pick `Live`, so the owner's config is
+  covered; say so in `TODO.md` rather than leave it implied.
+- `manager.rs` is about 4200 lines. Put new code in `peek_view.rs` and
+  `transit.rs`, not there.
+- Endpoint safety (`CLAUDE.md`): live checks stay manual and low-volume.

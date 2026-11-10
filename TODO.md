@@ -434,28 +434,26 @@ Set it for one run, e.g. from PowerShell in the repo:
 $env:GLAZEWM_ISOLATE = "noring,nobackdrop"; .\target\release\glazewm.exe
 ```
 
-## Next: one shared core for the switch and the scroll
+## Next: open, close and moves on pinned peeks
 
-`STAND_INS_PLAN.md`, revised 2026-11-04: what the stand-in systems
-(move/resize, workspace switch, scroll) do now, and the steps to share
-what the switch and the scroll do alike, each checked live before the
-next.
+`STAND_INS_PLAN.md`, rewritten 2026-11-10 as a task list a new session
+can follow. The scroll's per-window stand-in (`WindowPeek` and its
+hand-overs) becomes the one for every tiled window, one kind of
+animation at a time, each behind `GLAZEWM_ISOLATE=peeks` until seen
+live.
 
-1. Step 0, on the desktop: baseline recordings from a build of
-   `ab822ab` or a later docs-only commit (list in the plan). Not done
-   yet; every later step needs it.
-2. Step 1: one core type under `WorkspaceSurrogate` and `WindowPeek`,
-   and one function choosing `Live`. Moved code, no behaviour change.
-   The full merge first planned is dropped: they share about 80 lines of
-   wrappers, and differ in five ways the plan hadn't listed, one of them
-   the hand-back step 2 makes one (findings under step 1).
-3. Step 2: one overlay hand-over and hand-back on that core. Then decide
-   whether folding the two types is worth it.
-4. Step 3, decided after step 2: move/resize onto the core only if local
-   fixes for "Still open" 1 and 5 won't do.
+0. Baseline recordings on the desktop. Not done; task 3's check needs
+   them.
+1. Split the stand-in driver out of `scroll_view.rs` (moved code only).
+2. Entry track: frame maths, scaled and faded drawing, the switch.
+3. Open on peeks in tiling layouts. The gate: stop here if its live
+   check is worse than the old path.
+4. Restore. 5. Close and minimize. 6. Moves.
+7. Resize: your decision between three options, after 3 to 6.
+8. Remove the old paths, per kind, after you flip its default.
 
-"Still open" 3 and 4 are side fixes, any time (4 is nearly free after
-step 1).
+The switch and the scroll sharing a core (the plan's earlier steps 1
+and 2) comes after task 6: upkeep, nothing visible.
 
 ## Still open
 
