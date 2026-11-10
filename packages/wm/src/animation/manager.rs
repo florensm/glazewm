@@ -240,11 +240,11 @@ use wm_common::{
 use wm_platform::{
   lerp_f32,
   perf::{self, Stage},
-  sample_edge_color_async, Color, CornerStyle, DxgiVsyncWaiter,
-  EdgeColorCache, FrameClock, NativeBackdropOverlay, NativeBorderOverlay,
-  NativeSurrogate, NativeWindow, OpacityValue, Overlay, OverlayParams,
-  Rect, ResizeSession, SessionOptions, StyleBlend, SurrogateBatch,
-  WorkspaceSurrogate, HWND,
+  sample_edge_color_async, Color, CompanionCover, CornerStyle,
+  DxgiVsyncWaiter, EdgeColorCache, FrameClock, NativeBackdropOverlay,
+  NativeBorderOverlay, NativeSurrogate, NativeWindow, OpacityValue,
+  Overlay, OverlayParams, Rect, ResizeSession, SessionOptions, StyleBlend,
+  SurrogateBatch, WorkspaceSurrogate, HWND,
 };
 
 use crate::{
@@ -635,6 +635,9 @@ pub struct AnimationManager {
   /// `advance_focus_fades` while at rest, and by the scroll view while it
   /// draws them.
   focus_fades: FocusFades,
+  /// Covers of windows uncloaked without an animation, until their
+  /// companions are back over them (see `CompanionCover`).
+  companion_covers: HashMap<Uuid, CompanionCover>,
 }
 
 impl Drop for AnimationManager {
@@ -693,6 +696,7 @@ impl AnimationManager {
       sync_demoted_until: HashMap::new(),
       away_windows: HashMap::new(),
       focus_fades: FocusFades::default(),
+      companion_covers: HashMap::new(),
     }
   }
 
@@ -861,6 +865,54 @@ impl AnimationManager {
         .any(|(id, _, _)| id == window_id)
   }
 
+  /// Whether a stand-in other than a `CompanionCover` draws `window_id` or
+  /// hands it back: its own animation, a move's surrogate until it has
+  /// faded out, a workspace switch's, or a scroll peek.
+  pub fn stands_in_for(&self, window_id: &Uuid) -> bool {
+    self.animations.contains_key(window_id)
+      || self.has_active_surrogate(window_id)
+      || self.owns_window_position(window_id)
+      || self.scroll_view.draws_window(window_id)
+  }
+
+  /// Covers `window_id`, about to be uncloaked, with `cover` until its
+  /// companion is back over it.
+  pub fn add_companion_cover(
+    &mut self,
+    window_id: Uuid,
+    cover: CompanionCover,
+  ) {
+    self.companion_covers.insert(window_id, cover);
+    self.ensure_timer_running();
+  }
+
+  pub fn has_companion_cover(&self, window_id: &Uuid) -> bool {
+    self.companion_covers.contains_key(window_id)
+  }
+
+  pub fn drop_companion_cover(&mut self, window_id: &Uuid) {
+    self.companion_covers.remove(window_id);
+  }
+
+  /// Keeps each companion cover over its window, dropping those done
+  /// waiting (see `CompanionCover::awaits_companion`) and those whose
+  /// window another stand-in has taken since.
+  fn advance_companion_covers(&mut self) {
+    let taken = self
+      .companion_covers
+      .keys()
+      .filter(|id| self.stands_in_for(id))
+      .copied()
+      .collect::<Vec<_>>();
+
+    for id in taken {
+      self.companion_covers.remove(&id);
+    }
+    self
+      .companion_covers
+      .retain(|_, cover| cover.awaits_companion());
+  }
+
   /// Removes a window's animation and any associated resize session.
   pub fn remove_animation(&mut self, window_id: &Uuid) {
     self.animations.remove(window_id);
@@ -947,6 +999,7 @@ impl AnimationManager {
     // timer and the pending teardown finally runs.
     if !self.resize_sessions.is_empty()
       || self.pending_ws_cleanup.is_some()
+      || !self.companion_covers.is_empty()
     {
       return true;
     }
@@ -1094,6 +1147,7 @@ impl AnimationManager {
     self.pending_surrogate_updates.clear();
     self.workspace_switch = None;
     self.pending_ws_cleanup = None;
+    self.companion_covers.clear();
     self.clear_waiter();
     // On WM shutdown close-animation windows are left open — only clear
     // the tracking state without sending WM_CLOSE.
@@ -1951,6 +2005,7 @@ impl AnimationManager {
 
     advance_focus_fades(state, config);
     resync_settling_overlays(state);
+    state.animation_manager.advance_companion_covers();
 
     // Held in an `Option` so the nested `platform_sync` below can close it
     // early: leaving it open there made `Cleanup` enclose a second
@@ -3083,8 +3138,13 @@ impl AnimationManager {
   /// Whether `window_id` is about to be handed back from a surrogate
   /// drawing its companion, which only comes back over it some time after
   /// its uncloak: as an incoming window of a finished switch (see
-  /// `prepare_ws_hand_back`), or at the end of a move or resize.
+  /// `prepare_ws_hand_back`), at the end of a move or resize, or from a
+  /// `CompanionCover`.
   pub fn hands_back_to_companion(&self, window_id: &Uuid) -> bool {
+    if self.companion_covers.contains_key(window_id) {
+      return true;
+    }
+
     let from_switch = self.is_pending_ws_cleanup_incoming(window_id)
       && self
         .pending_ws_cleanup
@@ -3116,12 +3176,15 @@ impl AnimationManager {
     }
   }
 
-  /// Puts the surrogate of `window_id`'s finished move or resize back
-  /// over the window while it waits for the window's companion (see
-  /// `ResizeSession::cover_window`).
+  /// Puts the surrogate of `window_id`'s finished move or resize, or its
+  /// `CompanionCover`, back over the window while it waits for the
+  /// window's companion (see `ResizeSession::cover_window`).
   pub fn cover_companion_hand_back(&self, window_id: &Uuid) {
     if let Some(session) = self.handing_back_session(window_id) {
       session.cover_window();
+    }
+    if let Some(cover) = self.companion_covers.get(window_id) {
+      cover.cover_window();
     }
   }
 
@@ -3470,6 +3533,7 @@ impl AnimationManager {
 
         // Cover the window before the caller cloaks or minimizes it.
         session.show();
+        self.companion_covers.remove(&window_id);
         session.zoom = is_zoom;
         self.animations.insert(window_id, anim);
         self.resize_sessions.insert(window_id, session);

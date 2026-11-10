@@ -8,9 +8,9 @@ use wm_common::{
 };
 use wm_platform::{
   perf::{self, Stage},
-  BackdropOverlayParams, BorderOverlayParams, CornerStyle, LiveFrame,
-  NativeBackdropOverlay, NativeBorderOverlay, OpacityValue, Overlay,
-  OverlayParams, Rect, StyleBlend, SurrogateBatch, WindowZOrder,
+  BackdropOverlayParams, BorderOverlayParams, CompanionCover, CornerStyle,
+  LiveFrame, NativeBackdropOverlay, NativeBorderOverlay, OpacityValue,
+  Overlay, OverlayParams, Rect, StyleBlend, SurrogateBatch, WindowZOrder,
   WorkspaceSurrogate, HWND,
 };
 
@@ -1112,6 +1112,17 @@ fn redraw_containers(
     }
   }
 
+  cover_unanimated_uncloaks(
+    state,
+    &windows_to_redraw,
+    focused_container,
+    config,
+  );
+
+  // Covers of windows this pass hides again or hands to another stand-in,
+  // dropped once it has cloaked them.
+  let mut released_covers = Vec::new();
+
   // Whether any window in this redraw cycle changes size. Pure
   // translations in the same cycle then share the `window_resize` timing
   // so all edges stay in lock-step during the relayout (see
@@ -1496,6 +1507,9 @@ fn redraw_containers(
 
     debug!("Updating window position: {window}");
 
+    let is_applied =
+      matches!(position_result, AnimationPositionResult::Apply(_));
+
     match position_result {
       AnimationPositionResult::Frozen => {
         let _scope = perf::scope(Stage::RedrawFrozen);
@@ -1740,6 +1754,16 @@ fn redraw_containers(
       }
     }
 
+    let keeps_cover = is_applied
+      && is_visible
+      && !matches!(window.state(), WindowState::Minimized)
+      && !state.animation_manager.stands_in_for(&window.id());
+    if !keeps_cover
+      && state.animation_manager.has_companion_cover(&window.id())
+    {
+      released_covers.push(window.id());
+    }
+
     // Mark fullscreen windows as fullscreen on every redraw (including
     // during animations) to ensure browser fullscreen APIs work
     // correctly.
@@ -1782,6 +1806,10 @@ fn redraw_containers(
   // Cloak every window that entered its first `Frozen` frame this pass,
   // behind a single shared `DwmFlush` barrier. See `pending_cloaks`.
   commit_pending_cloaks(state, pending_cloaks, cloak_overlay_batch);
+
+  for id in &released_covers {
+    state.animation_manager.drop_companion_cover(id);
+  }
 
   // Every surrogate and overlay reposition queued during this pass goes
   // into one `DeferWindowPos` transaction, committed at the end of this
@@ -1875,6 +1903,124 @@ fn redraw_containers(
     z_order_touched,
     taskbar_updates,
   })
+}
+
+/// Puts up a `CompanionCover` over each window this pass uncloaks in place
+/// with no stand-in to hand it back, behind one shared `DwmFlush`, so the
+/// covers are on screen as the uncloaks in the redraw loop land.
+///
+/// Done ahead of the loop rather than by deferring those uncloaks past it:
+/// the loop shows windows before it hides the others (see the sort in
+/// `redraw_containers`), and an uncloak held back would land after the
+/// hide of the window it replaces, a frame with neither. With the covers
+/// up first, the loop's order is unchanged and what it shows and hides
+/// under them is never seen. A pass with no cover doesn't flush.
+fn cover_unanimated_uncloaks(
+  state: &mut WmState,
+  windows: &[WindowContainer],
+  focused_container: &Container,
+  config: &UserConfig,
+) {
+  let mut hiding = None;
+  let mut has_covers = false;
+
+  for window in windows {
+    let Some(rect) = unanimated_uncloak_rect(state, window) else {
+      continue;
+    };
+    let hiding = hiding.get_or_insert_with(|| hidden_by_pass(windows));
+    let set = window.effect_set(window.id() == focused_container.id());
+    let (_, corner_style, _) = surrogate_effects_for(set, config);
+
+    if let Some(cover) =
+      CompanionCover::new(&window.native(), &rect, &corner_style, hiding)
+    {
+      state
+        .animation_manager
+        .add_companion_cover(window.id(), cover);
+      has_covers = true;
+    }
+  }
+
+  if has_covers {
+    wm_platform::dwm_flush();
+  }
+}
+
+/// Where this pass uncloaks `window` without moving it and with no
+/// stand-in to hand it back (see [`is_unanimated_reveal`]), if it does.
+///
+/// It must stay where the layout last put it, so that no move animation
+/// starts, and be there already, cloaked: a window hidden outright, or a
+/// fullscreen one (covering it can end exclusive fullscreen), gets no
+/// cover.
+fn unanimated_uncloak_rect(
+  state: &WmState,
+  window: &WindowContainer,
+) -> Option<Rect> {
+  let id = window.id();
+  let shows = window.workspace().is_some_and(|w| w.is_displayed())
+    && !is_hidden_in_layout(window);
+  let has_stand_in = state.animation_manager.stands_in_for(&id)
+    || state.pending_sync.is_window_restore(&id);
+
+  if !is_unanimated_reveal(&window.display_state(), shows, has_stand_in)
+    || matches!(
+      window.state(),
+      WindowState::Fullscreen(_) | WindowState::Minimized
+    )
+    || window.active_drag().is_some()
+    || window.has_pending_dpi_adjustment()
+  {
+    return None;
+  }
+
+  let target = window
+    .to_rect()
+    .ok()?
+    .apply_delta(&window.total_border_delta().ok()?, None);
+  if state.window_target_positions.get(&id) != Some(&target) {
+    return None;
+  }
+
+  let rect = crate::layout::scrolling::real_window_rect(
+    &window.as_container(),
+    &target,
+  );
+  let is_in_place =
+    window.native().frame_with_shadows().ok().as_ref() == Some(&rect);
+
+  (is_in_place && window.native().is_cloaked().unwrap_or(false))
+    .then_some(rect)
+}
+
+/// Whether a window this pass `shows`, after `previous`, comes back on
+/// screen with nothing to hand it back unless it gets a `CompanionCover`.
+fn is_unanimated_reveal(
+  previous: &DisplayState,
+  shows: bool,
+  has_stand_in: bool,
+) -> bool {
+  shows
+    && matches!(previous, DisplayState::Hidden | DisplayState::Hiding)
+    && !has_stand_in
+}
+
+/// The windows of `windows` this pass hides.
+fn hidden_by_pass(windows: &[WindowContainer]) -> Vec<HWND> {
+  windows
+    .iter()
+    .filter(|window| {
+      let shows = window.workspace().is_some_and(|w| w.is_displayed())
+        && !is_hidden_in_layout(*window);
+      !shows
+        && matches!(
+          window.display_state(),
+          DisplayState::Shown | DisplayState::Showing
+        )
+    })
+    .map(|window| window.native().hwnd())
+    .collect()
 }
 
 /// Adds or removes the taskbar buttons a redraw pass queued.

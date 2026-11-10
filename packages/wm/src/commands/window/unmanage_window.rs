@@ -43,6 +43,7 @@ pub fn unmanage_window(
   state: &mut WmState,
 ) -> anyhow::Result<()> {
   state.animation_manager.remove_animation(&window.id());
+  state.animation_manager.drop_companion_cover(&window.id());
 
   // Destroy any static backdrop/border overlay owned by this window
   // directly, rather than leaving it for `sync_overlays`'s retain-based

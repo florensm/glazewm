@@ -831,6 +831,18 @@ impl NativeSurrogate {
     self.companion_wait.awaits(self.companion)
   }
 
+  /// [`awaits_companion`](Self::awaits_companion), also while any of
+  /// `obstructions` shows over the companion (see
+  /// [`HandoffWait::awaits_unobstructed`]).
+  pub(crate) fn awaits_unobstructed_companion(
+    &mut self,
+    obstructions: &[Companion],
+  ) -> bool {
+    self
+      .companion_wait
+      .awaits_unobstructed(self.companion, obstructions)
+  }
+
   /// Starts a fresh companion wait (see [`HandoffWait::restart`]), as the
   /// stand-in begins handing its window back.
   pub(crate) fn begin_hand_back(&mut self) {
@@ -937,6 +949,19 @@ impl NativeSurrogate {
   /// window once uncloaked instead of sitting behind it.
   pub fn raise_above(&self, window: HWND) -> crate::Result<()> {
     window_class::place_above(self.hwnd(), window)
+  }
+
+  /// Puts the surrogate directly above `anchor`, unless it already is
+  /// anywhere above it, so it keeps covering a window raised past it.
+  pub(crate) fn keep_above(&self, anchor: HWND) {
+    if crate::companion::is_above(self.hwnd(), anchor) {
+      return;
+    }
+    if let Err(err) = self.raise_above(anchor) {
+      tracing::warn!(
+        "Failed to raise a surrogate above its window: {err}"
+      );
+    }
   }
 
   /// Returns the logical dimensions the main thumbnail currently samples.

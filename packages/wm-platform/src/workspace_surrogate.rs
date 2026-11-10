@@ -693,17 +693,7 @@ impl WorkspaceSurrogate {
   /// [`prepare_hand_back`]: WorkspaceSurrogate::prepare_hand_back
   pub fn cover_window(&mut self) {
     self.covers_window = true;
-
-    let window = HWND(self.source);
-    if crate::companion::is_above(self.hwnd(), window) {
-      return;
-    }
-
-    if let Err(err) = self.inner.raise_above(window) {
-      tracing::warn!(
-        "Failed to raise a surrogate above its window: {err}"
-      );
-    }
+    self.inner.keep_above(HWND(self.source));
   }
 
   /// Whether [`cover_window`](Self::cover_window) put the surrogate above
