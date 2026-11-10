@@ -27,6 +27,25 @@ On top of `feat/todo-cleanup` (the macOS/`hide_method` cleanup):
   show no shadow; the real one returns as they land. Don't bring them back
   without a live A/B.
 
+Smoothness pass on `tryout/smooth` (2026-11-10, from `tryout/particles`;
+findings, evidence and what is left in `SMOOTHNESS_REVIEW.md`). None of
+it seen live: checks 14-19 below.
+
+- `0ab906a6` Frames are evaluated on a steady estimate of the vblank
+  times (`FrameClock`, `wm-platform/src/frame_clock.rs`) instead of at
+  the time the timer thread happened to wake. `d8598e3f` Scrolls are
+  paced by their monitor's vblank like every other animation.
+  `25cffc9f` The overview steps by the same clock.
+- `4f63c742` A move retargeted mid-way carries on from exactly what was
+  drawn, instead of up to half a frame of travel off.
+- `4da212d7` No `DwmFlush` on the WM thread at the end of every move,
+  resize and open: the overlay move it waited for was already made.
+- `be26317b` The wallpaper surface cache holds five per display, so two
+  displays no longer bake each other's surfaces out.
+- `a6a2bf33` A closed overview frees its card pictures' pixels.
+- `84b0b949` The backdrop device's adapter is logged, as a warning when
+  another adapter drives a display.
+
 How the pieces fit: every moving window is a DWM thumbnail in a surrogate
 window that spans the monitor and never moves (`WorkspaceSurrogate` for
 switches, `WindowPeek` for scrolling). Its ring and backdrop are more
@@ -188,6 +207,44 @@ file), `git pull` on `tryout/todo-cleanup`, `cargo build --release`, run.
     0.001)"` swings past and back without breaking the fades. Each
     `switch_style` with the arrows and the wheel.
 
+Smoothness pass (`tryout/smooth`; on the laptop `test/smooth`, by eye and
+`errors.log` only):
+
+14. **Steady motion** (`0ab906a6`, `d8598e3f`, `25cffc9f`): scroll a
+    scrolling layout with single presses and with a held key, switch
+    workspaces, move and resize, open and close the overview, on each
+    monitor. Motion is even, starts at once, never runs ahead and snaps
+    back, and never freezes mid-way. Desktop: also with the game or a
+    video running on the other monitor, and once on the 60 Hz monitor
+    right after one on the faster one. Laptop: on battery (60 Hz) and
+    plugged in, and across the internal panel and the external monitor.
+    `errors.log`: no "Animation timer stalled" lines.
+15. **Retargeted moves** (`4f63c742`): quick repeated scroll presses,
+    each before the last lands: the strip glides on with no hitch or
+    step back at a press. Same for a resize key held down in a tiling
+    layout: the windows keep their place at each repeat.
+16. **Ends of moves** (`4da212d7`): move and resize a window with a
+    backdrop and a border, also past a neighbour whose own move ends
+    first, and a window in a stack (tab bar): as each lands, the backdrop
+    and ring don't flicker, and the ring keeps framing the tab bar.
+    Desktop: `perf_bench` `resize` and `move` before and after (commands
+    in `SMOOTHNESS_REVIEW.md`): about one `dwm_flush` call less per
+    burst.
+17. **Two displays** (`be26317b`): with windows on both and the overview
+    opened once, change focus back and forth and open new windows: no
+    hitch as a backdrop appears, and backdrops show the right wallpaper
+    on each display. Task Manager, Details tab: GlazeWM's memory and GPU
+    memory don't climb as windows are opened and closed.
+18. **Overview memory** (`a6a2bf33`): open the overview in the stack
+    layout, close it, note GlazeWM's memory in Task Manager; it is lower
+    than with the overview open, and opening it again draws every card
+    (none blank, none stale).
+19. **Adapter log** (`84b0b949`): after a start with a backdrop
+    configured, `errors.log` has no "Backdrops are drawn on" warning when
+    one GPU drives every display. On the laptop, note what it says with
+    and without the external monitor, and whether Defender leaves the
+    build alone; this commit is the only one with new Windows calls.
+
 If bars or flicker show, isolate them with `GLAZEWM_ISOLATE` (below), one
 restart per flag: `noring`, `nobackdrop`, then `live`. With a long
 `duration_ms` (e.g. 3000) for `scroll` and `workspace_switch`, one
@@ -286,6 +343,11 @@ scroll is dropped.
 
 ## Laptop
 
+`test/smooth` is cut from `tryout/smooth` the same way. It was built and
+tested for the Windows target off Windows only (`x86_64-pc-windows-gnu`,
+tests under Wine), not natively. On the laptop, as below with
+`test/smooth` for the branch name.
+
 The laptop runs `test/todo-cleanup`, re-cut from `tryout/todo-cleanup` after
 each change following `CLAUDE.md`'s build-targets recipe, and built and
 tested natively before it is pushed. On the laptop:
@@ -319,10 +381,12 @@ cargo clippy --workspace --all-targets --target x86_64-pc-windows-gnu -- -D warn
 cargo test --workspace --no-run --target x86_64-pc-windows-gnu
 ```
 
-With `wine64` installed, the linked test executables (paths printed by the
+With `wine64` (or `wine`) installed, the linked test executables (paths printed by the
 command above) run too, one test at a time: run in parallel, the `wm` ones
 stall under Wine. Tests needing a real desktop (a message-only window, or
-`Windows.UI.Composition`) fail there.
+`Windows.UI.Composition`) fail there: eight of `wm-platform`'s as of
+`b6c9c8a8` (`dispatcher` x4, `display`, `event_loop`, `ui_thread`,
+`wallpaper_surface::tests::bakes_the_primary_monitor_end_to_end`).
 
 ```bash
 WINEDEBUG=-all wine64 <test executable> --test-threads=1
