@@ -14,6 +14,7 @@ mod dwm_thumbnail;
 mod error;
 mod event_loop;
 mod external_color_source;
+mod frame_clock;
 mod hidden_alpha;
 pub mod isolation;
 mod keybinding_listener;
@@ -66,6 +67,7 @@ pub use display_listener::*;
 pub use error::*;
 pub use event_loop::*;
 pub use external_color_source::*;
+pub use frame_clock::FrameClock;
 pub use keybinding_listener::*;
 pub use models::*;
 pub use mouse_listener::*;
@@ -173,27 +175,17 @@ pub fn dwm_flush() {
 ///
 /// Unlike `DwmFlush`, which aligns to the primary monitor's global
 /// composition cycle, this waits for the vertical-blank signal of a
-/// specific monitor. Clones share the same atomics so all copies observe
-/// period refinements and wake timestamps written by the timer thread.
+/// specific monitor.
 #[derive(Clone)]
 pub struct DxgiVsyncWaiter {
   output: windows::Win32::Graphics::Dxgi::IDXGIOutput,
   /// `HMONITOR` handle of the monitor this waiter was created for.
   monitor_handle: isize,
-  /// Monitor refresh period in microseconds, shared across clones.
+  /// Refresh period of the monitor's display mode, in microseconds.
   ///
-  /// Initialized from `query_frame_period_us`; refined downward in `wait`
-  /// if the measured vblank delta is smaller (truer). Defaults to
-  /// `16_667` (60 Hz).
-  period_us: std::sync::Arc<std::sync::atomic::AtomicU64>,
-  /// Timestamp of the most recent successful `WaitForVBlank` wake-up.
-  ///
-  /// Written by the timer thread immediately after vsync fires. Read by
-  /// `predictive_vsync_now` to lead the animation clock by a fraction of
-  /// a frame so the computed position aligns with the next DWM
-  /// composition.
-  pub last_wake:
-    std::sync::Arc<std::sync::Mutex<Option<std::time::Instant>>>,
+  /// The highest rate of a panel with a dynamic refresh rate, which may
+  /// be running slower: [`FrameClock`] measures the period in use.
+  period_us: u64,
 }
 
 /// Process-wide cache for the `IDXGIFactory` used by
@@ -256,10 +248,11 @@ impl DxgiVsyncWaiter {
     self.monitor_handle
   }
 
-  /// Returns the current frame period estimate in microseconds.
+  /// Returns the frame period of the monitor's display mode in
+  /// microseconds.
   #[must_use]
   pub fn frame_period_us(&self) -> u64 {
-    self.period_us.load(std::sync::atomic::Ordering::Relaxed)
+    self.period_us
   }
 
   /// Returns the `HMONITOR` handle of the monitor nearest to `hwnd`.
@@ -310,10 +303,7 @@ impl DxgiVsyncWaiter {
           return Ok(Self {
             output,
             monitor_handle,
-            period_us: std::sync::Arc::new(
-              std::sync::atomic::AtomicU64::new(period_us),
-            ),
-            last_wake: std::sync::Arc::new(std::sync::Mutex::new(None)),
+            period_us,
           });
         }
         oi += 1;
@@ -365,36 +355,12 @@ impl DxgiVsyncWaiter {
   }
 
   /// Blocks until the next vertical-blank signal from this output.
-  ///
-  /// On success, records the wake timestamp in `last_wake` and ratchets
-  /// `period_us` downward if the measured delta is plausible (25-370 Hz).
-  /// Returns `true` on success, `false` on error.
+  /// Returns whether it waited: not on an error.
   #[must_use]
   pub fn wait(&self) -> bool {
     // SAFETY: `self.output` is a valid `IDXGIOutput` kept alive by the
     // `Clone`-counted reference.
-    if unsafe { self.output.WaitForVBlank() }.is_err() {
-      return false;
-    }
-    let now = std::time::Instant::now();
-    if let Ok(mut guard) = self.last_wake.lock() {
-      if let Some(prev) = *guard {
-        let delta_us = u64::try_from(now.duration_since(prev).as_micros())
-          .unwrap_or(u64::MAX);
-        // Plausible vblank window: 25-370 Hz -> 2_700-40_000 us.
-        if (2_700..=40_000).contains(&delta_us) {
-          let current =
-            self.period_us.load(std::sync::atomic::Ordering::Relaxed);
-          if delta_us < current {
-            self
-              .period_us
-              .store(delta_us, std::sync::atomic::Ordering::Relaxed);
-          }
-        }
-      }
-      *guard = Some(now);
-    }
-    true
+    unsafe { self.output.WaitForVBlank() }.is_ok()
   }
 }
 
