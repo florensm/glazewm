@@ -241,6 +241,63 @@ fn cached_dxgi_factory(
   Ok(factory)
 }
 
+/// A graphics adapter and the displays it drives.
+pub(crate) struct DisplayAdapter {
+  /// Identifies the adapter among those of this boot.
+  pub(crate) luid: (u32, i32),
+  pub(crate) name: String,
+  /// GDI device names of its displays, e.g. `\\.\DISPLAY1`.
+  pub(crate) displays: Vec<String>,
+}
+
+/// Every graphics adapter, with the displays each drives.
+///
+/// On a laptop with two GPUs the internal panel usually hangs off the
+/// integrated one and external ports often off the discrete one.
+pub(crate) fn display_adapters() -> crate::Result<Vec<DisplayAdapter>> {
+  use windows::Win32::Graphics::Dxgi::{
+    DXGI_ADAPTER_DESC, DXGI_OUTPUT_DESC,
+  };
+
+  let factory = cached_dxgi_factory()?;
+  let mut adapters = Vec::new();
+
+  // SAFETY: `factory` is live; an index past the last adapter or output
+  // returns an error, which ends its loop. The descriptions are
+  // stack-allocated out-parameters.
+  unsafe {
+    while let Ok(adapter) =
+      factory.EnumAdapters(u32::try_from(adapters.len())?)
+    {
+      let mut desc = DXGI_ADAPTER_DESC::default();
+      adapter.GetDesc(&raw mut desc)?;
+
+      let mut displays = Vec::new();
+      while let Ok(output) =
+        adapter.EnumOutputs(u32::try_from(displays.len())?)
+      {
+        let mut output_desc = DXGI_OUTPUT_DESC::default();
+        output.GetDesc(&raw mut output_desc)?;
+        displays.push(wide_to_string(&output_desc.DeviceName));
+      }
+
+      adapters.push(DisplayAdapter {
+        luid: (desc.AdapterLuid.LowPart, desc.AdapterLuid.HighPart),
+        name: wide_to_string(&desc.Description),
+        displays,
+      });
+    }
+  }
+
+  Ok(adapters)
+}
+
+/// The text of a fixed-size wide string field, up to its terminator.
+fn wide_to_string(wide: &[u16]) -> String {
+  let len = wide.iter().position(|c| *c == 0).unwrap_or(wide.len());
+  String::from_utf16_lossy(&wide[..len])
+}
+
 impl DxgiVsyncWaiter {
   /// Returns the `HMONITOR` handle this waiter was created for.
   #[must_use]
@@ -485,3 +542,20 @@ pub use windows::Win32::{
     WS_MAXIMIZEBOX, WS_VISIBLE,
   },
 };
+
+#[cfg(test)]
+mod tests {
+  use super::wide_to_string;
+
+  #[test]
+  fn wide_string_ends_at_its_terminator() {
+    let mut name = [0u16; 8];
+    for (slot, unit) in name.iter_mut().zip("GPU 1".encode_utf16()) {
+      *slot = unit;
+    }
+    assert_eq!(wide_to_string(&name), "GPU 1");
+
+    let full = "ABCD".encode_utf16().collect::<Vec<_>>();
+    assert_eq!(wide_to_string(&full), "ABCD");
+  }
+}
