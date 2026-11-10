@@ -1736,6 +1736,9 @@ impl AnimationManager {
               continue;
             }
 
+            // Before the motion update below, which then draws it.
+            s.refresh_companion();
+
             let is_focused = Some(window_id) == focused_id_for_overlay;
             let (from_alpha, _, from_overlays) = surrogate_effects_for(
               effect_set(window_id, entry.was_focused),
@@ -3096,7 +3099,20 @@ impl AnimationManager {
   /// Hands a finished or interrupted slide's surrogates to
   /// `pending_ws_cleanup`, merging with any still waiting there so that
   /// none are destroyed before their real window is uncloaked.
-  fn stash_for_ws_cleanup(&mut self, ws: WorkspaceSwitchState) {
+  fn stash_for_ws_cleanup(&mut self, mut ws: WorkspaceSwitchState) {
+    // A last look for companions shown since, before the hand-back and
+    // the z-order it keeps for one (see `hands_back_to_companion`).
+    for surrogate in ws
+      .windows
+      .values_mut()
+      .filter(|entry| {
+        entry.is_incoming && entry.hand_back == HandBack::Pending
+      })
+      .filter_map(|entry| entry.surrogate.as_mut())
+    {
+      surrogate.adopt_companion();
+    }
+
     match &mut self.pending_ws_cleanup {
       Some(pending) => pending.windows.extend(ws.windows),
       None => self.pending_ws_cleanup = Some(ws),

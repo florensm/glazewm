@@ -1,4 +1,7 @@
-use std::sync::OnceLock;
+use std::{
+  sync::OnceLock,
+  time::{Duration, Instant},
+};
 
 use windows::{
   core::{w, PCWSTR},
@@ -22,6 +25,12 @@ use crate::{
 };
 
 const CLASS_NAME: PCWSTR = w!("GlazeWM_Surrogate");
+
+/// How often a stand-in showing no companion looks for one shown since
+/// (see [`NativeSurrogate::rechecks_companion`]). Time-based, as ticks run
+/// at up to the fastest monitor's refresh rate, and each look past
+/// `Companion::find`'s cache is an `EnumWindows` scan.
+const COMPANION_RECHECK_INTERVAL: Duration = Duration::from_millis(100);
 
 fn ensure_class_registered() {
   static REGISTERED: OnceLock<()> = OnceLock::new();
@@ -416,6 +425,9 @@ pub struct NativeSurrogate {
   companion: Option<Companion>,
   /// See [`NativeSurrogate::awaits_companion`].
   companion_wait: HandoffWait,
+  /// When the surrogate last looked for a companion. See
+  /// [`COMPANION_RECHECK_INTERVAL`].
+  companion_checked_at: Instant,
   /// Logical (visible-content) dimensions the main thumbnail samples.
   /// Updated by [`reregister_thumbnail`] when the registration size
   /// changes.
@@ -577,6 +589,7 @@ impl NativeSurrogate {
       thumbnail,
       companion,
       companion_wait: HandoffWait::default(),
+      companion_checked_at: Instant::now(),
       content_size: (logical_thumb.width(), logical_thumb.height()),
       border_inset,
       is_visible: false,
@@ -679,6 +692,7 @@ impl NativeSurrogate {
       self.stretch = stretch;
     }
     self.companion_wait = HandoffWait::default();
+    self.companion_checked_at = Instant::now();
 
     let (src, dst) = content_rects(
       logical_thumb.width(),
@@ -842,13 +856,24 @@ impl NativeSurrogate {
     }
   }
 
+  /// Whether it is time to look for a companion shown since the
+  /// surrogate last did (see [`adopt_companion`](Self::adopt_companion)):
+  /// at most every [`COMPANION_RECHECK_INTERVAL`], and never once it has
+  /// one.
+  #[must_use]
+  pub(crate) fn rechecks_companion(&self) -> bool {
+    self.companion.is_none()
+      && self.companion_checked_at.elapsed() >= COMPANION_RECHECK_INTERVAL
+  }
+
   /// Switches the thumbnail from `source_hwnd` to its companion, drawn at
   /// `opacity`, if it has none yet and one is shown now. Returns whether
-  /// it did.
+  /// it did. A hidden thumbnail, e.g. one handed back, is left as it is.
   ///
   /// The companion's thumbnail is registered before the window's goes, so
-  /// it stacks above it and no composition shows neither. It keeps what
-  /// the window's showed, mapped onto the companion.
+  /// it stacks above it and no composition shows neither, but also above
+  /// any thumbnail registered since the window's. It keeps what the
+  /// window's showed, mapped onto the companion.
   pub(crate) fn adopt_companion(
     &mut self,
     source_hwnd: HWND,
@@ -857,11 +882,16 @@ impl NativeSurrogate {
     if self.companion.is_some() {
       return false;
     }
-    let Some(shown) =
-      self.thumbnail.as_ref().map(|thumbnail| *thumbnail.look())
+    let Some(shown) = self
+      .thumbnail
+      .as_ref()
+      .map(|thumbnail| *thumbnail.look())
+      .filter(|look| look.visible)
     else {
       return false;
     };
+
+    self.companion_checked_at = Instant::now();
     let Some(companion) = Companion::find(source_hwnd) else {
       return false;
     };
@@ -876,17 +906,14 @@ impl NativeSurrogate {
       },
       |src| (src, shown.dest),
     );
-    let look = Look {
-      visible: shown.visible,
-      ..thumbnail_look(
-        Some(companion),
-        src,
-        dst,
-        self.border_inset,
-        opacity,
-        self.stretch.then_some(self.window_size),
-      )
-    };
+    let look = thumbnail_look(
+      Some(companion),
+      src,
+      dst,
+      self.border_inset,
+      opacity,
+      self.stretch.then_some(self.window_size),
+    );
     let Some(thumbnail) =
       register_thumbnail(self.hwnd(), source_hwnd, Some(companion), look)
     else {

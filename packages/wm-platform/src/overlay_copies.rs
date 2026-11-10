@@ -347,6 +347,23 @@ impl OverlayCopies {
     self.ring.is_some()
   }
 
+  /// Registers the ring copy on `dest` anew as it is, so it stacks above
+  /// thumbnails registered there since. The new one goes up before the
+  /// old one goes, so no composition shows neither.
+  pub(crate) fn raise_ring(&mut self, dest: HWND) {
+    let Some(ring) = &mut self.ring else {
+      return;
+    };
+
+    if let Some(thumbnail) = Thumbnail::register_with(
+      dest,
+      HWND(ring.source),
+      *ring.thumbnail.look(),
+    ) {
+      ring.thumbnail = thumbnail;
+    }
+  }
+
   /// Draws the backdrops `styles` give a window at `window_rest`, with its
   /// frame at `frame`, on `monitor`, on `dest` from now on, in whichever
   /// of them [`show_backdrop_blend`](Self::show_backdrop_blend) picks,

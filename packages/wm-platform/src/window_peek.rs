@@ -291,6 +291,35 @@ impl WindowPeek {
     }
   }
 
+  /// Switches the window's thumbnail to its companion if one was shown
+  /// since the peek last looked, e.g. for a column just opened, as shades
+  /// takes some time to cover it. Looks at most every 100 ms (see
+  /// `NativeSurrogate::rechecks_companion`).
+  pub fn refresh_companion(&mut self) {
+    if self.surrogate.rechecks_companion() {
+      self.adopt_companion();
+    }
+  }
+
+  /// [`refresh_companion`](Self::refresh_companion), unthrottled. A peek
+  /// that handed its window back keeps drawing nothing of it.
+  ///
+  /// The companion is drawn as the window was, then at
+  /// [`window_opacity`](Self::window_opacity), and the ring copy is put
+  /// back over it.
+  fn adopt_companion(&mut self) {
+    if self.drawn == Drawn::HandedBack
+      || !self
+        .surrogate
+        .adopt_companion(self.source, self.window_opacity())
+    {
+      return;
+    }
+
+    self.surrogate.set_window_opacity(self.window_opacity());
+    self.copies.raise_ring(self.surrogate.hwnd());
+  }
+
   /// Gives the real window back the alpha a handover set aside, unless it
   /// was set again since. No-op otherwise.
   pub fn restore_alpha(&mut self) {
@@ -442,8 +471,10 @@ impl WindowPeek {
   ///
   /// A peek is reused for move after move, so a wait kept from an earlier
   /// landing would have timed out and let a later one show the window
-  /// before its companion.
+  /// before its companion. A companion shown since the peek last looked
+  /// is picked up first, so the hand-back waits for it.
   pub fn begin_hand_back(&mut self) {
+    self.adopt_companion();
     self.surrogate.begin_hand_back();
 
     if let Err(err) = self.surrogate.raise_above(self.source) {

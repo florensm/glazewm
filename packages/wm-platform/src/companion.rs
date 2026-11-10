@@ -30,7 +30,8 @@ const COMPANION_PROPERTY: PCWSTR = w!("shades.CompanionOf");
 /// How long a scan for companions is reused. A workspace switch creates a
 /// surrogate per window in one tick, which then costs one `EnumWindows`
 /// instead of one each; a companion appearing within this window is missed
-/// for the animation, which then shows the window itself.
+/// until a stand-in looks again (see
+/// `NativeSurrogate::rechecks_companion`).
 const SNAPSHOT_TTL: Duration = Duration::from_millis(50);
 
 /// Every `(window, companion)` pair from a scan, and when it ran.

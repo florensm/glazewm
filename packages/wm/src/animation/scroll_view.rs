@@ -274,6 +274,7 @@ impl ScrollView {
           // redrawn, is drawn all the same.
           entry.peek.restore_alpha();
           entry.peek.show_window();
+          entry.peek.refresh_companion();
           entry.motion.start_clock(clock_origin);
           let (rect, _) = entry.motion.current_state_at(now);
           entry.place(&rect, batch);

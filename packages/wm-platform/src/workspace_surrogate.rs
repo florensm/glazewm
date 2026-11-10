@@ -120,6 +120,10 @@ pub struct WorkspaceSurrogate {
   /// At `1.0` (default) the opacity is constant throughout the
   /// animation; at `0.0` the window fully fades out or in.
   opacity_endpoint: f32,
+  /// The fraction of `window_opacity()` the window's thumbnail was last
+  /// drawn at, or `None` while it warms up (see
+  /// [`show_initial`](Self::show_initial)).
+  drawn_frac: Option<f32>,
   /// Positioning strategy, chosen once at creation based on whether the
   /// window has a backdrop configured.
   mode: SurrogateMode,
@@ -322,6 +326,7 @@ impl WorkspaceSurrogate {
       viewport: viewport.clone(),
       opacity,
       opacity_endpoint: opacity_endpoint.clamp(0.0, 1.0),
+      drawn_frac: Some(1.0),
       mode,
       border_inset,
       live_frame: None,
@@ -449,6 +454,7 @@ impl WorkspaceSurrogate {
   /// Draws the window, ring and backdrop at `frac` of their own
   /// opacities.
   fn set_opacity_frac(&mut self, frac: f32) {
+    self.drawn_frac = Some(frac);
     self.set_opacities(
       scale_alpha(self.window_opacity(), frac),
       scale_alpha(u8::MAX, frac),
@@ -460,6 +466,39 @@ impl WorkspaceSurrogate {
   /// `NativeSurrogate::stand_in_opacity`).
   fn window_opacity(&self) -> u8 {
     self.inner.stand_in_opacity(self.opacity)
+  }
+
+  /// Switches the window's thumbnail to its companion if one was shown
+  /// since the surrogate last looked, e.g. for a window shades had not
+  /// covered yet as the switch began. Looks at most every 100 ms (see
+  /// `NativeSurrogate::rechecks_companion`).
+  pub fn refresh_companion(&mut self) {
+    if self.inner.rechecks_companion() {
+      self.adopt_companion();
+    }
+  }
+
+  /// [`refresh_companion`](Self::refresh_companion), unthrottled, e.g.
+  /// right before the hand-back, which then takes the companion's path.
+  /// A surrogate whose thumbnail is hidden, e.g. handed back, keeps it.
+  ///
+  /// The companion is drawn as the window was, then at the same fraction
+  /// of its own opacity, and the ring copy is put back over it.
+  pub fn adopt_companion(&mut self) {
+    let opacity = self.drawn_frac.map_or(WARM_UP_OPACITY, |frac| {
+      scale_alpha(self.window_opacity(), frac)
+    });
+    if !self.inner.adopt_companion(HWND(self.source), opacity) {
+      return;
+    }
+
+    if let Some(frac) = self.drawn_frac {
+      self
+        .inner
+        .set_window_opacity(scale_alpha(self.window_opacity(), frac));
+    }
+    let dest = self.hwnd();
+    self.copies.raise_ring(dest);
   }
 
   /// Live footprint for the current animation frame, when in
@@ -684,6 +723,7 @@ impl WorkspaceSurrogate {
   pub fn show_initial(&mut self) {
     self.show_at_rest();
     self.set_opacities(WARM_UP_OPACITY, WARM_UP_OPACITY);
+    self.drawn_frac = None;
   }
 
   /// Takes over showing the window from `window`, which is about to be
