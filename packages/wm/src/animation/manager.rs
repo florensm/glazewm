@@ -3390,10 +3390,11 @@ impl AnimationManager {
     // still set opacity_from explicitly to combine fade with zoom.
     let effective_opacity_from = params.away_opacity;
 
-    // Cloak zoom windows immediately so the real window never appears at
-    // full size before the surrogate takes over. Non-zoom styles are
-    // cloaked later in the Frozen branch of platform_sync (on the
-    // first frame).
+    // A zoom starts from no size, so a window still on screen (one coming
+    // back from minimized; a new one is cloaked by `manage_window`) is
+    // cloaked at once rather than shown at full size until the first
+    // frame. Other styles' windows are covered by their stand-in first,
+    // in the `Frozen` branch of `platform_sync`.
     if is_zoom {
       let _ = native_window.set_cloaked(true);
     }
