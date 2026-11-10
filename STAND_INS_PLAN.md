@@ -413,14 +413,53 @@ Do, all behind `isolation::current().peeks`:
    once. Recompute it after a successful `enter`.
 4. Install the monitor's vsync waiter and start the timer as
    `drive_moving` does (`scroll_view.rs`).
-5. A retarget while entering (another window opens): `upsert` already
-   retargets the motion of an entry that is moving, keeping its speed
-   (`retargeted`). Make sure it keeps `transit` untouched. This is `ANIMATION_REVIEW.md` finding 9; add a
-   unit test that a retargeted entry's `amount_at` is unchanged.
+5. A retarget while entering (another window opens and the first one's
+   tile changes). Nothing does this for a tiling-layout window today:
+   `upsert`'s only caller is `sync_scroll_view`, and `enter` runs once
+   (found when 3a was first attempted). Without it the peek keeps
+   drawing the old tile while `follow_retargeted_column` moves the real
+   window to the new one, and the hand-back shows it misplaced.
+
+   So: in `platform_sync`'s `Frozen` branch, beside
+   `follow_retargeted_column`, when the switch is on, the entry has a
+   transit, is not a column, and `owned_target` differs from the new
+   rect, call a new `PeekView::retarget_entering(id, target, duration_ms,
+   easing, now)`. It retargets the motion only
+   (`WindowAnimationState::retargeted`, clock started at `now`) and
+   leaves `transit` untouched. Timing: what `start_animation_if_needed`
+   would pick for that window (`window_move`, or `window_resize` when
+   the tile's size changes or `cycle_has_resize`), so it stays in step
+   with its neighbours, as the old path's `update_target` does. Not the
+   scroll's timing. Update the peek's `rest` for the new tile's size
+   through whatever `upsert` uses for a retargeted column.
+
+   This is `ANIMATION_REVIEW.md` finding 9; add a unit test that a
+   retargeted entry's `amount_at` is unchanged.
 6. `take_departed` (scroll sync) removes entries of windows that are not
    scrolling columns. Entries with a `transit` must survive it: give
    `Entry` an `is_column: bool`, set by `sync_scroll_view`'s `upsert`
    calls, and only take departed column entries.
+
+7. Parity with `start_open_animation`, so the switch changes how an
+   open is drawn and nothing else:
+   - `enter` returns `false` for a transition with nothing to show (a
+     stationary style that is not a zoom, with `away_opacity >= 1`);
+   - a stationary, non-zoom style (a plain fade) holds its transit at
+     the start for `OPEN_PAINT_GRACE` (`clock.start_delay`), as the old
+     path does. Slides and zooms get none (`ANIMATION_REVIEW.md` 12
+     stays open for both paths).
+8. The ring copy must fade with the window. `track_overlays` runs after
+   `tick`, and `carry_ring` calls `WindowPeek::carry_ring`, which covers
+   the ring at full opacity (`OverlayCopies::cover_ring`): on a fading
+   entry that would undo `place_scaled` every pass. Make
+   `WindowPeek::carry_ring` (and `show_backdrop`, if it does the same)
+   apply the peek's `frac` after covering. At `frac` 1 the result must
+   be what it is now. This is in `wm-platform`, outside the `Handover`
+   steps rule 5 protects; do not change those.
+9. `Entry` holds a `WindowPeek`, a real window, so the unit tests below
+   are on pure functions: factor "is this moving entry complete",
+   "which entries does `take_departed` take" and the retarget into
+   functions over `motion`, `transit` and `is_column`, and test those.
 
 Do not: touch `start_open_animation` or `ResizeSession`; touch scrolling
 columns in this step; handle `Live` peeks.
