@@ -1621,13 +1621,7 @@ fn redraw_containers(
               &mut cloak_overlay_batch,
             );
           }
-          if let Some(session) = state
-            .animation_manager
-            .resize_sessions
-            .get_mut(&window.id())
-          {
-            session.show();
-          }
+          state.animation_manager.reveal_session(&window.id());
 
           // Queued rather than cloaked here: the cloak has to be preceded
           // by a `DwmFlush`, and doing that inline blocks the WM thread
