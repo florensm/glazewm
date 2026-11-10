@@ -146,6 +146,13 @@ kind stays on the old path until you have seen the new one.
 
 ## Tasks
 
+Owner's call, 2026-11-10: they cannot run live checks for now, so tasks
+3b to 6 are built one after another without waiting for 3a's gate. All
+of it stays behind the switch, and every live check still has to be run
+before a default is flipped. A flaw found later in 3a may mean rework in
+what was built on it. Tasks 7 to 9 still wait: for `perf.log`, for the
+owner's decision, and for seen-working code.
+
 - [ ] 0. Baseline recordings (desktop, by hand)
 - [x] 1. Split the per-window stand-in out of the scroll view (move only)
 - [x] 2. Entry track: the maths, the drawing, the switch
