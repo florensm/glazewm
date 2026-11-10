@@ -46,6 +46,8 @@ the gap by `window_resize`, or by the scroll.
 | 15 | Curves: restore plays minimize's ease-in forwards | proposed (design) |
 | 16 | `window_close` on by default | not yet |
 | 17-21 | Smaller items | proposed |
+| 22 | A fading close kept its border and backdrop to the end | fixed `15deb4d` |
+| 23 | A close beside neighbours is covered by them | by design; config |
 
 ## Fixed
 
@@ -316,7 +318,35 @@ checks, not before.
 21. **Shadows** arrive at the uncloak, not with the stand-in. Known; no
     copies without a live A/B (`TODO.md`).
 
+### 22. A fading close kept its border and backdrop to the end
+
+- **Where**: `resize_session.rs` `overlay_params`; read by the close
+  loop in `manager.rs` (`update_internal`) and by `platform_sync`.
+- **Sequence**: only a zoom scaled the overlays' opacity. A `style:
+  "none"` close with `opacity_to: 0` (the sample config's) faded the
+  thumbnail alone; ring and backdrop, separate windows, stayed at full
+  strength and went in one frame at the end. With a backdrop that reads
+  as a window that lingers, then pops. A fading open likewise.
+- **Fix**: a session records its stand-in's fade and scales both
+  overlays by it (by a zoom's progress when lower). `TODO.md` 38.
+- **Risk**: low. Sessions without a fade pass their resting opacity or
+  more, which scales nothing.
+
+### 23. A close beside neighbours is covered by them
+
+- **Where**: `manager.rs` `start_away_animation` (`place_at_top:
+  false`), against `place_at_top: true` for every move, resize and open.
+- **Sequence**: the neighbours' stand-ins are above the closing one and
+  grow into its place from the first frame, on a curve that starts fast,
+  while the default close eases in. So beside a neighbour little of a
+  close is seen; a workspace's last window plays in full.
+- **Status**: the owner keeps this order (2026-11-10). What shows is
+  then a matter of `window_close`'s style and easing. `TODO.md` 39.
+
 ## Why the overview looks smoother than real windows
+
+`STAND_INS_PLAN.md` now carries this as a table with the task that takes
+each lever; its B and D below are the plan's D and B.
 
 Added after a second look, 2026-11-10. Read from the code, not measured.
 The overview differs from a move, resize, open or close in four ways,

@@ -411,6 +411,30 @@ to see it; check each once more at 150 ms.
       record a close and step through its first frames. Is there one
       with neither the window nor its stand-in?
 
+38. **Border and backdrop of a fading close** (`15deb4d`): `window_close:
+    { enabled: true, style: "none", opacity_to: 0.0, duration_ms: 3000 }`
+    on a window with a border and a backdrop, the last one on its
+    workspace. Border and backdrop fade with the window; before, they
+    stayed at full strength for the three seconds and went in one
+    frame. Same with `window_open: { style: "none", opacity_from: 0.0 }`:
+    they fade in with it, and are at full strength as it lands. A `zoom`
+    close looks as before.
+39. **Which closes show** (reported 2026-11-10: the close animation shows
+    or fails depending on whether it is the workspace's last window; the
+    code only explains one direction). `window_close` on, `duration_ms:
+    3000`, with the close binding: (a) the only window on a workspace,
+    (b) one of two in a tiling layout, (c) a middle column in the
+    scrolling layout. Expected from the code: (a) plays in full; in (b)
+    and (c) it plays underneath while the neighbours cover it as they
+    fill the gap, since a closing window is drawn below them by choice
+    (`STAND_INS_PLAN.md` task 4). If (a) is the one that vanishes at
+    once, that is a bug not found by reading: note the style, and whether
+    `errors.log` has "No stand-in for" or "did not finish".
+    To see more of a close beside neighbours without changing that
+    order: `window_close: { style: "zoom", easing: "ease_out_cubic" }`.
+    A window closed by its own X or Alt+F4 never animates: it is gone
+    before the WM hears of it.
+
 If bars or flicker show, isolate them with `GLAZEWM_ISOLATE` (below), one
 restart per flag: `noring`, `nobackdrop`, then `live`. With a long
 `duration_ms` (e.g. 3000) for `scroll` and `workspace_switch`, one
@@ -436,8 +460,8 @@ $env:GLAZEWM_ISOLATE = "noring,nobackdrop"; .\target\release\glazewm.exe
 
 ## Next: open, close and moves on pinned peeks
 
-`STAND_INS_PLAN.md`, rewritten 2026-11-10 as a task list a new session
-can follow. The scroll's per-window stand-in (`WindowPeek` and its
+`STAND_INS_PLAN.md`, rewritten 2026-11-10 (fourth version) as a task
+list a new session can follow. The scroll's per-window stand-in (`WindowPeek` and its
 hand-overs) becomes the one for every tiled window, one kind of
 animation at a time, each behind `GLAZEWM_ISOLATE=peeks` until seen
 live.
@@ -446,11 +470,17 @@ live.
    them.
 1. Split the stand-in driver out of `scroll_view.rs` (moved code only).
 2. Entry track: frame maths, scaled and faded drawing, the switch.
-3. Open on peeks in tiling layouts. The gate: stop here if its live
-   check is worse than the old path.
-4. Restore. 5. Close and minimize. 6. Moves.
-7. Resize: your decision between three options, after 3 to 6.
-8. Remove the old paths, per kind, after you flip its default.
+3. Open on peeks: tiling layouts first (the gate: stop here if its live
+   check is worse than the old path), then scrolling columns.
+4. Close and minimize, both layouts; a closing window stays below its
+   neighbours (your call). 5. Restore. 6. Moves.
+7. Where a stand-in frame is drawn in the tick: measured first, changed
+   only if you say so.
+8. Resize: your decision between three options, after 3 to 7.
+9. Remove the old paths, per kind, after you flip its default.
+
+The plan's table "Why the overview is smoother" maps each of the
+overview's four advantages to the task that takes it.
 
 The switch and the scroll sharing a core (the plan's earlier steps 1
 and 2) comes after task 6: upkeep, nothing visible.

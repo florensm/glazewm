@@ -1,15 +1,52 @@
 # Plan: one way to animate windows
 
-Revised 2026-11-10 (third version; the second is `git show
+Revised 2026-11-10 (fourth version; the third is `git show
+229fc21:STAND_INS_PLAN.md`, the second `git show
 ec8e0fe:STAND_INS_PLAN.md`). Written so a session that has not seen the
 earlier ones can carry it out one task at a time. Read `CLAUDE.md`,
 `TODO.md` and `ANIMATION_REVIEW.md` first.
 
 Nothing in this plan has been seen running. It is a reading of the code
-as of `88e5183`. Task 3 is where it proves itself on screen; if its live
+as of `15deb4d`. Task 3 is where it proves itself on screen; if its live
 check fails, stop there.
 
-## What changed from the second version, and why
+## What changed from the third version, and why
+
+The owner's answers (2026-11-10) and a closer read of the overview:
+
+- **Both layouts, every task.** The owner uses the scrolling and the
+  tiling layouts about equally. The third version's gate (task 3) left
+  scrolling columns out, so it would have changed nothing in half their
+  use. Each task now has a step for each layout.
+- **Close before restore.** Close is what the owner asked about.
+- **A closing window stays below its neighbours** (owner's decision).
+  Task 4 says what that means on peeks and what it costs.
+- **Pinning is one of four reasons the overview is smoother**, and the
+  third version only took that one. See the next section: the frame's
+  place in the tick (task 7) and curves that turn round instead of
+  restarting (task 2a, `Transit::reversed`) are new.
+- A fade-style close left its border and backdrop at full strength until
+  the end (`15deb4d` fixes it on the old path). Task 2b's copies must
+  fade the same way; task 4 checks it.
+
+## Why the overview is smoother, and which task takes each lever
+
+Read from the code (`native_overview.rs`, `overview_layout.rs`,
+`manager.rs`, `main.rs`), not measured. Largest first.
+
+| | Overview | A real window's move, open or close today | Taken by |
+|---|---|---|---|
+| A. What moves | One window per monitor that never moves; a frame only updates thumbnails in it | Three top-level windows per animating window (stand-in, ring, backdrop) moved by `SetWindowPos`, plus thumbnail size and opacity by another route; all must land in one composition | Tasks 3 to 6 |
+| B. When in the frame | Its own thread wakes on the vblank and does nothing but spring steps and thumbnail updates: done well inside a millisecond or two | The WM thread first works off queued events for up to 4 ms (`CATCH_UP_BUDGET`), then runs a whole `platform_sync`. DWM has no transaction for thumbnail updates, so a frame's updates that straddle a composition show half applied | Task 7 |
+| C. Curves | Springs stepped by `dt`: a retarget keeps the speed, a reversal turns round | A fixed-length curve that restarts from rest at each retarget (columns excepted, `retargeted`); a close during an open jumps | Task 2a, tasks 4 and 6 |
+| D. Hand-over | None: nothing is cloaked, uncloaked or waited for | A flush before the first frame, a swap at the end, an app relaying out in between | Not removable. Tasks 3 to 6 reuse the scroll's, the one tuned live; entry and exit never resize the app |
+
+What this plan does not take, on purpose: one surface per monitor
+instead of one per window (A, second half), and a thread of its own for
+stand-in frames (B, in full). Both are under "Later"; task 7's
+measurement says whether they are worth it.
+
+## What changed from the second version, and why (still holds)
 
 The second version's diagnosis holds: three stand-in systems, fixes landing
 three times, move/resize on the oldest drawing. Its order does not serve
@@ -112,12 +149,13 @@ kind stays on the old path until you have seen the new one.
 - [ ] 0. Baseline recordings (desktop, by hand)
 - [ ] 1. Split the per-window stand-in out of the scroll view (move only)
 - [ ] 2. Entry track: the maths, the drawing, the switch
-- [ ] 3. Open on peeks, in tiling layouts
-- [ ] 4. Restore on peeks
-- [ ] 5. Close and minimize on peeks
+- [ ] 3. Open on peeks: tiling layouts (the gate), then scrolling columns
+- [ ] 4. Close and minimize on peeks, both layouts
+- [ ] 5. Restore on peeks
 - [ ] 6. Moves on peeks
-- [ ] 7. Resize: decide
-- [ ] 8. Remove what is no longer reached
+- [ ] 7. The frame's place in the tick: measure, then decide
+- [ ] 8. Resize: decide
+- [ ] 9. Remove what is no longer reached
 
 ### Task 0: baseline (desktop, by hand)
 
@@ -197,6 +235,9 @@ pub struct Transit {
   pub style: WindowTransitionStyle,
   /// Opacity at the away end, as a fraction of the window's own.
   pub away_opacity: f32,
+  /// How far in the window was when this transit began: 0 for an open,
+  /// 1 for a close, anything between for one turned round mid-way.
+  pub from: f32,
   /// Runs 0 to 1 over the transition's duration and easing; only its
   /// progress is read, never its rects.
   pub clock: WindowAnimationState,
@@ -204,8 +245,17 @@ pub struct Transit {
 
 impl Transit {
   /// How far in the window is at `now`: 0 away, 1 at rest.
-  pub fn amount_at(&self, now: Instant) -> f32;   // In: p, Out: 1 - p
+  /// In: `from + (1 - from) * p`. Out: `from * (1 - p)`.
+  pub fn amount_at(&self, now: Instant) -> f32;
   pub fn is_complete(&self) -> bool;
+  /// The transit the other way, from where this one is at `now`, over
+  /// `params`' duration scaled by how far it has left to go (at least
+  /// one frame). Its clock is unstarted: the caller starts it at `now`.
+  pub fn reversed(
+    &self,
+    params: &WindowTransitionParams,
+    now: Instant,
+  ) -> Self;
 }
 
 /// Where a window resting at `rest` is drawn when `amount` in, and at
@@ -246,8 +296,19 @@ Tests to write first, with `rest = Rect::from_ltrb(100, 50, 900, 650)`:
 - Opacity: `away 0.0, a 0.5` gives `0.5`; `away 1.0` gives `1.0` at any
   `a`; `away 0.4, a 0.0` gives `0.4`.
 - `Transit::amount_at`: with a linear easing (`CubicBezier(1/3, 1/3, 2/3,
-  2/3)`), 200 ms, clock started at `t0`: `In` at `t0 + 50 ms` is `0.25`,
-  `Out` is `0.75` (tolerance `1e-3`).
+  2/3)`), 200 ms, clock started at `t0`: `In` (`from` 0) at `t0 + 50 ms`
+  is `0.25`, `Out` (`from` 1) is `0.75` (tolerance `1e-3`).
+- `Transit::reversed`: that `In` reversed at `t0 + 50 ms` with the same
+  params is `Out`, `from` `0.25`, lasting 50 ms; started at `t0 + 50 ms`
+  its amount is `0.25` there, `0.125` at `t0 + 75 ms`, `0` at
+  `t0 + 100 ms`. Reversed again at once it is `In` from the same amount:
+  no step either way.
+
+Why `from` and not a second curve: a reversal must start at the amount
+on screen or it jumps (`ANIMATION_REVIEW.md` 9 and 14), and the overview
+never jumps for exactly this reason (lever C). A spring easing keeps its
+speed through `WindowAnimationState::retargeted` already; use that for
+the clock when the easing is a spring, and say so in the commit.
 
 Commit: `feat(animations): the entry track's frame maths`.
 
@@ -272,7 +333,9 @@ fade for the copies:
    `scale_alpha(u8::MAX, frac)` (`OverlayCopies::set_opacity`), and places
    the copies at `frame`. In `Live` mode it logs at debug and calls
    `place(frame, ...)`: callers never pick a transit for a live peek (task
-   3 rule).
+   3 rule). The copies must fade with the window: `15deb4d` fixed the
+   old path, where a fading close kept its border and backdrop at full
+   strength to the end.
 3. `place` must keep behaving exactly as now. Do not route it through
    `place_scaled`.
 4. Unit-test what is pure: if you add a helper computing the rects, test
@@ -291,9 +354,13 @@ tests there. Unset, nothing changes.
 
 Commit: `feat(isolation): a switch for animations drawn by peeks`.
 
-### Task 3: open on peeks, in tiling layouts
+### Task 3: open on peeks
 
-This is the task that shows whether the plan is right.
+This is the task that shows whether the plan is right. Two steps, two
+commits: 3a tiling layouts (the gate), 3b scrolling columns. Do not
+start 3b before 3a's live check has passed.
+
+**3a. Tiling layouts.**
 
 Today: `platform_sync.rs` picks `entry_transition` and calls
 `start_open_animation` (`manager.rs`), which begins a `ResizeSession`.
@@ -314,7 +381,7 @@ Do, all behind `isolation::current().peeks`:
    `Live` (same test `upsert` uses: a backdrop style that is not
    `is_copyable`).
 3. In `platform_sync.rs`, where `entry_transition` is `Some` for an open
-   (not a restore: task 4), and the switch is on, and the window is not a
+   (not a restore: task 5), and the switch is on, and the window is not a
    scrolling column: call `enter`. If it returns `true`, do not call
    `start_open_animation`. The window is then `peeks.is_moving`, so the
    existing code freezes it, moves its cloaked real window to its tile
@@ -329,18 +396,16 @@ Do, all behind `isolation::current().peeks`:
 4. Install the monitor's vsync waiter and start the timer as
    `drive_moving` does (`scroll_view.rs`).
 5. A retarget while entering (another window opens): `upsert` already
-   retargets the motion of an entry that is moving. Make sure it keeps
-   `transit` untouched. This is `ANIMATION_REVIEW.md` finding 9; add a
+   retargets the motion of an entry that is moving, keeping its speed
+   (`retargeted`). Make sure it keeps `transit` untouched. This is `ANIMATION_REVIEW.md` finding 9; add a
    unit test that a retargeted entry's `amount_at` is unchanged.
 6. `take_departed` (scroll sync) removes entries of windows that are not
    scrolling columns. Entries with a `transit` must survive it: give
    `Entry` an `is_column: bool`, set by `sync_scroll_view`'s `upsert`
    calls, and only take departed column entries.
 
-Do not: touch `start_open_animation` or `ResizeSession`; apply this to
-scrolling columns (a new column keeps widening in place; whether it
-should also zoom or fade is the owner's call, `ANIMATION_REVIEW.md` 17);
-handle `Live` peeks.
+Do not: touch `start_open_animation` or `ResizeSession`; touch scrolling
+columns in this step; handle `Live` peeks.
 
 Unit tests: completion needs both tracks; the retarget test above;
 `take_departed` leaves a non-column entry.
@@ -361,32 +426,53 @@ same build with the switch off:
 - opening a second window mid-way does not restart or misplace the first;
 - neighbours making room stay in step.
 
+Keep `perf.log` (`GLAZEWM_PERF=1`) of one run with the switch on and one
+with it off: `tick ms/frame` during an open beside three windows. Task 7
+needs both numbers.
+
 If any of these is worse than with the switch off and the cause is not a
 plain bug in the new code, stop: report which, with a screenshot. Do not
 tune hand-over timings to make it pass.
 
-### Task 4: restore on peeks
+**3b. Scrolling columns.** A new column already opens on a peek
+(`opening_rect`), widening in place on `animations.scroll`'s timing;
+`window_open` is ignored there (`ANIMATION_REVIEW.md` 17). With the
+switch on, give that entry `transit: Some(Transit { In, .. })` from
+`window_open` as well: the column's rect track stays the scroll's, the
+entry track is `window_open`'s style, opacity and timing. A column is
+complete when both are (3a step 1 already says so).
 
-As task 3, for the restore branch of `entry_transition`, with these
-differences:
+One look decision this adds, for the owner at the live check: a
+`slide_*` style on a column that is also widening. If it reads badly,
+columns take `zoom` and the fade only; do not invent a third behaviour.
 
-- The window may be on screen (the OS restored it) or still natively
-  minimized (`toggle-minimized`; `ANIMATION_REVIEW.md` finding 10). For
-  the second: cloak it, then restore it natively at its target
-  (`NativeWindow::restore(Some(rect))`), then `enter`. For the first:
-  `upsert` already warms the peek up under a window still shown and takes
-  over at the cloak; confirm `commit_pending_cloaks` is reached for it
-  (`covers_shown_window`).
-- A minimize still playing is ended first (`9a23bf4` does this for the
-  old path; keep that order).
+Commit: `feat(animations): let a new column enter by window_open behind
+the switch`.
 
-Live check: `toggle-minimized` twice two seconds apart, and a taskbar
-restore, each `window_minimize` style; then both within the animation.
+Live check, scrolling workspace, switch on: a new column with each
+`window_open` style at 2000 ms and 150 ms; one opened while the strip is
+still scrolling; one opened off the right edge. Same five points as 3a.
 
-### Task 5: close and minimize on peeks
+### Task 4: close and minimize on peeks
 
 Different in kind: nothing is handed back, and a closing window is out
 of the tree, so `track_overlays`' `state.window_by_id(id)` finds nothing.
+
+Decided by the owner (2026-11-10): **a closing window is drawn below
+its neighbours**, as `start_away_animation` does today (`place_at_top:
+false`; the neighbours' stand-ins go to `HWND_TOP`). On peeks: each peek
+is a top-level window of its own, so put a leaving peek directly below
+its real window when it is created and never raise it (no
+`begin_hand_back`). Every other peek and stand-in is created above it.
+
+What that costs, so nobody "fixes" it: in a tiled layout the neighbours
+grow over the closing window, so what shows of a close is the part they
+have not reached yet. With the sample config's curves the neighbours
+start fast (`cubic_bezier(0.2, 0, 0, 1)`) while the close eases in
+(`ease_in_cubic`, 12% done at half time): next to a neighbour a close is
+all but covered, and plays in full only for a workspace's last window.
+That is a config matter (`window_close.easing`, `style: "zoom"`), noted
+in `TODO.md`; this task does not change defaults or the order.
 
 Do, behind the switch:
 
@@ -415,12 +501,52 @@ Do, behind the switch:
    callers that depend on it (`handle_window_hidden`, `platform_sync`).
 6. `9dfab1f` (window gone mid-close) and `5f39127` (no thumbnail): keep
    both behaviours on the new path.
+7. A close or minimize of a window whose entry is still playing (task
+   3): do not start over from the layout rect (`ANIMATION_REVIEW.md` 14).
+   Its entry becomes `Role::Leaving` where it is, with
+   `transit.reversed(..)` for the close's params.
+8. Scrolling layout: a closing column gets the same leaving entry, with
+   `is_column: false` so `take_departed` leaves it alone; the strip
+   closes the gap by the scroll as now. Check `column_moves` does not
+   read the leaving window (it is out of the tree).
 
 Unit tests: a leaving entry is reported once and dropped; the four
-queries above answer `true` while it plays.
+queries above answer `true` while it plays; an entering entry closed
+mid-way leaves from its current amount.
 
-Live check: `TODO.md` 32, 34 and 35 again with the switch on, plus a
-refused close ("Save changes?" in Notepad): the window comes back.
+Live check, in both layouts, `window_close` on at 3000 ms and at 150 ms,
+styles `none` (fade), `zoom` and one slide: `TODO.md` 32, 34 and 35
+again with the switch on, plus
+
+- the last window of a workspace, and one with a neighbour: both play;
+  the second is covered as the neighbour arrives, never before;
+- border and backdrop fade or shrink with the window, never linger;
+- no frame at the start with neither window nor stand-in (finding 11);
+- close a window still opening: it turns round where it is;
+- a refused close ("Save changes?" in Notepad): the window comes back.
+
+### Task 5: restore on peeks
+
+As task 3a, for the restore branch of `entry_transition`, with these
+differences:
+
+- The window may be on screen (the OS restored it) or still natively
+  minimized (`toggle-minimized`; `ANIMATION_REVIEW.md` finding 10). For
+  the second: cloak it, then restore it natively at its target
+  (`NativeWindow::restore(Some(rect))`), then `enter`. For the first:
+  `upsert` already warms the peek up under a window still shown and takes
+  over at the cloak; confirm `commit_pending_cloaks` is reached for it
+  (`covers_shown_window`).
+- A minimize still playing is turned round, not ended: its leaving
+  entry (task 4) becomes a moving one with `transit.reversed(..)`, so
+  the window grows back from where it had shrunk to. `9a23bf4` ends it
+  and starts again on the old path; with the switch off that stays.
+- Scrolling layout: a restored column re-enters as a new column does
+  (3b).
+
+Live check, in both layouts: `toggle-minimized` twice two seconds apart,
+and a taskbar restore, each `window_minimize` style; then both within
+the animation: the window turns round where it was, with no jump.
 
 ### Task 6: moves on peeks
 
@@ -434,16 +560,58 @@ shown before and after) of a tiled window becomes a `Role::Moving` entry
 In the scrolling layout, widen `strip_moves` to any column move with the
 switch on.
 
+A move retargeted mid-way (a second swap, a held key) goes through
+`upsert`, which keeps its speed (`retargeted`): lever C. Check that
+holds for tiled windows as it does for columns, with a unit test.
+
 Watch for: a relayout that moves one window and resizes its neighbour.
 `cycle_has_resize` makes both share `window_resize`'s timing today; keep
 that, by giving the peek's motion the same duration and easing.
 
-Live check: swap two equal windows; `TODO.md` 15 and 16.
+Live check: swap two equal windows; the same swap pressed twice within
+the animation (no stop and restart in between); `TODO.md` 15 and 16.
 
-### Task 7: resize, a decision
+### Task 7: the frame's place in the tick
+
+Measure first; change nothing without the owner's go-ahead (rule 9: this
+is a scheduling change).
+
+Why: lever B. A peek frame is cheap (track maths and thumbnail updates,
+no `platform_sync`, no `SetWindowPos` for a pinned peek), but it is
+drawn where the old frames were: after `catch_up_before_frame`
+(`main.rs`, up to 4 ms of queued events) and inside `update_internal`,
+ahead of a `platform_sync` only by position. DWM applies each thumbnail
+update at its next composition with no way to group them, so the later
+and longer the frame's updates run, the likelier a composition falls
+between a window and its border. The overview avoids that by doing
+nothing else on its thread.
+
+Do:
+
+1. From task 3's two `perf.log` runs, and one more of a scroll: per
+   frame, the time from the tick's wake to the last peek update, and
+   its spread, on the fast monitor. Add a `perf::Stage` for the peek
+   tick if none covers it (`PeekView::tick` plus its `track_overlays`
+   and batch commit). Report the numbers to the owner.
+2. Only if they say go, and only if the wake-to-last-update time is
+   over about a quarter of that monitor's frame or varies by more than
+   that: draw the peeks' frame before the catch-up. On an animation
+   tick with `peeks.is_active()`, run the peek tick first, then
+   `catch_up_before_frame`, then the rest of `update_internal`, which
+   must not tick the peeks a second time that frame. Landed windows are
+   still queued for the same pass's redraw. Behind a second
+   `GLAZEWM_ISOLATE` word, `peeksfirst`.
+
+Do not: move peeks to another thread here; touch `CATCH_UP_BUDGET` or
+the timer thread.
+
+Live check: 3a's and task 6's checks with `peeks,peeksfirst` against
+`peeks`, on the fast monitor, with keys held so the queue is busy.
+
+### Task 8: resize, a decision
 
 Do not start without the owner's answer. The options, to put to them
-with recordings from tasks 3 to 6:
+with recordings from tasks 3 to 7:
 
 - (a) Leave resize on `ResizeSession`. Smallest risk; two systems remain,
   but only one kind of animation uses the old one.
@@ -455,7 +623,7 @@ with recordings from tasks 3 to 6:
   colour, mid-motion hand-off). The hard part the second version
   described; only if (b) is not acceptable.
 
-### Task 8: remove what is no longer reached
+### Task 9: remove what is no longer reached
 
 Only for kinds whose live check passed and whose default was flipped (a
 one-line change per kind, its own commit, after the owner says so).
@@ -464,7 +632,23 @@ Then delete the old branch for that kind: `start_open_animation`,
 and `update_zoom_fade`, `away_windows`, as each loses its last caller.
 `grep` for callers before deleting; one commit per kind.
 
-## Later, unchanged from the second version
+## Later
+
+What is left of the overview's lead after task 7, each only if the
+numbers or the owner's eye ask for it:
+
+- **One surface per monitor.** A pinned peek is a monitor-sized window
+  per moving window; the overview and the switch draw every window in
+  one. Folding peeks into one surface per monitor removes the z-order
+  between stand-ins (thumbnail order replaces it; task 4's "below
+  neighbours" becomes draw order) and is the merge described below.
+- **A thread for stand-in frames.** A peek frame needs only its tracks,
+  so it could run as the overview's does, with the WM thread sending
+  tracks and receiving "landed". Hand-overs stay on the WM thread. A
+  large change to ownership (`PeekView` is reached from
+  `platform_sync`); not before task 7 shows the WM thread is the limit.
+
+Unchanged from the second version:
 
 Sharing a core between the switch (`WorkspaceSurrogate`) and the scroll
 (`WindowPeek`), and one overlay hand-over for both. Still worth doing for
@@ -485,6 +669,11 @@ blends between focus styles).
   columns that slide. A window that scales or fades is new to it: the
   copies' opacity and a frame that is not the window's size are the two
   places to look first if something flashes.
+- Each pinned peek is a monitor-sized top-level window. They have no
+  redirection bitmap, so no pixels of their own, but eight windows
+  relaying out are eight such surfaces for DWM to walk. Task 3's
+  `perf.log` (DWM side: the bench's `--dwm`, desktop only) is where that
+  would show.
 - `Live` peeks (rounded corners, parallax != 1) stay on the old path
   throughout. Square corners never pick `Live`, so the owner's config is
   covered; say so in `TODO.md` rather than leave it implied.
