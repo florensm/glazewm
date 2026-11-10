@@ -402,7 +402,8 @@ pub(crate) struct CardSlot {
   pub view_center: f32,
 
   /// Span across the card, at scale 1, to keep on screen, e.g. that of
-  /// the window being picked in it.
+  /// the window being picked in it: in the middle on a strip, which is
+  /// wider than its monitor shows at once.
   pub keep: Option<(f32, f32)>,
 }
 
@@ -484,8 +485,13 @@ const STACK_GAP: f32 = 28.0;
 ///
 /// The selected card is panned `pan` further along its strip, in card
 /// units at scale 1, but only as far as keeps the overview's middle on
-/// it, and then as little as keeps its `keep` span in view. Returns the
-/// targets and the pan it ends up with.
+/// it. Its `keep` span then goes to the middle if it is a strip, wider
+/// than a monitor's card, and else moves as little as brings it into
+/// view. Returns the targets and the pan it ends up with.
+///
+/// Every other card rests on what its monitor shows, so a strip slides
+/// back there as another workspace is selected: the pan is the
+/// overview's own, and never the workspace's.
 #[allow(clippy::cast_precision_loss)]
 pub(crate) fn stack(
   metrics: &CardMetrics,
@@ -511,7 +517,10 @@ pub(crate) fn stack(
         left -=
           pan.clamp(-slot.view_center, slot.width - slot.view_center);
 
-        if let Some((from, to)) = slot.keep {
+        let is_strip = slot.width > metrics.width + 0.5;
+        if let Some((from, to)) = slot.keep.filter(|_| is_strip) {
+          left = middle.0 - f32::midpoint(from, to);
+        } else if let Some((from, to)) = slot.keep {
           let (low, high) = (margin, view_width - margin);
           if to - from > high - low || left + from < low {
             left = low - from;
@@ -1952,20 +1961,70 @@ mod tests {
   }
 
   #[test]
-  fn the_stack_pans_just_enough_to_show_what_it_keeps() {
+  fn the_stack_centers_what_a_strip_keeps() {
+    let metrics = metrics();
+    let (resting, card) = strip_slot(&metrics, 0.0, 4.0, None);
+
+    // Wherever on the strip it is, and wherever the strip was panned to:
+    // off to the right, at its very start, and already in view.
+    for (from, pan) in
+      [(resting.width - 300.0, 0.0), (0.0, 0.0), (700.0, 250.0)]
+    {
+      let (slot, _) =
+        strip_slot(&metrics, 0.0, 4.0, Some((from, from + 200.0)));
+      let (targets, panned) = stack(&metrics, &[slot], 0, pan);
+      let rect = targets.cards[0].rect(&card);
+
+      assert_close(rect.x + from + 100.0, 960.0);
+      assert_close(panned, from + 100.0 - slot.view_center);
+    }
+  }
+
+  #[test]
+  fn a_strip_slides_back_as_another_workspace_is_selected() {
     let metrics = metrics();
     let (resting, card) = strip_slot(&metrics, 0.0, 4.0, None);
     let far = resting.width - 300.0;
-    let (slot, _) =
+    let (picking, _) =
       strip_slot(&metrics, 0.0, 4.0, Some((far, far + 200.0)));
+    let other = CardSlot::new(&metrics);
+    let at_rest = 960.0 - resting.view_center;
 
-    let (targets, pan) = stack(&metrics, &[slot], 0, 0.0);
-    let rect = targets.cards[0].rect(&card);
+    let (targets, pan) = stack(&metrics, &[picking, other], 0, 0.0);
     assert!(pan > 0.0);
-    assert_close(rect.x + far + 200.0, 1920.0 - 48.0);
+    assert!(targets.cards[0].rect(&card).x < at_rest, "panned along");
 
-    // Already in view, it stays where it was panned to.
-    let (_, kept) = stack(&metrics, &[slot], 0, pan + 50.0);
-    assert_close(kept, pan + 50.0);
+    // The pan belongs to the selected card: with the other one selected,
+    // the strip rests on what its monitor shows again, and the pan
+    // starts over.
+    let (targets, pan) = stack(&metrics, &[resting, other], 1, 0.0);
+    assert_close(targets.cards[0].rect(&card).x, at_rest);
+    assert_close(pan, 0.0);
+  }
+
+  #[test]
+  fn a_card_no_wider_than_its_monitor_only_shows_what_it_keeps() {
+    let metrics = metrics();
+    let at_rest = stack(&metrics, &slots(&metrics, 1), 0, 0.0).0;
+
+    // In view already, it stays put rather than going to the middle.
+    let inside = CardSlot {
+      keep: Some((100.0, 300.0)),
+      ..CardSlot::new(&metrics)
+    };
+    let (targets, pan) = stack(&metrics, &[inside], 0, 0.0);
+    assert_close(pan, 0.0);
+    assert_close(targets.cards[0].cx, at_rest.cards[0].cx);
+
+    // Past the card's edge (e.g. a floating window half off screen), it
+    // moves just far enough.
+    let outside = CardSlot {
+      keep: Some((3000.0, 3200.0)),
+      ..CardSlot::new(&metrics)
+    };
+    let (targets, pan) = stack(&metrics, &[outside], 0, 0.0);
+    let rect = targets.cards[0].rect(&metrics);
+    assert!(pan > 0.0);
+    assert_close(rect.x + 3200.0, 1920.0 - 48.0);
   }
 }
