@@ -441,6 +441,12 @@ to see it; check each once more at 150 ms.
     the baseline: peeks glide, borders and backdrops move with them,
     windows hand back at the end. Not: a blank column, a window shown
     twice, a border left behind.
+41. **Entry track and the `peeks` switch** (`STAND_INS_PLAN.md` task 2:
+    maths, scaled drawing and the switch, none of it used yet). Once with
+    `GLAZEWM_ISOLATE` unset and once with `GLAZEWM_ISOLATE=peeks`: open,
+    close, minimize and restore a window in a tiling layout, scroll a
+    column. All look as before; with `peeks` set, the log's start-up
+    warning lists `peeks: true` and nothing else differs.
 
 If bars or flicker show, isolate them with `GLAZEWM_ISOLATE` (below), one
 restart per flag: `noring`, `nobackdrop`, then `live`. With a long
@@ -458,6 +464,9 @@ in the log says it is on):
   with one of them is drawn by that copy.
 - `live`: copy no backdrop, so windows with one move in surrogates and
   peeks that move with them, as before `b33c0ef8`.
+- `peeks`: draw open, close, minimize, restore and moves with pinned
+  peeks instead of `ResizeSession`, for the kinds already moved over.
+  None is yet: `STAND_INS_PLAN.md` task 3 moves the first.
 
 Set it for one run, e.g. from PowerShell in the repo:
 
