@@ -3536,6 +3536,15 @@ impl AnimationManager {
         stretch: false,
       },
     ) {
+      // Nothing to play, e.g. for an elevated window, which can't be
+      // drawn: started anyway, it would only cloak the window for the
+      // animation's length before closing it.
+      Ok(session) if !session.has_surrogate() => {
+        tracing::debug!(
+          "No stand-in for {window_id}; skipping its {transition:?} \
+           animation."
+        );
+      }
       Ok(mut session) => {
         // The session's own, which is opaque for a surrogate showing a
         // companion.
