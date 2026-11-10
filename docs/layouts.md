@@ -151,7 +151,9 @@ The view follows focus:
   strut, less the gap, so there is always something to click on. Column
   widths are percentages of the room between the struts, and the strip's
   first and last columns sit a strut in from the edge too.
-- The overview shows a scrolling workspace's whole strip in its card.
+- The overview shows a scrolling workspace's whole strip in its card. In
+  its stack layout, picking a window pans the card to center it, without
+  scrolling the workspace itself (see [the overview](./overview.md#scrolling-workspaces)).
 - Clicking a column partly off screen focuses it and scrolls it into
   view, without the click reaching its window, so it can't select text
   or press a button as the column slides in. Set `click_to_scroll` to

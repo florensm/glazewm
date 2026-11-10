@@ -32,14 +32,16 @@ overview's own outline instead.
 - **Stack**: every workspace at the same zoom, stacked top to bottom with
   the selected one in the middle, as niri's overview does. Each card lines
   up what its monitor shows with the middle of the screen, so a scrolling
-  workspace's strip reaches past either side at its full length. Stepping
-  to a window pans its strip just enough to show it, and the wheel turned
-  sideways (or with `Shift`) pans it by hand.
+  workspace's strip reaches past either side at its full length. Picking
+  a window on a strip pans the strip to put that window in the middle,
+  and the wheel turned sideways (or with `Shift`) pans it by hand (see
+  [Scrolling workspaces](#scrolling-workspaces)).
 
 On the cards, each window shows its app's icon in its middle.
 
 `overview.layout` sets the layout `toggle-overview` opens on, and `Tab`
-goes through them while it is open. Cards are drawn at the size each layout
+goes through them while it is open (unless a search is on, which it then
+steps through). Cards are drawn at the size each layout
 shows them, so their text stays sharp.
 
 Selection and hover show as highlights that fade in on the next workspace
@@ -88,44 +90,95 @@ is nowhere to go.
 | Click the background | Close without changing anything. |
 | Drag a window onto a workspace | Move it there, laid out where dropping it there on screen would put it: beside the window under the cursor, on the side nearest the cursor, which a highlight shows; or into the column there in a scrolling layout. Works within a workspace too, to rearrange it. A window that isn't tiling, or dropped on the special workspace or on a miniature in the activities, only moves. The overview stays open. |
 | Middle-click a window | Close the window. |
-| Click the search field | Type into the [search](#search), keeping its query. |
-| Click **? Shortcuts** | Show or hide the keyboard shortcuts. |
+| Click **F1 Shortcuts** | Show or hide the keyboard shortcuts. |
 | Wheel | Show or select the next or previous workspace. |
 | Wheel sideways, or `Shift` + wheel | Pan the stack's selected strip, half a monitor per notch, as far as keeps the middle of the screen on it. |
 
 ### Keyboard
 
+Typing searches: every letter, digit and symbol goes to the
+[search](#search), from anywhere, so no command is on a key that types.
+Commands are on the keys that type nothing (arrows, `Tab`, `Delete`,
+`F1`, ...) and on `Alt` chords.
+
 The keyboard goes one step deeper with each `Space`: browsing workspaces,
 picking a window inside one, then carrying that window to another
-workspace. Like GNOME's overview, it shows no key hints: `?`, or the
-**? Shortcuts** chip beside the search field, opens a sheet of them, which
-any key or click closes.
+workspace. Like GNOME's overview, it shows no key hints: `F1`, or the
+**F1 Shortcuts** chip beside the search field, opens a sheet of them,
+which any key or click closes.
 
-The arrows go between workspaces along the layout: `←` `→` in the
-activities, `↑` `↓` down the stack. The arrow toward the shown workspace's
-windows (`↓` in the activities, `→` in the stack) goes in among them, and
-the arrows then go to the nearest window that way; off their edge, back out
-to the workspaces.
+An arrow goes to what lies that way on screen:
+
+- **Activities**: `←` `→` go along the row of workspaces, and `↓` goes
+  down into the shown workspace's windows, which lie below the row. Among
+  the windows, the arrows go to the nearest window that way, and `↑` off
+  their top edge goes back up to the row.
+- **Stack**: `↑` `↓` go up and down the stack of workspaces. Their
+  windows show on the cards themselves, so no arrow points into them:
+  `Space` goes in. Among the windows, the arrows go to the nearest window
+  that way, and `↑` or `↓` off their edge goes to the workspace above or
+  below.
+- With nothing that way on the monitor, an arrow goes on to the monitor
+  that way (see [Monitors](#monitors)), or bumps when there is none.
+  `←` and `→` in the stack therefore never go into a workspace: they
+  cross to the monitor beside this one or bump, both alike.
 
 | Key | Browsing workspaces | Picking a window | Carrying a window |
 | --- | --- | --- | --- |
-| Arrows (or `h` `j` `k` `l`) | Select a workspace, or go in among its windows. | Select the nearest window that way, or go back out. | Select a workspace. |
+| Arrows, or `Alt`+`H` `J` `K` `L` | Select a workspace, or go in among its windows where an arrow points at them. | Select the nearest window that way, or go back out. | Select a workspace. |
 | `Home` / `End` | First / last workspace. | First / last window. | First / last workspace. |
-| `1`–`9`, `0` | Switch to that workspace and close. | Send the selected window there; the next window gets selected. | Drop it there. |
-| `s` | Same as a digit, for the [special workspace](#special-workspace). | Same. | Same. |
+| `Alt`+`1`–`9`, `0` | Switch to that workspace and close. | Same. | Drop it there. |
+| `Alt`+`Shift`+`1`–`9`, `0` | | Send the selected window there; the next window gets selected. | Drop it there. |
+| `Alt`+`-`, `Alt`+`Shift`+`-` | The same two, for the [special workspace](#special-workspace). | Same. | Same. |
 | `Space` | Look inside the selected workspace. | Pick up the selected window. | Drop it on the selected workspace. |
 | `Enter` | Switch to the selected workspace and close. | Focus the selected window and close. | Drop it on the selected workspace. |
-| `x` | | Close the selected window. | |
+| `Delete` | | Close the selected window. | |
 | `Backspace` | | Back to browsing. | Put the window down. |
-| `Tab` | Switch to the other layout. | Same. | Same. |
-| `/` | Start a [search](#search). | Same. | Same. |
-| `?` | Show the keyboard shortcuts. | Same. | Same. |
+| `Tab` / `Shift`+`Tab` | Switch to the other layout. | Same. | Same. |
+| `F1` | Show the keyboard shortcuts. | Same. | Same. |
 | `Escape` | Close without changing anything. | Same. | Same. |
+| Any letter, digit or symbol | Start or extend a [search](#search). | Same. | Same. |
+
+While a search is on, some of these keys work on it instead: see
+[Search](#search).
+
+Why these keys: with every typed character searching, a command on `x`,
+`s`, `n`, `h` or a digit could never be told from the start of a query.
+Keys that type nothing can, and so can `Alt` chords, which Windows never
+turns into characters. The chords mirror the sample config's `focus` and
+`move` keybindings (`alt+h`, `alt+1`, `alt+shift+1`, ...), so the hands
+stay where they are on the desktop.
 
 Digits go to the workspace named after them (`0` is `10`), like a
 `focus --workspace` binding would: one with a card on any monitor, or an
 inactive one from the config. When no workspace has a numeric name, they
 go by the cards' positions instead.
+
+#### Your own keybindings
+
+While the overview is open it has the keyboard, and the WM's keybindings
+act on it instead of on the workspace behind it. They are read from your
+config, whatever keys they are on:
+
+| Command bound | In the overview |
+| --- | --- |
+| `focus --direction <d>`, `move --direction <d>` | The arrow that way. |
+| `focus --workspace <name>` | Switch to it and close (or drop the carried window there). |
+| `move --workspace <name>` | Send the selected window there, or drop the carried one. |
+| `focus --special-workspace`, `move --special-workspace` | The same two, for the special workspace. |
+| `focus --next-workspace`, `--prev-workspace`, and their `-active` forms | Select the next or previous workspace, as the wheel does. |
+| `close` | Close the selected window. |
+| `toggle-overview`, `shell-exec`, and the `wm-*` commands but `wm-enable-binding-mode` | Run as ever. |
+| `wm-enable-binding-mode` | Nothing: a mode's keybindings are often on bare keys, which would then be taken from the search. |
+| Anything else (e.g. `resize`, `toggle-floating`) | Nothing: it would act on the desktop behind the overview. |
+
+A keybinding with several commands does the first of them the overview
+has a use for (`move --workspace 1` of a binding that moves a window and
+follows it), unless one of them runs as ever, in which case they all do.
+The `Alt` chords in the table above are the overview's own, for keys
+your config leaves unbound; a key your config binds goes by this table.
+Regular keybindings are back as soon as the overview closes, however it
+closes.
 
 ### Monitors
 
@@ -133,12 +186,13 @@ Each monitor shows the workspaces on it, and the keyboard is on one
 monitor at a time: the focused one at first. A ring in `accent_color`
 around its edges shows which.
 
-- An arrow with nowhere to go on a monitor goes on to the nearest monitor
-  that way that lines up with it: past either end of its row, an arrow
-  its layout doesn't use (e.g. `↑` in the activities), or off any edge of
-  the windows but the one they were entered by. Along the row, it lands
-  on the nearer end of the next monitor's row; across it, on the
-  workspace that monitor shows. `Home`, `End` and the wheel stay on the
+- An arrow with nothing that way on a monitor goes on to the nearest
+  monitor that way that lines up with it: past either end of its row or
+  stack, across it (e.g. `↑` in the activities, `←` `→` in the stack),
+  or off an edge of the windows that doesn't lead back to the
+  workspaces. Along the row or stack, it lands on the nearer end of the
+  next monitor's; across it, on the workspace that monitor shows. With no
+  monitor that way, it bumps. `Home`, `End` and the wheel stay on the
   monitor.
 - Pointing at another monitor moves the keyboard there.
 - Drag a window onto a workspace on another monitor, or carry it there
@@ -150,17 +204,29 @@ around its edges shows which.
 
 ### Search
 
-A search field sits at the bottom of every monitor. `/`, or a click on
-it, starts a search: type to match window titles and process names, on
-every monitor; matches are outlined in `search_color` and the rest fade,
-and the field shows the query and its matches, ringed in the accent while
-typing goes to it. `Enter` goes straight to
-the best match. `↓` / `↑` instead end typing on the next or previous
-match, after which `n` / `N` step through the matches, moving the
-keyboard to the monitor of each. While typing, `Escape` clears the
-search and `Backspace` on an empty query ends it. While carrying a
-window, a search picks the workspace to drop it on, and `Enter` drops it
-there.
+A search field sits at the bottom of every monitor, and typing goes to
+it from anywhere: there is no key to start a search. It matches window
+titles and process names, on every monitor; matches are outlined in
+`search_color` and the rest fade.
+
+- The selection follows the best match as the query changes, moving
+  there the way the arrows would, to another workspace or monitor too.
+  The field shows the query and which match is picked, e.g. "2 of 5".
+- `Tab` / `Shift`+`Tab`, the arrows (`↓` `→` next, `↑` `←` previous) and
+  `Alt`+`H` `J` `K` `L` step through the matches, around the ends, and
+  `Home` / `End` go to the first and last. The search stays on: keep
+  typing to narrow it down.
+- `Enter` goes to the picked match. Without a match it does nothing.
+- `Backspace` takes back a character, and `Escape` clears the query,
+  leaving the selection on the match. With no query left they do what
+  they always do: `Backspace` steps back, `Escape` closes.
+- `Space` types a space once there is a query, for titles of several
+  words. To pick up a match with `Space`, clear the query first.
+- The `Alt` chords and `Delete` act on the picked match as on any
+  window: `Alt`+`Shift`+`3` sends it to workspace 3.
+
+While carrying a window, a search picks the workspace to drop it on, and
+`Enter` drops it there.
 
 ### Special workspace
 
@@ -169,9 +235,10 @@ overview, wherever it is, after the other workspaces. It is tinted with
 the accent color and marked with a diamond before its name. While it is
 inactive or empty, it shows "Drop windows here".
 
-- `s` works like a digit key for it: switch to it, send the selected
-  window there, or drop the carried window there. Digits going by the
-  cards' positions skip it. It is reached like any other workspace.
+- `Alt`+`-` works like `Alt` with a digit for it, and `Alt`+`Shift`+`-`
+  like `Alt`+`Shift` with one: switch to it, send the selected window
+  there, or drop the carried window there. Digits going by the cards'
+  positions skip it. It is reached like any other workspace.
 - Picking it, or one of its windows, summons it to the monitor it was
   picked on, like `focus --special-workspace`. Dropping a window on it
   moves the window there, wherever it is (activating it on that monitor
@@ -207,11 +274,20 @@ A workspace with the scrolling layout shows its whole strip, not just the
 part on screen. In the activities, the shown workspace's whole strip is
 scaled to fit, and its miniature grows up to twice as wide. In the stack,
 a strip shows at its full length, up to four monitors wide, reaching past
-the screen's sides and panned to what is picked. On a card, a lighter frame
+the screen's sides. On a card, a lighter frame
 marks out the part on screen. A strip wider still is scaled to fit, with
 room left above and below. Columns scrolled out of view can be picked,
 dragged and searched like any other window; picking one focuses it, which
 scrolls it into view.
+
+In the stack, a window picked on a strip with the keyboard or a search
+goes to the middle of the screen, the strip panning under it; one pointed
+at stays where it is, under the cursor. Selecting another workspace lets
+the strip slide back to what its monitor shows. The pan is the
+overview's alone: the workspace itself only scrolls once a window is
+picked with `Enter` or a click, which focuses it. A card no wider than
+its monitor doesn't pan. The activities fit the whole strip in view, so
+there is nothing to pan there.
 
 The zoom on open and close starts and ends on the columns that are on
 screen, the others reaching off its sides as they do on the desktop.
@@ -428,6 +504,15 @@ frame, so it moves alike at any refresh rate, and even a short
 only swinging past its target on the way. None of it draws anything: it
 moves and scales the same thumbnails as before.
 
+The WM's keyboard hook takes every key press that matches a keybinding
+before any window sees it, the overview's included. While the overview
+is open, the WM hands such a keybinding to the overview as what it means
+there (see [Your own keybindings](#your-own-keybindings)) instead of
+running its commands. It goes by whether the overview is open, which
+every close clears, so nothing can leave the keybindings switched off;
+if the overview can't be reached at all, it is marked closed and the
+keybinding runs.
+
 The focused monitor's window takes the foreground while open, so keys go
 to the overview rather than to the window behind it; if Windows refuses it
 the foreground, the overview closes rather than stay up while keys go
@@ -438,7 +523,9 @@ workspace and focuses the new window (scrolling its strip into view)
 right away, and the overview's zoom into that workspace waits for it (at
 most 400ms), so it heads to where the windows land. The cards hold still
 meanwhile, so it heads straight there even while the layout would still
-be moving (e.g. the stack panning to the picked window). In the
+be moving (e.g. the stack panning to the picked window). A strip
+centered on its picked window stays so while the WM scrolls the real
+strip behind it: where the card goes doesn't depend on that scroll. In the
 activities, a scene still coming in is blended onto where it settles as
 the zoom closes, so its windows arrive exactly on the real ones however
 far along it was.

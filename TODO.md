@@ -182,10 +182,11 @@ file), `git pull` on `tryout/todo-cleanup`, `cargo build --release`, run.
 11. **Overview layouts** (stage, carousel and grid removed; `stack` added,
     niri-style): `Tab` switches between activities and stack. In the
     stack, workspaces sit top to bottom at one zoom with the selected one
-    in the middle; `↑` `↓` and the wheel move between them, `→` goes in
-    among the windows. A scrolling strip reaches past both sides at full
-    length (up to four monitors), stepping to a window pans just enough to
-    show it, and the wheel turned sideways (or `Shift` + wheel) pans it
+    in the middle; `↑` `↓` and the wheel move between them, `Space` goes
+    in among the windows (not `→` any more, see 26). A scrolling strip
+    reaches past both sides at full length (up to four monitors),
+    stepping to a window centers it (see 28), and the wheel turned
+    sideways (or `Shift` + wheel) pans it
     without the strip jumping back to the picked window. Pointing at a
     window must not pan it. Check the open and close zoom on a wide strip,
     and memory with a few wide strips open (each card's picture is as wide
@@ -267,6 +268,68 @@ Shades hand-backs (not part of `tryout/smooth`):
     (`cycle-stack-focus`) and by clicking the tab bar, slowly and quickly.
     Again with animations disabled. No white frame on the new tab, and
     the previous tab never shows over it.
+
+Overview keys and search (`tryout/smooth-shades`; on the laptop
+`test/smooth-shades`). Unit-tested, and run under Wine off Windows, but
+none of it seen live. Keys are in `docs/overview.md`.
+
+23. **Typing searches** (`90a28c6`): open the overview and type a
+    letter, a digit, `/`, `x`, `s`: each goes to the search field, none
+    runs a command. `Space` on an empty field still looks inside a
+    workspace, and types a space once there is a query. `Escape` clears
+    the query first and closes on the second press; `Backspace` erases,
+    then steps back. `F1` and the **F1 Shortcuts** chip open the sheet,
+    `Delete` closes the picked window. With a non-US keyboard layout
+    too: symbols typed with AltGr go to the query.
+24. **Search follows and animates** (`90a28c6`): with matches on other
+    workspaces and on the other monitor, type slowly: at each character
+    the selection glides to the best match on the same springs as an
+    arrow press (the activities slide the workspace in, the stack rolls
+    to its card), nothing snaps, and the keyboard ring moves to the
+    other monitor. `Tab` / `Shift`+`Tab`, the arrows and `Home` / `End`
+    step through the matches while the field keeps "2 of 5" up to date,
+    and typing on still narrows the search. `Enter` zooms into the
+    picked match. The old jump on `Enter` snapped because nothing was
+    selected before the pick held the cards; if a jump still snaps,
+    note which layout and whether it crosses a monitor.
+25. **The overview owns the keys** (`e776843`): with the overview open,
+    `alt+h/j/k/l` and `alt+arrows` move the overview's selection and
+    the workspace behind it does not change focus (close with `Escape`
+    and check the same window is focused as before). `alt+shift+h` etc.
+    do the same. `alt+1`..`9` switch to that workspace and close;
+    `alt+shift+3` with a window picked sends it to workspace 3 and the
+    overview stays open; `alt+shift+q` closes the picked window, not
+    the one focused behind. `alt+r` (resize mode) and `alt+t` do
+    nothing while it is open, so `h` typed afterwards still searches. `alt+w` still closes it,
+    `alt+shift+r` still reloads the config. Right after it closes (by
+    `Enter`, `Escape`, a click, and by clicking the taskbar so it
+    deactivates), `alt+h` moves focus on the desktop again. No beep on
+    any `Alt` chord. Also with `alt+h` unbound in the config: the
+    overview's own chord still moves the selection.
+26. **Arrows point where they go** (`9e14a6d`): in the stack, `↑` `↓`
+    step workspaces; `←` and `→` do the same thing as each other: bump
+    with one monitor, cross to the monitor that side with two, and
+    neither goes in among the windows. `Space` goes in; there `←` `→`
+    walk the columns and bump at the ends (or cross to a monitor that
+    side), and `↑` / `↓` off the windows go to the workspace above or
+    below. In the activities, `↓` goes into the windows and `↑` back
+    out, as before. Say if crossing to the other monitor with `←` `→`
+    in the stack feels wrong: it could bump instead.
+27. **Defender** on the laptop: this build adds no Windows call the
+    binary didn't already make (`GetKeyState` moved into the overview
+    too, `WM_SYSKEYDOWN` and one more `WM_APP` message are handled).
+    Note whether it runs clean.
+28. **Centered pick on a strip** (`b74aaab`): stack layout, on a
+    scrolling workspace wider than the monitor. `Space`, then `←` `→`:
+    each picked column glides to the middle of the screen, the first
+    and last too. `↑` or `↓` to another workspace: the strip glides
+    back to what the monitor really shows. `Escape`: the real strip
+    behind has not scrolled. Pointing at a column with the mouse must
+    not move the strip, and the wheel sideways still pans by hand.
+    `Enter` on a column far off screen: the zoom lands on the real
+    windows without veering. A workspace no wider than the monitor
+    doesn't move when its windows are picked. Same checks through a
+    search (type a title on that strip).
 
 If bars or flicker show, isolate them with `GLAZEWM_ISOLATE` (below), one
 restart per flag: `noring`, `nobackdrop`, then `live`. With a long
@@ -382,6 +445,9 @@ scroll is dropped.
 tested for the Windows target off Windows only (`x86_64-pc-windows-gnu`,
 tests under Wine), not natively. On the laptop, as below with
 `test/smooth` for the branch name.
+
+`test/smooth-shades` is cut from `tryout/smooth-shades` the same way,
+checked the same way (Windows target and Wine, not natively).
 
 The laptop runs `test/todo-cleanup`, re-cut from `tryout/todo-cleanup` after
 each change following `CLAUDE.md`'s build-targets recipe, and built and
