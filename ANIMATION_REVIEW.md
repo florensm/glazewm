@@ -29,7 +29,7 @@ the gap by `window_resize`, or by the scroll.
 
 | # | Finding | Status |
 |---|---|---|
-| 1 | A new window stayed at its app's size until after its open animation | fixed `4f37740` |
+| 1 | A new window stayed at its app's size until after its open animation | fixed `4f37740`, `b5f3592` |
 | 2 | A `fade` open never showed its stand-in | fixed `0ad7cf1` |
 | 3 | A zoom ended a few percent short of full size | fixed `983ef0d` |
 | 4 | Zoom, close and minimize frames were timed by the wall clock | fixed `7074e09` |
@@ -51,8 +51,8 @@ the gap by `window_resize`, or by the scroll.
 
 ### 1. A new window stayed at its app's size until after its open animation
 
-- **Where**: `platform_sync.rs:1593` (`FrozenStep`, `:555`),
-  `preposition_cloaked` `:654`; cause at `manage_window.rs:102`.
+- **Where**: `platform_sync.rs:1596` (`FrozenStep`, `:555`),
+  `preposition_cloaked` `:665`; cause at `manage_window.rs:102`.
 - **Sequence**: `manage_window` cloaks every new window (`CloakGuard`)
   before its first sync. The first `Frozen` redraw set a window up (show
   the stand-in, flush, cloak, move to target) only `if !is_cloaked()`, so
@@ -61,18 +61,22 @@ the gap by `window_resize`, or by the scroll.
   `start_rect`, which has the target's size) while the window keeps the
   size its app chose. So the animation drew that size's content cut to the
   tile, or past its edge where the tile is larger. At the end `pre_commit`
-  (`resize_session.rs:1098`) found the window off target, moved it, and
+  (`resize_session.rs:1113`) found the window off target, moved it, and
   waited for it to land (polled every other tick, up to 500 ms): the content
   reflowed in one step at rest, and the uncloak, border settle and focus
   came that much later.
 - **Evidence**: `FrozenStep::of(Some(false), || true)` was the skipped
   case; `handoff_done` starts `true` for a session whose source and target
-  sizes match (`resize_session.rs:385`), so `maybe_handoff` never moved the
+  sizes match (`resize_session.rs:387`), so `maybe_handoff` never moved the
   window either. Nothing else positions a new window before `pre_commit`.
 - **Fix**: the first frame is decided by `FrozenStep`. A session's window
   found cloaked is moved to its target at once (asynchronously, no flush:
   it is not on screen), so its app lays out at the tile's size while the
   stand-in plays, and `pre_commit` normally finds it there.
+  `b5f3592`: the move is made once (`ResizeSession::adopt`) and the session
+  stays unmarked, so an opening window is still checked every pass and
+  taken over again if the shell uncloaks it (it does when a window is
+  activated), as before this pass.
 - **Tests**: `platform_sync::tests::a_window_cloaked_before_its_session_*`,
   `a_window_still_shown_is_taken_over`, `a_window_set_up_already_*`.
 - **Risk**: medium. The app now resizes during the animation, so a slow one
@@ -82,7 +86,7 @@ the gap by `window_resize`, or by the scroll.
 
 ### 2. A `fade` open never showed its stand-in
 
-- **Where**: `platform_sync.rs:1648`, `manager.rs:3020` (`reveal_session`).
+- **Where**: `platform_sync.rs:1651`, `manager.rs:3020` (`reveal_session`).
 - **Sequence**: a stand-in is created hidden. Slides show theirs from
   `show_clipped`, zooms from `update_zoom_fade`; `none`/`fade` relied on
   `session.show()` in the block finding 1 describes, which an open never
@@ -96,8 +100,8 @@ the gap by `window_resize`, or by the scroll.
 
 ### 3. A zoom ended a few percent short of full size
 
-- **Where**: `resize_session.rs:1167` (`finish_commit`),
-  `zoom_destination` `:1257`.
+- **Where**: `resize_session.rs:1182` (`finish_commit`),
+  `zoom_destination` `:1272`.
 - **Sequence**: a zoom moves only its thumbnail's destination rect. The
   last frame is drawn a tick before the animation completes (completion is
   judged at the wall clock, `state.rs:324`). `finish_commit` squares the
@@ -131,7 +135,7 @@ the gap by `window_resize`, or by the scroll.
 
 ### 5. A restore during a minimize left the window in the wrong state
 
-- **Where**: `platform_sync.rs:1310`.
+- **Where**: `platform_sync.rs:1313`.
 - **Sequence**: `platform_sync` skips a window whose minimize animation
   plays. A restore inside that time (150 ms by default) was skipped too,
   and its restore flag is cleared with the sync; when the animation ended
@@ -170,7 +174,7 @@ the gap by `window_resize`, or by the scroll.
 
 ### 8. A slide restore showed the window twice for a frame
 
-- **Where**: `platform_sync.rs:1633`, `manager.rs:3020`.
+- **Where**: `platform_sync.rs:1636`, `manager.rs:3020`.
 - **Sequence**: restoring a window minimized with a `slide_*`
   `window_minimize` style is the one slide starting on a window still on
   screen. Its first frame (`update_clipped`) clips or hides the stand-in;
@@ -185,7 +189,7 @@ the gap by `window_resize`, or by the scroll.
 ### 9. An open retargeted mid-way loses its zoom or fade
 
 - **Where**: `manager.rs:2560` (`new_movement`), `:2577`
-  (`update_target`), `resize_session.rs:685` (`update_zoom_fade`).
+  (`update_target`), `resize_session.rs:700` (`update_zoom_fade`).
 - **Sequence**: window A is opening; window B opens (or anything else
   relays A out) before A lands. `start_animation_if_needed` replaces A's
   animation with a plain movement from its current rect to the new target.
@@ -209,8 +213,8 @@ the gap by `window_resize`, or by the scroll.
 
 ### 10. A restore by command animates a window still minimized
 
-- **Where**: `platform_sync.rs:1460`; the native restore is only in
-  `reposition_window` (`:2155`), on the final `Apply`.
+- **Where**: `platform_sync.rs:1463`; the native restore is only in
+  `reposition_window` (`:2169`), on the final `Apply`.
 - **Sequence**: `toggle-minimized` (or `set-tiling`) on a minimized window
   flags the restore and starts its animation, but nothing has restored the
   native window. The stand-in samples a minimized window, and `pre_commit`
@@ -228,7 +232,7 @@ the gap by `window_resize`, or by the scroll.
 ### 11. A close cloaks before its stand-in is composited
 
 - **Where**: `close_window.rs:30`, against `commit_pending_cloaks`
-  (`platform_sync.rs:627`).
+  (`platform_sync.rs:630`).
 - **Sequence**: a move or resize shows its stand-in, waits one composition
   (`DwmFlush`), then cloaks, "otherwise the cloak can land on a frame where
   the surrogate's thumbnail is not yet populated". A close shows the
@@ -302,7 +306,7 @@ checks, not before.
 17. **`window_open` has no effect in a scrolling layout** (see top). Either
     document it or let the column's stand-in carry the configured entry
     (with 9).
-18. **Floating windows pop in** (`platform_sync.rs:1467`): no open
+18. **Floating windows pop in** (`platform_sync.rs:1470`): no open
     animation for them. Design choice; Hyprland animates them.
 19. **Hand-back starts a tick late** (`SMOOTHNESS_REVIEW.md` 14) and the
     **first frame is on the wall clock** (its 9, 10): unchanged, and I

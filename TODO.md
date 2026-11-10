@@ -50,8 +50,8 @@ Open, close, minimize and restore pass (2026-11-10, from
 `tryout/smooth-shades`; findings, evidence and what is left in
 `ANIMATION_REVIEW.md`). None of it seen live: checks 29-37 below.
 
-- `4f37740` A window opening in a tiling layout is moved to its tile as
-  its animation starts, not after it ends: it was cloaked by
+- `4f37740`, `b5f3592` A window opening in a tiling layout is moved to
+  its tile as its animation starts, not after it ends: it was cloaked by
   `manage_window` already, which made the first-frame set-up skip it.
   `0ad7cf1` A `fade`/`none` open shows its stand-in (it never did).
   `356f882` A stand-in that slides or zooms in is only shown by its own
@@ -354,16 +354,17 @@ workspace with a tiling layout, not the scrolling one: there a new column
 opens through the scroll, without `window_open`. Long durations are only
 to see it; check each once more at 150 ms.
 
-29. **Open in a tiling layout** (`4f37740`): `window_open` as default
-    (`slide_right`) with `duration_ms: 1000`. Next to one open window,
-    open Notepad with a long line of text and word wrap on, Explorer,
-    and a browser. Each slides in already laid out for its tile: text
-    wrapped to the tile's width, nothing cut off at the right or bottom,
-    no strip of wallpaper or backdrop inside it. As it lands nothing
-    reflows and there is no pause before its border settles and it takes
-    keys. `errors.log`: no "did not land within 500ms". With Vesktop or
-    another slow app, note whether the first frames show an empty or
-    wrongly sized window (review finding 12).
+29. **Open in a tiling layout** (`4f37740`, `b5f3592`): `window_open` as
+    default (`slide_right`) with `duration_ms: 1000`. Next to one open
+    window, open Notepad with a long line of text and word wrap on,
+    Explorer, and a browser. Each slides in already laid out for its
+    tile: text wrapped to the tile's width, nothing cut off at the right
+    or bottom, no strip of wallpaper or backdrop inside it. As it lands
+    nothing reflows and there is no pause before its border settles and
+    it takes keys. The real window never shows at its tile while its
+    stand-in is still sliding in. `errors.log`: no "did not land within
+    500ms". With Vesktop or another slow app, note whether the first
+    frames show an empty or wrongly sized window (review finding 12).
 30. **Fade open** (`0ad7cf1`): `window_open: { style: "fade",
     opacity_from: 0.0, duration_ms: 1000 }`. The window fades in over
     the second; before, nothing showed and it popped in at the end. With
