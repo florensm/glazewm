@@ -3604,7 +3604,10 @@ mod tests {
 
   #[test]
   fn a_window_still_shown_is_taken_over() {
-    assert_eq!(FrozenStep::of(Some(false), || false), FrozenStep::TakeOver);
+    assert_eq!(
+      FrozenStep::of(Some(false), || false),
+      FrozenStep::TakeOver
+    );
     assert_eq!(FrozenStep::of(None, || false), FrozenStep::TakeOver);
   }
 

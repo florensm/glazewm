@@ -1254,7 +1254,11 @@ impl ResizeSession {
 /// Inset from each edge rather than grown from the center, which is half
 /// a pixel off it for an odd size and so ended a pixel too large.
 #[allow(clippy::cast_possible_truncation, clippy::cast_precision_loss)]
-fn zoom_destination(width: i32, height: i32, progress: f32) -> Option<RECT> {
+fn zoom_destination(
+  width: i32,
+  height: i32,
+  progress: f32,
+) -> Option<RECT> {
   let inset = |extent: i32| {
     (extent as f32 * (1.0 - progress.clamp(0.0, 1.0)) / 2.0).round() as i32
   };
