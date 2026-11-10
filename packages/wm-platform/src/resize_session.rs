@@ -184,6 +184,8 @@ pub struct ResizeSession {
   /// to fire on the first `Frozen` frame (where the cloak state is
   /// unknown) and after the session is torn down.
   session_cloaked: bool,
+  /// Whether [`adopt`](ResizeSession::adopt) has been called.
+  adopted: bool,
   /// Thumbnail content dims that need to be applied on the next animation
   /// tick via `DwmUpdateThumbnailProperties`.
   ///
@@ -386,6 +388,7 @@ impl ResizeSession {
       poll_parity: false,
       commit_poll_parity: false,
       session_cloaked: false,
+      adopted: false,
       pending_thumbnail_dims: None,
       overlays: options.overlays,
       current_rect: None,
@@ -556,6 +559,18 @@ impl ResizeSession {
   /// round-trip.
   pub fn mark_session_cloaked(&mut self) {
     self.session_cloaked = true;
+  }
+
+  /// Notes that the session's window, found cloaked as the session began,
+  /// is being sent to its target. Returns whether this is the first time.
+  ///
+  /// Kept apart from [`mark_session_cloaked`]: such a session goes on
+  /// checking its window's cloak, as the shell uncloaks a window that is
+  /// activated, which a newly opened one often is.
+  ///
+  /// [`mark_session_cloaked`]: ResizeSession::mark_session_cloaked
+  pub fn adopt(&mut self) -> bool {
+    !std::mem::replace(&mut self.adopted, true)
   }
 
   /// Whether a surrogate overlay with a valid DWM thumbnail is active.

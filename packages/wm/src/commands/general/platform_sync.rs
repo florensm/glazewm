@@ -561,6 +561,9 @@ enum FrozenStep {
   /// left. Without it the window keeps the size its app opened it at
   /// until `pre_commit`, so its open animation shows that size's content
   /// cut to the tile, reflowing in one step once the motion has ended.
+  ///
+  /// Read on every pass until the session is marked cloaked, so the
+  /// move itself is made once (see `ResizeSession::adopt`).
   Adopt,
   /// Set up on an earlier pass.
   Keep,
@@ -641,18 +644,26 @@ fn commit_pending_cloaks(
     let _ = window.native().set_cloaked(true);
 
     preposition_cloaked(state, &window, &z_order, &target_rect);
+
+    // Later `Frozen` ticks then skip the cloak query.
+    if let Some(session) = state
+      .animation_manager
+      .resize_sessions
+      .get_mut(&window.id())
+    {
+      session.mark_session_cloaked();
+    }
   }
 }
 
 /// Moves a frozen window, cloaked behind its stand-in, to the
-/// `target_rect` it is uncloaked at, and marks its session cloaked so
-/// later `Frozen` ticks skip the cloak query.
+/// `target_rect` it is uncloaked at.
 ///
 /// Posted asynchronously: the animation is far longer than any app's
 /// message-queue processing time, and `pre_commit` confirms the move at
 /// its end.
 fn preposition_cloaked(
-  state: &mut WmState,
+  state: &WmState,
   window: &WindowContainer,
   z_order: &WindowZOrder,
   target_rect: &Rect,
@@ -713,14 +724,6 @@ fn preposition_cloaked(
       target_rect,
       swp_flags | discard_bits_if_resized(current.as_ref(), target_rect),
     );
-  }
-
-  if let Some(session) = state
-    .animation_manager
-    .resize_sessions
-    .get_mut(&window.id())
-  {
-    session.mark_session_cloaked();
   }
 }
 
@@ -1646,7 +1649,18 @@ fn redraw_containers(
           // can't show, and its app resizes and repaints at its tile's
           // size while the stand-in plays.
           state.animation_manager.reveal_session(&window.id());
-          preposition_cloaked(state, window, &z_order, &real_rect);
+
+          // Once: the session stays unmarked, so that a window the shell
+          // uncloaks mid-way (it does as a window is activated) is taken
+          // over on the next pass.
+          let is_first = state
+            .animation_manager
+            .resize_sessions
+            .get_mut(&window.id())
+            .is_some_and(wm_platform::ResizeSession::adopt);
+          if is_first {
+            preposition_cloaked(state, window, &z_order, &real_rect);
+          }
         } else if state
           .animation_manager
           .scroll_view
