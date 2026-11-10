@@ -113,7 +113,7 @@ fn focus_clicked_peek(position: &Point, state: &mut WmState) {
 
   if let Some(window) = state
     .animation_manager
-    .scroll_view
+    .peeks
     .window_at(position)
     .filter(|_| !is_dragging)
     .and_then(|id| state.container_by_id(id))

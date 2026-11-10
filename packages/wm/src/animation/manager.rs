@@ -608,7 +608,7 @@ pub struct AnimationManager {
   /// Active workspace-switch slide animation, or `None` when idle.
   workspace_switch: Option<WorkspaceSwitchState>,
   /// Peeks drawing scrolling layouts' columns.
-  pub scroll_view: super::scroll_view::ScrollView,
+  pub peeks: super::peek_view::PeekView,
   /// Workspace-switch state that just completed; kept alive until the
   /// incoming real windows are uncloaked and their overlays settled under
   /// its surrogates, over the ticks of `ws_cleanup_step`.
@@ -689,7 +689,7 @@ impl AnimationManager {
       pending_session_cleanup: Vec::new(),
       slide_in_monitor_rects: HashMap::new(),
       workspace_switch: None,
-      scroll_view: super::scroll_view::ScrollView::default(),
+      peeks: super::peek_view::PeekView::default(),
       pending_ws_cleanup: None,
       ws_cleanup_step: WsCleanupStep::default(),
       interrupted_ws_windows: Vec::new(),
@@ -738,7 +738,7 @@ impl AnimationManager {
         None => switch.duration,
       });
 
-    [own, switch, self.scroll_view.time_to_land(window_id, now)]
+    [own, switch, self.peeks.time_to_land(window_id, now)]
       .into_iter()
       .flatten()
       .max()
@@ -795,7 +795,7 @@ impl AnimationManager {
   /// the surrogate is still mid-animation.
   pub fn has_active_surrogate(&self, window_id: &Uuid) -> bool {
     self.resize_sessions.contains_key(window_id)
-      || self.scroll_view.owns_window(window_id)
+      || self.peeks.owns_window(window_id)
       || self
         .workspace_switch
         .as_ref()
@@ -872,7 +872,7 @@ impl AnimationManager {
     self.animations.contains_key(window_id)
       || self.has_active_surrogate(window_id)
       || self.owns_window_position(window_id)
-      || self.scroll_view.draws_window(window_id)
+      || self.peeks.draws_window(window_id)
   }
 
   /// Covers `window_id`, about to be uncloaked, with `cover` until its
@@ -980,7 +980,7 @@ impl AnimationManager {
     if self.workspace_switch.is_some() {
       return true;
     }
-    if self.scroll_view.is_active() {
+    if self.peeks.is_active() {
       return true;
     }
     // Completed sessions fading out still need ticks to advance the fade.
@@ -1407,7 +1407,7 @@ impl AnimationManager {
     // and their overlays settled. Released ones get their overlays back
     // on the real window.
     let mut scroll_batch = SurrogateBatch::new();
-    let landed = state.animation_manager.scroll_view.tick(
+    let landed = state.animation_manager.peeks.tick(
       frame_now,
       clock_origin,
       &mut scroll_batch,
@@ -1425,7 +1425,7 @@ impl AnimationManager {
         state.pending_sync.queue_container_to_redraw(window);
       }
     }
-    super::scroll_view::track_overlays(state, config, scroll_batch);
+    super::peek_view::track_overlays(state, config, scroll_batch);
 
     // Queue in-progress windows for redraw.
     let active_window_ids: Vec<_> = state
@@ -1997,7 +1997,7 @@ impl AnimationManager {
     } else {
       // `platform_sync` syncs tab bars, which go with the peeks of moving
       // columns even when nothing else moved.
-      if state.animation_manager.scroll_view.is_active() {
+      if state.animation_manager.peeks.is_active() {
         crate::tab_bars::sync_tab_bars(
           state,
           config,

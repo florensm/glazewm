@@ -254,18 +254,16 @@ fn shown_tab_frame(
   let active = stack.active_child()?;
   let stack_rect = stack.to_rect().ok()?;
 
-  let stand_in = match animation_manager
-    .scroll_view
-    .stand_in(&active.id(), &stack_rect)
-  {
-    Some(peek) => Some(peek),
-    // A column kept off the monitor beside it shows only through a
-    // peek, which it has none of while out of view.
-    None if !scrolling::shows_real_window(&active) => return None,
-    None => {
-      animation_manager.animation_stand_in(&active.id(), &stack_rect)
-    }
-  };
+  let stand_in =
+    match animation_manager.peeks.stand_in(&active.id(), &stack_rect) {
+      Some(peek) => Some(peek),
+      // A column kept off the monitor beside it shows only through a
+      // peek, which it has none of while out of view.
+      None if !scrolling::shows_real_window(&active) => return None,
+      None => {
+        animation_manager.animation_stand_in(&active.id(), &stack_rect)
+      }
+    };
 
   let Some(stand_in) = stand_in else {
     return tab_frame_at(stack, &stack_rect, settings, config, focused_id);

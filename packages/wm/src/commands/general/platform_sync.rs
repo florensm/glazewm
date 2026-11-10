@@ -334,7 +334,7 @@ pub(crate) fn focus_blend<O: SyncableOverlay>(
 
 /// Draws the windows fading between focus states (see `FocusFades`) one
 /// frame further, and settles those done. Only those at rest: peeks draw
-/// theirs blended too (see `scroll_view::track_overlays`).
+/// theirs blended too (see `peek_view::track_overlays`).
 ///
 /// Other stand-ins end the fade: a workspace switch blends between focus
 /// states itself, and a move or close draws one style. Left running, the
@@ -348,8 +348,7 @@ pub(crate) fn advance_focus_fades(
 
   for id in window_ids {
     let manager = &mut state.animation_manager;
-    if manager.has_active_surrogate(&id)
-      && !manager.scroll_view.owns_window(&id)
+    if manager.has_active_surrogate(&id) && !manager.peeks.owns_window(&id)
     {
       manager.cancel_focus_fade(&id);
       continue;
@@ -434,10 +433,7 @@ fn sync_focus(
       .contains_key(&window.id());
     if is_ws_incoming
       || has_resize_session
-      || state
-        .animation_manager
-        .scroll_view
-        .owns_window(&window.id())
+      || state.animation_manager.peeks.owns_window(&window.id())
     {
       return Ok(None);
     }
@@ -615,7 +611,7 @@ fn commit_pending_cloaks(
     || pending.iter().any(|cloak| {
       !state
         .animation_manager
-        .scroll_view
+        .peeks
         .is_composited(&cloak.window.id())
     });
 
@@ -639,7 +635,7 @@ fn commit_pending_cloaks(
     // A scrolling layout's peek takes over as its window is cloaked.
     state
       .animation_manager
-      .scroll_view
+      .peeks
       .take_over(&window.id(), &window.native());
     let _ = window.native().set_cloaked(true);
 
@@ -1262,10 +1258,7 @@ fn redraw_containers(
     // isn't already where it lands, by the move that also uncloaks it.
     let z_order = match z_order {
       WindowZOrder::AfterWindow(_)
-        if state
-          .animation_manager
-          .scroll_view
-          .is_handing_back(&window.id())
+        if state.animation_manager.peeks.is_handing_back(&window.id())
           || state
             .animation_manager
             .hands_back_to_companion(&window.id()) =>
@@ -1403,7 +1396,7 @@ fn redraw_containers(
     let is_frozen_by_ws_animation = state
       .animation_manager
       .is_workspace_switch_incoming(&window.id())
-      || state.animation_manager.scroll_view.is_moving(&window.id());
+      || state.animation_manager.peeks.is_moving(&window.id());
 
     // A window is resizing when its dimensions change (vs. a pure
     // translation).
@@ -1661,11 +1654,7 @@ fn redraw_containers(
           if is_first {
             preposition_cloaked(state, window, &z_order, &real_rect);
           }
-        } else if state
-          .animation_manager
-          .scroll_view
-          .owns_window(&window.id())
-        {
+        } else if state.animation_manager.peeks.owns_window(&window.id()) {
           follow_retargeted_column(window, &real_rect);
         }
       }
@@ -1688,10 +1677,7 @@ fn redraw_containers(
           .animation_manager
           .resize_sessions
           .contains_key(&window.id())
-          || state
-            .animation_manager
-            .scroll_view
-            .owns_window(&window.id())
+          || state.animation_manager.peeks.owns_window(&window.id())
           || (is_visible
             && state
               .animation_manager
@@ -1733,7 +1719,7 @@ fn redraw_containers(
         } else if is_visible {
           state
             .animation_manager
-            .scroll_view
+            .peeks
             .prepare_hand_back(&window.id(), &window.native());
         }
 
@@ -1807,7 +1793,7 @@ fn redraw_containers(
           state
             .animation_manager
             .hide_pending_ws_cleanup_surrogate(window.id());
-          state.animation_manager.scroll_view.release(&window.id());
+          state.animation_manager.peeks.release(&window.id());
         }
 
         // Apply animated opacity for opacity-style focus animations. The
@@ -2696,7 +2682,7 @@ fn resync_overlay_z_order<O: SyncableOverlay>(state: &mut WmState) {
     // A peek's overlays stay behind the peek.
     let anchor = state
       .animation_manager
-      .scroll_view
+      .peeks
       .peek_hwnd(&window.id())
       .unwrap_or_else(|| overlay_z_anchor(&window));
 
@@ -3541,7 +3527,7 @@ fn overlays_tracked_elsewhere(
 
   manager.has_live_ws_surrogate(&window_id)
     || manager.has_live_resize_tracker(&window_id)
-    || manager.scroll_view.draws_window(&window_id)
+    || manager.peeks.draws_window(&window_id)
 }
 
 /// Whether `window`'s overlays are hidden in steady state: behind a
