@@ -1406,15 +1406,33 @@ fn to_f32(pixels: i32) -> f32 {
 
 #[cfg(test)]
 mod tests {
-  use super::draw_search;
+  use super::{draw_search, search_hits};
   use crate::{
     overview_state::SearchField, surface::Surface, Color, OverviewStyle,
   };
 
-  /// A search right after `/`, with nothing typed: an empty query must
-  /// not reach the text measuring, which crashed on it.
   #[test]
-  fn draws_a_search_with_nothing_typed_yet() {
+  fn the_search_field_says_which_match_is_picked() {
+    let field = |query: &str, hits, current| SearchField {
+      query: query.to_string(),
+      hits,
+      current,
+    };
+
+    assert_eq!(search_hits(&field("", 0, None)), "");
+    assert_eq!(search_hits(&field("zz", 0, None)), "No matches");
+    assert_eq!(search_hits(&field("te", 5, Some(1))), "2 of 5");
+    assert_eq!(search_hits(&field("te", 1, Some(0))), "1 of 1");
+
+    // With the cursor on none of them, e.g. on a window pointed at.
+    assert_eq!(search_hits(&field("te", 5, None)), "5 matches");
+    assert_eq!(search_hits(&field("te", 1, None)), "1 match");
+  }
+
+  /// With nothing typed, and with a query: an empty query must not reach
+  /// the text measuring, which crashed on it.
+  #[test]
+  fn draws_a_search_with_and_without_a_query() {
     let color = Color {
       r: 205,
       g: 214,
@@ -1443,14 +1461,16 @@ mod tests {
       effects: crate::OverviewEffects::default(),
       particles: crate::ParticleLook::default(),
     };
-    let search = SearchField {
+    let searching = SearchField {
       query: "term".to_string(),
       hits: 3,
       current: Some(1),
     };
 
-    let mut surface = Surface::new(1920, 36).expect("surface");
-    draw_search(&mut surface, &search, false, 1.0, &style);
-    assert!(surface.pixels().iter().any(|pixel| *pixel != 0));
+    for search in [SearchField::default(), searching] {
+      let mut surface = Surface::new(1920, 36).expect("surface");
+      draw_search(&mut surface, &search, false, 1.0, &style);
+      assert!(surface.pixels().iter().any(|pixel| *pixel != 0));
+    }
   }
 }

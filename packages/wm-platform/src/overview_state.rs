@@ -243,7 +243,7 @@ pub(crate) struct Hit {
 /// A control along the bottom of a screen.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Control {
-  /// The search field, which starts a search.
+  /// The search field, which typing goes to wherever the cursor is.
   Search,
 
   /// The chip beside it, which shows the keyboard shortcuts.
@@ -1876,7 +1876,7 @@ fn move_action(
 /// Name of the workspace digit key `digit` stands for, 0 being the tenth:
 /// the one named after it when workspaces are numbered, whether it has a
 /// card on any screen or is one of `others`, else the one at its position
-/// among `cards` (not counting the special workspace's, which `s` goes
+/// among `cards` (not counting the special workspace's, which `-` goes
 /// to).
 fn digit_target(
   digit: u8,

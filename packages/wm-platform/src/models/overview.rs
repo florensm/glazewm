@@ -58,7 +58,7 @@ pub struct OverviewWorkspace {
   pub is_new: bool,
 
   /// The special workspace: shown on every monitor's overview, set apart
-  /// after the others, and reached with the `s` key.
+  /// after the others, and reached with `Alt` + `-`.
   pub is_special: bool,
 
   /// Area its card shows, in physical pixels: the monitor's working area,
