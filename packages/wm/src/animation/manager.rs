@@ -761,13 +761,13 @@ impl AnimationManager {
     self.has_away_animation(window_id, AwayTransition::Minimize)
   }
 
-  /// How far `window_id`'s zoom has grown, from 0 to 1: a window going
-  /// away shrinks, so it runs its animation's progress backwards.
-  fn zoom_progress(&self, window_id: &Uuid) -> f32 {
+  /// How far `window_id`'s zoom has grown at `now`, from 0 to 1: a window
+  /// going away shrinks, so it runs its animation's progress backwards.
+  fn zoom_progress(&self, window_id: &Uuid, now: Instant) -> f32 {
     let progress = self
       .animations
       .get(window_id)
-      .map_or(1.0, WindowAnimationState::eased_progress);
+      .map_or(1.0, |animation| animation.eased_progress_at(now));
 
     if self.away_windows.contains_key(window_id) {
       1.0 - progress
@@ -1494,16 +1494,19 @@ impl AnimationManager {
       for id in &away_in_progress {
         state.animation_manager.refresh_session_companion(id);
 
+        // At the time this frame is shown, like every other animation,
+        // not at whenever the WM thread got to this tick.
         let Some((current_rect, opacity)) = state
           .animation_manager
           .animations
           .get(id)
-          .map(WindowAnimationState::current_state)
+          .map(|animation| animation.current_state_at(frame_now))
         else {
           continue;
         };
         let opacity_u8 = opacity.map_or(u8::MAX, |o| o.to_alpha());
-        let zoom_progress = state.animation_manager.zoom_progress(id);
+        let zoom_progress =
+          state.animation_manager.zoom_progress(id, frame_now);
 
         if let Some(session) =
           state.animation_manager.resize_sessions.get_mut(id)
@@ -2717,7 +2720,7 @@ impl AnimationManager {
             .as_ref()
             .map_or(effect_opacity, wm_platform::OpacityValue::to_alpha);
           if zoom {
-            let zoom_progress = self.zoom_progress(&window_id);
+            let zoom_progress = self.zoom_progress(&window_id, now);
             let session = self
               .resize_sessions
               .get_mut(&window_id)
@@ -4002,6 +4005,52 @@ mod tests {
 
   /// A drift moves a short way along the slide axis without scaling, and
   /// a soft zoom scales without moving, the outgoing side growing.
+  #[test]
+  fn zooms_are_evaluated_at_the_frame_time() {
+    let (tx, _rx) = mpsc::unbounded_channel();
+    let mut manager = AnimationManager::new(tx);
+    let rect = Rect::from_xy(0, 0, 800, 600);
+    let animation = WindowAnimationState::new_movement(
+      rect.clone(),
+      rect,
+      200,
+      EasingFunction::CubicBezier(
+        1.0 / 3.0,
+        1.0 / 3.0,
+        2.0 / 3.0,
+        2.0 / 3.0,
+      ),
+    );
+    let start = Instant::now();
+    animation.start_clock(start);
+    let (opening, closing) = (Uuid::new_v4(), Uuid::new_v4());
+    manager.start_animation(opening, animation.clone());
+    manager.start_animation(closing, animation);
+    manager.away_windows.insert(
+      closing,
+      AwayWindow {
+        transition: AwayTransition::Close,
+        hwnd: 0,
+      },
+    );
+
+    // The same frame time reads the same progress however late it is
+    // asked for, so frames step evenly.
+    for frame in [50, 100, 150] {
+      let at = start + Duration::from_millis(frame);
+      #[allow(clippy::cast_precision_loss)]
+      let expected = frame as f32 / 200.0;
+
+      assert!(
+        (manager.zoom_progress(&opening, at) - expected).abs() < 1e-3
+      );
+      assert!(
+        (manager.zoom_progress(&closing, at) - (1.0 - expected)).abs()
+          < 1e-3
+      );
+    }
+  }
+
   #[test]
   fn drift_and_soft_zoom_motion() {
     let (tick_tx, _tick_rx) = mpsc::unbounded_channel();
