@@ -204,6 +204,10 @@ pub enum KeyRoute {
 /// selection what they would do to the focused window, and the rest are
 /// dropped. Only commands on the WM itself, the overview's own toggle and
 /// launching a program still run.
+///
+/// Enabling a binding mode is dropped too: its keybindings are often on
+/// bare keys (`h`, `escape`), which the hook would then take from the
+/// overview's search and its own `Escape`.
 pub fn route_keybinding(commands: &[InvokeCommand]) -> KeyRoute {
   let is_the_wms = |command: &InvokeCommand| {
     matches!(
@@ -211,7 +215,6 @@ pub fn route_keybinding(commands: &[InvokeCommand]) -> KeyRoute {
       InvokeCommand::ToggleOverview { .. }
         | InvokeCommand::ShellExec { .. }
         | InvokeCommand::WmDisableBindingMode { .. }
-        | InvokeCommand::WmEnableBindingMode { .. }
         | InvokeCommand::WmExit
         | InvokeCommand::WmRedraw
         | InvokeCommand::WmReloadConfig
@@ -1062,6 +1065,7 @@ mod tests {
       "move --next-active-workspace",
       "move-workspace --direction left",
       "center-column",
+      "wm-enable-binding-mode --name resize",
     ] {
       assert_eq!(route(&[command]), KeyRoute::Dropped, "{command}");
     }
@@ -1075,6 +1079,7 @@ mod tests {
       "wm-exit",
       "wm-reload-config",
       "wm-toggle-pause",
+      "wm-disable-binding-mode --name resize",
       "shell-exec cmd",
     ] {
       assert_eq!(route(&[command]), KeyRoute::Wm, "{command}");
