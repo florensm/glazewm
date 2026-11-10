@@ -2054,67 +2054,9 @@ impl AnimationManager {
       // faded.
       let fade_now = Instant::now();
 
-      // Re-anchor to the real window's own `HWND` any session whose
-      // surrogate is about to be destroyed this tick -- same hazard, same
-      // fix as the workspace-switch cleanup's `incoming_backdrop_windows`
-      // loop above: the `retain_mut` below drops (and thereby destroys the
-      // surrogate of) any session that's done fading or skips fading
-      // outright, and without re-anchoring first the overlay is left
-      // pointing at a `HWND` that no longer exists until a later
-      // `platform_sync` call happens to fix it -- a one-frame flicker,
-      // most visible when moving a window past a sibling whose own
-      // relayout-triggered session finishes mid-gesture.
-      let finishing_sessions: Vec<(Uuid, Rect)> = state
-        .animation_manager
-        .pending_session_cleanup
-        .iter()
-        .filter_map(|(id, fade_start, session)| {
-          // `fade_start.is_some()` gates both arms: a session on its very
-          // first cleanup tick is deferred (see the `retain_mut` below)
-          // and so is not dropped yet, and re-anchoring it here
-          // would fire this block's flush a tick before it is
-          // needed.
-          let is_finishing = fade_start.is_some_and(|start| {
-            session.effect_opacity < u8::MAX
-              || fade_now.saturating_duration_since(start).as_secs_f32()
-                / SESSION_FADE_OUT.as_secs_f32()
-                >= 1.0
-          });
-          is_finishing
-            .then(|| session.current_rect().map(|rect| (*id, rect)))
-            .flatten()
-        })
-        .collect();
-
-      if !finishing_sessions.is_empty() {
-        let mut finishing_batch = SurrogateBatch::new();
-        for (id, rect) in &finishing_sessions {
-          let Some(container) = state.container_by_id(*id) else {
-            tracing::debug!("finishing_sessions: no container for {id}.");
-            continue;
-          };
-          let Ok(window) = container.as_window_container() else {
-            tracing::debug!(
-              "finishing_sessions: {id} not a window container."
-            );
-            continue;
-          };
-          let anchor = overlay_z_anchor(&window);
-          if let Some(overlays) = state.window_overlays.get_mut(id) {
-            tracing::debug!(
-              "finishing_sessions: re-anchoring {id} to {:?} at {:?}.",
-              anchor,
-              rect,
-            );
-            overlays.defer_rect(&mut finishing_batch, rect, anchor);
-          } else {
-            tracing::debug!("finishing_sessions: no overlays for {id}.");
-          }
-        }
-        finishing_batch.commit();
-        wm_platform::dwm_flush();
-      }
-
+      // Nothing to re-anchor before a session's surrogate goes below: the
+      // loop above has kept its overlays behind the real window since the
+      // session's first tick here, at least one composition ago.
       // Windows whose fading resize-session surrogate is dropped this tick
       // -- `has_active_surrogate` now covers
       // `pending_session_cleanup`, so once dropped here the static
