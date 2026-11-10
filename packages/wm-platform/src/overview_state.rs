@@ -898,10 +898,10 @@ impl Interaction {
       .clone()
       .filter(|index| *index < workspaces.len())
       .collect::<Vec<_>>();
-    let (back, forward, _) = arrows(self.layout);
+    let forward = geometry(self.layout).forward;
     let target = if toward == forward {
       row.first().copied()
-    } else if toward == back {
+    } else if toward == forward.opposite() {
       row.last().copied()
     } else {
       Some(cursor.shown)
@@ -914,29 +914,30 @@ impl Interaction {
     }
   }
 
-  /// Moves the window cursor, or else the workspace cursor, `toward`.
-  /// With nowhere to go that way on its screen, on to the screen that
-  /// way.
+  /// Moves the cursor to what lies `toward` on screen: a window, a
+  /// workspace, the selected workspace's windows where the layout shows
+  /// them apart, or else the screen that way. With nothing that way, it
+  /// bumps.
   fn arrow(&mut self, toward: Toward, workspaces: &[OverviewWorkspace]) {
+    let before = (self.selected(), self.mode, self.selected_window);
+    let geometry = geometry(self.layout);
+
     if self.mode == Mode::Windows {
       self.move_window_cursor(toward, workspaces);
-      return;
-    }
-
-    let before = (self.selected(), self.mode);
-    let (back, forward, inside) = arrows(self.layout);
-    if toward == back {
-      self.step(-1, workspaces);
-    } else if toward == forward {
-      self.step(1, workspaces);
-    } else if toward == inside && self.mode == Mode::Spaces {
+    } else if let Some(delta) = geometry.step(toward) {
+      self.step(delta, workspaces);
+    } else if geometry.windows == Some(toward) && self.mode == Mode::Spaces
+    {
       self.enter_windows(workspaces);
     }
 
-    if (self.selected(), self.mode) == before {
+    let is_unmoved = |state: &Self| {
+      (state.selected(), state.mode, state.selected_window) == before
+    };
+    if is_unmoved(self) {
       self.cross(toward, workspaces);
     }
-    if (self.selected(), self.mode) == before {
+    if is_unmoved(self) {
       self.nudge = Some(toward);
     }
   }
@@ -947,9 +948,10 @@ impl Interaction {
     self.nudge.take()
   }
 
-  /// Moves the window cursor to the nearest window `toward`; off the edge
-  /// the windows were entered from, back to the workspaces, and off any
-  /// other, on to the screen that way.
+  /// Moves the window cursor to the nearest window `toward`. Off the
+  /// windows' edge, it goes where the layout has the workspaces: back out
+  /// to their row, or on to the next one where the windows show on their
+  /// cards.
   fn move_window_cursor(
     &mut self,
     toward: Toward,
@@ -969,12 +971,15 @@ impl Interaction {
       None => nav.first().map(|(hwnd, _)| *hwnd),
     };
 
+    let geometry = geometry(self.layout);
     if let Some(hwnd) = next {
       self.selected_window = Some(hwnd);
-    } else if toward == arrows(self.layout).2.opposite() {
+    } else if geometry.windows == Some(toward.opposite()) {
       self.mode = Mode::Spaces;
-    } else {
-      self.cross(toward, workspaces);
+    } else if let Some(delta) =
+      geometry.step(toward).filter(|_| geometry.windows.is_none())
+    {
+      self.step(delta, workspaces);
     }
   }
 
@@ -1256,8 +1261,9 @@ impl Interaction {
     self.step(if is_down { 1 } else { -1 }, workspaces);
 
     if self.selected() == before {
-      let (back, forward, _) = arrows(self.layout);
-      self.nudge = Some(if is_down { forward } else { back });
+      let forward = geometry(self.layout).forward;
+      self.nudge =
+        Some(if is_down { forward } else { forward.opposite() });
     }
   }
 
@@ -1381,11 +1387,16 @@ impl Interaction {
   /// The keyboard shortcuts of every step, with the arrows `layout` goes
   /// by.
   pub fn shortcuts(&self) -> Vec<ShortcutGroup> {
-    let (back, forward, inside) = arrows(self.layout);
-    let workspace_arrows =
-      joined_labels([back, forward].map(Command::Move));
+    let geometry = geometry(self.layout);
+    let workspace_arrows = joined_labels(
+      [geometry.forward.opposite(), geometry.forward].map(Command::Move),
+    );
     let window_arrows = joined_labels(Toward::ALL.map(Command::Move));
-    let look_inside = Command::Move(inside).label();
+    // The arrow into the windows too, where one points at them.
+    let look_inside = joined_labels(
+      std::iter::once(Command::Space)
+        .chain(geometry.windows.map(Command::Move)),
+    );
     let to_workspace = format!(
       "{} {}",
       Command::Workspace(1).label(),
@@ -1569,15 +1580,42 @@ fn home_special(workspaces: &[OverviewWorkspace]) -> Option<usize> {
     .map(|(index, _)| index)
 }
 
-/// The arrows that go to the previous and the next workspace in
-/// `layout`, and the one that goes in among the selected workspace's
-/// windows.
-fn arrows(layout: OverviewLayoutMode) -> (Toward, Toward, Toward) {
-  match layout {
-    OverviewLayoutMode::Activities => {
-      (Toward::Left, Toward::Right, Toward::Down)
+/// Where a layout puts things on screen, which the arrows go by.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Geometry {
+  /// Way its workspaces run, first to last.
+  forward: Toward,
+
+  /// Way from the workspaces to the selected one's windows, where those
+  /// show apart from them. `None` where they show on its card, which no
+  /// arrow points into.
+  windows: Option<Toward>,
+}
+
+impl Geometry {
+  /// How many workspaces on an arrow `toward` goes, if it runs along
+  /// them.
+  fn step(self, toward: Toward) -> Option<isize> {
+    if toward == self.forward {
+      Some(1)
+    } else if toward == self.forward.opposite() {
+      Some(-1)
+    } else {
+      None
     }
-    OverviewLayoutMode::Stack => (Toward::Up, Toward::Down, Toward::Right),
+  }
+}
+
+fn geometry(layout: OverviewLayoutMode) -> Geometry {
+  match layout {
+    OverviewLayoutMode::Activities => Geometry {
+      forward: Toward::Right,
+      windows: Some(Toward::Down),
+    },
+    OverviewLayoutMode::Stack => Geometry {
+      forward: Toward::Down,
+      windows: None,
+    },
   }
 }
 
@@ -1901,7 +1939,7 @@ mod tests {
           "Esc"
         ],
         vec![
-          "\u{2193}",
+          "Space\u{2193}",
           "\u{2190}\u{2191}\u{2193}\u{2192}",
           "\u{23ce}",
           "X",
@@ -2202,7 +2240,7 @@ mod tests {
   }
 
   #[test]
-  fn the_stack_steps_down_its_column_and_goes_right_into_windows() {
+  fn the_stack_steps_down_its_column_and_only_space_goes_inside() {
     let workspaces = workspaces();
     let mut state = single(&workspaces, OverviewLayoutMode::Stack);
     let mut press = |keys: &[Key]| {
@@ -2214,12 +2252,63 @@ mod tests {
 
     assert_eq!(press(&[Key::Down]), (2, Mode::Spaces, None));
     assert_eq!(press(&[Key::Up, Key::Up]), (0, Mode::Spaces, None));
-    assert_eq!(press(&[Key::Right]), (0, Mode::Windows, Some(11)));
+
+    // No arrow points into a card's windows: sideways only bumps.
+    assert_eq!(press(&[Key::Right]), (0, Mode::Spaces, None));
+    assert_eq!(press(&[Key::Left]), (0, Mode::Spaces, None));
+
+    assert_eq!(press(&[Key::Space]), (0, Mode::Windows, Some(11)));
     assert_eq!(press(&[Key::Right]), (0, Mode::Windows, Some(12)));
     assert_eq!(
-      press(&[Key::Left, Key::Left]),
-      (0, Mode::Spaces, Some(11))
+      press(&[Key::Right]),
+      (0, Mode::Windows, Some(12)),
+      "nothing further right"
     );
+    assert_eq!(press(&[Key::Left]), (0, Mode::Windows, Some(11)));
+    assert_eq!(press(&[Key::Left]), (0, Mode::Windows, Some(11)));
+  }
+
+  #[test]
+  fn the_stack_leaves_a_workspace_windows_up_and_down() {
+    let workspaces = workspaces();
+    let mut state = single(&workspaces, OverviewLayoutMode::Stack);
+    let mut press = |keys: &[Key]| {
+      for key in keys {
+        state.key(*key, &workspaces);
+      }
+      (state.selected(), state.mode)
+    };
+
+    // Off the windows' bottom edge is the workspace below, and off their
+    // top the one above.
+    assert_eq!(press(&[Key::Space]), (1, Mode::Windows));
+    assert_eq!(press(&[Key::Down]), (2, Mode::Spaces));
+    assert_eq!(press(&[Key::Up, Key::Space, Key::Up]), (0, Mode::Spaces));
+
+    // Off the first workspace's, there is nowhere to go.
+    assert_eq!(press(&[Key::Space, Key::Up]), (0, Mode::Windows));
+    assert_eq!(state.take_nudge(), Some(Toward::Up));
+  }
+
+  #[test]
+  fn arrows_bump_alike_both_ways_in_every_layout() {
+    for layout in OverviewLayoutMode::ALL {
+      let workspaces = workspaces();
+      let mut state = single(&workspaces, layout);
+      let across = match layout {
+        OverviewLayoutMode::Activities => [Key::Up, Key::Up],
+        OverviewLayoutMode::Stack => [Key::Left, Key::Right],
+      };
+
+      for (key, toward) in across.into_iter().zip(
+        [[Toward::Up, Toward::Up], [Toward::Left, Toward::Right]]
+          [usize::from(layout == OverviewLayoutMode::Stack)],
+      ) {
+        state.key(key, &workspaces);
+        assert_eq!((state.selected(), state.mode), (1, Mode::Spaces));
+        assert_eq!(state.take_nudge(), Some(toward), "{layout:?}");
+      }
+    }
   }
 
   #[test]
@@ -2284,7 +2373,7 @@ mod tests {
       state.focus(0, &workspaces).keeps_window_in_view
     };
 
-    state.key(Key::Right, &workspaces);
+    state.key(Key::Space, &workspaces);
     assert_eq!(state.selected_window, Some(11));
     assert!(keeps(&state), "stepped to");
 
@@ -2953,7 +3042,7 @@ mod tests {
     assert_eq!((state.active, state.selected()), (0, 2), "nothing right");
 
     // Down into the windows, then off their bottom edge onto the screen
-    // below, where it shows what that screen shows.
+    // below, onto what that screen shows.
     press_on(&mut state, &workspaces, &[Key::Home, Key::Down]);
     assert_eq!(state.mode, Mode::Windows);
     press_on(&mut state, &workspaces, &[Key::Down]);
@@ -2971,14 +3060,39 @@ mod tests {
     let mut state =
       Interaction::new(&screens, OverviewLayoutMode::Stack, 6.0);
 
-    // Right goes in among the windows, and past them to the next screen.
+    // Sideways is the next screen, whether browsing or among windows.
     press_on(&mut state, &workspaces, &[Key::Down, Key::Up, Key::Right]);
-    assert_eq!(state.mode, Mode::Windows);
-    press_on(&mut state, &workspaces, &[Key::Right]);
     assert_eq!((state.active, state.selected()), (1, 3));
+    assert_eq!(state.mode, Mode::Spaces);
 
     press_on(&mut state, &workspaces, &[Key::Down, Key::Left]);
     assert_eq!((state.active, state.selected()), (0, 0), "its shown one");
+
+    press_on(&mut state, &workspaces, &[Key::Space, Key::Right]);
+    assert_eq!((state.active, state.selected()), (1, 4));
+    assert_eq!(state.mode, Mode::Spaces);
+
+    press_on(&mut state, &workspaces, &[Key::Right]);
+    assert_eq!((state.active, state.selected()), (1, 4), "none further");
+    assert_eq!(state.take_nudge(), Some(Toward::Right));
+  }
+
+  #[test]
+  fn stacked_screens_are_crossed_past_the_ends_of_the_stack() {
+    let screens = two_screens_at(Rect::from_xy(0, 1040, 1920, 1040));
+    let workspaces = all_workspaces(&screens);
+    let mut state =
+      Interaction::new(&screens, OverviewLayoutMode::Stack, 6.0);
+
+    // Off the windows of the last workspace with any, down its stack and
+    // past its end onto the start of the one below.
+    press_on(&mut state, &workspaces, &[Key::Down, Key::Space, Key::Down]);
+    assert_eq!((state.active, state.selected()), (0, 2));
+    press_on(&mut state, &workspaces, &[Key::Down]);
+    assert_eq!((state.active, state.selected()), (1, 3));
+
+    press_on(&mut state, &workspaces, &[Key::Space, Key::Up]);
+    assert_eq!((state.active, state.selected()), (0, 2), "its last");
   }
 
   #[test]
