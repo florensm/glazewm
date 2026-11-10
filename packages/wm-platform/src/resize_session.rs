@@ -37,13 +37,6 @@ const EDGE_SAMPLE_INSET: i32 = 4;
 /// duration observed, so it essentially never fires for a merely slow app.
 const COMMIT_CONFIRM_MAX_WAIT: Duration = Duration::from_millis(500);
 
-/// Thumbnail opacity of a session whose surrogate shows a companion,
-/// whatever the window's own alpha: the companion covers the window
-/// opaquely at rest, so drawn at the window's alpha it would look lighter
-/// for the whole animation, and the hand-back would show the real window
-/// (as it really is) through the fading surrogate.
-const COMPANION_OPACITY: u8 = u8::MAX;
-
 /// How often a session whose surrogate shows no companion looks for one
 /// shown since (see [`ResizeSession::refresh_companion`]). Time-based, as
 /// ticks run at up to the fastest monitor's refresh rate, and each look
@@ -51,9 +44,12 @@ const COMPANION_OPACITY: u8 = u8::MAX;
 const COMPANION_RECHECK_INTERVAL: Duration = Duration::from_millis(100);
 
 use crate::{
-  companion, discard_bits_if_resized, native_surrogate::to_logical,
-  platform_impl::NativeWindow, window_class, Color, CornerStyle,
-  NativeSurrogate, OverlayParams, Rect, SurrogateBatch,
+  companion::{self, COMPANION_OPACITY},
+  discard_bits_if_resized,
+  native_surrogate::to_logical,
+  platform_impl::NativeWindow,
+  window_class, Color, CornerStyle, NativeSurrogate, OverlayParams, Rect,
+  SurrogateBatch,
 };
 
 /// Options for [`ResizeSession::begin`].

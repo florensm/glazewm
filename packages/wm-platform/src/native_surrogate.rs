@@ -14,7 +14,7 @@ use windows::{
 };
 
 use crate::{
-  companion::{Companion, HandoffWait},
+  companion::{Companion, HandoffWait, COMPANION_OPACITY},
   dwm_thumbnail::{clip_rects, Look, Thumbnail},
   platform_impl::{self, composition::SurrogateFill},
   window_class::{self, DeferredPositions},
@@ -822,6 +822,18 @@ impl NativeSurrogate {
   #[must_use]
   pub(crate) fn shows_companion(&self) -> bool {
     self.companion.is_some()
+  }
+
+  /// Opacity to draw the thumbnail at for a window whose own alpha is
+  /// `window_alpha`: [`COMPANION_OPACITY`] while it samples the window's
+  /// companion.
+  #[must_use]
+  pub(crate) fn stand_in_opacity(&self, window_alpha: u8) -> u8 {
+    if self.shows_companion() {
+      COMPANION_OPACITY
+    } else {
+      window_alpha
+    }
   }
 
   /// Switches the thumbnail from `source_hwnd` to its companion, drawn at

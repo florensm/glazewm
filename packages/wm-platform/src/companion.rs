@@ -52,6 +52,13 @@ const MAX_Z_ORDER_WALK: usize = 4096;
 /// [`CompanionState`]).
 const HANDOFF_MAX_WAIT: Duration = Duration::from_secs(1);
 
+/// Thumbnail opacity of a stand-in showing a companion, whatever the
+/// window's own alpha: the companion covers the window opaquely at rest,
+/// so drawn at the window's alpha it would look lighter for the whole
+/// animation, and the hand-back would show the real window (as it really
+/// is) through the stand-in.
+pub(crate) const COMPANION_OPACITY: u8 = u8::MAX;
+
 /// What a [`HandoffWait`] finds on a call.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum CompanionState {
