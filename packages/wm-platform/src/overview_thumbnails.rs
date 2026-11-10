@@ -113,6 +113,15 @@ impl Picture {
     }
   }
 
+  /// Frees the picture's pixels, and the copy DWM keeps of its window's,
+  /// until it is drawn again. Its window stays, as creating one is what
+  /// reusing a picture saves.
+  pub fn release(&mut self) {
+    if self.surface.is_some() {
+      self.draw((1, 1), |_| {});
+    }
+  }
+
   /// Shows the whole picture at `dest` on the overview, cut to `clip`.
   pub fn place(&mut self, dest: &RectF, clip: &RectF, opacity: f32) {
     let (width, height) = self.size();
