@@ -150,6 +150,7 @@ kind stays on the old path until you have seen the new one.
 - [x] 1. Split the per-window stand-in out of the scroll view (move only)
 - [x] 2. Entry track: the maths, the drawing, the switch
 - [ ] 3. Open on peeks: tiling layouts (the gate), then scrolling columns
+  (3a built, not checked live; 3b not started)
 - [ ] 4. Close and minimize on peeks, both layouts
 - [ ] 5. Restore on peeks
 - [ ] 6. Moves on peeks
@@ -460,6 +461,23 @@ Do, all behind `isolation::current().peeks`:
    are on pure functions: factor "is this moving entry complete",
    "which entries does `take_departed` take" and the retarget into
    functions over `motion`, `transit` and `is_column`, and test those.
+10. Strays (found while building 3a): nothing else removes an entering
+    entry whose window goes away, since `take_departed` takes columns
+    only. `drop_strays` (`peek_view.rs`) runs on every `platform_sync`,
+    right after the scroll view's sync and outside its condition, and
+    costs nothing while no non-column entry exists. It takes non-column
+    entries whose window is unmanaged or no longer shown (workspace not
+    displayed, hidden in its layout, minimized, or playing a close or
+    minimize animation); `is_stray` decides. The peek is dropped at once,
+    with no hand-back, and a still-managed window is queued for redraw,
+    as `sync_scroll_view` does for departed columns: the ordinary path
+    then hides it, and uncloaks it once it is shown again.
+    `unmanage_window` also drops the entry directly
+    (`forget_entering`), as an unfocused window's removal may queue no
+    sync.
+
+    `time_to_land` reads the later of the motion's and the transit's
+    remaining time.
 
 Do not: touch `start_open_animation` or `ResizeSession`; touch scrolling
 columns in this step; handle `Live` peeks.

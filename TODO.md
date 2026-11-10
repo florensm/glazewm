@@ -447,6 +447,32 @@ to see it; check each once more at 150 ms.
     close, minimize and restore a window in a tiling layout, scroll a
     column. All look as before; with `peeks` set, the log's start-up
     warning lists `peeks: true` and nothing else differs.
+42. **Open on peeks, tiling layouts** (`STAND_INS_PLAN.md` 3a, the gate
+    for everything after it). On a tiling-layout workspace, with
+    `GLAZEWM_ISOLATE=peeks`, open a window with each `window_open` style
+    (`zoom`, each `slide_*`, `none` with `opacity_from` below 1) at
+    `duration_ms: 2000` and at 150. Compare with task 0's baseline and
+    with the same build with the switch unset. Include a see-through
+    window with a backdrop and one themed by shades. Should show:
+    - the window enters with its border and backdrop moving and fading
+      with it, never a frame apart;
+    - no flash, white frame or lighter look as a see-through or
+      shades-themed window lands;
+    - nothing shown twice or not at all at the start or the end;
+    - opening a second window mid-way neither restarts nor misplaces the
+      first;
+    - neighbours making room stay in step with it.
+
+    Then, each while a window is still opening at 2000 ms: close it, move
+    it to another workspace, switch workspace. Nothing of it may stay on
+    screen, and it must be visible and usable when you come back to it.
+    Windows whose peek would be `Live` (rounded corners, or parallax not
+    1) keep the old path, as does a restore. Keep `perf.log`
+    (`GLAZEWM_PERF=1`) of one run with the switch on and one with it off:
+    `tick ms/frame` during an open beside three windows, for task 7. If
+    any point is worse than with the switch off and the cause is not a
+    plain bug, stop and report with a screenshot; do not tune hand-over
+    timings.
 
 If bars or flicker show, isolate them with `GLAZEWM_ISOLATE` (below), one
 restart per flag: `noring`, `nobackdrop`, then `live`. With a long
@@ -466,7 +492,7 @@ in the log says it is on):
   peeks that move with them, as before `b33c0ef8`.
 - `peeks`: draw open, close, minimize, restore and moves with pinned
   peeks instead of `ResizeSession`, for the kinds already moved over.
-  None is yet: `STAND_INS_PLAN.md` task 3 moves the first.
+  So far: opens in tiling layouts (`STAND_INS_PLAN.md` 3a).
 
 Set it for one run, e.g. from PowerShell in the repo:
 
