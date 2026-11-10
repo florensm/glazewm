@@ -2314,6 +2314,12 @@ impl AnimationManager {
     self.clock().reset(FrameClock::DEFAULT_PERIOD);
   }
 
+  /// The time a frame drawn now is evaluated at, read afresh: for
+  /// sampling a movement outside a redraw pass where it was last drawn.
+  pub(crate) fn frame_time(&self) -> Instant {
+    self.predictive_vsync_now().unwrap_or_else(Instant::now)
+  }
+
   /// Starts a new redraw pass, so the next [`frame_now`] takes a fresh
   /// reading.
   ///
@@ -2338,7 +2344,7 @@ impl AnimationManager {
       return now;
     }
 
-    let now = self.predictive_vsync_now().unwrap_or_else(Instant::now);
+    let now = self.frame_time();
 
     self.pass_now = Some(now);
     now
@@ -2509,8 +2515,9 @@ impl AnimationManager {
       if let Some(prev_target) = previous_target {
         // Start from the current animated position on cancel-and-replace
         // so the animation does not jump back to the original
-        // start.
-        let now = Instant::now();
+        // start: where it is at the time frames are evaluated at, not at
+        // the wall clock, which is up to half a frame off either way.
+        let now = self.frame_now();
         let start_rect = existing_animation.as_ref().map_or_else(
           || prev_target.clone(),
           |a| a.current_state_at(now).0,
@@ -2563,6 +2570,19 @@ impl AnimationManager {
         // is slow.
         if let Some(session) = self.resize_sessions.get_mut(&window_id) {
           session.update_target(&start_rect, &target_rect);
+
+          // Redirected with nothing to set up, the new movement carries
+          // on from where the old one was drawn at `now`. Left to start
+          // on the next tick, it would repeat or skip up to a frame of
+          // travel.
+          let was_moving = existing_animation
+            .as_ref()
+            .is_some_and(|a| a.is_running() && !a.is_complete());
+          if let Some(animation) =
+            self.animations.get(&window_id).filter(|_| was_moving)
+          {
+            animation.start_clock(now);
+          }
         } else {
           let hwnd = native_window.hwnd();
           // Stretch never shows a gap, so it needs no edge color.

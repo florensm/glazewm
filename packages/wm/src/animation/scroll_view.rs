@@ -395,7 +395,9 @@ impl ScrollView {
   }
 
   /// Draws `window` with a peek in `role`, going from `from` to `target`.
-  /// A move of a peek already shown is queued into `batch`.
+  /// A move of a peek already shown is queued into `batch`, and one
+  /// already moving carries on from where it is at `now`, the time frames
+  /// are evaluated at.
   ///
   /// Returns whether a new peek now covers a still-visible real window,
   /// so it has to be composited before that window is cloaked.
@@ -409,6 +411,7 @@ impl ScrollView {
     role: Role,
     config: &UserConfig,
     is_focused: bool,
+    now: Instant,
     batch: &mut SurrogateBatch,
   ) -> bool {
     let scroll_config = &config.value.animations.scroll;
@@ -424,12 +427,20 @@ impl ScrollView {
     // A column already moving carries on at its speed toward the new
     // target, so quick presses in a row glide rather than restart.
     let motion = match in_flight {
-      Some(entry) if is_moving => entry.motion.retargeted(
-        target,
-        scroll_config.duration_ms,
-        scroll_config.easing.clone(),
-        Instant::now(),
-      ),
+      Some(entry) if is_moving => {
+        let motion = entry.motion.retargeted(
+          target,
+          scroll_config.duration_ms,
+          scroll_config.easing.clone(),
+          now,
+        );
+        // Sampled at the wall clock and started on the next tick, it
+        // repeated or skipped up to a frame of travel at every key press.
+        if entry.motion.is_running() {
+          motion.start_clock(now);
+        }
+        motion
+      }
       _ => WindowAnimationState::new_movement(
         from.clone(),
         target,
@@ -462,7 +473,7 @@ impl ScrollView {
       if covers_shown_window {
         entry.composited = false;
       }
-      let rect = entry.motion.current_rect();
+      let (rect, _) = entry.motion.current_state_at(now);
       entry.place(&rect, batch);
       return covers_shown_window;
     }
@@ -549,6 +560,7 @@ pub fn sync_scroll_view(
     .filter(|id| !state.window_target_positions.contains_key(id))
     .collect::<HashSet<_>>();
 
+  let now = state.animation_manager.frame_time();
   let view = &mut state.animation_manager.scroll_view;
 
   // Windows that left the displayed scrolling layouts lose their peeks;
@@ -633,6 +645,7 @@ pub fn sync_scroll_view(
         role,
         config,
         focused_id == Some(window.id()),
+        now,
         &mut batch,
       );
 
@@ -657,32 +670,30 @@ pub fn sync_scroll_view(
     }
   }
 
-  // The scroll view drives these windows now, not their own animations.
-  for id in &started_moving {
+  drive_moving(state, &started_moving);
+}
+
+/// Has the scroll view drive the columns that `started_moving`, on ticks
+/// paced by their monitor's vblanks. Without those a scroll is evaluated
+/// at whenever the WM thread gets to each tick, so it advances unevenly.
+fn drive_moving(state: &mut WmState, started_moving: &[Uuid]) {
+  // Not their own animations any more.
+  for id in started_moving {
     state.animation_manager.remove_animation(id);
   }
 
-  if let Some(id) = started_moving.first() {
-    pace_by_monitor_of(state, *id);
-  }
-
-  if state.animation_manager.scroll_view.is_active() {
-    state.animation_manager.ensure_timer_running();
-  }
-}
-
-/// Paces animation ticks by the vblanks of the monitor `window_id` is on.
-/// Without them a scroll is evaluated at whenever the WM thread gets to
-/// each tick, so its columns advance unevenly.
-fn pace_by_monitor_of(state: &WmState, window_id: Uuid) {
-  let monitor = state
-    .window_by_id(window_id)
+  let monitor = started_moving
+    .first()
+    .and_then(|id| state.window_by_id(*id))
     .and_then(|window| window.monitor());
-
   if let Some(monitor) = monitor {
     state
       .animation_manager
       .ensure_waiter_for(monitor.native_properties().handle);
+  }
+
+  if state.animation_manager.scroll_view.is_active() {
+    state.animation_manager.ensure_timer_running();
   }
 }
 
