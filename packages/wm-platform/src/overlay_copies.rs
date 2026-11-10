@@ -573,12 +573,17 @@ impl OverlayCopies {
 
   /// Draws the ring and backdrop at `opacity`.
   pub(crate) fn set_opacity(&mut self, opacity: u8) {
+    self.set_ring_opacity(opacity);
+    self.set_backdrop_opacity(opacity);
+  }
+
+  /// Draws the ring at `opacity`, independently of the backdrop.
+  pub(crate) fn set_ring_opacity(&mut self, opacity: u8) {
     if let Some(ring) = &mut self.ring {
       let _ = ring
         .thumbnail
         .set_opacity(left_out(opacity, isolation::current().no_ring));
     }
-    self.set_backdrop_opacity(opacity);
   }
 
   /// Brings the ring copy to full opacity.

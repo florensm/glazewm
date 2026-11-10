@@ -258,8 +258,15 @@ impl WindowPeek {
     let dest = self.surrogate.hwnd();
     let carries =
       self.copies.carry_ring(dest, source, ring_rect, window_rect);
-    // Drawn twice in one place, a ring looks like one.
-    self.copies.cover_ring();
+    // Drawn twice in one place, a ring looks like one. Faded with its
+    // window, as last placed (see `place_scaled`).
+    if self.frac < 1.0 {
+      self
+        .copies
+        .set_ring_opacity(scale_alpha(u8::MAX, self.frac));
+    } else {
+      self.copies.cover_ring();
+    }
     carries
   }
 
@@ -495,6 +502,13 @@ impl WindowPeek {
     self.surrogate.set_visible(true);
 
     Some(visible)
+  }
+
+  /// Hides the peek until it is placed again, e.g. while its window is
+  /// drawn at no size.
+  pub fn hide(&mut self) {
+    self.surrogate.set_visible(false);
+    self.visible_rect = None;
   }
 
   /// The window's visible frame where it was last placed, including any

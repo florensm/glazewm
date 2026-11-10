@@ -126,11 +126,13 @@ async fn start_wm(
 ) -> anyhow::Result<()> {
   setup_logging(&verbosity)?;
 
-  // Left on by mistake, it would make every animation look broken.
+  // Left on by mistake, it would make animations look broken or differ
+  // from the defaults.
   let isolation = wm_platform::isolation::current();
   if isolation != wm_platform::isolation::Isolation::default() {
     tracing::warn!(
-      "GLAZEWM_ISOLATE leaves parts of moving windows out: {isolation:?}."
+      "GLAZEWM_ISOLATE changes how moving windows are drawn: \
+       {isolation:?}."
     );
   }
 

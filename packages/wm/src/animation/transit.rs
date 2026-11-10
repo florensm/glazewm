@@ -5,7 +5,9 @@ use wm_common::{
 };
 use wm_platform::Rect;
 
-use crate::animation::state::WindowAnimationState;
+use crate::animation::{
+  manager::OPEN_PAINT_GRACE, state::WindowAnimationState,
+};
 
 /// Pixels a transit's clock travels per unit of its entry track.
 ///
@@ -22,6 +24,8 @@ const MIN_DURATION_MS: u32 = 17;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Direction {
   In,
+  // Unused until task 4 of `STAND_INS_PLAN.md` draws closes with it.
+  #[allow(dead_code)]
   Out,
 }
 
@@ -34,6 +38,8 @@ impl Direction {
     }
   }
 
+  // Unused until task 4 of `STAND_INS_PLAN.md` draws closes with it.
+  #[allow(dead_code)]
   fn opposite(self) -> Self {
     match self {
       Self::In => Self::Out,
@@ -83,6 +89,28 @@ impl Transit {
     }
   }
 
+  /// The transit of a window opening by `params`, or `None` when it would
+  /// show nothing: a stationary style other than a zoom, at full opacity
+  /// throughout, which `start_open_animation` skips too.
+  ///
+  /// A plain fade holds at the start for `OPEN_PAINT_GRACE`, so the app
+  /// paints before it shows, as on the old path. Slides and zooms show
+  /// nothing there, so start at once.
+  pub fn opening(params: &WindowTransitionParams) -> Option<Self> {
+    let is_zoom = params.style == WindowTransitionStyle::Zoom;
+    let is_fade = params.style.is_stationary() && !is_zoom;
+    if is_fade && params.away_opacity >= 1.0 {
+      return None;
+    }
+
+    let mut transit = Self::new(Direction::In, params, 0.0);
+    if is_fade {
+      transit.clock.start_delay = OPEN_PAINT_GRACE;
+    }
+
+    Some(transit)
+  }
+
   /// How far in the window is at `now`: 0 away, 1 at rest.
   pub fn amount_at(&self, now: Instant) -> f32 {
     let progress = self.clock.eased_progress_at(now);
@@ -103,6 +131,8 @@ impl Transit {
   ///
   /// A spring keeps the speed this one has at `now`, so it carries on a
   /// moment before turning round; other easings start from rest.
+  // Unused until task 4 of `STAND_INS_PLAN.md` draws closes with it.
+  #[allow(dead_code)]
   pub fn reversed(
     &self,
     params: &WindowTransitionParams,
@@ -336,6 +366,35 @@ mod tests {
     assert_near(closing.amount_at(at(75)), 0.125);
     assert_near(closing.amount_at(at(100)), 0.0);
     assert!(closing.clock.eased_progress_at(at(100)) >= 1.0);
+  }
+
+  #[test]
+  fn opening_matches_the_old_path() {
+    let with = |style, away_opacity| WindowTransitionParams {
+      style,
+      away_opacity,
+      ..params(linear())
+    };
+
+    assert!(
+      Transit::opening(&with(WindowTransitionStyle::None, 1.0)).is_none()
+    );
+
+    let fade = Transit::opening(&with(WindowTransitionStyle::None, 0.0));
+    assert_eq!(
+      fade.map(|transit| transit.clock.start_delay),
+      Some(OPEN_PAINT_GRACE)
+    );
+
+    for style in SLIDES.into_iter().chain([WindowTransitionStyle::Zoom]) {
+      let transit = Transit::opening(&with(style.clone(), 1.0));
+      assert!(
+        transit.is_some_and(|transit| transit.direction == Direction::In
+          && transit.from == 0.0
+          && transit.clock.start_delay.is_zero()),
+        "{style:?}"
+      );
+    }
   }
 
   #[test]

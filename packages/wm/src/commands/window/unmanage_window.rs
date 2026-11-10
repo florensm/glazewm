@@ -43,6 +43,9 @@ pub fn unmanage_window(
   state: &mut WmState,
 ) -> anyhow::Result<()> {
   state.animation_manager.remove_animation(&window.id());
+  // Here rather than in `platform_sync`, which an unfocused window's
+  // removal may not lead to (see below).
+  state.animation_manager.peeks.forget_entering(&window.id());
   state.animation_manager.drop_companion_cover(&window.id());
 
   // Destroy any static backdrop/border overlay owned by this window

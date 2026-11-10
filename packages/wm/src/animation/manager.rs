@@ -65,7 +65,7 @@ const SOFT_ZOOM_OUTGOING: f32 = 0.03;
 /// tick to paint. Roughly two frames at 60 Hz — long enough to cover the
 /// typical first-paint latency without a perceptible delay in the window
 /// appearing.
-const OPEN_PAINT_GRACE: Duration = Duration::from_millis(30);
+pub(super) const OPEN_PAINT_GRACE: Duration = Duration::from_millis(30);
 
 /// Duration of the surrogate fade-out at animation completion.
 ///
@@ -2528,23 +2528,8 @@ impl AnimationManager {
           |a| a.current_state_at(now).0,
         );
 
-        // Share the resize timing across the whole cycle when any window
-        // in it resizes, keeping all edges in lock-step (see doc
-        // comment).
-        let use_resize_timing = is_resize
-          || (cycle_has_resize
-            && config.value.animations.window_resize.enabled);
-
-        let (duration_ms, easing) = if is_column {
-          let c = &config.value.animations.scroll;
-          (c.duration_ms, c.easing.clone())
-        } else if use_resize_timing {
-          let c = &config.value.animations.window_resize;
-          (c.duration_ms, c.easing.clone())
-        } else {
-          let c = &config.value.animations.window_move;
-          (c.duration_ms, c.easing.clone())
-        };
+        let (duration_ms, easing) =
+          movement_timing(is_column, is_resize, cycle_has_resize, config);
 
         // A column already moving carries on at its speed toward the new
         // target, as the strip's columns do, rather than restarting.
@@ -3973,6 +3958,32 @@ fn reanchor_final_overlays(state: &mut WmState) -> bool {
   batch.commit();
 
   !windows.is_empty()
+}
+
+/// The duration and easing a window's move or resize runs on.
+///
+/// When any window in the cycle resizes, pure translations share the
+/// resize timing too, keeping all edges in lock-step (see
+/// `AnimationManager::start_animation_if_needed`).
+pub(crate) fn movement_timing(
+  is_column: bool,
+  is_resize: bool,
+  cycle_has_resize: bool,
+  config: &UserConfig,
+) -> (u32, EasingFunction) {
+  let use_resize_timing = is_resize
+    || (cycle_has_resize && config.value.animations.window_resize.enabled);
+
+  if is_column {
+    let c = &config.value.animations.scroll;
+    (c.duration_ms, c.easing.clone())
+  } else if use_resize_timing {
+    let c = &config.value.animations.window_resize;
+    (c.duration_ms, c.easing.clone())
+  } else {
+    let c = &config.value.animations.window_move;
+    (c.duration_ms, c.easing.clone())
+  }
 }
 
 #[cfg(test)]

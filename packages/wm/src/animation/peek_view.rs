@@ -6,23 +6,26 @@ use std::{
 };
 
 use uuid::Uuid;
+use wm_common::{EasingFunction, WindowState, WindowTransitionParams};
 use wm_platform::{
-  BackdropOverlayParams, BorderOverlayParams, NativeBackdropOverlay,
-  NativeBorderOverlay, NativeWindow, Overlay, Point, Rect, StyleBlend,
-  SurrogateBatch, WindowPeek, HWND,
+  BackdropOverlayParams, BorderOverlayParams, CornerStyle,
+  NativeBackdropOverlay, NativeBorderOverlay, NativeWindow, Overlay,
+  Point, Rect, StyleBlend, SurrogateBatch, WindowPeek, HWND,
 };
 
 use super::{
   stand_in::{moved_along, StandIn},
   state::WindowAnimationState,
+  transit::{transit_frame, Transit},
 };
 use crate::{
   commands::general::{
     focus_blend, overlay_entry, surrogate_effects_for,
     upsert_clipped_overlay, upsert_pinned_border_overlay,
   },
+  layout::is_hidden_in_layout,
   models::WindowContainer,
-  traits::{CommonGetters, WindowGetters},
+  traits::{CommonGetters, PositionGetters, WindowGetters},
   user_config::UserConfig,
   wm_state::WmState,
 };
@@ -82,6 +85,12 @@ pub(super) struct Entry {
   /// still-shown real window, so that window can be cloaked without
   /// waiting for another composition (see [`PeekView::is_composited`]).
   composited: bool,
+  /// How far the window has entered, for one opening on its peek (see
+  /// [`PeekView::enter`]). Its motion then only follows its tile.
+  transit: Option<Transit>,
+  /// Whether it is a scrolling layout's column, which
+  /// [`PeekView::take_departed`] takes once it leaves the layout.
+  is_column: bool,
 }
 
 impl Entry {
@@ -89,6 +98,85 @@ impl Entry {
     self.peek.place(rect, &self.clip, self.opacity, batch);
     self.rect = rect.clone();
   }
+
+  /// Places the peek with its window at `rect`, zoomed, slid and faded by
+  /// its transit at `now` if it has one.
+  fn draw(
+    &mut self,
+    rect: &Rect,
+    now: Instant,
+    batch: &mut SurrogateBatch,
+  ) {
+    let Some(transit) = &self.transit else {
+      self.place(rect, batch);
+      return;
+    };
+
+    match transit_frame(
+      rect,
+      &transit.style,
+      transit.away_opacity,
+      transit.amount_at(now),
+    ) {
+      Some((frame, frac)) => self.peek.place_scaled(
+        rect,
+        &frame,
+        &self.clip,
+        self.opacity,
+        frac,
+        batch,
+      ),
+      None => self.peek.hide(),
+    }
+    self.rect = rect.clone();
+  }
+}
+
+/// Whether a moving entry has landed: its motion and, while it enters,
+/// its transit too.
+fn has_landed(
+  motion: &WindowAnimationState,
+  transit: Option<&Transit>,
+) -> bool {
+  motion.is_complete() && transit.is_none_or(Transit::is_complete)
+}
+
+/// Whether [`PeekView::take_departed`] takes an entry whose window
+/// `is_known` to the displayed scrolling layouts or not: only a column's,
+/// so one entering a tiling layout stays.
+fn is_departed(is_column: bool, is_known: bool) -> bool {
+  is_column && !is_known
+}
+
+/// Whether [`PeekView::take_strays`] takes an entry: one not a column's,
+/// whose window is unmanaged (`shown` is `None`) or not shown.
+fn is_stray(is_column: bool, shown: Option<bool>) -> bool {
+  !is_column && shown != Some(true)
+}
+
+/// `motion` headed for `target` instead, at the speed it has at `now`
+/// (see `WindowAnimationState::retargeted`). One already drawn carries on
+/// from where it was at `now`.
+fn retargeted_motion(
+  motion: &WindowAnimationState,
+  target: Rect,
+  duration_ms: u32,
+  easing: EasingFunction,
+  now: Instant,
+) -> WindowAnimationState {
+  let retargeted = motion.retargeted(target, duration_ms, easing, now);
+  if motion.is_running() {
+    retargeted.start_clock(now);
+  }
+  retargeted
+}
+
+/// Whether a peek with copies of `styles` has to move with its window: a
+/// backdrop that can't be copied along in either focus state.
+fn is_live(styles: &[Option<BackdropOverlayParams>]) -> bool {
+  styles
+    .iter()
+    .any(|style| style.is_some_and(|params| !params.is_copyable()))
 }
 
 /// Columns whose move ended on a tick.
@@ -198,7 +286,12 @@ impl PeekView {
       .entries
       .get(window_id)
       .filter(|entry| matches!(entry.role, Role::Moving { .. }))
-      .map(|entry| entry.motion.remaining_at(now))
+      .map(|entry| {
+        let motion = entry.motion.remaining_at(now);
+        entry.transit.as_ref().map_or(motion, |transit| {
+          motion.max(transit.clock.remaining_at(now))
+        })
+      })
   }
 
   /// Whether `window_id` is moving, i.e. its real window stays frozen.
@@ -248,10 +341,13 @@ impl PeekView {
           entry.peek.show_window();
           entry.peek.refresh_companion();
           entry.motion.start_clock(clock_origin);
+          if let Some(transit) = &entry.transit {
+            transit.clock.start_clock(clock_origin);
+          }
           let (rect, _) = entry.motion.current_state_at(now);
-          entry.place(&rect, batch);
+          entry.draw(&rect, now, batch);
 
-          if entry.motion.is_complete() {
+          if has_landed(&entry.motion, entry.transit.as_ref()) {
             entry.role = if ends_shown {
               // Raised while its real window is still cloaked, so the
               // uncloak never shows the window over the peek.
@@ -303,14 +399,49 @@ impl PeekView {
     }
   }
 
-  /// Takes out the peeks of windows that `is_known` no longer knows, i.e.
+  /// Takes out the peeks of columns that `is_known` no longer knows, i.e.
   /// that left the displayed scrolling layouts, and forgets their rects.
   pub(super) fn take_departed(
     &mut self,
     is_known: impl Fn(&Uuid) -> bool,
   ) -> Vec<(Uuid, Entry)> {
     self.last_rects.retain(|id, _| is_known(id));
-    self.entries.extract_if(|id, _| !is_known(id)).collect()
+    self
+      .entries
+      .extract_if(|id, entry| is_departed(entry.is_column, is_known(id)))
+      .collect()
+  }
+
+  /// Takes out the peeks of windows entering a tiling layout that
+  /// `shown` no longer has on screen: unmanaged (`None`), or not shown
+  /// (`Some(false)`). Columns are left to
+  /// [`take_departed`](Self::take_departed).
+  pub(super) fn take_strays(
+    &mut self,
+    shown: impl Fn(&Uuid) -> Option<bool>,
+  ) -> Vec<Uuid> {
+    self
+      .entries
+      .extract_if(|id, entry| is_stray(entry.is_column, shown(id)))
+      .map(|(id, _)| id)
+      .collect()
+  }
+
+  /// Drops `window_id`'s peek, if it is entering a tiling layout, as its
+  /// window is unmanaged.
+  pub fn forget_entering(&mut self, window_id: &Uuid) {
+    if self
+      .entries
+      .get(window_id)
+      .is_some_and(|entry| !entry.is_column)
+    {
+      self.entries.remove(window_id);
+    }
+  }
+
+  /// Whether any peek draws a window entering a tiling layout.
+  fn has_entering(&self) -> bool {
+    self.entries.values().any(|entry| !entry.is_column)
   }
 
   /// Has `window_id`'s moving peek take over from its real window, which
@@ -439,6 +570,7 @@ impl PeekView {
       entry.clip = clip.clone();
       entry.opacity = opacity;
       entry.role = role;
+      entry.is_column = true;
       // Copies of both styles are drawn up front, so a focus change only
       // crossfades them (see `track_overlays`): one registered mid-move
       // left frames without it.
@@ -451,56 +583,253 @@ impl PeekView {
       return covers_shown_window;
     }
 
-    // A window with a backdrop that can't be copied along in either focus
-    // state has a peek that moves with it.
-    let is_live = styles
-      .iter()
-      .any(|style| style.is_some_and(|params| !params.is_copyable()));
-
-    // Sized like the window itself, which a collapsed `from` (an opening
-    // column) isn't.
-    let Ok(mut peek) = WindowPeek::new(
-      &window.native(),
-      &motion.target_rect,
+    let Some((mut entry, covers_shown_window)) = new_entry(
+      window,
+      motion,
       clip,
-      &corner_style,
-      is_live,
-    )
-    .inspect_err(|err| {
-      tracing::warn!("Failed to create a peek of {window}: {err}");
-    }) else {
+      opacity,
+      corner_style,
+      &styles,
+      role,
+    ) else {
       return false;
     };
 
-    // Before the ring, which goes on top. Shown in its style by
-    // `track_overlays`, before anything is composited.
-    peek.carry_styles(&styles);
-
-    // A moving column's real window may still show until the peek takes
-    // over from it as it is cloaked; one at rest is already cloaked.
-    let covers_shown_window =
-      is_moving && !window.native().is_cloaked().unwrap_or(true);
-    if covers_shown_window {
-      peek.warm_up();
-    }
-
-    let rect = motion.current_rect();
-    let mut entry = Entry {
-      peek,
-      motion,
-      rect: rect.clone(),
-      clip: clip.clone(),
-      opacity,
-      role,
-      ring: Handover::None,
-      backdrop: Handover::None,
-      composited: false,
-    };
+    let rect = entry.rect.clone();
     entry.place(&rect, batch);
     self.entries.insert(window.id(), entry);
 
     covers_shown_window
   }
+
+  /// Draws `window`, just opened at `target`, entering on a pinned peek
+  /// by `params`' style, opacity and timing, until it is handed back.
+  ///
+  /// Returns `false`, creating nothing, for a window already drawn, one
+  /// whose peek would be `Live`, or a transition with nothing to show (see
+  /// [`Transit::opening`]).
+  #[allow(clippy::too_many_arguments)]
+  pub(super) fn enter(
+    &mut self,
+    window: &WindowContainer,
+    target: &Rect,
+    clip: &Rect,
+    params: &WindowTransitionParams,
+    config: &UserConfig,
+    is_focused: bool,
+    now: Instant,
+    batch: &mut SurrogateBatch,
+  ) -> bool {
+    let styles = peek_styles(window, config);
+    let Some(transit) = Transit::opening(params)
+      .filter(|_| !is_live(&styles) && !self.draws_window(&window.id()))
+    else {
+      return false;
+    };
+
+    let (opacity, corner_style, _) =
+      surrogate_effects_for(window.effect_set(is_focused), config);
+    // Held at its tile: only the transit moves it in.
+    let motion = WindowAnimationState::new_movement(
+      target.clone(),
+      target.clone(),
+      params.duration_ms,
+      params.easing.clone(),
+    );
+
+    let Some((mut entry, _)) = new_entry(
+      window,
+      motion,
+      clip,
+      opacity,
+      corner_style,
+      &styles,
+      Role::Moving { ends_shown: true },
+    ) else {
+      return false;
+    };
+
+    entry.transit = Some(transit);
+    entry.is_column = false;
+    entry.draw(target, now, batch);
+    self.entries.insert(window.id(), entry);
+
+    true
+  }
+
+  /// Whether `window_id` is entering a tiling layout on its peek (see
+  /// [`enter`](Self::enter)).
+  pub fn is_entering(&self, window_id: &Uuid) -> bool {
+    self.entries.get(window_id).is_some_and(|entry| {
+      entry.transit.is_some()
+        && !entry.is_column
+        && matches!(entry.role, Role::Moving { .. })
+    })
+  }
+
+  /// Heads `window_id`'s peek, entering a tiling layout, for its new tile
+  /// at `target`, at the speed it has at `now`, over `duration_ms` and
+  /// `easing`. Its transit carries on untouched.
+  pub fn retarget_entering(
+    &mut self,
+    window_id: &Uuid,
+    target: Rect,
+    duration_ms: u32,
+    easing: EasingFunction,
+    now: Instant,
+  ) {
+    if !self.is_entering(window_id) {
+      return;
+    }
+
+    if let Some(entry) = self
+      .entries
+      .get_mut(window_id)
+      .filter(|entry| entry.motion.target_rect != target)
+    {
+      entry.motion =
+        retargeted_motion(&entry.motion, target, duration_ms, easing, now);
+    }
+  }
+}
+
+/// Drops the peeks of windows entering a tiling layout that are no longer
+/// shown: closed, moved to a hidden workspace or switched away, minimized
+/// or now a hidden tab. No hand-back: their real windows are queued for
+/// redraw, which hides or shows them for good, as `sync_scroll_view` does
+/// for departed columns. Free while no window enters.
+pub fn drop_strays(state: &mut WmState) {
+  if !state.animation_manager.peeks.has_entering() {
+    return;
+  }
+
+  let shown = |id: &Uuid| {
+    let window = state.window_by_id(*id)?;
+    let manager = &state.animation_manager;
+    Some(
+      window
+        .workspace()
+        .is_some_and(|workspace| workspace.is_displayed())
+        && !is_hidden_in_layout(&window)
+        && window.state() != WindowState::Minimized
+        && !manager.has_close_animation(id)
+        && !manager.has_minimize_animation(id),
+    )
+  };
+  let shown = state
+    .animation_manager
+    .peeks
+    .entries
+    .keys()
+    .map(|id| (*id, shown(id)))
+    .collect::<HashMap<_, _>>();
+
+  let strays = state
+    .animation_manager
+    .peeks
+    .take_strays(|id| shown.get(id).copied().flatten());
+
+  for id in strays {
+    tracing::debug!("Dropped the peek of {id}, no longer shown.");
+    if let Some(window) = state.window_by_id(id) {
+      state.pending_sync.queue_container_to_redraw(window);
+    }
+  }
+}
+
+/// Has `window`, just opened at `target`, enter on a pinned peek by
+/// `params` (see [`PeekView::enter`]), on ticks paced by its monitor's
+/// vblanks as a scroll is. Returns whether it does.
+///
+/// Clipped to the whole monitor, as the old path's slides are.
+pub fn enter_on_peek(
+  state: &mut WmState,
+  window: &WindowContainer,
+  target: &Rect,
+  params: &WindowTransitionParams,
+  config: &UserConfig,
+  is_focused: bool,
+) -> bool {
+  let Some((clip, handle)) = window.monitor().and_then(|monitor| {
+    let clip = monitor.to_rect().ok()?;
+    Some((clip, monitor.native_properties().handle))
+  }) else {
+    return false;
+  };
+
+  let now = state.animation_manager.frame_time();
+  let mut batch = SurrogateBatch::new();
+  let entered = state.animation_manager.peeks.enter(
+    window, target, &clip, params, config, is_focused, now, &mut batch,
+  );
+  batch.commit();
+
+  if entered {
+    state.animation_manager.ensure_waiter_for(handle);
+    state.animation_manager.ensure_timer_running();
+  }
+
+  entered
+}
+
+/// A hidden peek of `window` for `motion` in `role`, carrying copies of
+/// its backdrop `styles`, and whether it covers a still-shown real window,
+/// so it has to be composited before that window is cloaked. `None` when
+/// the peek can't be created.
+fn new_entry(
+  window: &WindowContainer,
+  motion: WindowAnimationState,
+  clip: &Rect,
+  opacity: u8,
+  corner_style: CornerStyle,
+  styles: &[Option<BackdropOverlayParams>; 2],
+  role: Role,
+) -> Option<(Entry, bool)> {
+  let is_moving = matches!(role, Role::Moving { .. });
+
+  // Sized like the window itself, which a collapsed `from` (an opening
+  // column) isn't. A window with a backdrop that can't be copied along has
+  // a peek that moves with it.
+  let mut peek = WindowPeek::new(
+    &window.native(),
+    &motion.target_rect,
+    clip,
+    &corner_style,
+    is_live(styles),
+  )
+  .inspect_err(|err| {
+    tracing::warn!("Failed to create a peek of {window}: {err}");
+  })
+  .ok()?;
+
+  // Before the ring, which goes on top. Shown in its style by
+  // `track_overlays`, before anything is composited.
+  peek.carry_styles(styles);
+
+  // A moving column's real window may still show until the peek takes
+  // over from it as it is cloaked; one at rest is already cloaked.
+  let covers_shown_window =
+    is_moving && !window.native().is_cloaked().unwrap_or(true);
+  if covers_shown_window {
+    peek.warm_up();
+  }
+
+  let rect = motion.current_rect();
+  let entry = Entry {
+    peek,
+    motion,
+    rect,
+    clip: clip.clone(),
+    opacity,
+    role,
+    ring: Handover::None,
+    backdrop: Handover::None,
+    composited: false,
+    transit: None,
+    is_column: true,
+  };
+
+  Some((entry, covers_shown_window))
 }
 /// Keeps the border and backdrop overlays of the windows the scroll view
 /// draws on their peeks, cut at the monitor edge like the peeks are.
@@ -849,4 +1178,117 @@ fn peek_styles(
       .2
       .backdrop
   })
+}
+
+#[cfg(test)]
+mod tests {
+  use std::time::{Duration, Instant};
+
+  use wm_common::{
+    EasingFunction, WindowTransitionParams, WindowTransitionStyle,
+  };
+  use wm_platform::Rect;
+
+  use super::{has_landed, is_departed, is_stray, retargeted_motion};
+  use crate::animation::{
+    state::WindowAnimationState,
+    transit::{Direction, Transit},
+  };
+
+  fn linear() -> EasingFunction {
+    EasingFunction::CubicBezier(1.0 / 3.0, 1.0 / 3.0, 2.0 / 3.0, 2.0 / 3.0)
+  }
+
+  fn tile() -> Rect {
+    Rect::from_ltrb(100, 50, 900, 650)
+  }
+
+  fn motion(duration_ms: u32) -> WindowAnimationState {
+    WindowAnimationState::new_movement(
+      tile(),
+      tile(),
+      duration_ms,
+      linear(),
+    )
+  }
+
+  fn transit(duration_ms: u32) -> Transit {
+    let params = WindowTransitionParams {
+      duration_ms,
+      easing: linear(),
+      style: WindowTransitionStyle::Zoom,
+      away_opacity: 0.0,
+    };
+    Transit::new(Direction::In, &params, 0.0)
+  }
+
+  /// An entering window lands once its motion and its transit both have.
+  #[test]
+  fn landing_needs_both_tracks() {
+    let now = Instant::now();
+    let (done, running) = (motion(0), motion(60_000));
+    let (entered, entering) = (transit(0), transit(60_000));
+    for clock in [&done, &running] {
+      clock.start_clock(now);
+    }
+    for transit in [&entered, &entering] {
+      transit.clock.start_clock(now);
+    }
+
+    assert!(has_landed(&done, None));
+    assert!(!has_landed(&running, None));
+    assert!(has_landed(&done, Some(&entered)));
+    assert!(!has_landed(&done, Some(&entering)));
+    assert!(!has_landed(&running, Some(&entered)));
+  }
+
+  /// Retargeted mid-entry, a window heads for its new tile from where it
+  /// is, its transit carrying on as it was.
+  #[test]
+  fn retarget_keeps_the_entry_track() {
+    let t0 = Instant::now();
+    let now = t0 + Duration::from_millis(50);
+    let entry_motion = motion(200);
+    let entry_transit = transit(200);
+    entry_motion.start_clock(t0);
+    entry_transit.clock.start_clock(t0);
+    let amount = entry_transit.amount_at(now);
+
+    let new_tile = Rect::from_ltrb(100, 50, 500, 650);
+    let retargeted = retargeted_motion(
+      &entry_motion,
+      new_tile.clone(),
+      200,
+      linear(),
+      now,
+    );
+
+    assert_eq!(retargeted.target_rect, new_tile);
+    assert_eq!(retargeted.current_state_at(now).0, tile());
+    assert!(retargeted.is_running());
+    assert!((entry_transit.amount_at(now) - amount).abs() < f32::EPSILON);
+    assert!((amount - 0.25).abs() < 1e-3, "{amount}");
+  }
+
+  /// Only an entering window that is unmanaged or no longer shown is a
+  /// stray; columns and entering windows still shown are left alone.
+  #[test]
+  fn strays_are_entering_windows_not_shown() {
+    assert!(is_stray(false, None));
+    assert!(is_stray(false, Some(false)));
+    assert!(!is_stray(false, Some(true)));
+    for shown in [None, Some(false), Some(true)] {
+      assert!(!is_stray(true, shown), "{shown:?}");
+    }
+  }
+
+  /// Only columns leave with the scrolling layouts; a window entering a
+  /// tiling layout keeps its peek.
+  #[test]
+  fn take_departed_leaves_other_entries() {
+    assert!(is_departed(true, false));
+    assert!(!is_departed(true, true));
+    assert!(!is_departed(false, false));
+    assert!(!is_departed(false, true));
+  }
 }

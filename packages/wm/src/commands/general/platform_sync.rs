@@ -68,6 +68,10 @@ pub fn platform_sync(
     );
   }
 
+  // Windows entering a tiling layout on peeks that went out of view
+  // since, e.g. by a workspace switch, are redrawn below without them.
+  crate::animation::peek_view::drop_strays(state);
+
   // Windows whose own z-order was changed this tick, and whose overlays
   // therefore have to be put back behind them. Collected rather than
   // inferred: the two producers below (`redraw_containers`' bare
@@ -1393,7 +1397,7 @@ fn redraw_containers(
     //
     // Columns of a scrolling layout moving across the monitor edge are
     // likewise drawn by the scroll view until they come to rest.
-    let is_frozen_by_ws_animation = state
+    let mut is_frozen_by_ws_animation = state
       .animation_manager
       .is_workspace_switch_incoming(&window.id())
       || state.animation_manager.peeks.is_moving(&window.id());
@@ -1447,6 +1451,8 @@ fn redraw_containers(
     // target position it had before it was minimized -- so it is
     // flagged on `PendingSync` instead. A restore is also allowed for
     // floating windows, which never slide in on open.
+    //
+    // Paired with whether it is an open rather than a restore.
     let entry_transition = if is_visible
       && !is_fullscreen
       && !is_outgoing_switch
@@ -1456,15 +1462,21 @@ fn redraw_containers(
       if is_window_restore
         && config.value.animations.window_minimize.enabled
       {
-        Some(WindowTransitionParams::from_minimize(
-          &config.value.animations.window_minimize,
+        Some((
+          WindowTransitionParams::from_minimize(
+            &config.value.animations.window_minimize,
+          ),
+          false,
         ))
       } else if previous_target.is_none()
         && !is_floating
         && config.value.animations.window_open.enabled
       {
-        Some(WindowTransitionParams::from_open(
-          &config.value.animations.window_open,
+        Some((
+          WindowTransitionParams::from_open(
+            &config.value.animations.window_open,
+          ),
+          true,
         ))
       } else {
         None
@@ -1473,20 +1485,41 @@ fn redraw_containers(
       None
     };
 
-    if let Some(params) = entry_transition {
-      let monitor_rect =
-        window.monitor().context("No monitor.")?.to_rect()?;
-      let native_ref = window.native();
-      state.animation_manager.start_open_animation(
-        window.id(),
-        &target_rect,
-        monitor_rect,
-        effect_opacity,
-        corner_style,
-        overlays,
-        &params,
-        &native_ref,
-      );
+    if let Some((params, is_open)) = entry_transition {
+      // Behind the switch, an open in a tiling layout enters on a pinned
+      // peek instead (`STAND_INS_PLAN.md` task 3).
+      let enters_on_peek = is_open
+        && !is_column
+        && wm_platform::isolation::current().peeks
+        && crate::animation::peek_view::enter_on_peek(
+          state,
+          window,
+          &target_rect,
+          &params,
+          config,
+          window.id() == focused_container.id(),
+        );
+
+      if enters_on_peek {
+        // Computed before the peek went up: frozen behind it from now on,
+        // or it would be uncloaked at once.
+        is_frozen_by_ws_animation |=
+          state.animation_manager.peeks.is_moving(&window.id());
+      } else {
+        let monitor_rect =
+          window.monitor().context("No monitor.")?.to_rect()?;
+        let native_ref = window.native();
+        state.animation_manager.start_open_animation(
+          window.id(),
+          &target_rect,
+          monitor_rect,
+          effect_opacity,
+          corner_style,
+          overlays,
+          &params,
+          &native_ref,
+        );
+      }
     }
 
     // A slide-in animation creates a `ResizeSession` and animation entry,
@@ -1558,6 +1591,29 @@ fn redraw_containers(
     match position_result {
       AnimationPositionResult::Frozen => {
         let _scope = perf::scope(Stage::RedrawFrozen);
+
+        // A window entering on its peek whose tile changed, e.g. as
+        // another window opened, heads for the new one in step
+        // with its neighbours.
+        if wm_platform::isolation::current().peeks
+          && state.animation_manager.peeks.is_entering(&window.id())
+        {
+          let (duration_ms, easing) =
+            crate::animation::manager::movement_timing(
+              is_column,
+              is_resize,
+              cycle_has_resize,
+              config,
+            );
+          let now = state.animation_manager.frame_time();
+          state.animation_manager.peeks.retarget_entering(
+            &window.id(),
+            target_rect.clone(),
+            duration_ms,
+            easing,
+            now,
+          );
+        }
 
         // A surrogate overlay is covering this window. On the first frame,
         // cloak the real window (so only the surrogate is visible) and
