@@ -1301,8 +1301,17 @@ fn redraw_containers(
     // and tear the surrogate down mid-flight. A closing window avoids
     // this by being detached from the tree; a minimizing one is still
     // in it.
+    //
+    // Unless the window is coming back already, e.g. `toggle-minimized`
+    // pressed twice. Skipped then too, it was left as it was once the
+    // minimize ended: natively minimized with a slot in the layout, or
+    // restored by the OS with no overlays and where it used to be, until
+    // something else redrew it. The restore ends the minimize instead.
     if state.animation_manager.has_minimize_animation(&window.id()) {
-      continue;
+      if !state.pending_sync.is_window_restore(&window.id()) {
+        continue;
+      }
+      state.animation_manager.remove_animation(&window.id());
     }
 
     // Capture display state before transition to detect opening windows
