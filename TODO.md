@@ -46,6 +46,24 @@ it seen live: checks 14-19 below.
 - `84b0b949` The backdrop device's adapter is logged, as a warning when
   another adapter drives a display.
 
+Open, close, minimize and restore pass (2026-11-10, from
+`tryout/smooth-shades`; findings, evidence and what is left in
+`ANIMATION_REVIEW.md`). None of it seen live: checks 29-37 below.
+
+- `4f37740` A window opening in a tiling layout is moved to its tile as
+  its animation starts, not after it ends: it was cloaked by
+  `manage_window` already, which made the first-frame set-up skip it.
+  `0ad7cf1` A `fade`/`none` open shows its stand-in (it never did).
+  `356f882` A stand-in that slides or zooms in is only shown by its own
+  frames.
+- `983ef0d` A zoom ends at full size before the window is handed back.
+- `7074e09` Zoom, close and minimize frames are evaluated on the frame
+  clock like the rest (`0ab906a6` missed them).
+- `9a23bf4` A restore ends a minimize animation still playing instead of
+  being dropped. `9dfab1f` A close animation ends when its window is
+  already gone. `5f39127` No close or minimize animation without a
+  stand-in to draw (elevated windows).
+
 How the pieces fit: every moving window is a DWM thumbnail in a surrogate
 window that spans the monitor and never moves (`WorkspaceSurrogate` for
 switches, `WindowPeek` for scrolling). Its ring and backdrop are more
@@ -331,6 +349,67 @@ none of it seen live. Keys are in `docs/overview.md`.
     doesn't move when its windows are picked. Same checks through a
     search (type a title on that strip).
 
+Open, close, minimize and restore (`ANIMATION_REVIEW.md`). 29-31 need a
+workspace with a tiling layout, not the scrolling one: there a new column
+opens through the scroll, without `window_open`. Long durations are only
+to see it; check each once more at 150 ms.
+
+29. **Open in a tiling layout** (`4f37740`): `window_open` as default
+    (`slide_right`) with `duration_ms: 1000`. Next to one open window,
+    open Notepad with a long line of text and word wrap on, Explorer,
+    and a browser. Each slides in already laid out for its tile: text
+    wrapped to the tile's width, nothing cut off at the right or bottom,
+    no strip of wallpaper or backdrop inside it. As it lands nothing
+    reflows and there is no pause before its border settles and it takes
+    keys. `errors.log`: no "did not land within 500ms". With Vesktop or
+    another slow app, note whether the first frames show an empty or
+    wrongly sized window (review finding 12).
+30. **Fade open** (`0ad7cf1`): `window_open: { style: "fade",
+    opacity_from: 0.0, duration_ms: 1000 }`. The window fades in over
+    the second; before, nothing showed and it popped in at the end. With
+    transparency on it ends at the window's own alpha, with no step.
+31. **End of a zoom** (`983ef0d`): `window_open: { style: "zoom",
+    duration_ms: 1000 }`, and restoring a minimized window from the
+    taskbar (`window_minimize` default). The window lands exactly at
+    full size: no last jump outward, no smaller copy fading over it, and
+    its border and backdrop at full strength as it lands. With
+    transparency on and off.
+32. **Zoom, close and minimize pacing** (`7074e09`): `window_close: {
+    enabled: true, style: "zoom", duration_ms: 500 }` and
+    `window_minimize.duration_ms: 500`. Close and minimize a window
+    beside another: the shrink is even, and the neighbour filling the
+    gap moves in step with it, never a frame ahead.
+33. **Restore during a minimize** (`9a23bf4`): `window_minimize.
+    duration_ms: 1000`. `toggle-minimized` twice within the second; then
+    minimize and click the window's taskbar button within the second.
+    Both times the window ends in its tile with its border and backdrop.
+    Not: an empty tile, or the window over its neighbours without a
+    border. It grows from small again rather than turning round where
+    it was (review finding 9).
+34. **Window gone mid-close** (`9dfab1f`): `window_close: { enabled:
+    true, duration_ms: 5000 }`. In a terminal run `ping -n 3 localhost
+    >nul & taskkill /f /im notepad.exe`, then focus Notepad and press
+    the close binding at once. When Notepad dies, its border and
+    backdrop go with it instead of playing on around nothing.
+    `errors.log`: no "Failed to send WM_CLOSE". Once is enough.
+35. **Close with no stand-in** (`5f39127`): `window_close` on. Close
+    Task Manager (elevated) with the close binding: it closes at once,
+    not after the animation's length with nothing drawn.
+36. **Slide restore** (`356f882`): `window_minimize: { style:
+    "slide_right", duration_ms: 1000 }`. Minimize the rightmost window,
+    restore it from the taskbar: no second copy of it beside its place
+    or on the monitor to the right as the slide starts.
+37. **To settle the review's proposed items**, a look each:
+    - Finding 10: `window_minimize.duration_ms: 1000`, `toggle-minimized`
+      twice, two seconds apart. Does the window zoom back in, or come
+      back late with no zoom? `errors.log`: "did not land within 500ms"?
+    - Finding 9: `window_open: { style: "zoom", duration_ms: 2000 }`,
+      open two windows a second apart. Does the first restart from
+      small, or sit at the wrong place until it lands?
+    - Finding 11: `window_close: { enabled: true, duration_ms: 3000 }`,
+      record a close and step through its first frames. Is there one
+      with neither the window nor its stand-in?
+
 If bars or flicker show, isolate them with `GLAZEWM_ISOLATE` (below), one
 restart per flag: `noring`, `nobackdrop`, then `live`. With a long
 `duration_ms` (e.g. 3000) for `scroll` and `workspace_switch`, one
@@ -426,6 +505,10 @@ scroll is dropped.
    began, or a focus change during the wait setting a semi-transparent
    window's alpha again, which shows it over its surrogate (alpha-hidden
    windows aren't covered).
+
+8. Open, close, minimize and restore: `ANIMATION_REVIEW.md` findings 9
+   to 21, ranked. First: 9 (one driver with an entry track that survives
+   a retarget), then 10 and 11 once check 37 says whether they show.
 
 ## Older items, not started
 
