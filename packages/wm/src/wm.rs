@@ -469,11 +469,20 @@ impl WindowManager {
         } => {
           let native = NativeWindow::from_handle(handle);
 
+          if outcome == CloseOutcome::Closed {
+            // Gone while its close animation still plays, e.g. closed by
+            // its app or crashed: the stand-in has nothing left to draw,
+            // so its ring and backdrop would play on around nothing.
+            if state.animation_manager.has_close_animation(&id) {
+              state.animation_manager.remove_animation(&id);
+              state.window_overlays.remove(&id);
+            }
+            continue;
+          }
+
           // Managed again in the meantime, so its cloak is the WM's to
           // decide as for any other window.
-          if outcome == CloseOutcome::Closed
-            || state.window_from_native(&native).is_some()
-          {
+          if state.window_from_native(&native).is_some() {
             continue;
           }
 
