@@ -1642,6 +1642,7 @@ fn redraw_containers(
           // Nothing to wait for: the window is not on screen, so the move
           // can't show, and its app resizes and repaints at its tile's
           // size while the stand-in plays.
+          state.animation_manager.reveal_session(&window.id());
           preposition_cloaked(state, window, &z_order, &real_rect);
         } else if state
           .animation_manager

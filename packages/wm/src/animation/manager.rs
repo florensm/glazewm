@@ -3010,6 +3010,19 @@ impl AnimationManager {
         .is_some_and(|session| session.zoom)
   }
 
+  /// Shows `window_id`'s stand-in, which is created hidden.
+  ///
+  /// Not one that slides or zooms in: its own frames show it, from where
+  /// it starts, and hide it while that is off its monitor or of no size.
+  pub fn reveal_session(&mut self, window_id: &Uuid) {
+    if self.is_entering(window_id) {
+      return;
+    }
+    if let Some(session) = self.resize_sessions.get_mut(window_id) {
+      session.show();
+    }
+  }
+
   /// Where `window_id` is drawn mid move or resize animation, with
   /// `rect`, a rect of the layout that moves with the window (e.g. its
   /// stack's), moved along.
