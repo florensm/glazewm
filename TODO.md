@@ -214,7 +214,7 @@ Smoothness pass (`tryout/smooth`; on the laptop `test/smooth`, by eye and
     scrolling layout with single presses and with a held key, switch
     workspaces, move and resize, open and close the overview, on each
     monitor. Motion is even, starts at once, never runs ahead and snaps
-    back, and never freezes mid-way. Desktop: also with the game or a
+    back, and never freezes mid-way. Desktop: also with a game or a
     video running on the other monitor, and once on the 60 Hz monitor
     right after one on the faster one. Laptop: on battery (60 Hz) and
     plugged in, and across the internal panel and the external monitor.
