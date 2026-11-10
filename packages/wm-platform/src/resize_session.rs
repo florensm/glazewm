@@ -156,6 +156,13 @@ pub struct ResizeSession {
   /// [`update_zoom_fade`]: ResizeSession::update_zoom_fade
   /// [`overlay_params`]: ResizeSession::overlay_params
   zoom_progress: f32,
+  /// How far the stand-in is faded, as a fraction of `effect_opacity`.
+  /// The overlays are separate windows, so [`overlay_params`] scales them
+  /// by it: left at full strength they outlast a window fading out, then
+  /// vanish in one frame.
+  ///
+  /// [`overlay_params`]: ResizeSession::overlay_params
+  fade: f32,
   /// `true` once the real window has been repositioned at the current
   /// `target_rect` (at session start for growing curtain-reveals, or
   /// mid-animation via [`maybe_handoff`]). Reset whenever a redirect
@@ -384,6 +391,7 @@ impl ResizeSession {
       stretch: options.stretch,
       zoom: false,
       zoom_progress: 1.0,
+      fade: 1.0,
       handoff_done: is_growing,
       poll_parity: false,
       commit_poll_parity: false,
@@ -410,17 +418,24 @@ impl ResizeSession {
   /// Returns the params for the overlay trackers in `AnimationManager`
   /// and `platform_sync`.
   ///
-  /// For `zoom` sessions, both overlays' opacity is scaled by
-  /// `zoom_progress` so they fade in/out alongside the thumbnail's own
-  /// zoom instead of sitting at full opacity for the whole animation --
-  /// see `zoom_progress`'s doc comment.
+  /// Both overlays' opacity follows the stand-in's fade, and a `zoom`
+  /// session's `zoom_progress` when that is lower, so they come and go
+  /// with the window instead of sitting at full opacity around it.
   #[must_use]
   pub fn overlay_params(&self) -> OverlayParams {
-    if self.zoom {
-      self.overlays.with_opacity_scaled(self.zoom_progress)
+    let factor =
+      overlay_factor(self.zoom.then_some(self.zoom_progress), self.fade);
+
+    if factor < 1.0 {
+      self.overlays.with_opacity_scaled(factor)
     } else {
       self.overlays
     }
+  }
+
+  /// Records the opacity the stand-in is drawn at as its fade.
+  fn note_opacity(&mut self, opacity: u8) {
+    self.fade = fade_fraction(opacity, self.effect_opacity);
   }
 
   /// `HWND` of this session's surrogate, or `None` when surrogate creation
@@ -699,6 +714,7 @@ impl ResizeSession {
   /// thumbnail rect animates.
   pub fn update_zoom_fade(&mut self, progress: f32, opacity: u8) {
     self.zoom_progress = progress;
+    self.note_opacity(opacity);
     self.sync_fill();
 
     let Some(ref mut surrogate) = self.surrogate else {
@@ -877,6 +893,7 @@ impl ResizeSession {
   /// `opacity` maps to the DWM thumbnail opacity (0 = transparent, 255 =
   /// opaque). Pass `255` for resize animations where no fade is needed.
   pub fn update(&mut self, current_rect: &Rect, opacity: u8) {
+    self.note_opacity(opacity);
     self.sync_registration();
     let logical = to_logical(current_rect, &self.border_inset);
     self.current_rect = Some(logical.clone());
@@ -902,6 +919,8 @@ impl ResizeSession {
     current_rect: &Rect,
     opacity: u8,
   ) {
+    self.note_opacity(opacity);
+
     // Apply deferred thumbnail dims before `sync_registration` so the
     // short-circuit check (`content_size == target_dims`) succeeds on this
     // tick rather than falling back to `GetWindowRect`.
@@ -936,6 +955,8 @@ impl ResizeSession {
     monitor_rect: &Rect,
     opacity: u8,
   ) {
+    self.note_opacity(opacity);
+
     let Some(surrogate) = &mut self.surrogate else {
       self.current_rect = None;
       return;
@@ -1200,6 +1221,9 @@ impl ResizeSession {
       self.update_zoom_fade(1.0, self.effect_opacity);
     }
 
+    // Drawn at rest below, past the last frame of any fade.
+    self.fade = 1.0;
+
     let logical = to_logical(&self.target_rect, &self.border_inset);
     self.current_rect = Some(logical.clone());
     if let Some(surrogate) = &mut self.surrogate {
@@ -1260,6 +1284,23 @@ impl ResizeSession {
     // keep the WM from exiting.
     self.move_to(&self.target_rect, SET_WINDOW_POS_FLAGS(0))
   }
+}
+
+/// How far a stand-in drawn at `opacity` is faded, as a fraction of the
+/// `effect_opacity` it rests at. An animation without a fade may pass
+/// more than that, which is no fade.
+fn fade_fraction(opacity: u8, effect_opacity: u8) -> f32 {
+  if effect_opacity == 0 {
+    return 1.0;
+  }
+
+  (f32::from(opacity) / f32::from(effect_opacity)).min(1.0)
+}
+
+/// What a session's overlays are scaled by: its fade, or its zoom's
+/// progress when that is lower.
+fn overlay_factor(zoom_progress: Option<f32>, fade: f32) -> f32 {
+  zoom_progress.map_or(fade, |progress| progress.min(fade))
 }
 
 /// Where a zoom at `progress` (0 to 1) draws a `width` x `height` window
@@ -1576,5 +1617,25 @@ mod tests {
   fn a_zoom_of_no_size_is_not_drawn() {
     assert_eq!(zoom_destination(800, 600, 0.0), None);
     assert_eq!(zoom_destination(0, 600, 1.0), None);
+  }
+
+  #[test]
+  fn a_fade_is_measured_against_the_resting_opacity() {
+    assert_eq!(fade_fraction(204, 204), 1.0);
+    assert_eq!(fade_fraction(102, 204), 0.5);
+    assert_eq!(fade_fraction(0, 204), 0.0);
+  }
+
+  #[test]
+  fn an_opacity_above_the_resting_one_is_no_fade() {
+    assert_eq!(fade_fraction(u8::MAX, 204), 1.0);
+    assert_eq!(fade_fraction(0, 0), 1.0);
+  }
+
+  #[test]
+  fn overlays_follow_the_lower_of_zoom_and_fade() {
+    assert_eq!(overlay_factor(None, 0.25), 0.25);
+    assert_eq!(overlay_factor(Some(0.5), 1.0), 0.5);
+    assert_eq!(overlay_factor(Some(0.5), 0.25), 0.25);
   }
 }
