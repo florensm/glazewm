@@ -83,8 +83,8 @@ use crate::{
   platform_impl::{self, composition::OverviewBackdrop},
   window_class::{self, mouse_position},
   window_icons, DxgiVsyncWaiter, FrameClock, OverviewAction,
-  OverviewFrame, OverviewLayoutMode, OverviewScreen, OverviewStyle,
-  OverviewWorkspace, OverviewZoomStyle, Rect,
+  OverviewFrame, OverviewInput, OverviewLayoutMode, OverviewScreen,
+  OverviewStyle, OverviewWorkspace, OverviewZoomStyle, Rect,
 };
 
 /// Posted with a `Box<Open>` in `WPARAM`.
@@ -103,6 +103,10 @@ const WM_HIDE_OVERVIEW: u32 = WM_APP + 4;
 
 /// Posted by the icon thread once an icon is cached.
 const WM_ICON_READY: u32 = WM_APP + 5;
+
+/// Posted with a `Box<OverviewInput>` in `WPARAM`: a keybinding of the
+/// WM's pressed while the overview has the keyboard.
+const WM_OVERVIEW_INPUT: u32 = WM_APP + 6;
 
 /// How long the zoom into a pick waits for the WM to carry it out before
 /// starting regardless, a safety net for a pick it never answers.
@@ -206,6 +210,21 @@ impl NativeOverview {
     self.post(WM_TOGGLE_OVERVIEW, index);
   }
 
+  /// Hands the open overview `input`, which it acts on as on a key of
+  /// its own, or drops once it is closing. Returns whether it got there:
+  /// not if the overview's thread is gone.
+  #[must_use]
+  pub fn input(&self, input: OverviewInput) -> bool {
+    let input = Box::into_raw(Box::new(input));
+    let is_posted = self.post(WM_OVERVIEW_INPUT, input as usize);
+
+    if !is_posted {
+      // SAFETY: The post failed, so the payload is still this side's.
+      drop(unsafe { Box::from_raw(input) });
+    }
+    is_posted
+  }
+
   /// Closes the overview once its zoom into the picked workspace ends.
   ///
   /// `frame` is shown first if it scrolled a workspace's strip (e.g. to
@@ -235,12 +254,12 @@ impl NativeOverview {
     self.session
   }
 
-  fn post(&self, msg: u32, wparam: usize) {
+  /// Returns whether the message was posted: not if the window is gone.
+  fn post(&self, msg: u32, wparam: usize) -> bool {
     // SAFETY: A boxed payload passes to the window procedure, which frees
-    // it. If the post fails the window is gone and it leaks.
+    // it. If the post fails it leaks, unless the caller takes it back.
     unsafe {
-      let _ =
-        PostMessageW(HWND(self.hwnd), msg, WPARAM(wparam), LPARAM(0));
+      PostMessageW(HWND(self.hwnd), msg, WPARAM(wparam), LPARAM(0)).is_ok()
     }
   }
 }
@@ -1467,6 +1486,11 @@ impl Overview {
     self.after_input(action);
   }
 
+  fn on_input(&mut self, input: &OverviewInput) {
+    let action = self.interaction.input(input, &self.workspaces);
+    self.after_input(action);
+  }
+
   fn on_toggle(&mut self, layout: OverviewLayoutMode) {
     if self.interaction.layout == layout {
       self.after_input(Some(OverviewAction::Cancel));
@@ -1734,6 +1758,14 @@ impl Overview {
           .copied()
           .unwrap_or_default(),
       ),
+      WM_OVERVIEW_INPUT => {
+        // SAFETY: Posted by `NativeOverview::input` with an owned input.
+        let input =
+          unsafe { Box::from_raw(wparam.0 as *mut OverviewInput) };
+        if is_open {
+          self.on_input(&input);
+        }
+      }
       WM_HIDE_OVERVIEW => self.on_hide(),
       WM_ICON_READY => {
         for screen in &mut self.screens {

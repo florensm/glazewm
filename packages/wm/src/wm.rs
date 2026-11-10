@@ -13,8 +13,8 @@ use wm_common::{
   WmEvent,
 };
 use wm_platform::{
-  Dispatcher, Keybinding, LengthValue, NativeWindow, OverviewAction,
-  PlatformEvent, RectDelta, WindowEvent,
+  Dispatcher, Keybinding, KeybindingEvent, LengthValue, NativeWindow,
+  OverviewAction, PlatformEvent, RectDelta, WindowEvent,
 };
 
 use crate::{
@@ -62,6 +62,7 @@ use crate::{
   },
   ipc_server::IpcServer,
   models::{workspace_target, Container},
+  overview::KeyRoute,
   traits::{CommonGetters, WindowGetters},
   user_config::UserConfig,
   wm_state::WmState,
@@ -505,6 +506,55 @@ impl WindowManager {
     Ok(())
   }
 
+  /// Runs the commands of the keybinding pressed, unless it is cooling
+  /// down. While the overview is open it has the keyboard, so the
+  /// keybinding acts on it rather than on the workspace behind it (see
+  /// `route_keybinding`).
+  fn process_keybinding(
+    &mut self,
+    event: &KeybindingEvent,
+    config: &mut UserConfig,
+  ) -> anyhow::Result<()> {
+    let commands = config
+      .active_keybinding_configs(
+        &self.state.binding_modes,
+        self.state.is_paused,
+      )
+      .find(|kb_config| kb_config.bindings.contains(&event.keybinding))
+      .filter(|kb_config| {
+        is_off_cooldown(
+          &mut self.state.keybinding_cooldowns,
+          &event.keybinding,
+          kb_config.cooldown_ms,
+          event.time,
+        )
+      })
+      .map(|kb_config| kb_config.commands.clone());
+
+    let Some(commands) = commands else {
+      return Ok(());
+    };
+
+    if self.state.overview.is_open() {
+      match crate::overview::route_keybinding(&commands) {
+        KeyRoute::Wm => {}
+        KeyRoute::Dropped => return Ok(()),
+        KeyRoute::Overview(input) => {
+          // One that took no input was closed by that; the WM runs the
+          // keybinding then.
+          if self.state.overview.input(input) {
+            return Ok(());
+          }
+        }
+      }
+    }
+
+    self.state.switch_log.note_press(Some(event.time));
+    let result = self.process_commands(&commands, None, config);
+    self.state.switch_log.note_press(None);
+    result.map(|_| ())
+  }
+
   pub fn process_event(
     &mut self,
     event: PlatformEvent,
@@ -517,37 +567,8 @@ impl WindowManager {
         handle_display_settings_changed(state, config)
       }
       PlatformEvent::Keybinding(keybinding_event) => {
-        // Find the keybinding config that matches this keybinding.
-        let commands = config
-          .active_keybinding_configs(
-            &self.state.binding_modes,
-            self.state.is_paused,
-          )
-          .find(|kb_config| {
-            kb_config.bindings.contains(&keybinding_event.keybinding)
-          })
-          .filter(|kb_config| {
-            is_off_cooldown(
-              &mut self.state.keybinding_cooldowns,
-              &keybinding_event.keybinding,
-              kb_config.cooldown_ms,
-              keybinding_event.time,
-            )
-          })
-          .map(|kb_config| kb_config.commands.clone());
-
-        if let Some(commands) = commands {
-          self
-            .state
-            .switch_log
-            .note_press(Some(keybinding_event.time));
-          let result = self.process_commands(&commands, None, config);
-          self.state.switch_log.note_press(None);
-          result?;
-        }
-
         // Return early since we don't want to redraw twice.
-        return Ok(());
+        return self.process_keybinding(&keybinding_event, config);
       }
       PlatformEvent::Mouse(event) => {
         crate::overview::check_hot_corner(&event, state, config)?;

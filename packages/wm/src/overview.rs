@@ -14,15 +14,15 @@ use anyhow::Context;
 use tokio::sync::mpsc;
 use uuid::Uuid;
 use wm_common::{
-  EasingFunction, EffectSet, HotCorner, Layout, OverviewLayout,
-  WindowState, WorkspaceConfig,
+  EasingFunction, EffectSet, HotCorner, InvokeCommand, InvokeFocusCommand,
+  InvokeMoveCommand, Layout, OverviewLayout, WindowState, WorkspaceConfig,
 };
 use wm_platform::{
   Color, MouseButton, MouseEvent, NativeBackdropOverlay,
   NativeBorderOverlay, NativeOverview, OverlayParams, OverviewAction,
-  OverviewCurve, OverviewFrame, OverviewLayoutMode, OverviewOverlay,
-  OverviewOverlayKind, OverviewScreen, OverviewStyle, OverviewWindow,
-  OverviewWorkspace, Point, Rect, TabFrame,
+  OverviewCurve, OverviewFrame, OverviewInput, OverviewLayoutMode,
+  OverviewOverlay, OverviewOverlayKind, OverviewScreen, OverviewStyle,
+  OverviewWindow, OverviewWorkspace, Point, Rect, TabFrame,
 };
 
 use crate::{
@@ -137,6 +137,25 @@ impl Overview {
       .map(NativeOverview::session)
   }
 
+  /// Hands the open overview `input` to act on. Returns whether it could.
+  ///
+  /// If the overview's thread is gone, it is marked closed and hidden, so
+  /// keybindings go to the WM again rather than nowhere.
+  pub fn input(&mut self, input: OverviewInput) -> bool {
+    let is_delivered = self.is_open()
+      && self
+        .native
+        .as_ref()
+        .is_some_and(|native| native.input(input));
+
+    if !is_delivered {
+      tracing::warn!("The overview took no input; marking it closed.");
+      self.close();
+      self.is_shown = false;
+    }
+    is_delivered
+  }
+
   /// Marks the overview closed.
   ///
   /// The native overview stays up until the next [`sync_overview`] (or
@@ -161,6 +180,98 @@ impl Overview {
     }
 
     self.native.as_mut().context("No native overview.")
+  }
+}
+
+/// Where a keybinding pressed while the overview is open goes.
+#[derive(Clone, Debug, PartialEq)]
+pub enum KeyRoute {
+  /// To the WM, which runs its commands as ever.
+  Wm,
+
+  /// To the overview, which does this to its selection.
+  Overview(OverviewInput),
+
+  /// Nowhere: its commands would act on the desktop behind the
+  /// overview, which has nothing like them.
+  Dropped,
+}
+
+/// Routes a keybinding running `commands` while the overview is open.
+///
+/// The overview has the keyboard then, so a keybinding acts on it rather
+/// than on the workspace behind it: `focus`, `move` and `close` do to its
+/// selection what they would do to the focused window, and the rest are
+/// dropped. Only commands on the WM itself, the overview's own toggle and
+/// launching a program still run.
+pub fn route_keybinding(commands: &[InvokeCommand]) -> KeyRoute {
+  let is_the_wms = |command: &InvokeCommand| {
+    matches!(
+      command,
+      InvokeCommand::ToggleOverview { .. }
+        | InvokeCommand::ShellExec { .. }
+        | InvokeCommand::WmDisableBindingMode { .. }
+        | InvokeCommand::WmEnableBindingMode { .. }
+        | InvokeCommand::WmExit
+        | InvokeCommand::WmRedraw
+        | InvokeCommand::WmReloadConfig
+        | InvokeCommand::WmTogglePause
+    )
+  };
+
+  if commands.iter().any(is_the_wms) {
+    return KeyRoute::Wm;
+  }
+
+  // The first that means something there, e.g. the `move` of a binding
+  // that moves a window to a workspace and follows it.
+  commands
+    .iter()
+    .find_map(overview_input)
+    .map_or(KeyRoute::Dropped, KeyRoute::Overview)
+}
+
+/// What `command` does in the overview, if anything.
+fn overview_input(command: &InvokeCommand) -> Option<OverviewInput> {
+  match command {
+    InvokeCommand::Close => Some(OverviewInput::CloseWindow),
+    InvokeCommand::Focus(InvokeFocusCommand {
+      direction: Some(direction),
+      ..
+    })
+    | InvokeCommand::Move(InvokeMoveCommand {
+      direction: Some(direction),
+      ..
+    }) => Some(OverviewInput::Move(direction.clone())),
+    InvokeCommand::Focus(focus) => {
+      if let Some(name) = &focus.workspace {
+        Some(OverviewInput::FocusWorkspace(name.clone()))
+      } else if focus.special_workspace {
+        Some(OverviewInput::FocusSpecialWorkspace)
+      } else if focus.next_workspace
+        || focus.next_active_workspace
+        || focus.next_active_workspace_on_monitor
+      {
+        Some(OverviewInput::NextWorkspace)
+      } else if focus.prev_workspace
+        || focus.prev_active_workspace
+        || focus.prev_active_workspace_on_monitor
+      {
+        Some(OverviewInput::PreviousWorkspace)
+      } else {
+        None
+      }
+    }
+    InvokeCommand::Move(to) => {
+      if let Some(name) = &to.workspace {
+        Some(OverviewInput::MoveToWorkspace(name.clone()))
+      } else if to.special_workspace {
+        Some(OverviewInput::MoveToSpecialWorkspace)
+      } else {
+        None
+      }
+    }
+    _ => None,
   }
 }
 
@@ -855,10 +966,13 @@ fn overview_windows(workspace: &Workspace) -> Vec<WindowContainer> {
 
 #[cfg(test)]
 mod tests {
-  use wm_common::WindowState;
-  use wm_platform::Rect;
+  use clap::Parser;
+  use wm_common::{InvokeCommand, WindowState};
+  use wm_platform::{Direction, OverviewInput, Rect};
 
-  use super::{overview_windows, strip_bounds};
+  use super::{
+    overview_windows, route_keybinding, strip_bounds, KeyRoute,
+  };
   use crate::{
     models::{NonTilingWindow, SplitContainer, TilingWindow, Workspace},
     traits::{CommonGetters, WindowGetters},
@@ -866,6 +980,111 @@ mod tests {
 
   fn tiling(title: &str) -> TilingWindow {
     TilingWindow::mock().title(title.to_string()).call()
+  }
+
+  /// Where a keybinding running `commands`, as written in a config, goes
+  /// while the overview is open.
+  fn route(commands: &[&str]) -> KeyRoute {
+    let commands = commands
+      .iter()
+      .map(|command| {
+        let args = std::iter::once("").chain(command.split_whitespace());
+        InvokeCommand::try_parse_from(args).expect("a command")
+      })
+      .collect::<Vec<_>>();
+
+    route_keybinding(&commands)
+  }
+
+  #[test]
+  fn direction_keybindings_move_the_overview_selection() {
+    for (command, direction) in [
+      ("focus --direction left", Direction::Left),
+      ("focus --direction down", Direction::Down),
+      ("move --direction up", Direction::Up),
+      ("move --direction right", Direction::Right),
+    ] {
+      assert_eq!(
+        route(&[command]),
+        KeyRoute::Overview(OverviewInput::Move(direction)),
+        "{command}"
+      );
+    }
+  }
+
+  #[test]
+  fn workspace_keybindings_act_on_the_overview_selection() {
+    let named = |name: &str| name.to_string();
+
+    for (commands, input) in [
+      (
+        vec!["focus --workspace 3"],
+        OverviewInput::FocusWorkspace(named("3")),
+      ),
+      // Moving a window and following it only moves it there.
+      (
+        vec!["move --workspace 3", "focus --workspace 3"],
+        OverviewInput::MoveToWorkspace(named("3")),
+      ),
+      (
+        vec!["focus --special-workspace"],
+        OverviewInput::FocusSpecialWorkspace,
+      ),
+      (
+        vec!["move --special-workspace"],
+        OverviewInput::MoveToSpecialWorkspace,
+      ),
+      (
+        vec!["focus --next-active-workspace"],
+        OverviewInput::NextWorkspace,
+      ),
+      (
+        vec!["focus --prev-workspace"],
+        OverviewInput::PreviousWorkspace,
+      ),
+      (vec!["close"], OverviewInput::CloseWindow),
+    ] {
+      assert_eq!(
+        route(&commands),
+        KeyRoute::Overview(input),
+        "{commands:?}"
+      );
+    }
+  }
+
+  #[test]
+  fn keybindings_on_the_desktop_behind_the_overview_are_dropped() {
+    for command in [
+      "resize --width +2%",
+      "toggle-floating",
+      "toggle-tiling-direction",
+      "focus --recent-workspace",
+      "move --next-active-workspace",
+      "move-workspace --direction left",
+      "center-column",
+    ] {
+      assert_eq!(route(&[command]), KeyRoute::Dropped, "{command}");
+    }
+  }
+
+  #[test]
+  fn keybindings_on_the_wm_itself_still_run() {
+    for command in [
+      "toggle-overview",
+      "toggle-overview --layout stack",
+      "wm-exit",
+      "wm-reload-config",
+      "wm-toggle-pause",
+      "shell-exec cmd",
+    ] {
+      assert_eq!(route(&[command]), KeyRoute::Wm, "{command}");
+    }
+
+    // Whatever else they run.
+    assert_eq!(
+      route(&["focus --direction left", "wm-redraw"]),
+      KeyRoute::Wm
+    );
   }
 
   #[test]

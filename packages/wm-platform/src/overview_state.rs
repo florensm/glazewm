@@ -20,8 +20,9 @@
 use std::ops::Range;
 
 use crate::{
-  overview_layout::RectF, OverviewAction, OverviewLayoutMode,
-  OverviewScreen, OverviewWindow, OverviewWorkspace, Point, Rect,
+  overview_layout::RectF, Direction, OverviewAction, OverviewInput,
+  OverviewLayoutMode, OverviewScreen, OverviewWindow, OverviewWorkspace,
+  Point, Rect,
 };
 
 /// Where the keyboard is in the overview's flow.
@@ -200,6 +201,17 @@ pub(crate) enum Toward {
   Right,
   Up,
   Down,
+}
+
+impl From<&Direction> for Toward {
+  fn from(direction: &Direction) -> Self {
+    match direction {
+      Direction::Left => Self::Left,
+      Direction::Right => Self::Right,
+      Direction::Up => Self::Up,
+      Direction::Down => Self::Down,
+    }
+  }
 }
 
 impl Toward {
@@ -579,6 +591,38 @@ impl Interaction {
       }
       _ => self.run(command?, workspaces),
     }
+  }
+
+  /// Acts on `input`, a keybinding of the WM's pressed while the overview
+  /// has the keyboard, as on the key of its own that does the same.
+  pub fn input(
+    &mut self,
+    input: &OverviewInput,
+    workspaces: &[OverviewWorkspace],
+  ) -> Option<OverviewAction> {
+    self.picked_by = PickedBy::Other;
+    self.shows_shortcuts = false;
+
+    let command = match input {
+      OverviewInput::Move(direction) => Command::Move(direction.into()),
+      OverviewInput::FocusWorkspace(name) => {
+        let monitor = self.monitor_for(name, workspaces);
+        return self.go_to(name.clone(), monitor, workspaces);
+      }
+      OverviewInput::MoveToWorkspace(name) => {
+        let monitor = self.monitor_for(name, workspaces);
+        return self.send_to(name.clone(), monitor, workspaces);
+      }
+      OverviewInput::FocusSpecialWorkspace => Command::Special,
+      OverviewInput::MoveToSpecialWorkspace => Command::SendToSpecial,
+      OverviewInput::NextWorkspace | OverviewInput::PreviousWorkspace => {
+        self.wheel(*input == OverviewInput::NextWorkspace, workspaces);
+        return None;
+      }
+      OverviewInput::CloseWindow => Command::CloseWindow,
+    };
+
+    self.run(command, workspaces)
   }
 
   /// Carries out `command`. During a search, the keys that move the
@@ -1901,8 +1945,9 @@ mod tests {
     Toward, BINDINGS,
   };
   use crate::{
-    overview_layout::RectF, OverviewAction, OverviewLayoutMode,
-    OverviewScreen, OverviewWindow, OverviewWorkspace, Point, Rect,
+    overview_layout::RectF, Direction, OverviewAction, OverviewInput,
+    OverviewLayoutMode, OverviewScreen, OverviewWindow, OverviewWorkspace,
+    Point, Rect,
   };
 
   /// ID of the monitor of the screen most tests have.
@@ -2648,6 +2693,77 @@ mod tests {
     assert_eq!(
       press(&mut state, &[Key::Space, Key::Delete]),
       Some(OverviewAction::CloseWindow(21))
+    );
+  }
+
+  #[test]
+  fn the_wm_keybindings_do_as_the_overview_keys() {
+    let workspaces = workspaces();
+    let named = |name: &str| name.to_string();
+
+    // `focus --direction` and `move --direction` are the arrows.
+    let mut state = interaction();
+    state.input(&OverviewInput::Move(Direction::Left), &workspaces);
+    assert_eq!(state.selected(), 0);
+    state.input(&OverviewInput::Move(Direction::Down), &workspaces);
+    assert_eq!(
+      (state.mode, state.selected_window),
+      (Mode::Windows, Some(11))
+    );
+    state.input(&OverviewInput::Move(Direction::Right), &workspaces);
+    assert_eq!(state.selected_window, Some(12));
+
+    // `move --workspace` sends what is picked, `close` closes it, and
+    // `focus --workspace` goes there.
+    assert_eq!(
+      state
+        .input(&OverviewInput::MoveToWorkspace(named("3")), &workspaces),
+      Some(OverviewAction::MoveWindow {
+        hwnd: 12,
+        workspace: named("3"),
+        monitor: MONITOR,
+      })
+    );
+    assert_eq!(
+      state.input(&OverviewInput::CloseWindow, &workspaces),
+      Some(OverviewAction::CloseWindow(11))
+    );
+    assert_eq!(
+      state.input(&OverviewInput::FocusWorkspace(named("3")), &workspaces),
+      Some(focus_workspace("3"))
+    );
+
+    // The next and previous workspace are stepped to, not switched to.
+    let mut state = interaction();
+    assert_eq!(
+      state.input(&OverviewInput::NextWorkspace, &workspaces),
+      None
+    );
+    assert_eq!(state.selected(), 2);
+    state.input(&OverviewInput::PreviousWorkspace, &workspaces);
+    assert_eq!(state.selected(), 1);
+
+    // During a search, a direction steps through its matches.
+    press(&mut state, &typed("e"));
+    let first = state.selected_window;
+    state.input(&OverviewInput::Move(Direction::Down), &workspaces);
+    assert_ne!(state.selected_window, first);
+    assert_eq!(state.query, "e");
+  }
+
+  #[test]
+  fn the_wm_keybindings_reach_the_special_workspace() {
+    let workspaces = with_special();
+    let mut state = single(&workspaces, OverviewLayoutMode::Activities);
+
+    assert_eq!(
+      state.input(&OverviewInput::MoveToSpecialWorkspace, &workspaces),
+      None,
+      "no window to send while browsing"
+    );
+    assert_eq!(
+      state.input(&OverviewInput::FocusSpecialWorkspace, &workspaces),
+      Some(focus_workspace("special"))
     );
   }
 

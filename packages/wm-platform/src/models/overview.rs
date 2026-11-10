@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::{
-  BorderOverlayParams, Color, ParticleEffects, ParticleLook,
+  BorderOverlayParams, Color, Direction, ParticleEffects, ParticleLook,
   ParticleStyle, Point, Rect, TabFrame,
 };
 
@@ -419,6 +419,33 @@ impl OverviewLayoutMode {
       Self::Stack => "stack",
     }
   }
+}
+
+/// What one of the WM's keybindings does in the open overview, which has
+/// the keyboard: what its command would do on the desktop, done to the
+/// overview's selection instead.
+#[derive(Clone, Debug, PartialEq)]
+pub enum OverviewInput {
+  /// Move the selection, as an arrow key does.
+  Move(Direction),
+
+  /// Switch to the named workspace and close, or drop the carried window
+  /// there.
+  FocusWorkspace(String),
+
+  /// Send the picked or carried window to the named workspace.
+  MoveToWorkspace(String),
+
+  /// The same for the special workspace.
+  FocusSpecialWorkspace,
+  MoveToSpecialWorkspace,
+
+  /// Select the next or previous workspace, as the wheel does.
+  NextWorkspace,
+  PreviousWorkspace,
+
+  /// Close the picked window.
+  CloseWindow,
 }
 
 /// What the user did in the overview.
