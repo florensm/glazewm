@@ -662,8 +662,27 @@ pub fn sync_scroll_view(
     state.animation_manager.remove_animation(id);
   }
 
+  if let Some(id) = started_moving.first() {
+    pace_by_monitor_of(state, *id);
+  }
+
   if state.animation_manager.scroll_view.is_active() {
     state.animation_manager.ensure_timer_running();
+  }
+}
+
+/// Paces animation ticks by the vblanks of the monitor `window_id` is on.
+/// Without them a scroll is evaluated at whenever the WM thread gets to
+/// each tick, so its columns advance unevenly.
+fn pace_by_monitor_of(state: &WmState, window_id: Uuid) {
+  let monitor = state
+    .window_by_id(window_id)
+    .and_then(|window| window.monitor());
+
+  if let Some(monitor) = monitor {
+    state
+      .animation_manager
+      .ensure_waiter_for(monitor.native_properties().handle);
   }
 }
 
