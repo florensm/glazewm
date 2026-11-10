@@ -512,6 +512,32 @@ mod tests {
   }
 
   #[test]
+  fn waits_while_obstructed() {
+    let obstructed = COVERING.obstructed_if(true);
+    assert_eq!(
+      answers(&[obstructed, obstructed, COVERING, COVERING]),
+      [true, true, true, false]
+    );
+  }
+
+  #[test]
+  fn obstruction_leaves_hidden_and_gone_alone() {
+    for state in [CompanionState::Gone, CompanionState::WindowHidden] {
+      assert_eq!(state.obstructed_if(true), state);
+    }
+    assert_eq!(NOT_COVERING.obstructed_if(false), NOT_COVERING);
+  }
+
+  #[test]
+  fn stops_waiting_for_an_obstruction_after_the_max_wait() {
+    let mut wait = HandoffWait::default();
+    let start = Instant::now();
+    let obstructed = COVERING.obstructed_if(true);
+    assert!(wait.awaits_state(obstructed, start));
+    assert!(!wait.awaits_state(obstructed, start + HANDOFF_MAX_WAIT));
+  }
+
+  #[test]
   fn stops_waiting_after_the_max_wait() {
     let mut wait = HandoffWait::default();
     let start = Instant::now();

@@ -3549,11 +3549,32 @@ pub(crate) fn resync_settling_overlays(state: &mut WmState) {
 
 #[cfg(test)]
 mod tests {
-  use wm_common::{EffectSet, ParsedConfig};
+  use wm_common::{DisplayState, EffectSet, ParsedConfig};
   use wm_platform::{NativeBackdropOverlay, OpacityValue};
 
-  use super::SyncableOverlay;
+  use super::{is_unanimated_reveal, SyncableOverlay};
   use crate::user_config::UserConfig;
+
+  #[test]
+  fn covers_a_hidden_window_shown_with_no_stand_in() {
+    for previous in [DisplayState::Hidden, DisplayState::Hiding] {
+      assert!(is_unanimated_reveal(&previous, true, false));
+    }
+  }
+
+  #[test]
+  fn leaves_a_window_shown_already_or_hidden_alone() {
+    for previous in [DisplayState::Shown, DisplayState::Showing] {
+      assert!(!is_unanimated_reveal(&previous, true, false));
+    }
+    assert!(!is_unanimated_reveal(&DisplayState::Hidden, false, false));
+    assert!(!is_unanimated_reveal(&DisplayState::Shown, false, false));
+  }
+
+  #[test]
+  fn leaves_a_window_another_stand_in_shows_alone() {
+    assert!(!is_unanimated_reveal(&DisplayState::Hidden, true, true));
+  }
 
   #[test]
   fn backdrops_show_at_once_behind_windows_turning_see_through() {
