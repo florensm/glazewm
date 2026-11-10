@@ -196,6 +196,13 @@ file), `git pull` on `tryout/todo-cleanup`, `cargo build --release`, run.
     no lighter, see-through look while it moves. Then once with
     transparency off.
 
+15. **Shades with switches and scrolls** (`5e76d21`, `d34367e`,
+    `cab7cc8`, `5d7a47f`), with transparency on (e.g. 80%) and a
+    shades-themed window: switch to its workspace and away several times,
+    and scroll its column out of view and back in. Wait a few seconds,
+    then do both again. No white frame at any landing, and no lighter,
+    see-through look while it moves. Then once with transparency off.
+
 If bars or flicker show, isolate them with `GLAZEWM_ISOLATE` (below), one
 restart per flag: `noring`, `nobackdrop`, then `live`. With a long
 `duration_ms` (e.g. 3000) for `scroll` and `workspace_switch`, one
@@ -254,10 +261,10 @@ scroll is dropped.
    picks up a companion made mid-animation (`2ddb24f`).
 2. A long scroll can show a one-frame hole as a column enters mid-move
    (with or without shades).
-3. A peek reused for several moves keeps its companion-wait start time
-   (only `NativeSurrogate::revive` resets `HandoffWait`, and peeks aren't
-   revived), so a later hand-back with a slow companion may stop waiting at
-   once.
+3. Done, not checked live (see "Not checked live yet" 15): a peek reused
+   for several moves kept its companion-wait start time, so a later
+   hand-back could stop waiting at once. Every stand-in now starts the
+   wait afresh as it begins a hand-back (`cab7cc8`).
 4. Workspace switch no longer blends a backdrop between focus styles
    mid-slide: the copy uses the style the window ends with (incoming) or
    starts with (outgoing). Now cheap to fix: a surrogate could carry both
@@ -283,6 +290,14 @@ scroll is dropped.
    hand-back (`WorkspaceSurrogate::cover_window`), re-raised if focus
    puts the window back on top, so the first suspect is fixed for opaque
    windows and the last can only cost a frame; untested on the laptop.
+   Since `5e76d21` and `5d7a47f` a switch surrogate draws a companion
+   opaque and picks up one shades makes mid-switch (every 100 ms, and
+   once more as the switch ends), so it covers or alpha-hides the window
+   and waits for the copy at the hand-back. Left to tell apart: the 1 s
+   wait timing out, shades making its copy only after the hand-back
+   began, or a focus change during the wait setting a semi-transparent
+   window's alpha again, which shows it over its surrogate (alpha-hidden
+   windows aren't covered).
 
 ## Older items, not started
 
