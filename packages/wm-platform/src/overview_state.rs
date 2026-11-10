@@ -17,7 +17,7 @@
 //! after screen, so a window can be carried, dragged or searched for
 //! anywhere.
 
-use std::ops::Range;
+use std::{borrow::Cow, ops::Range};
 
 use crate::{
   overview_layout::RectF, Direction, OverviewAction, OverviewInput,
@@ -1140,9 +1140,12 @@ impl Interaction {
 
   /// Where the selected workspace's windows show, first to last: as laid
   /// out, or else where they are on screen.
-  fn nav(&self, workspaces: &[OverviewWorkspace]) -> Vec<(isize, RectF)> {
+  fn nav(
+    &self,
+    workspaces: &[OverviewWorkspace],
+  ) -> Cow<'_, [(isize, RectF)]> {
     if !self.nav.is_empty() {
-      return self.nav.clone();
+      return Cow::Borrowed(&self.nav);
     }
 
     workspaces
@@ -1153,6 +1156,7 @@ impl Interaction {
           .map(|window| (window.hwnd, RectF::from_rect(&window.rect)))
           .collect()
       })
+      .into()
   }
 
   /// Selects the first (or last) workspace of the screen with the
@@ -1161,8 +1165,8 @@ impl Interaction {
     if self.mode == Mode::Windows {
       let nav = self.nav(workspaces);
       let window = if is_last { nav.last() } else { nav.first() };
-      if let Some((hwnd, _)) = window {
-        self.selected_window = Some(*hwnd);
+      if let Some(hwnd) = window.map(|(hwnd, _)| *hwnd) {
+        self.selected_window = Some(hwnd);
       }
     } else {
       let cards = self.active_cards();
