@@ -14,7 +14,7 @@ use windows::{
   },
 };
 
-use crate::{platform_impl::NativeWindow, window_class};
+use crate::{platform_impl::NativeWindow, window_class, Rect};
 
 /// Window property another app sets on its own overlay window to declare
 /// it the companion of the window it draws over (the value is that
@@ -71,6 +71,19 @@ enum CompanionState {
   WindowShown { covers: bool },
 }
 
+impl CompanionState {
+  /// The state as seen on screen: a companion with another window still
+  /// over it doesn't cover its window yet.
+  fn obstructed_if(self, is_obstructed: bool) -> Self {
+    match self {
+      Self::WindowShown { covers } => Self::WindowShown {
+        covers: covers && !is_obstructed,
+      },
+      state => state,
+    }
+  }
+}
+
 /// Waits out a companion's return over its window when a stand-in showing
 /// it hands the window back.
 ///
@@ -107,8 +120,24 @@ impl HandoffWait {
   /// a composition before the companion showed, and the window showed
   /// uncolored for a frame.
   pub(crate) fn awaits(&mut self, companion: Option<Companion>) -> bool {
+    self.awaits_unobstructed(companion, &[])
+  }
+
+  /// [`awaits`](Self::awaits), also while any of `obstructions`, e.g. the
+  /// companion of a window hidden as this one was shown, is still on
+  /// screen above `companion`.
+  pub(crate) fn awaits_unobstructed(
+    &mut self,
+    companion: Option<Companion>,
+    obstructions: &[Companion],
+  ) -> bool {
     companion.is_some_and(|companion| {
-      self.awaits_state(companion.state(), Instant::now())
+      let is_obstructed = obstructions.iter().any(|obstruction| {
+        obstruction.is_on_screen()
+          && is_above(obstruction.hwnd(), companion.hwnd())
+      });
+      let state = companion.state().obstructed_if(is_obstructed);
+      self.awaits_state(state, Instant::now())
     })
   }
 
@@ -214,11 +243,29 @@ impl Companion {
   /// Whether the companion is on screen over its window: shown, not
   /// cloaked, and above the window in the z-order.
   pub(crate) fn covers_window(self) -> bool {
+    self.is_on_screen() && is_above(self.hwnd(), HWND(self.source))
+  }
+
+  /// Whether the companion is shown and not cloaked.
+  pub(crate) fn is_on_screen(self) -> bool {
     // SAFETY: A stale handle just returns false.
     let is_visible = unsafe { IsWindowVisible(self.hwnd()) }.as_bool();
     is_visible
       && !NativeWindow::new(self.hwnd).is_cloaked().unwrap_or(false)
-      && is_above(self.hwnd(), HWND(self.source))
+  }
+
+  /// Where the companion is on screen.
+  pub(crate) fn bounds(self) -> Option<Rect> {
+    let mut bounds = RECT::default();
+
+    // SAFETY: `bounds` outlives the call; a stale handle just fails.
+    unsafe { GetWindowRect(self.hwnd(), &raw mut bounds) }.ok()?;
+    Some(Rect::from_ltrb(
+      bounds.left,
+      bounds.top,
+      bounds.right,
+      bounds.bottom,
+    ))
   }
 
   /// Maps a thumbnail's `(rcSource, rcDestination)`, with the source in
@@ -462,6 +509,32 @@ mod tests {
     wait.restart();
     assert!(wait.awaits_state(COVERING, start));
     assert!(!wait.awaits_state(COVERING, start));
+  }
+
+  #[test]
+  fn waits_while_obstructed() {
+    let obstructed = COVERING.obstructed_if(true);
+    assert_eq!(
+      answers(&[obstructed, obstructed, COVERING, COVERING]),
+      [true, true, true, false]
+    );
+  }
+
+  #[test]
+  fn obstruction_leaves_hidden_and_gone_alone() {
+    for state in [CompanionState::Gone, CompanionState::WindowHidden] {
+      assert_eq!(state.obstructed_if(true), state);
+    }
+    assert_eq!(NOT_COVERING.obstructed_if(false), NOT_COVERING);
+  }
+
+  #[test]
+  fn stops_waiting_for_an_obstruction_after_the_max_wait() {
+    let mut wait = HandoffWait::default();
+    let start = Instant::now();
+    let obstructed = COVERING.obstructed_if(true);
+    assert!(wait.awaits_state(obstructed, start));
+    assert!(!wait.awaits_state(obstructed, start + HANDOFF_MAX_WAIT));
   }
 
   #[test]

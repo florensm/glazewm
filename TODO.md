@@ -262,6 +262,12 @@ Shades hand-backs (not part of `tryout/smooth`):
     then do both again. No white frame at any landing, and no lighter,
     see-through look while it moves. Then once with transparency off.
 
+22. **Shades with stack tabs** (`604fdca`): stack two or more
+    shades-themed windows, then switch tabs back and forth, by keyboard
+    (`cycle-stack-focus`) and by clicking the tab bar, slowly and quickly.
+    Again with animations disabled. No white frame on the new tab, and
+    the previous tab never shows over it.
+
 If bars or flicker show, isolate them with `GLAZEWM_ISOLATE` (below), one
 restart per flag: `noring`, `nobackdrop`, then `live`. With a long
 `duration_ms` (e.g. 3000) for `scroll` and `workspace_switch`, one

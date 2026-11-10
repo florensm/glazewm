@@ -38,11 +38,9 @@ const EDGE_SAMPLE_INSET: i32 = 4;
 const COMMIT_CONFIRM_MAX_WAIT: Duration = Duration::from_millis(500);
 
 use crate::{
-  companion::{self, COMPANION_OPACITY},
-  discard_bits_if_resized,
-  native_surrogate::to_logical,
-  platform_impl::NativeWindow,
-  window_class, Color, CornerStyle, NativeSurrogate, OverlayParams, Rect,
+  companion::COMPANION_OPACITY, discard_bits_if_resized,
+  native_surrogate::to_logical, platform_impl::NativeWindow, window_class,
+  Color, CornerStyle, NativeSurrogate, OverlayParams, Rect,
   SurrogateBatch,
 };
 
@@ -645,17 +643,8 @@ impl ResizeSession {
     else {
       return;
     };
-    let Some(window) = self.window_hwnd() else {
-      return;
-    };
-
-    if companion::is_above(surrogate.hwnd(), window) {
-      return;
-    }
-    if let Err(err) = surrogate.raise_above(window) {
-      tracing::warn!(
-        "Failed to raise a surrogate above its window: {err}"
-      );
+    if let Some(window) = self.window_hwnd() {
+      surrogate.keep_above(window);
     }
   }
 

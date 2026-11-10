@@ -7,6 +7,7 @@ compile_error!("GlazeWM only supports Windows.");
 mod backdrop_source;
 mod click_guard;
 mod companion;
+mod companion_cover;
 mod dispatcher;
 mod display;
 mod display_listener;
@@ -61,6 +62,7 @@ mod window_peek;
 mod workspace_surrogate;
 
 pub use click_guard::ClickGuard;
+pub use companion_cover::CompanionCover;
 pub use dispatcher::*;
 pub use display::*;
 pub use display_listener::*;
