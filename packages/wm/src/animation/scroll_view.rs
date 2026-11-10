@@ -29,10 +29,15 @@
 use std::collections::HashSet;
 
 use uuid::Uuid;
-use wm_common::{DisplayState, Layout, WindowState};
+use wm_common::{
+  DisplayState, Layout, WindowState, WindowTransitionParams,
+};
 use wm_platform::{Rect, SurrogateBatch};
 
-use super::peek_view::{track_overlays, PeekView, Role};
+use super::{
+  peek_view::{track_overlays, PeekView, Role},
+  transit::Transit,
+};
 use crate::{
   layout::is_hidden_in_layout,
   models::{is_inactive_stack_child, WindowContainer, Workspace},
@@ -84,6 +89,7 @@ pub fn sync_scroll_view(
     view.take_departed(|id| windows.iter().any(|(w, _)| w.id() == *id));
 
   let scroll_config = &config.value.animations.scroll;
+  let opening = column_opening(config);
   let mut needs_flush = false;
   let mut adds_peek = false;
   let mut started_moving = Vec::new();
@@ -148,12 +154,17 @@ pub fn sync_scroll_view(
 
       let is_moving = matches!(role, Role::Moving { .. });
       adds_peek |= !view.entries.contains_key(&window.id());
+      let transit = opening
+        .as_ref()
+        .filter(|_| new_ids.contains(&window.id()))
+        .and_then(Transit::opening);
       needs_flush |= view.upsert(
         &window,
         &from,
         target,
         clip,
         role,
+        transit,
         config,
         focused_id == Some(window.id()),
         now,
@@ -182,6 +193,14 @@ pub fn sync_scroll_view(
   }
 
   drive_moving(state, &started_moving);
+}
+
+/// The transition a new column enters by as it widens on the scroll's
+/// timing: `window_open`, behind the switch (`STAND_INS_PLAN.md` task 3b).
+fn column_opening(config: &UserConfig) -> Option<WindowTransitionParams> {
+  let open_config = &config.value.animations.window_open;
+  (wm_platform::isolation::current().peeks && open_config.enabled)
+    .then(|| WindowTransitionParams::from_open(open_config))
 }
 
 /// Has the scroll view drive the columns that `started_moving`, on ticks

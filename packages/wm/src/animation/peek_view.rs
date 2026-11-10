@@ -154,6 +154,27 @@ fn is_stray(is_column: bool, shown: Option<bool>) -> bool {
   !is_column && shown != Some(true)
 }
 
+/// The transit an entry keeps as [`PeekView::upsert`] moves it on or
+/// puts it at rest: an unfinished one, while it moves. Nothing ticks a
+/// transit at rest, where the peek shows its window whole.
+fn kept_transit(
+  transit: Option<Transit>,
+  is_moving: bool,
+) -> Option<Transit> {
+  transit.filter(|transit| is_moving && !transit.is_complete())
+}
+
+/// Whether an entry is a window entering a tiling layout, which
+/// `platform_sync` retargets: not a column, which
+/// [`PeekView::upsert`] retargets.
+fn is_entering_tile(
+  has_transit: bool,
+  is_column: bool,
+  is_moving: bool,
+) -> bool {
+  has_transit && !is_column && is_moving
+}
+
 /// `motion` headed for `target` instead, at the speed it has at `now`
 /// (see `WindowAnimationState::retargeted`). One already drawn carries on
 /// from where it was at `now`.
@@ -503,6 +524,9 @@ impl PeekView {
   /// already moving carries on from where it is at `now`, the time frames
   /// are evaluated at.
   ///
+  /// A peek it creates moving and pinned enters by `opening`, if given
+  /// (see [`Transit`]); one already drawn keeps its own.
+  ///
   /// Returns whether a new peek now covers a still-visible real window,
   /// so it has to be composited before that window is cloaked.
   #[allow(clippy::too_many_arguments)]
@@ -513,6 +537,7 @@ impl PeekView {
     target: Rect,
     clip: &Rect,
     role: Role,
+    opening: Option<Transit>,
     config: &UserConfig,
     is_focused: bool,
     now: Instant,
@@ -571,6 +596,7 @@ impl PeekView {
       entry.opacity = opacity;
       entry.role = role;
       entry.is_column = true;
+      entry.transit = kept_transit(entry.transit.take(), is_moving);
       // Copies of both styles are drawn up front, so a focus change only
       // crossfades them (see `track_overlays`): one registered mid-move
       // left frames without it.
@@ -579,7 +605,7 @@ impl PeekView {
         entry.composited = false;
       }
       let (rect, _) = entry.motion.current_state_at(now);
-      entry.place(&rect, batch);
+      entry.draw(&rect, now, batch);
       return covers_shown_window;
     }
 
@@ -595,8 +621,10 @@ impl PeekView {
       return false;
     };
 
+    // `place_scaled` draws pinned peeks only.
+    entry.transit = opening.filter(|_| is_moving && !entry.peek.is_live());
     let rect = entry.rect.clone();
-    entry.place(&rect, batch);
+    entry.draw(&rect, now, batch);
     self.entries.insert(window.id(), entry);
 
     covers_shown_window
@@ -661,9 +689,11 @@ impl PeekView {
   /// [`enter`](Self::enter)).
   pub fn is_entering(&self, window_id: &Uuid) -> bool {
     self.entries.get(window_id).is_some_and(|entry| {
-      entry.transit.is_some()
-        && !entry.is_column
-        && matches!(entry.role, Role::Moving { .. })
+      is_entering_tile(
+        entry.transit.is_some(),
+        entry.is_column,
+        matches!(entry.role, Role::Moving { .. }),
+      )
     })
   }
 
@@ -1189,7 +1219,10 @@ mod tests {
   };
   use wm_platform::Rect;
 
-  use super::{has_landed, is_departed, is_stray, retargeted_motion};
+  use super::{
+    has_landed, is_departed, is_entering_tile, is_stray, kept_transit,
+    retargeted_motion,
+  };
   use crate::animation::{
     state::WindowAnimationState,
     transit::{Direction, Transit},
@@ -1268,6 +1301,38 @@ mod tests {
     assert!(retargeted.is_running());
     assert!((entry_transit.amount_at(now) - amount).abs() < f32::EPSILON);
     assert!((amount - 0.25).abs() < 1e-3, "{amount}");
+  }
+
+  /// A column moved on mid-entry keeps entering where it was; one put at
+  /// rest, or done entering, drops its transit.
+  #[test]
+  fn upsert_keeps_an_unfinished_entry_track() {
+    let t0 = Instant::now();
+    let now = t0 + Duration::from_millis(50);
+    let entering = transit(200);
+    entering.clock.start_clock(t0);
+    let amount = entering.amount_at(now);
+
+    let kept = kept_transit(Some(entering.clone()), true);
+    assert!(kept.is_some_and(
+      |kept| (kept.amount_at(now) - amount).abs() < f32::EPSILON
+    ));
+    assert!(kept_transit(Some(entering), false).is_none());
+
+    let entered = transit(0);
+    entered.clock.start_clock(t0);
+    assert!(kept_transit(Some(entered), true).is_none());
+    assert!(kept_transit(None, true).is_none());
+  }
+
+  /// A column entering is retargeted by the scroll, never as a window
+  /// entering a tiling layout.
+  #[test]
+  fn columns_are_not_entering_tiles() {
+    assert!(is_entering_tile(true, false, true));
+    assert!(!is_entering_tile(true, true, true));
+    assert!(!is_entering_tile(false, false, true));
+    assert!(!is_entering_tile(true, false, false));
   }
 
   /// Only an entering window that is unmanaged or no longer shown is a
