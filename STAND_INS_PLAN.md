@@ -615,7 +615,8 @@ with recordings from tasks 3 to 7:
 
 - (a) Leave resize on `ResizeSession`. Smallest risk; two systems remain,
   but only one kind of animation uses the old one.
-- (b) `window_resize.style: "stretch"` on peeks: the content scales to
+- (b) **Ruled out by the owner (2026-11-10): `stretch` "does weird
+  zooming".** Kept for the record. `window_resize.style: "stretch"` on peeks: the content scales to
   the animated rect and the app resizes on the first frame. `place_scaled`
   already draws this. Simple, and how Hyprland looks; text is blurred
   mid-resize.
