@@ -550,6 +550,42 @@ struct PendingCloak {
   target_rect: Rect,
 }
 
+/// What a `Frozen` window's redraw owes it, by whether it is cloaked yet.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum FrozenStep {
+  /// Still on screen: its stand-in is shown and composited, then the
+  /// window is cloaked and moved to its target (see [`PendingCloak`]).
+  TakeOver,
+  /// Cloaked before its session began, which a new window is from the
+  /// moment `manage_window` sees it: only the move to its target is
+  /// left. Without it the window keeps the size its app opened it at
+  /// until `pre_commit`, so its open animation shows that size's content
+  /// cut to the tile, reflowing in one step once the motion has ended.
+  Adopt,
+  /// Set up on an earlier pass.
+  Keep,
+}
+
+impl FrozenStep {
+  /// `session_cloaked` is `ResizeSession::is_session_cloaked` of the
+  /// window's session, if it has one. `is_cloaked` is only asked when
+  /// that doesn't settle it, as it is a call into DWM.
+  fn of(
+    session_cloaked: Option<bool>,
+    is_cloaked: impl FnOnce() -> bool,
+  ) -> Self {
+    // A window with no session (a workspace switch's, a scrolling
+    // column's) is checked on every pass, so one uncloaked mid-way is
+    // cloaked again.
+    match session_cloaked {
+      Some(true) => Self::Keep,
+      _ if !is_cloaked() => Self::TakeOver,
+      Some(false) => Self::Adopt,
+      None => Self::Keep,
+    }
+  }
+}
+
 /// Cloaks and pre-positions every window [`redraw_containers`] queued this
 /// pass, behind one shared `DwmFlush`.
 ///
@@ -562,11 +598,6 @@ fn commit_pending_cloaks(
   pending: Vec<PendingCloak>,
   overlay_batch: SurrogateBatch,
 ) {
-  use wm_platform::{
-    discard_bits_if_resized, SWP_ASYNCWINDOWPOS, SWP_FRAMECHANGED,
-    SWP_NOACTIVATE, SWP_NOSENDCHANGING, SWP_NOZORDER,
-  };
-
   if pending.is_empty() {
     return;
   }
@@ -609,78 +640,87 @@ fn commit_pending_cloaks(
       .take_over(&window.id(), &window.native());
     let _ = window.native().set_cloaked(true);
 
-    // Pre-position the cloaked window at its target rect so it appears
-    // there when uncloaked at animation end. Posted asynchronously — the
-    // animation duration (~300 ms) is far longer than any app's
-    // message-queue processing time.
-    //
-    // Growing resize sessions (both dimensions grow) pre-position so DWM
-    // captures the correctly-sized content during the curtain-reveal.
-    // Mixed and shrinking sessions use the clip/wipe approach
-    // (thumbnail at source), and stretch sessions sample source-sized
-    // content for the whole animation — both leave the window at
-    // source until `pre_commit`.
-    //
-    // The thumbnail stays registered at source dims until
-    // `sync_registration` confirms the resize landed, so a slow-to-respond
-    // app costs at most a few frames of backdrop fill in the newly
-    // revealed area — never a mis-sized capture. `pre_commit` issues a
-    // final synchronous move at animation end as a correctness
-    // guarantee.
-    let session_flags = state
-      .animation_manager
-      .resize_sessions
-      .get(&window.id())
-      .map(|session| {
-        (session.needs_preposition(), session.is_move_only())
-      });
+    preposition_cloaked(state, &window, &z_order, &target_rect);
+  }
+}
 
-    let swp_flags = match session_flags {
-      // No resize session (e.g. a workspace-switch frozen window): always
-      // pre-position, with a frame change.
-      None => Some(
-        SWP_NOZORDER
-          | SWP_FRAMECHANGED
-          | SWP_NOACTIVATE
-          | SWP_NOSENDCHANGING
-          | SWP_ASYNCWINDOWPOS,
-      ),
-      Some((true, is_move_only)) => {
-        let mut flags = SWP_NOZORDER
-          | SWP_NOACTIVATE
-          | SWP_NOSENDCHANGING
-          | SWP_ASYNCWINDOWPOS;
-        // `SWP_FRAMECHANGED` forces `WM_NCCALCSIZE` plus a full repaint in
-        // the target app; a pure move needs neither, so multi-window
-        // relayouts skip that per-window repaint burst for windows that
-        // only change position.
-        if !is_move_only {
-          flags |= SWP_FRAMECHANGED;
-        }
-        Some(flags)
+/// Moves a frozen window, cloaked behind its stand-in, to the
+/// `target_rect` it is uncloaked at, and marks its session cloaked so
+/// later `Frozen` ticks skip the cloak query.
+///
+/// Posted asynchronously: the animation is far longer than any app's
+/// message-queue processing time, and `pre_commit` confirms the move at
+/// its end.
+fn preposition_cloaked(
+  state: &mut WmState,
+  window: &WindowContainer,
+  z_order: &WindowZOrder,
+  target_rect: &Rect,
+) {
+  use wm_platform::{
+    discard_bits_if_resized, SWP_ASYNCWINDOWPOS, SWP_FRAMECHANGED,
+    SWP_NOACTIVATE, SWP_NOSENDCHANGING, SWP_NOZORDER,
+  };
+
+  // Growing resize sessions (both dimensions grow) pre-position so DWM
+  // captures the correctly-sized content during the curtain-reveal.
+  // Mixed and shrinking sessions use the clip/wipe approach
+  // (thumbnail at source), and stretch sessions sample source-sized
+  // content for the whole animation — both leave the window at
+  // source until `pre_commit`.
+  //
+  // The thumbnail stays registered at source dims until
+  // `sync_registration` confirms the resize landed, so a slow-to-respond
+  // app costs at most a few frames of backdrop fill in the newly
+  // revealed area — never a mis-sized capture.
+  let session_flags = state
+    .animation_manager
+    .resize_sessions
+    .get(&window.id())
+    .map(|session| (session.needs_preposition(), session.is_move_only()));
+
+  let swp_flags = match session_flags {
+    // No resize session (e.g. a workspace-switch frozen window): always
+    // pre-position, with a frame change.
+    None => Some(
+      SWP_NOZORDER
+        | SWP_FRAMECHANGED
+        | SWP_NOACTIVATE
+        | SWP_NOSENDCHANGING
+        | SWP_ASYNCWINDOWPOS,
+    ),
+    Some((true, is_move_only)) => {
+      let mut flags = SWP_NOZORDER
+        | SWP_NOACTIVATE
+        | SWP_NOSENDCHANGING
+        | SWP_ASYNCWINDOWPOS;
+      // `SWP_FRAMECHANGED` forces `WM_NCCALCSIZE` plus a full repaint in
+      // the target app; a pure move needs neither, so multi-window
+      // relayouts skip that per-window repaint burst for windows that
+      // only change position.
+      if !is_move_only {
+        flags |= SWP_FRAMECHANGED;
       }
-      Some((false, _)) => None,
-    };
-
-    if let Some(swp_flags) = swp_flags {
-      let current = window.native().frame_with_shadows().ok();
-      let _ = window.native().set_window_pos(
-        &z_order,
-        &target_rect,
-        swp_flags
-          | discard_bits_if_resized(current.as_ref(), &target_rect),
-      );
+      Some(flags)
     }
+    Some((false, _)) => None,
+  };
 
-    // Mark the session cloaked so subsequent Frozen ticks skip the
-    // per-tick `DwmGetWindowAttribute` query.
-    if let Some(session) = state
-      .animation_manager
-      .resize_sessions
-      .get_mut(&window.id())
-    {
-      session.mark_session_cloaked();
-    }
+  if let Some(swp_flags) = swp_flags {
+    let current = window.native().frame_with_shadows().ok();
+    let _ = window.native().set_window_pos(
+      z_order,
+      target_rect,
+      swp_flags | discard_bits_if_resized(current.as_ref(), target_rect),
+    );
+  }
+
+  if let Some(session) = state
+    .animation_manager
+    .resize_sessions
+    .get_mut(&window.id())
+  {
+    session.mark_session_cloaked();
   }
 }
 
@@ -1536,14 +1576,16 @@ fn redraw_containers(
         // `Frozen` frame and after session
         // teardown. Workspace-switch frozen windows (no resize session)
         // retain the full per-tick guard as a safety net.
-        let already_cloaked_by_session = state
+        let session_cloaked = state
           .animation_manager
           .resize_sessions
           .get(&window.id())
-          .is_some_and(wm_platform::ResizeSession::is_session_cloaked);
-        if !already_cloaked_by_session
-          && !window.native().is_cloaked().unwrap_or(false)
-        {
+          .map(wm_platform::ResizeSession::is_session_cloaked);
+        let step = FrozenStep::of(session_cloaked, || {
+          window.native().is_cloaked().unwrap_or(false)
+        });
+
+        if step == FrozenStep::TakeOver {
           let _scope = perf::scope(Stage::Cloak);
 
           // The surrogate is created hidden specifically so this can
@@ -1596,6 +1638,11 @@ fn redraw_containers(
             z_order,
             target_rect: real_rect.clone(),
           });
+        } else if step == FrozenStep::Adopt {
+          // Nothing to wait for: the window is not on screen, so the move
+          // can't show, and its app resizes and repaints at its tile's
+          // size while the stand-in plays.
+          preposition_cloaked(state, window, &z_order, &real_rect);
         } else if state
           .animation_manager
           .scroll_view
@@ -3552,8 +3599,26 @@ mod tests {
   use wm_common::{DisplayState, EffectSet, ParsedConfig};
   use wm_platform::{NativeBackdropOverlay, OpacityValue};
 
-  use super::{is_unanimated_reveal, SyncableOverlay};
+  use super::{is_unanimated_reveal, FrozenStep, SyncableOverlay};
   use crate::user_config::UserConfig;
+
+  #[test]
+  fn a_window_cloaked_before_its_session_is_moved_to_its_target() {
+    assert_eq!(FrozenStep::of(Some(false), || true), FrozenStep::Adopt);
+  }
+
+  #[test]
+  fn a_window_still_shown_is_taken_over() {
+    assert_eq!(FrozenStep::of(Some(false), || false), FrozenStep::TakeOver);
+    assert_eq!(FrozenStep::of(None, || false), FrozenStep::TakeOver);
+  }
+
+  #[test]
+  fn a_window_set_up_already_is_left_alone() {
+    let unasked = || panic!("Cloak state queried for a cloaked session.");
+    assert_eq!(FrozenStep::of(Some(true), unasked), FrozenStep::Keep);
+    assert_eq!(FrozenStep::of(None, || true), FrozenStep::Keep);
+  }
 
   #[test]
   fn covers_a_hidden_window_shown_with_no_stand_in() {
