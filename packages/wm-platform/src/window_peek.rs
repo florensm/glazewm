@@ -32,7 +32,8 @@ enum Drawn {
   /// Too faint to see, under its real window that still shows, while DWM
   /// warms the thumbnail up (see [`WindowPeek::take_over`]).
   WarmingUp,
-  /// At the window's opacity.
+  /// At the window's opacity, or opaque for its companion (see
+  /// `NativeSurrogate::stand_in_opacity`).
   Shown,
   /// Not at all, its real window shown again (see
   /// [`WindowPeek::hand_back`]).
@@ -60,7 +61,7 @@ pub struct WindowPeek {
   /// Whether the backdrop copy is to be drawn while the window is (see
   /// [`show_backdrop`](Self::show_backdrop)).
   shows_backdrop: bool,
-  /// The window's opacity, as last placed.
+  /// The window's own alpha, as last placed.
   opacity: u8,
   /// The real window's own alpha while it is hidden by it for a handover
   /// with the peek (see [`take_over`](Self::take_over) and
@@ -272,11 +273,11 @@ impl WindowPeek {
   }
 
   /// Takes over showing the window from `window`, which is about to be
-  /// cloaked: the thumbnail goes to the window's opacity and a
-  /// semi-transparent `window` to no alpha at all, in that order, so
-  /// the swap lands in one frame and the cloak unseen (see
-  /// `HiddenAlpha`). [`restore_alpha`](Self::restore_alpha) gives `window`
-  /// its alpha back once the cloak is on screen.
+  /// cloaked: the thumbnail goes to the window's opacity (see
+  /// [`Drawn::Shown`]) and a semi-transparent `window` to no alpha at all,
+  /// in that order, so the swap lands in one frame and the cloak unseen
+  /// (see `HiddenAlpha`). [`restore_alpha`](Self::restore_alpha) gives
+  /// `window` its alpha back once the cloak is on screen.
   pub fn take_over(&mut self, window: &NativeWindow) {
     self.draw(Drawn::Shown);
     self.hidden_alpha.hide(&window.inner);
@@ -335,7 +336,7 @@ impl WindowPeek {
   fn window_opacity(&self) -> u8 {
     match self.drawn {
       Drawn::WarmingUp => WARM_UP_OPACITY,
-      Drawn::Shown => self.opacity,
+      Drawn::Shown => self.surrogate.stand_in_opacity(self.opacity),
       Drawn::HandedBack => 0,
     }
   }
