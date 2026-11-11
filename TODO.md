@@ -570,6 +570,37 @@ to see it; check each once more at 150 ms.
     also resizes it stays on its peek, which then shows more or less of
     it rather than stretching it, as a column does: look there for a
     gap at its edge.
+47. **Floating windows open on peeks** (`STAND_INS_PLAN.md` task 6b).
+    With `GLAZEWM_ISOLATE=peeks`, `window_open` at `duration_ms: 2000`
+    and at 150, each style (`zoom`, each `slide_*`, `none` with
+    `opacity_from` below 1): open a floating dialog (e.g. Notepad's
+    Save As, or the Run box) and a floating app window (one made
+    floating by a rule, over a tiled window and over another floating
+    one). With the switch unset neither animates, as before. Should
+    show:
+    - the window enters on top of the windows it overlaps, with its
+      border and backdrop, never a frame under another floating window;
+    - it is handed back at its floating rect with nothing shown twice
+      or not at all, and stays on top, focused, afterwards;
+    - one opened while a tiled window is still entering: both play,
+      neither restarts, and the tiled one hands back under it;
+    - one placed partly off its monitor: cut at the monitor edge while
+      it enters, as a slide is, then whole once handed back (with two
+      monitors, look at the part on the other one);
+    - one opened on a monitor other than the focused one plays there,
+      paced by that monitor (on the fast monitor, not at 60 Hz);
+    - close one mid-open (`window_close` on): it turns round where it
+      is; minimize one mid-open: the same;
+    - move one mid-open (`move --direction`, or a dialog that centres
+      itself as it opens): its peek jumps to the new rect, as a
+      floating move does unanimated, and keeps entering; nothing lands
+      at the old rect.
+
+    Fullscreen and maximized windows, windows whose peek would be
+    `Live`, and dialogs or windows a rule leaves unmanaged or ignored
+    open at once, as before. A floating window that opens on another
+    monitor's workspace than the one it is on screen at is cut by its
+    workspace's monitor: look for that with two monitors.
 
 If bars or flicker show, isolate them with `GLAZEWM_ISOLATE` (below), one
 restart per flag: `noring`, `nobackdrop`, then `live`. With a long
@@ -589,7 +620,8 @@ in the log says it is on):
   peeks that move with them, as before `b33c0ef8`.
 - `peeks`: draw open, close, minimize, restore and moves with pinned
   peeks instead of `ResizeSession`, for the kinds already moved over.
-  So far: opens (`STAND_INS_PLAN.md` 3a, 3b), closes and minimizes
+  So far: opens, floating ones too (`STAND_INS_PLAN.md` 3a, 3b, 6b),
+  closes and minimizes
   (task 4), restores of tiled windows and columns (task 5), and moves
   that keep a tiled window's or column's size (task 6).
 

@@ -177,7 +177,7 @@ Owner's answers, 2026-11-11:
   live)
 - [ ] 5. Restore on peeks (built, not checked live)
 - [ ] 6. Moves on peeks (built, not checked live)
-- [ ] 6b. Floating windows open on peeks
+- [ ] 6b. Floating windows open on peeks (built, not checked live)
 - [ ] 7. The frame's place in the tick: build behind `peeksfirst`,
   measured later
 - [ ] 7b. Peeks by default, `window_close` on by default
@@ -799,6 +799,40 @@ that a floating window partly off its monitor is clipped as slides are.
 Fullscreen and maximized windows stay without. Live check: a floating
 dialog and a floating app window, each `window_open` style; one opened
 while a tiled window is still entering.
+
+As built, for tasks 7 and 7b:
+
+- `entry_transition` gives a new floating window `window_open` when
+  `opens_floating_on_peek` (`platform_sync.rs`): the switch on, and not
+  natively maximized (`reposition_window` would restore it first).
+  Fullscreen ones were already out (`is_fullscreen`). The exclusion was
+  a design choice (`ANIMATION_REVIEW.md` 18), not a fix: with the switch
+  off it stands. A floating open that `enter_on_peek` turns down (a
+  `Live` peek, nothing to show) opens at once: never
+  `start_open_animation`. Floating restores keep the old path.
+- The rest is 3a's path unchanged: a new window is cloaked from
+  `manage_window` on, so the `Frozen` branch's step is `Keep` and
+  `follow_retargeted_column` moves it to its floating rect; landed, it
+  is handed back by the `Apply` branch as a tile is. Clip and vsync
+  waiter are its workspace's monitor's (`window.monitor()`), cut at
+  that monitor's edge as slides are.
+- Z-order: its peek goes up just below its real window, and
+  `windows_to_bring_to_front` then restacks the other floating windows
+  directly below that window (asynchronously), over the peek. So a
+  focused one's peek is raised after the pass (`peek_raises`, beside
+  task 6's `raise_moving`); `begin_hand_back` later puts it directly
+  above its window, already on top. An unfocused one stays where its
+  window is.
+- Retarget: `follows_tile` holds for it, so the `Frozen` pass retargets
+  it, but a floating window that stays floating jumps there
+  (`follow_duration` 0), as the old path's floating moves are not
+  animated; its transit plays on. An app moving its own cloaked window
+  mid-entry (a dialog centring itself) queues a redraw
+  (`handle_window_moved_or_resized`), so the peek follows instead of
+  landing where it was.
+- 7b: nothing here reads the switch but `opens_floating_on_peek`,
+  `enters_on_peek`'s and the `Frozen` branch's tests, and the app-move
+  redraw: flipping `peeks` turns floating opens on with the rest.
 
 ### Task 7: the frame's place in the tick
 
