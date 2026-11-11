@@ -176,7 +176,7 @@ Owner's answers, 2026-11-11:
 - [ ] 4. Close and minimize on peeks, both layouts (built, not checked
   live)
 - [ ] 5. Restore on peeks (built, not checked live)
-- [ ] 6. Moves on peeks
+- [ ] 6. Moves on peeks (built, not checked live)
 - [ ] 6b. Floating windows open on peeks
 - [ ] 7. The frame's place in the tick: build behind `peeksfirst`,
   measured later
@@ -735,13 +735,17 @@ what decides. For tiling layouts there is no such sync.
 
 Do, behind the switch: a pure move (same size before and after, window
 shown before and after) of a tiled window becomes a `Role::Moving` entry
-(`upsert` with `from` = previous target). Resizes stay on the old path.
-In the scrolling layout, widen `strip_moves` to any column move with the
+from its previous target. Not through `upsert`, whose only caller is
+`sync_scroll_view` (scrolling workspaces only): where `platform_sync`
+would call `start_animation_if_needed`, as 3a's `enter_on_peek` sits
+beside `start_open_animation`. Resizes stay on the old path. In the
+scrolling layout, widen `strip_moves` to any column move with the
 switch on.
 
-A move retargeted mid-way (a second swap, a held key) goes through
-`upsert`, which keeps its speed (`retargeted`): lever C. Check that
-holds for tiled windows as it does for columns, with a unit test.
+A move retargeted mid-way (a second swap, a held key) keeps its speed
+(`retargeted`): lever C. For a column `upsert` does it; for a tiled
+window the `Frozen` pass's retarget, as 3a's `retarget_entering` does
+for an entering one. Check that holds for both, with a unit test.
 
 Watch for: a relayout that moves one window and resizes its neighbour.
 `cycle_has_resize` makes both share `window_resize`'s timing today; keep
@@ -749,6 +753,38 @@ that, by giving the peek's motion the same duration and easing.
 
 Live check: swap two equal windows; the same swap pressed twice within
 the animation (no stop and restart in between); `TODO.md` 15 and 16.
+
+As built, for tasks 6b and 7:
+
+- `platform_sync` calls `peek_view::move_on_peek` in place of
+  `start_animation_if_needed` for a shown, tiled (`WindowState::Tiling`,
+  not a column) window with no state change, whose move keeps its size
+  past `window_move.threshold_px` (`is_pure_move`), with no old-path
+  stand-in on it (`has_other_stand_in`), from inside its monitor, and
+  not `Live`. Timing: `movement_timing`, so `window_resize`'s when the
+  cycle resizes. `PeekView::move_tile` makes the entry (`is_column:
+  false`, no transit), or takes on again one still handing back.
+- Take-over: the `Frozen` branch's `TakeOver` step, into
+  `commit_pending_cloaks`' one flush. Around it, `cover_moved_overlays`
+  (before) and `hand_over_moved_overlays` (after) hand the ring and
+  backdrop over as `sync_scroll_view`'s flush does. Then the peeks go
+  to `HWND_TOP` (`raise_moving`, formerly `raise_restored`), never
+  before their windows are cloaked.
+- Retarget: `is_entering` and `retarget_entering` became `follows_tile`
+  and `retarget_tile`, covering any non-column `Moving` entry, at
+  `frame_now` (the pass's instant, which old-path retargets use) rather
+  than `frame_time`. A retarget that resizes stays on the peek
+  (`place`, as a column), as 3a does for an entering window.
+- 6b: this path keeps floating windows out (the `Tiling` test) and a
+  floating-to-tiling drop (`is_state_change`). 6b's open goes through
+  `enter_on_peek`, not here, but its entry is a non-column `Moving` one,
+  so `follows_tile` holds and the `Frozen` pass retargets it whenever
+  its rect changes mid-entry: check that is wanted for a floating rect.
+- 7: moving entries are ticked by `PeekView::tick` like the others; the
+  only new work outside the tick is in the relayout pass.
+- Scrolling: with the switch on, a peek drawing one column no longer
+  makes the whole strip move (`moves_on_peek`): pure moves and columns
+  already drawn go on peeks, resizes on screen stay on the old path.
 
 ### Task 6b: floating windows open on peeks
 

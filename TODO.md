@@ -537,6 +537,39 @@ to see it; check each once more at 150 ms.
     (minimize's curve time-reversed, finding 15), where it sped up and
     stopped dead before. Floating windows, and windows whose peek would
     be `Live`, keep the old path.
+46. **Moves on peeks** (`STAND_INS_PLAN.md` task 6). In a tiling layout
+    and on the scrolling workspace, with `GLAZEWM_ISOLATE=peeks`,
+    `window_move` at `duration_ms: 2000` and at 150, once with a spring
+    easing; windows with a backdrop and a border, one in a stack:
+    - swap two equal windows (`move --direction`): both glide across,
+      border and backdrop with them, never a frame apart; no frame at
+      the start showing a window twice or not at all, and no ring or
+      backdrop left at rest beside its moving window;
+    - the same swap pressed twice within the animation, and a move key
+      held down: each press carries on from where the window is, at its
+      speed, with no stop and restart in between;
+    - a move beside a neighbour that resizes (e.g. move a window into a
+      split, so its new neighbour shrinks): the moved one lands together
+      with the resized one, edges in step all the way;
+    - windows crossing others as they move pass over them, as on the
+      old path;
+    - on the scrolling workspace, swap two columns that are both on
+      screen: both move on their peeks; resize one column while the
+      others make room: the resized one keeps its `window_resize` style,
+      the others move on peeks, and all land together;
+    - close (`window_close` on), minimize, and a workspace switch during
+      a move: nothing left on screen (no peek, ring or backdrop) and
+      nothing left cloaked afterwards; the closed or minimized one turns
+      into its close or minimize from where it was;
+    - 15 and 16 again with the switch on.
+
+    A move below `threshold_px`, a resize, a floating window (dragged or
+    not), a tiling-to-floating change, a move onto another monitor, a
+    window whose peek would be `Live`, and one still on an old-path
+    animation keep the old path. A moving window whose next relayout
+    also resizes it stays on its peek, which then shows more or less of
+    it rather than stretching it, as a column does: look there for a
+    gap at its edge.
 
 If bars or flicker show, isolate them with `GLAZEWM_ISOLATE` (below), one
 restart per flag: `noring`, `nobackdrop`, then `live`. With a long
@@ -557,7 +590,8 @@ in the log says it is on):
 - `peeks`: draw open, close, minimize, restore and moves with pinned
   peeks instead of `ResizeSession`, for the kinds already moved over.
   So far: opens (`STAND_INS_PLAN.md` 3a, 3b), closes and minimizes
-  (task 4), restores of tiled windows and columns (task 5).
+  (task 4), restores of tiled windows and columns (task 5), and moves
+  that keep a tiled window's or column's size (task 6).
 
 Set it for one run, e.g. from PowerShell in the repo:
 
