@@ -153,6 +153,19 @@ impl PendingSync {
     self
   }
 
+  /// Replaces the redraw queue with `containers`.
+  pub fn replace_containers_to_redraw<I, T>(
+    &mut self,
+    containers: I,
+  ) -> &mut Self
+  where
+    I: IntoIterator<Item = T>,
+    T: Into<Container>,
+  {
+    self.containers_to_redraw.clear();
+    self.queue_containers_to_redraw(containers)
+  }
+
   pub fn dequeue_container_from_redraw<T>(
     &mut self,
     container: T,

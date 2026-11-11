@@ -16,8 +16,8 @@ use wm_platform::{
 
 use crate::{
   animation::{
-    peek_view::PeekRaise, AnimationPositionResult, AwayTransition,
-    HandBack, WorkspaceSwitchEntry,
+    manager::Motion, peek_view::PeekRaise, AnimationPositionResult,
+    AwayTransition, HandBack, WorkspaceSwitchEntry,
   },
   commands::window::unmanage_if_embedded,
   layout::is_hidden_in_layout,
@@ -44,6 +44,8 @@ pub fn platform_sync(
   let _scope = perf::scope(Stage::PlatformSync);
 
   unmanage_embedded_windows(state)?;
+
+  crate::covered_tiles::sync_covered_tiles(state);
 
   let focused_container =
     state.focused_container().context("No focused container.")?;
@@ -1471,12 +1473,24 @@ fn redraw_containers(
       crate::layout::scrolling::column_of(&window.as_container())
         .is_some();
 
-    let anim_enabled = if is_column {
-      config.value.animations.scroll.enabled
+    // A WM-initiated fullscreen toggle, in either direction, runs on its
+    // own settings.
+    let motion = if is_column {
+      Motion::Column
+    } else if is_wm_fullscreen_toggle {
+      Motion::Fullscreen
     } else if is_resize {
-      config.value.animations.window_resize.enabled
+      Motion::Resize
     } else {
-      config.value.animations.window_move.enabled
+      Motion::Move
+    };
+
+    let animations = &config.value.animations;
+    let anim_enabled = match motion {
+      Motion::Column => animations.scroll.enabled,
+      Motion::Resize => animations.window_resize.enabled,
+      Motion::Move => animations.window_move.enabled,
+      Motion::Fullscreen => animations.window_fullscreen.enabled,
     };
 
     // Compute effect opacity and corner style unconditionally — needed for
@@ -1684,9 +1698,8 @@ fn redraw_containers(
       } else {
         state.animation_manager.start_animation_if_needed(
           window.id(),
-          is_resize,
+          motion,
           cycle_has_resize,
-          is_column,
           target_rect.clone(),
           previous_target,
           &native_ref,
@@ -1724,8 +1737,7 @@ fn redraw_containers(
         {
           let (duration_ms, easing) =
             crate::animation::manager::movement_timing(
-              is_column,
-              is_resize,
+              motion,
               cycle_has_resize,
               config,
             );

@@ -728,6 +728,18 @@ to see it; check each once more at 150 ms.
       the sharp wallpaper as it fades in (nothing shifts or grows).
     - Change the wallpaper, and move a display, with it open: it follows.
     - With `backdrop_blur: 4` it bakes at full size, as before.
+56. **Fullscreen: covered tiles held, own transition** (this change).
+    Three tiles side by side, the middle one focused; `toggle-fullscreen`,
+    then again. Repeat at `window_fullscreen.duration_ms: 2000`.
+    - The other two tiles never move or resize, going in or out.
+    - The window grows to the monitor and back scaled (`stretch`), with
+      no edge-color strip; `style: fill` brings the old look back.
+    - Fullscreen, focus another tile (`focus --direction`): the tiles
+      reflow then, the focused one on top. `toggle-floating` from
+      fullscreen: they reflow too.
+    - A stack beside it keeps its tab bar where its windows are.
+    - Close the fullscreen window, and move it to another workspace:
+      the tiles fill its place.
 
 If bars or flicker show, isolate them with `GLAZEWM_ISOLATE` (below), one
 restart per flag: `noring`, `nobackdrop`, then `live`. With a long

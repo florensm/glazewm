@@ -29,6 +29,16 @@ animations:
     # 'stretch' scales it to the moving tile while the apps resize.
     style: "fill"
 
+  # A window going in or out of fullscreen (`toggle-fullscreen`). The
+  # windows it covers stay where they are meanwhile.
+  window_fullscreen:
+    enabled: true
+    duration_ms: 220
+    easing: "cubic_bezier(0.16, 1.0, 0.3, 1.0)"
+    # Same as `window_resize`'s; 'fill' paints most of the monitor in the
+    # window's edge color until the app has redrawn at its new size.
+    style: "stretch"
+
   window_open:
     enabled: true
     duration_ms: 150

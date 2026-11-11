@@ -2571,23 +2571,28 @@ impl AnimationManager {
   fn should_start_new_animation(
     &self,
     window_id: &Uuid,
-    is_resize: bool,
-    is_column: bool,
+    motion: Motion,
     target_rect: &Rect,
     previous_target: Option<&Rect>,
     config: &UserConfig,
   ) -> bool {
     let existing_animation = self.get_animation(window_id);
 
-    let (enabled, threshold_px) = if is_column {
-      let c = &config.value.animations.scroll;
-      (c.enabled, c.threshold_px)
-    } else if is_resize {
-      let c = &config.value.animations.window_resize;
-      (c.enabled, c.threshold_px)
-    } else {
-      let c = &config.value.animations.window_move;
-      (c.enabled, c.threshold_px)
+    let animations = &config.value.animations;
+    let (enabled, threshold_px) = match motion {
+      Motion::Column => {
+        (animations.scroll.enabled, animations.scroll.threshold_px)
+      }
+      Motion::Resize => (
+        animations.window_resize.enabled,
+        animations.window_resize.threshold_px,
+      ),
+      Motion::Move => (
+        animations.window_move.enabled,
+        animations.window_move.threshold_px,
+      ),
+      // No threshold: it is always a whole monitor's worth of change.
+      Motion::Fullscreen => (animations.window_fullscreen.enabled, 0),
     };
     let threshold = i32::try_from(threshold_px).unwrap_or(i32::MAX);
 
@@ -2636,8 +2641,7 @@ impl AnimationManager {
   /// a moved window would otherwise arrive early and detach from its
   /// still-resizing neighbors.
   ///
-  /// A column of a scrolling layout (`is_column`) moves and resizes as
-  /// `animations.scroll` says instead.
+  /// `motion` picks the settings it runs on (see `Motion`).
   ///
   /// Returns [`AnimationPositionResult::Frozen`] while a surrogate overlay
   /// is active so the caller does not reposition the real window on
@@ -2646,9 +2650,8 @@ impl AnimationManager {
   pub fn start_animation_if_needed(
     &mut self,
     window_id: Uuid,
-    is_resize: bool,
+    motion: Motion,
     cycle_has_resize: bool,
-    is_column: bool,
     target_rect: Rect,
     previous_target: Option<Rect>,
     // Only used on Windows to capture the window for the surrogate.
@@ -2668,15 +2671,19 @@ impl AnimationManager {
 
     let should_start = self.should_start_new_animation(
       &window_id,
-      is_resize,
-      is_column,
+      motion,
       &target_rect,
       previous_target.as_ref(),
       config,
     );
 
     if should_start {
-      perf::note_animation_start(is_resize);
+      perf::note_animation_start(previous_target.as_ref().is_some_and(
+        |prev| {
+          prev.width() != target_rect.width()
+            || prev.height() != target_rect.height()
+        },
+      ));
 
       if let Some(prev_target) = previous_target {
         // Start from the current animated position on cancel-and-replace
@@ -2690,12 +2697,14 @@ impl AnimationManager {
         );
 
         let (duration_ms, easing) =
-          movement_timing(is_column, is_resize, cycle_has_resize, config);
+          movement_timing(motion, cycle_has_resize, config);
 
         // A column already moving carries on at its speed toward the new
         // target, as the strip's columns do, rather than restarting.
         let animation = match &existing_animation {
-          Some(existing) if is_column && !existing.is_complete() => {
+          Some(existing)
+            if motion == Motion::Column && !existing.is_complete() =>
+          {
             existing.retargeted(
               target_rect.clone(),
               duration_ms,
@@ -2737,8 +2746,12 @@ impl AnimationManager {
         } else {
           let hwnd = native_window.hwnd();
           // Stretch never shows a gap, so it needs no edge color.
-          let stretch = config.value.animations.window_resize.style
-            == ResizeStyle::Stretch;
+          let style = if motion == Motion::Fullscreen {
+            config.value.animations.window_fullscreen.style
+          } else {
+            config.value.animations.window_resize.style
+          };
+          let stretch = style == ResizeStyle::Stretch;
           let cached_edge_color = if stretch {
             None
           } else {
@@ -4141,29 +4154,53 @@ fn reanchor_final_overlays(state: &mut WmState) -> bool {
   !windows.is_empty()
 }
 
-/// The duration and easing a window's move or resize runs on.
+/// What a window's move or resize animation is for, which picks the
+/// settings it runs on.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Motion {
+  /// A pure translation (`window_move`).
+  Move,
+  /// A change of size (`window_resize`).
+  Resize,
+  /// A scrolling layout's column moving or resizing (`scroll`).
+  Column,
+  /// A window going in or out of fullscreen (`window_fullscreen`).
+  Fullscreen,
+}
+
+/// The duration and easing a window's `motion` runs on.
 ///
 /// When any window in the cycle resizes, pure translations share the
 /// resize timing too, keeping all edges in lock-step (see
 /// `AnimationManager::start_animation_if_needed`).
 pub(crate) fn movement_timing(
-  is_column: bool,
-  is_resize: bool,
+  motion: Motion,
   cycle_has_resize: bool,
   config: &UserConfig,
 ) -> (u32, EasingFunction) {
-  let use_resize_timing = is_resize
-    || (cycle_has_resize && config.value.animations.window_resize.enabled);
+  let animations = &config.value.animations;
+  let use_resize_timing = motion == Motion::Resize
+    || (motion == Motion::Move
+      && cycle_has_resize
+      && animations.window_resize.enabled);
 
-  if is_column {
-    let c = &config.value.animations.scroll;
-    (c.duration_ms, c.easing.clone())
-  } else if use_resize_timing {
-    let c = &config.value.animations.window_resize;
-    (c.duration_ms, c.easing.clone())
-  } else {
-    let c = &config.value.animations.window_move;
-    (c.duration_ms, c.easing.clone())
+  match motion {
+    Motion::Column => (
+      animations.scroll.duration_ms,
+      animations.scroll.easing.clone(),
+    ),
+    Motion::Fullscreen => (
+      animations.window_fullscreen.duration_ms,
+      animations.window_fullscreen.easing.clone(),
+    ),
+    _ if use_resize_timing => (
+      animations.window_resize.duration_ms,
+      animations.window_resize.easing.clone(),
+    ),
+    _ => (
+      animations.window_move.duration_ms,
+      animations.window_move.easing.clone(),
+    ),
   }
 }
 

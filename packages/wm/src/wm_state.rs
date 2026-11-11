@@ -48,6 +48,9 @@ pub struct WmState {
   /// restart loops.
   pub window_target_positions: HashMap<Uuid, Rect>,
 
+  /// Tiles under a fullscreen window, whose redraws are held meanwhile.
+  pub covered_tiles: crate::covered_tiles::CoveredTiles,
+
   /// Name of the most recently focused workspace.
   ///
   /// Used for the `general.toggle_workspace_on_refocus` option on
@@ -161,6 +164,7 @@ impl WmState {
       pending_sync: PendingSync::default(),
       animation_manager: AnimationManager::new(animation_tick_tx),
       window_target_positions: HashMap::new(),
+      covered_tiles: crate::covered_tiles::CoveredTiles::default(),
       window_overlays: HashMap::new(),
       drop_indicator: None,
       overview: Overview::new(overview_action_tx),

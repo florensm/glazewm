@@ -40,6 +40,7 @@ mod auto_stack;
 mod closing_windows;
 mod commands;
 mod config_files;
+mod covered_tiles;
 mod drop_indicator;
 mod error_notifier;
 mod events;

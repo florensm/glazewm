@@ -391,10 +391,26 @@ pub fn sync_tab_bars(
 
   let animation_manager = &state.animation_manager;
 
+  // A stack under a fullscreen window keeps its bar where its windows are
+  // still drawn (see `covered_tiles`).
+  let covered = state
+    .root_container
+    .descendants()
+    .filter_map(|container| container.as_stack().cloned())
+    .filter(|stack| {
+      stack
+        .windows()
+        .iter()
+        .any(|window| state.covered_tiles.contains(&window.id()))
+    })
+    .map(|stack| stack.id())
+    .collect::<std::collections::HashSet<_>>();
+
   let frames = state
     .root_container
     .descendants()
     .filter_map(|container| container.as_stack().cloned())
+    .filter(|stack| !covered.contains(&stack.id()))
     .map(|stack| {
       let is_shown = stack.workspace().is_some_and(|ws| ws.is_displayed())
         && !stack.windows().iter().any(|window| {
@@ -417,7 +433,9 @@ pub fn sync_tab_bars(
     })
     .collect::<HashMap<_, _>>();
 
-  state.tab_bars.retain(|id, _| frames.contains_key(id));
+  state
+    .tab_bars
+    .retain(|id, _| frames.contains_key(id) || covered.contains(id));
 
   for (stack_id, frame) in frames {
     let Some(frame) = frame else {

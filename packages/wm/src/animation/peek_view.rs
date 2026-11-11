@@ -23,7 +23,8 @@ use super::{
 };
 use crate::{
   animation::{
-    manager::movement_timing, AnimationManager, AwayTransition,
+    manager::{movement_timing, Motion},
+    AnimationManager, AwayTransition,
   },
   commands::general::{
     focus_blend, overlay_entry, surrogate_effects_for,
@@ -1677,8 +1678,13 @@ pub fn move_on_peek(
     return false;
   }
 
+  let motion = if is_resize {
+    Motion::Resize
+  } else {
+    Motion::Move
+  };
   let (duration_ms, easing) =
-    movement_timing(false, is_resize, cycle_has_resize, config);
+    movement_timing(motion, cycle_has_resize, config);
   let now = state.animation_manager.frame_time();
   let mut batch = SurrogateBatch::new();
   let moved = state.animation_manager.peeks.move_tile(

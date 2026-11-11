@@ -1577,6 +1577,9 @@ pub struct AnimationsConfig {
   pub scroll: AnimationTypeConfig,
   /// Animation settings for operations that change window size.
   pub window_resize: WindowResizeConfig,
+  /// Animation settings for a window going in or out of fullscreen via
+  /// `set-fullscreen`/`toggle-fullscreen`.
+  pub window_fullscreen: WindowFullscreenConfig,
   /// Animation settings for when a new window appears.
   pub window_open: WindowOpenConfig,
   /// Animation settings for workspace-switch slide transitions.
@@ -1603,6 +1606,7 @@ impl Default for AnimationsConfig {
         ..AnimationTypeConfig::default()
       },
       window_resize: WindowResizeConfig::default(),
+      window_fullscreen: WindowFullscreenConfig::default(),
       window_open: WindowOpenConfig::default(),
       workspace_switch: WorkspaceSwitchAnimationConfig::default(),
       window_close: WindowCloseConfig::default(),
@@ -2094,6 +2098,30 @@ impl Default for WindowResizeConfig {
       easing: EasingFunction::CubicBezier(0.42, 0.0, 0.58, 1.0),
       threshold_px: 10,
       style: ResizeStyle::default(),
+    }
+  }
+}
+
+/// Animation settings for a window going in or out of fullscreen.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(default, rename_all(serialize = "camelCase"))]
+pub struct WindowFullscreenConfig {
+  pub enabled: bool,
+  pub duration_ms: u32,
+  pub easing: EasingFunction,
+  /// How the window's content is shown while it grows or shrinks.
+  /// Defaults to `stretch`: `fill` would paint most of the monitor in the
+  /// window's edge color until the app has redrawn at its new size.
+  pub style: ResizeStyle,
+}
+
+impl Default for WindowFullscreenConfig {
+  fn default() -> Self {
+    WindowFullscreenConfig {
+      enabled: true,
+      duration_ms: 220,
+      easing: EasingFunction::CubicBezier(0.16, 1.0, 0.3, 1.0),
+      style: ResizeStyle::Stretch,
     }
   }
 }
