@@ -601,6 +601,11 @@ to see it; check each once more at 150 ms.
     open at once, as before. A floating window that opens on another
     monitor's workspace than the one it is on screen at is cut by its
     workspace's monitor: look for that with two monitors.
+    Reported on the first run: the border appeared whole at the window's
+    rect as it began to zoom. A ring made for an entering or leaving
+    window is now made concealed, only its copy shown: look at the first
+    frames of a `zoom` open at 3000 ms for a full-size border, then the
+    same for a tiled window on an empty workspace.
 48. **The peeks' frame before the catch-up** (`STAND_INS_PLAN.md` task
     7, a scheduling change). On the fast monitor, run 42's checks (an
     open beside three tiled windows, and a second opened mid-way) and

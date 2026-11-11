@@ -1801,6 +1801,10 @@ fn carry_ring(
   );
   let anchor = native.hwnd();
 
+  if !create_concealed_ring(state, id, &ring_frame, blend.from, anchor) {
+    return false;
+  }
+
   let Some(overlay) = overlay_entry::<NativeBorderOverlay>(
     &mut state.window_overlays,
     id,
@@ -1856,6 +1860,51 @@ fn carry_ring(
   };
 
   true
+}
+
+/// Whether a ring made for an entry in `role` is made parked and
+/// concealed: one entering or leaving, by a transit. Made shown, it was
+/// handed over as a ring on screen, drawn whole at the window's rect for a
+/// frame around its zoomed, slid or faded copy.
+fn conceals_new_ring(role: Role, has_transit: bool) -> bool {
+  has_transit && matches!(role, Role::Moving { .. } | Role::Leaving(_))
+}
+
+/// Makes `id` a ring parked and concealed at `ring_frame`, behind
+/// `anchor`, if it has none and [`conceals_new_ring`] says so. Returns
+/// `false` only when that failed.
+fn create_concealed_ring(
+  state: &mut WmState,
+  id: Uuid,
+  ring_frame: &Rect,
+  params: BorderOverlayParams,
+  anchor: HWND,
+) -> bool {
+  let conceals = state
+    .animation_manager
+    .peeks
+    .entries
+    .get(&id)
+    .is_some_and(|entry| {
+      conceals_new_ring(entry.role, entry.transit.is_some())
+    });
+  let slot = &mut state.window_overlays.entry(id).or_default().border;
+  if slot.is_some() || !conceals {
+    return true;
+  }
+
+  match NativeBorderOverlay::create_parked(
+    ring_frame, params, anchor, true,
+  ) {
+    Ok(overlay) => {
+      *slot = Some(overlay);
+      true
+    }
+    Err(err) => {
+      tracing::debug!("Border overlay creation failed for {id}: {err}.");
+      false
+    }
+  }
 }
 
 /// Hands `id`'s backdrop, drawn with `params` or not at all, over to the
@@ -2023,9 +2072,10 @@ mod tests {
   use wm_platform::Rect;
 
   use super::{
-    follow_duration, follows_tile, has_landed, has_left, is_departed,
-    is_pure_move, is_stray, kept_transit, leaves_as, leaving_transit,
-    retargeted_motion, returning_transit, take_left, Role,
+    conceals_new_ring, follow_duration, follows_tile, has_landed,
+    has_left, is_departed, is_pure_move, is_stray, kept_transit,
+    leaves_as, leaving_transit, retargeted_motion, returning_transit,
+    take_left, Role,
   };
   use crate::animation::{
     state::WindowAnimationState,
@@ -2278,6 +2328,27 @@ mod tests {
         let leaving = Role::Leaving(transition);
         assert!(!is_stray(false, leaving, shown), "{shown:?}");
       }
+    }
+  }
+
+  /// A ring made for a window entering or leaving starts concealed, so
+  /// only its copy shows it; one made for a column scrolling, a plain
+  /// move or a landing window is made shown, as before.
+  #[test]
+  fn a_new_ring_is_concealed_while_its_window_transits() {
+    let moving = Role::Moving { ends_shown: true };
+    assert!(conceals_new_ring(moving, true));
+    assert!(conceals_new_ring(
+      Role::Leaving(AwayTransition::Close),
+      true
+    ));
+    assert!(!conceals_new_ring(moving, false));
+    for role in [
+      Role::Peek,
+      Role::HandingBack,
+      Role::Releasing { settled: false },
+    ] {
+      assert!(!conceals_new_ring(role, true), "{role:?}");
     }
   }
 
