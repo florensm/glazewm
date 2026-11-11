@@ -254,6 +254,22 @@ fn follows_tile(is_column: bool, is_moving: bool) -> bool {
   !is_column && is_moving
 }
 
+/// How long a window drawn moving or entering by its peek takes to follow
+/// a new rect: `duration_ms`, unless it is floating and stays so, whose
+/// moves the old path doesn't animate. That one jumps there; an entry it
+/// plays plays on.
+pub fn follow_duration(
+  is_floating: bool,
+  is_state_change: bool,
+  duration_ms: u32,
+) -> u32 {
+  if is_floating && !is_state_change {
+    0
+  } else {
+    duration_ms
+  }
+}
+
 /// Whether a window laid out at `target` after `from` only moves, and by
 /// more than `threshold_px` as `should_start_new_animation` measures it:
 /// below that, the old path doesn't animate it either.
@@ -2007,9 +2023,9 @@ mod tests {
   use wm_platform::Rect;
 
   use super::{
-    follows_tile, has_landed, has_left, is_departed, is_pure_move,
-    is_stray, kept_transit, leaves_as, leaving_transit, retargeted_motion,
-    returning_transit, take_left, Role,
+    follow_duration, follows_tile, has_landed, has_left, is_departed,
+    is_pure_move, is_stray, kept_transit, leaves_as, leaving_transit,
+    retargeted_motion, returning_transit, take_left, Role,
   };
   use crate::animation::{
     state::WindowAnimationState,
@@ -2124,6 +2140,43 @@ mod tests {
     assert!(follows_tile(false, true));
     assert!(!follows_tile(true, true));
     assert!(!follows_tile(false, false));
+  }
+
+  /// A floating window moved mid-entry jumps to its new rect, as the old
+  /// path's floating moves do, and lands once its entry has; one tiled or
+  /// changing state follows on its timing.
+  #[test]
+  fn a_floating_entry_jumps_to_its_new_rect() {
+    assert_eq!(follow_duration(true, false, 200), 0);
+    assert_eq!(follow_duration(true, true, 200), 200);
+    assert_eq!(follow_duration(false, false, 200), 200);
+
+    let t0 = Instant::now();
+    let now = t0 + Duration::from_millis(50);
+    let entering = transit(200);
+    entering.clock.start_clock(t0);
+    for easing in [linear(), spring()] {
+      let held = WindowAnimationState::new_movement(
+        tile(),
+        tile(),
+        200,
+        easing.clone(),
+      );
+      held.start_clock(t0);
+
+      let moved = Rect::from_xy(400, 300, 800, 600);
+      let jumped = retargeted_motion(
+        &held,
+        moved.clone(),
+        follow_duration(true, false, 200),
+        easing,
+        now,
+      );
+
+      assert_eq!(jumped.current_state_at(now).0, moved);
+      assert!(has_landed(&jumped, None));
+      assert!(!has_landed(&jumped, Some(&entering)));
+    }
   }
 
   /// Only a move that keeps the window's size, past the threshold, goes

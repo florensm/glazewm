@@ -659,6 +659,14 @@ fn commit_pending_cloaks(
   }
 }
 
+/// Whether `window`, new and floating, opens on a pinned peek: behind the
+/// switch, and not natively maximized, which `reposition_window` restores
+/// first.
+fn opens_floating_on_peek(window: &WindowContainer) -> bool {
+  wm_platform::isolation::current().peeks
+    && !window.native().is_maximized()
+}
+
 /// Whether `window_id` is minimizing on a peek, which a restore turns
 /// round (see `peek_view::restore_on_peek`) rather than ending it.
 fn leaves_on_peek(state: &WmState, window_id: &uuid::Uuid) -> bool {
@@ -1216,6 +1224,8 @@ fn redraw_containers(
   // and whether any of them is taken over from at the shared flush.
   let mut peek_moves = Vec::new();
   let mut peeks_take_over = false;
+  // Floating windows opened on peeks this pass whose peeks go on top.
+  let mut peek_raises = Vec::new();
 
   let cycle_has_resize = windows_to_update.iter().any(|window| {
     let target_rect = window.to_rect().and_then(|rect| {
@@ -1472,7 +1482,9 @@ fn redraw_containers(
     // once. A restore cannot use that test -- the window kept the
     // target position it had before it was minimized -- so it is
     // flagged on `PendingSync` instead. A restore is also allowed for
-    // floating windows, which never slide in on open.
+    // floating windows, which never slide in on open on the old path:
+    // behind the switch, one opens on a pinned peek (`STAND_INS_PLAN.md`
+    // task 6b), or not at all.
     //
     // Paired with whether it is an open rather than a restore.
     let entry_transition = if is_visible
@@ -1491,7 +1503,7 @@ fn redraw_containers(
           false,
         ))
       } else if previous_target.is_none()
-        && !is_floating
+        && (!is_floating || opens_floating_on_peek(window))
         && config.value.animations.window_open.enabled
       {
         Some((
@@ -1544,13 +1556,22 @@ fn redraw_containers(
       state.animation_manager.remove_animation(&window.id());
     }
 
-    if let Some((params, _)) = entry_transition {
+    if let Some((params, is_open)) = entry_transition {
       if enters_on_peek {
         // Computed before the peek went up: frozen behind it from now on,
         // or it would be uncloaked at once.
         is_frozen_by_ws_animation |=
           state.animation_manager.peeks.is_moving(&window.id());
-      } else {
+
+        // Floating, it may overlap windows restacked after it this pass
+        // (`windows_to_bring_to_front`) that would cover its peek, just
+        // below it. Focused, it goes on top, as its peek does once the
+        // pass is done.
+        if is_floating && window.id() == focused_container.id() {
+          peek_raises.push(window.id());
+        }
+      } else if !(is_open && is_floating) {
+        // A floating window its peek can't draw opens at once, as before.
         let monitor_rect =
           window.monitor().context("No monitor.")?.to_rect()?;
         let native_ref = window.native();
@@ -1662,7 +1683,8 @@ fn redraw_containers(
         // A window moving or entering on its peek whose tile changed,
         // e.g. as another window opened or the same swap was pressed
         // again, heads for the new one in step with its neighbours: on
-        // their timing, from the instant this pass evaluates them at.
+        // their timing, from the instant this pass evaluates them at. A
+        // floating one jumps there (see `follow_duration`).
         if wm_platform::isolation::current().peeks
           && state.animation_manager.peeks.follows_tile(&window.id())
         {
@@ -1677,7 +1699,11 @@ fn redraw_containers(
           state.animation_manager.peeks.retarget_tile(
             &window.id(),
             target_rect.clone(),
-            duration_ms,
+            crate::animation::peek_view::follow_duration(
+              is_floating,
+              is_state_change,
+              duration_ms,
+            ),
             easing,
             now,
           );
@@ -1993,7 +2019,7 @@ fn redraw_containers(
   }
   // Only now its window is cloaked: raised while that still showed, a
   // peek's opaque backdrop copy would have hidden it.
-  for id in &peek_moves {
+  for id in peek_moves.iter().chain(&peek_raises) {
     state.animation_manager.peeks.raise_moving(id);
   }
 
