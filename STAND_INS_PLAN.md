@@ -180,7 +180,8 @@ Owner's answers, 2026-11-11:
 - [ ] 6b. Floating windows open on peeks (built, not checked live)
 - [ ] 7. The frame's place in the tick: build behind `peeksfirst`,
   measured later (built, not checked live or measured)
-- [ ] 7b. Peeks by default, `window_close` on by default
+- [ ] 7b. Peeks by default, `window_close` on by default (built, not
+  checked live)
 - [ ] 8. Resize: decide
 - [ ] 9. Remove what is no longer reached
 
@@ -922,6 +923,12 @@ waiting for the live checks. Two commits:
    exposes (a refused close re-opens the window); note it in `TODO.md`.
 
 Nothing is deleted: task 9 still waits for seen-working code.
+
+As built: `Isolation::default()` has `peeks: true`; `nopeeks` clears it.
+Code still reads `isolation::current().peeks`, so nothing else moved.
+`peeksfirst` is untouched and off. Every task above says "behind the
+switch": read that as "unless `nopeeks`" from here on. No live check of
+tasks 3 to 7 had been run when the default changed.
 
 ### Task 8: resize, a decision
 

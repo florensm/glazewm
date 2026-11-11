@@ -644,17 +644,28 @@ in the log says it is on):
   with one of them is drawn by that copy.
 - `live`: copy no backdrop, so windows with one move in surrogates and
   peeks that move with them, as before `b33c0ef8`.
-- `peeks`: draw open, close, minimize, restore and moves with pinned
-  peeks instead of `ResizeSession`, for the kinds already moved over.
-  So far: opens, floating ones too (`STAND_INS_PLAN.md` 3a, 3b, 6b),
-  closes and minimizes
-  (task 4), restores of tiled windows and columns (task 5), and moves
-  that keep a tiled window's or column's size (task 6).
+- `nopeeks`: draw open, close, minimize, restore and moves with
+  `ResizeSession` again, as before `STAND_INS_PLAN.md` task 7b made
+  pinned peeks the default. This is how to compare the two, and the
+  fall-back if the new drawing misbehaves. On peeks by default: opens,
+  floating ones too (3a, 3b, 6b), closes and minimizes (task 4),
+  restores of tiled windows and columns (task 5), and moves that keep a
+  tiled window's or column's size (task 6). With `nopeeks` floating
+  windows open without an animation, as they used to. `peeks` is still
+  accepted and changes nothing.
+
+  Entries 42 to 48 above were written before the default changed: where
+  one says "switch on" or `GLAZEWM_ISOLATE=peeks`, run without the
+  variable; where it says "switch off", set `nopeeks`. None of them has
+  been run yet, so the default is unseen code.
+- `window_close` is enabled by default since task 7b. A close the app
+  refuses (a "Save changes?" prompt drawn inside the window) brings the
+  window back after up to two seconds (`ANIMATION_REVIEW.md` 16).
 - `peeksfirst`: on an animation tick with peeks to draw, draw the
   peeks' frame first, then work off queued events, then the rest of the
   tick (`STAND_INS_PLAN.md` task 7). Off by default, and independent of
-  `peeks`: scrolling columns move on peeks either way. Compare
-  `peeks,peeksfirst` against `peeks`.
+  `nopeeks`: scrolling columns move on peeks either way. Compare
+  `peeksfirst` against no variable.
 
 Set it for one run, e.g. from PowerShell in the repo:
 

@@ -44,7 +44,7 @@ the gap by `window_resize`, or by the scroll.
 | 13 | See-through windows are handed back without an alpha swap | proposed (`STAND_INS_PLAN.md` step 3) |
 | 14 | A close during the window's own animation jumps | proposed |
 | 15 | Curves: restore plays minimize's ease-in forwards | fixed `9699b12` |
-| 16 | `window_close` on by default | not yet |
+| 16 | `window_close` on by default | on, at the owner's word (`STAND_INS_PLAN.md` 7b) |
 | 17-21 | Smaller items | proposed |
 | 22 | A fading close kept its border and backdrop to the end | fixed `15deb4d` |
 | 23 | A close beside neighbours is covered by them | by design; config |
