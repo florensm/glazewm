@@ -601,6 +601,32 @@ to see it; check each once more at 150 ms.
     open at once, as before. A floating window that opens on another
     monitor's workspace than the one it is on screen at is cut by its
     workspace's monitor: look for that with two monitors.
+48. **The peeks' frame before the catch-up** (`STAND_INS_PLAN.md` task
+    7, a scheduling change). On the fast monitor, run 42's checks (an
+    open beside three tiled windows, and a second opened mid-way) and
+    46's (a swap, the same swap pressed twice, a move key held down),
+    plus a scroll on the scrolling workspace, once with
+    `GLAZEWM_ISOLATE=peeks` and once with `peeks,peeksfirst`, each with
+    keys held so the event queue is busy (e.g. hold a focus key while
+    another window opens). With `peeksfirst` nothing may look worse:
+    - borders and backdrops never a frame apart from their windows, and
+      fewer such frames than with `peeks` alone under a busy queue;
+    - keys and IPC commands still answered during an animation, no
+      later than with `peeks` alone (a peek opened or moved by a key
+      during an animation may start a frame later: look for that);
+    - nothing shown twice or not at all at a hand-back, nothing left
+      cloaked or on screen afterwards;
+    - a stack moving on the scrolling workspace: its tab bar keeps up
+      with its peek (it is moved after the catch-up, not with the peeks).
+
+    Desktop only: keep a `GLAZEWM_PERF=1` `perf.log` of each run. Read
+    `peek_frame` (time from the timer's wake to the peeks' frame
+    committed, frames with peeks only): `total / calls` is the mean,
+    `worst` the spread's top, against the monitor's frame budget in the
+    header; the plan asks whether it exceeds about a quarter of a frame
+    or varies by more. With `peeksfirst`, the catch-up's own stages
+    (`platform_sync` and below) count in the frame but not in `tick`;
+    compare `tick` between the two runs, not `platform_sync`.
 
 If bars or flicker show, isolate them with `GLAZEWM_ISOLATE` (below), one
 restart per flag: `noring`, `nobackdrop`, then `live`. With a long
@@ -624,6 +650,11 @@ in the log says it is on):
   closes and minimizes
   (task 4), restores of tiled windows and columns (task 5), and moves
   that keep a tiled window's or column's size (task 6).
+- `peeksfirst`: on an animation tick with peeks to draw, draw the
+  peeks' frame first, then work off queued events, then the rest of the
+  tick (`STAND_INS_PLAN.md` task 7). Off by default, and independent of
+  `peeks`: scrolling columns move on peeks either way. Compare
+  `peeks,peeksfirst` against `peeks`.
 
 Set it for one run, e.g. from PowerShell in the repo:
 

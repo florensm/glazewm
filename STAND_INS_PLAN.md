@@ -179,7 +179,7 @@ Owner's answers, 2026-11-11:
 - [ ] 6. Moves on peeks (built, not checked live)
 - [ ] 6b. Floating windows open on peeks (built, not checked live)
 - [ ] 7. The frame's place in the tick: build behind `peeksfirst`,
-  measured later
+  measured later (built, not checked live or measured)
 - [ ] 7b. Peeks by default, `window_close` on by default
 - [ ] 8. Resize: decide
 - [ ] 9. Remove what is no longer reached
@@ -872,6 +872,40 @@ the timer thread.
 
 Live check: 3a's and task 6's checks with `peeks,peeksfirst` against
 `peeks`, on the fast monitor, with keys held so the queue is busy.
+
+As built (step 1's stage and step 2 together, on the owner's go-ahead;
+no numbers yet), for task 7b:
+
+- `Isolation::peeks_first`, word `peeksfirst`, off by default. 7b must
+  leave it so: `nopeeks` turns `peeks` off and nothing else.
+- A frame with it on and `peeks.is_active()` at the top of the main
+  loop: the loop skips its catch-up; the tick's branch drains stale
+  ticks, then `AnimationManager::draw_peeks_first` (last frame time,
+  `perf::begin_frame`, `begin_frame_times`: one `begin_redraw_pass`,
+  `frame_now` and `clock_origin`; `PeekView::tick`; `finish_leaving` of
+  what left; `track_overlays` and its batch commit), then
+  `catch_up_before_frame` as before, then `finish_frame` (the rest of the
+  old `update_internal`), which takes the pass up again at the same
+  instants (`resume_pass`), starts animation clocks at the same
+  `clock_origin`, queues what landed and does not tick the peeks again.
+  With it off, `update_internal` is `finish_frame(None)`: the same steps
+  in the same order as before.
+- Carried across the catch-up: the frame's instants and `Landed` minus
+  `left` (shown, hidden, released ids), queued for redraw by
+  `queue_landed` after it, each looked up again with `window_by_id`, so
+  a window closed or unmanaged meanwhile is skipped. A landed window an
+  event's sync redrew already is handed back there; the later redraw
+  finds nothing to do. Peeks created during the catch-up get their first
+  tick next frame: ticked now, `note_composited` would claim a
+  composition that hadn't happened.
+- `perf::Stage::PeekFrame` (`peek_frame`), on both orders, frames with
+  peeks only: from the timer thread's wake (`FrameClock::last_wake`, if
+  since the last frame began, else now) to the peeks' commit
+  (`perf::scope_since`). Inert without `GLAZEWM_PERF`. With
+  `peeksfirst`, the catch-up runs inside the perf frame: its stages
+  count there, outside `tick`.
+- Not moved: tab bars of moving stacks (`sync_tab_bars`) still go in the
+  rest, after the catch-up.
 
 ### Task 7b: peeks by default
 
