@@ -2350,7 +2350,7 @@ impl AnimationManager {
   /// apart: measured 11ms between a shrinking window and the growing
   /// neighbour started after it, which the steep start of the easing
   /// curve turned into a ~190px hole between them on the first frame.
-  fn frame_now(&mut self) -> Instant {
+  pub(crate) fn frame_now(&mut self) -> Instant {
     if let Some(now) = self.pass_now {
       return now;
     }

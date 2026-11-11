@@ -1212,6 +1212,11 @@ fn redraw_containers(
   let mut cloak_overlay_batch = SurrogateBatch::new();
   let mut taskbar_updates = Vec::new();
 
+  // Windows put on peeks to move this pass (`peek_view::move_on_peek`),
+  // and whether any of them is taken over from at the shared flush.
+  let mut peek_moves = Vec::new();
+  let mut peeks_take_over = false;
+
   let cycle_has_resize = windows_to_update.iter().any(|window| {
     let target_rect = window.to_rect().and_then(|rect| {
       window
@@ -1599,6 +1604,28 @@ fn redraw_containers(
       let native_ref = window.native();
       if is_frozen_by_ws_animation {
         (AnimationPositionResult::Frozen, None)
+      } else if wm_platform::isolation::current().peeks
+        && !is_column
+        && !is_state_change
+        && window.state() == WindowState::Tiling
+        && previous_display_state == DisplayState::Shown
+        && previous_target.as_ref().is_some_and(|from| {
+          crate::animation::peek_view::move_on_peek(
+            state,
+            window,
+            from,
+            &target_rect,
+            cycle_has_resize,
+            config,
+            window.id() == focused_container.id(),
+          )
+        })
+      {
+        // Behind the switch, a tile that only moves does so on a pinned
+        // peek (`STAND_INS_PLAN.md` task 6), frozen behind it from now
+        // on as an entering one is.
+        peek_moves.push(window.id());
+        (AnimationPositionResult::Frozen, None)
       } else {
         state.animation_manager.start_animation_if_needed(
           window.id(),
@@ -1632,11 +1659,12 @@ fn redraw_containers(
       AnimationPositionResult::Frozen => {
         let _scope = perf::scope(Stage::RedrawFrozen);
 
-        // A window entering on its peek whose tile changed, e.g. as
-        // another window opened, heads for the new one in step
-        // with its neighbours.
+        // A window moving or entering on its peek whose tile changed,
+        // e.g. as another window opened or the same swap was pressed
+        // again, heads for the new one in step with its neighbours: on
+        // their timing, from the instant this pass evaluates them at.
         if wm_platform::isolation::current().peeks
-          && state.animation_manager.peeks.is_entering(&window.id())
+          && state.animation_manager.peeks.follows_tile(&window.id())
         {
           let (duration_ms, easing) =
             crate::animation::manager::movement_timing(
@@ -1645,8 +1673,8 @@ fn redraw_containers(
               cycle_has_resize,
               config,
             );
-          let now = state.animation_manager.frame_time();
-          state.animation_manager.peeks.retarget_entering(
+          let now = state.animation_manager.frame_now();
+          state.animation_manager.peeks.retarget_tile(
             &window.id(),
             target_rect.clone(),
             duration_ms,
@@ -1723,6 +1751,7 @@ fn redraw_containers(
             );
           }
           state.animation_manager.reveal_session(&window.id());
+          peeks_take_over |= peek_moves.contains(&window.id());
 
           // Queued rather than cloaked here: the cloak has to be preceded
           // by a `DwmFlush`, and doing that inline blocks the WM thread
@@ -1951,8 +1980,22 @@ fn redraw_containers(
   drop(loop_scope);
 
   // Cloak every window that entered its first `Frozen` frame this pass,
-  // behind a single shared `DwmFlush` barrier. See `pending_cloaks`.
+  // behind a single shared `DwmFlush` barrier. See `pending_cloaks`. A
+  // peek taking over from a moved window is new, so not composited yet:
+  // the barrier is sure to run then, and its ring and backdrop are handed
+  // over around it.
+  if peeks_take_over {
+    crate::animation::peek_view::cover_moved_overlays(state, config);
+  }
   commit_pending_cloaks(state, pending_cloaks, cloak_overlay_batch);
+  if peeks_take_over {
+    crate::animation::peek_view::hand_over_moved_overlays(state, config);
+  }
+  // Only now its window is cloaked: raised while that still showed, a
+  // peek's opaque backdrop copy would have hidden it.
+  for id in &peek_moves {
+    state.animation_manager.peeks.raise_moving(id);
+  }
 
   for id in &released_covers {
     state.animation_manager.drop_companion_cover(id);

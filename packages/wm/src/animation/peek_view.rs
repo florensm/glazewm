@@ -21,7 +21,9 @@ use super::{
   transit::{transit_frame, Direction, Transit},
 };
 use crate::{
-  animation::AwayTransition,
+  animation::{
+    manager::movement_timing, AnimationManager, AwayTransition,
+  },
   commands::general::{
     focus_blend, overlay_entry, surrogate_effects_for,
     upsert_clipped_overlay, upsert_pinned_border_overlay,
@@ -245,20 +247,35 @@ fn kept_transit(
   transit.filter(|transit| is_moving && !transit.is_complete())
 }
 
-/// Whether an entry is a window entering a tiling layout, which
-/// `platform_sync` retargets: not a column, which
+/// Whether an entry is a window moving in a tiling layout, entering or
+/// not, which `platform_sync` retargets to its tile: not a column, which
 /// [`PeekView::upsert`] retargets.
-fn is_entering_tile(
-  has_transit: bool,
-  is_column: bool,
-  is_moving: bool,
+fn follows_tile(is_column: bool, is_moving: bool) -> bool {
+  !is_column && is_moving
+}
+
+/// Whether a window laid out at `target` after `from` only moves, and by
+/// more than `threshold_px` as `should_start_new_animation` measures it:
+/// below that, the old path doesn't animate it either.
+pub(super) fn is_pure_move(
+  from: &Rect,
+  target: &Rect,
+  threshold_px: u32,
 ) -> bool {
-  has_transit && !is_column && is_moving
+  let threshold = i32::try_from(threshold_px).unwrap_or(i32::MAX);
+  let travel =
+    (from.x() - target.x()).abs() + (from.y() - target.y()).abs();
+
+  from.width() == target.width()
+    && from.height() == target.height()
+    && travel > threshold
 }
 
 /// `motion` headed for `target` instead, at the speed it has at `now`
-/// (see `WindowAnimationState::retargeted`). One already drawn carries on
-/// from where it was at `now`.
+/// (see `WindowAnimationState::retargeted`), so a retarget mid-way glides
+/// on rather than restarting. One already drawn carries on from where it
+/// was at `now`: sampled at the wall clock and started on the next tick,
+/// it repeated or skipped up to a frame of travel at every key press.
 fn retargeted_motion(
   motion: &WindowAnimationState,
   target: Rect,
@@ -738,20 +755,13 @@ impl PeekView {
     // A column already moving carries on at its speed toward the new
     // target, so quick presses in a row glide rather than restart.
     let motion = match in_flight {
-      Some(entry) if is_moving => {
-        let motion = entry.motion.retargeted(
-          target,
-          scroll_config.duration_ms,
-          scroll_config.easing.clone(),
-          now,
-        );
-        // Sampled at the wall clock and started on the next tick, it
-        // repeated or skipped up to a frame of travel at every key press.
-        if entry.motion.is_running() {
-          motion.start_clock(now);
-        }
-        motion
-      }
+      Some(entry) if is_moving => retargeted_motion(
+        &entry.motion,
+        target,
+        scroll_config.duration_ms,
+        scroll_config.easing.clone(),
+        now,
+      ),
       _ => WindowAnimationState::new_movement(
         from.clone(),
         target,
@@ -879,6 +889,103 @@ impl PeekView {
     !is_live(styles) && !self.draws_window(&window.id())
   }
 
+  /// Draws `window`, a tile moving from `from` to `target` at the same
+  /// size, on a pinned peek over `duration_ms` and `easing`, until it is
+  /// handed back. A peek still handing it back after an earlier move or
+  /// entry takes it on again from where it landed, as
+  /// [`upsert`](Self::upsert) does for a column.
+  ///
+  /// Returns `false`, creating nothing, for a window already drawn
+  /// otherwise (moving, leaving, or as a column), one whose peek would be
+  /// `Live`, or one DWM can't draw.
+  #[allow(clippy::too_many_arguments)]
+  pub(super) fn move_tile(
+    &mut self,
+    window: &WindowContainer,
+    from: &Rect,
+    target: Rect,
+    clip: &Rect,
+    duration_ms: u32,
+    easing: EasingFunction,
+    config: &UserConfig,
+    is_focused: bool,
+    now: Instant,
+    batch: &mut SurrogateBatch,
+  ) -> bool {
+    let id = window.id();
+    let styles = peek_styles(window, config);
+    let landing = match self.entries.get(&id) {
+      None => false,
+      Some(entry)
+        if !entry.is_column
+          && !entry.peek.is_live()
+          && matches!(
+            entry.role,
+            Role::HandingBack | Role::Releasing { .. }
+          ) =>
+      {
+        true
+      }
+      Some(_) => return false,
+    };
+    if is_live(&styles) {
+      return false;
+    }
+
+    let (opacity, corner_style, _) =
+      surrogate_effects_for(window.effect_set(is_focused), config);
+    let motion = WindowAnimationState::new_movement(
+      from.clone(),
+      target,
+      duration_ms,
+      easing,
+    );
+    let role = Role::Moving { ends_shown: true };
+
+    if landing {
+      // A releasing peek's real window is back on screen, so it has to be
+      // taken over from and cloaked again.
+      let covers_shown_window = self.is_releasing(&id);
+      let Some(entry) = self.entries.get_mut(&id) else {
+        return false;
+      };
+      entry.motion = motion;
+      entry.clip = clip.clone();
+      entry.opacity = opacity;
+      entry.role = role;
+      entry.transit = None;
+      entry.peek.carry_styles(&styles);
+      if covers_shown_window {
+        entry.composited = false;
+      }
+      entry.draw(from, now, batch);
+      return true;
+    }
+
+    let Some((mut entry, _)) = new_entry(
+      window,
+      motion,
+      clip,
+      opacity,
+      corner_style,
+      &styles,
+      role,
+    ) else {
+      return false;
+    };
+    // Nothing to draw it with: the old path snaps it into place.
+    if !entry.peek.has_thumbnail() {
+      tracing::debug!("No peek of {window} to move on.");
+      return false;
+    }
+
+    entry.is_column = false;
+    entry.draw(from, now, batch);
+    self.entries.insert(id, entry);
+
+    true
+  }
+
   /// Turns `window_id`'s peek, taking it off the screen by a minimize,
   /// round where it is at `now`: it comes back in by `params`, held
   /// where it is until retargeted, and is handed back as an entering one
@@ -918,12 +1025,13 @@ impl PeekView {
     true
   }
 
-  /// Puts `window_id`'s peek on top, as the old path's stand-ins of an
-  /// open or restore are (`place_at_top`): a restored window was at the
-  /// bottom of the z-order, under the windows it comes back over, and its
-  /// peek went up just below it. Not one leaving, which stays below its
-  /// neighbours (task 4).
-  pub(super) fn raise_restored(&self, window_id: &Uuid) {
+  /// Puts `window_id`'s moving peek on top, as the old path's stand-ins
+  /// of a move, open or restore are (`place_at_top`). A peek goes up just
+  /// below its real window: a restored one was at the bottom of the
+  /// z-order, under the windows it comes back over, and a moved one may be
+  /// under windows or stand-ins it passes. Not one leaving, which stays
+  /// below its neighbours (task 4).
+  pub fn raise_moving(&self, window_id: &Uuid) {
     if let Some(entry) = self
       .entries
       .get(window_id)
@@ -933,22 +1041,22 @@ impl PeekView {
     }
   }
 
-  /// Whether `window_id` is entering a tiling layout on its peek (see
-  /// [`enter`](Self::enter)).
-  pub fn is_entering(&self, window_id: &Uuid) -> bool {
+  /// Whether `window_id` moves in a tiling layout on its peek, entering
+  /// (see [`enter`](Self::enter)) or not (see
+  /// [`move_tile`](Self::move_tile)).
+  pub fn follows_tile(&self, window_id: &Uuid) -> bool {
     self.entries.get(window_id).is_some_and(|entry| {
-      is_entering_tile(
-        entry.transit.is_some(),
+      follows_tile(
         entry.is_column,
         matches!(entry.role, Role::Moving { .. }),
       )
     })
   }
 
-  /// Heads `window_id`'s peek, entering a tiling layout, for its new tile
-  /// at `target`, at the speed it has at `now`, over `duration_ms` and
-  /// `easing`. Its transit carries on untouched.
-  pub fn retarget_entering(
+  /// Heads `window_id`'s peek, moving in a tiling layout, for its new
+  /// tile at `target`, at the speed it has at `now`, over `duration_ms`
+  /// and `easing`. A transit it enters by carries on untouched.
+  pub fn retarget_tile(
     &mut self,
     window_id: &Uuid,
     target: Rect,
@@ -956,7 +1064,7 @@ impl PeekView {
     easing: EasingFunction,
     now: Instant,
   ) {
-    if !self.is_entering(window_id) {
+    if !self.follows_tile(window_id) {
       return;
     }
 
@@ -1190,6 +1298,99 @@ pub fn enter_on_peek(
   entered
 }
 
+/// Has `window`, a tile shown at `from` and laid out at `target`, move
+/// there on a pinned peek if it only moves (see [`is_pure_move`]), on
+/// `window_move`'s timing or, when `cycle_has_resize`, `window_resize`'s,
+/// as the old path would (`movement_timing`). Returns whether it does.
+///
+/// Its window is still shown: the redraw that freezes it queues the
+/// take-over into the pass's shared flush (`commit_pending_cloaks`), with
+/// [`cover_moved_overlays`] before it and [`hand_over_moved_overlays`]
+/// after.
+///
+/// Not a window another stand-in draws, which keeps it, nor one moving
+/// onto another monitor, which the peek would cut at this one's edge.
+pub fn move_on_peek(
+  state: &mut WmState,
+  window: &WindowContainer,
+  from: &Rect,
+  target: &Rect,
+  cycle_has_resize: bool,
+  config: &UserConfig,
+  is_focused: bool,
+) -> bool {
+  let threshold_px = config.value.animations.window_move.threshold_px;
+  if !is_pure_move(from, target, threshold_px)
+    || has_other_stand_in(&state.animation_manager, &window.id())
+  {
+    return false;
+  }
+
+  let Some((clip, handle)) = window.monitor().and_then(|monitor| {
+    let clip = monitor.to_rect().ok()?;
+    Some((clip, monitor.native_properties().handle))
+  }) else {
+    return false;
+  };
+  if !clip.contains_point(&from.center_point()) {
+    return false;
+  }
+
+  let (duration_ms, easing) =
+    movement_timing(false, false, cycle_has_resize, config);
+  let now = state.animation_manager.frame_time();
+  let mut batch = SurrogateBatch::new();
+  let moved = state.animation_manager.peeks.move_tile(
+    window,
+    from,
+    target.clone(),
+    &clip,
+    duration_ms,
+    easing,
+    config,
+    is_focused,
+    now,
+    &mut batch,
+  );
+  batch.commit();
+
+  if moved {
+    state.animation_manager.ensure_waiter_for(handle);
+    state.animation_manager.ensure_timer_running();
+  }
+
+  moved
+}
+
+/// Whether a stand-in other than a peek draws `window_id` or hands it
+/// back: its own animation, a move's surrogate until it has faded out, or
+/// a workspace switch's. A move then stays with it.
+pub(super) fn has_other_stand_in(
+  manager: &AnimationManager,
+  window_id: &Uuid,
+) -> bool {
+  manager.get_animation(window_id).is_some()
+    || manager.owns_window_position(window_id)
+    || (manager.has_active_surrogate(window_id)
+      && !manager.peeks.draws_window(window_id))
+}
+
+/// Covers the rings and backdrops of windows whose peeks [`move_on_peek`]
+/// put up this pass with their copies, for the pass's shared flush to
+/// composite, as `sync_scroll_view` does before its own flush.
+pub fn cover_moved_overlays(state: &mut WmState, config: &UserConfig) {
+  track_overlays(state, config, SurrogateBatch::new());
+}
+
+/// Hides the rings and backdrops [`cover_moved_overlays`] covered, now
+/// that a flush has composited their copies: hidden on the first tick of
+/// the move instead, a frame could show them still at rest beside their
+/// moved copies.
+pub fn hand_over_moved_overlays(state: &mut WmState, config: &UserConfig) {
+  state.animation_manager.peeks.note_composited();
+  track_overlays(state, config, SurrogateBatch::new());
+}
+
 /// Has `window`, coming back from minimized to `target`, enter on a
 /// pinned peek by `params`, as [`enter_on_peek`] has a new one. A minimize
 /// still playing on its peek turns round where it is instead. Returns
@@ -1214,7 +1415,7 @@ pub fn restore_on_peek(
     .turn_round(&id, params, false, now)
   {
     restore_cloaked(&window.native(), target);
-    state.animation_manager.peeks.raise_restored(&id);
+    state.animation_manager.peeks.raise_moving(&id);
     state.animation_manager.ensure_timer_running();
     return true;
   }
@@ -1231,7 +1432,7 @@ pub fn restore_on_peek(
   restore_cloaked(&window.native(), target);
   let entered =
     enter_on_peek(state, window, target, params, config, is_focused);
-  state.animation_manager.peeks.raise_restored(&id);
+  state.animation_manager.peeks.raise_moving(&id);
   entered
 }
 
@@ -1806,8 +2007,8 @@ mod tests {
   use wm_platform::Rect;
 
   use super::{
-    has_landed, has_left, is_departed, is_entering_tile, is_stray,
-    kept_transit, leaves_as, leaving_transit, retargeted_motion,
+    follows_tile, has_landed, has_left, is_departed, is_pure_move,
+    is_stray, kept_transit, leaves_as, leaving_transit, retargeted_motion,
     returning_transit, take_left, Role,
   };
   use crate::animation::{
@@ -1916,14 +2117,97 @@ mod tests {
     assert!(kept_transit(None, true).is_none());
   }
 
-  /// A column entering is retargeted by the scroll, never as a window
-  /// entering a tiling layout.
+  /// A moving column is retargeted by the scroll, never as a window
+  /// moving in a tiling layout; one at rest or landing by neither.
   #[test]
-  fn columns_are_not_entering_tiles() {
-    assert!(is_entering_tile(true, false, true));
-    assert!(!is_entering_tile(true, true, true));
-    assert!(!is_entering_tile(false, false, true));
-    assert!(!is_entering_tile(true, false, false));
+  fn columns_do_not_follow_tiles() {
+    assert!(follows_tile(false, true));
+    assert!(!follows_tile(true, true));
+    assert!(!follows_tile(false, false));
+  }
+
+  /// Only a move that keeps the window's size, past the threshold, goes
+  /// on a peek alone; a resize, or a move the old path wouldn't animate,
+  /// doesn't.
+  #[test]
+  fn pure_moves_keep_their_size_past_the_threshold() {
+    let moved = |dx, dy| Rect::from_xy(100 + dx, 50 + dy, 800, 600);
+    assert!(is_pure_move(&tile(), &moved(800, 0), 10));
+    assert!(is_pure_move(&tile(), &moved(-6, 5), 10));
+    assert!(!is_pure_move(&tile(), &moved(6, 4), 10));
+    assert!(!is_pure_move(&tile(), &tile(), 0));
+    assert!(!is_pure_move(
+      &tile(),
+      &Rect::from_xy(900, 50, 400, 600),
+      10
+    ));
+    assert!(!is_pure_move(&tile(), &Rect::from_xy(100, 50, 800, 601), 0));
+  }
+
+  fn spring() -> EasingFunction {
+    EasingFunction::Spring(wm_common::SpringParams::default())
+  }
+
+  /// Pressed again mid-move (the same swap, a held key), a tile on its
+  /// `window_move` timing and a column on the scroll's carry on from
+  /// where they were drawn, never from rest: a spring at the speed it
+  /// had, a curve with its start steepened toward it (which its second
+  /// control point can make a little faster still).
+  #[test]
+  fn a_retargeted_move_keeps_its_speed() {
+    let t0 = Instant::now();
+    let at = |ms| t0 + Duration::from_millis(ms);
+    let moved = |dx| Rect::from_xy(100 + dx, 50, 800, 600);
+    #[allow(clippy::cast_precision_loss)]
+    let speed = |motion: &WindowAnimationState, from, to| {
+      let (from, to) = (at(from), at(to));
+      (motion.current_state_at(to).0.x()
+        - motion.current_state_at(from).0.x()) as f32
+        / (to - from).as_secs_f32()
+    };
+    let curve = EasingFunction::CubicBezier(0.2, 0.0, 0.0, 1.0);
+
+    for (duration_ms, easing) in [
+      (200, curve.clone()),
+      (300, curve),
+      (200, spring()),
+      (300, spring()),
+    ] {
+      let motion = WindowAnimationState::new_movement(
+        moved(0),
+        moved(800),
+        duration_ms,
+        easing.clone(),
+      );
+      motion.start_clock(t0);
+      let drawn = motion.current_state_at(at(60)).0;
+      let before = speed(&motion, 58, 60);
+
+      let retargeted = retargeted_motion(
+        &motion,
+        moved(1_600),
+        duration_ms,
+        easing.clone(),
+        at(60),
+      );
+      assert_eq!(retargeted.current_state_at(at(60)).0, drawn);
+      let after = speed(&retargeted, 60, 62);
+      if matches!(easing, EasingFunction::Spring(_)) {
+        assert!(
+          (after - before).abs() < before * 0.25,
+          "{easing:?} over {duration_ms} ms: {before} then {after}"
+        );
+      }
+
+      let restarted = WindowAnimationState::new_movement(
+        drawn,
+        moved(1_600),
+        duration_ms,
+        easing,
+      );
+      restarted.start_clock(at(60));
+      assert!(speed(&restarted, 60, 62) < after);
+    }
   }
 
   /// Only an entering window that is unmanaged or no longer shown is a

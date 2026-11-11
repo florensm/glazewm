@@ -35,7 +35,10 @@ use wm_common::{
 use wm_platform::{Rect, SurrogateBatch};
 
 use super::{
-  peek_view::{restore_cloaked, track_overlays, PeekView, Role},
+  peek_view::{
+    has_other_stand_in, is_pure_move, restore_cloaked, track_overlays,
+    PeekView, Role,
+  },
   transit::Transit,
 };
 use crate::{
@@ -86,6 +89,19 @@ pub fn sync_scroll_view(
     HashSet::new()
   };
 
+  // Behind the switch, a column that only moves does so on its peek, as
+  // the strip does (`STAND_INS_PLAN.md` task 6), unless another stand-in
+  // draws it.
+  let pure_moves = column_pure_moves(config, animates);
+  let other_stand_ins = match pure_moves {
+    Some(_) => windows
+      .iter()
+      .map(|(window, _)| window.id())
+      .filter(|id| has_other_stand_in(&state.animation_manager, id))
+      .collect(),
+    None => HashSet::new(),
+  };
+
   let now = state.animation_manager.frame_time();
   let view = &mut state.animation_manager.peeks;
 
@@ -124,7 +140,9 @@ pub fn sync_scroll_view(
 
     // The strip moves as one when any column crosses the monitor edge,
     // is already drawn by a peek, or opens; moves that stay on screen are
-    // left to the regular per-window animations.
+    // left to the regular per-window animations. Behind the switch, only
+    // resizes are, so a peek drawing one column doesn't take a resized
+    // neighbour off its own (see `moves_on_peek`).
     let crosses_edge = |rect: &Rect| !clip.contains_rect(rect);
     let strip_moves = scroll_config.enabled
       && animates
@@ -132,7 +150,8 @@ pub fn sync_scroll_view(
         from != target
           && (crosses_edge(from)
             || crosses_edge(target)
-            || view.entries.contains_key(&window.id())
+            || (pure_moves.is_none()
+              && view.entries.contains_key(&window.id()))
             || opening_ids.contains(&window.id()))
       });
 
@@ -148,7 +167,14 @@ pub fn sync_scroll_view(
         continue;
       }
 
-      let role = if strip_moves && from != target {
+      let role = if moves_on_peek(
+        &from,
+        &target,
+        strip_moves,
+        pure_moves,
+        view.entries.contains_key(&window.id()),
+        other_stand_ins.contains(&window.id()),
+      ) {
         Role::Moving { ends_shown }
       } else if ends_shown {
         // At rest on screen: the real window shows it, once a peek still
@@ -205,7 +231,7 @@ pub fn sync_scroll_view(
         &mut batch,
       );
       if is_moving && is_restored {
-        view.raise_restored(&window.id());
+        view.raise_moving(&window.id());
       }
 
       if is_moving {
@@ -238,6 +264,39 @@ fn column_opening(config: &UserConfig) -> Option<WindowTransitionParams> {
   let open_config = &config.value.animations.window_open;
   (wm_platform::isolation::current().peeks && open_config.enabled)
     .then(|| WindowTransitionParams::from_open(open_config))
+}
+
+/// The threshold a column's move has to pass to go on its peek alone,
+/// behind the switch: the scroll's, as for its per-window animation (see
+/// [`moves_on_peek`]).
+fn column_pure_moves(config: &UserConfig, animates: bool) -> Option<u32> {
+  let scroll_config = &config.value.animations.scroll;
+  (wm_platform::isolation::current().peeks
+    && scroll_config.enabled
+    && animates)
+    .then_some(scroll_config.threshold_px)
+}
+
+/// Whether a column moving from `from` to `target` is drawn moving by its
+/// peek: as the strip moves as one, or, given `pure_moves`' threshold
+/// (see [`column_pure_moves`]), as a peek draws it already, or as it only
+/// moves (see [`is_pure_move`]) with no other stand-in drawing it. A
+/// column resized on screen keeps the per-window path either way.
+fn moves_on_peek(
+  from: &Rect,
+  target: &Rect,
+  strip_moves: bool,
+  pure_moves: Option<u32>,
+  is_drawn: bool,
+  has_other_stand_in: bool,
+) -> bool {
+  from != target
+    && (strip_moves
+      || pure_moves.is_some_and(|threshold_px| {
+        is_drawn
+          || (!has_other_stand_in
+            && is_pure_move(from, target, threshold_px))
+      }))
 }
 
 /// The transition a column coming back from minimized enters by, as a new
@@ -285,7 +344,7 @@ fn turn_round_restored(
       if let Ok(target) = target_rect(window) {
         restore_cloaked(&window.native(), &target);
       }
-      view.raise_restored(&window.id());
+      view.raise_moving(&window.id());
     }
   }
 }
@@ -478,4 +537,104 @@ fn target_rect(window: &WindowContainer) -> anyhow::Result<Rect> {
       .to_rect()?
       .apply_delta(&window.total_border_delta()?, None),
   )
+}
+
+#[cfg(test)]
+mod tests {
+  use wm_platform::Rect;
+
+  use super::moves_on_peek;
+
+  fn column() -> Rect {
+    Rect::from_xy(100, 50, 800, 600)
+  }
+
+  /// Without the switch, a column moves on its peek only with the strip,
+  /// as before.
+  #[test]
+  fn without_the_switch_only_the_strip_moves_columns() {
+    let moved = Rect::from_xy(900, 50, 800, 600);
+    let resized = Rect::from_xy(100, 50, 400, 600);
+    for to in [&moved, &resized] {
+      assert!(moves_on_peek(&column(), to, true, None, false, false));
+      assert!(!moves_on_peek(&column(), to, false, None, true, false));
+    }
+    assert!(!moves_on_peek(
+      &column(),
+      &column(),
+      true,
+      None,
+      true,
+      false
+    ));
+  }
+
+  /// Behind the switch, a column that only moves goes on its peek alone,
+  /// and one a peek draws stays on it; a resized one keeps the per-window
+  /// path, as does a move below the threshold or one another stand-in
+  /// draws.
+  #[test]
+  fn behind_the_switch_pure_column_moves_go_on_peeks() {
+    let threshold = Some(10);
+    let moved = Rect::from_xy(900, 50, 800, 600);
+    let nudged = Rect::from_xy(105, 50, 800, 600);
+    let resized = Rect::from_xy(100, 50, 400, 600);
+
+    assert!(moves_on_peek(
+      &column(),
+      &moved,
+      false,
+      threshold,
+      false,
+      false
+    ));
+    assert!(!moves_on_peek(
+      &column(),
+      &moved,
+      false,
+      threshold,
+      false,
+      true
+    ));
+    assert!(!moves_on_peek(
+      &column(),
+      &nudged,
+      false,
+      threshold,
+      false,
+      false
+    ));
+    assert!(!moves_on_peek(
+      &column(),
+      &resized,
+      false,
+      threshold,
+      false,
+      false
+    ));
+    assert!(moves_on_peek(
+      &column(),
+      &resized,
+      false,
+      threshold,
+      true,
+      false
+    ));
+    assert!(moves_on_peek(
+      &column(),
+      &resized,
+      true,
+      threshold,
+      false,
+      true
+    ));
+    assert!(!moves_on_peek(
+      &column(),
+      &column(),
+      true,
+      threshold,
+      true,
+      false
+    ));
+  }
 }
