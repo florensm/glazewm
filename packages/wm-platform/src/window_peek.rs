@@ -468,6 +468,59 @@ impl WindowPeek {
     self.visible_rect = Some(visible);
   }
 
+  /// Shows the window as it is, its rect `actual`, scaled into `frame` (of
+  /// any size) cut at `clip`, its ring and backdrop copies with it.
+  /// Samples the window at its own size, or at most `limit`'s on either
+  /// axis while it may still be resizing there: a source larger than the
+  /// window is drawn as a transparent hole.
+  ///
+  /// Pinned peeks only: a live one is placed at `frame` unscaled (see
+  /// [`place`](Self::place)).
+  pub fn place_stretched(
+    &mut self,
+    actual: &Rect,
+    frame: &Rect,
+    limit: Option<&Rect>,
+    clip: &Rect,
+    opacity: u8,
+    batch: &mut SurrogateBatch,
+  ) {
+    let PeekMode::Pinned { viewport } = &mut self.mode else {
+      tracing::debug!("A live peek can't draw its window stretched.");
+      self.place(frame, clip, opacity, batch);
+      return;
+    };
+
+    repin(&mut self.surrogate, viewport, clip);
+    let origin = (viewport.left, viewport.top);
+    self.opacity = opacity;
+    self.frac = 1.0;
+
+    let ScaledRects { drawn, shown } = stretched_rects(
+      actual,
+      frame,
+      limit,
+      clip,
+      self.border_inset,
+      origin,
+    );
+    self.frame_rect = Some(drawn);
+
+    let Some((visible, (rc_src, rc_dst))) = shown else {
+      self.surrogate.set_visible(false);
+      self.visible_rect = None;
+      return;
+    };
+
+    self.surrogate.set_thumbnail_rects(rc_src, rc_dst);
+    self.surrogate.set_window_opacity(self.window_opacity());
+    self.copies.place(frame, clip, origin);
+    self.copies.cover_ring();
+    self.copies.set_backdrop_opacity(u8::MAX);
+    self.surrogate.set_visible(true);
+    self.visible_rect = Some(visible);
+  }
+
   /// Draws the window at `rect`, its frame at `frame`, cut at `clip`, into
   /// a peek pinned with its top-left at `origin`. Returns the visible part
   /// of the frame, if any.
@@ -625,6 +678,40 @@ fn scaled_rects(
   ScaledRects { drawn, shown }
 }
 
+/// Where a window at `actual`, drawn at `frame` cut at `clip`, is drawn
+/// into a peek pinned with its top-left at `origin`, sampled at its own
+/// frame's size or, with `limit`, no larger than that rect's frame on
+/// either axis: the part sampled is drawn where it falls in `frame`, the
+/// rest left out.
+fn stretched_rects(
+  actual: &Rect,
+  frame: &Rect,
+  limit: Option<&Rect>,
+  clip: &Rect,
+  border_inset: RECT,
+  origin: (i32, i32),
+) -> ScaledRects {
+  let actual_frame = to_logical(actual, &border_inset);
+  let drawn = map_rect(&actual_frame, actual, frame);
+  let size =
+    limit.map_or((actual_frame.width(), actual_frame.height()), |limit| {
+      let limit = to_logical(limit, &border_inset);
+      (
+        actual_frame.width().min(limit.width()),
+        actual_frame.height().min(limit.height()),
+      )
+    });
+  let sampled =
+    Rect::from_xy(actual_frame.x(), actual_frame.y(), size.0, size.1);
+  let part = map_rect(&sampled, actual, frame);
+  let shown = part.intersection(clip).and_then(|visible| {
+    let rects = placed_rects(&part, &visible, size, border_inset, origin)?;
+    Some((visible, rects))
+  });
+
+  ScaledRects { drawn, shown }
+}
+
 #[cfg(test)]
 mod tests {
   use super::*;
@@ -682,5 +769,77 @@ mod tests {
       (7, 0, 807, 600)
     );
     assert_eq!((dst.right - dst.left, dst.bottom - dst.top), (400, 300));
+  }
+
+  /// Unlimited, a stretched window is sampled whole, as a scaled one at
+  /// rest at its own rect is, whatever its size.
+  #[test]
+  fn stretched_samples_the_window_as_it_is() {
+    let clip = Rect::from_ltrb(0, 0, 1920, 1040);
+    let frame = Rect::from_ltrb(93, 100, 1307, 707);
+    for actual in [
+      Rect::from_ltrb(93, 100, 907, 707),
+      Rect::from_ltrb(93, 100, 1507, 707),
+    ] {
+      assert_eq!(
+        stretched_rects(&actual, &frame, None, &clip, INSET, (0, 0)),
+        scaled_rects(&actual, &frame, &clip, INSET, (0, 0))
+      );
+    }
+  }
+
+  /// Drawn at its own rect, a stretched window is drawn exactly 1:1.
+  #[test]
+  fn stretched_at_its_own_rect_is_one_to_one() {
+    let actual = Rect::from_ltrb(93, 100, 907, 707);
+    let clip = Rect::from_ltrb(0, 0, 1920, 1040);
+    let ScaledRects { drawn, shown } = stretched_rects(
+      &actual,
+      &actual,
+      Some(&actual),
+      &clip,
+      INSET,
+      (0, 0),
+    );
+    let Some((visible, (src, dst))) = shown else {
+      panic!("not shown");
+    };
+
+    assert_eq!(drawn, to_logical(&actual, &INSET));
+    assert_eq!(visible, drawn);
+    assert_eq!(
+      (src.left, src.top, src.right, src.bottom),
+      (7, 0, 807, 600)
+    );
+    assert_eq!(
+      (dst.left, dst.top, dst.right, dst.bottom),
+      (100, 100, 900, 700)
+    );
+  }
+
+  /// Limited to a smaller rect, only that much of the window is sampled,
+  /// drawn where it falls in the frame: never more than the window has.
+  #[test]
+  fn a_limited_stretch_samples_no_more_than_the_limit() {
+    let actual = Rect::from_ltrb(93, 100, 907, 707);
+    let limit = Rect::from_ltrb(0, 0, 414, 907);
+    let frame = Rect::from_ltrb(93, 100, 907, 707);
+    let clip = Rect::from_ltrb(0, 0, 1920, 1040);
+    let ScaledRects { drawn, shown } =
+      stretched_rects(&actual, &frame, Some(&limit), &clip, INSET, (0, 0));
+    let Some((visible, (src, dst))) = shown else {
+      panic!("not shown");
+    };
+
+    assert_eq!(drawn, to_logical(&actual, &INSET));
+    assert_eq!(
+      (src.left, src.top, src.right, src.bottom),
+      (7, 0, 407, 600)
+    );
+    assert_eq!(
+      (dst.left, dst.top, dst.right, dst.bottom),
+      (100, 100, 500, 700)
+    );
+    assert_eq!(visible, Rect::from_ltrb(100, 100, 500, 700));
   }
 }
