@@ -150,8 +150,23 @@ Owner's call, 2026-11-10: they cannot run live checks for now, so tasks
 3b to 6 are built one after another without waiting for 3a's gate. All
 of it stays behind the switch, and every live check still has to be run
 before a default is flipped. A flaw found later in 3a may mean rework in
-what was built on it. Tasks 7 to 9 still wait: for `perf.log`, for the
-owner's decision, and for seen-working code.
+what was built on it. Tasks 8 and 9 still wait: for the owner's decision, and for
+seen-working code.
+
+Owner's answers, 2026-11-11:
+
+- No `perf.log` can be made for now. Task 7 is built anyway, behind its
+  own word, and measured later.
+- A restore plays minimize's curve time-reversed (`ANIMATION_REVIEW.md`
+  15): task 5.
+- Floating windows get the open animation (finding 18): task 6b.
+- "Just make the new thing the default": task 7b. Read as: peeks are the
+  default for every kind built, and `window_close` is enabled by
+  default. The old paths stay in the code behind an opt-out word.
+- Stretch looked wrong because "it zooms a bit as it ends": task 8 (b).
+- A stripped laptop build is wanted once 4 to 7b are in:
+  `tryout/stand-ins`, then `test/stand-ins` cut from it (`CLAUDE.md`
+  "Cutting a test build").
 
 - [ ] 0. Baseline recordings (desktop, by hand)
 - [x] 1. Split the per-window stand-in out of the scroll view (move only)
@@ -162,7 +177,10 @@ owner's decision, and for seen-working code.
   live)
 - [ ] 5. Restore on peeks
 - [ ] 6. Moves on peeks
-- [ ] 7. The frame's place in the tick: measure, then decide
+- [ ] 6b. Floating windows open on peeks
+- [ ] 7. The frame's place in the tick: build behind `peeksfirst`,
+  measured later
+- [ ] 7b. Peeks by default, `window_close` on by default
 - [ ] 8. Resize: decide
 - [ ] 9. Remove what is no longer reached
 
@@ -661,6 +679,16 @@ differences:
   and starts again on the old path; with the switch off that stays.
 - Scrolling layout: a restored column re-enters as a new column does
   (3b).
+- Curve (owner, 2026-11-11): a restore plays `window_minimize`'s easing
+  time-reversed, so an ease-in minimize comes back as an ease-out
+  (`ANIMATION_REVIEW.md` 15). Add the reversal to `EasingFunction`
+  (`wm-common`): a cubic bezier `(x1, y1, x2, y2)` becomes
+  `(1 - x2, 1 - y2, 1 - x1, 1 - y1)`; named curves map through their
+  bezier or to their named opposite; a spring is its own reverse. Use
+  it in `WindowTransitionParams::from_minimize`'s restore use on BOTH
+  paths (this one is not behind the switch: the config's doc already
+  says "plays in reverse"). Unit-test the mapping, and that reversing
+  twice gives the curve back.
 
 Live check, in both layouts: `toggle-minimized` twice two seconds apart,
 and a taskbar restore, each `window_minimize` style; then both within
@@ -689,10 +717,26 @@ that, by giving the peek's motion the same duration and easing.
 Live check: swap two equal windows; the same swap pressed twice within
 the animation (no stop and restart in between); `TODO.md` 15 and 16.
 
+### Task 6b: floating windows open on peeks
+
+Owner, 2026-11-11: floating windows animate open like tiled ones
+(`ANIMATION_REVIEW.md` 18). Today `platform_sync` gives a new floating
+window no `entry_transition`. With peeks on, let it take the 3a path
+(`enter_on_peek`) at its floating rect; with peeks off, nothing changes
+(the old path stays without it). Check first what excludes a floating
+window from `entry_transition` and why, that the Frozen branch and the
+hand-back treat a non-tiling window as 3a's three statements say, and
+that a floating window partly off its monitor is clipped as slides are.
+Fullscreen and maximized windows stay without. Live check: a floating
+dialog and a floating app window, each `window_open` style; one opened
+while a tiled window is still entering.
+
 ### Task 7: the frame's place in the tick
 
-Measure first; change nothing without the owner's go-ahead (rule 9: this
-is a scheduling change).
+Owner, 2026-11-11: no `perf.log` can be made for now; build step 2
+behind `peeksfirst` and the `perf::Stage` of step 1, and measure later.
+That is the go-ahead rule 9 asks for, for this change only. `peeksfirst`
+stays off by default until the numbers exist (task 7b does not flip it).
 
 Why: lever B. A peek frame is cheap (track maths and thumbnail updates,
 no `platform_sync`, no `SetWindowPos` for a pinned peek), but it is
@@ -726,6 +770,22 @@ the timer thread.
 Live check: 3a's and task 6's checks with `peeks,peeksfirst` against
 `peeks`, on the fast monitor, with keys held so the queue is busy.
 
+### Task 7b: peeks by default
+
+Owner, 2026-11-11: "just make the new thing the default", without
+waiting for the live checks. Two commits:
+
+1. `Isolation::peeks` is on unless `GLAZEWM_ISOLATE` has the new word
+   `nopeeks` (`peeks` stays accepted and means nothing more). Module
+   doc, tests and `TODO.md` "Live-check switch" say so, and that
+   `nopeeks` is how to compare with, and fall back to, the old paths.
+   `Live` peeks and everything not moved over keep the old path as now.
+2. `WindowCloseConfig`'s default `enabled` becomes `true` (the sample
+   config already has it on). `ANIMATION_REVIEW.md` 16 lists what that
+   exposes (a refused close re-opens the window); note it in `TODO.md`.
+
+Nothing is deleted: task 9 still waits for seen-working code.
+
 ### Task 8: resize, a decision
 
 Do not start without the owner's answer. The options, to put to them
@@ -738,9 +798,11 @@ with recordings from tasks 3 to 7:
   already draws this. How Hyprland looks; text is blurred mid-resize.
   The owner (2026-11-10): the idea "could be nice", but today's
   `stretch` on the old path "looks awful and acts weird" (weird
-  zooming). So (b) is open, and is judged only on a peek-drawn build
-  beside the old one; ask the owner what exactly looked wrong first and
-  list it in the live check as what must not show.
+  zooming): "a zoom effect when it kind of ended". That fits the old
+  path: the picture is scaled to the last frame, then swapped for the
+  real window at its true size. So (b) is open, judged only on a
+  peek-drawn build beside the old one, and its live check lists first:
+  no change of scale in the last frames or at the hand-back.
 - (c) Port the `fill` style (grow-only registration, gap fill, edge
   colour, mid-motion hand-off). The hard part the second version
   described; only if (b) is not acceptable.
