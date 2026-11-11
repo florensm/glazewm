@@ -632,6 +632,34 @@ to see it; check each once more at 150 ms.
     or varies by more. With `peeksfirst`, the catch-up's own stages
     (`platform_sync` and below) count in the frame but not in `tick`;
     compare `tick` between the two runs, not `platform_sync`.
+49. **Stretch resize on peeks** (`STAND_INS_PLAN.md` task 8, a timing
+    change: a relayout that resizes waits up to 100 ms before it moves).
+    Config `window_resize: { style: "stretch", duration_ms: 2000 }`, then
+    150; peeks on (the default). In a tiling layout: grow and shrink a
+    tile by keyboard, open a window beside two others, close one of
+    three, hold a resize key; on the scrolling workspace, resize a column.
+    Apps: Notepad with wrapped text, a browser, Explorer, an Electron app.
+    - First: any change of scale as it ends. The last frames and the
+      hand-back must show no zoom, no jump in size, nothing reflowing.
+    - How long before a resize starts to move after the key: at most
+      about 100 ms, mostly a frame or two; Outlook-like slow apps the
+      longest. The window waits at its old rect, then shows its new
+      layout squeezed into it in one step (the one swap left), then
+      stretches to its tile. Neighbours wait and move with it, borders
+      in step.
+    - No cut or padded content mid-way and no blank frame; at the swap,
+      look for a one-frame transparent strip on a shrinking window (the
+      app resizing between the WM's read and DWM's frame).
+    - Borders: thicker or thinner than normal at the start along the
+      resized axis (by old over new size), back to normal as it lands,
+      changing smoothly with no step.
+    - A held resize key: after the first press the motion glides on
+      without waiting again, the app resized to each newest target, the
+      picture never zooming at the end.
+    - A window that won't take its tile's size (e.g. a minimum size):
+      it is drawn as it really is, and the hand-back shows no jump.
+    - Compare with `GLAZEWM_ISOLATE=nopeeks` and with `style: "fill"`:
+      both must look as they did before.
 
 If bars or flicker show, isolate them with `GLAZEWM_ISOLATE` (below), one
 restart per flag: `noring`, `nobackdrop`, then `live`. With a long

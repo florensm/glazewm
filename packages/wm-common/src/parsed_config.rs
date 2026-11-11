@@ -2111,7 +2111,10 @@ pub enum ResizeStyle {
   #[default]
   Fill,
   /// Content is scaled to the animated size. The real window is sent its
-  /// final size on the first frame, and no edge color is sampled.
+  /// final size on the first frame, and no edge color is sampled. With
+  /// peeks (the default), the relayout waits, up to 100 ms, for its apps
+  /// to take their new size before it moves, so their new content scales
+  /// smoothly into place rather than replacing the old as it lands.
   Stretch,
 }
 

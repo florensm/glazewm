@@ -182,7 +182,8 @@ Owner's answers, 2026-11-11:
   measured later (built, not checked live or measured)
 - [ ] 7b. Peeks by default, `window_close` on by default (built, not
   checked live)
-- [ ] 8. Resize: `stretch` on peeks (owner's choice, 2026-11-11)
+- [ ] 8. Resize: `stretch` on peeks (owner's choice, 2026-11-11; wait,
+  then stretch; built, not checked live)
 - [ ] 9. Remove what is no longer reached
 
 ### Task 0: baseline (desktop, by hand)
@@ -1021,6 +1022,52 @@ The options as they were put:
 - (c) Port the `fill` style (grow-only registration, gap fill, edge
   colour, mid-motion hand-off). The hard part the second version
   described; only if (b) is not acceptable.
+
+As built (not seen running), for task 9 and a later `fill` port:
+
+- Only with `style: "stretch"`, `window_resize.enabled` and peeks on
+  (`stretches_on_peeks`); `fill` and `nopeeks` take exactly the paths
+  they took before.
+- Where the end-zoom came from: old `stretch` draws the whole window
+  (no source rect), so its scale is animated / actual size and steps by
+  target / source on the frame the app's resized content arrives; with a
+  fast-start 150 ms curve that is near the end, the old content blown up
+  most. Nothing in our code switches a source rect.
+- Order: as task 6's moves, the take-over's flush (`commit_pending_cloaks`
+  then `preposition_cloaked`, size included) resizes the cloaked window
+  once; a retarget resizes it again (`follow_retargeted_column`). The
+  relayout's peeks are held (`PeekView::hold`, `Entry::held`): their
+  clocks aren't started, so they are drawn at `from`, 1:1, until every
+  held stretching window's rect (`GetWindowRect`, read by `carry_ring`
+  each tick already) has its target's size, or `STRETCH_WAIT_CAP` (100
+  ms, from `HANDOFF_LEAD_MAX_MS`) runs out. Then all start on the next
+  tick, on one clock. Entering windows of the same relayout are held
+  with it; leaving ones are not.
+- Sampling: the window's actual rect, as read, scaled by animated /
+  target on each axis from the animated rect's top-left
+  (`stretch_frame`, `WindowPeek::place_stretched`): at target it fills
+  the rect, on the last frame it is the window 1:1 whatever size it has.
+  Until the window has been seen at its target's size, the source is
+  capped per axis at the target's size, so a resize still on its way
+  can't make it oversample.
+- Mixed relayouts: `stretches_relayout` keeps the whole relayout off
+  stretch (resizes on `ResizeSession`, pure moves on peeks, as task 6)
+  when any of its tiles couldn't go on a peek (`Live`, another
+  stand-in, floating state change, off its monitor) or is at its new
+  size already, which an interactive resize's drag end leaves it at. A
+  pass where something still lands on another path releases the hold.
+  Columns: `sync_scroll_view` does the same per strip (`can_stretch`); a
+  new column still widens from nothing (`opening_rect`), never scaled.
+- A retarget while held restarts the held motion for the new target
+  (`held_motion_to`); one while moving glides on (`retargeted_motion`)
+  and never holds again. An entry already stretching keeps stretching.
+- Ring copies scale with the frame: border width x animated / target
+  along a resized axis (TODO "Still open" 5). Drawing the ring at the
+  animated size, as the old path's overlays are, is the follow-up.
+- Task 9: `ResizeSession`'s `stretch` (`SessionOptions::stretch`,
+  `NativeSurrogate`'s `stretch` field, `stretched_destination`) is still
+  reached with `nopeeks` and by mixed relayouts; nothing is unreachable
+  yet. A `fill` port would reuse the hold and `place_stretched`'s cap.
 
 ### Task 9: remove what is no longer reached
 

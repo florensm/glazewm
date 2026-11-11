@@ -36,7 +36,8 @@ use wm_platform::{Rect, SurrogateBatch};
 
 use super::{
   peek_view::{
-    has_other_stand_in, is_pure_move, restore_cloaked, track_overlays,
+    has_other_stand_in, is_live, is_peek_resize, is_pure_move,
+    peek_styles, restore_cloaked, stretches_on_peeks, track_overlays,
     PeekView, Role,
   },
   transit::Transit,
@@ -102,6 +103,19 @@ pub fn sync_scroll_view(
     None => HashSet::new(),
   };
 
+  // With `window_resize.style: "stretch"`, a column resized on screen goes
+  // on its peek too, scaled, the strip held until its app has resized
+  // (`STAND_INS_PLAN.md` task 8), where every resized column can.
+  let stretches = pure_moves.is_some() && stretches_on_peeks(config);
+  let can_stretch = windows
+    .iter()
+    .filter(|_| stretches)
+    .filter(|(window, _)| {
+      can_stretch(state, window, &other_stand_ins, config)
+    })
+    .map(|(window, _)| window.id())
+    .collect::<HashSet<_>>();
+
   let now = state.animation_manager.frame_time();
   let view = &mut state.animation_manager.peeks;
 
@@ -137,6 +151,14 @@ pub fn sync_scroll_view(
 
   for (workspace, clip) in &workspaces {
     let moves = column_moves(view, workspace, &opening_ids);
+    let stretches = stretches
+      && moves.iter().all(|(window, from, target)| {
+        opening_ids.contains(&window.id())
+          || from.width() == target.width()
+            && from.height() == target.height()
+          || can_stretch.contains(&window.id())
+      });
+    let mut moving = Vec::new();
 
     // The strip moves as one when any column crosses the monitor edge,
     // is already drawn by a peek, or opens; moves that stay on screen are
@@ -172,6 +194,7 @@ pub fn sync_scroll_view(
         &target,
         strip_moves,
         pure_moves,
+        pure_moves.filter(|_| stretches),
         view.entries.contains_key(&window.id()),
         other_stand_ins.contains(&window.id()),
       ) {
@@ -225,6 +248,7 @@ pub fn sync_scroll_view(
         clip,
         role,
         transit,
+        stretches,
         config,
         focused_id == Some(window.id()),
         now,
@@ -236,7 +260,16 @@ pub fn sync_scroll_view(
 
       if is_moving {
         started_moving.push(window.id());
+        moving.push(window.id());
       }
+    }
+
+    // A strip part of which can't stretch can't wait either, nor what it
+    // moves on of one still waiting.
+    if stretches {
+      view.hold(&moving, now);
+    } else if moving.iter().any(|id| view.is_held(id)) {
+      view.release_hold();
     }
   }
 
@@ -280,23 +313,61 @@ fn column_pure_moves(config: &UserConfig, animates: bool) -> Option<u32> {
 /// Whether a column moving from `from` to `target` is drawn moving by its
 /// peek: as the strip moves as one, or, given `pure_moves`' threshold
 /// (see [`column_pure_moves`]), as a peek draws it already, or as it only
-/// moves (see [`is_pure_move`]) with no other stand-in drawing it. A
-/// column resized on screen keeps the per-window path either way.
+/// moves (see [`is_pure_move`]) or, given `stretches`' threshold when the
+/// strip stretches, resizes (see [`is_peek_resize`]), with no other
+/// stand-in drawing it. Otherwise a column resized on screen keeps the
+/// per-window path.
 fn moves_on_peek(
   from: &Rect,
   target: &Rect,
   strip_moves: bool,
   pure_moves: Option<u32>,
+  stretches: Option<u32>,
   is_drawn: bool,
   has_other_stand_in: bool,
 ) -> bool {
+  let alone = |threshold_px| {
+    !has_other_stand_in && is_pure_move(from, target, threshold_px)
+  };
+  let resized = |threshold_px| {
+    !has_other_stand_in && is_peek_resize(from, target, threshold_px)
+  };
+
   from != target
     && (strip_moves
-      || pure_moves.is_some_and(|threshold_px| {
-        is_drawn
-          || (!has_other_stand_in
-            && is_pure_move(from, target, threshold_px))
-      }))
+      || pure_moves
+        .is_some_and(|threshold_px| is_drawn || alone(threshold_px))
+      || stretches.is_some_and(resized))
+}
+
+/// Whether `window`, a column, can be drawn stretched as it resizes on
+/// its peek: not one another stand-in draws, nor one whose peek would be
+/// `Live`, nor one at its new size already, as an interactive resize
+/// leaves it, which keeps the per-window path as before.
+fn can_stretch(
+  state: &WmState,
+  window: &WindowContainer,
+  other_stand_ins: &HashSet<Uuid>,
+  config: &UserConfig,
+) -> bool {
+  let is_moving = state.animation_manager.peeks.is_moving(&window.id());
+  let is_resized_already =
+    !is_moving
+      && target_rect(window).is_ok_and(|target| {
+        state.window_target_positions.get(&window.id()).is_some_and(
+          |from| {
+            (from.width(), from.height())
+              != (target.width(), target.height())
+          },
+        ) && window.native().frame_with_shadows().is_ok_and(|actual| {
+          (actual.width(), actual.height())
+            == (target.width(), target.height())
+        })
+      });
+
+  !other_stand_ins.contains(&window.id())
+    && !is_live(&peek_styles(window, config))
+    && !is_resized_already
 }
 
 /// The transition a column coming back from minimized enters by, as a new
@@ -556,13 +627,30 @@ mod tests {
     let moved = Rect::from_xy(900, 50, 800, 600);
     let resized = Rect::from_xy(100, 50, 400, 600);
     for to in [&moved, &resized] {
-      assert!(moves_on_peek(&column(), to, true, None, false, false));
-      assert!(!moves_on_peek(&column(), to, false, None, true, false));
+      assert!(moves_on_peek(
+        &column(),
+        to,
+        true,
+        None,
+        None,
+        false,
+        false
+      ));
+      assert!(!moves_on_peek(
+        &column(),
+        to,
+        false,
+        None,
+        None,
+        true,
+        false
+      ));
     }
     assert!(!moves_on_peek(
       &column(),
       &column(),
       true,
+      None,
       None,
       true,
       false
@@ -585,6 +673,7 @@ mod tests {
       &moved,
       false,
       threshold,
+      None,
       false,
       false
     ));
@@ -592,6 +681,81 @@ mod tests {
       &column(),
       &moved,
       false,
+      threshold,
+      None,
+      false,
+      true
+    ));
+    assert!(!moves_on_peek(
+      &column(),
+      &nudged,
+      false,
+      threshold,
+      None,
+      false,
+      false
+    ));
+    assert!(!moves_on_peek(
+      &column(),
+      &resized,
+      false,
+      threshold,
+      None,
+      false,
+      false
+    ));
+    assert!(moves_on_peek(
+      &column(),
+      &resized,
+      false,
+      threshold,
+      None,
+      true,
+      false
+    ));
+    assert!(moves_on_peek(
+      &column(),
+      &resized,
+      true,
+      threshold,
+      None,
+      false,
+      true
+    ));
+    assert!(!moves_on_peek(
+      &column(),
+      &column(),
+      true,
+      threshold,
+      None,
+      true,
+      false
+    ));
+  }
+
+  /// With `stretch`, a column resized on screen past the threshold goes on
+  /// its peek too, unless another stand-in draws it; a smaller resize, or
+  /// one without `stretch`, doesn't.
+  #[test]
+  fn stretched_column_resizes_go_on_peeks() {
+    let threshold = Some(10);
+    let resized = Rect::from_xy(100, 50, 400, 600);
+    let nudged = Rect::from_xy(100, 50, 795, 600);
+
+    assert!(moves_on_peek(
+      &column(),
+      &resized,
+      false,
+      threshold,
+      threshold,
+      false,
+      false
+    ));
+    assert!(!moves_on_peek(
+      &column(),
+      &resized,
+      false,
+      threshold,
       threshold,
       false,
       true
@@ -601,6 +765,7 @@ mod tests {
       &nudged,
       false,
       threshold,
+      threshold,
       false,
       false
     ));
@@ -608,32 +773,9 @@ mod tests {
       &column(),
       &resized,
       false,
-      threshold,
+      None,
+      None,
       false,
-      false
-    ));
-    assert!(moves_on_peek(
-      &column(),
-      &resized,
-      false,
-      threshold,
-      true,
-      false
-    ));
-    assert!(moves_on_peek(
-      &column(),
-      &resized,
-      true,
-      threshold,
-      false,
-      true
-    ));
-    assert!(!moves_on_peek(
-      &column(),
-      &column(),
-      true,
-      threshold,
-      true,
       false
     ));
   }
