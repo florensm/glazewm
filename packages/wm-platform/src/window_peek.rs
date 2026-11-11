@@ -621,6 +621,17 @@ impl WindowPeek {
     }
   }
 
+  /// Puts the peek at the top of the always-on-top band if `topmost`, else
+  /// as [`raise_to_top`](Self::raise_to_top) does, out of that band if it
+  /// was in it.
+  pub fn raise_to_top_of_band(&self, topmost: bool) {
+    if let Err(err) = self.surrogate.raise_to_top_of_band(topmost) {
+      tracing::warn!(
+        "Failed to raise a peek to the top of its band: {err}"
+      );
+    }
+  }
+
   /// Whether the peek should keep covering its uncloaked window: it shows
   /// the window's companion, which is not back on screen yet.
   pub fn awaits_companion(&mut self) -> bool {

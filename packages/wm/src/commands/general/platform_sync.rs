@@ -16,8 +16,8 @@ use wm_platform::{
 
 use crate::{
   animation::{
-    AnimationPositionResult, AwayTransition, HandBack,
-    WorkspaceSwitchEntry,
+    peek_view::PeekRaise, AnimationPositionResult, AwayTransition,
+    HandBack, WorkspaceSwitchEntry,
   },
   commands::window::unmanage_if_embedded,
   layout::is_hidden_in_layout,
@@ -1224,8 +1224,9 @@ fn redraw_containers(
   // and whether any of them is taken over from at the shared flush.
   let mut peek_moves = Vec::new();
   let mut peeks_take_over = false;
-  // Floating windows opened on peeks this pass whose peeks go on top.
-  let mut peek_raises = Vec::new();
+  // Floating windows opened on peeks this pass whose peeks go on top, and
+  // of which band.
+  let mut peek_raises: Vec<(WindowContainer, PeekRaise)> = Vec::new();
 
   let cycle_has_resize = windows_to_update.iter().any(|window| {
     let target_rect = window.to_rect().and_then(|rect| {
@@ -1589,10 +1590,18 @@ fn redraw_containers(
 
         // Floating, it may overlap windows restacked after it this pass
         // (`windows_to_bring_to_front`) that would cover its peek, just
-        // below it. Focused, it goes on top, as its peek does once the
-        // pass is done.
-        if is_floating && window.id() == focused_container.id() {
-          peek_raises.push(window.id());
+        // below it. Its peek goes on top of the band it lands in once the
+        // pass is done (`floating_peek_raise`).
+        if let Some(raise) = is_floating
+          .then(|| {
+            crate::animation::peek_view::floating_peek_raise(
+              is_shown_on_top(window),
+              window.id() == focused_container.id(),
+            )
+          })
+          .flatten()
+        {
+          peek_raises.push(((*window).clone(), raise));
         }
       } else if !(is_open && is_floating) {
         // A floating window its peek can't draw opens at once, as before.
@@ -2045,8 +2054,23 @@ fn redraw_containers(
   }
   // Only now its window is cloaked: raised while that still showed, a
   // peek's opaque backdrop copy would have hidden it.
-  for id in peek_moves.iter().chain(&peek_raises) {
+  for id in &peek_moves {
     state.animation_manager.peeks.raise_moving(id);
+  }
+  for (window, raise) in &peek_raises {
+    // Its cloaked window goes into the band it lands in first, so that
+    // `begin_hand_back` puts the peek directly above it there, not back
+    // under the floating windows shown on top.
+    if *raise == PeekRaise::TopMost {
+      if let Err(err) = window.native().set_z_order(&WindowZOrder::TopMost)
+      {
+        tracing::warn!("Failed to set window z-order: {err}");
+      }
+    }
+    state
+      .animation_manager
+      .peeks
+      .raise_in_band(&window.id(), *raise);
   }
 
   for id in &released_covers {

@@ -439,6 +439,33 @@ pub fn follow_duration(
   }
 }
 
+/// Where the peek of a floating window opening on it goes once its window
+/// is cloaked (see [`floating_peek_raise`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PeekRaise {
+  /// The top of the non-topmost windows.
+  Top,
+  /// The top of the always-on-top band, with the floating windows shown
+  /// on top.
+  TopMost,
+}
+
+/// Where the peek of a floating window opening on it is raised, if at
+/// all: the top of the band the window lands in. One `shown_on_top` lands
+/// at the top of the always-on-top band (the hand-back's `HWND_TOPMOST`),
+/// focused or not; another is raised only if focused, over the floating
+/// windows restacked below it, or stays just below its window.
+pub fn floating_peek_raise(
+  shown_on_top: bool,
+  is_focused: bool,
+) -> Option<PeekRaise> {
+  if shown_on_top {
+    Some(PeekRaise::TopMost)
+  } else {
+    is_focused.then_some(PeekRaise::Top)
+  }
+}
+
 /// Whether a window laid out at `target` after `from` only moves, and by
 /// more than `threshold_px` as `should_start_new_animation` measures it:
 /// below that, the old path doesn't animate it either.
@@ -1296,6 +1323,18 @@ impl PeekView {
       .filter(|entry| matches!(entry.role, Role::Moving { .. }))
     {
       entry.peek.raise_to_top();
+    }
+  }
+
+  /// Puts `window_id`'s moving peek at the top of the band `raise` names
+  /// (see [`floating_peek_raise`]).
+  pub fn raise_in_band(&self, window_id: &Uuid, raise: PeekRaise) {
+    if let Some(entry) = self
+      .entries
+      .get(window_id)
+      .filter(|entry| matches!(entry.role, Role::Moving { .. }))
+    {
+      entry.peek.raise_to_top_of_band(raise == PeekRaise::TopMost);
     }
   }
 
@@ -2440,17 +2479,29 @@ mod tests {
   use wm_platform::Rect;
 
   use super::{
-    conceals_new_ring, follow_duration, follows_tile, has_landed,
-    has_left, is_departed, is_peek_resize, is_pure_move, is_stray,
-    kept_transit, leaves_as, leaving_transit, restretched,
-    retargeted_motion, returning_transit, settling, take_left, Role,
-    Stretch, STRETCH_SETTLE,
+    conceals_new_ring, floating_peek_raise, follow_duration, follows_tile,
+    has_landed, has_left, is_departed, is_peek_resize, is_pure_move,
+    is_stray, kept_transit, leaves_as, leaving_transit, restretched,
+    retargeted_motion, returning_transit, settling, take_left, PeekRaise,
+    Role, Stretch, STRETCH_SETTLE,
   };
   use crate::animation::{
     state::WindowAnimationState,
     transit::{Direction, Transit},
     AwayTransition,
   };
+
+  #[test]
+  fn floating_peeks_play_in_the_band_their_windows_land_in() {
+    // Shown on top: over the other floating windows shown on top, focused
+    // or not, as its window lands at the top of their band.
+    assert_eq!(floating_peek_raise(true, true), Some(PeekRaise::TopMost));
+    assert_eq!(floating_peek_raise(true, false), Some(PeekRaise::TopMost));
+    // Otherwise under them: on top of the rest if focused, else where its
+    // window is.
+    assert_eq!(floating_peek_raise(false, true), Some(PeekRaise::Top));
+    assert_eq!(floating_peek_raise(false, false), None);
+  }
 
   fn linear() -> EasingFunction {
     EasingFunction::CubicBezier(1.0 / 3.0, 1.0 / 3.0, 2.0 / 3.0, 2.0 / 3.0)

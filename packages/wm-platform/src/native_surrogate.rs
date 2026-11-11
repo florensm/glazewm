@@ -1007,6 +1007,12 @@ impl NativeSurrogate {
     Ok(())
   }
 
+  /// Restacks the surrogate at the top of the always-on-top band if
+  /// `topmost`, else at the top of the other windows.
+  pub fn raise_to_top_of_band(&self, topmost: bool) -> crate::Result<()> {
+    window_class::raise_to_top_of_band(self.hwnd(), topmost)
+  }
+
   /// Puts the surrogate directly above `anchor`, unless it already is
   /// anywhere above it, so it keeps covering a window raised past it.
   pub(crate) fn keep_above(&self, anchor: HWND) {

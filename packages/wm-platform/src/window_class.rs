@@ -388,6 +388,42 @@ pub(crate) fn match_z_band(overlay: HWND, anchor: HWND) {
   }
 }
 
+/// Restacks `window` at the top of the always-on-top band if `topmost`,
+/// else at the top of the other windows, moving it between bands if need
+/// be.
+pub(crate) fn raise_to_top_of_band(
+  window: HWND,
+  topmost: bool,
+) -> crate::Result<()> {
+  // SAFETY: A stale `window` just fails the call; the flags leave
+  // position, size and activation untouched.
+  unsafe {
+    SetWindowPos(
+      window,
+      top_of_band(topmost, is_topmost(window)),
+      0,
+      0,
+      0,
+      0,
+      SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
+    )
+  }?;
+
+  Ok(())
+}
+
+/// Insert-after handle that tops the band `topmost` names, for a window
+/// that `is_topmost` already or not. `HWND_TOP` keeps a window in its
+/// band, and `HWND_NOTOPMOST` does nothing to a window already outside the
+/// topmost one.
+fn top_of_band(topmost: bool, is_topmost: bool) -> HWND {
+  match (topmost, is_topmost) {
+    (true, _) => HWND_TOPMOST,
+    (false, true) => HWND_NOTOPMOST,
+    (false, false) => HWND_TOP,
+  }
+}
+
 /// Describes `hwnd` for z-order diagnostics: handle, class, band,
 /// visibility and owner. Leaves out the title, which can hold private
 /// data.
@@ -459,6 +495,14 @@ mod tests {
   };
 
   use super::*;
+
+  #[test]
+  fn tops_the_wanted_band_from_either() {
+    assert_eq!(top_of_band(true, false), HWND_TOPMOST);
+    assert_eq!(top_of_band(true, true), HWND_TOPMOST);
+    assert_eq!(top_of_band(false, true), HWND_NOTOPMOST);
+    assert_eq!(top_of_band(false, false), HWND_TOP);
+  }
 
   #[test]
   fn close_requests_are_recognized() {
