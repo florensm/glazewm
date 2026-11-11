@@ -1,6 +1,9 @@
 use std::{
   collections::HashMap,
-  sync::{Arc, Mutex},
+  sync::{
+    atomic::{AtomicBool, Ordering},
+    Arc, Mutex,
+  },
   time::{Duration, Instant},
 };
 
@@ -1337,6 +1340,10 @@ pub type EdgeColorCache = Arc<Mutex<HashMap<isize, (Color, Instant)>>>;
 /// is a no-op if the window is gone, hidden, cloaked or minimized (its
 /// screen pixels are something else) or sampling fails.
 ///
+/// A sample is dropped if `animating` is set, or the window has moved, by
+/// the time it is read: a stand-in or a border ring may then have crossed
+/// the strips it reads, and a ring's flat color wins over content.
+///
 /// `prune_len`/`ttl` mirror the caller's own cache-eviction policy (e.g.
 /// `AnimationManager`'s
 /// `EDGE_COLOR_CACHE_PRUNE_LEN`/`EDGE_COLOR_CACHE_TTL`) -- pruning happens
@@ -1347,6 +1354,7 @@ pub fn sample_edge_color_async(
   cache: EdgeColorCache,
   prune_len: usize,
   ttl: Duration,
+  animating: Arc<AtomicBool>,
 ) {
   let hwnd_raw = hwnd.0;
   tokio::task::spawn_blocking(move || {
@@ -1363,6 +1371,11 @@ pub fn sample_edge_color_async(
       logical_src.width(),
       logical_src.height(),
     ) {
+      if animating.load(Ordering::Relaxed)
+        || sampleable_rect(hwnd).as_ref() != Some(&source_rect)
+      {
+        return;
+      }
       if let Ok(mut map) = cache.lock() {
         if map.len() >= prune_len {
           map.retain(|_, (_, inserted_at)| inserted_at.elapsed() < ttl);

@@ -2357,12 +2357,13 @@ impl AnimationManager {
       // Last frame of this animation burst: emit the accumulated timings.
       perf::report("animations idle");
 
-      state.animation_manager.sample_pending_edge_colors();
-
       state
         .animation_manager
         .animation_timer_running
         .store(false, Ordering::Relaxed);
+
+      // After the flag is cleared, which a sample is checked against.
+      state.animation_manager.sample_pending_edge_colors();
 
       // All animations are done: clear the move/resize DXGI vsync waiter
       // so a later animation re-selects its own monitor and the
@@ -2942,6 +2943,7 @@ impl AnimationManager {
         self.edge_color_cache.clone(),
         EDGE_COLOR_CACHE_PRUNE_LEN,
         EDGE_COLOR_CACHE_TTL,
+        self.animation_timer_running.clone(),
       );
     }
   }
