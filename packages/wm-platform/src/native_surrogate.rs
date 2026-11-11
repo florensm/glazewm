@@ -214,6 +214,23 @@ fn covered_extent(
   }
 }
 
+/// Pixels of the thumbnail's trailing edges the gap fill reaches under.
+///
+/// A window's visible frame ends in the border DWM draws on it, which the
+/// WM hides: in a thumbnail those rows are see-through. Met exactly at the
+/// thumbnail's edge, the fill left them showing the backdrop, as a line
+/// between content and fill for as long as the fill showed.
+const FILL_UNDERLAP_PX: i32 = 2;
+
+/// Where the gap fill starts, from the surrogate's top-left, under a
+/// thumbnail covering `covered` (see [`FILL_UNDERLAP_PX`]).
+fn fill_start(covered: (i32, i32)) -> (i32, i32) {
+  (
+    (covered.0 - FILL_UNDERLAP_PX).max(0),
+    (covered.1 - FILL_UNDERLAP_PX).max(0),
+  )
+}
+
 /// How opaque the gap fill is under a thumbnail drawn at `opacity` that
 /// rests at `rest_opacity`: only as faded as the thumbnail is.
 ///
@@ -1266,10 +1283,13 @@ impl NativeSurrogate {
           return;
         }
       };
-      let initialized = fill.set_covered(self.covered).and_then(|()| {
-        fill
-          .set_opacity(fade_fraction(self.last_opacity, self.rest_opacity))
-      });
+      let initialized =
+        fill.set_covered(fill_start(self.covered)).and_then(|()| {
+          fill.set_opacity(fade_fraction(
+            self.last_opacity,
+            self.rest_opacity,
+          ))
+        });
       if let Err(err) = initialized {
         tracing::warn!("Failed to initialize surrogate fill: {err}.");
       }
@@ -1302,7 +1322,7 @@ impl NativeSurrogate {
     }
     self.covered = covered;
     if let Some(fill) = &self.fill {
-      if let Err(err) = fill.set_covered(covered) {
+      if let Err(err) = fill.set_covered(fill_start(covered)) {
         tracing::warn!("Surrogate fill resize failed: {err}.");
       }
     }
@@ -1350,10 +1370,11 @@ mod tests {
   };
 
   use super::{
-    ensure_class_registered, fade_fraction, is_surrogate, placed_rects,
-    stretched_destination, window_class, DeferredPositions, DestroyWindow,
-    Rect, SurrogateBatch, CLASS_NAME, HWND, RECT, SWP_NOSENDCHANGING,
-    WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TRANSPARENT,
+    ensure_class_registered, fade_fraction, fill_start, is_surrogate,
+    placed_rects, stretched_destination, window_class, DeferredPositions,
+    DestroyWindow, Rect, SurrogateBatch, CLASS_NAME, HWND, RECT,
+    SWP_NOSENDCHANGING, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW,
+    WS_EX_TRANSPARENT,
   };
 
   /// Batch commits performed by the leak regression test.
@@ -1435,6 +1456,14 @@ mod tests {
     assert_eq!(fade_fraction(0, 204), 0.0);
     assert_eq!(fade_fraction(u8::MAX, 204), 1.0);
     assert_eq!(fade_fraction(0, 0), 1.0);
+  }
+
+  /// The fill reaches under the thumbnail's trailing rows and columns,
+  /// and never starts before the surrogate does.
+  #[test]
+  fn the_fill_starts_under_the_thumbnails_trailing_edges() {
+    assert_eq!(fill_start((800, 600)), (798, 598));
+    assert_eq!(fill_start((1, 0)), (0, 0));
   }
 
   /// The invisible resize borders of a whole-window thumbnail must land
