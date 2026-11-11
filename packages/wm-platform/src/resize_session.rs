@@ -772,12 +772,12 @@ impl ResizeSession {
   ///
   /// No-op for zoom sessions (close animations must never move the real
   /// window — their target rect may be off-screen) and when the current
-  /// target has already been handed off.
+  /// target has already been handed off. Returns whether it handed off.
   ///
   /// [`sync_registration`]: ResizeSession::sync_registration
-  pub fn maybe_handoff(&mut self) {
+  pub fn maybe_handoff(&mut self) -> bool {
     if self.handoff_done || self.zoom || self.hwnd == 0 {
-      return;
+      return false;
     }
     self.handoff_done = true;
 
@@ -803,6 +803,8 @@ impl ResizeSession {
         );
       }
     }
+
+    true
   }
 
   /// Moves the real window to `target` asynchronously, without touching

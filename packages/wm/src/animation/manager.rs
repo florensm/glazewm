@@ -98,6 +98,29 @@ const HANDOFF_LEAD_MAX_MS: u64 = 100;
 /// couple of frames, not a fraction of the animation's duration.
 const MAX_HANDOFFS_PER_TICK: usize = 3;
 
+/// What is left of a redraw pass's [`MAX_HANDOFFS_PER_TICK`].
+///
+/// Only handoffs that happen are counted: a session already handed off,
+/// e.g. a growing or stretched one, asks again every tick and would
+/// otherwise use up the budget of the sessions after it for good.
+struct HandoffBudget {
+  left: usize,
+}
+
+impl HandoffBudget {
+  fn new(limit: usize) -> Self {
+    Self { left: limit }
+  }
+
+  /// Runs `handoff`, which returns whether it handed off, if any budget
+  /// is left.
+  fn spend(&mut self, handoff: impl FnOnce() -> bool) {
+    if self.left > 0 && handoff() {
+      self.left -= 1;
+    }
+  }
+}
+
 /// How long a sampled surrogate backdrop color stays valid per window.
 ///
 /// Sampling costs two GPU→CPU `BitBlt` readbacks; now always done on a
@@ -3061,7 +3084,7 @@ impl AnimationManager {
     // background sample lands rather than one animation later.
     let mut edge_colors = None;
 
-    let mut handoffs_this_tick = 0usize;
+    let mut handoffs = HandoffBudget::new(MAX_HANDOFFS_PER_TICK);
     for update in std::mem::take(&mut self.pending_surrogate_updates) {
       if let Some(session) =
         self.resize_sessions.get_mut(&update.window_id)
@@ -3079,9 +3102,8 @@ impl AnimationManager {
           }
         }
 
-        if update.handoff && handoffs_this_tick < MAX_HANDOFFS_PER_TICK {
-          session.maybe_handoff();
-          handoffs_this_tick += 1;
+        if update.handoff {
+          handoffs.spend(|| session.maybe_handoff());
         }
         session.defer_update(batch, &update.rect, update.opacity);
       }
@@ -4145,6 +4167,32 @@ mod tests {
   use wm_common::ParsedConfig;
 
   use super::*;
+
+  /// Sessions with nothing left to hand off, asking first every tick,
+  /// leave the budget to the ones after them.
+  #[test]
+  fn every_pending_handoff_lands_within_its_share_of_ticks() {
+    // Already handed off (growing, or done on an earlier tick) first, as
+    // in a relayout where the shrinking windows come last.
+    let mut done = [true, true, true, true, false, false, false, false];
+    let pending = done.iter().filter(|done| !**done).count();
+
+    for _ in 0..pending.div_ceil(MAX_HANDOFFS_PER_TICK) {
+      let mut budget = HandoffBudget::new(MAX_HANDOFFS_PER_TICK);
+      let mut handed_off = 0;
+      for done in &mut done {
+        budget.spend(|| {
+          let handing_off = !*done;
+          *done = true;
+          handed_off += usize::from(handing_off);
+          handing_off
+        });
+      }
+      assert!(handed_off <= MAX_HANDOFFS_PER_TICK);
+    }
+
+    assert!(done.iter().all(|done| *done));
+  }
 
   /// A tick whose peeks were drawn before the catch-up finishes at the
   /// instant they were drawn at, whatever passes in between read.
