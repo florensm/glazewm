@@ -528,9 +528,10 @@ to see it; check each once more at 150 ms.
       new one does, and one restored mid-minimize turns round;
     - nothing left cloaked, minimized or on screen afterwards: no empty
       tile, no peek left over; the window is focused and usable;
-    - the peek of a window minimized for a while shows above the
-      wallpaper and its neighbours, not under them (it is created just
-      below its real window, which was at the bottom of the z-order).
+    - restore a window minimized while other windows came above its
+      place in the z-order (e.g. focus others, or a floating window over
+      its tile): the restore plays on top of them, not under them or
+      the wallpaper.
 
     Both paths, switch on and off: a restore now eases out into place
     (minimize's curve time-reversed, finding 15), where it sped up and

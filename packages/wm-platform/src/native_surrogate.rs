@@ -951,6 +951,25 @@ impl NativeSurrogate {
     window_class::place_above(self.hwnd(), window)
   }
 
+  /// Restacks the surrogate at the top of the non-topmost windows, as
+  /// [`create`](Self::create) places it given `HWND(0)` (`HWND_TOP`).
+  pub fn raise_to_top(&self) -> crate::Result<()> {
+    // SAFETY: `HWND(self.hwnd)` is valid until `drop`; the flags leave
+    // position, size and activation untouched.
+    unsafe {
+      SetWindowPos(
+        HWND(self.hwnd),
+        HWND(0),
+        0,
+        0,
+        0,
+        0,
+        SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
+      )
+    }?;
+    Ok(())
+  }
+
   /// Puts the surrogate directly above `anchor`, unless it already is
   /// anywhere above it, so it keeps covering a window raised past it.
   pub(crate) fn keep_above(&self, anchor: HWND) {

@@ -918,6 +918,21 @@ impl PeekView {
     true
   }
 
+  /// Puts `window_id`'s peek on top, as the old path's stand-ins of an
+  /// open or restore are (`place_at_top`): a restored window was at the
+  /// bottom of the z-order, under the windows it comes back over, and its
+  /// peek went up just below it. Not one leaving, which stays below its
+  /// neighbours (task 4).
+  pub(super) fn raise_restored(&self, window_id: &Uuid) {
+    if let Some(entry) = self
+      .entries
+      .get(window_id)
+      .filter(|entry| matches!(entry.role, Role::Moving { .. }))
+    {
+      entry.peek.raise_to_top();
+    }
+  }
+
   /// Whether `window_id` is entering a tiling layout on its peek (see
   /// [`enter`](Self::enter)).
   pub fn is_entering(&self, window_id: &Uuid) -> bool {
@@ -1199,6 +1214,7 @@ pub fn restore_on_peek(
     .turn_round(&id, params, false, now)
   {
     restore_cloaked(&window.native(), target);
+    state.animation_manager.peeks.raise_restored(&id);
     state.animation_manager.ensure_timer_running();
     return true;
   }
@@ -1213,7 +1229,10 @@ pub fn restore_on_peek(
   }
 
   restore_cloaked(&window.native(), target);
-  enter_on_peek(state, window, target, params, config, is_focused)
+  let entered =
+    enter_on_peek(state, window, target, params, config, is_focused);
+  state.animation_manager.peeks.raise_restored(&id);
+  entered
 }
 
 /// Restores `window`, if it is still natively minimized, at `rect` behind

@@ -204,6 +204,9 @@ pub fn sync_scroll_view(
         now,
         &mut batch,
       );
+      if is_moving && is_restored {
+        view.raise_restored(&window.id());
+      }
 
       if is_moving {
         started_moving.push(window.id());
@@ -282,6 +285,7 @@ fn turn_round_restored(
       if let Ok(target) = target_rect(window) {
         restore_cloaked(&window.native(), &target);
       }
+      view.raise_restored(&window.id());
     }
   }
 }

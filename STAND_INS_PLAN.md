@@ -719,9 +719,13 @@ As built (`9699b12` curve, `9e19c06` restore), for task 6:
   round one still minimizing, which then moves with the strip. A
   turned-round column whose rect didn't change keeps its entry through
   the `owned_target` check, untouched.
-- A peek goes up just below its real window, which for one minimized a
-  while is at the bottom of the z-order; nothing raises it before the
-  hand-back. Not seen; the live check looks for it.
+- A peek goes up just below its real window, which minimized is at the
+  bottom of the z-order, and nothing restacks a peek before
+  `begin_hand_back`. So a restore's entering or turned-round peek is
+  raised to `HWND_TOP` (`PeekView::raise_restored`,
+  `WindowPeek::raise_to_top`), as the old path's `place_at_top` does;
+  a leaving one is not. Opens are left where they are: a new window is
+  normally at the top already.
 
 ### Task 6: moves on peeks
 

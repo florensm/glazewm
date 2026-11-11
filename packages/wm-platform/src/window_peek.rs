@@ -550,6 +550,15 @@ impl WindowPeek {
     }
   }
 
+  /// Puts the peek at the top of the non-topmost windows, over windows
+  /// that came above its real window while that was minimized. Its ring
+  /// and backdrop copies are drawn in it, so they go with it.
+  pub fn raise_to_top(&self) {
+    if let Err(err) = self.surrogate.raise_to_top() {
+      tracing::warn!("Failed to raise a peek to the top: {err}");
+    }
+  }
+
   /// Whether the peek should keep covering its uncloaked window: it shows
   /// the window's companion, which is not back on screen yet.
   pub fn awaits_companion(&mut self) -> bool {
