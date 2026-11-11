@@ -118,7 +118,9 @@ Always stripped from a test build:
   workspace switching and, with `--dwm`, enumerates processes, loads the `PresentMon` DLL at
   runtime and attaches to `dwm.exe`. Likely why a build got quarantined as `Bearfoos` malware.
   Its `switch_modes.ps1` restarts the WM with the profiler on and moves windows between
-  workspaces to compare the switch styles.
+  workspaces to compare the switch styles. Its `isolate_modes.ps1` restarts the WM once per
+  `GLAZEWM_ISOLATE` mode, with the profiler on, and drives bursts of moves, floats,
+  minimizes, resizes and switches to compare how windows are drawn.
 - `packages/wm-platform/examples/uncloak_all.rs`: walks and un-cloaks every top-level window.
 - `resources/scripts/package.ps1`: the installer packaging script, which only the release
   workflow runs. Not needed to build or run the WM.
