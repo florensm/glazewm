@@ -1860,7 +1860,7 @@ pub struct WindowCloseConfig {
 impl Default for WindowCloseConfig {
   fn default() -> Self {
     WindowCloseConfig {
-      enabled: false,
+      enabled: true,
       duration_ms: 150,
       easing: EasingFunction::CubicBezier(0.32, 0.0, 0.67, 0.0),
       style: WindowTransitionStyle::None,
