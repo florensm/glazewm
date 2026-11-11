@@ -36,20 +36,10 @@ use crate::{
   wm_state::WmState,
 };
 
-/// Longest a relayout drawn with `window_resize.style: "stretch"` waits,
-/// its peeks held where its windows were, for its resized windows to
-/// report their new size before it starts to move (see
-/// [`PeekView::hold`]).
-///
-/// It trades the delay between a key and the motion against where the
-/// swap from old content to new lands: within the cap it is on the first
-/// frame, still at the old rect; past it the motion starts anyway, the
-/// window drawn as it is until its app catches up. 100 ms is what the old
-/// path already allows an app to resize and repaint before its animation
-/// ends (`HANDOFF_LEAD_MAX_MS`): most apps take a frame or two (as
-/// `OPEN_PAINT_GRACE` assumes), slow ones (Outlook, at up to ~300 ms)
-/// run past it.
-pub(super) const STRETCH_WAIT_CAP: Duration = Duration::from_millis(100);
+/// How long a stretched window takes to ease back to the scale of its
+/// rect over its target once it has grown (see [`Stretch`]): a few frames,
+/// short of `window_resize`'s 150 ms.
+const STRETCH_SETTLE: Duration = Duration::from_millis(80);
 
 /// What a peek is currently doing.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -121,38 +111,103 @@ pub(super) struct Entry {
   /// How its window is scaled, for one whose size changes on its peek
   /// with `window_resize.style: "stretch"`.
   stretch: Option<Stretch>,
-  /// Whether its motion waits for a relayout's resized windows to reach
-  /// their new size (see [`PeekView::hold`]): drawn where it starts.
-  held: bool,
 }
 
-/// A window drawn scaled as its size changes.
+/// A window drawn scaled as its size changes, its app resized behind its
+/// cloak as the motion starts.
 ///
-/// Its picture is the window as it really is, scaled by the animated rect
-/// over its target, the same on each axis whatever size the app has
-/// reached: with the window at its target that fills the animated rect,
-/// and on the last frame is the window 1:1 (see [`stretch_frame`]).
-#[derive(Clone, Debug, Default)]
+/// Its picture always covers its animated rect, sampled from no more of
+/// the window than it is sure to have. Its scale is the rect over its
+/// target, which ends 1:1 and doesn't change as the app's content
+/// arrives, times a cover of 1 or more (see
+/// `WindowPeek::place_stretched`): what it takes a window yet to grow to
+/// reach across the rect. Once it has grown, the cover eases back to 1
+/// over [`STRETCH_SETTLE`] rather than stepping, which was the old path's
+/// zoom.
+#[derive(Clone, Debug)]
 struct Stretch {
-  /// The real window's rect, as `carry_ring` last read it.
+  /// The real window's rect, as last read.
   actual: Option<Rect>,
   /// Whether the window has been seen at its target's size, after which
   /// it is sampled whole: before, no larger than the target, as a resize
   /// still on its way there may land before the frame is composited.
   reached: bool,
+  /// The cover it was last drawn with, per axis.
+  cover: (f32, f32),
+  /// When its cover began to ease back to 1, and from what.
+  settle: Option<(Instant, (f32, f32))>,
 }
 
 impl Stretch {
-  /// Notes whether the window has reached the size of `target`.
-  fn note_target(&mut self, target: &Rect) {
-    if self
-      .actual
-      .as_ref()
-      .is_some_and(|actual| is_same_size(actual, target))
-    {
-      self.reached = true;
+  /// One for a window whose rect is `actual`, if it could be read.
+  fn at(actual: Option<Rect>) -> Self {
+    Self {
+      actual,
+      reached: false,
+      cover: (1.0, 1.0),
+      settle: None,
     }
   }
+
+  /// Notes at `now` whether the window has reached the size of `target`,
+  /// from when its cover settles.
+  fn note_target(&mut self, target: &Rect, now: Instant) {
+    if !self.reached
+      && self
+        .actual
+        .as_ref()
+        .is_some_and(|actual| is_same_size(actual, target))
+    {
+      self.reached = true;
+      self.settle = Some((now, self.cover));
+    }
+  }
+
+  /// Heads it for `target` instead of `from` at `now`: yet to reach it,
+  /// its cover settling from what keeps the scale it was last drawn at.
+  #[allow(clippy::cast_precision_loss)]
+  fn retarget(&mut self, from: &Rect, target: &Rect, now: Instant) {
+    let kept = |cover: f32, from: i32, to: i32| {
+      if from > 0 {
+        (cover * to as f32 / from as f32).max(1.0)
+      } else {
+        1.0
+      }
+    };
+    let cover = self.cover;
+
+    self.reached = false;
+    self.settle = Some((
+      now,
+      (
+        kept(cover.0, from.width(), target.width()),
+        kept(cover.1, from.height(), target.height()),
+      ),
+    ));
+  }
+
+  /// The least cover it is drawn with at `now`.
+  fn cover_at(&self, now: Instant) -> (f32, f32) {
+    self.settle.map_or((1.0, 1.0), |(since, from)| {
+      let elapsed = now.saturating_duration_since(since);
+      (settling(from.0, elapsed), settling(from.1, elapsed))
+    })
+  }
+
+  /// Whether its scale has come to rest at `now`, so it can land. One
+  /// short of its target isn't waited for.
+  fn is_settled(&self, now: Instant) -> bool {
+    !self.reached || self.cover_at(now) == (1.0, 1.0)
+  }
+}
+
+/// A cover easing from `from` back to 1, `elapsed` after it began to:
+/// fast at first, 1 from [`STRETCH_SETTLE`] on.
+fn settling(from: f32, elapsed: Duration) -> f32 {
+  let left =
+    1.0 - (elapsed.as_secs_f32() / STRETCH_SETTLE.as_secs_f32()).min(1.0);
+
+  1.0 + (from - 1.0) * left * left
 }
 
 /// A leaving window as it was when it started to leave.
@@ -183,7 +238,7 @@ impl Entry {
     now: Instant,
     batch: &mut SurrogateBatch,
   ) {
-    if self.transit.is_none() && self.draw_stretched(rect, batch) {
+    if self.transit.is_none() && self.draw_stretched(rect, now, batch) {
       self.rect = rect.clone();
       return;
     }
@@ -212,30 +267,28 @@ impl Entry {
     self.rect = rect.clone();
   }
 
-  /// Draws a stretching window at `rect` as it is (see [`Stretch`]).
-  /// Returns `false`, drawing nothing, for one to be placed as it is: one
-  /// that doesn't stretch, isn't read yet, or is held at its old size.
+  /// Draws a stretching window at `rect` as it is at `now` (see
+  /// [`Stretch`]). Returns `false`, drawing nothing, for one to be placed
+  /// as it is: one that doesn't stretch or couldn't be read.
   fn draw_stretched(
     &mut self,
     rect: &Rect,
+    now: Instant,
     batch: &mut SurrogateBatch,
   ) -> bool {
-    let Some(stretch) = &self.stretch else {
+    let Some(stretch) = &mut self.stretch else {
       return false;
     };
-    let Some(actual) = stretch.actual.as_ref().filter(|actual| {
-      !(self.held && is_same_size(actual, &self.motion.start_rect))
-    }) else {
+    let Some(actual) = &stretch.actual else {
       return false;
     };
 
-    let target = &self.motion.target_rect;
-    let frame = stretch_frame(actual, target, rect);
-    let limit = (!stretch.reached).then_some(target);
-    self.peek.place_stretched(
+    stretch.cover = self.peek.place_stretched(
       actual,
-      &frame,
-      limit,
+      &self.motion.target_rect,
+      rect,
+      !stretch.reached,
+      stretch.cover_at(now),
       &self.clip,
       self.opacity,
       batch,
@@ -249,64 +302,27 @@ fn is_same_size(a: &Rect, b: &Rect) -> bool {
   a.width() == b.width() && a.height() == b.height()
 }
 
-/// Where a window really at `actual` is drawn while its animated rect is
-/// `rect` on the way to `target`: scaled by `rect` over `target` on each
-/// axis, from `rect`'s top-left. With the window at its target that is
-/// `rect`; at the target, the window as it is, so the last frame matches
-/// it 1:1 whatever size it reached.
-#[allow(clippy::cast_possible_truncation, clippy::cast_precision_loss)]
-fn stretch_frame(actual: &Rect, target: &Rect, rect: &Rect) -> Rect {
-  let scaled = |length: i32, from: i32, to: i32| {
-    if from > 0 {
-      (length as f32 * to as f32 / from as f32).round() as i32
-    } else {
-      length
-    }
-  };
-
-  Rect::from_xy(
-    rect.x(),
-    rect.y(),
-    scaled(actual.width(), target.width(), rect.width()),
-    scaled(actual.height(), target.height(), rect.height()),
-  )
-}
-
-/// The stretch an entry keeps as it is moved on: none unless it
-/// `stretches`, else its window's last read, seen at its size again only
-/// once it reaches a target that `resized`.
+/// The stretch an entry keeps as it is moved on at `now`, from heading
+/// for `from` to `target`: none unless it `stretches`, else its own,
+/// retargeted if its size changes (see [`Stretch::retarget`]), or a new
+/// one for a window at `actual`.
 fn restretched(
   stretch: Option<Stretch>,
   stretches: bool,
-  resized: bool,
+  actual: impl FnOnce() -> Option<Rect>,
+  from: &Rect,
+  target: &Rect,
+  now: Instant,
 ) -> Option<Stretch> {
-  stretches.then(|| {
-    let mut kept = stretch.unwrap_or_default();
-    kept.reached &= !resized;
-    kept
+  stretches.then(|| match stretch {
+    Some(mut kept) => {
+      if !is_same_size(from, target) {
+        kept.retarget(from, target, now);
+      }
+      kept
+    }
+    None => Stretch::at(actual()),
   })
-}
-
-/// Whether a relayout held for its resized windows starts to move: once
-/// none is still `awaiting` its size, or `waited` the cap.
-fn releases_hold(awaiting: bool, waited: Duration) -> bool {
-  !awaiting || waited >= STRETCH_WAIT_CAP
-}
-
-/// `motion`, not started yet as its relayout is held, headed for `target`
-/// instead, from where it starts, as a new one would be.
-fn held_motion_to(
-  motion: &WindowAnimationState,
-  target: Rect,
-  duration_ms: u32,
-  easing: EasingFunction,
-) -> WindowAnimationState {
-  WindowAnimationState::new_movement(
-    motion.start_rect.clone(),
-    target,
-    duration_ms,
-    easing,
-  )
 }
 
 /// Whether a moving entry has landed: its motion and, while it enters,
@@ -538,8 +554,6 @@ pub struct PeekView {
   pub(super) last_rects: HashMap<Uuid, Rect>,
   /// Windows already reported by `report_stuck_windows`.
   pub(super) reported_stuck: HashSet<Uuid>,
-  /// When the entries now [`held`](Entry::held) began waiting.
-  hold_since: Option<Instant>,
 }
 
 impl PeekView {
@@ -625,19 +639,10 @@ impl PeekView {
       .get(window_id)
       .filter(|entry| matches!(entry.role, Role::Moving { .. }))
       .map(|entry| {
-        // Held, at the latest once the cap runs out.
-        let held = self.hold_since.filter(|_| entry.held).map_or(
-          Duration::ZERO,
-          |since| {
-            STRETCH_WAIT_CAP
-              .saturating_sub(now.saturating_duration_since(since))
-          },
-        );
         let motion = entry.motion.remaining_at(now);
-        held
-          + entry.transit.as_ref().map_or(motion, |transit| {
-            motion.max(transit.clock.remaining_at(now))
-          })
+        entry.transit.as_ref().map_or(motion, |transit| {
+          motion.max(transit.clock.remaining_at(now))
+        })
       })
   }
 
@@ -677,7 +682,6 @@ impl PeekView {
     // A later composition than the one copies were put over rings and
     // backdrops in.
     self.note_composited();
-    self.settle_hold(now);
 
     for (id, entry) in &mut self.entries {
       match entry.role {
@@ -688,17 +692,24 @@ impl PeekView {
           entry.peek.restore_alpha();
           entry.peek.show_window();
           entry.peek.refresh_companion();
-          // Held, it is drawn where it starts until its relayout moves.
-          if !entry.held {
-            entry.motion.start_clock(clock_origin);
-            if let Some(transit) = &entry.transit {
-              transit.clock.start_clock(clock_origin);
-            }
+          entry.motion.start_clock(clock_origin);
+          if let Some(transit) = &entry.transit {
+            transit.clock.start_clock(clock_origin);
+          }
+          if let Some(stretch) = &mut entry.stretch {
+            stretch.note_target(&entry.motion.target_rect, now);
           }
           let (rect, _) = entry.motion.current_state_at(now);
           entry.draw(&rect, now, batch);
 
-          if has_landed(&entry.motion, entry.transit.as_ref()) {
+          // A stretched window lands once its scale is at rest too.
+          let is_settled = entry
+            .stretch
+            .as_ref()
+            .is_none_or(|stretch| stretch.is_settled(now));
+          if is_settled
+            && has_landed(&entry.motion, entry.transit.as_ref())
+          {
             entry.role = if ends_shown {
               // Raised while its real window is still cloaked, so the
               // uncloak never shows the window over the peek.
@@ -772,83 +783,6 @@ impl PeekView {
     });
 
     landed
-  }
-
-  /// Holds the moving entries of `ids`, one relayout's, where they start
-  /// until its stretching windows have reached their new size or
-  /// [`STRETCH_WAIT_CAP`] runs out, so that each one's app has resized
-  /// behind its cloak before anything moves, and all of them move on one
-  /// clock. A hold still waiting takes them on, e.g. as a retarget reaches
-  /// it, under its own cap.
-  ///
-  /// Holds none if any of them already moves, which can't wait without
-  /// stopping, nor any if none stretches.
-  pub fn hold(&mut self, ids: &[Uuid], now: Instant) {
-    let members = ids
-      .iter()
-      .filter(|id| self.is_moving(id))
-      .copied()
-      .collect::<Vec<_>>();
-    let entries = || members.iter().filter_map(|id| self.entries.get(id));
-    if entries().any(|entry| entry.motion.is_running())
-      || !entries().any(|entry| entry.stretch.is_some())
-    {
-      return;
-    }
-
-    for id in &members {
-      if let Some(entry) = self.entries.get_mut(id) {
-        entry.held = true;
-      }
-    }
-    self.hold_since.get_or_insert(now);
-  }
-
-  /// Whether `window_id`'s peek is held (see [`hold`](Self::hold)).
-  pub fn is_held(&self, window_id: &Uuid) -> bool {
-    self.entries.get(window_id).is_some_and(|entry| entry.held)
-  }
-
-  /// Lets every held entry move from now on, its clock started on the
-  /// next tick.
-  pub fn release_hold(&mut self) {
-    self.hold_since = None;
-    for entry in self.entries.values_mut() {
-      entry.held = false;
-    }
-  }
-
-  /// Notes the sizes stretching windows have reached, and releases the
-  /// hold once none waits for its size or the cap has run out (see
-  /// [`hold`](Self::hold)).
-  fn settle_hold(&mut self, now: Instant) {
-    for entry in self.entries.values_mut() {
-      if let Some(stretch) = &mut entry.stretch {
-        stretch.note_target(&entry.motion.target_rect);
-      }
-    }
-
-    let Some(since) = self.hold_since else {
-      return;
-    };
-    let awaiting = self.entries.values().any(|entry| {
-      entry.held
-        && matches!(entry.role, Role::Moving { .. })
-        && entry
-          .stretch
-          .as_ref()
-          .is_some_and(|stretch| !stretch.reached)
-    });
-    let waited = now.saturating_duration_since(since);
-
-    if releases_hold(awaiting, waited) {
-      if awaiting {
-        tracing::debug!(
-          "Stretch started after {waited:?}, a window short of its size."
-        );
-      }
-      self.release_hold();
-    }
   }
 
   /// Notes that the copies put over real rings and backdrops have been
@@ -1043,13 +977,6 @@ impl PeekView {
     // A column already moving carries on at its speed toward the new
     // target, so quick presses in a row glide rather than restart.
     let motion = match in_flight {
-      // Held, it hasn't started: it starts for the new target instead.
-      Some(entry) if is_moving && entry.held => held_motion_to(
-        &entry.motion,
-        target,
-        scroll_config.duration_ms,
-        scroll_config.easing.clone(),
-      ),
       Some(entry) if is_moving => retargeted_motion(
         &entry.motion,
         target,
@@ -1083,10 +1010,10 @@ impl PeekView {
       && opening.is_none()
       && !is_same_size(&motion.start_rect, &motion.target_rect);
 
+    let actual = || window.native().frame_with_shadows().ok();
+
     if let Some(entry) = self.entries.get_mut(&window.id()) {
-      let resized =
-        !is_same_size(&entry.motion.target_rect, &motion.target_rect);
-      entry.motion = motion;
+      let headed = std::mem::replace(&mut entry.motion, motion);
       entry.clip = clip.clone();
       entry.opacity = opacity;
       entry.role = role;
@@ -1097,9 +1024,14 @@ impl PeekView {
       let stretches = (stretches
         || (is_moving && entry.stretch.is_some()))
         && entry.transit.is_none();
-      entry.stretch =
-        restretched(entry.stretch.take(), stretches, resized);
-      entry.held &= is_moving;
+      entry.stretch = restretched(
+        entry.stretch.take(),
+        stretches,
+        actual,
+        &headed.target_rect,
+        &entry.motion.target_rect,
+        now,
+      );
       // Copies of both styles are drawn up front, so a focus change only
       // crossfades them (see `track_overlays`): one registered mid-move
       // left frames without it.
@@ -1126,7 +1058,7 @@ impl PeekView {
 
     // `place_scaled` draws pinned peeks only.
     entry.transit = opening.filter(|_| is_moving && !entry.peek.is_live());
-    entry.stretch = stretches.then(Stretch::default);
+    entry.stretch = stretches.then(|| Stretch::at(actual()));
     let rect = entry.rect.clone();
     entry.draw(&rect, now, batch);
     self.entries.insert(window.id(), entry);
@@ -1256,6 +1188,7 @@ impl PeekView {
       easing,
     );
     let role = Role::Moving { ends_shown: true };
+    let actual = || window.native().frame_with_shadows().ok();
 
     if landing {
       // A releasing peek's real window is back on screen, so it has to be
@@ -1264,13 +1197,19 @@ impl PeekView {
       let Some(entry) = self.entries.get_mut(&id) else {
         return false;
       };
-      entry.motion = motion;
+      let headed = std::mem::replace(&mut entry.motion, motion);
       entry.clip = clip.clone();
       entry.opacity = opacity;
       entry.role = role;
       entry.transit = None;
-      entry.stretch = restretched(entry.stretch.take(), stretches, true);
-      entry.held = false;
+      entry.stretch = restretched(
+        entry.stretch.take(),
+        stretches,
+        actual,
+        &headed.target_rect,
+        &entry.motion.target_rect,
+        now,
+      );
       entry.peek.carry_styles(&styles);
       if covers_shown_window {
         entry.composited = false;
@@ -1297,7 +1236,7 @@ impl PeekView {
     }
 
     entry.is_column = false;
-    entry.stretch = stretches.then(Stretch::default);
+    entry.stretch = stretches.then(|| Stretch::at(actual()));
     entry.draw(from, now, batch);
     self.entries.insert(id, entry);
 
@@ -1374,10 +1313,9 @@ impl PeekView {
 
   /// Heads `window_id`'s peek, moving in a tiling layout, for its new
   /// tile at `target`, at the speed it has at `now`, over `duration_ms`
-  /// and `easing`. A transit it enters by carries on untouched. One held
-  /// (see [`hold`](Self::hold)) starts for the new tile instead, which its
-  /// hold then waits for. With `stretch`, a window that doesn't enter is
-  /// scaled as its size changes (see [`Stretch`]).
+  /// and `easing`. A transit it enters by carries on untouched. With
+  /// `stretch`, a window that doesn't enter is scaled as its size changes
+  /// (see [`Stretch`]).
   ///
   /// Returns whether it was retargeted.
   pub fn retarget_tile(
@@ -1401,12 +1339,9 @@ impl PeekView {
       return false;
     };
 
-    let resized = !is_same_size(&entry.motion.target_rect, &target);
-    entry.motion = if entry.held {
-      held_motion_to(&entry.motion, target, duration_ms, easing)
-    } else {
-      retargeted_motion(&entry.motion, target, duration_ms, easing, now)
-    };
+    let motion =
+      retargeted_motion(&entry.motion, target, duration_ms, easing, now);
+    let headed = std::mem::replace(&mut entry.motion, motion);
     // One stretching already goes on so: drawn another way from here, its
     // scale would jump.
     let stretches = entry.stretch.is_some()
@@ -1416,7 +1351,15 @@ impl PeekView {
           &entry.motion.start_rect,
           &entry.motion.target_rect,
         ));
-    entry.stretch = restretched(entry.stretch.take(), stretches, resized);
+    // One that only moved so far is the size of the tile it headed for.
+    entry.stretch = restretched(
+      entry.stretch.take(),
+      stretches,
+      || Some(headed.target_rect.clone()),
+      &headed.target_rect,
+      &entry.motion.target_rect,
+      now,
+    );
     true
   }
 
@@ -1505,7 +1448,6 @@ impl PeekView {
     entry.role = Role::Leaving(transition);
     entry.is_column = false;
     entry.stretch = None;
-    entry.held = false;
     entry.departing = Some(Departing {
       awaits_cloak: !native.is_cloaked().unwrap_or(true),
       native,
@@ -1724,15 +1666,14 @@ pub fn move_on_peek(
 }
 
 /// Whether a relayout redrawing `windows` draws its resizes stretched on
-/// peeks (see [`stretches_on_peeks`]), held until its apps have resized
-/// (see [`PeekView::hold`]): only if every tile it moves or resizes can go
-/// on a peek as [`move_on_peek`] puts it there.
+/// peeks (see [`stretches_on_peeks`]): only if every tile it moves or
+/// resizes can go on a peek as [`move_on_peek`] puts it there.
 ///
-/// One that can't would move on another path, which can't be held, so
-/// out of step with the rest for as long as they wait: the whole relayout
-/// keeps the old path's resizes then. So it does when a resized window is
-/// at its new size already, which an interactive resize leaves it at as
-/// its drag ends: that one stays exactly as it was.
+/// One that can't would resize on the old path, in another style beside
+/// the rest: the whole relayout keeps the old path's resizes then. So it
+/// does when a resized window is at its new size already, which an
+/// interactive resize leaves it at as its drag ends: that one stays
+/// exactly as it was.
 ///
 /// Columns are left to `sync_scroll_view`, and windows that open, are not
 /// shown, or stay floating to the redraw itself.
@@ -2036,7 +1977,6 @@ fn new_entry(
     is_column: true,
     departing: None,
     stretch: None,
-    held: false,
   };
 
   Some((entry, covers_shown_window))
@@ -2501,10 +2441,10 @@ mod tests {
 
   use super::{
     conceals_new_ring, follow_duration, follows_tile, has_landed,
-    has_left, held_motion_to, is_departed, is_peek_resize, is_pure_move,
-    is_stray, kept_transit, leaves_as, leaving_transit, releases_hold,
-    restretched, retargeted_motion, returning_transit, stretch_frame,
-    take_left, Role, Stretch, STRETCH_WAIT_CAP,
+    has_left, is_departed, is_peek_resize, is_pure_move, is_stray,
+    kept_transit, leaves_as, leaving_transit, restretched,
+    retargeted_motion, returning_transit, settling, take_left, Role,
+    Stretch, STRETCH_SETTLE,
   };
   use crate::animation::{
     state::WindowAnimationState,
@@ -2895,37 +2835,6 @@ mod tests {
     assert!(!is_departed(false, true));
   }
 
-  /// A stretched window is drawn scaled by the animated rect over its
-  /// target, whatever size it has: still at its old size, part way, or
-  /// there; at its target and with the frame there, exactly as it is.
-  #[test]
-  fn a_stretched_window_scales_by_its_target() {
-    let target = Rect::from_xy(100, 50, 400, 600);
-    let old = tile();
-    let midway = Rect::from_xy(100, 50, 600, 600);
-
-    // At its target, it fills the animated rect.
-    assert_eq!(stretch_frame(&target, &target, &midway), midway);
-    // Still at its old size, it is drawn as large as the target's scale
-    // makes it, wider than the rect.
-    assert_eq!(
-      stretch_frame(&old, &target, &midway),
-      Rect::from_xy(100, 50, 1200, 600)
-    );
-    // Part way there, in proportion.
-    assert_eq!(
-      stretch_frame(&Rect::from_xy(100, 50, 500, 600), &target, &midway),
-      Rect::from_xy(100, 50, 750, 600)
-    );
-    // On the last frame, 1:1 with the window, at its target or not.
-    assert_eq!(stretch_frame(&target, &target, &target), target);
-    let short = Rect::from_xy(100, 50, 450, 620);
-    assert_eq!(
-      stretch_frame(&short, &target, &target),
-      Rect::from_xy(100, 50, 450, 620)
-    );
-  }
-
   /// Only a change of size past the threshold is a resize on a peek.
   #[test]
   fn peek_resizes_change_size_past_the_threshold() {
@@ -2940,65 +2849,88 @@ mod tests {
     ));
   }
 
-  /// A held relayout moves once nothing waits for its size, or at the cap
-  /// whatever waits.
+  /// A cover eases back to 1 without a step: all there as it begins,
+  /// most of the way early, exactly 1 from the settle time on.
   #[test]
-  fn a_hold_ends_once_sized_or_at_the_cap() {
-    let short = STRETCH_WAIT_CAP.saturating_sub(Duration::from_millis(1));
-    assert!(!releases_hold(true, Duration::ZERO));
-    assert!(!releases_hold(true, short));
-    assert!(releases_hold(true, STRETCH_WAIT_CAP));
-    assert!(releases_hold(false, Duration::ZERO));
+  fn a_cover_settles_to_one_without_a_step() {
+    assert_eq!(settling(1.5, Duration::ZERO), 1.5);
+    let half = settling(1.5, STRETCH_SETTLE / 2);
+    assert!(half > 1.0 && half < 1.25, "{half}");
+    assert_eq!(settling(1.5, STRETCH_SETTLE), 1.0);
+    assert_eq!(settling(1.5, STRETCH_SETTLE * 3), 1.0);
+    assert_eq!(settling(1.0, Duration::ZERO), 1.0);
   }
 
-  /// Retargeted while held, a motion starts from where it would have, for
-  /// the new target, not started yet; once moving, a retarget glides on.
+  /// A window seen at its target's size settles from the cover it was
+  /// last drawn with, and lands only once that is 1. One short of its
+  /// target isn't waited for.
   #[test]
-  fn a_held_motion_retargets_from_its_start() {
+  fn a_stretch_settles_once_its_window_has_its_size() {
     let t0 = Instant::now();
-    let held = motion(200);
-    let wider = Rect::from_xy(100, 50, 1000, 600);
+    let target = Rect::from_xy(100, 50, 1200, 600);
+    let mut stretch = Stretch::at(Some(tile()));
+    stretch.cover = (1.5, 1.0);
 
-    let retargeted = held_motion_to(&held, wider.clone(), 200, linear());
-    assert_eq!(retargeted.start_rect, tile());
-    assert_eq!(retargeted.target_rect, wider);
-    assert!(!retargeted.is_running());
-    assert_eq!(retargeted.current_state_at(t0).0, tile());
+    stretch.note_target(&target, t0);
+    assert!(!stretch.reached && stretch.is_settled(t0));
+    assert_eq!(stretch.cover_at(t0), (1.0, 1.0));
 
-    let moving = WindowAnimationState::new_movement(
-      tile(),
-      Rect::from_xy(100, 50, 400, 600),
-      200,
-      linear(),
-    );
-    moving.start_clock(t0);
-    let now = t0 + Duration::from_millis(50);
-    let drawn = moving.current_state_at(now).0;
-    let glided = retargeted_motion(&moving, wider, 200, linear(), now);
-    assert!(glided.is_running());
-    assert_eq!(glided.current_state_at(now).0, drawn);
+    // Reached wherever it is: only its size counts.
+    stretch.actual = Some(Rect::from_xy(500, 50, 1200, 600));
+    stretch.note_target(&target, t0);
+    assert!(stretch.reached);
+    assert_eq!(stretch.cover_at(t0), (1.5, 1.0));
+    assert!(!stretch.is_settled(t0));
+
+    // Noted again later, it doesn't start over.
+    let later = t0 + STRETCH_SETTLE;
+    stretch.note_target(&target, later);
+    assert_eq!(stretch.cover_at(later), (1.0, 1.0));
+    assert!(stretch.is_settled(later));
   }
 
-  /// A stretch kept as its window moves on remembers its last read, and
-  /// is seen at its size again only once it reaches a resized target.
+  /// A stretch kept as its window moves on keeps its last read. Headed
+  /// for another size, it is yet to reach it, and keeps its scale: its
+  /// cover times the new target over the old, or 1 where that is less.
   #[test]
-  fn a_kept_stretch_waits_for_a_new_size() {
-    let read = Stretch {
-      actual: Some(tile()),
-      reached: true,
+  fn a_kept_stretch_keeps_its_scale_for_a_new_size() {
+    let t0 = Instant::now();
+    let old = Rect::from_xy(100, 50, 1000, 600);
+    let read = || {
+      let mut stretch = Stretch::at(Some(old.clone()));
+      stretch.note_target(&old, t0);
+      stretch
     };
-    let moved = restretched(Some(read.clone()), true, false);
-    assert!(moved.as_ref().is_some_and(|kept| kept.reached));
-    let resized = restretched(Some(read.clone()), true, true);
-    assert!(resized.as_ref().is_some_and(|kept| {
-      !kept.reached && kept.actual == Some(tile())
-    }));
-    assert!(restretched(Some(read), false, false).is_none());
+    let unread = || -> Option<Rect> { panic!("read again") };
 
-    let mut fresh = restretched(None, true, true).unwrap_or_default();
-    assert!(fresh.actual.is_none() && !fresh.reached);
-    fresh.actual = Some(tile());
-    fresh.note_target(&Rect::from_xy(500, 50, 800, 600));
-    assert!(fresh.reached);
+    let moved = restretched(
+      Some(read()),
+      true,
+      unread,
+      &old,
+      &Rect::from_xy(500, 50, 1000, 600),
+      t0,
+    );
+    assert!(moved.is_some_and(|kept| kept.reached));
+
+    let wider = Rect::from_xy(100, 50, 1200, 300);
+    let resized =
+      restretched(Some(read()), true, unread, &old, &wider, t0);
+    assert!(resized.is_some_and(|kept| {
+      !kept.reached
+        && kept.actual == Some(old.clone())
+        && kept.cover_at(t0) == (1.2, 1.0)
+    }));
+
+    assert!(
+      restretched(Some(read()), false, unread, &old, &wider, t0).is_none()
+    );
+
+    let fresh = restretched(None, true, || Some(tile()), &old, &wider, t0);
+    assert!(fresh.is_some_and(|fresh| {
+      fresh.actual == Some(tile())
+        && !fresh.reached
+        && fresh.cover_at(t0) == (1.0, 1.0)
+    }));
   }
 }

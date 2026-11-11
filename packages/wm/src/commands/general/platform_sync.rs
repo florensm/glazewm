@@ -1244,8 +1244,7 @@ fn redraw_containers(
   });
 
   // With `window_resize.style: "stretch"` and peeks, the relayout's
-  // resizes go on peeks too, and wait for their apps to resize behind
-  // their cloaks before the relayout moves (`STAND_INS_PLAN.md` task 8).
+  // resizes go on peeks too, scaled (`STAND_INS_PLAN.md` task 8).
   let stretches = cycle_has_resize
     && !suppress_animations
     && crate::animation::peek_view::stretches_relayout(
@@ -1253,10 +1252,6 @@ fn redraw_containers(
       &windows_to_redraw,
       config,
     );
-  // Windows of this relayout drawn moving by peeks, which with `stretches`
-  // wait together, and whether any moves another way, which can't wait.
-  let mut peek_group = Vec::new();
-  let mut moves_elsewhere = false;
 
   drop(prep_scope);
   let loop_scope = perf::scope(Stage::RedrawLoop);
@@ -1577,7 +1572,6 @@ fn redraw_containers(
         // or it would be uncloaked at once.
         is_frozen_by_ws_animation |=
           state.animation_manager.peeks.is_moving(&window.id());
-        peek_group.push(window.id());
 
         // Floating, it may overlap windows restacked after it this pass
         // (`windows_to_bring_to_front`) that would cover its peek, just
@@ -1663,10 +1657,9 @@ fn redraw_containers(
         // peek (`STAND_INS_PLAN.md` task 6), frozen behind it from now
         // on as an entering one is.
         peek_moves.push(window.id());
-        peek_group.push(window.id());
         (AnimationPositionResult::Frozen, None)
       } else {
-        let result = state.animation_manager.start_animation_if_needed(
+        state.animation_manager.start_animation_if_needed(
           window.id(),
           is_resize,
           cycle_has_resize,
@@ -1678,12 +1671,7 @@ fn redraw_containers(
           corner_style,
           overlays,
           config,
-        );
-        moves_elsewhere |= state
-          .animation_manager
-          .get_animation(&window.id())
-          .is_some_and(|animation| !animation.is_complete());
-        result
+        )
       }
     } else {
       // Animations are skipped for this window. Cancel any in-progress
@@ -1719,7 +1707,7 @@ fn redraw_containers(
               config,
             );
           let now = state.animation_manager.frame_now();
-          let retargeted = state.animation_manager.peeks.retarget_tile(
+          state.animation_manager.peeks.retarget_tile(
             &window.id(),
             target_rect.clone(),
             crate::animation::peek_view::follow_duration(
@@ -1731,9 +1719,6 @@ fn redraw_containers(
             stretches,
             now,
           );
-          if retargeted {
-            peek_group.push(window.id());
-          }
         }
 
         // A surrogate overlay is covering this window. On the first frame,
@@ -2031,19 +2016,6 @@ fn redraw_containers(
   }
 
   drop(loop_scope);
-
-  // Before the first tick, which starts what isn't held. A relayout part
-  // of which moves another way can't wait, nor what it retargets of an
-  // earlier one still waiting.
-  if stretches && !moves_elsewhere {
-    let now = state.animation_manager.frame_now();
-    state.animation_manager.peeks.hold(&peek_group, now);
-  } else if peek_group
-    .iter()
-    .any(|id| state.animation_manager.peeks.is_held(id))
-  {
-    state.animation_manager.peeks.release_hold();
-  }
 
   // Cloak every window that entered its first `Frozen` frame this pass,
   // behind a single shared `DwmFlush` barrier. See `pending_cloaks`. A

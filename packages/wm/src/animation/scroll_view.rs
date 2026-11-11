@@ -104,8 +104,8 @@ pub fn sync_scroll_view(
   };
 
   // With `window_resize.style: "stretch"`, a column resized on screen goes
-  // on its peek too, scaled, the strip held until its app has resized
-  // (`STAND_INS_PLAN.md` task 8), where every resized column can.
+  // on its peek too, scaled (`STAND_INS_PLAN.md` task 8), where every
+  // resized column can.
   let stretches = pure_moves.is_some() && stretches_on_peeks(config);
   let can_stretch = windows
     .iter()
@@ -158,7 +158,6 @@ pub fn sync_scroll_view(
             && from.height() == target.height()
           || can_stretch.contains(&window.id())
       });
-    let mut moving = Vec::new();
 
     // The strip moves as one when any column crosses the monitor edge,
     // is already drawn by a peek, or opens; moves that stay on screen are
@@ -260,16 +259,7 @@ pub fn sync_scroll_view(
 
       if is_moving {
         started_moving.push(window.id());
-        moving.push(window.id());
       }
-    }
-
-    // A strip part of which can't stretch can't wait either, nor what it
-    // moves on of one still waiting.
-    if stretches {
-      view.hold(&moving, now);
-    } else if moving.iter().any(|id| view.is_held(id)) {
-      view.release_hold();
     }
   }
 
