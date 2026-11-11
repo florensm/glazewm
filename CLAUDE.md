@@ -120,8 +120,8 @@ Always stripped from a test build:
   Its `switch_modes.ps1` restarts the WM with the profiler on and moves windows between
   workspaces to compare the switch styles. Its `isolate_modes.ps1` restarts the WM once per
   `GLAZEWM_ISOLATE` mode, with the profiler on, and drives bursts of moves, floats,
-  minimizes, resizes and switches, optionally under a queued IPC load (`--load`), to compare
-  how windows are drawn.
+  minimizes, resizes and switches, optionally under a queued IPC load (`--load`) and busy-loop
+  CPU jobs (`-CpuLoad`), to compare how windows are drawn.
 - `packages/wm-platform/examples/uncloak_all.rs`: walks and un-cloaks every top-level window.
 - `resources/scripts/package.ps1`: the installer packaging script, which only the release
   workflow runs. Not needed to build or run the WM.

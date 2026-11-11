@@ -39,11 +39,19 @@ IPC queries queued as each animation starts (`perf_bench --load`), so the
 main loop has a backlog to catch up on between frames. `peeksfirst` only
 differs from `default` with one; compare those two with e.g. `-Load 40`.
 
+.PARAMETER CpuLoad
+Busy-loop threads kept running while measuring, at normal priority, so the
+WM competes for the CPU and works through its backlog slower, as on a
+busy or weaker machine. `[Environment]::ProcessorCount` loads every core.
+
 .EXAMPLE
 powershell -ExecutionPolicy Bypass -File packages\wm-cli\examples\perf_bench\isolate_modes.ps1 -Target chrome
 
 .EXAMPLE
 powershell -ExecutionPolicy Bypass -File packages\wm-cli\examples\perf_bench\isolate_modes.ps1 -Target chrome -Modes default,peeksfirst -Scenarios move,resize -Load 40
+
+.EXAMPLE
+powershell -ExecutionPolicy Bypass -File packages\wm-cli\examples\perf_bench\isolate_modes.ps1 -Target chrome -Modes default,peeksfirst -Scenarios move,resize -Load 400 -CpuLoad 16
 #>
 param(
   [Parameter(Mandatory)] [string] $Target,
@@ -51,7 +59,8 @@ param(
   [string[]] $Scenarios = @('move', 'float', 'minimize', 'resize', 'switch'),
   [int] $Rounds = 2,
   [int] $Bursts = 10,
-  [int] $Load = 0
+  [int] $Load = 0,
+  [int] $CpuLoad = 0
 )
 
 $ErrorActionPreference = 'Stop'
@@ -143,10 +152,21 @@ foreach ($scenario in $Scenarios) { $rows[$scenario] = @() }
 
 Set-Content -Path $resultsFile -Value (
   "Isolate benchmark, $(Get-Date -Format s), target $Target, " +
-  "$Rounds round(s) of $Bursts bursts per scenario and mode, load $Load"
+  "$Rounds round(s) of $Bursts bursts per scenario and mode, load $Load, " +
+  "CPU load $CpuLoad thread(s) of $([Environment]::ProcessorCount)"
 )
 
+# One job per busy thread, each its own process, for the whole run.
+$cpuJobs = @()
+
 try {
+  if ($CpuLoad -gt 0) {
+    Write-Host "Starting $CpuLoad CPU load thread(s)..."
+    $cpuJobs = @(1..$CpuLoad | ForEach-Object {
+      Start-Job -ScriptBlock { while ($true) {} }
+    })
+  }
+
   for ($round = 1; $round -le $Rounds; $round++) {
     foreach ($mode in $Modes) {
       $isolate = $(if ($mode -eq 'default') { '' } else { $mode -replace '\+', ',' })
@@ -173,6 +193,12 @@ try {
     }
   }
 } finally {
+  if ($cpuJobs) {
+    Write-Host 'Stopping the CPU load...'
+    $cpuJobs | Stop-Job
+    $cpuJobs | Remove-Job -Force
+  }
+
   Write-Host 'Restarting GlazeWM as it was...'
   $benchWm = Get-WmProcess
   if ($benchWm) { Stop-Wm $wm $benchWm }
