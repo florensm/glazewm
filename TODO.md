@@ -681,10 +681,29 @@ to see it; check each once more at 150 ms.
       backdrop's detail doesn't show through it.
     - Press the resize key again before the first resize has finished,
       several times, right after another resize ended: the fill never
-      takes the border ring's color. A window's first resize since the
-      WM started still has no fill (its color isn't sampled yet).
+      takes the border ring's color. A window's first resize: see 52.
     - Open, close and the fade as a resize lands: the fill fades with the
       window, with no flash of solid color.
+51. **Fill resize: every window hands off mid-way** (`efee1e2`). Config
+    `window_resize: { style: "fill", duration_ms: 2000 }`. A tiling
+    layout of four or more windows with live content (Notepad with
+    wrapped text, a browser, Explorer): open a fifth window, then close
+    one of five; also with `style: "stretch"`.
+    - Every window's content reflows to its new size during the motion,
+      the last ones in pass order included.
+    - None reflows in one step after it lands, at rest.
+52. **Fill resize: first fill and steady fill color** (`27c65bb`,
+    `3b3595d`). Config `window_resize: { style: "fill", duration_ms:
+    2000 }`; see-through windows (about 80%) with a backdrop and a ring.
+    - Restart the WM, then grow a window: its first resize already shows
+      a fill. Same for a window just opened (wait for its open animation
+      to land), and for one opened with `window_open.enabled: false`
+      after any other animation has played.
+    - A see-through window's fill is a steady color close to the app's
+      own as it looks on screen, the same from one resize to the next,
+      never the ring's color or another window's.
+    - Should not show: any extra pause or stutter at the key press, or
+      right after an open lands.
 
 If bars or flicker show, isolate them with `GLAZEWM_ISOLATE` (below), one
 restart per flag: `noring`, `nobackdrop`, then `live`. With a long
