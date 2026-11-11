@@ -485,6 +485,30 @@ to see it; check each once more at 150 ms.
     screen; closing it or switching workspace mid-way leaves no peek.
     Question for the owner: does a `slide_*` style read well on a column
     that is also widening? If not, columns take `zoom` and the fade only.
+44. **Close and minimize on peeks** (`STAND_INS_PLAN.md` task 4). In a
+    tiling layout and on the scrolling workspace, with
+    `GLAZEWM_ISOLATE=peeks`, `window_close` on, at `duration_ms: 3000`
+    and at 150, styles `none` (with `opacity_to` below 1), `zoom` and
+    one `slide_*`; the same for `window_minimize` (`toggle-minimized`).
+    Run 32, 34 and 35 again with the switch on, then:
+    - the last window of a workspace, and one with a neighbour: both
+      play; the second is covered as the neighbour grows over it, never
+      before (the owner's z-order: a closing window stays below);
+    - border and backdrop fade or shrink with the window, never linger;
+    - no frame at the start with neither window nor stand-in (review
+      finding 11): step through the first frames of a 60 fps recording;
+    - close a window still opening (`window_open` at 2000 ms): it turns
+      round where it is, with no jump;
+    - a refused close ("Save changes?" in Notepad): the window comes
+      back, uncloaked;
+    - nothing left on screen or cloaked afterwards, and the window is
+      closed or minimized once the animation ends; exiting the WM
+      mid-close leaves the window open and visible.
+
+    Windows whose peek would be `Live` (rounded corners, or parallax not
+    1), and a partly visible scrolling column at rest, keep the old path.
+    A minimize waits for one composition (`DwmFlush`) before the window
+    is minimized; look for a hitch on pressing it.
 
 If bars or flicker show, isolate them with `GLAZEWM_ISOLATE` (below), one
 restart per flag: `noring`, `nobackdrop`, then `live`. With a long
@@ -504,7 +528,8 @@ in the log says it is on):
   peeks that move with them, as before `b33c0ef8`.
 - `peeks`: draw open, close, minimize, restore and moves with pinned
   peeks instead of `ResizeSession`, for the kinds already moved over.
-  So far: opens in tiling layouts (`STAND_INS_PLAN.md` 3a).
+  So far: opens (`STAND_INS_PLAN.md` 3a, 3b), closes and minimizes
+  (task 4).
 
 Set it for one run, e.g. from PowerShell in the repo:
 

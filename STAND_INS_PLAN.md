@@ -158,7 +158,8 @@ owner's decision, and for seen-working code.
 - [x] 2. Entry track: the maths, the drawing, the switch
 - [ ] 3. Open on peeks: tiling layouts (the gate), then scrolling columns
   (3a and 3b built, not checked live)
-- [ ] 4. Close and minimize on peeks, both layouts
+- [ ] 4. Close and minimize on peeks, both layouts (built, not checked
+  live)
 - [ ] 5. Restore on peeks
 - [ ] 6. Moves on peeks
 - [ ] 7. The frame's place in the tick: measure, then decide
@@ -613,6 +614,34 @@ again with the switch on, plus
 - no frame at the start with neither window nor stand-in (finding 11);
 - close a window still opening: it turns round where it is;
 - a refused close ("Save changes?" in Notepad): the window comes back.
+
+As built, for task 5:
+
+- `animate_away` calls `peek_view::leave_on_peek`; `PeekView::leave`
+  returns `Leave::Leaving`, `Skipped` (nothing to show, or no
+  thumbnail: closed or minimized at once) or `Unsupported` (a `Live`
+  peek, or an entry in a role other than `Moving`, e.g. a partly
+  visible column at rest: the old path, as before).
+- A leaving entry is `Role::Leaving(AwayTransition)`, `is_column:
+  false`, its motion held where it was (`held_motion`), and keeps a
+  `Departing` (native window, effect set, frames read before it went,
+  `awaits_cloak`). A minimized window's frames are its taskbar
+  button's, so they are never re-read.
+- Take-over: a close's sync never reaches `commit_pending_cloaks` for
+  it (out of the tree), so the first tick takes over and cloaks it. A
+  minimize can't wait (the caller minimizes it next), so
+  `leave_on_peek` flushes once (`DwmFlush`) and takes over before it
+  returns; the window is minimized, never cloaked, as on the old path.
+- `remove_animation` drops a leaving entry (`forget_leaving`), as it
+  dropped an away surrogate: the restore of a still-playing minimize
+  (`platform_sync`, `9a23bf4`) therefore still ends it. Task 5 turns it
+  round there instead: the entry's transit is `Out`, so
+  `leaving_transit`'s counterpart is `transit.reversed(..)` started at
+  the frame time, the role back to `Moving { ends_shown: true }`,
+  `departing` cleared and `is_column` as it was.
+- `sync_overlays` keeps a leaving window's overlays (the peek copies
+  them) until it has left; `column_moves` skips a leaving window, which
+  a minimizing column still is in the tree.
 
 ### Task 5: restore on peeks
 
