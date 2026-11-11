@@ -458,6 +458,11 @@ fn sync_focus(
   let focused_window_id = native_window.as_ref().map(CommonGetters::id);
   let result = if let Some(window) = native_window {
     tracing::info!("Setting focus to window: {window}");
+    if state.dispatcher.focused_window() != *window.native() {
+      state
+        .focus_requests
+        .record(window.native().id(), std::time::Instant::now());
+    }
     window.native().focus()
   } else {
     tracing::info!("Setting focus to the desktop window.");

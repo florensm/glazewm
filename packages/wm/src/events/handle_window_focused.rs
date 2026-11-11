@@ -45,6 +45,21 @@ pub fn handle_window_focused(
     return Ok(());
   }
 
+  // The echo of a focus change the WM has since moved on from, e.g. a
+  // quick second `focus --direction`: hand focus back to the WM's target
+  // rather than taking it as the user focusing the window.
+  if let Some(window) = &found_window {
+    let is_own_request = state
+      .focus_requests
+      .take(native_window.id(), std::time::Instant::now());
+
+    if is_own_request && focused_container.id() != window.id() {
+      info!("Ignoring focus event from an earlier focus change: {window}");
+      state.pending_sync.queue_focus_change();
+      return Ok(());
+    }
+  }
+
   // Ignore the focus event if window is being hidden by the WM.
   if let Some(window) = &found_window {
     if window.display_state() == DisplayState::Hiding {

@@ -95,6 +95,9 @@ pub struct WmState {
   /// Whether the OS focused window is the same as the WM focused window.
   pub is_focus_synced: bool,
 
+  /// Windows the WM asked the OS to focus, awaiting their focus event.
+  pub focus_requests: crate::focus_requests::FocusRequests,
+
   /// Backdrop and border overlay windows keyed by managed-window UUID.
   ///
   /// Each overlay is a `WS_POPUP` window rooting a
@@ -181,6 +184,7 @@ impl WmState {
       ),
       is_paused: false,
       is_focus_synced: false,
+      focus_requests: crate::focus_requests::FocusRequests::default(),
       has_initialized: false,
       event_tx,
       exit_tx,

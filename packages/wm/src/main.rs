@@ -44,6 +44,7 @@ mod covered_tiles;
 mod drop_indicator;
 mod error_notifier;
 mod events;
+mod focus_requests;
 mod ipc_server;
 mod layout;
 mod models;
