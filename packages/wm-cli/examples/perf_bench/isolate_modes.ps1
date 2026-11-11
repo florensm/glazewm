@@ -30,15 +30,24 @@ IPC (see CLAUDE.md's build targets).
 Process name of the tiled window to animate, e.g. `chrome` or `notepad`.
 It needs a tiled neighbour on its workspace for `move` and `resize`.
 
+.PARAMETER Load
+IPC queries queued as each animation starts (`perf_bench --load`), so the
+main loop has a backlog to catch up on between frames. `peeksfirst` only
+differs from `default` with one; compare those two with e.g. `-Load 40`.
+
 .EXAMPLE
 powershell -ExecutionPolicy Bypass -File packages\wm-cli\examples\perf_bench\isolate_modes.ps1 -Target chrome
+
+.EXAMPLE
+powershell -ExecutionPolicy Bypass -File packages\wm-cli\examples\perf_bench\isolate_modes.ps1 -Target chrome -Modes default,peeksfirst -Scenarios move,resize -Load 40
 #>
 param(
   [Parameter(Mandatory)] [string] $Target,
   [string[]] $Modes = @('nopeeks', 'default', 'peeksfirst'),
   [string[]] $Scenarios = @('move', 'float', 'minimize', 'resize', 'switch'),
   [int] $Rounds = 2,
-  [int] $Bursts = 10
+  [int] $Bursts = 10,
+  [int] $Load = 0
 )
 
 $ErrorActionPreference = 'Stop'
@@ -126,7 +135,7 @@ foreach ($scenario in $Scenarios) { $rows[$scenario] = @() }
 
 Set-Content -Path $resultsFile -Value (
   "Isolate benchmark, $(Get-Date -Format s), target $Target, " +
-  "$Rounds round(s) of $Bursts bursts per scenario and mode"
+  "$Rounds round(s) of $Bursts bursts per scenario and mode, load $Load"
 )
 
 try {
@@ -148,7 +157,7 @@ try {
       foreach ($scenario in $Scenarios) {
         Write-Host "  Measuring '$scenario'..."
         $output = & $bench --scenario $scenario --target $Target `
-          --bursts $Bursts --label "$mode #$round"
+          --bursts $Bursts --load $Load --label "$mode #$round"
         if ($LASTEXITCODE) { throw "Scenario '$scenario' failed." }
         $output | Add-Content -Path $resultsFile
         $rows[$scenario] += $output | Where-Object { $_ -like '| *' }

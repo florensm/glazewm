@@ -23,6 +23,10 @@
 //! workspace on the target's monitor. Every scenario reports how long each
 //! command took to be answered, which with animations off is the whole
 //! switch, as no profiler report is written without animation frames.
+//!
+//! `--load <n>` queues `n` IPC queries as each animation starts, so the
+//! main loop has a backlog to catch up on between frames, as it would
+//! with busy apps. It is what `GLAZEWM_ISOLATE=peeksfirst` is for.
 
 mod bench_config;
 mod dwm;
@@ -118,7 +122,13 @@ struct Args {
   dwm: bool,
   /// Workspace the switch scenario alternates with the target's.
   other_workspace: Option<String>,
+  /// IPC queries queued as each animation starts.
+  load: usize,
 }
+
+/// The query `--load` queues. It walks and serializes the whole tree, so
+/// each costs the main loop a measurable slice of a frame.
+const LOAD_QUERY: &str = "query workspaces";
 
 /// Per-burst DWM summaries, as `(label, values)` for the summary table.
 type DwmColumns = Vec<(&'static str, Vec<f64>)>;
@@ -186,6 +196,8 @@ async fn main() -> anyhow::Result<()> {
     let sent = Instant::now();
     send_step(&mut client, subject, step).await?;
     command_ms.push(sent.elapsed().as_secs_f64() * 1000.0);
+
+    send_load(&mut client, args.load).await?;
 
     tokio::time::sleep(args.settle).await;
 
@@ -281,6 +293,7 @@ fn parse_args() -> anyhow::Result<Args> {
     label: "run".into(),
     dwm: false,
     other_workspace: None,
+    load: 0,
   };
 
   let mut iter = std::env::args().skip(1);
@@ -300,6 +313,7 @@ fn parse_args() -> anyhow::Result<Args> {
       "--settle-ms" => args.settle = Duration::from_millis(value.parse()?),
       "--label" => args.label = value,
       "--other-workspace" => args.other_workspace = Some(value),
+      "--load" => args.load = value.parse()?,
       _ => bail!("Unknown flag '{flag}'."),
     }
   }
@@ -503,6 +517,28 @@ async fn send_step(
   Ok(())
 }
 
+/// Queues `count` [`LOAD_QUERY`]s at once, then waits for every answer.
+///
+/// All are sent before any answer is read, so they wait in the WM's queue
+/// together rather than one at a time.
+async fn send_load(
+  client: &mut IpcClient,
+  count: usize,
+) -> anyhow::Result<()> {
+  for _ in 0..count {
+    client.send(LOAD_QUERY).await?;
+  }
+
+  for _ in 0..count {
+    client
+      .client_response(LOAD_QUERY)
+      .await
+      .context("No response to load query.")?;
+  }
+
+  Ok(())
+}
+
 /// Removes ANSI color escapes, which the log writer may emit.
 fn strip_ansi(text: &str) -> String {
   let mut out = String::with_capacity(text.len());
@@ -655,11 +691,13 @@ fn print_summary(
   elapsed: Duration,
 ) {
   println!(
-    "label={} scenario={} target={} bursts={} reports={} wall={:.1}s",
+    "label={} scenario={} target={} bursts={} load={} reports={} \
+     wall={:.1}s",
     args.label,
     args.scenario,
     args.target,
     args.bursts,
+    args.load,
     reports.len(),
     elapsed.as_secs_f64(),
   );
