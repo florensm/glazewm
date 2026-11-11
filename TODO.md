@@ -704,6 +704,22 @@ to see it; check each once more at 150 ms.
       never the ring's color or another window's.
     - Should not show: any extra pause or stutter at the key press, or
       right after an open lands.
+53. **Floating open over floating windows shown on top** (`cf3f0e9`).
+    Config `window_open: { duration_ms: 2000 }`, `floating.shown_on_top`
+    on (the default), no `nopeeks`. Open two or three floating windows
+    (dialogs, or apps set to float) overlapping one spot, then open
+    another floating window over them.
+    - It animates on top of them the whole way, and lands where it was
+      drawn, with no jump above them as it lands.
+    - A tiled window opening beneath them animates under them.
+    - With `shown_on_top: false`: a new focused floating window animates
+      over the other floating windows, as before.
+54. **Steady gaps while tiles animate** (`afb82e7`). Config `window_move`
+    and `window_resize` at `duration_ms: 2000`. Three or four tiles side
+    by side: open a window among them, then close one.
+    - The gaps between tiles stay one steady width throughout, never
+      flickering a pixel wider or narrower frame to frame.
+    - A swap of two equal tiles keeps their size the whole way.
 
 If bars or flicker show, isolate them with `GLAZEWM_ISOLATE` (below), one
 restart per flag: `noring`, `nobackdrop`, then `live`. With a long
@@ -717,11 +733,6 @@ decided), swap and swap back mid-way, minimize and restore, close while
 opening all worked. Opens and closes looked about as before. A floating
 open showed its border at the final rect from the start (`f1982c2`,
 entry 47). Still unseen: entries 43 (columns), 45's taskbar cases, 48.
-
-Open, found by reading while fixing entry 47: with
-`floating.shown_on_top` (the default), other floating windows are in
-the topmost band, above a new floating window's peek, so it may open
-underneath them. Not fixed: needs a look first.
 
 ## Live-check switch: `GLAZEWM_ISOLATE`
 
