@@ -632,34 +632,59 @@ to see it; check each once more at 150 ms.
     or varies by more. With `peeksfirst`, the catch-up's own stages
     (`platform_sync` and below) count in the frame but not in `tick`;
     compare `tick` between the two runs, not `platform_sync`.
-49. **Stretch resize on peeks** (`STAND_INS_PLAN.md` task 8, a timing
-    change: a relayout that resizes waits up to 100 ms before it moves).
-    Config `window_resize: { style: "stretch", duration_ms: 2000 }`, then
-    150; peeks on (the default). In a tiling layout: grow and shrink a
-    tile by keyboard, open a window beside two others, close one of
-    three, hold a resize key; on the scrolling workspace, resize a column.
-    Apps: Notepad with wrapped text, a browser, Explorer, an Electron app.
-    - First: any change of scale as it ends. The last frames and the
-      hand-back must show no zoom, no jump in size, nothing reflowing.
-    - How long before a resize starts to move after the key: at most
-      about 100 ms, mostly a frame or two; Outlook-like slow apps the
-      longest. The window waits at its old rect, then shows its new
-      layout squeezed into it in one step (the one swap left), then
-      stretches to its tile. Neighbours wait and move with it, borders
-      in step.
-    - No cut or padded content mid-way and no blank frame; at the swap,
-      look for a one-frame transparent strip on a shrinking window (the
-      app resizing between the WM's read and DWM's frame).
-    - Borders: thicker or thinner than normal at the start along the
-      resized axis (by old over new size), back to normal as it lands,
-      changing smoothly with no step.
-    - A held resize key: after the first press the motion glides on
-      without waiting again, the app resized to each newest target, the
-      picture never zooming at the end.
-    - A window that won't take its tile's size (e.g. a minimum size):
-      it is drawn as it really is, and the hand-back shows no jump.
+49. **Stretch resize on peeks, instant** (`STAND_INS_PLAN.md` task 8;
+    the first build's wait of up to 100 ms is gone). Config
+    `window_resize: { style: "stretch", duration_ms: 2000 }`, then 150;
+    peeks on (the default). In a tiling layout: grow and shrink a tile by
+    keyboard, open a window beside two others, close one of three, hold a
+    resize key; on the scrolling workspace, resize a column, also the
+    rightmost one. Apps: Notepad with wrapped text, a browser, Explorer,
+    an Electron app, a slow one (Outlook).
+    - First: no wallpaper and no bare backdrop anywhere, at the key press
+      or after it, on any window, the rightmost included. The picture
+      covers its tile's moving rect on every frame.
+    - It moves on the frame after the key, as a pure move does.
+    - A window that shrinks: as it starts, the part of it that will stay
+      (from its top-left) is shown enlarged, by old size over new, then
+      glides to 1:1. This step at the start is the one left; judge it
+      first with a large change (open a window beside a full-width one).
+      Its new content arrives without any change of scale.
+    - A window that grows: its old content stretches with the tile; when
+      its new content arrives it keeps that scale, cut at the tile's edge,
+      and eases to fit within about 80 ms. No pop, no zoom, also with the
+      new content arriving late in the motion (it then lands up to 80 ms
+      later).
+    - As it ends: no change of scale in the last frames or at the
+      hand-back for a window that took its new size.
+    - Known weak: an app slower than the animation (content after about
+      150 ms) that grows ends stretched and is handed back so, the old
+      path's zoom at the end; a window that refuses its tile's size is
+      handed back with a jump.
+    - Borders: scaled with the picture along a resized axis, with a small
+      step in thickness as a growing window's content arrives.
+    - A held resize key: glides on, each press resizing the apps again,
+      with no wallpaper at the growing window's far edge between presses.
     - Compare with `GLAZEWM_ISOLATE=nopeeks` and with `style: "fill"`:
       both must look as they did before.
+50. **Fill resize: seam line and fill color** (`9e2849b`, `092278d`,
+    `1abbb0b`). Config `window_resize: { style: "fill", duration_ms:
+    2000 }`, then 150; see-through windows (about 80%) with a backdrop
+    and a ring. Resize two neighbouring tiles so that one grows on one
+    axis and shrinks on the other (the fill then shows for the whole
+    motion), with a dark app over a light part of the wallpaper.
+    - No 1 to 2 px line showing wallpaper or backdrop between a window's
+      content and its fill, along the bottom or right of the content. If
+      one still shows, note its width in pixels and the display's scale:
+      the fill reaches 2 px under the content's edge.
+    - The fill is the window's color as it looks on screen, not lighter
+      or more see-through than the content beside it. It is flat: the
+      backdrop's detail doesn't show through it.
+    - Press the resize key again before the first resize has finished,
+      several times, right after another resize ended: the fill never
+      takes the border ring's color. A window's first resize since the
+      WM started still has no fill (its color isn't sampled yet).
+    - Open, close and the fade as a resize lands: the fill fades with the
+      window, with no flash of solid color.
 
 If bars or flicker show, isolate them with `GLAZEWM_ISOLATE` (below), one
 restart per flag: `noring`, `nobackdrop`, then `live`. With a long

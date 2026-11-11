@@ -182,8 +182,9 @@ Owner's answers, 2026-11-11:
   measured later (built, not checked live or measured)
 - [ ] 7b. Peeks by default, `window_close` on by default (built, not
   checked live)
-- [ ] 8. Resize: `stretch` on peeks (owner's choice, 2026-11-11; wait,
-  then stretch; built, not checked live)
+- [ ] 8. Resize: `stretch` on peeks (owner's choice, 2026-11-11; first
+  built as wait, then stretch, rebuilt instant after the owner's live
+  run; not checked live)
 - [ ] 9. Remove what is no longer reached
 
 ### Task 0: baseline (desktop, by hand)
@@ -1023,51 +1024,85 @@ The options as they were put:
   colour, mid-motion hand-off). The hard part the second version
   described; only if (b) is not acceptable.
 
-As built (not seen running), for task 9 and a later `fill` port:
+Owner's verdicts on the first build (wait, then stretch), live,
+2026-11-11: the stretch itself "looks pretty nice", with no zoom and no
+snap. Rejected: the wait ("it should be a bit instant", "a bit laggy")
+and the wallpaper showing for a moment at the key press, sometimes on
+the rightmost window. One window alone resized well. `fill` judged "more
+solid", "a bit smoother" for now, with a thin unfilled line (fixed
+since, `TODO.md` entry 50).
+
+Where that wallpaper came from, read from the code: a held peek sampled
+its window at its old size while the app was resized behind the cloak. A
+window that shrank was oversampled, a transparent hole, from the moment
+its resize landed until a tick had read its new rect and the next had
+drawn with it: one to two frames, on every shrink. And a growing window
+whose content had not arrived when it moved (the cap run out, or any key
+press after the first, which never waited) was drawn at animated /
+target of its old size: short of its rect, its backdrop copy with it,
+the wallpaper showing in the rest, at its far edge. The rightmost window
+has nothing beside it to hide that.
+
+As rebuilt (not seen running), for task 9 and a later `fill` port:
 
 - Only with `style: "stretch"`, `window_resize.enabled` and peeks on
   (`stretches_on_peeks`); `fill` and `nopeeks` take exactly the paths
   they took before.
-- Where the end-zoom came from: old `stretch` draws the whole window
-  (no source rect), so its scale is animated / actual size and steps by
-  target / source on the frame the app's resized content arrives; with a
-  fast-start 150 ms curve that is near the end, the old content blown up
-  most. Nothing in our code switches a source rect.
-- Order: as task 6's moves, the take-over's flush (`commit_pending_cloaks`
-  then `preposition_cloaked`, size included) resizes the cloaked window
-  once; a retarget resizes it again (`follow_retargeted_column`). The
-  relayout's peeks are held (`PeekView::hold`, `Entry::held`): their
-  clocks aren't started, so they are drawn at `from`, 1:1, until every
-  held stretching window's rect (`GetWindowRect`, read by `carry_ring`
-  each tick already) has its target's size, or `STRETCH_WAIT_CAP` (100
-  ms, from `HANDOFF_LEAD_MAX_MS`) runs out. Then all start on the next
-  tick, on one clock. Entering windows of the same relayout are held
-  with it; leaving ones are not.
-- Sampling: the window's actual rect, as read, scaled by animated /
-  target on each axis from the animated rect's top-left
-  (`stretch_frame`, `WindowPeek::place_stretched`): at target it fills
-  the rect, on the last frame it is the window 1:1 whatever size it has.
-  Until the window has been seen at its target's size, the source is
-  capped per axis at the target's size, so a resize still on its way
-  can't make it oversample.
+- No wait: `Entry::held`, `PeekView::hold` and `STRETCH_WAIT_CAP` are
+  gone. The take-over's flush resizes every cloaked window of the
+  relayout at once (`preposition_cloaked`), a retarget resizes it again,
+  and the motion starts on the next tick, as a pure move's does.
+- Drawing rule (`Stretch`, `WindowPeek::place_stretched`,
+  `stretched_rects`): the picture always covers the animated rect, cut
+  at it, and samples no more of the window than it is sure to have (its
+  read size, capped per axis at the target's until it has been seen at
+  the target's size). Scale per axis = animated / target x cover, cover
+  >= 1: what it takes to reach across the rect with what is sampled.
+  The ring and backdrop copies are placed at the animated rect.
+  - Shrinking axis: only the target's length can be sampled safely, so
+    cover is 1 from the first frame: the part that stays, enlarged by
+    old / new as the motion starts, gliding to 1:1; the new content
+    arrives at the same scale. One step, at the start, as large as the
+    swap the first build made there.
+  - Growing axis: the old content is stretched across the rect (cover =
+    target / old). Once the window is seen at its target's size, the
+    cover eases to 1 over `STRETCH_SETTLE` (80 ms) instead of stepping:
+    the new content keeps the old one's scale, cut at the rect's edge,
+    then comes to fit. The step was the old path's zoom.
+  - Lands 1:1: at the target, a window of its size has cover 1 and is
+    sampled whole. A landing waits for the cover to be 1 (at most 80 ms
+    more, only when the content arrived in the last frames).
+- Why this rule: filling the rect with all of the old content
+  (animated / actual) oversamples a window the moment it shrinks, and
+  steps when content arrives; animated / target alone leaves a growing
+  window short of its rect, wallpaper beside it. Covering with what can
+  be sampled, and easing where easing can still cover, is what is left
+  with no wait.
+- Weak points: a growing window whose app is slower than the animation
+  lands stretched and is handed back so (the old zoom, for slow apps
+  only); a window that refuses its target's size is handed back with a
+  jump (the first build drew it as it was); the ring copy's thickness
+  follows animated / actual, so steps as a growing window's content
+  arrives (TODO "Still open" 5); the shrink's enlarged first frame.
+  Sending a shrinking window its size a few frames in, once the rect is
+  within a few percent of the target, would make that step as small:
+  not built, it is a wait of another kind.
+- The window's rect is read as its peek is made (`Stretch::at`) and by
+  `carry_ring` each tick (`GetWindowRect`, existing calls), so a draw
+  uses a read up to a tick old: the cap is what keeps that safe.
 - Mixed relayouts: `stretches_relayout` keeps the whole relayout off
   stretch (resizes on `ResizeSession`, pure moves on peeks, as task 6)
   when any of its tiles couldn't go on a peek (`Live`, another
   stand-in, floating state change, off its monitor) or is at its new
-  size already, which an interactive resize's drag end leaves it at. A
-  pass where something still lands on another path releases the hold.
+  size already, which an interactive resize's drag end leaves it at.
   Columns: `sync_scroll_view` does the same per strip (`can_stretch`); a
   new column still widens from nothing (`opening_rect`), never scaled.
-- A retarget while held restarts the held motion for the new target
-  (`held_motion_to`); one while moving glides on (`retargeted_motion`)
-  and never holds again. An entry already stretching keeps stretching.
-- Ring copies scale with the frame: border width x animated / target
-  along a resized axis (TODO "Still open" 5). Drawing the ring at the
-  animated size, as the old path's overlays are, is the follow-up.
+- A retarget glides on (`retargeted_motion`); a stretch headed for
+  another size keeps the scale it was drawn at (`Stretch::retarget`).
 - Task 9: `ResizeSession`'s `stretch` (`SessionOptions::stretch`,
   `NativeSurrogate`'s `stretch` field, `stretched_destination`) is still
   reached with `nopeeks` and by mixed relayouts; nothing is unreachable
-  yet. A `fill` port would reuse the hold and `place_stretched`'s cap.
+  yet.
 
 ### Task 9: remove what is no longer reached
 
