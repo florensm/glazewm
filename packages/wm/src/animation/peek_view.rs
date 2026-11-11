@@ -222,6 +222,19 @@ fn leaving_transit(
   }
 }
 
+/// The transit a window still leaving comes back by, turned round where
+/// it is at `now` and started then: it grows back from where it had
+/// shrunk to, rather than starting over.
+fn returning_transit(
+  leaving: &Transit,
+  params: &WindowTransitionParams,
+  now: Instant,
+) -> Transit {
+  let returning = leaving.reversed(params, now);
+  returning.clock.start_clock(now);
+  returning
+}
+
 /// The transit an entry keeps as [`PeekView::upsert`] moves it on or
 /// puts it at rest: an unfinished one, while it moves. Nothing ticks a
 /// transit at rest, where the peek shows its window whole.
@@ -799,8 +812,9 @@ impl PeekView {
     covers_shown_window
   }
 
-  /// Draws `window`, just opened at `target`, entering on a pinned peek
-  /// by `params`' style, opacity and timing, until it is handed back.
+  /// Draws `window`, just opened or restored at `target`, entering on a
+  /// pinned peek by `params`' style, opacity and timing, until it is
+  /// handed back.
   ///
   /// Returns `false`, creating nothing, for a window already drawn, one
   /// whose peek would be `Live`, or a transition with nothing to show (see
@@ -818,8 +832,8 @@ impl PeekView {
     batch: &mut SurrogateBatch,
   ) -> bool {
     let styles = peek_styles(window, config);
-    let Some(transit) = Transit::opening(params)
-      .filter(|_| !is_live(&styles) && !self.draws_window(&window.id()))
+    let Some(transit) =
+      Transit::opening(params).filter(|_| self.can_enter(window, &styles))
     else {
       return false;
     };
@@ -850,6 +864,56 @@ impl PeekView {
     entry.is_column = false;
     entry.draw(target, now, batch);
     self.entries.insert(window.id(), entry);
+
+    true
+  }
+
+  /// Whether [`enter`](Self::enter) can draw `window`, whose peek would
+  /// carry copies of `styles`: not one already drawn, nor one whose peek
+  /// would be `Live`.
+  fn can_enter(
+    &self,
+    window: &WindowContainer,
+    styles: &[Option<BackdropOverlayParams>],
+  ) -> bool {
+    !is_live(styles) && !self.draws_window(&window.id())
+  }
+
+  /// Turns `window_id`'s peek, taking it off the screen by a minimize,
+  /// round where it is at `now`: it comes back in by `params`, held
+  /// where it is until retargeted, and is handed back as an entering one
+  /// is. Its real window is read from the tree again. Returns whether it
+  /// was leaving so.
+  pub(super) fn turn_round(
+    &mut self,
+    window_id: &Uuid,
+    params: &WindowTransitionParams,
+    is_column: bool,
+    now: Instant,
+  ) -> bool {
+    let Some(entry) = self
+      .entries
+      .get_mut(window_id)
+      .filter(|entry| leaves_as(entry.role, AwayTransition::Minimize))
+    else {
+      return false;
+    };
+    let Some(leaving) = &entry.transit else {
+      return false;
+    };
+
+    let (current, _) = entry.motion.current_state_at(now);
+    entry.transit = Some(returning_transit(leaving, params, now));
+    entry.motion = WindowAnimationState::new_movement(
+      current.clone(),
+      current.clone(),
+      params.duration_ms,
+      params.easing.clone(),
+    );
+    entry.motion.start_clock(now);
+    entry.role = Role::Moving { ends_shown: true };
+    entry.is_column = is_column;
+    entry.departing = None;
 
     true
   }
@@ -1109,6 +1173,65 @@ pub fn enter_on_peek(
   }
 
   entered
+}
+
+/// Has `window`, coming back from minimized to `target`, enter on a
+/// pinned peek by `params`, as [`enter_on_peek`] has a new one. A minimize
+/// still playing on its peek turns round where it is instead. Returns
+/// whether it does either.
+///
+/// A window still natively minimized (`toggle-minimized`) is restored at
+/// `target` behind a cloak first (see [`restore_cloaked`]).
+pub fn restore_on_peek(
+  state: &mut WmState,
+  window: &WindowContainer,
+  target: &Rect,
+  params: &WindowTransitionParams,
+  config: &UserConfig,
+  is_focused: bool,
+) -> bool {
+  let id = window.id();
+  let now = state.animation_manager.frame_time();
+
+  if state
+    .animation_manager
+    .peeks
+    .turn_round(&id, params, false, now)
+  {
+    restore_cloaked(&window.native(), target);
+    state.animation_manager.ensure_timer_running();
+    return true;
+  }
+
+  let enters = Transit::opening(params).is_some()
+    && state
+      .animation_manager
+      .peeks
+      .can_enter(window, &peek_styles(window, config));
+  if !enters {
+    return false;
+  }
+
+  restore_cloaked(&window.native(), target);
+  enter_on_peek(state, window, target, params, config, is_focused)
+}
+
+/// Restores `window`, if it is still natively minimized, at `rect` behind
+/// a cloak, so that no frame shows it before its peek does
+/// (`ANIMATION_REVIEW.md` 10). One that can't be cloaked is left
+/// minimized, to be restored as it is handed back.
+pub(super) fn restore_cloaked(window: &NativeWindow, rect: &Rect) {
+  if !window.is_minimized() {
+    return;
+  }
+
+  if let Err(err) = window.set_cloaked(true) {
+    tracing::warn!("Failed to cloak a minimized window to restore: {err}");
+    return;
+  }
+  if let Err(err) = window.restore(Some(rect)) {
+    tracing::warn!("Failed to restore a cloaked window: {err}");
+  }
 }
 
 /// Takes `window`, at `rect`, off the screen on a pinned peek by `params`
@@ -1666,7 +1789,7 @@ mod tests {
   use super::{
     has_landed, has_left, is_departed, is_entering_tile, is_stray,
     kept_transit, leaves_as, leaving_transit, retargeted_motion,
-    take_left, Role,
+    returning_transit, take_left, Role,
   };
   use crate::animation::{
     state::WindowAnimationState,
@@ -1879,6 +2002,31 @@ mod tests {
       let left = leaving_transit(at_rest, fresh(), &params(200), now);
       assert!((left.from - 1.0).abs() < f32::EPSILON);
     }
+  }
+
+  /// A window restored mid-minimize comes back from the amount it had
+  /// shrunk to, and minimized again on the way back turns round where it
+  /// is once more: no jump either way.
+  #[test]
+  fn restored_mid_minimize_comes_back_from_where_it_is() {
+    let t0 = Instant::now();
+    let at = |ms| t0 + Duration::from_millis(ms);
+    let leaving = Transit::new(Direction::Out, &params(200), 1.0);
+    leaving.clock.start_clock(t0);
+    let shrunk = leaving.amount_at(at(50));
+
+    let returning = returning_transit(&leaving, &params(200), at(50));
+    assert_eq!(returning.direction, Direction::In);
+    assert!((returning.amount_at(at(50)) - shrunk).abs() < 1e-3);
+    assert!(returning.amount_at(at(75)) > shrunk);
+
+    let back = returning.amount_at(at(75));
+    let fresh = Transit::new(Direction::Out, &params(200), 1.0);
+    let again =
+      leaving_transit(Some(&returning), fresh, &params(200), at(75));
+    assert_eq!(again.direction, Direction::Out);
+    assert!((again.amount_at(at(75)) - back).abs() < 1e-3, "{back}");
+    assert!(again.amount_at(at(100)) < back);
   }
 
   /// Only columns leave with the scrolling layouts; a window entering a

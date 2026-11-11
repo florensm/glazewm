@@ -15,7 +15,10 @@ use wm_platform::{
 };
 
 use crate::{
-  animation::{AnimationPositionResult, HandBack, WorkspaceSwitchEntry},
+  animation::{
+    AnimationPositionResult, AwayTransition, HandBack,
+    WorkspaceSwitchEntry,
+  },
   commands::window::unmanage_if_embedded,
   layout::is_hidden_in_layout,
   models::{is_inactive_stack_child, Container, WindowContainer},
@@ -654,6 +657,16 @@ fn commit_pending_cloaks(
       session.mark_session_cloaked();
     }
   }
+}
+
+/// Whether `window_id` is minimizing on a peek, which a restore turns
+/// round (see `peek_view::restore_on_peek`) rather than ending it.
+fn leaves_on_peek(state: &WmState, window_id: &uuid::Uuid) -> bool {
+  wm_platform::isolation::current().peeks
+    && state
+      .animation_manager
+      .peeks
+      .leaves_by(window_id, AwayTransition::Minimize)
 }
 
 /// Moves a frozen window, cloaked behind its stand-in, to the
@@ -1307,11 +1320,15 @@ fn redraw_containers(
     // minimize ended: natively minimized with a slot in the layout, or
     // restored by the OS with no overlays and where it used to be, until
     // something else redrew it. The restore ends the minimize instead.
+    // Behind the switch, one playing on its peek is turned round below
+    // (`STAND_INS_PLAN.md` task 5), and ended there if it isn't.
     if state.animation_manager.has_minimize_animation(&window.id()) {
       if !state.pending_sync.is_window_restore(&window.id()) {
         continue;
       }
-      state.animation_manager.remove_animation(&window.id());
+      if !leaves_on_peek(state, &window.id()) {
+        state.animation_manager.remove_animation(&window.id());
+      }
     }
 
     // Capture display state before transition to detect opening windows
@@ -1485,21 +1502,44 @@ fn redraw_containers(
       None
     };
 
-    if let Some((params, is_open)) = entry_transition {
-      // Behind the switch, an open in a tiling layout enters on a pinned
-      // peek instead (`STAND_INS_PLAN.md` task 3).
-      let enters_on_peek = is_open
-        && !is_column
-        && wm_platform::isolation::current().peeks
-        && crate::animation::peek_view::enter_on_peek(
-          state,
-          window,
-          &target_rect,
-          &params,
-          config,
-          window.id() == focused_container.id(),
-        );
+    // Behind the switch, an open or a restore of a tiled window enters on
+    // a pinned peek instead (`STAND_INS_PLAN.md` tasks 3 and 5).
+    let enters_on_peek = match &entry_transition {
+      Some((params, is_open))
+        if !is_column
+          && wm_platform::isolation::current().peeks
+          && (*is_open || window.state() == WindowState::Tiling) =>
+      {
+        let is_focused = window.id() == focused_container.id();
+        if *is_open {
+          crate::animation::peek_view::enter_on_peek(
+            state,
+            window,
+            &target_rect,
+            params,
+            config,
+            is_focused,
+          )
+        } else {
+          crate::animation::peek_view::restore_on_peek(
+            state,
+            window,
+            &target_rect,
+            params,
+            config,
+            is_focused,
+          )
+        }
+      }
+      _ => false,
+    };
 
+    // A minimize on its peek that wasn't turned round ends, as above.
+    if is_window_restore && leaves_on_peek(state, &window.id()) {
+      state.animation_manager.remove_animation(&window.id());
+    }
+
+    if let Some((params, _)) = entry_transition {
       if enters_on_peek {
         // Computed before the peek went up: frozen behind it from now on,
         // or it would be uncloaked at once.

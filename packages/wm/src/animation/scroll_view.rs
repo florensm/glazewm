@@ -26,7 +26,7 @@
 //! A peek's border, backdrop and tab bar are cut at the monitor edge like
 //! the peek itself, so nothing of a column shows on the monitor beside it.
 
-use std::collections::HashSet;
+use std::{collections::HashSet, time::Instant};
 
 use uuid::Uuid;
 use wm_common::{
@@ -35,7 +35,7 @@ use wm_common::{
 use wm_platform::{Rect, SurrogateBatch};
 
 use super::{
-  peek_view::{track_overlays, PeekView, Role},
+  peek_view::{restore_cloaked, track_overlays, PeekView, Role},
   transit::Transit,
 };
 use crate::{
@@ -53,6 +53,7 @@ use crate::{
 /// Runs before `platform_sync` repositions anything: moving windows are
 /// then frozen (cloaked and pre-positioned at their target) behind peeks
 /// that are already on screen.
+#[allow(clippy::too_many_lines)]
 pub fn sync_scroll_view(
   state: &mut WmState,
   config: &UserConfig,
@@ -76,6 +77,15 @@ pub fn sync_scroll_view(
     .filter(|id| !state.window_target_positions.contains_key(id))
     .collect::<HashSet<_>>();
 
+  // Windows coming back from minimized, which re-enter as new ones do, by
+  // `window_minimize`, behind the switch (`STAND_INS_PLAN.md` task 5).
+  let restoring = column_restoring(config);
+  let restored_ids = if restoring.is_some() {
+    restored_columns(state, &windows, &new_ids)
+  } else {
+    HashSet::new()
+  };
+
   let now = state.animation_manager.frame_time();
   let view = &mut state.animation_manager.peeks;
 
@@ -90,13 +100,27 @@ pub fn sync_scroll_view(
 
   let scroll_config = &config.value.animations.scroll;
   let opening = column_opening(config);
+
+  if scroll_config.enabled && animates {
+    if let Some(params) = &restoring {
+      turn_round_restored(view, &windows, &restored_ids, params, now);
+    }
+  }
+
+  // Windows that open in place, widening as their neighbours make room:
+  // new ones, and restored ones not already drawn.
+  let opening_ids = new_ids
+    .iter()
+    .chain(restored_ids.iter().filter(|id| !view.draws_window(id)))
+    .copied()
+    .collect::<HashSet<_>>();
   let mut needs_flush = false;
   let mut adds_peek = false;
   let mut started_moving = Vec::new();
   let mut batch = SurrogateBatch::new();
 
   for (workspace, clip) in &workspaces {
-    let moves = column_moves(view, workspace, &new_ids);
+    let moves = column_moves(view, workspace, &opening_ids);
 
     // The strip moves as one when any column crosses the monitor edge,
     // is already drawn by a peek, or opens; moves that stay on screen are
@@ -109,7 +133,7 @@ pub fn sync_scroll_view(
           && (crosses_edge(from)
             || crosses_edge(target)
             || view.entries.contains_key(&window.id())
-            || new_ids.contains(&window.id()))
+            || opening_ids.contains(&window.id()))
       });
 
     for (window, from, target) in moves {
@@ -153,11 +177,21 @@ pub fn sync_scroll_view(
       }
 
       let is_moving = matches!(role, Role::Moving { .. });
+      let is_restored = restored_ids.contains(&window.id());
       adds_peek |= !view.entries.contains_key(&window.id());
-      let transit = opening
-        .as_ref()
-        .filter(|_| new_ids.contains(&window.id()))
-        .and_then(Transit::opening);
+      let entering = if new_ids.contains(&window.id()) {
+        opening.as_ref()
+      } else if is_restored {
+        restoring.as_ref()
+      } else {
+        None
+      };
+      let transit = entering.and_then(Transit::opening);
+      // Restored behind a cloak before its peek goes up, which then
+      // needn't warm up under it.
+      if is_moving && is_restored {
+        restore_cloaked(&window.native(), &target);
+      }
       needs_flush |= view.upsert(
         &window,
         &from,
@@ -201,6 +235,55 @@ fn column_opening(config: &UserConfig) -> Option<WindowTransitionParams> {
   let open_config = &config.value.animations.window_open;
   (wm_platform::isolation::current().peeks && open_config.enabled)
     .then(|| WindowTransitionParams::from_open(open_config))
+}
+
+/// The transition a column coming back from minimized enters by, as a new
+/// one does by `window_open`: `window_minimize` reversed, behind the
+/// switch (`STAND_INS_PLAN.md` task 5).
+fn column_restoring(
+  config: &UserConfig,
+) -> Option<WindowTransitionParams> {
+  let minimize_config = &config.value.animations.window_minimize;
+  (wm_platform::isolation::current().peeks && minimize_config.enabled)
+    .then(|| WindowTransitionParams::from_restore(minimize_config))
+}
+
+/// The windows of `windows` coming back from minimized this sync: not new
+/// ones, which `new_ids` holds.
+fn restored_columns(
+  state: &WmState,
+  windows: &[(WindowContainer, Rect)],
+  new_ids: &HashSet<Uuid>,
+) -> HashSet<Uuid> {
+  windows
+    .iter()
+    .map(|(window, _)| window.id())
+    .filter(|id| {
+      !new_ids.contains(id) && state.pending_sync.is_window_restore(id)
+    })
+    .collect()
+}
+
+/// Turns round where they are the columns in `restored_ids` still
+/// minimizing on their peeks, by `params`, their real windows restored
+/// behind a cloak if still minimized. The strip then moves them on as any
+/// moving column.
+fn turn_round_restored(
+  view: &mut PeekView,
+  windows: &[(WindowContainer, Rect)],
+  restored_ids: &HashSet<Uuid>,
+  params: &WindowTransitionParams,
+  now: Instant,
+) {
+  for (window, _) in windows {
+    if restored_ids.contains(&window.id())
+      && view.turn_round(&window.id(), params, true, now)
+    {
+      if let Ok(target) = target_rect(window) {
+        restore_cloaked(&window.native(), &target);
+      }
+    }
+  }
 }
 
 /// Has the scroll view drive the columns that `started_moving`, on ticks
@@ -285,7 +368,7 @@ pub fn report_stuck_windows(state: &mut WmState) {
 }
 
 /// Where each tiling window of `workspace` moves from and to: from where
-/// it is shown now, or for a new column from its opening rect.
+/// it is shown now, or for a column in `new_ids` from its opening rect.
 ///
 /// Not one leaving on its peek, which plays out where it was: a closing
 /// one is out of the tree already, a minimizing one until the OS reports
