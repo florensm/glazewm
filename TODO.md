@@ -720,6 +720,14 @@ to see it; check each once more at 150 ms.
     - The gaps between tiles stay one steady width throughout, never
       flickering a pixel wider or narrower frame to frame.
     - A swap of two equal tiles keeps their size the whole way.
+55. **Overview backdrop baked at half size** (`c6d857d`). Default
+    `overview.backdrop_blur: 40`. Open the overview on each display, also
+    one with a taskbar on its top or left edge.
+    - The blurred wallpaper looks as before: no banding in gradients, no
+      darker or lighter line along a screen edge, and it lines up with
+      the sharp wallpaper as it fades in (nothing shifts or grows).
+    - Change the wallpaper, and move a display, with it open: it follows.
+    - With `backdrop_blur: 4` it bakes at full size, as before.
 
 If bars or flicker show, isolate them with `GLAZEWM_ISOLATE` (below), one
 restart per flag: `noring`, `nobackdrop`, then `live`. With a long

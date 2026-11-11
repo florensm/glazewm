@@ -19,11 +19,11 @@ WM's own click-through window that draws a moving window (as in
 | 4 | Wallpaper surfaces re-baked and duplicated with two displays | fixed `be26317b` |
 | 5 | A closed overview kept every card's pixels | fixed `a6a2bf33` |
 | 6 | Unknown which GPU the backdrop device is on | logged `84b0b949` |
-| 7 | Wallpaper surfaces are full resolution | proposed |
+| 7 | Wallpaper surfaces are full resolution | overview's blurred copy `c6d857d`; windows' proposed |
 | 8 | The timer thread's scheduling boost is a Defender suspect | proposed |
 | 9 | One frame of wait between key press and first motion | proposed |
 | 10 | Second frame of every animation steps unevenly | proposed |
-| 11 | Overview wallpaper surfaces held while closed | proposed |
+| 11 | Overview wallpaper surfaces held while closed | blurred copy quartered `c6d857d` |
 | 12 | Moves and resizes restart from rest when retargeted | proposed (design) |
 | 13-17 | Smaller items | proposed |
 
@@ -240,6 +240,12 @@ WM's own click-through window that draws a moving window (as in
   bake first); or with finding 7, the blurred one shrinks to a quarter.
   Releasing on a low-memory signal needs
   `CreateMemoryResourceNotification`, a new API.
+- **Done** (`c6d857d`): the blurred copy is baked at half size per axis
+  when `backdrop_blur` is 8 or more, 3.7 MB instead of 14.7 MB at
+  2560x1440. It fills a sprite as large as the monitor
+  (`CompositionStretch::Fill`), so it needs no brush scale and no new
+  API. The sharp copy stays full size and held. Not seen live: `TODO.md`
+  55.
 
 ### 12. Moves and resizes restart from rest when retargeted
 
