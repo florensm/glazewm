@@ -56,11 +56,7 @@ impl SceneWindow {
   /// Points it at `rect` and `alpha`; there at once if `snap`.
   pub fn retarget(&mut self, rect: &RectF, alpha: f32, snap: bool) {
     self.rect.retarget(rect, snap);
-    if snap {
-      self.alpha.snap(alpha);
-    } else {
-      self.alpha.target = alpha;
-    }
+    self.alpha.aim(alpha, snap);
   }
 
   /// Shows it at `rect` at full strength at once, heading on to where it

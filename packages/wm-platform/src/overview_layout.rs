@@ -1028,11 +1028,7 @@ impl SpringRect {
       (&mut self.width, rect.w),
       (&mut self.height, rect.h),
     ] {
-      if snap {
-        spring.snap(value);
-      } else {
-        spring.target = value;
-      }
+      spring.aim(value, snap);
     }
   }
 
@@ -1150,6 +1146,15 @@ impl Spring {
     self.value = value;
     self.target = value;
     self.velocity = 0.0;
+  }
+
+  /// Points it at `value`; there at once if `snap`.
+  pub fn aim(&mut self, value: f32, snap: bool) {
+    if snap {
+      self.snap(value);
+    } else {
+      self.target = value;
+    }
   }
 
   /// Scales where it is, where it heads and how fast, e.g. to the same

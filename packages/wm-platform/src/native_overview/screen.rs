@@ -50,9 +50,7 @@ fn drawn_border(
     return None;
   }
   workspace
-    .windows
-    .iter()
-    .find(|candidate| candidate.hwnd == window.preview.hwnd)
+    .window(window.preview.hwnd)
     .and_then(|candidate| candidate.border)
 }
 
@@ -464,14 +462,12 @@ impl Screen {
     for card in &mut self.cards {
       // Under the windows, which cover the strip reaching under them.
       for bar in &mut card.tab_bars {
-        bar.picture.thumbnail =
-          Thumbnail::register(host, bar.picture.window);
+        bar.picture.register(host);
       }
       for preview in &mut card.previews {
         preview.register(host);
       }
-      card.picture.thumbnail =
-        Thumbnail::register(host, card.picture.window);
+      card.picture.register(host);
     }
 
     // Over the cards, under the highlights.
@@ -486,7 +482,7 @@ impl Screen {
         *picture = Picture::new();
       }
       if let Some(picture) = picture {
-        picture.thumbnail = Thumbnail::register(host, picture.window);
+        picture.register(host);
       }
     }
 
@@ -504,9 +500,9 @@ impl Screen {
     let mut retired = Vec::new();
 
     for card in &mut self.cards {
-      retired.extend(card.picture.thumbnail.take());
+      card.picture.retire(&mut retired);
       for bar in &mut card.tab_bars {
-        retired.extend(bar.picture.thumbnail.take());
+        bar.picture.retire(&mut retired);
       }
       for preview in &mut card.previews {
         preview.retire(&mut retired);
@@ -527,7 +523,7 @@ impl Screen {
     for picture in
       [&mut self.search, &mut self.sheet].into_iter().flatten()
     {
-      retired.extend(picture.thumbnail.take());
+      picture.retire(&mut retired);
     }
 
     retired
@@ -559,11 +555,7 @@ impl Screen {
 
     self.retarget_cards(&targets.cards, snap);
 
-    if snap {
-      self.search_y.snap(targets.search_y);
-    } else {
-      self.search_y.target = targets.search_y;
-    }
+    self.search_y.aim(targets.search_y, snap);
 
     if self.focus.layout.has_scene() {
       self.retarget_scenes(snap);
@@ -645,11 +637,7 @@ impl Screen {
         (&mut card.scale, scale),
         (&mut card.alpha, opacity),
       ] {
-        if snap {
-          spring.snap(value);
-        } else {
-          spring.target = value;
-        }
+        spring.aim(value, snap);
       }
     }
     self.is_dirty = true;
@@ -1175,8 +1163,8 @@ impl Screen {
           &view,
           chrome_opacity(fade),
         );
-      } else if let Some(thumbnail) = &mut search.thumbnail {
-        thumbnail.hide();
+      } else {
+        search.hide();
       }
     }
 
@@ -1187,11 +1175,7 @@ impl Screen {
         Some(rect) if sheet_opacity > 0.002 => {
           sheet.place(&rect, &view, sheet_opacity);
         }
-        _ => {
-          if let Some(thumbnail) = &mut sheet.thumbnail {
-            thumbnail.hide();
-          }
-        }
+        _ => sheet.hide(),
       }
     }
 

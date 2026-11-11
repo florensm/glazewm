@@ -117,8 +117,7 @@ impl Overlays {
   ) {
     if layout == OverviewLayoutMode::Activities {
       for label in &mut self.labels {
-        label.picture.thumbnail =
-          Thumbnail::register(host, label.picture.window);
+        label.picture.register(host);
       }
     }
 
@@ -127,19 +126,17 @@ impl Overlays {
     self.workspace_ring.slices.register(host);
     self.window_ring.slices.register(host);
     self.drop_ring.slices.register(host);
-    self.tag.picture.thumbnail =
-      Thumbnail::register(host, self.tag.picture.window);
+    self.tag.picture.register(host);
 
     if layout.has_scene() {
-      self.note.picture.thumbnail =
-        Thumbnail::register(host, self.note.picture.window);
+      self.note.picture.register(host);
     }
   }
 
   /// Hands their thumbnails over to `retired`, still registered.
   pub(super) fn retire(&mut self, retired: &mut Vec<Thumbnail>) {
     for label in &mut self.labels {
-      retired.extend(label.picture.thumbnail.take());
+      label.picture.retire(retired);
     }
     for slices in [
       &mut self.screen_ring.slices,
@@ -150,8 +147,8 @@ impl Overlays {
     ] {
       slices.retire(retired);
     }
-    retired.extend(self.tag.picture.thumbnail.take());
-    retired.extend(self.note.picture.thumbnail.take());
+    self.tag.picture.retire(retired);
+    self.note.picture.retire(retired);
   }
 
   /// Draws the highlights in `style`, at `metrics`' scale; each only if
@@ -551,8 +548,8 @@ impl Screen {
     for (label, rect) in overlays.labels.iter_mut().zip(&label_rects) {
       if let Some((rect, opacity)) = rect {
         label.picture.place(rect, &view, *opacity);
-      } else if let Some(thumbnail) = &mut label.picture.thumbnail {
-        thumbnail.hide();
+      } else {
+        label.picture.hide();
       }
     }
 

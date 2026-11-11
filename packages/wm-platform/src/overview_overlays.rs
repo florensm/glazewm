@@ -45,7 +45,7 @@ impl NineSlice {
   pub fn register(&mut self, host: HWND) {
     // Every part but the empty middle.
     self.parts = (0..8)
-      .filter_map(|_| Thumbnail::register(host, self.picture.window))
+      .filter_map(|_| self.picture.thumbnail_on(host))
       .collect();
   }
 
@@ -189,11 +189,7 @@ impl<D> Tag<D> {
       Some((rect, _, alpha)) => {
         self.picture.place(&rect, clip, alpha * opacity);
       }
-      None => {
-        if let Some(thumbnail) = &mut self.picture.thumbnail {
-          thumbnail.hide();
-        }
-      }
+      None => self.picture.hide(),
     }
   }
 }

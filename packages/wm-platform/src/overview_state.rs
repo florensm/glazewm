@@ -953,6 +953,11 @@ impl Interaction {
     }
   }
 
+  /// Index of screen `screen`'s first workspace among every screen's.
+  pub fn first_card(&self, screen: usize) -> Option<usize> {
+    self.screens.get(screen).map(|cursor| cursor.cards.start)
+  }
+
   /// Screen workspace `index` is on.
   fn screen_of(&self, index: usize) -> Option<usize> {
     self

@@ -323,9 +323,10 @@ impl Screen {
 
   /// Where window `hwnd` shows now, if on one of its cards or its scene.
   pub(super) fn shown_window_rect(&self, hwnd: isize) -> Option<RectF> {
-    let index = self.workspaces().iter().position(|workspace| {
-      workspace.windows.iter().any(|window| window.hwnd == hwnd)
-    })?;
+    let index = self
+      .workspaces()
+      .iter()
+      .position(|workspace| workspace.window(hwnd).is_some())?;
     let context = self.place_context();
     self.window_rect_in(index, hwnd, &context)
   }

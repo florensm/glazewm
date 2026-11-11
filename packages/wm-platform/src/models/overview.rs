@@ -73,6 +73,14 @@ pub struct OverviewWorkspace {
   pub tab_bars: Vec<TabFrame>,
 }
 
+impl OverviewWorkspace {
+  /// Its window `hwnd`, if it has it.
+  #[must_use]
+  pub fn window(&self, hwnd: isize) -> Option<&OverviewWindow> {
+    self.windows.iter().find(|window| window.hwnd == hwnd)
+  }
+}
+
 /// A window shown in the overview.
 #[derive(Clone, Debug, PartialEq)]
 pub struct OverviewWindow {

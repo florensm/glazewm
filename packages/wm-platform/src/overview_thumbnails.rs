@@ -71,9 +71,9 @@ fn create_picture_window() -> Option<HWND> {
 
 /// A picture drawn into a cloaked window, shown as a thumbnail.
 pub(crate) struct Picture {
-  pub window: HWND,
+  window: HWND,
   surface: Option<Surface>,
-  pub thumbnail: Option<Thumbnail>,
+  thumbnail: Option<Thumbnail>,
 }
 
 impl Picture {
@@ -119,6 +119,32 @@ impl Picture {
   pub fn release(&mut self) {
     if self.surface.is_some() {
       self.draw((1, 1), |_| {});
+    }
+  }
+
+  /// Registers it on `host`, above everything registered there so far.
+  pub fn register(&mut self, host: HWND) {
+    self.thumbnail = self.thumbnail_on(host);
+  }
+
+  /// A thumbnail of it on `host` for the caller to place, e.g. one of
+  /// several showing parts of it.
+  pub fn thumbnail_on(&self, host: HWND) -> Option<Thumbnail> {
+    Thumbnail::register(host, self.window)
+  }
+
+  pub fn unregister(&mut self) {
+    self.thumbnail = None;
+  }
+
+  /// Hands its thumbnail over to `retired`, still registered.
+  pub fn retire(&mut self, retired: &mut Vec<Thumbnail>) {
+    retired.extend(self.thumbnail.take());
+  }
+
+  pub fn hide(&mut self) {
+    if let Some(thumbnail) = &mut self.thumbnail {
+      thumbnail.hide();
     }
   }
 

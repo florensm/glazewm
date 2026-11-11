@@ -237,7 +237,7 @@ impl Screen {
 
     spare.extend(old.into_iter().map(|bar| {
       let mut picture = bar.picture;
-      picture.thumbnail = None;
+      picture.unregister();
       picture
     }));
     tab_bars
@@ -256,9 +256,7 @@ impl Screen {
       && !self
         .workspaces()
         .get(index)
-        .and_then(|workspace| {
-          workspace.windows.iter().find(|window| window.hwnd == hwnd)
-        })
+        .and_then(|workspace| workspace.window(hwnd))
         .is_some_and(|window| focus.is_match(window));
 
     if is_miss {
@@ -290,9 +288,8 @@ impl Screen {
         .previews
         .iter()
         .map(|preview| {
-          let window = workspace.and_then(|workspace| {
-            workspace.windows.iter().find(|w| w.hwnd == preview.hwnd)
-          });
+          let window =
+            workspace.and_then(|workspace| workspace.window(preview.hwnd));
           let is_match = window.is_some_and(|w| focus.is_match(w));
           let is_picked = focus.floating == Some(preview.hwnd);
           let is_focused = focused_window == Some(preview.hwnd);

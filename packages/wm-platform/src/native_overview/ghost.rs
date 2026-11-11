@@ -146,13 +146,10 @@ impl Ghost {
 
     // Under the ghost itself.
     self.trail = (0..self.trail_length)
-      .filter_map(|_| {
-        Thumbnail::register(screen.hwnd, self.picture.window)
-      })
+      .filter_map(|_| self.picture.thumbnail_on(screen.hwnd))
       .collect();
     self.preview.register(screen.hwnd);
-    self.picture.thumbnail =
-      Thumbnail::register(screen.hwnd, self.picture.window);
+    self.picture.register(screen.hwnd);
     self.host = Some(screen.registration);
   }
 

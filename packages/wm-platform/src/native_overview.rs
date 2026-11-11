@@ -180,12 +180,14 @@ impl NativeOverview {
     self.session += 1;
     self.last_frame = Some(frame.clone());
 
-    let open = Box::new(Open {
-      session: self.session,
-      frame,
-      layout,
-    });
-    self.post(WM_OPEN_OVERVIEW, Box::into_raw(open) as usize);
+    self.post_boxed(
+      WM_OPEN_OVERVIEW,
+      Open {
+        session: self.session,
+        frame,
+        layout,
+      },
+    );
   }
 
   /// Shows `frame` in the open overview.
@@ -197,7 +199,7 @@ impl NativeOverview {
     }
 
     self.last_frame = Some(frame.clone());
-    self.post(WM_UPDATE_OVERVIEW, Box::into_raw(Box::new(frame)) as usize);
+    self.post_boxed(WM_UPDATE_OVERVIEW, frame);
   }
 
   /// Switches the open overview to `layout`, or cancels it if it already
@@ -215,14 +217,7 @@ impl NativeOverview {
   /// not if the overview's thread is gone.
   #[must_use]
   pub fn input(&self, input: OverviewInput) -> bool {
-    let input = Box::into_raw(Box::new(input));
-    let is_posted = self.post(WM_OVERVIEW_INPUT, input as usize);
-
-    if !is_posted {
-      // SAFETY: The post failed, so the payload is still this side's.
-      drop(unsafe { Box::from_raw(input) });
-    }
-    is_posted
+    self.post_boxed(WM_OVERVIEW_INPUT, input)
   }
 
   /// Closes the overview once its zoom into the picked workspace ends.
@@ -254,10 +249,23 @@ impl NativeOverview {
     self.session
   }
 
+  /// Posts `msg` with `payload` boxed in `WPARAM`, for the window
+  /// procedure to free. Returns whether it was posted.
+  fn post_boxed<T>(&self, msg: u32, payload: T) -> bool {
+    let payload = Box::into_raw(Box::new(payload));
+    let is_posted = self.post(msg, payload as usize);
+
+    if !is_posted {
+      // SAFETY: The post failed, so the payload is still this side's.
+      drop(unsafe { Box::from_raw(payload) });
+    }
+    is_posted
+  }
+
   /// Returns whether the message was posted: not if the window is gone.
   fn post(&self, msg: u32, wparam: usize) -> bool {
-    // SAFETY: A boxed payload passes to the window procedure, which frees
-    // it. If the post fails it leaks, unless the caller takes it back.
+    // SAFETY: Only plain values are passed; a boxed payload goes through
+    // `post_boxed`.
     unsafe {
       PostMessageW(HWND(self.hwnd), msg, WPARAM(wparam), LPARAM(0)).is_ok()
     }
@@ -481,7 +489,7 @@ impl Card {
     std::iter::once(self.picture)
       .chain(self.tab_bars.into_iter().map(|bar| bar.picture))
       .map(|mut picture| {
-        picture.thumbnail = None;
+        picture.unregister();
         picture
       })
   }
@@ -566,16 +574,16 @@ fn place_card(card: &mut Card, index: usize, context: &PlaceContext) {
 
     if is_visible {
       bar.picture.place(&dest, view, opacity * alpha);
-    } else if let Some(thumbnail) = &mut bar.picture.thumbnail {
-      thumbnail.hide();
+    } else {
+      bar.picture.hide();
     }
   }
 
   if is_visible {
     let picture = camera.apply(&picture_rect(&metrics, &placement));
     card.picture.place(&picture, view, fade * alpha);
-  } else if let Some(thumbnail) = &mut card.picture.thumbnail {
-    thumbnail.hide();
+  } else {
+    card.picture.hide();
   }
 }
 
@@ -1005,7 +1013,7 @@ impl Overview {
     let is_gone = |hwnd: isize| {
       !workspaces
         .iter()
-        .any(|workspace| workspace.windows.iter().any(|w| w.hwnd == hwnd))
+        .any(|workspace| workspace.window(hwnd).is_some())
     };
 
     let (gone, waiting) = std::mem::take(&mut self.closing)
@@ -1115,13 +1123,11 @@ impl Overview {
       None => ghost.park(screen),
     }
 
-    let title = self.workspaces.iter().find_map(|workspace| {
-      workspace
-        .windows
-        .iter()
-        .find(|window| window.hwnd == ghost.hwnd)
-        .map(|window| window.title.clone())
-    });
+    let title = self
+      .workspaces
+      .iter()
+      .find_map(|workspace| workspace.window(ghost.hwnd))
+      .map(|window| window.title.clone());
     if let (Some(title), Some(style)) = (title, screen.style()) {
       ghost.draw(&title, screen.metrics.scale_factor, style);
     }
@@ -1161,12 +1167,7 @@ impl Overview {
         screen
           .workspaces()
           .iter()
-          .position(|workspace| {
-            workspace
-              .windows
-              .iter()
-              .any(|window| window.hwnd == ghost.hwnd)
-          })
+          .position(|workspace| workspace.window(ghost.hwnd).is_some())
           .map(|card| (index, card))
       })
     };
@@ -1246,8 +1247,7 @@ impl Overview {
     // The scenes zoom into the picked workspace's own windows, so they
     // show it first.
     for (index, card) in cards.iter().enumerate() {
-      let start =
-        self.interaction.screens.get(index).map(|s| s.cards.start);
+      let start = self.interaction.first_card(index);
       if let (Some(card), Some(start)) = (card, start) {
         self.interaction.show(start + card);
       }
@@ -1277,9 +1277,9 @@ impl Overview {
 
     match action {
       OverviewAction::FocusWindow { hwnd, monitor } if *monitor == id => {
-        workspaces.iter().position(|workspace| {
-          workspace.windows.iter().any(|window| window.hwnd == *hwnd)
-        })
+        workspaces
+          .iter()
+          .position(|workspace| workspace.window(*hwnd).is_some())
       }
       OverviewAction::FocusWorkspace { name, monitor }
         if *monitor == id =>
@@ -1398,11 +1398,7 @@ impl Overview {
     };
 
     let hit = self.screens[index].hit(x, y);
-    let start = self
-      .interaction
-      .screens
-      .get(index)
-      .map_or(0, |screen| screen.cards.start);
+    let start = self.interaction.first_card(index).unwrap_or(0);
 
     (
       Some(index),
@@ -1600,11 +1596,7 @@ impl Overview {
 
     let card = screen.zip(hit.workspace).filter(|_| hit.control.is_none());
     if let Some((screen, workspace)) = card {
-      let start = self
-        .interaction
-        .screens
-        .get(screen)
-        .map_or(0, |cursor| cursor.cards.start);
+      let start = self.interaction.first_card(screen).unwrap_or(0);
       self.screens[screen].ripple(workspace - start);
     }
 
