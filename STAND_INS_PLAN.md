@@ -175,7 +175,7 @@ Owner's answers, 2026-11-11:
   (3a and 3b built, not checked live)
 - [ ] 4. Close and minimize on peeks, both layouts (built, not checked
   live)
-- [ ] 5. Restore on peeks
+- [ ] 5. Restore on peeks (built, not checked live)
 - [ ] 6. Moves on peeks
 - [ ] 6b. Floating windows open on peeks
 - [ ] 7. The frame's place in the tick: build behind `peeksfirst`,
@@ -693,6 +693,35 @@ differences:
 Live check, in both layouts: `toggle-minimized` twice two seconds apart,
 and a taskbar restore, each `window_minimize` style; then both within
 the animation: the window turns round where it was, with no jump.
+
+As built (`9699b12` curve, `9e19c06` restore), for task 6:
+
+- `WindowTransitionParams::from_restore` is the restore's params on
+  both paths; `EasingFunction::time_reversed` leaves springs alone.
+- `restore_on_peek` (`peek_view.rs`) is called from the restore branch
+  for a tiled, non-column window; floating windows keep the old path.
+  It turns a minimize still on its peek round (`PeekView::turn_round`),
+  else enters as an open does, after the same checks as `enter`, so
+  nothing is cloaked or restored for a window that falls back.
+  `restore_cloaked` cloaks and then restores (`restore(Some(rect))`) a
+  window still natively minimized, before any peek goes up.
+- A turned-round entry is an ordinary entering one: role `Moving {
+  ends_shown: true }`, `departing` dropped, motion held where it was;
+  in a tiling layout the `Frozen` pass retargets it to its tile
+  (`retarget_entering`, `movement_timing`). Task 6's pure moves must
+  leave such entries (`is_entering`) to that retarget, as for an open.
+- `platform_sync` no longer ends a minimize on its peek at the start of
+  a restore's redraw (`leaves_on_peek`); it ends it after the entry
+  transition, before `start_open_animation`, if it wasn't turned round.
+- Scrolling layout: `sync_scroll_view` takes windows flagged
+  `is_window_restore` as it takes `new_ids` (`opening_ids`: opening
+  rect, the strip moves, a transit by the restore's params), and turns
+  round one still minimizing, which then moves with the strip. A
+  turned-round column whose rect didn't change keeps its entry through
+  the `owned_target` check, untouched.
+- A peek goes up just below its real window, which for one minimized a
+  while is at the bottom of the z-order; nothing raises it before the
+  hand-back. Not seen; the live check looks for it.
 
 ### Task 6: moves on peeks
 

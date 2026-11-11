@@ -38,12 +38,12 @@ the gap by `window_resize`, or by the scroll.
 | 7 | A close with no stand-in hid the window for the whole duration | fixed `5f39127` |
 | 8 | A slide restore showed the window twice for a frame | fixed `356f882` |
 | 9 | An open retargeted mid-way loses its zoom or fade | proposed (restructure) |
-| 10 | A restore by command animates a window still minimized | proposed (live check first) |
+| 10 | A restore by command animates a window still minimized | on peeks: built `9e19c06`, not checked live; old path open |
 | 11 | A close cloaks before its stand-in is composited | proposed (live A/B) |
 | 12 | Slide and zoom opens have no paint grace | proposed (live A/B) |
 | 13 | See-through windows are handed back without an alpha swap | proposed (`STAND_INS_PLAN.md` step 3) |
 | 14 | A close during the window's own animation jumps | proposed |
-| 15 | Curves: restore plays minimize's ease-in forwards | proposed (design) |
+| 15 | Curves: restore plays minimize's ease-in forwards | fixed `9699b12` |
 | 16 | `window_close` on by default | not yet |
 | 17-21 | Smaller items | proposed |
 | 22 | A fading close kept its border and backdrop to the end | fixed `15deb4d` |
@@ -410,8 +410,9 @@ largest first. Each is a lever for real windows.
 - A restore during a minimize plays the restore (5).
 - A window destroyed mid-close loses its border and backdrop at once (6).
 - Elevated windows close and minimize without the animation's delay (7).
+- A restore eases out: minimize's curve played time-reversed (15).
 
-Config keys, defaults, durations and curves are unchanged.
+Config keys, defaults and durations are unchanged.
 
 ## New Windows APIs
 

@@ -467,7 +467,7 @@ to see it; check each once more at 150 ms.
     it to another workspace, switch workspace. Nothing of it may stay on
     screen, and it must be visible and usable when you come back to it.
     Windows whose peek would be `Live` (rounded corners, or parallax not
-    1) keep the old path, as does a restore. Keep `perf.log`
+    1) keep the old path (a restore too, before task 5). Keep `perf.log`
     (`GLAZEWM_PERF=1`) of one run with the switch on and one with it off:
     `tick ms/frame` during an open beside three windows, for task 7. If
     any point is worse than with the switch off and the cause is not a
@@ -509,6 +509,33 @@ to see it; check each once more at 150 ms.
     1), and a partly visible scrolling column at rest, keep the old path.
     A minimize waits for one composition (`DwmFlush`) before the window
     is minimized; look for a hitch on pressing it.
+45. **Restore on peeks** (`STAND_INS_PLAN.md` task 5). In a tiling layout
+    and on the scrolling workspace, with `GLAZEWM_ISOLATE=peeks`,
+    `window_minimize` at `duration_ms: 2000` and at 150, styles `zoom`,
+    one `slide_*` and `none` with `opacity_to` below 1:
+    - `toggle-minimized` twice, two seconds apart: the window comes back
+      on its peek at once, growing, sliding or fading in, with no frame
+      of it before the peek shows it, no Windows restore animation, and
+      no "did not land within 500ms" in `errors.log` (review finding
+      10);
+    - a taskbar click on a minimized window: no frame showing it twice,
+      or not at all, as the peek takes over (finding 8 on the new path);
+    - both within the animation (`toggle-minimized` twice quickly, and
+      minimize then click its taskbar button): the window turns round
+      where it had shrunk to, with no jump, and its border and backdrop
+      follow it; minimize it again on the way back: it turns round again;
+    - on the scrolling workspace, a restored column widens in place as a
+      new one does, and one restored mid-minimize turns round;
+    - nothing left cloaked, minimized or on screen afterwards: no empty
+      tile, no peek left over; the window is focused and usable;
+    - the peek of a window minimized for a while shows above the
+      wallpaper and its neighbours, not under them (it is created just
+      below its real window, which was at the bottom of the z-order).
+
+    Both paths, switch on and off: a restore now eases out into place
+    (minimize's curve time-reversed, finding 15), where it sped up and
+    stopped dead before. Floating windows, and windows whose peek would
+    be `Live`, keep the old path.
 
 If bars or flicker show, isolate them with `GLAZEWM_ISOLATE` (below), one
 restart per flag: `noring`, `nobackdrop`, then `live`. With a long
@@ -529,7 +556,7 @@ in the log says it is on):
 - `peeks`: draw open, close, minimize, restore and moves with pinned
   peeks instead of `ResizeSession`, for the kinds already moved over.
   So far: opens (`STAND_INS_PLAN.md` 3a, 3b), closes and minimizes
-  (task 4).
+  (task 4), restores of tiled windows and columns (task 5).
 
 Set it for one run, e.g. from PowerShell in the repo:
 
