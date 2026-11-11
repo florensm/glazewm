@@ -182,7 +182,7 @@ Owner's answers, 2026-11-11:
   measured later (built, not checked live or measured)
 - [ ] 7b. Peeks by default, `window_close` on by default (built, not
   checked live)
-- [ ] 8. Resize: decide
+- [ ] 8. Resize: `stretch` on peeks (owner's choice, 2026-11-11)
 - [ ] 9. Remove what is no longer reached
 
 ### Task 0: baseline (desktop, by hand)
@@ -930,10 +930,56 @@ Code still reads `isolation::current().peeks`, so nothing else moved.
 switch": read that as "unless `nopeeks`" from here on. No live check of
 tasks 3 to 7 had been run when the default changed.
 
-### Task 8: resize, a decision
+### Task 8: resize, `stretch` on peeks
 
-Do not start without the owner's answer. The options, to put to them
-with recordings from tasks 3 to 7:
+Decided by the owner, 2026-11-11, after the first live run (opens,
+closes, minimize, restore, turn-rounds and moves on peeks all worked;
+opens and closes looked about as before): build option (b) below. With
+`window_resize.style: "stretch"` and peeks on, a resize of a tiled
+window or a column is drawn by a pinned peek that scales the window's
+content into the animated rect; the app is resized once, at the start,
+behind the cloak. `style: "fill"` (the default) keeps `ResizeSession`
+unchanged, and so does `stretch` with `nopeeks`.
+
+What must not show, in the owner's words about today's `stretch` on the
+old path: "a zoom effect when it kind of ended". So: no change of scale
+in the last frames or at the hand-back. The picture's scale must follow
+the animated rect and the window's real size at every frame, and at the
+last frame be exactly 1:1 with the real window at its target.
+
+The hard part, to settle by reading before writing anything: the app
+resizes asynchronously, so for some frames the real window is still its
+old size, then its new one, and its content may repaint a frame or more
+later. A thumbnail that samples a fixed source rect then shows a cut or
+padded window, or a jump in scale when the source is switched. Find what
+`WorkspaceSurrogate::show_frame`, `WindowPeek::place_scaled`
+(`scaled_rects`) and the old path's `stretch` (`NativeSurrogate`,
+`covered_extent`, `update_thumbnail_dims`, `sync_registration`,
+`pre_commit`) each sample and when, find where the old path's end-zoom
+comes from, and choose a sampling rule that cannot jump: e.g. sample
+the window's actual current size each frame (as `sync_registration`
+polls it), so the destination scale changes smoothly whatever the app
+does. Say in the commit which rule was chosen and why.
+
+Rest as in task 6, which this extends (a resize is a move whose size
+changes): same call site and qualifying rules apart from the size test,
+same take-over, timing (`movement_timing` with `is_resize`), retarget
+that keeps its speed, z-order, strays, landing hooks. A relayout mixes
+windows that move and windows that resize: with `stretch` all are on
+peeks, on one clock. Scrolling columns: a column whose width changes
+follows the same rule through `upsert`.
+
+Not in this task: `fill` on peeks (option (c) below), floating
+resizes, mouse drags, `Live` peeks.
+
+Live check: `window_resize: { style: "stretch", duration_ms: 2000 }`
+and at 150; grow and shrink a tile by keyboard, open a window beside
+two others, close one of three, a held resize key; Notepad with wrapped
+text, a browser, Explorer, an Electron app. Look first for any change
+of scale as it ends; then borders in step, no cut or padded content
+mid-way, no blank frame. Compare with `nopeeks` and with `fill`.
+
+The options as they were put:
 
 - (a) Leave resize on `ResizeSession`. Smallest risk; two systems remain,
   but only one kind of animation uses the old one.

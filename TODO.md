@@ -638,6 +638,19 @@ restart per flag: `noring`, `nobackdrop`, then `live`. With a long
 `duration_ms` (e.g. 3000) for `scroll` and `workspace_switch`, one
 screenshot catches a mid-animation frame.
 
+First live run, 2026-11-11 (owner, laptop, `test/stand-ins` at
+`1d82d8f`, no Defender flag): open beside a window, close of a last
+window, close beside a neighbour (plays, covered by the neighbour as
+decided), swap and swap back mid-way, minimize and restore, close while
+opening all worked. Opens and closes looked about as before. A floating
+open showed its border at the final rect from the start (`f1982c2`,
+entry 47). Still unseen: entries 43 (columns), 45's taskbar cases, 48.
+
+Open, found by reading while fixing entry 47: with
+`floating.shown_on_top` (the default), other floating windows are in
+the topmost band, above a new floating window's peek, so it may open
+underneath them. Not fixed: needs a look first.
+
 ## Live-check switch: `GLAZEWM_ISOLATE`
 
 Inert unless set. A comma-separated list, read once at WM start (a warning
