@@ -941,6 +941,31 @@ content into the animated rect; the app is resized once, at the start,
 behind the cloak. `style: "fill"` (the default) keeps `ResizeSession`
 unchanged, and so does `stretch` with `nopeeks`.
 
+**Corrected 2026-11-11, after the first attempt stopped.** The
+sampling rule suggested further down (sample the window's current size
+each frame) is what the old path already does, and it is the cause of
+the end-zoom, not its cure: old `stretch` registers its thumbnail with
+no source rect, so the scale is always animated size / actual size, and
+it steps by target / source on the frame the app's resized content
+replaces the old. Apps take one frame to about 300 ms; with a 150 ms
+fast-start curve that lands near the end, where the old content is
+blown up most. No rule that fills the rect avoids the step.
+
+Owner's choice: **wait, then stretch.** The app is resized first, behind
+the cloak, with the peek held at the source rect showing the window 1:1;
+the motion starts when the window reports its target size (existing
+`GetWindowRect` read) or a cap runs out. From then the picture is the
+new content, scaled animated / target, ending exactly 1:1. One visible
+swap remains, at the start: the old layout replaced by the new one
+squeezed into the old rect. Costs: the relayout starts late by the
+slowest resizing window (one clock for all its windows, so they stay in
+step), bounded by the cap; this is a timing change the owner asked for.
+A window that never reaches its target (minimum size, fixed aspect) is
+drawn as what it really is at the cap: scale by its real size, so the
+hand-back does not snap.
+
+The rest of this section is as first written; read it with the above.
+
 What must not show, in the owner's words about today's `stretch` on the
 old path: "a zoom effect when it kind of ended". So: no change of scale
 in the last frames or at the hand-back. The picture's scale must follow
