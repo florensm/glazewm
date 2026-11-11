@@ -164,6 +164,12 @@ impl FrameClock {
     self.vblank.filter(|_| is_fresh)
   }
 
+  /// When the latest wake was recorded, however long ago.
+  #[must_use]
+  pub fn last_wake(&self) -> Option<Instant> {
+    self.last_wake
+  }
+
   /// The refresh period in use, which may be longer than the display
   /// mode's (a panel with a dynamic refresh rate running slower).
   #[must_use]
@@ -321,6 +327,15 @@ mod tests {
     for (estimate, wake) in faster.iter().zip(&wakes) {
       assert!(estimate <= wake);
     }
+  }
+
+  #[test]
+  fn remembers_the_latest_wake() {
+    let mut clock = FrameClock::new(HZ_60);
+    assert_eq!(clock.last_wake(), None);
+
+    let (_, wakes) = run(&mut clock, Instant::now(), HZ_60, &[700; 3]);
+    assert_eq!(clock.last_wake(), wakes.last().copied());
   }
 
   #[test]

@@ -183,6 +183,12 @@ static EVENT_QUEUE_OVERFLOW: [AtomicU32; EventKind::COUNT] =
 pub enum Stage {
   /// The whole animation tick (`AnimationManager::update_internal`).
   Tick,
+  /// From the timer thread's wake for a tick to the commit of the peeks'
+  /// frame (`PeekView::tick`, `track_overlays` and their batch), in
+  /// frames with peeks to draw. Not nested in `Tick`: the wait for the
+  /// WM thread before it (the main loop's catch-up, among others) is
+  /// counted too.
+  PeekFrame,
   /// `platform_sync`, including everything nested below it.
   PlatformSync,
   /// `redraw_containers`, including both stages below.
@@ -245,8 +251,9 @@ pub enum Stage {
 
 impl Stage {
   /// Every stage, in report order.
-  const ALL: [Stage; 25] = [
+  const ALL: [Stage; 26] = [
     Stage::Tick,
+    Stage::PeekFrame,
     Stage::PlatformSync,
     Stage::Redraw,
     Stage::RedrawPrep,
@@ -285,6 +292,7 @@ impl Stage {
   const fn label(self) -> &'static str {
     match self {
       Stage::Tick => "tick",
+      Stage::PeekFrame => "peek_frame",
       Stage::PlatformSync => "platform_sync",
       Stage::Redraw => "redraw",
       Stage::RedrawPrep => "redraw_prep",
@@ -580,6 +588,17 @@ pub fn scope(stage: Stage) -> Scope {
   Scope {
     stage,
     start: is_enabled().then(Instant::now),
+  }
+}
+
+/// Starts measuring `stage` from `since`, or from now when `None`, until
+/// the returned [`Scope`] is dropped: for a stage that begins before the
+/// WM thread gets to it, e.g. on another thread's wake.
+#[must_use]
+pub fn scope_since(stage: Stage, since: Option<Instant>) -> Scope {
+  Scope {
+    stage,
+    start: is_enabled().then(|| since.unwrap_or_else(Instant::now)),
   }
 }
 
@@ -1433,6 +1452,7 @@ mod tests {
     assert!(!is_enabled());
     begin_frame();
     drop(scope(Stage::Tick));
+    drop(scope_since(Stage::PeekFrame, Some(Instant::now())));
     drop(apply_scope(
       || unreachable!("label built while disabled"),
       true,
@@ -1491,6 +1511,33 @@ mod tests {
       // say.
       assert!(take_report("unit test").is_none());
       PROFILER.with(|profiler| assert_eq!(profiler.borrow().frames, 0));
+    })
+    .join()
+    .expect("profiler test thread panicked");
+  }
+
+  /// A peek frame timed from an earlier wake counts the wait before it,
+  /// and is reported as a row of its own, beside `tick`.
+  #[test]
+  fn times_the_peek_frame_from_its_wake() {
+    std::thread::spawn(|| {
+      start_frame();
+      drop(Scope {
+        stage: Stage::PeekFrame,
+        start: Instant::now().checked_sub(Duration::from_millis(3)),
+      });
+      drop(forced_scope(Stage::Tick));
+      assert!(!roll_up_frame());
+
+      PROFILER.with(|profiler| {
+        let profiler = profiler.borrow();
+        let index = Stage::PeekFrame.index();
+        assert_eq!(profiler.calls[index], 1);
+        assert!(profiler.total[index] >= Duration::from_millis(3));
+      });
+
+      let report = take_report("unit test").expect("a frame was recorded");
+      assert!(report.contains("\n  peek_frame "), "{report}");
     })
     .join()
     .expect("profiler test thread panicked");
