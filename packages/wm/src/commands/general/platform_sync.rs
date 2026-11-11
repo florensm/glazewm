@@ -3522,9 +3522,13 @@ fn sync_overlays<O: SyncableOverlay>(
   // Destroy overlays for windows that are gone, or for every window once
   // the effect is switched off entirely -- `wanted_ids` is empty in that
   // case. A window that merely lost focus keeps its (hidden) overlay.
-  // Entries left with neither overlay go too.
+  // Entries left with neither overlay go too. A window leaving on a peek
+  // keeps its overlays, which the peek copies, until it has left, out of
+  // the tree as a closing one is.
   state.window_overlays.retain(|id, overlays| {
-    if !wanted_ids.contains(id) {
+    let is_leaving =
+      effect_configured && state.animation_manager.peeks.is_leaving(id);
+    if !wanted_ids.contains(id) && !is_leaving {
       *O::slot(overlays) = None;
     }
     !overlays.is_empty()

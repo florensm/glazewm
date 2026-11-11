@@ -785,6 +785,7 @@ impl AnimationManager {
       .away_windows
       .get(window_id)
       .is_some_and(|away| away.transition == transition)
+      || self.peeks.leaves_by(window_id, transition)
   }
 
   /// Returns `true` if a DWM surrogate is currently covering `window_id`.
@@ -805,6 +806,7 @@ impl AnimationManager {
         .as_ref()
         .is_some_and(|ws| ws.windows.contains_key(window_id))
       || self.away_windows.contains_key(window_id)
+      || self.peeks.is_leaving(window_id)
   }
 
   /// Returns `true` if `window_id` has a workspace-switch surrogate
@@ -913,12 +915,14 @@ impl AnimationManager {
       .retain(|_, cover| cover.awaits_companion());
   }
 
-  /// Removes a window's animation and any associated resize session.
+  /// Removes a window's animation and any associated resize session, or
+  /// the peek it is leaving on, as for a close or minimize surrogate.
   pub fn remove_animation(&mut self, window_id: &Uuid) {
     self.animations.remove(window_id);
     self.resize_sessions.remove(window_id);
     self.slide_in_monitor_rects.remove(window_id);
     self.away_windows.remove(window_id);
+    self.peeks.forget_leaving(window_id);
   }
 
   /// Removes animations that have both finished their eased progress *and*
@@ -1152,6 +1156,7 @@ impl AnimationManager {
     // On WM shutdown close-animation windows are left open — only clear
     // the tracking state without sending WM_CLOSE.
     self.away_windows.clear();
+    self.peeks.forget_all_leaving();
     sessions
   }
 
@@ -1412,6 +1417,7 @@ impl AnimationManager {
       clock_origin,
       &mut scroll_batch,
     );
+    super::peek_view::finish_leaving(state, landed.left);
     if !landed.shown.is_empty() {
       state.pending_sync.queue_focus_change();
     }

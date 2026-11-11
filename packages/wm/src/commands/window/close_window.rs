@@ -2,7 +2,7 @@ use tracing::warn;
 use wm_common::WindowTransitionParams;
 
 use crate::{
-  animation::AwayTransition,
+  animation::{peek_view::Leave, AwayTransition},
   commands::window::detach_window_for_close,
   models::WindowContainer,
   traits::{CommonGetters, PositionGetters, WindowGetters},
@@ -26,8 +26,11 @@ pub fn close_window(
 
     // Cloaked only now that the surrogate covers it: the slow
     // `IApplicationView` cloak could otherwise hide the window a frame
-    // before the surrogate is composited, exposing the desktop.
-    let _ = window.native().set_cloaked(true);
+    // before the surrogate is composited, exposing the desktop. A peek
+    // cloaks it itself, a tick later (see `leave_on_peek`).
+    if !state.animation_manager.peeks.is_leaving(&window.id()) {
+      let _ = window.native().set_cloaked(true);
+    }
     let close_config = &config.value.animations.window_close;
     let duration = std::time::Duration::from_millis(u64::from(
       close_config.easing.duration_ms(close_config.duration_ms),
@@ -82,6 +85,18 @@ pub(crate) fn animate_away(
   let is_focused = state
     .focused_container()
     .is_some_and(|focused| focused.id() == window.id());
+
+  // Behind the switch, on a pinned peek, unless it would be live
+  // (`STAND_INS_PLAN.md` task 4).
+  if wm_platform::isolation::current().peeks {
+    match crate::animation::peek_view::leave_on_peek(
+      state, window, &rect, transition, &params, config, is_focused,
+    ) {
+      Leave::Leaving => return true,
+      Leave::Skipped => return false,
+      Leave::Unsupported => {}
+    }
+  }
 
   let (effect_opacity, corner_style, overlays) =
     crate::commands::general::surrogate_effects_for(

@@ -6,7 +6,9 @@ use std::{
 };
 
 use uuid::Uuid;
-use wm_common::{EasingFunction, WindowState, WindowTransitionParams};
+use wm_common::{
+  EasingFunction, EffectSet, WindowState, WindowTransitionParams,
+};
 use wm_platform::{
   BackdropOverlayParams, BorderOverlayParams, CornerStyle,
   NativeBackdropOverlay, NativeBorderOverlay, NativeWindow, Overlay,
@@ -16,9 +18,10 @@ use wm_platform::{
 use super::{
   stand_in::{moved_along, StandIn},
   state::WindowAnimationState,
-  transit::{transit_frame, Transit},
+  transit::{transit_frame, Direction, Transit},
 };
 use crate::{
+  animation::AwayTransition,
   commands::general::{
     focus_blend, overlay_entry, surrogate_effects_for,
     upsert_clipped_overlay, upsert_pinned_border_overlay,
@@ -48,6 +51,9 @@ pub(super) enum Role {
   /// backdrop over the real ones, goes on the tick after, a later
   /// composition.
   Releasing { settled: bool },
+  /// Draws a window closing or minimizing, its real window cloaked or
+  /// minimized, until its transit ends. Never handed back.
+  Leaving(AwayTransition),
 }
 
 /// How far a pinned peek has taken over its window's border ring or
@@ -91,6 +97,22 @@ pub(super) struct Entry {
   /// Whether it is a scrolling layout's column, which
   /// [`PeekView::take_departed`] takes once it leaves the layout.
   is_column: bool,
+  /// What the overlays of a window leaving read, which a closing one,
+  /// out of the tree, has nowhere else (see [`Role::Leaving`]).
+  departing: Option<Departing>,
+}
+
+/// A leaving window as it was when it started to leave.
+struct Departing {
+  native: NativeWindow,
+  effect_set: EffectSet,
+  /// The window's rect with its shadows and its visible frame, read
+  /// before it went: a minimized window's are its taskbar button's.
+  bounds: Rect,
+  frame: Rect,
+  /// Whether its real window, still shown under the warmed-up peek, is
+  /// yet to be cloaked as the peek takes over (see [`PeekView::leave`]).
+  awaits_cloak: bool,
 }
 
 impl Entry {
@@ -148,10 +170,56 @@ fn is_departed(is_column: bool, is_known: bool) -> bool {
   is_column && !is_known
 }
 
-/// Whether [`PeekView::take_strays`] takes an entry: one not a column's,
-/// whose window is unmanaged (`shown` is `None`) or not shown.
-fn is_stray(is_column: bool, shown: Option<bool>) -> bool {
-  !is_column && shown != Some(true)
+/// Whether [`PeekView::take_strays`] takes an entry: one entering a
+/// tiling layout, whose window is unmanaged (`shown` is `None`) or not
+/// shown. A leaving window is neither shown nor a stray.
+fn is_stray(is_column: bool, role: Role, shown: Option<bool>) -> bool {
+  !is_column && !matches!(role, Role::Leaving(_)) && shown != Some(true)
+}
+
+/// Whether an entry in `role` has its window leaving by `transition`.
+fn leaves_as(role: Role, transition: AwayTransition) -> bool {
+  role == Role::Leaving(transition)
+}
+
+/// Whether a leaving entry is done: its transit has ended (its motion is
+/// held where it was).
+fn has_left(
+  role: Role,
+  motion: &WindowAnimationState,
+  transit: Option<&Transit>,
+) -> bool {
+  matches!(role, Role::Leaving(_)) && has_landed(motion, transit)
+}
+
+/// Takes the entries `is_done` says have left out of `entries`, so each
+/// is reported once.
+fn take_left<E>(
+  entries: &mut HashMap<Uuid, E>,
+  is_done: impl Fn(&E) -> bool,
+) -> Vec<(Uuid, E)> {
+  entries.extract_if(|_, entry| is_done(entry)).collect()
+}
+
+/// The transit a window leaves by: an entering one's turned round where
+/// it is at `now` and started then, so it doesn't jump
+/// (`ANIMATION_REVIEW.md` 14), else `fresh`, from all the way in.
+fn leaving_transit(
+  entering: Option<&Transit>,
+  fresh: Transit,
+  params: &WindowTransitionParams,
+  now: Instant,
+) -> Transit {
+  match entering.filter(|transit| {
+    transit.direction == Direction::In && !transit.is_complete()
+  }) {
+    Some(entering) => {
+      let reversed = entering.reversed(params, now);
+      reversed.clock.start_clock(now);
+      reversed
+    }
+    None => fresh,
+  }
 }
 
 /// The transit an entry keeps as [`PeekView::upsert`] moves it on or
@@ -212,6 +280,28 @@ pub struct Landed {
   /// Shown at rest, whose peeks were dropped now that their real window
   /// is on screen; their overlays go back to the real window.
   pub released: Vec<Uuid>,
+  /// Done leaving, whose peeks were dropped (see [`finish_leaving`]).
+  pub left: Vec<Left>,
+}
+
+/// A window whose peek has finished taking it off the screen.
+pub struct Left {
+  pub id: Uuid,
+  pub transition: AwayTransition,
+  pub window: NativeWindow,
+}
+
+/// How [`PeekView::leave`] takes a window off the screen.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Leave {
+  /// On its peek, until its transit ends.
+  Leaving,
+  /// Not at all, so it goes at once: a transition with nothing to show,
+  /// or a window DWM can't draw (e.g. an elevated one).
+  Skipped,
+  /// Not on a peek: a live one, or a peek already drawing the window in
+  /// a role that doesn't turn round (e.g. a partly visible column's).
+  Unsupported,
 }
 
 /// Peeks of the columns of displayed scrolling layouts.
@@ -391,6 +481,27 @@ impl PeekView {
             }
           }
         }
+        Role::Leaving(_) => {
+          // Cloaked as its peek takes over, a tick after the peek went up
+          // under it; given its alpha back a tick later, as a moving one.
+          match entry.departing.as_mut() {
+            Some(departing) if departing.awaits_cloak => {
+              entry.peek.take_over(&departing.native);
+              if let Err(err) = departing.native.set_cloaked(true) {
+                tracing::warn!("Failed to cloak leaving {id}: {err}");
+              }
+              departing.awaits_cloak = false;
+            }
+            _ => entry.peek.restore_alpha(),
+          }
+          entry.peek.show_window();
+          entry.peek.refresh_companion();
+          if let Some(transit) = &entry.transit {
+            transit.clock.start_clock(clock_origin);
+          }
+          let (rect, _) = entry.motion.current_state_at(now);
+          entry.draw(&rect, now, batch);
+        }
         Role::Peek | Role::HandingBack => {}
       }
     }
@@ -398,6 +509,22 @@ impl PeekView {
     for id in &landed.released {
       self.entries.remove(id);
     }
+
+    landed.left = take_left(&mut self.entries, |entry| {
+      has_left(entry.role, &entry.motion, entry.transit.as_ref())
+    })
+    .into_iter()
+    .filter_map(|(id, entry)| {
+      let Role::Leaving(transition) = entry.role else {
+        return None;
+      };
+      entry.departing.map(|departing| Left {
+        id,
+        transition,
+        window: departing.native,
+      })
+    })
+    .collect();
 
     // Columns that moved out of view have nothing left to show.
     self.entries.retain(|_, entry| {
@@ -443,7 +570,9 @@ impl PeekView {
   ) -> Vec<Uuid> {
     self
       .entries
-      .extract_if(|id, entry| is_stray(entry.is_column, shown(id)))
+      .extract_if(|id, entry| {
+        is_stray(entry.is_column, entry.role, shown(id))
+      })
       .map(|(id, _)| id)
       .collect()
   }
@@ -451,18 +580,56 @@ impl PeekView {
   /// Drops `window_id`'s peek, if it is entering a tiling layout, as its
   /// window is unmanaged.
   pub fn forget_entering(&mut self, window_id: &Uuid) {
-    if self
-      .entries
-      .get(window_id)
-      .is_some_and(|entry| !entry.is_column)
-    {
+    if self.entries.get(window_id).is_some_and(|entry| {
+      !entry.is_column && !matches!(entry.role, Role::Leaving(_))
+    }) {
       self.entries.remove(window_id);
     }
   }
 
   /// Whether any peek draws a window entering a tiling layout.
   fn has_entering(&self) -> bool {
-    self.entries.values().any(|entry| !entry.is_column)
+    self.entries.values().any(|entry| {
+      !entry.is_column && !matches!(entry.role, Role::Leaving(_))
+    })
+  }
+
+  /// Whether `window_id`'s peek is taking it off the screen (see
+  /// [`leave`](Self::leave)).
+  pub fn is_leaving(&self, window_id: &Uuid) -> bool {
+    self
+      .entries
+      .get(window_id)
+      .is_some_and(|entry| matches!(entry.role, Role::Leaving(_)))
+  }
+
+  /// Whether `window_id`'s peek is taking it off the screen by
+  /// `transition`.
+  pub(crate) fn leaves_by(
+    &self,
+    window_id: &Uuid,
+    transition: AwayTransition,
+  ) -> bool {
+    self
+      .entries
+      .get(window_id)
+      .is_some_and(|entry| leaves_as(entry.role, transition))
+  }
+
+  /// Drops `window_id`'s peek if it is leaving, ending its animation with
+  /// nothing more done: no `WM_CLOSE`, and its real window left as it is.
+  pub fn forget_leaving(&mut self, window_id: &Uuid) {
+    if self.is_leaving(window_id) {
+      self.entries.remove(window_id);
+    }
+  }
+
+  /// Drops every leaving peek, as [`forget_leaving`](Self::forget_leaving)
+  /// does.
+  pub fn forget_all_leaving(&mut self) {
+    self
+      .entries
+      .retain(|_, entry| !matches!(entry.role, Role::Leaving(_)));
   }
 
   /// Has `window_id`'s moving peek take over from its real window, which
@@ -508,10 +675,12 @@ impl PeekView {
     }
   }
 
-  /// The window whose peek is at `point`, if any.
+  /// The window whose peek is at `point`, if any. Not one leaving, which
+  /// is going and, closing, no longer managed.
   pub fn window_at(&self, point: &Point) -> Option<Uuid> {
     self.entries.iter().find_map(|(id, entry)| {
-      entry
+      Some(entry)
+        .filter(|entry| !matches!(entry.role, Role::Leaving(_)))?
         .peek
         .visible_rect()
         .filter(|rect| rect.contains_point(point))
@@ -721,6 +890,146 @@ impl PeekView {
         retargeted_motion(&entry.motion, target, duration_ms, easing, now);
     }
   }
+
+  /// Draws `window`, at `rect`, leaving by `params`' style, opacity and
+  /// timing on a pinned peek, until [`tick`](Self::tick) reports it
+  /// [`Landed::left`]. One already entering on its peek turns round where
+  /// it is.
+  ///
+  /// A new peek goes up directly below its real window and is never
+  /// raised: a closing window is drawn below its neighbours (owner's
+  /// decision, `STAND_INS_PLAN.md` task 4). Under a real window still
+  /// shown, it is warmed up until the window is cloaked by the first
+  /// tick, as it takes over.
+  #[allow(clippy::too_many_arguments)]
+  pub(super) fn leave(
+    &mut self,
+    window: &WindowContainer,
+    rect: &Rect,
+    clip: &Rect,
+    transition: AwayTransition,
+    params: &WindowTransitionParams,
+    config: &UserConfig,
+    is_focused: bool,
+    now: Instant,
+    batch: &mut SurrogateBatch,
+  ) -> Leave {
+    let id = window.id();
+    let role = self.entries.get(&id).map(|entry| entry.role);
+    if role.is_some_and(|role| matches!(role, Role::Leaving(_))) {
+      return Leave::Leaving;
+    }
+
+    let styles = peek_styles(window, config);
+    if is_live(&styles)
+      || role.is_some_and(|role| !matches!(role, Role::Moving { .. }))
+    {
+      return Leave::Unsupported;
+    }
+
+    let native = window.native().clone();
+    let (Ok(bounds), Ok(frame)) =
+      (native.frame_with_shadows(), native.frame())
+    else {
+      return Leave::Unsupported;
+    };
+    let Some(fresh) = Transit::leaving(params) else {
+      return Leave::Skipped;
+    };
+    let effect_set = window.effect_set(is_focused);
+
+    if role.is_none() {
+      let (opacity, corner_style, _) =
+        surrogate_effects_for(effect_set, config);
+      let Some((entry, _)) = new_entry(
+        window,
+        held_motion(rect.clone(), params),
+        clip,
+        opacity,
+        corner_style,
+        &styles,
+        Role::Leaving(transition),
+      ) else {
+        return Leave::Unsupported;
+      };
+      // No thumbnail, nothing to play (`5f39127`): dropped here.
+      if !entry.peek.has_thumbnail() {
+        tracing::debug!("No peek of {window} to leave on.");
+        return Leave::Skipped;
+      }
+      self.entries.insert(id, entry);
+    }
+
+    let Some(entry) = self
+      .entries
+      .get_mut(&id)
+      .filter(|entry| entry.peek.has_thumbnail())
+    else {
+      return Leave::Skipped;
+    };
+
+    let (current, _) = entry.motion.current_state_at(now);
+    entry.transit =
+      Some(leaving_transit(entry.transit.as_ref(), fresh, params, now));
+    entry.motion = held_motion(current.clone(), params);
+    entry.motion.start_clock(now);
+    entry.role = Role::Leaving(transition);
+    entry.is_column = false;
+    entry.departing = Some(Departing {
+      awaits_cloak: !native.is_cloaked().unwrap_or(true),
+      native,
+      effect_set,
+      bounds,
+      frame,
+    });
+    entry.draw(&current, now, batch);
+
+    Leave::Leaving
+  }
+
+  /// Has `window_id`'s leaving peek, warmed up under its still-shown real
+  /// window, take over from it now, as the caller is about to minimize
+  /// it (see `WindowPeek::take_over`). Returns whether it was waiting to.
+  fn take_over_leaving(&mut self, window_id: &Uuid) -> bool {
+    let Some((peek, departing)) =
+      self.entries.get_mut(window_id).and_then(|entry| {
+        let departing = entry.departing.as_mut()?;
+        departing
+          .awaits_cloak
+          .then_some((&mut entry.peek, departing))
+      })
+    else {
+      return false;
+    };
+
+    peek.take_over(&departing.native);
+    departing.awaits_cloak = false;
+    true
+  }
+
+  /// Whether `window_id`'s leaving peek waits to take over from its real
+  /// window, still shown.
+  fn awaits_take_over(&self, window_id: &Uuid) -> bool {
+    self
+      .entries
+      .get(window_id)
+      .and_then(|entry| entry.departing.as_ref())
+      .is_some_and(|departing| departing.awaits_cloak)
+  }
+}
+
+/// A motion holding a window at `rect`, for one leaving: only its transit
+/// moves it.
+fn held_motion(
+  rect: Rect,
+  params: &WindowTransitionParams,
+) -> WindowAnimationState {
+  WindowAnimationState::new_movement(
+    rect.clone(),
+    rect,
+    0,
+    params.easing.clone(),
+  )
 }
 
 /// Drops the peeks of windows entering a tiling layout that are no longer
@@ -802,6 +1111,91 @@ pub fn enter_on_peek(
   entered
 }
 
+/// Takes `window`, at `rect`, off the screen on a pinned peek by `params`
+/// (see [`PeekView::leave`]), on ticks paced by its monitor's vblanks.
+/// Clipped to the whole monitor, as an open on a peek is.
+///
+/// A minimize's peek takes over before this returns: the caller then
+/// minimizes the window, which leaves no thumbnail to warm up from, so a
+/// frame is composited here first, as `commit_pending_cloaks` does. A
+/// close's waits for the next tick, which cloaks the window: a closing
+/// window is out of the tree, so no cloak of the following sync's covers
+/// it.
+#[allow(clippy::too_many_arguments)]
+pub fn leave_on_peek(
+  state: &mut WmState,
+  window: &WindowContainer,
+  rect: &Rect,
+  transition: AwayTransition,
+  params: &WindowTransitionParams,
+  config: &UserConfig,
+  is_focused: bool,
+) -> Leave {
+  let Some((clip, handle)) = window.monitor().and_then(|monitor| {
+    let clip = monitor.to_rect().ok()?;
+    Some((clip, monitor.native_properties().handle))
+  }) else {
+    return Leave::Unsupported;
+  };
+
+  let now = state.animation_manager.frame_time();
+  let mut batch = SurrogateBatch::new();
+  let leave = state.animation_manager.peeks.leave(
+    window, rect, &clip, transition, params, config, is_focused, now,
+    &mut batch,
+  );
+  if leave != Leave::Leaving {
+    batch.commit();
+    return leave;
+  }
+
+  let id = window.id();
+  state.animation_manager.drop_companion_cover(&id);
+  track_overlays(state, config, batch);
+
+  if transition == AwayTransition::Minimize
+    && state.animation_manager.peeks.awaits_take_over(&id)
+  {
+    wm_platform::dwm_flush();
+    state.animation_manager.peeks.note_composited();
+    track_overlays(state, config, SurrogateBatch::new());
+    state.animation_manager.peeks.take_over_leaving(&id);
+  }
+
+  state.animation_manager.ensure_waiter_for(handle);
+  state.animation_manager.ensure_timer_running();
+
+  Leave::Leaving
+}
+
+/// Ends the animations of windows done leaving, as `update_internal` ends
+/// a close or minimize surrogate's: their overlays go, and a closing one
+/// is sent `WM_CLOSE`.
+pub fn finish_leaving(state: &mut WmState, left: Vec<Left>) {
+  for Left {
+    id,
+    transition,
+    window,
+  } in left
+  {
+    state.window_overlays.remove(&id);
+
+    match transition {
+      AwayTransition::Close => {
+        if let Err(err) = window.close() {
+          tracing::warn!(
+            "Failed to send WM_CLOSE for window {id}: {err}."
+          );
+        }
+        state.closing_windows.mark_close_sent(id, Instant::now());
+      }
+      AwayTransition::Minimize => {
+        tracing::debug!("Minimize on its peek complete for {id}.");
+      }
+    }
+  }
+}
+
 /// A hidden peek of `window` for `motion` in `role`, carrying copies of
 /// its backdrop `styles`, and whether it covers a still-shown real window,
 /// so it has to be composited before that window is cloaked. `None` when
@@ -815,7 +1209,7 @@ fn new_entry(
   styles: &[Option<BackdropOverlayParams>; 2],
   role: Role,
 ) -> Option<(Entry, bool)> {
-  let is_moving = matches!(role, Role::Moving { .. });
+  let is_moving = matches!(role, Role::Moving { .. } | Role::Leaving(_));
 
   // Sized like the window itself, which a collapsed `from` (an opening
   // column) isn't. A window with a backdrop that can't be copied along has
@@ -836,8 +1230,9 @@ fn new_entry(
   // `track_overlays`, before anything is composited.
   peek.carry_styles(styles);
 
-  // A moving column's real window may still show until the peek takes
-  // over from it as it is cloaked; one at rest is already cloaked.
+  // A moving column's or a leaving window's real window may still show
+  // until the peek takes over from it as it is cloaked; one at rest is
+  // already cloaked.
   let covers_shown_window =
     is_moving && !window.native().is_cloaked().unwrap_or(true);
   if covers_shown_window {
@@ -857,6 +1252,7 @@ fn new_entry(
     composited: false,
     transit: None,
     is_column: true,
+    departing: None,
   };
 
   Some((entry, covers_shown_window))
@@ -903,13 +1299,17 @@ pub fn track_overlays(
         _ => entry.peek.hwnd(),
       };
       let is_live = entry.peek.is_live();
-      (*id, frame, entry.clip.clone(), is_moving, is_live, anchor)
+      // A leaving window keeps the look it left with.
+      let kept_set = entry.departing.as_ref().map(|left| left.effect_set);
+      let clip = entry.clip.clone();
+      (*id, frame, clip, is_moving, is_live, anchor, kept_set)
     })
-    .collect::<Vec<(Uuid, Option<Rect>, Rect, bool, bool, HWND)>>();
+    .collect::<Vec<_>>();
 
-  for (id, frame, clip, is_moving, is_live, anchor) in tracked {
+  for (id, frame, clip, is_moving, is_live, anchor, kept_set) in tracked {
     // Blended across a focus fade, as steady state draws it.
-    let set = state.effect_set(id, focused_id == Some(id));
+    let set = kept_set
+      .unwrap_or_else(|| state.effect_set(id, focused_id == Some(id)));
     let backdrop =
       focus_blend::<NativeBackdropOverlay>(state, id, set, config);
     let border =
@@ -1001,16 +1401,22 @@ fn carry_ring(
   id: Uuid,
   blend: Option<StyleBlend<BorderOverlayParams>>,
 ) -> bool {
-  let Some(window) = state.window_by_id(id) else {
-    return false;
-  };
-
-  // Shown where it was, or cloaked where its peek is headed.
-  let native = window.native();
-  let (Ok(bounds), Ok(frame)) =
-    (native.frame_with_shadows(), native.frame())
-  else {
-    return false;
+  let leaving = leaving_window(state, id);
+  let window = state.window_by_id(id).filter(|_| leaving.is_none());
+  let (native, bounds, frame) = match (leaving, &window) {
+    // A leaving window's ring stays where it was, without a tab bar.
+    (Some(leaving), _) => leaving,
+    (None, Some(window)) => {
+      // Shown where it was, or cloaked where its peek is headed.
+      let native = window.native().clone();
+      let (Ok(bounds), Ok(frame)) =
+        (native.frame_with_shadows(), native.frame())
+      else {
+        return false;
+      };
+      (native, bounds, frame)
+    }
+    (None, None) => return false,
   };
 
   if let Some(entry) = state.animation_manager.peeks.entries.get_mut(&id) {
@@ -1030,7 +1436,10 @@ fn carry_ring(
   };
 
   // Framed with its stack's tab bar, like the real window.
-  let ring_frame = crate::tab_bars::window_with_tab_bar(&window, &frame);
+  let ring_frame = window.as_ref().map_or_else(
+    || frame.clone(),
+    |window| crate::tab_bars::window_with_tab_bar(window, &frame),
+  );
   let anchor = native.hwnd();
 
   let Some(overlay) = overlay_entry::<NativeBorderOverlay>(
@@ -1106,9 +1515,10 @@ fn carry_backdrop(
     .entries
     .get(&id)
     .is_some_and(|entry| entry.peek.carries_backdrop());
-  let Some(window) = state.window_by_id(id).filter(|_| carries) else {
+  let leaving = leaving_window(state, id);
+  if !carries || (leaving.is_none() && state.window_by_id(id).is_none()) {
     return false;
-  };
+  }
 
   let Some(blend) = blend else {
     if let Some(overlay) = state
@@ -1128,10 +1538,19 @@ fn carry_backdrop(
 
   // Where steady state puts it (see `sync_overlays`): over the real
   // window's own frame, where it shows before a scroll and waits cloaked
-  // during one.
-  let native = window.native();
-  let Ok(frame) = native.frame() else {
-    return false;
+  // during one. A leaving window's stays where it was.
+  let (native, frame) = if let Some((native, _, frame)) = leaving {
+    (native, frame)
+  } else {
+    let Some(native) =
+      state.window_by_id(id).map(|window| window.native().clone())
+    else {
+      return false;
+    };
+    let Ok(frame) = native.frame() else {
+      return false;
+    };
+    (native, frame)
   };
   let anchor = native.hwnd();
 
@@ -1197,6 +1616,27 @@ fn carry_backdrop(
   true
 }
 
+/// The real window, rect with shadows and frame that `id`'s peek kept as
+/// it started to leave, if it is leaving (see [`Departing`]).
+fn leaving_window(
+  state: &WmState,
+  id: Uuid,
+) -> Option<(NativeWindow, Rect, Rect)> {
+  let departing = state
+    .animation_manager
+    .peeks
+    .entries
+    .get(&id)?
+    .departing
+    .as_ref()?;
+
+  Some((
+    departing.native.clone(),
+    departing.bounds.clone(),
+    departing.frame.clone(),
+  ))
+}
+
 /// The backdrops of `window` focused and not, which its peek carries
 /// copies of.
 fn peek_styles(
@@ -1212,20 +1652,26 @@ fn peek_styles(
 
 #[cfg(test)]
 mod tests {
-  use std::time::{Duration, Instant};
+  use std::{
+    collections::HashMap,
+    time::{Duration, Instant},
+  };
 
+  use uuid::Uuid;
   use wm_common::{
     EasingFunction, WindowTransitionParams, WindowTransitionStyle,
   };
   use wm_platform::Rect;
 
   use super::{
-    has_landed, is_departed, is_entering_tile, is_stray, kept_transit,
-    retargeted_motion,
+    has_landed, has_left, is_departed, is_entering_tile, is_stray,
+    kept_transit, leaves_as, leaving_transit, retargeted_motion,
+    take_left, Role,
   };
   use crate::animation::{
     state::WindowAnimationState,
     transit::{Direction, Transit},
+    AwayTransition,
   };
 
   fn linear() -> EasingFunction {
@@ -1245,14 +1691,17 @@ mod tests {
     )
   }
 
-  fn transit(duration_ms: u32) -> Transit {
-    let params = WindowTransitionParams {
+  fn params(duration_ms: u32) -> WindowTransitionParams {
+    WindowTransitionParams {
       duration_ms,
       easing: linear(),
       style: WindowTransitionStyle::Zoom,
       away_opacity: 0.0,
-    };
-    Transit::new(Direction::In, &params, 0.0)
+    }
+  }
+
+  fn transit(duration_ms: u32) -> Transit {
+    Transit::new(Direction::In, &params(duration_ms), 0.0)
   }
 
   /// An entering window lands once its motion and its transit both have.
@@ -1336,14 +1785,99 @@ mod tests {
   }
 
   /// Only an entering window that is unmanaged or no longer shown is a
-  /// stray; columns and entering windows still shown are left alone.
+  /// stray; columns, entering windows still shown and leaving windows are
+  /// left alone.
   #[test]
   fn strays_are_entering_windows_not_shown() {
-    assert!(is_stray(false, None));
-    assert!(is_stray(false, Some(false)));
-    assert!(!is_stray(false, Some(true)));
+    let entering = Role::Moving { ends_shown: true };
+    assert!(is_stray(false, entering, None));
+    assert!(is_stray(false, entering, Some(false)));
+    assert!(!is_stray(false, entering, Some(true)));
     for shown in [None, Some(false), Some(true)] {
-      assert!(!is_stray(true, shown), "{shown:?}");
+      assert!(!is_stray(true, entering, shown), "{shown:?}");
+      for transition in [AwayTransition::Close, AwayTransition::Minimize] {
+        let leaving = Role::Leaving(transition);
+        assert!(!is_stray(false, leaving, shown), "{shown:?}");
+      }
+    }
+  }
+
+  /// A leaving entry answers for its own transition only, which the
+  /// close and minimize queries (and with them `has_active_surrogate`
+  /// and `stands_in_for`) read; no other role does.
+  #[test]
+  fn leaving_entries_answer_for_their_transition() {
+    let (close, minimize) =
+      (AwayTransition::Close, AwayTransition::Minimize);
+    assert!(leaves_as(Role::Leaving(close), close));
+    assert!(!leaves_as(Role::Leaving(close), minimize));
+    assert!(leaves_as(Role::Leaving(minimize), minimize));
+    for role in [
+      Role::Peek,
+      Role::Moving { ends_shown: true },
+      Role::HandingBack,
+      Role::Releasing { settled: false },
+    ] {
+      assert!(!leaves_as(role, close) && !leaves_as(role, minimize));
+    }
+  }
+
+  /// A leaving entry is taken out once its transit ends, so reported
+  /// once; one still playing, and entries in other roles, stay.
+  #[test]
+  fn a_leaving_entry_is_reported_once() {
+    let now = Instant::now();
+    let held = motion(0);
+    held.start_clock(now);
+    let (left, leaving) = (transit(0), transit(60_000));
+    for transit in [&left, &leaving] {
+      transit.clock.start_clock(now);
+    }
+    let close = Role::Leaving(AwayTransition::Close);
+    let (done, playing, moving) =
+      (Uuid::new_v4(), Uuid::new_v4(), Uuid::new_v4());
+    let mut entries = HashMap::from([
+      (done, (close, left.clone())),
+      (playing, (close, leaving)),
+      (moving, (Role::Moving { ends_shown: true }, left)),
+    ]);
+    let is_done = |(role, transit): &(Role, Transit)| {
+      has_left(*role, &held, Some(transit))
+    };
+
+    let taken = take_left(&mut entries, is_done);
+    assert_eq!(
+      taken.iter().map(|(id, _)| *id).collect::<Vec<_>>(),
+      [done]
+    );
+    assert!(take_left(&mut entries, is_done).is_empty());
+    assert!(
+      entries.contains_key(&playing) && entries.contains_key(&moving)
+    );
+  }
+
+  /// A window closed mid-entry leaves from the amount it had reached, and
+  /// one at rest from all the way in.
+  #[test]
+  fn closed_mid_entry_leaves_from_where_it_is() {
+    let t0 = Instant::now();
+    let now = t0 + Duration::from_millis(50);
+    let entering = transit(200);
+    entering.clock.start_clock(t0);
+    let amount = entering.amount_at(now);
+    let fresh = || Transit::new(Direction::Out, &params(200), 1.0);
+
+    let turned =
+      leaving_transit(Some(&entering), fresh(), &params(200), now);
+    assert_eq!(turned.direction, Direction::Out);
+    assert!((turned.amount_at(now) - amount).abs() < 1e-3, "{amount}");
+    assert!(turned.amount_at(now + Duration::from_millis(25)) < amount);
+
+    let entered = transit(0);
+    entered.clock.start_clock(t0);
+    for at_rest in [None, Some(&entered)] {
+      let left = leaving_transit(at_rest, fresh(), &params(200), now);
+      assert!((left.from - 1.0).abs() < f32::EPSILON);
     }
   }
 

@@ -286,6 +286,10 @@ pub fn report_stuck_windows(state: &mut WmState) {
 
 /// Where each tiling window of `workspace` moves from and to: from where
 /// it is shown now, or for a new column from its opening rect.
+///
+/// Not one leaving on its peek, which plays out where it was: a closing
+/// one is out of the tree already, a minimizing one until the OS reports
+/// it minimized.
 fn column_moves(
   view: &PeekView,
   workspace: &Workspace,
@@ -293,6 +297,7 @@ fn column_moves(
 ) -> Vec<(WindowContainer, Rect, Rect)> {
   let moves = tiling_windows(workspace)
     .into_iter()
+    .filter(|window| !view.is_leaving(&window.id()))
     .filter_map(|window| {
       let target = target_rect(&window).ok()?;
       let from = view

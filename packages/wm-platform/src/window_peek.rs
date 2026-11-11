@@ -135,6 +135,13 @@ impl WindowPeek {
     })
   }
 
+  /// Whether the peek draws its window at all: DWM refuses a thumbnail of
+  /// some, e.g. an elevated window.
+  #[must_use]
+  pub fn has_thumbnail(&self) -> bool {
+    self.surrogate.has_thumbnail()
+  }
+
   /// Whether the peek moves with its window (see [`PeekMode::Live`]).
   #[must_use]
   pub fn is_live(&self) -> bool {

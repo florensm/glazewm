@@ -24,8 +24,6 @@ const MIN_DURATION_MS: u32 = 17;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Direction {
   In,
-  // Unused until task 4 of `STAND_INS_PLAN.md` draws closes with it.
-  #[allow(dead_code)]
   Out,
 }
 
@@ -38,8 +36,6 @@ impl Direction {
     }
   }
 
-  // Unused until task 4 of `STAND_INS_PLAN.md` draws closes with it.
-  #[allow(dead_code)]
   fn opposite(self) -> Self {
     match self {
       Self::In => Self::Out,
@@ -97,18 +93,26 @@ impl Transit {
   /// paints before it shows, as on the old path. Slides and zooms show
   /// nothing there, so start at once.
   pub fn opening(params: &WindowTransitionParams) -> Option<Self> {
-    let is_zoom = params.style == WindowTransitionStyle::Zoom;
-    let is_fade = params.style.is_stationary() && !is_zoom;
-    if is_fade && params.away_opacity >= 1.0 {
+    if shows_nothing(params) {
       return None;
     }
 
+    let is_fade = params.style.is_stationary()
+      && params.style != WindowTransitionStyle::Zoom;
     let mut transit = Self::new(Direction::In, params, 0.0);
     if is_fade {
       transit.clock.start_delay = OPEN_PAINT_GRACE;
     }
 
     Some(transit)
+  }
+
+  /// The transit of a window closing or minimizing by `params`, from all
+  /// the way in, or `None` when it would show nothing, which
+  /// `start_away_animation` skips too.
+  pub fn leaving(params: &WindowTransitionParams) -> Option<Self> {
+    (!shows_nothing(params))
+      .then(|| Self::new(Direction::Out, params, 1.0))
   }
 
   /// How far in the window is at `now`: 0 away, 1 at rest.
@@ -131,8 +135,6 @@ impl Transit {
   ///
   /// A spring keeps the speed this one has at `now`, so it carries on a
   /// moment before turning round; other easings start from rest.
-  // Unused until task 4 of `STAND_INS_PLAN.md` draws closes with it.
-  #[allow(dead_code)]
   pub fn reversed(
     &self,
     params: &WindowTransitionParams,
@@ -155,6 +157,14 @@ impl Transit {
 
     reversed
   }
+}
+
+/// Whether `params` change nothing on screen: a stationary style other
+/// than a zoom, at full opacity throughout.
+fn shows_nothing(params: &WindowTransitionParams) -> bool {
+  params.style.is_stationary()
+    && params.style != WindowTransitionStyle::Zoom
+    && params.away_opacity >= 1.0
 }
 
 /// Where a window resting at `rest` is drawn when `amount` in, and at
@@ -391,6 +401,33 @@ mod tests {
       assert!(
         transit.is_some_and(|transit| transit.direction == Direction::In
           && transit.from == 0.0
+          && transit.clock.start_delay.is_zero()),
+        "{style:?}"
+      );
+    }
+  }
+
+  #[test]
+  fn leaving_matches_the_old_path() {
+    let with = |style, away_opacity| WindowTransitionParams {
+      style,
+      away_opacity,
+      ..params(linear())
+    };
+
+    assert!(
+      Transit::leaving(&with(WindowTransitionStyle::None, 1.0)).is_none()
+    );
+
+    let styles = SLIDES.into_iter().chain([WindowTransitionStyle::Zoom]);
+    for (style, away_opacity) in styles
+      .map(|style| (style, 1.0))
+      .chain([(WindowTransitionStyle::None, 0.0)])
+    {
+      let transit = Transit::leaving(&with(style.clone(), away_opacity));
+      assert!(
+        transit.is_some_and(|transit| transit.direction == Direction::Out
+          && (transit.from - 1.0).abs() < f32::EPSILON
           && transit.clock.start_delay.is_zero()),
         "{style:?}"
       );
