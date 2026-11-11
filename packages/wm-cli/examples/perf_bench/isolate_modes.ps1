@@ -30,6 +30,10 @@ IPC (see CLAUDE.md's build targets).
 Process name of the tiled window to animate, e.g. `chrome` or `notepad`.
 It needs a tiled neighbour on its workspace for `move` and `resize`.
 
+.PARAMETER Modes
+`GLAZEWM_ISOLATE` values to compare, `default` leaving it unset. A mode
+of several flags joins them with `+`, e.g. `nopeeks+peeksfirst`.
+
 .PARAMETER Load
 IPC queries queued as each animation starts (`perf_bench --load`), so the
 main loop has a backlog to catch up on between frames. `peeksfirst` only
@@ -52,6 +56,10 @@ param(
 
 $ErrorActionPreference = 'Stop'
 Set-Location (Resolve-Path (Join-Path $PSScriptRoot '..\..\..\..'))
+
+# `powershell -File` binds `-Modes a,b` as the one string 'a,b'.
+$Modes = @($Modes -split '\s*,\s*' | Where-Object { $_ })
+$Scenarios = @($Scenarios -split '\s*,\s*' | Where-Object { $_ })
 
 # Arguments of a process's command line, without its executable.
 function Get-Arguments([string] $CommandLine) {
@@ -141,7 +149,7 @@ Set-Content -Path $resultsFile -Value (
 try {
   for ($round = 1; $round -le $Rounds; $round++) {
     foreach ($mode in $Modes) {
-      $isolate = $(if ($mode -eq 'default') { '' } else { $mode })
+      $isolate = $(if ($mode -eq 'default') { '' } else { $mode -replace '\+', ',' })
       Write-Host "Round $round/${Rounds}: restarting GlazeWM as '$mode'..."
       $running = Get-WmProcess
       if ($running) { Stop-Wm $wm $running }
