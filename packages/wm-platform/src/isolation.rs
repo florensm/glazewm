@@ -12,6 +12,10 @@
 //!   peeks that move with them, as before backdrops were copied.
 //! - `peeks`: draw open, close, minimize, restore and moves with pinned
 //!   peeks instead of `ResizeSession`, for the kinds already moved over.
+//! - `peeksfirst`: on an animation tick with peeks to draw, draw their
+//!   frame before the main loop's catch-up on queued events, then the rest
+//!   of the tick, rather than all of it after the catch-up. With or
+//!   without `peeks`: scrolling columns move on peeks either way.
 //!
 //! Unset, nothing changes. Read once per process.
 
@@ -26,6 +30,7 @@ pub struct Isolation {
   pub no_ring: bool,
   pub live: bool,
   pub peeks: bool,
+  pub peeks_first: bool,
 }
 
 impl Isolation {
@@ -42,6 +47,7 @@ impl Isolation {
         "noring" => isolation.no_ring = true,
         "live" => isolation.live = true,
         "peeks" => isolation.peeks = true,
+        "peeksfirst" => isolation.peeks_first = true,
         _ => tracing::warn!("Unknown GLAZEWM_ISOLATE flag: {word}."),
       }
     }
@@ -68,6 +74,7 @@ mod tests {
   fn empty_leaves_nothing_out() {
     assert_eq!(Isolation::parse(""), Isolation::default());
     assert!(!Isolation::default().peeks);
+    assert!(!Isolation::default().peeks_first);
   }
 
   #[test]
@@ -79,6 +86,7 @@ mod tests {
         no_ring: true,
         live: true,
         peeks: true,
+        peeks_first: false,
       }
     );
     assert_eq!(
@@ -88,5 +96,25 @@ mod tests {
         ..Isolation::default()
       }
     );
+  }
+
+  #[test]
+  fn peeks_first_is_its_own_word() {
+    assert_eq!(
+      Isolation::parse("PeeksFirst"),
+      Isolation {
+        peeks_first: true,
+        ..Isolation::default()
+      }
+    );
+    assert_eq!(
+      Isolation::parse("peeks,peeksfirst"),
+      Isolation {
+        peeks: true,
+        peeks_first: true,
+        ..Isolation::default()
+      }
+    );
+    assert_eq!(Isolation::parse("peeks_first"), Isolation::default());
   }
 }

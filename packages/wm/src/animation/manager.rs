@@ -266,6 +266,25 @@ use crate::{
   wm_state::WmState,
 };
 
+/// The instants an animation tick's frame is evaluated at, read once per
+/// frame.
+#[derive(Clone, Copy, Debug)]
+struct FrameTimes {
+  /// See [`AnimationManager::frame_now`].
+  now: Instant,
+  /// One frame period before `now`, where clocks started this frame
+  /// begin, so its first frame already shows motion.
+  clock_origin: Instant,
+}
+
+/// A tick whose peeks [`AnimationManager::draw_peeks_first`] drew, and
+/// what the rest of it owes them: the windows that landed, queued for its
+/// redraw once events handled in between have changed what they may.
+pub struct PeeksDrawn {
+  times: FrameTimes,
+  landed: super::peek_view::Landed,
+}
+
 /// A single entry in the surrogate update queue built each redraw pass.
 struct PendingSurrogateUpdate {
   window_id: Uuid,
@@ -1364,18 +1383,110 @@ impl AnimationManager {
   }
 
   /// Internal update, accessed through `WmState` to avoid double-borrow.
-  #[allow(clippy::too_many_lines)]
   pub(crate) fn update_internal(
     state: &mut WmState,
     config: &UserConfig,
   ) -> anyhow::Result<()> {
-    if !state.animation_manager.has_active_animations() {
-      return Ok(());
+    Self::finish_frame(state, config, None)
+  }
+
+  /// Draws the peeks' frame of an animation tick ahead of the rest of it,
+  /// which [`finish_frame`](Self::finish_frame) then runs, e.g. after the
+  /// main loop's catch-up (`GLAZEWM_ISOLATE=peeksfirst`). `None`, drawing
+  /// nothing, while no peek needs ticks.
+  pub(crate) fn draw_peeks_first(
+    state: &mut WmState,
+    config: &UserConfig,
+  ) -> Option<PeeksDrawn> {
+    if !state.animation_manager.peeks.is_active() {
+      return None;
     }
 
+    let woke_at =
+      perf::is_enabled().then(|| state.animation_manager.tick_woke_at());
     state.animation_manager.last_frame_at.set(Instant::now());
 
     perf::begin_frame();
+    let _tick_scope = perf::scope(Stage::Tick);
+    let _peek_scope = perf::scope_since(Stage::PeekFrame, woke_at);
+
+    let times = state.animation_manager.begin_frame_times();
+    let (landed, batch) = Self::tick_peeks(state, times);
+    super::peek_view::track_overlays(state, config, batch);
+
+    Some(PeeksDrawn { times, landed })
+  }
+
+  /// Advances the peeks to `times`, ending the animations of windows done
+  /// leaving. Returns the rest of what landed, with their moves queued in
+  /// the batch, for [`track_overlays`] to commit along with their
+  /// overlays'.
+  ///
+  /// [`track_overlays`]: super::peek_view::track_overlays
+  fn tick_peeks(
+    state: &mut WmState,
+    times: FrameTimes,
+  ) -> (super::peek_view::Landed, SurrogateBatch) {
+    let mut batch = SurrogateBatch::new();
+    let mut landed = state.animation_manager.peeks.tick(
+      times.now,
+      times.clock_origin,
+      &mut batch,
+    );
+    super::peek_view::finish_leaving(
+      state,
+      std::mem::take(&mut landed.left),
+    );
+
+    (landed, batch)
+  }
+
+  /// Moved columns that end shown get their real window back in the
+  /// redraw below, and focus deferred while they moved lands then. Ones
+  /// that end hidden have their real window put where it stays cloaked,
+  /// and their overlays settled. Released ones get their overlays back on
+  /// the real window. Ones no longer in the tree are skipped.
+  fn queue_landed(state: &mut WmState, landed: super::peek_view::Landed) {
+    if !landed.shown.is_empty() {
+      state.pending_sync.queue_focus_change();
+    }
+    for window_id in landed
+      .shown
+      .into_iter()
+      .chain(landed.hidden)
+      .chain(landed.released)
+    {
+      if let Some(window) = state.window_by_id(window_id) {
+        state.pending_sync.queue_container_to_redraw(window);
+      }
+    }
+  }
+
+  /// Runs the rest of the tick whose peeks [`draw_peeks_first`] drew, at
+  /// the same instants, without ticking them again; or the whole tick for
+  /// `None`.
+  ///
+  /// [`draw_peeks_first`]: Self::draw_peeks_first
+  #[allow(clippy::too_many_lines)]
+  pub(crate) fn finish_frame(
+    state: &mut WmState,
+    config: &UserConfig,
+    drawn: Option<PeeksDrawn>,
+  ) -> anyhow::Result<()> {
+    // A frame whose peeks were drawn already is finished, even if nothing
+    // animates any more: what landed is still to be redrawn.
+    if drawn.is_none() && !state.animation_manager.has_active_animations()
+    {
+      return Ok(());
+    }
+
+    let woke_at = (drawn.is_none() && perf::is_enabled())
+      .then(|| state.animation_manager.tick_woke_at());
+    state.animation_manager.last_frame_at.set(Instant::now());
+
+    if drawn.is_none() {
+      perf::begin_frame();
+    }
     let tick_scope = perf::scope(Stage::Tick);
 
     // A failed sync must not end the frame early: the teardown after it is
@@ -1396,42 +1507,35 @@ impl AnimationManager {
     // Start the clock of every animation created since the last tick (see
     // `WindowAnimationState::start_clock`), one frame period before this
     // frame so the first tick already shows a frame of motion instead of
-    // repeating the start position.
-    state.animation_manager.begin_redraw_pass();
-    let frame_now = state.animation_manager.frame_now();
-    let clock_origin = frame_now
-      .checked_sub(state.animation_manager.frame_period())
-      .unwrap_or(frame_now);
+    // repeating the start position. A frame whose peeks were drawn first
+    // is evaluated at the instants they were, which events handled since
+    // may have read afresh.
+    let times = match &drawn {
+      Some(drawn) => {
+        state.animation_manager.resume_pass(drawn.times);
+        drawn.times
+      }
+      None => state.animation_manager.begin_frame_times(),
+    };
+    let FrameTimes {
+      now: frame_now,
+      clock_origin,
+    } = times;
     for animation in state.animation_manager.animations.values() {
       animation.start_clock(clock_origin);
     }
 
-    // Moved columns that end shown get their real window back in the
-    // redraw below, and focus deferred while they moved lands then. Ones
-    // that end hidden have their real window put where it stays cloaked,
-    // and their overlays settled. Released ones get their overlays back
-    // on the real window.
-    let mut scroll_batch = SurrogateBatch::new();
-    let landed = state.animation_manager.peeks.tick(
-      frame_now,
-      clock_origin,
-      &mut scroll_batch,
-    );
-    super::peek_view::finish_leaving(state, landed.left);
-    if !landed.shown.is_empty() {
-      state.pending_sync.queue_focus_change();
+    if let Some(drawn) = drawn {
+      Self::queue_landed(state, drawn.landed);
+    } else {
+      let peek_scope = woke_at
+        .filter(|_| state.animation_manager.peeks.is_active())
+        .map(|at| perf::scope_since(Stage::PeekFrame, Some(at)));
+      let (landed, batch) = Self::tick_peeks(state, times);
+      Self::queue_landed(state, landed);
+      super::peek_view::track_overlays(state, config, batch);
+      drop(peek_scope);
     }
-    for window_id in landed
-      .shown
-      .into_iter()
-      .chain(landed.hidden)
-      .chain(landed.released)
-    {
-      if let Some(window) = state.window_by_id(window_id) {
-        state.pending_sync.queue_container_to_redraw(window);
-      }
-    }
-    super::peek_view::track_overlays(state, config, scroll_batch);
 
     // Queue in-progress windows for redraw.
     let active_window_ids: Vec<_> = state
@@ -2359,6 +2463,33 @@ impl AnimationManager {
 
     self.pass_now = Some(now);
     now
+  }
+
+  /// Starts an animation tick's redraw pass and reads the instants its
+  /// frame is evaluated at.
+  fn begin_frame_times(&mut self) -> FrameTimes {
+    self.begin_redraw_pass();
+    let now = self.frame_now();
+    let clock_origin = now.checked_sub(self.frame_period()).unwrap_or(now);
+
+    FrameTimes { now, clock_origin }
+  }
+
+  /// Takes up a tick's redraw pass again at `times`, after passes run in
+  /// between read their own (see [`PeeksDrawn`]).
+  fn resume_pass(&mut self, times: FrameTimes) {
+    self.pass_now = Some(times.now);
+  }
+
+  /// When the timer thread woke for the tick about to be drawn, for the
+  /// profiler: its latest wake, if that came since the last frame began,
+  /// else now, as a ticking phase's first tick is sent without a wait.
+  fn tick_woke_at(&self) -> Instant {
+    tick_wake(
+      self.clock().last_wake(),
+      self.last_frame_at.get(),
+      Instant::now(),
+    )
   }
 
   /// Paces animation ticks against the monitor with `monitor_handle`,
@@ -3992,11 +4123,59 @@ pub(crate) fn movement_timing(
   }
 }
 
+/// The wake a tick being drawn at `now` came from: the timer thread's
+/// `last_wake`, if it came since the frame before began at
+/// `last_frame_at`. An older one was a tick drawn already, or one before
+/// the ticking phase began (`ensure_timer_running` resets
+/// `last_frame_at`), whose first tick is sent at once: then `now`.
+fn tick_wake(
+  last_wake: Option<Instant>,
+  last_frame_at: Instant,
+  now: Instant,
+) -> Instant {
+  last_wake
+    .filter(|wake| *wake > last_frame_at && *wake <= now)
+    .unwrap_or(now)
+}
+
 #[cfg(test)]
 mod tests {
   use wm_common::ParsedConfig;
 
   use super::*;
+
+  /// A tick whose peeks were drawn before the catch-up finishes at the
+  /// instant they were drawn at, whatever passes in between read.
+  #[test]
+  fn a_frame_drawn_first_resumes_at_its_instants() {
+    let (tx, _rx) = mpsc::unbounded_channel();
+    let mut manager = AnimationManager::new(tx);
+
+    let times = manager.begin_frame_times();
+    assert!(times.clock_origin <= times.now);
+    assert_eq!(manager.frame_now(), times.now);
+
+    std::thread::sleep(Duration::from_millis(2));
+    manager.begin_redraw_pass();
+    let caught_up = manager.frame_now();
+    assert!(caught_up > times.now);
+
+    manager.resume_pass(times);
+    assert_eq!(manager.frame_now(), times.now);
+  }
+
+  /// The profiler times a peek frame from the wake its tick came from,
+  /// not from one already drawn or from before the ticking phase.
+  #[test]
+  fn a_tick_is_timed_from_its_own_wake() {
+    let t0 = Instant::now();
+    let at = |ms| t0 + Duration::from_millis(ms);
+
+    assert_eq!(tick_wake(Some(at(10)), at(5), at(12)), at(10));
+    assert_eq!(tick_wake(Some(at(4)), at(5), at(12)), at(12));
+    assert_eq!(tick_wake(None, at(5), at(12)), at(12));
+    assert_eq!(tick_wake(Some(at(13)), at(5), at(12)), at(12));
+  }
 
   fn start_slide(
     manager: &mut AnimationManager,

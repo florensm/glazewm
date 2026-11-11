@@ -7,5 +7,5 @@ pub mod stand_in;
 pub mod state;
 pub mod transit;
 
-pub use manager::{AnimationManager, AnimationPositionResult};
+pub use manager::{AnimationManager, AnimationPositionResult, PeeksDrawn};
 pub(crate) use manager::{AwayTransition, HandBack, WorkspaceSwitchEntry};

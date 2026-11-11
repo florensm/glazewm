@@ -206,14 +206,21 @@ async fn start_wm(
     // ~577ms on an eight-window relayout, and IPC commands, tab clicks
     // and timers waited for the animation to end. The catch-up is bounded
     // per frame so a burst cannot starve the animation in turn.
-    if let Err(err) = catch_up_before_frame(
-      &mut wm,
-      &mut config,
-      &mut listeners,
-      &mut ipc_server,
-      &mut tray,
-    ) {
-      error_notifier.report(&err);
+    //
+    // Behind `GLAZEWM_ISOLATE=peeksfirst`, a tick with peeks to draw runs
+    // the catch-up after drawing them instead (see the tick's branch).
+    let peeks_first = isolation.peeks_first
+      && wm.state.animation_manager.peeks.is_active();
+    if !peeks_first {
+      if let Err(err) = catch_up_before_frame(
+        &mut wm,
+        &mut config,
+        &mut listeners,
+        &mut ipc_server,
+        &mut tray,
+      ) {
+        error_notifier.report(&err);
+      }
     }
 
     let auto_stack_deadline = wm.state.auto_stack.next_deadline();
@@ -243,7 +250,24 @@ async fn start_wm(
         // Drain any stale ticks that piled up while the previous frame was
         // processing, so each update_animations call covers the freshest state.
         while wm.animation_tick_rx.try_recv().is_ok() {}
-        wm.update_animations(&config)
+        if peeks_first {
+          // Thumbnail updates only, so they land early in the frame and
+          // close together, ahead of any composition the catch-up's work
+          // would let fall between them (`STAND_INS_PLAN.md` task 7).
+          let drawn = wm.draw_peeks_first(&config);
+          if let Err(err) = catch_up_before_frame(
+            &mut wm,
+            &mut config,
+            &mut listeners,
+            &mut ipc_server,
+            &mut tray,
+          ) {
+            error_notifier.report(&err);
+          }
+          wm.finish_animations(&config, drawn)
+        } else {
+          wm.update_animations(&config)
+        }
       },
       // Reached only when no tick is pending, i.e. the timer stopped
       // ticking while something is still animating.
