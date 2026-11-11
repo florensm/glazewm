@@ -2954,8 +2954,28 @@ impl AnimationManager {
     })
   }
 
-  /// Re-samples the edge color of every window that animated since the
-  /// last idle point.
+  /// Queues a first edge-color sample for a window just shown that has
+  /// none, so its first `fill` resize has a fill.
+  ///
+  /// Taken at the next idle point like a resize's, by then after any open
+  /// animation has landed; never at a resize's start (see
+  /// `sample_pending_edge_colors`).
+  pub fn queue_first_edge_sample(
+    &mut self,
+    hwnd: HWND,
+    config: &UserConfig,
+  ) {
+    let resize = &config.value.animations.window_resize;
+    if resize.enabled
+      && resize.style != ResizeStyle::Stretch
+      && self.cached_edge_color(hwnd.0).is_none()
+    {
+      self.pending_edge_samples.insert(hwnd.0);
+    }
+  }
+
+  /// Samples the edge color of every window that animated, or was shown
+  /// with none yet, since the last idle point.
   ///
   /// Deferred to here because the screen readback stalls DWM: run at a
   /// session's start, it more than tripled keypress-to-motion latency.
@@ -4192,6 +4212,45 @@ mod tests {
     }
 
     assert!(done.iter().all(|done| *done));
+  }
+
+  /// A window just shown is queued for a first fill color only while a
+  /// `fill` resize could use one and it has none yet.
+  #[test]
+  fn a_shown_window_is_queued_for_a_fill_color_it_lacks() {
+    let queues = |edit: fn(&mut ParsedConfig), cached: bool| {
+      let (tx, _rx) = mpsc::unbounded_channel();
+      let mut manager = AnimationManager::new(tx);
+      if cached {
+        if let Ok(mut map) = manager.edge_color_cache.lock() {
+          let color = Color {
+            r: 1,
+            g: 2,
+            b: 3,
+            a: 255,
+          };
+          map.insert(7, (color, Instant::now()));
+        }
+      }
+      let mut parsed = ParsedConfig::default();
+      edit(&mut parsed);
+      let config = UserConfig::from_parsed(parsed);
+
+      manager.queue_first_edge_sample(HWND(7), &config);
+      manager.pending_edge_samples.contains(&7)
+    };
+
+    assert!(queues(|_| {}, false));
+    assert!(!queues(|_| {}, true));
+    assert!(!queues(
+      |parsed| parsed.animations.window_resize.enabled = false,
+      false
+    ));
+    assert!(!queues(
+      |parsed| parsed.animations.window_resize.style =
+        ResizeStyle::Stretch,
+      false
+    ));
   }
 
   /// A tick whose peeks were drawn before the catch-up finishes at the

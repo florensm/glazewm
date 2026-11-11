@@ -1400,6 +1400,20 @@ fn redraw_containers(
       .window_target_positions
       .insert(window.id(), target_rect.clone());
 
+    // Opened, there at startup, or back on a shown workspace: sampled at
+    // the next idle point, once it has landed.
+    if is_visible
+      && (previous_target.is_none()
+        || matches!(
+          previous_display_state,
+          DisplayState::Hidden | DisplayState::Hiding
+        ))
+    {
+      state
+        .animation_manager
+        .queue_first_edge_sample(window.native().hwnd(), config);
+    }
+
     // Floating windows are not animated in general, but we allow a single
     // `window_move` animation when the window just crossed the
     // tiling/floating boundary so the transition is smooth rather than
