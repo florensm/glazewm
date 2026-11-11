@@ -1529,14 +1529,14 @@ fn sample_edge_color(
   // are independent allocations that outlive this scope.
   unsafe { ReleaseDC(HWND(0), hdc_screen) };
 
-  let mut counts: HashMap<u32, u32> = HashMap::with_capacity(64);
+  let mut pixels = Vec::with_capacity(2 * EDGE_SAMPLES as usize);
 
   for i in 0..EDGE_SAMPLES {
     let sy = (strip_h - 1) * i / (EDGE_SAMPLES - 1);
     // SAFETY: hdc_right is a valid DC with hbm_right selected.
     let c = unsafe { GetPixel(hdc_right, 0, sy) };
     if c.0 != 0xFFFF_FFFF {
-      *counts.entry(c.0 & 0x00FF_FFFF).or_insert(0) += 1;
+      pixels.push(c.0);
     }
   }
   for i in 0..EDGE_SAMPLES {
@@ -1544,7 +1544,7 @@ fn sample_edge_color(
     // SAFETY: hdc_bottom is a valid DC with hbm_bottom selected.
     let c = unsafe { GetPixel(hdc_bottom, sx, 0) };
     if c.0 != 0xFFFF_FFFF {
-      *counts.entry(c.0 & 0x00FF_FFFF).or_insert(0) += 1;
+      pixels.push(c.0);
     }
   }
 
@@ -1559,16 +1559,58 @@ fn sample_edge_color(
     let _ = DeleteObject(HGDIOBJ(hbm_bottom.0));
   }
 
-  // COLORREF is 0x00BBGGRR.
-  counts
-    .into_iter()
-    .max_by_key(|(_, n)| *n)
-    .map(|(colorref, _)| crate::Color {
-      r: (colorref & 0xFF) as u8,
-      g: ((colorref >> 8) & 0xFF) as u8,
-      b: ((colorref >> 16) & 0xFF) as u8,
-      a: 255,
-    })
+  dominant_color(&pixels)
+}
+
+/// Bits dropped from each channel to bucket sampled pixels by colour.
+///
+/// Steps of 32 absorb a see-through window's backdrop noise, which leaves
+/// no two pixels alike, yet keep a ring's or another window's colour apart
+/// from it; the bucket's mean then restores the precision.
+const EDGE_COLOR_BUCKET_SHIFT: u32 = 5;
+
+/// The mean of the most common colour bucket among `pixels`
+/// (`COLORREF`s, `0x00BBGGRR`), or `None` for no pixels.
+///
+/// A tie goes to the bucket seen first.
+fn dominant_color(pixels: &[u32]) -> Option<crate::Color> {
+  // Per bucket: its key, member count and channel sums.
+  let mut buckets: Vec<(u32, u32, [u32; 3])> = Vec::new();
+
+  for &pixel in pixels {
+    let channels =
+      [pixel & 0xFF, (pixel >> 8) & 0xFF, (pixel >> 16) & 0xFF];
+    let key = channels
+      .iter()
+      .fold(0, |key, c| (key << 8) | (c >> EDGE_COLOR_BUCKET_SHIFT));
+
+    match buckets.iter_mut().find(|(k, ..)| *k == key) {
+      Some((_, count, sums)) => {
+        *count += 1;
+        for (sum, c) in sums.iter_mut().zip(channels) {
+          *sum += c;
+        }
+      }
+      None => buckets.push((key, 1, channels)),
+    }
+  }
+
+  let (_, count, sums) = buckets.into_iter().reduce(|best, bucket| {
+    if bucket.1 > best.1 {
+      bucket
+    } else {
+      best
+    }
+  })?;
+  #[allow(clippy::cast_possible_truncation)]
+  let mean = |sum: u32| ((sum + count / 2) / count) as u8;
+
+  Some(crate::Color {
+    r: mean(sums[0]),
+    g: mean(sums[1]),
+    b: mean(sums[2]),
+    a: 255,
+  })
 }
 
 /// Computes the invisible border insets of `hwnd` in physical pixels.
@@ -1597,6 +1639,43 @@ mod tests {
 
   fn ltrb(rect: RECT) -> (i32, i32, i32, i32) {
     (rect.left, rect.top, rect.right, rect.bottom)
+  }
+
+  fn colorref(r: u32, g: u32, b: u32) -> u32 {
+    r | (g << 8) | (b << 16)
+  }
+
+  fn rgb(color: Color) -> (u8, u8, u8) {
+    (color.r, color.g, color.b)
+  }
+
+  #[test]
+  fn noisy_content_beats_a_smaller_flat_intruder() {
+    // A see-through window's edge: no two pixels alike.
+    let mut pixels: Vec<u32> = (0..40)
+      .map(|i| colorref(40 + i % 7, 44 + i / 7, 52 + i % 5))
+      .collect();
+    // A border ring's flat colour crossing the strip.
+    pixels.extend(std::iter::repeat_n(colorref(0, 200, 80), 24));
+
+    let (r, g, b) =
+      rgb(dominant_color(&pixels).expect("pixels were sampled"));
+    assert!((40..47).contains(&r), "{r}");
+    assert!((44..51).contains(&g), "{g}");
+    assert!((52..59).contains(&b), "{b}");
+  }
+
+  #[test]
+  fn a_clearly_dominant_color_wins_exactly() {
+    let mut pixels = vec![colorref(30, 30, 30); 50];
+    pixels.extend((0..14).map(|i| colorref(200, 10 * i, 255 - 10 * i)));
+
+    assert_eq!(dominant_color(&pixels).map(rgb), Some((30, 30, 30)));
+  }
+
+  #[test]
+  fn no_pixels_give_no_color() {
+    assert!(dominant_color(&[]).is_none());
   }
 
   #[test]
