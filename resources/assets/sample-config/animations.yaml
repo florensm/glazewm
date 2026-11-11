@@ -65,7 +65,8 @@ animations:
     # 0.0 to 1.0. Below 1.0 fades out.
     opacity_to: 0.0
 
-  # Plays in reverse on restore. Only for minimizes the WM does itself
+  # Plays in reverse on restore, easing included: an ease-in minimize
+  # eases out as it comes back. Only for minimizes the WM does itself
   # (e.g. `toggle-minimized`).
   window_minimize:
     enabled: false

@@ -1441,9 +1441,9 @@ fn redraw_containers(
 
     // Pick this window's entry animation, if it gets one: `window_open`
     // for a newly appearing tiling window, or `window_minimize` played
-    // inwards for one coming back from minimized. Both run through
-    // `start_open_animation`, which only differs between them by the
-    // params it is handed.
+    // backwards, its curve too, for one coming back from minimized. Both
+    // run through `start_open_animation`, which only differs between them
+    // by the params it is handed.
     //
     // `previous_target.is_none()` is true only on the first
     // `platform_sync` call for a window, so an open starts exactly
@@ -1463,7 +1463,7 @@ fn redraw_containers(
         && config.value.animations.window_minimize.enabled
       {
         Some((
-          WindowTransitionParams::from_minimize(
+          WindowTransitionParams::from_restore(
             &config.value.animations.window_minimize,
           ),
           false,

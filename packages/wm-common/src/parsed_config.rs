@@ -1789,6 +1789,16 @@ impl WindowTransitionParams {
       away_opacity: config.opacity_to,
     }
   }
+
+  /// A restore from minimized: the minimize played backwards, its curve
+  /// included (see [`EasingFunction::time_reversed`]).
+  #[must_use]
+  pub fn from_restore(config: &WindowMinimizeConfig) -> Self {
+    Self {
+      easing: config.easing.time_reversed(),
+      ..Self::from_minimize(config)
+    }
+  }
 }
 
 /// Animation settings for when a new window appears.
@@ -1866,7 +1876,8 @@ impl Default for WindowCloseConfig {
 /// is shared between open and close: a window that minimizes with
 /// `slide_bottom` (exiting toward the bottom edge) restores by entering
 /// from that same edge. `opacity_to` is the minimize-out target, and is
-/// played in reverse as the restore-in starting opacity.
+/// played in reverse as the restore-in starting opacity. So is `easing`,
+/// time-reversed: an ease-in minimize restores easing out.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(default, rename_all(serialize = "camelCase"))]
 pub struct WindowMinimizeConfig {
@@ -2283,6 +2294,22 @@ impl EasingFunction {
         u32::try_from(spring.duration().as_millis()).unwrap_or(u32::MAX)
       }
       _ => duration_ms,
+    }
+  }
+
+  /// The curve played backwards in time, whose value at `t` is `1 -
+  /// self(1 - t)`: an ease-in becomes the matching ease-out. Named curves
+  /// are beziers already. A spring is left as it is, as is
+  /// `EaseOutSpring`: reversed, either would wind up before it moved.
+  #[must_use]
+  pub fn time_reversed(&self) -> Self {
+    match self {
+      EasingFunction::CubicBezier(x1, y1, x2, y2) => {
+        EasingFunction::CubicBezier(1. - x2, 1. - y2, 1. - x1, 1. - y1)
+      }
+      EasingFunction::EaseOutSpring | EasingFunction::Spring(_) => {
+        self.clone()
+      }
     }
   }
 }
@@ -2896,6 +2923,65 @@ mod tests {
         a: 1
       })
     );
+  }
+
+  /// Whether two curves are the same, up to float rounding.
+  fn near(a: &EasingFunction, b: &EasingFunction) -> bool {
+    match (a, b) {
+      (
+        EasingFunction::CubicBezier(a1, a2, a3, a4),
+        EasingFunction::CubicBezier(b1, b2, b3, b4),
+      ) => [a1 - b1, a2 - b2, a3 - b3, a4 - b4]
+        .iter()
+        .all(|d| d.abs() < 1e-6),
+      _ => a == b,
+    }
+  }
+
+  /// A bezier's control points mirror through the curve's centre, so
+  /// `ease_in_cubic` restores as `ease_out_cubic`; springs stay as they
+  /// are.
+  #[test]
+  fn time_reversal_mirrors_beziers_and_keeps_springs() {
+    let parse = |name: &str| {
+      serde_json::from_value::<EasingFunction>(serde_json::json!(name))
+        .expect("easing should parse")
+    };
+    assert!(near(
+      &parse("ease_in_cubic").time_reversed(),
+      &parse("ease_out_cubic")
+    ));
+    assert!(near(&parse("ease_in").time_reversed(), &parse("ease_out")));
+    for symmetric in ["linear", "ease_in_out", "ease_in_out_cubic"] {
+      let easing = parse(symmetric);
+      assert!(near(&easing.time_reversed(), &easing), "{symmetric}");
+    }
+    assert!(near(
+      &EasingFunction::CubicBezier(0.2, -0.5, 0.6, 1.3).time_reversed(),
+      &EasingFunction::CubicBezier(0.4, -0.3, 0.8, 1.5)
+    ));
+
+    for easing in [
+      EasingFunction::EaseOutSpring,
+      EasingFunction::Spring(SpringParams::default()),
+    ] {
+      assert_eq!(easing.time_reversed(), easing);
+    }
+  }
+
+  /// Reversed twice, every curve is the one it started as.
+  #[test]
+  fn time_reversal_twice_gives_the_curve_back() {
+    for easing in [
+      EasingFunction::CubicBezier(0.32, 0.0, 0.67, 0.0),
+      EasingFunction::CubicBezier(0.16, 1.0, 0.3, 1.0),
+      EasingFunction::CubicBezier(0.2, -0.5, 0.6, 1.3),
+      EasingFunction::EaseOutSpring,
+      EasingFunction::Spring(SpringParams::default()),
+    ] {
+      let twice = easing.time_reversed().time_reversed();
+      assert!(near(&twice, &easing), "{easing:?}");
+    }
   }
 }
 
