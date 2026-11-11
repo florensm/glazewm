@@ -38,9 +38,11 @@ const EDGE_SAMPLE_INSET: i32 = 4;
 const COMMIT_CONFIRM_MAX_WAIT: Duration = Duration::from_millis(500);
 
 use crate::{
-  companion::COMPANION_OPACITY, discard_bits_if_resized,
-  native_surrogate::to_logical, platform_impl::NativeWindow, window_class,
-  Color, CornerStyle, NativeSurrogate, OverlayParams, Rect,
+  companion::COMPANION_OPACITY,
+  discard_bits_if_resized,
+  native_surrogate::{fade_fraction, to_logical},
+  platform_impl::NativeWindow,
+  window_class, Color, CornerStyle, NativeSurrogate, OverlayParams, Rect,
   SurrogateBatch,
 };
 
@@ -308,12 +310,10 @@ impl ResizeSession {
 
     // The fill stands in for the settled window in whatever strip the
     // thumbnail has not reached, so it is the window's own color as
-    // sampled off the screen -- already composited over its backdrop.
-    // It sits on the surrogate beneath the thumbnail, at the
-    // thumbnail's opacity, so it is correct whether or not the window
-    // is transparent or has a backdrop overlay behind it. A cache miss
-    // starts without one; `set_edge_color` fills it in when the
-    // background sample lands.
+    // sampled off the screen -- already composited over its backdrop,
+    // so drawn opaque, faded only as the thumbnail fades (see
+    // `fade_fraction`). A cache miss starts without one;
+    // `set_edge_color` fills it in when the background sample lands.
     let edge_color = options.edge_color;
 
     let insert_after = if options.place_at_top { HWND(0) } else { hwnd };
@@ -373,7 +373,7 @@ impl ResizeSession {
     // `Companion::find` that could disagree with it.
     let effect_opacity = match &mut surrogate {
       Some(surrogate) if surrogate.shows_companion() => {
-        surrogate.set_window_opacity(COMPANION_OPACITY);
+        surrogate.set_rest_opacity(COMPANION_OPACITY);
         COMPANION_OPACITY
       }
       _ => options.effect_opacity,
@@ -1284,17 +1284,6 @@ impl ResizeSession {
     // keep the WM from exiting.
     self.move_to(&self.target_rect, SET_WINDOW_POS_FLAGS(0))
   }
-}
-
-/// How far a stand-in drawn at `opacity` is faded, as a fraction of the
-/// `effect_opacity` it rests at. An animation without a fade may pass
-/// more than that, which is no fade.
-fn fade_fraction(opacity: u8, effect_opacity: u8) -> f32 {
-  if effect_opacity == 0 {
-    return 1.0;
-  }
-
-  (f32::from(opacity) / f32::from(effect_opacity)).min(1.0)
 }
 
 /// What a session's overlays are scaled by: its fade, or its zoom's

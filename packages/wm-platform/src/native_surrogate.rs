@@ -214,6 +214,20 @@ fn covered_extent(
   }
 }
 
+/// How opaque the gap fill is under a thumbnail drawn at `opacity` that
+/// rests at `rest_opacity`: only as faded as the thumbnail is.
+///
+/// Its color is sampled off the screen, so already blended with what is
+/// behind a see-through window. Drawn at the thumbnail's own opacity it
+/// was blended a second time, toward the backdrop.
+pub(crate) fn fade_fraction(opacity: u8, rest_opacity: u8) -> f32 {
+  if rest_opacity == 0 {
+    return 1.0;
+  }
+
+  (f32::from(opacity) / f32::from(rest_opacity)).min(1.0)
+}
+
 /// Destination rect that scales a whole-window thumbnail to a surrogate of
 /// `size`.
 ///
@@ -443,6 +457,9 @@ pub struct NativeSurrogate {
   /// used to skip redundant calls when opacity has not changed between
   /// frames.
   last_opacity: u8,
+  /// Opacity the thumbnail is drawn at when not faded, which the fill's
+  /// own opacity is measured against (see [`fade_fraction`]).
+  rest_opacity: u8,
   /// Last rect passed to `SetWindowPos` via `reposition`; used to skip
   /// redundant calls when the position and size have not changed.
   last_rect: Option<Rect>,
@@ -594,6 +611,7 @@ impl NativeSurrogate {
       border_inset,
       is_visible: false,
       last_opacity: opacity,
+      rest_opacity: opacity,
       last_rect: None,
       covered: covered_extent(&look, stretch, window_size),
       fill: None,
@@ -717,6 +735,7 @@ impl NativeSurrogate {
           register_thumbnail(self.hwnd(), source_hwnd, companion, look);
       }
     }
+    self.rest_opacity = opacity;
     self.set_fill_opacity(opacity);
     self.content_size = (logical_thumb.width(), logical_thumb.height());
     self.set_covered(covered_extent(&look, stretch, self.window_size));
@@ -935,6 +954,7 @@ impl NativeSurrogate {
     self.thumbnail = Some(thumbnail);
     self.companion = Some(companion);
     self.companion_wait = HandoffWait::default();
+    self.rest_opacity = opacity;
     self.set_fill_opacity(opacity);
     self.set_covered(covered_extent(
       &look,
@@ -1059,6 +1079,15 @@ impl NativeSurrogate {
     if opacity == self.last_opacity {
       return;
     }
+    self.set_fill_opacity(opacity);
+    if let Some(thumbnail) = &mut self.thumbnail {
+      let _ = thumbnail.set_opacity(opacity);
+    }
+  }
+
+  /// Draws the thumbnail at `opacity`, which it rests at from now on.
+  pub(crate) fn set_rest_opacity(&mut self, opacity: u8) {
+    self.rest_opacity = opacity;
     self.set_fill_opacity(opacity);
     if let Some(thumbnail) = &mut self.thumbnail {
       let _ = thumbnail.set_opacity(opacity);
@@ -1216,8 +1245,8 @@ impl NativeSurrogate {
     Ok(())
   }
 
-  /// Paints everything the thumbnail does not cover in `color`, at the
-  /// thumbnail's own opacity, or clears it when `None`.
+  /// Paints everything the thumbnail does not cover in `color`, as faded
+  /// as the thumbnail is, or clears it when `None`.
   ///
   /// The fill is rooted on the surrogate itself, so it can never lag the
   /// surrogate, and it is sized relative to the window, so it costs
@@ -1238,7 +1267,8 @@ impl NativeSurrogate {
         }
       };
       let initialized = fill.set_covered(self.covered).and_then(|()| {
-        fill.set_opacity(f32::from(self.last_opacity) / 255.0)
+        fill
+          .set_opacity(fade_fraction(self.last_opacity, self.rest_opacity))
       });
       if let Err(err) = initialized {
         tracing::warn!("Failed to initialize surrogate fill: {err}.");
@@ -1254,11 +1284,12 @@ impl NativeSurrogate {
     }
   }
 
-  /// Records the thumbnail opacity and mirrors it onto the fill.
+  /// Records the thumbnail opacity and mirrors its fade onto the fill.
   fn set_fill_opacity(&mut self, opacity: u8) {
     self.last_opacity = opacity;
     if let Some(fill) = &self.fill {
-      if let Err(err) = fill.set_opacity(f32::from(opacity) / 255.0) {
+      let fade = fade_fraction(opacity, self.rest_opacity);
+      if let Err(err) = fill.set_opacity(fade) {
         tracing::warn!("Surrogate fill opacity update failed: {err}.");
       }
     }
@@ -1319,7 +1350,7 @@ mod tests {
   };
 
   use super::{
-    ensure_class_registered, is_surrogate, placed_rects,
+    ensure_class_registered, fade_fraction, is_surrogate, placed_rects,
     stretched_destination, window_class, DeferredPositions, DestroyWindow,
     Rect, SurrogateBatch, CLASS_NAME, HWND, RECT, SWP_NOSENDCHANGING,
     WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TRANSPARENT,
@@ -1395,7 +1426,17 @@ mod tests {
     assert_eq!(ltrb(dst), (200, 100, 300, 250));
   }
 
-  /// Returns this process's current USER-object count.
+  /// A see-through window's fill is opaque at rest, as its color was
+  /// sampled blended already, and fades only as far as the thumbnail.
+  #[test]
+  fn the_fill_fades_with_the_thumbnail_not_with_its_alpha() {
+    assert_eq!(fade_fraction(204, 204), 1.0);
+    assert_eq!(fade_fraction(102, 204), 0.5);
+    assert_eq!(fade_fraction(0, 204), 0.0);
+    assert_eq!(fade_fraction(u8::MAX, 204), 1.0);
+    assert_eq!(fade_fraction(0, 0), 1.0);
+  }
+
   /// The invisible resize borders of a whole-window thumbnail must land
   /// outside the surrogate, so only content is drawn inside it.
   #[test]
@@ -1413,6 +1454,7 @@ mod tests {
     );
   }
 
+  /// Returns this process's current USER-object count.
   fn user_objects() -> i64 {
     // SAFETY: The pseudo-handle returned by `GetCurrentProcess` is always
     // valid and needs no closing.
