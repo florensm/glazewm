@@ -20,8 +20,8 @@ use windows::Win32::{
       VK_ESCAPE, VK_LMENU, VK_LWIN, VK_RMENU, VK_RWIN,
     },
     WindowsAndMessaging::{
-      CallNextHookEx, GetAncestor, GetCursorPos, GetWindowRect,
-      PostThreadMessageW, SetWindowPos, WindowFromPoint,
+      CallNextHookEx, DispatchMessageW, GetAncestor, GetCursorPos,
+      GetWindowRect, PostThreadMessageW, SetWindowPos, WindowFromPoint,
       EVENT_SYSTEM_DESKTOPSWITCH, GA_ROOT, MSG, MSLLHOOKSTRUCT,
       SWP_NOACTIVATE, SWP_NOSIZE, SWP_NOZORDER, WINEVENT_OUTOFCONTEXT,
       WM_APP, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE, WM_RBUTTONDOWN,
@@ -31,8 +31,9 @@ use windows::Win32::{
 };
 
 use super::{
-  is_async_key_down, mask_modifier_release, mask_modifiers_later,
-  MouseHookThread, FOREGROUND_INPUT_IDENTIFIER, WM_MASK_MODIFIERS,
+  grab_cursor::GrabCursor, is_async_key_down, mask_modifier_release,
+  mask_modifiers_later, MouseHookThread, FOREGROUND_INPUT_IDENTIFIER,
+  WM_MASK_MODIFIERS,
 };
 use crate::{
   grab_listener::{
@@ -43,6 +44,10 @@ use crate::{
 
 /// Posted to the hook's thread when Escape is pressed during a gesture.
 const WM_CANCEL_GESTURE: u32 = WM_APP + 3;
+
+/// Posted to the hook's thread as the WM ends a gesture, for the cursor to
+/// be handed back unless another gesture began since.
+const WM_SYNC_CURSOR: u32 = WM_APP + 4;
 
 /// The hook's thread while a gesture is under way, for the keyboard hook
 /// to cancel it on Escape, or 0.
@@ -65,6 +70,9 @@ struct HookState {
   /// Hook for switches of the input desktop, e.g. to a UAC prompt's or
   /// the lock screen, where a held press's release can't be seen.
   desktop_switch: HWINEVENTHOOK,
+
+  /// Sets the cursor during a gesture; without it, grabs keep the app's.
+  cursor: Option<GrabCursor>,
 }
 
 impl Drop for HookState {
@@ -125,11 +133,18 @@ impl GrabHook {
             tracing::warn!("Failed to hook desktop switches for grabs.");
           }
 
+          let cursor = GrabCursor::new()
+            .inspect_err(|err| {
+              tracing::warn!("Failed to create the grab cursor: {err}");
+            })
+            .ok();
+
           HOOK.with(|hook| {
             *hook.borrow_mut() = Some(HookState {
               shared,
               mover,
               desktop_switch,
+              cursor,
             });
           });
         },
@@ -157,6 +172,16 @@ impl GrabHook {
   pub(crate) fn end_gesture(&self) {
     self.mover.lock().target = None;
     GESTURE_THREAD.store(0, Ordering::Relaxed);
+
+    // SAFETY: No preconditions; a thread gone since just fails the post.
+    let _ = unsafe {
+      PostThreadMessageW(
+        self.thread.thread_id(),
+        WM_SYNC_CURSOR,
+        WPARAM(0),
+        LPARAM(0),
+      )
+    };
   }
 
   /// Unhooks the mouse and ends both threads.
@@ -277,6 +302,14 @@ unsafe extern "system" fn on_desktop_switch(
 
 /// Handles the messages posted to the hook's thread.
 fn on_message(msg: &MSG) {
+  // The cursor window's own, e.g. `WM_PAINT`, which comes back until
+  // handled.
+  if msg.hwnd.0 != 0 {
+    // SAFETY: `msg` was just retrieved by this thread's message loop.
+    unsafe { DispatchMessageW(msg) };
+    return;
+  }
+
   HOOK.with(|hook| {
     let hook = hook.borrow();
     let Some(hook) = hook.as_ref() else {
@@ -289,6 +322,12 @@ fn on_message(msg: &MSG) {
         let ended = hook.shared.tracker().end_live();
         if let Some((window, live)) = ended {
           hook.end_live(window, live, GrabEnd::Cancelled);
+        }
+      }
+      WM_SYNC_CURSOR => {
+        let is_live = hook.shared.tracker().is_live();
+        if !is_live {
+          hook.hide_cursor();
         }
       }
       _ => {}
@@ -347,6 +386,10 @@ impl HookState {
     GESTURE_THREAD
       .store(unsafe { GetCurrentThreadId() }, Ordering::Relaxed);
 
+    if let Some(cursor) = &self.cursor {
+      cursor.show(gesture, point);
+    }
+
     let _ = self.shared.event_tx.send(GrabEvent::Started {
       window: platform_impl::NativeWindow::new(window.0).into(),
       gesture,
@@ -373,6 +416,10 @@ impl HookState {
     // Where the cursor lands: the hook may be handed a point past the
     // desktop's edge, which the window or edge would then run ahead of.
     let cursor = onto_desktop(point);
+    if let Some(grab_cursor) = &self.cursor {
+      grab_cursor.follow(&cursor);
+    }
+
     let outcome = self.shared.tracker().moved(&cursor);
 
     match outcome {
@@ -388,6 +435,12 @@ impl HookState {
     false
   }
 
+  fn hide_cursor(&self) {
+    if let Some(cursor) = &self.cursor {
+      cursor.hide();
+    }
+  }
+
   /// Ends the held press, if any, as one whose release the hook missed.
   fn lose(&self) {
     let dropped = self.shared.tracker().drop_held();
@@ -400,6 +453,7 @@ impl HookState {
   /// Ends the held press on `window`, and its gesture if still under way.
   fn end_held(&self, window: WindowId, live: Option<Live>, end: GrabEnd) {
     self.shared.is_held.store(false, Ordering::Relaxed);
+    self.hide_cursor();
 
     match live {
       Some(live) => self.end_live(window, live, end),
@@ -419,6 +473,7 @@ impl HookState {
   /// last move, for a move, which a cancel puts back where it started.
   fn end_live(&self, window: WindowId, live: Live, end: GrabEnd) {
     GESTURE_THREAD.store(0, Ordering::Relaxed);
+    self.hide_cursor();
 
     match live {
       Live::Move { start, .. } => {

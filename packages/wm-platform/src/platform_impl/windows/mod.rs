@@ -4,6 +4,7 @@ pub(crate) mod composition;
 mod display;
 mod display_listener;
 mod event_loop;
+mod grab_cursor;
 mod grab_hook;
 pub(crate) mod graphics_device;
 mod keyboard_hook;
