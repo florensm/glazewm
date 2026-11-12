@@ -24,6 +24,10 @@
 //!   peeks on: a fullscreen toggle, floating <-> tiling and floating moves
 //!   by command, a tile moving to another monitor, and windows whose
 //!   backdrop can't be copied (`STAND_INS_PLAN.md` 10f).
+//! - `keepoverlays`: as `origin/main`, a window taken over by a new
+//!   `ResizeSession` keeps its overlays where they are until the session
+//!   loop moves them behind the surrogate, rather than having them hidden
+//!   for the take-over's flush and shown again after it.
 //!
 //! Read once per process.
 
@@ -41,6 +45,7 @@ pub struct Isolation {
   pub peeks: bool,
   pub peeks_first: bool,
   pub more_peeks: bool,
+  pub keep_overlays: bool,
 }
 
 impl Default for Isolation {
@@ -52,6 +57,7 @@ impl Default for Isolation {
       peeks: true,
       peeks_first: false,
       more_peeks: false,
+      keep_overlays: false,
     }
   }
 }
@@ -74,6 +80,7 @@ impl Isolation {
         "nopeeks" => isolation.peeks = false,
         "peeksfirst" => isolation.peeks_first = true,
         "morepeeks" => isolation.more_peeks = true,
+        "keepoverlays" => isolation.keep_overlays = true,
         _ => tracing::warn!("Unknown GLAZEWM_ISOLATE flag: {word}."),
       }
     }
@@ -114,6 +121,7 @@ mod tests {
         peeks: true,
         peeks_first: false,
         more_peeks: false,
+        keep_overlays: false,
       }
     );
     assert_eq!(Isolation::parse("peeks"), Isolation::default());
@@ -161,5 +169,11 @@ mod tests {
   #[test]
   fn fill_peeks_is_still_accepted() {
     assert_eq!(Isolation::parse("fillpeeks"), Isolation::default());
+  }
+
+  #[test]
+  fn keep_overlays_is_off_unless_given() {
+    assert!(!Isolation::default().keep_overlays);
+    assert!(Isolation::parse("nopeeks,KeepOverlays").keep_overlays);
   }
 }

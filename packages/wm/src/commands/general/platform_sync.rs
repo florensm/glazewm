@@ -1936,13 +1936,18 @@ fn redraw_containers(
               session.current_rect(),
             );
 
-            track_overlays(
-              &mut state.window_overlays,
-              window.id(),
-              session.overlay_params(),
-              placement.as_ref(),
-              &mut cloak_overlay_batch,
-            );
+            if tracks_at_take_over(
+              placement.is_some(),
+              wm_platform::isolation::current().keep_overlays,
+            ) {
+              track_overlays(
+                &mut state.window_overlays,
+                window.id(),
+                session.overlay_params(),
+                placement.as_ref(),
+                &mut cloak_overlay_batch,
+              );
+            }
           }
           state.animation_manager.reveal_session(&window.id());
           peeks_take_over |= peek_moves.contains(&window.id());
@@ -2937,6 +2942,17 @@ fn track_overlay<O: SyncableOverlay>(
       }
     }
   }
+}
+
+/// Whether a `Frozen` take-over tracks the window's overlays, given
+/// whether its session's surrogate has a placement yet.
+///
+/// A new session has none until `queue_surrogate_updates` (later in the
+/// pass), so tracking hides both overlays, two `ShowWindow` calls, and the
+/// session loop has to show them again. With `keep_overlays` they stay
+/// where they are, as on `origin/main`.
+fn tracks_at_take_over(has_placement: bool, keep_overlays: bool) -> bool {
+  has_placement || !keep_overlays
 }
 
 /// Where the overlays of `window_id` go while its resize session's
@@ -4030,13 +4046,22 @@ mod tests {
   use wm_platform::{NativeBackdropOverlay, OpacityValue, Rect};
 
   use super::{
-    is_unanimated_reveal, should_note_size, FrozenStep, SyncableOverlay,
+    is_unanimated_reveal, should_note_size, tracks_at_take_over,
+    FrozenStep, SyncableOverlay,
   };
   use crate::user_config::UserConfig;
 
   #[test]
   fn a_window_cloaked_before_its_session_is_moved_to_its_target() {
     assert_eq!(FrozenStep::of(Some(false), || true), FrozenStep::Adopt);
+  }
+
+  #[test]
+  fn a_take_over_without_a_placement_keeps_overlays_only_if_asked() {
+    assert!(tracks_at_take_over(true, true));
+    assert!(tracks_at_take_over(true, false));
+    assert!(tracks_at_take_over(false, false));
+    assert!(!tracks_at_take_over(false, true));
   }
 
   #[test]
