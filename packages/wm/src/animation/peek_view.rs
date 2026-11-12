@@ -2007,9 +2007,9 @@ pub fn move_on_peek(
 
 /// Whether a grab resize can draw `window` on a peek it holds (see
 /// [`hold_on_peek`], and `sync_scroll_view` for a column): a tile shown
-/// in its layout, its real window on its monitor, on a peek that never
-/// moves, and with no other stand-in. A stack's window is left out, its
-/// tab bar being a window of its own.
+/// in its layout, its real window on its monitor unless it is a column,
+/// on a peek that never moves, and with no other stand-in. A stack's
+/// window is left out, its tab bar being a window of its own.
 pub fn can_hold(
   state: &WmState,
   window: &WindowContainer,
@@ -2030,11 +2030,20 @@ pub fn hold_refusal(
     .is_some_and(|workspace| workspace.is_displayed())
     && !is_hidden_in_layout(window)
     && window.display_state() == wm_common::DisplayState::Shown;
-  let fits_monitor = window
-    .monitor()
-    .and_then(|monitor| monitor.to_rect().ok())
-    .zip(window.native().frame_with_shadows().ok())
-    .is_some_and(|(clip, rect)| clip.contains_point(&rect.center_point()));
+  // A column's peek is cut at its monitor by the scroll view, which also
+  // keeps the real window of one partly shown on it; one off screen is
+  // drawn once a step brings it into view. A tile's real window must be on
+  // its monitor, or the peek would cut it at that monitor's edge.
+  let is_column =
+    crate::layout::scrolling::column_of(&window.as_container()).is_some();
+  let fits_monitor = is_column
+    || window
+      .monitor()
+      .and_then(|monitor| monitor.to_rect().ok())
+      .zip(window.native().frame_with_shadows().ok())
+      .is_some_and(|(clip, rect)| {
+        clip.contains_point(&rect.center_point())
+      });
 
   if window.state() != WindowState::Tiling {
     Some("not tiling")
