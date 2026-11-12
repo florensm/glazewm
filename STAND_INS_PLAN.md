@@ -188,8 +188,8 @@ Owner's answers, 2026-11-11:
 - [ ] 9. Remove what is no longer reached
 - [ ] 10. `fill` on peeks, for mouse drags first, then keyboard resizes
   (planned and reviewed 2026-11-12: 10a answered by reading; the owner's
-  pre-check in 10a still to run; 10b and 10c-1 to 10c-4 built, not
-  checked live; 10c-5 next)
+  pre-check in 10a still to run; 10b and 10c built, not checked live;
+  10d is the owner's call, 10e next)
 
 ### Task 0: baseline (desktop, by hand)
 
@@ -1506,6 +1506,13 @@ minus its animation checks, and also leaves out columns until 10c-5;
 redraw retargets it with duration 0. No unit test reaches a held peek
 (`WindowPeek` needs a desktop): `Hold`'s landing rule, `unlanded`, and
 `holds_on_peek` refusing mock windows and `draw: "live"` are tested.
+
+10c-5 built the same day, not checked live, as written. Steps place a
+held column's real window at `real_window_rect` (on its monitor, cloaked)
+through the placer, and retarget its peek (`retarget_tile` now also takes
+a held column); a column not yet held is refused by the placer and held
+by `sync_scroll_view` (`upsert`'s `held`: duration 0, no transit,
+filled), whose own flush takes over from it.
 
 Behind `draw: "peeks"`. Tiled windows of split and dwindle layouts
 first, scrolling columns last. Five commits.

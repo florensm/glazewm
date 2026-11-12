@@ -241,6 +241,7 @@ pub fn holds_on_peek(
   });
 
   config.value.general.grab_and_move.draw == GrabDraw::Peeks
+    && wm_platform::isolation::current().peeks
     && is_resizing_here
     && (state.animation_manager.peeks.is_held(&window.id())
       || crate::animation::peek_view::can_hold(state, window, config))
@@ -568,11 +569,11 @@ fn place_moved_windows(
       && !is_hidden_in_layout(&window);
 
     if is_placeable(&window, shows, &target, state, config) {
-      note_size_change(&window, &target);
-      state
-        .grab
-        .placer
-        .place(window.native().id(), target.clone());
+      // A column a peek holds may be partly off screen, its cloaked real
+      // window kept on its monitor.
+      let rect = real_window_rect(&window.as_container(), &target);
+      note_size_change(&window, &rect);
+      state.grab.placer.place(window.native().id(), rect);
 
       // Held on a peek, which draws its overlays: the peek jumps to its
       // new tile, drawn there on the next frame.
@@ -659,8 +660,9 @@ fn is_placeable(
     && window.active_drag().is_none()
     && !window.has_pending_dpi_adjustment()
     && !state.animation_manager.owns_window_position(&id)
-    && (is_held || !state.animation_manager.peeks.owns_window(&id))
-    && real_window_rect(&window.as_container(), target) == *target
+    && (is_held
+      || (!state.animation_manager.peeks.owns_window(&id)
+        && real_window_rect(&window.as_container(), target) == *target))
 }
 
 /// Ends the grab under way as `end` says, a resize at the mouse's final

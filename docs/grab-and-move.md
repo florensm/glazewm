@@ -95,9 +95,8 @@ windows a resize changes itself, from live copies, together with their
 borders, at the layout's rects on every frame; the real windows are
 hidden and resized behind them. Where an app has yet to fill its new
 size, the rest of its tile shows the window's edge colour; where it is
-larger, it is cut at the tile. Columns of a scrolling layout, floating
-windows, stacks, and windows with a rounded backdrop are still drawn
-live. The first change of a resize shows a frame late, as the WM hands
+larger, it is cut at the tile. Floating windows, stacks, and windows
+with a rounded backdrop are still drawn live. The first change of a resize shows a frame late, as the WM hands
 the windows over to their stand-ins; when the button is released, each
 is handed back once its app has reached its final size, or after
 150 ms. Reloading the config switches between the two.

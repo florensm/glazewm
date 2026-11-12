@@ -116,6 +116,15 @@ pub fn sync_scroll_view(
     .map(|(window, _)| window.id())
     .collect::<HashSet<_>>();
 
+  // Columns a grab resize draws on peeks it holds (see
+  // `grab::holds_on_peek`).
+  let held = windows
+    .iter()
+    .map(|(window, _)| window)
+    .filter(|window| crate::grab::holds_on_peek(window, state, config))
+    .map(CommonGetters::id)
+    .collect::<HashSet<_>>();
+
   let now = state.animation_manager.frame_time();
   let view = &mut state.animation_manager.peeks;
 
@@ -188,15 +197,18 @@ pub fn sync_scroll_view(
         continue;
       }
 
-      let role = if moves_on_peek(
-        &from,
-        &target,
-        strip_moves,
-        pure_moves,
-        pure_moves.filter(|_| stretches),
-        view.entries.contains_key(&window.id()),
-        other_stand_ins.contains(&window.id()),
-      ) {
+      let is_held = held.contains(&window.id())
+        && (from != target || view.is_held(&window.id()));
+      let role = if is_held
+        || moves_on_peek(
+          &from,
+          &target,
+          strip_moves,
+          pure_moves,
+          pure_moves.filter(|_| stretches),
+          view.entries.contains_key(&window.id()),
+          other_stand_ins.contains(&window.id()),
+        ) {
         Role::Moving { ends_shown }
       } else if ends_shown {
         // At rest on screen: the real window shows it, once a peek still
@@ -246,8 +258,9 @@ pub fn sync_scroll_view(
         target,
         clip,
         role,
-        transit,
+        transit.filter(|_| !is_held),
         stretches,
+        is_held,
         config,
         focused_id == Some(window.id()),
         now,

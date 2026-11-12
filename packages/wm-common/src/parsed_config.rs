@@ -611,8 +611,8 @@ pub enum GrabDraw {
   Live,
   /// Stand-ins of the windows and their borders, drawn at the layout's
   /// rects together on every frame, while the real windows, hidden, are
-  /// resized behind them. Tiled windows of split and dwindle layouts
-  /// only, outside stacks; others are drawn live.
+  /// resized behind them. Tiled windows outside stacks only; others are
+  /// drawn live.
   Peeks,
 }
 

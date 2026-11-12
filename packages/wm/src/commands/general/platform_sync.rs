@@ -1481,8 +1481,9 @@ fn redraw_containers(
       .filter(|_| {
         !is_frozen_by_ws_animation
           && previous_display_state == DisplayState::Shown
-          && wm_platform::isolation::current().peeks
           && !state.animation_manager.peeks.is_held(&window.id())
+          && crate::layout::scrolling::column_of(&window.as_container())
+            .is_none()
           && crate::grab::holds_on_peek(window, state, config)
       });
     if let Some(from) = held_from {

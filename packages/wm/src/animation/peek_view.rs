@@ -1167,6 +1167,7 @@ impl PeekView {
     role: Role,
     opening: Option<Transit>,
     stretch: bool,
+    held: bool,
     config: &UserConfig,
     is_focused: bool,
     now: Instant,
@@ -1174,6 +1175,10 @@ impl PeekView {
   ) -> bool {
     let scroll_config = &config.value.animations.scroll;
     let is_moving = matches!(role, Role::Moving { .. });
+    // Held by a grab, it jumps to where each step puts it, drawn filled
+    // (see [`Hold`]).
+    let duration_ms = if held { 0 } else { scroll_config.duration_ms };
+    let stretch = stretch || held;
     let in_flight = self
       .entries
       .get(&window.id())
@@ -1188,18 +1193,14 @@ impl PeekView {
       Some(entry) if is_moving => retargeted_motion(
         &entry.motion,
         target,
-        scroll_config.duration_ms,
+        duration_ms,
         scroll_config.easing.clone(),
         now,
       ),
       _ => WindowAnimationState::new_movement(
         from.clone(),
         target,
-        if is_moving {
-          scroll_config.duration_ms
-        } else {
-          0
-        },
+        if is_moving { duration_ms } else { 0 },
         scroll_config.easing.clone(),
       ),
     };
@@ -1247,6 +1248,9 @@ impl PeekView {
       if covers_shown_window {
         entry.composited = false;
       }
+      if held {
+        entry.hold = Hold::Held;
+      }
       let (rect, _) = entry.motion.current_state_at(now);
       entry.draw(&rect, now, batch);
       return covers_shown_window;
@@ -1267,6 +1271,9 @@ impl PeekView {
     // `place_scaled` draws pinned peeks only.
     entry.transit = opening.filter(|_| is_moving && !entry.peek.is_live());
     entry.stretch = stretches.then(|| Stretch::at(actual()));
+    if held {
+      entry.hold = Hold::Held;
+    }
     let rect = entry.rect.clone();
     entry.draw(&rect, now, batch);
     self.entries.insert(window.id(), entry);
@@ -1547,7 +1554,8 @@ impl PeekView {
     stretch: bool,
     now: Instant,
   ) -> bool {
-    if !self.follows_tile(window_id) {
+    // A grab's steps put a column it holds too.
+    if !self.follows_tile(window_id) && !self.is_held(window_id) {
       return false;
     }
 
@@ -1891,10 +1899,10 @@ pub fn move_on_peek(
 }
 
 /// Whether a grab resize can draw `window` on a peek it holds (see
-/// [`hold_on_peek`]): a tile shown where it is drawn, on its monitor, on a
-/// peek that never moves, and with no other stand-in. A stack's window is
-/// left out, its tab bar being a window of its own, as is a column of a
-/// scrolling layout, which the scroll view draws.
+/// [`hold_on_peek`], and `sync_scroll_view` for a column): a tile shown
+/// in its layout, its real window on its monitor, on a peek that never
+/// moves, and with no other stand-in. A stack's window is left out, its
+/// tab bar being a window of its own.
 pub fn can_hold(
   state: &WmState,
   window: &WindowContainer,
@@ -1918,8 +1926,6 @@ pub fn can_hold(
     && window
       .parent()
       .is_none_or(|parent| parent.as_stack().is_none())
-    && crate::layout::scrolling::column_of(&window.as_container())
-      .is_none()
     && !has_other_stand_in(&state.animation_manager, &id)
     && !is_live(&peek_styles(window, config))
 }

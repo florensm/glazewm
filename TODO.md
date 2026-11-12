@@ -974,14 +974,26 @@ to see it; check each once more at 150 ms.
       come back. After each: every window visible, at its tile,
       clickable, and no "stuck" report in the WM's log
       (`report_stuck_windows`).
-    - A stacked window, a floating one and a scrolling layout's column:
-      resized live, as with `draw: "live"`.
+    - A stacked window and a floating one: resized live, as with
+      `draw: "live"`.
     - Compare with `draw: "live"` on the same windows; reload the config
       to switch.
     - Laptop: other apps' windows are now cloaked on every resize drag
       (no new Windows API; `DwmSetWindowAttribute(DWMWA_CLOAK)`,
       `DwmFlush`, thumbnail calls, all already made). Note whether
       Defender flags this build.
+69. **Grab resizes on peeks, round 2: scrolling** (`STAND_INS_PLAN.md`
+    10c-5). As 68, in a scrolling layout with four or more columns.
+    - Drag a column's right edge so its neighbours slide; then past the
+      screen's edge so the view scrolls (`docs/grab-and-move.md`, "Past
+      the screen's edge"); a row boundary inside a column; a column
+      partly off screen at the start.
+    - Same things to look for as 68, plus: columns cut at the monitor's
+      edge stay cut, and with two monitors nothing shows on the other.
+    - A column sliding in from off screen mid-drag: drawn from its first
+      frame, no blank tile.
+    - After release: partly visible columns rest on their peeks as
+      before, fully visible ones are handed back.
 
 If bars or flicker show, isolate them with `GLAZEWM_ISOLATE` (below), one
 restart per flag: `noring`, `nobackdrop`, then `live`. With a long
