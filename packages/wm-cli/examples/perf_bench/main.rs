@@ -111,6 +111,19 @@ const METRICS: &[(&str, &str)] = &[
     "outside:session_begin:total",
     "session_begin ms (outside frames)",
   ),
+  // What the command that starts the animation waits for.
+  ("outside:command:total", "command ms (WM side)"),
+  ("outside:peek_new:total", "peek_new ms (outside frames)"),
+  ("outside:peek_cover:total", "peek_cover ms (outside frames)"),
+  (
+    "outside:peek_handover:total",
+    "peek_handover ms (outside frames)",
+  ),
+  ("outside:peek_raise:total", "peek_raise ms (outside frames)"),
+  (
+    "outside:session_overlays:total",
+    "session_overlays ms (outside frames)",
+  ),
   ("latency:to anim start:p50", "input->anim start ms"),
   ("latency:to first frame:p50", "input->first frame ms"),
 ];
