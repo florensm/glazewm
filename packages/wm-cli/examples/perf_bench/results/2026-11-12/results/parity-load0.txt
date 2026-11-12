@@ -1,0 +1,1738 @@
+Bench run, 2026-11-12T21:34:10, modes main,nopeeks,default,morepeeks, target chrome, 4 round(s) of 10 bursts per scenario and mode, load 0, CPU load 0 thread(s) of 16
+tiles main #1 ws 1: chrome, ApplicationFrameHost, ApplicationFrameHost, explorer, Notepad, WindowsTerminal, Everything
+label=main #1 scenario=move target=chrome bursts=10 load=0 reports=9 wall=12.4s
+  command p50 ms                          37.24
+  command p90 ms                          39.30
+  frames                                  63.00
+  tick ms/frame                            1.24
+  frame p90 ms                             1.08
+  frames >2x budget                        1.00
+  interval p50 ms                          5.71
+  interval p90 ms                          5.77
+  peek_frame ms/frame                      0.00
+  session_overlays ms/frame                0.03
+  batch_commit ms/frame                    0.48
+  ovl_region ms/frame                      0.06
+  dwm_flush calls (in frames)              1.00
+  dwm_flush ms (outside frames)           10.40
+  cloak ms (outside frames)               16.00
+  session_begin ms (outside frames)        1.00
+  input->anim start ms                     0.21
+  input->first frame ms                   46.70
+| main #1 | move | 37.24 | 39.30 | 63.00 | 1.24 | 1.08 | 1.00 | 5.71 | 5.77 | 0.00 | 0.03 | 0.48 | 0.06 | 1.00 | 10.40 | 16.00 | 1.00 | 0.21 | 46.70 |
+label=main #1 scenario=float target=chrome bursts=10 load=0 reports=9 wall=12.8s
+  command p50 ms                          77.37
+  command p90 ms                          84.65
+  frames                                  60.00
+  tick ms/frame                            3.59
+  frame p90 ms                             6.48
+  frames >2x budget                        4.00
+  interval p50 ms                          5.72
+  interval p90 ms                          7.81
+  peek_frame ms/frame                      0.00
+  session_overlays ms/frame                0.03
+  batch_commit ms/frame                    1.25
+  ovl_region ms/frame                      0.06
+  dwm_flush calls (in frames)              3.00
+  dwm_flush ms (outside frames)           10.10
+  cloak ms (outside frames)               30.10
+  session_begin ms (outside frames)        2.70
+  input->anim start ms                     0.23
+  input->first frame ms                   77.58
+| main #1 | float | 77.37 | 84.65 | 60.00 | 3.59 | 6.48 | 4.00 | 5.72 | 7.81 | 0.00 | 0.03 | 1.25 | 0.06 | 3.00 | 10.10 | 30.10 | 2.70 | 0.23 | 77.58 |
+label=main #1 scenario=minimize target=chrome bursts=10 load=0 reports=10 wall=12.4s
+  command p50 ms                          47.05
+  command p90 ms                          56.44
+  frames                                 136.00
+  tick ms/frame                            1.70
+  frame p90 ms                             4.48
+  frames >2x budget                        6.00
+  interval p50 ms                          5.72
+  interval p90 ms                          5.79
+  peek_frame ms/frame                      0.00
+  session_overlays ms/frame                0.02
+  batch_commit ms/frame                    0.95
+  ovl_region ms/frame                      0.05
+  dwm_flush calls (in frames)              5.00
+  dwm_flush ms (outside frames)            8.50
+  cloak ms (outside frames)               35.30
+  session_begin ms (outside frames)        5.90
+  input->anim start ms                     3.92
+  input->first frame ms                  131.58
+| main #1 | minimize | 47.05 | 56.44 | 136.00 | 1.70 | 4.48 | 6.00 | 5.72 | 5.79 | 0.00 | 0.02 | 0.95 | 0.05 | 5.00 | 8.50 | 35.30 | 5.90 | 3.92 | 131.58 |
+label=main #1 scenario=resize target=chrome bursts=10 load=0 reports=11 wall=12.8s
+  command p50 ms                          75.34
+  command p90 ms                          84.66
+  frames                                  57.00
+  tick ms/frame                            4.15
+  frame p90 ms                             8.75
+  frames >2x budget                        4.00
+  interval p50 ms                          5.72
+  interval p90 ms                          8.86
+  peek_frame ms/frame                      0.00
+  session_overlays ms/frame                0.04
+  batch_commit ms/frame                    2.15
+  ovl_region ms/frame                      0.07
+  dwm_flush calls (in frames)              3.00
+  dwm_flush ms (outside frames)            8.20
+  cloak ms (outside frames)               25.10
+  session_begin ms (outside frames)        2.70
+  input->anim start ms                     0.22
+  input->first frame ms                   79.08
+| main #1 | resize | 75.34 | 84.66 | 57.00 | 4.15 | 8.75 | 4.00 | 5.72 | 8.86 | 0.00 | 0.04 | 2.15 | 0.07 | 3.00 | 8.20 | 25.10 | 2.70 | 0.22 | 79.08 |
+Moved 3 window(s) to workspace '2' to switch to.
+label=main #1 scenario=switch target=1<->2 bursts=10 load=0 reports=10 wall=12.5s
+  command p50 ms                          37.70
+  command p90 ms                          44.18
+  frames                                  97.00
+  tick ms/frame                            2.18
+  frame p90 ms                             3.39
+  frames >2x budget                        2.00
+  interval p50 ms                          5.71
+  interval p90 ms                          5.75
+  peek_frame ms/frame                      0.00
+  session_overlays ms/frame                0.00
+  batch_commit ms/frame                    0.70
+  ovl_region ms/frame                      0.07
+  dwm_flush calls (in frames)              3.00
+  dwm_flush ms (outside frames)           14.80
+  cloak ms (outside frames)                0.00
+  session_begin ms (outside frames)        0.00
+  input->anim start ms                     0.00
+  input->first frame ms                    0.00
+| main #1 | switch | 37.70 | 44.18 | 97.00 | 2.18 | 3.39 | 2.00 | 5.71 | 5.75 | 0.00 | 0.00 | 0.70 | 0.07 | 3.00 | 14.80 | 0.00 | 0.00 | 0.00 | 0.00 |
+tiles nopeeks #1 ws 1: ApplicationFrameHost, ApplicationFrameHost, Notepad, Everything, WindowsTerminal, explorer, chrome
+label=nopeeks #1 scenario=move target=chrome bursts=10 load=0 reports=10 wall=12.3s
+  command p50 ms                          17.72
+  command p90 ms                          18.89
+  frames                                  63.00
+  tick ms/frame                            0.55
+  frame p90 ms                             0.96
+  frames >2x budget                        0.00
+  interval p50 ms                          5.71
+  interval p90 ms                          5.75
+  peek_frame ms/frame                      0.00
+  session_overlays ms/frame                0.02
+  batch_commit ms/frame                    0.26
+  ovl_region ms/frame                      0.01
+  dwm_flush calls (in frames)              0.00
+  dwm_flush ms (outside frames)            6.60
+  cloak ms (outside frames)               11.00
+  session_begin ms (outside frames)        1.00
+  input->anim start ms                     0.29
+  input->first frame ms                   18.32
+| nopeeks #1 | move | 17.72 | 18.89 | 63.00 | 0.55 | 0.96 | 0.00 | 5.71 | 5.75 | 0.00 | 0.02 | 0.26 | 0.01 | 0.00 | 6.60 | 11.00 | 1.00 | 0.29 | 18.32 |
+label=nopeeks #1 scenario=float target=chrome bursts=10 load=0 reports=10 wall=12.9s
+  command p50 ms                          78.51
+  command p90 ms                         107.29
+  frames                                  60.00
+  tick ms/frame                            3.62
+  frame p90 ms                             7.66
+  frames >2x budget                        5.00
+  interval p50 ms                          5.72
+  interval p90 ms                          8.55
+  peek_frame ms/frame                      0.00
+  session_overlays ms/frame                0.06
+  batch_commit ms/frame                    1.45
+  ovl_region ms/frame                      0.12
+  dwm_flush calls (in frames)              0.00
+  dwm_flush ms (outside frames)            9.60
+  cloak ms (outside frames)               29.20
+  session_begin ms (outside frames)        2.60
+  input->anim start ms                     0.28
+  input->first frame ms                   92.11
+| nopeeks #1 | float | 78.51 | 107.29 | 60.00 | 3.62 | 7.66 | 5.00 | 5.72 | 8.55 | 0.00 | 0.06 | 1.45 | 0.12 | 0.00 | 9.60 | 29.20 | 2.60 | 0.28 | 92.11 |
+label=nopeeks #1 scenario=minimize target=chrome bursts=10 load=0 reports=10 wall=12.4s
+  command p50 ms                          36.71
+  command p90 ms                          63.66
+  frames                                 136.00
+  tick ms/frame                            1.52
+  frame p90 ms                             4.58
+  frames >2x budget                        5.00
+  interval p50 ms                          5.71
+  interval p90 ms                          5.81
+  peek_frame ms/frame                      0.00
+  session_overlays ms/frame                0.03
+  batch_commit ms/frame                    0.72
+  ovl_region ms/frame                      0.04
+  dwm_flush calls (in frames)              1.00
+  dwm_flush ms (outside frames)            8.50
+  cloak ms (outside frames)               28.70
+  session_begin ms (outside frames)        2.90
+  input->anim start ms                     3.28
+  input->first frame ms                  109.84
+| nopeeks #1 | minimize | 36.71 | 63.66 | 136.00 | 1.52 | 4.58 | 5.00 | 5.71 | 5.81 | 0.00 | 0.03 | 0.72 | 0.04 | 1.00 | 8.50 | 28.70 | 2.90 | 3.28 | 109.84 |
+label=nopeeks #1 scenario=resize target=chrome bursts=10 load=0 reports=11 wall=13.0s
+  command p50 ms                          86.29
+  command p90 ms                         112.74
+  frames                                  58.00
+  tick ms/frame                            3.43
+  frame p90 ms                             7.39
+  frames >2x budget                        4.00
+  interval p50 ms                          5.72
+  interval p90 ms                          9.36
+  peek_frame ms/frame                      0.00
+  session_overlays ms/frame                0.05
+  batch_commit ms/frame                    2.10
+  ovl_region ms/frame                      0.06
+  dwm_flush calls (in frames)              0.00
+  dwm_flush ms (outside frames)           12.40
+  cloak ms (outside frames)               32.00
+  session_begin ms (outside frames)        2.70
+  input->anim start ms                     0.30
+  input->first frame ms                   93.85
+| nopeeks #1 | resize | 86.29 | 112.74 | 58.00 | 3.43 | 7.39 | 4.00 | 5.72 | 9.36 | 0.00 | 0.05 | 2.10 | 0.06 | 0.00 | 12.40 | 32.00 | 2.70 | 0.30 | 93.85 |
+Moved 3 window(s) to workspace '2' to switch to.
+label=nopeeks #1 scenario=switch target=1<->2 bursts=10 load=0 reports=10 wall=12.7s
+  command p50 ms                          65.25
+  command p90 ms                          78.83
+  frames                                  99.00
+  tick ms/frame                            1.87
+  frame p90 ms                             1.83
+  frames >2x budget                        3.00
+  interval p50 ms                          5.71
+  interval p90 ms                          5.77
+  peek_frame ms/frame                      0.00
+  session_overlays ms/frame                0.00
+  batch_commit ms/frame                    0.00
+  ovl_region ms/frame                      0.04
+  dwm_flush calls (in frames)              0.00
+  dwm_flush ms (outside frames)            7.00
+  cloak ms (outside frames)                0.00
+  session_begin ms (outside frames)        0.00
+  input->anim start ms                     0.00
+  input->first frame ms                    0.00
+| nopeeks #1 | switch | 65.25 | 78.83 | 99.00 | 1.87 | 1.83 | 3.00 | 5.71 | 5.77 | 0.00 | 0.00 | 0.00 | 0.04 | 0.00 | 7.00 | 0.00 | 0.00 | 0.00 | 0.00 |
+tiles default #1 ws 1: chrome, ApplicationFrameHost, WindowsTerminal, Notepad, explorer, ApplicationFrameHost, Everything
+label=default #1 scenario=move target=chrome bursts=10 load=0 reports=9 wall=12.5s
+  command p50 ms                          37.82
+  command p90 ms                          39.65
+  frames                                  64.00
+  tick ms/frame                            1.25
+  frame p90 ms                             1.26
+  frames >2x budget                        1.00
+  interval p50 ms                          5.71
+  interval p90 ms                          5.76
+  peek_frame ms/frame                      0.52
+  session_overlays ms/frame                0.00
+  batch_commit ms/frame                    0.00
+  ovl_region ms/frame                      0.00
+  dwm_flush calls (in frames)              0.00
+  dwm_flush ms (outside frames)           11.10
+  cloak ms (outside frames)               17.60
+  session_begin ms (outside frames)        0.00
+  input->anim start ms                     0.00
+  input->first frame ms                    0.00
+| default #1 | move | 37.82 | 39.65 | 64.00 | 1.25 | 1.26 | 1.00 | 5.71 | 5.76 | 0.52 | 0.00 | 0.00 | 0.00 | 0.00 | 11.10 | 17.60 | 0.00 | 0.00 | 0.00 |
+label=default #1 scenario=float target=chrome bursts=10 load=0 reports=10 wall=13.1s
+  command p50 ms                         107.76
+  command p90 ms                         118.00
+  frames                                  60.00
+  tick ms/frame                            4.40
+  frame p90 ms                            10.36
+  frames >2x budget                        5.00
+  interval p50 ms                          5.72
+  interval p90 ms                         10.53
+  peek_frame ms/frame                      0.00
+  session_overlays ms/frame                0.05
+  batch_commit ms/frame                    2.43
+  ovl_region ms/frame                      0.14
+  dwm_flush calls (in frames)              0.00
+  dwm_flush ms (outside frames)           12.30
+  cloak ms (outside frames)               36.50
+  session_begin ms (outside frames)        2.70
+  input->anim start ms                     0.29
+  input->first frame ms                  138.78
+| default #1 | float | 107.76 | 118.00 | 60.00 | 4.40 | 10.36 | 5.00 | 5.72 | 10.53 | 0.00 | 0.05 | 2.43 | 0.14 | 0.00 | 12.30 | 36.50 | 2.70 | 0.29 | 138.78 |
+label=default #1 scenario=minimize target=chrome bursts=10 load=0 reports=9 wall=12.6s
+  command p50 ms                          69.08
+  command p90 ms                          81.74
+  frames                                 139.00
+  tick ms/frame                            1.79
+  frame p90 ms                             3.53
+  frames >2x budget                        5.00
+  interval p50 ms                          5.72
+  interval p90 ms                          5.78
+  peek_frame ms/frame                      0.85
+  session_overlays ms/frame                0.01
+  batch_commit ms/frame                    0.54
+  ovl_region ms/frame                      0.03
+  dwm_flush calls (in frames)              1.00
+  dwm_flush ms (outside frames)           13.50
+  cloak ms (outside frames)               39.20
+  session_begin ms (outside frames)        2.50
+  input->anim start ms                     3.09
+  input->first frame ms                   96.15
+| default #1 | minimize | 69.08 | 81.74 | 139.00 | 1.79 | 3.53 | 5.00 | 5.72 | 5.78 | 0.85 | 0.01 | 0.54 | 0.03 | 1.00 | 13.50 | 39.20 | 2.50 | 3.09 | 96.15 |
+label=default #1 scenario=resize target=chrome bursts=10 load=0 reports=10 wall=13.4s
+  command p50 ms                         135.94
+  command p90 ms                         148.23
+  frames                                  57.00
+  tick ms/frame                            5.18
+  frame p90 ms                             4.44
+  frames >2x budget                        4.00
+  interval p50 ms                          5.71
+  interval p90 ms                          7.10
+  peek_frame ms/frame                      3.25
+  session_overlays ms/frame                0.00
+  batch_commit ms/frame                    0.00
+  ovl_region ms/frame                      0.08
+  dwm_flush calls (in frames)              2.00
+  dwm_flush ms (outside frames)           17.00
+  cloak ms (outside frames)               39.70
+  session_begin ms (outside frames)        0.00
+  input->anim start ms                     0.00
+  input->first frame ms                    0.00
+| default #1 | resize | 135.94 | 148.23 | 57.00 | 5.18 | 4.44 | 4.00 | 5.71 | 7.10 | 3.25 | 0.00 | 0.00 | 0.08 | 2.00 | 17.00 | 39.70 | 0.00 | 0.00 | 0.00 |
+Moved 3 window(s) to workspace '2' to switch to.
+label=default #1 scenario=switch target=1<->2 bursts=10 load=0 reports=10 wall=12.8s
+  command p50 ms                          65.61
+  command p90 ms                          76.48
+  frames                                  99.00
+  tick ms/frame                            1.65
+  frame p90 ms                             1.69
+  frames >2x budget                        3.00
+  interval p50 ms                          5.71
+  interval p90 ms                          5.77
+  peek_frame ms/frame                      0.00
+  session_overlays ms/frame                0.00
+  batch_commit ms/frame                    0.00
+  ovl_region ms/frame                      0.02
+  dwm_flush calls (in frames)              0.00
+  dwm_flush ms (outside frames)            7.80
+  cloak ms (outside frames)                0.00
+  session_begin ms (outside frames)        0.00
+  input->anim start ms                     0.00
+  input->first frame ms                    0.00
+| default #1 | switch | 65.61 | 76.48 | 99.00 | 1.65 | 1.69 | 3.00 | 5.71 | 5.77 | 0.00 | 0.00 | 0.00 | 0.02 | 0.00 | 7.80 | 0.00 | 0.00 | 0.00 | 0.00 |
+tiles morepeeks #1 ws 1: ApplicationFrameHost, WindowsTerminal, explorer, Everything, ApplicationFrameHost, Notepad, chrome
+label=morepeeks #1 scenario=move target=chrome bursts=10 load=0 reports=10 wall=12.3s
+  command p50 ms                          23.27
+  command p90 ms                          24.61
+  frames                                  63.00
+  tick ms/frame                            0.83
+  frame p90 ms                             0.92
+  frames >2x budget                        1.00
+  interval p50 ms                          5.71
+  interval p90 ms                          5.76
+  peek_frame ms/frame                      0.38
+  session_overlays ms/frame                0.00
+  batch_commit ms/frame                    0.00
+  ovl_region ms/frame                      0.00
+  dwm_flush calls (in frames)              0.00
+  dwm_flush ms (outside frames)            8.60
+  cloak ms (outside frames)               11.50
+  session_begin ms (outside frames)        0.00
+  input->anim start ms                     0.00
+  input->first frame ms                    0.00
+| morepeeks #1 | move | 23.27 | 24.61 | 63.00 | 0.83 | 0.92 | 1.00 | 5.71 | 5.76 | 0.38 | 0.00 | 0.00 | 0.00 | 0.00 | 8.60 | 11.50 | 0.00 | 0.00 | 0.00 |
+label=morepeeks #1 scenario=float target=chrome bursts=10 load=0 reports=8 wall=14.1s
+  command p50 ms                         129.65
+  command p90 ms                         136.45
+  frames                                  59.00
+  tick ms/frame                            5.02
+  frame p90 ms                             4.14
+  frames >2x budget                        5.00
+  interval p50 ms                          5.72
+  interval p90 ms                          6.21
+  peek_frame ms/frame                      3.02
+  session_overlays ms/frame                0.00
+  batch_commit ms/frame                    0.00
+  ovl_region ms/frame                      0.05
+  dwm_flush calls (in frames)              2.00
+  dwm_flush ms (outside frames)            7.30
+  cloak ms (outside frames)               29.60
+  session_begin ms (outside frames)        0.00
+  input->anim start ms                     0.00
+  input->first frame ms                    0.00
+| morepeeks #1 | float | 129.65 | 136.45 | 59.00 | 5.02 | 4.14 | 5.00 | 5.72 | 6.21 | 3.02 | 0.00 | 0.00 | 0.05 | 2.00 | 7.30 | 29.60 | 0.00 | 0.00 | 0.00 |
+label=morepeeks #1 scenario=minimize target=chrome bursts=10 load=0 reports=10 wall=12.5s
+  command p50 ms                          65.69
+  command p90 ms                          73.54
+  frames                                 135.00
+  tick ms/frame                            2.21
+  frame p90 ms                             3.92
+  frames >2x budget                        5.00
+  interval p50 ms                          5.72
+  interval p90 ms                          5.78
+  peek_frame ms/frame                      0.00
+  session_overlays ms/frame                0.02
+  batch_commit ms/frame                    0.55
+  ovl_region ms/frame                      0.04
+  dwm_flush calls (in frames)              1.00
+  dwm_flush ms (outside frames)            7.00
+  cloak ms (outside frames)               31.10
+  session_begin ms (outside frames)        2.90
+  input->anim start ms                     4.18
+  input->first frame ms                  115.78
+| morepeeks #1 | minimize | 65.69 | 73.54 | 135.00 | 2.21 | 3.92 | 5.00 | 5.72 | 5.78 | 0.00 | 0.02 | 0.55 | 0.04 | 1.00 | 7.00 | 31.10 | 2.90 | 4.18 | 115.78 |
+label=morepeeks #1 scenario=resize target=chrome bursts=10 load=0 reports=10 wall=13.4s
+  command p50 ms                         133.86
+  command p90 ms                         143.17
+  frames                                  59.00
+  tick ms/frame                            5.17
+  frame p90 ms                             4.25
+  frames >2x budget                        5.00
+  interval p50 ms                          5.72
+  interval p90 ms                          6.15
+  peek_frame ms/frame                      3.24
+  session_overlays ms/frame                0.00
+  batch_commit ms/frame                    0.00
+  ovl_region ms/frame                      0.06
+  dwm_flush calls (in frames)              2.00
+  dwm_flush ms (outside frames)            6.70
+  cloak ms (outside frames)               41.30
+  session_begin ms (outside frames)        0.00
+  input->anim start ms                     0.00
+  input->first frame ms                    0.00
+| morepeeks #1 | resize | 133.86 | 143.17 | 59.00 | 5.17 | 4.25 | 5.00 | 5.72 | 6.15 | 3.24 | 0.00 | 0.00 | 0.06 | 2.00 | 6.70 | 41.30 | 0.00 | 0.00 | 0.00 |
+Moved 3 window(s) to workspace '2' to switch to.
+label=morepeeks #1 scenario=switch target=1<->2 bursts=10 load=0 reports=10 wall=12.7s
+  command p50 ms                          63.66
+  command p90 ms                          82.49
+  frames                                  99.00
+  tick ms/frame                            2.20
+  frame p90 ms                             2.02
+  frames >2x budget                        4.00
+  interval p50 ms                          5.72
+  interval p90 ms                          5.77
+  peek_frame ms/frame                      0.00
+  session_overlays ms/frame                0.00
+  batch_commit ms/frame                    0.00
+  ovl_region ms/frame                      0.02
+  dwm_flush calls (in frames)              0.00
+  dwm_flush ms (outside frames)            6.90
+  cloak ms (outside frames)                0.00
+  session_begin ms (outside frames)        0.00
+  input->anim start ms                     0.00
+  input->first frame ms                    0.00
+| morepeeks #1 | switch | 63.66 | 82.49 | 99.00 | 2.20 | 2.02 | 4.00 | 5.72 | 5.77 | 0.00 | 0.00 | 0.00 | 0.02 | 0.00 | 6.90 | 0.00 | 0.00 | 0.00 | 0.00 |
+tiles main #2 ws 1: chrome, ApplicationFrameHost, ApplicationFrameHost, explorer, Notepad, WindowsTerminal, Everything
+label=main #2 scenario=move target=chrome bursts=10 load=0 reports=9 wall=12.3s
+  command p50 ms                          22.30
+  command p90 ms                          24.33
+  frames                                  63.00
+  tick ms/frame                            0.88
+  frame p90 ms                             1.16
+  frames >2x budget                        1.00
+  interval p50 ms                          5.71
+  interval p90 ms                          5.75
+  peek_frame ms/frame                      0.00
+  session_overlays ms/frame                0.03
+  batch_commit ms/frame                    0.39
+  ovl_region ms/frame                      0.00
+  dwm_flush calls (in frames)              1.00
+  dwm_flush ms (outside frames)            7.10
+  cloak ms (outside frames)               10.60
+  session_begin ms (outside frames)        1.00
+  input->anim start ms                     0.20
+  input->first frame ms                   27.47
+| main #2 | move | 22.30 | 24.33 | 63.00 | 0.88 | 1.16 | 1.00 | 5.71 | 5.75 | 0.00 | 0.03 | 0.39 | 0.00 | 1.00 | 7.10 | 10.60 | 1.00 | 0.20 | 27.47 |
+label=main #2 scenario=float target=chrome bursts=10 load=0 reports=10 wall=12.8s
+  command p50 ms                          75.65
+  command p90 ms                          83.22
+  frames                                  60.00
+  tick ms/frame                            4.16
+  frame p90 ms                             9.14
+  frames >2x budget                        4.00
+  interval p50 ms                          5.72
+  interval p90 ms                          9.77
+  peek_frame ms/frame                      0.00
+  session_overlays ms/frame                0.04
+  batch_commit ms/frame                    1.65
+  ovl_region ms/frame                      0.15
+  dwm_flush calls (in frames)              3.00
+  dwm_flush ms (outside frames)            6.40
+  cloak ms (outside frames)               32.40
+  session_begin ms (outside frames)        2.90
+  input->anim start ms                     0.22
+  input->first frame ms                   94.29
+| main #2 | float | 75.65 | 83.22 | 60.00 | 4.16 | 9.14 | 4.00 | 5.72 | 9.77 | 0.00 | 0.04 | 1.65 | 0.15 | 3.00 | 6.40 | 32.40 | 2.90 | 0.22 | 94.29 |
+label=main #2 scenario=minimize target=chrome bursts=10 load=0 reports=10 wall=12.4s
+  command p50 ms                          46.80
+  command p90 ms                          64.43
+  frames                                 131.00
+  tick ms/frame                            1.95
+  frame p90 ms                             3.47
+  frames >2x budget                        5.00
+  interval p50 ms                          5.71
+  interval p90 ms                          5.79
+  peek_frame ms/frame                      0.00
+  session_overlays ms/frame                0.02
+  batch_commit ms/frame                    0.82
+  ovl_region ms/frame                      0.06
+  dwm_flush calls (in frames)              5.00
+  dwm_flush ms (outside frames)            9.30
+  cloak ms (outside frames)               41.10
+  session_begin ms (outside frames)        6.30
+  input->anim start ms                     4.49
+  input->first frame ms                  129.99
+| main #2 | minimize | 46.80 | 64.43 | 131.00 | 1.95 | 3.47 | 5.00 | 5.71 | 5.79 | 0.00 | 0.02 | 0.82 | 0.06 | 5.00 | 9.30 | 41.10 | 6.30 | 4.49 | 129.99 |
+label=main #2 scenario=resize target=chrome bursts=10 load=0 reports=10 wall=12.9s
+  command p50 ms                          81.82
+  command p90 ms                          85.31
+  frames                                  59.00
+  tick ms/frame                            4.61
+  frame p90 ms                             9.71
+  frames >2x budget                        4.00
+  interval p50 ms                          5.72
+  interval p90 ms                         10.13
+  peek_frame ms/frame                      0.00
+  session_overlays ms/frame                0.04
+  batch_commit ms/frame                    2.07
+  ovl_region ms/frame                      0.09
+  dwm_flush calls (in frames)              3.00
+  dwm_flush ms (outside frames)           10.90
+  cloak ms (outside frames)               39.10
+  session_begin ms (outside frames)        2.60
+  input->anim start ms                     0.22
+  input->first frame ms                  102.09
+| main #2 | resize | 81.82 | 85.31 | 59.00 | 4.61 | 9.71 | 4.00 | 5.72 | 10.13 | 0.00 | 0.04 | 2.07 | 0.09 | 3.00 | 10.90 | 39.10 | 2.60 | 0.22 | 102.09 |
+Moved 3 window(s) to workspace '2' to switch to.
+label=main #2 scenario=switch target=1<->2 bursts=10 load=0 reports=10 wall=12.5s
+  command p50 ms                          51.59
+  command p90 ms                          61.77
+  frames                                  96.00
+  tick ms/frame                            2.42
+  frame p90 ms                             3.68
+  frames >2x budget                        3.00
+  interval p50 ms                          5.71
+  interval p90 ms                          5.76
+  peek_frame ms/frame                      0.00
+  session_overlays ms/frame                0.00
+  batch_commit ms/frame                    0.76
+  ovl_region ms/frame                      0.03
+  dwm_flush calls (in frames)              3.00
+  dwm_flush ms (outside frames)           12.30
+  cloak ms (outside frames)                0.00
+  session_begin ms (outside frames)        0.00
+  input->anim start ms                     0.00
+  input->first frame ms                    0.00
+| main #2 | switch | 51.59 | 61.77 | 96.00 | 2.42 | 3.68 | 3.00 | 5.71 | 5.76 | 0.00 | 0.00 | 0.76 | 0.03 | 3.00 | 12.30 | 0.00 | 0.00 | 0.00 | 0.00 |
+tiles nopeeks #2 ws 1: ApplicationFrameHost, ApplicationFrameHost, Notepad, Everything, WindowsTerminal, explorer, chrome
+label=nopeeks #2 scenario=move target=chrome bursts=10 load=0 reports=10 wall=12.3s
+  command p50 ms                          18.37
+  command p90 ms                          18.74
+  frames                                  63.00
+  tick ms/frame                            0.53
+  frame p90 ms                             0.93
+  frames >2x budget                        0.00
+  interval p50 ms                          5.71
+  interval p90 ms                          5.75
+  peek_frame ms/frame                      0.00
+  session_overlays ms/frame                0.02
+  batch_commit ms/frame                    0.25
+  ovl_region ms/frame                      0.02
+  dwm_flush calls (in frames)              0.00
+  dwm_flush ms (outside frames)            7.10
+  cloak ms (outside frames)               11.50
+  session_begin ms (outside frames)        0.90
+  input->anim start ms                     0.30
+  input->first frame ms                   18.85
+| nopeeks #2 | move | 18.37 | 18.74 | 63.00 | 0.53 | 0.93 | 0.00 | 5.71 | 5.75 | 0.00 | 0.02 | 0.25 | 0.02 | 0.00 | 7.10 | 11.50 | 0.90 | 0.30 | 18.85 |
+label=nopeeks #2 scenario=float target=chrome bursts=10 load=0 reports=10 wall=13.0s
+  command p50 ms                          99.07
+  command p90 ms                         113.86
+  frames                                  59.00
+  tick ms/frame                            3.56
+  frame p90 ms                             9.95
+  frames >2x budget                        4.00
+  interval p50 ms                          5.72
+  interval p90 ms                         10.17
+  peek_frame ms/frame                      0.00
+  session_overlays ms/frame                0.06
+  batch_commit ms/frame                    2.35
+  ovl_region ms/frame                      0.12
+  dwm_flush calls (in frames)              0.00
+  dwm_flush ms (outside frames)            9.00
+  cloak ms (outside frames)               30.00
+  session_begin ms (outside frames)        2.60
+  input->anim start ms                     0.28
+  input->first frame ms                  121.83
+| nopeeks #2 | float | 99.07 | 113.86 | 59.00 | 3.56 | 9.95 | 4.00 | 5.72 | 10.17 | 0.00 | 0.06 | 2.35 | 0.12 | 0.00 | 9.00 | 30.00 | 2.60 | 0.28 | 121.83 |
+label=nopeeks #2 scenario=minimize target=chrome bursts=10 load=0 reports=10 wall=12.4s
+  command p50 ms                          56.54
+  command p90 ms                          66.85
+  frames                                 138.00
+  tick ms/frame                            1.58
+  frame p90 ms                             5.17
+  frames >2x budget                        5.00
+  interval p50 ms                          5.72
+  interval p90 ms                          5.80
+  peek_frame ms/frame                      0.00
+  session_overlays ms/frame                0.02
+  batch_commit ms/frame                    0.76
+  ovl_region ms/frame                      0.05
+  dwm_flush calls (in frames)              1.00
+  dwm_flush ms (outside frames)            9.20
+  cloak ms (outside frames)               40.40
+  session_begin ms (outside frames)        3.20
+  input->anim start ms                     3.48
+  input->first frame ms                  113.22
+| nopeeks #2 | minimize | 56.54 | 66.85 | 138.00 | 1.58 | 5.17 | 5.00 | 5.72 | 5.80 | 0.00 | 0.02 | 0.76 | 0.05 | 1.00 | 9.20 | 40.40 | 3.20 | 3.48 | 113.22 |
+label=nopeeks #2 scenario=resize target=chrome bursts=10 load=0 reports=10 wall=13.0s
+  command p50 ms                          94.68
+  command p90 ms                         108.04
+  frames                                  58.00
+  tick ms/frame                            3.76
+  frame p90 ms                             8.15
+  frames >2x budget                        4.00
+  interval p50 ms                          5.72
+  interval p90 ms                          8.22
+  peek_frame ms/frame                      0.00
+  session_overlays ms/frame                0.06
+  batch_commit ms/frame                    2.27
+  ovl_region ms/frame                      0.09
+  dwm_flush calls (in frames)              0.00
+  dwm_flush ms (outside frames)           11.30
+  cloak ms (outside frames)               33.40
+  session_begin ms (outside frames)        2.60
+  input->anim start ms                     0.32
+  input->first frame ms                  105.16
+| nopeeks #2 | resize | 94.68 | 108.04 | 58.00 | 3.76 | 8.15 | 4.00 | 5.72 | 8.22 | 0.00 | 0.06 | 2.27 | 0.09 | 0.00 | 11.30 | 33.40 | 2.60 | 0.32 | 105.16 |
+Moved 3 window(s) to workspace '2' to switch to.
+label=nopeeks #2 scenario=switch target=1<->2 bursts=10 load=0 reports=9 wall=13.0s
+  command p50 ms                          67.43
+  command p90 ms                         123.14
+  frames                                  99.00
+  tick ms/frame                            1.73
+  frame p90 ms                             1.56
+  frames >2x budget                        3.00
+  interval p50 ms                          5.72
+  interval p90 ms                          5.77
+  peek_frame ms/frame                      0.00
+  session_overlays ms/frame                0.00
+  batch_commit ms/frame                    0.00
+  ovl_region ms/frame                      0.03
+  dwm_flush calls (in frames)              0.00
+  dwm_flush ms (outside frames)            8.80
+  cloak ms (outside frames)                0.00
+  session_begin ms (outside frames)        0.00
+  input->anim start ms                     0.00
+  input->first frame ms                    0.00
+| nopeeks #2 | switch | 67.43 | 123.14 | 99.00 | 1.73 | 1.56 | 3.00 | 5.72 | 5.77 | 0.00 | 0.00 | 0.00 | 0.03 | 0.00 | 8.80 | 0.00 | 0.00 | 0.00 | 0.00 |
+tiles default #2 ws 1: chrome, ApplicationFrameHost, WindowsTerminal, Notepad, explorer, ApplicationFrameHost, Everything
+label=default #2 scenario=move target=chrome bursts=10 load=0 reports=9 wall=12.3s
+  command p50 ms                          26.46
+  command p90 ms                          27.07
+  frames                                  63.00
+  tick ms/frame                            1.08
+  frame p90 ms                             1.18
+  frames >2x budget                        2.00
+  interval p50 ms                          5.71
+  interval p90 ms                          5.77
+  peek_frame ms/frame                      0.49
+  session_overlays ms/frame                0.00
+  batch_commit ms/frame                    0.00
+  ovl_region ms/frame                      0.00
+  dwm_flush calls (in frames)              0.00
+  dwm_flush ms (outside frames)            8.30
+  cloak ms (outside frames)               12.30
+  session_begin ms (outside frames)        0.00
+  input->anim start ms                     0.00
+  input->first frame ms                    0.00
+| default #2 | move | 26.46 | 27.07 | 63.00 | 1.08 | 1.18 | 2.00 | 5.71 | 5.77 | 0.49 | 0.00 | 0.00 | 0.00 | 0.00 | 8.30 | 12.30 | 0.00 | 0.00 | 0.00 |
+label=default #2 scenario=float target=chrome bursts=10 load=0 reports=11 wall=13.0s
+  command p50 ms                          97.29
+  command p90 ms                         117.72
+  frames                                  60.00
+  tick ms/frame                            3.69
+  frame p90 ms                             5.42
+  frames >2x budget                        4.00
+  interval p50 ms                          5.72
+  interval p90 ms                          6.99
+  peek_frame ms/frame                      0.00
+  session_overlays ms/frame                0.05
+  batch_commit ms/frame                    1.44
+  ovl_region ms/frame                      0.08
+  dwm_flush calls (in frames)              0.00
+  dwm_flush ms (outside frames)            6.40
+  cloak ms (outside frames)               33.70
+  session_begin ms (outside frames)        2.80
+  input->anim start ms                     0.33
+  input->first frame ms                   88.23
+| default #2 | float | 97.29 | 117.72 | 60.00 | 3.69 | 5.42 | 4.00 | 5.72 | 6.99 | 0.00 | 0.05 | 1.44 | 0.08 | 0.00 | 6.40 | 33.70 | 2.80 | 0.33 | 88.23 |
+label=default #2 scenario=minimize target=chrome bursts=10 load=0 reports=9 wall=12.5s
+  command p50 ms                          67.12
+  command p90 ms                          81.22
+  frames                                 132.00
+  tick ms/frame                            1.83
+  frame p90 ms                             4.19
+  frames >2x budget                        5.00
+  interval p50 ms                          5.72
+  interval p90 ms                          5.79
+  peek_frame ms/frame                      0.71
+  session_overlays ms/frame                0.02
+  batch_commit ms/frame                    0.44
+  ovl_region ms/frame                      0.03
+  dwm_flush calls (in frames)              1.00
+  dwm_flush ms (outside frames)           11.70
+  cloak ms (outside frames)               47.90
+  session_begin ms (outside frames)        2.60
+  input->anim start ms                     0.62
+  input->first frame ms                   96.02
+| default #2 | minimize | 67.12 | 81.22 | 132.00 | 1.83 | 4.19 | 5.00 | 5.72 | 5.79 | 0.71 | 0.02 | 0.44 | 0.03 | 1.00 | 11.70 | 47.90 | 2.60 | 0.62 | 96.02 |
+label=default #2 scenario=resize target=chrome bursts=10 load=0 reports=11 wall=13.3s
+  command p50 ms                         130.96
+  command p90 ms                         138.06
+  frames                                  56.00
+  tick ms/frame                            4.90
+  frame p90 ms                             4.38
+  frames >2x budget                        5.00
+  interval p50 ms                          5.72
+  interval p90 ms                          5.94
+  peek_frame ms/frame                      3.02
+  session_overlays ms/frame                0.00
+  batch_commit ms/frame                    0.00
+  ovl_region ms/frame                      0.07
+  dwm_flush calls (in frames)              1.00
+  dwm_flush ms (outside frames)            8.50
+  cloak ms (outside frames)               36.70
+  session_begin ms (outside frames)        0.00
+  input->anim start ms                     0.00
+  input->first frame ms                    0.00
+| default #2 | resize | 130.96 | 138.06 | 56.00 | 4.90 | 4.38 | 5.00 | 5.72 | 5.94 | 3.02 | 0.00 | 0.00 | 0.07 | 1.00 | 8.50 | 36.70 | 0.00 | 0.00 | 0.00 |
+Moved 3 window(s) to workspace '2' to switch to.
+label=default #2 scenario=switch target=1<->2 bursts=10 load=0 reports=10 wall=12.8s
+  command p50 ms                          74.29
+  command p90 ms                          79.91
+  frames                                  99.00
+  tick ms/frame                            1.69
+  frame p90 ms                             1.83
+  frames >2x budget                        3.00
+  interval p50 ms                          5.72
+  interval p90 ms                          5.77
+  peek_frame ms/frame                      0.00
+  session_overlays ms/frame                0.00
+  batch_commit ms/frame                    0.00
+  ovl_region ms/frame                      0.03
+  dwm_flush calls (in frames)              0.00
+  dwm_flush ms (outside frames)           16.70
+  cloak ms (outside frames)                0.00
+  session_begin ms (outside frames)        0.00
+  input->anim start ms                     0.00
+  input->first frame ms                    0.00
+| default #2 | switch | 74.29 | 79.91 | 99.00 | 1.69 | 1.83 | 3.00 | 5.72 | 5.77 | 0.00 | 0.00 | 0.00 | 0.03 | 0.00 | 16.70 | 0.00 | 0.00 | 0.00 | 0.00 |
+tiles morepeeks #2 ws 1: ApplicationFrameHost, WindowsTerminal, explorer, Everything, ApplicationFrameHost, Notepad, chrome
+label=morepeeks #2 scenario=move target=chrome bursts=10 load=0 reports=10 wall=12.3s
+  command p50 ms                          22.63
+  command p90 ms                          25.77
+  frames                                  63.00
+  tick ms/frame                            0.84
+  frame p90 ms                             0.91
+  frames >2x budget                        1.00
+  interval p50 ms                          5.71
+  interval p90 ms                          5.75
+  peek_frame ms/frame                      0.37
+  session_overlays ms/frame                0.00
+  batch_commit ms/frame                    0.00
+  ovl_region ms/frame                      0.00
+  dwm_flush calls (in frames)              0.00
+  dwm_flush ms (outside frames)            8.00
+  cloak ms (outside frames)               10.80
+  session_begin ms (outside frames)        0.00
+  input->anim start ms                     0.00
+  input->first frame ms                    0.00
+| morepeeks #2 | move | 22.63 | 25.77 | 63.00 | 0.84 | 0.91 | 1.00 | 5.71 | 5.75 | 0.37 | 0.00 | 0.00 | 0.00 | 0.00 | 8.00 | 10.80 | 0.00 | 0.00 | 0.00 |
+label=morepeeks #2 scenario=float target=chrome bursts=10 load=0 reports=10 wall=13.3s
+  command p50 ms                         127.48
+  command p90 ms                         138.51
+  frames                                  57.00
+  tick ms/frame                            5.42
+  frame p90 ms                             3.96
+  frames >2x budget                        5.00
+  interval p50 ms                          5.72
+  interval p90 ms                          7.08
+  peek_frame ms/frame                      3.13
+  session_overlays ms/frame                0.00
+  batch_commit ms/frame                    0.00
+  ovl_region ms/frame                      0.05
+  dwm_flush calls (in frames)              2.00
+  dwm_flush ms (outside frames)            8.20
+  cloak ms (outside frames)               45.40
+  session_begin ms (outside frames)        0.00
+  input->anim start ms                     0.00
+  input->first frame ms                    0.00
+| morepeeks #2 | float | 127.48 | 138.51 | 57.00 | 5.42 | 3.96 | 5.00 | 5.72 | 7.08 | 3.13 | 0.00 | 0.00 | 0.05 | 2.00 | 8.20 | 45.40 | 0.00 | 0.00 | 0.00 |
+label=morepeeks #2 scenario=minimize target=chrome bursts=10 load=0 reports=9 wall=12.6s
+  command p50 ms                          68.77
+  command p90 ms                          77.94
+  frames                                 132.00
+  tick ms/frame                            2.31
+  frame p90 ms                             4.14
+  frames >2x budget                        6.00
+  interval p50 ms                          5.71
+  interval p90 ms                          5.78
+  peek_frame ms/frame                      0.71
+  session_overlays ms/frame                0.02
+  batch_commit ms/frame                    0.45
+  ovl_region ms/frame                      0.03
+  dwm_flush calls (in frames)              1.00
+  dwm_flush ms (outside frames)           13.90
+  cloak ms (outside frames)               36.30
+  session_begin ms (outside frames)        2.70
+  input->anim start ms                     2.50
+  input->first frame ms                   88.87
+| morepeeks #2 | minimize | 68.77 | 77.94 | 132.00 | 2.31 | 4.14 | 6.00 | 5.71 | 5.78 | 0.71 | 0.02 | 0.45 | 0.03 | 1.00 | 13.90 | 36.30 | 2.70 | 2.50 | 88.87 |
+label=morepeeks #2 scenario=resize target=chrome bursts=10 load=0 reports=10 wall=13.4s
+  command p50 ms                         131.04
+  command p90 ms                         140.74
+  frames                                  56.00
+  tick ms/frame                            5.39
+  frame p90 ms                             4.39
+  frames >2x budget                        5.00
+  interval p50 ms                          5.72
+  interval p90 ms                          6.47
+  peek_frame ms/frame                      3.25
+  session_overlays ms/frame                0.00
+  batch_commit ms/frame                    0.00
+  ovl_region ms/frame                      0.07
+  dwm_flush calls (in frames)              2.00
+  dwm_flush ms (outside frames)           11.40
+  cloak ms (outside frames)               39.20
+  session_begin ms (outside frames)        0.00
+  input->anim start ms                     0.00
+  input->first frame ms                    0.00
+| morepeeks #2 | resize | 131.04 | 140.74 | 56.00 | 5.39 | 4.39 | 5.00 | 5.72 | 6.47 | 3.25 | 0.00 | 0.00 | 0.07 | 2.00 | 11.40 | 39.20 | 0.00 | 0.00 | 0.00 |
+Moved 3 window(s) to workspace '2' to switch to.
+label=morepeeks #2 scenario=switch target=1<->2 bursts=10 load=0 reports=10 wall=12.8s
+  command p50 ms                          67.37
+  command p90 ms                          80.72
+  frames                                  99.00
+  tick ms/frame                            2.21
+  frame p90 ms                             2.03
+  frames >2x budget                        4.00
+  interval p50 ms                          5.71
+  interval p90 ms                          5.76
+  peek_frame ms/frame                      0.00
+  session_overlays ms/frame                0.00
+  batch_commit ms/frame                    0.00
+  ovl_region ms/frame                      0.02
+  dwm_flush calls (in frames)              0.00
+  dwm_flush ms (outside frames)            6.80
+  cloak ms (outside frames)                0.00
+  session_begin ms (outside frames)        0.00
+  input->anim start ms                     0.00
+  input->first frame ms                    0.00
+| morepeeks #2 | switch | 67.37 | 80.72 | 99.00 | 2.21 | 2.03 | 4.00 | 5.71 | 5.76 | 0.00 | 0.00 | 0.00 | 0.02 | 0.00 | 6.80 | 0.00 | 0.00 | 0.00 | 0.00 |
+tiles main #3 ws 1: chrome, ApplicationFrameHost, ApplicationFrameHost, explorer, Notepad, WindowsTerminal, Everything
+label=main #3 scenario=move target=chrome bursts=10 load=0 reports=9 wall=12.3s
+  command p50 ms                          22.99
+  command p90 ms                          24.84
+  frames                                  64.00
+  tick ms/frame                            0.94
+  frame p90 ms                             1.05
+  frames >2x budget                        1.00
+  interval p50 ms                          5.71
+  interval p90 ms                          5.75
+  peek_frame ms/frame                      0.00
+  session_overlays ms/frame                0.02
+  batch_commit ms/frame                    0.37
+  ovl_region ms/frame                      0.01
+  dwm_flush calls (in frames)              1.00
+  dwm_flush ms (outside frames)            8.10
+  cloak ms (outside frames)               11.80
+  session_begin ms (outside frames)        1.00
+  input->anim start ms                     0.20
+  input->first frame ms                   25.11
+| main #3 | move | 22.99 | 24.84 | 64.00 | 0.94 | 1.05 | 1.00 | 5.71 | 5.75 | 0.00 | 0.02 | 0.37 | 0.01 | 1.00 | 8.10 | 11.80 | 1.00 | 0.20 | 25.11 |
+label=main #3 scenario=float target=chrome bursts=10 load=0 reports=10 wall=12.8s
+  command p50 ms                          75.95
+  command p90 ms                          83.82
+  frames                                  63.00
+  tick ms/frame                            4.14
+  frame p90 ms                             9.45
+  frames >2x budget                        4.00
+  interval p50 ms                          5.72
+  interval p90 ms                          9.78
+  peek_frame ms/frame                      0.00
+  session_overlays ms/frame                0.04
+  batch_commit ms/frame                    1.92
+  ovl_region ms/frame                      0.14
+  dwm_flush calls (in frames)              3.00
+  dwm_flush ms (outside frames)            6.10
+  cloak ms (outside frames)               30.10
+  session_begin ms (outside frames)        2.60
+  input->anim start ms                     0.23
+  input->first frame ms                  109.29
+| main #3 | float | 75.95 | 83.82 | 63.00 | 4.14 | 9.45 | 4.00 | 5.72 | 9.78 | 0.00 | 0.04 | 1.92 | 0.14 | 3.00 | 6.10 | 30.10 | 2.60 | 0.23 | 109.29 |
+label=main #3 scenario=minimize target=chrome bursts=10 load=0 reports=10 wall=12.3s
+  command p50 ms                          26.50
+  command p90 ms                          58.52
+  frames                                 137.00
+  tick ms/frame                            1.91
+  frame p90 ms                             4.43
+  frames >2x budget                        6.00
+  interval p50 ms                          5.72
+  interval p90 ms                          5.80
+  peek_frame ms/frame                      0.00
+  session_overlays ms/frame                0.02
+  batch_commit ms/frame                    0.77
+  ovl_region ms/frame                      0.06
+  dwm_flush calls (in frames)              5.00
+  dwm_flush ms (outside frames)            9.70
+  cloak ms (outside frames)               34.90
+  session_begin ms (outside frames)        5.40
+  input->anim start ms                     4.30
+  input->first frame ms                  102.40
+| main #3 | minimize | 26.50 | 58.52 | 137.00 | 1.91 | 4.43 | 6.00 | 5.72 | 5.80 | 0.00 | 0.02 | 0.77 | 0.06 | 5.00 | 9.70 | 34.90 | 5.40 | 4.30 | 102.40 |
+label=main #3 scenario=resize target=chrome bursts=10 load=0 reports=10 wall=12.6s
+  command p50 ms                          52.68
+  command p90 ms                          55.38
+  frames                                 134.00
+  tick ms/frame                            3.15
+  frame p90 ms                             5.45
+  frames >2x budget                        5.00
+  interval p50 ms                          5.72
+  interval p90 ms                          5.78
+  peek_frame ms/frame                      0.00
+  session_overlays ms/frame                0.04
+  batch_commit ms/frame                    1.22
+  ovl_region ms/frame                      0.06
+  dwm_flush calls (in frames)              4.00
+  dwm_flush ms (outside frames)            6.80
+  cloak ms (outside frames)               23.20
+  session_begin ms (outside frames)        2.70
+  input->anim start ms                     0.21
+  input->first frame ms                   73.81
+| main #3 | resize | 52.68 | 55.38 | 134.00 | 3.15 | 5.45 | 5.00 | 5.72 | 5.78 | 0.00 | 0.04 | 1.22 | 0.06 | 4.00 | 6.80 | 23.20 | 2.70 | 0.21 | 73.81 |
+Moved 3 window(s) to workspace '2' to switch to.
+label=main #3 scenario=switch target=1<->2 bursts=10 load=0 reports=9 wall=24.2s
+  command p50 ms                          43.70
+  command p90 ms                         115.59
+  frames                                  97.00
+  tick ms/frame                            2.33
+  frame p90 ms                             3.62
+  frames >2x budget                        3.00
+  interval p50 ms                          5.72
+  interval p90 ms                          5.75
+  peek_frame ms/frame                      0.00
+  session_overlays ms/frame                0.00
+  batch_commit ms/frame                    0.69
+  ovl_region ms/frame                      0.05
+  dwm_flush calls (in frames)              3.00
+  dwm_flush ms (outside frames)           12.10
+  cloak ms (outside frames)                0.00
+  session_begin ms (outside frames)        0.00
+  input->anim start ms                     0.00
+  input->first frame ms                    0.00
+| main #3 | switch | 43.70 | 115.59 | 97.00 | 2.33 | 3.62 | 3.00 | 5.72 | 5.75 | 0.00 | 0.00 | 0.69 | 0.05 | 3.00 | 12.10 | 0.00 | 0.00 | 0.00 | 0.00 |
+tiles nopeeks #3 ws 1: ApplicationFrameHost, ApplicationFrameHost, Notepad, Everything, WindowsTerminal, explorer, chrome
+label=nopeeks #3 scenario=move target=chrome bursts=10 load=0 reports=10 wall=12.2s
+  command p50 ms                          17.50
+  command p90 ms                          18.89
+  frames                                  63.00
+  tick ms/frame                            0.53
+  frame p90 ms                             0.94
+  frames >2x budget                        0.00
+  interval p50 ms                          5.71
+  interval p90 ms                          5.75
+  peek_frame ms/frame                      0.00
+  session_overlays ms/frame                0.02
+  batch_commit ms/frame                    0.25
+  ovl_region ms/frame                      0.01
+  dwm_flush calls (in frames)              0.00
+  dwm_flush ms (outside frames)            6.00
+  cloak ms (outside frames)               10.20
+  session_begin ms (outside frames)        0.90
+  input->anim start ms                     0.27
+  input->first frame ms                   18.04
+| nopeeks #3 | move | 17.50 | 18.89 | 63.00 | 0.53 | 0.94 | 0.00 | 5.71 | 5.75 | 0.00 | 0.02 | 0.25 | 0.01 | 0.00 | 6.00 | 10.20 | 0.90 | 0.27 | 18.04 |
+label=nopeeks #3 scenario=float target=chrome bursts=10 load=0 reports=10 wall=13.0s
+  command p50 ms                          99.70
+  command p90 ms                         109.27
+  frames                                  59.00
+  tick ms/frame                            3.74
+  frame p90 ms                             9.77
+  frames >2x budget                        4.00
+  interval p50 ms                          5.72
+  interval p90 ms                         10.05
+  peek_frame ms/frame                      0.00
+  session_overlays ms/frame                0.05
+  batch_commit ms/frame                    2.25
+  ovl_region ms/frame                      0.12
+  dwm_flush calls (in frames)              0.00
+  dwm_flush ms (outside frames)           14.40
+  cloak ms (outside frames)               28.80
+  session_begin ms (outside frames)        2.50
+  input->anim start ms                     0.29
+  input->first frame ms                  113.44
+| nopeeks #3 | float | 99.70 | 109.27 | 59.00 | 3.74 | 9.77 | 4.00 | 5.72 | 10.05 | 0.00 | 0.05 | 2.25 | 0.12 | 0.00 | 14.40 | 28.80 | 2.50 | 0.29 | 113.44 |
+label=nopeeks #3 scenario=minimize target=chrome bursts=10 load=0 reports=10 wall=12.4s
+  command p50 ms                          60.25
+  command p90 ms                          71.04
+  frames                                 135.00
+  tick ms/frame                            1.60
+  frame p90 ms                             6.07
+  frames >2x budget                        5.00
+  interval p50 ms                          5.72
+  interval p90 ms                          6.38
+  peek_frame ms/frame                      0.00
+  session_overlays ms/frame                0.02
+  batch_commit ms/frame                    0.91
+  ovl_region ms/frame                      0.04
+  dwm_flush calls (in frames)              1.00
+  dwm_flush ms (outside frames)           14.50
+  cloak ms (outside frames)               37.20
+  session_begin ms (outside frames)        3.10
+  input->anim start ms                     3.56
+  input->first frame ms                  128.40
+| nopeeks #3 | minimize | 60.25 | 71.04 | 135.00 | 1.60 | 6.07 | 5.00 | 5.72 | 6.38 | 0.00 | 0.02 | 0.91 | 0.04 | 1.00 | 14.50 | 37.20 | 3.10 | 3.56 | 128.40 |
+label=nopeeks #3 scenario=resize target=chrome bursts=10 load=0 reports=10 wall=13.1s
+  command p50 ms                          96.54
+  command p90 ms                         109.71
+  frames                                  56.00
+  tick ms/frame                            3.89
+  frame p90 ms                             9.55
+  frames >2x budget                        5.00
+  interval p50 ms                          5.72
+  interval p90 ms                          9.62
+  peek_frame ms/frame                      0.00
+  session_overlays ms/frame                0.06
+  batch_commit ms/frame                    2.39
+  ovl_region ms/frame                      0.10
+  dwm_flush calls (in frames)              0.00
+  dwm_flush ms (outside frames)           12.70
+  cloak ms (outside frames)               32.20
+  session_begin ms (outside frames)        2.70
+  input->anim start ms                     0.31
+  input->first frame ms                  116.18
+| nopeeks #3 | resize | 96.54 | 109.71 | 56.00 | 3.89 | 9.55 | 5.00 | 5.72 | 9.62 | 0.00 | 0.06 | 2.39 | 0.10 | 0.00 | 12.70 | 32.20 | 2.70 | 0.31 | 116.18 |
+Moved 3 window(s) to workspace '2' to switch to.
+label=nopeeks #3 scenario=switch target=1<->2 bursts=10 load=0 reports=10 wall=12.7s
+  command p50 ms                          78.94
+  command p90 ms                          80.98
+  frames                                  99.00
+  tick ms/frame                            1.97
+  frame p90 ms                             1.91
+  frames >2x budget                        3.00
+  interval p50 ms                          5.71
+  interval p90 ms                          5.77
+  peek_frame ms/frame                      0.00
+  session_overlays ms/frame                0.00
+  batch_commit ms/frame                    0.00
+  ovl_region ms/frame                      0.04
+  dwm_flush calls (in frames)              0.00
+  dwm_flush ms (outside frames)            9.70
+  cloak ms (outside frames)                0.00
+  session_begin ms (outside frames)        0.00
+  input->anim start ms                     0.00
+  input->first frame ms                    0.00
+| nopeeks #3 | switch | 78.94 | 80.98 | 99.00 | 1.97 | 1.91 | 3.00 | 5.71 | 5.77 | 0.00 | 0.00 | 0.00 | 0.04 | 0.00 | 9.70 | 0.00 | 0.00 | 0.00 | 0.00 |
+tiles default #3 ws 1: chrome, ApplicationFrameHost, WindowsTerminal, Notepad, explorer, ApplicationFrameHost, Everything
+label=default #3 scenario=move target=chrome bursts=10 load=0 reports=9 wall=12.4s
+  command p50 ms                          37.75
+  command p90 ms                          40.24
+  frames                                  63.00
+  tick ms/frame                            1.25
+  frame p90 ms                             1.18
+  frames >2x budget                        1.00
+  interval p50 ms                          5.71
+  interval p90 ms                          5.77
+  peek_frame ms/frame                      0.51
+  session_overlays ms/frame                0.00
+  batch_commit ms/frame                    0.00
+  ovl_region ms/frame                      0.00
+  dwm_flush calls (in frames)              0.00
+  dwm_flush ms (outside frames)           11.10
+  cloak ms (outside frames)               17.60
+  session_begin ms (outside frames)        0.00
+  input->anim start ms                     0.00
+  input->first frame ms                    0.00
+| default #3 | move | 37.75 | 40.24 | 63.00 | 1.25 | 1.18 | 1.00 | 5.71 | 5.77 | 0.51 | 0.00 | 0.00 | 0.00 | 0.00 | 11.10 | 17.60 | 0.00 | 0.00 | 0.00 |
+label=default #3 scenario=float target=chrome bursts=10 load=0 reports=10 wall=13.0s
+  command p50 ms                         106.07
+  command p90 ms                         119.69
+  frames                                  60.00
+  tick ms/frame                            4.82
+  frame p90 ms                            10.64
+  frames >2x budget                        5.00
+  interval p50 ms                          5.72
+  interval p90 ms                         10.75
+  peek_frame ms/frame                      0.00
+  session_overlays ms/frame                0.04
+  batch_commit ms/frame                    2.50
+  ovl_region ms/frame                      0.16
+  dwm_flush calls (in frames)              0.00
+  dwm_flush ms (outside frames)           13.20
+  cloak ms (outside frames)               33.60
+  session_begin ms (outside frames)        2.70
+  input->anim start ms                     0.30
+  input->first frame ms                  131.12
+| default #3 | float | 106.07 | 119.69 | 60.00 | 4.82 | 10.64 | 5.00 | 5.72 | 10.75 | 0.00 | 0.04 | 2.50 | 0.16 | 0.00 | 13.20 | 33.60 | 2.70 | 0.30 | 131.12 |
+label=default #3 scenario=minimize target=chrome bursts=10 load=0 reports=10 wall=12.5s
+  command p50 ms                          67.41
+  command p90 ms                          77.98
+  frames                                 135.00
+  tick ms/frame                            1.79
+  frame p90 ms                             3.88
+  frames >2x budget                        5.00
+  interval p50 ms                          5.72
+  interval p90 ms                          5.78
+  peek_frame ms/frame                      1.27
+  session_overlays ms/frame                0.02
+  batch_commit ms/frame                    0.62
+  ovl_region ms/frame                      0.05
+  dwm_flush calls (in frames)              1.00
+  dwm_flush ms (outside frames)           17.20
+  cloak ms (outside frames)               40.20
+  session_begin ms (outside frames)        2.40
+  input->anim start ms                    37.15
+  input->first frame ms                  201.66
+| default #3 | minimize | 67.41 | 77.98 | 135.00 | 1.79 | 3.88 | 5.00 | 5.72 | 5.78 | 1.27 | 0.02 | 0.62 | 0.05 | 1.00 | 17.20 | 40.20 | 2.40 | 37.15 | 201.66 |
+label=default #3 scenario=resize target=chrome bursts=10 load=0 reports=9 wall=13.4s
+  command p50 ms                         116.75
+  command p90 ms                         138.02
+  frames                                  59.00
+  tick ms/frame                            4.99
+  frame p90 ms                             4.51
+  frames >2x budget                        5.00
+  interval p50 ms                          5.71
+  interval p90 ms                          6.16
+  peek_frame ms/frame                      3.15
+  session_overlays ms/frame                0.00
+  batch_commit ms/frame                    0.00
+  ovl_region ms/frame                      0.07
+  dwm_flush calls (in frames)              2.00
+  dwm_flush ms (outside frames)            7.30
+  cloak ms (outside frames)               28.10
+  session_begin ms (outside frames)        0.00
+  input->anim start ms                     0.00
+  input->first frame ms                    0.00
+| default #3 | resize | 116.75 | 138.02 | 59.00 | 4.99 | 4.51 | 5.00 | 5.71 | 6.16 | 3.15 | 0.00 | 0.00 | 0.07 | 2.00 | 7.30 | 28.10 | 0.00 | 0.00 | 0.00 |
+Moved 3 window(s) to workspace '2' to switch to.
+label=default #3 scenario=switch target=1<->2 bursts=10 load=0 reports=10 wall=12.7s
+  command p50 ms                          72.80
+  command p90 ms                          77.25
+  frames                                  99.00
+  tick ms/frame                            1.66
+  frame p90 ms                             1.66
+  frames >2x budget                        3.00
+  interval p50 ms                          5.72
+  interval p90 ms                          5.78
+  peek_frame ms/frame                      0.00
+  session_overlays ms/frame                0.00
+  batch_commit ms/frame                    0.00
+  ovl_region ms/frame                      0.02
+  dwm_flush calls (in frames)              0.00
+  dwm_flush ms (outside frames)           11.40
+  cloak ms (outside frames)                0.00
+  session_begin ms (outside frames)        0.00
+  input->anim start ms                     0.00
+  input->first frame ms                    0.00
+| default #3 | switch | 72.80 | 77.25 | 99.00 | 1.66 | 1.66 | 3.00 | 5.72 | 5.78 | 0.00 | 0.00 | 0.00 | 0.02 | 0.00 | 11.40 | 0.00 | 0.00 | 0.00 | 0.00 |
+tiles morepeeks #3 ws 1: ApplicationFrameHost, WindowsTerminal, explorer, Everything, ApplicationFrameHost, Notepad, chrome
+label=morepeeks #3 scenario=move target=chrome bursts=10 load=0 reports=10 wall=12.4s
+  command p50 ms                          23.88
+  command p90 ms                          25.42
+  frames                                  63.00
+  tick ms/frame                            0.84
+  frame p90 ms                             0.93
+  frames >2x budget                        1.00
+  interval p50 ms                          5.71
+  interval p90 ms                          5.75
+  peek_frame ms/frame                      0.38
+  session_overlays ms/frame                0.00
+  batch_commit ms/frame                    0.00
+  ovl_region ms/frame                      0.00
+  dwm_flush calls (in frames)              0.00
+  dwm_flush ms (outside frames)            8.10
+  cloak ms (outside frames)               11.10
+  session_begin ms (outside frames)        0.00
+  input->anim start ms                     0.00
+  input->first frame ms                    0.00
+| morepeeks #3 | move | 23.88 | 25.42 | 63.00 | 0.84 | 0.93 | 1.00 | 5.71 | 5.75 | 0.38 | 0.00 | 0.00 | 0.00 | 0.00 | 8.10 | 11.10 | 0.00 | 0.00 | 0.00 |
+label=morepeeks #3 scenario=float target=chrome bursts=10 load=0 reports=8 wall=13.9s
+  command p50 ms                         130.37
+  command p90 ms                         136.58
+  frames                                  57.00
+  tick ms/frame                            4.95
+  frame p90 ms                             4.51
+  frames >2x budget                        5.00
+  interval p50 ms                          5.72
+  interval p90 ms                          5.98
+  peek_frame ms/frame                      3.11
+  session_overlays ms/frame                0.00
+  batch_commit ms/frame                    0.00
+  ovl_region ms/frame                      0.05
+  dwm_flush calls (in frames)              2.00
+  dwm_flush ms (outside frames)            9.40
+  cloak ms (outside frames)               30.70
+  session_begin ms (outside frames)        0.00
+  input->anim start ms                     0.00
+  input->first frame ms                    0.00
+| morepeeks #3 | float | 130.37 | 136.58 | 57.00 | 4.95 | 4.51 | 5.00 | 5.72 | 5.98 | 3.11 | 0.00 | 0.00 | 0.05 | 2.00 | 9.40 | 30.70 | 0.00 | 0.00 | 0.00 |
+label=morepeeks #3 scenario=minimize target=chrome bursts=10 load=0 reports=10 wall=12.5s
+  command p50 ms                          73.31
+  command p90 ms                          77.16
+  frames                                 135.00
+  tick ms/frame                            2.17
+  frame p90 ms                             4.03
+  frames >2x budget                        6.00
+  interval p50 ms                          5.72
+  interval p90 ms                          5.77
+  peek_frame ms/frame                      1.09
+  session_overlays ms/frame                0.02
+  batch_commit ms/frame                    0.55
+  ovl_region ms/frame                      0.06
+  dwm_flush calls (in frames)              1.00
+  dwm_flush ms (outside frames)           13.80
+  cloak ms (outside frames)               35.90
+  session_begin ms (outside frames)        2.50
+  input->anim start ms                     4.27
+  input->first frame ms                  170.02
+| morepeeks #3 | minimize | 73.31 | 77.16 | 135.00 | 2.17 | 4.03 | 6.00 | 5.72 | 5.77 | 1.09 | 0.02 | 0.55 | 0.06 | 1.00 | 13.80 | 35.90 | 2.50 | 4.27 | 170.02 |
+label=morepeeks #3 scenario=resize target=chrome bursts=10 load=0 reports=10 wall=13.3s
+  command p50 ms                         111.52
+  command p90 ms                         139.77
+  frames                                  57.00
+  tick ms/frame                            5.26
+  frame p90 ms                             4.40
+  frames >2x budget                        5.00
+  interval p50 ms                          5.72
+  interval p90 ms                          6.38
+  peek_frame ms/frame                      3.16
+  session_overlays ms/frame                0.00
+  batch_commit ms/frame                    0.00
+  ovl_region ms/frame                      0.07
+  dwm_flush calls (in frames)              2.00
+  dwm_flush ms (outside frames)           12.30
+  cloak ms (outside frames)               39.60
+  session_begin ms (outside frames)        0.00
+  input->anim start ms                     0.00
+  input->first frame ms                    0.00
+| morepeeks #3 | resize | 111.52 | 139.77 | 57.00 | 5.26 | 4.40 | 5.00 | 5.72 | 6.38 | 3.16 | 0.00 | 0.00 | 0.07 | 2.00 | 12.30 | 39.60 | 0.00 | 0.00 | 0.00 |
+Moved 3 window(s) to workspace '2' to switch to.
+label=morepeeks #3 scenario=switch target=1<->2 bursts=10 load=0 reports=10 wall=12.7s
+  command p50 ms                          68.87
+  command p90 ms                          78.33
+  frames                                  99.00
+  tick ms/frame                            2.15
+  frame p90 ms                             2.03
+  frames >2x budget                        4.00
+  interval p50 ms                          5.72
+  interval p90 ms                          5.77
+  peek_frame ms/frame                      0.00
+  session_overlays ms/frame                0.00
+  batch_commit ms/frame                    0.00
+  ovl_region ms/frame                      0.03
+  dwm_flush calls (in frames)              0.00
+  dwm_flush ms (outside frames)            7.00
+  cloak ms (outside frames)                0.00
+  session_begin ms (outside frames)        0.00
+  input->anim start ms                     0.00
+  input->first frame ms                    0.00
+| morepeeks #3 | switch | 68.87 | 78.33 | 99.00 | 2.15 | 2.03 | 4.00 | 5.72 | 5.77 | 0.00 | 0.00 | 0.00 | 0.03 | 0.00 | 7.00 | 0.00 | 0.00 | 0.00 | 0.00 |
+tiles main #4 ws 1: chrome, ApplicationFrameHost, ApplicationFrameHost, explorer, Notepad, WindowsTerminal, Everything
+label=main #4 scenario=move target=chrome bursts=10 load=0 reports=9 wall=12.3s
+  command p50 ms                          22.51
+  command p90 ms                          25.56
+  frames                                  63.00
+  tick ms/frame                            0.94
+  frame p90 ms                             1.32
+  frames >2x budget                        1.00
+  interval p50 ms                          5.71
+  interval p90 ms                          5.75
+  peek_frame ms/frame                      0.00
+  session_overlays ms/frame                0.02
+  batch_commit ms/frame                    0.41
+  ovl_region ms/frame                      0.01
+  dwm_flush calls (in frames)              1.00
+  dwm_flush ms (outside frames)            7.70
+  cloak ms (outside frames)               11.50
+  session_begin ms (outside frames)        1.00
+  input->anim start ms                     0.20
+  input->first frame ms                   28.08
+| main #4 | move | 22.51 | 25.56 | 63.00 | 0.94 | 1.32 | 1.00 | 5.71 | 5.75 | 0.00 | 0.02 | 0.41 | 0.01 | 1.00 | 7.70 | 11.50 | 1.00 | 0.20 | 28.08 |
+label=main #4 scenario=float target=chrome bursts=10 load=0 reports=9 wall=12.9s
+  command p50 ms                          77.56
+  command p90 ms                          89.45
+  frames                                  62.00
+  tick ms/frame                            4.11
+  frame p90 ms                             7.58
+  frames >2x budget                        4.00
+  interval p50 ms                          5.72
+  interval p90 ms                          9.22
+  peek_frame ms/frame                      0.00
+  session_overlays ms/frame                0.03
+  batch_commit ms/frame                    1.45
+  ovl_region ms/frame                      0.15
+  dwm_flush calls (in frames)              3.00
+  dwm_flush ms (outside frames)            8.70
+  cloak ms (outside frames)               33.30
+  session_begin ms (outside frames)        3.00
+  input->anim start ms                     0.22
+  input->first frame ms                   77.65
+| main #4 | float | 77.56 | 89.45 | 62.00 | 4.11 | 7.58 | 4.00 | 5.72 | 9.22 | 0.00 | 0.03 | 1.45 | 0.15 | 3.00 | 8.70 | 33.30 | 3.00 | 0.22 | 77.65 |
+label=main #4 scenario=minimize target=chrome bursts=10 load=0 reports=10 wall=12.4s
+  command p50 ms                          48.38
+  command p90 ms                          58.96
+  frames                                 136.00
+  tick ms/frame                            1.83
+  frame p90 ms                             4.64
+  frames >2x budget                        5.00
+  interval p50 ms                          5.72
+  interval p90 ms                          5.78
+  peek_frame ms/frame                      0.00
+  session_overlays ms/frame                0.02
+  batch_commit ms/frame                    0.76
+  ovl_region ms/frame                      0.06
+  dwm_flush calls (in frames)              5.00
+  dwm_flush ms (outside frames)           12.00
+  cloak ms (outside frames)               37.90
+  session_begin ms (outside frames)        5.00
+  input->anim start ms                     4.18
+  input->first frame ms                  105.46
+| main #4 | minimize | 48.38 | 58.96 | 136.00 | 1.83 | 4.64 | 5.00 | 5.72 | 5.78 | 0.00 | 0.02 | 0.76 | 0.06 | 5.00 | 12.00 | 37.90 | 5.00 | 4.18 | 105.46 |
+label=main #4 scenario=resize target=chrome bursts=10 load=0 reports=10 wall=12.8s
+  command p50 ms                          68.83
+  command p90 ms                          95.62
+  frames                                  60.00
+  tick ms/frame                            4.92
+  frame p90 ms                            10.64
+  frames >2x budget                        5.00
+  interval p50 ms                          5.72
+  interval p90 ms                         11.45
+  peek_frame ms/frame                      0.00
+  session_overlays ms/frame                0.04
+  batch_commit ms/frame                    2.07
+  ovl_region ms/frame                      0.15
+  dwm_flush calls (in frames)              3.00
+  dwm_flush ms (outside frames)            6.40
+  cloak ms (outside frames)               34.60
+  session_begin ms (outside frames)        2.90
+  input->anim start ms                     0.23
+  input->first frame ms                   81.54
+| main #4 | resize | 68.83 | 95.62 | 60.00 | 4.92 | 10.64 | 5.00 | 5.72 | 11.45 | 0.00 | 0.04 | 2.07 | 0.15 | 3.00 | 6.40 | 34.60 | 2.90 | 0.23 | 81.54 |
+Moved 3 window(s) to workspace '2' to switch to.
+label=main #4 scenario=switch target=1<->2 bursts=10 load=0 reports=10 wall=12.5s
+  command p50 ms                          48.63
+  command p90 ms                          53.65
+  frames                                  97.00
+  tick ms/frame                            2.28
+  frame p90 ms                             3.49
+  frames >2x budget                        3.00
+  interval p50 ms                          5.71
+  interval p90 ms                          5.76
+  peek_frame ms/frame                      0.00
+  session_overlays ms/frame                0.00
+  batch_commit ms/frame                    0.76
+  ovl_region ms/frame                      0.04
+  dwm_flush calls (in frames)              3.00
+  dwm_flush ms (outside frames)           15.60
+  cloak ms (outside frames)                0.00
+  session_begin ms (outside frames)        0.00
+  input->anim start ms                     0.00
+  input->first frame ms                    0.00
+| main #4 | switch | 48.63 | 53.65 | 97.00 | 2.28 | 3.49 | 3.00 | 5.71 | 5.76 | 0.00 | 0.00 | 0.76 | 0.04 | 3.00 | 15.60 | 0.00 | 0.00 | 0.00 | 0.00 |
+tiles nopeeks #4 ws 1: ApplicationFrameHost, ApplicationFrameHost, Notepad, Everything, WindowsTerminal, explorer, chrome
+label=nopeeks #4 scenario=move target=chrome bursts=10 load=0 reports=10 wall=12.3s
+  command p50 ms                          17.95
+  command p90 ms                          18.83
+  frames                                  63.00
+  tick ms/frame                            0.54
+  frame p90 ms                             0.95
+  frames >2x budget                        0.00
+  interval p50 ms                          5.71
+  interval p90 ms                          5.75
+  peek_frame ms/frame                      0.00
+  session_overlays ms/frame                0.02
+  batch_commit ms/frame                    0.25
+  ovl_region ms/frame                      0.02
+  dwm_flush calls (in frames)              0.00
+  dwm_flush ms (outside frames)            6.80
+  cloak ms (outside frames)               10.90
+  session_begin ms (outside frames)        1.00
+  input->anim start ms                     0.30
+  input->first frame ms                   18.81
+| nopeeks #4 | move | 17.95 | 18.83 | 63.00 | 0.54 | 0.95 | 0.00 | 5.71 | 5.75 | 0.00 | 0.02 | 0.25 | 0.02 | 0.00 | 6.80 | 10.90 | 1.00 | 0.30 | 18.81 |
+label=nopeeks #4 scenario=float target=chrome bursts=10 load=0 reports=10 wall=13.0s
+  command p50 ms                         101.31
+  command p90 ms                         109.65
+  frames                                  60.00
+  tick ms/frame                            3.46
+  frame p90 ms                             8.13
+  frames >2x budget                        4.00
+  interval p50 ms                          5.72
+  interval p90 ms                          9.24
+  peek_frame ms/frame                      0.00
+  session_overlays ms/frame                0.06
+  batch_commit ms/frame                    2.27
+  ovl_region ms/frame                      0.12
+  dwm_flush calls (in frames)              0.00
+  dwm_flush ms (outside frames)           11.40
+  cloak ms (outside frames)               31.60
+  session_begin ms (outside frames)        2.50
+  input->anim start ms                     0.29
+  input->first frame ms                  111.06
+| nopeeks #4 | float | 101.31 | 109.65 | 60.00 | 3.46 | 8.13 | 4.00 | 5.72 | 9.24 | 0.00 | 0.06 | 2.27 | 0.12 | 0.00 | 11.40 | 31.60 | 2.50 | 0.29 | 111.06 |
+label=nopeeks #4 scenario=minimize target=chrome bursts=10 load=0 reports=10 wall=12.4s
+  command p50 ms                          52.74
+  command p90 ms                          67.05
+  frames                                 137.00
+  tick ms/frame                            1.60
+  frame p90 ms                             5.26
+  frames >2x budget                        5.00
+  interval p50 ms                          5.72
+  interval p90 ms                          5.82
+  peek_frame ms/frame                      0.00
+  session_overlays ms/frame                0.02
+  batch_commit ms/frame                    0.76
+  ovl_region ms/frame                      0.04
+  dwm_flush calls (in frames)              1.00
+  dwm_flush ms (outside frames)            8.20
+  cloak ms (outside frames)               28.80
+  session_begin ms (outside frames)        2.80
+  input->anim start ms                     3.51
+  input->first frame ms                  122.36
+| nopeeks #4 | minimize | 52.74 | 67.05 | 137.00 | 1.60 | 5.26 | 5.00 | 5.72 | 5.82 | 0.00 | 0.02 | 0.76 | 0.04 | 1.00 | 8.20 | 28.80 | 2.80 | 3.51 | 122.36 |
+label=nopeeks #4 scenario=resize target=chrome bursts=10 load=0 reports=10 wall=13.0s
+  command p50 ms                         106.40
+  command p90 ms                         112.81
+  frames                                  59.00
+  tick ms/frame                            3.63
+  frame p90 ms                             9.58
+  frames >2x budget                        4.00
+  interval p50 ms                          5.72
+  interval p90 ms                          9.66
+  peek_frame ms/frame                      0.00
+  session_overlays ms/frame                0.06
+  batch_commit ms/frame                    2.33
+  ovl_region ms/frame                      0.08
+  dwm_flush calls (in frames)              0.00
+  dwm_flush ms (outside frames)           11.90
+  cloak ms (outside frames)               36.40
+  session_begin ms (outside frames)        2.60
+  input->anim start ms                     0.30
+  input->first frame ms                  117.72
+| nopeeks #4 | resize | 106.40 | 112.81 | 59.00 | 3.63 | 9.58 | 4.00 | 5.72 | 9.66 | 0.00 | 0.06 | 2.33 | 0.08 | 0.00 | 11.90 | 36.40 | 2.60 | 0.30 | 117.72 |
+Moved 3 window(s) to workspace '2' to switch to.
+label=nopeeks #4 scenario=switch target=1<->2 bursts=10 load=0 reports=10 wall=12.7s
+  command p50 ms                          60.20
+  command p90 ms                          67.66
+  frames                                  99.00
+  tick ms/frame                            1.74
+  frame p90 ms                             1.67
+  frames >2x budget                        3.00
+  interval p50 ms                          5.71
+  interval p90 ms                          5.77
+  peek_frame ms/frame                      0.00
+  session_overlays ms/frame                0.00
+  batch_commit ms/frame                    0.00
+  ovl_region ms/frame                      0.03
+  dwm_flush calls (in frames)              0.00
+  dwm_flush ms (outside frames)            9.90
+  cloak ms (outside frames)                0.00
+  session_begin ms (outside frames)        0.00
+  input->anim start ms                     0.00
+  input->first frame ms                    0.00
+| nopeeks #4 | switch | 60.20 | 67.66 | 99.00 | 1.74 | 1.67 | 3.00 | 5.71 | 5.77 | 0.00 | 0.00 | 0.00 | 0.03 | 0.00 | 9.90 | 0.00 | 0.00 | 0.00 | 0.00 |
+tiles default #4 ws 1: chrome, ApplicationFrameHost, WindowsTerminal, Notepad, explorer, ApplicationFrameHost, Everything
+label=default #4 scenario=move target=chrome bursts=10 load=0 reports=9 wall=12.3s
+  command p50 ms                          26.13
+  command p90 ms                          29.14
+  frames                                  63.00
+  tick ms/frame                            1.03
+  frame p90 ms                             1.14
+  frames >2x budget                        1.00
+  interval p50 ms                          5.72
+  interval p90 ms                          5.77
+  peek_frame ms/frame                      0.48
+  session_overlays ms/frame                0.00
+  batch_commit ms/frame                    0.00
+  ovl_region ms/frame                      0.00
+  dwm_flush calls (in frames)              0.00
+  dwm_flush ms (outside frames)            9.10
+  cloak ms (outside frames)               13.10
+  session_begin ms (outside frames)        0.00
+  input->anim start ms                     0.00
+  input->first frame ms                    0.00
+| default #4 | move | 26.13 | 29.14 | 63.00 | 1.03 | 1.14 | 1.00 | 5.72 | 5.77 | 0.48 | 0.00 | 0.00 | 0.00 | 0.00 | 9.10 | 13.10 | 0.00 | 0.00 | 0.00 |
+label=default #4 scenario=float target=chrome bursts=10 load=0 reports=10 wall=13.0s
+  command p50 ms                         100.26
+  command p90 ms                         118.15
+  frames                                  59.00
+  tick ms/frame                            4.49
+  frame p90 ms                             9.24
+  frames >2x budget                        4.00
+  interval p50 ms                          5.72
+  interval p90 ms                          9.53
+  peek_frame ms/frame                      0.00
+  session_overlays ms/frame                0.05
+  batch_commit ms/frame                    1.91
+  ovl_region ms/frame                      0.12
+  dwm_flush calls (in frames)              0.00
+  dwm_flush ms (outside frames)            7.70
+  cloak ms (outside frames)               49.60
+  session_begin ms (outside frames)        2.60
+  input->anim start ms                     0.35
+  input->first frame ms                  114.76
+| default #4 | float | 100.26 | 118.15 | 59.00 | 4.49 | 9.24 | 4.00 | 5.72 | 9.53 | 0.00 | 0.05 | 1.91 | 0.12 | 0.00 | 7.70 | 49.60 | 2.60 | 0.35 | 114.76 |
+label=default #4 scenario=minimize target=chrome bursts=10 load=0 reports=10 wall=12.4s
+  command p50 ms                          63.11
+  command p90 ms                          69.55
+  frames                                 134.00
+  tick ms/frame                            1.86
+  frame p90 ms                             3.83
+  frames >2x budget                        5.00
+  interval p50 ms                          5.72
+  interval p90 ms                          5.79
+  peek_frame ms/frame                      1.29
+  session_overlays ms/frame                0.02
+  batch_commit ms/frame                    0.63
+  ovl_region ms/frame                      0.05
+  dwm_flush calls (in frames)              1.00
+  dwm_flush ms (outside frames)           12.20
+  cloak ms (outside frames)               32.10
+  session_begin ms (outside frames)        2.50
+  input->anim start ms                    38.96
+  input->first frame ms                  206.17
+| default #4 | minimize | 63.11 | 69.55 | 134.00 | 1.86 | 3.83 | 5.00 | 5.72 | 5.79 | 1.29 | 0.02 | 0.63 | 0.05 | 1.00 | 12.20 | 32.10 | 2.50 | 38.96 | 206.17 |
+label=default #4 scenario=resize target=chrome bursts=10 load=0 reports=10 wall=13.4s
+  command p50 ms                         136.18
+  command p90 ms                         143.41
+  frames                                  57.00
+  tick ms/frame                            5.43
+  frame p90 ms                             4.52
+  frames >2x budget                        5.00
+  interval p50 ms                          5.72
+  interval p90 ms                          6.33
+  peek_frame ms/frame                      3.08
+  session_overlays ms/frame                0.00
+  batch_commit ms/frame                    0.00
+  ovl_region ms/frame                      0.06
+  dwm_flush calls (in frames)              2.00
+  dwm_flush ms (outside frames)           11.80
+  cloak ms (outside frames)               37.20
+  session_begin ms (outside frames)        0.00
+  input->anim start ms                     0.00
+  input->first frame ms                    0.00
+| default #4 | resize | 136.18 | 143.41 | 57.00 | 5.43 | 4.52 | 5.00 | 5.72 | 6.33 | 3.08 | 0.00 | 0.00 | 0.06 | 2.00 | 11.80 | 37.20 | 0.00 | 0.00 | 0.00 |
+Moved 3 window(s) to workspace '2' to switch to.
+label=default #4 scenario=switch target=1<->2 bursts=10 load=0 reports=10 wall=12.7s
+  command p50 ms                          72.16
+  command p90 ms                          75.86
+  frames                                  99.00
+  tick ms/frame                            1.73
+  frame p90 ms                             1.60
+  frames >2x budget                        4.00
+  interval p50 ms                          5.71
+  interval p90 ms                          5.76
+  peek_frame ms/frame                      0.00
+  session_overlays ms/frame                0.00
+  batch_commit ms/frame                    0.00
+  ovl_region ms/frame                      0.04
+  dwm_flush calls (in frames)              0.00
+  dwm_flush ms (outside frames)            9.80
+  cloak ms (outside frames)                0.00
+  session_begin ms (outside frames)        0.00
+  input->anim start ms                     0.00
+  input->first frame ms                    0.00
+| default #4 | switch | 72.16 | 75.86 | 99.00 | 1.73 | 1.60 | 4.00 | 5.71 | 5.76 | 0.00 | 0.00 | 0.00 | 0.04 | 0.00 | 9.80 | 0.00 | 0.00 | 0.00 | 0.00 |
+tiles morepeeks #4 ws 1: ApplicationFrameHost, WindowsTerminal, explorer, Everything, ApplicationFrameHost, chrome, Notepad
+label=morepeeks #4 scenario=move target=chrome bursts=10 load=0 reports=10 wall=12.4s
+  command p50 ms                          32.15
+  command p90 ms                          34.78
+  frames                                  64.00
+  tick ms/frame                            1.44
+  frame p90 ms                             2.93
+  frames >2x budget                        1.00
+  interval p50 ms                          5.72
+  interval p90 ms                          5.77
+  peek_frame ms/frame                      0.54
+  session_overlays ms/frame                0.00
+  batch_commit ms/frame                    0.00
+  ovl_region ms/frame                      0.00
+  dwm_flush calls (in frames)              0.00
+  dwm_flush ms (outside frames)            9.20
+  cloak ms (outside frames)               12.80
+  session_begin ms (outside frames)        0.00
+  input->anim start ms                     0.00
+  input->first frame ms                    0.00
+| morepeeks #4 | move | 32.15 | 34.78 | 64.00 | 1.44 | 2.93 | 1.00 | 5.72 | 5.77 | 0.54 | 0.00 | 0.00 | 0.00 | 0.00 | 9.20 | 12.80 | 0.00 | 0.00 | 0.00 |
+label=morepeeks #4 scenario=float target=chrome bursts=10 load=0 reports=9 wall=14.0s
+  command p50 ms                         126.46
+  command p90 ms                         140.28
+  frames                                  56.00
+  tick ms/frame                            5.14
+  frame p90 ms                             3.86
+  frames >2x budget                        5.00
+  interval p50 ms                          5.71
+  interval p90 ms                          5.80
+  peek_frame ms/frame                      3.05
+  session_overlays ms/frame                0.00
+  batch_commit ms/frame                    0.00
+  ovl_region ms/frame                      0.04
+  dwm_flush calls (in frames)              2.00
+  dwm_flush ms (outside frames)            9.90
+  cloak ms (outside frames)               45.70
+  session_begin ms (outside frames)        0.00
+  input->anim start ms                     0.00
+  input->first frame ms                    0.00
+| morepeeks #4 | float | 126.46 | 140.28 | 56.00 | 5.14 | 3.86 | 5.00 | 5.71 | 5.80 | 3.05 | 0.00 | 0.00 | 0.04 | 2.00 | 9.90 | 45.70 | 0.00 | 0.00 | 0.00 |
+label=morepeeks #4 scenario=minimize target=chrome bursts=10 load=0 reports=10 wall=12.8s
+  command p50 ms                         119.25
+  command p90 ms                         132.91
+  frames                                  58.00
+  tick ms/frame                            4.85
+  frame p90 ms                             3.82
+  frames >2x budget                        5.00
+  interval p50 ms                          5.72
+  interval p90 ms                          5.99
+  peek_frame ms/frame                      2.90
+  session_overlays ms/frame                0.00
+  batch_commit ms/frame                    0.00
+  ovl_region ms/frame                      0.04
+  dwm_flush calls (in frames)              2.00
+  dwm_flush ms (outside frames)           25.90
+  cloak ms (outside frames)               46.20
+  session_begin ms (outside frames)        0.00
+  input->anim start ms                     0.00
+  input->first frame ms                    0.00
+| morepeeks #4 | minimize | 119.25 | 132.91 | 58.00 | 4.85 | 3.82 | 5.00 | 5.72 | 5.99 | 2.90 | 0.00 | 0.00 | 0.04 | 2.00 | 25.90 | 46.20 | 0.00 | 0.00 | 0.00 |
+label=morepeeks #4 scenario=resize target=chrome bursts=10 load=0 reports=10 wall=13.3s
+  command p50 ms                         120.53
+  command p90 ms                         134.82
+  frames                                  57.00
+  tick ms/frame                            5.21
+  frame p90 ms                             3.88
+  frames >2x budget                        5.00
+  interval p50 ms                          5.71
+  interval p90 ms                          6.83
+  peek_frame ms/frame                      3.19
+  session_overlays ms/frame                0.00
+  batch_commit ms/frame                    0.00
+  ovl_region ms/frame                      0.06
+  dwm_flush calls (in frames)              2.00
+  dwm_flush ms (outside frames)            8.60
+  cloak ms (outside frames)               33.30
+  session_begin ms (outside frames)        0.00
+  input->anim start ms                     0.00
+  input->first frame ms                    0.00
+| morepeeks #4 | resize | 120.53 | 134.82 | 57.00 | 5.21 | 3.88 | 5.00 | 5.71 | 6.83 | 3.19 | 0.00 | 0.00 | 0.06 | 2.00 | 8.60 | 33.30 | 0.00 | 0.00 | 0.00 |
+Moved 3 window(s) to workspace '2' to switch to.
+label=morepeeks #4 scenario=switch target=1<->2 bursts=10 load=0 reports=10 wall=12.6s
+  command p50 ms                          53.59
+  command p90 ms                          57.73
+  frames                                  99.00
+  tick ms/frame                            1.87
+  frame p90 ms                             1.78
+  frames >2x budget                        3.00
+  interval p50 ms                          5.72
+  interval p90 ms                          5.77
+  peek_frame ms/frame                      0.00
+  session_overlays ms/frame                0.00
+  batch_commit ms/frame                    0.00
+  ovl_region ms/frame                      0.03
+  dwm_flush calls (in frames)              0.00
+  dwm_flush ms (outside frames)            8.20
+  cloak ms (outside frames)                0.00
+  session_begin ms (outside frames)        0.00
+  input->anim start ms                     0.00
+  input->first frame ms                    0.00
+| morepeeks #4 | switch | 53.59 | 57.73 | 99.00 | 1.87 | 1.78 | 3.00 | 5.72 | 5.77 | 0.00 | 0.00 | 0.00 | 0.03 | 0.00 | 8.20 | 0.00 | 0.00 | 0.00 | 0.00 |
+
+## move
+
+| label | scenario | command p50 ms | command p90 ms | frames | tick ms/frame | frame p90 ms | frames >2x budget | interval p50 ms | interval p90 ms | peek_frame ms/frame | session_overlays ms/frame | batch_commit ms/frame | ovl_region ms/frame | dwm_flush calls (in frames) | dwm_flush ms (outside frames) | cloak ms (outside frames) | session_begin ms (outside frames) | input->anim start ms | input->first frame ms |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| main #1 | move | 37.24 | 39.30 | 63.00 | 1.24 | 1.08 | 1.00 | 5.71 | 5.77 | 0.00 | 0.03 | 0.48 | 0.06 | 1.00 | 10.40 | 16.00 | 1.00 | 0.21 | 46.70 |
+| main #2 | move | 22.30 | 24.33 | 63.00 | 0.88 | 1.16 | 1.00 | 5.71 | 5.75 | 0.00 | 0.03 | 0.39 | 0.00 | 1.00 | 7.10 | 10.60 | 1.00 | 0.20 | 27.47 |
+| main #3 | move | 22.99 | 24.84 | 64.00 | 0.94 | 1.05 | 1.00 | 5.71 | 5.75 | 0.00 | 0.02 | 0.37 | 0.01 | 1.00 | 8.10 | 11.80 | 1.00 | 0.20 | 25.11 |
+| main #4 | move | 22.51 | 25.56 | 63.00 | 0.94 | 1.32 | 1.00 | 5.71 | 5.75 | 0.00 | 0.02 | 0.41 | 0.01 | 1.00 | 7.70 | 11.50 | 1.00 | 0.20 | 28.08 |
+| nopeeks #1 | move | 17.72 | 18.89 | 63.00 | 0.55 | 0.96 | 0.00 | 5.71 | 5.75 | 0.00 | 0.02 | 0.26 | 0.01 | 0.00 | 6.60 | 11.00 | 1.00 | 0.29 | 18.32 |
+| nopeeks #2 | move | 18.37 | 18.74 | 63.00 | 0.53 | 0.93 | 0.00 | 5.71 | 5.75 | 0.00 | 0.02 | 0.25 | 0.02 | 0.00 | 7.10 | 11.50 | 0.90 | 0.30 | 18.85 |
+| nopeeks #3 | move | 17.50 | 18.89 | 63.00 | 0.53 | 0.94 | 0.00 | 5.71 | 5.75 | 0.00 | 0.02 | 0.25 | 0.01 | 0.00 | 6.00 | 10.20 | 0.90 | 0.27 | 18.04 |
+| nopeeks #4 | move | 17.95 | 18.83 | 63.00 | 0.54 | 0.95 | 0.00 | 5.71 | 5.75 | 0.00 | 0.02 | 0.25 | 0.02 | 0.00 | 6.80 | 10.90 | 1.00 | 0.30 | 18.81 |
+| default #1 | move | 37.82 | 39.65 | 64.00 | 1.25 | 1.26 | 1.00 | 5.71 | 5.76 | 0.52 | 0.00 | 0.00 | 0.00 | 0.00 | 11.10 | 17.60 | 0.00 | 0.00 | 0.00 |
+| default #2 | move | 26.46 | 27.07 | 63.00 | 1.08 | 1.18 | 2.00 | 5.71 | 5.77 | 0.49 | 0.00 | 0.00 | 0.00 | 0.00 | 8.30 | 12.30 | 0.00 | 0.00 | 0.00 |
+| default #3 | move | 37.75 | 40.24 | 63.00 | 1.25 | 1.18 | 1.00 | 5.71 | 5.77 | 0.51 | 0.00 | 0.00 | 0.00 | 0.00 | 11.10 | 17.60 | 0.00 | 0.00 | 0.00 |
+| default #4 | move | 26.13 | 29.14 | 63.00 | 1.03 | 1.14 | 1.00 | 5.72 | 5.77 | 0.48 | 0.00 | 0.00 | 0.00 | 0.00 | 9.10 | 13.10 | 0.00 | 0.00 | 0.00 |
+| morepeeks #1 | move | 23.27 | 24.61 | 63.00 | 0.83 | 0.92 | 1.00 | 5.71 | 5.76 | 0.38 | 0.00 | 0.00 | 0.00 | 0.00 | 8.60 | 11.50 | 0.00 | 0.00 | 0.00 |
+| morepeeks #2 | move | 22.63 | 25.77 | 63.00 | 0.84 | 0.91 | 1.00 | 5.71 | 5.75 | 0.37 | 0.00 | 0.00 | 0.00 | 0.00 | 8.00 | 10.80 | 0.00 | 0.00 | 0.00 |
+| morepeeks #3 | move | 23.88 | 25.42 | 63.00 | 0.84 | 0.93 | 1.00 | 5.71 | 5.75 | 0.38 | 0.00 | 0.00 | 0.00 | 0.00 | 8.10 | 11.10 | 0.00 | 0.00 | 0.00 |
+| morepeeks #4 | move | 32.15 | 34.78 | 64.00 | 1.44 | 2.93 | 1.00 | 5.72 | 5.77 | 0.54 | 0.00 | 0.00 | 0.00 | 0.00 | 9.20 | 12.80 | 0.00 | 0.00 | 0.00 |
+
+## float
+
+| label | scenario | command p50 ms | command p90 ms | frames | tick ms/frame | frame p90 ms | frames >2x budget | interval p50 ms | interval p90 ms | peek_frame ms/frame | session_overlays ms/frame | batch_commit ms/frame | ovl_region ms/frame | dwm_flush calls (in frames) | dwm_flush ms (outside frames) | cloak ms (outside frames) | session_begin ms (outside frames) | input->anim start ms | input->first frame ms |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| main #1 | float | 77.37 | 84.65 | 60.00 | 3.59 | 6.48 | 4.00 | 5.72 | 7.81 | 0.00 | 0.03 | 1.25 | 0.06 | 3.00 | 10.10 | 30.10 | 2.70 | 0.23 | 77.58 |
+| main #2 | float | 75.65 | 83.22 | 60.00 | 4.16 | 9.14 | 4.00 | 5.72 | 9.77 | 0.00 | 0.04 | 1.65 | 0.15 | 3.00 | 6.40 | 32.40 | 2.90 | 0.22 | 94.29 |
+| main #3 | float | 75.95 | 83.82 | 63.00 | 4.14 | 9.45 | 4.00 | 5.72 | 9.78 | 0.00 | 0.04 | 1.92 | 0.14 | 3.00 | 6.10 | 30.10 | 2.60 | 0.23 | 109.29 |
+| main #4 | float | 77.56 | 89.45 | 62.00 | 4.11 | 7.58 | 4.00 | 5.72 | 9.22 | 0.00 | 0.03 | 1.45 | 0.15 | 3.00 | 8.70 | 33.30 | 3.00 | 0.22 | 77.65 |
+| nopeeks #1 | float | 78.51 | 107.29 | 60.00 | 3.62 | 7.66 | 5.00 | 5.72 | 8.55 | 0.00 | 0.06 | 1.45 | 0.12 | 0.00 | 9.60 | 29.20 | 2.60 | 0.28 | 92.11 |
+| nopeeks #2 | float | 99.07 | 113.86 | 59.00 | 3.56 | 9.95 | 4.00 | 5.72 | 10.17 | 0.00 | 0.06 | 2.35 | 0.12 | 0.00 | 9.00 | 30.00 | 2.60 | 0.28 | 121.83 |
+| nopeeks #3 | float | 99.70 | 109.27 | 59.00 | 3.74 | 9.77 | 4.00 | 5.72 | 10.05 | 0.00 | 0.05 | 2.25 | 0.12 | 0.00 | 14.40 | 28.80 | 2.50 | 0.29 | 113.44 |
+| nopeeks #4 | float | 101.31 | 109.65 | 60.00 | 3.46 | 8.13 | 4.00 | 5.72 | 9.24 | 0.00 | 0.06 | 2.27 | 0.12 | 0.00 | 11.40 | 31.60 | 2.50 | 0.29 | 111.06 |
+| default #1 | float | 107.76 | 118.00 | 60.00 | 4.40 | 10.36 | 5.00 | 5.72 | 10.53 | 0.00 | 0.05 | 2.43 | 0.14 | 0.00 | 12.30 | 36.50 | 2.70 | 0.29 | 138.78 |
+| default #2 | float | 97.29 | 117.72 | 60.00 | 3.69 | 5.42 | 4.00 | 5.72 | 6.99 | 0.00 | 0.05 | 1.44 | 0.08 | 0.00 | 6.40 | 33.70 | 2.80 | 0.33 | 88.23 |
+| default #3 | float | 106.07 | 119.69 | 60.00 | 4.82 | 10.64 | 5.00 | 5.72 | 10.75 | 0.00 | 0.04 | 2.50 | 0.16 | 0.00 | 13.20 | 33.60 | 2.70 | 0.30 | 131.12 |
+| default #4 | float | 100.26 | 118.15 | 59.00 | 4.49 | 9.24 | 4.00 | 5.72 | 9.53 | 0.00 | 0.05 | 1.91 | 0.12 | 0.00 | 7.70 | 49.60 | 2.60 | 0.35 | 114.76 |
+| morepeeks #1 | float | 129.65 | 136.45 | 59.00 | 5.02 | 4.14 | 5.00 | 5.72 | 6.21 | 3.02 | 0.00 | 0.00 | 0.05 | 2.00 | 7.30 | 29.60 | 0.00 | 0.00 | 0.00 |
+| morepeeks #2 | float | 127.48 | 138.51 | 57.00 | 5.42 | 3.96 | 5.00 | 5.72 | 7.08 | 3.13 | 0.00 | 0.00 | 0.05 | 2.00 | 8.20 | 45.40 | 0.00 | 0.00 | 0.00 |
+| morepeeks #3 | float | 130.37 | 136.58 | 57.00 | 4.95 | 4.51 | 5.00 | 5.72 | 5.98 | 3.11 | 0.00 | 0.00 | 0.05 | 2.00 | 9.40 | 30.70 | 0.00 | 0.00 | 0.00 |
+| morepeeks #4 | float | 126.46 | 140.28 | 56.00 | 5.14 | 3.86 | 5.00 | 5.71 | 5.80 | 3.05 | 0.00 | 0.00 | 0.04 | 2.00 | 9.90 | 45.70 | 0.00 | 0.00 | 0.00 |
+
+## minimize
+
+| label | scenario | command p50 ms | command p90 ms | frames | tick ms/frame | frame p90 ms | frames >2x budget | interval p50 ms | interval p90 ms | peek_frame ms/frame | session_overlays ms/frame | batch_commit ms/frame | ovl_region ms/frame | dwm_flush calls (in frames) | dwm_flush ms (outside frames) | cloak ms (outside frames) | session_begin ms (outside frames) | input->anim start ms | input->first frame ms |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| main #1 | minimize | 47.05 | 56.44 | 136.00 | 1.70 | 4.48 | 6.00 | 5.72 | 5.79 | 0.00 | 0.02 | 0.95 | 0.05 | 5.00 | 8.50 | 35.30 | 5.90 | 3.92 | 131.58 |
+| main #2 | minimize | 46.80 | 64.43 | 131.00 | 1.95 | 3.47 | 5.00 | 5.71 | 5.79 | 0.00 | 0.02 | 0.82 | 0.06 | 5.00 | 9.30 | 41.10 | 6.30 | 4.49 | 129.99 |
+| main #3 | minimize | 26.50 | 58.52 | 137.00 | 1.91 | 4.43 | 6.00 | 5.72 | 5.80 | 0.00 | 0.02 | 0.77 | 0.06 | 5.00 | 9.70 | 34.90 | 5.40 | 4.30 | 102.40 |
+| main #4 | minimize | 48.38 | 58.96 | 136.00 | 1.83 | 4.64 | 5.00 | 5.72 | 5.78 | 0.00 | 0.02 | 0.76 | 0.06 | 5.00 | 12.00 | 37.90 | 5.00 | 4.18 | 105.46 |
+| nopeeks #1 | minimize | 36.71 | 63.66 | 136.00 | 1.52 | 4.58 | 5.00 | 5.71 | 5.81 | 0.00 | 0.03 | 0.72 | 0.04 | 1.00 | 8.50 | 28.70 | 2.90 | 3.28 | 109.84 |
+| nopeeks #2 | minimize | 56.54 | 66.85 | 138.00 | 1.58 | 5.17 | 5.00 | 5.72 | 5.80 | 0.00 | 0.02 | 0.76 | 0.05 | 1.00 | 9.20 | 40.40 | 3.20 | 3.48 | 113.22 |
+| nopeeks #3 | minimize | 60.25 | 71.04 | 135.00 | 1.60 | 6.07 | 5.00 | 5.72 | 6.38 | 0.00 | 0.02 | 0.91 | 0.04 | 1.00 | 14.50 | 37.20 | 3.10 | 3.56 | 128.40 |
+| nopeeks #4 | minimize | 52.74 | 67.05 | 137.00 | 1.60 | 5.26 | 5.00 | 5.72 | 5.82 | 0.00 | 0.02 | 0.76 | 0.04 | 1.00 | 8.20 | 28.80 | 2.80 | 3.51 | 122.36 |
+| default #1 | minimize | 69.08 | 81.74 | 139.00 | 1.79 | 3.53 | 5.00 | 5.72 | 5.78 | 0.85 | 0.01 | 0.54 | 0.03 | 1.00 | 13.50 | 39.20 | 2.50 | 3.09 | 96.15 |
+| default #2 | minimize | 67.12 | 81.22 | 132.00 | 1.83 | 4.19 | 5.00 | 5.72 | 5.79 | 0.71 | 0.02 | 0.44 | 0.03 | 1.00 | 11.70 | 47.90 | 2.60 | 0.62 | 96.02 |
+| default #3 | minimize | 67.41 | 77.98 | 135.00 | 1.79 | 3.88 | 5.00 | 5.72 | 5.78 | 1.27 | 0.02 | 0.62 | 0.05 | 1.00 | 17.20 | 40.20 | 2.40 | 37.15 | 201.66 |
+| default #4 | minimize | 63.11 | 69.55 | 134.00 | 1.86 | 3.83 | 5.00 | 5.72 | 5.79 | 1.29 | 0.02 | 0.63 | 0.05 | 1.00 | 12.20 | 32.10 | 2.50 | 38.96 | 206.17 |
+| morepeeks #1 | minimize | 65.69 | 73.54 | 135.00 | 2.21 | 3.92 | 5.00 | 5.72 | 5.78 | 0.00 | 0.02 | 0.55 | 0.04 | 1.00 | 7.00 | 31.10 | 2.90 | 4.18 | 115.78 |
+| morepeeks #2 | minimize | 68.77 | 77.94 | 132.00 | 2.31 | 4.14 | 6.00 | 5.71 | 5.78 | 0.71 | 0.02 | 0.45 | 0.03 | 1.00 | 13.90 | 36.30 | 2.70 | 2.50 | 88.87 |
+| morepeeks #3 | minimize | 73.31 | 77.16 | 135.00 | 2.17 | 4.03 | 6.00 | 5.72 | 5.77 | 1.09 | 0.02 | 0.55 | 0.06 | 1.00 | 13.80 | 35.90 | 2.50 | 4.27 | 170.02 |
+| morepeeks #4 | minimize | 119.25 | 132.91 | 58.00 | 4.85 | 3.82 | 5.00 | 5.72 | 5.99 | 2.90 | 0.00 | 0.00 | 0.04 | 2.00 | 25.90 | 46.20 | 0.00 | 0.00 | 0.00 |
+
+## resize
+
+| label | scenario | command p50 ms | command p90 ms | frames | tick ms/frame | frame p90 ms | frames >2x budget | interval p50 ms | interval p90 ms | peek_frame ms/frame | session_overlays ms/frame | batch_commit ms/frame | ovl_region ms/frame | dwm_flush calls (in frames) | dwm_flush ms (outside frames) | cloak ms (outside frames) | session_begin ms (outside frames) | input->anim start ms | input->first frame ms |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| main #1 | resize | 75.34 | 84.66 | 57.00 | 4.15 | 8.75 | 4.00 | 5.72 | 8.86 | 0.00 | 0.04 | 2.15 | 0.07 | 3.00 | 8.20 | 25.10 | 2.70 | 0.22 | 79.08 |
+| main #2 | resize | 81.82 | 85.31 | 59.00 | 4.61 | 9.71 | 4.00 | 5.72 | 10.13 | 0.00 | 0.04 | 2.07 | 0.09 | 3.00 | 10.90 | 39.10 | 2.60 | 0.22 | 102.09 |
+| main #3 | resize | 52.68 | 55.38 | 134.00 | 3.15 | 5.45 | 5.00 | 5.72 | 5.78 | 0.00 | 0.04 | 1.22 | 0.06 | 4.00 | 6.80 | 23.20 | 2.70 | 0.21 | 73.81 |
+| main #4 | resize | 68.83 | 95.62 | 60.00 | 4.92 | 10.64 | 5.00 | 5.72 | 11.45 | 0.00 | 0.04 | 2.07 | 0.15 | 3.00 | 6.40 | 34.60 | 2.90 | 0.23 | 81.54 |
+| nopeeks #1 | resize | 86.29 | 112.74 | 58.00 | 3.43 | 7.39 | 4.00 | 5.72 | 9.36 | 0.00 | 0.05 | 2.10 | 0.06 | 0.00 | 12.40 | 32.00 | 2.70 | 0.30 | 93.85 |
+| nopeeks #2 | resize | 94.68 | 108.04 | 58.00 | 3.76 | 8.15 | 4.00 | 5.72 | 8.22 | 0.00 | 0.06 | 2.27 | 0.09 | 0.00 | 11.30 | 33.40 | 2.60 | 0.32 | 105.16 |
+| nopeeks #3 | resize | 96.54 | 109.71 | 56.00 | 3.89 | 9.55 | 5.00 | 5.72 | 9.62 | 0.00 | 0.06 | 2.39 | 0.10 | 0.00 | 12.70 | 32.20 | 2.70 | 0.31 | 116.18 |
+| nopeeks #4 | resize | 106.40 | 112.81 | 59.00 | 3.63 | 9.58 | 4.00 | 5.72 | 9.66 | 0.00 | 0.06 | 2.33 | 0.08 | 0.00 | 11.90 | 36.40 | 2.60 | 0.30 | 117.72 |
+| default #1 | resize | 135.94 | 148.23 | 57.00 | 5.18 | 4.44 | 4.00 | 5.71 | 7.10 | 3.25 | 0.00 | 0.00 | 0.08 | 2.00 | 17.00 | 39.70 | 0.00 | 0.00 | 0.00 |
+| default #2 | resize | 130.96 | 138.06 | 56.00 | 4.90 | 4.38 | 5.00 | 5.72 | 5.94 | 3.02 | 0.00 | 0.00 | 0.07 | 1.00 | 8.50 | 36.70 | 0.00 | 0.00 | 0.00 |
+| default #3 | resize | 116.75 | 138.02 | 59.00 | 4.99 | 4.51 | 5.00 | 5.71 | 6.16 | 3.15 | 0.00 | 0.00 | 0.07 | 2.00 | 7.30 | 28.10 | 0.00 | 0.00 | 0.00 |
+| default #4 | resize | 136.18 | 143.41 | 57.00 | 5.43 | 4.52 | 5.00 | 5.72 | 6.33 | 3.08 | 0.00 | 0.00 | 0.06 | 2.00 | 11.80 | 37.20 | 0.00 | 0.00 | 0.00 |
+| morepeeks #1 | resize | 133.86 | 143.17 | 59.00 | 5.17 | 4.25 | 5.00 | 5.72 | 6.15 | 3.24 | 0.00 | 0.00 | 0.06 | 2.00 | 6.70 | 41.30 | 0.00 | 0.00 | 0.00 |
+| morepeeks #2 | resize | 131.04 | 140.74 | 56.00 | 5.39 | 4.39 | 5.00 | 5.72 | 6.47 | 3.25 | 0.00 | 0.00 | 0.07 | 2.00 | 11.40 | 39.20 | 0.00 | 0.00 | 0.00 |
+| morepeeks #3 | resize | 111.52 | 139.77 | 57.00 | 5.26 | 4.40 | 5.00 | 5.72 | 6.38 | 3.16 | 0.00 | 0.00 | 0.07 | 2.00 | 12.30 | 39.60 | 0.00 | 0.00 | 0.00 |
+| morepeeks #4 | resize | 120.53 | 134.82 | 57.00 | 5.21 | 3.88 | 5.00 | 5.71 | 6.83 | 3.19 | 0.00 | 0.00 | 0.06 | 2.00 | 8.60 | 33.30 | 0.00 | 0.00 | 0.00 |
+
+## switch
+
+| label | scenario | command p50 ms | command p90 ms | frames | tick ms/frame | frame p90 ms | frames >2x budget | interval p50 ms | interval p90 ms | peek_frame ms/frame | session_overlays ms/frame | batch_commit ms/frame | ovl_region ms/frame | dwm_flush calls (in frames) | dwm_flush ms (outside frames) | cloak ms (outside frames) | session_begin ms (outside frames) | input->anim start ms | input->first frame ms |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| main #1 | switch | 37.70 | 44.18 | 97.00 | 2.18 | 3.39 | 2.00 | 5.71 | 5.75 | 0.00 | 0.00 | 0.70 | 0.07 | 3.00 | 14.80 | 0.00 | 0.00 | 0.00 | 0.00 |
+| main #2 | switch | 51.59 | 61.77 | 96.00 | 2.42 | 3.68 | 3.00 | 5.71 | 5.76 | 0.00 | 0.00 | 0.76 | 0.03 | 3.00 | 12.30 | 0.00 | 0.00 | 0.00 | 0.00 |
+| main #3 | switch | 43.70 | 115.59 | 97.00 | 2.33 | 3.62 | 3.00 | 5.72 | 5.75 | 0.00 | 0.00 | 0.69 | 0.05 | 3.00 | 12.10 | 0.00 | 0.00 | 0.00 | 0.00 |
+| main #4 | switch | 48.63 | 53.65 | 97.00 | 2.28 | 3.49 | 3.00 | 5.71 | 5.76 | 0.00 | 0.00 | 0.76 | 0.04 | 3.00 | 15.60 | 0.00 | 0.00 | 0.00 | 0.00 |
+| nopeeks #1 | switch | 65.25 | 78.83 | 99.00 | 1.87 | 1.83 | 3.00 | 5.71 | 5.77 | 0.00 | 0.00 | 0.00 | 0.04 | 0.00 | 7.00 | 0.00 | 0.00 | 0.00 | 0.00 |
+| nopeeks #2 | switch | 67.43 | 123.14 | 99.00 | 1.73 | 1.56 | 3.00 | 5.72 | 5.77 | 0.00 | 0.00 | 0.00 | 0.03 | 0.00 | 8.80 | 0.00 | 0.00 | 0.00 | 0.00 |
+| nopeeks #3 | switch | 78.94 | 80.98 | 99.00 | 1.97 | 1.91 | 3.00 | 5.71 | 5.77 | 0.00 | 0.00 | 0.00 | 0.04 | 0.00 | 9.70 | 0.00 | 0.00 | 0.00 | 0.00 |
+| nopeeks #4 | switch | 60.20 | 67.66 | 99.00 | 1.74 | 1.67 | 3.00 | 5.71 | 5.77 | 0.00 | 0.00 | 0.00 | 0.03 | 0.00 | 9.90 | 0.00 | 0.00 | 0.00 | 0.00 |
+| default #1 | switch | 65.61 | 76.48 | 99.00 | 1.65 | 1.69 | 3.00 | 5.71 | 5.77 | 0.00 | 0.00 | 0.00 | 0.02 | 0.00 | 7.80 | 0.00 | 0.00 | 0.00 | 0.00 |
+| default #2 | switch | 74.29 | 79.91 | 99.00 | 1.69 | 1.83 | 3.00 | 5.72 | 5.77 | 0.00 | 0.00 | 0.00 | 0.03 | 0.00 | 16.70 | 0.00 | 0.00 | 0.00 | 0.00 |
+| default #3 | switch | 72.80 | 77.25 | 99.00 | 1.66 | 1.66 | 3.00 | 5.72 | 5.78 | 0.00 | 0.00 | 0.00 | 0.02 | 0.00 | 11.40 | 0.00 | 0.00 | 0.00 | 0.00 |
+| default #4 | switch | 72.16 | 75.86 | 99.00 | 1.73 | 1.60 | 4.00 | 5.71 | 5.76 | 0.00 | 0.00 | 0.00 | 0.04 | 0.00 | 9.80 | 0.00 | 0.00 | 0.00 | 0.00 |
+| morepeeks #1 | switch | 63.66 | 82.49 | 99.00 | 2.20 | 2.02 | 4.00 | 5.72 | 5.77 | 0.00 | 0.00 | 0.00 | 0.02 | 0.00 | 6.90 | 0.00 | 0.00 | 0.00 | 0.00 |
+| morepeeks #2 | switch | 67.37 | 80.72 | 99.00 | 2.21 | 2.03 | 4.00 | 5.71 | 5.76 | 0.00 | 0.00 | 0.00 | 0.02 | 0.00 | 6.80 | 0.00 | 0.00 | 0.00 | 0.00 |
+| morepeeks #3 | switch | 68.87 | 78.33 | 99.00 | 2.15 | 2.03 | 4.00 | 5.72 | 5.77 | 0.00 | 0.00 | 0.00 | 0.03 | 0.00 | 7.00 | 0.00 | 0.00 | 0.00 | 0.00 |
+| morepeeks #4 | switch | 53.59 | 57.73 | 99.00 | 1.87 | 1.78 | 3.00 | 5.72 | 5.77 | 0.00 | 0.00 | 0.00 | 0.03 | 0.00 | 8.20 | 0.00 | 0.00 | 0.00 | 0.00 |
