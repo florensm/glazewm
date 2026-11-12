@@ -745,6 +745,11 @@ fn preposition_cloaked(
     }
     Some((false, _)) => None,
   };
+  // A window filled on its peek that shrinks keeps its size until the
+  // peek lands, as a `fill` session's does (see `resizes_at_start`).
+  let swp_flags = swp_flags.filter(|_| {
+    !state.animation_manager.peeks.defers_resize(&window.id())
+  });
 
   if let Some(swp_flags) = swp_flags {
     let current = window.native().frame_with_shadows().ok();
@@ -1252,15 +1257,18 @@ fn redraw_containers(
     }
   });
 
-  // With `window_resize.style: "stretch"` and peeks, the relayout's
-  // resizes go on peeks too, scaled (`STAND_INS_PLAN.md` task 8).
-  let stretches = cycle_has_resize
-    && !suppress_animations
-    && crate::animation::peek_view::stretches_relayout(
+  // With `window_resize.style: "stretch"` (or `fill` under
+  // `GLAZEWM_ISOLATE=fillpeeks`) and peeks, the relayout's resizes go on
+  // peeks too (`STAND_INS_PLAN.md` tasks 8 and 10e).
+  let resizes = if cycle_has_resize && !suppress_animations {
+    crate::animation::peek_view::resizes_relayout(
       state,
       &windows_to_redraw,
       config,
-    );
+    )
+  } else {
+    None
+  };
 
   drop(prep_scope);
   let loop_scope = perf::scope(Stage::RedrawLoop);
@@ -1723,7 +1731,7 @@ fn redraw_containers(
             from,
             &target_rect,
             cycle_has_resize,
-            stretches,
+            resizes,
             config,
             window.id() == focused_container.id(),
           )
@@ -1797,7 +1805,7 @@ fn redraw_containers(
               duration_ms,
             ),
             easing,
-            stretches,
+            resizes,
             now,
           );
         }
@@ -1898,7 +1906,9 @@ fn redraw_containers(
           if is_first {
             preposition_cloaked(state, window, &z_order, &real_rect);
           }
-        } else if state.animation_manager.peeks.owns_window(&window.id()) {
+        } else if state.animation_manager.peeks.owns_window(&window.id())
+          && !state.animation_manager.peeks.defers_resize(&window.id())
+        {
           follow_retargeted_column(window, &real_rect);
         }
       }

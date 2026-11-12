@@ -928,19 +928,23 @@ to see it; check each once more at 150 ms.
       before.
     - No new Windows API: up to eight `DwmRegisterThumbnail`s per ring
       instead of one, the same calls.
-67. **Filled resizes on peeks** (`STAND_INS_PLAN.md` 10b-2 and 10b-3).
-    `GLAZEWM_ISOLATE=fillpeeks`, `window_resize: { style: "stretch",
-    duration_ms: 2000 }`, a border, a gap wide enough to see, two tiles
-    opened after the WM started (so their edge colour is sampled; wait a
-    second after they open). Then once with a see-through window
-    (`transparency`) and once with a backdrop.
-    - Shrink one by keyboard: its app shrinks at once behind the cloak,
-      so for two seconds the strip fills the rest of its tile. The
+67. **Filled resizes on peeks** (`STAND_INS_PLAN.md` 10b and 10e).
+    `GLAZEWM_ISOLATE=fillpeeks`, `window_resize: { style: "fill",
+    duration_ms: 2000 }`, then 150 ms. A border, a gap wide enough to
+    see, two tiles opened after the WM started (so their edge colour is
+    sampled; wait a second after they open). Then once with a
+    see-through window (`transparency`) and once with a backdrop.
+    - Grow one by keyboard: its app is resized at once behind the
+      cloak; where it lags, the rest of its tile is the strip. The
       strip's far edge, the ring and the gap move as one. Its colour
       matches the window's edge; no line between content and strip; a
       see-through window's strip is no darker than the window.
-    - Grow it: content cut at the tile, no strip once the app has grown,
-      no hole to the desktop at any point.
+    - Shrink it: its app keeps its size until it lands, cut at its
+      shrinking tile (a wipe, no strip); at the landing it gets its new
+      size, with no jump.
+    - A mixed resize (one axis each way), a held resize key, a window
+      opened beside two, one of three closed. Compare each with the
+      same without the variable (the old engine).
     - The hand-back: no jump, blink or step; no strip left over the real
       window for a frame.
     - A backdrop: it covers the whole tile throughout, not a few pixels
@@ -1041,12 +1045,11 @@ in the log says it is on):
   tick (`STAND_INS_PLAN.md` task 7). Off by default, and independent of
   `nopeeks`: scrolling columns move on peeks either way. Compare
   `peeksfirst` against no variable.
-- `fillpeeks`: resizes that `window_resize`'s `stretch` style draws on
-  peeks are drawn filled instead: the window 1:1 from its tile's
+- `fillpeeks`: `window_resize`'s `fill` style draws resizes on peeks
+  instead of with `ResizeSession`: the window 1:1 from its tile's
   top-left, cut at the tile, the rest of the tile in the window's edge
-  colour (`STAND_INS_PLAN.md` 10b-3). Also samples the edge colour of
-  windows as they open or are shown, which `stretch` otherwise never
-  does. Off by default; compare against no variable.
+  colour (`STAND_INS_PLAN.md` 10b-3, 10e). Since 10e it no longer
+  changes `stretch`. Off by default; compare against no variable.
 
 Set it for one run, e.g. from PowerShell in the repo:
 

@@ -46,18 +46,25 @@ const STRETCH_SETTLE: Duration = Duration::from_millis(80);
 /// before its peek lands all the same (see [`Hold::Released`]).
 const HOLD_RELEASE_WAIT: Duration = Duration::from_millis(150);
 
-/// Whether a grab holds an entry where it draws it, its window resized
-/// behind it (see [`PeekView::hold`]).
+/// How long a window filled on its peek by a keyboard resize may take to
+/// report its size once its motion is done before the peek lands all the
+/// same, as `ResizeSession::pre_commit` waits (see [`Hold::Released`]).
+const FILL_LANDING_WAIT: Duration = Duration::from_millis(500);
+
+/// Whether an entry is kept from landing while its window resizes behind
+/// it: by a grab (see [`PeekView::hold`]), or waiting for a filled
+/// window's last size.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 enum Hold {
   #[default]
   Free,
   /// Drawn where the grab puts it, never landing.
   Held,
-  /// Let go of at the instant given: lands once its window has been read
-  /// at its target's size, so the hand-back doesn't swap a filled tile
-  /// for a window still short of it, or after [`HOLD_RELEASE_WAIT`].
-  Released(Instant),
+  /// Let go of, or done moving, at the instant given: lands once its
+  /// window has been read at its target's size, so the hand-back doesn't
+  /// swap a filled tile for a window still short of it, or after the
+  /// wait given.
+  Released(Instant, Duration),
 }
 
 impl Hold {
@@ -67,11 +74,31 @@ impl Hold {
     match self {
       Self::Free => true,
       Self::Held => false,
-      Self::Released(at) => {
-        reached || now.saturating_duration_since(at) >= HOLD_RELEASE_WAIT
+      Self::Released(at, wait) => {
+        reached || now.saturating_duration_since(at) >= wait
       }
     }
   }
+}
+
+/// How a window whose size changes on its peek is drawn
+/// (`window_resize.style`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PeekResize {
+  /// Scaled (see [`Stretch`]).
+  Stretch,
+  /// 1:1, cut at its tile, the rest of the tile in its edge color (see
+  /// `WindowPeek::place_filled`).
+  Fill,
+}
+
+/// Whether a window going from `from` to `target`, drawn filled, is sent
+/// its new size as its motion starts: only one growing on both axes,
+/// whose new content then arrives under the cut. One that shrinks on
+/// either axis keeps its size until it lands, cut at its tile, as
+/// `ResizeSession::needs_preposition` has it.
+fn resizes_at_start(from: &Rect, target: &Rect) -> bool {
+  target.width() >= from.width() && target.height() >= from.height()
 }
 
 /// What a peek is currently doing.
@@ -172,25 +199,42 @@ struct Stretch {
   cover: (f32, f32),
   /// When its cover began to ease back to 1, and from what.
   settle: Option<(Instant, (f32, f32))>,
-  /// The window's edge color, as last sampled, with which it is drawn
-  /// filled instead under `GLAZEWM_ISOLATE=fillpeeks` (see
-  /// [`note_fill_inputs`]).
-  fill: Option<Color>,
+  /// Whether it is drawn filled rather than scaled (see [`PeekResize`]).
+  filled: bool,
+  /// Whether, filled, its window is sent its new size only as it lands
+  /// (see [`resizes_at_start`]). Sampled as it is meanwhile.
+  deferred: bool,
+  /// The window's edge color, as last sampled, which it is filled with
+  /// (see [`note_fill_inputs`]).
+  edge_color: Option<Color>,
   /// The smallest size, per axis, the window was sent by a grab and may
   /// not have reported yet (see `WindowPlacer::unlanded`).
   in_flight: Option<(i32, i32)>,
 }
 
 impl Stretch {
-  /// One for a window whose rect is `actual`, if it could be read.
-  fn at(actual: Option<Rect>) -> Self {
+  /// One for a window whose rect is `actual`, if it could be read, drawn
+  /// as `resize` says, its new size sent only as it lands if `deferred`.
+  fn at(actual: Option<Rect>, resize: PeekResize, deferred: bool) -> Self {
+    let filled = resize == PeekResize::Fill;
+
     Self {
       actual,
       reached: false,
       cover: (1.0, 1.0),
       settle: None,
-      fill: None,
+      filled,
+      deferred: filled && deferred,
+      edge_color: None,
       in_flight: None,
+    }
+  }
+
+  fn resize(&self) -> PeekResize {
+    if self.filled {
+      PeekResize::Fill
+    } else {
+      PeekResize::Stretch
     }
   }
 
@@ -312,6 +356,30 @@ impl Entry {
     self.rect = rect.clone();
   }
 
+  /// Whether a moving entry may land at `now`: its motion and transit
+  /// done, and a stretched window's scale at rest. A filled window sent
+  /// its size first waits for it, once (see [`FILL_LANDING_WAIT`]), and a
+  /// held one for its grab to let go of it (see [`Hold`]).
+  fn may_land(&mut self, now: Instant) -> bool {
+    let stretch = self.stretch.as_ref();
+    let is_done = stretch.is_none_or(|stretch| stretch.is_settled(now))
+      && has_landed(&self.motion, self.transit.as_ref());
+    let reached = stretch.is_some_and(|stretch| stretch.reached);
+    let awaits_size = stretch.is_some_and(|stretch| {
+      stretch.filled && !stretch.deferred && !stretch.reached
+    });
+
+    if is_done && awaits_size && self.hold == Hold::Free {
+      self.hold = Hold::Released(now, FILL_LANDING_WAIT);
+    }
+    if !is_done || !self.hold.allows_landing(reached, now) {
+      return false;
+    }
+
+    self.hold = Hold::Free;
+    true
+  }
+
   /// Draws a stretching window at `rect` as it is at `now` (see
   /// [`Stretch`]). Returns `false`, drawing nothing, for one to be placed
   /// as it is: one that doesn't stretch or couldn't be read.
@@ -328,18 +396,17 @@ impl Entry {
       return false;
     };
 
-    if self.hold != Hold::Free
-      || wm_platform::isolation::current().fill_peeks
-    {
-      if let Some(color) = stretch.fill {
+    if stretch.filled || self.hold != Hold::Free {
+      if let Some(color) = stretch.edge_color {
         self.peek.carry_fill(color);
       }
-      // Yet to reach its target, the window may be resized to it at any
-      // time, so is sampled no larger, nor larger than any size a grab
-      // sent it and it may apply first.
+      // Sent its target and yet to reach it, the window may be resized to
+      // it at any time, so is sampled no larger, nor larger than any size
+      // a grab sent it and it may apply first.
       let target = &self.motion.target_rect;
       let in_flight = [
-        (!stretch.reached).then(|| (target.width(), target.height())),
+        (!stretch.reached && !stretch.deferred)
+          .then(|| (target.width(), target.height())),
         stretch.in_flight,
       ];
       self.peek.place_filled(
@@ -386,10 +453,9 @@ fn sampled_size(
   })
 }
 
-/// Notes on the peek of each window drawn filled (one a grab holds, or any
-/// stretching one under `GLAZEWM_ISOLATE=fillpeeks`) its edge color, as
-/// last sampled, to fill with, and the sizes a grab sent it that it may
-/// not have reported yet.
+/// Notes on the peek of each window drawn filled its edge color, as last
+/// sampled, to fill with, and the sizes a grab sent it that it may not
+/// have reported yet.
 pub(super) fn note_fill_inputs(state: &mut WmState) {
   let inputs = state
     .animation_manager
@@ -397,9 +463,10 @@ pub(super) fn note_fill_inputs(state: &mut WmState) {
     .entries
     .iter()
     .filter(|(_, entry)| {
-      entry.stretch.is_some()
-        && (entry.hold != Hold::Free
-          || wm_platform::isolation::current().fill_peeks)
+      entry
+        .stretch
+        .as_ref()
+        .is_some_and(|stretch| stretch.filled || entry.hold != Hold::Free)
     })
     .filter_map(|(id, _)| {
       let native = state.window_by_id(*id)?.native().clone();
@@ -417,7 +484,7 @@ pub(super) fn note_fill_inputs(state: &mut WmState) {
       .get_mut(&id)
       .and_then(|entry| entry.stretch.as_mut())
     {
-      stretch.fill = color.or(stretch.fill);
+      stretch.edge_color = color.or(stretch.edge_color);
       stretch.in_flight = in_flight;
     }
   }
@@ -429,25 +496,27 @@ fn is_same_size(a: &Rect, b: &Rect) -> bool {
 }
 
 /// The stretch an entry keeps as it is moved on at `now`, from heading
-/// for `from` to `target`: none unless it `stretches`, else its own,
+/// for `from` to `target`: none without a `resize`, else its own,
 /// retargeted if its size changes (see [`Stretch::retarget`]), or a new
-/// one for a window at `actual`.
+/// one for a window at `actual`, its new size sent as it lands if
+/// `deferred`.
 fn restretched(
   stretch: Option<Stretch>,
-  stretches: bool,
+  resize: Option<PeekResize>,
+  deferred: bool,
   actual: impl FnOnce() -> Option<Rect>,
   from: &Rect,
   target: &Rect,
   now: Instant,
 ) -> Option<Stretch> {
-  stretches.then(|| match stretch {
+  resize.map(|resize| match stretch {
     Some(mut kept) => {
       if !is_same_size(from, target) {
         kept.retarget(from, target, now);
       }
       kept
     }
-    None => Stretch::at(actual()),
+    None => Stretch::at(actual(), resize, deferred),
   })
 }
 
@@ -626,13 +695,20 @@ pub(super) fn is_peek_resize(
   !is_same_size(from, target) && distance > threshold
 }
 
-/// Whether `window_resize` draws resizes stretched on peeks: its `stretch`
-/// style, enabled, with peeks on.
-pub(super) fn stretches_on_peeks(config: &UserConfig) -> bool {
+/// How `window_resize` draws resizes on peeks, if it does: enabled, with
+/// peeks on, its `stretch` style, or its `fill` style under
+/// `GLAZEWM_ISOLATE=fillpeeks`.
+pub(super) fn resizes_on_peeks(config: &UserConfig) -> Option<PeekResize> {
   let resize = &config.value.animations.window_resize;
-  wm_platform::isolation::current().peeks
-    && resize.enabled
-    && resize.style == ResizeStyle::Stretch
+  let isolation = wm_platform::isolation::current();
+  if !isolation.peeks || !resize.enabled {
+    return None;
+  }
+
+  match resize.style {
+    ResizeStyle::Stretch => Some(PeekResize::Stretch),
+    ResizeStyle::Fill => isolation.fill_peeks.then_some(PeekResize::Fill),
+  }
 }
 
 /// `motion` headed for `target` instead, at the speed it has at `now`
@@ -676,6 +752,9 @@ pub struct Landed {
   pub released: Vec<Uuid>,
   /// Done leaving, whose peeks were dropped (see [`finish_leaving`]).
   pub left: Vec<Left>,
+  /// Landed after a resize drawn filled, whose edge color is to be
+  /// sampled again, as after a `fill` session.
+  pub filled: Vec<Uuid>,
 }
 
 /// A window whose peek has finished taking it off the screen.
@@ -826,9 +905,25 @@ impl PeekView {
 
     entry.hold = match (is_held, entry.hold) {
       (true, _) => Hold::Held,
-      (false, Hold::Held) => Hold::Released(Instant::now()),
+      (false, Hold::Held) => {
+        Hold::Released(Instant::now(), HOLD_RELEASE_WAIT)
+      }
       (false, hold) => hold,
     };
+    // Its window is sent each size the grab gives it.
+    if let Some(stretch) = entry.stretch.as_mut().filter(|_| is_held) {
+      stretch.deferred = false;
+    }
+  }
+
+  /// Whether `id`'s window, filled on its peek, is to be sent its new
+  /// size only as its peek lands (see [`resizes_at_start`]).
+  pub fn defers_resize(&self, id: &Uuid) -> bool {
+    self
+      .entries
+      .get(id)
+      .and_then(|entry| entry.stretch.as_ref())
+      .is_some_and(|stretch| stretch.deferred)
   }
 
   /// Lets go of every peek a grab holds (see [`hold`](Self::hold)).
@@ -836,7 +931,7 @@ impl PeekView {
     let now = Instant::now();
     for entry in self.entries.values_mut() {
       if entry.hold == Hold::Held {
-        entry.hold = Hold::Released(now);
+        entry.hold = Hold::Released(now, HOLD_RELEASE_WAIT);
       }
     }
   }
@@ -888,21 +983,11 @@ impl PeekView {
           let (rect, _) = entry.motion.current_state_at(now);
           entry.draw(&rect, now, batch);
 
-          // A stretched window lands once its scale is at rest too, and a
-          // held one once its grab lets go of it.
-          let is_settled = entry
-            .stretch
-            .as_ref()
-            .is_none_or(|stretch| stretch.is_settled(now));
-          let reached = entry
-            .stretch
-            .as_ref()
-            .is_some_and(|stretch| stretch.reached);
-          if is_settled
-            && has_landed(&entry.motion, entry.transit.as_ref())
-            && entry.hold.allows_landing(reached, now)
-          {
-            entry.hold = Hold::Free;
+          if entry.may_land(now) {
+            if entry.stretch.as_ref().is_some_and(|stretch| stretch.filled)
+            {
+              landed.filled.push(*id);
+            }
             entry.role = if ends_shown {
               // Raised while its real window is still cloaked, so the
               // uncloak never shows the window over the peek.
@@ -1166,7 +1251,7 @@ impl PeekView {
     clip: &Rect,
     role: Role,
     opening: Option<Transit>,
-    stretch: bool,
+    resize: Option<PeekResize>,
     held: bool,
     config: &UserConfig,
     is_focused: bool,
@@ -1178,7 +1263,7 @@ impl PeekView {
     // Held by a grab, it jumps to where each step puts it, drawn filled
     // (see [`Hold`]).
     let duration_ms = if held { 0 } else { scroll_config.duration_ms };
-    let stretch = stretch || held;
+    let resize = if held { Some(PeekResize::Fill) } else { resize };
     let in_flight = self
       .entries
       .get(&window.id())
@@ -1212,12 +1297,15 @@ impl PeekView {
     if !is_moving {
       motion.start_clock(Instant::now());
     }
-    // Stretched while its size changes on the way, but not entering: a new
-    // column widens from nothing, showing more of itself.
-    let stretches = stretch
-      && is_moving
-      && opening.is_none()
-      && !is_same_size(&motion.start_rect, &motion.target_rect);
+    // Resized on its peek while its size changes on the way, but not
+    // entering: a new column widens from nothing, showing more of itself.
+    let resizes = resize.filter(|_| {
+      is_moving
+        && opening.is_none()
+        && !is_same_size(&motion.start_rect, &motion.target_rect)
+    });
+    let deferred =
+      !held && !resizes_at_start(&motion.start_rect, &motion.target_rect);
 
     let actual = || window.native().frame_with_shadows().ok();
 
@@ -1228,14 +1316,19 @@ impl PeekView {
       entry.role = role;
       entry.is_column = true;
       entry.transit = kept_transit(entry.transit.take(), is_moving);
-      // One stretching already goes on so while it moves: drawn another
+      // One resizing already goes on so while it moves: drawn another
       // way from here, its scale would jump.
-      let stretches = (stretches
-        || (is_moving && entry.stretch.is_some()))
-        && entry.transit.is_none();
+      let resizes = entry
+        .stretch
+        .as_ref()
+        .filter(|_| is_moving)
+        .map(Stretch::resize)
+        .or(resizes)
+        .filter(|_| entry.transit.is_none());
       entry.stretch = restretched(
         entry.stretch.take(),
-        stretches,
+        resizes,
+        deferred,
         actual,
         &headed.target_rect,
         &entry.motion.target_rect,
@@ -1248,9 +1341,7 @@ impl PeekView {
       if covers_shown_window {
         entry.composited = false;
       }
-      if held {
-        entry.hold = Hold::Held;
-      }
+      entry.hold = if held { Hold::Held } else { Hold::Free };
       let (rect, _) = entry.motion.current_state_at(now);
       entry.draw(&rect, now, batch);
       return covers_shown_window;
@@ -1270,7 +1361,8 @@ impl PeekView {
 
     // `place_scaled` draws pinned peeks only.
     entry.transit = opening.filter(|_| is_moving && !entry.peek.is_live());
-    entry.stretch = stretches.then(|| Stretch::at(actual()));
+    entry.stretch =
+      resizes.map(|resize| Stretch::at(actual(), resize, deferred));
     if held {
       entry.hold = Hold::Held;
     }
@@ -1367,7 +1459,7 @@ impl PeekView {
     clip: &Rect,
     duration_ms: u32,
     easing: EasingFunction,
-    stretch: bool,
+    resize: Option<PeekResize>,
     config: &UserConfig,
     is_focused: bool,
     now: Instant,
@@ -1375,7 +1467,8 @@ impl PeekView {
   ) -> bool {
     let id = window.id();
     let styles = peek_styles(window, config);
-    let stretches = stretch && !is_same_size(from, &target);
+    let resizes = resize.filter(|_| !is_same_size(from, &target));
+    let deferred = !resizes_at_start(from, &target);
     let landing = match self.entries.get(&id) {
       None => false,
       Some(entry)
@@ -1417,9 +1510,11 @@ impl PeekView {
       entry.opacity = opacity;
       entry.role = role;
       entry.transit = None;
+      entry.hold = Hold::Free;
       entry.stretch = restretched(
         entry.stretch.take(),
-        stretches,
+        resizes,
+        deferred,
         actual,
         &headed.target_rect,
         &entry.motion.target_rect,
@@ -1451,7 +1546,8 @@ impl PeekView {
     }
 
     entry.is_column = false;
-    entry.stretch = stretches.then(|| Stretch::at(actual()));
+    entry.stretch =
+      resizes.map(|resize| Stretch::at(actual(), resize, deferred));
     entry.draw(from, now, batch);
     self.entries.insert(id, entry);
 
@@ -1551,7 +1647,7 @@ impl PeekView {
     target: Rect,
     duration_ms: u32,
     easing: EasingFunction,
-    stretch: bool,
+    resize: Option<PeekResize>,
     now: Instant,
   ) -> bool {
     // A grab's steps put a column it holds too.
@@ -1570,19 +1666,30 @@ impl PeekView {
     let motion =
       retargeted_motion(&entry.motion, target, duration_ms, easing, now);
     let headed = std::mem::replace(&mut entry.motion, motion);
-    // One stretching already goes on so: drawn another way from here, its
+    // One resizing already goes on so: drawn another way from here, its
     // scale would jump.
-    let stretches = entry.stretch.is_some()
-      || (stretch
-        && entry.transit.is_none()
-        && !is_same_size(
-          &entry.motion.start_rect,
-          &entry.motion.target_rect,
-        ));
+    let resizes =
+      entry.stretch.as_ref().map(Stretch::resize).or_else(|| {
+        resize.filter(|_| {
+          entry.transit.is_none()
+            && !is_same_size(
+              &entry.motion.start_rect,
+              &entry.motion.target_rect,
+            )
+        })
+      });
+    let deferred = entry.hold != Hold::Held
+      && !resizes_at_start(&headed.target_rect, &entry.motion.target_rect);
+    // A new motion waits anew for its window's size, unless a grab holds
+    // it.
+    if entry.hold != Hold::Held {
+      entry.hold = Hold::Free;
+    }
     // One that only moved so far is the size of the tile it headed for.
     entry.stretch = restretched(
       entry.stretch.take(),
-      stretches,
+      resizes,
+      deferred,
       || Some(headed.target_rect.clone()),
       &headed.target_rect,
       &entry.motion.target_rect,
@@ -1834,14 +1941,14 @@ pub fn move_on_peek(
   from: &Rect,
   target: &Rect,
   cycle_has_resize: bool,
-  stretches: bool,
+  resizes: Option<PeekResize>,
   config: &UserConfig,
   is_focused: bool,
 ) -> bool {
   let animations = &config.value.animations;
   let is_resize = !is_same_size(from, target);
   let qualifies = if is_resize {
-    stretches
+    resizes.is_some()
       && is_peek_resize(
         from,
         target,
@@ -1882,7 +1989,7 @@ pub fn move_on_peek(
     &clip,
     duration_ms,
     easing,
-    stretches,
+    resizes,
     config,
     is_focused,
     now,
@@ -1961,7 +2068,7 @@ pub fn hold_on_peek(
     &clip,
     0,
     easing,
-    true,
+    Some(PeekResize::Fill),
     config,
     is_focused,
     now,
@@ -1980,8 +2087,8 @@ pub fn hold_on_peek(
   moved
 }
 
-/// Whether a relayout redrawing `windows` draws its resizes stretched on
-/// peeks (see [`stretches_on_peeks`]): only if every tile it moves or
+/// How a relayout redrawing `windows` draws its resizes on peeks (see
+/// [`resizes_on_peeks`]), if it does: only if every tile it moves or
 /// resizes can go on a peek as [`move_on_peek`] puts it there.
 ///
 /// One that can't would resize on the old path, in another style beside
@@ -1992,69 +2099,78 @@ pub fn hold_on_peek(
 ///
 /// Columns are left to `sync_scroll_view`, and windows that open, are not
 /// shown, or stay floating to the redraw itself.
-pub fn stretches_relayout(
+pub fn resizes_relayout(
   state: &WmState,
   windows: &[WindowContainer],
   config: &UserConfig,
-) -> bool {
-  if !stretches_on_peeks(config) {
-    return false;
-  }
+) -> Option<PeekResize> {
+  let resize = resizes_on_peeks(config)?;
 
   let animations = &config.value.animations;
-  windows.iter().all(|window| {
-    let id = window.id();
-    let (Some(from), Ok(target)) = (
-      state.window_target_positions.get(&id),
-      window.to_rect().and_then(|rect| {
-        Ok(rect.apply_delta(&window.total_border_delta()?, None))
-      }),
-    ) else {
-      return true;
-    };
-    let is_state_change = state.pending_sync.is_window_state_change(&id);
-    let is_shown = window
-      .workspace()
-      .is_some_and(|workspace| workspace.is_displayed())
-      && !is_hidden_in_layout(window)
-      && window.state() != WindowState::Minimized;
-    let is_resize = !is_same_size(from, &target);
-    let animates = if is_resize {
-      is_peek_resize(from, &target, animations.window_resize.threshold_px)
-    } else {
-      animations.window_move.enabled
-        && is_pure_move(from, &target, animations.window_move.threshold_px)
-    };
+  windows
+    .iter()
+    .all(|window| {
+      let id = window.id();
+      let (Some(from), Ok(target)) = (
+        state.window_target_positions.get(&id),
+        window.to_rect().and_then(|rect| {
+          Ok(rect.apply_delta(&window.total_border_delta()?, None))
+        }),
+      ) else {
+        return true;
+      };
+      let is_state_change = state.pending_sync.is_window_state_change(&id);
+      let is_shown = window
+        .workspace()
+        .is_some_and(|workspace| workspace.is_displayed())
+        && !is_hidden_in_layout(window)
+        && window.state() != WindowState::Minimized;
+      let is_resize = !is_same_size(from, &target);
+      let animates = if is_resize {
+        is_peek_resize(
+          from,
+          &target,
+          animations.window_resize.threshold_px,
+        )
+      } else {
+        animations.window_move.enabled
+          && is_pure_move(
+            from,
+            &target,
+            animations.window_move.threshold_px,
+          )
+      };
 
-    if !is_shown
-      || !animates
-      || crate::layout::scrolling::column_of(&window.as_container())
-        .is_some()
-      || (matches!(window.state(), WindowState::Floating(_))
-        && !is_state_change)
-    {
-      return true;
-    }
+      if !is_shown
+        || !animates
+        || crate::layout::scrolling::column_of(&window.as_container())
+          .is_some()
+        || (matches!(window.state(), WindowState::Floating(_))
+          && !is_state_change)
+      {
+        return true;
+      }
 
-    let fits_monitor = window
-      .monitor()
-      .and_then(|monitor| monitor.to_rect().ok())
-      .is_some_and(|clip| clip.contains_point(&from.center_point()));
-    let is_resized_already = is_resize
-      && !state.animation_manager.peeks.is_moving(&id)
-      && window
-        .native()
-        .frame_with_shadows()
-        .is_ok_and(|actual| is_same_size(&actual, &target));
+      let fits_monitor = window
+        .monitor()
+        .and_then(|monitor| monitor.to_rect().ok())
+        .is_some_and(|clip| clip.contains_point(&from.center_point()));
+      let is_resized_already = is_resize
+        && !state.animation_manager.peeks.is_moving(&id)
+        && window
+          .native()
+          .frame_with_shadows()
+          .is_ok_and(|actual| is_same_size(&actual, &target));
 
-    window.state() == WindowState::Tiling
-      && !is_state_change
-      && window.display_state() == wm_common::DisplayState::Shown
-      && !has_other_stand_in(&state.animation_manager, &id)
-      && !is_live(&peek_styles(window, config))
-      && fits_monitor
-      && !is_resized_already
-  })
+      window.state() == WindowState::Tiling
+        && !is_state_change
+        && window.display_state() == wm_common::DisplayState::Shown
+        && !has_other_stand_in(&state.animation_manager, &id)
+        && !is_live(&peek_styles(window, config))
+        && fits_monitor
+        && !is_resized_already
+    })
+    .then_some(resize)
 }
 
 /// Whether a stand-in other than a peek draws `window_id` or hands it
@@ -2786,10 +2902,10 @@ mod tests {
   use super::{
     conceals_new_ring, floating_peek_raise, follow_duration, follows_tile,
     has_landed, has_left, is_departed, is_peek_resize, is_pure_move,
-    is_stray, kept_transit, leaves_as, leaving_transit, restretched,
-    retargeted_motion, returning_transit, sampled_size, settling,
-    take_left, Hold, PeekRaise, Role, Stretch, HOLD_RELEASE_WAIT,
-    STRETCH_SETTLE,
+    is_stray, kept_transit, leaves_as, leaving_transit, resizes_at_start,
+    restretched, retargeted_motion, returning_transit, sampled_size,
+    settling, take_left, Hold, PeekRaise, PeekResize, Role, Stretch,
+    FILL_LANDING_WAIT, HOLD_RELEASE_WAIT, STRETCH_SETTLE,
   };
   use crate::animation::{
     state::WindowAnimationState,
@@ -2864,7 +2980,7 @@ mod tests {
   #[test]
   fn a_held_peek_lands_once_let_go_and_its_window_reached() {
     let now = Instant::now();
-    let released = Hold::Released(now);
+    let released = Hold::Released(now, HOLD_RELEASE_WAIT);
 
     assert!(Hold::Free.allows_landing(false, now));
     assert!(!Hold::Held.allows_landing(true, now));
@@ -3239,7 +3355,8 @@ mod tests {
   fn a_stretch_settles_once_its_window_has_its_size() {
     let t0 = Instant::now();
     let target = Rect::from_xy(100, 50, 1200, 600);
-    let mut stretch = Stretch::at(Some(tile()));
+    let mut stretch =
+      Stretch::at(Some(tile()), PeekResize::Stretch, false);
     stretch.cover = (1.5, 1.0);
 
     stretch.note_target(&target, t0);
@@ -3268,7 +3385,8 @@ mod tests {
     let t0 = Instant::now();
     let old = Rect::from_xy(100, 50, 1000, 600);
     let read = || {
-      let mut stretch = Stretch::at(Some(old.clone()));
+      let mut stretch =
+        Stretch::at(Some(old.clone()), PeekResize::Stretch, false);
       stretch.note_target(&old, t0);
       stretch
     };
@@ -3276,7 +3394,8 @@ mod tests {
 
     let moved = restretched(
       Some(read()),
-      true,
+      Some(PeekResize::Stretch),
+      false,
       unread,
       &old,
       &Rect::from_xy(500, 50, 1000, 600),
@@ -3285,24 +3404,72 @@ mod tests {
     assert!(moved.is_some_and(|kept| kept.reached));
 
     let wider = Rect::from_xy(100, 50, 1200, 300);
-    let resized =
-      restretched(Some(read()), true, unread, &old, &wider, t0);
+    let resized = restretched(
+      Some(read()),
+      Some(PeekResize::Stretch),
+      false,
+      unread,
+      &old,
+      &wider,
+      t0,
+    );
     assert!(resized.is_some_and(|kept| {
       !kept.reached
         && kept.actual == Some(old.clone())
         && kept.cover_at(t0) == (1.2, 1.0)
     }));
 
-    assert!(
-      restretched(Some(read()), false, unread, &old, &wider, t0).is_none()
-    );
+    assert!(restretched(
+      Some(read()),
+      None,
+      false,
+      unread,
+      &old,
+      &wider,
+      t0
+    )
+    .is_none());
 
-    let fresh = restretched(None, true, || Some(tile()), &old, &wider, t0);
+    let fresh = restretched(
+      None,
+      Some(PeekResize::Fill),
+      true,
+      || Some(tile()),
+      &old,
+      &wider,
+      t0,
+    );
     assert!(fresh.is_some_and(|fresh| {
       fresh.actual == Some(tile())
         && !fresh.reached
+        && fresh.filled
+        && fresh.deferred
         && fresh.cover_at(t0) == (1.0, 1.0)
     }));
+  }
+
+  /// Filled, a window growing on both axes is sent its size as it starts;
+  /// one shrinking on either keeps its size until it lands.
+  #[test]
+  fn a_filled_window_is_resized_at_the_start_only_to_grow() {
+    let from = Rect::from_xy(0, 0, 800, 600);
+
+    assert!(resizes_at_start(&from, &Rect::from_xy(0, 0, 900, 600)));
+    assert!(resizes_at_start(&from, &Rect::from_xy(50, 0, 900, 700)));
+    assert!(!resizes_at_start(&from, &Rect::from_xy(0, 0, 700, 600)));
+    assert!(!resizes_at_start(&from, &Rect::from_xy(0, 0, 900, 500)));
+  }
+
+  /// Done moving, a filled window sent its size waits for it at most as
+  /// long as a `fill` session does.
+  #[test]
+  fn a_filled_landing_waits_for_its_windows_size() {
+    let now = Instant::now();
+    let waiting = Hold::Released(now, FILL_LANDING_WAIT);
+
+    assert!(!waiting.allows_landing(false, now + HOLD_RELEASE_WAIT));
+    assert!(waiting.allows_landing(true, now));
+    assert!(waiting.allows_landing(false, now + FILL_LANDING_WAIT));
   }
 
   /// Filled, a window samples per axis no more than it was read at, its

@@ -1474,6 +1474,15 @@ impl AnimationManager {
     if !landed.shown.is_empty() {
       state.pending_sync.queue_focus_change();
     }
+    // Sampled at the next idle point, once handed back.
+    for window_id in &landed.filled {
+      if let Some(window) = state.window_by_id(*window_id) {
+        state
+          .animation_manager
+          .pending_edge_samples
+          .insert(window.native().hwnd().0);
+      }
+    }
     for window_id in landed
       .shown
       .into_iter()
@@ -2969,8 +2978,8 @@ impl AnimationManager {
   }
 
   /// Queues a first edge-color sample for a window just shown that has
-  /// none, so its first `fill` resize, `stretch` one under
-  /// `GLAZEWM_ISOLATE=fillpeeks`, or grab resize on peeks has a fill.
+  /// none, so its first `fill` resize, or grab resize on peeks, has a
+  /// fill.
   ///
   /// Taken at the next idle point like a resize's, by then after any open
   /// animation has landed; never at a resize's start (see
@@ -2985,9 +2994,7 @@ impl AnimationManager {
     let grab_fills = grab.enabled
       && grab.resize
       && grab.draw == wm_common::GrabDraw::Peeks;
-    let fills = (resize.enabled
-      && (resize.style != ResizeStyle::Stretch
-        || wm_platform::isolation::current().fill_peeks))
+    let fills = (resize.enabled && resize.style != ResizeStyle::Stretch)
       || grab_fills;
     if fills && self.cached_edge_color(hwnd.0).is_none() {
       self.pending_edge_samples.insert(hwnd.0);

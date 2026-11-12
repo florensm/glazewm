@@ -188,8 +188,9 @@ Owner's answers, 2026-11-11:
 - [ ] 9. Remove what is no longer reached
 - [ ] 10. `fill` on peeks, for mouse drags first, then keyboard resizes
   (planned and reviewed 2026-11-12: 10a answered by reading; the owner's
-  pre-check in 10a still to run; 10b and 10c built, not checked live;
-  10d is the owner's call, 10e next)
+  pre-check in 10a still to run; 10b, 10c, 10e-1 and 10e-2 built, not
+  checked live; 10d is the owner's call; 10e-3 waits for the owner's
+  A/B)
 
 ### Task 0: baseline (desktop, by hand)
 
@@ -1653,6 +1654,26 @@ keyboard resizes. Mid-motion retargets: `retargeted_motion`, as
 `stretch`.
 - Live check: as 10e-1, with a slow app; look at the last frames and
   the hand-back only.
+
+Built 2026-11-12, not checked live: 10e-1 and 10e-2 in one commit, as
+the landing wait is the same `Hold` change. How it went in:
+
+- `stretch: bool` through `move_tile`, `upsert`, `retarget_tile` and
+  `move_on_peek` became `Option<PeekResize>` (`Stretch` or `Fill`), and
+  `stretches_relayout`/`stretches_on_peeks` became `resizes_relayout`/
+  `resizes_on_peeks`. A `Stretch` notes `filled`, and `deferred` for a
+  filled window that shrinks on either axis (`resizes_at_start`):
+  `preposition_cloaked` and `follow_retargeted_column` skip it, so it is
+  sent its size only by the hand-back's `Apply`. A grab's hold clears
+  `deferred`.
+- A filled window sent its size waits up to `FILL_LANDING_WAIT` (500 ms)
+  once its motion is done, through `Hold::Released`, which now carries
+  its wait; a deferred one doesn't, as nothing was sent before it lands.
+  A new motion resets the wait unless a grab holds it.
+- As a `fill` session does, the edge colour is sampled again once a
+  filled peek lands (`Landed::filled`).
+- `fillpeeks` no longer draws `stretch` filled; entry 67 is rewritten
+  for `fill`.
 
 **10e-3. Default.** After the owner's A/B and say-so: `fill` on peeks
 unless `nopeeks`; `fillpeeks` goes. Its own one-line commit (rule 4).

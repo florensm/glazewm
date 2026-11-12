@@ -37,7 +37,7 @@ use wm_platform::{Rect, SurrogateBatch};
 use super::{
   peek_view::{
     has_other_stand_in, is_live, is_peek_resize, is_pure_move,
-    peek_styles, restore_cloaked, stretches_on_peeks, track_overlays,
+    peek_styles, resizes_on_peeks, restore_cloaked, track_overlays,
     PeekView, Role,
   },
   transit::Transit,
@@ -103,13 +103,14 @@ pub fn sync_scroll_view(
     None => HashSet::new(),
   };
 
-  // With `window_resize.style: "stretch"`, a column resized on screen goes
-  // on its peek too, scaled (`STAND_INS_PLAN.md` task 8), where every
-  // resized column can.
-  let stretches = pure_moves.is_some() && stretches_on_peeks(config);
+  // With `window_resize.style: "stretch"` (or `fill` under
+  // `GLAZEWM_ISOLATE=fillpeeks`), a column resized on screen goes on its
+  // peek too (`STAND_INS_PLAN.md` tasks 8 and 10e), where every resized
+  // column can.
+  let resizes = resizes_on_peeks(config).filter(|_| pure_moves.is_some());
   let can_stretch = windows
     .iter()
-    .filter(|_| stretches)
+    .filter(|_| resizes.is_some())
     .filter(|(window, _)| {
       can_stretch(state, window, &other_stand_ins, config)
     })
@@ -160,13 +161,14 @@ pub fn sync_scroll_view(
 
   for (workspace, clip) in &workspaces {
     let moves = column_moves(view, workspace, &opening_ids);
-    let stretches = stretches
-      && moves.iter().all(|(window, from, target)| {
+    let resizes = resizes.filter(|_| {
+      moves.iter().all(|(window, from, target)| {
         opening_ids.contains(&window.id())
           || from.width() == target.width()
             && from.height() == target.height()
           || can_stretch.contains(&window.id())
-      });
+      })
+    });
 
     // The strip moves as one when any column crosses the monitor edge,
     // is already drawn by a peek, or opens; moves that stay on screen are
@@ -205,7 +207,7 @@ pub fn sync_scroll_view(
           &target,
           strip_moves,
           pure_moves,
-          pure_moves.filter(|_| stretches),
+          pure_moves.filter(|_| resizes.is_some()),
           view.entries.contains_key(&window.id()),
           other_stand_ins.contains(&window.id()),
         ) {
@@ -259,7 +261,7 @@ pub fn sync_scroll_view(
         clip,
         role,
         transit.filter(|_| !is_held),
-        stretches,
+        resizes,
         is_held,
         config,
         focused_id == Some(window.id()),

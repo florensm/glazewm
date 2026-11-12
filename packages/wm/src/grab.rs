@@ -26,7 +26,10 @@ use wm_platform::{
 };
 
 use crate::{
-  animation::manager::{movement_timing, Motion},
+  animation::{
+    manager::{movement_timing, Motion},
+    peek_view::PeekResize,
+  },
   commands::{
     container::set_focused_descendant,
     general::{defer_window_frame, follow_window_frame, note_size_change},
@@ -585,7 +588,7 @@ fn place_moved_windows(
           target.clone(),
           0,
           easing,
-          true,
+          Some(PeekResize::Fill),
           now,
         );
       } else if !state.animation_manager.has_active_surrogate(&window.id())

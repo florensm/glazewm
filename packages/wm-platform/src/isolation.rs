@@ -17,9 +17,9 @@
 //!   frame before the main loop's catch-up on queued events, then the rest
 //!   of the tick, rather than all of it after the catch-up. With or
 //!   without `nopeeks`: scrolling columns move on peeks either way.
-//! - `fillpeeks`: draw resizes on peeks that `window_resize`'s `stretch`
-//!   style draws stretched filled instead: the window 1:1, cut at its
-//!   tile, the rest of the tile in its edge color.
+//! - `fillpeeks`: draw `window_resize`'s `fill` style on peeks instead of
+//!   with `ResizeSession`: the window 1:1, cut at its tile, the rest of
+//!   the tile in its edge color.
 //!
 //! Read once per process.
 
