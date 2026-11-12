@@ -48,6 +48,10 @@ use crate::{
   wm_state::WmState,
 };
 
+/// `tracing` target of the lines saying how a resize draws each window,
+/// which go to their own file.
+pub const GRAB_LOG_TARGET: &str = "glazewm::grab";
+
 /// What [`GrabListener`] grabs with under `config`, if anything.
 pub fn settings(config: &UserConfig) -> Option<GrabSettings> {
   let grab = &config.value.general.grab_and_move;
@@ -408,6 +412,10 @@ fn start(
     }
   }
 
+  if resize.is_some() {
+    log_peek_holds(&window, state, config);
+  }
+
   state.grab.grab = Some(Grab {
     native,
     start,
@@ -416,6 +424,45 @@ fn start(
   state.grab.is_focus_lost = false;
 
   Ok(())
+}
+
+/// Logs, for a resize of `window` drawn on peeks, which windows of its
+/// workspace a peek can hold and why the rest are drawn live.
+fn log_peek_holds(
+  window: &WindowContainer,
+  state: &WmState,
+  config: &UserConfig,
+) {
+  if config.value.general.grab_and_move.draw != GrabDraw::Peeks {
+    return;
+  }
+  if !wm_platform::isolation::current().peeks {
+    tracing::info!(
+      target: GRAB_LOG_TARGET,
+      "Resize drawn live: GLAZEWM_ISOLATE has nopeeks."
+    );
+    return;
+  }
+
+  let Some(workspace) = window.workspace() else {
+    return;
+  };
+  tracing::info!(target: GRAB_LOG_TARGET, "Resize of {window} on peeks:");
+
+  for window in workspace
+    .descendants()
+    .filter_map(|container| container.as_window_container().ok())
+  {
+    match crate::animation::peek_view::hold_refusal(state, &window, config)
+    {
+      None => {
+        tracing::info!(target: GRAB_LOG_TARGET, "{window}: on a peek.");
+      }
+      Some(reason) => {
+        tracing::info!(target: GRAB_LOG_TARGET, "{window}: live, {reason}.");
+      }
+    }
+  }
 }
 
 impl Resize {

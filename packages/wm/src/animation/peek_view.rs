@@ -2015,7 +2015,16 @@ pub fn can_hold(
   window: &WindowContainer,
   config: &UserConfig,
 ) -> bool {
-  let id = window.id();
+  hold_refusal(state, window, config).is_none()
+}
+
+/// Why a grab resize can't draw `window` on a peek it holds (see
+/// [`can_hold`]), or `None` if it can.
+pub fn hold_refusal(
+  state: &WmState,
+  window: &WindowContainer,
+  config: &UserConfig,
+) -> Option<&'static str> {
   let is_shown = window
     .workspace()
     .is_some_and(|workspace| workspace.is_displayed())
@@ -2027,14 +2036,24 @@ pub fn can_hold(
     .zip(window.native().frame_with_shadows().ok())
     .is_some_and(|(clip, rect)| clip.contains_point(&rect.center_point()));
 
-  window.state() == WindowState::Tiling
-    && is_shown
-    && fits_monitor
-    && window
-      .parent()
-      .is_none_or(|parent| parent.as_stack().is_none())
-    && !has_other_stand_in(&state.animation_manager, &id)
-    && !is_live(&peek_styles(window, config))
+  if window.state() != WindowState::Tiling {
+    Some("not tiling")
+  } else if !is_shown {
+    Some("not shown")
+  } else if !fits_monitor {
+    Some("not on its monitor")
+  } else if window
+    .parent()
+    .is_some_and(|parent| parent.as_stack().is_some())
+  {
+    Some("in a stack")
+  } else if has_other_stand_in(&state.animation_manager, &window.id()) {
+    Some("drawn by another animation")
+  } else if is_live(&peek_styles(window, config)) {
+    Some("its backdrop can't be copied (rounded or parallax)")
+  } else {
+    None
+  }
 }
 
 /// Puts `window` on a peek a grab resize holds where it puts it, from
@@ -2076,6 +2095,11 @@ pub fn hold_on_peek(
   );
   if moved {
     peeks.hold(window.id(), true);
+  } else {
+    tracing::info!(
+      target: crate::grab::GRAB_LOG_TARGET,
+      "{window}: live, its peek couldn't be put up."
+    );
   }
   batch.commit();
 

@@ -635,7 +635,8 @@ fn log_panics() {
 ///
 /// Error and warning logs are saved to `~/.glzr/glazewm/errors.log`, the
 /// overview's trace of picks to `~/.glzr/glazewm/overview.log`, how WPF
-/// windows answer the WM to `~/.glzr/glazewm/wpf.log`, and with
+/// windows answer the WM to `~/.glzr/glazewm/wpf.log`, how grab resizes
+/// draw each window to `~/.glzr/glazewm/grab.log`, and with
 /// `--verbose` every log to `~/.glzr/glazewm/debug.log`.
 ///
 /// The latter is the only way to read verbose logs of a release build:
@@ -696,6 +697,16 @@ fn setup_logging(verbosity: &Verbosity) -> anyhow::Result<()> {
         .with_target(switch_log::SWITCH_LOG_TARGET, Level::INFO),
     );
 
+  // A few lines per grab resize drawn on peeks, so always on, in its own
+  // file.
+  let grab_layer = fmt::Layer::new()
+    .with_ansi(false)
+    .with_writer(open_log_file(&error_log_dir, "grab.log")?)
+    .with_filter(
+      tracing_subscriber::filter::Targets::new()
+        .with_target(grab::GRAB_LOG_TARGET, Level::INFO),
+    );
+
   let debug_layer = (verbosity.level() == Level::DEBUG)
     .then(|| open_log_file(&error_log_dir, "debug.log"))
     .transpose()?
@@ -719,6 +730,7 @@ fn setup_logging(verbosity: &Verbosity) -> anyhow::Result<()> {
     .with(perf_layer)
     .with(overview_layer)
     .with(switch_layer)
+    .with(grab_layer)
     .with(wpf_layer)
     .with(debug_layer);
 
