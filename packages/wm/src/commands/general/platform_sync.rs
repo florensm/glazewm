@@ -2448,6 +2448,16 @@ fn reposition_window(
 
     drop(query_scope);
 
+    // A window being hidden is cloaked before it moves. Moved first, it
+    // showed at its new rect until the cloak landed, e.g. on top of the
+    // stack it joins as a background tab. One the shell can't cloak is
+    // hidden outright after the move instead (see the visibility step
+    // below).
+    let is_cloaked_first = !is_visible && {
+      let _scope = perf::scope(Stage::RepositionVisibility);
+      window.native().cloak_if_viewed()?
+    };
+
     // Whether the window already sits exactly where this pass wants
     // it, making the geometry call below a no-op move. Compared
     // against `GetWindowRect`: the space `set_window_pos` writes, and
@@ -2464,15 +2474,11 @@ fn reposition_window(
     // outright instead: its app may stop drawing while hidden (WPF does),
     // and without the call a stack's hidden WPF tabs came back partly
     // unpainted. Elsewhere such a window can't be hidden at all (see the
-    // visibility step below). Checked last, as it asks the shell: a call
-    // into Explorer that every window hidden by a workspace switch
-    // otherwise paid on top of its cloak.
+    // visibility step below).
     let current_frame = window.native().frame_with_shadows().ok();
     let already_at_rect = !window.has_pending_dpi_adjustment()
       && current_frame.as_ref() == Some(rect)
-      && (is_visible
-        || !is_hidden_in_layout(window)
-        || window.native().can_be_cloaked());
+      && (is_visible || is_cloaked_first || !is_hidden_in_layout(window));
 
     // During animation frames, omit `SWP_ASYNCWINDOWPOS` so that
     // adjacent windows are repositioned synchronously. This keeps
@@ -2591,10 +2597,15 @@ fn reposition_window(
     // while elsewhere DWM keeps rendering a window cloaked along with
     // its owner.
     let _visibility_scope = perf::scope(Stage::RepositionVisibility);
-    if is_visible || is_hidden_in_layout(window) {
-      window.native().set_cloaked_or_hidden(!is_visible)?;
-    } else {
-      window.native().set_cloaked(true)?;
+    if is_visible {
+      window.native().set_cloaked_or_hidden(false)?;
+    } else if !is_cloaked_first {
+      if !is_hidden_in_layout(window) {
+        anyhow::bail!(
+          "Can't cloak {window}: the shell has no view of it."
+        );
+      }
+      window.native().hide()?;
     }
     cloak_applied = true;
   }
