@@ -94,7 +94,8 @@ impl ResizeEdges {
 /// What a grab does with the window.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Gesture {
-  /// Moves it with the cursor, as a drag by its title bar does.
+  /// Moves it with the cursor, as a drag by its title bar does (see
+  /// [`GrabEvent::Moved`]).
   Move,
 
   /// Drags these of its edges along with the cursor, and on past the
@@ -130,6 +131,11 @@ pub enum GrabEvent {
   /// with [`GrabListener::take_resize_delta`]. Not sent again until it is
   /// read, so a slow reader only ever sees the newest total.
   Resized,
+
+  /// The cursor moved during a move: read where the window goes with
+  /// [`GrabListener::take_move_position`]. Not sent again until it is
+  /// read. The window is moved without the reader.
+  Moved,
 
   /// The grab of `window` ended. A move's last reposition has landed by
   /// then. Also sent for a grab ended early by
@@ -253,6 +259,13 @@ impl GrabListener {
   #[must_use]
   pub fn take_resize_delta(&self) -> Option<(i32, i32)> {
     self.shared.tracker().take_delta()
+  }
+
+  /// Where the top-left corner of the window being moved goes, as last
+  /// handed to its mover. `None` outside a move.
+  #[must_use]
+  pub fn take_move_position(&self) -> Option<Point> {
+    self.shared.tracker().take_position()
   }
 
   /// Ends the gesture under way, if any, without reporting it, e.g. as its
@@ -394,6 +407,10 @@ pub(crate) enum Live {
     offset: Point,
     /// Where the window's top-left corner started.
     start: Point,
+    /// Where the window's top-left corner goes now.
+    position: Point,
+    /// Whether `position` changed since last read.
+    is_unread: bool,
   },
   Resize {
     /// Where the press was.
@@ -431,8 +448,13 @@ impl Live {
 pub(crate) enum MoveOutcome {
   /// Nothing more.
   Pass,
-  /// The window is moved for its top-left corner to be here.
-  MoveWindow(WindowId, Point),
+  /// The window is moved for its top-left corner to be at `position`;
+  /// `notify` is whether the reader of positions has to be told.
+  MoveWindow {
+    window: WindowId,
+    position: Point,
+    notify: bool,
+  },
   /// A resize's total changed; `notify` is whether its reader has to be
   /// told.
   Resize { notify: bool },
@@ -483,6 +505,11 @@ impl Tracker {
             x: rect.left,
             y: rect.top,
           },
+          position: Point {
+            x: rect.left,
+            y: rect.top,
+          },
+          is_unread: false,
         },
       ),
       GrabButton::Right if settings.resizes => (
@@ -514,13 +541,26 @@ impl Tracker {
 
     match &mut held.live {
       None => MoveOutcome::Pass,
-      Some(Live::Move { offset, .. }) => MoveOutcome::MoveWindow(
-        held.window,
-        Point {
+      Some(Live::Move {
+        offset,
+        position,
+        is_unread,
+        ..
+      }) => {
+        let target = Point {
           x: cursor.x - offset.x,
           y: cursor.y - offset.y,
-        },
-      ),
+        };
+        let notify = *position != target && !*is_unread;
+        *is_unread |= notify;
+        *position = target.clone();
+
+        MoveOutcome::MoveWindow {
+          window: held.window,
+          position: target,
+          notify,
+        }
+      }
       Some(Live::Resize {
         cursor: current,
         is_unread,
@@ -612,6 +652,20 @@ impl Tracker {
       self.held.as_ref().and_then(|held| held.live.as_ref()),
       Some(Live::Resize { .. })
     )
+  }
+
+  fn take_position(&mut self) -> Option<Point> {
+    match self.held.as_mut()?.live.as_mut()? {
+      Live::Move {
+        position,
+        is_unread,
+        ..
+      } => {
+        *is_unread = false;
+        Some(position.clone())
+      }
+      Live::Resize { .. } => None,
+    }
   }
 
   fn take_delta(&mut self) -> Option<(i32, i32)> {
@@ -822,8 +876,38 @@ mod tests {
 
     assert_eq!(
       outcome,
-      MoveOutcome::MoveWindow(WindowId(1), Point { x: 350, y: 210 })
+      MoveOutcome::MoveWindow {
+        window: WindowId(1),
+        position: Point { x: 350, y: 210 },
+        notify: true,
+      }
     );
+  }
+
+  #[test]
+  fn a_move_notifies_once_until_its_position_is_read() {
+    let mut tracker = Tracker::default();
+    press(&mut tracker, GrabButton::Left);
+    assert_eq!(tracker.take_position(), Some(Point { x: 100, y: 100 }));
+
+    let notifies = |tracker: &mut Tracker, x| match tracker
+      .moved(&Point { x, y: 150 })
+    {
+      MoveOutcome::MoveWindow { notify, .. } => notify,
+      outcome => panic!("Not a move: {outcome:?}"),
+    };
+
+    assert!(notifies(&mut tracker, 160));
+    assert!(!notifies(&mut tracker, 170));
+    assert_eq!(tracker.take_position(), Some(Point { x: 120, y: 100 }));
+
+    // Unmoved since read: nothing to tell.
+    assert!(!notifies(&mut tracker, 170));
+    assert!(notifies(&mut tracker, 180));
+    assert_eq!(tracker.take_delta(), None);
+
+    tracker.end_live();
+    assert_eq!(tracker.take_position(), None);
   }
 
   #[test]

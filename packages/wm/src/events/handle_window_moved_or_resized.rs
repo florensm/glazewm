@@ -58,8 +58,15 @@ pub fn handle_window_moved_or_resized(
 
       // An interactive drag moves the window through the OS, and the
       // window is dequeued from redraw for the gesture, so `platform_sync`
-      // never tracks it.
-      follow_window_frame(&window, &frame_position, state, config);
+      // never tracks it. A grab's move places them itself.
+      if !crate::grab::places_move_overlays(
+        &window,
+        &old_frame_position,
+        &frame_position,
+        state,
+      ) {
+        follow_window_frame(&window, &frame_position, state, config);
+      }
 
       // The drag operation has ended on `EVENT_SYSTEM_MOVESIZEEND`.
       if is_interactive_end {
@@ -418,7 +425,8 @@ fn follow_drag_with_tab_bar(
 
 /// Keeps a shown window's overlays on it after a move nothing queued a
 /// redraw for: the app moved its own window, or the WM's asynchronous
-/// move landed after `platform_sync` had placed the overlays.
+/// move landed after `platform_sync` had placed the overlays. Not while a
+/// grab's resize is still placing it, which placed them already.
 fn follow_own_move(
   window: &WindowContainer,
   frame: &Rect,
@@ -430,6 +438,7 @@ fn follow_own_move(
 
   if is_shown
     && !state.animation_manager.has_active_surrogate(&window.id())
+    && !crate::grab::is_placing(window, state)
   {
     follow_window_frame(window, frame, state, config);
   }

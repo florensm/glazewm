@@ -8,19 +8,25 @@
 //! neighbours along with it, unanimated. Windows that only change rect
 //! are placed by a `WindowPlacer`, each window on its own, rather than by
 //! `platform_sync`; the rest of the layout's changes go through it.
+//!
+//! Either way, the WM places the border and backdrop overlays of the
+//! windows it moves where they are going as it hands their rects over,
+//! rather than once each window reports its move: the window's app paces
+//! its move, and the overlays would trail it by a frame or more.
 
 use std::collections::{HashMap, HashSet};
 
 use wm_common::{ActiveDragOperation, DisplayState, Layout, WindowState};
 use wm_platform::{
   Gesture, GrabEnd, GrabEvent, GrabListener, GrabSettings, NativeWindow,
-  Rect, ResizeEdges, WindowId, WindowPlacer,
+  Point, Rect, RectDelta, ResizeEdges, SurrogateBatch, WindowId,
+  WindowPlacer,
 };
 
 use crate::{
   commands::{
     container::set_focused_descendant,
-    general::note_size_change,
+    general::{defer_window_frame, follow_window_frame, note_size_change},
     window::{MIN_FLOATING_HEIGHT, MIN_FLOATING_WIDTH},
   },
   events::{end_window_drag, handle_window_moved_or_resized},
@@ -103,6 +109,13 @@ pub fn handle_grab_event(
       // Ended since: its end brings the final total.
       None => Ok(()),
     },
+    GrabEvent::Moved => {
+      // Ended since: its end follows where the window landed.
+      if let Some(position) = listener.take_move_position() {
+        follow_move(&position, state, config);
+      }
+      Ok(())
+    }
     GrabEvent::Ended {
       window,
       end,
@@ -142,6 +155,75 @@ fn step(
 
   state.grab.grab = Some(grab);
   result
+}
+
+/// Places the overlays of the window a move is under way on where its
+/// top-left corner goes to `position`, as its mover moves it there.
+fn follow_move(
+  position: &Point,
+  state: &mut WmState,
+  config: &UserConfig,
+) {
+  let window = state
+    .grab
+    .grab
+    .as_ref()
+    .filter(|grab| grab.resize.is_none())
+    .and_then(|grab| state.window_from_native(&grab.native))
+    .filter(|window| window.active_drag().is_some());
+
+  if let Some(window) = window {
+    let properties = window.native_properties();
+    let frame =
+      moved_frame(&properties.frame, &properties.shadow_borders, position);
+    follow_window_frame(&window, &frame, state, config);
+  }
+}
+
+/// Whether the move under way places the overlays of `window`, whose
+/// frame went from `old_frame` to `frame`: a translation, which its mover
+/// made or is overtaking. The moved window's events then don't place
+/// them, as a late one would put them back where a newer step left.
+///
+/// A change in size is the app's own (e.g. rescaling for a monitor's DPI),
+/// which the overlays follow, and for which the shadow borders the moves
+/// convert by are read anew.
+pub fn places_move_overlays(
+  window: &WindowContainer,
+  old_frame: &Rect,
+  frame: &Rect,
+  state: &WmState,
+) -> bool {
+  let is_moved = state.grab.grab.as_ref().is_some_and(|grab| {
+    grab.resize.is_none() && grab.native.id() == window.native().id()
+  });
+
+  if !is_moved {
+    return false;
+  }
+
+  if old_frame.width() == frame.width()
+    && old_frame.height() == frame.height()
+  {
+    return true;
+  }
+
+  // Bound by `let` so the `native()` borrow ends before the update.
+  let shadow_borders = window.native().shadow_borders();
+  if let Ok(shadow_borders) = shadow_borders {
+    window.update_native_properties(|properties| {
+      properties.shadow_borders = shadow_borders;
+    });
+  }
+
+  false
+}
+
+/// Whether a resize's placer may not have placed `window` at its newest
+/// rect yet, whose overlays are already there: an event of the window's
+/// then shows an older rect, which they mustn't go back to.
+pub fn is_placing(window: &WindowContainer, state: &WmState) -> bool {
+  state.grab.placer.is_placing(window.native().id())
 }
 
 /// Notes that `native` took the foreground, which ends a grab of another
@@ -413,8 +495,9 @@ fn apply_resize(
 /// Only windows that stay shown in place take this path; one that shows,
 /// hides, or is drawn by an animation or a peek is redrawn by
 /// `platform_sync` as usual. A stack's hidden tabs are left to the
-/// gesture's end. Overlays follow the windows' moves as for an app's own
-/// (`handle_window_moved_or_resized`), tab bars are synced here.
+/// gesture's end. Their overlays are placed here in one commit, and tab
+/// bars synced; a window's own events correct its overlays once it has
+/// landed (see [`is_placing`]), e.g. at a size its app insists on.
 fn place_moved_windows(
   containers: &[Container],
   state: &mut WmState,
@@ -422,6 +505,7 @@ fn place_moved_windows(
 ) {
   let mut seen = HashSet::new();
   let mut has_stack = false;
+  let mut overlays = SurrogateBatch::new();
 
   let windows = containers
     .iter()
@@ -452,6 +536,14 @@ fn place_moved_windows(
         .grab
         .placer
         .place(window.native().id(), target.clone());
+
+      // As `follow_own_move` has them follow a window's own move.
+      if !state.animation_manager.has_active_surrogate(&window.id()) {
+        let frame =
+          frame_at(&target, &window.native_properties().shadow_borders);
+        defer_window_frame(&window, &frame, state, config, &mut overlays);
+      }
+
       state.window_target_positions.insert(window.id(), target);
       has_stack |= window
         .parent()
@@ -462,9 +554,31 @@ fn place_moved_windows(
     }
   }
 
+  overlays.commit();
+
   if has_stack {
     sync_tab_bars(state, config, Restack::None);
   }
+}
+
+/// The visible frame, as `frame()` reads it, of a window placed at `rect`,
+/// which takes in its invisible `shadow_borders`.
+fn frame_at(rect: &Rect, shadow_borders: &RectDelta) -> Rect {
+  rect.apply_delta(&shadow_borders.inverse(), None)
+}
+
+/// [`frame_at`] for a window shown at `frame` moved for its top-left
+/// corner, shadow borders included, to be at `position`.
+fn moved_frame(
+  frame: &Rect,
+  shadow_borders: &RectDelta,
+  position: &Point,
+) -> Rect {
+  let rect = frame
+    .apply_delta(shadow_borders, None)
+    .translate_to_coordinates(position.x, position.y);
+
+  frame_at(&rect, shadow_borders)
 }
 
 /// Whether `window`, which `shows` in the layout, can be placed at
@@ -576,10 +690,14 @@ mod tests {
     ActiveDrag, ActiveDragOperation, DisplayState, WindowState,
   };
   use wm_platform::{
-    Gesture, GrabEnd, GrabListener, NativeWindow, ResizeEdges,
+    Gesture, GrabEnd, GrabListener, LengthValue, NativeWindow, Point,
+    Rect, RectDelta, ResizeEdges,
   };
 
-  use super::{finish, is_grabbable, start, step};
+  use super::{
+    finish, frame_at, is_grabbable, moved_frame, places_move_overlays,
+    start, step,
+  };
   use crate::{
     events::float_for_drag,
     models::{
@@ -804,5 +922,97 @@ mod tests {
     // Nor started on, should one get through.
     grab_right_edge(&left, &mut state);
     assert!(state.grab.grab.is_none());
+  }
+
+  /// Invisible borders as Windows 10 and 11 give a resizable window.
+  fn shadow_borders() -> RectDelta {
+    RectDelta::new(
+      LengthValue::from_px(7),
+      LengthValue::from_px(0),
+      LengthValue::from_px(7),
+      LengthValue::from_px(7),
+    )
+  }
+
+  #[test]
+  fn overlays_go_by_the_frame_a_placed_window_shows() {
+    let (_state, [window, ..]) = setup();
+    let placed = Rect::from_xy(93, 200, 514, 407);
+
+    assert_eq!(
+      frame_at(&placed, &shadow_borders()),
+      Rect::from_xy(100, 200, 500, 400)
+    );
+
+    // As steady state has it: the layout rect plus the configured border
+    // delta, without the shadow borders the placed rect takes in.
+    window.update_native_properties(|properties| {
+      properties.shadow_borders = shadow_borders();
+    });
+    window.set_border_delta(RectDelta::new(
+      LengthValue::from_px(-2),
+      LengthValue::from_px(-2),
+      LengthValue::from_px(-2),
+      LengthValue::from_px(-2),
+    ));
+    assert_eq!(
+      frame_at(&target(&window), &shadow_borders()),
+      window
+        .to_rect()
+        .unwrap()
+        .apply_delta(&window.border_delta(), None)
+    );
+  }
+
+  #[test]
+  fn a_moved_frame_keeps_its_size_and_shadows() {
+    let frame = Rect::from_xy(100, 200, 500, 400);
+
+    // The window's own top-left corner, shadow borders included.
+    let position = Point { x: 293, y: 50 };
+
+    assert_eq!(
+      moved_frame(&frame, &shadow_borders(), &position),
+      Rect::from_xy(300, 50, 500, 400)
+    );
+  }
+
+  #[test]
+  fn a_move_places_the_overlays_of_its_translations_only() {
+    let (mut state, [left, middle, _]) = setup();
+    let frame = Rect::from_xy(100, 200, 500, 400);
+    let moved = Rect::from_xy(160, 180, 500, 400);
+    let resized = Rect::from_xy(160, 180, 600, 450);
+
+    let middle = middle.into();
+    assert!(!places_move_overlays(&middle, &frame, &moved, &state));
+
+    start(
+      NativeWindow::from_handle(2),
+      Gesture::Move,
+      &GrabListener::new(),
+      &mut state,
+      &mock_config(),
+    )
+    .unwrap();
+
+    assert!(places_move_overlays(&middle, &frame, &moved, &state));
+    assert!(!places_move_overlays(&middle, &frame, &resized, &state));
+    assert!(!places_move_overlays(&left.into(), &frame, &moved, &state));
+  }
+
+  #[test]
+  fn a_resize_leaves_the_overlays_to_the_windows_events() {
+    let (mut state, [_, middle, _]) = setup();
+    let frame = Rect::from_xy(100, 200, 500, 400);
+    let moved = Rect::from_xy(160, 180, 500, 400);
+    grab_right_edge(&middle, &mut state);
+
+    assert!(!places_move_overlays(
+      &middle.into(),
+      &frame,
+      &moved,
+      &state
+    ));
   }
 }

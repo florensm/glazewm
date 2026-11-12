@@ -882,6 +882,25 @@ to see it; check each once more at 150 ms.
       `SetCursorPos`, and a synchronous `SetWindowPos` from one short-lived
       thread per window being resized. Note whether Defender flags it,
       with the feature on and off.
+64. **Borders and backdrops on grabbed windows** (`fix(grab)` after
+    `f218797b`). `grab_and_move` on, a border (and a backdrop, if
+    configured). Alt+drag a window quickly in circles, floating and while
+    it still tiles; then Alt+right-drag a tile's edge against its
+    neighbour, back and forth quickly, in a split and in a scrolling
+    layout.
+    - The border and backdrop stay on the window's edge throughout, on
+      the dragged window and on its neighbour: no ring trailing behind,
+      nor one jumping back and forth.
+    - After release, and after Escape mid-move and mid-resize, they are
+      where the windows are, no jump by a few pixels.
+    - A stacked window: the ring frames window and tab bar while moving
+      (the tab bar itself may still trail, as before).
+    - Shrink a neighbour past its app's minimum (e.g. Settings): its ring
+      ends on the window's real edge once it stops.
+    - Move a window onto a monitor of another scale: the ring follows it
+      as the app rescales.
+    - No new Windows API: overlays are moved with the `DeferWindowPos`
+      batch the WM already uses for them, from the WM's own thread.
 
 If bars or flicker show, isolate them with `GLAZEWM_ISOLATE` (below), one
 restart per flag: `noring`, `nobackdrop`, then `live`. With a long

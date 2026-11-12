@@ -123,13 +123,22 @@ always pass, so the cursor moves as usual. A move hands the newest cursor
 position to a mover thread, which moves the window with a synchronous
 `SetWindowPos`: a slow app gets one current move when it is ready rather
 than a backlog of stale ones, and the WM sees the moves as it sees a
-title-bar drag, skipping moves that piled up behind newer ones.
+title-bar drag, skipping moves that piled up behind newer ones. The hook
+also tells the WM the newest position, and the WM moves the window's
+border and backdrop there at once, rather than after the window reports
+its move, so they don't trail it. Until the release, the window's own
+moves move them only if its size changes (e.g. as its app rescales for
+another monitor's DPI).
 
 A resize hands the newest total to the WM, which lays the windows out
 anew on every move of the mouse, without animations. Each window whose
 rect changed and that stays shown is then placed by a thread of its own,
 again with a synchronous `SetWindowPos` given only the newest rect, so
 the dragged window never waits on a neighbour, nor on the WM's next sync.
+The WM moves those windows' borders and backdrops to the new rects at
+once, in one go; while a window's thread is still placing it, its
+reported moves leave them be, and once it has landed they follow where it
+really is, e.g. at a size its app insists on.
 Windows that show or hide (e.g. columns scrolling in or out of view) go
 through the WM's usual sync, and on release every window the resize can
 have moved is synced once more. How far the mouse pushes past the

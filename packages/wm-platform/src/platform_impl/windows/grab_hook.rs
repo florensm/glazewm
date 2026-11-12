@@ -377,8 +377,17 @@ impl HookState {
 
     match outcome {
       MoveOutcome::Pass | MoveOutcome::Resize { notify: false } => {}
-      MoveOutcome::MoveWindow(window, position) => {
+      MoveOutcome::MoveWindow {
+        window,
+        position,
+        notify,
+      } => {
         self.mover.move_to(window, position);
+
+        // After the move is handed over, which never waits on the WM.
+        if notify {
+          let _ = self.shared.event_tx.send(GrabEvent::Moved);
+        }
       }
       MoveOutcome::Resize { notify: true } => {
         let _ = self.shared.event_tx.send(GrabEvent::Resized);

@@ -2894,18 +2894,30 @@ pub(crate) fn follow_window_frame(
   state: &mut WmState,
   config: &UserConfig,
 ) {
+  let mut batch = SurrogateBatch::new();
+  defer_window_frame(window, frame, state, config, &mut batch);
+  batch.commit();
+}
+
+/// [`follow_window_frame`] into `batch`, e.g. for overlays of several
+/// windows to land in one commit.
+pub(crate) fn defer_window_frame(
+  window: &WindowContainer,
+  frame: &Rect,
+  state: &mut WmState,
+  config: &UserConfig,
+  batch: &mut SurrogateBatch,
+) {
   let is_focused = state
     .focused_container()
     .is_some_and(|container| container.id() == window.id());
 
-  let mut batch = SurrogateBatch::new();
   follow_frame::<NativeBackdropOverlay>(
-    window, frame, is_focused, state, config, &mut batch,
+    window, frame, is_focused, state, config, batch,
   );
   follow_frame::<NativeBorderOverlay>(
-    window, frame, is_focused, state, config, &mut batch,
+    window, frame, is_focused, state, config, batch,
   );
-  batch.commit();
 }
 
 fn follow_frame<O: SyncableOverlay>(

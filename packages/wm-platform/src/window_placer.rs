@@ -41,6 +41,10 @@ struct Slot {
 #[derive(Default)]
 struct SlotState {
   rect: Option<Rect>,
+
+  /// Whether a rect taken from `rect` is being applied.
+  is_placing: bool,
+
   quit: bool,
 }
 
@@ -71,6 +75,16 @@ impl WindowPlacer {
 
     slot.lock().rect = Some(rect);
     slot.signal.notify_one();
+  }
+
+  /// Whether `window` has a rect waiting or being applied, i.e. it may
+  /// not be where it was last placed yet.
+  #[must_use]
+  pub fn is_placing(&self, window: WindowId) -> bool {
+    self.lock().get(&window).is_some_and(|slot| {
+      let state = slot.lock();
+      state.rect.is_some() || state.is_placing
+    })
   }
 
   /// Drops the rect not yet applied to `window`, and its thread.
@@ -146,11 +160,14 @@ impl Slot {
             .unwrap_or_else(PoisonError::into_inner);
         }
 
-        (state.rect.take(), state.quit)
+        let rect = state.rect.take();
+        state.is_placing = rect.is_some();
+        (rect, state.quit)
       };
 
       if let Some(rect) = rect {
         place_window(window, &rect);
+        self.lock().is_placing = false;
       }
 
       if quit {
@@ -180,5 +197,25 @@ fn place_window(window: WindowId, rect: &Rect) {
 
   if let Err(err) = result {
     tracing::debug!("Failed to place window {:#x}: {err}", window.0);
+  }
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+
+  #[test]
+  fn only_a_window_with_a_rect_in_hand_is_placing() {
+    let placer = WindowPlacer::default();
+    let window = WindowId(0);
+    assert!(!placer.is_placing(window));
+
+    placer.place(window, Rect::from_xy(0, 0, 100, 100));
+    placer.forget(window);
+    assert!(!placer.is_placing(window));
+
+    placer.place(window, Rect::from_xy(0, 0, 100, 100));
+    placer.finish();
+    assert!(!placer.is_placing(window));
   }
 }
