@@ -1737,6 +1737,16 @@ always-on-top band (`fullscreen_peek_raise`); its ring copy is left off
 as `border_hidden_for_fullscreen` says. Floating windows and a window
 driving itself fullscreen keep the old path. Windows API: none new.
 
+Built 2026-11-12, not checked live (`TODO.md` 72): the monitor row,
+behind `morepeeks`. A tile moving onto another monitor is drawn by two
+pinned peeks (`Trail`): its own on the target monitor, which takes over
+and hands back as before, and a trail on the monitor it comes from, which
+only draws and goes as it lands. Not one peek spanning both: a backdrop
+copy is cut from one monitor's source, and a union could reach a third.
+Left on the engine: stacks, and a tile still landing from an earlier
+move. A move retargeted onto a monitor neither peek is on is still cut at
+its first monitor's edge, as without the word.
+
 So 10f starts with a decision per row, recorded here, then:
 
 1. Move out of `resize_session.rs` what others use: `compute_border_inset`
