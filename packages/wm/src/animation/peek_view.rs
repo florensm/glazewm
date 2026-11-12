@@ -954,16 +954,31 @@ impl PeekView {
     }
   }
 
-  /// The window whose peek is at `point`, if any. Not one leaving, which
-  /// is going and, closing, no longer managed.
+  /// The window whose peek at rest is at `point`, if any. Moving ones
+  /// are clicked through `ClickGuard`'s motion guard instead (see
+  /// [`Self::moving_rects`]).
   pub fn window_at(&self, point: &Point) -> Option<Uuid> {
     self.entries.iter().find_map(|(id, entry)| {
       Some(entry)
-        .filter(|entry| !matches!(entry.role, Role::Leaving(_)))?
+        .filter(|entry| entry.role == Role::Peek)?
         .peek
         .visible_rect()
         .filter(|rect| rect.contains_point(point))
         .map(|_| *id)
+    })
+  }
+
+  /// On-screen rects of the peeks drawing moving windows, whose real
+  /// windows are cloaked meanwhile, so a click there reaches nothing.
+  pub fn moving_rects(&self) -> impl Iterator<Item = (Uuid, &Rect)> {
+    self.entries.iter().filter_map(|(id, entry)| {
+      Some(entry)
+        .filter(|entry| {
+          matches!(entry.role, Role::Moving { .. } | Role::HandingBack)
+        })?
+        .peek
+        .visible_rect()
+        .map(|rect| (*id, rect))
     })
   }
 

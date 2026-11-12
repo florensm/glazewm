@@ -158,6 +158,12 @@ The view follows focus:
   view, without the click reaching its window, so it can't select text
   or press a button as the column slides in. Set `click_to_scroll` to
   `false` to let the click through.
+- A click on a column while the strip is moving focuses the column
+  drawn under the cursor, and the strip heads to it, as niri hit tests
+  windows where it draws them. The click doesn't reach the app: mid-move
+  a column is a stand-in, its real window hidden. The same goes for a
+  window sliding in with a workspace switch; one sliding out ignores the
+  click. Floating windows over the strip keep their clicks.
 - With `focus_follows_cursor`, hovering a column partly off screen
   focuses and scrolls to it, unless `focus_follows_cursor_max_scroll`
   limits how far that may scroll.

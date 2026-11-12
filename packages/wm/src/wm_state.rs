@@ -159,7 +159,7 @@ impl WmState {
     animation_tick_tx: mpsc::UnboundedSender<()>,
     overview_action_tx: mpsc::UnboundedSender<(u64, OverviewAction)>,
     tab_action_tx: mpsc::UnboundedSender<(Uuid, TabAction)>,
-    guarded_click_tx: mpsc::UnboundedSender<NativeWindow>,
+    guarded_click_tx: mpsc::UnboundedSender<wm_platform::GuardedClick>,
   ) -> Self {
     Self {
       root_container: RootContainer::new(),

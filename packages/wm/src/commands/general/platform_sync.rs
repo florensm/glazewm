@@ -200,6 +200,7 @@ pub fn platform_sync(
   if let Err(err) = crate::layout::scrolling::sync_click_guard(state) {
     tracing::warn!("Failed to sync the click guard: {err}");
   }
+  crate::animation::motion_clicks::sync_motion_guard(state);
 
   // Once the layout has settled, so resized windows' new rects are known.
   crate::particles::show_particles(state, config);

@@ -61,7 +61,7 @@ mod window_listener;
 mod window_peek;
 mod workspace_surrogate;
 
-pub use click_guard::ClickGuard;
+pub use click_guard::{ClickGuard, GuardedClick};
 pub use companion_cover::CompanionCover;
 pub use dispatcher::*;
 pub use display::*;

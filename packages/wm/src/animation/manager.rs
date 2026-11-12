@@ -3167,6 +3167,34 @@ impl AnimationManager {
     self.workspace_switch.is_some() || self.pending_ws_cleanup.is_some()
   }
 
+  /// Windows sliding in a playing workspace switch, whether each is
+  /// incoming, and where it is drawn this frame, cut to the monitor.
+  pub fn switching_rects(&self) -> Vec<(Uuid, bool, Rect)> {
+    let Some(switch) = &self.workspace_switch else {
+      return Vec::new();
+    };
+
+    let monitor = Rect::from_xy(
+      switch.monitor_x,
+      switch.monitor_y,
+      switch.monitor_width,
+      switch.monitor_height,
+    );
+
+    switch
+      .windows
+      .iter()
+      .filter_map(|(id, entry)| {
+        let rect = entry
+          .surrogate
+          .as_ref()?
+          .unclipped_rect()?
+          .intersection(&monitor)?;
+        Some((*id, entry.is_incoming, rect))
+      })
+      .collect()
+  }
+
   /// Whether a workspace-switch animation is playing, not counting one
   /// already being torn down.
   pub fn is_workspace_switch_playing(&self) -> bool {

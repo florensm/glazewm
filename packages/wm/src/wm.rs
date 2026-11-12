@@ -13,7 +13,7 @@ use wm_common::{
   WmEvent,
 };
 use wm_platform::{
-  Dispatcher, Keybinding, KeybindingEvent, LengthValue, NativeWindow,
+  Dispatcher, GuardedClick, Keybinding, KeybindingEvent, LengthValue,
   OverviewAction, PlatformEvent, RectDelta, WindowEvent,
 };
 
@@ -80,8 +80,8 @@ pub struct WindowManager {
   /// platforms without tab bars.
   pub tab_action_rx:
     mpsc::UnboundedReceiver<(uuid::Uuid, wm_platform::TabAction)>,
-  /// Windows whose click the `ClickGuard` kept from them.
-  pub guarded_click_rx: mpsc::UnboundedReceiver<NativeWindow>,
+  /// Clicks the `ClickGuard` kept from where they landed.
+  pub guarded_click_rx: mpsc::UnboundedReceiver<GuardedClick>,
 }
 
 impl WindowManager {
@@ -124,11 +124,11 @@ impl WindowManager {
     })
   }
 
-  /// Focuses a window whose click the `ClickGuard` kept from it, which
-  /// scrolls it into view.
+  /// Focuses the window a click the `ClickGuard` kept was on: a guarded
+  /// window, which scrolls it into view, or one drawn moving.
   pub fn process_guarded_click(
     &mut self,
-    window: &NativeWindow,
+    click: &GuardedClick,
     config: &UserConfig,
   ) -> anyhow::Result<()> {
     let state = &mut self.state;
@@ -137,14 +137,27 @@ impl WindowManager {
       return Ok(());
     }
 
-    let Some(window) = state.window_from_native(window) else {
-      return Ok(());
-    };
+    match click {
+      GuardedClick::Window(window) => {
+        let Some(window) = state.window_from_native(window) else {
+          return Ok(());
+        };
 
-    set_focused_descendant(&window.as_container(), None);
-    state.pending_sync.queue_focus_change();
+        set_focused_descendant(&window.as_container(), None);
+        state.pending_sync.queue_focus_change();
+      }
+      GuardedClick::Motion(point) => {
+        crate::animation::motion_clicks::focus_moving_window_at(
+          point, state,
+        );
+      }
+    }
 
-    platform_sync(state, config)
+    if state.pending_sync.has_changes() {
+      platform_sync(state, config)?;
+    }
+
+    Ok(())
   }
 
   /// Carries out an action taken in the overview, unless it comes from an
@@ -666,7 +679,10 @@ impl WindowManager {
   ) -> anyhow::Result<()> {
     use crate::animation::AnimationManager;
     // Access animation_manager through state to avoid double borrow
-    AnimationManager::update_internal(&mut self.state, config)
+    let result =
+      AnimationManager::update_internal(&mut self.state, config);
+    crate::animation::motion_clicks::sync_motion_guard(&mut self.state);
+    result
   }
 
   /// Draws the peeks' frame of an animation tick ahead of the rest, which
@@ -689,11 +705,13 @@ impl WindowManager {
     config: &UserConfig,
     drawn: Option<crate::animation::PeeksDrawn>,
   ) -> anyhow::Result<()> {
-    crate::animation::AnimationManager::finish_frame(
+    let result = crate::animation::AnimationManager::finish_frame(
       &mut self.state,
       config,
       drawn,
-    )
+    );
+    crate::animation::motion_clicks::sync_motion_guard(&mut self.state);
+    result
   }
 
   pub fn process_commands(

@@ -740,6 +740,24 @@ to see it; check each once more at 150 ms.
     - A stack beside it keeps its tab bar where its windows are.
     - Close the fullscreen window, and move it to another workspace:
       the tiles fill its place.
+57. **Quick focus never bounces back**: `scroll` with a spring, press
+    `focus --direction right` twice fast (and left twice), many times.
+    Focus always ends two columns on, never back on the first. In the log,
+    a bounce caught is `Ignoring focus event from an earlier focus
+    change`; `Window manually focused` at that moment means another cause.
+58. **Clicks while things move**: with a long `scroll` and
+    `workspace_switch` `duration_ms` (e.g. 1500):
+    - Click a column mid-scroll: it takes focus and the scroll heads to
+      it. Nothing behind it (desktop, other windows) gets the click.
+    - Click a window sliding in mid-switch: it takes focus once the slide
+      lands. A click on one sliding out does nothing.
+    - A floating window over the scrolling strip still takes its clicks
+      mid-scroll, and the taskbar and bars always do.
+    - At rest every click reaches its window at once, apart from
+      `click_to_scroll`'s partly off-screen columns, as before.
+    - Defender: the click hook now also goes up for each scroll and
+      switch (same `SetWindowsHookExW` as `click_to_scroll`'s, no new
+      Windows call), and down after.
 
 If bars or flicker show, isolate them with `GLAZEWM_ISOLATE` (below), one
 restart per flag: `noring`, `nobackdrop`, then `live`. With a long
