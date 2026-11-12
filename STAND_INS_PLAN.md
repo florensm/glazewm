@@ -187,7 +187,8 @@ Owner's answers, 2026-11-11:
   run; not checked live)
 - [ ] 9. Remove what is no longer reached
 - [ ] 10. `fill` on peeks, for mouse drags first, then keyboard resizes
-  (planned 2026-11-12, not started)
+  (planned and reviewed 2026-11-12: 10a answered by reading, nothing
+  built; the owner's pre-check in 10a comes first)
 
 ### Task 0: baseline (desktop, by hand)
 
@@ -1117,97 +1118,578 @@ and `update_zoom_fade`, `away_windows`, as each loses its last caller.
 
 ### Task 10: `fill` on peeks, for mouse drags first
 
-Asked for by the owner, 2026-11-12. With `general.grab_and_move` (the
-AltSnap replacement, `docs/grab-and-move.md`), a mouse resize moves the
-real windows live, and their border rings follow. Even with the rings
-placed in the same step as the window (`c70a4555`), a window shows a
-frame or more off its ring, and a growing neighbour or a shrinking
-window covers a ring for a frame: each app applies its size on its own
-thread, at its own time. Hyprland avoids this by drawing window and
-border itself in one frame from the window's real buffer; on Windows
-only DWM draws a real window. The nearest equivalent is to draw the
-window and its ring ourselves, in one DWM update: peeks.
+Asked for by the owner, 2026-11-12. Reviewed and rewritten the same day
+against the code at `f0465543` (read only, nothing run): 10a is
+answered below, and 10b to 10f are cut into steps of one commit each.
+
+With `general.grab_and_move` (the AltSnap replacement,
+`docs/grab-and-move.md`), a mouse resize moves the real windows live,
+and their border rings follow. Even with the rings placed in the same
+step as the window (`c70a4555`), a window shows a frame or more off its
+ring, and a growing neighbour or a shrinking window covers a ring for a
+frame: each app applies its size on its own thread, at its own time.
+Hyprland avoids this by drawing window and border itself in one frame
+from the window's real buffer; on Windows only DWM draws a real window.
+The nearest equivalent is to draw the window and its ring ourselves,
+from one thread, in one burst of thumbnail updates: peeks.
 
 Goal: during a grab resize, the windows it changes are drawn by pinned
-peeks placed at the layout's rects every step, so edges, gaps and rings
-are exact on every frame. The real windows are still resized every
-step, cloaked, and their thumbnails are live, so content keeps
-updating; where an app lags, the uncovered strip is the window's edge
-colour (`fill`, which the owner prefers to `stretch`), and where it is
-too large it is cut at the tile. Then the same drawing replaces
-`ResizeSession` for keyboard `fill` resizes, which lets the old engine
-go.
+peeks placed at the layout's rects, so edges, gaps and rings agree on
+(nearly, see "Limits") every frame. The real windows are still resized
+every step, cloaked, and their thumbnails are live, so content keeps
+updating; where an app's window has not reached its size, the uncovered
+strip is the window's edge colour (`fill`, which the owner prefers to
+`stretch`), and where it is too large it is cut at the tile. Then the
+same drawing replaces `ResizeSession` for keyboard `fill` resizes, which
+lets the old engine go.
 
 Behind `grab_and_move.draw: "live" | "peeks"` (default `live`, today's
-behaviour) until the owner has seen it.
+behaviour) until the owner has seen it. A config option, not a
+`GLAZEWM_ISOLATE` word, so the owner can switch by reloading the config
+mid-session.
 
-**10a. Design check (read only, report, no code).** Settle by reading,
-before anything is built:
-1. **The fill.** A peek has no fill today. The strip must change size in
-   the same DWM update as the thumbnail, or it is a frame off, the
-   problem this task exists for. Options: a composition visual on the
-   peek (as `SurrogateFill` is on a `NativeSurrogate`), which reaches DWM
-   by its own commit; or a DWM thumbnail of a small window of ours
-   painted the edge colour, stretched over the strip, which goes with the
-   window's thumbnail. Say which keeps the two in one update, from the
-   code and the docs, and what each costs.
-2. **The ring at any size.** A ring copy is a thumbnail of the parked
-   ring window, scaled from its rest to the frame (`copy_rects`), so a
-   resize changes its thickness. Draw it as slices instead: four corners
-   at their size and four edges stretched along their length only, each
-   a thumbnail of the same ring window with its own source rect
-   (`Thumbnail::place` takes one). Confirm glow and rounded corners fit
-   in a corner slice, and the count (8 thumbnails per ring) is fine.
-3. **The backdrop.** Its copy is cut from a monitor-wide source
-   (`BackdropSource`), so it should cover any frame already: confirm.
-4. **Sampling.** The `fill` rule on a peek: source = the window's actual
-   current size, capped at the frame per axis (never oversample: a
-   transparent hole); destination = that size at the frame's top-left,
-   cut at the frame; fill = the rest. Which read gives the actual size
-   each step without a new call (the placer's landed rect, the location
-   events, `GetWindowRect` as `carry_ring` already reads)?
-5. **Grab integration.** Where a grab resize starts, steps and ends
-   (`grab.rs`: `place_moved_windows`, `WindowPlacer`); how a window not
-   yet on a peek is taken over mid-drag when a step first changes it
-   (warm-up, one composited frame, `take_over`, cloak: the scroll's
-   order, rule 5); what a frame of take-over latency means at the start
-   of a drag; Escape; a window closing or a workspace switching mid-drag.
-6. **End of the drag.** Hand-back of every peek once its window has
-   landed at its final rect, with a cap; whether the fade-off (see
-   below) is wanted here first.
-Report: the choices, with evidence, and anything that makes the goal
-unreachable. Stop there.
+Windows API for the whole task: **none new.** Every step below uses
+calls the WM already makes (`DwmRegisterThumbnail`,
+`DwmUpdateThumbnailProperties`, `DwmUnregisterThumbnail`,
+`SetWindowPos`, `DeferWindowPos`, `DwmSetWindowAttribute` with
+`DWMWA_CLOAK`, `DwmFlush`, `GetWindowRect`, `CreateWindowExW`,
+`SetLayeredWindowAttributes`, and the `Windows.UI.Composition` calls
+`SurrogateFill` makes). If a step turns out to need another, rule 9
+holds: stop, say which and why, its own commit. What does change is how
+often existing calls run (other apps' windows cloaked on every drag);
+`CLAUDE.md` lists cloaking among what keeps the WM near Defender's
+threshold. That verdict is on the binary, so no change is expected, but
+it is not known: the first laptop build with 10c is the test.
 
-**10b. `fill` drawing on `WindowPeek`**: `place_filled(frame, clip,
-actual, ...)` per 10a, ring slices, unit tests on the rect maths. No
-caller yet. No new Windows API.
+#### Limits, stated before anything is built
 
-**10c. Grab resizes on peeks**, behind `draw: "peeks"`: a `Role::Held`
-(or the nearest existing role) that is placed every step at the layout
-rect with no clock and handed back only when the grab ends; take-over
-on first change; real windows resized cloaked by the placer as now;
-strays and Escape. Live check: drag an edge between two and three
-tiles, fast and slow, a slow app (browser, Electron) and a quick one,
-split and scrolling; the gap and rings exact on every frame; content
-live; edge colour where an app lags; no window left cloaked.
+- **"One DWM update" is not a guarantee.** DWM has no transaction for
+  thumbnail updates (this plan, lever B and task 7): a frame is a run
+  of `DwmUpdateThumbnailProperties` calls, each applied at the next
+  composition. A composition that falls inside the run shows it half
+  applied. What peeks buy is that the run is ours, on one thread, well
+  under a millisecond, instead of one app thread per window taking
+  milliseconds to hundreds of them. Edges and rings will be exact on
+  nearly every frame, not on every frame. Steps 10b and 10c keep the
+  run short and in an order whose halves look least wrong.
+- **The fill covers a late window rect, not late pixels.** The strip is
+  sized from the window's rect (`GetWindowRect`). An app whose window
+  has its new size but has not painted it shows whatever DWM holds for
+  it, as it does in a drag by its own border today.
+- **Content is live only if the app paints while cloaked.** Resting
+  peeks of the scroll view rely on that already, but nothing in the
+  repo says every app does (a browser may stop painting a window it
+  takes for hidden; not verified). 10a ends with a check of this that
+  needs no new code. If it fails for the owner's apps, stop: the task
+  is not worth building.
+- **A take-over and a hand-back on every drag.** One blocked
+  composition (`DwmFlush`, up to a frame) on the first step that
+  changes anything, and the hand-over at release. A window's DWM shadow
+  is not in its thumbnail, so it goes as the drag starts and comes back
+  as it ends, as it does for a move on a peek.
+- **Not covered at first**: floating windows, stacks (their tab bar is
+  a window of its own, placed by `sync_tab_bars`), `Live` peeks
+  (rounded corners, parallax != 1), windows DWM gives no thumbnail of.
+  They keep the live path, which therefore stays in the code for good.
 
-**10d. Grab moves on peeks** (optional, owner's call after 10c): the
-picture translated, the real window moved cloaked by the mover thread.
+#### 10a. Design check: answered 2026-11-12
 
-**10e. Keyboard `fill` resizes on peeks**: the animated rect drives the
-same drawing; owner A/B against today's `fill`.
+Read from the code, nothing run. "Inferred" marks what the code implies
+but no comment or test states.
 
-**10f. Delete the old engine** once 10e has been seen and the owner says
-so: `ResizeSession`, `NativeSurrogate`'s session path and the old
-open/close/move paths of task 9. One stand-in system for windows, plus
-the workspace switch's.
+1. **The fill: a DWM thumbnail of a small window of ours, not a
+   composition visual.**
+   - A visual on the peek fails twice. `SurrogateFill`'s doc
+     (`composition.rs`): it is drawn "underneath the thumbnail (DWM
+     draws thumbnails above a non-topmost `DesktopWindowTarget`)". A
+     pinned peek's thumbnails include its backdrop crops, which are
+     opaque, so the fill would sit under them, unseen. And today's fill
+     is in step only because it is sized relative to its surrogate
+     window ("a per-frame resize of the surrogate needs no composition
+     write at all"), which moves by `SetWindowPos`. A pinned peek never
+     moves, so the strip would need `SetOffset`/`SetSize` every frame,
+     and those reach DWM with the compositor's own commit:
+     `overlay_copies.rs` says a window or visual tree of its own
+     reaches DWM "on schedules of their own", which is why the ring and
+     backdrop are copies at all.
+   - A thumbnail goes in the same run as the window's, and stacks by
+     registration order (`Thumbnail::register`: "Thumbnails stack in
+     the order they are registered"), so it can sit above the backdrop
+     crops and below the window. Its source is built from what exists:
+     an `OverlayWindow` hidden by its alpha, "which thumbnails of it
+     leave out" (as `BackdropSource::create`), with a `SurrogateFill`
+     rooted on it and `set_covered((0, 0))`, which paints the whole
+     window. A few pixels square: one colour stretches without harm.
+     Shared per colour, as `BackdropSource` shares per style
+     (`SOURCES`). The colour is written through composition once, when
+     it is sampled, never per frame.
+   - Cost: one small hidden window per colour in use, and two
+     thumbnails per peek (the uncovered part is an L: a strip right of
+     the content and one under it, as `SurrogateFill`'s two sprites).
+     `FILL_UNDERLAP_PX` and `fade_fraction` (`native_surrogate.rs`)
+     carry over: the strips start 2 px under the content's trailing
+     edges, and are drawn at the thumbnail's fade, not its alpha.
+   - The colour is `AnimationManager::cached_edge_color`, sampled from
+     the screen (`sample_edge_color`: `GetDC(0)` and a blit), so only
+     while the window is uncloaked and never during a drag. A window
+     with no cached colour gets no strip: its backdrop copy, or the
+     desktop, shows there. `queue_first_edge_sample` only queues one
+     with `window_resize` on and not `stretch`: 10c widens that test.
+   - Not chosen, noted for later: a second thumbnail of the window
+     itself, a column a few pixels inside its edge stretched over the
+     strip. No source window and no screen read, but it smears whatever
+     is at the edge (a scroll bar), and is not the `fill` the owner
+     has seen.
+2. **The ring in slices: supported as the code stands; 8 thumbnails per
+   ring instead of 1.**
+   - `Thumbnail::show(source, dest)` and `Thumbnail::place` take a
+     source rect per thumbnail (`DWM_TNP_RECTSOURCE`), so a slice is a
+     `Thumbnail` of the ring's window with its own source. Two
+     thumbnails of one source on one destination already coexist:
+     `OverlayCopies::raise_ring` registers the new one "before the old
+     one goes".
+   - Slices: four corners drawn 1:1, four edges stretched along their
+     length only. A corner slice reaches from the ring window's outer
+     edge to a little inside the ring's inner edge:
+     `BorderOverlayParams::outset()` (width plus glow reach) plus the
+     rim hairline. Rounded rings never get here: a rounded backdrop
+     makes the peek `Live` (`is_copyable`, `is_live`), which carries no
+     ring copy (`WindowPeek::carry_ring`). Inferred: a square ring with
+     a rounded-corner *border* and no backdrop is possible in config;
+     the corner slice must then also take in `corner_radius`.
+   - The ring's stroke is a vertical gradient over the top
+     `HIGHLIGHT_FALLOFF` (0.35) of its height (`BorderVisual`). The
+     side slices stretch it with the height, as the real ring does at
+     the new size; only the part inside the corner slices keeps its
+     old length. Inferred invisible; look for it in 10b's check.
+   - The slices need a source that does not change during the drag.
+     Today `carry_ring` (`peek_view.rs`) parks the ring at the real
+     window's own frame on every tick (`overlay.park(&ring_frame, ..)`),
+     which resizes the ring's window and its visual by their own
+     routes. For a peek whose window is being resized the ring stays
+     parked where it was taken over, and only the slices' destinations
+     change. `Handover`'s steps and their order are untouched: the ring
+     is still shown again at the landed frame under the copy
+     (`Handover::Revealed`).
+   - Cost: up to 8 updates per ring per frame, but `Thumbnail::set`
+     sends only what changed; dragging one edge changes five slices.
+     With the window, two fill strips, a backdrop crop and a vignette,
+     about ten calls per changed window per frame. Not measured:
+     `perf::Stage::PeekFrame` is where it shows.
+   - A whole ring is the one-slice case of the same type, so
+     `WorkspaceSurrogate` and peeks that never change size keep one
+     thumbnail and one code path draws both.
+3. **The backdrop covers any frame; one flaw in how the frame is
+   mapped.** `CropCopy::place` cuts `window_frame ∩ clip` out of a
+   source spanning the monitor, so any frame on the monitor is covered.
+   But `BackdropCopy::place_current` gets that frame from
+   `map_rect(frame_rest, window_rest, placement.frame)`, which scales
+   the invisible-border inset with the window: at 1.5 times the width a
+   7 px inset becomes 10 px, and the backdrop ends 3 px short of the
+   frame on each side. During a drag `carry_ring` re-reads the rest
+   rects every tick (`WindowPeek::follow_window`), so the error stays
+   under a pixel; for a keyboard resize (10e) the window may stay at
+   its old size for the whole motion, and a see-through window would
+   show it. 10b fixes it by placing the copies at the frame minus the
+   inset, not scaled.
+4. **Sampling.** Rule, per axis: source length = the smallest of (the
+   window's size as last read, the frame, every size sent to the window
+   and not yet read back); destination = that length from the frame's
+   top-left, 1:1; fill = the rest of the frame.
+   - The read: `carry_ring` (`peek_view.rs`) already calls
+     `frame_with_shadows()` (`GetWindowRect`) for every entry on every
+     tick and stores it for `Stretch` (`stretch.actual`). Same read, no
+     new call. It is up to a tick old, hence the third term.
+   - "Sent and not yet read back": for a drag, the rect the window's
+     placer thread holds or is applying (`WindowPlacer`'s `SlotState`:
+     `rect`, `is_placing`), exposed by a read-only method; for keyboard
+     resizes, the target, as `Stretch::reached` does today.
+   - Why the third term: a drag reverses. Window at 1000 px, 950 sent,
+     then 980 sent before 950 landed. A tick reads 1000 and has a frame
+     of 980; 950 lands before DWM composes; 980 is oversampled. An
+     oversampled source "renders as a transparent hole"
+     (`NativeSurrogate`'s doc; whether all of it or only the excess is
+     not stated anywhere: inferred the excess).
+5. **Grab integration: take-over through the redraw, by the path a
+   move on a peek takes; no new role.**
+   - Where: a step is `grab::step` → `apply_resize` →
+     `place_moved_windows`, which for each window whose target changed
+     either hands it to the placer and places its overlays
+     (`defer_window_frame`), or, if `is_placeable` says no, queues it
+     for `platform_sync`'s redraw. The end is `grab::finish`
+     (`placer.finish()`, then a redraw of every window the resize can
+     have moved); Escape is `finish` with `GrabEnd::Cancelled`, which
+     first steps back to a delta of 0.
+   - Role: `Role::Moving { ends_shown: true }` with a hold flag on the
+     `Entry`, not a new `Role`. Every existing test then holds
+     unchanged: `owns_window`, `is_moving` (frozen in the redraw),
+     `follows_tile`, `retarget_tile`, `track_overlays`, strays, and the
+     landing in `PeekView::tick`, which only gains "and not held". No
+     `Role` transition is added, so rule 5 is not touched.
+   - Take-over, in the scroll view's order (`sync_scroll_view`,
+     `flush_overlays`) as task 6 already runs it for a tile: on the
+     first step that changes a window not yet on a peek, the step
+     queues it for redraw instead of placing it. The redraw puts up a
+     warmed-up peek at the window's rect (`PeekView::move_tile` →
+     `new_entry` → `WindowPeek::warm_up`), lists it in `peek_moves`,
+     and from there nothing is new: `cover_moved_overlays`, then
+     `commit_pending_cloaks` (one `DwmFlush` for the pass,
+     `PeekView::take_over`, cloak, `preposition_cloaked` at the new
+     rect), then `hand_over_moved_overlays`. From the next step on the
+     window goes to the placer, cloaked, and its peek is retargeted.
+   - The redraw must do this ahead of its animation gate:
+     `apply_resize` calls `suppress_animations()`, and
+     `should_use_animations` is then false unless the window is already
+     frozen. Same place and shape as `enters_on_peek`
+     (`is_frozen_by_ws_animation |= peeks.is_moving(..)`).
+   - `is_placeable` and `is_grabbable` both refuse a window a peek
+     owns. `is_placeable` must let through one this grab holds;
+     `is_grabbable` stays as it is (no new grab starts on a moving
+     peek).
+   - Latency: the first changing step is shown one composition late
+     (the flush) plus a tick. Every later step is drawn on the next
+     frame tick, not on the mouse event: at most a frame behind the
+     cursor, the same for every window.
+   - Drawn on the tick, not in the step. A step only retargets
+     (`retarget_tile`, duration 0: it jumps, as `follow_duration` does
+     for a floating window). `PeekView::tick` draws, on vblank ticks,
+     so the run of updates sits where task 7 put it.
+   - Not raised: `raise_moving` puts a moving peek on top, over
+     floating windows it passes. A held peek stays where it went up,
+     directly below its window, for the whole drag.
+   - A window closing or hiding mid-drag: `drop_strays` → `is_stray`
+     takes a non-column `Moving` entry no longer shown, and queues its
+     window for redraw. The grabbed window going ends the grab
+     (`sync_listener`). A workspace switch does not end it today unless
+     focus moves to another window (`note_focused`): 10c adds "its
+     workspace is no longer displayed" to `sync_listener`'s `is_lost`.
+6. **End of the drag: the existing hand-back, with one wait; no
+   fade-off first.** `finish` clears the hold. The next tick finds the
+   entry landed (duration 0) and takes the normal road:
+   `begin_hand_back`, `Landed::shown`, the redraw's `Apply` branch
+   (`prepare_hand_back`, a synchronous `SetWindowPos` because
+   `peeks.owns_window`, guarded by `allows_sync_reposition` for a hung
+   app, uncloak, `release`), `Role::Releasing`, `hand_back`. The one
+   addition: a held entry lands only once its window is read at its
+   target's size, or 150 ms after the release, so the swap is not from
+   a filled strip to a window still short. Same hook as
+   `Stretch::is_settled`. The fade-off (end of this task) stays an A/B
+   for later: it is a second kind of hand-back, and this one is the one
+   tuned.
 
-Risks: the take-over at the start of a drag (a frame of latency, and a
-window shown and its peek not yet composited); windows that can't be
-drawn (elevated, see `docs/grab-and-move.md`: not grabbed at all, so
-fine) and `Live` peeks (rounded corners, parallax != 1), which keep the
-live path; the fill's colour (sampled, see `27c65bb`, `3b3595d`); rule
-5's hand-over code reused for a role it was not tuned on.
+**Owner's check before any code (five minutes, today's build).** In a
+scrolling layout, scroll until a browser column playing a video, then
+an Electron app with something moving, is cut by the monitor's edge
+and at rest. That column is a resting peek: a thumbnail of a cloaked
+window. Does it keep playing, at full rate, for a minute? If it
+freezes or stutters, a drag on peeks will too, for that app.
+
+#### 10b. `fill` drawing on `WindowPeek`
+
+Three commits. No grab code yet.
+
+**10b-1. Ring copy in slices.** In `overlay_copies.rs`: the ring copy
+holds a list of slices, each a `Thumbnail` of the ring's window with a
+fixed source and a rule for its destination (corner: 1:1 at its corner
+of the frame; edge: stretched between two corners). `carry_ring` takes
+whether to slice; whole is one slice. `raise_ring`, `set_ring_opacity`,
+`cover_ring`, `hide_ring` loop over the slices; `raise_ring` still
+registers the new ones before dropping the old. A pure function gives
+`(source, dest)` per slice from the ring's rest, the window's rest, the
+frame, the clip and the origin, cut at the clip as `copy_rects` is;
+unit tests: at rest the slices tile the whole ring exactly; at another
+size corners keep their size and the edges meet them; cut at the clip.
+Sliced for peeks that stretch (`Entry::stretch`); `carry_ring`
+(`peek_view.rs`) then parks the ring once and leaves it parked at that
+rect while its window's size changes (10a.2).
+- Reuses: `Thumbnail`, `placed_rects`, `OverlayCopy`.
+- Deletes: nothing yet. Closes `TODO.md` "Still open" 5 (the ring
+  copy's thickness stepping under `stretch`).
+- Rule 5: `Handover` steps and their order unchanged; only what a ring
+  copy is made of, and that a resizing window's ring is not re-parked.
+  Say so in the commit.
+- Windows API: `DwmRegisterThumbnail`, `DwmUpdateThumbnailProperties`,
+  `DwmUnregisterThumbnail`. None new.
+- Live check: `window_resize: { style: "stretch", duration_ms: 2000 }`,
+  a border with a glow. Grow and shrink a tile by keyboard: the ring
+  keeps its thickness and its corners their shape all the way, and
+  nothing changes at the hand-back. Then a pure move, a workspace
+  switch and a scroll: as before.
+
+**10b-2. The fill's source and strips.** A `FillSource` beside
+`BackdropSource` (`backdrop_source.rs`): an `OverlayWindow` of
+`OverlayKind::BackdropSource` (no new window class), alpha 0, a few
+pixels square at the bottom of the z-order, a `SurrogateFill` on it
+painting it whole; `acquire(colour)` shares one per colour and keeps a
+couple idle, as `BackdropSource::acquire`. In `OverlayCopies`: two
+strip thumbnails of it, registered after the backdrop crops and before
+the window's thumbnail is put back on top (`carry_backdrop`'s order
+note and `NativeSurrogate::raise_thumbnail`), placed by a pure function
+from the frame, the content's covered extent, the clip and the origin
+(`fill_start`'s underlap; nothing when the content covers the frame).
+Unit tests on that function.
+- Reuses: `OverlayWindow`, `SurrogateFill`, `Thumbnail`, `fill_start`,
+  `FILL_UNDERLAP_PX`, `fade_fraction`.
+- Deletes: nothing yet; in 10f `SurrogateFill`'s two-sprite layout and
+  `NativeSurrogate`'s `fill`, `covered`, `set_fill_color`,
+  `set_covered` go, leaving `SurrogateFill` one sprite.
+- Windows API: `CreateWindowExW`, `SetLayeredWindowAttributes`,
+  `SetWindowPos` (through `OverlayWindow`), `CreateDesktopWindowTarget`
+  and a colour brush (through `SurrogateFill`), the thumbnail calls.
+  None new.
+- Live check: with 10b-3.
+
+**10b-3. `WindowPeek::place_filled` and the sampling rule.**
+`place_filled(sampled, rect, clip, opacity, batch)`: content 1:1 from
+the frame's top-left, `sampled` long per axis (10a.4, computed by the
+caller), cut at the frame and the clip; strips over the rest; ring
+slices and backdrop at the frame, the backdrop at the frame minus the
+inset instead of `map_rect` (10a.3). A pure `filled_rects` beside
+`stretched_rects`, with tests: at its size 1:1 and no strip; short of
+the frame, a strip of the difference less the underlap; larger than the
+frame, cut and never sampled past the frame; a size in flight smaller
+than both caps the source; cut at the clip. The order of the calls in a
+frame is fixed and said in a comment: backdrop, strips, content, ring
+slices, so a composition mid-run shows an edge a frame late rather than
+a hole. To see it: a `GLAZEWM_ISOLATE` word, `fillpeeks`, off by
+default, that makes task 8's stretch path draw with `place_filled`
+(`Entry::draw_stretched`), the strip in the cached edge colour. Listed
+in `TODO.md` "Live-check switch"; 10e turns it into the real path.
+- Reuses: `placed_rects`, `to_logical`, `ScaledRects`, `Stretch`'s
+  `actual` read, `cached_edge_color`.
+- Deletes: nothing yet; in 10f `place_stretched`, `stretched_rects`,
+  `covering` and `STRETCH_SETTLE` go if the owner drops `stretch`
+  (their call: it is the only other style).
+- Rule 5: `WindowPeek::draw`, `take_over`, `prepare_hand_back`,
+  `hand_back` untouched; `place_filled` is a sibling of
+  `place_stretched`.
+- Windows API: `DwmUpdateThumbnailProperties`. None new.
+- Live check: `GLAZEWM_ISOLATE=fillpeeks`, `window_resize: { style:
+  "stretch", duration_ms: 2000 }`, two tiles, a window resized by
+  keyboard once before (so its colour is cached). Shrink it: its app
+  shrinks at once behind the cloak, so for two seconds the strip fills
+  the rest of the tile. The strip's far edge, the ring and the gap move
+  as one; its colour matches the window's edge; no line between content
+  and strip; a see-through window's strip is not darker than the
+  window. Grow it: content cut at the tile, no strip once the app has
+  grown, no hole at any point.
+
+#### 10c. Grab resizes on peeks
+
+Behind `draw: "peeks"`. Tiled windows of split and dwindle layouts
+first, scrolling columns last. Five commits.
+
+**10c-1. The option and the hold.** `GrabAndMoveConfig::draw`
+(`"live"` default, `"peeks"`), docs in `docs/grab-and-move.md` and the
+sample config. `Entry::held`, set and cleared by
+`PeekView::hold(id, bool)`; `tick` lands a `Moving` entry only if not
+held, and a just-released one only once its window is read at its
+target's size or 150 ms on (10a.6). Unit tests beside
+`landing_needs_both_tracks`. Nothing sets the flag yet.
+- Reuses: `Role::Moving`, `has_landed`, the `Stretch::is_settled` hook.
+- Windows API: none.
+- Live check: none possible (no caller); `draw: "peeks"` must change
+  nothing yet. Checked with 10c-2.
+
+**10c-2. Take-over on the first step.** `grab::holds_on_peek(window,
+state, config)`: `draw` is `peeks`, a resize grab is under way on the
+window's workspace, and the window qualifies as `stretches_relayout`
+asks of each tile (tiling, shown, on its monitor, not `Live`, no other
+stand-in), and is not in a stack. `is_placeable` refuses such a window
+until a peek holds it, so `place_moved_windows` queues it for redraw.
+In `redraw_containers`, beside `enters_on_peek`: such a window goes up
+by `move_tile` (duration 0, sliced ring, `fill` drawing, held), is
+frozen from then on and pushed to `peek_moves`; it is not passed to
+`raise_moving`. The rest is the existing take-over (10a.5).
+`queue_first_edge_sample` also queues when `draw` is `peeks`.
+- Reuses: `move_tile`, `new_entry`, `warm_up`, `cover_moved_overlays`,
+  `commit_pending_cloaks`, `hand_over_moved_overlays`,
+  `preposition_cloaked`.
+- Rule 5: none changed. `commit_pending_cloaks`' single flush and
+  `FrozenStep` are used as they are.
+- Windows API: `DwmFlush`, `DwmSetWindowAttribute(DWMWA_CLOAK)`,
+  `SetWindowPos` (async, existing flags), thumbnail calls. None new.
+- Live check: after 10c-3 (a held window that is never stepped or
+  released is not a state to test).
+
+**10c-3. Steps.** `WindowPlacer::unlanded(window) -> Option<Rect>`:
+the smaller, per axis, of the rect waiting and the rect being applied.
+In `place_moved_windows`, a held window is placed by the placer as now
+(same flags: no frame change, no discarded bits), its peek retargeted
+(`retarget_tile`, duration 0), and `defer_window_frame` skipped: its
+ring and backdrop are copies. `carry_ring`'s per-tick read feeds
+`place_filled` with 10a.4's rule.
+- Reuses: `WindowPlacer`, `retarget_tile`, `carry_ring`'s read,
+  `place_filled`.
+- Windows API: `SetWindowPos` on the placer's threads (existing, same
+  flags), `GetWindowRect`, thumbnail calls. None new. No new thread:
+  the placer's per-window threads exist.
+- Live check: with 10c-4.
+
+**10c-4. The end, Escape, strays.** `finish` clears every hold of the
+grab before its redraws; a cancelled grab steps back first, as now.
+`sync_listener` also ends a grab whose workspace is no longer
+displayed. A unit test in `grab.rs` beside
+`the_end_of_a_resize_syncs_every_window`: after `finish` no entry is
+held.
+- Reuses: `finish`, `end_early`, `drop_strays`, the whole hand-back.
+- Rule 5: none changed.
+- Windows API: none new.
+- **Live check, round 1** (split layout, `draw: "peeks"`, a border and
+  a gap wide enough to see):
+  - Two tiles, then three with a nested split. Drag an edge slowly,
+    then fast, then back and forth quickly. Gap and rings solid: no
+    window over its own or its neighbour's ring, at any speed.
+  - A slow app (browser, Electron, Outlook) beside a quick one
+    (Notepad). Content keeps updating during the drag; edge colour
+    where the slow one lags when growing; never a hole to the desktop.
+  - The start: the first movement shows within a frame or two, with no
+    blink, no blank window, no ring drawn twice. The end: release, and
+    nothing moves, blinks or changes size; the shadow's return is the
+    only change.
+  - Press and release without moving: nothing is cloaked (no blink at
+    all).
+  - Escape mid-drag; the grabbed window closed mid-drag (by the WM's
+    close keybinding); a neighbour closed mid-drag; a workspace switch
+    mid-drag; lock the screen (Win+L) mid-drag and come back. After
+    each: every window visible, at its tile, clickable, and no "stuck"
+    report in the WM's log (`report_stuck_windows`).
+  - Compare with `draw: "live"` on the same windows.
+
+**10c-5. Scrolling columns.** `sync_scroll_view` asks
+`grab::holds_on_peek` for the columns of the grab's workspace and
+passes the hold to `upsert`, which gives such a column `Role::Moving`
+with duration 0, held, sliced, `fill`; a resting peek (`Role::Peek`,
+already cloaked) becomes held with no take-over. Columns leaving the
+view keep `ends_shown: false` and are dropped as now.
+- Reuses: `sync_scroll_view`, `upsert`, `column_moves`, `take_departed`.
+- Rule 5: none changed.
+- Windows API: none new.
+- **Live check, round 2** (scrolling layout): drag a column's right
+  edge so its neighbours slide; past the screen's edge so the view
+  scrolls (`docs/grab-and-move.md`, "Past the screen's edge"); a row
+  boundary inside a column; a column partly off screen at the start.
+  Same things to look for as round 1, plus: columns cut at the
+  monitor's edge stay cut, on two monitors nothing shows on the other.
+
+#### 10d. Grab moves on peeks (optional, owner's call after 10c)
+
+The picture translated, the real window moved cloaked by the mover
+thread. One commit. A move never changes size, so no fill and no
+slices: `place` as a tile move, held. Worth it only if the owner sees
+the ring trail a moved window today (`follow_move` already places it
+ahead of the window's own report).
+- Windows API: none new.
+- Live check: drag a floating and a tiled window by the modifier,
+  across monitors of different DPI (the app rescales as it crosses: the
+  one case where a move changes size, which must fall back to live).
+
+#### 10e. Keyboard `fill` resizes on peeks
+
+More than "the same drawing": the old engine also decides *when* the
+app is resized, and waits for it at the end. Three commits.
+
+**10e-1. When the app is resized.** `ResizeSession::needs_preposition`
+today: a window growing on both axes is resized at the start (content
+arrives under the cut: a curtain); one that shrinks on either axis
+stays at its old size until `pre_commit` (a wipe, no strip), with the
+strip on any grown axis. On peeks: `preposition_cloaked` for a held or
+moving peek with `fill` follows the same test; the size a shrinking
+window is owed is sent as it lands, which the redraw's `Apply` branch
+already does synchronously for a window a peek owns. `fillpeeks` then
+means: `fill` relayouts go on peeks (`stretches_relayout`'s test,
+renamed for both styles).
+- Reuses: `move_on_peek`, `stretches_relayout`, `retarget_tile`,
+  `place_filled`, `follow_retargeted_column`.
+- Deletes: nothing yet.
+- Windows API: none new.
+- Live check: `GLAZEWM_ISOLATE=fillpeeks`, `style: "fill"`, 2000 ms and
+  150 ms: grow, shrink, a mixed resize (one axis each way), a held
+  resize key, open a window beside two, close one of three. Against
+  the same without the word.
+
+**10e-2. The landing wait.** `pre_commit` waits up to
+`COMMIT_CONFIRM_MAX_WAIT` (500 ms) for the window to report its size
+before the stand-in goes. On peeks: 10c-1's wait, with that cap for
+keyboard resizes. Mid-motion retargets: `retargeted_motion`, as
+`stretch`.
+- Live check: as 10e-1, with a slow app; look at the last frames and
+  the hand-back only.
+
+**10e-3. Default.** After the owner's A/B and say-so: `fill` on peeks
+unless `nopeeks`; `fillpeeks` goes. Its own one-line commit (rule 4).
+
+#### 10f. Delete the old engine
+
+Only once 10e-3 has been lived with, and only kind by kind (task 9's
+rule). `ResizeSession` is still reached, after 10e, by more than this
+task first listed. `grep -n "SessionOptions {" manager.rs` finds its
+three makers: `start_animation_if_needed`, `start_open_animation`,
+`start_away_animation`. What reaches them then:
+
+| Still on `ResizeSession` | Way out |
+|---|---|
+| Opens, closes, minimizes with `nopeeks` | Task 9: drop `nopeeks` |
+| A WM fullscreen toggle (`Motion::Fullscreen`) | Port (a resize on a peek) or unanimated: owner |
+| Floating ↔ tiling, floating moves by command | Port or unanimated: owner |
+| A tile moving to another monitor (`move_on_peek` refuses) | Two peeks, or unanimated: owner |
+| `Live` peeks: rounded backdrop, parallax != 1 | Unanimated, or keep the engine: owner |
+| Windows with no thumbnail (elevated) | Already snap (`move_tile`) |
+| Mixed relayouts (`stretches_relayout` false) | Gone once every row above is |
+
+So 10f starts with a decision per row, recorded here, then:
+
+1. Move out of `resize_session.rs` what others use: `compute_border_inset`
+   (`window_peek.rs`, `workspace_surrogate.rs`, `companion_cover.rs`),
+   the edge colour sampler
+   (`sample_edge_color_async`, `sample_edge_color`, `dominant_color`,
+   `EdgeColorCache`). Move only.
+2. One commit per row: its last caller gone, then the branch.
+3. `ResizeSession` and `SessionOptions`; `AnimationManager`'s
+   `resize_sessions` and what only it feeds (`FrozenStep::Adopt`,
+   `was_pre_committed_at`, `reveal_session`: check each with `grep`);
+   `NativeSurrogate`'s session-only parts (`stretch`, `update`,
+   `update_thumbnail_dims`, `reregister_thumbnail`, `show_clipped` if
+   `Live` goes, the fill fields). `NativeSurrogate` itself stays: a
+   peek and a `WorkspaceSurrogate` are built on it.
+4. `nopeeks`, `fillpeeks`, and `TODO.md`'s entries for them.
+
+`FrozenStep` is rule 5 code: step 3 removes a variant nothing reaches,
+and must say so. If any row is kept on the engine, the engine stays and
+the end state is two systems with one of them rarely used: say that
+plainly rather than half-delete it.
+
+- Windows API: none new; calls only go.
+- Live check after each commit: the kind it touched, once, and one
+  drag, one keyboard resize, one open and close.
+
+#### Size of the task
+
+About 12 commits to the end of 10e (3 + 5 + 3, and the default), one
+more for 10d if wanted, and 5 to 8 for 10f depending on the table.
+Owner's rounds: the pre-check, 10b (one sitting), 10c twice, 10e
+twice, 10f once per row; six at best, and task 8 took three builds for
+one round, so plan for about ten.
+
+#### Risks
+
+- The pre-check failing (apps that stop painting while cloaked): ends
+  the task.
+- A composition inside the run of updates (see "Limits"). If round 1
+  shows it, turn on `peeksfirst` (task 7, built, unmeasured) before
+  changing anything else.
+- The take-over: a frame of latency, and the first drag on a window
+  whose colour was never sampled has no strip.
+- The WM thread now ticks every frame for the whole drag
+  (`PeekView::is_active`), also while the mouse is still.
+- Eight slices per ring: more DWM calls per frame; unmeasured.
+- Rule 5's hand-over reused for a window whose size changed while it
+  was held. Tasks 6 and 8 did the same for moves and `stretch`; neither
+  has passed a live check yet, and this task stands on both.
+- A crash mid-drag leaves windows cloaked until `wm-watcher` cleans up,
+  as for any animation, but a drag lasts longer than one.
+- The live path stays for floating windows, stacks and `Live` peeks, so
+  the mouse feature ends with two ways to draw, not one.
 
 The fade-off idea (2026-11-12, not built): at a hand-back, uncloak the
 real window under its peek and fade the peek out over ~60 ms, as the
