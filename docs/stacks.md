@@ -32,12 +32,18 @@ These are available for your own bindings or scripts:
 Moving or resizing a window in a stack moves or resizes the stack as a
 whole. Directional focus enters a stack through its active tab.
 
-A WPF window that sizes itself to its content (`SizeToContent`) is asked
-once, as GlazeWM first gives it a new size (in a stack, a tile, or by a
-resize command), to lay its content out to the size it gets, as after a
-resize with the mouse. Without that it kept drawing at its own size and
-left the rest of its tab white. A floating window GlazeWM only moves
-keeps sizing itself.
+WPF windows lay their content out to the size GlazeWM gives them, in a
+stack, a tile, or by a resize command or grab. GlazeWM asks a window for
+its minimum size with the defaults Windows itself hands it; asked with
+zeroes, as before, WPF took 0x0 for its maximum, laid its content out at
+its minimum size from then on and left the rest of its tab white, until
+a resize by its border. A WPF window that sizes itself to its content
+(`SizeToContent`) is asked, as GlazeWM changes its size, to lay its
+content out to the size it gets, as after a resize with the mouse, until
+it answers once. A floating window GlazeWM only moves keeps sizing
+itself. How each WPF window answers is logged to
+`~/.glzr/glazewm/wpf.log`, along with a size past the most the window
+allows (WPF draws no larger than that).
 
 Closing or removing a tab never changes the stack's size. An unnamed stack
 is removed once it holds a single window, which then takes over the

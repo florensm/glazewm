@@ -108,6 +108,10 @@ pub use workspace_surrogate::{LiveFrame, WorkspaceSurrogate};
 /// closing zoom, which the WM writes to a file of its own.
 pub const OVERVIEW_LOG_TARGET: &str = "glazewm::overview";
 
+/// `tracing` target of how WPF windows answer what the WM asks of them
+/// as it sizes them, which the WM writes to a file of its own.
+pub const WPF_LOG_TARGET: &str = "glazewm::wpf";
+
 /// Stops Windows from creating "ghost" windows for this process.
 ///
 /// Every overlay and surrogate window is created on the WM's own thread,

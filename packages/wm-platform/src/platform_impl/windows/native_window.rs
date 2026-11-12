@@ -41,8 +41,8 @@ use windows::{
       WindowsAndMessaging::{
         EnumWindows, FlashWindowEx, GetAncestor, GetClassNameW,
         GetDesktopWindow, GetForegroundWindow, GetGUIThreadInfo,
-        GetLayeredWindowAttributes, GetShellWindow, GetWindow,
-        GetWindowLongPtrW, GetWindowRect, GetWindowTextW,
+        GetLayeredWindowAttributes, GetShellWindow, GetSystemMetrics,
+        GetWindow, GetWindowLongPtrW, GetWindowRect, GetWindowTextW,
         GetWindowThreadProcessId, IsIconic, IsWindow, IsWindowVisible,
         IsZoomed, SendMessageTimeoutW, SendNotifyMessageW,
         SetForegroundWindow, SetLayeredWindowAttributes,
@@ -53,13 +53,14 @@ use windows::{
         GW_HWNDPREV, GW_OWNER, HWND_NOTOPMOST, HWND_TOP, HWND_TOPMOST,
         LAYERED_WINDOW_ATTRIBUTES_FLAGS, LWA_ALPHA, LWA_COLORKEY,
         MINMAXINFO, SET_WINDOW_POS_FLAGS, SMTO_ABORTIFHUNG, SMTO_BLOCK,
-        SWP_ASYNCWINDOWPOS, SWP_FRAMECHANGED, SWP_NOACTIVATE,
-        SWP_NOCOPYBITS, SWP_NOMOVE, SWP_NOOWNERZORDER, SWP_NOSENDCHANGING,
-        SWP_NOSIZE, SWP_NOZORDER, SWP_SHOWWINDOW, SW_HIDE, SW_MAXIMIZE,
-        SW_MINIMIZE, SW_RESTORE, SW_SHOWNA, WINDOWPLACEMENT,
-        WINDOW_EX_STYLE, WINDOW_STYLE, WM_CLOSE, WM_GETMINMAXINFO,
-        WPF_ASYNCWINDOWPLACEMENT, WS_DLGFRAME, WS_EX_LAYERED,
-        WS_EX_TOPMOST, WS_THICKFRAME,
+        SM_CXMAXIMIZED, SM_CXMAXTRACK, SM_CXMINTRACK, SM_CXSCREEN,
+        SM_CYMAXIMIZED, SM_CYMAXTRACK, SM_CYMINTRACK, SWP_ASYNCWINDOWPOS,
+        SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOCOPYBITS, SWP_NOMOVE,
+        SWP_NOOWNERZORDER, SWP_NOSENDCHANGING, SWP_NOSIZE, SWP_NOZORDER,
+        SWP_SHOWWINDOW, SW_HIDE, SW_MAXIMIZE, SW_MINIMIZE, SW_RESTORE,
+        SW_SHOWNA, WINDOWPLACEMENT, WINDOW_EX_STYLE, WINDOW_STYLE,
+        WM_CLOSE, WM_GETMINMAXINFO, WPF_ASYNCWINDOWPLACEMENT, WS_DLGFRAME,
+        WS_EX_LAYERED, WS_EX_TOPMOST, WS_THICKFRAME,
       },
     },
   },
@@ -421,12 +422,28 @@ impl NativeWindow {
 
   /// Implements [`crate::NativeWindow::min_window_size`].
   pub(crate) fn min_window_size(&self) -> Option<(i32, i32)> {
-    let mut info = MINMAXINFO::default();
+    self.size_limits(MIN_SIZE_TIMEOUT_MS).map(|(min, _)| min)
+  }
+
+  /// Smallest and largest tracking size the window's app allows, as it
+  /// answers `WM_GETMINMAXINFO` within `timeout_ms`.
+  ///
+  /// Asked with the defaults the system fills in before it sends the
+  /// message itself: an app may keep what it is handed, as WPF's `Window`
+  /// does (`WmGetMinMaxInfo`), which then lays out no larger than the
+  /// maximum. Sent zeroed, a WPF window took 0x0 for its maximum and
+  /// shrank its content to its minimum on every later resize, until the
+  /// system's own message (a resize by its border) put it right.
+  pub(crate) fn size_limits(
+    &self,
+    timeout_ms: u32,
+  ) -> Option<((i32, i32), (i32, i32))> {
+    let mut info = default_min_max_info();
     let mut result = 0usize;
 
     // SAFETY: `info` outlives the call, and the system copies it to and
     // from the window's process. A hung or slow app makes the call fail
-    // after `MIN_SIZE_TIMEOUT_MS` instead of blocking.
+    // after `timeout_ms` instead of blocking.
     let answered = unsafe {
       SendMessageTimeoutW(
         self.hwnd(),
@@ -434,26 +451,25 @@ impl NativeWindow {
         WPARAM(0),
         LPARAM(std::ptr::from_mut(&mut info) as isize),
         SMTO_ABORTIFHUNG | SMTO_BLOCK,
-        MIN_SIZE_TIMEOUT_MS,
+        timeout_ms,
         Some(&raw mut result),
       )
     };
 
-    (answered.0 != 0)
-      .then_some((info.ptMinTrackSize.x, info.ptMinTrackSize.y))
+    (answered.0 != 0).then_some((
+      (info.ptMinTrackSize.x, info.ptMinTrackSize.y),
+      (info.ptMaxTrackSize.x, info.ptMaxTrackSize.y),
+    ))
   }
 
-  /// Implements [`crate::NativeWindow::release_size_to_content`].
-  pub(crate) fn release_size_to_content(&self) {
+  /// Implements [`crate::NativeWindow::note_sized`].
+  pub(crate) fn note_sized(&self, size: (i32, i32)) {
     let is_wpf = self
       .class_name()
       .is_ok_and(|class| size_to_content::is_wpf_class(&class));
 
-    if is_wpf && size_to_content::release(self.handle) {
-      tracing::debug!(
-        "Asking WPF window {:#x} to turn off SizeToContent.",
-        self.handle
-      );
+    if is_wpf {
+      size_to_content::note_sized(self.handle, size);
     }
   }
 
@@ -1226,6 +1242,37 @@ pub(crate) fn visible_windows(
 pub(crate) fn focused_window(_: &Dispatcher) -> crate::NativeWindow {
   let handle = unsafe { GetForegroundWindow() };
   NativeWindow::new(handle.0).into()
+}
+
+/// The `MINMAXINFO` defaults the system hands a top-level window with
+/// `WM_GETMINMAXINFO` (see its documentation): tracking sizes from
+/// `SM_C?MINTRACK` and `SM_C?MAXTRACK`, maximized size from
+/// `SM_C?MAXIMIZED`, at the primary monitor's top-left less the frame.
+fn default_min_max_info() -> MINMAXINFO {
+  // SAFETY: No preconditions.
+  let metric = |index| unsafe { GetSystemMetrics(index) };
+  let max_size = POINT {
+    x: metric(SM_CXMAXIMIZED),
+    y: metric(SM_CYMAXIMIZED),
+  };
+  let frame = (max_size.x - metric(SM_CXSCREEN)) / 2;
+
+  MINMAXINFO {
+    ptReserved: POINT::default(),
+    ptMaxSize: max_size,
+    ptMaxPosition: POINT {
+      x: -frame,
+      y: -frame,
+    },
+    ptMinTrackSize: POINT {
+      x: metric(SM_CXMINTRACK),
+      y: metric(SM_CYMINTRACK),
+    },
+    ptMaxTrackSize: POINT {
+      x: metric(SM_CXMAXTRACK),
+      y: metric(SM_CYMAXTRACK),
+    },
+  }
 }
 
 /// A yes-or-no `class` of `process`'s token (e.g. `TokenElevation`), or

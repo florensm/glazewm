@@ -1397,7 +1397,7 @@ fn redraw_containers(
 
     // Here rather than where the window is moved, which an animation or
     // a drag can do instead.
-    release_size_to_content_once(window, &real_rect);
+    note_size_change(window, &real_rect);
 
     let is_visible = matches!(
       window.display_state(),
@@ -2193,47 +2193,35 @@ fn redraw_containers(
   })
 }
 
-/// Asks `window`, if it is a WPF window sizing itself to its content, to
-/// lay its content out to the WM's sizes instead (see
-/// `NativeWindow::release_size_to_content`), once the WM first changes its
-/// size to `rect`.
+/// Tells `window`'s platform side that the WM changes its size to `rect`
+/// (see `NativeWindow::note_sized`), for a WPF window to lay its content
+/// out to it.
 ///
 /// Keyed off the size changing rather than the window's state, so that a
 /// floating window the WM only moves keeps sizing itself, while one it
 /// resizes, a tile, a fullscreen window and every tab of a stack are
-/// asked.
-fn release_size_to_content_once(window: &WindowContainer, rect: &Rect) {
-  let mut was_released = true;
-  window.update_native_properties(|properties| {
-    was_released = properties.size_to_content_released;
-  });
-
-  let releases = should_release_size_to_content(
-    was_released,
+/// covered.
+pub(crate) fn note_size_change(window: &WindowContainer, rect: &Rect) {
+  let is_resized = should_note_size(
     window.state() == WindowState::Minimized,
     || window.native().frame_with_shadows().ok(),
     rect,
   );
 
-  if releases {
-    window.native().release_size_to_content();
-    window.update_native_properties(|properties| {
-      properties.size_to_content_released = true;
-    });
+  if is_resized {
+    window.native().note_sized((rect.width(), rect.height()));
   }
 }
 
-/// Whether a window at `current` is asked as the WM sizes it to `target`
-/// (see [`release_size_to_content_once`]). A minimized one is left alone:
-/// it would lay out to its minimized size.
-fn should_release_size_to_content(
-  was_released: bool,
+/// Whether a window at `current` changes size as the WM sizes it to
+/// `target` (see [`note_size_change`]). A minimized one is left
+/// alone: it would lay out to its minimized size.
+fn should_note_size(
   is_minimized: bool,
   current: impl FnOnce() -> Option<Rect>,
   target: &Rect,
 ) -> bool {
-  !was_released
-    && !is_minimized
+  !is_minimized
     && current().is_some_and(|current| {
       current.width() != target.width()
         || current.height() != target.height()
@@ -3903,8 +3891,7 @@ mod tests {
   use wm_platform::{NativeBackdropOverlay, OpacityValue, Rect};
 
   use super::{
-    is_unanimated_reveal, should_release_size_to_content, FrozenStep,
-    SyncableOverlay,
+    is_unanimated_reveal, should_note_size, FrozenStep, SyncableOverlay,
   };
   use crate::user_config::UserConfig;
 
@@ -3930,52 +3917,24 @@ mod tests {
   }
 
   #[test]
-  fn releases_size_to_content_as_the_wm_first_resizes_a_window() {
+  fn notes_every_size_the_wm_changes() {
     let target = Rect::from_xy(0, 0, 800, 600);
     let at =
       |width, height| move || Some(Rect::from_xy(40, 40, width, height));
 
-    assert!(should_release_size_to_content(
-      false,
-      false,
-      at(400, 600),
-      &target
-    ));
-    assert!(should_release_size_to_content(
-      false,
-      false,
-      at(800, 300),
-      &target
-    ));
+    assert!(should_note_size(false, at(400, 600), &target));
+    assert!(should_note_size(false, at(800, 300), &target));
   }
 
   #[test]
-  fn keeps_size_to_content_of_a_window_only_moved() {
+  fn leaves_a_window_only_moved_or_minimized_alone() {
     let target = Rect::from_xy(0, 0, 800, 600);
     let moved = || Some(Rect::from_xy(40, 40, 800, 600));
-
-    assert!(!should_release_size_to_content(
-      false, false, moved, &target
-    ));
-    assert!(!should_release_size_to_content(
-      false,
-      false,
-      || None,
-      &target
-    ));
-  }
-
-  #[test]
-  fn releases_size_to_content_once_and_never_while_minimized() {
-    let target = Rect::from_xy(0, 0, 800, 600);
     let unasked = || -> Option<Rect> { panic!("Frame read needlessly.") };
 
-    assert!(!should_release_size_to_content(
-      true, false, unasked, &target
-    ));
-    assert!(!should_release_size_to_content(
-      false, true, unasked, &target
-    ));
+    assert!(!should_note_size(false, moved, &target));
+    assert!(!should_note_size(false, || None, &target));
+    assert!(!should_note_size(true, unasked, &target));
   }
 
   #[test]

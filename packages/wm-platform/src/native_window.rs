@@ -203,15 +203,16 @@ impl NativeWindow {
     self.inner.min_window_size()
   }
 
-  /// Makes a WPF window lay its content out to whatever size it is given
-  /// from now on, as after a user's resize, rather than keep the size of
-  /// its content (`SizeToContent`), which the WM's moves bypass. No-op for
-  /// other windows.
+  /// Notes that the WM sizes the window to `size`. A WPF window is made
+  /// to lay its content out to whatever size it is given from now on, as
+  /// after a user's resize, rather than keep the size of its content
+  /// (`SizeToContent`), which the WM's moves bypass; and a size past its
+  /// maximum is logged. No-op for other windows.
   ///
-  /// Sent in the background; an app that turns `SizeToContent` on again
-  /// later isn't asked again.
-  pub fn release_size_to_content(&self) {
-    self.inner.release_size_to_content();
+  /// Done in the background, asking each window until it answers once;
+  /// an app that turns `SizeToContent` on again later isn't asked again.
+  pub fn note_sized(&self, size: (i32, i32)) {
+    self.inner.note_sized(size);
   }
 
   /// Whether the window has an owner window.
