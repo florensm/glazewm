@@ -1050,6 +1050,11 @@ in the log says it is on):
   top-left, cut at the tile, the rest of the tile in the window's edge
   colour (`STAND_INS_PLAN.md` 10b-3, 10e). Since 10e it no longer
   changes `stretch`. Off by default; compare against no variable.
+- `morepeeks`: draws on peeks what `ResizeSession` still draws: a
+  fullscreen toggle, floating <-> tiling and floating moves by command, a
+  tile moving to another monitor, windows whose backdrop can't be copied
+  (`STAND_INS_PLAN.md` 10f, entries 70 to 73). Off by default; compare
+  against no variable.
 
 Set it for one run, e.g. from PowerShell in the repo:
 

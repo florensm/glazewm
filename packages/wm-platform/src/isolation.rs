@@ -20,6 +20,10 @@
 //! - `fillpeeks`: draw `window_resize`'s `fill` style on peeks instead of
 //!   with `ResizeSession`: the window 1:1, cut at its tile, the rest of
 //!   the tile in its edge color.
+//! - `morepeeks`: draw on peeks too what `ResizeSession` still draws
+//!   with peeks on: a fullscreen toggle, floating <-> tiling and floating
+//!   moves by command, a tile moving to another monitor, and windows whose
+//!   backdrop can't be copied (`STAND_INS_PLAN.md` 10f).
 //!
 //! Read once per process.
 
@@ -37,6 +41,7 @@ pub struct Isolation {
   pub peeks: bool,
   pub peeks_first: bool,
   pub fill_peeks: bool,
+  pub more_peeks: bool,
 }
 
 impl Default for Isolation {
@@ -48,6 +53,7 @@ impl Default for Isolation {
       peeks: true,
       peeks_first: false,
       fill_peeks: false,
+      more_peeks: false,
     }
   }
 }
@@ -69,6 +75,7 @@ impl Isolation {
         "nopeeks" => isolation.peeks = false,
         "peeksfirst" => isolation.peeks_first = true,
         "fillpeeks" => isolation.fill_peeks = true,
+        "morepeeks" => isolation.more_peeks = true,
         _ => tracing::warn!("Unknown GLAZEWM_ISOLATE flag: {word}."),
       }
     }
@@ -109,6 +116,7 @@ mod tests {
         peeks: true,
         peeks_first: false,
         fill_peeks: false,
+        more_peeks: false,
       }
     );
     assert_eq!(Isolation::parse("peeks"), Isolation::default());
@@ -145,6 +153,12 @@ mod tests {
       }
     );
     assert_eq!(Isolation::parse("peeks_first"), Isolation::default());
+  }
+
+  #[test]
+  fn more_peeks_is_off_unless_given() {
+    assert!(!Isolation::default().more_peeks);
+    assert!(Isolation::parse("MorePeeks").more_peeks);
   }
 
   #[test]
