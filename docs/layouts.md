@@ -95,7 +95,10 @@ tabs. New windows open as a column right of the focused one.
   end makes a new column.
 - Resizing a column's width (`resize --width`, `size --width`) leaves the
   other columns alone. Dragging its left edge resizes it leftwards,
-  keeping its right edge in place.
+  keeping its right edge in place. A resize with the mouse
+  (`grab_and_move`, see [grab-and-move.md](grab-and-move.md)) carries on
+  past the screen's edge, up to the view's width, scrolling the view to
+  keep the dragged edge on screen.
 - A column is never narrower than the apps of its windows allow (Windows
   only). Its width stays as set, for when they allow it again.
 - `toggle-tiling-direction` and `set-tiling-direction` do nothing: columns
@@ -172,6 +175,13 @@ The view follows focus:
   alt+shift+wheel and the horizontal wheel to `focus --direction`.
 
 ## Dragging windows
+
+Dragging a tiling window's border moves only that edge: the boundary with
+the neighbour on that side, which alone gives or takes the room (in a
+scrolling layout, the column just gets wider or narrower). Windows placed
+by the mouse land at once, without animations, and so do the windows
+around them. `grab_and_move` does the same from anywhere on a window
+([grab-and-move.md](grab-and-move.md)).
 
 While a tiling window is dragged, a highlight shows where it will land if
 dropped: the half of the window or column it goes beside, or all of an

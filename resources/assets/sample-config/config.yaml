@@ -42,6 +42,17 @@ general:
     # clicking a status bar's workspace button.
     on_workspace_switch: false
 
+  # Mouse. Hold `modifier` and drag anywhere on a window: left moves it like
+  # its title bar, right resizes it from the nearest edge or corner (in a
+  # scrolling layout, past the screen's edge). Escape cancels. Off by
+  # default; see docs/grab-and-move.md.
+  grab_and_move:
+    enabled: false
+    # 'alt' or 'win'.
+    modifier: "alt"
+    # Off, right clicks with the modifier reach the window as usual.
+    resize: true
+
   # Show windows of every workspace in the taskbar, not only shown ones.
   show_all_in_taskbar: false
 

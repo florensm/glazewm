@@ -786,6 +786,77 @@ to see it; check each once more at 150 ms.
       switch (same `SetWindowsHookExW` as `click_to_scroll`'s, no new
       Windows call), and down after.
 
+59. **Grab and move** (`c33fddee`, `e1abb0c2`, `docs/grab-and-move.md`). Config
+    `general.grab_and_move: { enabled: true }`, default animations. Two
+    or three tiles, one stack, one floating window; then a scrolling
+    workspace.
+    - Alt+left-drag the middle of a tile: it floats after 10px, the drop
+      indicator shows, and it drops where a title-bar drag would. Same for
+      a stacked window (stack and tab bar move together, drop onto another
+      tab bar joins it) and a floating window. Onto the other monitor too,
+      also one of another DPI.
+    - Nothing animates: the dragged window lands at once, and the tiles
+      making room for it or closing up after it jump too. Same for a drag
+      by the title bar.
+    - Escape mid-move: the window goes back where it started and tiles
+      back there. The app gets no Escape.
+    - Release Alt before the button, and after: no menu bar opens in the
+      app (e.g. Notepad), and no menu-bar underline stays. With `modifier:
+      "win"`: no Start menu.
+    - The app never gets the click: no text selected, no button pressed,
+      no context menu after a right-drag.
+60. **Grab and resize** (same change). Alt+right-drag near each corner,
+    each side, and the middle of a tile in a split of three.
+    - The edge or corner nearest the press moves; the opposite edge and
+      the tile on the far side stay put, the neighbour on the dragged side
+      resizes along with it during the drag, not only on release.
+    - The cursor stays where it was pressed until release.
+    - A tile at a workspace edge doesn't move that edge.
+    - Shrink past an app's minimum (e.g. Settings): the edge stops there.
+    - Escape mid-resize: every size goes back.
+    - A stacked window resizes its stack, tab bar included; a floating
+      window just resizes, never below 250x140 unless it started smaller.
+    - Dragging a tile's border (no modifier) moves only that edge too, and
+      lands without animating.
+61. **Resize past the screen in a scrolling layout** (same change). Three
+    columns of 33%, the rightmost at the screen's right edge.
+    - Alt+right-drag its right half rightwards: it widens, the view
+      scrolls to keep its right edge at the screen's edge, other columns
+      keep their widths and slide left. It stops at the view's width.
+      Drag back: it narrows with the view left where it scrolled.
+    - Same pressing on the screen's very last pixel: the cursor hops in
+      about 48px first, and the column still widens.
+    - Its left half leftwards: its right edge stays, its left edge goes
+      left, the view scrolls once it reaches the screen's left edge.
+    - A column partly off screen: grabbing it focuses it without scrolling
+      it into view first.
+    - With `center_focused_column: "always"` the column grows both ways,
+      staying centered.
+    - Note how the columns right of it keep up on a slow app (Firefox,
+      VS Code): they may lag, but never play back old sizes after
+      release.
+62. **What isn't grabbed** (same change). Each of these gets Alt+click as
+    usual (e.g. a selection or menu): a window ignored by a rule, a game or
+    video fullscreen, a maximized window, Task Manager (elevated, WM not
+    elevated), a tab bar, the overview, the taskbar; all windows while
+    paused (`wm-toggle-pause`). Turning `enabled` off and reloading
+    mid-drag: the drag ends, the app gets no release.
+63. **Losing a grab** (same change). Mid-resize, press Ctrl+Alt+Del (or
+    Win+L) and release the button there: back on the desktop the grab has
+    ended, the cursor moves again, the sizes are as left. Same with a UAC
+    prompt opened mid-drag by a scheduled task, if handy. Close the
+    grabbed window mid-resize (e.g. a timed app): the grab ends, the
+    layout fills its place. If a grab is ever left stuck, pressing its
+    button again ends it (log: `Window grab ended: Lost`).
+    - Laptop: this build adds another low-level mouse hook while
+      `grab_and_move` is on (off by default), swallowing modifier+clicks
+      and, during a resize, mouse moves, and its keyboard hook swallows
+      Escape during a grab. New calls: `OpenProcessToken` and
+      `GetTokenInformation` (elevation of windows' processes, once per
+      window, only while on), a `SetWinEventHook` for desktop switches,
+      and `SetCursorPos` from the hook's thread. Note whether Defender
+      flags it, with the feature on and off.
+
 If bars or flicker show, isolate them with `GLAZEWM_ISOLATE` (below), one
 restart per flag: `noring`, `nobackdrop`, then `live`. With a long
 `duration_ms` (e.g. 3000) for `scroll` and `workspace_switch`, one

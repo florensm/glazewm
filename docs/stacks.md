@@ -65,7 +65,8 @@ a window's state change the whole stack:
 - `toggle-floating` floats the stack, tab bar included, at the size of its
   active window. Toggled again, the stack tiles back into its old slot.
 - Dragging a stacked window, or resizing it, drags or resizes the whole
-  stack, whether it is tiling or floating. A dragged tiling stack drops
+  stack, whether it is tiling or floating, also with `grab_and_move`
+  ([grab-and-move.md](grab-and-move.md)). A dragged tiling stack drops
   into the layout like a single window.
 - `toggle-fullscreen` (or maximizing a stacked window) makes the stack
   fullscreen, without its tab bar; tabs can still be switched with

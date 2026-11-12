@@ -152,6 +152,15 @@ general:
     # Whether switching workspaces jumps too. Turn off to keep the cursor
     # on a status bar's workspace button after clicking it.
     on_workspace_switch: true
+
+  # Move (left-drag) or resize (right-drag) a window from anywhere on it
+  # while holding a modifier. See docs/grab-and-move.md.
+  grab_and_move:
+    enabled: false
+    # 'alt' or 'win'.
+    modifier: "alt"
+    # Whether right-drag resizes; off, right clicks reach the window.
+    resize: true
 ```
 
 ### Config: Keybindings
