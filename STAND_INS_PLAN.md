@@ -1703,6 +1703,16 @@ to another monitor, `Live` peeks), so the engine can go later; but keep
 `nopeeks` as the way back, with its own live check, and the engine's
 deletion (steps 1 to 4 below) waits for the owner's say-so.
 
+Fullscreen toggle row: built behind `morepeeks`, not checked live
+(`TODO.md` 70). A tile toggled in or out of fullscreen by the WM
+(`Motion::Fullscreen`) goes on a pinned peek through `move_tile`, on
+`window_fullscreen`'s timing and in its own `style` (`stretch` by
+default), as the old path draws it; taken over from as a move on a peek
+(`peek_moves`). A peek shown on top at either end plays in the
+always-on-top band (`fullscreen_peek_raise`); its ring copy is left off
+as `border_hidden_for_fullscreen` says. Floating windows and a window
+driving itself fullscreen keep the old path. Windows API: none new.
+
 So 10f starts with a decision per row, recorded here, then:
 
 1. Move out of `resize_session.rs` what others use: `compute_border_inset`

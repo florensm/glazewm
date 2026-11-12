@@ -998,6 +998,24 @@ to see it; check each once more at 150 ms.
       frame, no blank tile.
     - After release: partly visible columns rest on their peeks as
       before, fully visible ones are handed back.
+70. **Fullscreen toggles on peeks** (`STAND_INS_PLAN.md` 10f).
+    `GLAZEWM_ISOLATE=morepeeks`, `window_fullscreen: { duration_ms:
+    2000 }`, then 220 ms; a border, a backdrop, two tiles. Toggle one
+    fullscreen with the keybinding and back; again with `style: "fill"`,
+    with `state_defaults.fullscreen.maximized: false`, and with
+    `shown_on_top: true` beside a floating window shown on top.
+    - Grows to the monitor and back on its peek, no blank or doubled
+      frame at the start, no jump, blink or step at the hand-back.
+    - Going in, the ring goes as it starts (`hide_border_on_fullscreen`);
+      coming back, it is drawn with the window and is there after.
+    - Shown on top: over the floating window shown on top from the first
+      frame, both ways, and not over it once back in its tile.
+    - The tiles behind don't move (`covered_tiles`).
+    - Toggled twice within the animation: turns round where it is.
+    - A game or video player going fullscreen by itself: not animated,
+      not cloaked, as without the variable. Compare each with no variable
+      (the old engine).
+    - Windows API: none new; the calls a move on a peek makes.
 
 If bars or flicker show, isolate them with `GLAZEWM_ISOLATE` (below), one
 restart per flag: `noring`, `nobackdrop`, then `live`. With a long

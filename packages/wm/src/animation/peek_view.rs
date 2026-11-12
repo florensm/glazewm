@@ -27,8 +27,9 @@ use crate::{
     AnimationManager, AwayTransition,
   },
   commands::general::{
-    focus_blend, overlay_entry, surrogate_effects_for,
-    upsert_clipped_overlay, upsert_pinned_border_overlay,
+    border_hidden_for_fullscreen, focus_blend, overlay_entry,
+    surrogate_effects_for, upsert_clipped_overlay,
+    upsert_pinned_border_overlay,
   },
   layout::is_hidden_in_layout,
   models::WindowContainer,
@@ -2005,6 +2006,146 @@ pub fn move_on_peek(
   moved
 }
 
+/// How a WM fullscreen toggle is drawn on peeks, if it is: enabled, with
+/// peeks on, under `GLAZEWM_ISOLATE=morepeeks`, in `window_fullscreen`'s
+/// own style, as the old path draws it.
+fn fullscreen_on_peeks(config: &UserConfig) -> Option<PeekResize> {
+  let fullscreen = &config.value.animations.window_fullscreen;
+  let isolation = wm_platform::isolation::current();
+  (isolation.peeks && isolation.more_peeks && fullscreen.enabled)
+    .then_some(peek_resize(fullscreen.style))
+}
+
+/// How a window drawn in `style` is drawn on its peek.
+fn peek_resize(style: ResizeStyle) -> PeekResize {
+  match style {
+    ResizeStyle::Stretch => PeekResize::Stretch,
+    ResizeStyle::Fill => PeekResize::Fill,
+  }
+}
+
+/// How `retarget_tile` draws a resize of a peek retargeted by `motion`:
+/// a fullscreen toggle as [`fullscreen_on_peeks`] says, if it does, and
+/// anything else as the relayout's `resizes`.
+pub fn retarget_resize(
+  motion: Motion,
+  resizes: Option<PeekResize>,
+  config: &UserConfig,
+) -> Option<PeekResize> {
+  match motion {
+    Motion::Fullscreen => fullscreen_on_peeks(config).or(resizes),
+    _ => resizes,
+  }
+}
+
+/// Whether a window now in `state`, after `prev`, went from a tile to
+/// fullscreen or back. A floating one, or one only changing how it is
+/// fullscreen, isn't.
+fn toggles_tile_fullscreen(
+  state: &WindowState,
+  prev: Option<&WindowState>,
+) -> bool {
+  matches!(
+    (state, prev),
+    (WindowState::Fullscreen(_), Some(WindowState::Tiling))
+      | (WindowState::Tiling, Some(WindowState::Fullscreen(_)))
+  )
+}
+
+/// Where the peek of a window toggled in or out of fullscreen, now in
+/// `state` after `prev`, is raised beyond `raise_moving`: to the top of
+/// the always-on-top band if the window is shown on top at either end,
+/// so it plays in the band its cloaked window is in and is handed back
+/// there.
+pub fn fullscreen_peek_raise(
+  state: &WindowState,
+  prev: Option<&WindowState>,
+) -> Option<PeekRaise> {
+  let on_top = |state: &WindowState| matches!(state, WindowState::Fullscreen(config) if config.shown_on_top);
+
+  (on_top(state) || prev.is_some_and(on_top)).then_some(PeekRaise::TopMost)
+}
+
+/// Puts `window`, which a WM command toggled in or out of fullscreen
+/// from `from` to `target`, on a pinned peek, on `window_fullscreen`'s
+/// timing, as [`move_on_peek`] puts a move (see [`fullscreen_on_peeks`]).
+/// Returns whether it does.
+///
+/// Only a tile going fullscreen or back, from inside its monitor, and not
+/// one another stand-in draws. A window driving itself fullscreen never
+/// gets here: cloaking an exclusive-fullscreen game breaks it.
+pub fn fullscreen_on_peek(
+  state: &mut WmState,
+  window: &WindowContainer,
+  from: &Rect,
+  target: &Rect,
+  config: &UserConfig,
+  is_focused: bool,
+) -> bool {
+  let Some(resize) = fullscreen_on_peeks(config) else {
+    return false;
+  };
+  if from == target
+    || !toggles_tile_fullscreen(
+      &window.state(),
+      window.prev_state().as_ref(),
+    )
+    || has_other_stand_in(&state.animation_manager, &window.id())
+  {
+    return false;
+  }
+
+  let Some((clip, handle)) = window.monitor().and_then(|monitor| {
+    let clip = monitor.to_rect().ok()?;
+    Some((clip, monitor.native_properties().handle))
+  }) else {
+    return false;
+  };
+  if !clip.contains_point(&from.center_point()) {
+    return false;
+  }
+
+  let (duration_ms, easing) =
+    movement_timing(Motion::Fullscreen, false, config);
+  let now = state.animation_manager.frame_time();
+  let mut batch = SurrogateBatch::new();
+  let moved = state.animation_manager.peeks.move_tile(
+    window,
+    from,
+    target.clone(),
+    &clip,
+    duration_ms,
+    easing,
+    Some(resize),
+    config,
+    is_focused,
+    now,
+    &mut batch,
+  );
+  batch.commit();
+
+  if moved {
+    state.animation_manager.ensure_waiter_for(handle);
+    state.animation_manager.ensure_timer_running();
+  }
+
+  moved
+}
+
+/// Whether `id`'s ring is left off its peek as its window is fullscreen,
+/// as `border_hidden_for_fullscreen` leaves it off the window, under
+/// `morepeeks` (see [`fullscreen_on_peek`]).
+fn hides_ring_for_fullscreen(
+  state: &WmState,
+  id: Uuid,
+  config: &UserConfig,
+) -> bool {
+  wm_platform::isolation::current().more_peeks
+    && state
+      .window_by_id(id)
+      .is_some_and(|window| border_hidden_for_fullscreen(&window, config))
+}
+
 /// Whether a grab resize can draw `window` on a peek it holds (see
 /// [`hold_on_peek`], and `sync_scroll_view` for a column): a tile shown
 /// in its layout, its real window on its monitor unless it is a column,
@@ -2502,7 +2643,8 @@ pub fn track_overlays(
     let backdrop =
       focus_blend::<NativeBackdropOverlay>(state, id, set, config);
     let border =
-      focus_blend::<NativeBorderOverlay>(state, id, set, config);
+      focus_blend::<NativeBorderOverlay>(state, id, set, config)
+        .filter(|_| !hides_ring_for_fullscreen(state, id, config));
 
     let carries_backdrop = !is_live && carry_backdrop(state, id, backdrop);
 
@@ -2963,17 +3105,21 @@ mod tests {
 
   use uuid::Uuid;
   use wm_common::{
-    EasingFunction, WindowTransitionParams, WindowTransitionStyle,
+    EasingFunction, FloatingStateConfig, FullscreenStateConfig,
+    ResizeStyle, WindowState, WindowTransitionParams,
+    WindowTransitionStyle,
   };
   use wm_platform::{LengthValue, Rect, RectDelta};
 
   use super::{
     conceals_new_ring, floating_peek_raise, follow_duration, follows_tile,
-    has_landed, has_left, is_departed, is_peek_resize, is_pure_move,
-    is_stray, kept_transit, leaves_as, leaving_transit, resizes_at_start,
-    restretched, retargeted_motion, returning_transit, sampled_size,
-    settling, take_left, visible_frame, Hold, PeekRaise, PeekResize, Role,
-    Stretch, FILL_LANDING_WAIT, HOLD_RELEASE_WAIT, STRETCH_SETTLE,
+    fullscreen_peek_raise, has_landed, has_left, is_departed,
+    is_peek_resize, is_pure_move, is_stray, kept_transit, leaves_as,
+    leaving_transit, peek_resize, resizes_at_start, restretched,
+    retargeted_motion, returning_transit, sampled_size, settling,
+    take_left, toggles_tile_fullscreen, visible_frame, Hold, PeekRaise,
+    PeekResize, Role, Stretch, FILL_LANDING_WAIT, HOLD_RELEASE_WAIT,
+    STRETCH_SETTLE,
   };
   use crate::animation::{
     state::WindowAnimationState,
@@ -2991,6 +3137,64 @@ mod tests {
     // window is.
     assert_eq!(floating_peek_raise(false, true), Some(PeekRaise::Top));
     assert_eq!(floating_peek_raise(false, false), None);
+  }
+
+  fn fullscreen(shown_on_top: bool) -> WindowState {
+    WindowState::Fullscreen(FullscreenStateConfig {
+      maximized: true,
+      shown_on_top,
+    })
+  }
+
+  #[test]
+  fn only_tiles_toggled_in_or_out_of_fullscreen_go_on_peeks() {
+    let tiling = WindowState::Tiling;
+    assert!(toggles_tile_fullscreen(&fullscreen(false), Some(&tiling)));
+    assert!(toggles_tile_fullscreen(&tiling, Some(&fullscreen(true))));
+    // From or back to floating, or fullscreen in another way: the old
+    // path.
+    let floating = WindowState::Floating(FloatingStateConfig::default());
+    assert!(!toggles_tile_fullscreen(
+      &fullscreen(false),
+      Some(&floating)
+    ));
+    assert!(!toggles_tile_fullscreen(
+      &floating,
+      Some(&fullscreen(false))
+    ));
+    assert!(!toggles_tile_fullscreen(
+      &fullscreen(false),
+      Some(&fullscreen(true))
+    ));
+    assert!(!toggles_tile_fullscreen(&fullscreen(false), None));
+  }
+
+  #[test]
+  fn fullscreen_peeks_play_in_the_band_their_windows_are_in() {
+    let tiling = WindowState::Tiling;
+    assert_eq!(
+      fullscreen_peek_raise(&fullscreen(true), Some(&tiling)),
+      Some(PeekRaise::TopMost)
+    );
+    // Leaving the band only once handed back.
+    assert_eq!(
+      fullscreen_peek_raise(&tiling, Some(&fullscreen(true))),
+      Some(PeekRaise::TopMost)
+    );
+    assert_eq!(
+      fullscreen_peek_raise(&fullscreen(false), Some(&tiling)),
+      None
+    );
+    assert_eq!(
+      fullscreen_peek_raise(&tiling, Some(&fullscreen(false))),
+      None
+    );
+  }
+
+  #[test]
+  fn fullscreen_peeks_are_drawn_in_their_own_style() {
+    assert_eq!(peek_resize(ResizeStyle::Stretch), PeekResize::Stretch);
+    assert_eq!(peek_resize(ResizeStyle::Fill), PeekResize::Fill);
   }
 
   fn linear() -> EasingFunction {
