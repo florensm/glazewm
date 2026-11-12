@@ -813,6 +813,43 @@ fn follow_retargeted_column(window: &WindowContainer, target_rect: &Rect) {
   }
 }
 
+/// Sends `window`, moving on its peek, the size it deferred (see
+/// `Landed::sized`), at the rect `redraw_containers` hands it back at, so
+/// it is there already as it lands. Not one whose tile changed since: the
+/// redraw queued with the change retargets its peek and sends it that.
+///
+/// Rather than queued for redraw, which reaches the same move in the
+/// `Frozen` arm: that would run a whole `platform_sync` pass for it
+/// mid-motion, settling its overlays' z-order as if it was repositioned.
+pub(crate) fn post_deferred_size(
+  state: &WmState,
+  window: &WindowContainer,
+) {
+  let Ok(target_rect) = window.to_rect().and_then(|rect| {
+    Ok(rect.apply_delta(&window.total_border_delta()?, None))
+  }) else {
+    return;
+  };
+  let peeks = &state.animation_manager.peeks;
+  if !peeks.heads_for(&window.id(), &target_rect)
+    || peeks.defers_resize(&window.id())
+  {
+    return;
+  }
+
+  let real_rect = crate::layout::scrolling::real_window_rect(
+    &window.as_container(),
+    &target_rect,
+  );
+  follow_retargeted_column(window, &real_rect);
+
+  // Sent again after the size Windows suggests on a monitor of another
+  // DPI, as `preposition_cloaked` does.
+  if window.has_pending_dpi_adjustment() && peeks.has_trail(&window.id()) {
+    follow_retargeted_column(window, &real_rect);
+  }
+}
+
 /// Unmanages windows queued for redraw that another app has since
 /// embedded into one of its own windows.
 ///
@@ -2008,7 +2045,10 @@ fn redraw_containers(
           .animation_manager
           .resize_sessions
           .contains_key(&window.id())
-          || state.animation_manager.peeks.owns_window(&window.id())
+          || hands_back_in_step(
+            state.animation_manager.peeks.owns_window(&window.id()),
+            wm_platform::isolation::current().async_hand_back,
+          )
           || (is_visible
             && state
               .animation_manager
@@ -2499,6 +2539,16 @@ fn apply_taskbar_updates(updates: Vec<(WindowContainer, bool)>) {
       tracing::warn!("Failed to set taskbar visibility: {}", err);
     }
   }
+}
+
+/// Whether a window its peek hands back (`peek_hands_back`) is moved in
+/// step with it, synchronously: not under `GLAZEWM_ISOLATE=asynchandback`,
+/// which posts its move so the WM never waits on its app.
+fn hands_back_in_step(
+  peek_hands_back: bool,
+  async_hand_back: bool,
+) -> bool {
+  peek_hands_back && !async_hand_back
 }
 
 /// Above this duration, `reposition_window`'s synchronous
@@ -4055,10 +4105,18 @@ mod tests {
   use wm_platform::{NativeBackdropOverlay, OpacityValue, Rect};
 
   use super::{
-    is_unanimated_reveal, should_note_size, tracks_at_take_over,
-    FrozenStep, SyncableOverlay,
+    hands_back_in_step, is_unanimated_reveal, should_note_size,
+    tracks_at_take_over, FrozenStep, SyncableOverlay,
   };
   use crate::user_config::UserConfig;
+
+  #[test]
+  fn a_peek_hand_back_is_posted_only_under_its_word() {
+    assert!(hands_back_in_step(true, false));
+    assert!(!hands_back_in_step(true, true));
+    assert!(!hands_back_in_step(false, false));
+    assert!(!hands_back_in_step(false, true));
+  }
 
   #[test]
   fn a_window_cloaked_before_its_session_is_moved_to_its_target() {

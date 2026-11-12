@@ -279,8 +279,8 @@ use crate::{
   commands::general::{
     advance_focus_fades, apply_focus_effects,
     border_hidden_for_fullscreen, overlay_params_for, overlay_z_anchor,
-    platform_sync, resync_settling_overlays, surrogate_effects_for,
-    track_overlays, upsert_live_backdrop_overlay,
+    platform_sync, post_deferred_size, resync_settling_overlays,
+    surrogate_effects_for, track_overlays, upsert_live_backdrop_overlay,
     upsert_pinned_border_overlay, SyncableOverlay,
   },
   traits::{CommonGetters, WindowGetters},
@@ -1470,10 +1470,16 @@ impl AnimationManager {
   /// redraw below, and focus deferred while they moved lands then. Ones
   /// that end hidden have their real window put where it stays cloaked,
   /// and their overlays settled. Released ones get their overlays back on
-  /// the real window. Ones no longer in the tree are skipped.
+  /// the real window. Ones still moving that were done deferring their
+  /// new size are sent it. Ones no longer in the tree are skipped.
   fn queue_landed(state: &mut WmState, landed: super::peek_view::Landed) {
     if !landed.shown.is_empty() {
       state.pending_sync.queue_focus_change();
+    }
+    for window_id in &landed.sized {
+      if let Some(window) = state.window_by_id(*window_id) {
+        post_deferred_size(state, &window);
+      }
     }
     // Sampled at the next idle point, once handed back.
     for window_id in &landed.filled {
