@@ -249,6 +249,15 @@ impl NativeWindow {
     self.inner.is_top_level()
   }
 
+  /// Whether the WM lacks the rights to move the window: its process is
+  /// elevated, while the WM is neither elevated nor has UI access.
+  ///
+  /// Opens the window's process, so worth caching per window.
+  #[must_use]
+  pub fn is_out_of_reach(&self) -> bool {
+    self.inner.is_out_of_reach()
+  }
+
   /// ID of the process that owns the window.
   #[must_use]
   pub fn process_id(&self) -> u32 {

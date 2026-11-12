@@ -3,8 +3,8 @@ use std::str::FromStr;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use wm_platform::{
   BackdropOverlayParams, BorderGlow, BorderOverlayParams, Color,
-  CornerStyle, Key, Keybinding, LengthUnit, LengthValue, OpacityValue,
-  OverviewEffects, OverviewSwitchStyle, OverviewZoomStyle,
+  CornerStyle, GrabModifier, Key, Keybinding, LengthUnit, LengthValue,
+  OpacityValue, OverviewEffects, OverviewSwitchStyle, OverviewZoomStyle,
   ParticleEffects, ParticleLook, RectDelta,
 };
 
@@ -510,6 +510,10 @@ pub struct GeneralConfig {
   /// Config for automatically moving the cursor.
   pub cursor_jump: CursorJumpConfig,
 
+  /// Config for moving and resizing windows by dragging anywhere on them
+  /// with a modifier key held.
+  pub grab_and_move: GrabAndMoveConfig,
+
   /// Whether to automatically focus windows underneath the cursor.
   pub focus_follows_cursor: bool,
 
@@ -552,6 +556,7 @@ impl Default for GeneralConfig {
   fn default() -> Self {
     GeneralConfig {
       cursor_jump: CursorJumpConfig::default(),
+      grab_and_move: GrabAndMoveConfig::default(),
       focus_follows_cursor: false,
       toggle_workspace_on_refocus: true,
       dynamic_workspaces: false,
@@ -561,6 +566,31 @@ impl Default for GeneralConfig {
       shutdown_commands: vec![],
       config_reload_commands: vec![],
       show_all_in_taskbar: false,
+    }
+  }
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(default, rename_all(serialize = "camelCase"))]
+pub struct GrabAndMoveConfig {
+  /// Whether holding `modifier` and dragging a managed window with the
+  /// left mouse button moves it, as a drag by its title bar does.
+  pub enabled: bool,
+
+  /// Key to hold for a press to grab the window under the cursor.
+  pub modifier: GrabModifier,
+
+  /// Whether dragging with the right mouse button resizes the window from
+  /// its edges nearest to the press. Off, right clicks reach the window.
+  pub resize: bool,
+}
+
+impl Default for GrabAndMoveConfig {
+  fn default() -> Self {
+    Self {
+      enabled: false,
+      modifier: GrabModifier::Alt,
+      resize: true,
     }
   }
 }
@@ -2579,11 +2609,40 @@ mod tests {
 
   use super::{
     BackdropEffectConfig, BorderEffectConfig, BorderGlow,
-    BorderGlowConfig, Color, EasingFunction, GapsConfig, LengthValue,
-    OverviewConfig, OverviewEffects, OverviewLayout, OverviewSwitchStyle,
+    BorderGlowConfig, Color, EasingFunction, GapsConfig, GeneralConfig,
+    GrabAndMoveConfig, GrabModifier, LengthValue, OverviewConfig,
+    OverviewEffects, OverviewLayout, OverviewSwitchStyle,
     OverviewZoomStyle, ParticlesConfig, ScrollingLayoutConfig,
     SpringParams, WorkspaceSwitchAnimationConfig, WorkspaceSwitchStyle,
   };
+
+  /// Grabbing is off by default, and only `alt` and `win` are modifiers.
+  #[test]
+  fn grab_and_move_is_opt_in_with_alt_or_win() {
+    let general: GeneralConfig =
+      serde_json::from_value(serde_json::json!({}))
+        .expect("empty general config should parse");
+    assert_eq!(general.grab_and_move, GrabAndMoveConfig::default());
+    assert!(!general.grab_and_move.enabled);
+
+    let config: GrabAndMoveConfig = serde_json::from_value(
+      serde_json::json!({ "enabled": true, "modifier": "win" }),
+    )
+    .expect("grab config should parse");
+    assert_eq!(
+      config,
+      GrabAndMoveConfig {
+        enabled: true,
+        modifier: GrabModifier::Win,
+        resize: true,
+      }
+    );
+
+    let ctrl = serde_json::from_value::<GrabAndMoveConfig>(
+      serde_json::json!({ "modifier": "ctrl" }),
+    );
+    assert!(ctrl.is_err());
+  }
 
   /// A cut lands at once whatever its duration, and `iris`, the removed
   /// style it replaced, parses as one, so configs naming it keep loading.

@@ -16,6 +16,7 @@ mod error;
 mod event_loop;
 mod external_color_source;
 mod frame_clock;
+mod grab_listener;
 mod hidden_alpha;
 pub mod isolation;
 mod keybinding_listener;
@@ -71,6 +72,10 @@ pub use error::*;
 pub use event_loop::*;
 pub use external_color_source::*;
 pub use frame_clock::FrameClock;
+pub use grab_listener::{
+  Gesture, GrabEnd, GrabEvent, GrabListener, GrabModifier, GrabSettings,
+  ResizeEdges,
+};
 pub use keybinding_listener::*;
 pub use models::*;
 pub use mouse_listener::*;

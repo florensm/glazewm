@@ -10,7 +10,7 @@ use windows::{
   core::PWSTR,
   Win32::{
     Foundation::{
-      CloseHandle, BOOL, HWND, LPARAM, POINT, RECT,
+      CloseHandle, BOOL, HANDLE, HWND, LPARAM, POINT, RECT,
       TYPE_E_ELEMENTNOTFOUND, WPARAM,
     },
     Graphics::Dwm::{
@@ -20,8 +20,13 @@ use windows::{
       DWMWA_WINDOW_CORNER_PREFERENCE, DWMWCP_DEFAULT, DWMWCP_DONOTROUND,
       DWMWCP_ROUND, DWMWCP_ROUNDSMALL,
     },
+    Security::{
+      GetTokenInformation, TokenElevation, TokenUIAccess,
+      TOKEN_INFORMATION_CLASS, TOKEN_QUERY,
+    },
     System::Threading::{
-      OpenProcess, QueryFullProcessImageNameW, PROCESS_NAME_WIN32,
+      GetCurrentProcess, OpenProcess, OpenProcessToken,
+      QueryFullProcessImageNameW, PROCESS_NAME_WIN32,
       PROCESS_QUERY_LIMITED_INFORMATION,
     },
     UI::{
@@ -146,6 +151,41 @@ impl NativeWindow {
       .ok_or_else(|| {
         crate::Error::Platform("Failed to parse process name.".to_string())
       })
+  }
+
+  /// Implements [`crate::NativeWindow::is_out_of_reach`].
+  pub(crate) fn is_out_of_reach(&self) -> bool {
+    static WM_HAS_REACH: LazyLock<bool> = LazyLock::new(|| {
+      // SAFETY: No preconditions; the pseudo handle needs no closing.
+      let process = unsafe { GetCurrentProcess() };
+      token_flag(process, TokenElevation) == Some(true)
+        || token_flag(process, TokenUIAccess) == Some(true)
+    });
+
+    if *WM_HAS_REACH {
+      return false;
+    }
+
+    let mut process_id = 0u32;
+    // SAFETY: `process_id` outlives the call.
+    unsafe {
+      GetWindowThreadProcessId(self.hwnd(), Some(&raw mut process_id));
+    }
+
+    // SAFETY: No preconditions.
+    let Ok(process) = (unsafe {
+      OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, process_id)
+    }) else {
+      return true;
+    };
+
+    let is_elevated = token_flag(process, TokenElevation);
+
+    // SAFETY: `process` was opened above.
+    let _ = unsafe { CloseHandle(process) };
+
+    // A token the WM may not even query is of a process above it.
+    is_elevated != Some(false)
   }
 
   /// Implements [`NativeWindow::frame`].
@@ -1186,6 +1226,38 @@ pub(crate) fn visible_windows(
 pub(crate) fn focused_window(_: &Dispatcher) -> crate::NativeWindow {
   let handle = unsafe { GetForegroundWindow() };
   NativeWindow::new(handle.0).into()
+}
+
+/// A yes-or-no `class` of `process`'s token (e.g. `TokenElevation`), or
+/// `None` if it can't be queried.
+fn token_flag(
+  process: HANDLE,
+  class: TOKEN_INFORMATION_CLASS,
+) -> Option<bool> {
+  let mut token = HANDLE::default();
+  // SAFETY: `token` outlives the call.
+  unsafe { OpenProcessToken(process, TOKEN_QUERY, &raw mut token) }
+    .ok()?;
+
+  // `TOKEN_ELEVATION` and `TokenUIAccess` are both a `u32`.
+  let mut value = 0u32;
+  let mut length = 0u32;
+  // SAFETY: `value` outlives the call, and its size is passed along.
+  #[allow(clippy::cast_possible_truncation)]
+  let result = unsafe {
+    GetTokenInformation(
+      token,
+      class,
+      Some((&raw mut value).cast()),
+      std::mem::size_of::<u32>() as u32,
+      &raw mut length,
+    )
+  };
+
+  // SAFETY: `token` was opened above.
+  let _ = unsafe { CloseHandle(token) };
+
+  result.ok().map(|()| value != 0)
 }
 
 /// Whether `vk` is sent with `KEYEVENTF_EXTENDEDKEY`, without which e.g.
