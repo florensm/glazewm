@@ -3,7 +3,7 @@ use wm_common::{
   try_warn, ActiveDrag, ActiveDragOperation, DisplayState,
   FloatingStateConfig, FullscreenStateConfig, WindowState,
 };
-use wm_platform::{NativeWindow, Rect};
+use wm_platform::{NativeWindow, Point, Rect};
 
 use crate::{
   commands::{
@@ -56,8 +56,14 @@ pub fn handle_window_moved_or_resized(
 
       // The drag operation has ended on `EVENT_SYSTEM_MOVESIZEEND`.
       if is_interactive_end {
-        return handle_window_moved_or_resized_end(&window, state, config);
+        return handle_window_moved_or_resized_end(
+          &window, None, state, config,
+        );
       }
+
+      // Windows the drag makes room for, or closes up after, follow the
+      // mouse at once, as the dragged window does.
+      state.pending_sync.suppress_animations();
 
       update_drag_state(&window, &frame_position, state, config)?;
 
@@ -297,6 +303,31 @@ pub fn handle_window_moved_or_resized(
   }
 
   Ok(())
+}
+
+/// Ends the drag of `native_window` that a grab of it moved, with the
+/// window dropped where `drop_point` is, or else where the cursor is.
+pub fn end_window_drag(
+  native_window: &NativeWindow,
+  drop_point: Option<&Point>,
+  state: &mut WmState,
+  config: &UserConfig,
+) -> anyhow::Result<()> {
+  let Some(window) = state
+    .window_from_native(native_window)
+    .filter(|window| window.active_drag().is_some())
+  else {
+    return Ok(());
+  };
+
+  if let Ok(frame) = window.native().frame() {
+    window.update_native_properties(|properties| {
+      properties.frame = frame.clone();
+    });
+    follow_window_frame(&window, &frame, state, config);
+  }
+
+  handle_window_moved_or_resized_end(&window, drop_point, state, config)
 }
 
 /// Widens a scrolling layout's column for a window its app keeps wider

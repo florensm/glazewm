@@ -22,9 +22,9 @@ use tracing_subscriber::{
 };
 use wm_common::{AppCommand, InvokeCommand, Verbosity, WmEvent};
 use wm_platform::{
-  Dispatcher, DisplayListener, EventLoop, KeybindingListener,
-  MouseEventKind, MouseListener, PlatformEvent, SingleInstance,
-  WindowListener,
+  Dispatcher, DisplayListener, EventLoop, GrabListener,
+  KeybindingListener, MouseEventKind, MouseListener, PlatformEvent,
+  SingleInstance, WindowListener,
 };
 
 use crate::{
@@ -45,6 +45,7 @@ mod drop_indicator;
 mod error_notifier;
 mod events;
 mod focus_requests;
+mod grab;
 mod ipc_server;
 mod layout;
 mod models;
@@ -173,7 +174,11 @@ async fn start_wm(
         .collect::<Vec<_>>(),
       dispatcher,
     )?,
+    grab: GrabListener::new(),
   };
+
+  listeners.grab.configure(grab::settings(&config));
+  listeners.grab.arm(!wm.state.is_paused);
 
   let error_notifier = ErrorNotifier::new(dispatcher.clone());
 
@@ -199,6 +204,10 @@ async fn start_wm(
 
   loop {
     wm_platform::process_sent_messages();
+
+    if let Err(err) = wm.sync_grab(&listeners.grab, &config) {
+      error_notifier.report(&err);
+    }
 
     // Hand queued work the thread before the next animation frame. The
     // `biased` select below puts the animation tick above every other
@@ -230,6 +239,7 @@ async fn start_wm(
     let animation_watchdog =
       wm.state.animation_manager.watchdog_deadline();
     let hot_corner = wm.state.overview.hot_corner_deadline();
+    let grab_step = grab::step_deadline(&wm.state);
 
     let res = tokio::select! {
       // biased: evaluated top-to-bottom when multiple futures are ready
@@ -276,6 +286,11 @@ async fn start_wm(
       () = sleep_until(animation_watchdog) => {
         wm.recover_stalled_animations(&config)
       },
+      Some(event) = listeners.grab.next_event() => {
+        tracing::debug!("Received grab event: {:?}", event);
+        wm.process_grab_event(event, &listeners.grab, &config)
+      },
+      () = sleep_until(grab_step) => wm.step_grab(&config),
       Some(event) = listeners.mouse.next_event() => {
         tracing::debug!("Received mouse event: {:?}", event);
         wm.process_event(PlatformEvent::Mouse(event), &mut config)
@@ -360,6 +375,7 @@ struct Listeners {
   mouse: MouseListener,
   window: WindowListener,
   display: DisplayListener,
+  grab: GrabListener,
 }
 
 /// Mouse events to listen for under `config`: moves only for focus
@@ -410,6 +426,11 @@ fn handle_wm_event(
   // Disable mouse listener when the WM is paused.
   if let WmEvent::PauseChanged { is_paused } = wm_event {
     let _ = listeners.mouse.enable(!is_paused);
+    listeners.grab.arm(!is_paused);
+  }
+
+  if let WmEvent::UserConfigChanged { .. } = wm_event {
+    listeners.grab.configure(grab::settings(config));
   }
 
   // Update keybinding and mouse listeners on config changes. While

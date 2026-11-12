@@ -13,8 +13,9 @@ use wm_common::{
   WmEvent,
 };
 use wm_platform::{
-  Dispatcher, GuardedClick, Keybinding, KeybindingEvent, LengthValue,
-  OverviewAction, PlatformEvent, RectDelta, WindowEvent,
+  Dispatcher, GrabEvent, GrabListener, GuardedClick, Keybinding,
+  KeybindingEvent, LengthValue, OverviewAction, PlatformEvent, RectDelta,
+  WindowEvent,
 };
 
 use crate::{
@@ -157,6 +158,50 @@ impl WindowManager {
       platform_sync(state, config)?;
     }
 
+    Ok(())
+  }
+
+  /// Handles an event of the grab gestures `listener` reports.
+  pub fn process_grab_event(
+    &mut self,
+    event: GrabEvent,
+    listener: &GrabListener,
+    config: &UserConfig,
+  ) -> anyhow::Result<()> {
+    crate::grab::handle_grab_event(
+      event,
+      listener,
+      &mut self.state,
+      config,
+    )?;
+    self.sync_pending(config)
+  }
+
+  /// Takes the next step of the grab resize under way.
+  pub fn step_grab(&mut self, config: &UserConfig) -> anyhow::Result<()> {
+    crate::grab::step(&mut self.state)?;
+    self.sync_pending(config)
+  }
+
+  /// Hands `listener` the windows it may grab, ending a gesture whose
+  /// window can no longer take it.
+  pub fn sync_grab(
+    &mut self,
+    listener: &GrabListener,
+    config: &UserConfig,
+  ) -> anyhow::Result<()> {
+    crate::grab::sync_listener(listener, &mut self.state, config)?;
+    self.sync_pending(config)
+  }
+
+  fn sync_pending(&mut self, config: &UserConfig) -> anyhow::Result<()> {
+    let state = &mut self.state;
+
+    if !state.is_paused && state.pending_sync.has_changes() {
+      platform_sync(state, config)?;
+    }
+
+    state.animation_manager.ensure_timer_running();
     Ok(())
   }
 
@@ -598,6 +643,7 @@ impl WindowManager {
       }
       PlatformEvent::Window(window_event) => match window_event {
         WindowEvent::Focused { window, .. } => {
+          crate::grab::note_focused(state, &window);
           handle_window_focused(&window, state, config)?;
           crate::stay_interactive::keep_stacked_windows_interactive(
             &window, state, config,
@@ -621,13 +667,16 @@ impl WindowManager {
           is_interactive_start,
           is_interactive_end,
           ..
-        } => handle_window_moved_or_resized(
-          &window,
-          is_interactive_start,
-          is_interactive_end,
-          state,
-          config,
-        ),
+        } => {
+          crate::grab::note_moved(state, &window);
+          handle_window_moved_or_resized(
+            &window,
+            is_interactive_start,
+            is_interactive_end,
+            state,
+            config,
+          )
+        }
         WindowEvent::Minimized { window, .. } => {
           handle_window_minimized(&window, state, config)
         }

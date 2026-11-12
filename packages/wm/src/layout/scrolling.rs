@@ -120,7 +120,13 @@ where
 /// Narrowest `column` can be, as its widest window's app allows, but at
 /// most `max` (which outer gaps wider than the monitor make negative).
 fn min_width(column: &impl CommonGetters, max: i32) -> i32 {
-  column
+  windows_min_width(column).min(max).max(0)
+}
+
+/// Narrowest the widest app's window in `container` lets it be laid out,
+/// less the window's shadow borders, or 0 if unknown.
+pub(crate) fn windows_min_width(container: &impl CommonGetters) -> i32 {
+  container
     .self_and_descendants()
     .filter_map(|container| container.as_window_container().ok())
     .map(|window| {
@@ -134,8 +140,17 @@ fn min_width(column: &impl CommonGetters, max: i32) -> i32 {
     })
     .max()
     .unwrap_or(0)
-    .min(max)
-    .max(0)
+}
+
+/// Narrowest and widest `column` of `workspace` can be made: as its apps
+/// allow but at least [`MIN_COLUMN_SIZE`], and the width of the view.
+pub fn column_width_range(
+  column: &TilingContainer,
+  workspace: &Workspace,
+) -> anyhow::Result<(i32, i32)> {
+  let min = width_at(column, workspace, MIN_COLUMN_SIZE)?;
+  let max = width_at(column, workspace, 1.)?;
+  Ok((min, max.max(min)))
 }
 
 /// Rect of a column on its workspace's strip.
@@ -461,9 +476,9 @@ pub enum ViewRequest {
   /// edge, or as close to that as shows it whole.
   PlaceActive { x: i32 },
 
-  /// Show the active column with its right edge `right` from the view's
-  /// left edge, or as close to that as shows it whole.
-  PlaceActiveRight { right: i32 },
+  /// Show the active column with its left edge `x` from the view's left
+  /// edge exactly, even partly hidden (see `ColumnHold`).
+  HoldActive { x: i32 },
 }
 
 impl StripView {
@@ -588,8 +603,7 @@ impl StripView {
       (Some(ViewRequest::PlaceActive { x }), _) => {
         strip.fit(active, strip.start(active) - x)
       }
-      (Some(ViewRequest::PlaceActiveRight { right }), _) => strip
-        .fit(active, strip.start(active) + strip.widths[active] - right),
+      (Some(ViewRequest::HoldActive { x }), _) => strip.start(active) - x,
       (Some(ViewRequest::KeepCamera { from }), _) => {
         strip.offset_for(active, base, Some(from), config)
       }
@@ -804,25 +818,72 @@ fn scroll_to_focus(
   Some((strip.offset_for(index, offset, active, config) - offset).abs())
 }
 
-/// Keeps the right edge of `container`'s column where it is on screen
-/// through the next sync, e.g. as its left edge is dragged.
+/// Where a column being resized by one of its edges is held on screen:
+/// its other edge stays where it is, other columns keep their widths and
+/// slide along the strip, and the view only scrolls when the dragged edge
+/// would leave it, to keep that edge at the view's edge. Scrolled, it
+/// stays scrolled as the column shrinks again, so the dragged edge
+/// follows the mouse back.
 ///
-/// Does nothing unless it is the active column, which the view follows.
-pub fn keep_right_edge(container: &Container) -> anyhow::Result<()> {
-  let Some((column, workspace)) = column_of(container) else {
-    return Ok(());
-  };
+/// A column the layout keeps centered stays centered instead.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ColumnHold {
+  /// Left edge, relative to the view's left edge.
+  x: i32,
+  width: i32,
+}
 
-  if active_column(&workspace)
-    .is_some_and(|active| active.id() == column.id())
-  {
+impl ColumnHold {
+  /// Where `column` of `workspace` is now.
+  pub fn at(
+    column: &TilingContainer,
+    workspace: &Workspace,
+  ) -> anyhow::Result<Self> {
     let rect = column.to_rect()?;
-    workspace.request_view(ViewRequest::PlaceActiveRight {
-      right: rect.x() + rect.width() - view_rect(&workspace)?.x(),
-    });
+
+    Ok(Self {
+      x: rect.x() - view_rect(workspace)?.x(),
+      width: rect.width(),
+    })
   }
 
-  Ok(())
+  /// Follows `column` of `workspace` to its width now, dragged by its
+  /// left edge if `is_left_edge`, else by its right one, and asks the next
+  /// sync to show it there.
+  ///
+  /// Does nothing unless it is the active column, which the view follows.
+  pub fn hold(
+    &mut self,
+    column: &TilingContainer,
+    workspace: &Workspace,
+    is_left_edge: bool,
+  ) -> anyhow::Result<()> {
+    if active_column(workspace)
+      .is_none_or(|active| active.id() != column.id())
+    {
+      return Ok(());
+    }
+
+    let width = column.to_rect()?.width();
+    self.follow(is_left_edge, width, view_rect(workspace)?.width());
+    self.keep(workspace);
+
+    Ok(())
+  }
+
+  /// Asks the next sync to show the active column where this holds it.
+  pub fn keep(self, workspace: &Workspace) {
+    workspace.request_view(ViewRequest::HoldActive { x: self.x });
+  }
+
+  fn follow(&mut self, is_left_edge: bool, width: i32, view_width: i32) {
+    self.x = if is_left_edge {
+      (self.x + self.width - width).max(0)
+    } else {
+      self.x.min(view_width - width)
+    };
+    self.width = width;
+  }
 }
 
 /// The window to focus when the focused tiling `window` leaves its
@@ -1022,7 +1083,7 @@ mod tests {
   use super::{
     click_to_scroll_windows, focus_target_after_removal,
     is_focusable_by_hover, is_in_view, min_width, real_window_rect,
-    shows_real_window, sync_view, view_rect, Strip, StripView,
+    shows_real_window, sync_view, view_rect, ColumnHold, Strip, StripView,
     ViewRequest,
   };
   use crate::{
@@ -1724,9 +1785,57 @@ mod tests {
       ids: strip.ids.clone(),
       ..self::strip(&[300, 500, 300])
     };
-    view.request(ViewRequest::PlaceActiveRight { right: 650 });
+    view.request(ViewRequest::HoldActive { x: 150 });
     view.update(&wide, Some(1), &config);
     assert_eq!(screen_x(&wide, &view, 1), 250);
+  }
+
+  #[test]
+  fn a_held_column_stays_put_even_partly_hidden() {
+    let strip = strip(&[300, 300, 300]);
+    let mut view = StripView::default();
+    view.update(&strip, Some(1), &fit());
+
+    // Its left edge 100px off the view's left edge, which a fit undoes.
+    view.request(ViewRequest::HoldActive { x: -100 });
+    view.update(&strip, Some(1), &fit());
+    assert_eq!(screen_x(&strip, &view, 1), -100);
+
+    // And stays there through the syncs after.
+    view.update(&strip, Some(1), &fit());
+    assert_eq!(screen_x(&strip, &view, 1), -100);
+  }
+
+  #[test]
+  fn a_column_grown_by_its_right_edge_scrolls_only_past_the_view() {
+    let mut hold = ColumnHold { x: 400, width: 300 };
+
+    // Its left edge stays while its right edge is in view.
+    hold.follow(false, 500, 1000);
+    assert_eq!(hold, ColumnHold { x: 400, width: 500 });
+
+    // Then the view scrolls, keeping the right edge at the view's edge.
+    hold.follow(false, 900, 1000);
+    assert_eq!(hold, ColumnHold { x: 100, width: 900 });
+
+    // Shrinking again, the scrolled view stays and the edge comes back.
+    hold.follow(false, 700, 1000);
+    assert_eq!(hold, ColumnHold { x: 100, width: 700 });
+  }
+
+  #[test]
+  fn a_column_grown_by_its_left_edge_keeps_its_right_edge() {
+    let mut hold = ColumnHold { x: 400, width: 300 };
+
+    hold.follow(true, 500, 1000);
+    assert_eq!(hold, ColumnHold { x: 200, width: 500 });
+
+    // Its left edge would leave the view: the view scrolls instead.
+    hold.follow(true, 900, 1000);
+    assert_eq!(hold, ColumnHold { x: 0, width: 900 });
+
+    hold.follow(true, 600, 1000);
+    assert_eq!(hold, ColumnHold { x: 300, width: 600 });
   }
 
   #[test]

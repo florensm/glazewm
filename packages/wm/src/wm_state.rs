@@ -117,6 +117,9 @@ pub struct WmState {
   /// Times each workspace switch for `switch.log`.
   pub switch_log: SwitchLog,
 
+  /// The grab gesture under way, if any.
+  pub grab: crate::grab::GrabState,
+
   /// Whether the initial state has been populated.
   has_initialized: bool,
 
@@ -172,6 +175,7 @@ impl WmState {
       drop_indicator: None,
       overview: Overview::new(overview_action_tx),
       switch_log: SwitchLog::default(),
+      grab: crate::grab::GrabState::default(),
       prev_effects_window: None,
       recent_workspace_name: None,
       unmanaged_or_minimized_timestamp: None,
