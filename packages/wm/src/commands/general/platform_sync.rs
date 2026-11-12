@@ -2003,7 +2003,10 @@ fn redraw_containers(
           .animation_manager
           .resize_sessions
           .contains_key(&window.id())
-          || state.animation_manager.peeks.owns_window(&window.id())
+          || hands_back_in_step(
+            state.animation_manager.peeks.owns_window(&window.id()),
+            wm_platform::isolation::current().async_hand_back,
+          )
           || (is_visible
             && state
               .animation_manager
@@ -2494,6 +2497,16 @@ fn apply_taskbar_updates(updates: Vec<(WindowContainer, bool)>) {
       tracing::warn!("Failed to set taskbar visibility: {}", err);
     }
   }
+}
+
+/// Whether a window its peek hands back (`peek_hands_back`) is moved in
+/// step with it, synchronously: not under `GLAZEWM_ISOLATE=asynchandback`,
+/// which posts its move so the WM never waits on its app.
+fn hands_back_in_step(
+  peek_hands_back: bool,
+  async_hand_back: bool,
+) -> bool {
+  peek_hands_back && !async_hand_back
 }
 
 /// Above this duration, `reposition_window`'s synchronous
@@ -4039,9 +4052,18 @@ mod tests {
   use wm_platform::{NativeBackdropOverlay, OpacityValue, Rect};
 
   use super::{
-    is_unanimated_reveal, should_note_size, FrozenStep, SyncableOverlay,
+    hands_back_in_step, is_unanimated_reveal, should_note_size,
+    FrozenStep, SyncableOverlay,
   };
   use crate::user_config::UserConfig;
+
+  #[test]
+  fn a_peek_hand_back_is_posted_only_under_its_word() {
+    assert!(hands_back_in_step(true, false));
+    assert!(!hands_back_in_step(true, true));
+    assert!(!hands_back_in_step(false, false));
+    assert!(!hands_back_in_step(false, true));
+  }
 
   #[test]
   fn a_window_cloaked_before_its_session_is_moved_to_its_target() {
