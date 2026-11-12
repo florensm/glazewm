@@ -998,6 +998,36 @@ to see it; check each once more at 150 ms.
       frame, no blank tile.
     - After release: partly visible columns rest on their peeks as
       before, fully visible ones are handed back.
+73. **Moves and resizes on live peeks** (`STAND_INS_PLAN.md` 10f, the
+    `Live` row). `GLAZEWM_ISOLATE=morepeeks`, a border, a backdrop with
+    `corner_radius: 8px` in both `window_effects` blocks (a rounded
+    backdrop), then again
+    with square corners and `backdrop.parallax: 0.8`. A split layout,
+    three tiles, then a scrolling layout. `window_move.duration_ms: 2000`
+    and `window_resize: { style: "stretch", duration_ms: 2000 }`, then
+    `style: "fill"` with `fillpeeks`, then both at 150.
+    - Swap two tiles, and the same swap pressed twice mid-way: each
+      window glides on its peek, its real backdrop and ring with it, in
+      step (at most a frame behind at the backdrop's rounded corners).
+      The backdrop stays under its own window where the two peeks cross
+      and over a floating window passed: never a neighbour or the
+      desktop showing through a see-through window.
+    - Grow and shrink a tile by keyboard. `stretch`: the window scales,
+      no zoom or step as it ends. `fill`: cut at its tile; where a
+      growing app lags, the real backdrop shows there (no edge-colour
+      strip: a live peek carries none). A column grown and shrunk in the
+      scrolling layout: the same.
+    - The hand-back: no jump or blink, the window never shown under its
+      own backdrop for a frame, the backdrop and ring where the window
+      landed.
+    - A parallax backdrop drifts against its window during the move as
+      it does with the old engine.
+    - Opens, closes, minimizes and grab resizes of these windows: still
+      the old engine, as without the word. Without `morepeeks`:
+      everything as before.
+    - Windows API: none new (`SetWindowPos`, `DeferWindowPos`,
+      `DwmUpdateThumbnailProperties`, `GetWindowRect`, all already made
+      for live peeks and overlays).
 
 If bars or flicker show, isolate them with `GLAZEWM_ISOLATE` (below), one
 restart per flag: `noring`, `nobackdrop`, then `live`. With a long

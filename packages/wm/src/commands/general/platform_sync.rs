@@ -2127,6 +2127,7 @@ fn redraw_containers(
   for id in &peek_moves {
     if !state.animation_manager.peeks.is_held(id) {
       state.animation_manager.peeks.raise_moving(id);
+      crate::animation::peek_view::restack_live_overlays(state, id);
     }
   }
   for (window, raise) in &peek_raises {

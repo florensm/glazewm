@@ -738,6 +738,23 @@ pub(super) fn is_live(styles: &[Option<BackdropOverlayParams>]) -> bool {
     .any(|style| style.is_some_and(|params| !params.is_copyable()))
 }
 
+/// Whether a window whose peek would carry copies of `styles` can move and
+/// resize on it: on a pinned peek, or on a `Live` one under
+/// `GLAZEWM_ISOLATE=morepeeks` (`STAND_INS_PLAN.md` 10f).
+pub(super) fn can_move_on_peek(
+  styles: &[Option<BackdropOverlayParams>],
+) -> bool {
+  allows_motion(
+    is_live(styles),
+    wm_platform::isolation::current().more_peeks,
+  )
+}
+
+/// [`can_move_on_peek`] for a peek that is `live` or not.
+fn allows_motion(live: bool, more_peeks: bool) -> bool {
+  !live || more_peeks
+}
+
 /// Columns whose move ended on a tick.
 #[derive(Default)]
 pub struct Landed {
@@ -1440,16 +1457,16 @@ impl PeekView {
     !is_live(styles) && !self.draws_window(&window.id())
   }
 
-  /// Draws `window`, a tile moving from `from` to `target`, on a pinned
-  /// peek over `duration_ms` and `easing`, until it is handed back. A peek
+  /// Draws `window`, a tile moving from `from` to `target`, on a peek
+  /// over `duration_ms` and `easing`, until it is handed back. A peek
   /// still handing it back after an earlier move or entry takes it on
   /// again from where it landed, as [`upsert`](Self::upsert) does for a
   /// column. With `stretch`, a change of size scales the window (see
   /// [`Stretch`]); without, it keeps the same size.
   ///
   /// Returns `false`, creating nothing, for a window already drawn
-  /// otherwise (moving, leaving, or as a column), one whose peek would be
-  /// `Live`, or one DWM can't draw.
+  /// otherwise (moving, leaving, or as a column), one whose peek can't
+  /// move it (see [`can_move_on_peek`]), or one DWM can't draw.
   #[allow(clippy::too_many_arguments)]
   pub(super) fn move_tile(
     &mut self,
@@ -1473,7 +1490,10 @@ impl PeekView {
       None => false,
       Some(entry)
         if !entry.is_column
-          && !entry.peek.is_live()
+          && allows_motion(
+            entry.peek.is_live(),
+            wm_platform::isolation::current().more_peeks,
+          )
           && matches!(
             entry.role,
             Role::HandingBack | Role::Releasing { .. }
@@ -1483,7 +1503,7 @@ impl PeekView {
       }
       Some(_) => return false,
     };
-    if is_live(&styles) {
+    if !can_move_on_peek(&styles) {
       return false;
     }
 
@@ -1920,7 +1940,7 @@ pub fn enter_on_peek(
 }
 
 /// Has `window`, a tile shown at `from` and laid out at `target`, move
-/// there on a pinned peek if it only moves (see [`is_pure_move`]) or, if
+/// there on a peek if it only moves (see [`is_pure_move`]) or, if
 /// its relayout `stretches` (see [`stretches_relayout`]), resizes too (see
 /// [`is_peek_resize`]), on `window_move`'s timing or, when it resizes or
 /// `cycle_has_resize`, `window_resize`'s, as the old path would
@@ -2199,7 +2219,7 @@ pub fn resizes_relayout(
         && !is_state_change
         && window.display_state() == wm_common::DisplayState::Shown
         && !has_other_stand_in(&state.animation_manager, &id)
-        && !is_live(&peek_styles(window, config))
+        && can_move_on_peek(&peek_styles(window, config))
         && fits_monitor
         && !is_resized_already
     })
@@ -2478,15 +2498,7 @@ pub fn track_overlays(
         .and(entry.peek.frame_rect())
         .cloned();
       let is_moving = entry.role != Role::Peek;
-      // A releasing peek covers its real window, back on screen and with
-      // the overlays behind it, which stay there once the peek goes.
-      let anchor = match entry.role {
-        Role::Releasing { .. } => state.window_by_id(*id).map_or_else(
-          || entry.peek.hwnd(),
-          |window| window.native().hwnd(),
-        ),
-        _ => entry.peek.hwnd(),
-      };
+      let anchor = overlay_anchor(state, *id, entry);
       let is_live = entry.peek.is_live();
       // A leaving window keeps the look it left with.
       let kept_set = entry.departing.as_ref().map(|left| left.effect_set);
@@ -2504,6 +2516,9 @@ pub fn track_overlays(
     let border =
       focus_blend::<NativeBorderOverlay>(state, id, set, config);
 
+    if is_live {
+      note_live_size(state, id);
+    }
     let carries_backdrop = !is_live && carry_backdrop(state, id, backdrop);
 
     match (backdrop, &frame) {
@@ -2574,6 +2589,95 @@ pub fn track_overlays(
   }
 
   batch.commit();
+}
+
+/// The window the overlays of `id`, drawn by `entry`, sit behind: its
+/// peek, or its real window once that is back on screen under a releasing
+/// peek, where they stay once the peek goes. A landed live tile's go there
+/// as its peek leaves the top for just above the window (see
+/// `WindowPeek::begin_hand_back`), before the window is uncloaked.
+fn overlay_anchor(state: &WmState, id: Uuid, entry: &Entry) -> HWND {
+  let behind_window = match entry.role {
+    Role::Releasing { .. } => true,
+    Role::HandingBack => entry.peek.is_live() && !entry.is_column,
+    _ => false,
+  };
+
+  if behind_window {
+    state
+      .window_by_id(id)
+      .map_or_else(|| entry.peek.hwnd(), |window| window.native().hwnd())
+  } else {
+    entry.peek.hwnd()
+  }
+}
+
+/// Notes the real window's rect for `id`'s live peek, if it resizes on it
+/// (see [`Stretch::actual`]), as [`carry_ring`] does for a pinned one.
+fn note_live_size(state: &mut WmState, id: Uuid) {
+  let resizes = state
+    .animation_manager
+    .peeks
+    .entries
+    .get(&id)
+    .is_some_and(|entry| entry.stretch.is_some());
+  if !resizes {
+    return;
+  }
+
+  let Some(bounds) = state
+    .window_by_id(id)
+    .and_then(|window| window.native().frame_with_shadows().ok())
+  else {
+    return;
+  };
+  if let Some(stretch) = state
+    .animation_manager
+    .peeks
+    .entries
+    .get_mut(&id)
+    .and_then(|entry| entry.stretch.as_mut())
+  {
+    stretch.actual = Some(bounds);
+  }
+}
+
+/// Puts the backdrop and border of `window_id`, moving on a live peek
+/// just raised, back directly behind it: a live peek's are real overlays,
+/// not copies drawn in it.
+pub fn restack_live_overlays(state: &mut WmState, window_id: &Uuid) {
+  let Some(anchor) = state
+    .animation_manager
+    .peeks
+    .entries
+    .get(window_id)
+    .filter(|entry| {
+      entry.peek.is_live() && matches!(entry.role, Role::Moving { .. })
+    })
+    .map(|entry| entry.peek.hwnd())
+  else {
+    return;
+  };
+  let Some(overlays) = state.window_overlays.get_mut(window_id) else {
+    return;
+  };
+
+  // Backdrop first, so the border ends up between it and the peek.
+  let backdrop = overlays
+    .backdrop
+    .as_mut()
+    .filter(|overlay| overlay.is_visible())
+    .map(|overlay| overlay.sync_z_order(anchor, true));
+  let border = overlays
+    .border
+    .as_mut()
+    .filter(|overlay| overlay.is_visible())
+    .map(|overlay| overlay.sync_z_order(anchor, true));
+  for result in [backdrop, border].into_iter().flatten() {
+    if let Err(err) = result {
+      tracing::warn!("Failed to restack {window_id}'s overlays: {err}");
+    }
+  }
 }
 
 /// Keeps `id`'s pinned peek drawing its window's ring, with `params` or
@@ -2968,12 +3072,13 @@ mod tests {
   use wm_platform::{LengthValue, Rect, RectDelta};
 
   use super::{
-    conceals_new_ring, floating_peek_raise, follow_duration, follows_tile,
-    has_landed, has_left, is_departed, is_peek_resize, is_pure_move,
-    is_stray, kept_transit, leaves_as, leaving_transit, resizes_at_start,
-    restretched, retargeted_motion, returning_transit, sampled_size,
-    settling, take_left, visible_frame, Hold, PeekRaise, PeekResize, Role,
-    Stretch, FILL_LANDING_WAIT, HOLD_RELEASE_WAIT, STRETCH_SETTLE,
+    allows_motion, conceals_new_ring, floating_peek_raise,
+    follow_duration, follows_tile, has_landed, has_left, is_departed,
+    is_peek_resize, is_pure_move, is_stray, kept_transit, leaves_as,
+    leaving_transit, resizes_at_start, restretched, retargeted_motion,
+    returning_transit, sampled_size, settling, take_left, visible_frame,
+    Hold, PeekRaise, PeekResize, Role, Stretch, FILL_LANDING_WAIT,
+    HOLD_RELEASE_WAIT, STRETCH_SETTLE,
   };
   use crate::animation::{
     state::WindowAnimationState,
@@ -3083,6 +3188,16 @@ mod tests {
     assert!(retargeted.is_running());
     assert!((entry_transit.amount_at(now) - amount).abs() < f32::EPSILON);
     assert!((amount - 0.25).abs() < 1e-3, "{amount}");
+  }
+
+  /// A pinned peek always moves its window; a live one only under
+  /// `morepeeks`.
+  #[test]
+  fn live_peeks_move_only_under_morepeeks() {
+    assert!(allows_motion(false, false));
+    assert!(allows_motion(false, true));
+    assert!(!allows_motion(true, false));
+    assert!(allows_motion(true, true));
   }
 
   /// A column moved on mid-entry keeps entering where it was; one put at
