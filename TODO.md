@@ -998,6 +998,29 @@ to see it; check each once more at 150 ms.
       frame, no blank tile.
     - After release: partly visible columns rest on their peeks as
       before, fully visible ones are handed back.
+71. **Floating <-> tiling on peeks** (`STAND_INS_PLAN.md` 10f).
+    `GLAZEWM_ISOLATE=morepeeks`, `window_resize` and `window_move` at
+    `duration_ms: 2000`, then 150; a border and a backdrop; `fill`, then
+    `stretch`. Three tiles opened after the WM started.
+    - `toggle-floating` on the focused tile, with `floating.shown_on_top`
+      on and off: it goes to its floating rect on its peek, over the
+      tiles and, shown on top, over the other floating windows shown on
+      top, never a frame under one; the tiles close the gap together.
+    - `toggle-floating` back: it sinks into its tile on its peek, over
+      the tiles while it moves; once landed, under the floating windows
+      shown on top, not over them.
+    - Drag a tile by its title bar and drop it back into the layout: the
+      drag itself is live as before; the drop animates into the tile.
+    - Each one twice within the animation: it turns, no restart.
+    - Hand-back: no jump, blink or step, nothing shown twice, the window
+      focused and in its band afterwards; a shrinking `fill` one gets
+      its size as it lands.
+    - Should not change: a floating window moved or resized by command
+      (`move`, `position`, `resize`) or dragged stays unanimated; a
+      fullscreen toggle, a minimize and a restore, as before. Without
+      the variable, the floating toggle is drawn by the old engine.
+    - Windows API: none new (`SetWindowPos` z-order on the cloaked
+      window, as task 6b's raise; thumbnail and cloak calls).
 
 If bars or flicker show, isolate them with `GLAZEWM_ISOLATE` (below), one
 restart per flag: `noring`, `nobackdrop`, then `live`. With a long
