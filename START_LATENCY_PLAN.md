@@ -204,3 +204,54 @@ as they are: those are already at their rect when the peek lands.
 `cargo check --workspace --target x86_64-pc-windows-msvc` (passes on
 `cd04e3c` here, 48 s), `cargo clippy` for that target, `cargo test` for
 what builds on Linux.
+
+## B: findings
+
+Read off the code and the `nopeeks`/`main` `resize` excerpts; not seen
+running. On the command's own pass `platform_sync` is +18 ms (86.8 vs
+68.8): `redraw_loop` +8.8, `session_overlays` +12.5, `cloak` −2.2.
+
+1. **First-pass overlay tracking: confirmed, fixed behind
+   `keepoverlays`.** `platform_sync.rs: redraw_containers` (`Frozen` arm,
+   `FrozenStep::TakeOver`) calls `track_overlays` with
+   `session_overlay_placement`, which is `None` for a new session:
+   `ResizeSession::current_rect` is only set by `queue_surrogate_updates`
+   later in the pass. `track_overlay`'s `None` arm then hides both
+   overlays (`ShowWindow` ×2 per window), and the session loop finds them
+   hidden, so `NativeBorderOverlay::place_ring`/`NativeBackdropOverlay::place`
+   take the reveal path (`SWP_SHOWWINDOW`, ring rebuilt first). `main`
+   skipped the upsert without a rect (lost in `3448d80`, a refactor), so
+   its loop only moved shown overlays behind the surrogate. With the word
+   the take-over skips tracking without a placement (`tracks_at_take_over`).
+   Changes the flushed frame (overlays kept behind the real window, as on
+   `main`, instead of hidden), hence the word. Expected: `rd_frozen`
+   back to ~0.6 ms/window (−7 ms on 7 windows) and `session_overlays`
+   toward `main`'s 38.8 (−12 ms); also `move`/`float` (same take-over).
+   Measure: `nopeeks` vs `nopeeks,keepoverlays` vs `main`, `resize` and
+   `move`; command p50, `rd_frozen`, `session_overlays`, A's `ovl_place`;
+   watch the ring/backdrop at a resize's first frame for a blink (should
+   be gone, not added).
+2. **Cloaking: refuted.** The per-window `cloak` rows in the timeline
+   are the take-over scope (`Stage::Cloak` inside `rd_frozen`), i.e.
+   finding 1. `commit_pending_cloaks` itself is 16.6 vs 18.8 ms;
+   `set_view_cloaked` matches `main`. `preposition_cloaked` adds
+   `frame_with_shadows` per growing window: small, and feeds
+   `discard_bits_if_resized` (on screen), left alone.
+3. **More passes: refuted for the answer.** The slowest-input timeline
+   has one `platform_sync` between command and first tick in both
+   builds (`WindowManager::process_commands` runs one). The extra two
+   passes and the extra `rd_apply`/`uncloak` (3.4 ms) fall elsewhere in
+   the burst. Open what queues them; measure with A's `command` stage and
+   per-pass logs.
+4. **`switch`: open.** The switch set-up in `redraw_containers`
+   (`WorkspaceSurrogate::new` + `carry_backdrop`, `park_switch_borders`,
+   `cover_ring`, `conceal` after the flush) is new per window and all of
+   it reaches the screen in an order rule 5 protects. Nothing redundant
+   found by reading. Measure: a `switch` excerpt with scopes around
+   `park_switch_borders` and the surrogate loop.
+5. **Pass tail: refuted.** On the command's pass `platform_sync` −
+   `redraw` is 0.11 ms (`main` 0.06); the 3.2 ms total is the other
+   passes (3).
+
+Minor, open: `session_begin` 0.51 vs 0.37 ms per call
+(`ResizeSession::begin_impl`; unread, possibly `NativeSurrogate`'s companion lookup).
