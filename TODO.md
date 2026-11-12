@@ -1045,11 +1045,12 @@ in the log says it is on):
   tick (`STAND_INS_PLAN.md` task 7). Off by default, and independent of
   `nopeeks`: scrolling columns move on peeks either way. Compare
   `peeksfirst` against no variable.
-- `fillpeeks`: `window_resize`'s `fill` style draws resizes on peeks
-  instead of with `ResizeSession`: the window 1:1 from its tile's
-  top-left, cut at the tile, the rest of the tile in the window's edge
-  colour (`STAND_INS_PLAN.md` 10b-3, 10e). Since 10e it no longer
-  changes `stretch`. Off by default; compare against no variable.
+- `fillpeeks`: still accepted, changes nothing. Since
+  `STAND_INS_PLAN.md` 10e-3 (owner's say-so, 2026-11-12),
+  `window_resize`'s `fill` style draws resizes on peeks by default: the
+  window 1:1 from its tile's top-left, cut at the tile, the rest of the
+  tile in the window's edge colour. `nopeeks` draws them with
+  `ResizeSession` again; compare the two.
 - `morepeeks`: draws on peeks what `ResizeSession` still draws: a
   fullscreen toggle, floating <-> tiling and floating moves by command, a
   tile moving to another monitor, windows whose backdrop can't be copied

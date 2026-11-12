@@ -189,8 +189,8 @@ Owner's answers, 2026-11-11:
 - [ ] 10. `fill` on peeks, for mouse drags first, then keyboard resizes
   (planned and reviewed 2026-11-12: 10a answered by reading; the owner's
   pre-check in 10a still to run; 10b, 10c, 10e-1 and 10e-2 built, not
-  checked live; 10d is the owner's call; 10e-3 waits for the owner's
-  A/B)
+  checked live; 10d is the owner's call; 10e-3 done on the owner's
+  say-so, 2026-11-12; 10f ports under way behind `morepeeks`)
 
 ### Task 0: baseline (desktop, by hand)
 

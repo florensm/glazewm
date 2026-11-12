@@ -695,20 +695,18 @@ pub(super) fn is_peek_resize(
   !is_same_size(from, target) && distance > threshold
 }
 
-/// How `window_resize` draws resizes on peeks, if it does: enabled, with
-/// peeks on, its `stretch` style, or its `fill` style under
-/// `GLAZEWM_ISOLATE=fillpeeks`.
+/// How `window_resize` draws resizes on peeks, if it does: in its style,
+/// enabled, with peeks on.
 pub(super) fn resizes_on_peeks(config: &UserConfig) -> Option<PeekResize> {
   let resize = &config.value.animations.window_resize;
-  let isolation = wm_platform::isolation::current();
-  if !isolation.peeks || !resize.enabled {
+  if !wm_platform::isolation::current().peeks || !resize.enabled {
     return None;
   }
 
-  match resize.style {
-    ResizeStyle::Stretch => Some(PeekResize::Stretch),
-    ResizeStyle::Fill => isolation.fill_peeks.then_some(PeekResize::Fill),
-  }
+  Some(match resize.style {
+    ResizeStyle::Stretch => PeekResize::Stretch,
+    ResizeStyle::Fill => PeekResize::Fill,
+  })
 }
 
 /// `motion` headed for `target` instead, at the speed it has at `now`
