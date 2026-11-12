@@ -327,7 +327,11 @@ pub fn end_window_drag(
     return Ok(());
   };
 
-  if let Ok(frame) = window.native().frame() {
+  // Bound by `let` so the `native()` borrow ends here: in an `if let`
+  // scrutinee it would outlive the mutable borrows below.
+  let frame = window.native().frame();
+
+  if let Ok(frame) = frame {
     window.update_native_properties(|properties| {
       properties.frame = frame.clone();
     });

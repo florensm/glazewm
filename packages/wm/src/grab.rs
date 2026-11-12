@@ -572,14 +572,19 @@ fn end_early(
 mod tests {
   use std::mem::ManuallyDrop;
 
-  use wm_common::{DisplayState, WindowState};
+  use wm_common::{
+    ActiveDrag, ActiveDragOperation, DisplayState, WindowState,
+  };
   use wm_platform::{
     Gesture, GrabEnd, GrabListener, NativeWindow, ResizeEdges,
   };
 
   use super::{finish, is_grabbable, start, step};
   use crate::{
-    models::{Monitor, NonTilingWindow, TilingWindow, Workspace},
+    events::float_for_drag,
+    models::{
+      Monitor, NonTilingWindow, TilingWindow, WindowContainer, Workspace,
+    },
     test_utils::{mock_config, mock_inner_gaps},
     traits::{
       CommonGetters, PositionGetters, TilingSizeGetters, WindowGetters,
@@ -727,6 +732,47 @@ mod tests {
       assert!((window.tiling_size() - 1. / 3.).abs() < 1e-4);
       assert!(is_placed(window, &state));
     }
+    assert!(state.grab.grab.is_none());
+  }
+
+  /// Ends a move the way a release of one crashed on (a `RefCell` borrowed
+  /// twice). A mock's frame can't be queried, so the frame read that
+  /// crashed is skipped, and the float the move's first events would do is
+  /// done directly.
+  #[test]
+  fn a_cancelled_move_tiles_its_floated_window_back() {
+    let (mut state, [left, middle, _]) = setup();
+    let config = mock_config();
+    let native = middle.native().clone();
+    start(
+      native.clone(),
+      Gesture::Move,
+      &GrabListener::new(),
+      &mut state,
+      &config,
+    )
+    .unwrap();
+    assert!(state.grab.grab.is_some());
+
+    middle.set_active_drag(Some(ActiveDrag {
+      operation: Some(ActiveDragOperation::Move),
+      is_from_floating: false,
+      initial_position: target(&middle),
+    }));
+    float_for_drag(&middle.clone().into(), false, &mut state, &config)
+      .unwrap();
+    let floated = state.window_from_native(&native).unwrap();
+    assert!(matches!(floated, WindowContainer::NonTilingWindow(_)));
+    assert!(floated.active_drag().is_some());
+
+    finish(GrabEnd::Cancelled, None, &mut state, &config).unwrap();
+
+    let dropped = state.window_from_native(&native).unwrap();
+    assert!(matches!(dropped, WindowContainer::TilingWindow(_)));
+    assert!(dropped.active_drag().is_none());
+    let workspace = left.workspace().unwrap();
+    assert_eq!(dropped.workspace().map(|w| w.id()), Some(workspace.id()));
+    assert_eq!(workspace.tiling_children().count(), 3);
     assert!(state.grab.grab.is_none());
   }
 
