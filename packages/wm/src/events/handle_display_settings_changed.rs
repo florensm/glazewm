@@ -18,6 +18,9 @@ pub fn handle_display_settings_changed(
 ) -> anyhow::Result<()> {
   tracing::info!("Display settings changed.");
 
+  // Kept peeks span monitors as they were.
+  state.animation_manager.peeks.drop_spares();
+
   // Ignore the event if retrieval of the displays or their properties
   // fails (can happen transiently during sleep/wake).
   let displays = try_warn!(state
