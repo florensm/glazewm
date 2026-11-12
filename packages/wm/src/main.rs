@@ -399,6 +399,7 @@ fn handle_ipc_message(
 ) {
   tracing::info!("Received IPC message: {:?}", message);
   wm_platform::perf::mark_input();
+  let _scope = wm_platform::perf::scope(wm_platform::perf::Stage::Command);
 
   if let Err(err) = ipc_server.process_message(
     message,

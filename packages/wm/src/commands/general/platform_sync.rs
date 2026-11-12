@@ -103,6 +103,7 @@ pub fn platform_sync(
   } else {
     Redraw::default()
   };
+  let _tail_scope = perf::scope(Stage::SyncTail);
 
   // Focus is synced after `redraw_containers` so that the workspace-switch
   // animation is already set up when `sync_focus` runs. This lets the
@@ -648,13 +649,17 @@ fn commit_pending_cloaks(
   } in pending
   {
     // A scrolling layout's peek takes over as its window is cloaked.
+    let take_over_scope = perf::scope(Stage::TakeOver);
     state
       .animation_manager
       .peeks
       .take_over(&window.id(), &window.native());
     let _ = window.native().set_cloaked(true);
+    drop(take_over_scope);
 
+    let preposition_scope = perf::scope(Stage::Preposition);
     preposition_cloaked(state, &window, &z_order, &target_rect);
+    drop(preposition_scope);
 
     // Later `Frozen` ticks then skip the cloak query.
     if let Some(session) = state
@@ -2181,12 +2186,15 @@ fn redraw_containers(
   // the barrier is sure to run then, and its ring and backdrop are handed
   // over around it.
   if peeks_take_over {
+    let _scope = perf::scope(Stage::PeekCover);
     crate::animation::peek_view::cover_moved_overlays(state, config);
   }
   commit_pending_cloaks(state, pending_cloaks, cloak_overlay_batch);
   if peeks_take_over {
+    let _scope = perf::scope(Stage::PeekHandover);
     crate::animation::peek_view::hand_over_moved_overlays(state, config);
   }
+  let raise_scope = perf::scope(Stage::PeekRaise);
   // Only now its window is cloaked: raised while that still showed, a
   // peek's opaque backdrop copy would have hidden it.
   // One a grab holds stays where it went up, just below its window, for
@@ -2221,6 +2229,7 @@ fn redraw_containers(
       .peeks
       .raise_in_band(&window.id(), *raise);
   }
+  drop(raise_scope);
 
   for id in &released_covers {
     state.animation_manager.drop_companion_cover(id);

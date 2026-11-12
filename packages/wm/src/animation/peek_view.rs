@@ -11,6 +11,7 @@ use wm_common::{
   WindowTransitionParams,
 };
 use wm_platform::{
+  perf::{self, Stage},
   BackdropOverlayParams, BorderOverlayParams, Color, CornerStyle,
   NativeBackdropOverlay, NativeBorderOverlay, NativeWindow, Overlay,
   Point, Rect, RectDelta, StyleBlend, SurrogateBatch, WindowPeek, HWND,
@@ -2801,6 +2802,7 @@ fn new_entry(
   styles: &[Option<BackdropOverlayParams>; 2],
   role: Role,
 ) -> Option<(Entry, bool)> {
+  let _scope = perf::scope(Stage::PeekNew);
   let is_moving = matches!(role, Role::Moving { .. } | Role::Leaving(_));
 
   // Sized like the window itself, which a collapsed `from` (an opening
