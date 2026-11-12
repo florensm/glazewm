@@ -135,6 +135,85 @@ impl WindowPeek {
     })
   }
 
+  /// Hides the peek and drops its copies, so it draws nothing and costs
+  /// nothing until [`reset`](Self::reset) readies it for its window's next
+  /// motion. Its real window gets back any alpha a handover set aside, as
+  /// on drop.
+  pub fn set_aside(&mut self) {
+    self.surrogate.set_visible(false);
+    self.surrogate.hide_thumbnail();
+    self.copies.clear();
+    self.hidden_alpha.restore();
+    self.frame_rect = None;
+    self.visible_rect = None;
+  }
+
+  /// Leaves a peek set aside (see [`set_aside`](Self::set_aside)) as
+  /// [`new`](Self::new) leaves one of the same window with these
+  /// arguments: thumbnail, companion, corners, z-order just below the
+  /// window, and no copies.
+  pub fn reset(
+    &mut self,
+    rect: &Rect,
+    clip: &Rect,
+    corner_style: &CornerStyle,
+    live: bool,
+  ) -> crate::Result<()> {
+    let hwnd = self.source;
+    let border_inset = compute_border_inset(hwnd);
+
+    // Done by `set_aside` already; repeated so no copy, alpha or shown
+    // window can outlive a reset.
+    self.copies.clear();
+    self.hidden_alpha.restore();
+    self.surrogate.set_visible(false);
+
+    // As `new` creates the surrogate, for `revive` to match it.
+    if live {
+      self.surrogate.revive(
+        hwnd,
+        &to_logical(rect, &border_inset),
+        rect,
+        u8::MAX,
+        border_inset,
+        corner_style,
+        hwnd,
+        false,
+      )?;
+      self.mode = PeekMode::Live;
+    } else {
+      self.surrogate.revive(
+        hwnd,
+        clip,
+        rect,
+        u8::MAX,
+        RECT::default(),
+        &CornerStyle::Square,
+        hwnd,
+        false,
+      )?;
+      self.mode = PeekMode::Pinned {
+        viewport: clip.clone(),
+      };
+    }
+
+    self.border_inset = border_inset;
+    self.rest = rect.clone();
+    self.drawn = Drawn::Shown;
+    self.shows_backdrop = false;
+    self.opacity = u8::MAX;
+    self.frac = 1.0;
+    self.frame_rect = None;
+    self.visible_rect = None;
+    Ok(())
+  }
+
+  /// The window the peek shows.
+  #[must_use]
+  pub fn source(&self) -> HWND {
+    self.source
+  }
+
   /// Whether the peek draws its window at all: DWM refuses a thumbnail of
   /// some, e.g. an elevated window.
   #[must_use]

@@ -12,6 +12,7 @@ pub fn toggle_pause(state: &mut WmState) {
   if is_paused {
     crate::drop_indicator::hide_drop_indicator(state);
     state.click_guard.guard([]);
+    state.animation_manager.peeks.drop_spares();
   }
 
   // Redraw full container tree on unpause.
