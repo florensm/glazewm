@@ -516,8 +516,8 @@ impl WindowPeek {
   /// a window that may still be resizing there: a source larger than the
   /// window is drawn as a transparent hole.
   ///
-  /// Returns the cover drawn with. Pinned peeks only: a live one is placed
-  /// at `rect` unscaled (see [`place`](Self::place)).
+  /// Returns the cover drawn with. A live peek is moved over the frame's
+  /// visible part (see [`frame_origin`](Self::frame_origin)).
   #[allow(clippy::too_many_arguments)]
   pub fn place_stretched(
     &mut self,
@@ -530,14 +530,7 @@ impl WindowPeek {
     opacity: u8,
     batch: &mut SurrogateBatch,
   ) -> (f32, f32) {
-    let PeekMode::Pinned { viewport } = &mut self.mode else {
-      tracing::debug!("A live peek can't draw its window stretched.");
-      self.place(rect, clip, opacity, batch);
-      return (1.0, 1.0);
-    };
-
-    repin(&mut self.surrogate, viewport, clip);
-    let origin = (viewport.left, viewport.top);
+    let origin = self.frame_origin(rect, clip, batch);
     self.opacity = opacity;
     self.frac = 1.0;
 
@@ -576,8 +569,9 @@ impl WindowPeek {
   /// [`carry_fill`](Self::carry_fill)), and its ring and backdrop copies
   /// around `rect`.
   ///
-  /// Pinned peeks only: a live one is placed at `rect` as it is (see
-  /// [`place`](Self::place)).
+  /// A live peek, which carries no fill, is moved over the frame's visible
+  /// part (see [`frame_origin`](Self::frame_origin)): the window's real
+  /// backdrop under it shows where its content does not reach.
   pub fn place_filled(
     &mut self,
     sampled: (i32, i32),
@@ -586,14 +580,7 @@ impl WindowPeek {
     opacity: u8,
     batch: &mut SurrogateBatch,
   ) {
-    let PeekMode::Pinned { viewport } = &mut self.mode else {
-      tracing::debug!("A live peek can't draw its window filled.");
-      self.place(rect, clip, opacity, batch);
-      return;
-    };
-
-    repin(&mut self.surrogate, viewport, clip);
-    let origin = (viewport.left, viewport.top);
+    let origin = self.frame_origin(rect, clip, batch);
     self.opacity = opacity;
     self.frac = 1.0;
 
@@ -627,6 +614,34 @@ impl WindowPeek {
     self.copies.cover_ring();
     self.surrogate.set_visible(true);
     self.visible_rect = Some(visible);
+  }
+
+  /// The top-left a peek draws its window at `rect`, cut at `clip`, from:
+  /// a pinned one's viewport, moved to span `clip` if it doesn't; a live
+  /// one's own, moved over the visible part of the window's frame (queued
+  /// into `batch` once shown), or the frame's if none of it is visible.
+  fn frame_origin(
+    &mut self,
+    rect: &Rect,
+    clip: &Rect,
+    batch: &mut SurrogateBatch,
+  ) -> (i32, i32) {
+    match &mut self.mode {
+      PeekMode::Pinned { viewport } => {
+        repin(&mut self.surrogate, viewport, clip);
+        (viewport.left, viewport.top)
+      }
+      PeekMode::Live => {
+        let frame = to_logical(rect, &self.border_inset);
+        match frame.intersection(clip) {
+          Some(visible) => {
+            self.surrogate.move_to(&visible, Some(batch));
+            (visible.left, visible.top)
+          }
+          None => (frame.left, frame.top),
+        }
+      }
+    }
   }
 
   /// Draws the window at `rect`, its frame at `frame`, cut at `clip`, into
@@ -1103,6 +1118,49 @@ mod tests {
     assert_eq!(visible, Rect::from_ltrb(1520, 100, 1920, 700));
     assert_eq!(ltrb(src), (7, 0, 407, 600));
     assert_eq!(ltrb(dst), (1520, 100, 1920, 700));
+  }
+
+  /// Drawn from the visible part of its frame, as a live peek is, a window
+  /// samples what a pinned peek does, drawn at the same place on screen.
+  #[test]
+  fn a_live_origin_draws_what_a_pinned_one_does() {
+    let actual = Rect::from_ltrb(1513, 100, 2327, 707);
+    let target = Rect::from_ltrb(1313, 100, 2327, 707);
+    let rect = Rect::from_ltrb(1413, 100, 2327, 707);
+    let draw = |origin| {
+      stretched_rects(
+        &actual,
+        &target,
+        &rect,
+        true,
+        (1.0, 1.0),
+        &CLIP,
+        INSET,
+        origin,
+      )
+    };
+
+    let (ScaledRects { shown: pinned, .. }, _) = draw((0, 0));
+    let Some((visible, (pinned_src, pinned_dst))) = pinned else {
+      panic!("not shown");
+    };
+    let (ScaledRects { shown: live, .. }, _) =
+      draw((visible.left, visible.top));
+    let Some((_, (live_src, live_dst))) = live else {
+      panic!("not shown");
+    };
+
+    assert_eq!(ltrb(live_src), ltrb(pinned_src));
+    assert_eq!(
+      ltrb(live_dst),
+      (
+        pinned_dst.left - visible.left,
+        pinned_dst.top - visible.top,
+        pinned_dst.right - visible.left,
+        pinned_dst.bottom - visible.top,
+      )
+    );
+    assert_eq!((live_dst.left, live_dst.top), (0, 0));
   }
 
   /// `(covered, rcSource, rcDestination)` of a window at

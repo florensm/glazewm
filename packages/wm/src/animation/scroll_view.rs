@@ -36,7 +36,7 @@ use wm_platform::{Rect, SurrogateBatch};
 
 use super::{
   peek_view::{
-    has_other_stand_in, is_live, is_peek_resize, is_pure_move,
+    can_move_on_peek, has_other_stand_in, is_peek_resize, is_pure_move,
     peek_styles, resizes_on_peeks, restore_cloaked, track_overlays,
     PeekView, Role,
   },
@@ -346,9 +346,10 @@ fn moves_on_peek(
 }
 
 /// Whether `window`, a column, can be drawn stretched as it resizes on
-/// its peek: not one another stand-in draws, nor one whose peek would be
-/// `Live`, nor one at its new size already, as an interactive resize
-/// leaves it, which keeps the per-window path as before.
+/// its peek: not one another stand-in draws, nor one whose peek can't
+/// (see `can_move_on_peek`), nor one at its new size already, as an
+/// interactive resize leaves it, which keeps the per-window path as
+/// before.
 fn can_stretch(
   state: &WmState,
   window: &WindowContainer,
@@ -371,7 +372,7 @@ fn can_stretch(
       });
 
   !other_stand_ins.contains(&window.id())
-    && !is_live(&peek_styles(window, config))
+    && can_move_on_peek(&peek_styles(window, config))
     && !is_resized_already
 }
 

@@ -827,21 +827,30 @@ impl NativeSurrogate {
       return None;
     };
     self.set_thumbnail_rects(src, dst);
-
-    match batch {
-      Some(batch) if self.is_visible => {
-        self.defer_reposition(batch, &visible);
-      }
-      _ => {
-        if let Err(err) = self.reposition(&visible) {
-          tracing::warn!("Surrogate clipped update failed: {err}.");
-        }
-      }
-    }
+    self.move_to(&visible, batch);
     self.set_window_opacity(opacity);
     self.set_visible(true);
 
     Some(visible)
+  }
+
+  /// Moves the surrogate to `rect`. With `batch`, a move of an already
+  /// shown surrogate is queued into it.
+  pub(crate) fn move_to(
+    &mut self,
+    rect: &Rect,
+    batch: Option<&mut SurrogateBatch>,
+  ) {
+    match batch {
+      Some(batch) if self.is_visible => {
+        self.defer_reposition(batch, rect);
+      }
+      _ => {
+        if let Err(err) = self.reposition(rect) {
+          tracing::warn!("Surrogate clipped update failed: {err}.");
+        }
+      }
+    }
   }
 
   /// Returns the raw handle of the surrogate overlay window.

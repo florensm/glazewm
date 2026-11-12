@@ -1696,6 +1696,16 @@ three makers: `start_animation_if_needed`, `start_open_animation`,
 | Windows with no thumbnail (elevated) | Already snap (`move_tile`) |
 | Mixed relayouts (`stretches_relayout` false) | Gone once every row above is |
 
+`Live` row: moves and resizes built behind `morepeeks`, not checked live
+(`TODO.md` 73). A live peek moves and resizes tiles and columns as a
+pinned one does: `place_stretched` and `place_filled` move its own
+window over the frame's visible part (`frame_origin`), and its real
+backdrop and ring follow as for a column (`track_overlays`); a filled
+one has no strip, its backdrop shows there. Raised, its overlays are
+restacked behind it (`restack_live_overlays`); landed, they go behind
+the window (`overlay_anchor`). Opens, closes, minimizes and grabs stay
+on the engine: the real overlays can't fade or zoom with a transit.
+
 Owner's decision, 2026-11-12: port every row to peeks (fullscreen
 toggle, floating <-> tiling and floating moves by command, a tile moving
 to another monitor, `Live` peeks), so the engine can go later; but keep
