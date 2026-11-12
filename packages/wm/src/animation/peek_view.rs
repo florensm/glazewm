@@ -11,7 +11,7 @@ use wm_common::{
   WindowTransitionParams,
 };
 use wm_platform::{
-  BackdropOverlayParams, BorderOverlayParams, CornerStyle,
+  BackdropOverlayParams, BorderOverlayParams, Color, CornerStyle,
   NativeBackdropOverlay, NativeBorderOverlay, NativeWindow, Overlay,
   Point, Rect, StyleBlend, SurrogateBatch, WindowPeek, HWND,
 };
@@ -137,6 +137,10 @@ struct Stretch {
   cover: (f32, f32),
   /// When its cover began to ease back to 1, and from what.
   settle: Option<(Instant, (f32, f32))>,
+  /// The window's edge color, as last sampled, with which it is drawn
+  /// filled instead under `GLAZEWM_ISOLATE=fillpeeks` (see
+  /// [`note_fill_colors`]).
+  fill: Option<Color>,
 }
 
 impl Stretch {
@@ -147,6 +151,7 @@ impl Stretch {
       reached: false,
       cover: (1.0, 1.0),
       settle: None,
+      fill: None,
     }
   }
 
@@ -284,6 +289,24 @@ impl Entry {
       return false;
     };
 
+    if wm_platform::isolation::current().fill_peeks {
+      if let Some(color) = stretch.fill {
+        self.peek.carry_fill(color);
+      }
+      // Yet to reach its target, the window may be resized to it at any
+      // time, so is sampled no larger.
+      let in_flight =
+        (!stretch.reached).then_some(&self.motion.target_rect);
+      self.peek.place_filled(
+        sampled_size(actual, rect, in_flight),
+        rect,
+        &self.clip,
+        self.opacity,
+        batch,
+      );
+      return true;
+    }
+
     stretch.cover = self.peek.place_stretched(
       actual,
       &self.motion.target_rect,
@@ -295,6 +318,51 @@ impl Entry {
       batch,
     );
     true
+  }
+}
+
+/// The size of a window, drawn filled at `rect`, that is sure to be drawn
+/// (see `WindowPeek::place_filled`): per axis, the smallest of its size as
+/// last read, `actual`, the rect's, and that of a size it was sent and is
+/// yet to report, `in_flight`.
+fn sampled_size(
+  actual: &Rect,
+  rect: &Rect,
+  in_flight: Option<&Rect>,
+) -> (i32, i32) {
+  [Some(actual), Some(rect), in_flight]
+    .into_iter()
+    .flatten()
+    .fold((i32::MAX, i32::MAX), |(width, height), size| {
+      (width.min(size.width()), height.min(size.height()))
+    })
+}
+
+/// Notes each stretching window's edge color, as last sampled, on its
+/// peek, which draws it filled with it under `GLAZEWM_ISOLATE=fillpeeks`.
+pub(super) fn note_fill_colors(state: &mut WmState) {
+  let colors = state
+    .animation_manager
+    .peeks
+    .entries
+    .iter()
+    .filter(|(_, entry)| entry.stretch.is_some())
+    .filter_map(|(id, _)| {
+      let hwnd = state.window_by_id(*id)?.native().hwnd();
+      Some((*id, state.animation_manager.cached_edge_color(hwnd.0)?))
+    })
+    .collect::<Vec<_>>();
+
+  for (id, color) in colors {
+    if let Some(stretch) = state
+      .animation_manager
+      .peeks
+      .entries
+      .get_mut(&id)
+      .and_then(|entry| entry.stretch.as_mut())
+    {
+      stretch.fill = Some(color);
+    }
   }
 }
 
@@ -2531,8 +2599,8 @@ mod tests {
     conceals_new_ring, floating_peek_raise, follow_duration, follows_tile,
     has_landed, has_left, is_departed, is_peek_resize, is_pure_move,
     is_stray, kept_transit, leaves_as, leaving_transit, restretched,
-    retargeted_motion, returning_transit, settling, take_left, PeekRaise,
-    Role, Stretch, STRETCH_SETTLE,
+    retargeted_motion, returning_transit, sampled_size, settling,
+    take_left, PeekRaise, Role, Stretch, STRETCH_SETTLE,
   };
   use crate::animation::{
     state::WindowAnimationState,
@@ -3032,5 +3100,20 @@ mod tests {
         && !fresh.reached
         && fresh.cover_at(t0) == (1.0, 1.0)
     }));
+  }
+
+  /// Filled, a window samples per axis no more than it was read at, its
+  /// rect, and a size it is yet to report.
+  #[test]
+  fn a_filled_window_samples_the_smallest_size_it_is_sure_to_have() {
+    let actual = Rect::from_xy(0, 0, 1000, 600);
+    let rect = Rect::from_xy(0, 0, 980, 700);
+
+    assert_eq!(sampled_size(&actual, &rect, None), (980, 600));
+
+    // Sent 950 wide, not yet read back: it may land before the frame
+    // shows.
+    let in_flight = Rect::from_xy(0, 0, 950, 800);
+    assert_eq!(sampled_size(&actual, &rect, Some(&in_flight)), (950, 600));
   }
 }

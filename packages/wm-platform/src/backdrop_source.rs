@@ -9,23 +9,51 @@
 
 use std::{cell::RefCell, rc::Rc};
 
-use windows::Win32::UI::WindowsAndMessaging::HWND_BOTTOM;
+use windows::Win32::{
+  Foundation::RECT, UI::WindowsAndMessaging::HWND_BOTTOM,
+};
 
 use crate::{
   overlay_window::{OverlayKind, OverlayWindow},
-  platform_impl::composition::{BackdropVisual, VignetteVisual},
-  BackdropOverlayParams, Rect,
+  platform_impl::composition::{
+    BackdropVisual, SurrogateFill, VignetteVisual,
+  },
+  BackdropOverlayParams, Color, Rect,
 };
 
 /// Sources no copy uses that are kept for their style coming back, e.g.
 /// as focus returns to a window.
 const MAX_IDLE_SOURCES: usize = 2;
 
+/// Side of a [`FillSource`]'s window, in physical pixels.
+const FILL_SOURCE_SIZE: i32 = 8;
+
+/// Pixels of a [`FillSource`]'s edges its copies leave out: a stretched
+/// thumbnail blends its edge pixels with what is past them.
+const FILL_SOURCE_MARGIN: i32 = 2;
+
 thread_local! {
   /// Every source in use, shared by the copies of windows with the same
   /// style on the same monitor.
   static SOURCES: RefCell<Vec<Rc<BackdropSource>>> =
     const { RefCell::new(Vec::new()) };
+
+  /// Every fill source in use, shared by the copies of windows with the
+  /// same edge color.
+  static FILL_SOURCES: RefCell<Vec<Rc<FillSource>>> =
+    const { RefCell::new(Vec::new()) };
+}
+
+/// Drops all but [`MAX_IDLE_SOURCES`] of `sources` no copy uses.
+fn drop_idle<T>(sources: &mut Vec<Rc<T>>) {
+  let mut idle = 0;
+  sources.retain(|source| {
+    if Rc::strong_count(source) > 1 {
+      return true;
+    }
+    idle += 1;
+    idle <= MAX_IDLE_SOURCES
+  });
 }
 
 /// A backdrop spanning a monitor, in a window hidden by its alpha, which
@@ -78,16 +106,7 @@ impl BackdropSource {
       tracing::warn!("Backdrop source refresh failed: {err}.");
     }
 
-    SOURCES.with(|sources| {
-      let mut idle = 0;
-      sources.borrow_mut().retain(|source| {
-        if Rc::strong_count(source) > 1 {
-          return true;
-        }
-        idle += 1;
-        idle <= MAX_IDLE_SOURCES
-      });
-    });
+    SOURCES.with(|sources| drop_idle(&mut sources.borrow_mut()));
 
     Ok(source)
   }
@@ -175,5 +194,82 @@ impl VignetteSource {
 
   pub(crate) fn rect(&self) -> &Rect {
     &self.rect
+  }
+}
+
+/// A few pixels of one color, in a window hidden by its alpha, which
+/// thumbnails of it leave out: what a surrogate stretches over the part of
+/// a window's frame its app has yet to fill (see
+/// `OverlayCopies::carry_fill`).
+///
+/// A thumbnail rather than a visual on the surrogate, as it is drawn in
+/// the same DWM updates as the window's own, and above the backdrop's
+/// copy, which a visual rooted on the surrogate would be under.
+pub(crate) struct FillSource {
+  /// Declared before `window`, which its visual tree is rooted to.
+  _composition: SurrogateFill,
+  window: OverlayWindow,
+  color: Color,
+}
+
+impl FillSource {
+  /// The source of `color`, shared with the other copies of it.
+  pub(crate) fn acquire(color: Color) -> crate::Result<Rc<Self>> {
+    let cached = FILL_SOURCES.with(|sources| {
+      sources
+        .borrow()
+        .iter()
+        .find(|source| source.color == color)
+        .cloned()
+    });
+
+    let source = if let Some(source) = cached {
+      source
+    } else {
+      let source = Rc::new(Self::create(color)?);
+      FILL_SOURCES
+        .with(|sources| sources.borrow_mut().push(source.clone()));
+      source
+    };
+
+    FILL_SOURCES.with(|sources| drop_idle(&mut sources.borrow_mut()));
+    Ok(source)
+  }
+
+  /// At the primary monitor's top-left, which is always on screen, at the
+  /// bottom of the z-order.
+  fn create(color: Color) -> crate::Result<Self> {
+    let rect = Rect::from_xy(0, 0, FILL_SOURCE_SIZE, FILL_SOURCE_SIZE);
+    let mut window = OverlayWindow::create(
+      OverlayKind::BackdropSource,
+      &rect,
+      HWND_BOTTOM,
+    )?;
+    window.set_alpha(0)?;
+
+    let composition = SurrogateFill::create(window.hwnd())?;
+    composition.set_covered((0, 0))?;
+    composition.set_color(Some(color))?;
+    window.place_at_bottom(&rect)?;
+
+    Ok(Self {
+      _composition: composition,
+      window,
+      color,
+    })
+  }
+
+  pub(crate) fn hwnd(&self) -> windows::Win32::Foundation::HWND {
+    self.window.hwnd()
+  }
+
+  /// The part of the source its copies draw, in its own coordinates.
+  pub(crate) fn sample_rect() -> RECT {
+    RECT {
+      left: FILL_SOURCE_MARGIN,
+      top: FILL_SOURCE_MARGIN,
+      right: FILL_SOURCE_SIZE - FILL_SOURCE_MARGIN,
+      bottom: FILL_SOURCE_SIZE - FILL_SOURCE_MARGIN,
+    }
   }
 }

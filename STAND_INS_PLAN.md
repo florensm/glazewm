@@ -188,7 +188,7 @@ Owner's answers, 2026-11-11:
 - [ ] 9. Remove what is no longer reached
 - [ ] 10. `fill` on peeks, for mouse drags first, then keyboard resizes
   (planned and reviewed 2026-11-12: 10a answered by reading; the owner's
-  pre-check in 10a still to run; 10b-1 built, not checked live)
+  pre-check in 10a still to run; 10b built, not checked live)
 
 ### Task 0: baseline (desktop, by hand)
 
@@ -1438,6 +1438,22 @@ Unit tests on that function.
   and a colour brush (through `SurrogateFill`), the thumbnail calls.
   None new.
 - Live check: with 10b-3.
+
+Built 2026-11-12, not checked live: 10b-1 in `0f19042`; 10b-2 and 10b-3
+in one commit, as 10b-2 alone has no caller and fails `-D warnings`. Three
+departures from the text above, both in the commit message:
+
+- The fill strips stack above the window's own thumbnail, not below:
+  putting them below means registering the window's thumbnail anew,
+  and `NativeSurrogate::raise_thumbnail` unregisters it first, which
+  can leave a frame with no window. Above it they cover only where the
+  content does not reach, plus the 2 px underlap, which is the hidden
+  border's see-through rows anyway. The ring is raised over them.
+- The fill is shown with the backdrop copy's step in
+  `WindowPeek::apply_backdrop` (drawn only while the window is), so
+  `WindowPeek::draw`'s order is untouched.
+- `fillpeeks` also queues a first edge sample for windows as they open
+  or are shown (`queue_first_edge_sample`), as `stretch` never samples.
 
 **10b-3. `WindowPeek::place_filled` and the sampling rule.**
 `place_filled(sampled, rect, clip, opacity, batch)`: content 1:1 from

@@ -928,6 +928,30 @@ to see it; check each once more at 150 ms.
       before.
     - No new Windows API: up to eight `DwmRegisterThumbnail`s per ring
       instead of one, the same calls.
+67. **Filled resizes on peeks** (`STAND_INS_PLAN.md` 10b-2 and 10b-3).
+    `GLAZEWM_ISOLATE=fillpeeks`, `window_resize: { style: "stretch",
+    duration_ms: 2000 }`, a border, a gap wide enough to see, two tiles
+    opened after the WM started (so their edge colour is sampled; wait a
+    second after they open). Then once with a see-through window
+    (`transparency`) and once with a backdrop.
+    - Shrink one by keyboard: its app shrinks at once behind the cloak,
+      so for two seconds the strip fills the rest of its tile. The
+      strip's far edge, the ring and the gap move as one. Its colour
+      matches the window's edge; no line between content and strip; a
+      see-through window's strip is no darker than the window.
+    - Grow it: content cut at the tile, no strip once the app has grown,
+      no hole to the desktop at any point.
+    - The hand-back: no jump, blink or step; no strip left over the real
+      window for a frame.
+    - A backdrop: it covers the whole tile throughout, not a few pixels
+      short at the sides.
+    - A window opened before the WM started gets no strip (its backdrop
+      copy or the desktop shows there): expected, not a fault.
+    - Then without the variable: `stretch` as before.
+    - Windows API: one new hidden window per edge colour in use
+      (`CreateWindowExW`, `SetLayeredWindowAttributes`, `SetWindowPos`,
+      a `Windows.UI.Composition` colour brush), all already used for the
+      backdrop copies. Only with the variable set.
 
 If bars or flicker show, isolate them with `GLAZEWM_ISOLATE` (below), one
 restart per flag: `noring`, `nobackdrop`, then `live`. With a long
@@ -975,6 +999,12 @@ in the log says it is on):
   tick (`STAND_INS_PLAN.md` task 7). Off by default, and independent of
   `nopeeks`: scrolling columns move on peeks either way. Compare
   `peeksfirst` against no variable.
+- `fillpeeks`: resizes that `window_resize`'s `stretch` style draws on
+  peeks are drawn filled instead: the window 1:1 from its tile's
+  top-left, cut at the tile, the rest of the tile in the window's edge
+  colour (`STAND_INS_PLAN.md` 10b-3). Also samples the edge colour of
+  windows as they open or are shown, which `stretch` otherwise never
+  does. Off by default; compare against no variable.
 
 Set it for one run, e.g. from PowerShell in the repo:
 

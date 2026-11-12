@@ -17,6 +17,9 @@
 //!   frame before the main loop's catch-up on queued events, then the rest
 //!   of the tick, rather than all of it after the catch-up. With or
 //!   without `nopeeks`: scrolling columns move on peeks either way.
+//! - `fillpeeks`: draw resizes on peeks that `window_resize`'s `stretch`
+//!   style draws stretched filled instead: the window 1:1, cut at its
+//!   tile, the rest of the tile in its edge color.
 //!
 //! Read once per process.
 
@@ -33,6 +36,7 @@ pub struct Isolation {
   /// On unless `nopeeks` is given.
   pub peeks: bool,
   pub peeks_first: bool,
+  pub fill_peeks: bool,
 }
 
 impl Default for Isolation {
@@ -43,6 +47,7 @@ impl Default for Isolation {
       live: false,
       peeks: true,
       peeks_first: false,
+      fill_peeks: false,
     }
   }
 }
@@ -63,6 +68,7 @@ impl Isolation {
         "peeks" => {}
         "nopeeks" => isolation.peeks = false,
         "peeksfirst" => isolation.peeks_first = true,
+        "fillpeeks" => isolation.fill_peeks = true,
         _ => tracing::warn!("Unknown GLAZEWM_ISOLATE flag: {word}."),
       }
     }
@@ -102,6 +108,7 @@ mod tests {
         live: true,
         peeks: true,
         peeks_first: false,
+        fill_peeks: false,
       }
     );
     assert_eq!(Isolation::parse("peeks"), Isolation::default());
@@ -138,5 +145,17 @@ mod tests {
       }
     );
     assert_eq!(Isolation::parse("peeks_first"), Isolation::default());
+  }
+
+  #[test]
+  fn fill_peeks_is_off_unless_given() {
+    assert!(!Isolation::default().fill_peeks);
+    assert_eq!(
+      Isolation::parse("FillPeeks"),
+      Isolation {
+        fill_peeks: true,
+        ..Isolation::default()
+      }
+    );
   }
 }

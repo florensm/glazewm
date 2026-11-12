@@ -224,7 +224,7 @@ const FILL_UNDERLAP_PX: i32 = 2;
 
 /// Where the gap fill starts, from the surrogate's top-left, under a
 /// thumbnail covering `covered` (see [`FILL_UNDERLAP_PX`]).
-fn fill_start(covered: (i32, i32)) -> (i32, i32) {
+pub(crate) fn fill_start(covered: (i32, i32)) -> (i32, i32) {
   (
     (covered.0 - FILL_UNDERLAP_PX).max(0),
     (covered.1 - FILL_UNDERLAP_PX).max(0),

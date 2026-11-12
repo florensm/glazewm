@@ -1451,6 +1451,9 @@ impl AnimationManager {
     times: FrameTimes,
   ) -> (super::peek_view::Landed, SurrogateBatch) {
     let mut batch = SurrogateBatch::new();
+    if wm_platform::isolation::current().fill_peeks {
+      super::peek_view::note_fill_colors(state);
+    }
     let mut landed = state.animation_manager.peeks.tick(
       times.now,
       times.clock_origin,
@@ -2968,7 +2971,8 @@ impl AnimationManager {
   }
 
   /// Queues a first edge-color sample for a window just shown that has
-  /// none, so its first `fill` resize has a fill.
+  /// none, so its first `fill` resize, or `stretch` one under
+  /// `GLAZEWM_ISOLATE=fillpeeks`, has a fill.
   ///
   /// Taken at the next idle point like a resize's, by then after any open
   /// animation has landed; never at a resize's start (see
@@ -2979,9 +2983,9 @@ impl AnimationManager {
     config: &UserConfig,
   ) {
     let resize = &config.value.animations.window_resize;
-    if resize.enabled
-      && resize.style != ResizeStyle::Stretch
-      && self.cached_edge_color(hwnd.0).is_none()
+    let fills = resize.style != ResizeStyle::Stretch
+      || wm_platform::isolation::current().fill_peeks;
+    if resize.enabled && fills && self.cached_edge_color(hwnd.0).is_none()
     {
       self.pending_edge_samples.insert(hwnd.0);
     }
@@ -3018,7 +3022,7 @@ impl AnimationManager {
   /// `sample_edge_color_async`'s background thread populates this same map
   /// directly (see `edge_color_cache`'s doc comment), so a lock failure
   /// here is treated the same as a miss rather than propagated.
-  fn cached_edge_color(&self, hwnd: isize) -> Option<Color> {
+  pub(super) fn cached_edge_color(&self, hwnd: isize) -> Option<Color> {
     let map = self.edge_color_cache.lock().ok()?;
     map.get(&hwnd).map(|(color, _)| *color)
   }

@@ -6,8 +6,8 @@ use crate::{
   overlay_copies::{map_rect, scale_alpha, OverlayCopies},
   platform_impl::wallpaper_surface,
   resize_session::compute_border_inset,
-  BackdropOverlayParams, CornerStyle, NativeSurrogate, NativeWindow, Rect,
-  StyleBlend, SurrogateBatch,
+  BackdropOverlayParams, Color, CornerStyle, NativeSurrogate,
+  NativeWindow, Rect, StyleBlend, SurrogateBatch,
 };
 
 /// Thumbnail opacity a peek is warmed up at under its still-shown real
@@ -239,11 +239,14 @@ impl WindowPeek {
   }
 
   /// Draws the backdrop copy or not, as asked and as the window is drawn:
-  /// over a real window handed back, an opaque copy would hide it.
+  /// over a real window handed back, an opaque copy would hide it. The
+  /// fill goes with it, drawn only with the window (see
+  /// [`carry_fill`](Self::carry_fill)).
   fn apply_backdrop(&mut self) {
     self.copies.show_backdrop(
       self.shows_backdrop && self.drawn != Drawn::HandedBack,
     );
+    self.copies.show_fill(self.drawn == Drawn::Shown);
   }
 
   /// Draws the window's border ring along with it from now on, at once,
@@ -302,6 +305,21 @@ impl WindowPeek {
   #[must_use]
   pub fn carried_ring_rect(&self) -> Option<&Rect> {
     self.copies.ring_rest()
+  }
+
+  /// Covers the part of the window's frame its content does not reach in
+  /// `color` from now on, while the peek draws it filled (see
+  /// [`place_filled`](Self::place_filled)) and draws the window at all.
+  /// The same `color` again keeps what is drawn. Returns whether it does:
+  /// only a peek that never moves can, as for its ring.
+  pub fn carry_fill(&mut self, color: Color) -> bool {
+    if self.is_live() {
+      return false;
+    }
+
+    let carries = self.copies.carry_fill(self.surrogate.hwnd(), color);
+    self.copies.show_fill(self.drawn == Drawn::Shown);
+    carries
   }
 
   /// Draws the window too faint to see until
@@ -551,6 +569,66 @@ impl WindowPeek {
     cover
   }
 
+  /// Shows the window at `rect` 1:1 from its frame's top-left, sampling
+  /// `sampled` of it (invisible borders included, see [`filled_rects`]),
+  /// cut at its frame and at `clip`, with the part of its frame the
+  /// content does not reach covered by the fill (see
+  /// [`carry_fill`](Self::carry_fill)), and its ring and backdrop copies
+  /// around `rect`.
+  ///
+  /// Pinned peeks only: a live one is placed at `rect` as it is (see
+  /// [`place`](Self::place)).
+  pub fn place_filled(
+    &mut self,
+    sampled: (i32, i32),
+    rect: &Rect,
+    clip: &Rect,
+    opacity: u8,
+    batch: &mut SurrogateBatch,
+  ) {
+    let PeekMode::Pinned { viewport } = &mut self.mode else {
+      tracing::debug!("A live peek can't draw its window filled.");
+      self.place(rect, clip, opacity, batch);
+      return;
+    };
+
+    repin(&mut self.surrogate, viewport, clip);
+    let origin = (viewport.left, viewport.top);
+    self.opacity = opacity;
+    self.frac = 1.0;
+
+    let FilledRects {
+      drawn,
+      covered,
+      content,
+    } = filled_rects(sampled, rect, clip, self.border_inset, origin);
+    self.frame_rect = Some(drawn.clone());
+
+    let Some(visible) = drawn.intersection(clip) else {
+      self.surrogate.set_visible(false);
+      self.visible_rect = None;
+      return;
+    };
+
+    // In this order, so a composition landing mid-run shows an edge a
+    // frame late rather than a hole: backdrop, fill, content, ring.
+    self.copies.place_backdrop(rect, Some(&drawn), clip, origin);
+    self.copies.set_backdrop_opacity(u8::MAX);
+    self.copies.place_fill(&drawn, Some(covered), clip, origin);
+    self.copies.set_fill_opacity(u8::MAX);
+    match content {
+      Some((rc_src, rc_dst)) => {
+        self.surrogate.set_thumbnail_rects(rc_src, rc_dst);
+      }
+      None => self.surrogate.hide_thumbnail(),
+    }
+    self.surrogate.set_window_opacity(self.window_opacity());
+    self.copies.place_ring();
+    self.copies.cover_ring();
+    self.surrogate.set_visible(true);
+    self.visible_rect = Some(visible);
+  }
+
   /// Draws the window at `rect`, its frame at `frame`, cut at `clip`, into
   /// a peek pinned with its top-left at `origin`. Returns the visible part
   /// of the frame, if any.
@@ -786,6 +864,52 @@ fn covering(
   (cover, length.max(drawn))
 }
 
+/// Where a pinned peek draws a window filled (see [`filled_rects`]).
+#[derive(Debug, PartialEq, Eq)]
+struct FilledRects {
+  /// The window's visible frame, including any part outside the clip.
+  drawn: Rect,
+  /// How much of the frame, from its top-left, the content covers.
+  covered: (i32, i32),
+  /// The thumbnail's `(rcSource, rcDestination)` drawing the content,
+  /// unless none of it is inside the clip.
+  content: Option<(RECT, RECT)>,
+}
+
+/// Where a window at `rect`, of which `sampled` is sure to be drawn, is
+/// drawn 1:1 from its frame's top-left, cut at the frame and at `clip`,
+/// into a peek pinned with its top-left at `origin`.
+///
+/// `sampled` is the window's size, invisible borders included, it is sure
+/// to have when the frame is composited: the smallest of its size as last
+/// read, `rect`'s, and any it was sent and is yet to report. Sampling more
+/// than the window has draws a transparent hole.
+fn filled_rects(
+  sampled: (i32, i32),
+  rect: &Rect,
+  clip: &Rect,
+  border_inset: RECT,
+  origin: (i32, i32),
+) -> FilledRects {
+  let drawn = to_logical(rect, &border_inset);
+  let covered = (
+    (sampled.0 - border_inset.left - border_inset.right)
+      .clamp(0, drawn.width()),
+    (sampled.1 - border_inset.top - border_inset.bottom)
+      .clamp(0, drawn.height()),
+  );
+  let part = Rect::from_xy(drawn.x(), drawn.y(), covered.0, covered.1);
+  let content = part.intersection(clip).and_then(|visible| {
+    placed_rects(&part, &visible, covered, border_inset, origin)
+  });
+
+  FilledRects {
+    drawn,
+    covered,
+    content,
+  }
+}
+
 #[cfg(test)]
 mod tests {
   use super::*;
@@ -852,7 +976,10 @@ mod tests {
     bottom: 1040,
   };
 
-  fn ltrb(rect: RECT) -> (i32, i32, i32, i32) {
+  /// `(left, top, right, bottom)` of a `RECT`.
+  type Edges = (i32, i32, i32, i32);
+
+  fn ltrb(rect: RECT) -> Edges {
     (rect.left, rect.top, rect.right, rect.bottom)
   }
 
@@ -976,5 +1103,65 @@ mod tests {
     assert_eq!(visible, Rect::from_ltrb(1520, 100, 1920, 700));
     assert_eq!(ltrb(src), (7, 0, 407, 600));
     assert_eq!(ltrb(dst), (1520, 100, 1920, 700));
+  }
+
+  /// `(covered, rcSource, rcDestination)` of a window at
+  /// (93, 100, 814x607), its frame (100, 100, 800x600), sampling
+  /// `sampled`, cut at `clip`.
+  fn filled(
+    sampled: (i32, i32),
+    clip: &Rect,
+  ) -> ((i32, i32), Option<(Edges, Edges)>) {
+    let rect = Rect::from_ltrb(93, 100, 907, 707);
+    let FilledRects {
+      drawn,
+      covered,
+      content,
+    } = filled_rects(sampled, &rect, clip, INSET, (0, 0));
+    assert_eq!(drawn, Rect::from_ltrb(100, 100, 900, 700));
+
+    (covered, content.map(|(src, dst)| (ltrb(src), ltrb(dst))))
+  }
+
+  /// At its size, a window covers its frame 1:1.
+  #[test]
+  fn filled_at_its_size_covers_its_frame() {
+    assert_eq!(
+      filled((814, 607), &CLIP),
+      ((800, 600), Some(((7, 0, 807, 600), (100, 100, 900, 700))))
+    );
+  }
+
+  /// Short of its frame, a window is drawn 1:1 from the frame's top-left,
+  /// the rest left to the fill.
+  #[test]
+  fn filled_short_of_its_frame_leaves_the_rest_to_the_fill() {
+    assert_eq!(
+      filled((614, 507), &CLIP),
+      ((600, 500), Some(((7, 0, 607, 500), (100, 100, 700, 600))))
+    );
+  }
+
+  /// Larger than its frame, a window is cut at it, never sampled past it.
+  #[test]
+  fn filled_larger_than_its_frame_is_cut_at_it() {
+    assert_eq!(
+      filled((1214, 907), &CLIP),
+      ((800, 600), Some(((7, 0, 807, 600), (100, 100, 900, 700))))
+    );
+  }
+
+  /// Cut at the clip, only the content inside it is drawn; content wholly
+  /// past it is not.
+  #[test]
+  fn filled_is_cut_at_the_clip() {
+    let clip = Rect::from_ltrb(0, 0, 400, 1040);
+    assert_eq!(
+      filled((614, 607), &clip),
+      ((600, 600), Some(((7, 0, 307, 600), (100, 100, 400, 700))))
+    );
+
+    let clip = Rect::from_ltrb(800, 0, 1920, 1040);
+    assert_eq!(filled((614, 607), &clip), ((600, 600), None));
   }
 }
