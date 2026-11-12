@@ -13,7 +13,7 @@ use wm_common::{
 use wm_platform::{
   BackdropOverlayParams, BorderOverlayParams, Color, CornerStyle,
   NativeBackdropOverlay, NativeBorderOverlay, NativeWindow, Overlay,
-  Point, Rect, StyleBlend, SurrogateBatch, WindowPeek, HWND,
+  Point, Rect, RectDelta, StyleBlend, SurrogateBatch, WindowPeek, HWND,
 };
 
 use super::{
@@ -2629,6 +2629,7 @@ fn carry_ring(
   };
 
   // Framed with its stack's tab bar, like the real window.
+  let frame = landing_frame(state, id, frame);
   let ring_frame = window.as_ref().map_or_else(
     || frame.clone(),
     |window| crate::tab_bars::window_with_tab_bar(window, &frame),
@@ -2721,6 +2722,40 @@ fn carry_ring(
   };
 
   true
+}
+
+/// Where `id`'s ring and backdrop go back to as its peek lands, its real
+/// window's visible frame being `frame`: there, unless the window was
+/// sent its size only as it lands (see [`Stretch::deferred`]), whose frame
+/// is still the old one. Theirs is then the frame it lands at, or they
+/// would be shown at the old one until the window has its new size.
+fn landing_frame(state: &WmState, id: Uuid, frame: Rect) -> Rect {
+  let target = state
+    .animation_manager
+    .peeks
+    .entries
+    .get(&id)
+    .filter(|entry| {
+      matches!(entry.role, Role::HandingBack | Role::Releasing { .. })
+        && entry
+          .stretch
+          .as_ref()
+          .is_some_and(|stretch| stretch.deferred)
+    })
+    .map(|entry| entry.motion.target_rect.clone());
+
+  match (target, state.window_by_id(id)) {
+    (Some(target), Some(window)) => {
+      visible_frame(&target, &window.native_properties().shadow_borders)
+    }
+    _ => frame,
+  }
+}
+
+/// The visible frame of a window placed at `rect`, which takes in its
+/// invisible `shadow_borders`.
+fn visible_frame(rect: &Rect, shadow_borders: &RectDelta) -> Rect {
+  rect.apply_delta(&shadow_borders.inverse(), None)
 }
 
 /// Whether a ring made for an entry in `role` is made parked and
@@ -2819,7 +2854,7 @@ fn carry_backdrop(
     let Ok(frame) = native.frame() else {
       return false;
     };
-    (native, frame)
+    (native, landing_frame(state, id, frame))
   };
   let anchor = native.hwnd();
 
@@ -2930,15 +2965,15 @@ mod tests {
   use wm_common::{
     EasingFunction, WindowTransitionParams, WindowTransitionStyle,
   };
-  use wm_platform::Rect;
+  use wm_platform::{LengthValue, Rect, RectDelta};
 
   use super::{
     conceals_new_ring, floating_peek_raise, follow_duration, follows_tile,
     has_landed, has_left, is_departed, is_peek_resize, is_pure_move,
     is_stray, kept_transit, leaves_as, leaving_transit, resizes_at_start,
     restretched, retargeted_motion, returning_transit, sampled_size,
-    settling, take_left, Hold, PeekRaise, PeekResize, Role, Stretch,
-    FILL_LANDING_WAIT, HOLD_RELEASE_WAIT, STRETCH_SETTLE,
+    settling, take_left, visible_frame, Hold, PeekRaise, PeekResize, Role,
+    Stretch, FILL_LANDING_WAIT, HOLD_RELEASE_WAIT, STRETCH_SETTLE,
   };
   use crate::animation::{
     state::WindowAnimationState,
@@ -3491,6 +3526,22 @@ mod tests {
     assert!(resizes_at_start(&from, &Rect::from_xy(50, 0, 900, 700)));
     assert!(!resizes_at_start(&from, &Rect::from_xy(0, 0, 700, 600)));
     assert!(!resizes_at_start(&from, &Rect::from_xy(0, 0, 900, 500)));
+  }
+
+  /// A window placed at a rect is framed inside its invisible borders.
+  #[test]
+  fn a_landing_frame_leaves_out_the_invisible_borders() {
+    let borders = RectDelta::new(
+      LengthValue::from_px(7),
+      LengthValue::from_px(0),
+      LengthValue::from_px(7),
+      LengthValue::from_px(7),
+    );
+
+    assert_eq!(
+      visible_frame(&Rect::from_ltrb(93, 100, 907, 707), &borders),
+      Rect::from_ltrb(100, 100, 900, 700)
+    );
   }
 
   /// Done moving, a filled window sent its size waits for it at most as
