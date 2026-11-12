@@ -181,6 +181,9 @@ static EVENT_QUEUE_OVERFLOW: [AtomicU32; EventKind::COUNT] =
 /// A measurable segment of the WM thread's per-frame work.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Stage {
+  /// The WM's handling of one IPC message (`handle_ipc_message`), mostly
+  /// run outside frames, so the answer's own cost can be read off.
+  Command,
   /// The whole animation tick (`AnimationManager::update_internal`).
   Tick,
   /// From the timer thread's wake for a tick to the commit of the peeks'
@@ -215,6 +218,12 @@ pub enum Stage {
   RepositionVisibility,
   /// The `Apply` arm's own uncloak, after `reposition_window` returns.
   ApplyUncloak,
+  /// `redraw_containers`' `cover_moved_overlays`, after its loop.
+  PeekCover,
+  /// `redraw_containers`' `hand_over_moved_overlays`, after the cloaks.
+  PeekHandover,
+  /// `redraw_containers`' raise of moving peeks and of `peek_raises`.
+  PeekRaise,
   /// Backdrop overlay sync pass.
   BackdropSync,
   /// Border overlay sync pass.
@@ -235,6 +244,9 @@ pub enum Stage {
   /// backdrop/border overlay onto its surrogate, queued into the same
   /// batch as the surrogates themselves.
   SessionOverlays,
+  /// `platform_sync` after `redraw_containers`: focus, overlay sync, tab
+  /// bars, overview, guards and particles.
+  SyncTail,
   /// `update_internal`'s post-`platform_sync` session/workspace cleanup
   /// and surrogate fade-out tail.
   Cleanup,
@@ -247,11 +259,22 @@ pub enum Stage {
   OverlayRegion,
   /// The border overlay's `Windows.UI.Composition` visual-tree resize.
   OverlayVisual,
+  /// `peek_view::new_entry`: creating a `WindowPeek` and warming it up.
+  PeekNew,
+  /// `commit_pending_cloaks`' `peeks.take_over` and cloak of one window.
+  TakeOver,
+  /// `commit_pending_cloaks`' `preposition_cloaked` of one window.
+  Preposition,
+  /// `OverlayWindow::place`, an immediate `SetWindowPos`.
+  OverlayPlace,
+  /// `Overlay::apply_blend` of either overlay kind.
+  OverlayBlend,
 }
 
 impl Stage {
   /// Every stage, in report order.
-  const ALL: [Stage; 26] = [
+  const ALL: [Stage; 36] = [
+    Stage::Command,
     Stage::Tick,
     Stage::PeekFrame,
     Stage::PlatformSync,
@@ -265,6 +288,9 @@ impl Stage {
     Stage::RepositionSwp,
     Stage::RepositionVisibility,
     Stage::ApplyUncloak,
+    Stage::PeekCover,
+    Stage::PeekHandover,
+    Stage::PeekRaise,
     Stage::BackdropSync,
     Stage::BorderSync,
     Stage::DwmFlush,
@@ -273,11 +299,17 @@ impl Stage {
     Stage::SurrogateFlush,
     Stage::BatchCommit,
     Stage::SessionOverlays,
+    Stage::SyncTail,
     Stage::Cleanup,
     Stage::PreCommit,
     Stage::NativeFrame,
     Stage::OverlayRegion,
     Stage::OverlayVisual,
+    Stage::PeekNew,
+    Stage::TakeOver,
+    Stage::Preposition,
+    Stage::OverlayPlace,
+    Stage::OverlayBlend,
   ];
 
   /// Number of distinct stages, i.e. the width of the accumulator arrays.
@@ -291,6 +323,7 @@ impl Stage {
   /// Short human-readable name used in the report.
   const fn label(self) -> &'static str {
     match self {
+      Stage::Command => "command",
       Stage::Tick => "tick",
       Stage::PeekFrame => "peek_frame",
       Stage::PlatformSync => "platform_sync",
@@ -304,6 +337,9 @@ impl Stage {
       Stage::RepositionSwp => "rp_swp",
       Stage::RepositionVisibility => "rp_visible",
       Stage::ApplyUncloak => "uncloak",
+      Stage::PeekCover => "peek_cover",
+      Stage::PeekHandover => "peek_handover",
+      Stage::PeekRaise => "peek_raise",
       Stage::BackdropSync => "backdrop_sync",
       Stage::BorderSync => "border_sync",
       Stage::DwmFlush => "dwm_flush",
@@ -312,11 +348,17 @@ impl Stage {
       Stage::SurrogateFlush => "surrogate_flush",
       Stage::BatchCommit => "batch_commit",
       Stage::SessionOverlays => "session_overlays",
+      Stage::SyncTail => "sync_tail",
       Stage::Cleanup => "cleanup",
       Stage::PreCommit => "pre_commit",
       Stage::NativeFrame => "native_frame",
       Stage::OverlayRegion => "ovl_region",
       Stage::OverlayVisual => "ovl_visual",
+      Stage::PeekNew => "peek_new",
+      Stage::TakeOver => "take_over",
+      Stage::Preposition => "preposition",
+      Stage::OverlayPlace => "ovl_place",
+      Stage::OverlayBlend => "ovl_blend",
     }
   }
 
@@ -329,9 +371,12 @@ impl Stage {
   const fn depth(self) -> usize {
     match self {
       Stage::PlatformSync | Stage::Cleanup => 1,
-      Stage::Redraw => 2,
+      Stage::Redraw | Stage::SyncTail => 2,
       Stage::RedrawPrep
       | Stage::RedrawLoop
+      | Stage::PeekCover
+      | Stage::PeekHandover
+      | Stage::PeekRaise
       | Stage::SurrogateFlush
       | Stage::SessionOverlays => 3,
       Stage::AnimStep | Stage::RedrawFrozen | Stage::RedrawApply => 4,
@@ -364,6 +409,11 @@ impl Stage {
         | Stage::OverlayVisual
         | Stage::BackdropSync
         | Stage::BorderSync
+        | Stage::PeekNew
+        | Stage::TakeOver
+        | Stage::Preposition
+        | Stage::OverlayPlace
+        | Stage::OverlayBlend
     )
   }
 }
@@ -391,7 +441,6 @@ pub fn is_enabled() -> bool {
 
 /// Per-stage totals for the frame in progress, plus the session totals
 /// they roll up into.
-#[derive(Default)]
 struct Profiler {
   /// Time accumulated in each stage during the frame in progress.
   frame_total: [Duration; Stage::COUNT],
@@ -451,6 +500,38 @@ struct Profiler {
   /// Timeline of the session's slowest input, with its latency to the
   /// first frame.
   slowest_trace: Option<(Duration, Vec<TraceEntry>)>,
+}
+
+// By hand: arrays longer than 32 don't implement `Default`.
+impl Default for Profiler {
+  fn default() -> Self {
+    Self {
+      frame_total: [Duration::ZERO; Stage::COUNT],
+      frame_calls: [0; Stage::COUNT],
+      total: [Duration::ZERO; Stage::COUNT],
+      calls: [0; Stage::COUNT],
+      worst_frame: [Duration::ZERO; Stage::COUNT],
+      frames: 0,
+      slow_frames: 0,
+      budget: Duration::ZERO,
+      peak_windows: 0,
+      started_at: None,
+      tick_samples: Vec::new(),
+      apply_samples: Vec::new(),
+      apply_overflow: ApplySample::default(),
+      event_wait: [EventWait::default(); EventKind::COUNT],
+      gesture_moves: 0,
+      gesture_resizes: 0,
+      last_frame_start: None,
+      interval_samples: Vec::new(),
+      outside_total: [Duration::ZERO; Stage::COUNT],
+      outside_calls: [0; Stage::COUNT],
+      pending_input: None,
+      latency_samples: Vec::new(),
+      input_trace: Vec::new(),
+      slowest_trace: None,
+    }
+  }
 }
 
 /// One stage run on the way from an input to its first frame.
@@ -1443,6 +1524,69 @@ mod tests {
     for (expected, stage) in Stage::ALL.into_iter().enumerate() {
       assert_eq!(stage.index(), expected);
     }
+  }
+
+  /// The tree only reads right if each stage is at most one level below
+  /// the one printed above it.
+  #[test]
+  fn stage_tree_nests_one_level_at_a_time() {
+    let mut previous = 0;
+    for stage in Stage::ALL.into_iter().filter(|s| !s.is_cross_cutting()) {
+      assert!(stage.depth() <= previous + 1, "{}", stage.label());
+      previous = stage.depth();
+    }
+
+    assert_eq!(Stage::Command.depth(), 0);
+    assert_eq!(Stage::SyncTail.depth(), Stage::Redraw.depth());
+    for stage in [Stage::PeekCover, Stage::PeekHandover, Stage::PeekRaise]
+    {
+      assert_eq!(stage.depth(), Stage::RedrawLoop.depth());
+      assert!(stage.index() > Stage::ApplyUncloak.index());
+    }
+    for stage in [
+      Stage::PeekNew,
+      Stage::TakeOver,
+      Stage::Preposition,
+      Stage::OverlayPlace,
+      Stage::OverlayBlend,
+    ] {
+      assert!(stage.is_cross_cutting(), "{}", stage.label());
+    }
+  }
+
+  /// An IPC message is handled between frames, so its `command` time is
+  /// reported outside them, and cross-cutting stages in their own section.
+  #[test]
+  fn reports_a_command_outside_frames() {
+    std::thread::spawn(|| {
+      PROFILER.with(|profiler| {
+        arm_input(&mut profiler.borrow_mut(), Instant::now());
+      });
+      drop(forced_scope(Stage::Command));
+      start_frame();
+      drop(forced_scope(Stage::Tick));
+      drop(forced_scope(Stage::PeekNew));
+      assert!(!roll_up_frame());
+
+      PROFILER.with(|profiler| {
+        let profiler = profiler.borrow();
+        assert_eq!(profiler.outside_calls[Stage::Command.index()], 1);
+        assert_eq!(profiler.calls[Stage::Command.index()], 0);
+      });
+
+      let report = take_report("unit test").expect("a frame was recorded");
+      let (frames, outside) = report
+        .split_once("-- outside frames")
+        .expect("an outside-frames section");
+      assert!(!frames.contains("\n  command "), "{report}");
+      assert!(outside.contains("\n  command "), "{report}");
+      let (_, several) = frames
+        .split_once("-- called from several parents")
+        .expect("a cross-cutting section");
+      assert!(several.contains("\n    peek_new "), "{report}");
+    })
+    .join()
+    .expect("profiler test thread panicked");
   }
 
   #[test]

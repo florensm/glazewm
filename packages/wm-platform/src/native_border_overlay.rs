@@ -933,6 +933,7 @@ impl Overlay for NativeBorderOverlay {
   }
 
   fn apply_blend(&mut self, blend: StyleBlend<BorderOverlayParams>) {
+    let _scope = crate::perf::scope(crate::perf::Stage::OverlayBlend);
     let params = blend.from.lerp(&blend.to, blend.t);
     self.set_colors(params.color, params.highlight, params.rim);
     self.set_widths(params.width, params.glow);

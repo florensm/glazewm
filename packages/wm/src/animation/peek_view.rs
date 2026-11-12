@@ -11,6 +11,7 @@ use wm_common::{
   WindowTransitionParams,
 };
 use wm_platform::{
+  perf::{self, Stage},
   BackdropOverlayParams, BorderOverlayParams, Color, CornerStyle,
   NativeBackdropOverlay, NativeBorderOverlay, NativeWindow, Overlay,
   Point, Rect, RectDelta, StyleBlend, SurrogateBatch, WindowPeek, HWND,
@@ -2141,6 +2142,7 @@ pub fn enter_on_peek(
   batch.commit();
 
   if entered {
+    perf::note_animation_start(false);
     state.animation_manager.ensure_waiter_for(handle);
     state.animation_manager.ensure_timer_running();
   }
@@ -2232,6 +2234,7 @@ pub fn move_on_peek(
   batch.commit();
 
   if moved {
+    perf::note_animation_start(is_resize);
     state.animation_manager.ensure_waiter_for(handle);
     state.animation_manager.ensure_timer_running();
   }
@@ -2358,6 +2361,7 @@ pub fn fullscreen_on_peek(
   batch.commit();
 
   if moved {
+    perf::note_animation_start(!is_same_size(from, target));
     state.animation_manager.ensure_waiter_for(handle);
     state.animation_manager.ensure_timer_running();
   }
@@ -2665,6 +2669,7 @@ pub fn restore_on_peek(
   {
     restore_cloaked(&window.native(), target);
     state.animation_manager.peeks.raise_moving(&id);
+    perf::note_animation_start(false);
     state.animation_manager.ensure_timer_running();
     return true;
   }
@@ -2754,6 +2759,7 @@ pub fn leave_on_peek(
     state.animation_manager.peeks.take_over_leaving(&id);
   }
 
+  perf::note_animation_start(false);
   state.animation_manager.ensure_waiter_for(handle);
   state.animation_manager.ensure_timer_running();
 
@@ -2801,6 +2807,7 @@ fn new_entry(
   styles: &[Option<BackdropOverlayParams>; 2],
   role: Role,
 ) -> Option<(Entry, bool)> {
+  let _scope = perf::scope(Stage::PeekNew);
   let is_moving = matches!(role, Role::Moving { .. } | Role::Leaving(_));
 
   // Sized like the window itself, which a collapsed `from` (an opening

@@ -94,6 +94,9 @@ const METRICS: &[(&str, &str)] = &[
   ("dist:hitches_2x", "frames >2x budget"),
   ("interval:p50", "interval p50 ms"),
   ("interval:p90", "interval p90 ms"),
+  ("interval:p99", "interval p99 ms"),
+  // Like every column, a median over bursts, not the longest seen.
+  ("interval:max", "interval max ms (median burst)"),
   ("tree:peek_frame:per_frame", "peek_frame ms/frame"),
   (
     "tree:session_overlays:per_frame",
@@ -636,6 +639,8 @@ fn parse_reports(text: &str) -> Vec<HashMap<String, f64>> {
       "dist" if name == "frame interval" && values.len() >= 4 => {
         report.insert("interval:p50".into(), values[0]);
         report.insert("interval:p90".into(), values[1]);
+        report.insert("interval:p99".into(), values[2]);
+        report.insert("interval:max".into(), values[3]);
       }
       "dist" if name == "hitches:" && values.len() == 3 => {
         report.insert("dist:hitches_2x".into(), values[0]);
@@ -746,7 +751,7 @@ perf [idle]: 30 frames in 500.0ms, 2 slow (>6.9ms)
   frame time                  p50        p90        p99        max
                            1.80ms     3.10ms     8.50ms     9.00ms
   hitches: 3 frame(s) >2x budget, 1 >4x budget, out of 30
-  frame interval           6.94ms     7.40ms    13.80ms    14.10ms
+  frame interval           6.94ms     7.40ms    13.80ms    14.10ms  (~144 fps)
 ";
     let reports = parse_reports(text);
     assert_eq!(reports.len(), 1);
@@ -757,5 +762,7 @@ perf [idle]: 30 frames in 500.0ms, 2 slow (>6.9ms)
     assert_eq!(report.get("dist:hitches_2x"), Some(&3.0));
     assert_eq!(report.get("interval:p50"), Some(&6.94));
     assert_eq!(report.get("interval:p90"), Some(&7.4));
+    assert_eq!(report.get("interval:p99"), Some(&13.8));
+    assert_eq!(report.get("interval:max"), Some(&14.1));
   }
 }
