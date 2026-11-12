@@ -186,6 +186,8 @@ Owner's answers, 2026-11-11:
   built as wait, then stretch, rebuilt instant after the owner's live
   run; not checked live)
 - [ ] 9. Remove what is no longer reached
+- [ ] 10. `fill` on peeks, for mouse drags first, then keyboard resizes
+  (planned 2026-11-12, not started)
 
 ### Task 0: baseline (desktop, by hand)
 
@@ -1112,6 +1114,106 @@ Then delete the old branch for that kind: `start_open_animation`,
 `start_away_animation`, `slide_in_monitor_rects`, `ResizeSession::zoom`
 and `update_zoom_fade`, `away_windows`, as each loses its last caller.
 `grep` for callers before deleting; one commit per kind.
+
+### Task 10: `fill` on peeks, for mouse drags first
+
+Asked for by the owner, 2026-11-12. With `general.grab_and_move` (the
+AltSnap replacement, `docs/grab-and-move.md`), a mouse resize moves the
+real windows live, and their border rings follow. Even with the rings
+placed in the same step as the window (`c70a4555`), a window shows a
+frame or more off its ring, and a growing neighbour or a shrinking
+window covers a ring for a frame: each app applies its size on its own
+thread, at its own time. Hyprland avoids this by drawing window and
+border itself in one frame from the window's real buffer; on Windows
+only DWM draws a real window. The nearest equivalent is to draw the
+window and its ring ourselves, in one DWM update: peeks.
+
+Goal: during a grab resize, the windows it changes are drawn by pinned
+peeks placed at the layout's rects every step, so edges, gaps and rings
+are exact on every frame. The real windows are still resized every
+step, cloaked, and their thumbnails are live, so content keeps
+updating; where an app lags, the uncovered strip is the window's edge
+colour (`fill`, which the owner prefers to `stretch`), and where it is
+too large it is cut at the tile. Then the same drawing replaces
+`ResizeSession` for keyboard `fill` resizes, which lets the old engine
+go.
+
+Behind `grab_and_move.draw: "live" | "peeks"` (default `live`, today's
+behaviour) until the owner has seen it.
+
+**10a. Design check (read only, report, no code).** Settle by reading,
+before anything is built:
+1. **The fill.** A peek has no fill today. The strip must change size in
+   the same DWM update as the thumbnail, or it is a frame off, the
+   problem this task exists for. Options: a composition visual on the
+   peek (as `SurrogateFill` is on a `NativeSurrogate`), which reaches DWM
+   by its own commit; or a DWM thumbnail of a small window of ours
+   painted the edge colour, stretched over the strip, which goes with the
+   window's thumbnail. Say which keeps the two in one update, from the
+   code and the docs, and what each costs.
+2. **The ring at any size.** A ring copy is a thumbnail of the parked
+   ring window, scaled from its rest to the frame (`copy_rects`), so a
+   resize changes its thickness. Draw it as slices instead: four corners
+   at their size and four edges stretched along their length only, each
+   a thumbnail of the same ring window with its own source rect
+   (`Thumbnail::place` takes one). Confirm glow and rounded corners fit
+   in a corner slice, and the count (8 thumbnails per ring) is fine.
+3. **The backdrop.** Its copy is cut from a monitor-wide source
+   (`BackdropSource`), so it should cover any frame already: confirm.
+4. **Sampling.** The `fill` rule on a peek: source = the window's actual
+   current size, capped at the frame per axis (never oversample: a
+   transparent hole); destination = that size at the frame's top-left,
+   cut at the frame; fill = the rest. Which read gives the actual size
+   each step without a new call (the placer's landed rect, the location
+   events, `GetWindowRect` as `carry_ring` already reads)?
+5. **Grab integration.** Where a grab resize starts, steps and ends
+   (`grab.rs`: `place_moved_windows`, `WindowPlacer`); how a window not
+   yet on a peek is taken over mid-drag when a step first changes it
+   (warm-up, one composited frame, `take_over`, cloak: the scroll's
+   order, rule 5); what a frame of take-over latency means at the start
+   of a drag; Escape; a window closing or a workspace switching mid-drag.
+6. **End of the drag.** Hand-back of every peek once its window has
+   landed at its final rect, with a cap; whether the fade-off (see
+   below) is wanted here first.
+Report: the choices, with evidence, and anything that makes the goal
+unreachable. Stop there.
+
+**10b. `fill` drawing on `WindowPeek`**: `place_filled(frame, clip,
+actual, ...)` per 10a, ring slices, unit tests on the rect maths. No
+caller yet. No new Windows API.
+
+**10c. Grab resizes on peeks**, behind `draw: "peeks"`: a `Role::Held`
+(or the nearest existing role) that is placed every step at the layout
+rect with no clock and handed back only when the grab ends; take-over
+on first change; real windows resized cloaked by the placer as now;
+strays and Escape. Live check: drag an edge between two and three
+tiles, fast and slow, a slow app (browser, Electron) and a quick one,
+split and scrolling; the gap and rings exact on every frame; content
+live; edge colour where an app lags; no window left cloaked.
+
+**10d. Grab moves on peeks** (optional, owner's call after 10c): the
+picture translated, the real window moved cloaked by the mover thread.
+
+**10e. Keyboard `fill` resizes on peeks**: the animated rect drives the
+same drawing; owner A/B against today's `fill`.
+
+**10f. Delete the old engine** once 10e has been seen and the owner says
+so: `ResizeSession`, `NativeSurrogate`'s session path and the old
+open/close/move paths of task 9. One stand-in system for windows, plus
+the workspace switch's.
+
+Risks: the take-over at the start of a drag (a frame of latency, and a
+window shown and its peek not yet composited); windows that can't be
+drawn (elevated, see `docs/grab-and-move.md`: not grabbed at all, so
+fine) and `Live` peeks (rounded corners, parallax != 1), which keep the
+live path; the fill's colour (sampled, see `27c65bb`, `3b3595d`); rule
+5's hand-over code reused for a role it was not tuned on.
+
+The fade-off idea (2026-11-12, not built): at a hand-back, uncloak the
+real window under its peek and fade the peek out over ~60 ms, as the
+scene spike's `LIFT` did, so the shadow and any last difference blend
+in. A see-through window shows doubled for those frames. Behind a
+switch word, an owner A/B.
 
 ## Later
 
