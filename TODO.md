@@ -728,7 +728,7 @@ to see it; check each once more at 150 ms.
       the sharp wallpaper as it fades in (nothing shifts or grows).
     - Change the wallpaper, and move a display, with it open: it follows.
     - With `backdrop_blur: 4` it bakes at full size, as before.
-56. **WPF windows lay out to the size they get** (`6e261c64`). A WPF
+56. **WPF windows lay out to the size they get** (`ea1c112d`). A WPF
     window that opens at its content's size (`SizeToContent`, e.g. the
     owner's auto-stacked windows): let it join a stack, tile it, and
     resize it with the resize keybinds, each at a size other than its own.
@@ -740,7 +740,7 @@ to see it; check each once more at 150 ms.
       section expands) still does after a `move` command.
     - Laptop: this is the first build sending a cross-process
       `WM_SIZING`; note whether Defender flags it.
-57. **Windows joining a stack stay hidden** (`e1babc67`). Three tiles,
+57. **Windows joining a stack stay hidden** (`6371cccf`). Three tiles,
     one themed by shades: `stack-all`, then `unstack-all`, then
     `stack-absorb-neighbor`; again with `window_move` at
     `duration_ms: 2000`.
