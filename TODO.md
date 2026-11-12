@@ -728,6 +728,33 @@ to see it; check each once more at 150 ms.
       the sharp wallpaper as it fades in (nothing shifts or grows).
     - Change the wallpaper, and move a display, with it open: it follows.
     - With `backdrop_blur: 4` it bakes at full size, as before.
+56. **WPF windows lay out to the size they get** (`6e261c64`). A WPF
+    window that opens at its content's size (`SizeToContent`, e.g. the
+    owner's auto-stacked windows): let it join a stack, tile it, and
+    resize it with the resize keybinds, each at a size other than its own.
+    - It fills its tile or tab at once, with no part left white, and
+      reflows on every keybind resize; no mouse resize needed.
+    - The log (debug level) has one `Asking WPF window 0x... to turn off
+      SizeToContent.` per such window, never a second.
+    - A floating WPF dialog that sizes itself (e.g. one growing as a
+      section expands) still does after a `move` command.
+    - Laptop: this is the first build sending a cross-process
+      `WM_SIZING`; note whether Defender flags it.
+57. **Windows joining a stack stay hidden** (`e1babc67`). Three tiles,
+    one themed by shades: `stack-all`, then `unstack-all`, then
+    `stack-absorb-neighbor`; again with `window_move` at
+    `duration_ms: 2000`.
+    - No joining window, nor its shades colours, flashes over the active
+      tab as it joins.
+    - Hold `cycle-stack-focus`'s key down on a stack of three: no
+      background tab is left on screen afterwards, also for an app whose
+      windows the log says "can't be cloaked, as the shell has no view of
+      it".
+58. **Shades on a stack resized while a tab is hidden** (shades
+    `fix/glazewm-stacks`, not pushed). Stack two shades-themed windows,
+    open and close a tile beside the stack so it shrinks and grows, then
+    switch to the other tab.
+    - No unthemed strip along its right or bottom edge as it shows.
 56. **Fullscreen: covered tiles held, own transition** (this change).
     Three tiles side by side, the middle one focused; `toggle-fullscreen`,
     then again. Repeat at `window_fullscreen.duration_ms: 2000`.
@@ -892,6 +919,17 @@ scroll is dropped.
 8. Open, close, minimize and restore: `ANIMATION_REVIEW.md` findings 9
    to 21, ranked. First: 9 (one driver with an entry track that survives
    a retarget), then 10 and 11 once check 37 says whether they show.
+9. **Shades on stack tabs the shell can't cloak** (2026-11-12, from
+   code). Such tabs (the log warns "can't be cloaked") are hidden with
+   `SW_HIDE`, and shades drops a hidden window's overlay (`app.rs`
+   `target`). Switched back to, the tab shows unthemed until shades has
+   made a new overlay, and no `CompanionCover` can bridge that: it needs
+   a cloaked window (`unanimated_uncloak_rect`) and a companion on screen
+   or cloaked (`Companion::find`). Fix needs both sides: shades keeping a
+   hidden window's overlay shown but cloaked, as for a cloaked window,
+   and the cover taking hidden windows too. Open question first: whether
+   a WGC session of a window survives `SW_HIDE` and delivers frames once
+   it is shown again.
 
 ## Older items, not started
 
