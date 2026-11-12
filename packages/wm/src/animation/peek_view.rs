@@ -53,6 +53,12 @@ const HOLD_RELEASE_WAIT: Duration = Duration::from_millis(150);
 /// same, as `ResizeSession::pre_commit` waits (see [`Hold::Released`]).
 const FILL_LANDING_WAIT: Duration = Duration::from_millis(500);
 
+/// How close, per axis, a window deferring its new size is drawn to it
+/// when `GLAZEWM_ISOLATE=earlylanding` sends it (see [`EarlySize::Near`]).
+/// Until its motion ends, it may then be drawn up to this much short of
+/// its rect, the rest in its edge color.
+const EARLY_LANDING_GAP_PX: i32 = 12;
+
 /// Whether an entry is kept from landing while its window resizes behind
 /// it: by a grab (see [`PeekView::hold`]), or waiting for a filled
 /// window's last size.
@@ -93,11 +99,17 @@ enum EarlySize {
   Never,
   /// As its motion ends (`GLAZEWM_ISOLATE=asynclanding`).
   AtEnd,
+  /// As it is drawn within [`EARLY_LANDING_GAP_PX`] of its new size, or
+  /// its motion ends (`GLAZEWM_ISOLATE=earlylanding`).
+  Near,
 }
 
 impl EarlySize {
   fn current() -> Self {
-    if wm_platform::isolation::current().async_landing {
+    let isolation = wm_platform::isolation::current();
+    if isolation.early_landing {
+      Self::Near
+    } else if isolation.async_landing {
       Self::AtEnd
     } else {
       Self::Never
@@ -106,13 +118,26 @@ impl EarlySize {
 }
 
 /// Whether an entry whose window `defers` its new size, free of a grab and
-/// ending shown, is sent it now, `when` says, its motion done or not.
-fn sends_size_early(when: EarlySize, defers: bool, is_done: bool) -> bool {
+/// ending shown, is sent it now, `when` says, its motion done or not, and
+/// drawn near that size or not.
+fn sends_size_early(
+  when: EarlySize,
+  defers: bool,
+  is_done: bool,
+  is_near: bool,
+) -> bool {
   defers
     && match when {
       EarlySize::Never => false,
       EarlySize::AtEnd => is_done,
+      EarlySize::Near => is_done || is_near,
     }
+}
+
+/// Whether `rect` is within `gap` of `target`'s size on both axes.
+fn is_near_size(rect: &Rect, target: &Rect, gap: i32) -> bool {
+  (rect.width() - target.width()).abs() <= gap
+    && (rect.height() - target.height()).abs() <= gap
 }
 
 /// How a window whose size changes on its peek is drawn
@@ -481,18 +506,30 @@ impl Entry {
       && has_landed(&self.motion, self.transit.as_ref())
   }
 
-  /// Stops deferring its window's new size at `now` if [`EarlySize`]
-  /// says it is sent it now, for one that ends shown, as `ends_shown`
-  /// says: one landing hidden isn't handed back. Returns whether it did,
-  /// for the caller to send it (see [`Landed::sized`]).
-  fn sends_size_early(&mut self, now: Instant, ends_shown: bool) -> bool {
+  /// Stops deferring its window's new size at `now`, drawn at `rect`, if
+  /// [`EarlySize`] says it is sent it now, for one that ends shown, as
+  /// `ends_shown` says: one landing hidden isn't handed back. Returns
+  /// whether it did, for the caller to send it (see [`Landed::sized`]).
+  fn sends_size_early(
+    &mut self,
+    rect: &Rect,
+    now: Instant,
+    ends_shown: bool,
+  ) -> bool {
     let defers = ends_shown
       && self.hold != Hold::Held
       && self
         .stretch
         .as_ref()
         .is_some_and(|stretch| stretch.deferred);
-    if !sends_size_early(EarlySize::current(), defers, self.is_done(now)) {
+    let is_near =
+      is_near_size(rect, &self.motion.target_rect, EARLY_LANDING_GAP_PX);
+    if !sends_size_early(
+      EarlySize::current(),
+      defers,
+      self.is_done(now),
+      is_near,
+    ) {
       return false;
     }
 
@@ -1243,7 +1280,7 @@ impl PeekView {
           let (rect, _) = entry.motion.current_state_at(now);
           // Before the draw: sent before this frame is composited, its new
           // size may land first.
-          if entry.sends_size_early(now, ends_shown) {
+          if entry.sends_size_early(&rect, now, ends_shown) {
             landed.sized.push(*id);
           }
           entry.draw(&rect, now, batch);
@@ -3585,13 +3622,14 @@ mod tests {
     allows_motion, conceals_new_ring, crosses_floating, defers_again,
     floating_peek_raise, follow_duration, follows_tile,
     fullscreen_peek_raise, has_landed, has_left, is_departed,
-    is_peek_resize, is_pure_move, is_stray, kept_transit, lands_on_trail,
-    leaves_as, leaving_transit, move_clips, peek_resize, resizes_at_start,
-    restretched, retargeted_motion, returning_transit, sampled_size,
-    sends_size_early, settling, state_change_peek_raise,
+    is_near_size, is_peek_resize, is_pure_move, is_stray, kept_transit,
+    lands_on_trail, leaves_as, leaving_transit, move_clips, peek_resize,
+    resizes_at_start, restretched, retargeted_motion, returning_transit,
+    sampled_size, sends_size_early, settling, state_change_peek_raise,
     state_change_resize, take_left, toggles_tile_fullscreen,
     visible_frame, EarlySize, Hold, PeekRaise, PeekResize, Role, Stretch,
-    FILL_LANDING_WAIT, HOLD_RELEASE_WAIT, STRETCH_SETTLE,
+    EARLY_LANDING_GAP_PX, FILL_LANDING_WAIT, HOLD_RELEASE_WAIT,
+    STRETCH_SETTLE,
   };
   use crate::animation::{
     state::WindowAnimationState,
@@ -4373,15 +4411,47 @@ mod tests {
   }
 
   /// A window deferring its size is sent it ahead of landing only under a
-  /// word: under `asynclanding`, once its motion is done.
+  /// word: under `asynclanding`, once its motion is done; under
+  /// `earlylanding`, also once drawn near that size.
   #[test]
   fn a_deferred_size_is_sent_early_only_under_its_word() {
-    for is_done in [false, true] {
-      assert!(!sends_size_early(EarlySize::Never, true, is_done));
-      assert!(!sends_size_early(EarlySize::AtEnd, false, is_done));
+    for (is_done, is_near) in
+      [(false, false), (false, true), (true, false), (true, true)]
+    {
+      assert!(!sends_size_early(EarlySize::Never, true, is_done, is_near));
+      for when in [EarlySize::AtEnd, EarlySize::Near] {
+        assert!(!sends_size_early(when, false, is_done, is_near));
+      }
     }
-    assert!(!sends_size_early(EarlySize::AtEnd, true, false));
-    assert!(sends_size_early(EarlySize::AtEnd, true, true));
+    assert!(!sends_size_early(EarlySize::AtEnd, true, false, true));
+    assert!(sends_size_early(EarlySize::AtEnd, true, true, false));
+    assert!(!sends_size_early(EarlySize::Near, true, false, false));
+    assert!(sends_size_early(EarlySize::Near, true, false, true));
+    assert!(sends_size_early(EarlySize::Near, true, true, false));
+  }
+
+  /// Near its size means within the gap on both axes, either way.
+  #[test]
+  fn a_rect_is_near_a_size_within_the_gap_on_both_axes() {
+    let target = Rect::from_xy(0, 0, 800, 600);
+    let gap = EARLY_LANDING_GAP_PX;
+
+    assert!(is_near_size(&target, &target, gap));
+    assert!(is_near_size(
+      &Rect::from_xy(40, 0, 800 + gap, 600 - gap),
+      &target,
+      gap
+    ));
+    assert!(!is_near_size(
+      &Rect::from_xy(0, 0, 800 + gap + 1, 600),
+      &target,
+      gap
+    ));
+    assert!(!is_near_size(
+      &Rect::from_xy(0, 0, 800, 600 - gap - 1),
+      &target,
+      gap
+    ));
   }
 
   /// Sent its size early, a window's ring and backdrop land at its target
