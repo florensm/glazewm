@@ -1696,6 +1696,13 @@ three makers: `start_animation_if_needed`, `start_open_animation`,
 | Windows with no thumbnail (elevated) | Already snap (`move_tile`) |
 | Mixed relayouts (`stretches_relayout` false) | Gone once every row above is |
 
+Owner's decision, 2026-11-12: port every row to peeks (fullscreen
+toggle, floating <-> tiling and floating moves by command, a tile moving
+to another monitor, `Live` peeks), so the engine can go later; but keep
+`ResizeSession` in the code for now. Each port is its own step behind
+`nopeeks` as the way back, with its own live check, and the engine's
+deletion (steps 1 to 4 below) waits for the owner's say-so.
+
 So 10f starts with a decision per row, recorded here, then:
 
 1. Move out of `resize_session.rs` what others use: `compute_border_inset`
