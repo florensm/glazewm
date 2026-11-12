@@ -248,8 +248,11 @@ impl WindowPeek {
 
   /// Draws the window's border ring along with it from now on, at once,
   /// over the ring itself: `source`, its overlay window, at `ring_rect`
-  /// around the window at `window_rect`, both where they are now. Called
-  /// again with the same `source`, only updates where the two are.
+  /// around the window at `window_rect`, both where they are now. With
+  /// `corner_reach` (see `NativeBorderOverlay::corner_reach`), it is drawn
+  /// in cells, keeping its width and corners as its window's size changes
+  /// (see [`cut_ring`](Self::cut_ring)). Called again with the same
+  /// `source`, only updates where the two are and how it is cut.
   /// Returns whether the peek does: only one that never moves can carry
   /// a ring, as for a `WorkspaceSurrogate`.
   pub fn carry_ring(
@@ -257,14 +260,20 @@ impl WindowPeek {
     source: HWND,
     ring_rect: &Rect,
     window_rect: &Rect,
+    corner_reach: Option<i32>,
   ) -> bool {
     if self.is_live() {
       return false;
     }
 
     let dest = self.surrogate.hwnd();
-    let carries =
-      self.copies.carry_ring(dest, source, ring_rect, window_rect);
+    let carries = self.copies.carry_ring(
+      dest,
+      source,
+      ring_rect,
+      window_rect,
+      corner_reach,
+    );
     // Drawn twice in one place, a ring looks like one. Faded with its
     // window, as last placed (see `place_scaled`).
     if self.frac < 1.0 {
@@ -281,6 +290,18 @@ impl WindowPeek {
   #[must_use]
   pub fn carries_ring(&self) -> bool {
     self.copies.carries_ring()
+  }
+
+  /// Draws the ring copy whole, or with `corner_reach` in cells, from now
+  /// on, where it was carried (see [`carry_ring`](Self::carry_ring)).
+  pub fn cut_ring(&mut self, corner_reach: Option<i32>) {
+    self.copies.cut_ring(self.surrogate.hwnd(), corner_reach);
+  }
+
+  /// Where the ring's overlay window was when the peek last carried it.
+  #[must_use]
+  pub fn carried_ring_rect(&self) -> Option<&Rect> {
+    self.copies.ring_rest()
   }
 
   /// Draws the window too faint to see until

@@ -914,6 +914,20 @@ to see it; check each once more at 150 ms.
       as the app rescales.
     - No new Windows API: overlays are moved with the `DeferWindowPos`
       batch the WM already uses for them, from the WM's own thread.
+66. **Ring copy in cells under `stretch`** (`STAND_INS_PLAN.md` 10b-1).
+    `window_resize: { style: "stretch", duration_ms: 2000 }`, a border
+    with a glow (and, once, with `corner_radius` set). Grow and shrink a
+    tile by keyboard, in a split and in a scrolling layout.
+    - The ring keeps its width, its glow and its corners' shape the whole
+      way: no edge thinning or thickening, no corner squashed. Look at
+      the top edge's highlight too: it should look as on a resting ring.
+    - Nothing changes at the hand-back: no jump, blink or step in width.
+    - A focus change mid-resize (the ring's colour or width changes):
+      the ring follows, no frame without it.
+    - Then a pure move, a workspace switch and a scroll: rings as
+      before.
+    - No new Windows API: up to eight `DwmRegisterThumbnail`s per ring
+      instead of one, the same calls.
 
 If bars or flicker show, isolate them with `GLAZEWM_ISOLATE` (below), one
 restart per flag: `noring`, `nobackdrop`, then `live`. With a long
@@ -1015,8 +1029,10 @@ scroll is dropped.
    mid-slide: the copy uses the style the window ends with (incoming) or
    starts with (outgoing). Now cheap to fix: a surrogate could carry both
    styles' crops as peeks do and crossfade their opacities.
-5. During a column resize the ring copy stretches with the window, so its
-   vertical edges thin out until the column lands.
+5. Done, not checked live (see "Not checked live yet" 66): during a
+   column resize the ring copy stretched with the window, so its vertical
+   edges thinned out until the column landed. A resizing window's ring
+   copy is now drawn in cells, its corners 1:1.
 6. With scroll animations off, a partly visible column becoming fully
    visible drops its peek before its real window is uncloaked: possibly a
    blank frame.

@@ -2180,6 +2180,7 @@ pub fn track_overlays(
 /// places its ring (see `sync_overlays`), rather than where the layout
 /// puts it: an app that keeps its window a little off that rect would
 /// otherwise have its ring shift as it scrolls, and back once it lands.
+#[allow(clippy::too_many_lines)]
 fn carry_ring(
   state: &mut WmState,
   id: Uuid,
@@ -2250,6 +2251,10 @@ fn carry_ring(
   };
   let is_landing =
     matches!(entry.role, Role::HandingBack | Role::Releasing { .. });
+  // A window whose size changes on its peek keeps its ring's width and
+  // corners, cut into cells.
+  let corner_reach =
+    entry.stretch.is_some().then(|| overlay.corner_reach());
 
   entry.ring = match entry.ring {
     // Shown where the window landed, under the copy, before the peek
@@ -2268,7 +2273,12 @@ fn carry_ring(
       overlay.park(&ring_frame, anchor, !is_shown);
 
       let ring_rect = overlay.outer_rect();
-      if !entry.peek.carry_ring(overlay.hwnd(), &ring_rect, &bounds) {
+      if !entry.peek.carry_ring(
+        overlay.hwnd(),
+        &ring_rect,
+        &bounds,
+        corner_reach,
+      ) {
         return false;
       }
 
@@ -2279,10 +2289,28 @@ fn carry_ring(
       }
     }
     Handover::Covering => Handover::Covering,
+    // A resizing window's ring stays where it was carried from, unless
+    // the ring itself changed: re-parked at the window's frame, its window
+    // and visual would be resized by their own routes while its cells are
+    // drawn from them.
+    Handover::Covered | Handover::Parked
+      if corner_reach.is_some()
+        && entry.peek.carried_ring_rect()
+          == Some(&overlay.outer_rect()) =>
+    {
+      overlay.conceal();
+      entry.peek.cut_ring(corner_reach);
+      Handover::Parked
+    }
     Handover::Covered | Handover::Parked => {
       overlay.park(&ring_frame, anchor, true);
       let ring_rect = overlay.outer_rect();
-      entry.peek.carry_ring(overlay.hwnd(), &ring_rect, &bounds);
+      entry.peek.carry_ring(
+        overlay.hwnd(),
+        &ring_rect,
+        &bounds,
+        corner_reach,
+      );
       Handover::Parked
     }
   };

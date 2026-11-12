@@ -15,7 +15,7 @@ use windows::Win32::Foundation::{HWND, RECT};
 
 use crate::{
   backdrop_source::{BackdropSource, VignetteSource},
-  dwm_thumbnail::Thumbnail,
+  dwm_thumbnail::{clip_rects, Look, Thumbnail},
   isolation, lerp_f32,
   native_surrogate::placed_rects,
   BackdropOverlayParams, Rect, StyleBlend,
@@ -33,9 +33,7 @@ struct Placement {
 /// A thumbnail of a window drawn around another one.
 struct OverlayCopy {
   thumbnail: Thumbnail,
-  /// The window the thumbnail is of.
-  source: isize,
-  /// Where `source` is.
+  /// Where the window the thumbnail is of is.
   rest: Rect,
   /// Where the window it is drawn around was when `source` was put at
   /// `rest`, which it keeps to that window as it moves.
@@ -58,6 +56,194 @@ impl OverlayCopy {
       None => self.thumbnail.hide(),
     }
   }
+}
+
+/// One of the thumbnails a [`RingCopy`] is drawn with.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum RingPart {
+  /// The whole ring, stretched along with its window.
+  Whole,
+  /// One cell of the ring cut three by three, by column and row: its
+  /// corners drawn 1:1, its edges stretched along their length only. The
+  /// middle cell, inside the ring, is never drawn.
+  Cell(Band, Band),
+}
+
+/// Which third of a ring cut three by three, along one axis.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Band {
+  Start,
+  Middle,
+  End,
+}
+
+impl RingPart {
+  /// The parts a ring is drawn with: whole, or with `corner_reach`, in the
+  /// eight cells around its middle.
+  fn all(corner_reach: Option<i32>) -> Vec<Self> {
+    const BANDS: [Band; 3] = [Band::Start, Band::Middle, Band::End];
+
+    if corner_reach.is_none() {
+      return vec![Self::Whole];
+    }
+
+    BANDS
+      .iter()
+      .flat_map(|&row| BANDS.iter().map(move |&column| (column, row)))
+      .filter(|&cell| cell != (Band::Middle, Band::Middle))
+      .map(|(column, row)| Self::Cell(column, row))
+      .collect()
+  }
+}
+
+/// A copy of a window's border ring: whole, scaled with its window, or in
+/// cells, so a window resized on its copy keeps its ring's width and
+/// corners (see [`ring_part_rects`]).
+struct RingCopy {
+  /// One thumbnail of `source` per part, in the order registered.
+  parts: Vec<(RingPart, Thumbnail)>,
+  source: isize,
+  /// Where `source` is.
+  rest: Rect,
+  /// Where the window it is drawn around was when `source` was put at
+  /// `rest`, which it keeps to that window as it moves.
+  window_rest: Rect,
+  /// How far in from its outer edge its corners reach, when drawn in
+  /// cells.
+  corner_reach: Option<i32>,
+}
+
+impl RingCopy {
+  /// Draws the ring around its window as `placement` places it.
+  fn place(&mut self, placement: &Placement) {
+    let Placement {
+      frame,
+      clip,
+      origin,
+    } = placement;
+
+    for (part, thumbnail) in &mut self.parts {
+      match ring_part_rects(
+        *part,
+        &self.rest,
+        &self.window_rest,
+        frame,
+        clip,
+        *origin,
+        self.corner_reach.unwrap_or_default(),
+      ) {
+        Some((rc_src, rc_dst)) => {
+          let _ = thumbnail.show(rc_src, rc_dst);
+        }
+        None => thumbnail.hide(),
+      }
+    }
+  }
+
+  /// Registers the ring's parts on `dest` anew, cut by `corner_reach`, so
+  /// they stack above thumbnails registered there since: as they were,
+  /// or, cut anew, drawn as `placement` places them, at the opacity they
+  /// were drawn at. All go up before the old ones go, so no composition
+  /// shows neither; if any fails, the old ones stay. Returns whether the
+  /// new ones went up.
+  fn register_anew(
+    &mut self,
+    dest: HWND,
+    corner_reach: Option<i32>,
+    placement: Option<&Placement>,
+  ) -> bool {
+    let parts = if corner_reach == self.corner_reach {
+      self
+        .parts
+        .iter()
+        .map(|(part, thumbnail)| (*part, *thumbnail.look()))
+        .collect::<Vec<_>>()
+    } else {
+      let opacity = self
+        .parts
+        .first()
+        .map_or(0, |(_, thumbnail)| thumbnail.look().opacity);
+      let is_shown = self
+        .parts
+        .iter()
+        .any(|(_, thumbnail)| thumbnail.look().visible);
+      self.looks(corner_reach, placement.filter(|_| is_shown), opacity)
+    };
+
+    let Some(parts) = register_all(dest, HWND(self.source), parts) else {
+      return false;
+    };
+    self.parts = parts;
+    self.corner_reach = corner_reach;
+    true
+  }
+
+  /// Each part of the ring cut by `corner_reach`, with how it is drawn at
+  /// `opacity` as `placement` places it, or hidden without one.
+  fn looks(
+    &self,
+    corner_reach: Option<i32>,
+    placement: Option<&Placement>,
+    opacity: u8,
+  ) -> Vec<(RingPart, Look)> {
+    RingPart::all(corner_reach)
+      .into_iter()
+      .map(|part| {
+        let rects = placement.and_then(|placement| {
+          ring_part_rects(
+            part,
+            &self.rest,
+            &self.window_rest,
+            &placement.frame,
+            &placement.clip,
+            placement.origin,
+            corner_reach.unwrap_or_default(),
+          )
+        });
+        let look = rects.map_or(
+          Look {
+            opacity,
+            ..Look::default()
+          },
+          |(source, dest)| Look {
+            source: Some(source),
+            dest,
+            opacity,
+            visible: true,
+          },
+        );
+        (part, look)
+      })
+      .collect()
+  }
+
+  fn set_opacity(&mut self, opacity: u8) {
+    for (_, thumbnail) in &mut self.parts {
+      let _ = thumbnail.set_opacity(opacity);
+    }
+  }
+
+  fn hide(&mut self) {
+    for (_, thumbnail) in &mut self.parts {
+      thumbnail.hide();
+    }
+  }
+}
+
+/// Registers a thumbnail of `source` on `dest` drawing each of `parts` as
+/// its look says from its first frame, or none if any fails.
+fn register_all(
+  dest: HWND,
+  source: HWND,
+  parts: Vec<(RingPart, Look)>,
+) -> Option<Vec<(RingPart, Thumbnail)>> {
+  parts
+    .into_iter()
+    .map(|(part, look)| {
+      Thumbnail::register_with(dest, source, look)
+        .map(|thumbnail| (part, thumbnail))
+    })
+    .collect()
 }
 
 /// The part behind a window of a backdrop spanning its monitor, in one
@@ -301,7 +487,7 @@ pub(crate) fn scale_alpha(alpha: u8, frac: f32) -> u8 {
 /// own window is destroyed.
 #[derive(Default)]
 pub(crate) struct OverlayCopies {
-  ring: Option<OverlayCopy>,
+  ring: Option<RingCopy>,
   backdrop: Option<BackdropCopy>,
   /// Where they were last placed.
   placement: Option<Placement>,
@@ -310,37 +496,62 @@ pub(crate) struct OverlayCopies {
 impl OverlayCopies {
   /// Draws the ring of `source`, an overlay window at `rest` around a
   /// window at `window_rest`, on `dest` from now on, where the others were
-  /// last placed if they were. Called again with the same `source`, only
-  /// updates where the two are, e.g. for a width change that resized the
-  /// ring. Returns whether it does.
+  /// last placed if they were: whole, or with `corner_reach` (see
+  /// `NativeBorderOverlay::corner_reach`), in cells. Called again with the
+  /// same `source`, only updates where the two are, e.g. for a width
+  /// change that resized the ring, and how it is cut. Returns whether it
+  /// does.
   pub(crate) fn carry_ring(
     &mut self,
     dest: HWND,
     source: HWND,
     rest: &Rect,
     window_rest: &Rect,
+    corner_reach: Option<i32>,
   ) -> bool {
     if let Some(ring) =
       self.ring.as_mut().filter(|ring| ring.source == source.0)
     {
       ring.rest = rest.clone();
       ring.window_rest = window_rest.clone();
+      if ring.corner_reach != corner_reach {
+        ring.register_anew(dest, corner_reach, self.placement.as_ref());
+      }
       return true;
     }
 
-    self.ring =
-      Thumbnail::register(dest, source).map(|thumbnail| OverlayCopy {
-        thumbnail,
-        source: source.0,
-        rest: rest.clone(),
-        window_rest: window_rest.clone(),
-      });
-    if let (Some(ring), Some(placement)) =
-      (&mut self.ring, &self.placement)
-    {
-      ring.place(placement);
-    }
+    let ring = RingCopy {
+      parts: Vec::new(),
+      source: source.0,
+      rest: rest.clone(),
+      window_rest: window_rest.clone(),
+      corner_reach,
+    };
+    let looks = ring.looks(corner_reach, self.placement.as_ref(), 0);
+    self.ring = register_all(dest, source, looks)
+      .map(|parts| RingCopy { parts, ..ring });
     self.ring.is_some()
+  }
+
+  /// Cuts the ring copy by `corner_reach` from now on, as
+  /// [`carry_ring`](Self::carry_ring) does, leaving where it is as it is.
+  pub(crate) fn cut_ring(
+    &mut self,
+    dest: HWND,
+    corner_reach: Option<i32>,
+  ) {
+    if let Some(ring) = self
+      .ring
+      .as_mut()
+      .filter(|ring| ring.corner_reach != corner_reach)
+    {
+      ring.register_anew(dest, corner_reach, self.placement.as_ref());
+    }
+  }
+
+  /// Where the ring's window was when it was last carried.
+  pub(crate) fn ring_rest(&self) -> Option<&Rect> {
+    self.ring.as_ref().map(|ring| &ring.rest)
   }
 
   pub(crate) fn carries_ring(&self) -> bool {
@@ -351,16 +562,8 @@ impl OverlayCopies {
   /// thumbnails registered there since. The new one goes up before the
   /// old one goes, so no composition shows neither.
   pub(crate) fn raise_ring(&mut self, dest: HWND) {
-    let Some(ring) = &mut self.ring else {
-      return;
-    };
-
-    if let Some(thumbnail) = Thumbnail::register_with(
-      dest,
-      HWND(ring.source),
-      *ring.thumbnail.look(),
-    ) {
-      ring.thumbnail = thumbnail;
+    if let Some(ring) = &mut self.ring {
+      ring.register_anew(dest, ring.corner_reach, None);
     }
   }
 
@@ -455,7 +658,6 @@ impl OverlayCopies {
           VignetteCopy {
             copy: OverlayCopy {
               thumbnail,
-              source: source.hwnd().0,
               rest: source.rect().clone(),
               window_rest: window_rest.clone(),
             },
@@ -580,24 +782,20 @@ impl OverlayCopies {
   /// Draws the ring at `opacity`, independently of the backdrop.
   pub(crate) fn set_ring_opacity(&mut self, opacity: u8) {
     if let Some(ring) = &mut self.ring {
-      let _ = ring
-        .thumbnail
-        .set_opacity(left_out(opacity, isolation::current().no_ring));
+      ring.set_opacity(left_out(opacity, isolation::current().no_ring));
     }
   }
 
   /// Brings the ring copy to full opacity.
   pub(crate) fn cover_ring(&mut self) {
     if let Some(ring) = &mut self.ring {
-      let _ = ring
-        .thumbnail
-        .set_opacity(left_out(u8::MAX, isolation::current().no_ring));
+      ring.set_opacity(left_out(u8::MAX, isolation::current().no_ring));
     }
   }
 
   pub(crate) fn hide_ring(&mut self) {
     if let Some(ring) = &mut self.ring {
-      ring.thumbnail.hide();
+      ring.hide();
     }
   }
 
@@ -639,6 +837,85 @@ pub(crate) fn copy_rects(
     RECT::default(),
     origin,
   )
+}
+
+/// `(rcSource, rcDestination)` drawing `part` of a ring copy that rests at
+/// `copy_rest`, around a window resting at `window_rest`, with that window
+/// now at `frame`, cut at `clip`, into a surrogate whose top-left is at
+/// `origin`. `None` when nothing of it is left.
+///
+/// The whole ring is scaled with its window (see [`copy_rects`]). Cut
+/// into cells, it keeps its distance from each edge of the window, its
+/// corners, `corner_reach` in from its outer edge, drawn 1:1 and its edges
+/// stretched between them, so its width and corners never change.
+/// A ring smaller than two corners has them cut to half its size.
+fn ring_part_rects(
+  part: RingPart,
+  copy_rest: &Rect,
+  window_rest: &Rect,
+  frame: &Rect,
+  clip: &Rect,
+  origin: (i32, i32),
+  corner_reach: i32,
+) -> Option<(RECT, RECT)> {
+  let RingPart::Cell(column, row) = part else {
+    return copy_rects(copy_rest, window_rest, frame, clip, origin);
+  };
+
+  let outer = Rect::from_ltrb(
+    frame.left - (window_rest.left - copy_rest.left),
+    frame.top - (window_rest.top - copy_rest.top),
+    frame.right + (copy_rest.right - window_rest.right),
+    frame.bottom + (copy_rest.bottom - window_rest.bottom),
+  );
+  let (src_x, dst_x) = band_span(
+    column,
+    copy_rest.width(),
+    (outer.left, outer.right),
+    corner_reach,
+  )?;
+  let (src_y, dst_y) = band_span(
+    row,
+    copy_rest.height(),
+    (outer.top, outer.bottom),
+    corner_reach,
+  )?;
+
+  let source = RECT {
+    left: src_x.0,
+    top: src_y.0,
+    right: src_x.1,
+    bottom: src_y.1,
+  };
+  let dest = Rect::from_ltrb(dst_x.0, dst_y.0, dst_x.1, dst_y.1);
+  let visible = dest.intersection(clip)?;
+
+  clip_rects(source, shifted(&dest, origin), &shifted(&visible, origin))
+}
+
+/// The span `band` covers along one axis of a ring `length` long at rest,
+/// in its own coordinates, and drawn from `drawn.0` to `drawn.1`, with
+/// corners `corner` long: `(source, destination)`, or `None` for one of no
+/// length.
+fn band_span(
+  band: Band,
+  length: i32,
+  drawn: (i32, i32),
+  corner: i32,
+) -> Option<((i32, i32), (i32, i32))> {
+  let corner = corner.min(length / 2).min((drawn.1 - drawn.0) / 2).max(0);
+
+  let spans = match band {
+    Band::Start => ((0, corner), (drawn.0, drawn.0 + corner)),
+    Band::Middle => (
+      (corner, length - corner),
+      (drawn.0 + corner, drawn.1 - corner),
+    ),
+    Band::End => ((length - corner, length), (drawn.1 - corner, drawn.1)),
+  };
+
+  let ((src_from, src_to), (dst_from, dst_to)) = spans;
+  (src_to > src_from && dst_to > dst_from).then_some(spans)
 }
 
 /// `rect`, which goes with a window resting at `window_rest`, moved and
@@ -683,8 +960,9 @@ fn shifted(rect: &Rect, origin: (i32, i32)) -> RECT {
 #[cfg(test)]
 mod tests {
   use super::{
-    copy_rects, crop_fade, crop_weights, map_rect, same_set, scale_alpha,
-    shifted, vignette_strength, BackdropOverlayParams, Rect, RECT,
+    copy_rects, crop_fade, crop_weights, map_rect, ring_part_rects,
+    same_set, scale_alpha, shifted, vignette_strength,
+    BackdropOverlayParams, Band, Rect, RingPart, RECT,
   };
   use crate::Color;
 
@@ -854,5 +1132,183 @@ mod tests {
   fn crossfade_with_one_side_not_carried_fades_alone() {
     assert_eq!(crop_weights(2, None, Some(1), 0.25), vec![0.0, 0.25]);
     assert_eq!(crop_weights(2, Some(0), None, 0.25), vec![0.75, 0.0]);
+  }
+
+  /// A window resting at (100, 100, 800x600) with a 10 px ring around it,
+  /// its corners reaching 16 px in.
+  const RING_WINDOW: Rect = Rect {
+    left: 100,
+    top: 100,
+    right: 900,
+    bottom: 700,
+  };
+  const RING: Rect = Rect {
+    left: 90,
+    top: 90,
+    right: 910,
+    bottom: 710,
+  };
+  const CORNER_REACH: i32 = 16;
+
+  /// `(rcSource, rcDestination)` of each of the ring's cells, with its
+  /// window at `frame`, cut at `clip`.
+  fn cells_at(frame: &Rect, clip: &Rect) -> Vec<Option<(Edges, Edges)>> {
+    RingPart::all(Some(CORNER_REACH))
+      .into_iter()
+      .map(|part| {
+        ring_part_rects(
+          part,
+          &RING,
+          &RING_WINDOW,
+          frame,
+          clip,
+          (0, 0),
+          CORNER_REACH,
+        )
+        .map(|(src, dst)| (ltrb(src), ltrb(dst)))
+      })
+      .collect()
+  }
+
+  fn area((left, top, right, bottom): Edges) -> i32 {
+    (right - left) * (bottom - top)
+  }
+
+  #[test]
+  fn a_ring_is_cut_into_eight_cells_around_its_middle() {
+    let parts = RingPart::all(Some(CORNER_REACH));
+
+    assert_eq!(parts.len(), 8);
+    assert!(!parts.contains(&RingPart::Cell(Band::Middle, Band::Middle)));
+    assert_eq!(RingPart::all(None), vec![RingPart::Whole]);
+  }
+
+  /// At rest, the cells draw the ring 1:1 and cover all of it but its
+  /// middle, each pixel once.
+  #[test]
+  fn ring_cells_at_rest_tile_the_ring() {
+    let cells = cells_at(&RING_WINDOW, &MONITOR)
+      .into_iter()
+      .map(|cell| cell.expect("shown"))
+      .collect::<Vec<_>>();
+
+    for (src, dst) in &cells {
+      assert_eq!(
+        (src.0 + RING.left, src.1 + RING.top),
+        (dst.0, dst.1),
+        "drawn where it rests"
+      );
+      assert_eq!(area(*src), area(*dst), "drawn 1:1");
+    }
+
+    let middle = RING.inset(CORNER_REACH);
+    let covered = cells.iter().map(|(_, dst)| area(*dst)).sum::<i32>();
+    assert_eq!(
+      covered,
+      RING.width() * RING.height() - middle.width() * middle.height()
+    );
+  }
+
+  /// Resized, the ring keeps its corners 1:1 at the window's new corners
+  /// and stretches its edges to meet them.
+  #[test]
+  fn ring_cells_keep_their_corners_as_the_window_is_resized() {
+    let frame = Rect::from_xy(100, 100, 1200, 300);
+    let cells = cells_at(&frame, &MONITOR);
+    let parts = RingPart::all(Some(CORNER_REACH));
+    let cell = |column, row| {
+      let index = parts
+        .iter()
+        .position(|part| *part == RingPart::Cell(column, row))
+        .expect("a cell");
+      cells[index].expect("shown")
+    };
+
+    assert_eq!(
+      cell(Band::Start, Band::Start),
+      ((0, 0, 16, 16), (90, 90, 106, 106))
+    );
+    assert_eq!(
+      cell(Band::End, Band::End),
+      ((804, 604, 820, 620), (1294, 394, 1310, 410))
+    );
+    // The top edge, stretched from 788 to 1188 px between its corners.
+    assert_eq!(
+      cell(Band::Middle, Band::Start),
+      ((16, 0, 804, 16), (106, 90, 1294, 106))
+    );
+    // The left edge, squeezed from 588 to 288 px.
+    assert_eq!(
+      cell(Band::Start, Band::Middle),
+      ((0, 16, 16, 604), (90, 106, 106, 394))
+    );
+  }
+
+  /// Cut at the clip, a cell partly past it is cut with its source, and
+  /// one wholly past it is not drawn.
+  #[test]
+  fn ring_cells_are_cut_at_the_clip() {
+    let clip = Rect::from_ltrb(0, 0, 500, 1080);
+    let cells = cells_at(&RING_WINDOW, &clip);
+    let parts = RingPart::all(Some(CORNER_REACH));
+    let cell = |column, row| {
+      let index = parts
+        .iter()
+        .position(|part| *part == RingPart::Cell(column, row))
+        .expect("a cell");
+      cells[index]
+    };
+
+    assert_eq!(
+      cell(Band::Middle, Band::Start),
+      Some(((16, 0, 410, 16), (106, 90, 500, 106)))
+    );
+    assert_eq!(cell(Band::End, Band::Start), None);
+  }
+
+  /// A ring drawn smaller than its two corners has them cut to half its
+  /// size, with no edge between them.
+  #[test]
+  fn ring_cells_of_a_tiny_ring_meet_in_its_middle() {
+    let frame = Rect::from_xy(100, 100, 10, 600);
+    let cells = cells_at(&frame, &MONITOR);
+    let parts = RingPart::all(Some(CORNER_REACH));
+    let cell = |column, row| {
+      let index = parts
+        .iter()
+        .position(|part| *part == RingPart::Cell(column, row))
+        .expect("a cell");
+      cells[index]
+    };
+
+    // 30 px across: corners of 15.
+    assert_eq!(
+      cell(Band::Start, Band::Start),
+      Some(((0, 0, 15, 16), (90, 90, 105, 106)))
+    );
+    assert_eq!(cell(Band::Middle, Band::Start), None);
+    assert_eq!(
+      cell(Band::End, Band::Start),
+      Some(((805, 0, 820, 16), (105, 90, 120, 106)))
+    );
+  }
+
+  /// Whole, a ring scales with its window, as any copy does.
+  #[test]
+  fn a_whole_ring_scales_with_its_window() {
+    let frame = Rect::from_xy(200, 200, 400, 300);
+
+    assert_eq!(
+      ring_part_rects(
+        RingPart::Whole,
+        &RING,
+        &RING_WINDOW,
+        &frame,
+        &MONITOR,
+        (0, 0),
+        CORNER_REACH,
+      ),
+      copy_rects(&RING, &RING_WINDOW, &frame, &MONITOR, (0, 0))
+    );
   }
 }

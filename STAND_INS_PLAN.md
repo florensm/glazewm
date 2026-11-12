@@ -187,8 +187,8 @@ Owner's answers, 2026-11-11:
   run; not checked live)
 - [ ] 9. Remove what is no longer reached
 - [ ] 10. `fill` on peeks, for mouse drags first, then keyboard resizes
-  (planned and reviewed 2026-11-12: 10a answered by reading, nothing
-  built; the owner's pre-check in 10a comes first)
+  (planned and reviewed 2026-11-12: 10a answered by reading; the owner's
+  pre-check in 10a still to run; 10b-1 built, not checked live)
 
 ### Task 0: baseline (desktop, by hand)
 
