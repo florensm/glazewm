@@ -16,7 +16,9 @@
 
 use std::collections::{HashMap, HashSet};
 
-use wm_common::{ActiveDragOperation, DisplayState, Layout, WindowState};
+use wm_common::{
+  ActiveDragOperation, DisplayState, GrabDraw, Layout, WindowState,
+};
 use wm_platform::{
   Gesture, GrabEnd, GrabEvent, GrabListener, GrabSettings, NativeWindow,
   Point, Rect, RectDelta, ResizeEdges, SurrogateBatch, WindowId,
@@ -24,6 +26,7 @@ use wm_platform::{
 };
 
 use crate::{
+  animation::manager::{movement_timing, Motion},
   commands::{
     container::set_focused_descendant,
     general::{defer_window_frame, follow_window_frame, note_size_change},
@@ -219,6 +222,38 @@ pub fn places_move_overlays(
   false
 }
 
+/// Whether a resize under way on `window`'s workspace draws it on a peek
+/// it holds (`grab_and_move.draw: "peeks"`, see
+/// `peek_view::hold_on_peek`): a window the peek can draw, already held or
+/// to be put on one by the redraw of its first step.
+pub fn holds_on_peek(
+  window: &WindowContainer,
+  state: &WmState,
+  config: &UserConfig,
+) -> bool {
+  let is_resizing_here = state.grab.grab.as_ref().is_some_and(|grab| {
+    grab.resize.is_some()
+      && state
+        .window_from_native(&grab.native)
+        .and_then(|grabbed| grabbed.workspace())
+        .zip(window.workspace())
+        .is_some_and(|(grabbed, workspace)| grabbed.id() == workspace.id())
+  });
+
+  config.value.general.grab_and_move.draw == GrabDraw::Peeks
+    && is_resizing_here
+    && (state.animation_manager.peeks.is_held(&window.id())
+      || crate::animation::peek_view::can_hold(state, window, config))
+}
+
+impl GrabState {
+  /// The smallest size, per axis, the resize under way sent `window` that
+  /// it may not have applied yet.
+  pub fn unlanded(&self, window: WindowId) -> Option<(i32, i32)> {
+    self.placer.unlanded(window)
+  }
+}
+
 /// Whether a resize's placer may not have placed `window` at its newest
 /// rect yet, whose overlays are already there: an event of the window's
 /// then shows an older rect, which they mustn't go back to.
@@ -263,7 +298,9 @@ pub fn sync_listener(
         matches!(
           window.state(),
           WindowState::Fullscreen(_) | WindowState::Minimized
-        )
+        ) || window
+          .workspace()
+          .is_none_or(|workspace| !workspace.is_displayed())
       });
 
     if is_lost {
@@ -530,15 +567,29 @@ fn place_moved_windows(
     let shows = window.workspace().is_some_and(|ws| ws.is_displayed())
       && !is_hidden_in_layout(&window);
 
-    if is_placeable(&window, shows, &target, state) {
+    if is_placeable(&window, shows, &target, state, config) {
       note_size_change(&window, &target);
       state
         .grab
         .placer
         .place(window.native().id(), target.clone());
 
-      // As `follow_own_move` has them follow a window's own move.
-      if !state.animation_manager.has_active_surrogate(&window.id()) {
+      // Held on a peek, which draws its overlays: the peek jumps to its
+      // new tile, drawn there on the next frame.
+      if state.animation_manager.peeks.is_held(&window.id()) {
+        let now = state.animation_manager.frame_now();
+        let (_, easing) = movement_timing(Motion::Resize, true, config);
+        state.animation_manager.peeks.retarget_tile(
+          &window.id(),
+          target.clone(),
+          0,
+          easing,
+          true,
+          now,
+        );
+      } else if !state.animation_manager.has_active_surrogate(&window.id())
+      {
+        // As `follow_own_move` has them follow a window's own move.
         let frame =
           frame_at(&target, &window.native_properties().shadow_borders);
         defer_window_frame(&window, &frame, state, config, &mut overlays);
@@ -583,14 +634,21 @@ fn moved_frame(
 
 /// Whether `window`, which `shows` in the layout, can be placed at
 /// `target` by the placer: shown there already, at a rect of its own, and
-/// with nothing else drawing it.
+/// with nothing else drawing it but a peek the resize holds. One the
+/// resize is to hold is left to the redraw, which puts it on its peek.
 fn is_placeable(
   window: &WindowContainer,
   shows: bool,
   target: &Rect,
   state: &WmState,
+  config: &UserConfig,
 ) -> bool {
   let id = window.id();
+  let is_held = state.animation_manager.peeks.is_held(&id);
+
+  if !is_held && holds_on_peek(window, state, config) {
+    return false;
+  }
 
   shows
     && window.display_state() == DisplayState::Shown
@@ -601,7 +659,7 @@ fn is_placeable(
     && window.active_drag().is_none()
     && !window.has_pending_dpi_adjustment()
     && !state.animation_manager.owns_window_position(&id)
-    && !state.animation_manager.peeks.owns_window(&id)
+    && (is_held || !state.animation_manager.peeks.owns_window(&id))
     && real_window_rect(&window.as_container(), target) == *target
 }
 
@@ -634,6 +692,7 @@ fn finish(
 
   let Some(window) = state.window_from_native(&grab.native) else {
     state.grab.placer.finish();
+    state.animation_manager.peeks.release_holds();
     return Ok(());
   };
 
@@ -662,8 +721,10 @@ fn finish(
 
   // The placer's last rects are the final ones, which the sync of every
   // window the resize can have moved sends too: whichever lands last,
-  // each ends where the layout says, with its overlays and tab bar.
+  // each ends where the layout says, with its overlays and tab bar. Peeks
+  // it held land once their windows have reached them.
   state.grab.placer.finish();
+  state.animation_manager.peeks.release_holds();
   for container in redraw {
     state.pending_sync.queue_container_to_redraw(container);
   }
@@ -687,7 +748,8 @@ mod tests {
   use std::mem::ManuallyDrop;
 
   use wm_common::{
-    ActiveDrag, ActiveDragOperation, DisplayState, WindowState,
+    ActiveDrag, ActiveDragOperation, DisplayState, GrabDraw, ParsedConfig,
+    WindowState,
   };
   use wm_platform::{
     Gesture, GrabEnd, GrabListener, LengthValue, NativeWindow, Point,
@@ -695,8 +757,8 @@ mod tests {
   };
 
   use super::{
-    finish, frame_at, is_grabbable, moved_frame, places_move_overlays,
-    start, step,
+    finish, frame_at, holds_on_peek, is_grabbable, moved_frame,
+    places_move_overlays, start, step,
   };
   use crate::{
     events::float_for_drag,
@@ -707,6 +769,7 @@ mod tests {
     traits::{
       CommonGetters, PositionGetters, TilingSizeGetters, WindowGetters,
     },
+    user_config::UserConfig,
     wm_state::WmState,
   };
 
@@ -799,6 +862,40 @@ mod tests {
       state.window_target_positions.get(&left.id()),
       Some(&before)
     );
+  }
+
+  /// Drawn on peeks, a resize still places at once the windows a peek
+  /// can't draw (here, mocks with no real window to read), and holds
+  /// nothing.
+  #[test]
+  fn on_peeks_a_window_no_peek_can_draw_is_placed_live() {
+    let (mut state, [_, middle, right]) = setup();
+    let mut parsed = ParsedConfig::default();
+    parsed.general.grab_and_move.draw = GrabDraw::Peeks;
+    let config = UserConfig::from_parsed(parsed);
+    grab_right_edge(&middle, &mut state);
+
+    for window in [&middle, &right] {
+      assert!(!holds_on_peek(&window.clone().into(), &state, &config));
+    }
+    step((100, 0), &mut state, &config).unwrap();
+
+    assert!(is_placed(&middle, &state) && is_placed(&right, &state));
+    assert!(!is_queued(&middle, &state) && !is_queued(&right, &state));
+    assert!(!state.animation_manager.peeks.is_held(&middle.id()));
+  }
+
+  /// Drawn live, the default, no window is ever held on a peek.
+  #[test]
+  fn live_resizes_hold_nothing() {
+    let (mut state, [_, middle, _]) = setup();
+    grab_right_edge(&middle, &mut state);
+
+    assert!(!holds_on_peek(
+      &middle.clone().into(),
+      &state,
+      &mock_config()
+    ));
   }
 
   #[test]

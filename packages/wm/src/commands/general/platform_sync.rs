@@ -1471,6 +1471,34 @@ fn redraw_containers(
       .is_workspace_switch_incoming(&window.id())
       || state.animation_manager.peeks.is_moving(&window.id());
 
+    // A grab resize drawn on peeks puts each tile it changes on a peek it
+    // holds on its first step, which the placer can't take (see
+    // `grab::holds_on_peek`). Ahead of the animation gate, which the
+    // resize suppresses, and taken over from as a move on a peek is.
+    let held_from = previous_target
+      .as_ref()
+      .filter(|from| *from != &target_rect)
+      .filter(|_| {
+        !is_frozen_by_ws_animation
+          && previous_display_state == DisplayState::Shown
+          && wm_platform::isolation::current().peeks
+          && !state.animation_manager.peeks.is_held(&window.id())
+          && crate::grab::holds_on_peek(window, state, config)
+      });
+    if let Some(from) = held_from {
+      if crate::animation::peek_view::hold_on_peek(
+        state,
+        window,
+        from,
+        &target_rect,
+        config,
+        window.id() == focused_container.id(),
+      ) {
+        is_frozen_by_ws_animation = true;
+        peek_moves.push(window.id());
+      }
+    }
+
     // A window is resizing when its dimensions change (vs. a pure
     // translation).
     let is_resize = previous_target.as_ref().is_some_and(|prev| {
@@ -1751,6 +1779,13 @@ fn redraw_containers(
               cycle_has_resize,
               config,
             );
+          // One a grab holds jumps, as its steps put it.
+          let duration_ms =
+            if state.animation_manager.peeks.is_held(&window.id()) {
+              0
+            } else {
+              duration_ms
+            };
           let now = state.animation_manager.frame_now();
           state.animation_manager.peeks.retarget_tile(
             &window.id(),
@@ -2076,8 +2111,12 @@ fn redraw_containers(
   }
   // Only now its window is cloaked: raised while that still showed, a
   // peek's opaque backdrop copy would have hidden it.
+  // One a grab holds stays where it went up, just below its window, for
+  // the whole resize: it never passes over floating windows.
   for id in &peek_moves {
-    state.animation_manager.peeks.raise_moving(id);
+    if !state.animation_manager.peeks.is_held(id) {
+      state.animation_manager.peeks.raise_moving(id);
+    }
   }
   for (window, raise) in &peek_raises {
     // Its cloaked window goes into the band it lands in first, so that

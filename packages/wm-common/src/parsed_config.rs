@@ -583,6 +583,9 @@ pub struct GrabAndMoveConfig {
   /// Whether dragging with the right mouse button resizes the window from
   /// its edges nearest to the press. Off, right clicks reach the window.
   pub resize: bool,
+
+  /// How a resize draws the windows it changes.
+  pub draw: GrabDraw,
 }
 
 impl Default for GrabAndMoveConfig {
@@ -591,8 +594,26 @@ impl Default for GrabAndMoveConfig {
       enabled: false,
       modifier: GrabModifier::Alt,
       resize: true,
+      draw: GrabDraw::Live,
     }
   }
+}
+
+/// How a grab resize draws the windows it changes.
+#[derive(
+  Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum GrabDraw {
+  /// The real windows, each drawn at its new size as soon as its app has
+  /// applied it.
+  #[default]
+  Live,
+  /// Stand-ins of the windows and their borders, drawn at the layout's
+  /// rects together on every frame, while the real windows, hidden, are
+  /// resized behind them. Tiled windows of split and dwindle layouts
+  /// only, outside stacks; others are drawn live.
+  Peeks,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -2610,8 +2631,8 @@ mod tests {
   use super::{
     BackdropEffectConfig, BorderEffectConfig, BorderGlow,
     BorderGlowConfig, Color, EasingFunction, GapsConfig, GeneralConfig,
-    GrabAndMoveConfig, GrabModifier, LengthValue, OverviewConfig,
-    OverviewEffects, OverviewLayout, OverviewSwitchStyle,
+    GrabAndMoveConfig, GrabDraw, GrabModifier, LengthValue,
+    OverviewConfig, OverviewEffects, OverviewLayout, OverviewSwitchStyle,
     OverviewZoomStyle, ParticlesConfig, ScrollingLayoutConfig,
     SpringParams, WorkspaceSwitchAnimationConfig, WorkspaceSwitchStyle,
   };
@@ -2635,6 +2656,7 @@ mod tests {
         enabled: true,
         modifier: GrabModifier::Win,
         resize: true,
+        draw: GrabDraw::Live,
       }
     );
 
@@ -2642,6 +2664,16 @@ mod tests {
       serde_json::json!({ "modifier": "ctrl" }),
     );
     assert!(ctrl.is_err());
+  }
+
+  /// Resizes are drawn live unless `draw` asks for peeks.
+  #[test]
+  fn grab_resizes_draw_live_by_default() {
+    let config: GrabAndMoveConfig =
+      serde_json::from_value(serde_json::json!({ "draw": "peeks" }))
+        .expect("grab config should parse");
+    assert_eq!(config.draw, GrabDraw::Peeks);
+    assert_eq!(GrabAndMoveConfig::default().draw, GrabDraw::Live);
   }
 
   /// A cut lands at once whatever its duration, and `iris`, the removed

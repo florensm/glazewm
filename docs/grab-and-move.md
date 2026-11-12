@@ -13,6 +13,8 @@ general:
     # Right-drag resizes. Off, right clicks with the modifier reach the
     # window as usual.
     resize: true
+    # How a resize draws the windows it changes: 'live' or 'peeks'.
+    draw: "live"
 ```
 
 Reloading the config turns it on or off, or changes the key, at once.
@@ -80,6 +82,25 @@ leave the view, the view scrolls to keep it at the view's edge, and stays
 scrolled as the column shrinks again. A column can be made as wide as the
 view; a layout set to keep columns centered (`center_focused_column:
 "always"`) keeps it centered, growing both ways.
+
+### Drawing: `draw`
+
+With `live`, the default, each window is drawn by its app at its new size
+as soon as the app has applied it. Apps apply sizes at their own pace, so
+a window can show a frame or more off its border, or over its
+neighbour's.
+
+With `peeks` (in development, not yet complete), the WM draws the tiled
+windows a resize changes itself, from live copies, together with their
+borders, at the layout's rects on every frame; the real windows are
+hidden and resized behind them. Where an app has yet to fill its new
+size, the rest of its tile shows the window's edge colour; where it is
+larger, it is cut at the tile. Columns of a scrolling layout, floating
+windows, stacks, and windows with a rounded backdrop are still drawn
+live. The first change of a resize shows a frame late, as the WM hands
+the windows over to their stand-ins; when the button is released, each
+is handed back once its app has reached its final size, or after
+150 ms. Reloading the config switches between the two.
 
 ### Limits
 

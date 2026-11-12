@@ -952,6 +952,36 @@ to see it; check each once more at 150 ms.
       (`CreateWindowExW`, `SetLayeredWindowAttributes`, `SetWindowPos`,
       a `Windows.UI.Composition` colour brush), all already used for the
       backdrop copies. Only with the variable set.
+68. **Grab resizes on peeks, round 1** (`STAND_INS_PLAN.md` 10c-1 to
+    10c-4). `grab_and_move: { enabled: true, draw: "peeks" }`, a split
+    layout, a border, a gap wide enough to see. Open the windows after
+    the WM started, so their edge colour is sampled.
+    - Two tiles, then three with a nested split. Alt+right-drag an edge
+      slowly, then fast, then back and forth quickly. Gap and rings
+      solid: no window over its own or its neighbour's ring, at any
+      speed.
+    - A slow app (browser, Electron, Outlook) beside a quick one
+      (Notepad). Content keeps updating during the drag; edge colour
+      where the slow one lags when growing; never a hole to the desktop.
+    - The start: the first movement shows within a frame or two, with no
+      blink, no blank window, no ring drawn twice. The end: release, and
+      nothing moves, blinks or changes size; the shadow's return is the
+      only change.
+    - Press and release without moving: nothing is cloaked (no blink).
+    - Escape mid-drag; the grabbed window closed mid-drag (by the WM's
+      close keybinding); a neighbour closed mid-drag; a workspace switch
+      mid-drag (ends the grab now); lock the screen (Win+L) mid-drag and
+      come back. After each: every window visible, at its tile,
+      clickable, and no "stuck" report in the WM's log
+      (`report_stuck_windows`).
+    - A stacked window, a floating one and a scrolling layout's column:
+      resized live, as with `draw: "live"`.
+    - Compare with `draw: "live"` on the same windows; reload the config
+      to switch.
+    - Laptop: other apps' windows are now cloaked on every resize drag
+      (no new Windows API; `DwmSetWindowAttribute(DWMWA_CLOAK)`,
+      `DwmFlush`, thumbnail calls, all already made). Note whether
+      Defender flags this build.
 
 If bars or flicker show, isolate them with `GLAZEWM_ISOLATE` (below), one
 restart per flag: `noring`, `nobackdrop`, then `live`. With a long

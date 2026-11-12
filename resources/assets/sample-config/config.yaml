@@ -52,6 +52,9 @@ general:
     modifier: "alt"
     # Off, right clicks with the modifier reach the window as usual.
     resize: true
+    # How a resize draws: 'live' (the windows themselves) or 'peeks'
+    # (stand-ins kept in step with the layout every frame).
+    draw: "live"
 
   # Show windows of every workspace in the taskbar, not only shown ones.
   show_all_in_taskbar: false

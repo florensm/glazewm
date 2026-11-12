@@ -1451,9 +1451,7 @@ impl AnimationManager {
     times: FrameTimes,
   ) -> (super::peek_view::Landed, SurrogateBatch) {
     let mut batch = SurrogateBatch::new();
-    if wm_platform::isolation::current().fill_peeks {
-      super::peek_view::note_fill_colors(state);
-    }
+    super::peek_view::note_fill_inputs(state);
     let mut landed = state.animation_manager.peeks.tick(
       times.now,
       times.clock_origin,
@@ -2971,8 +2969,8 @@ impl AnimationManager {
   }
 
   /// Queues a first edge-color sample for a window just shown that has
-  /// none, so its first `fill` resize, or `stretch` one under
-  /// `GLAZEWM_ISOLATE=fillpeeks`, has a fill.
+  /// none, so its first `fill` resize, `stretch` one under
+  /// `GLAZEWM_ISOLATE=fillpeeks`, or grab resize on peeks has a fill.
   ///
   /// Taken at the next idle point like a resize's, by then after any open
   /// animation has landed; never at a resize's start (see
@@ -2983,10 +2981,15 @@ impl AnimationManager {
     config: &UserConfig,
   ) {
     let resize = &config.value.animations.window_resize;
-    let fills = resize.style != ResizeStyle::Stretch
-      || wm_platform::isolation::current().fill_peeks;
-    if resize.enabled && fills && self.cached_edge_color(hwnd.0).is_none()
-    {
+    let grab = &config.value.general.grab_and_move;
+    let grab_fills = grab.enabled
+      && grab.resize
+      && grab.draw == wm_common::GrabDraw::Peeks;
+    let fills = (resize.enabled
+      && (resize.style != ResizeStyle::Stretch
+        || wm_platform::isolation::current().fill_peeks))
+      || grab_fills;
+    if fills && self.cached_edge_color(hwnd.0).is_none() {
       self.pending_edge_samples.insert(hwnd.0);
     }
   }

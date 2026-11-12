@@ -188,7 +188,8 @@ Owner's answers, 2026-11-11:
 - [ ] 9. Remove what is no longer reached
 - [ ] 10. `fill` on peeks, for mouse drags first, then keyboard resizes
   (planned and reviewed 2026-11-12: 10a answered by reading; the owner's
-  pre-check in 10a still to run; 10b built, not checked live)
+  pre-check in 10a still to run; 10b and 10c-1 to 10c-4 built, not
+  checked live; 10c-5 next)
 
 ### Task 0: baseline (desktop, by hand)
 
@@ -1491,6 +1492,19 @@ in `TODO.md` "Live-check switch"; 10e turns it into the real path.
   grown, no hole at any point.
 
 #### 10c. Grab resizes on peeks
+
+Owner, 2026-11-12: keep `fill` (whether `stretch` goes in 10f is still
+to be asked).
+
+Built 2026-11-12, not checked live: 10c-1 to 10c-4 in one commit, as
+none of them is reachable without the next. As written, plus:
+`can_hold` (`peek_view.rs`) is `stretches_relayout`'s per-tile test
+minus its animation checks, and also leaves out columns until 10c-5;
+`WindowPlacer::unlanded` keeps the rect being applied
+(`SlotState::applying`, which replaces `is_placing`); a held peek's
+redraw retargets it with duration 0. No unit test reaches a held peek
+(`WindowPeek` needs a desktop): `Hold`'s landing rule, `unlanded`, and
+`holds_on_peek` refusing mock windows and `draw: "live"` are tested.
 
 Behind `draw: "peeks"`. Tiled windows of split and dwindle layouts
 first, scrolling columns last. Five commits.

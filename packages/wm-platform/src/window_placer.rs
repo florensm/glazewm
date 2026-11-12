@@ -42,8 +42,8 @@ struct Slot {
 struct SlotState {
   rect: Option<Rect>,
 
-  /// Whether a rect taken from `rect` is being applied.
-  is_placing: bool,
+  /// The rect taken from `rect` that is being applied, if any.
+  applying: Option<Rect>,
 
   quit: bool,
 }
@@ -83,8 +83,23 @@ impl WindowPlacer {
   pub fn is_placing(&self, window: WindowId) -> bool {
     self.lock().get(&window).is_some_and(|slot| {
       let state = slot.lock();
-      state.rect.is_some() || state.is_placing
+      state.rect.is_some() || state.applying.is_some()
     })
+  }
+
+  /// The size `window` may be at by the time it has applied every rect it
+  /// was given, smallest per axis: of the rect waiting and the one being
+  /// applied. `None` with neither.
+  #[must_use]
+  pub fn unlanded(&self, window: WindowId) -> Option<(i32, i32)> {
+    let workers = self.lock();
+    let state = workers.get(&window)?.lock();
+
+    [&state.rect, &state.applying]
+      .into_iter()
+      .flatten()
+      .map(|rect| (rect.width(), rect.height()))
+      .reduce(|a, b| (a.0.min(b.0), a.1.min(b.1)))
   }
 
   /// Drops the rect not yet applied to `window`, and its thread.
@@ -161,13 +176,13 @@ impl Slot {
         }
 
         let rect = state.rect.take();
-        state.is_placing = rect.is_some();
+        state.applying.clone_from(&rect);
         (rect, state.quit)
       };
 
       if let Some(rect) = rect {
         place_window(window, &rect);
-        self.lock().is_placing = false;
+        self.lock().applying = None;
       }
 
       if quit {
@@ -217,5 +232,23 @@ mod tests {
     placer.place(window, Rect::from_xy(0, 0, 100, 100));
     placer.finish();
     assert!(!placer.is_placing(window));
+  }
+
+  #[test]
+  fn unlanded_takes_the_smallest_of_waiting_and_applying() {
+    let placer = WindowPlacer::default();
+    let window = WindowId(0);
+    assert_eq!(placer.unlanded(window), None);
+
+    placer.lock().insert(window, Arc::new(Slot::default()));
+    if let Some(slot) = placer.lock().get(&window) {
+      let mut state = slot.lock();
+      state.applying = Some(Rect::from_xy(0, 0, 950, 600));
+      state.rect = Some(Rect::from_xy(0, 0, 980, 500));
+    }
+    assert_eq!(placer.unlanded(window), Some((950, 500)));
+
+    placer.clear();
+    assert_eq!(placer.unlanded(window), None);
   }
 }
