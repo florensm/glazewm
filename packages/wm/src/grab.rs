@@ -4,48 +4,37 @@
 //!
 //! A move runs as a drag by the title bar does: the platform moves the
 //! window with the cursor, and its moves arrive as for any interactive
-//! drag. A resize is laid out by the WM as the mouse moves, its
-//! neighbours along with it, every step unanimated.
+//! drag. A resize is laid out by the WM on every move of the mouse, its
+//! neighbours along with it, unanimated. Windows that only change rect
+//! are placed by a `WindowPlacer`, each window on its own, rather than by
+//! `platform_sync`; the rest of the layout's changes go through it.
 
-use std::{
-  collections::{HashMap, HashSet},
-  time::{Duration, Instant},
-};
+use std::collections::{HashMap, HashSet};
 
-use uuid::Uuid;
-use wm_common::{DisplayState, Layout, WindowState};
+use wm_common::{ActiveDragOperation, DisplayState, Layout, WindowState};
 use wm_platform::{
   Gesture, GrabEnd, GrabEvent, GrabListener, GrabSettings, NativeWindow,
-  Rect, ResizeEdges, WindowId,
+  Rect, ResizeEdges, WindowId, WindowPlacer,
 };
 
 use crate::{
   commands::{
     container::set_focused_descendant,
+    general::note_size_change,
     window::{MIN_FLOATING_HEIGHT, MIN_FLOATING_WIDTH},
   },
   events::{end_window_drag, handle_window_moved_or_resized},
   layout::{
     edge_resize::{drag_and_hold, dragged_rect, SizeSnapshot},
     is_hidden_in_layout,
-    scrolling::{column_of, sync_view, ColumnHold},
+    scrolling::{column_of, real_window_rect, sync_view, ColumnHold},
   },
   models::{Container, WindowContainer, Workspace},
+  tab_bars::{sync_tab_bars, Restack},
   traits::{CommonGetters, PositionGetters, WindowGetters},
   user_config::UserConfig,
   wm_state::WmState,
 };
-
-/// Shortest time between two steps of a resize, which each lay out its
-/// windows anew.
-const STEP_INTERVAL: Duration = Duration::from_millis(8);
-
-/// Longest a window is waited on to land at the size a step gave it
-/// before it is given a newer one.
-///
-/// Repositions are asynchronous, so a slow app would otherwise queue up a
-/// size per step and play them all back, lagging ever further behind.
-const LANDING_TIMEOUT: Duration = Duration::from_millis(100);
 
 /// What [`GrabListener`] grabs with under `config`, if anything.
 pub fn settings(config: &UserConfig) -> Option<GrabSettings> {
@@ -68,6 +57,9 @@ pub struct GrabState {
   /// Whether another window took the foreground during the grab, e.g. a
   /// UAC prompt, which the grab's release may be made on.
   is_focus_lost: bool,
+
+  /// Places the windows a resize only changes the rect of.
+  placer: WindowPlacer,
 }
 
 #[derive(Debug)]
@@ -91,21 +83,8 @@ struct Resize {
   /// Where the window's column is held on screen, and where it started.
   hold: Option<(ColumnHold, ColumnHold)>,
 
-  /// Newest movement of the mouse, in all, that no step has applied yet.
-  pending: Option<(i32, i32)>,
-
   /// Movement the last step applied.
   applied: (i32, i32),
-
-  last_step: Option<Instant>,
-
-  /// Windows given a new rect that they haven't reported landing at yet,
-  /// and when.
-  in_flight: HashMap<Uuid, Instant>,
-
-  /// Whether the last step left a window at its old rect, being still in
-  /// flight.
-  has_held_back: bool,
 }
 
 /// Handles `event` from `listener`.
@@ -119,23 +98,16 @@ pub fn handle_grab_event(
     GrabEvent::Started { window, gesture } => {
       start(window, gesture, listener, state, config)
     }
-    GrabEvent::Resized => {
-      let delta = listener.take_resize_delta();
-
-      if let Some(resize) = resize_mut(state) {
-        resize.pending = Some(delta);
-
-        let is_due = resize
-          .last_step
-          .is_none_or(|at| at.elapsed() >= STEP_INTERVAL);
-        if is_due {
-          return step(state);
-        }
-      }
-
-      Ok(())
-    }
-    GrabEvent::Ended { window, end } => {
+    GrabEvent::Resized => match listener.take_resize_delta() {
+      Some(delta) => step(delta, state, config),
+      // Ended since: its end brings the final total.
+      None => Ok(()),
+    },
+    GrabEvent::Ended {
+      window,
+      end,
+      resize_total,
+    } => {
       let is_current = state
         .grab
         .grab
@@ -146,40 +118,24 @@ pub fn handle_grab_event(
         return Ok(());
       }
 
-      if let Some(resize) = resize_mut(state) {
-        resize.pending = Some(listener.take_resize_delta());
-      }
-
-      finish(end, state, config)
+      finish(end, resize_total, state, config)
     }
   }
 }
 
-/// When the resize under way takes its next step, if it has one to take.
-pub fn step_deadline(state: &WmState) -> Option<Instant> {
-  let resize = state.grab.grab.as_ref()?.resize.as_ref()?;
-
-  (resize.pending.is_some() || resize.has_held_back).then(|| {
-    resize
-      .last_step
-      .map_or_else(Instant::now, |at| at + STEP_INTERVAL)
-  })
-}
-
-/// Lays out the resize under way for the mouse's newest movement.
-pub fn step(state: &mut WmState) -> anyhow::Result<()> {
+/// Lays out the resize under way for the mouse's newest movement `delta`.
+fn step(
+  delta: (i32, i32),
+  state: &mut WmState,
+  config: &UserConfig,
+) -> anyhow::Result<()> {
   let Some(mut grab) = state.grab.grab.take() else {
     return Ok(());
   };
 
-  let delta = grab.resize.as_mut().map(|resize| {
-    resize.last_step = Some(Instant::now());
-    resize.pending.take().unwrap_or(resize.applied)
-  });
-
-  let result = match (delta, state.window_from_native(&grab.native)) {
-    (Some(delta), Some(window)) => {
-      apply_resize(&mut grab, &window, delta, true, state)
+  let result = match state.window_from_native(&grab.native) {
+    Some(window) if grab.resize.is_some() => {
+      apply_resize(&mut grab, &window, delta, state, config).map(|_| ())
     }
     _ => Ok(()),
   };
@@ -188,31 +144,16 @@ pub fn step(state: &mut WmState) -> anyhow::Result<()> {
   result
 }
 
-/// Notes that `native` moved, which lands it for the resize under way.
-pub fn note_moved(state: &mut WmState, native: &NativeWindow) {
-  if resize_mut(state).is_none_or(|resize| resize.in_flight.is_empty()) {
-    return;
-  }
-
-  let Some(id) =
-    state.window_from_native(native).map(|window| window.id())
-  else {
-    return;
-  };
-
-  if let Some(resize) = resize_mut(state) {
-    resize.in_flight.remove(&id);
-  }
-}
-
 /// Notes that `native` took the foreground, which ends a grab of another
 /// window at the next `sync_listener`.
+///
+/// Only if it still has the foreground: an event from before the grab
+/// focused its window, handled after the grab began, is no such loss.
 pub fn note_focused(state: &mut WmState, native: &NativeWindow) {
-  let is_other = state
-    .grab
-    .grab
-    .as_ref()
-    .is_some_and(|grab| grab.native.id() != native.id());
+  let is_other = state.grab.grab.as_ref().is_some_and(|grab| {
+    grab.native.id() != native.id()
+      && state.dispatcher.focused_window().id() == native.id()
+  });
 
   if is_other {
     state.grab.is_focus_lost = true;
@@ -329,6 +270,19 @@ fn start(
 
   if resize.is_none() {
     handle_window_moved_or_resized(&native, true, false, state, config)?;
+
+    // A move from the start, measured from where the window is now: the
+    // frame cached from its last event may be stale, which would take
+    // the drag for a resize that never floats the window.
+    if let Some(window) = state.window_from_native(&native) {
+      if let Some(drag) = window.active_drag() {
+        window.set_active_drag(Some(wm_common::ActiveDrag {
+          operation: Some(ActiveDragOperation::Move),
+          initial_position: window.native_properties().frame,
+          ..drag
+        }));
+      }
+    }
   }
 
   state.grab.grab = Some(Grab {
@@ -363,27 +317,26 @@ impl Resize {
       edges,
       snapshot,
       hold,
-      pending: None,
       applied: (0, 0),
-      last_step: None,
-      in_flight: HashMap::new(),
-      has_held_back: false,
     })
   }
 }
 
 /// Resizes `window`, grabbed by `grab`, for the mouse's movement `delta`
-/// in all, and queues the windows that moved for redraw: with `gate`, only
-/// those not still in flight.
+/// in all, and places the windows whose rect changed (see
+/// [`place_moved_windows`]).
+///
+/// Returns the containers holding every window the resize can move, for
+/// its end to redraw.
 fn apply_resize(
   grab: &mut Grab,
   window: &WindowContainer,
   delta: (i32, i32),
-  gate: bool,
   state: &mut WmState,
-) -> anyhow::Result<()> {
+  config: &UserConfig,
+) -> anyhow::Result<Vec<Container>> {
   let Some(resize) = &mut grab.resize else {
-    return Ok(());
+    return Ok(Vec::new());
   };
 
   resize.applied = delta;
@@ -391,18 +344,18 @@ fn apply_resize(
   let redraw: Vec<Container> = match window {
     WindowContainer::TilingWindow(tiling) => {
       let Some((workspace, snapshot)) = &resize.snapshot else {
-        return Ok(());
+        return Ok(Vec::new());
       };
 
       // A window opened or closed since: its tiling sizes are no longer
       // the ones it resizes from, so it stays as it is.
       if !snapshot.matches(workspace) {
-        return Ok(());
+        return Ok(Vec::new());
       }
 
       snapshot.restore();
       let hold = resize.hold.as_mut().map(|(hold, _)| hold);
-      let redraw = drag_and_hold(tiling, resize.edges, delta, hold)?;
+      drag_and_hold(tiling, resize.edges, delta, hold)?;
 
       // Scrolled now rather than by the sync, so that the windows' rects
       // below are where the sync puts them.
@@ -410,11 +363,15 @@ fn apply_resize(
         sync_view(workspace)?;
       }
 
-      redraw
+      // All of them, as against where they were last placed: a step can
+      // put back a window an earlier one moved, and a scroll move any.
+      let workspace: Container = workspace.clone().into();
+      place_moved_windows(std::slice::from_ref(&workspace), state, config);
+      vec![workspace]
     }
     WindowContainer::NonTilingWindow(floating) => {
       if !matches!(floating.state(), WindowState::Floating(_)) {
-        return Ok(());
+        return Ok(Vec::new());
       }
 
       // Never below what the app allows, nor grown by a resize that
@@ -435,70 +392,110 @@ fn apply_resize(
       floating.set_has_custom_floating_placement(true);
 
       // A floating stack resizes as one.
-      vec![window
+      let moved = vec![window
         .parent()
         .filter(|parent| parent.as_stack().is_some())
-        .unwrap_or_else(|| window.as_container())]
+        .unwrap_or_else(|| window.as_container())];
+
+      place_moved_windows(&moved, state, config);
+      moved
     }
   };
 
-  queue_moved_windows(&redraw, resize, gate, state);
   state.pending_sync.suppress_animations();
-
-  Ok(())
+  Ok(redraw)
 }
 
-/// Queues the windows of `containers` whose rect changed for redraw:
-/// with `gate`, only those not still in flight.
-fn queue_moved_windows(
+/// Places the windows of `containers` whose rect changed, each on its
+/// own, at once: the grabbed one doesn't wait on its neighbours, nor on
+/// the main loop's next sync.
+///
+/// Only windows that stay shown in place take this path; one that shows,
+/// hides, or is drawn by an animation or a peek is redrawn by
+/// `platform_sync` as usual. A stack's hidden tabs are left to the
+/// gesture's end. Overlays follow the windows' moves as for an app's own
+/// (`handle_window_moved_or_resized`), tab bars are synced here.
+fn place_moved_windows(
   containers: &[Container],
-  resize: &mut Resize,
-  gate: bool,
   state: &mut WmState,
+  config: &UserConfig,
 ) {
-  let now = Instant::now();
   let mut seen = HashSet::new();
-  resize.has_held_back = false;
+  let mut has_stack = false;
 
   let windows = containers
     .iter()
     .flat_map(CommonGetters::self_and_descendants)
     .filter_map(|container| container.as_window_container().ok())
-    .filter(|window| seen.insert(window.id()));
+    .filter(|window| seen.insert(window.id()))
+    .collect::<Vec<_>>();
 
   for window in windows {
-    let target = window.to_rect().and_then(|rect| {
+    let Ok(target) = window.to_rect().and_then(|rect| {
       window
         .total_border_delta()
         .map(|delta| rect.apply_delta(&delta, None))
-    });
+    }) else {
+      continue;
+    };
 
-    let is_unchanged = target.is_ok_and(|target| {
-      state.window_target_positions.get(&window.id()) == Some(&target)
-    });
-
-    if is_unchanged {
+    if state.window_target_positions.get(&window.id()) == Some(&target) {
       continue;
     }
 
-    let is_in_flight = resize
-      .in_flight
-      .get(&window.id())
-      .is_some_and(|at| now.duration_since(*at) < LANDING_TIMEOUT);
+    let shows = window.workspace().is_some_and(|ws| ws.is_displayed())
+      && !is_hidden_in_layout(&window);
 
-    if gate && is_in_flight {
-      resize.has_held_back = true;
-      continue;
+    if is_placeable(&window, shows, &target, state) {
+      note_size_change(&window, &target);
+      state
+        .grab
+        .placer
+        .place(window.native().id(), target.clone());
+      state.window_target_positions.insert(window.id(), target);
+      has_stack |= window
+        .parent()
+        .is_some_and(|parent| parent.as_stack().is_some());
+    } else if shows || window.display_state() != DisplayState::Hidden {
+      state.grab.placer.forget(window.native().id());
+      state.pending_sync.queue_container_to_redraw(window);
     }
+  }
 
-    resize.in_flight.insert(window.id(), now);
-    state.pending_sync.queue_container_to_redraw(window);
+  if has_stack {
+    sync_tab_bars(state, config, Restack::None);
   }
 }
 
-/// Ends the grab under way as `end` says.
+/// Whether `window`, which `shows` in the layout, can be placed at
+/// `target` by the placer: shown there already, at a rect of its own, and
+/// with nothing else drawing it.
+fn is_placeable(
+  window: &WindowContainer,
+  shows: bool,
+  target: &Rect,
+  state: &WmState,
+) -> bool {
+  let id = window.id();
+
+  shows
+    && window.display_state() == DisplayState::Shown
+    && matches!(
+      window.state(),
+      WindowState::Tiling | WindowState::Floating(_)
+    )
+    && window.active_drag().is_none()
+    && !window.has_pending_dpi_adjustment()
+    && !state.animation_manager.owns_window_position(&id)
+    && !state.animation_manager.peeks.owns_window(&id)
+    && real_window_rect(&window.as_container(), target) == *target
+}
+
+/// Ends the grab under way as `end` says, a resize at the mouse's final
+/// movement `delta`, or else at the last one applied.
 fn finish(
   end: GrabEnd,
+  delta: Option<(i32, i32)>,
   state: &mut WmState,
   config: &UserConfig,
 ) -> anyhow::Result<()> {
@@ -522,27 +519,39 @@ fn finish(
   };
 
   let Some(window) = state.window_from_native(&grab.native) else {
+    state.grab.placer.finish();
     return Ok(());
   };
 
+  let is_cancelled = end == GrabEnd::Cancelled;
   let start_hold = resize.hold.map(|(_, start)| start);
-  let delta = if end == GrabEnd::Cancelled {
+  let delta = if is_cancelled {
     (0, 0)
   } else {
-    resize.pending.take().unwrap_or(resize.applied)
+    delta.unwrap_or(resize.applied)
   };
 
-  apply_resize(&mut grab, &window, delta, false, state)?;
+  let redraw = apply_resize(&mut grab, &window, delta, state, config)?;
 
-  if end == GrabEnd::Cancelled {
+  if is_cancelled {
     // Back where it started, its column too, even partly off screen.
     if let (Some(hold), Some((_, workspace))) =
       (start_hold, column_of(&window.as_container()))
     {
       hold.keep(&workspace);
+      sync_view(&workspace)?;
+      place_moved_windows(&[workspace.into()], state, config);
     }
   } else {
     crate::particles::note_resize(state, &window.as_container());
+  }
+
+  // The placer's last rects are the final ones, which the sync of every
+  // window the resize can have moved sends too: whichever lands last,
+  // each ends where the layout says, with its overlays and tab bar.
+  state.grab.placer.finish();
+  for container in redraw {
+    state.pending_sync.queue_container_to_redraw(container);
   }
 
   Ok(())
@@ -556,25 +565,19 @@ fn end_early(
   config: &UserConfig,
 ) -> anyhow::Result<()> {
   listener.end_gesture();
-  finish(GrabEnd::Released, state, config)
-}
-
-fn resize_mut(state: &mut WmState) -> Option<&mut Resize> {
-  state.grab.grab.as_mut()?.resize.as_mut()
+  finish(GrabEnd::Released, None, state, config)
 }
 
 #[cfg(test)]
 mod tests {
   use std::mem::ManuallyDrop;
 
-  use wm_common::WindowState;
+  use wm_common::{DisplayState, WindowState};
   use wm_platform::{
     Gesture, GrabEnd, GrabListener, NativeWindow, ResizeEdges,
   };
 
-  use super::{
-    finish, is_grabbable, note_moved, start, step, step_deadline,
-  };
+  use super::{finish, is_grabbable, start, step};
   use crate::{
     models::{Monitor, NonTilingWindow, TilingWindow, Workspace},
     test_utils::{mock_config, mock_inner_gaps},
@@ -613,11 +616,19 @@ mod tests {
 
     // Where a sync put them.
     for window in &windows {
-      let target = window.to_rect().unwrap();
-      state.window_target_positions.insert(window.id(), target);
+      state
+        .window_target_positions
+        .insert(window.id(), target(window));
     }
 
     (state, windows)
+  }
+
+  fn target(window: &TilingWindow) -> wm_platform::Rect {
+    window
+      .to_rect()
+      .unwrap()
+      .apply_delta(&window.total_border_delta().unwrap(), None)
   }
 
   /// Grabs `window` to resize its right edge, from a clean sync.
@@ -631,8 +642,7 @@ mod tests {
 
   /// Takes a step for the mouse moved `dx` right in all.
   fn step_to(dx: i32, state: &mut WmState) {
-    super::resize_mut(state).unwrap().pending = Some((dx, 0));
-    step(state).unwrap();
+    step((dx, 0), state, &mock_config()).unwrap();
   }
 
   fn is_queued(window: &TilingWindow, state: &WmState) -> bool {
@@ -642,9 +652,15 @@ mod tests {
       .contains_key(&window.id())
   }
 
+  fn is_placed(window: &TilingWindow, state: &WmState) -> bool {
+    state.window_target_positions.get(&window.id())
+      == Some(&target(window))
+  }
+
   #[test]
-  fn a_step_resizes_the_neighbour_at_once_without_animations() {
+  fn a_step_places_the_window_and_its_neighbour_at_once() {
     let (mut state, [left, middle, right]) = setup();
+    let before = target(&left);
     grab_right_edge(&middle, &mut state);
 
     step_to(100, &mut state);
@@ -652,31 +668,51 @@ mod tests {
     assert!(middle.tiling_size() > right.tiling_size());
     assert!((left.tiling_size() - 1. / 3.).abs() < 1e-4);
     assert!(state.pending_sync.animations_suppressed());
-    assert!(is_queued(&middle, &state) && is_queued(&right, &state));
-    assert!(!is_queued(&left, &state));
+
+    // Placed directly, not left to the next sync.
+    assert!(is_placed(&middle, &state) && is_placed(&right, &state));
+    assert!(!is_queued(&middle, &state) && !is_queued(&right, &state));
+    assert_eq!(
+      state.window_target_positions.get(&left.id()),
+      Some(&before)
+    );
   }
 
   #[test]
-  fn a_window_still_in_flight_waits_for_its_landing() {
+  fn a_window_not_shown_in_place_is_left_to_the_sync() {
     let (mut state, [_, middle, right]) = setup();
+    right.set_display_state(DisplayState::Showing);
+    grab_right_edge(&middle, &mut state);
+
+    step_to(100, &mut state);
+
+    assert!(is_placed(&middle, &state) && !is_queued(&middle, &state));
+    assert!(is_queued(&right, &state));
+  }
+
+  #[test]
+  fn the_end_of_a_resize_syncs_every_window() {
+    let (mut state, [left, middle, right]) = setup();
     grab_right_edge(&middle, &mut state);
     step_to(100, &mut state);
-    for window in [&middle, &right] {
-      // Sent: as the sync records it.
-      let target = window.to_rect().unwrap();
-      state.window_target_positions.insert(window.id(), target);
+
+    finish(
+      GrabEnd::Released,
+      Some((120, 0)),
+      &mut state,
+      &mock_config(),
+    )
+    .unwrap();
+
+    for window in [&left, &middle, &right] {
+      assert!(is_placed(window, &state));
     }
-    state.pending_sync.clear();
-
-    // Neither has landed: both are held back, and another step is due.
-    step_to(150, &mut state);
-    assert!(!is_queued(&middle, &state) && !is_queued(&right, &state));
-    assert!(step_deadline(&state).is_some());
-
-    note_moved(&mut state, &right.native());
-    step(&mut state).unwrap();
-    assert!(is_queued(&right, &state));
-    assert!(!is_queued(&middle, &state));
+    let workspace = middle.workspace().unwrap();
+    assert!(state
+      .pending_sync
+      .containers_to_redraw()
+      .contains_key(&workspace.id()));
+    assert!(state.grab.grab.is_none());
   }
 
   #[test]
@@ -685,10 +721,11 @@ mod tests {
     grab_right_edge(&middle, &mut state);
     step_to(200, &mut state);
 
-    finish(GrabEnd::Cancelled, &mut state, &mock_config()).unwrap();
+    finish(GrabEnd::Cancelled, None, &mut state, &mock_config()).unwrap();
 
     for window in [&left, &middle, &right] {
       assert!((window.tiling_size() - 1. / 3.).abs() < 1e-4);
+      assert!(is_placed(window, &state));
     }
     assert!(state.grab.grab.is_none());
   }
@@ -715,7 +752,7 @@ mod tests {
     .unwrap();
     assert!(!is_grabbable(&fullscreen.into(), &state));
 
-    left.set_display_state(wm_common::DisplayState::Hidden);
+    left.set_display_state(DisplayState::Hidden);
     assert!(!is_grabbable(&left.clone().into(), &state));
 
     // Nor started on, should one get through.

@@ -59,16 +59,15 @@ dragged stay where they are.
 - **Stacks**: a stacked window resizes its whole stack.
 - **Floating**: the window just resizes.
 
-The neighbours resize along with the window as the mouse moves, not only
-on release.
+The cursor moves freely, and the dragged edge follows it. The neighbours
+resize along with the window as the mouse moves, not only on release.
 
 ### Past the screen's edge
 
-The cursor stays where it was pressed for the whole resize, and the edge
-follows the mouse's own movement instead, so it keeps going past the
-screen's edge. Pressed within 48px of the desktop's outer edge, the
-cursor is first moved in from it, or that edge's movement could not be
-measured.
+Once the cursor is held at the desktop's outer edge, pushing the mouse on
+in that direction keeps moving the dragged edge, at the mouse's own
+(unaccelerated) speed. Coming back, the edge follows the cursor again,
+that far ahead of it.
 
 In a scrolling layout the view keeps the column's other edge where it is
 on screen while the dragged edge is in view. Once the dragged edge would
@@ -119,13 +118,19 @@ wheel, so Alt doesn't open the window's menu bar, nor Win the Start menu.
 ## How it works
 
 A low-level mouse hook on a thread of its own takes the press and its
-release when the modifier is held over a window it may grab. A move hands
-the newest cursor position to a mover thread, which moves the window with
-`SetWindowPos`; a slow app gets one current move when it is ready rather
+release when the modifier is held over a window it may grab; mouse moves
+always pass, so the cursor moves as usual. A move hands the newest cursor
+position to a mover thread, which moves the window with a synchronous
+`SetWindowPos`: a slow app gets one current move when it is ready rather
 than a backlog of stale ones, and the WM sees the moves as it sees a
-title-bar drag. A resize swallows the mouse's moves, which keeps the
-cursor still, and adds them up for the WM, which reads only the newest
-total. The WM then lays the windows out anew at most every 8ms, without
-animations; a window that hasn't yet landed at the rect it was last given
-waits (up to 100ms) for a newer one, so a slow app never queues up stale
-sizes.
+title-bar drag, skipping moves that piled up behind newer ones.
+
+A resize hands the newest total to the WM, which lays the windows out
+anew on every move of the mouse, without animations. Each window whose
+rect changed and that stays shown is then placed by a thread of its own,
+again with a synchronous `SetWindowPos` given only the newest rect, so
+the dragged window never waits on a neighbour, nor on the WM's next sync.
+Windows that show or hide (e.g. columns scrolling in or out of view) go
+through the WM's usual sync, and on release every window the resize can
+have moved is synced once more. How far the mouse pushes past the
+desktop's edge comes from raw mouse input, which the WM already reads.

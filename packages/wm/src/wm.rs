@@ -177,12 +177,6 @@ impl WindowManager {
     self.sync_pending(config)
   }
 
-  /// Takes the next step of the grab resize under way.
-  pub fn step_grab(&mut self, config: &UserConfig) -> anyhow::Result<()> {
-    crate::grab::step(&mut self.state)?;
-    self.sync_pending(config)
-  }
-
   /// Hands `listener` the windows it may grab, ending a gesture whose
   /// window can no longer take it.
   pub fn sync_grab(
@@ -667,16 +661,13 @@ impl WindowManager {
           is_interactive_start,
           is_interactive_end,
           ..
-        } => {
-          crate::grab::note_moved(state, &window);
-          handle_window_moved_or_resized(
-            &window,
-            is_interactive_start,
-            is_interactive_end,
-            state,
-            config,
-          )
-        }
+        } => handle_window_moved_or_resized(
+          &window,
+          is_interactive_start,
+          is_interactive_end,
+          state,
+          config,
+        ),
         WindowEvent::Minimized { window, .. } => {
           handle_window_minimized(&window, state, config)
         }

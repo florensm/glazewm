@@ -1,16 +1,18 @@
 use std::{
-  cell::{Cell, RefCell},
+  cell::RefCell,
   sync::{
     atomic::{AtomicBool, AtomicU32, Ordering},
     Arc, Condvar, Mutex, PoisonError,
   },
   thread::{self, JoinHandle},
-  time::Instant,
 };
 
 use windows::Win32::{
   Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, WPARAM},
-  Graphics::Gdi::{MonitorFromPoint, MONITOR_DEFAULTTONULL},
+  Graphics::Gdi::{
+    GetMonitorInfoW, MonitorFromPoint, MONITORINFO,
+    MONITOR_DEFAULTTONEAREST, MONITOR_DEFAULTTONULL,
+  },
   System::Threading::GetCurrentThreadId,
   UI::{
     Accessibility::{SetWinEventHook, UnhookWinEvent, HWINEVENTHOOK},
@@ -19,7 +21,7 @@ use windows::Win32::{
     },
     WindowsAndMessaging::{
       CallNextHookEx, GetAncestor, GetCursorPos, GetWindowRect,
-      PostThreadMessageW, SetCursorPos, SetWindowPos, WindowFromPoint,
+      PostThreadMessageW, SetWindowPos, WindowFromPoint,
       EVENT_SYSTEM_DESKTOPSWITCH, GA_ROOT, MSG, MSLLHOOKSTRUCT,
       SWP_NOACTIVATE, SWP_NOSIZE, SWP_NOZORDER, WINEVENT_OUTOFCONTEXT,
       WM_APP, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE, WM_RBUTTONDOWN,
@@ -34,15 +36,10 @@ use super::{
 };
 use crate::{
   grab_listener::{
-    warp_target, GrabButton, GrabShared, Live, MoveOutcome, ReleaseOutcome,
+    GrabButton, GrabShared, Live, MoveOutcome, ReleaseOutcome,
   },
-  platform_impl, Gesture, GrabEnd, GrabEvent, GrabModifier, Point, Rect,
-  ResizeEdges, WindowId,
+  platform_impl, GrabEnd, GrabEvent, GrabModifier, Point, Rect, WindowId,
 };
-
-/// Posted by the hook to its own thread once a gesture began, for the work
-/// the hook itself has to leave out to return quickly.
-const WM_GESTURE_BEGAN: u32 = WM_APP + 2;
 
 /// Posted to the hook's thread when Escape is pressed during a gesture.
 const WM_CANCEL_GESTURE: u32 = WM_APP + 3;
@@ -64,10 +61,6 @@ thread_local! {
 struct HookState {
   shared: Arc<GrabShared>,
   mover: Arc<Mover>,
-
-  /// The resize that began, for `WM_GESTURE_BEGAN` to warp the cursor
-  /// for: where it was pressed, and what it drags.
-  began_resize: Cell<Option<(Point, ResizeEdges)>>,
 
   /// Hook for switches of the input desktop, e.g. to a UAC prompt's or
   /// the lock screen, where a held press's release can't be seen.
@@ -136,7 +129,6 @@ impl GrabHook {
             *hook.borrow_mut() = Some(HookState {
               shared,
               mover,
-              began_resize: Cell::new(None),
               desktop_switch,
             });
           });
@@ -293,7 +285,6 @@ fn on_message(msg: &MSG) {
 
     match msg.message {
       WM_MASK_MODIFIERS => mask_modifier_release(),
-      WM_GESTURE_BEGAN => hook.began(),
       WM_CANCEL_GESTURE => {
         let ended = hook.shared.tracker().end_live();
         if let Some((window, live)) = ended {
@@ -356,17 +347,12 @@ impl HookState {
     GESTURE_THREAD
       .store(unsafe { GetCurrentThreadId() }, Ordering::Relaxed);
 
-    if let Gesture::Resize(edges) = gesture {
-      self.began_resize.set(Some((point.clone(), edges)));
-    }
-
     let _ = self.shared.event_tx.send(GrabEvent::Started {
       window: platform_impl::NativeWindow::new(window.0).into(),
       gesture,
     });
 
     mask_modifiers_later();
-    post_to_self(WM_GESTURE_BEGAN);
     true
   }
 
@@ -382,60 +368,24 @@ impl HookState {
     }
   }
 
+  /// Never swallows the move: the cursor moves along with any gesture.
   fn moved(&self, point: &Point) -> bool {
-    let outcome = {
-      let mut tracker = self.shared.tracker();
-      let cursor = if tracker.is_resizing() {
-        cursor_position().unwrap_or_else(|| point.clone())
-      } else {
-        point.clone()
-      };
-
-      tracker.moved(point, &cursor, Instant::now())
-    };
+    // Where the cursor lands: the hook may be handed a point past the
+    // desktop's edge, which the window or edge would then run ahead of.
+    let cursor = onto_desktop(point);
+    let outcome = self.shared.tracker().moved(&cursor);
 
     match outcome {
-      MoveOutcome::Pass => false,
+      MoveOutcome::Pass | MoveOutcome::Resize { notify: false } => {}
       MoveOutcome::MoveWindow(window, position) => {
         self.mover.move_to(window, position);
-        false
       }
-      MoveOutcome::Measure { notify } => {
-        if notify {
-          let _ = self.shared.event_tx.send(GrabEvent::Resized);
-        }
-        true
+      MoveOutcome::Resize { notify: true } => {
+        let _ = self.shared.event_tx.send(GrabEvent::Resized);
       }
     }
-  }
 
-  /// Warps the cursor off the desktop's edge for a resize that began, as
-  /// the hook itself has to return quickly.
-  fn began(&self) {
-    let Some((point, edges)) = self.began_resize.take() else {
-      return;
-    };
-
-    // Released already.
-    if !self.shared.tracker().is_resizing() {
-      return;
-    }
-
-    let Some(target) = warp_target(&point, edges, is_on_desktop) else {
-      return;
-    };
-
-    // Noted first: moves the hook sees from here on are measured from
-    // where the cursor is warped to.
-    self
-      .shared
-      .tracker()
-      .warped(point, target.clone(), Instant::now());
-
-    // SAFETY: No preconditions.
-    if let Err(err) = unsafe { SetCursorPos(target.x, target.y) } {
-      tracing::warn!("Failed to move the cursor off the edge: {err}");
-    }
+    false
   }
 
   /// Ends the held press, if any, as one whose release the hook missed.
@@ -459,6 +409,7 @@ impl HookState {
         let _ = self.shared.event_tx.send(GrabEvent::Ended {
           window: platform_impl::NativeWindow::new(window.0).into(),
           end,
+          resize_total: None,
         });
       }
     }
@@ -482,6 +433,7 @@ impl HookState {
         let _ = self.shared.event_tx.send(GrabEvent::Ended {
           window: platform_impl::NativeWindow::new(window.0).into(),
           end,
+          resize_total: live.resize_total(),
         });
       }
     }
@@ -576,6 +528,7 @@ impl Mover {
         let _ = shared.event_tx.send(GrabEvent::Ended {
           window: platform_impl::NativeWindow::new(finish.window.0).into(),
           end: finish.end,
+          resize_total: None,
         });
       }
     }
@@ -652,19 +605,55 @@ fn is_on_desktop(point: &Point) -> bool {
   !unsafe { MonitorFromPoint(point, MONITOR_DEFAULTTONULL) }.is_invalid()
 }
 
-fn cursor_position() -> Option<Point> {
-  let mut point = POINT::default();
-  // SAFETY: `point` outlives the call.
-  unsafe { GetCursorPos(&raw mut point) }.ok()?;
-  Some(Point {
+/// `point`, or the nearest point on the desktop if it is off it.
+fn onto_desktop(point: &Point) -> Point {
+  if is_on_desktop(point) {
+    return point.clone();
+  }
+
+  let win_point = POINT {
     x: point.x,
     y: point.y,
-  })
+  };
+  let mut info = MONITORINFO {
+    #[allow(clippy::cast_possible_truncation)]
+    cbSize: std::mem::size_of::<MONITORINFO>() as u32,
+    ..Default::default()
+  };
+
+  // SAFETY: `info` outlives the call, with `cbSize` set.
+  let is_found = unsafe {
+    let monitor = MonitorFromPoint(win_point, MONITOR_DEFAULTTONEAREST);
+    GetMonitorInfoW(monitor, &raw mut info).as_bool()
+  };
+
+  if !is_found {
+    return point.clone();
+  }
+
+  let bounds = info.rcMonitor;
+  Point {
+    x: point.x.clamp(bounds.left, bounds.right - 1),
+    y: point.y.clamp(bounds.top, bounds.bottom - 1),
+  }
 }
 
-fn post_to_self(message: u32) {
-  // SAFETY: No preconditions.
-  let _ = unsafe {
-    PostThreadMessageW(GetCurrentThreadId(), message, WPARAM(0), LPARAM(0))
+/// For raw mouse movement `(dx, dy)`, which axes push the cursor against
+/// the desktop's outer edge, where it can't follow.
+pub(crate) fn pinned_axes((dx, dy): (i32, i32)) -> (bool, bool) {
+  let mut cursor = POINT::default();
+  // SAFETY: `cursor` outlives the call.
+  if unsafe { GetCursorPos(&raw mut cursor) }.is_err() {
+    return (false, false);
+  }
+
+  let is_blocked = |step_x: i32, step_y: i32| {
+    (step_x, step_y) != (0, 0)
+      && !is_on_desktop(&Point {
+        x: cursor.x + step_x,
+        y: cursor.y + step_y,
+      })
   };
+
+  (is_blocked(dx.signum(), 0), is_blocked(0, dy.signum()))
 }

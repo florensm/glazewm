@@ -49,6 +49,13 @@ pub fn handle_window_moved_or_resized(
 
     // Handle windows that are actively being dragged.
     if !state.is_paused && window.active_drag().is_some() {
+      // Already handled at this frame: events that piled up behind a
+      // slow iteration all read the window's newest frame, so only the
+      // first does any work and the drag never trails a backlog.
+      if old_frame_position == frame_position && !is_interactive_end {
+        return Ok(());
+      }
+
       // An interactive drag moves the window through the OS, and the
       // window is dequeued from redraw for the gesture, so `platform_sync`
       // never tracks it.

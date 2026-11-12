@@ -239,7 +239,6 @@ async fn start_wm(
     let animation_watchdog =
       wm.state.animation_manager.watchdog_deadline();
     let hot_corner = wm.state.overview.hot_corner_deadline();
-    let grab_step = grab::step_deadline(&wm.state);
 
     let res = tokio::select! {
       // biased: evaluated top-to-bottom when multiple futures are ready
@@ -290,7 +289,6 @@ async fn start_wm(
         tracing::debug!("Received grab event: {:?}", event);
         wm.process_grab_event(event, &listeners.grab, &config)
       },
-      () = sleep_until(grab_step) => wm.step_grab(&config),
       Some(event) = listeners.mouse.next_event() => {
         tracing::debug!("Received mouse event: {:?}", event);
         wm.process_event(PlatformEvent::Mouse(event), &mut config)
@@ -527,6 +525,13 @@ fn catch_up_before_frame(
     if let Some(event) = listeners.keybinding.try_next_event() {
       tracing::debug!("Received keyboard event ahead of tick: {event:?}");
       wm.process_event(PlatformEvent::Keybinding(event), config)?;
+      continue;
+    }
+
+    // A grab tracks the mouse: it can't wait for an animation to end.
+    if let Some(event) = listeners.grab.try_next_event() {
+      tracing::debug!("Received grab event ahead of tick: {event:?}");
+      wm.process_grab_event(event, &listeners.grab, config)?;
       continue;
     }
 

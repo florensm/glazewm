@@ -61,6 +61,7 @@ mod window_class;
 mod window_icons;
 mod window_listener;
 mod window_peek;
+mod window_placer;
 mod workspace_surrogate;
 
 pub use click_guard::{ClickGuard, GuardedClick};
@@ -102,6 +103,7 @@ pub use thread_bound::*;
 pub use ui_thread::UiThread;
 pub use window_listener::*;
 pub use window_peek::WindowPeek;
+pub use window_placer::WindowPlacer;
 pub use workspace_surrogate::{LiveFrame, WorkspaceSurrogate};
 
 /// `tracing` target of the overview's trace of picks through to its
