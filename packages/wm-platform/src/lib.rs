@@ -46,6 +46,7 @@ mod platform_event;
 mod platform_impl;
 mod resize_session;
 mod single_instance;
+mod size_to_content;
 mod surface;
 mod system_accent_color;
 mod tab_bar_paint;

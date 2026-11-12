@@ -65,9 +65,9 @@ use super::{
   SENT_KEY_MARKER,
 };
 use crate::{
-  discard_bits_if_resized, window_class, Color, CornerStyle, Delta,
-  Dispatcher, Key, KeyCode, LengthValue, OpacityValue, Point, Rect,
-  RectDelta, WindowId, WindowZOrder,
+  discard_bits_if_resized, size_to_content, window_class, Color,
+  CornerStyle, Delta, Dispatcher, Key, KeyCode, LengthValue, OpacityValue,
+  Point, Rect, RectDelta, WindowId, WindowZOrder,
 };
 
 /// Magic number used to identify programmatic mouse inputs from our own
@@ -401,6 +401,20 @@ impl NativeWindow {
 
     (answered.0 != 0)
       .then_some((info.ptMinTrackSize.x, info.ptMinTrackSize.y))
+  }
+
+  /// Implements [`crate::NativeWindow::release_size_to_content`].
+  pub(crate) fn release_size_to_content(&self) {
+    let is_wpf = self
+      .class_name()
+      .is_ok_and(|class| size_to_content::is_wpf_class(&class));
+
+    if is_wpf && size_to_content::release(self.handle) {
+      tracing::debug!(
+        "Asking WPF window {:#x} to turn off SizeToContent.",
+        self.handle
+      );
+    }
   }
 
   /// Implements [`crate::NativeWindow::has_owner_window`].

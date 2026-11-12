@@ -1395,6 +1395,10 @@ fn redraw_containers(
       &target_rect,
     );
 
+    // Here rather than where the window is moved, which an animation or
+    // a drag can do instead.
+    release_size_to_content_once(window, &real_rect);
+
     let is_visible = matches!(
       window.display_state(),
       DisplayState::Showing | DisplayState::Shown
@@ -2187,6 +2191,53 @@ fn redraw_containers(
     z_order_touched,
     taskbar_updates,
   })
+}
+
+/// Asks `window`, if it is a WPF window sizing itself to its content, to
+/// lay its content out to the WM's sizes instead (see
+/// `NativeWindow::release_size_to_content`), once the WM first changes its
+/// size to `rect`.
+///
+/// Keyed off the size changing rather than the window's state, so that a
+/// floating window the WM only moves keeps sizing itself, while one it
+/// resizes, a tile, a fullscreen window and every tab of a stack are
+/// asked.
+fn release_size_to_content_once(window: &WindowContainer, rect: &Rect) {
+  let mut was_released = true;
+  window.update_native_properties(|properties| {
+    was_released = properties.size_to_content_released;
+  });
+
+  let releases = should_release_size_to_content(
+    was_released,
+    window.state() == WindowState::Minimized,
+    || window.native().frame_with_shadows().ok(),
+    rect,
+  );
+
+  if releases {
+    window.native().release_size_to_content();
+    window.update_native_properties(|properties| {
+      properties.size_to_content_released = true;
+    });
+  }
+}
+
+/// Whether a window at `current` is asked as the WM sizes it to `target`
+/// (see [`release_size_to_content_once`]). A minimized one is left alone:
+/// it would lay out to its minimized size.
+fn should_release_size_to_content(
+  was_released: bool,
+  is_minimized: bool,
+  current: impl FnOnce() -> Option<Rect>,
+  target: &Rect,
+) -> bool {
+  !was_released
+    && !is_minimized
+    && current().is_some_and(|current| {
+      current.width() != target.width()
+        || current.height() != target.height()
+    })
 }
 
 /// Puts up a `CompanionCover` over each window this pass uncloaks in place
@@ -3838,9 +3889,12 @@ pub(crate) fn resync_settling_overlays(state: &mut WmState) {
 #[cfg(test)]
 mod tests {
   use wm_common::{DisplayState, EffectSet, ParsedConfig};
-  use wm_platform::{NativeBackdropOverlay, OpacityValue};
+  use wm_platform::{NativeBackdropOverlay, OpacityValue, Rect};
 
-  use super::{is_unanimated_reveal, FrozenStep, SyncableOverlay};
+  use super::{
+    is_unanimated_reveal, should_release_size_to_content, FrozenStep,
+    SyncableOverlay,
+  };
   use crate::user_config::UserConfig;
 
   #[test]
@@ -3862,6 +3916,55 @@ mod tests {
     let unasked = || panic!("Cloak state queried for a cloaked session.");
     assert_eq!(FrozenStep::of(Some(true), unasked), FrozenStep::Keep);
     assert_eq!(FrozenStep::of(None, || true), FrozenStep::Keep);
+  }
+
+  #[test]
+  fn releases_size_to_content_as_the_wm_first_resizes_a_window() {
+    let target = Rect::from_xy(0, 0, 800, 600);
+    let at =
+      |width, height| move || Some(Rect::from_xy(40, 40, width, height));
+
+    assert!(should_release_size_to_content(
+      false,
+      false,
+      at(400, 600),
+      &target
+    ));
+    assert!(should_release_size_to_content(
+      false,
+      false,
+      at(800, 300),
+      &target
+    ));
+  }
+
+  #[test]
+  fn keeps_size_to_content_of_a_window_only_moved() {
+    let target = Rect::from_xy(0, 0, 800, 600);
+    let moved = || Some(Rect::from_xy(40, 40, 800, 600));
+
+    assert!(!should_release_size_to_content(
+      false, false, moved, &target
+    ));
+    assert!(!should_release_size_to_content(
+      false,
+      false,
+      || None,
+      &target
+    ));
+  }
+
+  #[test]
+  fn releases_size_to_content_once_and_never_while_minimized() {
+    let target = Rect::from_xy(0, 0, 800, 600);
+    let unasked = || -> Option<Rect> { panic!("Frame read needlessly.") };
+
+    assert!(!should_release_size_to_content(
+      true, false, unasked, &target
+    ));
+    assert!(!should_release_size_to_content(
+      false, true, unasked, &target
+    ));
   }
 
   #[test]

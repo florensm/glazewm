@@ -202,6 +202,7 @@ impl NativeWindowProperties {
       class_name: String::new(),
       shadow_borders: mock_border_delta(),
       min_width: 0,
+      size_to_content_released: false,
     }
   }
 }
