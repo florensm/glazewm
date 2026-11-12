@@ -255,3 +255,38 @@ running. On the command's own pass `platform_sync` is +18 ms (86.8 vs
 
 Minor, open: `session_begin` 0.51 vs 0.37 ms per call
 (`ResizeSession::begin_impl`; unread, possibly `NativeSurrogate`'s companion lookup).
+
+## Result (2026-11-12, not seen running)
+
+Merged into `tryout/start-latency`: A, B, C, D. `cargo check --workspace
+--tests` and `cargo clippy --workspace --all-targets -- -D warnings`
+for `x86_64-pc-windows-msvc` are clean. No test ran: `wm-platform`
+doesn't build on Linux. No new Windows API calls.
+
+| word | where | notes |
+|---|---|---|
+| `keepoverlays` | `redraw_containers`, `Frozen` take-over | Old path (and `morepeeks` leftovers). See "B: findings". |
+| `keeppeeks` | `PeekView::keep_spare`/`take_spare`, `WindowPeek::set_aside`/`reset` | Copies are rebuilt, so the saving is the window and first thumbnail only. |
+| `asynchandback` | `hands_back_in_step` | Posts the hand-back's move. |
+| `asynclanding` | `Entry::sends_size_early`, `post_deferred_size` | Posted directly, not through a redraw pass: that would settle overlays mid-motion. |
+| `earlylanding` | same, `EARLY_LANDING_GAP_PX` = 12 | Takes precedence over `asynclanding`. |
+
+Differences from the plan above:
+
+- `hold_on_peek` and scrolling columns don't note an animation start: no
+  input starts them.
+- `asynclanding`/`earlylanding` leave out entries that land hidden: they
+  are posted already.
+- `perf_bench` also prints the WM-side `command` time and the
+  `peek_*`/`session_overlays` time outside frames.
+
+To measure (desktop, `-TileOrder` as on 2026-11-12):
+
+```
+powershell -ExecutionPolicy Bypass -File packages\wm-cli\examples\perf_bench\isolate_modes.ps1 -Target chrome -Rounds 4 -Scenarios move,resize -Modes nopeeks,nopeeks+keepoverlays,default,keeppeeks,asynchandback,asynclanding,earlylanding,earlylanding+asynchandback+keeppeeks -TileOrder <names>
+powershell -ExecutionPolicy Bypass -File packages\wm-cli\examples\perf_bench\isolate_modes.ps1 -Target chrome -Rounds 4 -Scenarios float,resize -Modes morepeeks,morepeeks+keeppeeks,morepeeks+earlylanding+asynchandback+keeppeeks -TileOrder <names>
+```
+
+Read first: `input->first frame ms` (now recorded on peeks), `command ms
+(WM side)`, the `peek_*` columns (where the unscoped ~56 ms went), then
+`interval p99`/`max` for the stall.
