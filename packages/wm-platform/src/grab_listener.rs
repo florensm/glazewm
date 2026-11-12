@@ -637,8 +637,8 @@ impl Tracker {
     self.held.take().map(|held| (held.window, held.live))
   }
 
-  #[cfg(test)]
-  fn is_live(&self) -> bool {
+  /// Whether a gesture is under way.
+  pub(crate) fn is_live(&self) -> bool {
     self.held.as_ref().is_some_and(|held| held.live.is_some())
   }
 

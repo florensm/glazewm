@@ -29,6 +29,11 @@ The button is fixed: left moves, right resizes. The window is focused
 when it is grabbed, as a click would. Neither the press nor its release
 reaches the app.
 
+For the whole gesture the cursor shows what it does, as AltSnap's does:
+the move cursor for a move, and the resize cursor of the edge or corner
+dragged for a resize. A small invisible window of the WM's is kept under
+the cursor meanwhile, since only the window under the cursor can set it.
+
 Which edges a resize drags is picked from where on the window it was
 pressed: the window is cut into a 3x3 grid whose side bands are 38% of
 its width (or height) each. A corner cell drags its corner, a side cell

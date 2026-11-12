@@ -882,7 +882,20 @@ to see it; check each once more at 150 ms.
       `SetCursorPos`, and a synchronous `SetWindowPos` from one short-lived
       thread per window being resized. Note whether Defender flags it,
       with the feature on and off.
-64. **Borders and backdrops on grabbed windows** (`fix(grab)` after
+64. **Grab cursors**. Alt+left-drag: the cursor is the four-way move
+    cursor from the press to the release, also over other windows, the
+    taskbar and the other monitor. Alt+right-drag near each corner and
+    side: the matching diagonal or straight resize cursor, kept for the
+    whole drag. On release, and on Escape, the app's own cursor is back
+    at once (e.g. a text caret over an editor); clicks right where the
+    drag ended reach the app. A grab the WM ends itself (close the window
+    mid-drag) also gives the cursor back. Watch the WM's CPU while idle
+    and while dragging: no busy thread.
+    - Laptop: the grab hook's thread now creates one hidden
+      `GlazeWM_GrabCursor` window, shown and moved only during a grab. No
+      new Windows API (`CreateWindowExW`, `SetWindowPos`, `LoadCursorW`,
+      `SetCursor` and `DispatchMessageW` are already used elsewhere).
+65. **Borders and backdrops on grabbed windows** (`fix(grab)` after
     `f218797b`). `grab_and_move` on, a border (and a backdrop, if
     configured). Alt+drag a window quickly in circles, floating and while
     it still tiles; then Alt+right-drag a tile's edge against its
