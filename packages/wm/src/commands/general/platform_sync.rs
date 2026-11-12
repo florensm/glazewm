@@ -1772,6 +1772,32 @@ fn redraw_containers(
           }
         }
         (AnimationPositionResult::Frozen, None)
+      } else if motion == Motion::Fullscreen
+        && previous_display_state == DisplayState::Shown
+        && previous_target.as_ref().is_some_and(|from| {
+          crate::animation::peek_view::fullscreen_on_peek(
+            state,
+            window,
+            from,
+            &target_rect,
+            config,
+            window.id() == focused_container.id(),
+          )
+        })
+      {
+        // Under `morepeeks`, a tile toggled in or out of fullscreen does
+        // so on a pinned peek (`STAND_INS_PLAN.md` 10f), taken over from
+        // as a move on a peek is.
+        peek_moves.push(window.id());
+        if let Some(raise) =
+          crate::animation::peek_view::fullscreen_peek_raise(
+            &window.state(),
+            window.prev_state().as_ref(),
+          )
+        {
+          peek_raises.push(((*window).clone(), raise));
+        }
+        (AnimationPositionResult::Frozen, None)
       } else {
         state.animation_manager.start_animation_if_needed(
           window.id(),
@@ -1835,7 +1861,9 @@ fn redraw_containers(
               duration_ms,
             ),
             easing,
-            resizes,
+            crate::animation::peek_view::retarget_resize(
+              motion, resizes, config,
+            ),
             now,
           );
         }
