@@ -33,6 +33,10 @@
 //!   few pixels of its tile's size.
 //! - `keeppeeks`: a tile's peek is kept, hidden, when it hands back, for
 //!   its window's next motion.
+//! - `keepoverlays`: as `origin/main`, a window taken over by a new
+//!   `ResizeSession` keeps its overlays where they are until the session
+//!   loop moves them behind the surrogate, rather than having them hidden
+//!   for the take-over's flush and shown again after it.
 //!
 //! Read once per process.
 
@@ -54,6 +58,7 @@ pub struct Isolation {
   pub async_landing: bool,
   pub early_landing: bool,
   pub keep_peeks: bool,
+  pub keep_overlays: bool,
 }
 
 impl Default for Isolation {
@@ -69,6 +74,7 @@ impl Default for Isolation {
       async_landing: false,
       early_landing: false,
       keep_peeks: false,
+      keep_overlays: false,
     }
   }
 }
@@ -95,6 +101,7 @@ impl Isolation {
         "asynclanding" => isolation.async_landing = true,
         "earlylanding" => isolation.early_landing = true,
         "keeppeeks" => isolation.keep_peeks = true,
+        "keepoverlays" => isolation.keep_overlays = true,
         _ => tracing::warn!("Unknown GLAZEWM_ISOLATE flag: {word}."),
       }
     }
@@ -139,6 +146,7 @@ mod tests {
         async_landing: false,
         early_landing: false,
         keep_peeks: false,
+        keep_overlays: false,
       }
     );
     assert_eq!(Isolation::parse("peeks"), Isolation::default());
@@ -216,5 +224,11 @@ mod tests {
   #[test]
   fn fill_peeks_is_still_accepted() {
     assert_eq!(Isolation::parse("fillpeeks"), Isolation::default());
+  }
+
+  #[test]
+  fn keep_overlays_is_off_unless_given() {
+    assert!(!Isolation::default().keep_overlays);
+    assert!(Isolation::parse("nopeeks,KeepOverlays").keep_overlays);
   }
 }
