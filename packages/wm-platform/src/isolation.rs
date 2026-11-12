@@ -24,6 +24,15 @@
 //!   peeks on: a fullscreen toggle, floating <-> tiling and floating moves
 //!   by command, a tile moving to another monitor, and windows whose
 //!   backdrop can't be copied (`STAND_INS_PLAN.md` 10f).
+//! - `asynchandback`: a window its peek hands back is moved
+//!   asynchronously, not in step with the peek.
+//! - `asynclanding`: a window filled on its peek that keeps its size until
+//!   it lands is sent it as its motion ends, and its peek lands once it
+//!   has it.
+//! - `earlylanding`: as `asynclanding`, sent as its peek comes within a
+//!   few pixels of its tile's size.
+//! - `keeppeeks`: a tile's peek is kept, hidden, when it hands back, for
+//!   its window's next motion.
 //!
 //! Read once per process.
 
@@ -41,6 +50,10 @@ pub struct Isolation {
   pub peeks: bool,
   pub peeks_first: bool,
   pub more_peeks: bool,
+  pub async_hand_back: bool,
+  pub async_landing: bool,
+  pub early_landing: bool,
+  pub keep_peeks: bool,
 }
 
 impl Default for Isolation {
@@ -52,6 +65,10 @@ impl Default for Isolation {
       peeks: true,
       peeks_first: false,
       more_peeks: false,
+      async_hand_back: false,
+      async_landing: false,
+      early_landing: false,
+      keep_peeks: false,
     }
   }
 }
@@ -74,6 +91,10 @@ impl Isolation {
         "nopeeks" => isolation.peeks = false,
         "peeksfirst" => isolation.peeks_first = true,
         "morepeeks" => isolation.more_peeks = true,
+        "asynchandback" => isolation.async_hand_back = true,
+        "asynclanding" => isolation.async_landing = true,
+        "earlylanding" => isolation.early_landing = true,
+        "keeppeeks" => isolation.keep_peeks = true,
         _ => tracing::warn!("Unknown GLAZEWM_ISOLATE flag: {word}."),
       }
     }
@@ -114,6 +135,10 @@ mod tests {
         peeks: true,
         peeks_first: false,
         more_peeks: false,
+        async_hand_back: false,
+        async_landing: false,
+        early_landing: false,
+        keep_peeks: false,
       }
     );
     assert_eq!(Isolation::parse("peeks"), Isolation::default());
@@ -156,6 +181,36 @@ mod tests {
   fn more_peeks_is_off_unless_given() {
     assert!(!Isolation::default().more_peeks);
     assert!(Isolation::parse("MorePeeks").more_peeks);
+  }
+
+  #[test]
+  fn hand_back_and_landing_words_are_off_unless_given() {
+    let isolation = Isolation::default();
+    assert!(!isolation.async_hand_back);
+    assert!(!isolation.async_landing);
+    assert!(!isolation.early_landing);
+    assert!(!isolation.keep_peeks);
+
+    assert_eq!(
+      Isolation::parse(
+        "AsyncHandBack,asynclanding EarlyLanding,KEEPPEEKS"
+      ),
+      Isolation {
+        async_hand_back: true,
+        async_landing: true,
+        early_landing: true,
+        keep_peeks: true,
+        ..Isolation::default()
+      }
+    );
+    assert_eq!(
+      Isolation::parse("earlylanding"),
+      Isolation {
+        early_landing: true,
+        ..Isolation::default()
+      }
+    );
+    assert_eq!(Isolation::parse("async_landing"), Isolation::default());
   }
 
   #[test]
