@@ -6,7 +6,8 @@ this PC, with nothing to set up.
 .DESCRIPTION
 Builds the WM and `perf_bench`, then for each mode restarts GlazeWM with the
 frame profiler on and that `GLAZEWM_ISOLATE` value, puts every window back
-on its workspace, and runs the same benchmark scenarios on it. Modes are run
+on its workspace, optionally puts the focused workspace's tiles in a fixed
+order, and runs the same benchmark scenarios on it. Modes are run
 in turn, round after round, so drift over the session (a browser warming
 up, thermals) spreads over all of them rather than favouring the first.
 Then it restarts GlazeWM the way it was running and restores the layout.
@@ -21,7 +22,8 @@ The modes compared by default:
 Results are printed, one table per scenario, and saved to
 ~/.glzr/glazewm/isolate-bench.txt. Lower is better in every column, except
 `frames`; `interval p50 ms` should match the refresh period, and the gap to
-`interval p90 ms` shows how evenly frames land.
+`interval p90 ms` shows how evenly frames land. Each mode's results are
+preceded by its workspace's window order, which a restart can change.
 
 Desktop PC only: it restarts the WM and drives bursts of window moves over
 IPC (see CLAUDE.md's build targets).
@@ -44,6 +46,13 @@ Busy-loop threads kept running while measuring, at normal priority, so the
 WM competes for the CPU and works through its backlog slower, as on a
 busy or weaker machine. `[Environment]::ProcessorCount` loads every core.
 
+.PARAMETER TileOrder
+Process names, left to right, to put the focused workspace's tiles in after
+every restart, once the layout is restored. A restart can otherwise
+reorder them, changing the target's neighbours between modes. Of several
+windows of one process, the lowest handle goes first; names with no window
+are skipped, and tiles not named stay right of the rest.
+
 .EXAMPLE
 powershell -ExecutionPolicy Bypass -File packages\wm-cli\examples\perf_bench\isolate_modes.ps1 -Target chrome
 
@@ -52,6 +61,9 @@ powershell -ExecutionPolicy Bypass -File packages\wm-cli\examples\perf_bench\iso
 
 .EXAMPLE
 powershell -ExecutionPolicy Bypass -File packages\wm-cli\examples\perf_bench\isolate_modes.ps1 -Target chrome -Modes default,peeksfirst -Scenarios move,resize -Load 400 -CpuLoad 16
+
+.EXAMPLE
+powershell -ExecutionPolicy Bypass -File packages\wm-cli\examples\perf_bench\isolate_modes.ps1 -Target notepad -Scenarios resize -TileOrder chrome,notepad,explorer
 #>
 param(
   [Parameter(Mandatory)] [string] $Target,
@@ -60,7 +72,8 @@ param(
   [int] $Rounds = 2,
   [int] $Bursts = 10,
   [int] $Load = 0,
-  [int] $CpuLoad = 0
+  [int] $CpuLoad = 0,
+  [string[]] $TileOrder = @()
 )
 
 $ErrorActionPreference = 'Stop'
@@ -69,6 +82,7 @@ Set-Location (Resolve-Path (Join-Path $PSScriptRoot '..\..\..\..'))
 # `powershell -File` binds `-Modes a,b` as the one string 'a,b'.
 $Modes = @($Modes -split '\s*,\s*' | Where-Object { $_ })
 $Scenarios = @($Scenarios -split '\s*,\s*' | Where-Object { $_ })
+$TileOrder = @($TileOrder -split '\s*,\s*' | Where-Object { $_ })
 
 # Arguments of a process's command line, without its executable.
 function Get-Arguments([string] $CommandLine) {
@@ -122,6 +136,93 @@ function Start-Wm([string] $Exe, [string] $Arguments, [bool] $Perf, [string] $Is
   }
 }
 
+# Process names of the focused workspace's windows, in tree order.
+function Get-TileOrder([string] $Cli) {
+  $ErrorActionPreference = 'Continue'
+  $json = & $Cli query workspaces 2>$null | Out-String
+  $workspace = ($json | ConvertFrom-Json).data.workspaces |
+    Where-Object { $_.hasFocus } | Select-Object -First 1
+  $names = New-Object System.Collections.Generic.List[string]
+  $walk = {
+    param($children)
+    foreach ($child in $children) {
+      if ($child.type -eq 'window') { $names.Add($child.processName) }
+      elseif ($child.children) { & $walk $child.children }
+    }
+  }
+  & $walk $workspace.children
+  "ws $($workspace.name): $($names -join ', ')"
+}
+
+# Sends `$Message` over the WM's IPC socket and returns its response. One
+# connection serves many commands, rather than a CLI process each.
+function Invoke-WmMessage($Socket, [string] $Message) {
+  $none = [Threading.CancellationToken]::None
+  $bytes = [Text.Encoding]::UTF8.GetBytes($Message)
+  $Socket.SendAsync([ArraySegment[byte]]::new($bytes),
+    [Net.WebSockets.WebSocketMessageType]::Text, $true, $none).Wait()
+  $buffer = New-Object byte[] 65536
+  while ($true) {
+    $stream = New-Object IO.MemoryStream
+    do {
+      $result = $Socket.ReceiveAsync([ArraySegment[byte]]::new($buffer), $none).Result
+      $stream.Write($buffer, 0, $result.Count)
+    } while (-not $result.EndOfMessage)
+    $response = [Text.Encoding]::UTF8.GetString($stream.ToArray()) | ConvertFrom-Json
+    if ($response.messageType -eq 'client_response' -and
+        $response.clientMessage -eq $Message) {
+      if (-not $response.success) { throw "'$Message' failed: $($response.error)" }
+      return $response
+    }
+  }
+}
+
+# Tiled windows of the focused workspace, in tree order.
+function Get-Tiles($Socket) {
+  $workspace = (Invoke-WmMessage $Socket 'query workspaces').data.workspaces |
+    Where-Object { $_.hasFocus } | Select-Object -First 1
+  $tiles = New-Object System.Collections.Generic.List[object]
+  $walk = {
+    param($children)
+    foreach ($child in $children) {
+      if ($child.type -eq 'window') {
+        if ($child.state.type -eq 'tiling') { $tiles.Add($child) }
+      } elseif ($child.children) {
+        & $walk $child.children
+      }
+    }
+  }
+  & $walk $workspace.children
+  $tiles
+}
+
+# Moves the focused workspace's tiles into `$Order`, by process name (see
+# `-TileOrder`).
+function Set-TileOrder([string[]] $Order) {
+  $none = [Threading.CancellationToken]::None
+  $socket = New-Object System.Net.WebSockets.ClientWebSocket
+  $socket.ConnectAsync([Uri] 'ws://127.0.0.1:6123', $none).Wait()
+  try {
+    $placed = 0
+    foreach ($name in $Order) {
+      $tiles = @(Get-Tiles $socket)
+      $match = @(for ($k = $placed; $k -lt $tiles.Count; $k++) {
+        if ($tiles[$k].processName -eq $name) {
+          [pscustomobject]@{ Index = $k; Id = $tiles[$k].id; Handle = $tiles[$k].handle }
+        }
+      }) | Sort-Object Handle | Select-Object -First 1
+      if (-not $match) { continue }
+      for ($k = $match.Index; $k -gt $placed; $k--) {
+        Invoke-WmMessage $socket "command --id $($match.Id) move --direction left" | Out-Null
+      }
+      $placed++
+    }
+  } finally {
+    $socket.CloseAsync(
+      [Net.WebSockets.WebSocketCloseStatus]::NormalClosure, '', $none).Wait()
+  }
+}
+
 Write-Host 'Building...'
 cargo build --release -p wm
 if ($LASTEXITCODE) { throw 'Building the WM failed.' }
@@ -153,7 +254,8 @@ foreach ($scenario in $Scenarios) { $rows[$scenario] = @() }
 Set-Content -Path $resultsFile -Value (
   "Isolate benchmark, $(Get-Date -Format s), target $Target, " +
   "$Rounds round(s) of $Bursts bursts per scenario and mode, load $Load, " +
-  "CPU load $CpuLoad thread(s) of $([Environment]::ProcessorCount)"
+  "CPU load $CpuLoad thread(s) of $([Environment]::ProcessorCount), tile " +
+  "order $(if ($TileOrder) { $TileOrder -join ',' } else { 'as restarted' })"
 )
 
 # One job per busy thread, each its own process, for the whole run.
@@ -180,7 +282,11 @@ try {
       # workspace, so each mode starts from the same layout.
       & $bench restore-layout $layoutFile
       if ($LASTEXITCODE) { throw 'Restoring the window layout failed.' }
+      if ($TileOrder) { Set-TileOrder $TileOrder }
       Start-Sleep -Seconds 2
+      $tileLine = "tiles $mode #$round $(Get-TileOrder $wm)"
+      Write-Host "  $tileLine"
+      $tileLine | Add-Content -Path $resultsFile
 
       foreach ($scenario in $Scenarios) {
         Write-Host "  Measuring '$scenario'..."
