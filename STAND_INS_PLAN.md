@@ -1703,6 +1703,20 @@ to another monitor, `Live` peeks), so the engine can go later; but keep
 `nopeeks` as the way back, with its own live check, and the engine's
 deletion (steps 1 to 4 below) waits for the owner's say-so.
 
+Built 2026-11-12, not checked live (`TODO.md` 71): floating <-> tiling,
+behind `morepeeks`. A state change between floating and tiling
+(`changes_state_on_peek`: not from fullscreen or minimized, not while
+the OS drags it) takes task 6's path (`move_on_peek`), drawn in
+`window_resize`'s style (`state_change_resize`), and counts in
+`resizes_relayout`. Its peek goes into the band its window lands in
+(`state_change_peek_raise`, through 6b's `peek_raises`): a floating one
+as one opening, a tile to the top of the other windows, its cloaked
+window first out of the always-on-top band. Floating moves by command
+are not in it: the old path never animated them (no state change,
+`should_use_animations`), so they are not on `ResizeSession`, and
+animating them needs a way to tell a command's move from an app's or a
+drag's: the owner's call.
+
 So 10f starts with a decision per row, recorded here, then:
 
 1. Move out of `resize_session.rs` what others use: `compute_border_inset`

@@ -1237,9 +1237,13 @@ fn redraw_containers(
   // and whether any of them is taken over from at the shared flush.
   let mut peek_moves = Vec::new();
   let mut peeks_take_over = false;
-  // Floating windows opened on peeks this pass whose peeks go on top, and
-  // of which band.
+  // Floating windows opened on peeks this pass, and windows crossing
+  // between floating and tiling on them, whose peeks go on top, and of
+  // which band.
   let mut peek_raises: Vec<(WindowContainer, PeekRaise)> = Vec::new();
+  // Windows crossing between floating and tiling on peeks this pass,
+  // raised in their band (`peek_raises`) rather than to the top.
+  let mut band_moves = Vec::new();
 
   let cycle_has_resize = windows_to_update.iter().any(|window| {
     let target_rect = window.to_rect().and_then(|rect| {
@@ -1694,6 +1698,15 @@ fn redraw_containers(
         .get_animation(&window.id())
         .is_some_and(|a| !a.is_complete());
 
+    // A tile that only moves or resizes goes on a peek; with `morepeeks`,
+    // also one crossing between floating and tiling (`STAND_INS_PLAN.md`
+    // 10f).
+    let moves_as_tile = if is_state_change {
+      crate::animation::peek_view::changes_state_on_peek(window)
+    } else {
+      window.state() == WindowState::Tiling
+    };
+
     // Windows frozen by an in-flight workspace-switch animation stay on
     // the animation path regardless of suppression — the switch's
     // surrogate teardown uncloaks them, so dropping them here would
@@ -1721,8 +1734,7 @@ fn redraw_containers(
         (AnimationPositionResult::Frozen, None)
       } else if wm_platform::isolation::current().peeks
         && !is_column
-        && !is_state_change
-        && window.state() == WindowState::Tiling
+        && moves_as_tile
         && previous_display_state == DisplayState::Shown
         && previous_target.as_ref().is_some_and(|from| {
           crate::animation::peek_view::move_on_peek(
@@ -1731,7 +1743,13 @@ fn redraw_containers(
             from,
             &target_rect,
             cycle_has_resize,
-            resizes,
+            if is_state_change {
+              crate::animation::peek_view::state_change_resize(
+                &config.value.animations.window_resize,
+              )
+            } else {
+              resizes
+            },
             config,
             window.id() == focused_container.id(),
           )
@@ -1741,6 +1759,18 @@ fn redraw_containers(
         // peek (`STAND_INS_PLAN.md` task 6), frozen behind it from now
         // on as an entering one is.
         peek_moves.push(window.id());
+        if is_state_change {
+          band_moves.push(window.id());
+          if let Some(raise) =
+            crate::animation::peek_view::state_change_peek_raise(
+              is_floating,
+              is_shown_on_top(window),
+              window.id() == focused_container.id(),
+            )
+          {
+            peek_raises.push(((*window).clone(), raise));
+          }
+        }
         (AnimationPositionResult::Frozen, None)
       } else {
         state.animation_manager.start_animation_if_needed(
@@ -2125,17 +2155,26 @@ fn redraw_containers(
   // One a grab holds stays where it went up, just below its window, for
   // the whole resize: it never passes over floating windows.
   for id in &peek_moves {
-    if !state.animation_manager.peeks.is_held(id) {
+    if !state.animation_manager.peeks.is_held(id)
+      && !band_moves.contains(id)
+    {
       state.animation_manager.peeks.raise_moving(id);
     }
   }
   for (window, raise) in &peek_raises {
     // Its cloaked window goes into the band it lands in first, so that
     // `begin_hand_back` puts the peek directly above it there, not back
-    // under the floating windows shown on top.
-    if *raise == PeekRaise::TopMost {
-      if let Err(err) = window.native().set_z_order(&WindowZOrder::TopMost)
-      {
+    // under the floating windows shown on top, nor over them for a tile
+    // that was one of them.
+    let band = match raise {
+      PeekRaise::TopMost => Some(WindowZOrder::TopMost),
+      PeekRaise::Top if window.state() == WindowState::Tiling => {
+        Some(WindowZOrder::Normal)
+      }
+      PeekRaise::Top => None,
+    };
+    if let Some(band) = band {
+      if let Err(err) = window.native().set_z_order(&band) {
         tracing::warn!("Failed to set window z-order: {err}");
       }
     }

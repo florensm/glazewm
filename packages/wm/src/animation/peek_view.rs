@@ -7,7 +7,7 @@ use std::{
 
 use uuid::Uuid;
 use wm_common::{
-  EasingFunction, EffectSet, ResizeStyle, WindowState,
+  EasingFunction, EffectSet, ResizeStyle, WindowResizeConfig, WindowState,
   WindowTransitionParams,
 };
 use wm_platform::{
@@ -658,6 +658,57 @@ pub fn floating_peek_raise(
     Some(PeekRaise::TopMost)
   } else {
     is_focused.then_some(PeekRaise::Top)
+  }
+}
+
+/// Whether `window`, whose state changed this pass, moves on a pinned
+/// peek as a tile does (`morepeeks`, `STAND_INS_PLAN.md` 10f): between
+/// floating and tiling, not while the OS still drags it.
+pub fn changes_state_on_peek(window: &WindowContainer) -> bool {
+  wm_platform::isolation::current().more_peeks
+    && window.active_drag().is_none()
+    && crosses_floating(&window.state(), window.prev_state().as_ref())
+}
+
+/// Whether a window now in `state`, its state changed this pass, came
+/// there across floating and tiling. `prev_state` is unreliable for a
+/// window dropped after a drag (the state before the drag), so it only
+/// rules out a window coming back from fullscreen or minimized.
+fn crosses_floating(
+  state: &WindowState,
+  prev_state: Option<&WindowState>,
+) -> bool {
+  matches!(state, WindowState::Tiling | WindowState::Floating(_))
+    && !matches!(
+      prev_state,
+      Some(WindowState::Fullscreen(_) | WindowState::Minimized)
+    )
+}
+
+/// How a window crossing between floating and tiling on its peek draws a
+/// change of size: in `window_resize`'s style, as the old path does.
+pub fn state_change_resize(
+  resize: &WindowResizeConfig,
+) -> Option<PeekResize> {
+  resize.enabled.then_some(match resize.style {
+    ResizeStyle::Stretch => PeekResize::Stretch,
+    ResizeStyle::Fill => PeekResize::Fill,
+  })
+}
+
+/// Where the peek of a window crossing between floating and tiling goes
+/// once its window is cloaked: one landing floating as one opening does
+/// (see [`floating_peek_raise`]), a tile to the top of the other windows,
+/// out of the always-on-top band.
+pub fn state_change_peek_raise(
+  lands_floating: bool,
+  shown_on_top: bool,
+  is_focused: bool,
+) -> Option<PeekRaise> {
+  if lands_floating {
+    floating_peek_raise(shown_on_top, is_focused)
+  } else {
+    Some(PeekRaise::Top)
   }
 }
 
@@ -2131,7 +2182,9 @@ pub fn hold_on_peek(
 /// exactly as it was.
 ///
 /// Columns are left to `sync_scroll_view`, and windows that open, are not
-/// shown, or stay floating to the redraw itself.
+/// shown, or stay floating to the redraw itself. One crossing between
+/// floating and tiling goes on a peek only as [`changes_state_on_peek`]
+/// allows.
 pub fn resizes_relayout(
   state: &WmState,
   windows: &[WindowContainer],
@@ -2195,8 +2248,13 @@ pub fn resizes_relayout(
           .frame_with_shadows()
           .is_ok_and(|actual| is_same_size(&actual, &target));
 
-      window.state() == WindowState::Tiling
-        && !is_state_change
+      let moves_as_tile = if is_state_change {
+        changes_state_on_peek(window)
+      } else {
+        window.state() == WindowState::Tiling
+      };
+
+      moves_as_tile
         && window.display_state() == wm_common::DisplayState::Shown
         && !has_other_stand_in(&state.animation_manager, &id)
         && !is_live(&peek_styles(window, config))
@@ -2963,17 +3021,21 @@ mod tests {
 
   use uuid::Uuid;
   use wm_common::{
-    EasingFunction, WindowTransitionParams, WindowTransitionStyle,
+    EasingFunction, FloatingStateConfig, FullscreenStateConfig,
+    ResizeStyle, WindowResizeConfig, WindowState, WindowTransitionParams,
+    WindowTransitionStyle,
   };
   use wm_platform::{LengthValue, Rect, RectDelta};
 
   use super::{
-    conceals_new_ring, floating_peek_raise, follow_duration, follows_tile,
-    has_landed, has_left, is_departed, is_peek_resize, is_pure_move,
-    is_stray, kept_transit, leaves_as, leaving_transit, resizes_at_start,
-    restretched, retargeted_motion, returning_transit, sampled_size,
-    settling, take_left, visible_frame, Hold, PeekRaise, PeekResize, Role,
-    Stretch, FILL_LANDING_WAIT, HOLD_RELEASE_WAIT, STRETCH_SETTLE,
+    conceals_new_ring, crosses_floating, floating_peek_raise,
+    follow_duration, follows_tile, has_landed, has_left, is_departed,
+    is_peek_resize, is_pure_move, is_stray, kept_transit, leaves_as,
+    leaving_transit, resizes_at_start, restretched, retargeted_motion,
+    returning_transit, sampled_size, settling, state_change_peek_raise,
+    state_change_resize, take_left, visible_frame, Hold, PeekRaise,
+    PeekResize, Role, Stretch, FILL_LANDING_WAIT, HOLD_RELEASE_WAIT,
+    STRETCH_SETTLE,
   };
   use crate::animation::{
     state::WindowAnimationState,
@@ -2991,6 +3053,72 @@ mod tests {
     // window is.
     assert_eq!(floating_peek_raise(false, true), Some(PeekRaise::Top));
     assert_eq!(floating_peek_raise(false, false), None);
+  }
+
+  #[test]
+  fn only_crossings_between_floating_and_tiling_go_on_peeks() {
+    let floating = WindowState::Floating(FloatingStateConfig::default());
+    let fullscreen =
+      WindowState::Fullscreen(FullscreenStateConfig::default());
+
+    assert!(crosses_floating(&floating, Some(&WindowState::Tiling)));
+    assert!(crosses_floating(&WindowState::Tiling, Some(&floating)));
+    // Dropped after a drag, its state before the drag.
+    assert!(crosses_floating(
+      &WindowState::Tiling,
+      Some(&WindowState::Tiling)
+    ));
+    // Back from fullscreen or minimized: not this path.
+    assert!(!crosses_floating(&WindowState::Tiling, Some(&fullscreen)));
+    assert!(!crosses_floating(&floating, Some(&fullscreen)));
+    assert!(!crosses_floating(&floating, Some(&WindowState::Minimized)));
+    assert!(!crosses_floating(&fullscreen, Some(&floating)));
+    assert!(!crosses_floating(&WindowState::Minimized, Some(&floating)));
+  }
+
+  #[test]
+  fn a_state_change_resizes_in_window_resizes_style() {
+    let resize = |enabled, style| WindowResizeConfig {
+      enabled,
+      style,
+      ..WindowResizeConfig::default()
+    };
+
+    assert_eq!(
+      state_change_resize(&resize(true, ResizeStyle::Fill)),
+      Some(PeekResize::Fill)
+    );
+    assert_eq!(
+      state_change_resize(&resize(true, ResizeStyle::Stretch)),
+      Some(PeekResize::Stretch)
+    );
+    assert_eq!(
+      state_change_resize(&resize(false, ResizeStyle::Fill)),
+      None
+    );
+  }
+
+  #[test]
+  fn state_change_peeks_play_in_the_band_their_windows_land_in() {
+    // Landing floating: as a floating window opening.
+    assert_eq!(
+      state_change_peek_raise(true, true, false),
+      Some(PeekRaise::TopMost)
+    );
+    assert_eq!(
+      state_change_peek_raise(true, false, true),
+      Some(PeekRaise::Top)
+    );
+    assert_eq!(state_change_peek_raise(true, false, false), None);
+    // Landing tiled: the top of the other windows, focused or not.
+    assert_eq!(
+      state_change_peek_raise(false, true, false),
+      Some(PeekRaise::Top)
+    );
+    assert_eq!(
+      state_change_peek_raise(false, false, false),
+      Some(PeekRaise::Top)
+    );
   }
 
   fn linear() -> EasingFunction {
