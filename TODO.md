@@ -998,6 +998,34 @@ to see it; check each once more at 150 ms.
       frame, no blank tile.
     - After release: partly visible columns rest on their peeks as
       before, fully visible ones are handed back.
+72. **A tile moving onto another monitor, on two peeks**
+    (`STAND_INS_PLAN.md` 10f, the monitor row). `GLAZEWM_ISOLATE=morepeeks`,
+    two monitors side by side, ideally of different scale (100% and
+    150%), `window_move: { duration_ms: 2000 }`, then 150 ms. A border
+    and a backdrop on the windows.
+    - `move --direction right` from the left monitor's rightmost tile
+      onto the right monitor, two tiles of the same size (a pure move),
+      then with `fillpeeks` or `style: "stretch"` into a tile of another
+      size. The window slides across the edge as one: its left part cut
+      at the left monitor's edge, its right part at the right one's, no
+      seam, no frame where either part is missing, nothing drawn between
+      monitors that don't touch.
+    - Each part over its own monitor's backdrop; the ring whole on both
+      sides, in step with the window.
+    - Different scales: the content is the new scale's from early on (the
+      app is sent its rect twice, as at a landing), not cut or holed at
+      the tile's edge. A few pixels' shift at the hand-back is possible
+      (the invisible borders' width is read as the move starts): note it.
+    - The same key twice within the motion, so it heads back: it glides
+      back and lands on the left, handed back there, no blink.
+    - A move within a monitor retargeted onto the other is still cut at
+      the first one's edge, as without the word: expected, not this port.
+    - A stacked window, and one moving while it still lands from an
+      earlier move: the old engine, as without the word.
+    - Then without the word: such moves on the old engine, as before.
+    - Windows API: none new. A second pinned peek (`CreateWindowExW`,
+      thumbnail calls) and, across scales, a second `SetWindowPos`, all
+      already made.
 
 If bars or flicker show, isolate them with `GLAZEWM_ISOLATE` (below), one
 restart per flag: `noring`, `nobackdrop`, then `live`. With a long

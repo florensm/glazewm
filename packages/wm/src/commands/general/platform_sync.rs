@@ -753,11 +753,20 @@ fn preposition_cloaked(
 
   if let Some(swp_flags) = swp_flags {
     let current = window.native().frame_with_shadows().ok();
-    let _ = window.native().set_window_pos(
-      z_order,
-      target_rect,
-      swp_flags | discard_bits_if_resized(current.as_ref(), target_rect),
-    );
+    let flags =
+      swp_flags | discard_bits_if_resized(current.as_ref(), target_rect);
+    let _ = window.native().set_window_pos(z_order, target_rect, flags);
+
+    // Moved onto a monitor of another DPI on two peeks, its app takes the
+    // size Windows suggests for it there: sent its rect again, as
+    // `reposition_window` does, after that in its queue, it is drawn at
+    // its tile's size for the rest of the motion, not only once it
+    // lands.
+    if window.has_pending_dpi_adjustment()
+      && state.animation_manager.peeks.has_trail(&window.id())
+    {
+      let _ = window.native().set_window_pos(z_order, target_rect, flags);
+    }
   }
 }
 

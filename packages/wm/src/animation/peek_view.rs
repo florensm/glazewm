@@ -174,6 +174,22 @@ pub(super) struct Entry {
   /// Whether a grab holds it, which draws it filled rather than
   /// stretched (see `WindowPeek::place_filled`).
   hold: Hold,
+  /// Its peek on the monitor it moves from, for a tile moving onto
+  /// another one.
+  trail: Option<Trail>,
+}
+
+/// A second pinned peek of a tile moving onto another monitor, cut at the
+/// monitor it comes from (see [`tile_clips`]), drawn as the entry's own
+/// peek is.
+///
+/// Two peeks rather than one spanning both monitors: each carries the
+/// backdrop of its own monitor, and nothing is drawn between them or on a
+/// third. It never takes over or hands back the real window, and goes as
+/// the motion lands, on the entry's own peek's monitor.
+struct Trail {
+  peek: WindowPeek,
+  clip: Rect,
 }
 
 /// A window drawn scaled as its size changes, its app resized behind its
@@ -312,10 +328,41 @@ struct Departing {
   awaits_cloak: bool,
 }
 
+/// `peek`, cut at `clip`, and the peek of `trail` with its clip.
+fn peeks_of<'a>(
+  peek: &'a mut WindowPeek,
+  clip: &'a Rect,
+  trail: Option<&'a mut Trail>,
+) -> impl Iterator<Item = (&'a mut WindowPeek, &'a Rect)> {
+  std::iter::once((peek, clip))
+    .chain(trail.map(|trail| (&mut trail.peek, &trail.clip)))
+}
+
 impl Entry {
-  fn place(&mut self, rect: &Rect, batch: &mut SurrogateBatch) {
-    self.peek.place(rect, &self.clip, self.opacity, batch);
-    self.rect = rect.clone();
+  /// Its peeks with the clips they are cut at: its own, then its trail's.
+  fn peeks_mut(
+    &mut self,
+  ) -> impl Iterator<Item = (&mut WindowPeek, &Rect)> {
+    peeks_of(&mut self.peek, &self.clip, self.trail.as_mut())
+  }
+
+  /// Draws its window's ring along with it on each of its peeks (see
+  /// `WindowPeek::carry_ring`). Returns whether its own peek does.
+  fn carry_ring(
+    &mut self,
+    source: HWND,
+    ring_rect: &Rect,
+    window_rect: &Rect,
+    corner_reach: Option<i32>,
+  ) -> bool {
+    if let Some(trail) = &mut self.trail {
+      trail
+        .peek
+        .carry_ring(source, ring_rect, window_rect, corner_reach);
+    }
+    self
+      .peek
+      .carry_ring(source, ring_rect, window_rect, corner_reach)
   }
 
   /// Places the peek with its window at `rect`, zoomed, slid and faded by
@@ -332,26 +379,24 @@ impl Entry {
       return;
     }
 
-    let Some(transit) = &self.transit else {
-      self.place(rect, batch);
-      return;
-    };
-
-    match transit_frame(
-      rect,
-      &transit.style,
-      transit.away_opacity,
-      transit.amount_at(now),
-    ) {
-      Some((frame, frac)) => self.peek.place_scaled(
+    let frame = self.transit.as_ref().map(|transit| {
+      transit_frame(
         rect,
-        &frame,
-        &self.clip,
-        self.opacity,
-        frac,
-        batch,
-      ),
-      None => self.peek.hide(),
+        &transit.style,
+        transit.away_opacity,
+        transit.amount_at(now),
+      )
+    });
+    let opacity = self.opacity;
+
+    for (peek, clip) in self.peeks_mut() {
+      match &frame {
+        None => peek.place(rect, clip, opacity, batch),
+        Some(Some((frame, frac))) => {
+          peek.place_scaled(rect, frame, clip, opacity, *frac, batch);
+        }
+        Some(None) => peek.hide(),
+      }
     }
     self.rect = rect.clone();
   }
@@ -396,10 +441,9 @@ impl Entry {
       return false;
     };
 
+    let peeks = peeks_of(&mut self.peek, &self.clip, self.trail.as_mut());
+
     if stretch.filled || self.hold != Hold::Free {
-      if let Some(color) = stretch.edge_color {
-        self.peek.carry_fill(color);
-      }
       // Sent its target and yet to reach it, the window may be resized to
       // it at any time, so is sampled no larger, nor larger than any size
       // a grab sent it and it may apply first.
@@ -409,26 +453,35 @@ impl Entry {
           .then(|| (target.width(), target.height())),
         stretch.in_flight,
       ];
-      self.peek.place_filled(
-        sampled_size(actual, rect, in_flight.into_iter().flatten()),
-        rect,
-        &self.clip,
-        self.opacity,
-        batch,
-      );
+      let sampled =
+        sampled_size(actual, rect, in_flight.into_iter().flatten());
+      for (peek, clip) in peeks {
+        if let Some(color) = stretch.edge_color {
+          peek.carry_fill(color);
+        }
+        peek.place_filled(sampled, rect, clip, self.opacity, batch);
+      }
       return true;
     }
 
-    stretch.cover = self.peek.place_stretched(
-      actual,
-      &self.motion.target_rect,
-      rect,
-      !stretch.reached,
-      stretch.cover_at(now),
-      &self.clip,
-      self.opacity,
-      batch,
-    );
+    // The cover doesn't depend on the clip: the same on every peek.
+    let mut drawn = None;
+    for (peek, clip) in peeks {
+      let cover = peek.place_stretched(
+        actual,
+        &self.motion.target_rect,
+        rect,
+        !stretch.reached,
+        stretch.cover_at(now),
+        clip,
+        self.opacity,
+        batch,
+      );
+      drawn.get_or_insert(cover);
+    }
+    if let Some(cover) = drawn {
+      stretch.cover = cover;
+    }
     true
   }
 }
@@ -616,6 +669,35 @@ fn kept_transit(
 /// [`PeekView::upsert`] retargets.
 fn follows_tile(is_column: bool, is_moving: bool) -> bool {
   !is_column && is_moving
+}
+
+/// The clips of the peeks a tile moving from `from` onto the monitor at
+/// `clip` is drawn on: `clip`, and, if it comes from another monitor,
+/// `source`, that monitor's, for its trail (see [`Trail`]), if `crosses`.
+/// `None` if it can't be drawn so: the peek would cut it at `clip`'s edge.
+fn move_clips(
+  from: &Rect,
+  clip: Rect,
+  source: Option<Rect>,
+  crosses: bool,
+) -> Option<(Rect, Option<Rect>)> {
+  let center = from.center_point();
+  if clip.contains_point(&center) {
+    return Some((clip, None));
+  }
+
+  source
+    .filter(|source| {
+      crosses && *source != clip && source.contains_point(&center)
+    })
+    .map(|source| (clip, Some(source)))
+}
+
+/// Whether a tile drawn on a peek cut at `clip` and a trail cut at
+/// `trail_clip`, headed for `target`, lands on its trail's monitor.
+fn lands_on_trail(target: &Rect, clip: &Rect, trail_clip: &Rect) -> bool {
+  let center = target.center_point();
+  !clip.contains_point(&center) && trail_clip.contains_point(&center)
 }
 
 /// How long a window drawn moving or entering by its peek takes to follow
@@ -970,9 +1052,11 @@ impl PeekView {
           // Its real window was cloaked a tick ago at least, so needs its
           // alpha no more. One not taken over from, e.g. as it wasn't
           // redrawn, is drawn all the same.
-          entry.peek.restore_alpha();
-          entry.peek.show_window();
-          entry.peek.refresh_companion();
+          for (peek, _) in entry.peeks_mut() {
+            peek.restore_alpha();
+            peek.show_window();
+            peek.refresh_companion();
+          }
           entry.motion.start_clock(clock_origin);
           if let Some(transit) = &entry.transit {
             transit.clock.start_clock(clock_origin);
@@ -984,6 +1068,9 @@ impl PeekView {
           entry.draw(&rect, now, batch);
 
           if entry.may_land(now) {
+            // Landed on its own peek's monitor, it has nothing left on
+            // another.
+            entry.trail = None;
             if entry.stretch.as_ref().is_some_and(|stretch| stretch.filled)
             {
               landed.filled.push(*id);
@@ -1023,8 +1110,10 @@ impl PeekView {
             }
             _ => entry.peek.restore_alpha(),
           }
-          entry.peek.show_window();
-          entry.peek.refresh_companion();
+          for (peek, _) in entry.peeks_mut() {
+            peek.show_window();
+            peek.refresh_companion();
+          }
           if let Some(transit) = &entry.transit {
             transit.clock.start_clock(clock_origin);
           }
@@ -1169,6 +1258,10 @@ impl PeekView {
       .get_mut(window_id)
       .filter(|entry| matches!(entry.role, Role::Moving { .. }))
     {
+      // Drawn before the real window's alpha goes, as its own peek is.
+      if let Some(trail) = &mut entry.trail {
+        trail.peek.show_window();
+      }
       entry.peek.take_over(window);
     }
   }
@@ -1221,15 +1314,17 @@ impl PeekView {
   /// On-screen rects of the peeks drawing moving windows, whose real
   /// windows are cloaked meanwhile, so a click there reaches nothing.
   pub fn moving_rects(&self) -> impl Iterator<Item = (Uuid, &Rect)> {
-    self.entries.iter().filter_map(|(id, entry)| {
-      Some(entry)
-        .filter(|entry| {
-          matches!(entry.role, Role::Moving { .. } | Role::HandingBack)
-        })?
-        .peek
-        .visible_rect()
-        .map(|rect| (*id, rect))
-    })
+    self
+      .entries
+      .iter()
+      .filter(|(_, entry)| {
+        matches!(entry.role, Role::Moving { .. } | Role::HandingBack)
+      })
+      .flat_map(|(id, entry)| {
+        std::iter::once(&entry.peek)
+          .chain(entry.trail.as_ref().map(|trail| &trail.peek))
+          .filter_map(|peek| peek.visible_rect().map(|rect| (*id, rect)))
+      })
   }
 
   /// Draws `window` with a peek in `role`, going from `from` to `target`.
@@ -1554,6 +1649,59 @@ impl PeekView {
     true
   }
 
+  /// Has `window`'s peek, just put up by [`move_tile`](Self::move_tile)
+  /// on the monitor it moves onto, drawn on `clip`, the monitor it comes
+  /// from, too (see [`Trail`]). Returns whether it is: if not, the peek
+  /// is dropped, as it would cut the window at its monitor's edge.
+  #[allow(clippy::too_many_arguments)]
+  pub(super) fn add_trail(
+    &mut self,
+    window: &WindowContainer,
+    clip: &Rect,
+    config: &UserConfig,
+    is_focused: bool,
+    now: Instant,
+    batch: &mut SurrogateBatch,
+  ) -> bool {
+    let id = window.id();
+    let Some(entry) = self.entries.get_mut(&id) else {
+      return false;
+    };
+
+    let styles = peek_styles(window, config);
+    let (opacity, corner_style, _) =
+      surrogate_effects_for(window.effect_set(is_focused), config);
+    let Some((trail, _)) = new_entry(
+      window,
+      entry.motion.clone(),
+      clip,
+      opacity,
+      corner_style,
+      &styles,
+      entry.role,
+    ) else {
+      self.entries.remove(&id);
+      return false;
+    };
+
+    entry.trail = Some(Trail {
+      peek: trail.peek,
+      clip: clip.clone(),
+    });
+    let rect = entry.rect.clone();
+    entry.draw(&rect, now, batch);
+    true
+  }
+
+  /// Whether `window_id` moves onto another monitor on two peeks (see
+  /// [`Trail`]).
+  pub fn has_trail(&self, window_id: &Uuid) -> bool {
+    self
+      .entries
+      .get(window_id)
+      .is_some_and(|entry| entry.trail.is_some())
+  }
+
   /// Turns `window_id`'s peek, taking it off the screen by a minimize,
   /// round where it is at `now`: it comes back in by `params`, held
   /// where it is until retargeted, and is handed back as an entering one
@@ -1607,6 +1755,9 @@ impl PeekView {
       .filter(|entry| matches!(entry.role, Role::Moving { .. }))
     {
       entry.peek.raise_to_top();
+      if let Some(trail) = &entry.trail {
+        trail.peek.raise_to_top();
+      }
     }
   }
 
@@ -1666,6 +1817,14 @@ impl PeekView {
     let motion =
       retargeted_motion(&entry.motion, target, duration_ms, easing, now);
     let headed = std::mem::replace(&mut entry.motion, motion);
+    // Headed back to the monitor it came from, it lands on its trail's
+    // peek, which becomes its own.
+    if let Some(trail) = entry.trail.as_mut().filter(|trail| {
+      lands_on_trail(&entry.motion.target_rect, &entry.clip, &trail.clip)
+    }) {
+      std::mem::swap(&mut entry.peek, &mut trail.peek);
+      std::mem::swap(&mut entry.clip, &mut trail.clip);
+    }
     // One resizing already goes on so: drawn another way from here, its
     // scale would jump.
     let resizes =
@@ -1933,7 +2092,7 @@ pub fn enter_on_peek(
 /// behind its cloak.
 ///
 /// Not a window another stand-in draws, which keeps it, nor one moving
-/// onto another monitor, which the peek would cut at this one's edge.
+/// onto another monitor unless [`tile_clips`] draws it on two peeks.
 #[allow(clippy::too_many_arguments)]
 pub fn move_on_peek(
   state: &mut WmState,
@@ -1963,15 +2122,15 @@ pub fn move_on_peek(
     return false;
   }
 
-  let Some((clip, handle)) = window.monitor().and_then(|monitor| {
-    let clip = monitor.to_rect().ok()?;
-    Some((clip, monitor.native_properties().handle))
-  }) else {
+  let Some(handle) = window
+    .monitor()
+    .map(|monitor| monitor.native_properties().handle)
+  else {
     return false;
   };
-  if !clip.contains_point(&from.center_point()) {
+  let Some((clip, trail_clip)) = tile_clips(state, window, from) else {
     return false;
-  }
+  };
 
   let motion = if is_resize {
     Motion::Resize
@@ -1982,7 +2141,8 @@ pub fn move_on_peek(
     movement_timing(motion, cycle_has_resize, config);
   let now = state.animation_manager.frame_time();
   let mut batch = SurrogateBatch::new();
-  let moved = state.animation_manager.peeks.move_tile(
+  let peeks = &mut state.animation_manager.peeks;
+  let moved = peeks.move_tile(
     window,
     from,
     target.clone(),
@@ -1994,7 +2154,10 @@ pub fn move_on_peek(
     is_focused,
     now,
     &mut batch,
-  );
+  ) && trail_clip.as_ref().is_none_or(|trail_clip| {
+    peeks
+      .add_trail(window, trail_clip, config, is_focused, now, &mut batch)
+  });
   batch.commit();
 
   if moved {
@@ -2184,10 +2347,7 @@ pub fn resizes_relayout(
         return true;
       }
 
-      let fits_monitor = window
-        .monitor()
-        .and_then(|monitor| monitor.to_rect().ok())
-        .is_some_and(|clip| clip.contains_point(&from.center_point()));
+      let fits_monitor = tile_clips(state, window, from).is_some();
       let is_resized_already = is_resize
         && !state.animation_manager.peeks.is_moving(&id)
         && window
@@ -2204,6 +2364,30 @@ pub fn resizes_relayout(
         && !is_resized_already
     })
     .then_some(resize)
+}
+
+/// The clips of the peeks [`move_on_peek`] draws `window`, a tile moving
+/// from `from`, on (see [`move_clips`]). With `morepeeks`, one moving onto
+/// another monitor is drawn on two, unless a peek draws it already (one
+/// handing it back is on its own monitor) or it is in a stack, whose tab
+/// bar is cut at one monitor.
+fn tile_clips(
+  state: &WmState,
+  window: &WindowContainer,
+  from: &Rect,
+) -> Option<(Rect, Option<Rect>)> {
+  let clip = window.monitor()?.to_rect().ok()?;
+  let crosses = wm_platform::isolation::current().more_peeks
+    && !state.animation_manager.peeks.draws_window(&window.id())
+    && window
+      .parent()
+      .is_none_or(|parent| parent.as_stack().is_none());
+  let source = crosses
+    .then(|| state.monitor_at_point(&from.center_point()))
+    .flatten()
+    .and_then(|monitor| monitor.to_rect().ok());
+
+  move_clips(from, clip, source, crosses)
 }
 
 /// Whether a stand-in other than a peek draws `window_id` or hands it
@@ -2442,6 +2626,7 @@ fn new_entry(
     departing: None,
     stretch: None,
     hold: Hold::Free,
+    trail: None,
   };
 
   Some((entry, covers_shown_window))
@@ -2610,7 +2795,9 @@ fn carry_ring(
   };
 
   if let Some(entry) = state.animation_manager.peeks.entries.get_mut(&id) {
-    entry.peek.follow_window(&bounds, &frame);
+    for (peek, _) in entry.peeks_mut() {
+      peek.follow_window(&bounds, &frame);
+    }
     if let Some(stretch) = &mut entry.stretch {
       stretch.actual = Some(bounds.clone());
     }
@@ -2679,7 +2866,7 @@ fn carry_ring(
       overlay.park(&ring_frame, anchor, !is_shown);
 
       let ring_rect = overlay.outer_rect();
-      if !entry.peek.carry_ring(
+      if !entry.carry_ring(
         overlay.hwnd(),
         &ring_rect,
         &bounds,
@@ -2705,18 +2892,15 @@ fn carry_ring(
           == Some(&overlay.outer_rect()) =>
     {
       overlay.conceal();
-      entry.peek.cut_ring(corner_reach);
+      for (peek, _) in entry.peeks_mut() {
+        peek.cut_ring(corner_reach);
+      }
       Handover::Parked
     }
     Handover::Covered | Handover::Parked => {
       overlay.park(&ring_frame, anchor, true);
       let ring_rect = overlay.outer_rect();
-      entry.peek.carry_ring(
-        overlay.hwnd(),
-        &ring_rect,
-        &bounds,
-        corner_reach,
-      );
+      entry.carry_ring(overlay.hwnd(), &ring_rect, &bounds, corner_reach);
       Handover::Parked
     }
   };
@@ -2834,7 +3018,9 @@ fn carry_backdrop(
     }
     if let Some(entry) = state.animation_manager.peeks.entries.get_mut(&id)
     {
-      entry.peek.hide_backdrop();
+      for (peek, _) in entry.peeks_mut() {
+        peek.hide_backdrop();
+      }
       entry.backdrop = Handover::None;
     }
     return true;
@@ -2864,8 +3050,10 @@ fn carry_backdrop(
   };
   let is_landing =
     matches!(entry.role, Role::HandingBack | Role::Releasing { .. });
-  entry.peek.show_backdrop();
-  entry.peek.show_style_blend(&blend);
+  for (peek, _) in entry.peeks_mut() {
+    peek.show_backdrop();
+    peek.show_style_blend(&blend);
+  }
 
   let handover = entry.backdrop;
   entry.backdrop = if is_landing
@@ -2970,10 +3158,11 @@ mod tests {
   use super::{
     conceals_new_ring, floating_peek_raise, follow_duration, follows_tile,
     has_landed, has_left, is_departed, is_peek_resize, is_pure_move,
-    is_stray, kept_transit, leaves_as, leaving_transit, resizes_at_start,
-    restretched, retargeted_motion, returning_transit, sampled_size,
-    settling, take_left, visible_frame, Hold, PeekRaise, PeekResize, Role,
-    Stretch, FILL_LANDING_WAIT, HOLD_RELEASE_WAIT, STRETCH_SETTLE,
+    is_stray, kept_transit, lands_on_trail, leaves_as, leaving_transit,
+    move_clips, resizes_at_start, restretched, retargeted_motion,
+    returning_transit, sampled_size, settling, take_left, visible_frame,
+    Hold, PeekRaise, PeekResize, Role, Stretch, FILL_LANDING_WAIT,
+    HOLD_RELEASE_WAIT, STRETCH_SETTLE,
   };
   use crate::animation::{
     state::WindowAnimationState,
@@ -3156,6 +3345,53 @@ mod tests {
   /// Only a move that keeps the window's size, past the threshold, goes
   /// on a peek alone; a resize, or a move the old path wouldn't animate,
   /// doesn't.
+  #[test]
+  fn a_tile_from_another_monitor_is_drawn_on_two_peeks() {
+    let left = Rect::from_ltrb(0, 0, 1920, 1080);
+    let right = Rect::from_ltrb(1920, 0, 3840, 1080);
+    let on_left = Rect::from_xy(100, 100, 800, 600);
+    let on_right = Rect::from_xy(2020, 100, 800, 600);
+
+    // On its own monitor: one peek, whether or not it may cross.
+    assert_eq!(
+      move_clips(&on_right, right.clone(), Some(right.clone()), true),
+      Some((right.clone(), None))
+    );
+    assert_eq!(
+      move_clips(&on_right, right.clone(), None, false),
+      Some((right.clone(), None))
+    );
+    // From another: a trail on that one, only if it may cross.
+    assert_eq!(
+      move_clips(&on_left, right.clone(), Some(left.clone()), true),
+      Some((right.clone(), Some(left.clone())))
+    );
+    assert_eq!(
+      move_clips(&on_left, right.clone(), Some(left.clone()), false),
+      None
+    );
+    // From no monitor known, or one that doesn't hold it: none.
+    assert_eq!(move_clips(&on_left, right.clone(), None, true), None);
+    assert_eq!(
+      move_clips(&on_left, right.clone(), Some(right.clone()), true),
+      None
+    );
+  }
+
+  #[test]
+  fn a_tile_headed_back_lands_on_its_trail() {
+    let left = Rect::from_ltrb(0, 0, 1920, 1080);
+    let right = Rect::from_ltrb(1920, 0, 3840, 1080);
+    let on_left = Rect::from_xy(100, 100, 800, 600);
+    let on_right = Rect::from_xy(2020, 100, 800, 600);
+    let elsewhere = Rect::from_xy(100, 2000, 800, 600);
+
+    assert!(lands_on_trail(&on_left, &right, &left));
+    assert!(!lands_on_trail(&on_right, &right, &left));
+    // Onto neither monitor, it stays as it is.
+    assert!(!lands_on_trail(&elsewhere, &right, &left));
+  }
+
   #[test]
   fn pure_moves_keep_their_size_past_the_threshold() {
     let moved = |dx, dy| Rect::from_xy(100 + dx, 50 + dy, 800, 600);
