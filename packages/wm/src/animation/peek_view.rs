@@ -83,6 +83,38 @@ impl Hold {
   }
 }
 
+/// When a window filled on its peek that defers its new size (see
+/// [`Stretch::deferred`]) is sent it ahead of landing, its peek then
+/// waiting for it as for one sent it at the start, so the hand-back finds
+/// it at its tile rather than resizing it synchronously.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum EarlySize {
+  /// Only as it lands.
+  Never,
+  /// As its motion ends (`GLAZEWM_ISOLATE=asynclanding`).
+  AtEnd,
+}
+
+impl EarlySize {
+  fn current() -> Self {
+    if wm_platform::isolation::current().async_landing {
+      Self::AtEnd
+    } else {
+      Self::Never
+    }
+  }
+}
+
+/// Whether an entry whose window `defers` its new size, free of a grab and
+/// ending shown, is sent it now, `when` says, its motion done or not.
+fn sends_size_early(when: EarlySize, defers: bool, is_done: bool) -> bool {
+  defers
+    && match when {
+      EarlySize::Never => false,
+      EarlySize::AtEnd => is_done,
+    }
+}
+
 /// How a window whose size changes on its peek is drawn
 /// (`window_resize.style`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -205,6 +237,8 @@ struct Trail {
 /// reach across the rect. Once it has grown, the cover eases back to 1
 /// over [`STRETCH_SETTLE`] rather than stepping, which was the old path's
 /// zoom.
+// Each read on its own as the window is drawn and lands.
+#[allow(clippy::struct_excessive_bools)]
 #[derive(Clone, Debug)]
 struct Stretch {
   /// The real window's rect, as last read.
@@ -222,6 +256,9 @@ struct Stretch {
   /// Whether, filled, its window is sent its new size only as it lands
   /// (see [`resizes_at_start`]). Sampled as it is meanwhile.
   deferred: bool,
+  /// Whether its window was sent the size it deferred ahead of landing
+  /// (see [`EarlySize`]), so is waited for as one sent it at the start.
+  sent_early: bool,
   /// The window's edge color, as last sampled, which it is filled with
   /// (see [`note_fill_inputs`]).
   edge_color: Option<Color>,
@@ -243,6 +280,7 @@ impl Stretch {
       settle: None,
       filled,
       deferred: filled && deferred,
+      sent_early: false,
       edge_color: None,
       in_flight: None,
     }
@@ -291,6 +329,13 @@ impl Stretch {
         kept(cover.1, from.height(), target.height()),
       ),
     ));
+  }
+
+  /// Whether its window may still be short of its target's size as it
+  /// lands, so its ring and backdrop go back to the target's frame (see
+  /// [`landing_frame`]).
+  fn lands_unsized(&self) -> bool {
+    self.deferred || (self.sent_early && !self.reached)
   }
 
   /// The least cover it is drawn with at `now`.
@@ -409,8 +454,7 @@ impl Entry {
   /// held one for its grab to let go of it (see [`Hold`]).
   fn may_land(&mut self, now: Instant) -> bool {
     let stretch = self.stretch.as_ref();
-    let is_done = stretch.is_none_or(|stretch| stretch.is_settled(now))
-      && has_landed(&self.motion, self.transit.as_ref());
+    let is_done = self.is_done(now);
     let reached = stretch.is_some_and(|stretch| stretch.reached);
     let awaits_size = stretch.is_some_and(|stretch| {
       stretch.filled && !stretch.deferred && !stretch.reached
@@ -424,6 +468,38 @@ impl Entry {
     }
 
     self.hold = Hold::Free;
+    true
+  }
+
+  /// Whether its motion and transit are done at `now`, and a stretched
+  /// window's scale at rest.
+  fn is_done(&self, now: Instant) -> bool {
+    self
+      .stretch
+      .as_ref()
+      .is_none_or(|stretch| stretch.is_settled(now))
+      && has_landed(&self.motion, self.transit.as_ref())
+  }
+
+  /// Stops deferring its window's new size at `now` if [`EarlySize`]
+  /// says it is sent it now, for one that ends shown, as `ends_shown`
+  /// says: one landing hidden isn't handed back. Returns whether it did,
+  /// for the caller to send it (see [`Landed::sized`]).
+  fn sends_size_early(&mut self, now: Instant, ends_shown: bool) -> bool {
+    let defers = ends_shown
+      && self.hold != Hold::Held
+      && self
+        .stretch
+        .as_ref()
+        .is_some_and(|stretch| stretch.deferred);
+    if !sends_size_early(EarlySize::current(), defers, self.is_done(now)) {
+      return false;
+    }
+
+    if let Some(stretch) = &mut self.stretch {
+      stretch.deferred = false;
+      stretch.sent_early = true;
+    }
     true
   }
 
@@ -552,8 +628,9 @@ fn is_same_size(a: &Rect, b: &Rect) -> bool {
 
 /// The stretch an entry keeps as it is moved on at `now`, from heading
 /// for `from` to `target`: none without a `resize`, else its own,
-/// retargeted if its size changes (see [`Stretch::retarget`]), or a new
-/// one for a window at `actual`, its new size sent as it lands if
+/// retargeted if its size changes (see [`Stretch::retarget`]) and
+/// deferring again as [`defers_again`] says if sent its size early, or a
+/// new one for a window at `actual`, its new size sent as it lands if
 /// `deferred`.
 fn restretched(
   stretch: Option<Stretch>,
@@ -566,6 +643,11 @@ fn restretched(
 ) -> Option<Stretch> {
   resize.map(|resize| match stretch {
     Some(mut kept) => {
+      if kept.sent_early {
+        kept.sent_early = false;
+        kept.deferred =
+          defers_again(kept.actual.as_ref(), deferred, from, target);
+      }
       if !is_same_size(from, target) {
         kept.retarget(from, target, now);
       }
@@ -573,6 +655,22 @@ fn restretched(
     }
     None => Stretch::at(actual(), resize, deferred),
   })
+}
+
+/// Whether a stretch whose window was sent `from`'s size ahead of landing
+/// (see [`Stretch::sent_early`]) defers its new size again as it heads
+/// for `target` instead, where the caller would defer it (`deferred`):
+/// only once its window, last read at `actual`, has `from`'s size, as one
+/// still on its way there may apply it at any time.
+fn defers_again(
+  actual: Option<&Rect>,
+  deferred: bool,
+  from: &Rect,
+  target: &Rect,
+) -> bool {
+  deferred
+    && !resizes_at_start(from, target)
+    && actual.is_some_and(|actual| is_same_size(actual, from))
 }
 
 /// Whether a moving entry has landed: its motion and, while it enters,
@@ -905,6 +1003,9 @@ pub struct Landed {
   /// Landed after a resize drawn filled, whose edge color is to be
   /// sampled again, as after a `fill` session.
   pub filled: Vec<Uuid>,
+  /// Moving, whose real windows are to be sent the size they deferred
+  /// ahead of landing (see [`EarlySize`]).
+  pub sized: Vec<Uuid>,
 }
 
 /// A window whose peek has finished taking it off the screen.
@@ -971,6 +1072,12 @@ impl PeekView {
       clip: Some(entry.clip.clone()),
       anchor: Some(entry.peek.hwnd()),
     })
+  }
+
+  /// Whether `window_id`'s peek is headed for `rect` while its real window
+  /// is cloaked.
+  pub fn heads_for(&self, window_id: &Uuid, rect: &Rect) -> bool {
+    self.owned_target(window_id) == Some(rect)
   }
 
   /// Where `window_id`'s peek is headed while its real window is cloaked.
@@ -1063,6 +1170,7 @@ impl PeekView {
     // Its window is sent each size the grab gives it.
     if let Some(stretch) = entry.stretch.as_mut().filter(|_| is_held) {
       stretch.deferred = false;
+      stretch.sent_early = false;
     }
   }
 
@@ -1133,6 +1241,11 @@ impl PeekView {
             stretch.note_target(&entry.motion.target_rect, now);
           }
           let (rect, _) = entry.motion.current_state_at(now);
+          // Before the draw: sent before this frame is composited, its new
+          // size may land first.
+          if entry.sends_size_early(now, ends_shown) {
+            landed.sized.push(*id);
+          }
           entry.draw(&rect, now, batch);
 
           if entry.may_land(now) {
@@ -3223,9 +3336,10 @@ fn carry_ring(
 
 /// Where `id`'s ring and backdrop go back to as its peek lands, its real
 /// window's visible frame being `frame`: there, unless the window was
-/// sent its size only as it lands (see [`Stretch::deferred`]), whose frame
-/// is still the old one. Theirs is then the frame it lands at, or they
-/// would be shown at the old one until the window has its new size.
+/// sent its size only as it lands (see [`Stretch::deferred`]) or is yet
+/// to report one sent ahead (see [`Stretch::sent_early`]), whose frame is
+/// still the old one. Theirs is then the frame it lands at, or they would
+/// be shown at the old one until the window has its new size.
 fn landing_frame(state: &WmState, id: Uuid, frame: Rect) -> Rect {
   let target = state
     .animation_manager
@@ -3234,10 +3348,7 @@ fn landing_frame(state: &WmState, id: Uuid, frame: Rect) -> Rect {
     .get(&id)
     .filter(|entry| {
       matches!(entry.role, Role::HandingBack | Role::Releasing { .. })
-        && entry
-          .stretch
-          .as_ref()
-          .is_some_and(|stretch| stretch.deferred)
+        && entry.stretch.as_ref().is_some_and(Stretch::lands_unsized)
     })
     .map(|entry| entry.motion.target_rect.clone());
 
@@ -3471,15 +3582,16 @@ mod tests {
   use wm_platform::{LengthValue, Rect, RectDelta};
 
   use super::{
-    allows_motion, conceals_new_ring, crosses_floating,
+    allows_motion, conceals_new_ring, crosses_floating, defers_again,
     floating_peek_raise, follow_duration, follows_tile,
     fullscreen_peek_raise, has_landed, has_left, is_departed,
     is_peek_resize, is_pure_move, is_stray, kept_transit, lands_on_trail,
     leaves_as, leaving_transit, move_clips, peek_resize, resizes_at_start,
     restretched, retargeted_motion, returning_transit, sampled_size,
-    settling, state_change_peek_raise, state_change_resize, take_left,
-    toggles_tile_fullscreen, visible_frame, Hold, PeekRaise, PeekResize,
-    Role, Stretch, FILL_LANDING_WAIT, HOLD_RELEASE_WAIT, STRETCH_SETTLE,
+    sends_size_early, settling, state_change_peek_raise,
+    state_change_resize, take_left, toggles_tile_fullscreen,
+    visible_frame, EarlySize, Hold, PeekRaise, PeekResize, Role, Stretch,
+    FILL_LANDING_WAIT, HOLD_RELEASE_WAIT, STRETCH_SETTLE,
   };
   use crate::animation::{
     state::WindowAnimationState,
@@ -4257,6 +4369,80 @@ mod tests {
     assert_eq!(
       sampled_size(&actual, &rect, [(950, 800), (990, 650)]),
       (950, 600)
+    );
+  }
+
+  /// A window deferring its size is sent it ahead of landing only under a
+  /// word: under `asynclanding`, once its motion is done.
+  #[test]
+  fn a_deferred_size_is_sent_early_only_under_its_word() {
+    for is_done in [false, true] {
+      assert!(!sends_size_early(EarlySize::Never, true, is_done));
+      assert!(!sends_size_early(EarlySize::AtEnd, false, is_done));
+    }
+    assert!(!sends_size_early(EarlySize::AtEnd, true, false));
+    assert!(sends_size_early(EarlySize::AtEnd, true, true));
+  }
+
+  /// Sent its size early, a window's ring and backdrop land at its target
+  /// until it is read at that size, as a deferring one's do.
+  #[test]
+  fn a_window_sent_its_size_early_lands_unsized_until_it_has_it() {
+    let mut stretch = Stretch::at(Some(tile()), PeekResize::Fill, true);
+    assert!(stretch.lands_unsized());
+
+    stretch.deferred = false;
+    assert!(!stretch.lands_unsized());
+
+    stretch.sent_early = true;
+    assert!(stretch.lands_unsized());
+
+    stretch.reached = true;
+    assert!(!stretch.lands_unsized());
+  }
+
+  /// Moved on to shrink again, a window sent its size early defers its
+  /// new one once it has the size it was sent, not while that may still
+  /// land, nor to grow.
+  #[test]
+  fn a_window_sent_its_size_early_defers_again_once_it_has_it() {
+    let sent = Rect::from_xy(0, 0, 800, 600);
+    let smaller = Rect::from_xy(0, 0, 700, 600);
+    let larger = Rect::from_xy(0, 0, 900, 600);
+    let old = Rect::from_xy(0, 0, 1000, 600);
+
+    assert!(defers_again(Some(&sent), true, &sent, &smaller));
+    assert!(!defers_again(Some(&old), true, &sent, &smaller));
+    assert!(!defers_again(None, true, &sent, &smaller));
+    assert!(!defers_again(Some(&sent), false, &sent, &smaller));
+    assert!(!defers_again(Some(&sent), true, &sent, &larger));
+
+    let t0 = Instant::now();
+    let sent_early = |actual: &Rect| {
+      let mut stretch =
+        Stretch::at(Some(actual.clone()), PeekResize::Fill, true);
+      stretch.deferred = false;
+      stretch.sent_early = true;
+      stretch
+    };
+    let unread = || -> Option<Rect> { panic!("read again") };
+    let rearmed = |actual: &Rect| {
+      restretched(
+        Some(sent_early(actual)),
+        Some(PeekResize::Fill),
+        true,
+        unread,
+        &sent,
+        &smaller,
+        t0,
+      )
+    };
+
+    assert!(rearmed(&sent).is_some_and(|kept| kept.deferred
+      && !kept.sent_early
+      && !kept.reached));
+    assert!(
+      rearmed(&old).is_some_and(|kept| !kept.deferred && !kept.sent_early)
     );
   }
 }
