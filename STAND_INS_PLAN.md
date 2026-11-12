@@ -1493,8 +1493,9 @@ in `TODO.md` "Live-check switch"; 10e turns it into the real path.
 
 #### 10c. Grab resizes on peeks
 
-Owner, 2026-11-12: keep `fill` (whether `stretch` goes in 10f is still
-to be asked).
+Owner, 2026-11-12: keep `fill`, and keep `stretch` for now, so 10f
+leaves `place_stretched`, `stretched_rects`, `covering` and
+`STRETCH_SETTLE` in place.
 
 Built 2026-11-12, not checked live: 10c-1 to 10c-4 in one commit, as
 none of them is reachable without the next. As written, plus:
