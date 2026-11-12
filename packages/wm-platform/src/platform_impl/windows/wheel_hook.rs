@@ -2,34 +2,25 @@ use std::cell::Cell;
 
 use windows::Win32::{
   Foundation::{LPARAM, LRESULT, WPARAM},
-  System::Threading::GetCurrentThreadId,
   UI::{
     Input::KeyboardAndMouse::{
-      GetAsyncKeyState, SendInput, INPUT, INPUT_0, INPUT_KEYBOARD,
-      KEYBDINPUT, KEYBD_EVENT_FLAGS, KEYEVENTF_KEYUP, VIRTUAL_KEY,
-      VK_LCONTROL, VK_LMENU, VK_LSHIFT, VK_LWIN, VK_RCONTROL, VK_RMENU,
-      VK_RSHIFT, VK_RWIN,
+      VIRTUAL_KEY, VK_LCONTROL, VK_LMENU, VK_LSHIFT, VK_LWIN, VK_RCONTROL,
+      VK_RMENU, VK_RSHIFT, VK_RWIN,
     },
     WindowsAndMessaging::{
-      CallNextHookEx, PostThreadMessageW, MSLLHOOKSTRUCT, WM_APP,
-      WM_MOUSEHWHEEL, WM_MOUSEWHEEL,
+      CallNextHookEx, MSLLHOOKSTRUCT, WM_MOUSEHWHEEL, WM_MOUSEWHEEL,
     },
   },
 };
 
-use super::{MouseHookThread, SENT_KEY_MARKER};
+use super::{
+  is_async_key_down, mask_modifier_release, mask_modifiers_later,
+  MouseHookThread, WM_MASK_MODIFIERS,
+};
 use crate::{Key, KeyCode};
 
 /// Callback stored in [`HOOK`] for wheel events.
 type HookCallback = Box<dyn FnMut(WheelEvent) -> bool>;
-
-/// Posted by the hook to its own thread, to tap [`MASK_KEY`] once the
-/// turn it swallowed is done with.
-const WM_MASK_MODIFIERS: u32 = WM_APP + 1;
-
-/// An unassigned key, whose tap keeps a later release of Alt or Win from
-/// counting as a lone tap of it.
-const MASK_KEY: VIRTUAL_KEY = VIRTUAL_KEY(0xE8);
 
 thread_local! {
   /// The callback of the hook's thread, called for every turn of a mouse
@@ -50,12 +41,7 @@ pub struct WheelEvent {
 impl WheelEvent {
   /// Whether `key` is held down at the time of the turn.
   pub fn is_key_down(key: Key) -> bool {
-    // The set high bit, i.e. a negative state, is whether the key is down
-    // now rather than as of the last message this thread read, which a
-    // hook thread may never have.
-    // SAFETY: No preconditions.
-    let is_down =
-      |key_code: u16| unsafe { GetAsyncKeyState(i32::from(key_code)) } < 0;
+    let is_down = |key_code: u16| is_async_key_down(VIRTUAL_KEY(key_code));
 
     match key {
       Key::Win => is_down(VK_LWIN.0) || is_down(VK_RWIN.0),
@@ -147,51 +133,8 @@ impl WheelHook {
       return unsafe { CallNextHookEx(None, code, wparam, lparam) };
     }
 
-    // Without the turn, the window under the cursor sees a lone tap of
-    // the held modifiers once they are released, which for Alt opens its
-    // menu bar and for Win the Start menu. Masked after the hook returns,
-    // as it must return quickly.
-    if WheelEvent::is_key_down(Key::Alt)
-      || WheelEvent::is_key_down(Key::Win)
-    {
-      // SAFETY: No preconditions.
-      let _ = unsafe {
-        PostThreadMessageW(
-          GetCurrentThreadId(),
-          WM_MASK_MODIFIERS,
-          WPARAM(0),
-          LPARAM(0),
-        )
-      };
-    }
+    mask_modifiers_later();
 
     LRESULT(1)
-  }
-}
-
-/// Taps [`MASK_KEY`], marked so that the keyboard hook lets it through.
-fn mask_modifier_release() {
-  let input = |flags| INPUT {
-    r#type: INPUT_KEYBOARD,
-    Anonymous: INPUT_0 {
-      ki: KEYBDINPUT {
-        wVk: MASK_KEY,
-        wScan: 0,
-        dwFlags: flags,
-        time: 0,
-        dwExtraInfo: SENT_KEY_MARKER,
-      },
-    },
-  };
-
-  let inputs = [input(KEYBD_EVENT_FLAGS(0)), input(KEYEVENTF_KEYUP)];
-
-  // SAFETY: `inputs` outlives the call and `cbsize` matches `INPUT`.
-  #[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
-  let sent =
-    unsafe { SendInput(&inputs, std::mem::size_of::<INPUT>() as i32) };
-
-  if sent as usize != inputs.len() {
-    tracing::warn!("Failed to mask the release of a held modifier key.");
   }
 }

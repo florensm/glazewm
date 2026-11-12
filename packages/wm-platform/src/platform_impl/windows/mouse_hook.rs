@@ -6,11 +6,29 @@ use std::{
 use windows::Win32::{
   Foundation::{HINSTANCE, LPARAM, WPARAM},
   System::Threading::GetCurrentThreadId,
-  UI::WindowsAndMessaging::{
-    GetMessageW, PeekMessageW, PostThreadMessageW, SetWindowsHookExW,
-    UnhookWindowsHookEx, HOOKPROC, MSG, PM_NOREMOVE, WH_MOUSE_LL, WM_QUIT,
+  UI::{
+    Input::KeyboardAndMouse::{
+      GetAsyncKeyState, SendInput, INPUT, INPUT_0, INPUT_KEYBOARD,
+      KEYBDINPUT, KEYBD_EVENT_FLAGS, KEYEVENTF_KEYUP, VIRTUAL_KEY,
+      VK_LMENU, VK_LWIN, VK_RMENU, VK_RWIN,
+    },
+    WindowsAndMessaging::{
+      GetMessageW, PeekMessageW, PostThreadMessageW, SetWindowsHookExW,
+      UnhookWindowsHookEx, HOOKPROC, MSG, PM_NOREMOVE, WH_MOUSE_LL,
+      WM_APP, WM_QUIT,
+    },
   },
 };
+
+use super::SENT_KEY_MARKER;
+
+/// Posted by a hook to its own thread, to tap [`MASK_KEY`] once the input
+/// it swallowed is done with (see [`mask_modifiers_later`]).
+pub(crate) const WM_MASK_MODIFIERS: u32 = WM_APP + 1;
+
+/// An unassigned key, whose tap keeps a later release of Alt or Win from
+/// counting as a lone tap of it.
+const MASK_KEY: VIRTUAL_KEY = VIRTUAL_KEY(0xE8);
 
 /// A system-wide low-level mouse hook on a thread of its own.
 ///
@@ -127,5 +145,68 @@ impl MouseHookThread {
 impl Drop for MouseHookThread {
   fn drop(&mut self) {
     let _ = self.terminate();
+  }
+}
+
+/// Whether the key `vk` is held down now.
+///
+/// The set high bit, i.e. a negative state, is whether the key is down now
+/// rather than as of the last message this thread read, which a hook
+/// thread may never have.
+pub(crate) fn is_async_key_down(vk: VIRTUAL_KEY) -> bool {
+  // SAFETY: No preconditions.
+  unsafe { GetAsyncKeyState(i32::from(vk.0)) < 0 }
+}
+
+/// Has the calling hook thread tap [`MASK_KEY`] once its hook returns, if
+/// Alt or Win is held.
+///
+/// Without the mouse input a hook swallowed, the window under the cursor
+/// sees a lone tap of the held modifiers once they are released, which for
+/// Alt opens its menu bar and for Win the Start menu. The tap is posted,
+/// as the hook must return quickly; the thread's `on_message` has to call
+/// [`mask_modifier_release`] for [`WM_MASK_MODIFIERS`].
+pub(crate) fn mask_modifiers_later() {
+  let is_held = [VK_LMENU, VK_RMENU, VK_LWIN, VK_RWIN]
+    .into_iter()
+    .any(is_async_key_down);
+
+  if is_held {
+    // SAFETY: No preconditions.
+    let _ = unsafe {
+      PostThreadMessageW(
+        GetCurrentThreadId(),
+        WM_MASK_MODIFIERS,
+        WPARAM(0),
+        LPARAM(0),
+      )
+    };
+  }
+}
+
+/// Taps [`MASK_KEY`], marked so that the keyboard hook lets it through.
+pub(crate) fn mask_modifier_release() {
+  let input = |flags| INPUT {
+    r#type: INPUT_KEYBOARD,
+    Anonymous: INPUT_0 {
+      ki: KEYBDINPUT {
+        wVk: MASK_KEY,
+        wScan: 0,
+        dwFlags: flags,
+        time: 0,
+        dwExtraInfo: SENT_KEY_MARKER,
+      },
+    },
+  };
+
+  let inputs = [input(KEYBD_EVENT_FLAGS(0)), input(KEYEVENTF_KEYUP)];
+
+  // SAFETY: `inputs` outlives the call and `cbsize` matches `INPUT`.
+  #[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
+  let sent =
+    unsafe { SendInput(&inputs, std::mem::size_of::<INPUT>() as i32) };
+
+  if sent as usize != inputs.len() {
+    tracing::warn!("Failed to mask the release of a held modifier key.");
   }
 }
