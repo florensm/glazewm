@@ -128,6 +128,7 @@ async fn start_wm(
   dispatcher: &Dispatcher,
 ) -> anyhow::Result<()> {
   setup_logging(&verbosity)?;
+  log_panics();
 
   // Left on by mistake, it would make animations look broken or differ
   // from the defaults.
@@ -611,6 +612,23 @@ fn catch_up_before_frame(
   }
 
   Ok(())
+}
+
+/// Logs panics to `errors.log`, with their thread and a backtrace: the
+/// release WM has no console for the default hook's message, so a panic
+/// otherwise ends the WM (or one of its threads) without a trace.
+fn log_panics() {
+  let default_hook = std::panic::take_hook();
+
+  std::panic::set_hook(Box::new(move |info| {
+    tracing::error!(
+      "Panic on thread '{}': {info}\n{}",
+      std::thread::current().name().unwrap_or("unnamed"),
+      std::backtrace::Backtrace::force_capture(),
+    );
+
+    default_hook(info);
+  }));
 }
 
 /// Initialize logging with the specified verbosity level.
