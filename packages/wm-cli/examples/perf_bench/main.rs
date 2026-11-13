@@ -98,6 +98,10 @@ const METRICS: &[(&str, &str)] = &[
   // Like every column, a median over bursts, not the longest seen.
   ("interval:max", "interval max ms (median burst)"),
   ("tree:peek_frame:per_frame", "peek_frame ms/frame"),
+  ("tree:peek_draw:per_frame", "peek_draw ms/frame"),
+  ("tree:peek_track:per_frame", "peek_track ms/frame"),
+  ("cross:peek_ring:per_frame", "peek_ring ms/frame"),
+  ("cross:peek_backdrop:per_frame", "peek_backdrop ms/frame"),
   (
     "tree:session_overlays:per_frame",
     "session_overlays ms/frame",
@@ -124,6 +128,14 @@ const METRICS: &[(&str, &str)] = &[
     "outside:session_overlays:total",
     "session_overlays ms (outside frames)",
   ),
+  // The workspace switch's pre-pass, under `redraw_prep`.
+  (
+    "outside:ws_surrogates:total",
+    "ws_surrogates ms (outside frames)",
+  ),
+  ("outside:ws_park:total", "ws_park ms (outside frames)"),
+  ("outside:ws_show:total", "ws_show ms (outside frames)"),
+  ("outside:ws_start:total", "ws_start ms (outside frames)"),
   ("latency:to anim start:p50", "input->anim start ms"),
   ("latency:to first frame:p50", "input->first frame ms"),
 ];

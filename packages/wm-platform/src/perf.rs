@@ -184,14 +184,21 @@ pub enum Stage {
   /// The WM's handling of one IPC message (`handle_ipc_message`), mostly
   /// run outside frames, so the answer's own cost can be read off.
   Command,
-  /// The whole animation tick (`AnimationManager::update_internal`).
-  Tick,
   /// From the timer thread's wake for a tick to the commit of the peeks'
   /// frame (`PeekView::tick`, `track_overlays` and their batch), in
   /// frames with peeks to draw. Not nested in `Tick`: the wait for the
   /// WM thread before it (the main loop's catch-up, among others) is
   /// counted too.
   PeekFrame,
+  /// `PeekView::tick`'s drawing of each moving or leaving peek, from its
+  /// alpha restore and companion check (a leaving one's cloak) to
+  /// `Entry::draw`.
+  PeekDraw,
+  /// The peek frame's `peek_view::track_overlays`, its batch commit
+  /// included.
+  PeekTrack,
+  /// The whole animation tick (`AnimationManager::update_internal`).
+  Tick,
   /// `platform_sync`, including everything nested below it.
   PlatformSync,
   /// `redraw_containers`, including both stages below.
@@ -199,6 +206,17 @@ pub enum Stage {
   /// `redraw_containers`' setup before its per-window loop: expanding the
   /// redraw set, focus-order sorting, and the workspace-switch pre-pass.
   RedrawPrep,
+  /// The switch pre-pass's `WorkspaceSurrogate::new` and backdrop copy of
+  /// each window.
+  WsSurrogates,
+  /// The switch pre-pass's `park_switch_borders`.
+  WsPark,
+  /// The switch pre-pass's surrogate show and ring cover, its `DwmFlush`,
+  /// and the ring conceals after it.
+  WsShow,
+  /// The switch pre-pass's `hand_over_cut_short_slide` and
+  /// `start_workspace_switch`.
+  WsStart,
   /// `redraw_containers`' per-window loop itself.
   RedrawLoop,
   /// `AnimationManager::start_animation_if_needed`: this frame's
@@ -247,6 +265,15 @@ pub enum Stage {
   /// `platform_sync` after `redraw_containers`: focus, overlay sync, tab
   /// bars, overview, guards and particles.
   SyncTail,
+  /// `sync_tail`'s `sync_focus`.
+  SyncFocus,
+  /// `sync_tail`'s `sync_tab_bars`.
+  TabBars,
+  /// `sync_tail`'s `sync_overview`.
+  Overview,
+  /// `sync_tail`'s stuck-window report, click and motion guards, and
+  /// particles.
+  Guards,
   /// `update_internal`'s post-`platform_sync` session/workspace cleanup
   /// and surrogate fade-out tail.
   Cleanup,
@@ -269,17 +296,37 @@ pub enum Stage {
   OverlayPlace,
   /// `Overlay::apply_blend` of either overlay kind.
   OverlayBlend,
+  /// `new_entry`'s `WindowPeek::carry_styles`: the backdrop copies.
+  PeekStyles,
+  /// `new_entry`'s `WindowPeek::warm_up`.
+  PeekWarm,
+  /// `NativeSurrogate::create`'s window: `CreateWindowExW` and its
+  /// corner style. Any surrogate's, peeks' among them.
+  SurrogateWindow,
+  /// `NativeSurrogate::create`/`revive`'s companion lookup and thumbnail
+  /// registration (or update). Any surrogate's, peeks' among them.
+  SurrogateThumb,
+  /// `peek_view::track_overlays`' `carry_ring` of one window.
+  PeekRing,
+  /// `peek_view::track_overlays`' `carry_backdrop` of one window.
+  PeekBackdrop,
 }
 
 impl Stage {
   /// Every stage, in report order.
-  const ALL: [Stage; 36] = [
+  const ALL: [Stage; 52] = [
     Stage::Command,
-    Stage::Tick,
     Stage::PeekFrame,
+    Stage::PeekDraw,
+    Stage::PeekTrack,
+    Stage::Tick,
     Stage::PlatformSync,
     Stage::Redraw,
     Stage::RedrawPrep,
+    Stage::WsSurrogates,
+    Stage::WsPark,
+    Stage::WsShow,
+    Stage::WsStart,
     Stage::RedrawLoop,
     Stage::AnimStep,
     Stage::RedrawFrozen,
@@ -300,6 +347,10 @@ impl Stage {
     Stage::BatchCommit,
     Stage::SessionOverlays,
     Stage::SyncTail,
+    Stage::SyncFocus,
+    Stage::TabBars,
+    Stage::Overview,
+    Stage::Guards,
     Stage::Cleanup,
     Stage::PreCommit,
     Stage::NativeFrame,
@@ -310,6 +361,12 @@ impl Stage {
     Stage::Preposition,
     Stage::OverlayPlace,
     Stage::OverlayBlend,
+    Stage::PeekStyles,
+    Stage::PeekWarm,
+    Stage::SurrogateWindow,
+    Stage::SurrogateThumb,
+    Stage::PeekRing,
+    Stage::PeekBackdrop,
   ];
 
   /// Number of distinct stages, i.e. the width of the accumulator arrays.
@@ -324,11 +381,17 @@ impl Stage {
   const fn label(self) -> &'static str {
     match self {
       Stage::Command => "command",
-      Stage::Tick => "tick",
       Stage::PeekFrame => "peek_frame",
+      Stage::PeekDraw => "peek_draw",
+      Stage::PeekTrack => "peek_track",
+      Stage::Tick => "tick",
       Stage::PlatformSync => "platform_sync",
       Stage::Redraw => "redraw",
       Stage::RedrawPrep => "redraw_prep",
+      Stage::WsSurrogates => "ws_surrogates",
+      Stage::WsPark => "ws_park",
+      Stage::WsShow => "ws_show",
+      Stage::WsStart => "ws_start",
       Stage::RedrawLoop => "redraw_loop",
       Stage::AnimStep => "anim_step",
       Stage::RedrawFrozen => "rd_frozen",
@@ -349,6 +412,10 @@ impl Stage {
       Stage::BatchCommit => "batch_commit",
       Stage::SessionOverlays => "session_overlays",
       Stage::SyncTail => "sync_tail",
+      Stage::SyncFocus => "sync_focus",
+      Stage::TabBars => "tab_bars",
+      Stage::Overview => "overview",
+      Stage::Guards => "guards",
       Stage::Cleanup => "cleanup",
       Stage::PreCommit => "pre_commit",
       Stage::NativeFrame => "native_frame",
@@ -359,6 +426,12 @@ impl Stage {
       Stage::Preposition => "preposition",
       Stage::OverlayPlace => "ovl_place",
       Stage::OverlayBlend => "ovl_blend",
+      Stage::PeekStyles => "peek_styles",
+      Stage::PeekWarm => "peek_warm",
+      Stage::SurrogateWindow => "sg_window",
+      Stage::SurrogateThumb => "sg_thumb",
+      Stage::PeekRing => "peek_ring",
+      Stage::PeekBackdrop => "peek_backdrop",
     }
   }
 
@@ -370,7 +443,10 @@ impl Stage {
   /// [`is_cross_cutting`]: Stage::is_cross_cutting
   const fn depth(self) -> usize {
     match self {
-      Stage::PlatformSync | Stage::Cleanup => 1,
+      Stage::PeekDraw
+      | Stage::PeekTrack
+      | Stage::PlatformSync
+      | Stage::Cleanup => 1,
       Stage::Redraw | Stage::SyncTail => 2,
       Stage::RedrawPrep
       | Stage::RedrawLoop
@@ -378,8 +454,18 @@ impl Stage {
       | Stage::PeekHandover
       | Stage::PeekRaise
       | Stage::SurrogateFlush
-      | Stage::SessionOverlays => 3,
-      Stage::AnimStep | Stage::RedrawFrozen | Stage::RedrawApply => 4,
+      | Stage::SessionOverlays
+      | Stage::SyncFocus
+      | Stage::TabBars
+      | Stage::Overview
+      | Stage::Guards => 3,
+      Stage::WsSurrogates
+      | Stage::WsPark
+      | Stage::WsShow
+      | Stage::WsStart
+      | Stage::AnimStep
+      | Stage::RedrawFrozen
+      | Stage::RedrawApply => 4,
       Stage::RepositionQuery
       | Stage::RepositionSwp
       | Stage::RepositionVisibility
@@ -414,6 +500,12 @@ impl Stage {
         | Stage::Preposition
         | Stage::OverlayPlace
         | Stage::OverlayBlend
+        | Stage::PeekStyles
+        | Stage::PeekWarm
+        | Stage::SurrogateWindow
+        | Stage::SurrogateThumb
+        | Stage::PeekRing
+        | Stage::PeekBackdrop
     )
   }
 }
@@ -1543,12 +1635,43 @@ mod tests {
       assert_eq!(stage.depth(), Stage::RedrawLoop.depth());
       assert!(stage.index() > Stage::ApplyUncloak.index());
     }
+    for stage in [Stage::PeekDraw, Stage::PeekTrack] {
+      assert_eq!(stage.depth(), Stage::PeekFrame.depth() + 1);
+      assert!(stage.index() > Stage::PeekFrame.index());
+      assert!(stage.index() < Stage::Tick.index());
+    }
+    for stage in [
+      Stage::WsSurrogates,
+      Stage::WsPark,
+      Stage::WsShow,
+      Stage::WsStart,
+    ] {
+      assert_eq!(stage.depth(), Stage::RedrawPrep.depth() + 1);
+      assert!(stage.index() > Stage::RedrawPrep.index());
+      assert!(stage.index() < Stage::RedrawLoop.index());
+    }
+    for stage in [
+      Stage::SyncFocus,
+      Stage::TabBars,
+      Stage::Overview,
+      Stage::Guards,
+    ] {
+      assert_eq!(stage.depth(), Stage::SyncTail.depth() + 1);
+      assert!(stage.index() > Stage::SyncTail.index());
+      assert!(stage.index() < Stage::Cleanup.index());
+    }
     for stage in [
       Stage::PeekNew,
       Stage::TakeOver,
       Stage::Preposition,
       Stage::OverlayPlace,
       Stage::OverlayBlend,
+      Stage::PeekStyles,
+      Stage::PeekWarm,
+      Stage::SurrogateWindow,
+      Stage::SurrogateThumb,
+      Stage::PeekRing,
+      Stage::PeekBackdrop,
     ] {
       assert!(stage.is_cross_cutting(), "{}", stage.label());
     }
@@ -1661,7 +1784,8 @@ mod tests {
   }
 
   /// A peek frame timed from an earlier wake counts the wait before it,
-  /// and is reported as a row of its own, beside `tick`.
+  /// and is reported as a row of its own, beside `tick`, its own stages
+  /// under it.
   #[test]
   fn times_the_peek_frame_from_its_wake() {
     std::thread::spawn(|| {
@@ -1670,6 +1794,8 @@ mod tests {
         stage: Stage::PeekFrame,
         start: Instant::now().checked_sub(Duration::from_millis(3)),
       });
+      drop(forced_scope(Stage::PeekDraw));
+      drop(forced_scope(Stage::PeekRing));
       drop(forced_scope(Stage::Tick));
       assert!(!roll_up_frame());
 
@@ -1681,7 +1807,17 @@ mod tests {
       });
 
       let report = take_report("unit test").expect("a frame was recorded");
-      assert!(report.contains("\n  peek_frame "), "{report}");
+      let (tree, several) = report
+        .split_once("-- called from several parents")
+        .expect("a cross-cutting section");
+      let (_, under_peek_frame) = tree
+        .split_once("\n  peek_frame ")
+        .expect("a peek_frame row");
+      let (under_peek_frame, _) = under_peek_frame
+        .split_once("\n  tick ")
+        .expect("a tick row after it");
+      assert!(under_peek_frame.contains("\n    peek_draw "), "{report}");
+      assert!(several.contains("\n    peek_ring "), "{report}");
     })
     .join()
     .expect("profiler test thread panicked");

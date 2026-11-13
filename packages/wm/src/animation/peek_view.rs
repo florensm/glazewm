@@ -1310,6 +1310,7 @@ impl PeekView {
   /// Advances moving columns to `now`, returning the ones that landed.
   /// Their moves are queued into `batch`, for [`track_overlays`] to commit
   /// along with their overlays'.
+  #[allow(clippy::too_many_lines)]
   pub fn tick(
     &mut self,
     now: Instant,
@@ -1328,6 +1329,7 @@ impl PeekView {
           // Its real window was cloaked a tick ago at least, so needs its
           // alpha no more. One not taken over from, e.g. as it wasn't
           // redrawn, is drawn all the same.
+          let draw_scope = perf::scope(Stage::PeekDraw);
           for (peek, _) in entry.peeks_mut() {
             peek.restore_alpha();
             peek.show_window();
@@ -1347,6 +1349,7 @@ impl PeekView {
             landed.sized.push(*id);
           }
           entry.draw(&rect, now, batch);
+          drop(draw_scope);
 
           if entry.may_land(now) {
             // Landed on its own peek's monitor, it has nothing left on
@@ -1381,6 +1384,7 @@ impl PeekView {
         Role::Leaving(_) => {
           // Cloaked as its peek takes over, a tick after the peek went up
           // under it; given its alpha back a tick later, as a moving one.
+          let draw_scope = perf::scope(Stage::PeekDraw);
           match entry.departing.as_mut() {
             Some(departing) if departing.awaits_cloak => {
               entry.peek.take_over(&departing.native);
@@ -1400,6 +1404,7 @@ impl PeekView {
           }
           let (rect, _) = entry.motion.current_state_at(now);
           entry.draw(&rect, now, batch);
+          drop(draw_scope);
         }
         Role::Peek | Role::HandingBack => {}
       }
@@ -3186,7 +3191,9 @@ fn new_entry(
 
   // Before the ring, which goes on top. Shown in its style by
   // `track_overlays`, before anything is composited.
+  let styles_scope = perf::scope(Stage::PeekStyles);
   peek.carry_styles(styles);
+  drop(styles_scope);
 
   // A moving column's or a leaving window's real window may still show
   // until the peek takes over from it as it is cloaked; one at rest is
@@ -3194,6 +3201,7 @@ fn new_entry(
   let covers_shown_window =
     is_moving && !window.native().is_cloaked().unwrap_or(true);
   if covers_shown_window {
+    let _scope = perf::scope(Stage::PeekWarm);
     peek.warm_up();
   }
 
@@ -3448,6 +3456,7 @@ fn carry_ring(
   id: Uuid,
   blend: Option<StyleBlend<BorderOverlayParams>>,
 ) -> bool {
+  let _scope = perf::scope(Stage::PeekRing);
   let leaving = leaving_window(state, id);
   let window = state.window_by_id(id).filter(|_| leaving.is_none());
   let (native, bounds, frame) = match (leaving, &window) {
@@ -3667,6 +3676,7 @@ fn carry_backdrop(
   id: Uuid,
   blend: Option<StyleBlend<BackdropOverlayParams>>,
 ) -> bool {
+  let _scope = perf::scope(Stage::PeekBackdrop);
   let carries = state
     .animation_manager
     .peeks

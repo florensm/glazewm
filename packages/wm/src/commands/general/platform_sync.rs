@@ -37,6 +37,7 @@ fn animations_suppressed(state: &WmState) -> bool {
   state.pending_sync.animations_suppressed() || state.overview.is_shown()
 }
 
+#[allow(clippy::too_many_lines)]
 pub fn platform_sync(
   state: &mut WmState,
   config: &UserConfig,
@@ -111,11 +112,13 @@ pub fn platform_sync(
   // `SetForegroundWindow` during the slide (the animation manager
   // re-queues focus after it completes), preventing the OS from
   // asynchronously uncloaking the incoming focused window mid-animation.
+  let focus_scope = perf::scope(Stage::SyncFocus);
   let focused_id = if state.pending_sync.needs_focus_update() {
     sync_focus(&focused_container, state)
   } else {
     Ok(None)
   };
+  drop(focus_scope);
 
   // `SetForegroundWindow` may have raised a window past the surrogate of
   // its finished move, which covers it until its companion is back. Put
@@ -188,12 +191,17 @@ pub fn platform_sync(
   } else {
     crate::tab_bars::Restack::None
   };
+  let tab_bars_scope = perf::scope(Stage::TabBars);
   crate::tab_bars::sync_tab_bars(state, config, restack);
+  drop(tab_bars_scope);
 
   // After focus is synced, so the overview never hides while it is still
   // the foreground window.
+  let overview_scope = perf::scope(Stage::Overview);
   crate::overview::sync_overview(state, config);
+  drop(overview_scope);
 
+  let guards_scope = perf::scope(Stage::Guards);
   if !state.animation_manager.has_active_animations() {
     crate::animation::scroll_view::report_stuck_windows(state);
   }
@@ -205,6 +213,7 @@ pub fn platform_sync(
 
   // Once the layout has settled, so resized windows' new rects are known.
   crate::particles::show_particles(state, config);
+  drop(guards_scope);
 
   let is_animating = state.animation_manager.is_workspace_switch_playing();
   state.switch_log.note_synced(is_animating);
@@ -980,6 +989,7 @@ fn redraw_containers(
         // `border_viewport`).
         let mut monitor_work_area = Rect::from_xy(0, 0, 0, 0);
 
+        let surrogates_scope = perf::scope(Stage::WsSurrogates);
         for window in &windows_to_update {
           let id = window.id();
           let is_incoming =
@@ -1144,6 +1154,7 @@ fn redraw_containers(
             ));
           }
         }
+        drop(surrogates_scope);
 
         let has_outgoing =
           ws_windows.iter().any(|(_, entry)| !entry.is_incoming);
@@ -1158,12 +1169,15 @@ fn redraw_containers(
         if (has_outgoing || has_incoming)
           && (direction != 0 || starts_on_screen)
         {
+          let park_scope = perf::scope(Stage::WsPark);
           park_switch_borders(
             state,
             &mut ws_windows,
             focused_container.id(),
             config,
           );
+          drop(park_scope);
+          let show_scope = perf::scope(Stage::WsShow);
           // Show outgoing surrogates before flushing: real windows are
           // still active so their DWM thumbnails are immediately
           // warm. For stationary (non-slide) styles, also show
@@ -1214,7 +1228,9 @@ fn redraw_containers(
               overlay.conceal();
             }
           }
+          drop(show_scope);
 
+          let start_scope = perf::scope(Stage::WsStart);
           // Windows still sliding on a switch this one cuts short are
           // drawn by that one's surrogates, which go as this one
           // starts.
@@ -1233,6 +1249,7 @@ fn redraw_containers(
             &monitor_work_area,
             config,
           );
+          drop(start_scope);
         }
         // If the incoming workspace is empty, or direction == 0 (workspace
         // not in config), skip the animation.
