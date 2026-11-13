@@ -293,3 +293,56 @@ and closes them after; `minimize` is no longer in the default scenarios.
 Read first: `input->first frame ms` (now recorded on peeks), `command ms
 (WM side)`, the `peek_*` columns (where the unscoped ~56 ms went), then
 `interval p99`/`max` for the stall.
+
+## Stages, second round
+
+Scopes only (`sl/f-stages-2`), not seen running. `*` = cross-cutting
+(listed under "called from several parents", already counted in its
+parents; out of frames, all stages are in "outside frames").
+
+- `peek_draw` → `PeekView::tick`'s drawing of each moving/leaving peek
+  (alpha restore, companion check, `Entry::draw`; a leaving one's cloak)
+  → `peek_frame`.
+- `peek_track` → the frame's `track_overlays`, batch commit included →
+  `peek_frame`.
+- `peek_ring`* → `carry_ring` → `track_overlays` (`peek_track`,
+  `peek_cover`, `peek_handover`, `flush_overlays`, `leave_on_peek`).
+- `peek_backdrop`* → `carry_backdrop` → same.
+- `peek_styles`* → `new_entry`'s `carry_styles` (backdrop copies) →
+  `peek_new`.
+- `peek_warm`* → `new_entry`'s `warm_up` → `peek_new`.
+- `sg_window`* → `NativeSurrogate::create`'s `CreateWindowExW` and corner
+  style → any surrogate (`peek_new`, `ws_surrogates`, sessions, covers).
+- `sg_thumb`* → `create`/`revive`'s companion lookup and thumbnail
+  registration (or update) → same.
+- `ws_surrogates` → `WorkspaceSurrogate::new` + backdrop copy per window
+  → `redraw_prep`.
+- `ws_park` → `park_switch_borders` → `redraw_prep`.
+- `ws_show` → surrogate show/ring cover, `DwmFlush`, ring conceals →
+  `redraw_prep`.
+- `ws_start` → `hand_over_cut_short_slide`, `start_workspace_switch` →
+  `redraw_prep`.
+- `sync_focus`, `tab_bars`, `overview`, `guards` (stuck-window report,
+  click/motion guards, particles) → `sync_tail`.
+
+Read-offs: `peek_frame` − `peek_draw` − `peek_track` is the wait for the
+WM thread from the timer's wake (plus `note_fill_inputs`, `queue_landed`
+and `finish_leaving`, all cheap). Rest of the frame's `track_overlays` ≈
+`peek_track` − `peek_ring` − `peek_backdrop` (exact unless a sync in the
+same frame also tracked peeks). Rest of `peek_new` (border inset, the
+cloak query, the surrogate's z-order `SetWindowPos`) = `peek_new` −
+children, on a resize with no other surrogate created. `sync_tail` −
+children − `backdrop_sync` − `border_sync` = taskbar updates, cursor
+jump, focus effects, z-order settle.
+
+The next bench (`resize` on peeks, and one `switch` run) should answer:
+
+1. Of `peek_new`'s ~17.7 ms, how much is `sg_window` vs `sg_thumb` vs
+   `peek_styles`: is it the window, its thumbnail, or the backdrop
+   copies?
+2. Of the first `peek_frame`'s ~26 ms (slowest input timeline), how much
+   is waiting for the WM thread vs `peek_draw` vs `peek_track` (and in
+   that `peek_ring`/`peek_backdrop`)?
+3. Of `switch`'s +20.5 ms in `redraw_prep` and +15.7 ms in `sync_tail`,
+   which `ws_*` stage and which of `sync_focus`/`tab_bars`/`overview`/
+   `guards` holds it?
