@@ -26,8 +26,6 @@
 //!   backdrop can't be copied (`STAND_INS_PLAN.md` 10f).
 //! - `asynchandback`: a window its peek hands back is moved
 //!   asynchronously, not in step with the peek.
-//! - `keeppeeks`: a tile's peek is kept, hidden, when it hands back, for
-//!   its window's next motion.
 //! - `keepoverlays`: as `origin/main`, a window taken over by a new
 //!   `ResizeSession` keeps its overlays where they are until the session
 //!   loop moves them behind the surrogate, rather than having them hidden
@@ -50,7 +48,6 @@ pub struct Isolation {
   pub peeks_first: bool,
   pub more_peeks: bool,
   pub async_hand_back: bool,
-  pub keep_peeks: bool,
   pub keep_overlays: bool,
 }
 
@@ -64,7 +61,6 @@ impl Default for Isolation {
       peeks_first: false,
       more_peeks: false,
       async_hand_back: false,
-      keep_peeks: false,
       keep_overlays: false,
     }
   }
@@ -89,7 +85,6 @@ impl Isolation {
         "peeksfirst" => isolation.peeks_first = true,
         "morepeeks" => isolation.more_peeks = true,
         "asynchandback" => isolation.async_hand_back = true,
-        "keeppeeks" => isolation.keep_peeks = true,
         "keepoverlays" => isolation.keep_overlays = true,
         _ => tracing::warn!("Unknown GLAZEWM_ISOLATE flag: {word}."),
       }
@@ -132,7 +127,6 @@ mod tests {
         peeks_first: false,
         more_peeks: false,
         async_hand_back: false,
-        keep_peeks: false,
         keep_overlays: false,
       }
     );
@@ -179,16 +173,12 @@ mod tests {
   }
 
   #[test]
-  fn hand_back_and_keep_peeks_words_are_off_unless_given() {
-    let isolation = Isolation::default();
-    assert!(!isolation.async_hand_back);
-    assert!(!isolation.keep_peeks);
-
+  fn async_hand_back_is_off_unless_given() {
+    assert!(!Isolation::default().async_hand_back);
     assert_eq!(
-      Isolation::parse("AsyncHandBack,KEEPPEEKS"),
+      Isolation::parse("AsyncHandBack"),
       Isolation {
         async_hand_back: true,
-        keep_peeks: true,
         ..Isolation::default()
       }
     );

@@ -30,9 +30,6 @@ pub fn reload_config(
 
   state.tab_bar_settings = None;
 
-  // Kept peeks were made for the old styles.
-  state.animation_manager.peeks.drop_spares();
-
   // Marks are re-applied by the window rules below, so that removing
   // the rule takes effect.
   state.stay_interactive.unmark_all();

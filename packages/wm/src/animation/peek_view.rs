@@ -927,73 +927,10 @@ pub enum Leave {
   Unsupported,
 }
 
-/// How long a released tile's peek is kept for its window's next motion
-/// (see [`Spare`]). Checked lazily, as no tick runs while nothing moves.
-const SPARE_LIFETIME: Duration = Duration::from_secs(10);
-
-/// Most spare peeks kept at once; the oldest goes first.
-const MAX_SPARES: usize = 16;
-
-/// What a spare peek was made for, which a new motion must ask for to
-/// reuse it.
-#[derive(Clone, Debug, PartialEq, Eq)]
-struct SpareFit {
-  /// The real window it shows.
-  source: HWND,
-  /// The monitor area it is clipped to.
-  clip: Rect,
-  live: bool,
-}
-
-/// A released tile's peek, hidden and kept for its window's next motion
-/// instead of being built anew (`GLAZEWM_ISOLATE=keeppeeks`).
-struct Spare {
-  peek: WindowPeek,
-  fit: SpareFit,
-  kept_at: Instant,
-}
-
-/// Whether a peek kept at `kept_at` has outlived [`SPARE_LIFETIME`] at
-/// `now`.
-fn is_expired(kept_at: Instant, now: Instant) -> bool {
-  now.saturating_duration_since(kept_at) >= SPARE_LIFETIME
-}
-
-/// Whether a spare made for `fit`, kept at `kept_at`, can draw a motion
-/// asking for `wanted` at `now`.
-fn reuses_spare(
-  fit: &SpareFit,
-  kept_at: Instant,
-  wanted: &SpareFit,
-  now: Instant,
-) -> bool {
-  fit == wanted && !is_expired(kept_at, now)
-}
-
-/// Of spares kept at the instants given, those past the first `cap`,
-/// newest first.
-fn evicted<K: Copy>(
-  kept: impl IntoIterator<Item = (K, Instant)>,
-  cap: usize,
-) -> Vec<K> {
-  let mut kept = kept.into_iter().collect::<Vec<_>>();
-  kept.sort_by_key(|(_, kept_at)| std::cmp::Reverse(*kept_at));
-  kept.into_iter().skip(cap).map(|(key, _)| key).collect()
-}
-
-/// Whether a released entry's peek is kept as a spare: a tile's, drawn on
-/// one peek, not one taking its window off the screen.
-fn keeps_peek(is_column: bool, has_trail: bool, role: Role) -> bool {
-  !is_column && !has_trail && !matches!(role, Role::Leaving(_))
-}
-
 /// Peeks of the columns of displayed scrolling layouts.
 #[derive(Default)]
 pub struct PeekView {
   pub(super) entries: HashMap<Uuid, Entry>,
-  /// Hidden peeks of released tiles, by window, which no query over
-  /// `entries` sees (see [`Spare`]).
-  spares: HashMap<Uuid, Spare>,
   /// Last target rect of every window in a displayed scrolling layout,
   /// i.e. where it is shown now and moves from on the next relayout.
   pub(super) last_rects: HashMap<Uuid, Rect>,
@@ -1260,11 +1197,8 @@ impl PeekView {
       }
     }
 
-    self.prune_spares(now);
     for id in &landed.released {
-      if let Some(entry) = self.entries.remove(id) {
-        self.keep_spare(*id, entry, now);
-      }
+      self.entries.remove(id);
     }
 
     landed.left = take_left(&mut self.entries, |entry| {
@@ -1311,14 +1245,10 @@ impl PeekView {
     is_known: impl Fn(&Uuid) -> bool,
   ) -> Vec<(Uuid, Entry)> {
     self.last_rects.retain(|id, _| is_known(id));
-    let departed = self
+    self
       .entries
       .extract_if(|id, entry| is_departed(entry.is_column, is_known(id)))
-      .collect::<Vec<_>>();
-    for (id, _) in &departed {
-      self.spares.remove(id);
-    }
-    departed
+      .collect()
   }
 
   /// Takes out the peeks of windows entering a tiling layout that
@@ -1329,23 +1259,18 @@ impl PeekView {
     &mut self,
     shown: impl Fn(&Uuid) -> Option<bool>,
   ) -> Vec<Uuid> {
-    let strays = self
+    self
       .entries
       .extract_if(|id, entry| {
         is_stray(entry.is_column, entry.role, shown(id))
       })
       .map(|(id, _)| id)
-      .collect::<Vec<_>>();
-    for id in &strays {
-      self.spares.remove(id);
-    }
-    strays
+      .collect()
   }
 
-  /// Drops `window_id`'s peek, if it is entering a tiling layout, and its
-  /// spare, as its window is unmanaged.
+  /// Drops `window_id`'s peek, if it is entering a tiling layout, as its
+  /// window is unmanaged.
   pub fn forget_entering(&mut self, window_id: &Uuid) {
-    self.spares.remove(window_id);
     if self.entries.get(window_id).is_some_and(|entry| {
       !entry.is_column && !matches!(entry.role, Role::Leaving(_))
     }) {
@@ -1384,9 +1309,7 @@ impl PeekView {
 
   /// Drops `window_id`'s peek if it is leaving, ending its animation with
   /// nothing more done: no `WM_CLOSE`, and its real window left as it is.
-  /// Its spare goes too.
   pub fn forget_leaving(&mut self, window_id: &Uuid) {
-    self.spares.remove(window_id);
     if self.is_leaving(window_id) {
       self.entries.remove(window_id);
     }
@@ -1600,7 +1523,6 @@ impl PeekView {
       corner_style,
       &styles,
       role,
-      None,
     ) else {
       return false;
     };
@@ -1663,7 +1585,6 @@ impl PeekView {
       corner_style,
       &styles,
       Role::Moving { ends_shown: true },
-      None,
     ) else {
       return false;
     };
@@ -1778,15 +1699,6 @@ impl PeekView {
       return true;
     }
 
-    let spare = self.take_spare(
-      &id,
-      &SpareFit {
-        source: window.native().hwnd(),
-        clip: clip.clone(),
-        live: is_live(&styles),
-      },
-      now,
-    );
     let Some((mut entry, _)) = new_entry(
       window,
       motion,
@@ -1795,7 +1707,6 @@ impl PeekView {
       corner_style,
       &styles,
       role,
-      spare,
     ) else {
       return false;
     };
@@ -1844,7 +1755,6 @@ impl PeekView {
       corner_style,
       &styles,
       entry.role,
-      None,
     ) else {
       self.entries.remove(&id);
       return false;
@@ -2047,8 +1957,6 @@ impl PeekView {
     batch: &mut SurrogateBatch,
   ) -> Leave {
     let id = window.id();
-    // Leaving, its window has no next motion to keep a peek for.
-    self.spares.remove(&id);
     let role = self.entries.get(&id).map(|entry| entry.role);
     if role.is_some_and(|role| matches!(role, Role::Leaving(_))) {
       return Leave::Leaving;
@@ -2083,7 +1991,6 @@ impl PeekView {
         corner_style,
         &styles,
         Role::Leaving(transition),
-        None,
       ) else {
         return Leave::Unsupported;
       };
@@ -2143,71 +2050,6 @@ impl PeekView {
     true
   }
 
-  /// Keeps `entry`'s peek, just released, hidden for `id`'s next motion
-  /// (see [`Spare`]) under `GLAZEWM_ISOLATE=keeppeeks`, if it is a tile's.
-  /// Drops it otherwise.
-  fn keep_spare(&mut self, id: Uuid, entry: Entry, now: Instant) {
-    if !wm_platform::isolation::current().keep_peeks
-      || !keeps_peek(entry.is_column, entry.trail.is_some(), entry.role)
-    {
-      return;
-    }
-
-    let mut peek = entry.peek;
-    let fit = SpareFit {
-      source: peek.source(),
-      clip: entry.clip,
-      live: peek.is_live(),
-    };
-    peek.set_aside();
-
-    self.prune_spares(now);
-    self.spares.insert(
-      id,
-      Spare {
-        peek,
-        fit,
-        kept_at: now,
-      },
-    );
-    let evicted = evicted(
-      self.spares.iter().map(|(id, spare)| (*id, spare.kept_at)),
-      MAX_SPARES,
-    );
-    for id in evicted {
-      self.spares.remove(&id);
-    }
-  }
-
-  /// Takes `id`'s spare peek if it can draw a motion asking for `wanted`
-  /// at `now`. One that can't is dropped.
-  fn take_spare(
-    &mut self,
-    id: &Uuid,
-    wanted: &SpareFit,
-    now: Instant,
-  ) -> Option<WindowPeek> {
-    self.prune_spares(now);
-    self
-      .spares
-      .remove(id)
-      .filter(|spare| reuses_spare(&spare.fit, spare.kept_at, wanted, now))
-      .map(|spare| spare.peek)
-  }
-
-  /// Drops the spare peeks past [`SPARE_LIFETIME`] at `now`.
-  fn prune_spares(&mut self, now: Instant) {
-    self
-      .spares
-      .retain(|_, spare| !is_expired(spare.kept_at, now));
-  }
-
-  /// Drops every spare peek (see [`Spare`]), e.g. as the config reloads,
-  /// displays change or the WM pauses.
-  pub fn drop_spares(&mut self) {
-    self.spares.clear();
-  }
-
   /// Whether `window_id`'s leaving peek waits to take over from its real
   /// window, still shown.
   fn awaits_take_over(&self, window_id: &Uuid) -> bool {
@@ -2238,22 +2080,30 @@ fn held_motion(
 /// or now a hidden tab. No hand-back: their real windows are queued for
 /// redraw, which hides or shows them for good, as `sync_scroll_view` does
 /// for departed columns. Free while no window enters.
-///
-/// Spare peeks (see [`Spare`]) of such windows go too, as do those past
-/// their lifetime: no tick checks them while nothing moves.
 pub fn drop_strays(state: &mut WmState) {
-  drop_stray_spares(state);
-
   if !state.animation_manager.peeks.has_entering() {
     return;
   }
 
+  let shown = |id: &Uuid| {
+    let window = state.window_by_id(*id)?;
+    let manager = &state.animation_manager;
+    Some(
+      window
+        .workspace()
+        .is_some_and(|workspace| workspace.is_displayed())
+        && !is_hidden_in_layout(&window)
+        && window.state() != WindowState::Minimized
+        && !manager.has_close_animation(id)
+        && !manager.has_minimize_animation(id),
+    )
+  };
   let shown = state
     .animation_manager
     .peeks
     .entries
     .keys()
-    .map(|id| (*id, shown_state(state, id)))
+    .map(|id| (*id, shown(id)))
     .collect::<HashMap<_, _>>();
 
   let strays = state
@@ -2266,44 +2116,6 @@ pub fn drop_strays(state: &mut WmState) {
     if let Some(window) = state.window_by_id(id) {
       state.pending_sync.queue_container_to_redraw(window);
     }
-  }
-}
-
-/// Whether `id`'s window is on screen: `None` unmanaged, `Some(false)` on
-/// a hidden workspace, minimized, a hidden tab, or closing or minimizing.
-fn shown_state(state: &WmState, id: &Uuid) -> Option<bool> {
-  let window = state.window_by_id(*id)?;
-  let manager = &state.animation_manager;
-  Some(
-    window
-      .workspace()
-      .is_some_and(|workspace| workspace.is_displayed())
-      && !is_hidden_in_layout(&window)
-      && window.state() != WindowState::Minimized
-      && !manager.has_close_animation(id)
-      && !manager.has_minimize_animation(id),
-  )
-}
-
-/// Drops the spare peeks of windows [`shown_state`] doesn't find on
-/// screen, and those past [`SPARE_LIFETIME`].
-fn drop_stray_spares(state: &mut WmState) {
-  if state.animation_manager.peeks.spares.is_empty() {
-    return;
-  }
-
-  let strays = state
-    .animation_manager
-    .peeks
-    .spares
-    .keys()
-    .filter(|id| shown_state(state, id) != Some(true))
-    .copied()
-    .collect::<Vec<_>>();
-  let peeks = &mut state.animation_manager.peeks;
-  peeks.prune_spares(Instant::now());
-  for id in strays {
-    peeks.spares.remove(&id);
   }
 }
 
@@ -2991,10 +2803,6 @@ pub fn finish_leaving(state: &mut WmState, left: Vec<Left>) {
 /// its backdrop `styles`, and whether it covers a still-shown real window,
 /// so it has to be composited before that window is cloaked. `None` when
 /// the peek can't be created.
-///
-/// `spare`, a peek of the same window set aside (see [`Spare`]), is reset
-/// to what a new one would be and used instead, unless that fails.
-#[allow(clippy::too_many_arguments)]
 fn new_entry(
   window: &WindowContainer,
   motion: WindowAnimationState,
@@ -3003,7 +2811,6 @@ fn new_entry(
   corner_style: CornerStyle,
   styles: &[Option<BackdropOverlayParams>; 2],
   role: Role,
-  spare: Option<WindowPeek>,
 ) -> Option<(Entry, bool)> {
   let _scope = perf::scope(Stage::PeekNew);
   let is_moving = matches!(role, Role::Moving { .. } | Role::Leaving(_));
@@ -3011,33 +2818,17 @@ fn new_entry(
   // Sized like the window itself, which a collapsed `from` (an opening
   // column) isn't. A window with a backdrop that can't be copied along has
   // a peek that moves with it.
-  let live = is_live(styles);
-  let reused = spare.and_then(|mut peek| {
-    peek
-      .reset(&motion.target_rect, clip, &corner_style, live)
-      .inspect_err(|err| {
-        tracing::warn!("Failed to reuse the peek of {window}: {err}");
-      })
-      .ok()
-      .map(|()| peek)
-  });
-  let mut peek = reused
-    .map_or_else(
-      || {
-        WindowPeek::new(
-          &window.native(),
-          &motion.target_rect,
-          clip,
-          &corner_style,
-          live,
-        )
-      },
-      Ok,
-    )
-    .inspect_err(|err| {
-      tracing::warn!("Failed to create a peek of {window}: {err}");
-    })
-    .ok()?;
+  let mut peek = WindowPeek::new(
+    &window.native(),
+    &motion.target_rect,
+    clip,
+    &corner_style,
+    is_live(styles),
+  )
+  .inspect_err(|err| {
+    tracing::warn!("Failed to create a peek of {window}: {err}");
+  })
+  .ok()?;
 
   // Before the ring, which goes on top. Shown in its style by
   // `track_overlays`, before anything is composited.
@@ -3687,20 +3478,18 @@ mod tests {
     ResizeStyle, WindowResizeConfig, WindowState, WindowTransitionParams,
     WindowTransitionStyle,
   };
-  use wm_platform::{LengthValue, Rect, RectDelta, HWND};
+  use wm_platform::{LengthValue, Rect, RectDelta};
 
   use super::{
-    allows_motion, conceals_new_ring, crosses_floating, evicted,
+    allows_motion, conceals_new_ring, crosses_floating,
     floating_peek_raise, follow_duration, follows_tile,
-    fullscreen_peek_raise, has_landed, has_left, is_departed, is_expired,
-    is_peek_resize, is_pure_move, is_stray, keeps_peek, kept_transit,
-    lands_on_trail, leaves_as, leaving_transit, move_clips, peek_resize,
-    resizes_at_start, restretched, retargeted_motion, returning_transit,
-    reuses_spare, sampled_size, settling, state_change_peek_raise,
-    state_change_resize, take_left, toggles_tile_fullscreen,
-    visible_frame, Hold, PeekRaise, PeekResize, Role, SpareFit, Stretch,
-    FILL_LANDING_WAIT, HOLD_RELEASE_WAIT, MAX_SPARES, SPARE_LIFETIME,
-    STRETCH_SETTLE,
+    fullscreen_peek_raise, has_landed, has_left, is_departed,
+    is_peek_resize, is_pure_move, is_stray, kept_transit, lands_on_trail,
+    leaves_as, leaving_transit, move_clips, peek_resize, resizes_at_start,
+    restretched, retargeted_motion, returning_transit, sampled_size,
+    settling, state_change_peek_raise, state_change_resize, take_left,
+    toggles_tile_fullscreen, visible_frame, Hold, PeekRaise, PeekResize,
+    Role, Stretch, FILL_LANDING_WAIT, HOLD_RELEASE_WAIT, STRETCH_SETTLE,
   };
   use crate::animation::{
     state::WindowAnimationState,
@@ -4296,81 +4085,6 @@ mod tests {
     assert!(!is_departed(true, true));
     assert!(!is_departed(false, false));
     assert!(!is_departed(false, true));
-  }
-
-  fn fit(source: isize, clip: Rect, live: bool) -> SpareFit {
-    SpareFit {
-      source: HWND(source),
-      clip,
-      live,
-    }
-  }
-
-  /// A spare draws only a motion of its own window, on the clip and in the
-  /// mode it was made for, within its lifetime.
-  #[test]
-  fn a_spare_is_reused_only_as_it_was_made() {
-    let clip = Rect::from_xy(0, 0, 1920, 1040);
-    let kept = fit(1, clip.clone(), false);
-    let at = Instant::now();
-    let soon = at + Duration::from_secs(1);
-
-    assert!(reuses_spare(&kept, at, &kept, soon));
-    assert!(!reuses_spare(&kept, at, &fit(2, clip.clone(), false), soon));
-    assert!(!reuses_spare(&kept, at, &fit(1, clip.clone(), true), soon));
-    assert!(!reuses_spare(
-      &kept,
-      at,
-      &fit(1, Rect::from_xy(1920, 0, 1920, 1040), false),
-      soon
-    ));
-    assert!(!reuses_spare(&kept, at, &kept, at + SPARE_LIFETIME));
-  }
-
-  /// A spare expires once its lifetime is up, not before; one kept after
-  /// `now` (frame times run ahead) has not.
-  #[test]
-  fn a_spare_expires_after_its_lifetime() {
-    let at = Instant::now();
-    assert!(!is_expired(at, at));
-    assert!(!is_expired(at + Duration::from_millis(5), at));
-    assert!(!is_expired(
-      at + Duration::from_millis(1),
-      at + SPARE_LIFETIME
-    ));
-    assert!(is_expired(at, at + SPARE_LIFETIME));
-  }
-
-  /// Past the cap, the oldest spares go.
-  #[test]
-  fn spares_past_the_cap_go_oldest_first() {
-    let at = Instant::now();
-    let kept = (0..MAX_SPARES + 2)
-      .map(|index| (index, at + Duration::from_millis(index as u64)))
-      .rev()
-      .collect::<Vec<_>>();
-
-    let mut gone = evicted(kept.clone(), MAX_SPARES);
-    gone.sort_unstable();
-    assert_eq!(gone, vec![0, 1]);
-    assert!(
-      evicted(kept.into_iter().take(MAX_SPARES), MAX_SPARES).is_empty()
-    );
-  }
-
-  /// Only a tile drawn on one peek keeps its peek; a column, a tile
-  /// moving onto another monitor and a leaving window don't.
-  #[test]
-  fn only_tiles_keep_their_peeks() {
-    let releasing = Role::Releasing { settled: true };
-    assert!(keeps_peek(false, false, releasing));
-    assert!(!keeps_peek(true, false, releasing));
-    assert!(!keeps_peek(false, true, releasing));
-    assert!(!keeps_peek(
-      false,
-      false,
-      Role::Leaving(AwayTransition::Close)
-    ));
   }
 
   /// Only a change of size past the threshold is a resize on a peek.
