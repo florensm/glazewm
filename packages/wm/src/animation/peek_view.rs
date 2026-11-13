@@ -459,6 +459,7 @@ impl Entry {
         sampled_size(actual, rect, in_flight.into_iter().flatten());
       for (peek, clip) in peeks {
         if let Some(color) = stretch.edge_color {
+          let _scope = perf::scope(Stage::PeekFill);
           peek.carry_fill(color);
         }
         peek.place_filled(sampled, rect, clip, self.opacity, batch);
@@ -1129,7 +1130,9 @@ impl PeekView {
           // redrawn, is drawn all the same.
           let draw_scope = perf::scope(Stage::PeekDraw);
           for (peek, _) in entry.peeks_mut() {
+            let alpha_scope = perf::scope(Stage::PeekDrawAlpha);
             peek.restore_alpha();
+            drop(alpha_scope);
             peek.show_window();
             peek.refresh_companion();
           }
@@ -1141,7 +1144,9 @@ impl PeekView {
             stretch.note_target(&entry.motion.target_rect, now);
           }
           let (rect, _) = entry.motion.current_state_at(now);
+          let entry_scope = perf::scope(Stage::PeekDrawEntry);
           entry.draw(&rect, now, batch);
+          drop(entry_scope);
           drop(draw_scope);
 
           if entry.may_land(now) {
@@ -1186,7 +1191,10 @@ impl PeekView {
               }
               departing.awaits_cloak = false;
             }
-            _ => entry.peek.restore_alpha(),
+            _ => {
+              let _scope = perf::scope(Stage::PeekDrawAlpha);
+              entry.peek.restore_alpha();
+            }
           }
           for (peek, _) in entry.peeks_mut() {
             peek.show_window();
@@ -1196,7 +1204,9 @@ impl PeekView {
             transit.clock.start_clock(clock_origin);
           }
           let (rect, _) = entry.motion.current_state_at(now);
+          let entry_scope = perf::scope(Stage::PeekDrawEntry);
           entry.draw(&rect, now, batch);
+          drop(entry_scope);
           drop(draw_scope);
         }
         Role::Peek | Role::HandingBack => {}
@@ -1752,6 +1762,7 @@ impl PeekView {
       if covers_shown_window {
         entry.composited = false;
       }
+      let _scope = perf::scope(Stage::PeekPlace);
       entry.draw(from, now, batch);
       return true;
     }
@@ -1776,7 +1787,9 @@ impl PeekView {
     entry.is_column = false;
     entry.stretch =
       resizes.map(|resize| Stretch::at(actual(), resize, deferred));
+    let place_scope = perf::scope(Stage::PeekPlace);
     entry.draw(from, now, batch);
+    drop(place_scope);
     self.entries.insert(id, entry);
 
     true

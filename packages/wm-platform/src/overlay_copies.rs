@@ -642,6 +642,7 @@ impl OverlayCopies {
   /// thumbnails registered there since. The new one goes up before the
   /// old one goes, so no composition shows neither.
   pub(crate) fn raise_ring(&mut self, dest: HWND) {
+    let _scope = crate::perf::scope(crate::perf::Stage::RingRaise);
     if let Some(ring) = &mut self.ring {
       ring.register_anew(dest, ring.corner_reach, None);
     }

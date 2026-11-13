@@ -239,6 +239,7 @@ impl FillSource {
   /// At the primary monitor's top-left, which is always on screen, at the
   /// bottom of the z-order.
   fn create(color: Color) -> crate::Result<Self> {
+    let _scope = crate::perf::scope(crate::perf::Stage::FillSource);
     let rect = Rect::from_xy(0, 0, FILL_SOURCE_SIZE, FILL_SOURCE_SIZE);
     let mut window = OverlayWindow::create(
       OverlayKind::BackdropSource,

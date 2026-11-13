@@ -102,6 +102,13 @@ const METRICS: &[(&str, &str)] = &[
   ("tree:peek_track:per_frame", "peek_track ms/frame"),
   ("cross:peek_ring:per_frame", "peek_ring ms/frame"),
   ("cross:peek_backdrop:per_frame", "peek_backdrop ms/frame"),
+  // A peek's first draw is the burst's costliest: its worst frame's.
+  ("tree:peek_draw:worst", "peek_draw ms (worst frame)"),
+  ("tree:pd_alpha:worst", "pd_alpha ms (worst frame)"),
+  ("tree:pd_draw:worst", "pd_draw ms (worst frame)"),
+  ("cross:pd_fill:worst", "pd_fill ms (worst frame)"),
+  ("cross:fill_source:worst", "fill_source ms (worst frame)"),
+  ("cross:ring_raise:worst", "ring_raise ms (worst frame)"),
   (
     "tree:session_overlays:per_frame",
     "session_overlays ms/frame",
@@ -118,6 +125,13 @@ const METRICS: &[(&str, &str)] = &[
   // What the command that starts the animation waits for.
   ("outside:command:total", "command ms (WM side)"),
   ("outside:peek_new:total", "peek_new ms (outside frames)"),
+  ("outside:peek_place:total", "peek_place ms (outside frames)"),
+  ("outside:pd_fill:total", "pd_fill ms (outside frames)"),
+  (
+    "outside:fill_source:total",
+    "fill_source ms (outside frames)",
+  ),
+  ("outside:ring_raise:total", "ring_raise ms (outside frames)"),
   ("outside:peek_cover:total", "peek_cover ms (outside frames)"),
   (
     "outside:peek_handover:total",
@@ -653,6 +667,7 @@ fn parse_reports(text: &str) -> Vec<HashMap<String, f64>> {
         report.insert(format!("{key}:calls"), values[0]);
         report.insert(format!("{key}:total"), values[1]);
         report.insert(format!("{key}:per_frame"), values[2]);
+        report.insert(format!("{key}:worst"), values[3]);
       }
       "outside" if values.len() == 2 => {
         report.insert(format!("outside:{name}:total"), values[1]);
@@ -772,6 +787,9 @@ perf [idle]: 30 frames in 500.0ms, 2 slow (>6.9ms)
   stage                 calls      total  per-frame      worst
   tick                     30     60.0ms     2.00ms     9.00ms
   peek_frame               30     45.0ms     1.50ms     4.00ms
+    peek_draw              40     20.0ms     0.67ms     6.00ms
+  -- called from several parents, already counted above --
+    pd_fill                 6      3.0ms     0.10ms     2.50ms
   -- frame time distribution (budget 6.9ms) --
   frame time                  p50        p90        p99        max
                            1.80ms     3.10ms     8.50ms     9.00ms
@@ -783,6 +801,8 @@ perf [idle]: 30 frames in 500.0ms, 2 slow (>6.9ms)
     let report = &reports[0];
     assert_eq!(report.get("frames"), Some(&30.0));
     assert_eq!(report.get("tree:peek_frame:per_frame"), Some(&1.5));
+    assert_eq!(report.get("tree:peek_draw:worst"), Some(&6.0));
+    assert_eq!(report.get("cross:pd_fill:worst"), Some(&2.5));
     assert_eq!(report.get("dist:p90"), Some(&3.1));
     assert_eq!(report.get("dist:hitches_2x"), Some(&3.0));
     assert_eq!(report.get("interval:p50"), Some(&6.94));
