@@ -126,6 +126,23 @@ pub fn sync_scroll_view(
     .map(CommonGetters::id)
     .collect::<HashSet<_>>();
 
+  // Under `slidepeeks`, columns a resting peek draws that slide in with a
+  // workspace switch: their peeks stand by under the switch's surrogates
+  // until it hands them over (`SWITCH_PEEKS_PLAN.md`).
+  let slide_peeks = wm_platform::isolation::current().slide_peeks;
+  let switch_animates =
+    config.value.animations.workspace_switch.enabled && animates;
+  let slides_in = windows
+    .iter()
+    .map(|(window, _)| window.id())
+    .filter(|id| {
+      slide_peeks
+        && (state.animation_manager.awaits_peek_hand_back(id)
+          || switch_animates
+            && state.pending_sync.is_workspace_switch_incoming(id))
+    })
+    .collect::<HashSet<_>>();
+
   let now = state.animation_manager.frame_time();
   let view = &mut state.animation_manager.peeks;
 
@@ -135,8 +152,25 @@ pub fn sync_scroll_view(
   //
   // Their peeks stay up until any that take over are on screen, e.g. that
   // of a stack's newly active tab, so the column never goes blank.
-  let gone =
+  let mut gone =
     view.take_departed(|id| windows.iter().any(|(w, _)| w.id() == *id));
+
+  // Under `slidepeeks`, one sliding out is kept where it is until its
+  // surrogate takes over, rather than gone before that is shown.
+  if slide_peeks {
+    let (kept, left): (Vec<_>, Vec<_>) =
+      gone.into_iter().partition(|(id, entry)| {
+        waits_on_switch(
+          entry.role == Role::Peek,
+          switch_animates
+            && state.pending_sync.is_workspace_switch_outgoing(id),
+        )
+      });
+    for (id, entry) in kept {
+      view.keep_switching_out(id, entry);
+    }
+    gone = left;
+  }
 
   let scroll_config = &config.value.animations.scroll;
   let opening = column_opening(config);
@@ -254,6 +288,16 @@ pub fn sync_scroll_view(
       if is_moving && is_restored {
         restore_cloaked(&window.native(), &target);
       }
+      if slide_peeks {
+        if waits_on_switch(
+          role == Role::Peek,
+          slides_in.contains(&window.id()),
+        ) {
+          view.stand_by(window.id());
+        } else {
+          view.end_stand_by(&window.id());
+        }
+      }
       needs_flush |= view.upsert(
         &window,
         &from,
@@ -294,6 +338,14 @@ pub fn sync_scroll_view(
   }
 
   drive_moving(state, &started_moving);
+}
+
+/// Whether a column's peek waits on a workspace switch it slides in or
+/// out with, under `slidepeeks`: standing by under its surrogate, or kept
+/// until that takes over. Only a resting peek: a moving one is drawn as
+/// its neighbours' moving peeks are.
+fn waits_on_switch(is_at_rest: bool, slides_with_switch: bool) -> bool {
+  is_at_rest && slides_with_switch
 }
 
 /// The transition a new column enters by as it widens on the scroll's
@@ -620,10 +672,18 @@ fn target_rect(window: &WindowContainer) -> anyhow::Result<Rect> {
 mod tests {
   use wm_platform::Rect;
 
-  use super::moves_on_peek;
+  use super::{moves_on_peek, waits_on_switch};
 
   fn column() -> Rect {
     Rect::from_xy(100, 50, 800, 600)
+  }
+
+  /// Only a resting peek waits on a switch its column slides with.
+  #[test]
+  fn only_resting_peeks_wait_on_a_switch() {
+    assert!(waits_on_switch(true, true));
+    assert!(!waits_on_switch(false, true));
+    assert!(!waits_on_switch(true, false));
   }
 
   /// Without the switch, a column moves on its peek only with the strip,

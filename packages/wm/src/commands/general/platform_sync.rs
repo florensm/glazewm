@@ -106,6 +106,11 @@ pub fn platform_sync(
   };
   let _tail_scope = perf::scope(Stage::SyncTail);
 
+  // Before anything else is drawn: the switch has started or not by now.
+  if wm_platform::isolation::current().slide_peeks {
+    crate::animation::peek_view::settle_switch_peeks(state, config);
+  }
+
   // Focus is synced after `redraw_containers` so that the workspace-switch
   // animation is already set up when `sync_focus` runs. This lets the
   // deferral check in `sync_focus` correctly suppress
@@ -1268,6 +1273,9 @@ fn redraw_containers(
   // and whether any of them is taken over from at the shared flush.
   let mut peek_moves = Vec::new();
   let mut peeks_take_over = false;
+  // Windows of a finished switch handed to their resting peeks this pass
+  // (`slidepeeks`).
+  let mut peek_hand_backs = Vec::new();
   // Floating windows opened on peeks this pass, and windows crossing
   // between floating and tiling on them, whose peeks go on top, and of
   // which band.
@@ -2055,7 +2063,11 @@ fn redraw_containers(
         // surrogate or a scrolling layout's peek is first hidden by its
         // alpha, so the swap with it lands in one frame however late the
         // shell's (un)cloak does. See `HiddenAlpha`.
-        if is_outgoing_switch {
+        if is_outgoing_switch
+          && state.animation_manager.peeks.is_switching_out(&window.id())
+        {
+          state.animation_manager.take_over_from_peek(window.id());
+        } else if is_outgoing_switch {
           state
             .animation_manager
             .take_over_outgoing(window.id(), &window.native());
@@ -2145,6 +2157,16 @@ fn redraw_containers(
             .animation_manager
             .hide_pending_ws_cleanup_surrogate(window.id());
           state.animation_manager.peeks.release(&window.id());
+        } else if wm_platform::isolation::current().slide_peeks
+          && workspace.is_displayed()
+          && is_hidden_in_layout(*window)
+          && state
+            .animation_manager
+            .is_pending_ws_cleanup_incoming(&window.id())
+        {
+          // Slid in but kept hidden by the layout: its resting peek takes
+          // over below, its real window stays cloaked.
+          peek_hand_backs.push(window.id());
         }
 
         // Apply animated opacity for opacity-style focus animations. The
@@ -2204,6 +2226,23 @@ fn redraw_containers(
   }
 
   drop(loop_scope);
+
+  // Each peek is drawn again, its ring and backdrop copies too, before its
+  // surrogate's thumbnail goes, back to back, as a cut-short slide's
+  // surrogates are swapped: a frame between shows both, never neither.
+  if !peek_hand_backs.is_empty() {
+    for id in &peek_hand_backs {
+      state.animation_manager.peeks.end_stand_by(id);
+    }
+    crate::animation::peek_view::track_overlays(
+      state,
+      config,
+      SurrogateBatch::new(),
+    );
+    for id in &peek_hand_backs {
+      state.animation_manager.hand_back_to_peek(*id);
+    }
+  }
 
   // Cloak every window that entered its first `Frozen` frame this pass,
   // behind a single shared `DwmFlush` barrier. See `pending_cloaks`. A
@@ -3231,7 +3270,10 @@ fn park_switch_borders(
 
     let rest = surrogate.rest_frame();
     let anchor = overlay_z_anchor(&window);
-    let conceal = entry.is_incoming;
+    // One whose resting peek drew it would reach onto the monitor beside
+    // at its rest frame (`slidepeeks`): only its copy shows it.
+    let conceal = entry.is_incoming
+      || state.animation_manager.peeks.is_switching_out(id);
 
     let slot = &mut state.window_overlays.entry(*id).or_default().border;
     let overlay = match slot {

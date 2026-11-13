@@ -8,9 +8,11 @@ use crate::{
     container::set_focused_descendant,
     workspace::deactivate_unused_workspace,
   },
-  layout::is_hidden_in_layout,
-  models::{WindowContainer, Workspace, WorkspaceTarget},
-  traits::{CommonGetters, WindowGetters},
+  layout::scrolling::shows_real_window,
+  models::{
+    is_inactive_stack_child, WindowContainer, Workspace, WorkspaceTarget,
+  },
+  traits::{CommonGetters, PositionGetters, WindowGetters},
   user_config::UserConfig,
   wm_state::WmState,
 };
@@ -185,14 +187,58 @@ fn workspace_switch_axis(
 /// columns scrolled off screen) have no visible content to animate, and
 /// snapshotting them causes flicker.
 fn is_switch_animated(window: &WindowContainer) -> bool {
-  window.state() != WindowState::Minimized && !is_hidden_in_layout(window)
+  let slide_peeks = wm_platform::isolation::current().slide_peeks;
+  let shows_real_window = shows_real_window(&window.as_container());
+
+  slides_with_switch(
+    window.state() == WindowState::Minimized,
+    is_inactive_stack_child(window),
+    shows_real_window,
+    slide_peeks && !shows_real_window && is_on_screen(window),
+    slide_peeks,
+  )
+}
+
+/// Whether a window slides with the switch: one shown by its real window,
+/// unless minimized or an inactive stack tab, or under `slidepeeks` one
+/// whose resting peek shows part of it (`SWITCH_PEEKS_PLAN.md`).
+#[allow(clippy::fn_params_excessive_bools)]
+fn slides_with_switch(
+  is_minimized: bool,
+  is_inactive_tab: bool,
+  shows_real_window: bool,
+  has_part_on_screen: bool,
+  slide_peeks: bool,
+) -> bool {
+  !is_minimized
+    && !is_inactive_tab
+    && (shows_real_window || slide_peeks && has_part_on_screen)
+}
+
+/// Whether part of `window`'s tile lies in its monitor's working area,
+/// which a resting peek is cut at.
+fn is_on_screen(window: &WindowContainer) -> bool {
+  let rect = window.to_rect().and_then(|rect| {
+    window
+      .total_border_delta()
+      .map(|delta| rect.apply_delta(&delta, None))
+  });
+
+  match (rect, window.monitor()) {
+    (Ok(rect), Some(monitor)) => {
+      rect.intersection_area(&monitor.native_properties().working_area) > 0
+    }
+    _ => false,
+  }
 }
 
 #[cfg(test)]
 mod tests {
   use wm_common::{ParsedConfig, WorkspaceSwitchDirection};
 
-  use super::{workspace_switch_axis, workspace_switch_direction};
+  use super::{
+    slides_with_switch, workspace_switch_axis, workspace_switch_direction,
+  };
   use crate::{
     models::Workspace,
     test_utils::{mock_config, mock_workspace_configs},
@@ -217,6 +263,22 @@ mod tests {
     // The special workspace comes last.
     assert_eq!(workspace_switch_direction(&special, "10", &config), 1);
     assert_eq!(workspace_switch_direction("1", &special, &config), -1);
+  }
+
+  #[test]
+  fn only_shown_windows_slide_unless_peeks_do() {
+    // Shown by its real window.
+    assert!(slides_with_switch(false, false, true, false, false));
+    assert!(!slides_with_switch(true, false, true, false, false));
+    assert!(!slides_with_switch(false, true, true, false, false));
+
+    // Drawn by a resting peek: only under `slidepeeks`, with some of it
+    // on screen.
+    assert!(!slides_with_switch(false, false, false, true, false));
+    assert!(slides_with_switch(false, false, false, true, true));
+    assert!(!slides_with_switch(false, false, false, false, true));
+    assert!(!slides_with_switch(false, true, false, true, true));
+    assert!(!slides_with_switch(true, false, false, true, true));
   }
 
   #[test]

@@ -936,6 +936,12 @@ pub struct PeekView {
   pub(super) last_rects: HashMap<Uuid, Rect>,
   /// Windows already reported by `report_stuck_windows`.
   pub(super) reported_stuck: HashSet<Uuid>,
+  /// Columns whose resting peeks stand by under a workspace switch's
+  /// surrogates, under `slidepeeks` (see `WindowPeek::stand_by`).
+  standing_by: HashSet<Uuid>,
+  /// Resting peeks of columns sliding out with a workspace switch, kept
+  /// at rest until their surrogates take over, under `slidepeeks`.
+  switching_out: HashMap<Uuid, Entry>,
 }
 
 impl PeekView {
@@ -1251,6 +1257,50 @@ impl PeekView {
       .collect()
   }
 
+  /// Has `window_id`'s resting peek stand by from now on, drawn too faint
+  /// to see, as a workspace switch's surrogate draws it (see
+  /// `WindowPeek::stand_by`). Its overlays are left to the switch.
+  pub(super) fn stand_by(&mut self, window_id: Uuid) {
+    self.standing_by.insert(window_id);
+    if let Some(entry) = self.entries.get_mut(&window_id) {
+      entry.peek.stand_by();
+    }
+  }
+
+  /// Has `window_id`'s peek draw its window again after
+  /// [`stand_by`](Self::stand_by). No-op for one not standing by.
+  pub fn end_stand_by(&mut self, window_id: &Uuid) {
+    if !self.standing_by.remove(window_id) {
+      return;
+    }
+    if let Some(entry) = self.entries.get_mut(window_id) {
+      entry.peek.end_stand_by();
+    }
+  }
+
+  /// Keeps `entry`, the resting peek of a column sliding out with a
+  /// workspace switch, drawn where it is until its surrogate takes over
+  /// (see [`drop_switched_out`](Self::drop_switched_out)).
+  pub(super) fn keep_switching_out(
+    &mut self,
+    window_id: Uuid,
+    entry: Entry,
+  ) {
+    self.standing_by.remove(&window_id);
+    self.switching_out.insert(window_id, entry);
+  }
+
+  /// Whether `window_id`'s resting peek is kept for its surrogate to take
+  /// over from (see [`keep_switching_out`](Self::keep_switching_out)).
+  pub fn is_switching_out(&self, window_id: &Uuid) -> bool {
+    self.switching_out.contains_key(window_id)
+  }
+
+  /// Drops `window_id`'s kept resting peek, once its surrogate is drawn.
+  pub fn drop_switched_out(&mut self, window_id: &Uuid) {
+    self.switching_out.remove(window_id);
+  }
+
   /// Takes out the peeks of windows entering a tiling layout that
   /// `shown` no longer has on screen: unmanaged (`None`), or not shown
   /// (`Some(false)`). Columns are left to
@@ -1376,7 +1426,8 @@ impl PeekView {
   pub fn window_at(&self, point: &Point) -> Option<Uuid> {
     self.entries.iter().find_map(|(id, entry)| {
       Some(entry)
-        .filter(|entry| entry.role == Role::Peek)?
+        .filter(|entry| entry.role == Role::Peek)
+        .filter(|_| !self.standing_by.contains(id))?
         .peek
         .visible_rect()
         .filter(|rect| rect.contains_point(point))
@@ -1510,6 +1561,9 @@ impl PeekView {
         entry.composited = false;
       }
       entry.hold = if held { Hold::Held } else { Hold::Free };
+      if self.standing_by.contains(&window.id()) {
+        entry.peek.stand_by();
+      }
       let (rect, _) = entry.motion.current_state_at(now);
       entry.draw(&rect, now, batch);
       return covers_shown_window;
@@ -1533,6 +1587,9 @@ impl PeekView {
       resizes.map(|resize| Stretch::at(actual(), resize, deferred));
     if held {
       entry.hold = Hold::Held;
+    }
+    if self.standing_by.contains(&window.id()) {
+      entry.peek.stand_by();
     }
     let rect = entry.rect.clone();
     entry.draw(&rect, now, batch);
@@ -2116,6 +2173,40 @@ pub fn drop_strays(state: &mut WmState) {
     if let Some(window) = state.window_by_id(id) {
       state.pending_sync.queue_container_to_redraw(window);
     }
+  }
+}
+
+/// Has the peeks standing by for a workspace switch that no switch owes a
+/// hand-over any more (none played, or it ended another way) draw their
+/// windows again, and drops the resting peeks kept for surrogates that
+/// took over by now or never will (see [`PeekView::keep_switching_out`]).
+///
+/// Run once `redraw_containers` has started or skipped the switch, so no
+/// peek stays faint, or kept, past the sync that decides it.
+pub fn settle_switch_peeks(state: &mut WmState, config: &UserConfig) {
+  let manager = &state.animation_manager;
+  let owed = manager
+    .peeks
+    .standing_by
+    .iter()
+    .filter(|id| manager.awaits_peek_hand_back(id))
+    .copied()
+    .collect::<HashSet<_>>();
+
+  let view = &mut state.animation_manager.peeks;
+  view.switching_out.clear();
+  let released = view
+    .standing_by
+    .iter()
+    .filter(|id| !owed.contains(id))
+    .copied()
+    .collect::<Vec<_>>();
+  for id in &released {
+    view.end_stand_by(id);
+  }
+
+  if !released.is_empty() {
+    track_overlays(state, config, SurrogateBatch::new());
   }
 }
 
@@ -2886,11 +2977,11 @@ pub fn track_overlays(
 ) {
   let focused_id = state.focused_container().map(|focused| focused.id());
 
-  let tracked = state
-    .animation_manager
-    .peeks
+  let peeks = &state.animation_manager.peeks;
+  let tracked = peeks
     .entries
     .iter()
+    .filter(|(id, _)| !peeks.standing_by.contains(id))
     .map(|(id, entry)| {
       // Only while some of the window is on screen.
       let frame = entry

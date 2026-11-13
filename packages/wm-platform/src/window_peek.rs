@@ -73,6 +73,9 @@ pub struct WindowPeek {
   /// The window's visible frame where it was last placed, clipped or not.
   frame_rect: Option<Rect>,
   visible_rect: Option<Rect>,
+  /// Whether it stands by under a workspace switch's surrogate (see
+  /// [`stand_by`](Self::stand_by)).
+  stands_by: bool,
 }
 
 impl WindowPeek {
@@ -132,6 +135,7 @@ impl WindowPeek {
       hidden_alpha: HiddenAlpha::default(),
       frame_rect: None,
       visible_rect: None,
+      stands_by: false,
     })
   }
 
@@ -327,6 +331,33 @@ impl WindowPeek {
   /// shows, while DWM warms the thumbnail up.
   pub fn warm_up(&mut self) {
     self.draw(Drawn::WarmingUp);
+  }
+
+  /// Draws the window and its ring and backdrop copies too faint to see,
+  /// placed as usual, while a workspace switch's surrogate draws them,
+  /// until [`end_stand_by`](Self::end_stand_by). DWM keeps them warm
+  /// meanwhile.
+  pub fn stand_by(&mut self) {
+    self.stands_by = true;
+    self.draw(Drawn::WarmingUp);
+    self.copies.show_backdrop(true);
+    self.copies.set_opacity(WARM_UP_OPACITY);
+  }
+
+  /// Draws the window and its copies again after
+  /// [`stand_by`](Self::stand_by), the window first. The backdrop copy
+  /// stays shown for its window's style to decide (see
+  /// [`show_backdrop`](Self::show_backdrop)). No-op unless standing by.
+  pub fn end_stand_by(&mut self) {
+    if !self.stands_by {
+      return;
+    }
+
+    self.stands_by = false;
+    self.drawn = Drawn::Shown;
+    self.surrogate.set_window_opacity(self.window_opacity());
+    self.copies.cover_ring();
+    self.copies.set_backdrop_opacity(u8::MAX);
   }
 
   /// Takes over showing the window from `window`, which is about to be
@@ -680,8 +711,12 @@ impl WindowPeek {
     self.surrogate.set_thumbnail_rects(rc_src, rc_dst);
     self.surrogate.set_window_opacity(self.window_opacity());
     self.copies.place(rect, clip, origin);
-    self.copies.cover_ring();
-    self.copies.set_backdrop_opacity(u8::MAX);
+    if self.stands_by {
+      self.copies.set_opacity(WARM_UP_OPACITY);
+    } else {
+      self.copies.cover_ring();
+      self.copies.set_backdrop_opacity(u8::MAX);
+    }
     self.surrogate.set_visible(true);
 
     Some(visible)
