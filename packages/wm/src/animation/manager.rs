@@ -366,6 +366,10 @@ pub(crate) enum HandBack {
   AwaitingCompanion,
   /// Shown again in its place.
   Done,
+  /// Drawn by its resting peek again, its real window left cloaked as
+  /// the layout hides it (`slidepeeks`, see
+  /// `AnimationManager::hand_back_to_peek`).
+  ToPeek,
 }
 
 /// A step of tearing down a finished workspace switch's surrogates.
@@ -3864,6 +3868,59 @@ impl AnimationManager {
     }
   }
 
+  /// Whether `window_id` slides in with a workspace switch, playing or
+  /// finished, whose surrogate has yet to hand it back.
+  pub fn awaits_peek_hand_back(&self, window_id: &Uuid) -> bool {
+    [&self.workspace_switch, &self.pending_ws_cleanup]
+      .into_iter()
+      .flatten()
+      .filter_map(|ws| ws.windows.get(window_id))
+      .any(|entry| {
+        entry.is_incoming
+          && entry.surrogate.is_some()
+          && entry.hand_back == HandBack::Pending
+      })
+  }
+
+  /// Hands incoming `window_id` of a finished switch, which the layout
+  /// keeps hidden, over to its resting peek, drawn again just before:
+  /// its surrogate's thumbnail and backdrop copy go, its ring copy stays
+  /// over the peek's until the surrogate is dropped (`WsCleanupStep`).
+  pub fn hand_back_to_peek(&mut self, window_id: Uuid) {
+    let Some(entry) = self
+      .pending_ws_cleanup
+      .as_mut()
+      .and_then(|ws| ws.windows.get_mut(&window_id))
+      .filter(|entry| {
+        entry.is_incoming && entry.hand_back == HandBack::Pending
+      })
+    else {
+      return;
+    };
+
+    entry.hand_back = HandBack::ToPeek;
+    if let Some(surrogate) = entry.surrogate.as_mut() {
+      surrogate.hide_thumbnail();
+      surrogate.hide_backdrop();
+    }
+  }
+
+  /// Hands outgoing `window_id`, which a resting peek drew, over to its
+  /// workspace-switch surrogate, before the peek goes. Its real window is
+  /// cloaked already, so it needn't be hidden by its alpha.
+  pub fn take_over_from_peek(&mut self, window_id: Uuid) {
+    if let Some(surrogate) = self
+      .workspace_switch
+      .as_mut()
+      .and_then(|ws| ws.windows.get_mut(&window_id))
+      .filter(|entry| !entry.is_incoming)
+      .and_then(|entry| entry.surrogate.as_mut())
+    {
+      surrogate.apply_effect_opacity();
+    }
+    self.peeks.drop_switched_out(&window_id);
+  }
+
   /// Hands outgoing `window` over to its workspace-switch surrogate, just
   /// before the window is cloaked (see `WorkspaceSurrogate::take_over`).
   pub fn take_over_outgoing(
@@ -4072,6 +4129,8 @@ fn final_overlay_rects(state: &WmState) -> Vec<(Uuid, Rect, HWND)> {
       ws.windows
         .iter()
         .filter(|(_, entry)| entry.is_incoming)
+        // Its peek draws its overlays (see `hand_back_to_peek`).
+        .filter(|(_, entry)| entry.hand_back != HandBack::ToPeek)
         .filter_map(|(id, entry)| {
           let surrogate = entry.surrogate.as_ref()?;
           let window = state.window_by_id(*id);
