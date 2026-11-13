@@ -287,6 +287,9 @@ powershell -ExecutionPolicy Bypass -File packages\wm-cli\examples\perf_bench\iso
 powershell -ExecutionPolicy Bypass -File packages\wm-cli\examples\perf_bench\isolate_modes.ps1 -Target chrome -Rounds 4 -Scenarios float,resize -Modes morepeeks,morepeeks+keeppeeks,morepeeks+earlylanding+asynchandback+keeppeeks -TileOrder <names>
 ```
 
+`-Launch` (default `notepad,explorer,wt,chrome`) starts those once per run
+and closes them after; `minimize` is no longer in the default scenarios.
+
 Read first: `input->first frame ms` (now recorded on peeks), `command ms
 (WM side)`, the `peek_*` columns (where the unscoped ~56 ms went), then
 `interval p99`/`max` for the stall.
