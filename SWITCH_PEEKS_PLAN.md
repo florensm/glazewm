@@ -143,9 +143,10 @@ old one hidden, back to back).
    `take_over_from_peek` (surrogate to full: window, ring, backdrop
    copies) then the peek is dropped, back to back. No `HiddenAlpha`: the
    real window is cloaked already.
-6. `Apply` arm, end of slide: a window not shown (`!is_visible`) that is
+6. `Apply` arm, end of slide: a window the layout hides on a displayed
+   workspace (so `!is_visible`) that is
    an incoming `Pending` entry of `pending_ws_cleanup` is collected.
-   After the loop: `stand_in` its peek (window, then ring and backdrop to
+   After the loop: `end_stand_by` its peek (window, then ring and backdrop to
    full), `track_overlays` once (ring parked concealed at the real frame
    and carried into the peek, backdrop shown in its style), then
    `hand_back_to_peek`: surrogate thumbnail and backdrop copy hidden,
@@ -156,7 +157,7 @@ old one hidden, back to back).
 7. `final_overlay_rects` leaves `ToPeek` entries out: the real ring and
    backdrop at the cloaked window's `frame()` would be in the wrong
    place. The peek's `track_overlays` owns them from step 6 on.
-8. After `redraw_containers` (`peek_view::settle_switch_stand_ins`): a
+8. After `redraw_containers` (`peek_view::settle_switch_peeks`): a
    peek on stand-by whose window the manager no longer owes a hand-over
    (no surrogate, switch not played, suppressed, cut, cleared) stands
    in; kept outgoing peeks left are dropped. Self-healing: no peek stays
@@ -183,7 +184,7 @@ old one hidden, back to back).
   visible → it shows its real window: not standing by any more, the
   normal hand-back uncloaks it at the end (it is visible then). Fully
   off screen → `entries.remove`; step 6 just hides the surrogate. A
-  column that moves on a peek mid-slide stands in first (step 2) and
+  column that moves on a peek mid-slide ends its stand-by first (step 2) and
   then moves as its neighbours' moving peeks do today (both their
   surrogates and peeks show: pre-existing, not changed here).
 - **Two monitors**: the surrogate is pinned to its working area and cut
