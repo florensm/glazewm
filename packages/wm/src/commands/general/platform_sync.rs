@@ -822,43 +822,6 @@ fn follow_retargeted_column(window: &WindowContainer, target_rect: &Rect) {
   }
 }
 
-/// Sends `window`, moving on its peek, the size it deferred (see
-/// `Landed::sized`), at the rect `redraw_containers` hands it back at, so
-/// it is there already as it lands. Not one whose tile changed since: the
-/// redraw queued with the change retargets its peek and sends it that.
-///
-/// Rather than queued for redraw, which reaches the same move in the
-/// `Frozen` arm: that would run a whole `platform_sync` pass for it
-/// mid-motion, settling its overlays' z-order as if it was repositioned.
-pub(crate) fn post_deferred_size(
-  state: &WmState,
-  window: &WindowContainer,
-) {
-  let Ok(target_rect) = window.to_rect().and_then(|rect| {
-    Ok(rect.apply_delta(&window.total_border_delta()?, None))
-  }) else {
-    return;
-  };
-  let peeks = &state.animation_manager.peeks;
-  if !peeks.heads_for(&window.id(), &target_rect)
-    || peeks.defers_resize(&window.id())
-  {
-    return;
-  }
-
-  let real_rect = crate::layout::scrolling::real_window_rect(
-    &window.as_container(),
-    &target_rect,
-  );
-  follow_retargeted_column(window, &real_rect);
-
-  // Sent again after the size Windows suggests on a monitor of another
-  // DPI, as `preposition_cloaked` does.
-  if window.has_pending_dpi_adjustment() && peeks.has_trail(&window.id()) {
-    follow_retargeted_column(window, &real_rect);
-  }
-}
-
 /// Unmanages windows queued for redraw that another app has since
 /// embedded into one of its own windows.
 ///

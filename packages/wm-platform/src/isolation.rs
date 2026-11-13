@@ -26,11 +26,6 @@
 //!   backdrop can't be copied (`STAND_INS_PLAN.md` 10f).
 //! - `asynchandback`: a window its peek hands back is moved
 //!   asynchronously, not in step with the peek.
-//! - `asynclanding`: a window filled on its peek that keeps its size until
-//!   it lands is sent it as its motion ends, and its peek lands once it
-//!   has it.
-//! - `earlylanding`: as `asynclanding`, sent as its peek comes within a
-//!   few pixels of its tile's size.
 //! - `keeppeeks`: a tile's peek is kept, hidden, when it hands back, for
 //!   its window's next motion.
 //! - `keepoverlays`: as `origin/main`, a window taken over by a new
@@ -55,8 +50,6 @@ pub struct Isolation {
   pub peeks_first: bool,
   pub more_peeks: bool,
   pub async_hand_back: bool,
-  pub async_landing: bool,
-  pub early_landing: bool,
   pub keep_peeks: bool,
   pub keep_overlays: bool,
 }
@@ -71,8 +64,6 @@ impl Default for Isolation {
       peeks_first: false,
       more_peeks: false,
       async_hand_back: false,
-      async_landing: false,
-      early_landing: false,
       keep_peeks: false,
       keep_overlays: false,
     }
@@ -98,8 +89,6 @@ impl Isolation {
         "peeksfirst" => isolation.peeks_first = true,
         "morepeeks" => isolation.more_peeks = true,
         "asynchandback" => isolation.async_hand_back = true,
-        "asynclanding" => isolation.async_landing = true,
-        "earlylanding" => isolation.early_landing = true,
         "keeppeeks" => isolation.keep_peeks = true,
         "keepoverlays" => isolation.keep_overlays = true,
         _ => tracing::warn!("Unknown GLAZEWM_ISOLATE flag: {word}."),
@@ -143,8 +132,6 @@ mod tests {
         peeks_first: false,
         more_peeks: false,
         async_hand_back: false,
-        async_landing: false,
-        early_landing: false,
         keep_peeks: false,
         keep_overlays: false,
       }
@@ -192,33 +179,20 @@ mod tests {
   }
 
   #[test]
-  fn hand_back_and_landing_words_are_off_unless_given() {
+  fn hand_back_and_keep_peeks_words_are_off_unless_given() {
     let isolation = Isolation::default();
     assert!(!isolation.async_hand_back);
-    assert!(!isolation.async_landing);
-    assert!(!isolation.early_landing);
     assert!(!isolation.keep_peeks);
 
     assert_eq!(
-      Isolation::parse(
-        "AsyncHandBack,asynclanding EarlyLanding,KEEPPEEKS"
-      ),
+      Isolation::parse("AsyncHandBack,KEEPPEEKS"),
       Isolation {
         async_hand_back: true,
-        async_landing: true,
-        early_landing: true,
         keep_peeks: true,
         ..Isolation::default()
       }
     );
-    assert_eq!(
-      Isolation::parse("earlylanding"),
-      Isolation {
-        early_landing: true,
-        ..Isolation::default()
-      }
-    );
-    assert_eq!(Isolation::parse("async_landing"), Isolation::default());
+    assert_eq!(Isolation::parse("async_hand_back"), Isolation::default());
   }
 
   #[test]
