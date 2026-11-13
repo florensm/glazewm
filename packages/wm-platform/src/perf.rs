@@ -194,6 +194,10 @@ pub enum Stage {
   /// alpha restore and companion check (a leaving one's cloak) to
   /// `Entry::draw`.
   PeekDraw,
+  /// `peek_draw`'s `WindowPeek::restore_alpha` calls.
+  PeekDrawAlpha,
+  /// `peek_draw`'s `Entry::draw`.
+  PeekDrawEntry,
   /// The peek frame's `peek_view::track_overlays`, its batch commit
   /// included.
   PeekTrack,
@@ -310,14 +314,28 @@ pub enum Stage {
   PeekRing,
   /// `peek_view::track_overlays`' `carry_backdrop` of one window.
   PeekBackdrop,
+  /// `Entry::draw_stretched`'s `WindowPeek::carry_fill` calls: the fill's
+  /// source and strips, and the ring raised over them on first use.
+  PeekFill,
+  /// `FillSource::create`: the window and visual of a fill color not in
+  /// use or kept idle.
+  FillSource,
+  /// `OverlayCopies::raise_ring`: the ring copy registered anew over what
+  /// was registered since.
+  RingRaise,
+  /// `PeekView::move_tile`'s first draw of the peek, at the motion's
+  /// start.
+  PeekPlace,
 }
 
 impl Stage {
   /// Every stage, in report order.
-  const ALL: [Stage; 52] = [
+  const ALL: [Stage; 58] = [
     Stage::Command,
     Stage::PeekFrame,
     Stage::PeekDraw,
+    Stage::PeekDrawAlpha,
+    Stage::PeekDrawEntry,
     Stage::PeekTrack,
     Stage::Tick,
     Stage::PlatformSync,
@@ -367,6 +385,10 @@ impl Stage {
     Stage::SurrogateThumb,
     Stage::PeekRing,
     Stage::PeekBackdrop,
+    Stage::PeekFill,
+    Stage::FillSource,
+    Stage::RingRaise,
+    Stage::PeekPlace,
   ];
 
   /// Number of distinct stages, i.e. the width of the accumulator arrays.
@@ -383,6 +405,8 @@ impl Stage {
       Stage::Command => "command",
       Stage::PeekFrame => "peek_frame",
       Stage::PeekDraw => "peek_draw",
+      Stage::PeekDrawAlpha => "pd_alpha",
+      Stage::PeekDrawEntry => "pd_draw",
       Stage::PeekTrack => "peek_track",
       Stage::Tick => "tick",
       Stage::PlatformSync => "platform_sync",
@@ -432,6 +456,10 @@ impl Stage {
       Stage::SurrogateThumb => "sg_thumb",
       Stage::PeekRing => "peek_ring",
       Stage::PeekBackdrop => "peek_backdrop",
+      Stage::PeekFill => "pd_fill",
+      Stage::FillSource => "fill_source",
+      Stage::RingRaise => "ring_raise",
+      Stage::PeekPlace => "peek_place",
     }
   }
 
@@ -447,7 +475,10 @@ impl Stage {
       | Stage::PeekTrack
       | Stage::PlatformSync
       | Stage::Cleanup => 1,
-      Stage::Redraw | Stage::SyncTail => 2,
+      Stage::Redraw
+      | Stage::SyncTail
+      | Stage::PeekDrawAlpha
+      | Stage::PeekDrawEntry => 2,
       Stage::RedrawPrep
       | Stage::RedrawLoop
       | Stage::PeekCover
@@ -506,6 +537,10 @@ impl Stage {
         | Stage::SurrogateThumb
         | Stage::PeekRing
         | Stage::PeekBackdrop
+        | Stage::PeekFill
+        | Stage::FillSource
+        | Stage::RingRaise
+        | Stage::PeekPlace
     )
   }
 }
@@ -1640,6 +1675,11 @@ mod tests {
       assert!(stage.index() > Stage::PeekFrame.index());
       assert!(stage.index() < Stage::Tick.index());
     }
+    for stage in [Stage::PeekDrawAlpha, Stage::PeekDrawEntry] {
+      assert_eq!(stage.depth(), Stage::PeekDraw.depth() + 1);
+      assert!(stage.index() > Stage::PeekDraw.index());
+      assert!(stage.index() < Stage::PeekTrack.index());
+    }
     for stage in [
       Stage::WsSurrogates,
       Stage::WsPark,
@@ -1672,6 +1712,10 @@ mod tests {
       Stage::SurrogateThumb,
       Stage::PeekRing,
       Stage::PeekBackdrop,
+      Stage::PeekFill,
+      Stage::FillSource,
+      Stage::RingRaise,
+      Stage::PeekPlace,
     ] {
       assert!(stage.is_cross_cutting(), "{}", stage.label());
     }
@@ -1795,7 +1839,9 @@ mod tests {
         start: Instant::now().checked_sub(Duration::from_millis(3)),
       });
       drop(forced_scope(Stage::PeekDraw));
+      drop(forced_scope(Stage::PeekDrawEntry));
       drop(forced_scope(Stage::PeekRing));
+      drop(forced_scope(Stage::PeekFill));
       drop(forced_scope(Stage::Tick));
       assert!(!roll_up_frame());
 
@@ -1817,7 +1863,9 @@ mod tests {
         .split_once("\n  tick ")
         .expect("a tick row after it");
       assert!(under_peek_frame.contains("\n    peek_draw "), "{report}");
+      assert!(under_peek_frame.contains("\n      pd_draw "), "{report}");
       assert!(several.contains("\n    peek_ring "), "{report}");
+      assert!(several.contains("\n    pd_fill "), "{report}");
     })
     .join()
     .expect("profiler test thread panicked");

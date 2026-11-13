@@ -37,6 +37,16 @@
 //!   workspace switch instead of sliding with its neighbours
 //!   (`SWITCH_PEEKS_PLAN.md`). `slidepeeks` is still accepted and changes
 //!   nothing.
+//! - `latealpha`: give a moving tile's semi-transparent window back the
+//!   alpha its peek's take-over hid it by as the peek hands it back (or
+//!   lands hidden), rather than on the motion's first tick. Cloaked
+//!   meanwhile, so it doesn't show either way.
+//! - `earlyfill`: register a filled peek's fill strips as its motion
+//!   starts, before its ring copy, when its edge color is known, rather
+//!   than on its first tick, which then registers the ring copy anew over
+//!   them.
+//! - `keepfills`: keep up to 8 unused fill sources, one per edge color,
+//!   rather than 2, so a burst's peeks find theirs already made.
 //!
 //! Read once per process.
 
@@ -60,6 +70,9 @@ pub struct Isolation {
   pub keep_overlays: bool,
   /// On unless `noslidepeeks` is given.
   pub slide_peeks: bool,
+  pub late_alpha: bool,
+  pub early_fill: bool,
+  pub keep_fills: bool,
 }
 
 impl Default for Isolation {
@@ -74,6 +87,9 @@ impl Default for Isolation {
       async_hand_back: true,
       keep_overlays: true,
       slide_peeks: true,
+      late_alpha: false,
+      early_fill: false,
+      keep_fills: false,
     }
   }
 }
@@ -100,6 +116,9 @@ impl Isolation {
         "noasynchandback" => isolation.async_hand_back = false,
         "nokeepoverlays" => isolation.keep_overlays = false,
         "noslidepeeks" => isolation.slide_peeks = false,
+        "latealpha" => isolation.late_alpha = true,
+        "earlyfill" => isolation.early_fill = true,
+        "keepfills" => isolation.keep_fills = true,
         _ => tracing::warn!("Unknown GLAZEWM_ISOLATE flag: {word}."),
       }
     }
@@ -143,6 +162,9 @@ mod tests {
         async_hand_back: true,
         keep_overlays: true,
         slide_peeks: true,
+        late_alpha: false,
+        early_fill: false,
+        keep_fills: false,
       }
     );
     assert_eq!(Isolation::parse("peeks"), Isolation::default());
@@ -214,6 +236,23 @@ mod tests {
       }
     );
     assert_eq!(Isolation::parse("slidepeeks"), Isolation::default());
+  }
+
+  #[test]
+  fn first_draw_words_are_off_unless_given() {
+    let isolation = Isolation::default();
+    assert!(!isolation.late_alpha);
+    assert!(!isolation.early_fill);
+    assert!(!isolation.keep_fills);
+    assert_eq!(
+      Isolation::parse("LateAlpha,earlyfill KEEPFILLS"),
+      Isolation {
+        late_alpha: true,
+        early_fill: true,
+        keep_fills: true,
+        ..Isolation::default()
+      }
+    );
   }
 
   #[test]
