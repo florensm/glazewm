@@ -66,8 +66,9 @@ Windows Terminal's process name is `WindowsTerminal`.
 Programs started once, before the first round, so every run measures the
 same windows; `none` starts nothing. They open on the focused workspace.
 `notepad`, `explorer`, `wt` and `chrome` (with `--new-window`) each open a
-new window; any other name is started as given, its window expected from
-the process named after the file. The windows of those processes that the
+new window; `explorer`'s is shown by the file manager registered for
+folders, if not Explorer (e.g. `FPilot`). Any other name is started as
+given, its window expected from the process named after the file. The windows of those processes that the
 WM manages within 20 seconds, and didn't before, are closed at the end
 through the WM's `close`; no other window is.
 
@@ -133,7 +134,9 @@ function Wait-WmReady([string] $Cli) {
   # terminating error under 'Stop'.
   $ErrorActionPreference = 'Continue'
   for ($i = 0; $i -lt 60; $i++) {
-    & $Cli query monitors *> $null
+    # The executable is a GUI app: only with its output piped does
+    # PowerShell wait for it and set `$LASTEXITCODE`, not with `*> $null`.
+    & $Cli query monitors 2>$null | Out-Null
     if ($LASTEXITCODE -eq 0) { return }
     Start-Sleep -Milliseconds 500
   }
@@ -263,14 +266,26 @@ function Get-ManagedWindows([string] $Cli) {
   $windows
 }
 
+# Process that shows the window `explorer.exe` opens: a file manager
+# registered for folders' `open` verb (e.g. File Pilot) takes it over.
+function Get-FolderOwner {
+  $command = (Get-ItemProperty -ErrorAction SilentlyContinue `
+    'Registry::HKEY_CLASSES_ROOT\Directory\shell\open\command').'(default)'
+  if ($command -match '^\s*"?([^"]+?\.exe)\b') {
+    return [IO.Path]::GetFileNameWithoutExtension($Matches[1])
+  }
+  'explorer'
+}
+
 # Starts each of `$Names` once (see `-Launch`) and waits up to 20 seconds
 # for the WM to manage their windows. Returns the new windows' handles.
 function Start-Launched([string] $Cli, [string[]] $Names) {
   # `Owner` is the window's process: launchers hand off to it and exit.
   $known = @{
     notepad  = @{ FilePath = 'notepad.exe'; Owner = 'notepad' }
-    explorer = @{ FilePath = 'explorer.exe'; Owner = 'explorer' }
-    wt       = @{ FilePath = 'wt.exe'; Owner = 'WindowsTerminal' }
+    explorer = @{ FilePath = 'explorer.exe'; Owner = Get-FolderOwner }
+    # Without `-w new`, a `windowingBehavior` setting can open a tab instead.
+    wt       = @{ FilePath = 'wt.exe'; Arguments = '-w new'; Owner = 'WindowsTerminal' }
     chrome   = @{ FilePath = 'chrome.exe'; Arguments = '--new-window'; Owner = 'chrome' }
   }
   $before = Get-ManagedWindows $Cli
@@ -324,7 +339,7 @@ function Close-Launched([string] $Cli, [int64[]] $Handles) {
   foreach ($handle in $Handles) {
     $window = $windows[$handle]
     if (-not $window) { continue }
-    & $Cli command --id $window.id close *> $null
+    & $Cli command --id $window.id close 2>$null | Out-Null
     if ($LASTEXITCODE) {
       Write-Warning "Closing the $($window.processName) window $handle failed."
     }
