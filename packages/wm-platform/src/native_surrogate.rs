@@ -569,6 +569,8 @@ impl NativeSurrogate {
     let logical_src = to_logical(source_rect, &border_inset);
     let logical_thumb = to_logical(thumbnail_rect, &border_inset);
 
+    let window_scope =
+      crate::perf::scope(crate::perf::Stage::SurrogateWindow);
     // `WS_EX_NOREDIRECTIONBITMAP` leaves the window with no GDI surface at
     // all, so everything outside the thumbnail is transparent, and lets
     // the gap fill root a composition tree on it.
@@ -583,6 +585,7 @@ impl NativeSurrogate {
     )?;
 
     style_like_window(hwnd, *corner_style);
+    drop(window_scope);
 
     // Register the DWM thumbnail at `thumbnail_rect` dimensions. For
     // shrinking animations this equals `source_rect` so the thumbnail
@@ -597,6 +600,8 @@ impl NativeSurrogate {
     //
     // Failure is non-fatal: the surrogate still shows its fill if given a
     // color.
+    let thumb_scope =
+      crate::perf::scope(crate::perf::Stage::SurrogateThumb);
     let companion = Companion::find(source_hwnd);
     let window_size = (logical_src.width(), logical_src.height());
     let (src, dst) = content_rects(
@@ -613,6 +618,7 @@ impl NativeSurrogate {
       stretch.then_some(window_size),
     );
     let thumbnail = register_thumbnail(hwnd, source_hwnd, companion, look);
+    drop(thumb_scope);
 
     // Constructed before the final `SetWindowPos` call (rather than after)
     // so that if it fails, `?`'s early return drops `this` — running
@@ -717,6 +723,8 @@ impl NativeSurrogate {
     self.last_rect = None;
     self.window_size = (logical_src.width(), logical_src.height());
 
+    let thumb_scope =
+      crate::perf::scope(crate::perf::Stage::SurrogateThumb);
     // The existing registration samples the old companion (or the window
     // itself), so a changed companion needs a new one, as does a changed
     // `stretch`, since a source rect cannot be unset once applied.
@@ -752,6 +760,7 @@ impl NativeSurrogate {
           register_thumbnail(self.hwnd(), source_hwnd, companion, look);
       }
     }
+    drop(thumb_scope);
     self.rest_opacity = opacity;
     self.set_fill_opacity(opacity);
     self.content_size = (logical_thumb.width(), logical_thumb.height());

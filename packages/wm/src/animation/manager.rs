@@ -1436,7 +1436,9 @@ impl AnimationManager {
 
     let times = state.animation_manager.begin_frame_times();
     let (landed, batch) = Self::tick_peeks(state, times);
+    let track_scope = perf::scope(Stage::PeekTrack);
     super::peek_view::track_overlays(state, config, batch);
+    drop(track_scope);
 
     Some(PeeksDrawn { times, landed })
   }
@@ -1573,7 +1575,11 @@ impl AnimationManager {
         .map(|at| perf::scope_since(Stage::PeekFrame, Some(at)));
       let (landed, batch) = Self::tick_peeks(state, times);
       Self::queue_landed(state, landed);
+      // Under `peek_frame` only, which a frame with no peek moving lacks.
+      let track_scope =
+        peek_scope.as_ref().map(|_| perf::scope(Stage::PeekTrack));
       super::peek_view::track_overlays(state, config, batch);
+      drop(track_scope);
       drop(peek_scope);
     }
 
