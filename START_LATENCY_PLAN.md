@@ -346,3 +346,20 @@ The next bench (`resize` on peeks, and one `switch` run) should answer:
 3. Of `switch`'s +20.5 ms in `redraw_prep` and +15.7 ms in `sync_tail`,
    which `ws_*` stage and which of `sync_focus`/`tab_bars`/`overview`/
    `guards` holds it?
+
+## Decided (2026-11-13 bench)
+
+From `packages/wm-cli/examples/perf_bench/results/2026-11-13/bench-report.md`.
+The words above are no longer all off by default.
+
+| word | now | why |
+|---|---|---|
+| `keepoverlays` | default; `nokeepoverlays` turns it off | `nopeeks` resize command −30%, within ~2 ms of `main`; frames unchanged. |
+| `asynchandback` | default; `noasynchandback` turns it off | Resize `[sync]` rows 120 → 0, worst burst gap 170 → 49 ms, at no frame cost. |
+| `asynclanding` | removed | `[sync]` rows stay (115 ms Notepad fallback under CPU 8), frame p90 +21%; `asynchandback` does better. |
+| `earlylanding` | removed | Frame p90 +64% / +149%, interval p90 doubles at CPU 8: the motion's tail misses vblanks. |
+| `keeppeeks` | removed | `peek_new` only −1.5–2.3 ms, resize command not separated, interval p99 +29% at CPU 8. |
+
+`keepoverlays` and `asynchandback` are still accepted and change nothing.
+The removed code is in history: the hand-over words at `e120e85`,
+`keeppeeks` at `04826e6`.
