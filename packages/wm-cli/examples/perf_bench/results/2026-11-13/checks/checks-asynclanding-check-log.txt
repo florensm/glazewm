@@ -1,0 +1,15 @@
+asynclanding-check tiles: Notepad, WindowsTerminal, WindowsTerminal, chrome, chrome, FPilot
+       3 ms  resize --width +2% (answered in 68.2 ms)
+   1,082 ms  move --direction left (answered in 23.0 ms)
+   2,110 ms  move --direction right (answered in 24.6 ms)
+   3,146 ms  resize --width -2% (answered in 71.8 ms)
+   4,947 ms  settled screenshot
+  Notepad          shown    x=   20 w=  550 y=  20 h=1400 132078
+  WindowsTerminal  shown    x=  590 w=  550 y=  20 h=1400 66798
+  WindowsTerminal  shown    x= 1160 w=  550 y=  20 h=1400 132050
+  chrome           shown    x= 1730 w=  550 y=  20 h=1400 66882
+  chrome           shown    x= 2300 w=  550 y=  20 h=1400 132136
+  FPilot           shown    x= 2870 w=  550 y=  20 h=1400 132092
+errors.log: 9 new line(s)
+  8x WARN glazewm::commands::general::platform_sync: Failed to set focus: The operation completed successfully. (#)
+  1x WARN glazewm::commands::general::platform_sync: Synchronous reposition for Window(id=WindowId(#), process=FPilot, class=File Pilot) took #.#ms -- likely blocked on the target process's message queue, 

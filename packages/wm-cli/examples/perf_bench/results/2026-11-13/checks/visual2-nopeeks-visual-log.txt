@@ -1,0 +1,12 @@
+nopeeks-visual tiles: Notepad, WindowsTerminal, WindowsTerminal, chrome, chrome, FPilot
+       4 ms  move --direction left (answered in 17.5 ms)
+     373 ms  screenshot
+   4,879 ms  move --direction right (answered in 17.1 ms)
+  Notepad          shown    x=   20 w=  550 y=  20 h=1400 132078
+  WindowsTerminal  shown    x=  590 w=  550 y=  20 h=1400 66798
+  WindowsTerminal  shown    x= 1160 w=  550 y=  20 h=1400 132050
+  chrome           shown    x= 1730 w=  550 y=  20 h=1400 66882
+  chrome           shown    x= 2300 w=  550 y=  20 h=1400 132136
+  FPilot           shown    x= 2870 w=  550 y=  20 h=1400 132092
+errors.log: 2 new line(s)
+  2x WARN glazewm::commands::general::platform_sync: Failed to set focus: The operation completed successfully. (#)

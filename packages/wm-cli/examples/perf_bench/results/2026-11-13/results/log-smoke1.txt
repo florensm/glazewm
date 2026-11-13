@@ -1,0 +1,21 @@
+Building...
+    Finished `release` profile [optimized] target(s) in 0.35s
+    Finished `release` profile [optimized] target(s) in 0.25s
+Starting notepad, explorer, wt, chrome...
+  Started 'notepad' (process 17344).
+  Started 'explorer' (process 8044).
+  Started 'wt' (process 3360).
+  Started 'chrome' (process 11412).
+WARNING: No window of 'explorer' appeared within 20 seconds.
+Round 1/1: restarting GlazeWM as 'default'...
+  tiles default #1 ws 1: Notepad, WindowsTerminal, WindowsTerminal, chrome, chrome, FPilot, AnyDesk
+  Measuring 'move'...
+Restarting GlazeWM as it was...
+Closing the 3 window(s) it started...
+
+## move
+
+| label | scenario | command p50 ms | command p90 ms | frames | tick ms/frame | frame p90 ms | frames >2x budget | interval p50 ms | interval p90 ms | interval p99 ms | interval max ms (median burst) | peek_frame ms/frame | session_overlays ms/frame | batch_commit ms/frame | ovl_region ms/frame | dwm_flush calls (in frames) | dwm_flush ms (outside frames) | cloak ms (outside frames) | session_begin ms (outside frames) | command ms (WM side) | peek_new ms (outside frames) | peek_cover ms (outside frames) | peek_handover ms (outside frames) | peek_raise ms (outside frames) | session_overlays ms (outside frames) | input->anim start ms | input->first frame ms |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| default #1 | move | 27.60 | 27.70 | 63.00 | 0.94 | 1.14 | 0.00 | 5.72 | 5.76 | 8.81 | 8.81 | 0.46 | 0.00 | 0.00 | 0.00 | 0.00 | 8.40 | 12.50 | 0.00 | 27.30 | 6.50 | 1.20 | 3.50 | 0.30 | 0.00 | 5.32 | 28.69 |
+Done. Results are in C:\Users\googlers\.glzr\glazewm\isolate-bench.txt

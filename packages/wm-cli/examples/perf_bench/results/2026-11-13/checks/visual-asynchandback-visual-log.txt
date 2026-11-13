@@ -1,0 +1,18 @@
+asynchandback-visual tiles: Notepad, WindowsTerminal, WindowsTerminal, chrome, chrome, FPilot
+       3 ms  resize --width +25% (answered in 47.3 ms)
+   3,312 ms  screenshot
+   7,824 ms  resize --width -25% (answered in 82.4 ms)
+  Notepad          shown    x=   20 w=  550 y=  20 h=1400 132078
+  WindowsTerminal  shown    x=  590 w=  550 y=  20 h=1400 66798
+  WindowsTerminal  shown    x= 1160 w=  550 y=  20 h=1400 132050
+  chrome           shown    x= 1730 w=  550 y=  20 h=1400 66882
+  chrome           shown    x= 2300 w=  550 y=  20 h=1400 132136
+  FPilot           shown    x= 2870 w=  550 y=  20 h=1400 132092
+errors.log: 19 new line(s)
+  7x WARN glazewm::commands::general::platform_sync: Failed to set focus: The operation completed successfully. (#)
+  2x WARN glazewm::commands::general::platform_sync: Overlay z-settle for aebff#db-#da#-#-#-#ef capped: surrogate still active.
+  2x WARN glazewm::commands::general::platform_sync: Overlay z-settle for #ca#c#a-#f#-#ed#-#d#-#bf#d#b capped: surrogate still active.
+  2x WARN glazewm::commands::general::platform_sync: Overlay z-settle for #d#-#f-#-b#-b#b#b#d capped: surrogate still active.
+  2x WARN glazewm::commands::general::platform_sync: Overlay z-settle for #b#a#a-#ec-#a#-#-#b#ef#a#fd capped: surrogate still active.
+  2x WARN glazewm::commands::general::platform_sync: Overlay z-settle for #-#-#-bc#-#b#d#db# capped: surrogate still active.
+  2x WARN glazewm::commands::general::platform_sync: Overlay z-settle for e#be#-c#d-#a#-bcaf-#ecb#bd capped: surrogate still active.
