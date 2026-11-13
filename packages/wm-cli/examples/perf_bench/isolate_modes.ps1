@@ -21,8 +21,8 @@ The modes compared by default:
 - `peeksfirst`: the new drawing, with peek frames drawn before the main
   loop's catch-up.
 
-Results are printed, one table per scenario, and saved to
-~/.glzr/glazewm/isolate-bench.txt. Lower is better in every column, except
+Results are printed, one table per scenario, and saved to `-ResultsFile`
+(~/.glzr/glazewm/isolate-bench.txt). Lower is better in every column, except
 `frames`; `interval p50 ms` should match the refresh period, and the gap to
 `interval p90 ms` shows how evenly frames land. Each mode's results are
 preceded by its workspace's window order, which a restart can change.
@@ -75,6 +75,11 @@ through the WM's `close`; no other window is.
 .PARAMETER KeepLaunched
 Leaves the `-Launch` windows open at the end.
 
+.PARAMETER ResultsFile
+File the results are written to, replacing it. Elsewhere than the default
+when an editor holds ~/.glzr/glazewm's files open: Zed's handles make
+`Set-Content` and `Add-Content` fail there.
+
 .EXAMPLE
 powershell -ExecutionPolicy Bypass -File packages\wm-cli\examples\perf_bench\isolate_modes.ps1 -Target chrome
 
@@ -100,10 +105,13 @@ param(
   [int] $CpuLoad = 0,
   [string[]] $TileOrder = @(),
   [string[]] $Launch = @('notepad', 'explorer', 'wt', 'chrome'),
-  [switch] $KeepLaunched
+  [switch] $KeepLaunched,
+  [string] $ResultsFile = (Join-Path $HOME '.glzr\glazewm\isolate-bench.txt')
 )
 
 $ErrorActionPreference = 'Stop'
+# Relative to where it was started from, not the repository root.
+$ResultsFile = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($ResultsFile)
 Set-Location (Resolve-Path (Join-Path $PSScriptRoot '..\..\..\..'))
 
 # `powershell -File` binds `-Modes a,b` as the one string 'a,b'.
@@ -356,7 +364,6 @@ $wm = (Resolve-Path 'target\release\glazewm.exe').Path
 $bench = (Resolve-Path 'target\release\examples\perf_bench.exe').Path
 $dataDir = Join-Path $HOME '.glzr\glazewm'
 $layoutFile = Join-Path $dataDir 'isolate-bench-layout.txt'
-$resultsFile = Join-Path $dataDir 'isolate-bench.txt'
 
 $userWm = Get-WmProcess
 if (-not $userWm) {
