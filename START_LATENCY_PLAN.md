@@ -363,3 +363,69 @@ The words above are no longer all off by default.
 `keepoverlays` and `asynchandback` are still accepted and change nothing.
 The removed code is in history: the hand-over words at `e120e85`,
 `keeppeeks` at `04826e6`.
+
+## First draw (2026-11-13 afternoon bench)
+
+Read off the code (`sl/i-first-draw`, from `cdd5198`) against
+`results/2026-11-13-stages/`; not seen running. A peek's first draw
+(`peek_draw`, 4.83 ms each, 29 ms for 6) against 0.36 ms later. What the
+first tick of a `fill`-resized tile does that later ticks don't:
+
+| step (`file: function`) | one-time? | whose | status |
+| --- | --- | --- | --- |
+| `hidden_alpha.rs: HiddenAlpha::restore`, from `PeekView::tick` | yes: `take_over` hid each window by alpha (bench config: `transparency` 90%, so all 6) | ours: 2× `GetWindowLongPtrW`, `GetLayeredWindowAttributes`, `SetLayeredWindowAttributes` on another app's window; cost unknown (`take_over`, 1.2–2 ms, is the same hide plus the cloak) | behind `latealpha`; `pd_alpha` measures it |
+| `window_peek.rs: show_window` | no: `take_over` already drew `Shown` | — | nothing to do |
+| `window_peek.rs: refresh_companion` → `Companion::find` (`EnumWindows`) | no: throttle set at `NativeSurrogate::create`, 100 ms; the first tick is ~40–65 ms later. Arms on a later tick (one scan per 50 ms, shared) | ours, later ticks | not the first draw |
+| `start_clock`, `Stretch::note_target` | trivial | — | — |
+| `window_peek.rs: carry_fill` → `overlay_copies.rs: carry_fill`: first edge color (set by `note_fill_inputs` on the tick; `Stretch::at` starts with none) | yes | ours: 2 `DwmRegisterThumbnail` (+ property update each) | moved into the command by `earlyfill` |
+| same → `OverlayCopies::raise_ring` → `RingCopy::register_anew` | yes: the fill goes up after the cover pass's ring, so the 8 ring cells are registered anew over it and the old 8 unregistered | ours, redundant: the cover pass's 8 cells cost 1.25 ms per window (`peek_cover` 7.55 / 6) | removed by `earlyfill` |
+| same → `backdrop_source.rs: FillSource::acquire` → `create` | per burst for some colors: peeks drop theirs at landing, and `drop_idle`, on the next burst's first `acquire`, keeps 2 idle of the rest | ours: `OverlayWindow::create`, `set_alpha`, `SurrogateFill::create` (composition), `place_at_bottom` | behind `keepfills` |
+| `window_peek.rs: place_filled`: `place_fill` + `set_fill_opacity` (4 updates) | yes | ours, needed | — |
+| `place_filled`'s thumbnail, ring cells, `set_visible` | no: rects change every frame; the peek was shown by `move_tile`'s draw in the command | ours (`DwmUpdateThumbnailProperties`, async) | — |
+| DWM's first composition of a just-cloaked window's thumbnail | yes | DWM's | needs measuring (`pd_draw` − `pd_fill` on the first frame against later frames) |
+
+No `DwmFlush`, synchronous `SetWindowPos`, `SetWindowRgn` or style
+change on the first tick. Item 2 of the bench: `carry_ring` in the
+hand-over pass is the `Covered` → `Parked` step (conceal, `cut_ring`
+no-op), 0.66 ms for 6, and rule 5's; the cover pass's 8 registrations
+per window are needed. Nothing plainly redundant there. The rest of
+`move_on_peek` outside `peek_new` (5.5 ms) is mostly `move_tile`'s first
+draw (`place_filled`: the peek's first `ShowWindow`, thumbnail and ring
+placement), now `peek_place`.
+
+Expected savings on the first frame (6 windows, unmeasured):
+
+| word | first frame | command |
+| --- | --- | --- |
+| `latealpha` | −`pd_alpha` (guess: up to ~1 ms per window); hand-back also skips `prepare_hand_back`'s hide | 0 |
+| `earlyfill` | −~8–9 ms (8 registrations + 8 unregistrations per window, and the fill's 2) | +~2 ms (fill's 2 registrations per window) |
+| `keepfills` | −0.5–2 ms per re-created color, from the second burst on | 0 |
+
+Together the first `peek_draw` should drop from ~29 to ~10–14 ms;
+input→first frame by about as much less `earlyfill`'s command cost.
+
+New stages (scopes only): `pd_alpha` and `pd_draw` under `peek_draw`;
+cross-cutting `pd_fill` (`draw_stretched`'s `carry_fill`, and
+`earlyfill`'s), `fill_source`, `ring_raise`, `peek_place`. `perf_bench`
+now reads a row's `worst` column: `peek_draw`/`pd_alpha`/`pd_draw`/
+`pd_fill`/`fill_source`/`ring_raise ms (worst frame)` (the first frame,
+in practice), and `peek_place`/`pd_fill`/`fill_source`/`ring_raise ms
+(outside frames)`.
+
+Measure next (desktop, as on 2026-11-13: `-TileOrder`, backdrops off,
+load 0 and CPU 8), `resize` and `move`:
+
+```
+-Modes default,latealpha,earlyfill,keepfills,latealpha+earlyfill+keepfills
+```
+
+Read: `input->first frame ms`, `command ms (WM side)`, `peek_draw ms
+(worst frame)` and its `pd_*` / `fill_source` / `ring_raise` columns,
+`peek_place ms (outside frames)`; then `frame p90`, `interval p99` for
+regressions. Settles: `pd_alpha` is the alpha restore's real cost (0
+under `latealpha`); `ring_raise (worst frame)` ≈ 0 under `earlyfill`;
+`fill_source` ≈ 0 under `keepfills` from the second burst; whatever of
+`pd_draw` is left over the later frames' 0.36 ms is DWM's. Once with
+backdrops on: `carry_styles`' 12 ms in `peek_new`, untouched here. Watch
+a `resize` for a fill strip or ring missing on the first frame, and a
+window shown without its transparency after landing (`latealpha`).
