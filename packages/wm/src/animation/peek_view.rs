@@ -53,12 +53,6 @@ const HOLD_RELEASE_WAIT: Duration = Duration::from_millis(150);
 /// same, as `ResizeSession::pre_commit` waits (see [`Hold::Released`]).
 const FILL_LANDING_WAIT: Duration = Duration::from_millis(500);
 
-/// How close, per axis, a window deferring its new size is drawn to it
-/// when `GLAZEWM_ISOLATE=earlylanding` sends it (see [`EarlySize::Near`]).
-/// Until its motion ends, it may then be drawn up to this much short of
-/// its rect, the rest in its edge color.
-const EARLY_LANDING_GAP_PX: i32 = 12;
-
 /// Whether an entry is kept from landing while its window resizes behind
 /// it: by a grab (see [`PeekView::hold`]), or waiting for a filled
 /// window's last size.
@@ -87,57 +81,6 @@ impl Hold {
       }
     }
   }
-}
-
-/// When a window filled on its peek that defers its new size (see
-/// [`Stretch::deferred`]) is sent it ahead of landing, its peek then
-/// waiting for it as for one sent it at the start, so the hand-back finds
-/// it at its tile rather than resizing it synchronously.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum EarlySize {
-  /// Only as it lands.
-  Never,
-  /// As its motion ends (`GLAZEWM_ISOLATE=asynclanding`).
-  AtEnd,
-  /// As it is drawn within [`EARLY_LANDING_GAP_PX`] of its new size, or
-  /// its motion ends (`GLAZEWM_ISOLATE=earlylanding`).
-  Near,
-}
-
-impl EarlySize {
-  fn current() -> Self {
-    let isolation = wm_platform::isolation::current();
-    if isolation.early_landing {
-      Self::Near
-    } else if isolation.async_landing {
-      Self::AtEnd
-    } else {
-      Self::Never
-    }
-  }
-}
-
-/// Whether an entry whose window `defers` its new size, free of a grab and
-/// ending shown, is sent it now, `when` says, its motion done or not, and
-/// drawn near that size or not.
-fn sends_size_early(
-  when: EarlySize,
-  defers: bool,
-  is_done: bool,
-  is_near: bool,
-) -> bool {
-  defers
-    && match when {
-      EarlySize::Never => false,
-      EarlySize::AtEnd => is_done,
-      EarlySize::Near => is_done || is_near,
-    }
-}
-
-/// Whether `rect` is within `gap` of `target`'s size on both axes.
-fn is_near_size(rect: &Rect, target: &Rect, gap: i32) -> bool {
-  (rect.width() - target.width()).abs() <= gap
-    && (rect.height() - target.height()).abs() <= gap
 }
 
 /// How a window whose size changes on its peek is drawn
@@ -262,8 +205,6 @@ struct Trail {
 /// reach across the rect. Once it has grown, the cover eases back to 1
 /// over [`STRETCH_SETTLE`] rather than stepping, which was the old path's
 /// zoom.
-// Each read on its own as the window is drawn and lands.
-#[allow(clippy::struct_excessive_bools)]
 #[derive(Clone, Debug)]
 struct Stretch {
   /// The real window's rect, as last read.
@@ -281,9 +222,6 @@ struct Stretch {
   /// Whether, filled, its window is sent its new size only as it lands
   /// (see [`resizes_at_start`]). Sampled as it is meanwhile.
   deferred: bool,
-  /// Whether its window was sent the size it deferred ahead of landing
-  /// (see [`EarlySize`]), so is waited for as one sent it at the start.
-  sent_early: bool,
   /// The window's edge color, as last sampled, which it is filled with
   /// (see [`note_fill_inputs`]).
   edge_color: Option<Color>,
@@ -305,7 +243,6 @@ impl Stretch {
       settle: None,
       filled,
       deferred: filled && deferred,
-      sent_early: false,
       edge_color: None,
       in_flight: None,
     }
@@ -354,13 +291,6 @@ impl Stretch {
         kept(cover.1, from.height(), target.height()),
       ),
     ));
-  }
-
-  /// Whether its window may still be short of its target's size as it
-  /// lands, so its ring and backdrop go back to the target's frame (see
-  /// [`landing_frame`]).
-  fn lands_unsized(&self) -> bool {
-    self.deferred || (self.sent_early && !self.reached)
   }
 
   /// The least cover it is drawn with at `now`.
@@ -479,7 +409,8 @@ impl Entry {
   /// held one for its grab to let go of it (see [`Hold`]).
   fn may_land(&mut self, now: Instant) -> bool {
     let stretch = self.stretch.as_ref();
-    let is_done = self.is_done(now);
+    let is_done = stretch.is_none_or(|stretch| stretch.is_settled(now))
+      && has_landed(&self.motion, self.transit.as_ref());
     let reached = stretch.is_some_and(|stretch| stretch.reached);
     let awaits_size = stretch.is_some_and(|stretch| {
       stretch.filled && !stretch.deferred && !stretch.reached
@@ -493,50 +424,6 @@ impl Entry {
     }
 
     self.hold = Hold::Free;
-    true
-  }
-
-  /// Whether its motion and transit are done at `now`, and a stretched
-  /// window's scale at rest.
-  fn is_done(&self, now: Instant) -> bool {
-    self
-      .stretch
-      .as_ref()
-      .is_none_or(|stretch| stretch.is_settled(now))
-      && has_landed(&self.motion, self.transit.as_ref())
-  }
-
-  /// Stops deferring its window's new size at `now`, drawn at `rect`, if
-  /// [`EarlySize`] says it is sent it now, for one that ends shown, as
-  /// `ends_shown` says: one landing hidden isn't handed back. Returns
-  /// whether it did, for the caller to send it (see [`Landed::sized`]).
-  fn sends_size_early(
-    &mut self,
-    rect: &Rect,
-    now: Instant,
-    ends_shown: bool,
-  ) -> bool {
-    let defers = ends_shown
-      && self.hold != Hold::Held
-      && self
-        .stretch
-        .as_ref()
-        .is_some_and(|stretch| stretch.deferred);
-    let is_near =
-      is_near_size(rect, &self.motion.target_rect, EARLY_LANDING_GAP_PX);
-    if !sends_size_early(
-      EarlySize::current(),
-      defers,
-      self.is_done(now),
-      is_near,
-    ) {
-      return false;
-    }
-
-    if let Some(stretch) = &mut self.stretch {
-      stretch.deferred = false;
-      stretch.sent_early = true;
-    }
     true
   }
 
@@ -665,9 +552,8 @@ fn is_same_size(a: &Rect, b: &Rect) -> bool {
 
 /// The stretch an entry keeps as it is moved on at `now`, from heading
 /// for `from` to `target`: none without a `resize`, else its own,
-/// retargeted if its size changes (see [`Stretch::retarget`]) and
-/// deferring again as [`defers_again`] says if sent its size early, or a
-/// new one for a window at `actual`, its new size sent as it lands if
+/// retargeted if its size changes (see [`Stretch::retarget`]), or a new
+/// one for a window at `actual`, its new size sent as it lands if
 /// `deferred`.
 fn restretched(
   stretch: Option<Stretch>,
@@ -680,11 +566,6 @@ fn restretched(
 ) -> Option<Stretch> {
   resize.map(|resize| match stretch {
     Some(mut kept) => {
-      if kept.sent_early {
-        kept.sent_early = false;
-        kept.deferred =
-          defers_again(kept.actual.as_ref(), deferred, from, target);
-      }
       if !is_same_size(from, target) {
         kept.retarget(from, target, now);
       }
@@ -692,22 +573,6 @@ fn restretched(
     }
     None => Stretch::at(actual(), resize, deferred),
   })
-}
-
-/// Whether a stretch whose window was sent `from`'s size ahead of landing
-/// (see [`Stretch::sent_early`]) defers its new size again as it heads
-/// for `target` instead, where the caller would defer it (`deferred`):
-/// only once its window, last read at `actual`, has `from`'s size, as one
-/// still on its way there may apply it at any time.
-fn defers_again(
-  actual: Option<&Rect>,
-  deferred: bool,
-  from: &Rect,
-  target: &Rect,
-) -> bool {
-  deferred
-    && !resizes_at_start(from, target)
-    && actual.is_some_and(|actual| is_same_size(actual, from))
 }
 
 /// Whether a moving entry has landed: its motion and, while it enters,
@@ -1040,9 +905,6 @@ pub struct Landed {
   /// Landed after a resize drawn filled, whose edge color is to be
   /// sampled again, as after a `fill` session.
   pub filled: Vec<Uuid>,
-  /// Moving, whose real windows are to be sent the size they deferred
-  /// ahead of landing (see [`EarlySize`]).
-  pub sized: Vec<Uuid>,
 }
 
 /// A window whose peek has finished taking it off the screen.
@@ -1065,73 +927,10 @@ pub enum Leave {
   Unsupported,
 }
 
-/// How long a released tile's peek is kept for its window's next motion
-/// (see [`Spare`]). Checked lazily, as no tick runs while nothing moves.
-const SPARE_LIFETIME: Duration = Duration::from_secs(10);
-
-/// Most spare peeks kept at once; the oldest goes first.
-const MAX_SPARES: usize = 16;
-
-/// What a spare peek was made for, which a new motion must ask for to
-/// reuse it.
-#[derive(Clone, Debug, PartialEq, Eq)]
-struct SpareFit {
-  /// The real window it shows.
-  source: HWND,
-  /// The monitor area it is clipped to.
-  clip: Rect,
-  live: bool,
-}
-
-/// A released tile's peek, hidden and kept for its window's next motion
-/// instead of being built anew (`GLAZEWM_ISOLATE=keeppeeks`).
-struct Spare {
-  peek: WindowPeek,
-  fit: SpareFit,
-  kept_at: Instant,
-}
-
-/// Whether a peek kept at `kept_at` has outlived [`SPARE_LIFETIME`] at
-/// `now`.
-fn is_expired(kept_at: Instant, now: Instant) -> bool {
-  now.saturating_duration_since(kept_at) >= SPARE_LIFETIME
-}
-
-/// Whether a spare made for `fit`, kept at `kept_at`, can draw a motion
-/// asking for `wanted` at `now`.
-fn reuses_spare(
-  fit: &SpareFit,
-  kept_at: Instant,
-  wanted: &SpareFit,
-  now: Instant,
-) -> bool {
-  fit == wanted && !is_expired(kept_at, now)
-}
-
-/// Of spares kept at the instants given, those past the first `cap`,
-/// newest first.
-fn evicted<K: Copy>(
-  kept: impl IntoIterator<Item = (K, Instant)>,
-  cap: usize,
-) -> Vec<K> {
-  let mut kept = kept.into_iter().collect::<Vec<_>>();
-  kept.sort_by_key(|(_, kept_at)| std::cmp::Reverse(*kept_at));
-  kept.into_iter().skip(cap).map(|(key, _)| key).collect()
-}
-
-/// Whether a released entry's peek is kept as a spare: a tile's, drawn on
-/// one peek, not one taking its window off the screen.
-fn keeps_peek(is_column: bool, has_trail: bool, role: Role) -> bool {
-  !is_column && !has_trail && !matches!(role, Role::Leaving(_))
-}
-
 /// Peeks of the columns of displayed scrolling layouts.
 #[derive(Default)]
 pub struct PeekView {
   pub(super) entries: HashMap<Uuid, Entry>,
-  /// Hidden peeks of released tiles, by window, which no query over
-  /// `entries` sees (see [`Spare`]).
-  spares: HashMap<Uuid, Spare>,
   /// Last target rect of every window in a displayed scrolling layout,
   /// i.e. where it is shown now and moves from on the next relayout.
   pub(super) last_rects: HashMap<Uuid, Rect>,
@@ -1172,12 +971,6 @@ impl PeekView {
       clip: Some(entry.clip.clone()),
       anchor: Some(entry.peek.hwnd()),
     })
-  }
-
-  /// Whether `window_id`'s peek is headed for `rect` while its real window
-  /// is cloaked.
-  pub fn heads_for(&self, window_id: &Uuid, rect: &Rect) -> bool {
-    self.owned_target(window_id) == Some(rect)
   }
 
   /// Where `window_id`'s peek is headed while its real window is cloaked.
@@ -1270,7 +1063,6 @@ impl PeekView {
     // Its window is sent each size the grab gives it.
     if let Some(stretch) = entry.stretch.as_mut().filter(|_| is_held) {
       stretch.deferred = false;
-      stretch.sent_early = false;
     }
   }
 
@@ -1343,11 +1135,6 @@ impl PeekView {
             stretch.note_target(&entry.motion.target_rect, now);
           }
           let (rect, _) = entry.motion.current_state_at(now);
-          // Before the draw: sent before this frame is composited, its new
-          // size may land first.
-          if entry.sends_size_early(&rect, now, ends_shown) {
-            landed.sized.push(*id);
-          }
           entry.draw(&rect, now, batch);
           drop(draw_scope);
 
@@ -1410,11 +1197,8 @@ impl PeekView {
       }
     }
 
-    self.prune_spares(now);
     for id in &landed.released {
-      if let Some(entry) = self.entries.remove(id) {
-        self.keep_spare(*id, entry, now);
-      }
+      self.entries.remove(id);
     }
 
     landed.left = take_left(&mut self.entries, |entry| {
@@ -1461,14 +1245,10 @@ impl PeekView {
     is_known: impl Fn(&Uuid) -> bool,
   ) -> Vec<(Uuid, Entry)> {
     self.last_rects.retain(|id, _| is_known(id));
-    let departed = self
+    self
       .entries
       .extract_if(|id, entry| is_departed(entry.is_column, is_known(id)))
-      .collect::<Vec<_>>();
-    for (id, _) in &departed {
-      self.spares.remove(id);
-    }
-    departed
+      .collect()
   }
 
   /// Takes out the peeks of windows entering a tiling layout that
@@ -1479,23 +1259,18 @@ impl PeekView {
     &mut self,
     shown: impl Fn(&Uuid) -> Option<bool>,
   ) -> Vec<Uuid> {
-    let strays = self
+    self
       .entries
       .extract_if(|id, entry| {
         is_stray(entry.is_column, entry.role, shown(id))
       })
       .map(|(id, _)| id)
-      .collect::<Vec<_>>();
-    for id in &strays {
-      self.spares.remove(id);
-    }
-    strays
+      .collect()
   }
 
-  /// Drops `window_id`'s peek, if it is entering a tiling layout, and its
-  /// spare, as its window is unmanaged.
+  /// Drops `window_id`'s peek, if it is entering a tiling layout, as its
+  /// window is unmanaged.
   pub fn forget_entering(&mut self, window_id: &Uuid) {
-    self.spares.remove(window_id);
     if self.entries.get(window_id).is_some_and(|entry| {
       !entry.is_column && !matches!(entry.role, Role::Leaving(_))
     }) {
@@ -1534,9 +1309,7 @@ impl PeekView {
 
   /// Drops `window_id`'s peek if it is leaving, ending its animation with
   /// nothing more done: no `WM_CLOSE`, and its real window left as it is.
-  /// Its spare goes too.
   pub fn forget_leaving(&mut self, window_id: &Uuid) {
-    self.spares.remove(window_id);
     if self.is_leaving(window_id) {
       self.entries.remove(window_id);
     }
@@ -1750,7 +1523,6 @@ impl PeekView {
       corner_style,
       &styles,
       role,
-      None,
     ) else {
       return false;
     };
@@ -1813,7 +1585,6 @@ impl PeekView {
       corner_style,
       &styles,
       Role::Moving { ends_shown: true },
-      None,
     ) else {
       return false;
     };
@@ -1928,15 +1699,6 @@ impl PeekView {
       return true;
     }
 
-    let spare = self.take_spare(
-      &id,
-      &SpareFit {
-        source: window.native().hwnd(),
-        clip: clip.clone(),
-        live: is_live(&styles),
-      },
-      now,
-    );
     let Some((mut entry, _)) = new_entry(
       window,
       motion,
@@ -1945,7 +1707,6 @@ impl PeekView {
       corner_style,
       &styles,
       role,
-      spare,
     ) else {
       return false;
     };
@@ -1994,7 +1755,6 @@ impl PeekView {
       corner_style,
       &styles,
       entry.role,
-      None,
     ) else {
       self.entries.remove(&id);
       return false;
@@ -2197,8 +1957,6 @@ impl PeekView {
     batch: &mut SurrogateBatch,
   ) -> Leave {
     let id = window.id();
-    // Leaving, its window has no next motion to keep a peek for.
-    self.spares.remove(&id);
     let role = self.entries.get(&id).map(|entry| entry.role);
     if role.is_some_and(|role| matches!(role, Role::Leaving(_))) {
       return Leave::Leaving;
@@ -2233,7 +1991,6 @@ impl PeekView {
         corner_style,
         &styles,
         Role::Leaving(transition),
-        None,
       ) else {
         return Leave::Unsupported;
       };
@@ -2293,71 +2050,6 @@ impl PeekView {
     true
   }
 
-  /// Keeps `entry`'s peek, just released, hidden for `id`'s next motion
-  /// (see [`Spare`]) under `GLAZEWM_ISOLATE=keeppeeks`, if it is a tile's.
-  /// Drops it otherwise.
-  fn keep_spare(&mut self, id: Uuid, entry: Entry, now: Instant) {
-    if !wm_platform::isolation::current().keep_peeks
-      || !keeps_peek(entry.is_column, entry.trail.is_some(), entry.role)
-    {
-      return;
-    }
-
-    let mut peek = entry.peek;
-    let fit = SpareFit {
-      source: peek.source(),
-      clip: entry.clip,
-      live: peek.is_live(),
-    };
-    peek.set_aside();
-
-    self.prune_spares(now);
-    self.spares.insert(
-      id,
-      Spare {
-        peek,
-        fit,
-        kept_at: now,
-      },
-    );
-    let evicted = evicted(
-      self.spares.iter().map(|(id, spare)| (*id, spare.kept_at)),
-      MAX_SPARES,
-    );
-    for id in evicted {
-      self.spares.remove(&id);
-    }
-  }
-
-  /// Takes `id`'s spare peek if it can draw a motion asking for `wanted`
-  /// at `now`. One that can't is dropped.
-  fn take_spare(
-    &mut self,
-    id: &Uuid,
-    wanted: &SpareFit,
-    now: Instant,
-  ) -> Option<WindowPeek> {
-    self.prune_spares(now);
-    self
-      .spares
-      .remove(id)
-      .filter(|spare| reuses_spare(&spare.fit, spare.kept_at, wanted, now))
-      .map(|spare| spare.peek)
-  }
-
-  /// Drops the spare peeks past [`SPARE_LIFETIME`] at `now`.
-  fn prune_spares(&mut self, now: Instant) {
-    self
-      .spares
-      .retain(|_, spare| !is_expired(spare.kept_at, now));
-  }
-
-  /// Drops every spare peek (see [`Spare`]), e.g. as the config reloads,
-  /// displays change or the WM pauses.
-  pub fn drop_spares(&mut self) {
-    self.spares.clear();
-  }
-
   /// Whether `window_id`'s leaving peek waits to take over from its real
   /// window, still shown.
   fn awaits_take_over(&self, window_id: &Uuid) -> bool {
@@ -2388,22 +2080,30 @@ fn held_motion(
 /// or now a hidden tab. No hand-back: their real windows are queued for
 /// redraw, which hides or shows them for good, as `sync_scroll_view` does
 /// for departed columns. Free while no window enters.
-///
-/// Spare peeks (see [`Spare`]) of such windows go too, as do those past
-/// their lifetime: no tick checks them while nothing moves.
 pub fn drop_strays(state: &mut WmState) {
-  drop_stray_spares(state);
-
   if !state.animation_manager.peeks.has_entering() {
     return;
   }
 
+  let shown = |id: &Uuid| {
+    let window = state.window_by_id(*id)?;
+    let manager = &state.animation_manager;
+    Some(
+      window
+        .workspace()
+        .is_some_and(|workspace| workspace.is_displayed())
+        && !is_hidden_in_layout(&window)
+        && window.state() != WindowState::Minimized
+        && !manager.has_close_animation(id)
+        && !manager.has_minimize_animation(id),
+    )
+  };
   let shown = state
     .animation_manager
     .peeks
     .entries
     .keys()
-    .map(|id| (*id, shown_state(state, id)))
+    .map(|id| (*id, shown(id)))
     .collect::<HashMap<_, _>>();
 
   let strays = state
@@ -2416,44 +2116,6 @@ pub fn drop_strays(state: &mut WmState) {
     if let Some(window) = state.window_by_id(id) {
       state.pending_sync.queue_container_to_redraw(window);
     }
-  }
-}
-
-/// Whether `id`'s window is on screen: `None` unmanaged, `Some(false)` on
-/// a hidden workspace, minimized, a hidden tab, or closing or minimizing.
-fn shown_state(state: &WmState, id: &Uuid) -> Option<bool> {
-  let window = state.window_by_id(*id)?;
-  let manager = &state.animation_manager;
-  Some(
-    window
-      .workspace()
-      .is_some_and(|workspace| workspace.is_displayed())
-      && !is_hidden_in_layout(&window)
-      && window.state() != WindowState::Minimized
-      && !manager.has_close_animation(id)
-      && !manager.has_minimize_animation(id),
-  )
-}
-
-/// Drops the spare peeks of windows [`shown_state`] doesn't find on
-/// screen, and those past [`SPARE_LIFETIME`].
-fn drop_stray_spares(state: &mut WmState) {
-  if state.animation_manager.peeks.spares.is_empty() {
-    return;
-  }
-
-  let strays = state
-    .animation_manager
-    .peeks
-    .spares
-    .keys()
-    .filter(|id| shown_state(state, id) != Some(true))
-    .copied()
-    .collect::<Vec<_>>();
-  let peeks = &mut state.animation_manager.peeks;
-  peeks.prune_spares(Instant::now());
-  for id in strays {
-    peeks.spares.remove(&id);
   }
 }
 
@@ -3141,10 +2803,6 @@ pub fn finish_leaving(state: &mut WmState, left: Vec<Left>) {
 /// its backdrop `styles`, and whether it covers a still-shown real window,
 /// so it has to be composited before that window is cloaked. `None` when
 /// the peek can't be created.
-///
-/// `spare`, a peek of the same window set aside (see [`Spare`]), is reset
-/// to what a new one would be and used instead, unless that fails.
-#[allow(clippy::too_many_arguments)]
 fn new_entry(
   window: &WindowContainer,
   motion: WindowAnimationState,
@@ -3153,7 +2811,6 @@ fn new_entry(
   corner_style: CornerStyle,
   styles: &[Option<BackdropOverlayParams>; 2],
   role: Role,
-  spare: Option<WindowPeek>,
 ) -> Option<(Entry, bool)> {
   let _scope = perf::scope(Stage::PeekNew);
   let is_moving = matches!(role, Role::Moving { .. } | Role::Leaving(_));
@@ -3161,33 +2818,17 @@ fn new_entry(
   // Sized like the window itself, which a collapsed `from` (an opening
   // column) isn't. A window with a backdrop that can't be copied along has
   // a peek that moves with it.
-  let live = is_live(styles);
-  let reused = spare.and_then(|mut peek| {
-    peek
-      .reset(&motion.target_rect, clip, &corner_style, live)
-      .inspect_err(|err| {
-        tracing::warn!("Failed to reuse the peek of {window}: {err}");
-      })
-      .ok()
-      .map(|()| peek)
-  });
-  let mut peek = reused
-    .map_or_else(
-      || {
-        WindowPeek::new(
-          &window.native(),
-          &motion.target_rect,
-          clip,
-          &corner_style,
-          live,
-        )
-      },
-      Ok,
-    )
-    .inspect_err(|err| {
-      tracing::warn!("Failed to create a peek of {window}: {err}");
-    })
-    .ok()?;
+  let mut peek = WindowPeek::new(
+    &window.native(),
+    &motion.target_rect,
+    clip,
+    &corner_style,
+    is_live(styles),
+  )
+  .inspect_err(|err| {
+    tracing::warn!("Failed to create a peek of {window}: {err}");
+  })
+  .ok()?;
 
   // Before the ring, which goes on top. Shown in its style by
   // `track_overlays`, before anything is composited.
@@ -3591,10 +3232,9 @@ fn carry_ring(
 
 /// Where `id`'s ring and backdrop go back to as its peek lands, its real
 /// window's visible frame being `frame`: there, unless the window was
-/// sent its size only as it lands (see [`Stretch::deferred`]) or is yet
-/// to report one sent ahead (see [`Stretch::sent_early`]), whose frame is
-/// still the old one. Theirs is then the frame it lands at, or they would
-/// be shown at the old one until the window has its new size.
+/// sent its size only as it lands (see [`Stretch::deferred`]), whose frame
+/// is still the old one. Theirs is then the frame it lands at, or they
+/// would be shown at the old one until the window has its new size.
 fn landing_frame(state: &WmState, id: Uuid, frame: Rect) -> Rect {
   let target = state
     .animation_manager
@@ -3603,7 +3243,10 @@ fn landing_frame(state: &WmState, id: Uuid, frame: Rect) -> Rect {
     .get(&id)
     .filter(|entry| {
       matches!(entry.role, Role::HandingBack | Role::Releasing { .. })
-        && entry.stretch.as_ref().is_some_and(Stretch::lands_unsized)
+        && entry
+          .stretch
+          .as_ref()
+          .is_some_and(|stretch| stretch.deferred)
     })
     .map(|entry| entry.motion.target_rect.clone());
 
@@ -3835,21 +3478,18 @@ mod tests {
     ResizeStyle, WindowResizeConfig, WindowState, WindowTransitionParams,
     WindowTransitionStyle,
   };
-  use wm_platform::{LengthValue, Rect, RectDelta, HWND};
+  use wm_platform::{LengthValue, Rect, RectDelta};
 
   use super::{
-    allows_motion, conceals_new_ring, crosses_floating, defers_again,
-    evicted, floating_peek_raise, follow_duration, follows_tile,
-    fullscreen_peek_raise, has_landed, has_left, is_departed, is_expired,
-    is_near_size, is_peek_resize, is_pure_move, is_stray, keeps_peek,
-    kept_transit, lands_on_trail, leaves_as, leaving_transit, move_clips,
-    peek_resize, resizes_at_start, restretched, retargeted_motion,
-    returning_transit, reuses_spare, sampled_size, sends_size_early,
+    allows_motion, conceals_new_ring, crosses_floating,
+    floating_peek_raise, follow_duration, follows_tile,
+    fullscreen_peek_raise, has_landed, has_left, is_departed,
+    is_peek_resize, is_pure_move, is_stray, kept_transit, lands_on_trail,
+    leaves_as, leaving_transit, move_clips, peek_resize, resizes_at_start,
+    restretched, retargeted_motion, returning_transit, sampled_size,
     settling, state_change_peek_raise, state_change_resize, take_left,
-    toggles_tile_fullscreen, visible_frame, EarlySize, Hold, PeekRaise,
-    PeekResize, Role, SpareFit, Stretch, EARLY_LANDING_GAP_PX,
-    FILL_LANDING_WAIT, HOLD_RELEASE_WAIT, MAX_SPARES, SPARE_LIFETIME,
-    STRETCH_SETTLE,
+    toggles_tile_fullscreen, visible_frame, Hold, PeekRaise, PeekResize,
+    Role, Stretch, FILL_LANDING_WAIT, HOLD_RELEASE_WAIT, STRETCH_SETTLE,
   };
   use crate::animation::{
     state::WindowAnimationState,
@@ -4447,81 +4087,6 @@ mod tests {
     assert!(!is_departed(false, true));
   }
 
-  fn fit(source: isize, clip: Rect, live: bool) -> SpareFit {
-    SpareFit {
-      source: HWND(source),
-      clip,
-      live,
-    }
-  }
-
-  /// A spare draws only a motion of its own window, on the clip and in the
-  /// mode it was made for, within its lifetime.
-  #[test]
-  fn a_spare_is_reused_only_as_it_was_made() {
-    let clip = Rect::from_xy(0, 0, 1920, 1040);
-    let kept = fit(1, clip.clone(), false);
-    let at = Instant::now();
-    let soon = at + Duration::from_secs(1);
-
-    assert!(reuses_spare(&kept, at, &kept, soon));
-    assert!(!reuses_spare(&kept, at, &fit(2, clip.clone(), false), soon));
-    assert!(!reuses_spare(&kept, at, &fit(1, clip.clone(), true), soon));
-    assert!(!reuses_spare(
-      &kept,
-      at,
-      &fit(1, Rect::from_xy(1920, 0, 1920, 1040), false),
-      soon
-    ));
-    assert!(!reuses_spare(&kept, at, &kept, at + SPARE_LIFETIME));
-  }
-
-  /// A spare expires once its lifetime is up, not before; one kept after
-  /// `now` (frame times run ahead) has not.
-  #[test]
-  fn a_spare_expires_after_its_lifetime() {
-    let at = Instant::now();
-    assert!(!is_expired(at, at));
-    assert!(!is_expired(at + Duration::from_millis(5), at));
-    assert!(!is_expired(
-      at + Duration::from_millis(1),
-      at + SPARE_LIFETIME
-    ));
-    assert!(is_expired(at, at + SPARE_LIFETIME));
-  }
-
-  /// Past the cap, the oldest spares go.
-  #[test]
-  fn spares_past_the_cap_go_oldest_first() {
-    let at = Instant::now();
-    let kept = (0..MAX_SPARES + 2)
-      .map(|index| (index, at + Duration::from_millis(index as u64)))
-      .rev()
-      .collect::<Vec<_>>();
-
-    let mut gone = evicted(kept.clone(), MAX_SPARES);
-    gone.sort_unstable();
-    assert_eq!(gone, vec![0, 1]);
-    assert!(
-      evicted(kept.into_iter().take(MAX_SPARES), MAX_SPARES).is_empty()
-    );
-  }
-
-  /// Only a tile drawn on one peek keeps its peek; a column, a tile
-  /// moving onto another monitor and a leaving window don't.
-  #[test]
-  fn only_tiles_keep_their_peeks() {
-    let releasing = Role::Releasing { settled: true };
-    assert!(keeps_peek(false, false, releasing));
-    assert!(!keeps_peek(true, false, releasing));
-    assert!(!keeps_peek(false, true, releasing));
-    assert!(!keeps_peek(
-      false,
-      false,
-      Role::Leaving(AwayTransition::Close)
-    ));
-  }
-
   /// Only a change of size past the threshold is a resize on a peek.
   #[test]
   fn peek_resizes_change_size_past_the_threshold() {
@@ -4702,112 +4267,6 @@ mod tests {
     assert_eq!(
       sampled_size(&actual, &rect, [(950, 800), (990, 650)]),
       (950, 600)
-    );
-  }
-
-  /// A window deferring its size is sent it ahead of landing only under a
-  /// word: under `asynclanding`, once its motion is done; under
-  /// `earlylanding`, also once drawn near that size.
-  #[test]
-  fn a_deferred_size_is_sent_early_only_under_its_word() {
-    for (is_done, is_near) in
-      [(false, false), (false, true), (true, false), (true, true)]
-    {
-      assert!(!sends_size_early(EarlySize::Never, true, is_done, is_near));
-      for when in [EarlySize::AtEnd, EarlySize::Near] {
-        assert!(!sends_size_early(when, false, is_done, is_near));
-      }
-    }
-    assert!(!sends_size_early(EarlySize::AtEnd, true, false, true));
-    assert!(sends_size_early(EarlySize::AtEnd, true, true, false));
-    assert!(!sends_size_early(EarlySize::Near, true, false, false));
-    assert!(sends_size_early(EarlySize::Near, true, false, true));
-    assert!(sends_size_early(EarlySize::Near, true, true, false));
-  }
-
-  /// Near its size means within the gap on both axes, either way.
-  #[test]
-  fn a_rect_is_near_a_size_within_the_gap_on_both_axes() {
-    let target = Rect::from_xy(0, 0, 800, 600);
-    let gap = EARLY_LANDING_GAP_PX;
-
-    assert!(is_near_size(&target, &target, gap));
-    assert!(is_near_size(
-      &Rect::from_xy(40, 0, 800 + gap, 600 - gap),
-      &target,
-      gap
-    ));
-    assert!(!is_near_size(
-      &Rect::from_xy(0, 0, 800 + gap + 1, 600),
-      &target,
-      gap
-    ));
-    assert!(!is_near_size(
-      &Rect::from_xy(0, 0, 800, 600 - gap - 1),
-      &target,
-      gap
-    ));
-  }
-
-  /// Sent its size early, a window's ring and backdrop land at its target
-  /// until it is read at that size, as a deferring one's do.
-  #[test]
-  fn a_window_sent_its_size_early_lands_unsized_until_it_has_it() {
-    let mut stretch = Stretch::at(Some(tile()), PeekResize::Fill, true);
-    assert!(stretch.lands_unsized());
-
-    stretch.deferred = false;
-    assert!(!stretch.lands_unsized());
-
-    stretch.sent_early = true;
-    assert!(stretch.lands_unsized());
-
-    stretch.reached = true;
-    assert!(!stretch.lands_unsized());
-  }
-
-  /// Moved on to shrink again, a window sent its size early defers its
-  /// new one once it has the size it was sent, not while that may still
-  /// land, nor to grow.
-  #[test]
-  fn a_window_sent_its_size_early_defers_again_once_it_has_it() {
-    let sent = Rect::from_xy(0, 0, 800, 600);
-    let smaller = Rect::from_xy(0, 0, 700, 600);
-    let larger = Rect::from_xy(0, 0, 900, 600);
-    let old = Rect::from_xy(0, 0, 1000, 600);
-
-    assert!(defers_again(Some(&sent), true, &sent, &smaller));
-    assert!(!defers_again(Some(&old), true, &sent, &smaller));
-    assert!(!defers_again(None, true, &sent, &smaller));
-    assert!(!defers_again(Some(&sent), false, &sent, &smaller));
-    assert!(!defers_again(Some(&sent), true, &sent, &larger));
-
-    let t0 = Instant::now();
-    let sent_early = |actual: &Rect| {
-      let mut stretch =
-        Stretch::at(Some(actual.clone()), PeekResize::Fill, true);
-      stretch.deferred = false;
-      stretch.sent_early = true;
-      stretch
-    };
-    let unread = || -> Option<Rect> { panic!("read again") };
-    let rearmed = |actual: &Rect| {
-      restretched(
-        Some(sent_early(actual)),
-        Some(PeekResize::Fill),
-        true,
-        unread,
-        &sent,
-        &smaller,
-        t0,
-      )
-    };
-
-    assert!(rearmed(&sent).is_some_and(|kept| kept.deferred
-      && !kept.sent_early
-      && !kept.reached));
-    assert!(
-      rearmed(&old).is_some_and(|kept| !kept.deferred && !kept.sent_early)
     );
   }
 }

@@ -822,43 +822,6 @@ fn follow_retargeted_column(window: &WindowContainer, target_rect: &Rect) {
   }
 }
 
-/// Sends `window`, moving on its peek, the size it deferred (see
-/// `Landed::sized`), at the rect `redraw_containers` hands it back at, so
-/// it is there already as it lands. Not one whose tile changed since: the
-/// redraw queued with the change retargets its peek and sends it that.
-///
-/// Rather than queued for redraw, which reaches the same move in the
-/// `Frozen` arm: that would run a whole `platform_sync` pass for it
-/// mid-motion, settling its overlays' z-order as if it was repositioned.
-pub(crate) fn post_deferred_size(
-  state: &WmState,
-  window: &WindowContainer,
-) {
-  let Ok(target_rect) = window.to_rect().and_then(|rect| {
-    Ok(rect.apply_delta(&window.total_border_delta()?, None))
-  }) else {
-    return;
-  };
-  let peeks = &state.animation_manager.peeks;
-  if !peeks.heads_for(&window.id(), &target_rect)
-    || peeks.defers_resize(&window.id())
-  {
-    return;
-  }
-
-  let real_rect = crate::layout::scrolling::real_window_rect(
-    &window.as_container(),
-    &target_rect,
-  );
-  follow_retargeted_column(window, &real_rect);
-
-  // Sent again after the size Windows suggests on a monitor of another
-  // DPI, as `preposition_cloaked` does.
-  if window.has_pending_dpi_adjustment() && peeks.has_trail(&window.id()) {
-    follow_retargeted_column(window, &real_rect);
-  }
-}
-
 /// Unmanages windows queued for redraw that another app has since
 /// embedded into one of its own windows.
 ///
@@ -2559,8 +2522,8 @@ fn apply_taskbar_updates(updates: Vec<(WindowContainer, bool)>) {
 }
 
 /// Whether a window its peek hands back (`peek_hands_back`) is moved in
-/// step with it, synchronously: not under `GLAZEWM_ISOLATE=asynchandback`,
-/// which posts its move so the WM never waits on its app.
+/// step with it, synchronously. Its move is posted, so the WM never waits
+/// on its app, unless `GLAZEWM_ISOLATE=noasynchandback`.
 fn hands_back_in_step(
   peek_hands_back: bool,
   async_hand_back: bool,
@@ -3025,8 +2988,9 @@ fn track_overlay<O: SyncableOverlay>(
 ///
 /// A new session has none until `queue_surrogate_updates` (later in the
 /// pass), so tracking hides both overlays, two `ShowWindow` calls, and the
-/// session loop has to show them again. With `keep_overlays` they stay
-/// where they are, as on `origin/main`.
+/// session loop has to show them again. With `keep_overlays`, off only
+/// under `GLAZEWM_ISOLATE=nokeepoverlays`, they stay where they are, as on
+/// `origin/main`.
 fn tracks_at_take_over(has_placement: bool, keep_overlays: bool) -> bool {
   has_placement || !keep_overlays
 }
@@ -4128,7 +4092,7 @@ mod tests {
   use crate::user_config::UserConfig;
 
   #[test]
-  fn a_peek_hand_back_is_posted_only_under_its_word() {
+  fn a_peek_hand_back_is_in_step_only_if_turned_off() {
     assert!(hands_back_in_step(true, false));
     assert!(!hands_back_in_step(true, true));
     assert!(!hands_back_in_step(false, false));
@@ -4141,7 +4105,7 @@ mod tests {
   }
 
   #[test]
-  fn a_take_over_without_a_placement_keeps_overlays_only_if_asked() {
+  fn a_take_over_without_a_placement_keeps_overlays_unless_turned_off() {
     assert!(tracks_at_take_over(true, true));
     assert!(tracks_at_take_over(true, false));
     assert!(tracks_at_take_over(false, false));
