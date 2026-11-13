@@ -24,12 +24,14 @@
 //!   peeks on: a fullscreen toggle, floating <-> tiling and floating moves
 //!   by command, a tile moving to another monitor, and windows whose
 //!   backdrop can't be copied (`STAND_INS_PLAN.md` 10f).
-//! - `asynchandback`: a window its peek hands back is moved
-//!   asynchronously, not in step with the peek.
-//! - `keepoverlays`: as `origin/main`, a window taken over by a new
-//!   `ResizeSession` keeps its overlays where they are until the session
-//!   loop moves them behind the surrogate, rather than having them hidden
-//!   for the take-over's flush and shown again after it.
+//! - `noasynchandback`: move a window its peek hands back in step with the
+//!   peek, synchronously, again, rather than posting its move.
+//!   `asynchandback` is still accepted and changes nothing.
+//! - `nokeepoverlays`: hide the overlays of a window taken over by a new
+//!   `ResizeSession` for the take-over's flush and show them again after
+//!   it, rather than keeping them where they are, as `origin/main` does,
+//!   until the session loop moves them behind the surrogate.
+//!   `keepoverlays` is still accepted and changes nothing.
 //!
 //! Read once per process.
 
@@ -47,7 +49,9 @@ pub struct Isolation {
   pub peeks: bool,
   pub peeks_first: bool,
   pub more_peeks: bool,
+  /// On unless `noasynchandback` is given.
   pub async_hand_back: bool,
+  /// On unless `nokeepoverlays` is given.
   pub keep_overlays: bool,
 }
 
@@ -60,8 +64,8 @@ impl Default for Isolation {
       peeks: true,
       peeks_first: false,
       more_peeks: false,
-      async_hand_back: false,
-      keep_overlays: false,
+      async_hand_back: true,
+      keep_overlays: true,
     }
   }
 }
@@ -80,12 +84,12 @@ impl Isolation {
         "noring" => isolation.no_ring = true,
         "live" => isolation.live = true,
         // Defaults now, still accepted.
-        "peeks" | "fillpeeks" => {}
+        "peeks" | "fillpeeks" | "asynchandback" | "keepoverlays" => {}
         "nopeeks" => isolation.peeks = false,
         "peeksfirst" => isolation.peeks_first = true,
         "morepeeks" => isolation.more_peeks = true,
-        "asynchandback" => isolation.async_hand_back = true,
-        "keepoverlays" => isolation.keep_overlays = true,
+        "noasynchandback" => isolation.async_hand_back = false,
+        "nokeepoverlays" => isolation.keep_overlays = false,
         _ => tracing::warn!("Unknown GLAZEWM_ISOLATE flag: {word}."),
       }
     }
@@ -126,8 +130,8 @@ mod tests {
         peeks: true,
         peeks_first: false,
         more_peeks: false,
-        async_hand_back: false,
-        keep_overlays: false,
+        async_hand_back: true,
+        keep_overlays: true,
       }
     );
     assert_eq!(Isolation::parse("peeks"), Isolation::default());
@@ -173,16 +177,19 @@ mod tests {
   }
 
   #[test]
-  fn async_hand_back_is_off_unless_given() {
-    assert!(!Isolation::default().async_hand_back);
+  fn async_hand_back_is_on_unless_turned_off() {
+    assert!(Isolation::default().async_hand_back);
     assert_eq!(
-      Isolation::parse("AsyncHandBack"),
+      Isolation::parse("NoAsyncHandBack"),
       Isolation {
-        async_hand_back: true,
+        async_hand_back: false,
         ..Isolation::default()
       }
     );
-    assert_eq!(Isolation::parse("async_hand_back"), Isolation::default());
+    assert_eq!(Isolation::parse("asynchandback"), Isolation::default());
+    assert!(
+      !Isolation::parse("asynchandback,noasynchandback").async_hand_back
+    );
   }
 
   #[test]
@@ -191,8 +198,17 @@ mod tests {
   }
 
   #[test]
-  fn keep_overlays_is_off_unless_given() {
-    assert!(!Isolation::default().keep_overlays);
-    assert!(Isolation::parse("nopeeks,KeepOverlays").keep_overlays);
+  fn keep_overlays_is_on_unless_turned_off() {
+    assert!(Isolation::default().keep_overlays);
+    assert!(Isolation::parse("nopeeks").keep_overlays);
+    assert_eq!(
+      Isolation::parse("nopeeks,NoKeepOverlays"),
+      Isolation {
+        peeks: false,
+        keep_overlays: false,
+        ..Isolation::default()
+      }
+    );
+    assert_eq!(Isolation::parse("keepoverlays"), Isolation::default());
   }
 }
