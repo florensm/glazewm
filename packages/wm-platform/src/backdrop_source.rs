@@ -14,6 +14,7 @@ use windows::Win32::{
 };
 
 use crate::{
+  isolation,
   overlay_window::{OverlayKind, OverlayWindow},
   platform_impl::composition::{
     BackdropVisual, SurrogateFill, VignetteVisual,
@@ -24,6 +25,12 @@ use crate::{
 /// Sources no copy uses that are kept for their style coming back, e.g.
 /// as focus returns to a window.
 const MAX_IDLE_SOURCES: usize = 2;
+
+/// Fill sources no copy uses that are kept under
+/// `GLAZEWM_ISOLATE=keepfills`: one per edge color of a workspace's
+/// windows, whose peeks all let theirs go as a burst ends and take them
+/// again as the next one starts.
+const MAX_IDLE_FILL_SOURCES: usize = 8;
 
 /// Side of a [`FillSource`]'s window, in physical pixels.
 const FILL_SOURCE_SIZE: i32 = 8;
@@ -44,16 +51,25 @@ thread_local! {
     const { RefCell::new(Vec::new()) };
 }
 
-/// Drops all but [`MAX_IDLE_SOURCES`] of `sources` no copy uses.
-fn drop_idle<T>(sources: &mut Vec<Rc<T>>) {
+/// Drops all but `max_idle` of `sources` no copy uses.
+fn drop_idle<T>(sources: &mut Vec<Rc<T>>, max_idle: usize) {
   let mut idle = 0;
   sources.retain(|source| {
     if Rc::strong_count(source) > 1 {
       return true;
     }
     idle += 1;
-    idle <= MAX_IDLE_SOURCES
+    idle <= max_idle
   });
+}
+
+/// How many unused fill sources are kept (see `isolation`'s `keepfills`).
+fn max_idle_fill_sources(keep_fills: bool) -> usize {
+  if keep_fills {
+    MAX_IDLE_FILL_SOURCES
+  } else {
+    MAX_IDLE_SOURCES
+  }
 }
 
 /// A backdrop spanning a monitor, in a window hidden by its alpha, which
@@ -106,7 +122,9 @@ impl BackdropSource {
       tracing::warn!("Backdrop source refresh failed: {err}.");
     }
 
-    SOURCES.with(|sources| drop_idle(&mut sources.borrow_mut()));
+    SOURCES.with(|sources| {
+      drop_idle(&mut sources.borrow_mut(), MAX_IDLE_SOURCES);
+    });
 
     Ok(source)
   }
@@ -232,7 +250,10 @@ impl FillSource {
       source
     };
 
-    FILL_SOURCES.with(|sources| drop_idle(&mut sources.borrow_mut()));
+    let max_idle = max_idle_fill_sources(isolation::current().keep_fills);
+    FILL_SOURCES.with(|sources| {
+      drop_idle(&mut sources.borrow_mut(), max_idle);
+    });
     Ok(source)
   }
 
@@ -272,5 +293,31 @@ impl FillSource {
       right: FILL_SOURCE_SIZE - FILL_SOURCE_MARGIN,
       bottom: FILL_SOURCE_SIZE - FILL_SOURCE_MARGIN,
     }
+  }
+}
+
+#[cfg(test)]
+mod tests {
+  use std::rc::Rc;
+
+  use super::{drop_idle, max_idle_fill_sources, MAX_IDLE_SOURCES};
+
+  /// Sources in use stay; of the rest, only the first `max_idle` do.
+  #[test]
+  fn drop_idle_keeps_those_in_use_and_the_first_idle_ones() {
+    let in_use = Rc::new(0);
+    let mut sources =
+      vec![Rc::new(1), in_use.clone(), Rc::new(2), Rc::new(3)];
+
+    drop_idle(&mut sources, 1);
+
+    let kept = sources.iter().map(|source| **source).collect::<Vec<_>>();
+    assert_eq!(kept, vec![1, 0]);
+  }
+
+  #[test]
+  fn fill_sources_are_kept_per_color_only_under_keepfills() {
+    assert_eq!(max_idle_fill_sources(false), MAX_IDLE_SOURCES);
+    assert!(max_idle_fill_sources(true) > MAX_IDLE_SOURCES);
   }
 }
