@@ -1,0 +1,462 @@
+Isolate benchmark, 2026-11-13T13:57:11, target chrome, 4 round(s) of 10 bursts per scenario and mode, load 0, CPU load 8 thread(s) of 16, tile order Notepad,WindowsTerminal,WindowsTerminal,chrome,chrome,FPilot, launched notepad,explorer,wt,chrome (4 window(s))
+tiles nopeeks #1 ws 1: Notepad, WindowsTerminal, WindowsTerminal, chrome, chrome, FPilot
+label=nopeeks #1 scenario=switch target=1<->2 bursts=10 load=0 reports=10 wall=12.5s
+  command p50 ms                          38.64
+  command p90 ms                          42.33
+  frames                                  98.00
+  tick ms/frame                            1.29
+  frame p90 ms                             1.72
+  frames >2x budget                        3.00
+  interval p50 ms                          5.72
+  interval p90 ms                          5.77
+  interval p99 ms                         24.81
+  interval max ms (median burst)          24.81
+  peek_frame ms/frame                      0.00
+  peek_draw ms/frame                       0.00
+  peek_track ms/frame                      0.00
+  peek_ring ms/frame                       0.00
+  peek_backdrop ms/frame                   0.00
+  session_overlays ms/frame                0.00
+  batch_commit ms/frame                    0.00
+  ovl_region ms/frame                      0.02
+  dwm_flush calls (in frames)              0.00
+  dwm_flush ms (outside frames)            9.40
+  cloak ms (outside frames)                0.00
+  session_begin ms (outside frames)        0.00
+  command ms (WM side)                    37.30
+  peek_new ms (outside frames)             0.00
+  peek_cover ms (outside frames)           0.00
+  peek_handover ms (outside frames)        0.00
+  peek_raise ms (outside frames)           0.00
+  session_overlays ms (outside frames)     0.00
+  ws_surrogates ms (outside frames)        4.80
+  ws_park ms (outside frames)              4.10
+  ws_show ms (outside frames)             17.40
+  ws_start ms (outside frames)             0.50
+  input->anim start ms                     0.00
+  input->first frame ms                    0.00
+| nopeeks #1 | switch | 38.64 | 42.33 | 98.00 | 1.29 | 1.72 | 3.00 | 5.72 | 5.77 | 24.81 | 24.81 | 0.00 | 0.00 | 0.00 | 0.00 | 0.00 | 0.00 | 0.00 | 0.02 | 0.00 | 9.40 | 0.00 | 0.00 | 37.30 | 0.00 | 0.00 | 0.00 | 0.00 | 0.00 | 4.80 | 4.10 | 17.40 | 0.50 | 0.00 | 0.00 |
+tiles default #1 ws 1: Notepad, WindowsTerminal, WindowsTerminal, chrome, chrome, FPilot
+label=default #1 scenario=switch target=1<->2 bursts=10 load=0 reports=10 wall=12.4s
+  command p50 ms                          34.01
+  command p90 ms                          43.73
+  frames                                  99.00
+  tick ms/frame                            1.25
+  frame p90 ms                             1.49
+  frames >2x budget                        3.00
+  interval p50 ms                          5.71
+  interval p90 ms                          5.77
+  interval p99 ms                         23.45
+  interval max ms (median burst)          23.45
+  peek_frame ms/frame                      0.00
+  peek_draw ms/frame                       0.00
+  peek_track ms/frame                      0.00
+  peek_ring ms/frame                       0.00
+  peek_backdrop ms/frame                   0.00
+  session_overlays ms/frame                0.00
+  batch_commit ms/frame                    0.00
+  ovl_region ms/frame                      0.02
+  dwm_flush calls (in frames)              0.00
+  dwm_flush ms (outside frames)            9.10
+  cloak ms (outside frames)                0.00
+  session_begin ms (outside frames)        0.00
+  command ms (WM side)                    33.70
+  peek_new ms (outside frames)             0.00
+  peek_cover ms (outside frames)           0.00
+  peek_handover ms (outside frames)        0.00
+  peek_raise ms (outside frames)           0.00
+  session_overlays ms (outside frames)     0.00
+  ws_surrogates ms (outside frames)        4.90
+  ws_park ms (outside frames)              4.00
+  ws_show ms (outside frames)             15.80
+  ws_start ms (outside frames)             0.50
+  input->anim start ms                     0.00
+  input->first frame ms                    0.00
+| default #1 | switch | 34.01 | 43.73 | 99.00 | 1.25 | 1.49 | 3.00 | 5.71 | 5.77 | 23.45 | 23.45 | 0.00 | 0.00 | 0.00 | 0.00 | 0.00 | 0.00 | 0.00 | 0.02 | 0.00 | 9.10 | 0.00 | 0.00 | 33.70 | 0.00 | 0.00 | 0.00 | 0.00 | 0.00 | 4.90 | 4.00 | 15.80 | 0.50 | 0.00 | 0.00 |
+tiles noslidepeeks #1 ws 1: Notepad, WindowsTerminal, WindowsTerminal, chrome, chrome, FPilot
+label=noslidepeeks #1 scenario=switch target=1<->2 bursts=10 load=0 reports=10 wall=12.4s
+  command p50 ms                          35.94
+  command p90 ms                          37.46
+  frames                                  98.00
+  tick ms/frame                            1.27
+  frame p90 ms                             1.40
+  frames >2x budget                        3.00
+  interval p50 ms                          5.71
+  interval p90 ms                          5.78
+  interval p99 ms                         22.81
+  interval max ms (median burst)          22.81
+  peek_frame ms/frame                      0.00
+  peek_draw ms/frame                       0.00
+  peek_track ms/frame                      0.00
+  peek_ring ms/frame                       0.00
+  peek_backdrop ms/frame                   0.00
+  session_overlays ms/frame                0.00
+  batch_commit ms/frame                    0.00
+  ovl_region ms/frame                      0.03
+  dwm_flush calls (in frames)              0.00
+  dwm_flush ms (outside frames)            9.70
+  cloak ms (outside frames)                0.00
+  session_begin ms (outside frames)        0.00
+  command ms (WM side)                    35.70
+  peek_new ms (outside frames)             0.00
+  peek_cover ms (outside frames)           0.00
+  peek_handover ms (outside frames)        0.00
+  peek_raise ms (outside frames)           0.00
+  session_overlays ms (outside frames)     0.00
+  ws_surrogates ms (outside frames)        4.80
+  ws_park ms (outside frames)              4.20
+  ws_show ms (outside frames)             16.80
+  ws_start ms (outside frames)             0.50
+  input->anim start ms                     0.00
+  input->first frame ms                    0.00
+| noslidepeeks #1 | switch | 35.94 | 37.46 | 98.00 | 1.27 | 1.40 | 3.00 | 5.71 | 5.78 | 22.81 | 22.81 | 0.00 | 0.00 | 0.00 | 0.00 | 0.00 | 0.00 | 0.00 | 0.03 | 0.00 | 9.70 | 0.00 | 0.00 | 35.70 | 0.00 | 0.00 | 0.00 | 0.00 | 0.00 | 4.80 | 4.20 | 16.80 | 0.50 | 0.00 | 0.00 |
+tiles nopeeks #2 ws 1: Notepad, WindowsTerminal, WindowsTerminal, chrome, chrome, FPilot
+label=nopeeks #2 scenario=switch target=1<->2 bursts=10 load=0 reports=10 wall=12.4s
+  command p50 ms                          33.46
+  command p90 ms                          37.06
+  frames                                  99.00
+  tick ms/frame                            1.24
+  frame p90 ms                             1.32
+  frames >2x budget                        3.00
+  interval p50 ms                          5.71
+  interval p90 ms                          5.77
+  interval p99 ms                         21.99
+  interval max ms (median burst)          22.71
+  peek_frame ms/frame                      0.00
+  peek_draw ms/frame                       0.00
+  peek_track ms/frame                      0.00
+  peek_ring ms/frame                       0.00
+  peek_backdrop ms/frame                   0.00
+  session_overlays ms/frame                0.00
+  batch_commit ms/frame                    0.00
+  ovl_region ms/frame                      0.03
+  dwm_flush calls (in frames)              0.00
+  dwm_flush ms (outside frames)            8.40
+  cloak ms (outside frames)                0.00
+  session_begin ms (outside frames)        0.00
+  command ms (WM side)                    33.10
+  peek_new ms (outside frames)             0.00
+  peek_cover ms (outside frames)           0.00
+  peek_handover ms (outside frames)        0.00
+  peek_raise ms (outside frames)           0.00
+  session_overlays ms (outside frames)     0.00
+  ws_surrogates ms (outside frames)        4.80
+  ws_park ms (outside frames)              4.30
+  ws_show ms (outside frames)             14.70
+  ws_start ms (outside frames)             0.50
+  input->anim start ms                     0.00
+  input->first frame ms                    0.00
+| nopeeks #2 | switch | 33.46 | 37.06 | 99.00 | 1.24 | 1.32 | 3.00 | 5.71 | 5.77 | 21.99 | 22.71 | 0.00 | 0.00 | 0.00 | 0.00 | 0.00 | 0.00 | 0.00 | 0.03 | 0.00 | 8.40 | 0.00 | 0.00 | 33.10 | 0.00 | 0.00 | 0.00 | 0.00 | 0.00 | 4.80 | 4.30 | 14.70 | 0.50 | 0.00 | 0.00 |
+tiles default #2 ws 1: Notepad, WindowsTerminal, WindowsTerminal, chrome, chrome, FPilot
+label=default #2 scenario=switch target=1<->2 bursts=10 load=0 reports=10 wall=12.5s
+  command p50 ms                          35.56
+  command p90 ms                          41.77
+  frames                                  99.00
+  tick ms/frame                            1.26
+  frame p90 ms                             1.58
+  frames >2x budget                        3.00
+  interval p50 ms                          5.71
+  interval p90 ms                          5.78
+  interval p99 ms                         22.89
+  interval max ms (median burst)          22.89
+  peek_frame ms/frame                      0.00
+  peek_draw ms/frame                       0.00
+  peek_track ms/frame                      0.00
+  peek_ring ms/frame                       0.00
+  peek_backdrop ms/frame                   0.00
+  session_overlays ms/frame                0.00
+  batch_commit ms/frame                    0.00
+  ovl_region ms/frame                      0.03
+  dwm_flush calls (in frames)              0.00
+  dwm_flush ms (outside frames)           10.20
+  cloak ms (outside frames)                0.00
+  session_begin ms (outside frames)        0.00
+  command ms (WM side)                    35.30
+  peek_new ms (outside frames)             0.00
+  peek_cover ms (outside frames)           0.00
+  peek_handover ms (outside frames)        0.00
+  peek_raise ms (outside frames)           0.00
+  session_overlays ms (outside frames)     0.00
+  ws_surrogates ms (outside frames)        4.70
+  ws_park ms (outside frames)              4.00
+  ws_show ms (outside frames)             17.90
+  ws_start ms (outside frames)             0.50
+  input->anim start ms                     0.00
+  input->first frame ms                    0.00
+| default #2 | switch | 35.56 | 41.77 | 99.00 | 1.26 | 1.58 | 3.00 | 5.71 | 5.78 | 22.89 | 22.89 | 0.00 | 0.00 | 0.00 | 0.00 | 0.00 | 0.00 | 0.00 | 0.03 | 0.00 | 10.20 | 0.00 | 0.00 | 35.30 | 0.00 | 0.00 | 0.00 | 0.00 | 0.00 | 4.70 | 4.00 | 17.90 | 0.50 | 0.00 | 0.00 |
+tiles noslidepeeks #2 ws 1: Notepad, WindowsTerminal, WindowsTerminal, chrome, chrome, FPilot
+label=noslidepeeks #2 scenario=switch target=1<->2 bursts=10 load=0 reports=10 wall=12.4s
+  command p50 ms                          34.29
+  command p90 ms                          41.03
+  frames                                  98.00
+  tick ms/frame                            1.30
+  frame p90 ms                             1.40
+  frames >2x budget                        3.00
+  interval p50 ms                          5.71
+  interval p90 ms                          5.77
+  interval p99 ms                         22.91
+  interval max ms (median burst)          24.74
+  peek_frame ms/frame                      0.00
+  peek_draw ms/frame                       0.00
+  peek_track ms/frame                      0.00
+  peek_ring ms/frame                       0.00
+  peek_backdrop ms/frame                   0.00
+  session_overlays ms/frame                0.00
+  batch_commit ms/frame                    0.00
+  ovl_region ms/frame                      0.02
+  dwm_flush calls (in frames)              0.00
+  dwm_flush ms (outside frames)            8.30
+  cloak ms (outside frames)                0.00
+  session_begin ms (outside frames)        0.00
+  command ms (WM side)                    33.90
+  peek_new ms (outside frames)             0.00
+  peek_cover ms (outside frames)           0.00
+  peek_handover ms (outside frames)        0.00
+  peek_raise ms (outside frames)           0.00
+  session_overlays ms (outside frames)     0.00
+  ws_surrogates ms (outside frames)        4.70
+  ws_park ms (outside frames)              4.50
+  ws_show ms (outside frames)             15.70
+  ws_start ms (outside frames)             0.50
+  input->anim start ms                     0.00
+  input->first frame ms                    0.00
+| noslidepeeks #2 | switch | 34.29 | 41.03 | 98.00 | 1.30 | 1.40 | 3.00 | 5.71 | 5.77 | 22.91 | 24.74 | 0.00 | 0.00 | 0.00 | 0.00 | 0.00 | 0.00 | 0.00 | 0.02 | 0.00 | 8.30 | 0.00 | 0.00 | 33.90 | 0.00 | 0.00 | 0.00 | 0.00 | 0.00 | 4.70 | 4.50 | 15.70 | 0.50 | 0.00 | 0.00 |
+tiles nopeeks #3 ws 1: Notepad, WindowsTerminal, WindowsTerminal, chrome, chrome, FPilot
+label=nopeeks #3 scenario=switch target=1<->2 bursts=10 load=0 reports=10 wall=12.4s
+  command p50 ms                          32.71
+  command p90 ms                          38.02
+  frames                                  99.00
+  tick ms/frame                            1.28
+  frame p90 ms                             1.50
+  frames >2x budget                        3.00
+  interval p50 ms                          5.71
+  interval p90 ms                          5.78
+  interval p99 ms                         22.49
+  interval max ms (median burst)          23.82
+  peek_frame ms/frame                      0.00
+  peek_draw ms/frame                       0.00
+  peek_track ms/frame                      0.00
+  peek_ring ms/frame                       0.00
+  peek_backdrop ms/frame                   0.00
+  session_overlays ms/frame                0.00
+  batch_commit ms/frame                    0.00
+  ovl_region ms/frame                      0.02
+  dwm_flush calls (in frames)              0.00
+  dwm_flush ms (outside frames)            8.40
+  cloak ms (outside frames)                0.00
+  session_begin ms (outside frames)        0.00
+  command ms (WM side)                    32.40
+  peek_new ms (outside frames)             0.00
+  peek_cover ms (outside frames)           0.00
+  peek_handover ms (outside frames)        0.00
+  peek_raise ms (outside frames)           0.00
+  session_overlays ms (outside frames)     0.00
+  ws_surrogates ms (outside frames)        4.80
+  ws_park ms (outside frames)              4.30
+  ws_show ms (outside frames)             14.90
+  ws_start ms (outside frames)             0.50
+  input->anim start ms                     0.00
+  input->first frame ms                    0.00
+| nopeeks #3 | switch | 32.71 | 38.02 | 99.00 | 1.28 | 1.50 | 3.00 | 5.71 | 5.78 | 22.49 | 23.82 | 0.00 | 0.00 | 0.00 | 0.00 | 0.00 | 0.00 | 0.00 | 0.02 | 0.00 | 8.40 | 0.00 | 0.00 | 32.40 | 0.00 | 0.00 | 0.00 | 0.00 | 0.00 | 4.80 | 4.30 | 14.90 | 0.50 | 0.00 | 0.00 |
+tiles default #3 ws 1: Notepad, WindowsTerminal, WindowsTerminal, chrome, chrome, FPilot
+label=default #3 scenario=switch target=1<->2 bursts=10 load=0 reports=10 wall=12.4s
+  command p50 ms                          34.83
+  command p90 ms                          41.43
+  frames                                  99.00
+  tick ms/frame                            1.31
+  frame p90 ms                             1.44
+  frames >2x budget                        3.00
+  interval p50 ms                          5.71
+  interval p90 ms                          5.77
+  interval p99 ms                         24.22
+  interval max ms (median burst)          24.22
+  peek_frame ms/frame                      0.00
+  peek_draw ms/frame                       0.00
+  peek_track ms/frame                      0.00
+  peek_ring ms/frame                       0.00
+  peek_backdrop ms/frame                   0.00
+  session_overlays ms/frame                0.00
+  batch_commit ms/frame                    0.00
+  ovl_region ms/frame                      0.02
+  dwm_flush calls (in frames)              0.00
+  dwm_flush ms (outside frames)            9.10
+  cloak ms (outside frames)                0.00
+  session_begin ms (outside frames)        0.00
+  command ms (WM side)                    34.50
+  peek_new ms (outside frames)             0.00
+  peek_cover ms (outside frames)           0.00
+  peek_handover ms (outside frames)        0.00
+  peek_raise ms (outside frames)           0.00
+  session_overlays ms (outside frames)     0.00
+  ws_surrogates ms (outside frames)        4.70
+  ws_park ms (outside frames)              4.10
+  ws_show ms (outside frames)             16.60
+  ws_start ms (outside frames)             0.50
+  input->anim start ms                     0.00
+  input->first frame ms                    0.00
+| default #3 | switch | 34.83 | 41.43 | 99.00 | 1.31 | 1.44 | 3.00 | 5.71 | 5.77 | 24.22 | 24.22 | 0.00 | 0.00 | 0.00 | 0.00 | 0.00 | 0.00 | 0.00 | 0.02 | 0.00 | 9.10 | 0.00 | 0.00 | 34.50 | 0.00 | 0.00 | 0.00 | 0.00 | 0.00 | 4.70 | 4.10 | 16.60 | 0.50 | 0.00 | 0.00 |
+tiles noslidepeeks #3 ws 1: Notepad, WindowsTerminal, WindowsTerminal, chrome, chrome, FPilot
+label=noslidepeeks #3 scenario=switch target=1<->2 bursts=10 load=0 reports=10 wall=12.4s
+  command p50 ms                          36.08
+  command p90 ms                          40.62
+  frames                                  99.00
+  tick ms/frame                            1.24
+  frame p90 ms                             1.37
+  frames >2x budget                        3.00
+  interval p50 ms                          5.71
+  interval p90 ms                          5.76
+  interval p99 ms                         22.82
+  interval max ms (median burst)          22.88
+  peek_frame ms/frame                      0.00
+  peek_draw ms/frame                       0.00
+  peek_track ms/frame                      0.00
+  peek_ring ms/frame                       0.00
+  peek_backdrop ms/frame                   0.00
+  session_overlays ms/frame                0.00
+  batch_commit ms/frame                    0.00
+  ovl_region ms/frame                      0.02
+  dwm_flush calls (in frames)              0.00
+  dwm_flush ms (outside frames)           10.10
+  cloak ms (outside frames)                0.00
+  session_begin ms (outside frames)        0.00
+  command ms (WM side)                    35.80
+  peek_new ms (outside frames)             0.00
+  peek_cover ms (outside frames)           0.00
+  peek_handover ms (outside frames)        0.00
+  peek_raise ms (outside frames)           0.00
+  session_overlays ms (outside frames)     0.00
+  ws_surrogates ms (outside frames)        4.90
+  ws_park ms (outside frames)              3.80
+  ws_show ms (outside frames)             17.40
+  ws_start ms (outside frames)             0.40
+  input->anim start ms                     0.00
+  input->first frame ms                    0.00
+| noslidepeeks #3 | switch | 36.08 | 40.62 | 99.00 | 1.24 | 1.37 | 3.00 | 5.71 | 5.76 | 22.82 | 22.88 | 0.00 | 0.00 | 0.00 | 0.00 | 0.00 | 0.00 | 0.00 | 0.02 | 0.00 | 10.10 | 0.00 | 0.00 | 35.80 | 0.00 | 0.00 | 0.00 | 0.00 | 0.00 | 4.90 | 3.80 | 17.40 | 0.40 | 0.00 | 0.00 |
+tiles nopeeks #4 ws 1: Notepad, WindowsTerminal, WindowsTerminal, chrome, chrome, FPilot
+label=nopeeks #4 scenario=switch target=1<->2 bursts=10 load=0 reports=10 wall=12.4s
+  command p50 ms                          36.12
+  command p90 ms                          39.87
+  frames                                  99.00
+  tick ms/frame                            1.21
+  frame p90 ms                             1.64
+  frames >2x budget                        3.00
+  interval p50 ms                          5.71
+  interval p90 ms                          5.77
+  interval p99 ms                         22.66
+  interval max ms (median burst)          23.49
+  peek_frame ms/frame                      0.00
+  peek_draw ms/frame                       0.00
+  peek_track ms/frame                      0.00
+  peek_ring ms/frame                       0.00
+  peek_backdrop ms/frame                   0.00
+  session_overlays ms/frame                0.00
+  batch_commit ms/frame                    0.00
+  ovl_region ms/frame                      0.03
+  dwm_flush calls (in frames)              0.00
+  dwm_flush ms (outside frames)            9.30
+  cloak ms (outside frames)                0.00
+  session_begin ms (outside frames)        0.00
+  command ms (WM side)                    35.80
+  peek_new ms (outside frames)             0.00
+  peek_cover ms (outside frames)           0.00
+  peek_handover ms (outside frames)        0.00
+  peek_raise ms (outside frames)           0.00
+  session_overlays ms (outside frames)     0.00
+  ws_surrogates ms (outside frames)        4.50
+  ws_park ms (outside frames)              3.90
+  ws_show ms (outside frames)             17.10
+  ws_start ms (outside frames)             0.50
+  input->anim start ms                     0.00
+  input->first frame ms                    0.00
+| nopeeks #4 | switch | 36.12 | 39.87 | 99.00 | 1.21 | 1.64 | 3.00 | 5.71 | 5.77 | 22.66 | 23.49 | 0.00 | 0.00 | 0.00 | 0.00 | 0.00 | 0.00 | 0.00 | 0.03 | 0.00 | 9.30 | 0.00 | 0.00 | 35.80 | 0.00 | 0.00 | 0.00 | 0.00 | 0.00 | 4.50 | 3.90 | 17.10 | 0.50 | 0.00 | 0.00 |
+tiles default #4 ws 1: Notepad, WindowsTerminal, WindowsTerminal, chrome, chrome, FPilot
+label=default #4 scenario=switch target=1<->2 bursts=10 load=0 reports=10 wall=12.4s
+  command p50 ms                          31.60
+  command p90 ms                          39.11
+  frames                                  98.00
+  tick ms/frame                            1.24
+  frame p90 ms                             1.31
+  frames >2x budget                        3.00
+  interval p50 ms                          5.71
+  interval p90 ms                          5.77
+  interval p99 ms                         23.13
+  interval max ms (median burst)          23.13
+  peek_frame ms/frame                      0.00
+  peek_draw ms/frame                       0.00
+  peek_track ms/frame                      0.00
+  peek_ring ms/frame                       0.00
+  peek_backdrop ms/frame                   0.00
+  session_overlays ms/frame                0.00
+  batch_commit ms/frame                    0.00
+  ovl_region ms/frame                      0.02
+  dwm_flush calls (in frames)              0.00
+  dwm_flush ms (outside frames)            8.80
+  cloak ms (outside frames)                0.00
+  session_begin ms (outside frames)        0.00
+  command ms (WM side)                    31.30
+  peek_new ms (outside frames)             0.00
+  peek_cover ms (outside frames)           0.00
+  peek_handover ms (outside frames)        0.00
+  peek_raise ms (outside frames)           0.00
+  session_overlays ms (outside frames)     0.00
+  ws_surrogates ms (outside frames)        4.60
+  ws_park ms (outside frames)              3.60
+  ws_show ms (outside frames)             15.00
+  ws_start ms (outside frames)             0.40
+  input->anim start ms                     0.00
+  input->first frame ms                    0.00
+| default #4 | switch | 31.60 | 39.11 | 98.00 | 1.24 | 1.31 | 3.00 | 5.71 | 5.77 | 23.13 | 23.13 | 0.00 | 0.00 | 0.00 | 0.00 | 0.00 | 0.00 | 0.00 | 0.02 | 0.00 | 8.80 | 0.00 | 0.00 | 31.30 | 0.00 | 0.00 | 0.00 | 0.00 | 0.00 | 4.60 | 3.60 | 15.00 | 0.40 | 0.00 | 0.00 |
+tiles noslidepeeks #4 ws 1: Notepad, WindowsTerminal, WindowsTerminal, chrome, chrome, FPilot
+label=noslidepeeks #4 scenario=switch target=1<->2 bursts=10 load=0 reports=10 wall=12.4s
+  command p50 ms                          33.07
+  command p90 ms                          36.37
+  frames                                 100.00
+  tick ms/frame                            1.24
+  frame p90 ms                             1.50
+  frames >2x budget                        3.00
+  interval p50 ms                          5.71
+  interval p90 ms                          5.77
+  interval p99 ms                         23.92
+  interval max ms (median burst)          23.92
+  peek_frame ms/frame                      0.00
+  peek_draw ms/frame                       0.00
+  peek_track ms/frame                      0.00
+  peek_ring ms/frame                       0.00
+  peek_backdrop ms/frame                   0.00
+  session_overlays ms/frame                0.00
+  batch_commit ms/frame                    0.00
+  ovl_region ms/frame                      0.03
+  dwm_flush calls (in frames)              0.00
+  dwm_flush ms (outside frames)            8.10
+  cloak ms (outside frames)                0.00
+  session_begin ms (outside frames)        0.00
+  command ms (WM side)                    32.80
+  peek_new ms (outside frames)             0.00
+  peek_cover ms (outside frames)           0.00
+  peek_handover ms (outside frames)        0.00
+  peek_raise ms (outside frames)           0.00
+  session_overlays ms (outside frames)     0.00
+  ws_surrogates ms (outside frames)        4.70
+  ws_park ms (outside frames)              4.40
+  ws_show ms (outside frames)             15.40
+  ws_start ms (outside frames)             0.50
+  input->anim start ms                     0.00
+  input->first frame ms                    0.00
+| noslidepeeks #4 | switch | 33.07 | 36.37 | 100.00 | 1.24 | 1.50 | 3.00 | 5.71 | 5.77 | 23.92 | 23.92 | 0.00 | 0.00 | 0.00 | 0.00 | 0.00 | 0.00 | 0.00 | 0.03 | 0.00 | 8.10 | 0.00 | 0.00 | 32.80 | 0.00 | 0.00 | 0.00 | 0.00 | 0.00 | 4.70 | 4.40 | 15.40 | 0.50 | 0.00 | 0.00 |
+
+## switch
+
+| label | scenario | command p50 ms | command p90 ms | frames | tick ms/frame | frame p90 ms | frames >2x budget | interval p50 ms | interval p90 ms | interval p99 ms | interval max ms (median burst) | peek_frame ms/frame | peek_draw ms/frame | peek_track ms/frame | peek_ring ms/frame | peek_backdrop ms/frame | session_overlays ms/frame | batch_commit ms/frame | ovl_region ms/frame | dwm_flush calls (in frames) | dwm_flush ms (outside frames) | cloak ms (outside frames) | session_begin ms (outside frames) | command ms (WM side) | peek_new ms (outside frames) | peek_cover ms (outside frames) | peek_handover ms (outside frames) | peek_raise ms (outside frames) | session_overlays ms (outside frames) | ws_surrogates ms (outside frames) | ws_park ms (outside frames) | ws_show ms (outside frames) | ws_start ms (outside frames) | input->anim start ms | input->first frame ms |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| nopeeks #1 | switch | 38.64 | 42.33 | 98.00 | 1.29 | 1.72 | 3.00 | 5.72 | 5.77 | 24.81 | 24.81 | 0.00 | 0.00 | 0.00 | 0.00 | 0.00 | 0.00 | 0.00 | 0.02 | 0.00 | 9.40 | 0.00 | 0.00 | 37.30 | 0.00 | 0.00 | 0.00 | 0.00 | 0.00 | 4.80 | 4.10 | 17.40 | 0.50 | 0.00 | 0.00 |
+| nopeeks #2 | switch | 33.46 | 37.06 | 99.00 | 1.24 | 1.32 | 3.00 | 5.71 | 5.77 | 21.99 | 22.71 | 0.00 | 0.00 | 0.00 | 0.00 | 0.00 | 0.00 | 0.00 | 0.03 | 0.00 | 8.40 | 0.00 | 0.00 | 33.10 | 0.00 | 0.00 | 0.00 | 0.00 | 0.00 | 4.80 | 4.30 | 14.70 | 0.50 | 0.00 | 0.00 |
+| nopeeks #3 | switch | 32.71 | 38.02 | 99.00 | 1.28 | 1.50 | 3.00 | 5.71 | 5.78 | 22.49 | 23.82 | 0.00 | 0.00 | 0.00 | 0.00 | 0.00 | 0.00 | 0.00 | 0.02 | 0.00 | 8.40 | 0.00 | 0.00 | 32.40 | 0.00 | 0.00 | 0.00 | 0.00 | 0.00 | 4.80 | 4.30 | 14.90 | 0.50 | 0.00 | 0.00 |
+| nopeeks #4 | switch | 36.12 | 39.87 | 99.00 | 1.21 | 1.64 | 3.00 | 5.71 | 5.77 | 22.66 | 23.49 | 0.00 | 0.00 | 0.00 | 0.00 | 0.00 | 0.00 | 0.00 | 0.03 | 0.00 | 9.30 | 0.00 | 0.00 | 35.80 | 0.00 | 0.00 | 0.00 | 0.00 | 0.00 | 4.50 | 3.90 | 17.10 | 0.50 | 0.00 | 0.00 |
+| default #1 | switch | 34.01 | 43.73 | 99.00 | 1.25 | 1.49 | 3.00 | 5.71 | 5.77 | 23.45 | 23.45 | 0.00 | 0.00 | 0.00 | 0.00 | 0.00 | 0.00 | 0.00 | 0.02 | 0.00 | 9.10 | 0.00 | 0.00 | 33.70 | 0.00 | 0.00 | 0.00 | 0.00 | 0.00 | 4.90 | 4.00 | 15.80 | 0.50 | 0.00 | 0.00 |
+| default #2 | switch | 35.56 | 41.77 | 99.00 | 1.26 | 1.58 | 3.00 | 5.71 | 5.78 | 22.89 | 22.89 | 0.00 | 0.00 | 0.00 | 0.00 | 0.00 | 0.00 | 0.00 | 0.03 | 0.00 | 10.20 | 0.00 | 0.00 | 35.30 | 0.00 | 0.00 | 0.00 | 0.00 | 0.00 | 4.70 | 4.00 | 17.90 | 0.50 | 0.00 | 0.00 |
+| default #3 | switch | 34.83 | 41.43 | 99.00 | 1.31 | 1.44 | 3.00 | 5.71 | 5.77 | 24.22 | 24.22 | 0.00 | 0.00 | 0.00 | 0.00 | 0.00 | 0.00 | 0.00 | 0.02 | 0.00 | 9.10 | 0.00 | 0.00 | 34.50 | 0.00 | 0.00 | 0.00 | 0.00 | 0.00 | 4.70 | 4.10 | 16.60 | 0.50 | 0.00 | 0.00 |
+| default #4 | switch | 31.60 | 39.11 | 98.00 | 1.24 | 1.31 | 3.00 | 5.71 | 5.77 | 23.13 | 23.13 | 0.00 | 0.00 | 0.00 | 0.00 | 0.00 | 0.00 | 0.00 | 0.02 | 0.00 | 8.80 | 0.00 | 0.00 | 31.30 | 0.00 | 0.00 | 0.00 | 0.00 | 0.00 | 4.60 | 3.60 | 15.00 | 0.40 | 0.00 | 0.00 |
+| noslidepeeks #1 | switch | 35.94 | 37.46 | 98.00 | 1.27 | 1.40 | 3.00 | 5.71 | 5.78 | 22.81 | 22.81 | 0.00 | 0.00 | 0.00 | 0.00 | 0.00 | 0.00 | 0.00 | 0.03 | 0.00 | 9.70 | 0.00 | 0.00 | 35.70 | 0.00 | 0.00 | 0.00 | 0.00 | 0.00 | 4.80 | 4.20 | 16.80 | 0.50 | 0.00 | 0.00 |
+| noslidepeeks #2 | switch | 34.29 | 41.03 | 98.00 | 1.30 | 1.40 | 3.00 | 5.71 | 5.77 | 22.91 | 24.74 | 0.00 | 0.00 | 0.00 | 0.00 | 0.00 | 0.00 | 0.00 | 0.02 | 0.00 | 8.30 | 0.00 | 0.00 | 33.90 | 0.00 | 0.00 | 0.00 | 0.00 | 0.00 | 4.70 | 4.50 | 15.70 | 0.50 | 0.00 | 0.00 |
+| noslidepeeks #3 | switch | 36.08 | 40.62 | 99.00 | 1.24 | 1.37 | 3.00 | 5.71 | 5.76 | 22.82 | 22.88 | 0.00 | 0.00 | 0.00 | 0.00 | 0.00 | 0.00 | 0.00 | 0.02 | 0.00 | 10.10 | 0.00 | 0.00 | 35.80 | 0.00 | 0.00 | 0.00 | 0.00 | 0.00 | 4.90 | 3.80 | 17.40 | 0.40 | 0.00 | 0.00 |
+| noslidepeeks #4 | switch | 33.07 | 36.37 | 100.00 | 1.24 | 1.50 | 3.00 | 5.71 | 5.77 | 23.92 | 23.92 | 0.00 | 0.00 | 0.00 | 0.00 | 0.00 | 0.00 | 0.00 | 0.03 | 0.00 | 8.10 | 0.00 | 0.00 | 32.80 | 0.00 | 0.00 | 0.00 | 0.00 | 0.00 | 4.70 | 4.40 | 15.40 | 0.50 | 0.00 | 0.00 |

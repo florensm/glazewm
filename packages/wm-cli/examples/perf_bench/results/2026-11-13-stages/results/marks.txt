@@ -1,0 +1,23 @@
+start resize-load0 13:07:19 errors.log 2708434 perf.log 54711
+end resize-load0 13:11:32 errors.log 2801104 perf.log 1302229
+start switch-load0 13:11:32 errors.log 2801104 perf.log 1302229
+end switch-load0 13:14:42 errors.log 2837482 perf.log 1891298
+start main-load0 13:14:42 errors.log 2837482 perf.log 1891298
+end main-load0 13:20:27 errors.log 2946811 perf.log 3244497
+start resize-cpu8 13:20:27 errors.log 2946811 perf.log 3244497
+end resize-cpu8 13:24:50 errors.log 2996148 perf.log 4549939
+start switch-cpu8 13:24:50 errors.log 2996148 perf.log 4549939
+end switch-cpu8 13:28:07 errors.log 3020472 perf.log 5159007
+start main-cpu8 13:28:07 errors.log 3020472 perf.log 5159007
+end main-cpu8 13:33:52 errors.log 3096199 perf.log 6529113
+chain done 13:33:53
+rerun (AnyDesk moved to ws 3)
+start main-load0 13:47:02 errors.log 3097651 perf.log 6529113
+end main-load0 13:52:46 errors.log 3185243 perf.log 7884737
+start resize-cpu8 13:52:46 errors.log 3185243 perf.log 7884737
+end resize-cpu8 13:57:08 errors.log 3220952 perf.log 9190547
+start switch-cpu8 13:57:08 errors.log 3220952 perf.log 9190547
+end switch-cpu8 14:00:25 errors.log 3239105 perf.log 9795690
+start main-cpu8 14:00:25 errors.log 3239105 perf.log 9795690
+end main-cpu8 14:06:10 errors.log 3303319 perf.log 11161978
+chain done 14:06:11

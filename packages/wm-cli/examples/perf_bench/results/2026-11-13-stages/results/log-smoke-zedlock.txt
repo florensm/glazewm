@@ -1,0 +1,18 @@
+13:02:26 Building...
+13:02:27     Finished `release` profile [optimized] target(s) in 0.34s
+13:02:27     Finished `release` profile [optimized] target(s) in 0.25s
+13:02:27 Starting notepad, explorer, wt, chrome...
+13:02:27   Started 'notepad' (process 408).
+13:02:27   Started 'explorer' (process 9040).
+13:02:27   Started 'wt' (process 8252).
+13:02:27   Started 'chrome' (process 17328).
+13:02:29 Restarting GlazeWM as it was...
+13:02:30 Closing the 4 window(s) it started...
+13:02:30 Set-Content : The process cannot access the file 'C:\Users\googlers\.glzr\glazewm\isolate-bench.txt' because it is 
+13:02:30 being used by another process.
+13:02:30 At C:\Users\googlers\glazewm\packages\wm-cli\examples\perf_bench\isolate_modes.ps1:390 char:3
+13:02:30 +   Set-Content -Path $resultsFile -Value (
+13:02:30 +   ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+13:02:30     + CategoryInfo          : NotSpecified: (:) [Set-Content], IOException
+13:02:30     + FullyQualifiedErrorId : System.IO.IOException,Microsoft.PowerShell.Commands.SetContentCommand
+13:02:30  

@@ -1,0 +1,291 @@
+=== default #4 resize (median of 40 reports by interval max: 35.13 ms)
+2026-11-13T12:11:10.439221Z  INFO glazewm::perf: perf [animations idle]: 60 frames in 417.4ms, 4 slow (>5.7ms), peak 0 window(s) animating
+  stage                 calls      total  per-frame      worst
+  peek_frame               23    101.7ms     1.70ms    31.12ms
+    peek_draw             122     66.1ms     1.10ms    25.43ms
+    peek_track             23      9.0ms     0.15ms     4.01ms
+  tick                     60    153.4ms     2.56ms    33.70ms
+    platform_sync           4     54.6ms     0.91ms    25.31ms
+      redraw                4     49.9ms     0.83ms    23.69ms
+        redraw_prep         4      0.3ms     0.00ms     0.09ms
+        redraw_loop         4     24.7ms     0.41ms    16.17ms
+          anim_step        12      0.0ms     0.00ms     0.01ms
+          rd_apply         12     23.7ms     0.40ms    15.74ms
+            rp_query       12      0.0ms     0.00ms     0.00ms
+            rp_swp         12      1.7ms     0.03ms     1.35ms
+            rp_visible     12     17.8ms     0.30ms    11.42ms
+            uncloak        12      3.0ms     0.05ms     2.13ms
+        peek_raise          4      0.0ms     0.00ms     0.00ms
+        session_overlays      4      0.0ms     0.00ms     0.00ms
+      sync_tail             4      4.3ms     0.07ms     2.28ms
+        sync_focus          4      2.0ms     0.03ms     1.65ms
+        tab_bars            4      0.0ms     0.00ms     0.01ms
+        overview            4      0.0ms     0.00ms     0.00ms
+        guards              4      0.5ms     0.01ms     0.47ms
+    cleanup                60      0.0ms     0.00ms     0.00ms
+  -- called from several parents, already counted above --
+    backdrop_sync           4      0.1ms     0.00ms     0.02ms
+    border_sync             4      1.7ms     0.03ms     0.89ms
+    dwm_flush               2     24.9ms     0.42ms    18.22ms
+    native_frame          148      0.9ms     0.01ms     0.27ms
+    ovl_region              6      2.7ms     0.04ms     1.42ms
+    ovl_place               6      2.9ms     0.05ms     1.56ms
+    ovl_blend             152      0.0ms     0.00ms     0.01ms
+    peek_ring             142      8.5ms     0.14ms     4.00ms
+    peek_backdrop         142      0.0ms     0.00ms     0.00ms
+  -- outside frames (e.g. the relayout starting an animation) --
+  stage                 calls      total
+  command                   1     42.3ms
+  platform_sync             7     46.6ms
+  redraw                    7     45.3ms
+  redraw_prep               7      0.2ms
+  redraw_loop               7     15.4ms
+  anim_step                12     11.4ms
+  rd_frozen                 6      0.0ms
+  rd_apply                  6      3.5ms
+  rp_query                  6      0.0ms
+  rp_swp                    6      0.0ms
+  rp_visible                6      3.5ms
+  uncloak                   6      0.0ms
+  peek_cover                1      7.6ms
+  peek_handover             1      0.7ms
+  peek_raise                7      1.1ms
+  backdrop_sync             7      0.1ms
+  border_sync               7      0.4ms
+  dwm_flush                 1     11.5ms
+  cloak                     7     20.3ms
+  session_overlays          7      0.0ms
+  sync_tail                 7      0.8ms
+  sync_focus                7      0.0ms
+  tab_bars                  7      0.1ms
+  overview                  7      0.0ms
+  guards                    7      0.3ms
+  native_frame             44      0.2ms
+  peek_new                  6      6.0ms
+  take_over                 6      8.7ms
+  preposition               6      0.1ms
+  ovl_blend                53      0.0ms
+  peek_styles               6      0.0ms
+  peek_warm                 6      0.1ms
+  sg_window                 6      4.0ms
+  sg_thumb                  6      0.5ms
+  peek_ring                32      8.3ms
+  peek_backdrop            32      0.0ms
+  -- frame time distribution (budget 5.7ms) --
+  frame time                  p50        p90        p99        max
+                           0.15ms     2.50ms    33.70ms    33.70ms
+  hitches: 4 frame(s) >2x budget, 3 >4x budget, out of 60
+  frame interval           5.72ms     5.79ms    35.13ms    35.13ms  (~175 fps)
+  -- input -> motion latency --
+                        count        p50        max
+  to anim start             1     2.11ms     2.11ms
+  to first frame            1    67.95ms    67.95ms
+  -- slowest input timeline (67.95ms to first frame; * = called from several parents) --
+  stage                        at       took
+  command                  0.00ms    42.25ms
+    platform_sync          0.38ms    41.86ms
+      redraw               0.42ms    41.56ms
+        redraw_loop        0.53ms    11.81ms
+          anim_step        0.55ms     2.00ms
+  * peek_new               0.55ms     0.87ms
+  * sg_window              0.56ms     0.46ms
+          anim_step        2.60ms     1.69ms
+  * peek_new               2.60ms     0.86ms
+  * sg_window              2.60ms     0.54ms
+          anim_step        4.38ms     2.02ms
+  * peek_new               4.39ms     1.15ms
+  * sg_window              4.44ms     0.82ms
+          anim_step        6.47ms     1.53ms
+  * peek_new               6.47ms     0.80ms
+  * sg_window              6.52ms     0.53ms
+          anim_step        8.05ms     1.96ms
+  * peek_new               8.05ms     1.19ms
+  * sg_window              8.11ms     0.86ms
+          anim_step       10.08ms     2.24ms
+  * peek_new              10.09ms     1.09ms
+  * sg_window             10.13ms     0.77ms
+        peek_cover        12.34ms     7.55ms
+  * peek_ring             12.36ms     1.24ms
+  * peek_ring             13.61ms     1.27ms
+  * peek_ring             14.89ms     1.30ms
+  * peek_ring             16.20ms     1.18ms
+  * peek_ring             17.39ms     1.22ms
+  * peek_ring             18.61ms     1.28ms
+  * cloak                 19.89ms    20.28ms
+  * dwm_flush             19.89ms    11.48ms
+  * take_over             31.38ms     1.39ms
+  * take_over             32.82ms     1.98ms
+  * take_over             34.81ms     1.27ms
+  * take_over             36.08ms     1.58ms
+  peek_frame              36.80ms    31.12ms
+  * take_over             37.67ms     1.22ms
+  * take_over             38.89ms     1.28ms
+        peek_handover     40.17ms     0.66ms
+        peek_raise        40.84ms     1.14ms
+  tick                    42.37ms    25.58ms
+    peek_draw             42.38ms     6.07ms
+    peek_draw             48.45ms     2.02ms
+    peek_draw             50.47ms     4.86ms
+    peek_draw             55.34ms     4.13ms
+    peek_draw             59.47ms     3.98ms
+    peek_draw             63.46ms     4.38ms
+  -- rd_apply by process (sync = blocked on that app's message pump)        --
+  process               calls      total   per-call      worst
+  chrome [async]            6      6.5ms     1.09ms     2.56ms
+  Notepad [async]           3      6.2ms     2.06ms     4.80ms
+  WindowsTerminal [async]      6      5.2ms     0.87ms     2.02ms
+  FPilot [async]            3      5.0ms     1.67ms     3.93ms
+  -- event queue wait (main-loop starvation) --
+  event                 count      total       mean      worst
+  window                   74   2086.8ms    28.20ms    63.02ms  (1 unpaired -- SUSPECT)
+  -- animations started (move vs resize) --
+  gesture               count      share
+  move                      0       0.0%
+  resize                    6     100.0%
+
+=== default #4 resize (max of 40 reports by interval max: 44.14 ms)
+2026-11-13T12:11:12.959817Z  INFO glazewm::perf: perf [animations idle]: 60 frames in 421.6ms, 4 slow (>5.7ms), peak 0 window(s) animating
+  stage                 calls      total  per-frame      worst
+  peek_frame               23    100.8ms     1.68ms    28.71ms
+    peek_draw             122     67.3ms     1.12ms    27.14ms
+    peek_track             23      7.9ms     0.13ms     3.31ms
+  tick                     60    155.2ms     2.59ms    41.72ms
+    platform_sync           4     59.9ms     1.00ms    35.41ms
+      redraw                4     54.7ms     0.91ms    33.45ms
+        redraw_prep         4      0.3ms     0.00ms     0.09ms
+        redraw_loop         4     27.1ms     0.45ms    17.35ms
+          anim_step        12      0.0ms     0.00ms     0.01ms
+          rd_apply         12     25.8ms     0.43ms    16.86ms
+            rp_query       12      0.0ms     0.00ms     0.00ms
+            rp_swp         12      1.6ms     0.03ms     0.88ms
+            rp_visible     12     19.9ms     0.33ms    12.91ms
+            uncloak        12      2.9ms     0.05ms     2.02ms
+        peek_raise          4      0.0ms     0.00ms     0.00ms
+        session_overlays      4      0.0ms     0.00ms     0.00ms
+      sync_tail             4      4.6ms     0.08ms     1.86ms
+        sync_focus          4      1.7ms     0.03ms     1.34ms
+        tab_bars            4      0.0ms     0.00ms     0.01ms
+        overview            4      0.0ms     0.00ms     0.00ms
+        guards              4      0.6ms     0.01ms     0.54ms
+    cleanup                60      0.0ms     0.00ms     0.00ms
+  -- called from several parents, already counted above --
+    backdrop_sync           4      0.1ms     0.00ms     0.02ms
+    border_sync             4      2.1ms     0.04ms     1.19ms
+    dwm_flush               2     27.4ms     0.46ms    16.02ms
+    native_frame          148      0.8ms     0.01ms     0.26ms
+    ovl_region              6      2.3ms     0.04ms     1.25ms
+    ovl_place               6      2.5ms     0.04ms     1.38ms
+    ovl_blend             152      0.0ms     0.00ms     0.01ms
+    peek_ring             142      7.4ms     0.12ms     3.31ms
+    peek_backdrop         142      0.0ms     0.00ms     0.00ms
+  -- outside frames (e.g. the relayout starting an animation) --
+  stage                 calls      total
+  command                   1     43.7ms
+  platform_sync             7     48.9ms
+  redraw                    7     47.0ms
+  redraw_prep               7      0.2ms
+  redraw_loop               7     16.0ms
+  anim_step                12     11.5ms
+  rd_frozen                 6      0.0ms
+  rd_apply                  6      3.9ms
+  rp_query                  6      0.0ms
+  rp_swp                    6      0.0ms
+  rp_visible                6      3.9ms
+  uncloak                   6      0.0ms
+  peek_cover                1      7.7ms
+  peek_handover             1      0.8ms
+  peek_raise                7      1.6ms
+  backdrop_sync             7      0.1ms
+  border_sync               7      0.7ms
+  dwm_flush                 1     12.4ms
+  cloak                     7     20.7ms
+  session_overlays          7      0.0ms
+  sync_tail                 7      1.3ms
+  sync_focus                7      0.0ms
+  tab_bars                  7      0.1ms
+  overview                  7      0.0ms
+  guards                    7      0.4ms
+  native_frame             44      0.4ms
+  peek_new                  6      5.9ms
+  take_over                 6      8.3ms
+  preposition               6      0.0ms
+  ovl_blend                53      0.0ms
+  peek_styles               6      0.0ms
+  peek_warm                 6      0.1ms
+  sg_window                 6      3.9ms
+  sg_thumb                  6      0.5ms
+  peek_ring                32      8.6ms
+  peek_backdrop            32      0.0ms
+  -- frame time distribution (budget 5.7ms) --
+  frame time                  p50        p90        p99        max
+                           0.16ms     2.46ms    41.72ms    41.72ms
+  hitches: 4 frame(s) >2x budget, 3 >4x budget, out of 60
+  frame interval           5.72ms     5.84ms    44.14ms    44.14ms  (~175 fps)
+  -- input -> motion latency --
+                        count        p50        max
+  to anim start             1     1.85ms     1.85ms
+  to first frame            1    71.10ms    71.10ms
+  -- slowest input timeline (71.10ms to first frame; * = called from several parents) --
+  stage                        at       took
+  command                  0.00ms    43.65ms
+    platform_sync          0.30ms    43.33ms
+      redraw               0.33ms    42.84ms
+        redraw_loop        0.41ms    11.94ms
+          anim_step        0.42ms     1.93ms
+  * peek_new               0.42ms     0.82ms
+  * sg_window              0.43ms     0.41ms
+          anim_step        2.40ms     1.53ms
+  * peek_new               2.40ms     0.74ms
+  * sg_window              2.41ms     0.49ms
+          anim_step        4.11ms     2.07ms
+  * peek_new               4.11ms     1.33ms
+  * sg_window              4.18ms     0.96ms
+          anim_step        6.25ms     1.81ms
+  * peek_new               6.26ms     0.97ms
+  * sg_window              6.31ms     0.63ms
+          anim_step        8.13ms     2.51ms
+  * peek_new               8.13ms     1.15ms
+  * sg_window              8.18ms     0.78ms
+          anim_step       10.73ms     1.61ms
+  * peek_new              10.73ms     0.91ms
+  * sg_window             10.78ms     0.59ms
+        peek_cover        12.35ms     7.69ms
+  * peek_ring             12.36ms     1.27ms
+  * peek_ring             13.64ms     1.39ms
+  * peek_ring             15.04ms     1.33ms
+  * peek_ring             16.38ms     1.17ms
+  * peek_ring             17.56ms     1.19ms
+  * peek_ring             18.76ms     1.28ms
+  * cloak                 20.04ms    20.68ms
+  * dwm_flush             20.04ms    12.38ms
+  * take_over             32.43ms     1.67ms
+  * take_over             34.12ms     1.70ms
+  * take_over             35.82ms     1.29ms
+  * take_over             37.11ms     1.30ms
+  * take_over             38.41ms     1.21ms
+  * take_over             39.61ms     1.11ms
+        peek_handover     40.72ms     0.84ms
+        peek_raise        41.56ms     1.61ms
+  peek_frame              42.36ms    28.71ms
+      sync_tail           43.18ms     0.45ms
+        guards            43.28ms     0.35ms
+  tick                    43.78ms    27.32ms
+    peek_draw             43.80ms     6.86ms
+    peek_draw             50.67ms     2.16ms
+    peek_draw             52.83ms     5.05ms
+    peek_draw             57.89ms     5.03ms
+    peek_draw             62.92ms     4.11ms
+    peek_draw             67.04ms     3.93ms
+  -- rd_apply by process (sync = blocked on that app's message pump)        --
+  process               calls      total   per-call      worst
+  FPilot [async]            3      7.5ms     2.50ms     6.18ms
+  WindowsTerminal [async]      6      6.7ms     1.12ms     2.63ms
+  chrome [async]            6      5.8ms     0.97ms     1.84ms
+  Notepad [async]           3      5.4ms     1.80ms     3.57ms
+  -- event queue wait (main-loop starvation) --
+  event                 count      total       mean      worst
+  window                   73   2124.5ms    29.10ms    66.40ms  (1 unpaired -- SUSPECT)
+  -- animations started (move vs resize) --
+  gesture               count      share
+  move                      0       0.0%
+  resize                    6     100.0%

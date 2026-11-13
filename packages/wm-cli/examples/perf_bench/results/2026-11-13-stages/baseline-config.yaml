@@ -1,0 +1,543 @@
+# Baseline (origin/main) translation of ~/.glzr/glazewm/config.yaml and its
+# includes: origin/main has no `include:`. Same values where the old schema
+# has the key; new-only keys (scroll, focus_change, particles, glow,
+# highlight, rim, special_workspace, layouts) are dropped.
+animations:
+  overlay_tracking: "all"
+  window_move:
+    enabled: true
+    duration_ms: 150
+    easing: "cubic_bezier(0.2, 0.0, 0.0, 1.0)"
+    threshold_px: 10
+  window_resize:
+    enabled: true
+    duration_ms: 150
+    easing: "cubic_bezier(0.2, 0.0, 0.0, 1.0)"
+    threshold_px: 10
+    style: "fill"
+  window_open:
+    enabled: true
+    duration_ms: 650
+    easing: "cubic_bezier(0.16, 1.0, 0.3, 1.0)"
+    style: "zoom"
+    opacity_from: 1.0
+  workspace_switch:
+    enabled: true
+    duration_ms: 350
+    easing: "ease_out_cubic"
+    style: "slide"
+    direction: "horizontal"
+    opacity_outgoing: 1.0
+    opacity_incoming: 1.0
+    zoom_factor: 0.0
+  window_close:
+    enabled: true
+    duration_ms: 650
+    easing: "ease_in_cubic"
+    style: "zoom"
+    opacity_to: 0.0
+  window_minimize:
+    enabled: false
+    duration_ms: 150
+    easing: "ease_in_cubic"
+    style: "zoom"
+    opacity_to: 0.0
+
+general:
+  startup_commands: []
+  shutdown_commands: []
+  config_reload_commands: []
+  focus_follows_cursor: false
+  toggle_workspace_on_refocus: false
+  ignore_focus_steal: false
+  dynamic_workspaces: true
+  cursor_jump:
+    enabled: true
+    trigger: "monitor_focus"
+  show_all_in_taskbar: false
+
+gaps:
+  scale_with_dpi: true
+  inner_gap: "20px"
+  outer_gap:
+    top: "20px"
+    right: "20px"
+    bottom: "20px"
+    left: "20px"
+
+stack:
+  # Height of the tab bar shown for stacked windows (0px = disabled).
+  # ** Only rendered on Windows.
+  tab_bar_height: "28px"
+
+  # Whether the tab bar appears above or below the stacked windows.
+  # Possible values: "top" | "bottom"
+  tab_bar_position: "top"
+
+  # Tab bar colors. Like border colors, these accept a hex value, "accent",
+  # or a palette file: { file: "path/to/colors.css", key: "--accent" }.
+  tab_bar_background: "#1f1f1f"
+  tab_active_background: "#3a3a3a"
+  tab_hover_background: "#2c2c2c"
+  # Background of a tab whose window requests attention (e.g. flashes).
+  tab_urgent_background: "#8a5a00"
+  tab_text_color: "#ffffff"
+  tab_inactive_text_color: "#a0a0a0"
+
+  tab_font_family: "Segoe UI"
+  tab_font_size: "12px"
+  tab_corner_radius: "8px"
+
+  # When tabs show a close button: "hover" | "always" | "never".
+  tab_close_button: "hover"
+
+  # Regex replacements applied to window titles shown on tabs.
+  tab_title_overrides: []
+
+  # Whether a new tiling window opened while a stacked window is focused
+  # joins that stack, rather than being tiled next to it.
+  new_windows_join_focused_stack: false
+
+  # Where windows added to a stack go among its tabs: "end" or
+  # "after_active".
+  new_tab_position: "end"
+
+  # Whether popups (windows with an owner) of an app that has windows in a
+  # stack open floating.
+  float_owned_popups: true
+
+  # Put matching windows into a named stack as they open. There is one
+  # stack per name, across all workspaces.
+  auto_stack: []
+  # Example:
+  # auto_stack:
+  #   - name: "browsers"
+  #     match:
+  #       - window_process: { equals: "firefox" }
+  #     # Windows that never join, even if they match.
+  #     exclude:
+  #       - window_title: { includes: "Picture-in-Picture" }
+  #     # Keys pressed once in each new window after it joins.
+  #     send_keys_on_join: ["ctrl+t"]
+  #     # Close tabs with the same title as a joining window.
+  #     duplicates: "close_older"
+  #     # Let a window that matches apart from its still empty title join
+  #     # right away if it's at least this big. It leaves the stack again
+  #     # if the title it gets doesn't match.
+  #     join_untitled:
+  #       min_width: "800px"
+  #       min_height: "500px"
+
+
+window_effects:
+  hide_border_on_fullscreen: false
+  focused_window:
+    border:
+      enabled: true
+      color: "#8dbcff"
+      width: "2px"
+    hide_title_bar:
+      enabled: false
+    corner_style:
+      enabled: true
+      style: "square"
+    transparency:
+      enabled: true
+      opacity: "90%"
+    backdrop:
+      enabled: false
+      tint: "#00000030"
+      blur_amount: 30.0
+      opacity: 1.0
+      saturation: 1.2
+      exposure: 0.0
+      contrast: 0.0
+      highlights: -0.3
+      shadows: 0.1
+      vignette: 0.2
+      grain: 0.05
+      parallax: 1.0
+  other_windows:
+    border:
+      enabled: true
+      color: "#a1a1a1"
+      width: "2px"
+    hide_title_bar:
+      enabled: false
+    corner_style:
+      enabled: true
+      style: "square"
+    transparency:
+      enabled: true
+      opacity: "90%"
+    backdrop:
+      enabled: false
+      tint: "#00000060"
+      blur_amount: 30.0
+      opacity: 1.0
+      saturation: 1.2
+      exposure: 0.0
+      contrast: 0.0
+      highlights: -0.3
+      shadows: 0.1
+      vignette: 0.4
+      grain: 0.05
+      parallax: 1.0
+
+window_behavior:
+  # Take a fullscreen window back out of fullscreen when a new window opens on
+  # its workspace. A fullscreen window covers the whole workspace, so without
+  # this the new window opens hidden behind it. Matches Hyprland.
+  exit_fullscreen_on_new_window: true
+
+  # New windows are created in this state whenever possible.
+  # Allowed values: 'tiling', 'floating'.
+  initial_state: "tiling"
+
+  # Sets the default options for when a new window is created. This also
+  # changes the defaults for when the state change commands, like
+  # `set-floating`, are used without any flags.
+  state_defaults:
+    floating:
+      # Whether to center floating windows by default.
+      centered: true
+
+      # Whether to show floating windows as always on top.
+      shown_on_top: true
+
+    fullscreen:
+      # Maximize the window if possible. If the window doesn't have a
+      # maximize button, then it'll be fullscreen'ed normally instead.
+      maximized: false
+
+      # Whether to show fullscreen windows as always on top.
+      shown_on_top: false
+
+# Overview of the focused monitor's workspaces, opened by `toggle-overview`.
+# Click a window or workspace to go there, drag windows between workspaces,
+# or use the keys shown under the cards. Only available on Windows.
+overview:
+  # Blur radius of the wallpaper behind the cards.
+  backdrop_blur: 40
+
+  # Tint over the blurred wallpaper; its alpha is how dark it gets.
+  backdrop_tint: "#00000066"
+
+  # Selection and highlights. Same values as a border's color: a hex color,
+  # "accent" for the OS accent color, or a file and key. Left out, it is
+  # the focused window's border color.
+  # accent_color: "accent"
+
+  # Workspace cards, hovered cards and window title strips.
+  card_color: "#221e24e6"
+  surface_color: "#2d292eff"
+  caption_color: "#161217c7"
+
+  # Text, secondary text (e.g. key hints), and the outline of windows
+  # matching a search.
+  text_color: "#e8e0e8ff"
+  subtext_color: "#cdc3ceff"
+  search_color: "#89b4faff"
+  font_family: "Segoe UI"
+
+  # Columns of the grid of every workspace (`toggle-overview --grid`, or tab
+  # while open).
+  grid_columns: 5
+
+  # Length of the zoom out on open, and of the zoom into the picked
+  # workspace on close; 0 makes it instant.
+  open_duration_ms: 250
+  close_duration_ms: 200
+
+workspaces:
+  - name: "1"
+  - name: "2"
+  - name: "3"
+  - name: "4"
+  - name: "5"
+  - name: "6"
+  - name: "7"
+  - name: "8"
+  - name: "9"
+
+window_rules:
+  # Flag a window as urgent when its title changes, for apps that signal a
+  # new message that way rather than by flashing their taskbar button.
+  # Jump to it with the `focus --urgent-window` command.
+  # - commands: ["set-urgency"]
+  #   on: ["title_change"]
+  #   match:
+  #     - window_process: { equals: "Discord" }
+  #       window_title: { regex: '^\(\d+\)' }
+  - commands: ["ignore"]
+    match:
+      # Ignores any Zebar windows.
+      - window_process: { equals: "zebar" }
+
+      # Ignores picture-in-picture windows for browsers.
+      - window_title: { regex: "[Pp]icture.in.[Pp]icture" }
+        window_class: { regex: "Chrome_WidgetWin_1|MozillaDialogClass" }
+
+      # Ignore rules for various 3rd-party apps.
+      - window_process: { equals: "PowerToys" }
+        window_class: { regex: 'HwndWrapper\[PowerToys\.PowerAccent.*?\]' }
+      - window_title: { equals: "Command Palette" }
+        window_class: { equals: "WinUIDesktopWin32WindowClass" }
+      - window_process: { equals: "PowerToys" }
+        window_title: { regex: ".*? - Peek" }
+      - window_process: { equals: "Lively" }
+        window_class: { regex: "HwndWrapper" }
+      - window_process: { equals: "EXCEL" }
+        window_class: { not_regex: "XLMAIN" }
+      - window_process: { equals: "WINWORD" }
+        window_class: { not_regex: "OpusApp" }
+      - window_process: { equals: "POWERPNT" }
+        window_class: { not_regex: "PPTFrameClass" }
+      - window_process: { equals: "CleanShot X" }
+
+  # Forcibly manage windows that would otherwise be skipped by the
+  # built-in manageability checks (e.g. tool windows that aren't shown
+  # in the alt+tab menu). Combine with other commands to control how
+  # the window is placed once managed. Run GlazeWM with debug logging
+  # to find the process/class/title of a skipped window.
+  - commands: ['force-manage']
+    match:
+      # Flow Launcher's window has a tool window style and wouldn't be
+      # managed otherwise.
+      - window_process: { equals: 'Flow.Launcher' }
+        window_title: { equals: 'Flow.Launcher' }
+
+  # Keep an app's stacked windows usable while it shows a blocking popup.
+  # - commands: ["stay-interactive"]
+  #   match:
+  #     - window_process: { equals: "MyApp" }
+
+binding_modes:
+  # When enabled, the focused window can be stacked with its neighbors.
+  - name: "stack"
+    keybindings:
+      # Absorb the neighbor in a given direction into the stack.
+      - commands: ["stack-absorb-neighbor --direction left"]
+        bindings: ["h", "left"]
+      - commands: ["stack-absorb-neighbor --direction right"]
+        bindings: ["l", "right"]
+      - commands: ["stack-absorb-neighbor --direction up"]
+        bindings: ["k", "up"]
+      - commands: ["stack-absorb-neighbor --direction down"]
+        bindings: ["j", "down"]
+      # Cycle focus to the next/previous window within the stack.
+      - commands: ["cycle-stack-focus"]
+        bindings: ["n"]
+      - commands: ["cycle-stack-focus --prev"]
+        bindings: ["p"]
+      # Toggle the focused window out of the stack.
+      - commands: ["toggle-stack"]
+        bindings: ["g"]
+      # Take the focused window out of the stack as a floating window.
+      - commands: ["float-out-of-stack"]
+        bindings: ["f"]
+      # More stack commands (stack-all, unstack-all, move-stack-tab,
+      # focus-stack-index, move-to-stack) are listed in docs/stacks.md.
+      # Press enter/escape to return to default keybindings.
+      - commands: ["wm-disable-binding-mode --name stack"]
+        bindings: ["escape", "enter"]
+
+  # When enabled, the focused window can be resized via arrow keys or HJKL.
+  - name: "resize"
+    keybindings:
+      - commands: ["resize --width -2%"]
+        bindings: ["h", "left"]
+      - commands: ["resize --width +2%"]
+        bindings: ["l", "right"]
+      - commands: ["resize --height +2%"]
+        bindings: ["k", "up"]
+      - commands: ["resize --height -2%"]
+        bindings: ["j", "down"]
+      # Press escape/enter/alt+r to return to default keybindings.
+      - commands: ["wm-disable-binding-mode --name resize"]
+        bindings: ["escape", "enter", "alt+r"]
+
+keybindings:
+  # Shift focus in a given direction.
+  - commands: ["focus --direction left"]
+    bindings: ["alt+h", "alt+left"]
+  - commands: ["focus --direction right"]
+    bindings: ["alt+l", "alt+right"]
+  - commands: ["focus --direction up"]
+    bindings: ["alt+k", "alt+up"]
+  - commands: ["focus --direction down"]
+    bindings: ["alt+j", "alt+down"]
+
+  # Move focused window in a given direction.
+  - commands: ["move --direction left"]
+    bindings: ["alt+shift+h", "alt+shift+left"]
+  - commands: ["move --direction right"]
+    bindings: ["alt+shift+l", "alt+shift+right"]
+  - commands: ["move --direction up"]
+    bindings: ["alt+shift+k", "alt+shift+up"]
+  - commands: ["move --direction down"]
+    bindings: ["alt+shift+j", "alt+shift+down"]
+
+  # Resize focused window by a percentage or pixel amount.
+  - commands: ["resize --width -2%"]
+    bindings: ["alt+u"]
+  - commands: ["resize --width +2%"]
+    bindings: ["alt+p"]
+  - commands: ["resize --height +2%"]
+    bindings: ["alt+shift+o"]
+  - commands: ["resize --height -2%"]
+    bindings: ["alt+i"]
+
+  # As an alternative to the resize keybindings above, resize mode enables
+  # resizing via arrow keys or HJKL. The binding mode is defined above with
+  # the name 'resize'.
+  - commands: ["wm-enable-binding-mode --name resize"]
+    bindings: ["alt+r"]
+
+  # Disables window management and all other keybindings until alt+shift+p
+  # is pressed again.
+  - commands: ["wm-toggle-pause"]
+    bindings: ["alt+shift+p"]
+
+  # Change tiling direction. This determines where new tiling windows will
+  # be inserted.
+  - commands: ["toggle-tiling-direction"]
+    bindings: ["alt+v"]
+
+  # Toggle the focused window into/out of a stack container. A stack acts as
+  # one window: toggle-floating, toggle-fullscreen and toggle-minimized on
+  # a stacked window apply to its whole stack.
+  - commands: ["toggle-stack"]
+    bindings: ["alt+g"]
+
+  # Enter stack mode to absorb neighbors or cycle focus within the stack.
+  - commands: ["wm-enable-binding-mode --name stack"]
+    bindings: ["alt+shift+g"]
+
+  # Cycle focus to the next/previous window within the focused stack.
+  - commands: ["cycle-stack-focus"]
+    bindings: ["alt+oem_period"]
+  - commands: ["cycle-stack-focus --prev"]
+    bindings: ["alt+oem_comma"]
+
+  # Change focus from tiling windows -> floating -> fullscreen.
+  - commands: ["wm-cycle-focus"]
+    bindings: ["alt+space"]
+
+  # Show the focused monitor's workspaces and their windows, to switch to
+  # one or move windows between them.
+  - commands: ["toggle-overview"]
+    bindings: ["alt+o"]
+
+  # Change the focused window to be floating.
+  - commands: ["toggle-floating --centered"]
+    bindings: ["alt+shift+space"]
+
+  # Change the focused window to be tiling.
+  - commands: ["toggle-tiling"]
+    bindings: ["alt+t"]
+
+  # Change the focused window to be fullscreen.
+  - commands: ["toggle-fullscreen"]
+    bindings: ["alt+f"]
+
+  # Minimize focused window.
+  - commands: ["toggle-minimized"]
+    bindings: ["alt+m"]
+
+  # Close focused window.
+  - commands: ["close"]
+    bindings: ["alt+shift+q"]
+
+  # Kill GlazeWM process safely.
+  - commands: ["wm-exit"]
+    bindings: ["alt+shift+e"]
+
+  # Re-evaluate configuration file.
+  - commands: ["wm-reload-config"]
+    bindings: ["alt+shift+r"]
+
+  # Redraw all windows.
+  - commands: ["wm-redraw"]
+    bindings: ["alt+shift+w"]
+
+  # Launch CMD terminal. Alternatively, use `shell-exec wt` or
+  # `shell-exec %ProgramFiles%/Git/git-bash.exe` to start Windows
+  # Terminal and Git Bash respectively.
+  - commands: ["shell-exec cmd"]
+    bindings: ["alt+enter"]
+
+  # Focus the next/previous active workspace defined in `workspaces` config.
+  - commands: ["focus --next-active-workspace"]
+    bindings: ["alt+s"]
+  - commands: ["focus --prev-active-workspace"]
+    bindings: ["alt+a"]
+
+  # Focus the workspace that last had focus.
+  - commands: ["focus --recent-workspace"]
+    bindings: ["alt+d"]
+
+  # Focus the first workspace without any windows. With
+  # `general.dynamic_workspaces` enabled, a new one is created when every
+  # workspace is in use.
+  - commands: ["focus --next-empty-workspace"]
+    bindings: ["alt+n"]
+
+  # Send the focused window to the first empty workspace, staying put.
+  - commands: ["move --next-empty-workspace"]
+    bindings: ["alt+shift+n"]
+
+  # Focus the window that most recently asked for attention.
+  - commands: ["focus --urgent-window"]
+    bindings: ["alt+shift+u"]
+
+  # Change focus to a workspace defined in `workspaces` config.
+  - commands: ["focus --workspace 1"]
+    bindings: ["alt+1"]
+  - commands: ["focus --workspace 2"]
+    bindings: ["alt+2"]
+  - commands: ["focus --workspace 3"]
+    bindings: ["alt+3"]
+  - commands: ["focus --workspace 4"]
+    bindings: ["alt+4"]
+  - commands: ["focus --workspace 5"]
+    bindings: ["alt+5"]
+  - commands: ["focus --workspace 6"]
+    bindings: ["alt+6"]
+  - commands: ["focus --workspace 7"]
+    bindings: ["alt+7"]
+  - commands: ["focus --workspace 8"]
+    bindings: ["alt+8"]
+  - commands: ["focus --workspace 9"]
+    bindings: ["alt+9"]
+
+  # Move the focused window's parent workspace to a monitor in a given
+  # direction.
+  - commands: ["move-workspace --direction left"]
+    bindings: ["alt+shift+a"]
+  - commands: ["move-workspace --direction right"]
+    bindings: ["alt+shift+f"]
+  - commands: ["move-workspace --direction up"]
+    bindings: ["alt+shift+d"]
+  - commands: ["move-workspace --direction down"]
+    bindings: ["alt+shift+s"]
+
+  # Move focused window to a workspace defined in `workspaces` config.
+  - commands: ["move --workspace 1", "focus --workspace 1"]
+    bindings: ["alt+shift+1"]
+  - commands: ["move --workspace 2", "focus --workspace 2"]
+    bindings: ["alt+shift+2"]
+  - commands: ["move --workspace 3", "focus --workspace 3"]
+    bindings: ["alt+shift+3"]
+  - commands: ["move --workspace 4", "focus --workspace 4"]
+    bindings: ["alt+shift+4"]
+  - commands: ["move --workspace 5", "focus --workspace 5"]
+    bindings: ["alt+shift+5"]
+  - commands: ["move --workspace 6", "focus --workspace 6"]
+    bindings: ["alt+shift+6"]
+  - commands: ["move --workspace 7", "focus --workspace 7"]
+    bindings: ["alt+shift+7"]
+  - commands: ["move --workspace 8", "focus --workspace 8"]
+    bindings: ["alt+shift+8"]
+  - commands: ["move --workspace 9", "focus --workspace 9"]
+    bindings: ["alt+shift+9"]

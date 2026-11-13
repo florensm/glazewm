@@ -1,0 +1,29 @@
+13:06:38 Modes: main; scenarios: resize, switch;
+13:06:38 rounds 1, bursts 2, load 0, CPU load 0;
+13:06:38 tile order: Notepad, WindowsTerminal, WindowsTerminal, chrome, chrome, FPilot;
+13:06:38 launch: notepad, explorer, wt, chrome;
+13:06:38 user WM: C:\Users\googlers\glazewm\target\release\glazewm.exe start   ; results: C:\Users\googlers\AppData\Local\Temp\claude\C--Users-googlers-glazewm\8ea0075d-a938-4747-a9b2-e7220e3ef22f\scratchpad\bench\smoke-main.txt
+13:06:39 Starting notepad, explorer, wt, chrome...
+13:06:39   Started 'notepad' (process 17984).
+13:06:39   Started 'explorer' (process 5252).
+13:06:39   Started 'wt' (process 15992).
+13:06:39   Started 'chrome' (process 6940).
+13:06:39 Round 1/1: restarting GlazeWM as 'main'...
+13:06:43 tiles main #1 ws 1: Notepad, WindowsTerminal, WindowsTerminal, chrome, chrome, FPilot
+13:06:43   Measuring 'resize'...
+13:06:46   Measuring 'switch'...
+13:06:48 Restarting GlazeWM as it was...
+13:06:49 Closing the 4 window(s) it started...
+13:06:50 
+13:06:50 ## resize
+13:06:50 
+13:06:50 | label | scenario | command p50 ms | command p90 ms | frames | tick ms/frame | frame p90 ms | frames >2x budget | interval p50 ms | interval p90 ms | interval p99 ms | interval max ms (median burst) | peek_frame ms/frame | peek_draw ms/frame | peek_track ms/frame | peek_ring ms/frame | peek_backdrop ms/frame | session_overlays ms/frame | batch_commit ms/frame | ovl_region ms/frame | dwm_flush calls (in frames) | dwm_flush ms (outside frames) | cloak ms (outside frames) | session_begin ms (outside frames) | command ms (WM side) | peek_new ms (outside frames) | peek_cover ms (outside frames) | peek_handover ms (outside frames) | peek_raise ms (outside frames) | session_overlays ms (outside frames) | ws_surrogates ms (outside frames) | ws_park ms (outside frames) | ws_show ms (outside frames) | ws_start ms (outside frames) | input->anim start ms | input->first frame ms |
+13:06:50 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+13:06:50 | main #1 | resize | 38.64 | 38.64 | 63.00 | 1.71 | 4.22 | 1.00 | 5.72 | 5.79 | 25.70 | 25.70 | 0.00 | 0.00 | 0.00 | 0.00 | 0.00 | 0.03 | 0.98 | 0.04 | 2.00 | 9.50 | 25.20 | 3.10 | 0.00 | 0.00 | 0.00 | 0.00 | 0.00 | 9.30 | 0.00 | 0.00 | 0.00 | 0.00 | 0.33 | 46.64 |
+13:06:50 
+13:06:50 ## switch
+13:06:50 
+13:06:50 | label | scenario | command p50 ms | command p90 ms | frames | tick ms/frame | frame p90 ms | frames >2x budget | interval p50 ms | interval p90 ms | interval p99 ms | interval max ms (median burst) | peek_frame ms/frame | peek_draw ms/frame | peek_track ms/frame | peek_ring ms/frame | peek_backdrop ms/frame | session_overlays ms/frame | batch_commit ms/frame | ovl_region ms/frame | dwm_flush calls (in frames) | dwm_flush ms (outside frames) | cloak ms (outside frames) | session_begin ms (outside frames) | command ms (WM side) | peek_new ms (outside frames) | peek_cover ms (outside frames) | peek_handover ms (outside frames) | peek_raise ms (outside frames) | session_overlays ms (outside frames) | ws_surrogates ms (outside frames) | ws_park ms (outside frames) | ws_show ms (outside frames) | ws_start ms (outside frames) | input->anim start ms | input->first frame ms |
+13:06:50 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+13:06:50 | main #1 | switch | 34.61 | 34.61 | 96.00 | 1.07 | 0.87 | 2.00 | 5.72 | 5.75 | 62.68 | 62.68 | 0.00 | 0.00 | 0.00 | 0.00 | 0.00 | 0.00 | 0.00 | 0.01 | 3.00 | 6.00 | 0.00 | 0.00 | 0.00 | 0.00 | 0.00 | 0.00 | 0.00 | 0.00 | 0.00 | 0.00 | 0.00 | 0.00 | 0.00 | 0.00 |
+13:06:50 Done. Results are in C:\Users\googlers\AppData\Local\Temp\claude\C--Users-googlers-glazewm\8ea0075d-a938-4747-a9b2-e7220e3ef22f\scratchpad\bench\smoke-main.txt
