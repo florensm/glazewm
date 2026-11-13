@@ -32,6 +32,10 @@
 //!   it, rather than keeping them where they are, as `origin/main` does,
 //!   until the session loop moves them behind the surrogate.
 //!   `keepoverlays` is still accepted and changes nothing.
+//! - `slidepeeks`: have a scrolling layout's column drawn by a resting
+//!   peek, as it would reach onto another monitor, slide with the
+//!   workspace switch like its neighbours instead of resting through it
+//!   (`SWITCH_PEEKS_PLAN.md`).
 //!
 //! Read once per process.
 
@@ -53,6 +57,7 @@ pub struct Isolation {
   pub async_hand_back: bool,
   /// On unless `nokeepoverlays` is given.
   pub keep_overlays: bool,
+  pub slide_peeks: bool,
 }
 
 impl Default for Isolation {
@@ -66,6 +71,7 @@ impl Default for Isolation {
       more_peeks: false,
       async_hand_back: true,
       keep_overlays: true,
+      slide_peeks: false,
     }
   }
 }
@@ -90,6 +96,7 @@ impl Isolation {
         "morepeeks" => isolation.more_peeks = true,
         "noasynchandback" => isolation.async_hand_back = false,
         "nokeepoverlays" => isolation.keep_overlays = false,
+        "slidepeeks" => isolation.slide_peeks = true,
         _ => tracing::warn!("Unknown GLAZEWM_ISOLATE flag: {word}."),
       }
     }
@@ -132,6 +139,7 @@ mod tests {
         more_peeks: false,
         async_hand_back: true,
         keep_overlays: true,
+        slide_peeks: false,
       }
     );
     assert_eq!(Isolation::parse("peeks"), Isolation::default());
@@ -189,6 +197,18 @@ mod tests {
     assert_eq!(Isolation::parse("asynchandback"), Isolation::default());
     assert!(
       !Isolation::parse("asynchandback,noasynchandback").async_hand_back
+    );
+  }
+
+  #[test]
+  fn slide_peeks_is_off_unless_given() {
+    assert!(!Isolation::default().slide_peeks);
+    assert_eq!(
+      Isolation::parse("SlidePeeks"),
+      Isolation {
+        slide_peeks: true,
+        ..Isolation::default()
+      }
     );
   }
 
