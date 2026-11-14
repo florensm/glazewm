@@ -462,6 +462,148 @@ vignette's move and the wallpaper poll through existing helpers;
   surface goes once a surface is made for the new one (one window of the
   surrogate class per monitor in a window list).
 
+## Step 3: as built
+
+Branch `os/3-tiles`. Not seen running.
+
+Every tile move or resize `move_on_peek` hosts (`hosts_on_surface`) now
+goes on its monitor's surface: `PeekView::tenancy` falls back to a
+window of its own only if no surface can be made.
+
+### Today's order, and how it is kept
+
+Own-window peeks: each goes up just below its window, then the raise
+loop raises them in `peek_moves` order, the redraw loop's
+(`windows_to_update` by focus order, walked in reverse): of the tiles one
+command moves, the most recently focused ends on top. A later command's
+go over an earlier one's; a retarget raises nothing (step 2).
+
+On a surface, `Tenancy::rank` is that order (given as `move_tile` puts or
+reuses a tile), and new tiles register in it too. What breaks it: parts
+registered late (ring copy in the cover pass, fill and companion on
+ticks, ring cuts) and parts kept (ready peeks, a landing peek reused).
+
+- Every `Thumbnail` gets a process-wide sequence number as it is
+  registered (`Thumbnail::order`); `WindowPeek::stacking` is a peek's
+  first and last, spares included (held, they keep their place). So the
+  order on a surface is known exactly, not guessed from changed handles.
+- `out_of_order` (tested): in rank order, a tile with a thumbnail under
+  the last of a lower-ranked tile it may meet is registered anew whole
+  (`register_anew`, step 2's B.2, unchanged); one restacked then counts
+  as newest, so the higher ones meeting it follow.
+- May meet (`Entry::meets`, `lanes_meet`, tested): on one clock
+  (`WindowAnimationState::shares_clock`: same start instant or both yet
+  to start, same delay, duration, easing) unless `lanes_stay_apart`;
+  otherwise their lanes' hulls overlap, or either easing overshoots
+  (then always). A landed tile (`HandingBack`, `Releasing`) only where it
+  landed.
+- Checked at the end of `move_tile` (both paths), in `retarget_tile`
+  (lane now from the retargeted motion's start, so the one-clock test
+  holds), and at the end of `tick` and `track_overlays`, as in step 2.
+  Replaces step 2's handle records, `crossing_group` and `restacked`.
+- Cost: nothing for tiles in order or apart (neighbours resized on one
+  clock). A swap: one restack of the upper tile, after the cover pass
+  registered the lower one's ring copy over its window. Shown in a new
+  cross-cutting stage `restack`, with `perf_bench` columns `restack ms
+  (worst frame)` and `restack ms (outside frames)`.
+
+### Fallbacks removed
+
+| step 1 kept a tile off a surface when | which protected | now |
+|---|---|---|
+| its lane may meet a tenant's | stacking against late registrations | the rank-order restack above |
+| a tenant was started or on other timing | only the lane test's premise, one eased progress | `shares_clock` picks that test, the hull test otherwise |
+| the surface was raised since last empty | a joiner's still-shown window against the surface's place | below |
+
+A surface raised over its tenants can't go below a joiner's window (it
+would take tiles drawn over other windows under them), and above it the
+joiner's opaque backdrop copy would hide that window until its cloak.
+
+- `SurfaceWindow::admit` (`goes_below`, tested): not raised, as before.
+  Raised: never down; up to just below a joiner's window above it, so no
+  window between covers the joiner's copies once it is cloaked and before
+  the raise, which puts the surface there anyway.
+- Over a joiner's window below it, the joiner draws that window as it
+  is: its thumbnail at `WARM_UP_OPACITY` as today, and now its backdrop
+  copy too (`WindowPeek::warms_backdrop`, hosted peeks only), at full
+  again in `draw` at `take_over`, after the window's thumbnail (backdrop
+  last in, as `draw` has it). Not held instead: a held thumbnail is not
+  composited, and the warm-up is there so the first composition after
+  the cloak has content. The ring copy is drawn at full over the real
+  ring as today, which must be composited before the real one hides; the
+  fill shows only once `Shown`.
+- `restack_joining_overlays`: on a raised surface, joiners not yet
+  composited whose window is above it (after `admit`, only the highest)
+  get their shown overlays put behind it, as on one not raised.
+
+So from admission to the raise: warmed (window over its faint copies, or
+its faint copies over it), flush, `take_over` (thumbnail full, then
+backdrop full, then the window's alpha hidden, then the cloak), hand-over,
+raise. No frame shows neither (the thumbnail is full before anything of
+the window goes), none the opaque backdrop copy over the shown window.
+Hand-over steps are untouched (rule 5).
+
+`readypeeks`: a reused ready peek keeps its old orders, so it is
+restacked at `move_tile` if a lower-ranked tile it may meet registered
+anything after it, like any tenant.
+
+### Still on a window of its own
+
+- **A stack's window.** Its tab bar is a real window (`NativeStackTabBar`)
+  moved each frame by `sync_tab_bars` behind its stand-in (`stand_in`'s
+  anchor). Behind a surface it would be under every tile there, so a
+  stacked tile ranked on top would lose its bar under a lower one
+  crossing it, and lanes leave the bar out. Missing for a contained
+  change: a copy of the bar on the surface (a thumbnail of its window in
+  `OverlayCopies`, between window and ring, with a cover, park and reveal
+  hand-over like the ring's), lanes and ring reach taking in the bar, and
+  a resize that draws the tabs at the new width (a thumbnail stretches
+  their text: cells like the ring's, or the bar painted at the target).
+- State changes, trails, live peeks: unchanged (later steps; live by
+  design). `hold_on_peek`, `fullscreen_on_peek` never host.
+- No surface could be made.
+
+### Known differences on screen
+
+- An own-window peek (stack, live, trail, state change) raised between
+  two tenants of one surface ends above or below all of them: the surface
+  is at its last raised tenant's height.
+- A joiner below a raised surface: its ring copy (and faint thumbnail
+  and backdrop) are drawn over windows between it and the surface, and
+  over its window's shadow, from its first draw to the raise of the same
+  pass, which puts them there anyway.
+
+### Windows functions called by the new code
+
+All already called by `wm-platform`: `SetWindowPos` (`admit` moving a
+raised surface up), `GetWindow` (through `companion::is_above`, in
+`PeekSurface::is_below` and `admit`), `DwmRegisterThumbnail`,
+`DwmUpdateThumbnailProperties`, `DwmUnregisterThumbnail` (restacks,
+backdrop opacity).
+
+### To check on screen (`onesurface`, then `onesurface,readypeeks`)
+
+- Swap two tiles: both on one surface (one window of the surrogate class
+  in a window list), the focused one whole over the other all the way (no
+  ring or backdrop of the lower over the upper's window); a debug line
+  `Stacking ... over a tile it may cross` once per swap.
+- Move a tile across two others: the moved one, if focused, over both;
+  no ring cut through it.
+- Resize, then resize again before it lands: no blank, backdrop-only or
+  ring-less frame; neighbours not restacked (no debug line) unless
+  their rings meet in the gap.
+- A resize while the previous one is still landing: the new motion's
+  first frames show the tile, not its backdrop, and no frame without it;
+  a floating window between (focused after the first resize) not drawn
+  over the moving tile once it is cloaked.
+- A stacked tile: still its own peek with its bar, as `default`.
+- Two monitors: a swap on each, each surface on its own monitor, nothing
+  across the edge.
+- With `readypeeks`: swap, then swap back within 5 s: the reused peeks
+  stack as the first time; count the debug lines (a reused peek is
+  restacked only if a tile ranked below registered over it).
+  `restack` in the profiler stays near zero for resizes.
+
 ## Full translation (owner's decision, 2026-11-14)
 
 After steps 1 and 2, every stand-in the WM draws with documented
