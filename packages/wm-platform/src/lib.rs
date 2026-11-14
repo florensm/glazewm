@@ -42,6 +42,7 @@ mod overview_tab_bars;
 mod overview_thumbnails;
 mod paint;
 mod particles;
+mod peek_surface;
 pub mod perf;
 mod platform_event;
 mod platform_impl;
@@ -92,6 +93,7 @@ pub use particles::{
   ParticleBurst, ParticleEdges, ParticleEffects, ParticleLook,
   ParticleSource, ParticleStyle,
 };
+pub use peek_surface::PeekSurface;
 pub use platform_event::*;
 pub use resize_session::{
   sample_edge_color_async, EdgeColorCache, ResizeSession, SessionOptions,
