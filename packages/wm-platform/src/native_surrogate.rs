@@ -704,15 +704,16 @@ impl NativeSurrogate {
   /// no border inset, square corners and no stretch, just below
   /// `source_hwnd`.
   ///
-  /// The surface goes just below `source_hwnd` as `SurfaceWindow::admit`
-  /// decides. A failed registration leaves it without a thumbnail, as for
-  /// `create`.
+  /// The surface goes by `source_hwnd`, which `is_shown` or is cloaked, as
+  /// `SurfaceWindow::admit` decides. A failed registration leaves it
+  /// without a thumbnail, as for `create`.
   #[must_use]
   pub fn create_hosted(
     surface: &PeekSurface,
     source_hwnd: HWND,
     thumbnail_rect: &Rect,
     opacity: u8,
+    is_shown: bool,
   ) -> Self {
     let window = Rc::clone(surface.window());
     let border_inset = RECT::default();
@@ -739,7 +740,7 @@ impl NativeSurrogate {
     );
     drop(thumb_scope);
 
-    window.admit(source_hwnd);
+    window.admit(source_hwnd, is_shown);
 
     Self {
       host: Host::Shared(window),
@@ -882,6 +883,15 @@ impl NativeSurrogate {
   #[must_use]
   pub fn is_hosted(&self) -> bool {
     matches!(self.host, Host::Shared(_))
+  }
+
+  /// Keeps a hosted one's surface from going down from now on, as its
+  /// source window is cloaked under it (see `SurfaceWindow::hold_place`).
+  /// None for one of its own.
+  pub(crate) fn hold_place(&self) {
+    if let Host::Shared(window) = &self.host {
+      window.hold_place();
+    }
   }
 
   /// Whether its thumbnails are to be kept hidden: hosted and hidden.

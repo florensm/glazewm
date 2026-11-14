@@ -604,6 +604,136 @@ backdrop opacity).
   restacked only if a tile ranked below registered over it).
   `restack` in the profiler stays near zero for resizes.
 
+## Step 4: as built
+
+Branch `os/4-transits`. Not seen running.
+
+A tile of a tiling layout that opens, closes, minimizes or is restored
+on a pinned peek now draws on its monitor's surface when
+`hosts_transit` says so (`hosts_on_surface`, tested). Hand-over steps are
+untouched: each runs where it ran, on the surface or on nothing, as in
+step 1's table.
+
+### Today's order, found by reading
+
+| kind | steps | z-position of its own peek |
+|---|---|---|
+| open (`enter_on_peek`) | window cloaked since `manage_window`; peek up, drawn at the transit's start; `Frozen` step `Keep`, window moved behind its cloak; ticks draw `place_scaled`; ring made parked and concealed (`conceals_new_ring`); lands, `begin_hand_back`, uncloak (`Normal`), hand back | just below its new window, normally at the top; never raised (only a floating one, `peek_raises`). The pass's moved neighbours are raised after the loop, so they end over it; earlier passes' peeks are under it |
+| restore (`restore_on_peek`) | `restore_cloaked`, then as an open, or `turn_round` of a minimize still playing | raised to the top as it is drawn, inside the loop: under the pass's raises too |
+| close / minimize (`leave_on_peek`) | peek up warmed under the still-shown window, ring and backdrop handed over (`track_overlays`); a close's first tick takes over and cloaks it, a minimize's flush and take-over run before the caller minimizes; never handed back; dropped when its transit ends, then `WM_CLOSE` | just below its real window, never raised: under every peek raised before, and under everything raised later |
+| close during an open, close of a moving tile | the same entry turns `Leaving` where it is | kept |
+
+### Hosted
+
+- **Ranks** (`Rank`, tested): (raise pass, raised, order). Moves:
+  raised in their pass. Opens and restores (and a minimize turned
+  round): put on top in their pass, under its raises. A fresh leaving
+  tile: below every other (pass 0); several leaving ones stack in the
+  order they started. A tile turning round in place keeps its rank;
+  `turn_round` re-ranks as a restore. `set_raise_pass(false)` counts the
+  passes. Out-of-order registrations are restacked by step 3's
+  `out_of_order` and `register_anew`, so a close's neighbours are
+  registered anew over it if they were registered first (a close while
+  they move), and an open's neighbours moved earlier in the pass over
+  it (`enter` restacks at once, `track_overlays` again after the ring
+  copies).
+- **Lanes** (`Entry::lane`): a transit's tile is drawn within its
+  motion's rect for a zoom or fade, and within the rect plus where it
+  slides from for a slide (`transit_reach`, tested); a slide is never on
+  one clock with another tile. A held motion (start = target) never
+  overshoots, whatever its easing.
+- **Admission** (`admission`, tested): a shown window (a closing or
+  minimizing one, a restore the OS showed) as before; a cloaked one (an
+  open, a restore behind `restore_cloaked`) puts the surface just above
+  it, unless the surface is raised and above it already, and holds it
+  there (`hold_place`: never down from then on). Just above, not below:
+  the window shows nothing, and the hand-back (no raise for a hosted
+  peek) needs the surface over the window it uncloaks.
+- **Leaving**: warmed up as a step 3 joiner is (thumbnail and backdrop
+  copy at `WARM_UP_OPACITY`, ring copy at full over the real ring), so a
+  surface above the still-shown window draws nothing of it over that
+  window until `take_over` (thumbnail full, backdrop full, alpha hidden,
+  cloak, in that order). Then `hold_place`: nothing raises it, and a
+  later joiner must not take it down. When its transit ends its entry
+  drops, its thumbnails go, and the surface hides with its last drawing
+  tenant (`note_drawing`).
+- **Fades**: `place_scaled`'s `frac` reaches every copy of a hosted peek
+  as of its own: ring and backdrop opacities in `place_scaled`, the ring
+  in `carry_ring`, the backdrop at full times `frac` at `take_over` after
+  its warm-up, kept by restacks (`held_anew` copies each look).
+- **Ready peeks**: a leaving window's is dropped (`leave`); an entering
+  one has none (`enter` drops any, a restore's included: its window was
+  minimized since); one that entered and landed is kept as any tile's.
+
+### Still on a window of its own, and why
+
+- Floating windows (`opens_floating_on_peek`: their peek is raised in
+  its band, `peek_raises`), fullscreen ones, and any window not tiled:
+  the top band is step 6's.
+- A stack's window (step 3), a live peek, a scrolling column (step 5).
+- A tile whose workspace has a stack or a live tile (`beside_own_peek`):
+  that one's own peek and the surface stack by their last raise in the
+  pass, so the surface could end over it, and the entering or leaving
+  tile with it, where it must be under.
+- A close or minimize of a tile handing back (`HandingBack`,
+  `Releasing`): the old path's surrogate, as on own peeks
+  (`Leave::Unsupported`).
+
+### Edge cases
+
+- Closed while neighbours move on the surface: admitted under the
+  raised surface (stays), drawn faint until the tick's take-over,
+  neighbours restacked over it.
+- Several closing at once: each below the others already leaving.
+- Close during an open: turns round in place, rank kept. An open right
+  after a close in the same slot: ranks over the leaving tile.
+- Minimize then restore quickly: `turn_round` re-ranks it and restacks
+  it over the tiles it may meet, as its own peek's raise puts it.
+- Last window of a workspace: the surface hides as its transit ends.
+- Workspace switch mid-transit: entering tiles go with `drop_strays`,
+  leaving ones play on (not strays), as own peeks; `forget_all_leaving`
+  at shutdown drops them before the surfaces.
+- Two monitors: one surface per monitor clip, as for moves.
+
+### Known differences on screen
+
+- As for moves: once a neighbour's raise puts the surface on top, an
+  entering or leaving tile is drawn over windows that were above its own
+  peek (a floating window over a closing tile), and its ring copy over
+  windows between before its take-over.
+- Opens cost a restack of the neighbours moved before them in the pass
+  that meet them, twice when their ring copies register after the
+  open's (`restack` stage). An open ranked on top instead would cost
+  none but draw over its neighbours where today they cover it.
+
+### Windows functions called by the new code
+
+All already called by `wm-platform`: `SetWindowPos`, `GetWindow`,
+`GetWindowLongPtrW` (`window_class::place_above`, `companion::is_above`),
+`DwmGetWindowAttribute` (`is_cloaked`), `DwmRegisterThumbnail`,
+`DwmUpdateThumbnailProperties`, `DwmUnregisterThumbnail`, `ShowWindow`.
+
+### To check on screen (`GLAZEWM_ISOLATE=onesurface`)
+
+- Open a window among two tiles with each `window_open` style used
+  (the bench config's zoom, a fade, a slide): one surrogate-class window
+  per monitor in a window list, no peek of its own; neighbours cover the
+  opening tile where they still overlap it, as with `default`; border
+  and backdrop zoom and fade with it; no frame without it at the end.
+- Close a tile beside two others: it shrinks under its neighbours, never
+  over them; no frame where its window shows over its opaque copy, or
+  neither shows.
+- Close during an open: it turns round where it is.
+- Minimize and restore with `toggle-minimized`, then both within the
+  animation: it turns round with no jump, over its neighbours.
+- Close a tile while its neighbours still move from a resize: they stay
+  over it; one `Stacking ... over a tile it may cross` debug line each.
+- Close the last window of a workspace: it plays in full, and the
+  surface is hidden once it has gone.
+- Two monitors: an open on each, each on its own monitor's surface.
+- A stack on the workspace: opens and closes there keep their own
+  peeks, as `default`.
+
 ## Full translation (owner's decision, 2026-11-14)
 
 After steps 1 and 2, every stand-in the WM draws with documented
