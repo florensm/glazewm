@@ -1,6 +1,8 @@
 //! DWM thumbnails: live copies of one window drawn on another, which every
 //! stand-in, ring copy and overview preview the WM shows is made of.
 
+use std::sync::atomic::{AtomicU64, Ordering};
+
 use windows::Win32::{
   Foundation::{HWND, RECT},
   Graphics::Dwm::{
@@ -24,6 +26,9 @@ pub(crate) struct Look {
   pub visible: bool,
 }
 
+/// The [`Thumbnail::order`] of the next registration.
+static NEXT_ORDER: AtomicU64 = AtomicU64::new(0);
+
 /// A DWM thumbnail, unregistered on drop, which must come before its
 /// destination window is destroyed.
 ///
@@ -31,6 +36,7 @@ pub(crate) struct Look {
 /// unchanged one costs nothing.
 pub(crate) struct Thumbnail {
   handle: isize,
+  order: u64,
   look: Look,
   /// Whether it is kept hidden whatever `look` says, as the stand-in it
   /// belongs to is hidden on a window it shares (see `PeekSurface`).
@@ -66,7 +72,13 @@ impl Thumbnail {
     // SAFETY: Registration fails for anything but two valid top-level
     // windows.
     let handle = unsafe { DwmRegisterThumbnail(dest, source) }.ok()?;
-    let thumbnail = Self { handle, look, held };
+    let order = NEXT_ORDER.fetch_add(1, Ordering::Relaxed);
+    let thumbnail = Self {
+      handle,
+      order,
+      look,
+      held,
+    };
 
     let mut flags = DWM_TNP_RECTDESTINATION
       | DWM_TNP_OPACITY
@@ -85,9 +97,10 @@ impl Thumbnail {
     &self.look
   }
 
-  /// DWM's handle of it, new with each registration.
-  pub fn handle(&self) -> isize {
-    self.handle
+  /// When it was registered, against every other thumbnail: one of two on
+  /// a destination with the higher order is drawn over the other.
+  pub fn order(&self) -> u64 {
+    self.order
   }
 
   /// A second thumbnail of `source` on `dest` showing what this one does,

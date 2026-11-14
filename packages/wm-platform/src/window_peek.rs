@@ -144,8 +144,8 @@ impl WindowPeek {
 
   /// Creates a hidden peek of `window`, which is at `rect`, drawn on
   /// `surface` as a pinned one spanning its clip is on a window of its
-  /// own. `surface` must take tenants (see `PeekSurface::takes_tenants`),
-  /// and goes below `window`, which still shows, unless it is already.
+  /// own. `surface` goes just below `window`, which still shows, as
+  /// `SurfaceWindow::admit` decides.
   #[must_use]
   pub fn hosted(
     window: &NativeWindow,
@@ -205,8 +205,8 @@ impl WindowPeek {
   /// `rect`, for a new motion as [`hosted`](Self::hosted) makes one anew,
   /// before [`carry_styles`](Self::carry_styles) with `styles`: every
   /// field as there, every registration kept while what it was made from
-  /// holds, and back on its surface, below `window` unless it is
-  /// already.
+  /// holds, and back on its surface, which goes just below `window` as
+  /// `SurfaceWindow::admit` decides.
   ///
   /// A tile's registrations stack backdrop, window, fill, ring. Those
   /// kept keep their order; a window thumbnail or backdrop registered
@@ -252,16 +252,21 @@ impl WindowPeek {
     self.stands_by = false;
   }
 
-  /// DWM's handles of every thumbnail it draws, which change whenever any
-  /// of them is registered anew.
+  /// The first and last registration orders of the thumbnails it has on
+  /// the window it draws on, those held included: it draws wholly over
+  /// another peek there whose last is below its first. `None` with none.
   #[must_use]
-  pub fn registrations(&self) -> Vec<isize> {
+  pub fn stacking(&self) -> Option<(u64, u64)> {
     self
       .surrogate
-      .thumbnail_handle()
+      .thumbnail_order()
       .into_iter()
-      .chain(self.copies.handles())
-      .collect()
+      .chain(self.copies.orders())
+      .fold(None, |span, order| {
+        Some(span.map_or((order, order), |(first, last): (u64, u64)| {
+          (first.min(order), last.max(order))
+        }))
+      })
   }
 
   /// Registers every thumbnail of the peek anew, over everything on the
@@ -487,7 +492,8 @@ impl WindowPeek {
 
   /// Draws the window too faint to see until
   /// [`take_over`](Self::take_over), under its real window that still
-  /// shows, while DWM warms the thumbnail up.
+  /// shows, while DWM warms the thumbnail up; a hosted one's backdrop copy
+  /// too (see [`warms_backdrop`](Self::warms_backdrop)).
   pub fn warm_up(&mut self) {
     self.draw(Drawn::WarmingUp);
   }
@@ -599,13 +605,36 @@ impl WindowPeek {
   /// two then shows the window twice, over the real one under the peek,
   /// rather than not at all, hidden by the opaque copy.
   fn draw(&mut self, drawn: Drawn) {
+    let warmed_backdrop = self.warms_backdrop();
     self.drawn = drawn;
     if drawn == Drawn::HandedBack {
       self.apply_backdrop();
       self.surrogate.set_window_opacity(self.window_opacity());
     } else {
       self.surrogate.set_window_opacity(self.window_opacity());
+      if warmed_backdrop && !self.warms_backdrop() {
+        self
+          .copies
+          .set_backdrop_opacity(scale_alpha(u8::MAX, self.frac));
+      }
       self.apply_backdrop();
+    }
+  }
+
+  /// Whether the backdrop copy is drawn too faint to see while the window
+  /// warms up: a hosted one's, whose surface may be above the real window
+  /// still shown, which the opaque copy would hide.
+  fn warms_backdrop(&self) -> bool {
+    self.drawn == Drawn::WarmingUp && self.is_hosted()
+  }
+
+  /// The opacity the backdrop copy is drawn at, `opacity` unless it warms
+  /// up (see [`warms_backdrop`](Self::warms_backdrop)).
+  fn backdrop_opacity(&self, opacity: u8) -> u8 {
+    if self.warms_backdrop() {
+      WARM_UP_OPACITY
+    } else {
+      opacity
     }
   }
 
@@ -693,7 +722,11 @@ impl WindowPeek {
     self.surrogate.set_thumbnail_rects(rc_src, rc_dst);
     self.surrogate.set_window_opacity(self.window_opacity());
     self.copies.place(frame, clip, origin);
-    self.copies.set_opacity(scale_alpha(u8::MAX, self.frac));
+    let opacity = scale_alpha(u8::MAX, self.frac);
+    self.copies.set_ring_opacity(opacity);
+    self
+      .copies
+      .set_backdrop_opacity(self.backdrop_opacity(opacity));
     self.set_shown(true);
     self.visible_rect = Some(visible);
   }
@@ -747,7 +780,9 @@ impl WindowPeek {
     self.surrogate.set_window_opacity(self.window_opacity());
     self.copies.place(rect, clip, origin);
     self.copies.cover_ring();
-    self.copies.set_backdrop_opacity(u8::MAX);
+    self
+      .copies
+      .set_backdrop_opacity(self.backdrop_opacity(u8::MAX));
     self.set_shown(true);
     self.visible_rect = Some(visible);
     cover
@@ -791,7 +826,9 @@ impl WindowPeek {
     // In this order, so a composition landing mid-run shows an edge a
     // frame late rather than a hole: backdrop, fill, content, ring.
     self.copies.place_backdrop(rect, Some(&drawn), clip, origin);
-    self.copies.set_backdrop_opacity(u8::MAX);
+    self
+      .copies
+      .set_backdrop_opacity(self.backdrop_opacity(u8::MAX));
     self.copies.place_fill(&drawn, Some(covered), clip, origin);
     self.copies.set_fill_opacity(u8::MAX);
     match content {
@@ -875,7 +912,9 @@ impl WindowPeek {
       self.copies.set_opacity(WARM_UP_OPACITY);
     } else {
       self.copies.cover_ring();
-      self.copies.set_backdrop_opacity(u8::MAX);
+      self
+        .copies
+        .set_backdrop_opacity(self.backdrop_opacity(u8::MAX));
     }
     self.set_shown(true);
 

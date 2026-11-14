@@ -1294,25 +1294,24 @@ impl OverlayCopies {
     self.spare_fill = None;
   }
 
-  /// DWM's handles of the copies drawn, new with each registration.
-  pub(crate) fn handles(&self) -> Vec<isize> {
+  /// The registration orders (see `Thumbnail::order`) of every copy
+  /// registered, those set aside too: held, they still stack where they
+  /// were registered.
+  pub(crate) fn orders(&self) -> impl Iterator<Item = u64> + '_ {
     let backdrop = self.backdrop.iter().flat_map(|backdrop| {
       backdrop.thumbnails().map(|(thumbnail, _)| thumbnail)
     });
-    let fill = self
+    let fills = self
       .fill
       .iter()
+      .chain(&self.spare_fill)
       .flat_map(|fill| [&fill.right, &fill.bottom]);
-    let ring = self
-      .ring
-      .iter()
-      .flat_map(|ring| ring.parts.iter().map(|(_, thumbnail)| thumbnail));
+    let rings =
+      self.ring.iter().chain(&self.spare_ring).flat_map(|ring| {
+        ring.parts.iter().map(|(_, thumbnail)| thumbnail)
+      });
 
-    backdrop
-      .chain(fill)
-      .chain(ring)
-      .map(Thumbnail::handle)
-      .collect()
+    backdrop.chain(fills).chain(rings).map(Thumbnail::order)
   }
 
   /// Second thumbnails of the backdrop's, registered held on `dest` over

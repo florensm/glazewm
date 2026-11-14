@@ -190,18 +190,14 @@ pub(super) struct Entry {
 /// Tenants of one surface stack in the order their thumbnails were
 /// registered, and a tenant registers some late (its ring copy as its
 /// overlays are tracked, its fill and companion on its first ticks), over
-/// the others' windows. So only tiles that never overlap share a surface
-/// (see [`lanes_stay_apart`]); one brought across another by a later
-/// command is stacked whole again (see `PeekView::stack_crossing`).
+/// the others' windows. So one drawn under a lower-ranked one its path may
+/// meet is stacked whole again (see `PeekView::restack_crossings`).
 struct Tenancy {
   reach: Reach,
   lane: Lane,
   /// The order its tile was put on top in, as a peek of its own is raised
   /// in: by each command that moves it, not by one that retargets it.
   rank: u64,
-  /// While its lane crosses another tenant's: its peek's registrations
-  /// when it was last stacked whole over the tenants ranked below it.
-  crossing: Option<Vec<isize>>,
 }
 
 /// What a tile's peek draws around its rect: its visible frame, inside the
@@ -237,6 +233,14 @@ impl Lane {
   /// All it may reach on the way, unless its easing overshoots.
   fn hull(&self) -> Rect {
     self.from.union(&self.to)
+  }
+
+  /// The lane of a tile that has landed at its end.
+  fn landed(&self) -> Self {
+    Self {
+      from: self.to.clone(),
+      to: self.to.clone(),
+    }
   }
 }
 
@@ -405,6 +409,33 @@ impl Entry {
     &mut self,
   ) -> impl Iterator<Item = (&mut WindowPeek, &Rect)> {
     peeks_of(&mut self.peek, &self.clip, self.trail.as_mut())
+  }
+
+  /// Whether its tile and `other`'s, both on a surface, may overlap from
+  /// now on (see [`lanes_meet`]): one that landed only where it did.
+  fn meets(&self, other: &Self) -> bool {
+    let is_moving =
+      |entry: &Self| matches!(entry.role, Role::Moving { .. });
+    let lane = |entry: &Self| {
+      entry.tenancy.as_ref().map(|tenancy| {
+        if is_moving(entry) {
+          tenancy.lane.clone()
+        } else {
+          tenancy.lane.landed()
+        }
+      })
+    };
+    let (Some(a), Some(b)) = (lane(self), lane(other)) else {
+      return false;
+    };
+
+    let same_clock = is_moving(self)
+      && is_moving(other)
+      && self.motion.shares_clock(&other.motion);
+    let overshoots = [self, other].into_iter().any(|entry| {
+      is_moving(entry) && entry.motion.easing.can_overshoot()
+    });
+    lanes_meet(&a, &b, same_clock, overshoots)
   }
 
   /// Draws its window's ring along with it on each of its peeks (see
@@ -957,11 +988,11 @@ fn allows_motion(live: bool, more_peeks: bool) -> bool {
 }
 
 /// Whether a tile [`move_on_peek`] puts on a peek is drawn on its
-/// monitor's `PeekSurface` (`onesurface`), if one takes it: a move or
-/// resize by command. Not a crossing between floating and tiling, whose
-/// peek goes to its own band, a stack's window, whose tab bar is a window
-/// of its own behind its stand-in, one drawn on two monitors, nor a live
-/// peek, which moves with its window.
+/// monitor's `PeekSurface` (`onesurface`): a move or resize by command.
+/// Not a crossing between floating and tiling, whose peek goes to its own
+/// band, a stack's window, whose tab bar is a window of its own behind its
+/// stand-in that a surface could only put under every tile on it, one
+/// drawn on two monitors, nor a live peek, which moves with its window.
 // Independent conditions, each keeping a tile on a peek of its own.
 #[allow(clippy::fn_params_excessive_bools)]
 fn hosts_on_surface(
@@ -1135,36 +1166,58 @@ fn is_stale_surface(
   is_unused && !monitor_clips.contains(clip)
 }
 
-/// The tenants of one surface, by their lanes' hulls, whose paths may
-/// cross the one at `start`'s, directly or through one another: their
-/// indices, `start` first.
-fn crossing_group(hulls: &[Rect], start: usize) -> Vec<usize> {
-  let mut group = vec![start];
-  let mut next = 0;
-  while let Some(&at) = group.get(next) {
-    next += 1;
-    for (index, hull) in hulls.iter().enumerate() {
-      if !group.contains(&index)
-        && hulls
-          .get(at)
-          .is_some_and(|other| other.intersection(hull).is_some())
-      {
-        group.push(index);
-      }
-    }
+/// Whether two tiles drawn along lanes `a` and `b` may overlap: on one
+/// clock, unless [`lanes_stay_apart`]; otherwise wherever their hulls
+/// meet, or anywhere if either easing `overshoots` past its ends.
+fn lanes_meet(
+  a: &Lane,
+  b: &Lane,
+  same_clock: bool,
+  overshoots: bool,
+) -> bool {
+  if same_clock {
+    !lanes_stay_apart(a, b, overshoots)
+  } else {
+    overshoots || a.hull().intersection(&b.hull()).is_some()
   }
-  group
 }
 
-/// Of crossing tenants in rank order, whether each registered anything
-/// since it was last stacked, those to register anew, in that order, so
-/// each draws whole over those ranked below it: every one ranked above
-/// the lowest that did.
-fn restacked(changed: &[bool]) -> std::ops::Range<usize> {
-  changed
+/// Of the tiles on one surface in rank order, by the first and last
+/// registration orders of their thumbnails there (see
+/// `WindowPeek::stacking`), those to register anew, in that order, so each
+/// draws wholly over every lower-ranked one that `meets` it (by their
+/// indices, lower first): each with a thumbnail under one of such a
+/// tile's, as that tile is then, re-registered ones included.
+fn out_of_order(
+  spans: &[Option<(u64, u64)>],
+  meets: impl Fn(usize, usize) -> bool,
+) -> Vec<usize> {
+  let mut spans = spans.to_vec();
+  let mut next = spans
     .iter()
-    .position(|changed| *changed)
-    .map_or(0..0, |lowest| lowest + 1..changed.len())
+    .flatten()
+    .map(|(_, last)| last + 1)
+    .max()
+    .unwrap_or_default();
+  let mut restacked = Vec::new();
+
+  for upper in 0..spans.len() {
+    let Some(Some((first, _))) = spans.get(upper).copied() else {
+      continue;
+    };
+    let is_under =
+      spans.iter().take(upper).enumerate().any(|(lower, span)| {
+        span.is_some_and(|(_, last)| last > first) && meets(lower, upper)
+      });
+    if is_under {
+      if let Some(span) = spans.get_mut(upper) {
+        *span = Some((next, next));
+      }
+      next += 1;
+      restacked.push(upper);
+    }
+  }
+  restacked
 }
 
 /// Peeks of the columns of displayed scrolling layouts.
@@ -2046,7 +2099,8 @@ impl PeekView {
       let place_scope = perf::scope(Stage::PeekPlace);
       entry.draw(from, now, batch);
       drop(place_scope);
-      self.stack_crossing(&id);
+      // Its registrations kept, it may be under tiles now ranked below it.
+      self.restack_crossings();
       return true;
     }
 
@@ -2103,18 +2157,24 @@ impl PeekView {
     drop(place_scope);
     // A landing one it replaces goes now, as this one is drawn.
     self.entries.insert(id, entry);
+    // A ready peek's kept registrations may be under tiles ranked below
+    // it; a new one's are over every other.
+    self.restack_crossings();
 
     true
   }
 
   /// The surface a new peek of `window`, a tile moving by `motion` cut at
   /// `clip`, is drawn on, by its index in `surfaces`, made if there is
-  /// none, and where it draws there. `None` if it isn't to share one: the
-  /// surface was raised over its tenants' windows since it was last empty
-  /// (see `PeekSurface::takes_tenants`), a tenant's clock is running
-  /// already or on another timing, or the two may overlap (see
-  /// [`lanes_stay_apart`]). Making one drops the unused surfaces whose
-  /// clip is none of `monitor_clips` (see [`is_stale_surface`]).
+  /// none, and where it draws there, ranked over every tile on it. `None`
+  /// only if no surface could be made. Making one drops the unused
+  /// surfaces whose clip is none of `monitor_clips` (see
+  /// [`is_stale_surface`]).
+  ///
+  /// It joins whatever its surface's tenants are doing: a surface raised
+  /// already stays above them (see `SurfaceWindow::admit`), and one
+  /// drawn under a lower-ranked tile it may meet is stacked over it (see
+  /// [`restack_crossings`](Self::restack_crossings)).
   fn tenancy(
     &mut self,
     window: &WindowContainer,
@@ -2153,156 +2213,87 @@ impl PeekView {
         }
       },
     };
-    let surface = self.surfaces.get(index)?;
-    if !surface.takes_tenants() {
-      return None;
-    }
-
-    let overshoots = motion.easing.can_overshoot();
-    let shares = self
-      .entries
-      .values()
-      .filter(|entry| entry.peek.hwnd() == surface.hwnd())
-      .all(|entry| {
-        entry.tenancy.as_ref().is_some_and(|tenancy| {
-          !entry.motion.is_running()
-            && entry.motion.duration == motion.duration
-            && entry.motion.easing == motion.easing
-            && lanes_stay_apart(&lane, &tenancy.lane, overshoots)
-        })
-      });
-
-    if !shares {
-      return None;
-    }
 
     let rank = self.next_rank;
     self.next_rank += 1;
-    Some((
-      index,
-      Tenancy {
-        reach,
-        lane,
-        rank,
-        crossing: None,
-      },
-    ))
+    Some((index, Tenancy { reach, lane, rank }))
   }
 
-  /// Has `window_id`'s hosted peek, set on a new path by a later command,
-  /// and the tiles on its surface that path may bring it across, stack
-  /// whole in rank order from now on, as peeks of their own would: their
-  /// copies otherwise stack in the order registered (see [`Tenancy`]).
-  fn stack_crossing(&mut self, window_id: &Uuid) {
-    let Some(hwnd) = self
-      .entries
-      .get(window_id)
-      .filter(|entry| entry.tenancy.is_some())
-      .map(|entry| entry.peek.hwnd())
-    else {
-      return;
-    };
-
-    let (ids, hulls): (Vec<Uuid>, Vec<Rect>) = self
-      .entries
-      .iter()
-      .filter(|(_, entry)| entry.peek.hwnd() == hwnd)
-      .filter_map(|(id, entry)| {
-        Some((*id, entry.tenancy.as_ref()?.lane.hull()))
-      })
-      .unzip();
-    let Some(start) = ids.iter().position(|id| id == window_id) else {
-      return;
-    };
-    let group = crossing_group(&hulls, start);
-    if group.len() < 2 {
-      return;
-    }
-
-    tracing::debug!(
-      "{window_id} may cross {} other tiles on its peek surface.",
-      group.len() - 1
-    );
-    for index in group {
-      let tenancy = ids
-        .get(index)
-        .and_then(|id| self.entries.get_mut(id))
-        .and_then(|entry| entry.tenancy.as_mut());
-      // Not stacked yet: an empty record never matches its registrations.
-      if let Some(tenancy) =
-        tenancy.filter(|tenancy| tenancy.crossing.is_none())
-      {
-        tenancy.crossing = Some(Vec::new());
-      }
-    }
-    self.restack_crossings();
-  }
-
-  /// Registers anew, in rank order, the crossing tenants of each surface
-  /// that some lower-ranked one may have registered a part over since they
-  /// were last stacked (see [`restacked`]), so each tile draws whole over
-  /// those ranked below it. Each part goes up before the one it replaces
-  /// goes (see `WindowPeek::register_anew`). Free while none cross.
+  /// Registers anew, in rank order, each tile on a surface drawn under a
+  /// lower-ranked one its path may meet (see [`out_of_order`]), so each
+  /// draws whole over those ranked below it, as peeks of their own raised
+  /// in that order would. Each part goes up before the one it replaces
+  /// goes (see `WindowPeek::register_anew`). Called wherever a tile may
+  /// have registered something or been set on a new path.
   pub(super) fn restack_crossings(&mut self) {
-    let mut crossing = self
+    let mut tenants = self
       .entries
       .iter()
       .filter_map(|(id, entry)| {
-        let tenancy = entry.tenancy.as_ref()?;
-        tenancy
-          .crossing
-          .as_ref()
-          .map(|_| (entry.peek.hwnd(), tenancy.rank, *id))
+        let rank = entry.tenancy.as_ref()?.rank;
+        Some((entry.peek.hwnd().0, rank, *id))
       })
       .collect::<Vec<_>>();
-    if crossing.is_empty() {
+    if tenants.len() < 2 {
       return;
     }
-    crossing.sort_by_key(|(hwnd, rank, _)| (hwnd.0, *rank));
+    tenants.sort_by_key(|(hwnd, rank, _)| (*hwnd, *rank));
 
-    for group in crossing.chunk_by(|a, b| a.0 == b.0) {
-      let changed = group
+    for group in tenants.chunk_by(|a, b| a.0 == b.0) {
+      let members = group
         .iter()
-        .map(|(_, _, id)| {
-          self.entries.get(id).is_some_and(|entry| {
-            entry.tenancy.as_ref().and_then(|t| t.crossing.as_ref())
-              != Some(&entry.peek.registrations())
-          })
-        })
+        .filter_map(|(_, _, id)| Some((*id, self.entries.get(id)?)))
         .collect::<Vec<_>>();
+      let spans = members
+        .iter()
+        .map(|(_, entry)| entry.peek.stacking())
+        .collect::<Vec<_>>();
+      let restacked = out_of_order(&spans, |lower, upper| {
+        match (members.get(lower), members.get(upper)) {
+          (Some((_, lower)), Some((_, upper))) => lower.meets(upper),
+          _ => false,
+        }
+      })
+      .into_iter()
+      .filter_map(|index| members.get(index).map(|(id, _)| *id))
+      .collect::<Vec<_>>();
+      if restacked.is_empty() {
+        continue;
+      }
 
-      for (_, _, id) in group.get(restacked(&changed)).unwrap_or_default()
-      {
-        if let Some(entry) = self.entries.get_mut(id) {
+      let _scope = perf::scope(Stage::Restack);
+      for id in restacked {
+        tracing::debug!("Stacking {id}'s peek over a tile it may cross.");
+        if let Some(entry) = self.entries.get_mut(&id) {
           if !entry.peek.register_anew() {
             tracing::warn!("Failed to stack {id}'s peek over another.");
           }
         }
       }
-      for (_, _, id) in group {
-        if let Some(entry) = self.entries.get_mut(id) {
-          let registrations = entry.peek.registrations();
-          if let Some(tenancy) = &mut entry.tenancy {
-            tenancy.crossing = Some(registrations);
-          }
-        }
-      }
     }
   }
 
-  /// The tiles on surfaces not raised yet since they were last empty,
-  /// i.e. joining them, with their surface's window.
+  /// The tiles joining surfaces whose windows, still shown, are above
+  /// their surface, with its window: every tile on one not raised since
+  /// it was last empty, which went below the lowest of their windows, and
+  /// on a raised one, those yet to be composited whose window it is below
+  /// (see `SurfaceWindow::admit`).
   fn joining_tenants(&self) -> Vec<(Uuid, HWND)> {
     self
       .surfaces
       .iter()
-      .filter(|surface| surface.takes_tenants() && !surface.is_empty())
+      .filter(|surface| !surface.is_empty())
       .flat_map(|surface| {
         self
           .entries
           .iter()
           .filter(move |(_, entry)| {
-            entry.tenancy.is_some() && entry.peek.hwnd() == surface.hwnd()
+            entry.tenancy.is_some()
+              && entry.peek.hwnd() == surface.hwnd()
+              && (!surface.is_raised()
+                || (!entry.composited
+                  && matches!(entry.role, Role::Moving { .. })
+                  && surface.is_below(entry.peek.source())))
           })
           .map(move |(id, _)| (*id, surface.hwnd()))
       })
@@ -2644,12 +2635,13 @@ impl PeekView {
       now,
     );
     let is_hosted = entry.tenancy.as_mut().is_some_and(|tenancy| {
-      tenancy.lane =
-        tenancy.reach.lane(&entry.rect, &entry.motion.target_rect);
+      tenancy.lane = tenancy
+        .reach
+        .lane(&entry.motion.start_rect, &entry.motion.target_rect);
       true
     });
     if is_hosted {
-      self.stack_crossing(window_id);
+      self.restack_crossings();
     }
     true
   }
@@ -3482,7 +3474,8 @@ pub fn cover_moved_overlays(state: &mut WmState, config: &UserConfig) {
 }
 
 /// Puts the shown overlays of the tiles that joined a `PeekSurface` this
-/// pass directly behind it. It went below the lowest of their windows
+/// pass, with their windows above it, directly behind it (see
+/// `PeekView::joining_tenants`). It went below the lowest of their windows
 /// (see `WindowPeek::hosted`), maybe under the overlays of higher ones,
 /// which would cover their copies there once their windows are cloaked,
 /// until it is raised.
@@ -4402,17 +4395,17 @@ mod tests {
 
   use super::{
     allows_motion, carries_fill_early, conceals_new_ring,
-    crosses_floating, crossing_group, evicted, floating_peek_raise,
-    follow_duration, follows_tile, fullscreen_peek_raise, has_landed,
-    has_left, hosts_on_surface, is_departed, is_peek_resize, is_pure_move,
+    crosses_floating, evicted, floating_peek_raise, follow_duration,
+    follows_tile, fullscreen_peek_raise, has_landed, has_left,
+    hosts_on_surface, is_departed, is_peek_resize, is_pure_move,
     is_ready_expired, is_stale_surface, is_stray, keeps_ready,
-    kept_transit, lands_on_trail, lanes_stay_apart, leaves_as,
-    leaving_transit, move_clips, peek_resize, resizes_at_start, restacked,
-    restretched, retargeted_motion, returning_transit, sampled_size,
-    settling, state_change_peek_raise, state_change_resize, take_left,
-    takes_ready, toggles_tile_fullscreen, visible_frame, Hold, Lane,
-    PeekRaise, PeekResize, ReadyFit, Role, Stretch, FILL_LANDING_WAIT,
-    HOLD_RELEASE_WAIT, READY_LIFETIME, STRETCH_SETTLE,
+    kept_transit, lands_on_trail, lanes_meet, lanes_stay_apart, leaves_as,
+    leaving_transit, move_clips, out_of_order, peek_resize,
+    resizes_at_start, restretched, retargeted_motion, returning_transit,
+    sampled_size, settling, state_change_peek_raise, state_change_resize,
+    take_left, takes_ready, toggles_tile_fullscreen, visible_frame, Hold,
+    Lane, PeekRaise, PeekResize, ReadyFit, Role, Stretch,
+    FILL_LANDING_WAIT, HOLD_RELEASE_WAIT, READY_LIFETIME, STRETCH_SETTLE,
   };
   use crate::animation::{
     state::WindowAnimationState,
@@ -4521,28 +4514,58 @@ mod tests {
     assert!(!is_stale_surface(true, &monitor, &monitors));
   }
 
-  /// Tiles cross a path when their lanes meet it, or meet one that does.
+  /// On one clock, only lanes that don't stay apart meet; otherwise any
+  /// whose hulls overlap, and any at all past an overshooting easing.
   #[test]
-  fn a_crossing_takes_in_every_tile_its_path_meets() {
-    let hulls = [
-      Rect::from_ltrb(0, 0, 1000, 500),
-      Rect::from_ltrb(900, 0, 1400, 500),
-      Rect::from_ltrb(1300, 0, 1900, 500),
-      Rect::from_ltrb(0, 600, 1900, 1000),
-    ];
+  fn lanes_meet_where_their_tiles_may_overlap() {
+    let left = lane((0, 0, 500, 900), (0, 0, 700, 900));
+    let right = lane((510, 0, 1000, 900), (710, 0, 1000, 900));
+    let below = lane((0, 1000, 500, 1400), (0, 1000, 500, 1400));
 
-    assert_eq!(crossing_group(&hulls, 0), vec![0, 1, 2]);
-    assert_eq!(crossing_group(&hulls, 3), vec![3]);
+    assert!(!lanes_meet(&left, &right, true, false));
+    assert!(lanes_meet(&left, &right, false, false));
+    assert!(!lanes_meet(&left, &below, false, false));
+    assert!(lanes_meet(&left, &below, false, true));
+    assert!(!lanes_meet(&left.landed(), &right.landed(), false, false));
   }
 
-  /// Tenants above the lowest one that registered anything are registered
-  /// anew; none if none did.
+  /// A tile under part of a lower-ranked one it meets goes over it, and
+  /// then over it every higher one it meets; ones in order, or apart,
+  /// stay.
   #[test]
-  fn tenants_over_a_changed_one_are_restacked() {
-    assert_eq!(restacked(&[false, true, false, false]), 2..4);
-    assert_eq!(restacked(&[true, true]), 1..2);
-    assert_eq!(restacked(&[false, false, true]), 3..3);
-    assert_eq!(restacked(&[false, false]), 0..0);
+  fn tiles_under_lower_ranked_ones_they_meet_are_restacked() {
+    let all = |_: usize, _: usize| true;
+    let none = |_: usize, _: usize| false;
+
+    // Registered in rank order: nothing to do.
+    let in_order = [Some((0, 3)), Some((4, 6)), Some((7, 9))];
+    assert!(out_of_order(&in_order, all).is_empty());
+
+    // The lowest's ring registered over the others' windows.
+    let late_ring = [Some((0, 12)), Some((4, 6)), Some((7, 9))];
+    assert_eq!(out_of_order(&late_ring, all), vec![1, 2]);
+    assert!(out_of_order(&late_ring, none).is_empty());
+    // Only those meeting the lowest go.
+    assert_eq!(
+      out_of_order(&late_ring, |lower, _| lower == 0),
+      vec![1, 2]
+    );
+    assert_eq!(
+      out_of_order(&late_ring, |lower, upper| (lower, upper) == (0, 2)),
+      vec![2]
+    );
+
+    // A reused one ranked on top with registrations kept from before.
+    let reused = [Some((5, 9)), Some((0, 3))];
+    assert_eq!(out_of_order(&reused, all), vec![1]);
+
+    // One restacked goes over the ones above that meet it.
+    let chain = [Some((0, 5)), Some((3, 4)), Some((6, 8))];
+    assert_eq!(
+      out_of_order(&chain, |lower, upper| upper == lower + 1),
+      vec![1, 2]
+    );
+    assert!(out_of_order(&[None, Some((0, 1))], all).is_empty());
   }
 
   /// A gap that changes holds for a progress in 0..1 only, and by a pixel
