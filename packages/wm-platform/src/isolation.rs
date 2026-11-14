@@ -47,6 +47,11 @@
 //!   them.
 //! - `keepfills`: keep up to 8 unused fill sources, one per edge color,
 //!   rather than 2, so a burst's peeks find theirs already made.
+//! - `onesurface`: draw a tile that moves or resizes by command on its
+//!   monitor's `PeekSurface`, one window shared by such tiles, rather than
+//!   on a peek window of its own (`ONE_SURFACE_PLAN.md`).
+//! - `readypeeks`: with `onesurface`: a landed tile's thumbnails stay
+//!   registered, hidden, for its next motion.
 //!
 //! Read once per process.
 
@@ -73,6 +78,8 @@ pub struct Isolation {
   pub late_alpha: bool,
   pub early_fill: bool,
   pub keep_fills: bool,
+  pub one_surface: bool,
+  pub ready_peeks: bool,
 }
 
 impl Default for Isolation {
@@ -90,6 +97,8 @@ impl Default for Isolation {
       late_alpha: false,
       early_fill: false,
       keep_fills: false,
+      one_surface: false,
+      ready_peeks: false,
     }
   }
 }
@@ -119,6 +128,8 @@ impl Isolation {
         "latealpha" => isolation.late_alpha = true,
         "earlyfill" => isolation.early_fill = true,
         "keepfills" => isolation.keep_fills = true,
+        "onesurface" => isolation.one_surface = true,
+        "readypeeks" => isolation.ready_peeks = true,
         _ => tracing::warn!("Unknown GLAZEWM_ISOLATE flag: {word}."),
       }
     }
@@ -165,6 +176,8 @@ mod tests {
         late_alpha: false,
         early_fill: false,
         keep_fills: false,
+        one_surface: false,
+        ready_peeks: false,
       }
     );
     assert_eq!(Isolation::parse("peeks"), Isolation::default());
@@ -253,6 +266,22 @@ mod tests {
         ..Isolation::default()
       }
     );
+  }
+
+  #[test]
+  fn one_surface_words_are_off_unless_given() {
+    let isolation = Isolation::default();
+    assert!(!isolation.one_surface);
+    assert!(!isolation.ready_peeks);
+    assert_eq!(
+      Isolation::parse("OneSurface readypeeks"),
+      Isolation {
+        one_surface: true,
+        ready_peeks: true,
+        ..Isolation::default()
+      }
+    );
+    assert_eq!(Isolation::parse("one_surface"), Isolation::default());
   }
 
   #[test]
