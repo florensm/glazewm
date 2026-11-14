@@ -85,6 +85,18 @@ impl Thumbnail {
     &self.look
   }
 
+  /// DWM's handle of it, new with each registration.
+  pub fn handle(&self) -> isize {
+    self.handle
+  }
+
+  /// A second thumbnail of `source` on `dest` showing what this one does,
+  /// registered held and so stacked above this one (see
+  /// [`set_held`](Self::set_held)).
+  pub fn held_anew(&self, dest: HWND, source: HWND) -> Option<Self> {
+    Self::register_held(dest, source, self.look, true)
+  }
+
   /// Keeps it hidden whatever its look says, or lets it show that again.
   pub fn set_held(&mut self, held: bool) {
     if self.held == held {

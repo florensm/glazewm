@@ -117,10 +117,7 @@ impl BackdropSource {
       source
     };
 
-    // A changed wallpaper is picked up as the source is put to use.
-    if let Err(err) = source.composition.borrow_mut().sync_backdrop() {
-      tracing::warn!("Backdrop source refresh failed: {err}.");
-    }
+    source.refresh();
 
     SOURCES.with(|sources| {
       drop_idle(&mut sources.borrow_mut(), MAX_IDLE_SOURCES);
@@ -149,6 +146,13 @@ impl BackdropSource {
       monitor: monitor.clone(),
       params,
     })
+  }
+
+  /// Picks up a changed wallpaper, as the source is put to use.
+  pub(crate) fn refresh(&self) {
+    if let Err(err) = self.composition.borrow_mut().sync_backdrop() {
+      tracing::warn!("Backdrop source refresh failed: {err}.");
+    }
   }
 
   pub(crate) fn hwnd(&self) -> windows::Win32::Foundation::HWND {

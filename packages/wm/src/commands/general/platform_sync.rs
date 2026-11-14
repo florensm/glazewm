@@ -2263,6 +2263,8 @@ fn redraw_containers(
   // peek's opaque backdrop copy would have hidden it.
   // One a grab holds stays where it went up, just below its window, for
   // the whole resize: it never passes over floating windows.
+  // A surface already on top since a tenant's raise stays (`onesurface`).
+  state.animation_manager.peeks.set_raise_pass(true);
   for id in &peek_moves {
     if !state.animation_manager.peeks.is_held(id)
       && !band_moves.contains(id)
@@ -2271,6 +2273,7 @@ fn redraw_containers(
       crate::animation::peek_view::restack_live_overlays(state, id);
     }
   }
+  state.animation_manager.peeks.set_raise_pass(false);
   for (window, raise) in &peek_raises {
     // Its cloaked window goes into the band it lands in first, so that
     // `begin_hand_back` puts the peek directly above it there, not back

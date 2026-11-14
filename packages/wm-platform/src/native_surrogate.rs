@@ -157,6 +157,17 @@ fn register_thumbnail(
   )
 }
 
+/// Whether a stand-in's thumbnail, if `is_registered`, sampling its
+/// window's companion `kept` when it was made, can draw the window now
+/// that its companion is `found`: only if it samples the same one.
+fn keeps_window_thumbnail<T: PartialEq + Copy>(
+  is_registered: bool,
+  kept: Option<T>,
+  found: Option<T>,
+) -> bool {
+  is_registered && kept == found
+}
+
 /// A shown thumbnail at `opacity` of `src` (in the source window's
 /// coordinates) sampled into `dst`, or with `stretch_to`, the whole
 /// sampled window scaled to that surrogate size.
@@ -511,6 +522,9 @@ pub struct NativeSurrogate {
   stretch: bool,
   /// Current size of the surrogate window, the stretch destination.
   window_size: (i32, i32),
+  /// Whether it is kept, hidden, as a ready peek of its surface (see
+  /// [`retire`](NativeSurrogate::retire)).
+  is_ready: bool,
 }
 
 /// The window a [`NativeSurrogate`] draws on.
@@ -660,6 +674,7 @@ impl NativeSurrogate {
       fill_color: None,
       stretch,
       window_size,
+      is_ready: false,
     };
 
     // Set the initial Z-order position.
@@ -744,7 +759,122 @@ impl NativeSurrogate {
       fill_color: None,
       stretch: false,
       window_size,
+      is_ready: false,
     }
+  }
+
+  /// Keeps a hosted surrogate, hidden, as a ready peek of its surface,
+  /// which then takes new tenants as if it were gone (see
+  /// `SurfaceWindow::retire`), until [`reclaim`](Self::reclaim). None for
+  /// one of its own or one shown.
+  pub(crate) fn retire(&mut self) {
+    let Host::Shared(window) = &self.host else {
+      return;
+    };
+    if self.is_visible || self.is_ready {
+      return;
+    }
+
+    window.retire();
+    self.is_ready = true;
+  }
+
+  /// Has a retired surrogate draw `source_hwnd` again as
+  /// [`create_hosted`](Self::create_hosted) would anew with
+  /// `thumbnail_rect` and `opacity`, back on its surface, which goes below
+  /// `source_hwnd` unless it already is: the same fields, and the same
+  /// thumbnail unless that would sample another companion now (see
+  /// [`keeps_window_thumbnail`]). Returns whether the thumbnail was
+  /// registered anew, i.e. stacks above everything on the surface.
+  pub(crate) fn reclaim(
+    &mut self,
+    source_hwnd: HWND,
+    thumbnail_rect: &Rect,
+    opacity: u8,
+  ) -> bool {
+    let Host::Shared(window) = &self.host else {
+      return false;
+    };
+    let window = Rc::clone(window);
+    let border_inset = RECT::default();
+    let clip = window.clip();
+    let window_size = (clip.width(), clip.height());
+
+    let thumb_scope =
+      crate::perf::scope(crate::perf::Stage::SurrogateThumb);
+    let companion = Companion::find(source_hwnd);
+    let (src, dst) = content_rects(
+      thumbnail_rect.width(),
+      thumbnail_rect.height(),
+      border_inset,
+    );
+    let look =
+      thumbnail_look(companion, src, dst, border_inset, opacity, None);
+    let keeps = keeps_window_thumbnail(
+      self.thumbnail.is_some(),
+      self.companion,
+      companion,
+    );
+    match self.thumbnail.as_mut().filter(|_| keeps) {
+      Some(thumbnail) => {
+        let _ = thumbnail.set(look);
+      }
+      None => {
+        self.thumbnail = register_thumbnail(
+          window.hwnd(),
+          source_hwnd,
+          companion,
+          look,
+          true,
+        );
+      }
+    }
+    drop(thumb_scope);
+
+    self.companion = companion;
+    self.companion_wait = HandoffWait::default();
+    self.companion_checked_at = Instant::now();
+    self.content_size = (thumbnail_rect.width(), thumbnail_rect.height());
+    self.border_inset = border_inset;
+    self.last_opacity = opacity;
+    self.rest_opacity = opacity;
+    self.last_rect = None;
+    self.covered = covered_extent(&look, false, window_size);
+    self.fill = None;
+    self.fill_color = None;
+    self.stretch = false;
+    self.window_size = window_size;
+
+    if self.is_ready {
+      self.is_ready = false;
+      window.rejoin(source_hwnd);
+    }
+    !keeps
+  }
+
+  /// DWM's handle of its thumbnail, new with each registration.
+  pub(crate) fn thumbnail_handle(&self) -> Option<isize> {
+    self.thumbnail.as_ref().map(Thumbnail::handle)
+  }
+
+  /// A second thumbnail of what it draws of `source_hwnd`, registered held
+  /// over everything on its window, for
+  /// [`put_thumbnail`](Self::put_thumbnail). `None` without a thumbnail or
+  /// if registration failed.
+  pub(crate) fn thumbnail_held_anew(
+    &self,
+    source_hwnd: HWND,
+  ) -> Option<Thumbnail> {
+    let source = self.companion.map_or(source_hwnd, Companion::hwnd);
+    self.thumbnail.as_ref()?.held_anew(self.hwnd(), source)
+  }
+
+  /// Draws `thumbnail`, from
+  /// [`thumbnail_held_anew`](Self::thumbnail_held_anew), in place of its
+  /// own: let go first, so no composition shows neither.
+  pub(crate) fn put_thumbnail(&mut self, mut thumbnail: Thumbnail) {
+    thumbnail.set_held(self.is_held());
+    self.thumbnail = Some(thumbnail);
   }
 
   /// Whether it draws on a [`PeekSurface`] (see
@@ -1555,7 +1685,11 @@ impl Drop for NativeSurrogate {
         if self.is_visible {
           window.note_drawing(false);
         }
-        window.release();
+        if self.is_ready {
+          window.drop_ready();
+        } else {
+          window.release();
+        }
       }
     }
   }
@@ -1569,10 +1703,10 @@ mod tests {
 
   use super::{
     ensure_class_registered, fade_fraction, fill_start, is_surrogate,
-    placed_rects, stretched_destination, window_class, DeferredPositions,
-    DestroyWindow, Rect, SurrogateBatch, CLASS_NAME, HWND, RECT,
-    SWP_NOSENDCHANGING, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW,
-    WS_EX_TRANSPARENT,
+    keeps_window_thumbnail, placed_rects, stretched_destination,
+    window_class, DeferredPositions, DestroyWindow, Rect, SurrogateBatch,
+    CLASS_NAME, HWND, RECT, SWP_NOSENDCHANGING, WS_EX_NOACTIVATE,
+    WS_EX_TOOLWINDOW, WS_EX_TRANSPARENT,
   };
 
   /// Batch commits performed by the leak regression test.
@@ -1592,6 +1726,18 @@ mod tests {
 
   fn ltrb(rect: RECT) -> (i32, i32, i32, i32) {
     (rect.left, rect.top, rect.right, rect.bottom)
+  }
+
+  /// A kept thumbnail draws its window again only sampling what it would
+  /// sample made anew: the window, or the same companion.
+  #[test]
+  fn a_kept_thumbnail_is_kept_only_for_the_same_companion() {
+    assert!(keeps_window_thumbnail::<u8>(true, None, None));
+    assert!(keeps_window_thumbnail(true, Some(1), Some(1)));
+    assert!(!keeps_window_thumbnail(true, None, Some(1)));
+    assert!(!keeps_window_thumbnail(true, Some(1), None));
+    assert!(!keeps_window_thumbnail(true, Some(1), Some(2)));
+    assert!(!keeps_window_thumbnail::<u8>(false, None, None));
   }
 
   /// A window cut at its surrogate's far edge keeps the same thumbnail
