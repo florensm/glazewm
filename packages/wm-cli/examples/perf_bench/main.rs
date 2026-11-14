@@ -138,6 +138,8 @@ const METRICS: &[(&str, &str)] = &[
     "peek_handover ms (outside frames)",
   ),
   ("outside:peek_raise:total", "peek_raise ms (outside frames)"),
+  // `onesurface`'s surface windows: made, shown, hidden and raised.
+  ("outside:surface:total", "surface ms (outside frames)"),
   (
     "outside:session_overlays:total",
     "session_overlays ms (outside frames)",
