@@ -144,13 +144,14 @@ impl WindowPeek {
 
   /// Creates a hidden peek of `window`, which is at `rect`, drawn on
   /// `surface` as a pinned one spanning its clip is on a window of its
-  /// own. `surface` goes just below `window`, which still shows, as
+  /// own. `surface` goes by `window`, which `is_shown` or is cloaked, as
   /// `SurfaceWindow::admit` decides.
   #[must_use]
   pub fn hosted(
     window: &NativeWindow,
     rect: &Rect,
     surface: &PeekSurface,
+    is_shown: bool,
   ) -> Self {
     let hwnd = window.hwnd();
 
@@ -161,6 +162,7 @@ impl WindowPeek {
         hwnd,
         rect,
         u8::MAX,
+        is_shown,
       ),
       mode: PeekMode::Pinned {
         viewport: surface.clip().clone(),
@@ -183,6 +185,13 @@ impl WindowPeek {
   #[must_use]
   pub fn is_hosted(&self) -> bool {
     self.surrogate.is_hosted()
+  }
+
+  /// Keeps a hosted peek's surface from going down from now on, its window
+  /// just cloaked under it with no raise to follow (see
+  /// `SurfaceWindow::hold_place`). None for one of its own.
+  pub fn hold_place(&self) {
+    self.surrogate.hold_place();
   }
 
   /// Keeps a hosted peek, with every registration it has, for its tile's

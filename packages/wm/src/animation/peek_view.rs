@@ -3689,9 +3689,14 @@ fn new_entry(
   // column) isn't. A window with a backdrop that can't be copied along has
   // a peek that moves with it.
   let peek = match surface {
-    Some(surface) => {
-      WindowPeek::hosted(&window.native(), &motion.target_rect, surface)
-    }
+    // A window not known to be cloaked is taken to show, which keeps the
+    // surface under it.
+    Some(surface) => WindowPeek::hosted(
+      &window.native(),
+      &motion.target_rect,
+      surface,
+      !window.native().is_cloaked().unwrap_or(false),
+    ),
     None => WindowPeek::new(
       &window.native(),
       &motion.target_rect,

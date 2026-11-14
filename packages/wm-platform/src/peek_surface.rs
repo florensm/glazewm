@@ -73,8 +73,8 @@ impl PeekSurface {
   }
 
   /// Whether it has been raised over its tenants' windows since it was
-  /// last empty, so a new tenant never moves it down (see
-  /// [`SurfaceWindow::admit`]).
+  /// last empty, or held where a tenant draws over its cloaked window, so
+  /// a new tenant never moves it down (see [`SurfaceWindow::admit`]).
   #[must_use]
   pub fn is_raised(&self) -> bool {
     self.window.raised.get()
@@ -125,7 +125,8 @@ pub(crate) struct SurfaceWindow {
   /// Of those, the ones that draw, i.e. are shown.
   drawing: Cell<usize>,
   /// Whether it has been raised over its tenants' windows since it was
-  /// last empty.
+  /// last empty, or held where a tenant draws over its cloaked window
+  /// (see [`hold_place`](Self::hold_place)).
   raised: Cell<bool>,
   /// Whether a pass of raises is open (see
   /// `PeekSurface::set_raise_pass`).
@@ -176,35 +177,55 @@ impl SurfaceWindow {
     &self.clip
   }
 
-  /// Takes in a tenant drawing `window`, which still shows, putting the
-  /// surface just below it if [`goes_below`] says so.
-  pub(crate) fn admit(&self, window: HWND) {
+  /// Takes in a tenant drawing `window`, which still shows or not, moving
+  /// the surface as [`admission`] says. One whose window is cloaked keeps
+  /// the surface from going down from then on (see
+  /// [`hold_place`](Self::hold_place)).
+  pub(crate) fn admit(&self, window: HWND, is_shown: bool) {
     self.tenants.set(self.tenants.get() + 1);
 
-    if !goes_below(
+    let admission = admission(
       self.raised.get(),
       companion::is_above(window, self.hwnd()),
-    ) {
+      is_shown,
+    );
+    if !is_shown {
+      self.hold_place();
+    }
+    if admission == Admission::Stays {
       return;
     }
 
     let _scope = perf::scope(Stage::Surface);
     self.on_top.set(false);
-    // SAFETY: Both handles are valid or fail the call; the flags leave
-    // position, size and activation untouched.
-    if let Err(err) = unsafe {
-      SetWindowPos(
-        self.hwnd(),
-        window,
-        0,
-        0,
-        0,
-        0,
-        SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
-      )
-    } {
-      tracing::warn!("Failed to put a peek surface below a window: {err}");
+    let placed = if admission == Admission::Above {
+      window_class::place_above(self.hwnd(), window)
+    } else {
+      // SAFETY: Both handles are valid or fail the call; the flags leave
+      // position, size and activation untouched.
+      unsafe {
+        SetWindowPos(
+          self.hwnd(),
+          window,
+          0,
+          0,
+          0,
+          0,
+          SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
+        )
+      }
+      .map_err(Into::into)
+    };
+    if let Err(err) = placed {
+      tracing::warn!("Failed to put a peek surface by a window: {err}");
     }
+  }
+
+  /// Keeps the surface from going down for tenants to come, as one raised
+  /// over its tenants' windows: one of its tenants draws over its cloaked
+  /// window there, which a window put between would cover.
+  pub(crate) fn hold_place(&self) {
+    self.raised.set(true);
   }
 
   /// Lets a tenant go. The last one leaving lets the surface take new
@@ -224,11 +245,11 @@ impl SurfaceWindow {
     self.ready.set(self.ready.get() + 1);
   }
 
-  /// Takes a ready peek in again as a tenant drawing `window` (see
-  /// [`admit`](Self::admit)).
+  /// Takes a ready peek in again as a tenant drawing `window`, which still
+  /// shows (see [`admit`](Self::admit)).
   pub(crate) fn rejoin(&self, window: HWND) {
     self.drop_ready();
-    self.admit(window);
+    self.admit(window, true);
   }
 
   /// Lets a ready peek go.
@@ -334,9 +355,45 @@ fn goes_below(is_raised: bool, is_above: bool) -> bool {
   is_raised == is_above
 }
 
+/// Where a surface goes for a tenant joining it, see [`admission`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Admission {
+  Stays,
+  /// Just below the tenant's window.
+  Below,
+  /// Just above the tenant's window.
+  Above,
+}
+
+/// Where a surface that `is_raised` goes for a joining tenant whose window
+/// `is_above` it or not, and `is_shown` or cloaked.
+///
+/// Shown, as [`goes_below`] says. Cloaked (an entering window), just above
+/// it, where its own peek would draw (just below a window that shows
+/// nothing), and where the hand-back needs it: covering the window once
+/// it is uncloaked. Unless it is raised and above the window already, as
+/// it never goes down then.
+fn admission(
+  is_raised: bool,
+  is_above: bool,
+  is_shown: bool,
+) -> Admission {
+  if is_shown {
+    if goes_below(is_raised, is_above) {
+      Admission::Below
+    } else {
+      Admission::Stays
+    }
+  } else if is_raised && !is_above {
+    Admission::Stays
+  } else {
+    Admission::Above
+  }
+}
+
 #[cfg(test)]
 mod tests {
-  use super::goes_below;
+  use super::{admission, goes_below, Admission};
 
   #[test]
   fn a_raised_surface_only_goes_up_for_a_joining_window() {
@@ -344,5 +401,26 @@ mod tests {
     assert!(!goes_below(false, true));
     assert!(goes_below(true, true));
     assert!(!goes_below(true, false));
+  }
+
+  #[test]
+  fn a_surface_goes_above_a_cloaked_window_unless_raised_over_it() {
+    assert_eq!(admission(false, true, false), Admission::Above);
+    assert_eq!(admission(false, false, false), Admission::Above);
+    assert_eq!(admission(true, true, false), Admission::Above);
+    assert_eq!(admission(true, false, false), Admission::Stays);
+  }
+
+  #[test]
+  fn a_shown_window_is_admitted_as_before() {
+    for (is_raised, is_above) in
+      [(false, false), (false, true), (true, true), (true, false)]
+    {
+      assert_eq!(
+        admission(is_raised, is_above, true) == Admission::Below,
+        goes_below(is_raised, is_above)
+      );
+      assert_ne!(admission(is_raised, is_above, true), Admission::Above);
+    }
   }
 }
