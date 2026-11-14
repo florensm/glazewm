@@ -214,6 +214,14 @@ pub fn transit_frame(
   Some((frame, opacity))
 }
 
+/// All a window resting at `rest` may be drawn over as it enters or leaves
+/// by `style` (see [`transit_frame`]): its rect, and the rect a slide
+/// comes from. Every amount in between draws within the two.
+pub fn transit_reach(rest: &Rect, style: &WindowTransitionStyle) -> Rect {
+  transit_frame(rest, style, 1.0, 0.0)
+    .map_or_else(|| rest.clone(), |(away, _)| rest.union(&away))
+}
+
 /// A clock rect standing for `amount` in (see [`AMOUNT_SCALE`]).
 #[allow(clippy::cast_possible_truncation)]
 fn amount_rect(amount: f32) -> Rect {
@@ -315,6 +323,33 @@ mod tests {
     );
     for slide in &SLIDES {
       assert_eq!(frame_at(slide, 1.0), Some(rest()), "{slide:?}");
+    }
+  }
+
+  #[test]
+  fn a_transit_reaches_where_a_slide_comes_from() {
+    assert_eq!(
+      transit_reach(&rest(), &WindowTransitionStyle::SlideRight),
+      Rect::from_ltrb(100, 50, 1700, 650)
+    );
+    assert_eq!(
+      transit_reach(&rest(), &WindowTransitionStyle::SlideTop),
+      Rect::from_ltrb(100, -550, 900, 650)
+    );
+    for style in [WindowTransitionStyle::Zoom, WindowTransitionStyle::None]
+    {
+      assert_eq!(transit_reach(&rest(), &style), rest(), "{style:?}");
+    }
+    for amount in [0.0, 0.3, 0.7, 1.0] {
+      for slide in &SLIDES {
+        let reach = transit_reach(&rest(), slide);
+        assert!(
+          frame_at(slide, amount).is_some_and(|frame| reach
+            .intersection(&frame)
+            .is_some_and(|shared| shared == frame)),
+          "{slide:?} at {amount}"
+        );
+      }
     }
   }
 
