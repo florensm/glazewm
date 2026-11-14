@@ -257,3 +257,61 @@ each new before old goes), or hand it to a peek of its own.
   they move, and comes back over a landed tile when its peek goes.
 - Interrupted by a workspace switch: no tile left on the old monitor's
   surface, no stray frame.
+
+## Full translation (owner's decision, 2026-11-14)
+
+After steps 1 and 2, every stand-in the WM draws with documented
+thumbnails moves onto the per-monitor surfaces, still behind
+`onesurface` (off by default) until the owner has seen each kind and the
+bench has compared them. Steps 1 and 2 have not been seen running when
+this is written: a desktop check of `onesurface` between steps is worth
+more than any reading, and each step below starts from what that check
+found.
+
+What stays on a window of its own, on purpose:
+
+- **Live peeks** (a backdrop that can't be copied: rounded corners or
+  parallax != 1). The real backdrop overlay has to follow the window,
+  and it can only follow a window that moves. A surface never moves.
+- **The old engine** (`ResizeSession`, `nopeeks`): the fallback and the
+  bench's reference.
+
+One surface is one height in the window stack, so a monitor gets up to
+two: one at the top of the ordinary windows, one in the always-on-top
+band for windows shown there (floating and fullscreen windows shown on
+top). Inside a surface, order is registration order.
+
+Steps, one agent each, in order. Each keeps the tuned hand-over steps in
+place (rule 5) and adds no Windows API.
+
+3. **Every tile motion.** Remove step 1's narrow admission: tiles whose
+   paths cross share the surface, restacked by registering the upper
+   one's parts anew, in order, each before the old one goes (step 2's
+   B.2 mechanism); a motion that starts while earlier tenants land
+   joins them; tiles in a stack, with their tab bar's stand-in.
+4. **Entering and leaving.** Open, close, minimize and restore of tiles
+   (`enter_on_peek`, `leave_on_peek`, `restore_on_peek`, `turn_round`):
+   transits (zoom, slide, fade) on the surface. A leaving window stays
+   below its neighbours: registered first.
+5. **Scrolling layouts.** Moving columns and resting peeks
+   (`sync_scroll_view`, `Role::Peek`, `Role::Moving`), the strip, opening
+   columns, `stand_by` under a workspace switch (`slidepeeks`). A
+   resting peek keeps its surface shown at rest: check what that costs
+   idle (it must cost nothing per frame) and that clicks still reach the
+   windows under it (`window_at`, the click guard).
+6. **Held peeks and the top band.** Grab resizes (`hold_on_peek`), and
+   the `morepeeks` cases that are not live: floating <-> tiling,
+   fullscreen toggles (the second, always-on-top surface), tiles
+   crossing monitors (each monitor's surface draws its part, replacing
+   `Trail`).
+7. **Workspace switches.** `WorkspaceSurrogate`'s windows become tenants
+   of the surfaces: incoming and outgoing windows of a switch, its ring
+   and backdrop copies, `pending_ws_cleanup`, a cut-short slide. The
+   surface of a switch slides nothing itself: each tenant's thumbnail
+   does, cut at the working area as moved with its workspace.
+8. **Clean-up and bench.** What steps 3 to 7 left duplicated between
+   `WindowPeek`, `WorkspaceSurrogate` and the hosted forms; bench modes;
+   the measuring section.
+
+Each step's report says which kinds still fall back to their own
+window, and why.
