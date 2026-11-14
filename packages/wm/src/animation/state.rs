@@ -101,6 +101,16 @@ impl WindowAnimationState {
     self.start_time.get().is_some()
   }
 
+  /// Whether it is always at the same eased progress as `other`: started
+  /// at the same instant, or neither yet (for motions started on one
+  /// tick), with the same delay, duration and easing.
+  pub fn shares_clock(&self, other: &Self) -> bool {
+    self.start_time.get() == other.start_time.get()
+      && self.start_delay == other.start_delay
+      && self.duration == other.duration
+      && self.easing == other.easing
+  }
+
   /// Gets the eased progress in [0.0, 1.0] at an explicit `now` instant.
   ///
   /// Allows callers to supply a predictive timestamp (e.g. vsync wake-up
@@ -704,5 +714,28 @@ mod tests {
     let target = anim.target_opacity.as_ref().map(|opacity| opacity.0);
     assert!(start.is_some_and(|start| (start - 0.5).abs() < 1e-3));
     assert!(target.is_some_and(|target| (target - 1.0).abs() < 1e-3));
+  }
+
+  #[test]
+  fn motions_share_a_clock_started_together_on_one_timing() {
+    let motion = |duration_ms| {
+      WindowAnimationState::new_movement(
+        Rect::from_xy(0, 0, 100, 100),
+        Rect::from_xy(200, 0, 100, 100),
+        duration_ms,
+        linear(),
+      )
+    };
+    let (a, b, c) = (motion(100), motion(100), motion(200));
+    assert!(a.shares_clock(&b));
+    assert!(!a.shares_clock(&c));
+
+    let t0 = Instant::now();
+    a.start_clock(t0);
+    assert!(!a.shares_clock(&b));
+    b.start_clock(t0);
+    assert!(a.shares_clock(&b));
+    b.start_clock(t0 + Duration::from_millis(16));
+    assert!(a.shares_clock(&b));
   }
 }

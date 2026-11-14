@@ -72,12 +72,18 @@ impl PeekSurface {
     self.is_empty() && self.window.ready.get() == 0
   }
 
-  /// Whether a new peek can be hosted on it: not once it has been raised
-  /// over its tenants' windows, until it is empty again (see
+  /// Whether it has been raised over its tenants' windows since it was
+  /// last empty, so a new tenant never moves it down (see
   /// [`SurfaceWindow::admit`]).
   #[must_use]
-  pub fn takes_tenants(&self) -> bool {
-    !self.window.raised.get()
+  pub fn is_raised(&self) -> bool {
+    self.window.raised.get()
+  }
+
+  /// Whether `window` is anywhere above it in the z-order.
+  #[must_use]
+  pub fn is_below(&self, window: HWND) -> bool {
+    companion::is_above(window, self.hwnd())
   }
 
   /// Puts it at the top of the non-topmost windows.
@@ -170,18 +176,15 @@ impl SurfaceWindow {
     &self.clip
   }
 
-  /// Takes in a tenant drawing `window`, which still shows: the surface
-  /// goes below it unless it is already, as a pinned peek goes up just
-  /// below its window, so the tenant's copies, its opaque backdrop's
-  /// among them, stay under that window until it is cloaked.
-  ///
-  /// Only before the surface has been raised (see
-  /// [`PeekSurface::takes_tenants`]): moved down then, it would take
-  /// tenants already drawn over other windows under them.
+  /// Takes in a tenant drawing `window`, which still shows, putting the
+  /// surface just below it if [`goes_below`] says so.
   pub(crate) fn admit(&self, window: HWND) {
     self.tenants.set(self.tenants.get() + 1);
 
-    if companion::is_above(window, self.hwnd()) {
+    if !goes_below(
+      self.raised.get(),
+      companion::is_above(window, self.hwnd()),
+    ) {
       return;
     }
 
@@ -311,5 +314,35 @@ impl Drop for SurfaceWindow {
     unsafe {
       let _ = DestroyWindow(self.hwnd());
     }
+  }
+}
+
+/// Whether a surface goes just below a joining tenant's window, which
+/// still shows and `is_above` the surface or not, given whether it
+/// `is_raised` (see [`PeekSurface::is_raised`]).
+///
+/// Not raised, it goes below the window unless it is already, as a pinned
+/// peek goes up just below its window, so the tenant's copies stay under
+/// that window until it is cloaked. Raised, it is never moved down, which
+/// would take tenants already drawn over other windows under them, but up
+/// to just below a window above it, so no window between covers the
+/// tenant's copies once that window is cloaked and before the surface is
+/// raised again; that is where the raise takes it anyway. Over a window
+/// below it, the tenant draws the window as it is until it is cloaked,
+/// its backdrop copy too faint to see (see `WindowPeek::warm_up`).
+fn goes_below(is_raised: bool, is_above: bool) -> bool {
+  is_raised == is_above
+}
+
+#[cfg(test)]
+mod tests {
+  use super::goes_below;
+
+  #[test]
+  fn a_raised_surface_only_goes_up_for_a_joining_window() {
+    assert!(goes_below(false, false));
+    assert!(!goes_below(false, true));
+    assert!(goes_below(true, true));
+    assert!(!goes_below(true, false));
   }
 }

@@ -704,10 +704,9 @@ impl NativeSurrogate {
   /// no border inset, square corners and no stretch, just below
   /// `source_hwnd`.
   ///
-  /// The surface goes below `source_hwnd` unless it already is (see
-  /// `SurfaceWindow::admit`), so it must take tenants (see
-  /// [`PeekSurface::takes_tenants`]). A failed registration leaves it
-  /// without a thumbnail, as for `create`.
+  /// The surface goes just below `source_hwnd` as `SurfaceWindow::admit`
+  /// decides. A failed registration leaves it without a thumbnail, as for
+  /// `create`.
   #[must_use]
   pub fn create_hosted(
     surface: &PeekSurface,
@@ -781,11 +780,12 @@ impl NativeSurrogate {
 
   /// Has a retired surrogate draw `source_hwnd` again as
   /// [`create_hosted`](Self::create_hosted) would anew with
-  /// `thumbnail_rect` and `opacity`, back on its surface, which goes below
-  /// `source_hwnd` unless it already is: the same fields, and the same
-  /// thumbnail unless that would sample another companion now (see
-  /// [`keeps_window_thumbnail`]). Returns whether the thumbnail was
-  /// registered anew, i.e. stacks above everything on the surface.
+  /// `thumbnail_rect` and `opacity`, back on its surface, which goes just
+  /// below `source_hwnd` as `SurfaceWindow::admit` decides: the same
+  /// fields, and the same thumbnail unless that would sample another
+  /// companion now (see [`keeps_window_thumbnail`]). Returns whether the
+  /// thumbnail was registered anew, i.e. stacks above everything on the
+  /// surface.
   pub(crate) fn reclaim(
     &mut self,
     source_hwnd: HWND,
@@ -852,9 +852,9 @@ impl NativeSurrogate {
     !keeps
   }
 
-  /// DWM's handle of its thumbnail, new with each registration.
-  pub(crate) fn thumbnail_handle(&self) -> Option<isize> {
-    self.thumbnail.as_ref().map(Thumbnail::handle)
+  /// Its thumbnail's registration order (see `Thumbnail::order`).
+  pub(crate) fn thumbnail_order(&self) -> Option<u64> {
+    self.thumbnail.as_ref().map(Thumbnail::order)
   }
 
   /// A second thumbnail of what it draws of `source_hwnd`, registered held
