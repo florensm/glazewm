@@ -185,6 +185,122 @@ impl WindowPeek {
     self.surrogate.is_hosted()
   }
 
+  /// Keeps a hosted peek, with every registration it has, for its tile's
+  /// next motion (see [`reclaim`](Self::reclaim)): held, drawing nothing,
+  /// on its surface as a ready peek rather than a tenant. Gives its window
+  /// back the alpha a handover set aside, as dropping it would. None for
+  /// one of its own.
+  pub fn set_ready(&mut self) {
+    if !self.is_hosted() {
+      return;
+    }
+
+    self.hide();
+    self.hidden_alpha.restore();
+    self.copies.set_aside();
+    self.surrogate.retire();
+  }
+
+  /// Has a peek kept by [`set_ready`](Self::set_ready) draw `window`, at
+  /// `rect`, for a new motion as [`hosted`](Self::hosted) makes one anew,
+  /// before [`carry_styles`](Self::carry_styles) with `styles`: every
+  /// field as there, every registration kept while what it was made from
+  /// holds, and back on its surface, below `window` unless it is
+  /// already.
+  ///
+  /// A tile's registrations stack backdrop, window, fill, ring. Those
+  /// kept keep their order; a window thumbnail or backdrop registered
+  /// anew goes on top, so the fill and ring set aside above it go, to be
+  /// registered on top of it in turn as they are carried.
+  pub fn reclaim(
+    &mut self,
+    window: &NativeWindow,
+    rect: &Rect,
+    styles: &[Option<BackdropOverlayParams>],
+  ) {
+    let PeekMode::Pinned { viewport } = &self.mode else {
+      return;
+    };
+    let hwnd = window.hwnd();
+    let border_inset = compute_border_inset(hwnd);
+    let frame = to_logical(rect, &border_inset);
+
+    let backdrops = copyable(styles);
+    let monitor = (!backdrops.is_empty())
+      .then(|| wallpaper_surface::monitor_bounds(viewport));
+    let keeps_backdrop = self.copies.reclaim_backdrop(
+      &backdrops,
+      monitor.as_ref(),
+      rect,
+      &frame,
+    );
+    let keeps_window = !self.surrogate.reclaim(hwnd, rect, u8::MAX);
+    if !keeps_backdrop || !keeps_window {
+      self.copies.drop_spares();
+    }
+
+    self.source = hwnd;
+    self.border_inset = border_inset;
+    self.rest = rect.clone();
+    self.drawn = Drawn::Shown;
+    self.shows_backdrop = false;
+    self.opacity = u8::MAX;
+    self.frac = 1.0;
+    self.hidden_alpha = HiddenAlpha::default();
+    self.frame_rect = None;
+    self.visible_rect = None;
+    self.stands_by = false;
+  }
+
+  /// DWM's handles of every thumbnail it draws, which change whenever any
+  /// of them is registered anew.
+  #[must_use]
+  pub fn registrations(&self) -> Vec<isize> {
+    self
+      .surrogate
+      .thumbnail_handle()
+      .into_iter()
+      .chain(self.copies.handles())
+      .collect()
+  }
+
+  /// Registers every thumbnail of the peek anew, over everything on the
+  /// window it draws on, in the order its tile stacks them: backdrop,
+  /// window, fill, ring. All go up held, then each part is let go before
+  /// its old thumbnails go, the top one first, so no composition shows
+  /// the tile without one of them (a semi-transparent window may show
+  /// twice for one). Returns whether it did: nothing changes if any
+  /// registration fails.
+  pub fn register_anew(&mut self) -> bool {
+    let dest = self.surrogate.hwnd();
+    let Some(anew) = self.copies.backdrop_held_anew(dest) else {
+      return false;
+    };
+    let window = match self.surrogate.thumbnail_held_anew(self.source) {
+      None if self.surrogate.has_thumbnail() => return false,
+      window => window,
+    };
+    let Some(mut anew) = self.copies.above_window_held_anew(dest, anew)
+    else {
+      return false;
+    };
+
+    self.copies.put_above_window_anew(&mut anew);
+    if let Some(window) = window {
+      self.surrogate.put_thumbnail(window);
+    }
+    self.copies.put_backdrop_anew(anew);
+    // Left below the tile now, they would stack under it once carried.
+    self.copies.drop_spares();
+    true
+  }
+
+  /// The window the peek shows.
+  #[must_use]
+  pub fn source(&self) -> HWND {
+    self.source
+  }
+
   /// Whether the peek draws its window at all: DWM refuses a thumbnail of
   /// some, e.g. an elevated window.
   #[must_use]
@@ -234,12 +350,7 @@ impl WindowPeek {
 
     let dest = self.surrogate.hwnd();
     let frame = to_logical(&self.rest, &self.border_inset);
-    let backdrops = styles
-      .iter()
-      .flatten()
-      .copied()
-      .filter(BackdropOverlayParams::is_copyable)
-      .collect::<Vec<_>>();
+    let backdrops = copyable(styles);
 
     if !backdrops.is_empty()
       && !self.copies.carries_backdrop_styles(&backdrops)
@@ -253,6 +364,8 @@ impl WindowPeek {
         .carry_backdrop(dest, &backdrops, &monitor, &self.rest, &frame)
       {
         self.surrogate.raise_thumbnail(self.source);
+        // Under the window now, they would stack below it once carried.
+        self.copies.drop_spares();
       }
     }
   }
@@ -452,6 +565,7 @@ impl WindowPeek {
 
     self.surrogate.set_window_opacity(self.window_opacity());
     self.copies.raise_ring(self.surrogate.hwnd());
+    self.copies.drop_spares();
   }
 
   /// Gives the real window back the alpha a handover set aside, unless it
@@ -857,6 +971,19 @@ impl WindowPeek {
   pub fn visible_rect(&self) -> Option<&Rect> {
     self.visible_rect.as_ref()
   }
+}
+
+/// Those of `styles` a peek copies its window's backdrop in (see
+/// `BackdropOverlayParams::is_copyable`).
+fn copyable(
+  styles: &[Option<BackdropOverlayParams>],
+) -> Vec<BackdropOverlayParams> {
+  styles
+    .iter()
+    .flatten()
+    .copied()
+    .filter(BackdropOverlayParams::is_copyable)
+    .collect()
 }
 
 /// Moves a pinned peek's `surrogate`, spanning `viewport`, to span `clip`

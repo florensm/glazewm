@@ -59,10 +59,17 @@ impl PeekSurface {
     self.window.drawing.get() > 0
   }
 
-  /// Whether no peek is hosted on it.
+  /// Whether no peek is hosted on it, ready ones aside.
   #[must_use]
   pub fn is_empty(&self) -> bool {
     self.window.tenants.get() == 0
+  }
+
+  /// Whether no peek is hosted on it, ready ones included (see
+  /// `WindowPeek::set_ready`).
+  #[must_use]
+  pub fn is_unused(&self) -> bool {
+    self.is_empty() && self.window.ready.get() == 0
   }
 
   /// Whether a new peek can be hosted on it: not once it has been raised
@@ -80,6 +87,20 @@ impl PeekSurface {
     }
   }
 
+  /// Opens or closes a pass of raises, within which a raise of the
+  /// surface still at the top since its last one is skipped (see
+  /// [`note_covered`](Self::note_covered)).
+  pub fn set_raise_pass(&self, is_open: bool) {
+    self.window.in_raise_pass.set(is_open);
+    self.window.on_top.set(false);
+  }
+
+  /// Notes that something may have been put above it since it was last
+  /// raised, so its next raise is not skipped.
+  pub fn note_covered(&self) {
+    self.window.on_top.set(false);
+  }
+
   pub(crate) fn window(&self) -> &Rc<SurfaceWindow> {
     &self.window
   }
@@ -90,13 +111,22 @@ impl PeekSurface {
 pub(crate) struct SurfaceWindow {
   hwnd: isize,
   clip: Rect,
-  /// Peeks hosted on it.
+  /// Peeks hosted on it, ready ones aside.
   tenants: Cell<usize>,
+  /// Peeks kept on it, hidden, for their tiles' next motions (see
+  /// `WindowPeek::set_ready`).
+  ready: Cell<usize>,
   /// Of those, the ones that draw, i.e. are shown.
   drawing: Cell<usize>,
   /// Whether it has been raised over its tenants' windows since it was
   /// last empty.
   raised: Cell<bool>,
+  /// Whether a pass of raises is open (see
+  /// `PeekSurface::set_raise_pass`).
+  in_raise_pass: Cell<bool>,
+  /// Whether it was raised to the top in the open pass, and nothing is
+  /// known to have been put above it since.
+  on_top: Cell<bool>,
 }
 
 impl SurfaceWindow {
@@ -124,8 +154,11 @@ impl SurfaceWindow {
       hwnd: hwnd.0,
       clip: clip.clone(),
       tenants: Cell::new(0),
+      ready: Cell::new(0),
       drawing: Cell::new(0),
       raised: Cell::new(false),
+      in_raise_pass: Cell::new(false),
+      on_top: Cell::new(false),
     })
   }
 
@@ -153,6 +186,7 @@ impl SurfaceWindow {
     }
 
     let _scope = perf::scope(Stage::Surface);
+    self.on_top.set(false);
     // SAFETY: Both handles are valid or fail the call; the flags leave
     // position, size and activation untouched.
     if let Err(err) = unsafe {
@@ -180,6 +214,25 @@ impl SurfaceWindow {
     }
   }
 
+  /// Lets a tenant go as [`release`](Self::release) does, kept on as a
+  /// ready peek, which never keeps the surface from taking new tenants.
+  pub(crate) fn retire(&self) {
+    self.release();
+    self.ready.set(self.ready.get() + 1);
+  }
+
+  /// Takes a ready peek in again as a tenant drawing `window` (see
+  /// [`admit`](Self::admit)).
+  pub(crate) fn rejoin(&self, window: HWND) {
+    self.drop_ready();
+    self.admit(window);
+  }
+
+  /// Lets a ready peek go.
+  pub(crate) fn drop_ready(&self) {
+    self.ready.set(self.ready.get().saturating_sub(1));
+  }
+
   /// Notes a tenant starting or stopping to draw: the first one shows the
   /// surface, and the last one hides it.
   pub(crate) fn note_drawing(&self, is_drawing: bool) {
@@ -193,6 +246,7 @@ impl SurfaceWindow {
 
     if (before == 0) != (after == 0) {
       let _scope = perf::scope(Stage::Surface);
+      self.on_top.set(false);
       // SAFETY: `self.hwnd` is valid until drop.
       unsafe {
         ShowWindow(
@@ -208,10 +262,16 @@ impl SurfaceWindow {
   }
 
   /// Puts the surface at the top of the non-topmost windows, as
-  /// `NativeSurrogate::raise_to_top` does a surrogate.
+  /// `NativeSurrogate::raise_to_top` does a surrogate. Skipped while it
+  /// is there already from a raise in the open pass (see
+  /// `PeekSurface::set_raise_pass`).
   pub(crate) fn raise_to_top(&self) -> crate::Result<()> {
-    let _scope = perf::scope(Stage::Surface);
     self.raised.set(true);
+    if self.on_top.get() {
+      return Ok(());
+    }
+
+    let _scope = perf::scope(Stage::Surface);
 
     // SAFETY: `self.hwnd` is valid until drop; the flags leave position,
     // size and activation untouched.
@@ -226,6 +286,7 @@ impl SurfaceWindow {
         SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
       )
     }?;
+    self.on_top.set(self.in_raise_pass.get());
     Ok(())
   }
 
@@ -237,6 +298,7 @@ impl SurfaceWindow {
   ) -> crate::Result<()> {
     let _scope = perf::scope(Stage::Surface);
     self.raised.set(true);
+    self.on_top.set(false);
     window_class::raise_to_top_of_band(self.hwnd(), topmost)
   }
 }
