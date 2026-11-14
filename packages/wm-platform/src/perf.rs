@@ -329,11 +329,14 @@ pub enum Stage {
   /// A `PeekSurface`'s window: its creation, shows and hides, and moves
   /// in the z-order.
   Surface,
+  /// `PeekView::restack_crossings`: tiles on a `PeekSurface` registered
+  /// anew over ones they may cross (`WindowPeek::register_anew`).
+  Restack,
 }
 
 impl Stage {
   /// Every stage, in report order.
-  const ALL: [Stage; 59] = [
+  const ALL: [Stage; 60] = [
     Stage::Command,
     Stage::PeekFrame,
     Stage::PeekDraw,
@@ -393,6 +396,7 @@ impl Stage {
     Stage::RingRaise,
     Stage::PeekPlace,
     Stage::Surface,
+    Stage::Restack,
   ];
 
   /// Number of distinct stages, i.e. the width of the accumulator arrays.
@@ -465,6 +469,7 @@ impl Stage {
       Stage::RingRaise => "ring_raise",
       Stage::PeekPlace => "peek_place",
       Stage::Surface => "surface",
+      Stage::Restack => "restack",
     }
   }
 
@@ -547,6 +552,7 @@ impl Stage {
         | Stage::RingRaise
         | Stage::PeekPlace
         | Stage::Surface
+        | Stage::Restack
     )
   }
 }
@@ -1723,6 +1729,7 @@ mod tests {
       Stage::RingRaise,
       Stage::PeekPlace,
       Stage::Surface,
+      Stage::Restack,
     ] {
       assert!(stage.is_cross_cutting(), "{}", stage.label());
     }

@@ -109,6 +109,8 @@ const METRICS: &[(&str, &str)] = &[
   ("cross:pd_fill:worst", "pd_fill ms (worst frame)"),
   ("cross:fill_source:worst", "fill_source ms (worst frame)"),
   ("cross:ring_raise:worst", "ring_raise ms (worst frame)"),
+  // `onesurface`'s tiles registered anew over ones they cross.
+  ("cross:restack:worst", "restack ms (worst frame)"),
   (
     "tree:session_overlays:per_frame",
     "session_overlays ms/frame",
@@ -140,6 +142,7 @@ const METRICS: &[(&str, &str)] = &[
   ("outside:peek_raise:total", "peek_raise ms (outside frames)"),
   // `onesurface`'s surface windows: made, shown, hidden and raised.
   ("outside:surface:total", "surface ms (outside frames)"),
+  ("outside:restack:total", "restack ms (outside frames)"),
   (
     "outside:session_overlays:total",
     "session_overlays ms (outside frames)",
