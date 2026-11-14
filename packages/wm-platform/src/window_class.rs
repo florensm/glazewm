@@ -347,6 +347,45 @@ fn next_in_z_order(hwnd: HWND) -> HWND {
   unsafe { GetWindow(hwnd, GW_HWNDNEXT) }
 }
 
+/// Most windows [`z_depths`] walks past each way, bounding a walk of a
+/// z-order that changes under it.
+const MAX_DEPTH_WALK: usize = 4096;
+
+/// Each of `windows`' place in the z-order, in windows down from the first
+/// (negative above it), or `None` for one not met within
+/// [`MAX_DEPTH_WALK`] either way.
+pub(crate) fn z_depths(windows: &[HWND]) -> Vec<Option<i64>> {
+  let Some(&first) = windows.first() else {
+    return Vec::new();
+  };
+  let mut depths = windows
+    .iter()
+    .map(|window| (*window == first).then_some(0))
+    .collect::<Vec<_>>();
+
+  for (direction, step) in [(GW_HWNDNEXT, 1), (GW_HWNDPREV, -1)] {
+    let mut current = first;
+    let mut depth = 0;
+    for _ in 0..MAX_DEPTH_WALK {
+      if depths.iter().all(Option::is_some) {
+        return depths;
+      }
+      // SAFETY: A stale handle just makes `GetWindow` return `HWND(0)`.
+      current = unsafe { GetWindow(current, direction) };
+      if current.0 == 0 {
+        break;
+      }
+      depth += step;
+      for (window, slot) in windows.iter().zip(&mut depths) {
+        if *window == current {
+          *slot = Some(depth);
+        }
+      }
+    }
+  }
+  depths
+}
+
 /// Puts `overlay` in the same always-on-top band as `anchor`, if it isn't
 /// already.
 ///

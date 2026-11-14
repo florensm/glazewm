@@ -1,12 +1,13 @@
 use windows::Win32::Foundation::{HWND, RECT};
 
 use crate::{
+  companion::Companion,
   hidden_alpha::HiddenAlpha,
   native_surrogate::{placed_rects, to_logical},
   overlay_copies::{map_rect, scale_alpha, OverlayCopies},
   resize_session::compute_border_inset,
-  BackdropOverlayParams, CornerStyle, NativeSurrogate, NativeWindow, Rect,
-  StyleBlend, SurrogateBatch,
+  window_class, BackdropOverlayParams, CornerStyle, NativeSurrogate,
+  NativeWindow, PeekSurface, Rect, StyleBlend, SurrogateBatch,
 };
 
 /// Thumbnail opacity a surrogate is warmed up at under its still-shown
@@ -39,6 +40,43 @@ fn frame_rects(
     border_inset,
     origin,
   )
+}
+
+/// Inset carrying `rect` to `frame_rect`, the window's frame within it.
+fn frame_inset(rect: &Rect, frame_rect: &Rect) -> RECT {
+  RECT {
+    left: frame_rect.left - rect.left,
+    top: frame_rect.top - rect.top,
+    right: rect.right - frame_rect.right,
+    bottom: rect.bottom - frame_rect.bottom,
+  }
+}
+
+/// The rank from the bottom of windows at `depths` in the z-order, counted
+/// in windows down from one of them (`None` for one not found): 0 is the
+/// lowest, and ones not found rank lowest.
+fn ranks_bottom_first(depths: &[Option<i64>]) -> Vec<usize> {
+  let mut bottom_first = (0..depths.len()).collect::<Vec<_>>();
+  bottom_first.sort_by_key(|&index| {
+    let depth = depths.get(index).copied().flatten();
+    (depth.is_some(), std::cmp::Reverse(depth))
+  });
+
+  let mut ranks = vec![0; depths.len()];
+  for (rank, index) in bottom_first.into_iter().enumerate() {
+    if let Some(slot) = ranks.get_mut(index) {
+      *slot = rank;
+    }
+  }
+  ranks
+}
+
+/// Each of `windows`' rank in the z-order from the bottom, 0 the lowest:
+/// the order their [`WorkspaceSurrogate`]s, each just below its window,
+/// stack in. Ones not found rank lowest.
+#[must_use]
+pub fn stacking_ranks(windows: &[HWND]) -> Vec<usize> {
+  ranks_bottom_first(&window_class::z_depths(windows))
 }
 
 /// Positioning strategy for a [`WorkspaceSurrogate`].
@@ -91,6 +129,9 @@ pub struct LiveFrame {
 /// instead moved/resized every frame to their current visible rect,
 /// batched via [`SurrogateBatch`]. The surrogate is hidden (via `SW_HIDE`)
 /// when the visible area is empty.
+///
+/// A hosted one (see [`hosted`](Self::hosted)) is pinned on a
+/// [`PeekSurface`] instead of a window of its own.
 pub struct WorkspaceSurrogate {
   inner: NativeSurrogate,
   /// Final screen rect of the window (target position for incoming,
@@ -193,6 +234,10 @@ pub struct WorkspaceSurrogate {
   /// [`carry_ring`]: WorkspaceSurrogate::carry_ring
   /// [`carry_backdrop`]: WorkspaceSurrogate::carry_backdrop
   copies: OverlayCopies,
+
+  /// The clip of the surface it draws on, if hosted, whose top-left its
+  /// thumbnails are placed from.
+  host_clip: Option<Rect>,
 }
 
 impl WorkspaceSurrogate {
@@ -313,12 +358,7 @@ impl WorkspaceSurrogate {
     let stored_rect = to_logical(rect, &deflation);
 
     // Derived before `stored_rect` is moved into the struct below.
-    let frame_inset = RECT {
-      left: frame_rect.left - stored_rect.left,
-      top: frame_rect.top - stored_rect.top,
-      right: stored_rect.right - frame_rect.right,
-      bottom: stored_rect.bottom - frame_rect.bottom,
-    };
+    let frame_inset = frame_inset(&stored_rect, frame_rect);
 
     Ok(Self {
       inner,
@@ -337,7 +377,145 @@ impl WorkspaceSurrogate {
       source: hwnd.0,
       covers_window: false,
       copies: OverlayCopies::default(),
+      host_clip: None,
     })
+  }
+
+  /// Creates a hidden surrogate as [`new`](Self::new) does one pinned to
+  /// `viewport`, drawn on `surface` instead of a window of its own, which
+  /// goes just below `hwnd` as `SurfaceWindow::admit` decides.
+  ///
+  /// `None` for a window in the always-on-top band, which would take the
+  /// surface and its other tenants there, or with a companion, which only
+  /// a window of its own can keep covering at the hand-back (see
+  /// [`cover_window`](Self::cover_window)).
+  #[must_use]
+  pub fn hosted(
+    surface: &PeekSurface,
+    hwnd: HWND,
+    rect: &Rect,
+    frame_rect: &Rect,
+    viewport: &Rect,
+    opacity: u8,
+    opacity_endpoint: f32,
+  ) -> Option<Self> {
+    if window_class::is_topmost(hwnd) || Companion::find(hwnd).is_some() {
+      return None;
+    }
+
+    Some(Self {
+      inner: NativeSurrogate::create_hosted(surface, hwnd, rect, opacity),
+      rect: rect.clone(),
+      viewport: viewport.clone(),
+      opacity,
+      opacity_endpoint: opacity_endpoint.clamp(0.0, 1.0),
+      drawn_frac: Some(1.0),
+      mode: SurrogateMode::PinnedViewport,
+      border_inset: compute_border_inset(hwnd),
+      live_frame: None,
+      unclipped_rect: None,
+      panel: None,
+      frame_inset: frame_inset(rect, frame_rect),
+      hidden_alpha: HiddenAlpha::default(),
+      source: hwnd.0,
+      covers_window: false,
+      copies: OverlayCopies::held(),
+      host_clip: Some(surface.clip().clone()),
+    })
+  }
+
+  /// Whether it draws on a `PeekSurface` (see [`hosted`](Self::hosted)).
+  #[must_use]
+  pub fn is_hosted(&self) -> bool {
+    self.host_clip.is_some()
+  }
+
+  /// The window it shows.
+  #[must_use]
+  pub fn source(&self) -> HWND {
+    HWND(self.source)
+  }
+
+  /// The window's frame where it rests, with its ring if it carries one.
+  #[must_use]
+  pub fn rest_reach(&self) -> Rect {
+    let frame = self.rest_frame();
+    match self.copies.ring_rest() {
+      Some(ring) => frame.union(ring),
+      None => frame,
+    }
+  }
+
+  /// The first and last registration orders of its thumbnails on the
+  /// surface it is hosted on, held ones included (see
+  /// `WindowPeek::stacking`). `None` with none.
+  #[must_use]
+  pub fn stacking(&self) -> Option<(u64, u64)> {
+    self
+      .inner
+      .thumbnail_order()
+      .into_iter()
+      .chain(self.copies.orders())
+      .fold(None, |span, order| {
+        Some(span.map_or((order, order), |(first, last): (u64, u64)| {
+          (first.min(order), last.max(order))
+        }))
+      })
+  }
+
+  /// Registers every thumbnail anew over everything on its surface, in the
+  /// order a surrogate stacks them: backdrop, window, ring. Each part is
+  /// let go before its old thumbnails go, the top one first, as
+  /// `WindowPeek::register_anew` does. Returns whether it did: nothing
+  /// changes if any registration fails.
+  pub fn register_anew(&mut self) -> bool {
+    let dest = self.hwnd();
+    let Some(anew) = self.copies.backdrop_held_anew(dest) else {
+      return false;
+    };
+    let window = match self.inner.thumbnail_held_anew(self.source()) {
+      None if self.inner.has_thumbnail() => return false,
+      window => window,
+    };
+    let Some(mut anew) = self.copies.above_window_held_anew(dest, anew)
+    else {
+      return false;
+    };
+
+    self.copies.put_above_window_anew(&mut anew);
+    if let Some(window) = window {
+      self.inner.put_thumbnail(window);
+    }
+    self.copies.put_backdrop_anew(anew);
+    true
+  }
+
+  /// Where its thumbnails are placed from: its own window's top-left, the
+  /// viewport's, or its surface's.
+  fn origin(&self) -> (i32, i32) {
+    let area = self.host_clip.as_ref().unwrap_or(&self.viewport);
+    (area.left, area.top)
+  }
+
+  /// What the window is drawn cut at, with the workspace's `panel` this
+  /// frame on `monitor`: also the viewport for a hosted one, which its
+  /// own window's bounds would cut it at.
+  fn cut(&self, panel: &Rect, monitor: &Rect) -> Option<Rect> {
+    let clip = panel.intersection(monitor)?;
+    if self.is_hosted() {
+      clip.intersection(&self.viewport)
+    } else {
+      Some(clip)
+    }
+  }
+
+  /// Shows or hides it. A hosted one holds or lets go its copies too,
+  /// which a window of its own would hide with it.
+  fn set_shown(&mut self, is_shown: bool) {
+    self.inner.set_visible(is_shown);
+    if self.is_hosted() {
+      self.copies.set_held(!is_shown);
+    }
   }
 
   /// The window's frame rect where it rests: where the switch starts it
@@ -471,9 +649,10 @@ impl WorkspaceSurrogate {
   /// Switches the window's thumbnail to its companion if one was shown
   /// since the surrogate last looked, e.g. for a window shades had not
   /// covered yet as the switch began. Looks at most every 100 ms (see
-  /// `NativeSurrogate::rechecks_companion`).
+  /// `NativeSurrogate::rechecks_companion`). None for a hosted one (see
+  /// [`adopt_companion`](Self::adopt_companion)).
   pub fn refresh_companion(&mut self) {
-    if self.inner.rechecks_companion() {
+    if !self.is_hosted() && self.inner.rechecks_companion() {
       self.adopt_companion();
     }
   }
@@ -484,7 +663,14 @@ impl WorkspaceSurrogate {
   ///
   /// The companion is drawn as the window was, then at the same fraction
   /// of its own opacity, and the ring copy is put back over it.
+  ///
+  /// None for a hosted one, which can't cover its window at the hand-back
+  /// as one drawing a companion has to (see
+  /// [`cover_window`](Self::cover_window)): it draws the window as it is.
   pub fn adopt_companion(&mut self) {
+    if self.is_hosted() {
+      return;
+    }
     let opacity = self.drawn_frac.map_or(WARM_UP_OPACITY, |frac| {
       scale_alpha(self.window_opacity(), frac)
     });
@@ -526,7 +712,7 @@ impl WorkspaceSurrogate {
   /// Hides the surrogate and clears the cached frame rects, for a frame
   /// where the window has nothing visible left to draw.
   fn clear_frame(&mut self) {
-    self.inner.set_visible(false);
+    self.set_shown(false);
     self.copies.hide_ring();
     self.live_frame = None;
     self.unclipped_rect = None;
@@ -549,7 +735,7 @@ impl WorkspaceSurrogate {
     panel: Rect,
     monitor: &Rect,
   ) -> bool {
-    let Some(clip) = panel.intersection(monitor) else {
+    let Some(clip) = self.cut(&panel, monitor) else {
       self.clear_frame();
       return false;
     };
@@ -564,7 +750,7 @@ impl WorkspaceSurrogate {
         frame,
         &clip,
         self.border_inset,
-        (self.viewport.left, self.viewport.top),
+        self.origin(),
       )
       .map(|rects| (rects, None)),
       SurrogateMode::Live => {
@@ -587,7 +773,7 @@ impl WorkspaceSurrogate {
     };
 
     self.inner.set_thumbnail_rects(rc_src, rc_dst);
-    let origin = (self.viewport.left, self.viewport.top);
+    let origin = self.origin();
     self.copies.place(frame, &clip, origin);
 
     if let Some((shown, visible)) = live {
@@ -603,7 +789,7 @@ impl WorkspaceSurrogate {
         visible,
       });
     }
-    self.inner.set_visible(true);
+    self.set_shown(true);
     self.panel = Some(panel);
 
     true
@@ -631,7 +817,7 @@ impl WorkspaceSurrogate {
     matches!(self.mode, SurrogateMode::Live)
   }
 
-  /// `HWND` of this surrogate.
+  /// `HWND` of this surrogate, or of its surface if hosted.
   ///
   /// Used as the backdrop-overlay tracker's z-order anchor while a
   /// workspace-switch animation is active: the surrogate is what's
@@ -690,8 +876,14 @@ impl WorkspaceSurrogate {
   /// once uncloaked or raised. A semi-transparent one is hidden by its
   /// alpha instead (see [`prepare_hand_back`]).
   ///
+  /// None for a hosted one: its surface stays below every window of the
+  /// switch, and it never draws a companion.
+  ///
   /// [`prepare_hand_back`]: WorkspaceSurrogate::prepare_hand_back
   pub fn cover_window(&mut self) {
+    if self.is_hosted() {
+      return;
+    }
     self.covers_window = true;
     self.inner.keep_above(HWND(self.source));
   }
@@ -952,7 +1144,7 @@ impl Drop for WorkspaceSurrogate {
 
 #[cfg(test)]
 mod tests {
-  use super::{frame_rects, Rect, RECT};
+  use super::{frame_rects, ranks_bottom_first, Rect, RECT};
 
   const MONITOR: Rect = Rect {
     left: 0,
@@ -1022,5 +1214,23 @@ mod tests {
       drawn_at(&Rect::from_xy(93, 100, 407, 304)),
       Some(((7, 0, 807, 600), (97, 100, 497, 400)))
     );
+  }
+
+  /// Deeper in the z-order is lower; windows above the first are higher.
+  #[test]
+  fn windows_rank_from_the_bottom_of_the_z_order() {
+    assert_eq!(
+      ranks_bottom_first(&[Some(0), Some(3), Some(-2), Some(1)]),
+      vec![2, 0, 3, 1]
+    );
+  }
+
+  #[test]
+  fn windows_not_found_rank_lowest() {
+    assert_eq!(
+      ranks_bottom_first(&[Some(0), None, Some(5)]),
+      vec![2, 0, 1]
+    );
+    assert!(ranks_bottom_first(&[]).is_empty());
   }
 }
