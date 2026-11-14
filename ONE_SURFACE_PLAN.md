@@ -242,7 +242,8 @@ A later command retargeting a hosted tile (`retarget_tile`), or reusing
 a landed one, onto a path across another tenant: their parts then stack
 in registration order. `note_crossing` logs it at debug. Options:
 re-register the tenant that must be on top (backdrop, window, fill, ring,
-each new before old goes), or hand it to a peek of its own.
+each new before old goes), or hand it to a peek of its own. Done in step
+2 (B.2).
 
 ### To check on screen (`GLAZEWM_ISOLATE=onesurface`)
 
@@ -257,3 +258,206 @@ each new before old goes), or hand it to a peek of its own.
   they move, and comes back over a landed tile when its peek goes.
 - Interrupted by a workspace switch: no tile left on the old monitor's
   surface, no stray frame.
+
+## Step 2: as built
+
+Branch `os/2-ready`. Not seen running.
+
+### Ready peeks (`readypeeks`)
+
+- When a hosted tile's entry is released (`tick`, `landed.released`),
+  its `WindowPeek` goes to `PeekView.ready` (by window, apart from
+  `entries`, so no query sees it) instead of being dropped:
+  `WindowPeek::set_ready` hides it (every thumbnail held, so the surface
+  counts one fewer drawing tenant), gives back any alpha a handover set
+  aside (as its drop would), resets its copies (`OverlayCopies::set_aside`)
+  and moves it on its surface from the tenants to a `ready` count
+  (`SurfaceWindow::retire`). The surface hides, and takes new tenants
+  again (`raised` reset), exactly as if the peek had gone.
+- Kept only for a tile's peek with no trail (`keeps_ready`). Lifetime
+  `READY_LIFETIME` (5 s), cap `MAX_READY` (16, oldest out).
+- `move_tile` takes the window's ready peek (always out of the store)
+  and uses it only if the window handle and clip are the same, it is not
+  expired (`takes_ready`), the motion `host`s and `tenancy` admits it,
+  on the very surface it is on. Otherwise it is dropped there and a peek
+  is built as in step 1. `reuse_entry` is `new_entry` on it:
+  `WindowPeek::reclaim`, then `carry_styles`, `warm_up` and the same new
+  `Entry`, all inside `peek_new`.
+
+Per part, what it was built from and when it is kept (the pure checks
+have unit tests):
+
+| part | built from | kept when | else |
+|---|---|---|---|
+| window thumbnail | source window, its companion (`Companion::find`) | `keeps_window_thumbnail`: registered, and `Companion::find` now gives the same companion (or none, as before) | registered anew (on top) |
+| backdrop crops, vignette | copyable styles, `BackdropSource` per style on `monitor_bounds(viewport)`, vignette at the window's frame | `keeps_backdrop`: same set of styles, every source on the same monitor; sources refreshed for a changed wallpaper (`BackdropSource::refresh`, as `acquire` does), vignette moved to the new frame (`move_backdrop`) | dropped; `carry_styles` registers them anew (on top, then the window over them) |
+| ring cells | the ring overlay's window, the cut (`RingPart::all(corner_reach)`) | `keeps_ring`, when `carry_ring` next carries it: same overlay window, same parts; rects, rest, corner reach and opacity are set anew from what `carry_ring` is given, as a registration would draw them | registered anew by `carry_ring` |
+| fill strips | `FillSource` of one edge color | `keeps_fill`, when `carry_fill` next carries it: same color | registered anew by `carry_fill` (then the ring raised) |
+
+Validity of the whole ready peek: same window id (the key) and native
+handle, same clip and surface window, not expired, and the motion still
+`hosts_on_surface` and passes `tenancy` (so it is never live, a column,
+a trail, a state change or a stack's window).
+
+### Per-field state after `reclaim`
+
+`WindowPeek` (as `hosted`):
+
+| field | after `reclaim` |
+|---|---|
+| `copies` | see `OverlayCopies` below |
+| `surrogate` | see `NativeSurrogate` below |
+| `mode` | kept: `Pinned` at the surface's clip, which is the same |
+| `source` | the window's handle (the same, by validity) |
+| `border_inset` | `compute_border_inset` again |
+| `rest` | the target rect |
+| `drawn` | `Shown`; `warm_up` follows as for a new one |
+| `shows_backdrop` | false |
+| `opacity`, `frac` | 255, 1.0 |
+| `hidden_alpha` | empty (restored at `set_ready`) |
+| `frame_rect`, `visible_rect` | `None` |
+| `stands_by` | false |
+
+`NativeSurrogate` (hosted, as `create_hosted`), `reclaim`:
+
+| field | after `reclaim` |
+|---|---|
+| `host` | kept: the same surface's window |
+| `thumbnail` | kept with `create_hosted`'s look set on it (content rects of the target, 255, visible, held), or registered anew held |
+| `companion` | `Companion::find` again |
+| `companion_wait` | default |
+| `companion_checked_at` | now |
+| `content_size` | target's size |
+| `border_inset` | none |
+| `is_visible` | false (hidden since `set_ready`) |
+| `last_opacity`, `rest_opacity` | 255 |
+| `last_rect` | `None` |
+| `covered` | from the look, as `create_hosted` |
+| `fill`, `fill_color` | `None` (never set on a hosted one) |
+| `stretch` | false |
+| `window_size` | the clip's size |
+| `is_ready` | false; the surface takes it back as a tenant and goes below the window unless it is already (`SurfaceWindow::rejoin` → `admit`) |
+
+`OverlayCopies` (as `OverlayCopies::held()` followed by `carry_styles`):
+
+| field | after `set_aside` / `reclaim` |
+|---|---|
+| `held` | true |
+| `placement` | `None` |
+| `ring` | `None`: the ring is in `spare_ring` until `carry_ring` takes it back (so nothing of it is placed or drawn before, as with no ring at all) |
+| `fill` | `None`: in `spare_fill` until `carry_fill` takes it back; hidden, not shown, opacity 0, as a just registered one |
+| `backdrop` | kept or dropped (above); kept: no style, `t` 1, not shown, opacity 0, never placed, thumbnails hidden, rest and frame at the target, as `carry_backdrop` leaves a new one |
+| `spare_ring`, `spare_fill` | dropped once anything they must stack above is registered anew (window thumbnail or backdrop at `reclaim` or in `carry_styles`, a companion adopted, `register_anew`) |
+
+The new `Entry` is new: `Handover::None` for ring and backdrop,
+`composited` false, no transit, stretch, hold or trail. So the cover pass
+covers the real ring and backdrop as for a new peek, `carry_ring`'s
+`None` branch parks the overlay and carries the ring (taking the spare
+back instead of registering 8 cells), `Covering` → `Covered` → `Parked`
+→ `Revealed` run as before; `carry_backdrop` sees `carries_backdrop()`
+and walks the same steps. No step is skipped or reordered.
+
+### Stacking
+
+Within a tile, registrations stack backdrop, window, fill, ring.
+Kept parts keep their order. A part registered anew goes on top of
+everything on the surface, so every part that must sit above it is
+registered after it: the backdrop's `carry_styles` raises the window,
+`carry_fill` raises the ring, and the spare fill and ring are dropped
+(to be registered on top when carried) whenever the window thumbnail or
+backdrop is registered anew. Stated on `WindowPeek::reclaim` and
+`OverlayCopies::spare_ring`.
+
+### Purge points
+
+Ready peeks go: on `forget_entering` (unmanage), `leave`, a column
+`upsert`, `enter`, a `move_tile` that doesn't take them, `drop_strays`
+(windows no longer shown, and expired ones; free while none is kept),
+past the lifetime and cap, and always before their surface:
+`retain_surfaces` (display change) drops those of a dropped clip first,
+`drop_surfaces` (reload, pause, shutdown) all of them first, and
+`ready` is declared before `surfaces`.
+
+### Stages
+
+`peek_new` wraps `reuse_entry`. Kept parts cost no registration: in
+`sg_thumb` only `Companion::find` and one property update; in
+`peek_styles` nothing for kept styles; in `peek_ring` and `ring_raise`
+no 8-cell registration (the ring isn't registered anew when the fill is
+taken back). A part rebuilt shows in the stage that builds it, as for a
+new peek.
+
+### B.1: one raise per pass
+
+`platform_sync`'s raise loop opens a raise pass (`set_raise_pass`). A
+surface raised in the pass is marked on top; its next raise in the pass
+is skipped while nothing may have gone above it. That ends with: the
+pass, any `raise_moving` of something other than that surface (an own
+peek, a trail, another surface: `note_raised`), `raise_in_band`, the
+surface going below a joiner (`admit`), shown or hidden
+(`note_drawing`), or raised into a band. Outside a pass every raise is
+made, as in step 1.
+
+### B.2: a retarget across another tenant
+
+Checked against own-window peeks: a retarget (`retarget_tile`) raises
+nothing; they keep the order of the commands that put them up, the
+later on top. A landed one reused for a new command is raised again by
+it. So each tenant gets a rank as `move_tile` puts or reuses it (the
+raise order), not as it is retargeted: the one on top is the later
+ranked, not necessarily the one retargeted.
+
+On a retarget or landed reuse whose lane crosses others on the same
+surface (`crossing_group`, transitive), every tile of the group but the
+lowest-ranked is registered anew in rank order (`register_anew`): all
+its parts go up held in order, then each part is let go before its old
+thumbnails go, top first, so no composition shows the tile without a
+part. The group is kept: at the end of every `tick` and
+`track_overlays`, a member whose registrations changed (late fill,
+companion, ring cut) has every member ranked above it registered anew
+again (`restacked`).
+
+Chosen over moving the tile to a peek of its own: that would need a new
+window mid-motion, a ring and backdrop handover onto it with the real
+ones already parked, and a composited frame before the old peek may go,
+which a retarget pass doesn't flush for; and it would have to move the
+higher-ranked tile, not the retargeted one. Re-registration uses only
+thumbnails of windows already composited.
+
+### B.3: surfaces off the monitors
+
+Making a surface (`tenancy`) first drops every surface with no tenant
+and no ready peek whose clip is none of the monitors' (`is_stale_surface`).
+`move_on_peek` reads the monitors' rects only when no surface spans the
+clip yet.
+
+### Windows functions called by the new code
+
+All already called by `wm-platform`: `DwmRegisterThumbnail`,
+`DwmUpdateThumbnailProperties`, `DwmUnregisterThumbnail` (thumbnails);
+`SetWindowPos` (`admit` on rejoin, fewer surface raises); `ShowWindow`
+(the surface hiding as a peek is set ready, as on its drop);
+`EnumWindows` through `Companion::find`; `GetWindowRect` and
+`DwmGetWindowAttribute` through `compute_border_inset`;
+`MonitorFromPoint`, `GetMonitorInfoW` through `monitor_bounds`; the
+vignette's move and the wallpaper poll through existing helpers;
+`GetLayeredWindowAttributes`/`SetLayeredWindowAttributes` through
+`HiddenAlpha::restore`.
+
+### To check on screen (`GLAZEWM_ISOLATE=onesurface,readypeeks`)
+
+- Two resizes in a row on the same tiles: the second starts with no
+  blank, backdrop-only or ring-less frame; `peek_new`, `peek_ring`,
+  `ring_raise` well under the first's.
+- A resize, a focus change, a resize: the ring copy in the new focus
+  color from the first frame, no second ring line.
+- A resize, a config reload (ring width or backdrop changed), a resize:
+  the new ring width and backdrop, nothing of the old.
+- A window closed between two motions of its neighbours: no frame of it.
+- A swap retargeted across another tile mid-resize: the tile commanded
+  later stays whole over the other (no ring or fill of the lower one over
+  the upper one's window), and a semi-transparent window doesn't flash
+  denser.
+- A display change while tiles move, then a resize: the old clip's
+  surface goes once a surface is made for the new one (one window of the
+  surrogate class per monitor in a window list).
