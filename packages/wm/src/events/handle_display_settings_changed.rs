@@ -81,6 +81,17 @@ pub fn handle_display_settings_changed(
     move_bounded_workspaces_to_new_monitor(&new_monitor, state, config)?;
   }
 
+  // Peek surfaces span a monitor each (`onesurface`).
+  let clips = state
+    .monitors()
+    .iter()
+    .filter_map(|monitor| monitor.to_rect().ok())
+    .collect::<Vec<_>>();
+  state
+    .animation_manager
+    .peeks
+    .retain_surfaces(|clip| clips.contains(clip));
+
   for window in state.windows() {
     // Display setting changes can spread windows out sporadically, so mark
     // all windows as needing a DPI adjustment (just in case).

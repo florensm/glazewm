@@ -1203,6 +1203,7 @@ impl AnimationManager {
     // the tracking state without sending WM_CLOSE.
     self.away_windows.clear();
     self.peeks.forget_all_leaving();
+    self.peeks.drop_surfaces();
     sessions
   }
 

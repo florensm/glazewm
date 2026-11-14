@@ -1,4 +1,5 @@
 use std::{
+  rc::Rc,
   sync::OnceLock,
   time::{Duration, Instant},
 };
@@ -19,12 +20,13 @@ use windows::{
 use crate::{
   companion::{Companion, HandoffWait, COMPANION_OPACITY},
   dwm_thumbnail::{clip_rects, Look, Thumbnail},
+  peek_surface::SurfaceWindow,
   platform_impl::{self, composition::SurrogateFill},
   window_class::{self, DeferredPositions},
-  Color, CornerStyle, Rect,
+  Color, CornerStyle, PeekSurface, Rect,
 };
 
-const CLASS_NAME: PCWSTR = w!("GlazeWM_Surrogate");
+pub(crate) const CLASS_NAME: PCWSTR = w!("GlazeWM_Surrogate");
 
 /// How often a stand-in showing no companion looks for one shown since
 /// (see [`NativeSurrogate::rechecks_companion`]). Time-based, as ticks run
@@ -32,7 +34,7 @@ const CLASS_NAME: PCWSTR = w!("GlazeWM_Surrogate");
 /// `Companion::find`'s cache is an `EnumWindows` scan.
 const COMPANION_RECHECK_INTERVAL: Duration = Duration::from_millis(100);
 
-fn ensure_class_registered() {
+pub(crate) fn ensure_class_registered() {
   static REGISTERED: OnceLock<()> = OnceLock::new();
   window_class::ensure_class_registered(
     &REGISTERED,
@@ -60,7 +62,7 @@ pub(crate) fn is_surrogate(hwnd: HWND) -> bool {
 /// overlay's ring shows a second line inside it for every transition, as
 /// it would on the real window (see `set_native_border_hidden`). Both are
 /// no-ops before Windows 11.
-fn style_like_window(hwnd: HWND, corner_style: CornerStyle) {
+pub(crate) fn style_like_window(hwnd: HWND, corner_style: CornerStyle) {
   let corner_style = match corner_style {
     CornerStyle::Default => CornerStyle::Rounded,
     style => style,
@@ -139,17 +141,19 @@ fn sampled_rects(
 
 /// Registers a DWM thumbnail of `source_hwnd` -- or of its `companion`,
 /// when it has one -- onto `dest_hwnd`, showing `look` (see
-/// [`thumbnail_look`]).
+/// [`thumbnail_look`]), kept hidden if `held` (see `Thumbnail::set_held`).
 fn register_thumbnail(
   dest_hwnd: HWND,
   source_hwnd: HWND,
   companion: Option<Companion>,
   look: Look,
+  held: bool,
 ) -> Option<Thumbnail> {
-  Thumbnail::register_with(
+  Thumbnail::register_held(
     dest_hwnd,
     companion.map_or(source_hwnd, Companion::hwnd),
     look,
+    held,
   )
 }
 
@@ -446,9 +450,15 @@ pub(crate) fn to_logical(rect: &Rect, inset: &RECT) -> Rect {
 ///
 /// The gap fill needs `Windows.UI.Composition` (Windows 10 1803+);
 /// without it the surrogate still shows its thumbnail.
+///
+/// A hosted one (see [`create_hosted`]) draws on a [`PeekSurface`]'s
+/// window instead of one of its own, which it can't move, show or hide:
+/// each method that would says what it does instead.
+///
+/// [`create_hosted`]: NativeSurrogate::create_hosted
 pub struct NativeSurrogate {
-  /// Handle to the overlay window.
-  hwnd: isize,
+  /// The window it draws on.
+  host: Host,
   /// DWM thumbnail, or `None` if registration failed.
   thumbnail: Option<Thumbnail>,
   /// The source window's companion, which the thumbnail samples instead
@@ -501,6 +511,14 @@ pub struct NativeSurrogate {
   stretch: bool,
   /// Current size of the surrogate window, the stretch destination.
   window_size: (i32, i32),
+}
+
+/// The window a [`NativeSurrogate`] draws on.
+enum Host {
+  /// Its own, destroyed with it.
+  Own(isize),
+  /// A [`PeekSurface`]'s, shared with other surrogates.
+  Shared(Rc<SurfaceWindow>),
 }
 
 impl NativeSurrogate {
@@ -617,7 +635,8 @@ impl NativeSurrogate {
       opacity,
       stretch.then_some(window_size),
     );
-    let thumbnail = register_thumbnail(hwnd, source_hwnd, companion, look);
+    let thumbnail =
+      register_thumbnail(hwnd, source_hwnd, companion, look, false);
     drop(thumb_scope);
 
     // Constructed before the final `SetWindowPos` call (rather than after)
@@ -625,7 +644,7 @@ impl NativeSurrogate {
     // `Drop`'s thumbnail-unregister and window-destroy cleanup —
     // instead of leaking the overlay window and DWM thumbnail.
     let this = Self {
-      hwnd: hwnd.0,
+      host: Host::Own(hwnd.0),
       thumbnail,
       companion,
       companion_wait: HandoffWait::default(),
@@ -665,6 +684,81 @@ impl NativeSurrogate {
     Ok(this)
   }
 
+  /// Creates a hidden surrogate drawing `source_hwnd` on `surface`, as
+  /// [`create`](Self::create) does one spanning the surface's clip with
+  /// no border inset, square corners and no stretch, just below
+  /// `source_hwnd`.
+  ///
+  /// The surface goes below `source_hwnd` unless it already is (see
+  /// `SurfaceWindow::admit`), so it must take tenants (see
+  /// [`PeekSurface::takes_tenants`]). A failed registration leaves it
+  /// without a thumbnail, as for `create`.
+  #[must_use]
+  pub fn create_hosted(
+    surface: &PeekSurface,
+    source_hwnd: HWND,
+    thumbnail_rect: &Rect,
+    opacity: u8,
+  ) -> Self {
+    let window = Rc::clone(surface.window());
+    let border_inset = RECT::default();
+    let clip = window.clip();
+    let window_size = (clip.width(), clip.height());
+
+    // No window to create: `sg_window` has nothing to time here.
+    let thumb_scope =
+      crate::perf::scope(crate::perf::Stage::SurrogateThumb);
+    let companion = Companion::find(source_hwnd);
+    let (src, dst) = content_rects(
+      thumbnail_rect.width(),
+      thumbnail_rect.height(),
+      border_inset,
+    );
+    let look =
+      thumbnail_look(companion, src, dst, border_inset, opacity, None);
+    let thumbnail = register_thumbnail(
+      window.hwnd(),
+      source_hwnd,
+      companion,
+      look,
+      true,
+    );
+    drop(thumb_scope);
+
+    window.admit(source_hwnd);
+
+    Self {
+      host: Host::Shared(window),
+      thumbnail,
+      companion,
+      companion_wait: HandoffWait::default(),
+      companion_checked_at: Instant::now(),
+      content_size: (thumbnail_rect.width(), thumbnail_rect.height()),
+      border_inset,
+      is_visible: false,
+      last_opacity: opacity,
+      rest_opacity: opacity,
+      last_rect: None,
+      covered: covered_extent(&look, false, window_size),
+      fill: None,
+      fill_color: None,
+      stretch: false,
+      window_size,
+    }
+  }
+
+  /// Whether it draws on a [`PeekSurface`] (see
+  /// [`create_hosted`](Self::create_hosted)).
+  #[must_use]
+  pub fn is_hosted(&self) -> bool {
+    matches!(self.host, Host::Shared(_))
+  }
+
+  /// Whether its thumbnails are to be kept hidden: hosted and hidden.
+  fn is_held(&self) -> bool {
+    self.is_hosted() && !self.is_visible
+  }
+
   /// Reconfigures this already-existing surrogate window (and its DWM
   /// thumbnail registration, when still valid) to track a fresh
   /// resize/move session on `source_hwnd`, instead of creating a brand
@@ -684,6 +778,8 @@ impl NativeSurrogate {
   /// the previous session re-registers the thumbnail, since a source rect
   /// cannot be unset once applied.
   ///
+  /// Fails for a hosted one, which is never kept warm.
+  ///
   /// [`create`]: NativeSurrogate::create
   #[allow(clippy::too_many_arguments)]
   pub fn revive(
@@ -697,6 +793,12 @@ impl NativeSurrogate {
     insert_after: HWND,
     stretch: bool,
   ) -> crate::Result<()> {
+    if self.is_hosted() {
+      return Err(crate::Error::Platform(
+        "A hosted surrogate can't be revived.".to_string(),
+      ));
+    }
+
     // A fill left on from the previous session must not show before this
     // one decides whether it wants one.
     self.set_fill_color(None);
@@ -756,8 +858,13 @@ impl NativeSurrogate {
         let _ = thumbnail.set(look);
       }
       None => {
-        self.thumbnail =
-          register_thumbnail(self.hwnd(), source_hwnd, companion, look);
+        self.thumbnail = register_thumbnail(
+          self.hwnd(),
+          source_hwnd,
+          companion,
+          look,
+          false,
+        );
       }
     }
     drop(thumb_scope);
@@ -810,6 +917,8 @@ impl NativeSurrogate {
   /// it.
   ///
   /// With `batch`, a move of an already shown surrogate is queued into it.
+  /// A hosted one, which can't move, draws the part at its place on its
+  /// surface.
   ///
   /// Returns the visible rect, if any.
   pub fn show_clipped(
@@ -825,12 +934,16 @@ impl NativeSurrogate {
       return None;
     };
 
+    let origin = match &self.host {
+      Host::Own(_) => (visible.left, visible.top),
+      Host::Shared(window) => (window.clip().left, window.clip().top),
+    };
     let Some((src, dst)) = placed_rects(
       logical,
       logical,
       (logical.width(), logical.height()),
       border_inset,
-      (visible.left, visible.top),
+      origin,
     ) else {
       self.set_visible(false);
       return None;
@@ -844,7 +957,7 @@ impl NativeSurrogate {
   }
 
   /// Moves the surrogate to `rect`. With `batch`, a move of an already
-  /// shown surrogate is queued into it.
+  /// shown surrogate is queued into it. None for a hosted one.
   pub(crate) fn move_to(
     &mut self,
     rect: &Rect,
@@ -862,10 +975,14 @@ impl NativeSurrogate {
     }
   }
 
-  /// Returns the raw handle of the surrogate overlay window.
+  /// Returns the raw handle of the window it draws on: its own, or its
+  /// surface's.
   #[must_use]
   pub fn hwnd(&self) -> HWND {
-    HWND(self.hwnd)
+    match &self.host {
+      Host::Own(hwnd) => HWND(*hwnd),
+      Host::Shared(window) => window.hwnd(),
+    }
   }
 
   /// Returns `true` when a DWM thumbnail was successfully registered.
@@ -980,9 +1097,13 @@ impl NativeSurrogate {
       opacity,
       self.stretch.then_some(self.window_size),
     );
-    let Some(thumbnail) =
-      register_thumbnail(self.hwnd(), source_hwnd, Some(companion), look)
-    else {
+    let Some(thumbnail) = register_thumbnail(
+      self.hwnd(),
+      source_hwnd,
+      Some(companion),
+      look,
+      self.is_held(),
+    ) else {
       return false;
     };
 
@@ -1002,18 +1123,30 @@ impl NativeSurrogate {
 
   /// Restacks the surrogate directly above `window`, so it covers the
   /// window once uncloaked instead of sitting behind it.
+  ///
+  /// None for a hosted one: its surface is raised over every tile it
+  /// draws, and moved down to one it would take others under them.
   pub fn raise_above(&self, window: HWND) -> crate::Result<()> {
-    window_class::place_above(self.hwnd(), window)
+    let Host::Own(hwnd) = self.host else {
+      return Ok(());
+    };
+    window_class::place_above(HWND(hwnd), window)
   }
 
   /// Restacks the surrogate at the top of the non-topmost windows, as
-  /// [`create`](Self::create) places it given `HWND(0)` (`HWND_TOP`).
+  /// [`create`](Self::create) places it given `HWND(0)` (`HWND_TOP`). A
+  /// hosted one restacks its surface, with every surrogate on it.
   pub fn raise_to_top(&self) -> crate::Result<()> {
-    // SAFETY: `HWND(self.hwnd)` is valid until `drop`; the flags leave
-    // position, size and activation untouched.
+    let hwnd = match &self.host {
+      Host::Own(hwnd) => HWND(*hwnd),
+      Host::Shared(window) => return window.raise_to_top(),
+    };
+
+    // SAFETY: `hwnd` is valid until `drop`; the flags leave position,
+    // size and activation untouched.
     unsafe {
       SetWindowPos(
-        HWND(self.hwnd),
+        hwnd,
         HWND(0),
         0,
         0,
@@ -1026,15 +1159,23 @@ impl NativeSurrogate {
   }
 
   /// Restacks the surrogate at the top of the always-on-top band if
-  /// `topmost`, else at the top of the other windows.
+  /// `topmost`, else at the top of the other windows. A hosted one
+  /// restacks its surface, with every surrogate on it.
   pub fn raise_to_top_of_band(&self, topmost: bool) -> crate::Result<()> {
-    window_class::raise_to_top_of_band(self.hwnd(), topmost)
+    match &self.host {
+      Host::Own(hwnd) => {
+        window_class::raise_to_top_of_band(HWND(*hwnd), topmost)
+      }
+      Host::Shared(window) => window.raise_to_top_of_band(topmost),
+    }
   }
 
   /// Puts the surrogate directly above `anchor`, unless it already is
   /// anywhere above it, so it keeps covering a window raised past it.
+  /// None for a hosted one, as for [`raise_above`](Self::raise_above).
   pub(crate) fn keep_above(&self, anchor: HWND) {
-    if crate::companion::is_above(self.hwnd(), anchor) {
+    if self.is_hosted() || crate::companion::is_above(self.hwnd(), anchor)
+    {
       return;
     }
     if let Err(err) = self.raise_above(anchor) {
@@ -1051,6 +1192,9 @@ impl NativeSurrogate {
   }
 
   /// Shows or hides the surrogate overlay window without activating it.
+  /// A hosted one shows or hides its thumbnail, kept hidden meanwhile
+  /// whatever it is set to show, and its surface follows its surrogates
+  /// (see `SurfaceWindow::note_drawing`).
   ///
   /// No-op when the window is already in the requested state.
   pub fn set_visible(&mut self, visible: bool) {
@@ -1062,12 +1206,20 @@ impl NativeSurrogate {
       return;
     }
     self.is_visible = visible;
-    // SAFETY: `HWND(self.hwnd)` is valid until `drop`.
-    unsafe {
-      ShowWindow(
-        HWND(self.hwnd),
-        if visible { SW_SHOWNOACTIVATE } else { SW_HIDE },
-      );
+    match &self.host {
+      // SAFETY: `hwnd` is valid until `drop`.
+      Host::Own(hwnd) => unsafe {
+        ShowWindow(
+          HWND(*hwnd),
+          if visible { SW_SHOWNOACTIVATE } else { SW_HIDE },
+        );
+      },
+      Host::Shared(window) => {
+        if let Some(thumbnail) = &mut self.thumbnail {
+          thumbnail.set_held(!visible);
+        }
+        window.note_drawing(visible);
+      }
     }
   }
 
@@ -1077,17 +1229,20 @@ impl NativeSurrogate {
   /// Use this when the thumbnail is managed separately (e.g.
   /// workspace-switch slide animations that update
   /// `rcSource`/`rcDestination` independently). No-op when `rect`
-  /// matches the last applied position.
+  /// matches the last applied position, and for a hosted one, whose
+  /// surface spans its clip.
   pub fn reposition(&mut self, rect: &Rect) -> crate::Result<()> {
+    let Host::Own(hwnd) = self.host else {
+      return Ok(());
+    };
     if self.last_rect.as_ref() == Some(rect) {
       return Ok(());
     }
-    // SAFETY: `HWND(self.hwnd)` is the overlay created in `create` and
-    // remains valid until `drop`. `SWP_NOZORDER` makes
-    // `hWndInsertAfter` irrelevant.
+    // SAFETY: `hwnd` is the overlay created in `create` and remains valid
+    // until `drop`. `SWP_NOZORDER` makes `hWndInsertAfter` irrelevant.
     unsafe {
       SetWindowPos(
-        HWND(self.hwnd),
+        HWND(hwnd),
         HWND(0),
         rect.x(),
         rect.y(),
@@ -1239,10 +1394,11 @@ impl NativeSurrogate {
       self.stretch.then_some(self.window_size),
     );
     self.thumbnail = register_thumbnail(
-      HWND(self.hwnd),
+      self.hwnd(),
       source_hwnd,
       self.companion,
       look,
+      self.is_held(),
     );
     self.content_size = (logical_width, logical_height);
     self.set_covered(covered_extent(
@@ -1270,10 +1426,11 @@ impl NativeSurrogate {
     // Unregistered first, as two would draw the window twice.
     self.thumbnail = None;
     self.thumbnail = register_thumbnail(
-      HWND(self.hwnd),
+      self.hwnd(),
       source_hwnd,
       self.companion,
       look,
+      self.is_held(),
     );
   }
 
@@ -1294,8 +1451,11 @@ impl NativeSurrogate {
   /// nothing per frame. The first color builds the composition tree, one
   /// blocking hop to the composition thread per surrogate; a failure
   /// leaves the surrogate without a fill.
+  ///
+  /// None for a hosted one: rooted on its surface, a fill would cover the
+  /// whole surface, and a window takes one composition tree only.
   pub fn set_fill_color(&mut self, color: Option<&Color>) {
-    if self.fill_color.as_ref() == color {
+    if self.is_hosted() || self.fill_color.as_ref() == color {
       return;
     }
 
@@ -1358,16 +1518,20 @@ impl NativeSurrogate {
   /// All surrogates queued into the same [`SurrogateBatch`] are
   /// repositioned atomically when the batch is committed, so adjacent
   /// windows' edges move in the same DWM composition frame. No-op when
-  /// `rect` matches the last applied position.
+  /// `rect` matches the last applied position, and for a hosted one, as
+  /// for [`reposition`](Self::reposition).
   pub fn defer_reposition(
     &mut self,
     batch: &mut SurrogateBatch,
     rect: &Rect,
   ) {
+    let Host::Own(hwnd) = self.host else {
+      return;
+    };
     if self.last_rect.as_ref() == Some(rect) {
       return;
     }
-    batch.push(self.hwnd, rect.clone());
+    batch.push(hwnd, rect.clone());
     self.last_rect = Some(rect.clone());
     self.set_window_size(rect);
   }
@@ -1380,9 +1544,19 @@ impl Drop for NativeSurrogate {
     self.fill.take();
     self.thumbnail.take();
 
-    // SAFETY: `self.hwnd` is the window created by this type.
-    unsafe {
-      let _ = DestroyWindow(HWND(self.hwnd));
+    match &self.host {
+      // SAFETY: `hwnd` is the window created by this type.
+      Host::Own(hwnd) => unsafe {
+        let _ = DestroyWindow(HWND(*hwnd));
+      },
+      // The surface's window stays, held by `host` until it is dropped
+      // after this.
+      Host::Shared(window) => {
+        if self.is_visible {
+          window.note_drawing(false);
+        }
+        window.release();
+      }
     }
   }
 }

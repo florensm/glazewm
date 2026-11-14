@@ -168,12 +168,14 @@ impl RingCopy {
   /// or, cut anew, drawn as `placement` places them, at the opacity they
   /// were drawn at. All go up before the old ones go, so no composition
   /// shows neither; if any fails, the old ones stay. Returns whether the
-  /// new ones went up.
+  /// new ones went up. `held` ones are kept hidden (see
+  /// `Thumbnail::set_held`).
   fn register_anew(
     &mut self,
     dest: HWND,
     corner_reach: Option<i32>,
     placement: Option<&Placement>,
+    held: bool,
   ) -> bool {
     let parts = if corner_reach == self.corner_reach {
       self
@@ -193,7 +195,8 @@ impl RingCopy {
       self.looks(corner_reach, placement.filter(|_| is_shown), opacity)
     };
 
-    let Some(parts) = register_all(dest, HWND(self.source), parts) else {
+    let Some(parts) = register_all(dest, HWND(self.source), parts, held)
+    else {
       return false;
     };
     self.parts = parts;
@@ -251,19 +254,27 @@ impl RingCopy {
       thumbnail.hide();
     }
   }
+
+  fn set_held(&mut self, held: bool) {
+    for (_, thumbnail) in &mut self.parts {
+      thumbnail.set_held(held);
+    }
+  }
 }
 
 /// Registers a thumbnail of `source` on `dest` drawing each of `parts` as
-/// its look says from its first frame, or none if any fails.
+/// its look says from its first frame, or none if any fails. `held` ones
+/// are kept hidden (see `Thumbnail::set_held`).
 fn register_all(
   dest: HWND,
   source: HWND,
   parts: Vec<(RingPart, Look)>,
+  held: bool,
 ) -> Option<Vec<(RingPart, Thumbnail)>> {
   parts
     .into_iter()
     .map(|(part, look)| {
-      Thumbnail::register_with(dest, source, look)
+      Thumbnail::register_held(dest, source, look, held)
         .map(|thumbnail| (part, thumbnail))
     })
     .collect()
@@ -315,6 +326,11 @@ impl FillCopy {
     let opacity = if self.is_shown { self.opacity } else { 0 };
     let _ = self.right.set_opacity(opacity);
     let _ = self.bottom.set_opacity(opacity);
+  }
+
+  fn set_held(&mut self, held: bool) {
+    self.right.set_held(held);
+    self.bottom.set_held(held);
   }
 }
 
@@ -490,6 +506,15 @@ impl BackdropCopy {
         .set_opacity(scale_alpha(opacity, strength));
     }
   }
+
+  fn set_held(&mut self, held: bool) {
+    for crop in &mut self.crops {
+      crop.thumbnail.set_held(held);
+    }
+    if let Some(vignette) = &mut self.vignette {
+      vignette.copy.thumbnail.set_held(held);
+    }
+  }
 }
 
 /// The crops a fade from crop `from` to crop `to`, `t` of the way, draws,
@@ -571,9 +596,40 @@ pub(crate) struct OverlayCopies {
   fill: Option<FillCopy>,
   /// Where they were last placed.
   placement: Option<Placement>,
+  /// Whether they are all kept hidden, those registered from now on too
+  /// (see [`set_held`](Self::set_held)).
+  held: bool,
 }
 
 impl OverlayCopies {
+  /// Copies kept hidden until [`set_held`](Self::set_held) lets them go.
+  pub(crate) fn held() -> Self {
+    Self {
+      held: true,
+      ..Self::default()
+    }
+  }
+
+  /// Keeps every copy hidden, whatever it is set to draw, or lets them
+  /// draw that again: for a surrogate hidden on a window it shares with
+  /// others, which can't hide the window (see `PeekSurface`).
+  pub(crate) fn set_held(&mut self, held: bool) {
+    if self.held == held {
+      return;
+    }
+
+    self.held = held;
+    if let Some(backdrop) = &mut self.backdrop {
+      backdrop.set_held(held);
+    }
+    if let Some(fill) = &mut self.fill {
+      fill.set_held(held);
+    }
+    if let Some(ring) = &mut self.ring {
+      ring.set_held(held);
+    }
+  }
+
   /// Draws the ring of `source`, an overlay window at `rest` around a
   /// window at `window_rest`, on `dest` from now on, where the others were
   /// last placed if they were: whole, or with `corner_reach` (see
@@ -595,7 +651,12 @@ impl OverlayCopies {
       ring.rest = rest.clone();
       ring.window_rest = window_rest.clone();
       if ring.corner_reach != corner_reach {
-        ring.register_anew(dest, corner_reach, self.placement.as_ref());
+        ring.register_anew(
+          dest,
+          corner_reach,
+          self.placement.as_ref(),
+          self.held,
+        );
       }
       return true;
     }
@@ -608,7 +669,7 @@ impl OverlayCopies {
       corner_reach,
     };
     let looks = ring.looks(corner_reach, self.placement.as_ref(), 0);
-    self.ring = register_all(dest, source, looks)
+    self.ring = register_all(dest, source, looks, self.held)
       .map(|parts| RingCopy { parts, ..ring });
     self.ring.is_some()
   }
@@ -625,7 +686,12 @@ impl OverlayCopies {
       .as_mut()
       .filter(|ring| ring.corner_reach != corner_reach)
     {
-      ring.register_anew(dest, corner_reach, self.placement.as_ref());
+      ring.register_anew(
+        dest,
+        corner_reach,
+        self.placement.as_ref(),
+        self.held,
+      );
     }
   }
 
@@ -644,7 +710,7 @@ impl OverlayCopies {
   pub(crate) fn raise_ring(&mut self, dest: HWND) {
     let _scope = crate::perf::scope(crate::perf::Stage::RingRaise);
     if let Some(ring) = &mut self.ring {
-      ring.register_anew(dest, ring.corner_reach, None);
+      ring.register_anew(dest, ring.corner_reach, None, self.held);
     }
   }
 
@@ -710,7 +776,7 @@ impl OverlayCopies {
           continue;
         }
       };
-      if let Some(thumbnail) = Thumbnail::register(dest, source.hwnd()) {
+      if let Some(thumbnail) = self.register_hidden(dest, source.hwnd()) {
         crops.push(CropCopy {
           thumbnail,
           source,
@@ -735,7 +801,7 @@ impl OverlayCopies {
           .ok()
       })
       .and_then(|source| {
-        Thumbnail::register(dest, source.hwnd()).map(|thumbnail| {
+        self.register_hidden(dest, source.hwnd()).map(|thumbnail| {
           VignetteCopy {
             copy: OverlayCopy {
               thumbnail,
@@ -764,6 +830,16 @@ impl OverlayCopies {
     self.backdrop = Some(backdrop);
     self.raise_fill(dest);
     true
+  }
+
+  /// Registers a hidden thumbnail of `source` on `dest`, held while these
+  /// copies are.
+  fn register_hidden(
+    &self,
+    dest: HWND,
+    source: HWND,
+  ) -> Option<Thumbnail> {
+    Thumbnail::register_held(dest, source, Look::default(), self.held)
   }
 
   pub(crate) fn carries_backdrop(&self) -> bool {
@@ -862,8 +938,8 @@ impl OverlayCopies {
       },
     );
     let (Some(right), Some(bottom)) = (
-      Thumbnail::register_with(dest, source.hwnd(), looks.0),
-      Thumbnail::register_with(dest, source.hwnd(), looks.1),
+      Thumbnail::register_held(dest, source.hwnd(), looks.0, self.held),
+      Thumbnail::register_held(dest, source.hwnd(), looks.1, self.held),
     ) else {
       return false;
     };
@@ -921,8 +997,18 @@ impl OverlayCopies {
 
     let source = fill.source.hwnd();
     if let (Some(right), Some(bottom)) = (
-      Thumbnail::register_with(dest, source, *fill.right.look()),
-      Thumbnail::register_with(dest, source, *fill.bottom.look()),
+      Thumbnail::register_held(
+        dest,
+        source,
+        *fill.right.look(),
+        self.held,
+      ),
+      Thumbnail::register_held(
+        dest,
+        source,
+        *fill.bottom.look(),
+        self.held,
+      ),
     ) {
       fill.right = right;
       fill.bottom = bottom;

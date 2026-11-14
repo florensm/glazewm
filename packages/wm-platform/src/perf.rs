@@ -326,11 +326,14 @@ pub enum Stage {
   /// `PeekView::move_tile`'s first draw of the peek, at the motion's
   /// start.
   PeekPlace,
+  /// A `PeekSurface`'s window: its creation, shows and hides, and moves
+  /// in the z-order.
+  Surface,
 }
 
 impl Stage {
   /// Every stage, in report order.
-  const ALL: [Stage; 58] = [
+  const ALL: [Stage; 59] = [
     Stage::Command,
     Stage::PeekFrame,
     Stage::PeekDraw,
@@ -389,6 +392,7 @@ impl Stage {
     Stage::FillSource,
     Stage::RingRaise,
     Stage::PeekPlace,
+    Stage::Surface,
   ];
 
   /// Number of distinct stages, i.e. the width of the accumulator arrays.
@@ -460,6 +464,7 @@ impl Stage {
       Stage::FillSource => "fill_source",
       Stage::RingRaise => "ring_raise",
       Stage::PeekPlace => "peek_place",
+      Stage::Surface => "surface",
     }
   }
 
@@ -541,6 +546,7 @@ impl Stage {
         | Stage::FillSource
         | Stage::RingRaise
         | Stage::PeekPlace
+        | Stage::Surface
     )
   }
 }
@@ -1716,6 +1722,7 @@ mod tests {
       Stage::FillSource,
       Stage::RingRaise,
       Stage::PeekPlace,
+      Stage::Surface,
     ] {
       assert!(stage.is_cross_cutting(), "{}", stage.label());
     }

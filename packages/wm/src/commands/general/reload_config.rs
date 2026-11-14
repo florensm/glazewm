@@ -76,6 +76,8 @@ pub fn reload_config(
   // Clear active binding modes.
   state.binding_modes = Vec::new();
 
+  state.animation_manager.peeks.drop_surfaces();
+
   // Redraw full container tree.
   state
     .pending_sync

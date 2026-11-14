@@ -32,6 +32,9 @@ pub(crate) struct Look {
 pub(crate) struct Thumbnail {
   handle: isize,
   look: Look,
+  /// Whether it is kept hidden whatever `look` says, as the stand-in it
+  /// belongs to is hidden on a window it shares (see `PeekSurface`).
+  held: bool,
 }
 
 impl Thumbnail {
@@ -49,10 +52,21 @@ impl Thumbnail {
     source: HWND,
     look: Look,
   ) -> Option<Self> {
+    Self::register_held(dest, source, look, false)
+  }
+
+  /// [`register_with`](Self::register_with), kept hidden from its first
+  /// frame if `held` (see [`set_held`](Self::set_held)).
+  pub fn register_held(
+    dest: HWND,
+    source: HWND,
+    look: Look,
+    held: bool,
+  ) -> Option<Self> {
     // SAFETY: Registration fails for anything but two valid top-level
     // windows.
     let handle = unsafe { DwmRegisterThumbnail(dest, source) }.ok()?;
-    let thumbnail = Self { handle, look };
+    let thumbnail = Self { handle, look, held };
 
     let mut flags = DWM_TNP_RECTDESTINATION
       | DWM_TNP_OPACITY
@@ -66,8 +80,21 @@ impl Thumbnail {
     Some(thumbnail)
   }
 
+  /// What it shows, or would if not held.
   pub fn look(&self) -> &Look {
     &self.look
+  }
+
+  /// Keeps it hidden whatever its look says, or lets it show that again.
+  pub fn set_held(&mut self, held: bool) {
+    if self.held == held {
+      return;
+    }
+
+    self.held = held;
+    if self.look.visible {
+      let _ = self.apply(DWM_TNP_VISIBLE, &self.look);
+    }
   }
 
   /// Shows `look`, sending DWM only what differs from what it shows now.
@@ -82,15 +109,14 @@ impl Thumbnail {
     if look.opacity != self.look.opacity {
       flags |= DWM_TNP_OPACITY;
     }
-    if look.visible != self.look.visible {
+    if look.visible != self.look.visible && !self.held {
       flags |= DWM_TNP_VISIBLE;
     }
 
-    if flags == 0 {
-      return Ok(());
+    // Held, a change of visibility is only noted, for when it is let go.
+    if flags != 0 {
+      self.apply(flags, &look)?;
     }
-
-    self.apply(flags, &look)?;
     self.look = Look {
       source: look.source.or(self.look.source),
       ..look
@@ -150,7 +176,7 @@ impl Thumbnail {
       rcSource: look.source.unwrap_or_default(),
       rcDestination: look.dest,
       opacity: look.opacity,
-      fVisible: look.visible.into(),
+      fVisible: (look.visible && !self.held).into(),
       fSourceClientAreaOnly: false.into(),
     };
 

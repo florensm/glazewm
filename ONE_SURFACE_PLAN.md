@@ -141,3 +141,119 @@ report.
 `-Modes nopeeks,default,onesurface,onesurface+readypeeks`, then the same
 with `earlyfill+latealpha+keepfills` added to the last two. One
 `--dwm` run (elevated) of `default` against `onesurface` for GPU.
+
+## Step 1: as built
+
+Branch `os/1-surface`. Not seen running.
+
+### Representation
+
+- `PeekSurface` (`wm-platform/src/peek_surface.rs`): a handle on an
+  `Rc<SurfaceWindow>`, the window plus counts of tenants and of tenants
+  drawing, and whether it was raised since it was last empty. Every
+  hosted peek holds the `Rc`, so the window is destroyed only once the
+  surface and all its peeks are gone; nothing is `Send` here already
+  (`OverlayCopies` holds `Rc`s).
+- `NativeSurrogate` owns a `Host`: `Own(hwnd)` as before, or
+  `Shared(Rc<SurfaceWindow>)` (`create_hosted`). `WindowPeek::hosted` is
+  always pinned, its viewport the surface's clip. Placement code is
+  untouched: every thumbnail already goes to `surrogate.hwnd()` in
+  viewport coordinates.
+- Per-tenant visibility is `Thumbnail::set_held`: held thumbnails send
+  `fVisible = false` whatever their look says, and thumbnails registered
+  while their peek is hidden are registered held. `WindowPeek::set_shown`
+  holds the window's thumbnail and every copy (`OverlayCopies::set_held`).
+
+### Hosted meaning of each window operation
+
+| `NativeSurrogate` / `WindowPeek` | hosted |
+|---|---|
+| `create` (`create_popup`, `style_like_window`, `SetWindowPos`) | `create_hosted`: registers held on the surface, which goes below the tile's window unless it is already (`SurfaceWindow::admit`); no `sg_window`, `sg_thumb` as before |
+| `set_visible` | holds or lets go the thumbnail; the surface's drawing count shows it at 1 and hides it at 0 |
+| `reposition`, `defer_reposition`, `move_to`, `repin` | none |
+| `show_clipped` (live only) | draws at its place on the surface |
+| `raise_to_top`, `raise_to_top_of_band` | the surface's (marks it raised) |
+| `raise_above` (`begin_hand_back`), `keep_above` | none |
+| `revive` | error: never kept warm |
+| `set_fill_color` (gap fill) | none: one composition tree per window |
+| `hwnd()` (overlay anchor, `peek_hwnd`, `stand_in`) | the surface's |
+| `Drop` | thumbnails go, tenant count down, window stays |
+
+### Who goes on a surface
+
+`hosts_on_surface`: `onesurface`, and not a state change, a stack's
+window (its tab bar is a window behind the stand-in), a trail, or a live
+peek. `hold_on_peek` and `fullscreen_on_peek` never host. Then
+`PeekView::tenancy`, for a new entry only: the clip's surface (made on
+first use) takes tenants, i.e. was not raised since it was last empty,
+and every tenant on it is on the same timing, not started yet, and
+`lanes_stay_apart` from the new one (visible frame plus ring reach, at
+both ends; a changing gap only without overshoot). Otherwise a window of
+its own, as today.
+
+Why the lane test: DWM stacks one window's thumbnails in registration
+order only, and a tenant registers parts late (ring copy in
+`track_overlays`, fill and companion on ticks), over other tenants'
+windows. Today's peeks stack whole, last raised on top (`raise_moving`
+in `peek_moves` order, the redraw loop's, which is also registration
+order). Tenants that never overlap make the order moot; of two swapped
+tiles, the second goes on a peek of its own, raised over the surface
+after it, as its peek is today.
+
+Why "not raised": a joining tile's real window still shows, and its
+opaque backdrop copy must stay under it until it is cloaked. The
+surface goes below each joiner's window; `cover_moved_overlays` then
+puts the joiners' real overlays behind it (`restack_joining_overlays`),
+or a higher joiner's backdrop would cover its copy between its cloak and
+the raise.
+
+### Z-order through a motion
+
+1. Join: surface below the lowest joining window, joiners' overlays
+   below it.
+2. Flush, take-over, cloak, hand-over: unchanged.
+3. `raise_moving`: the surface to the top of the non-topmost windows,
+   at each tenant's call, as each peek is raised today.
+4. `begin_hand_back`: no raise. The surface is above the landing window
+   already; the uncloak keeps the window's place (`Normal`), and focus is
+   deferred while the peek owns the window. A `SetForegroundWindow` on a
+   `Releasing` tile raises its window over the surface as it does over an
+   own peek today.
+
+### Reuse and replacement
+
+- A landing hosted peek is reused for a new motion that `host`s on the
+  same clip; otherwise a new peek replaces it once drawn
+  (`entries.insert`). A column taking over a hosted entry (`upsert`)
+  gets a new peek of its own the same way.
+- Interruptions drop the entry (strays, unmanage, `forget_*`): its
+  thumbnails go, and the surface hides with its last drawing tenant.
+
+### Purge points
+
+Display change: surfaces whose clip is no monitor's. Config reload,
+pause, shutdown (`drain_all_sessions`): all. A surface still drawing
+tiles stays alive in them until they land. `PeekView.surfaces` is its
+last field, so entries drop first.
+
+### Not kept
+
+A later command retargeting a hosted tile (`retarget_tile`), or reusing
+a landed one, onto a path across another tenant: their parts then stack
+in registration order. `note_crossing` logs it at debug. Options:
+re-register the tenant that must be on top (backdrop, window, fill, ring,
+each new before old goes), or hand it to a peek of its own.
+
+### To check on screen (`GLAZEWM_ISOLATE=onesurface`)
+
+- Resize two to six tiles: no blank or backdrop-only frame at the start
+  or end, the surface hidden once they have landed.
+- Swap two tiles: one on the surface, one on its own peek over it, as
+  `default` stacks them.
+- Retarget mid-motion (resize, then swap before it lands): the debug
+  line, and whether a ring shows over the other tile.
+- Two monitors: a resize on each, nothing drawn across the edge.
+- A floating window over tiles: it goes under the moving tiles while
+  they move, and comes back over a landed tile when its peek goes.
+- Interrupted by a workspace switch: no tile left on the old monitor's
+  surface, no stray frame.
