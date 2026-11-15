@@ -359,8 +359,7 @@ pub(crate) enum HandBack {
   /// Shown again in its place.
   Done,
   /// Drawn by its resting peek again, its real window left cloaked as
-  /// the layout hides it (`slidepeeks`, see
-  /// `AnimationManager::hand_back_to_peek`).
+  /// the layout hides it (see `AnimationManager::hand_back_to_peek`).
   ToPeek,
 }
 

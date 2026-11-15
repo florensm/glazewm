@@ -107,9 +107,7 @@ pub fn platform_sync(
   let _tail_scope = perf::scope(Stage::SyncTail);
 
   // Before anything else is drawn: the switch has started or not by now.
-  if wm_platform::isolation::current().slide_peeks {
-    crate::animation::peek_view::settle_switch_peeks(state, config);
-  }
+  crate::animation::peek_view::settle_switch_peeks(state, config);
 
   // Focus is synced after `redraw_containers` so that the workspace-switch
   // animation is already set up when `sync_focus` runs. This lets the
@@ -1317,8 +1315,7 @@ fn redraw_containers(
   // and whether any of them is taken over from at the shared flush.
   let mut peek_moves = Vec::new();
   let mut peeks_take_over = false;
-  // Windows of a finished switch handed to their resting peeks this pass
-  // (`slidepeeks`).
+  // Windows of a finished switch handed to their resting peeks this pass.
   let mut peek_hand_backs = Vec::new();
   // Floating windows opened on peeks this pass, and windows crossing
   // between floating and tiling on them, whose peeks go on top, and of
@@ -2201,8 +2198,7 @@ fn redraw_containers(
             .animation_manager
             .hide_pending_ws_cleanup_surrogate(window.id());
           state.animation_manager.peeks.release(&window.id());
-        } else if wm_platform::isolation::current().slide_peeks
-          && workspace.is_displayed()
+        } else if workspace.is_displayed()
           && is_hidden_in_layout(*window)
           && state
             .animation_manager
@@ -3307,7 +3303,7 @@ fn park_switch_borders(
     let rest = surrogate.rest_frame();
     let anchor = overlay_z_anchor(&window);
     // One whose resting peek drew it would reach onto the monitor beside
-    // at its rest frame (`slidepeeks`): only its copy shows it.
+    // at its rest frame: only its copy shows it.
     let conceal = entry.is_incoming
       || state.animation_manager.peeks.is_switching_out(id);
 

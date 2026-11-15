@@ -1593,10 +1593,10 @@ pub struct PeekView {
   /// Windows already reported by `report_stuck_windows`.
   pub(super) reported_stuck: HashSet<Uuid>,
   /// Columns whose resting peeks stand by under a workspace switch's
-  /// surrogates, under `slidepeeks` (see `WindowPeek::stand_by`).
+  /// surrogates (see `WindowPeek::stand_by`).
   standing_by: HashSet<Uuid>,
   /// Resting peeks of columns sliding out with a workspace switch, kept
-  /// at rest until their surrogates take over, under `slidepeeks`.
+  /// at rest until their surrogates take over.
   switching_out: HashMap<Uuid, Entry>,
   /// Peeks of columns that `upsert` replaced with a peek elsewhere (on
   /// another surface or a window of their own), still drawing until the
@@ -5864,7 +5864,7 @@ mod tests {
     assert!(!hosts_hold(false, false));
   }
 
-  /// A surface has one place at rest, under `slidepeeks` or not: a second
+  /// A surface has one place at rest: a second
   /// resting column keeps a peek of its own; a moving one ending shown
   /// always goes.
   #[test]

@@ -126,20 +126,18 @@ pub fn sync_scroll_view(
     .map(CommonGetters::id)
     .collect::<HashSet<_>>();
 
-  // Under `slidepeeks`, columns a resting peek draws that slide in with a
-  // workspace switch: their peeks stand by under the switch's surrogates
-  // until it hands them over (`SWITCH_PEEKS_PLAN.md`).
-  let slide_peeks = wm_platform::isolation::current().slide_peeks;
+  // Columns a resting peek draws that slide in with a workspace switch:
+  // their peeks stand by under the switch's surrogates until it hands them
+  // over (`SWITCH_PEEKS_PLAN.md`).
   let switch_animates =
     config.value.animations.workspace_switch.enabled && animates;
   let slides_in = windows
     .iter()
     .map(|(window, _)| window.id())
     .filter(|id| {
-      slide_peeks
-        && (state.animation_manager.awaits_peek_hand_back(id)
-          || switch_animates
-            && state.pending_sync.is_workspace_switch_incoming(id))
+      state.animation_manager.awaits_peek_hand_back(id)
+        || switch_animates
+          && state.pending_sync.is_workspace_switch_incoming(id)
     })
     .collect::<HashSet<_>>();
 
@@ -158,24 +156,21 @@ pub fn sync_scroll_view(
   //
   // Their peeks stay up until any that take over are on screen, e.g. that
   // of a stack's newly active tab, so the column never goes blank.
-  let mut gone =
+  let gone =
     view.take_departed(|id| windows.iter().any(|(w, _)| w.id() == *id));
 
-  // Under `slidepeeks`, one sliding out is kept where it is until its
-  // surrogate takes over, rather than gone before that is shown.
-  if slide_peeks {
-    let (kept, left): (Vec<_>, Vec<_>) =
-      gone.into_iter().partition(|(id, entry)| {
-        waits_on_switch(
-          entry.role == Role::Peek,
-          switch_animates
-            && state.pending_sync.is_workspace_switch_outgoing(id),
-        )
-      });
-    for (id, entry) in kept {
-      view.keep_switching_out(id, entry);
-    }
-    gone = left;
+  // One sliding out is kept where it is until its surrogate takes over,
+  // rather than gone before that is shown.
+  let (kept, gone): (Vec<_>, Vec<_>) =
+    gone.into_iter().partition(|(id, entry)| {
+      waits_on_switch(
+        entry.role == Role::Peek,
+        switch_animates
+          && state.pending_sync.is_workspace_switch_outgoing(id),
+      )
+    });
+  for (id, entry) in kept {
+    view.keep_switching_out(id, entry);
   }
 
   let scroll_config = &config.value.animations.scroll;
@@ -301,15 +296,13 @@ pub fn sync_scroll_view(
       if is_moving && is_restored {
         restore_cloaked(&window.native(), &target);
       }
-      if slide_peeks {
-        if waits_on_switch(
-          role == Role::Peek,
-          slides_in.contains(&window.id()),
-        ) {
-          view.stand_by(window.id());
-        } else {
-          view.end_stand_by(&window.id());
-        }
+      if waits_on_switch(
+        role == Role::Peek,
+        slides_in.contains(&window.id()),
+      ) {
+        view.stand_by(window.id());
+      } else {
+        view.end_stand_by(&window.id());
       }
       let may_host = one_surface
         && hosts_column(
@@ -368,7 +361,7 @@ pub fn sync_scroll_view(
 }
 
 /// Whether a column's peek waits on a workspace switch it slides in or
-/// out with, under `slidepeeks`: standing by under its surrogate, or kept
+/// out with: standing by under its surrogate, or kept
 /// until that takes over. Only a resting peek: a moving one is drawn as
 /// its neighbours' moving peeks are.
 fn waits_on_switch(is_at_rest: bool, slides_with_switch: bool) -> bool {
@@ -733,10 +726,10 @@ mod tests {
     assert!(!waits_on_switch(true, false));
   }
 
-  /// Without the switch, a column moves on its peek only with the strip,
-  /// as before.
+  /// With no pure-move threshold, a column moves on its peek only with the
+  /// strip.
   #[test]
-  fn without_the_switch_only_the_strip_moves_columns() {
+  fn without_a_threshold_only_the_strip_moves_columns() {
     let moved = Rect::from_xy(900, 50, 800, 600);
     let resized = Rect::from_xy(100, 50, 400, 600);
     for to in [&moved, &resized] {
