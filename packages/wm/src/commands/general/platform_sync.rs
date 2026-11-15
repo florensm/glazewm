@@ -1026,7 +1026,6 @@ fn redraw_containers(
             surrogate
           };
           let hosts = hosts_switch_window(
-            wm_platform::isolation::current().one_surface,
             is_live,
             window.state() == WindowState::Tiling,
           );
@@ -1805,8 +1804,7 @@ fn redraw_containers(
 
     // Where a crossing between floating and tiling, or a fullscreen
     // toggle, on a peek is raised beyond the tiles once its window is
-    // cloaked (`peek_raises`), which also picks its surface under
-    // `onesurface`.
+    // cloaked (`peek_raises`), which also picks its surface.
     let state_change_raise = is_state_change
       .then(|| {
         crate::animation::peek_view::state_change_peek_raise(
@@ -2302,7 +2300,7 @@ fn redraw_containers(
   // peek's opaque backdrop copy would have hidden it.
   // One a grab holds stays where it went up, just below its window, for
   // the whole resize: it never passes over floating windows.
-  // A surface already on top since a tenant's raise stays (`onesurface`).
+  // A surface already on top since a tenant's raise stays.
   state.animation_manager.peeks.set_raise_pass(true);
   for id in &peek_moves {
     if !state.animation_manager.peeks.is_held(id)
@@ -3336,16 +3334,12 @@ fn park_switch_borders(
 }
 
 /// Whether a window of a starting workspace switch is drawn on its
-/// monitor's switch surface (`onesurface`): only a tile whose backdrop can
-/// be copied. A floating or fullscreen window overlaps others of the
+/// monitor's switch surface: only a tile whose backdrop can be copied. A
+/// floating or fullscreen window overlaps others of the
 /// switch, and its own window just below its real one keeps it over them
 /// through every cloak and uncloak; a `Live` one moves.
-fn hosts_switch_window(
-  one_surface: bool,
-  is_live: bool,
-  is_tiling: bool,
-) -> bool {
-  one_surface && !is_live && is_tiling
+fn hosts_switch_window(is_live: bool, is_tiling: bool) -> bool {
+  !is_live && is_tiling
 }
 
 /// `hwnd`'s surrogate on the switch surface of the working area `area`, if
@@ -4214,13 +4208,12 @@ mod tests {
   };
   use crate::user_config::UserConfig;
 
-  /// Only copyable tiles go on a switch surface, and only under the word.
+  /// Only copyable tiles go on a switch surface.
   #[test]
   fn only_copyable_tiles_host_on_a_switch_surface() {
-    assert!(hosts_switch_window(true, false, true));
-    assert!(!hosts_switch_window(false, false, true));
-    assert!(!hosts_switch_window(true, true, true));
-    assert!(!hosts_switch_window(true, false, false));
+    assert!(hosts_switch_window(false, true));
+    assert!(!hosts_switch_window(true, true));
+    assert!(!hosts_switch_window(false, false));
   }
 
   #[test]

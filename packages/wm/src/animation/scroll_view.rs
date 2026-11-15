@@ -138,11 +138,9 @@ pub fn sync_scroll_view(
     })
     .collect::<HashSet<_>>();
 
-  // Under `onesurface`, columns draw on the surface of their working area
-  // (see `PeekView::upsert`).
-  let one_surface = wm_platform::isolation::current().one_surface;
-  let monitor_clips =
-    surface_monitor_clips(state, one_surface, &workspaces);
+  // Columns draw on the surface of their working area (see
+  // `PeekView::upsert`).
+  let monitor_clips = surface_monitor_clips(state, &workspaces);
 
   let now = state.animation_manager.frame_time();
   let view = &mut state.animation_manager.peeks;
@@ -221,10 +219,9 @@ pub fn sync_scroll_view(
 
     // A column on a peek of its own is stacked by where that went, which a
     // surface can't keep its neighbours in step with (see `hosts_column`).
-    let beside_own_peek = one_surface
-      && moves
-        .iter()
-        .any(|(window, _, _)| is_live(&peek_styles(window, config)));
+    let beside_own_peek = moves
+      .iter()
+      .any(|(window, _, _)| is_live(&peek_styles(window, config)));
 
     for (window, from, target) in moves {
       view.last_rects.insert(window.id(), target.clone());
@@ -301,12 +298,10 @@ pub fn sync_scroll_view(
       } else {
         view.end_stand_by(&window.id());
       }
-      let may_host = one_surface
-        && hosts_column(
-          true,
-          is_live(&peek_styles(&window, config)),
-          beside_own_peek,
-        );
+      let may_host = hosts_column(
+        is_live(&peek_styles(&window, config)),
+        beside_own_peek,
+      );
       needs_flush |= view.upsert(
         &window,
         &from,
@@ -528,10 +523,8 @@ fn flush_overlays(
   flushes: bool,
 ) {
   track_overlays(state, config, batch);
-  // As `cover_moved_overlays` has it for tiles (`onesurface`).
-  if wm_platform::isolation::current().one_surface {
-    restack_joining_overlays(state);
-  }
+  // As `cover_moved_overlays` has it for tiles.
+  restack_joining_overlays(state);
 
   if flushes {
     wm_platform::dwm_flush();
@@ -645,17 +638,14 @@ fn opening_rect(
 }
 
 /// The clips a surface may span (see `surface_clips`), read only for a
-/// surface to be made for a column (`one_surface`) at the clip of one of
-/// `workspaces` (see `PeekView::tenancy`).
+/// surface to be made for a column at the clip of one of `workspaces`
+/// (see `PeekView::tenancy`).
 fn surface_monitor_clips(
   state: &WmState,
-  one_surface: bool,
   workspaces: &[(Workspace, Rect)],
 ) -> Vec<Rect> {
   let peeks = &state.animation_manager.peeks;
-  if !one_surface
-    || workspaces.iter().all(|(_, clip)| peeks.has_surface(clip))
-  {
+  if workspaces.iter().all(|(_, clip)| peeks.has_surface(clip)) {
     return Vec::new();
   }
 

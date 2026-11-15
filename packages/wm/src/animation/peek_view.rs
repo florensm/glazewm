@@ -187,8 +187,8 @@ pub(super) struct Entry {
   tenancy: Option<Tenancy>,
 }
 
-/// Where a tile's peek draws on the `PeekSurface` it is hosted on, under
-/// `onesurface`: its visible frame and its ring around it. A tile crossing
+/// Where a tile's peek draws on the `PeekSurface` it is hosted on: its
+/// visible frame and its ring around it. A tile crossing
 /// monitors has one for both its peeks (see [`Trail`]).
 ///
 /// Tenants of one surface stack in the order their thumbnails were
@@ -370,10 +370,10 @@ impl Lane {
 /// third. It never takes over or hands back the real window, and goes as
 /// the motion lands, on the entry's own peek's monitor.
 ///
-/// Under `onesurface`, hosted on its monitor's surface of the entry's
-/// layer whenever the entry's own peek is hosted (see
-/// [`PeekView::add_trail`]): a second tenancy of the tile, with its rank
-/// and lane, restacked among that surface's tenants.
+/// Hosted on its monitor's surface of the entry's layer whenever the
+/// entry's own peek is hosted (see [`PeekView::add_trail`]): a second
+/// tenancy of the tile, with its rank and lane, restacked among that
+/// surface's tenants.
 struct Trail {
   peek: WindowPeek,
   clip: Rect,
@@ -1154,7 +1154,7 @@ pub(super) fn is_live(styles: &[Option<BackdropOverlayParams>]) -> bool {
 }
 
 /// Whether a window put on a peek may be drawn on one of its monitor's
-/// `PeekSurface`s (`onesurface`), which [`host_for`] picks: a move or
+/// `PeekSurface`s, which [`host_for`] picks: a move or
 /// resize by command ([`move_on_peek`]), a crossing between floating and
 /// tiling, a fullscreen toggle ([`fullscreen_on_peek`]), an open, restore,
 /// close or minimize ([`enter_on_peek`], [`restore_on_peek`],
@@ -1171,22 +1171,20 @@ pub(super) fn is_live(styles: &[Option<BackdropOverlayParams>]) -> bool {
 /// pass. Moving tiles leave the two in that order (`ONE_SURFACE_PLAN.md`,
 /// step 3's known differences).
 // Independent conditions, each keeping a window on a peek of its own.
-#[allow(clippy::fn_params_excessive_bools)]
 fn hosts_on_surface(
-  one_surface: bool,
   live: bool,
   is_column: bool,
   beside_own_peek: bool,
 ) -> bool {
-  one_surface && !live && !is_column && !beside_own_peek
+  !live && !is_column && !beside_own_peek
 }
 
 /// Where a tile moving onto another monitor that [`host_for`] puts on
 /// `host` is drawn: there, both its parts (see [`Trail`]), unless a grab
 /// holds a tile on either monitor's tiles' surface (`held_on_either`),
 /// which the tile's raise would top over the floating windows held tiles
-/// stay under (see [`hosts_hold`]). Kept off surfaces, it plays as
-/// without `onesurface`.
+/// stay under (see [`hosts_hold`]). Kept off surfaces, it plays on peeks
+/// of its own.
 fn crossing_host(
   host: Option<Host>,
   held_on_either: bool,
@@ -1211,28 +1209,24 @@ fn host_for(is_tile: bool, raise: Option<PeekRaise>) -> Option<Host> {
 }
 
 /// Whether a scrolling layout's column that the scroll view puts on a
-/// pinned peek may be drawn on the `PeekSurface` of its working area
-/// (`onesurface`), its role aside (see [`keeps_rest_hosted`]), a grab
+/// pinned peek may be drawn on the `PeekSurface` of its working area, its
+/// role aside (see [`keeps_rest_hosted`]), a grab
 /// holding it or not, a stack's included (see [`carry_tab_bar`]). Not a
 /// live peek, which moves with its window, nor any column of a workspace
 /// with a live column (`beside_own_peek`), which stacks against the
 /// surface by where each went last, as for tiles.
-pub(super) fn hosts_column(
-  one_surface: bool,
-  live: bool,
-  beside_own_peek: bool,
-) -> bool {
-  one_surface && !live && !beside_own_peek
+pub(super) fn hosts_column(live: bool, beside_own_peek: bool) -> bool {
+  !live && !beside_own_peek
 }
 
 /// Whether a tile a grab resize holds (see [`hold_on_peek`]) is drawn on
-/// its monitor's `PeekSurface` (`onesurface`): only if that surface is not
+/// its monitor's `PeekSurface`: only if that surface is not
 /// `topped`, as a held peek stays just under its window for the whole
 /// grab, never over floating windows above it (`STAND_INS_PLAN.md` 10a.5),
 /// and a topped surface is above them until its last tenant has gone.
 /// [`can_hold`] has left out what else keeps a tile on a peek of its own.
-fn hosts_hold(one_surface: bool, topped: bool) -> bool {
-  one_surface && !topped
+fn hosts_hold(topped: bool) -> bool {
+  !topped
 }
 
 /// Whether a column the surface may take (see [`hosts_column`]) is drawn
@@ -1281,11 +1275,6 @@ fn hosts_transit(
   peeks: &PeekView,
   config: &UserConfig,
 ) -> Option<Host> {
-  // Its workspace is walked only for a surface to be drawn on.
-  if !wm_platform::isolation::current().one_surface {
-    return None;
-  }
-
   let host = host_for(window.state() == WindowState::Tiling, raise)?;
   let beside_own_peek =
     host == Host::Tiles && has_own_peek_neighbour(window, config);
@@ -1293,7 +1282,6 @@ fn hosts_transit(
     && host.layer() == Layer::Tiles
     && has_held_neighbour(window, peeks);
   hosts_on_surface(
-    true,
     is_live(&peek_styles(window, config)),
     crate::layout::scrolling::column_of(&window.as_container()).is_some(),
     beside_own_peek || beside_held,
@@ -1420,7 +1408,7 @@ const MAX_READY: usize = 16;
 
 /// A landed tile's peek hosted on a `PeekSurface`, kept for the tile's
 /// next motion with every registration it has, held so it draws nothing
-/// (`GLAZEWM_ISOLATE=readypeeks`, see `WindowPeek::set_ready`). Apart from
+/// (see `WindowPeek::set_ready`). Apart from
 /// `PeekView::entries`, so no query over those sees it.
 struct Ready {
   peek: WindowPeek,
@@ -1437,14 +1425,10 @@ struct ReadyFit {
   clip: Rect,
 }
 
-/// Whether a landed entry's peek is kept ready under `ready_peeks`: a
-/// tile's or a column's, hosted on a surface, drawn on no other peek.
-fn keeps_ready(
-  ready_peeks: bool,
-  is_hosted: bool,
-  has_trail: bool,
-) -> bool {
-  ready_peeks && is_hosted && !has_trail
+/// Whether a landed entry's peek is kept ready: a tile's or a column's,
+/// hosted on a surface, drawn on no other peek.
+fn keeps_ready(is_hosted: bool, has_trail: bool) -> bool {
+  is_hosted && !has_trail
 }
 
 /// Whether a peek kept ready at `kept_at` has outlived [`READY_LIFETIME`]
@@ -1594,18 +1578,18 @@ pub struct PeekView {
   next_rank: u64,
   /// Raise passes closed so far (see [`Rank::pass`]).
   raise_passes: u64,
-  /// Landed tiles' peeks kept for their next motions, by window, under
-  /// `readypeeks` (see [`Ready`]). Before `surfaces`, which they are on.
+  /// Landed tiles' peeks kept for their next motions, by window (see
+  /// [`Ready`]). Before `surfaces`, which they are on.
   ready: HashMap<Uuid, Ready>,
-  /// One per clip that tiles were drawn on under `onesurface`, kept
+  /// One per clip that tiles were drawn on, kept
   /// between motions. Last, so the peeks hosted on them go first.
   surfaces: Vec<PeekSurface>,
   /// One per monitor rect that windows shown in the always-on-top band
   /// were drawn on (see [`Layer::TopBand`]), kept as `surfaces` are.
   band_surfaces: Vec<PeekSurface>,
-  /// One per working area that workspace switches drew on under
-  /// `onesurface` (see [`switch_surface`](Self::switch_surface)). Their
-  /// tenants live in the switch, and hold their windows.
+  /// One per working area that workspace switches drew on (see
+  /// [`switch_surface`](Self::switch_surface)). Their tenants live in
+  /// the switch, and hold their windows.
   switch_surfaces: Vec<PeekSurface>,
 }
 
@@ -1916,12 +1900,9 @@ impl PeekView {
       }
     }
 
-    let ready_peeks = wm_platform::isolation::current().ready_peeks;
     for id in &landed.released {
       if let Some(entry) = self.entries.remove(id) {
-        if ready_peeks {
-          self.keep_ready(*id, entry, now);
-        }
+        self.keep_ready(*id, entry, now);
       }
     }
 
@@ -3145,11 +3126,7 @@ impl PeekView {
   /// it is a tile's on a surface (see [`Ready`]); drops it otherwise.
   /// Prunes those expired at `now` and the oldest past [`MAX_READY`].
   fn keep_ready(&mut self, id: Uuid, entry: Entry, now: Instant) {
-    if !keeps_ready(
-      wm_platform::isolation::current().ready_peeks,
-      entry.peek.is_hosted(),
-      entry.trail.is_some(),
-    ) {
+    if !keeps_ready(entry.peek.is_hosted(), entry.trail.is_some()) {
       return;
     }
 
@@ -3400,7 +3377,7 @@ impl PeekView {
   /// (see [`floating_peek_raise`]). A hosted one's surface is that band's
   /// (see [`host_for`]), raised with every peek on it, and so is its
   /// trail's, hosted, on the monitor it comes from. A trail of its own is
-  /// left where it went up, as without `onesurface`.
+  /// left where it went up.
   pub fn raise_in_band(&self, window_id: &Uuid, raise: PeekRaise) {
     if let Some(entry) = self
       .entries
@@ -3855,7 +3832,7 @@ pub fn enter_on_peek(
 ///
 /// Not a window another stand-in draws, which keeps it, nor one moving
 /// onto another monitor unless [`tile_clips`] draws it on two peeks:
-/// under `onesurface`, on each monitor's surface (see [`move_host`]).
+/// on each monitor's surface (see [`move_host`]).
 ///
 /// One crossing between floating and tiling (see
 /// [`changes_state_on_peek`]) is drawn on the surface of the band its pass
@@ -3975,25 +3952,21 @@ fn move_host(
   raise: Option<PeekRaise>,
 ) -> Option<Host> {
   let peeks = &state.animation_manager.peeks;
-  let host = hosts_on_surface(
-    wm_platform::isolation::current().one_surface,
-    is_live(&peek_styles(window, config)),
-    false,
-    false,
-  )
-  .then(|| {
-    host_for(
-      !state.pending_sync.is_window_state_change(&window.id()),
-      raise,
-    )
-  })
-  .flatten()
-  // Its band raise would top the tiles' surface over held tiles, as an
-  // entering one's would (see `hosts_transit`).
-  .filter(|host| {
-    *host != Host::InBand(Layer::Tiles)
-      || !has_held_neighbour(window, peeks)
-  });
+  let host =
+    hosts_on_surface(is_live(&peek_styles(window, config)), false, false)
+      .then(|| {
+        host_for(
+          !state.pending_sync.is_window_state_change(&window.id()),
+          raise,
+        )
+      })
+      .flatten()
+      // Its band raise would top the tiles' surface over held tiles, as an
+      // entering one's would (see `hosts_transit`).
+      .filter(|host| {
+        *host != Host::InBand(Layer::Tiles)
+          || !has_held_neighbour(window, peeks)
+      });
 
   match trail_clip {
     Some(trail_clip) => crossing_host(
@@ -4105,7 +4078,7 @@ pub fn fullscreen_peek_raise(
 /// one another stand-in draws. A window driving itself fullscreen never
 /// gets here: cloaking an exclusive-fullscreen game breaks it.
 ///
-/// Under `onesurface`, drawn among the tiles as a resize is, or on the
+/// Drawn among the tiles as a resize is, or on the
 /// always-on-top band's surface if its pass `raise`s it there (see
 /// [`fullscreen_peek_raise`], [`host_for`]).
 pub fn fullscreen_on_peek(
@@ -4142,14 +4115,10 @@ pub fn fullscreen_on_peek(
 
   let (duration_ms, easing) =
     movement_timing(Motion::Fullscreen, false, config);
-  let host = hosts_on_surface(
-    wm_platform::isolation::current().one_surface,
-    is_live(&peek_styles(window, config)),
-    false,
-    false,
-  )
-  .then(|| host_for(true, raise))
-  .flatten();
+  let host =
+    hosts_on_surface(is_live(&peek_styles(window, config)), false, false)
+      .then(|| host_for(true, raise))
+      .flatten();
   let monitor_clips = surface_monitor_clips(state, host, &clip);
   let now = state.animation_manager.frame_time();
   let mut batch = SurrogateBatch::new();
@@ -4276,11 +4245,9 @@ pub fn hold_on_peek(
   };
 
   let (_, easing) = movement_timing(Motion::Resize, true, config);
-  let host = hosts_hold(
-    wm_platform::isolation::current().one_surface,
-    state.animation_manager.peeks.is_surface_topped(&clip),
-  )
-  .then_some(Host::Tiles);
+  let host =
+    hosts_hold(state.animation_manager.peeks.is_surface_topped(&clip))
+      .then_some(Host::Tiles);
   let monitor_clips = surface_monitor_clips(state, host, &clip);
   let now = state.animation_manager.frame_time();
   let mut batch = SurrogateBatch::new();
@@ -5555,15 +5522,11 @@ mod tests {
 
   #[test]
   fn only_plain_tiles_go_on_a_surface() {
-    assert!(hosts_on_surface(true, false, false, false));
-    assert!(!hosts_on_surface(false, false, false, false));
+    assert!(hosts_on_surface(false, false, false));
     for kept_off in 0..3 {
       let off: [bool; 3] = std::array::from_fn(|index| index == kept_off);
       let [live, is_column, beside] = off;
-      assert!(
-        !hosts_on_surface(true, live, is_column, beside),
-        "{kept_off}"
-      );
+      assert!(!hosts_on_surface(live, is_column, beside), "{kept_off}");
     }
   }
 
@@ -5586,7 +5549,7 @@ mod tests {
   }
 
   /// A hosted trail draws a tick past the landing; one of its own goes at
-  /// once, as without `onesurface`.
+  /// once.
   #[test]
   fn only_a_hosted_trail_outlives_its_landing() {
     assert!(keeps_trail_drawing(true));
@@ -5727,24 +5690,21 @@ mod tests {
     assert!(!lanes_stay_apart(&left, &right, false));
   }
 
-  /// Only a hosted peek, drawn on no other, is kept ready, and only under
-  /// `readypeeks`.
+  /// Only a hosted peek, drawn on no other, is kept ready.
   #[test]
   fn only_hosted_peeks_are_kept_ready() {
-    assert!(keeps_ready(true, true, false));
-    assert!(!keeps_ready(false, true, false));
-    assert!(!keeps_ready(true, false, false));
-    assert!(!keeps_ready(true, true, true));
+    assert!(keeps_ready(true, false));
+    assert!(!keeps_ready(false, false));
+    assert!(!keeps_ready(true, true));
   }
 
   /// A column goes on a surface, held or not, a stack's too, unless its
   /// peek is live or a column of its workspace keeps a peek of its own.
   #[test]
   fn only_plain_columns_go_on_a_surface() {
-    assert!(hosts_column(true, false, false));
-    assert!(!hosts_column(false, false, false));
-    assert!(!hosts_column(true, true, false));
-    assert!(!hosts_column(true, false, true));
+    assert!(hosts_column(false, false));
+    assert!(!hosts_column(true, false));
+    assert!(!hosts_column(false, true));
   }
 
   /// A hosted peek covers its stack's bar, cloaks it once composited, and
@@ -5827,9 +5787,8 @@ mod tests {
   /// band, over the floating windows a held peek stays under.
   #[test]
   fn a_held_tile_goes_on_a_surface_not_raised_to_the_top() {
-    assert!(hosts_hold(true, false));
-    assert!(!hosts_hold(true, true));
-    assert!(!hosts_hold(false, false));
+    assert!(hosts_hold(false));
+    assert!(!hosts_hold(true));
   }
 
   /// A surface has one place at rest: a second
