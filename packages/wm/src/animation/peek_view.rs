@@ -199,6 +199,10 @@ struct Tenancy {
   /// The order its tile was put on top in, as a peek of its own is raised
   /// in: by each command that moves it, not by one that retargets it.
   rank: Rank,
+  /// Whether its motion raised nothing, as a grab's doesn't (see
+  /// [`hold_on_peek`]): its surface is wherever it went up for it, so it
+  /// goes above the window as that lands, as a column's does.
+  never_raised: bool,
 }
 
 /// Where a tile stacks among the tenants of its surface: as its peek of
@@ -1098,22 +1102,31 @@ fn hosts_on_surface(
 
 /// Whether a scrolling layout's column that the scroll view puts on a
 /// pinned peek may be drawn on the `PeekSurface` of its working area
-/// (`onesurface`), its role aside (see [`keeps_rest_hosted`]). Not a live
-/// peek, which moves with its window; one a grab holds (`held`, a later
-/// step's); a stack's window, whose tab bar is a window of its own behind
-/// its stand-in; nor any column of a workspace with a column on a peek of
-/// its own (`beside_own_peek`: a stack's, a live or a held one), which
-/// stacks against the surface by where each went last, as for tiles.
+/// (`onesurface`), its role aside (see [`keeps_rest_hosted`]), a grab
+/// holding it or not. Not a live peek, which moves with its window; a
+/// stack's window, whose tab bar is a window of its own behind its
+/// stand-in; nor any column of a workspace with a column on a peek of its
+/// own (`beside_own_peek`: a stack's or a live one), which stacks against
+/// the surface by where each went last, as for tiles.
 // Independent conditions, each keeping a column on a peek of its own.
 #[allow(clippy::fn_params_excessive_bools)]
 pub(super) fn hosts_column(
   one_surface: bool,
   live: bool,
-  held: bool,
   is_stacked: bool,
   beside_own_peek: bool,
 ) -> bool {
-  one_surface && !live && !held && !is_stacked && !beside_own_peek
+  one_surface && !live && !is_stacked && !beside_own_peek
+}
+
+/// Whether a tile a grab resize holds (see [`hold_on_peek`]) is drawn on
+/// its monitor's `PeekSurface` (`onesurface`): only if that surface is not
+/// `topped`, as a held peek stays just under its window for the whole
+/// grab, never over floating windows above it (`STAND_INS_PLAN.md` 10a.5),
+/// and a topped surface is above them until its last tenant has gone.
+/// [`can_hold`] has left out what else keeps a tile on a peek of its own.
+fn hosts_hold(one_surface: bool, topped: bool) -> bool {
+  one_surface && !topped
 }
 
 /// Whether a column the surface may take (see [`hosts_column`]) is drawn
@@ -1148,7 +1161,17 @@ fn rest_anchor(
 
 /// Whether `window`, a tile entering or leaving, is drawn on its monitor's
 /// `PeekSurface` (see [`hosts_on_surface`]).
-fn hosts_transit(window: &WindowContainer, config: &UserConfig) -> bool {
+///
+/// One `entering` beside a tile a grab holds keeps a peek of its own: its
+/// surface would be raised to the top, putting the held tiles there over
+/// the floating windows they stay under (see [`hosts_hold`]). One leaving
+/// is never raised.
+fn hosts_transit(
+  window: &WindowContainer,
+  entering: bool,
+  peeks: &PeekView,
+  config: &UserConfig,
+) -> bool {
   // Its workspace is walked only for a surface to be drawn on.
   if !wm_platform::isolation::current().one_surface {
     return false;
@@ -1161,8 +1184,19 @@ fn hosts_transit(window: &WindowContainer, config: &UserConfig) -> bool {
     false,
     is_live(&peek_styles(window, config)),
     crate::layout::scrolling::column_of(&window.as_container()).is_some(),
-    has_own_peek_neighbour(window, config),
+    has_own_peek_neighbour(window, config)
+      || (entering && has_held_neighbour(window, peeks)),
   )
+}
+
+/// Whether another tile of `window`'s workspace is on a peek a grab holds.
+fn has_held_neighbour(window: &WindowContainer, peeks: &PeekView) -> bool {
+  window.workspace().is_some_and(|workspace| {
+    workspace
+      .descendants()
+      .filter_map(|container| container.as_window_container().ok())
+      .any(|other| other.id() != window.id() && peeks.is_held(&other.id()))
+  })
 }
 
 /// Whether `window` is a stack's window.
@@ -1565,6 +1599,10 @@ impl PeekView {
     if let Some(stretch) = entry.stretch.as_mut().filter(|_| is_held) {
       stretch.deferred = false;
     }
+    // Never raised: its surface goes above its window as it lands.
+    if let Some(tenancy) = entry.tenancy.as_mut().filter(|_| is_held) {
+      tenancy.never_raised = true;
+    }
   }
 
   /// Whether `id`'s window, filled on its peek, is to be sent its new
@@ -1658,8 +1696,14 @@ impl PeekView {
               // Raised while its real window is still cloaked, so the
               // uncloak never shows the window over the peek.
               entry.peek.begin_hand_back();
-              // A column's surface is not raised over the tiles it draws.
-              if entry.is_column {
+              // A column's surface is not raised over the tiles it draws,
+              // nor a held tile's.
+              if entry.is_column
+                || entry
+                  .tenancy
+                  .as_ref()
+                  .is_some_and(|tenancy| tenancy.never_raised)
+              {
                 entry.peek.stay_over_window();
               }
               landed.shown.push(*id);
@@ -2503,6 +2547,7 @@ impl PeekView {
       if let Some(tenancy) = &mut entry.tenancy {
         tenancy.lane = tenancy.reach.lane(from, &entry.motion.target_rect);
         tenancy.rank = rank;
+        tenancy.never_raised = false;
         self.next_rank += 1;
       }
       let place_scope = perf::scope(Stage::PeekPlace);
@@ -2632,7 +2677,15 @@ impl PeekView {
     };
 
     let rank = self.take_rank(stacking);
-    Some((index, Tenancy { reach, lane, rank }))
+    Some((
+      index,
+      Tenancy {
+        reach,
+        lane,
+        rank,
+        never_raised: false,
+      },
+    ))
   }
 
   /// The rank of a tile put on top by `stacking` now (see [`Rank`]).
@@ -2721,6 +2774,16 @@ impl PeekView {
           .map(move |(id, _)| (*id, surface.hwnd()))
       })
       .collect()
+  }
+
+  /// Whether the `PeekSurface` spanning `clip`, if any, is at the top of
+  /// its band (see `PeekSurface::is_topped`).
+  fn is_surface_topped(&self, clip: &Rect) -> bool {
+    self
+      .surfaces
+      .iter()
+      .find(|surface| surface.clip() == clip)
+      .is_some_and(PeekSurface::is_topped)
   }
 
   /// Whether a `PeekSurface` spans `clip`.
@@ -3448,7 +3511,8 @@ pub fn enter_on_peek(
     return false;
   };
 
-  let host = hosts_transit(window, config);
+  let host =
+    hosts_transit(window, true, &state.animation_manager.peeks, config);
   let monitor_clips = surface_monitor_clips(state, host, &clip);
   let now = state.animation_manager.frame_time();
   let mut batch = SurrogateBatch::new();
@@ -3833,6 +3897,9 @@ pub fn hold_refusal(
 /// until the grab lets go of it (see [`Hold`]). Its real window is taken
 /// over from and cloaked by the redraw that called this, as for a move on
 /// a peek, and then resized behind it. Returns whether it is.
+///
+/// Drawn on its monitor's `PeekSurface` as [`hosts_hold`] says, which is
+/// then never raised for it: it stays where the tile's admission put it.
 pub fn hold_on_peek(
   state: &mut WmState,
   window: &WindowContainer,
@@ -3849,6 +3916,11 @@ pub fn hold_on_peek(
   };
 
   let (_, easing) = movement_timing(Motion::Resize, true, config);
+  let host = hosts_hold(
+    wm_platform::isolation::current().one_surface,
+    state.animation_manager.peeks.is_surface_topped(&clip),
+  );
+  let monitor_clips = surface_monitor_clips(state, host, &clip);
   let now = state.animation_manager.frame_time();
   let mut batch = SurrogateBatch::new();
   let peeks = &mut state.animation_manager.peeks;
@@ -3860,8 +3932,8 @@ pub fn hold_on_peek(
     0,
     easing,
     Some(PeekResize::Fill),
-    false,
-    &[],
+    host,
+    &monitor_clips,
     config,
     is_focused,
     now,
@@ -4158,7 +4230,8 @@ pub fn leave_on_peek(
     return Leave::Unsupported;
   };
 
-  let host = hosts_transit(window, config);
+  let host =
+    hosts_transit(window, false, &state.animation_manager.peeks, config);
   let monitor_clips = surface_monitor_clips(state, host, &clip);
   let now = state.animation_manager.frame_time();
   let mut batch = SurrogateBatch::new();
@@ -4965,16 +5038,17 @@ mod tests {
     allows_motion, carries_fill_early, conceals_new_ring,
     crosses_floating, evicted, floating_peek_raise, follow_duration,
     follows_tile, fullscreen_peek_raise, has_landed, has_left,
-    hosts_column, hosts_on_surface, is_departed, is_peek_resize,
-    is_pure_move, is_ready_expired, is_stale_surface, is_stray,
-    keeps_ready, keeps_rest_hosted, kept_transit, lands_on_trail,
-    lanes_meet, lanes_stay_apart, leaves_as, leaving_transit, move_clips,
-    out_of_order, peek_resize, rank, resizes_at_start, rest_anchor,
-    restretched, rests, retargeted_motion, returning_transit,
-    sampled_size, settling, state_change_peek_raise, state_change_resize,
-    take_left, takes_ready, toggles_tile_fullscreen, visible_frame, Hold,
-    Lane, PeekRaise, PeekResize, ReadyFit, Role, Stacking, Stretch,
-    FILL_LANDING_WAIT, HOLD_RELEASE_WAIT, READY_LIFETIME, STRETCH_SETTLE,
+    hosts_column, hosts_hold, hosts_on_surface, is_departed,
+    is_peek_resize, is_pure_move, is_ready_expired, is_stale_surface,
+    is_stray, keeps_ready, keeps_rest_hosted, kept_transit,
+    lands_on_trail, lanes_meet, lanes_stay_apart, leaves_as,
+    leaving_transit, move_clips, out_of_order, peek_resize, rank,
+    resizes_at_start, rest_anchor, restretched, rests, retargeted_motion,
+    returning_transit, sampled_size, settling, state_change_peek_raise,
+    state_change_resize, take_left, takes_ready, toggles_tile_fullscreen,
+    visible_frame, Hold, Lane, PeekRaise, PeekResize, ReadyFit, Role,
+    Stacking, Stretch, FILL_LANDING_WAIT, HOLD_RELEASE_WAIT,
+    READY_LIFETIME, STRETCH_SETTLE,
   };
   use crate::animation::{
     state::WindowAnimationState,
@@ -5057,20 +5131,26 @@ mod tests {
     assert!(!keeps_ready(true, true, true));
   }
 
-  /// A column goes on a surface unless its peek is live, held or a
-  /// stack's, or a column of its workspace keeps a peek of its own.
+  /// A column goes on a surface, held or not, unless its peek is live or
+  /// a stack's, or a column of its workspace keeps a peek of its own.
   #[test]
   fn only_plain_columns_go_on_a_surface() {
-    assert!(hosts_column(true, false, false, false, false));
-    assert!(!hosts_column(false, false, false, false, false));
-    for kept_off in 0..4 {
-      let off: [bool; 4] = std::array::from_fn(|index| index == kept_off);
-      let [live, held, is_stacked, beside] = off;
-      assert!(
-        !hosts_column(true, live, held, is_stacked, beside),
-        "{kept_off}"
-      );
+    assert!(hosts_column(true, false, false, false));
+    assert!(!hosts_column(false, false, false, false));
+    for kept_off in 0..3 {
+      let off: [bool; 3] = std::array::from_fn(|index| index == kept_off);
+      let [live, is_stacked, beside] = off;
+      assert!(!hosts_column(true, live, is_stacked, beside), "{kept_off}");
     }
+  }
+
+  /// A held tile goes on its surface unless that is at the top of its
+  /// band, over the floating windows a held peek stays under.
+  #[test]
+  fn a_held_tile_goes_on_a_surface_not_raised_to_the_top() {
+    assert!(hosts_hold(true, false));
+    assert!(!hosts_hold(true, true));
+    assert!(!hosts_hold(false, false));
   }
 
   /// A surface has one place at rest, under `slidepeeks` or not: a second

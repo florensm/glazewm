@@ -80,6 +80,14 @@ impl PeekSurface {
     self.window.raised.get()
   }
 
+  /// Whether it has been put at the top of its band since it was last
+  /// empty or put at rest, so it is above every window there: a tenant
+  /// that must stay under windows above its own (a grab's) can't join it.
+  #[must_use]
+  pub fn is_topped(&self) -> bool {
+    self.window.topped.get()
+  }
+
   /// Whether `window` is anywhere above it in the z-order.
   #[must_use]
   pub fn is_below(&self, window: HWND) -> bool {
@@ -118,6 +126,7 @@ impl PeekSurface {
 
     let _scope = perf::scope(Stage::Surface);
     self.window.on_top.set(false);
+    self.window.topped.set(false);
     match window_class::place_above(self.hwnd(), window) {
       Ok(()) => self.window.rests_above.set(window.0),
       Err(err) => {
@@ -147,6 +156,9 @@ pub(crate) struct SurfaceWindow {
   /// last empty, or held where a tenant draws over its cloaked window
   /// (see [`hold_place`](Self::hold_place)).
   raised: Cell<bool>,
+  /// Whether it has been put at the top of its band since it was last
+  /// empty or put at rest (see `PeekSurface::is_topped`).
+  topped: Cell<bool>,
   /// Whether a pass of raises is open (see
   /// `PeekSurface::set_raise_pass`).
   in_raise_pass: Cell<bool>,
@@ -186,6 +198,7 @@ impl SurfaceWindow {
       ready: Cell::new(0),
       drawing: Cell::new(0),
       raised: Cell::new(false),
+      topped: Cell::new(false),
       in_raise_pass: Cell::new(false),
       on_top: Cell::new(false),
       rests_above: Cell::new(0),
@@ -277,6 +290,7 @@ impl SurfaceWindow {
     self.tenants.set(tenants);
     if tenants == 0 {
       self.raised.set(false);
+      self.topped.set(false);
       self.rests_above.set(0);
     }
   }
@@ -334,6 +348,7 @@ impl SurfaceWindow {
   /// `PeekSurface::set_raise_pass`).
   pub(crate) fn raise_to_top(&self) -> crate::Result<()> {
     self.raised.set(true);
+    self.topped.set(true);
     self.rests_above.set(0);
     if self.on_top.get() {
       return Ok(());
@@ -366,6 +381,7 @@ impl SurfaceWindow {
   ) -> crate::Result<()> {
     let _scope = perf::scope(Stage::Surface);
     self.raised.set(true);
+    self.topped.set(true);
     self.on_top.set(false);
     self.rests_above.set(0);
     window_class::raise_to_top_of_band(self.hwnd(), topmost)
