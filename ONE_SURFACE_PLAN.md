@@ -2642,3 +2642,120 @@ Windows functions added: none. No longer called: none from the source
 time the engine's session path (its surrogate, the zoom open's early
 `set_cloaked`, per-frame updates and overlay tracking) is no longer
 reached.
+
+#### R4: as built
+
+Branch `os/r4-engine`, four code commits (platform_sync arms,
+`AnimationManager`, `ResizeSession`, perf stages) and this note. Not
+seen running. Nothing in the source names `ResizeSession` any more
+outside historical comments in `peek_view.rs` ("as `pre_commit`
+waits").
+
+What went, by file:
+
+- `wm-platform/src/resize_session.rs` (1358 lines, deleted):
+  `ResizeSession`, `SessionOptions`, `COMMIT_CONFIRM_MAX_WAIT`, and R0's
+  leftovers `overlay_factor`, `zoom_destination` and their tests, and
+  the `fade_fraction` tests (duplicates of those in
+  `native_surrogate.rs`). No peek path used any of them, so nothing was
+  moved. `lib.rs` loses the module and re-export; `window_edges::window_rect`
+  is private again.
+- `manager.rs` (4090 -> 3101 lines): fields `animations`,
+  `resize_sessions`, `warm_surrogates`, `pending_surrogate_updates`,
+  `pending_session_cleanup`, `slide_in_monitor_rects`, `away_windows`,
+  `backdrop_overlay_z_order_dirty` (never set since R3); constants
+  `SESSION_FADE_OUT`, `MAX_HANDOFFS_PER_TICK`, `WARM_SURROGATE_TTL`,
+  `WARM_SURROGATE_PRUNE_LEN`; `HandoffBudget`, `PendingSurrogateUpdate`,
+  `AwayWindow`, `prune_and_insert`; `get_animation`, `zoom_progress`,
+  `active_window_ids`, `remove_completed_animations`,
+  `owns_window_position`, `has_live_resize_tracker`,
+  `was_pre_committed_at`, `stash_warm_surrogate`,
+  `queue_surrogate_updates`, `has_any_surrogate`, `is_entering`,
+  `reveal_session`, `animation_stand_in`, `refresh_session_companion`,
+  `handing_back_session`; tick sections: the clock start loop, the
+  engine redraw queue (with its `perf::note_window_count`), the close
+  and minimize direct drive, the away teardown, the completed-animation
+  redraw and focus re-queue, the session fade tail; tests
+  `every_pending_handoff_lands_within_its_share_of_ticks`,
+  `zooms_are_evaluated_at_the_frame_time`. `drain_all_sessions` is
+  `drop_all_stand_ins` (nothing to hand back). Session, animation and
+  away-window terms out of `has_active_surrogate`, `stands_in_for`,
+  `has_away_animation` (now private), `remove_animation`,
+  `has_active_animations`, `time_to_rest`.
+- `platform_sync.rs` (4269 -> 3906 lines): `FrozenStep::Adopt`, the
+  `Some(true)` arm and `of`'s `session_cloaked` parameter;
+  `mark_session_cloaked`'s call; `has_slide_in`; the session overlay
+  tracking in the `TakeOver` arm and the batch block after the raise
+  loop; `tracks_at_take_over`, `session_overlay_placement` and their
+  tests; `anim_opacity` and its `set_transparency`; the session term of
+  `Apply`'s `has_surrogate`; `already_positioned`; `sync_focus`'
+  session deferral; `apply_focus_effects`' engine opacity;
+  `sync_overlays`' `full_z_order_resync` parameter; the session arm of
+  `preposition_cloaked` (it always takes the flags a session-less window
+  took); `commit_pending_cloaks`' overlay batch parameter, which only
+  the session take-over filled.
+- `tab_bars.rs`: `animated_with_tab_bar`; `shown_tab_frame`'s
+  `animation_stand_in` fallback (a peek's stand-in, or the stack's rect).
+- `wm_state.rs`: the drop's session commit loop.
+- `grab.rs`, `handle_window_moved_or_resized.rs`: `owns_window_position`
+  guards; `make_room_for_min_width`'s `get_animation` guard.
+- `peek_view.rs`: `has_other_stand_in`'s engine terms.
+- `state.rs`: `current_state`, `rescale_opacity` and its test (engine
+  only). `window_overlays.rs`: `hide_untracked`.
+- `native_surrogate.rs`: `set_rest_opacity` (R5's list; only the
+  session called it, and `dead_code` tripped).
+- `perf.rs`: `Stage::SessionBegin`, `SurrogateFlush`, `SessionOverlays`,
+  `PreCommit`.
+
+Tuned steps whose engine arm went, each call left where it was:
+
+- `FrozenStep`: `TakeOver`/`Keep` stay. The `TakeOver` arm now reads:
+  `Stage::Cloak` scope, `peeks_take_over |= peek_moves.contains(..)`,
+  push the `PendingCloak`; then, after the loop, as before:
+  `peek_hand_backs` -> `cover_moved_overlays` (if `peeks_take_over`) ->
+  `commit_pending_cloaks` -> `hand_over_moved_overlays` -> raise loop
+  (`raise_moving` + `restack_live_overlays`, then `peek_raises`) ->
+  companion covers dropped -> `apply_outgoing_surrogate_opacities` ->
+  transparency flush.
+- `commit_pending_cloaks`: one flush, still skipped when every window is
+  composited already; then per window `peeks.take_over`, `set_cloaked`,
+  `preposition_cloaked`, in that order.
+- `preposition_cloaked`: the peek `defers_resize` skip, then the move
+  and the DPI re-send, unchanged.
+- `hands_back_to_companion`: companion cover and ws-cleanup arms kept;
+  `platform_sync`'s "keeps its place" rule still checks
+  `peeks.is_handing_back` first.
+- `cover_companion_hand_back`: the cover's `cover_window` kept, still
+  called right after `sync_focus`.
+- `HandoffWait`, the companion waits, `WindowPeek`/`WorkspaceSurrogate`
+  hand-over steps, live peek paths: untouched.
+
+Kept although named: `DxgiVsyncWaiter::window_monitor` (still called
+by `native_overview.rs`); `has_close_animation`/`has_minimize_animation`
+(peeks' leaves); `AwayTransition` (peeks' `Role::Leaving`);
+`WindowAnimationState` (every peek's motion); `OPEN_PAINT_GRACE`
+(`transit.rs`).
+
+Left for R5 / step 8:
+
+- R5: the other `NativeSurrogate` methods only the session called
+  (`revive`, `update`, `update_thumbnail_dims`, `content_size`,
+  `defer_reposition`, fill colour/opacity/covered,
+  `reregister_thumbnail`, `stretch`) are `pub` and so don't trip
+  `dead_code`; their doc mentions of `warm_surrogates` go with them.
+- Step 8: `perf_bench`'s `session_begin` and `session_overlays` columns
+  (strings, compile, read zero; no `perf_bench` edit was needed);
+  `perf::note_window_count` and its `peak_windows` report now have no
+  caller in `wm`.
+- Not checked: `main.rs`' `catch_up_before_frame` doc justified
+  delivering window events during moves by the session's bail-out in
+  `handle_window_moved_or_resized`; it now says that is not checked for
+  windows on peeks.
+
+Windows functions added: none. No longer called anywhere in the
+source: none. `resize_session.rs` called `SetWindowPos` and `IsWindow`
+directly (both still called elsewhere) and everything else through
+`NativeSurrogate`/`NativeWindow` methods peeks still use; the engine
+code in `wm` called `NativeWindow::close`, `set_transparency`,
+`set_cloaked` and `dwm_flush`, all still called by peeks and the
+switch.
