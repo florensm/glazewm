@@ -81,11 +81,18 @@ pub fn handle_display_settings_changed(
     move_bounded_workspaces_to_new_monitor(&new_monitor, state, config)?;
   }
 
-  // Peek surfaces span a monitor each (`onesurface`).
+  // Peek surfaces span a monitor each, or its working area for columns
+  // (`onesurface`).
   let clips = state
     .monitors()
     .iter()
-    .filter_map(|monitor| monitor.to_rect().ok())
+    .flat_map(|monitor| {
+      monitor
+        .to_rect()
+        .ok()
+        .into_iter()
+        .chain([monitor.native_properties().working_area])
+    })
     .collect::<Vec<_>>();
   state
     .animation_manager
