@@ -1741,7 +1741,9 @@ fn redraw_containers(
       state.animation_manager.remove_animation(&window.id());
     }
 
-    if let Some((params, is_open)) = entry_transition {
+    // One its peek can't draw snaps: placed and uncloaked below as at
+    // rest, with no stand-in.
+    if let Some((params, _)) = entry_transition {
       if enters_on_peek {
         // Computed before the peek went up: frozen behind it from now on,
         // or it would be uncloaked at once.
@@ -1751,8 +1753,7 @@ fn redraw_containers(
         if let Some(raise) = floating_raise {
           peek_raises.push(((*window).clone(), raise));
         }
-      } else if !(is_open && is_floating) {
-        // A floating window its peek can't draw opens at once, as before.
+      } else if is_column {
         let monitor_rect =
           window.monitor().context("No monitor.")?.to_rect()?;
         let native_ref = window.native();
@@ -1888,6 +1889,10 @@ fn redraw_containers(
           peek_raises.push(((*window).clone(), raise));
         }
         (AnimationPositionResult::Frozen, None)
+      } else if motion != Motion::Column {
+        // Its peek refused (another stand-in draws it, no monitor, it
+        // couldn't be made): it snaps, placed as at rest.
+        (AnimationPositionResult::Apply(real_rect.clone()), None)
       } else {
         state.animation_manager.start_animation_if_needed(
           window.id(),
