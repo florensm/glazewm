@@ -14,8 +14,8 @@ use wm_platform::{
   perf::{self, Stage},
   BackdropOverlayParams, BorderOverlayParams, Color, CornerStyle,
   NativeBackdropOverlay, NativeBorderOverlay, NativeWindow, Overlay,
-  PeekSurface, Point, Rect, RectDelta, StyleBlend, SurrogateBatch,
-  TabBarPlace, WindowPeek, HWND,
+  OverlayParams, PeekSurface, Point, Rect, RectDelta, StyleBlend,
+  SurrogateBatch, TabBarPlace, WindowPeek, HWND,
 };
 
 use super::{
@@ -1393,8 +1393,9 @@ pub enum Leave {
   /// Not at all, so it goes at once: a transition with nothing to show,
   /// or a window DWM can't draw (e.g. an elevated one).
   Skipped,
-  /// Not on a peek: a live one, or a peek already drawing the window in
-  /// a role that doesn't turn round (e.g. a partly visible column's).
+  /// Not on a peek: one already drawing the window in a role that doesn't
+  /// turn round (e.g. a partly visible column's), or one that couldn't be
+  /// made.
   Unsupported,
 }
 
@@ -2393,7 +2394,7 @@ impl PeekView {
         now,
       );
     } else {
-      // `place_scaled` draws pinned peeks only.
+      // A live column opens by its motion alone.
       entry.transit =
         opening.filter(|_| is_moving && !entry.peek.is_live());
       entry.stretch =
@@ -2501,9 +2502,12 @@ impl PeekView {
   /// for one raised in its band; a surface made for it drops those left
   /// unused off `monitor_clips`.
   ///
-  /// Returns `false`, creating nothing, for a window already drawn, one
-  /// whose peek would be `Live`, or a transition with nothing to show (see
-  /// [`Transit::opening`]).
+  /// Without `host`, a window whose backdrop can't be copied (see
+  /// [`is_live`]) enters on a live peek of its own, its real overlays
+  /// following the drawn frame (see [`track_overlays`]).
+  ///
+  /// Returns `false`, creating nothing, for a window already drawn, or a
+  /// transition with nothing to show (see [`Transit::opening`]).
   #[allow(clippy::too_many_arguments)]
   pub(super) fn enter(
     &mut self,
@@ -2520,7 +2524,7 @@ impl PeekView {
   ) -> bool {
     let styles = peek_styles(window, config);
     let Some(transit) =
-      Transit::opening(params).filter(|_| self.can_enter(window, &styles))
+      Transit::opening(params).filter(|_| self.can_enter(window))
     else {
       return false;
     };
@@ -2576,15 +2580,10 @@ impl PeekView {
     true
   }
 
-  /// Whether [`enter`](Self::enter) can draw `window`, whose peek would
-  /// carry copies of `styles`: not one already drawn, nor one whose peek
-  /// would be `Live`.
-  fn can_enter(
-    &self,
-    window: &WindowContainer,
-    styles: &[Option<BackdropOverlayParams>],
-  ) -> bool {
-    !is_live(styles) && !self.draws_window(&window.id())
+  /// Whether [`enter`](Self::enter) can draw `window`: not one already
+  /// drawn.
+  fn can_enter(&self, window: &WindowContainer) -> bool {
+    !self.draws_window(&window.id())
   }
 
   /// Draws `window`, a tile moving from `from` to `target`, on a peek
@@ -3500,7 +3499,9 @@ impl PeekView {
   /// With `host`, a new peek is drawn on the `PeekSurface` of `clip`
   /// instead, ranked below every tile there (see [`Rank`]), which a
   /// surface made for it drops those left unused off `monitor_clips` for.
-  /// One already drawn stays where it is, its rank kept.
+  /// One already drawn stays where it is, its rank kept. Without, a window
+  /// whose backdrop can't be copied leaves on a live peek, as it enters
+  /// (see [`enter`](Self::enter)).
   #[allow(clippy::too_many_arguments)]
   pub(super) fn leave(
     &mut self,
@@ -3525,9 +3526,7 @@ impl PeekView {
     }
 
     let styles = peek_styles(window, config);
-    if is_live(&styles)
-      || role.is_some_and(|role| !matches!(role, Role::Moving { .. }))
-    {
+    if role.is_some_and(|role| !matches!(role, Role::Moving { .. })) {
       return Leave::Unsupported;
     }
 
@@ -3761,8 +3760,8 @@ pub fn settle_switch_peeks(state: &mut WmState, config: &UserConfig) {
   }
 }
 
-/// Has `window`, just opened at `target`, enter on a pinned peek by
-/// `params` (see [`PeekView::enter`]), on ticks paced by its monitor's
+/// Has `window`, just opened at `target`, enter on a peek, pinned or live,
+/// by `params` (see [`PeekView::enter`]), on ticks paced by its monitor's
 /// vblanks as a scroll is. Returns whether it does.
 ///
 /// Clipped to the whole monitor, as the old path's slides are. Drawn on
@@ -4464,8 +4463,8 @@ pub fn hand_over_moved_overlays(state: &mut WmState, config: &UserConfig) {
   track_overlays(state, config, SurrogateBatch::new());
 }
 
-/// Has `window`, coming back from minimized to `target`, enter on a
-/// pinned peek by `params`, as [`enter_on_peek`] has a new one. A minimize
+/// Has `window`, coming back from minimized to `target`, enter on a peek
+/// by `params`, as [`enter_on_peek`] has a new one. A minimize
 /// still playing on its peek turns round where it is instead, on its
 /// surface or on its own window as it was drawn. Returns whether it does
 /// either.
@@ -4490,16 +4489,14 @@ pub fn restore_on_peek(
   {
     restore_cloaked(&window.native(), target);
     state.animation_manager.peeks.raise_moving(&id);
+    restack_live_overlays(state, &id);
     perf::note_animation_start(false);
     state.animation_manager.ensure_timer_running();
     return true;
   }
 
   let enters = Transit::opening(params).is_some()
-    && state
-      .animation_manager
-      .peeks
-      .can_enter(window, &peek_styles(window, config));
+    && state.animation_manager.peeks.can_enter(window);
   if !enters {
     return false;
   }
@@ -4509,6 +4506,7 @@ pub fn restore_on_peek(
   let entered =
     enter_on_peek(state, window, target, params, config, is_focused, None);
   state.animation_manager.peeks.raise_moving(&id);
+  restack_live_overlays(state, &id);
   entered
 }
 
@@ -4530,10 +4528,10 @@ pub(super) fn restore_cloaked(window: &NativeWindow, rect: &Rect) {
   }
 }
 
-/// Takes `window`, at `rect`, off the screen on a pinned peek by `params`
-/// (see [`PeekView::leave`]), on ticks paced by its monitor's vblanks.
-/// Clipped to the whole monitor, as an open on a peek is, and drawn on its
-/// `PeekSurface` if [`hosts_transit`] says so.
+/// Takes `window`, at `rect`, off the screen on a peek, pinned or live, by
+/// `params` (see [`PeekView::leave`]), on ticks paced by its monitor's
+/// vblanks. Clipped to the whole monitor, as an open on a peek is, and
+/// drawn on its `PeekSurface` if [`hosts_transit`] says so.
 ///
 /// A minimize's peek takes over before this returns: the caller then
 /// minimizes the window, which leaves no thumbnail to warm up from, so a
@@ -4796,14 +4794,9 @@ pub fn track_overlays(
     .collect::<Vec<_>>();
 
   for (id, frame, clip, is_moving, is_live, anchor, kept_set) in tracked {
-    // Blended across a focus fade, as steady state draws it.
     let set = kept_set
       .unwrap_or_else(|| state.effect_set(id, focused_id == Some(id)));
-    let backdrop =
-      focus_blend::<NativeBackdropOverlay>(state, id, set, config);
-    let border =
-      focus_blend::<NativeBorderOverlay>(state, id, set, config)
-        .filter(|_| !hides_ring_for_fullscreen(state, id, config));
+    let (backdrop, border) = tracked_blends(state, id, set, config);
 
     if is_live {
       note_live_size(state, id);
@@ -4882,6 +4875,76 @@ pub fn track_overlays(
   batch.commit();
   // Its ring copies may have been registered or cut anew.
   state.animation_manager.peeks.restack_crossings();
+}
+
+/// The backdrop and ring `id`'s peek draws in `set`, blended across a
+/// focus fade as steady state draws them. A live peek's, real overlays,
+/// at the opacity its transit fades it to (a pinned peek fades its copies
+/// itself, see `WindowPeek::place_scaled`).
+fn tracked_blends(
+  state: &WmState,
+  id: Uuid,
+  set: EffectSet,
+  config: &UserConfig,
+) -> (
+  Option<StyleBlend<BackdropOverlayParams>>,
+  Option<StyleBlend<BorderOverlayParams>>,
+) {
+  let backdrop =
+    focus_blend::<NativeBackdropOverlay>(state, id, set, config);
+  let border = focus_blend::<NativeBorderOverlay>(state, id, set, config)
+    .filter(|_| !hides_ring_for_fullscreen(state, id, config));
+  let fade = state
+    .animation_manager
+    .peeks
+    .entries
+    .get(&id)
+    .filter(|entry| entry.peek.is_live())
+    .map(|entry| entry.peek.opacity_fraction())
+    .filter(|frac| *frac < 1.0);
+
+  match fade {
+    Some(frac) => faded_overlays(backdrop, border, frac),
+    None => (backdrop, border),
+  }
+}
+
+/// `backdrop` and `border` at `frac` of their opacity, both ends of each
+/// blend.
+fn faded_overlays(
+  backdrop: Option<StyleBlend<BackdropOverlayParams>>,
+  border: Option<StyleBlend<BorderOverlayParams>>,
+  frac: f32,
+) -> (
+  Option<StyleBlend<BackdropOverlayParams>>,
+  Option<StyleBlend<BorderOverlayParams>>,
+) {
+  let scaled = |backdrop, border| {
+    OverlayParams { backdrop, border }.with_opacity_scaled(frac)
+  };
+  let from = scaled(
+    backdrop.map(|blend| blend.from),
+    border.map(|blend| blend.from),
+  );
+  let to =
+    scaled(backdrop.map(|blend| blend.to), border.map(|blend| blend.to));
+
+  (
+    backdrop.zip(from.backdrop.zip(to.backdrop)).map(
+      |(blend, (from, to))| StyleBlend {
+        from,
+        to,
+        t: blend.t,
+      },
+    ),
+    border
+      .zip(from.border.zip(to.border))
+      .map(|(blend, (from, to))| StyleBlend {
+        from,
+        to,
+        t: blend.t,
+      }),
+  )
 }
 
 /// The window the overlays of `id`, drawn by `entry`, sit behind: its
