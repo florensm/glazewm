@@ -2258,8 +2258,10 @@ checks and pushes `tryout/one-surface`. Agents that share files run one
 after another. Branches merged so far: `os/1-surface`, `os/2-ready`,
 `os/3-tiles`, `os/4-transits`, `os/5-scroll`, `os/7-switch`, `os/9-integrate`, `os/10-rest-slide`, `os/6a-held`, `os/6b-band`, `os/6c-cross`, `os/11-stacks`, `os/r0-move`, `os/r1-words`, `os/r2-live`, `os/r3-rows`.
 
-Laptop test build of this state (before the removal): `test/one-surface`.
-Run it with `GLAZEWM_ISOLATE=onesurface,readypeeks,morepeeks`.
+Laptop test build: `test/one-surface`, re-cut 2026-11-15 from `0c841473`
+(R0..R3 merged: nothing starts the engine; R4's deletion of the then
+unreachable engine not in it). No `GLAZEWM_ISOLATE` any more: the
+surfaces are always on. Same Windows functions as the build before it.
 
 ## Removal plan (2026-11-15)
 
