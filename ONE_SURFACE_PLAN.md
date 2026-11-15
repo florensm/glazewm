@@ -1612,6 +1612,199 @@ None new. Newly reached for held peeks, all already called by
 - With `readypeeks`: resize by grab, then by keyboard within 5 s: no
   stale frame of the grab's last size.
 
+## Step 6b: as built
+
+Branch `os/6b-band` (from `tryout/one-surface`, `5934e41`). Floating <->
+tiling, WM fullscreen toggles, and floating opens (a transit kept off
+surfaces only for its band, step 4). Tiles crossing monitors (6c) are
+untouched. Not seen running.
+
+### Today's order, found by reading (own peeks)
+
+All pinned, clipped to the monitor rect (`tile_clips`,
+`fullscreen_on_peek`, `enter_on_peek`), created just below the real
+window (in its band), warmed, taken over at the pass's flush. Then the
+raise loop (`redraw_containers`): `raise_moving` for `peek_moves` not in
+`band_moves`, the pass closed, then `peek_raises` in loop order, each
+setting the cloaked window's band first (`set_z_order`), then
+`raise_to_top_of_band` on its peek. Landing: `begin_hand_back`, peek just
+above its window.
+
+| case | `raise_moving` | `peek_raises` | window's band before / after |
+|---|---|---|---|
+| tiling -> floating, shown on top | no (`band_moves`) | `TopMost` | normal / topmost, set in the raise loop |
+| tiling -> floating, focused | no | `Top` | normal / normal, not moved |
+| tiling -> floating, unfocused | no | none: stays just below its window | normal / normal |
+| floating -> tiling | no | `Top`, window set `Normal` first | topmost or normal / normal |
+| fullscreen on or off, not on top | yes | none | normal / normal |
+| fullscreen on or off, on top at either end | yes | `TopMost`, window set `TopMost` | either / topmost until the hand-back's `reposition_window` |
+| floating open, shown on top | no (entering) | `TopMost` | topmost |
+| floating open, focused | no | `Top` | normal |
+| floating open, unfocused | no | none | normal |
+| floating close, minimize | never raised | none | its own |
+
+Neighbours: the tiles a crossing or toggle moves are raised by
+`raise_moving` in the same pass, so a band raise ends over them. A
+window never changes band mid-motion: its band is set once, in the
+raise loop of the pass that cloaks it; a second toggle mid-motion
+retargets (`follows_tile`, frozen), no new raise.
+
+### Surface decision
+
+Per monitor rect, a second `PeekSurface` in `band_surfaces`
+(`Layer::TopBand`), next to the tiles' one (`surfaces`,
+`Layer::Tiles`). Which one a peek takes follows its raise
+(`host_for`, tested):
+
+- `TopMost` raise: the band surface, raised to the top of the
+  always-on-top band as the own peek was.
+- `Top` raise: the tiles' surface, ranked over the pass's raised tiles
+  (`Stacking::OverPass`, rank pass + 2: as first put on top in the next
+  pass), the surface raised to the top as the own peek was.
+- No band raise, a tile (fullscreen toggle not on top): the tiles'
+  surface, ranked as a move.
+- No band raise, not a tile (unfocused floating crossing or open,
+  floating close or minimize): own peek. It stays just below its own
+  window, under floating windows above it; a surface raised for other
+  tenants can't.
+
+Clip: the monitor rect, not the working area. A fullscreen window
+covers the taskbar, and a floating one may overlap it; today's own peeks
+of these windows span the monitor rect already, topmost for the
+on-top ones, so Explorer's fullscreen-app rule sees nothing new (still
+unchecked on screen, as for the tiles' surface).
+
+One surface for the whole motion: the band is fixed at the pass's raise
+loop, before anything after the take-over is composited, and kept to the
+landing. Between the flush and the raise the own peek sat just below its
+window in the window's old band; hosted, the surface is where admission
+put it (a shown window: just below it, or stays if raised), and the
+cloaked window shows nothing either way; the raise follows in the same
+synchronous loop. A landing peek moved on by a motion on another surface
+(e.g. floating on top -> tiling while landing) is replaced: the new one
+drawn, the old one kept drawing in `replaced_tiles` until the next tick
+(`tick` clears it after `note_composited`), so a frame may show both,
+never neither. This also covers step 3's clip change, which dropped the
+old one at once.
+
+### Hosted
+
+| step | own window | hosted |
+|---|---|---|
+| `move_on_peek` (crossing), `fullscreen_on_peek`, `enter_on_peek` (floating) | peek made just below its window | `host_for` picks the surface; `tenancy` registers on it (`SurfaceWindow::admit`: shown window, unraised surface goes just below it, raised stays; cloaked, just above, held) |
+| take-over (cover, flush, `take_over`, cloak, hand-over) | as is | as is; `joining_tenants` now walks band surfaces too |
+| `raise_moving` (fullscreen) | peek to top of its band | surface to top of its band (`HWND_TOP`), as before |
+| `set_z_order` of the window (`peek_raises`) | as is | as is, unchanged order |
+| `raise_in_band` | peek to the band's top | surface to the band's top (`SurfaceWindow::raise_to_top_of_band`), each raise in turn, as a later window's band change can put it above the surface |
+| retarget, ticks | thumbnails | thumbnails on the surface, lanes anew, `restack_crossings` |
+| `begin_hand_back` | peek just above its window | nothing, then `stay_over_window` (`Tenancy::in_band`): the surface just above the window unless above it already, never down |
+| `Apply`, `hand_back`, release | as is | as is; ready store as any hosted peek |
+
+No hand-over step reordered or dropped (rule 5): the raise loop's order,
+`set_z_order` before the raise, the flush and the hand-back's z-order rule
+are as they were.
+
+### Stacking
+
+- Band surface vs tiles' surface: topmost over non-topmost, as `TopMost`
+  own peeks were over `Top` ones.
+- Inside each, registration order; ranks: a pass's band-raised tenants
+  over its raised tiles, in loop order (the order of `peek_raises`), under
+  the next pass's. Late parts (ring copies in the cover pass, fills)
+  restack the upper tenant once (`out_of_order`, grouped per surface);
+  nothing re-registers per frame.
+- Beside a stack or live tile: only `Host::Tiles` transits keep their own
+  peek; a band-raised one ends over every peek its pass raised anyway.
+- Beside a held tile: a `Top` crossing or entering on the tiles' surface
+  keeps its own peek (its raise would top the surface over the held
+  tiles); the band surface is free to take one.
+
+### Ownership and purge
+
+`band_surfaces` declared after `surfaces`, before `switch_surfaces`;
+entries, `replaced`, `replaced_tiles` and `ready` before both, so
+tenants go first. Same rule as integration's (`is_stale_surface`): a
+surface goes only unused, ready peeks first. Display change
+(`retain_surfaces`), reload, pause, shutdown (`drop_unused_surfaces`) and
+a new surface of that layer prune the band list too. A replaced peek is
+a tenant until the next tick, so it keeps its surface listed. Ready
+peeks: a band tenant's is kept on the band surface; a later motion takes
+it only on that surface (`surface.hwnd() == peek.hwnd()`), else it goes.
+
+### Edge cases
+
+- Toggle twice mid-motion: retargeted on the same surface (no new raise).
+- Toggle again while landing: in place if the same layer's surface at the
+  same clip draws it (`surface_at`), else replaced as above.
+- Floating open, closed mid-open: turns round in place on its surface,
+  rank kept (step 4's rule).
+- Floating open retargeted (app centring itself): jumps, lane anew.
+- Into a stack, live, onto another monitor (`Trail`): own, as before.
+- Surface creation fails: own peek, as before.
+- Two monitors: one band surface per monitor rect.
+- Without `onesurface`: `host_for` never reached, no band surface, the
+  raises computed from the same values in the same pass (now once,
+  before the call, `platform_sync.rs` `state_change_raise`,
+  `fullscreen_raise`, `floating_raise`): today's behaviour. Without
+  `morepeeks`: crossings and toggles stay off peeks as before; floating
+  opens are under `peeks`, as before.
+
+### Still on a window of its own, and why
+
+- Unfocused floating windows not shown on top (crossing to floating, or
+  opening): their peek stays below their own window, under floating
+  windows above it.
+- Floating and fullscreen windows closing or minimizing: never raised,
+  same reason.
+- Workspace switches' floating, fullscreen and topmost windows
+  (`hosts_switch_window`, unchanged): they overlap one another, and a
+  switch cloaks and uncloaks them a frame apart; on one surface below
+  them (the band's would have to be, since incoming windows are uncloaked
+  over their surrogates until `Drop`) the upper of two overlapping ones
+  would show under the lower's surrogate for that frame. Tiles don't
+  overlap, so they don't meet this.
+- Stacks, live peeks, trails (6c).
+
+### Windows functions called by the new code
+
+None new. Newly reached on a band surface, all already called by
+`wm-platform`: `SetWindowPos` (with `HWND_TOPMOST`, `HWND_NOTOPMOST`,
+`HWND_TOP`, through `window_class::raise_to_top_of_band`, and in
+`admit`), `GetWindowLongPtrW` (`is_topmost`), `GetWindow`
+(`companion::is_above`, `place_above`), `CreateWindowExW` and
+`DestroyWindow` (the surface), `ShowWindow`, `DwmRegisterThumbnail`,
+`DwmUpdateThumbnailProperties`, `DwmUnregisterThumbnail`,
+`DwmGetWindowAttribute` (`is_cloaked`).
+
+### To check on screen
+
+`GLAZEWM_ISOLATE=onesurface,morepeeks`, then
+`onesurface,morepeeks,readypeeks`; `window_resize`, `window_move`,
+`window_fullscreen` at `duration_ms: 2000`, then default; a border and a
+backdrop; three tiles; a floating window with `shown_on_top: true`.
+
+- `toggle-floating` on the focused tile, `floating.shown_on_top` off:
+  one surrogate-class window per monitor in a window list (no extra one),
+  the window over the tiles closing the gap all the way.
+- The same with `shown_on_top` on: a second surrogate-class window,
+  topmost; the window over the other floating window shown on top from
+  the first frame; once landed, in that band.
+- `toggle-floating` back (from on top and not): sinks into its tile over
+  the tiles, once landed under the floating windows shown on top; no
+  blink at the hand-back.
+- Each twice within the animation, and once more just as it lands: turns
+  round; at the landing no frame without the window.
+- Unfocused crossing (by IPC on another window): its own peek, as with
+  `morepeeks` alone.
+- Fullscreen on and off, `shown_on_top` off then on: on the tiles'
+  surface, then on the band one; ring gone going in, back coming out; an
+  app bar set to hide for fullscreen apps: as with `morepeeks` alone.
+- Open a floating dialog, focused, then one shown on top: no own peek;
+  over the tiles, resp. over the other window shown on top.
+- Reload and pause mid-motion: it lands; band surface hidden after.
+- Two monitors: each its own band surface.
+- With `readypeeks`: fullscreen on and off within 5 s: no stale frame.
+
 ## State and next steps (2026-11-15)
 
 For whoever picks this up in a new session. `tryout/one-surface` holds

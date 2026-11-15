@@ -1695,6 +1695,19 @@ fn redraw_containers(
       None
     };
 
+    // Floating, it may overlap windows restacked after it this pass
+    // (`windows_to_bring_to_front`) that would cover its peek, just below
+    // it. Its peek goes on top of the band it lands in once the pass is
+    // done (`floating_peek_raise`).
+    let floating_raise = is_floating
+      .then(|| {
+        crate::animation::peek_view::floating_peek_raise(
+          is_shown_on_top(window),
+          window.id() == focused_container.id(),
+        )
+      })
+      .flatten();
+
     // Behind the switch, an open or a restore of a tiled window enters on
     // a pinned peek instead (`STAND_INS_PLAN.md` tasks 3 and 5).
     let enters_on_peek = match &entry_transition {
@@ -1712,6 +1725,7 @@ fn redraw_containers(
             params,
             config,
             is_focused,
+            floating_raise,
           )
         } else {
           crate::animation::peek_view::restore_on_peek(
@@ -1739,19 +1753,7 @@ fn redraw_containers(
         is_frozen_by_ws_animation |=
           state.animation_manager.peeks.is_moving(&window.id());
 
-        // Floating, it may overlap windows restacked after it this pass
-        // (`windows_to_bring_to_front`) that would cover its peek, just
-        // below it. Its peek goes on top of the band it lands in once the
-        // pass is done (`floating_peek_raise`).
-        if let Some(raise) = is_floating
-          .then(|| {
-            crate::animation::peek_view::floating_peek_raise(
-              is_shown_on_top(window),
-              window.id() == focused_container.id(),
-            )
-          })
-          .flatten()
-        {
+        if let Some(raise) = floating_raise {
           peek_raises.push(((*window).clone(), raise));
         }
       } else if !(is_open && is_floating) {
@@ -1809,6 +1811,25 @@ fn redraw_containers(
           && ((anim_enabled && (!is_floating || is_state_change))
             || has_slide_in)));
 
+    // Where a crossing between floating and tiling, or a fullscreen
+    // toggle, on a peek is raised beyond the tiles once its window is
+    // cloaked (`peek_raises`), which also picks its surface under
+    // `onesurface`.
+    let state_change_raise = is_state_change
+      .then(|| {
+        crate::animation::peek_view::state_change_peek_raise(
+          is_floating,
+          is_shown_on_top(window),
+          window.id() == focused_container.id(),
+        )
+      })
+      .flatten();
+    let fullscreen_raise =
+      crate::animation::peek_view::fullscreen_peek_raise(
+        &window.state(),
+        window.prev_state().as_ref(),
+      );
+
     // Determine the rect to use for this frame.
     let anim_scope = perf::scope(Stage::AnimStep);
     let (position_result, anim_opacity) = if should_use_animations {
@@ -1838,6 +1859,7 @@ fn redraw_containers(
             },
             config,
             window.id() == focused_container.id(),
+            state_change_raise,
           )
         })
       {
@@ -1847,13 +1869,7 @@ fn redraw_containers(
         peek_moves.push(window.id());
         if is_state_change {
           band_moves.push(window.id());
-          if let Some(raise) =
-            crate::animation::peek_view::state_change_peek_raise(
-              is_floating,
-              is_shown_on_top(window),
-              window.id() == focused_container.id(),
-            )
-          {
+          if let Some(raise) = state_change_raise {
             peek_raises.push(((*window).clone(), raise));
           }
         }
@@ -1868,6 +1884,7 @@ fn redraw_containers(
             &target_rect,
             config,
             window.id() == focused_container.id(),
+            fullscreen_raise,
           )
         })
       {
@@ -1875,12 +1892,7 @@ fn redraw_containers(
         // so on a pinned peek (`STAND_INS_PLAN.md` 10f), taken over from
         // as a move on a peek is.
         peek_moves.push(window.id());
-        if let Some(raise) =
-          crate::animation::peek_view::fullscreen_peek_raise(
-            &window.state(),
-            window.prev_state().as_ref(),
-          )
-        {
+        if let Some(raise) = fullscreen_raise {
           peek_raises.push(((*window).clone(), raise));
         }
         (AnimationPositionResult::Frozen, None)
