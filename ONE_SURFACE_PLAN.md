@@ -2332,3 +2332,27 @@ section (a short subsection per phase, not a new top section).
 - Not part of the removal: the test-build strip list (`CLAUDE.md`) and
   the bench scripts, which step 8 reworks to compare against
   `origin/main`.
+
+#### R0: as built
+
+Branch `os/r0-move`. Move only; not seen running.
+
+- New module `wm-platform/src/window_edges.rs`: `compute_border_inset`,
+  `EdgeColorCache`, `sample_edge_color_async`, `sample_edge_color`,
+  `dominant_color`, `EDGE_SAMPLE_INSET`, `EDGE_SAMPLES`,
+  `EDGE_COLOR_BUCKET_SHIFT`, `sampleable_rect`, `window_rect`, and the
+  three `dominant_color` tests (with their `colorref`/`rgb` helpers).
+- `window_rect` is also used by `ResizeSession` (its commit polls), so it
+  moved too, now `pub(crate)`; `resize_session.rs` imports it and
+  `compute_border_inset` from `window_edges`. R4 drops that import with
+  the file.
+- `window_peek.rs`, `workspace_surrogate.rs`, `companion_cover.rs` import
+  `compute_border_inset` from `window_edges`. `lib.rs` re-exports
+  `sample_edge_color_async` and `EdgeColorCache` from `window_edges`;
+  `manager.rs` imports them from the crate root, unchanged.
+- Left in `resize_session.rs` for R4: `overlay_factor`,
+  `zoom_destination` and their tests, and the `fade_fraction` tests
+  (`fade_fraction` lives in `native_surrogate.rs`; move its tests there
+  if it outlives the engine).
+- Windows functions added: none. Removed: none (the GDI calls of
+  `sample_edge_color` moved with it).
