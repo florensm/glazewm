@@ -2545,3 +2545,100 @@ used by live peeks: `SetWindowPos`, or the batch's `DeferWindowPos`).
 No longer called: none; these transits no longer make an engine
 session (its surrogate, per-frame updates and overlay tracking, a zoom
 open's early `set_cloaked`), but each function stays called elsewhere.
+
+#### R3: as built
+
+Branch `os/r3-rows`, six commits, one per row, then one deleting the
+entry points left uncalled. Not seen running.
+
+Nothing calls `start_animation_if_needed`, `start_open_animation` or
+`start_away_animation` any more; they are deleted (see the last row).
+R1 and R2 left no other caller: the three call sites were
+`redraw_containers` (redraw, open/restore) and `animate_away`.
+
+| row | ported to / snapped | why |
+|---|---|---|
+| restore of a floating window | ported: `restore_on_peek` takes the pass's `floating_raise` and enters as a floating open (6b): band surface, tiles' surface ranked over the pass, or an own peek just below its window; raised by the `peek_raises` loop, not `raise_moving`; a floating minimize still playing turns round the same way | 6b's open path fits as is |
+| peek refused otherwise (moves, resizes, crossings, fullscreen toggles, opens, restores) | snapped: the redraw's `Apply` arm at `real_rect`, as with the animation off | no peek path takes them: another stand-in draws the window, no monitor or clip, a peek that couldn't be made, `move_tile` refusing an entry in another role |
+| mixed relayout | per window: `resizes_relayout` goes, the relayout's resizes go on peeks whenever `window_resize` is on (`resizes_on_peeks`); `move_on_peek` refuses, per tile, one at its new size already (`is_resized_already`), which snaps with the refused ones | the all-or-nothing rule only kept neighbours in one style beside the engine |
+| `Motion::Column` | ported: `sync_scroll_view` decides `resizes` per column (`can_stretch`, opening, same size), not per workspace. Snapped: what it still leaves to the redraw (a resize with `window_resize` off, one at its size already, one another stand-in draws) and a column opening or restored with `scroll` off | the scroll view's path takes any column it can stretch; the rest have no peek path (`enter_on_peek` excludes columns, whose entries the scroll view owns) |
+| close/minimize `leave` -> `Unsupported` | snapped: `animate_away` returns `false`, so a close sends `WM_CLOSE` at once and a minimize minimizes at once, as with the animation off; covers the leave's own refusals too (no monitor, no frame, no peek), which share `Unsupported` | a handing-back or releasing peek has already put its window and overlays back, and a resting column's peek is the scroll view's: turning either into a leaving one is not a small change in `leave` |
+| no thumbnail (elevated) | unchanged (snaps) | |
+| entry points left uncalled | deleted with what only they reached: `should_start_new_animation`, `reclaim_surrogate`, `compute_transition_start_rect`, `HANDOFF_LEAD_MAX_MS`, `start_animation` (one engine test now inserts into `animations`) | `dead_code` under `-D warnings`; nothing else of the engine touched |
+
+How a snap ends right: every snap is the redraw's `Apply` arm, the one an
+animation turned off takes. `reposition_window` restores a still
+minimized window and places it; `set_cloaked(false)` uncloaks it (an
+open's `manage_window` cloak too); a peek still handing it back is
+readied and released (`prepare_hand_back`, `release`) as at any
+landing, `hand_back` giving back any alpha set aside; overlays are
+placed at rest by the pass's `sync_overlays`, no session holding them.
+No cloak, alpha or stand-in is put up for a snap. A close or minimize that snaps is never cloaked
+for it (`close_window`'s engine cloak went: an animated close is always on
+a peek, which cloaks on its first tick).
+
+Hand-over order: no step moved, simplified or dropped. Engine arms gone:
+the three calls, the effect opacity, corner style and overlay params
+computed only for them, `close_window`'s cloak for an engine surrogate.
+`Frozen` (`TakeOver`/`Keep`/`Adopt`), `pending_cloaks`, the flush, the
+cover and hand-over passes and the raise loop are as they were.
+
+For items 2 and 3: the live path is untouched. `is_live` (through
+`is_copyable`) still alone decides live vs pinned, also for a floating
+restore (`hosts_transit` -> `new_entry`), and `has_own_peek_neighbour`,
+`beside_own_peek` and the live arms stay as they were.
+
+On screen, against R2:
+
+- A floating window coming back from minimized enters as it opens, by
+  `window_minimize` reversed: focused, over the tiles; shown on top, in
+  the top band; unfocused, just below its own window. The engine put its
+  surrogate on top of everything. A natively maximized one snaps.
+- `toggle-minimized` twice on a floating window: turns round on its
+  peek (the minimize's peek was dropped and the engine restarted it).
+- A relayout where one tile is at its new size already (an interactive
+  resize's drag end): its neighbours resize on peeks; that one stays
+  put. Before, every resize of the relayout was on the engine.
+- Columns: one that can't stretch no longer keeps the others of its
+  workspace off theirs; a column resize with `window_resize` off, and a
+  column opening or restored with `scroll` off, snap (the engine played
+  them on `scroll`'s timing, or by `window_open`).
+- Close or minimize of a window still landing (handing back,
+  releasing), or of a half-visible resting column: no animation.
+- Any refused peek (rare: another stand-in, no monitor, a failed
+  surface or peek window): no animation where the engine played one.
+
+To check on screen:
+
+- Minimize and restore a floating window, focused, unfocused (by IPC),
+  and with `shown_on_top`; `toggle-minimized` twice within the
+  animation.
+- Drag a tile's edge and let go: no jump of the dragged tile, the
+  others resize on peeks.
+- Scrolling layout: resize a column with `window_resize` off (snaps),
+  and a few columns at once with one dragged.
+- Close a tile right as it lands from a move, and a half-visible
+  column: it goes at once, nothing left cloaked or blank.
+- With `scroll` off, open a column: it shows at once.
+
+What R4 can now delete as well (never reached since this phase):
+`has_slide_in` (always false), the `Frozen` arm's session reads
+(`session_cloaked`, `reveal_session`), `FrozenStep::Adopt`,
+`was_pre_committed_at`, the always-`None` `anim_opacity` and its
+`set_transparency` in `Apply`, `away_windows`/`AwayWindow` and the
+`has_away_animation` family (always false), `zoom_progress` and its
+test, `animations` and `get_animation` (only removed, never filled),
+`pending_surrogate_updates`, `slide_in_monitor_rects`, warm surrogates
+(`stash_warm_surrogate` is all that is left of them), and in
+`wm-platform` `ResizeSession::begin`, `begin_reusing_surrogate`,
+`SessionOptions` and `DxgiVsyncWaiter::window_monitor`, which `wm` no
+longer calls. `Stage::AnimStep` now times only the redraw's choice of
+how a window moves (its doc says so).
+
+Windows functions added: none. No longer called: none from the source
+(each stays called elsewhere: `ResizeSession`'s `CreateWindowExW`,
+`DwmRegisterThumbnail` and per-frame `DwmUpdateThumbnailProperties` /
+`SetWindowPos` by peeks, `MonitorFromWindow` by `display.rs`); at run
+time the engine's session path (its surrogate, the zoom open's early
+`set_cloaked`, per-frame updates and overlay tracking) is no longer
+reached.
