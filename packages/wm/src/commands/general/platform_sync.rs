@@ -1030,6 +1030,11 @@ fn redraw_containers(
             }
             surrogate
           };
+          let hosts = hosts_switch_window(
+            wm_platform::isolation::current().one_surface,
+            is_live,
+            window.state() == WindowState::Tiling,
+          );
 
           if is_incoming {
             let surrogate = window
@@ -1041,15 +1046,30 @@ fn redraw_containers(
               })
               .ok()
               .and_then(|(rect, frame_rect)| {
-                WorkspaceSurrogate::new(
+                hosted_switch_surrogate(
+                  state,
+                  hosts,
                   hwnd,
                   &rect,
                   &frame_rect,
                   &monitor_work_area,
                   opacity,
                   opacity_incoming,
-                  &corner_style,
-                  overlay_tint,
+                )
+                .map_or_else(
+                  || {
+                    WorkspaceSurrogate::new(
+                      hwnd,
+                      &rect,
+                      &frame_rect,
+                      &monitor_work_area,
+                      opacity,
+                      opacity_incoming,
+                      &corner_style,
+                      overlay_tint,
+                    )
+                  },
+                  Ok,
                 )
                 .map_err(|e| {
                   tracing::warn!(
@@ -1095,15 +1115,30 @@ fn redraw_containers(
                 .unwrap_or_else(|_| Rect::from_xy(0, 0, 0, 0));
               (frame.clone(), frame)
             };
-            let surrogate = WorkspaceSurrogate::new(
+            let surrogate = hosted_switch_surrogate(
+              state,
+              hosts,
               hwnd,
               &current,
               &frame_rect,
               &monitor_work_area,
               opacity,
               opacity_outgoing,
-              &corner_style,
-              overlay_tint,
+            )
+            .map_or_else(
+              || {
+                WorkspaceSurrogate::new(
+                  hwnd,
+                  &current,
+                  &frame_rect,
+                  &monitor_work_area,
+                  opacity,
+                  opacity_outgoing,
+                  &corner_style,
+                  overlay_tint,
+                )
+              },
+              Ok,
             )
             .map_err(|e| {
               tracing::warn!("Failed to create outgoing surrogate: {e}.");
@@ -1145,6 +1180,18 @@ fn redraw_containers(
             config,
           );
           drop(park_scope);
+          // Their rings are carried after every window: hosted ones that
+          // may meet are stacked as their own windows would be.
+          crate::animation::restack_switch_tenants(
+            &mut ws_windows,
+            crate::animation::switch_crossing(
+              config,
+              state.pending_sync.workspace_switch_axis(),
+              direction,
+              monitor_width,
+              monitor_height,
+            ),
+          );
           let show_scope = perf::scope(Stage::WsShow);
           // Show outgoing surrogates before flushing: real windows are
           // still active so their DWM thumbnails are immediately
@@ -3307,6 +3354,56 @@ fn park_switch_borders(
   }
 }
 
+/// Whether a window of a starting workspace switch is drawn on its
+/// monitor's switch surface (`onesurface`): only a tile whose backdrop can
+/// be copied. A floating or fullscreen window overlaps others of the
+/// switch, and its own window just below its real one keeps it over them
+/// through every cloak and uncloak; a `Live` one moves.
+fn hosts_switch_window(
+  one_surface: bool,
+  is_live: bool,
+  is_tiling: bool,
+) -> bool {
+  one_surface && !is_live && is_tiling
+}
+
+/// `hwnd`'s surrogate on the switch surface of the working area `area`, if
+/// it `hosts` there and can (see `WorkspaceSurrogate::hosted`).
+#[allow(clippy::too_many_arguments)]
+fn hosted_switch_surrogate(
+  state: &mut WmState,
+  hosts: bool,
+  hwnd: HWND,
+  rect: &Rect,
+  frame_rect: &Rect,
+  area: &Rect,
+  opacity: u8,
+  opacity_endpoint: f32,
+) -> Option<WorkspaceSurrogate> {
+  if !hosts {
+    return None;
+  }
+
+  let monitors = state.monitors();
+  let surface =
+    state.animation_manager.peeks.switch_surface(area, || {
+      monitors
+        .iter()
+        .map(|monitor| monitor.native_properties().working_area)
+        .collect()
+    })?;
+
+  WorkspaceSurrogate::hosted(
+    surface,
+    hwnd,
+    rect,
+    frame_rect,
+    area,
+    opacity,
+    opacity_endpoint,
+  )
+}
+
 /// Hands the windows of a starting workspace switch that the one it cuts
 /// short still draws over to their new surrogates (see
 /// `AnimationManager::hand_over_cut_short_slide`), along with their
@@ -4131,10 +4228,19 @@ mod tests {
   use wm_platform::{NativeBackdropOverlay, OpacityValue, Rect};
 
   use super::{
-    hands_back_in_step, is_unanimated_reveal, should_note_size,
-    tracks_at_take_over, FrozenStep, SyncableOverlay,
+    hands_back_in_step, hosts_switch_window, is_unanimated_reveal,
+    should_note_size, tracks_at_take_over, FrozenStep, SyncableOverlay,
   };
   use crate::user_config::UserConfig;
+
+  /// Only copyable tiles go on a switch surface, and only under the word.
+  #[test]
+  fn only_copyable_tiles_host_on_a_switch_surface() {
+    assert!(hosts_switch_window(true, false, true));
+    assert!(!hosts_switch_window(false, false, true));
+    assert!(!hosts_switch_window(true, true, true));
+    assert!(!hosts_switch_window(true, false, false));
+  }
 
   #[test]
   fn a_peek_hand_back_is_in_step_only_if_turned_off() {

@@ -791,3 +791,174 @@ place (rule 5) and adds no Windows API.
 
 Each step's report says which kinds still fall back to their own
 window, and why.
+
+## Workspace switches: as built
+
+Branch `os/7-switch` (from `3c3c08c`, before step 4). Not seen running.
+
+### A switch surrogate today
+
+- One `WorkspaceSurrogate` window per switching window (`NativeSurrogate`,
+  click-through popup of the surrogate class). `PinnedViewport`: spans the
+  monitor's **working area**, never moves; per frame only its thumbnail's
+  `rcSource`/`rcDestination` (and its ring/backdrop copies) change, cut at
+  `panel ∩ monitor` (the working area moved and scaled with its
+  workspace) and by the window's bounds at the working area (f8a226b: a
+  monitor-sized window reads to Explorer as a fullscreen app, and app bars
+  set to make way for one hide). `Live` (uncopyable backdrop): sized to its
+  visible rect, moved every frame by a batched `SetWindowPos`.
+- Z-order: created just below its own real window (`insert_after = hwnd`),
+  so surrogates stack as their windows do, topmost ones in the band,
+  floating over tiling, other workspaces' (cloaked) windows irrelevant.
+  Outgoing: `show_initial` warms it at opacity 1 under the still-shown
+  window, the flush composites it, `take_over` brings it to full and hides
+  a semi-transparent window's alpha, then the cloak. Incoming: cloaked
+  windows; shown at rest at start opacity (fade, zoom), at warm-up (cut),
+  or on the first frame (slide); at the end uncloaked *over* their
+  surrogates (`prepare_hand_back`, `hide_thumbnail`; the backdrop copy
+  stays under the window until `WsCleanupStep::Drop`). A companion's
+  (shades) surrogate is put above its window (`cover_window`).
+- Tile peeks at the start: outgoing tiles' moving or landing peeks are
+  dropped by `drop_strays` before the pre-pass (no hand-back; their
+  windows are taken over by the switch in the same sync). Incoming
+  windows have none; resting peeks of hidden columns stand by
+  (`slidepeeks`), own windows just below their cloaked windows.
+
+### Hosted form (`WorkspaceSurrogate::hosted`)
+
+Only `PinnedViewport`. Registers on a surface through
+`NativeSurrogate::create_hosted` (held, tenant count, `admit`), its
+copies `OverlayCopies::held()`. Placement is unchanged: thumbnails are
+placed from the surface's top-left (`origin`), which is the working
+area's.
+
+| operation, own window | hosted |
+|---|---|
+| `new` (`create_popup`, `style_like_window`, `SetWindowPos` below `hwnd`) | `hosted`: thumbnail held on the surface, which goes below `hwnd` unless already (`admit`); `None` for a topmost window or one with a companion |
+| `set_visible` (show_frame, clear_frame) | `set_shown`: window thumbnail and every copy held or let go; the surface shows with its first drawing tenant, hides with its last |
+| `reposition`/`defer_reposition` | never reached (`Live` only) |
+| window bounds cutting at the working area | `cut`: clip also ∩ viewport, for the window and its copies |
+| `cover_window` / `keep_above` | none (never needed: no companion) |
+| `adopt_companion`, `refresh_companion` | none: a hosted one draws the window as it is |
+| `raise_thumbnail` (backdrop carried) | re-registers on the surface, held while hidden |
+| `hide_thumbnail` | thumbnail hidden, tenant still drawing (ring, backdrop copies) |
+| `hwnd()` (overlay anchors: `final_overlay_rects`, pinned-ring fallback) | the surface's |
+| `Drop` | copies and thumbnail unregistered, tenant count down; the window stays |
+
+### Ownership and purge
+
+`PeekView.switch_surfaces`, one per working area (`switch_surface`),
+apart from the tiles' `surfaces`, which span the monitor (`tile_clips`)
+and which a tile motion raises to the top. Two reasons: the Explorer
+fullscreen rule above, and the switch surface must stay below every
+incoming window from its uncloak to `Drop` (backdrop copies under their
+real windows). Tenants hold the surface's window (`Rc`), so it outlives
+them whatever drops first. Purged with the tiles': `drop_surfaces`
+(reload, pause, shutdown), display change (`retain_switch_surfaces`, by
+working area), and unused ones off every working area as one is made
+(`is_stale_surface`).
+
+### Who goes on it
+
+`hosts_switch_window`: `onesurface`, a tile (`WindowState::Tiling`) whose
+backdrop is copyable (not `Live`), and `hosted` accepts it (not topmost,
+no companion at the start). Everything else keeps its own window:
+floating and fullscreen windows (they overlap other switch windows; a
+surface below all switch tiles would put a floating window under a tile
+for the gap between their cloaks, or uncloaks, a frame now and then),
+`Live`, topmost-band windows (step 6's top surface), companions.
+
+### Z-order and stacking
+
+- The surface is never raised: each tenant's `admit` puts it below its
+  window, so it ends below the lowest switch tile. Outgoing tiles warm
+  under their still-shown windows, then are cloaked over it; incoming are
+  uncloaked over it; own-window surrogates (floating) sit just below
+  their windows, above it.
+- Among tenants: registration order. Each tile's rings are carried in
+  `park_switch_borders`, after every window's thumbnail. So right after
+  park, before anything is shown, `restack_switch_tenants` registers anew
+  (`register_anew`, held) every hosted surrogate drawn under a lower one
+  it may meet, lower and higher by the real windows' z-order
+  (`stacking_ranks`, one `GetWindow` walk), as step 3's `out_of_order`.
+  May meet (`switch_tenants_meet`, tested): same side, where their rest
+  frames with rings overlap; across sides by `Crossing`: unzoomed styles
+  (drift, fade, zoom, cut) a fixed offset apart, zoomed-down slides never
+  (panels a monitor apart), soft zoom anywhere. A plain slide restacks
+  nothing and walks nothing; a fade restacks the upper side's tiles that
+  overlap the other side (stage `restack`).
+- Not restacked: registrations after the start (none for hosted ones:
+  no companion, the ring's source and cut stay), and a cut-short
+  switch's tenants against the new one's (new ones register later, so
+  over them, as `hand_over_cut_short_slide` needs).
+
+### Hand-over steps
+
+Untouched and in place: `show_initial`/`cover_ring`, the single flush,
+`conceal`, `hand_over_cut_short_slide` (new one full before the old one
+hides, both on one surface: registered later, so over it),
+`take_over_outgoing`/`take_over_from_peek`, per-frame `restore_alpha`,
+`hide_thumbnail`/`hide_ring` at `ws_done`, `stash_for_ws_cleanup`,
+`prepare_ws_hand_back`, `hide_pending_ws_cleanup_surrogate`,
+`hand_back_to_peek`, `WsCleanupStep` (overlays shown behind the surface,
+then behind their windows, then `Drop`). The restack is a new step
+between park and show, on held thumbnails only.
+
+### Edge cases
+
+- Second switch mid-slide, switch back mid-slide: both switches' tenants
+  on one surface; `hand_over_cut_short_slide` unchanged.
+- The other monitor: its own working area, its own surface; a playing
+  switch finished by `start_workspace_switch` hands back on its surface.
+- No windows on a side: nothing changes; the surface shows with the first
+  shown tenant.
+- A window closing or opening during the slide: as today; a closed
+  window's thumbnail draws nothing until `Drop`.
+- Fullscreen: own window. Semi-transparent: alpha take-over unchanged
+  (z-order independent). Suppressed: no pre-pass, no surface.
+- Two DPIs: one surface per working area, physical pixels throughout.
+- Resting peeks (`slidepeeks`): own windows just below their columns'
+  windows, so above or below the surface; faint either way, and at the
+  end peek and surrogate are identical while both draw.
+
+### Known differences on screen
+
+- An own-window surrogate (floating, `Live`, topmost) and hosted tiles
+  stack by the surface's height, not the real z-order: a floating window
+  below a tile it overlaps ends above it; a `Live` tile above the other
+  side's tiles in a crossfade.
+- Unmanaged windows between switch tiles in the z-order end above all
+  hosted tiles.
+- A companion first seen after the start is not adopted by a hosted
+  surrogate: the window slides uncolored and its companion comes back on
+  its own after the uncloak.
+- Tiles' surfaces still span the monitor: a tile motion may hide app bars
+  that make way for fullscreen apps (not seen; option: tile surfaces on
+  the working area too, one surface per monitor again).
+
+### Windows functions called by the new code
+
+All already called by `wm-platform`: `GetWindow` (`z_depths`, `admit`),
+`GetWindowLongPtrW` (`is_topmost`), `EnumWindows`, `GetPropW` through
+`Companion::find`, `SetWindowPos`, `ShowWindow`, `CreateWindowExW` (a
+surface), `DwmRegisterThumbnail`, `DwmUpdateThumbnailProperties`,
+`DwmUnregisterThumbnail`, `GetWindowRect`/`DwmGetWindowAttribute`
+through `compute_border_inset`.
+
+### To check on screen (`GLAZEWM_ISOLATE=onesurface`)
+
+- Switch 1→2 and back, each style used (bench: slide): no blank,
+  doubled or ring-less frame at start or end; one extra window of the
+  surrogate class per monitor, spanning the working area, hidden after.
+- A second switch mid-slide, and back mid-slide: nothing left behind.
+- A workspace with a floating window over tiles: it stays over them all
+  the way, on its own surrogate.
+- Fade: which workspace draws on top matches `default`; `restack` shows in the profiler
+  at the start, never for a slide.
+- A scrolling column half off the inner edge of a monitor
+  (`slidepeeks`): slides with its neighbours, cut at the edge, no flash
+  at the hand-over to its peek.
+- An app bar set to hide for fullscreen apps: stays through switches.
+- Two monitors: a switch on each, nothing across the edge; then a
+  display change and a switch.
+- A shades-recolored window: still on its own surrogate, colors kept.

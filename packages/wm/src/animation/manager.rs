@@ -495,32 +495,209 @@ struct WorkspaceSwitchState {
 
 impl WorkspaceSwitchState {
   /// How this switch's style moves its surrogates.
-  #[allow(clippy::cast_possible_truncation, clippy::cast_precision_loss)]
   fn motion(&self) -> SwitchMotion {
     let travel = match self.slide_direction {
       WorkspaceSwitchDirection::Horizontal => self.slide_distance_h,
       WorkspaceSwitchDirection::Vertical => self.slide_distance_v,
     };
 
-    let (distance, zoom_incoming, zoom_outgoing) = match self.style {
-      WorkspaceSwitchStyle::Slide => {
-        (travel, self.zoom_factor, self.zoom_factor)
-      }
-      WorkspaceSwitchStyle::Drift => {
-        ((travel as f32 * DRIFT_DISTANCE).round() as i32, 0.0, 0.0)
-      }
-      WorkspaceSwitchStyle::SoftZoom => {
-        (0, SOFT_ZOOM_INCOMING, -SOFT_ZOOM_OUTGOING)
-      }
-      WorkspaceSwitchStyle::Fade
-      | WorkspaceSwitchStyle::Zoom
-      | WorkspaceSwitchStyle::Cut => (0, 0.0, 0.0),
-    };
+    switch_motion(&self.style, travel, self.zoom_factor)
+  }
+}
 
-    SwitchMotion {
-      distance,
-      zoom_incoming,
-      zoom_outgoing,
+/// How `style` moves a switch's surrogates, its slides travelling `travel`
+/// and its zooms by `zoom_factor`.
+#[allow(clippy::cast_possible_truncation, clippy::cast_precision_loss)]
+fn switch_motion(
+  style: &WorkspaceSwitchStyle,
+  travel: i32,
+  zoom_factor: f32,
+) -> SwitchMotion {
+  let (distance, zoom_incoming, zoom_outgoing) = match style {
+    WorkspaceSwitchStyle::Slide => (travel, zoom_factor, zoom_factor),
+    WorkspaceSwitchStyle::Drift => {
+      ((travel as f32 * DRIFT_DISTANCE).round() as i32, 0.0, 0.0)
+    }
+    WorkspaceSwitchStyle::SoftZoom => {
+      (0, SOFT_ZOOM_INCOMING, -SOFT_ZOOM_OUTGOING)
+    }
+    WorkspaceSwitchStyle::Fade
+    | WorkspaceSwitchStyle::Zoom
+    | WorkspaceSwitchStyle::Cut => (0, 0.0, 0.0),
+  };
+
+  SwitchMotion {
+    distance,
+    zoom_incoming,
+    zoom_outgoing,
+  }
+}
+
+/// Where a switch's incoming windows may be drawn over its outgoing ones
+/// (see [`switch_tenants_meet`]).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) enum Crossing {
+  /// Nowhere: each workspace is drawn inside its own panel, and the
+  /// panels never overlap.
+  Never,
+  /// Where an incoming window, moved by this, overlaps an outgoing one at
+  /// rest: both sides move alike, this far apart.
+  Offset(i32, i32),
+  /// Anywhere.
+  Anywhere,
+}
+
+/// Where `motion`'s incoming windows may meet its outgoing ones, sliding
+/// in from `order_direction` along an axis the monitor spans `extent` of.
+///
+/// Unzoomed, the two sides are a fixed offset apart. Zoomed in to a
+/// smaller scale, panels a monitor apart stay apart: each is the working
+/// area scaled about the monitor's center.
+fn crossing(
+  motion: SwitchMotion,
+  order_direction: i32,
+  is_vertical: bool,
+  extent: i32,
+) -> Crossing {
+  if motion.zoom_incoming == 0.0 && motion.zoom_outgoing == 0.0 {
+    let offset = order_direction * motion.distance;
+    if is_vertical {
+      Crossing::Offset(0, offset)
+    } else {
+      Crossing::Offset(offset, 0)
+    }
+  } else if motion.zoom_incoming >= 0.0
+    && motion.zoom_outgoing >= 0.0
+    && motion.distance >= extent
+  {
+    Crossing::Never
+  } else {
+    Crossing::Anywhere
+  }
+}
+
+/// Where a starting switch's incoming windows may meet its outgoing ones,
+/// for a switch from `order_direction` along `axis` on a monitor of
+/// `monitor_width` by `monitor_height`, as `start_workspace_switch` sets
+/// it up.
+pub(crate) fn switch_crossing(
+  config: &UserConfig,
+  axis: &WorkspaceSwitchDirection,
+  order_direction: i32,
+  monitor_width: i32,
+  monitor_height: i32,
+) -> Crossing {
+  let ws_config = &config.value.animations.workspace_switch;
+  let is_vertical = *axis == WorkspaceSwitchDirection::Vertical;
+  let travel = if is_vertical {
+    monitor_height.max(1)
+  } else {
+    monitor_width.max(1)
+  };
+  let motion = switch_motion(
+    &ws_config.style,
+    travel,
+    ws_config.zoom_factor.clamp(0.0, 1.0),
+  );
+
+  crossing(motion, order_direction, is_vertical, travel)
+}
+
+/// Whether two windows of a switch, each drawn about `reach` at rest and
+/// incoming or not, may overlap at any frame of it.
+///
+/// Windows of one side move as one, so only overlap where they rest.
+fn switch_tenants_meet(
+  a: (&Rect, bool),
+  b: (&Rect, bool),
+  crossing: Crossing,
+) -> bool {
+  let ((a, a_incoming), (b, b_incoming)) = (a, b);
+  if a_incoming == b_incoming {
+    return a.intersection(b).is_some();
+  }
+
+  let (incoming, outgoing) = if a_incoming { (a, b) } else { (b, a) };
+  match crossing {
+    Crossing::Never => false,
+    Crossing::Anywhere => true,
+    Crossing::Offset(dx, dy) => Rect::from_xy(
+      incoming.x() + dx,
+      incoming.y() + dy,
+      incoming.width(),
+      incoming.height(),
+    )
+    .intersection(outgoing)
+    .is_some(),
+  }
+}
+
+/// Registers anew, in z-order, each hosted surrogate of a starting switch
+/// drawn under a lower one it may meet (see [`switch_tenants_meet`]), as
+/// `PeekView::restack_crossings` does tiles: so each draws whole over the
+/// lower ones, as one of its own just below its window does. Their rings
+/// were carried after every window's thumbnail.
+///
+/// Before they are shown, so nothing drawn changes. Free while none may
+/// meet, as in most slides.
+pub(crate) fn restack_switch_tenants(
+  windows: &mut [(Uuid, WorkspaceSwitchEntry)],
+  crossing: Crossing,
+) {
+  let mut tenants = windows
+    .iter_mut()
+    .filter_map(|(_, entry)| {
+      let is_incoming = entry.is_incoming;
+      entry
+        .surrogate
+        .as_mut()
+        .filter(|surrogate| surrogate.is_hosted())
+        .map(|surrogate| (surrogate.rest_reach(), is_incoming, surrogate))
+    })
+    .collect::<Vec<_>>();
+
+  let meets = |a: usize, b: usize| match (tenants.get(a), tenants.get(b)) {
+    (Some((a, a_in, _)), Some((b, b_in, _))) => {
+      switch_tenants_meet((a, *a_in), (b, *b_in), crossing)
+    }
+    _ => false,
+  };
+  let count = tenants.len();
+  if !(0..count).any(|a| (a + 1..count).any(|b| meets(a, b))) {
+    return;
+  }
+
+  let _scope = perf::scope(Stage::Restack);
+  let ranks = wm_platform::stacking_ranks(
+    &tenants
+      .iter()
+      .map(|(_, _, surrogate)| surrogate.source())
+      .collect::<Vec<_>>(),
+  );
+  let mut bottom_first = (0..count).collect::<Vec<_>>();
+  bottom_first.sort_by_key(|index| ranks.get(*index).copied());
+
+  let spans = bottom_first
+    .iter()
+    .map(|index| tenants.get(*index).and_then(|(_, _, s)| s.stacking()))
+    .collect::<Vec<_>>();
+  let restacked =
+    super::peek_view::out_of_order(&spans, |lower, upper| {
+      match (bottom_first.get(lower), bottom_first.get(upper)) {
+        (Some(lower), Some(upper)) => meets(*lower, *upper),
+        _ => false,
+      }
+    });
+
+  for index in restacked {
+    let Some((_, _, surrogate)) = bottom_first
+      .get(index)
+      .and_then(|index| tenants.get_mut(*index))
+    else {
+      continue;
+    };
+    if !surrogate.register_anew() {
+      tracing::warn!("Failed to stack a switch surrogate over another.");
     }
   }
 }
@@ -4332,6 +4509,64 @@ mod tests {
   use wm_common::ParsedConfig;
 
   use super::*;
+
+  fn motion(
+    distance: i32,
+    zoom_incoming: f32,
+    zoom_outgoing: f32,
+  ) -> SwitchMotion {
+    SwitchMotion {
+      distance,
+      zoom_incoming,
+      zoom_outgoing,
+    }
+  }
+
+  /// Unzoomed sides are a fixed offset apart; zoomed down a monitor
+  /// apart, they never meet; zoomed up, anywhere.
+  #[test]
+  fn switch_sides_cross_as_their_motion_moves_them() {
+    assert_eq!(
+      crossing(motion(1920, 0.0, 0.0), -1, false, 1920),
+      Crossing::Offset(-1920, 0)
+    );
+    assert_eq!(
+      crossing(motion(96, 0.0, 0.0), 1, true, 1080),
+      Crossing::Offset(0, 96)
+    );
+    assert_eq!(
+      crossing(motion(1920, 0.1, 0.1), 1, false, 1920),
+      Crossing::Never
+    );
+    assert_eq!(
+      crossing(motion(0, 0.05, -0.05), 1, false, 1920),
+      Crossing::Anywhere
+    );
+  }
+
+  /// One side's windows meet only where they rest; the other side's
+  /// where the crossing puts them.
+  #[test]
+  fn switch_windows_meet_where_their_sides_overlap() {
+    let left = Rect::from_xy(0, 0, 900, 1000);
+    let right = Rect::from_xy(1000, 0, 900, 1000);
+    let offset = Crossing::Offset(1000, 0);
+
+    assert!(!switch_tenants_meet((&left, true), (&right, true), offset));
+    assert!(switch_tenants_meet((&left, true), (&left, true), offset));
+    assert!(switch_tenants_meet((&left, true), (&right, false), offset));
+    assert!(!switch_tenants_meet((&left, false), (&right, true), offset));
+    assert!(!switch_tenants_meet(
+      (&left, true),
+      (&left, false),
+      Crossing::Never
+    ));
+    assert!(switch_tenants_meet(
+      (&left, true),
+      (&right, false),
+      Crossing::Anywhere
+    ));
+  }
 
   /// Sessions with nothing left to hand off, asking first every tick,
   /// leave the budget to the ones after them.

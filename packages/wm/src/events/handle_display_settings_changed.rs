@@ -91,6 +91,16 @@ pub fn handle_display_settings_changed(
     .animation_manager
     .peeks
     .retain_surfaces(|clip| clips.contains(clip));
+  // A workspace switch's span a working area each.
+  let areas = state
+    .monitors()
+    .iter()
+    .map(|monitor| monitor.native_properties().working_area)
+    .collect::<Vec<_>>();
+  state
+    .animation_manager
+    .peeks
+    .retain_switch_surfaces(|area| areas.contains(area));
 
   for window in state.windows() {
     // Display setting changes can spread windows out sporadically, so mark

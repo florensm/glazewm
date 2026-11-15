@@ -106,7 +106,9 @@ pub use ui_thread::UiThread;
 pub use window_listener::*;
 pub use window_peek::WindowPeek;
 pub use window_placer::WindowPlacer;
-pub use workspace_surrogate::{LiveFrame, WorkspaceSurrogate};
+pub use workspace_surrogate::{
+  stacking_ranks, LiveFrame, WorkspaceSurrogate,
+};
 
 /// `tracing` target of the overview's trace of picks through to its
 /// closing zoom, which the WM writes to a file of its own.

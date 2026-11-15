@@ -1323,7 +1323,7 @@ fn lanes_meet(
 /// draws wholly over every lower-ranked one that `meets` it (by their
 /// indices, lower first): each with a thumbnail under one of such a
 /// tile's, as that tile is then, re-registered ones included.
-fn out_of_order(
+pub(super) fn out_of_order(
   spans: &[Option<(u64, u64)>],
   meets: impl Fn(usize, usize) -> bool,
 ) -> Vec<usize> {
@@ -1380,6 +1380,10 @@ pub struct PeekView {
   /// One per clip that tiles were drawn on under `onesurface`, kept
   /// between motions. Last, so the peeks hosted on them go first.
   surfaces: Vec<PeekSurface>,
+  /// One per working area that workspace switches drew on under
+  /// `onesurface` (see [`switch_surface`](Self::switch_surface)). Their
+  /// tenants live in the switch, and hold their windows.
+  switch_surfaces: Vec<PeekSurface>,
 }
 
 impl PeekView {
@@ -2501,6 +2505,50 @@ impl PeekView {
   pub fn drop_surfaces(&mut self) {
     self.ready.clear();
     self.surfaces.clear();
+    self.switch_surfaces.clear();
+  }
+
+  /// The surface a workspace switch on the monitor whose working area is
+  /// `area` draws its windows on (see `WorkspaceSurrogate::hosted`), made
+  /// if there is none, which drops the unused ones spanning none of
+  /// `areas`, every monitor's working area. `None` if none could be made.
+  ///
+  /// Apart from the tiles' surfaces, for two reasons. Spanning a whole
+  /// monitor, as a tile's does, it would read to Explorer as a fullscreen
+  /// app for the whole switch, hiding app bars set to make way for one.
+  /// And it stays below the switch's windows to the end of its teardown,
+  /// its backdrop copies under their uncloaked windows, while a tile
+  /// moving meanwhile raises its surface over every window.
+  pub fn switch_surface(
+    &mut self,
+    area: &Rect,
+    areas: impl FnOnce() -> Vec<Rect>,
+  ) -> Option<&PeekSurface> {
+    if let Some(index) = self
+      .switch_surfaces
+      .iter()
+      .position(|surface| surface.clip() == area)
+    {
+      return self.switch_surfaces.get(index);
+    }
+
+    let surface = PeekSurface::new(area)
+      .inspect_err(|err| {
+        tracing::warn!("Failed to create a switch surface: {err}");
+      })
+      .ok()?;
+    let areas = areas();
+    self.switch_surfaces.retain(|old| {
+      !is_stale_surface(old.is_unused(), old.clip(), &areas)
+    });
+    self.switch_surfaces.push(surface);
+    self.switch_surfaces.last()
+  }
+
+  /// Drops the switch surfaces whose working area `keeps` says no longer
+  /// is a monitor's. One still drawn on goes with its last tenant.
+  pub fn retain_switch_surfaces(&mut self, keeps: impl Fn(&Rect) -> bool) {
+    self.switch_surfaces.retain(|surface| keeps(surface.clip()));
   }
 
   /// Opens or closes a pass of `raise_moving` calls, within which a
