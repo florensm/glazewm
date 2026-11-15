@@ -2138,8 +2138,8 @@ default.
 
 For whoever picks this up in a new session. `tryout/one-surface` holds
 steps 1 to 5, the workspace switches, the integration pass, resting
-columns under `slidepeeks` steps 6a (grab resizes), 6b (top band) and 6c (tiles crossing
-monitors), merged;
+columns under `slidepeeks` steps 6a (grab resizes), 6b (top band), 6c (tiles crossing
+monitors) and stacks, merged;
 `cargo check
 --workspace --tests` and `cargo clippy --workspace --all-targets -- -D
 warnings` for `x86_64-pc-windows-msvc` are clean. Tests only type-check
@@ -2176,21 +2176,18 @@ ported first (items below), then this flicker, then the bench.
 
 ### Open, in the order to take them
 
-1. **Stacks**: a copy of the tab bar on the surface (step 3's notes say
-   what it needs). Until then one stack keeps its whole workspace's
-   opens, closes and columns on their own windows.
-2. **Removal of the old code** (owner's decision, 2026-11-15, right
+1. **Removal of the old code** (owner's decision, 2026-11-15, right
    after porting, before the bench): the old engine (`ResizeSession`,
    `nopeeks`) and every own-window peek path a surface replaced, so
    `onesurface` is the only engine, on by default with no word. See
    "Removal plan" (end of this file).
-3. **Step 8**: duplicated code, bench modes (owner, 2026-11-15: drop the
+2. **Step 8**: duplicated code, bench modes (owner, 2026-11-15: drop the
    isolate words and modes that are not compared, so the bench runs only
    what matters; and have the bench script also build and run a second
    branch, `origin/main` unless the owner names another, from a separate
    checkout, the same scenarios on each), the measuring section.
-4. **The backdrop flicker** on workspace switches (above).
-5. **Bench**.
+3. **The backdrop flicker** on workspace switches (above).
+4. **Bench**.
 
 ### Owner's decisions still open
 
@@ -2219,7 +2216,10 @@ a worktree, on a branch `os/<n>-<name>` cut from `tryout/one-surface`;
 each appends its "as built" section here; the reviewer merges, runs the
 checks and pushes `tryout/one-surface`. Agents that share files run one
 after another. Branches merged so far: `os/1-surface`, `os/2-ready`,
-`os/3-tiles`, `os/4-transits`, `os/5-scroll`, `os/7-switch`, `os/9-integrate`, `os/10-rest-slide`, `os/6a-held`, `os/6b-band`, `os/6c-cross`.
+`os/3-tiles`, `os/4-transits`, `os/5-scroll`, `os/7-switch`, `os/9-integrate`, `os/10-rest-slide`, `os/6a-held`, `os/6b-band`, `os/6c-cross`, `os/11-stacks`.
+
+Laptop test build of this state (before the removal): `test/one-surface`.
+Run it with `GLAZEWM_ISOLATE=onesurface,readypeeks,morepeeks`.
 
 ## Removal plan (2026-11-15)
 
