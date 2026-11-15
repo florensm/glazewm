@@ -3857,7 +3857,11 @@ pub fn move_on_peek(
         target,
         animations.window_resize.threshold_px,
       )
-      && !is_resized_already(window, target)
+      && !is_resized_already(
+        state.animation_manager.peeks.is_moving(&window.id()),
+        || window.native().frame_with_shadows().ok(),
+        target,
+      )
   } else {
     is_pure_move(from, target, animations.window_move.threshold_px)
   };
@@ -4285,14 +4289,19 @@ pub fn hold_on_peek(
   moved
 }
 
-/// Whether `window`, laid out at `target`, is at that size already, as an
-/// interactive resize leaves it as its drag ends: drawn resizing on a
-/// peek, it would shrink back to its old size first, so it snaps.
-fn is_resized_already(window: &WindowContainer, target: &Rect) -> bool {
-  window
-    .native()
-    .frame_with_shadows()
-    .is_ok_and(|actual| is_same_size(&actual, target))
+/// Whether a window laid out at `target`, its frame read by `actual`, is
+/// at that size already, as an interactive resize leaves it as its drag
+/// ends: drawn resizing on a peek, it would shrink back to its old size
+/// first, so it snaps. Not one `is_moving` on a peek, whose filled or
+/// stretched peek may have sent its window that size already: retargeted,
+/// it stays on its peek.
+fn is_resized_already(
+  is_moving: bool,
+  actual: impl FnOnce() -> Option<Rect>,
+  target: &Rect,
+) -> bool {
+  !is_moving
+    && actual().is_some_and(|actual| is_same_size(&actual, target))
 }
 
 /// The clips of the peeks [`move_on_peek`] draws `window`, a tile moving
@@ -5499,9 +5508,9 @@ mod tests {
     evicted, floating_peek_raise, follow_duration, follows_tile,
     fullscreen_peek_raise, has_landed, has_left, host_for, hosts_column,
     hosts_hold, hosts_on_surface, is_departed, is_peek_resize,
-    is_pure_move, is_ready_expired, is_stale_surface, is_stray,
-    keeps_ready, keeps_rest_hosted, keeps_trail_drawing, kept_transit,
-    lands_on_trail, lanes_meet, lanes_stay_apart, leaves_as,
+    is_pure_move, is_ready_expired, is_resized_already, is_stale_surface,
+    is_stray, keeps_ready, keeps_rest_hosted, keeps_trail_drawing,
+    kept_transit, lands_on_trail, lanes_meet, lanes_stay_apart, leaves_as,
     leaving_transit, lowest, move_clips, out_of_order, peek_resize, rank,
     resizes_at_start, rest_anchor, restretched, rests, retargeted_motion,
     returning_transit, sampled_size, settling, state_change_peek_raise,
@@ -6719,5 +6728,17 @@ mod tests {
       sampled_size(&actual, &rect, [(950, 800), (990, 650)]),
       (950, 600)
     );
+  }
+
+  #[test]
+  fn only_a_tile_not_moving_is_resized_already() {
+    let target = Rect::from_xy(0, 0, 800, 600);
+    let at_size = Rect::from_xy(40, 40, 800, 600);
+    let other_size = Rect::from_xy(0, 0, 640, 600);
+
+    assert!(is_resized_already(false, || Some(at_size.clone()), &target));
+    assert!(!is_resized_already(true, || Some(at_size.clone()), &target));
+    assert!(!is_resized_already(false, || Some(other_size), &target));
+    assert!(!is_resized_already(false, || None, &target));
   }
 }
