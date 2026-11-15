@@ -154,17 +154,6 @@ pub fn platform_sync(
     apply_focus_effects(state, &focused_container, all_windows, config);
   }
 
-  // A surrogate created this cycle with `place_at_top: true` may have
-  // displaced any window's overlay (of either kind), not just its own --
-  // fall back to resyncing every non-redrawing window's z-order this one
-  // tick instead of only `z_order_touched`'s narrower set (see the field's
-  // doc comment on `AnimationManager`). Read and cleared once here so both
-  // overlay kinds see it: clearing it per `sync_overlays` call let
-  // whichever ran first consume it and starve the other.
-  let full_z_order_resync = std::mem::take(
-    &mut state.animation_manager.backdrop_overlay_z_order_dirty,
-  );
-
   // Sync backdrop and border overlays every tick so they track window
   // position through moves, resizes, and workspace changes. See
   // `sync_overlays`.
@@ -172,14 +161,12 @@ pub fn platform_sync(
     state,
     config,
     &focused_container,
-    full_z_order_resync,
     &z_order_touched,
   );
   sync_overlays::<NativeBorderOverlay>(
     state,
     config,
     &focused_container,
-    full_z_order_resync,
     &z_order_touched,
   );
 
@@ -260,25 +247,6 @@ pub(crate) fn apply_focus_effects(
 
   for window in unfocused_windows {
     apply_window_effects(&window, window.effect_set(false), config);
-  }
-
-  // Re-apply animation-driven opacity for the focused window if an
-  // opacity focus animation is running. `apply_window_effects` above
-  // may have reset the transparency to the config value; overriding it
-  // here ensures the animated opacity is visible on the first frame.
-  if let Ok(window) = focused_container.as_window_container() {
-    if let Some(anim) = state.animation_manager.get_animation(&window.id())
-    {
-      if let (_, Some(opacity)) = anim.current_state() {
-        debug!(
-          "Overriding transparency for {} with in-progress animation \
-           opacity: alpha={}.",
-          window.id(),
-          opacity.to_alpha()
-        );
-        let _ = window.native().set_transparency(&opacity);
-      }
-    }
   }
 }
 
@@ -437,9 +405,8 @@ fn sync_focus(
   let native_window = focused_container.as_window_container().ok();
 
   // Defer `SetForegroundWindow` while the focused window is covered by an
-  // active surrogate (workspace-switch, resize, or a scrolling layout's
-  // moving column). The OS may
-  // asynchronously remove the DWM cloak when a window becomes the
+  // active stand-in (a workspace switch's surrogate, or a peek). The OS
+  // may asynchronously remove the DWM cloak when a window becomes the
   // foreground window, causing the slow `IApplicationView::SetCloak`
   // path to fire on the next animation tick and blocking the frame loop.
   // `AnimationManager::update_internal` re-queues the focus change once
@@ -450,12 +417,7 @@ fn sync_focus(
         && state
           .animation_manager
           .is_workspace_switch_incoming(&window.id());
-    let has_resize_session = state
-      .animation_manager
-      .resize_sessions
-      .contains_key(&window.id());
     if is_ws_incoming
-      || has_resize_session
       || state.animation_manager.peeks.owns_window(&window.id())
     {
       return Ok(None);
@@ -580,35 +542,18 @@ enum FrozenStep {
   /// Still on screen: its stand-in is shown and composited, then the
   /// window is cloaked and moved to its target (see [`PendingCloak`]).
   TakeOver,
-  /// Cloaked before its session began, which a new window is from the
-  /// moment `manage_window` sees it: only the move to its target is
-  /// left. Without it the window keeps the size its app opened it at
-  /// until `pre_commit`, so its open animation shows that size's content
-  /// cut to the tile, reflowing in one step once the motion has ended.
-  ///
-  /// Read on every pass until the session is marked cloaked, so the
-  /// move itself is made once (see `ResizeSession::adopt`).
-  Adopt,
   /// Set up on an earlier pass.
   Keep,
 }
 
 impl FrozenStep {
-  /// `session_cloaked` is `ResizeSession::is_session_cloaked` of the
-  /// window's session, if it has one. `is_cloaked` is only asked when
-  /// that doesn't settle it, as it is a call into DWM.
-  fn of(
-    session_cloaked: Option<bool>,
-    is_cloaked: impl FnOnce() -> bool,
-  ) -> Self {
-    // A window with no session (a workspace switch's, a scrolling
-    // column's) is checked on every pass, so one uncloaked mid-way is
-    // cloaked again.
-    match session_cloaked {
-      Some(true) => Self::Keep,
-      _ if !is_cloaked() => Self::TakeOver,
-      Some(false) => Self::Adopt,
-      None => Self::Keep,
+  /// Checked on every pass, so a window uncloaked mid-way is cloaked
+  /// again.
+  fn of(is_cloaked: impl FnOnce() -> bool) -> Self {
+    if is_cloaked() {
+      Self::Keep
+    } else {
+      Self::TakeOver
     }
   }
 }
@@ -616,15 +561,9 @@ impl FrozenStep {
 /// Cloaks and pre-positions every window [`redraw_containers`] queued this
 /// pass, behind one shared `DwmFlush`.
 ///
-/// `overlay_batch` holds the overlay repositions that must be visible in
-/// the flushed frame; it is committed first so the flush covers them too.
 /// See `pending_cloaks`' declaration in [`redraw_containers`] for why the
 /// flush is hoisted out of the per-window loop.
-fn commit_pending_cloaks(
-  state: &mut WmState,
-  pending: Vec<PendingCloak>,
-  overlay_batch: SurrogateBatch,
-) {
+fn commit_pending_cloaks(state: &mut WmState, pending: Vec<PendingCloak>) {
   if pending.is_empty() {
     return;
   }
@@ -635,15 +574,12 @@ fn commit_pending_cloaks(
   // flushes after putting up their peeks, earlier in the same pass, so a
   // pass cloaking only those skips a second wait of up to a frame before
   // the scroll's first.
-  let flushes = !overlay_batch.is_empty()
-    || pending.iter().any(|cloak| {
-      !state
-        .animation_manager
-        .peeks
-        .is_composited(&cloak.window.id())
-    });
-
-  overlay_batch.commit();
+  let flushes = pending.iter().any(|cloak| {
+    !state
+      .animation_manager
+      .peeks
+      .is_composited(&cloak.window.id())
+  });
 
   // Flush before cloaking so DWM renders one frame with every queued
   // surrogate (and its now-correctly-anchored overlays) visible and its
@@ -672,15 +608,6 @@ fn commit_pending_cloaks(
     let preposition_scope = perf::scope(Stage::Preposition);
     preposition_cloaked(state, &window, &z_order, &target_rect);
     drop(preposition_scope);
-
-    // Later `Frozen` ticks then skip the cloak query.
-    if let Some(session) = state
-      .animation_manager
-      .resize_sessions
-      .get_mut(&window.id())
-    {
-      session.mark_session_cloaked();
-    }
   }
 }
 
@@ -703,8 +630,7 @@ fn leaves_on_peek(state: &WmState, window_id: &uuid::Uuid) -> bool {
 /// `target_rect` it is uncloaked at.
 ///
 /// Posted asynchronously: the animation is far longer than any app's
-/// message-queue processing time, and `pre_commit` confirms the move at
-/// its end.
+/// message-queue processing time.
 fn preposition_cloaked(
   state: &WmState,
   window: &WindowContainer,
@@ -716,71 +642,30 @@ fn preposition_cloaked(
     SWP_NOACTIVATE, SWP_NOSENDCHANGING, SWP_NOZORDER,
   };
 
-  // Growing resize sessions (both dimensions grow) pre-position so DWM
-  // captures the correctly-sized content during the curtain-reveal.
-  // Mixed and shrinking sessions use the clip/wipe approach
-  // (thumbnail at source), and stretch sessions sample source-sized
-  // content for the whole animation — both leave the window at
-  // source until `pre_commit`.
-  //
-  // The thumbnail stays registered at source dims until
-  // `sync_registration` confirms the resize landed, so a slow-to-respond
-  // app costs at most a few frames of backdrop fill in the newly
-  // revealed area — never a mis-sized capture.
-  let session_flags = state
-    .animation_manager
-    .resize_sessions
-    .get(&window.id())
-    .map(|session| (session.needs_preposition(), session.is_move_only()));
-
-  let swp_flags = match session_flags {
-    // No resize session (e.g. a workspace-switch frozen window): always
-    // pre-position, with a frame change.
-    None => Some(
-      SWP_NOZORDER
-        | SWP_FRAMECHANGED
-        | SWP_NOACTIVATE
-        | SWP_NOSENDCHANGING
-        | SWP_ASYNCWINDOWPOS,
-    ),
-    Some((true, is_move_only)) => {
-      let mut flags = SWP_NOZORDER
-        | SWP_NOACTIVATE
-        | SWP_NOSENDCHANGING
-        | SWP_ASYNCWINDOWPOS;
-      // `SWP_FRAMECHANGED` forces `WM_NCCALCSIZE` plus a full repaint in
-      // the target app; a pure move needs neither, so multi-window
-      // relayouts skip that per-window repaint burst for windows that
-      // only change position.
-      if !is_move_only {
-        flags |= SWP_FRAMECHANGED;
-      }
-      Some(flags)
-    }
-    Some((false, _)) => None,
-  };
   // A window filled on its peek that shrinks keeps its size until the
-  // peek lands, as a `fill` session's does (see `resizes_at_start`).
-  let swp_flags = swp_flags.filter(|_| {
-    !state.animation_manager.peeks.defers_resize(&window.id())
-  });
+  // peek lands (see `resizes_at_start`).
+  if state.animation_manager.peeks.defers_resize(&window.id()) {
+    return;
+  }
 
-  if let Some(swp_flags) = swp_flags {
-    let current = window.native().frame_with_shadows().ok();
-    let flags =
-      swp_flags | discard_bits_if_resized(current.as_ref(), target_rect);
+  let swp_flags = SWP_NOZORDER
+    | SWP_FRAMECHANGED
+    | SWP_NOACTIVATE
+    | SWP_NOSENDCHANGING
+    | SWP_ASYNCWINDOWPOS;
+  let current = window.native().frame_with_shadows().ok();
+  let flags =
+    swp_flags | discard_bits_if_resized(current.as_ref(), target_rect);
+  let _ = window.native().set_window_pos(z_order, target_rect, flags);
+
+  // Moved onto a monitor of another DPI on two peeks, its app takes the
+  // size Windows suggests for it there: sent its rect again, as
+  // `reposition_window` does, after that in its queue, it is drawn at
+  // its tile's size for the rest of the motion, not only once it lands.
+  if window.has_pending_dpi_adjustment()
+    && state.animation_manager.peeks.has_trail(&window.id())
+  {
     let _ = window.native().set_window_pos(z_order, target_rect, flags);
-
-    // Moved onto a monitor of another DPI on two peeks, its app takes the
-    // size Windows suggests for it there: sent its rect again, as
-    // `reposition_window` does, after that in its queue, it is drawn at
-    // its tile's size for the rest of the motion, not only once it
-    // lands.
-    if window.has_pending_dpi_adjustment()
-      && state.animation_manager.peeks.has_trail(&window.id())
-    {
-      let _ = window.native().set_window_pos(z_order, target_rect, flags);
-    }
   }
 }
 
@@ -1282,8 +1167,8 @@ fn redraw_containers(
   // so all edges stay in lock-step during the relayout (see
   // `movement_timing`).
   // Set when any window's animation-completion redraw actually issues a
-  // `SWP_FRAMECHANGED` reposition on a visible window this pass (see the
-  // `already_positioned` check below) -- `reassert_transparency` inside
+  // `SWP_FRAMECHANGED` reposition on a visible window this pass --
+  // `reassert_transparency` inside
   // `reposition_window` is only a best-effort fix-up for that flash (it
   // races DWM's own compositor thread), so a single flush after the whole
   // loop deterministically forces one composited frame with the corrected
@@ -1307,7 +1192,6 @@ fn redraw_containers(
   // rendered. The barrier is per-composition, not per-window, so one
   // flush after the loop satisfies every queued window at once.
   let mut pending_cloaks: Vec<PendingCloak> = Vec::new();
-  let mut cloak_overlay_batch = SurrogateBatch::new();
   let mut taskbar_updates = Vec::new();
 
   // Windows put on peeks to move this pass (`peek_view::move_on_peek`),
@@ -1735,18 +1619,6 @@ fn redraw_containers(
       }
     }
 
-    // A slide-in animation creates a `ResizeSession` and animation entry,
-    // making the window eligible for the `Frozen`/`Apply` animation paths
-    // even when `window_move` animations are disabled.
-    let has_slide_in = state
-      .animation_manager
-      .resize_sessions
-      .contains_key(&window.id())
-      && state
-        .animation_manager
-        .get_animation(&window.id())
-        .is_some_and(|a| !a.is_complete());
-
     // A tile that only moves or resizes goes on a peek; also one crossing
     // between floating and tiling (`STAND_INS_PLAN.md` 10f).
     let moves_as_tile = if is_state_change {
@@ -1766,10 +1638,10 @@ fn redraw_containers(
     let should_use_animations = !is_outgoing_switch
       && (is_frozen_by_ws_animation
         || (is_visible
-          && (!is_fullscreen || is_wm_fullscreen_toggle || has_slide_in)
+          && (!is_fullscreen || is_wm_fullscreen_toggle)
           && !suppress_animations
-          && ((anim_enabled && (!is_floating || is_state_change))
-            || has_slide_in)));
+          && anim_enabled
+          && (!is_floating || is_state_change)));
 
     // Where a crossing between floating and tiling, or a fullscreen
     // toggle, on a peek is raised beyond the tiles once its window is
@@ -1791,12 +1663,12 @@ fn redraw_containers(
 
     // Determine the rect to use for this frame.
     let anim_scope = perf::scope(Stage::AnimStep);
-    let (position_result, anim_opacity) = if should_use_animations {
+    let position_result = if should_use_animations {
       // Incoming workspace-switch windows: the surrogate handles all
       // visuals for the full animation duration — freeze the real
       // window.
       if is_frozen_by_ws_animation {
-        (AnimationPositionResult::Frozen, None)
+        AnimationPositionResult::Frozen
       } else if !is_column
         && moves_as_tile
         && previous_display_state == DisplayState::Shown
@@ -1830,7 +1702,7 @@ fn redraw_containers(
             peek_raises.push(((*window).clone(), raise));
           }
         }
-        (AnimationPositionResult::Frozen, None)
+        AnimationPositionResult::Frozen
       } else if motion == Motion::Fullscreen
         && previous_display_state == DisplayState::Shown
         && previous_target.as_ref().is_some_and(|from| {
@@ -1852,20 +1724,20 @@ fn redraw_containers(
         if let Some(raise) = fullscreen_raise {
           peek_raises.push(((*window).clone(), raise));
         }
-        (AnimationPositionResult::Frozen, None)
+        AnimationPositionResult::Frozen
       } else {
         // Its peek refused (another stand-in draws it, no monitor, it
         // couldn't be made), or a column the scroll view doesn't draw
         // moving (a resize with `window_resize` off, or one it can't
         // stretch, see `scroll_view`'s `can_stretch`): it snaps, placed
         // as at rest.
-        (AnimationPositionResult::Apply(real_rect.clone()), None)
+        AnimationPositionResult::Apply(real_rect.clone())
       }
     } else {
       // Animations are skipped for this window. Cancel any in-progress
       // animation and its surrogate so subsequent ticks don't re-cloak it.
       state.animation_manager.remove_animation(&window.id());
-      (AnimationPositionResult::Apply(real_rect.clone()), None)
+      AnimationPositionResult::Apply(real_rect.clone())
     };
 
     drop(anim_scope);
@@ -1927,64 +1799,12 @@ fn redraw_containers(
         // windows so cloaking is safe. If something unclocks the
         // window mid-animation the next tick will re-cloak and
         // re-position it.
-        //
-        // For `ResizeSession`-backed animations, `pre_commit` also calls
-        // `SetWindowPos` synchronously just before the surrogate drops,
-        // guaranteeing the window is at `target_rect` when uncloaked.
-        // Skip the per-tick `DwmGetWindowAttribute(DWMWA_CLOAKED)`
-        // round-trip for resize-session windows whose cloak state
-        // is already known — the check only fires on the first
-        // `Frozen` frame and after session
-        // teardown. Workspace-switch frozen windows (no resize session)
-        // retain the full per-tick guard as a safety net.
-        let session_cloaked = state
-          .animation_manager
-          .resize_sessions
-          .get(&window.id())
-          .map(wm_platform::ResizeSession::is_session_cloaked);
-        let step = FrozenStep::of(session_cloaked, || {
-          window.native().is_cloaked().unwrap_or(false)
-        });
+        let step =
+          FrozenStep::of(|| window.native().is_cloaked().unwrap_or(false));
 
         if step == FrozenStep::TakeOver {
           let _scope = perf::scope(Stage::Cloak);
 
-          // The surrogate is created hidden specifically so this can
-          // anchor the backdrop overlay behind it *before*
-          // `ResizeSession::show` reveals it -- the surrogate's `HWND` is
-          // already stable at this point even though it isn't visible
-          // yet, which is all `overlay_z_anchor` needs. Without this,
-          // showing the surrogate first leaves it visible with no
-          // correctly-positioned overlay behind
-          // it until this window's backdrop overlay upsert eventually
-          // catches up, giving DWM a real window to composite an unblurred
-          // frame in.
-          //
-          // Deferred into the pass-wide batches (rather than each window
-          // committing its own `SurrogateBatch`) so the whole relayout's
-          // overlay repositions land in one `DeferWindowPos` transaction
-          // -- see `pending_cloaks`' declaration.
-          if let Some(session) =
-            state.animation_manager.resize_sessions.get(&window.id())
-          {
-            let placement = session_overlay_placement(
-              state,
-              window.id(),
-              session.surrogate_hwnd(),
-              session.current_rect(),
-            );
-
-            if tracks_at_take_over(placement.is_some()) {
-              track_overlays(
-                &mut state.window_overlays,
-                window.id(),
-                session.overlay_params(),
-                placement.as_ref(),
-                &mut cloak_overlay_batch,
-              );
-            }
-          }
-          state.animation_manager.reveal_session(&window.id());
           peeks_take_over |= peek_moves.contains(&window.id());
 
           // Queued rather than cloaked here: the cloak has to be preceded
@@ -1996,23 +1816,6 @@ fn redraw_containers(
             z_order,
             target_rect: real_rect.clone(),
           });
-        } else if step == FrozenStep::Adopt {
-          // Nothing to wait for: the window is not on screen, so the move
-          // can't show, and its app resizes and repaints at its tile's
-          // size while the stand-in plays.
-          state.animation_manager.reveal_session(&window.id());
-
-          // Once: the session stays unmarked, so that a window the shell
-          // uncloaks mid-way (it does as a window is activated) is taken
-          // over on the next pass.
-          let is_first = state
-            .animation_manager
-            .resize_sessions
-            .get_mut(&window.id())
-            .is_some_and(wm_platform::ResizeSession::adopt);
-          if is_first {
-            preposition_cloaked(state, window, &z_order, &real_rect);
-          }
         } else if state.animation_manager.peeks.owns_window(&window.id())
           && !state.animation_manager.peeks.defers_resize(&window.id())
         {
@@ -2022,37 +1825,17 @@ fn redraw_containers(
       AnimationPositionResult::Apply(ref apply_rect) => {
         let _scope = perf::scope(Stage::RedrawApply);
 
-        // Only omit `SWP_ASYNCWINDOWPOS` when a surrogate is active for
-        // this window — adjacent windows must stay in lock-step
-        // with the overlay. For pure moves (no surrogate) async is
-        // correct and avoids blocking on the target process's
-        // message queue each frame. Also treat incoming ws-switch
-        // windows as having a surrogate when being uncloaked at
-        // animation completion. Without this, the window
-        // would be repositioned with `SWP_ASYNCWINDOWPOS` and immediately
-        // uncloaked — if its message queue is slow, it appears at its old
-        // position for one frame. A window its peek hands back is not
-        // counted: its move is posted, so the WM never waits on its app.
-        let has_surrogate = state
-          .animation_manager
-          .resize_sessions
-          .contains_key(&window.id())
-          || (is_visible
-            && state
-              .animation_manager
-              .is_pending_ws_cleanup_incoming(&window.id()));
-
-        // Skip the `SetWindowPos` on the animation-completion redraw when
-        // `pre_commit` already positioned the window at exactly this rect.
-        // Repositioning again is not just redundant — `SWP_FRAMECHANGED`
-        // forces a frame recalculation and full repaint that lands right
-        // as the window is uncloaked below, flashing at the end of
-        // every move/resize animation. The uncloak and effects
-        // below still run.
-        let already_positioned = is_visible
+        // Only omit `SWP_ASYNCWINDOWPOS` for an incoming ws-switch window
+        // being uncloaked at animation completion. Without this, the
+        // window would be repositioned with `SWP_ASYNCWINDOWPOS` and
+        // immediately uncloaked — if its message queue is slow, it
+        // appears at its old position for one frame. A window its peek
+        // hands back is not counted: its move is posted, so the WM never
+        // waits on its app.
+        let has_surrogate = is_visible
           && state
             .animation_manager
-            .was_pre_committed_at(&window.id(), apply_rect);
+            .is_pending_ws_cleanup_incoming(&window.id());
 
         // Whether `reposition_window` already uncloaked the window, which
         // the uncloak below then skips (see `Reposition::cloak_applied`).
@@ -2086,54 +1869,51 @@ fn redraw_containers(
             .prepare_hand_back(&window.id(), &window.native());
         }
 
-        if !already_positioned {
-          {
-            // Attribute the reposition to the window's own process. When
-            // `has_surrogate` is set the `SetWindowPos` is synchronous and
-            // blocks on that application's message pump, so a single slow
-            // app can dominate `rd_apply` -- the stage totals alone cannot
-            // show which one. Scoped tightly so only the reposition itself
-            // is counted.
-            // A window whose app is hung, or was recently slow to answer a
-            // synchronous move, is moved asynchronously instead: in step
-            // with its surrogate is not worth stalling the whole WM for.
-            let has_surrogate = has_surrogate
-              && state
-                .animation_manager
-                .allows_sync_reposition(&window.native());
+        {
+          // Attribute the reposition to the window's own process. When
+          // `has_surrogate` is set the `SetWindowPos` is synchronous and
+          // blocks on that application's message pump, so a single slow
+          // app can dominate `rd_apply` -- the stage totals alone cannot
+          // show which one. Scoped tightly so only the reposition itself
+          // is counted.
+          // A window whose app is hung, or was recently slow to answer a
+          // synchronous move, is moved asynchronously instead: in step
+          // with its surrogate is not worth stalling the whole WM for.
+          let has_surrogate = has_surrogate
+            && state
+              .animation_manager
+              .allows_sync_reposition(&window.native());
 
-            let _apply_scope = perf::apply_scope(
-              || window.native_properties().process_name,
-              has_surrogate,
-            );
+          let _apply_scope = perf::apply_scope(
+            || window.native_properties().process_name,
+            has_surrogate,
+          );
 
-            match reposition_window(
-              window,
-              apply_rect,
-              &z_order,
-              is_visible,
-              has_surrogate,
-            ) {
-              Ok(reposition) => {
-                cloak_applied = reposition.cloak_applied;
-                did_move = reposition.moved;
+          match reposition_window(
+            window,
+            apply_rect,
+            &z_order,
+            is_visible,
+            has_surrogate,
+          ) {
+            Ok(reposition) => {
+              cloak_applied = reposition.cloak_applied;
+              did_move = reposition.moved;
 
-                if let Some(elapsed) = reposition.sync_elapsed {
-                  state.animation_manager.note_sync_reposition(
-                    window.native().hwnd().0,
-                    elapsed,
-                  );
-                }
-              }
-              Err(err) => {
-                tracing::warn!("Failed to set window position: {}", err);
+              if let Some(elapsed) = reposition.sync_elapsed {
+                state
+                  .animation_manager
+                  .note_sync_reposition(window.native().hwnd().0, elapsed);
               }
             }
+            Err(err) => {
+              tracing::warn!("Failed to set window position: {}", err);
+            }
           }
+        }
 
-          if is_visible && did_move {
-            needs_transparency_flush = true;
-          }
+        if is_visible && did_move {
+          needs_transparency_flush = true;
         }
 
         // Uncloak after repositioning so the window is revealed at the
@@ -2166,13 +1946,6 @@ fn redraw_containers(
           // Slid in but kept hidden by the layout: its resting peek takes
           // over below, its real window stays cloaked.
           peek_hand_backs.push(window.id());
-        }
-
-        // Apply animated opacity for opacity-style focus animations. The
-        // real window is not cloaked in this path, so `set_transparency`
-        // updates it directly each frame.
-        if let Some(ref opacity) = anim_opacity {
-          let _ = window.native().set_transparency(opacity);
         }
       }
     }
@@ -2252,7 +2025,7 @@ fn redraw_containers(
     let _scope = perf::scope(Stage::PeekCover);
     crate::animation::peek_view::cover_moved_overlays(state, config);
   }
-  commit_pending_cloaks(state, pending_cloaks, cloak_overlay_batch);
+  commit_pending_cloaks(state, pending_cloaks);
   if peeks_take_over {
     let _scope = perf::scope(Stage::PeekHandover);
     crate::animation::peek_view::hand_over_moved_overlays(state, config);
@@ -2303,75 +2076,6 @@ fn redraw_containers(
 
   for id in &released_covers {
     state.animation_manager.drop_companion_cover(id);
-  }
-
-  // Every surrogate and overlay reposition queued during this pass goes
-  // into one `DeferWindowPos` transaction, committed at the end of this
-  // block.
-  //
-  // Splitting it -- surrogates in one transaction, overlays in another --
-  // lets the two land in different DWM composition frames, so a window's
-  // surrogate can move while its border outline is still drawn around the
-  // old position. Queuing everything first and committing once makes the
-  // window and its overlays move atomically, and hands DWM one transaction
-  // per frame instead of three.
-  //
-  // The ordering this relies on: `queue_surrogate_updates` updates each
-  // session's `current_rect` as it queues (`ResizeSession::defer_update`),
-  // not when the batch is committed, so the overlay loop below reads the
-  // same live rect it read before -- it just no longer has to wait on a
-  // commit to do so.
-  {
-    let mut batch = SurrogateBatch::new();
-    state.animation_manager.queue_surrogate_updates(&mut batch);
-
-    // Keep the backdrop and border overlays tracking each
-    // move/resize/open session's surrogate at its live rect, instead of
-    // leaving them hidden for the whole animation. Close sessions are
-    // tracked separately, inside `AnimationManager::update_internal`'s
-    // direct-drive loop -- that path never reaches `platform_sync`
-    // (closing windows are detached from the layout tree), so skip
-    // them here to avoid a duplicate upsert this tick.
-    let overlay_scope = perf::scope(Stage::SessionOverlays);
-
-    // Each animating window costs three composited surfaces, not one: its
-    // surrogate plus these two overlays, all repositioned every frame.
-    for (id, session) in &state.animation_manager.resize_sessions {
-      if state.animation_manager.has_close_animation(id) {
-        continue;
-      }
-
-      let params = session.overlay_params();
-      let placement = session_overlay_placement(
-        state,
-        *id,
-        session.surrogate_hwnd(),
-        session.current_rect(),
-      );
-
-      // A session that carries no params for an overlay kind has no
-      // tracker for it, and `sync_overlays` will not step in: it
-      // skips every window with a live resize session outright
-      // (`has_live_resize_tracker`), assuming this loop owns it.
-      // Left alone, the overlay stays visible at the window's
-      // pre-animation rect for the whole animation -- a border
-      // outline, or a filled backdrop rect, stranded at the old position
-      // until the session ends. So hide it here, once.
-      if let Some(overlays) = state.window_overlays.get_mut(id) {
-        overlays.hide_untracked(&params);
-      }
-
-      track_overlays(
-        &mut state.window_overlays,
-        *id,
-        params,
-        placement.as_ref(),
-        &mut batch,
-      );
-    }
-    drop(overlay_scope);
-
-    batch.commit();
   }
 
   // Apply effect opacity to outgoing surrogates now that the real windows
@@ -2569,8 +2273,7 @@ fn apply_taskbar_updates(updates: Vec<(WindowContainer, bool)>) {
 /// Above this duration, `reposition_window`'s synchronous
 /// (non-`ASYNCWINDOWPOS`) `SetWindowPos`/restore/minimize/maximize
 /// sequence is logged as a warning. See its `has_surrogate` doc comment
-/// for why this path can block on a slow app's message queue. Mirrors
-/// `wm_platform::resize_session`'s `SLOW_SYNC_SETWINDOWPOS_THRESHOLD`.
+/// for why this path can block on a slow app's message queue.
 const SLOW_SYNC_REPOSITION_THRESHOLD: Duration = Duration::from_millis(8);
 
 /// What [`reposition_window`] did, for the caller's follow-up work.
@@ -3016,39 +2719,6 @@ fn track_overlay<O: SyncableOverlay>(
       }
     }
   }
-}
-
-/// Whether a `Frozen` take-over tracks the window's overlays, given
-/// whether its session's surrogate has a placement yet.
-///
-/// A new session has none until `queue_surrogate_updates` (later in the
-/// pass): tracking would hide both overlays, two `ShowWindow` calls, for
-/// the session loop to show again, so they stay where they are, as on
-/// `origin/main`.
-fn tracks_at_take_over(has_placement: bool) -> bool {
-  has_placement
-}
-
-/// Where the overlays of `window_id` go while its resize session's
-/// surrogate, `anchor`, draws it at `rect`, or `None` while the surrogate
-/// has nowhere to be.
-fn session_overlay_placement(
-  state: &WmState,
-  window_id: uuid::Uuid,
-  anchor: Option<HWND>,
-  rect: Option<Rect>,
-) -> Option<OverlayPlacement> {
-  let (anchor, rect) = anchor.zip(rect)?;
-
-  // Framed with its stack's tab bar, which goes along with it.
-  let border_rect =
-    crate::tab_bars::animated_with_tab_bar(state, window_id, &rect);
-
-  Some(OverlayPlacement {
-    anchor,
-    rect,
-    border_rect,
-  })
 }
 
 /// `window_id`'s overlay of kind `O`, if it has one.
@@ -3513,13 +3183,8 @@ fn window_alpha(set: EffectSet, config: &UserConfig) -> u8 {
   }
 }
 
-/// `(effect_opacity, corner_style, overlay_params)`.
-///
-/// Snapshotted onto the `ResizeSession` rather than re-read live, because
-/// the close and minimize direct-drive loops run once the window is
-/// detached from the container tree (close) or already minimized
-/// (minimize), where the per-window effect config can no longer be
-/// recomputed.
+/// `(effect_opacity, corner_style, overlay_params)` of a stand-in drawn
+/// in `set`'s style.
 pub(crate) fn surrogate_effects_for(
   set: EffectSet,
   config: &UserConfig,
@@ -3794,12 +3459,6 @@ impl SyncableOverlay for NativeBorderOverlay {
 /// workspace's `!is_displayed()` flips true the instant the switch command
 /// runs, well before the animation completes.
 ///
-/// Windows with an active or fading `ResizeSession` (move/resize/open/
-/// close) are likewise owned entirely by the trackers in `platform_sync`'s
-/// post-flush loop, `AnimationManager::update_internal`'s close
-/// direct-drive loop, and its `pending_session_cleanup` fade-tail loop --
-/// same reasoning as the workspace-switch case above.
-///
 /// Otherwise, hides the static overlay while some other kind of
 /// surrogate/session is active for this window without a live tracker of
 /// its own (e.g. this effect not configured for it). When such a surrogate
@@ -3809,13 +3468,10 @@ impl SyncableOverlay for NativeBorderOverlay {
 /// minimized windows and windows on inactive workspaces; the entry stays
 /// alive so it can be re-shown immediately when the window returns.
 ///
-/// `full_z_order_resync` is `true` for one tick after any `place_at_top`
-/// surrogate goes up, which can silently displace *any* window's overlay
-/// (of either kind) out of its z-order slot -- see the doc comment at the
-/// call site in `platform_sync`. Otherwise every other configured window's
-/// overlay is resynced only when `z_order_touched` names it (its own real
-/// z-order was actually touched this cycle by `redraw_containers` or
-/// `sync_focus`) -- an overlay whose anchor didn't move can't have drifted
+/// Every other configured window's overlay is resynced only when
+/// `z_order_touched` names it (its own real z-order was actually touched
+/// this cycle by `redraw_containers` or `sync_focus`) -- an overlay whose
+/// anchor didn't move can't have drifted
 /// (see `sync_z_order`'s doc comment), and unconditionally resyncing every
 /// configured window on every tick would issue a `GetWindow` syscall per
 /// window that's a guaranteed no-op in the common case.
@@ -3824,7 +3480,6 @@ fn sync_overlays<O: SyncableOverlay>(
   state: &mut WmState,
   config: &UserConfig,
   focused_container: &Container,
-  full_z_order_resync: bool,
   z_order_touched: &std::collections::HashSet<uuid::Uuid>,
 ) {
   let _scope = perf::scope(O::PERF_STAGE);
@@ -3841,7 +3496,8 @@ fn sync_overlays<O: SyncableOverlay>(
   // which is exactly the artifact this ordering avoids.
   let mut z_order_resyncs: Vec<(uuid::Uuid, HWND, bool)> = Vec::new();
 
-  let surrogates_alive = state.animation_manager.has_any_surrogate();
+  let surrogates_alive =
+    state.animation_manager.is_workspace_switch_active();
 
   // `containers_to_redraw()` may hold an ancestor (e.g. a whole workspace
   // on a workspace switch) rather than each window individually --
@@ -3982,21 +3638,20 @@ fn sync_overlays<O: SyncableOverlay>(
       // their slot -- a window nobody moved can still need
       // putting back. So the check runs for everyone while any
       // surrogate is alive, which is exactly the window in which
-      // a workspace switch or resize is on screen, and for
-      // nobody once they are gone.
+      // a workspace switch is on screen, and for nobody once they are
+      // gone.
       //
       // Neither covers a window whose z-order was changed *without*
       // being repositioned -- `redraw_containers`' bare `set_z_order`
       // and `sync_focus`' `SetForegroundWindow`. Those leave the
       // overlay behind with nothing in the overlay's own state to show
-      // for it, which is what `z_order_touched`/`full_z_order_resync`
-      // report. They force the re-assert rather than letting
-      // `sync_z_order` decide: the window's move is issued with
-      // `SWP_ASYNCWINDOWPOS` and may not have landed yet, so the
-      // `GW_HWNDPREV` check can still see the stale (correct-looking)
-      // ordering and skip. See `sync_z_order`'s doc comment.
-      let forced =
-        full_z_order_resync || z_order_touched.contains(&window.id());
+      // for it, which is what `z_order_touched` reports. They force the
+      // re-assert rather than letting `sync_z_order` decide: the
+      // window's move is issued with `SWP_ASYNCWINDOWPOS` and may
+      // not have landed yet, so the `GW_HWNDPREV` check can still
+      // see the stale (correct-looking) ordering and skip. See
+      // `sync_z_order`'s doc comment.
+      let forced = z_order_touched.contains(&window.id());
 
       if repositioned || surrogates_alive || forced {
         z_order_resyncs.push((window.id(), anchor, forced));
@@ -4091,7 +3746,6 @@ fn overlays_tracked_elsewhere(
   let manager = &state.animation_manager;
 
   manager.has_live_ws_surrogate(&window_id)
-    || manager.has_live_resize_tracker(&window_id)
     || manager.peeks.draws_window(&window_id)
 }
 
@@ -4170,7 +3824,7 @@ mod tests {
 
   use super::{
     hosts_switch_window, is_unanimated_reveal, should_note_size,
-    tracks_at_take_over, FrozenStep, SyncableOverlay,
+    FrozenStep, SyncableOverlay,
   };
   use crate::user_config::UserConfig;
 
@@ -4183,30 +3837,13 @@ mod tests {
   }
 
   #[test]
-  fn a_window_cloaked_before_its_session_is_moved_to_its_target() {
-    assert_eq!(FrozenStep::of(Some(false), || true), FrozenStep::Adopt);
-  }
-
-  #[test]
-  fn a_take_over_without_a_placement_keeps_overlays() {
-    assert!(tracks_at_take_over(true));
-    assert!(!tracks_at_take_over(false));
-  }
-
-  #[test]
   fn a_window_still_shown_is_taken_over() {
-    assert_eq!(
-      FrozenStep::of(Some(false), || false),
-      FrozenStep::TakeOver
-    );
-    assert_eq!(FrozenStep::of(None, || false), FrozenStep::TakeOver);
+    assert_eq!(FrozenStep::of(|| false), FrozenStep::TakeOver);
   }
 
   #[test]
   fn a_window_set_up_already_is_left_alone() {
-    let unasked = || panic!("Cloak state queried for a cloaked session.");
-    assert_eq!(FrozenStep::of(Some(true), unasked), FrozenStep::Keep);
-    assert_eq!(FrozenStep::of(None, || true), FrozenStep::Keep);
+    assert_eq!(FrozenStep::of(|| true), FrozenStep::Keep);
   }
 
   #[test]

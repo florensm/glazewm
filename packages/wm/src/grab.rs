@@ -354,7 +354,6 @@ fn is_grabbable(window: &WindowContainer, state: &WmState) -> bool {
       .workspace()
       .is_some_and(|workspace| workspace.is_displayed())
     && !is_hidden_in_layout(window)
-    && !state.animation_manager.owns_window_position(&window.id())
     && !state.animation_manager.peeks.owns_window(&window.id())
 }
 
@@ -700,7 +699,6 @@ fn is_placeable(
     )
     && window.active_drag().is_none()
     && !window.has_pending_dpi_adjustment()
-    && !state.animation_manager.owns_window_position(&id)
     && (is_held
       || (!state.animation_manager.peeks.owns_window(&id)
         && real_window_rect(&window.as_container(), target) == *target))

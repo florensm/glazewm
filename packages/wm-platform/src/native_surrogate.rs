@@ -1429,15 +1429,6 @@ impl NativeSurrogate {
     }
   }
 
-  /// Draws the thumbnail at `opacity`, which it rests at from now on.
-  pub(crate) fn set_rest_opacity(&mut self, opacity: u8) {
-    self.rest_opacity = opacity;
-    self.set_fill_opacity(opacity);
-    if let Some(thumbnail) = &mut self.thumbnail {
-      let _ = thumbnail.set_opacity(opacity);
-    }
-  }
-
   /// Shows `rc_src` (source-window-local) at `rc_dst` (surrogate-local),
   /// keeping the opacity set by [`set_window_opacity`]. No-op when no
   /// thumbnail was registered.

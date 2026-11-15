@@ -2,7 +2,7 @@ use crate::Color;
 
 /// Tint, blur radius, corner radius, opacity, saturation and grading knobs
 /// for a `NativeBackdropOverlay`, bundled so the growing set of overlay
-/// knobs travels as one value through `SessionOptions`/`ResizeSession`/
+/// knobs travels as one value through
 /// `upsert_overlay` instead of a same-typed positional-argument list
 /// that's easy to mis-order at the many call sites (static sync,
 /// workspace-switch, and move/resize/open/close tracking) that all thread

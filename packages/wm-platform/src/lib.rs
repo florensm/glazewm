@@ -45,7 +45,6 @@ mod peek_surface;
 pub mod perf;
 mod platform_event;
 mod platform_impl;
-mod resize_session;
 mod single_instance;
 mod size_to_content;
 mod surface;
@@ -95,7 +94,6 @@ pub use particles::{
 };
 pub use peek_surface::PeekSurface;
 pub use platform_event::*;
-pub use resize_session::{ResizeSession, SessionOptions};
 pub use single_instance::*;
 pub use system_accent_color::*;
 pub use tab_layout::TabAction;

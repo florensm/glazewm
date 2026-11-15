@@ -217,21 +217,6 @@ pub fn with_tab_bar_of(
   )
 }
 
-/// [`with_tab_bar_of`] for a window a surrogate draws at `frame` mid
-/// animation: the bar goes along with a move or resize, but not with a
-/// window opening into its stack.
-pub fn animated_with_tab_bar(
-  state: &WmState,
-  window_id: uuid::Uuid,
-  frame: &Rect,
-) -> Rect {
-  if state.animation_manager.is_entering(&window_id) {
-    frame.clone()
-  } else {
-    with_tab_bar_of(state, window_id, frame)
-  }
-}
-
 /// The tab bar of `stack`, or `None` when it has no tab bar, no tabs or
 /// isn't shown. The overview draws the same bar on its cards.
 pub fn tab_frame(
@@ -255,18 +240,14 @@ fn shown_tab_frame(
   let active = stack.active_child()?;
   let stack_rect = stack.to_rect().ok()?;
 
-  let stand_in =
-    match animation_manager.peeks.stand_in(&active.id(), &stack_rect) {
-      Some(peek) => Some(peek),
-      // A column kept off the monitor beside it shows only through a
-      // peek, which it has none of while out of view.
-      None if !scrolling::shows_real_window(&active) => return None,
-      None => {
-        animation_manager.animation_stand_in(&active.id(), &stack_rect)
-      }
-    };
-
-  let Some(stand_in) = stand_in else {
+  let Some(stand_in) =
+    animation_manager.peeks.stand_in(&active.id(), &stack_rect)
+  else {
+    // A column kept off the monitor beside it shows only through a peek,
+    // which it has none of while out of view.
+    if !scrolling::shows_real_window(&active) {
+      return None;
+    }
     return tab_frame_at(stack, &stack_rect, settings, config, focused_id);
   };
 

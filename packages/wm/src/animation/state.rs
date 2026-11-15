@@ -342,23 +342,13 @@ impl WindowAnimationState {
       .interpolate(&self.target_rect, self.eased_progress())
   }
 
-  /// Gets the interpolated rect and opacity in a single call.
-  ///
-  /// Prefer this over separate `current_rect` + `current_opacity` calls
-  /// when both values are needed in the same frame — `eased_progress`
-  /// (which runs a Newton-Raphson solve) is computed only once.
-  pub fn current_state(&self) -> (Rect, Option<OpacityValue>) {
-    self.current_state_at(Instant::now())
-  }
-
   /// Gets the interpolated rect and opacity at an explicit `now` instant.
   ///
-  /// Like [`current_state`], but evaluates progress at a caller-supplied
-  /// predictive timestamp (e.g. a vsync wake-up led forward by a fraction
-  /// of a frame) so the computed position aligns with the next DWM
-  /// composition rather than the moment this code runs.
-  ///
-  /// [`current_state`]: WindowAnimationState::current_state
+  /// Evaluated at a caller-supplied predictive timestamp (e.g. a vsync
+  /// wake-up led forward by a fraction of a frame) so the computed
+  /// position aligns with the next DWM composition rather than the moment
+  /// this code runs. `eased_progress` (a Newton-Raphson solve) is computed
+  /// only once for both values.
   pub fn current_state_at(
     &self,
     now: Instant,
@@ -370,23 +360,6 @@ impl WindowAnimationState {
       _ => None,
     };
     (rect, opacity)
-  }
-
-  /// Rescales the opacity track, given as fractions of `from` alpha, to
-  /// the same fractions of `to`, e.g. for a stand-in drawn at a different
-  /// opacity from mid-animation on. No-op without a track or from 0.
-  pub fn rescale_opacity(&mut self, from: u8, to: u8) {
-    if from == 0 || from == to {
-      return;
-    }
-
-    let factor = f32::from(to) / f32::from(from);
-    for opacity in [&mut self.start_opacity, &mut self.target_opacity]
-      .into_iter()
-      .flatten()
-    {
-      opacity.0 = (opacity.0 * factor).clamp(0.0, 1.0);
-    }
   }
 }
 
@@ -693,27 +666,6 @@ mod tests {
     let half =
       anim.eased_progress_at(first_tick + Duration::from_millis(50));
     assert!((half - 0.5).abs() < 0.01, "got {half}");
-  }
-
-  /// A fade from 40% to 80% alpha, at a window alpha of 80%, becomes one
-  /// from 50% to 100% at full alpha.
-  #[test]
-  fn rescaled_opacity_keeps_fractions_of_the_new_alpha() {
-    let mut anim = WindowAnimationState::new_movement(
-      Rect::from_xy(0, 0, 100, 100),
-      Rect::from_xy(0, 0, 100, 100),
-      100,
-      linear(),
-    );
-    anim.start_opacity = Some(OpacityValue(0.4));
-    anim.target_opacity = Some(OpacityValue(0.8));
-
-    anim.rescale_opacity(204, 255);
-
-    let start = anim.start_opacity.as_ref().map(|opacity| opacity.0);
-    let target = anim.target_opacity.as_ref().map(|opacity| opacity.0);
-    assert!(start.is_some_and(|start| (start - 0.5).abs() < 1e-3));
-    assert!(target.is_some_and(|target| (target - 1.0).abs() < 1e-3));
   }
 
   #[test]

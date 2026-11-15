@@ -252,20 +252,11 @@ pub enum Stage {
   BorderSync,
   /// `DwmFlush` -- blocks until the next DWM composition frame.
   DwmFlush,
-  /// `ResizeSession::begin`/`begin_reusing_surrogate`.
-  SessionBegin,
   /// Cloaking the real window and pre-positioning it at its target.
   Cloak,
-  /// `AnimationManager::queue_surrogate_updates` -- queueing only; the
-  /// commit it feeds is reported under `BatchCommit`.
-  SurrogateFlush,
   /// `SurrogateBatch::commit` -- the `DeferWindowPos` transaction that
   /// actually moves every surrogate and overlay window queued this frame.
   BatchCommit,
-  /// `platform_sync`'s loop tracking each live resize session's
-  /// backdrop/border overlay onto its surrogate, queued into the same
-  /// batch as the surrogates themselves.
-  SessionOverlays,
   /// `platform_sync` after `redraw_containers`: focus, overlay sync, tab
   /// bars, overview, guards and particles.
   SyncTail,
@@ -278,11 +269,8 @@ pub enum Stage {
   /// `sync_tail`'s stuck-window report, click and motion guards, and
   /// particles.
   Guards,
-  /// `update_internal`'s post-`platform_sync` session/workspace cleanup
-  /// and surrogate fade-out tail.
+  /// `update_internal`'s post-`platform_sync` workspace-switch cleanup.
   Cleanup,
-  /// `ResizeSession::pre_commit`.
-  PreCommit,
   /// `NativeWindow::frame` -- a `DwmGetWindowAttribute` round-trip.
   NativeFrame,
   /// The border overlay's `SetWindowRgn` hole, including building the two
@@ -336,7 +324,7 @@ pub enum Stage {
 
 impl Stage {
   /// Every stage, in report order.
-  const ALL: [Stage; 60] = [
+  const ALL: [Stage; 56] = [
     Stage::Command,
     Stage::PeekFrame,
     Stage::PeekDraw,
@@ -365,18 +353,14 @@ impl Stage {
     Stage::BackdropSync,
     Stage::BorderSync,
     Stage::DwmFlush,
-    Stage::SessionBegin,
     Stage::Cloak,
-    Stage::SurrogateFlush,
     Stage::BatchCommit,
-    Stage::SessionOverlays,
     Stage::SyncTail,
     Stage::SyncFocus,
     Stage::TabBars,
     Stage::Overview,
     Stage::Guards,
     Stage::Cleanup,
-    Stage::PreCommit,
     Stage::NativeFrame,
     Stage::OverlayRegion,
     Stage::OverlayVisual,
@@ -438,18 +422,14 @@ impl Stage {
       Stage::BackdropSync => "backdrop_sync",
       Stage::BorderSync => "border_sync",
       Stage::DwmFlush => "dwm_flush",
-      Stage::SessionBegin => "session_begin",
       Stage::Cloak => "cloak",
-      Stage::SurrogateFlush => "surrogate_flush",
       Stage::BatchCommit => "batch_commit",
-      Stage::SessionOverlays => "session_overlays",
       Stage::SyncTail => "sync_tail",
       Stage::SyncFocus => "sync_focus",
       Stage::TabBars => "tab_bars",
       Stage::Overview => "overview",
       Stage::Guards => "guards",
       Stage::Cleanup => "cleanup",
-      Stage::PreCommit => "pre_commit",
       Stage::NativeFrame => "native_frame",
       Stage::OverlayRegion => "ovl_region",
       Stage::OverlayVisual => "ovl_visual",
@@ -494,8 +474,6 @@ impl Stage {
       | Stage::PeekCover
       | Stage::PeekHandover
       | Stage::PeekRaise
-      | Stage::SurrogateFlush
-      | Stage::SessionOverlays
       | Stage::SyncFocus
       | Stage::TabBars
       | Stage::Overview
@@ -520,17 +498,14 @@ impl Stage {
   ///
   /// These are reported separately: their time is already included in the
   /// tree above, but attributing them to any single parent would be wrong.
-  /// `SurrogateBatch::commit`, for instance, runs from the shared
-  /// surrogate/session-overlay batch, both overlay sync passes, the cloak
-  /// commit and the cleanup tail.
+  /// `SurrogateBatch::commit`, for instance, runs from the peeks' frame,
+  /// both overlay sync passes and the workspace switch's.
   const fn is_cross_cutting(self) -> bool {
     matches!(
       self,
       Stage::BatchCommit
         | Stage::DwmFlush
-        | Stage::SessionBegin
         | Stage::Cloak
-        | Stage::PreCommit
         | Stage::NativeFrame
         | Stage::OverlayRegion
         | Stage::OverlayVisual
