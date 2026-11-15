@@ -122,8 +122,8 @@ pub struct LiveFrame {
 /// Both outgoing and incoming windows move together so the whole workspace
 /// slides as a single panel. For windows with no live backdrop
 /// ([`SurrogateMode::PinnedViewport`]), the surrogate is created at the
-/// monitor's working area (`viewport`) and never repositioned; all per-frame
-/// animation is expressed via `rcSource`/`rcDestination` in
+/// monitor's working area (`viewport`) and never repositioned; all
+/// per-frame animation is expressed via `rcSource`/`rcDestination` in
 /// `DwmUpdateThumbnailProperties`, avoiding any per-frame `SetWindowPos`
 /// calls. Windows with a live backdrop ([`SurrogateMode::Live`]) are
 /// instead moved/resized every frame to their current visible rect,

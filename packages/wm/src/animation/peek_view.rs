@@ -2736,7 +2736,9 @@ impl PeekView {
   /// restacked and settled with it, and no second surface is made at its
   /// clip; it goes at a later purge, or as a surface is made, once unused.
   pub fn retain_surfaces(&mut self, clips: &[Rect]) {
-    self.ready.retain(|_, ready| clips.contains(&ready.fit.clip));
+    self
+      .ready
+      .retain(|_, ready| clips.contains(&ready.fit.clip));
     self.surfaces.retain(|surface| {
       !is_stale_surface(surface.is_unused(), surface.clip(), clips)
     });
