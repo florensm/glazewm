@@ -2761,3 +2761,87 @@ directly (both still called elsewhere) and everything else through
 code in `wm` called `NativeWindow::close`, `set_transparency`,
 `set_cloaked` and `dwm_flush`, all still called by peeks and the
 switch.
+
+#### R5: as built
+
+Branch `os/r5-surrogate`, three code commits and this note. Not seen
+running.
+
+What went, by file:
+
+- `native_surrogate.rs` (1988 -> 1404 lines): `revive`, `update`,
+  `update_thumbnail_dims`, `reregister_thumbnail`, `content_size`,
+  `set_fill_color` and the gap fill with it (fields `fill`, `fill_color`,
+  `rest_opacity`, `covered`; `set_fill_opacity`, `set_covered`,
+  `fade_fraction` and its test); the `stretch` field and `create`'s
+  `stretch` parameter (every caller passed `false`), with what only
+  stretching reached: `window_size`, `set_window_size`,
+  `stretched_destination` and its test, `sampled_inset`,
+  `covered_extent`, the `content_size` and `border_inset` fields, and
+  `thumbnail_look`'s `border_inset`/`stretch_to` parameters.
+  `adopt_companion`'s whole-window arm (a look without a source rect,
+  which only a stretched registration had) now returns `false`: every
+  look this type registers has a source rect, and DWM keeps one once
+  set. The type's and `create`'s docs no longer describe the engine
+  (wipe, curtain reveal, fill).
+- `composition.rs`: `SurrogateFill::set_opacity` (only the gap fill
+  called it); `SurrogateFill`'s doc now names its one user,
+  `FillSource`.
+- `window_peek.rs`, `workspace_surrogate.rs`, `companion_cover.rs`: the
+  `false` they passed for `stretch`. `window_peek.rs`: also
+  `WindowPeek::carries_ring` (sweep, below).
+- `overlay_copies.rs`: `set_fill_opacity`'s doc pointed at
+  `fade_fraction`; it now says why itself.
+- `perf.rs`: `note_window_count`, `record_window_count`, the
+  `peak_windows` field and the report header's "peak N window(s)
+  animating" (no caller since R4; `perf_bench` parses only the frame
+  count from that line, and its scripts don't read it either), with the
+  test lines that fed or checked it; `Stage::SurrogateThumb`'s doc names
+  `reclaim` for `revive`.
+
+Named items kept, and why:
+
+- `defer_reposition`: `NativeSurrogate::move_to` (own peeks:
+  `show_clipped`, `live_origin`) and `WorkspaceSurrogate`'s live
+  placement queue moves into a batch through it.
+- `SurrogateFill` itself, `fill_start` and `FILL_UNDERLAP_PX`:
+  `FillSource` and `OverlayCopies`' fill copies use them.
+
+Sweep: every `pub fn` of `WindowPeek`, `WorkspaceSurrogate`,
+`PeekSurface`, `CompanionCover` and `NativeSurrogate` made
+`pub(crate)` one type at a time, `wm` checked for the ones it calls,
+the rest left to `dead_code`, each hit then checked by `grep` (the
+probe gave false hits where a trait method of the same name
+resolved). `wm` itself is a binary, so `dead_code` already covers it.
+Also checked: every `wm-platform` method a removed line of R1..R4 called
+still has a caller, and no function in the workspace has a `bool` or
+`Option` parameter every caller passes the same literal for.
+
+- Deleted: `WindowPeek::carries_ring` (last caller `earlyfill`'s
+  `carries_fill_early`, R1).
+- Found uncalled but not left by the removal, so left as they are:
+  `WindowPeek::carries_tab_bar` (added by the stacks step, never
+  called), `PeekSurface::is_shown` and `PeekSurface::raise_to_top`
+  (step 1; `WindowPeek::raise_to_top` reaches the surface's window
+  through `NativeSurrogate`). Step 8's call.
+- No own-window branch was found whose only entry was a folded word:
+  R1's folds were all in `wm`, where `dead_code` would have flagged a
+  helper left behind, and the own (non-hosted) arms in `window_peek.rs`,
+  `workspace_surrogate.rs`, `native_surrogate.rs` and `overlay_copies.rs`
+  are still reached by live peeks, stacks, the switch's fallbacks
+  (floating, fullscreen, topmost, live, companion), a topped surface
+  and surface creation failure. `repin` (an own pinned peek moved to a
+  new clip) is kept on the same grounds.
+
+Live peek path: untouched (`is_copyable`, `is_live`, the `Live` modes,
+live arms, `restack_live_overlays`, `has_own_peek_neighbour`,
+`beside_own_peek`; `show_clipped`, `move_to`, `reposition`,
+`defer_reposition` stay). No hand-over step moved, simplified or
+dropped.
+
+Windows functions added: none. No longer called anywhere in the
+source: none. The deleted code called `SetWindowPos` (`revive`), the
+DWM thumbnail functions, `CreateDesktopWindowTarget` through
+`SurrogateFill::create` and `ContainerVisual::SetOpacity`, all still
+called elsewhere (`SetOpacity` by the border, backdrop and vignette
+visuals).
