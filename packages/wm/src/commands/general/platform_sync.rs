@@ -1341,13 +1341,10 @@ fn redraw_containers(
   });
 
   // With `window_resize` enabled, in either style, the relayout's resizes
-  // go on peeks too (`STAND_INS_PLAN.md` tasks 8 and 10e).
+  // go on peeks too (`STAND_INS_PLAN.md` tasks 8 and 10e), each tile's as
+  // `move_on_peek` takes it.
   let resizes = if cycle_has_resize && !suppress_animations {
-    crate::animation::peek_view::resizes_relayout(
-      state,
-      &windows_to_redraw,
-      config,
-    )
+    crate::animation::peek_view::resizes_on_peeks(config)
   } else {
     None
   };

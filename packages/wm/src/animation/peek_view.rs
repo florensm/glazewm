@@ -1121,7 +1121,7 @@ pub(super) fn is_peek_resize(
 
 /// How `window_resize` draws resizes on peeks, if it does: in its style,
 /// enabled.
-pub(super) fn resizes_on_peeks(config: &UserConfig) -> Option<PeekResize> {
+pub fn resizes_on_peeks(config: &UserConfig) -> Option<PeekResize> {
   let resize = &config.value.animations.window_resize;
   resize.enabled.then(|| peek_resize(resize.style))
 }
@@ -3817,8 +3817,8 @@ pub fn enter_on_peek(
 }
 
 /// Has `window`, a tile shown at `from` and laid out at `target`, move
-/// there on a peek if it only moves (see [`is_pure_move`]) or, if
-/// its relayout `stretches` (see [`stretches_relayout`]), resizes too (see
+/// there on a peek if it only moves (see [`is_pure_move`]) or, given
+/// `resizes` (see [`resizes_on_peeks`]), resizes too (see
 /// [`is_peek_resize`]), on `window_move`'s timing or, when it resizes or
 /// `cycle_has_resize`, `window_resize`'s, as the old path would
 /// (`movement_timing`). Returns whether it does.
@@ -3831,7 +3831,8 @@ pub fn enter_on_peek(
 ///
 /// Not a window another stand-in draws, which keeps it, nor one moving
 /// onto another monitor unless [`tile_clips`] draws it on two peeks:
-/// on each monitor's surface (see [`move_host`]).
+/// on each monitor's surface (see [`move_host`]). Each tile of a
+/// relayout is taken or refused on its own; a refused one snaps.
 ///
 /// One crossing between floating and tiling (see
 /// [`changes_state_on_peek`]) is drawn on the surface of the band its pass
@@ -3857,6 +3858,7 @@ pub fn move_on_peek(
         target,
         animations.window_resize.threshold_px,
       )
+      && !is_resized_already(window, target)
   } else {
     is_pure_move(from, target, animations.window_move.threshold_px)
   };
@@ -4284,93 +4286,14 @@ pub fn hold_on_peek(
   moved
 }
 
-/// How a relayout redrawing `windows` draws its resizes on peeks (see
-/// [`resizes_on_peeks`]), if it does: only if every tile it moves or
-/// resizes can go on a peek as [`move_on_peek`] puts it there.
-///
-/// One that can't would resize on the old path, in another style beside
-/// the rest: the whole relayout keeps the old path's resizes then. So it
-/// does when a resized window is at its new size already, which an
-/// interactive resize leaves it at as its drag ends: that one stays
-/// exactly as it was.
-///
-/// Columns are left to `sync_scroll_view`, and windows that open, are not
-/// shown, or stay floating to the redraw itself. One crossing between
-/// floating and tiling goes on a peek only as [`changes_state_on_peek`]
-/// allows.
-pub fn resizes_relayout(
-  state: &WmState,
-  windows: &[WindowContainer],
-  config: &UserConfig,
-) -> Option<PeekResize> {
-  let resize = resizes_on_peeks(config)?;
-
-  let animations = &config.value.animations;
-  windows
-    .iter()
-    .all(|window| {
-      let id = window.id();
-      let (Some(from), Ok(target)) = (
-        state.window_target_positions.get(&id),
-        window.to_rect().and_then(|rect| {
-          Ok(rect.apply_delta(&window.total_border_delta()?, None))
-        }),
-      ) else {
-        return true;
-      };
-      let is_state_change = state.pending_sync.is_window_state_change(&id);
-      let is_shown = window
-        .workspace()
-        .is_some_and(|workspace| workspace.is_displayed())
-        && !is_hidden_in_layout(window)
-        && window.state() != WindowState::Minimized;
-      let is_resize = !is_same_size(from, &target);
-      let animates = if is_resize {
-        is_peek_resize(
-          from,
-          &target,
-          animations.window_resize.threshold_px,
-        )
-      } else {
-        animations.window_move.enabled
-          && is_pure_move(
-            from,
-            &target,
-            animations.window_move.threshold_px,
-          )
-      };
-
-      if !is_shown
-        || !animates
-        || crate::layout::scrolling::column_of(&window.as_container())
-          .is_some()
-        || (matches!(window.state(), WindowState::Floating(_))
-          && !is_state_change)
-      {
-        return true;
-      }
-
-      let fits_monitor = tile_clips(state, window, from, config).is_some();
-      let is_resized_already = is_resize
-        && !state.animation_manager.peeks.is_moving(&id)
-        && window
-          .native()
-          .frame_with_shadows()
-          .is_ok_and(|actual| is_same_size(&actual, &target));
-
-      let moves_as_tile = if is_state_change {
-        changes_state_on_peek(window)
-      } else {
-        window.state() == WindowState::Tiling
-      };
-
-      moves_as_tile
-        && window.display_state() == wm_common::DisplayState::Shown
-        && !has_other_stand_in(&state.animation_manager, &id)
-        && fits_monitor
-        && !is_resized_already
-    })
-    .then_some(resize)
+/// Whether `window`, laid out at `target`, is at that size already, as an
+/// interactive resize leaves it as its drag ends: drawn resizing on a
+/// peek, it would shrink back to its old size first, so it snaps.
+fn is_resized_already(window: &WindowContainer, target: &Rect) -> bool {
+  window
+    .native()
+    .frame_with_shadows()
+    .is_ok_and(|actual| is_same_size(&actual, target))
 }
 
 /// The clips of the peeks [`move_on_peek`] draws `window`, a tile moving
