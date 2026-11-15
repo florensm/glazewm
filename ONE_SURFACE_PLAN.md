@@ -2176,7 +2176,7 @@ ported first (items below), then this flicker, then the bench.
 
 ### Open, in the order to take them
 
-1. **Removal of the old code** (in progress; merged: R0, R1, R2; `GLAZEWM_ISOLATE` is gone) (owner's decision, 2026-11-15, right
+1. **Removal of the old code** (in progress; merged: R0, R1, R2, R3; nothing starts the engine any more; `GLAZEWM_ISOLATE` is gone) (owner's decision, 2026-11-15, right
    after porting, before the bench): the old engine (`ResizeSession`,
    `nopeeks`) and every own-window peek path a surface replaced, so
    `onesurface` is the only engine, on by default with no word. See
@@ -2256,7 +2256,7 @@ a worktree, on a branch `os/<n>-<name>` cut from `tryout/one-surface`;
 each appends its "as built" section here; the reviewer merges, runs the
 checks and pushes `tryout/one-surface`. Agents that share files run one
 after another. Branches merged so far: `os/1-surface`, `os/2-ready`,
-`os/3-tiles`, `os/4-transits`, `os/5-scroll`, `os/7-switch`, `os/9-integrate`, `os/10-rest-slide`, `os/6a-held`, `os/6b-band`, `os/6c-cross`, `os/11-stacks`, `os/r0-move`, `os/r1-words`, `os/r2-live`.
+`os/3-tiles`, `os/4-transits`, `os/5-scroll`, `os/7-switch`, `os/9-integrate`, `os/10-rest-slide`, `os/6a-held`, `os/6b-band`, `os/6c-cross`, `os/11-stacks`, `os/r0-move`, `os/r1-words`, `os/r2-live`, `os/r3-rows`.
 
 Laptop test build of this state (before the removal): `test/one-surface`.
 Run it with `GLAZEWM_ISOLATE=onesurface,readypeeks,morepeeks`.
