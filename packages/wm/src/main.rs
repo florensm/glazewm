@@ -466,9 +466,10 @@ const CATCH_UP_BUDGET: Duration = Duration::from_millis(4);
 /// Mouse, window and display handlers mutate layout state -- display
 /// states, workspace membership, floating placement, unmanagement -- and
 /// so do due auto-stack and closing-window timers, which manage windows.
-/// Resize and move animations are safe: `handle_window_moved_or_resized`
-/// bails out early for any window holding a `ResizeSession`, so those
-/// events cost a rect query and nothing more. A workspace-switch slide has
+/// Resize and move animations were judged safe while
+/// `handle_window_moved_or_resized` bailed out early for any window
+/// holding a `ResizeSession` (the engine, since removed); not checked yet
+/// for windows on peeks. A workspace-switch slide has
 /// no such guard on every path, and delivering these events mid-slide
 /// broke the animation and left workspaces reporting no windows.
 ///

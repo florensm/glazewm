@@ -4332,16 +4332,13 @@ fn tile_clips(
 }
 
 /// Whether a stand-in other than a peek draws `window_id` or hands it
-/// back: its own animation, a move's surrogate until it has faded out, or
-/// a workspace switch's. A move then stays with it.
+/// back: a workspace switch's. A move then stays with it.
 pub(super) fn has_other_stand_in(
   manager: &AnimationManager,
   window_id: &Uuid,
 ) -> bool {
-  manager.get_animation(window_id).is_some()
-    || manager.owns_window_position(window_id)
-    || (manager.has_active_surrogate(window_id)
-      && !manager.peeks.draws_window(window_id))
+  manager.has_active_surrogate(window_id)
+    && !manager.peeks.draws_window(window_id)
 }
 
 /// Covers the rings and backdrops of windows whose peeks [`move_on_peek`]

@@ -3184,13 +3184,8 @@ fn window_alpha(set: EffectSet, config: &UserConfig) -> u8 {
   }
 }
 
-/// `(effect_opacity, corner_style, overlay_params)`.
-///
-/// Snapshotted onto the `ResizeSession` rather than re-read live, because
-/// the close and minimize direct-drive loops run once the window is
-/// detached from the container tree (close) or already minimized
-/// (minimize), where the per-window effect config can no longer be
-/// recomputed.
+/// `(effect_opacity, corner_style, overlay_params)` of a stand-in drawn
+/// in `set`'s style.
 pub(crate) fn surrogate_effects_for(
   set: EffectSet,
   config: &UserConfig,
