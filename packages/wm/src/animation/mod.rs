@@ -12,4 +12,4 @@ pub(crate) use manager::{
   restack_switch_tenants, switch_crossing, AwayTransition, HandBack,
   WorkspaceSwitchEntry,
 };
-pub use manager::{AnimationManager, AnimationPositionResult, PeeksDrawn};
+pub use manager::{AnimationManager, AnimationPositionResult};
