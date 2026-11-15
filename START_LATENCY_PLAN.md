@@ -1,5 +1,12 @@
 # Plan: peek path that starts as fast as the old engine
 
+Note (2026-11-15): since the removal (`ONE_SURFACE_PLAN.md` "Removal
+plan"), `GLAZEWM_ISOLATE` and every word it took (`onesurface`,
+`readypeeks`, `morepeeks`, `nopeeks`, `slidepeeks`, `peeksfirst`, ...)
+and `ResizeSession` (the old engine) are gone: windows animate on peeks
+and peek surfaces only, with no switch. References to them below are
+historical, not rewritten.
+
 Written 2026-11-12 from a reading of `cd04e3c` (`tryout/start-latency`,
 = `tryout/stand-ins` `65a60de` plus the bench results) and
 `perf_bench/results/2026-11-12/`. Nothing here has been seen running:

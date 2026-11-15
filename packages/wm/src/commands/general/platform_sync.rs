@@ -1514,9 +1514,8 @@ fn redraw_containers(
     // once. A restore cannot use that test -- the window kept the
     // target position it had before it was minimized -- so it is
     // flagged on `PendingSync` instead. A restore is also allowed for
-    // floating windows, which never slide in on open on the old path:
-    // one opens on a pinned peek (`STAND_INS_PLAN.md`
-    // task 6b), or not at all.
+    // floating windows: one opens on a peek (`STAND_INS_PLAN.md` task
+    // 6b), or not at all.
     //
     // Paired with whether it is an open rather than a restore.
     let entry_transition = if is_visible
@@ -2670,7 +2669,7 @@ fn upsert_overlay<O: SyncableOverlay>(
 /// to be. Leaves an overlay alone that `params` has no params for.
 ///
 /// Takes the overlay map directly (rather than `&mut WmState`) so callers
-/// still borrowing other `WmState` fields, e.g. the session they track,
+/// still borrowing other `WmState` fields, e.g. the peek they track,
 /// can pass `&mut state.window_overlays`.
 pub(crate) fn track_overlays(
   overlays: &mut std::collections::HashMap<uuid::Uuid, WindowOverlays>,
@@ -3459,9 +3458,9 @@ impl SyncableOverlay for NativeBorderOverlay {
 /// workspace's `!is_displayed()` flips true the instant the switch command
 /// runs, well before the animation completes.
 ///
-/// Otherwise, hides the static overlay while some other kind of
-/// surrogate/session is active for this window without a live tracker of
-/// its own (e.g. this effect not configured for it). When such a surrogate
+/// Otherwise, hides the static overlay while some other kind of stand-in
+/// is active for this window without a live tracker of its own (e.g.
+/// this effect not configured for it). When such a surrogate
 /// is running, the real window is cloaked at its target rect; reading
 /// `frame()` would return the target position while the surrogate is still
 /// mid-animation, causing the overlay to jump ahead. Also hides for

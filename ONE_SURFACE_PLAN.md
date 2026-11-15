@@ -2845,3 +2845,33 @@ DWM thumbnail functions, `CreateDesktopWindowTarget` through
 `SurrogateFill::create` and `ContainerVisual::SetOpacity`, all still
 called elsewhere (`SetOpacity` by the border, backdrop and vignette
 visuals).
+
+#### R6: as built
+
+Branch `os/r6-docs`, two commits and this note. Not seen running.
+
+- Noted as historical (a dated note under the title, bodies not
+  rewritten): `TODO.md`, `START_LATENCY_PLAN.md`, `ANIMATION_REVIEW.md`,
+  `SWITCH_PEEKS_PLAN.md`, `STAND_INS_PLAN.md`. Other root `*.md` checked
+  by `grep`: none names a removed word or `ResizeSession` (this file
+  keeps its own history; `CLAUDE.md` below). `TODO.md` also marks inline
+  the live checks that set or compare a word (41 to 49, 53, 67, 70 to
+  73), the "isolate them" paragraph and the `GLAZEWM_ISOLATE` section.
+- `STAND_INS_PLAN.md`: 10f marked done (pointing here, also in the task
+  list); "Old path" says `ResizeSession` is deleted.
+- Code comments (comments only): `peek_view.rs` (`ResizeSession::pre_commit`,
+  `needs_preposition`, "the old path" in eight docs and one comment, the
+  `fill` session in two), `transit.rs` ("as on the old path"),
+  `state.rs` and `manager.rs` (engine "session" setup and sampling),
+  `platform_sync.rs` (a floating restore "on the old path", "the session
+  they track", "surrogate/session"). Each now states its reason without
+  the engine. `grep` of `packages/` outside `examples/` finds no removed
+  word or switch named as current.
+- Left as worded: `main.rs`' `catch_up_before_frame` doc (window events
+  during peek moves "not checked yet", naming `ResizeSession` as since
+  removed, R4). `perf_bench` (step 8).
+- `CLAUDE.md` not edited: its `isolate_modes.ps1` description (the
+  strip list, "`GLAZEWM_ISOLATE` mode") is proposed to the reviewer for
+  step 8, which reworks the bench.
+
+Windows functions added: none. Removed: none (docs and comments only).

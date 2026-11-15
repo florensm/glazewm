@@ -1,5 +1,12 @@
 # Plan: one way to animate windows
 
+Note (2026-11-15): since the removal (`ONE_SURFACE_PLAN.md` "Removal
+plan"), `GLAZEWM_ISOLATE` and every word it took (`onesurface`,
+`readypeeks`, `morepeeks`, `nopeeks`, `slidepeeks`, `peeksfirst`, ...)
+and `ResizeSession` (the old engine) are gone: windows animate on peeks
+and peek surfaces only, with no switch. References to them below are
+historical, not rewritten.
+
 Revised 2026-11-10 (fourth version; the third is `git show
 229fc21:STAND_INS_PLAN.md`, the second `git show
 ec8e0fe:STAND_INS_PLAN.md`). Written so a session that has not seen the
@@ -98,7 +105,8 @@ kind stays on the old path until you have seen the new one.
   start / end without a frame showing both or neither.
 - **Rect track**: where a window's tile is going (retargetable).
   **Entry track**: how far it has entered or left, 0 (away) to 1 (in).
-- **Old path**: `ResizeSession` (`wm-platform/src/resize_session.rs`).
+- **Old path**: `ResizeSession` (`wm-platform/src/resize_session.rs`),
+  deleted 2026-11-15 (`ONE_SURFACE_PLAN.md` "Removal plan", R4).
 
 ## Rules for whoever carries this out
 
@@ -190,7 +198,7 @@ Owner's answers, 2026-11-11:
   (planned and reviewed 2026-11-12: 10a answered by reading; the owner's
   pre-check in 10a still to run; 10b, 10c, 10e-1 and 10e-2 built, not
   checked live; 10d is the owner's call; 10e-3 done on the owner's
-  say-so, 2026-11-12; 10f ports under way behind `morepeeks`)
+  say-so, 2026-11-12; 10f done 2026-11-15, see below)
 
 ### Task 0: baseline (desktop, by hand)
 
@@ -1679,6 +1687,11 @@ the landing wait is the same `Hold` change. How it went in:
 unless `nopeeks`; `fillpeeks` goes. Its own one-line commit (rule 4).
 
 #### 10f. Delete the old engine
+
+**Done** (2026-11-15) by `ONE_SURFACE_PLAN.md` "Removal plan" (R0 to
+R6): every row ported or snapped, `ResizeSession` and every
+`GLAZEWM_ISOLATE` word deleted. Not seen running. The text below is the
+plan as it stood.
 
 Only once 10e-3 has been lived with, and only kind by kind (task 9's
 rule). `ResizeSession` is still reached, after 10e, by more than this

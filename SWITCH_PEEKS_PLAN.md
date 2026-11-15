@@ -1,5 +1,12 @@
 # Plan: columns drawn by a resting peek slide with the workspace switch
 
+Note (2026-11-15): since the removal (`ONE_SURFACE_PLAN.md` "Removal
+plan"), `GLAZEWM_ISOLATE` and every word it took (`onesurface`,
+`readypeeks`, `morepeeks`, `nopeeks`, `slidepeeks`, `peeksfirst`, ...)
+and `ResizeSession` (the old engine) are gone: windows animate on peeks
+and peek surfaces only, with no switch. References to them below are
+historical, not rewritten.
+
 Written 2026-11-13 from a reading of `1d65077` (`tryout/start-latency`).
 Nothing here has been seen running: the container is Linux. Read
 `CLAUDE.md` and `STAND_INS_PLAN.md` ("Words used here", "Rules", rule 5

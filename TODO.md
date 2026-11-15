@@ -1,5 +1,12 @@
 # TODO: `tryout/todo-cleanup`
 
+Note (2026-11-15): since the removal (`ONE_SURFACE_PLAN.md` "Removal
+plan"), `GLAZEWM_ISOLATE` and every word it took (`onesurface`,
+`readypeeks`, `morepeeks`, `nopeeks`, `slidepeeks`, `peeksfirst`, ...)
+and `ResizeSession` (the old engine) are gone: windows animate on peeks
+and peek surfaces only, with no switch. References to them below are
+historical, not rewritten.
+
 State as of 2026-11-03, for picking this up in another session. Live
 testing needs a Windows desktop session (GlazeWM is Windows-only); a cloud
 session can build, lint and unit-test (see "Checks" at the end). Items
@@ -447,6 +454,9 @@ to see it; check each once more at 150 ms.
     close, minimize and restore a window in a tiling layout, scroll a
     column. All look as before; with `peeks` set, the log's start-up
     warning lists `peeks: true` and nothing else differs.
+    Historical (2026-11-15): `GLAZEWM_ISOLATE` and its words are gone
+    (`ONE_SURFACE_PLAN.md` "Removal plan"); steps that set or compare
+    one no longer apply.
 42. **Open on peeks, tiling layouts** (`STAND_INS_PLAN.md` 3a, the gate
     for everything after it). On a tiling-layout workspace, with
     `GLAZEWM_ISOLATE=peeks`, open a window with each `window_open` style
@@ -473,6 +483,9 @@ to see it; check each once more at 150 ms.
     any point is worse than with the switch off and the cause is not a
     plain bug, stop and report with a screenshot; do not tune hand-over
     timings.
+    Historical (2026-11-15): `GLAZEWM_ISOLATE` and its words are gone
+    (`ONE_SURFACE_PLAN.md` "Removal plan"); steps that set or compare
+    one no longer apply.
 43. **Open on peeks, scrolling columns** (`STAND_INS_PLAN.md` 3b). On the
     scrolling workspace, with `GLAZEWM_ISOLATE=peeks`, open a new column
     with each `window_open` style (`zoom`, each `slide_*`, `none` with
@@ -485,6 +498,9 @@ to see it; check each once more at 150 ms.
     screen; closing it or switching workspace mid-way leaves no peek.
     Question for the owner: does a `slide_*` style read well on a column
     that is also widening? If not, columns take `zoom` and the fade only.
+    Historical (2026-11-15): `GLAZEWM_ISOLATE` and its words are gone
+    (`ONE_SURFACE_PLAN.md` "Removal plan"); steps that set or compare
+    one no longer apply.
 44. **Close and minimize on peeks** (`STAND_INS_PLAN.md` task 4). In a
     tiling layout and on the scrolling workspace, with
     `GLAZEWM_ISOLATE=peeks`, `window_close` on, at `duration_ms: 3000`
@@ -509,6 +525,9 @@ to see it; check each once more at 150 ms.
     1), and a partly visible scrolling column at rest, keep the old path.
     A minimize waits for one composition (`DwmFlush`) before the window
     is minimized; look for a hitch on pressing it.
+    Historical (2026-11-15): `GLAZEWM_ISOLATE` and its words are gone
+    (`ONE_SURFACE_PLAN.md` "Removal plan"); steps that set or compare
+    one no longer apply.
 45. **Restore on peeks** (`STAND_INS_PLAN.md` task 5). In a tiling layout
     and on the scrolling workspace, with `GLAZEWM_ISOLATE=peeks`,
     `window_minimize` at `duration_ms: 2000` and at 150, styles `zoom`,
@@ -537,6 +556,9 @@ to see it; check each once more at 150 ms.
     (minimize's curve time-reversed, finding 15), where it sped up and
     stopped dead before. Floating windows, and windows whose peek would
     be `Live`, keep the old path.
+    Historical (2026-11-15): `GLAZEWM_ISOLATE` and its words are gone
+    (`ONE_SURFACE_PLAN.md` "Removal plan"); steps that set or compare
+    one no longer apply.
 46. **Moves on peeks** (`STAND_INS_PLAN.md` task 6). In a tiling layout
     and on the scrolling workspace, with `GLAZEWM_ISOLATE=peeks`,
     `window_move` at `duration_ms: 2000` and at 150, once with a spring
@@ -570,6 +592,9 @@ to see it; check each once more at 150 ms.
     also resizes it stays on its peek, which then shows more or less of
     it rather than stretching it, as a column does: look there for a
     gap at its edge.
+    Historical (2026-11-15): `GLAZEWM_ISOLATE` and its words are gone
+    (`ONE_SURFACE_PLAN.md` "Removal plan"); steps that set or compare
+    one no longer apply.
 47. **Floating windows open on peeks** (`STAND_INS_PLAN.md` task 6b).
     With `GLAZEWM_ISOLATE=peeks`, `window_open` at `duration_ms: 2000`
     and at 150, each style (`zoom`, each `slide_*`, `none` with
@@ -606,6 +631,9 @@ to see it; check each once more at 150 ms.
     window is now made concealed, only its copy shown: look at the first
     frames of a `zoom` open at 3000 ms for a full-size border, then the
     same for a tiled window on an empty workspace.
+    Historical (2026-11-15): `GLAZEWM_ISOLATE` and its words are gone
+    (`ONE_SURFACE_PLAN.md` "Removal plan"); steps that set or compare
+    one no longer apply.
 48. **The peeks' frame before the catch-up** (`STAND_INS_PLAN.md` task
     7, a scheduling change). On the fast monitor, run 42's checks (an
     open beside three tiled windows, and a second opened mid-way) and
@@ -632,6 +660,9 @@ to see it; check each once more at 150 ms.
     or varies by more. With `peeksfirst`, the catch-up's own stages
     (`platform_sync` and below) count in the frame but not in `tick`;
     compare `tick` between the two runs, not `platform_sync`.
+    Historical (2026-11-15): `GLAZEWM_ISOLATE` and its words are gone
+    (`ONE_SURFACE_PLAN.md` "Removal plan"); steps that set or compare
+    one no longer apply.
 49. **Stretch resize on peeks, instant** (`STAND_INS_PLAN.md` task 8;
     the first build's wait of up to 100 ms is gone). Config
     `window_resize: { style: "stretch", duration_ms: 2000 }`, then 150;
@@ -666,6 +697,9 @@ to see it; check each once more at 150 ms.
       with no wallpaper at the growing window's far edge between presses.
     - Compare with `GLAZEWM_ISOLATE=nopeeks` and with `style: "fill"`:
       both must look as they did before.
+    - Historical (2026-11-15): `GLAZEWM_ISOLATE` and its words are
+      gone (`ONE_SURFACE_PLAN.md` "Removal plan"); steps that set or
+      compare one no longer apply.
 50. **Fill resize: seam line and fill color** (`9e2849b`, `092278d`,
     `1abbb0b`). Config `window_resize: { style: "fill", duration_ms:
     2000 }`, then 150; see-through windows (about 80%) with a backdrop
@@ -714,6 +748,9 @@ to see it; check each once more at 150 ms.
     - A tiled window opening beneath them animates under them.
     - With `shown_on_top: false`: a new focused floating window animates
       over the other floating windows, as before.
+    - Historical (2026-11-15): `GLAZEWM_ISOLATE` and its words are
+      gone (`ONE_SURFACE_PLAN.md` "Removal plan"); steps that set or
+      compare one no longer apply.
 54. **Steady gaps while tiles animate** (`afb82e7`). Config `window_move`
     and `window_resize` at `duration_ms: 2000`. Three or four tiles side
     by side: open a window among them, then close one.
@@ -956,6 +993,9 @@ to see it; check each once more at 150 ms.
       (`CreateWindowExW`, `SetLayeredWindowAttributes`, `SetWindowPos`,
       a `Windows.UI.Composition` colour brush), all already used for the
       backdrop copies. Only with the variable set.
+    - Historical (2026-11-15): `GLAZEWM_ISOLATE` and its words are
+      gone (`ONE_SURFACE_PLAN.md` "Removal plan"); steps that set or
+      compare one no longer apply.
 68. **Grab resizes on peeks, round 1** (`STAND_INS_PLAN.md` 10c-1 to
     10c-4). `grab_and_move: { enabled: true, draw: "peeks" }`, a split
     layout, a border, a gap wide enough to see. Open the windows after
@@ -1016,6 +1056,9 @@ to see it; check each once more at 150 ms.
       not cloaked, as without the variable. Compare each with no variable
       (the old engine).
     - Windows API: none new; the calls a move on a peek makes.
+    - Historical (2026-11-15): `GLAZEWM_ISOLATE` and its words are
+      gone (`ONE_SURFACE_PLAN.md` "Removal plan"); steps that set or
+      compare one no longer apply.
 71. **Floating <-> tiling on peeks** (`STAND_INS_PLAN.md` 10f).
     `GLAZEWM_ISOLATE=morepeeks`, `window_resize` and `window_move` at
     `duration_ms: 2000`, then 150; a border and a backdrop; `fill`, then
@@ -1039,6 +1082,9 @@ to see it; check each once more at 150 ms.
       the variable, the floating toggle is drawn by the old engine.
     - Windows API: none new (`SetWindowPos` z-order on the cloaked
       window, as task 6b's raise; thumbnail and cloak calls).
+    - Historical (2026-11-15): `GLAZEWM_ISOLATE` and its words are
+      gone (`ONE_SURFACE_PLAN.md` "Removal plan"); steps that set or
+      compare one no longer apply.
 72. **A tile moving onto another monitor, on two peeks**
     (`STAND_INS_PLAN.md` 10f, the monitor row). `GLAZEWM_ISOLATE=morepeeks`,
     two monitors side by side, ideally of different scale (100% and
@@ -1067,6 +1113,9 @@ to see it; check each once more at 150 ms.
     - Windows API: none new. A second pinned peek (`CreateWindowExW`,
       thumbnail calls) and, across scales, a second `SetWindowPos`, all
       already made.
+    - Historical (2026-11-15): `GLAZEWM_ISOLATE` and its words are
+      gone (`ONE_SURFACE_PLAN.md` "Removal plan"); steps that set or
+      compare one no longer apply.
 73. **Moves and resizes on live peeks** (`STAND_INS_PLAN.md` 10f, the
     `Live` row). `GLAZEWM_ISOLATE=morepeeks`, a border, a backdrop with
     `corner_radius: 8px` in both `window_effects` blocks (a rounded
@@ -1097,9 +1146,13 @@ to see it; check each once more at 150 ms.
     - Windows API: none new (`SetWindowPos`, `DeferWindowPos`,
       `DwmUpdateThumbnailProperties`, `GetWindowRect`, all already made
       for live peeks and overlays).
+    - Historical (2026-11-15): `GLAZEWM_ISOLATE` and its words are
+      gone (`ONE_SURFACE_PLAN.md` "Removal plan"); steps that set or
+      compare one no longer apply.
 
 If bars or flicker show, isolate them with `GLAZEWM_ISOLATE` (below), one
-restart per flag: `noring`, `nobackdrop`, then `live`. With a long
+restart per flag: `noring`, `nobackdrop`, then `live` (historical: those
+words are gone since 2026-11-15). With a long
 `duration_ms` (e.g. 3000) for `scroll` and `workspace_switch`, one
 screenshot catches a mid-animation frame.
 
@@ -1111,7 +1164,11 @@ opening all worked. Opens and closes looked about as before. A floating
 open showed its border at the final rect from the start (`f1982c2`,
 entry 47). Still unseen: entries 43 (columns), 45's taskbar cases, 48.
 
-## Live-check switch: `GLAZEWM_ISOLATE`
+## Live-check switch: `GLAZEWM_ISOLATE` (historical)
+
+Removed 2026-11-15 (`ONE_SURFACE_PLAN.md` "Removal plan"): the WM reads
+no `GLAZEWM_ISOLATE` and none of the words below exist. Kept for the
+entries above that name them.
 
 Inert unless set. A comma-separated list, read once at WM start (a warning
 in the log says it is on):
