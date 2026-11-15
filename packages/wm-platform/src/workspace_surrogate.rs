@@ -404,7 +404,11 @@ impl WorkspaceSurrogate {
     }
 
     Some(Self {
-      inner: NativeSurrogate::create_hosted(surface, hwnd, rect, opacity),
+      // Admitted as below a shown window, cloaked or not: a switch's
+      // surface stays below every incoming window until the cleanup.
+      inner: NativeSurrogate::create_hosted(
+        surface, hwnd, rect, opacity, true,
+      ),
       rect: rect.clone(),
       viewport: viewport.clone(),
       opacity,
