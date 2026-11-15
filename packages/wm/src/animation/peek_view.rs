@@ -1086,8 +1086,7 @@ pub fn state_change_peek_raise(
 }
 
 /// Whether a window laid out at `target` after `from` only moves, and by
-/// more than `threshold_px` as `should_start_new_animation` measures it:
-/// below that, the old path doesn't animate it either.
+/// more than `threshold_px`: below that, it isn't animated.
 pub(super) fn is_pure_move(
   from: &Rect,
   target: &Rect,
@@ -1103,8 +1102,7 @@ pub(super) fn is_pure_move(
 }
 
 /// Whether a window laid out at `target` after `from` changes size, by
-/// more than `threshold_px` as `should_start_new_animation` measures a
-/// resize: below that, the old path doesn't animate it either.
+/// more than `threshold_px`: below that, it isn't animated.
 pub(super) fn is_peek_resize(
   from: &Rect,
   target: &Rect,
@@ -1121,7 +1119,7 @@ pub(super) fn is_peek_resize(
 
 /// How `window_resize` draws resizes on peeks, if it does: in its style,
 /// enabled.
-pub(super) fn resizes_on_peeks(config: &UserConfig) -> Option<PeekResize> {
+pub fn resizes_on_peeks(config: &UserConfig) -> Option<PeekResize> {
   let resize = &config.value.animations.window_resize;
   resize.enabled.then(|| peek_resize(resize.style))
 }
@@ -1393,9 +1391,10 @@ pub enum Leave {
   /// Not at all, so it goes at once: a transition with nothing to show,
   /// or a window DWM can't draw (e.g. an elevated one).
   Skipped,
-  /// Not on a peek: one already drawing the window in a role that doesn't
-  /// turn round (e.g. a partly visible column's), or one that couldn't be
-  /// made.
+  /// Not on a peek, so it goes at once too: one already drawing the
+  /// window in a role that doesn't turn round (handing back, releasing, a
+  /// partly visible column's at rest), no monitor or frame, or one that
+  /// couldn't be made.
   Unsupported,
 }
 
@@ -3817,8 +3816,8 @@ pub fn enter_on_peek(
 }
 
 /// Has `window`, a tile shown at `from` and laid out at `target`, move
-/// there on a peek if it only moves (see [`is_pure_move`]) or, if
-/// its relayout `stretches` (see [`stretches_relayout`]), resizes too (see
+/// there on a peek if it only moves (see [`is_pure_move`]) or, given
+/// `resizes` (see [`resizes_on_peeks`]), resizes too (see
 /// [`is_peek_resize`]), on `window_move`'s timing or, when it resizes or
 /// `cycle_has_resize`, `window_resize`'s, as the old path would
 /// (`movement_timing`). Returns whether it does.
@@ -3831,7 +3830,8 @@ pub fn enter_on_peek(
 ///
 /// Not a window another stand-in draws, which keeps it, nor one moving
 /// onto another monitor unless [`tile_clips`] draws it on two peeks:
-/// on each monitor's surface (see [`move_host`]).
+/// on each monitor's surface (see [`move_host`]). Each tile of a
+/// relayout is taken or refused on its own; a refused one snaps.
 ///
 /// One crossing between floating and tiling (see
 /// [`changes_state_on_peek`]) is drawn on the surface of the band its pass
@@ -3856,6 +3856,11 @@ pub fn move_on_peek(
         from,
         target,
         animations.window_resize.threshold_px,
+      )
+      && !is_resized_already(
+        state.animation_manager.peeks.is_moving(&window.id()),
+        || window.native().frame_with_shadows().ok(),
+        target,
       )
   } else {
     is_pure_move(from, target, animations.window_move.threshold_px)
@@ -4284,93 +4289,19 @@ pub fn hold_on_peek(
   moved
 }
 
-/// How a relayout redrawing `windows` draws its resizes on peeks (see
-/// [`resizes_on_peeks`]), if it does: only if every tile it moves or
-/// resizes can go on a peek as [`move_on_peek`] puts it there.
-///
-/// One that can't would resize on the old path, in another style beside
-/// the rest: the whole relayout keeps the old path's resizes then. So it
-/// does when a resized window is at its new size already, which an
-/// interactive resize leaves it at as its drag ends: that one stays
-/// exactly as it was.
-///
-/// Columns are left to `sync_scroll_view`, and windows that open, are not
-/// shown, or stay floating to the redraw itself. One crossing between
-/// floating and tiling goes on a peek only as [`changes_state_on_peek`]
-/// allows.
-pub fn resizes_relayout(
-  state: &WmState,
-  windows: &[WindowContainer],
-  config: &UserConfig,
-) -> Option<PeekResize> {
-  let resize = resizes_on_peeks(config)?;
-
-  let animations = &config.value.animations;
-  windows
-    .iter()
-    .all(|window| {
-      let id = window.id();
-      let (Some(from), Ok(target)) = (
-        state.window_target_positions.get(&id),
-        window.to_rect().and_then(|rect| {
-          Ok(rect.apply_delta(&window.total_border_delta()?, None))
-        }),
-      ) else {
-        return true;
-      };
-      let is_state_change = state.pending_sync.is_window_state_change(&id);
-      let is_shown = window
-        .workspace()
-        .is_some_and(|workspace| workspace.is_displayed())
-        && !is_hidden_in_layout(window)
-        && window.state() != WindowState::Minimized;
-      let is_resize = !is_same_size(from, &target);
-      let animates = if is_resize {
-        is_peek_resize(
-          from,
-          &target,
-          animations.window_resize.threshold_px,
-        )
-      } else {
-        animations.window_move.enabled
-          && is_pure_move(
-            from,
-            &target,
-            animations.window_move.threshold_px,
-          )
-      };
-
-      if !is_shown
-        || !animates
-        || crate::layout::scrolling::column_of(&window.as_container())
-          .is_some()
-        || (matches!(window.state(), WindowState::Floating(_))
-          && !is_state_change)
-      {
-        return true;
-      }
-
-      let fits_monitor = tile_clips(state, window, from, config).is_some();
-      let is_resized_already = is_resize
-        && !state.animation_manager.peeks.is_moving(&id)
-        && window
-          .native()
-          .frame_with_shadows()
-          .is_ok_and(|actual| is_same_size(&actual, &target));
-
-      let moves_as_tile = if is_state_change {
-        changes_state_on_peek(window)
-      } else {
-        window.state() == WindowState::Tiling
-      };
-
-      moves_as_tile
-        && window.display_state() == wm_common::DisplayState::Shown
-        && !has_other_stand_in(&state.animation_manager, &id)
-        && fits_monitor
-        && !is_resized_already
-    })
-    .then_some(resize)
+/// Whether a window laid out at `target`, its frame read by `actual`, is
+/// at that size already, as an interactive resize leaves it as its drag
+/// ends: drawn resizing on a peek, it would shrink back to its old size
+/// first, so it snaps. Not one `is_moving` on a peek, whose filled or
+/// stretched peek may have sent its window that size already: retargeted,
+/// it stays on its peek.
+fn is_resized_already(
+  is_moving: bool,
+  actual: impl FnOnce() -> Option<Rect>,
+  target: &Rect,
+) -> bool {
+  !is_moving
+    && actual().is_some_and(|actual| is_same_size(&actual, target))
 }
 
 /// The clips of the peeks [`move_on_peek`] draws `window`, a tile moving
@@ -4470,7 +4401,10 @@ pub fn hand_over_moved_overlays(state: &mut WmState, config: &UserConfig) {
 /// either.
 ///
 /// A window still natively minimized (`toggle-minimized`) is restored at
-/// `target` behind a cloak first (see [`restore_cloaked`]).
+/// `target` behind a cloak first (see [`restore_cloaked`]). A tile is
+/// raised as it comes back; a floating one enters as one opening does
+/// (see [`floating_peek_raise`]): raised in its band by its pass's
+/// `raise`, if any, else left just below its window.
 pub fn restore_on_peek(
   state: &mut WmState,
   window: &WindowContainer,
@@ -4478,9 +4412,11 @@ pub fn restore_on_peek(
   params: &WindowTransitionParams,
   config: &UserConfig,
   is_focused: bool,
+  raise: Option<PeekRaise>,
 ) -> bool {
   let id = window.id();
   let now = state.animation_manager.frame_time();
+  let raises_as_tile = !matches!(window.state(), WindowState::Floating(_));
 
   if state
     .animation_manager
@@ -4488,8 +4424,10 @@ pub fn restore_on_peek(
     .turn_round(&id, params, false, now)
   {
     restore_cloaked(&window.native(), target);
-    state.animation_manager.peeks.raise_moving(&id);
-    restack_live_overlays(state, &id);
+    if raises_as_tile {
+      state.animation_manager.peeks.raise_moving(&id);
+      restack_live_overlays(state, &id);
+    }
     perf::note_animation_start(false);
     state.animation_manager.ensure_timer_running();
     return true;
@@ -4502,11 +4440,15 @@ pub fn restore_on_peek(
   }
 
   restore_cloaked(&window.native(), target);
-  // Raised as a tile, in no band of its own.
-  let entered =
-    enter_on_peek(state, window, target, params, config, is_focused, None);
-  state.animation_manager.peeks.raise_moving(&id);
-  restack_live_overlays(state, &id);
+  // A tile is raised as one, in no band of its own.
+  let raise = raise.filter(|_| !raises_as_tile);
+  let entered = enter_on_peek(
+    state, window, target, params, config, is_focused, raise,
+  );
+  if raises_as_tile {
+    state.animation_manager.peeks.raise_moving(&id);
+    restack_live_overlays(state, &id);
+  }
   entered
 }
 
@@ -5566,9 +5508,9 @@ mod tests {
     evicted, floating_peek_raise, follow_duration, follows_tile,
     fullscreen_peek_raise, has_landed, has_left, host_for, hosts_column,
     hosts_hold, hosts_on_surface, is_departed, is_peek_resize,
-    is_pure_move, is_ready_expired, is_stale_surface, is_stray,
-    keeps_ready, keeps_rest_hosted, keeps_trail_drawing, kept_transit,
-    lands_on_trail, lanes_meet, lanes_stay_apart, leaves_as,
+    is_pure_move, is_ready_expired, is_resized_already, is_stale_surface,
+    is_stray, keeps_ready, keeps_rest_hosted, keeps_trail_drawing,
+    kept_transit, lands_on_trail, lanes_meet, lanes_stay_apart, leaves_as,
     leaving_transit, lowest, move_clips, out_of_order, peek_resize, rank,
     resizes_at_start, rest_anchor, restretched, rests, retargeted_motion,
     returning_transit, sampled_size, settling, state_change_peek_raise,
@@ -6786,5 +6728,17 @@ mod tests {
       sampled_size(&actual, &rect, [(950, 800), (990, 650)]),
       (950, 600)
     );
+  }
+
+  #[test]
+  fn only_a_tile_not_moving_is_resized_already() {
+    let target = Rect::from_xy(0, 0, 800, 600);
+    let at_size = Rect::from_xy(40, 40, 800, 600);
+    let other_size = Rect::from_xy(0, 0, 640, 600);
+
+    assert!(is_resized_already(false, || Some(at_size.clone()), &target));
+    assert!(!is_resized_already(true, || Some(at_size.clone()), &target));
+    assert!(!is_resized_already(false, || Some(other_size), &target));
+    assert!(!is_resized_already(false, || None, &target));
   }
 }

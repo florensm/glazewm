@@ -223,8 +223,8 @@ pub enum Stage {
   WsStart,
   /// `redraw_containers`' per-window loop itself.
   RedrawLoop,
-  /// `AnimationManager::start_animation_if_needed`: this frame's
-  /// animation math plus queueing the surrogate update.
+  /// `redraw_containers`' choice of how a window moves this frame: on a
+  /// peek, frozen, or placed at once.
   AnimStep,
   /// `redraw_containers`' `Frozen` arm, past the first-frame cloak.
   RedrawFrozen,

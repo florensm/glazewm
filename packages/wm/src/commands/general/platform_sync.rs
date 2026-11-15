@@ -1280,7 +1280,7 @@ fn redraw_containers(
   // Whether any window in this redraw cycle changes size. Pure
   // translations in the same cycle then share the `window_resize` timing
   // so all edges stay in lock-step during the relayout (see
-  // `AnimationManager::start_animation_if_needed`).
+  // `movement_timing`).
   // Set when any window's animation-completion redraw actually issues a
   // `SWP_FRAMECHANGED` reposition on a visible window this pass (see the
   // `already_positioned` check below) -- `reassert_transparency` inside
@@ -1341,13 +1341,10 @@ fn redraw_containers(
   });
 
   // With `window_resize` enabled, in either style, the relayout's resizes
-  // go on peeks too (`STAND_INS_PLAN.md` tasks 8 and 10e).
+  // go on peeks too (`STAND_INS_PLAN.md` tasks 8 and 10e), each tile's as
+  // `move_on_peek` takes it.
   let resizes = if cycle_has_resize && !suppress_animations {
-    crate::animation::peek_view::resizes_relayout(
-      state,
-      &windows_to_redraw,
-      config,
-    )
+    crate::animation::peek_view::resizes_on_peeks(config)
   } else {
     None
   };
@@ -1622,28 +1619,11 @@ fn redraw_containers(
       Motion::Fullscreen => animations.window_fullscreen.enabled,
     };
 
-    // Compute effect opacity and corner style unconditionally — needed for
-    // both the movement surrogate path and the fade-in path.
-    let (effect_opacity, corner_style, overlays) = {
-      let is_focused = window.id() == focused_container.id();
-      let (opacity, style, overlays) =
-        surrogate_effects_for(window.effect_set(is_focused), config);
-
-      let overlays = OverlayParams {
-        backdrop: overlays.backdrop,
-        border: overlays
-          .border
-          .filter(|_| !border_hidden_for_fullscreen(window, config)),
-      };
-
-      (opacity, style, overlays)
-    };
-
     // Pick this window's entry animation, if it gets one: `window_open`
     // for a newly appearing tiling window, or `window_minimize` played
     // backwards, its curve too, for one coming back from minimized. Both
-    // run through `start_open_animation`, which only differs between them
-    // by the params it is handed.
+    // enter on a peek, which only differs between them by the params it
+    // is handed.
     //
     // `previous_target.is_none()` is true only on the first
     // `platform_sync` call for a window, so an open starts exactly
@@ -1700,12 +1680,15 @@ fn redraw_containers(
       })
       .flatten();
 
-    // An open or a restore of a tiled window enters on a peek, pinned or
-    // live, instead (`STAND_INS_PLAN.md` tasks 3 and 5).
+    // An open or a restore enters on a peek, pinned or live, instead
+    // (`STAND_INS_PLAN.md` tasks 3 and 5); a floating one as a floating
+    // open does, raised in its band by `floating_raise`.
     let enters_on_peek = match &entry_transition {
       Some((params, is_open))
         if !is_column
-          && (*is_open || window.state() == WindowState::Tiling) =>
+          && (*is_open
+            || window.state() == WindowState::Tiling
+            || (is_floating && opens_floating_on_peek(window))) =>
       {
         let is_focused = window.id() == focused_container.id();
         if *is_open {
@@ -1726,6 +1709,7 @@ fn redraw_containers(
             params,
             config,
             is_focused,
+            floating_raise,
           )
         }
       }
@@ -1737,31 +1721,17 @@ fn redraw_containers(
       state.animation_manager.remove_animation(&window.id());
     }
 
-    if let Some((params, is_open)) = entry_transition {
-      if enters_on_peek {
-        // Computed before the peek went up: frozen behind it from now on,
-        // or it would be uncloaked at once.
-        is_frozen_by_ws_animation |=
-          state.animation_manager.peeks.is_moving(&window.id());
+    // One its peek can't draw, or a column the scroll view doesn't draw
+    // entering (`scroll` off), snaps: placed and uncloaked below as at
+    // rest, with no stand-in.
+    if enters_on_peek {
+      // Computed before the peek went up: frozen behind it from now on, or
+      // it would be uncloaked at once.
+      is_frozen_by_ws_animation |=
+        state.animation_manager.peeks.is_moving(&window.id());
 
-        if let Some(raise) = floating_raise {
-          peek_raises.push(((*window).clone(), raise));
-        }
-      } else if !(is_open && is_floating) {
-        // A floating window its peek can't draw opens at once, as before.
-        let monitor_rect =
-          window.monitor().context("No monitor.")?.to_rect()?;
-        let native_ref = window.native();
-        state.animation_manager.start_open_animation(
-          window.id(),
-          &target_rect,
-          monitor_rect,
-          effect_opacity,
-          corner_style,
-          overlays,
-          &params,
-          &native_ref,
-        );
+      if let Some(raise) = floating_raise {
+        peek_raises.push(((*window).clone(), raise));
       }
     }
 
@@ -1825,7 +1795,6 @@ fn redraw_containers(
       // Incoming workspace-switch windows: the surrogate handles all
       // visuals for the full animation duration — freeze the real
       // window.
-      let native_ref = window.native();
       if is_frozen_by_ws_animation {
         (AnimationPositionResult::Frozen, None)
       } else if !is_column
@@ -1885,18 +1854,12 @@ fn redraw_containers(
         }
         (AnimationPositionResult::Frozen, None)
       } else {
-        state.animation_manager.start_animation_if_needed(
-          window.id(),
-          motion,
-          cycle_has_resize,
-          target_rect.clone(),
-          previous_target,
-          &native_ref,
-          effect_opacity,
-          corner_style,
-          overlays,
-          config,
-        )
+        // Its peek refused (another stand-in draws it, no monitor, it
+        // couldn't be made), or a column the scroll view doesn't draw
+        // moving (a resize with `window_resize` off, or one it can't
+        // stretch, see `scroll_view`'s `can_stretch`): it snaps, placed
+        // as at rest.
+        (AnimationPositionResult::Apply(real_rect.clone()), None)
       }
     } else {
       // Animations are skipped for this window. Cancel any in-progress
