@@ -2138,13 +2138,14 @@ default.
 
 For whoever picks this up in a new session. `tryout/one-surface` holds
 steps 1 to 5, the workspace switches, the integration pass, resting
-columns under `slidepeeks` steps 6a (grab resizes), 6b (top band), 6c (tiles crossing
-monitors) and stacks, merged;
-`cargo check
+columns, steps 6a (grab resizes), 6b (top band), 6c (tiles crossing
+monitors) and stacks, and the removal (R0..R6, 2026-11-15): the old
+engine (`ResizeSession`) and every `GLAZEWM_ISOLATE` word are gone, so
+surfaces (and own peeks where a fallback needs one, live peeks among
+them) are the only way windows animate, with no switch. `cargo check
 --workspace --tests` and `cargo clippy --workspace --all-targets -- -D
 warnings` for `x86_64-pc-windows-msvc` are clean. Tests only type-check
-on Linux. Everything is behind `onesurface` (and `readypeeks`), off by
-default.
+on Linux.
 
 Seen running by the owner (desktop, `onesurface,readypeeks`): steps 1
 and 2 only, a few resizes: "nothing weird, no difference noticed". Not
@@ -2176,11 +2177,15 @@ ported first (items below), then this flicker, then the bench.
 
 ### Open, in the order to take them
 
-1. **Removal of the old code** (in progress; merged: R0..R5; the engine and its surrogate leftovers are deleted; R6 (docs) left; `GLAZEWM_ISOLATE` is gone) (owner's decision, 2026-11-15, right
-   after porting, before the bench): the old engine (`ResizeSession`,
-   `nopeeks`) and every own-window peek path a surface replaced, so
-   `onesurface` is the only engine, on by default with no word. See
-   "Removal plan" (end of this file).
+1. **Removal of the old code**: done 2026-11-15 (R0..R6, see "Removal
+   plan"). Left from it for step 8: uncalled `WindowPeek::carries_tab_bar`,
+   `PeekSurface::is_shown`, `PeekSurface::raise_to_top` (never called,
+   not orphaned by the removal); `perf_bench` columns reading removed
+   stages (`session_begin`, `session_overlays`, now zero); the
+   `isolate_modes.ps1` modes (inert); `CLAUDE.md`'s `isolate_modes.ps1`
+   description (R6 proposed wording, owner to decide). To check: the
+   `catch_up_before_frame` doc in `main.rs` (window events during peek
+   moves, "not checked yet" since R4's guard went).
 2. **Rounded backdrops on the surface** (owner, 2026-11-15; after the
    removal, before the flicker and the bench). A backdrop with rounded
    corners (the window's corner style) or `parallax` != 1 is not
@@ -2256,7 +2261,7 @@ a worktree, on a branch `os/<n>-<name>` cut from `tryout/one-surface`;
 each appends its "as built" section here; the reviewer merges, runs the
 checks and pushes `tryout/one-surface`. Agents that share files run one
 after another. Branches merged so far: `os/1-surface`, `os/2-ready`,
-`os/3-tiles`, `os/4-transits`, `os/5-scroll`, `os/7-switch`, `os/9-integrate`, `os/10-rest-slide`, `os/6a-held`, `os/6b-band`, `os/6c-cross`, `os/11-stacks`, `os/r0-move`, `os/r1-words`, `os/r2-live`, `os/r3-rows`, `os/r4-engine`, `os/r5-surrogate`.
+`os/3-tiles`, `os/4-transits`, `os/5-scroll`, `os/7-switch`, `os/9-integrate`, `os/10-rest-slide`, `os/6a-held`, `os/6b-band`, `os/6c-cross`, `os/11-stacks`, `os/r0-move`, `os/r1-words`, `os/r2-live`, `os/r3-rows`, `os/r4-engine`, `os/r5-surrogate`, `os/r6-docs`.
 
 Laptop test build: `test/one-surface`, re-cut 2026-11-15 from `0c841473`
 (R0..R3 merged: nothing starts the engine; R4's deletion of the then
