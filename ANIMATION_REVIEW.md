@@ -1,5 +1,12 @@
 # Open, close, minimize and restore: animation review
 
+Note (2026-11-15): since the removal (`ONE_SURFACE_PLAN.md` "Removal
+plan"), `GLAZEWM_ISOLATE` and every word it took (`onesurface`,
+`readypeeks`, `morepeeks`, `nopeeks`, `slidepeeks`, `peeksfirst`, ...)
+and `ResizeSession` (the old engine) are gone: windows animate on peeks
+and peek surfaces only, with no switch. References to them below are
+historical, not rewritten.
+
 2026-11-10, on `claude/glazewm-window-animations-zbw9df` (from
 `tryout/smooth-shades` at `ec8e0fe`). Done in a cloud session: nothing
 here was seen running. Every fix was built, linted and unit-tested for the
