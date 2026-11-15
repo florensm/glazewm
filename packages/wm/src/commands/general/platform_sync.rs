@@ -1700,8 +1700,8 @@ fn redraw_containers(
       })
       .flatten();
 
-    // An open or a restore of a tiled window enters on a pinned peek
-    // instead (`STAND_INS_PLAN.md` tasks 3 and 5).
+    // An open or a restore of a tiled window enters on a peek, pinned or
+    // live, instead (`STAND_INS_PLAN.md` tasks 3 and 5).
     let enters_on_peek = match &entry_transition {
       Some((params, is_open))
         if !is_column
@@ -2331,6 +2331,10 @@ fn redraw_containers(
       .animation_manager
       .peeks
       .raise_in_band(&window.id(), *raise);
+    crate::animation::peek_view::restack_live_overlays(
+      state,
+      &window.id(),
+    );
   }
   drop(raise_scope);
 

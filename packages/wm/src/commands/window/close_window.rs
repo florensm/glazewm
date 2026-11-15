@@ -86,8 +86,7 @@ pub(crate) fn animate_away(
     .focused_container()
     .is_some_and(|focused| focused.id() == window.id());
 
-  // On a pinned peek, unless it would be live (`STAND_INS_PLAN.md` task
-  // 4).
+  // On a peek, pinned or live (`STAND_INS_PLAN.md` task 4).
   match crate::animation::peek_view::leave_on_peek(
     state, window, &rect, transition, &params, config, is_focused,
   ) {
