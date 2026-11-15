@@ -248,7 +248,6 @@ pub fn holds_on_peek(
   });
 
   config.value.general.grab_and_move.draw == GrabDraw::Peeks
-    && wm_platform::isolation::current().peeks
     && is_resizing_here
     && (state.animation_manager.peeks.is_held(&window.id())
       || crate::animation::peek_view::can_hold(state, window, config))
@@ -436,14 +435,6 @@ fn log_peek_holds(
   if config.value.general.grab_and_move.draw != GrabDraw::Peeks {
     return;
   }
-  if !wm_platform::isolation::current().peeks {
-    tracing::info!(
-      target: GRAB_LOG_TARGET,
-      "Resize drawn live: GLAZEWM_ISOLATE has nopeeks."
-    );
-    return;
-  }
-
   let Some(workspace) = window.workspace() else {
     return;
   };

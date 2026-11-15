@@ -686,22 +686,19 @@ fn commit_pending_cloaks(
   }
 }
 
-/// Whether `window`, new and floating, opens on a pinned peek: behind the
-/// switch, and not natively maximized, which `reposition_window` restores
-/// first.
+/// Whether `window`, new and floating, opens on a pinned peek: not
+/// natively maximized, which `reposition_window` restores first.
 fn opens_floating_on_peek(window: &WindowContainer) -> bool {
-  wm_platform::isolation::current().peeks
-    && !window.native().is_maximized()
+  !window.native().is_maximized()
 }
 
 /// Whether `window_id` is minimizing on a peek, which a restore turns
 /// round (see `peek_view::restore_on_peek`) rather than ending it.
 fn leaves_on_peek(state: &WmState, window_id: &uuid::Uuid) -> bool {
-  wm_platform::isolation::current().peeks
-    && state
-      .animation_manager
-      .peeks
-      .leaves_by(window_id, AwayTransition::Minimize)
+  state
+    .animation_manager
+    .peeks
+    .leaves_by(window_id, AwayTransition::Minimize)
 }
 
 /// Moves a frozen window, cloaked behind its stand-in, to the
@@ -1452,7 +1449,7 @@ fn redraw_containers(
     // minimize ended: natively minimized with a slot in the layout, or
     // restored by the OS with no overlays and where it used to be, until
     // something else redrew it. The restore ends the minimize instead.
-    // Behind the switch, one playing on its peek is turned round below
+    // One playing on its peek is turned round below
     // (`STAND_INS_PLAN.md` task 5), and ended there if it isn't.
     if state.animation_manager.has_minimize_animation(&window.id()) {
       if !state.pending_sync.is_window_restore(&window.id()) {
@@ -1659,7 +1656,7 @@ fn redraw_containers(
     // target position it had before it was minimized -- so it is
     // flagged on `PendingSync` instead. A restore is also allowed for
     // floating windows, which never slide in on open on the old path:
-    // behind the switch, one opens on a pinned peek (`STAND_INS_PLAN.md`
+    // one opens on a pinned peek (`STAND_INS_PLAN.md`
     // task 6b), or not at all.
     //
     // Paired with whether it is an open rather than a restore.
@@ -1708,12 +1705,11 @@ fn redraw_containers(
       })
       .flatten();
 
-    // Behind the switch, an open or a restore of a tiled window enters on
-    // a pinned peek instead (`STAND_INS_PLAN.md` tasks 3 and 5).
+    // An open or a restore of a tiled window enters on a pinned peek
+    // instead (`STAND_INS_PLAN.md` tasks 3 and 5).
     let enters_on_peek = match &entry_transition {
       Some((params, is_open))
         if !is_column
-          && wm_platform::isolation::current().peeks
           && (*is_open || window.state() == WindowState::Tiling) =>
       {
         let is_focused = window.id() == focused_container.id();
@@ -1839,8 +1835,7 @@ fn redraw_containers(
       let native_ref = window.native();
       if is_frozen_by_ws_animation {
         (AnimationPositionResult::Frozen, None)
-      } else if wm_platform::isolation::current().peeks
-        && !is_column
+      } else if !is_column
         && moves_as_tile
         && previous_display_state == DisplayState::Shown
         && previous_target.as_ref().is_some_and(|from| {
@@ -1863,8 +1858,8 @@ fn redraw_containers(
           )
         })
       {
-        // Behind the switch, a tile that only moves does so on a pinned
-        // peek (`STAND_INS_PLAN.md` task 6), frozen behind it from now
+        // A tile that only moves does so on a pinned peek
+        // (`STAND_INS_PLAN.md` task 6), frozen behind it from now
         // on as an entering one is.
         peek_moves.push(window.id());
         if is_state_change {
@@ -1933,9 +1928,7 @@ fn redraw_containers(
         // again, heads for the new one in step with its neighbours: on
         // their timing, from the instant this pass evaluates them at. A
         // floating one jumps there (see `follow_duration`).
-        if wm_platform::isolation::current().peeks
-          && state.animation_manager.peeks.follows_tile(&window.id())
-        {
+        if state.animation_manager.peeks.follows_tile(&window.id()) {
           let (duration_ms, easing) =
             crate::animation::manager::movement_timing(
               motion,
@@ -4221,8 +4214,8 @@ mod tests {
   use wm_platform::{NativeBackdropOverlay, OpacityValue, Rect};
 
   use super::{
-    hosts_switch_window, is_unanimated_reveal,
-    should_note_size, tracks_at_take_over, FrozenStep, SyncableOverlay,
+    hosts_switch_window, is_unanimated_reveal, should_note_size,
+    tracks_at_take_over, FrozenStep, SyncableOverlay,
   };
   use crate::user_config::UserConfig;
 

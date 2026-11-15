@@ -83,7 +83,7 @@ pub fn sync_scroll_view(
     .collect::<HashSet<_>>();
 
   // Windows coming back from minimized, which re-enter as new ones do, by
-  // `window_minimize`, behind the switch (`STAND_INS_PLAN.md` task 5).
+  // `window_minimize` (`STAND_INS_PLAN.md` task 5).
   let restoring = column_restoring(config);
   let restored_ids = if restoring.is_some() {
     restored_columns(state, &windows, &new_ids)
@@ -91,9 +91,8 @@ pub fn sync_scroll_view(
     HashSet::new()
   };
 
-  // Behind the switch, a column that only moves does so on its peek, as
-  // the strip does (`STAND_INS_PLAN.md` task 6), unless another stand-in
-  // draws it.
+  // A column that only moves does so on its peek, as the strip does
+  // (`STAND_INS_PLAN.md` task 6), unless another stand-in draws it.
   let pure_moves = column_pure_moves(config, animates);
   let other_stand_ins = match pure_moves {
     Some(_) => windows
@@ -213,9 +212,9 @@ pub fn sync_scroll_view(
 
     // The strip moves as one when any column crosses the monitor edge,
     // is already drawn by a peek, or opens; moves that stay on screen are
-    // left to the regular per-window animations. Behind the switch, only
-    // resizes are, so a peek drawing one column doesn't take a resized
-    // neighbour off its own (see `moves_on_peek`).
+    // left to the regular per-window animations. Only resizes are, so a
+    // peek drawing one column doesn't take a resized neighbour off its
+    // own (see `moves_on_peek`).
     let crosses_edge = |rect: &Rect| !clip.contains_rect(rect);
     let strip_moves = scroll_config.enabled
       && animates
@@ -377,22 +376,19 @@ fn waits_on_switch(is_at_rest: bool, slides_with_switch: bool) -> bool {
 }
 
 /// The transition a new column enters by as it widens on the scroll's
-/// timing: `window_open`, behind the switch (`STAND_INS_PLAN.md` task 3b).
+/// timing: `window_open` (`STAND_INS_PLAN.md` task 3b).
 fn column_opening(config: &UserConfig) -> Option<WindowTransitionParams> {
   let open_config = &config.value.animations.window_open;
-  (wm_platform::isolation::current().peeks && open_config.enabled)
+  open_config
+    .enabled
     .then(|| WindowTransitionParams::from_open(open_config))
 }
 
-/// The threshold a column's move has to pass to go on its peek alone,
-/// behind the switch: the scroll's, as for its per-window animation (see
-/// [`moves_on_peek`]).
+/// The threshold a column's move has to pass to go on its peek alone:
+/// the scroll's, as for its per-window animation (see [`moves_on_peek`]).
 fn column_pure_moves(config: &UserConfig, animates: bool) -> Option<u32> {
   let scroll_config = &config.value.animations.scroll;
-  (wm_platform::isolation::current().peeks
-    && scroll_config.enabled
-    && animates)
-    .then_some(scroll_config.threshold_px)
+  (scroll_config.enabled && animates).then_some(scroll_config.threshold_px)
 }
 
 /// Whether a column moving from `from` to `target` is drawn moving by its
@@ -457,13 +453,14 @@ fn can_stretch(
 }
 
 /// The transition a column coming back from minimized enters by, as a new
-/// one does by `window_open`: `window_minimize` reversed, behind the
-/// switch (`STAND_INS_PLAN.md` task 5).
+/// one does by `window_open`: `window_minimize` reversed
+/// (`STAND_INS_PLAN.md` task 5).
 fn column_restoring(
   config: &UserConfig,
 ) -> Option<WindowTransitionParams> {
   let minimize_config = &config.value.animations.window_minimize;
-  (wm_platform::isolation::current().peeks && minimize_config.enabled)
+  minimize_config
+    .enabled
     .then(|| WindowTransitionParams::from_restore(minimize_config))
 }
 
@@ -773,12 +770,11 @@ mod tests {
     ));
   }
 
-  /// Behind the switch, a column that only moves goes on its peek alone,
-  /// and one a peek draws stays on it; a resized one keeps the per-window
-  /// path, as does a move below the threshold or one another stand-in
-  /// draws.
+  /// A column that only moves goes on its peek alone, and one a peek draws
+  /// stays on it; a resized one keeps the per-window path, as does a
+  /// move below the threshold or one another stand-in draws.
   #[test]
-  fn behind_the_switch_pure_column_moves_go_on_peeks() {
+  fn pure_column_moves_go_on_peeks() {
     let threshold = Some(10);
     let moved = Rect::from_xy(900, 50, 800, 600);
     let nudged = Rect::from_xy(105, 50, 800, 600);

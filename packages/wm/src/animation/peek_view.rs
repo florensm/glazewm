@@ -1121,17 +1121,10 @@ pub(super) fn is_peek_resize(
 }
 
 /// How `window_resize` draws resizes on peeks, if it does: in its style,
-/// enabled, with peeks on.
+/// enabled.
 pub(super) fn resizes_on_peeks(config: &UserConfig) -> Option<PeekResize> {
   let resize = &config.value.animations.window_resize;
-  if !wm_platform::isolation::current().peeks || !resize.enabled {
-    return None;
-  }
-
-  Some(match resize.style {
-    ResizeStyle::Stretch => PeekResize::Stretch,
-    ResizeStyle::Fill => PeekResize::Fill,
-  })
+  resize.enabled.then(|| peek_resize(resize.style))
 }
 
 /// `motion` headed for `target` instead, at the speed it has at `now`
@@ -4073,13 +4066,12 @@ pub(crate) fn surface_clips(state: &WmState) -> Vec<Rect> {
     .collect()
 }
 
-/// How a WM fullscreen toggle is drawn on peeks, if it is: enabled, with
-/// peeks on, under `GLAZEWM_ISOLATE=morepeeks`, in `window_fullscreen`'s
-/// own style, as the old path draws it.
+/// How a WM fullscreen toggle is drawn on peeks, if it is: enabled, under
+/// `GLAZEWM_ISOLATE=morepeeks`, in `window_fullscreen`'s own style, as the
+/// old path draws it.
 fn fullscreen_on_peeks(config: &UserConfig) -> Option<PeekResize> {
   let fullscreen = &config.value.animations.window_fullscreen;
-  let isolation = wm_platform::isolation::current();
-  (isolation.peeks && isolation.more_peeks && fullscreen.enabled)
+  (wm_platform::isolation::current().more_peeks && fullscreen.enabled)
     .then_some(peek_resize(fullscreen.style))
 }
 
@@ -5572,21 +5564,20 @@ mod tests {
   use wm_platform::{LengthValue, Rect, RectDelta, HWND};
 
   use super::{
-    allows_motion, by_surface, conceals_new_ring,
-    crosses_floating, crossing_host, evicted, floating_peek_raise,
-    follow_duration, follows_tile, fullscreen_peek_raise, has_landed,
-    has_left, host_for, hosts_column, hosts_hold, hosts_on_surface,
-    is_departed, is_peek_resize, is_pure_move, is_ready_expired,
-    is_stale_surface, is_stray, keeps_ready, keeps_rest_hosted,
-    keeps_trail_drawing, kept_transit, lands_on_trail, lanes_meet,
-    lanes_stay_apart, leaves_as, leaving_transit, lowest, move_clips,
-    out_of_order, peek_resize, rank, resizes_at_start, rest_anchor,
-    restretched, rests, retargeted_motion, returning_transit,
-    sampled_size, settling, state_change_peek_raise, state_change_resize,
-    take_left, takes_ready, toggles_tile_fullscreen, visible_frame, Hold,
-    Host, Lane, Layer, Part, PeekRaise, PeekResize, Rank, ReadyFit, Role,
-    Stacking, Stretch, FILL_LANDING_WAIT, HOLD_RELEASE_WAIT,
-    READY_LIFETIME, STRETCH_SETTLE,
+    allows_motion, by_surface, conceals_new_ring, crosses_floating,
+    crossing_host, evicted, floating_peek_raise, follow_duration,
+    follows_tile, fullscreen_peek_raise, has_landed, has_left, host_for,
+    hosts_column, hosts_hold, hosts_on_surface, is_departed,
+    is_peek_resize, is_pure_move, is_ready_expired, is_stale_surface,
+    is_stray, keeps_ready, keeps_rest_hosted, keeps_trail_drawing,
+    kept_transit, lands_on_trail, lanes_meet, lanes_stay_apart, leaves_as,
+    leaving_transit, lowest, move_clips, out_of_order, peek_resize, rank,
+    resizes_at_start, rest_anchor, restretched, rests, retargeted_motion,
+    returning_transit, sampled_size, settling, state_change_peek_raise,
+    state_change_resize, take_left, takes_ready, toggles_tile_fullscreen,
+    visible_frame, Hold, Host, Lane, Layer, Part, PeekRaise, PeekResize,
+    Rank, ReadyFit, Role, Stacking, Stretch, FILL_LANDING_WAIT,
+    HOLD_RELEASE_WAIT, READY_LIFETIME, STRETCH_SETTLE,
   };
   use crate::animation::{
     state::WindowAnimationState,

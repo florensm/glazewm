@@ -86,16 +86,14 @@ pub(crate) fn animate_away(
     .focused_container()
     .is_some_and(|focused| focused.id() == window.id());
 
-  // Behind the switch, on a pinned peek, unless it would be live
-  // (`STAND_INS_PLAN.md` task 4).
-  if wm_platform::isolation::current().peeks {
-    match crate::animation::peek_view::leave_on_peek(
-      state, window, &rect, transition, &params, config, is_focused,
-    ) {
-      Leave::Leaving => return true,
-      Leave::Skipped => return false,
-      Leave::Unsupported => {}
-    }
+  // On a pinned peek, unless it would be live (`STAND_INS_PLAN.md` task
+  // 4).
+  match crate::animation::peek_view::leave_on_peek(
+    state, window, &rect, transition, &params, config, is_focused,
+  ) {
+    Leave::Leaving => return true,
+    Leave::Skipped => return false,
+    Leave::Unsupported => {}
   }
 
   let (effect_opacity, corner_style, overlays) =
