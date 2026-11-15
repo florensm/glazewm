@@ -1471,7 +1471,8 @@ monitors side by side, scrolling layout, `workspace_switch` slide.
 ## State and next steps (2026-11-15)
 
 For whoever picks this up in a new session. `tryout/one-surface` holds
-steps 1 to 5, the workspace switches and the integration pass, merged;
+steps 1 to 5, the workspace switches, the integration pass and resting
+columns under `slidepeeks`, merged;
 `cargo check
 --workspace --tests` and `cargo clippy --workspace --all-targets -- -D
 warnings` for `x86_64-pc-windows-msvc` are clean. Tests only type-check
@@ -1491,23 +1492,18 @@ benched. Next: the owner's desktop check and bench, before item 1 below.
 | tile move, resize | yes | stacks; live peeks |
 | tile open, close, minimize, restore | yes | floating and fullscreen windows; any tile on a workspace with a stack or a live tile; a tile closed while handing back |
 | scrolling column, moving | yes | live; held by a grab; stacks; every column of a workspace with a stack, a live or a held column |
-| scrolling column, at rest | one per surface, and only with `noslidepeeks` | all of them by default (`slidepeeks` is on); a second resting column on a surface |
+| scrolling column, at rest | one per surface, `slidepeeks` or not | a second resting column on a surface; an incoming one while a peek kept for an outgoing surrogate rests there (that switch only) |
 | workspace switch | tiles whose backdrop can be copied | floating, fullscreen, always-on-top, live, windows with a companion |
 | grab resize, floating <-> tiling, fullscreen toggle, tile crossing monitors | no | all (step 6) |
 
 ### Open, in the order to take them
 
-1. **Resting columns under `slidepeeks`** (the default). Step 5 hosts
-   none, so a switch never meets a hosted resting peek. Join the two:
-   `stand_by`, `end_stand_by`, `hand_back_to_peek`,
-   `take_over_from_peek`, `settle_switch_peeks`, `keep_switching_out`
-   for a hosted peek.
-2. **Step 6**: grab resizes, floating and fullscreen (a top-band
+1. **Step 6**: grab resizes, floating and fullscreen (a top-band
    surface), tiles crossing monitors.
-3. **Stacks**: a copy of the tab bar on the surface (step 3's notes say
+2. **Stacks**: a copy of the tab bar on the surface (step 3's notes say
    what it needs). Until then one stack keeps its whole workspace's
    opens, closes and columns on their own windows.
-4. **Step 8**: duplicated code, bench modes, the measuring section.
+3. **Step 8**: duplicated code, bench modes, the measuring section.
 
 ### Owner's decisions still open
 
@@ -1517,6 +1513,11 @@ benched. Next: the owner's desktop check and bench, before item 1 below.
   tile retargeted after a clip change keeps its old surface until it
   lands; with `noslidepeeks` an incoming resting peek shows at once
   during the slide, as an own peek does today.
+- Resting columns under `slidepeeks`: with a cut column on both
+  workspaces of a monitor, an incoming one gets a window of its own on
+  every other switch (a kept outgoing peek holds the surface's one place
+  at rest). Hosting both would let the incoming one move the surface
+  under the kept one for a sync. Kept as built unless the owner objects.
 - An opening tile is drawn under its moving neighbours, as today, at
   the cost of restacking them on every open (step 4). The other way
   (opening tile on top) costs nothing and looks different.
@@ -1531,4 +1532,4 @@ a worktree, on a branch `os/<n>-<name>` cut from `tryout/one-surface`;
 each appends its "as built" section here; the reviewer merges, runs the
 checks and pushes `tryout/one-surface`. Agents that share files run one
 after another. Branches merged so far: `os/1-surface`, `os/2-ready`,
-`os/3-tiles`, `os/4-transits`, `os/5-scroll`, `os/7-switch`, `os/9-integrate`.
+`os/3-tiles`, `os/4-transits`, `os/5-scroll`, `os/7-switch`, `os/9-integrate`, `os/10-rest-slide`.
