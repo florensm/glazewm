@@ -3,7 +3,8 @@ use std::sync::OnceLock;
 use windows::{
   core::{w, PCWSTR, PWSTR},
   Win32::{
-    Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, WPARAM},
+    Foundation::{BOOL, HWND, LPARAM, LRESULT, POINT, RECT, WPARAM},
+    Graphics::Dwm::{DwmSetWindowAttribute, DWMWA_CLOAK},
     UI::{
       Controls::{
         InitCommonControlsEx, ICC_WIN95_CLASSES, INITCOMMONCONTROLSEX,
@@ -112,6 +113,9 @@ pub struct NativeStackTabBar {
   /// Frame last posted, to skip posting identical ones every animation
   /// tick. `None` while hidden.
   last_frame: Option<TabFrame>,
+  /// Whether it is cloaked, drawn only by a copy (see
+  /// [`set_cloaked`](Self::set_cloaked)).
+  is_cloaked: bool,
 }
 
 // SAFETY: Only the raw handle is kept, used to post messages, which is
@@ -198,7 +202,46 @@ impl NativeStackTabBar {
     Ok(Self {
       hwnd,
       last_frame: None,
+      is_cloaked: false,
     })
+  }
+
+  /// The bar's window, e.g. for a thumbnail of it.
+  #[must_use]
+  pub fn hwnd(&self) -> HWND {
+    HWND(self.hwnd)
+  }
+
+  /// Whether the bar is shown, as last posted.
+  #[must_use]
+  pub fn is_shown(&self) -> bool {
+    self.last_frame.is_some()
+  }
+
+  /// Cloaks or uncloaks the bar, from the calling thread, so it lands in
+  /// step with the thumbnails drawn there: cloaked, DWM still composes it,
+  /// so a copy of it on a peek's surface goes on showing it as it is
+  /// painted, while the bar itself shows nowhere.
+  pub fn set_cloaked(&mut self, cloaked: bool) {
+    if self.is_cloaked == cloaked {
+      return;
+    }
+
+    let cloak = BOOL::from(cloaked);
+    // SAFETY: The attribute matches its documented `BOOL` size. A
+    // destroyed window just fails.
+    let result = unsafe {
+      DwmSetWindowAttribute(
+        HWND(self.hwnd),
+        DWMWA_CLOAK,
+        std::ptr::from_ref(&cloak).cast(),
+        u32::try_from(std::mem::size_of::<BOOL>()).unwrap_or(4),
+      )
+    };
+    if let Err(err) = result {
+      tracing::warn!("Failed to cloak a tab bar: {err}");
+    }
+    self.is_cloaked = cloaked;
   }
 
   /// Shows the bar with `frame`. `restack` puts it back behind its anchor

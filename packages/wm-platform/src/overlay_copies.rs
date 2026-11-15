@@ -18,7 +18,7 @@ use crate::{
   dwm_thumbnail::{clip_rects, Look, Thumbnail},
   isolation, lerp_f32,
   native_surrogate::{fill_start, placed_rects},
-  BackdropOverlayParams, Color, Rect, StyleBlend,
+  BackdropOverlayParams, Color, Rect, StyleBlend, TabBarPlace,
 };
 
 /// Where a surrogate draws its window: at `frame`, cut at `clip`, into a
@@ -78,6 +78,59 @@ impl OverlayCopy {
       None => self.thumbnail.hide(),
     }
   }
+}
+
+/// A copy of a stack's tab bar beside its window, drawn 1:1 from the bar's
+/// window, which is painted at the bar's size wherever the window is (see
+/// `NativeStackTabBar::set_cloaked`), so its tabs are never stretched.
+struct BarCopy {
+  thumbnail: Thumbnail,
+  source: isize,
+  place: TabBarPlace,
+}
+
+impl BarCopy {
+  fn place(&mut self, placement: &Placement) {
+    let outer = self.place.rect(&placement.frame);
+    match bar_rects(&outer, &placement.clip, placement.origin) {
+      Some((source, dest)) => {
+        let _ = self.thumbnail.set(Look {
+          source: Some(source),
+          dest,
+          opacity: u8::MAX,
+          visible: true,
+        });
+      }
+      None => self.thumbnail.hide(),
+    }
+  }
+}
+
+/// `(rcSource, rcDestination)` drawing a tab bar at `outer`, cut at `clip`
+/// as its window is, into a surrogate whose top-left is at `origin`: the
+/// bar's window holds only the part inside `clip`, from its own top-left.
+/// `None` when none of it is inside.
+fn bar_rects(
+  outer: &Rect,
+  clip: &Rect,
+  origin: (i32, i32),
+) -> Option<(RECT, RECT)> {
+  let visible = outer.intersection(clip)?;
+
+  Some((
+    RECT {
+      left: 0,
+      top: 0,
+      right: visible.width(),
+      bottom: visible.height(),
+    },
+    RECT {
+      left: visible.left - origin.0,
+      top: visible.top - origin.1,
+      right: visible.right - origin.0,
+      bottom: visible.bottom - origin.1,
+    },
+  ))
 }
 
 /// One of the thumbnails a [`RingCopy`] is drawn with.
@@ -679,6 +732,9 @@ pub(crate) fn scale_alpha(alpha: u8, frac: f32) -> u8 {
 pub(crate) struct OverlayCopies {
   ring: Option<RingCopy>,
   backdrop: Option<BackdropCopy>,
+  /// Over the backdrop and under the window, as the bar's strip reaches
+  /// under the window's rounded corners.
+  bar: Option<BarCopy>,
   fill: Option<FillCopy>,
   /// Where they were last placed.
   placement: Option<Placement>,
@@ -713,11 +769,72 @@ impl OverlayCopies {
     if let Some(backdrop) = &mut self.backdrop {
       backdrop.set_held(held);
     }
+    if let Some(bar) = &mut self.bar {
+      bar.thumbnail.set_held(held);
+    }
     if let Some(fill) = &mut self.fill {
       fill.set_held(held);
     }
     if let Some(ring) = &mut self.ring {
       ring.set_held(held);
+    }
+  }
+
+  /// Draws the tab bar `source` at `place` beside its window on `dest`
+  /// from now on, where the others were last placed if they were. Returns
+  /// whether it registered the copy anew: the caller then registers the
+  /// window's own thumbnail over it (see
+  /// `NativeSurrogate::raise_thumbnail`)
+  /// and [`raise_above_window`](Self::raise_above_window). Called again
+  /// with the same `source`, only updates its place.
+  pub(crate) fn carry_bar(
+    &mut self,
+    dest: HWND,
+    source: HWND,
+    place: TabBarPlace,
+  ) -> bool {
+    if let Some(bar) =
+      self.bar.as_mut().filter(|bar| bar.source == source.0)
+    {
+      bar.place = place;
+      if let Some(placement) = &self.placement {
+        bar.place(placement);
+      }
+      return false;
+    }
+
+    self.bar = None;
+    let Some(thumbnail) = self.register_hidden(dest, source) else {
+      return false;
+    };
+    let mut bar = BarCopy {
+      thumbnail,
+      source: source.0,
+      place,
+    };
+    if let Some(placement) = &self.placement {
+      bar.place(placement);
+    }
+    self.bar = Some(bar);
+    true
+  }
+
+  pub(crate) fn carries_bar(&self) -> bool {
+    self.bar.is_some()
+  }
+
+  /// Stops drawing the tab bar.
+  pub(crate) fn drop_bar(&mut self) {
+    self.bar = None;
+  }
+
+  /// Registers the fill, then the ring, anew over everything on `dest`,
+  /// once the window's own thumbnail went over them.
+  pub(crate) fn raise_above_window(&mut self, dest: HWND) {
+    if self.fill.is_some() {
+      self.raise_fill(dest);
+    } else {
+      self.raise_ring(dest);
     }
   }
 
@@ -1156,6 +1273,9 @@ impl OverlayCopies {
     if let Some(backdrop) = &mut self.backdrop {
       backdrop.place(&placement);
     }
+    if let Some(bar) = &mut self.bar {
+      bar.place(&placement);
+    }
     self.placement = Some(placement);
   }
 
@@ -1179,6 +1299,9 @@ impl OverlayCopies {
 
     if let Some(backdrop) = &mut self.backdrop {
       backdrop.place(&placement);
+    }
+    if let Some(bar) = &mut self.bar {
+      bar.place(&placement);
     }
     self.placement = Some(placement);
   }
@@ -1222,6 +1345,7 @@ impl OverlayCopies {
   pub(crate) fn clear(&mut self) {
     self.ring = None;
     self.backdrop = None;
+    self.bar = None;
     self.fill = None;
     self.placement = None;
     self.spare_ring = None;
@@ -1236,6 +1360,8 @@ impl OverlayCopies {
   /// for its tile's next motion.
   pub(crate) fn set_aside(&mut self) {
     self.set_held(true);
+    // Carried anew by whatever draws the bar next.
+    self.bar = None;
     if let Some(backdrop) = &mut self.backdrop {
       backdrop.reset();
     }
@@ -1301,6 +1427,7 @@ impl OverlayCopies {
     let backdrop = self.backdrop.iter().flat_map(|backdrop| {
       backdrop.thumbnails().map(|(thumbnail, _)| thumbnail)
     });
+    let bar = self.bar.iter().map(|bar| &bar.thumbnail);
     let fills = self
       .fill
       .iter()
@@ -1311,23 +1438,38 @@ impl OverlayCopies {
         ring.parts.iter().map(|(_, thumbnail)| thumbnail)
       });
 
-    backdrop.chain(fills).chain(rings).map(Thumbnail::order)
+    backdrop
+      .chain(bar)
+      .chain(fills)
+      .chain(rings)
+      .map(Thumbnail::order)
   }
 
-  /// Second thumbnails of the backdrop's, registered held on `dest` over
-  /// everything there, for [`put_backdrop_anew`](Self::put_backdrop_anew).
-  /// `None` if any registration failed.
+  /// Second thumbnails of the backdrop's, then of the tab bar's,
+  /// registered held on `dest` over everything there, for
+  /// [`put_backdrop_anew`](Self::put_backdrop_anew). `None` if any
+  /// registration failed.
   pub(crate) fn backdrop_held_anew(&self, dest: HWND) -> Option<Anew> {
-    held_anew(
+    let backdrop = held_anew(
       dest,
       self
         .backdrop
         .iter()
         .flat_map(BackdropCopy::thumbnails)
         .collect(),
-    )
-    .map(|backdrop| Anew {
+    )?;
+    let bar = held_anew(
+      dest,
+      self
+        .bar
+        .iter()
+        .map(|bar| (&bar.thumbnail, HWND(bar.source)))
+        .collect(),
+    )?;
+
+    Some(Anew {
       backdrop,
+      bar,
       ..Anew::default()
     })
   }
@@ -1389,10 +1531,13 @@ impl OverlayCopies {
     }
   }
 
-  /// Draws the backdrop's second thumbnails of `anew` in place of its own,
-  /// let go before they go.
+  /// Draws the tab bar's, then the backdrop's, second thumbnails of `anew`
+  /// in place of their own, each let go before its own goes.
   pub(crate) fn put_backdrop_anew(&mut self, anew: Anew) {
     let held = self.held;
+    if let Some(bar) = &mut self.bar {
+      put_all([&mut bar.thumbnail], anew.bar, held);
+    }
     if let Some(backdrop) = &mut self.backdrop {
       put_all(backdrop.thumbnails_mut(), anew.backdrop, held);
     }
@@ -1404,6 +1549,7 @@ impl OverlayCopies {
 #[derive(Default)]
 pub(crate) struct Anew {
   backdrop: Vec<Thumbnail>,
+  bar: Vec<Thumbnail>,
   fill: Vec<Thumbnail>,
   ring: Vec<Thumbnail>,
 }
@@ -1636,12 +1782,31 @@ fn shifted(rect: &Rect, origin: (i32, i32)) -> RECT {
 #[cfg(test)]
 mod tests {
   use super::{
-    copy_rects, crop_fade, crop_weights, fill_strips, keeps_backdrop,
-    keeps_fill, keeps_ring, map_rect, ring_part_rects, same_set,
-    scale_alpha, shifted, vignette_strength, BackdropOverlayParams, Band,
-    Rect, RingPart, RECT,
+    bar_rects, copy_rects, crop_fade, crop_weights, fill_strips,
+    keeps_backdrop, keeps_fill, keeps_ring, map_rect, ring_part_rects,
+    same_set, scale_alpha, shifted, vignette_strength,
+    BackdropOverlayParams, Band, Rect, RingPart, RECT,
   };
   use crate::Color;
+
+  /// Uncut, a bar is drawn whole and 1:1; cut, from its window's top-left,
+  /// which holds only the part inside the clip.
+  #[test]
+  fn a_bar_copy_draws_its_window_one_to_one() {
+    let clip = Rect::from_ltrb(0, 0, 1920, 1080);
+    let bar = Rect::from_ltrb(100, 50, 500, 86);
+    let (source, dest) = bar_rects(&bar, &clip, (0, 0)).unwrap();
+    assert_eq!(ltrb(source), (0, 0, 400, 36));
+    assert_eq!(ltrb(dest), (100, 50, 500, 86));
+
+    let cut = Rect::from_ltrb(-100, 50, 300, 86);
+    let (source, dest) = bar_rects(&cut, &clip, (0, 0)).unwrap();
+    assert_eq!(ltrb(source), (0, 0, 300, 36));
+    assert_eq!(ltrb(dest), (0, 50, 300, 86));
+
+    let elsewhere = Rect::from_ltrb(1920, 0, 3840, 1080);
+    assert!(bar_rects(&bar, &elsewhere, (1920, 0)).is_none());
+  }
 
   fn backdrop(blur_amount: f32) -> BackdropOverlayParams {
     BackdropOverlayParams {

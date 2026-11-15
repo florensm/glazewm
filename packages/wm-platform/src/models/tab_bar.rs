@@ -140,9 +140,62 @@ impl TabFrame {
   }
 }
 
+/// Where a stack's tab bar is drawn beside its window, as offsets from the
+/// window's rect, so a copy of the bar can go along as the window moves
+/// and resizes: along the rect's top edge (`at_top`) or bottom edge,
+/// `outer` past it and `inner` back over it, its sides `left` and `right`
+/// off the rect's.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TabBarPlace {
+  at_top: bool,
+  left: i32,
+  right: i32,
+  outer: i32,
+  inner: i32,
+}
+
+impl TabBarPlace {
+  /// The place of a bar at `bar` beside a window at `window`.
+  #[must_use]
+  pub fn between(bar: &Rect, window: &Rect, at_top: bool) -> Self {
+    let (outer, inner) = if at_top {
+      (window.top - bar.top, bar.bottom - window.top)
+    } else {
+      (bar.bottom - window.bottom, window.bottom - bar.top)
+    };
+
+    Self {
+      at_top,
+      left: bar.left - window.left,
+      right: bar.right - window.right,
+      outer,
+      inner,
+    }
+  }
+
+  /// Where the bar is beside a window at `window`.
+  #[must_use]
+  pub fn rect(&self, window: &Rect) -> Rect {
+    let (top, bottom) = if self.at_top {
+      (window.top - self.outer, window.top + self.inner)
+    } else {
+      (window.bottom - self.inner, window.bottom + self.outer)
+    };
+
+    Rect::from_ltrb(
+      window.left + self.left,
+      top,
+      window.right + self.right,
+      bottom,
+    )
+  }
+}
+
 #[cfg(test)]
 mod tests {
-  use super::{CornerRadii, TabBarStyle, TabCloseMode, TabFrame};
+  use super::{
+    CornerRadii, TabBarPlace, TabBarStyle, TabCloseMode, TabFrame,
+  };
   use crate::{Color, Rect};
 
   fn frame(clip: Option<Rect>) -> TabFrame {
@@ -223,5 +276,23 @@ mod tests {
       frame(Some(Rect::from_ltrb(300, 0, 1000, 500))).visible_rect(),
       None
     );
+  }
+
+  #[test]
+  fn bar_keeps_its_place_beside_a_moving_resizing_window() {
+    // A top bar reaching 8 under a window with 7 px invisible borders.
+    let window = Rect::from_ltrb(93, 128, 507, 607);
+    let bar = Rect::from_ltrb(100, 100, 500, 136);
+    let place = TabBarPlace::between(&bar, &window, true);
+    assert_eq!(place.rect(&window), bar);
+
+    let moved = Rect::from_ltrb(-207, 228, 107, 507);
+    assert_eq!(place.rect(&moved), Rect::from_ltrb(-200, 200, 100, 236));
+
+    let below = Rect::from_ltrb(93, 0, 507, 400);
+    let bar = Rect::from_ltrb(100, 392, 500, 428);
+    let place = TabBarPlace::between(&bar, &below, false);
+    let taller = Rect::from_ltrb(93, 0, 507, 500);
+    assert_eq!(place.rect(&taller), Rect::from_ltrb(100, 492, 500, 528));
   }
 }

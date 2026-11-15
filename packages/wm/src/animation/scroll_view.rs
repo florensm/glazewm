@@ -37,9 +37,9 @@ use wm_platform::{Rect, SurrogateBatch};
 use super::{
   peek_view::{
     can_move_on_peek, has_other_stand_in, hosts_column, is_live,
-    is_peek_resize, is_pure_move, is_stacked, peek_styles,
-    resizes_on_peeks, restack_joining_overlays, restore_cloaked,
-    surface_clips, track_overlays, PeekView, Role,
+    is_peek_resize, is_pure_move, peek_styles, resizes_on_peeks,
+    restack_joining_overlays, restore_cloaked, surface_clips,
+    track_overlays, PeekView, Role,
   },
   transit::Transit,
 };
@@ -231,9 +231,9 @@ pub fn sync_scroll_view(
     // A column on a peek of its own is stacked by where that went, which a
     // surface can't keep its neighbours in step with (see `hosts_column`).
     let beside_own_peek = one_surface
-      && moves.iter().any(|(window, _, _)| {
-        is_stacked(window) || is_live(&peek_styles(window, config))
-      });
+      && moves
+        .iter()
+        .any(|(window, _, _)| is_live(&peek_styles(window, config)));
 
     for (window, from, target) in moves {
       view.last_rects.insert(window.id(), target.clone());
@@ -316,7 +316,6 @@ pub fn sync_scroll_view(
         && hosts_column(
           true,
           is_live(&peek_styles(&window, config)),
-          is_stacked(&window),
           beside_own_peek,
         );
       needs_flush |= view.upsert(

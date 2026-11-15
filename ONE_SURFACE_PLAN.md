@@ -1980,6 +1980,160 @@ backdrop; a gap of 0 at the shared edge once.
 - With `readypeeks`: move a tile across and back within 5 s: the move
   back draws at once (its trail reuses the peek kept where it landed).
 
+## Stacks: as built
+
+Branch `os/11-stacks` (from `tryout/one-surface`, `6798117`). Open item
+1. Not seen running.
+
+### Today's order, found by reading (own peeks)
+
+| what | where, when |
+|---|---|
+| the bar | `NativeStackTabBar`: a layered popup on a thread of its own (`glazewm-tab-bars`), the WM only posts to it. `sync_tab_bars` (end of every `platform_sync`, and every tick while peeks are active) posts `shown_tab_frame`: the stack's rect moved along with its active window's stand-in (`PeekView::stand_in`: `moved_along(stack, motion target, entry.rect)`), cut at the stand-in's clip, anchored behind the stand-in's hwnd. The bar thread repaints only when the picture changes (`draws_like`: a width change relayouts the tabs), else re-shows the same picture elsewhere; `restack_behind` puts it just behind the anchor and the WM's overlays of it |
+| z-order | just behind its window's own peek, so under that peek's window, ring and backdrop copies, over everything below the peek; the peek is raised in the pass, so the bar with it (a tick later, as posted) |
+| during a motion | a window that follows the peek, a post (one thread hop) behind the peek's thumbnails; a resize repaints the tabs at each frame's width on the bar thread. Never hidden |
+| landing | `stands_in` leaves out `Releasing`, so from the uncloak on the bar goes behind the real window again, at the stack's rect |
+| tab switch | no motion: the new active tab is shown and the old one hidden in one pass (shown first, `windows_to_update`'s order); the bar repaints its active tab, anchored behind the new active window. Mid-motion, the moving entry is the old tab's: the bar follows the new active tab (no stand-in), at the stack's rect |
+| tab opened or closed mid-motion | the bar repaints with the tab added or gone; an opening window is a transit (`animated_with_tab_bar`: the bar doesn't go along with an open), drawn at the stack's rect behind the entering peek; a closing tab leaves the tree, the next one is active, the bar stays at the stack's rect |
+| scrolling layout | a stacked column's peek (moving or resting) is own; its bar follows it, cut at the working area; a column with no peek off the monitor beside it shows no bar (`shown_tab_frame`) |
+| workspace switch | every bar of a stack in the switch is hidden for the slide (`is_in_workspace_switch`); `hosts_switch_window` never looked at stacks: their windows were hosted already |
+| grab | `can_hold` refuses stacks: they snap |
+| crossing monitors | `tile_clips` keeps stacks off peeks: the engine draws them |
+
+### Hosted
+
+The stack's active window is a tenant like any tile; its tab bar is a
+thumbnail of the bar's own window on the same surface, the window's
+other copies around it (`OverlayCopies::bar`, `BarCopy`).
+
+| step | own peek | hosted |
+|---|---|---|
+| `move_on_peek`, `fullscreen_on_peek` | own peek | `hosts_on_surface` no longer asks `is_stacked`: on the surface `host_for` picks, ranked as any move |
+| `enter_on_peek`, `leave_on_peek`, `restore_on_peek` (`hosts_transit`) | own peek | hosted. No copy: the bar doesn't go along with a transit; it stays a window at the stack's rect, behind the surface (its stand-in's anchor), where no tile of that transit's pass crosses it |
+| scroll view `upsert` (`hosts_column`) | own peek | hosted, moving, held or resting, with the copy |
+| tenancy (`Reach`) | none | the lane takes in the bar (`Reach::bar`, the bar's `TabBarPlace` at the motion's target), so `meets` sees a tile crossing it |
+| take-over pass (`cover_moved_overlays` → `track_overlays` → `carry_tab_bar`) | bar behind the peek | `tab_bar_place` (the bar's outer rect at the stack's layout rect, as offsets from the window's target rect); `WindowPeek::carry_tab_bar` registers the copy, then the window's thumbnail anew over it and the fill and ring over that (each new one up before its old one goes); drawn 1:1 over the still-shown bar (`Handover::Covering`) |
+| each tick (`Entry::draw` → `place*` → `OverlayCopies::place`/`place_backdrop`) | bar a post behind | the copy at `TabBarPlace::rect(window rect)`, cut at the clip, in the same thumbnail updates as the window (`bar_rects`) |
+| next tick (`note_composited`) | | `Covered`, then `Parked` in `track_overlays`; `sync_tab_bars` → `conceal_copied_bars` cloaks the bar (`NativeStackTabBar::set_cloaked`, on the WM thread). DWM still composes it, the bar thread still paints it at each frame's width, and the copy shows it |
+| landing (`HandingBack`, `Releasing`) | bar back behind the window from the uncloak | `Revealed`: uncloaked in the same tick's `sync_tab_bars`, under the copy; the copy goes with the peek two ticks later at least, so a frame may show both, never neither |
+| moved on in place while landing | | `Revealed` → `Covering` → `Parked` again |
+| `register_anew` (restacks) | | the copy goes with the backdrop group (`backdrop_held_anew`, `put_backdrop_anew`): backdrop, bar, window, fill, ring; `stacking` counts it |
+| ready store (`set_aside`) | | the copy is dropped; carried anew by the next motion |
+| entry dropped (`drop_strays`, forget, leave) | | the copy goes with the peek; the next `sync_tab_bars` (end of that same `platform_sync`) uncloaks the bar |
+
+No hand-over step is reordered or dropped (rule 5): the bar's steps are
+new and run inside `track_overlays` and `sync_tab_bars`, where the ring's
+and the bar's already ran; `draw`, `take_over`, `prepare_hand_back`,
+`hand_back`, the flush and the raise loop are unchanged.
+
+### Stacking
+
+- Within the tile: backdrop, bar, window, fill, ring. The bar is under the
+  window, as its strip reaches under the window's rounded corners. Today
+  the bar is behind the backdrop overlay; over it the copy shows the bar
+  in the corner notches, which is what the strip is for (only a
+  semi-transparent window shows the difference, in that strip).
+- Among tenants: the copy is the tile's, registered late (cover pass, or
+  a bar shown mid-motion), so `restack_crossings`' `out_of_order` restacks
+  as for a ring copy: a stacked tile ranked over a crossing one draws its
+  bar over it, which a bar window behind the surface could not.
+
+### Edge cases
+
+- Tab switch mid-motion: the moving entry's window is no longer the
+  active tab, so `carry_tab_bar` no longer wants the bar: a parked one is
+  revealed (`conceal_copied_bars` looks at the active tab only, so it is
+  uncloaked that sync) and its copy dropped a tick later; one not yet
+  parked is dropped at once. The bar follows the new active tab.
+- Tab opened mid-motion into the moving stack: the bar repaints (one more
+  tab) and the copy shows the new picture; the entering window is a
+  transit, its own entry carries no copy. Active tab closed mid-motion:
+  the entry turns `Leaving` (or the window leaves the stack): revealed
+  and dropped as above.
+- Stack turning fullscreen: `shows_tab_bar` is false, no place, no copy;
+  out of fullscreen the copy is carried once the bar shows.
+- Bar hidden mid-motion (a switch, a column out of view): `is_shown`
+  false, so the copy is let go as above; a hidden window shows nothing in
+  a thumbnail anyway.
+- Bar window recreated (stack recreated) mid-motion: the copy is
+  registered on the new source as it is carried.
+- Resize: the copy samples the bar's window 1:1 at the new size; the bar
+  thread repaints at that width a post later, so for a frame the copy
+  shows the old picture uncut (growing: a sliver past its right end is
+  transparent; shrinking: the last tab cut), where today the bar's window
+  itself lands a post late. Never stretched.
+- Columns: resting stacked columns are hosted too (one per surface, step
+  5's rule), their bar copied and cloaked while at rest; cut at the
+  working area as the bar's window is (`bar_rects`).
+- Several stacks moving: one copy each; cloaks are per bar, decided by
+  each stack's active tab alone.
+- Without `onesurface`: no hosted peek, no copy, `conceals_tab_bar` always
+  false, `set_cloaked(false)` a no-op: today's behaviour.
+
+### Exclusions lifted and kept
+
+| exclusion | now | why |
+|---|---|---|
+| `hosts_on_surface`'s `is_stacked` (moves, fullscreen, transits) | lifted | the copy draws the bar with its window; a transit's bar stays put |
+| `hosts_column`'s `is_stacked` | lifted | as for tiles |
+| `has_own_peek_neighbour` counting stacks (transits beside a stack) | lifted: live tiles only | stacks no longer keep own peeks |
+| scroll view's `beside_own_peek` counting stacks | lifted: live columns only | as above |
+| workspace switches | not applicable | stacked tiles were hosted already; bars hide for the slide |
+| `tile_clips` (crossings) | kept | the bar's window is cut at the own part's clip (`shown_tab_frame`), so a trail's copy would have nothing past the monitor edge to draw. A cloaked bar no longer forces this in principle: drawn uncut while copied, with a copy on each part, it could cross. A step of its own, with the DPI of the two halves to check |
+| `can_hold` (grabs) | kept | not in this step; the copy would carry a held stack the same way, with `place_filled` |
+
+### Still on a window of its own, and why
+
+- The tab bar itself: a window always, cloaked while a hosted peek's copy
+  shows it. Transits (open into, close out of, minimize, restore a stack)
+  draw it as a window behind the surface, at rest.
+- A stack crossing monitors (engine), a stack under a grab (snaps).
+- A stack whose peek is live, or whose surface couldn't be made, or a
+  held one on a topped surface: its own peek, bar behind it, as before.
+
+### Windows functions called by the new code
+
+None new. `DwmSetWindowAttribute` with `DWMWA_CLOAK`
+(`NativeStackTabBar::set_cloaked`), already called by `wm-platform`
+(`overview_thumbnails::create_picture_window`, same attribute, on a
+window of our own). Newly reached for a stack's tile, all already called:
+`DwmRegisterThumbnail`, `DwmUpdateThumbnailProperties`,
+`DwmUnregisterThumbnail` (the copy, the window anew), and what any hosted
+tile reaches (`SetWindowPos`, `GetWindow`, `GetWindowLongPtrW`,
+`ShowWindow`, `CreateWindowExW`, `DestroyWindow`,
+`DwmGetWindowAttribute`). The bar thread's calls are unchanged.
+
+### To check on screen
+
+`GLAZEWM_ISOLATE=onesurface`, then `onesurface,readypeeks`; a stack of
+three tabs beside two tiles, with a border, a backdrop and rounded
+corners; `window_move`/`window_resize` at `duration_ms: 2000`, then
+default.
+
+- Move the stack (`move --direction`) and resize it: one surrogate-class
+  window per monitor, no peek of its own; the bar glued to the window
+  every frame (today it trails a frame); no frame without the bar at the
+  start or end; ring around window and bar.
+- Swap the stack with a tile, both ways (focused one on top): the bar of
+  the upper one over the lower one all the way; at most one `Stacking
+  ... over a tile it may cross` per swap.
+- Resize: tabs never stretched; note any sliver at the bar's end.
+- Switch tabs mid-move and right after it lands; open a window into the
+  stack mid-move; close the active tab mid-move: the bar ends with the
+  right tabs at the stack's rect, never missing (a window list or Spy++:
+  `GlazeWM_TabBar` not left cloaked).
+- Open, close, minimize and restore a tile beside the stack: no own peek
+  (before: every one on the workspace had one).
+- Scrolling layout: a stacked column scrolled half off the edge, at rest
+  and moving; a floating window over it at rest stays over it.
+- Toggle fullscreen on the stack (with `morepeeks`): bar gone going in,
+  back coming out.
+- Workspace switch mid-move: no bar left cloaked on either workspace.
+- Clicks and hover on the bar after each landing: tooltips and drag still
+  work (a cloaked bar takes no input while it moves).
+- With `readypeeks`: move the stack twice within 5 s: the second carries
+  the copy anew, no frame without the bar.
+
 ## State and next steps (2026-11-15)
 
 For whoever picks this up in a new session. `tryout/one-surface` holds
