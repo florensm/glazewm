@@ -465,12 +465,6 @@ impl WindowPeek {
     carries
   }
 
-  /// Whether the peek draws the window's border ring.
-  #[must_use]
-  pub fn carries_ring(&self) -> bool {
-    self.copies.carries_ring()
-  }
-
   /// Draws the ring copy whole, or with `corner_reach` in cells, from now
   /// on, where it was carried (see [`carry_ring`](Self::carry_ring)).
   pub fn cut_ring(&mut self, corner_reach: Option<i32>) {
