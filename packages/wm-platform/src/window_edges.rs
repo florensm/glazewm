@@ -114,7 +114,7 @@ fn sampleable_rect(hwnd: HWND) -> Option<Rect> {
 }
 
 /// A window's `GetWindowRect`, or `None` if its handle went stale.
-pub(crate) fn window_rect(hwnd: isize) -> Option<Rect> {
+fn window_rect(hwnd: isize) -> Option<Rect> {
   NativeWindow::new(hwnd).frame_with_shadows().ok()
 }
 

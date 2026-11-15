@@ -2273,8 +2273,7 @@ fn apply_taskbar_updates(updates: Vec<(WindowContainer, bool)>) {
 /// Above this duration, `reposition_window`'s synchronous
 /// (non-`ASYNCWINDOWPOS`) `SetWindowPos`/restore/minimize/maximize
 /// sequence is logged as a warning. See its `has_surrogate` doc comment
-/// for why this path can block on a slow app's message queue. Mirrors
-/// `wm_platform::resize_session`'s `SLOW_SYNC_SETWINDOWPOS_THRESHOLD`.
+/// for why this path can block on a slow app's message queue.
 const SLOW_SYNC_REPOSITION_THRESHOLD: Duration = Duration::from_millis(8);
 
 /// What [`reposition_window`] did, for the caller's follow-up work.
