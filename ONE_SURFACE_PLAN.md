@@ -1468,6 +1468,150 @@ monitors side by side, scrolling layout, `workspace_switch` slide.
 - `onesurface,noslidepeeks`: as step 5 (the column shows at rest at
   once during a switch).
 
+## Step 6a: as built
+
+Branch `os/6a-held` (from `tryout/one-surface`, `aee1185`). Grab resizes
+only (`hold_on_peek`, held columns); 6b (floating <-> tiling, fullscreen,
+top band) and 6c (tiles crossing monitors) not started. Not seen running.
+
+### Today's order, found by reading (own peeks)
+
+| what | where, when |
+|---|---|
+| start | `grab::step` → `apply_resize` → `place_moved_windows`: a window `holds_on_peek` wants and no peek holds yet is refused by `is_placeable` and queued for redraw. The redraw (`held_from`, ahead of the animation gate) calls `hold_on_peek` → `move_tile` (duration 0, `Fill`, then `hold(id, true)`); pushed to `peek_moves`, frozen; the pass's `cover_moved_overlays`, `commit_pending_cloaks` (one flush, `take_over`, cloak), `hand_over_moved_overlays` take over as for a move |
+| columns | `sync_scroll_view` asks `holds_on_peek` per column; `upsert(held)`: `Role::Moving`, duration 0, filled, no transit; a resting one becomes held with no take-over |
+| z-order | a new held peek goes up just below its window (warmed). The raise loop skips held ids, so it stays there for the whole grab, under any floating window over its tile. Held tiles stack among themselves as their windows do (focus order); a tile already landing on its own peek is moved on in place, where `begin_hand_back` put it (just above its window). Columns: just below their windows, never raised |
+| each step | `place_moved_windows`: the placer resizes the cloaked window; `retarget_tile` (duration 0) moves the target. Drawn on the next tick (`tick` → `Entry::draw` → `place_filled`): thumbnails only, the peek's window never moves (pinned) |
+| neighbours | every tile and column the grab changes is held if `can_hold`; one that can't (stack, live, off its monitor, another stand-in) is redrawn with animations suppressed: it snaps. A tile still moving on a peek is retargeted on its timing (frozen), and held at the first step after it landed |
+| end | `finish`: placer's last rects, `release_holds` (`Hold::Released`, 150 ms or its size read), redraw of every window. `tick`: `may_land` → `begin_hand_back` (own: just above its window; a column's hosted surface: `stay_over_window`) → `Apply` (`prepare_hand_back`, synchronous `SetWindowPos`, uncloak, `release`) → `Releasing` → `hand_back` → released (ready store under `readypeeks`) |
+| guards | `window_at` (resting `Role::Peek` rects) and `moving_rects` (`visible_rect`) read the same for a hosted peek; the grab owns the mouse meanwhile. `is_grabbable` refuses a window a peek owns, so no grab starts on a moving one |
+| live peeks | `can_hold` refuses them: they snap, own (unchanged) |
+| mid-grab | switch: `sync_listener` ends the grab when its workspace is no longer displayed, `drop_strays` takes the peeks. Pause: listener unhooked, `end_early`. Reload, display change: the grab goes on; a held peek keeps its clip until it lands (`retarget_tile` doesn't repin) |
+
+### Hosted
+
+| step | own window | hosted |
+|---|---|---|
+| `move_tile` from `hold_on_peek` | peek made just below its window | registered on the monitor's tile surface (`tenancy`, `Stacking::Raised` rank); the surface admitted by the shown window (`SurfaceWindow::admit`): not raised, it goes just below the lowest held window; raised, never down. A landing hosted tile on the same surface is moved on in place; a ready one there is reclaimed |
+| `hold(id, true)` | `Hold::Held` | the same, and `Tenancy::never_raised` |
+| take-over (`cover_moved_overlays`, flush, `take_over`, cloak, `hand_over_moved_overlays`) | as is | as is; `restack_joining_overlays` puts shown overlays of tenants on an unraised surface behind it (step 3) |
+| raise loop | skipped (held) | skipped: the surface stays where admission put it |
+| each step's `retarget_tile` | target moved | the same, lane anew, `restack_crossings` (pure unless out of order) |
+| tick draw | thumbnails | thumbnails on the surface |
+| `begin_hand_back` | peek just above its window | nothing (`raise_above` is for own windows), then `stay_over_window` (new for held tiles, as columns since step 5): the surface just above the landing window unless above it already, never down after |
+| `Apply`, `hand_back`, release | as is | as is; tenant's thumbnails go, or kept ready |
+| column `upsert(held)` | just below its window | on the column surface as any moving column (step 5): admitted, moved on in place if hosted there, else replaced via `replaced`/`drop_replaced` |
+
+### Stacking
+
+- Held tiles among themselves: ranks are given in the redraw's order,
+  the same order their own peeks went up in. Tiles don't overlap; only
+  rings meeting in a gap can, and a late registration there (ring cells
+  in the cover pass, fill strips on the first ticks) restacks the upper
+  tile once (`out_of_order`, step 3), not per frame: per step only lanes
+  are recomputed. No re-registration per frame.
+- Against other windows: one surface height, below the lowest held
+  window, so floating windows over the tiles stay over them, as today.
+- A surface already at the top of its band (`PeekSurface::is_topped`,
+  new: set by `raise_to_top`/`raise_to_top_of_band`, cleared when empty
+  or put at rest) is above every floating window until its last tenant
+  goes, which a grab's tenants would keep it at: a tile held then keeps
+  a peek of its own (`hosts_hold`, tested). That is a grab started while
+  a neighbour still lands from a command.
+- A tile entering (open, restore) beside a held one keeps a peek of its
+  own (`hosts_transit`'s `entering`): its raise would top the surface,
+  putting the held tiles over floating windows. As today, its own raised
+  peek goes over the held ones. A leaving tile is never raised, so stays
+  hosted, ranked below.
+- Columns: column surfaces are not raised (a restored column aside), so
+  no such check; a held column draws at its surface's height, step 5's
+  rules for moving columns.
+
+### Exclusions lifted
+
+- `hosts_column` lost `held`; `sync_scroll_view`'s `beside_own_peek` no
+  longer counts held columns. Held columns are hosted, so nothing of the
+  workspace is on an own peek because of them. A column whose entry was
+  own already (a second resting column) stays own for its life, as in
+  step 5, beside hosted ones.
+- Tiles had no such exclusion: `has_own_peek_neighbour` counts stacks and
+  live peeks only.
+
+### Edge cases
+
+- Grab start on a tile moving hosted: not held until it has landed
+  (unchanged); then moved on in place on its surface. Landing on another
+  clip (display change): a new peek, the old one dropped at once, as for
+  every tile move since step 3. On a topped surface: an own peek
+  replaces the hosted landing one at once, as every hold did before this
+  step.
+- Ready store: a held tile's peek released after landing shown is kept
+  ready (hosted, `keeps_ready`), its fill and ring cells with it; a hold
+  takes it only on its surface, otherwise it goes (`take_ready`). Purge
+  points unchanged: a held tenant keeps its surface in use, so reload,
+  pause and display change keep it (`is_stale_surface`).
+- Several held tiles land apart: each lifts the surface just above its
+  window if needed (`keep_above`), only ever up.
+- Window closed mid-grab: `drop_strays`, its thumbnails go; the surface
+  hides with its last drawing tenant.
+- Without `onesurface`: `hosts_hold` false, empty `monitor_clips`, as the
+  call had; no surface exists, `never_raised` never read. Today's
+  behaviour.
+
+### Known differences on screen
+
+- A window between two tiled windows in the z-order (an unmanaged one)
+  covers a held tile whose window is above it: the surface is below the
+  lowest held window. Its own peek was just below its own window.
+- A neighbour's real ring above the surface may cover a held tile's ring
+  copy where the two meet in a gap.
+- A column restored mid-grab tops its column surface (`raise_moving`),
+  putting held columns there over floating windows until it empties.
+
+### Still on a window of its own, and why
+
+- Held tiles while their surface is topped (above); tiles entering beside
+  a held tile (above).
+- Live peeks, stacks: not held at all (`can_hold`).
+- 6b and 6c: floating <-> tiling, fullscreen toggles, tiles crossing
+  monitors.
+
+### Windows functions called by the new code
+
+None new. Newly reached for held peeks, all already called by
+`wm-platform`: `SetWindowPos` and `GetWindow` (`SurfaceWindow::admit`,
+`keep_above` through `window_class::place_above` and
+`companion::is_above`), `ShowWindow` (`note_drawing`),
+`CreateWindowExW` and `DestroyWindow` (a surface), `DwmRegisterThumbnail`,
+`DwmUpdateThumbnailProperties`, `DwmUnregisterThumbnail`,
+`DwmGetWindowAttribute` (`is_cloaked`). `is_topped` reads a flag.
+
+### To check on screen
+
+`GLAZEWM_ISOLATE=onesurface`, then `onesurface,readypeeks`, with
+`grab_and_move.draw: "peeks"`, a border and a gap wide enough to see.
+
+- Two, then three tiles: drag an edge slowly, fast, back and forth. One
+  surrogate-class window for the monitor, no peek of its own per tile;
+  rings and gaps solid; no blank, backdrop-only or ring-less frame at the
+  start; the surface hidden after the release.
+- A floating window over a tile being resized: stays over it all the
+  drag, and at the release no flash of the window over its peek.
+- Release: nothing moves, blinks or changes size; Escape mid-drag lands
+  back where it started.
+- Resize by keyboard, then grab a neighbour's edge within the animation:
+  the held tiles on peeks of their own (an extra surrogate-class window
+  each), floating windows still over them.
+- Close a neighbour mid-drag (keybinding): it closes under the held
+  tiles; open a window without focus mid-drag: it enters on its own
+  peek over the held tiles.
+- Scrolling layout: drag a column's edge so neighbours slide, past the
+  screen's edge, a column partly off screen: one column surface, no peek
+  of its own per column; columns cut at the edge stay cut.
+- Two monitors: grab on each in turn, each surface on its own monitor.
+- With `readypeeks`: resize by grab, then by keyboard within 5 s: no
+  stale frame of the grab's last size.
+
 ## State and next steps (2026-11-15)
 
 For whoever picks this up in a new session. `tryout/one-surface` holds

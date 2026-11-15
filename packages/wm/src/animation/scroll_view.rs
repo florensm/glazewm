@@ -232,9 +232,7 @@ pub fn sync_scroll_view(
     // surface can't keep its neighbours in step with (see `hosts_column`).
     let beside_own_peek = one_surface
       && moves.iter().any(|(window, _, _)| {
-        is_stacked(window)
-          || is_live(&peek_styles(window, config))
-          || held.contains(&window.id())
+        is_stacked(window) || is_live(&peek_styles(window, config))
       });
 
     for (window, from, target) in moves {
@@ -318,7 +316,6 @@ pub fn sync_scroll_view(
         && hosts_column(
           true,
           is_live(&peek_styles(&window, config)),
-          is_held,
           is_stacked(&window),
           beside_own_peek,
         );
