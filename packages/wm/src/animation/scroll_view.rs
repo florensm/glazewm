@@ -104,7 +104,7 @@ pub fn sync_scroll_view(
 
   // With `window_resize` enabled, in either style, a column resized on
   // screen goes on its peek too (`STAND_INS_PLAN.md` tasks 8 and 10e),
-  // where every resized column can.
+  // each one that can stretch.
   let resizes = resizes_on_peeks(config).filter(|_| pure_moves.is_some());
   let can_stretch = windows
     .iter()
@@ -190,20 +190,10 @@ pub fn sync_scroll_view(
 
   for (workspace, clip) in &workspaces {
     let moves = column_moves(view, workspace, &opening_ids);
-    let resizes = resizes.filter(|_| {
-      moves.iter().all(|(window, from, target)| {
-        opening_ids.contains(&window.id())
-          || from.width() == target.width()
-            && from.height() == target.height()
-          || can_stretch.contains(&window.id())
-      })
-    });
 
     // The strip moves as one when any column crosses the monitor edge,
-    // is already drawn by a peek, or opens; moves that stay on screen are
-    // left to the regular per-window animations. Only resizes are, so a
-    // peek drawing one column doesn't take a resized neighbour off its
-    // own (see `moves_on_peek`).
+    // is already drawn by a peek, or opens; other columns move or resize
+    // on their peeks one by one, or snap (see `moves_on_peek`).
     let crosses_edge = |rect: &Rect| !clip.contains_rect(rect);
     let strip_moves = scroll_config.enabled
       && animates
@@ -224,6 +214,15 @@ pub fn sync_scroll_view(
 
     for (window, from, target) in moves {
       view.last_rects.insert(window.id(), target.clone());
+
+      // Resized on its peek only if it can stretch: one that can't snaps,
+      // as its neighbours resize on theirs.
+      let resizes = resizes.filter(|_| {
+        opening_ids.contains(&window.id())
+          || from.width() == target.width()
+            && from.height() == target.height()
+          || can_stretch.contains(&window.id())
+      });
 
       let ends_shown = !is_hidden_in_layout(&window);
       let is_on_screen = |rect: &Rect| rect.intersection_area(clip) > 0;
@@ -380,8 +379,8 @@ fn column_pure_moves(config: &UserConfig, animates: bool) -> Option<u32> {
 /// (see [`column_pure_moves`]), as a peek draws it already, or as it only
 /// moves (see [`is_pure_move`]) or, given `stretches`' threshold when the
 /// strip stretches, resizes (see [`is_peek_resize`]), with no other
-/// stand-in drawing it. Otherwise a column resized on screen keeps the
-/// per-window path.
+/// stand-in drawing it. Otherwise a column resized on screen snaps, placed
+/// by the redraw as at rest.
 fn moves_on_peek(
   from: &Rect,
   target: &Rect,
@@ -407,8 +406,7 @@ fn moves_on_peek(
 
 /// Whether `window`, a column, can be drawn stretched as it resizes on
 /// its peek: not one another stand-in draws, nor one at its new size
-/// already, as an interactive resize leaves it, which keeps the
-/// per-window path as before.
+/// already, as an interactive resize leaves it, which snaps.
 fn can_stretch(
   state: &WmState,
   window: &WindowContainer,
