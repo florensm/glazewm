@@ -1086,8 +1086,7 @@ pub fn state_change_peek_raise(
 }
 
 /// Whether a window laid out at `target` after `from` only moves, and by
-/// more than `threshold_px` as `should_start_new_animation` measures it:
-/// below that, the old path doesn't animate it either.
+/// more than `threshold_px`: below that, it isn't animated.
 pub(super) fn is_pure_move(
   from: &Rect,
   target: &Rect,
@@ -1103,8 +1102,7 @@ pub(super) fn is_pure_move(
 }
 
 /// Whether a window laid out at `target` after `from` changes size, by
-/// more than `threshold_px` as `should_start_new_animation` measures a
-/// resize: below that, the old path doesn't animate it either.
+/// more than `threshold_px`: below that, it isn't animated.
 pub(super) fn is_peek_resize(
   from: &Rect,
   target: &Rect,

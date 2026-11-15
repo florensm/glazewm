@@ -87,7 +87,7 @@ impl Transit {
 
   /// The transit of a window opening by `params`, or `None` when it would
   /// show nothing: a stationary style other than a zoom, at full opacity
-  /// throughout, which `start_open_animation` skips too.
+  /// throughout, which then opens at once.
   ///
   /// A plain fade holds at the start for `OPEN_PAINT_GRACE`, so the app
   /// paints before it shows, as on the old path. Slides and zooms show
@@ -108,8 +108,8 @@ impl Transit {
   }
 
   /// The transit of a window closing or minimizing by `params`, from all
-  /// the way in, or `None` when it would show nothing, which
-  /// `start_away_animation` skips too.
+  /// the way in, or `None` when it would show nothing, which then goes at
+  /// once.
   pub fn leaving(params: &WindowTransitionParams) -> Option<Self> {
     (!shows_nothing(params))
       .then(|| Self::new(Direction::Out, params, 1.0))
