@@ -1116,6 +1116,195 @@ through `compute_border_inset`.
   display change and a switch.
 - A shades-recolored window: still on its own surrogate, colors kept.
 
+## Integration: as built
+
+Branch `os/9-integrate` (from `tryout/one-surface`, `0df1473`). A
+reading-and-fixing pass over steps 3, 4, 5 and the workspace switches
+together. Not seen running.
+
+### Three surfaces per monitor (reviewer's decision)
+
+| surface | spans | height |
+|---|---|---|
+| tiles' (`surfaces`, `tile_clips`) | monitor rect | raised to the top of the ordinary windows for a motion |
+| columns' (`surfaces`, `displayed_scrolling_workspaces`) | working area | just above its resting tenant's cloaked window at rest (`rest_above`), above a landing window (`keep_above`) |
+| switch's (`switch_surfaces`) | working area | below every incoming window until `WsCleanupStep::Drop` (`admit`, never raised) |
+
+Why apart:
+
+- Columns' and switch's are not merged: their heights conflict. A column
+  landing mid-switch lifts its surface above the landing window
+  (`stay_over_window`); with switch tenants on it, they would go over
+  the uncloaked incoming windows they must stay under, backdrop copies
+  included, until `Drop`. A resting column's surface sits just above a
+  cloaked window wherever that is in the z-order, which is not "below
+  every incoming window" either.
+- Tiles' keep the monitor rect: an own pinned peek of a tile spans the
+  same rect today, so nothing new for Explorer's fullscreen rule (still
+  unchecked on screen, see "Known differences" of the switches).
+- A column surface equal to a tile surface (working area == monitor
+  rect, e.g. an auto-hidden taskbar) is one surface, found by clip.
+  Checked: a tile's raise lifts a resting column on it too (step 5's
+  known difference: "drawn at the surface's height" while anything moves
+  on it); `rest_anchor` gives no anchor while any tile tenant is there,
+  `Releasing` ones included, so `settle_resting_surfaces` never takes the
+  surface down under a landing tile; `raise_to_top` clears `rests_above`,
+  so the next settle puts it back; a resting tenant holds the surface's
+  place (`hold_place`), so a tile joining never moves it down
+  (`admission`), and `joining_tenants` leaves the resting one out. One
+  gap fixed (below): a tile dropped outside a tick left the surface
+  raised.
+
+### Purge points
+
+One rule now, `is_stale_surface`: a surface goes only once unused (no
+tenant, no ready peek) and off the clips kept; ready peeks always first.
+So tenants always go before their surface, structurally, and no surface
+in use is ever off its list (before: dropped from the lists while still
+drawing, held alive by `Rc`, but then out of reach of raise passes,
+restacks and settling, moved on in place by a landing tile's next
+motion, and a second surface could be made at the same clip).
+
+| point | order |
+|---|---|
+| display change (`handle_display_settings_changed`) | ready peeks cut at no monitor rect or working area; tile/column surfaces unused off those (`retain_surfaces`, clips from `surface_clips`); switch surfaces unused off every working area (`retain_switch_surfaces`). A tenant on a kept surface whose clip changed is replaced at its next motion or upsert (clip compare in `move_tile`, `moves_on_in_place`); a moving tile retargeted keeps it to its landing; the old surface goes, unused, as one is made or at the next purge |
+| reload (`reload_config`), pause (`toggle_pause`) | `drop_unused_surfaces`: every ready peek, then every unused tile, column and switch surface. Moving and leaving tenants play on (ticks run while paused) and keep theirs; a playing switch keeps its own to its end, cut short or not; a resting column (`noslidepeeks`) keeps drawing on its surface, which stays listed, so the redraw after an unpause moves it on in place |
+| shutdown (`drain_all_sessions`) | the switch and `pending_ws_cleanup` (their tenants) first, leaving peeks, then `drop_unused_surfaces`; entries left drop with `PeekView`, declared before `ready` and the surface lists |
+| `drop_replaced` | after `sync_scroll_view`'s flush, the same sync as the `upsert` that filled it, so `replaced` is empty between syncs and at every purge |
+| `switching_out`, `standing_by` | own peeks only (`slidepeeks` hosts no resting column, `keeps_rest_hosted`); `switching_out` cleared by `settle_switch_peeks` the same sync |
+| ready store | dropped before surfaces everywhere above; strays (`drop_stray_ready`) at every sync before the switch pre-pass; per window on unmanage, leave, enter, a column upsert, a `move_tile` that doesn't take it |
+
+`surface_clips` (monitor rects and working areas) is now also what a
+surface made for a tile prunes by: it used monitor rects only, so it
+dropped unused column surfaces (a `CreateWindowExW` again at the next
+scroll). Without `onesurface` no surface or ready peek exists, so none
+of this runs.
+
+### Cross-interactions
+
+- Switch starting with tiles on a surface: `drop_strays` drops the
+  outgoing workspace's moving, landing and entering tiles' peeks before
+  the pre-pass, as for own peeks; the surface hides with its last drawing
+  tenant (`note_drawing`), `release` lets it go down again. Fine as is.
+  Ready peeks of switched-out windows go in the same sync
+  (`drop_stray_ready`); switched-in windows have none left (dropped when
+  they went out, or expired). Fine as is.
+- The same, with a resting column (`noslidepeeks`) of the incoming
+  workspace on a surface shared with an outgoing tile: the column is
+  upserted (and admitted, cloaked, where the tile's raise put the
+  surface) before `drop_strays` drops the tile, and nothing settled the
+  surface after: the column stayed over every window until the next tick
+  or scroll. **Fixed**: `take_strays`, `forget_entering` and
+  `forget_leaving` settle resting surfaces when they drop an entry.
+- Resting columns at a switch, `slidepeeks` (default): never hosted
+  (`keeps_rest_hosted`), so `stand_by`, `keep_switching_out`,
+  `take_over_from_peek` and `hand_back_to_peek` only meet own peeks. A
+  hosted column turning to rest is replaced by an own peek; `stand_by`
+  runs before `upsert`, so the old hosted one and the new own one are
+  both faint until the flush. Fine as is (open item 2).
+- Resting columns at a switch, `noslidepeeks`: an outgoing hosted one
+  departs (`take_departed`) and drops after the scroll view's flush, as
+  an own one does; an incoming one rests at once, as an own one does
+  with `noslidepeeks`, just above its cloaked window instead of just
+  below it (step 5). Fine as is.
+- Moving columns at a switch: an outgoing one departs (kept only at
+  rest) and drops after the flush; the switch's surrogate takes the
+  window as for an own peek. Fine as is.
+- Tile or column motion while a switch's surface is up, same monitor:
+  the switch's windows have another stand-in (`has_other_stand_in`, by
+  `has_active_surrogate`, which includes `pending_ws_cleanup`), so their
+  moves stay with the switch. A window opening meanwhile enters on the
+  tiles' surface, raised to the top, over the switch's surface, as its
+  own peek would be raised. A column landing lifts the columns' surface,
+  never the switch's. Other monitor: other clips, other surfaces. Fine
+  as is.
+- Cut-short switches, switch back mid-slide: both switches' tenants on
+  one switch surface, since a purge no longer drops it while in use
+  (before: a reload or pause mid-switch, then a second switch, put the
+  new tenants on a second surface, ordered against the first by where
+  each was admitted rather than by registration). Fixed by the purge
+  rule.
+- Overlay anchors: `WorkspaceSurrogate::hwnd()` gives the switch surface,
+  `PeekView::peek_hwnd`/`stand_in` the tile or column surface; a window
+  never has both a hosted peek and a hosted switch surrogate drawing it.
+  Fine as is.
+- Shared helpers, checked to agree: `admit`'s `is_shown` (below);
+  `is_unused` counts tenants and ready peeks, and switch surfaces have no
+  ready peeks; tenant counts go up in `create_hosted`/`rejoin`, down in
+  `Drop`/`retire`, the same for both kinds; `set_raise_pass` and
+  `note_raised` reach `surfaces` only, and switch surfaces are never
+  raised (`WorkspaceSurrogate` calls no `raise_*`, `hold_place` or
+  `lift_surface_above` on its inner surrogate), and their `admit` only
+  takes them down to below a window, never over a raised tile surface;
+  `restack_crossings` groups entries by surface, `restack_switch_tenants`
+  switch tenants only; `is_stale_surface` now prunes both lists, by
+  `surface_clips` and by working areas.
+
+### `1baeb71`: kept
+
+`WorkspaceSurrogate::hosted` admits as below a shown window
+(`create_hosted(..., true)`). Since step 4, `is_shown: false` means an
+entering window: `admit` holds the surface's place (`raised`) and puts it
+just above the cloaked window, where the hand-back needs it over the
+window once uncloaked. A switch needs the opposite: its incoming windows
+are uncloaked *over* their surrogates (`prepare_hand_back`,
+`hide_thumbnail`), backdrop copies under them until `Drop`. With `true`,
+an unraised surface goes just below each tenant's window unless already
+below it, so it ends below the lowest switch tile, cloaked or shown, as
+"Workspace switches: as built" intends, and `raised` is never set on it.
+
+### Still on a window of its own
+
+Unchanged by this pass: see the table in "State and next steps".
+
+### Windows functions called by the new code
+
+All already called by `wm-platform`: `GetWindow` and `SetWindowPos`
+(`PeekSurface::rest_above`, through `window_class::place_above`, now
+also reached as a tile drops off a surface), `DestroyWindow` (a surface
+dropped, as before). No other call is new or newly reached.
+
+### To check on screen
+
+`GLAZEWM_ISOLATE=onesurface`, then `onesurface,readypeeks`. Watch the
+surrogate-class windows (one per monitor rect, one per working area for
+columns, one per working area for switches): each hidden when nothing
+moves.
+
+- Step 3: resize and swap two to six tiles; retarget mid-motion; a
+  floating window over moving tiles goes under them and comes back over.
+- Step 4: open, close, minimize and restore a tile among moving
+  neighbours: no blank or ring-less frame; a closing tile under them.
+- Step 5: scroll the strip, scroll again before it lands, open and close
+  a column mid-strip; with `noslidepeeks`, a column resting half off the
+  edge with a floating window over it.
+- Switches: 1→2 and back, each style; a second switch mid-slide, and
+  back mid-slide.
+- Tiles moving, then a switch (press a resize and the switch back to
+  back): nothing left on the old workspace's surface, no stray frame.
+- A switch, then a resize on the incoming workspace during the slide
+  and during the teardown: the move stays with the switch's stand-in
+  (`has_other_stand_in`), no peek of its own or hosted one appears; the
+  switch's tiles stay under their uncloaked windows.
+- A new window opening on the incoming workspace mid-switch: drawn over
+  the sliding tiles, then handed back; the switch surface hidden after.
+- Scrolling workspace, `noslidepeeks`, taskbar auto-hidden (one surface
+  for tiles and columns): a tiling workspace with a tile moving, switch
+  to the scrolling one with a column resting half off the edge and a
+  floating window over it: the floating window stays over the column
+  once the switch is done.
+- The same with the taskbar shown (separate surfaces): the column lands
+  mid-switch and the switch's tiles stay under their windows.
+- Reload the config mid-slide, then switch again mid-slide: one switch
+  surface per monitor (no second one), no tile left faint or doubled.
+- Pause mid-resize, unpause: tiles land; a resting column (with
+  `noslidepeeks`) stays put, no flash.
+- Display change (unplug a monitor, or change the taskbar's edge) mid
+  motion and mid switch: what draws finishes on its old surface; the
+  next motion and switch draw on the new ones; old ones hidden.
+- `readypeeks`: resize the same tile twice within a few seconds, switch
+  away and back, resize again: no stale frame of its old position.
+
 ## State and next steps (2026-11-15)
 
 For whoever picks this up in a new session. `tryout/one-surface` holds

@@ -81,33 +81,16 @@ pub fn handle_display_settings_changed(
     move_bounded_workspaces_to_new_monitor(&new_monitor, state, config)?;
   }
 
-  // Peek surfaces span a monitor each, or its working area for columns
-  // (`onesurface`).
-  let clips = state
-    .monitors()
-    .iter()
-    .flat_map(|monitor| {
-      monitor
-        .to_rect()
-        .ok()
-        .into_iter()
-        .chain([monitor.native_properties().working_area])
-    })
-    .collect::<Vec<_>>();
-  state
-    .animation_manager
-    .peeks
-    .retain_surfaces(|clip| clips.contains(clip));
-  // A workspace switch's span a working area each.
+  // Peek surfaces (`onesurface`) span a monitor each, or its working area
+  // for columns; a workspace switch's span a working area each.
+  let clips = crate::animation::peek_view::surface_clips(state);
+  state.animation_manager.peeks.retain_surfaces(&clips);
   let areas = state
     .monitors()
     .iter()
     .map(|monitor| monitor.native_properties().working_area)
     .collect::<Vec<_>>();
-  state
-    .animation_manager
-    .peeks
-    .retain_switch_surfaces(|area| areas.contains(area));
+  state.animation_manager.peeks.retain_switch_surfaces(&areas);
 
   for window in state.windows() {
     // Display setting changes can spread windows out sporadically, so mark

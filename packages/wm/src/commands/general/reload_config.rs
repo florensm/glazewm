@@ -76,7 +76,7 @@ pub fn reload_config(
   // Clear active binding modes.
   state.binding_modes = Vec::new();
 
-  state.animation_manager.peeks.drop_surfaces();
+  state.animation_manager.peeks.drop_unused_surfaces();
 
   // Redraw full container tree.
   state
