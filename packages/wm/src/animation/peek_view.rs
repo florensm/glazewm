@@ -1393,9 +1393,10 @@ pub enum Leave {
   /// Not at all, so it goes at once: a transition with nothing to show,
   /// or a window DWM can't draw (e.g. an elevated one).
   Skipped,
-  /// Not on a peek: one already drawing the window in a role that doesn't
-  /// turn round (e.g. a partly visible column's), or one that couldn't be
-  /// made.
+  /// Not on a peek, so it goes at once too: one already drawing the
+  /// window in a role that doesn't turn round (handing back, releasing, a
+  /// partly visible column's at rest), no monitor or frame, or one that
+  /// couldn't be made.
   Unsupported,
 }
 
