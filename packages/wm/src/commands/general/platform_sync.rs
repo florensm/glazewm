@@ -2025,10 +2025,7 @@ fn redraw_containers(
               session.current_rect(),
             );
 
-            if tracks_at_take_over(
-              placement.is_some(),
-              wm_platform::isolation::current().keep_overlays,
-            ) {
+            if tracks_at_take_over(placement.is_some()) {
               track_overlays(
                 &mut state.window_overlays,
                 window.id(),
@@ -2085,17 +2082,12 @@ fn redraw_containers(
         // animation completion. Without this, the window
         // would be repositioned with `SWP_ASYNCWINDOWPOS` and immediately
         // uncloaked — if its message queue is slow, it appears at its old
-        // position for one frame.
-        // Windows handed back by a scrolling layout's scroll view too: a
-        // just-opened one hasn't been moved into place while cloaked.
+        // position for one frame. A window its peek hands back is not
+        // counted: its move is posted, so the WM never waits on its app.
         let has_surrogate = state
           .animation_manager
           .resize_sessions
           .contains_key(&window.id())
-          || hands_back_in_step(
-            state.animation_manager.peeks.owns_window(&window.id()),
-            wm_platform::isolation::current().async_hand_back,
-          )
           || (is_visible
             && state
               .animation_manager
@@ -2622,16 +2614,6 @@ fn apply_taskbar_updates(updates: Vec<(WindowContainer, bool)>) {
   }
 }
 
-/// Whether a window its peek hands back (`peek_hands_back`) is moved in
-/// step with it, synchronously. Its move is posted, so the WM never waits
-/// on its app, unless `GLAZEWM_ISOLATE=noasynchandback`.
-fn hands_back_in_step(
-  peek_hands_back: bool,
-  async_hand_back: bool,
-) -> bool {
-  peek_hands_back && !async_hand_back
-}
-
 /// Above this duration, `reposition_window`'s synchronous
 /// (non-`ASYNCWINDOWPOS`) `SetWindowPos`/restore/minimize/maximize
 /// sequence is logged as a warning. See its `has_surrogate` doc comment
@@ -3088,12 +3070,11 @@ fn track_overlay<O: SyncableOverlay>(
 /// whether its session's surrogate has a placement yet.
 ///
 /// A new session has none until `queue_surrogate_updates` (later in the
-/// pass), so tracking hides both overlays, two `ShowWindow` calls, and the
-/// session loop has to show them again. With `keep_overlays`, off only
-/// under `GLAZEWM_ISOLATE=nokeepoverlays`, they stay where they are, as on
+/// pass): tracking would hide both overlays, two `ShowWindow` calls, for
+/// the session loop to show again, so they stay where they are, as on
 /// `origin/main`.
-fn tracks_at_take_over(has_placement: bool, keep_overlays: bool) -> bool {
-  has_placement || !keep_overlays
+fn tracks_at_take_over(has_placement: bool) -> bool {
+  has_placement
 }
 
 /// Where the overlays of `window_id` go while its resize session's
@@ -4240,7 +4221,7 @@ mod tests {
   use wm_platform::{NativeBackdropOverlay, OpacityValue, Rect};
 
   use super::{
-    hands_back_in_step, hosts_switch_window, is_unanimated_reveal,
+    hosts_switch_window, is_unanimated_reveal,
     should_note_size, tracks_at_take_over, FrozenStep, SyncableOverlay,
   };
   use crate::user_config::UserConfig;
@@ -4255,24 +4236,14 @@ mod tests {
   }
 
   #[test]
-  fn a_peek_hand_back_is_in_step_only_if_turned_off() {
-    assert!(hands_back_in_step(true, false));
-    assert!(!hands_back_in_step(true, true));
-    assert!(!hands_back_in_step(false, false));
-    assert!(!hands_back_in_step(false, true));
-  }
-
-  #[test]
   fn a_window_cloaked_before_its_session_is_moved_to_its_target() {
     assert_eq!(FrozenStep::of(Some(false), || true), FrozenStep::Adopt);
   }
 
   #[test]
-  fn a_take_over_without_a_placement_keeps_overlays_unless_turned_off() {
-    assert!(tracks_at_take_over(true, true));
-    assert!(tracks_at_take_over(true, false));
-    assert!(tracks_at_take_over(false, false));
-    assert!(!tracks_at_take_over(false, true));
+  fn a_take_over_without_a_placement_keeps_overlays() {
+    assert!(tracks_at_take_over(true));
+    assert!(!tracks_at_take_over(false));
   }
 
   #[test]
