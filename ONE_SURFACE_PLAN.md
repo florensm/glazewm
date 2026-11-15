@@ -1984,7 +1984,8 @@ backdrop; a gap of 0 at the shared edge once.
 
 For whoever picks this up in a new session. `tryout/one-surface` holds
 steps 1 to 5, the workspace switches, the integration pass, resting
-columns under `slidepeeks` steps 6a (grab resizes) and 6b (top band), merged;
+columns under `slidepeeks` steps 6a (grab resizes), 6b (top band) and 6c (tiles crossing
+monitors), merged;
 `cargo check
 --workspace --tests` and `cargo clippy --workspace --all-targets -- -D
 warnings` for `x86_64-pc-windows-msvc` are clean. Tests only type-check
@@ -2017,15 +2018,18 @@ ported first (items below), then this flicker, then the bench.
 | workspace switch | tiles whose backdrop can be copied | floating, fullscreen, always-on-top, live, windows with a companion |
 | grab resize | yes (6a) | live; a hold starting while its surface is topped (a neighbour still landing from a command); a tile opening or restoring beside a held one |
 | floating <-> tiling, fullscreen toggle, floating open | yes (6b): on top -> the monitor's band surface; focused -> the tiles' surface | unfocused floating windows not on top; floating closes and minimizes; live |
-| tile crossing monitors | no | all (6c) |
+| tile crossing monitors | yes (6c), with `morepeeks`: each monitor's surface draws its part | live; stacks; a grab holding a tile on either monitor's surface |
 
 ### Open, in the order to take them
 
-1. **Step 6c**: tiles crossing monitors (each monitor's surface draws
-   its part, replacing `Trail`).
-2. **Stacks**: a copy of the tab bar on the surface (step 3's notes say
+1. **Stacks**: a copy of the tab bar on the surface (step 3's notes say
    what it needs). Until then one stack keeps its whole workspace's
    opens, closes and columns on their own windows.
+2. **Removal of the old code** (owner's decision, 2026-11-15, right
+   after porting, before the bench): the old engine (`ResizeSession`,
+   `nopeeks`) and every own-window peek path a surface replaced, so
+   `onesurface` is the only engine, on by default with no word. See
+   "Removal plan" once written.
 3. **Step 8**: duplicated code, bench modes (owner, 2026-11-15: drop the
    isolate words and modes that are not compared, so the bench runs only
    what matters; and have the bench script also build and run a second
@@ -2061,4 +2065,4 @@ a worktree, on a branch `os/<n>-<name>` cut from `tryout/one-surface`;
 each appends its "as built" section here; the reviewer merges, runs the
 checks and pushes `tryout/one-surface`. Agents that share files run one
 after another. Branches merged so far: `os/1-surface`, `os/2-ready`,
-`os/3-tiles`, `os/4-transits`, `os/5-scroll`, `os/7-switch`, `os/9-integrate`, `os/10-rest-slide`, `os/6a-held`, `os/6b-band`.
+`os/3-tiles`, `os/4-transits`, `os/5-scroll`, `os/7-switch`, `os/9-integrate`, `os/10-rest-slide`, `os/6a-held`, `os/6b-band`, `os/6c-cross`.
