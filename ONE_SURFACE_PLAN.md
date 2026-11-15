@@ -1305,6 +1305,169 @@ moves.
 - `readypeeks`: resize the same tile twice within a few seconds, switch
   away and back, resize again: no stale frame of its old position.
 
+## Resting columns under `slidepeeks`: as built
+
+Branch `os/10-rest-slide` (from `tryout/one-surface`, `2ada205`). Open
+item 1 of "State and next steps". Not seen running.
+
+### Today's order, found by reading (own peeks)
+
+Each step keeps this order; only where things sit changes.
+
+| step | where, when | what, and z-order |
+|---|---|---|
+| `stand_by` | `sync_scroll_view`, start of `platform_sync`, before `upsert` and before the pre-pass | an incoming column at rest (`slides_in`: switch incoming and animated, or `awaits_peek_hand_back`): peek made (or kept) just below its cloaked window, window and copies at warm-up opacity. The pre-pass then makes its surrogate just below the same window, so between the two: surrogate over peek. Under `onesurface` the surrogate is on the switch surface (below the lowest switch tile): over or under the peek |
+| `keep_switching_out` | same call, after `take_departed`, before the upserts | an outgoing column at rest: its entry leaves `entries`, kept at full, just below its cloaked window, in `switching_out` |
+| `take_over_from_peek` | `redraw_containers`' `Apply` arm, for an outgoing window `is_switching_out` (instead of `take_over_outgoing`) | surrogate (made in the pre-pass, warmed at opacity 1, flushed) to full (`apply_effect_opacity`), then the kept peek dropped, back to back: a frame between shows both |
+| `end_stand_by` | after the `Apply` loop (`peek_hand_backs`: displayed, hidden by the layout, incoming of `pending_ws_cleanup`); in `sync_scroll_view` once it no longer slides in; in `settle_switch_peeks` | window to its opacity first, ring copy covered, backdrop copy to full; then `track_overlays` once (ring parked concealed, carried) |
+| `hand_back_to_peek` | right after, same ids | surrogate thumbnail and backdrop copy hidden (`HandBack::ToPeek`), ring copy kept until `WsCleanupStep::Drop`, over the peek's identical one |
+| `settle_switch_peeks` | after `redraw_containers` | stood-by peeks no switch owes a hand-over drawn again (`end_stand_by`, `track_overlays`); `switching_out` cleared, so none is kept past the sync |
+
+### Hosted
+
+| step | own window | hosted (on its column surface) |
+|---|---|---|
+| `stand_by` | its window's thumbnail and copies at warm-up | the same, on the tenant's thumbnails only; the surface stays shown and where it is (just above the column's cloaked window, by `admit` and `settle_resting_surfaces`), other tenants untouched |
+| `keep_switching_out` | kept window | kept tenant at full, surface where it was; it counts as the surface's resting tenant until dropped (`rests_on_surface`, `settle_resting_surfaces`) |
+| `take_over_from_peek` | surrogate full, then the window destroyed | surrogate full, then the tenant's thumbnails unregistered; the surface hides with its last drawing tenant |
+| `end_stand_by` | thumbnail and copies to full | the same, on the tenant; surface unmoved |
+| `hand_back_to_peek` | acts on the surrogate | the same |
+| `settle_switch_peeks` | as above | as above; a kept tenant goes with `switching_out` |
+
+Code: `keeps_rest_hosted` lost its `slide_peeks` exclusion (one resting
+column per surface, under `slidepeeks` or not); `rests_on_surface` and
+`settle_resting_surfaces` also read `switching_out`. `hosts_column` had
+no `slidepeeks` term. `wm-platform` is unchanged: `WindowPeek::stand_by`
+and `end_stand_by` only set opacities, hosted or not (a hosted peek's
+warm-up already keeps its backdrop copy faint, `warms_backdrop`).
+
+### Z-order through a switch, same monitor
+
+The column surface rests just above its tenant's cloaked window. The
+switch surface goes just below each switch tile's window unless already
+below it (`admit`, shown), so below the column's window too: **the
+column surface is above the switch surface whenever both hold that
+column**. The same holds for a column whose switch surrogate is its own
+window (a companion): just below the column's window, so below the
+column surface.
+
+- Column workspace switching in. Start: the stood-by tenant draws at
+  warm-up over the sliding surrogates; faint, so its height does not
+  show. End: `end_stand_by` brings the peek to full over its surrogate,
+  both at rest, cut at the same working area, then `hand_back_to_peek`
+  hides the surrogate: while both draw they draw the same pixels (an
+  opaque window looks the same; a semi-transparent one a frame darker,
+  as with own windows today). The ring copies (surrogate's under the
+  peek's) are identical until `Drop`. Other incoming windows between the
+  two surfaces are uncloaked in the same pass; at rest they do not reach
+  into the cut column.
+- Column workspace switching out. Start: the kept tenant draws at full,
+  above the switch surface; its surrogate warms at opacity 1 under it
+  (flushed), then `take_over_from_peek` brings the surrogate to full and
+  only then drops the tenant: the peek draws until the surrogate has
+  taken over, and the two are identical while both draw.
+- Own windows, for comparison: the surrogate was over the peek, here
+  under it. Same pixels while both draw; neither order shows a blank.
+
+### Edge cases
+
+- **An incoming resting column while an outgoing one is kept on the same
+  surface** (two monitors, a cut column on both workspaces): the
+  incoming one takes a peek of its own for its life (until it departs).
+  Hosted, its `admit` (just above its cloaked window) and
+  `settle_resting_surfaces` would move the surface the kept one draws on
+  at full, for the rest of the sync, which could put it over a floating
+  window that covered it, or under a shown one. So a switch from a
+  hosted column alternates: the next switch back finds the surface empty
+  and hosts the other one. Own windows draw as today.
+- **Mix of hosted and own resting peeks** in one switch (the second
+  resting column of a surface, the case above, a stack's or a live
+  column): each step goes by window id, so each meets its own kind; the
+  two never share a place (different edges, or the case above).
+- **Hiding and showing a hosted resting tenant** (stand-by, end of it):
+  its thumbnails only; the surface's shown count is unchanged (a
+  stood-by tenant is shown, at warm-up), other tenants untouched.
+- **Height while one stands by and others move** (the strip scrolls
+  mid-slide): movers set the surface's height as in step 5 (admitted
+  above cloaked joiners, `stay_over_window` on landing); the stood-by
+  one is faint meanwhile. A stood-by column that moves ends its stand-by
+  first (`waits_on_switch`), as for own peeks. Once all rest, settled
+  over the one resting tenant.
+- **Second switch mid-slide, or back**: a stood-by hosted tenant
+  departs and is kept (still faint), `hand_over_cut_short_slide` brings
+  its new outgoing surrogate up, `take_over_from_peek` drops it; the
+  column coming back in meets the case above (own peek) if it rests on
+  the same surface.
+- **Ready store**: a resting tenant is in use, never ready; a kept one
+  is dropped, never released to the store; an incoming stood-by column's
+  window is cloaked, so its ready peek is taken and dropped
+  (`take_ready`, not reused).
+- **Purge points**: a stood-by tenant keeps its surface in use, so
+  reload, pause and display change keep it listed (`is_stale_surface`);
+  `switching_out` is empty between syncs. Display change mid-switch: the
+  tenant is replaced at its next upsert (clip changed), the new one stood
+  by too (`standing_by` is by id), the old one in `replaced` until the
+  flush. Pause mid-switch with a stood-by hosted column: the switch plays
+  on and hands back as for an own peek. Shutdown: the switch's
+  surrogates go first, the tenant with `PeekView`, before its surface.
+- **`noslidepeeks`**: `switching_out` is never filled, so admission and
+  settling are step 5's exactly. Without `onesurface` no surface exists:
+  today's behaviour.
+
+### Still on a window of its own, and why
+
+- A second resting column on one surface (one height at rest), as in
+  step 5.
+- An incoming resting column whose surface holds an outgoing one kept
+  for its surrogate (above).
+- As before: live peeks, held columns, stacks, and every column of a
+  workspace with one of those.
+
+### Windows functions called by the new code
+
+No new call. Newly reached for resting columns under `slidepeeks`, all
+already called by `wm-platform`: `GetWindow` and `SetWindowPos`
+(`SurfaceWindow::admit`, `PeekSurface::rest_above` through
+`window_class::place_above`, `companion::is_above`), `ShowWindow`
+(`note_drawing`), `DwmRegisterThumbnail`, `DwmUpdateThumbnailProperties`,
+`DwmUnregisterThumbnail`, `CreateWindowExW` (a column surface),
+`DestroyWindow`, `DwmGetWindowAttribute` (`is_cloaked`).
+
+### To check on screen
+
+`GLAZEWM_ISOLATE=onesurface`, then `onesurface,readypeeks`. Two
+monitors side by side, scrolling layout, `workspace_switch` slide.
+
+- Left monitor, workspace 2 with a column cut at its right edge,
+  workspace 1 tiled. 1→2: the column slides in with its neighbours, cut
+  at the edge, nothing of it on the right monitor; at the end no flash,
+  no double ring, no faint frame. One surrogate-class window for the
+  columns (working area) shows the column at rest, none of its own.
+- 2→1: the column slides out with the rest from the first frame (no
+  blank, no doubled frame at the start); the column surface hidden after.
+- Workspaces 1 and 2 both with a cut column on the left monitor: 1→2,
+  2→1, 1→2. Each switch slides both columns; every other switch the
+  incoming one is on a peek of its own (an extra surrogate-class window
+  just below its window): no difference on screen.
+- 1→2 then back mid-slide, 1→2 then 2→3 mid-slide, fast presses: no
+  column left faint, blank or doubled.
+- Semi-transparent window and one with a copyable backdrop as the cut
+  column: at most one frame darker at the hand-over, as with `default`.
+- A floating window over the cut column on workspace 2: 1→2, it stays
+  over the column once landed; 2→1, it never shows under the column.
+- Three monitors, columns cut at both edges of the middle one: one on
+  the surface, the other on its own window; switches slide both.
+- `fade`, `zoom`; `workspace_switch.enabled: false`; overview pick: the
+  column is shown at rest at once, as today.
+- Focus a neighbour mid-slide so the strip scrolls: the column ends
+  where the layout puts it.
+- Pause mid-switch, then unpause; reload mid-switch; unplug a monitor
+  mid-switch: nothing left faint, the next switch draws.
+- With `readypeeks`: resize a column, switch away and back within a few
+  seconds: no stale frame.
+- `onesurface,noslidepeeks`: as step 5 (the column shows at rest at
+  once during a switch).
+
 ## State and next steps (2026-11-15)
 
 For whoever picks this up in a new session. `tryout/one-surface` holds
