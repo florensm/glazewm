@@ -2206,13 +2206,28 @@ ported first (items below), then this flicker, then the bench.
    can compare A, B and the live stand-in on screen; the switch goes
    once chosen. `parallax` != 1
    stays live either way.
-3. **Step 8**: duplicated code, bench modes (owner, 2026-11-15: drop the
+3. **Parallax backdrops on the surface, then no live peeks** (owner,
+   2026-11-15; after item 2). A pinned backdrop copy is cut from one
+   blurred image of the whole monitor; parallax only changes where it is
+   cut (window offset within the monitor times `parallax`), so shift the
+   copy's `rcSource` by that, clamped at the monitor's edges as the real
+   overlay is (check its code for what it does there). Not checked yet:
+   read the overlay first and stop if it can't match. If items 2 and 3
+   both hold, every backdrop is copyable: delete live peeks (`Live` modes
+   of `WindowPeek` and `WorkspaceSurrogate`, `is_live`, `allows_motion`,
+   the live arms of the admission rules) and the rules that keep tiles,
+   transits and columns beside an own peek on their own
+   (`has_own_peek_neighbour`, `beside_own_peek`), which only count live
+   peeks since stacks. Own windows stay for the other fallbacks
+   (unfocused floating not on top, floating closes, switch floating,
+   fullscreen and topmost, a topped surface, surface failure).
+4. **Step 8**: duplicated code, bench modes (owner, 2026-11-15: drop the
    isolate words and modes that are not compared, so the bench runs only
    what matters; and have the bench script also build and run a second
    branch, `origin/main` unless the owner names another, from a separate
    checkout, the same scenarios on each), the measuring section.
-4. **The backdrop flicker** on workspace switches (above).
-5. **Bench**.
+5. **The backdrop flicker** on workspace switches (above).
+6. **Bench**.
 
 ### Owner's decisions still open
 
