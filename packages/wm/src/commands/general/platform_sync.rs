@@ -1779,9 +1779,8 @@ fn redraw_containers(
         .get_animation(&window.id())
         .is_some_and(|a| !a.is_complete());
 
-    // A tile that only moves or resizes goes on a peek; with `morepeeks`,
-    // also one crossing between floating and tiling (`STAND_INS_PLAN.md`
-    // 10f).
+    // A tile that only moves or resizes goes on a peek; also one crossing
+    // between floating and tiling (`STAND_INS_PLAN.md` 10f).
     let moves_as_tile = if is_state_change {
       crate::animation::peek_view::changes_state_on_peek(window)
     } else {
@@ -1880,9 +1879,9 @@ fn redraw_containers(
           )
         })
       {
-        // Under `morepeeks`, a tile toggled in or out of fullscreen does
-        // so on a pinned peek (`STAND_INS_PLAN.md` 10f), taken over from
-        // as a move on a peek is.
+        // A tile toggled in or out of fullscreen does so on a pinned peek
+        // (`STAND_INS_PLAN.md` 10f), taken over from as a move on a peek
+        // is.
         peek_moves.push(window.id());
         if let Some(raise) = fullscreen_raise {
           peek_raises.push(((*window).clone(), raise));

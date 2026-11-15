@@ -36,10 +36,9 @@ use wm_platform::{Rect, SurrogateBatch};
 
 use super::{
   peek_view::{
-    can_move_on_peek, has_other_stand_in, hosts_column, is_live,
-    is_peek_resize, is_pure_move, peek_styles, resizes_on_peeks,
-    restack_joining_overlays, restore_cloaked, surface_clips,
-    track_overlays, PeekView, Role,
+    has_other_stand_in, hosts_column, is_live, is_peek_resize,
+    is_pure_move, peek_styles, resizes_on_peeks, restack_joining_overlays,
+    restore_cloaked, surface_clips, track_overlays, PeekView, Role,
   },
   transit::Transit,
 };
@@ -111,9 +110,7 @@ pub fn sync_scroll_view(
   let can_stretch = windows
     .iter()
     .filter(|_| resizes.is_some())
-    .filter(|(window, _)| {
-      can_stretch(state, window, &other_stand_ins, config)
-    })
+    .filter(|(window, _)| can_stretch(state, window, &other_stand_ins))
     .map(|(window, _)| window.id())
     .collect::<HashSet<_>>();
 
@@ -415,15 +412,13 @@ fn moves_on_peek(
 }
 
 /// Whether `window`, a column, can be drawn stretched as it resizes on
-/// its peek: not one another stand-in draws, nor one whose peek can't
-/// (see `can_move_on_peek`), nor one at its new size already, as an
-/// interactive resize leaves it, which keeps the per-window path as
-/// before.
+/// its peek: not one another stand-in draws, nor one at its new size
+/// already, as an interactive resize leaves it, which keeps the
+/// per-window path as before.
 fn can_stretch(
   state: &WmState,
   window: &WindowContainer,
   other_stand_ins: &HashSet<Uuid>,
-  config: &UserConfig,
 ) -> bool {
   let is_moving = state.animation_manager.peeks.is_moving(&window.id());
   let is_resized_already =
@@ -440,9 +435,7 @@ fn can_stretch(
         })
       });
 
-  !other_stand_ins.contains(&window.id())
-    && can_move_on_peek(&peek_styles(window, config))
-    && !is_resized_already
+  !other_stand_ins.contains(&window.id()) && !is_resized_already
 }
 
 /// The transition a column coming back from minimized enters by, as a new

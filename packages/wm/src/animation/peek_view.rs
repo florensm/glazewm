@@ -1036,11 +1036,10 @@ pub fn floating_peek_raise(
 }
 
 /// Whether `window`, whose state changed this pass, moves on a pinned
-/// peek as a tile does (`morepeeks`, `STAND_INS_PLAN.md` 10f): between
-/// floating and tiling, not while the OS still drags it.
+/// peek as a tile does (`STAND_INS_PLAN.md` 10f): between floating and
+/// tiling, not while the OS still drags it.
 pub fn changes_state_on_peek(window: &WindowContainer) -> bool {
-  wm_platform::isolation::current().more_peeks
-    && window.active_drag().is_none()
+  window.active_drag().is_none()
     && crosses_floating(&window.state(), window.prev_state().as_ref())
 }
 
@@ -1152,23 +1151,6 @@ pub(super) fn is_live(styles: &[Option<BackdropOverlayParams>]) -> bool {
   styles
     .iter()
     .any(|style| style.is_some_and(|params| !params.is_copyable()))
-}
-
-/// Whether a window whose peek would carry copies of `styles` can move and
-/// resize on it: on a pinned peek, or on a `Live` one under
-/// `GLAZEWM_ISOLATE=morepeeks` (`STAND_INS_PLAN.md` 10f).
-pub(super) fn can_move_on_peek(
-  styles: &[Option<BackdropOverlayParams>],
-) -> bool {
-  allows_motion(
-    is_live(styles),
-    wm_platform::isolation::current().more_peeks,
-  )
-}
-
-/// [`can_move_on_peek`] for a peek that is `live` or not.
-fn allows_motion(live: bool, more_peeks: bool) -> bool {
-  !live || more_peeks
 }
 
 /// Whether a window put on a peek may be drawn on one of its monitor's
@@ -2640,8 +2622,7 @@ impl PeekView {
   /// next tick, so no frame shows neither.
   ///
   /// Returns `false`, creating nothing, for a window already drawn
-  /// otherwise (moving, leaving, or as a column), one whose peek can't
-  /// move it (see [`can_move_on_peek`]), or one DWM can't draw.
+  /// otherwise (moving, leaving, or as a column), or one DWM can't draw.
   #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
   pub(super) fn move_tile(
     &mut self,
@@ -2667,10 +2648,6 @@ impl PeekView {
       None => false,
       Some(entry)
         if !entry.is_column
-          && allows_motion(
-            entry.peek.is_live(),
-            wm_platform::isolation::current().more_peeks,
-          )
           && matches!(
             entry.role,
             Role::HandingBack | Role::Releasing { .. }
@@ -2685,10 +2662,6 @@ impl PeekView {
       }
       Some(_) => return false,
     };
-    if !can_move_on_peek(&styles) {
-      return false;
-    }
-
     let (opacity, corner_style, _) =
       surrogate_effects_for(window.effect_set(is_focused), config);
     let motion = WindowAnimationState::new_movement(
@@ -4066,13 +4039,11 @@ pub(crate) fn surface_clips(state: &WmState) -> Vec<Rect> {
     .collect()
 }
 
-/// How a WM fullscreen toggle is drawn on peeks, if it is: enabled, under
-/// `GLAZEWM_ISOLATE=morepeeks`, in `window_fullscreen`'s own style, as the
-/// old path draws it.
+/// How a WM fullscreen toggle is drawn on peeks, if it is: enabled, in
+/// `window_fullscreen`'s own style, as the old path draws it.
 fn fullscreen_on_peeks(config: &UserConfig) -> Option<PeekResize> {
   let fullscreen = &config.value.animations.window_fullscreen;
-  (wm_platform::isolation::current().more_peeks && fullscreen.enabled)
-    .then_some(peek_resize(fullscreen.style))
+  fullscreen.enabled.then_some(peek_resize(fullscreen.style))
 }
 
 /// How a window drawn in `style` is drawn on its peek.
@@ -4209,17 +4180,16 @@ pub fn fullscreen_on_peek(
 }
 
 /// Whether `id`'s ring is left off its peek as its window is fullscreen,
-/// as `border_hidden_for_fullscreen` leaves it off the window, under
-/// `morepeeks` (see [`fullscreen_on_peek`]).
+/// as `border_hidden_for_fullscreen` leaves it off the window (see
+/// [`fullscreen_on_peek`]).
 fn hides_ring_for_fullscreen(
   state: &WmState,
   id: Uuid,
   config: &UserConfig,
 ) -> bool {
-  wm_platform::isolation::current().more_peeks
-    && state
-      .window_by_id(id)
-      .is_some_and(|window| border_hidden_for_fullscreen(&window, config))
+  state
+    .window_by_id(id)
+    .is_some_and(|window| border_hidden_for_fullscreen(&window, config))
 }
 
 /// Whether a grab resize can draw `window` on a peek it holds (see
@@ -4431,7 +4401,6 @@ pub fn resizes_relayout(
       moves_as_tile
         && window.display_state() == wm_common::DisplayState::Shown
         && !has_other_stand_in(&state.animation_manager, &id)
-        && can_move_on_peek(&peek_styles(window, config))
         && fits_monitor
         && !is_resized_already
     })
@@ -4439,11 +4408,11 @@ pub fn resizes_relayout(
 }
 
 /// The clips of the peeks [`move_on_peek`] draws `window`, a tile moving
-/// from `from`, on (see [`move_clips`]). With `morepeeks`, one moving onto
-/// another monitor is drawn on two, unless a peek draws it already (one
-/// handing it back is on its own monitor), it is in a stack, whose tab
-/// bar's window is cut at one peek's monitor (a hosted copy of it draws
-/// only what that window holds), or its peek is live.
+/// from `from`, on (see [`move_clips`]). One moving onto another monitor
+/// is drawn on two, unless a peek draws it already (one handing it back is
+/// on its own monitor), it is in a stack, whose tab bar's window is cut at
+/// one peek's monitor (a hosted copy of it draws only what that window
+/// holds), or its peek is live.
 fn tile_clips(
   state: &WmState,
   window: &WindowContainer,
@@ -4452,8 +4421,7 @@ fn tile_clips(
 ) -> Option<(Rect, Option<Rect>)> {
   let clip = window.monitor()?.to_rect().ok()?;
   // A live peek's real backdrop overlay can follow one peek, not two.
-  let crosses = wm_platform::isolation::current().more_peeks
-    && !state.animation_manager.peeks.draws_window(&window.id())
+  let crosses = !state.animation_manager.peeks.draws_window(&window.id())
     && window
       .parent()
       .is_none_or(|parent| parent.as_stack().is_none())
@@ -5564,13 +5532,13 @@ mod tests {
   use wm_platform::{LengthValue, Rect, RectDelta, HWND};
 
   use super::{
-    allows_motion, by_surface, conceals_new_ring, crosses_floating,
-    crossing_host, evicted, floating_peek_raise, follow_duration,
-    follows_tile, fullscreen_peek_raise, has_landed, has_left, host_for,
-    hosts_column, hosts_hold, hosts_on_surface, is_departed,
-    is_peek_resize, is_pure_move, is_ready_expired, is_stale_surface,
-    is_stray, keeps_ready, keeps_rest_hosted, keeps_trail_drawing,
-    kept_transit, lands_on_trail, lanes_meet, lanes_stay_apart, leaves_as,
+    by_surface, conceals_new_ring, crosses_floating, crossing_host,
+    evicted, floating_peek_raise, follow_duration, follows_tile,
+    fullscreen_peek_raise, has_landed, has_left, host_for, hosts_column,
+    hosts_hold, hosts_on_surface, is_departed, is_peek_resize,
+    is_pure_move, is_ready_expired, is_stale_surface, is_stray,
+    keeps_ready, keeps_rest_hosted, keeps_trail_drawing, kept_transit,
+    lands_on_trail, lanes_meet, lanes_stay_apart, leaves_as,
     leaving_transit, lowest, move_clips, out_of_order, peek_resize, rank,
     resizes_at_start, rest_anchor, restretched, rests, retargeted_motion,
     returning_transit, sampled_size, settling, state_change_peek_raise,
@@ -6261,16 +6229,6 @@ mod tests {
     assert!(retargeted.is_running());
     assert!((entry_transit.amount_at(now) - amount).abs() < f32::EPSILON);
     assert!((amount - 0.25).abs() < 1e-3, "{amount}");
-  }
-
-  /// A pinned peek always moves its window; a live one only under
-  /// `morepeeks`.
-  #[test]
-  fn live_peeks_move_only_under_morepeeks() {
-    assert!(allows_motion(false, false));
-    assert!(allows_motion(false, true));
-    assert!(!allows_motion(true, false));
-    assert!(allows_motion(true, true));
   }
 
   /// A column moved on mid-entry keeps entering where it was; one put at
